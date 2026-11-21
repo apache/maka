@@ -1,0 +1,209 @@
+From 0104090b4c6039132ea45a12902707505854aff1 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Fri, 16 Oct 2026 23:16:34 +0800
+Subject: [PATCH] library: Hermes's bots are profiles, so the library's servers
+ go into every profile's config as well
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Hermes Agent reads mcp_servers from each bot's own config.yaml
+(<root>/profiles/<name>), which reads no other home's — as magpie's own
+wiring has it (agent.HermesProfiles) — but the library's target named the
+main home's file alone, so `magpie library sync` gave the servers to the
+default home only, and every profile's session had none (#2540). The
+profile configs go into the target's Also now, written and taken out with
+the main one's, as dsh's patch lists are; a profile's own settings stay
+as its user set them, and only magpie's come out again.
+
+Fixes #2540
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/agent/hermes.go            | 31 ++++++++++++++---
+ internal/library/hermes_mcp_test.go | 53 +++++++++++++++++++++++++++++
+ internal/library/mcp.go             | 20 ++++++++---
+ internal/library/targets.go         |  9 ++++-
+ 4 files changed, 103 insertions(+), 10 deletions(-)
+
+diff --git a/internal/agent/hermes.go b/internal/agent/hermes.go
+index 05517a03..794b3a7e 100644
+--- a/internal/agent/hermes.go
++++ b/internal/agent/hermes.go
+@@ -194,17 +194,38 @@ var hermesProfileID = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
+ // (%LOCALAPPDATA%\hermes on Windows, ~/.hermes elsewhere), which a
+ // HERMES_HOME under it is a profile of; a HERMES_HOME elsewhere is the root itself, or, as
+ // <root>/profiles/<name>, a profile of <root> (get_default_hermes_root).
+-// A profile with no config.yaml yet is left out: magpie doesn't make one.
+ func hermesProfiles(at place) []string {
+ 	root := at.hermesDefault()
+ 	if env := at.getenv("HERMES_HOME"); env != "" {
+ 		if rel, err := filepath.Rel(root, env); err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+-			root = env
+-			if filepath.Base(filepath.Dir(env)) == "profiles" {
+-				root = filepath.Dir(filepath.Dir(env))
+-			}
++			root = hermesRoot(env)
+ 		}
+ 	}
++	return hermesProfileConfigs(root)
++}
++
++// HermesProfiles is the config.yaml of each of the profiles (its bots) of
++// the Hermes whose folder is dir, as Hermes lists them (hermesProfileConfigs):
++// the resource library gives each of them the library's MCP servers, which
++// a profile reads from its own config.yaml alone (#2540). A profile with no
++// config.yaml yet is left out: magpie doesn't make one.
++func HermesProfiles(dir string) []string { return hermesProfileConfigs(hermesRoot(dir)) }
++
++// hermesRoot is the root of Hermes's profiles: dir itself, or, as
++// <root>/profiles/<name>, the root it is a profile of.
++func hermesRoot(dir string) string {
++	if filepath.Base(filepath.Dir(dir)) == "profiles" {
++		return filepath.Dir(filepath.Dir(dir))
++	}
++	return dir
++}
++
++// hermesProfileConfigs is every profile's config.yaml under root: the
++// root's own, and <root>/profiles/<name>'s for each name Hermes allows that
++// holds a file only a profile has and isn't deleted (a tombstone at
++// profiles/.deleted/<name>). A profile with no config.yaml yet is left
++// out: magpie doesn't make one.
++func hermesProfileConfigs(root string) []string {
+ 	paths := []string{filepath.Join(root, "config.yaml")}
+ 	ps := filepath.Join(root, "profiles")
+ 	es, _ := os.ReadDir(ps)
+diff --git a/internal/library/hermes_mcp_test.go b/internal/library/hermes_mcp_test.go
+index 34dc82e2..2fd44cad 100644
+--- a/internal/library/hermes_mcp_test.go
++++ b/internal/library/hermes_mcp_test.go
+@@ -129,6 +129,59 @@ func TestHermesMCP(t *testing.T) {
+ 	}
+ }
+ 
++// sryimnoob123 (#2540): every bot is a profile with its own config.yaml,
++// which reads no other home's (hermes.go hermesProfiles), so the library's
++// servers go into each profile's config as well — a profile's own settings
++// stay as its user set them, and only magpie's come out again.
++func TestHermesProfilesGetMCP(t *testing.T) {
++	h := sandbox(t)
++	dir := filepath.Join(h, "hermes-home")
++	t.Setenv("HERMES_HOME", dir)
++	p := filepath.Join(dir, "config.yaml")
++	write(t, p, hermesConfig)
++	holdCLI(t, h, "hermes") // the config alone is gone (#2173, #2177)
++
++	// one bot profile beside the default home, and another
++	alpha := filepath.Join(dir, "profiles", "alpha", "config.yaml")
++	beta := filepath.Join(dir, "profiles", "beta", "config.yaml")
++	write(t, alpha, "# alpha's own\nmodel:\n  default: mine/other\n")
++	write(t, beta, "# beta's own\nmodel:\n  default: mine/else\n")
++
++	agents := []string{"hermes"}
++	ok(t)(SaveServer("", Server{Name: "web", Transport: "http", URL: "https://example.com/mcp", Agents: agents}))
++
++	for _, c := range []struct{ name, model string }{{"alpha", "mine/other"}, {"beta", "mine/else"}} {
++		got := read(t, filepath.Join(dir, "profiles", c.name, "config.yaml"))
++		if !strings.Contains(got, "web") || !strings.Contains(got, "https://example.com/mcp") {
++			t.Errorf("%s's config.yaml got nothing:\n%s", c.name, got)
++		}
++		if !strings.Contains(got, c.model) {
++			t.Errorf("%s lost its own model:\n%s", c.name, got)
++		}
++	}
++	if got := read(t, p); !strings.Contains(got, "web") {
++		t.Errorf("the main home's config.yaml lost it:\n%s", got)
++	}
++
++	// a profile that is as the library has it isn't written again
++	before := read(t, alpha)
++	ok(t)(Sync())
++	if read(t, alpha) != before {
++		t.Errorf("a sync rewrote a profile that is as the library has it:\n%s", read(t, alpha))
++	}
++
++	ok(t)(RemoveServer("web"))
++	for _, c := range []struct{ name, model string }{{"alpha", "mine/other"}, {"beta", "mine/else"}} {
++		got := read(t, filepath.Join(dir, "profiles", c.name, "config.yaml"))
++		if strings.Contains(got, "web") {
++			t.Errorf("%s's config.yaml still has it:\n%s", c.name, got)
++		}
++		if !strings.Contains(got, c.model) {
++			t.Errorf("%s lost its own model:\n%s", c.name, got)
++		}
++	}
++}
++
+ // A server Hermes has that the library doesn't is found, to bring in.
+ func TestHermesMCPFound(t *testing.T) {
+ 	h := sandbox(t)
+diff --git a/internal/library/mcp.go b/internal/library/mcp.go
+index c9062700..c815adcc 100644
+--- a/internal/library/mcp.go
++++ b/internal/library/mcp.go
+@@ -966,7 +966,7 @@ func (f *mcpFile) read() (map[string]*Server, error) {
+ 
+ // also is the file of each of Also, for formats written file by file.
+ func (f *mcpFile) also() []*mcpFile {
+-	if f.Format != fmtPi && f.Format != fmtDesktop {
++	if f.Format != fmtPi && f.Format != fmtDesktop && f.Format != fmtHermes {
+ 		return nil
+ 	}
+ 	var out []*mcpFile
+@@ -1133,8 +1133,15 @@ func (f *mcpFile) putEntry(s *Server, o ordered) error {
+ 		}
+ 		return edit.SetYAML(f.Path, edit.KV{Path: "extensions." + s.Name, Value: m})
+ 	case fmtHermes:
+-		// in its order, beside the user's other settings and comments
+-		return edit.SetYAML(f.Path, edit.KV{Path: f.key() + "." + s.Name, Value: o})
++		// in its order, beside the user's other settings and comments, in
++		// every profile's config.yaml: a bot reads its own and no other's
++		// (#2540)
++		for _, p := range f.files() {
++			if err := edit.SetYAML(p, edit.KV{Path: f.key() + "." + s.Name, Value: o}); err != nil {
++				return err
++			}
++		}
++		return nil
+ 	case fmtDsh:
+ 		for _, p := range f.files() {
+ 			if err := dshPut(p, s.Name, o); err != nil {
+@@ -1173,7 +1180,12 @@ func (f *mcpFile) del(name string) error {
+ 	case fmtGoose:
+ 		return edit.DelYAML(f.Path, "extensions."+name)
+ 	case fmtHermes:
+-		return edit.DelYAML(f.Path, f.key()+"."+name)
++		for _, p := range f.files() {
++			if err := edit.DelYAML(p, f.key()+"."+name); err != nil {
++				return err
++			}
++		}
++		return nil
+ 	}
+ 	return edit.Atomically(func() error {
+ 		for _, a := range f.also() {
+diff --git a/internal/library/targets.go b/internal/library/targets.go
+index 5a13fc7e..b714212d 100644
+--- a/internal/library/targets.go
++++ b/internal/library/targets.go
+@@ -292,8 +292,15 @@ func targetOf(a *agent.Agent) *Target {
+ 	case "hermes":
+ 		// Hermes Agent reads mcp_servers from $HERMES_HOME/config.yaml, the
+ 		// file magpie sets its model in too (tools/mcp_tool.py), and skills
+-		// from $HERMES_HOME/skills
++		// from $HERMES_HOME/skills. Each of its bots is a profile with its
++		// own config.yaml, which reads no other home's (agent.HermesProfiles):
++		// the library's servers go into every profile's too (#2540)
+ 		t.MCP = &mcpFile{Path: a.Path, Format: fmtHermes}
++		for _, p := range agent.HermesProfiles(a.Dir) {
++			if p != a.Path {
++				t.MCP.Also = append(t.MCP.Also, p)
++			}
++		}
+ 		t.Skills = filepath.Join(a.Dir, "skills")
+ 	case "minimax-code":
+ 		// MiniMax Code loads the skills in its data folder ($MINIMAX_DATA_DIR,
+-- 
+2.50.1 (Apple Git-155)
+

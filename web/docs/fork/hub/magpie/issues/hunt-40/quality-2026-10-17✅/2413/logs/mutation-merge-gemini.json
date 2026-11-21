@@ -1,0 +1,16 @@
+{
+  "name": "mutation-merge-gemini",
+  "time_utc": "2026-10-16T23:43:05.814361+00:00",
+  "cwd": "/private/tmp/magpie-quality-20261017-2413",
+  "command": "go test -p 2 -tags nogui -count=1 -timeout 10m ./internal/provider -run '^TestImportCCSwitch$'",
+  "input": "SQLite fixtures in internal/provider/importapps_test.go; no real credentials; temporary HOME via wrapper and provider TestMain testenv",
+  "environment": {
+    "GOTOOLCHAIN": "auto",
+    "GOPATH": "/Users/ggbdpq/go",
+    "GOMODCACHE": "/Users/ggbdpq/go/pkg/mod",
+    "GOCACHE": "/Users/ggbdpq/Library/Caches/go-build",
+    "GOMAXPROCS": "2"
+  },
+  "output": "--- FAIL: TestImportCCSwitch (0.61s)\n    importapps_test.go:87: relay: {Ref:claude/relay From:Claude Code, Codex, Gemini CLI Provider:{ID:some-relay Name:Some Relay Was:[] Icon: Preset: Key:sk-relay AccessKeyID: SecretAccessKey: KeyName: Keys:[] KeyProtocol: KeyWeight:0 Chat: Responses:https://relay.example.com/v1 Anthropic:https://relay.example.com Gemini: Decide: BaseAPI: Fallback:[] Routing: Sink:false Affinity: KeepLogin:false KeepLoginAs: SwitchOnly:false MaxConcurrency:<nil> AccountConcurrency:map[] QueueLimit:0 QueueWait:0 MaxRPM:0 QuotaRest:0 QuotaResetAt: RestCap:0 PriceRate:0 Headers:map[] ExtraBody:map[] Searches:false CodexAsSent:false NativeCompaction:false PassUserAgent:false PinUpstream:false AuthHeader: Unredacted:false InsecureTLS:false Proxy: AccountProxies:map[] AccountModels:map[] AccountCaps:map[] AccountWindowCaps:map[] AccountNames:map[] BalanceURL: BalancePath: BalanceMethod: BalanceToken: ZhipuTeam:<nil> Vertex:<nil> ModelsURL: Models:[claude-sonnet-5 gpt-5.5 gemini-2.5-flash] NoModels:false PickedFrom:[] RefreshEvery: AutoInclude:[] Unlisted:false Off:false Contexts:map[] Family: Catalog: Website:https://relay.example.com KeysURL: IconURL: Hidden:false Quiet:false Tucked:false Account:<nil>} Status:new Existing: KeyOf: Reserved:false Off: Skip:}\nFAIL\nFAIL\tgithub.com/yetone/magpie/internal/provider\t1.022s\nFAIL\n",
+  "exit_status": 1
+}

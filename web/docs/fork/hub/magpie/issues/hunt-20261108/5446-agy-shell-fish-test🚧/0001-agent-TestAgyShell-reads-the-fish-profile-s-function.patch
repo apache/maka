@@ -1,0 +1,115 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Sun, 8 Nov 2026 08:57:01 +0800
+Subject: [PATCH] agent: TestAgyShell reads the fish profile's function as fish
+ (#5446)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+TestAgyShell seeded the POSIX profiles alone and then held every
+profile update.ShellFunctionIn("agy") names to the POSIX fixture: the
+"function agy {" prefix, the "$@" forwarding, the "}" suffix. On a
+fish user's machine (Ns2Kracy, Linux) the list includes
+~/.config/fish/config.fish, whose function agy is fish's own words —
+function agy … end, $argv — so the test failed there and passed on
+machines without fish.
+
+The test now makes the home a fish user's on every machine: a fish in
+~/.local/bin (one of the folders the shell search looks in) and the
+config folder fish makes on its first start, config.fish seeded with
+the user's own line. Each profile's block is asserted in that shell's
+own words, the fish one checked to have no POSIX "$@" in it, and
+config.fish is required among the profiles the function landed in.
+The wired-again start rewrites each profile with its own user line,
+and stepping out leaves config.fish with the user's line alone, as it
+does the POSIX profiles.
+---
+ internal/agent/agy_shell_test.go | 41 ++++++++++++++++++++++++++++++--
+ 1 file changed, 39 insertions(+), 2 deletions(-)
+
+diff --git a/internal/agent/agy_shell_test.go b/internal/agent/agy_shell_test.go
+index 8d5520bee..a42b4d7ee 100644
+--- a/internal/agent/agy_shell_test.go
++++ b/internal/agent/agy_shell_test.go
+@@ -5,6 +5,7 @@ package agent
+ import (
+ 	"os"
+ 	"path/filepath"
++	"slices"
+ 	"strings"
+ 	"testing"
+ 
+@@ -32,6 +33,17 @@ func TestAgyShell(t *testing.T) {
+ 	for _, n := range rcs {
+ 		os.WriteFile(filepath.Join(home, n), []byte(mine), 0o644)
+ 	}
++	// fish too, on every machine: magpie gives the function to each shell
++	// it finds, and on a fish user's (the reporter's) that is config.fish,
++	// whose function is fish's own words — a fish in the home's .local/bin
++	// (one of the folders the shell search looks in) and the config folder
++	// fish makes on its first start make this home one
++	os.MkdirAll(filepath.Join(home, ".local", "bin"), 0o755)
++	os.WriteFile(filepath.Join(home, ".local", "bin", "fish"), []byte("#!/bin/sh\n"), 0o755)
++	os.MkdirAll(filepath.Join(home, ".config", "fish"), 0o755)
++	fishConfig := filepath.Join(home, ".config", "fish", "config.fish")
++	mineFish := "alias ll 'ls -l'\n"
++	os.WriteFile(fishConfig, []byte(mineFish), 0o644)
+ 	a, err := Find("agy")
+ 	if err != nil {
+ 		t.Fatal(err)
+@@ -46,9 +58,27 @@ func TestAgyShell(t *testing.T) {
+ 	if len(in) == 0 {
+ 		t.Fatal("no shell's profile has agy")
+ 	}
++	// the fish profile is among them, and each profile's block is in that
++	// shell's own words: the POSIX one keeps its braces and "$@", the fish
++	// one `$argv` and `end` — the POSIX assertions failed on config.fish
++	// (#5446)
++	if !slices.Contains(in, fishConfig) {
++		t.Fatalf("no fish's config.fish has agy: %v", in)
++	}
+ 	for _, p := range in {
+ 		b, _ := os.ReadFile(p)
+-		if s := string(b); !strings.HasPrefix(s, mine+"\n# >>> magpie agy >>>\nfunction agy {\n") || !strings.Contains(s, ` agy run "$@"; else command agy "$@"; fi`) || !strings.HasSuffix(s, "}\n# <<< magpie agy <<<\n") {
++		s := string(b)
++		if p == fishConfig {
++			if !strings.HasPrefix(s, mineFish+"\n# >>> magpie agy >>>\nfunction agy\n") ||
++				!strings.Contains(s, " agy run $argv\n") ||
++				!strings.Contains(s, "command agy $argv\n") ||
++				!strings.HasSuffix(s, "end\n# <<< magpie agy <<<\n") ||
++				strings.Contains(s, `"$@"`) {
++				t.Fatalf("%s:\n%s", p, s)
++			}
++			continue
++		}
++		if !strings.HasPrefix(s, mine+"\n# >>> magpie agy >>>\nfunction agy {\n") || !strings.Contains(s, ` agy run "$@"; else command agy "$@"; fi`) || !strings.HasSuffix(s, "}\n# <<< magpie agy <<<\n") {
+ 			t.Fatalf("%s:\n%s", p, s)
+ 		}
+ 	}
+@@ -65,7 +95,11 @@ func TestAgyShell(t *testing.T) {
+ 
+ 	// wired before the function was given: the next start gives it
+ 	for _, p := range in {
+-		os.WriteFile(p, []byte(mine), 0o644)
++		if p == fishConfig {
++			os.WriteFile(p, []byte(mineFish), 0o644)
++		} else {
++			os.WriteFile(p, []byte(mine), 0o644)
++		}
+ 	}
+ 	if a.Typed() != "" {
+ 		t.Fatal("typed with no function")
+@@ -86,6 +120,9 @@ func TestAgyShell(t *testing.T) {
+ 			t.Fatalf("%s after stepping out:\n%s", n, b)
+ 		}
+ 	}
++	if b, _ := os.ReadFile(fishConfig); string(b) != mineFish {
++		t.Fatalf("config.fish after stepping out:\n%s", b)
++	}
+ 	if a.Typed() != "" {
+ 		t.Fatal("typed after stepping out")
+ 	}
+-- 
+2.50.1 (Apple Git-155)
+

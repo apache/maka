@@ -1,0 +1,65 @@
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py codex baseline
+INPUT: CONFIG: fixed codex source allowlist
+OUTPUT: BASELINE PASS groups=15 files=16867 bytes=1686713509 protected=1
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py codex archive
+INPUT: 4d59ac1c0d114df775a22c8250a0f2b6719f8bb9c878804564bd8f5d746a4d50
+OUTPUT: ValueError: Source changed before archive: plugins
+EXIT: 1
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py codex apply
+INPUT: 4d59ac1c0d114df775a22c8250a0f2b6719f8bb9c878804564bd8f5d746a4d50
+OUTPUT: ValueError: Expected archived
+EXIT: 1
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py codex verify
+INPUT: 4d59ac1c0d114df775a22c8250a0f2b6719f8bb9c878804564bd8f5d746a4d50
+OUTPUT: ValueError: Expected migrated
+EXIT: 1
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py codex archive
+INPUT: 4d59ac1c0d114df775a22c8250a0f2b6719f8bb9c878804564bd8f5d746a4d50
+OUTPUT: FileExistsError: [Errno 17] File exists: 'E:\\cc\\guahub\\sessions\\raw\\codex\\migration-20261026-140245\\thread-history.zip'
+EXIT: 1
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py codex apply
+INPUT: 4d59ac1c0d114df775a22c8250a0f2b6719f8bb9c878804564bd8f5d746a4d50
+OUTPUT: ValueError: Expected archived
+EXIT: 1
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py codex verify
+INPUT: 4d59ac1c0d114df775a22c8250a0f2b6719f8bb9c878804564bd8f5d746a4d50
+OUTPUT: ValueError: Expected migrated
+EXIT: 1
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py codex archive
+INPUT: 4d59ac1c0d114df775a22c8250a0f2b6719f8bb9c878804564bd8f5d746a4d50
+OUTPUT: ValueError: ZIP does not support timestamps before 1980
+EXIT: 1
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py codex apply
+INPUT: 4d59ac1c0d114df775a22c8250a0f2b6719f8bb9c878804564bd8f5d746a4d50
+OUTPUT: ValueError: Expected archived
+EXIT: 1
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py codex verify
+INPUT: 4d59ac1c0d114df775a22c8250a0f2b6719f8bb9c878804564bd8f5d746a4d50
+OUTPUT: ValueError: Expected migrated
+EXIT: 1
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py codex archive
+INPUT: 4d59ac1c0d114df775a22c8250a0f2b6719f8bb9c878804564bd8f5d746a4d50
+OUTPUT: ValueError: Source changed before archive: app-logs-db
+EXIT: 1
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py codex apply
+INPUT: 4d59ac1c0d114df775a22c8250a0f2b6719f8bb9c878804564bd8f5d746a4d50
+OUTPUT: ValueError: Expected archived
+EXIT: 1
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py codex verify
+INPUT: 4d59ac1c0d114df775a22c8250a0f2b6719f8bb9c878804564bd8f5d746a4d50
+OUTPUT: ValueError: Expected migrated
+EXIT: 1
+

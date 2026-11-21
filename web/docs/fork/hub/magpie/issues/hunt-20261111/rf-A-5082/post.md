@@ -1,0 +1,457 @@
+Refresh of my rework above (the one built along the lines of the review — "learn from the reply instead"), not a redesign: the same commit rebased onto current `upstream/main` (`c75a1a0f8`) and the whole verification re-run. One real conflict, resolved by union: main's Responses `respTail` (what a `response.failed` magpie ends a stream with, #4855's family) now lives in the same sniffer struct as this patch's learning fields (`askedJSON`, the gathered text) — the two watch different things about the same stream and neither rewrote the other. `formatIgnored` still exists nowhere on main, and no upstream commit has taken the learning since, so the gap this closes is unchanged.
+
+To repeat the shape the review asked for: nothing is rewritten on discovery. A relayed request goes as the client sent it; a 200 whose answer text is not the JSON the `json_schema` asked for marks that provider and model (`formatIgnored`, learned in the reply sniffer the passthrough already runs, streaming or whole); from the next turn the format is told in the system prompt for that provider and model alone, exactly how `formatRefused` works after a 400. An answer that is JSON is never learned from, and a JSON object asked without a schema neither — an official API that honors the field keeps it, and Codex's `instructions` stay byte for byte.
+
+<details><summary>patch: gateway: a schema a relay drops without a word is learned from its reply — git am applies it as is; SHA-256 first 16: 3a68dc000eb10518</summary>
+
+```text
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Fri, 6 Nov 2026 21:06:11 +0800
+Subject: [PATCH] gateway: a schema a relay drops without a word is learned
+ from its reply
+
+Claude Code's session-title request asks for its answer as a JSON schema
+through output_config.format, and reads the text block back as JSON.
+Through magpie to a relay in front of a model without structured output,
+the body is relayed as it came: the field goes out and the relay takes it
+and drops it without a word - a 200 whose text is no JSON, no refusal to
+learn from (#5082). The schema never reached the model in any form, so
+the title silently never appeared.
+
+Until a refusal is on record the field went as the client sent it, and
+nothing ever told that relay's model the schema. Now a 200 whose answer
+says something that is no JSON - asked for a json_schema as the client
+sent it - marks the provider and model (formatIgnored), and from the
+next turn the format is told in the system prompt for them alone, the
+way formatRefused is after a 400. An answer that is the JSON it was
+asked for is never learned from, and neither is a JSON object asked
+without a schema: an upstream that honors the field keeps it, and an
+official API is never rewritten for.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+Fixes #5082
+---
+ internal/gateway/format.go      |  11 +-
+ internal/gateway/format_test.go | 189 ++++++++++++++++++++++++++++++++
+ internal/gateway/gateway.go     |  23 +++-
+ internal/gateway/sniff.go       |  74 ++++++++++++-
+ 4 files changed, 294 insertions(+), 3 deletions(-)
+
+diff --git a/internal/gateway/format.go b/internal/gateway/format.go
+index 8f6df969b..aa7dba706 100644
+--- a/internal/gateway/format.go
++++ b/internal/gateway/format.go
+@@ -118,7 +118,8 @@ func (f *Format) chat() map[string]any {
+ // instruction is the format said in words, for a model whose API can't be
+ // asked for it: Anthropic's Messages for any JSON object (its
+ // output_config.format takes a schema only), a bridge to a vendor's own
+-// API, or an upstream that turned the field away (formatRefused).
++// API, or an upstream that turned the field away (formatRefused) or took
++// it and answered without it (formatIgnored).
+ func (f *Format) instruction() string {
+ 	if s := f.schema(); len(s) > 0 {
+ 		return "Respond with a single JSON value and nothing else, matching this JSON schema:\n" + string(s) + "."
+@@ -163,6 +164,14 @@ func refusesFormat(status int, body []byte) bool {
+ // the system prompt, from then on.
+ func schemaRefused(model string) string { return "json_schema:" + model }
+ 
++// formatIgnored is how unfit remembers a provider that took the format
++// field as sent and answered anyway — a relay in front of a model without
++// structured output replying a 200 whose text is no JSON (#5082) — so the
++// format is told in the system prompt for that model alone from then on,
++// the way a refusal (formatRefused) is. Learned from a reply, not from a
++// 400: asked and answered is all the silence such a relay ever says.
++func formatIgnored(model string) string { return "format_ignored:" + model }
++
+ // asObject is r asking for any JSON object, its schema told in the system
+ // prompt; r itself when it asks for no schema.
+ func (r *Request) asObject() *Request {
+diff --git a/internal/gateway/format_test.go b/internal/gateway/format_test.go
+index f53fb1fa6..f25f53230 100644
+--- a/internal/gateway/format_test.go
++++ b/internal/gateway/format_test.go
+@@ -282,3 +282,192 @@ func TestStructuredOutputOnGemini(t *testing.T) {
+ 		t.Fatalf("response_format = %s", chat.ResponseFormat)
+ 	}
+ }
++
++// titleBody is Claude Code's session-title request, asked of a relay's
++// model in Anthropic's words: its answer read back as JSON (#5082).
++var titleBody = `{"model":"relay/deepseek-chat","max_tokens":256,"system":"Generate a concise title for this session.",` +
++	`"messages":[{"role":"user","content":"help me add a header mod"}],"output_config":{"format":{"type":"json_schema","schema":` +
++	`{"type":"object","properties":{"title":{"type":"string"}},"required":["title"],"additionalProperties":false}}}}`
++
++// sdkChatObjectAsk is a chat.completions ask for any JSON object, no
++// schema in it.
++const sdkChatObjectAsk = `{"messages":[{"role":"user","content":"hi"}],"model":"%s","response_format":{"type":"json_object"},"stream":false}`
++
++// withStream asks a whole body for a stream.
++func withStream(body string) string {
++	return strings.TrimSuffix(body, "}") + `,"stream":true}`
++}
++
++// ignoredVendor serves Chat, Responses and Messages like a relay in front
++// of a model without structured output (#5082): the format field is taken
++// as sent, and the answer comes back anyway, plain text that is no JSON —
++// or, with honors, the JSON an upstream that honors the field answers
++// with. Streamed requests are answered in kind. It keeps what each was
++// sent.
++type ignoredVendor struct {
++	mu     sync.Mutex
++	bodies []map[string]any
++	paths  []string
++	honors bool // answer with the JSON an honoring upstream would
++}
++
++func (v *ignoredVendor) ServeHTTP(w http.ResponseWriter, r *http.Request) {
++	b, _ := io.ReadAll(r.Body)
++	var m map[string]any
++	json.Unmarshal(b, &m)
++	v.mu.Lock()
++	v.bodies = append(v.bodies, m)
++	v.paths = append(v.paths, r.URL.Path)
++	v.mu.Unlock()
++	stream, _ := m["stream"].(bool)
++	answer, _ := json.Marshal("I added the header mod to your config.")
++	if v.honors {
++		answer, _ = json.Marshal(calendarAnswer)
++	}
++	if !stream {
++		w.Header().Set("Content-Type", "application/json")
++		switch {
++		case strings.HasSuffix(r.URL.Path, "/chat/completions"):
++			io.WriteString(w, `{"id":"c1","object":"chat.completion","model":"m","choices":[{"index":0,"message":{"role":"assistant","content":`+string(answer)+`},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":5,"total_tokens":10}}`)
++		case strings.HasSuffix(r.URL.Path, "/responses"):
++			io.WriteString(w, `{"id":"r1","object":"response","model":"m","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":`+string(answer)+`}]}],"usage":{"input_tokens":5,"output_tokens":5}}`)
++		default:
++			io.WriteString(w, `{"id":"msg_1","type":"message","role":"assistant","model":"m","content":[{"type":"text","text":`+string(answer)+`}],"stop_reason":"end_turn","usage":{"input_tokens":5,"output_tokens":5}}`)
++		}
++		return
++	}
++	w.Header().Set("Content-Type", "text/event-stream")
++	switch {
++	case strings.HasSuffix(r.URL.Path, "/chat/completions"):
++		io.WriteString(w, sse(`data: {"id":"c1","object":"chat.completion.chunk","model":"m","choices":[{"index":0,"delta":{"role":"assistant","content":`+string(answer)+`}}]}`,
++			`data: {"id":"c1","object":"chat.completion.chunk","model":"m","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":5,"total_tokens":10}}`,
++			`data: [DONE]`))
++	case strings.HasSuffix(r.URL.Path, "/responses"):
++		io.WriteString(w, sse(`data: {"type":"response.output_text.delta","delta":`+string(answer)+`}`,
++			`data: {"type":"response.output_item.done","output_index":0,"item":{"type":"message","role":"assistant","content":[{"type":"output_text","text":`+string(answer)+`}]}}`,
++			`data: {"type":"response.completed","response":{"id":"r1","status":"completed","output":[]}}`))
++	default:
++		io.WriteString(w, sse(`event: message_start`+"\n"+`data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"m","content":[],"usage":{"input_tokens":1,"output_tokens":0}}}`,
++			`event: content_block_start`+"\n"+`data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`,
++			`event: content_block_delta`+"\n"+`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":`+string(answer)+`}}`,
++			`event: content_block_stop`+"\n"+`data: {"type":"content_block_stop","index":0}`,
++			`event: message_delta`+"\n"+`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":5}}`,
++			`event: message_stop`+"\n"+`data: {"type":"message_stop"}`))
++	}
++}
++
++func (v *ignoredVendor) sent() (string, map[string]any) {
++	v.mu.Lock()
++	defer v.mu.Unlock()
++	if len(v.bodies) == 0 {
++		return "", nil
++	}
++	return v.paths[len(v.paths)-1], v.bodies[len(v.bodies)-1]
++}
++
++// fieldIn reads a body's format field out, by its path as it went as sent.
++func fieldIn(sent map[string]any, field string) any {
++	got := any(sent)
++	for _, k := range strings.Split(field, ".") {
++		m, _ := got.(map[string]any)
++		got = m[k]
++	}
++	return got
++}
++
++// A relay that takes the format field as sent and answers anyway — a 200
++// whose text is no JSON, a model without structured output behind it
++// (#5082) — is learned from: the schema was asked and never reached its
++// model in any form, so from the next turn the format is told in the
++// system prompt for that provider and model alone, the way a refusal
++// (formatRefused) is. The first turn still goes as the client sent it:
++// an honoring upstream must keep the field it was asked in.
++func TestIgnoredFormatLearnedFromReply(t *testing.T) {
++	for _, c := range []struct {
++		name, path, body, field string // where the format went as sent
++	}{
++		{"Claude Code's session-title request", "/v1/messages", titleBody, "output_config.format"},
++		{"that request, streamed", "/v1/messages", withStream(titleBody), "output_config.format"},
++		{"a chat.completions.parse", "/v1/chat/completions", strings.Replace(sdkChatParse, "%s", "relay/deepseek-chat", 1), "response_format"},
++		{"a responses.parse", "/v1/responses", strings.Replace(sdkResponsesParse, "%s", "relay/deepseek-chat", 1), "text.format"},
++	} {
++		t.Run(c.name, func(t *testing.T) {
++			fresh(t)
++			up := &ignoredVendor{}
++			srv := httptest.NewServer(up)
++			t.Cleanup(srv.Close)
++			if err := provider.Save(provider.Provider{ID: "relay", Name: "Relay", Key: "k",
++				Chat: srv.URL + "/v1", Responses: srv.URL + "/v1", Anthropic: srv.URL + "/v1",
++				Models: []string{"deepseek-chat"}}); err != nil {
++				t.Fatal(err)
++			}
++			h := New().Handler()
++			for i := range 2 {
++				rec := httptest.NewRecorder()
++				h.ServeHTTP(rec, httptest.NewRequest("POST", c.path, strings.NewReader(c.body)))
++				if rec.Code != 200 {
++					t.Fatalf("turn %d: status %d: %s", i, rec.Code, rec.Body.String())
++				}
++				_, sent := up.sent()
++				got, words := fieldIn(sent, c.field), strings.Count(jsonOf(sent), "Respond with a single JSON")
++				if i == 0 {
++					if got == nil {
++						t.Fatalf("turn %d: the format field was dropped before anything was learned: %s", i, jsonOf(sent))
++					}
++					if words != 0 {
++						t.Fatalf("turn %d: told in words before anything was learned: %s", i, jsonOf(sent))
++					}
++					continue
++				}
++				if got != nil {
++					t.Fatalf("turn %d: the format field was kept: %s", i, jsonOf(sent))
++				}
++				if words != 1 {
++					t.Fatalf("turn %d: format not told in words once: %s", i, jsonOf(sent))
++				}
++			}
++		})
++	}
++}
++
++// An upstream that honors the format field answers the JSON it was asked
++// for, and is never learned from; a JSON object asked without a schema is
++// not learned from either. Whatever the answers, the field goes as sent
++// and no words are said, turn after turn.
++func TestHonoredFormatNeverLearned(t *testing.T) {
++	for _, c := range []struct {
++		name, path, body, field string
++		honors                  bool
++	}{
++		{"an honoring relay's chat parse", "/v1/chat/completions", strings.Replace(sdkChatParse, "%s", "relay/deepseek-chat", 1), "response_format", true},
++		{"an object ask at a dropping relay", "/v1/chat/completions", strings.Replace(sdkChatObjectAsk, "%s", "relay/deepseek-chat", 1), "response_format", false},
++		{"an honoring relay's session title", "/v1/messages", titleBody, "output_config.format", true},
++	} {
++		t.Run(c.name, func(t *testing.T) {
++			fresh(t)
++			up := &ignoredVendor{honors: c.honors}
++			srv := httptest.NewServer(up)
++			t.Cleanup(srv.Close)
++			if err := provider.Save(provider.Provider{ID: "relay", Name: "Relay", Key: "k",
++				Chat: srv.URL + "/v1", Responses: srv.URL + "/v1", Anthropic: srv.URL + "/v1",
++				Models: []string{"deepseek-chat"}}); err != nil {
++				t.Fatal(err)
++			}
++			h := New().Handler()
++			for i := range 2 {
++				rec := httptest.NewRecorder()
++				h.ServeHTTP(rec, httptest.NewRequest("POST", c.path, strings.NewReader(c.body)))
++				if rec.Code != 200 {
++					t.Fatalf("turn %d: status %d: %s", i, rec.Code, rec.Body.String())
++				}
++				_, sent := up.sent()
++				if got := fieldIn(sent, c.field); got == nil {
++					t.Fatalf("turn %d: the format field was dropped: %s", i, jsonOf(sent))
++				}
++				if words := strings.Count(jsonOf(sent), "Respond with a single JSON"); words != 0 {
++					t.Fatalf("turn %d: told in words: %s", i, jsonOf(sent))
++				}
++			}
++		})
++	}
++}
+diff --git a/internal/gateway/gateway.go b/internal/gateway/gateway.go
+index 607f8c2b6..7cb5a33ae 100644
+--- a/internal/gateway/gateway.go
++++ b/internal/gateway/gateway.go
+@@ -6724,11 +6724,22 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
+ 		body, _, _ = withHistoryTools(proto, body)
+ 	}
+ 	// structured output an upstream turned away before (#2126): a schema
+-	// as any JSON object, or the format told in the system prompt alone
++	// as any JSON object, or the format told in the system prompt alone;
++	// one that took the field as sent and answered without it (#5082, as
++	// learned from its reply below) is told it in words alone, as one
++	// that refused is
+ 	if !s.fits(p.ID, formatRefused(model), proto) {
+ 		body, _ = formatInBody(proto, body, false)
+ 	} else if !s.fits(p.ID, schemaRefused(model), proto) {
+ 		body, _ = formatInBody(proto, body, true)
++	} else if !s.fits(p.ID, formatIgnored(model), proto) {
++		body, _ = formatInBody(proto, body, false)
++	}
++	// a json_schema sent as the client asked it, none of the marks above
++	// having rewritten it: its answer is learned from (#5082)
++	schemaAsked := false
++	if f := bodyFormat(proto, body); f != nil && f.Type == "json_schema" {
++		schemaAsked = true
+ 	}
+ 	// xAI's own API takes neither a sealed reasoning item's null content
+ 	// nor a system turn in Messages (xai_body.go, #3392)
+@@ -7234,6 +7245,7 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
+ 	}
+ 	f, _ := w.(http.Flusher)
+ 	sniff := newSniffer(proto, res.Header.Get("Content-Type"))
++	sniff.askedJSON = schemaAsked // the schema went as sent (#5082): its answer is learned from
+ 	defer func() { u.add(sniff.usage()) }()
+ 	var tidy *chatTidy
+ 	if proto == provider.Chat && sse {
+@@ -7624,6 +7636,7 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
+ 		sniff.drain()
+ 	} else {
+ 		sniff.settleWhole()
++		sniff.gatherWhole()
+ 	}
+ 	if sniff.failedNamed != 0 {
+ 		// the stream's error frame named its own status: the failure is
+@@ -7631,6 +7644,14 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
+ 		// frame itself goes to the client as it came
+ 		noteSaidStatus(w, sniff.failedNamed)
+ 	}
++	if schemaAsked && (rerr == nil || rerr == io.EOF) && sniff.ignoredFormat() {
++		// a 200 whose answer is no JSON for a schema sent as the client
++		// asked it (#5082): a relay that takes the field and drops it —
++		// the model was never told. The format is told in the system
++		// prompt for this provider and model from now on, as one that
++		// refused is.
++		s.markUnfit(p.ID, formatIgnored(model), proto)
++	}
+ 	if gather != nil {
+ 		// the gathered stream is read here, not by the client: it gets
+ 		// every byte, a last line the upstream never ended included, as
+diff --git a/internal/gateway/sniff.go b/internal/gateway/sniff.go
+index 447c970cd..b1394259c 100644
+--- a/internal/gateway/sniff.go
++++ b/internal/gateway/sniff.go
+@@ -5,6 +5,8 @@ import (
+ 	"encoding/json"
+ 	"strings"
+ 
++	"github.com/tidwall/gjson"
++
+ 	"github.com/yetone/magpie/internal/provider"
+ )
+ 
+@@ -36,6 +38,11 @@ type usageSniffer struct {
+ 	// resp: the Responses stream's own response, as far as it went: what
+ 	// a response.failed magpie ends it with carries (streamFailure)
+ 	resp respTail
++	// askedJSON: the request went as the client sent it with a json_schema
++	// format in it (#5082), and the answer's text is gathered as it goes
++	// by, to learn from one that answers with text that is no JSON
++	askedJSON bool
++	text      strings.Builder
+ }
+ 
+ // respTail is what a Responses stream said of its response before it
+@@ -108,7 +115,9 @@ func (s *usageSniffer) line(line []byte) {
+ 
+ func (s *usageSniffer) flushEvent() {
+ 	if len(s.data) > 0 {
+-		s.parse(bytes.TrimSpace(s.data))
++		b := bytes.TrimSpace(s.data)
++		s.parse(b)
++		s.gatherText(b)
+ 		s.data = nil
+ 	}
+ }
+@@ -316,6 +325,69 @@ func (s *usageSniffer) settleWhole() {
+ 	}
+ }
+ 
++// gatherWhole gathers a reply that came whole for its answer's text
++// (askedJSON, #5082); a stream's text is gathered event by event instead.
++// Call it once the body has ended, before usage reads it.
++func (s *usageSniffer) gatherWhole() {
++	if s.sse || s.over || len(s.buf) == 0 {
++		return
++	}
++	s.gatherText(bytes.TrimSpace(s.buf))
++}
++
++// gatherText gathers the answer's text out of what went by, askedJSON
++// alone (#5082): a stream's text deltas, or a whole reply's message.
++func (s *usageSniffer) gatherText(b []byte) {
++	if !s.askedJSON {
++		return
++	}
++	switch s.proto {
++	case provider.Chat:
++		for _, c := range gjson.GetBytes(b, "choices").Array() {
++			if s.sse {
++				s.text.WriteString(c.Get("delta.content").String())
++			} else {
++				s.text.WriteString(c.Get("message.content").String())
++			}
++		}
++	case provider.Responses:
++		if s.sse {
++			if gjson.GetBytes(b, "type").String() == "response.output_text.delta" {
++				s.text.WriteString(gjson.GetBytes(b, "delta").String())
++			}
++			return
++		}
++		for _, o := range gjson.GetBytes(b, "output").Array() {
++			for _, c := range o.Get("content").Array() {
++				s.text.WriteString(c.Get("text").String())
++			}
++		}
++	default:
++		if s.sse {
++			if gjson.GetBytes(b, "type").String() == "content_block_delta" {
++				s.text.WriteString(gjson.GetBytes(b, "delta.text").String())
++			}
++			return
++		}
++		for _, c := range gjson.GetBytes(b, "content").Array() {
++			s.text.WriteString(c.Get("text").String())
++		}
++	}
++}
++
++// ignoredFormat reports whether a reply a json_schema was asked of
++// (#5082) came back saying something that is no JSON: a relay that takes
++// the format field as sent and drops it answers a 200 like that. A
++// stream that never reached its last event, one that failed, and one
++// that said nothing are none of them a verdict.
++func (s *usageSniffer) ignoredFormat() bool {
++	if !s.askedJSON || s.failed != "" || s.sse && !s.ended {
++		return false
++	}
++	txt := strings.TrimSpace(s.text.String())
++	return txt != "" && !json.Valid([]byte(txt))
++}
++
+ // usage is what the reply reported, the model it named in Served; call it
+ // once the body has ended.
+ func (s *usageSniffer) usage() Usage {
+-- 
+2.50.1 (Apple Git-155)
+
+```
+
+</details>
+
+**Branch with the commit**: [`hunt-20261111-rf-5082`](https://github.com/ggbdpq/magpie/tree/hunt-20261111-rf-5082) (head `c179db1f1204515214be5a85cff1136f8e13315b`), rebased onto current `upstream/main` (`c75a1a0f8`); on a fresh checkout at that tip `git am` applies it as is (replayed on a detached worktree, resulting tree identical to the branch head, checked by tree hash).
+
+Verification this round (on `c75a1a0f8` + this commit, `GOCACHE` pinned):
+
+| Check | Result |
+| --- | --- |
+| `TestIgnoredFormatLearnedFromReply`, `TestHonoredFormatNeverLearned` (+ `Format`/title neighbors, 32s) | ok |
+| targeted `-race` on the two learning tests | ok (2.3s) |
+| Ablation: the learning write (`s.markUnfit(p.ID, formatIgnored(model), proto)`) made unreachable, build intact | red: `turn 1: the format field was kept` — the schema goes out again verbatim to the relay that drops it, the title never appears, streaming and whole alike; restored: green |
+| `go test -tags nogui -timeout 40m -count=1 ./internal/gateway/` (whole package) | ok (909.1s), zero failures |
+| `gofmt -l` on the four touched files | prints nothing |
+| `go vet -tags nogui ./internal/gateway/` | clean |
+| `go build -tags nogui ./...` darwin / `GOOS=linux` / `GOOS=windows` | clean |
+
+**Siblings**: the learning rides the one sniffer the passthrough already runs; the marking is read by `fits`/`unfit` beside `formatRefused`/`schemaRefused` (`gateway.go`), and `Format.instruction()` is the one place the in-words form is told (`format.go`). The translated path's schema handling (`readResponses`) is untouched — it never sends the field as-is. Codex's `instructions` are never rewritten: only a provider+model that answered a schema with non-JSON text is marked.
+
+**Not verified**: a real relay in front of a model without structured output with a real Claude Code session-title request (the tests use fake relays shaped as the report describes); GUI rendering of the title once it appears.
+
+**Attribution**: AI-written; I've read the whole diff and the tests pass. Please keep the author (`ggbdpq`) or add `Co-authored-by: ggbdpq <ggbdpq@gmail.com>`.

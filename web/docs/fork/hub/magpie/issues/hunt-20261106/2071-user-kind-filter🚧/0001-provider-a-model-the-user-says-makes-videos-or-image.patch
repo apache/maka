@@ -1,0 +1,248 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Fri, 6 Nov 2026 21:46:27 +0800
+Subject: [PATCH] provider: a model the user says makes videos or images leaves
+ the chat list (#2071)
+
+SetModelKind kept a relay model's kind in settings' ModelKinds, and the
+videos and images paths read it, so requests went to the right API - but
+the chat list went on serving the model: Available is the list every chat
+consumer builds on (the editor's chips, the agents' lists, the gateway's,
+the CLIs), and it carried the mark nowhere. Setting a flag on the entries,
+as a first patch tried, read nothing after that: the one filter that reads
+such flags (catalog.Chat) had run before Available, on the fetched list,
+and no consumer of Available looks at a flag. The members leave instead:
+Available hands out none of the models the user said make images or
+videos, the check standing after the ids they are listed by (ModelKinds
+follows a model's listed id, SetModelID), and Exposed builds no unlisted
+one for a marked pick, the user's word beating the pick. The marks are
+read only where they can be taken (MarksKinds), so a provider that no
+longer takes them keeps none, and one said nothing of keeps its vendor's
+word. Said back to Auto, the model comes back.
+
+The videos and images paths keep the marked models: hasKindable counts a
+pick as had whatever its list says, for a hand-typed model marked and
+picked leaves both lists now (a list-fetched one has its list still).
+Found by the gateway's own tests: TestCustomProviderVideoTheUserMarks and
+TestCustomProviderVideoKeepsTheCallersFields went red without it.
+
+The editor's part of the first rework is not carried: the video and image
+areas it added the marked models to are upstream's now, its own way
+(renderVideomakers beside renderDrawers, filmIds, ticked to be offered),
+and both already list the marked models. A marked chip's way back to Auto
+through those areas' right-click is still to come with that work.
+
+The tests say who is in the list, not what a model carries:
+TestUserKindLeavesTheChatList (a relay's list saying nothing, a mark
+moving the model out of Available and Exposed and back to Auto, the
+videos and images paths keeping it) and TestUserKindBeatsAPick (a marked
+pick out of Exposed all the same) fail on main.
+
+Fixes #2071
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/provider/modelkind.go           |  10 ++-
+ internal/provider/modelkind_list_test.go | 103 +++++++++++++++++++++++
+ internal/provider/models.go              |  39 ++++++++-
+ 3 files changed, 146 insertions(+), 6 deletions(-)
+ create mode 100644 internal/provider/modelkind_list_test.go
+
+diff --git a/internal/provider/modelkind.go b/internal/provider/modelkind.go
+index f04d02b05..1de30d57b 100644
+--- a/internal/provider/modelkind.go
++++ b/internal/provider/modelkind.go
+@@ -72,11 +72,13 @@ func (p Provider) KindModels(kind string) []string {
+ 	return slices.DeleteFunc(out, func(m string) bool { return !p.hasKindable(m) })
+ }
+ 
+-// hasKindable is whether p has model: one it serves to chat with, or one
+-// its fetched list has that it leaves out of those, as making images or
+-// videos.
++// hasKindable is whether p has model: one it serves to chat with, one of its
++// picks (a hand-typed one its list doesn't have is had however its list
++// stands, and one the user said makes images or videos left the chat list,
++// #2071 — the videos and images paths still ask it), or one its fetched list
++// has that it leaves out of those, as making images or videos.
+ func (p Provider) hasKindable(model string) bool {
+-	if p.serves(model) {
++	if p.serves(model) || slices.Contains(p.Models, model) {
+ 		return true
+ 	}
+ 	all, _ := catalog.LiveAll(p.ID)
+diff --git a/internal/provider/modelkind_list_test.go b/internal/provider/modelkind_list_test.go
+new file mode 100644
+index 000000000..730b8d090
+--- /dev/null
++++ b/internal/provider/modelkind_list_test.go
+@@ -0,0 +1,103 @@
++package provider
++
++import (
++	"path/filepath"
++	"slices"
++	"testing"
++
++	"github.com/yetone/magpie/internal/catalog"
++)
++
++// kindHome is a sandbox home with a relay whose fetched list says nothing
++// of what its models make: omni_flash-10s and a chat model beside it, as
++// the relay of #2071 lists them.
++func kindHome(t *testing.T) Provider {
++	t.Helper()
++	home := t.TempDir()
++	t.Setenv("HOME", home)
++	t.Setenv("USERPROFILE", home)
++	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
++	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
++	p := Provider{ID: "relay", Name: "Relay", Chat: "http://127.0.0.1:9/v1", Key: "k"}
++	if err := Save(p); err != nil {
++		t.Fatal(err)
++	}
++	if err := catalog.SaveLive("relay", "http://127.0.0.1:9/v1", []catalog.Model{
++		{ID: "omni_flash-10s", Name: "Omni Flash"},
++		{ID: "claude-sonnet-4-5", Name: "Claude Sonnet 4.5"},
++	}); err != nil {
++		t.Fatal(err)
++	}
++	return p
++}
++
++func listOf(ms []catalog.Model) []string {
++	var out []string
++	for _, m := range ms {
++		out = append(out, m.ID)
++	}
++	return out
++}
++
++func hasModel(ms []catalog.Model, id string) bool {
++	return slices.ContainsFunc(ms, func(m catalog.Model) bool { return m.ID == id })
++}
++
++// A model the user said makes videos or images (SetModelKind, #1399) leaves
++// the chat list itself: the editor's chips, the agents' lists and the
++// gateway's are all built on Available and Exposed, and a flag none of them
++// read kept a marked model's seat in every one (#2071: a relay's
++// omni_flash-10s, marked "Video model", went on showing where agents chat).
++// Said back to Auto, it comes back.
++func TestUserKindLeavesTheChatList(t *testing.T) {
++	p := kindHome(t)
++	if !hasModel(p.Available(), "omni_flash-10s") || !hasModel(p.Exposed(), "omni_flash-10s") {
++		t.Fatalf("an unmarked model left the chat list: available %v, exposed %v", listOf(p.Available()), listOf(p.Exposed()))
++	}
++	if err := SetModelKind("relay/omni_flash-10s", KindVideo); err != nil {
++		t.Fatal(err)
++	}
++	if hasModel(p.Available(), "omni_flash-10s") {
++		t.Fatalf("Available (the editor's chat chips) still has it: %v", listOf(p.Available()))
++	}
++	if hasModel(p.Exposed(), "omni_flash-10s") {
++		t.Fatalf("Exposed (the agents' lists) still has it: %v", listOf(p.Exposed()))
++	}
++	// the videos path keeps it: a marked model is asked at the videos API
++	if got := p.KindModels(KindVideo); !slices.Equal(got, []string{"omni_flash-10s"}) {
++		t.Fatalf("the videos path lost it: %v", got)
++	}
++	// said image, the same
++	if err := SetModelKind("relay/claude-sonnet-4-5", KindImage); err != nil {
++		t.Fatal(err)
++	}
++	if hasModel(p.Available(), "claude-sonnet-4-5") || hasModel(p.Exposed(), "claude-sonnet-4-5") {
++		t.Fatalf("the image mark left it in the chat list: available %v, exposed %v", listOf(p.Available()), listOf(p.Exposed()))
++	}
++	if got := p.KindModels(KindImage); !slices.Equal(got, []string{"claude-sonnet-4-5"}) {
++		t.Fatalf("the images path lost it: %v", got)
++	}
++	if err := SetModelKind("relay/omni_flash-10s", ""); err != nil {
++		t.Fatal(err)
++	}
++	if !hasModel(p.Available(), "omni_flash-10s") || !hasModel(p.Exposed(), "omni_flash-10s") {
++		t.Fatalf("said back to Auto it didn't come back: available %v, exposed %v", listOf(p.Available()), listOf(p.Exposed()))
++	}
++}
++
++// A pick the user later said makes videos stays out of the agents' list all
++// the same: Exposed builds a picked model the list no longer offers as an
++// unlisted one, and the user's word beats the pick.
++func TestUserKindBeatsAPick(t *testing.T) {
++	p := kindHome(t)
++	p.Models = []string{"omni_flash-10s", "claude-sonnet-4-5"}
++	if err := SetModelKind("relay/omni_flash-10s", KindVideo); err != nil {
++		t.Fatal(err)
++	}
++	if hasModel(p.Exposed(), "omni_flash-10s") {
++		t.Fatalf("Exposed still serves a pick the user said makes videos: %v", listOf(p.Exposed()))
++	}
++	if !hasModel(p.Exposed(), "claude-sonnet-4-5") {
++		t.Fatalf("Exposed lost a pick nothing was said of: %v", listOf(p.Exposed()))
++	}
++}
+diff --git a/internal/provider/models.go b/internal/provider/models.go
+index 0eaa0f7d0..99ef774e4 100644
+--- a/internal/provider/models.go
++++ b/internal/provider/models.go
+@@ -34,8 +34,9 @@ func (p Provider) Available() []catalog.Model {
+ 	if p.DecideOnly() {
+ 		return p.decideModels()
+ 	}
+-	// by the ids the user lists them by (SetModelID)
+-	ms := p.ids().list(p.available())
++	// by the ids the user lists them by (SetModelID), less those the user
++	// said make images or videos: said so, they are no models to talk to
++	ms := p.withoutUserKinds(p.ids().list(p.available()))
+ 	if p.Decides() {
+ 		// a gateway's Jev among its chat models, with its window and input
+ 		ms = slices.Clone(ms)
+@@ -48,6 +49,36 @@ func (p Provider) Available() []catalog.Model {
+ 	return ms
+ }
+ 
++// withoutUserKinds leaves out the models the user said make images or videos
++// (settings' ModelKinds, SetModelKind): said so, they are no models to talk
++// to, so they leave the chat list itself — the editor's chips, the agents'
++// lists (Exposed) and the gateway's model list are all built on this, and a
++// flag nothing read kept a marked model's seat in every one of those (#2071:
++// a relay's omni_flash-10s, marked "Video model", went on showing where
++// agents chat). Said back to Auto, it comes back. The marks are read only
++// where they can be taken (MarksKinds), so a provider that no longer takes
++// them keeps none, and one said nothing of keeps its vendor's word.
++func (p Provider) withoutUserKinds(ms []catalog.Model) []catalog.Model {
++	if !p.MarksKinds() || len(ms) == 0 {
++		return ms
++	}
++	s := heldSettings()
++	if len(s.ModelKinds) == 0 {
++		return ms
++	}
++	marked := false
++	for _, m := range ms {
++		if modelKindIn(s, p.ID, m.ID) != "" {
++			marked = true
++			break
++		}
++	}
++	if !marked {
++		return ms
++	}
++	return slices.DeleteFunc(slices.Clone(ms), func(m catalog.Model) bool { return modelKindIn(s, p.ID, m.ID) != "" })
++}
++
+ func (p Provider) available() []catalog.Model {
+ 	signedIn := p.Account != nil && p.Account.models != nil
+ 	var known []catalog.Model
+@@ -1678,6 +1709,10 @@ func (p Provider) ExposedOf(avail []catalog.Model) []catalog.Model {
+ 		byID[m.ID] = m
+ 	}
+ 	pick := func(ids []string) []catalog.Model {
++		// a model the user said makes images or videos stays out, picked or
++		// not: the user's word beats the pick, or Exposed would build the
++		// marked model again as an unlisted one (#2071)
++		ids = slices.DeleteFunc(slices.Clone(ids), func(id string) bool { return p.ModelKind(id) != "" })
+ 		var unlisted []catalog.Model
+ 		for _, id := range ids {
+ 			if _, ok := byID[id]; !ok {
+-- 
+2.50.1 (Apple Git-155)
+

@@ -1,0 +1,9 @@
+--- E:\cc\guahub\sessions\raw\kiro\migration-20261026-134406\ORIGINAL_FILE.json
++++ E:\cc\guahub\sessions\raw\kiro\migration-20261026-134406\MODIFIED_FILE.json
+@@ -1,5 +1,5 @@
+ {
+-  "state": "source_present",
++  "state": "migrated",
+   "groups": [
+     {
+       "name": "extensions",

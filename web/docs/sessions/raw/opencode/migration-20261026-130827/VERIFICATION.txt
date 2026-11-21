@@ -1,0 +1,40 @@
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py opencode baseline
+INPUT: CONFIG: fixed opencode source allowlist
+OUTPUT: BASELINE PASS groups=4 files=3696 bytes=66383155 protected=1
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py opencode archive
+INPUT: c86f6b55995bb61f30197efa02087acdc4543cc548890e780775b7854994d2c9
+OUTPUT: ARCHIVE PASS zip_files=4 files=3696 bytes=66383155
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py opencode apply
+INPUT: d9ca39ae1ac4f61e6798c90faa6b61a99fb238843849cd1813222d13e200f139
+OUTPUT: PermissionError: [WinError 5] 拒绝访问。: 'C:\\Users\\802165\\.local\\share\\opencode\\snapshot\\608357269625e2657e3a917c87cce4dc9028896c\\d2e08ba3f7d3afab535b5a259f408778e2f393da\\objects\\pack\\pack-2f226a075b3596eeeac55dc9d231a47675c4ca86.idx'
+EXIT: 1
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py opencode verify
+INPUT: d9ca39ae1ac4f61e6798c90faa6b61a99fb238843849cd1813222d13e200f139
+OUTPUT: ValueError: Expected migrated
+EXIT: 1
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py opencode rollback-test
+INPUT: d9ca39ae1ac4f61e6798c90faa6b61a99fb238843849cd1813222d13e200f139
+OUTPUT: ValueError: Expected migrated
+EXIT: 1
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py opencode apply
+INPUT: d9ca39ae1ac4f61e6798c90faa6b61a99fb238843849cd1813222d13e200f139
+OUTPUT: APPLY PASS removed_files=3696 removed_bytes=66383155
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py opencode verify
+INPUT: c1b3b999637f6e90e62d227463a039f8dd3b7a52e2d593d56aab647aef661adb
+OUTPUT: MODIFIED PASS files=3696 bytes=66383155 originals_absent=true protected_unchanged=true
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py opencode rollback-test
+INPUT: c1b3b999637f6e90e62d227463a039f8dd3b7a52e2d593d56aab647aef661adb
+OUTPUT: ROLLBACK PASS restored_files=3696 restored_bytes=66383155 hashes_match=true originals_untouched=true
+EXIT: 0
+

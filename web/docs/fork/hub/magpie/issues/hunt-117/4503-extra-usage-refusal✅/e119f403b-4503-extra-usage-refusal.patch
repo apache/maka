@@ -1,0 +1,339 @@
+From e119f403bd76099e1fdf0a8d99eb92127e342787 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Mon, 2 Nov 2026 21:43:01 +0800
+Subject: [PATCH] claude: a turn the interactive mode is refused as a
+ third-party app's is redone as claude -p (#4503)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Anthropic refuses an interactive Claude Code (the cli entrypoint) a turn
+whose prompt is the client agent's own harness prompt — the tools, rules
+and skills of Pi, OpenCode and the like, judged as a whole, no phrase of
+them alone (#4503's controlled tests). The refusal is a 400 that says
+"keep going", and the same request as claude -p is served: its sdk-cli
+entrypoint the prompt does not condemn. Until now the 400 reached the
+client whole, which is why the bridge looked intermittent.
+
+The bridge holds the reply's start, and on that refusal redoes the turn
+once as claude -p: printRetry marks the redo, and a -p run is not redone.
+What extra usage the account turns on stays the user's to decide; the
+redo runs as claude -p, which the plan counts at about twice the
+interactive mode's — spent on a turn that otherwise answered nothing.
+Each run's mode is in the log.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gateway/claude_subscription.go     | 144 +++++++++++++++-----
+ internal/gateway/claude_tui_refusal_test.go |  90 ++++++++++++
+ internal/gateway/ir.go                      |   6 +
+ 3 files changed, 209 insertions(+), 31 deletions(-)
+
+diff --git a/internal/gateway/claude_subscription.go b/internal/gateway/claude_subscription.go
+index 86e7cb156..6ee58b560 100644
+--- a/internal/gateway/claude_subscription.go
++++ b/internal/gateway/claude_subscription.go
+@@ -1011,7 +1011,7 @@ func (b *subscriptionBridge) startRun(ctx context.Context, req *Request, model,
+ 	// runs them interactively. A run it can't take is refused, never made
+ 	// -p: a refused request never ran, and isn't the last run
+ 	tui, code := claudeTUI(req, binary)
+-	if !tui && code != "off" && code != "no-shim" {
++	if !tui && code != "off" && code != "no-shim" && code != "retry" {
+ 		cleanup()
+ 		return nil, nil, &tuiRefusal{claudeTUIErr(claudeNotTUIWhy(req, binary))}
+ 	}
+@@ -1231,6 +1231,12 @@ var claudeTUIRuns = true
+ // The code is claudePrint's, for the provider editor's last run
+ // (ClaudeMode.Last).
+ func claudeTUI(req *Request, binary claudeCLI) (bool, string) {
++	if req.printRetry {
++		// Anthropic refused this turn in the interactive mode as a
++		// third-party app's (#4503): it is redone as claude -p once,
++		// which serves the same prompt
++		return false, "retry"
++	}
+ 	code, why := claudePrint(req, binary)
+ 	if why != "" && code != "no-shim" {
+ 		log.Printf("claude: not the interactive mode: %s", why)
+@@ -5765,39 +5771,63 @@ func (s *Server) serveSubscription(w http.ResponseWriter, r *http.Request, from
+ 	if run == nil && name == "Claude Code" {
+ 		req.branch = s.subscription.branch(req, owner)
+ 	}
+-	if run == nil {
+-		run, events, err = start(r.Context(), req)
+-		if err == nil {
+-			// its agent is running already: what it was told is set
+-			// under the run's lock, as offers and shelve read it
+-			tools := map[string]bool{}
+-			for _, t := range req.Tools {
+-				tools[t.Name] = true
+-			}
+-			run.mu.Lock()
+-			run.tools = tools
+-			if search.Name != "" {
+-				run.search, run.searchName = s.webSearch, search.Name
++	// what a fresh run is told of the turn before it answers: its agent is
++	// running already, so what it was told is set under the run's lock, as
++	// offers and shelve read it. A run redone as claude -p is told the
++	// same (#4503).
++	equip := func(run *subscriptionRun) {
++		tools := map[string]bool{}
++		for _, t := range req.Tools {
++			tools[t.Name] = true
++		}
++		run.mu.Lock()
++		run.tools = tools
++		if search.Name != "" {
++			run.search, run.searchName = s.webSearch, search.Name
++		}
++		if answer.Name != "" && run.tui {
++			run.answerName, run.answerSchema = answer.Name, answerSchema
++		}
++		run.mu.Unlock()
++	}
++	// A turn the interactive mode's Anthropic refuses as a third-party
++	// app's (#4503) is redone once as claude -p, which serves the same
++	// prompt. The reply's start is held till the peek knows; on the
++	// refusal the run is let go and started again, printRetry saying the
++	// redo is -p and is not redone itself.
++	for first := true; ; first = false {
++		if run == nil {
++			run, events, err = start(r.Context(), req)
++			if err == nil {
++				equip(run)
+ 			}
+-			if answer.Name != "" && run.tui {
+-				run.answerName, run.answerSchema = answer.Name, answerSchema
++		}
++		if err != nil {
++			// no room for another Claude Code on this machine is no fault of
++			// the account: a 503 passes it to the next (#2956)
++			code := 502
++			var full *claudeFull
++			var refused *cliSchemaRefused
++			var tui *tuiRefusal
++			if errors.As(err, &full) {
++				code = 503
++			} else if errors.As(err, &refused) || errors.As(err, &tui) {
++				code = 400
+ 			}
+-			run.mu.Unlock()
++			return writeError(w, from, code, name+": "+err.Error()), err.Error()
+ 		}
+-	}
+-	if err != nil {
+-		// no room for another Claude Code on this machine is no fault of
+-		// the account: a 503 passes it to the next (#2956)
+-		code := 502
+-		var full *claudeFull
+-		var refused *cliSchemaRefused
+-		var tui *tuiRefusal
+-		if errors.As(err, &full) {
+-			code = 503
+-		} else if errors.As(err, &refused) || errors.As(err, &tui) {
+-			code = 400
+-		}
+-		return writeError(w, from, code, name+": "+err.Error()), err.Error()
++		if !first || !run.tui {
++			break
++		}
++		head, redo := thirdPartyPeek(events)
++		if !redo {
++			events = heldEvents(head, events)
++			break
++		}
++		log.Printf("%s on %s: Anthropic refused the interactive mode's turn as a third-party app's; it is redone as claude -p", name, model)
++		run.abort()
++		req.printRetry = true
++		run, events, err = nil, nil, nil
+ 	}
+ 	cacheDropped(w, req)
+ 	run.heard(req.Messages)
+@@ -5836,6 +5866,58 @@ func (s *Server) serveSubscription(w http.ResponseWriter, r *http.Request, from
+ 	})
+ }
+ 
++// thirdPartyWords is how Anthropic refuses an interactive Claude Code a
++// turn whose prompt is another agent harness's own — the tools, rules and
++// skills of Pi, OpenCode and the like, judged as a whole, no phrase of
++// them alone (#4503). The refusal is a notice, not a dead end: it says
++// "keep going", and the same request as claude -p is served, whose
++// sdk-cli entrypoint the prompt does not condemn (#4503's own tests).
++// What extra usage the account turns on is the user's to decide; the
++// turn is redone as claude -p once rather than told back to the caller
++// as a bare 400 the way it was.
++const thirdPartyWords = "Third-party apps now draw from your extra usage"
++
++// thirdPartyExtraUsage is whether msg is that refusal.
++func thirdPartyExtraUsage(msg string) bool {
++	return strings.Contains(msg, thirdPartyWords)
++}
++
++// thirdPartyPeek holds a run of the interactive mode's first events while
++// it looks for the turn Anthropic refuses as a third-party app's (#4503):
++// a 400 that says no reply began. What was held is told again either way
++// (heldEvents); redo says whether the events began with the refusal, and
++// the turn is to be redone as claude -p.
++func thirdPartyPeek(events <-chan Event) (head []Event, redo bool) {
++	for ev := range events {
++		head = append(head, ev)
++		switch ev.Kind {
++		case KStart, KUsage:
++			// the reply's start: a refusal, if it comes, is later
++			continue
++		case KError:
++			redo = ev.Status == 400 && thirdPartyExtraUsage(ev.Text)
++		}
++		return head, redo
++	}
++	return head, false
++}
++
++// heldEvents is events with head told again before them: what the peek
++// held while it looked for the third-party refusal (#4503).
++func heldEvents(head []Event, events <-chan Event) <-chan Event {
++	out := make(chan Event, len(head)+8)
++	for _, ev := range head {
++		out <- ev
++	}
++	go func() {
++		defer close(out)
++		for ev := range events {
++			out <- ev
++		}
++	}()
++	return out
++}
++
+ // bridgeFailed is the status and words a client is answered with when an
+ // agent's run ended in an error before any answer: the status the agent
+ // got, else a guess from the words, else 502.
+diff --git a/internal/gateway/claude_tui_refusal_test.go b/internal/gateway/claude_tui_refusal_test.go
+index 1a271f129..8c4e59a9c 100644
+--- a/internal/gateway/claude_tui_refusal_test.go
++++ b/internal/gateway/claude_tui_refusal_test.go
+@@ -2,10 +2,13 @@ package gateway
+ 
+ import (
+ 	"net/http/httptest"
++	"path/filepath"
+ 	"strings"
+ 	"testing"
+ 
++	"github.com/yetone/magpie/internal/claudetui"
+ 	"github.com/yetone/magpie/internal/provider"
++	"github.com/yetone/magpie/internal/testenv"
+ )
+ 
+ // A request the interactive mode refuses is refused the same on every
+@@ -24,3 +27,90 @@ func TestClaudeTUIRefusalIsNoAccountsFault(t *testing.T) {
+ 		t.Fatalf("the refusal is asked of the next account: %s", rec.Body.String())
+ 	}
+ }
++
++// tuiThirdPartyRefusal is the 400 an interactive Claude Code answers a
++// turn whose prompt is another agent harness's own (#4503).
++const tuiThirdPartyRefusal = `{"type":"result","subtype":"error_during_execution","is_error":true,"result":"API Error: 400 Third-party apps now draw from your extra usage, not your plan limits. Add more at claude.ai/settings/usage and keep going.","api_error_status":400}`
++
++// tuiThirdPartyHarness is tuiHelperHarness whose interactive Claude Code
++// answers a turn the way Anthropic refuses one told through it when its
++// prompt is another agent harness's own (#4503): a 400 that says "keep
++// going" — and claude -p, which the helper is not, serves the same
++// request as its own entrypoint does. As -p the fake answers print: the
++// shell lines of an answer of its own, or the usual "ok" when print is "".
++func tuiThirdPartyHarness(t *testing.T, print string) (*resumeHarness, string) {
++	t.Helper()
++	start := `if [ -n "$MG_TEST_TUI" ]; then
++  echo '{"type":"system","subtype":"init","session_id":"'$sid'"}'
++  while read -r line; do
++    case $line in *'"type":"control_request"'*)
++      id=$(printf '%s' "$line" | sed 's/.*"request_id":"\([^"]*\)".*/\1/')
++      echo '{"type":"control_response","response":{"subtype":"success","request_id":"'$id'"}}'
++      continue ;;
++    esac
++    echo '` + tuiThirdPartyRefusal + `'
++    exit 1
++  done
++  exit 0
++fi
++` + print
++	h := newScriptHarness(t, "ok", start)
++	claudeTUIRuns = true
++	t.Cleanup(func() { claudeTUIRuns = false })
++	started := filepath.Join(t.TempDir(), "started")
++	helper := filepath.Join(t.TempDir(), "magpie")
++	testenv.Program(t, helper, `#!/bin/sh
++[ "$1" = "`+claudetui.Command+`" ] || exit 9
++echo start >> '`+started+`'
++MG_TEST_TUI=1
++export MG_TEST_TUI
++shift; claude=$1; shift
++exec "$claude" "$@"
++`)
++	claudeTUIHelper = helper
++	t.Cleanup(func() { claudeTUIHelper = "" })
++	return h, started
++}
++
++// An interactive Claude Code told a caller agent's own system prompt is
++// refused by Anthropic as a third-party app's, a 400 that says "keep
++// going" (#4503): the notice is no answer to give the caller, and claude
++// -p serves the same request, its entrypoint not judged by the prompt.
++// The turn is redone once as claude -p, and the client has its reply,
++// where the 400 reached it whole before. The interactive mode is tried
++// first still: only the turn Anthropic refuses goes the other way.
++func TestClaudeTUIThirdPartyRefusalRedoneAsPrint(t *testing.T) {
++	h, started := tuiThirdPartyHarness(t, "")
++	code, msg := h.askCode("an agent harness's own prompt", "hi")
++	if code != 200 {
++		t.Fatalf("%d %.300s", code, msg)
++	}
++	if n := helperStarts(started); n != 1 {
++		t.Fatalf("the helper started %d times, want once: the redo is claude -p, which no helper starts", n)
++	}
++}
++
++// The redo is once: claude -p too refusing the turn the same way, the
++// client has that refusal, not a third run — a -p run is not redone
++// (#4503).
++func TestClaudeTUIThirdPartyRefusalRedoneOnce(t *testing.T) {
++	print := `echo '{"type":"system","subtype":"init","session_id":"'$sid'"}'
++while read -r line; do
++  case $line in *'"type":"control_request"'*) continue ;; esac
++  echo '` + tuiThirdPartyRefusal + `'
++  exit 1
++done
++exit 0
++`
++	h, started := tuiThirdPartyHarness(t, print)
++	code, msg := h.askCode("an agent harness's own prompt", "hi")
++	if code != 400 || !strings.Contains(msg, "Third-party apps now draw from your extra usage") {
++		t.Fatalf("%d %.300s", code, msg)
++	}
++	if n := helperStarts(started); n != 1 {
++		t.Fatalf("the helper started %d times, want once", n)
++	}
++	if runs := h.runs(); len(runs) != 2 {
++		t.Fatalf("%d runs, want two: the interactive mode's, then the redo as claude -p", len(runs))
++	}
++}
+diff --git a/internal/gateway/ir.go b/internal/gateway/ir.go
+index b826a0994..ed4a77cf4 100644
+--- a/internal/gateway/ir.go
++++ b/internal/gateway/ir.go
+@@ -215,6 +215,12 @@ type Request struct {
+ 	// replayed: the run started was given the conversation as a
+ 	// transcript (replaySession)
+ 	replayed bool
++	// printRetry, for the Claude bridge, is a turn Anthropic refused in
++	// the interactive mode as a third-party app's (#4503): it is redone
++	// as claude -p once, which serves the same request (the interactive
++	// mode is what Anthropic judges by the prompt, not -p), and is not
++	// redone again
++	printRetry bool
+ 	// hourMarks has the cache marks magpie adds on Anthropic's Messages
+ 	// (anthropicBody) last an hour: a Responses client's (Codex's), whose
+ 	// turns are often more than five minutes apart and whose own vendor
+-- 
+2.50.1 (Apple Git-155)
+

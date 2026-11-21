@@ -1,0 +1,19 @@
+--- E:\cc\guahub\sessions\raw\codex\migration-20261026-141216\ORIGINAL_FILE.json
++++ E:\cc\guahub\sessions\raw\codex\migration-20261026-141216\MODIFIED_FILE.json
+@@ -1,5 +1,5 @@
+ {
+-  "state": "source_present",
++  "state": "migrated",
+   "groups": [
+     {
+       "name": "cache",
+@@ -81,7 +81,8 @@
+       "remove_root": true,
+       "category": "cache",
+       "skipped": [
+-        "cache/openai-bundled/chrome/latest"
++        "cache/openai-bundled/chrome/latest",
++        "cache/openai-bundled/chrome/26.1021.31345/extension-host/windows/x64/extension-host.exe"
+       ],
+       "archive": "E:\\cc\\guahub\\sessions\\_trash\\codex-migration-20261026-141216\\plugins.zip",
+       "files": [

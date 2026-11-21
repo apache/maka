@@ -1,0 +1,19 @@
+# Probe output on upstream main 9d08993c8bd40de5d002bc364a16be344c5d78fa (2026-11-01)
+
+$ go test ./internal/gateway/ -run 'TestProbeSubagent' -v -count=1
+
+=== RUN   TestProbeSubagentRelayedUsage
+    probe_4608_test.go:63: ledger: model="gpt-6-luna" kind="collab_spawn" in=11 out=3 status=200 provider="codex"
+--- PASS: TestProbeSubagentRelayedUsage (0.38s)
+=== RUN   TestProbeSubagentMovedUsage
+    probe_4608_test.go:91: ledger: model="gpt-6-sol" requested="gpt-6-luna" kind="collab_spawn" in=11 out=3 status=200
+--- PASS: TestProbeSubagentMovedUsage (0.03s)
+PASS
+ok  	github.com/yetone/magpie/internal/gateway	1.246s
+
+# Scene 1 (TestProbeSubagentRelayedUsage): nothing set for Codex's subagents;
+#   the collab_spawn ask stays on the bare luna slug and is relayed to the
+#   ChatGPT backend (fake). usage.jsonl gains model=gpt-6-luna with the
+#   tokens the upstream reported.
+# Scene 2 (TestProbeSubagentMovedUsage): codexSubagentModel set to a magpie
+#   model; the ask is moved, ledger names model=gpt-6-sol requested=gpt-6-luna.

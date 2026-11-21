@@ -1,0 +1,1676 @@
+From 83a8958febb95a00c142dfa3e1591f2b1161a395 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Sat, 31 Oct 2026 00:34:49 +0800
+Subject: [PATCH] gateway: the CR a glm-5.3-flash* replica stitches into
+ tool-call arguments
+
+Yetone's review of the two earlier rounds (#4256): the cure changed
+healthy replies and cost the relay hot path. This one keeps to the routes
+the defect was seen on, and holds a cut escape the way the encoders do:
+
+- The cure runs only on glm-5.3-flash* routes (glmFlash, the way
+  grokModel scopes its rule): a relay installs crTidy for those models
+  alone, translate sets Request.CR the way it sets Request.Grok, and the
+  encoder wrapper crEncoder and the whole-reply pass crResult hang off
+  that flag. Another model's reply goes as it came, healthy or not.
+- The relay's mends wait per call (crTidy.calls, by Chat's tool_calls
+  index, Messages' block index, Responses' item id), so a \r\n cut
+  across two fragments arrives as the pair it is; a \r the next
+  fragment does not answer with \n is the defect, and goes. A line's
+  end is looked for in the new bytes of a read alone, and a region
+  without the escape is said from where it lies: a 24MB line in 32KB
+  reads costs a scan (23ms here; the round-2 way took 2.45s).
+- The events whose delta is an argument are read from the event's own
+  type or shape: a text delta that only mentions the arguments' event
+  names stands, \r and all.
+- A custom tool's raw input (Codex's apply_patch) is read as bytes: the
+  CRLF pair is the line ending it says, a lone CR goes.
+- The encoders' dropper is said at a call's end: a lone \r goes, a bare
+  \ is said as it came (crEncoder.say).
+
+Fixes #4256
+
+Run: go test -tags nogui ./internal/gateway/... (ok). The healthy
+split-CRLF relays of all three protocols, the custom input's, the text
+delta's and the scope's tests fail on the round-2 branch and pass here;
+unwiring the flag reds the cure tests again.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gateway/gateway.go           |  29 +
+ internal/gateway/ir.go                |   5 +
+ internal/gateway/tool_args_cr.go      | 535 ++++++++++++++
+ internal/gateway/tool_args_cr_test.go | 984 ++++++++++++++++++++++++++
+ 4 files changed, 1553 insertions(+)
+ create mode 100644 internal/gateway/tool_args_cr.go
+ create mode 100644 internal/gateway/tool_args_cr_test.go
+
+diff --git a/internal/gateway/gateway.go b/internal/gateway/gateway.go
+index aa8e2751f..6bd7305bf 100644
+--- a/internal/gateway/gateway.go
++++ b/internal/gateway/gateway.go
+@@ -5407,6 +5407,13 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
+ 	if (proto == provider.Responses || proto == provider.Chat || proto == provider.Anthropic) && (grokModel(model) || grokModel(upstream)) {
+ 		ints = &intTidy{proto: proto, sse: sse}
+ 	}
++	// a glm-5.3-flash* replica's CR stitched into a call's argument
++	// fragments goes (tool_args_cr.go, #4256); any other model's reply
++	// goes as it came
++	var crArgs *crTidy
++	if (proto == provider.Responses || proto == provider.Chat || proto == provider.Anthropic) && (glmFlash(model) || glmFlash(upstream)) {
++		crArgs = &crTidy{proto: proto, sse: sse}
++	}
+ 	// a message the upstream gave no phase gets one, as OpenAI's own
+ 	// models' do (phase.go, #2437); it goes last, as it holds events back
+ 	var phases *phaseTidy
+@@ -5485,6 +5492,9 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
+ 			if ints != nil {
+ 				out = ints.write(out)
+ 			}
++			if crArgs != nil {
++				out = crArgs.write(out)
++			}
+ 			if sigs != nil {
+ 				out = sigs.write(out)
+ 			}
+@@ -5515,6 +5525,9 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
+ 		if ints != nil {
+ 			b = ints.write(b)
+ 		}
++		if crArgs != nil {
++			b = crArgs.write(b)
++		}
+ 		if sigs != nil {
+ 			b = sigs.write(b)
+ 		}
+@@ -5553,6 +5566,13 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
+ 		}
+ 		write(out(b))
+ 	}
++	if crArgs != nil {
++		b := crArgs.flush()
++		if sigs != nil {
++			b = sigs.write(b)
++		}
++		write(out(b))
++	}
+ 	if sigs != nil {
+ 		write(out(sigs.flush()))
+ 	}
+@@ -6739,6 +6759,9 @@ func (s *Server) translate(w http.ResponseWriter, r *http.Request, p provider.Pr
+ 	// a Grok model's 2500.0 in a call's arguments, which Codex turns away
+ 	// (grok_integral.go, #1431)
+ 	request.Grok = grokServed(wiresOf(r.Context()), p, model)
++	// a glm-5.3-flash* replica's CR stitched into a call's arguments
++	// (tool_args_cr.go, #4256)
++	request.CR = glmServed(wiresOf(r.Context()), p, model)
+ 	if from == provider.Anthropic {
+ 		// Claude Code's auto mode classifier, on a model that reasons
+ 		// whatever it is told (#250)
+@@ -7220,6 +7243,9 @@ func encoder(proto provider.Protocol, w *sseWriter, r *Request, usage ...*Usage)
+ 		// outside usageEncoder, which reads its encoder's reply id
+ 		enc = &wholeEncoder{streamEncoder: enc}
+ 	}
++	if r.CR {
++		enc = &crEncoder{streamEncoder: enc}
++	}
+ 	if r.wantsJSON() {
+ 		// a fenced JSON answer reaches a structured-output client as the
+ 		// JSON it asked for (format_fence.go)
+@@ -7246,6 +7272,9 @@ func render(proto provider.Protocol, res Result, r *Request) []byte {
+ 	if r.Grok {
+ 		res = wholeResult(res)
+ 	}
++	if r.CR {
++		res = crResult(res)
++	}
+ 	res = unfencedResult(res, r)
+ 	switch proto {
+ 	case provider.Chat:
+diff --git a/internal/gateway/ir.go b/internal/gateway/ir.go
+index 0e9f03cc2..3edb15335 100644
+--- a/internal/gateway/ir.go
++++ b/internal/gateway/ir.go
+@@ -318,6 +318,11 @@ type Request struct {
+ 	// arguments reach the client with their zero fractions dropped
+ 	// (grok_integral.go).
+ 	Grok bool
++	// CR is set when the model asked is one of the glm-5.3-flash* routes
++	// whose replicas stitch CR into a call's arguments (#4256): the
++	// arguments reach the client with the stitched CR dropped
++	// (tool_args_cr.go).
++	CR bool
+ }
+ 
+ // nsTool is a tool as a Responses client knows it: by its namespace and its
+diff --git a/internal/gateway/tool_args_cr.go b/internal/gateway/tool_args_cr.go
+new file mode 100644
+index 000000000..bc8a1dec6
+--- /dev/null
++++ b/internal/gateway/tool_args_cr.go
+@@ -0,0 +1,535 @@
++package gateway
++
++import (
++	"bytes"
++	"encoding/json"
++	"strconv"
++	"strings"
++
++	"github.com/yetone/magpie/internal/provider"
++)
++
++// Some replicas of GLM's flash models stitch the fragments of a streamed
++// tool call's arguments with CR: each JSON \r escape in the text is a CR
++// they put at a token boundary (yetone/magpie#4256), and the client reads
++// one broken line a CR. An argument's text says a line ending as the pair
++// \r\n, which stays; a \n or a \t stands for itself; a \\r is a backslash
++// and an r, no CR at all. Every other \r escape goes, with the little
++// content that carries a lone CR of its own losing it, which is the
++// cure's cost. The cure runs only on the routes the defect was seen on:
++// another model's reply goes as it came, healthy or not.
++
++// glmFlash is whether id, the model as magpie or its upstream names it,
++// is one of those flash models, under whatever vendor prefix a relay or
++// router gives it.
++func glmFlash(id string) bool {
++	if i := strings.LastIndexByte(id, '/'); i >= 0 {
++		id = id[i+1:]
++	}
++	return strings.HasPrefix(strings.ToLower(id), "glm-5.3-flash")
++}
++
++// glmServed is whether a request for model on p goes to one of those
++// models, by magpie's id for it or the name it is sent upstream under.
++func glmServed(wires map[string]string, p provider.Provider, model string) bool {
++	return glmFlash(model) || glmFlash(provider.UpstreamNameIn(wires, p.ID, model))
++}
++
++// crDropper takes a stream of an argument's text, a piece at a time, and
++// gives it back without the \r escapes, keeping them the pair \r\n begins.
++// An escape cut between two pieces waits in pend for the next one.
++type crDropper struct {
++	pend string
++}
++
++func (d *crDropper) write(s string) string {
++	if d.pend != "" {
++		s, d.pend = d.pend+s, ""
++	}
++	return d.scan(s, false)
++}
++
++// flush gives back what is pending at the end of the stream: a trailing
++// \r escape is alone (nothing follows to pair with it), and goes; a
++// trailing backslash is said as it came.
++func (d *crDropper) flush() string {
++	s := d.pend
++	d.pend = ""
++	return d.scan(s, true)
++}
++
++func (d *crDropper) scan(s string, final bool) string {
++	var b strings.Builder
++	b.Grow(len(s))
++	for i := 0; i < len(s); {
++		if c := s[i]; c != '\\' {
++			b.WriteByte(c)
++			i++
++			continue
++		}
++		if i+1 >= len(s) {
++			if final {
++				b.WriteByte(s[i])
++				i++
++				continue
++			}
++			d.pend = s[i:] // the next piece says what the escape is
++			return b.String()
++		}
++		if s[i+1] == 'r' {
++			if i+4 <= len(s) {
++				if s[i+2] == '\\' && s[i+3] == 'n' {
++					b.WriteString(s[i : i+4]) // \r\n: a line ending, kept
++					i += 4
++				} else {
++					i += 2 // a CR stitched between fragments goes
++				}
++				continue
++			}
++			if final { // nothing after it: alone
++				i += 2
++				continue
++			}
++			d.pend = s[i:] // whether a \n follows is the next piece's to tell
++			return b.String()
++		}
++		b.WriteByte(s[i])
++		b.WriteByte(s[i+1])
++		i += 2
++	}
++	return b.String()
++}
++
++// dropCR is a call's whole arguments text with the stitched CR gone, for
++// the replies said at once: the text arrives complete, so the dropper's
++// whole stream is one piece.
++func dropCR(s string) string {
++	var d crDropper
++	return d.write(s) + d.flush()
++}
++
++// crBytes takes a custom tool's raw input text, a piece at a time, and
++// gives it back without the lone CR bytes: a CRLF pair is the line ending
++// it says, and stays. A patch carries real bytes, not JSON escapes, so
++// the same cure reads them as bytes; a backslash and an r are two of the
++// text's own characters and stand.
++type crBytes struct {
++	pend string
++}
++
++func (d *crBytes) write(s string) string {
++	if d.pend != "" {
++		s, d.pend = d.pend+s, ""
++	}
++	return d.scan(s, false)
++}
++
++// flush gives back what is pending at the end of the stream: a trailing
++// CR is alone, and goes.
++func (d *crBytes) flush() string {
++	s := d.pend
++	d.pend = ""
++	return d.scan(s, true)
++}
++
++func (d *crBytes) scan(s string, final bool) string {
++	var b strings.Builder
++	b.Grow(len(s))
++	for i := 0; i < len(s); i++ {
++		if s[i] != '\r' {
++			b.WriteByte(s[i])
++			continue
++		}
++		if i+1 < len(s) {
++			if s[i+1] == '\n' {
++				b.WriteString("\r\n") // a line ending, kept
++				i++
++			} // else a CR stitched between fragments goes
++			continue
++		}
++		if final { // alone at the end: gone
++			continue
++		}
++		d.pend = s[i:] // whether an LF follows is the next piece's to tell
++		return b.String()
++	}
++	return b.String()
++}
++
++// dropRawCR is a custom tool's whole input text with the lone CR bytes
++// gone.
++func dropRawCR(s string) string {
++	var d crBytes
++	return d.write(s) + d.flush()
++}
++
++// crEncoder hands its encoder one of those models' reply with the stitched
++// CR of its calls' arguments dropped, streamed in pieces. An escape cut at
++// a piece's end waits in the dropper for the next, so the events that end
++// a call say what it holds: a \r that turned out alone is already gone,
++// and a bare \ is said as it came.
++type crEncoder struct {
++	streamEncoder
++	args crDropper
++}
++
++func (e *crEncoder) event(ev Event) {
++	switch ev.Kind {
++	case KToolArgs:
++		if ev.Text = e.args.write(ev.Text); ev.Text == "" {
++			return // held: what the next piece may finish
++		}
++	case KToolStart:
++		e.say(e.args.flush()) // the last call's tail, before this one opens
++		e.args = crDropper{}
++	case KStop:
++		e.say(e.args.flush())
++	}
++	e.streamEncoder.event(ev)
++}
++
++// say gives a call's held tail to its encoder: say gets "" for a tail
++// that turned out to be a lone \r, and says anything else as it came.
++func (e *crEncoder) say(tail string) {
++	if tail != "" {
++		e.streamEncoder.event(Event{Kind: KToolArgs, Text: tail})
++	}
++}
++
++// crResult is a whole reply from one of those models with the stitched CR
++// of its calls' arguments dropped.
++func crResult(res Result) Result {
++	var parts []Part
++	for i, p := range res.Parts {
++		if p.Kind != ToolCall || len(p.Args) == 0 {
++			continue
++		}
++		if a := dropCR(string(p.Args)); a != string(p.Args) {
++			if parts == nil {
++				parts = append([]Part(nil), res.Parts...)
++			}
++			parts[i].Args = json.RawMessage(a)
++		}
++	}
++	if parts != nil {
++		res.Parts = parts
++	}
++	return res
++}
++
++// crSeq is the two bytes every JSON \r escape begins with.
++var crSeq = []byte{'\\', 'r'}
++
++// crTidy drops, in one of those models' reply relayed as it came, the
++// stitched CR of its calls' arguments: Responses' function_call items and
++// argument deltas (a custom tool's input the same way), Chat's tool_calls,
++// and Messages' tool_use input. Which events carry arguments is read from
++// the event's own type or shape, never from a text's words. A stream's
++// lines pass as they came unless one carries the escape or answers a cut
++// one; a reply that isn't a stream is held whole and gone through at the
++// end. A line's end is looked for in the new bytes of a read alone, and a
++// region without the escape comes back as it came, so a healthy reply
++// pays a scan and a copy it was going to pay anyway.
++type crTidy struct {
++	proto provider.Protocol
++	sse   bool
++	buf   []byte
++	calls map[string]*crDropper // a streamed call's cut escape, by its index or item id
++	texts map[string]*crBytes   // a custom tool's input, by its item id
++}
++
++func (t *crTidy) write(b []byte) []byte {
++	if !t.sse {
++		t.buf = append(t.buf, b...)
++		return nil
++	}
++	old := len(t.buf)
++	t.buf = append(t.buf, b...)
++	// the bytes before these were searched for a line's end when they came
++	i := bytes.LastIndexByte(b, '\n')
++	if i < 0 {
++		return nil
++	}
++	end := old + i + 1
++	// what a line's end leaves waits where the said lines were, so a
++	// region the filter did not change is said from a copy of itself
++	// then; when nothing waits it is said from where it lies
++	out := t.lines(t.buf[:end], end < len(t.buf))
++	t.buf = append(t.buf[:0], t.buf[end:]...)
++	return out
++}
++
++func (t *crTidy) flush() []byte {
++	b := t.buf
++	t.buf, t.calls, t.texts = nil, nil, nil
++	if !t.sse {
++		if nb, ok := t.event(b); ok {
++			return nb
++		}
++		return b
++	}
++	return t.lines(b, false)
++}
++
++// cut is whether a call's text waits for the piece that says what its cut
++// escape is: the lines of that call must be read even when they carry no
++// escape of their own.
++func (t *crTidy) cut() bool {
++	for _, d := range t.calls {
++		if d.pend != "" {
++			return true
++		}
++	}
++	for _, d := range t.texts {
++		if d.pend != "" {
++			return true
++		}
++	}
++	return false
++}
++
++// lines is a region's lines, each said once. copy says whether the region
++// still has a tail waiting behind it, in whose room an unchanged region
++// would not survive being said from where it lies.
++func (t *crTidy) lines(b []byte, copy bool) []byte {
++	if !bytes.Contains(b, crSeq) && !t.cut() {
++		if copy {
++			return append([]byte(nil), b...)
++		}
++		return b
++	}
++	var out []byte
++	rest := b
++	for len(rest) > 0 {
++		line := rest
++		if i := bytes.IndexByte(rest, '\n'); i >= 0 {
++			line, rest = rest[:i+1], rest[i+1:]
++		} else {
++			rest = nil
++		}
++		nb, changed := t.line(line)
++		if !changed {
++			if out != nil {
++				out = append(out, line...)
++			}
++			continue
++		}
++		if out == nil { // the lines before the first changed one, as they came
++			out = append([]byte(nil), b[:len(b)-len(rest)-len(line)]...)
++		}
++		out = append(out, nb...)
++	}
++	if out == nil {
++		if copy {
++			return append([]byte(nil), b...)
++		}
++		return b
++	}
++	return out
++}
++
++// line is the line, its ending kept, with the stitched CR of the arguments
++// its event carries gone. A line with none of the escape, and no cut one
++// to answer, goes as it came.
++func (t *crTidy) line(l []byte) ([]byte, bool) {
++	if !bytes.Contains(l, crSeq) && !t.cut() {
++		return l, false
++	}
++	body := bytes.TrimRight(l, "\r\n")
++	data, ok := bytes.CutPrefix(body, []byte("data:"))
++	if !ok {
++		return l, false
++	}
++	nb, ok := t.event(bytes.TrimSpace(data))
++	if !ok {
++		return l, false
++	}
++	return append(append([]byte("data: "), nb...), l[len(body):]...), true
++}
++
++// event is an event, or a reply that came whole, with its calls'
++// arguments' stitched CR dropped, and whether that changed it.
++func (t *crTidy) event(data []byte) ([]byte, bool) {
++	dec := json.NewDecoder(bytes.NewReader(data))
++	dec.UseNumber() // the event's own numbers as they came
++	var ev map[string]any
++	if dec.Decode(&ev) != nil || ev == nil {
++		return nil, false
++	}
++	var changed bool
++	switch t.proto {
++	case provider.Responses:
++		changed = t.responses(ev)
++	case provider.Chat:
++		changed = t.chat(ev)
++	case provider.Anthropic:
++		changed = t.anthropic(ev)
++	}
++	if !changed {
++		return nil, false
++	}
++	nb, err := marshalPlain(ev)
++	if err != nil {
++		return nil, false
++	}
++	return nb, true
++}
++
++// stream is the state of the streamed call at key, made on first sight.
++func (t *crTidy) stream(key string) *crDropper {
++	if t.calls == nil {
++		t.calls = map[string]*crDropper{}
++	}
++	d := t.calls[key]
++	if d == nil {
++		d = &crDropper{}
++		t.calls[key] = d
++	}
++	return d
++}
++
++// rawText is the same for a custom tool's input text.
++func (t *crTidy) rawText(key string) *crBytes {
++	if t.texts == nil {
++		t.texts = map[string]*crBytes{}
++	}
++	d := t.texts[key]
++	if d == nil {
++		d = &crBytes{}
++		t.texts[key] = d
++	}
++	return d
++}
++
++func (t *crTidy) responses(ev map[string]any) bool {
++	changed := false
++	// a call said whole: a function call's arguments are JSON text, a
++	// custom tool's input the raw text
++	item := func(it map[string]any) {
++		if it == nil {
++			return
++		}
++		switch it["type"] {
++		case "function_call":
++			changed = set(it, "arguments", dropCR) || changed
++		case "custom_tool_call":
++			changed = set(it, "input", dropRawCR) || changed
++		}
++	}
++	it, _ := ev["item"].(map[string]any)
++	item(it)
++	// the event's own type says what its delta carries: a call's
++	// fragments travel here, a text or reasoning delta never
++	switch ev["type"] {
++	case "response.function_call_arguments.delta":
++		if set(ev, "delta", t.stream(callKeyOf(ev)).write) {
++			changed = true
++		}
++	case "response.custom_tool_call_input.delta":
++		if set(ev, "delta", t.rawText(callKeyOf(ev)).write) {
++			changed = true
++		}
++	case "response.function_call_arguments.done":
++		delete(t.calls, callKeyOf(ev))
++		if set(ev, "arguments", dropCR) {
++			changed = true
++		}
++	case "response.custom_tool_call_input.done":
++		delete(t.texts, callKeyOf(ev))
++		if set(ev, "input", dropRawCR) {
++			changed = true
++		}
++	}
++	res, _ := ev["response"].(map[string]any)
++	if res == nil && ev["object"] == "response" {
++		res = ev // a whole reply
++	}
++	if res != nil {
++		out, _ := res["output"].([]any)
++		for _, o := range out {
++			im, _ := o.(map[string]any)
++			item(im)
++		}
++	}
++	return changed
++}
++
++func (t *crTidy) chat(ev map[string]any) bool {
++	changed := false
++	choices, _ := ev["choices"].([]any)
++	for _, c := range choices {
++		cm, _ := c.(map[string]any)
++		if cm == nil {
++			continue
++		}
++		// a stream's delta, its arguments in pieces by the call's index
++		if d, _ := cm["delta"].(map[string]any); d != nil {
++			calls, _ := d["tool_calls"].([]any)
++			for j, tc := range calls {
++				tm, _ := tc.(map[string]any)
++				fn, _ := tm["function"].(map[string]any)
++				if fn == nil {
++					continue
++				}
++				idx := jsonText(tm["index"])
++				if tm["index"] == nil {
++					idx = strconv.Itoa(j)
++				}
++				if set(fn, "arguments", t.stream(jsonText(cm["index"])+"/"+idx).write) {
++					changed = true
++				}
++			}
++		}
++		// a whole reply's message
++		if m, _ := cm["message"].(map[string]any); m != nil {
++			calls, _ := m["tool_calls"].([]any)
++			for _, tc := range calls {
++				tm, _ := tc.(map[string]any)
++				if fn, _ := tm["function"].(map[string]any); fn != nil && set(fn, "arguments", dropCR) {
++					changed = true
++				}
++			}
++		}
++	}
++	return changed
++}
++
++func (t *crTidy) anthropic(ev map[string]any) bool {
++	changed := false
++	// a whole reply's tool_use blocks, their input an object
++	block := func(b map[string]any) {
++		if b == nil || b["type"] != "tool_use" || b["input"] == nil {
++			return
++		}
++		in, err := marshalPlain(b["input"])
++		if err != nil {
++			return
++		}
++		if out := dropCR(string(in)); out != string(in) {
++			b["input"] = json.RawMessage(out)
++			changed = true
++		}
++	}
++	content, _ := ev["content"].([]any)
++	for _, c := range content {
++		cm, _ := c.(map[string]any)
++		block(cm)
++	}
++	cb, _ := ev["content_block"].(map[string]any)
++	block(cb)
++	// a stream's input, in pieces by the block's index
++	if ev["type"] == "content_block_delta" {
++		if d, _ := ev["delta"].(map[string]any); d != nil && d["type"] == "input_json_delta" {
++			if set(d, "partial_json", t.stream(jsonText(ev["index"])).write) {
++				changed = true
++			}
++		}
++	}
++	// the block's end: a cut escape waited for a piece that never comes.
++	// A \r it held was alone, and its going is the cure; a bare \ the
++	// client never saw said, which only malformed arguments reach.
++	if ev["type"] == "content_block_stop" {
++		delete(t.calls, jsonText(ev["index"]))
++	}
++	return changed
++}
+diff --git a/internal/gateway/tool_args_cr_test.go b/internal/gateway/tool_args_cr_test.go
+new file mode 100644
+index 000000000..55d0f1dd2
+--- /dev/null
++++ b/internal/gateway/tool_args_cr_test.go
+@@ -0,0 +1,984 @@
++package gateway
++
++import (
++	"encoding/json"
++	"net/http/httptest"
++	"strings"
++	"testing"
++	"time"
++
++	"github.com/yetone/magpie/internal/provider"
++)
++
++// A defective upstream stitches the fragments of a streamed tool call's
++// arguments with CR: the JSON \r escape in the text is a CR it put at a
++// token boundary (yetone/magpie#4256), and the client reads one broken
++// line a CR. The deltas a client stitches say what it should have.
++
++// stitched is the arguments a defective relay sends, its CR at the token
++// boundaries, and clean is what the client should read: every stitched CR
++// gone, the \r\n pair (a line ending), the \n and the \\r (a backslash
++// then an r, no CR at all) as they were.
++const (
++	stitched = `{"a":"x\ry\r\nz","n":"p\nq","b":"m\\rs","t":"tail\r"}`
++	clean    = `{"a":"xy\r\nz","n":"p\nq","b":"m\\rs","t":"tail"}`
++)
++
++// crInput reads what the client was given of a tool call's input: its
++// partial_json pieces, stitched, as a JSON string's insides would show.
++func crInput(t *testing.T, body string) string {
++	t.Helper()
++	var pieces []string
++	for _, ev := range events(body) {
++		if ev["type"] != "content_block_delta" {
++			continue
++		}
++		d, _ := ev["delta"].(map[string]any)
++		if d == nil || d["type"] != "input_json_delta" {
++			continue
++		}
++		p, _ := d["partial_json"].(string)
++		pieces = append(pieces, p)
++	}
++	return strings.Join(pieces, "")
++}
++
++// TestRelayedToolArgsLoseStitchedCR is the route the issue came from: a
++// Messages upstream whose own stream is relayed as it came, its fragments
++// stitched with CR.
++func TestRelayedToolArgsLoseStitchedCR(t *testing.T) {
++	fresh(t)
++	f := &fake{t: t, reply: sse(
++		`event: message_start`+"\n"+`data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"glm-5.3-flash","content":[],"usage":{"input_tokens":1,"output_tokens":1}}}`,
++		`event: content_block_start`+"\n"+`data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"AskUserQuestion","input":{}}}`,
++		`event: content_block_delta`+"\n"+`data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"a\":\"x\\r"}}`,
++		`event: content_block_delta`+"\n"+`data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"y\\r\\nz\",\"n\":\"p\\nq\",\"b\":\"m\\\\rs\",\"t\":\"tail\\r\"}"}}`,
++		`event: content_block_stop`+"\n"+`data: {"type":"content_block_stop","index":0}`,
++		`event: message_delta`+"\n"+`data: {"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null},"usage":{"input_tokens":1,"output_tokens":3}}`,
++		`event: message_stop`+"\n"+`data: {"type":"message_stop"}`,
++	)}
++	crModel(t, provider.Anthropic, setup(t, provider.Anthropic, f), "glm-5.3-flash")
++	rec := httptest.NewRecorder()
++	req := httptest.NewRequest("POST", "/v1/messages",
++		strings.NewReader(`{"model":"glm-5.3-flash","max_tokens":100,"stream":true,"messages":[{"role":"user","content":"hi"}]}`))
++	New().Handler().ServeHTTP(rec, req)
++	if rec.Code != 200 {
++		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
++	}
++	if got := crInput(t, rec.Body.String()); got != clean {
++		t.Fatalf("client read %s, want %s", got, clean)
++	}
++	var input struct {
++		A, N, B, T string
++	}
++	if err := json.Unmarshal([]byte(clean), &input); err != nil {
++		panic(err)
++	}
++	if input.A != "xy\r\nz" || input.N != "p\nq" || input.B != `m\rs` || input.T != "tail" {
++		t.Fatalf("input %q", input)
++	}
++}
++
++// TestTranslatedToolArgsLoseStitchedCR is the same call from an upstream
++// magpie speaks Chat to, translated for the Messages client.
++func TestTranslatedToolArgsLoseStitchedCR(t *testing.T) {
++	fresh(t)
++	f := &fake{t: t, reply: sse(
++		`data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"AskUserQuestion","arguments":"{\"a\":\"x\\r"}}]}}]}`,
++		`data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"y\\r\\nz\",\"n\":\"p\\nq\",\"b\":\"m\\\\rs\",\"t\":\"tail\\r\"}"}}]}}]}`,
++		`data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
++		`data: [DONE]`,
++	)}
++	crModel(t, provider.Chat, setup(t, provider.Chat, f), "glm-5.3-flash")
++	rec := httptest.NewRecorder()
++	req := httptest.NewRequest("POST", "/v1/messages",
++		strings.NewReader(`{"model":"glm-5.3-flash","max_tokens":100,"stream":true,"messages":[{"role":"user","content":"hi"}]}`))
++	New().Handler().ServeHTTP(rec, req)
++	if rec.Code != 200 {
++		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
++	}
++	if got := crInput(t, rec.Body.String()); got != clean {
++		t.Fatalf("client read %s, want %s", got, clean)
++	}
++}
++
++// TestCRDropper walks the filter over a stream's pieces the way fragments
++// arrive: an escape cut in half, the \r\n pair cut in half, a call's last
++// piece ending in the defect.
++func TestCRDropper(t *testing.T) {
++	for _, c := range []struct {
++		pieces, want string
++	}{
++		{`x\ry`, `xy`},               // the defect, between fragments
++		{`x\r\ny`, `x\r\ny`},         // a line ending, kept
++		{`x\` + "\ny", `x\` + "\ny"}, // a backslash before a real newline, kept
++		{`p\nq`, `p\nq`},             // a line feed, kept
++		{`a\\rb`, `a\\rb`},           // a backslash then an r: no CR, kept
++	} {
++		var d crDropper
++		got := d.write(c.pieces) + d.flush()
++		if got != c.want {
++			t.Errorf("whole %s: got %s, want %s", c.pieces, got, c.want)
++		}
++	}
++	for _, c := range []struct {
++		pieces []string
++		want   string
++	}{
++		{[]string{`x\`, `ry`}, `xy`},                                  // the escape cut in half
++		{[]string{`x\r\`, `ny`}, `x\r\ny`},                            // the pair cut in half
++		{[]string{`x\`}, `x\`},                                        // a lone backslash at the end, said as it came
++		{[]string{`x\r`}, `x`},                                        // a trailing CR: alone, gone
++		{[]string{`\`}, `\`},                                          // a call that opens with half an escape
++		{[]string{`{"a":"b\`, "\nnc\"}"}, `{"a":"b\` + "\n" + `nc"}`}, // a real line ending, cut
++	} {
++		d := crDropper{}
++		got := ""
++		for _, p := range c.pieces {
++			got += d.write(p)
++		}
++		if got = got + d.flush(); got != c.want {
++			t.Errorf("pieces %q: got %q, want %q", c.pieces, got, c.want)
++		}
++	}
++}
++
++// TestCRLeavesHealthyStreamsAlone says a relayed stream with no stitched
++// CR comes out byte for byte as it came, whatever size the reads are.
++func TestCRLeavesHealthyStreamsAlone(t *testing.T) {
++	stream := sse(
++		`event: message_start`+"\n"+`data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"glm-5.3-flash","content":[],"usage":{"input_tokens":1,"output_tokens":1}}}`,
++		`event: content_block_start`+"\n"+`data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"Edit","input":{}}}`,
++		`event: content_block_delta`+"\n"+`data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"file\":\"a\\nb\\r\\nc\",\"repl\":\"x<y>&z\",\"n\": 12}"}}`,
++		`event: content_block_delta`+"\n"+`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"说\\r的"}}`,
++		`event: content_block_stop`+"\n"+`data: {"type":"content_block_stop","index":0}`,
++		`event: message_delta`+"\n"+`data: {"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null},"usage":{"input_tokens":1,"output_tokens":3}}`,
++		`event: message_stop`+"\n"+`data: {"type":"message_stop"}`,
++	)
++	wholeTidy := &crTidy{proto: provider.Anthropic, sse: true}
++	whole := string(wholeTidy.write([]byte(stream))) + string(wholeTidy.flush())
++	if whole != stream {
++		t.Fatalf("a whole healthy stream changed:\n%s\nwant\n%s", whole, stream)
++	}
++	for _, n := range []int{1, 2, 3, 7, 13} {
++		tidy := &crTidy{proto: provider.Anthropic, sse: true}
++		got := ""
++		for i := 0; i < len(stream); i += n {
++			j := min(i+n, len(stream))
++			got += string(tidy.write([]byte(stream[i:j])))
++		}
++		if got += string(tidy.flush()); got != stream {
++			t.Fatalf("reads of %d changed the stream:\n%s\nwant\n%s", n, got, stream)
++		}
++	}
++}
++
++// anthropicStitched is the defective upstream's Messages stream, its call's
++// fragments stitched with CR, as the tests of the translated replies share
++// it.
++var anthropicStitched = sse(
++	`event: message_start`+"\n"+`data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"glm-5.3-flash","content":[],"usage":{"input_tokens":1,"output_tokens":1}}}`,
++	`event: content_block_start`+"\n"+`data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"AskUserQuestion","input":{}}}`,
++	`event: content_block_delta`+"\n"+`data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"a\":\"x\\r"}}`,
++	`event: content_block_delta`+"\n"+`data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"y\\r\\nz\",\"n\":\"p\\nq\",\"b\":\"m\\\\rs\",\"t\":\"tail\\r\"}"}}`,
++	`event: content_block_stop`+"\n"+`data: {"type":"content_block_stop","index":0}`,
++	`event: message_delta`+"\n"+`data: {"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null},"usage":{"input_tokens":1,"output_tokens":3}}`,
++	`event: message_stop`+"\n"+`data: {"type":"message_stop"}`,
++)
++
++// chatStreamStitched is the same call from a Chat upstream, its fragments
++// stitched the same.
++var chatStreamStitched = sse(
++	`data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"AskUserQuestion","arguments":"{\"a\":\"x\\r"}}]}}]}`,
++	`data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"y\\r\\nz\",\"n\":\"p\\nq\",\"b\":\"m\\\\rs\",\"t\":\"tail\\r\"}"}}]}}]}`,
++	`data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
++	`data: [DONE]`,
++)
++
++// chatWholeStitched is a whole chat reply whose one call's arguments carry
++// the defect, as a replica that stitches serves a client that asked for
++// one body.
++const chatWholeStitched = `{"id":"c1","object":"chat.completion","model":"glm-5.3-flash","choices":[{"index":0,"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"AskUserQuestion","arguments":"{\"a\":\"x\\ry\\r\\nz\",\"n\":\"p\\nq\",\"b\":\"m\\\\rs\",\"t\":\"tail\\r\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":1,"completion_tokens":3}}`
++
++// compact says raw as JSON says an object: sorted keys, no bargains.
++func compact(t *testing.T, raw json.RawMessage) string {
++	t.Helper()
++	var v any
++	if json.Unmarshal(raw, &v) != nil {
++		t.Fatalf("not JSON: %s", raw)
++	}
++	b, _ := json.Marshal(v)
++	return string(b)
++}
++
++// chatArgs reads what a Chat client was given of a tool call's input: its
++// arguments pieces, stitched.
++func crChatArgs(t *testing.T, body string) string {
++	t.Helper()
++	var pieces []string
++	for _, ev := range events(body) {
++		choices, _ := ev["choices"].([]any)
++		for _, c := range choices {
++			ch, _ := c.(map[string]any)
++			if ch == nil {
++				continue
++			}
++			delta, _ := ch["delta"].(map[string]any)
++			if delta == nil {
++				continue
++			}
++			calls, _ := delta["tool_calls"].([]any)
++			for _, k := range calls {
++				call, _ := k.(map[string]any)
++				if call == nil {
++					continue
++				}
++				fn, _ := call["function"].(map[string]any)
++				if fn == nil {
++					continue
++				}
++				if a, _ := fn["arguments"].(string); a != "" {
++					pieces = append(pieces, a)
++				}
++			}
++		}
++	}
++	return strings.Join(pieces, "")
++}
++
++// responsesArgs reads what a Responses client was given of a tool call's
++// input: its function call arguments deltas, stitched.
++func responsesArgs(t *testing.T, body string) string {
++	t.Helper()
++	var pieces []string
++	for _, ev := range events(body) {
++		if ev["type"] != "response.function_call_arguments.delta" {
++			continue
++		}
++		if d, _ := ev["delta"].(string); d != "" {
++			pieces = append(pieces, d)
++		}
++	}
++	return strings.Join(pieces, "")
++}
++
++// responsesDoneArgs are the arguments the reply's done events say whole.
++func responsesDoneArgs(t *testing.T, body string) []string {
++	t.Helper()
++	var out []string
++	for _, ev := range events(body) {
++		switch ev["type"] {
++		case "response.output_item.done":
++			item, _ := ev["item"].(map[string]any)
++			if item == nil || item["type"] != "function_call" {
++				continue
++			}
++			if a, _ := item["arguments"].(string); a != "" {
++				out = append(out, a)
++			}
++		case "response.completed":
++			res, _ := ev["response"].(map[string]any)
++			if res == nil {
++				continue
++			}
++			items, _ := res["output"].([]any)
++			for _, k := range items {
++				item, _ := k.(map[string]any)
++				if item == nil || item["type"] != "function_call" {
++					continue
++				}
++				if a, _ := item["arguments"].(string); a != "" {
++					out = append(out, a)
++				}
++			}
++		}
++	}
++	return out
++}
++
++// geminiStreamCalls are the arguments objects a Gemini stream gave, said
++// back as JSON to compare.
++func geminiStreamCalls(t *testing.T, body string) []string {
++	t.Helper()
++	var out []string
++	for _, ev := range events(body) {
++		cands, _ := ev["candidates"].([]any)
++		for _, c := range cands {
++			cand, _ := c.(map[string]any)
++			if cand == nil {
++				continue
++			}
++			content, _ := cand["content"].(map[string]any)
++			if content == nil {
++				continue
++			}
++			ps, _ := content["parts"].([]any)
++			for _, p := range ps {
++				part, _ := p.(map[string]any)
++				if part == nil {
++					continue
++				}
++				fc, _ := part["functionCall"].(map[string]any)
++				if fc == nil {
++					continue
++				}
++				raw, _ := json.Marshal(fc["args"])
++				out = append(out, compact(t, raw))
++			}
++		}
++	}
++	return out
++}
++
++// TestChatClientToolArgsLoseStitchedCR is the call a Chat client reads of
++// a Messages upstream, translated: its arguments pieces go out of the
++// chatEncoder stitched as they came in.
++func TestChatClientToolArgsLoseStitchedCR(t *testing.T) {
++	fresh(t)
++	f := &fake{t: t, reply: anthropicStitched}
++	crModel(t, provider.Anthropic, setup(t, provider.Anthropic, f), "glm-5.3-flash")
++	code, body := post(t, "/v1/chat/completions",
++		`{"model":"glm-5.3-flash","stream":true,"messages":[{"role":"user","content":"hi"}]}`)
++	if code != 200 {
++		t.Fatalf("status %d: %s", code, body)
++	}
++	if got := crChatArgs(t, body); got != clean {
++		t.Fatalf("client read %s, want %s", got, clean)
++	}
++}
++
++// TestChatReplyToolArgsLoseStitchedCR is the same call, the client asking
++// for one body: the reply is relayed as it came (chatWhole), the call's
++// arguments read where they travel.
++func TestChatReplyToolArgsLoseStitchedCR(t *testing.T) {
++	fresh(t)
++	f := &fake{t: t, ctype: "application/json", reply: chatWholeStitched}
++	crModel(t, provider.Chat, setup(t, provider.Chat, f), "glm-5.3-flash")
++	code, body := post(t, "/v1/chat/completions", `{"model":"glm-5.3-flash","messages":[{"role":"user","content":"hi"}]}`)
++	if code != 200 {
++		t.Fatalf("status %d: %s", code, body)
++	}
++	var reply struct {
++		Choices []struct {
++			Message struct {
++				ToolCalls []struct {
++					Function struct {
++						Arguments string `json:"arguments"`
++					} `json:"function"`
++				} `json:"tool_calls"`
++			} `json:"message"`
++		} `json:"choices"`
++	}
++	if json.Unmarshal([]byte(body), &reply) != nil {
++		t.Fatalf("reply: %s", body)
++	}
++	for _, ch := range reply.Choices {
++		for _, call := range ch.Message.ToolCalls {
++			if call.Function.Arguments != clean {
++				t.Fatalf("client read %s, want %s", call.Function.Arguments, clean)
++			}
++			return
++		}
++	}
++	t.Fatalf("no call in %s", body)
++}
++
++// TestResponsesClientToolArgsLoseStitchedCR is the call a Responses client
++// reads of a Messages upstream, translated: the deltas and the done
++// events' whole arguments go out of the responsesEncoder stitched as they
++// came in.
++func TestResponsesClientToolArgsLoseStitchedCR(t *testing.T) {
++	fresh(t)
++	f := &fake{t: t, reply: anthropicStitched}
++	crModel(t, provider.Anthropic, setup(t, provider.Anthropic, f), "glm-5.3-flash")
++	code, body := post(t, "/v1/responses", `{"model":"glm-5.3-flash","stream":true,"input":"hi"}`)
++	if code != 200 {
++		t.Fatalf("status %d: %s", code, body)
++	}
++	if got := responsesArgs(t, body); got != clean {
++		t.Fatalf("client read %s, want %s", got, clean)
++	}
++	done := responsesDoneArgs(t, body)
++	if len(done) == 0 {
++		t.Fatalf("no done arguments in %s", body)
++	}
++	for _, a := range done {
++		if a != clean {
++			t.Fatalf("done said %s, want %s", a, clean)
++		}
++	}
++}
++
++// TestResponsesReplyToolArgsLoseStitchedCR is the same call, the client
++// asking for one body: renderResponses says the call's arguments as the
++// reply brought them.
++func TestResponsesReplyToolArgsLoseStitchedCR(t *testing.T) {
++	fresh(t)
++	// a Chat upstream is asked streamed even for a client that wants one
++	// body; the reply is read and said whole
++	f := &fake{t: t, reply: chatStreamStitched}
++	crModel(t, provider.Chat, setup(t, provider.Chat, f), "glm-5.3-flash")
++	code, body := post(t, "/v1/responses", `{"model":"glm-5.3-flash","input":"hi"}`)
++	if code != 200 {
++		t.Fatalf("status %d: %s", code, body)
++	}
++	var reply struct {
++		Output []struct {
++			Type      string `json:"type"`
++			Arguments string `json:"arguments"`
++		} `json:"output"`
++	}
++	if json.Unmarshal([]byte(body), &reply) != nil {
++		t.Fatalf("reply: %s", body)
++	}
++	for _, item := range reply.Output {
++		if item.Type == "function_call" {
++			if item.Arguments != clean {
++				t.Fatalf("client read %s, want %s", item.Arguments, clean)
++			}
++			return
++		}
++	}
++	t.Fatalf("no call in %s", body)
++}
++
++// TestGeminiClientToolArgsLoseStitchedCR is the call a Gemini client reads
++// of a Chat upstream, translated: Gemini takes a call whole, its arguments
++// an object the encoder says once the fragments have all come.
++func TestGeminiClientToolArgsLoseStitchedCR(t *testing.T) {
++	fresh(t)
++	f := &fake{t: t, reply: chatStreamStitched}
++	crModel(t, provider.Chat, setup(t, provider.Chat, f), "glm-5.3-flash")
++	code, body := post(t, "/v1beta/models/fake/glm-5.3-flash:streamGenerateContent?alt=sse",
++		`{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}`)
++	if code != 200 {
++		t.Fatalf("status %d: %s", code, body)
++	}
++	calls := geminiStreamCalls(t, body)
++	if len(calls) != 1 {
++		t.Fatalf("calls %q", calls)
++	}
++	if calls[0] != compact(t, []byte(clean)) {
++		t.Fatalf("client read %s, want %s", calls[0], compact(t, []byte(clean)))
++	}
++}
++
++// TestGeminiReplyToolArgsLoseStitchedCR is the same call, the client
++// asking for one body: renderGemini says the call's arguments as the reply
++// brought them.
++func TestGeminiReplyToolArgsLoseStitchedCR(t *testing.T) {
++	fresh(t)
++	f := &fake{t: t, reply: chatStreamStitched}
++	crModel(t, provider.Chat, setup(t, provider.Chat, f), "glm-5.3-flash")
++	code, body := post(t, "/v1beta/models/fake/glm-5.3-flash:generateContent",
++		`{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}`)
++	if code != 200 {
++		t.Fatalf("status %d: %s", code, body)
++	}
++	var reply struct {
++		Candidates []struct {
++			Content struct {
++				Parts []struct {
++					FunctionCall struct {
++						Args json.RawMessage `json:"args"`
++					} `json:"functionCall"`
++				} `json:"parts"`
++			} `json:"content"`
++		} `json:"candidates"`
++	}
++	if json.Unmarshal([]byte(body), &reply) != nil {
++		t.Fatalf("reply: %s", body)
++	}
++	n := 0
++	for _, cand := range reply.Candidates {
++		for _, part := range cand.Content.Parts {
++			if part.FunctionCall.Args == nil {
++				continue
++			}
++			if got := compact(t, part.FunctionCall.Args); got != compact(t, []byte(clean)) {
++				t.Fatalf("client read %s, want %s", got, compact(t, []byte(clean)))
++			}
++			n++
++		}
++	}
++	if n == 0 {
++		t.Fatalf("no call in %s", body)
++	}
++}
++
++// TestMessagesReplyToolArgsLoseStitchedCR is the call a Messages client
++// that asked for one body reads of a Chat upstream: renderAnthropic says
++// the call's input as the reply brought it.
++func TestMessagesReplyToolArgsLoseStitchedCR(t *testing.T) {
++	fresh(t)
++	// a Chat upstream is always asked streamed; the reply is gathered for
++	// the client that asked for one body
++	f := &fake{t: t, reply: chatStreamStitched}
++	crModel(t, provider.Chat, setup(t, provider.Chat, f), "glm-5.3-flash")
++	code, body := post(t, "/v1/messages", `{"model":"glm-5.3-flash","max_tokens":100,"messages":[{"role":"user","content":"hi"}]}`)
++	if code != 200 {
++		t.Fatalf("status %d: %s", code, body)
++	}
++	var reply struct {
++		Content []struct {
++			Type  string          `json:"type"`
++			Input json.RawMessage `json:"input"`
++		} `json:"content"`
++	}
++	if json.Unmarshal([]byte(body), &reply) != nil {
++		t.Fatalf("reply: %s", body)
++	}
++	n := 0
++	for _, bl := range reply.Content {
++		if bl.Type != "tool_use" {
++			continue
++		}
++		if got := compact(t, bl.Input); got != compact(t, []byte(clean)) {
++			t.Fatalf("client read %s, want %s", got, compact(t, []byte(clean)))
++		}
++		n++
++	}
++	if n == 0 {
++		t.Fatalf("no call in %s", body)
++	}
++}
++
++// TestChatRelayedToolArgsLoseStitchedCR is the call a Chat client reads of
++// a Chat upstream, the stream relayed as it came: the arguments travel in
++// the lines' own tool_calls, and their stitched CR goes there.
++func TestChatRelayedToolArgsLoseStitchedCR(t *testing.T) {
++	fresh(t)
++	f := &fake{t: t, reply: chatStreamStitched}
++	crModel(t, provider.Chat, setup(t, provider.Chat, f), "glm-5.3-flash")
++	code, body := post(t, "/v1/chat/completions",
++		`{"model":"glm-5.3-flash","stream":true,"messages":[{"role":"user","content":"hi"}]}`)
++	if code != 200 {
++		t.Fatalf("status %d: %s", code, body)
++	}
++	if got := crChatArgs(t, body); got != clean {
++		t.Fatalf("client read %s, want %s", got, clean)
++	}
++}
++
++// responsesStreamStitched is the same call from a Responses upstream, its
++// fragments stitched the same, a function call's arguments in the delta
++// events' own strings.
++var responsesStreamStitched = sse(
++	`data: {"type":"response.created","response":{"id":"resp_1"}}`,
++	`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"AskUserQuestion","arguments":""}}`,
++	`data: {"type":"response.function_call_arguments.delta","item_id":"fc_1","output_index":0,"delta":"{\"a\":\"x\\ry"}`,
++	`data: {"type":"response.function_call_arguments.delta","item_id":"fc_1","output_index":0,"delta":"\\r\\nz\",\"n\":\"p\\nq\",\"b\":\"m\\\\rs\",\"t\":\"tail\\r\"}"}`,
++	`data: {"type":"response.function_call_arguments.done","item_id":"fc_1","output_index":0,"arguments":"{\"a\":\"x\\ry\\r\\nz\",\"n\":\"p\\nq\",\"b\":\"m\\\\rs\",\"t\":\"tail\\r\"}"}`,
++	`data: {"type":"response.completed"}`,
++)
++
++// TestResponsesRelayedToolArgsLoseStitchedCR is the call a Responses
++// client reads of a Responses upstream, the stream relayed as it came: a
++// function call's fragments travel in the delta events' delta strings,
++// and their stitched CR goes there.
++func TestResponsesRelayedToolArgsLoseStitchedCR(t *testing.T) {
++	fresh(t)
++	f := &fake{t: t, reply: responsesStreamStitched}
++	crModel(t, provider.Responses, setup(t, provider.Responses, f), "glm-5.3-flash")
++	code, body := post(t, "/v1/responses", `{"model":"glm-5.3-flash","stream":true,"input":"hi"}`)
++	if code != 200 {
++		t.Fatalf("status %d: %s", code, body)
++	}
++	if got := responsesArgs(t, body); got != clean {
++		t.Fatalf("client read %s, want %s", got, clean)
++	}
++	for _, a := range responsesDoneArgs(t, body) {
++		if a != clean {
++			t.Fatalf("done said %s, want %s", a, clean)
++		}
++	}
++}
++
++// anthropicWholeStitched is a whole Messages reply whose one call's input
++// object carries the defect in its strings, as a replica that stitches
++// serves a client that asked for one body.
++var anthropicWholeStitched = `{"id":"msg_1","type":"message","role":"assistant","model":"glm-5.3-flash","content":[{"type":"tool_use","id":"toolu_1","name":"AskUserQuestion","input":{"a":"x\ry\r\nz","n":"p\nq","b":"m\\rs","t":"tail\r"}}],"stop_reason":"tool_use","usage":{"input_tokens":1,"output_tokens":3}}`
++
++// TestAnthropicWholeRelayedToolArgsLoseStitchedCR is the same reply, the
++// client asking for one body: the input object is an arguments' own
++// object, and the stitched CR of its strings goes.
++func TestAnthropicWholeRelayedToolArgsLoseStitchedCR(t *testing.T) {
++	fresh(t)
++	f := &fake{t: t, ctype: "application/json", reply: anthropicWholeStitched}
++	crModel(t, provider.Anthropic, setup(t, provider.Anthropic, f), "glm-5.3-flash")
++	code, body := post(t, "/v1/messages", `{"model":"glm-5.3-flash","max_tokens":100,"messages":[{"role":"user","content":"hi"}]}`)
++	if code != 200 {
++		t.Fatalf("status %d: %s", code, body)
++	}
++	var reply struct {
++		Content []struct {
++			Type  string          `json:"type"`
++			Input json.RawMessage `json:"input"`
++		} `json:"content"`
++	}
++	if json.Unmarshal([]byte(body), &reply) != nil {
++		t.Fatalf("reply: %s", body)
++	}
++	for _, block := range reply.Content {
++		if block.Type == "tool_use" {
++			if got, want := compact(t, block.Input), compact(t, json.RawMessage(clean)); got != want {
++				t.Fatalf("client read %s, want %s", got, want)
++			}
++			return
++		}
++	}
++	t.Fatalf("no call in %s", body)
++}
++
++// crModel is setup's provider said again with the model a test's client
++// asks for: the cure follows the model (glm-5.3-flash*, #4256), so these
++// tests ask for one of those routes, or, for the scope test, another.
++func crModel(t *testing.T, proto provider.Protocol, up *httptest.Server, model string) {
++	t.Helper()
++	p := provider.Provider{ID: "fake", Name: "Fake", Key: "k", Models: []string{model}}
++	switch proto {
++	case provider.Chat:
++		p.Chat = up.URL + "/v1"
++	case provider.Responses:
++		p.Responses = up.URL + "/v1"
++	case provider.Anthropic:
++		p.Anthropic = up.URL
++	}
++	if err := provider.Save(p); err != nil {
++		t.Fatal(err)
++	}
++}
++
++// healthySplit is a HEALTHY stream's call writing a CRLF file, its one
++// argument fragment cut where a vendor's delta boundary lands: the first
++// piece ends with the \r of a \r\n pair, the second begins with its \n.
++// Nothing here is the defect, and the client reads the pair whole.
++const (
++	healthySplit1 = `{"content":"line1\r`
++	healthySplit2 = `\nline2\r\n"}`
++	healthyWhole  = `{"content":"line1\r\nline2\r\n"}`
++)
++
++// TestMessagesRelayKeepsHealthyCRLFSplit is yetone's review probe: a plain
++// Anthropic-shaped Messages stream relayed as it came, its partial_json
++// cut between the \r and the \n of a line ending. The pair survives; the
++// client reads the file's line ending as it was written.
++func TestMessagesRelayKeepsHealthyCRLFSplit(t *testing.T) {
++	fresh(t)
++	f := &fake{t: t, reply: sse(
++		`event: message_start`+"\n"+`data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"glm-5.3-flash","content":[],"usage":{"input_tokens":1,"output_tokens":1}}}`,
++		`event: content_block_start`+"\n"+`data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"Write","input":{}}}`,
++		`event: content_block_delta`+"\n"+`data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"content\":\"line1\\r"}}`,
++		`event: content_block_delta`+"\n"+`data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"\\nline2\\r\\n\"}"}}`,
++		`event: content_block_stop`+"\n"+`data: {"type":"content_block_stop","index":0}`,
++		`event: message_delta`+"\n"+`data: {"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null},"usage":{"input_tokens":1,"output_tokens":3}}`,
++		`event: message_stop`+"\n"+`data: {"type":"message_stop"}`,
++	)}
++	up := setup(t, provider.Anthropic, f)
++	crModel(t, provider.Anthropic, up, "glm-5.3-flash")
++	code, body := post(t, "/v1/messages", `{"model":"glm-5.3-flash","max_tokens":100,"stream":true,"messages":[{"role":"user","content":"hi"}]}`)
++	if code != 200 {
++		t.Fatalf("status %d: %s", code, body)
++	}
++	if got := crInput(t, body); got != healthyWhole {
++		t.Fatalf("client read %s, want %s", got, healthyWhole)
++	}
++}
++
++// TestChatRelayKeepsHealthyCRLFSplit is the same healthy call from a Chat
++// upstream relayed as it came, its arguments cut at the same boundary.
++func TestChatRelayKeepsHealthyCRLFSplit(t *testing.T) {
++	fresh(t)
++	f := &fake{t: t, reply: sse(
++		`data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"Write","arguments":"{\"content\":\"line1\\r"}}]}}]}`,
++		`data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\\nline2\\r\\n\"}"}}]}}]}`,
++		`data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
++		`data: [DONE]`,
++	)}
++	up := setup(t, provider.Chat, f)
++	crModel(t, provider.Chat, up, "glm-5.3-flash")
++	code, body := post(t, "/v1/chat/completions", `{"model":"glm-5.3-flash","stream":true,"messages":[{"role":"user","content":"hi"}]}`)
++	if code != 200 {
++		t.Fatalf("status %d: %s", code, body)
++	}
++	if got := crChatArgs(t, body); got != healthyWhole {
++		t.Fatalf("client read %s, want %s", got, healthyWhole)
++	}
++}
++
++// TestResponsesRelayKeepsHealthyCRLFSplit is the same healthy call from a
++// Responses upstream, its function_call_arguments.delta cut the same way.
++func TestResponsesRelayKeepsHealthyCRLFSplit(t *testing.T) {
++	fresh(t)
++	f := &fake{t: t, reply: sse(
++		`data: {"type":"response.created","response":{"id":"resp_1"}}`,
++		`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"Write","arguments":""}}`,
++		`data: {"type":"response.function_call_arguments.delta","item_id":"fc_1","output_index":0,"delta":"{\"content\":\"line1\\r"}`,
++		`data: {"type":"response.function_call_arguments.delta","item_id":"fc_1","output_index":0,"delta":"\\nline2\\r\\n\"}"}`,
++		`data: {"type":"response.function_call_arguments.done","item_id":"fc_1","output_index":0,"arguments":"{\"content\":\"line1\\r\\nline2\\r\\n\"}"}`,
++		`data: {"type":"response.completed"}`,
++	)}
++	up := setup(t, provider.Responses, f)
++	crModel(t, provider.Responses, up, "glm-5.3-flash")
++	code, body := post(t, "/v1/responses", `{"model":"glm-5.3-flash","stream":true,"input":"hi"}`)
++	if code != 200 {
++		t.Fatalf("status %d: %s", code, body)
++	}
++	if got := responsesArgs(t, body); got != healthyWhole {
++		t.Fatalf("client read %s, want %s", got, healthyWhole)
++	}
++}
++
++// TestCustomInputRelayKeepsHealthyCRLFSplit is Codex's apply_patch input, a
++// custom tool's raw text whose patch writes a CRLF file, its delta cut
++// between the \r and the \n: the patch's line ending survives whole.
++func TestCustomInputRelayKeepsHealthyCRLFSplit(t *testing.T) {
++	fresh(t)
++	f := &fake{t: t, reply: sse(
++		`data: {"type":"response.created","response":{"id":"resp_1"}}`,
++		`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"custom_tool_call","id":"ct_1","call_id":"call_1","name":"apply_patch","input":""}}`,
++		"data: {\"type\":\"response.custom_tool_call_input.delta\",\"item_id\":\"ct_1\",\"output_index\":0,\"delta\":\"line1\\r\"}",
++		"data: {\"type\":\"response.custom_tool_call_input.delta\",\"item_id\":\"ct_1\",\"output_index\":0,\"delta\":\"\\nline2\"}",
++		`data: {"type":"response.completed"}`,
++	)}
++	up := setup(t, provider.Responses, f)
++	crModel(t, provider.Responses, up, "glm-5.3-flash")
++	code, body := post(t, "/v1/responses", `{"model":"glm-5.3-flash","stream":true,"input":"hi"}`)
++	if code != 200 {
++		t.Fatalf("status %d: %s", code, body)
++	}
++	var pieces []string
++	for _, ev := range events(body) {
++		if ev["type"] == "response.custom_tool_call_input.delta" {
++			if d, _ := ev["delta"].(string); d != "" {
++				pieces = append(pieces, d)
++			}
++		}
++	}
++	if got := strings.Join(pieces, ""); got != "line1\r\nline2" {
++		t.Fatalf("client read %q, want %q", got, "line1\r\nline2")
++	}
++}
++
++// TestRelayedTextDeltaMentioningArgumentsStands is a text delta that only
++// mentions the arguments' event names and carries a \r: a reply's own
++// words, whatever its text says, are not arguments to mend.
++func TestRelayedTextDeltaMentioningArgumentsStands(t *testing.T) {
++	fresh(t)
++	f := &fake{t: t, reply: sse(
++		`data: {"type":"response.created","response":{"id":"resp_1"}}`,
++		`data: {"type":"response.output_text.delta","delta":"the response.function_call_arguments.delta event said x\\ry"}`,
++		`data: {"type":"response.completed"}`,
++	)}
++	up := setup(t, provider.Responses, f)
++	crModel(t, provider.Responses, up, "glm-5.3-flash")
++	code, body := post(t, "/v1/responses", `{"model":"glm-5.3-flash","stream":true,"input":"hi"}`)
++	if code != 200 {
++		t.Fatalf("status %d: %s", code, body)
++	}
++	var said []string
++	for _, ev := range events(body) {
++		if ev["type"] == "response.output_text.delta" {
++			if d, _ := ev["delta"].(string); d != "" {
++				said = append(said, d)
++			}
++		}
++	}
++	if len(said) != 1 || said[0] != "the response.function_call_arguments.delta event said x\\ry" {
++		t.Fatalf("client read %q, the text as it came", said)
++	}
++}
++
++// TestForeignModelStitchedStreamGoesAsItCame is the scope: the defect was
++// seen on glm-5.3-flash* replicas, so another model's stream carrying the
++// defect's very shape goes to its client byte for byte, uncured.
++func TestForeignModelStitchedStreamGoesAsItCame(t *testing.T) {
++	fresh(t)
++	f := &fake{t: t, reply: sse(
++		`event: message_start`+"\n"+`data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"m1","content":[],"usage":{"input_tokens":1,"output_tokens":1}}}`,
++		`event: content_block_start`+"\n"+`data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"AskUserQuestion","input":{}}}`,
++		`event: content_block_delta`+"\n"+`data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"a\":\"x\\r"}}`,
++		`event: content_block_delta`+"\n"+`data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"y\\r\\nz\"}"}}`,
++		`event: content_block_stop`+"\n"+`data: {"type":"content_block_stop","index":0}`,
++		`event: message_delta`+"\n"+`data: {"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null},"usage":{"input_tokens":1,"output_tokens":3}}`,
++		`event: message_stop`+"\n"+`data: {"type":"message_stop"}`,
++	)}
++	setup(t, provider.Anthropic, f)
++	code, body := post(t, "/v1/messages", `{"model":"m1","max_tokens":100,"stream":true,"messages":[{"role":"user","content":"hi"}]}`)
++	if code != 200 {
++		t.Fatalf("status %d: %s", code, body)
++	}
++	if got := crInput(t, body); got != `{"a":"x\ry\r\nz"}` {
++		t.Fatalf("another model's stream changed: client read %s", got)
++	}
++}
++
++// TestRelayedSplitDefectStillCured is the defect's own cut: a stitched CR
++// at a fragment's end the next fragment does not answer with \n is alone,
++// and goes, whatever fragment boundary it sits on.
++func TestRelayedSplitDefectStillCured(t *testing.T) {
++	fresh(t)
++	f := &fake{t: t, reply: sse(
++		`event: message_start`+"\n"+`data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"glm-5.3-flash","content":[],"usage":{"input_tokens":1,"output_tokens":1}}}`,
++		`event: content_block_start`+"\n"+`data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"AskUserQuestion","input":{}}}`,
++		`event: content_block_delta`+"\n"+`data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"a\":\"x\\r"}}`,
++		`event: content_block_delta`+"\n"+`data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"y\"}"}}`,
++		`event: content_block_stop`+"\n"+`data: {"type":"content_block_stop","index":0}`,
++		`event: message_delta`+"\n"+`data: {"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null},"usage":{"input_tokens":1,"output_tokens":3}}`,
++		`event: message_stop`+"\n"+`data: {"type":"message_stop"}`,
++	)}
++	up := setup(t, provider.Anthropic, f)
++	crModel(t, provider.Anthropic, up, "glm-5.3-flash-max")
++	code, body := post(t, "/v1/messages", `{"model":"glm-5.3-flash-max","max_tokens":100,"stream":true,"messages":[{"role":"user","content":"hi"}]}`)
++	if code != 200 {
++		t.Fatalf("status %d: %s", code, body)
++	}
++	if got := crInput(t, body); got != `{"a":"xy"}` {
++		t.Fatalf("client read %s, want {\"a\":\"xy\"}", got)
++	}
++}
++
++// crSpy is a stream encoder that records what it is told, for the
++// crEncoder's own tests.
++type crSpy struct {
++	said []Event
++}
++
++func (s *crSpy) event(ev Event) { s.said = append(s.said, ev) }
++func (s *crSpy) finish()        {}
++func (s *crSpy) keepalive()     {}
++
++// TestCREscapeSaidAtCallEnd is the seam a whole argument's last escape is
++// cut at: a bare \ the reply ended on is said before the stop, a \r that
++// turned out alone is not, and a next call's start hears the tail of the
++// one before it first.
++func TestCREscapeSaidAtCallEnd(t *testing.T) {
++	spy := &crSpy{}
++	e := &crEncoder{streamEncoder: spy}
++	e.event(Event{Kind: KToolStart, ID: "c1", Name: "n"})
++	e.event(Event{Kind: KToolArgs, Text: `{"a":"x\`})
++	e.event(Event{Kind: KStop, Stop: "end_turn"})
++	var got string
++	for _, ev := range spy.said {
++		if ev.Kind == KToolArgs {
++			got += ev.Text
++		}
++	}
++	// the piece the reply ended on is said before the stop: a bare \ as
++	// it came, stitched with the piece before it
++	if len(spy.said) != 4 || got != `{"a":"x\` || spy.said[3].Kind != KStop {
++		t.Fatalf("events %d, deltas %q", len(spy.said), got)
++	}
++
++	// a \r at the very end is alone: it goes, and nothing empty is said
++	spy = &crSpy{}
++	e = &crEncoder{streamEncoder: spy}
++	e.event(Event{Kind: KToolStart, ID: "c1", Name: "n"})
++	e.event(Event{Kind: KToolArgs, Text: `{"a":"x\r`})
++	e.event(Event{Kind: KStop, Stop: "end_turn"})
++	got = ""
++	for _, ev := range spy.said {
++		if ev.Kind == KToolArgs {
++			if ev.Text == "" {
++				t.Error("an empty delta was said")
++			}
++			got += ev.Text
++		}
++	}
++	if len(spy.said) != 3 || got != `{"a":"x` {
++		t.Fatalf("a lone trailing \r was said: %d events, deltas %q", len(spy.said), got)
++	}
++
++	// two calls: the first one's tail belongs to the first one's block
++	spy = &crSpy{}
++	e = &crEncoder{streamEncoder: spy}
++	e.event(Event{Kind: KToolStart, ID: "c1", Name: "n"})
++	e.event(Event{Kind: KToolArgs, Text: `{"a":"x\`})
++	e.event(Event{Kind: KToolStart, ID: "c2", Name: "n"})
++	var at int
++	for i, ev := range spy.said {
++		if ev.Kind == KToolStart && ev.ID == "c2" {
++			at = i
++		}
++	}
++	if at != 3 || spy.said[2].Kind != KToolArgs || spy.said[2].Text != `\` {
++		t.Fatalf("tail of the first call not said before the second opened: %d events", len(spy.said))
++	}
++}
++
++// TestGLMFlashScope is the gate itself: the routes the defect was seen on,
++// under a router's prefix, said in any case; not their bigger family, not
++// another vendor.
++func TestGLMFlashScope(t *testing.T) {
++	for _, c := range []struct {
++		id   string
++		want bool
++	}{
++		{"glm-5.3-flash", true},
++		{"glm-5.3-flash-max", true},
++		{"GLM-5.3-Flash", true},
++		{"zhipu/glm-5.3-flash", true},
++		{"glm-5.3", false},
++		{"glm-5.4-flash", false},
++		{"glm-4", false},
++		{"grok-4", false},
++	} {
++		if got := glmFlash(c.id); got != c.want {
++			t.Errorf("glmFlash(%q) = %v", c.id, got)
++		}
++	}
++}
++
++// TestCRTidyTwentyFourMBLine is the relay hot path's bill: one huge SSE
++// line (a big response.completed) in 32KB reads. Without the escape the
++// line comes back as it came, at a scan's cost; with one, the call it
++// carries is read once and said again. The reads themselves were
++// quadratic once (yetone's review of #4256 measured 2.43s).
++func TestCRTidyTwentyFourMBLine(t *testing.T) {
++	unit := `{"type":"text","text":"hello \"world\" padding "}`
++	rep := (24 << 20) / (len(unit) + 1)
++	big := func(withCall bool) string {
++		var b strings.Builder
++		b.WriteString(`data: {"type":"response.completed","response":{"output":[`)
++		if withCall {
++			b.WriteString(`{"type":"function_call","id":"fc_1","call_id":"call_1","name":"n","arguments":"{\"a\":\"x\\ry\"}"},`)
++		}
++		for i := 0; i < rep; i++ {
++			b.WriteString(unit)
++			b.WriteString(",")
++		}
++		b.WriteString(`]}}` + "\n\n")
++		return b.String()
++	}
++	for _, c := range []struct {
++		name string
++		line string
++		want string
++	}{
++		{"no escape", big(false), big(false)},
++		{"one call mended", big(true), strings.Replace(big(true), `x\ry`, `xy`, 1)},
++	} {
++		t.Run(c.name, func(t *testing.T) {
++			tidy := &crTidy{proto: provider.Responses, sse: true}
++			start := time.Now()
++			var got []byte
++			for i := 0; i < len(c.line); i += 32 << 10 {
++				j := min(i+32<<10, len(c.line))
++				if out := tidy.write([]byte(c.line[i:j])); out != nil {
++					got = append(got, out...)
++				}
++			}
++			if out := tidy.flush(); out != nil {
++				got = append(got, out...)
++			}
++			elapsed := time.Since(start)
++			t.Logf("24MB line in 32KB reads: %s", elapsed)
++			if string(got) != c.want {
++				t.Fatal("the line came out other than wanted")
++			}
++			if elapsed > 8*time.Second {
++				t.Fatalf("24MB took %s", elapsed)
++			}
++		})
++	}
++}

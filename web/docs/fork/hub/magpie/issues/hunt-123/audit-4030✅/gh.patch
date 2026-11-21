@@ -1,0 +1,442 @@
+From c233b744cc3eacd85bef4fa5159d39552e22a743 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Thu, 5 Nov 2026 01:40:43 +0800
+Subject: [PATCH] gateway: a pool can keep its order through a short rest
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+wssz527 (#4030): a Kimi Code subscription answers 429 "The engine is
+currently overloaded" for seconds at a time. restLast moved the resting
+account behind the pool's other one whatever the routing had ordered, so
+the conversation moved and paid its whole prompt again on the next
+account, and again on coming back — on their log, 10 of 35 overloaded
+429s moved accounts in 20 days, and a cache read costs a rounding error
+where an uncached prompt costs a large multiple. No setting kept a
+resting account in front, and stays=strict hands the 429 to the agent
+even when a long window is genuinely spent.
+
+- provider.go: KeepThroughRest, off by default, says a transient rest is
+  no reason to move a provider's keys or accounts; accountSettings copies
+  it with the pool's other settings (#4738's one list both ways).
+- routing.go: SetKeepThroughRest, beside SetCapStop and SetCapCareful.
+- fallback.go: restLast asks candidate.keepsThrough — a rate limit or a
+  failure that says nothing of why keeps its place, which the routing
+  ordered, and its trace row still says it rests, so a new conversation
+  goes to a ready one (readyForNew). Quota, credit, restriction and
+  verification still move it, as does every rest of a provider without
+  the setting.
+- pool_cli.go: `magpie provider pool <id> --keep on|off`, and the pool's
+  lines say what keep through a rest does.
+- providers.go: a save from the provider editor keeps KeepThroughRest,
+  as it does CapStop and CapCareful, so a value set from the CLI is not
+  lost.
+- docs/subsystems/gateway-routing.md: a bullet beside restLast's.
+
+Tests (pool_keep_test.go; pool_keep_cli_test.go):
+- TestPoolKeepsThroughARateRest: a keeping pool's account resting out of
+  a rate limit, or after a failure, is asked where the routing put it,
+  ahead of a ready one, and the trace says its rest; nothing promotes it
+  past a ready one either.
+- TestPoolStillMovesOnQuotaAndWithoutTheSetting: quota and credit still
+  move it, and a rate rest moves it for a provider without the setting.
+- TestPoolKeepSaysItsPoolKeepsThroughARest: --keep on, --keep off, and
+  --keep maybe refused.
+- TestAccountSettingsKept keeps and clears it on a signed-in account,
+  as the rests' settings are.
+
+Fixes #4030
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ docs/subsystems/gateway-routing.md         |  1 +
+ internal/cli/pool_cli.go                   | 23 ++++--
+ internal/cli/pool_keep_cli_test.go         | 59 ++++++++++++++++
+ internal/gateway/fallback.go               | 20 +++++-
+ internal/gateway/pool_keep_test.go         | 81 ++++++++++++++++++++++
+ internal/gui/providers.go                  |  1 +
+ internal/provider/account_settings_test.go |  9 +--
+ internal/provider/provider.go              | 12 ++++
+ internal/provider/routing.go               | 12 ++++
+ 9 files changed, 208 insertions(+), 10 deletions(-)
+ create mode 100644 internal/cli/pool_keep_cli_test.go
+ create mode 100644 internal/gateway/pool_keep_test.go
+
+diff --git a/docs/subsystems/gateway-routing.md b/docs/subsystems/gateway-routing.md
+index 00d811381c..08c331ef99 100644
+--- a/docs/subsystems/gateway-routing.md
++++ b/docs/subsystems/gateway-routing.md
+@@ -211,6 +211,7 @@ recorded as a prediction failure (`noPrediction`).
+ - A turn's end is told to the app for the "Task done alert" notification (itieniu on X, `turndone.go`). The trace follows each agent session's turn (`turns`, keyed by agent and session): a request is of the turn unless it has a `Kind` or is a Claude Code subagent's (`agentTurnOf`), and its reply is scanned on the way to the agent for a tool call in any wire format (`toolScan`, a JSON value such as `"type":"tool_use"` or `"finish_reason":"tool_calls"`, never a key or text). The turn is done when no request of it is going, the last reply was whole, under 400 and called no tool, and nothing more came for `turnQuiet` (4s); a session idle past `turnStale` (30m) starts over. Only a turn that ran at least `settings.TurnDoneAlert` seconds is told (`TurnDone`, set by the GUI; nil under `magpie serve`, so nothing is followed). The ChatGPT backend path (`codexBackend`) is followed the same way. `TestTurnDoneSaidAtTheTurnsEnd`, `TestTurnDoneCodexBackend`, `TestToolScan`, `turn-done.test.cjs`.
+ - A request's masking record is told to the app for the "Masking alert" notification (Must2333 on X, `OnMasked` in [`masked.go`](../../internal/gateway/masked.go), set by the GUI; nil under `magpie serve`), after `maskrec.Hold` and with its text around placeholders (`Snips`, `Back`) taken out. [`mask_alert.go`](../../internal/gui/mask_alert.go) keeps the records while `settings.MaskAlert` is on (off until turned on, in Settings → Usage, hidden with masking) and says only the values a record masked for the first time (`maskrec.Fresh`, [`first.go`](../../internal/maskrec/first.go): each placeholder by the key of the first record that had it, read from memory and the days kept, so a conversation's history sent again each turn, or after a restart, is not news; a value sent as written is not one masked). A burst is gathered for `maskGather` (3s) and said as one, and one is said at most every `maskGap` (1 minute), what came in between said after it. It says each kind with its count and up to two agents, never a value nor its hint; a click opens the Masking page on the latest record (`clickView`, `masking&key=`). A held-back request (`noteBlocked`) is not said; a value whose records have all aged out (30 days) is new again. `TestFreshOnlyTheFirstTime`, `TestMaskAlertFirstTimeOnly`, `TestMaskAlertNeverSaysTheValue`, `TestMaskAlertCoalesces`, `mask-alert.test.cjs`.
+ - A resting candidate is tried last (`restLast`). Of the resting candidates, a request asks only the one whose rest ends soonest, the first in order on a tie (`probeOne`, #1799). The others aren't asked by that request, so a member that is down isn't asked by every request its rest was meant to spare it from, and a group that is down whole takes one upstream request per request, not one per member. Every ready candidate is still asked in its order. A lone candidate is tried even while it rests, because there is no other. The trace still lists every member, the resting ones with their rest. Only rests are read, and a failure about the request's content or its model rests no member (a model refusal rests only `restID`), so neither leaves a member out. The same applies in `count_tokens`, embeddings and rerank, image accounts and a group's System One decision models. A Codex reset (`autoReset`) still looks over every candidate. This is like AxonHub's error-aware load balancing: the rest and its backoff are the penalty that decays, and the member back soonest is the one asked to show it is back. Keys out of their allowance aren't asked even so, not even the one back soonest or a lone one (#1772: four Ollama Cloud keys out for the week, each asked again and refused on every request). The refusal given again says when they are asked again on this magpie's clock with its offset (`heldClock`: "20:12 UTC+8", "Oct 16 09:00 UTC+8"), as do the gateway's other held errors (a capped window, a spent searcher or describer): its reader may be a Remote magpie's user on another clock. When every candidate left is a key (not a subscription account, whose resets `autoReset` may spend) resting out of quota or credit after a 429 or 402, none is asked. The first one's refusal is given again (`quotaHeld`, its words kept in the rest's `said`), saying when it is asked again. A key whose rest magpie guessed the length of, the vendor and the user naming no time (`creditRest`, or `quotaRest` with no `Provider.OwnQuotaRest`), is held so only once it was refused so twice in a row (`Rest.first`): a single refusal may be a moment's, and the next request, the agent's retry first, asks it again (zoecats on Discord: a local aggregator said 429 `insufficient_quota` "quota exhausted" for the moment it switched upstreams, and every request was answered from its rest of 15 or 30 minutes, which only the provider's "Rests" switch, `LimitRestOff`, let through before). Held, it is asked again a minute on (`Rest.askAt`, `fallbackCooldown`), once, and held again if refused (`Rest.asksAt`); a time the vendor named, or the user set, holds it from the first refusal to then. The rest itself stays as long as before, so the order still passes it over for a candidate that is ready. The last key left rests too when it is refused so, as the keys before it do, and so does the last account left (a Codex or other subscription account; `quotaHeld` still holds keys alone, and `autoReset` lifts the rest of an account it spends a reset of): before, an account last in an in-order group, out of its quota, was never rested, so every request a relay ahead of it failed for a moment went on to it and ended on its 429 (dbydd on Discord; `TestGroupSpentLastAccountRests`). Any 429 that reaches the agent without a vendor `Retry-After`, while every candidate tried is resting, carries one: the seconds until the first of them is asked again (`soonestBack`, by `asksAt`), none after a key's first refusal. `TestRetryAfterALimitIsAsked`, `TestHeldLimitAskedAgainInAMinute`. A quota refusal with no word of when it is back rests `quotaRest` (15 minutes), or the provider's own `quotaRest` in minutes (`Provider.QuotaRestFor`, at most `MaxQuotaRest`, 8 days; `magpie provider quota-rest <id> 7d`), or until the time of day the user said its allowance comes back (`QuotaResetAt`, `Provider.OwnQuotaRest`; `magpie provider quota-rest <id> until 08:00`, or `until 00:00+08:00` on the vendor's clock; #2008, a free tier's "today's free-model token quota"). Whichever of the two was set last counts. A time the vendor names stands over it, and so does its `Retry-After`, unless that was more than `longestWait` (an hour) and so cut to it while the user's own rest is longer: then the user's stands (`TestQuotaRestsUntilTheTimeOfDaySet`). A key listed in `keys` as well as in `key` is one candidate (`KeysOn`), not asked twice. `TestAllRestingAnswersFromRest`, `TestOwnQuotaRest`, `TestQuotaHeldOnlyForKeysOutOfAllowance`, `TestFirstKeyListedTwiceAskedOnce`.
++- A pool whose provider says *Keep through a rest* (`Provider.KeepThroughRest`, `magpie provider pool <id> --keep on`; wssz527, #4030) keeps its resting key or account in the place the routing gave it when the rest is a rate limit or a failure that says nothing of why — the transient kinds, over in seconds — for what the vendor cached of the conversations it answers is worth more than the wait: a conversation moved pays its whole prompt again on the next account. A rest out of quota or credit, a restricted account, and one asked to verify itself still move it, and so does every rest of a provider without the setting. Its trace row still says it rests, so a new conversation goes to a ready one (`readyForNew`), and the Routing page says what happened. `pool_keep_test.go`.
+ - A model its plugin reports busier than the user's *Busy models last* (`settings.BusyLoad`, 1 to 9999 (`BusyLoadMost`-1), past 100 for a vendor that queues, its Custom… field taking any of them, off by default; axelburks on Discord) goes behind the ready candidates, ahead of the resting ones (`restLast`, `busyOf`), and its trace row has `busy` with the load. The load comes from the plugin through `plugin.ModelLoad` (see [provider plugins](provider-plugins.md#a-models-load)); one not reported in the last 5 minutes is unknown and keeps its place. A lone candidate is asked whatever its load. A conversation it answered moves, at its next turn, to the ready one that leads (`affine`'s Why `busy`, `busyBehind`); within a turn it stays. A turn going round (`after`), a new conversation spread (`readyForNew`) or In turn (`leastHeld`) never lands on it past a ready one. When every candidate is busy, nothing moves.
+ - A key resting after an outage that names no time is asked again in the background (`rest_probe.go`, heatonz on Discord). Behind ready keys, `probeOne` never asks it before its rest ends, though its vendor may be back in a minute. `restAfterMarked` marks the rest `Probed` when it is a key's own (not an account's or a plugin's, not one model's `restID`), `failOther` by `backoff` after a 5xx, a 408 or no connection, with no Retry-After or reset header, at a provider whose `List` asks over the network (`Provider.ListAsks`), and long enough for a first ask. `keepProbingRests`, started in `ListenAndServe`, then asks the vendor's model list with that key through its proxy (`Provider.List`, which saves nothing) 1, 2, 5 and then every 10 minutes into the rest, while it is the same rest. When the list answers, the rest is lifted as Try now lifts it (`liftedLocked`, `unsink`, the trace's lift). Not asked: rate limits (a list answers while the chat endpoint still refuses, and lifting one early would undo Sink), quota, credit, a Retry-After or reset, a refused key (401, 403, 400), restrictions and verification, each of which ends on its own time or the vendor's. A key a probe lifted that fails again within 30 minutes isn't asked again until it answers a request (`probeMissed`, `probeAnswered` in `served`): the list answered for the vendor, not for its chat. Only the loop's own `Server` asks (`restProbes.asking`), so a test's `Server` never reaches the network. The cost is one list per resting key per step, never one per request. The key list (`KeyRest.Probed`) and Routing's words for the try (`restHow`) add "checked in the background, back as soon as it answers". `TestRestProbeLiftsAKeyBackUp`, `TestRestProbeLeavesOtherRests`, `TestRestProbeOnlyByARunningLoop`, `rest-probed.test.cjs`.
+ - A provider whose keys are on different plans (`KeyAccount.Plan`, `PlansMixed`; yckonnnn on X) sends each key to its plan's endpoints: every key path takes its copy through `WithKey`, which moves it there (`atKeyPlan`), on the first try and on a failover alike. `perKeyBarred` leaves out a key whose plan's list lacks the model (`PlanServing`: a pay-as-you-go model id at the Agent Plan's endpoint only answers 404), not shown in the trace; only when no key's plan has it are those keys asked. Embeddings and drawing go through the same `perKeyBarred` and `WithKey`; a video started on a mixed provider names its key in the task id (`videoStart.onKey`, `keyMark`) so its poll goes to that key's plan. `TestKeyPlansEachToItsOwnEndpoint`.
+diff --git a/internal/cli/pool_cli.go b/internal/cli/pool_cli.go
+index 66c5f40c2e..3feca83f05 100644
+--- a/internal/cli/pool_cli.go
++++ b/internal/cli/pool_cli.go
+@@ -15,7 +15,7 @@ import (
+ 	"github.com/yetone/magpie/internal/provider"
+ )
+ 
+-const poolUsage = "magpie provider pool <id> [--accounts a,b,…] [--cap percent|off] [--stop on|off] [--careful on|off]"
++const poolUsage = "magpie provider pool <id> [--accounts a,b,…] [--cap percent|off] [--stop on|off] [--careful on|off] [--keep on|off]"
+ 
+ // poolCmd shows a subscription's pool, after setting what the flags say:
+ // --accounts puts those accounts in use in that order, the rest out of
+@@ -23,14 +23,17 @@ const poolUsage = "magpie provider pool <id> [--accounts a,b,…] [--cap percent
+ // --stop answers 429 while every account is at its cap rather than going
+ // on to the fallbacks (provider.Provider.CapStop); --careful reads usage
+ // again near a cap and holds an account whose usage can't be told
+-// (provider.Provider.CapCareful).
++// (provider.Provider.CapCareful); --keep keeps a request on the account
++// its conversation answered through a transient rest, a rate limit or a
++// failure, rather than pay its prompt again on another account
++// (provider.Provider.KeepThroughRest).
+ func poolCmd(rest []string) error {
+ 	usage := fmt.Errorf("%s", poolUsage)
+ 	var id string
+ 	var accounts []string
+ 	accountsSet, capSet := false, false
+ 	capN := 0
+-	var stop, careful *bool
++	var stop, careful, keep *bool
+ 	onOff := func(v string) (*bool, error) {
+ 		switch strings.ToLower(strings.TrimSpace(v)) {
+ 		case "on", "true", "yes":
+@@ -80,6 +83,8 @@ func poolCmd(rest []string) error {
+ 			stop, err = onOff(val)
+ 		case "--careful":
+ 			careful, err = onOff(val)
++		case "--keep":
++			keep, err = onOff(val)
+ 		default:
+ 			return usage
+ 		}
+@@ -175,7 +180,12 @@ func poolCmd(rest []string) error {
+ 			return err
+ 		}
+ 	}
+-	if accountsSet || capSet || stop != nil || careful != nil {
++	if keep != nil {
++		if err := provider.SetKeepThroughRest(p.ID, *keep); err != nil {
++			return err
++		}
++	}
++	if accountsSet || capSet || stop != nil || careful != nil || keep != nil {
+ 		fmt.Println(green.Render("✓"), "saved", p.Name, muted.Render("("+p.ID+")"))
+ 		if p, err = provider.Find(p.ID); err != nil {
+ 			return err
+@@ -238,8 +248,13 @@ func printPool(p provider.Provider, ls []provider.Login) {
+ 	if !p.CapCareful {
+ 		careful = "off: routing goes by the last reading, read again each minute"
+ 	}
++	keep := "off: a request whose account rests after a rate limit or a failure goes to the next account in line"
++	if p.KeepThroughRest {
++		keep = "on: a request stays on its account through a rest out of a rate limit or a failure, that its cache is not lost; out of quota or credit it moves as ever"
++	}
+ 	fmt.Println("stop at caps ·", stop)
+ 	fmt.Println("check usage near the cap ·", careful)
++	fmt.Println("keep through a rest ·", keep)
+ 	if uncapped > 0 {
+ 		fmt.Println(muted.Render(fmt.Sprintf("%d account(s) in use have no cap, so nothing holds them before the vendor does: magpie provider pool %s --cap 90", uncapped, p.ID)))
+ 	}
+diff --git a/internal/cli/pool_keep_cli_test.go b/internal/cli/pool_keep_cli_test.go
+new file mode 100644
+index 0000000000..39552d92e7
+--- /dev/null
++++ b/internal/cli/pool_keep_cli_test.go
+@@ -0,0 +1,59 @@
++package cli
++
++// wssz527 (#4030): `magpie provider pool <id> --keep on` says a transient
++// rest — a rate limit, a failure — is no reason to move the pool's
++// accounts, and --keep off says it is again. Anything else is refused.
++import (
++	"os"
++	"path/filepath"
++	"testing"
++
++	"github.com/yetone/magpie/internal/agent"
++	"github.com/yetone/magpie/internal/provider"
++)
++
++func TestPoolKeepSaysItsPoolKeepsThroughARest(t *testing.T) {
++	home := t.TempDir()
++	t.Setenv("HOME", home)
++	t.Setenv("USERPROFILE", home)
++	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
++	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
++	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(home, ".claude"))
++	t.Setenv("COPILOT_HOME", filepath.Join(home, ".copilot"))
++	logins := filepath.Join(filepath.Dir(provider.Path()), "logins.json")
++	if err := os.MkdirAll(filepath.Dir(logins), 0o700); err != nil {
++		t.Fatal(err)
++	}
++	if err := os.WriteFile(logins, []byte(`[
++  {"agent": "copilot", "user": "mona", "seen": "2026-10-05T10:00:00Z", "on": true, "auth": {"oauth_token": "gho_m"}},
++  {"agent": "copilot", "user": "hubot", "seen": "2026-10-06T10:00:00Z", "on": true, "auth": {"oauth_token": "gho_h"}}
++]`), 0o600); err != nil {
++		t.Fatal(err)
++	}
++	provider.ForgetAccounts()
++	t.Cleanup(provider.ForgetAccounts)
++	t.Cleanup(agent.SyncCatalogSettled) // the pool's save syncs the agents' files behind it
++
++	if _, err := said(t, func() error { return poolCmd([]string{"copilot", "--keep", "on"}) }); err != nil {
++		t.Fatal(err)
++	}
++	p, err := provider.Find("copilot")
++	if err != nil {
++		t.Fatal(err)
++	}
++	if !p.KeepThroughRest {
++		t.Fatal("--keep on was not kept")
++	}
++	if _, err := said(t, func() error { return poolCmd([]string{"copilot", "--keep", "off"}) }); err != nil {
++		t.Fatal(err)
++	}
++	if p, err = provider.Find("copilot"); err != nil {
++		t.Fatal(err)
++	}
++	if p.KeepThroughRest {
++		t.Fatal("--keep off was not kept")
++	}
++	if _, err := said(t, func() error { return poolCmd([]string{"copilot", "--keep", "maybe"}) }); err == nil {
++		t.Fatal("maybe was taken for on or off")
++	}
++}
+diff --git a/internal/gateway/fallback.go b/internal/gateway/fallback.go
+index cfc7788bb2..770aa11634 100644
+--- a/internal/gateway/fallback.go
++++ b/internal/gateway/fallback.go
+@@ -1236,7 +1236,11 @@ func asideOf(cs []candidate, q provider.Provider, fallback bool, from provider.P
+ // them (creditsLast) behind both, those in their own order. Ahead of the
+ // resting, a model its plugin says is busier than the user's
+ // settings.BusyLoad (busyOf) goes behind the ready ones: it answers, only
+-// after a wait in its vendor's queue (axelburks on Discord).
++// after a wait in its vendor's queue (axelburks on Discord). A pool set
++// to keep through a rest (KeepThroughRest) keeps its place through a
++// transient one — a rate limit, a failure that says nothing of why —
++// which the routing ordered: what its account has cached is worth more
++// than the wait (wssz527, #4030).
+ func restLast(out []candidate, pl planned) ([]candidate, planned) {
+ 	if len(out) == 1 {
+ 		if r, ok := restingOf(out[0]); ok {
+@@ -1259,7 +1263,7 @@ func restLast(out []candidate, pl planned) ([]candidate, planned) {
+ 		case c.creditsLast(now):
+ 			pl.order[i].CreditsLast = true
+ 			last, wLast = append(last, c), append(wLast, pl.order[i])
+-		case isResting:
++		case isResting && !c.keepsThrough(r):
+ 			resting, wResting = append(resting, c), append(wResting, pl.order[i])
+ 		case isBusy:
+ 			pl.order[i].Busy = load
+@@ -1272,6 +1276,18 @@ func restLast(out []candidate, pl planned) ([]candidate, planned) {
+ 	return append(append(append(ready, busy...), resting...), last...), pl
+ }
+ 
++// keepsThrough says a rest is no reason to move c: its provider says a
++// transient rest is not worth losing what its key or account has cached
++// (provider.KeepThroughRest, #4030). A rest out of quota or credit, a
++// restricted account, and one asked to verify itself still move it, as
++// they do without the setting.
++func (c candidate) keepsThrough(r Rest) bool {
++	if !c.p.KeepThroughRest {
++		return false
++	}
++	return r.Why == failRate || r.Why == failOther
++}
++
+ // busyOf is the load c's plugin last reported for its model, and whether
+ // that is over the percent over (settings.BusyLoad; 0 is off). A model
+ // with no load reported, or none within plugin.LoadFresh, isn't busy:
+diff --git a/internal/gateway/pool_keep_test.go b/internal/gateway/pool_keep_test.go
+new file mode 100644
+index 0000000000..d06cbe94bd
+--- /dev/null
++++ b/internal/gateway/pool_keep_test.go
+@@ -0,0 +1,81 @@
++package gateway
++
++// wssz527 (#4030): a pool whose accounts answer "overloaded" 429s for
++// seconds pays its conversations' whole prompts again whenever a
++// transient rest moves them to the pool's other account — restLast moves
++// a resting one behind the rest whatever the routing ordered, so no
++// strategy keeps it, and the cache its account had built is wasted. A
++// pool set KeepThroughRest says a rest out of a rate limit or a failure
++// that says nothing of why is no reason to move its accounts: they keep
++// the place the routing gave them, and the trace still says they rest. A
++// rest out of quota or credit still moves them, and so does every rest
++// of a pool without the setting.
++import (
++	"testing"
++	"time"
++
++	"github.com/yetone/magpie/internal/provider"
++)
++
++// restAt has key resting for a little while, for why.
++func restAt(t *testing.T, key, why string) {
++	t.Helper()
++	restingUntil.Lock()
++	restingUntil.m[key] = time.Now().Add(30 * time.Second)
++	restingUntil.note[key] = Rest{Why: why}
++	restingUntil.Unlock()
++	t.Cleanup(func() {
++		restingUntil.Lock()
++		delete(restingUntil.m, key)
++		delete(restingUntil.note, key)
++		restingUntil.Unlock()
++	})
++}
++
++// A pool keeping through a rest: its account resting out of a rate limit,
++// or after a failure that says nothing of why, is asked where the routing
++// put it, and the trace says it rests all the same.
++func TestPoolKeepsThroughARateRest(t *testing.T) {
++	for _, why := range []string{failRate, failOther} {
++		p := provider.Provider{ID: "kimi", KeepThroughRest: true}
++		resting := candidate{p: p, model: "m", rest: "kimi@one"}
++		ready := candidate{p: p, model: "m", rest: "kimi@two"}
++		restAt(t, "kimi@one", why)
++		out, pl := restLast([]candidate{resting, ready}, planned{order: make([]Weighed, 2)})
++		if out[0].rest != "kimi@one" {
++			t.Fatalf("%s: the resting one moved behind: first %s", why, out[0].rest)
++		}
++		if pl.order[0].Rest == nil || pl.order[0].Rest.Why != why {
++			t.Fatalf("%s: the trace says nothing of its rest: %+v", why, pl.order[0].Rest)
++		}
++		// ready ahead of it, it follows as it did: nothing promotes it
++		out, _ = restLast([]candidate{ready, resting}, planned{order: make([]Weighed, 2)})
++		if out[0].rest != "kimi@two" {
++			t.Fatalf("%s: the resting one was put ahead: first %s", why, out[0].rest)
++		}
++	}
++}
++
++// A rest out of quota or credit still moves a keeping pool's account
++// behind the rest: those are not over in seconds. And without the
++// setting, a rate rest moves it as it did.
++func TestPoolStillMovesOnQuotaAndWithoutTheSetting(t *testing.T) {
++	for _, why := range []string{failQuota, failCredit} {
++		p := provider.Provider{ID: "kimi", KeepThroughRest: true}
++		resting := candidate{p: p, model: "m", rest: "kimi@one"}
++		ready := candidate{p: p, model: "m", rest: "kimi@two"}
++		restAt(t, "kimi@one", why)
++		out, _ := restLast([]candidate{resting, ready}, planned{order: make([]Weighed, 2)})
++		if out[0].rest != "kimi@two" {
++			t.Fatalf("%s: the resting one kept its place: first %s", why, out[0].rest)
++		}
++	}
++	p := provider.Provider{ID: "kimi"}
++	resting := candidate{p: p, model: "m", rest: "kimi@one"}
++	ready := candidate{p: p, model: "m", rest: "kimi@two"}
++	restAt(t, "kimi@one", failRate)
++	out, _ := restLast([]candidate{resting, ready}, planned{order: make([]Weighed, 2)})
++	if out[0].rest != "kimi@two" {
++		t.Fatalf("no setting: the resting one kept its place: first %s", out[0].rest)
++	}
++}
+diff --git a/internal/gui/providers.go b/internal/gui/providers.go
+index 50a1f8e123..06200bf122 100644
+--- a/internal/gui/providers.go
++++ b/internal/gui/providers.go
+@@ -2002,6 +2002,7 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
+ 					in.KeepLoginAs = old.KeepLoginAs
+ 					in.SwitchOnly, in.RestartApp = old.SwitchOnly, old.RestartApp // switchonly, restartapp
+ 					in.CapStop, in.CapCareful = old.CapStop, old.CapCareful       // capstop, capcareful
++					in.KeepThroughRest = old.KeepThroughRest                      // keepthroughrest
+ 					in.Off = old.Off                                              // and this with off and on
+ 					if in.Contexts == nil {
+ 						in.Contexts = old.Contexts // a save that doesn't say
+diff --git a/internal/provider/account_settings_test.go b/internal/provider/account_settings_test.go
+index dc6b361a47..0064e2d9af 100644
+--- a/internal/provider/account_settings_test.go
++++ b/internal/provider/account_settings_test.go
+@@ -28,6 +28,7 @@ func TestAccountSettingsKept(t *testing.T) {
+ 		q.QuotaRest = 90
+ 		q.RestCap = 20
+ 		q.LimitRestOff = true
++		q.KeepThroughRest = true
+ 		q.Patience = 30
+ 		if err := Save(q); err != nil {
+ 			t.Fatal(err)
+@@ -48,17 +49,17 @@ func TestAccountSettingsKept(t *testing.T) {
+ 		if !slices.Equal(got.ReplyHeaders, q.ReplyHeaders) {
+ 			t.Errorf("%s: reply headers %v, want %v", id, got.ReplyHeaders, q.ReplyHeaders)
+ 		}
+-		if got.QuotaRest != 90 || got.RestCap != 20 || !got.LimitRestOff || got.Patience != 30 {
+-			t.Errorf("%s: rests %d %d %v, patience %d", id, got.QuotaRest, got.RestCap, got.LimitRestOff, got.Patience)
++		if got.QuotaRest != 90 || got.RestCap != 20 || !got.LimitRestOff || !got.KeepThroughRest || got.Patience != 30 {
++			t.Errorf("%s: rests %d %d %v %v, patience %d", id, got.QuotaRest, got.RestCap, got.LimitRestOff, got.KeepThroughRest, got.Patience)
+ 		}
+ 		// set back, each is the default again
+ 		r := *got
+ 		r.AdditionalTools, r.ExtraBody, r.ReplyHeaders = false, nil, nil
+-		r.QuotaRest, r.RestCap, r.LimitRestOff, r.Patience = 0, 0, false, 0
++		r.QuotaRest, r.RestCap, r.LimitRestOff, r.KeepThroughRest, r.Patience = 0, 0, false, false, 0
+ 		if err := Save(r); err != nil {
+ 			t.Fatal(err)
+ 		}
+-		if got, _ := Find(id); got.AdditionalTools || len(got.ExtraBody) > 0 || len(got.ReplyHeaders) > 0 || got.QuotaRest != 0 || got.RestCap != 0 || got.LimitRestOff || got.Patience != 0 {
++		if got, _ := Find(id); got.AdditionalTools || len(got.ExtraBody) > 0 || len(got.ReplyHeaders) > 0 || got.QuotaRest != 0 || got.RestCap != 0 || got.LimitRestOff || got.KeepThroughRest || got.Patience != 0 {
+ 			t.Errorf("%s: left after clearing: %+v", id, got)
+ 		}
+ 	}
+diff --git a/internal/provider/provider.go b/internal/provider/provider.go
+index b333f4fa9b..08628f8e25 100644
+--- a/internal/provider/provider.go
++++ b/internal/provider/provider.go
+@@ -448,6 +448,17 @@ type Provider struct {
+ 	// goes by the last reading, read again each minute. See
+ 	// gateway.carefulDoubt.
+ 	CapCareful bool `json:"capCareful,omitempty"`
++	// KeepThroughRest says a transient rest — a rate limit lifted in
++	// seconds, a failure that says nothing of why — is no reason to move
++	// a request off the key or account that its conversation answered:
++	// what the vendor cached of it is worth more than the wait, and a
++	// conversation moved pays its whole prompt again on the next account
++	// (wssz527, #4030: two Kimi Code accounts, a cache read at a rounding
++	// error and an uncached prompt at a large multiple). A rest out of
++	// quota or credit, a restricted account, and one asked to verify
++	// itself still move it, as they do without the setting. Off, the
++	// default. See gateway.restLast.
++	KeepThroughRest bool `json:"keepThroughRest,omitempty"`
+ 	// AccountNames is, for a subscription, the name the user gave each
+ 	// account they named (#1515: a team's seats told apart by who holds
+ 	// them, not by a masked email), by the account's name in lower case.
+@@ -928,6 +939,7 @@ func accountSettings(a, pk Provider) Provider {
+ 	a.Proxy, a.AccountProxies, a.AccountModels, a.AccountModelsAll = pk.Proxy, pk.AccountProxies, pk.AccountModels, pk.AccountModelsAll
+ 	a.AccountCaps, a.AccountWindowCaps = pk.AccountCaps, pk.AccountWindowCaps
+ 	a.CapStop, a.CapCareful = pk.CapStop, pk.CapCareful
++	a.KeepThroughRest = pk.KeepThroughRest
+ 	a.AccountNames = pk.AccountNames
+ 	a.MaxConcurrency, a.PinUpstream = pk.MaxConcurrency, pk.PinUpstream
+ 	a.MaxAccounts = pk.MaxAccounts
+diff --git a/internal/provider/routing.go b/internal/provider/routing.go
+index 1ec7dca6e9..828758d110 100644
+--- a/internal/provider/routing.go
++++ b/internal/provider/routing.go
+@@ -128,6 +128,18 @@ func SetCapCareful(id string, on bool) error {
+ 	return Save(*p)
+ }
+ 
++// SetKeepThroughRest has a provider's keys and accounts keep the place
++// the routing gave them through a transient rest, or move behind one
++// again (Provider.KeepThroughRest).
++func SetKeepThroughRest(id string, on bool) error {
++	p, err := Find(id)
++	if err != nil {
++		return err
++	}
++	p.KeepThroughRest = on
++	return Save(*p)
++}
++
+ // SetCountFree has every model of a provider count as free for the
+ // routings that weigh it, or go by its vendor's word again
+ // (Provider.CountFree).

@@ -1,0 +1,62 @@
+From 6c99a27fa65be2f1a27c77d23f864cdd45e08dfe Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Sun, 25 Oct 2026 01:21:06 +0800
+Subject: [PATCH] test(usage): measure each read from the change stamp, not the
+ wall clock (#3511)
+
+TestUsageReadAfterAppendHashesNothingOnAFineClock/whole-second_stamp went
+red about 1 run in 20: it truncates the log's change time to whole seconds
+and reads at time.Now()+150 ms, expecting every read to fall inside the
+stamp's 1 s settle. An append landing late in its second (x.86 s or later)
+has a truncated stamp of x.0, and the read at x.86+0.15 is already past
+x+1 s, so the stamp counts as settled and nothing is hashed. Whether the
+test passed depended on where in the wall-clock second the appends landed.
+
+Measure each read from the append's change stamp (stamp + 150 ms) instead
+of the wall clock: a fine stamp, settled in 100 ms, still hashes nothing,
+and a whole-second stamp still waits out logStampSettle and hashes,
+wherever in the second the appends land. The assertions are unchanged.
+
+Fixes #3511
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/usage/log_hash_cost_test.go | 13 ++++++++++---
+ 1 file changed, 10 insertions(+), 3 deletions(-)
+
+diff --git a/internal/usage/log_hash_cost_test.go b/internal/usage/log_hash_cost_test.go
+index 7327d0a9..ec989404 100644
+--- a/internal/usage/log_hash_cost_test.go
++++ b/internal/usage/log_hash_cost_test.go
+@@ -119,8 +119,13 @@ func TestUsageReadAfterAppendHashesNothingOnAFineClock(t *testing.T) {
+ 			if !tc.fine {
+ 				logChangeTime = func(info os.FileInfo) time.Time { return changeTime(info).Truncate(time.Second) }
+ 			}
+-			// each read comes 150 ms after the append before it
+-			logIndexNow = func() time.Time { return time.Now().Add(150 * time.Millisecond) }
++			stamp := logChangeTime(mustStat(t))
++			// each read comes 150 ms after the append before it, measured from
++			// the append's change stamp: a whole-second stamp of an append late
++			// in its second is a second behind the wall clock, so a read
++			// measured from the wall clock lands past the stamp's 1 s settle
++			// and hashes nothing (#3511)
++			logIndexNow = func() time.Time { return stamp.Add(150 * time.Millisecond) }
+ 			Summarize(Today)
+ 			hash := logRecordHash
+ 			var hashed int64
+@@ -132,9 +137,11 @@ func TestUsageReadAfterAppendHashesNothingOnAFineClock(t *testing.T) {
+ 			const cycles = 5
+ 			for range cycles {
+ 				Append(Record{Agent: "codex", Provider: "relay", Model: "m", Input: 1, Status: 200})
+-				if c := logChangeTime(mustStat(t)); tc.fine && c.Nanosecond() == 0 {
++				c := logChangeTime(mustStat(t))
++				if tc.fine && c.Nanosecond() == 0 {
+ 					t.Skip("this file system keeps change times in whole seconds")
+ 				}
++				stamp = c
+ 				Summarize(Today)
+ 				Summarize(Today)
+ 			}
+-- 
+2.50.1 (Apple Git-155)
+

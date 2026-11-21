@@ -1,0 +1,668 @@
+A refusal that says when its quota comes back — ChatGPT's `resets_at`, kept by `restAfterMarked` as `by:"resets"` — rested the account till then, but the rest did not keep. Every failure asks the usage read again (`staleAllowance`), and when the reading came back finding the window less than full — which the vendor's own usage endpoint can say while its refusal stands — `renewedFrom` read it as full till sooner and `renewed` lifted the rest. The account was then tried first in its group and refused again every few minutes, all saying the same reset. AutoVision has kept off resting describers since #1801, so once the rest was lifted the pick went back to the refused account and the next image asked it again. The two paths in the report are one defect seen through two doors.
+
+## Summary
+
+- What the vendor itself gave the time of (`by:"resets"`, `by:"retry-after"`) is no longer lifted by a reading that merely finds the window less than full. `Allowances` now also tells when a window that was full at the last reading stands started again in fact — its reset gone by, or standing a new, later cycle; a pool of some models as much as the whole account's — through a new `startedAgain` and a second hook (`OnStarted`), and only that word lifts what the vendor timed. Rests no vendor timed (`by:"quota"`, `by:"window"`) are lifted by a reading's word alone, as before.
+- A reset spent tells both hooks (`renewedNow`) and lifts at once, as before. A Claude account whose `/usage` finds its five hours standing a new cycle before Claude Code's word said is lifted by the new read's reset, as before. A key's own readings tell the two the same way (`keyAllowance`'s `keep` returns both).
+- AutoVision needed nothing of its own; a test pins that it keeps off an account whose refusal stands, whether a reading has gone by or not.
+
+## What changed
+
+- `internal/provider/allowance_renewed.go`: `startedAgain` beside `renewedFrom` — the real-restart rule over the same readings.
+- `internal/provider/routing.go`: `OnStarted`/`tellStarted` hooks; `Allowances` tells `renewed` as before and `restarted` when a window truly started again; `renewedNow` tells both.
+- `internal/provider/key_allowance.go`: `keep` returns both words; key readings tell both hooks.
+- `internal/gateway/routing.go`: `renewed` lifts what no vendor timed; a new `restarted` lifts what the vendor timed; both share `liftRests`.
+
+## Verification
+
+| Check | Result |
+|---|---|
+| `TestReadingKeepsARefusalsRest` (new) | red at base `f5b01574`: a reading that found the window less than full lifted the refusal's rest; green with the change; red again with the lift gated off |
+| `TestAutoVisionKeepsOffARefusedAccount` (new) | red at base: `AutoVision = "codex/gpt-6.1-sol", back on the refused account, before its reset`; green with the change; red again with the lift gated off |
+| `TestStartedAgain` (new, by `TestRenewedFrom`'s table) | green |
+| `TestClaudeAccountBackOnceItsWindowRenews`, `TestQuotaRestsUntilItsReset`, `TestFactoryStandardOutLeavesCore` | green (the restart reading stands a new cycle, as a fresh `/usage` says it; the reset-spent and pool-renewed words go through both hooks, as `renewedNow` does) |
+| `go test ./internal/gateway/ ./internal/provider/ -p 1 -timeout 30m` | ok (gateway 328s, provider 74s) |
+| `go test -race` of the Renewed, Rest, AutoVision, SpentModel, Allowance, QuotaRests, FactoryStandard, ClaudeAccountBack families | ok |
+| `go vet` of both packages; `gofmt`; `go build ./...` three times | clean |
+
+## AI use
+
+AI-written; an automated coding agent wrote the patch and its tests from the issue thread alone, and the submitter checked the diff and ran the verification before opening this.
+
+## Checklist
+
+- [x] Both paths in the report covered by tests that fail without the change: the group's retries (the rest keeps) and the image describer (keeps off the refused account)
+- [x] Rest records and their expiry untouched; no new settings, no new dependencies
+- [x] Rests no vendor timed, and resets spent, lift as before (existing tests kept, two re-pointed to the both-hooks tell)
+
+---
+
+**Source**: reported in #2718 (parkavenue9639, with the rest record and both paths' retry counts)
+
+**Red without the fix** (base `f5b01574`):
+
+```
+--- FAIL: TestReadingKeepsARefusalsRest (0.32s)
+    rest_resets_read_test.go:86: a reading that found the window less than full lifted the refusal's rest, due at 23:00:16
+--- FAIL: TestAutoVisionKeepsOffARefusedAccount (0.25s)
+    rest_resets_read_test.go:125: AutoVision = "codex/gpt-6.1-sol", back on the refused account, before its reset
+```
+
+**Siblings**: #2526 (recovered yet held — the opposite ruling of readings against rests, same arbiter); #1801 (the describer's pass-over of spent models, which this stands on); #1979 (the pooled Factory rest, whose renewed word now goes through the new hook as well).
+
+**When the read fails**: a failed or missing reading tells nothing, as `renewedFrom` already required both readings — the rest then runs to its own end, as it does with no reads at all. A reading that contradicts the refusal the report's way (less than full, the same reset standing) now leaves the rest standing till its time, a true restart, or a reset spent.
+
+**Not verified**: against a live vendor — the readings are fakes (`LoginUsageVia`) shaped as the report's log and the maintainer's plan describe; whether a real usage endpoint reads "less than full" during such a window is the reporter's own inference (the Usage page showed full throughout). The maintainer's fallback (3), a latch for readings proven untrustworthy, and per-lift routing-log lines (4) are not in this patch; the narrowing above already removes the report's 11 and 21 retries.
+
+Branch with the commit: [hunt57-d-rest-paths](https://github.com/ggbdpq/magpie/tree/hunt57-d-rest-paths) (head `0f416b449ff5b6e6e6b271249ebb2148630f7cea`).
+
+**Attribution**: AI-written; the findings in #2718 are parkavenue9639's, the fix plan in the thread is yetone's, and the patch follows both. Please keep the author (`ggbdpq`) or add `Co-authored-by: ggbdpq <ggbdpq@gmail.com>`.
+
+**Patch**: one commit on `f5b01574`, 9 files, +322/−25; SHA-256 first 16: `e900fb5e291effc2`
+
+```patch
+From 0f416b449ff5b6e6e6b271249ebb2148630f7cea Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Wed, 21 Oct 2026 21:57:25 +0800
+Subject: [PATCH] provider, gateway: a rest the vendor gave the time of keeps
+ till it ends, and the reading that lifted it does not bring the image picker
+ back to the account (#2718)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+What changed:
+
+A refusal that says when its quota comes back (ChatGPT's resets_at, or
+a Retry-After: restAfterMarked keeps it by "resets" or "retry-after")
+rested the account till then, but the rest did not keep. Every failure
+asks the usage read again (staleAllowance), and when the reading came
+back finding the window less than full — which the vendor's own usage
+endpoint can say while its refusal stands — renewedFrom read it as full
+till sooner, and renewed lifted the rest. The account went first in its
+group and was refused again, every few minutes, all saying the same
+reset: parkavenue9639 counted 11 such tries in 92 minutes, and 21 more
+from magpie's own image descriptions, without one gaining anything.
+
+What a reading may lift is now told from what only a window truly
+starting again may. Allowances still tells renewed by renewedFrom, and
+renewed lifts by it what no vendor gave the time of (by "quota",
+"window"): unchanged. A new startedAgain says whether a window full at
+the last reading — a pool of some models as much as the whole account's
+— has its reset gone by, or stands a new, later cycle: the two ways a
+window really restarted. Allowances tells that to a second hook
+(OnStarted), which alone lifts what the vendor itself timed ("resets",
+"retry-after"). A reset spent tells both hooks (renewedNow), and lifts
+at once, as before. A Claude account whose /usage finds its five hours
+started again before Claude Code's word said is told by the new read's
+reset standing a new cycle, and its rest is lifted as it was. A key's
+own readings tell the two the same way (keyAllowance's keep returns
+both).
+
+AutoVision needed nothing of its own: it has kept off a resting
+describer since #1801 (spentModel counts a quota rest as spent, and
+autoSpent asks none "until one is back"). Its 21 refusals in the report
+were this lifting: the rest gone, the pick went back to the refused
+account, and the next image asked it again. The test drives both: with
+the rest standing, a reading that finds the window at 80% with the same
+reset lifts nothing, and AutoVision keeps the other describer.
+
+Run: TestReadingKeepsARefusalsRest,
+TestAutoVisionKeepsOffARefusedAccount red on f5b01574 (a reading that
+found the window less than full lifted the refusal's rest; AutoVision =
+"codex/gpt-6.1-sol", back on the refused account), green with the
+change, red again with the lift gated off. TestStartedAgain added by
+TestRenewedFrom's table. TestClaudeAccountBackOnceItsWindowRenews now
+reads the restart as a new cycle, as a fresh /usage says it;
+TestQuotaRestsUntilItsReset and TestFactoryStandardOutLeavesCore tell
+the reset-spent and pool-renewed word through both hooks, as
+renewedNow does. go test ./internal/gateway/ ./internal/provider/
+-p 1 -timeout 30m ok (gateway 328s, provider 74s); go test -race of
+the Renewed, Rest, AutoVision, SpentModel, Allowance, QuotaRests,
+FactoryStandard, ClaudeAccountBack families ok; go vet of both
+packages clean; gofmt clean; go build ./... ok.
+
+Fixes #2718
+Co-authored-by: parkavenue9639 <92194680+parkavenue9639@users.noreply.github.com>
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gateway/claude_renewed_test.go     |   8 +-
+ internal/gateway/factory_pool_rest_test.go  |   6 +-
+ internal/gateway/quota_rest_test.go         |   5 +-
+ internal/gateway/rest_resets_read_test.go   | 129 ++++++++++++++++++++
+ internal/gateway/routing.go                 |  45 +++++--
+ internal/provider/allowance_renewed.go      |  31 +++++
+ internal/provider/allowance_renewed_test.go |  48 ++++++++
+ internal/provider/key_allowance.go          |  30 +++--
+ internal/provider/routing.go                |  45 ++++++-
+ 9 files changed, 322 insertions(+), 25 deletions(-)
+ create mode 100644 internal/gateway/rest_resets_read_test.go
+
+diff --git a/internal/gateway/claude_renewed_test.go b/internal/gateway/claude_renewed_test.go
+index 99c7a26f..c30d2404 100644
+--- a/internal/gateway/claude_renewed_test.go
++++ b/internal/gateway/claude_renewed_test.go
+@@ -25,6 +25,7 @@ func TestClaudeAccountBackOnceItsWindowRenews(t *testing.T) {
+ 	window := time.Now().Add(2 * time.Hour).Truncate(time.Second)
+ 	var mu sync.Mutex
+ 	used := map[string]float64{a: 100, b: 100}
++	back := map[string]time.Time{a: window, b: window}
+ 	provider.LoginUsageVia(func(_ context.Context, agent string) map[string]provider.SubscriptionQuota {
+ 		out := map[string]provider.SubscriptionQuota{}
+ 		if agent != "claude" {
+@@ -33,8 +34,9 @@ func TestClaudeAccountBackOnceItsWindowRenews(t *testing.T) {
+ 		mu.Lock()
+ 		defer mu.Unlock()
+ 		for u, n := range used {
++			end := back[u]
+ 			out[u] = provider.SubscriptionQuota{Provider: "claude", Windows: []provider.QuotaWindow{
+-				{Name: "5 hours", Used: n, Span: 5 * time.Hour, ResetsAt: &window},
++				{Name: "5 hours", Used: n, Span: 5 * time.Hour, ResetsAt: &end},
+ 				{Name: "7 days", Used: 40, Span: 7 * 24 * time.Hour},
+ 			}}
+ 		}
+@@ -81,9 +83,11 @@ func TestClaudeAccountBackOnceItsWindowRenews(t *testing.T) {
+ 	}
+ 
+ 	// a's five hours started again (a new /usage, what Claude Code says
+-	// as it answers); routing reads it a minute on
++	// as it answers, the window standing a new, later cycle); routing
++	// reads it a minute on
+ 	mu.Lock()
+ 	used[a] = 4
++	back[a] = time.Now().Add(5 * time.Hour).Truncate(time.Second)
+ 	mu.Unlock()
+ 	deadline := time.Now().Add(10 * time.Second)
+ 	for {
+diff --git a/internal/gateway/factory_pool_rest_test.go b/internal/gateway/factory_pool_rest_test.go
+index c07a36d3..3a77b825 100644
+--- a/internal/gateway/factory_pool_rest_test.go
++++ b/internal/gateway/factory_pool_rest_test.go
+@@ -86,9 +86,11 @@ func TestFactoryStandardOutLeavesCore(t *testing.T) {
+ 				}
+ 			}
+ 			// read again once Standard's window has renewed, Opus is back:
+-			// a rest out of quota is lifted by the reading, as one for
+-			// credit wasn't (Ziqi-Cui on #1979)
++			// a window truly starting again tells both hooks, and lifts a
++			// rest out of quota, the refusal's own time included, as one
++			// for credit wasn't (Ziqi-Cui on #1979)
+ 			renewed(way.agent, "a@x.com")
++			restarted(way.agent, "a@x.com")
+ 			if _, ok := restingOf(acct("a@x.com", "claude-opus-5-5")); ok {
+ 				t.Fatal("Opus still rests after Standard's window renewed")
+ 			}
+diff --git a/internal/gateway/quota_rest_test.go b/internal/gateway/quota_rest_test.go
+index c4043d1e..6b73df9b 100644
+--- a/internal/gateway/quota_rest_test.go
++++ b/internal/gateway/quota_rest_test.go
+@@ -78,8 +78,11 @@ func TestQuotaRestsUntilItsReset(t *testing.T) {
+ 		t.Fatalf("a month off: %v", time.Until(r.Until))
+ 	}
+ 
+-	// a Codex reset spent on a@x.com brings it back, and it alone
++	// a Codex reset spent on a@x.com brings it back, and it alone: a
++	// reset spent tells both hooks (provider.renewedNow), the refusal's
++	// own time included
+ 	renewed("codex", "A@x.com")
++	restarted("codex", "A@x.com")
+ 	if _, ok := restOf(acct("a@x.com").restKey()); ok {
+ 		t.Fatal("still resting after its windows started again")
+ 	}
+diff --git a/internal/gateway/rest_resets_read_test.go b/internal/gateway/rest_resets_read_test.go
+new file mode 100644
+index 00000000..65c48495
+--- /dev/null
++++ b/internal/gateway/rest_resets_read_test.go
+@@ -0,0 +1,129 @@
++package gateway
++
++import (
++	"context"
++	"testing"
++	"time"
++
++	"github.com/yetone/magpie/internal/catalog"
++	"github.com/yetone/magpie/internal/provider"
++)
++
++// readCodexUsage stands in for ChatGPT's usage readings: the five hours
++// of me@example.com, at what used says now, back at resets. The stand-in
++// is asked for every agent; only codex's is filled.
++func readCodexUsage(t *testing.T, used func() float64, resets time.Time) {
++	t.Helper()
++	provider.LoginUsageVia(func(_ context.Context, agent string) map[string]provider.SubscriptionQuota {
++		if agent != "codex" {
++			return map[string]provider.SubscriptionQuota{}
++		}
++		return map[string]provider.SubscriptionQuota{"me@example.com": {Provider: agent, Windows: []provider.QuotaWindow{
++			{Name: "5 hours", Used: used(), Span: 5 * time.Hour, ResetsAt: &resets},
++		}}}
++	})
++	t.Cleanup(func() { provider.LoginUsageVia(nil) })
++}
++
++// waitUsed has codex's windows read again and waits till they say used,
++// then a moment for the renewal a reading tells of to land.
++func waitUsed(t *testing.T, used float64) {
++	t.Helper()
++	provider.StaleAllowance("codex", "me@example.com")
++	for deadline := time.Now().Add(10 * time.Second); ; {
++		a := provider.Allowances("codex")["me@example.com"]
++		if len(a) > 0 && a[0].Used == used {
++			time.Sleep(100 * time.Millisecond)
++			return
++		}
++		if time.Now().After(deadline) {
++			t.Fatalf("the reading never said %v%%: %+v", used, a)
++		}
++		time.Sleep(10 * time.Millisecond)
++	}
++}
++
++// restByRefusal rests codex's account as restAfterMarked does a refusal
++// that names its reset: out of quota, by "resets", till resets.
++func restByRefusal(t *testing.T, id string, resets time.Time) {
++	t.Helper()
++	restingUntil.Lock()
++	restingUntil.m[id], restingUntil.note[id] = resets, Rest{
++		Why: failQuota, Status: 429, Until: resets, By: "resets", Key: id,
++		agent: "codex", user: "me@example.com",
++	}
++	restingUntil.Unlock()
++	t.Cleanup(func() {
++		restingUntil.Lock()
++		delete(restingUntil.m, id)
++		delete(restingUntil.note, id)
++		restingUntil.Unlock()
++	})
++}
++
++// A refusal that names when its quota comes back (by "resets") rests the
++// account till then, and only till then: a usage reading that merely
++// finds the window less than full — the vendor's usage can say so while
++// its own refusal stands — does not lift it (#2718). Lifted, the account
++// was tried first in its group and refused again every few minutes, all
++// of them saying the same reset, with nothing gained by one.
++func TestReadingKeepsARefusalsRest(t *testing.T) {
++	codexSignedIn(t)
++	p, err := provider.Find("codex")
++	if err != nil {
++		t.Fatal(err)
++	}
++	id := candidate{p: *p, model: "gpt-6.1-sol"}.restKey()
++	resets := time.Now().Add(92 * time.Minute).Truncate(time.Second)
++	used := 100.0
++	readCodexUsage(t, func() float64 { return used }, resets)
++	waitUsed(t, 100)
++	restByRefusal(t, id, resets)
++	used = 80
++	waitUsed(t, 80)
++	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); {
++		if _, ok := restOf(id); !ok {
++			t.Fatal("a reading that found the window less than full lifted the refusal's rest, due at", resets.Format(time.TimeOnly))
++		}
++		time.Sleep(10 * time.Millisecond)
++	}
++}
++
++// AutoVision, left to pick a describer, keeps off an account the vendor
++// refused till a reset — and a usage reading that finds its window less
++// than full, while the refusal stands, does not bring it back (#2718):
++// lifted, the pick went to the refused account, and every image's
++// description was refused with it, one after another.
++func TestAutoVisionKeepsOffARefusedAccount(t *testing.T) {
++	codexSignedIn(t)
++	if err := provider.Save(provider.Provider{ID: "keyed", Name: "keyed", Chat: "http://keyed.invalid/v1", Key: "k", Models: []string{"eye"}}); err != nil {
++		t.Fatal(err)
++	}
++	if err := catalog.SaveLive("keyed", "http://keyed.invalid/v1", []catalog.Model{{ID: "eye", Images: true, ImageInput: imageInputBool(true)}}); err != nil {
++		t.Fatal(err)
++	}
++	if err := catalog.SaveLive("codex", provider.CodexBase, []catalog.Model{{ID: "gpt-6.1-sol", Images: true, ImageInput: imageInputBool(true)}}); err != nil {
++		t.Fatal(err)
++	}
++	capUsage(t, map[string]float64{"me@example.com": 80})
++	p, err := provider.Find("codex")
++	if err != nil {
++		t.Fatal(err)
++	}
++	resets := time.Now().Add(92 * time.Minute).Truncate(time.Second)
++	used := 100.0
++	readCodexUsage(t, func() float64 { return used }, resets)
++	waitUsed(t, 100)
++	restByRefusal(t, candidate{p: *p, model: "gpt-6.1-sol"}.restKey(), resets)
++	if m := AutoVision(); m != "keyed/eye" {
++		t.Fatalf("AutoVision = %q with codex refused till %s", m, resets.Format(time.TimeOnly))
++	}
++	used = 80
++	waitUsed(t, 80)
++	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); {
++		if m := AutoVision(); m != "keyed/eye" {
++			t.Fatalf("AutoVision = %q, back on the refused account, before its reset", m)
++		}
++		time.Sleep(10 * time.Millisecond)
++	}
++}
+diff --git a/internal/gateway/routing.go b/internal/gateway/routing.go
+index 23cc0ce3..8873b2da 100644
+--- a/internal/gateway/routing.go
++++ b/internal/gateway/routing.go
+@@ -487,25 +487,52 @@ type Rest struct {
+ }
+ 
+ // renewed lifts the rests of a subscription account whose windows were
+-// just started again (a Codex reset spent, or a reading finding a window
+-// it was full in full no more): out of quota no longer. Only its rests out
+-// of quota, or failed with a window full ("window"), are lifted; one for a
+-// rate limit, its credit or a verification stays. Told agent "", it is a
+-// key (provider.KeyAllowanceID) whose windows a reading found full no
++// just started again, as a reading of them (Allowances) finds one it was
++// full in full no more: out of quota no longer. Only its rests out of
++// quota, or failed with a window full ("window"), are lifted, and of
++// them only what no vendor gave the time of: a refusal's own word
++// ("resets", "retry-after") stands till a window truly starts again
++// (restarted), or a reset is spent — not till a reading merely finds the
++// window less than full, which the vendor's usage can say while its own
++// refusal stands, and lifted on that the account was tried and refused
++// again every few minutes till its reset (#2718). One for a rate limit,
++// its credit or a verification stays. Told agent "", it is a key
++// (provider.KeyAllowanceID) whose windows a reading found full no
+ // more — its limit raised, or its usage reset — and its rest out of them
+ // is lifted; a key's other rests aren't noted by it.
+ func renewed(agent, user string) {
++	liftRests(agent, user, false)
++}
++
++// restarted lifts what a reading's word alone may not: the rests the
++// vendor itself gave the time of. Told as renewed is, when a window
++// stands started again in fact, or a reset was spent.
++func restarted(agent, user string) {
++	liftRests(agent, user, true)
++}
++
++// liftRests lifts an account's rests out of quota, or of a window read
++// full: those no vendor timed by renewed's word alone, and those it did
++// only by restarted's.
++func liftRests(agent, user string, vendorTill bool) {
+ 	restingUntil.Lock()
+ 	defer restingUntil.Unlock()
+ 	for k, r := range restingUntil.note {
+-		if r.agent == agent && strings.EqualFold(r.user, user) && (r.Why == failQuota || r.By == "window") {
+-			delete(restingUntil.m, k)
+-			delete(restingUntil.note, k)
++		if r.agent != agent || !strings.EqualFold(r.user, user) || r.Why != failQuota && r.By != "window" {
++			continue
+ 		}
++		if vendorTill != (r.By == "resets" || r.By == "retry-after") {
++			continue
++		}
++		delete(restingUntil.m, k)
++		delete(restingUntil.note, k)
+ 	}
+ }
+ 
+-func init() { provider.OnRenewed(renewed) }
++func init() {
++	provider.OnRenewed(renewed)
++	provider.OnStarted(restarted)
++}
+ 
+ // staleAllowance is provider.StaleAllowance, swapped in tests.
+ var staleAllowance = provider.StaleAllowance
+diff --git a/internal/provider/allowance_renewed.go b/internal/provider/allowance_renewed.go
+index 716d4c12..93c5c6fa 100644
+--- a/internal/provider/allowance_renewed.go
++++ b/internal/provider/allowance_renewed.go
+@@ -52,6 +52,37 @@ func (a Allowance) renewedFrom(was Allowance, wasAt time.Time, share float64, no
+ 	return false
+ }
+ 
++// startedAgain says whether a window that was had full at wasAt stands
++// started again in fact, as a, read at now, has it: its reset, standing
++// at wasAt, has gone by since, or the same window's reset stands a new,
++// later cycle now — a pool of some models as much as the whole account's
++// (Factory's Standard renewed leaves its Opus back, #1979). A window
++// merely read less than full, its reset unchanged, is not one: a
++// vendor's usage can say so while its own refusal stands, and what rests
++// by the vendor's word waits for this rather than that (#2718). A window
++// not read this time tells nothing here.
++func (a Allowance) startedAgain(was Allowance, wasAt time.Time, share float64, now time.Time) bool {
++	type key struct{ name, model string }
++	keyOf := func(l Limit) key { return key{l.Name, l.Model} }
++	read := map[key]time.Time{}
++	for _, l := range a {
++		read[keyOf(l)] = l.Resets
++	}
++	for _, l := range was {
++		if l.Used < share || l.Resets.IsZero() || !l.Resets.After(wasAt) {
++			continue // not full at wasAt, its reset not said, or gone by already
++		}
++		resets, ok := read[keyOf(l)]
++		if !ok {
++			continue
++		}
++		if !l.Resets.After(now) || resets.After(l.Resets) {
++			return true
++		}
++	}
++	return false
++}
++
+ // fullTill is when the windows in leaves full at share at now renew: the
+ // last of their resets, zero when none is full, and far off when one is
+ // full with its reset not known.
+diff --git a/internal/provider/allowance_renewed_test.go b/internal/provider/allowance_renewed_test.go
+index 9ab6fbd8..a8c650ee 100644
+--- a/internal/provider/allowance_renewed_test.go
++++ b/internal/provider/allowance_renewed_test.go
+@@ -305,3 +305,51 @@ func TestRenewedFrom(t *testing.T) {
+ 		t.Error("its reset gone by before either reading: renewed")
+ 	}
+ }
++
++// A window stands started again in fact — what a rest the vendor itself
++// gave the time of waits for, rather than the reading being renewedFrom
++// alone (#2718) — when one full at the last reading has its reset gone
++// by, or stands a new, later cycle now, a pool of some models as much as
++// the whole account's. Less than full at the same reset is not it, nor a
++// window not read this time, nor one that wasn't full.
++func TestStartedAgain(t *testing.T) {
++	now := time.Now()
++	h := func(n int) time.Time { return now.Add(time.Duration(n) * time.Hour) }
++	five := func(used float64, resets time.Time) QuotaWindow {
++		return QuotaWindow{Name: "5 hours", Used: used, Span: 5 * time.Hour, ResetsAt: &resets}
++	}
++	week := func(used float64, resets time.Time) QuotaWindow {
++		return QuotaWindow{Name: "7 days", Used: used, Span: 7 * 24 * time.Hour, ResetsAt: &resets}
++	}
++	opus := func(used float64, resets time.Time) QuotaWindow {
++		w := week(used, resets)
++		w.Name, w.Model = "7 days (Opus)", "opus"
++		return w
++	}
++	of := func(ws ...QuotaWindow) Allowance { return allowanceOf(ws, now) }
++	for _, c := range []struct {
++		what     string
++		was, now Allowance
++		started  bool
++	}{
++		{"a new, later cycle", of(five(100, h(1))), of(five(3, h(6))), true},
++		{"less than full, the same reset standing", of(five(100, h(1))), of(five(80, h(1))), false},
++		{"read full alike", of(five(100, h(1))), of(five(100, h(1))), false},
++		{"its window not read this time", of(five(100, h(1)), week(40, h(50))), of(week(41, h(50))), false},
++		{"not full at the last reading", of(five(20, h(1))), of(five(3, h(6))), false},
++		{"a model's own pool too", of(week(40, h(50)), opus(100, h(50))), of(week(41, h(50)), opus(0, h(218))), true},
++		{"a model's pool, the same reset standing", of(week(40, h(50)), opus(100, h(50))), of(week(41, h(50)), opus(50, h(50))), false},
++	} {
++		if got := c.now.startedAgain(c.was, now, 98, now); got != c.started {
++			t.Errorf("%s: started again %v", c.what, got)
++		}
++	}
++	// read before its reset, read alike after it: started again then
++	was := of(five(100, h(1)))
++	if !was.startedAgain(was, now, 98, h(2)) {
++		t.Error("its reset gone by since it was read: not started again")
++	}
++	if was.startedAgain(was, h(2), 98, h(3)) {
++		t.Error("its reset gone by before either reading: started again")
++	}
++}
+diff --git a/internal/provider/key_allowance.go b/internal/provider/key_allowance.go
+index 4b3a956f..2fbb1e4f 100644
+--- a/internal/provider/key_allowance.go
++++ b/internal/provider/key_allowance.go
+@@ -142,7 +142,10 @@ func readKeyAllowance(p Provider, id string, gen int) {
+ 		return // forgotten while it was read: read again
+ 	}
+ 	e.loading, e.at = false, now
+-	renewed := err == nil && e.keep(allowanceOf(ws, now), SpentShareOf(p.Routing), now)
++	var renewed, started bool
++	if err == nil {
++		renewed, started = e.keep(allowanceOf(ws, now), SpentShareOf(p.Routing), now)
++	}
+ 	if err == nil {
+ 		r.at, r.seq = now, seq
+ 		e.read = r
+@@ -155,16 +158,26 @@ func readKeyAllowance(p Provider, id string, gen int) {
+ 	if renewed {
+ 		tellRenewed("", id)
+ 	}
++	if started {
++		tellStarted("", id)
++	}
+ }
+ 
+ // keep has the key go by a, read at now, and says whether a window it
+ // was full in (at share, as routing counts it full) is full no more, or
+-// till sooner: its limit raised, its usage reset, or the window started
+-// again.
+-func (e *keyAllowance) keep(a Allowance, share float64, now time.Time) (renewed bool) {
+-	was := e.a.Full("", share, now)
++// till sooner — its limit raised, its usage reset, or the window started
++// again — and whether one stands started again in fact, its reset gone
++// by or a new, later cycle (what the vendor itself timed waits for,
++// #2718).
++func (e *keyAllowance) keep(a Allowance, share float64, now time.Time) (renewed, started bool) {
++	old, wasAt := e.a, e.at
++	was := old.Full("", share, now)
+ 	e.a, e.at = a, now
+-	return was.After(a.Full("", share, now))
++	if was.After(a.Full("", share, now)) {
++		renewed = true
++	}
++	started = a.startedAgain(old, wasAt, share, now)
++	return renewed, started
+ }
+ 
+ // keyWindows asks the vendor for p's key's windows, as the key's card
+@@ -229,11 +242,14 @@ func noteKeyAllowance(p Provider, ws []QuotaWindow, now time.Time) {
+ 		e = &keyAllowance{}
+ 		c.m[id] = e
+ 	}
+-	renewed := e.keep(allowanceOf(ws, now), SpentShareOf(p.Routing), now)
++	renewed, started := e.keep(allowanceOf(ws, now), SpentShareOf(p.Routing), now)
+ 	c.Unlock()
+ 	if renewed {
+ 		tellRenewed("", id)
+ 	}
++	if started {
++		tellStarted("", id)
++	}
+ }
+ 
+ // StaleKeyAllowance has the next KeyAllowance ask the vendor again for
+diff --git a/internal/provider/routing.go b/internal/provider/routing.go
+index 7d19e817..d33a6fd8 100644
+--- a/internal/provider/routing.go
++++ b/internal/provider/routing.go
+@@ -514,7 +514,7 @@ func Allowances(agent string) map[string]Allowance {
+ 			if c.seen == nil {
+ 				c.seen = map[string]reading{}
+ 			}
+-			var renewed []string
++			var renewed, restarts []string
+ 			for user, a := range all {
+ 				key := agent + "/" + strings.ToLower(user)
+ 				if c.renewed[key] > began {
+@@ -524,8 +524,13 @@ func Allowances(agent string) map[string]Allowance {
+ 					at = time.Time{}
+ 					continue
+ 				}
+-				if was, ok := c.seen[key]; ok && a.renewedFrom(was.a, was.at, share, now) {
+-					renewed = append(renewed, user)
++				if was, ok := c.seen[key]; ok {
++					if a.renewedFrom(was.a, was.at, share, now) {
++						renewed = append(renewed, user)
++					}
++					if a.startedAgain(was.a, was.at, share, now) {
++						restarts = append(restarts, user)
++					}
+ 				}
+ 				c.seen[key] = reading{a, now}
+ 			}
+@@ -543,6 +548,9 @@ func Allowances(agent string) map[string]Allowance {
+ 			for _, user := range renewed {
+ 				tellRenewed(agent, user)
+ 			}
++			for _, user := range restarts {
++				tellStarted(agent, user)
++			}
+ 			close(done)
+ 		}()
+ 	}
+@@ -582,13 +590,32 @@ var renewedHooks struct {
+ 	fs []func(agent, user string)
+ }
+ 
++// OnStarted has f told as OnRenewed is, and by the same tellings, but
++// only when a window stands started again in fact: a reading finding one
++// it was full in full no more with its reset gone by, or standing a new,
++// later cycle, or a reset spent on them. What a vendor itself gave the
++// time of waits for that, not for a reading that merely finds its window
++// less than full while the vendor's own word stands (#2718).
++func OnStarted(f func(agent, user string)) {
++	startedHooks.Lock()
++	startedHooks.fs = append(startedHooks.fs, f)
++	startedHooks.Unlock()
++}
++
++var startedHooks struct {
++	sync.Mutex
++	fs []func(agent, user string)
++}
++
+ // renewedNow tells those OnRenewed asked, and forgets the account's
+ // allowance as last read: its windows are not known till read again, and
+ // what holds an account at a share of them (a cap, credits not spent)
+-// holds it no more.
++// holds it no more. Those OnStarted asked are told too: a reset spent is
++// a window started again in fact.
+ func renewedNow(agent, user string) {
+ 	forgetAllowance(agent, user)
+ 	tellRenewed(agent, user)
++	tellStarted(agent, user)
+ }
+ 
+ // tellRenewed tells those OnRenewed asked.
+@@ -601,6 +628,16 @@ func tellRenewed(agent, user string) {
+ 	}
+ }
+ 
++// tellStarted tells those OnStarted asked.
++func tellStarted(agent, user string) {
++	startedHooks.Lock()
++	fs := startedHooks.fs
++	startedHooks.Unlock()
++	for _, f := range fs {
++		f(agent, user)
++	}
++}
++
+ // AwaitAllowance has agent's accounts read again unless a reading is out,
+ // and waits, till ctx ends, for one that knows user: after a reset is
+ // spent, routing then counts the account's windows started again, rather
+-- 
+2.50.1 (Apple Git-155)
+
+```

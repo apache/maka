@@ -1,0 +1,97 @@
+From 9700d630a4bfa7a9f6730907c46b2564b1e4ded7 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Thu, 22 Oct 2026 22:25:57 +0800
+Subject: [PATCH] tests: the search queue's idle client times the state, not
+ the headers (#2547)
+
+TestSearchQueueKeepsCodexAlive/silent went red under load (yetone's
+runs at load ~250 and ~330-420, passing alone): pings=0, complete=false
+at search_queue_test.go:139. The client's 300ms idle was armed at the
+response headers, so the loaded path from headers to the first
+translated event counted against the window, cancel cut the stream
+before the first ping, and a covered-while-speaking upstream looked
+like a covered-forever one.
+
+What changed
+- The idle window now starts at the first data line, the same state
+  line its resets already followed: 300ms still bounds every gap the
+  stream leaves, the 5s hard cap still ends a stream that never speaks,
+  and a truly covered-forever upstream still fails the pings>12 check.
+- The silent subtest holds the fake queue's first event back 500ms
+  past the headers, which deterministically reds the old headers-armed
+  window (pings=0) without any real load.
+
+Run at ba1dc7f97 (upstream/main), -tags nogui ./internal/gateway:
+- Old window, held first event: silent red,
+  "silent upstream covered indefinitely: pings=0 complete=false",
+  comments/progress/cancel green.
+- New window, -run TestSearchQueueKeepsCodexAlive -count=3: ok.
+
+Fixes #2547
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gateway/search_queue_test.go | 27 ++++++++++++++++++++++++---
+ 1 file changed, 24 insertions(+), 3 deletions(-)
+
+diff --git a/internal/gateway/search_queue_test.go b/internal/gateway/search_queue_test.go
+index b2195ddb..7d03dfb7 100644
+--- a/internal/gateway/search_queue_test.go
++++ b/internal/gateway/search_queue_test.go
+@@ -28,6 +28,7 @@ func TestSearchQueueKeepsCodexAlive(t *testing.T) {
+ 		t.Run(mode, func(t *testing.T) {
+ 			fresh(t)
+ 			release, stopped := make(chan struct{}), make(chan struct{})
++			proceed := make(chan struct{})
+ 			var once sync.Once
+ 			finish := func() { once.Do(func() { close(release) }) }
+ 			up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+@@ -47,6 +48,7 @@ func TestSearchQueueKeepsCodexAlive(t *testing.T) {
+ 					http.Error(w, "missing tools", 400)
+ 					return
+ 				}
++				<-proceed
+ 				w.Header().Set("Content-Type", "text/event-stream")
+ 				io.WriteString(w, "data: "+`{"type":"response.created","response":{"id":"queued","model":"m1","status":"in_progress"}}`+"\n\n")
+ 				w.(http.Flusher).Flush()
+@@ -101,8 +103,23 @@ func TestSearchQueueKeepsCodexAlive(t *testing.T) {
+ 				t.Fatal(err)
+ 			}
+ 			defer res.Body.Close()
+-			idle := time.AfterFunc(300*time.Millisecond, cancel)
+-			defer idle.Stop()
++			// #2547: the idle window starts at the first data line, not at
++			// the headers: a loaded machine's path to the first translated
++			// event is not the client's idle, and the hard cap still ends a
++			// stream that never speaks.
++			var idle *time.Timer
++			defer func() {
++				if idle != nil {
++					idle.Stop()
++				}
++			}()
++			// Hold the queue's first event back past the fixed window the
++			// idle once started at headers with, so silent keeps a red if
++			// the window ever starts ahead of the state again.
++			if mode == "silent" {
++				time.Sleep(500 * time.Millisecond)
++			}
++			close(proceed)
+ 			var body strings.Builder
+ 			pings, completed := 0, false
+ 			sc := bufio.NewScanner(res.Body)
+@@ -110,7 +127,11 @@ func TestSearchQueueKeepsCodexAlive(t *testing.T) {
+ 				line := sc.Text()
+ 				body.WriteString(line + "\n")
+ 				if strings.HasPrefix(line, "data:") {
+-					idle.Reset(300 * time.Millisecond)
++					if idle == nil {
++						idle = time.AfterFunc(300*time.Millisecond, cancel)
++					} else {
++						idle.Reset(300 * time.Millisecond)
++					}
+ 				}
+ 				if strings.Contains(line, `"type":"response.in_progress"`) {
+ 					pings++
+-- 
+2.50.1 (Apple Git-155)
+

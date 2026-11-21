@@ -1,0 +1,276 @@
+package gateway
+
+// hunt68 #2532 (Lane A evidence, not for merging as-is): a Codex thread
+// whose mode instructions change mid-thread — Plan while it planned, then
+// Default for the execution. The thread's head developer item is lifted
+// into the system prompt on every turn (responses.go, before `replied`
+// flips); a developer item after the first reply is demoted to a user
+// message inside <system-reminder> (#502). When the change IS the mode
+// switch, the mode left behind keeps the system's weight and the fresh
+// one reads as the user's words. MashiroSky reports the model stays in
+// Plan after the UI switched to Default, and that codexAsSent: true
+// restored both directions.
+//
+// Tests here, in order:
+//   1. RED witness: the fresh mode instruction is wanted at the system's
+//      weight; today it is demoted. Expected to FAIL until a maintainer
+//      rules on mid-thread developer items.
+//   2. The wire shape as it is (pins what 1 fails against): system
+//      byte-stable across the switch, the fresh instruction as
+//      <system-reminder> inside a user turn.
+//   3. Ablation: codexAsSent does not touch the translated (Messages)
+//      wire — the demotion is identical with it on.
+//   4. Ablation: on a Responses relay (the only wire codexAsSent acts on)
+//      developer items keep their role with the switch off AND on — the
+//      demotion never runs there.
+
+import (
+	"encoding/json"
+	"net/http/httptest"
+	"strconv"
+	"strings"
+	"testing"
+
+	"github.com/yetone/magpie/internal/provider"
+)
+
+const (
+	hunt68PlanInstruction    = "<permissions instructions>mode: plan — research and plan only, do not modify files</permissions instructions>"
+	hunt68DefaultInstruction = "<permissions instructions>mode: default — you may edit files and run commands</permissions instructions>"
+)
+
+// hunt68ModeSwitchBody is a Codex request whose thread began in Plan mode
+// and switched to Default after the first reply: the head developer item
+// carries the Plan instruction, a developer item after the reply carries
+// the Default one, and the user asks for the plan to be executed.
+func hunt68ModeSwitchBody() string {
+	return `{"model":"fake/m1","instructions":"You are Codex.","input":[` +
+		codexItem("developer", hunt68PlanInstruction) + `,` +
+		codexItem("user", "plan a fix for the bug") + `,` +
+		codexItem("assistant", "here is the plan") + `,` +
+		codexItem("developer", hunt68DefaultInstruction) + `,` +
+		codexItem("user", "execute the plan now") + `]}`
+}
+
+// hunt68ControlBody is the same thread without the mid-thread switch: the
+// mode never changed.
+func hunt68ControlBody() string {
+	return `{"model":"fake/m1","instructions":"You are Codex.","input":[` +
+		codexItem("developer", hunt68PlanInstruction) + `,` +
+		codexItem("user", "plan a fix for the bug") + `,` +
+		codexItem("assistant", "here is the plan") + `,` +
+		codexItem("user", "execute the plan now") + `]}`
+}
+
+func hunt68Post(s *Server, body string) *httptest.ResponseRecorder {
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", CodexPath+"/responses", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer chatgpt-token")
+	req.Header.Set("User-Agent", "codex_cli_rs/0.162.0 (Windows 11)")
+	req.Header.Set("originator", "codex_cli_rs")
+	s.Handler().ServeHTTP(rec, req)
+	return rec
+}
+
+type hunt68Wire struct {
+	System []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	} `json:"system"`
+	Messages []struct {
+		Role    string `json:"role"`
+		Content []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
+	} `json:"messages"`
+}
+
+func hunt68SystemText(q *hunt68Wire) string {
+	var b strings.Builder
+	for _, blk := range q.System {
+		b.WriteString(blk.Text)
+	}
+	return b.String()
+}
+
+// hunt68Dump renders the upstream-bound wire for a failure message: the
+// system field, then each message's role and text blocks.
+func hunt68Dump(q *hunt68Wire) string {
+	var b strings.Builder
+	b.WriteString("system: " + strconv.Quote(hunt68SystemText(q)) + "\n")
+	for i, m := range q.Messages {
+		b.WriteString("message[" + strconv.Itoa(i) + "] role=" + m.Role + ":")
+		for _, blk := range m.Content {
+			b.WriteString("\n  " + blk.Type + ": " + strconv.Quote(blk.Text))
+		}
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+// hunt68ClaudeReply is the fake Messages upstream's answer: one short
+// text turn, streamed as Anthropic does.
+var hunt68ClaudeReply = sse(
+	`data: {"type":"message_start","message":{"id":"m","type":"message","role":"assistant","model":"m1","content":[],"usage":{"input_tokens":1,"output_tokens":0}}}`,
+	`data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`,
+	`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}`,
+	`data: {"type":"content_block_stop","index":0}`,
+	`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}`,
+	`data: {"type":"message_stop"}`,
+)
+
+// The mode switch's fresh instruction wanted at the system's weight: the
+// stale Plan instruction keeps it, so a demoted Default reads one level
+// under the mode it replaced. RED today (this is the #502 demotion);
+// left failing on purpose as the witness for #2532's question.
+func TestHunt68FreshModeInstructionKeepsItsSystemWeight(t *testing.T) {
+	f := &fake{t: t, reply: hunt68ClaudeReply}
+	setup(t, provider.Anthropic, f)
+	if rec := hunt68Post(New(), hunt68ModeSwitchBody()); rec.Code != 200 {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body)
+	}
+	var q hunt68Wire
+	if err := json.Unmarshal(f.got, &q); err != nil {
+		t.Fatalf("%v: %s", err, f.got)
+	}
+	sys := hunt68SystemText(&q)
+	if !strings.Contains(sys, "mode: default") {
+		t.Fatalf("the mid-thread mode instruction lost the system's weight — the stale Plan mode stays in the system prompt and the fresh Default mode rides a user turn:\n%s", hunt68Dump(&q))
+	}
+}
+
+// The wire shape as it is, on the Messages wire a Claude model is asked
+// on: the system field is byte-what it was without the switch (the cache
+// keeps its prefix, #502), and the fresh mode instruction arrives as the
+// user's words inside <system-reminder>, ahead of the user's own words.
+func TestHunt68ModeSwitchWireShapeAsItIs(t *testing.T) {
+	f := &fake{t: t, reply: hunt68ClaudeReply}
+	setup(t, provider.Anthropic, f)
+	if rec := hunt68Post(New(), hunt68ModeSwitchBody()); rec.Code != 200 {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body)
+	}
+	var switched hunt68Wire
+	if err := json.Unmarshal(f.got, &switched); err != nil {
+		t.Fatalf("%v: %s", err, f.got)
+	}
+
+	f2 := &fake{t: t, reply: hunt68ClaudeReply}
+	setup(t, provider.Anthropic, f2)
+	if rec := hunt68Post(New(), hunt68ControlBody()); rec.Code != 200 {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body)
+	}
+	var control hunt68Wire
+	if err := json.Unmarshal(f2.got, &control); err != nil {
+		t.Fatalf("%v: %s", err, f2.got)
+	}
+
+	// the system field never learned of the switch
+	if hunt68SystemText(&switched) != hunt68SystemText(&control) {
+		t.Fatalf("system changed across the switch:\nswitched: %q\ncontrol: %q", hunt68SystemText(&switched), hunt68SystemText(&control))
+	}
+	if !strings.Contains(hunt68SystemText(&switched), "mode: plan") || strings.Contains(hunt68SystemText(&switched), "mode: default") {
+		t.Fatalf("system field: %q", hunt68SystemText(&switched))
+	}
+	// the fresh instruction rides a user turn, wrapped as a reminder, in
+	// place ahead of the user's own words
+	if len(switched.Messages) != 3 {
+		t.Fatalf("messages: %s", hunt68Dump(&switched))
+	}
+	last := switched.Messages[2]
+	if last.Role != "user" || len(last.Content) != 2 ||
+		last.Content[0].Text != "<system-reminder>\n"+hunt68DefaultInstruction+"\n</system-reminder>" ||
+		last.Content[1].Text != "execute the plan now" {
+		t.Fatalf("the fresh instruction's turn:\n%s", hunt68Dump(&switched))
+	}
+}
+
+// codexAsSent never touches the translated wire: with a Codex request
+// translated to Messages, the demotion is byte-identical with the switch
+// off and with it on. The lever MashiroSky flipped cannot act here.
+func TestHunt68CodexAsSentLeavesTheClaudeWireUnchanged(t *testing.T) {
+	f := &fake{t: t, reply: hunt68ClaudeReply}
+	setup(t, provider.Anthropic, f)
+	if rec := hunt68Post(New(), hunt68ModeSwitchBody()); rec.Code != 200 {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body)
+	}
+	off := string(f.got)
+
+	p, err := provider.Find("fake")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.CodexAsSent = true
+	if err := provider.Save(*p); err != nil {
+		t.Fatal(err)
+	}
+	if rec := hunt68Post(New(), hunt68ModeSwitchBody()); rec.Code != 200 {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body)
+	}
+	on := string(f.got)
+
+	if off != on {
+		t.Fatalf("codexAsSent changed the translated request, it cannot (it is read only on a passthrough, gateway.go's single CodexAsSent site):\noff:\n%s\non:\n%s", off, on)
+	}
+	var q hunt68Wire
+	if err := json.Unmarshal([]byte(on), &q); err != nil {
+		t.Fatalf("%v: %s", err, on)
+	}
+	if !strings.Contains(hunt68SystemText(&q), "mode: plan") || strings.Contains(hunt68SystemText(&q), "mode: default") {
+		t.Fatalf("with codexAsSent on, the system field still holds the stale mode: %q", hunt68SystemText(&q))
+	}
+}
+
+// On a Responses relay — the only wire codexAsSent acts on — both
+// developer items keep the developer role with the switch off (the relay
+// fitting leaves roles alone) and with it on (the request goes as sent).
+// The demotion never runs here, so a bypass felt on this wire did not go
+// through responses.go's demotion.
+func TestHunt68ModeInstructionKeepsItsRoleOnAResponsesRelay(t *testing.T) {
+	f := &fake{t: t, reply: sse(
+		`data: {"type":"response.created","response":{"id":"r1","model":"m1"}}`,
+		`data: {"type":"response.completed","response":{"id":"r1","output":[],"usage":{"input_tokens":5,"output_tokens":2}}}`)}
+	setup(t, provider.Responses, f)
+	body := strings.Replace(hunt68ModeSwitchBody(), `"instructions":"You are Codex.",`, `"instructions":"You are Codex.","stream":true,`, 1)
+
+	roles := func(wire []byte) (have []string, reminder bool) {
+		var q struct {
+			Input []struct {
+				Type string `json:"type"`
+				Role string `json:"role"`
+			} `json:"input"`
+		}
+		if err := json.Unmarshal(wire, &q); err != nil {
+			t.Fatalf("%v: %s", err, wire)
+		}
+		for _, it := range q.Input {
+			have = append(have, it.Role)
+		}
+		return have, strings.Contains(string(wire), "<system-reminder>")
+	}
+	want := []string{"developer", "user", "assistant", "developer", "user"}
+
+	if rec := hunt68Post(New(), body); rec.Code != 200 {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body)
+	}
+	off, reminderOff := roles(f.got)
+	if strings.Join(off, ",") != strings.Join(want, ",") || reminderOff {
+		t.Fatalf("relay, codexAsSent off: roles %v, reminder %v\nwire:\n%s", off, reminderOff, f.got)
+	}
+
+	p, err := provider.Find("fake")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.CodexAsSent = true
+	if err := provider.Save(*p); err != nil {
+		t.Fatal(err)
+	}
+	if rec := hunt68Post(New(), body); rec.Code != 200 {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body)
+	}
+	on, reminderOn := roles(f.got)
+	if strings.Join(on, ",") != strings.Join(want, ",") || reminderOn {
+		t.Fatalf("relay, codexAsSent on: roles %v, reminder %v\nwire:\n%s", on, reminderOn, f.got)
+	}
+}

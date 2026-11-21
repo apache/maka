@@ -1,0 +1,340 @@
+From 4813662209ecd545a3520e36afdfeda4e9f9af48 Mon Sep 17 00:00:00 2001
+From: Jinbu Li <199886831+Jinbu-Li@users.noreply.github.com>
+Date: Wed, 4 Nov 2026 23:03:02 +0800
+Subject: [PATCH 2/2] agent: shared Codex configs use catalogs across homes
+ (#5086)
+
+OpenResearch uses a private CODEX_HOME with a config.toml linked to the
+user's main Codex home. The relative Windows catalog name resolved in
+that private home, where neither magpie catalog existed, so config/read
+failed with JSON-RPC -32603 and os error 2.
+
+Use native absolute paths for new provider and desktop catalog references.
+Keep an existing relative reference while its catalog remains selected,
+including through Join, for a Windows config also read by WSL (#816).
+Disconnect/reconnect adopts the new default on existing connections.
+Recognize slash-spelled Windows desktop catalog paths for cleanup too.
+Document the shared-home and Windows/WSL compatibility boundaries.
+
+Reported and reproduced by Jinbu-Li in #5086. The preceding commit preserves
+Dopetaiga's original #4785 ownCatalog fix; this commit covers both catalogs
+and adds the shared-home lifecycle regression.
+
+Verification on the original f44fa2ef6 base, Windows x64 / Go 1.26.8:
+- TestCodexCatalogAcrossHomes/provider and /desktop both FAIL before the
+  fix: the catalog cannot be read from the private CODEX_HOME. Both PASS
+  after it. Seven related top-level tests and their subtests PASS.
+- Native/Windows go vet ./..., Linux go vet -tags nogui ./..., native and
+  Linux builds, and the Windows nogui build PASS; gofmt and diff checks
+  print nothing.
+- Real Codex 0.166.0 config/read with the reporter's catalog: relative
+  reference reproduces -32603/os error 2; absolute reference succeeds.
+  Used identical config bytes in isolated homes; creating a new Windows
+  symlink was unavailable. OpenResearch itself was not restarted.
+- Full Windows nogui suite: 72 packages PASS, 15 FAIL; gateway reaches
+  the 10-minute package timeout. Nine neighboring failures reproduce with
+  the original codex.go. This is not a green full-suite claim.
+All Go tests use an isolated HOME and fixed Go caches. No live agent
+configuration or running gateway was changed. Actual Linux/WSL/macOS and
+browser UI tests were not run.
+
+Verification repeated after applying to upstream e928b57f0 plus the #4785
+dependency (a6330cb54), on Windows x64 / Go 1.26.8:
+- With the parent codex.go selected through go test -overlay, both new
+  shared-home subtests FAIL with missing catalog files (real FAIL).
+- With this change, eight related top-level tests and their subtests
+  PASS in 8.423s:
+  go test -tags nogui ./internal/agent -count=1 -v -run
+  '^TestCodex(CatalogAcrossHomes|WSLAppAddressKept|DesktopList|NeverNamesGoneCatalog|SyncMendsGoneCatalog|OwnCatalogGoneNotPutBack)'
+- go vet ./..., GOOS=linux go vet -tags nogui ./..., Windows native
+  go build, Linux nogui build and Windows nogui build all PASS.
+- gofmt -l on changed Go files and git diff --check print nothing.
+The full suite was not repeated on this newer base; its earlier failures
+and the runtime-check limitations above remain disclosed.
+---
+ docs/subsystems/agent-wiring.md          |  16 +++
+ internal/agent/codex.go                  |  35 ++++---
+ internal/agent/codex_shared_home_test.go | 120 +++++++++++++++++++++++
+ internal/agent/codex_wsl_app_test.go     |   8 +-
+ 4 files changed, 159 insertions(+), 20 deletions(-)
+ create mode 100644 internal/agent/codex_shared_home_test.go
+
+diff --git a/docs/subsystems/agent-wiring.md b/docs/subsystems/agent-wiring.md
+index 53f5f96c2..d85e5703f 100644
+--- a/docs/subsystems/agent-wiring.md
++++ b/docs/subsystems/agent-wiring.md
+@@ -46,6 +46,22 @@ something else shows up as drift.
+ ## Constraints and failure behavior
+ 
+ - magpie only removes what it wrote. Anything else in an agent's config stays as it was.
++- New Codex catalog references (`model_catalog_json`, both `magpie-models.json`
++  and `magpie-desktop-models.json` in [`codex.go`](../../internal/agent/codex.go))
++  use absolute paths in the reader's own syntax, including a WSL distro's
++  Linux paths. A second `CODEX_HOME` sharing `config.toml` (OpenResearch)
++  then reads the same current catalog without a copy or another symlink.
++  Codex resolves relative catalog paths from its home, not from a linked
++  config's target folder. Existing relative references are kept while
++  that catalog remains selected, for Windows configs also read by WSL
++  (#816); sync does not migrate them. Disconnect and reconnect to adopt
++  the absolute default on an existing connection. Both spellings are
++  recognized for checks and removal; a catalog the user set is still theirs.
++  A Windows absolute path cannot be read by a WSL Codex: a shared Windows/WSL
++  config still needs a relative reference and the catalog in both readers'
++  homes, or separate configs. `TestCodexCatalogAcrossHomes` checks both
++  catalogs across homes, sync, the legacy relative spelling, disconnect and
++  reconnect; `TestCodexWSLAppAddressKept` checks the WSL spelling and address.
+ - agy's shell function (`update.ShellFunction`, [`shellfn.go`](../../internal/update/shellfn.go)) sits between `# >>> magpie agy >>>` and `# <<< magpie agy <<<`, the only lines magpie writes or takes out of a profile. The profiles are those `cliProfile` names (zsh's in `ZDOTDIR` when set, bash's, fish's `config.fish`), plus PowerShell 7's and Windows PowerShell's on Windows when their execution policy runs a profile. A missing profile is made only for the shell a terminal opens. Only a file inside the home is written, writes go through temp-and-rename, and a profile that can't be read is left alone. Picking one of magpie's models and every `Sync` on one put it there, which covers users wired before it existed. Stepping out and a `Sync` off magpie take it out. agy in a WSL distro gets the function in the distro's own profiles (`agyDistroProfiles` in [`agy.go`](../../internal/agent/agy.go), through `update.ShellFunctionAt`): `~/.bashrc`, `~/.zshrc` and `~/.config/fish/config.fish` where each is, and the profile of the login shell the distro's `/etc/passwd` names (bash when it names none) made where it isn't. The distro's `ZDOTDIR` and `XDG_CONFIG_HOME` aren't read. No magpie runs there, so the function (`agyDistroFunction`) reads `settings.json`'s model with `sed` and carries the gateway's address as the distro reaches it (`place.gw`, Windows' under NAT) and the key it takes from there (`agentKeyAt`, the WSL key under NAT). `Sync` writes it again, so an address WSL changed on a restart follows, and until then `Check` reports a function naming another address. A user's own `alias agy` still wins over it. A terminal opened before the change still needs the `Launch` command.
+ - A sync brings magpie's models up to date, not where the agent reaches magpie. Every `Sync` that `SyncCatalog` runs (each start and update of magpie, a provider added, and a plugin signed in to, out of or renewed, or listing other models than the last time: `plugin.OnChange` and `plugin.OnListed` call `catalog.Touched`, #2373) goes through `synced`, which passes each file written through `kept.away` (`edit.Filtered`, [`keptaway.go`](../../internal/agent/keptaway.go)). The filter sees every file written through `edit` while it is on, from any goroutine and under whatever lock the writer holds, so it takes none a writer may hold: the gateway's address and the LAN key are read before it is on (`keeping`), and magpie's own files (`magpieFile`: its folder as named or where its links lead, such as a `~/.config` linked into a dotfiles repo) are left as they are (ylorn on Discord: `settings.Save` under the settings' lock reached a filter that read the settings, and the app hung ~10s after every start; `TestOwnWritesDuringASyncWithALinkedConfig`). In a file without the gateway's own address, whose magpie the user pointed at an address on another machine (a NAS's, or this machine's LAN address), and with no address a WSL distro was seen at, that address stays in place of `gateway.URL()`, with the path before magpie's every URL at it had (`awayPath`: a reverse proxy's `/magpie`; on loopback, a local proxy's route where magpie answered or hasn't been asked), and so does the key that went with it in place of magpie's own (coeo91 on Discord: the base URL went back to 127.0.0.1 after an update or restart). An address on this machine's loopback follows the gateway; with more than one address or key gone, the write is left as it is. Picking a model in magpie still points the agent at this magpie, but for Claude Code at a proxy to it (above). ZCode and WorkBuddy keep such an address in their own writers too (`zcodeAddress`, `buddyWriteAt`).
+ - An agent whose `Sync` does nothing but bring a block of magpie's name up to the catalog is `ListOnly` (OpenCode, MiMo Code and the other OpenCode forms, Pi and its forks, Goose, Crush, Air, AtomCode, Command Code, Droid, Fx, jcode, Kimi, MiniMax, Mothx, omp, OpenChamber, OpenClaw, OpenPencil, Penguin, Qwen Code, T3 Code). `SyncCatalog` runs it only while the agent is connected (`Wired`), as its switch on the Agents page says: a custom provider the user named magpie in the agent, with a few models picked by hand, was written over with the whole catalog at every start (yyddbds on Discord, Xiaomi MiMo; `TestCatalogSyncLeavesAHandWrittenMagpieBlock`). A list magpie wrote while connected waits, while the agent runs a model of its own, until a model of magpie's is picked again; a model of magpie's picked by hand on a provider the user wrote doesn't connect it (`handWired`, above). Every `ListOnly` agent magpie connects reads as `Wired` (`TestListOnlyAgentsReadConnected`). Agents whose `Sync` also repairs while not connected (Codex, Claude, Grok, Hermes' bots) are not `ListOnly`. magpie keeps no copy of a list it wrote over before this, so such a list stays full until the user trims it.
+diff --git a/internal/agent/codex.go b/internal/agent/codex.go
+index d061f5f77..8a418041c 100644
+--- a/internal/agent/codex.go
++++ b/internal/agent/codex.go
+@@ -13,7 +13,6 @@ import (
+ 	"os"
+ 	"path/filepath"
+ 	"regexp"
+-	"runtime"
+ 	"slices"
+ 	"strconv"
+ 	"strings"
+@@ -276,19 +275,12 @@ func codexIn(at place) *Agent {
+ 	if at.spell == nil && at.base == nil {
+ 		at.base = func() string { return codexKeptGateway(path) }
+ 	}
+-	// the catalog as the config names it: relative to config.toml on
+-	// Windows, where a C:\ path is no file to the same Codex reading it
+-	// from WSL (#816); Codex reads a relative one from its home
+-	catalogRef := at.native(catalogPath)
+-	if at.spell == nil && runtime.GOOS == "windows" {
+-		catalogRef = filepath.Base(catalogPath)
+-	}
+ 	// ownCatalog: the config names magpie's catalog, by any spelling
+ 	ownCatalog := func(c string) bool {
+ 		if c == "" {
+ 			return false
+ 		}
+-		if c == catalogRef || c == at.native(catalogPath) {
++		if c == at.native(catalogPath) {
+ 			return true
+ 		}
+ 		if at.spell != nil {
+@@ -301,6 +293,16 @@ func codexIn(at place) *Agent {
+ 		}
+ 		return filepath.Clean(c) == filepath.Clean(catalogPath)
+ 	}
++	// A new reference is absolute in the reader's own path syntax. A
++	// second CODEX_HOME can share config.toml (OpenResearch does) without
++	// having either catalog beside it. Keep an existing relative reference:
++	// the Windows app's WSL agent may need it (#816).
++	catalogRef := func() string {
++		if c := get("model_catalog_json"); at.spell == nil && ownCatalog(c) && !filepath.IsAbs(c) {
++			return c
++		}
++		return at.native(catalogPath)
++	}
+ 	// ownList is magpie's model list for Codex as written to catalogPath:
+ 	// what the user added by hand to the list there (a key magpie doesn't
+ 	// write, supports_reasoning_summaries on a model magpie gave none) is
+@@ -437,14 +439,11 @@ func codexIn(at place) *Agent {
+ 	// backend's list as the backend sent them (CodexDesktopList).
+ 	deskPath := filepath.Join(dir, "magpie-desktop-models.json")
+ 	deskRef := at.native(deskPath)
+-	if at.spell == nil && runtime.GOOS == "windows" {
+-		deskRef = filepath.Base(deskPath)
+-	}
+ 	deskCatalog := func(c string) bool {
+ 		if c == "" {
+ 			return false
+ 		}
+-		if c == deskRef || c == at.native(deskPath) {
++		if c == deskRef || at.spell == nil && filepath.FromSlash(c) == deskPath {
+ 			return true
+ 		}
+ 		return at.spell == nil && !filepath.IsAbs(c) && filepath.Clean(filepath.Join(dir, c)) == filepath.Clean(deskPath)
+@@ -1529,7 +1528,7 @@ func codexIn(at place) *Agent {
+ 			// which refuses it (#259). A base URL of the user's own stays.
+ 			kv := []edit.KV{
+ 				{Path: "model_provider", Value: magpieID},
+-				{Path: "model_catalog_json", Value: catalogRef},
++				{Path: "model_catalog_json", Value: catalogRef()},
+ 				{Path: "model", Value: v},
+ 			}
+ 			if u := get("openai_base_url"); u == "" || viaBase() {
+@@ -1648,7 +1647,13 @@ func codexIn(at place) *Agent {
+ 			if err := putProvider(); err != nil {
+ 				return false, err
+ 			}
+-			if err := edit.DelTOMLTop(path, "model_provider", "model_catalog_json"); err != nil {
++			// Keep the app's catalog if already named, including a
++			// relative spelling its WSL reader needs; settle refreshes it.
++			keys := []string{"model_provider"}
++			if !deskCatalog(get("model_catalog_json")) {
++				keys = append(keys, "model_catalog_json")
++			}
++			if err := edit.DelTOMLTop(path, keys...); err != nil {
+ 				return false, err
+ 			}
+ 			if err := edit.SetTOMLTop(path, edit.KV{Path: "openai_base_url", Value: at.codexURL()}); err != nil {
+diff --git a/internal/agent/codex_shared_home_test.go b/internal/agent/codex_shared_home_test.go
+new file mode 100644
+index 000000000..6a1683c8e
+--- /dev/null
++++ b/internal/agent/codex_shared_home_test.go
+@@ -0,0 +1,120 @@
++package agent
++
++import (
++	"bytes"
++	"os"
++	"path/filepath"
++	"testing"
++
++	"github.com/yetone/magpie/internal/edit"
++)
++
++// OpenResearch shares config.toml with the desktop app, but runs Codex
++// with its own CODEX_HOME. Codex resolves a relative model_catalog_json
++// from that home, where magpie's catalogs were never written.
++func TestCodexCatalogAcrossHomes(t *testing.T) {
++	for _, desktop := range []bool{false, true} {
++		name, auth := "provider", ""
++		if desktop {
++			name, auth = "desktop", chatGPTAuth
++		}
++		t.Run(name, func(t *testing.T) {
++			home, _ := codexHome(t, auth, "model = \"gpt-5.5\"\n")
++			app := true
++			codexAppReads(t, &app)
++			list := `{"models":[{"slug":"gpt-6-sol"},{"slug":"fake/m1"}]}`
++			deskListIs(t, &list)
++			cx := codex(home)
++			connect := func() {
++				t.Helper()
++				if desktop {
++					if ok, err := cx.Join(); err != nil || !ok {
++						t.Fatalf("join: %v %v", ok, err)
++					}
++				} else if err := cx.Fields[0].Set("fake/m1"); err != nil {
++					t.Fatal(err)
++				}
++			}
++			connect()
++			private := filepath.Join(home, "OpenResearch", "agents", "codex")
++			if err := os.MkdirAll(private, 0o755); err != nil {
++				t.Fatal(err)
++			}
++			// Copy the shared config's bytes, so this guarantee is checked
++			// even on Windows without permission to create symlinks.
++			check := func() string {
++				t.Helper()
++				b, err := os.ReadFile(cx.Path)
++				if err != nil {
++					t.Fatal(err)
++				}
++				cfg := filepath.Join(private, "config.toml")
++				if err := os.WriteFile(cfg, b, 0o644); err != nil {
++					t.Fatal(err)
++				}
++				ref, ok := edit.GetTOMLTop(cfg, "model_catalog_json")
++				if !ok || ref == "" {
++					t.Fatalf("shared config has no catalog: %q", ref)
++				}
++				resolved := ref
++				if !filepath.IsAbs(resolved) {
++					resolved = filepath.Join(private, resolved)
++				}
++				got, err := os.ReadFile(resolved)
++				if err != nil {
++					t.Fatalf("catalog %q cannot be read from a private CODEX_HOME: %v", ref, err)
++				}
++				want, err := os.ReadFile(filepath.Join(home, ".codex", filepath.Base(resolved)))
++				if err != nil || !bytes.Equal(got, want) {
++					t.Fatalf("private CODEX_HOME did not read magpie's current catalog: %v", err)
++				}
++				return resolved
++			}
++			catalog := check()
++			list = `{"models":[{"slug":"gpt-6-sol"},{"slug":"fake/m2"}]}`
++			if err := cx.Sync(); err != nil {
++				t.Fatal(err)
++			}
++			check()
++			// TOML writers commonly use forward slashes on Windows. The
++			// same absolute path is still magpie's, not a user's catalog.
++			if err := edit.SetTOMLTop(cx.Path, edit.KV{Path: "model_catalog_json", Value: filepath.ToSlash(catalog)}); err != nil {
++				t.Fatal(err)
++			}
++			cx = codex(home)
++			if err := cx.Sync(); err != nil {
++				t.Fatal(err)
++			}
++			check()
++			// Existing relative paths may be needed by a WSL reader. A
++			// sync or another connect keeps them; disconnect still removes
++			// the key and file, and the next connection uses the new default.
++			relative := "./" + filepath.Base(catalog)
++			if err := edit.SetTOMLTop(cx.Path, edit.KV{Path: "model_catalog_json", Value: relative}); err != nil {
++				t.Fatal(err)
++			}
++			cx = codex(home)
++			if err := cx.Sync(); err != nil {
++				t.Fatal(err)
++			}
++			connect()
++			if ref, _ := edit.GetTOMLTop(cx.Path, "model_catalog_json"); ref != relative {
++				t.Fatalf("existing relative catalog changed: %q", ref)
++			}
++			if msg := cx.Check(); msg != "" {
++				t.Fatalf("relative catalog not recognized: %s", msg)
++			}
++			if err := cx.Disconnect(); err != nil {
++				t.Fatal(err)
++			}
++			if ref, _ := edit.GetTOMLTop(cx.Path, "model_catalog_json"); ref != "" {
++				t.Fatalf("disconnect left a catalog reference: %q", ref)
++			}
++			if _, err := os.Stat(catalog); !os.IsNotExist(err) {
++				t.Fatalf("disconnect left magpie's catalog: %v", err)
++			}
++			connect()
++			check()
++		})
++	}
++}
+diff --git a/internal/agent/codex_wsl_app_test.go b/internal/agent/codex_wsl_app_test.go
+index 31fd9cb3c..627d0d5a8 100644
+--- a/internal/agent/codex_wsl_app_test.go
++++ b/internal/agent/codex_wsl_app_test.go
+@@ -2,7 +2,6 @@ package agent
+ 
+ import (
+ 	"os"
+-	"runtime"
+ 	"strings"
+ 	"testing"
+ 
+@@ -27,10 +26,6 @@ func TestCodexWSLAppAddressKept(t *testing.T) {
+ 	if err := cx.Fields[0].Set("fake/m1"); err != nil {
+ 		t.Fatal(err)
+ 	}
+-	// on Windows magpie names the catalog as the app's WSL agent can read it
+-	if c, _ := edit.GetTOMLTop(cx.Path, "model_catalog_json"); runtime.GOOS == "windows" && c != "magpie-models.json" {
+-		t.Fatalf("catalog named %q", c)
+-	}
+ 	if c := cx.Check(); c != "" {
+ 		t.Fatal(c)
+ 	}
+@@ -53,6 +48,9 @@ func TestCodexWSLAppAddressKept(t *testing.T) {
+ 	keep := func(when string) {
+ 		t.Helper()
+ 		cfg := read()
++		if c, _ := edit.GetTOMLTop(cx.Path, "model_catalog_json"); c != "magpie-models.json" {
++			t.Fatalf("%s: the relative catalog was not kept: %q", when, c)
++		}
+ 		if !strings.Contains(cfg, `openai_base_url = "`+wsl+gateway.CodexPath+`"`) || !strings.Contains(cfg, `base_url = "`+wsl+`/v1"`) ||
+ 			strings.Contains(cfg, "127.0.0.1:"+gateway.Port()) {
+ 			t.Fatalf("%s: the address was not kept\n%s", when, cfg)
+-- 
+2.50.1 (Apple Git-155)
+

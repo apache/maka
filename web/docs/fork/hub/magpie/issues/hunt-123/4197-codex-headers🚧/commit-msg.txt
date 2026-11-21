@@ -1,0 +1,35 @@
+plugins: a provider may have Codex's own headers on to its upstream (#4197)
+
+A plugin provider never got Codex's own request headers, so a Responses
+relay that only admits the official Codex client rejected Codex's
+requests through it with 403 "native codex clients only", while the same
+key configured as a custom provider answered 200 (BB-fat; the Codex side
+of #2817). The body reached the relay unchanged; only the headers were
+missing, and the plugin cannot make them up — its loader and chat.headers
+hooks never see the agent's original headers, and made-up ones would not
+match the body's prompt_cache_key and client_metadata anyway.
+
+forwardOnce copies Codex's identity headers (codexClientHeader: the
+User-Agent, originator, session-id, thread-id, and the x-codex-/x-openai-
+ones codexHeader lets through) only to a provider without an account. A
+plugin provider always has one (Agent "plugin"), so it got none, and the
+request went as magpie's own User-Agent. The condition now also takes a
+plugin provider that says its upstream is such a relay: a new codexClient
+flag, set by the plugin's config hook as searches is (#2027), read by the
+host, carried on plugin.Provider, and set on the provider it builds. Off,
+the default, a plugin's requests keep the shape its pinning tests say
+(Cursor's, Grok's). The allowlist is unchanged: the plugin's own key
+still signs the request, and Codex's ChatGPT sign-in and attestation
+never go on.
+
+Tested (darwin/arm64): TestPluginCodexClientHeaders (a Codex request to a
+plugin with the flag reaches its fetch with the identity headers, its key
+still on) and TestPluginWithoutCodexClientFlagSendsNoCodexHeaders (no
+flag, nothing forwarded) — red at df7c94bdf, green with the change;
+internal/gateway with -tags nogui ok (640s); internal/plugin ok but
+TestHostToldTheGatewayAddress, red at df7c94bdf too (the port-moved
+assertion, pre-existing); internal/provider ok; gofmt -l clean; go vet
+clean; go build ./... ok; the targeted header tests green under -race.
+
+Fixes #4197
+Generated-by: GLM-5.3-Flash (ZCode)

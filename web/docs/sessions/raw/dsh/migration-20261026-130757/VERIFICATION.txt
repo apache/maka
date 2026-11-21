@@ -1,0 +1,40 @@
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py dsh baseline
+INPUT: CONFIG: fixed dsh source allowlist
+OUTPUT: BASELINE PASS groups=2 files=13 bytes=2324133 protected=0
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py dsh archive
+INPUT: b8b076ae0792184c1b6bbbb11609ec3595bab12adefdcdbc6a89a08fe542a4db
+OUTPUT: ARCHIVE PASS zip_files=2 files=13 bytes=2324133
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py dsh apply
+INPUT: a50abd78f5f3a159f1831fb79bcd82543ad0430d91ef72c6bbfd2a402ee4f62e
+OUTPUT: PermissionError: [WinError 5] 拒绝访问。: 'C:\\Users\\802165\\.dsh\\attachments\\v1\\objects\\05\\05b27f25f75de8689338da70edb3296b7e43ec56454d0c6424a37a8dc869405a'
+EXIT: 1
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py dsh verify
+INPUT: a50abd78f5f3a159f1831fb79bcd82543ad0430d91ef72c6bbfd2a402ee4f62e
+OUTPUT: ValueError: Expected migrated
+EXIT: 1
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py dsh rollback-test
+INPUT: a50abd78f5f3a159f1831fb79bcd82543ad0430d91ef72c6bbfd2a402ee4f62e
+OUTPUT: ValueError: Expected migrated
+EXIT: 1
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py dsh apply
+INPUT: a50abd78f5f3a159f1831fb79bcd82543ad0430d91ef72c6bbfd2a402ee4f62e
+OUTPUT: APPLY PASS removed_files=13 removed_bytes=2324133
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py dsh verify
+INPUT: d846a69a0b30c344c36ef7bd577c4a9ea9ef25312a846fbad52458695337d45c
+OUTPUT: MODIFIED PASS files=13 bytes=2324133 originals_absent=true protected_unchanged=true
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py dsh rollback-test
+INPUT: d846a69a0b30c344c36ef7bd577c4a9ea9ef25312a846fbad52458695337d45c
+OUTPUT: ROLLBACK PASS restored_files=13 restored_bytes=2324133 hashes_match=true originals_untouched=true
+EXIT: 0
+

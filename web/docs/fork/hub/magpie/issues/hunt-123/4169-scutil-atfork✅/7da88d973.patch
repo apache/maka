@@ -1,0 +1,369 @@
+From 7da88d973f9dc3f7c0153f7b5000ef8e7bba2e9f Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Wed, 4 Nov 2026 08:57:21 +0800
+Subject: [PATCH] netproxy: the read after failed ones of the system's proxy is
+ put off longer each time (#4169)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+A read of the system's proxy is a fork() of scutil, and fork() in a
+multithreaded process runs libmalloc's atfork parent handler — which on
+one machine (0.1.1981) found its own lock unlocked and aborted into a
+spin that held the gateway unresponsive for 57 minutes. Where reads
+fail — no proxy set, scutil gone — noneKeep forked scutil every 2
+seconds while requests flowed, each a fresh roll of those dice.
+
+The reads after failed ones are now put off twice the none window
+after the first failure, twice that after the next, and so on up to a
+minute (failKeep); one that answers resets the run. A set proxy is
+kept for its 15 seconds as before, and a read that answers within
+readWait is still what the request waiting for it goes through (#3421).
+
+The tool's read window (toolWait) is exported as ToolWait, so a test
+can shorten it without reaching into the package's own name space.
+
+Tests: TestFailedSystemProxyReadsBackOff (a failed read keeps the
+proxy read before, the reads after it back off up to failKeep, an
+answering one resets that), TestRequestsKeepGoingWhileReadsFail (a
+request whose system read never answers is answered from the cache
+without waiting readWait).
+
+Fixes #4169
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/netproxy/backoff_test.go   | 159 ++++++++++++++++++++++++++++
+ internal/netproxy/netproxy.go       |  45 +++++++-
+ internal/netproxy/scutil.go         |   8 +-
+ internal/netproxy/stuckread_test.go |  12 +--
+ 4 files changed, 209 insertions(+), 15 deletions(-)
+ create mode 100644 internal/netproxy/backoff_test.go
+
+diff --git a/internal/netproxy/backoff_test.go b/internal/netproxy/backoff_test.go
+new file mode 100644
+index 000000000..d3e5c27e0
+--- /dev/null
++++ b/internal/netproxy/backoff_test.go
+@@ -0,0 +1,159 @@
++package netproxy
++
++import (
++	"net/http"
++	"net/http/httptest"
++	"sync/atomic"
++	"testing"
++	"time"
++)
++
++// settled waits until no read of the system's proxy is under way: System
++// hands a request what was read before at once when the last read failed,
++// its read finishing behind it.
++func settled() {
++	for range 1000 {
++		sysCache.Lock()
++		reading := sysCache.reading != nil
++		sysCache.Unlock()
++		if !reading {
++			return
++		}
++		time.Sleep(2 * time.Millisecond)
++	}
++}
++
++// #4169: a machine whose reads of the system's proxy fail forked scutil
++// every noneKeep while requests flowed, and a fork is what killed the
++// process there (libmalloc's atfork parent handler). The reads after
++// failed ones are put off longer each time, and one that answers resets
++// that.
++func TestFailedSystemProxyReadsBackOff(t *testing.T) {
++	oldFail := failKeep
++	failKeep = 10 * time.Second
++	t.Cleanup(func() { failKeep = oldFail })
++
++	set := Proxy{URL: "http://127.0.0.1:7890"}
++	var calls atomic.Int32
++	oldRead := readSystem
++	readSystem = func() (Proxy, bool) { calls.Add(1); return Proxy{}, false }
++	t.Cleanup(func() { readSystem = oldRead })
++	sysCache.Lock()
++	// a proxy was read before (at, p), 16 s ago: past a set proxy's keep,
++	// so the first ask reads again — and that read fails
++	sysCache.at, sysCache.p, sysCache.failed = time.Now().Add(-16*time.Second), set, 0
++	sysCache.reading, sysCache.since = nil, time.Time{}
++	sysCache.Unlock()
++	t.Cleanup(func() {
++		sysCache.Lock()
++		sysCache.at, sysCache.p, sysCache.failed = time.Time{}, Proxy{}, 0
++		sysCache.reading, sysCache.since = nil, time.Time{}
++		sysCache.Unlock()
++	})
++
++	// the first read fails, and keeps what was read before
++	if p := ask(t); p.URL != set.URL {
++		t.Fatalf("a failed read dropped the proxy read before: %+v", p)
++	}
++	settled()
++	if calls.Load() != 1 || sysCache.failed != 1 {
++		t.Fatalf("the first read: %d calls, %d failures standing", calls.Load(), sysCache.failed)
++	}
++
++	// the reads after failed ones run again only past their keep, which
++	// doubles each time up to failKeep; within it a request takes what
++	// was read before and begins no read, past it the next one runs and
++	// no request waits for it (a failed read is answered from the cache
++	// at once, its read finishing behind it)
++	for k := 1; ; k++ {
++		keep := nextKeep(k)
++		if keep > failKeep {
++			t.Fatalf("the read after %d failures is put off %v, past failKeep", k, keep)
++		}
++		// within the window: no read
++		if p := ask(t); p.URL != set.URL {
++			t.Fatalf("within the window after %d failures, requests take %+v", k, p)
++		}
++		settled()
++		if calls.Load() != int32(k) {
++			t.Fatalf("a read began within the %v window after %d failures", keep, k)
++		}
++		// past it: the next read runs, and fails
++		sysCache.Lock()
++		sysCache.at = time.Now().Add(-keep - time.Second)
++		sysCache.Unlock()
++		if p := ask(t); p.URL != set.URL {
++			t.Fatalf("the read after %d failures dropped the proxy read before", k)
++		}
++		settled()
++		if calls.Load() != int32(k+1) || sysCache.failed != k+1 {
++			t.Fatalf("the read after %d failures: %d calls, %d failures standing", k, calls.Load(), sysCache.failed)
++		}
++		if keep == failKeep {
++			break
++		}
++	}
++
++	// an answer among them stops the backing off
++	readSystem = func() (Proxy, bool) { calls.Add(1); return set, true }
++	sysCache.Lock()
++	sysCache.at = time.Now().Add(-failKeep - time.Second)
++	sysCache.Unlock()
++	if p := ask(t); p.URL != set.URL {
++		t.Fatalf("the read that answered, but requests take %+v", p)
++	}
++	settled()
++	if sysCache.failed != 0 {
++		t.Fatalf("an answering read left %d failures standing", sysCache.failed)
++	}
++
++	// and the reads after it are on the set proxy's keep again: a read
++	// began at once, not on a failed one's put-off
++	n := calls.Load()
++	sysCache.Lock()
++	sysCache.at = time.Now().Add(-systemKeep - time.Second)
++	sysCache.Unlock()
++	if p := ask(t); p.URL != set.URL {
++		t.Fatalf("the read after an answering one: requests take %+v", p)
++	}
++	settled()
++	if got := calls.Load(); got != n+1 {
++		t.Fatalf("%d reads after an answering one: the backoff was not reset", got-n)
++	}
++}
++
++// The fork the system's read makes on macOS is off the request path as
++// far as the cache can take it: a request whose proxy the system has none
++// of, where reads fail, still answers, on what was read before.
++func TestRequestsKeepGoingWhileReadsFail(t *testing.T) {
++	oldRead, oldFail, oldNone := readSystem, failKeep, noneKeep
++	readSystem, failKeep = func() (Proxy, bool) { return Proxy{}, false }, 10*time.Second
++	noneKeep = 2 * time.Second
++	t.Cleanup(func() { readSystem, failKeep, noneKeep = oldRead, oldFail, oldNone })
++	sysCache.Lock()
++	sysCache.at, sysCache.p, sysCache.failed = time.Now().Add(-time.Hour), Proxy{}, 0
++	sysCache.reading, sysCache.since = nil, time.Time{}
++	sysCache.Unlock()
++	t.Cleanup(func() {
++		sysCache.Lock()
++		sysCache.at, sysCache.p, sysCache.failed = time.Time{}, Proxy{}, 0
++		sysCache.reading, sysCache.since = nil, time.Time{}
++		sysCache.Unlock()
++	})
++
++	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
++	defer srv.Close()
++	base := http.DefaultTransport.(*http.Transport).Clone()
++	base.Proxy = Func
++	c := &http.Client{Transport: Dispatch(base)}
++	defer c.CloseIdleConnections()
++	start := time.Now()
++	resp, err := c.Get(srv.URL)
++	if err != nil {
++		t.Fatalf("a request with the system read failing: %v", err)
++	}
++	resp.Body.Close()
++	if took := time.Since(start); took >= readWait {
++		t.Fatalf("a request waited %v for a read that never answers", took)
++	}
++}
+diff --git a/internal/netproxy/netproxy.go b/internal/netproxy/netproxy.go
+index 54c0ce65b..53ce42241 100644
+--- a/internal/netproxy/netproxy.go
++++ b/internal/netproxy/netproxy.go
+@@ -496,7 +496,7 @@ var sysCache struct {
+ 	sync.Mutex
+ 	at     time.Time // when the last read ended; zero: nothing read yet
+ 	p      Proxy
+-	failed bool // the last read failed, so p is from one before it
++	failed int // reads that failed in a row; the next is put off by backoff
+ 	// reading is closed when the read under way, begun at since, ends;
+ 	// nil while none is
+ 	reading chan struct{}
+@@ -517,16 +517,44 @@ var (
+ 	readSystem = system
+ )
+ 
++// failKeep: a read of the system's proxy that failed, or was ended at
++// ToolWait, is not tried again for a while — twice noneKeep after the
++// first, twice that after the next, and so on up to failKeep (#4169).
++// Each read is a fork(), and fork() is what killed the process there:
++// libmalloc's atfork parent handler found its own lock unlocked (the
++// stack ends at _os_unfair_lock_unowned_abort) and the process sat
++// spinning in its abort path for 57 minutes. A machine whose reads fail
++// — no proxy set, scutil gone — forked scutil every 2 seconds while
++// requests flowed; twice a minute, for nothing any of them said.
++var failKeep = time.Minute
++
++// nextKeep is the wait after a read that failed, the n-th in a row: the
++// none window doubled each time, capped at failKeep.
++func nextKeep(n int) time.Duration {
++	keep := noneKeep
++	for i := 0; i < n-1 && keep < failKeep; i++ {
++		keep *= 2
++	}
++	if keep > failKeep {
++		keep = failKeep
++	}
++	return keep
++}
++
+ // System reads the system proxy, at most every 15 seconds while one is
+ // set and every 2 while none is. One read runs at a time, outside the
+ // lock. A read that fails keeps what was read before, and the one after
+-// it holds nobody.
++// it holds nobody; the reads after failed ones are put off longer each
++// time (failKeep).
+ func System() Proxy {
+ 	sysCache.Lock()
+ 	keep := systemKeep
+ 	if sysCache.p.URL == "" {
+ 		keep = noneKeep
+ 	}
++	if sysCache.failed > 0 {
++		keep = nextKeep(sysCache.failed)
++	}
+ 	if !sysCache.at.IsZero() && time.Since(sysCache.at) <= keep {
+ 		p := sysCache.p
+ 		sysCache.Unlock()
+@@ -537,7 +565,7 @@ func System() Proxy {
+ 		go refreshSystem(sysCache.reading)
+ 	}
+ 	var wait time.Duration
+-	if sysCache.at.IsZero() || !sysCache.failed {
++	if sysCache.at.IsZero() || sysCache.failed == 0 {
+ 		wait = time.Until(sysCache.since.Add(readWait))
+ 	}
+ 	done := sysCache.reading
+@@ -556,14 +584,21 @@ func System() Proxy {
+ }
+ 
+ // refreshSystem reads the system proxy into sysCache, then closes done.
+-// A read that fails keeps what was read before, if anything was.
++// A read that fails keeps what was read before, if anything was, and the
++// reads after it are put off longer each time (failKeep); one that
++// answers resets that.
+ func refreshSystem(done chan struct{}) {
+ 	p, ok := readSystem()
+ 	sysCache.Lock()
+ 	if ok || sysCache.at.IsZero() {
+ 		sysCache.p = p
+ 	}
+-	sysCache.at, sysCache.failed, sysCache.reading = time.Now(), !ok, nil
++	sysCache.at, sysCache.reading = time.Now(), nil
++	if ok {
++		sysCache.failed = 0
++	} else {
++		sysCache.failed++
++	}
+ 	sysCache.Unlock()
+ 	close(done)
+ }
+diff --git a/internal/netproxy/scutil.go b/internal/netproxy/scutil.go
+index 929e08212..4ad697b33 100644
+--- a/internal/netproxy/scutil.go
++++ b/internal/netproxy/scutil.go
+@@ -9,15 +9,15 @@ import (
+ 	"github.com/yetone/magpie/internal/proc"
+ )
+ 
+-// toolWait is how long a tool that reads the system's proxy gets. scutil
++// ToolWait is how long a tool that reads the system's proxy gets. scutil
+ // answers in milliseconds; one that never did held every request that
+ // asked for the system's proxy (#3421).
+-var toolWait = 10 * time.Second
++var ToolWait = 10 * time.Second
+ 
+ // readTool runs a tool that prints the system's proxy and parses what it
+-// prints. A run that fails, or is ended at toolWait, is a failed read.
++// prints. A run that fails, or is ended at ToolWait, is a failed read.
+ func readTool(parse func(string) Proxy, name string, args ...string) (Proxy, bool) {
+-	ctx, cancel := context.WithTimeout(context.Background(), toolWait)
++	ctx, cancel := context.WithTimeout(context.Background(), ToolWait)
+ 	defer cancel()
+ 	out, err := proc.CommandContext(ctx, name, args...).Output()
+ 	if err != nil {
+diff --git a/internal/netproxy/stuckread_test.go b/internal/netproxy/stuckread_test.go
+index 32eaac9a1..c28d42908 100644
+--- a/internal/netproxy/stuckread_test.go
++++ b/internal/netproxy/stuckread_test.go
+@@ -33,7 +33,7 @@ func holdReads(t *testing.T, p Proxy, at time.Time, wait time.Duration) (*atomic
+ 	}
+ 	readWait = wait
+ 	sysCache.Lock()
+-	sysCache.at, sysCache.p, sysCache.failed = at, p, false
++	sysCache.at, sysCache.p, sysCache.failed = at, p, 0
+ 	sysCache.Unlock()
+ 	t.Cleanup(func() {
+ 		// the read still under way ends before the next test reads
+@@ -41,7 +41,7 @@ func holdReads(t *testing.T, p Proxy, at time.Time, wait time.Duration) (*atomic
+ 		readEnds(t, underWay())
+ 		readSystem, readWait = oldRead, oldWait
+ 		sysCache.Lock()
+-		sysCache.at, sysCache.p, sysCache.failed = time.Time{}, Proxy{}, false
++		sysCache.at, sysCache.p, sysCache.failed = time.Time{}, Proxy{}, 0
+ 		sysCache.Unlock()
+ 	})
+ 	return &reads, answers
+@@ -167,7 +167,7 @@ func TestFailedSystemProxyReadKeepsTheProxy(t *testing.T) {
+ }
+ 
+ // The tool that reads the system's proxy (scutil on macOS) is ended at
+-// toolWait, and its read fails; what a tool that answers prints is parsed.
++// ToolWait, and its read fails; what a tool that answers prints is parsed.
+ func TestSystemProxyToolThatHangsIsEnded(t *testing.T) {
+ 	if runtime.GOOS == "windows" {
+ 		t.Skip("no echo or sleep program on Windows")
+@@ -177,9 +177,9 @@ func TestSystemProxyToolThatHangsIsEnded(t *testing.T) {
+ 		t.Fatalf("a tool that answered read as %+v, %v", p, ok)
+ 	}
+ 
+-	old := toolWait
+-	toolWait = 100 * time.Millisecond
+-	t.Cleanup(func() { toolWait = old })
++	old := ToolWait
++	ToolWait = 100 * time.Millisecond
++	t.Cleanup(func() { ToolWait = old })
+ 	start := time.Now()
+ 	if p, ok := readTool(parse, "sleep", "30"); ok || p.URL != "" {
+ 		t.Fatalf("a tool that never answered read as %+v, %v", p, ok)
+-- 
+2.50.1 (Apple Git-155)
+

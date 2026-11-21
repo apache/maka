@@ -1,0 +1,159 @@
+diff --git a/docs/subsystems/gateway-routing.md b/docs/subsystems/gateway-routing.md
+index 0b6e5178..2257c344 100644
+--- a/docs/subsystems/gateway-routing.md
++++ b/docs/subsystems/gateway-routing.md
+@@ -164,7 +164,7 @@ recorded as a prediction failure (`noPrediction`).
+ - A relayed Chat reply whose choice made calls and ended `stop` ends `tool_calls`, streamed (`chatTidy`) and whole (`chatWhole`), as the translations' collector already ends it (`collector.finish`): told it stopped, a client that reads `finish_reason` ends its turn with the calls not run (喜欢一个人 on Discord, a relay in front of deepseek-v4.1-flash). Any other reason stays as it came. `TestChatCallsEndToolCalls` in [`chattidy_finish_test.go`](../../internal/gateway/chattidy_finish_test.go).
+ - Codex's model list from the backend path (`codexModels`) is the ChatGPT backend's for its sign-in and then magpie's (`provider.CodexListed`), its ETag and every reply's `X-Models-Etag` tagged with `provider.CodexListTag` so a change has Codex ask again. A Codex there only for account failover, not connected (`CodexOwnOnly`, `agent.CodexOwnOnly`; #1385), gets the backend's alone, tagged with `provider.CodexOwnListTag`; neither tag contains the other, so connecting or disconnecting has Codex fetch the list again. The user's picks on the codex provider (`provider.CodexNativePicked`) narrow the backend's listed models. They keep its hidden ones (`visibility: "hide"`), which no picker shows. One of those is `codex-auto-review`: when the list lacks it and no reviewer is set, Codex's auto-review runs on the conversation's model at low effort (#1460, `TestCodexModelListPicksKeepHidden`). The account's own models kept out of agents' lists for routing groups (`provider.CodexNativeUnlisted`) are dropped from it too, hidden ones kept: every one when the codex provider is "Only through routing groups" (`Provider.Unlisted`), and those a group that unlists its members names (`Group.Unlists`). A Codex there only for failover keeps them, as it is handed no groups; `spawnChoices` drops the same ones (#1602, `TestCodexModelListUnlistedForGroups`).
+ - Reasoning state goes through magpie's translation as the vendor wrote it when the agent and the upstream speak the same API (#1445, XYenon): a non-streaming Messages request to a stream-only account, web search on the agent's own API, a plugin, failover. The IR carries it sealed (`Part.Sealed`, `SealedBy`; events `KThinkStart`, `KSealed`, `KTextSig` in [`ir.go`](../../internal/gateway/ir.go)), so each thinking block or reasoning item stays apart, whole or streamed, and a seal is written only for its own API (`sealedBy`). Anthropic's `redacted_thinking` goes back raw (to DeepSeek as a thinking block, below), and a thinking block signed with no text keeps its signature (`aBlock` still writes `"thinking": ""`, #1447), on Claude's subscription too. A Responses reasoning item keeps its id, summary and `encrypted_content`, and goes back to a Responses upstream as it came when it has no reasoning text (`sealedReasoning`; text, another vendor's, is still left out for OpenAI, #1411). Gemini's `thoughtSignature` stays on the call it signed and on text; a later call of a signed step goes without one, and only an unsigned step or Claude on Antigravity gets `skip_thought_signature_validator`. Another API's agent gets the call's signature in its id, as on chat (#687), with its length in the mark (`__ts<n>__`), so an id a client shortened carries no signature and the call goes as unsigned (#1536); it gets no one else's seal. The signature itself is kept in magpie's folder, `gemini-signatures/<key>`, named by its hash (`keepSignature` in [`gemini_sigstore.go`](../../internal/gateway/gemini_sigstore.go)), and the id carries only the key (`__tsk16__<key>`), so an id stays under 64 characters however long the step's signature (#2411: LobeHub's PostgreSQL index turned away a 3KB id). A key magpie no longer has, or whose file doesn't hash to it, reads as no signature; one not read for 90 days is removed. Where the folder can't be written, the id carries the signature as before. Carrying reasoning across APIs (an envelope) isn't done.
+-- A translated Responses reply gives Codex the reasoning items a Responses upstream sent, as it sent them; any other upstream's reasoning becomes items magpie made: an `rs_` id and a summary, nothing sealed. Codex hands them back on every turn. A request relayed as is to OpenAI's API or Azure OpenAI goes without them (`withoutBareReasoning`) unless `store` is true, because both look the id up among stored items and answer 400 "Item with id 'rs_…' not found" (#1008). Any other Responses upstream gets them, because a DeepSeek model wants its reasoning back (#388). When one answers 400 naming the input (`refusesInput`: `param` is `input`, or the error names an item by id), as a relay in front of OpenAI does with a message of its own, `passthrough` asks once more without them and, once that works, leaves them out for that provider and model from then on (`bareReasoningRefused`, #1044). Codex's compaction offers no tools, so it is relayed even when its turns were translated. When a provider answers its summary request 404, or 400 for an item it didn't find (`itemNotFound`, a relay in front of either), `codexCompact` asks once more with the conversation as text (`plainCompact`), then compacts locally (#866, #1008). So does the ChatGPT backend's 502 "response protection is unavailable" (`protectionRefused`): a long history refused so was answered as text. Codex also compacts remotely, a `compaction_trigger` on `/responses` that wants exactly one compaction item back, on any provider table named "OpenAI", as CC Switch names its relay tables. magpie points those at `/v1` while a magpie model is on, so `handle` makes the summary there too (`codexInput`, `codexCompact`), and magpie's summaries go back to the model as text (#1301). A summary is wanted only whole (`askWhole`, `holdWriter.wantWhole`): its stream is held to its end, not let through at its first words, so a reply cut short (`errEndedShort`), failed halfway (a 429 "Individual quota reached" after some of it) or ended `incomplete` (`endedIncomplete`, `incompleteReply`) fails over to the next candidate like a failure before any of it, and rests the account as that failure would; one that reached its output limit rests nobody. With nobody left, `codexCompact` answers 502 and never hands Codex the words before the cut as the summary (#2274, huangzuomin: Antigravity cutting each summary short). Codex with context_management's experimental mode compacts in the background at every step while the conversation is over its threshold and drops a failed compaction without a word, so a conversation whose summaries keep failing is asked again every few seconds, each paying for the whole history (1169 compactions in 6 hours there). After `compactFailsMost` (3) failed summaries in a row of one conversation (`prompt_cache_key`) on one model, each within `compactHeldFor` (5 minutes) of the last, the next is answered at once with a 400 naming the last failure, which Codex doesn't ask again, and no model is asked until 5 minutes have passed (`compactFails` in [`codex_compact_guard.go`](../../internal/gateway/codex_compact_guard.go)); a summary that comes clears the count, and a sign-in's 401 or 403 isn't counted. `TestCodexCompactCutSummaryFailsOver`, `TestCodexCompactCutSummaryIsNoSummary`, `TestCodexCompactKeepsFailingIsHeld`.
++- A translated Responses reply gives Codex the reasoning items a Responses upstream sent, as it sent them; any other upstream's reasoning becomes items magpie made: an `rs_` id and a summary, nothing sealed. Codex hands them back on every turn. A request relayed as is to OpenAI's API or Azure OpenAI goes without them (`withoutBareReasoning`) unless `store` is true, because both look the id up among stored items and answer 400 "Item with id 'rs_…' not found" (#1008). Any other Responses upstream gets them, because a DeepSeek model wants its reasoning back (#388). When one answers 400 naming the input (`refusesInput`: `param` is `input`, or the error names an item by id), as a relay in front of OpenAI does with a message of its own, `passthrough` asks once more without them and, once that works, leaves them out for that provider and model from then on (`bareReasoningRefused`, #1044). The shared `unreadableItem` matcher also recognizes a relay's "Referenced reasoning item … was not found or has expired" (#3062), so the same repair, the ChatGPT backend's named-item removal (`withoutUnreadable`), and compaction's text fallback (`itemNotFound`) recognize that wording. Codex's compaction offers no tools, so it is relayed even when its turns were translated. When a provider answers its summary request 404, or 400 for an item it didn't find (`itemNotFound`, a relay in front of either), `codexCompact` asks once more with the conversation as text (`plainCompact`), then compacts locally (#866, #1008). So does the ChatGPT backend's 502 "response protection is unavailable" (`protectionRefused`): a long history refused so was answered as text. Codex also compacts remotely, a `compaction_trigger` on `/responses` that wants exactly one compaction item back, on any provider table named "OpenAI", as CC Switch names its relay tables. magpie points those at `/v1` while a magpie model is on, so `handle` makes the summary there too (`codexInput`, `codexCompact`), and magpie's summaries go back to the model as text (#1301). A summary is wanted only whole (`askWhole`, `holdWriter.wantWhole`): its stream is held to its end, not let through at its first words, so a reply cut short (`errEndedShort`), failed halfway (a 429 "Individual quota reached" after some of it) or ended `incomplete` (`endedIncomplete`, `incompleteReply`) fails over to the next candidate like a failure before any of it, and rests the account as that failure would; one that reached its output limit rests nobody. With nobody left, `codexCompact` answers 502 and never hands Codex the words before the cut as the summary (#2274, huangzuomin: Antigravity cutting each summary short). Codex with context_management's experimental mode compacts in the background at every step while the conversation is over its threshold and drops a failed compaction without a word, so a conversation whose summaries keep failing is asked again every few seconds, each paying for the whole history (1169 compactions in 6 hours there). After `compactFailsMost` (3) failed summaries in a row of one conversation (`prompt_cache_key`) on one model, each within `compactHeldFor` (5 minutes) of the last, the next is answered at once with a 400 naming the last failure, which Codex doesn't ask again, and no model is asked until 5 minutes have passed (`compactFails` in [`codex_compact_guard.go`](../../internal/gateway/codex_compact_guard.go)); a summary that comes clears the count, and a sign-in's 401 or 403 isn't counted. `TestCodexCompactCutSummaryFailsOver`, `TestCodexCompactCutSummaryIsNoSummary`, `TestCodexCompactKeepsFailingIsHeld`.
+ - A reasoning item with its text in it (`content` parts: DeepSeek's Responses API writes `reasoning_text`, relayed to Codex as it came) is another vendor's. OpenAI's API and the ChatGPT backend take a reasoning item's `content` only empty, and refuse the whole request over one with 400 "Invalid 'input[n].content': array too long. Expected an array with maximum length 0" (`array_above_max_length`). Codex hands the item back on every later turn, so it never goes to them: for one of Codex's own models, `codexInput(body, false)` leaves it out (and a reasoning item with nothing sealed in it) on `/backend-api/codex`'s `/responses` and on `/responses/compact`, before Codex's own sign-in, its API key or a magpie Codex account (`compactOn`) is asked. Codex compacts a thread before its first turn back on its own model, and a refused compaction shows as that turn's error (jue on Discord). `passthrough` leaves it out for OpenAI, Azure OpenAI and a Codex account (`withoutReasoningText`), and for any other upstream once it has refused one (`refusesReasoningText`, `reasoningTextRefused`, #1411). OpenAI's own sealed reasoning (`encrypted_content`, no text) stays, and a DeepSeek model (`replaysReasoning`) still gets the text. `TestForeignReasoningNeverReachesOpenAI`, `TestReasoningTextLeftOutWhereRefused`, `TestReasoningTextNotSentToCodexAccount`.
+ - Native compaction (#1099, off by default): a provider with `nativeCompaction` on (`provider.Provider.CompactsOn`; the editor's Compaction row, `magpie provider set <id> compaction=native`) is asked Codex's `compaction_trigger` as Codex sent it, and the compaction item it seals goes back to Codex unchanged, not as a `magpie1:` summary. Only a wire that carries it can be set so (`CarriesCompaction`): a Responses API, a ChatGPT account, GitHub Copilot (its models asked on Responses; its Claude models keep magpie's summary). The decision is made where `handle` and `codexBackend` read the input (`nativeCompactionFor`, `codexInputAs`): a group compacts natively only when every member does. Such a request, and a later one carrying a sealed compaction to a provider set so or to the provider recorded as its writer, is relayed, never translated, which would drop the item (`keepsCompaction` in `attempt`); a provider that can't be asked it on Responses answers a 400 saying so. The key or account that answered is recorded, whoever it is: a fallback or another member that answered the trigger sealed it whatever its own setting, and only it can read the seal (#2271, JasonBuildAI: a fallback's seal went unrecorded, and the next turn was answered 200 without the compacted history; `TestNativeCompactionFallbackSealStaysWithItsWriter`). It is recorded by the hash of what it sealed (`wroteCheckpoint`, `compactions.json` beside `affinity.json`, 0600, at most 1024 for 30 days). A later request carrying it goes only to that writer (`checkpointReaders`); a writer whose own list has since dropped the model is tried still, as the last resort an account whose list lacks the model is — it sealed the model's compaction, and no other can read it (`planned.unlisted`, `TestNativeCompactionWriterWhoseListLacksTheModel`, #2642: it was refused as "switched off, removed, or no longer serves" though it was on, and switching it on changed nothing). With the writer gone from the candidates, magpie answers 400 `checkpointError` with the reason its settings give (`checkpointGone`: the provider removed, the account signed out, its sign-in lapsed, paused while others are on, switched off, kept from the model in Names & levels, the key off or gone, the model disabled, or the model or group asked for not going to it), what lets the conversation go on, and whether native compaction is on for the writer's provider now, and never sends it to another key, drops it, or summarises it in its place (`TestNativeCompactionWriterGoneSaysWhy`). One of Codex's own models asked on the backend path is decided as a magpie model is when magpie's Codex accounts serve it (`codexAccounts`): the trigger is kept only with the codex provider's native compaction on, else `codexCompact` gives magpie's summary, which any account reads, and no writer is recorded (#2582, ump45nose; before, every such compaction was sealed natively whatever the setting, and the conversation was held to its account; `TestCodexOwnModelCompactionHonoursTheToggle`). Codex's own sign-in alone, relayed as it came, still compacts natively, unrecorded, as does `/responses/compact`; but a request carrying a compaction magpie recorded the writer of goes through routing even then (`codexSealedFor`), so with the writer switched off the one account left isn't sent it. A legacy `/responses/compact` carrying one is judged at its passthrough (`sealedCompact`): the writer on in magpie answers it signed as the writer — its own seal while the sign-in can be asked, a key's seal, a request signing with its own `chatgpt-account-id`, or an unreadable sign-in state relays as it came — and a writer gone is refused with `checkpointError`'s reason, the same words as on `/responses` (`TestNativeCompactionCompactJudgesItsWriter`, #2727). The writer matched is the account user the record holds, so two Team seats of one email read as one and such a compact relays as it came. A gateway key held to some accounts (#905) is asked of the account the compact goes to (`compactSigninHeld`): the writer when it answers it, so a writer the key may not use is refused 403 (`sealedCompactHeldError`) with nothing asked, and one it may use answers though the sign-in isn't the key's (`TestNativeCompactionCompactKeepsTheKeysAccounts`). With the writer held at its usage cap or for credits it may not spend, the answer is 429 `checkpointCappedError` (record `checkpointCappedRecord`, "native compaction's account at its usage cap"), naming that account, that the others serving the model weren't tried for the compaction, and that neither the routing mode nor how conversations stay changes that: wait for the window, raise or lift its cap, or start a new conversation (#2517, lm0711; before, it read "every account at its usage cap" though another had room; `TestNativeCompactionWriterAtItsCap`). `withoutCompaction` (the drop after a refused reasoning item) isn't used for such a request. A route carrying a compaction names its sealer (`Route.Compaction`), and Routing says that is why no other account was asked, not that it is "the only account on" for the model (#2639; `TestNativeCompactionRouteNamesItsWriter`, `routing-compaction.test.cjs`). A refusal of the trigger reaches Codex as the upstream sent it. Not tried against a real upstream; Copilot may refuse a history that holds Codex's `web_search` items. [`native_compaction.go`](../../internal/gateway/native_compaction.go), `TestNativeCompaction*`.
+ - A compaction magpie answers itself (`codexCompact`: a magpie model, Codex's own models through magpie's Codex accounts, a CC Switch table) goes to Codex as a `compaction` item whose `encrypted_content` is `magpie1:` and the summary in base64 (`codexsummary.Encrypted`), and `codexInputAs` sends Codex's own summary message in its place (`codexsummary.Message`: Codex's summary prefix, a newline and the summary, as a user message). Codex keeps the item in its rollout and replays it, and OpenAI refuses it once Codex talks to OpenAI itself (`invalid_encrypted_content`, LukeMa on X). So `sessions.PortCodexRollouts` writes that same message into the rollouts in its place ([`codex_portable.go`](../../internal/sessions/codex_portable.go)). It changes only magpie's items, keeps every other line's bytes and the file's line count, mode and time, and drops an unreadable item together with its `replacement_history_metadata` entry. It publishes as Codex publishes a compressed rollout: under `thread-writer-locks/.coordination.lock`, only with the thread's lock free, through a temp file and a rename. A thread a Codex has open is left for a later pass, and a Codex home without writer locks is left alone. It runs 2 minutes after the GUI or `magpie serve` starts and every 10 minutes after, on Codex Disconnect (3s), and as the GUI quits (3s). Each pass reads what changed since the last whole pass, plus what was held (`codex-portable.json`). A ported thread was resumed by Codex 0.162.1 against an upstream that refuses `magpie1:` as OpenAI does. Not tried: a Codex in a WSL distro, whose locks this machine can't take, so it is skipped. `TestPortCodexRollouts*`, `TestPortedCompactionReadsTheSame`.
+diff --git a/internal/gateway/bare_reasoning_test.go b/internal/gateway/bare_reasoning_test.go
+index 55bac1d3..0912956a 100644
+--- a/internal/gateway/bare_reasoning_test.go
++++ b/internal/gateway/bare_reasoning_test.go
+@@ -16,14 +16,17 @@ import (
+ // reporter captured it: a request whose input has reasoning with nothing
+ // sealed in it is turned away with the relay's own 400, word for word,
+ // naming only the input; without such reasoning the turn is answered. With
+-// refuse unset it takes the reasoning, as a relay for a DeepSeek model does
+-// (#388). With status set, every request gets that error instead.
++// expired set it turns the same reasoning away in an OpenCode Go relay's
++// own words, naming the id it can't resolve (#3062). With refuse unset it
++// takes the reasoning, as a relay for a DeepSeek model does (#388). With
++// status set, every request gets that error instead.
+ type relayUpstream struct {
+-	mu     sync.Mutex
+-	refuse bool
+-	status int
+-	errMsg string
+-	inputs [][]map[string]any
++	mu      sync.Mutex
++	refuse  bool
++	expired bool
++	status  int
++	errMsg  string
++	inputs  [][]map[string]any
+ }
+ 
+ func (u *relayUpstream) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+@@ -49,6 +52,12 @@ func (u *relayUpstream) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+ 			io.WriteString(w, `{"error":{"message":"bad response status code 400 (request id: 20261007000605227481978n1OdHdSC)","type":"invalid_request_error","param":"input","code":null}}`)
+ 			return
+ 		}
++		if u.expired && it["type"] == "reasoning" && enc == "" {
++			w.Header().Set("Content-Type", "application/json")
++			w.WriteHeader(http.StatusBadRequest)
++			io.WriteString(w, `{"error":{"message":"OpenCode Go: Referenced reasoning item '`+it["id"].(string)+`' was not found or has expired.","type":"invalid_request_error"}}`)
++			return
++		}
+ 	}
+ 	w.Header().Set("Content-Type", "text/event-stream")
+ 	io.WriteString(w, sse(
+@@ -169,6 +178,52 @@ func TestBareReasoningLeftOutWhereRefused(t *testing.T) {
+ 	}
+ }
+ 
++// #3062: a Codex thread behind a Responses passthrough relay collects
++// reasoning ids the relay can't resolve — ones magpie minted in a
++// translated reply, or the relay's own whose seal lapsed after a resume
++// gap — and Codex replays them on every turn. The relay answers 400 in
++// its own words, naming no input ("OpenCode Go: Referenced reasoning item
++// 'rs_…' was not found or has expired."), and the thread stayed broken for
++// good. The refusal is read as OpenAI's own unreadable item: asked once
++// more without the bare reasoning, every other item kept, and that
++// provider's model isn't sent them again.
++func TestRelayRefusedReasoningItemReadAsUnreadable(t *testing.T) {
++	for _, tc := range bareRequests("relay/gpt-5.4") {
++		t.Run(tc.name, func(t *testing.T) {
++			fresh(t)
++			u := &relayUpstream{expired: true}
++			saveRelay(t, u)
++			s := New()
++			rec := codexPostTo(s, tc.body)
++			if rec.Code != 200 || !strings.Contains(rec.Body.String(), "SUMMARY") && !strings.Contains(rec.Body.String(), "U1VNTUFSWQ") {
++				t.Fatalf("%d %s", rec.Code, rec.Body)
++			}
++			got := u.asked()
++			if len(got) != 2 {
++				t.Fatalf("asked the relay %d times, want 2", len(got))
++			}
++			if ids := strings.Join(reasoningIDs(got[0]), ","); ids != "rs_18dbe693b3dce4800000003c,rs_18dbe693b3dce4800000003d,rs_sealed" {
++				t.Errorf("first ask's reasoning: %s", ids)
++			}
++			if ids := strings.Join(reasoningIDs(got[1]), ","); ids != "rs_sealed" {
++				t.Errorf("asked again with reasoning %s, want the sealed only", ids)
++			}
++			before, after := kinds(got[0]), kinds(got[1])
++			for _, k := range []string{"message", "function_call", "function_call_output", "custom_tool_call", "custom_tool_call_output"} {
++				if after[k] == 0 || after[k] != before[k] {
++					t.Errorf("%s: %d asked again, %d first", k, after[k], before[k])
++				}
++			}
++
++			// the next request goes without them at once
++			rec = codexPostTo(s, tc.body)
++			if got = u.asked(); rec.Code != 200 || len(got) != 3 || strings.Join(reasoningIDs(got[2]), ",") != "rs_sealed" {
++				t.Fatalf("again: %d, %d asks, reasoning %v", rec.Code, len(got), reasoningIDs(got[len(got)-1]))
++			}
++		})
++	}
++}
++
+ // An upstream that takes reasoning with nothing sealed in it, as a relay
+ // for a DeepSeek model wants it back (#388), still gets it as Codex sent
+ // it, and is asked once.
+@@ -222,6 +277,7 @@ func TestRefusesInput(t *testing.T) {
+ 		{400, `{"error":{"message":"bad response status code 400 (request id: x)","type":"invalid_request_error","param":"input","code":null}}`, true},
+ 		{400, `{"error":{"message":"Invalid 'input[3].id'","type":"invalid_request_error","param":"input[3].id"}}`, true},
+ 		{400, `{"error":{"code":null,"message":"Item with id 'rs_1' not found.","param":null,"type":"invalid_request_error"}}`, true},
++		{400, `{"error":{"message":"OpenCode Go: Referenced reasoning item 'rs_18e02568274e11f100000242' was not found or has expired.","type":"invalid_request_error"}}`, true},
+ 		{400, `{"error":{"message":"bad response status code 400","type":"invalid_request_error"}}`, false},
+ 		{400, `{"error":{"message":"Invalid value for 'reasoning.effort'","param":"reasoning.effort"}}`, false},
+ 		{400, `{"error":{"message":"bad","param":"inputs"}}`, false},
+@@ -232,3 +288,22 @@ func TestRefusesInput(t *testing.T) {
+ 		}
+ 	}
+ }
++
++func TestRelayUnreadableItemKeepsOtherInput(t *testing.T) {
++	body := []byte(`{"model":"gpt-5.4","input":[` + bareConversation + `]}`)
++	msg := []byte(`{"error":{"message":"OpenCode Go: Referenced reasoning item 'rs_18dbe693b3dce4800000003c' was not found or has expired.","type":"invalid_request_error"}}`)
++	got, ok := withoutUnreadable(body, msg)
++	want, _ := withoutItem(body, "rs_18dbe693b3dce4800000003c")
++	if !ok || string(got) != string(want) {
++		t.Fatalf("named unreadable item not removed alone: %s, %v", got, ok)
++	}
++	rec := &recorder{status: http.StatusBadRequest}
++	rec.body.Write(msg)
++	if !itemNotFound(rec) {
++		t.Fatal("compaction did not recognize the relay's missing item")
++	}
++	rec.status = http.StatusTooManyRequests
++	if itemNotFound(rec) || refusesInput(rec.status, msg) {
++		t.Fatal("a rate limit must not remove reasoning")
++	}
++}
+diff --git a/internal/gateway/codex_backend.go b/internal/gateway/codex_backend.go
+index 39b69709..0b615b9d 100644
+--- a/internal/gateway/codex_backend.go
++++ b/internal/gateway/codex_backend.go
+@@ -1430,9 +1430,12 @@ func codexServed(base string, h http.Header, on *provider.Provider) (id, account
+ 	return p.ID, p.Account.User
+ }
+ 
+-// unreadableItem is the item OpenAI's refusal names: sealed content it
+-// can't verify, or an id it doesn't have ("Item with id 'rs_…' not found").
+-var unreadableItem = regexp.MustCompile(`(?i)(?:encrypted content for item|item with id) '?([A-Za-z]+_[A-Za-z0-9_-]+)'?`)
++// unreadableItem is the item a refusal names: sealed content OpenAI
++// can't verify, or an id it doesn't have ("Item with id 'rs_…' not
++// found"), which a relay in front of one answers in words of its own
++// ("Referenced reasoning item 'rs_…' was not found or has expired",
++// #3062).
++var unreadableItem = regexp.MustCompile(`(?i)(?:encrypted content for item|item with id|referenced reasoning item) '?([A-Za-z]+_[A-Za-z0-9_-]+)'?`)
+ 
+ // withoutUnreadable is body without what OpenAI's refusal msg says it
+ // can't read: the item it names, or the reasoning another account sealed.

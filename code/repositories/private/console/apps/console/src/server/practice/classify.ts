@@ -1,0 +1,57 @@
+import type { PracticeType } from '@ggbdpq/console-shared'
+
+/**
+ * 提交标题清理与分类（纯函数，测试锁定）。
+ * 公司仓库大量 subject 带 AI 工具残留的 markdown 围栏（```fix(scope): xxx），入库前清掉。
+ */
+/** 围栏后常见的语言标记（仅在这些词后接空白/结尾时才随围栏一起剥掉；fix/feat 等类型词不在表内） */
+const FENCE_LANGS = 'ts|js|tsx|jsx|md|markdown|sh|bash|json|text|txt'
+
+export function cleanSubject(raw: string): string {
+  const trimmed = raw.trim()
+  const cleaned = trimmed
+    .replace(new RegExp(`^\`{3,}(?:(?:${FENCE_LANGS})(?:\\s+|$))?\\s*`, 'i'), '')
+    .replace(/`{3,}\s*$/, '')
+    .trim()
+  if (cleaned) return cleaned
+  // 整条都是围栏（如 ```、```ts）或空：保底占位，不留垃圾字符
+  return trimmed && /`/.test(trimmed) ? '(无有效提交信息)' : trimmed || '(空提交信息)'
+}
+
+/** 提取 TAPD bug 单号：--bug=1080152@tapd-xxx 形式 */
+export function extractTapdBug(raw: string): string | null {
+  const m = raw.match(/--bug=(\d+)@tapd/)
+  return m ? (m[1] as string) : null
+}
+
+/**
+ * 类型分类：新增功能 → pr，缺陷修复 → issue，其余 → other。
+ * 规则优先级：merge 排除 → conventional 前缀 → 中文句式动词 → 全文关键词。
+ */
+export function classifyCommit(raw: string): PracticeType {
+  // 围栏不参与分类：先剥掉再识别前缀
+  const s = raw.trim().replace(/^`{3,}/, '').trim()
+  const lower = s.toLowerCase()
+
+  // 平台合并提交（cnb/GitHub）不计入工作类型
+  if (/^merge\b/.test(lower) || s.startsWith('合并来自') || s.startsWith('Merge branch')) {
+    return 'other'
+  }
+  // conventional 前缀（fix / feat|feature|add），容忍冒号/括号/空白边界
+  if (/^(fix|bugfix|bug-fix)\b/.test(lower) || /^bug(\(|:|：)/.test(lower)) return 'issue'
+  if (/^(feat|feature|add)\b/.test(lower)) return 'pr'
+  // 中文句式动词开头
+  if (/^修复|^修正|^解决/.test(s)) return 'issue'
+  if (/^(新增|增加|添加|接入|支持|上线|开发)/.test(s)) return 'pr'
+  // 全文关键词兜底
+  if (/修复|修正|\bfix(es|ed)?\b/i.test(s)) return 'issue'
+  if (/新增|增加|添加|接入|支持/.test(s)) return 'pr'
+  return 'other'
+}
+
+/** 提取 fix 类提交的 scope：fix(workbench): xxx → workbench；无 scope 返回 null */
+export function extractFixScope(cleanedSubject: string): string | null {
+  const m = cleanedSubject.match(/^(?:fix|bugfix|bug-fix)(?:\(([^):]+)\))?\s*[:：]/i)
+  const scope = m?.[1]?.trim()
+  return scope ? scope : null
+}

@@ -1,0 +1,16 @@
+=== RUN   TestClaudeSubscriptionPromptKeepsForeignHarnessOutOfSystem
+--- PASS: TestClaudeSubscriptionPromptKeepsForeignHarnessOutOfSystem (0.00s)
+=== RUN   TestAskClaudeTUIOn
+--- PASS: TestAskClaudeTUIOn (0.84s)
+=== RUN   TestClaudeUsageTUIOn
+--- PASS: TestClaudeUsageTUIOn (0.22s)
+=== RUN   TestWarmClaudeAsksClaudeCodeOnce
+--- PASS: TestWarmClaudeAsksClaudeCodeOnce (0.10s)
+=== RUN   TestClaudeUsageRunsClaudeCode
+    claude_warmup_test.go:125: run lacks "[--settings][{\"disableDeepLinkRegistration\":\"disable\"}]":
+        args:[-p][/usage][--output-format][json][--tools][][--strict-mcp-config][--setting-sources][][--no-session-persistence]
+        token:
+--- FAIL: TestClaudeUsageRunsClaudeCode (0.10s)
+FAIL
+FAIL	github.com/yetone/magpie/internal/gateway	1.746s
+FAIL

@@ -1,0 +1,127 @@
+From b7a4095176e1501a8f24931f26de63cecebff810 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Wed, 21 Oct 2026 20:40:29 +0800
+Subject: [PATCH] gateway: a type that folds off array leaves a tool schema's
+ items behind, so Antigravity takes the turn (#3173)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+plainSchema folds a schema's list of types to its first one that isn't
+null but carried the items keyword along: a tool whose parameter said
+["string","array"] reached Antigravity as a string still wearing items,
+and Gemini's check that items rides on an array turned the whole turn
+away with "field predicate failed: $type == Type.ARRAY" — under an
+array property that failure names the node twice over, items.items.
+#3121 is the one-level form of the same leak. A union on items folds to
+its first member already; what leaked was the keyword a non-array type
+had no business carrying. plainSchema now drops items wherever the type
+it survives with isn't array — the one spot every branch of the walk
+(refs, allOf, unions, plain nodes) funnels through.
+
+What changed
+- internal/gateway/codeassist.go: plainSchema deletes items off a node
+  whose folded type isn't array.
+- internal/gateway/plain_schema_test.go: a schema of #3173's reported
+  shape — items over items under an array, the type list folding to
+  string — comes out with no stray items; unions on items, #3173's
+  minimal forms, are pinned folding to their first member.
+
+Run
+- go test ./internal/gateway/ -run TestPlainSchema -count=1 -v: 3/3,
+  red at base f5b01574 before the fix
+- go test -race ./internal/gateway/ -run TestPlainSchema -count=1
+- go vet ./internal/gateway/, gofmt clean
+- go build ./... on darwin/arm64; GOOS=linux GOARCH=amd64 and
+  GOOS=windows GOARCH=amd64, both -tags nogui
+- go test ./internal/gateway/ -p 1 -timeout 30m
+
+Fixes #3173
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gateway/codeassist.go        |  7 ++++
+ internal/gateway/plain_schema_test.go | 52 +++++++++++++++++++++++++++
+ 2 files changed, 59 insertions(+)
+
+diff --git a/internal/gateway/codeassist.go b/internal/gateway/codeassist.go
+index 82a77969..43fd993a 100644
+--- a/internal/gateway/codeassist.go
++++ b/internal/gateway/codeassist.go
+@@ -794,6 +794,13 @@ func plainSchema(raw json.RawMessage) json.RawMessage {
+ 					out["type"] = "array"
+ 				}
+ 			}
++			if out["items"] != nil && out["type"] != "array" {
++				// items rides on an array only: a type that folds to
++				// something else, as ["string","array"] does to string,
++				// leaves it stray and Antigravity turns the turn away
++				// over it (#3121, #3173)
++				delete(out, "items")
++			}
+ 			if req, ok := out["required"].([]any); ok {
+ 				// required names only the properties there are
+ 				props, _ := out["properties"].(map[string]any)
+diff --git a/internal/gateway/plain_schema_test.go b/internal/gateway/plain_schema_test.go
+index b160c668..862306fb 100644
+--- a/internal/gateway/plain_schema_test.go
++++ b/internal/gateway/plain_schema_test.go
+@@ -37,3 +37,55 @@ func TestPlainSchemaKeepsOnlyWhatAntigravityTakes(t *testing.T) {
+ 		t.Errorf("got %s", b)
+ 	}
+ }
++
++// Antigravity takes items only on an array: a type that folds to something
++// else, as ["string","array"] does to string, has to leave it behind or the
++// schema reaches Gemini with an items on a string and the turn is turned
++// away with "field predicate failed: $type == Type.ARRAY" (#3121, #3173).
++func TestPlainSchemaDropsItemsOffAnArray(t *testing.T) {
++	in := `{"type":"object","properties":{
++		"disease":{"type":["string","array"],"items":{"type":"string","minLength":1}},
++		"functions":{"type":"array","minItems":1,"items":{"type":["string","array"],"items":{"type":"string"}}},
++		"actions":{"type":"array","items":{"oneOf":[{"type":["string","array"],"items":{"type":"string"}},{"type":"number"}]}}
++	},"required":["disease"]}`
++	want := `{"type":"object","properties":{
++		"disease":{"type":"string"},
++		"functions":{"type":"array","minItems":1,"items":{"type":"string"}},
++		"actions":{"type":"array","items":{"type":"string"}}
++	},"required":["disease"]}`
++	var got, exp any
++	if err := json.Unmarshal(plainSchema(json.RawMessage(in)), &got); err != nil {
++		t.Fatal(err)
++	}
++	json.Unmarshal([]byte(want), &exp)
++	if !reflect.DeepEqual(got, exp) {
++		b, _ := json.Marshal(got)
++		t.Errorf("got %s", b)
++	}
++}
++
++// a union folds to its first member that isn't null, on items as anywhere
++// else (#3173): items under a oneOf come out as that member, typed.
++func TestPlainSchemaFoldsAUnionOnItems(t *testing.T) {
++	in := `{"type":"object","properties":{
++		"tags":{"type":"array","items":{"oneOf":[{"type":"string"},{"type":"number"}]}},
++		"actions":{"minItems":1,"type":"array","items":{"oneOf":[{"type":"object","properties":{"kind":{"type":"string"}},"required":["kind","gone"]},{"type":"object","properties":{"op":{"type":"string"}}}]}},
++		"subject":{"anyOf":[{"oneOf":[{"type":"object","properties":{"path":{"type":"string"}}}]},{"type":"string"}]},
++		"limbo":{"type":"array","items":{"oneOf":[]}}
++	}}`
++	want := `{"type":"object","properties":{
++		"tags":{"type":"array","items":{"type":"string"}},
++		"actions":{"type":"array","minItems":1,"items":{"type":"object","properties":{"kind":{"type":"string"}},"required":["kind"]}},
++		"subject":{"type":"object","properties":{"path":{"type":"string"}}},
++		"limbo":{"type":"array","items":{"type":"string"}}
++	}}`
++	var got, exp any
++	if err := json.Unmarshal(plainSchema(json.RawMessage(in)), &got); err != nil {
++		t.Fatal(err)
++	}
++	json.Unmarshal([]byte(want), &exp)
++	if !reflect.DeepEqual(got, exp) {
++		b, _ := json.Marshal(got)
++		t.Errorf("got %s", b)
++	}
++}
+-- 
+2.50.1 (Apple Git-155)
+

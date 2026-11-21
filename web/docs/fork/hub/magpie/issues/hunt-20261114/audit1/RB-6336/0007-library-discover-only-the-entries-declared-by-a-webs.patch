@@ -1,0 +1,72 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Aryz <aryz0713@gmail.com>
+Date: Thu, 12 Nov 2026 20:30:49 +0800
+Subject: [PATCH 07/11] library: discover only the entries declared by a
+ website
+
+Read the downloaded catalog entry directories directly instead of applying the recursive Git collection scanner. Supporting SKILL.md templates stay files of their declared skill and cannot become separate candidates.
+
+Regression: TestWellKnownCatalogListsOnlyItsEntries fails before the fix with three candidates instead of the one declared entry (Actions 43213792487 attempt 3). Re-run the complete website lifecycle selection for this fix.
+---
+ internal/library/skills.go         |  6 +++++-
+ internal/library/skillwellknown.go | 20 ++++++++++++++++++++
+ 2 files changed, 25 insertions(+), 1 deletion(-)
+
+diff --git a/internal/library/skills.go b/internal/library/skills.go
+index defcd0e52..2d325aa5f 100644
+--- a/internal/library/skills.go
++++ b/internal/library/skills.go
+@@ -1430,7 +1430,11 @@ func probeSkills(input, name string) (*Probe, error) {
+ 			return nil, err
+ 		}
+ 		p.Kind, p.root, p.src = src.Kind, tmp, src
+-		p.Candidates = candidates(tmp, "", srcFolder(src))
++		p.Candidates, err = wellKnownCandidates(tmp)
++		if err != nil {
++			os.RemoveAll(tmp)
++			return nil, err
++		}
+ 		keepProbe(input, p, tmp)
+ 	} else if src, ok := githubSource(input); ok || isGit(input) {
+ 		if !ok {
+diff --git a/internal/library/skillwellknown.go b/internal/library/skillwellknown.go
+index 9d90281bd..ec5d83e1d 100644
+--- a/internal/library/skillwellknown.go
++++ b/internal/library/skillwellknown.go
+@@ -10,6 +10,7 @@ import (
+ 	"net/url"
+ 	"os"
+ 	"path/filepath"
++	"sort"
+ 	"strings"
+ 	"time"
+ 	"unicode"
+@@ -79,6 +80,25 @@ func probeWellKnown(input string) (src Source, dir string, found bool, err error
+ 	return src, dir, true, err
+ }
+ 
++// wellKnownCandidates lists only the catalog entries. Listed SKILL.md
++// templates inside an entry are supporting files, not additional skills.
++func wellKnownCandidates(dir string) ([]Candidate, error) {
++	entries, err := os.ReadDir(dir)
++	if err != nil {
++		return nil, err
++	}
++	out := make([]Candidate, 0, len(entries))
++	for _, e := range entries {
++		m, ok := readMeta(filepath.Join(dir, e.Name()))
++		if !e.IsDir() || !ok {
++			return nil, fmt.Errorf("%s has no valid SKILL.md", e.Name())
++		}
++		out = append(out, Candidate{Path: e.Name(), Name: nameFor(e.Name(), m), Description: m.Description})
++	}
++	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
++	return out, nil
++}
++
+ // fetchWellKnown fetches the complete catalog again. Only a successful,
+ // fully validated fetch may say that a skill is no longer listed there.
+ func fetchWellKnown(src Source) (string, error) {
+-- 
+2.50.1 (Apple Git-155)
+

@@ -1,0 +1,22 @@
+{
+  "id": "58",
+  "slug": "contains-duplicate",
+  "title": "存在重复元素",
+  "difficulty": "easy",
+  "tags": ["数组", "哈希表"],
+  "description": "给你一个整数数组 `nums`。如果任一值在数组中出现**至少两次**,返回 `true`;如果数组中每个元素互不相同,返回 `false`。\n\n**示例 1:**\n\n- 输入:`nums = [1,2,3,1]`\n- 输出:`true`\n\n**示例 2:**\n\n- 输入:`nums = [1,2,3,4]`\n- 输出:`false`",
+  "solution": "## 思路\n\n把数组放入集合,集合大小若小于数组长度则存在重复。O(n)。\n\n## 参考代码\n\n```js\nfunction containsDuplicate(nums) {\n  return new Set(nums).size !== nums.length;\n}\n```\n\n## 复杂度\n\n- 时间:O(n)\n- 空间:O(n)",
+  "signature": {
+    "language": "javascript",
+    "entry": "containsDuplicate",
+    "params": [{ "name": "nums", "type": "number[]" }],
+    "returns": "boolean"
+  },
+  "testCases": [
+    { "sample": true, "input": [[1, 2, 3, 1]], "expected": true },
+    { "sample": true, "input": [[1, 2, 3, 4]], "expected": false },
+    { "sample": false, "input": [[1]], "expected": false },
+    { "sample": false, "input": [[1, 1, 1, 1]], "expected": true },
+    { "sample": false, "input": [[]], "expected": false }
+  ]
+}

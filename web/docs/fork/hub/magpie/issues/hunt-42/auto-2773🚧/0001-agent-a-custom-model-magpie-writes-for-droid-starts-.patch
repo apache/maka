@@ -1,0 +1,162 @@
+From 39f11c0d12b21e7005c71490d3493522b4eda77f Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Sun, 18 Oct 2026 06:34:16 +0800
+Subject: [PATCH] agent: a custom model magpie writes for droid starts with its
+ reasoning on
+
+What changed: droid clamps a custom model without a reasoningEffort to
+"none" - every new session of every model magpie wrote started
+reasoning-blind, and the off/low/medium/high picker stayed locked
+(#2773's session logs: reasoning_clamped). Each entry now carries the
+strongest of the model's own levels droid can spell - its picker tops at
+high, so a model reasoning past that still starts at high - and a model
+with no levels at all goes without the key, droid's "none" being right
+for it. A user's own entry is untouched, as are the keys magpie already
+wrote.
+
+Run: TestDroidReasoningEffort is red on upstream/main 5380114d (the
+three reasoning models written with no reasoningEffort) and green with
+the change; the sign-in's own entry and a model without levels still go
+without it. -race green. Ablation: droid.go restored to upstream/main
+with the test kept, the same three fail again. Mutation: the
+above-high fallback dropped - exactly the ceiling subtest red.
+TestDroid* family green; full internal/agent suite green (193.9s).
+gofmt -l clean. go vet ./..., GOOS=linux/windows vet green (the known
+trayimage cgo warning aside); darwin/linux/windows builds green.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/agent/droid.go      | 26 ++++++++++++++++-
+ internal/agent/droid_test.go | 54 ++++++++++++++++++++++++++++++++++++
+ 2 files changed, 79 insertions(+), 1 deletion(-)
+
+diff --git a/internal/agent/droid.go b/internal/agent/droid.go
+index e8659cb9..9dc44a86 100644
+--- a/internal/agent/droid.go
++++ b/internal/agent/droid.go
+@@ -31,6 +31,7 @@ import (
+ 	"github.com/tidwall/gjson"
+ 	"github.com/tidwall/jsonc"
+ 
++	"github.com/yetone/magpie/internal/catalog"
+ 	"github.com/yetone/magpie/internal/edit"
+ 	"github.com/yetone/magpie/internal/gateway"
+ 	"github.com/yetone/magpie/internal/provider"
+@@ -56,6 +57,10 @@ type droidEntry struct {
+ 	// droid takes a model on Chat Completions as seeing no images unless
+ 	// told otherwise, so this is always written
+ 	NoImageSupport bool `json:"noImageSupport"`
++	// reasoningEffort is what a new session starts at, and what unlocks
++	// droid's off/low/medium/high picker for a custom model; without it
++	// droid clamps the session to none, reasoning-blind (#2773)
++	ReasoningEffort string `json:"reasoningEffort,omitempty"`
+ }
+ 
+ // droidEntries are magpie's custom models as the catalog is now.
+@@ -66,7 +71,8 @@ func droidEntriesAt(gw string) []droidEntry {
+ 	var out []droidEntry
+ 	for _, m := range magpieModels("droid") {
+ 		e := droidEntry{Model: m.ID, ID: droidID + m.ID, BaseURL: gw + "/v1", APIKey: keyAt(gw),
+-			Provider: "generic-chat-completion-api", MaxContextLimit: m.Context, MaxOutputTokens: maxTokens(m), NoImageSupport: !m.Images}
++			Provider: "generic-chat-completion-api", MaxContextLimit: m.Context, MaxOutputTokens: maxTokens(m), NoImageSupport: !m.Images,
++			ReasoningEffort: droidEffort(m)}
+ 		switch {
+ 		case slices.Contains(m.APIs, string(provider.Responses)):
+ 			e.Provider = "openai"
+@@ -84,6 +90,24 @@ func droidEntriesAt(gw string) []droidEntry {
+ 	return out
+ }
+ 
++// droidEffort is the reasoningEffort magpie writes for a custom model: the
++// strongest of the model's own levels droid can spell (its picker tops at
++// high). A model reasoning past that, or with levels only droid can't
++// spell, still starts there rather than droid's silent "none" (#2773); a
++// model with no levels at all goes without the key, "none" being right
++// for it.
++func droidEffort(m catalog.Model) string {
++	for _, level := range []string{"high", "medium", "low"} {
++		if slices.Contains(m.Efforts, level) {
++			return level
++		}
++	}
++	if len(m.Efforts) > 0 {
++		return "high"
++	}
++	return ""
++}
++
+ // droidSlug is droid's own spelling of a display name in a model id.
+ func droidSlug(s string) string {
+ 	return strings.Join(strings.FieldsFunc(strings.TrimSpace(s), unicode.IsSpace), "-")
+diff --git a/internal/agent/droid_test.go b/internal/agent/droid_test.go
+index a63efe23..e64cc7ff 100644
+--- a/internal/agent/droid_test.go
++++ b/internal/agent/droid_test.go
+@@ -7,6 +7,7 @@ import (
+ 	"strings"
+ 	"testing"
+ 
++	"github.com/yetone/magpie/internal/catalog"
+ 	"github.com/yetone/magpie/internal/gateway"
+ 	"github.com/yetone/magpie/internal/provider"
+ )
+@@ -282,3 +283,56 @@ func TestDroidOverrideAndLegacy(t *testing.T) {
+ 		t.Fatal(err)
+ 	}
+ }
++
++// #2773: droid clamps a custom model without a reasoningEffort to "none" —
++// every new session of a magpie model started reasoning-blind and the
++// off/low/medium/high picker stayed locked. The model's own levels say
++// what magpie writes: the strongest level droid can spell, so a reasoning
++// model starts on; a model with none of droid's levels (only xhigh/max or
++// no levels at all) goes without the key, droid's "none" being right for
++// it. A user's own entry is never touched.
++func TestDroidReasoningEffort(t *testing.T) {
++	_, path := droidHome(t)
++	os.WriteFile(path, []byte(droidUser), 0o644)
++	if err := catalog.SaveLive("droid-relay", "https://relay.test/v1", []catalog.Model{
++		{ID: "thinker", Name: "Thinker", Efforts: []string{"medium", "high", "max"}},
++		{ID: "ceiling", Name: "Ceiling", Efforts: []string{"xhigh", "max"}},
++		{ID: "lowly", Name: "Lowly", Efforts: []string{"low"}},
++		{ID: "plain", Name: "Plain"},
++	}); err != nil {
++		t.Fatal(err)
++	}
++	if err := provider.Save(provider.Provider{ID: "droid-relay", Name: "Droid Relay", Key: "k",
++		Chat: "https://relay.test/v1", Models: []string{"thinker", "ceiling", "lowly", "plain"}}); err != nil {
++		t.Fatal(err)
++	}
++	a, err := Find("droid")
++	if err != nil {
++		t.Fatal(err)
++	}
++	if err := a.Apply("model", "magpie/droid-relay/thinker"); err != nil {
++		t.Fatal(err)
++	}
++	ms, _, _ := droidFile(t, path)
++	for id, want := range map[string]string{
++		"custom:magpie/droid-relay/thinker": "high",
++		"custom:magpie/droid-relay/ceiling": "high", // droid's picker tops at high
++		"custom:magpie/droid-relay/lowly":   "low",
++	} {
++		e := ms[id]
++		if e == nil {
++			t.Errorf("%s missing: %v", id, ms)
++			continue
++		}
++		if got, _ := e["reasoningEffort"].(string); got != want {
++			t.Errorf("%s: reasoningEffort %q, want %q", id, got, want)
++		}
++	}
++	for _, id := range []string{"custom:magpie/droid-relay/plain", "custom:Kimi-K2-[Groq]-0"} {
++		if e := ms[id]; e != nil {
++			if _, has := e["reasoningEffort"]; has {
++				t.Errorf("%s: reasoningEffort written for a model without levels", id)
++			}
++		}
++	}
++}
+-- 
+2.50.1 (Apple Git-155)
+

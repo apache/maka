@@ -1,0 +1,25 @@
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py gemini baseline
+INPUT: CONFIG: fixed gemini source allowlist
+OUTPUT: BASELINE PASS groups=2 files=5 bytes=4668164 protected=1
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py gemini archive
+INPUT: e459716a06507e954d47b30d5209694597956a1a832bcb143a321949904105b1
+OUTPUT: ARCHIVE PASS zip_files=2 files=5 bytes=4668164
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py gemini apply
+INPUT: 9ccdde4640a0736301b18189ff510aa6f1c7153e22e73c1e5d9e53dee5e5617c
+OUTPUT: APPLY PASS removed_files=5 removed_bytes=4668164
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py gemini verify
+INPUT: 96d98cb87e2af8008d675b4afcbb6f8bc7eea5c76611ba50e2903d0516863579
+OUTPUT: MODIFIED PASS files=5 bytes=4668164 originals_absent=true protected_unchanged=true
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py gemini rollback-test
+INPUT: 96d98cb87e2af8008d675b4afcbb6f8bc7eea5c76611ba50e2903d0516863579
+OUTPUT: ROLLBACK PASS restored_files=5 restored_bytes=4668164 hashes_match=true originals_untouched=true
+EXIT: 0
+

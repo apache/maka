@@ -1,0 +1,10 @@
+{
+    "extName": {
+        "message": "X-Track: 推特足迹 & 书签管理器",
+        "description": "Extension name"
+    },
+    "extDescription": {
+        "message": "同步书签，追踪阅读历史，AI 智能分析兴趣偏好。",
+        "description": "Extension description"
+    }
+}

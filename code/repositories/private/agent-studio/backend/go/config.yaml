@@ -1,0 +1,19 @@
+server:
+  port: 8080
+  mode: debug  # debug/release
+
+database:
+  host: localhost
+  port: 5432
+  name: agent_studio
+  user: postgres
+  password: postgres
+  sslmode: disable
+
+models:
+  openai:
+    base_url: https://api.openai.com/v1
+    # API密钥从环境变量读取: OPENAI_API_KEY
+  qwen:
+    base_url: https://dashscope.aliyuncs.com/api/v1
+    # API密钥从环境变量读取: QWEN_API_KEY

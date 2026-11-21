@@ -1,0 +1,11 @@
+upstream/main:internal/gateway/decide.go:582:		writeError(w, provider.Chat, http.StatusForbidden, keyModelError(keyWho, asked))
+upstream/main:internal/gateway/decide_group.go:99:		writeError(w, provider.Chat, http.StatusForbidden, keyModelError(keyWho, asked))
+upstream/main:internal/gateway/draw.go:618:			fail(403, keyModelError(keyWho, d.Model))
+upstream/main:internal/gateway/draw.go:640:				fail(403, keyModelError(keyWho, d.Model))
+upstream/main:internal/gateway/embeddings.go:124:		msg := keyModelError(keyWho, asked)
+upstream/main:internal/gateway/gateway.go:2463:		writeError(w, from, 403, keyModelError(keyWho, call.Model))
+upstream/main:internal/gateway/key_models.go:453:func keyModelError(who access.Identity, model string) string {
+upstream/main:internal/gateway/key_models.go:531:		writeError(w, proto, http.StatusForbidden, keyModelError(keyWho, id))
+upstream/main:internal/gateway/video.go:1045:		fail(403, keyModelError(keyWho, f.Model))
+upstream/main:internal/gateway/video.go:1068:			fail(403, keyModelError(keyWho, f.Model))
+upstream/main:internal/gateway/video.go:1347:	return keyModelError(who, p.ID+"/"+model)

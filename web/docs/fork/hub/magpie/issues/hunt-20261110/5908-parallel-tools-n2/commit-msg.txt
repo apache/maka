@@ -1,0 +1,60 @@
+agent: Antigravity's wire protocol stays what the file holds (#5908)
+
+On a gateway, Antigravity's app talks to magpie on the wire protocol
+its config names, and magpie wrote openai there every time it synced
+or re-connected the file. On that openai stream the app's own
+accumulator folds a turn's parallel calls into one — the ids, names
+and arguments of the model's functionCalls collapsing into a single
+call — so its turns retry for good over a Gemini-compatible provider
+(#5908); on genai it reads the same calls whole, one part each, and
+the reporter's own way out was hand-setting genai, which magpie's
+next write put back on openai. mergeTheirs keeps a key magpie doesn't
+write; wireProtocol is one it does, so the file's own value never
+survived.
+
+So a wired file's wireProtocol stays what the file holds: the
+reporter's genai keeps working past magpie's syncs, and any other
+value the app reads is the user's to pick. A block magpie starts (no
+gateway of its own in the file yet) still says openai, as does a file
+that names none. magpie's address, key and catalog still refresh; a
+user's added keys stay, as theirsKept already kept them. magpie
+serves both wires on the same address (the app asks /v1/chat/
+completions on openai, /v1beta/models/{model}:streamGenerateContent
+on genai), so nothing else reads the value.
+
+Run:
+- TestAntigravityWireProtocolKept: a fresh block writes openai; a
+  hand-set genai survives a re-connect and a sync, with magpie's url
+  and key still in place (red on the old code: genai written back to
+  openai — the report's own workaround, undone at the next sync).
+- TestAntigravityGateway: a user's own genai gateway is stashed and
+  replaced with magpie's openai block, as before.
+- TestAntigravitySyncWiresConfigJSON and the 2.30-file, legacy-file,
+  admin and env batches — green.
+- The parallel calls themselves measured on both wires end to end, a
+  Gemini-compatible fake upstream answering three functionCalls (one
+  chunk, one call a chunk, upstream ids, thought signatures, thinking
+  between the calls, a whole reply): the openai wire carries three
+  tool_calls at indexes 0,1,2 with an id of their own each and the
+  replayed history keeps every call and every answer; the genai wire
+  carries three whole functionCalls. All green on this base
+  (TestChatWireKeepsParallelCallsApart, TestChatWireReplaysParallel-
+  CallsWhole, TestChatWireParallelCallShapes, TestChatWireParallel-
+  CallsWholeReply, TestGenaiWireParallelCalls) — the fold lives in
+  the app's openai accumulator, which magpie's frames meet with the
+  shape OpenAI itself streams.
+- go test -tags nogui ./internal/agent (whole package): green but
+  TestMothX, red on the parent commit too on this machine.
+- The named tests again with -race: green. gofmt -l empty.
+- Ablation: the keep branch made a no-op turns
+  TestAntigravityWireProtocolKept red; restored, green.
+- Sibling scan: wireProtocol is written nowhere else; nothing else
+  reads it; avibe, miniq, fx and qoder name a protocol in blocks
+  magpie writes for apps with a single wire against magpie, where no
+  user choice and no defect is on record — left as they are;
+  theirsKept and mergeTheirs untouched.
+
+Not tried: a real Antigravity app (none on this machine); the wire
+fixtures pin the frames the report's chain carries.
+
+Generated-by: GLM-5.3-Flash (ZCode)

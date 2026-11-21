@@ -1,0 +1,360 @@
+## Summary
+
+`workPlace` (`internal/gateway/workdir.go`) now reads the folder in the same two layers `clientNamedWorkPlace` does. The caller's own layer — its instructions and its `{role: "system"}` messages — is read whole, a `claude --bare` run's `CWD: /x` and pi 1.1's `Current working directory:` among the forms; a turn of the conversation is read only for the forms a caller states in one — `<cwd>`, OpenCode's `<env>`, and Claude Code's `<system-reminder>`, which is how it says a folder it moved to. A working-directory line a user message quotes — WardLu's P3, "Primary working directory: /x" alone on its line — no longer names the folder: not for a group's rule by folder, not for the routing log, and not to a plugin's provider as `WorkDirHeader`.
+
+One deliberate distance from the issue's proposal: the turn face keeps workdir.go's own wrapper-scoped forms instead of taking `clientTurnWorkDir` verbatim, because two behaviors the routing face pins (and the bridge's unscoped turn forms would break) are real agents' shapes: Claude Code's move announcement arrives as `<system-reminder>` in a user turn (`TestWorkDirLastSaidAndOnlyByTheAgent`, from the folder-routing feature's captures), and a bare `Working directory:` line in a turn is not OpenCode's (`TestWorkDirOpenCode` pins it read only inside `<env>`). The structure is shared; the compiled patterns stay per-face, and `clientNamedWorkPlace` is untouched.
+
+## Reproduce
+
+A request whose system prompt says ` - Primary working directory: /Users/me/real` and whose next user turn says `Primary working directory: /Users/me/quoted` alone on its line: on base `cb7d7f9aa` a group rule by folder matched `/Users/me/quoted`, and a plugin's provider was told `/Users/me/quoted` in `X-Magpie-Work-Dir`. And a `claude --bare` caller (`CWD: /x` as its whole system prompt) named no folder at all — its rule by folder never matched.
+
+## Root cause
+
+`workDirIn` took the last folder named by its patterns anywhere in the system prompt and every non-assistant text part, with one pattern set for both layers — the shape #4449 moved the bridge off, left in the routing face. A quoted line and the caller's own statement were the same bytes to it.
+
+## Fix
+
+`workPlace` reads each text with the form set its layer allows: `callerForms` (all forms, `CWD:` and pi's line added) for the system prompt and system messages, `turnForms` (`<cwd>`, `<env>`, `<system-reminder>`-wrapped `Primary working directory:`) for the rest. The last said still goes, wherever it sits — an agent that moved says so after, in a turn, and is still followed. The forms carry workdir.go's own handling (entities unescaped, ` (was …)` dropped, the cheap substring gate kept). `docs/subsystems/gateway-routing.md`'s rule-by-folder section says the same in its contract line.
+
+## Verification
+
+| Check | Result |
+| --- | --- |
+| `TestWorkDirTurnQuoteIsNotTheCallerWord`, `TestWorkDirBareCWD`, `TestTellWorkPlaceTurnQuote` on base `cb7d7f9aa` | FAIL: the quoted turn named the folder (routing and header faces); `CWD:` named none |
+| the same with the change | green: the caller's own wins, a quote alone names nothing, `CWD:` and pi's line are read |
+| `TestWorkDirMoveReminderStillTheAgentWord` | green — protective only, green before the fix too: pins that the move reminder is read and the last said goes |
+| `TestWorkDirOfEachAgent`, `TestWorkDirOpenCode`, `TestWorkDirLastSaidAndOnlyByTheAgent`, `TestRuleByFolder` (the pinned agent shapes, untouched) | green |
+| ablation: `workdir.go` reverted to base, tests kept | the three defect tests fail again; restored: green |
+| `go test -tags nogui -count=1 -timeout 30m ./internal/gateway` | 569 s: one red — `TestCodexPoolSaysTheClientsVersion`, pre-existing on this machine (its pinned Codex version against the installed CLI 0.165.0; green solo, and the same red on bare `main` here, as #4942's verification notes) |
+| the workdir tests with `-race` | ok |
+| `gofmt -l`, `go vet -tags nogui` (darwin, GOOS=linux, GOOS=windows), `go build -tags nogui` (darwin, linux, windows) | clean |
+
+**Not verified**: real Claude Code / Codex / pi / OpenCode traffic against the change — the fixtures in `testdata/workdir/` (captured requests, entities and all) stand in for them; `TestWorkDirOfEachAgent` and `TestRuleByFolder` run those bytes end to end. A `--bare` caller against a live gateway: the form is read the same way the bridge has read it since #4449.
+
+**Left**: the bridge's `clientTurnWorkDir` reads a bare `Working directory:` line in a turn (its own os.Stat gate stands between it and a wrong spawn folder); bringing the two faces to one pattern set is a wider change than this issue asks.
+
+---
+**Source**: reported in #4940 (yetone, sibling of #4449; WardLu's P3 case from that issue's thread).
+
+**Red without the fix** (base `cb7d7f9aa`): with `internal/gateway/workdir.go` reverted and the new tests kept, `go test ./internal/gateway -run 'TestWorkDirTurnQuoteIsNotTheCallerWord|TestWorkDirBareCWD|TestTellWorkPlaceTurnQuote'` fails:
+```
+--- FAIL: TestWorkDirTurnQuoteIsNotTheCallerWord (0.00s)
+    workdir_turn_quote_test.go:19: a quoted line in a turn overrode the caller's own: "/Users/me/quoted"
+--- FAIL: TestWorkDirBareCWD (0.00s)
+    workdir_turn_quote_test.go:33: a --bare run's CWD: is not read: ""
+--- FAIL: TestTellWorkPlaceTurnQuote (0.00s)
+    workdir_turn_quote_test.go:64: the plugin is told "%2FUsers%2Fme%2Fquoted", want "%2FUsers%2Fme%2Freal"
+```
+With the fix: `ok`.
+
+**Siblings**: `workDir`'s consumers — `rules.go` (a group's rule by folder), `middleware.go` (`info.Cwd`, the routing log), `zenfree.go` (OpenCode's environment block), `parse_memo.go` (`factsOf` → `tellWorkPlace`, the plugin header) — all read through `workPlace`, so one change covers them; `parse_memo_test.go` pins the body face. `clientNamedWorkPlace` (the bridge) is untouched.
+
+**When the read fails**: a folder no text states leaves `WorkDirHeader` off and the rule by folder unmatched, as before; a form inside a truncated block (`<env>` or `<system-reminder>` without its close) is skipped, not half-read.
+
+**Not verified**: live traffic of each agent; Windows GUI.
+
+**Attribution**: AI-written; I've read the whole diff and the tests pass. Please keep the author (`ggbdpq`) or add `Co-authored-by: ggbdpq <ggbdpq@gmail.com>`.
+
+**Branch with the commit**: [fix/4940-workdirin-two-layers](https://github.com/ggbdpq/magpie/tree/fix/4940-workdirin-two-layers) (head `85f144682`).
+
+**Patch**: <details><summary>patch: gateway: a working-directory line a turn quotes is no caller's word, and a --bare run's CWD: is read (#4940) — git am applies it as is; SHA-256 first 16: 4afeb456f6ce043d</summary>
+
+```patch
+From 85f144682721c562f0377ba2473e5cd9a3480596 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Tue, 3 Nov 2026 07:03:07 +0800
+Subject: [PATCH] gateway: a working-directory line a turn quotes is no
+ caller's word, and a --bare run's CWD: is read (#4940)
+
+What changed: workPlace reads the folder in two layers, as
+clientNamedWorkPlace does. The caller's own layer - its instructions and
+its {role: "system"} messages - is read whole: Claude Code's
+" - Primary working directory:", a --bare run's "CWD: /x", pi 1.1's
+"Current working directory:", Codex's and pi's <cwd>, OpenCode's <env>.
+A turn of the conversation is read only for the forms a caller states in
+one - <cwd>, <env>, and Claude Code's <system-reminder>, which says a
+folder it moved to; a line a user message quotes ("Primary working
+directory: /x" alone on its line, WardLu's P3) no longer names the
+folder for a group's rule by folder, nor goes to a plugin's provider as
+its WorkDirHeader. The last said still goes, wherever it sits: an agent
+that moved says so after. The forms are workdir.go's own, wrapper-scoped
+as the routing face pinned them; the bridge's clientNamedWorkPlace is
+untouched.
+
+Run:
+- go test ./internal/gateway -run 'TestWorkDirTurnQuote|TestWorkDirBareCWD|TestWorkDirMoveReminder|TestTellWorkPlaceTurnQuote' -count=1
+  RED before (the quoted line named the folder; CWD: named none), green after.
+- TestWorkDirOfEachAgent, TestWorkDirOpenCode, TestWorkDirLastSaidAndOnlyByTheAgent,
+  TestRuleByFolder unchanged and green - the agents' own shapes and the
+  move reminder keep working.
+- gofmt, go vet -tags nogui (darwin/linux/windows), go build -tags nogui
+  (darwin/linux/windows), the new tests with -race: clean.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ docs/subsystems/gateway-routing.md          |   2 +-
+ internal/gateway/workdir.go                 | 112 ++++++++++++++------
+ internal/gateway/workdir_turn_quote_test.go |  66 ++++++++++++
+ 3 files changed, 149 insertions(+), 31 deletions(-)
+ create mode 100644 internal/gateway/workdir_turn_quote_test.go
+
+diff --git a/docs/subsystems/gateway-routing.md b/docs/subsystems/gateway-routing.md
+index 77a384f2e..ca9c64eae 100644
+--- a/docs/subsystems/gateway-routing.md
++++ b/docs/subsystems/gateway-routing.md
+@@ -172,7 +172,7 @@ recorded as a prediction failure (`noPrediction`).
+    - A rule may name several members (`Rule.More` after `Rule.Use`, `more` in the group's JSON, `use=a,b` typed; monkeyin_92 on X: one rule, several models, not a rule each). They go first in that order, ahead of the later matching rules' members (`ThenUses` leaves out every one the rule names) and the group's others: when the first fails or rests the rule's next takes the request, and the hit says so (`RuleHit.More`; `Instead` is that next one with `Unready` false, where an `Instead` from a later rule comes with `Unready` true). `Uses`, `SetUses`, `MapUses`, `Without` and `Names` in [`grouprule.go`](../../internal/provider/grouprule.go) are how every reader goes through them: `cleanRules` (each must be the group's, each named once, a pause names one), the turn's hold, the tool rounds and compaction (`ruleFor`, the rule's first that takes the summary), `nestedRules` and `ruleLed` (the one of them a nested group's turn stays on), `ruleEffort` (the rule's `useEffort` asked of each), `ruledEntry` (what a group takes is what every one of them takes), a model's rename and removal (a rule goes with its last), `ShareGroup` and its import (one this magpie hasn't is left out of the rule), the CLI's `groups rules` and the TUI. The editor draws a chip per member with a + for the next and an × on each while there is more than one (`rUses`/`setUses` in [`plugins/routing/client.js`](../../internal/gui/assets/plugins/routing/client.js)). A rule of one member writes no `more`, so a group saved before it reads and saves as it was. A magpie from before it reads `use` alone: its requests go to the first, and the others are plain members in the group's order; if it saves the group, `more` is dropped. `TestRuleSeveralModelsInOrder`, `TestCleanRulesSeveralModels`, `routing-rule-models.test.cjs`.
+    - The editor's rules are checked top first, so their order is theirs to set: a rule's number is its handle (`ruleHandle`, `.rt-rhandle`), dragged (`dragRows`, as the members are) or moved a place with Alt+↑/↓, the rules renumbered at once; the grip beside it shows on hover only, and Move up and down stay under its ⋯ (`moveRule`). Saved as the group's `rules` in their new order. `routing-rule-drag.test.cjs`.
+    - A rule can set the reasoning its member is asked for (`Rule.UseEffort`, `useEffort` in the group's JSON, `use-effort=low` typed; #2633, dengtongcai: an intent picks the model and the effort as a pair). It is an output like `Use`, not a condition like `Effort`. `ruleFor` copies it onto the hit (`RuleHit.UseEffort`) from the rule that put a member first, outer or nested; `ruleOver` keeps that rule's members, and `ruleEffort` gives each candidate of them the level fitted to its model's own (`fitLevel`), which `withFixedEffort` writes into the request's field for its protocol (Chat's `reasoning_effort`, Responses' `reasoning.effort`, Anthropic's thinking budget or `output_config.effort`) even when the agent asked none. A member fixed at an effort keeps its own; otherwise the rule's beats the model's suffix, the turn's pick and the agent's pick, and isn't bounded by the group's levels. A model whose levels aren't known (`Efforts` empty) is asked as the agent asked, as with the auto verdict. The members the group fails over to are asked it too (#3664): the effort is the turn's decision, so when the rule's own member is turned away the member that takes the request over is asked the same level, fitted to its model, rather than the agent's. A rule that names the candidate goes before one it only fails over from, and a nested group's rule decides for that group's members only: when the whole nested group fails, the outer group's member outside it is asked as the agent asked, or by the outer group's rule (`TestIntentEffortSurvivesTheGroupsFailover`, `TestNestedRuleEffortStaysInItsGroup`). A Gemini-protocol client's request is left as it came, as for every effort magpie sets. `cleanRules` refuses a value outside `provider.Efforts` and a pause with one. The try records it (`Try.RuleEffort`), and the Routing page says the rule set it. `rule_effort_test.go`, `grouprule_useeffort_test.go`, `routing-rule-effort.test.cjs`.
+-   - A rule by folder (`Rule.Folders`, `folders=~/work/acme,~/oss`; Cario0x on X: routing by the project being worked on) matches when the folder the agent works in is one of them or inside one (`provider.FolderUnder`, [`rulefolder.go`](../../internal/provider/rulefolder.go)): at a path's boundary, so `/a/b` is not under `/a/bc`; `~` is the home folder; a Windows drive is one with its WSL mount (`C:\work` is `/mnt/c/work`) and a `\\wsl$\<distro>` or `\\wsl.localhost\<distro>` share is the distro's own path; case doesn't count on macOS and Windows, nor ever for a drive. A rule outside folders (`Rule.ExceptFolders`, `except-folders=~/big-task`; #1606, Ti800) matches when the folder is in none of them, and an agent that says none isn't known to be in one, so it matches; a rule may have both (`Rule.ByFolder`, `inFolders`). The folder is read from the request only when a rule of the group has folders or except-folders (`workDir` in [`workdir.go`](../../internal/gateway/workdir.go)), in each agent's own words, taken from captured requests: Claude Code's ` - Primary working directory: <path>` (its `<`/`>` as entities; ` (was <old>)` after a change dropped), Codex's `<environment_context>` `<cwd>`, Pi's `<cwd>` in the system prompt, and OpenCode's `Working directory:` inside its `<env>` block. Only the system prompt and the user's and system messages' text count, never the model's words or a tool's result, and the last said wins. An agent that says none has no folder, and no `folders=` rule matches it (unknown, never empty). The same reading tells a plugin's fetch where its agent works ([provider-plugins](provider-plugins.md#where-the-agent-works-for-a-plugins-fetch)). A pause rule may hold by folder too (below). The trace's `RuleHit.Folder` is the folder read, and the Routing page tells it beside the rule's `folder …` condition. `TestFolderUnder`, `TestRuleMatchesByFolder`, `TestParseRuleFolders`, `TestWorkDirOfEachAgent`, `TestRuleByFolder`, `TestRuleMatchesExceptFolders`, `routing-folder.test.cjs`. Rules by folder are never in a shared group (`ShareGroup` drops every `ByFolder` rule).
++   - A rule by folder (`Rule.Folders`, `folders=~/work/acme,~/oss`; Cario0x on X: routing by the project being worked on) matches when the folder the agent works in is one of them or inside one (`provider.FolderUnder`, [`rulefolder.go`](../../internal/provider/rulefolder.go)): at a path's boundary, so `/a/b` is not under `/a/bc`; `~` is the home folder; a Windows drive is one with its WSL mount (`C:\work` is `/mnt/c/work`) and a `\\wsl$\<distro>` or `\\wsl.localhost\<distro>` share is the distro's own path; case doesn't count on macOS and Windows, nor ever for a drive. A rule outside folders (`Rule.ExceptFolders`, `except-folders=~/big-task`; #1606, Ti800) matches when the folder is in none of them, and an agent that says none isn't known to be in one, so it matches; a rule may have both (`Rule.ByFolder`, `inFolders`). The folder is read from the request only when a rule of the group has folders or except-folders (`workDir` in [`workdir.go`](../../internal/gateway/workdir.go)), in each agent's own words, taken from captured requests: Claude Code's ` - Primary working directory: <path>` (its `<`/`>` as entities; ` (was <old>)` after a change dropped), Codex's `<environment_context>` `<cwd>`, Pi's `<cwd>` or `Current working directory:` in the system prompt, and OpenCode's `Working directory:` inside its `<env>` block. The caller's own layer — the system prompt and its `{role: "system"}` messages — is read whole, a `claude --bare` run's `CWD: <path>` among the forms; a user turn counts only for the forms a caller states in one (`<cwd>`, OpenCode's `<env>`, Claude Code's `<system-reminder>`, which says a folder it moved to): a working-directory line a user message quotes is no caller's word (#4940). Never the model's words or a tool's result, and the last said wins. An agent that says none has no folder, and no `folders=` rule matches it (unknown, never empty). The same reading tells a plugin's fetch where its agent works ([provider-plugins](provider-plugins.md#where-the-agent-works-for-a-plugins-fetch)). A pause rule may hold by folder too (below). The trace's `RuleHit.Folder` is the folder read, and the Routing page tells it beside the rule's `folder …` condition. `TestFolderUnder`, `TestRuleMatchesByFolder`, `TestParseRuleFolders`, `TestWorkDirOfEachAgent`, `TestRuleByFolder`, `TestRuleMatchesExceptFolders`, `routing-folder.test.cjs`. Rules by folder are never in a shared group (`ShareGroup` drops every `ByFolder` rule).
+    - A rule by agent (`Rule.Agents`, `agents=codex,sillytavern`) matches the agent the gateway names the request's (`agentOf` in [`gateway.go`](../../internal/gateway/gateway.go): its `magpie-<name>` key, else its User-Agent), in lower case (`cleanRules`, `MatchesBesidesIntent`, `Pauses`). A client magpie doesn't know is named by its User-Agent's product name, before the first `/` or space (`usage.AgentOf`), so a rule can hold SillyTavern or one's own app (raikyou on Discord). The editor's agent picker lists the agents magpie knows, then those `/api/usage?period=30d` heard from that it doesn't (not `other`, nor `magpie`), and takes a name typed in its filter as the gateway reads a User-Agent (`uaName` in [`plugins/routing/client.js`](../../internal/gui/assets/plugins/routing/client.js), through the picker's `field.typed`): "MyApp/2.0 (Linux)" is `myapp`. `routing-rule-agent-typed.test.cjs`.
+    - A pause rule (`Rule.Pause`, `pause=<model>`; John on Discord: a model of the group paused in its vendor's peak hours) leaves the model it names out of the group while it holds (`provider.PausedOut`, on `ruleClock`): the group's own rules and each nested group's on the way down to a member, a group named taking all its models, and a model named taking it wherever a group in the group has it (#625). It runs before planning, on every request rather than once a turn, so the model is not first, not a failover, and not kept by affinity, and comes back as soon as the hours end. It holds by hours, days, agents and folders only (`cleanRules` refuses another condition), and is not a send-to rule: `Matches`, `MatchRule`, `ThenUses`, `Ruled` and the compaction rules leave it out. A send-to rule naming a paused model finds it unready and the group routes as without it. The trace keeps what was paused (`GroupRef.Paused`), and the Routing page says so. Every model paused answers 503 (`pausedError`) naming each rule. Embeddings go by the same pauses; manual groups have no rules (`Live`), so none pause there. A pause by folder (#1606, Ti800: a subscription's quota kept for the long task in one folder, `pause=<model> except-folders=~/big-task`) reads the folder only when such a pause is on the way (`provider.PausesByFolder`, then `workDir`): outside its except-folders, which includes a request that says no folder (a subagent's or a small model's that doesn't), the model is left out; with `folders=`, only requests known to be in them. Embeddings and System One's decision calls have no folder. `Paused.Folder`/`ByFolder` carry what was read, and the Routing page says the folder or that none was said. `rules_pause_test.go`, `TestPauseByFolder`, `TestPauseByFolderRule`, `TestParsePauseByFolder`, `routing-pause-folder.test.cjs`.
+    - A rule's hours and days (`Rule.Time`, `provider.TimeWindow`) are read on `ruleClock` in the zone they were set in (`TimeWindow.Zone`, an IANA name; gaubeebangeel on X: magpie on a cloud server in UTC, its user in Beijing, the hours 8 off). The GUI saves the browser's zone when the hours or days are changed in the editor and leaves a rule's zone alone otherwise; the CLI (`magpie group rule add … time=09:00-18:00@Asia/Shanghai` or `tz=`) and the TUI save the one typed, or this computer's (`provider.LocalZone`: `$TZ`, `time.Local`, the `/etc/localtime` link) when it has an IANA name. A window with no zone, every one saved before zones were kept, stays on magpie's own clock. A zone magpie doesn't know is refused on save (`TimeWindow.clean`), and one in a file edited by hand makes the window never hold (`zoneOf`): the rule is as if absent, never always on and never hours off. Zones come from Go's embedded tzdata, so Windows knows them too. `/api/groups` gives magpie's clock (`clock`: its zone and offset in seconds), and when it differs from the hours' zone the Routing page tells the zone beside them, on the group's rules and in the editor (`zoneNote` in [`plugins/routing/client.js`](../../internal/gui/assets/plugins/routing/client.js)): the zone's name, or the server's offset for hours with none. `TestRuleTimeWindowInItsZone`, `TestRuleTimeWindowInItsZoneAtTurnStart`, `TestRuleTimeWindowUnknownZone`, `TestParseRuleTimeZone`, `TestGroupRuleTimeZoneCmd`, `routing-time-zone.test.cjs`.
+diff --git a/internal/gateway/workdir.go b/internal/gateway/workdir.go
+index 583acbf1c..4f3a137bd 100644
+--- a/internal/gateway/workdir.go
++++ b/internal/gateway/workdir.go
+@@ -6,14 +6,21 @@ package gateway
+ //
+ //   - Claude Code (2.1.296): its environment, " - Primary working
+ //     directory: /x", in the system prompt or a system message; when the
+-//     folder changes, "Primary working directory: /y (was /x)". < and > in
+-//     the path come as &lt; and &gt;.
++//     folder changes, a <system-reminder> in a turn, "Primary working
++//     directory: /y (was /x)". < and > in the path come as &lt; and &gt;.
+ //   - Codex (0.162): a user message's <environment_context> with
+ //     "<cwd>/x</cwd>", the path's &, < and > as entities.
+-//   - Pi (1.1): the system prompt's "<cwd>\n/x\n</cwd>", backslashes as /.
++//   - Pi (1.1): the system prompt's "<cwd>\n/x\n</cwd>" or its "Current
++//     working directory: /x", backslashes as /.
+ //   - OpenCode (2.0): "<env>\n  Working directory: /x\n…</env>", in the
+ //     system prompt or, when it changes, a later message.
+ //
++// The caller's own layer — its instructions and its system messages — is
++// read whole, a --bare run's "CWD: /x" among the forms (#4940). A turn of
++// the conversation is read only for the forms a caller states in one:
++// Codex's and pi's <cwd>, OpenCode's <env>, Claude Code's
++// <system-reminder>. A line a user message quotes — "Primary working
++// directory: /x" alone on its line (WardLu's P3) — is no caller's word.
+ // Of those it says, the last one goes: an agent that moved says so after.
+ // An agent that says none of them has no folder: a rule by folder doesn't
+ // match it.
+@@ -33,9 +40,43 @@ var (
+ 	// the folder a <cwd> holds: Codex's on its line, Pi's on its own
+ 	cwdTag = regexp.MustCompile(`<cwd>\s*([^<\n]+?)\s*</cwd>`)
+ 	envDir = regexp.MustCompile(`(?m)^\s*Working directory: (.+)$`)
++	// a --bare run's whole system prompt is "CWD: /x"
++	bareCWD = regexp.MustCompile(`(?m)^\s*(?: - )?CWD: (.+)$`)
++	// pi 1.1 states its folder as a line, where its <cwd> wraps it
++	piDir = regexp.MustCompile(`(?m)^\s*(?: - )?Current working directory: (.+)$`)
+ 	wasDir = regexp.MustCompile(` \(was .*\)$`)
+ )
+ 
++// dirForm is one form a caller states its folder in. wrap, when set, is
++// the caller's own block the form is read inside: in a turn, a form is a
++// caller's word only inside the block it states it in (#4940).
++type dirForm struct {
++	re   *regexp.Regexp
++	wrap string
++	was  bool // a moved-folder line, its " (was …)" dropped
++}
++
++// callerForms are the forms of the caller's own layer — its instructions
++// and its system messages — where every form it states counts, wherever
++// it sits there.
++var callerForms = []dirForm{
++	{re: ccWorkDir, was: true},
++	{re: bareCWD},
++	{re: piDir},
++	{re: cwdTag},
++	{re: envDir, wrap: "<env>"},
++}
++
++// turnForms are the forms a caller states in a turn: Codex's and pi's
++// <cwd> (the <environment_context> is one of the user's), OpenCode's
++// <env> a later message, and Claude Code's <system-reminder>, which says
++// a folder it moved to.
++var turnForms = []dirForm{
++	{re: cwdTag},
++	{re: envDir, wrap: "<env>"},
++	{re: ccWorkDir, wrap: "<system-reminder>", was: true},
++}
++
+ // workDir is the folder the request says its agent works in; "" when it
+ // doesn't say.
+ func workDir(req *Request) string {
+@@ -50,19 +91,23 @@ func workPlace(req *Request) (dir, git string) {
+ 	if req == nil {
+ 		return "", ""
+ 	}
+-	look := func(text string) {
+-		if d := workDirIn(text, ""); d != "" {
++	look := func(text string, forms []dirForm) {
++		if d := workDirIn(text, "", forms); d != "" {
+ 			dir, git = d, provider.GitSaid(text)
+ 		}
+ 	}
+-	look(req.System)
++	look(req.System, callerForms)
+ 	for _, m := range req.Messages {
+ 		if m.Role == "assistant" {
+ 			continue // the model's words, not the agent's
+ 		}
++		forms := turnForms
++		if m.Role == "system" {
++			forms = callerForms // the caller's own, said after its instructions
++		}
+ 		for _, p := range m.Parts {
+ 			if p.Kind == Text {
+-				look(p.Text)
++				look(p.Text, forms)
+ 			}
+ 		}
+ 	}
+@@ -94,38 +139,45 @@ func tellWorkPlace(h http.Header, to provider.Protocol, body []byte) {
+ 	}
+ }
+ 
+-// workDirIn is the last folder text says, else dir.
+-func workDirIn(text, dir string) string {
+-	if !strings.Contains(text, "irectory: ") && !strings.Contains(text, "<cwd>") {
++// workDirIn is the last folder text says in these forms, else dir.
++func workDirIn(text, dir string, forms []dirForm) string {
++	if !strings.Contains(text, "irectory: ") && !strings.Contains(text, "<cwd>") && !strings.Contains(text, "CWD:") {
+ 		return dir
+ 	}
+ 	at := -1
+-	take := func(i int, v string) {
++	take := func(i int, v string, was bool) {
+ 		if v = strings.TrimSpace(html.UnescapeString(v)); v != "" && i > at {
++			if was {
++				v = wasDir.ReplaceAllString(v, "")
++			}
+ 			at, dir = i, v
+ 		}
+ 	}
+-	for _, m := range ccWorkDir.FindAllStringSubmatchIndex(text, -1) {
+-		take(m[0], wasDir.ReplaceAllString(text[m[2]:m[3]], ""))
+-	}
+-	for _, m := range cwdTag.FindAllStringSubmatchIndex(text, -1) {
+-		take(m[0], text[m[2]:m[3]])
+-	}
+-	// OpenCode's, only within its <env>
+-	for rest, off := text, 0; ; {
+-		i := strings.Index(rest, "<env>")
+-		if i < 0 {
+-			break
+-		}
+-		j := strings.Index(rest[i:], "</env>")
+-		if j < 0 {
+-			break
++	for _, f := range forms {
++		if f.wrap == "" {
++			for _, m := range f.re.FindAllStringSubmatchIndex(text, -1) {
++				take(m[0], text[m[2]:m[3]], f.was)
++			}
++			continue
+ 		}
+-		block := rest[i : i+j]
+-		if m := envDir.FindStringSubmatchIndex(block); m != nil {
+-			take(off+i+m[0], block[m[2]:m[3]])
++		// OpenCode's <env>, Claude Code's <system-reminder>: the caller's
++		// own block the form is read inside
++		end := "</" + f.wrap[1:]
++		for rest, off := text, 0; ; {
++			i := strings.Index(rest, f.wrap)
++			if i < 0 {
++				break
++			}
++			j := strings.Index(rest[i:], end)
++			if j < 0 {
++				break
++			}
++			block := rest[i : i+j]
++			if m := f.re.FindStringSubmatchIndex(block); m != nil {
++				take(off+i+m[0], block[m[2]:m[3]], f.was)
++			}
++			rest, off = rest[i+j:], off+i+j
+ 		}
+-		rest, off = rest[i+j:], off+i+j
+ 	}
+ 	return dir
+ }
+diff --git a/internal/gateway/workdir_turn_quote_test.go b/internal/gateway/workdir_turn_quote_test.go
+new file mode 100644
+index 000000000..d0165508d
+--- /dev/null
++++ b/internal/gateway/workdir_turn_quote_test.go
+@@ -0,0 +1,66 @@
++package gateway
++
++import (
++	"net/http"
++	"net/url"
++	"testing"
++
++	"github.com/yetone/magpie/internal/provider"
++)
++
++// A user turn that quotes a working-directory line — "Primary working
++// directory: /x" alone on its line, WardLu's P3 — is no caller's word:
++// the caller's own layer wins, and a turn is read only for the forms a
++// caller states in one (#4940).
++func TestWorkDirTurnQuoteIsNotTheCallerWord(t *testing.T) {
++	req := &Request{System: "You are an agent.\n - Primary working directory: /Users/me/real",
++		Messages: []Message{{Role: "user", Parts: []Part{{Kind: Text, Text: "Please remember this:\nPrimary working directory: /Users/me/quoted"}}}}}
++	if got := workDir(req); got != "/Users/me/real" {
++		t.Fatalf("a quoted line in a turn overrode the caller's own: %q", got)
++	}
++	// a quote alone on its line, nothing said by the caller: no folder
++	if got := workDir(&Request{Messages: []Message{{Role: "user", Parts: []Part{{Kind: Text, Text: "Primary working directory: /Users/me/quoted"}}}}}); got != "" {
++		t.Fatalf("a quoted line alone named a folder: %q", got)
++	}
++}
++
++// A --bare run states its folder as "CWD: /x", its whole system prompt;
++// the routing rules and a plugin's provider are told it (#4940).
++func TestWorkDirBareCWD(t *testing.T) {
++	req := &Request{System: "CWD: /Users/me/bare",
++		Messages: []Message{{Role: "user", Parts: []Part{{Kind: Text, Text: "hi"}}}}}
++	if got := workDir(req); got != "/Users/me/bare" {
++		t.Fatalf("a --bare run's CWD: is not read: %q", got)
++	}
++	// pi 1.1's line form, where its <cwd> isn't the only one it writes
++	if got := workDir(&Request{System: "Current working directory: /Users/me/pi"}); got != "/Users/me/pi" {
++		t.Fatalf("pi's line form is not read: %q", got)
++	}
++}
++
++// Claude Code says a folder it moved to in a turn, as a
++// <system-reminder>; that stays the agent's word, and the last said goes
++// — the caller's own earlier line does not hold it back.
++func TestWorkDirMoveReminderStillTheAgentWord(t *testing.T) {
++	req := &Request{System: "You are an agent.\n - Primary working directory: /Users/me/old",
++		Messages: []Message{{Role: "user", Parts: []Part{{Kind: Text, Text: "<system-reminder>\nPrimary working directory: /Users/me/next (was /Users/me/old)\n</system-reminder>"}}}}}
++	if got := workDir(req); got != "/Users/me/next" {
++		t.Fatalf("the move reminder is not read: %q", got)
++	}
++	// a reminder quoted beside a bare line: the reminder's, not the quote's
++	req.Messages[0].Parts[0].Text = "Primary working directory: /Users/me/quoted\n<system-reminder>\nPrimary working directory: /Users/me/next\n</system-reminder>"
++	if got := workDir(req); got != "/Users/me/next" {
++		t.Fatalf("the reminder beside a quote: %q", got)
++	}
++}
++
++// A plugin's provider is told the caller's folder, not one a turn quotes:
++// the header face of the same fix (#4940).
++func TestTellWorkPlaceTurnQuote(t *testing.T) {
++	body := []byte(`{"model":"m","messages":[{"role":"system","content":"You are an agent.\n - Primary working directory: /Users/me/real"},{"role":"user","content":"Primary working directory: /Users/me/quoted"}]}`)
++	h := http.Header{}
++	tellWorkPlace(h, provider.Chat, body)
++	if got, want := h.Get(provider.WorkDirHeader), url.PathEscape("/Users/me/real"); got != want {
++		t.Fatalf("the plugin is told %q, want %q", got, want)
++	}
++}
+-- 
+2.50.1 (Apple Git-155)
+```
+
+</details>

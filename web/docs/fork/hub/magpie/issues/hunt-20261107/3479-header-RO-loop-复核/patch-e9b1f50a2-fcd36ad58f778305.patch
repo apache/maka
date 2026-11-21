@@ -1,0 +1,58 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Sun, 25 Oct 2026 02:14:04 +0800
+Subject: [PATCH] gui tests: header-centre doesn't count WebKit's
+ ResizeObserver loop notice as a page error (#3479)
+
+webkit "en at 125%" failed 2 of 2 solo runs on main (7b1faf99), errors ==
+['ResizeObserver loop completed with undelivered notifications.'], while
+every layout assertion stayed green. Traced with every ResizeObserver
+delivery logged per frame: sweeping the window's width in 10-point
+steps, a stop between fitTop's steps has the classes it tries (tight,
+cramped, inrow, crowded, packed) re-laying the header out in the same
+frame, so the header's observers (.top, .brand, .actions) are told once
+more, and at that stop the round lands past the loop's depth. WebKit
+reports it as a page error, Chromium doesn't. The round is delivered on
+the next frame and the layout settles: with every stop's geometry
+snapshotted per frame, en at 125% ran 182 frames at the narrowest stop
+with the header 448x46 and every class and width stable, and the sweep's
+own assertions hold at every stop, Chromium and WebKit alike. That is
+the same class 75aa03e1a already ruled on for purpose-filter;
+group-template, group-share, group-duplicate, update-release-page and
+view-scrollbar-drag take the same exemption.
+
+The test now ignores that one message, with the reason beside it; every
+layout assertion is untouched.
+
+webkit 2 of 2 solo runs pass after, chromium is green, and taking the
+exemption back out turns webkit red again. header-zoom-fit and
+header-relang, the other two specs that sweep fitTop's layout and assert
+no page errors, pass on both engines and are left alone.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gui/tests/header-centre.test.cjs | 8 +++++++-
+ 1 file changed, 7 insertions(+), 1 deletion(-)
+
+diff --git a/internal/gui/tests/header-centre.test.cjs b/internal/gui/tests/header-centre.test.cjs
+index cf6dba07c..73696db06 100644
+--- a/internal/gui/tests/header-centre.test.cjs
++++ b/internal/gui/tests/header-centre.test.cjs
+@@ -63,7 +63,13 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
+         const ctx = await browser.newContext({ viewport: { width: Math.round(1100 / zoom), height: 600 }, deviceScaleFactor: zoom });
+         await ctx.addInitScript(() => { Object.defineProperty(Navigator.prototype, "platform", { get: () => "Win32" }); });
+         const page = await ctx.newPage();
+-        page.on("pageerror", (e) => errors.push(e.message));
++        // WebKit reports a ResizeObserver round left to the next frame as a page
++        // error; Chromium doesn't. Sweeping the window's width, a stop between
++        // fitTop's steps has the classes it tries re-laying the header out in
++        // the same frame, so the header's observers are told once more, past
++        // the loop's depth. The round is delivered on the next frame and the
++        // layout settles; nothing is painted wrong.
++        page.on("pageerror", (e) => { if (!/^ResizeObserver loop completed with undelivered notifications/.test(e.message)) errors.push(e.message); });
+         await page.route("**/*", server(lang));
+         await page.goto("http://magpie.test/");
+         await page.waitForSelector("#nav button.on");
+-- 
+2.50.1 (Apple Git-155)
+

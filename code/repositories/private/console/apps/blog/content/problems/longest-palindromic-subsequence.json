@@ -1,0 +1,22 @@
+{
+  "id": "67",
+  "slug": "longest-palindromic-subsequence",
+  "title": "最长回文子序列",
+  "difficulty": "medium",
+  "tags": ["字符串", "动态规划"],
+  "description": "给你一个字符串 `s`,找出其中最长的回文子序列的长度。\n\n子序列是不改变剩余字符顺序的情况下删除某些字符形成的新序列。\n\n**示例 1:**\n\n- 输入:`s = \"bbbab\"`\n- 输出:`4`(最长回文子序列为 `\"bbbb\"`)\n\n**示例 2:**\n\n- 输入:`s = \"cbbd\"`\n- 输出:`2`(最长回文子序列为 `\"bb\"`)",
+  "solution": "## 思路\n\n**区间动态规划**:`dp[i][j]` 表示 `s[i..j]` 的最长回文子序列长度。两端字符相等则 `dp[i][j] = dp[i+1][j-1] + 2`;否则取 `max(dp[i+1][j], dp[i][j-1])`。从右下角向右上角填(按长度递增)。\n\n## 参考代码\n\n```js\nfunction longestPalindromeSubseq(s) {\n  const n = s.length;\n  const dp = Array.from({ length: n }, () => new Array(n).fill(0));\n  for (let i = n - 1; i >= 0; i--) {\n    dp[i][i] = 1;\n    for (let j = i + 1; j < n; j++) {\n      if (s[i] === s[j]) dp[i][j] = dp[i + 1][j - 1] + 2;\n      else dp[i][j] = Math.max(dp[i + 1][j], dp[i][j - 1]);\n    }\n  }\n  return dp[0][n - 1];\n}\n```\n\n## 复杂度\n\n- 时间:O(n²)\n- 空间:O(n²)",
+  "signature": {
+    "language": "javascript",
+    "entry": "longestPalindromeSubseq",
+    "params": [{ "name": "s", "type": "string" }],
+    "returns": "number"
+  },
+  "testCases": [
+    { "sample": true, "input": ["bbbab"], "expected": 4 },
+    { "sample": true, "input": ["cbbd"], "expected": 2 },
+    { "sample": false, "input": ["a"], "expected": 1 },
+    { "sample": false, "input": ["abc"], "expected": 1 },
+    { "sample": false, "input": ["aaa"], "expected": 3 }
+  ]
+}

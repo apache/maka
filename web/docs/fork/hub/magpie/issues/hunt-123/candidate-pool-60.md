@@ -1,0 +1,86 @@
+# hunt-122 续场候选池（预算 60 单，2026-11-04 凌晨扩容）
+
+## 口径
+- 来源：open 全量 400 窗口 → 非 yetone 254 → census 排除 133 → 擅长族关键词 87 → Feature/UI 排除 → 台账 449 排除 → 65 → 人工修正剔除 14 → 51 → 未分类补选 12 → **63 个**
+- census 窗口=最近 1000 条评论（133 单），窗口外老单处置记录以台账 grep 为准，仍有漏网可能
+
+## 派前排雷三查（每单必做，不因在池豁免）
+1. 我方历史评论全查（census 窗口外老单必查）：gh issue view 看 ggbdpq 评论
+2. 竞速者占坑：评论区/时间线 fork 分支交付（skygunner/Jackzigen/Edward4226 形态）
+3. 报告者自带修复：正文分支声明（fix on a fork branch=让位）+ 已 landed（git log -S）
+
+## 已知剔除（勿再入池）
+- 上游已 landed：#4868（f168dd278）
+- r15 帖在审：#4899/#4936/#4944 + 散支 #2972/#4909
+- 已收编闭环：#4910/#4921/#4934/#4913/#4914/#4917/#4931/#4923（维护者自修）/​#4927（待路由）
+- 我方已处置：#4950/#4948/#4970/#4894/#5058
+- 让位：#5083/#5084（qiqll 自带分支）/#4986（自带 fork fix）
+- 不接：#5059（UI）/#5061（Windows ConPTY）/#4990（Windows 沙箱）
+
+## 池（63）
+
+```
+4778	JinJieBeWater	[Bug] Claude 交互模式：网关自动更新后长会话触发 400KB 限制，并被当作 502 反复重试
+4780	Derrors	[Bug] Claude 交互模式多图历史重放时图片粘贴超时，返回 502 或空文本 200；SDK 对照正常
+4782	wuuli	test: Claude callback helper times out in full macOS suite without stage diagnostics
+4798	fewensa	Responses routing sends incompatible encrypted reasoning before retrying with HTTP 400
+4802	faithleysath	[Bug] Git 插件更新到比记录里 latest 更新的提交后，「有新版本」的点和横幅要挂到下一次整点检查，点更新只 toast「已是最新」
+4819	fitzyracing1	CI: test failing: go vet fails on -Wimplicit-enum-enum-cast in dockflap_darwin.go:42,68 and trayimage_darwin.g
+4821	wsyzxjn	usage, gui: 菜单栏面板与路由组的「全部账号」汇总条被截断为 3 项，漏掉 Antigravity 的 Claude 7d 与 Gemini 4 Argon 7d 额度
+4827	SINOALLEN	quota: 额度卡片主数值误取 used 而非 amount，剩余百分比恒为 0%
+4843	z1edge	daemon status lists "on the network" addresses that --web isn't bound to
+4852	ethanfly	gateway: tool-schema \0 fix is scoped to api.deepseek.com, so DeepSeek relays (Open Design plugin) still 400 o
+4855	MYCF711	gateway: a plugin's in-stream error frame is relayed as data — its code/status never reach routing
+4856	xljya	Windows: privacy masking timeouts cause sustained CPU spike and Codex 504s
+4861	huhuhulululu	Docs or support: passkey sign-in for `magpie web` behind a reverse proxy
+4869	qusuan85-dev	Windows: app never opens after auto-update to 0.1.2677 / 0.1.2679 - launch stalls before the first log line (r
+4874	JJasonSun	gateway: empty Anthropic text block loses its start when a tool block begins early
+4882	yinwu01	gateway: TestLongTurnCopiedFewTimes red once in a full run (read 3.2× the body, bound 3×)
+4884	AlstonChan	anthropic member returns 'credit balance too low' through Magpie, but the same key works directly
+4887	wsszh	macOS: daemon install after `autostart off` leaves a service crash-looping on the port while the app still run
+4893	KaranocaVe	[Performance] usageSniffer 对同一 SSE 事件重复 JSON 验证与解码，透传路径消耗 0.42 CPU-s
+4906	MystryMocha	[bug] Responses → Chat for Mistral: `deepseek-*` model gets `reasoning_content` echoed back → 422 extra_forbid
+4918	KaranocaVe	[Performance] Usage 热力图 recentDays 反复配对 Codex 请求，30s 采样消耗 1.67 CPU-s
+4920	KaranocaVe	[Performance][Investigation] Usage 查询中 Codex 文件枚举仍消耗 0.29 CPU-s，评估跨查询目录快照复用
+4929	Yelijah	Does using a gateway like MagPie for forwarding increase the probability of ChatGPT returning a 529 error?
+4942	Ricinix	gateway: a thread_title request loses function_call when Codex offers set_thread_title
+4945	barryzzz	[gateway] DeepSeek chat path rejects parallel tool_use blocks: "tool_use ids were found without tool_result bl
+4953	FjlI5	新版 Codex 基础提示词经 Magpie 转发后被重复追加
+4972	ChenxiGao84	[Bug] GitHub Copilot GPT-6 Luna returns 400 invalid_request_body after tool execution in Codex
+4973	xiaofei-lee	[调查] Codex 单账号同会话在额度重置前后由 own sign-in 切到 codex/<model>：Routing/Usage 账号、模型名称及 reasoning 摘要同步变化
+4978	NickWilde18	Claude subscription, interactive mode: a long auto-mode conversation gets 502 "fork/exec …/magpie: argument li
+4979	hxyinan	usage: an account's name on the Overview reads too small and faint to tell several accounts apart
+4980	noxchen	Agent CLI 有新版本却不显示（Pi 1.4.0 → 1.5.0）：「重新检测」不刷新 latest 的缓存
+4983	tlerbao	macOS: "Update and Restart" still quits without relaunching on 0.1.2773 (macOS 13.3, Intel) — relaunch.log is 
+4985	tonylaysg	stream disconnected before completion: Remote magpie: magpie stopped this request after 2m0s because its body 
+4987	Ikki6666	library: ZCode reads ~/.agents/skills too, but magpie doesn't lock the skill for it
+4988	XcodeFish	Claude 额度卡片显示 100% /「还没用过」，实际 5h 已用 29%、7d 已用 17%（refresh 只解析到模型级 Fable 窗口）
+4992	scutken	provider test: a multi-account model test asks the first account, not the one whose list has the model
+4993	q753456446	[Bug] 123pan WebDAV 条件 GET 返回 HTTP 500，导致 Magpie 后续同步失败
+4995	SCIYYDy	[Bug] Claude /usage 的 401/403 requests 统计被误判为鉴权失败，导致额度无法显示
+4998	ryan-zhao-go	gateway: add a routing-group answer timeout so reasoning/queue activity cannot block failover
+5000	lixiaoshuang79	[Bug] inferenceModels 写入缺 labelOverride，Desktop 模型菜单显示 mythos-magpie-* 裸 id；behavesAs 触发配置告警
+5001	SuTangVerse	[Bug] Windows Claude TUI 长文本提交失败，stderr 被丢失为通用 502；相同输入 -p 正常
+5002	dchaofei	【bug】脱敏规则需修复
+5004	JJasonSun	Image generation routes custom model IDs to Chat Completions without a per-model override
+5006	hzyqn	【BUG】SenseNova 的 429 被记为 out of credit：同一错误文案在同一天内出现 rate / credit 两种判定
+5008	l1shen	gateway: Antigravity 完全 0 token 的空回复仍重试约 6 次，客户端等了 146 秒才收到 empty reply
+5009	EricStoneChina	[Bug] Codex: 一次本地 429（every account at its usage cap / usage unread）让 Codex 静默等待 27.8 小时，期间零请求
+5010	MDX-Tom	[Bug] DSH / Anthropic 协议下 web_search 响应的 text block 仍未携带 citations[]
+5012	ddnio	Claude bridge: a setup-token account's allowance stays unknown in interactive mode; the tap can tell it from e
+5017	aabbccgg	gateway: switching off a routing group named like a model makes that bare model id unusable
+5020	mufanmu	WorkBuddy daily check-in is missed when the Mac sleeps through 00:00 (no catch-up after wake)
+5021	Jasonpetrelli	Anthropic endpoint: sending both Authorization and X-Api-Key makes some upstream models (Qwen-Flash) return 40
+5022	odtu945	A custom provider's Anthropic base is advertised as native for every model, so a model it doesn't serve there 
+5023	W0n9	agent: /usr/sbin/zed (zfs-zed) is taken for the Zed editor — a false restart notice, and Zed listed as install
+5024	icutool	[Bug] magpie-models.json 中的 supported_reasoning_levels 缺少 description 字段，导致 Codex 配置解析失败
+5025	xiaowenxi	[Bug] DesktopInferenceModels omits labelOverride for custom aliases without [1m]
+5029	ylongw	Pace routing can start a long tool turn on a stale allowance after idle; default turn affinity preserves that 
+5032	hong65201	Antigravity 无法调用 Magpie 配置的 GPT 生图模型
+5033	hong65201	Antigravity 中无法切换 GPT 模型的思考强度
+5034	SouperGeng	intel MacOS GPU 占用高
+5036	Ricinix	routing rules: the classifier has too little context to make cost-aware, cache-aware decisions
+5081	catnuko	[compat] Claude Code 引擎只写 modelPicker，把 Claude Code 当引擎的宿主（如 OpenMausBot）列不出 magpie 模型
+5107	loosekite	[Bug]: Antigravity (agy) skills installed on Windows are silently ignored because Antigravity skips NTFS junct
+5111	wuxiaoqiang12	gateway: a LiteLLM "Budget has been exceeded" 429 reads as a short rate limit, so quota-rest until HH:MM never
+```

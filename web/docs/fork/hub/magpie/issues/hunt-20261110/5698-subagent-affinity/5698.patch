@@ -1,0 +1,348 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Mon, 9 Nov 2026 05:56:56 +0800
+Subject: [PATCH] fix(gateway): a Codex subagent keeps its own account's cache
+ (#5698)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Every request of a Codex chat names the chat's own session_id, its
+subagents' too, and the gateway kept one affinity stick for the session.
+Six Codex multi-agent V1 subagents over three accounts took their first
+tasks on three accounts, and the second round read that one stick
+(kept=true, why=session) — all six went to the account that had answered
+last, and what each vendor had cached of a subagent's thread was left
+behind (Foreverrainy: WorkBuddy's three accounts, twelve requests, the
+second round all on one).
+
+stickKey now keeps a Codex subagent's stick apart, by the thread id its
+turn metadata names (codexSubagentThread), when that thread is not the
+session's own, on a key of its own ending "|thread:" — not Claude Code's
+"|agent:", which withLead would keep with the session's account under
+Smart; a Codex subagent's first turn still spreads over the accounts as
+a session of its own, and its later turns stay with whoever answered it,
+whose cache holds its thread. The lead's key is the session's as before,
+so its stick, and leadFirst's read of it by the thread id, are as they
+were; a chat whose metadata names no other thread keeps the one stick it
+had. The turn metadata is read only behind the fromCodex header gate, so
+no other agent's request parses it.
+
+Run (darwin/arm64, at this commit):
+- go test -run 'TestCodexSubagentsKeepTheirOwnAccounts|
+  TestCodexChatWithoutSubagentsKeepsItsAffinity' ./internal/gateway: red
+  at the parent aa3d11d5b (the three workers all on one account, kept
+  why=session; their sticks one shared entry), green here, over In turn
+  and Smart alike; the chat without subagents green at the parent and
+  here (its stick still the session's alone).
+- go test -count=1 ./internal/gateway: ok; -race over the affinity and
+  Codex families: ok. gofmt -l, GOOS=linux/windows go vet: clean.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gateway/affinity.go                  |  43 +++-
+ .../gateway/codex_subagent_affinity_test.go   | 235 ++++++++++++++++++
+ 2 files changed, 266 insertions(+), 12 deletions(-)
+ create mode 100644 internal/gateway/codex_subagent_affinity_test.go
+
+diff --git a/internal/gateway/affinity.go b/internal/gateway/affinity.go
+index c6385061c..63089fe77 100644
+--- a/internal/gateway/affinity.go
++++ b/internal/gateway/affinity.go
+@@ -515,21 +515,40 @@ func strictOnly(cs []candidate, pl planned, at int) ([]candidate, planned) {
+ }
+ 
+ // stickKey is the conversation a stick is kept for: scope's, by the
+-// conversation's id, and a Claude Code subagent's apart from its lead's.
+-// Claude Code sends its session's id with every request of the session,
+-// its subagents' too, which say only by x-claude-code-agent-id that they
+-// are one (subagentOf). Under the session's key, a subagent's answer took
+-// the lead's stick over: the lead's next turn was judged by the cache of
+-// the subagent's conversation, moved to another account as "no-cache" or
+-// "cold" or to wherever the subagent had gone, and the lead's whole
+-// conversation written to that account's cache again (slkassinthehood on
+-// X: two Pro accounts' 5 hours spent in ten minutes). The lead's key is
+-// the session's as before, so what is kept of it, and Codex's leadFirst,
+-// which reads a lead's stick by its thread id, are as they were.
++// conversation's id, and a subagent's apart from its lead's. Claude Code
++// sends its session's id with every request of the session, its subagents'
++// too, which say only by x-claude-code-agent-id that they are one
++// (subagentOf) — theirs ends "|agent:", and withSession keeps such a one
++// with its session's account (withLead). Codex's session_id is the root
++// thread's, its subagents' too, and a subagent's own thread id is in its
++// turn metadata — so a Codex subagent is kept apart by that thread
++// (codexSubagentThread), when the thread it names is not the session's
++// own, on a key of its own that ends "|thread:" (Foreverrainy on #5698:
++// twelve requests of a chat and its six subagents over three accounts
++// shared the parent session's one stick, and the second round read
++// kept=true, why=session, all six onto the one account that had written
++// it last). Its suffix is its own, not Claude Code's, so a Codex
++// subagent's first turn still spreads over the accounts as a session of
++// its own does (spreadsSessions), instead of withLead's taking it to the
++// account its session is on. Under the session's key, a subagent's answer
++// took the lead's stick over: the lead's next turn was judged by the
++// cache of the subagent's conversation, moved to another account as
++// "no-cache" or "cold" or to wherever the subagent had gone, and the
++// lead's whole conversation written to that account's cache again
++// (slkassinthehood on X: two Pro accounts' 5 hours spent in ten minutes).
++// The lead's key is the session's as before, so what is kept of it, and
++// Codex's leadFirst, which reads a lead's stick by its thread id, are as
++// they were.
+ func stickKey(scope string, in http.Header, body []byte) string {
+-	key := scope + "|" + affinityID(in, body)
++	id := affinityID(in, body)
++	key := scope + "|" + id
+ 	if sub := subOf(in); sub != "" {
+ 		key += "|agent:" + sub
++	} else if fromCodex(in) {
++		// the turn metadata is Codex's own; no other agent sends it
++		if thread := codexSubagentThread(in, requestSessionMetadata(in, body)); thread != "" && thread != id {
++			key += "|thread:" + thread
++		}
+ 	}
+ 	return key
+ }
+diff --git a/internal/gateway/codex_subagent_affinity_test.go b/internal/gateway/codex_subagent_affinity_test.go
+new file mode 100644
+index 000000000..d616d68d7
+--- /dev/null
++++ b/internal/gateway/codex_subagent_affinity_test.go
+@@ -0,0 +1,235 @@
++package gateway
++
++import (
++	"io"
++	"net/http"
++	"net/http/httptest"
++	"os"
++	"path/filepath"
++	"strconv"
++	"strings"
++	"sync"
++	"testing"
++	"time"
++
++	"github.com/yetone/magpie/internal/provider"
++	"github.com/yetone/magpie/internal/routes"
++)
++
++// codexSignedThree is Codex signed in to ChatGPT with two more of its
++// accounts on in magpie (acct-1, acct-2, acct-3), its models cached, the
++// ChatGPT backend a fake noting the account of each request, routing over
++// the three by rotation, a conversation kept to who answered it for the
++// session, and the routing's own state of sticks and rests fresh.
++func codexSignedThree(t *testing.T, routing string) (served func() string) {
++	t.Helper()
++	codexSignedIn(t, "spare2@example.com", "spare3@example.com")
++	home, _ := os.UserHomeDir()
++	os.WriteFile(filepath.Join(home, ".codex", "models_cache.json"), []byte(`{"etag":"\"v1\"","models":[
++		{"slug":"gpt-5.5","display_name":"GPT-5.5","visibility":"list","priority":1,"context_window":272000}]}`), 0o644)
++	var mu sync.Mutex
++	var got []string
++	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		b, _ := io.ReadAll(r.Body)
++		if !strings.HasSuffix(r.URL.Path, "/responses") {
++			w.WriteHeader(404)
++			return
++		}
++		mu.Lock()
++		got = append(got, r.Header.Get("chatgpt-account-id"))
++		id := strconv.Itoa(len(got))
++		mu.Unlock()
++		w.Header().Set("Content-Type", "text/event-stream")
++		io.WriteString(w, sse(
++			`data: {"type":"response.created","response":{"id":"r`+id+`","model":"`+modelOf(b)+`"}}`,
++			`data: {"type":"response.output_text.delta","delta":"on it"}`,
++			`data: {"type":"response.completed","response":{"id":"r`+id+`","usage":{"input_tokens":7,"output_tokens":1}}}`))
++	}))
++	t.Cleanup(up.Close)
++	was := provider.CodexBase
++	provider.CodexBase = up.URL + "/backend-api/codex"
++	t.Cleanup(func() { provider.CodexBase = was })
++	p, err := provider.Find("codex")
++	if err != nil {
++		t.Fatal(err)
++	}
++	p.Routing = routing
++	p.Affinity = provider.AffinitySession
++	if err := provider.Save(*p); err != nil {
++		t.Fatal(err)
++	}
++	routes.Forget("codex")
++	sticks.Lock()
++	sticks.m, sticks.from, sticks.mod = map[string]stick{}, "", time.Time{}
++	sticks.Unlock()
++	restingUntil.Lock()
++	restingUntil.m = map[string]time.Time{}
++	restingUntil.Unlock()
++	return func() string { mu.Lock(); defer mu.Unlock(); return got[len(got)-1] }
++}
++
++// Foreverrainy on #5698: six Codex multi-agent V1 subagents over a
++// three-account WorkBuddy group, a round of tasks each, spread two to an
++// account; the second round drew them all to one account. Every request of
++// the chat names the chat's own session_id, the lead's and its subagents'
++// alike, so affinity kept one stick for the parent session and the twelve
++// requests of the two rounds shared it: the second round read kept=true,
++// why=session, and went wherever the round before had left that one stick.
++//
++// A subagent's turns are a conversation of their own, on the account whose
++// cache holds its thread: each keeps its own stick, by its thread id
++// (codexSubagentThread), as a Claude Code subagent does by its agent id,
++// and the lead's stick stays on the session's key as it was. The same
++// over In turn (the group's own rotation) and over Smart: under Smart the
++// first round spreads by what the accounts already hold, a subagent's
++// conversation counted there as one of its own ("|thread:" keys are not
++// Claude Code's "|agent:", which withLead keeps with the session).
++func TestCodexSubagentsKeepTheirOwnAccounts(t *testing.T) {
++	for _, routing := range []string{provider.Rotate, ""} {
++		t.Run(routingName(routing), func(t *testing.T) {
++			testCodexSubagentsKeepTheirOwnAccounts(t, routing)
++		})
++	}
++}
++
++func routingName(routing string) string {
++	if routing == "" {
++		return "smart"
++	}
++	return routing
++}
++
++func testCodexSubagentsKeepTheirOwnAccounts(t *testing.T, routing string) {
++	served := codexSignedThree(t, routing)
++	s := New()
++	t.Cleanup(s.subscription.abortAll)
++	h := s.Handler()
++
++	var mu sync.Mutex
++	var bad []string
++	ask := func(thread, parent string) (account string, aff *Affinity) {
++		t.Helper()
++		body := `{"model":"gpt-5.5","stream":true,"input":[` + workerAsk + `]}`
++		req := httptest.NewRequest("POST", CodexPath+"/responses", strings.NewReader(body))
++		req.Header.Set("Authorization", "Bearer chatgpt-token")
++		req.Header.Set("chatgpt-account-id", "acct-1")
++		req.Header.Set("User-Agent", "codex_cli_rs/0.162.1 (Mac OS 26.2.0; arm64)")
++		req.Header.Set("session_id", "root-1")
++		meta := `{"session_id":"root-1","thread_id":"` + thread + `"`
++		if parent != "" {
++			req.Header.Set("x-openai-subagent", "collab_spawn")
++			req.Header.Set("x-codex-parent-thread-id", parent)
++			meta += `,"parent_thread_id":"` + parent + `"`
++		}
++		req.Header.Set("x-codex-turn-metadata", meta+"}")
++		rec := httptest.NewRecorder()
++		h.ServeHTTP(rec, req)
++		if rec.Code != 200 {
++			mu.Lock()
++			bad = append(bad, strconv.Itoa(rec.Code)+" "+thread)
++			mu.Unlock()
++			return "", nil
++		}
++		route := s.trace.routes[len(s.trace.routes)-1]
++		return served(), route.Affinity
++	}
++
++	// the six spawn and their first round of tasks with it, one after
++	// another as they land: a conversation nobody has answered goes where
++	// the fewest others in scope are held (rotate), so the three threads
++	// start on three accounts
++	var first [3]string
++	for i, thread := range []string{"worker-1", "worker-2", "worker-3"} {
++		first[i], _ = ask(thread, "root-1")
++	}
++	mu.Lock()
++	failed := append([]string(nil), bad...)
++	mu.Unlock()
++	if len(failed) > 0 {
++		t.Fatalf("the first round: %v", failed)
++	}
++	distinct := map[string]bool{}
++	for _, a := range first {
++		distinct[a] = true
++	}
++	if len(distinct) < 2 {
++		t.Fatalf("the first round went to %v, not over the accounts", first)
++	}
++
++	// the lead's own turn in between, then the second round, one after
++	// another as send_input brings each agent back
++	lead, _ := ask("root-1", "")
++	for i, thread := range []string{"worker-1", "worker-2", "worker-3"} {
++		account, aff := ask(thread, "root-1")
++		if account != first[i] {
++			t.Errorf("%s's second turn went to %s, not back to %s", thread, account, first[i])
++		}
++		if aff == nil || !aff.Kept || aff.Why != "session" {
++			t.Errorf("%s's second turn: kept %+v, want kept for the session", thread, aff)
++		}
++	}
++	if again, _ := ask("root-1", ""); again != lead {
++		t.Errorf("the lead's next turn went to %s, not back to %s", again, lead)
++	}
++
++	// three sticks of the workers' own, the lead's on the session's key
++	// as before (leadFirst reads it there)
++	var agent, plain []string
++	sticks.Lock()
++	for k := range sticks.m {
++		if strings.Contains(k, "|thread:") {
++			agent = append(agent, k)
++		} else {
++			plain = append(plain, k)
++		}
++	}
++	sticks.Unlock()
++	if len(agent) != 3 {
++		t.Errorf("%d sticks of a subagent's own (%v), want one each for the three workers", len(agent), agent)
++	}
++	if len(plain) != 1 || !strings.HasSuffix(plain[0], "|root-1") {
++		t.Errorf("the lead's stick sits on %v, want the session's key alone", plain)
++	}
++}
++
++// A chat without subagents keeps the affinity it had: the session's key is
++// the only one, and its turns stay with the account that answered.
++func TestCodexChatWithoutSubagentsKeepsItsAffinity(t *testing.T) {
++	served := codexSignedThree(t, provider.Rotate)
++	s := New()
++	t.Cleanup(s.subscription.abortAll)
++	h := s.Handler()
++	ask := func() (string, *Affinity) {
++		t.Helper()
++		body := `{"model":"gpt-5.5","stream":true,"input":[` + workerAsk + `]}`
++		req := httptest.NewRequest("POST", CodexPath+"/responses", strings.NewReader(body))
++		req.Header.Set("Authorization", "Bearer chatgpt-token")
++		req.Header.Set("chatgpt-account-id", "acct-1")
++		req.Header.Set("User-Agent", "codex_cli_rs/0.162.1 (Mac OS 26.2.0; arm64)")
++		req.Header.Set("session_id", "solo-1")
++		req.Header.Set("x-codex-turn-metadata", `{"session_id":"solo-1","thread_id":"solo-1"}`)
++		rec := httptest.NewRecorder()
++		h.ServeHTTP(rec, req)
++		if rec.Code != 200 {
++			t.Fatalf("%d %s", rec.Code, rec.Body.String())
++		}
++		return served(), s.trace.routes[len(s.trace.routes)-1].Affinity
++	}
++	one, _ := ask()
++	two, aff := ask()
++	if two != one {
++		t.Fatalf("the second turn went to %s, not back to %s", two, one)
++	}
++	if aff == nil || !aff.Kept || aff.Why != "session" {
++		t.Fatalf("the second turn: kept %+v, want kept for the session", aff)
++	}
++	var keys []string
++	sticks.Lock()
++	for k := range sticks.m {
++		keys = append(keys, k)
++	}
++	sticks.Unlock()
++	if len(keys) != 1 || !strings.HasSuffix(keys[0], "|solo-1") || strings.Contains(keys[0], "|thread:") || strings.Contains(keys[0], "|agent:") {
++		t.Fatalf("the chat's stick sits on %v, want the session's key alone", keys)
++	}
++}
+-- 
+2.50.1 (Apple Git-155)
+

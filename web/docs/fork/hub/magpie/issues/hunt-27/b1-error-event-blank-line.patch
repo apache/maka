@@ -1,0 +1,267 @@
+From 0aa2d31f411aabee8e875a4504f0636051657238 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Fri, 16 Oct 2026 00:02:55 +0800
+Subject: [PATCH] gateway: an error event appended to a relayed stream begins
+ after a blank line
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The relay in passthrough writes the upstream's bytes as they come, and
+ends a stream cut short with the protocol's own error event (936a6fc7,
+truncated inside the data line — left the client mid-line, and the
+appended "event: error" landed inside that line: the client read one
+event whose data was the truncated half and the error joined, which no
+SDK parses, so the error agents act on (#370's point) never arrived as
+one. The same append in holdWriter.cutLoop joined onto the reply's last
+write the same way, where the encoder's leading message_start landed in
+the line still pending.
+
+What is appended now begins after a blank line: one where the client is
+at a line's end, two where it is mid-line, so the event still pending
+stands and the failure is read as an event of its own. Whole streams
+are untouched.
+
+What changed:
+- passthrough tracks the line its last write ended on and prefixes the
+  failure event it appends accordingly (internal/gateway/gateway.go).
+- holdWriter.cutLoop asks its own atLine before streamError
+  (internal/gateway/fallback.go).
+- TestPassthroughStreamCutMidLine, TestPassthroughStreamEndsOnLineEnd
+  and TestLoopCutMidLine fail without the change; the family's
+  TestPassthroughStream* and TestTranslate* stay green.
+
+Run: go test -tags nogui -p 2 ./internal/gateway/ (full package, 299s,
+ok); gofmt -l internal/gateway/ clean; go vet ./... and GOOS=linux
+go vet -tags nogui ./... and GOOS=windows go vet ./... clean; go build
+and GOOS=linux go build -tags nogui and GOOS=windows go build clean
+(known warnings: trayimage_darwin.go cgo -Wenum-conversion, duplicate
+ld libraries). Measured against the real binary in a sandbox: an
+Anthropic upstream that dies mid-line reaches a curl client as
+"stop_re" + "event: error" on one line before the change, and as
+"stop_re", a blank line, then the error event after it.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gateway/fallback.go                 |  8 ++
+ internal/gateway/gateway.go                  | 39 +++++++---
+ internal/gateway/passthrough_severed_test.go | 81 ++++++++++++++++++++
+ 3 files changed, 118 insertions(+), 10 deletions(-)
+
+diff --git a/internal/gateway/fallback.go b/internal/gateway/fallback.go
+index 3faeefb0..229be1e2 100644
+--- a/internal/gateway/fallback.go
++++ b/internal/gateway/fallback.go
+@@ -1712,6 +1712,14 @@ func (h *holdWriter) cutLoop(b []byte, t loopTrip) (int, error) {
+ 	if h.alive != nil {
+ 		proto = h.alive.proto
+ 	}
++	// what is appended begins after a blank line, as in passthrough: the
++	// reply's last write may have stopped mid-line, and an event joined
++	// onto it is one the client can't parse (TestLoopCutMidLine)
++	if h.atLine {
++		io.WriteString(h.w, "\n")
++	} else {
++		io.WriteString(h.w, "\n\n")
++	}
+ 	streamError(h.w, proto, http.StatusBadGateway, msg)
+ 	h.looped, h.ended = msg, true
+ 	h.flush()
+diff --git a/internal/gateway/gateway.go b/internal/gateway/gateway.go
+index 42f32965..32d26ffe 100644
+--- a/internal/gateway/gateway.go
++++ b/internal/gateway/gateway.go
+@@ -4391,6 +4391,18 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
+ 	}
+ 	buf := make([]byte, 32<<10)
+ 	var rerr error
++	// atLine says whether what the client has ends a line, so what is
++	// appended below begins one of its own: appended after a line still
++	// pending, an event's name lands inside that line's data, and the
++	// client reads one event it can't parse where the protocol's error was
++	// meant (TestPassthroughStreamCutMidLine)
++	atLine := true
++	write := func(b []byte) (int, error) {
++		if len(b) > 0 {
++			atLine = b[len(b)-1] == '\n'
++		}
++		return w.Write(b)
++	}
+ 	for {
+ 		n, err := rd.Read(buf)
+ 		if n > 0 {
+@@ -4420,7 +4432,7 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
+ 			if phases != nil {
+ 				out = phases.write(out)
+ 			}
+-			if _, werr := w.Write(out); werr != nil {
++			if _, werr := write(out); werr != nil {
+ 				return res.StatusCode, "", true
+ 			}
+ 			if f != nil {
+@@ -4448,39 +4460,39 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
+ 		if written != nil {
+ 			out = append(written.write(out), written.flush()...)
+ 		}
+-		w.Write(sign(out))
++		write(sign(out))
+ 	} else if written != nil {
+-		w.Write(sign(written.flush()))
++		write(sign(written.flush()))
+ 	}
+ 	if whole != nil {
+ 		out := whole.flush()
+ 		if spaces != nil {
+ 			out = spaces.write(out)
+ 		}
+-		w.Write(sign(out))
++		write(sign(out))
+ 	}
+ 	if search != nil {
+ 		out := search.flush()
+ 		if spaces != nil {
+ 			out = spaces.write(out)
+ 		}
+-		w.Write(sign(out))
++		write(sign(out))
+ 	}
+ 	if spaces != nil {
+-		w.Write(sign(spaces.flush()))
++		write(sign(spaces.flush()))
+ 	}
+ 	if ints != nil {
+ 		b := ints.flush()
+ 		if sigs != nil {
+ 			b = sigs.write(b)
+ 		}
+-		w.Write(out(b))
++		write(out(b))
+ 	}
+ 	if sigs != nil {
+-		w.Write(out(sigs.flush()))
++		write(out(sigs.flush()))
+ 	}
+ 	if phases != nil {
+-		w.Write(phases.flush())
++		write(phases.flush())
+ 	}
+ 	if sse {
+ 		sniff.drain()
+@@ -4509,7 +4521,14 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
+ 			failed = p.Name + ": the reply ended before it was complete"
+ 		}
+ 		if failed != "" {
+-			w.Write(streamFailure(proto, failed))
++			// what is appended begins after a blank line: the event still
++			// pending is left to stand, and the failure is read as an
++			// event of its own (TestPassthroughStreamEndsOnLineEnd)
++			sep := []byte{'\n'}
++			if !atLine {
++				sep = append(sep, '\n')
++			}
++			w.Write(append(sep, streamFailure(proto, failed)...))
+ 			if f != nil {
+ 				f.Flush()
+ 			}
+diff --git a/internal/gateway/passthrough_severed_test.go b/internal/gateway/passthrough_severed_test.go
+index bdc25525..853590c7 100644
+--- a/internal/gateway/passthrough_severed_test.go
++++ b/internal/gateway/passthrough_severed_test.go
+@@ -1,6 +1,7 @@
+ package gateway
+ 
+ import (
++	"encoding/json"
+ 	"net/http/httptest"
+ 	"strings"
+ 	"testing"
+@@ -47,6 +48,86 @@ func TestPassthroughStreamEndsShort(t *testing.T) {
+ 	}
+ }
+ 
++// The upstream's last write stops mid-line, its last event cut inside the
++// data line. The failure event that ends the relay must begin after a
++// blank line: appended straight after the partial line, its "event:" name
++// lands inside that line, and the client reads one event whose data is the
++// truncated half and the error joined — no error of the protocol's, and
++// nothing to act on (#370's error event, unread).
++func TestPassthroughStreamCutMidLine(t *testing.T) {
++	fresh(t)
++	f := &fake{reply: anthropicStart + anthropicText + "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_re"}
++	setup(t, "anthropic", f)
++	code, body := postMessages(t, `{"model":"fake/m1","stream":true,"max_tokens":8,"messages":[{"role":"user","content":"hi"}]}`)
++	if code != 200 {
++		t.Fatalf("status = %d, want 200; body: %s", code, body)
++	}
++	atLineEnd(t, body)
++}
++
++// One cut exactly at a line's end but short of the blank line joins the
++// same way: the error event's fields land inside the event still pending.
++func TestPassthroughStreamEndsOnLineEnd(t *testing.T) {
++	fresh(t)
++	f := &fake{reply: anthropicStart + anthropicText + "event: message_delta\n"}
++	setup(t, "anthropic", f)
++	code, body := postMessages(t, `{"model":"fake/m1","stream":true,"max_tokens":8,"messages":[{"role":"user","content":"hi"}]}`)
++	if code != 200 {
++		t.Fatalf("status = %d, want 200; body: %s", code, body)
++	}
++	atLineEnd(t, body)
++}
++
++// atLineEnd fails when the reply's error event doesn't begin after a blank
++// line, where an SSE client reads it as an event of its own.
++func atLineEnd(t *testing.T, body string) {
++	t.Helper()
++	i := strings.Index(body, "event: error")
++	if i < 0 {
++		t.Fatalf("the cut stream ended without an error event: %s", body)
++	}
++	if !strings.HasSuffix(body[:i], "\n\n") {
++		t.Fatalf("the error event began inside the event still pending: %q", body[max(0, i-60):i+len("event: error")])
++	}
++}
++
++// A reply the loop guard cuts (cutLoop) while the client is mid-line ends
++// in the same joined event: what is appended after it must begin after a
++// blank line too.
++func TestLoopCutMidLine(t *testing.T) {
++	fresh(t)
++	run := strings.Repeat("mcp ", 1024) // 4096 chars, no break in it: one run-on unit
++	delta := func(txt string) string {
++		b, _ := json.Marshal(map[string]any{"type": "content_block_delta", "index": 0,
++			"delta": map[string]any{"type": "text_delta", "text": txt}})
++		return "event: content_block_delta\ndata: " + string(b) + "\n\n"
++	}
++	// the second run-on unit trips the guard (loop_guard.go: two units cut
++	// at 4096 are a loop); the line after it stops mid-line, and the write
++	// that trips ends there
++	f := &fake{reply: anthropicStart + delta(run) + delta(run) + "event: content_block_delta\ndata: {\"type\":\"te"}
++	setup(t, "anthropic", f)
++	code, body := postMessages(t, `{"model":"fake/m1","stream":true,"max_tokens":8,"messages":[{"role":"user","content":"hi"}]}`)
++	if code != 200 {
++		t.Fatalf("status = %d, want 200; body: %s", code, body)
++	}
++	if !strings.Contains(body, "stuck in a loop") {
++		t.Fatalf("the run-on reply was not cut by the loop guard: %s", body[:min(600, len(body))])
++	}
++	// the upstream's own last line is the only event the client may read
++	// unparseable: a join of two halves is magpie's doing
++	joined := 0
++	readSSE(strings.NewReader(body), func(_, data string) error {
++		if strings.Contains(data, "\n") && json.Valid([]byte(data)) == false {
++			joined++
++		}
++		return nil
++	})
++	if joined != 0 {
++		t.Fatalf("an appended event was joined onto the line still pending: %s", body[max(0, len(body)-400):])
++	}
++}
++
+ // A whole stream goes through untouched, nothing added after its end.
+ func TestPassthroughStreamWhole(t *testing.T) {
+ 	fresh(t)
+-- 
+2.50.1 (Apple Git-155)
+

@@ -1,0 +1,287 @@
+From 7aa5682b28d66ccf1da626877cc4a6c537ac4fc7 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Fri, 16 Oct 2026 20:49:31 +0800
+Subject: [PATCH] gateway: a plugin model that refuses temperature is asked
+ without it, relayed or translated (#2492)
+
+What changed: the plugin host carries a model's temperature where it is
+said - the config model's temperature (Factory 0.1.31's configModels,
+plugins#154), models.dev's own, or a models hook's model field - into
+plugin.Model and pluginCatalog's catalog model, where
+RejectsTemperature reads it as it reads a built-in's. A Chat or
+Responses request relayed as it came to a model whose list refuses
+temperature and top_p now leaves them out (passthrough), as the
+translation of one (build) already did. A model nothing says so of
+keeps what the client sent. OpenCode's capabilities.temperature is not
+read: its false is what it reads a models.dev silence as, not a refusal
+said.
+
+Docs: the sampling row of gateway-routing, and provider-plugins' new
+"A plugin model's sampling".
+
+Run at ea3dee96 + this change, sandbox HOME:
+go test -tags nogui -p 2 -run TestPluginModelRefusingTemperature
+./internal/gateway/ - red at ea3dee96 without this change (the plugin's
+fetch got temperature 0.7, top_p 0.9 relayed, temperature 0.7
+translated; the model that says nothing keeps them), green with it;
+ablation removed the four product files and went red the same way.
+go test -tags nogui -p 2 -timeout 45m ./internal/gateway/ ok (291s);
+go test -tags nogui -p 2 ./internal/plugin/ ok; -run
+'TestRejectsTemperature|TestPluginModel|TestPluginCatalog|PluginParity|TestPlugin'
+./internal/provider/ ok; -run
+'TestSampling|TestUpstreamBytes|TestPassthrough|TestRelay'
+./internal/gateway/ ok.
+gofmt -l internal/ clean; go vet ./... (darwin, the
+trayimage_darwin.go cgo warning as before), GOOS=linux go vet -tags
+nogui ./... and GOOS=windows go vet ./... clean; go build and
+GOOS=linux/windows go build ok.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ docs/subsystems/gateway-routing.md          |  2 +-
+ docs/subsystems/provider-plugins.md         |  4 +
+ internal/gateway/gateway.go                 | 11 +++
+ internal/gateway/plugin_temperature_test.go | 81 +++++++++++++++++++++
+ internal/plugin/host.js                     | 11 +++
+ internal/plugin/providers.go                |  5 ++
+ internal/plugin/testdata/fake/index.js      |  6 ++
+ internal/provider/plugins.go                |  2 +
+ 8 files changed, 121 insertions(+), 1 deletion(-)
+ create mode 100644 internal/gateway/plugin_temperature_test.go
+
+diff --git a/docs/subsystems/gateway-routing.md b/docs/subsystems/gateway-routing.md
+index e88c14a8..4821ee6b 100644
+--- a/docs/subsystems/gateway-routing.md
++++ b/docs/subsystems/gateway-routing.md
+@@ -160,7 +160,7 @@ recorded as a prediction failure (`noPrediction`).
+ - A request to an Anthropic endpoint that turns thinking off is sent as the model takes it (`thinkingOffAsTaken`, in `forwardOnce`, so relayed requests, count_tokens, magpie's own thinking-off and retries all get it; the model is read as the vendor names it, from the body, or from the path for Bedrock and Vertex). Claude Sonnet 5.5 refuses `thinking: {type: "disabled"}` and is sent `{type: "between_tools"}` alone, at effort `high` at most. Opus 5.5, Fable 5 and Mythos 5 refuse it at every effort and are sent no thinking, at effort `low` unless one was asked, with `classifierRoom` added to a reply limit below it, as Claude Code does. Opus 5 and Haiku 5.5 take it only up to `high`, so `xhigh` and `max` are asked as `high`. `between_tools` sent to any other Claude goes as `disabled`, or as none where that is refused too. Other vendors' models, older Claudes and later lines than these go as they came (#1454). A Sonnet 5.5 by a name these rules can't read, answering 400 that asks for `between_tools` (`asksBetweenTools`), is asked again with it, once; a refusal of `disabled` at any effort (`thinkingOffRefused`) is asked again with thinking left to the model, as `alwaysThinks` is. So is a relay that reads `disabled` as reasoning effort `none` and turns that level away naming the ones it takes (Sub2API's gpt-6.1-sol, "does not support reasoning effort \"none\"; use low, medium, high, xhigh or max", #1465); `refusesThinkingOff` is the one list of these refusals for both routes. A relayed request refused so marks the model (`markUnfit(offRefused)`), and its later requests go with thinking left to the model at once until magpie restarts, as auto mode's classifier asks on every action.
+ - A Chat or Responses client's reasoning turned off (`none`, `ThinkOff`), translated to an Anthropic endpoint (`buildAnthropic`), goes as `thinking: {type: "disabled"}`; it went as thinking at a 4096-token budget before (#1636). A model that refuses it (`refusesThinkingOff`: `alwaysThinks`, `mandatoryReasoning`, `thinkingOffRefused`, or `none` turned away naming the levels taken) is asked again at its least (`thinkingBackOn`), and `markUnfit(offRefused)` sends it so at once until magpie restarts. A translated request's level can differ from the one asked: `none` and `minimal` go as `low` where the model's levels don't say it stops (`effortOf`). The route keeps the level asked; the try, the usage log and Routing's "went" say the one built (`noteWireEffort`, `wireEffort` in [`wire_effort.go`](../../internal/gateway/wire_effort.go)). Gemini's builders say theirs their own way and are logged as asked.
+ - A model the user ticked no levels of (`ModelReasonless` in [settings](../../internal/settings/settings.go), `SetModelReasonless`; the provider editor's Names & levels, or `magpie model efforts <provider/model> off`) is sent no reasoning field on any route, whatever the agent asks: the candidate loop strips the body with `withoutAnyReasoning` ([`quiet.go`](../../internal/gateway/quiet.go): Chat's `reasoning_effort`, `reasoning`, `thinking`, `enable_thinking` and `include`'s `reasoning.encrypted_content`, Responses' `reasoning`, Anthropic's `thinking` of any type and `output_config.effort`, Gemini's `thinkingConfig`), the Anthropic relay doesn't add `thinking:{type:disabled}` for it, and `forwardTranslated` clears `Effort`, `ThinkOff` and `Thinking` for its other callers. It offers no levels (`Efforts`, `entryFor`), is `Quiet`, and as a routing-group member doesn't take the group's levels away. The learned refusals above cover only reasoning *off* and Gemini levels; a vendor that answers a plain `reasoning_effort` with 422 (yuexian7 on Discord) is not learned, so this is the user's switch. `TestReasonlessModelSentNoReasoning`, `TestReasonlessAnthropicRelay`, `TestGroupReasonlessMemberKeepsLevels`, `model-reasonless.test.cjs`.
+-- A request to an Anthropic endpoint with `temperature`, `top_p` or `top_k` reaches a model that refuses them without them (`samplingAsTaken`, beside `thinkingOffAsTaken` in `forwardOnce`): Opus 4.7, 4.8, 5 and 5.5, Fable 5, Mythos 5, Sonnet 5 and 5.5, and Haiku 5.5, whose 400 is "`temperature` is deprecated for this model" (Claude Code's auto mode classifier and magpie's own classifiers ask at temperature 0). Older Claudes, Haiku 4.5 among them, other vendors' models and later lines go as they came (#1454). A Claude by a name these rules can't read, answering that a sampling parameter is deprecated (`samplingDeprecated`), is asked again without them, once — a Chat or Responses client's request translated to Messages (`forwardTranslated`) as much as a relayed one.
++- A request to an Anthropic endpoint with `temperature`, `top_p` or `top_k` reaches a model that refuses them without them (`samplingAsTaken`, beside `thinkingOffAsTaken` in `forwardOnce`): Opus 4.7, 4.8, 5 and 5.5, Fable 5, Mythos 5, Sonnet 5 and 5.5, and Haiku 5.5, whose 400 is "`temperature` is deprecated for this model" (Claude Code's auto mode classifier and magpie's own classifiers ask at temperature 0). Older Claudes, Haiku 4.5 among them, other vendors' models and later lines go as they came (#1454). A Claude by a name these rules can't read, answering that a sampling parameter is deprecated (`samplingDeprecated`), is asked again without them, once — a Chat or Responses client's request translated to Messages (`forwardTranslated`) as much as a relayed one. A model whose own list refuses them (`RejectsTemperature`, from the catalog's `temperature`, or a plugin's `temperature: false` carried by [the plugin host](provider-plugins.md#a-plugin-models-sampling), #2492) is asked without `temperature` and `top_p` whatever the client speaks: a translation leaves them out (`build`), and a Chat or Responses request relayed as it came does too (`passthrough`).
+ - Claude Code's auto mode asks the API to review each action ([`automode.go`](../../internal/gateway/automode.go), Anthropic's [auto-mode-classifier-billing](https://code.claude.com/docs/en/auto-mode-classifier-billing)): the `dangerous-tool-use-…` beta, a `safeguards` field, and `safeguard_results` in the reply (a stream's in its `message_delta`). Only Anthropic runs that classifier, so they reach only a route it answers on (`AutoModeReviewed`): the Claude subscription (the bridge hands them to Claude Code's own binary), a Claude model under any vendor's spelling (Anthropic's API, a relay, Bedrock, Vertex), and anything on `api.anthropic.com`. There the beta, `safeguards` and the results pass as sent, a whole reply's results moved into a stream's `message_delta` (`anthropicWholeEvents`), tool-use ids unchanged. To any other model they are taken off (`serverReview`; a translation never carries them), and magpie never answers a result on Anthropic's behalf. Claude Code then classifies locally and names the gateway in a notice; the wiring turns the review off in its settings while no model it can reach through magpie is reviewed (`claudeReviewEnv`, [agent wiring](agent-wiring.md)), which is the page's remedy for a gateway that can't run the checks (1EFLOPS on X: Codex's model behind magpie).
+ - Claude Code's billing line (`x-anthropic-billing-header: cc_version=…; cc_entrypoint=…; cch=…;`, its own first system block, `cch` changing every turn) goes on only to a Claude model asked on Anthropic's Messages API (`keepsBillingLine` in [`billing_line.go`](../../internal/gateway/billing_line.go): Anthropic's, a relay's, Bedrock's), as Claude Code sent it. Anywhere else it is left out, the rest of the system as sent (`withoutBillingLine`): a vendor's model relayed on Messages (`passthrough`), every translation to Chat, Responses or Gemini (`forwardTranslated`, Claude models too), and the subscriptions asked through their own clients' APIs (Cursor, Devin, Kiro, Qoder, Zed, Command Code's Go plan, in `attempt`). Kept, a vendor read it as the prompt's first words and its prefix cache missed from byte 0 every turn (#1600, justrun1983: 4% read from DeepSeek's cache behind Command Code's plan). The Claude subscription's run sends its own (`withoutBillingHeader`), another magpie decides for the provider it picks, and Code Assist (Antigravity, Gemini CLI) is sent it as before, which `antigravityTurnsAway` reads (#666). Once Antigravity has turned such a request away, for `agForeseeing` (6 hours) after, a candidate loop with someone left after an Antigravity account skips it for a request that carries the line, without asking it (`antigravityForeseen`, #2156: each Claude Desktop turn waited about a second on the same refusal before the next member). The skip goes in `Fallback` with the hint, nothing rests, and the agent is told the refusal if nobody after it answers but with a quota. The last one left is still asked, and an old refusal foresees nothing, so a block Google lifts is noticed (`TestAntigravityTurnedAwayIsForeseen`).
+ - Claude Code's advisor (`/advisor`, `--advisor`) is Anthropic's server tool `advisor_20260301`, its `model` named as Claude Code names its own: on magpie, by magpie's id (the tier an alias like `opus` is on), which no vendor knows, so the request was turned away whole (JackChou on Discord). Relayed on Messages (`passthrough`), the advisor's model goes as the upstream's own name for it when it is the same provider's Claude model, or a Claude id naming no provider (`advisorTools` in [`advisor.go`](../../internal/gateway/advisor.go)); one it can't run there (another provider's, a group, not Claude's) is left out, as is every advisor when the request's own model isn't a Claude model (a vendor's Messages API knows no such tool), and the turn is answered without one. A translation drops it with every other server tool. Claude Code (2.1.300) also puts the advisor in the conversation: a `{role: "system"}` message whose text ends in its instructions ("# Advisor Tool … call advisor BEFORE substantive work") and a `tool_addition` naming it. Where the advisor is left out, that `tool_addition` goes too (and a message it leaves empty), and the instructions become Claude Code's own "The advisor tool is no longer available; disregard the earlier advisor instructions." (`withoutAdvisor` on Messages, `advisorGoneIn` in `parseAnthropic` for a translation): left there, the model called `advisor()` as one of the agent's tools and Claude Code answered "No such tool available: advisor" (JackChou on Discord). The Claude subscription's run declares only magpie's tools, so it never has one. `TestAdvisorModelAsTheUpstreamNamesIt`, `TestAdvisorLeftOutOnTranslation`.
+diff --git a/docs/subsystems/provider-plugins.md b/docs/subsystems/provider-plugins.md
+index 12a9a112..69f585e0 100644
+--- a/docs/subsystems/provider-plugins.md
++++ b/docs/subsystems/provider-plugins.md
+@@ -68,6 +68,10 @@ A plugin in front of Anthropic's or OpenAI's own API (a CPA or sub2api relay, sa
+ 
+ A plugin says which service tiers its vendor serves a model at with `serviceTiers` on the model (#2514): ids such as `"priority"` and `"ultrafast"`, or objects with an `id`. The host keeps the ids (`tiersOf` in `host.js`, into `plugin.Model.ServiceTiers`), `pluginCatalog` puts them on the catalog model's `Tiers`, and [`CodexTiers`](../../internal/provider/codex_models.go) offers them to Codex, as `codexcat` names them (`priority` is Fast). In [`forwardTranslated`](../../internal/gateway/gateway.go) a request translated to the plugin's Chat or Responses keeps its `service_tier` (`Request.OwnTier`) only when it is among the model's tiers (`provider.PluginTiers`); a request relayed in its own protocol was sent as the client wrote it before, and still is. Cursor's `fast` flag is separate and unchanged.
+ 
++## A plugin model's sampling
++
++A plugin says whether its vendor takes a model's `temperature` and `top_p` with `temperature` on the config model — Factory's OpenAI route says `false` of its reasoning models (plugins#154) — as models.dev says it of the built-ins, or on a model the models hook lists. The host carries it (`temperature` in `host.js`, into `plugin.Model.Temperature`), `pluginCatalog` puts it on the catalog model's `Temperature`, and [`RejectsTemperature`](../../internal/provider/models.go) reads it there as it reads a built-in's: a request translated to the model goes without them (`build`), and one relayed on Chat or Responses does too (`passthrough`, [gateway-routing](gateway-routing.md)). A model nothing says so of keeps what the client sent. OpenCode's `capabilities.temperature` is not read for this: its `false` is what it reads a models.dev silence as, not a refusal said.
++
+ ## A plugin's decision API
+ 
+ A plugin can serve TypeSafe's System One for its provider (#1514). Its `config` hook sets `decide: true` on the provider, and `decides: true` on a model that answers questions rather than a conversation, in the `config` hook or on the `models` hook's list. The host passes both through (`plugin.Provider.Decide`, `plugin.Model.Decides`). [`pluginProvider`](../../internal/provider/plugins.go) then sets the provider's `Decide` to `plugin://<id>/v1`, its own base: `pluginFetch` sends nowhere but the loader's host, so a decision address of the plugin's own couldn't be reached. `AskSystemOne` and the gateway's classifier post `/v1/systemone` with `Provider.Do`, which reaches the loader's `fetch` as `{baseURL}/systemone` with the account's sign-in.
+diff --git a/internal/gateway/gateway.go b/internal/gateway/gateway.go
+index 6286099f..f13edca3 100644
+--- a/internal/gateway/gateway.go
++++ b/internal/gateway/gateway.go
+@@ -3957,6 +3957,11 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
+ 			// for other backends (#1758)
+ 			break
+ 		}
++		if p.RejectsTemperature(model) {
++			// a model whose list refuses them (a plugin's temperature:
++			// false, #2492), as the translation of one leaves them out
++			body = withoutFields(body, "temperature", "top_p")
++		}
+ 		// Responses Lite's tools, as an input item, go as OpenAI takes them
+ 		// only to OpenAI (#350)
+ 		if (p.Account == nil || p.Account.Agent != "codex") && !strings.HasSuffix(p.Host(), "openai.com") {
+@@ -4005,6 +4010,12 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
+ 			body = withoutLoneToolChoice(body)
+ 		}
+ 	case provider.Chat:
++		if p.RejectsTemperature(model) {
++			// a model whose list refuses them (a plugin's temperature:
++			// false, #2492): a translation leaves them out (build), so
++			// does the relay of one the provider understands as it came
++			body = withoutFields(body, "temperature", "top_p")
++		}
+ 		body = developerAsSystem(body)
+ 		if mistral := p.Preset == "mistral" || p.Host() == "api.mistral.ai"; !mistral && (chatReplaysReasoning(buildHost(p), model) || chatReplaysReasoning(buildHost(p), upstream)) {
+ 			// a tool call the client kept no thinking for, which DeepSeek
+diff --git a/internal/gateway/plugin_temperature_test.go b/internal/gateway/plugin_temperature_test.go
+new file mode 100644
+index 00000000..e2cce845
+--- /dev/null
++++ b/internal/gateway/plugin_temperature_test.go
+@@ -0,0 +1,81 @@
++package gateway
++
++import (
++	"encoding/json"
++	"io"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"sync"
++	"testing"
++)
++
++// A plugin model whose config says temperature: false — as factory 0.1.31's
++// config models say it of its OpenAI route (plugins#154, sweanng424: the
++// vendor turned temperature and top_p away with a 400) — is asked without
++// them, however the client speaks: relayed as it came, or translated. One
++// that says nothing of it keeps what the client sent (#2492).
++func TestPluginModelRefusingTemperature(t *testing.T) {
++	t.Setenv("FAKE_TEMP", "1")
++	var mu sync.Mutex
++	var seen []map[string]any
++	pid := besideFake(t, "opencode-zen-free", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		b, _ := io.ReadAll(r.Body)
++		var q map[string]any
++		json.Unmarshal(b, &q)
++		mu.Lock()
++		seen = append(seen, q)
++		mu.Unlock()
++		w.Header().Set("Content-Type", "text/event-stream")
++		b1, _ := json.Marshal(map[string]any{"id": "c1", "object": "chat.completion.chunk", "choices": []any{map[string]any{"index": 0, "delta": map[string]any{"content": "ok"}, "finish_reason": nil}}})
++		io.WriteString(w, "data: "+string(b1)+"\n\n")
++		io.WriteString(w, `data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`+"\n\ndata: [DONE]\n\n")
++	}))
++	h := New().Handler()
++	ask := func(path, body string) (int, string) {
++		req := httptest.NewRequest("POST", path, strings.NewReader(body))
++		req.Header.Set("Authorization", "Bearer magpie")
++		rec := httptest.NewRecorder()
++		h.ServeHTTP(rec, req)
++		return rec.Code, rec.Body.String()
++	}
++	last := func() map[string]any {
++		t.Helper()
++		mu.Lock()
++		defer mu.Unlock()
++		if len(seen) == 0 {
++			t.Fatal("the plugin's fetch was never asked")
++		}
++		return seen[len(seen)-1]
++	}
++	has := func(q map[string]any, field string) bool {
++		_, ok := q[field]
++		return ok
++	}
++	// relayed as it came: a streamed chat request goes through as the
++	// client sent it, temperature and all, the model's name swapped
++	code, body := ask("/v1/chat/completions", `{"model":"`+pid+`/fake-cold","stream":true,"temperature":0.7,"top_p":0.9,"messages":[{"role":"user","content":"hi"}]}`)
++	if code != 200 {
++		t.Fatalf("fake-cold relayed: %d %s", code, body)
++	}
++	if q := last(); has(q, "temperature") || has(q, "top_p") {
++		t.Errorf("the plugin's fetch got a model that refuses them asked with temperature %v, top_p %v", q["temperature"], q["top_p"])
++	}
++	// translated from Claude's API, which has no model list of its own to
++	// read the refusal from: the built chat request carries neither
++	code, body = ask("/v1/messages", `{"model":"`+pid+`/fake-cold","max_tokens":100,"temperature":0.7,"messages":[{"role":"user","content":"hi"}]}`)
++	if code != 200 {
++		t.Fatalf("fake-cold translated: %d %s", code, body)
++	}
++	if q := last(); has(q, "temperature") {
++		t.Errorf("the translated request asked temperature %v of a model that refuses it", q["temperature"])
++	}
++	// one that says nothing keeps what the client sent
++	code, body = ask("/v1/chat/completions", `{"model":"`+pid+`/fake-1","stream":true,"temperature":0.7,"top_p":0.9,"messages":[{"role":"user","content":"hi"}]}`)
++	if code != 200 {
++		t.Fatalf("fake-1 relayed: %d %s", code, body)
++	}
++	if q := last(); !has(q, "temperature") || !has(q, "top_p") {
++		t.Errorf("a model that says nothing of temperature was asked without it (temperature %v, top_p %v)", q["temperature"], q["top_p"])
++	}
++}
+diff --git a/internal/plugin/host.js b/internal/plugin/host.js
+index c6324892..1c7095e3 100644
+--- a/internal/plugin/host.js
++++ b/internal/plugin/host.js
+@@ -1434,6 +1434,9 @@ function kinds(c) {
+ }
+ 
+ // fromModelsDev is a models.dev model as OpenCode's provider list has it.
++// temperature is what models.dev itself said of it, left out where it said
++// nothing: capabilities.temperature is OpenCode's own, and its false is
++// what OpenCode reads a model.dev silence as, not a refusal said.
+ function fromModelsDev(p, m) {
+   return {
+     id: m.id,
+@@ -1446,6 +1449,7 @@ function fromModelsDev(p, m) {
+     options: {},
+     cost: cost(m.cost),
+     limit: { context: m.limit?.context ?? 0, input: m.limit?.input, output: m.limit?.output ?? 0 },
++    ...(m.temperature !== undefined ? { temperature: m.temperature } : {}),
+     capabilities: {
+       temperature: m.temperature ?? false,
+       reasoning: m.reasoning ?? false,
+@@ -1509,6 +1513,9 @@ async function info(id, key, strict) {
+         ...(m.modalities?.output ? { output: modalities(m.modalities.output) } : {}),
+       },
+       variants: m.variants ?? was?.variants ?? {},
++      // what the config itself says of the model's sampling, as Factory's
++      // config models say temperature of their OpenAI route (plugins#154)
++      ...(m.temperature !== undefined ? { temperature: m.temperature } : {}),
+       // magpie's own mark: a decision model, answering System One
+       ...(typeof m.decides === "boolean" ? { decides: m.decides } : was?.decides !== undefined ? { decides: was.decides } : {}),
+     }
+@@ -1732,6 +1739,10 @@ async function providers({ proxies } = {}) {
+           // every kind it takes and gives, not image alone (#1595)
+           inputs: kinds(m.capabilities?.input),
+           outputs: kinds(m.capabilities?.output),
++          // whether the model takes temperature and top_p, where something
++          // said so (models.dev, the config, the models hook); unsaid goes
++          // to magpie as nothing, which keeps them (#2492)
++          ...(typeof m.temperature === "boolean" ? { temperature: m.temperature } : {}),
+           released: m.release_date ?? "",
+           cost: m.cost,
+           variants: Object.keys(m.variants ?? {}),
+diff --git a/internal/plugin/providers.go b/internal/plugin/providers.go
+index 56b603a9..5fd3110c 100644
+--- a/internal/plugin/providers.go
++++ b/internal/plugin/providers.go
+@@ -89,6 +89,11 @@ type Model struct {
+ 	// OpenCode's order: not image alone (#1595)
+ 	Inputs  []string `json:"inputs,omitempty"`
+ 	Outputs []string `json:"outputs,omitempty"`
++	// Temperature is whether the model takes temperature and top_p, where
++	// something said so: the config model's temperature (Factory's OpenAI
++	// route, plugins#154), models.dev's own, or the models hook's. Unsaid
++	// is nil, which keeps what the client sent.
++	Temperature *bool `json:"temperature,omitempty"`
+ 	// Fast is set by the plugin on a model it runs in its vendor's fast
+ 	// mode when the request says service_tier "priority" (m.fast: Cursor's
+ 	// plugin from 0.2.2, for a model Cursor has a fast variant of)
+diff --git a/internal/plugin/testdata/fake/index.js b/internal/plugin/testdata/fake/index.js
+index 9981f08a..89bfba06 100644
+--- a/internal/plugin/testdata/fake/index.js
++++ b/internal/plugin/testdata/fake/index.js
+@@ -106,6 +106,12 @@ export const FakePlugin = async ({ client }) => ({
+       cfg.provider[ID].models["fake-off"] = { name: "Fake Off", reasoning: true, variants: levels(["none", "low", "high", "max"]), limit: { context: 1000, output: 100 } }
+       cfg.provider[ID].models["fake-on"] = { name: "Fake On", reasoning: true, variants: levels(["low", "high", "max"]), limit: { context: 1000, output: 100 } }
+     }
++    // $FAKE_TEMP: a model whose vendor turns temperature and top_p away,
++    // said as Factory 0.1.31's config models say it of its OpenAI route
++    // (plugins#154); fake-1 beside it says nothing and takes them
++    if (process.env.FAKE_TEMP) {
++      cfg.provider[ID].models["fake-cold"] = { name: "Fake Cold", temperature: false, limit: { context: 1000, output: 100 } }
++    }
+     // $FAKE_ZEN: a model as opencode-zen-free 0.1.3's config hook writes
+     // it, from models.opencode.ai on 2026-10-11 (#1595, tkhs101): it
+     // takes audio, video and pdf too, at five levels (its api left to ours)
+diff --git a/internal/provider/plugins.go b/internal/provider/plugins.go
+index eb6e0843..625b8f47 100644
+--- a/internal/provider/plugins.go
++++ b/internal/provider/plugins.go
+@@ -198,6 +198,8 @@ func pluginCatalog(pp plugin.Provider) []catalog.Model {
+ 			APIs: []string{string(pluginProtocol(pp.ID, m))}, Images: m.Image,
+ 			Context: catalog.Window(m.Input), Output: m.Output, Free: m.Free,
+ 			Rate: m.Rate, RateWas: m.RateWas,
++			// the model's own sampling, as its plugin said it (#2492)
++			Temperature: m.Temperature,
+ 			// a decision model the plugin marked counts only where it
+ 			// serves a decision API (pp.Decide)
+ 			Decides: pp.Decide && m.Decides,
+-- 
+2.50.1 (Apple Git-155)
+

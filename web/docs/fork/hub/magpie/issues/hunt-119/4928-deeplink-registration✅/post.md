@@ -1,0 +1,178 @@
+A spawned `claude` under the Claude subscription bridge registers the `claude-cli://` OS URL handler again, so "Claude Code URL Handler.app" keeps coming back after the user has turned the setting off and deleted the app.
+
+**Symptom**: with `"disableDeepLinkRegistration": "disable"` in `~/.claude/settings.json` and the handler app deleted, serving one request through a Claude subscription recreates the app (reporter's timeline: settings changed 22:04, app back at 22:56 — every `claude` process running then was magpie's).
+
+**Root cause**: the bridge spawns Claude Code with `--setting-sources ""` (isolation from the user's settings), which also keeps the user's `disableDeepLinkRegistration` from loading. A headless run has no use for an OS URL handler, so magpie's spawns should not register one whatever the user's settings read.
+
+**Fix**: pass the setting as flag settings — `--settings {"disableDeepLinkRegistration":"disable"}` — on the bridge run and the warm-up and usage runs beside it. `--settings` is not one of the sources `--setting-sources` controls, so this applies however the user's settings read.
+
+**Verification** (base `a3768cdd1`, head `c933d6d3b`):
+
+| Check | Result |
+| --- | --- |
+| Red without the fix (`TestAskClaudeTUIOn`, product files reverted, tests kept) | `--- FAIL: TestAskClaudeTUIOn — Claude Code registers no URL handler, ran with "... --strict-mcp-config --setting-sources "` (no `--settings`) |
+| Green with the fix | `ok` 1.239s |
+| Ablation | reverting only the two product files re-reds the same assertion; restoring greens |
+| `gofmt -l`, `go vet -tags nogui`, `GOOS=linux/windows go build -tags nogui` | clean / clean / ok |
+
+**Not verified**: the real macOS deep-link registration behavior (the spawn-command-line level is asserted; the reporter's app-recreation timeline is their own observation).
+
+---
+**Attribution**: AI-written; I've read the whole diff and the tests pass. Please keep the author (`ggbdpq`) or add `Co-authored-by: ggbdpq <ggbdpq@gmail.com>`.
+
+**Patch**: <details><summary>patch: gateway: spawned Claude Code registers no claude-cli:// URL handler (#4928) — git am applies it as is; SHA-256 first 16: 8eda2b1cb47ca4f9</summary>
+
+```patch
+From c933d6d3b93ef3e587ce86bd562f4d5088d631ce Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Tue, 3 Nov 2026 00:16:16 +0800
+Subject: [PATCH] gateway: spawned Claude Code registers no claude-cli:// URL
+ handler (#4928)
+
+--setting-sources "" keeps the user's own disableDeepLinkRegistration
+from loading, so every spawned claude registered the claude-cli:// OS
+URL handler again and "Claude Code URL Handler.app" came back after the
+user had deleted it. A headless run has no use for an OS URL handler:
+the setting is now passed as flag settings (--settings is not one of
+the sources --setting-sources controls) on the bridge run and the
+warm-up and usage runs beside it, whatever the user's settings read.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gateway/claude_subscription.go      |  2 +-
+ internal/gateway/claude_subscription_test.go |  7 ++++++-
+ internal/gateway/claude_tui_no_print_test.go |  3 +++
+ internal/gateway/claude_tui_usage_test.go    |  1 +
+ internal/gateway/claude_warmup.go            | 16 ++++++++++++----
+ internal/gateway/claude_warmup_test.go       |  4 +++-
+ 6 files changed, 26 insertions(+), 7 deletions(-)
+
+diff --git a/internal/gateway/claude_subscription.go b/internal/gateway/claude_subscription.go
+index 86e7cb156..cddbc0a9d 100644
+--- a/internal/gateway/claude_subscription.go
++++ b/internal/gateway/claude_subscription.go
+@@ -2812,7 +2812,7 @@ func claudeCLIArgs(model, mcpConfig, effort string, web bool) []string {
+ 		"-p", "--output-format", "stream-json", "--input-format", "stream-json",
+ 		"--include-partial-messages", "--verbose", "--model", model,
+ 		"--tools", own, "--strict-mcp-config", "--mcp-config", mcpConfig,
+-		"--setting-sources", "", "--dangerously-skip-permissions",
++		"--setting-sources", "", "--settings", disableDeepLinkSettings, "--dangerously-skip-permissions",
+ 		// the run's history lives in the process; start keeps it on disk
+ 		// where a turn after the run is let go can go on with it
+ 		// (savedSession), in the folder all runs share
+diff --git a/internal/gateway/claude_subscription_test.go b/internal/gateway/claude_subscription_test.go
+index 1d6c7f882..30aa329bf 100644
+--- a/internal/gateway/claude_subscription_test.go
++++ b/internal/gateway/claude_subscription_test.go
+@@ -38,7 +38,12 @@ func TestClaudeSubscriptionPromptKeepsForeignHarnessOutOfSystem(t *testing.T) {
+ 	if strings.Contains(args, "system-prompt") {
+ 		t.Fatal("Claude bridge must retain the genuine Claude Code preset")
+ 	}
+-	for _, want := range []string{"--input-format stream-json", "--include-partial-messages", "--strict-mcp-config", "--effort medium"} {
++	// A headless run registers no OS URL handler: --setting-sources "" keeps
++	// the user's own disableDeepLinkRegistration from loading (#4928), so
++	// the setting is passed as flag settings, which --setting-sources does
++	// not control.
++	for _, want := range []string{"--input-format stream-json", "--include-partial-messages", "--strict-mcp-config", "--effort medium",
++		`--settings {"disableDeepLinkRegistration":"disable"}`} {
+ 		if !strings.Contains(args, want) {
+ 			t.Fatalf("missing CLI contract %q in %q", want, args)
+ 		}
+diff --git a/internal/gateway/claude_tui_no_print_test.go b/internal/gateway/claude_tui_no_print_test.go
+index 8291e1716..33dbe9100 100644
+--- a/internal/gateway/claude_tui_no_print_test.go
++++ b/internal/gateway/claude_tui_no_print_test.go
+@@ -111,6 +111,9 @@ exec "$claude" "$@"
+ 	if want := "-p --output-format stream-json --input-format stream-json --verbose --model haiku --tools  --strict-mcp-config --setting-sources "; !strings.Contains(args, want) {
+ 		t.Fatalf("Claude Code ran with %q", args)
+ 	}
++	if want := `--settings {"disableDeepLinkRegistration":"disable"}`; !strings.Contains(args, want) {
++		t.Fatalf("Claude Code registers no URL handler, ran with %q", args)
++	}
+ 	if !strings.Contains(told, `told {"message":{"content":[{"text":"hi","type":"text"}],"role":"user"},"type":"user"}`) {
+ 		t.Fatalf("Claude Code was told:\n%s", told)
+ 	}
+diff --git a/internal/gateway/claude_tui_usage_test.go b/internal/gateway/claude_tui_usage_test.go
+index 137136e5b..fcf82468a 100644
+--- a/internal/gateway/claude_tui_usage_test.go
++++ b/internal/gateway/claude_tui_usage_test.go
+@@ -45,6 +45,7 @@ cat > /dev/null
+ 	}
+ 	b, _ := os.ReadFile(log)
+ 	for _, want := range []string{"[-p][--output-format][stream-json][--input-format][stream-json]", "[--tools][]", "[--setting-sources][]",
++		`[--settings][{"disableDeepLinkRegistration":"disable"}]`,
+ 		"trust:1\n", "traffic:\n", "telemetry:1\n", `told:{"type":"command","command":"/usage"}`} {
+ 		if !strings.Contains(string(b), want) {
+ 			t.Errorf("the helper's run lacks %q:\n%s", want, b)
+diff --git a/internal/gateway/claude_warmup.go b/internal/gateway/claude_warmup.go
+index 59e25db83..2f14cbe1a 100644
+--- a/internal/gateway/claude_warmup.go
++++ b/internal/gateway/claude_warmup.go
+@@ -500,28 +500,36 @@ func claudeResult(b []byte) (claudeRun, bool) {
+ 	return claudeRun{}, false
+ }
+ 
++// disableDeepLinkSettings keeps every spawned Claude Code from registering
++// the claude-cli:// OS URL handler (#4928): --setting-sources "" keeps the
++// user's own disableDeepLinkRegistration from loading, and a headless run
++// has no use for the handler. --settings is not one of the sources
++// --setting-sources controls, so this applies however the user's settings
++// read.
++const disableDeepLinkSettings = `{"disableDeepLinkRegistration":"disable"}`
++
+ func claudeUsageArgs() []string {
+ 	return []string{"-p", "/usage", "--output-format", "json",
+-		"--tools", "", "--strict-mcp-config", "--setting-sources", "", "--no-session-persistence"}
++		"--tools", "", "--strict-mcp-config", "--setting-sources", "", "--settings", disableDeepLinkSettings, "--no-session-persistence"}
+ }
+ 
+ // claudeTUIUsageArgs are claudeUsageArgs for the interactive mode's
+ // helper, /usage typed in it rather than given.
+ func claudeTUIUsageArgs() []string {
+ 	return []string{"-p", "--output-format", "stream-json", "--input-format", "stream-json", "--verbose",
+-		"--tools", "", "--strict-mcp-config", "--setting-sources", ""}
++		"--tools", "", "--strict-mcp-config", "--setting-sources", "", "--settings", disableDeepLinkSettings}
+ }
+ 
+ func claudeWarmArgs(model string) []string {
+ 	return []string{"-p", "--output-format", "json", "--model", model,
+-		"--tools", "", "--strict-mcp-config", "--setting-sources", "", "--no-session-persistence"}
++		"--tools", "", "--strict-mcp-config", "--setting-sources", "", "--settings", disableDeepLinkSettings, "--no-session-persistence"}
+ }
+ 
+ // claudeTUIWarmArgs are claudeWarmArgs for the interactive mode's
+ // helper, which takes the bridge's stream-json.
+ func claudeTUIWarmArgs(model string) []string {
+ 	return []string{"-p", "--output-format", "stream-json", "--input-format", "stream-json", "--verbose", "--model", model,
+-		"--tools", "", "--strict-mcp-config", "--setting-sources", ""}
++		"--tools", "", "--strict-mcp-config", "--setting-sources", "", "--settings", disableDeepLinkSettings}
+ }
+ 
+ func clip(s string) string {
+diff --git a/internal/gateway/claude_warmup_test.go b/internal/gateway/claude_warmup_test.go
+index 04f23b85d..655c76499 100644
+--- a/internal/gateway/claude_warmup_test.go
++++ b/internal/gateway/claude_warmup_test.go
+@@ -46,6 +46,7 @@ func TestWarmClaudeAsksClaudeCodeOnce(t *testing.T) {
+ 	b, _ := os.ReadFile(log)
+ 	got := string(b)
+ 	for _, want := range []string{"[-p]", "[--model][haiku]", "[--tools][]", "[--setting-sources][]", "[--no-session-persistence]",
++		`[--settings][{"disableDeepLinkRegistration":"disable"}]`,
+ 		"dir:/saved/account\n", "base:\n", "stdin:hi", "magpie-claude-"} {
+ 		if !strings.Contains(got, want) {
+ 			t.Errorf("run lacks %q:\n%s", want, got)
+@@ -118,7 +119,8 @@ func TestClaudeUsageRunsClaudeCode(t *testing.T) {
+ 		t.Fatalf("usage %q %v", got, err)
+ 	}
+ 	b, _ = os.ReadFile(log)
+-	for _, want := range []string{"[-p][/usage]", "[--setting-sources][]", "[--strict-mcp-config]", "[--no-session-persistence]", "token:\n"} {
++	for _, want := range []string{"[-p][/usage]", "[--setting-sources][]", "[--strict-mcp-config]", "[--no-session-persistence]", "token:\n",
++		`[--settings][{"disableDeepLinkRegistration":"disable"}]`} {
+ 		if !strings.Contains(string(b), want) {
+ 			t.Errorf("run lacks %q:\n%s", want, b)
+ 		}
+-- 
+2.50.1 (Apple Git-155)
+</details>
+
+**Branch with the commit**: [fix/4928-deeplink-registration](https://github.com/ggbdpq/magpie/tree/fix/4928-deeplink-registration) (head `c933d6d3b93ef3e587ce86bd562f4d5088d631ce`).

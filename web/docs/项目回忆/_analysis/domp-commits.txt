@@ -1,0 +1,603 @@
+2024-08-06|ggbdpq|[GYLJG-3841] fix: 修复zIndex带来的问题
+2024-08-05|ggbdpq|[GYLJG-3841] fix: 修复不纳入统计配置新增数据表单回显问题
+2024-08-05|ggbdpq|[GYLJG-3841] refactor: 完善标签更新日志列表相关代码
+2024-08-05|ggbdpq|[GYLJG-3841] refactor: 修复多弹窗的zIndex问题,完善操作日志相关代码
+2024-08-05|ggbdpq|[GYLJG-3841] fix: 修复时效趋势分析丢失分页问题
+2024-08-02|ggbdpq|[GYLJG-3841] refactor: 修复dev和test公共样式问题
+2024-08-02|ggbdpq|[GYLJG-3841] fix: 修复空闲资源-推送提醒记录页面只有单个权限搜索和重置功能问题
+2024-08-02|ggbdpq|[GYLJG-3841] refactor: 增加不纳入统计配置按钮权限控制;设置接口满足当前数据权限;调整结束时间大于开始时间
+2024-08-01|ggbdpq|[GYLJG-3841] refactor: sso-sdk版本升级到0.1.2
+2024-07-31|ggbdpq|[GYLJG-3841] refactor: 完善不纳入统计的应用配置取值校验
+2024-07-31|ggbdpq|[GYLJG-3841] refactor: 校验API权限增加过滤路径查询字符后缀
+2024-07-31|ggbdpq|[GYLJG-3689] fix: 指标数据池表单弹窗去掉系统和应用的必填校验
+2024-07-31|ggbdpq|[GYLJG-3841] fix: 修复发版统计-发版异常确认明细传参问题
+2024-07-31|ggbdpq|[GYLJG-3841] feat: 发版页面新增不纳入统计配置功能
+2024-07-29|ggbdpq|[GYLJG-3689] refactor: 完善指标数据池页面功能
+2024-07-22|ggbdpq|[GYLJG-3689] refactor: 基础指标管理页面新增字段
+2024-07-24|ggbdpq|[GYLJG-3754] fix: 修复安全页面各部门拆分数据问题
+2024-07-23|ggbdpq|[GYLJG-3754] feat: 安全页面新增安全漏洞分类数量&&时效柱状折线图
+2024-07-23|ggbdpq|[GYLJG-3754] feat: 资源分布页面新增研发支撑和技术支持类型数据展示
+2024-07-22|ggbdpq|[GYLJG-3627] refactor: 完善发版人和提单人传参处理
+2024-07-18|ggbdpq|[GYLJG-3627] feat: 发版统计页面发版异常确认明细页面新增发版人和提单人异常
+2024-07-04|ggbdpq|[GYLJG-3453] refactor: 完善获取动态近八周趋势图标题
+2024-07-04|ggbdpq|[GYLJG-3453] refactor: 动态获取近八周趋势图标题
+2024-07-04|ggbdpq|[GYLJG-3453] refactor: 修复发版统计近8周趋势图的动态标题显示
+2024-07-04|ggbdpq|[GYLJG-3571] refactor: 降级TableSorter,更新package.json;
+2024-07-04|ggbdpq|[GYLJG-3571] feat: 升级shineout版本
+2024-07-04|ggbdpq|[GYLJG-3571] refactor: 变更需求时效和需求明细的表格列排序组件;
+2024-07-03|ggbdpq|[GYLJG-3571] fix: 修复动态获取云配置uid;赋予APPKEY默认值;
+2024-07-03|ggbdpq|[GYLJG-3453] fix: 修复时效趋势分析和质效目标时间筛选问题和指标名称搜索问题;修复时效页面重置问题;
+2024-07-01|ggbdpq|[GYLJG-3453] fix: 修复指标信息配置页面二次新增属性配置对象回显问题
+2024-07-01|ggbdpq|[GYLJG-3453] fix: 修复周数字段的显示问题
+2024-07-01|ggbdpq|[GYLJG-3453] refactor: 周数字段支持排序
+2024-07-01|ggbdpq|[GYLJG-3453] refactor: 发版统计页面发版超4次应用列表增加周数字段
+2024-07-01|ggbdpq|[GYLJG-3453] refactor: 变更质量页面重大故障明细传参字段
+2024-06-28|ggbdpq|[GYLJG-3571] refactor: 变更云配置uid取值仅为工号
+2024-06-28|ggbdpq|[GYLJG-3571] refactor: 完善项目配置和说明文档
+2024-06-28|ggbdpq|[GYLJG-3571] refactor: 删除commonApi不必要的接口以及代码注释
+2024-06-28|ggbdpq|[GYLJG-3571] fix: 修复表格排序的云配置问题
+2024-06-27|ggbdpq|[GYLJG-3533] fix: 修复时间筛选上个月的取数逻辑
+2024-06-27|ggbdpq|[GYLJG-3533] refactor: 给需求时效页面增加变量代码注释;查看修改日志接口放在公共部分统一处理;
+2024-06-26|ggbdpq|[GYLJG-3533] refactor: 完善需求明细页面的时间筛选条件
+2024-06-26|ggbdpq|[GYLJG-3533] refactor: 修改需求时效页面时间传参方式
+2024-06-26|ggbdpq|[GYLJG-3533] fix: 修复时间快速选择范围的近四周和近两周到默认上一周问题
+2024-06-25|ggbdpq|[GYLJG-3533] refactor: 隐藏稳定性和成本页面的时间筛选条件,以及系统指标整合页面
+2024-06-25|ggbdpq|[GYLJG-3533] feat: 快速选择时间范围增加上个月和今年以来
+2024-06-25|ggbdpq|[GYLJG-3533] feat: 新增只有二级部门访问mot指标接口
+2024-06-21|ggbdpq|Merge branch 'master' into GYLJG-2689
+2024-06-20|ggbdpq|[GYLJG-3062] refactor: 变更部分bizNameZh字段为bizNameDomp字段
+2024-06-17|ggbdpq|[GYLJG-3062] refactor: 完善获取指标名称枚举接口默认值;重置选择时间;
+2024-06-17|ggbdpq|[GYLJG-3062] feat: 需求积压情况列表增加暂停字段
+2024-06-12|ggbdpq|[GYLJG-3062] fix: 修复切换页面重置页面初始化问题
+2024-06-11|ggbdpq|[GYLJG-3062] refactor: 更换选择部门筛选组件
+2024-06-07|ggbdpq|[GYLJG-3062] refactor: 删减时效趋势分析页面颜色代码;系统异常值配置新增配置指标KEY值查询条件
+2024-06-07|ggbdpq|[GYLJG-3062] fix: 修复加载状态变更导致的状态循环问题
+2024-06-07|ggbdpq|[GYLJG-3062] refactor: 时效趋势分析接口联调
+2024-06-05|ggbdpq|[GYLJG-2689] refactor: 删除不必要的代码
+2024-06-04|ggbdpq|[GYLJG-3062] refactor: 质效目标页面去掉列表排序;代码格式化
+2024-06-04|ggbdpq|[GYLJG-3062] feat: 开发时效趋势分析页面
+2024-06-03|ggbdpq|Merge branch 'master' into GYLJG-2689
+2024-06-03|ggbdpq|[fix_GYLJG-3061] refactor: 设置质效目标的实际值字段不排序
+2024-06-03|ggbdpq|[fix_GYLJG-3061] fix: 修复TableSorter组件对动态列的自动排序问题
+2024-05-30|ggbdpq|[GYLJG-3061] fix: 修复标签帮助提示没有id的情况
+2024-05-30|ggbdpq|[GYLJG-3061] feat: 新增Decimal精度库和修改百分比显示
+2024-05-30|ggbdpq|[GYLJG-3061] refactor: 完善阈值处理逻辑
+2024-05-30|ggbdpq|[GYLJG-3061] refactor: 完善处理质效目标列表数据逻辑
+2024-05-30|ggbdpq|[GYLJG-3061] fix: 修复质效目标页面返回多部门处理不同目标值的问题
+2024-05-30|ggbdpq|[GYLJG-3061] fix: 修复系统异常值配置只有一个部门权限的默认选中值显示问题
+2024-05-30|ggbdpq|[GYLJG-3061] fix: 修复质效目标-周月数据的目标值为0显示的问题
+2024-05-30|ggbdpq|[GYLJG-3061] refactor: 设置年度实际值列项的固定冻结效果
+2024-05-30|ggbdpq|[GYLJG-3366] fix: 修复离开响应时间页面重置mot指标选中状态
+2024-05-29|ggbdpq|[GYLJG-3366] fix: 修复mot指标默认值为禁用状态
+2024-05-29|ggbdpq|[GYLJG-3366] feat: 增加慢查SQL、响应时间底部总和栏及mot指标自动勾选对应应用
+2024-05-29|ggbdpq|[GYLJG-3061] fix: 下放公共表格组件的列伸缩属性
+2024-05-29|ggbdpq|[GYLJG-3061] fix: 修复指标信息配置页面弹窗目标字段没有重置的问题
+2024-05-29|ggbdpq|[GYLJG-3061] fix: 修复没有单位时自动隐藏单位显示问题
+2024-05-29|ggbdpq|[GYLJG-3061] fix: 系统异常值配置页面设置新增弹窗指标单位字段
+2024-05-27|ggbdpq|[GYLJG-3061] fix: 修复实际值为数组的形式
+2024-05-24|ggbdpq|[GYLJG-3061] fix: 修复基础指标管理页面-属性配置关闭弹窗恢复查看状态问题
+2024-05-24|ggbdpq|[GYLJG-3061] fix: 修复质效目标页面的实际值为0的展示问题
+2024-05-24|ggbdpq|[GYLJG-3061] refactor: 完善质效目标页面的实际值是否显示红色逻辑处理
+2024-05-24|ggbdpq|[GYLJG-3061] fix: 质效目标页面获取标签接口完善传参字段
+2024-05-23|ggbdpq|[GYLJG-3061] refactor: 修复接口联调存在问题;代码格式化;优化相关样式和展示;
+2024-05-23|ggbdpq|[GYLJG-3061] refactor: 修复质效目标页面列表判空和搜索条件校验;
+2024-05-23|ggbdpq|[GYLJG-3061] refactor: 质效目标页面接口联调;完善标签的显示样式;
+2024-05-23|ggbdpq|[GYLJG-3061] refactor: 指标数据池页面接口联调
+2024-05-22|ggbdpq|[GYLJG-3061] refactor: 系统异常值配置页面新增单位字段
+2024-05-21|ggbdpq|[GYLJG-3061] refactor: 指标信息配置页面新增标签和备注字段
+2024-05-21|ggbdpq|[GYLJG-3061] refactor: 基础指标管理页面新增标签字段
+2024-05-21|ggbdpq|[GYLJG-3061] refactor: 指标数据池页面筛选条件新增指标编码
+2024-05-14|ggbdpq|Merge branch 'master' into GYLJG-2689
+2024-05-14|ggbdpq|[GYLJG-3061] feat: 开发质效目标查询页面
+2024-05-14|ggbdpq|Merge branch 'GYLJG-2907' into master_merge_GYLJG-2907
+2024-05-13|ggbdpq|[GYLJG-2907] refactor: 完善页面渲染时间页面初始化的部门选择
+2024-05-13|ggbdpq|[GYLJG-2907] refactor: 修复切换页面更改部门选择须重新赋值部门的问题
+2024-05-13|ggbdpq|[GYLJG-3006] fix: 增加对请求接口过程中的筛选条件限制
+2024-05-13|ggbdpq|[GYLJG-2907] fix: 修复阈值页面增加部门选择的兼容性
+2024-05-13|ggbdpq|[GYLJG-3006] refactor: 修复重大故障明细传参;修复loading的写法;
+2024-05-11|ggbdpq|[GYLJG-2907] fix: 修复阈值配置获取二级部门ID的问题
+2024-05-11|ggbdpq|[GYLJG-3006] refactor: 增加周月时间的最大值限制
+2024-05-10|ggbdpq|[GYLJG-2907] refactor: 修复资源成本月周时间-列表显示联动问题
+2024-05-10|ggbdpq|[GYLJG-2907] fix: 修复清除月周选中时间值问题;删除不必要代码;修复资源成本月周切换问题
+2024-05-10|ggbdpq|[GYLJG-3006] fix: 修复时间转换问题;统一处理时间函数
+2024-05-10|ggbdpq|[GYLJG-3006] refactor: 修复上周故障统计的时间问题
+2024-05-10|ggbdpq|[GYLJG-3006] refactor: 修复选择部门设置赋值二三级部门的问题
+2024-05-09|ggbdpq|[GYLJG-3006] refactor: 修复切换页面恢复默认时间类型和时间默认值
+2024-05-09|ggbdpq|[GYLJG-3006] refactor: 完善首页-重大故障明细相关逻辑;修改质量-故障概述请求接口
+2024-05-09|ggbdpq|[GYLJG-3006] refactor: 增加发送请求接口的时间校验
+2024-05-09|ggbdpq|[GYLJG-3006] refactor: 质量页面前后端接口联调
+2024-05-08|ggbdpq|[GYLJG-2907] refactor: 改造数据管理-页面渲染时间页面
+2024-05-08|ggbdpq|[GYLJG-2907] refactor: 修复点击切换部门配置表不同明细列表重新发送接口问题
+2024-05-08|ggbdpq|[GYLJG-2907] refactor: 统一管理部门、系统、应用、服务相关枚举接口;代码格式化
+2024-05-08|ggbdpq|[GYLJG-2907] refactor: 修复数据管理相关页面点击重置，恢复三级部门、系统、应用的默认值
+2024-05-07|ggbdpq|[GYLJG-2907] refactor: 改造数据管理-安全评分清单、资源成本、资源数量水位页面
+2024-04-29|ggbdpq|[GYLJG-3006] refactor: 消除无用字段name="weekType"和代码格式化;
+2024-04-29|ggbdpq|[GYLJG-3006] refactor: 质量页面新增年、月维度;统一整理时间类型枚举值和代码格式化;
+2024-04-29|ggbdpq|Merge branch 'master' into GYLJG-2907
+2024-04-26|ggbdpq|Merge branch 'master' into GYLJG-2689
+2024-04-25|ggbdpq|[GYLJG-2952] feat: 发版统计页面增加服务名称列表显示字段
+2024-04-25|ggbdpq|[GYLJG-2952] refactor: 取消对弹窗表单输入框的文本最大字数限制
+2024-04-25|ggbdpq|Merge branch 'master' into GYLJG-2952
+2024-04-25|ggbdpq|Merge branch 'master' into GYLJG-2689
+2024-04-24|ggbdpq|[GYLJG-2952] refactor: 修复模板下载启用状态和报错提示,指标信息配置页面编辑数据回显;
+2024-04-24|ggbdpq|[GYLJG-2952] fix: 修复属性配置编辑的自动渲染问题;修改常量文件夹命名
+2024-04-24|ggbdpq|[GYLJG-2952] fix: 修复模板下载存在问题
+2024-04-23|ggbdpq|[GYLJG-2952] refactor: 完善搜索条件系统字段子项页面显示和过滤筛选
+2024-04-23|ggbdpq|[GYLJG-2952] refactor: 指标信息配置修改指标配置搜索条件的交互方式;统一管理搜索条件过滤函数;修改指标目标字段取值;
+2024-04-23|ggbdpq|[GYLJG-2952] refactor: 指标数据池页面接口联调;部门联动接口增加判空;
+2024-04-23|ggbdpq|[GYLJG-2952] refactor: 删除属性配置弹窗多余的ID字段
+2024-04-23|ggbdpq|[GYLJG-2952] refactor: 完善模板下载的处理逻辑;完善系统指标配置的表单校验;
+2024-04-23|ggbdpq|[GYLJG-2952] refactor: 增加相关代码注释,删除不必要代码;
+2024-04-22|ggbdpq|[GYLJG-2952] refactor: 修复导出失败返回的文件名;修改指标信息配置-编辑的数据回显;
+2024-04-22|ggbdpq|[GYLJG-2952] refactor: 指标信息配置页面开发部分接口自测
+2024-04-22|ggbdpq|[GYLJG-2952] refactor: 基础指标管理页面开发部分接口自测
+2024-04-22|ggbdpq|[GYLJG-3014] feat: 完善需求时效页对接15天内完成信息
+2024-04-19|ggbdpq|[GYLJG-2952] feat: 系统指标配置页面开发
+2024-04-19|ggbdpq|[GYLJG-2952] feat: 指标数据池页面开发
+2024-04-18|ggbdpq|[GYLJG-2905] refactor: 完善自定义Popover容器id的写法
+2024-04-18|ggbdpq|[GYLJG-2905] refactor: 完善文案
+2024-04-18|ggbdpq|[GYLJG-2905] refactor: 调整稳定性-前端指标相关文案
+2024-04-18|ggbdpq|[GYLJG-2905] refactor: 文案调整
+2024-04-18|ggbdpq|[GYLJG-2905] refactor: 修改小驼峰转下划线方法中值的处理逻辑
+2024-04-18|ggbdpq|[GYLJG-2905] refactor: 修复应用数据明细、系统数据明细编辑成功后重新访问枚举接口问题
+2024-04-17|ggbdpq|[fix_20240417] refactor: 修复绑定定时任务配置提交恢复默认值和相关样式
+2024-04-17|ggbdpq|[fix_20240417] refactor: 修复定时任务接口引入问题;修复eslint检测发现的问题;
+2024-04-17|ggbdpq|[GYLJG-2905] refactor: 首页文案调整
+2024-04-12|ggbdpq|Merge branch 'master' into GYLJG-2689
+2024-04-12|ggbdpq|Merge branch 'master' into GYLJG-2907
+2024-04-11|ggbdpq|[GYLJG-2657] refactor: 完善发布统计配置弹窗样式
+2024-04-11|ggbdpq|[GYLJG-2907] refactor: 完善数据管理相关页面改造功能
+2024-04-11|ggbdpq|[GYLJG-2907] refactor: 改造数据管理相关页面,提取公共的渲染组件
+2024-04-10|ggbdpq|[GYLJG-2907] refactor: 重构数据管理-慢SQL,可用性,响应时间页面;完善Table增加请求完成函数,以及兼容返回响应数据;
+2024-04-09|ggbdpq|[GYLJG-2657] refactor: 修复数据管理切换页面重置系统和应用数据问题
+2024-04-08|ggbdpq|[GYLJG-2657] refactor: 整理commonApi文件,调整非公共接口的存放位置;代码格式化
+2024-04-08|ggbdpq|[GYLJG-2657] refactor: 修复时间组件快速选择区间的默认取值
+2024-04-08|ggbdpq|[GYLJG-2657] refactor: 修复获取实时时间的相关函数
+2024-04-08|ggbdpq|[GYLJG-2657] refactor: 修复发版统计的选择时间展示,以及切换发版异常确认明细页签不带条数字段问题
+2024-04-08|ggbdpq|[GYLJG-2907] refactor: 消除成本页面的无用和注释代码
+2024-04-08|ggbdpq|[GYLJG-2657] refactor: 修改发版统计页签文案
+2024-04-07|ggbdpq|[GYLJG-2657] refactor: 修改发版统计页面筛选条件的默认时间为上周
+2024-04-07|ggbdpq|[GYLJG-2657] refactor: 调整发版统计页面-发版情况-发版次数应用排名图表的图例位置
+2024-04-03|ggbdpq|Merge branch 'master' into GYLJG-2689
+2024-04-03|ggbdpq|Merge branch 'master' into GYLJG-2657
+2024-04-03|ggbdpq|[GYLJG-2657] refactor: 完善发版明细-发布统计配置交互方式
+2024-04-01|ggbdpq|[GYLJG-2657] refactor: 修复发版明细弹窗删除两次确认;修复编辑发版时间的标题取值;调整弹窗之前的高度;调整发版统计空数据样式的样式;
+2024-03-29|ggbdpq|[GYLJG-2657] refactor: 修复发版统计的系统和应用字段问题
+2024-03-29|ggbdpq|[GYLJG-2739] refactor: 变更需求明细-需求积压情况列表字段名称,以及新增承接系统字段
+2024-03-28|ggbdpq|[GYLJG-2657] refactor: 优化发版统计图表显示
+2024-03-28|ggbdpq|[GYLJG-2657] refactor: 完善系统、应用、服务、发版相关页面部门和系统、应用的联动;修复暂无数据显示样式;删除多余的无用代码;
+2024-03-28|ggbdpq|[GYLJG-2657] refactor: 修改发版异常确认明细查看备注字段
+2024-03-28|ggbdpq|[GYLJG-2657] refactor: 删除发版异常确认明细无用的字段;修改特殊发版字段;
+2024-03-28|ggbdpq|[GYLJG-2657] refactor: 修改发版异常确认明细和编辑备注原因字段;自动格式化相关代码;
+2024-03-27|ggbdpq|[GYLJG-2657] refactor: 完善发版异常确认明细-修改备注原因;核对明细列表字段;删除无用注释代码;
+2024-03-27|ggbdpq|[GYLJG-2657] refactor: 发版统计前后端接口联调;新增empty组件;隐藏发版人异常和提单人异常列表页签
+2024-03-26|ggbdpq|[GYLJG-2657] refactor: 修复发布统计默认查询近一周;发送请求接口先检验是否选择时间;调整加载更多的样式位置
+2024-03-26|ggbdpq|[GYLJG-2657] feat: 开发发版统计页面
+2024-03-25|ggbdpq|[GYLJG-2657] refactor: 完善发布统计配置-新增配置相关功能
+2024-03-25|ggbdpq|[GYLJG-2657] feat: 发布统计配置-编辑时间范围,当删除最后一条数据,重置左侧星期数组默认值;
+2024-03-25|ggbdpq|[GYLJG-2657] feat: 发版明细-发布统计配置添加新增按钮;修复应用数据明细筛选条件-是否纳入统计(发版)默认值为否的问题
+2024-03-22|ggbdpq|Merge branch 'master' into GYLJG-2689
+2024-03-21|ggbdpq|[GYLJG-2647] refactor: 修复服务数据明细,发版明细点击重置功能
+2024-03-20|ggbdpq|Merge branch 'master' into GYLJG-2689
+2024-03-20|ggbdpq|Merge branch 'master' into GYLJG-2647
+2024-03-20|ggbdpq|[GYLJG-2618] fix: 修改成本近四周各部门指标只有一个部门图表的显示
+2024-03-20|ggbdpq|[GYLJG-2618] fix: 修复稳定性和成本页面近四周各部门指标的只有一个部门的图表显示
+2024-03-19|ggbdpq|[GYLJG-2647] refactor: 优化发版明细JSON字符串辅助方法
+2024-03-19|ggbdpq|[GYLJG-2618] refactor: 修改首页-交付效率-项目数据的帮助文案
+2024-03-18|ggbdpq|[GYLJG-2647] refactor: 部门层级关系页面弹窗保留业务负责人
+2024-03-18|ggbdpq|[GYLJG-2647] refactor: 修改三级部门的页面渲染字段
+2024-03-18|ggbdpq|[GYLJG-2689] refactor: 升级依赖库sheinq为最新版本
+2024-03-18|ggbdpq|[GYLJG-2689] feat: 采用新单点登录方案，实现无感授权
+2024-03-18|ggbdpq|[GYLJG-2647] refactor: 判断合法日期格式增加大小于号检验
+2024-03-18|ggbdpq|[GYLJG-2647] refactor: 完善发版明细相关辅助方法
+2024-03-18|ggbdpq|[GYLJG-2647] refactor: 移除部门层级关系有关系统明细的所有代码;优化代码注释,删减不必要的代码;
+2024-03-15|ggbdpq|[GYLJG-2647] refactor: 部门层级关系外层列表改造
+2024-03-15|ggbdpq|Merge branch 'master' into GYLJG-2647
+2024-03-15|ggbdpq|Merge branch 'master' into GYLJG-2618
+2024-03-15|ggbdpq|[GYLJG-2647] refactor: 修复编辑弹窗的DOMP业务线编码是否禁用编辑逻辑
+2024-03-15|ggbdpq|[GYLJG-2647] refactor: 删除新增编辑弹窗的部门负责人、业务线名、业务线中文名、业务负责人字段
+2024-03-14|ggbdpq|优化服务和发版数据明细页面部门、系统、应用、服务的联动关系
+2024-03-14|ggbdpq|优化服务和发版数据明细页面部门、系统、应用、服务的联动关系
+2024-03-14|ggbdpq|Merge branch 'GYLJG-2167_ggbdpq' into GYLJG-2167
+2024-03-14|ggbdpq|优化服务和发版数据明细页面部门、系统、应用的联动关系
+2024-03-14|ggbdpq|优化应用数据明细页面部门、系统、应用的联动关系
+2024-03-14|ggbdpq|[GYLJG-2167_ggbdpq] refactor: 优化应用数据明细页面部门、系统、应用的联动关系
+2024-03-14|ggbdpq|[GYLJG-2647] refactor: 修复部门层级关系-DOMP业务线编码字段
+2024-03-13|ggbdpq|[GYLJG-2647] feat: 部门层级关系页面调整,新增若干字段,调整样式,删除不必要的代码
+2024-03-13|ggbdpq|Merge branch 'GYLJG-2167_ggbdpq' into GYLJG-2167
+2024-03-13|ggbdpq|[GYLJG-2167_ggbdpq] refactor: 优化重算接口传参;新增CMDB应用名称字段;
+2024-03-12|ggbdpq|Merge branch 'GYLJG-2167_ggbdpq' into GYLJG-2167
+2024-03-12|ggbdpq|[GYLJG-2167_ggbdpq] refactor: 修复系统、应用、服务、发版数据明细的部门下拉选择问题
+2024-03-12|ggbdpq|Merge branch 'GYLJG-2167_ggbdpq' into GYLJG-2167
+2024-03-12|ggbdpq|[GYLJG-2167_ggbdpq] refactor: 修复发版明细查看日志和发布统计配置弹窗问题
+2024-03-12|ggbdpq|Merge branch 'GYLJG-2167_ggbdpq' into GYLJG-2167
+2024-03-12|ggbdpq|[GYLJG-2167_ggbdpq] feat: 开发发布统计配置弹窗
+2024-03-12|ggbdpq|[GYLJG-2618] refactor: 调整首页-安全帮助提示弹窗的显示位置
+2024-03-11|ggbdpq|[GYLJG-2618] refactor: 优化稳定性和成本页面近四周各部门指标图表拖拽显示
+2024-03-11|ggbdpq|Merge branch 'GYLJG-2167_ggbdpq' into GYLJG-2167
+2024-03-11|ggbdpq|[GYLJG-2167_ggbdpq] fix: 修复服务数据明细搜索条件联动交互问题
+2024-03-11|ggbdpq|[GYLJG-2618] feat: 部门配置表页面新增jira提报系统名称字段
+2024-03-11|ggbdpq|[GYLJG-2618] refactor: 新增质量页面-子部门数据图表标题;优化各图表弹窗固定显示和近四周各部门指标图表拖拽显示
+2024-03-08|ggbdpq|Merge branch 'GYLJG-2167' into GYLJG-2167_ggbdpq
+2024-03-08|ggbdpq|Merge branch 'master' into GYLJG-2167
+2024-03-08|ggbdpq|[fix_GYLJG-2609] fix: 修复首页-稳定性&&告警相关帮助提示文案
+2024-03-08|ggbdpq|Merge branch 'GYLJG-2167_ggbdpq' into GYLJG-2167
+2024-03-08|ggbdpq|[GYLJG-2167_ggbdpq] refactor: 修复发版明细的导入功能;修改发版明细列表的系统和发布时间类型字段
+2024-03-08|ggbdpq|Merge branch 'GYLJG-2167_ggbdpq' into GYLJG-2167
+2024-03-08|ggbdpq|[GYLJG-2167_ggbdpq] refactor: 修复发版明细的导入功能
+2024-03-08|ggbdpq|Merge branch 'GYLJG-2167_ggbdpq' into GYLJG-2167
+2024-03-08|ggbdpq|[GYLJG-2167_ggbdpq] refactor: 修复发版明细列表发布类型和发布时间类型的字段
+2024-03-08|ggbdpq|[GYLJG-2609] refactor: 去掉首页-稳定性原先的目标设置文案;修改首页-安全弹窗显示位置;修复数据管理相关页面重置应用下拉枚举值问题
+2024-03-08|ggbdpq|[GYLJG-2609] feat: 首页-稳定性、需求时效、质量、安全模块帮助提示文案修改
+2024-03-07|ggbdpq|[GYLJG-2609] refactor: 需求时效页面的业务需求研发时效增加10天内完成字段
+2024-03-07|ggbdpq|[GYLJG-2609] refactor: 修改稳定性页面-近四周趋势图-响应时间图标的数组数据排序问题;修复数据管理搜索条件的联动重置问题
+2024-03-07|ggbdpq|[GYLJG-2609] refactor: 修改文案
+2024-03-07|ggbdpq|[GYLJG-2609] refactor: 【数据管理】-【页面渲染时间】的导入按钮移除
+2024-03-07|ggbdpq|[GYLJG-2609] refactor: 首页【稳定性数据】前端文案调整（阈值配置）
+2024-03-06|ggbdpq|Merge branch 'GYLJG-2167_ggbdpq' into GYLJG-2167
+2024-03-06|ggbdpq|[GYLJG-2167_ggbdpq] fix: 修复部门,系统和应用的搜索条件无法选择问题
+2024-03-06|ggbdpq|Merge branch 'GYLJG-2167_ggbdpq' into GYLJG-2167
+2024-03-06|ggbdpq|[GYLJG-2167_ggbdpq] refactor: 完善服务数据和发版明细功能
+2024-03-06|ggbdpq|Merge branch 'GYLJG-2167_ggbdpq' into GYLJG-2167
+2024-03-06|ggbdpq|[GYLJG-2167_ggbdpq] refactor: 完善服务和发版明细相关功能
+2024-03-06|ggbdpq|[GYLJG-2609] feat: 设置DOMP项目所有图表渲染纵坐标指示器隐藏
+2024-03-05|ggbdpq|Merge branch 'GYLJG-2167_ggbdpq' into GYLJG-2167
+2024-03-05|ggbdpq|[GYLJG-2167_ggbdpq] feat: 发版明细页面开发
+2024-03-04|ggbdpq|Merge branch 'GYLJG-2167_ggbdpq' into GYLJG-2167
+2024-03-04|ggbdpq|[GYLJG-2167_ggbdpq] feat: 服务数据明细页面开发;对应用/系统数据明细页面联动搜素重置数据、修改按钮样式和模板下载提示
+2024-03-04|ggbdpq|[GYLJG-2167_ggbdpq] feat: 应用数据明细相关页面增加是否纳入统计(发版)字段
+2024-02-28|ggbdpq|Merge branch 'master' into GYLJG-2521
+2024-02-28|ggbdpq|[GYLJG-2445] fix: 修复页面初始化请求接口问题
+2024-02-28|ggbdpq|[GYLJG-2521] style: 优化图表的样式显示
+2024-02-28|ggbdpq|[GYLJG-2521] refactor: 删除日常需求页面没有调用的接口
+2024-02-28|ggbdpq|[GYLJG-2445] fix: 修复系统巡检页面初始化,先执行部门接口,再加载列表数据
+2024-02-28|ggbdpq|[GYLJG-2445] fix: 修复日归档数据页面初始化,先执行部门接口,再加载列表数据
+2024-02-27|ggbdpq|[GYLJG-2445] refactor: 修改稳定性相关的系统异常值配置;设置近四周各部门指标和系统指标整合列表单横杠默认值;
+2024-02-27|ggbdpq|[GYLJG-2521] refactor: 需求时效页面-子部门异常信息变更图表交互形式
+2024-02-27|ggbdpq|[GYLJG-2521] refactor: 质量页面-子部门数据变更图表交互形式
+2024-02-27|ggbdpq|Merge branch 'master' into GYLJG-2445
+2024-02-26|ggbdpq|[GYLJG-2445] refactor: 修复近四周各部门指标的前端LCP和LCPS页签按周数排序;代码格式化整理
+2024-02-26|ggbdpq|[GYLJG-2445] fix: 修改日归档数据列表的前端LCPS指标数量字段取值
+2024-02-26|ggbdpq|[GYLJG-2548] feat: 增加配合项目概览列表的的编辑备注的交互逻辑
+2024-02-26|ggbdpq|[GYLJG-2445] fix: 修复近四周各部门指标-前端LCPS TP75 字段取值
+2024-02-26|ggbdpq|[GYLJG-2548] refactor: 增加参与业务立项项目的编辑备注的交互逻辑
+2024-02-23|ggbdpq|[GYLJG-2445] refactor: 删除不必要的注释;导入成功,重置搜索条件和发送列表请求
+2024-02-23|ggbdpq|[GYLJG-2445] refactor: 对日归档数据页面查漏补缺，增加限制和快捷时间范围；清除三级部门，联动清除系统下拉枚举值；统一整理日期的快捷选择
+2024-02-23|ggbdpq|[GYLJG-2445] refactor: 优化页面渲染时间的响应时间和平均数
+2024-02-23|ggbdpq|[GYLJG-2445] feat: 开发日归档数据页面
+2024-02-22|ggbdpq|[GYLJG-2445] refactor: 修改首页、稳定性、页面渲染时间等页面涉及稳定性的内容;增加文案提示;修改常量命名、图表颜色以及顺序;
+2024-02-20|ggbdpq|Merge branch 'master' into GYLJG-2402
+2024-02-20|ggbdpq|[GYLJG-2402] style: 修复部门配置表的新增和编辑弹窗样式
+2024-02-20|ggbdpq|[GYLJG-2402] style: 修复代码质量扫描发现的样式问题
+2024-02-20|ggbdpq|[GYLJG-2402] refactor: 修复获取业务负责人值为空的问题
+2024-02-20|ggbdpq|[GYLJG-2429] refactor: 列表小组负责应用字段显示统一大写展示
+2024-02-19|ggbdpq|[perf_20240206] perf: 完善系统和应用数据页面筛选条件的回调触发和过滤函数
+2024-02-06|关天豪|[GYLJG-2429] refactor: 修复编辑弹窗三级部门和应用的联动问题;
+2024-02-06|关天豪|[perf_20240206] refactor: 关掉弹窗重置系统和应用的默认值
+2024-02-06|关天豪|[GYLJG-2429] refactor: 优化获取应用接口传参字段;关掉弹窗清空应用枚举值;
+2024-02-06|关天豪|[perf_20240206] fix: 慢 SQL、可用性、响应时间页面编辑弹窗增加应用可筛选、修复应用回显问题
+2024-02-05|ggbdpq|Merge branch 'master' into GYLJG-2429
+2024-02-05|ggbdpq|Merge branch 'master' into GYLJG-2402
+2024-02-05|ggbdpq|[GYLJG-2410] refactor: 修复研发故障MTTR的取值问题
+2024-02-05|ggbdpq|[GYLJG-2402] refactor: 增加对需求积压跳转链接的判空;修复数据管理各表格弹窗的备注宽度;修复项目页面的相关注释;
+2024-01-30|ggbdpq|[GYLJG-2402] refactor: 删除不必要的样式代码
+2024-01-29|ggbdpq|refactor: 优化相关代码
+2024-01-26|ggbdpq|[GYLJG-2402] refactor: 抽取获取年份函数;赋予函数默认值;
+2024-02-05|ggbdpq|[GYLJG-2410] refactor: 修改查看近四周的标题为近四周研发周人均故障数
+2024-02-05|ggbdpq|[GYLJG-2410] refactor: 修改研发故障数-最近一周-查看近四周取值字段
+2024-02-04|ggbdpq|[GYLJG-2429] feat: 部门小组配置绑定系统调整,新增应用维度;
+2024-02-02|ggbdpq|[GYLJG-2410] refactor: 修复formatOptionData函数未传入新增图表类型
+2024-02-02|ggbdpq|[GYLJG-2410] refactor: 调整需求时效页签全选的位置
+2024-02-02|ggbdpq|[GYLJG-2410] refactor: 修改质量相关文字提示和阈值key值
+2024-02-02|ggbdpq|[GYLJG-2410] feat: 首页增加周人均故障
+2024-02-01|ggbdpq|[GYLJG-2410] feat: 需求时效增加全选功能;近两周研发时效超15天明细增加问题类型字段;部门小组配置明细增加请填写jira账号;
+2024-01-31|ggbdpq|Merge branch 'master' into GYLJG-2392
+2024-01-31|ggbdpq|[GYLJG-2392] fix: 修复切换部门所有项目清单页签重置总条数的问题
+2024-01-30|ggbdpq|[GYLJG-2258] style: 修改编辑按钮的初始样式
+2024-01-30|ggbdpq|[GYLJG-2258] refactor: 优化点击删除函数逻辑;变更部门长配置相关变量名;删除不必要的代码和样式
+2024-01-30|ggbdpq|[GYLJG-2356] refactor: 修改需求时效的提示文案
+2024-01-30|ggbdpq|[GYLJG-2258] refactor: 删减发送请求不必须传递的参数;删除tip和多余的代码;
+2024-01-30|ggbdpq|[GYLJG-2258] refactor: 完善推送提醒配置页面交互体检
+2024-01-29|ggbdpq|[GYLJG-2258] refactor: 优化推送内容的显示
+2024-01-26|ggbdpq|[GYLJG-2392] refactor: 修改字段created为创建时间
+2024-01-26|ggbdpq|Merge branch 'master' into GYLJG-2392
+2024-01-26|ggbdpq|Merge branch 'master' into GYLJG-2356
+2024-01-26|ggbdpq|Merge branch 'master' into GYLJG-2258
+2024-01-26|ggbdpq|[GYLJG-2392] refactor: 修复立项通过时间和created为同一个字段
+2024-01-26|ggbdpq|[GYLJG-2392] feat: 增加项目页面-部门所有项目清单增加页签
+2024-01-25|ggbdpq|[GYLJG-2258] fix: 修复离开页面重置删除默认显示状态
+2024-01-25|ggbdpq|[GYLJG-2258] refactor: 修复切换页面重置配置默认编辑状态;调整加减号的样式大小;
+2024-01-25|ggbdpq|[GYLJG-2258] refactor: 优化markdown转html的用户体检;修改新增弹窗推送时间默认值;
+2024-01-25|ggbdpq|Merge branch 'master' into GYLJG-2356
+2024-01-25|ggbdpq|Merge branch 'master' into GYLJG-2258
+2024-01-24|ggbdpq|[GYLJG-2258] fix: 查漏补缺;优化检验字段;
+2024-01-24|ggbdpq|[GYLJG-2258] feat: 推送提醒配置页面开发;优化记录列表内容的气泡显示;
+2024-01-24|ggbdpq|[GYLJG-2258-new] feat: 空闲资源-推送提醒记录页面开发
+2024-01-23|ggbdpq|Merge branch 'master' into GYLJG-2356
+2024-01-22|ggbdpq|[GYLJG-2266] refactor: 稳定性-响应时间图表数据按年份-周数排序
+2024-01-22|ggbdpq|[GYLJG-2356] feat: 首页-项目增加文字提示;项目页面异常项目明细增加项目总分字段;
+2024-01-22|ggbdpq|[GYLJG-2266] fix: 修复稳定性-近四周趋势图-响应时间的周数排序问题
+2024-01-19|ggbdpq|Merge branch 'master' into GYLJG-2266
+2024-01-17|ggbdpq|Merge branch 'master' into GYLJG-2279
+2024-01-17|ggbdpq|Merge branch 'master' into GYLJG-2266
+2024-01-17|ggbdpq|[GYLJG-2105] refactor: 修复下拉部门选项出现空白的情况
+2024-01-16|ggbdpq|Merge branch 'GYLJG-2199' into master_merge_GYLJG-2199
+2024-01-16|ggbdpq|[GYLJG-2199] refactor: 修复统计范围支持筛选过滤选项
+2024-01-15|ggbdpq|[GYLJG-2279] refactor: 删除多余的默认值重置
+2024-01-15|ggbdpq|[GYLJG-2279] refactor: 切换选项重置系统、应用默认值;更换支持多系统获取应用的枚举接口;
+2024-01-15|ggbdpq|[GYLJG-2279] refactor: 临时移除研发运营数据-稳定性、成本、告警页面年月的时间选择范围
+2024-01-15|ggbdpq|[GYLJG-2279] refactor: 数据管理页面系统、应用下拉框增加支持多选和筛选过滤
+2024-01-15|ggbdpq|[GYLJG-2199] refactor: 优化首页-需求剩余工作量的剩余需求数文案显示
+2024-01-12|ggbdpq|[GYLJG-2199] feat: 添加今日空闲资源的文字提醒
+2024-01-10|ggbdpq|[GYLJG-2144] refactor: 子部门需求时效图表图例样式调整
+2024-01-10|ggbdpq|[GYLJG-2144] refactor: 子部门需求时效默认选中研发时效
+2024-01-08|ggbdpq|[GYLJG-2144] refactor: 优化首页-需求页签相关功能;根据二级部门权限判断是否显示FTIC(业务研发线)
+2024-01-05|ggbdpq|[GYLJG-2144] refactor: 需求页签接口联调,完善业务处理逻辑
+2024-01-05|ggbdpq|[GYLJG-2144] refactor: 首页-需求页签核验字段、增加相关枚举接口;给各请求接口带上需求页签字段
+2024-01-05|ggbdpq|[GYLJG-2144] feat: 需求时效页面增加FTIC（业务研发线)二级部门、以及问题类型、统计范围等筛选条件
+2024-01-04|ggbdpq|[GYLJG-2144] refactor: 删除原有的仅展示业务需求,仅展示非研发需求;给首页-图表的事件监听函数增加判断条件;增加需求页签
+2024-01-10|ggbdpq|[GYLJG-2144] refactor: 子部门需求时效图表图例样式调整
+2024-01-10|ggbdpq|[GYLJG-2144] refactor: 子部门需求时效默认选中研发时效
+2024-01-08|ggbdpq|[GYLJG-2144] refactor: 优化首页-需求页签相关功能;根据二级部门权限判断是否显示FTIC(业务研发线)
+2024-01-05|ggbdpq|[GYLJG-2144] refactor: 需求页签接口联调,完善业务处理逻辑
+2024-01-05|ggbdpq|[GYLJG-2144] refactor: 首页-需求页签核验字段、增加相关枚举接口;给各请求接口带上需求页签字段
+2024-01-05|ggbdpq|[GYLJG-2144] feat: 需求时效页面增加FTIC（业务研发线)二级部门、以及问题类型、统计范围等筛选条件
+2024-01-04|ggbdpq|[GYLJG-2144] refactor: 删除原有的仅展示业务需求,仅展示非研发需求;给首页-图表的事件监听函数增加判断条件;增加需求页签
+2024-01-10|ggbdpq|[GYLJG-2144] refactor: 子部门需求时效图表图例样式调整
+2024-01-10|ggbdpq|[GYLJG-2144] refactor: 子部门需求时效默认选中研发时效
+2024-01-10|ggbdpq|[GYLJG-2266] feat: 任务绑定-穿梭框支持筛选过滤
+2024-01-10|ggbdpq|[GYLJG-2199] feat: 资源分布功能上增加【今日空闲资源】
+2024-01-10|ggbdpq|[GYLJG-2266] refactor: 优化单选框数组遍历写法;统一onChange规范写法;
+2024-01-10|ggbdpq|[GYLJG-2266] refactor: 调整列表绑定巡检/备注的显示样式
+2024-01-10|ggbdpq|[GYLJG-2266] refactor: 删掉定时任务触发;优化穿梭框的逻辑处理
+2024-01-09|ggbdpq|[GYLJG-2266] feat: 定时任务配置前端页面开发
+2024-01-09|ggbdpq|[GYLJG-2266] feat: 定时任务配置页面初始化
+2024-01-08|ggbdpq|[GYLJG-2144] refactor: 优化首页-需求页签相关功能;根据二级部门权限判断是否显示FTIC(业务研发线)
+2024-01-05|ggbdpq|[GYLJG-2144] refactor: 需求页签接口联调,完善业务处理逻辑
+2024-01-05|ggbdpq|Merge branch 'master' into GYLJG-2144
+2024-01-05|ggbdpq|[GYLJG-2144] refactor: 首页-需求页签核验字段、增加相关枚举接口;给各请求接口带上需求页签字段
+2024-01-05|ggbdpq|[GYLJG-2144] feat: 需求时效页面增加FTIC（业务研发线)二级部门、以及问题类型、统计范围等筛选条件
+2024-01-04|ggbdpq|Merge branch 'master' into GYLJG-2146
+2024-01-04|ggbdpq|Merge branch 'master' into GYLJG-2144
+2024-01-04|ggbdpq|[GYLJG-2146] fix: 修复应用标签的帮助提示无法点击的问题;
+2024-01-04|ggbdpq|[GYLJG-2144] refactor: 删除原有的仅展示业务需求,仅展示非研发需求;给首页-图表的事件监听函数增加判断条件;增加需求页签
+2024-01-04|ggbdpq|[GYLJG-2146] refactor: 修复系统数据明细-批量编辑的开发方式字段显示问题
+2024-01-04|ggbdpq|[GYLJG-2146] refactor: 修改色块组件的变量名;把加载状态封在色块组件里
+2024-01-04|ggbdpq|[GYLJG-2146] refactor: 系统数据明细-编辑-开发方式放开过滤空白选项
+2024-01-04|ggbdpq|[GYLJG-2146] refactor: 完善色块组件
+2024-01-03|ggbdpq|[GYLJG-2146] refactor: 修复系统数据-系统的查看明细页面展示
+2024-01-03|ggbdpq|[GYLJG-2146] refactor: 增加默认展示没有下线的应用
+2024-01-03|ggbdpq|[GYLJG-2146] refactor: 配合后端改造首页-系统数据的传值;修复切换页签标签重置的问题
+2024-01-03|ggbdpq|Merge branch 'master' into GYLJG-2146
+2024-01-03|ggbdpq|Merge branch 'master' into GYLJG-2062
+2024-01-03|ggbdpq|[GYLJG-2146] refactor: 改造系统数据-系统-查看明细接口
+2024-01-02|ggbdpq|[GYLJG-2146] refactor: 优化获取动态长度的写法
+2024-01-02|ggbdpq|[GYLJG-2146] refactor: 优化首页色块组件;优化动态计算长度;
+2024-01-02|ggbdpq|[GYLJG-2146] refactor: 首页-系统数据-系统动态计算宽度;url 下钻跳转过滤掉null的情况;
+2024-01-02|ggbdpq|[GYLJG-2146] refactor: 变更系统数据明细开发方式变量名
+2024-01-02|ggbdpq|[GYLJG-2146] refactor: 修复应用数据明细列表所属系统字段的英文显示;变更首页-系统数据-系统相关取值变量名;
+2024-01-02|ggbdpq|[GYLJG-2146] feat: 系统数据明细新增开发方式查询条件
+2024-01-02|ggbdpq|[GYLJG-2146] feat: 首页-系统数据增加分类维度
+2023-12-29|ggbdpq|[GYLJG-1966] refactor: 优化系统巡检列表的状态显示
+2023-12-29|ggbdpq|Merge branch 'master' into GYLJG-1966
+2023-12-29|ggbdpq|[GYLJG-2062] refactor: 升级TableColumnManager依赖;更改Table为动态列;
+2023-12-29|ggbdpq|[GYLJG-2062] fix: 修复导出需求明细刷新访问列表的问题
+2023-12-29|ggbdpq|[GYLJG-2062] fix: 需求明细列表增加等待开发和测试中这两个字段
+2023-12-29|ggbdpq|Merge branch 'master' into GYLJG-2062
+2023-12-29|ggbdpq|[GYLJG-2062] fix: 增加导出的备注字段;给修改日志弹窗的字段增加HTML格式渲染方式
+2023-12-29|ggbdpq|[GYLJG-2062] fix: 修改导出detailType传参类型
+2023-12-28|ggbdpq|[GYLJG-2062] fix: 修改排序字段为下划线形式,增加列项key字段用于导出;完善导出功能;
+2023-12-28|ggbdpq|[GYLJG-2062] refactor: 校验需求明细列表增加字段,优化异常备注不为空
+2023-12-28|ggbdpq|[GYLJG-2062] feat: 研发时效超15天需求明细列表增加查看日志功能
+2023-12-28|ggbdpq|[GYLJG-2062] feat: 研发时效超15天需求明细列表增加导入导出相关功能
+2023-12-28|ggbdpq|[GYLJG-2158] feat: 扩充研发时效超15天需求明细列表字段,增加支持排序功能;
+2023-12-28|ggbdpq|[GYLJG-2155] refactor: 控制请求频率为1 次,优化页面崩溃问题
+2023-12-28|ggbdpq|[GYLJG-2155] refactor: 优化选中行变化的触发函数
+2023-12-28|ggbdpq|[GYLJG-2155] fix: 修改加载状态,给搜索和重置按钮添加加载状态
+2023-12-28|ggbdpq|[GYLJG-2155] refactor: 应用标签把“自提”“第三方”的相关描述去掉的文案去掉
+2023-12-27|ggbdpq|[GYLJG-2155] fix: 修复首页-系统数据-服务范围弹窗的空白字段显示问题
+2023-12-27|ggbdpq|[GYLJG-2155] refactor: 修复可用级别传递参数
+2023-12-27|ggbdpq|[GYLJG-2155] refactor: 优化色块组件判断字段;优化判断空数组
+2023-12-27|ggbdpq|[GYLJG-2155] refactor: 抽离色块组件;优化首页-系统数据弹窗显示
+2023-12-27|ggbdpq|[GYLJG-2155] perf: 优化首页-系统数据处理逻辑,简化相关代码
+2023-12-27|ggbdpq|[GYLJG-2155] refactor: 优化搜索条件用户体验
+2023-12-27|ggbdpq|[GYLJG-2155] refactor: 去掉系统明细列表跳转字段的字符串判断
+2023-12-27|ggbdpq|[GYLJG-2155] fix: 离开页面,手动重置ready默认值
+2023-12-27|ggbdpq|[GYLJG-2155] refactor: 删除不必要的代码;优化发送请求频率;优化系统明细列表初始化请求默认值
+2023-12-27|ggbdpq|[GYLJG-2155] fix: 解决首页查看明细的空白字段默认渲染为0 问题
+2023-12-27|ggbdpq|[GYLJG-2155] fix: 解决首页系统和应用下钻跳转的空参数处理问题
+2023-12-26|ggbdpq|[GYLJG-2155] fix: 修改应用名称下拉选中值
+2023-12-26|ggbdpq|[GYLJG-2155] refactor: 下钻跳转前后端联调
+2023-12-26|ggbdpq|[GYLJG-2155] refactor: 设置下钻跳转 state 的默认值
+2023-12-26|ggbdpq|[GYLJG-2155] refactor: 优化下钻跳转接收函数
+2023-12-26|ggbdpq|[GYLJG-1966] fix: 修复模拟测试弹窗返回结果显示问题
+2023-12-26|ggbdpq|[GYLJG-2155] refactor: 优化系统和应用明细页面下钻跳转;过滤编辑弹窗空白字段
+2023-12-26|ggbdpq|[GYLJG-2155] feat: 首页-系统数据和系统/应用数据明细页面改造
+2023-12-25|ggbdpq|[GYLJG-1966] fix: 修改点击编辑弹窗三级部门无数据,修改巡检EL的长度校验
+2023-12-25|ggbdpq|[GYLJG-1966] refactor: 剔除二级部门非必要的值
+2023-12-25|ggbdpq|Merge branch 'master' into GYLJG-1966
+2023-12-25|ggbdpq|[fixbug_GYLJG-2140] refactor: 优化系统和应用的过滤筛选功能
+2023-12-25|ggbdpq|[fixbug_GYLJG-2140] fix: 修改系统-编辑弹窗的日期选中不生效的问题;放开应用-批量编辑
+2023-12-25|ggbdpq|[GYLJG-1966] refactor: 兼容 data 和 meta 返回 null 的情况
+2023-12-25|ggbdpq|[GYLJG-1966] refactor: 优化系统巡检配置页面开发
+2023-12-21|ggbdpq|[GYLJG-1966] feat: 系统巡检配置页面初始化
+2023-12-25|ggbdpq|Merge branch 'master' into GYLJG-1966
+2023-12-22|ggbdpq|[GYLJG-1966] refactor: 系统巡检配置前后端开发联调
+2023-12-22|ggbdpq|[GYLJG-2140] fix: 隐藏应用数据明细的批量修改
+2023-12-22|ggbdpq|[GYLJG-2140] fix: 修改应用标签初始化为空格的问题;修改系统名称和所属系统;修改服务范围为 0 的情况
+2023-12-22|ggbdpq|[GYLJG-1966] feat: 完善系统巡检配置页面开发
+2023-12-22|ggbdpq|[GYLJG-2140] refactor: 优化接口404情况;明确导入错误信息名称;去掉不必要的时间辅助函数
+2023-12-21|ggbdpq|[GYLJG-1966] feat: 系统巡检配置页面初始化
+2023-12-21|ggbdpq|[GYLJG-2140] refactor: 系统数据明细列表增加开发方式字段
+2023-12-21|ggbdpq|[GYLJG-2140] refactor: 去掉二级部门
+2023-12-21|ggbdpq|[GYLJG-2140] refactor: 修复重置按钮;修复部门接口返回值;
+2023-12-21|ggbdpq|[GYLJG-2140] style: 修改应用描述字段
+2023-12-21|ggbdpq|[GYLJG-2140] refactor: 完善系统数据明细的页面开发
+2023-12-21|ggbdpq|[GYLJG-2140] refactor: 完善应用数据明细枚举接口;去掉系统负责人字段
+2023-12-21|ggbdpq|[GYLJG-2140] refactor: 修改获取系统和应用的接口;修改批量弹窗字段检验;列表增加显示部门/业务字段,去掉更新时间字段;
+2023-12-21|ggbdpq|[GYLJG-2140] refactor: 修复批量修改的字段校验
+2023-12-21|ggbdpq|[GYLJG-2140] refactor: 增加批量修改的字段校验
+2023-12-21|ggbdpq|[GYLJG-2140] fix: 修复应用标签格式转换的问题;纠正错误字段;
+2023-12-20|ggbdpq|[GYLJG-2140] feat: 完善应用数据明细接口、字段定义
+2023-12-20|ggbdpq|[GYLJG-2140] feat: 完善系统数据明细接口、字段定义
+2023-12-19|ggbdpq|[GYLJG-2032] refactor: 增加系统阈值配置页面初始化
+2023-12-18|ggbdpq|[perf_20231218] style: 修改首页-稳定性的标题
+2023-12-18|ggbdpq|[perf_20231218] refactor: 修改首页-查看明细页码重置的问题
+2023-12-18|ggbdpq|[perf_20231218] refactor: 修改首页-查看明细页码重置的问题
+2023-12-19|ggbdpq|[GYLJG-2140] feat: 系统数据明细和应用数据明细页面初始化
+2023-12-18|ggbdpq|[perf_20231218] style: 修改首页-稳定性的标题
+2023-12-19|ggbdpq|[GYLJG-2032] refactor: 增加系统阈值配置页面初始化
+2023-12-18|ggbdpq|[GYLJG-2032] fix: 数据管理各页面增加列表底部平均值
+2023-12-18|ggbdpq|[fix_GYLJG-2057] fix: 修改首页-需求时效的名称
+2023-12-15|ggbdpq|[GYLJG-2057] style: 调整首页-系统数据的样式
+2023-12-15|ggbdpq|[GYLJG-2057] refactor: 修复首页-交付效率的需求相关样式
+2023-12-15|ggbdpq|[GYLJG-2057] refactor: 修复请求接口的默认值返回
+2023-12-15|ggbdpq|Merge branch 'master' into GYLJG-2057
+2023-12-15|ggbdpq|[GYLJG-2057] refactor: 应用类型增加一个空白字段;修复首页-安全,成本样式
+2023-12-15|ggbdpq|[GYLJG-2057] refactor: 应用标签增加按数值降序排序
+2023-12-14|ggbdpq|[GYLJG-2057] refactor: 首页-系统数据完善页面及接口联调
+2023-12-14|ggbdpq|Revert "[GYLJG-2035] refactor: 优化阈值配置和列表组件的代码"
+2023-12-13|ggbdpq|[GYLJG-2057] refactor: 优化颜色块的显示
+2023-12-13|ggbdpq|[GYLJG-2057] refactor: 首页样式调整;设置按钮根据条件显示与否
+2023-12-13|ggbdpq|[GYLJG-2057] refactor: 简化目录结构,优化代码结构
+2023-12-13|ggbdpq|[GYLJG-2057] refactor: 系统数据前后端接口联调
+2023-12-12|ggbdpq|[GYLJG-2057] fix: 完善系统数据页面开发
+2023-12-11|ggbdpq|[GYLJG-2057] feat: 首页-系统数据页面开发;优化相关页面
+2023-12-08|ggbdpq|[GYLJG-1839] refactor: 优化Table组件重置分页默认值显示
+2023-12-06|ggbdpq|[GYLJG-1839] fix: 修复批量修改配置值为0显示,阈值配置值允许10位整数位,5位小数点
+2023-12-06|ggbdpq|[GYLJG-1839] fix: 修复Table发送列表接口重置到默认页码和条数
+2023-12-06|ggbdpq|[GYLJG-1839] fix: 修复查看修改日志列表分页,阈值列表配置值0显示问题
+2023-12-06|ggbdpq|[GYLJG-1839] fix: 使用定时器修复出现阈值配置警告自动消失
+2023-12-06|ggbdpq|[GYLJG-1839] fix: 修复配置指标名称按名称筛选数据,支持大小写
+2023-12-06|ggbdpq|[GYLJG-1839] fix: 修复部门应默认选中FTIC研发部
+2023-12-04|ggbdpq|[GYLJG-1839] feat: 增加查看修改日志列表弹窗
+2023-11-06|ggbdpq|[GYLJG-1754] refactor: 查漏补缺,补充图表单位
+2023-11-06|ggbdpq|[GYLJG-1754] refactor: 稳定性页面子部门数据展示UI调整
+2023-11-06|ggbdpq|[GYLJG-1754] refactor: 【DOMP】成本、稳定性页面子部门数据展示UI调整
+2023-10-30|ggbdpq|[hotfix_GYLJG-1645] fix: 修复稳定性页面慢SQL数量趋势图和可用部门性图字段取值问题
+2023-10-26|ggbdpq|[GYLJG-1645] refactor: 完善图表渲染逻辑，兼容海外履约部门添加后图表数据为空的情况
+2023-10-25|ggbdpq|[GYLJG-1645] fix: 修复table组件翻页/加载状态的问题
+2023-10-25|ggbdpq|[GYLJG-1645] refactor: 修复Echart组件卸载重置数据的问题;对数组判空操作做一些特殊处理
+2023-10-07|ggbdpq|[GYLJG-1585] perf: 部门名称调整
+2023-09-11|ggbdpq|[GYLJG-1458] style: 修复echarts中横坐标值显示不全的问题
+2023-09-15|ggbdpq|[GYLJG-1478] refactor: 增加首页-成本-资源成本-查看近四周图表独占、均摊维度,删减暂无使用的依赖包
+2023-09-11|ggbdpq|[GYLJG-1458] style: 修复echarts中横坐标值显示不全的问题
+2023-09-05|ggbdpq|[GYLJG-1383] style: 修改首页-成本中关于资源成本的温馨提示文案
+2023-09-04|ggbdpq|[GYLJG-1383] fix: 修复【系统管理-部门配置表】列表数据中的系统明细-新增弹窗中服务下拉渲染问题
+2023-09-04|ggbdpq|[GYLJG-1383] style: 图表图例样式调整
+2023-09-04|ggbdpq|[GYLJG-1383] refactor: 重构原先封装图表组件的导入引用和通用写法
+2023-09-04|ggbdpq|[GYLJG-1383] style: 图表样式调整
+2023-09-01|ggbdpq|[GYLJG-1383] refactor: 封装时间组件为函数,新增弹窗时间类型默认不取值
+2023-09-01|ggbdpq|[GYLJG-1383] fix: 取消多余的可选链
+2023-09-01|ggbdpq|[GYLJG-1383] fix: 查漏补缺
+2023-09-01|ggbdpq|[GYLJG-1383] fix: 【成本】和【资源成本】模块的前后端接口联调
+2023-08-31|ggbdpq|[GYLJG-1383] fix: 初步与后端接口联调,查漏补缺
+2023-08-31|ggbdpq|[GYLJG-1383] refactor: 核对3个成本字段,修改周数和月份的时间组件问题
+2023-08-31|ggbdpq|[GYLJG-1383] refactor: 修复资源成本模块的搜索-时间类型，列表以及新增&&编辑弹窗增加成本各字段等问题
+2023-08-30|ggbdpq|[GYLJG-1383] refactor: 修改成本模块的近四周趋势图和子部门数据的资源成本图表,修复部分eslint代码格式化
+2023-08-17|ggbdpq|[GYLJG-1295] refactor: 修复资源分布页面中帮助提示的【其他投入】的文案
+2023-08-17|ggbdpq|[GYLJG-1295] fix: 修复项目页面【三级部门配合项目】图表的渲染卸载问题
+2023-08-16|ggbdpq|[GYLJG-1295] refactor: 项目页面配合项目概览中表格的计划完成时间字段修复
+2023-08-16|ggbdpq|[GYLJG-1295] refactor: 修改资源投入分布的帮助提示
+2023-08-16|ggbdpq|Merge branch 'master' into GYLJG-1295
+2023-08-15|ggbdpq|[GYLJG-1295] refactor: 修改width初始值,相关render函数为小驼峰命名法
+2023-08-15|ggbdpq|[GYLJG-1295] refactor: 提取【项目】页面关于columns字段的复用代码，封装成函数和简单组件
+2023-08-15|ggbdpq|[GYLJG-1295] fix: 【部门所有项目清单】表头文案修改
+2023-08-11|ggbdpq|[GYLJG-1247] refactor: 修复项目页部门项目清单模块下字段使用错误的历史问题
+2023-08-08|ggbdpq|[GYLJG-1255] style: 项目需求指标页面文案修改
+2023-08-04|ggbdpq|Merge branch 'master' into GYLJG-1185
+2023-08-04|ggbdpq|[GYLJG-1185] refactor: 还原【剩余工作量(周)】显示值的默认精度
+2023-08-03|ggbdpq|[GYLJG-1185] refactor: 为echarts目录增加index文件，修改对应路径写法
+2023-08-03|ggbdpq|[GYLJG-1185] refactor: 移动helpTipTypeRender函数到辅助方法目录中
+2023-08-03|ggbdpq|[GYLJG-1185] refactor: 更改目录constant命名为constants
+2023-08-03|ggbdpq|[GYLJG-1185] refactor: 改造useEcharts中useEffect的写法，一个函数只监听一个数组
+2023-08-03|ggbdpq|[GYLJG-1185] refactor: 提取help-tip为公共组件
+2023-08-02|ggbdpq|[GYLJG-1185] refactor: 提取【研发运营数据】中提示气泡的公共组件，包括项目需求指标、日常需求时效、质量、安全和告警
+2023-08-02|ggbdpq|[GYLJG-1185] fix: 修复content文件存在问题，代码格式化
+2023-08-02|ggbdpq|[GYLJG-1185] fix: 核对项目管理页面增加业务类型的字段
+2023-08-02|ggbdpq|[GYLJG-1185] refactor: 提取首页涉及【温馨提示】文字说明气泡的公共组件
+2023-08-01|ggbdpq|[GYLJG-1185] refactor: 提取首页涉及【时效】、【评分】子模块的公共组件
+2023-07-31|ggbdpq|[GYLJG-1185] perf: 使用第三方库dayjs取代原先的momment库
+2023-07-31|ggbdpq|[GYLJG-1185] feat: 项目【时效、评分、准时交付率】新增业务维度，【三级部门项目情况】新增业务柱状图，【部门所有项目清单】新增[业务项目字段，小改样式。
+2023-07-31|ggbdpq|[GYLJG-1185] feat: 首页新增业务维度。【部门项目吞吐】新增3个时间趋势图的业务维度，【时效】和【评分】新增业务一栏。另外修改当前模块部分样式。
+2023-07-28|ggbdpq|Merge branch 'GYLJG-780' into master_merge_GYLJG-780
+2023-07-28|ggbdpq|[pref_20230728] perf: 新增剩余资源人的tooltip悬浮框显示
+2023-07-27|ggbdpq|[GYLJG-780] fix: 修复数据管理模块的默认值问题,默认不选
+2023-07-27|ggbdpq|[GYLJG-780] style: useEcharts 文件增加头部代码注释
+2023-07-27|ggbdpq|[GYLJG-780] fix: 研发运营数据模块除了首页之外,其他恢复默认不选
+2023-07-26|ggbdpq|[GYLJG-780] fix: 修改日常需求时效和成本的时间默认值为年,查漏补缺修改存在问题
+2023-07-25|ggbdpq|[GYLJG-780] fix: 修复eslint提示的问题
+2023-07-25|ggbdpq|[GYLJG-780] fix: 查漏补缺
+2023-07-25|ggbdpq|[GYLJG-780] fix: 为useEcharts函数添加头部注释
+2023-07-25|ggbdpq|[GYLJG-780] fix: 修复 eslint-disable-next-line 存在的问题
+2023-07-25|ggbdpq|[GYLJG-780] fix: maximum设置最大长度不超过120，prettier格式化和自动修复问题
+2023-07-25|ggbdpq|[GYLJG-780] fix: 修复MR发现的问题
+2023-07-24|ggbdpq|[GYLJG-780] fix: 修复base-chart的id问题
+2023-07-24|ggbdpq|[GYLJG-780] fix: 修复eslint,useEcharts等存在问题
+2023-07-21|ggbdpq|[GYLJG-780] refactor: 修复剩下的代码格式化问题
+2023-07-21|ggbdpq|[GYLJG-780] refactor: 查漏补缺，整理代码格式化
+2023-07-21|ggbdpq|[GYLJG-780] refactor: 修复以list和store为首的部分文件代码格式化，涉及到获取周数，格式检验等
+2023-07-21|ggbdpq|[GYLJG-780] refactor: 统一整理@路径，修复代码格式化
+2023-07-20|ggbdpq|[GYLJG-780] refactor: 前端LCP TP90颜色处理默认值4000s
+2023-07-20|ggbdpq|[GYLJG-780] refactor: 整理【稳定性】相关代码，把图表处理代码放在hooks当中
+2023-07-20|ggbdpq|[GYLJG-780] refactor: 封装stability目录下的响应时间（TP90）/TP90等图表组件
+2023-07-20|ggbdpq|[GYLJG-780] refactor: 整理【告警】相关代码，把图表处理代码放在hooks当中
+2023-07-20|ggbdpq|[GYLJG-780] refactor: 整理【日常需求时效】相关代码，把图表处理代码放在hooks当中
+2023-07-20|ggbdpq|[GYLJG-780] refactor: 整理【安全】相关代码，把图表处理代码放在hooks当中
+2023-07-20|ggbdpq|[GYLJG-780] refactor: 整理【质量】相关代码，把图表处理代码放在hooks当中
+2023-07-19|ggbdpq|[GYLJG-780] refactor: 整理【项目需求指标】相关代码，把图表处理代码放在hooks当中
+2023-07-19|ggbdpq|[GYLJG-780] refactor: 整理【成本】相关代码，把图表处理代码放在hooks当中
+2023-07-19|ggbdpq|[GYLJG-780] refactor: 整理【研发运营数据】相关代码，把图表处理代码放在hooks当中
+2023-07-19|ggbdpq|[GYLJG-780] refactor: 放置各模块图表组件到对应的components/echarts目录下
+2023-07-19|ggbdpq|[GYLJG-780] refactor: 封装quality目录下的故障等级分布图/近四周故障趋势图/研发故障数月趋势图等组件
+2023-07-19|ggbdpq|[GYLJG-780] refactor: 封装project目录下的三级部门项目情况和发起方所属二级部门分布的图表组件
+2023-07-19|ggbdpq|[GYLJG-780] refactor: 重构告警模块的子部门数据后面3个部门柱状图
+2023-07-18|ggbdpq|[GYLJG-780] refactor: 修改告警模块的线上告警的趋势折线图问题
+2023-07-18|ggbdpq|[GYLJG-780] refactor: 修复安全模块的安全数据和安全漏洞等级(来源)数量/时效相关图表问题
+2023-07-18|ggbdpq|[GYLJG-780] refactor: 修复质量模块的线上研发故障相关图表问题
+2023-07-18|ggbdpq|[GYLJG-780] refactor: 修复日常需求时效模块的需求时效的趋势折线图问题
+2023-07-18|ggbdpq|[GYLJG-780] refactor: 修复项目模块的三级部门配合项目的部门柱状图问题
+2023-07-18|ggbdpq|[GYLJG-780] refactor: 修复项目模块的时效、评分和准时交付率的趋势折线图问题
+2023-07-17|ggbdpq|新增数据管理模块下选择时间的默认值，另外需求明细默认为日
+2023-07-17|ggbdpq|新增研发运营数据模块下选择时间的默认值
+2023-07-17|ggbdpq|[GYLJG-780] fix: 修复前端LCP-TP90颜色规则处理问题
+2023-07-17|ggbdpq|[GYLJG-780] refactor: 查漏补缺，使用可选链处理默认没有数据返回null的情况
+2023-07-17|ggbdpq|[GYLJG-780] refactor: 修复日常需求时效模块部门柱状图问题
+2023-07-14|ggbdpq|[GYLJG-780] refactor: 修复告警模块趋势折线图和部门柱状图问题
+2023-07-14|ggbdpq|[GYLJG-780] refactor: 修复安全模块趋势折线图和部门柱状图问题
+2023-07-14|ggbdpq|[GYLJG-780] refactor: 修复成本模块趋势折线图和部门柱状图问题
+2023-07-14|ggbdpq|[GYLJG-780] refactor: 修复稳定性模块趋势折线图和部门柱状图问题
+2023-07-14|ggbdpq|[GYLJG-780] refactor: 重构目录结构，按需和规范放置非公共的页面配置文件
+2023-07-14|ggbdpq|[GYLJG-780] refactor: 简单修改成本、告警、待办跟进模块的series中type类型
+2023-07-14|ggbdpq|[GYLJG-780] refactor: 简单修改稳定性模块的series中type类型，修改lego的sit环境配置文件
+2023-07-14|ggbdpq|[GYLJG-780] refactor: 简单修改涉及全选图表的series中type类型，修改store的eslint检验
+2023-07-14|ggbdpq|[GYLJG-780] refactor: 修改质量模块子部门数据的图表，修复useEffest监听空数组的问题
+2023-07-14|ggbdpq|[GYLJG-780] refactor: 格式化content文件，修改eslint规则，把首页柱状图修改为折线图
+2023-07-13|ggbdpq|[GYLJG-780] feat: 封装ECharts公共组件，尝试替换部门项目吞吐4个图表和日常需求的1个图表
+2023-07-11|ggbdpq|Merge branch 'GYLJG-938_ggbdpq' into GYLJG-938
+2023-06-30|ggbdpq|[GYLJG-1079] fix: 修复页面渲染时间-新增&&修改弹窗清空服务选项置灰按钮的操作问题
+2023-06-29|ggbdpq|[GYLJG-1079] fix: 修复新增弹窗前端LCP和响应时间默认值,新增稳定性页面响应时间和TP90的tooltip等问题
+2023-06-29|ggbdpq|[GYLJG-1079] style: 首页部分样式宽度占比调整
+2023-06-28|ggbdpq|[GYLJG-1079] fix: 修改前端LCP图表渲染颜色
+2023-06-28|ggbdpq|[GYLJG-1079] fix: 修复字段
+2023-06-28|ggbdpq|[GYLJG-1079] fix: 调整首页布局的宽度样式
+2023-06-28|ggbdpq|[GYLJG-1079] fix: 修复两个for循环的eslint报错
+2023-06-28|ggbdpq|[GYLJG-1079] fix: 修复 稳定性 系统指标整合增加 前端lcp字段,修复导入成功之后增加查询接口
+2023-06-28|ggbdpq|[GYLJG-1079] fix: 调整 研发运营数据 中 稳定性 中查看明细和查看近八周的宽度比例为45%和55%
+2023-06-28|ggbdpq|[GYLJG-1079] fix: 修复宽度和页面展示问题
+2023-06-28|ggbdpq|[GYLJG-1079] fix: 在页面渲染时间新增/编辑弹窗新增LCP字段,另外服务和前端LCP字段为必填
+2023-06-27|ggbdpq|[GYLJG-1079] feat: 在页面渲染时间增加lcp字段,修复其他发现的细节问题
+2023-06-27|ggbdpq|[GYLJG-1079] feat: 在 稳定性 模块的页面上增加【前端LCP】一项的相关功能
+2023-06-27|ggbdpq|[GYLJG-1079] feat: 在前端渲染、后端接口同级中前面增加一项【前端LCP】,同时具备查看明细和查看近八周功能
+2023-06-27|ggbdpq|[GYLJG-1079] fix: 在【稳定性】中增加一栏【LCP】提示,统一管理echart图表目录,修复研发故障数查看近四周弹窗打开的问题
+2023-05-26|ggbdpq|[GYLJG-938_ggbdpq] refactor(dialog): 封装适用于数据管理模块的安全评分清单的弹窗组件
+2023-05-26|ggbdpq|[GYLJG-938_ggbdpq] refactor(form): 修改表单组件下拉框枚举值形参命名
+2023-05-26|ggbdpq|[GYLJG-938_ggbdpq] refactor(form): 修改表单组件，把二级部门作为store共享数据
+2023-05-24|ggbdpq|[GYLJG-938_ggbdpq] refactor(form): 优化表单组件中subFields部分代码
+2023-05-24|Ggbdpq Guan|Merge branch 'GYLJG-938_erictan' into 'GYLJG-938'
+2023-05-24|ggbdpq|[GYLJG-938_ggbdpq] refactor(form): 优化表单组件部分代码
+2023-05-24|Ggbdpq Guan|Merge branch 'GYLJG-938_ggbdpq' into 'GYLJG-938'
+2023-05-24|ggbdpq|[GYLJG-938_ggbdpq] refactor(form): 优化表单组件部分代码
+2023-05-23|ggbdpq|[GYLJG-938_ggbdpq] refactor(form): 修复样式格式,删除无用的辅助函数
+2023-05-23|ggbdpq|[GYLJG-938_ggbdpq] refactor(form): 修复默认导出问题
+2023-05-23|ggbdpq|[GYLJG-938_ggbdpq] refactor(form): 封装适用于数据管理模块的表单公共组件

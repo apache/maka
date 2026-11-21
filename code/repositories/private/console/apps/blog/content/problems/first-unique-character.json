@@ -1,0 +1,22 @@
+{
+  "id": "71",
+  "slug": "first-unique-character-in-a-string",
+  "title": "字符串中的第一个唯一字符",
+  "difficulty": "easy",
+  "tags": ["队列", "哈希表", "字符串"],
+  "description": "给定一个字符串 `s`,找到它的**第一个不重复的字符**,并返回它的索引。如果不存在,则返回 `-1`。\n\n**示例 1:**\n\n- 输入:`s = \"leetcode\"`\n- 输出:`0`(`'l'` 是第一个不重复字符)\n\n**示例 2:**\n\n- 输入:`s = \"loveleetcode\"`\n- 输出:`2`(`'v'`)\n\n**示例 3:**\n\n- 输入:`s = \"aabb\"`\n- 输出:`-1`",
+  "solution": "## 思路\n\n两遍扫描:第一遍统计字符频次,第二遍找到第一个频次为 1 的字符索引。\n\n## 参考代码\n\n```js\nfunction firstUniqChar(s) {\n  const count = new Map();\n  for (const c of s) count.set(c, (count.get(c) || 0) + 1);\n  for (let i = 0; i < s.length; i++) {\n    if (count.get(s[i]) === 1) return i;\n  }\n  return -1;\n}\n```\n\n## 复杂度\n\n- 时间:O(n)\n- 空间:O(k),k 为字符集大小",
+  "signature": {
+    "language": "javascript",
+    "entry": "firstUniqChar",
+    "params": [{ "name": "s", "type": "string" }],
+    "returns": "number"
+  },
+  "testCases": [
+    { "sample": true, "input": ["leetcode"], "expected": 0 },
+    { "sample": true, "input": ["loveleetcode"], "expected": 2 },
+    { "sample": true, "input": ["aabb"], "expected": -1 },
+    { "sample": false, "input": ["a"], "expected": 0 },
+    { "sample": false, "input": ["abc"], "expected": 0 }
+  ]
+}

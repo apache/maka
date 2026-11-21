@@ -1,0 +1,3 @@
+**Attribution addendum** (the comment above predates this): the verified commit is entirely ddnio's — author Nio <ddnio777@gmail.com> preserved through `git am`; I only resolved a comment-only clash in tap.js. The patch file for `git am` is on the branch; SHA-256 (first 16) of the format-patch copy: `97148bc1c9967566`.
+
+**AI use**: analysis and verification by a coding agent (GLM, via ZCode), posted by ggbdpq.

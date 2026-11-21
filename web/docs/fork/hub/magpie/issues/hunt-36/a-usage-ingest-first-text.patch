@@ -1,0 +1,164 @@
+From fedd5eff787e6aa60545ed3afcb92e3f5de89e81 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Sat, 17 Oct 2026 09:58:33 +0800
+Subject: [PATCH] usage: a reported call can carry first_text_ms and flow_ms
+ (#2637)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+A reporter that calls its vendor itself times its own calls, but
+POST /v1/magpie/usage/requests refused a record carrying
+first_text_ms ("not a field a reported record takes"), the field
+usage.jsonl has for the reply's first text. DecodeOf times a
+reasoning reply's answer from its first text, so without it almost
+every reported reasoning call shows "—" for its answer speed on the
+Requests page; flow_ms, which lets the held-and-released-in-a-burst
+guard (HeldShare) run on a reported row, was refused the same way.
+Both are now taken, checked like ttft_ms (a whole number of ms, at
+most a day) and written as they came, so the page's speed, HeldShare
+and ThinkPace see what a gateway call sees. Existing reporters that
+send neither are unaffected.
+
+What changed:
+- internal/gateway/usage_ingest.go: ingestFields takes first_text_ms
+  and flow_ms; parseReported reads each into the record through the
+  same whole() check ttft_ms goes through.
+- docs/subsystems/gateway-sessions.md: the ingest field list names
+  them.
+
+Run (at origin/main 8bb9375e7, go1.26.x darwin/arm64):
+- New TestUsageIngestFirstTextAndFlow: red before ("record 0:
+  first_text_ms: not a field a reported record takes (...)"), the
+  issue's repro; green after, and the reported row reads back with
+  first_text_ms 4700 and flow_ms 300, negative, fractional,
+  quoted and over-a-day values refused by field name.
+- Ablation: with internal/gateway/usage_ingest.go alone put back to
+  8bb9375e7 (test kept), the new test goes red with the same 400;
+  restored, green again (-count=1).
+- GOTOOLCHAIN=auto go test -tags nogui -p 2 -run TestUsageIngest
+  ./internal/gateway: ok. -run 'Decode|Speed|TTFT' ./internal/usage:
+  ok. gofmt -l clean. go vet ./... (darwin), GOOS=linux and
+  GOOS=windows go vet -tags nogui ./...: clean (internal/gui's
+  trayimage cgo Wenum-conversion warning as on main). Builds for
+  darwin, linux (nogui) and windows (nogui): ok (darwin ld's
+  duplicate-library warnings as on main).
+
+Not tried: a real reporter's dashboard view (the record shape is
+checked at the ingest boundary and read back through the GET route).
+
+Fixes #2637
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ docs/subsystems/gateway-sessions.md   |  6 +++-
+ internal/gateway/usage_ingest.go      | 11 +++++-
+ internal/gateway/usage_ingest_test.go | 49 +++++++++++++++++++++++++++
+ 3 files changed, 64 insertions(+), 2 deletions(-)
+
+diff --git a/docs/subsystems/gateway-sessions.md b/docs/subsystems/gateway-sessions.md
+index a5332e24..b0ba3a69 100644
+--- a/docs/subsystems/gateway-sessions.md
++++ b/docs/subsystems/gateway-sessions.md
+@@ -337,7 +337,11 @@ them straight to its vendor, so the Usage page covers them too. The body is
+ one record or an array of up to 5000 (32 MiB at most), in `usage.jsonl`'s
+ shape: `t`, `agent`, `provider`, `model` and `rid` are required; `in`,
+ `out`, `cache_read`, `cache_write`, `cache_write_1h`, `reasoning`, `ms`,
+-`ttft_ms`, `status`, `cost`, `effort`, `session` and `err` are optional.
++`ttft_ms`, `first_text_ms`, `flow_ms`, `status`, `cost`, `effort`,
++`session` and `err` are optional (`first_text_ms` and `flow_ms` as
++`usage.jsonl` has them: a client that times its own reasoning calls tells
++the reply's first text and content flow, which the answer speed needs,
++#2637).
+ Any other field, a quoted number, a negative or out-of-range count, a time
+ more than an hour ahead or before 2000-01-01T00:00:00Z refuses the whole
+ post with a 400 that names the record (`error.index`) and the field
+diff --git a/internal/gateway/usage_ingest.go b/internal/gateway/usage_ingest.go
+index 92dfccd7..87220c8c 100644
+--- a/internal/gateway/usage_ingest.go
++++ b/internal/gateway/usage_ingest.go
+@@ -70,7 +70,7 @@ var ingestEarliest = time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
+ 
+ // ingestFields are the fields a reported record may carry, of the ones
+ // usage.jsonl has: what a client can know of a call it made itself.
+-var ingestFields = []string{"t", "agent", "provider", "model", "in", "out", "cache_read", "cache_write", "cache_write_1h", "reasoning", "ms", "ttft_ms", "status", "rid", "cost", "effort", "session", "err"}
++var ingestFields = []string{"t", "agent", "provider", "model", "in", "out", "cache_read", "cache_write", "cache_write_1h", "reasoning", "ms", "ttft_ms", "first_text_ms", "flow_ms", "status", "rid", "cost", "effort", "session", "err"}
+ 
+ // ingestFault is what is wrong with one record of a post.
+ type ingestFault struct {
+@@ -321,6 +321,15 @@ func parseReported(i int, raw json.RawMessage, now time.Time) (usage.Record, *in
+ 	if rec.TTFT, f = whole("ttft_ms", ingestMaxMillis, false); f != nil {
+ 		return rec, f
+ 	}
++	// first_text_ms and flow_ms (#2637): the client often times a
++	// reasoning reply's first text and its content's flow itself, and
++	// DecodeOf needs them to tell that reply's speed
++	if rec.FirstText, f = whole("first_text_ms", ingestMaxMillis, false); f != nil {
++		return rec, f
++	}
++	if rec.Flow, f = whole("flow_ms", ingestMaxMillis, false); f != nil {
++		return rec, f
++	}
+ 	st, f := whole("status", 599, true)
+ 	if f != nil {
+ 		return rec, f
+diff --git a/internal/gateway/usage_ingest_test.go b/internal/gateway/usage_ingest_test.go
+index 5e0a91cd..6a0036b1 100644
+--- a/internal/gateway/usage_ingest_test.go
++++ b/internal/gateway/usage_ingest_test.go
+@@ -342,3 +342,52 @@ func TestUsageIngestConcurrent(t *testing.T) {
+ 		}
+ 	}
+ }
++
++// A reported reasoning call can tell its answer's speed (#2637): the
++// reporter times the reply's first text itself, and the record carries it
++// as first_text_ms (and flow_ms), as usage.jsonl has them. DecodeOf times a
++// reasoning reply's answer from its first text, so without it such a call
++// shows "—" on the Requests page.
++func TestUsageIngestFirstTextAndFlow(t *testing.T) {
++	do := ingestServer(t)
++	c, out, b := do("127.0.0.1:5000", "["+reportedRecord("ft-1", `,"reasoning":129,"first_text_ms":4700`)+","+reportedRecord("ft-2", `,"flow_ms":300`)+"]")
++	if c != 200 || out.Accepted != 2 {
++		t.Fatalf("%d %.300s", c, b)
++	}
++	h := lanGuard(New().Handler())
++	r := httptest.NewRequest("GET", "/v1/magpie/usage/requests?period=all&via=reported", nil)
++	r.RemoteAddr = "127.0.0.1:5000"
++	w := httptest.NewRecorder()
++	h.ServeHTTP(w, r)
++	var l usageapi.Ledger
++	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &l) != nil {
++		t.Fatal(w.Code, w.Body.String())
++	}
++	got := map[string]int64{}
++	for _, row := range l.Rows {
++		got[row.RequestID] = row.FirstText
++		if row.RequestID == "ft-2" && row.Flow != 300 {
++			t.Fatalf("ft-2 flow %d", row.Flow)
++		}
++	}
++	if got["ft-1"] != 4700 {
++		t.Fatalf("ft-1 first_text %d", got["ft-1"])
++	}
++	// checked like ttft_ms is
++	for _, c := range []struct {
++		bad, field string
++	}{
++		{reportedRecord("b", `,"first_text_ms":-5`), "first_text_ms"},
++		{reportedRecord("b", `,"first_text_ms":1.5`), "first_text_ms"},
++		{reportedRecord("b", `,"first_text_ms":999999999999`), "first_text_ms"},
++		{reportedRecord("b", `,"flow_ms":-1`), "flow_ms"},
++		{reportedRecord("b", `,"flow_ms":"300"`), "flow_ms"},
++	} {
++		if code, out, b := do("127.0.0.1:5000", "["+reportedRecord("ok", "")+","+c.bad+"]"); code != 400 || out.Error == nil || out.Error.Param != c.field {
++			t.Errorf("%s: %d %.200s", c.field, code, b)
++		}
++	}
++	if n := reportedLines(t); n != 2 {
++		t.Fatal("lines:", n)
++	}
++}
+-- 
+2.50.1 (Apple Git-155)
+

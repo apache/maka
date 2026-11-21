@@ -1,0 +1,77 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Aryz <aryz0713@gmail.com>
+Date: Thu, 12 Nov 2026 19:33:11 +0800
+Subject: [PATCH 01/11] library: reproduce skills published by a website
+
+Add a loopback-only regression for a pasted skills CLI command whose source publishes /.well-known/skills/index.json. It requires discovery and installation of every referenced file, retaining the website source and content hashes.
+
+Validation: submitted to the fork validation workflow to establish the failing baseline before implementing website discovery. No live website is contacted by the test.
+---
+ internal/library/skillwellknown_test.go | 55 +++++++++++++++++++++++++
+ 1 file changed, 55 insertions(+)
+ create mode 100644 internal/library/skillwellknown_test.go
+
+diff --git a/internal/library/skillwellknown_test.go b/internal/library/skillwellknown_test.go
+new file mode 100644
+index 000000000..b8153db5f
+--- /dev/null
++++ b/internal/library/skillwellknown_test.go
+@@ -0,0 +1,55 @@
++package library
++
++import (
++	"fmt"
++	"net/http"
++	"net/http/httptest"
++	"path/filepath"
++	"testing"
++)
++
++// Uizze publishes a skills CLI index on its own website, rather than a
++// git repository. The index lists each skill's complete set of files.
++func TestWellKnownSourceInstallsAllFiles(t *testing.T) {
++	sandbox(t)
++	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		switch r.URL.Path {
++		case "/.well-known/skills/index.json":
++			fmt.Fprint(w, `{"skills":[{"name":"ui-taste","description":"UI taste","files":["SKILL.md","reference/craft.md"]},{"name":"ios-design","description":"iOS design","files":["SKILL.md"]}]}`)
++		case "/.well-known/skills/ui-taste/SKILL.md":
++			fmt.Fprint(w, "---\nname: ui-taste\ndescription: UI taste\n---\nRead reference/craft.md.\n")
++		case "/.well-known/skills/ui-taste/reference/craft.md":
++			fmt.Fprint(w, "Keep the product's visual hierarchy.")
++		case "/.well-known/skills/ios-design/SKILL.md":
++			fmt.Fprint(w, "---\nname: ios-design\ndescription: iOS design\n---\n")
++		default:
++			t.Errorf("unexpected request: %s", r.URL.Path)
++			http.NotFound(w, r)
++		}
++	}))
++	t.Cleanup(srv.Close)
++
++	input := "npx skills add " + srv.URL + "/"
++	p, err := ProbeSkills(input)
++	if err != nil {
++		t.Fatalf("a website's well-known skills must be discoverable: %v", err)
++	}
++	if p.Kind != "well-known" || len(p.Candidates) != 2 {
++		t.Fatalf("website skills: %+v", p)
++	}
++	res, err := InstallSkills(input, []string{"ui-taste"}, nil)
++	if err != nil || len(res.Installed) != 1 || res.Installed[0] != "ui-taste" {
++		t.Fatalf("install: %+v, %v", res, err)
++	}
++	if got := read(t, filepath.Join(skillDir("ui-taste"), "reference", "craft.md")); got != "Keep the product's visual hierarchy." {
++		t.Fatalf("the skill's referenced file was not installed: %q", got)
++	}
++	l, err := load()
++	if err != nil {
++		t.Fatal(err)
++	}
++	s := l.skill("ui-taste")
++	if s == nil || s.Source == nil || s.Source.Kind != "well-known" || s.Source.Repo != srv.URL || s.Source.Path != "ui-taste" || s.Hash == "" || s.Own == "" {
++		t.Fatalf("the installed skill must retain its website source and hashes: %+v", s)
++	}
++}
+-- 
+2.50.1 (Apple Git-155)
+

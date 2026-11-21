@@ -1,0 +1,23 @@
+{
+  "name": "@ggbdpq/console-shared",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./todo": "./src/todo/index.ts",
+    "./bookmarks": "./src/bookmarks/index.ts",
+    "./client": "./src/client/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.5"
+  }
+}

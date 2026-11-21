@@ -1,0 +1,41 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Aryz <aryz0713@gmail.com>
+Date: Thu, 12 Nov 2026 20:22:52 +0800
+Subject: [PATCH 06/11] library: keep website catalog entries separate from
+ example files
+
+Add a regression requiring the website picker to list only the manifest entry when its supporting files contain two example SKILL.md documents. The Git collection scanner must not turn those listed files into extra installable entries.
+---
+ .../library/skillwellknown_catalog_test.go    | 20 +++++++++++++++++++
+ 1 file changed, 20 insertions(+)
+ create mode 100644 internal/library/skillwellknown_catalog_test.go
+
+diff --git a/internal/library/skillwellknown_catalog_test.go b/internal/library/skillwellknown_catalog_test.go
+new file mode 100644
+index 000000000..60ba0ec43
+--- /dev/null
++++ b/internal/library/skillwellknown_catalog_test.go
+@@ -0,0 +1,20 @@
++package library
++
++import "testing"
++
++func TestWellKnownCatalogListsOnlyItsEntries(t *testing.T) {
++	sandbox(t)
++	files := map[string]string{}
++	files["/.well-known/skills/index.json"] = `{"skills":[{"name":"ui-taste","description":"UI taste","files":["SKILL.md","example-a/SKILL.md","example-b/SKILL.md"]}]}`
++	files["/.well-known/skills/ui-taste/SKILL.md"] = websiteSkill
++	files["/.well-known/skills/ui-taste/example-a/SKILL.md"] = "---\nname: example-a\ndescription: Example template\n---\n"
++	files["/.well-known/skills/ui-taste/example-b/SKILL.md"] = "---\nname: example-b\ndescription: Example template\n---\n"
++	base, _ := websiteFixture(t, files)
++	p, err := ProbeSkills(base)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if len(p.Candidates) != 1 || p.Candidates[0].Path != "ui-taste" {
++		t.Fatalf("only entries declared by the website are installable; supporting examples are files: %+v", p.Candidates)
++	}
++}
+-- 
+2.50.1 (Apple Git-155)
+

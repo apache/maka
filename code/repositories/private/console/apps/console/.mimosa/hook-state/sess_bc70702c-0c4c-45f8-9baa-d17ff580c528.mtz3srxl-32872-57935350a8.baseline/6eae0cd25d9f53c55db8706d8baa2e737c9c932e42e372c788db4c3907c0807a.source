@@ -1,0 +1,102 @@
+import { mkdtempSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterEach, describe, expect, it } from 'vitest'
+import type { PracticeCommit } from '@ggbdpq/console-shared'
+import { getPracticeDb, loadCommits, loadMeta, loadRepoSummaries, saveSyncedPayload } from './db'
+
+const tempDirs: string[] = []
+
+afterEach(() => {
+  // 单例按目录缓存：每个用例独立目录即天然隔离，无需额外清理连接
+  tempDirs.length = 0
+})
+
+function makeCommit(sha: string): PracticeCommit {
+  return {
+    sha,
+    shortSha: sha.slice(0, 8),
+    repo: 'advisor',
+    branches: ['main', 'feature/v1.7.0'],
+    subject: 'fix(home): 修复白屏',
+    rawSubject: '```fix(home): 修复白屏',
+    type: 'issue',
+    authorName: '关天豪',
+    authorEmail: '802165@clife.cn',
+    authoredAt: '2026-09-01T10:00:00+08:00',
+    insertions: 7,
+    deletions: 3,
+    filesChanged: 1,
+    tapdBug: '1080152',
+    files: [{ path: 'src/pages/home/index.tsx', insertions: 7, deletions: 3 }],
+  }
+}
+
+describe('practice db', () => {
+  it('写入后可完整读回（提交/文件/分支/仓库/meta）', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'practice-db-'))
+    tempDirs.push(dir)
+    const db = getPracticeDb(dir)
+    const commits = [makeCommit('a'.repeat(40)), makeCommit('b'.repeat(40))]
+
+    saveSyncedPayload(
+      db,
+      {
+        window: { since: '2026-04-16', until: '2026-09-13' },
+        authors: ['802165@clife\\.cn'],
+        repos: [
+          { name: 'advisor', path: 'E:/x/advisor', commits: 2, error: null },
+          { name: 'brand', path: 'E:/x/brand', commits: 0, error: '目录不存在' },
+        ],
+        commits,
+      },
+      '2026-09-13T08:00:00.000Z',
+    )
+
+    const loaded = loadCommits(db)
+    expect(loaded).toHaveLength(2)
+    expect(loaded[0]).toMatchObject({
+      sha: 'a'.repeat(40),
+      shortSha: 'a'.repeat(8),
+      subject: 'fix(home): 修复白屏',
+      rawSubject: '```fix(home): 修复白屏',
+      type: 'issue',
+      tapdBug: '1080152',
+      files: [{ path: 'src/pages/home/index.tsx', insertions: 7, deletions: 3 }],
+      branches: expect.arrayContaining(['main', 'feature/v1.7.0']),
+    })
+
+    expect(loadMeta(db, 'synced_at')).toBe('2026-09-13T08:00:00.000Z')
+    expect(loadMeta(db, 'window_since')).toBe('2026-04-16')
+    expect(loadMeta(db, 'window_until')).toBe('2026-09-13')
+    expect(loadRepoSummaries(db)).toHaveLength(2)
+  })
+
+  it('重复同步为全量替换，不产生重复行', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'practice-db-'))
+    tempDirs.push(dir)
+    const db = getPracticeDb(dir)
+    const payload = {
+      window: { since: '2026-04-16', until: '2026-09-13' },
+      authors: ['802165@clife\\.cn'],
+      repos: [{ name: 'advisor', path: 'E:/x/advisor', commits: 1, error: null }],
+      commits: [makeCommit('c'.repeat(40))],
+    }
+    saveSyncedPayload(db, payload, '2026-09-13T08:00:00.000Z')
+    saveSyncedPayload(db, payload, '2026-09-13T09:00:00.000Z')
+
+    expect(loadCommits(db)).toHaveLength(1)
+    expect(loadCommits(db)[0]?.sha).toBe('c'.repeat(40))
+    expect(loadRepoSummaries(db)).toHaveLength(1)
+    expect(loadMeta(db, 'synced_at')).toBe('2026-09-13T09:00:00.000Z')
+  })
+
+  it('空库读取返回空集合与 null meta', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'practice-db-'))
+    tempDirs.push(dir)
+    const db = getPracticeDb(dir)
+    expect(loadCommits(db)).toEqual([])
+    expect(loadMeta(db, 'synced_at')).toBeNull()
+    expect(loadRepoSummaries(db)).toEqual([])
+  })
+})

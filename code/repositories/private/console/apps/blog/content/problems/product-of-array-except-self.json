@@ -1,0 +1,22 @@
+{
+  "id": "26",
+  "slug": "product-of-array-except-self",
+  "title": "除自身以外数组的乘积",
+  "difficulty": "medium",
+  "tags": ["数组", "前缀和"],
+  "description": "给你一个整数数组 `nums`,返回数组 `answer`,其中 `answer[i]` 等于 `nums` 中除 `nums[i]` 之外其余各元素的乘积。\n\n题目数据保证数组之中任意元素的全部前缀元素和后缀(甚至是整个数组)的乘积都在 32 位整数范围内。\n\n请不要使用除法,且在 `O(n)` 时间复杂度内完成。\n\n**示例 1:**\n\n- 输入:`nums = [1,2,3,4]`\n- 输出:`[24,12,8,6]`\n\n**示例 2:**\n\n- 输入:`nums = [-1,1,0,-3,3]`\n- 输出:`[0,0,9,0,0]`",
+  "solution": "## 思路\n\n不能用除法,就用**左右乘积**:第一遍从左到右把「左侧所有元素乘积」填入 `res`;第二遍从右到左累乘「右侧乘积」。两遍 O(n),空间 O(1)(结果数组不计)。\n\n## 参考代码\n\n```js\nfunction productExceptSelf(nums) {\n  const n = nums.length;\n  const res = new Array(n).fill(1);\n  let left = 1;\n  for (let i = 0; i < n; i++) { res[i] = left; left *= nums[i]; }\n  let right = 1;\n  for (let i = n - 1; i >= 0; i--) { res[i] *= right; right *= nums[i]; }\n  return res;\n}\n```\n\n## 复杂度\n\n- 时间:O(n)\n- 空间:O(1)(输出数组不计额外空间)",
+  "signature": {
+    "language": "javascript",
+    "entry": "productExceptSelf",
+    "params": [{ "name": "nums", "type": "number[]" }],
+    "returns": "number[]"
+  },
+  "testCases": [
+    { "sample": true, "input": [[1, 2, 3, 4]], "expected": [24, 12, 8, 6] },
+    { "sample": true, "input": [[-1, 1, 0, -3, 3]], "expected": [0, 0, 9, 0, 0] },
+    { "sample": false, "input": [[1]], "expected": [1] },
+    { "sample": false, "input": [[2, 3]], "expected": [3, 2] },
+    { "sample": false, "input": [[0, 0]], "expected": [0, 0] }
+  ]
+}

@@ -1,0 +1,138 @@
+From d79961fbbc3041d2165178df3128d0ca43cb40c1 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Mon, 19 Oct 2026 06:52:23 +0800
+Subject: [PATCH] gateway: an Antigravity schema's array always says its items,
+ tuple or not (#2826)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+What changed
+- plainSchema (internal/gateway/codeassist.go) now leaves every array
+  schema with an items object, at any depth:
+  - a tuple's items (an array, draft 07) collapses to its first member
+    that says anything;
+  - an array whose members were said in prefixItems — dropped by the
+    subset — takes that tuple's first meaningful member as its items;
+  - an array that still has none gets items {"type":"string"}.
+
+Why
+- Google requires items on every schema of type array. Claude Code's
+  tools (ArtifactData's query.where) say an array of arrays in JSON
+  Schema 2020-12 tuples, and stripping prefixItems left the inner array
+  with none, so Antigravity turned the whole request away with 400
+  "tools[0].function_declarations[3].parameters.properties[query].
+  properties[where].items.items: missing field". plainSchema is the
+  Antigravity path only: Gemini CLI and Vertex take the schema as it
+  came, and no other vendor path strips tuples.
+
+Run
+- go test -tags nogui -count=1 -run 'TestPlainSchema|TestCodeAssist|TestAntigravity' ./internal/gateway/: ok (TestPlainSchemaArrayAlwaysHasItems red on 1a3b9268 before the fix, green after)
+- go test -tags nogui -count=1 ./internal/gateway/: ok 327.237s
+- go test -race -tags nogui -count=1 -run 'TestPlainSchema' ./internal/gateway/: ok 2.143s
+- gofmt -l internal/gateway/: empty; go vet -tags nogui on darwin/linux/windows: clean
+- go build -tags nogui ./..., GOOS=linux, GOOS=windows: ok
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gateway/codeassist.go        | 32 ++++++++++++++++++++++++
+ internal/gateway/plain_schema_test.go | 36 +++++++++++++++++++++++++++
+ 2 files changed, 68 insertions(+)
+
+diff --git a/internal/gateway/codeassist.go b/internal/gateway/codeassist.go
+index 82a77969..3d225b84 100644
+--- a/internal/gateway/codeassist.go
++++ b/internal/gateway/codeassist.go
+@@ -649,6 +649,16 @@ func plainSchema(raw json.RawMessage) json.RawMessage {
+ 		}
+ 	}
+ 	var walk func(v any, depth int) any
++	firstSays := func(members []any) any {
++		// the first schema of a tuple that says anything of its members:
++		// {} and whatever isn't an object says nothing
++		for _, m := range members {
++			if s, ok := m.(map[string]any); ok && len(s) > 0 {
++				return s
++			}
++		}
++		return nil
++	}
+ 	walk = func(v any, depth int) any {
+ 		switch x := v.(type) {
+ 		case []any:
+@@ -794,6 +804,28 @@ func plainSchema(raw json.RawMessage) json.RawMessage {
+ 					out["type"] = "array"
+ 				}
+ 			}
++			if out["type"] == "array" {
++				if t, ok := out["items"].([]any); ok {
++					// a tuple (draft 07's items as an array) stands as one
++					// schema: Gemini takes an items object and nothing else
++					out["items"] = firstSays(t)
++				}
++				if out["items"] == nil {
++					// the members prefixItems said are gone from the subset;
++					// the first one that says something stands in for them
++					if pfx, _ := x["prefixItems"].([]any); len(pfx) > 0 {
++						if s := firstSays(pfx); s != nil {
++							out["items"] = walk(s, depth+1)
++						}
++					}
++					if out["items"] == nil {
++						// an array says what its members are, or Google
++						// turns the whole request away over the missing
++						// field (#2826)
++						out["items"] = map[string]any{"type": "string"}
++					}
++				}
++			}
+ 			if req, ok := out["required"].([]any); ok {
+ 				// required names only the properties there are
+ 				props, _ := out["properties"].(map[string]any)
+diff --git a/internal/gateway/plain_schema_test.go b/internal/gateway/plain_schema_test.go
+index b160c668..4b0b4fd2 100644
+--- a/internal/gateway/plain_schema_test.go
++++ b/internal/gateway/plain_schema_test.go
+@@ -37,3 +37,39 @@ func TestPlainSchemaKeepsOnlyWhatAntigravityTakes(t *testing.T) {
+ 		t.Errorf("got %s", b)
+ 	}
+ }
++
++// Google refuses a whole request over an array schema that says no items,
++// at any depth ("...properties[where].items.items: missing field", #2826).
++// Claude Code's tools (ArtifactData's query.where) say an array of arrays
++// in JSON Schema 2020-12 tuples — prefixItems, or items as an array — and
++// both are outside what Antigravity's subset takes: once dropped, an array
++// is left with no items, and an items has to be one object, not a tuple.
++func TestPlainSchemaArrayAlwaysHasItems(t *testing.T) {
++	tests := []struct {
++		name, in, want string
++	}{
++		{"recovers a tuple's first member", `{"type":"object","properties":{"query":{"type":"object","properties":{"where":{"type":"array","maxItems":10,
++			"items":{"type":"array","prefixItems":[{"type":"string"},{"type":"string","enum":["eq","ne","in"]},{}]}}}}},"required":["query"]}`,
++			`{"type":"object","properties":{"query":{"type":"object","properties":{"where":{"type":"array","maxItems":10,
++			"items":{"type":"array","items":{"type":"string"}}}}}},"required":["query"]}`},
++		{"an array that never said items", `{"type":"array","maxItems":3}`,
++			`{"type":"array","maxItems":3,"items":{"type":"string"}}`},
++		{"a tuple items collapses to one", `{"type":"array","items":[{"type":"number"},{"type":"boolean"},{}]}`,
++			`{"type":"array","items":{"type":"number"}}`},
++		{"a tuple of nothing gets the default", `{"type":"array","prefixItems":[{},{}]}`,
++			`{"type":"array","items":{"type":"string"}}`},
++	}
++	for _, tc := range tests {
++		t.Run(tc.name, func(t *testing.T) {
++			var got, exp any
++			if err := json.Unmarshal(plainSchema(json.RawMessage(tc.in)), &got); err != nil {
++				t.Fatal(err)
++			}
++			json.Unmarshal([]byte(tc.want), &exp)
++			if !reflect.DeepEqual(got, exp) {
++				b, _ := json.Marshal(got)
++				t.Errorf("got %s", b)
++			}
++		})
++	}
++}
+-- 
+2.50.1 (Apple Git-155)
+

@@ -1,0 +1,7 @@
+: keepalive
+event: message_start
+data: {"message":{"content":[],"id":"msg_18df26f87f3cbe7800000002","model":"","role":"assistant","stop_reason":null,"stop_sequence":null,"type":"message","usage":{"input_tokens":0,"output_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}},"type":"message_start"}
+
+event: error
+data: {"error":{"message":"A: 413 Request Entity Too Large (request_too_large)","type":"api_error"},"type":"error"}
+

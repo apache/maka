@@ -1,0 +1,312 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Tue, 10 Nov 2026 23:48:37 +0800
+Subject: [PATCH] provider: a re-login for a Claude account gives way the
+ allowance the sign-in before told (#5921)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Claude Code's /usage is run by magpie, never Anthropic asked, and what
+it told is kept per account in claudeUsage for the Usage page's timer,
+the switch list and routing. The keeping knew no credential: a re-login
+for the account Claude Code is signed in to — a plan move on it, a Max
+5x upgrade — swapped the tokens under a kept reading, and the reading
+served on. On a headless `magpie serve` (delete-cloud) the card said
+`plan: max` — the plan is read with the credential, fresh — while its
+windows stayed at the sign-in before, `7 days: 100%`, for some 45
+minutes, though the account's real allowance was 0% on every window and
+a separate `magpie accounts` process had written a fresh reading to
+quotas.json meanwhile: the kept entry's hearing stood newer than that
+disk reading (withHeardClaude), and nothing unasked re-read — no local
+session .jsonl a gateway that only proxies would write, no qualifying
+rate_limit_event — until a hand refresh.
+
+A sign-in for an account can only change what was told of it, so now
+the keeping knows what told it:
+
+- A reading keeps the sign-in it was told by (claudeCredMark, a digest
+  of the live credential's access token), and claudeWindows, before it
+  lets the account Claude Code is on serve what is kept, drops a
+  reading told by another sign-in of the same account: the next look
+  reads again, on the new plan's allowance. A move to another account
+  takes nothing away — the reading kept is that account's own, and it
+  stands for it while Claude Code is signed in elsewhere (moved off,
+  nil_1024). Kept under the old code with no mark at all, an entry is
+  another sign-in's to the fix as well: a gateway already holding the
+  stale reading is re-read on its first look after the upgrade.
+- A sign-in magpie made itself (addLogin, and the switch that puts a
+  saved account's sign-in on Claude Code) now drops the account's kept
+  allowance with the folder's older sign-in it already gave way
+  (forgetClaudeUsage), so the card is never served the windows of the
+  plan before; what Claude Code said as it answered is stamped with the
+  sign-in that said it too.
+
+Run:
+- TestClaudeUsageOfASignInBeforeGivesWay: a kept full reading of the
+  sign-in before, a re-login under the same account (fresh tokens, the
+  tier moved), the Usage card's unasked look — red before (the 100%
+  windows served, no run), green after (read again: 5% on the new
+  sign-in, one run).
+- TestSignInDropsTheKeptAllowance: addLogin drops it — red before
+  (claudeReadAt still the hour-old reading), green after (nothing kept,
+  the next look reads).
+- Ablation: the kept-reading drop taken out made the first red again;
+  the sign-in drop taken out made the second red again; the moved-off
+  guard taken out made TestClaudeUsageOfAnotherAccountNotKept and
+  TestClaudeSeatKeepsItsOwnUsage red (a switch to another account must
+  leave the account's own reading standing) — restored, green.
+- ./internal/provider whole, and on the parent commit too: green both,
+  so nothing pre-existing hides here; the four named tests green with
+  -race. gateway's reads of the kept limits
+  (TestRefusedMidReadRestsByWindow, TestClaudeSubscriptionFailedTry*
+  and the client-cache usage tests) green.
+- Sibling scan: every reader of claudeUsage takes the drop without
+  change (withHeardClaude stops overriding the card with the old
+  hearing, KeptClaudeLimits weighs routing without it until an answer
+  tells it again, claudeReadAt nil, out-soon nothing to say); the
+  writers stamp it; StaleAllowance stays untouched — NoteClaudeLimits
+  calls it after writing a fresh hearing, and dropping there would
+  erase the fact just told. loginUsageCache (a minute), the
+  subscription cache (forgetAccountCaches) and usedCache
+  (StaleAllowance) were already in the invalidation net; Codex's usage
+  is read from the vendor each time and keeps no such per-account
+  memory.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/provider/claude_limits.go            |  1 +
+ .../provider/claude_usage_resignin_test.go    | 98 +++++++++++++++++++
+ internal/provider/logins.go                   |  2 +
+ internal/provider/signin.go                   |  3 +
+ internal/provider/subscription_usage.go       | 42 +++++++-
+ 5 files changed, 145 insertions(+), 1 deletion(-)
+ create mode 100644 internal/provider/claude_usage_resignin_test.go
+
+diff --git a/internal/provider/claude_limits.go b/internal/provider/claude_limits.go
+index b8c2b4938..8b4128a04 100644
+--- a/internal/provider/claude_limits.go
++++ b/internal/provider/claude_limits.go
+@@ -116,6 +116,7 @@ func NoteClaudeLimits(user string, ls []ClaudeLimit) {
+ 	ws = append(ws, heard...)
+ 	slices.SortStableFunc(ws, func(a, b QuotaWindow) int { return claudeKindOrder(a) - claudeKindOrder(b) })
+ 	e.ws, e.at, e.heard = ws, time.Now(), time.Now()
++	e.cred = claudeCredMark()             // what it told, it told as this sign-in (#5921)
+ 	e.heardSeq = quotaReadSequence.Add(1) // after every reading started before it, as the cards order them
+ 	e.err = nil                           // a new observation supersedes the failed reading
+ 	c.m[key] = e
+diff --git a/internal/provider/claude_usage_resignin_test.go b/internal/provider/claude_usage_resignin_test.go
+new file mode 100644
+index 000000000..f1fc709d0
+--- /dev/null
++++ b/internal/provider/claude_usage_resignin_test.go
+@@ -0,0 +1,98 @@
++package provider
++
++import (
++	"context"
++	"path/filepath"
++	"sync/atomic"
++	"testing"
++	"time"
++)
++
++// A re-login for the account Claude Code is signed in to (a plan move on
++// it: a Max 5x upgrade, delete-cloud) swaps the credential under a kept
++// reading. What the sign-in before told — every window full of a plan the
++// new one never shared — served on while the account's real allowance was
++// 0% on every window, until a hand refresh. The kept reading gives way
++// with the sign-in it was told by (#5921).
++func TestClaudeUsageOfASignInBeforeGivesWay(t *testing.T) {
++	home := claudeHome(t)
++	cred := claudeSignIn(t, home, time.Now().Add(time.Hour))
++	writeFile(t, filepath.Join(home, ".claude.json"), map[string]any{"oauthAccount": map[string]any{"emailAddress": "a@example.com", "accountUuid": "u-a"}})
++
++	var out atomic.Value
++	out.Store("Current session: 5% used · resets " + sessionReset() + "\nCurrent week (all models): 20% used · resets " + soon(3) + " at 2pm (UTC)\n")
++	runs := fakeClaudeUsage(t, &out, nil)
++	oldUsed := claudeUsedSince
++	claudeUsedSince = func(time.Time) bool { return false } // a headless gateway: no session of its own
++	t.Cleanup(func() { claudeUsedSince = oldUsed })
++
++	// a reading kept from the hour before, told by the sign-in then in
++	// place: every window of it full
++	T0 := time.Now().Add(-time.Hour)
++	claudeUsage.Lock()
++	claudeUsage.m = map[string]claudeUsageEntry{"a@example.com": {at: T0, ws: []QuotaWindow{
++		{Name: "Current session", Used: 100, Span: 5 * time.Hour},
++		{Name: "Current week (all models)", Used: 100, Span: 7 * 24 * time.Hour},
++	}, heard: T0, tried: T0, whole: true}}
++	claudeUsage.Unlock()
++
++	// a re-login in place: fresh tokens, the tier moved, the profile
++	// still the account's
++	writeFile(t, cred, map[string]any{"claudeAiOauth": map[string]any{
++		"accessToken": "sk-ant-oat01-new", "refreshToken": "sk-ant-ort01-new",
++		"expiresAt": time.Now().Add(time.Hour).UnixMilli(), "subscriptionType": "max",
++		"rateLimitTier": "default_claude_max_5x"}})
++	forgetClaudeCredential()
++
++	// the Usage card's unasked look serves no window of the sign-in
++	// before, and reads again instead
++	ws, err := claudeWindows(context.Background(), "a@example.com", true)
++	if err != nil || len(ws) == 0 || ws[0].Used != 5 {
++		t.Fatalf("the kept reading of the sign-in before served: %v %+v (%d runs)", err, ws, runs.Load())
++	}
++	if runs.Load() != 1 {
++		t.Fatalf("%d runs, want the one the re-login's look made", runs.Load())
++	}
++}
++
++// A sign-in magpie made itself drops what the sign-in before told: the
++// card named the new plan while its windows still said the old one (#5921).
++func TestSignInDropsTheKeptAllowance(t *testing.T) {
++	home := claudeHome(t)
++	claudeSignIn(t, home, time.Now().Add(time.Hour))
++	writeFile(t, filepath.Join(home, ".claude.json"), map[string]any{"oauthAccount": map[string]any{"emailAddress": "a@example.com", "accountUuid": "u-a"}})
++
++	var out atomic.Value
++	out.Store("Current session: 5% used · resets " + sessionReset() + "\n")
++	runs := fakeClaudeUsage(t, &out, nil)
++	oldUsed := claudeUsedSince
++	claudeUsedSince = func(time.Time) bool { return false }
++	t.Cleanup(func() { claudeUsedSince = oldUsed })
++
++	T0 := time.Now().Add(-time.Hour)
++	claudeUsage.Lock()
++	claudeUsage.m = map[string]claudeUsageEntry{"a@example.com": {at: T0, ws: []QuotaWindow{
++		{Name: "Current week (all models)", Used: 100},
++	}, heard: T0, tried: T0, whole: true}}
++	claudeUsage.Unlock()
++
++	l, err := claudeLogin(claudeCredentials{OAuth: claudeAuth{
++		AccessToken: "tok-new", RefreshToken: "r-new",
++		ExpiresAt: time.Now().Add(time.Hour).UnixMilli(), SubscriptionType: "max",
++		RateLimitTier: "default_claude_max_5x",
++	}}, map[string]any{"emailAddress": "a@example.com"})
++	if err != nil {
++		t.Fatal(err)
++	}
++	if _, err := addLogin(l); err != nil {
++		t.Fatal(err)
++	}
++	if at := claudeReadAt("a@example.com"); at != nil {
++		t.Fatalf("the kept reading of the sign-in before stands after the new one: %s", at.Format(time.RFC3339))
++	}
++	// the next look reads the new sign-in
++	ws, err := claudeWindows(context.Background(), "a@example.com", true)
++	if err != nil || len(ws) == 0 || ws[0].Used != 5 {
++		t.Fatalf("not read again under the new sign-in: %v %+v (%d runs)", err, ws, runs.Load())
++	}
++}
+diff --git a/internal/provider/logins.go b/internal/provider/logins.go
+index 2db28ee3b..8d6af114b 100644
+--- a/internal/provider/logins.go
++++ b/internal/provider/logins.go
+@@ -1491,6 +1491,8 @@ func switchSavedLogin(agent, user string) (from string, _ error) {
+ 			// Claude Code's own now: its only holder
+ 			forgetClaudeDir(want.User)
+ 			claudeHandedOver(want.User)
++			// and the allowance the sign-in before told gives way with it (#5921)
++			forgetClaudeUsage(want.User)
+ 		}
+ 	default:
+ 		err = fmt.Errorf("%s accounts can't be switched", agent)
+diff --git a/internal/provider/signin.go b/internal/provider/signin.go
+index 6d0d14abe..5a8425af2 100644
+--- a/internal/provider/signin.go
++++ b/internal/provider/signin.go
+@@ -979,6 +979,9 @@ func addLogin(l savedLogin) (using bool, err error) {
+ 		// signed in afresh: what Claude Code kept for it beside the
+ 		// agent's own is an older sign-in, and gives way
+ 		forgetClaudeDir(l.User)
++		// so does the allowance it told: windows of the sign-in before,
++		// served on while the card said the new plan (#5921)
++		forgetClaudeUsage(l.User)
+ 	}
+ 	loginsSeenAt.Store(0)
+ 	forgetAccountCaches()
+diff --git a/internal/provider/subscription_usage.go b/internal/provider/subscription_usage.go
+index 695ccaa31..56aab0388 100644
+--- a/internal/provider/subscription_usage.go
++++ b/internal/provider/subscription_usage.go
+@@ -2,6 +2,8 @@ package provider
+ 
+ import (
+ 	"context"
++	"crypto/sha256"
++	"encoding/hex"
+ 	"encoding/json"
+ 	"errors"
+ 	"fmt"
+@@ -724,6 +726,7 @@ type claudeUsageEntry struct {
+ 	wait     time.Duration // how long after tried it runs again unasked
+ 	err      error         // what the last run said, when it failed
+ 	whole    bool          // /usage was read: ws has every window the account has
++	cred     string        // the sign-in the reading was told by (claudeCredMark): another one under the account gives way (#5921)
+ }
+ 
+ // windows is what e keeps as of now, partial where /usage never read it.
+@@ -735,6 +738,28 @@ func (e claudeUsageEntry) windows(now time.Time) []QuotaWindow {
+ 	return ws
+ }
+ 
++// claudeCredMark says which sign-in of it the live credential is: a
++// digest of its access token, enough to tell a re-login (fresh tokens, a
++// plan moved on the account) from the sign-in a kept reading was told by.
++// "" when no credential is read.
++func claudeCredMark() string {
++	c, _, ok := claudeCredential()
++	if !ok || c.OAuth.AccessToken == "" {
++		return ""
++	}
++	sum := sha256.Sum256([]byte(c.OAuth.AccessToken))
++	return hex.EncodeToString(sum[:6])
++}
++
++// forgetClaudeUsage drops what Claude Code last told of user's allowance:
++// a sign-in for the account can only change it, and the windows of the
++// sign-in before stand for that one, not this (#5921).
++func forgetClaudeUsage(user string) {
++	claudeUsage.Lock()
++	delete(claudeUsage.m, strings.ToLower(user))
++	claudeUsage.Unlock()
++}
++
+ // claudeAskFloor is the least time between two readings, however often the
+ // user refreshes; between two that nobody asked for (a reading magpie keeps
+ // up to date by itself, for the Usage page left open, the menu bar's
+@@ -891,6 +916,21 @@ func claudeWindows(ctx context.Context, user string, active bool) ([]QuotaWindow
+ 	c.Lock()
+ 	e, ok := c.m[key]
+ 	c.Unlock()
++	// a re-login for the account swaps the credential under a kept
++	// reading: what it told stands for the sign-in before, whose windows
++	// a plan change leaves far from — every window full served while the
++	// account's real allowance was gone, till a hand refresh (#5921).
++	// The next look reads again. A move to another account takes nothing
++	// away: the reading kept is that account's own, and it stands for it
++	// while Claude Code is signed in elsewhere (moved off).
++	if ok && active && e.cred != claudeCredMark() && !ClaudeCodeMovedOff(user) {
++		c.Lock()
++		if f, still := c.m[key]; still && f.cred == e.cred {
++			delete(c.m, key)
++		}
++		c.Unlock()
++		e, ok = claudeUsageEntry{}, false
++	}
+ 	// the account Claude Code is on is read sooner near out
+ 	// (claudeWaitOf), and at once once Claude Code was refused for its
+ 	// limit since (claudeLimitHitAfter, #4443)
+@@ -995,7 +1035,7 @@ func claudeWindows(ctx context.Context, user string, active bool) ([]QuotaWindow
+ 	if c.m == nil {
+ 		c.m = map[string]claudeUsageEntry{}
+ 	}
+-	c.m[key] = claudeUsageEntry{at: now, ws: ws, heard: e.heard, tried: now, asked: asked, wait: e.wait, whole: true}
++	c.m[key] = claudeUsageEntry{at: now, ws: ws, heard: e.heard, tried: now, asked: asked, wait: e.wait, whole: true, cred: claudeCredMark()}
+ 	c.Unlock()
+ 	// as of now, as a kept reading is: /usage gives a reset to the minute
+ 	// and can lag it, so a window it still counts full may have started
+-- 
+2.50.1 (Apple Git-155)
+

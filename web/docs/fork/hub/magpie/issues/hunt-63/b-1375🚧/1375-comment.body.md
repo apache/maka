@@ -1,0 +1,258 @@
+This hardens the test as 2c36d3f28 left it, and answers the 10-19 sighting directly — two bound lines and then the marker line, a 58s run whose requests were only waiting on the scheduler. Reading that shape off the test showed two defects, both the test's, and the patch touches nothing but the test file.
+
+**1. The run kept counting past its own failure.** The 10s bound fired with `t.Errorf`, so the run went on through every further bound until it had outlasted the fake's 20s sleep — and once it had, the landing marker was what load produces, so the final line said "waited on the devin CLI" about a run that only crawled. That is the compound shape in the 10-19 output, and it is why the marker kept joining failures it had nothing to do with.
+
+**2. The marker could not tell waited from slow, exactly as the 10-16 note said.** So the fake now does what that note suggested: it blocks until the test releases it, and the release is written after the last request. Its answer can only land once the requests are done, whatever the load, and the check before the release — still "no answer landed" — is sound by construction instead of by a sleep that load outruns. A request that waits on the CLI is no longer told by the marker at all: the asks carry their own ~30s ceilings, so such a wait costs at most ~30s and then answers anyway; the guard below is what catches it, and the marker now pins the gating itself. The `running/` census went with the clock those ceilings also ended: they kill a blocked fake mid-wait, the census counted those kills as runaways, and the stop file plus the script's own minute cap still end every run of it.
+
+**3. The latency check reads the machine first.** A fixed clock was the other defect: 1.5s failed at 1.6s under a full run, and its 10s successor at 13–31s. The guard now measures one bare round trip of the same server and takes the trip times 200, floored at 15s, capped at 60s — whatever slows the sets slows the trip the same way, so the guard moves with the machine instead of against it. A request past the guard stops the test (`t.Fatalf`): the old run piled bound upon bound until the marker joined in, and one failure is the informative one. The message carries the trip, so "33.1s against a 10ms trip" reads as a wait and "13s against a 200ms trip" reads as load.
+
+**4. Where the time goes — product side, left alone.** On "31s for one set looks like a timeout being reached": what the code pins down is that no synchronous wait on the hung calls is reachable from this test's requests. The devin asks that drawing the state makes go through `provider.DevinNoWait` (internal/agent/devin.go:106, 116, 134) and answer at once while the ask runs behind them; the only unmarked callers are the Devin agent's own field setters, which this test never drives; and every sighting under 20s — most of them: 10.04s, 10.49s, 10.76s, 11.97s, 12.44s, 13.04s, 13.81s — cannot be a wait on the fake at all, whose answers land only after its full sleep. What remains are the asks' own ~30s ceilings (`devinIdentityTimeout`, internal/provider/devin.go:96, and the per-home deadline on `devin models list`, devin.go:521): a regression that did wait the CLI out would cost ≈30s and then answer — from outside, that and a loaded box look alike, which is exactly the gap this patch stops the test from falling into. Whether those ceilings should be shorter is a product-semantics call, so the product code here is untouched.
+
+**5. The proof, both directions.** The old test, fed six requests each delayed 11s (the load shape, nothing waiting), failed in exactly the reported shape — three set bounds, three state bounds, then the marker. The hardened test passes that same feed. And with `DevinNoWait` made a no-op by hand, so the state's devin asks really do wait the CLI out, the hardened test still fails, once, at 33s against the guard — the stop keeps it to the one line that means something.
+
+## Verification
+
+| Command | Result |
+|---|---|
+| old test fed six requests each delayed 11s | red in the reported shape: three set bounds, three state bounds, then the marker (67.5s) |
+| hardened test on the same feed | pass (78.5s; sets 11.09/11.36/11.14s against a 60s guard) |
+| `DevinNoWait` made a no-op by hand | red at once: `set claude-opus-5-5 took 33.1165985s (guard 15s, a bare round trip 10.018875ms)`, one failure, no pile-up (33.9s) |
+| `go test -tags nogui -count=1/3/5 -run TestSetAnswersWhileDevinAndProvidersHang ./internal/gui/` | ok (1.7s / 2.6s / 3.6s) |
+| `go test -tags nogui -race -count=3 -run TestSetAnswersWhileDevinAndProvidersHang ./internal/gui/` | ok (4.8s) |
+| `go test -tags nogui -count=1 ./internal/gui/` | only the pre-existing `TestProxyCheckSaysAProxyPassedBy` red (HTTP 502 on this box) |
+| `gofmt -l internal/gui internal/provider` | clean |
+| `go vet ./...` and `GOOS=linux/windows go vet -tags nogui ./...` | clean (the pre-existing `trayimage_darwin.go` cgo warning only) |
+| `go build ./...` and `GOOS=linux/windows go build -tags nogui ./...` | pass |
+
+## Not verified
+
+The WebKit GUI suite (this test drives the HTTP API, no page in it) and CI. The guard also abstains by design above its cap: a box that slows a bare trip past 300ms sits at the 60s ceiling, and a wait shorter than that on such a box is indistinguishable from load — the test says nothing there rather than risk another clock false fire.
+
+**Attribution**: AI-written; I've read the whole diff and the tests pass. Please keep the author (`ggbdpq`) or add `Co-authored-by: ggbdpq <ggbdpq@gmail.com>`.
+
+<details><summary>patch: tests: the devin hang test releases its fake after the requests, so load can't fail it (#1375) — git am applies it as is; SHA-256 first 16: 7fbda39ae9de3004</summary>
+
+```patch
+From 3d154d35b3e79dc1a02d39e20031accb025c3abc Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Thu, 22 Oct 2026 22:53:12 +0800
+Subject: [PATCH] tests: the devin hang test releases its fake after the
+ requests, so load can't fail it (#1375)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+What changed
+
+TestSetAnswersWhileDevinAndProvidersHang kept failing under load after
+2c36d3f28, always in one compound shape: a set broke the 10s bound, the
+test kept counting (t.Errorf), and once the whole run outlasted the
+fake's 20s sleep the landing marker fired too — a slow box read as a
+wait (three bound lines and then the marker in the 10-19 sighting, 58s
+of run for requests that only waited on the scheduler). Both defects
+are the test's; the product is untouched.
+
+The fake no longer runs on a clock. It blocks until the test releases
+it, written after the requests, so its answer can only land once
+nothing was waiting on it — whatever the load — and the marker check
+before that release is sound by construction, where a sleep plus a
+stat could only ever say "the run was slow". The running/ census went
+with the clock: the asks time the fake out at their own 30s, killing a
+run mid-wait, and the census counted those kills as runaways; the stop
+file and the script's own minute cap still end every run of it.
+
+The latency check reads the machine first: a bare round trip of the
+same server, times 200, floored at 15s, capped at 60s. The fixed 1.5s
+failed at 1.6s under a full run, and the 10s successor at 13–31s; the
+sets' load slows the trip the same way, so the guard moves with the
+machine. A request past the guard stops the test (t.Fatalf), since one
+clock failure must not pile onto another, and the message carries the
+trip, so a real wait (machine fast, set slow) reads differently from a
+loaded one.
+
+Run
+
+- old test fed six requests each delayed 11s: red in exactly the
+  reported shape (three set bounds, three state bounds, then the
+  marker, 67s); the hardened test passes the same feed
+- broken by hand (DevinNoWait a no-op, so the state's devin asks wait
+  the CLI out): still red, "set claude-opus-5-5 took 33.1s (guard 15s,
+  a bare round trip 10.0ms)" — the stop keeps the run to one failure
+- go test -tags nogui -count=1|3|5 -run
+  TestSetAnswersWhileDevinAndProvidersHang ./internal/gui/ ok; -race
+  -count=3 ok
+- go test -tags nogui -count=1 ./internal/gui/ — only the pre-existing
+  TestProxyCheckSaysAProxyPassedBy red (HTTP 502 on this box)
+- gofmt -l internal/gui internal/provider clean; go vet ./... and
+  GOOS=linux/windows go vet -tags nogui ./... clean (the pre-existing
+  trayimage_darwin.go cgo warning only); builds pass on darwin and,
+  -tags nogui, on linux and windows
+
+Not run: the WebKit GUI suite (this test drives the HTTP API, no page
+in it) and CI. Nothing outside the test file changes.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gui/set_fast_unix_test.go | 103 +++++++++++++++++------------
+ 1 file changed, 62 insertions(+), 41 deletions(-)
+
+diff --git a/internal/gui/set_fast_unix_test.go b/internal/gui/set_fast_unix_test.go
+index a1e549c2..9fe19f29 100644
+--- a/internal/gui/set_fast_unix_test.go
++++ b/internal/gui/set_fast_unix_test.go
+@@ -22,14 +22,17 @@ import (
+ // with the whole state: with Devin installed, every state asked `devin
+ // models list` again (several times: its model's family, its options, its
+ // efforts), each taking seconds, and a CLI that gave no list was asked anew
+-// on the next click — the pick took 5–10s to show. Here the devin CLI takes
+-// 20s to answer and a provider's model endpoint never answers; the set, and
+-// the state after it, must not wait on either, and Claude Code's config is
+-// written as before. That they didn't wait is told by order, not a clock:
+-// the fake marks each answer it gives, and no answer may have landed when
+-// the requests are done. The clock bound only stops a set that waits from
+-// running into the fake's 20s; a 1.5s one failed at 1.6s under a loaded
+-// full run (#1375).
++// on the next click — the pick took 5–10s to show. Here the devin CLI hangs
++// and a provider's model endpoint never answers; the set, and the state
++// after it, must not wait on either, and Claude Code's config is written as
++// before. That they didn't wait is told by order, not a clock: the fake
++// blocks until the test releases it, after the requests, so its answer can
++// only land once nothing was waiting on it — whatever the load. The load
++// itself is why the latency check reads the machine first: a fixed clock
++// failed at 1.6s, and its 10s successor at 13–31s, both on loaded runs
++// (#1375); the guard is a bare round trip multiplied, and a set past it
++// stops the test, since anything read after a wait that deep would be the
++// machine's, not the code's.
+ func TestSetAnswersWhileDevinAndProvidersHang(t *testing.T) {
+ 	h := t.TempDir()
+ 	t.Setenv("HOME", h)
+@@ -42,34 +45,24 @@ func TestSetAnswersWhileDevinAndProvidersHang(t *testing.T) {
+ 	os.MkdirAll(bin, 0o755)
+ 	t.Setenv("PATH", bin+string(os.PathListSeparator)+"/usr/bin"+string(os.PathListSeparator)+"/bin")
+ 
+-	// a devin CLI that takes 20s over every answer and marks it landed.
+-	// It sleeps in short steps and ends as soon as the test does: the
+-	// background asks it is given outlive the requests, and would otherwise
+-	// outlive the test (each run of it keeps a file in running/ till it ends)
++	// a devin CLI that hangs until the test releases it and only then
++	// marks its answer landed. The release is written after the requests,
++	// so no answer can land while they run, on any load — a wait on the
++	// CLI and a slow box can't be told apart by a clock, and this needs
++	// none. It sleeps in short steps and ends as soon as the test does;
++	// the minute cap is for a test that never releases, and the asks it
++	// is given time it out at their own 30s, killing a run mid-wait — a
++	// normal end here, not a runaway (the running/ census the clocked
++	// fake served counted those kills as runaways, so it went with it).
+ 	devin := filepath.Join(bin, "devin")
+ 	answered := filepath.Join(h, "devin-answered")
++	release := filepath.Join(h, "devin-release")
+ 	stop := filepath.Join(h, "devin-stop")
+-	running := filepath.Join(h, "devin-running")
+-	os.MkdirAll(running, 0o755)
+ 	testenv.Program(t, devin, "#!/bin/sh\n"+
+-		"touch '"+running+"'/$$\n"+
+ 		"i=0\n"+
+-		"while [ $i -lt 200 ] && [ ! -e '"+stop+"' ]; do sleep 0.1; i=$((i+1)); done\n"+
+-		"[ -e '"+stop+"' ] || touch '"+answered+"'\n"+
+-		"rm -f '"+running+"'/$$\n")
+-	t.Cleanup(func() {
+-		os.WriteFile(stop, nil, 0o644)
+-		for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(50 * time.Millisecond) {
+-			left, _ := os.ReadDir(running)
+-			if len(left) == 0 {
+-				return
+-			}
+-			if time.Now().After(deadline) {
+-				t.Errorf("%d devin fakes still running after the test", len(left))
+-				return
+-			}
+-		}
+-	})
++		"while [ $i -lt 600 ] && [ ! -e '"+release+"' ] && [ ! -e '"+stop+"' ]; do sleep 0.1; i=$((i+1)); done\n"+
++		"if [ -e '"+release+"' ] && [ ! -e '"+stop+"' ]; then touch '"+answered+"'; fi\n")
++	t.Cleanup(func() { os.WriteFile(stop, nil, 0o644) })
+ 	old := provider.DevinExecutable
+ 	provider.DevinExecutable = func() string { return devin }
+ 	t.Cleanup(func() { provider.DevinExecutable = old })
+@@ -105,6 +98,30 @@ func TestSetAnswersWhileDevinAndProvidersHang(t *testing.T) {
+ 
+ 	srv := httptest.NewServer(Handler(nil, nil))
+ 	t.Cleanup(srv.Close)
++
++	// what a request costs when nothing waits: one bare round trip of this
++	// server, measured here, is the unit the latency guard thinks in. A set
++	// does far more work than the trip (the whole state drawn, the config
++	// written), so the guard is the trip times 200, at least 15s — so an
++	// unloaded run still catches a wait — and at most 60s, so a hung set
++	// still ends the test within the minute. A fixed clock was 1.5s and
++	// failed at 1.6s under a full run, and its 10s successor failed at
++	// 13–31s (#1375); whatever slows the sets slows this trip the same way,
++	// so the guard moves with the machine instead of against it.
++	ctrl := time.Now()
++	cres, err := http.Get(srv.URL + "/")
++	if err != nil {
++		t.Fatal(err)
++	}
++	cres.Body.Close()
++	trip := time.Since(ctrl)
++	guard := 200 * trip
++	if guard < 15*time.Second {
++		guard = 15 * time.Second
++	}
++	if guard > 60*time.Second {
++		guard = 60 * time.Second
++	}
+ 	set := func(value string) (time.Duration, stateJSON) {
+ 		t.Helper()
+ 		start := time.Now()
+@@ -136,11 +153,13 @@ func TestSetAnswersWhileDevinAndProvidersHang(t *testing.T) {
+ 	for _, v := range []string{"claude-opus-5-5", "slow/slow-1", "claude-sonnet-5-5"} {
+ 		took, s := set(v)
+ 		t.Logf("set %s: %v", v, took)
+-		// a fast set is milliseconds; one that waits takes the fake's 20s
+-		// or, on the provider, never comes back: the bound has slack on
+-		// both sides, and the marker below is what pins the guarantee
+-		if took > 10*time.Second {
+-			t.Errorf("set %s took %v: it waited on the devin CLI or the provider", v, took)
++		// a set past the guard stops the test here: the checks below only
++		// vouch for a run that stayed this fast, and one clock failure
++		// must not pile onto another (the old 10s bound kept counting
++		// through its own failures until the run outlasted the fake and
++		// failed on the load it had measured, not on a wait)
++		if took > guard {
++			t.Fatalf("set %s took %v (guard %v, a bare round trip %v): it waited on the devin CLI or the provider", v, took, guard, trip)
+ 		}
+ 		if got := shown(s); got != v {
+ 			t.Errorf("set %s: the state shows %q", v, got)
+@@ -151,16 +170,18 @@ func TestSetAnswersWhileDevinAndProvidersHang(t *testing.T) {
+ 			t.Fatal(err)
+ 		}
+ 		res.Body.Close()
+-		if took := time.Since(start); took > 10*time.Second {
+-			t.Errorf("the state after set %s took %v", v, took)
++		if took := time.Since(start); took > guard {
++			t.Fatalf("the state after set %s took %v (guard %v, a bare round trip %v)", v, took, guard, trip)
+ 		}
+ 	}
+ 
+-	// no devin answer landed while the requests ran: one that waited on
+-	// the CLI came back only after an answer had, whatever the load
++	// no answer may have landed: the fake marks only once released, and
++	// the release is written below, after this check — a marker here says
++	// the gating leaked, which no speed of the machine explains
+ 	if _, err := os.Stat(answered); err == nil {
+-		t.Error("a devin answer landed before the requests were done: a set or the state waited on the devin CLI")
++		t.Fatal("a devin answer landed before the requests were done: a set or the state waited on the devin CLI")
+ 	}
++	os.WriteFile(release, nil, 0o644)
+ 
+ 	// what is written is what it was: the last pick, Anthropic's own
+ 	// model, off magpie's gateway
+-- 
+2.50.1 (Apple Git-155)
+
+```
+
+</details>
+
+Branch with the commit: [hunt63-b-1375-bound-harden](https://github.com/ggbdpq/magpie/tree/hunt63-b-1375-bound-harden) (head `3d154d35b3e79dc1a02d39e20031accb025c3abc`).

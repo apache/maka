@@ -1,0 +1,1 @@
+go test -tags nogui -count=1 -p 2 -timeout 2m -artifacts -outputdir /Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/restored-fixtures -run \^TestStreamedByteCap -v ./internal/gateway 

@@ -1,0 +1,3 @@
+重启前: running 20
+restore 计数: 1
+重启后 5s: running 20 → 永远停在 running（僵尸任务）

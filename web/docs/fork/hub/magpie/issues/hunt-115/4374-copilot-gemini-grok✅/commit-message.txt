@@ -1,0 +1,39 @@
+fix(gateway): Copilot's Gemini takes Codex's disjoint unions as oneOf, its Grok the custom tools as functions (#4374)
+
+What changed: Codex Desktop through Copilot failed on every tool-bearing
+turn, on two wires at once (#4374). The Gemini models, served on chat
+completions alone, answered 400 "invalid request body" to a turn whose
+whole content was "hi" — the tool schemas' anyOf of object branches is
+what Copilot's Gemini rejects, as #3931's comparisons showed (the same
+request with the unions as oneOf came back 200). A union whose branches
+are provably disjoint now goes as oneOf, renamed in place: both branches
+require a string field whose enum or const values never meet, or one
+requires a field the other forbids through additionalProperties: false.
+A union that can't be proved stays an anyOf, Copilot's other models are
+untouched.
+
+Grok 4.7, served on /responses, answered 422 "422 Unprocessable Entity:
+Unprocessable Entity" six requests in a row: xAI behind Copilot takes no
+custom tool (#3392), and Copilot's answer in front of Grok says no more
+than the status (#378), so the refusal-learner that serves the vendors
+whose answer names them (#2656) has nothing to read. A Codex turn with a
+custom tool to a Grok model on Copilot is translated from the first ask,
+as a learned refusal does elsewhere.
+
+Run (go test -tags nogui ./internal/gateway):
+
+- TestCopilotGeminiTakesCodexUnionsAsOneOf: a fake Copilot refusing a
+  tool schema with an anyOf, word for word as #4374's Gemini record, is
+  answered; the union goes out as oneOf
+- TestCopilotGeminiKeepsUnprovenUnions: a union no one can prove stays
+  an anyOf and the refusal still reaches the client
+- TestCopilotGrokTakesCustomToolsAsFunctions: a fake Copilot whose Grok
+  refuses a custom tool with #2951's bare 422 is answered; apply_patch
+  goes as a function, GPT on the same /responses keeps it as it came
+- RED on the parent commit: the first and third fail with the refusals
+  named above; the second holds before and after — it guards that only
+  what is provable is renamed
+
+Fixes #4374
+
+Generated-by: GLM-5.3-Flash (ZCode)

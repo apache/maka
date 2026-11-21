@@ -1,0 +1,65 @@
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py ide-caches baseline
+INPUT: CONFIG: fixed ide-caches source allowlist
+OUTPUT: BASELINE PASS groups=98 files=43335 bytes=8765277926 protected=0
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py ide-caches archive
+INPUT: 9dfffb035d106983a5933689cb9157ad2d941a0f5d14bd22cbcfc0c3cad95894
+OUTPUT: ValueError: Source changed before archive: kimi-desktop-Cache
+EXIT: 1
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py ide-caches apply
+INPUT: 9dfffb035d106983a5933689cb9157ad2d941a0f5d14bd22cbcfc0c3cad95894
+OUTPUT: ValueError: Expected archived
+EXIT: 1
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py ide-caches verify
+INPUT: 9dfffb035d106983a5933689cb9157ad2d941a0f5d14bd22cbcfc0c3cad95894
+OUTPUT: ValueError: Expected migrated
+EXIT: 1
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py ide-caches archive
+INPUT: 9dfffb035d106983a5933689cb9157ad2d941a0f5d14bd22cbcfc0c3cad95894
+OUTPUT: ARCHIVE PASS zip_files=98 files=43335 bytes=8765277926
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py ide-caches apply
+INPUT: 8c562ec724d5b763a80cabb631b5c698ba54e8a4202e953912d7f8626db4a4d4
+OUTPUT: ValueError: Changed source retained: C:\Users\802165\AppData\Roaming\kimi-desktop\Cache\Cache_Data\data_0
+EXIT: 1
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py ide-caches verify
+INPUT: 8c562ec724d5b763a80cabb631b5c698ba54e8a4202e953912d7f8626db4a4d4
+OUTPUT: ValueError: Expected migrated
+EXIT: 1
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py ide-caches apply
+INPUT: 8c562ec724d5b763a80cabb631b5c698ba54e8a4202e953912d7f8626db4a4d4
+OUTPUT: KeyError: 'sha256'
+EXIT: 1
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py ide-caches verify
+INPUT: 8c562ec724d5b763a80cabb631b5c698ba54e8a4202e953912d7f8626db4a4d4
+OUTPUT: ValueError: Expected migrated
+EXIT: 1
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py ide-caches apply
+INPUT: 8c562ec724d5b763a80cabb631b5c698ba54e8a4202e953912d7f8626db4a4d4
+OUTPUT: ValueError: New source files appeared; no deletion started: codex-desktop-local-logs
+EXIT: 1
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py ide-caches verify
+INPUT: 8c562ec724d5b763a80cabb631b5c698ba54e8a4202e953912d7f8626db4a4d4
+OUTPUT: ValueError: Expected migrated
+EXIT: 1
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py ide-caches apply
+INPUT: b16cf117b28f0d9387816f664a619548aceda33138f05ddecc3708112546c366
+OUTPUT: APPLY PASS removed_files=43177 removed_bytes=8529505856 skipped=0
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py ide-caches verify
+INPUT: 10a248b59fc4862c2f54f7cd95f7c9f024a57e2f932b087e93a369a418e4dfd1
+OUTPUT: MODIFIED PASS files=43177 bytes=8529505856 originals_absent=true protected_unchanged=true
+EXIT: 0
+

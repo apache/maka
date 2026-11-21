@@ -1,0 +1,66 @@
+# Config Orchestrator - Profile Configuration
+# 
+# This file defines configuration profiles for synchronizing editor settings.
+# Each profile specifies:
+#   - name: Unique identifier for the profile
+#   - managedScopes: Array of dot-notation prefixes that this profile manages
+#   - settings: Key-value pairs of settings to enforce (flat dot-notation)
+#
+# Managed Scopes Behavior:
+#   - Keys declared in 'settings' will be SET to the specified value
+#   - Keys within 'managedScopes' but NOT in 'settings' will be DELETED
+#   - Keys outside 'managedScopes' are left untouched (user customizations preserved)
+
+profiles:
+  - name: default
+    managedScopes:
+      - editor
+      - workbench.colorTheme
+      - workbench.iconTheme
+      - terminal.integrated.fontSize
+      - files.autoSave
+    settings:
+      editor.fontSize: 14
+      editor.tabSize: 2
+      editor.insertSpaces: true
+      editor.formatOnSave: true
+      editor.formatOnPaste: false
+      editor.defaultFormatter: esbenp.prettier-vscode
+      editor.minimap.enabled: false
+      editor.wordWrap: "on"
+      editor.lineNumbers: "on"
+      editor.renderWhitespace: "selection"
+      files.autoSave: onFocusChange
+      terminal.integrated.fontSize: 13
+
+  - name: minimal
+    managedScopes:
+      - editor.fontSize
+      - editor.tabSize
+    settings:
+      editor.fontSize: 14
+      editor.tabSize: 2
+
+  - name: development
+    managedScopes:
+      - editor
+      - workbench
+      - terminal.integrated
+      - files
+    settings:
+      editor.fontSize: 13
+      editor.tabSize: 2
+      editor.insertSpaces: true
+      editor.formatOnSave: true
+      editor.defaultFormatter: esbenp.prettier-vscode
+      editor.minimap.enabled: true
+      editor.minimap.maxColumn: 80
+      editor.wordWrap: "off"
+      editor.lineNumbers: "on"
+      editor.renderWhitespace: "all"
+      editor.bracketPairColorization.enabled: true
+      workbench.colorTheme: "One Dark Pro"
+      workbench.iconTheme: "material-icon-theme"
+      terminal.integrated.fontSize: 12
+      files.autoSave: afterDelay
+      files.autoSaveDelay: 1000

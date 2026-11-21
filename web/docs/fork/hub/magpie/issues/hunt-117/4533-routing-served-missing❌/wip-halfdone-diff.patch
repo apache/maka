@@ -1,0 +1,30 @@
+diff --git a/internal/gateway/claude_subscription.go b/internal/gateway/claude_subscription.go
+index 86e7cb156..9c3ceaf3a 100644
+--- a/internal/gateway/claude_subscription.go
++++ b/internal/gateway/claude_subscription.go
+@@ -5950,6 +5950,13 @@ func relay(w http.ResponseWriter, r *http.Request, from provider.Protocol, name
+ 		ended(said, stop, failed == "" && r.Context().Err() == nil)
+ 		// an error event already ended the reply in the client's protocol
+ 		if failed == "" {
++			// a reply whose messages name no model — Claude Code's side asks
++			// tell whole rows without one — answered with the model asked
++			// for: a 200 whose row reads as if nothing had answered it
++			// leaves its clients guessing (#4533)
++			if usage.Served == "" {
++				usage.add(Usage{Served: req.Model})
++			}
+ 			enc.finish()
+ 		}
+ 		return 200, failed
+@@ -5986,6 +5993,11 @@ func relay(w http.ResponseWriter, r *http.Request, from provider.Protocol, name
+ 	res := col.finish()
+ 	usage.add(res.Usage)
+ 	usage.add(Usage{Served: res.Model})
++	// as in a stream: a reply that names no model answers with the one
++	// asked for (#4533)
++	if col.err == "" && usage.Served == "" {
++		usage.add(Usage{Served: req.Model})
++	}
+ 	w.Header().Set("Content-Type", "application/json")
+ 	w.WriteHeader(200)
+ 	_, _ = w.Write(renderUsage(from, res, req, usage))

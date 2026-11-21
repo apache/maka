@@ -1,0 +1,545 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Wed, 4 Nov 2026 06:35:11 +0800
+Subject: [PATCH] gateway: a 200 whose reply counted no token is not the answer
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+An upstream that answers a well-formed completion whose body is its own
+billing notice — "Your subscription has expired.", its balance and its
+expiry — and whose usage counts nothing had the notice delivered as the
+answer: the try booked done=true, status 200, no fail, the conversation
+pinned to the seat, three turns the same notice, three real upstream
+calls (yetone/magpie#3967, Gaudi-XIX). What said the body wasn't the
+answer was in the reply all along: it reported its usage, and every
+count zero — nothing was generated, so nothing the body says was.
+
+What was missing is the reading. A reply's usage is told by a member,
+and only the counts were kept: reported-and-zero collapsed into
+never-reported (cUsage.usage() returns a value), and every decision
+that could have failed the try keys on something else — the #733 arm
+on an error member, the empty-reply checks on nothing said, #2086 and
+says something, so it walked past them all.
+
+Now the member's own saying is kept, as the cache counts' is
+(cacheCreationReported): usageReported is wire evidence, not a counter
+(ir.go), carried from the Chat decoder and the relay sniffer, through
+Usage.add and plus. Reported and every count zero fails the try as its
+words would have with their own status — a billing notice as the 402
+it owes, the seat resting out of credit (errorReply's reading) —
+
+- where the reply is held whole (settle), for the next member to
+  answer in the turn, the agent never seeing it;
+- where a translation read the reply whole (translate), the same;
+- where a streamed reply has already passed (the walk's accounting),
+  which can't be taken back: the failure is booked, the stick dropped,
+  and the seat rested, so the session's next turn is answered
+  elsewhere instead of the same notice again.
+
+What settle read for the first of these is the body magpie held. On a
+translation the held body is magpie's own rendering, whose usage counts
+all zero whatever the upstream said — renderUsage embeds one — so the
+body alone read a rendering's zero as the wire's, and an upstream that
+never reported a usage (the exempt class) had its answer failed and
+held from it. Settle's read is gated on saidUsage now, the sniffer's
+read of the wire carried to the hold (the same usageReported the two
+other seams key on); uncountedReply's body reading stands only beside
+it. The full gateway suite caught this and 20 more of the same
+(zenfree_v2's fakes, whose upstreams say no usage); ablation on the
+gate turns TestZenFreeAsOpenCode225 red again.
+
+A reply that never reports a usage — one that ignores stream_options'
+include_usage — stays an answer, though nothing is counted of it: the
+fields said are what is read (emptyCompleted), so the rule needs no
+per-provider list. A counted-nothing Chat reply whose words are
+innocent still fails, as #2086 counts a reply that counted nothing no
+reply at all; it fails as a 502 for the next member, and rests as any
+502 does.
+
+Fixes #3967
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gateway/chat.go                 |   9 +-
+ internal/gateway/claude_subscription.go  |   3 +
+ internal/gateway/counted_nothing_test.go | 193 +++++++++++++++++++++++
+ internal/gateway/deferred_usage_test.go  |   4 +-
+ internal/gateway/fallback.go             |  76 +++++++++
+ internal/gateway/gateway.go              |  35 ++++
+ internal/gateway/ir.go                   |   7 +
+ internal/gateway/sniff.go                |   7 +-
+ internal/gateway/sniff_test.go           |   4 +-
+ 9 files changed, 333 insertions(+), 5 deletions(-)
+ create mode 100644 internal/gateway/counted_nothing_test.go
+
+diff --git a/internal/gateway/chat.go b/internal/gateway/chat.go
+index d87f2c53d..df640cdca 100644
+--- a/internal/gateway/chat.go
++++ b/internal/gateway/chat.go
+@@ -1450,8 +1450,13 @@ func (d *chatDecoder) decode(data string, emit func(Event)) error {
+ 			emit(Event{Kind: KStop, Stop: stopFromChat(c.FinishReason)})
+ 		}
+ 	}
+-	if ch.Usage != nil && (ch.Usage.PromptTokens > 0 || ch.Usage.CompletionTokens > 0 || ch.Usage.MagpieDeferred != nil || ch.Usage.Credit != nil) {
+-		emit(Event{Kind: KUsage, Usage: ch.Usage.usage()})
++	if ch.Usage != nil {
++		// said, whether or not it counted anything: reported and all zero
++		// is a reply that counted no token (usageReported, #3967), not no
++		// usage at all, which the counts alone can't tell from a zero
++		u := ch.Usage.usage()
++		u.usageReported = true
++		emit(Event{Kind: KUsage, Usage: u})
+ 	}
+ 	return nil
+ }
+diff --git a/internal/gateway/claude_subscription.go b/internal/gateway/claude_subscription.go
+index 71ff2d8bd..fce2ea9c7 100644
+--- a/internal/gateway/claude_subscription.go
++++ b/internal/gateway/claude_subscription.go
+@@ -4609,6 +4609,9 @@ func (u Usage) plus(v Usage, only bool) Usage {
+ 	if !only {
+ 		u.cacheCreationReported = u.cacheCreationReported || v.cacheCreationReported
+ 	}
++	// the usage member's own wire evidence ors whatever the split: said
++	// is said, at a zero too (usageReported, yetone/magpie#3967)
++	u.usageReported = u.usageReported || v.usageReported
+ 	return u
+ }
+ 
+diff --git a/internal/gateway/counted_nothing_test.go b/internal/gateway/counted_nothing_test.go
+new file mode 100644
+index 000000000..fdb71ddc5
+--- /dev/null
++++ b/internal/gateway/counted_nothing_test.go
+@@ -0,0 +1,193 @@
++package gateway
++
++import (
++	"net/http/httptest"
++	"strings"
++	"testing"
++
++	"github.com/yetone/magpie/internal/provider"
++)
++
++// A 200 whose body is an upstream billing notice and whose usage counts
++// nothing is no answer (yetone/magpie#3967): nothing was generated, so
++// the body is not the completion the agent asked for, and the try fails
++// as its words would have with their own status — a billing notice as the
++// 402 it owes — for the next member to answer. Reported and all zero is
++// what reads; a reply that never reports a usage stays an answer, as one
++// that ignores stream_options' include_usage does.
++const billingNotice = "Your subscription has expired. API key status: expired. USDT balance: 12.5 USDT."
++
++const noticeJSON = `{"id":"c1","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"` + billingNotice + `"},"finish_reason":"stop"}],"usage":{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}}`
++
++const countedJSON = `{"id":"c2","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}],"usage":{"prompt_tokens":12,"completion_tokens":3,"total_tokens":15}}`
++
++var noticeSSE = sse(`data: {"id":"c1","choices":[{"index":0,"delta":{"content":"`+billingNotice+`"}}]}`,
++	`data: {"id":"c1","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
++	`data: {"id":"c1","choices":[],"usage":{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}}`,
++	`data: [DONE]`)
++
++var countedSSE = sse(`data: {"id":"c2","choices":[{"index":0,"delta":{"content":"from b"}}]}`,
++	`data: {"id":"c2","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
++	`data: {"id":"c2","choices":[],"usage":{"prompt_tokens":12,"completion_tokens":3,"total_tokens":15}}`,
++	`data: [DONE]`)
++
++// The body reached the client as a completion through a relayed request,
++// where the reply comes as it came: the try fails, and the next member
++// answers in the turn.
++func TestCountedNothingFailsOver(t *testing.T) {
++	fresh(t)
++	a := &scripted{replies: []reply{{200, "", noticeJSON}}}
++	b := &scripted{replies: []reply{{200, "", countedJSON}}}
++	scriptedOn(t, "a", provider.Chat, a)
++	scriptedOn(t, "b", provider.Chat, b)
++	if err := provider.SaveGroup(provider.Group{Name: "G", Members: []string{"a/m", "b/m"}, Routing: provider.Ordered}); err != nil {
++		t.Fatal(err)
++	}
++	s := New()
++	code, body := postAs(t, s, "", `{"model":"group/g","messages":[{"role":"user","content":"hi"}]}`)
++	if code != 200 || !strings.Contains(body, "hello") || strings.Contains(body, "subscription") {
++		t.Fatalf("%d %s %+v", code, body, s.trace.routes[len(s.trace.routes)-1])
++	}
++	if a.n != 1 || b.n != 1 {
++		t.Fatalf("a asked %d, b asked %d", a.n, b.n)
++	}
++	r := s.trace.routes[len(s.trace.routes)-1]
++	if len(r.Tries) != 2 || r.Tries[0].Fail == "" {
++		t.Fatalf("tries: %+v", r.Tries)
++	}
++}
++
++// The same through a translation, where magpie reads the reply itself:
++// a reply that reported its usage as counting nothing is not an answer,
++// and what it said (a billing notice here) never reaches the agent.
++func TestCountedNothingTranslatedFailsOver(t *testing.T) {
++	fresh(t)
++	a := &scripted{replies: []reply{{200, "text/event-stream", noticeSSE}}}
++	b := &scripted{replies: []reply{{200, "text/event-stream", countedSSE}}}
++	scriptedOn(t, "a", provider.Chat, a)
++	scriptedOn(t, "b", provider.Chat, b)
++	if err := provider.SaveGroup(provider.Group{Name: "G", Members: []string{"a/m", "b/m"}, Routing: provider.Ordered}); err != nil {
++		t.Fatal(err)
++	}
++	s := New()
++	rec := httptest.NewRecorder()
++	s.Handler().ServeHTTP(rec, httptest.NewRequest("POST", "/v1/messages",
++		strings.NewReader(`{"model":"group/g","max_tokens":10,"messages":[{"role":"user","content":"hi"}]}`)))
++	code, body := rec.Code, rec.Body.String()
++	if code != 200 || !strings.Contains(body, "from b") || strings.Contains(body, "subscription") {
++		t.Fatalf("%d %s %+v", code, body, s.trace.routes[len(s.trace.routes)-1])
++	}
++	if a.n != 1 || b.n != 1 {
++		t.Fatalf("a asked %d, b asked %d", a.n, b.n)
++	}
++	r := s.trace.routes[len(s.trace.routes)-1]
++	if len(r.Tries) != 2 || r.Tries[0].Fail == "" {
++		t.Fatalf("tries: %+v", r.Tries)
++	}
++}
++
++// A streamed turn cannot be taken back once its text has passed, so the
++// first turn still carries the notice; what the failure buys is the seat
++// set aside and the conversation's stick dropped, so the next turn of the
++// session is answered by another member instead of the same notice again.
++func TestCountedNothingStreamDropsTheStick(t *testing.T) {
++	fresh(t)
++	a := &scripted{replies: []reply{{200, "text/event-stream", noticeSSE}}}
++	b := &scripted{replies: []reply{{200, "text/event-stream", countedSSE}}}
++	scriptedOn(t, "a", provider.Chat, a)
++	scriptedOn(t, "b", provider.Chat, b)
++	if err := provider.SaveGroup(provider.Group{Name: "G", Members: []string{"a/m", "b/m"}, Routing: provider.Ordered}); err != nil {
++		t.Fatal(err)
++	}
++	s := New()
++	send := func() (int, string) {
++		rec := httptest.NewRecorder()
++		req := httptest.NewRequest("POST", "/v1/chat/completions",
++			strings.NewReader(`{"model":"group/g","stream":true,"messages":[{"role":"user","content":"hi"}]}`))
++		req.Header.Set("x-session-id", "s1")
++		s.Handler().ServeHTTP(rec, req)
++		return rec.Code, rec.Body.String()
++	}
++	code, _ := send()
++	r := s.trace.routes[len(s.trace.routes)-1]
++	if code != 200 || len(r.Tries) != 1 || r.Tries[0].Fail == "" || r.Tries[0].Rest == nil {
++		t.Fatalf("turn1 %d fails %+v", code, r.Tries)
++	}
++	code, body := send()
++	if code != 200 || !strings.Contains(body, "from b") || strings.Contains(body, "subscription") {
++		t.Fatalf("turn2 %d %s %+v", code, body, s.trace.routes[len(s.trace.routes)-1])
++	}
++	if a.n != 1 || b.n != 1 {
++		t.Fatalf("a asked %d, b asked %d across the two turns", a.n, b.n)
++	}
++}
++
++// The same streamed turn through a translation, where magpie reads the
++// events itself: the notice leaks as the first turn's text all the same,
++// and the failure is booked, the seat rested, and the stick dropped for
++// the session's next turn to be answered elsewhere.
++func TestCountedNothingTranslatedStreamDropsTheStick(t *testing.T) {
++	fresh(t)
++	a := &scripted{replies: []reply{{200, "text/event-stream", noticeSSE}}}
++	b := &scripted{replies: []reply{{200, "text/event-stream", countedSSE}}}
++	scriptedOn(t, "a", provider.Chat, a)
++	scriptedOn(t, "b", provider.Chat, b)
++	if err := provider.SaveGroup(provider.Group{Name: "G", Members: []string{"a/m", "b/m"}, Routing: provider.Ordered}); err != nil {
++		t.Fatal(err)
++	}
++	s := New()
++	send := func() (int, string) {
++		rec := httptest.NewRecorder()
++		req := httptest.NewRequest("POST", "/v1/messages",
++			strings.NewReader(`{"model":"group/g","max_tokens":10,"stream":true,"messages":[{"role":"user","content":"hi"}]}`))
++		req.Header.Set("x-session-id", "s1")
++		s.Handler().ServeHTTP(rec, req)
++		return rec.Code, rec.Body.String()
++	}
++	code, _ := send()
++	r := s.trace.routes[len(s.trace.routes)-1]
++	if code != 200 || len(r.Tries) != 1 || r.Tries[0].Fail == "" || r.Tries[0].Rest == nil {
++		t.Fatalf("turn1 %d fails %+v", code, r.Tries)
++	}
++	code, body := send()
++	if code != 200 || !strings.Contains(body, "from b") || strings.Contains(body, "subscription") {
++		t.Fatalf("turn2 %d %s %+v", code, body, s.trace.routes[len(s.trace.routes)-1])
++	}
++	if a.n != 1 || b.n != 1 {
++		t.Fatalf("a asked %d, b asked %d across the two turns", a.n, b.n)
++	}
++}
++
++// The exempt class: a reply that never reports a usage — one that ignores
++// stream_options' include_usage — stays the answer it is, though nothing
++// is counted of it.
++func TestUsageNeverReportedStaysAnAnswer(t *testing.T) {
++	fresh(t)
++	a := &scripted{replies: []reply{{200, "", chatOK}}}
++	scriptedOn(t, "a", provider.Chat, a)
++	s := New()
++	if code, body := postAs(t, s, "", `{"model":"a/m","messages":[{"role":"user","content":"hi"}]}`); code != 200 || !strings.Contains(body, "hello") {
++		t.Fatalf("%d %s", code, body)
++	}
++	r := s.trace.routes[len(s.trace.routes)-1]
++	if len(r.Tries) != 1 || r.Tries[0].Fail != "" {
++		t.Fatalf("tries: %+v", r.Tries)
++	}
++
++	fresh(t)
++	a = &scripted{replies: []reply{{200, "text/event-stream", sse(`data: {"id":"c3","choices":[{"index":0,"delta":{"content":"said anyway"}}]}`,
++		`data: {"id":"c3","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
++		`data: [DONE]`)}}}
++	scriptedOn(t, "a", provider.Chat, a)
++	s = New()
++	rec := httptest.NewRecorder()
++	s.Handler().ServeHTTP(rec, httptest.NewRequest("POST", "/v1/messages",
++		strings.NewReader(`{"model":"a/m","max_tokens":10,"messages":[{"role":"user","content":"hi"}]}`)))
++	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "said anyway") {
++		t.Fatalf("%d %s", rec.Code, rec.Body.String())
++	}
++	r = s.trace.routes[len(s.trace.routes)-1]
++	if len(r.Tries) != 1 || r.Tries[0].Fail != "" {
++		t.Fatalf("tries: %+v", r.Tries)
++	}
++}
+diff --git a/internal/gateway/deferred_usage_test.go b/internal/gateway/deferred_usage_test.go
+index 4f909586b..7503d5a20 100644
+--- a/internal/gateway/deferred_usage_test.go
++++ b/internal/gateway/deferred_usage_test.go
+@@ -29,7 +29,9 @@ func TestSniffChatDeferredUsage(t *testing.T) {
+ 		t.Fatalf("deferred %+v", got.Deferred)
+ 	}
+ 	got.Deferred = nil
+-	if own := (Usage{Input: 4, Output: 2240, CacheRead: 181266, CacheWrite: 4400, ResponseID: "c", Stop: "tool_calls"}); got != own {
++	// the reply said its usage on the wire (usageReported, #3967), counts
++	// beside the point
++	if own := (Usage{Input: 4, Output: 2240, CacheRead: 181266, CacheWrite: 4400, usageReported: true, ResponseID: "c", Stop: "tool_calls"}); got != own {
+ 		t.Fatalf("own %+v want %+v", got, own)
+ 	}
+ }
+diff --git a/internal/gateway/fallback.go b/internal/gateway/fallback.go
+index 34ecff207..dcb8a1f20 100644
+--- a/internal/gateway/fallback.go
++++ b/internal/gateway/fallback.go
+@@ -2504,6 +2504,11 @@ type holdWriter struct {
+ 	// to be read event by event
+ 	after []byte
+ 	whole bool // a reply that isn't streamed, held whole until release
++	// saidUsage: the upstream said a usage on its wire this try (the
++	// sniffer's usageReported, #3967). What the held body carries is no
++	// evidence of its own once a translation's rendering has been through:
++	// its usage is all zero even for an upstream that never said one
++	saidUsage bool
+ 	// wholeUnsure: held whole only as the agent has a stream's headers,
+ 	// under a type that says neither JSON nor a stream: the reply's first
+ 	// bytes say whether it streams after all (Write)
+@@ -3456,6 +3461,18 @@ func (h *holdWriter) settle() {
+ 			h.failure, h.failMsg = status, msg
+ 			return
+ 		}
++		// and one that counted no token beside it, its usage said on the
++		// wire: nothing was generated, so what the body says is not the
++		// answer either (uncountedReply, #3967). The wire is what says so
++		// (saidUsage): the body here can be magpie's own rendering of a
++		// translation, which carries a usage all zero whatever the
++		// upstream said — one that never reported a usage stays an answer
++		if h.saidUsage {
++			if status, msg, ok := uncountedReply(h.held.Bytes()); ok {
++				h.failure, h.failMsg = status, msg
++				return
++			}
++		}
+ 	}
+ 	if h.alive != nil && h.alive.sent && h.status < 400 && wholeEvents(h.alive.proto, h.held.Bytes()) == nil {
+ 		// a 200 that is no reply of the protocol's, once the agent has a
+@@ -4593,6 +4610,65 @@ func magpieSaid(msg string) bool {
+ 	return strings.Contains(msg, loopGuardSaid) || strings.Contains(msg, emptyReply) || strings.Contains(msg, reloopedError)
+ }
+ 
++// countedNothing is what a 200 whose reply counted no token (its usage
++// was reported, and every count zero) says of itself, in the failure the
++// hold keeps (yetone/magpie#3967): nothing was generated, so whatever the
++// body carries beside the counts — today a billing notice, tomorrow a
++// quota page — is not the answer, and the next candidate is asked, the
++// seat reading as its words do (a billing notice as out of credit).
++// A reply that names no usage at all is taken as it came: the fields said
++// are what is read, as a Responses completed naming its output and usage
++// is (emptyCompleted).
++const countedNothing = "the reply counted no tokens; what it said was not generated"
++
++// uncountedReply tells whether a Chat completions reply named its usage
++// as counting nothing: the usage member said, every count it named zero.
++// The choices beside it are what make the shape Chat's, so another
++// protocol's usage (Anthropic's input_tokens, whose counts this read
++// would miss) is never taken for a zero. It fails as its words would
++// have with their own status (errorReply): a billing notice as the 402
++// it owes, and the seat rests as out of credit.
++func uncountedReply(body []byte) (status int, msg string, ok bool) {
++	b := bytes.TrimSpace(body)
++	if len(b) == 0 || b[0] != '{' {
++		return 0, "", false
++	}
++	var v struct {
++		Choices []json.RawMessage `json:"choices"`
++		Usage   *struct {
++			PromptTokens        int `json:"prompt_tokens"`
++			CompletionTokens    int `json:"completion_tokens"`
++			TotalTokens         int `json:"total_tokens"`
++			PromptTokensDetails *struct {
++				CachedTokens     int `json:"cached_tokens"`
++				CacheWriteTokens int `json:"cache_write_tokens"`
++			} `json:"prompt_tokens_details"`
++			CompletionTokensDetails *struct {
++				ReasoningTokens int `json:"reasoning_tokens"`
++			} `json:"completion_tokens_details"`
++			PromptCacheHitTokens     int `json:"prompt_cache_hit_tokens"`
++			CachedTokens             int `json:"cached_tokens"`
++			CacheReadInputTokens     int `json:"cache_read_input_tokens"`
++			CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
++		} `json:"usage"`
++	}
++	if json.Unmarshal(b, &v) != nil || len(v.Choices) == 0 || v.Usage == nil {
++		return 0, "", false
++	}
++	u := v.Usage
++	if u.PromptTokens+u.CompletionTokens+u.TotalTokens+
++		u.PromptCacheHitTokens+u.CachedTokens+u.CacheReadInputTokens+u.CacheCreationInputTokens != 0 {
++		return 0, "", false
++	}
++	if d := u.PromptTokensDetails; d != nil && d.CachedTokens+d.CacheWriteTokens != 0 {
++		return 0, "", false
++	}
++	if d := u.CompletionTokensDetails; d != nil && d.ReasoningTokens != 0 {
++		return 0, "", false
++	}
++	return streamStatus(string(wordsOf(b))), countedNothing, true
++}
++
+ // streamStatus is the status an error in a stream stands for, as a vendor
+ // would have answered it before streaming.
+ func streamStatus(msg string) int {
+diff --git a/internal/gateway/gateway.go b/internal/gateway/gateway.go
+index 40b6b4696..9e4331578 100644
+--- a/internal/gateway/gateway.go
++++ b/internal/gateway/gateway.go
+@@ -4082,6 +4082,11 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
+ 			logged()
+ 			break
+ 		}
++		// whether the upstream said a usage this try, the sniffer's read
++		// of the wire (usageReported, #3967): what settle's held body
++		// carries is no evidence of its own, a translation's rendering
++		// carries a usage all zero whatever the upstream said
++		hw.saidUsage = call.Usage.usageReported
+ 		hw.settle()
+ 		if hw.handedOver {
+ 			// its refusal came after its reasoning went to the agent: the
+@@ -5204,6 +5209,25 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
+ 					call.Status = named
+ 				}
+ 			}
++		} else if call.Status < 400 && call.Usage.usageReported && uncounted(call.Usage) && r.Context().Err() == nil {
++			// a 200 whose reply counted no token, its usage said: nothing
++			// was generated, and what the reply said beside the counts —
++			// a billing notice's words — is not the answer
++			// (yetone/magpie#3967). What the agent has stays as it is, a
++			// stream's text can't be taken back; but the conversation
++			// isn't kept here for the agent's retry, and the words it
++			// said fail it as their own status would, a vendor that said
++			// why resting (as #733's does). A reply that never reported a
++			// usage stays an answer (usageReported)
++			said := capture.body.text()
++			try.Fail = failureOf(c, call.Status, []byte(said))
++			if (hit == nil || !hit.Compact) && aff.Why != "strict" {
++				unanswered(stuck, c)
++			}
++			if lateRests(said) {
++				rest := s.restAfter(c, call.Status, hw.header, []byte(said))
++				try.Fail, try.Rest = rest.Why, &rest
++			}
+ 		} else if call.Status < 400 {
+ 			servedCandidate(c, call.Usage.Input+call.Usage.Output+call.Usage.CacheRead+call.Usage.CacheWrite)
+ 			// a thinking reply that went on to an answer is one more in the
+@@ -8922,6 +8946,17 @@ func (s *Server) translate(w http.ResponseWriter, r *http.Request, p provider.Pr
+ 		msg := cutVoidFailed(p.Name)
+ 		return writeError(w, from, 502, msg), msg
+ 	}
++	if col.res.Usage.usageReported && uncounted(col.res.Usage) {
++		// a reply that reported its usage and counted no token said
++		// nothing of its own: nothing was generated, so whatever its body
++		// carries — today a billing notice, tomorrow a quota page — is
++		// not the answer (yetone/magpie#3967). It fails as its words
++		// would have with their own status, for the next member to
++		// answer; a reply that never reported a usage stays an answer
++		// (usageReported)
++		msg := p.Name + ": " + countedNothing
++		return writeError(w, from, streamStatus(text(col.res.Parts)), msg), msg
++	}
+ 	if zen != nil {
+ 		zen.end(col.add)
+ 	}
+diff --git a/internal/gateway/ir.go b/internal/gateway/ir.go
+index cb2f97475..f9ad0d903 100644
+--- a/internal/gateway/ir.go
++++ b/internal/gateway/ir.go
+@@ -490,6 +490,12 @@ type Usage struct {
+ 	// cacheUnknown: the reply said its vendor counts no cache tokens
+ 	// (a plugin's magpie_cache_unknown), so a CacheRead of 0 is not a miss
+ 	cacheUnknown bool
++	// usageReported: the reply said its usage at all — the usage member's
++	// own wire evidence, not a counter. Reported and every count zero is
++	// a reply that counted no token (yetone/magpie#3967), which nothing
++	// generated can stand beside; never reported stays unknown, as a
++	// reply that ignores stream_options' include_usage is
++	usageReported bool
+ 	// searches: the web searches the reply says its model ran with its
+ 	// provider's own tool (searchTally), for the request log's Web search
+ 	// rows; told nowhere else
+@@ -580,6 +586,7 @@ func (u *Usage) add(v Usage) {
+ 	}
+ 	u.cacheCreationReported = u.cacheCreationReported || v.cacheCreationReported
+ 	u.cacheUnknown = u.cacheUnknown || v.cacheUnknown
++	u.usageReported = u.usageReported || v.usageReported
+ 	u.searches = max(u.searches, v.searches)
+ 	if v.Reasoning > 0 {
+ 		u.Reasoning = v.Reasoning
+diff --git a/internal/gateway/sniff.go b/internal/gateway/sniff.go
+index 447c970cd..f78d9dda1 100644
+--- a/internal/gateway/sniff.go
++++ b/internal/gateway/sniff.go
+@@ -198,7 +198,12 @@ func (s *usageSniffer) parse(b []byte) {
+ 				s.u.add(Usage{ResponseID: v.ID})
+ 			}
+ 			if v.Usage != nil {
+-				s.u.add(v.Usage.usage())
++				// said, whether or not it counted anything (usageReported,
++				// #3967): a reply that reports zero counted nothing, which
++				// is not the same as never having said
++				u := v.Usage.usage()
++				u.usageReported = true
++				s.u.add(u)
+ 			}
+ 		}
+ 	case provider.Responses:
+diff --git a/internal/gateway/sniff_test.go b/internal/gateway/sniff_test.go
+index 5acb3c13b..2d3f6ea6a 100644
+--- a/internal/gateway/sniff_test.go
++++ b/internal/gateway/sniff_test.go
+@@ -33,7 +33,9 @@ func TestSniffChatStreamSplitAcrossWrites(t *testing.T) {
+ 	s.write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"x\"}}],\"usage\":null}\n\n" + line[:30]))
+ 	s.write([]byte(line[30:]))
+ 	got := s.usage()
+-	want := Usage{Input: 40, Output: 20, CacheRead: 60, Reasoning: 5}
++	// the reply said its usage on the wire (usageReported, #3967), counts
++	// beside the point
++	want := Usage{Input: 40, Output: 20, CacheRead: 60, Reasoning: 5, usageReported: true}
+ 	if got != want {
+ 		t.Fatalf("got %+v want %+v", got, want)
+ 	}
+-- 
+2.50.1 (Apple Git-155)
+

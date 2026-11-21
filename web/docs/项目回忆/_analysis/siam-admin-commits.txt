@@ -1,0 +1,9 @@
+2024-04-09|ggbdpq|[GYLJG-2863] refactor: 设置shineout组件跟随bbl切换语言
+2024-04-03|ggbdpq|[GYLJG-2863] refactor: 修复fetch的预处理函数问题
+2024-04-03|ggbdpq|[GYLJG-2863] refactor: 增加必要请求接口注释;删除没用到的变量和模拟数据;降低代码复杂度;修复sort函数用法;增加404页面的bbl;
+2024-04-02|ggbdpq|[GYLJG-2863] refactor: 消除已经注释和暂时无用的代码;
+2024-01-09|ggbdpq|[GYLJG-1978_ggbdpq] refactor: 增加通知详情栅格间距样式
+2024-01-08|ggbdpq|Merge branch 'GYLJG-1978_ggbdpq' of gitlab.sheincorp.cn:group_supply_arch/siam-admin-front into GYLJG-1978_ggbdpq
+2024-01-08|ggbdpq|[GYLJG-1978_ggbdpq] feat: 通知管理模块详情页面开发
+2024-01-08|ggbdpq|[GYLJG-1978_ggbdpq] feat: 通知管理模块详情页面开发
+2024-01-03|ggbdpq|[GYLJG-1978_ggbdpq] feat: 接入系统列表页面开发

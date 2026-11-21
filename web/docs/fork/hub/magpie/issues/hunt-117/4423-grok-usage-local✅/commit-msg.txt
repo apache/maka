@@ -1,0 +1,37 @@
+sessions: Grok Build's own calls reach Usage, read from its updates (#4423)
+
+Usage counts the gateway's calls and the calls the agents' own session
+files record (sessions.Calls). Grok Build had no reader, so its calls
+straight to x.ai never showed (liubing0806: the menu-bar Usage tab with
+Local session selected lists Kimi's, Claude's, Codex's and DeepSeek
+Harness's models, no Grok Build model, while Usage → Sessions shows the
+tokens of the same sessions).
+
+The reader (calls_grok.go) reads the same updates.jsonl the Sessions
+page reads (grokFiles), as parseGrok counts them: each turn_completed's
+usage a call per model in modelUsage, on that model's own counts
+(grokUsage.tokens: input without what the cache held), the turn's time
+the line's; an empty modelUsage falls back to the session's model
+(current_model_id, else "grok"). A subagent's turns are in its own
+folder, calls of its own session. A fork counts the lines written from
+its created_at on: what it copied from its source was counted where it
+was first written. A call made through magpie's gateway is the
+gateway's to count; the ledger matches these calls with its records as
+it matches the others' (gatewayMatches) and leaves the matched out of
+Local session. The turn_completed lines carry no message id, so none is
+matched on.
+
+It is a line call source (callSources, lineCallReaders): Grok Build
+only appends to updates.jsonl, so a file that grew is read on from
+where the last read left off, its carry (the session's model and, for a
+fork, the time its source's lines were copied before) kept in the disk
+shard as Pi's is.
+
+The tests read the fixture sessions (testdata/grok): a's two turns (its
+first spent by grok-4.7-build and grok-4.7-mini together, its second by
+grok-4.7-build alone), a subagent's own folder counting its one turn as
+its own, a fork counting only the turn written after its created_at,
+and a session with no turn completed no calls, by ~/.grok and by
+$GROK_HOME. They fail with no Grok calls on the old code.
+
+Generated-by: GLM-5.3-Flash (ZCode)

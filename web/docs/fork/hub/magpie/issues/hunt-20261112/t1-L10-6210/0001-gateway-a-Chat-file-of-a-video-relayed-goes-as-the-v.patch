@@ -1,0 +1,232 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Fri, 13 Nov 2026 03:30:48 +0800
+Subject: [PATCH] gateway: a Chat file of a video relayed goes as the video_url
+ a Chat API reads (#6210)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+double2tea sent a Chat Completions request whose attachment was a file
+part of an MP4 (file.file_data, a data:video/mp4 URI) to a routing
+group. The group's filter read the video and picked the member whose
+list takes one, but that member was asked with the body as the client
+sent it, file block and all, and Qwen answered 400 "The current model
+does not support PDF file input": the build gives a video a video_url
+on Chat (#6135), a request relayed as it came kept the file block, and
+the vendor read it as a document.
+
+forwardOnce's Chat body now takes the same shape the build gives: a
+file part whose file_data names a video — by its data: URL's type,
+else the filename's extension, as the parse reads the part — is
+rewritten in place to the video_url part DashScope's Qwen, Kimi,
+Zhipu, OpenRouter and vLLM read. A file of another type, or one held
+by its OpenAI file id, stays as it came, and so does every other byte
+of the body.
+
+Run (mote):
+- go test ./internal/gateway -run 'TestChatVideoFileGoesAsVideoURL|TestGroupChatVideoFileGoesAsVideoURL|TestVideo|TestGroup': ok
+- gofmt -l clean; go vet ./internal/gateway: ok
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gateway/gateway.go          |  5 ++
+ internal/gateway/video_input.go      | 76 ++++++++++++++++++++++++++++
+ internal/gateway/video_input_test.go | 74 +++++++++++++++++++++++++++
+ 3 files changed, 155 insertions(+)
+
+diff --git a/internal/gateway/gateway.go b/internal/gateway/gateway.go
+index f14bf99a7..e73857602 100644
+--- a/internal/gateway/gateway.go
++++ b/internal/gateway/gateway.go
+@@ -6576,6 +6576,11 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
+ 		// a content of text parts, which a vendor's server that takes a
+ 		// string alone turns the whole request away for (Atria on Discord)
+ 		body = textPartsAsString(body)
++		// a file part of a video, which the Chat APIs that take a video
++		// read as the video_url the build gives one (#6135); relayed as it
++		// came, the vendor read the file block as a document — Qwen
++		// answered an MP4 with "does not support PDF file input" (#6210)
++		body = chatVideoFileAsURL(body)
+ 		// a turn the client cut off before it said anything, which
+ 		// DeepSeek and Kimi turn every later request away for (#2599)
+ 		body = silentAssistantsOut(body)
+diff --git a/internal/gateway/video_input.go b/internal/gateway/video_input.go
+index 7761202b4..f90340e79 100644
+--- a/internal/gateway/video_input.go
++++ b/internal/gateway/video_input.go
+@@ -9,6 +9,7 @@ import (
+ 	"slices"
+ 	"strings"
+ 
++	"github.com/tidwall/gjson"
+ 	"github.com/yetone/magpie/internal/provider"
+ )
+ 
+@@ -130,6 +131,81 @@ func chatVideo(p Part) map[string]any {
+ 	return map[string]any{"type": "video_url", "video_url": map[string]any{"url": dataURL(p)}}
+ }
+ 
++// chatVideoFileAsURL turns a Chat request relayed as the client sent it a
++// file part of a video into the video_url part the Chat APIs that take a
++// video read (DashScope's Qwen, Kimi, Zhipu, OpenRouter, vLLM). The build
++// gives a video a video_url on Chat (#6135); a relayed one kept the file
++// block, and the vendor read it as a document — Qwen answered an MP4 with
++// "The current model does not support PDF file input" (#6210).
++//
++// Only a file part whose file_data names a video becomes one, by the data:
++// URL's type, else by the filename's extension, as the parse reads the
++// part (videoFileType). A file of another type, or one held by its OpenAI
++// file id, stays as it came. Every other byte of the body stays as sent,
++// and a body with no file part comes back as it was.
++func chatVideoFileAsURL(body []byte) []byte {
++	if !bytes.Contains(body, []byte(`"file_data"`)) {
++		return body
++	}
++	msgs := gjson.GetBytes(body, "messages")
++	if !msgs.IsArray() {
++		return body
++	}
++	type edit struct {
++		at, n int
++		s     []byte
++	}
++	var edits []edit
++	msgs.ForEach(func(_, m gjson.Result) bool {
++		if !m.IsObject() {
++			return true
++		}
++		c := m.Get("content")
++		if !c.IsArray() || c.Index <= 0 || c.Index+len(c.Raw) > len(body) || string(body[c.Index:c.Index+len(c.Raw)]) != c.Raw {
++			return true
++		}
++		c.ForEach(func(_, p gjson.Result) bool {
++			if p.Get("type").Str != "file" || p.Index <= 0 || p.Index+len(p.Raw) > len(body) || string(body[p.Index:p.Index+len(p.Raw)]) != p.Raw {
++				return true
++			}
++			f := p.Get("file")
++			data := f.Get("file_data").Str
++			if data == "" {
++				return true
++			}
++			name := f.Get("filename").Str
++			mt := videoFileType(data, name)
++			if mt == "" {
++				return true
++			}
++			url := data
++			if !strings.HasPrefix(data, "data:") && !strings.Contains(data, "://") {
++				// bare base64, as some clients send it: named as the parse
++				// names it (chatFile's cmp.Or of the type from the name)
++				url = "data:" + mt + ";base64," + data
++			}
++			s, err := marshalPlain(map[string]any{"type": "video_url", "video_url": map[string]any{"url": url}})
++			if err != nil {
++				return true
++			}
++			edits = append(edits, edit{p.Index, len(p.Raw), s})
++			return true
++		})
++		return true
++	})
++	if len(edits) == 0 {
++		return body
++	}
++	out := make([]byte, 0, len(body))
++	last := 0
++	for _, e := range edits {
++		out = append(out, body[last:e.at]...)
++		out = append(out, e.s...)
++		last = e.at + e.n
++	}
++	return append(out, body[last:]...)
++}
++
+ // videoBlock is a video as a Messages video block, the image block's shape
+ // under another type: MiniMax's Anthropic endpoint reads it.
+ func videoBlock(p Part) aBlock {
+diff --git a/internal/gateway/video_input_test.go b/internal/gateway/video_input_test.go
+index b7976395b..b941e5c3b 100644
+--- a/internal/gateway/video_input_test.go
++++ b/internal/gateway/video_input_test.go
+@@ -293,3 +293,77 @@ func TestGroupVideoGoesToMembersThatTakeIt(t *testing.T) {
+ 		t.Errorf("group with no member that takes video: %d %s; upstream %v", rec.Code, rec.Body.String(), bodies)
+ 	}
+ }
++
++// A Chat file of a video (#6210: the reporter's `file.file_data` data:
++// video/mp4 URI) relayed as the client sent it reaches a Chat upstream
++// that reads video_url as the file block it is — Qwen answered the MP4
++// with "The current model does not support PDF file input". It goes as
++// the video_url the build gives a video on Chat (#6135); a file of
++// another type, or one held by its OpenAI file id, stays as it came.
++func TestChatVideoFileGoesAsVideoURL(t *testing.T) {
++	fresh(t)
++	noVision(t)
++	up, upServer := videoUp(t)
++	p := provider.Provider{ID: "qv", Name: "QV", Chat: upServer.URL + "/v1", Key: "k", Models: []string{"v"}}
++	if err := provider.Save(p); err != nil {
++		t.Fatal(err)
++	}
++	if err := catalog.SaveLive(p.ID, upServer.URL, []catalog.Model{
++		{ID: "v", Images: true, ImageInput: imageInputBool(true), InputModalities: videoKinds, OutputModalities: []string{"text"}},
++	}); err != nil {
++		t.Fatal(err)
++	}
++	s := New()
++
++	rec := serveVideo(s, "/v1/chat/completions", `{"model":"qv/v","max_tokens":64,"messages":[{"role":"user","content":[`+
++		`{"type":"file","file":{"filename":"sample.mp4","file_data":"data:video/mp4;base64,`+videoData+`"}},`+
++		`{"type":"text","text":"Analyze this video."}]}]}`)
++	bodies, _ := up.sent()
++	if rec.Code != 200 || len(bodies) != 1 || !strings.Contains(bodies[0], `"video_url"`) || !strings.Contains(bodies[0], videoData) ||
++		strings.Contains(bodies[0], "file_data") {
++		t.Errorf("a Chat file of a video relayed: %d %q", rec.Code, bodies)
++	}
++
++	up.reset()
++	rec = serveVideo(s, "/v1/chat/completions", `{"model":"qv/v","max_tokens":64,"messages":[{"role":"user","content":[`+
++		`{"type":"file","file":{"filename":"notes.pdf","file_data":"data:application/pdf;base64,AAAA"}},`+
++		`{"type":"file","file":{"file_id":"file-1"}},`+
++		`{"type":"text","text":"Read these."}]}]}`)
++	bodies, _ = up.sent()
++	if rec.Code != 200 || len(bodies) != 1 || strings.Contains(bodies[0], "video_url") ||
++		!strings.Contains(bodies[0], "data:application/pdf") || !strings.Contains(bodies[0], `"file_id":"file-1"`) {
++		t.Errorf("a PDF file and one by id relayed: %d %q", rec.Code, bodies)
++	}
++}
++
++// The same file of a video through a routing group: the member whose list
++// takes video is the one asked, and it is asked with the video_url, not
++// the file block the vendor reads as a document (#6210).
++func TestGroupChatVideoFileGoesAsVideoURL(t *testing.T) {
++	fresh(t)
++	noVision(t)
++	up, upServer := videoUp(t)
++	p := provider.Provider{ID: "qg", Name: "QG", Chat: upServer.URL + "/v1", Key: "k", Models: []string{"v", "t"}}
++	if err := provider.Save(p); err != nil {
++		t.Fatal(err)
++	}
++	if err := catalog.SaveLive(p.ID, upServer.URL, []catalog.Model{
++		{ID: "v", Images: true, ImageInput: imageInputBool(true), InputModalities: videoKinds, OutputModalities: []string{"text"}},
++		{ID: "t", Images: true, ImageInput: imageInputBool(true), InputModalities: []string{"text", "image"}, OutputModalities: []string{"text"}},
++	}); err != nil {
++		t.Fatal(err)
++	}
++	if err := provider.SaveGroup(provider.Group{Name: "vf", Members: []string{"qg/t", "qg/v"}, Routing: provider.Ordered}); err != nil {
++		t.Fatal(err)
++	}
++	s := New()
++
++	rec := serveVideo(s, "/v1/chat/completions", `{"model":"group/vf","max_tokens":64,"messages":[{"role":"user","content":[`+
++		`{"type":"file","file":{"filename":"sample.mp4","file_data":"data:video/mp4;base64,`+videoData+`"}},`+
++		`{"type":"text","text":"Analyze this video."}]}]}`)
++	bodies, models := up.sent()
++	if rec.Code != 200 || len(bodies) != 1 || len(models) != 1 || models[0] != "v" ||
++		!strings.Contains(bodies[0], `"video_url"`) || strings.Contains(bodies[0], "file_data") {
++		t.Errorf("group file-of-video: %d bodies=%v models=%v", rec.Code, bodies, models)
++	}
++}
+-- 
+2.50.1 (Apple Git-155)
+

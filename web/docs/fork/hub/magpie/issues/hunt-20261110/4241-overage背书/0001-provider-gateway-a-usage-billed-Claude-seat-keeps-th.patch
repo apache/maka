@@ -1,0 +1,205 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Niko Wu <wwh930329@163.com>
+Date: Thu, 29 Oct 2026 18:02:02 +0800
+Subject: [PATCH] provider, gateway: a usage-billed Claude seat keeps the
+ overage window Claude Code tells (#4241)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+An enterprise seat billed by usage has no 5-hour or 7-day window of its
+own. Claude Code tells its one reading as rateLimitType "overage" in the
+run's rate_limit_event, and calls the renewal overageResetsAt, apart from
+resetsAt. claudeKinds had no "overage", so the reading was dropped: the
+seat's card fell back to its /usage, which prints only the subscription
+notice, and said no allowance was known.
+
+- claudeKinds gains {"overage", "Extra usage", "", 0}: a span of its own of
+  none, since it renews with the billing period.
+- claudeLimits renews it at overageResetsAt when Claude Code names one,
+  for the utilization and the rejected branches both.
+- ratelimitWindows says it again as anthropic-ratelimit-unified-overage-*,
+  the window a Claude Code signed in to claude.ai reads.
+
+Tests: TestClaudeOverageSeatKeepsItsWindow (provider) — a seat whose /usage
+prints the subscription notice keeps the heard 0.84 as "Extra usage";
+TestNoteClaudeLimits now expects the fourth window; TestClaudeOverageSeatSaysItsWindow
+(gateway) — the event's utilization and overageResetsAt reach the reply's
+headers. Both are red on the tree before this change.
+
+Ran: go test ./internal/provider/ ./internal/catalog/ — 1934 passed;
+go test ./internal/gateway/ -timeout 45m — 428s, green but for four that are
+red on upstream/main 4534561f on this machine (TestCodexFittedImagesPastTheBudget,
+TestMarshalRawIsEncodingJSON, TestServeWSLListensBesideLoopback,
+FuzzMarshalRaw/seed#7); gofmt -l and go vet clean.
+
+Co-Authored-By: Claude Code <noreply@anthropic.com>
+---
+ .../gateway/claude_ratelimit_headers_test.go  | 27 +++++++++++++++++++
+ internal/gateway/claude_subscription.go       | 22 ++++++++++-----
+ internal/provider/claude_limits.go            |  5 ++++
+ internal/provider/claude_limits_test.go       | 21 +++++++++++++--
+ 4 files changed, 66 insertions(+), 9 deletions(-)
+
+diff --git a/internal/gateway/claude_ratelimit_headers_test.go b/internal/gateway/claude_ratelimit_headers_test.go
+index 7aeefeeee..ffbbe5ecb 100644
+--- a/internal/gateway/claude_ratelimit_headers_test.go
++++ b/internal/gateway/claude_ratelimit_headers_test.go
+@@ -2,6 +2,7 @@ package gateway
+ 
+ import (
+ 	"context"
++	"encoding/json"
+ 	"io"
+ 	"net/http"
+ 	"net/http/httptest"
+@@ -87,6 +88,32 @@ func TestClaudeSubscriptionReplySaysTheAllowance(t *testing.T) {
+ 	}
+ }
+ 
++// A usage-based enterprise seat has no 5-hour or 7-day window: its one
++// reading is the overage window Claude Code names rateLimitType "overage",
++// which renews when the billing period does, not at resetsAt. It is said as
++// anthropic-ratelimit-unified-overage-*, the window Claude Code reads
++// (#4241).
++func TestClaudeOverageSeatSaysItsWindow(t *testing.T) {
++	user := "overage-" + strconv.FormatInt(time.Now().UnixNano(), 36) + "@example.com"
++	reset := time.Now().Add(6 * 24 * time.Hour).Truncate(time.Second).Unix()
++	event := `{"status":"allowed","rateLimitType":"overage","utilization":0.84,"resetsAt":1,"overageResetsAt":` + strconv.FormatInt(reset, 10) + `}`
++	ls := claudeLimits(json.RawMessage(event))
++	if len(ls) != 1 || ls[0].Kind != "overage" || ls[0].Used != 0.84 || ls[0].ResetsAt != reset {
++		t.Fatalf("limits: %+v", ls)
++	}
++	provider.NoteClaudeLimits(user, ls)
++	rec := httptest.NewRecorder()
++	limitHeaders(rec, "claude\x00"+user)
++	for k, v := range map[string]string{
++		"anthropic-ratelimit-unified-overage-utilization": "0.84",
++		"anthropic-ratelimit-unified-overage-reset":       strconv.FormatInt(reset, 10),
++	} {
++		if got := rec.Header().Get(k); got != v {
++			t.Errorf("%s %q, want %q (headers %v)", k, got, v, rec.Header())
++		}
++	}
++}
++
+ // Through the gateway as it runs, to a Claude Code signed in to the
+ // account and answering as Claude Code does, streamed or not: the reply's
+ // headers carry what its rate_limit_event said, past the writer that holds
+diff --git a/internal/gateway/claude_subscription.go b/internal/gateway/claude_subscription.go
+index 71ff2d8bd..ce7b1e060 100644
+--- a/internal/gateway/claude_subscription.go
++++ b/internal/gateway/claude_subscription.go
+@@ -4523,15 +4523,22 @@ func claudeLimits(raw json.RawMessage) []provider.ClaudeLimit {
+ 		ResetsAt    int64   `json:"resetsAt"`
+ 	}
+ 	var info struct {
+-		Status         string            `json:"status"`
+-		RateLimitType  string            `json:"rateLimitType"`
+-		Utilization    *float64          `json:"utilization"`
+-		ResetsAt       int64             `json:"resetsAt"`
+-		UnifiedWindows map[string]window `json:"unifiedWindows"`
++		Status          string            `json:"status"`
++		RateLimitType   string            `json:"rateLimitType"`
++		Utilization     *float64          `json:"utilization"`
++		ResetsAt        int64             `json:"resetsAt"`
++		OverageResetsAt int64             `json:"overageResetsAt"`
++		UnifiedWindows  map[string]window `json:"unifiedWindows"`
+ 	}
+ 	if json.Unmarshal(raw, &info) != nil {
+ 		return nil
+ 	}
++	// a usage-based seat's overage window renews when its billing period
++	// does, which Claude Code names apart from resetsAt (#4241)
++	resets := info.ResetsAt
++	if info.RateLimitType == "overage" && info.OverageResetsAt > 0 {
++		resets = info.OverageResetsAt
++	}
+ 	var out []provider.ClaudeLimit
+ 	for kind, w := range info.UnifiedWindows {
+ 		out = append(out, provider.ClaudeLimit{Kind: kind, Used: w.Utilization, ResetsAt: w.ResetsAt})
+@@ -4539,9 +4546,9 @@ func claudeLimits(raw json.RawMessage) []provider.ClaudeLimit {
+ 	if _, told := info.UnifiedWindows[info.RateLimitType]; !told && info.RateLimitType != "" {
+ 		switch {
+ 		case info.Utilization != nil:
+-			out = append(out, provider.ClaudeLimit{Kind: info.RateLimitType, Used: *info.Utilization, ResetsAt: info.ResetsAt})
++			out = append(out, provider.ClaudeLimit{Kind: info.RateLimitType, Used: *info.Utilization, ResetsAt: resets})
+ 		case info.Status == "rejected":
+-			out = append(out, provider.ClaudeLimit{Kind: info.RateLimitType, Used: 1, ResetsAt: info.ResetsAt})
++			out = append(out, provider.ClaudeLimit{Kind: info.RateLimitType, Used: 1, ResetsAt: resets})
+ 		}
+ 	}
+ 	return out
+@@ -6656,6 +6663,7 @@ var ratelimitWindows = map[string]string{
+ 	"five_hour":                  "5h",
+ 	"seven_day":                  "7d",
+ 	"seven_day_overage_included": "7d_oi",
++	"overage":                    "overage",
+ }
+ 
+ // serveSubscription answers a request through an agent's own binary: a new
+diff --git a/internal/provider/claude_limits.go b/internal/provider/claude_limits.go
+index 0a1efd42d..57a1cf1b8 100644
+--- a/internal/provider/claude_limits.go
++++ b/internal/provider/claude_limits.go
+@@ -35,6 +35,11 @@ var claudeKinds = []struct {
+ 	// usage credits past it ("Fable", "Fable 5", "Fable 5.1"), which it
+ 	// calls the Fable limit: the usage endpoint's weekly_scoped Fable
+ 	{"seven_day_overage_included", "7 days · Fable", "fable", 7 * 24 * time.Hour},
++	// an enterprise seat billed by usage has no window of its own: its
++	// allowance is the monthly credits, which Claude Code tells as
++	// rateLimitType "overage" and renews when the billing period does
++	// (#4241)
++	{"overage", "Extra usage", "", 0},
+ }
+ 
+ // claudeKindOrder is w's place among claudeKinds, the windows Claude Code
+diff --git a/internal/provider/claude_limits_test.go b/internal/provider/claude_limits_test.go
+index ccc496968..81be0fe32 100644
+--- a/internal/provider/claude_limits_test.go
++++ b/internal/provider/claude_limits_test.go
+@@ -7,6 +7,23 @@ import (
+ 	"time"
+ )
+ 
++// A usage-based enterprise seat has no 5-hour or 7-day window: its /usage
++// prints only the subscription notice, and the one reading it has is the
++// overage window Claude Code told as it answered. That reading is kept
++// instead of "temporarily unavailable" (#4241).
++func TestClaudeOverageSeatKeepsItsWindow(t *testing.T) {
++	var out atomic.Value
++	out.Store("You are currently using your subscription to power your Claude Code usage\n")
++	fakeClaudeUsage(t, &out, nil)
++	reset := time.Now().Add(12 * time.Hour).Truncate(time.Second)
++	NoteClaudeLimits("seat@example.com", []ClaudeLimit{{Kind: "overage", Used: 0.84, ResetsAt: reset.Unix()}})
++	AskClaudeUsage()
++	ws, err := claudeWindows(context.Background(), "seat@example.com", true)
++	if err != nil || len(ws) != 1 || ws[0].Name != "Extra usage" || ws[0].Used != 84 || ws[0].ResetsAt == nil || !ws[0].ResetsAt.Equal(reset) {
++		t.Fatalf("seat: %v %+v", err, ws)
++	}
++}
++
+ // What Claude Code says as it answers is the account's allowance, without
+ // its /usage, which keeps the windows it alone tells.
+ func TestNoteClaudeLimits(t *testing.T) {
+@@ -32,7 +49,7 @@ func TestNoteClaudeLimits(t *testing.T) {
+ 	for _, w := range ws {
+ 		names = append(names, w.Name)
+ 	}
+-	if len(ws) != 3 || ws[0].Name != "5 hours" || ws[0].Used != 42 || !ws[0].ResetsAt.Equal(reset) || ws[0].Span != 5*time.Hour || ws[1].Name != "7 days" || ws[1].Used != 10 || ws[2].Name != "7 days · Opus" {
++	if len(ws) != 4 || ws[0].Name != "5 hours" || ws[0].Used != 42 || !ws[0].ResetsAt.Equal(reset) || ws[0].Span != 5*time.Hour || ws[1].Name != "7 days" || ws[1].Used != 10 || ws[2].Name != "7 days · Opus" || ws[3].Name != "Extra usage" || ws[3].Used != 100 || ws[3].Span != 0 {
+ 		t.Fatalf("windows: %v %+v", names, ws)
+ 	}
+ 
+@@ -44,7 +61,7 @@ func TestNoteClaudeLimits(t *testing.T) {
+ 	e.tried = time.Now().Add(-time.Hour) // past the floor
+ 	claudeUsage.m["kev@example.com"] = e
+ 	claudeUsage.Unlock()
+-	if ws, err := claudeWindows(context.Background(), "kev@example.com", true); err != nil || len(ws) != 3 {
++	if ws, err := claudeWindows(context.Background(), "kev@example.com", true); err != nil || len(ws) != 4 {
+ 		t.Fatalf("after the endpoint failed: %v %v", ws, err)
+ 	}
+ 	// heard long ago, the failure is told
+-- 
+2.50.1 (Apple Git-155)
+

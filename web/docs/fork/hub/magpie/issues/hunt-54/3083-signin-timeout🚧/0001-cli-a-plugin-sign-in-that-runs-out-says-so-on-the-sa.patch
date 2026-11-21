@@ -1,0 +1,163 @@
+From f21de209e2727b6a557c1362f826ddebbe596df7 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Wed, 21 Oct 2026 05:11:22 +0800
+Subject: [PATCH] cli: a plugin sign-in that runs out says so, on the same
+ clock the window waits on (#3083)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+`magpie plugin login` gave its sign-in its own 10 minutes rather than
+the window's `signInTimeout`, and let the deadline surface as it came:
+a browser sign-in slower than that ended in a bare
+"magpie: context deadline exceeded", nothing saying the sign-in timed
+out or to start it again — while the window's sign-in, waiting on
+`signInTimeout` and turning `context.DeadlineExceeded` away in
+`pluginDone`, says "the sign-in timed out; start it again".
+
+The command line now waits on `provider.SignInTimeout()` — the same
+clock — and says the same thing when it runs out. Every other error
+still reaches the user as the plugin said it.
+
+Run: with the fake plugin's sign-in held open (a code whose callback
+never finishes) and the wait given 5s, the new test red on base
+(plugin_login_cli_test.go:116, magpie said "context deadline
+exceeded"), green with the fix, red again with the fix reverted and
+the test kept. A plugin's own error ("the sign-in page expired")
+still comes through as it came. go test ./internal/cli/... ok;
+./internal/plugin/... ok; ./internal/provider/... ok; -race on
+TestPluginLogin ok; gofmt -l clean; go vet clean; builds on
+darwin/arm64, linux/amd64 (-tags nogui) and windows/amd64.
+
+Fixes #3083
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/cli/plugin_login_cli_test.go  | 37 ++++++++++++++++++++++++++
+ internal/cli/plugins_cli.go            |  8 ++++--
+ internal/plugin/testdata/fake/index.js |  4 ++-
+ internal/provider/signin.go            |  5 ++++
+ 4 files changed, 51 insertions(+), 3 deletions(-)
+
+diff --git a/internal/cli/plugin_login_cli_test.go b/internal/cli/plugin_login_cli_test.go
+index 94157231..952fadcd 100644
+--- a/internal/cli/plugin_login_cli_test.go
++++ b/internal/cli/plugin_login_cli_test.go
+@@ -6,6 +6,7 @@ import (
+ 	"net/http"
+ 	"net/http/httptest"
+ 	"path/filepath"
++	"strings"
+ 	"sync/atomic"
+ 	"testing"
+ 	"time"
+@@ -97,6 +98,42 @@ func TestPluginLoginReadsUsageAfresh(t *testing.T) {
+ 	}
+ }
+ 
++// magpie plugin login, out of time while the plugin still waits for its
++// browser sign-in, says so the way the window's sign-in does, rather than
++// letting the deadline reach the user as a bare "context deadline
++// exceeded" (#3083).
++func TestPluginLoginSaysTimedOut(t *testing.T) {
++	ctx := fakeCoHome(t)
++	noBrowser(t)
++	// the browser's way (2), Home (1), and a code whose sign-in the plugin
++	// never finishes: the sign-in's clock runs out first
++	piped(t, "1", "wait")
++	wait, cancel := context.WithTimeout(ctx, 5*time.Second)
++	defer cancel()
++	if _, err := said(t, func() error { return pluginLogin(wait, "fakeco", "2") }); err == nil {
++		t.Fatal("a sign-in past its time ended in nothing")
++	} else if !strings.Contains(err.Error(), "timed out") {
++		t.Fatalf("the clock ran out and magpie said %q; want it timed out", err)
++	} else if strings.Contains(err.Error(), "context deadline") {
++		t.Fatalf("the deadline itself reached the user: %q", err)
++	}
++}
++
++// An error of the plugin's own, not the clock's, reaches the user as it
++// came: the sign-in's words are for timeouts alone.
++func TestPluginLoginKeepsAPluginErrorAsItCame(t *testing.T) {
++	ctx := fakeCoHome(t)
++	noBrowser(t)
++	// the browser's way (2), Home (1), and the code the page shows, which
++	// its page says has expired
++	piped(t, "1", "expired")
++	if _, err := said(t, func() error { return pluginLogin(ctx, "fakeco", "2") }); err == nil {
++		t.Fatal("an expired code signed in")
++	} else if !strings.Contains(err.Error(), "the sign-in page expired") {
++		t.Fatalf("the plugin's own error was rewritten: %q", err)
++	}
++}
++
+ // fakeCoHome is a HOME of the test's own with the plugin host's test
+ // plugin (FakeCo) added, as TestAccountsOfAPlugin sets one up.
+ func fakeCoHome(t *testing.T) context.Context {
+diff --git a/internal/cli/plugins_cli.go b/internal/cli/plugins_cli.go
+index af0cc8e1..5c1b8fa6 100644
+--- a/internal/cli/plugins_cli.go
++++ b/internal/cli/plugins_cli.go
+@@ -9,7 +9,6 @@ import (
+ 	"sort"
+ 	"strconv"
+ 	"strings"
+-	"time"
+ 
+ 	"github.com/yetone/magpie/internal/gateway"
+ 	"github.com/yetone/magpie/internal/middleware"
+@@ -496,7 +495,7 @@ func pluginLogin(ctx context.Context, name, method string) error {
+ 			}
+ 			code = strings.TrimSpace(line)
+ 		}
+-		wait, cancel := context.WithTimeout(ctx, 10*time.Minute)
++		wait, cancel := context.WithTimeout(ctx, provider.SignInTimeout())
+ 		defer cancel()
+ 		if a.Method != "code" && provider.PluginPastesCallback(pp.ID, a.URL) {
+ 			// a browser on another computer (magpie on a server or in
+@@ -520,6 +519,11 @@ func pluginLogin(ctx context.Context, name, method string) error {
+ 			}()
+ 		}
+ 		if saved, err = plugin.Finish(wait, a.Session, code); err != nil {
++			if errors.Is(err, context.DeadlineExceeded) {
++				// the sign-in ran out of time, as the window's says when
++				// its does: the deadline itself is no words for a user
++				err = errors.New("the sign-in timed out; start it again")
++			}
+ 			return err
+ 		}
+ 	}
+diff --git a/internal/plugin/testdata/fake/index.js b/internal/plugin/testdata/fake/index.js
+index dc83d038..6ff5e960 100644
+--- a/internal/plugin/testdata/fake/index.js
++++ b/internal/plugin/testdata/fake/index.js
+@@ -142,7 +142,9 @@ export const FakePlugin = async ({ client }) => ({
+           // `grok login` opens its own on macOS and Windows
+           opened: inputs.team === "cli-opened",
+           callback: async (code) =>
+-            (process.env.FAKE_SIGNIN && (await fetch(process.env.FAKE_SIGNIN + "/token").catch(() => {})), code === "good")
++            code === "wait"
++              ? new Promise(() => {}) // a sign-in that never finishes, for a sign-in that runs out of time first
++              : (process.env.FAKE_SIGNIN && (await fetch(process.env.FAKE_SIGNIN + "/token").catch(() => {})), code === "good")
+               ? { type: "success", refresh: "r-" + (inputs.team ?? "none"), access: "stale", expires: 0, ...fakeWho(inputs.team) }
+               : code === "expired"
+                 ? { type: "failed", error: "the sign-in page expired" }
+diff --git a/internal/provider/signin.go b/internal/provider/signin.go
+index 7b6acfec..57092faf 100644
+--- a/internal/provider/signin.go
++++ b/internal/provider/signin.go
+@@ -47,6 +47,11 @@ const codexScopes = "openid profile email offline_access api.connectors.read api
+ // signInTimeout is how long a sign-in waits for the browser.
+ var signInTimeout = 10 * time.Minute
+ 
++// SignInTimeout is how long a sign-in waits for the browser: the command
++// line's plugin sign-in waits on the same clock the window's does, and
++// says the same thing when it runs out.
++func SignInTimeout() time.Duration { return signInTimeout }
++
+ // devicePollFloor is the least a device sign-in (Copilot, Factory, ZCode)
+ // waits between asking whether the user is done, whatever interval the
+ // vendor gave, 0 among them. A var: the tests' fakes give 0, and a second
+-- 
+2.50.1 (Apple Git-155)
+

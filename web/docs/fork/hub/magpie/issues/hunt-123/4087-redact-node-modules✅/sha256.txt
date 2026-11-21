@@ -1,0 +1,1 @@
+e1217f3ac10ae43e20e5bbdb0e038ac2f2ec4a8af1118520987c9bcb8971d925  /Users/ggbdpq/cc/guahub/fork/docs/hub/magpie/issues/hunt-123/4087-redact-node-modules/0001-redact-and-words-like-it-are-no-name-found-or-known-.patch

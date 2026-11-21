@@ -1,0 +1,250 @@
+From ffbddc4e14a91d86818d7471a164e12d1bc221c8 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Mon, 19 Oct 2026 06:50:15 +0800
+Subject: [PATCH] settings: a settings update holds the file's lock across read
+ and write (#2813)
+
+A setter that reads, changes and writes the whole file did so without
+holding the lock across the three steps: s := settings.Load(), change
+one field, settings.Save(s). Load and Save each take settings' fileMu
+on their own, so two setters that ran at once each saved their own
+snapshot, and the second write dropped the first one's change. The one
+setter already correct was SetGatewayConversations, which holds fileMu
+across load, the change, and save.
+
+settings.Update is that shape, for every setter: fn is handed what the
+file holds now, and what fn leaves is what is saved. fn's error leaves
+the file as it was, and like any save but the consent one, recording
+consent is kept. The three setters the report names move onto it:
+SetCodexCredits, setCodexAutoReset and setModelName. The no-op path of
+setModelName (a name set to what it already was) now writes the file's
+own contents back instead of leaving it untouched; what is written is
+what the file holds, so nothing else changes.
+
+Fifty-five more Load-then-Save sites in thirty files follow the same
+shape (access, backup, cli, gui, provider, tui) and are left as they
+are: this fix is the reported repro and the helper, so the rest are
+mechanical follow-ups if the direction is accepted.
+
+Test: TestSetCodexCreditsConcurrentKeepsBothAccounts, 100 rounds of two
+SetCodexCredits calls at once, one account each. On base 1a3b9268 it
+failed 5 of 5 runs, each run losing 98 to 100 of its 100 rounds; with
+the fix it passed -count=20 and -race -count=1. The settings and
+provider suites pass (-tags nogui -count=1), gofmt -l is empty, go vet
+-tags nogui is clean on darwin, linux and windows, and go build -tags
+nogui ./... goes through on darwin and linux, GOOS=windows on the main
+package too.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/provider/codex_autoreset.go          | 35 ++++++-------
+ internal/provider/codex_credits.go            | 13 ++---
+ .../provider/codex_credits_concurrent_test.go | 50 +++++++++++++++++++
+ internal/provider/modelprefs.go               | 29 ++++++-----
+ internal/settings/settings.go                 | 17 +++++++
+ 5 files changed, 108 insertions(+), 36 deletions(-)
+ create mode 100644 internal/provider/codex_credits_concurrent_test.go
+
+diff --git a/internal/provider/codex_autoreset.go b/internal/provider/codex_autoreset.go
+index cccc9c6e..960e1ca9 100644
+--- a/internal/provider/codex_autoreset.go
++++ b/internal/provider/codex_autoreset.go
+@@ -121,25 +121,26 @@ func SetCodexAutoResetCase(user, when string, on bool) error {
+ 
+ func setCodexAutoReset(user string, week, expiring bool) error {
+ 	user = strings.ToLower(strings.TrimSpace(user))
+-	s := settings.Load()
+-	s.CodexAutoReset = slices.DeleteFunc(slices.Clone(s.CodexAutoReset), func(u string) bool { return u == user })
+-	only := map[string]string{}
+-	for u, c := range s.CodexAutoResetOnly {
+-		if u != user {
+-			only[u] = c
++	return settings.Update(func(s *settings.Settings) error {
++		s.CodexAutoReset = slices.DeleteFunc(slices.Clone(s.CodexAutoReset), func(u string) bool { return u == user })
++		only := map[string]string{}
++		for u, c := range s.CodexAutoResetOnly {
++			if u != user {
++				only[u] = c
++			}
+ 		}
+-	}
+-	if user != "" && (week || expiring) {
+-		s.CodexAutoReset = append(s.CodexAutoReset, user)
+-		switch {
+-		case !expiring:
+-			only[user] = ResetCaseWeek
+-		case !week:
+-			only[user] = ResetCaseExpiring
++		if user != "" && (week || expiring) {
++			s.CodexAutoReset = append(s.CodexAutoReset, user)
++			switch {
++			case !expiring:
++				only[user] = ResetCaseWeek
++			case !week:
++				only[user] = ResetCaseExpiring
++			}
+ 		}
+-	}
+-	s.CodexAutoResetOnly = only
+-	return settings.Save(s)
++		s.CodexAutoResetOnly = only
++		return nil
++	})
+ }
+ 
+ var autoReset = autoResets{file: "codex-autoreset.json"}
+diff --git a/internal/provider/codex_credits.go b/internal/provider/codex_credits.go
+index b3cdc46e..3ab14faa 100644
+--- a/internal/provider/codex_credits.go
++++ b/internal/provider/codex_credits.go
+@@ -35,12 +35,13 @@ func CodexCredits(user string) bool {
+ // SetCodexCredits turns that on or off for user.
+ func SetCodexCredits(user string, on bool) error {
+ 	user = accountKey(user)
+-	s := settings.Load()
+-	s.CodexNoCredits = slices.DeleteFunc(s.CodexNoCredits, func(u string) bool { return u == user })
+-	if !on && user != "" {
+-		s.CodexNoCredits = append(s.CodexNoCredits, user)
+-	}
+-	return settings.Save(s)
++	return settings.Update(func(s *settings.Settings) error {
++		s.CodexNoCredits = slices.DeleteFunc(s.CodexNoCredits, func(u string) bool { return u == user })
++		if !on && user != "" {
++			s.CodexNoCredits = append(s.CodexNoCredits, user)
++		}
++		return nil
++	})
+ }
+ 
+ // HoldCaps is the shares of its windows at which routing holds the
+diff --git a/internal/provider/codex_credits_concurrent_test.go b/internal/provider/codex_credits_concurrent_test.go
+new file mode 100644
+index 00000000..f07f38fa
+--- /dev/null
++++ b/internal/provider/codex_credits_concurrent_test.go
+@@ -0,0 +1,50 @@
++package provider
++
++import (
++	"errors"
++	"fmt"
++	"slices"
++	"sync"
++	"testing"
++
++	"github.com/yetone/magpie/internal/settings"
++)
++
++// Two setters that run at once each saved their own snapshot: Load and Save
++// take settings' file lock on their own, so the second write dropped the
++// first one's change (#2813). Round after round, each of two accounts turned
++// off together must still be kept.
++func TestSetCodexCreditsConcurrentKeepsBothAccounts(t *testing.T) {
++	signIn(t)
++	const rounds = 100
++	lost := 0
++	for i := range rounds {
++		a, b := fmt.Sprintf("a%d@example.com", i), fmt.Sprintf("b%d@example.com", i)
++		start := make(chan struct{})
++		var wg sync.WaitGroup
++		var errs []error
++		var mu sync.Mutex
++		for _, u := range []string{a, b} {
++			wg.Go(func() {
++				<-start
++				if err := SetCodexCredits(u, false); err != nil {
++					mu.Lock()
++					errs = append(errs, err)
++					mu.Unlock()
++				}
++			})
++		}
++		close(start)
++		wg.Wait()
++		if len(errs) != 0 {
++			t.Fatal(errors.Join(errs...))
++		}
++		got := settings.Load().CodexNoCredits
++		if !slices.Contains(got, a) || !slices.Contains(got, b) {
++			lost++
++		}
++	}
++	if lost != 0 {
++		t.Fatalf("%d of %d rounds lost an update", lost, rounds)
++	}
++}
+diff --git a/internal/provider/modelprefs.go b/internal/provider/modelprefs.go
+index 5b4120b5..ef1fb0ca 100644
+--- a/internal/provider/modelprefs.go
++++ b/internal/provider/modelprefs.go
+@@ -87,23 +87,26 @@ func setModelName(ref, name string) (bool, error) {
+ 	if name != "" && !p.serves(model) {
+ 		return false, fmt.Errorf("%s has no model %s (magpie provider %s lists them)", p.ID, model, p.ID)
+ 	}
+-	s := settings.Load()
+ 	key := p.ID + "/" + model
+-	if s.ModelNames[key] == name {
+-		return false, nil
+-	}
+-	if name == "" {
+-		delete(s.ModelNames, key)
+-	} else {
+-		if s.ModelNames == nil {
+-			s.ModelNames = map[string]string{}
++	changed := false
++	if err := settings.Update(func(s *settings.Settings) error {
++		if s.ModelNames[key] == name {
++			return nil
+ 		}
+-		s.ModelNames[key] = name
+-	}
+-	if err := settings.Save(s); err != nil {
++		if name == "" {
++			delete(s.ModelNames, key)
++		} else {
++			if s.ModelNames == nil {
++				s.ModelNames = map[string]string{}
++			}
++			s.ModelNames[key] = name
++		}
++		changed = true
++		return nil
++	}); err != nil {
+ 		return false, err
+ 	}
+-	return true, nil
++	return changed, nil
+ }
+ 
+ // SetModelPrice is what a provider's model costs the user, in USD per million
+diff --git a/internal/settings/settings.go b/internal/settings/settings.go
+index c94e91fa..75232ded 100644
+--- a/internal/settings/settings.go
++++ b/internal/settings/settings.go
+@@ -1164,6 +1164,23 @@ func Save(s Settings) error {
+ 	return save(s, false)
+ }
+ 
++// Update changes the settings under the file's lock: fn is handed what the
++// file holds now, and what fn leaves is what is saved. Load and Save each
++// take the lock on their own, so a setter that loads a snapshot, changes it
++// and saves it drops whatever another setter wrote in between (#2813); a
++// setter that reads, changes and writes the whole file goes through this,
++// the way SetGatewayConversations does. fn's error leaves the file as it
++// was, and like any save but the consent one, recording consent is kept.
++func Update(fn func(*Settings) error) error {
++	fileMu.Lock()
++	defer fileMu.Unlock()
++	s := load()
++	if err := fn(&s); err != nil {
++		return err
++	}
++	return save(s, false)
++}
++
+ // SetGatewayConversations changes local recording consent without overwriting
+ // other settings from an earlier snapshot.
+ func SetGatewayConversations(on bool) error {
+-- 
+2.50.1 (Apple Git-155)
+

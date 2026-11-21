@@ -1,0 +1,186 @@
+diff --git a/docs/subsystems/gateway-routing.md b/docs/subsystems/gateway-routing.md
+index 29f33a38..4520fca0 100644
+--- a/docs/subsystems/gateway-routing.md
++++ b/docs/subsystems/gateway-routing.md
+@@ -139,7 +139,7 @@ recorded as a prediction failure (`noPrediction`).
+ - Codex's model list from the backend path (`codexModels`) is the ChatGPT backend's for its sign-in and then magpie's (`provider.CodexListed`), its ETag and every reply's `X-Models-Etag` tagged with `provider.CodexListTag` so a change has Codex ask again. A Codex there only for account failover, not connected (`CodexOwnOnly`, `agent.CodexOwnOnly`; #1385), gets the backend's alone, tagged with `provider.CodexOwnListTag`; neither tag contains the other, so connecting or disconnecting has Codex fetch the list again. The user's picks on the codex provider (`provider.CodexNativePicked`) narrow the backend's listed models. They keep its hidden ones (`visibility: "hide"`), which no picker shows. One of those is `codex-auto-review`: when the list lacks it and no reviewer is set, Codex's auto-review runs on the conversation's model at low effort (#1460, `TestCodexModelListPicksKeepHidden`). The account's own models kept out of agents' lists for routing groups (`provider.CodexNativeUnlisted`) are dropped from it too, hidden ones kept: every one when the codex provider is "Only through routing groups" (`Provider.Unlisted`), and those a group that unlists its members names (`Group.Unlists`). A Codex there only for failover keeps them, as it is handed no groups; `spawnChoices` drops the same ones (#1602, `TestCodexModelListUnlistedForGroups`).
+ - Reasoning state goes through magpie's translation as the vendor wrote it when the agent and the upstream speak the same API (#1445, XYenon): a non-streaming Messages request to a stream-only account, web search on the agent's own API, a plugin, failover. The IR carries it sealed (`Part.Sealed`, `SealedBy`; events `KThinkStart`, `KSealed`, `KTextSig` in [`ir.go`](../../internal/gateway/ir.go)), so each thinking block or reasoning item stays apart, whole or streamed, and a seal is written only for its own API (`sealedBy`). Anthropic's `redacted_thinking` goes back raw (to DeepSeek as a thinking block, below), and a thinking block signed with no text keeps its signature (`aBlock` still writes `"thinking": ""`, #1447), on Claude's subscription too. A Responses reasoning item keeps its id, summary and `encrypted_content`, and goes back to a Responses upstream as it came when it has no reasoning text (`sealedReasoning`; text, another vendor's, is still left out for OpenAI, #1411). Gemini's `thoughtSignature` stays on the call it signed and on text; a later call of a signed step goes without one, and only an unsigned step or Claude on Antigravity gets `skip_thought_signature_validator`. Another API's agent gets the call's signature in its id, as on chat (#687), with its length in the mark (`__ts<n>__`), so an id a client shortened carries no signature and the call goes as unsigned (#1536); it gets no one else's seal. The signature itself is kept in magpie's folder, `gemini-signatures/<key>`, named by its hash (`keepSignature` in [`gemini_sigstore.go`](../../internal/gateway/gemini_sigstore.go)), and the id carries only the key (`__tsk16__<key>`), so an id stays under 64 characters however long the step's signature (#2411: LobeHub's PostgreSQL index turned away a 3KB id). A key magpie no longer has, or whose file doesn't hash to it, reads as no signature; one not read for 90 days is removed. Where the folder can't be written, the id carries the signature as before. Carrying reasoning across APIs (an envelope) isn't done.
+ - A translated Responses reply gives Codex the reasoning items a Responses upstream sent, as it sent them; any other upstream's reasoning becomes items magpie made: an `rs_` id and a summary, nothing sealed. Codex hands them back on every turn. A request relayed as is to OpenAI's API or Azure OpenAI goes without them (`withoutBareReasoning`) unless `store` is true, because both look the id up among stored items and answer 400 "Item with id 'rs_…' not found" (#1008). Any other Responses upstream gets them, because a DeepSeek model wants its reasoning back (#388). When one answers 400 naming the input (`refusesInput`: `param` is `input`, or the error names an item by id), as a relay in front of OpenAI does with a message of its own, `passthrough` asks once more without them and, once that works, leaves them out for that provider and model from then on (`bareReasoningRefused`, #1044). Codex's compaction offers no tools, so it is relayed even when its turns were translated. When a provider answers its summary request 404, or 400 for an item it didn't find (`itemNotFound`, a relay in front of either), `codexCompact` asks once more with the conversation as text (`plainCompact`), then compacts locally (#866, #1008). So does the ChatGPT backend's 502 "response protection is unavailable" (`protectionRefused`): a long history refused so was answered as text. Codex also compacts remotely, a `compaction_trigger` on `/responses` that wants exactly one compaction item back, on any provider table named "OpenAI", as CC Switch names its relay tables. magpie points those at `/v1` while a magpie model is on, so `handle` makes the summary there too (`codexInput`, `codexCompact`), and magpie's summaries go back to the model as text (#1301). A summary is wanted only whole (`askWhole`, `holdWriter.wantWhole`): its stream is held to its end, not let through at its first words, so a reply cut short (`errEndedShort`), failed halfway (a 429 "Individual quota reached" after some of it) or ended `incomplete` (`endedIncomplete`, `incompleteReply`) fails over to the next candidate like a failure before any of it, and rests the account as that failure would; one that reached its output limit rests nobody. With nobody left, `codexCompact` answers 502 and never hands Codex the words before the cut as the summary (#2274, huangzuomin: Antigravity cutting each summary short). Codex with context_management's experimental mode compacts in the background at every step while the conversation is over its threshold and drops a failed compaction without a word, so a conversation whose summaries keep failing is asked again every few seconds, each paying for the whole history (1169 compactions in 6 hours there). After `compactFailsMost` (3) failed summaries in a row of one conversation (`prompt_cache_key`) on one model, each within `compactHeldFor` (5 minutes) of the last, the next is answered at once with a 400 naming the last failure, which Codex doesn't ask again, and no model is asked until 5 minutes have passed (`compactFails` in [`codex_compact_guard.go`](../../internal/gateway/codex_compact_guard.go)); a summary that comes clears the count, and a sign-in's 401 or 403 isn't counted. `TestCodexCompactCutSummaryFailsOver`, `TestCodexCompactCutSummaryIsNoSummary`, `TestCodexCompactKeepsFailingIsHeld`.
+-- Native compaction (#1099, off by default): a provider with `nativeCompaction` on (`provider.Provider.CompactsOn`; the editor's Compaction row, `magpie provider set <id> compaction=native`) is asked Codex's `compaction_trigger` as Codex sent it, and the compaction item it seals goes back to Codex unchanged, not as a `magpie1:` summary. Only a wire that carries it can be set so (`CarriesCompaction`): a Responses API, a ChatGPT account, GitHub Copilot (its models asked on Responses; its Claude models keep magpie's summary). The decision is made where `handle` and `codexBackend` read the input (`nativeCompactionFor`, `codexInputAs`): a group compacts natively only when every member does. Such a request, and a later one carrying a sealed compaction to a provider set so or to the provider recorded as its writer, is relayed, never translated, which would drop the item (`keepsCompaction` in `attempt`); a provider that can't be asked it on Responses answers a 400 saying so. The key or account that answered is recorded, whoever it is: a fallback or another member that answered the trigger sealed it whatever its own setting, and only it can read the seal (#2271, JasonBuildAI: a fallback's seal went unrecorded, and the next turn was answered 200 without the compacted history; `TestNativeCompactionFallbackSealStaysWithItsWriter`). It is recorded by the hash of what it sealed (`wroteCheckpoint`, `compactions.json` beside `affinity.json`, 0600, at most 1024 for 30 days). A later request carrying it goes only to that writer (`checkpointReaders`); with the writer gone from the candidates (switched off, resting, removed), magpie answers 400 `checkpointError` naming why, and never sends it to another key, drops it, or summarises it in its place. With the writer held at its usage cap or for credits it may not spend, the answer is 429 `checkpointCappedError` (record `checkpointCappedRecord`, "native compaction's account at its usage cap"), naming that account, that the others serving the model weren't tried for the compaction, and that neither the routing mode nor how conversations stay changes that: wait for the window, raise or lift its cap, or start a new conversation (#2517, lm0711; before, it read "every account at its usage cap" though another had room; `TestNativeCompactionWriterAtItsCap`). `withoutCompaction` (the drop after a refused reasoning item) isn't used for such a request. A refusal of the trigger reaches Codex as the upstream sent it. Not tried against a real upstream; Copilot may refuse a history that holds Codex's `web_search` items. [`native_compaction.go`](../../internal/gateway/native_compaction.go), `TestNativeCompaction*`.
++- Native compaction (#1099, off by default): a provider with `nativeCompaction` on (`provider.Provider.CompactsOn`; the editor's Compaction row, `magpie provider set <id> compaction=native`) is asked Codex's `compaction_trigger` as Codex sent it, and the compaction item it seals goes back to Codex unchanged, not as a `magpie1:` summary. Only a wire that carries it can be set so (`CarriesCompaction`): a Responses API, a ChatGPT account, GitHub Copilot (its models asked on Responses; its Claude models keep magpie's summary). The decision is made where `handle` and `codexBackend` read the input (`nativeCompactionFor`, `codexInputAs`): a group compacts natively only when every member does. One of Codex's own models served through magpie's account pool asks the policy there too, as a magpie model does: with the toggle off, its trigger is answered magpie's summary and its `/responses/compact` is refused with the way on, while a request relayed to Codex's own sign-in still goes as it came (#2582, `TestCodexOwnModelCompactionThroughThePoolFollowsTheToggle`, `TestCodexOwnModelCompactEndpointFollowsTheToggle`). Such a request, and a later one carrying a sealed compaction to a provider set so or to the provider recorded as its writer, is relayed, never translated, which would drop the item (`keepsCompaction` in `attempt`); a provider that can't be asked it on Responses answers a 400 saying so. The key or account that answered is recorded, whoever it is: a fallback or another member that answered the trigger sealed it whatever its own setting, and only it can read the seal (#2271, JasonBuildAI: a fallback's seal went unrecorded, and the next turn was answered 200 without the compacted history; `TestNativeCompactionFallbackSealStaysWithItsWriter`). It is recorded by the hash of what it sealed (`wroteCheckpoint`, `compactions.json` beside `affinity.json`, 0600, at most 1024 for 30 days). A later request carrying it goes only to that writer (`checkpointReaders`); with the writer gone from the candidates (switched off, resting, removed), magpie answers 400 `checkpointError` naming why, and never sends it to another key, drops it, or summarises it in its place. With the writer held at its usage cap or for credits it may not spend, the answer is 429 `checkpointCappedError` (record `checkpointCappedRecord`, "native compaction's account at its usage cap"), naming that account, that the others serving the model weren't tried for the compaction, and that neither the routing mode nor how conversations stay changes that: wait for the window, raise or lift its cap, or start a new conversation (#2517, lm0711; before, it read "every account at its usage cap" though another had room; `TestNativeCompactionWriterAtItsCap`). `withoutCompaction` (the drop after a refused reasoning item) isn't used for such a request. A refusal of the trigger reaches Codex as the upstream sent it. Not tried against a real upstream; Copilot may refuse a history that holds Codex's `web_search` items. [`native_compaction.go`](../../internal/gateway/native_compaction.go), `TestNativeCompaction*`.
+ - A Responses request Codex sends a Responses provider is fitted for a backend that isn't OpenAI's before it goes (`passthrough`): Responses Lite's `additional_tools` item lifted into `tools` (`liftAdditionalTools`, #350), the tool search as a function, OpenAI-only fields left out. A relay that checks a request is Codex's own turns that shape away (#1758: 400 "Codex 客户端请求特征无效", 10014). A provider set `codexAsSent` (`magpie provider set <id> codex=as-sent`) gets a request from Codex (`fromCodex`) as Codex sent it, its model name alone swapped, with Codex's own headers (`codexClientHeader`). Off is the default, and a subscription account is never sent so. `TestCodexAsSent`.
+ - A tool a Chat request's message carries joins the request's `tools` (`liftMessageTools` in [`message_tools.go`](../../internal/gateway/message_tools.go), #2322). Pi with `supportsMidConvoToolAdditions` gives a tool it adds mid-conversation as `{"role":"system","tools":[…]}` with no content, and keeps top-level `tools` as they were at the start; no Chat API reads tools there, and `parseChat` read only the top-level ones, so the tool could be called on no route. `handle` lifts them for every Chat body before `serveAgent`, so the Chat relay, the schema fixers, redaction (the tool is a tool definition, not message text), the prompt shown and routing all see them; `parseChat` lifts too, for a body that never came through `handle` (the Claude subscription bridge's direct callers). Each tool joins once by name and the first definition wins: a top-level tool keeps its own, then the earliest message's, as `liftAdditionalTools` and a `tool_addition` (`withoutDeferredTools`) do. A system or developer message that carried only tools is left out, so it is neither relayed as an empty system message nor joined into the system text as an empty part; one with content keeps its place without `tools`. Messages stay where they are: the in-place system message the issue also asks for is not this change. `TestPiAddedToolReachesEveryRoute` sends deephbz's Pi 1.2.0 bytes through the Chat relay, Messages, Responses, Gemini and Codex, and `TestPiAddedToolOfferedToClaudeCode` through the Claude subscription bridge.
+ - A Chat request's tool in another API's shape is put in the Chat shape, `{"type":"function","function":{name, description, parameters, strict}}` (`shapeChatTools` in [`chat_tool_shape.go`](../../internal/gateway/chat_tool_shape.go), #2622, jinyue806): MCP's `{"name","description","inputSchema"}` (ZCode), Anthropic's `input_schema`, a bare `{"name","parameters"}` and Responses' flat `{"type":"function","name",…}`. No Chat API takes those (SenseNova: "field Tools[0].Type invalid, should be set" and "function cannot be empty"), and `parseChat` read no name from them, so a translated request offered a tool named "". It runs right after `liftMessageTools`, in `handle` for every Chat body and in `parseChat`, so it holds for every Chat upstream, not SenseNova's alone. A tool with its `function`, a hosted tool (any other `type`) and one with no name are left as they came, and a request with none to shape is relayed byte for byte. `TestChatToolInAnotherShapeIsShaped` sends the report's request with each of its four tools through the Chat relay, Messages and Responses; `TestShapeChatToolsLeavesChatShape`.
+diff --git a/internal/gateway/codex_backend.go b/internal/gateway/codex_backend.go
+index 3225a6a3..09dbca81 100644
+--- a/internal/gateway/codex_backend.go
++++ b/internal/gateway/codex_backend.go
+@@ -171,6 +171,15 @@ func (s *Server) codexBackend(w http.ResponseWriter, r *http.Request) {
+ 				writeError(w, provider.Responses, 403, compactHeldError(who, model))
+ 				return
+ 			}
++			// served through the pool with the toggle off, the endpoint has
++			// no portable answer, so it is refused as a magpie model's is
++			// (#2582); relayed to Codex's own sign-in it still goes as it came
++			if id, ok := codexAccounts(r, model); ok {
++				if _, _, res := provider.Resolve(id); res && !s.nativeCompactionFor(id) {
++					writeError(w, provider.Responses, 400, "/responses/compact is not supported for Magpie models; use a compaction_trigger on /responses")
++					return
++				}
++			}
+ 			if on != nil {
+ 				s.codexUpstreamOn(w, r, rest, body, on)
+ 				return
+@@ -179,6 +188,16 @@ func (s *Server) codexBackend(w http.ResponseWriter, r *http.Request) {
+ 		}
+ 		body, _ = codexInput(body, false)
+ 		if id, ok := codexAccounts(r, model); ok {
++			// served through the pool, the compaction policy is asked there
++			// as for a magpie model: with the toggle off, the trigger is
++			// answered magpie's portable summary, whose conversation follows
++			// any account on (#2582); with it on, the trigger is relayed
++			if _, _, res := provider.Resolve(id); res && !s.nativeCompactionFor(id) {
++				if b, compact := codexInputAs(withModel(body, id), true, false); compact {
++					s.codexCompact(w, r, b)
++					return
++				}
++			}
+ 			s.serveAgent(w, r, provider.Responses, withModel(body, id))
+ 			return
+ 		}
+diff --git a/internal/gateway/codex_backend_test.go b/internal/gateway/codex_backend_test.go
+index 781a0d17..1f75b5fa 100644
+--- a/internal/gateway/codex_backend_test.go
++++ b/internal/gateway/codex_backend_test.go
+@@ -1139,3 +1139,131 @@ func TestCodexModelListOwnOnlyForFailover(t *testing.T) {
+ 		t.Errorf("%d X-Models-Etag %q", rec.Code, got)
+ 	}
+ }
++
++// poolBackend stands in for the ChatGPT backend in a test that has already
++// signed its Codex in: chatgpt() moves HOME, which takes that sign-in with
++// it, and the pool would dissolve (usedUp, newResetBackend don't move it).
++func poolBackend(t *testing.T, h http.HandlerFunc) *httptest.Server {
++	t.Helper()
++	up := httptest.NewServer(h)
++	t.Cleanup(up.Close)
++	was := provider.CodexBase
++	provider.CodexBase = up.URL + "/backend-api/codex"
++	t.Cleanup(func() { provider.CodexBase = was })
++	return up
++}
++
++// One of Codex's own models served through magpie's account pool asks the
++// compaction policy there, as a magpie model does (#2582): with the toggle
++// off, the trigger is answered magpie's portable summary and the backend
++// is never asked Codex's compaction, so the conversation it seals follows
++// any account on; with the toggle on, the trigger is relayed as it came.
++func TestCodexOwnModelCompactionThroughThePoolFollowsTheToggle(t *testing.T) {
++	codexSignedIn(t, "spare@example.com")
++	var got [][]byte
++	var accts []string
++	nextOut := false
++	poolBackend(t, func(w http.ResponseWriter, r *http.Request) {
++		b, _ := io.ReadAll(r.Body)
++		got = append(got, b)
++		acct := r.Header.Get("chatgpt-account-id")
++		accts = append(accts, acct)
++		if strings.Contains(string(b), "compaction_trigger") {
++			// the backend compacts natively when it is asked to
++			w.Header()["Content-Type"] = nil
++			io.WriteString(w, nativeSealedReply("gAAAAB-native-seal"))
++			return
++		}
++		if nextOut && acct == "acct-1" {
++			w.WriteHeader(429)
++			io.WriteString(w, `{"error":{"type":"usage_limit_reached","message":"The usage limit has been reached","plan_type":"plus","resets_in_seconds":7200}}`)
++			return
++		}
++		w.Header()["Content-Type"] = nil
++		io.WriteString(w, sse(
++			`data: {"type":"response.output_item.done","output_index":0,"item":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"SUMMARY TEXT"}]}}`,
++			`data: {"type":"response.completed","response":{"id":"r1","status":"completed","output":[],"usage":{"input_tokens":7,"output_tokens":1}}}`))
++	})
++
++	// off: magpie summarises, the trigger never reaches the backend
++	turn := `{"model":"gpt-5.5","stream":true,"tools":[{"type":"web_search"}],"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"fix the bug"}]},{"type":"compaction_trigger"}]}`
++	code, body := codexPost(t, turn)
++	if code != 200 || !strings.Contains(body, magpieCompaction) {
++		t.Fatalf("off: %d %s", code, body)
++	}
++	if len(got) != 1 || strings.Contains(string(got[0]), "compaction_trigger") || !strings.Contains(string(got[0]), "CONTEXT CHECKPOINT COMPACTION") {
++		t.Fatalf("the backend wasn't asked magpie's summary request: %d, %s", len(got), string(got[len(got)-1]))
++	}
++	var item map[string]any
++	for _, e := range events(body) {
++		if e["type"] == "response.output_item.done" {
++			item = e["item"].(map[string]any)
++		}
++	}
++	enc, _ := item["encrypted_content"].(string)
++	if item["type"] != "compaction" || !strings.HasPrefix(enc, magpieCompaction) {
++		t.Fatalf("the summary isn't magpie's portable one: %v", item)
++	}
++
++	// the conversation follows the next account on: the writer is out of
++	// its allowance, the spare reads the summary as text
++	nextOut = true
++	code, body = codexPost(t, `{"model":"gpt-5.5","stream":true,"input":[{"type":"compaction","encrypted_content":"`+enc+`"},{"type":"message","role":"user","content":[{"type":"input_text","text":"go on"}]}]}`)
++	if code != 200 {
++		t.Fatalf("next turn: %d %s", code, body)
++	}
++	followed := false
++	for _, a := range accts {
++		if a == "acct-2" {
++			followed = true
++		}
++	}
++	if !followed {
++		t.Errorf("the conversation didn't follow the spare: %v", accts)
++	}
++	last := string(got[len(got)-1])
++	if strings.Contains(last, magpieCompaction) || strings.Contains(last, "compaction") ||
++		!strings.Contains(last, codexSummaryPrefix) || !strings.Contains(last, "SUMMARY TEXT") {
++		t.Errorf("the summary didn't go to the spare as text: %s", last)
++	}
++
++	// on: the trigger is relayed as it came, the seal going back as it came
++	got, accts = nil, nil
++	nativeOn(t, "codex")
++	code, body = codexPost(t, turn)
++	if code != 200 || !strings.Contains(body, `"encrypted_content":"gAAAAB-native-seal"`) || strings.Contains(body, magpieCompaction) {
++		t.Fatalf("on: %d %s", code, body)
++	}
++	if len(got) != 1 || !strings.Contains(string(got[0]), "compaction_trigger") {
++		t.Errorf("the backend wasn't asked Codex's own compaction: %d, %s", len(got), string(got[len(got)-1]))
++	}
++}
++
++// The legacy compact endpoint, asked of one of Codex's own models served
++// through the pool, follows the toggle too (#2582): refused with the way
++// on when it is off, as a magpie model's is, relayed as it came when on.
++func TestCodexOwnModelCompactEndpointFollowsTheToggle(t *testing.T) {
++	codexSignedIn(t, "spare@example.com")
++	var asked int
++	poolBackend(t, func(w http.ResponseWriter, r *http.Request) {
++		asked++
++		io.WriteString(w, `{"id":"r1","output":[]}`)
++	})
++	post := func() (int, string) {
++		rec := httptest.NewRecorder()
++		req := httptest.NewRequest("POST", CodexPath+"/responses/compact", strings.NewReader(`{"model":"gpt-5.5","input":"hi","stream":true}`))
++		req.Header.Set("Authorization", "Bearer chatgpt-token")
++		req.Header.Set("chatgpt-account-id", "acct-1")
++		New().Handler().ServeHTTP(rec, req)
++		return rec.Code, rec.Body.String()
++	}
++	code, body := post()
++	if code != 400 || !strings.Contains(body, "compaction_trigger") || asked != 0 {
++		t.Fatalf("off: %d %s, asked %d", code, body, asked)
++	}
++	nativeOn(t, "codex")
++	code, body = post()
++	if code != 200 || asked != 1 {
++		t.Fatalf("on: %d %s, asked %d", code, body, asked)
++	}
++}

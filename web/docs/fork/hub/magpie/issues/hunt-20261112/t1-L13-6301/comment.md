@@ -1,0 +1,185 @@
+Took this from the read-loop side: your three branches reproduce here, and the fix is the terminal state the ask was missing.
+
+**Branch:** [`hunt-20261112-t1-6301`](https://github.com/ggbdpq/magpie/tree/hunt-20261112-t1-6301) @ `e63ec3e88c3bc0ca` — one commit on current `upstream/main` (`f28787b39`). Patch: `fe2adf364659269c` (sha256 first 16), `git am` applies it as is; the replayed tree is byte-identical to the branch tip.
+
+**The mechanism, against your repro.** `socketTurnWriter.event` marks the reply ended when `response.completed` goes through, but the run doesn't learn it: `socketTurnRun.interrupt` still matches the id and accepts, and the cancel reaches `responsesSocket.turn`'s check before `keep` — the turn returns without holding the completed reply, so the next turn naming it is `previous_response_not_found`. That is your `completed_then_interrupt_before_eof` branch, 3/3 here too; both controls pass.
+
+**The fix.** The run records that a terminal event of the reply went out (`finishing`: `response.completed`, `response.incomplete`, `response.failed`, `response.cancelled`, an `error` frame, and the warmup's own completed). `interrupt` refuses an ended reply — `response.interrupt.failed` — and stops nothing, so the turn reaches `keep` on its own and the anchor survives. An interrupt of a reply still in flight is accepted as before.
+
+**Evidence** (darwin/arm64, `f28787b39` + this commit):
+
+- `TestResponsesSocketInterruptAfterCompleted` (new, your repro's shape: the fake upstream flushes `response.completed` and holds the stream open): the interrupt comes back `response.interrupt.failed`, and the next turn with `previous_response_id` completes, 2 upstream calls. `TestResponsesSocketInterrupt` (in-flight interrupts still accepted, the provider's request cancelled) and the Responses-socket family's 11 tests all green.
+- Ablation (product file back at the base, test kept): red as the report says — the client gets `response.interrupt.accepted` then `response.incomplete`; restored: green.
+- `go test ./internal/gateway -count=1 -timeout 25m` on the branch head: ok, zero failures (869.4s). `-race` on the Responses-socket family: ok. `gofmt -l` clean; `go vet ./internal/gateway` clean; the package builds for `GOOS=linux` and `GOOS=windows`.
+- `git am` on `f28787b39`: applies as is; replayed tree hash equals the branch tip's.
+
+**Siblings**: `rg "response.interrupt" internal/ --type go` — every decider of the client-facing ask lives in responses_ws.go: the no-turn-in-flight ask already answers `.failed` (unchanged), and the in-turn one goes through `t.interrupt`, the decider changed here. `codex_socket.go` (the upstream-facing kept sockets) has no interrupt face; the HTTP route has no interrupt message — over HTTP a cancel is the client going away, which still ends the turn as before.
+
+**Not verified**: a live Codex Desktop against a real ChatGPT account (the red/green here runs your script's shape at the gateway's own test seams, no real upstream); whether the field 499s land in this window — your own bounding of that stands.
+
+Attribution: AI-written; I've read the whole diff and can answer questions on it myself. Please keep the author (`ggbdpq`) or add `Co-authored-by: ggbdpq <ggbdpq@gmail.com>`.
+
+**Patch**: <details><summary>patch: gateway: an interrupt after a reply's terminal event is refused, and the reply is kept for the next turn (#6301) — git am applies it as is; SHA-256 first 16: fe2adf364659269c</summary>
+
+```patch
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Fri, 13 Nov 2026 03:34:57 +0800
+Subject: [PATCH] gateway: an interrupt after a reply's terminal event is
+ refused, and the reply is kept for the next turn (#6301)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The Responses socket answered response.interrupt.accepted for a reply
+whose terminal event had already gone to the client: the writer had seen
+response.completed, the handler had not returned yet, and the ask's id
+still matched the run. The cancel stopped the turn before keep, so the
+completed reply was never held — the next turn naming it was answered
+previous_response_not_found and Codex resent the conversation whole
+(yangfengfan2011: upstream stream held open after the terminal event,
+3/3 with a self-contained repro and two passing controls).
+
+A run now remembers that its reply's terminal event went out (finishing:
+completed, incomplete, failed, cancelled, an error, and the warmup's own
+completed). An interrupt of an ended reply is refused —
+response.interrupt.failed — and stops nothing, so the turn reaches keep
+on its own; an interrupt of one still in flight is accepted as before.
+
+Run (darwin/arm64, 9c33839de + this change):
+- go test ./internal/gateway -run TestResponsesSocket -count=1: ok (11
+  tests; TestResponsesSocketInterruptAfterCompleted new — a held-open
+  upstream stream after response.completed: the interrupt is failed and
+  the next turn naming the reply completes; TestResponsesSocketInterrupt
+  unchanged — in-flight interrupts still accepted)
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gateway/responses_ws.go      | 19 +++++++++++
+ internal/gateway/responses_ws_test.go | 46 +++++++++++++++++++++++++++
+ 2 files changed, 65 insertions(+)
+
+diff --git a/internal/gateway/responses_ws.go b/internal/gateway/responses_ws.go
+index 336dce131..145e73d24 100644
+--- a/internal/gateway/responses_ws.go
++++ b/internal/gateway/responses_ws.go
+@@ -380,6 +380,7 @@ type socketTurnRun struct {
+ 	ids       []string // the response ids it gave
+ 	cut       bool     // its reply ended before its end
+ 	cancelled bool
++	ended     bool // a terminal event of the reply went to the client
+ }
+ 
+ func (t *socketTurnRun) interrupt(id string) bool {
+@@ -387,6 +388,9 @@ func (t *socketTurnRun) interrupt(id string) bool {
+ 	defer t.mu.Unlock()
+ 	for _, have := range t.ids {
+ 		if have == id {
++			if t.ended {
++				return false
++			}
+ 			t.cancelled = true
+ 			return true
+ 		}
+@@ -394,6 +398,18 @@ func (t *socketTurnRun) interrupt(id string) bool {
+ 	return false
+ }
+ 
++// finishing records a terminal event of the reply (completed, incomplete,
++// failed, cancelled, an error). The client has the reply's end; an
++// interrupt answered after it has nothing in flight to stop, and stopping
++// the turn would keep the completed reply from being kept (the context
++// turn checks before keep) — the anchor a later turn names was lost that
++// way (#6301).
++func (t *socketTurnRun) finishing() {
++	t.mu.Lock()
++	t.ended = true
++	t.mu.Unlock()
++}
++
+ // held is the conversation a reply the socket holds ends.
+ func (rs *responsesSocket) held(id string) ([]json.RawMessage, bool) {
+ 	for i := len(rs.turns) - 1; i >= 0; i-- {
+@@ -484,6 +500,7 @@ func (rs *responsesSocket) turn(ctx context.Context, t *socketTurnRun, frame []b
+ 		resp["usage"] = map[string]any{"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+ 		b, _ = json.Marshal(map[string]any{"type": "response.completed", "response": resp})
+ 		if rs.write(ctx, b) == nil {
++			t.finishing()
+ 			rs.keep(id, held, fresh, nil)
+ 		}
+ 		return
+@@ -810,8 +827,10 @@ func (w *socketTurnWriter) event(data []byte) error {
+ 	case "response.completed":
+ 		w.note(gjson.GetBytes(e.Response, "id").String())
+ 		w.ended, w.completed = true, true
++		w.run.finishing()
+ 	case "response.incomplete", "response.failed", "response.cancelled", "error":
+ 		w.ended = true
++		w.run.finishing()
+ 	case "codex.response.metadata":
+ 		// the model list's tag as magpie gives it (modelsEtag), which the
+ 		// reply's header has
+diff --git a/internal/gateway/responses_ws_test.go b/internal/gateway/responses_ws_test.go
+index c9ad5a521..ab41d3b46 100644
+--- a/internal/gateway/responses_ws_test.go
++++ b/internal/gateway/responses_ws_test.go
+@@ -409,6 +409,52 @@ func TestResponsesSocketInterrupt(t *testing.T) {
+ 	}
+ }
+ 
++// An interrupt answered after the reply's terminal event went to the
++// client is refused, though the upstream's stream is still open (the
++// window between the terminal event and the handler's return): the reply
++// is over, and the completed reply stays one a later turn can name
++// (#6301). Before, the ask was accepted, the turn's context was cancelled,
++// and the completed reply was never kept — the next turn naming it was
++// previous_response_not_found.
++func TestResponsesSocketInterruptAfterCompleted(t *testing.T) {
++	fresh(t)
++	u := &respUp{}
++	release := make(chan struct{})
++	u.reply = func(w http.ResponseWriter, r *http.Request, n int) {
++		w.Header().Set("Content-Type", "text/event-stream")
++		io.WriteString(w, sse(
++			`data: {"type":"response.created","response":{"id":"resp_done","object":"response","status":"in_progress","output":[]}}`,
++			`data: {"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"msg_done","role":"assistant","status":"completed","content":[{"type":"output_text","text":"OK"}]}}`,
++			`data: {"type":"response.completed","response":{"id":"resp_done","object":"response","status":"completed","output":[{"type":"message","id":"msg_done","role":"assistant","status":"completed","content":[{"type":"output_text","text":"OK"}]}],"usage":{"input_tokens":8,"output_tokens":1,"total_tokens":9}}}`))
++		w.(http.Flusher).Flush()
++		select {
++		case <-release: // the terminal went to the client; the stream is held open
++		case <-r.Context().Done():
++		}
++	}
++	sockUp(t, u)
++	_, ts := sockServer(t)
++	c, _, err := dialSock(t, ts, "/v1/responses", nil)
++	if err != nil {
++		t.Fatal(err)
++	}
++	c.send(create("", userHi))
++	if got, err := c.until("response.completed"); err != nil || last(got).Get("response.id").String() != "resp_done" {
++		t.Fatalf("%v %v", got, err)
++	}
++	c.send(`{"type":"response.interrupt","response_id":"resp_done","mode":"discard_partial_items"}`)
++	if got, err := c.until("response.interrupt.failed"); err != nil || last(got).Get("response_id").String() != "resp_done" {
++		t.Fatalf("interrupt of a completed reply: %v %v", got, err)
++	}
++	close(release)
++	if got := c.turn(create("resp_done", userMore)); last(got).Get("type").String() != "response.completed" {
++		t.Fatalf("continuation after a refused interrupt: %v", got)
++	}
++	if u.calls() != 2 {
++		t.Fatalf("%d upstream calls", u.calls())
++	}
++}
++
+ // A reply cut before its end is a failed turn, as the HTTP route tells
+ // it; the socket goes on, and the failed reply isn't one to name.
+ func TestResponsesSocketCutReplyFails(t *testing.T) {
+-- 
+2.50.1 (Apple Git-155)
+```
+
+</details>
+
+Generated-by: GLM-5.3-Flash (ZCode)

@@ -1,0 +1,21 @@
+{
+  "id": "42",
+  "slug": "pascals-triangle",
+  "title": "杨辉三角",
+  "difficulty": "easy",
+  "tags": ["数组", "动态规划"],
+  "description": "给定一个非负整数 `numRows`,生成「杨辉三角」的前 `numRows` 行。\n\n在「杨辉三角」中,每个数是它左上方和右上方数的和。\n\n**示例 1:**\n\n- 输入:`numRows = 5`\n- 输出:`[[1],[1,1],[1,2,1],[1,3,3,1],[1,4,6,4,1]]`\n\n**示例 2:**\n\n- 输入:`numRows = 1`\n- 输出:`[[1]]`",
+  "solution": "## 思路\n\n逐行构造:每行首尾为 1,中间元素等于上一行相邻两元素之和。O(numRows²)。\n\n## 参考代码\n\n```js\nfunction generate(numRows) {\n  const res = [];\n  for (let i = 0; i < numRows; i++) {\n    const row = new Array(i + 1).fill(1);\n    for (let j = 1; j < i; j++) row[j] = res[i - 1][j - 1] + res[i - 1][j];\n    res.push(row);\n  }\n  return res;\n}\n```\n\n## 复杂度\n\n- 时间:O(numRows²)\n- 空间:O(1)(不计输出)",
+  "signature": {
+    "language": "javascript",
+    "entry": "generate",
+    "params": [{ "name": "numRows", "type": "number" }],
+    "returns": "number[][]"
+  },
+  "testCases": [
+    { "sample": true, "input": [5], "expected": [[1], [1, 1], [1, 2, 1], [1, 3, 3, 1], [1, 4, 6, 4, 1]] },
+    { "sample": true, "input": [1], "expected": [[1]] },
+    { "sample": false, "input": [2], "expected": [[1], [1, 1]] },
+    { "sample": false, "input": [3], "expected": [[1], [1, 1], [1, 2, 1]] }
+  ]
+}

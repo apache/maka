@@ -1,0 +1,30 @@
+{
+  "mcpServers": {
+    "aurora-dsql": {
+      "command": "uvx",
+      "args": [
+        "awslabs.aurora-dsql-mcp-server@latest",
+        "--cluster_endpoint",
+        "${CLUSTER}.dsql.${REGION}.on.aws",
+        "--region",
+        "${REGION}",
+        "--database_user",
+        "admin"
+      ],
+      "env": {
+        "FASTMCP_LOG_LEVEL": "ERROR",
+        "AWS_PROFILE": "${AWS_PROFILE}"
+      }
+    },
+    "aws-core": {
+      "command": "uvx",
+      "args": [
+        "awslabs.core-mcp-server@latest"
+      ],
+      "env": {
+        "FASTMCP_LOG_LEVEL": "ERROR"
+      },
+      "disabled": true
+    }
+  }
+}

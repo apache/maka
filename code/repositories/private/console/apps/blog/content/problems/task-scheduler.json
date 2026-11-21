@@ -1,0 +1,25 @@
+{
+  "id": "81",
+  "slug": "task-scheduler",
+  "title": "任务调度器",
+  "difficulty": "medium",
+  "tags": ["贪心", "数组", "计数"],
+  "description": "给你一个用字符数组表示的 CPU 任务列表 `tasks` 和一个冷却时间 `n`。每个周期可以执行一个任务,或在待命状态(idle)。两个**相同种类**的任务之间必须有 `n` 个单位的冷却时间。\n\n返回完成所有任务的最少周期数。\n\n**示例 1:**\n\n- 输入:`tasks = [\"A\",\"A\",\"A\",\"B\",\"B\",\"B\"]`, `n = 2`\n- 输出:`8`(A → B → idle → A → B → idle → A → B)\n\n**示例 2:**\n\n- 输入:`tasks = [\"A\",\"A\",\"A\",\"B\",\"B\",\"B\"]`, `n = 0`\n- 输出:`6`",
+  "solution": "## 思路\n\n让**出现次数最多**的任务决定框架。设最大频次 `maxFreq`、达到该频次的任务数 `maxCount`。框架长度 `(maxFreq-1)*(n+1) + maxCount`;若任务总数更大则取任务总数。\n\n## 参考代码\n\n```js\nfunction leastInterval(tasks, n) {\n  const freq = new Map();\n  for (const t of tasks) freq.set(t, (freq.get(t) || 0) + 1);\n  const maxFreq = Math.max(...freq.values());\n  let maxCount = 0;\n  for (const v of freq.values()) if (v === maxFreq) maxCount++;\n  return Math.max(tasks.length, (maxFreq - 1) * (n + 1) + maxCount);\n}\n```\n\n## 复杂度\n\n- 时间:O(n)\n- 空间:O(k),k 为任务种类",
+  "signature": {
+    "language": "javascript",
+    "entry": "leastInterval",
+    "params": [
+      { "name": "tasks", "type": "string[]" },
+      { "name": "n", "type": "number" }
+    ],
+    "returns": "number"
+  },
+  "testCases": [
+    { "sample": true, "input": [["A", "A", "A", "B", "B", "B"], 2], "expected": 8 },
+    { "sample": true, "input": [["A", "A", "A", "B", "B", "B"], 0], "expected": 6 },
+    { "sample": true, "input": [["A", "A", "A", "A", "A", "A", "B", "C", "D", "E", "F", "G"], 2], "expected": 16 },
+    { "sample": false, "input": [["A"], 1], "expected": 1 },
+    { "sample": false, "input": [["A", "A"], 2], "expected": 4 }
+  ]
+}

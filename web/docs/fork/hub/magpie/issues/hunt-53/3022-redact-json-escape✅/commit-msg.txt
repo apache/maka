@@ -1,0 +1,41 @@
+redact: a mask match in tool arguments never starts at an escape (#3022)
+
+Why: a tool call's arguments ride in the request as a string that
+holds JSON of its own, and the newline in the command it carries is
+the two characters \ and n. The EMAIL rule read the n@mcp.tool after
+one — the escape's n taken for the first letter of an address — and
+the placeholder went in where the n had been:
+{"command":"print('before')\{{EMAIL_…}}()…"}. The outer JSON still
+parsed, the arguments no longer did, and Ollama Cloud turned the
+request away with 400 "invalid tool call arguments"; the call sat in
+the history, so every later turn failed with it. The same shape
+reaches other rules where a mask's match can start at an escape's
+second character: an npm_ key after \n, a MAC address after \b, an
+IPv6 address after \f, a user@host after \n.
+
+What changed: mask and takes now say whether the string holds JSON of
+its own (a tool call's arguments, a stream's partial_json — the same
+asJSON the restore side reads). There, a match may not start at a
+backslash that opens an escape: an odd run of backslashes before the
+match says the last one is an escape's, and the value goes as it is.
+An even run (a \\ of a Windows path) escapes itself, and what follows
+is masked as before — C:\Users\rkato keeps going in a system string,
+where one unescaping is all the vendor does. Everywhere else (plain
+text, a field the vendor reads as its own string) nothing changes;
+the rules' patterns, bounds, ok checks and kinds are untouched.
+
+Test: TestMaskJSONKeepsArgumentsJSON sends the report's history — an
+assistant turn whose pwsh call carries print('before')\n@mcp.tool()
+and a user turn that really has mara@quill.dev in it. On the base
+internal/redact it fails "2 masked, want 1" with the arguments
+carrying \{{EMAIL_…}}; with the change the arguments still parse, the
+command reads as it was, and the address goes. It also checks a
+Windows path in a plain string still masks. go test
+./internal/redact/... -count=1, ./internal/gateway/ -run
+'Redact|redact|Mask' -count=1, -race on the redact package, gofmt,
+go vet, and go build ./... on darwin/arm64, linux/amd64 -tags nogui
+and windows/amd64 pass.
+
+Fixes #3022
+
+Generated-by: GLM-5.3-Flash (ZCode)

@@ -1,0 +1,14 @@
+import assert from 'node:assert/strict';
+import {readFile} from 'node:fs/promises';
+const {initializeSupport,requestSupport}=await import('../../app/offline-support.js');
+globalThis.fetch=async()=>({json:async()=>JSON.parse(await readFile(new URL('../../app/business-data.json',import.meta.url),'utf8'))});
+await initializeSupport();
+const models=await requestSupport('/agent-microapp/dict/compList',{type:'default_bigModel'});
+assert.equal(models.success,true);
+assert.ok(models.data.some(model=>model.compCode));
+const plugins=await requestSupport('/decision/agent-microapp/dict/list',{type:'zeroCodePlugin'});
+assert.equal(plugins.data.length,2);
+const bases=await requestSupport('/agent-kg/database/getUserDataBase',{});
+assert.ok(Array.isArray(bases.data));
+assert.equal(requestSupport('/unknown',{}),undefined);
+console.log('旧版模型、插件与知识库配置检查通过');

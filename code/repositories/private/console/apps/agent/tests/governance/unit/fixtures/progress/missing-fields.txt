@@ -1,0 +1,20 @@
+### 下一步计划
+
+Next: PRD PRD-01 ProjectScaffold
+
+---
+
+## 2026-01-10 PRD-00 完成
+
+### 完成内容
+
+- 做了一些事情
+
+### 相关 PRD
+
+- id: PRD-00
+- component: BlockingDecision
+
+### Git 提交
+
+docs(core): something

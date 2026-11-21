@@ -1,0 +1,225 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Wed, 11 Nov 2026 05:28:24 +0800
+Subject: [PATCH] proc: a browser isn't started where there is no display to
+ show it on (#5958)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+A sign-in on a VPS was seen to call the server's own browser, which
+came up and went away, and the Google authorization went unfinished —
+the user's browser is on another machine (#5958). magpie web itself
+opens nothing there (its OpenURL is a no-op since #102; the page opens
+sign-in links itself), and the community agy-cli plugin's login runs
+agy's own terminal sign-in, printing the link and taking the code
+back, opening no browser at all. But the surfaces that do open a
+browser all go through proc.OpenBrowser, which started the launcher
+wherever magpie runs: `magpie plugin login agy-cli` over SSH started a
+browser with nothing to show it on and said nothing, since only the
+launcher failing to start was an error, and `magpie web` on a server
+did the same with the page's own link.
+
+So OpenBrowser refuses where there is nothing to open a browser on:
+the xdg-open family with neither DISPLAY nor WAYLAND_DISPLAY set gets
+an error instead of a browser that can only start and die, and the
+caller shows it with the link it already prints, for a browser on the
+machine the user is at. WSL is spared: its xdg-open is wslview, which
+opens Windows' own browser with no Linux display, as magpie there
+always has (#2043 came from one). darwin's open, Windows' rundll32 and
+termux-open-url all reach a screen of their own without a display
+here, and stay as they are. The desktop window's fallback sits behind
+a Wails window, so no no-display machine runs it.
+
+Run:
+- TestBrowserWithoutDisplayStartsNoneAndSaysWhy: WSL starts its
+  browser with no display, a server with neither variable set starts
+  none and gets "there is no display on this machine to open a browser
+  on", a DISPLAY or a WAYLAND_DISPLAY starts one again, and darwin,
+  Windows and Android keep theirs (red before the fix: the seam the
+  tests drive didn't exist — the compile was the red).
+- TestInWSL: WSL1's and WSL2's kernels read as microsoft; a generic
+  one and an unreadable one don't.
+- Ablation: the guard's condition held false — the no-display case
+  started a browser and gave no error ("no display: err <nil>, started
+  2") — restored, green.
+- TestBrowserNamesRundll32ByItsPath, the whole proc package, -race on
+  the new tests, the gui sign-in open tests
+  (TestPluginSignInPageOpensOnce, TestSignInLinkOnlyOpensNothing,
+  TestMCPSignInSaysTheBrowserDidntOpen, TestOpenSaysTheBrowserDidntOpen,
+  TestSignInAlertOpensItsProvider, TestSignInText) and a nogui build.
+
+Not tried: a real headless Linux (none here) — the fixtures stand in
+for the display's variables and the kernel's name.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/proc/browser.go      | 52 ++++++++++++++++++++++---
+ internal/proc/browser_test.go | 73 +++++++++++++++++++++++++++++++++++
+ 2 files changed, 120 insertions(+), 5 deletions(-)
+
+diff --git a/internal/proc/browser.go b/internal/proc/browser.go
+index 10403a292..fc6272303 100644
+--- a/internal/proc/browser.go
++++ b/internal/proc/browser.go
+@@ -1,21 +1,63 @@
+ package proc
+ 
+ import (
++	"errors"
+ 	"os"
+ 	"os/exec"
+ 	"path/filepath"
+ 	"runtime"
++	"strings"
+ )
+ 
+ // OpenBrowser opens url in the user's default browser. The error is the
+-// launcher's failing to start, for the caller to show with the link to open
+-// by hand: a sign-in that waits on a page that never opened only times out
+-// (#2043).
+-func OpenBrowser(url string) error {
+-	name, args := browserCommand(runtime.GOOS, os.Getenv("SystemRoot"), url)
++// launcher's failing to start, or there being no display to open one on,
++// for the caller to show with the link to open by hand: a sign-in that
++// waits on a page that never opened only times out (#2043), and a browser
++// started on a machine with no screen only comes up and goes away there
++// (#5958).
++func OpenBrowser(url string) error { return openBrowserOn(runtime.GOOS, url) }
++
++// openBrowserOn is OpenBrowser for the system goos names; tests stand in
++// the start and the kernel's name.
++func openBrowserOn(goos, url string) error {
++	if why := noDisplay(goos, os.Getenv("DISPLAY"), os.Getenv("WAYLAND_DISPLAY"), inWSL()); why != "" {
++		return errors.New(why)
++	}
++	name, args := browserCommand(goos, os.Getenv("SystemRoot"), url)
+ 	return startBrowser(Command(name, args...))
+ }
+ 
++// noDisplay says why a browser can't be shown on the machine magpie runs
++// on, "" when one can: where the launcher is xdg-open (the default here),
++// a server, a container or an SSH session with neither DISPLAY nor
++// WAYLAND_DISPLAY has no browser to start, short of WSL, whose xdg-open
++// (wslview) opens Windows' own browser. darwin's open, Windows' rundll32
++// and termux-open-url all reach a screen of theirs without a display here.
++func noDisplay(goos, display, wayland string, wsl bool) string {
++	switch goos {
++	case "darwin", "windows", "android":
++		return ""
++	}
++	if display != "" || wayland != "" || wsl {
++		return ""
++	}
++	return "there is no display on this machine to open a browser on"
++}
++
++// inWSL says whether magpie runs inside WSL, by the kernel's name: WSL1
++// and WSL2 both report a microsoft one.
++func inWSL() bool {
++	b, ok := osrelease()
++	return ok && strings.Contains(strings.ToLower(b), "microsoft")
++}
++
++// osrelease is this machine's kernel name, whether it could be read;
++// tests stand in for it.
++var osrelease = func() (string, bool) {
++	b, err := os.ReadFile("/proc/sys/kernel/osrelease")
++	return string(b), err == nil
++}
++
+ // startBrowser starts cmd and reaps it once it ends; tests stand in for it.
+ var startBrowser = func(cmd *exec.Cmd) error {
+ 	if err := cmd.Start(); err != nil {
+diff --git a/internal/proc/browser_test.go b/internal/proc/browser_test.go
+index d6a64b78c..b52e3047f 100644
+--- a/internal/proc/browser_test.go
++++ b/internal/proc/browser_test.go
+@@ -1,7 +1,9 @@
+ package proc
+ 
+ import (
++	"os/exec"
+ 	"path/filepath"
++	"strings"
+ 	"testing"
+ )
+ 
+@@ -27,3 +29,74 @@ func TestBrowserNamesRundll32ByItsPath(t *testing.T) {
+ 		}
+ 	}
+ }
++
++// A magpie on a server, in a container or over SSH has no display for
++// xdg-open, and a browser started there only comes up and goes away
++// (#5958): none starts, and the error says why, for the caller to show
++// with the link it prints. A display keeps the browser, as do WSL (its
++// xdg-open is wslview, which opens Windows' own browser with no Linux
++// display) and the systems whose launcher reaches a screen of its own:
++// darwin's open, Windows' rundll32 and termux-open-url.
++func TestBrowserWithoutDisplayStartsNoneAndSaysWhy(t *testing.T) {
++	t.Setenv("DISPLAY", "")
++	t.Setenv("WAYLAND_DISPLAY", "")
++	start := startBrowser
++	defer func() { startBrowser = start }()
++	var started int
++	startBrowser = func(*exec.Cmd) error { started++; return nil }
++	kernel := osrelease
++	defer func() { osrelease = kernel }()
++
++	// WSL is spared: its launcher opens Windows' own browser
++	osrelease = func() (string, bool) { return "5.15.167.4-microsoft-standard-WSL2", true }
++	if err := openBrowserOn("linux", "https://accounts.google.com/o/oauth2/authorize"); err != nil {
++		t.Fatalf("WSL: %v", err)
++	}
++	// a plain server's launcher has no display to open a browser on
++	osrelease = func() (string, bool) { return "6.8.0-85-generic", true }
++	err := openBrowserOn("linux", "https://accounts.google.com/o/oauth2/authorize")
++	if err == nil || started != 1 || !strings.Contains(err.Error(), "no display") {
++		t.Fatalf("no display: err %v, started %d", err, started)
++	}
++	// a display, X11's or Wayland's, keeps the browser
++	t.Setenv("DISPLAY", ":0")
++	if err := openBrowserOn("linux", "https://accounts.google.com/o/oauth2/authorize"); err != nil || started != 2 {
++		t.Fatalf("X11: err %v, started %d", err, started)
++	}
++	t.Setenv("DISPLAY", "")
++	t.Setenv("WAYLAND_DISPLAY", "wayland-0")
++	if err := openBrowserOn("linux", "https://accounts.google.com/o/oauth2/authorize"); err != nil || started != 3 {
++		t.Fatalf("Wayland: err %v, started %d", err, started)
++	}
++	t.Setenv("WAYLAND_DISPLAY", "")
++	// darwin's open, Windows' rundll32 and termux-open-url need no display here
++	for _, goos := range []string{"darwin", "windows", "android"} {
++		if err := openBrowserOn(goos, "https://accounts.google.com/o/oauth2/authorize"); err != nil {
++			t.Fatalf("%s: %v", goos, err)
++		}
++	}
++	if started != 6 {
++		t.Fatalf("browsers started: %d", started)
++	}
++}
++
++// inWSL reads the kernel's name: WSL1 and WSL2 both report a microsoft
++// one; anything else, or a name that can't be read, is not WSL.
++func TestInWSL(t *testing.T) {
++	kernel := osrelease
++	defer func() { osrelease = kernel }()
++	for name, want := range map[string]bool{
++		"5.15.167.4-microsoft-standard-WSL2": true,
++		"4.4.0-19041-Microsoft":              true,
++		"6.8.0-85-generic":                   false,
++	} {
++		osrelease = func() (string, bool) { return name, true }
++		if got := inWSL(); got != want {
++			t.Errorf("%s: %v, want %v", name, got, want)
++		}
++	}
++	osrelease = func() (string, bool) { return "", false }
++	if inWSL() {
++		t.Error("a kernel whose name can't be read: WSL")
++	}
++}
+-- 
+2.50.1 (Apple Git-155)
+

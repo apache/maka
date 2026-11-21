@@ -1,0 +1,4436 @@
+import {
+    c as br,
+    g as ai
+} from "./vendor-KfUPlHYY.js";
+var _r = {
+    exports: {}
+};
+(function(De, Vn) {
+    (function(be, C) {
+        De.exports = C()
+    })(br, function() {
+        var be = function(e, n) {
+                return (be = Object.setPrototypeOf || {
+                        __proto__: []
+                    }
+                    instanceof Array && function(t, r) {
+                        t.__proto__ = r
+                    } || function(t, r) {
+                        for (var i in r) Object.prototype.hasOwnProperty.call(r, i) && (t[i] = r[i])
+                    })(e, n)
+            },
+            C = function() {
+                return (C = Object.assign || function(e) {
+                    for (var n, t = 1, r = arguments.length; t < r; t++)
+                        for (var i in n = arguments[t]) Object.prototype.hasOwnProperty.call(n, i) && (e[i] = n[i]);
+                    return e
+                }).apply(this, arguments)
+            };
+
+        function hn(e, n, t) {
+            for (var r, i = 0, o = n.length; i < o; i++) !r && i in n || ((r = r || Array.prototype.slice.call(n, 0, i))[i] = n[i]);
+            return e.concat(r || Array.prototype.slice.call(n))
+        }
+        var $ = typeof globalThis < "u" ? globalThis : typeof self < "u" ? self : typeof window < "u" ? window : br,
+            z = Object.keys,
+            L = Array.isArray;
+
+        function ee(e, n) {
+            return typeof n != "object" || z(n).forEach(function(t) {
+                e[t] = n[t]
+            }), e
+        }
+        typeof Promise > "u" || $.Promise || ($.Promise = Promise);
+        var Ie = Object.getPrototypeOf,
+            xr = {}.hasOwnProperty;
+
+        function J(e, n) {
+            return xr.call(e, n)
+        }
+
+        function qe(e, n) {
+            typeof n == "function" && (n = n(Ie(e))), (typeof Reflect > "u" ? z : Reflect.ownKeys)(n).forEach(function(t) {
+                fe(e, t, n[t])
+            })
+        }
+        var jt = Object.defineProperty;
+
+        function fe(e, n, t, r) {
+            jt(e, n, ee(t && J(t, "get") && typeof t.get == "function" ? {
+                get: t.get,
+                set: t.set,
+                configurable: !0
+            } : {
+                value: t,
+                configurable: !0,
+                writable: !0
+            }, r))
+        }
+
+        function Be(e) {
+            return {
+                from: function(n) {
+                    return e.prototype = Object.create(n.prototype), fe(e.prototype, "constructor", e), {
+                        extend: qe.bind(null, e.prototype)
+                    }
+                }
+            }
+        }
+        var kr = Object.getOwnPropertyDescriptor,
+            Or = [].slice;
+
+        function dn(e, n, t) {
+            return Or.call(e, n, t)
+        }
+
+        function Ct(e, n) {
+            return n(e)
+        }
+
+        function Xe(e) {
+            if (!e) throw new Error("Assertion Failed")
+        }
+
+        function Tt(e) {
+            $.setImmediate ? setImmediate(e) : setTimeout(e, 0)
+        }
+
+        function ue(e, n) {
+            if (typeof n == "string" && J(e, n)) return e[n];
+            if (!n) return e;
+            if (typeof n != "string") {
+                for (var t = [], r = 0, i = n.length; r < i; ++r) {
+                    var o = ue(e, n[r]);
+                    t.push(o)
+                }
+                return t
+            }
+            var a = n.indexOf(".");
+            if (a !== -1) {
+                var u = e[n.substr(0, a)];
+                return u == null ? void 0 : ue(u, n.substr(a + 1))
+            }
+        }
+
+        function Z(e, n, t) {
+            if (e && n !== void 0 && !("isFrozen" in Object && Object.isFrozen(e)))
+                if (typeof n != "string" && "length" in n) {
+                    Xe(typeof t != "string" && "length" in t);
+                    for (var r = 0, i = n.length; r < i; ++r) Z(e, n[r], t[r])
+                } else {
+                    var o, a, u = n.indexOf(".");
+                    u !== -1 ? (o = n.substr(0, u), (a = n.substr(u + 1)) === "" ? t === void 0 ? L(e) && !isNaN(parseInt(o)) ? e.splice(o, 1) : delete e[o] : e[o] = t : Z(u = !(u = e[o]) || !J(e, o) ? e[o] = {} : u, a, t)) : t === void 0 ? L(e) && !isNaN(parseInt(n)) ? e.splice(n, 1) : delete e[n] : e[n] = t
+                }
+        }
+
+        function Dt(e) {
+            var n, t = {};
+            for (n in e) J(e, n) && (t[n] = e[n]);
+            return t
+        }
+        var Pr = [].concat;
+
+        function It(e) {
+            return Pr.apply([], e)
+        }
+        var ke = "BigUint64Array,BigInt64Array,Array,Boolean,String,Date,RegExp,Blob,File,FileList,FileSystemFileHandle,FileSystemDirectoryHandle,ArrayBuffer,DataView,Uint8ClampedArray,ImageBitmap,ImageData,Map,Set,CryptoKey".split(",").concat(It([8, 16, 32, 64].map(function(e) {
+                return ["Int", "Uint", "Float"].map(function(n) {
+                    return n + e + "Array"
+                })
+            }))).filter(function(e) {
+                return $[e]
+            }),
+            qt = new Set(ke.map(function(e) {
+                return $[e]
+            })),
+            Ge = null;
+
+        function we(e) {
+            return Ge = new WeakMap, e = function n(t) {
+                if (!t || typeof t != "object") return t;
+                var r = Ge.get(t);
+                if (r) return r;
+                if (L(t)) {
+                    r = [], Ge.set(t, r);
+                    for (var i = 0, o = t.length; i < o; ++i) r.push(n(t[i]))
+                } else if (qt.has(t.constructor)) r = t;
+                else {
+                    var a, u = Ie(t);
+                    for (a in r = u === Object.prototype ? {} : Object.create(u), Ge.set(t, r), t) J(t, a) && (r[a] = n(t[a]))
+                }
+                return r
+            }(e), Ge = null, e
+        }
+        var Er = {}.toString;
+
+        function zn(e) {
+            return Er.call(e).slice(8, -1)
+        }
+        var Yn = typeof Symbol < "u" ? Symbol.iterator : "@@iterator",
+            Kr = typeof Yn == "symbol" ? function(e) {
+                var n;
+                return e != null && (n = e[Yn]) && n.apply(e)
+            } : function() {
+                return null
+            };
+
+        function _e(e, n) {
+            return n = e.indexOf(n), 0 <= n && e.splice(n, 1), 0 <= n
+        }
+        var Re = {};
+
+        function se(e) {
+            var n, t, r, i;
+            if (arguments.length === 1) {
+                if (L(e)) return e.slice();
+                if (this === Re && typeof e == "string") return [e];
+                if (i = Kr(e)) {
+                    for (t = []; !(r = i.next()).done;) t.push(r.value);
+                    return t
+                }
+                if (e == null) return [e];
+                if (typeof(n = e.length) != "number") return [e];
+                for (t = new Array(n); n--;) t[n] = e[n];
+                return t
+            }
+            for (n = arguments.length, t = new Array(n); n--;) t[n] = arguments[n];
+            return t
+        }
+        var Wn = typeof Symbol < "u" ? function(e) {
+                return e[Symbol.toStringTag] === "AsyncFunction"
+            } : function() {
+                return !1
+            },
+            Ze = ["Unknown", "Constraint", "Data", "TransactionInactive", "ReadOnly", "Version", "NotFound", "InvalidState", "InvalidAccess", "Abort", "Timeout", "QuotaExceeded", "Syntax", "DataClone"],
+            re = ["Modify", "Bulk", "OpenFailed", "VersionChange", "Schema", "Upgrade", "InvalidTable", "MissingAPI", "NoSuchDatabase", "InvalidArgument", "SubTransaction", "Unsupported", "Internal", "DatabaseClosed", "PrematureCommit", "ForeignAwait"].concat(Ze),
+            Sr = {
+                VersionChanged: "Database version changed by other database connection",
+                DatabaseClosed: "Database has been closed",
+                Abort: "Transaction aborted",
+                TransactionInactive: "Transaction has already completed or failed",
+                MissingAPI: "IndexedDB API missing. Please visit https://tinyurl.com/y2uuvskb"
+            };
+
+        function Fe(e, n) {
+            this.name = e, this.message = n
+        }
+
+        function Bt(e, n) {
+            return e + ". Errors: " + Object.keys(n).map(function(t) {
+                return n[t].toString()
+            }).filter(function(t, r, i) {
+                return i.indexOf(t) === r
+            }).join(`
+`)
+        }
+
+        function pn(e, n, t, r) {
+            this.failures = n, this.failedKeys = r, this.successCount = t, this.message = Bt(e, n)
+        }
+
+        function Ne(e, n) {
+            this.name = "BulkError", this.failures = Object.keys(n).map(function(t) {
+                return n[t]
+            }), this.failuresByPos = n, this.message = Bt(e, this.failures)
+        }
+        Be(Fe).from(Error).extend({
+            toString: function() {
+                return this.name + ": " + this.message
+            }
+        }), Be(pn).from(Fe), Be(Ne).from(Fe);
+        var $n = re.reduce(function(e, n) {
+                return e[n] = n + "Error", e
+            }, {}),
+            Ar = Fe,
+            j = re.reduce(function(e, n) {
+                var t = n + "Error";
+
+                function r(i, o) {
+                    this.name = t, i ? typeof i == "string" ? (this.message = "".concat(i).concat(o ? `
+ ` + o : ""), this.inner = o || null) : typeof i == "object" && (this.message = "".concat(i.name, " ").concat(i.message), this.inner = i) : (this.message = Sr[n] || t, this.inner = null)
+                }
+                return Be(r).from(Ar), e[n] = r, e
+            }, {});
+        j.Syntax = SyntaxError, j.Type = TypeError, j.Range = RangeError;
+        var Rt = Ze.reduce(function(e, n) {
+                return e[n + "Error"] = j[n], e
+            }, {}),
+            yn = re.reduce(function(e, n) {
+                return ["Syntax", "Type", "Range"].indexOf(n) === -1 && (e[n + "Error"] = j[n]), e
+            }, {});
+
+        function F() {}
+
+        function He(e) {
+            return e
+        }
+
+        function jr(e, n) {
+            return e == null || e === He ? n : function(t) {
+                return n(e(t))
+            }
+        }
+
+        function xe(e, n) {
+            return function() {
+                e.apply(this, arguments), n.apply(this, arguments)
+            }
+        }
+
+        function Cr(e, n) {
+            return e === F ? n : function() {
+                var t = e.apply(this, arguments);
+                t !== void 0 && (arguments[0] = t);
+                var r = this.onsuccess,
+                    i = this.onerror;
+                this.onsuccess = null, this.onerror = null;
+                var o = n.apply(this, arguments);
+                return r && (this.onsuccess = this.onsuccess ? xe(r, this.onsuccess) : r), i && (this.onerror = this.onerror ? xe(i, this.onerror) : i), o !== void 0 ? o : t
+            }
+        }
+
+        function Tr(e, n) {
+            return e === F ? n : function() {
+                e.apply(this, arguments);
+                var t = this.onsuccess,
+                    r = this.onerror;
+                this.onsuccess = this.onerror = null, n.apply(this, arguments), t && (this.onsuccess = this.onsuccess ? xe(t, this.onsuccess) : t), r && (this.onerror = this.onerror ? xe(r, this.onerror) : r)
+            }
+        }
+
+        function Dr(e, n) {
+            return e === F ? n : function(t) {
+                var r = e.apply(this, arguments);
+                ee(t, r);
+                var i = this.onsuccess,
+                    o = this.onerror;
+                return this.onsuccess = null, this.onerror = null, t = n.apply(this, arguments), i && (this.onsuccess = this.onsuccess ? xe(i, this.onsuccess) : i), o && (this.onerror = this.onerror ? xe(o, this.onerror) : o), r === void 0 ? t === void 0 ? void 0 : t : ee(r, t)
+            }
+        }
+
+        function Ir(e, n) {
+            return e === F ? n : function() {
+                return n.apply(this, arguments) !== !1 && e.apply(this, arguments)
+            }
+        }
+
+        function Qn(e, n) {
+            return e === F ? n : function() {
+                var t = e.apply(this, arguments);
+                if (t && typeof t.then == "function") {
+                    for (var r = this, i = arguments.length, o = new Array(i); i--;) o[i] = arguments[i];
+                    return t.then(function() {
+                        return n.apply(r, o)
+                    })
+                }
+                return n.apply(this, arguments)
+            }
+        }
+        yn.ModifyError = pn, yn.DexieError = Fe, yn.BulkError = Ne;
+        var ie = typeof location < "u" && /^(http|https):\/\/(localhost|127\.0\.0\.1)/.test(location.href);
+
+        function Ft(e) {
+            ie = e
+        }
+        var Je = {},
+            Nt = 100,
+            ke = typeof Promise > "u" ? [] : function() {
+                var e = Promise.resolve();
+                if (typeof crypto > "u" || !crypto.subtle) return [e, Ie(e), e];
+                var n = crypto.subtle.digest("SHA-512", new Uint8Array([0]));
+                return [n, Ie(n), e]
+            }(),
+            Ze = ke[0],
+            re = ke[1],
+            ke = ke[2],
+            re = re && re.then,
+            Oe = Ze && Ze.constructor,
+            Xn = !!ke,
+            en = function(e, n) {
+                nn.push([e, n]), vn && (queueMicrotask(Br), vn = !1)
+            },
+            Gn = !0,
+            vn = !0,
+            Pe = [],
+            mn = [],
+            Hn = He,
+            he = {
+                id: "global",
+                global: !0,
+                ref: 0,
+                unhandleds: [],
+                onunhandled: F,
+                pgp: !1,
+                env: {},
+                finalize: F
+            },
+            A = he,
+            nn = [],
+            Ee = 0,
+            gn = [];
+
+        function K(e) {
+            if (typeof this != "object") throw new TypeError("Promises must be constructed via new");
+            this._listeners = [], this._lib = !1;
+            var n = this._PSD = A;
+            if (typeof e != "function") {
+                if (e !== Je) throw new TypeError("Not a function");
+                return this._state = arguments[1], this._value = arguments[2], void(this._state === !1 && Zn(this, this._value))
+            }
+            this._state = null, this._value = null, ++n.ref,
+                function t(r, i) {
+                    try {
+                        i(function(o) {
+                            if (r._state === null) {
+                                if (o === r) throw new TypeError("A promise cannot be resolved with itself.");
+                                var a = r._lib && Me();
+                                o && typeof o.then == "function" ? t(r, function(u, c) {
+                                    o instanceof K ? o._then(u, c) : o.then(u, c)
+                                }) : (r._state = !0, r._value = o, Lt(r)), a && Le()
+                            }
+                        }, Zn.bind(null, r))
+                    } catch (o) {
+                        Zn(r, o)
+                    }
+                }(this, e)
+        }
+        var Jn = {
+            get: function() {
+                var e = A,
+                    n = xn;
+
+                function t(r, i) {
+                    var o = this,
+                        a = !e.global && (e !== A || n !== xn),
+                        u = a && !pe(),
+                        c = new K(function(l, p) {
+                            et(o, new Mt(Vt(r, e, a, u), Vt(i, e, a, u), l, p, e))
+                        });
+                    return this._consoleTask && (c._consoleTask = this._consoleTask), c
+                }
+                return t.prototype = Je, t
+            },
+            set: function(e) {
+                fe(this, "then", e && e.prototype === Je ? Jn : {
+                    get: function() {
+                        return e
+                    },
+                    set: Jn.set
+                })
+            }
+        };
+
+        function Mt(e, n, t, r, i) {
+            this.onFulfilled = typeof e == "function" ? e : null, this.onRejected = typeof n == "function" ? n : null, this.resolve = t, this.reject = r, this.psd = i
+        }
+
+        function Zn(e, n) {
+            var t, r;
+            mn.push(n), e._state === null && (t = e._lib && Me(), n = Hn(n), e._state = !1, e._value = n, r = e, Pe.some(function(i) {
+                return i._value === r._value
+            }) || Pe.push(r), Lt(e), t && Le())
+        }
+
+        function Lt(e) {
+            var n = e._listeners;
+            e._listeners = [];
+            for (var t = 0, r = n.length; t < r; ++t) et(e, n[t]);
+            var i = e._PSD;
+            --i.ref || i.finalize(), Ee === 0 && (++Ee, en(function() {
+                --Ee == 0 && nt()
+            }, []))
+        }
+
+        function et(e, n) {
+            if (e._state !== null) {
+                var t = e._state ? n.onFulfilled : n.onRejected;
+                if (t === null) return (e._state ? n.resolve : n.reject)(e._value);
+                ++n.psd.ref, ++Ee, en(qr, [t, e, n])
+            } else e._listeners.push(n)
+        }
+
+        function qr(e, n, t) {
+            try {
+                var r, i = n._value;
+                !n._state && mn.length && (mn = []), r = ie && n._consoleTask ? n._consoleTask.run(function() {
+                    return e(i)
+                }) : e(i), n._state || mn.indexOf(i) !== -1 || function(o) {
+                    for (var a = Pe.length; a;)
+                        if (Pe[--a]._value === o._value) return Pe.splice(a, 1)
+                }(n), t.resolve(r)
+            } catch (o) {
+                t.reject(o)
+            } finally {
+                --Ee == 0 && nt(), --t.psd.ref || t.psd.finalize()
+            }
+        }
+
+        function Br() {
+            Ke(he, function() {
+                Me() && Le()
+            })
+        }
+
+        function Me() {
+            var e = Gn;
+            return vn = Gn = !1, e
+        }
+
+        function Le() {
+            var e, n, t;
+            do
+                for (; 0 < nn.length;)
+                    for (e = nn, nn = [], t = e.length, n = 0; n < t; ++n) {
+                        var r = e[n];
+                        r[0].apply(null, r[1])
+                    }
+            while (0 < nn.length);
+            vn = Gn = !0
+        }
+
+        function nt() {
+            var e = Pe;
+            Pe = [], e.forEach(function(r) {
+                r._PSD.onunhandled.call(null, r._value, r)
+            });
+            for (var n = gn.slice(0), t = n.length; t;) n[--t]()
+        }
+
+        function bn(e) {
+            return new K(Je, !1, e)
+        }
+
+        function M(e, n) {
+            var t = A;
+            return function() {
+                var r = Me(),
+                    i = A;
+                try {
+                    return ye(t, !0), e.apply(this, arguments)
+                } catch (o) {
+                    n && n(o)
+                } finally {
+                    ye(i, !1), r && Le()
+                }
+            }
+        }
+        qe(K.prototype, {
+            then: Jn,
+            _then: function(e, n) {
+                et(this, new Mt(null, null, e, n, A))
+            },
+            catch: function(e) {
+                if (arguments.length === 1) return this.then(null, e);
+                var n = e,
+                    t = arguments[1];
+                return typeof n == "function" ? this.then(null, function(r) {
+                    return (r instanceof n ? t : bn)(r)
+                }) : this.then(null, function(r) {
+                    return (r && r.name === n ? t : bn)(r)
+                })
+            },
+            finally: function(e) {
+                return this.then(function(n) {
+                    return K.resolve(e()).then(function() {
+                        return n
+                    })
+                }, function(n) {
+                    return K.resolve(e()).then(function() {
+                        return bn(n)
+                    })
+                })
+            },
+            timeout: function(e, n) {
+                var t = this;
+                return e < 1 / 0 ? new K(function(r, i) {
+                    var o = setTimeout(function() {
+                        return i(new j.Timeout(n))
+                    }, e);
+                    t.then(r, i).finally(clearTimeout.bind(null, o))
+                }) : this
+            }
+        }), typeof Symbol < "u" && Symbol.toStringTag && fe(K.prototype, Symbol.toStringTag, "Dexie.Promise"), he.env = Ut(), qe(K, {
+            all: function() {
+                var e = se.apply(null, arguments).map(kn);
+                return new K(function(n, t) {
+                    e.length === 0 && n([]);
+                    var r = e.length;
+                    e.forEach(function(i, o) {
+                        return K.resolve(i).then(function(a) {
+                            e[o] = a, --r || n(e)
+                        }, t)
+                    })
+                })
+            },
+            resolve: function(e) {
+                return e instanceof K ? e : e && typeof e.then == "function" ? new K(function(n, t) {
+                    e.then(n, t)
+                }) : new K(Je, !0, e)
+            },
+            reject: bn,
+            race: function() {
+                var e = se.apply(null, arguments).map(kn);
+                return new K(function(n, t) {
+                    e.map(function(r) {
+                        return K.resolve(r).then(n, t)
+                    })
+                })
+            },
+            PSD: {
+                get: function() {
+                    return A
+                },
+                set: function(e) {
+                    return A = e
+                }
+            },
+            totalEchoes: {
+                get: function() {
+                    return xn
+                }
+            },
+            newPSD: de,
+            usePSD: Ke,
+            scheduler: {
+                get: function() {
+                    return en
+                },
+                set: function(e) {
+                    en = e
+                }
+            },
+            rejectionMapper: {
+                get: function() {
+                    return Hn
+                },
+                set: function(e) {
+                    Hn = e
+                }
+            },
+            follow: function(e, n) {
+                return new K(function(t, r) {
+                    return de(function(i, o) {
+                        var a = A;
+                        a.unhandleds = [], a.onunhandled = o, a.finalize = xe(function() {
+                            var u, c = this;
+                            u = function() {
+                                c.unhandleds.length === 0 ? i() : o(c.unhandleds[0])
+                            }, gn.push(function l() {
+                                u(), gn.splice(gn.indexOf(l), 1)
+                            }), ++Ee, en(function() {
+                                --Ee == 0 && nt()
+                            }, [])
+                        }, a.finalize), e()
+                    }, n, t, r)
+                })
+            }
+        }), Oe && (Oe.allSettled && fe(K, "allSettled", function() {
+            var e = se.apply(null, arguments).map(kn);
+            return new K(function(n) {
+                e.length === 0 && n([]);
+                var t = e.length,
+                    r = new Array(t);
+                e.forEach(function(i, o) {
+                    return K.resolve(i).then(function(a) {
+                        return r[o] = {
+                            status: "fulfilled",
+                            value: a
+                        }
+                    }, function(a) {
+                        return r[o] = {
+                            status: "rejected",
+                            reason: a
+                        }
+                    }).then(function() {
+                        return --t || n(r)
+                    })
+                })
+            })
+        }), Oe.any && typeof AggregateError < "u" && fe(K, "any", function() {
+            var e = se.apply(null, arguments).map(kn);
+            return new K(function(n, t) {
+                e.length === 0 && t(new AggregateError([]));
+                var r = e.length,
+                    i = new Array(r);
+                e.forEach(function(o, a) {
+                    return K.resolve(o).then(function(u) {
+                        return n(u)
+                    }, function(u) {
+                        i[a] = u, --r || t(new AggregateError(i))
+                    })
+                })
+            })
+        }), Oe.withResolvers && (K.withResolvers = Oe.withResolvers));
+        var Y = {
+                awaits: 0,
+                echoes: 0,
+                id: 0
+            },
+            Rr = 0,
+            wn = [],
+            _n = 0,
+            xn = 0,
+            Fr = 0;
+
+        function de(e, n, t, r) {
+            var i = A,
+                o = Object.create(i);
+            return o.parent = i, o.ref = 0, o.global = !1, o.id = ++Fr, he.env, o.env = Xn ? {
+                Promise: K,
+                PromiseProp: {
+                    value: K,
+                    configurable: !0,
+                    writable: !0
+                },
+                all: K.all,
+                race: K.race,
+                allSettled: K.allSettled,
+                any: K.any,
+                resolve: K.resolve,
+                reject: K.reject
+            } : {}, n && ee(o, n), ++i.ref, o.finalize = function() {
+                --this.parent.ref || this.parent.finalize()
+            }, r = Ke(o, e, t, r), o.ref === 0 && o.finalize(), r
+        }
+
+        function Ue() {
+            return Y.id || (Y.id = ++Rr), ++Y.awaits, Y.echoes += Nt, Y.id
+        }
+
+        function pe() {
+            return !!Y.awaits && (--Y.awaits == 0 && (Y.id = 0), Y.echoes = Y.awaits * Nt, !0)
+        }
+
+        function kn(e) {
+            return Y.echoes && e && e.constructor === Oe ? (Ue(), e.then(function(n) {
+                return pe(), n
+            }, function(n) {
+                return pe(), U(n)
+            })) : e
+        }
+
+        function Nr() {
+            var e = wn[wn.length - 1];
+            wn.pop(), ye(e, !1)
+        }
+
+        function ye(e, n) {
+            var t, r = A;
+            (n ? !Y.echoes || _n++ && e === A : !_n || --_n && e === A) || queueMicrotask(n ? (function(i) {
+                ++xn, Y.echoes && --Y.echoes != 0 || (Y.echoes = Y.awaits = Y.id = 0), wn.push(A), ye(i, !0)
+            }).bind(null, e) : Nr), e !== A && (A = e, r === he && (he.env = Ut()), Xn && (t = he.env.Promise, n = e.env, (r.global || e.global) && (Object.defineProperty($, "Promise", n.PromiseProp), t.all = n.all, t.race = n.race, t.resolve = n.resolve, t.reject = n.reject, n.allSettled && (t.allSettled = n.allSettled), n.any && (t.any = n.any))))
+        }
+
+        function Ut() {
+            var e = $.Promise;
+            return Xn ? {
+                Promise: e,
+                PromiseProp: Object.getOwnPropertyDescriptor($, "Promise"),
+                all: e.all,
+                race: e.race,
+                allSettled: e.allSettled,
+                any: e.any,
+                resolve: e.resolve,
+                reject: e.reject
+            } : {}
+        }
+
+        function Ke(e, n, t, r, i) {
+            var o = A;
+            try {
+                return ye(e, !0), n(t, r, i)
+            } finally {
+                ye(o, !1)
+            }
+        }
+
+        function Vt(e, n, t, r) {
+            return typeof e != "function" ? e : function() {
+                var i = A;
+                t && Ue(), ye(n, !0);
+                try {
+                    return e.apply(this, arguments)
+                } finally {
+                    ye(i, !1), r && queueMicrotask(pe)
+                }
+            }
+        }
+
+        function tt(e) {
+            Promise === Oe && Y.echoes === 0 ? _n === 0 ? e() : enqueueNativeMicroTask(e) : setTimeout(e, 0)
+        }("" + re).indexOf("[native code]") === -1 && (Ue = pe = F);
+        var U = K.reject,
+            Se = "￿",
+            ce = "Invalid key provided. Keys must be of type string, number, Date or Array<string | number | Date>.",
+            zt = "String expected.",
+            Ve = [],
+            On = "__dbnames",
+            rt = "readonly",
+            it = "readwrite";
+
+        function Ae(e, n) {
+            return e ? n ? function() {
+                return e.apply(this, arguments) && n.apply(this, arguments)
+            } : e : n
+        }
+        var Yt = {
+            type: 3,
+            lower: -1 / 0,
+            lowerOpen: !1,
+            upper: [
+                []
+            ],
+            upperOpen: !1
+        };
+
+        function Pn(e) {
+            return typeof e != "string" || /\./.test(e) ? function(n) {
+                return n
+            } : function(n) {
+                return n[e] === void 0 && e in n && delete(n = we(n))[e], n
+            }
+        }
+
+        function Wt() {
+            throw j.Type("Entity instances must never be new:ed. Instances are generated by the framework bypassing the constructor.")
+        }
+
+        function B(e, n) {
+            try {
+                var t = $t(e),
+                    r = $t(n);
+                if (t !== r) return t === "Array" ? 1 : r === "Array" ? -1 : t === "binary" ? 1 : r === "binary" ? -1 : t === "string" ? 1 : r === "string" ? -1 : t === "Date" ? 1 : r !== "Date" ? NaN : -1;
+                switch (t) {
+                    case "number":
+                    case "Date":
+                    case "string":
+                        return n < e ? 1 : e < n ? -1 : 0;
+                    case "binary":
+                        return function(i, o) {
+                            for (var a = i.length, u = o.length, c = a < u ? a : u, l = 0; l < c; ++l)
+                                if (i[l] !== o[l]) return i[l] < o[l] ? -1 : 1;
+                            return a === u ? 0 : a < u ? -1 : 1
+                        }(Qt(e), Qt(n));
+                    case "Array":
+                        return function(i, o) {
+                            for (var a = i.length, u = o.length, c = a < u ? a : u, l = 0; l < c; ++l) {
+                                var p = B(i[l], o[l]);
+                                if (p !== 0) return p
+                            }
+                            return a === u ? 0 : a < u ? -1 : 1
+                        }(e, n)
+                }
+            } catch {}
+            return NaN
+        }
+
+        function $t(e) {
+            var n = typeof e;
+            return n != "object" ? n : ArrayBuffer.isView(e) ? "binary" : (e = zn(e), e === "ArrayBuffer" ? "binary" : e)
+        }
+
+        function Qt(e) {
+            return e instanceof Uint8Array ? e : ArrayBuffer.isView(e) ? new Uint8Array(e.buffer, e.byteOffset, e.byteLength) : new Uint8Array(e)
+        }
+
+        function En(e, n, t) {
+            var r = e.schema.yProps;
+            return r ? (n && 0 < t.numFailures && (n = n.filter(function(i, o) {
+                return !t.failures[o]
+            })), Promise.all(r.map(function(i) {
+                return i = i.updatesTable, n ? e.db.table(i).where("k").anyOf(n).delete() : e.db.table(i).clear()
+            })).then(function() {
+                return t
+            })) : t
+        }
+        var tn = (Xt.prototype.execute = function(e) {
+            var n = this["@@propmod"];
+            if (n.add !== void 0) {
+                var t = n.add;
+                if (L(t)) return hn(hn([], L(e) ? e : [], !0), t).sort();
+                if (typeof t == "number") return (Number(e) || 0) + t;
+                if (typeof t == "bigint") try {
+                    return BigInt(e) + t
+                } catch {
+                    return BigInt(0) + t
+                }
+                throw new TypeError("Invalid term ".concat(t))
+            }
+            if (n.remove !== void 0) {
+                var r = n.remove;
+                if (L(r)) return L(e) ? e.filter(function(i) {
+                    return !r.includes(i)
+                }).sort() : [];
+                if (typeof r == "number") return Number(e) - r;
+                if (typeof r == "bigint") try {
+                    return BigInt(e) - r
+                } catch {
+                    return BigInt(0) - r
+                }
+                throw new TypeError("Invalid subtrahend ".concat(r))
+            }
+            return t = (t = n.replacePrefix) === null || t === void 0 ? void 0 : t[0], t && typeof e == "string" && e.startsWith(t) ? n.replacePrefix[1] + e.substring(t.length) : e
+        }, Xt);
+
+        function Xt(e) {
+            this["@@propmod"] = e
+        }
+
+        function Gt(e, n) {
+            for (var t = z(n), r = t.length, i = !1, o = 0; o < r; ++o) {
+                var a = t[o],
+                    u = n[a],
+                    c = ue(e, a);
+                u instanceof tn ? (Z(e, a, u.execute(c)), i = !0) : c !== u && (Z(e, a, u), i = !0)
+            }
+            return i
+        }
+        var Ht = (N.prototype._trans = function(e, n, t) {
+            var r = this._tx || A.trans,
+                i = this.name,
+                o = ie && typeof console < "u" && console.createTask && console.createTask("Dexie: ".concat(e === "readonly" ? "read" : "write", " ").concat(this.name));
+
+            function a(l, p, s) {
+                if (!s.schema[i]) throw new j.NotFound("Table " + i + " not part of transaction");
+                return n(s.idbtrans, s)
+            }
+            var u = Me();
+            try {
+                var c = r && r.db._novip === this.db._novip ? r === A.trans ? r._promise(e, a, t) : de(function() {
+                    return r._promise(e, a, t)
+                }, {
+                    trans: r,
+                    transless: A.transless || A
+                }) : function l(p, s, v, f) {
+                    if (p.idbdb && (p._state.openComplete || A.letThrough || p._vip)) {
+                        var h = p._createTransaction(s, v, p._dbSchema);
+                        try {
+                            h.create(), p._state.PR1398_maxLoop = 3
+                        } catch (d) {
+                            return d.name === $n.InvalidState && p.isOpen() && 0 < --p._state.PR1398_maxLoop ? (console.warn("Dexie: Need to reopen db"), p.close({
+                                disableAutoOpen: !1
+                            }), p.open().then(function() {
+                                return l(p, s, v, f)
+                            })) : U(d)
+                        }
+                        return h._promise(s, function(d, y) {
+                            return de(function() {
+                                return A.trans = h, f(d, y, h)
+                            })
+                        }).then(function(d) {
+                            if (s === "readwrite") try {
+                                h.idbtrans.commit()
+                            } catch {}
+                            return s === "readonly" ? d : h._completion.then(function() {
+                                return d
+                            })
+                        })
+                    }
+                    if (p._state.openComplete) return U(new j.DatabaseClosed(p._state.dbOpenError));
+                    if (!p._state.isBeingOpened) {
+                        if (!p._state.autoOpen) return U(new j.DatabaseClosed);
+                        p.open().catch(F)
+                    }
+                    return p._state.dbReadyPromise.then(function() {
+                        return l(p, s, v, f)
+                    })
+                }(this.db, e, [this.name], a);
+                return o && (c._consoleTask = o, c = c.catch(function(l) {
+                    return console.trace(l), U(l)
+                })), c
+            } finally {
+                u && Le()
+            }
+        }, N.prototype.get = function(e, n) {
+            var t = this;
+            return e && e.constructor === Object ? this.where(e).first(n) : e == null ? U(new j.Type("Invalid argument to Table.get()")) : this._trans("readonly", function(r) {
+                return t.core.get({
+                    trans: r,
+                    key: e
+                }).then(function(i) {
+                    return t.hook.reading.fire(i)
+                })
+            }).then(n)
+        }, N.prototype.where = function(e) {
+            if (typeof e == "string") return new this.db.WhereClause(this, e);
+            if (L(e)) return new this.db.WhereClause(this, "[".concat(e.join("+"), "]"));
+            var n = z(e);
+            if (n.length === 1) return this.where(n[0]).equals(e[n[0]]);
+            var t = this.schema.indexes.concat(this.schema.primKey).filter(function(u) {
+                if (u.compound && n.every(function(l) {
+                        return 0 <= u.keyPath.indexOf(l)
+                    })) {
+                    for (var c = 0; c < n.length; ++c)
+                        if (n.indexOf(u.keyPath[c]) === -1) return !1;
+                    return !0
+                }
+                return !1
+            }).sort(function(u, c) {
+                return u.keyPath.length - c.keyPath.length
+            })[0];
+            if (t && this.db._maxKey !== Se) {
+                var o = t.keyPath.slice(0, n.length);
+                return this.where(o).equals(o.map(function(c) {
+                    return e[c]
+                }))
+            }!t && ie && console.warn("The query ".concat(JSON.stringify(e), " on ").concat(this.name, " would benefit from a ") + "compound index [".concat(n.join("+"), "]"));
+            var r = this.schema.idxByName;
+
+            function i(u, c) {
+                return B(u, c) === 0
+            }
+            var a = n.reduce(function(s, c) {
+                    var l = s[0],
+                        p = s[1],
+                        s = r[c],
+                        v = e[c];
+                    return [l || s, l || !s ? Ae(p, s && s.multi ? function(f) {
+                        return f = ue(f, c), L(f) && f.some(function(h) {
+                            return i(v, h)
+                        })
+                    } : function(f) {
+                        return i(v, ue(f, c))
+                    }) : p]
+                }, [null, null]),
+                o = a[0],
+                a = a[1];
+            return o ? this.where(o.name).equals(e[o.keyPath]).filter(a) : t ? this.filter(a) : this.where(n).equals("")
+        }, N.prototype.filter = function(e) {
+            return this.toCollection().and(e)
+        }, N.prototype.count = function(e) {
+            return this.toCollection().count(e)
+        }, N.prototype.offset = function(e) {
+            return this.toCollection().offset(e)
+        }, N.prototype.limit = function(e) {
+            return this.toCollection().limit(e)
+        }, N.prototype.each = function(e) {
+            return this.toCollection().each(e)
+        }, N.prototype.toArray = function(e) {
+            return this.toCollection().toArray(e)
+        }, N.prototype.toCollection = function() {
+            return new this.db.Collection(new this.db.WhereClause(this))
+        }, N.prototype.orderBy = function(e) {
+            return new this.db.Collection(new this.db.WhereClause(this, L(e) ? "[".concat(e.join("+"), "]") : e))
+        }, N.prototype.reverse = function() {
+            return this.toCollection().reverse()
+        }, N.prototype.mapToClass = function(e) {
+            var n, t = this.db,
+                r = this.name;
+
+            function i() {
+                return n !== null && n.apply(this, arguments) || this
+            }(this.schema.mappedClass = e).prototype instanceof Wt && (function(c, l) {
+                if (typeof l != "function" && l !== null) throw new TypeError("Class extends value " + String(l) + " is not a constructor or null");
+
+                function p() {
+                    this.constructor = c
+                }
+                be(c, l), c.prototype = l === null ? Object.create(l) : (p.prototype = l.prototype, new p)
+            }(i, n = e), Object.defineProperty(i.prototype, "db", {
+                get: function() {
+                    return t
+                },
+                enumerable: !1,
+                configurable: !0
+            }), i.prototype.table = function() {
+                return r
+            }, e = i);
+            for (var o = new Set, a = e.prototype; a; a = Ie(a)) Object.getOwnPropertyNames(a).forEach(function(c) {
+                return o.add(c)
+            });
+
+            function u(c) {
+                if (!c) return c;
+                var l, p = Object.create(e.prototype);
+                for (l in c)
+                    if (!o.has(l)) try {
+                        p[l] = c[l]
+                    } catch {}
+                return p
+            }
+            return this.schema.readHook && this.hook.reading.unsubscribe(this.schema.readHook), this.schema.readHook = u, this.hook("reading", u), e
+        }, N.prototype.defineClass = function() {
+            return this.mapToClass(function(e) {
+                ee(this, e)
+            })
+        }, N.prototype.add = function(e, n) {
+            var t = this,
+                r = this.schema.primKey,
+                i = r.auto,
+                o = r.keyPath,
+                a = e;
+            return o && i && (a = Pn(o)(e)), this._trans("readwrite", function(u) {
+                return t.core.mutate({
+                    trans: u,
+                    type: "add",
+                    keys: n != null ? [n] : null,
+                    values: [a]
+                })
+            }).then(function(u) {
+                return u.numFailures ? K.reject(u.failures[0]) : u.lastResult
+            }).then(function(u) {
+                if (o) try {
+                    Z(e, o, u)
+                } catch {}
+                return u
+            })
+        }, N.prototype.upsert = function(e, n) {
+            var t = this,
+                r = this.schema.primKey.keyPath;
+            return this._trans("readwrite", function(i) {
+                return t.core.get({
+                    trans: i,
+                    key: e
+                }).then(function(o) {
+                    var a = o ?? {};
+                    return Gt(a, n), r && Z(a, r, e), t.core.mutate({
+                        trans: i,
+                        type: "put",
+                        values: [a],
+                        keys: [e],
+                        upsert: !0,
+                        updates: {
+                            keys: [e],
+                            changeSpecs: [n]
+                        }
+                    }).then(function(u) {
+                        return u.numFailures ? K.reject(u.failures[0]) : !!o
+                    })
+                })
+            })
+        }, N.prototype.update = function(e, n) {
+            return typeof e != "object" || L(e) ? this.where(":id").equals(e).modify(n) : (e = ue(e, this.schema.primKey.keyPath), e === void 0 ? U(new j.InvalidArgument("Given object does not contain its primary key")) : this.where(":id").equals(e).modify(n))
+        }, N.prototype.put = function(e, n) {
+            var t = this,
+                r = this.schema.primKey,
+                i = r.auto,
+                o = r.keyPath,
+                a = e;
+            return o && i && (a = Pn(o)(e)), this._trans("readwrite", function(u) {
+                return t.core.mutate({
+                    trans: u,
+                    type: "put",
+                    values: [a],
+                    keys: n != null ? [n] : null
+                })
+            }).then(function(u) {
+                return u.numFailures ? K.reject(u.failures[0]) : u.lastResult
+            }).then(function(u) {
+                if (o) try {
+                    Z(e, o, u)
+                } catch {}
+                return u
+            })
+        }, N.prototype.delete = function(e) {
+            var n = this;
+            return this._trans("readwrite", function(t) {
+                return n.core.mutate({
+                    trans: t,
+                    type: "delete",
+                    keys: [e]
+                }).then(function(r) {
+                    return En(n, [e], r)
+                }).then(function(r) {
+                    return r.numFailures ? K.reject(r.failures[0]) : void 0
+                })
+            })
+        }, N.prototype.clear = function() {
+            var e = this;
+            return this._trans("readwrite", function(n) {
+                return e.core.mutate({
+                    trans: n,
+                    type: "deleteRange",
+                    range: Yt
+                }).then(function(t) {
+                    return En(e, null, t)
+                })
+            }).then(function(n) {
+                return n.numFailures ? K.reject(n.failures[0]) : void 0
+            })
+        }, N.prototype.bulkGet = function(e) {
+            var n = this;
+            return this._trans("readonly", function(t) {
+                return n.core.getMany({
+                    keys: e,
+                    trans: t
+                }).then(function(r) {
+                    return r.map(function(i) {
+                        return n.hook.reading.fire(i)
+                    })
+                })
+            })
+        }, N.prototype.bulkAdd = function(e, n, t) {
+            var r = this,
+                i = Array.isArray(n) ? n : void 0,
+                o = (t = t || (i ? void 0 : n)) ? t.allKeys : void 0;
+            return this._trans("readwrite", function(a) {
+                var l = r.schema.primKey,
+                    u = l.auto,
+                    l = l.keyPath;
+                if (l && i) throw new j.InvalidArgument("bulkAdd(): keys argument invalid on tables with inbound keys");
+                if (i && i.length !== e.length) throw new j.InvalidArgument("Arguments objects and keys must have the same length");
+                var c = e.length,
+                    l = l && u ? e.map(Pn(l)) : e;
+                return r.core.mutate({
+                    trans: a,
+                    type: "add",
+                    keys: i,
+                    values: l,
+                    wantResults: o
+                }).then(function(h) {
+                    var s = h.numFailures,
+                        v = h.results,
+                        f = h.lastResult,
+                        h = h.failures;
+                    if (s === 0) return o ? v : f;
+                    throw new Ne("".concat(r.name, ".bulkAdd(): ").concat(s, " of ").concat(c, " operations failed"), h)
+                })
+            })
+        }, N.prototype.bulkPut = function(e, n, t) {
+            var r = this,
+                i = Array.isArray(n) ? n : void 0,
+                o = (t = t || (i ? void 0 : n)) ? t.allKeys : void 0;
+            return this._trans("readwrite", function(a) {
+                var l = r.schema.primKey,
+                    u = l.auto,
+                    l = l.keyPath;
+                if (l && i) throw new j.InvalidArgument("bulkPut(): keys argument invalid on tables with inbound keys");
+                if (i && i.length !== e.length) throw new j.InvalidArgument("Arguments objects and keys must have the same length");
+                var c = e.length,
+                    l = l && u ? e.map(Pn(l)) : e;
+                return r.core.mutate({
+                    trans: a,
+                    type: "put",
+                    keys: i,
+                    values: l,
+                    wantResults: o
+                }).then(function(h) {
+                    var s = h.numFailures,
+                        v = h.results,
+                        f = h.lastResult,
+                        h = h.failures;
+                    if (s === 0) return o ? v : f;
+                    throw new Ne("".concat(r.name, ".bulkPut(): ").concat(s, " of ").concat(c, " operations failed"), h)
+                })
+            })
+        }, N.prototype.bulkUpdate = function(e) {
+            var n = this,
+                t = this.core,
+                r = e.map(function(a) {
+                    return a.key
+                }),
+                i = e.map(function(a) {
+                    return a.changes
+                }),
+                o = [];
+            return this._trans("readwrite", function(a) {
+                return t.getMany({
+                    trans: a,
+                    keys: r,
+                    cache: "clone"
+                }).then(function(u) {
+                    var c = [],
+                        l = [];
+                    e.forEach(function(s, v) {
+                        var f = s.key,
+                            h = s.changes,
+                            d = u[v];
+                        if (d) {
+                            for (var y = 0, m = Object.keys(h); y < m.length; y++) {
+                                var g = m[y],
+                                    b = h[g];
+                                if (g === n.schema.primKey.keyPath) {
+                                    if (B(b, f) !== 0) throw new j.Constraint("Cannot update primary key in bulkUpdate()")
+                                } else Z(d, g, b)
+                            }
+                            o.push(v), c.push(f), l.push(d)
+                        }
+                    });
+                    var p = c.length;
+                    return t.mutate({
+                        trans: a,
+                        type: "put",
+                        keys: c,
+                        values: l,
+                        updates: {
+                            keys: r,
+                            changeSpecs: i
+                        }
+                    }).then(function(s) {
+                        var v = s.numFailures,
+                            f = s.failures;
+                        if (v === 0) return p;
+                        for (var h = 0, d = Object.keys(f); h < d.length; h++) {
+                            var y, m = d[h],
+                                g = o[Number(m)];
+                            g != null && (y = f[m], delete f[m], f[g] = y)
+                        }
+                        throw new Ne("".concat(n.name, ".bulkUpdate(): ").concat(v, " of ").concat(p, " operations failed"), f)
+                    })
+                })
+            })
+        }, N.prototype.bulkDelete = function(e) {
+            var n = this,
+                t = e.length;
+            return this._trans("readwrite", function(r) {
+                return n.core.mutate({
+                    trans: r,
+                    type: "delete",
+                    keys: e
+                }).then(function(i) {
+                    return En(n, e, i)
+                })
+            }).then(function(a) {
+                var i = a.numFailures,
+                    o = a.lastResult,
+                    a = a.failures;
+                if (i === 0) return o;
+                throw new Ne("".concat(n.name, ".bulkDelete(): ").concat(i, " of ").concat(t, " operations failed"), a)
+            })
+        }, N);
+
+        function N() {}
+
+        function rn(e) {
+            function n(a, u) {
+                if (u) {
+                    for (var c = arguments.length, l = new Array(c - 1); --c;) l[c - 1] = arguments[c];
+                    return t[a].subscribe.apply(null, l), e
+                }
+                if (typeof a == "string") return t[a]
+            }
+            var t = {};
+            n.addEventType = o;
+            for (var r = 1, i = arguments.length; r < i; ++r) o(arguments[r]);
+            return n;
+
+            function o(a, u, c) {
+                if (typeof a != "object") {
+                    var l;
+                    u = u || Ir;
+                    var p = {
+                        subscribers: [],
+                        fire: c = c || F,
+                        subscribe: function(s) {
+                            p.subscribers.indexOf(s) === -1 && (p.subscribers.push(s), p.fire = u(p.fire, s))
+                        },
+                        unsubscribe: function(s) {
+                            p.subscribers = p.subscribers.filter(function(v) {
+                                return v !== s
+                            }), p.fire = p.subscribers.reduce(u, c)
+                        }
+                    };
+                    return t[a] = n[a] = p
+                }
+                z(l = a).forEach(function(s) {
+                    var v = l[s];
+                    if (L(v)) o(s, l[s][0], l[s][1]);
+                    else {
+                        if (v !== "asap") throw new j.InvalidArgument("Invalid event config");
+                        var f = o(s, He, function() {
+                            for (var h = arguments.length, d = new Array(h); h--;) d[h] = arguments[h];
+                            f.subscribers.forEach(function(y) {
+                                Tt(function() {
+                                    y.apply(null, d)
+                                })
+                            })
+                        })
+                    }
+                })
+            }
+        }
+
+        function on(e, n) {
+            return Be(n).from({
+                prototype: e
+            }), n
+        }
+
+        function ze(e, n) {
+            return !(e.filter || e.algorithm || e.or) && (n ? e.justLimit : !e.replayFilter)
+        }
+
+        function ot(e, n) {
+            e.filter = Ae(e.filter, n)
+        }
+
+        function at(e, n, t) {
+            var r = e.replayFilter;
+            e.replayFilter = r ? function() {
+                return Ae(r(), n())
+            } : n, e.justLimit = t && !r
+        }
+
+        function Kn(e, n) {
+            if (e.isPrimKey) return n.primaryKey;
+            var t = n.getIndexByKeyPath(e.index);
+            if (!t) throw new j.Schema("KeyPath " + e.index + " on object store " + n.name + " is not indexed");
+            return t
+        }
+
+        function Jt(e, n, t) {
+            var r = Kn(e, n.schema);
+            return n.openCursor({
+                trans: t,
+                values: !e.keysOnly,
+                reverse: e.dir === "prev",
+                unique: !!e.unique,
+                query: {
+                    index: r,
+                    range: e.range
+                }
+            })
+        }
+
+        function Sn(e, n, t, r) {
+            var i = e.replayFilter ? Ae(e.filter, e.replayFilter()) : e.filter;
+            if (e.or) {
+                var o = {},
+                    a = function(u, c, l) {
+                        var p, s;
+                        i && !i(c, l, function(v) {
+                            return c.stop(v)
+                        }, function(v) {
+                            return c.fail(v)
+                        }) || ((s = "" + (p = c.primaryKey)) == "[object ArrayBuffer]" && (s = "" + new Uint8Array(p)), J(o, s) || (o[s] = !0, n(u, c, l)))
+                    };
+                return Promise.all([e.or._iterate(a, t), Zt(Jt(e, r, t), e.algorithm, a, !e.keysOnly && e.valueMapper)])
+            }
+            return Zt(Jt(e, r, t), Ae(e.algorithm, i), n, !e.keysOnly && e.valueMapper)
+        }
+
+        function Zt(e, n, t, r) {
+            var i = M(r ? function(o, a, u) {
+                return t(r(o), a, u)
+            } : t);
+            return e.then(function(o) {
+                if (o) return o.start(function() {
+                    var a = function() {
+                        return o.continue()
+                    };
+                    n && !n(o, function(u) {
+                        return a = u
+                    }, function(u) {
+                        o.stop(u), a = F
+                    }, function(u) {
+                        o.fail(u), a = F
+                    }) || i(o.value, o, function(u) {
+                        return a = u
+                    }), a()
+                })
+            })
+        }
+        var Mr = (R.prototype._read = function(e, n) {
+            var t = this._ctx;
+            return t.error ? t.table._trans(null, U.bind(null, t.error)) : t.table._trans("readonly", e).then(n)
+        }, R.prototype._write = function(e) {
+            var n = this._ctx;
+            return n.error ? n.table._trans(null, U.bind(null, n.error)) : n.table._trans("readwrite", e, "locked")
+        }, R.prototype._addAlgorithm = function(e) {
+            var n = this._ctx;
+            n.algorithm = Ae(n.algorithm, e)
+        }, R.prototype._iterate = function(e, n) {
+            return Sn(this._ctx, e, n, this._ctx.table.core)
+        }, R.prototype.clone = function(e) {
+            var n = Object.create(this.constructor.prototype),
+                t = Object.create(this._ctx);
+            return e && ee(t, e), n._ctx = t, n
+        }, R.prototype.raw = function() {
+            return this._ctx.valueMapper = null, this
+        }, R.prototype.each = function(e) {
+            var n = this._ctx;
+            return this._read(function(t) {
+                return Sn(n, e, t, n.table.core)
+            })
+        }, R.prototype.count = function(e) {
+            var n = this;
+            return this._read(function(t) {
+                var r = n._ctx,
+                    i = r.table.core;
+                if (ze(r, !0)) return i.count({
+                    trans: t,
+                    query: {
+                        index: Kn(r, i.schema),
+                        range: r.range
+                    }
+                }).then(function(a) {
+                    return Math.min(a, r.limit)
+                });
+                var o = 0;
+                return Sn(r, function() {
+                    return ++o, !1
+                }, t, i).then(function() {
+                    return o
+                })
+            }).then(e)
+        }, R.prototype.sortBy = function(e, n) {
+            var t = e.split(".").reverse(),
+                r = t[0],
+                i = t.length - 1;
+
+            function o(c, l) {
+                return l ? o(c[t[l]], l - 1) : c[r]
+            }
+            var a = this._ctx.dir === "next" ? 1 : -1;
+
+            function u(c, l) {
+                return B(o(c, i), o(l, i)) * a
+            }
+            return this.toArray(function(c) {
+                return c.sort(u)
+            }).then(n)
+        }, R.prototype.toArray = function(e) {
+            var n = this;
+            return this._read(function(t) {
+                var r = n._ctx;
+                if (r.dir === "next" && ze(r, !0) && 0 < r.limit) {
+                    var i = r.valueMapper,
+                        o = Kn(r, r.table.core.schema);
+                    return r.table.core.query({
+                        trans: t,
+                        limit: r.limit,
+                        values: !0,
+                        query: {
+                            index: o,
+                            range: r.range
+                        }
+                    }).then(function(u) {
+                        return u = u.result, i ? u.map(i) : u
+                    })
+                }
+                var a = [];
+                return Sn(r, function(u) {
+                    return a.push(u)
+                }, t, r.table.core).then(function() {
+                    return a
+                })
+            }, e)
+        }, R.prototype.offset = function(e) {
+            var n = this._ctx;
+            return e <= 0 || (n.offset += e, ze(n) ? at(n, function() {
+                var t = e;
+                return function(r, i) {
+                    return t === 0 || (t === 1 ? --t : i(function() {
+                        r.advance(t), t = 0
+                    }), !1)
+                }
+            }) : at(n, function() {
+                var t = e;
+                return function() {
+                    return --t < 0
+                }
+            })), this
+        }, R.prototype.limit = function(e) {
+            return this._ctx.limit = Math.min(this._ctx.limit, e), at(this._ctx, function() {
+                var n = e;
+                return function(t, r, i) {
+                    return --n <= 0 && r(i), 0 <= n
+                }
+            }, !0), this
+        }, R.prototype.until = function(e, n) {
+            return ot(this._ctx, function(t, r, i) {
+                return !e(t.value) || (r(i), n)
+            }), this
+        }, R.prototype.first = function(e) {
+            return this.limit(1).toArray(function(n) {
+                return n[0]
+            }).then(e)
+        }, R.prototype.last = function(e) {
+            return this.reverse().first(e)
+        }, R.prototype.filter = function(e) {
+            var n;
+            return ot(this._ctx, function(t) {
+                return e(t.value)
+            }), (n = this._ctx).isMatch = Ae(n.isMatch, e), this
+        }, R.prototype.and = function(e) {
+            return this.filter(e)
+        }, R.prototype.or = function(e) {
+            return new this.db.WhereClause(this._ctx.table, e, this)
+        }, R.prototype.reverse = function() {
+            return this._ctx.dir = this._ctx.dir === "prev" ? "next" : "prev", this._ondirectionchange && this._ondirectionchange(this._ctx.dir), this
+        }, R.prototype.desc = function() {
+            return this.reverse()
+        }, R.prototype.eachKey = function(e) {
+            var n = this._ctx;
+            return n.keysOnly = !n.isMatch, this.each(function(t, r) {
+                e(r.key, r)
+            })
+        }, R.prototype.eachUniqueKey = function(e) {
+            return this._ctx.unique = "unique", this.eachKey(e)
+        }, R.prototype.eachPrimaryKey = function(e) {
+            var n = this._ctx;
+            return n.keysOnly = !n.isMatch, this.each(function(t, r) {
+                e(r.primaryKey, r)
+            })
+        }, R.prototype.keys = function(e) {
+            var n = this._ctx;
+            n.keysOnly = !n.isMatch;
+            var t = [];
+            return this.each(function(r, i) {
+                t.push(i.key)
+            }).then(function() {
+                return t
+            }).then(e)
+        }, R.prototype.primaryKeys = function(e) {
+            var n = this._ctx;
+            if (n.dir === "next" && ze(n, !0) && 0 < n.limit) return this._read(function(r) {
+                var i = Kn(n, n.table.core.schema);
+                return n.table.core.query({
+                    trans: r,
+                    values: !1,
+                    limit: n.limit,
+                    query: {
+                        index: i,
+                        range: n.range
+                    }
+                })
+            }).then(function(r) {
+                return r.result
+            }).then(e);
+            n.keysOnly = !n.isMatch;
+            var t = [];
+            return this.each(function(r, i) {
+                t.push(i.primaryKey)
+            }).then(function() {
+                return t
+            }).then(e)
+        }, R.prototype.uniqueKeys = function(e) {
+            return this._ctx.unique = "unique", this.keys(e)
+        }, R.prototype.firstKey = function(e) {
+            return this.limit(1).keys(function(n) {
+                return n[0]
+            }).then(e)
+        }, R.prototype.lastKey = function(e) {
+            return this.reverse().firstKey(e)
+        }, R.prototype.distinct = function() {
+            var e = this._ctx,
+                e = e.index && e.table.schema.idxByName[e.index];
+            if (!e || !e.multi) return this;
+            var n = {};
+            return ot(this._ctx, function(i) {
+                var r = i.primaryKey.toString(),
+                    i = J(n, r);
+                return n[r] = !0, !i
+            }), this
+        }, R.prototype.modify = function(e) {
+            var n = this,
+                t = this._ctx;
+            return this._write(function(r) {
+                var i = typeof e == "function" ? e : function(d) {
+                        return Gt(d, e)
+                    },
+                    o = t.table.core,
+                    l = o.schema.primaryKey,
+                    a = l.outbound,
+                    u = l.extractKey,
+                    c = 200,
+                    l = n.db._options.modifyChunkSize;
+                l && (c = typeof l == "object" ? l[o.name] || l["*"] || 200 : l);
+
+                function p(d, g) {
+                    var m = g.failures,
+                        g = g.numFailures;
+                    v += d - g;
+                    for (var b = 0, w = z(m); b < w.length; b++) {
+                        var x = w[b];
+                        s.push(m[x])
+                    }
+                }
+                var s = [],
+                    v = 0,
+                    f = [],
+                    h = e === er;
+                return n.clone().primaryKeys().then(function(d) {
+                    function y(g) {
+                        var b = Math.min(c, d.length - g),
+                            w = d.slice(g, g + b);
+                        return (h ? Promise.resolve([]) : o.getMany({
+                            trans: r,
+                            keys: w,
+                            cache: "immutable"
+                        })).then(function(x) {
+                            var P = [],
+                                _ = [],
+                                k = a ? [] : null,
+                                E = h ? w : [];
+                            if (!h)
+                                for (var O = 0; O < b; ++O) {
+                                    var S = x[O],
+                                        D = {
+                                            value: we(S),
+                                            primKey: d[g + O]
+                                        };
+                                    i.call(D, D.value, D) !== !1 && (D.value == null ? E.push(d[g + O]) : a || B(u(S), u(D.value)) === 0 ? (_.push(D.value), a && k.push(d[g + O])) : (E.push(d[g + O]), P.push(D.value)))
+                                }
+                            return Promise.resolve(0 < P.length && o.mutate({
+                                trans: r,
+                                type: "add",
+                                values: P
+                            }).then(function(I) {
+                                for (var q in I.failures) E.splice(parseInt(q), 1);
+                                p(P.length, I)
+                            })).then(function() {
+                                return (0 < _.length || m && typeof e == "object") && o.mutate({
+                                    trans: r,
+                                    type: "put",
+                                    keys: k,
+                                    values: _,
+                                    criteria: m,
+                                    changeSpec: typeof e != "function" && e,
+                                    isAdditionalChunk: 0 < g
+                                }).then(function(I) {
+                                    return p(_.length, I)
+                                })
+                            }).then(function() {
+                                return (0 < E.length || m && h) && o.mutate({
+                                    trans: r,
+                                    type: "delete",
+                                    keys: E,
+                                    criteria: m,
+                                    isAdditionalChunk: 0 < g
+                                }).then(function(I) {
+                                    return En(t.table, E, I)
+                                }).then(function(I) {
+                                    return p(E.length, I)
+                                })
+                            }).then(function() {
+                                return d.length > g + b && y(g + c)
+                            })
+                        })
+                    }
+                    var m = ze(t) && t.limit === 1 / 0 && (typeof e != "function" || h) && {
+                        index: t.index,
+                        range: t.range
+                    };
+                    return y(0).then(function() {
+                        if (0 < s.length) throw new pn("Error modifying one or more objects", s, v, f);
+                        return d.length
+                    })
+                })
+            })
+        }, R.prototype.delete = function() {
+            var e = this._ctx,
+                n = e.range;
+            return !ze(e) || e.table.schema.yProps || !e.isPrimKey && n.type !== 3 ? this.modify(er) : this._write(function(t) {
+                var r = e.table.core.schema.primaryKey,
+                    i = n;
+                return e.table.core.count({
+                    trans: t,
+                    query: {
+                        index: r,
+                        range: i
+                    }
+                }).then(function(o) {
+                    return e.table.core.mutate({
+                        trans: t,
+                        type: "deleteRange",
+                        range: i
+                    }).then(function(c) {
+                        var u = c.failures,
+                            c = c.numFailures;
+                        if (c) throw new pn("Could not delete some values", Object.keys(u).map(function(l) {
+                            return u[l]
+                        }), o - c);
+                        return o - c
+                    })
+                })
+            })
+        }, R);
+
+        function R() {}
+        var er = function(e, n) {
+            return n.value = null
+        };
+
+        function Lr(e, n) {
+            return e < n ? -1 : e === n ? 0 : 1
+        }
+
+        function Ur(e, n) {
+            return n < e ? -1 : e === n ? 0 : 1
+        }
+
+        function ne(e, n, t) {
+            return e = e instanceof tr ? new e.Collection(e) : e, e._ctx.error = new(t || TypeError)(n), e
+        }
+
+        function Ye(e) {
+            return new e.Collection(e, function() {
+                return nr("")
+            }).limit(0)
+        }
+
+        function An(e, n, t, r) {
+            var i, o, a, u, c, l, p, s = t.length;
+            if (!t.every(function(h) {
+                    return typeof h == "string"
+                })) return ne(e, zt);
+
+            function v(h) {
+                i = h === "next" ? function(y) {
+                    return y.toUpperCase()
+                } : function(y) {
+                    return y.toLowerCase()
+                }, o = h === "next" ? function(y) {
+                    return y.toLowerCase()
+                } : function(y) {
+                    return y.toUpperCase()
+                }, a = h === "next" ? Lr : Ur;
+                var d = t.map(function(y) {
+                    return {
+                        lower: o(y),
+                        upper: i(y)
+                    }
+                }).sort(function(y, m) {
+                    return a(y.lower, m.lower)
+                });
+                u = d.map(function(y) {
+                    return y.upper
+                }), c = d.map(function(y) {
+                    return y.lower
+                }), p = (l = h) === "next" ? "" : r
+            }
+            v("next"), e = new e.Collection(e, function() {
+                return ve(u[0], c[s - 1] + r)
+            }), e._ondirectionchange = function(h) {
+                v(h)
+            };
+            var f = 0;
+            return e._addAlgorithm(function(h, d, y) {
+                var m = h.key;
+                if (typeof m != "string") return !1;
+                var g = o(m);
+                if (n(g, c, f)) return !0;
+                for (var b = null, w = f; w < s; ++w) {
+                    var x = function(P, _, k, E, O, S) {
+                        for (var D = Math.min(P.length, E.length), I = -1, q = 0; q < D; ++q) {
+                            var te = _[q];
+                            if (te !== E[q]) return O(P[q], k[q]) < 0 ? P.substr(0, q) + k[q] + k.substr(q + 1) : O(P[q], E[q]) < 0 ? P.substr(0, q) + E[q] + k.substr(q + 1) : 0 <= I ? P.substr(0, I) + _[I] + k.substr(I + 1) : null;
+                            O(P[q], te) < 0 && (I = q)
+                        }
+                        return D < E.length && S === "next" ? P + k.substr(P.length) : D < P.length && S === "prev" ? P.substr(0, k.length) : I < 0 ? null : P.substr(0, I) + E[I] + k.substr(I + 1)
+                    }(m, g, u[w], c[w], a, l);
+                    x === null && b === null ? f = w + 1 : (b === null || 0 < a(b, x)) && (b = x)
+                }
+                return d(b !== null ? function() {
+                    h.continue(b + p)
+                } : y), !1
+            }), e
+        }
+
+        function ve(e, n, t, r) {
+            return {
+                type: 2,
+                lower: e,
+                upper: n,
+                lowerOpen: t,
+                upperOpen: r
+            }
+        }
+
+        function nr(e) {
+            return {
+                type: 1,
+                lower: e,
+                upper: e
+            }
+        }
+        var tr = (Object.defineProperty(W.prototype, "Collection", {
+            get: function() {
+                return this._ctx.table.db.Collection
+            },
+            enumerable: !1,
+            configurable: !0
+        }), W.prototype.between = function(e, n, t, r) {
+            t = t !== !1, r = r === !0;
+            try {
+                return 0 < this._cmp(e, n) || this._cmp(e, n) === 0 && (t || r) && (!t || !r) ? Ye(this) : new this.Collection(this, function() {
+                    return ve(e, n, !t, !r)
+                })
+            } catch {
+                return ne(this, ce)
+            }
+        }, W.prototype.equals = function(e) {
+            return e == null ? ne(this, ce) : new this.Collection(this, function() {
+                return nr(e)
+            })
+        }, W.prototype.above = function(e) {
+            return e == null ? ne(this, ce) : new this.Collection(this, function() {
+                return ve(e, void 0, !0)
+            })
+        }, W.prototype.aboveOrEqual = function(e) {
+            return e == null ? ne(this, ce) : new this.Collection(this, function() {
+                return ve(e, void 0, !1)
+            })
+        }, W.prototype.below = function(e) {
+            return e == null ? ne(this, ce) : new this.Collection(this, function() {
+                return ve(void 0, e, !1, !0)
+            })
+        }, W.prototype.belowOrEqual = function(e) {
+            return e == null ? ne(this, ce) : new this.Collection(this, function() {
+                return ve(void 0, e)
+            })
+        }, W.prototype.startsWith = function(e) {
+            return typeof e != "string" ? ne(this, zt) : this.between(e, e + Se, !0, !0)
+        }, W.prototype.startsWithIgnoreCase = function(e) {
+            return e === "" ? this.startsWith(e) : An(this, function(n, t) {
+                return n.indexOf(t[0]) === 0
+            }, [e], Se)
+        }, W.prototype.equalsIgnoreCase = function(e) {
+            return An(this, function(n, t) {
+                return n === t[0]
+            }, [e], "")
+        }, W.prototype.anyOfIgnoreCase = function() {
+            var e = se.apply(Re, arguments);
+            return e.length === 0 ? Ye(this) : An(this, function(n, t) {
+                return t.indexOf(n) !== -1
+            }, e, "")
+        }, W.prototype.startsWithAnyOfIgnoreCase = function() {
+            var e = se.apply(Re, arguments);
+            return e.length === 0 ? Ye(this) : An(this, function(n, t) {
+                return t.some(function(r) {
+                    return n.indexOf(r) === 0
+                })
+            }, e, Se)
+        }, W.prototype.anyOf = function() {
+            var e = this,
+                n = se.apply(Re, arguments),
+                t = this._cmp;
+            try {
+                n.sort(t)
+            } catch {
+                return ne(this, ce)
+            }
+            if (n.length === 0) return Ye(this);
+            var r = new this.Collection(this, function() {
+                return ve(n[0], n[n.length - 1])
+            });
+            r._ondirectionchange = function(o) {
+                t = o === "next" ? e._ascending : e._descending, n.sort(t)
+            };
+            var i = 0;
+            return r._addAlgorithm(function(o, a, u) {
+                for (var c = o.key; 0 < t(c, n[i]);)
+                    if (++i === n.length) return a(u), !1;
+                return t(c, n[i]) === 0 || (a(function() {
+                    o.continue(n[i])
+                }), !1)
+            }), r
+        }, W.prototype.notEqual = function(e) {
+            return this.inAnyRange([
+                [-1 / 0, e],
+                [e, this.db._maxKey]
+            ], {
+                includeLowers: !1,
+                includeUppers: !1
+            })
+        }, W.prototype.noneOf = function() {
+            var e = se.apply(Re, arguments);
+            if (e.length === 0) return new this.Collection(this);
+            try {
+                e.sort(this._ascending)
+            } catch {
+                return ne(this, ce)
+            }
+            var n = e.reduce(function(t, r) {
+                return t ? t.concat([
+                    [t[t.length - 1][1], r]
+                ]) : [
+                    [-1 / 0, r]
+                ]
+            }, null);
+            return n.push([e[e.length - 1], this.db._maxKey]), this.inAnyRange(n, {
+                includeLowers: !1,
+                includeUppers: !1
+            })
+        }, W.prototype.inAnyRange = function(m, n) {
+            var t = this,
+                r = this._cmp,
+                i = this._ascending,
+                o = this._descending,
+                a = this._min,
+                u = this._max;
+            if (m.length === 0) return Ye(this);
+            if (!m.every(function(g) {
+                    return g[0] !== void 0 && g[1] !== void 0 && i(g[0], g[1]) <= 0
+                })) return ne(this, "First argument to inAnyRange() must be an Array of two-value Arrays [lower,upper] where upper must not be lower than lower", j.InvalidArgument);
+            var c = !n || n.includeLowers !== !1,
+                l = n && n.includeUppers === !0,
+                p, s = i;
+
+            function v(g, b) {
+                return s(g[0], b[0])
+            }
+            try {
+                (p = m.reduce(function(g, b) {
+                    for (var w = 0, x = g.length; w < x; ++w) {
+                        var P = g[w];
+                        if (r(b[0], P[1]) < 0 && 0 < r(b[1], P[0])) {
+                            P[0] = a(P[0], b[0]), P[1] = u(P[1], b[1]);
+                            break
+                        }
+                    }
+                    return w === x && g.push(b), g
+                }, [])).sort(v)
+            } catch {
+                return ne(this, ce)
+            }
+            var f = 0,
+                h = l ? function(g) {
+                    return 0 < i(g, p[f][1])
+                } : function(g) {
+                    return 0 <= i(g, p[f][1])
+                },
+                d = c ? function(g) {
+                    return 0 < o(g, p[f][0])
+                } : function(g) {
+                    return 0 <= o(g, p[f][0])
+                },
+                y = h,
+                m = new this.Collection(this, function() {
+                    return ve(p[0][0], p[p.length - 1][1], !c, !l)
+                });
+            return m._ondirectionchange = function(g) {
+                s = g === "next" ? (y = h, i) : (y = d, o), p.sort(v)
+            }, m._addAlgorithm(function(g, b, w) {
+                for (var x, P = g.key; y(P);)
+                    if (++f === p.length) return b(w), !1;
+                return !h(x = P) && !d(x) || (t._cmp(P, p[f][1]) === 0 || t._cmp(P, p[f][0]) === 0 || b(function() {
+                    s === i ? g.continue(p[f][0]) : g.continue(p[f][1])
+                }), !1)
+            }), m
+        }, W.prototype.startsWithAnyOf = function() {
+            var e = se.apply(Re, arguments);
+            return e.every(function(n) {
+                return typeof n == "string"
+            }) ? e.length === 0 ? Ye(this) : this.inAnyRange(e.map(function(n) {
+                return [n, n + Se]
+            })) : ne(this, "startsWithAnyOf() only works with strings")
+        }, W);
+
+        function W() {}
+
+        function oe(e) {
+            return M(function(n) {
+                return an(n), e(n.target.error), !1
+            })
+        }
+
+        function an(e) {
+            e.stopPropagation && e.stopPropagation(), e.preventDefault && e.preventDefault()
+        }
+        var un = "storagemutated",
+            ut = "x-storagemutated-1",
+            me = rn(null, un),
+            Vr = (ae.prototype._lock = function() {
+                return Xe(!A.global), ++this._reculock, this._reculock !== 1 || A.global || (A.lockOwnerFor = this), this
+            }, ae.prototype._unlock = function() {
+                if (Xe(!A.global), --this._reculock == 0)
+                    for (A.global || (A.lockOwnerFor = null); 0 < this._blockedFuncs.length && !this._locked();) {
+                        var e = this._blockedFuncs.shift();
+                        try {
+                            Ke(e[1], e[0])
+                        } catch {}
+                    }
+                return this
+            }, ae.prototype._locked = function() {
+                return this._reculock && A.lockOwnerFor !== this
+            }, ae.prototype.create = function(e) {
+                var n = this;
+                if (!this.mode) return this;
+                var t = this.db.idbdb,
+                    r = this.db._state.dbOpenError;
+                if (Xe(!this.idbtrans), !e && !t) switch (r && r.name) {
+                    case "DatabaseClosedError":
+                        throw new j.DatabaseClosed(r);
+                    case "MissingAPIError":
+                        throw new j.MissingAPI(r.message, r);
+                    default:
+                        throw new j.OpenFailed(r)
+                }
+                if (!this.active) throw new j.TransactionInactive;
+                return Xe(this._completion._state === null), (e = this.idbtrans = e || (this.db.core || t).transaction(this.storeNames, this.mode, {
+                    durability: this.chromeTransactionDurability
+                })).onerror = M(function(i) {
+                    an(i), n._reject(e.error)
+                }), e.onabort = M(function(i) {
+                    an(i), n.active && n._reject(new j.Abort(e.error)), n.active = !1, n.on("abort").fire(i)
+                }), e.oncomplete = M(function() {
+                    n.active = !1, n._resolve(), "mutatedParts" in e && me.storagemutated.fire(e.mutatedParts)
+                }), this
+            }, ae.prototype._promise = function(e, n, t) {
+                var r = this;
+                if (e === "readwrite" && this.mode !== "readwrite") return U(new j.ReadOnly("Transaction is readonly"));
+                if (!this.active) return U(new j.TransactionInactive);
+                if (this._locked()) return new K(function(o, a) {
+                    r._blockedFuncs.push([function() {
+                        r._promise(e, n, t).then(o, a)
+                    }, A])
+                });
+                if (t) return de(function() {
+                    var o = new K(function(a, u) {
+                        r._lock();
+                        var c = n(a, u, r);
+                        c && c.then && c.then(a, u)
+                    });
+                    return o.finally(function() {
+                        return r._unlock()
+                    }), o._lib = !0, o
+                });
+                var i = new K(function(o, a) {
+                    var u = n(o, a, r);
+                    u && u.then && u.then(o, a)
+                });
+                return i._lib = !0, i
+            }, ae.prototype._root = function() {
+                return this.parent ? this.parent._root() : this
+            }, ae.prototype.waitFor = function(e) {
+                var n, t = this._root(),
+                    r = K.resolve(e);
+                t._waitingFor ? t._waitingFor = t._waitingFor.then(function() {
+                    return r
+                }) : (t._waitingFor = r, t._waitingQueue = [], n = t.idbtrans.objectStore(t.storeNames[0]), function o() {
+                    for (++t._spinCount; t._waitingQueue.length;) t._waitingQueue.shift()();
+                    t._waitingFor && (n.get(-1 / 0).onsuccess = o)
+                }());
+                var i = t._waitingFor;
+                return new K(function(o, a) {
+                    r.then(function(u) {
+                        return t._waitingQueue.push(M(o.bind(null, u)))
+                    }, function(u) {
+                        return t._waitingQueue.push(M(a.bind(null, u)))
+                    }).finally(function() {
+                        t._waitingFor === i && (t._waitingFor = null)
+                    })
+                })
+            }, ae.prototype.abort = function() {
+                this.active && (this.active = !1, this.idbtrans && this.idbtrans.abort(), this._reject(new j.Abort))
+            }, ae.prototype.table = function(e) {
+                var n = this._memoizedTables || (this._memoizedTables = {});
+                if (J(n, e)) return n[e];
+                var t = this.schema[e];
+                if (!t) throw new j.NotFound("Table " + e + " not part of transaction");
+                return t = new this.db.Table(e, t, this), t.core = this.db.core.table(e), n[e] = t
+            }, ae);
+
+        function ae() {}
+
+        function st(e, n, t, r, i, o, a, u) {
+            return {
+                name: e,
+                keyPath: n,
+                unique: t,
+                multi: r,
+                auto: i,
+                compound: o,
+                src: (t && !a ? "&" : "") + (r ? "*" : "") + (i ? "++" : "") + rr(n),
+                type: u
+            }
+        }
+
+        function rr(e) {
+            return typeof e == "string" ? e : e ? "[" + [].join.call(e, "+") + "]" : ""
+        }
+
+        function ct(e, n, t) {
+            return {
+                name: e,
+                primKey: n,
+                indexes: t,
+                mappedClass: null,
+                idxByName: (r = function(i) {
+                    return [i.name, i]
+                }, t.reduce(function(i, o, a) {
+                    return a = r(o, a), a && (i[a[0]] = a[1]), i
+                }, {}))
+            };
+            var r
+        }
+        var sn = function(e) {
+            try {
+                return e.only([
+                    []
+                ]), sn = function() {
+                    return [
+                        []
+                    ]
+                }, [
+                    []
+                ]
+            } catch {
+                return sn = function() {
+                    return Se
+                }, Se
+            }
+        };
+
+        function lt(e) {
+            return e == null ? function() {} : typeof e == "string" ? (n = e).split(".").length === 1 ? function(t) {
+                return t[n]
+            } : function(t) {
+                return ue(t, n)
+            } : function(t) {
+                return ue(t, e)
+            };
+            var n
+        }
+
+        function ir(e) {
+            return [].slice.call(e)
+        }
+        var zr = 0;
+
+        function cn(e) {
+            return e == null ? ":id" : typeof e == "string" ? e : "[".concat(e.join("+"), "]")
+        }
+
+        function Yr(e, n, c) {
+            function r(y) {
+                if (y.type === 3) return null;
+                if (y.type === 4) throw new Error("Cannot convert never type to IDBKeyRange");
+                var f = y.lower,
+                    h = y.upper,
+                    d = y.lowerOpen,
+                    y = y.upperOpen;
+                return f === void 0 ? h === void 0 ? null : n.upperBound(h, !!y) : h === void 0 ? n.lowerBound(f, !!d) : n.bound(f, h, !!d, !!y)
+            }
+
+            function i(v) {
+                var f, h = v.name;
+                return {
+                    name: h,
+                    schema: v,
+                    mutate: function(d) {
+                        var y = d.trans,
+                            m = d.type,
+                            g = d.keys,
+                            b = d.values,
+                            w = d.range;
+                        return new Promise(function(x, P) {
+                            x = M(x);
+                            var _ = y.objectStore(h),
+                                k = _.keyPath == null,
+                                E = m === "put" || m === "add";
+                            if (!E && m !== "delete" && m !== "deleteRange") throw new Error("Invalid operation type: " + m);
+                            var O, S = (g || b || {
+                                length: 1
+                            }).length;
+                            if (g && b && g.length !== b.length) throw new Error("Given keys array must have same length as given values array.");
+                            if (S === 0) return x({
+                                numFailures: 0,
+                                failures: {},
+                                results: [],
+                                lastResult: void 0
+                            });
+
+                            function D(H) {
+                                ++te, an(H)
+                            }
+                            var I = [],
+                                q = [],
+                                te = 0;
+                            if (m === "deleteRange") {
+                                if (w.type === 4) return x({
+                                    numFailures: te,
+                                    failures: q,
+                                    results: [],
+                                    lastResult: void 0
+                                });
+                                w.type === 3 ? I.push(O = _.clear()) : I.push(O = _.delete(r(w)))
+                            } else {
+                                var k = E ? k ? [b, g] : [b, null] : [g, null],
+                                    T = k[0],
+                                    X = k[1];
+                                if (E)
+                                    for (var G = 0; G < S; ++G) I.push(O = X && X[G] !== void 0 ? _[m](T[G], X[G]) : _[m](T[G])), O.onerror = D;
+                                else
+                                    for (G = 0; G < S; ++G) I.push(O = _[m](T[G])), O.onerror = D
+                            }
+
+                            function Ln(H) {
+                                H = H.target.result, I.forEach(function(Te, St) {
+                                    return Te.error != null && (q[St] = Te.error)
+                                }), x({
+                                    numFailures: te,
+                                    failures: q,
+                                    results: m === "delete" ? g : I.map(function(Te) {
+                                        return Te.result
+                                    }),
+                                    lastResult: H
+                                })
+                            }
+                            O.onerror = function(H) {
+                                D(H), Ln(H)
+                            }, O.onsuccess = Ln
+                        })
+                    },
+                    getMany: function(d) {
+                        var y = d.trans,
+                            m = d.keys;
+                        return new Promise(function(g, b) {
+                            g = M(g);
+                            for (var w, x = y.objectStore(h), P = m.length, _ = new Array(P), k = 0, E = 0, O = function(I) {
+                                    I = I.target, _[I._pos] = I.result, ++E === k && g(_)
+                                }, S = oe(b), D = 0; D < P; ++D) m[D] != null && ((w = x.get(m[D]))._pos = D, w.onsuccess = O, w.onerror = S, ++k);
+                            k === 0 && g(_)
+                        })
+                    },
+                    get: function(d) {
+                        var y = d.trans,
+                            m = d.key;
+                        return new Promise(function(g, b) {
+                            g = M(g);
+                            var w = y.objectStore(h).get(m);
+                            w.onsuccess = function(x) {
+                                return g(x.target.result)
+                            }, w.onerror = oe(b)
+                        })
+                    },
+                    query: (f = l, function(d) {
+                        return new Promise(function(y, m) {
+                            y = M(y);
+                            var g, b, w, k = d.trans,
+                                x = d.values,
+                                P = d.limit,
+                                O = d.query,
+                                _ = P === 1 / 0 ? void 0 : P,
+                                E = O.index,
+                                O = O.range,
+                                k = k.objectStore(h),
+                                E = E.isPrimaryKey ? k : k.index(E.name),
+                                O = r(O);
+                            if (P === 0) return y({
+                                result: []
+                            });
+                            f ? ((_ = x ? E.getAll(O, _) : E.getAllKeys(O, _)).onsuccess = function(S) {
+                                return y({
+                                    result: S.target.result
+                                })
+                            }, _.onerror = oe(m)) : (g = 0, b = !x && "openKeyCursor" in E ? E.openKeyCursor(O) : E.openCursor(O), w = [], b.onsuccess = function(S) {
+                                var D = b.result;
+                                return D ? (w.push(x ? D.value : D.primaryKey), ++g === P ? y({
+                                    result: w
+                                }) : void D.continue()) : y({
+                                    result: w
+                                })
+                            }, b.onerror = oe(m))
+                        })
+                    }),
+                    openCursor: function(d) {
+                        var y = d.trans,
+                            m = d.values,
+                            g = d.query,
+                            b = d.reverse,
+                            w = d.unique;
+                        return new Promise(function(x, P) {
+                            x = M(x);
+                            var E = g.index,
+                                _ = g.range,
+                                k = y.objectStore(h),
+                                k = E.isPrimaryKey ? k : k.index(E.name),
+                                E = b ? w ? "prevunique" : "prev" : w ? "nextunique" : "next",
+                                O = !m && "openKeyCursor" in k ? k.openKeyCursor(r(_), E) : k.openCursor(r(_), E);
+                            O.onerror = oe(P), O.onsuccess = M(function(S) {
+                                var D, I, q, te, T = O.result;
+                                T ? (T.___id = ++zr, T.done = !1, D = T.continue.bind(T), I = (I = T.continuePrimaryKey) && I.bind(T), q = T.advance.bind(T), te = function() {
+                                    throw new Error("Cursor not stopped")
+                                }, T.trans = y, T.stop = T.continue = T.continuePrimaryKey = T.advance = function() {
+                                    throw new Error("Cursor not started")
+                                }, T.fail = M(P), T.next = function() {
+                                    var X = this,
+                                        G = 1;
+                                    return this.start(function() {
+                                        return G-- ? X.continue() : X.stop()
+                                    }).then(function() {
+                                        return X
+                                    })
+                                }, T.start = function(X) {
+                                    function G() {
+                                        if (O.result) try {
+                                            X()
+                                        } catch (H) {
+                                            T.fail(H)
+                                        } else T.done = !0, T.start = function() {
+                                            throw new Error("Cursor behind last entry")
+                                        }, T.stop()
+                                    }
+                                    var Ln = new Promise(function(H, Te) {
+                                        H = M(H), O.onerror = oe(Te), T.fail = Te, T.stop = function(St) {
+                                            T.stop = T.continue = T.continuePrimaryKey = T.advance = te, H(St)
+                                        }
+                                    });
+                                    return O.onsuccess = M(function(H) {
+                                        O.onsuccess = G, G()
+                                    }), T.continue = D, T.continuePrimaryKey = I, T.advance = q, G(), Ln
+                                }, x(T)) : x(null)
+                            }, P)
+                        })
+                    },
+                    count: function(d) {
+                        var y = d.query,
+                            m = d.trans,
+                            g = y.index,
+                            b = y.range;
+                        return new Promise(function(w, x) {
+                            var P = m.objectStore(h),
+                                _ = g.isPrimaryKey ? P : P.index(g.name),
+                                P = r(b),
+                                _ = P ? _.count(P) : _.count();
+                            _.onsuccess = M(function(k) {
+                                return w(k.target.result)
+                            }), _.onerror = oe(x)
+                        })
+                    }
+                }
+            }
+            var o, a, u, p = (a = c, u = ir((o = e).objectStoreNames), {
+                    schema: {
+                        name: o.name,
+                        tables: u.map(function(v) {
+                            return a.objectStore(v)
+                        }).map(function(v) {
+                            var f = v.keyPath,
+                                y = v.autoIncrement,
+                                h = L(f),
+                                d = {},
+                                y = {
+                                    name: v.name,
+                                    primaryKey: {
+                                        name: null,
+                                        isPrimaryKey: !0,
+                                        outbound: f == null,
+                                        compound: h,
+                                        keyPath: f,
+                                        autoIncrement: y,
+                                        unique: !0,
+                                        extractKey: lt(f)
+                                    },
+                                    indexes: ir(v.indexNames).map(function(m) {
+                                        return v.index(m)
+                                    }).map(function(w) {
+                                        var g = w.name,
+                                            b = w.unique,
+                                            x = w.multiEntry,
+                                            w = w.keyPath,
+                                            x = {
+                                                name: g,
+                                                compound: L(w),
+                                                keyPath: w,
+                                                unique: b,
+                                                multiEntry: x,
+                                                extractKey: lt(w)
+                                            };
+                                        return d[cn(w)] = x
+                                    }),
+                                    getIndexByKeyPath: function(m) {
+                                        return d[cn(m)]
+                                    }
+                                };
+                            return d[":id"] = y.primaryKey, f != null && (d[cn(f)] = y.primaryKey), y
+                        })
+                    },
+                    hasGetAll: 0 < u.length && "getAll" in a.objectStore(u[0]) && !(typeof navigator < "u" && /Safari/.test(navigator.userAgent) && !/(Chrome\/|Edge\/)/.test(navigator.userAgent) && [].concat(navigator.userAgent.match(/Safari\/(\d*)/))[1] < 604)
+                }),
+                c = p.schema,
+                l = p.hasGetAll,
+                p = c.tables.map(i),
+                s = {};
+            return p.forEach(function(v) {
+                return s[v.name] = v
+            }), {
+                stack: "dbcore",
+                transaction: e.transaction.bind(e),
+                table: function(v) {
+                    if (!s[v]) throw new Error("Table '".concat(v, "' not found"));
+                    return s[v]
+                },
+                MIN_KEY: -1 / 0,
+                MAX_KEY: sn(n),
+                schema: c
+            }
+        }
+
+        function Wr(e, n, t, r) {
+            var i = t.IDBKeyRange;
+            return t.indexedDB, {
+                dbcore: (r = Yr(n, i, r), e.dbcore.reduce(function(o, a) {
+                    return a = a.create, C(C({}, o), a(o))
+                }, r))
+            }
+        }
+
+        function jn(e, r) {
+            var t = r.db,
+                r = Wr(e._middlewares, t, e._deps, r);
+            e.core = r.dbcore, e.tables.forEach(function(i) {
+                var o = i.name;
+                e.core.schema.tables.some(function(a) {
+                    return a.name === o
+                }) && (i.core = e.core.table(o), e[o] instanceof e.Table && (e[o].core = i.core))
+            })
+        }
+
+        function Cn(e, n, t, r) {
+            t.forEach(function(i) {
+                var o = r[i];
+                n.forEach(function(a) {
+                    var u = function c(l, p) {
+                        return kr(l, p) || (l = Ie(l)) && c(l, p)
+                    }(a, i);
+                    (!u || "value" in u && u.value === void 0) && (a === e.Transaction.prototype || a instanceof e.Transaction ? fe(a, i, {
+                        get: function() {
+                            return this.table(i)
+                        },
+                        set: function(c) {
+                            jt(this, i, {
+                                value: c,
+                                writable: !0,
+                                configurable: !0,
+                                enumerable: !0
+                            })
+                        }
+                    }) : a[i] = new e.Table(i, o))
+                })
+            })
+        }
+
+        function ft(e, n) {
+            n.forEach(function(t) {
+                for (var r in t) t[r] instanceof e.Table && delete t[r]
+            })
+        }
+
+        function $r(e, n) {
+            return e._cfg.version - n._cfg.version
+        }
+
+        function Qr(e, n, t, r) {
+            var i = e._dbSchema;
+            t.objectStoreNames.contains("$meta") && !i.$meta && (i.$meta = ct("$meta", ar("")[0], []), e._storeNames.push("$meta"));
+            var o = e._createTransaction("readwrite", e._storeNames, i);
+            o.create(t), o._completion.catch(r);
+            var a = o._reject.bind(o),
+                u = A.transless || A;
+            de(function() {
+                return A.trans = o, A.transless = u, n !== 0 ? (jn(e, t), l = n, ((c = o).storeNames.includes("$meta") ? c.table("$meta").get("version").then(function(p) {
+                    return p ?? l
+                }) : K.resolve(l)).then(function(p) {
+                    return v = p, f = o, h = t, d = [], p = (s = e)._versions, y = s._dbSchema = Dn(0, s.idbdb, h), (p = p.filter(function(m) {
+                        return m._cfg.version >= v
+                    })).length !== 0 ? (p.forEach(function(m) {
+                        d.push(function() {
+                            var g = y,
+                                b = m._cfg.dbschema;
+                            In(s, g, h), In(s, b, h), y = s._dbSchema = b;
+                            var w = ht(g, b);
+                            w.add.forEach(function(E) {
+                                dt(h, E[0], E[1].primKey, E[1].indexes)
+                            }), w.change.forEach(function(E) {
+                                if (E.recreate) throw new j.Upgrade("Not yet support for changing primary key");
+                                var O = h.objectStore(E.name);
+                                E.add.forEach(function(S) {
+                                    return Tn(O, S)
+                                }), E.change.forEach(function(S) {
+                                    O.deleteIndex(S.name), Tn(O, S)
+                                }), E.del.forEach(function(S) {
+                                    return O.deleteIndex(S)
+                                })
+                            });
+                            var x = m._cfg.contentUpgrade;
+                            if (x && m._cfg.version > v) {
+                                jn(s, h), f._memoizedTables = {};
+                                var P = Dt(b);
+                                w.del.forEach(function(E) {
+                                    P[E] = g[E]
+                                }), ft(s, [s.Transaction.prototype]), Cn(s, [s.Transaction.prototype], z(P), P), f.schema = P;
+                                var _, k = Wn(x);
+                                return k && Ue(), w = K.follow(function() {
+                                    var E;
+                                    (_ = x(f)) && k && (E = pe.bind(null, null), _.then(E, E))
+                                }), _ && typeof _.then == "function" ? K.resolve(_) : w.then(function() {
+                                    return _
+                                })
+                            }
+                        }), d.push(function(g) {
+                            var b, w, x = m._cfg.dbschema;
+                            b = x, w = g, [].slice.call(w.db.objectStoreNames).forEach(function(P) {
+                                return b[P] == null && w.db.deleteObjectStore(P)
+                            }), ft(s, [s.Transaction.prototype]), Cn(s, [s.Transaction.prototype], s._storeNames, s._dbSchema), f.schema = s._dbSchema
+                        }), d.push(function(g) {
+                            s.idbdb.objectStoreNames.contains("$meta") && (Math.ceil(s.idbdb.version / 10) === m._cfg.version ? (s.idbdb.deleteObjectStore("$meta"), delete s._dbSchema.$meta, s._storeNames = s._storeNames.filter(function(b) {
+                                return b !== "$meta"
+                            })) : g.objectStore("$meta").put(m._cfg.version, "version"))
+                        })
+                    }), function m() {
+                        return d.length ? K.resolve(d.shift()(f.idbtrans)).then(m) : K.resolve()
+                    }().then(function() {
+                        or(y, h)
+                    })) : K.resolve();
+                    var s, v, f, h, d, y
+                }).catch(a)) : (z(i).forEach(function(p) {
+                    dt(t, p, i[p].primKey, i[p].indexes)
+                }), jn(e, t), void K.follow(function() {
+                    return e.on.populate.fire(o)
+                }).catch(a));
+                var c, l
+            })
+        }
+
+        function Xr(e, n) {
+            or(e._dbSchema, n), n.db.version % 10 != 0 || n.objectStoreNames.contains("$meta") || n.db.createObjectStore("$meta").add(Math.ceil(n.db.version / 10 - 1), "version");
+            var t = Dn(0, e.idbdb, n);
+            In(e, e._dbSchema, n);
+            for (var r = 0, i = ht(t, e._dbSchema).change; r < i.length; r++) {
+                var o = function(a) {
+                    if (a.change.length || a.recreate) return console.warn("Unable to patch indexes of table ".concat(a.name, " because it has changes on the type of index or primary key.")), {
+                        value: void 0
+                    };
+                    var u = n.objectStore(a.name);
+                    a.add.forEach(function(c) {
+                        ie && console.debug("Dexie upgrade patch: Creating missing index ".concat(a.name, ".").concat(c.src)), Tn(u, c)
+                    })
+                }(i[r]);
+                if (typeof o == "object") return o.value
+            }
+        }
+
+        function ht(e, n) {
+            var t, r = {
+                del: [],
+                add: [],
+                change: []
+            };
+            for (t in e) n[t] || r.del.push(t);
+            for (t in n) {
+                var i = e[t],
+                    o = n[t];
+                if (i) {
+                    var a = {
+                        name: t,
+                        def: o,
+                        recreate: !1,
+                        del: [],
+                        add: [],
+                        change: []
+                    };
+                    if ("" + (i.primKey.keyPath || "") != "" + (o.primKey.keyPath || "") || i.primKey.auto !== o.primKey.auto) a.recreate = !0, r.change.push(a);
+                    else {
+                        var u = i.idxByName,
+                            c = o.idxByName,
+                            l = void 0;
+                        for (l in u) c[l] || a.del.push(l);
+                        for (l in c) {
+                            var p = u[l],
+                                s = c[l];
+                            p ? p.src !== s.src && a.change.push(s) : a.add.push(s)
+                        }(0 < a.del.length || 0 < a.add.length || 0 < a.change.length) && r.change.push(a)
+                    }
+                } else r.add.push([t, o])
+            }
+            return r
+        }
+
+        function dt(e, n, t, r) {
+            var i = e.db.createObjectStore(n, t.keyPath ? {
+                keyPath: t.keyPath,
+                autoIncrement: t.auto
+            } : {
+                autoIncrement: t.auto
+            });
+            return r.forEach(function(o) {
+                return Tn(i, o)
+            }), i
+        }
+
+        function or(e, n) {
+            z(e).forEach(function(t) {
+                n.db.objectStoreNames.contains(t) || (ie && console.debug("Dexie: Creating missing table", t), dt(n, t, e[t].primKey, e[t].indexes))
+            })
+        }
+
+        function Tn(e, n) {
+            e.createIndex(n.name, n.keyPath, {
+                unique: n.unique,
+                multiEntry: n.multi
+            })
+        }
+
+        function Dn(e, n, t) {
+            var r = {};
+            return dn(n.objectStoreNames, 0).forEach(function(i) {
+                for (var o = t.objectStore(i), a = st(rr(l = o.keyPath), l || "", !0, !1, !!o.autoIncrement, l && typeof l != "string", !0), u = [], c = 0; c < o.indexNames.length; ++c) {
+                    var p = o.index(o.indexNames[c]),
+                        l = p.keyPath,
+                        p = st(p.name, l, !!p.unique, !!p.multiEntry, !1, l && typeof l != "string", !1);
+                    u.push(p)
+                }
+                r[i] = ct(i, a, u)
+            }), r
+        }
+
+        function In(e, n, t) {
+            for (var r = t.db.objectStoreNames, i = 0; i < r.length; ++i) {
+                var o = r[i],
+                    a = t.objectStore(o);
+                e._hasGetAll = "getAll" in a;
+                for (var u = 0; u < a.indexNames.length; ++u) {
+                    var c = a.indexNames[u],
+                        l = a.index(c).keyPath,
+                        p = typeof l == "string" ? l : "[" + dn(l).join("+") + "]";
+                    !n[o] || (l = n[o].idxByName[p]) && (l.name = c, delete n[o].idxByName[p], n[o].idxByName[c] = l)
+                }
+            }
+            typeof navigator < "u" && /Safari/.test(navigator.userAgent) && !/(Chrome\/|Edge\/)/.test(navigator.userAgent) && $.WorkerGlobalScope && $ instanceof $.WorkerGlobalScope && [].concat(navigator.userAgent.match(/Safari\/(\d*)/))[1] < 604 && (e._hasGetAll = !1)
+        }
+
+        function ar(e) {
+            return e.split(",").map(function(n, t) {
+                var o = n.split(":"),
+                    r = (i = o[1]) === null || i === void 0 ? void 0 : i.trim(),
+                    i = (n = o[0].trim()).replace(/([&*]|\+\+)/g, ""),
+                    o = /^\[/.test(i) ? i.match(/^\[(.*)\]$/)[1].split("+") : i;
+                return st(i, o || null, /\&/.test(n), /\*/.test(n), /\+\+/.test(n), L(o), t === 0, r)
+            })
+        }
+        var Gr = (We.prototype._createTableSchema = ct, We.prototype._parseIndexSyntax = ar, We.prototype._parseStoresSpec = function(e, n) {
+            var t = this;
+            z(e).forEach(function(r) {
+                if (e[r] !== null) {
+                    var i = t._parseIndexSyntax(e[r]),
+                        o = i.shift();
+                    if (!o) throw new j.Schema("Invalid schema for table " + r + ": " + e[r]);
+                    if (o.unique = !0, o.multi) throw new j.Schema("Primary key cannot be multiEntry*");
+                    i.forEach(function(a) {
+                        if (a.auto) throw new j.Schema("Only primary key can be marked as autoIncrement (++)");
+                        if (!a.keyPath) throw new j.Schema("Index must have a name and cannot be an empty string")
+                    }), i = t._createTableSchema(r, o, i), n[r] = i
+                }
+            })
+        }, We.prototype.stores = function(t) {
+            var n = this.db;
+            this._cfg.storesSource = this._cfg.storesSource ? ee(this._cfg.storesSource, t) : t;
+            var t = n._versions,
+                r = {},
+                i = {};
+            return t.forEach(function(o) {
+                ee(r, o._cfg.storesSource), i = o._cfg.dbschema = {}, o._parseStoresSpec(r, i)
+            }), n._dbSchema = i, ft(n, [n._allTables, n, n.Transaction.prototype]), Cn(n, [n._allTables, n, n.Transaction.prototype, this._cfg.tables], z(i), i), n._storeNames = z(i), this
+        }, We.prototype.upgrade = function(e) {
+            return this._cfg.contentUpgrade = Qn(this._cfg.contentUpgrade || F, e), this
+        }, We);
+
+        function We() {}
+
+        function pt(e, n) {
+            var t = e._dbNamesDB;
+            return t || (t = e._dbNamesDB = new le(On, {
+                addons: [],
+                indexedDB: e,
+                IDBKeyRange: n
+            })).version(1).stores({
+                dbnames: "name"
+            }), t.table("dbnames")
+        }
+
+        function yt(e) {
+            return e && typeof e.databases == "function"
+        }
+
+        function vt(e) {
+            return de(function() {
+                return A.letThrough = !0, e()
+            })
+        }
+
+        function mt(e) {
+            return !("from" in e)
+        }
+        var Q = function(e, n) {
+            if (!this) {
+                var t = new Q;
+                return e && "d" in e && ee(t, e), t
+            }
+            ee(this, arguments.length ? {
+                d: 1,
+                from: e,
+                to: 1 < arguments.length ? n : e
+            } : {
+                d: 0
+            })
+        };
+
+        function ln(e, n, t) {
+            var r = B(n, t);
+            if (!isNaN(r)) {
+                if (0 < r) throw RangeError();
+                if (mt(e)) return ee(e, {
+                    from: n,
+                    to: t,
+                    d: 1
+                });
+                var i = e.l,
+                    r = e.r;
+                if (B(t, e.from) < 0) return i ? ln(i, n, t) : e.l = {
+                    from: n,
+                    to: t,
+                    d: 1,
+                    l: null,
+                    r: null
+                }, sr(e);
+                if (0 < B(n, e.to)) return r ? ln(r, n, t) : e.r = {
+                    from: n,
+                    to: t,
+                    d: 1,
+                    l: null,
+                    r: null
+                }, sr(e);
+                B(n, e.from) < 0 && (e.from = n, e.l = null, e.d = r ? r.d + 1 : 1), 0 < B(t, e.to) && (e.to = t, e.r = null, e.d = e.l ? e.l.d + 1 : 1), t = !e.r, i && !e.l && fn(e, i), r && t && fn(e, r)
+            }
+        }
+
+        function fn(e, n) {
+            mt(n) || function t(r, c) {
+                var o = c.from,
+                    a = c.to,
+                    u = c.l,
+                    c = c.r;
+                ln(r, o, a), u && t(r, u), c && t(r, c)
+            }(e, n)
+        }
+
+        function ur(e, n) {
+            var t = qn(n),
+                r = t.next();
+            if (r.done) return !1;
+            for (var i = r.value, o = qn(e), a = o.next(i.from), u = a.value; !r.done && !a.done;) {
+                if (B(u.from, i.to) <= 0 && 0 <= B(u.to, i.from)) return !0;
+                B(i.from, u.from) < 0 ? i = (r = t.next(u.from)).value : u = (a = o.next(i.from)).value
+            }
+            return !1
+        }
+
+        function qn(e) {
+            var n = mt(e) ? null : {
+                s: 0,
+                n: e
+            };
+            return {
+                next: function(t) {
+                    for (var r = 0 < arguments.length; n;) switch (n.s) {
+                        case 0:
+                            if (n.s = 1, r)
+                                for (; n.n.l && B(t, n.n.from) < 0;) n = {
+                                    up: n,
+                                    n: n.n.l,
+                                    s: 1
+                                };
+                            else
+                                for (; n.n.l;) n = {
+                                    up: n,
+                                    n: n.n.l,
+                                    s: 1
+                                };
+                        case 1:
+                            if (n.s = 2, !r || B(t, n.n.to) <= 0) return {
+                                value: n.n,
+                                done: !1
+                            };
+                        case 2:
+                            if (n.n.r) {
+                                n.s = 3, n = {
+                                    up: n,
+                                    n: n.n.r,
+                                    s: 0
+                                };
+                                continue
+                            }
+                        case 3:
+                            n = n.up
+                    }
+                    return {
+                        done: !0
+                    }
+                }
+            }
+        }
+
+        function sr(e) {
+            var n, t, r = (((n = e.r) === null || n === void 0 ? void 0 : n.d) || 0) - (((t = e.l) === null || t === void 0 ? void 0 : t.d) || 0),
+                i = 1 < r ? "r" : r < -1 ? "l" : "";
+            i && (n = i == "r" ? "l" : "r", t = C({}, e), r = e[i], e.from = r.from, e.to = r.to, e[i] = r[i], t[i] = r[n], (e[n] = t).d = cr(t)), e.d = cr(e)
+        }
+
+        function cr(t) {
+            var n = t.r,
+                t = t.l;
+            return (n ? t ? Math.max(n.d, t.d) : n.d : t ? t.d : 0) + 1
+        }
+
+        function Bn(e, n) {
+            return z(n).forEach(function(t) {
+                e[t] ? fn(e[t], n[t]) : e[t] = function r(i) {
+                    var o, a, u = {};
+                    for (o in i) J(i, o) && (a = i[o], u[o] = !a || typeof a != "object" || qt.has(a.constructor) ? a : r(a));
+                    return u
+                }(n[t])
+            }), e
+        }
+
+        function gt(e, n) {
+            return e.all || n.all || Object.keys(e).some(function(t) {
+                return n[t] && ur(n[t], e[t])
+            })
+        }
+        qe(Q.prototype, ((re = {
+            add: function(e) {
+                return fn(this, e), this
+            },
+            addKey: function(e) {
+                return ln(this, e, e), this
+            },
+            addKeys: function(e) {
+                var n = this;
+                return e.forEach(function(t) {
+                    return ln(n, t, t)
+                }), this
+            },
+            hasKey: function(e) {
+                var n = qn(this).next(e).value;
+                return n && B(n.from, e) <= 0 && 0 <= B(n.to, e)
+            }
+        })[Yn] = function() {
+            return qn(this)
+        }, re));
+        var je = {},
+            bt = {},
+            wt = !1;
+
+        function Rn(e) {
+            Bn(bt, e), wt || (wt = !0, setTimeout(function() {
+                wt = !1, _t(bt, !(bt = {}))
+            }, 0))
+        }
+
+        function _t(e, n) {
+            n === void 0 && (n = !1);
+            var t = new Set;
+            if (e.all)
+                for (var r = 0, i = Object.values(je); r < i.length; r++) lr(a = i[r], e, t, n);
+            else
+                for (var o in e) {
+                    var a, u = /^idb\:\/\/(.*)\/(.*)\//.exec(o);
+                    u && (o = u[1], u = u[2], (a = je["idb://".concat(o, "/").concat(u)]) && lr(a, e, t, n))
+                }
+            t.forEach(function(c) {
+                return c()
+            })
+        }
+
+        function lr(e, n, t, r) {
+            for (var i = [], o = 0, a = Object.entries(e.queries.query); o < a.length; o++) {
+                for (var u = a[o], c = u[0], l = [], p = 0, s = u[1]; p < s.length; p++) {
+                    var v = s[p];
+                    gt(n, v.obsSet) ? v.subscribers.forEach(function(y) {
+                        return t.add(y)
+                    }) : r && l.push(v)
+                }
+                r && i.push([c, l])
+            }
+            if (r)
+                for (var f = 0, h = i; f < h.length; f++) {
+                    var d = h[f],
+                        c = d[0],
+                        l = d[1];
+                    e.queries.query[c] = l
+                }
+        }
+
+        function Hr(e) {
+            var n = e._state,
+                t = e._deps.indexedDB;
+            if (n.isBeingOpened || e.idbdb) return n.dbReadyPromise.then(function() {
+                return n.dbOpenError ? U(n.dbOpenError) : e
+            });
+            n.isBeingOpened = !0, n.dbOpenError = null, n.openComplete = !1;
+            var r = n.openCanceller,
+                i = Math.round(10 * e.verno),
+                o = !1;
+
+            function a() {
+                if (n.openCanceller !== r) throw new j.DatabaseClosed("db.open() was cancelled")
+            }
+
+            function u() {
+                return new K(function(v, f) {
+                    if (a(), !t) throw new j.MissingAPI;
+                    var h = e.name,
+                        d = n.autoSchema || !i ? t.open(h) : t.open(h, i);
+                    if (!d) throw new j.MissingAPI;
+                    d.onerror = oe(f), d.onblocked = M(e._fireOnBlocked), d.onupgradeneeded = M(function(y) {
+                        var m;
+                        p = d.transaction, n.autoSchema && !e._options.allowEmptyDB ? (d.onerror = an, p.abort(), d.result.close(), (m = t.deleteDatabase(h)).onsuccess = m.onerror = M(function() {
+                            f(new j.NoSuchDatabase("Database ".concat(h, " doesnt exist")))
+                        })) : (p.onerror = oe(f), y = y.oldVersion > Math.pow(2, 62) ? 0 : y.oldVersion, s = y < 1, e.idbdb = d.result, o && Xr(e, p), Qr(e, y / 10, p, f))
+                    }, f), d.onsuccess = M(function() {
+                        p = null;
+                        var y, m, g, b, w, x = e.idbdb = d.result,
+                            P = dn(x.objectStoreNames);
+                        if (0 < P.length) try {
+                            var _ = x.transaction((b = P).length === 1 ? b[0] : b, "readonly");
+                            if (n.autoSchema) m = x, g = _, (y = e).verno = m.version / 10, g = y._dbSchema = Dn(0, m, g), y._storeNames = dn(m.objectStoreNames, 0), Cn(y, [y._allTables], z(g), g);
+                            else if (In(e, e._dbSchema, _), ((w = ht(Dn(0, (w = e).idbdb, _), w._dbSchema)).add.length || w.change.some(function(k) {
+                                    return k.add.length || k.change.length
+                                })) && !o) return console.warn("Dexie SchemaDiff: Schema was extended without increasing the number passed to db.version(). Dexie will add missing parts and increment native version number to workaround this."), x.close(), i = x.version + 1, o = !0, v(u());
+                            jn(e, _)
+                        } catch {}
+                        Ve.push(e), x.onversionchange = M(function(k) {
+                            n.vcFired = !0, e.on("versionchange").fire(k)
+                        }), x.onclose = M(function() {
+                            e.close({
+                                disableAutoOpen: !1
+                            })
+                        }), s && (w = e._deps, _ = h, x = w.indexedDB, w = w.IDBKeyRange, yt(x) || _ === On || pt(x, w).put({
+                            name: _
+                        }).catch(F)), v()
+                    }, f)
+                }).catch(function(v) {
+                    switch (v == null ? void 0 : v.name) {
+                        case "UnknownError":
+                            if (0 < n.PR1398_maxLoop) return n.PR1398_maxLoop--, console.warn("Dexie: Workaround for Chrome UnknownError on open()"), u();
+                            break;
+                        case "VersionError":
+                            if (0 < i) return i = 0, u()
+                    }
+                    return K.reject(v)
+                })
+            }
+            var c, l = n.dbReadyResolve,
+                p = null,
+                s = !1;
+            return K.race([r, (typeof navigator > "u" ? K.resolve() : !navigator.userAgentData && /Safari\//.test(navigator.userAgent) && !/Chrom(e|ium)\//.test(navigator.userAgent) && indexedDB.databases ? new Promise(function(v) {
+                function f() {
+                    return indexedDB.databases().finally(v)
+                }
+                c = setInterval(f, 100), f()
+            }).finally(function() {
+                return clearInterval(c)
+            }) : Promise.resolve()).then(u)]).then(function() {
+                return a(), n.onReadyBeingFired = [], K.resolve(vt(function() {
+                    return e.on.ready.fire(e.vip)
+                })).then(function v() {
+                    if (0 < n.onReadyBeingFired.length) {
+                        var f = n.onReadyBeingFired.reduce(Qn, F);
+                        return n.onReadyBeingFired = [], K.resolve(vt(function() {
+                            return f(e.vip)
+                        })).then(v)
+                    }
+                })
+            }).finally(function() {
+                n.openCanceller === r && (n.onReadyBeingFired = null, n.isBeingOpened = !1)
+            }).catch(function(v) {
+                n.dbOpenError = v;
+                try {
+                    p && p.abort()
+                } catch {}
+                return r === n.openCanceller && e._close(), U(v)
+            }).finally(function() {
+                n.openComplete = !0, l()
+            }).then(function() {
+                var v;
+                return s && (v = {}, e.tables.forEach(function(f) {
+                    f.schema.indexes.forEach(function(h) {
+                        h.name && (v["idb://".concat(e.name, "/").concat(f.name, "/").concat(h.name)] = new Q(-1 / 0, [
+                            [
+                                []
+                            ]
+                        ]))
+                    }), v["idb://".concat(e.name, "/").concat(f.name, "/")] = v["idb://".concat(e.name, "/").concat(f.name, "/:dels")] = new Q(-1 / 0, [
+                        [
+                            []
+                        ]
+                    ])
+                }), me(un).fire(v), _t(v, !0)), e
+            })
+        }
+
+        function xt(e) {
+            function n(o) {
+                return e.next(o)
+            }
+            var t = i(n),
+                r = i(function(o) {
+                    return e.throw(o)
+                });
+
+            function i(o) {
+                return function(c) {
+                    var u = o(c),
+                        c = u.value;
+                    return u.done ? c : c && typeof c.then == "function" ? c.then(t, r) : L(c) ? Promise.all(c).then(t, r) : t(c)
+                }
+            }
+            return i(n)()
+        }
+
+        function Fn(e, n, t) {
+            for (var r = L(e) ? e.slice() : [e], i = 0; i < t; ++i) r.push(n);
+            return r
+        }
+        var Jr = {
+            stack: "dbcore",
+            name: "VirtualIndexMiddleware",
+            level: 1,
+            create: function(e) {
+                return C(C({}, e), {
+                    table: function(n) {
+                        var t = e.table(n),
+                            r = t.schema,
+                            i = {},
+                            o = [];
+
+                        function a(s, v, f) {
+                            var h = cn(s),
+                                d = i[h] = i[h] || [],
+                                y = s == null ? 0 : typeof s == "string" ? 1 : s.length,
+                                m = 0 < v,
+                                m = C(C({}, f), {
+                                    name: m ? "".concat(h, "(virtual-from:").concat(f.name, ")") : f.name,
+                                    lowLevelIndex: f,
+                                    isVirtual: m,
+                                    keyTail: v,
+                                    keyLength: y,
+                                    extractKey: lt(s),
+                                    unique: !m && f.unique
+                                });
+                            return d.push(m), m.isPrimaryKey || o.push(m), 1 < y && a(y === 2 ? s[0] : s.slice(0, y - 1), v + 1, f), d.sort(function(g, b) {
+                                return g.keyTail - b.keyTail
+                            }), m
+                        }
+                        n = a(r.primaryKey.keyPath, 0, r.primaryKey), i[":id"] = [n];
+                        for (var u = 0, c = r.indexes; u < c.length; u++) {
+                            var l = c[u];
+                            a(l.keyPath, 0, l)
+                        }
+
+                        function p(s) {
+                            var v, f = s.query.index;
+                            return f.isVirtual ? C(C({}, s), {
+                                query: {
+                                    index: f.lowLevelIndex,
+                                    range: (v = s.query.range, f = f.keyTail, {
+                                        type: v.type === 1 ? 2 : v.type,
+                                        lower: Fn(v.lower, v.lowerOpen ? e.MAX_KEY : e.MIN_KEY, f),
+                                        lowerOpen: !0,
+                                        upper: Fn(v.upper, v.upperOpen ? e.MIN_KEY : e.MAX_KEY, f),
+                                        upperOpen: !0
+                                    })
+                                }
+                            }) : s
+                        }
+                        return C(C({}, t), {
+                            schema: C(C({}, r), {
+                                primaryKey: n,
+                                indexes: o,
+                                getIndexByKeyPath: function(s) {
+                                    return (s = i[cn(s)]) && s[0]
+                                }
+                            }),
+                            count: function(s) {
+                                return t.count(p(s))
+                            },
+                            query: function(s) {
+                                return t.query(p(s))
+                            },
+                            openCursor: function(s) {
+                                var v = s.query.index,
+                                    f = v.keyTail,
+                                    h = v.isVirtual,
+                                    d = v.keyLength;
+                                return h ? t.openCursor(p(s)).then(function(m) {
+                                    return m && y(m)
+                                }) : t.openCursor(s);
+
+                                function y(m) {
+                                    return Object.create(m, {
+                                        continue: {
+                                            value: function(g) {
+                                                g != null ? m.continue(Fn(g, s.reverse ? e.MAX_KEY : e.MIN_KEY, f)) : s.unique ? m.continue(m.key.slice(0, d).concat(s.reverse ? e.MIN_KEY : e.MAX_KEY, f)) : m.continue()
+                                            }
+                                        },
+                                        continuePrimaryKey: {
+                                            value: function(g, b) {
+                                                m.continuePrimaryKey(Fn(g, e.MAX_KEY, f), b)
+                                            }
+                                        },
+                                        primaryKey: {
+                                            get: function() {
+                                                return m.primaryKey
+                                            }
+                                        },
+                                        key: {
+                                            get: function() {
+                                                var g = m.key;
+                                                return d === 1 ? g[0] : g.slice(0, d)
+                                            }
+                                        },
+                                        value: {
+                                            get: function() {
+                                                return m.value
+                                            }
+                                        }
+                                    })
+                                }
+                            }
+                        })
+                    }
+                })
+            }
+        };
+
+        function kt(e, n, t, r) {
+            return t = t || {}, r = r || "", z(e).forEach(function(i) {
+                var o, a, u;
+                J(n, i) ? (o = e[i], a = n[i], typeof o == "object" && typeof a == "object" && o && a ? (u = zn(o)) !== zn(a) ? t[r + i] = n[i] : u === "Object" ? kt(o, a, t, r + i + ".") : o !== a && (t[r + i] = n[i]) : o !== a && (t[r + i] = n[i])) : t[r + i] = void 0
+            }), z(n).forEach(function(i) {
+                J(e, i) || (t[r + i] = n[i])
+            }), t
+        }
+
+        function Ot(e, n) {
+            return n.type === "delete" ? n.keys : n.keys || n.values.map(e.extractKey)
+        }
+        var Zr = {
+            stack: "dbcore",
+            name: "HooksMiddleware",
+            level: 2,
+            create: function(e) {
+                return C(C({}, e), {
+                    table: function(n) {
+                        var t = e.table(n),
+                            r = t.schema.primaryKey;
+                        return C(C({}, t), {
+                            mutate: function(i) {
+                                var o = A.trans,
+                                    a = o.table(n).hook,
+                                    u = a.deleting,
+                                    c = a.creating,
+                                    l = a.updating;
+                                switch (i.type) {
+                                    case "add":
+                                        if (c.fire === F) break;
+                                        return o._promise("readwrite", function() {
+                                            return p(i)
+                                        }, !0);
+                                    case "put":
+                                        if (c.fire === F && l.fire === F) break;
+                                        return o._promise("readwrite", function() {
+                                            return p(i)
+                                        }, !0);
+                                    case "delete":
+                                        if (u.fire === F) break;
+                                        return o._promise("readwrite", function() {
+                                            return p(i)
+                                        }, !0);
+                                    case "deleteRange":
+                                        if (u.fire === F) break;
+                                        return o._promise("readwrite", function() {
+                                            return function s(v, f, h) {
+                                                return t.query({
+                                                    trans: v,
+                                                    values: !1,
+                                                    query: {
+                                                        index: r,
+                                                        range: f
+                                                    },
+                                                    limit: h
+                                                }).then(function(d) {
+                                                    var y = d.result;
+                                                    return p({
+                                                        type: "delete",
+                                                        keys: y,
+                                                        trans: v
+                                                    }).then(function(m) {
+                                                        return 0 < m.numFailures ? Promise.reject(m.failures[0]) : y.length < h ? {
+                                                            failures: [],
+                                                            numFailures: 0,
+                                                            lastResult: void 0
+                                                        } : s(v, C(C({}, f), {
+                                                            lower: y[y.length - 1],
+                                                            lowerOpen: !0
+                                                        }), h)
+                                                    })
+                                                })
+                                            }(i.trans, i.range, 1e4)
+                                        }, !0)
+                                }
+                                return t.mutate(i);
+
+                                function p(s) {
+                                    var v, f, h, d = A.trans,
+                                        y = s.keys || Ot(r, s);
+                                    if (!y) throw new Error("Keys missing");
+                                    return (s = s.type === "add" || s.type === "put" ? C(C({}, s), {
+                                        keys: y
+                                    }) : C({}, s)).type !== "delete" && (s.values = hn([], s.values)), s.keys && (s.keys = hn([], s.keys)), v = t, h = y, ((f = s).type === "add" ? Promise.resolve([]) : v.getMany({
+                                        trans: f.trans,
+                                        keys: h,
+                                        cache: "immutable"
+                                    })).then(function(m) {
+                                        var g = y.map(function(b, w) {
+                                            var x, P, _, k = m[w],
+                                                E = {
+                                                    onerror: null,
+                                                    onsuccess: null
+                                                };
+                                            return s.type === "delete" ? u.fire.call(E, b, k, d) : s.type === "add" || k === void 0 ? (x = c.fire.call(E, b, s.values[w], d), b == null && x != null && (s.keys[w] = b = x, r.outbound || Z(s.values[w], r.keyPath, b))) : (x = kt(k, s.values[w]), (P = l.fire.call(E, x, b, k, d)) && (_ = s.values[w], Object.keys(P).forEach(function(O) {
+                                                J(_, O) ? _[O] = P[O] : Z(_, O, P[O])
+                                            }))), E
+                                        });
+                                        return t.mutate(s).then(function(b) {
+                                            for (var w = b.failures, x = b.results, P = b.numFailures, b = b.lastResult, _ = 0; _ < y.length; ++_) {
+                                                var k = (x || y)[_],
+                                                    E = g[_];
+                                                k == null ? E.onerror && E.onerror(w[_]) : E.onsuccess && E.onsuccess(s.type === "put" && m[_] ? s.values[_] : k)
+                                            }
+                                            return {
+                                                failures: w,
+                                                results: x,
+                                                numFailures: P,
+                                                lastResult: b
+                                            }
+                                        }).catch(function(b) {
+                                            return g.forEach(function(w) {
+                                                return w.onerror && w.onerror(b)
+                                            }), Promise.reject(b)
+                                        })
+                                    })
+                                }
+                            }
+                        })
+                    }
+                })
+            }
+        };
+
+        function fr(e, n, t) {
+            try {
+                if (!n || n.keys.length < e.length) return null;
+                for (var r = [], i = 0, o = 0; i < n.keys.length && o < e.length; ++i) B(n.keys[i], e[o]) === 0 && (r.push(t ? we(n.values[i]) : n.values[i]), ++o);
+                return r.length === e.length ? r : null
+            } catch {
+                return null
+            }
+        }
+        var ei = {
+            stack: "dbcore",
+            level: -1,
+            create: function(e) {
+                return {
+                    table: function(n) {
+                        var t = e.table(n);
+                        return C(C({}, t), {
+                            getMany: function(r) {
+                                if (!r.cache) return t.getMany(r);
+                                var i = fr(r.keys, r.trans._cache, r.cache === "clone");
+                                return i ? K.resolve(i) : t.getMany(r).then(function(o) {
+                                    return r.trans._cache = {
+                                        keys: r.keys,
+                                        values: r.cache === "clone" ? we(o) : o
+                                    }, o
+                                })
+                            },
+                            mutate: function(r) {
+                                return r.type !== "add" && (r.trans._cache = null), t.mutate(r)
+                            }
+                        })
+                    }
+                }
+            }
+        };
+
+        function hr(e, n) {
+            return e.trans.mode === "readonly" && !!e.subscr && !e.trans.explicit && e.trans.db._options.cache !== "disabled" && !n.schema.primaryKey.outbound
+        }
+
+        function dr(e, n) {
+            switch (e) {
+                case "query":
+                    return n.values && !n.unique;
+                case "get":
+                case "getMany":
+                case "count":
+                case "openCursor":
+                    return !1
+            }
+        }
+        var ni = {
+            stack: "dbcore",
+            level: 0,
+            name: "Observability",
+            create: function(e) {
+                var n = e.schema.name,
+                    t = new Q(e.MIN_KEY, e.MAX_KEY);
+                return C(C({}, e), {
+                    transaction: function(r, i, o) {
+                        if (A.subscr && i !== "readonly") throw new j.ReadOnly("Readwrite transaction in liveQuery context. Querier source: ".concat(A.querier));
+                        return e.transaction(r, i, o)
+                    },
+                    table: function(r) {
+                        var i = e.table(r),
+                            o = i.schema,
+                            a = o.primaryKey,
+                            s = o.indexes,
+                            u = a.extractKey,
+                            c = a.outbound,
+                            l = a.autoIncrement && s.filter(function(f) {
+                                return f.compound && f.keyPath.includes(a.keyPath)
+                            }),
+                            p = C(C({}, i), {
+                                mutate: function(f) {
+                                    function h(O) {
+                                        return O = "idb://".concat(n, "/").concat(r, "/").concat(O), b[O] || (b[O] = new Q)
+                                    }
+                                    var d, y, m, g = f.trans,
+                                        b = f.mutatedParts || (f.mutatedParts = {}),
+                                        w = h(""),
+                                        x = h(":dels"),
+                                        P = f.type,
+                                        E = f.type === "deleteRange" ? [f.range] : f.type === "delete" ? [f.keys] : f.values.length < 50 ? [Ot(a, f).filter(function(O) {
+                                            return O
+                                        }), f.values] : [],
+                                        _ = E[0],
+                                        k = E[1],
+                                        E = f.trans._cache;
+                                    return L(_) ? (w.addKeys(_), (E = P === "delete" || _.length === k.length ? fr(_, E) : null) || x.addKeys(_), (E || k) && (d = h, y = E, m = k, o.indexes.forEach(function(O) {
+                                        var S = d(O.name || "");
+
+                                        function D(q) {
+                                            return q != null ? O.extractKey(q) : null
+                                        }
+
+                                        function I(q) {
+                                            return O.multiEntry && L(q) ? q.forEach(function(te) {
+                                                return S.addKey(te)
+                                            }) : S.addKey(q)
+                                        }(y || m).forEach(function(q, X) {
+                                            var T = y && D(y[X]),
+                                                X = m && D(m[X]);
+                                            B(T, X) !== 0 && (T != null && I(T), X != null && I(X))
+                                        })
+                                    }))) : _ ? (k = {
+                                        from: (k = _.lower) !== null && k !== void 0 ? k : e.MIN_KEY,
+                                        to: (k = _.upper) !== null && k !== void 0 ? k : e.MAX_KEY
+                                    }, x.add(k), w.add(k)) : (w.add(t), x.add(t), o.indexes.forEach(function(O) {
+                                        return h(O.name).add(t)
+                                    })), i.mutate(f).then(function(O) {
+                                        return !_ || f.type !== "add" && f.type !== "put" || (w.addKeys(O.results), l && l.forEach(function(S) {
+                                            for (var D = f.values.map(function(T) {
+                                                    return S.extractKey(T)
+                                                }), I = S.keyPath.findIndex(function(T) {
+                                                    return T === a.keyPath
+                                                }), q = 0, te = O.results.length; q < te; ++q) D[q][I] = O.results[q];
+                                            h(S.name).addKeys(D)
+                                        })), g.mutatedParts = Bn(g.mutatedParts || {}, b), O
+                                    })
+                                }
+                            }),
+                            s = function(h) {
+                                var d = h.query,
+                                    h = d.index,
+                                    d = d.range;
+                                return [h, new Q((h = d.lower) !== null && h !== void 0 ? h : e.MIN_KEY, (d = d.upper) !== null && d !== void 0 ? d : e.MAX_KEY)]
+                            },
+                            v = {
+                                get: function(f) {
+                                    return [a, new Q(f.key)]
+                                },
+                                getMany: function(f) {
+                                    return [a, new Q().addKeys(f.keys)]
+                                },
+                                count: s,
+                                query: s,
+                                openCursor: s
+                            };
+                        return z(v).forEach(function(f) {
+                            p[f] = function(h) {
+                                var d = A.subscr,
+                                    y = !!d,
+                                    m = hr(A, i) && dr(f, h) ? h.obsSet = {} : d;
+                                if (y) {
+                                    var g = function(k) {
+                                            return k = "idb://".concat(n, "/").concat(r, "/").concat(k), m[k] || (m[k] = new Q)
+                                        },
+                                        b = g(""),
+                                        w = g(":dels"),
+                                        d = v[f](h),
+                                        y = d[0],
+                                        d = d[1];
+                                    if ((f === "query" && y.isPrimaryKey && !h.values ? w : g(y.name || "")).add(d), !y.isPrimaryKey) {
+                                        if (f !== "count") {
+                                            var x = f === "query" && c && h.values && i.query(C(C({}, h), {
+                                                values: !1
+                                            }));
+                                            return i[f].apply(this, arguments).then(function(k) {
+                                                if (f === "query") {
+                                                    if (c && h.values) return x.then(function(D) {
+                                                        return D = D.result, b.addKeys(D), k
+                                                    });
+                                                    var E = h.values ? k.result.map(u) : k.result;
+                                                    (h.values ? b : w).addKeys(E)
+                                                } else if (f === "openCursor") {
+                                                    var O = k,
+                                                        S = h.values;
+                                                    return O && Object.create(O, {
+                                                        key: {
+                                                            get: function() {
+                                                                return w.addKey(O.primaryKey), O.key
+                                                            }
+                                                        },
+                                                        primaryKey: {
+                                                            get: function() {
+                                                                var D = O.primaryKey;
+                                                                return w.addKey(D), D
+                                                            }
+                                                        },
+                                                        value: {
+                                                            get: function() {
+                                                                return S && b.addKey(O.primaryKey), O.value
+                                                            }
+                                                        }
+                                                    })
+                                                }
+                                                return k
+                                            })
+                                        }
+                                        w.add(t)
+                                    }
+                                }
+                                return i[f].apply(this, arguments)
+                            }
+                        }), p
+                    }
+                })
+            }
+        };
+
+        function pr(e, n, t) {
+            if (t.numFailures === 0) return n;
+            if (n.type === "deleteRange") return null;
+            var r = n.keys ? n.keys.length : "values" in n && n.values ? n.values.length : 1;
+            return t.numFailures === r ? null : (n = C({}, n), L(n.keys) && (n.keys = n.keys.filter(function(i, o) {
+                return !(o in t.failures)
+            })), "values" in n && L(n.values) && (n.values = n.values.filter(function(i, o) {
+                return !(o in t.failures)
+            })), n)
+        }
+
+        function Pt(e, n) {
+            return t = e, ((r = n).lower === void 0 || (r.lowerOpen ? 0 < B(t, r.lower) : 0 <= B(t, r.lower))) && (e = e, (n = n).upper === void 0 || (n.upperOpen ? B(e, n.upper) < 0 : B(e, n.upper) <= 0));
+            var t, r
+        }
+
+        function yr(e, n, v, r, i, o) {
+            if (!v || v.length === 0) return e;
+            var a = n.query.index,
+                u = a.multiEntry,
+                c = n.query.range,
+                l = r.schema.primaryKey.extractKey,
+                p = a.extractKey,
+                s = (a.lowLevelIndex || a).extractKey,
+                v = v.reduce(function(f, h) {
+                    var d = f,
+                        y = [];
+                    if (h.type === "add" || h.type === "put")
+                        for (var m = new Q, g = h.values.length - 1; 0 <= g; --g) {
+                            var b, w = h.values[g],
+                                x = l(w);
+                            m.hasKey(x) || (b = p(w), (u && L(b) ? b.some(function(O) {
+                                return Pt(O, c)
+                            }) : Pt(b, c)) && (m.addKey(x), y.push(w)))
+                        }
+                    switch (h.type) {
+                        case "add":
+                            var P = new Q().addKeys(n.values ? f.map(function(S) {
+                                    return l(S)
+                                }) : f),
+                                d = f.concat(n.values ? y.filter(function(S) {
+                                    return S = l(S), !P.hasKey(S) && (P.addKey(S), !0)
+                                }) : y.map(function(S) {
+                                    return l(S)
+                                }).filter(function(S) {
+                                    return !P.hasKey(S) && (P.addKey(S), !0)
+                                }));
+                            break;
+                        case "put":
+                            var _ = new Q().addKeys(h.values.map(function(S) {
+                                return l(S)
+                            }));
+                            d = f.filter(function(S) {
+                                return !_.hasKey(n.values ? l(S) : S)
+                            }).concat(n.values ? y : y.map(function(S) {
+                                return l(S)
+                            }));
+                            break;
+                        case "delete":
+                            var k = new Q().addKeys(h.keys);
+                            d = f.filter(function(S) {
+                                return !k.hasKey(n.values ? l(S) : S)
+                            });
+                            break;
+                        case "deleteRange":
+                            var E = h.range;
+                            d = f.filter(function(S) {
+                                return !Pt(l(S), E)
+                            })
+                    }
+                    return d
+                }, e);
+            return v === e ? e : (v.sort(function(f, h) {
+                return B(s(f), s(h)) || B(l(f), l(h))
+            }), n.limit && n.limit < 1 / 0 && (v.length > n.limit ? v.length = n.limit : e.length === n.limit && v.length < n.limit && (i.dirty = !0)), o ? Object.freeze(v) : v)
+        }
+
+        function vr(e, n) {
+            return B(e.lower, n.lower) === 0 && B(e.upper, n.upper) === 0 && !!e.lowerOpen == !!n.lowerOpen && !!e.upperOpen == !!n.upperOpen
+        }
+
+        function ti(e, n) {
+            return function(t, r, i, o) {
+                if (t === void 0) return r !== void 0 ? -1 : 0;
+                if (r === void 0) return 1;
+                if ((r = B(t, r)) === 0) {
+                    if (i && o) return 0;
+                    if (i) return 1;
+                    if (o) return -1
+                }
+                return r
+            }(e.lower, n.lower, e.lowerOpen, n.lowerOpen) <= 0 && 0 <= function(t, r, i, o) {
+                if (t === void 0) return r !== void 0 ? 1 : 0;
+                if (r === void 0) return -1;
+                if ((r = B(t, r)) === 0) {
+                    if (i && o) return 0;
+                    if (i) return -1;
+                    if (o) return 1
+                }
+                return r
+            }(e.upper, n.upper, e.upperOpen, n.upperOpen)
+        }
+
+        function ri(e, n, t, r) {
+            e.subscribers.add(t), r.addEventListener("abort", function() {
+                var i, o;
+                e.subscribers.delete(t), e.subscribers.size === 0 && (i = e, o = n, setTimeout(function() {
+                    i.subscribers.size === 0 && _e(o, i)
+                }, 3e3))
+            })
+        }
+        var ii = {
+            stack: "dbcore",
+            level: 0,
+            name: "Cache",
+            create: function(e) {
+                var n = e.schema.name;
+                return C(C({}, e), {
+                    transaction: function(t, r, i) {
+                        var o, a, u = e.transaction(t, r, i);
+                        return r === "readwrite" && (a = (o = new AbortController).signal, i = function(c) {
+                            return function() {
+                                if (o.abort(), r === "readwrite") {
+                                    for (var l = new Set, p = 0, s = t; p < s.length; p++) {
+                                        var v = s[p],
+                                            f = je["idb://".concat(n, "/").concat(v)];
+                                        if (f) {
+                                            var h = e.table(v),
+                                                d = f.optimisticOps.filter(function(S) {
+                                                    return S.trans === u
+                                                });
+                                            if (u._explicit && c && u.mutatedParts)
+                                                for (var y = 0, m = Object.values(f.queries.query); y < m.length; y++)
+                                                    for (var g = 0, b = (P = m[y]).slice(); g < b.length; g++) gt((_ = b[g]).obsSet, u.mutatedParts) && (_e(P, _), _.subscribers.forEach(function(S) {
+                                                        return l.add(S)
+                                                    }));
+                                            else if (0 < d.length) {
+                                                f.optimisticOps = f.optimisticOps.filter(function(S) {
+                                                    return S.trans !== u
+                                                });
+                                                for (var w = 0, x = Object.values(f.queries.query); w < x.length; w++)
+                                                    for (var P, _, k, E = 0, O = (P = x[w]).slice(); E < O.length; E++)(_ = O[E]).res != null && u.mutatedParts && (c && !_.dirty ? (k = Object.isFrozen(_.res), k = yr(_.res, _.req, d, h, _, k), _.dirty ? (_e(P, _), _.subscribers.forEach(function(S) {
+                                                        return l.add(S)
+                                                    })) : k !== _.res && (_.res = k, _.promise = K.resolve({
+                                                        result: k
+                                                    }))) : (_.dirty && _e(P, _), _.subscribers.forEach(function(S) {
+                                                        return l.add(S)
+                                                    })))
+                                            }
+                                        }
+                                    }
+                                    l.forEach(function(S) {
+                                        return S()
+                                    })
+                                }
+                            }
+                        }, u.addEventListener("abort", i(!1), {
+                            signal: a
+                        }), u.addEventListener("error", i(!1), {
+                            signal: a
+                        }), u.addEventListener("complete", i(!0), {
+                            signal: a
+                        })), u
+                    },
+                    table: function(t) {
+                        var r = e.table(t),
+                            i = r.schema.primaryKey;
+                        return C(C({}, r), {
+                            mutate: function(o) {
+                                var a = A.trans;
+                                if (i.outbound || a.db._options.cache === "disabled" || a.explicit || a.idbtrans.mode !== "readwrite") return r.mutate(o);
+                                var u = je["idb://".concat(n, "/").concat(t)];
+                                return u ? (a = r.mutate(o), o.type !== "add" && o.type !== "put" || !(50 <= o.values.length || Ot(i, o).some(function(c) {
+                                    return c == null
+                                })) ? (u.optimisticOps.push(o), o.mutatedParts && Rn(o.mutatedParts), a.then(function(c) {
+                                    0 < c.numFailures && (_e(u.optimisticOps, o), (c = pr(0, o, c)) && u.optimisticOps.push(c), o.mutatedParts && Rn(o.mutatedParts))
+                                }), a.catch(function() {
+                                    _e(u.optimisticOps, o), o.mutatedParts && Rn(o.mutatedParts)
+                                })) : a.then(function(c) {
+                                    var l = pr(0, C(C({}, o), {
+                                        values: o.values.map(function(p, s) {
+                                            var v;
+                                            return c.failures[s] ? p : (p = (v = i.keyPath) !== null && v !== void 0 && v.includes(".") ? we(p) : C({}, p), Z(p, i.keyPath, c.results[s]), p)
+                                        })
+                                    }), c);
+                                    u.optimisticOps.push(l), queueMicrotask(function() {
+                                        return o.mutatedParts && Rn(o.mutatedParts)
+                                    })
+                                }), a) : r.mutate(o)
+                            },
+                            query: function(o) {
+                                if (!hr(A, r) || !dr("query", o)) return r.query(o);
+                                var a = ((l = A.trans) === null || l === void 0 ? void 0 : l.db._options.cache) === "immutable",
+                                    s = A,
+                                    u = s.requery,
+                                    c = s.signal,
+                                    l = function(h, d, y, m) {
+                                        var g = je["idb://".concat(h, "/").concat(d)];
+                                        if (!g) return [];
+                                        if (!(d = g.queries[y])) return [null, !1, g, null];
+                                        var b = d[(m.query ? m.query.index.name : null) || ""];
+                                        if (!b) return [null, !1, g, null];
+                                        switch (y) {
+                                            case "query":
+                                                var w = b.find(function(x) {
+                                                    return x.req.limit === m.limit && x.req.values === m.values && vr(x.req.query.range, m.query.range)
+                                                });
+                                                return w ? [w, !0, g, b] : [b.find(function(x) {
+                                                    return ("limit" in x.req ? x.req.limit : 1 / 0) >= m.limit && (!m.values || x.req.values) && ti(x.req.query.range, m.query.range)
+                                                }), !1, g, b];
+                                            case "count":
+                                                return w = b.find(function(x) {
+                                                    return vr(x.req.query.range, m.query.range)
+                                                }), [w, !!w, g, b]
+                                        }
+                                    }(n, t, "query", o),
+                                    p = l[0],
+                                    s = l[1],
+                                    v = l[2],
+                                    f = l[3];
+                                return p && s ? p.obsSet = o.obsSet : (s = r.query(o).then(function(h) {
+                                    var d = h.result;
+                                    if (p && (p.res = d), a) {
+                                        for (var y = 0, m = d.length; y < m; ++y) Object.freeze(d[y]);
+                                        Object.freeze(d)
+                                    } else h.result = we(d);
+                                    return h
+                                }).catch(function(h) {
+                                    return f && p && _e(f, p), Promise.reject(h)
+                                }), p = {
+                                    obsSet: o.obsSet,
+                                    promise: s,
+                                    subscribers: new Set,
+                                    type: "query",
+                                    req: o,
+                                    dirty: !1
+                                }, f ? f.push(p) : (f = [p], (v = v || (je["idb://".concat(n, "/").concat(t)] = {
+                                    queries: {
+                                        query: {},
+                                        count: {}
+                                    },
+                                    objs: new Map,
+                                    optimisticOps: [],
+                                    unsignaledParts: {}
+                                })).queries.query[o.query.index.name || ""] = f)), ri(p, f, u, c), p.promise.then(function(h) {
+                                    return {
+                                        result: yr(h.result, o, v == null ? void 0 : v.optimisticOps, r, p, a)
+                                    }
+                                })
+                            }
+                        })
+                    }
+                })
+            }
+        };
+
+        function Nn(e, n) {
+            return new Proxy(e, {
+                get: function(t, r, i) {
+                    return r === "db" ? n : Reflect.get(t, r, i)
+                }
+            })
+        }
+        var le = (V.prototype.version = function(e) {
+            if (isNaN(e) || e < .1) throw new j.Type("Given version is not a positive number");
+            if (e = Math.round(10 * e) / 10, this.idbdb || this._state.isBeingOpened) throw new j.Schema("Cannot add version when database is open");
+            this.verno = Math.max(this.verno, e);
+            var n = this._versions,
+                t = n.filter(function(r) {
+                    return r._cfg.version === e
+                })[0];
+            return t || (t = new this.Version(e), n.push(t), n.sort($r), t.stores({}), this._state.autoSchema = !1, t)
+        }, V.prototype._whenReady = function(e) {
+            var n = this;
+            return this.idbdb && (this._state.openComplete || A.letThrough || this._vip) ? e() : new K(function(t, r) {
+                if (n._state.openComplete) return r(new j.DatabaseClosed(n._state.dbOpenError));
+                if (!n._state.isBeingOpened) {
+                    if (!n._state.autoOpen) return void r(new j.DatabaseClosed);
+                    n.open().catch(F)
+                }
+                n._state.dbReadyPromise.then(t, r)
+            }).then(e)
+        }, V.prototype.use = function(e) {
+            var n = e.stack,
+                t = e.create,
+                r = e.level,
+                i = e.name;
+            return i && this.unuse({
+                stack: n,
+                name: i
+            }), e = this._middlewares[n] || (this._middlewares[n] = []), e.push({
+                stack: n,
+                create: t,
+                level: r ?? 10,
+                name: i
+            }), e.sort(function(o, a) {
+                return o.level - a.level
+            }), this
+        }, V.prototype.unuse = function(e) {
+            var n = e.stack,
+                t = e.name,
+                r = e.create;
+            return n && this._middlewares[n] && (this._middlewares[n] = this._middlewares[n].filter(function(i) {
+                return r ? i.create !== r : !!t && i.name !== t
+            })), this
+        }, V.prototype.open = function() {
+            var e = this;
+            return Ke(he, function() {
+                return Hr(e)
+            })
+        }, V.prototype._close = function() {
+            this.on.close.fire(new CustomEvent("close"));
+            var e = this._state,
+                n = Ve.indexOf(this);
+            if (0 <= n && Ve.splice(n, 1), this.idbdb) {
+                try {
+                    this.idbdb.close()
+                } catch {}
+                this.idbdb = null
+            }
+            e.isBeingOpened || (e.dbReadyPromise = new K(function(t) {
+                e.dbReadyResolve = t
+            }), e.openCanceller = new K(function(t, r) {
+                e.cancelOpen = r
+            }))
+        }, V.prototype.close = function(t) {
+            var n = (t === void 0 ? {
+                    disableAutoOpen: !0
+                } : t).disableAutoOpen,
+                t = this._state;
+            n ? (t.isBeingOpened && t.cancelOpen(new j.DatabaseClosed), this._close(), t.autoOpen = !1, t.dbOpenError = new j.DatabaseClosed) : (this._close(), t.autoOpen = this._options.autoOpen || t.isBeingOpened, t.openComplete = !1, t.dbOpenError = null)
+        }, V.prototype.delete = function(e) {
+            var n = this;
+            e === void 0 && (e = {
+                disableAutoOpen: !0
+            });
+            var t = 0 < arguments.length && typeof arguments[0] != "object",
+                r = this._state;
+            return new K(function(i, o) {
+                function a() {
+                    n.close(e);
+                    var u = n._deps.indexedDB.deleteDatabase(n.name);
+                    u.onsuccess = M(function() {
+                        var c, l, p;
+                        c = n._deps, l = n.name, p = c.indexedDB, c = c.IDBKeyRange, yt(p) || l === On || pt(p, c).delete(l).catch(F), i()
+                    }), u.onerror = oe(o), u.onblocked = n._fireOnBlocked
+                }
+                if (t) throw new j.InvalidArgument("Invalid closeOptions argument to db.delete()");
+                r.isBeingOpened ? r.dbReadyPromise.then(a) : a()
+            })
+        }, V.prototype.backendDB = function() {
+            return this.idbdb
+        }, V.prototype.isOpen = function() {
+            return this.idbdb !== null
+        }, V.prototype.hasBeenClosed = function() {
+            var e = this._state.dbOpenError;
+            return e && e.name === "DatabaseClosed"
+        }, V.prototype.hasFailed = function() {
+            return this._state.dbOpenError !== null
+        }, V.prototype.dynamicallyOpened = function() {
+            return this._state.autoSchema
+        }, Object.defineProperty(V.prototype, "tables", {
+            get: function() {
+                var e = this;
+                return z(this._allTables).map(function(n) {
+                    return e._allTables[n]
+                })
+            },
+            enumerable: !1,
+            configurable: !0
+        }), V.prototype.transaction = function() {
+            var e = (function(n, t, r) {
+                var i = arguments.length;
+                if (i < 2) throw new j.InvalidArgument("Too few arguments");
+                for (var o = new Array(i - 1); --i;) o[i - 1] = arguments[i];
+                return r = o.pop(), [n, It(o), r]
+            }).apply(this, arguments);
+            return this._transaction.apply(this, e)
+        }, V.prototype._transaction = function(e, n, t) {
+            var r = this,
+                i = A.trans;
+            i && i.db === this && e.indexOf("!") === -1 || (i = null);
+            var o, a, u = e.indexOf("?") !== -1;
+            e = e.replace("!", "").replace("?", "");
+            try {
+                if (a = n.map(function(l) {
+                        if (l = l instanceof r.Table ? l.name : l, typeof l != "string") throw new TypeError("Invalid table argument to Dexie.transaction(). Only Table or String are allowed");
+                        return l
+                    }), e == "r" || e === rt) o = rt;
+                else {
+                    if (e != "rw" && e != it) throw new j.InvalidArgument("Invalid transaction mode: " + e);
+                    o = it
+                }
+                if (i) {
+                    if (i.mode === rt && o === it) {
+                        if (!u) throw new j.SubTransaction("Cannot enter a sub-transaction with READWRITE mode when parent transaction is READONLY");
+                        i = null
+                    }
+                    i && a.forEach(function(l) {
+                        if (i && i.storeNames.indexOf(l) === -1) {
+                            if (!u) throw new j.SubTransaction("Table " + l + " not included in parent transaction.");
+                            i = null
+                        }
+                    }), u && i && !i.active && (i = null)
+                }
+            } catch (l) {
+                return i ? i._promise(null, function(p, s) {
+                    s(l)
+                }) : U(l)
+            }
+            var c = (function l(p, s, v, f, h) {
+                return K.resolve().then(function() {
+                    var d = A.transless || A,
+                        y = p._createTransaction(s, v, p._dbSchema, f);
+                    if (y.explicit = !0, d = {
+                            trans: y,
+                            transless: d
+                        }, f) y.idbtrans = f.idbtrans;
+                    else try {
+                        y.create(), y.idbtrans._explicit = !0, p._state.PR1398_maxLoop = 3
+                    } catch (b) {
+                        return b.name === $n.InvalidState && p.isOpen() && 0 < --p._state.PR1398_maxLoop ? (console.warn("Dexie: Need to reopen db"), p.close({
+                            disableAutoOpen: !1
+                        }), p.open().then(function() {
+                            return l(p, s, v, null, h)
+                        })) : U(b)
+                    }
+                    var m, g = Wn(h);
+                    return g && Ue(), d = K.follow(function() {
+                        var b;
+                        (m = h.call(y, y)) && (g ? (b = pe.bind(null, null), m.then(b, b)) : typeof m.next == "function" && typeof m.throw == "function" && (m = xt(m)))
+                    }, d), (m && typeof m.then == "function" ? K.resolve(m).then(function(b) {
+                        return y.active ? b : U(new j.PrematureCommit("Transaction committed too early. See http://bit.ly/2kdckMn"))
+                    }) : d.then(function() {
+                        return m
+                    })).then(function(b) {
+                        return f && y._resolve(), y._completion.then(function() {
+                            return b
+                        })
+                    }).catch(function(b) {
+                        return y._reject(b), U(b)
+                    })
+                })
+            }).bind(null, this, o, a, i, t);
+            return i ? i._promise(o, c, "lock") : A.trans ? Ke(A.transless, function() {
+                return r._whenReady(c)
+            }) : this._whenReady(c)
+        }, V.prototype.table = function(e) {
+            if (!J(this._allTables, e)) throw new j.InvalidTable("Table ".concat(e, " does not exist"));
+            return this._allTables[e]
+        }, V);
+
+        function V(e, n) {
+            var t = this;
+            this._middlewares = {}, this.verno = 0;
+            var r = V.dependencies;
+            this._options = n = C({
+                addons: V.addons,
+                autoOpen: !0,
+                indexedDB: r.indexedDB,
+                IDBKeyRange: r.IDBKeyRange,
+                cache: "cloned"
+            }, n), this._deps = {
+                indexedDB: n.indexedDB,
+                IDBKeyRange: n.IDBKeyRange
+            }, r = n.addons, this._dbSchema = {}, this._versions = [], this._storeNames = [], this._allTables = {}, this.idbdb = null, this._novip = this;
+            var i, o, a, u, c, l = {
+                dbOpenError: null,
+                isBeingOpened: !1,
+                onReadyBeingFired: null,
+                openComplete: !1,
+                dbReadyResolve: F,
+                dbReadyPromise: null,
+                cancelOpen: F,
+                openCanceller: null,
+                autoSchema: !0,
+                PR1398_maxLoop: 3,
+                autoOpen: n.autoOpen
+            };
+            l.dbReadyPromise = new K(function(s) {
+                l.dbReadyResolve = s
+            }), l.openCanceller = new K(function(s, v) {
+                l.cancelOpen = v
+            }), this._state = l, this.name = e, this.on = rn(this, "populate", "blocked", "versionchange", "close", {
+                ready: [Qn, F]
+            }), this.once = function(s, v) {
+                var f = function() {
+                    for (var h = [], d = 0; d < arguments.length; d++) h[d] = arguments[d];
+                    t.on(s).unsubscribe(f), v.apply(t, h)
+                };
+                return t.on(s, f)
+            }, this.on.ready.subscribe = Ct(this.on.ready.subscribe, function(s) {
+                return function(v, f) {
+                    V.vip(function() {
+                        var h, d = t._state;
+                        d.openComplete ? (d.dbOpenError || K.resolve().then(v), f && s(v)) : d.onReadyBeingFired ? (d.onReadyBeingFired.push(v), f && s(v)) : (s(v), h = t, f || s(function y() {
+                            h.on.ready.unsubscribe(v), h.on.ready.unsubscribe(y)
+                        }))
+                    })
+                }
+            }), this.Collection = (i = this, on(Mr.prototype, function(m, y) {
+                this.db = i;
+                var f = Yt,
+                    h = null;
+                if (y) try {
+                    f = y()
+                } catch (g) {
+                    h = g
+                }
+                var d = m._ctx,
+                    y = d.table,
+                    m = y.hook.reading.fire;
+                this._ctx = {
+                    table: y,
+                    index: d.index,
+                    isPrimKey: !d.index || y.schema.primKey.keyPath && d.index === y.schema.primKey.name,
+                    range: f,
+                    keysOnly: !1,
+                    dir: "next",
+                    unique: "",
+                    algorithm: null,
+                    filter: null,
+                    replayFilter: null,
+                    justLimit: !0,
+                    isMatch: null,
+                    offset: 0,
+                    limit: 1 / 0,
+                    error: h,
+                    or: d.or,
+                    valueMapper: m !== He ? m : null
+                }
+            })), this.Table = (o = this, on(Ht.prototype, function(s, v, f) {
+                this.db = o, this._tx = f, this.name = s, this.schema = v, this.hook = o._allTables[s] ? o._allTables[s].hook : rn(null, {
+                    creating: [Cr, F],
+                    reading: [jr, He],
+                    updating: [Dr, F],
+                    deleting: [Tr, F]
+                })
+            })), this.Transaction = (a = this, on(Vr.prototype, function(s, v, f, h, d) {
+                var y = this;
+                s !== "readonly" && v.forEach(function(m) {
+                    m = (m = f[m]) === null || m === void 0 ? void 0 : m.yProps, m && (v = v.concat(m.map(function(g) {
+                        return g.updatesTable
+                    })))
+                }), this.db = a, this.mode = s, this.storeNames = v, this.schema = f, this.chromeTransactionDurability = h, this.idbtrans = null, this.on = rn(this, "complete", "error", "abort"), this.parent = d || null, this.active = !0, this._reculock = 0, this._blockedFuncs = [], this._resolve = null, this._reject = null, this._waitingFor = null, this._waitingQueue = null, this._spinCount = 0, this._completion = new K(function(m, g) {
+                    y._resolve = m, y._reject = g
+                }), this._completion.then(function() {
+                    y.active = !1, y.on.complete.fire()
+                }, function(m) {
+                    var g = y.active;
+                    return y.active = !1, y.on.error.fire(m), y.parent ? y.parent._reject(m) : g && y.idbtrans && y.idbtrans.abort(), U(m)
+                })
+            })), this.Version = (u = this, on(Gr.prototype, function(s) {
+                this.db = u, this._cfg = {
+                    version: s,
+                    storesSource: null,
+                    dbschema: {},
+                    tables: {},
+                    contentUpgrade: null
+                }
+            })), this.WhereClause = (c = this, on(tr.prototype, function(s, v, f) {
+                if (this.db = c, this._ctx = {
+                        table: s,
+                        index: v === ":id" ? null : v,
+                        or: f
+                    }, this._cmp = this._ascending = B, this._descending = function(h, d) {
+                        return B(d, h)
+                    }, this._max = function(h, d) {
+                        return 0 < B(h, d) ? h : d
+                    }, this._min = function(h, d) {
+                        return B(h, d) < 0 ? h : d
+                    }, this._IDBKeyRange = c._deps.IDBKeyRange, !this._IDBKeyRange) throw new j.MissingAPI
+            })), this.on("versionchange", function(s) {
+                0 < s.newVersion ? console.warn("Another connection wants to upgrade database '".concat(t.name, "'. Closing db now to resume the upgrade.")) : console.warn("Another connection wants to delete database '".concat(t.name, "'. Closing db now to resume the delete request.")), t.close({
+                    disableAutoOpen: !1
+                })
+            }), this.on("blocked", function(s) {
+                !s.newVersion || s.newVersion < s.oldVersion ? console.warn("Dexie.delete('".concat(t.name, "') was blocked")) : console.warn("Upgrade '".concat(t.name, "' blocked by other connection holding version ").concat(s.oldVersion / 10))
+            }), this._maxKey = sn(n.IDBKeyRange), this._createTransaction = function(s, v, f, h) {
+                return new t.Transaction(s, v, f, t._options.chromeTransactionDurability, h)
+            }, this._fireOnBlocked = function(s) {
+                t.on("blocked").fire(s), Ve.filter(function(v) {
+                    return v.name === t.name && v !== t && !v._state.vcFired
+                }).map(function(v) {
+                    return v.on("versionchange").fire(s)
+                })
+            }, this.use(ei), this.use(ii), this.use(ni), this.use(Jr), this.use(Zr);
+            var p = new Proxy(this, {
+                get: function(s, v, f) {
+                    if (v === "_vip") return !0;
+                    if (v === "table") return function(d) {
+                        return Nn(t.table(d), p)
+                    };
+                    var h = Reflect.get(s, v, f);
+                    return h instanceof Ht ? Nn(h, p) : v === "tables" ? h.map(function(d) {
+                        return Nn(d, p)
+                    }) : v === "_createTransaction" ? function() {
+                        return Nn(h.apply(this, arguments), p)
+                    } : h
+                }
+            });
+            this.vip = p, r.forEach(function(s) {
+                return s(t)
+            })
+        }
+        var Mn, re = typeof Symbol < "u" && "observable" in Symbol ? Symbol.observable : "@@observable",
+            oi = (Et.prototype.subscribe = function(e, n, t) {
+                return this._subscribe(e && typeof e != "function" ? e : {
+                    next: e,
+                    error: n,
+                    complete: t
+                })
+            }, Et.prototype[re] = function() {
+                return this
+            }, Et);
+
+        function Et(e) {
+            this._subscribe = e
+        }
+        try {
+            Mn = {
+                indexedDB: $.indexedDB || $.mozIndexedDB || $.webkitIndexedDB || $.msIndexedDB,
+                IDBKeyRange: $.IDBKeyRange || $.webkitIDBKeyRange
+            }
+        } catch {
+            Mn = {
+                indexedDB: null,
+                IDBKeyRange: null
+            }
+        }
+
+        function mr(e) {
+            var n, t = !1,
+                r = new oi(function(i) {
+                    var o = Wn(e),
+                        a, u = !1,
+                        c = {},
+                        l = {},
+                        p = {
+                            get closed() {
+                                return u
+                            },
+                            unsubscribe: function() {
+                                u || (u = !0, a && a.abort(), s && me.storagemutated.unsubscribe(f))
+                            }
+                        };
+                    i.start && i.start(p);
+                    var s = !1,
+                        v = function() {
+                            return tt(h)
+                        },
+                        f = function(d) {
+                            Bn(c, d), gt(l, c) && v()
+                        },
+                        h = function() {
+                            var d, y, m;
+                            !u && Mn.indexedDB && (c = {}, d = {}, a && a.abort(), a = new AbortController, m = function(g) {
+                                var b = Me();
+                                try {
+                                    o && Ue();
+                                    var w = de(e, g);
+                                    return w = o ? w.finally(pe) : w
+                                } finally {
+                                    b && Le()
+                                }
+                            }(y = {
+                                subscr: d,
+                                signal: a.signal,
+                                requery: v,
+                                querier: e,
+                                trans: null
+                            }), Promise.resolve(m).then(function(g) {
+                                t = !0, n = g, u || y.signal.aborted || (c = {}, function(b) {
+                                    for (var w in b)
+                                        if (J(b, w)) return;
+                                    return 1
+                                }(l = d) || s || (me(un, f), s = !0), tt(function() {
+                                    return !u && i.next && i.next(g)
+                                }))
+                            }, function(g) {
+                                t = !1, ["DatabaseClosedError", "AbortError"].includes(g == null ? void 0 : g.name) || u || tt(function() {
+                                    u || i.error && i.error(g)
+                                })
+                            }))
+                        };
+                    return setTimeout(v, 0), p
+                });
+            return r.hasValue = function() {
+                return t
+            }, r.getValue = function() {
+                return n
+            }, r
+        }
+        var Ce = le;
+
+        function Kt(e) {
+            var n = ge;
+            try {
+                ge = !0, me.storagemutated.fire(e), _t(e, !0)
+            } finally {
+                ge = n
+            }
+        }
+        qe(Ce, C(C({}, yn), {
+            delete: function(e) {
+                return new Ce(e, {
+                    addons: []
+                }).delete()
+            },
+            exists: function(e) {
+                return new Ce(e, {
+                    addons: []
+                }).open().then(function(n) {
+                    return n.close(), !0
+                }).catch("NoSuchDatabaseError", function() {
+                    return !1
+                })
+            },
+            getDatabaseNames: function(e) {
+                try {
+                    return n = Ce.dependencies, t = n.indexedDB, n = n.IDBKeyRange, (yt(t) ? Promise.resolve(t.databases()).then(function(r) {
+                        return r.map(function(i) {
+                            return i.name
+                        }).filter(function(i) {
+                            return i !== On
+                        })
+                    }) : pt(t, n).toCollection().primaryKeys()).then(e)
+                } catch {
+                    return U(new j.MissingAPI)
+                }
+                var n, t
+            },
+            defineClass: function() {
+                return function(e) {
+                    ee(this, e)
+                }
+            },
+            ignoreTransaction: function(e) {
+                return A.trans ? Ke(A.transless, e) : e()
+            },
+            vip: vt,
+            async: function(e) {
+                return function() {
+                    try {
+                        var n = xt(e.apply(this, arguments));
+                        return n && typeof n.then == "function" ? n : K.resolve(n)
+                    } catch (t) {
+                        return U(t)
+                    }
+                }
+            },
+            spawn: function(e, n, t) {
+                try {
+                    var r = xt(e.apply(t, n || []));
+                    return r && typeof r.then == "function" ? r : K.resolve(r)
+                } catch (i) {
+                    return U(i)
+                }
+            },
+            currentTransaction: {
+                get: function() {
+                    return A.trans || null
+                }
+            },
+            waitFor: function(e, n) {
+                return n = K.resolve(typeof e == "function" ? Ce.ignoreTransaction(e) : e).timeout(n || 6e4), A.trans ? A.trans.waitFor(n) : n
+            },
+            Promise: K,
+            debug: {
+                get: function() {
+                    return ie
+                },
+                set: function(e) {
+                    Ft(e)
+                }
+            },
+            derive: Be,
+            extend: ee,
+            props: qe,
+            override: Ct,
+            Events: rn,
+            on: me,
+            liveQuery: mr,
+            extendObservabilitySet: Bn,
+            getByKeyPath: ue,
+            setByKeyPath: Z,
+            delByKeyPath: function(e, n) {
+                typeof n == "string" ? Z(e, n, void 0) : "length" in n && [].map.call(n, function(t) {
+                    Z(e, t, void 0)
+                })
+            },
+            shallowClone: Dt,
+            deepClone: we,
+            getObjectDiff: kt,
+            cmp: B,
+            asap: Tt,
+            minKey: -1 / 0,
+            addons: [],
+            connections: Ve,
+            errnames: $n,
+            dependencies: Mn,
+            cache: je,
+            semVer: "4.2.1",
+            version: "4.2.1".split(".").map(function(e) {
+                return parseInt(e)
+            }).reduce(function(e, n, t) {
+                return e + n / Math.pow(10, 2 * t)
+            })
+        })), Ce.maxKey = sn(Ce.dependencies.IDBKeyRange), typeof dispatchEvent < "u" && typeof addEventListener < "u" && (me(un, function(e) {
+            ge || (e = new CustomEvent(ut, {
+                detail: e
+            }), ge = !0, dispatchEvent(e), ge = !1)
+        }), addEventListener(ut, function(e) {
+            e = e.detail, ge || Kt(e)
+        }));
+        var $e, ge = !1,
+            gr = function() {};
+        return typeof BroadcastChannel < "u" && ((gr = function() {
+            ($e = new BroadcastChannel(ut)).onmessage = function(e) {
+                return e.data && Kt(e.data)
+            }
+        })(), typeof $e.unref == "function" && $e.unref(), me(un, function(e) {
+            ge || $e.postMessage(e)
+        })), typeof addEventListener < "u" && (addEventListener("pagehide", function(e) {
+            if (!le.disableBfCache && e.persisted) {
+                ie && console.debug("Dexie: handling persisted pagehide"), $e != null && $e.close();
+                for (var n = 0, t = Ve; n < t.length; n++) t[n].close({
+                    disableAutoOpen: !1
+                })
+            }
+        }), addEventListener("pageshow", function(e) {
+            !le.disableBfCache && e.persisted && (ie && console.debug("Dexie: handling persisted pageshow"), gr(), Kt({
+                all: new Q(-1 / 0, [
+                    []
+                ])
+            }))
+        })), K.rejectionMapper = function(e, n) {
+            return !e || e instanceof Fe || e instanceof TypeError || e instanceof SyntaxError || !e.name || !Rt[e.name] ? e : (n = new Rt[e.name](n || e.message, e), "stack" in e && fe(n, "stack", {
+                get: function() {
+                    return this.inner.stack
+                }
+            }), n)
+        }, Ft(ie), C(le, Object.freeze({
+            __proto__: null,
+            Dexie: le,
+            liveQuery: mr,
+            Entity: Wt,
+            cmp: B,
+            PropModification: tn,
+            replacePrefix: function(e, n) {
+                return new tn({
+                    replacePrefix: [e, n]
+                })
+            },
+            add: function(e) {
+                return new tn({
+                    add: e
+                })
+            },
+            remove: function(e) {
+                return new tn({
+                    remove: e
+                })
+            },
+            default: le,
+            RangeSet: Q,
+            mergeRanges: fn,
+            rangesOverlap: ur
+        }), {
+            default: le
+        }), le
+    })
+})(_r);
+var ui = _r.exports;
+const At = ai(ui),
+    wr = Symbol.for("Dexie"),
+    Un = globalThis[wr] || (globalThis[wr] = At);
+if (At.semVer !== Un.semVer) throw new Error(`Two different versions of Dexie loaded in the same app: ${At.semVer} and ${Un.semVer}`);
+const {
+    liveQuery: li,
+    mergeRanges: fi,
+    rangesOverlap: hi,
+    RangeSet: di,
+    cmp: pi,
+    Entity: yi,
+    PropModification: vi,
+    replacePrefix: mi,
+    add: gi,
+    remove: bi,
+    DexieYProvider: wi
+} = Un;
+class si extends Un {
+    constructor() {
+        super("XTrackDB"), this.version(3).stores({
+            tweets: "id, authorId, createdAt, tweetType, *textTokens",
+            users: "id, screenName, name",
+            history: "++id, tweetId, viewedAt, durationSeconds, type",
+            bookmarks: "tweetId, addedAt, *tags, synced",
+            likes: "tweetId, addedAt, synced",
+            myTweets: "id, createdAt, synced"
+        })
+    }
+}
+const Qe = new si;
+async function _i() {
+    await Qe.tweets.clear(), await Qe.users.clear(), await Qe.history.clear(), await Qe.bookmarks.clear(), await Qe.likes.clear(), await Qe.myTweets.clear(), console.log("X-Track: All data cleared")
+}
+
+function xi(De) {
+    if (!De) return [];
+    try {
+        const Vn = De.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, " ").split(/\s+/).filter(be => be.length > 1);
+        return [...new Set(Vn)]
+    } catch {
+        const be = De.toLowerCase().replace(/[^\w\s\u4e00-\u9fa5]/g, " ").split(/\s+/).filter(C => C.length > 1);
+        return [...new Set(be)]
+    }
+}
+export {
+    _i as c, Qe as d, xi as t
+};

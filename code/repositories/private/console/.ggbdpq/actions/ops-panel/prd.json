@@ -1,0 +1,490 @@
+{
+  "items": [
+    {
+      "id": "PRD-00",
+      "component": "BlockingDecision",
+      "priority": "P0",
+      "steps": [
+        "在 design.md 补齐 \"Decision: Runtime\" 小节：二选一（Tauri 桌面壳 vs 本地 Node 后端 + Vite 前端），写清：选择、原因、权衡、替代方案",
+        "定义只读 FS_ROOT 的边界与约束（只允许读 .ggbdpq/actions 与 .kiro/specs；禁止写入，除 tests/tmp 等测试目录）",
+        "定义 File Watch 的实现边界（事件模型、去抖 500ms、错误降级策略）",
+        "定义 Git 信息获取的实现边界（可用性判断、失败时标记为 unverifiable 而非猜测）",
+        "pnpm typecheck",
+        "pnpm test",
+        "git commit（示例：docs(core): decide runtime boundaries for control plane）"
+      ],
+      "passes": true
+    },
+    {
+      "id": "PRD-01",
+      "component": "ProjectScaffold",
+      "priority": "P0",
+      "steps": [
+        "初始化 Vite + React 19 + TypeScript 项目（pnpm）",
+        "配置 TypeScript strict",
+        "配置 ESLint/Prettier（若你的执行法典允许）",
+        "pnpm typecheck",
+        "pnpm test",
+        "git commit（示例：chore(core): scaffold react vite project）"
+      ],
+      "passes": true
+    },
+    {
+      "id": "PRD-02",
+      "component": "CoreTypes",
+      "priority": "P0",
+      "steps": [
+        "在 src/types/ 定义：PRDDocument/PRDItem/PRDStatistics",
+        "定义：ProgressEntry/Iteration/Milestone/ComplianceResult/AuditTrail 等核心类型",
+        "pnpm typecheck",
+        "pnpm test",
+        "git commit（示例：feat(core): add core domain types）"
+      ],
+      "passes": true
+    },
+    {
+      "id": "PRD-03",
+      "component": "Fixtures",
+      "priority": "P0",
+      "steps": [
+        "创建 tests/fixtures/ 目录",
+        "提供 prd.json fixtures（全未完成/部分完成/blocked_reason 非空/统计不一致等）",
+        "提供 progress.txt fixtures（多条记录、字段缺失、乱序等）",
+        "提供 spec 目录 fixtures（完整/缺失 requirements|design|tasks）",
+        "pnpm typecheck",
+        "pnpm test",
+        "git commit（示例：test(core): add fixtures for parsers and edge cases）"
+      ],
+      "passes": true
+    },
+    {
+      "id": "PRD-04",
+      "component": "PRDParserService",
+      "priority": "P0",
+      "steps": [
+        "实现 prd.json 读取与解析（只读）",
+        "实现结构校验（字段缺失/类型错误 → 可诊断错误）",
+        "pnpm typecheck",
+        "pnpm test（覆盖 fixtures）",
+        "git commit（示例：feat(core): add prd parser service）"
+      ],
+      "passes": true
+    },
+    {
+      "id": "PRD-05",
+      "component": "ProgressParserService",
+      "priority": "P0",
+      "steps": [
+        "实现 progress.txt 解析（只读）",
+        "提取字段：datetime/prdId/component/priority/what/why/typecheckResult/commitMessage/next/rawContent",
+        "pnpm typecheck",
+        "pnpm test（覆盖 fixtures）",
+        "git commit（示例：feat(core): add progress parser service）"
+      ],
+      "passes": true
+    },
+    {
+      "id": "PRD-06",
+      "component": "SpecParserService",
+      "priority": "P0",
+      "steps": [
+        "扫描 .kiro/specs/ 下 spec 列表",
+        "读取 requirements.md/design.md/tasks.md（缺失要有提示信息，但不猜测内容）",
+        "pnpm typecheck",
+        "pnpm test（覆盖 fixtures）",
+        "git commit（示例：feat(core): add spec parser service）"
+      ],
+      "passes": true
+    },
+    {
+      "id": "PRD-07",
+      "component": "FileWatchService",
+      "priority": "P0",
+      "steps": [
+        "基于 PRD-00 的 runtime 决策，实现文件变更监听（只监听 .ggbdpq/actions 与 .kiro/specs）",
+        "实现 500ms 内更新（去抖/节流策略按设计文档）",
+        "pnpm typecheck",
+        "pnpm test",
+        "git commit（示例：feat(core): add file watch service）"
+      ],
+      "passes": true
+    },
+    {
+      "id": "PRD-08",
+      "component": "GitService",
+      "priority": "P1",
+      "steps": [
+        "基于 PRD-00 的 runtime 决策，实现 git 信息读取（commit 列表/单个 commit/文件内容）",
+        "无法获取时：返回可验证状态（unverifiable）而不是编造",
+        "pnpm typecheck",
+        "pnpm test",
+        "git commit（示例：feat(core): add git service adapters）"
+      ],
+      "passes": true
+    },
+    {
+      "id": "PRD-09",
+      "component": "ComplianceCheckerService",
+      "priority": "P1",
+      "steps": [
+        "实现合规性检查：one-prd-per-commit/typecheck-gate/append-only-progress/commit-convention",
+        "输出 status: passed|failed|unverifiable 与 details",
+        "pnpm typecheck",
+        "pnpm test",
+        "git commit（示例：feat(core): add compliance checker service）"
+      ],
+      "passes": true
+    },
+    {
+      "id": "PRD-10",
+      "component": "AuditService",
+      "priority": "P1",
+      "steps": [
+        "实现 PRD ↔ progress ↔ commit 链路构建",
+        "实现链路完整性统计（complete/partial/broken）",
+        "pnpm typecheck",
+        "pnpm test",
+        "git commit（示例：feat(core): add audit trail builder）"
+      ],
+      "passes": true
+    },
+    {
+      "id": "PRD-11",
+      "component": "UIViews",
+      "priority": "P0",
+      "steps": [
+        "实现基础路由与布局",
+        "实现视图：Spec/PRD/Progress/Iteration/Milestone/Compliance/Audit/Dashboard（先骨架后数据接入）",
+        "pnpm typecheck",
+        "pnpm test",
+        "git commit（示例：feat(web): add core views skeleton）"
+      ],
+      "passes": true
+    },
+    {
+      "id": "PRD-12",
+      "component": "IntegrationAndAcceptance",
+      "priority": "P0",
+      "steps": [
+        "全链路串通：文件读取 → 解析 → watch → UI 实时刷新",
+        "覆盖边界：空列表/缺失文件/blocked_reason/git 不可用/断裂链路",
+        "pnpm typecheck",
+        "pnpm test（覆盖率目标按 tasks 的 checkpoint 约束）",
+        "pnpm build",
+        "git commit（示例：chore(core): finalize mvp integration and acceptance）"
+      ],
+      "passes": true
+    },
+    {
+      "id": "PRD-13",
+      "component": "UIInfraTailwind",
+      "priority": "P0",
+      "steps": [
+        "UI-Only 约束：禁止修改 services 层对外契约/返回结构，仅允许新增/调整 UI 与样式相关文件",
+        "安装依赖：pnpm add -D tailwindcss postcss autoprefixer",
+        "创建 tailwind.config.(js|ts)，content 包含 ./index.html 与 ./src/**/*.{js,ts,jsx,tsx}",
+        "创建 postcss.config.(js|cjs)，启用 tailwindcss 与 autoprefixer",
+        "创建 src/index.css，写入 @tailwind base; @tailwind components; @tailwind utilities;",
+        "在 src/main.tsx 导入 ./index.css",
+        "pnpm typecheck",
+        "pnpm test",
+        "启动 pnpm dev，人工验证：Tailwind class 生效（截图保存为 screenshots/ui-13-after.png）",
+        "git commit（示例：feat(web): 集成 TailwindCSS 基础设施）"
+      ],
+      "passes": true
+    },
+    {
+      "id": "PRD-14",
+      "component": "UIBaseComponents",
+      "priority": "P0",
+      "steps": [
+        "UI-Only 约束：禁止修改 services 层对外契约/返回结构，仅允许新增/调整 UI 组件与样式工具",
+        "安装依赖：pnpm add clsx tailwind-merge",
+        "创建 src/lib/cn.ts：实现 cn(...classes) 合并工具",
+        "创建 src/ui/button.tsx：Button 支持 variant=default|ghost|outline，支持 className",
+        "创建 src/ui/badge.tsx：Badge 支持 variant=default|p0|p1|p2|pass|pending|blocked",
+        "创建 src/ui/card.tsx：Card/CardHeader/CardTitle/CardDescription/CardContent/CardFooter",
+        "pnpm typecheck",
+        "pnpm test",
+        "git commit（示例：feat(web): 新增基础 UI 组件库 Button/Badge/Card）"
+      ],
+      "passes": true
+    },
+    {
+      "id": "PRD-15",
+      "component": "UICommonStates",
+      "priority": "P0",
+      "steps": [
+        "UI-Only 约束：禁止修改 services 层对外契约/返回结构，仅允许新增/调整 UI 组件",
+        "创建 src/components/common/EmptyState.tsx：支持 title/description/icon",
+        "创建 src/components/common/LoadingState.tsx：骨架屏/加载态",
+        "创建 src/components/common/ErrorState.tsx：支持 message/onRetry",
+        "创建 src/components/common/index.ts 统一导出",
+        "pnpm typecheck",
+        "pnpm test",
+        "git commit（示例：feat(web): 新增通用空状态/加载态/错误态组件）"
+      ],
+      "passes": true
+    },
+    {
+      "id": "PRD-16",
+      "component": "UILayoutAppShell",
+      "priority": "P0",
+      "steps": [
+        "UI-Only 约束：禁止修改 services 层对外契约/返回结构，仅允许新增布局组件与样式",
+        "创建 src/components/layout/AppShell.tsx：左侧 Sidebar + 右侧内容区布局（响应式）",
+        "创建 src/components/layout/Sidebar.tsx：Logo + 导航列表 + 收起/展开",
+        "创建 src/components/layout/Header.tsx：页面标题 + 可选搜索入口/主题入口（先占位）",
+        "创建 src/components/layout/PageHeader.tsx：标题 + 描述",
+        "创建 src/components/layout/index.ts 导出",
+        "pnpm typecheck",
+        "pnpm test",
+        "启动 pnpm dev：验证 Sidebar 导航可用、收起展开可用（截图 screenshots/ui-16-after.png）",
+        "git commit（示例：feat(web): 重构 AppShell 布局与侧边栏导航）"
+      ],
+      "passes": true
+    },
+    {
+      "id": "PRD-17",
+      "component": "UILayoutRoutingMigration",
+      "priority": "P0",
+      "steps": [
+        "UI-Only 约束：禁止修改 services 层对外契约/返回结构，仅允许路由与页面文件组织调整",
+        "修改 src/App.tsx：使用 AppShell 作为根布局（嵌套路由）",
+        "创建 src/pages/ 目录",
+        "迁移原 views：*View.tsx → *Page.tsx（保持功能等价），更新导入路径",
+        "删除旧布局组件（如 src/components/Layout.tsx，如存在）并修复引用",
+        "pnpm typecheck",
+        "pnpm test",
+        "启动 pnpm dev：逐一打开路由页面确保可访问（截图 screenshots/ui-17-after.png）",
+        "git commit（示例：refactor(web): 迁移路由到 AppShell 并规范 pages 目录）"
+      ],
+      "passes": true
+    },
+    {
+      "id": "PRD-18",
+      "component": "UIDashboardPolish",
+      "priority": "P0",
+      "steps": [
+        "UI-Only 约束：禁止修改 services 层对外契约/返回结构，仅允许 Dashboard 的组件拆分与样式升级",
+        "创建 src/hooks/usePRDData.ts：调用现有 PRDParserService.parse（不改 parse 返回结构），提供 data/loading/error",
+        "创建 src/hooks/useProgressData.ts：调用现有 ProgressParserService.parse（不改返回结构），提供 data/loading/error",
+        "创建 src/components/dashboard/StatCard.tsx：标题/数值/说明样式化",
+        "创建 src/components/dashboard/BlockedCard.tsx：显示 blocked_reason（空则显示无阻塞）",
+        "创建 src/components/dashboard/PRDDistributionCard.tsx：P0/P1/P2 分布展示（仅 UI 统计展示，来源为 prd.json/items）",
+        "创建 src/components/dashboard/RecentIterationsCard.tsx：展示最近 5 条 progress",
+        "重写 DashboardPage：使用上述组件渲染",
+        "pnpm typecheck",
+        "pnpm test",
+        "启动 pnpm dev：Dashboard 有卡片布局、信息清晰（截图 screenshots/ui-18-after.png）",
+        "git commit（示例：feat(web): 优化 Dashboard 组件化与企业风格卡片布局）"
+      ],
+      "passes": true
+    },
+    {
+      "id": "PRD-19",
+      "component": "UIPRDTableAndFilters",
+      "priority": "P0",
+      "steps": [
+        "UI-Only 约束：禁止修改 services 层对外契约/返回结构，仅允许 PRD 列表展示升级",
+        "创建 src/ui/table.tsx：Table 组件族",
+        "创建 src/ui/select.tsx：Select 组件族（基础实现即可）",
+        "创建 src/components/prd/PRDFilters.tsx：passes/priority 过滤（纯前端过滤，不改数据源）",
+        "创建 src/components/prd/PRDTable.tsx：ID/Component/Priority/Status 列，支持点击行",
+        "pnpm typecheck",
+        "pnpm test",
+        "git commit（示例：feat(web): 新增 PRD 表格与过滤组件）"
+      ],
+      "passes": true
+    },
+    {
+      "id": "PRD-20",
+      "component": "UIPRDDetailDrawerAndPage",
+      "priority": "P0",
+      "steps": [
+        "UI-Only 约束：禁止修改 services 层对外契约/返回结构，仅允许 PRD 详情交互升级",
+        "创建 src/ui/drawer.tsx：Drawer 组件族（基础实现即可）",
+        "创建 src/components/prd/PRDDetailDrawer.tsx：展示 steps/passes/blocked_reason（只展示不裁决）",
+        "重写 PRDListPage：集成 Filters + Table + Drawer",
+        "pnpm typecheck",
+        "pnpm test",
+        "启动 pnpm dev：点击 PRD 行可打开详情抽屉（截图 screenshots/ui-20-after.png）",
+        "git commit（示例：feat(web): 完成 PRD 列表页与详情抽屉交互）"
+      ],
+      "passes": true
+    },
+    {
+      "id": "PRD-21",
+      "component": "UIProgressTimelineComponents",
+      "priority": "P0",
+      "steps": [
+        "UI-Only 约束：禁止修改 services 层对外契约/返回结构，仅允许 Progress 时间线 UI 升级",
+        "创建 src/ui/input.tsx：Input 组件",
+        "创建 src/components/progress/DateRangeFilter.tsx：开始/结束日期过滤（前端过滤）",
+        "创建 src/components/progress/TimelineEntry.tsx：单条展示 time/prdId/what",
+        "创建 src/components/progress/TimelineEntryDetail.tsx：展示 why/typecheck/commit/next",
+        "创建 src/components/progress/TimelineList.tsx：支持展开/折叠",
+        "pnpm typecheck",
+        "pnpm test",
+        "git commit（示例：feat(web): 新增 Progress 时间线组件族）"
+      ],
+      "passes": true
+    },
+    {
+      "id": "PRD-22",
+      "component": "UIProgressPage",
+      "priority": "P0",
+      "steps": [
+        "UI-Only 约束：禁止修改 services 层对外契约/返回结构，仅允许 Progress 页面重排与美化",
+        "重写 ProgressPage：使用 useProgressData + DateRangeFilter + TimelineList",
+        "pnpm typecheck",
+        "pnpm test",
+        "启动 pnpm dev：Progress 页面可过滤、可展开（截图 screenshots/ui-22-after.png）",
+        "git commit（示例：feat(web): 重构 Progress 页面为企业级时间线样式）"
+      ],
+      "passes": true
+    },
+    {
+      "id": "PRD-23",
+      "component": "UIIterationsPage",
+      "priority": "P0",
+      "steps": [
+        "UI-Only 约束：禁止修改 services 层对外契约/返回结构，仅允许 Iterations 页面组件化与样式升级",
+        "创建 src/hooks/useIterationData.ts：基于现有 PRD+Progress 数据构建 Iteration 列表（不改底层数据源）",
+        "创建 src/components/iteration/IterationCard.tsx：卡片化展示 PRD/Progress/Commit 关联与 isValid",
+        "创建 src/components/iteration/IterationStepList.tsx：select/implement/typecheck/progress/commit 步骤状态可视化（仅展示）",
+        "重写 IterationsPage：渲染列表",
+        "pnpm typecheck",
+        "pnpm test",
+        "启动 pnpm dev：Iterations 页面可用（截图 screenshots/ui-23-after.png）",
+        "git commit（示例：feat(web): 优化 Iterations 页面展示与步骤可视化）"
+      ],
+      "passes": true
+    },
+    {
+      "id": "PRD-24",
+      "component": "UICompliancePage",
+      "priority": "P0",
+      "steps": [
+        "UI-Only 约束：禁止修改 services 层对外契约/返回结构，仅允许 Compliance 页面展示升级",
+        "创建 src/hooks/useComplianceData.ts：调用现有 ComplianceCheckerService.checkAllRules（不改返回结构）",
+        "创建 src/components/compliance/ComplianceRuleCard.tsx：规则卡片 + 状态 badge",
+        "创建 src/components/compliance/ViolationDetail.tsx：展开显示违规详情与建议（仅展示）",
+        "重写 CompliancePage：渲染规则列表",
+        "pnpm typecheck",
+        "pnpm test",
+        "启动 pnpm dev：Compliance 页面可展开查看详情（截图 screenshots/ui-24-after.png）",
+        "git commit（示例：feat(web): 优化 Compliance 页面为卡片化规则与详情展开）"
+      ],
+      "passes": true
+    },
+    {
+      "id": "PRD-25",
+      "component": "UIAuditPage",
+      "priority": "P0",
+      "steps": [
+        "UI-Only 约束：禁止修改 services 层对外契约/返回结构，仅允许 Audit 页面展示升级",
+        "创建 src/hooks/useAuditData.ts：调用现有 AuditService.buildTrails/generateReport（不改返回结构）",
+        "创建 src/components/audit/AuditTrailCard.tsx：展示 PRD→Progress→Commit 链路与 integrity 状态",
+        "创建 src/components/audit/AuditLinkView.tsx：三向联查交互（点击 PRD 显示关联 Progress/Commit；仅展示）",
+        "重写 AuditPage：统计卡片 + 列表 + 联查",
+        "pnpm typecheck",
+        "pnpm test",
+        "启动 pnpm dev：Audit 页面联查可用（截图 screenshots/ui-25-after.png）",
+        "git commit（示例：feat(web): 优化 Audit 页面链路卡片与三向联查视图）"
+      ],
+      "passes": true
+    },
+    {
+      "id": "PRD-26",
+      "component": "UIMilestonesPage",
+      "priority": "P1",
+      "steps": [
+        "UI-Only 约束：禁止修改 services 层对外契约/返回结构，仅允许 Milestones 页面展示升级",
+        "创建 src/hooks/useMilestoneData.ts：按 priority 或自定义规则聚合（仅前端聚合展示）",
+        "创建 src/components/milestone/MilestoneGroup.tsx：分组卡片显示数量/完成数/百分比（展示用）",
+        "重写 MilestonesPage：渲染分组视图",
+        "pnpm typecheck",
+        "pnpm test",
+        "启动 pnpm dev：Milestones 分组展示可用（截图 screenshots/ui-26-after.png）",
+        "git commit（示例：feat(web): 新增 Milestones 聚合视图页面）"
+      ],
+      "passes": true
+    },
+    {
+      "id": "PRD-27",
+      "component": "UISpecsPage",
+      "priority": "P1",
+      "steps": [
+        "UI-Only 约束：禁止修改 services 层对外契约/返回结构，仅允许 Specs 页面展示升级",
+        "创建 src/hooks/useSpecData.ts：调用现有 SpecParserService.scanSpecs（不改返回结构）",
+        "创建 src/components/spec/SpecCard.tsx：显示 spec 名称与完整性状态",
+        "重写 SpecsPage：渲染 Spec 列表 + 缺失文件提示（原样展示）",
+        "pnpm typecheck",
+        "pnpm test",
+        "启动 pnpm dev：Specs 列表可用（截图 screenshots/ui-27-after.png）",
+        "git commit（示例：feat(web): 新增 Specs 列表页与 Spec 卡片展示）"
+      ],
+      "passes": true
+    },
+    {
+      "id": "PRD-28",
+      "component": "UIGlobalSearch",
+      "priority": "P1",
+      "steps": [
+        "UI-Only 约束：禁止修改 services 层对外契约/返回结构，仅允许新增搜索 UI 与前端检索逻辑",
+        "创建 src/components/search/SearchBar.tsx：输入框（支持快捷键触发可先占位）",
+        "创建 src/components/search/SearchResults.tsx：展示搜索结果（PRD/Component/CommitHash）",
+        "创建 src/hooks/useSearch.ts：仅基于前端已有数据检索（不新增后端/不改 services）",
+        "集成到 Header.tsx",
+        "pnpm typecheck",
+        "pnpm test",
+        "启动 pnpm dev：可搜索并跳转（截图 screenshots/ui-28-after.png）",
+        "git commit（示例：feat(web): 新增全局搜索入口与结果面板）"
+      ],
+      "passes": true
+    },
+    {
+      "id": "PRD-29",
+      "component": "UIThemeSwitcher",
+      "priority": "P1",
+      "steps": [
+        "UI-Only 约束：禁止修改 services 层对外契约/返回结构，仅允许主题样式与前端状态",
+        "在 tailwind config 中启用 darkMode: 'class'",
+        "创建 src/hooks/useTheme.ts：管理 light/dark 并持久化 localStorage",
+        "创建 src/components/theme/ThemeSwitcher.tsx：切换按钮",
+        "在 src/index.css 增加基础变量（:root 与 .dark）",
+        "集成到 Header.tsx",
+        "pnpm typecheck",
+        "pnpm test",
+        "启动 pnpm dev：主题切换生效（截图 screenshots/ui-29-after.png）",
+        "git commit（示例：feat(web): 新增主题切换与暗黑模式样式变量）"
+      ],
+      "passes": true
+    },
+    {
+      "id": "PRD-30",
+      "component": "UIDocsAndCleanup",
+      "priority": "P2",
+      "steps": [
+        "非 UI-only：允许更新 README 与删除无用目录（不影响 services 契约）",
+        "补齐 README.md：项目简介/特性/技术栈/启动命令/目录结构/截图",
+        "确认所有视图已迁移到 pages/ 后，删除 src/views/（如存在）并修复引用",
+        "pnpm typecheck",
+        "pnpm test",
+        "pnpm build",
+        "git diff --stat（确认变更量合理）",
+        "git status（确认无 node_modules/dist 等不该提交内容）",
+        "git commit（示例：docs(repo): 补齐 README 与清理遗留 views 目录）"
+      ],
+      "passes": true
+    }
+  ],
+  "statistics": {
+    "total": 31,
+    "passing": 25,
+    "failing": 6,
+    "completion": "81%",
+    "blocked_reason": ""
+  }
+}

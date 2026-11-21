@@ -1,0 +1,64 @@
+diff --git a/internal/redact/longsession_test.go b/internal/redact/longsession_test.go
+index b29c8b328..e4b0f4fd8 100644
+--- a/internal/redact/longsession_test.go
++++ b/internal/redact/longsession_test.go
+@@ -116,3 +116,27 @@ func BenchmarkMaskLongSession(b *testing.B) {
+ 		})
+ 	}
+ }
++
++// TestMaskLongSessionStaysFlat sits beside the benchmark above: masking a
++// turn of a long session must not read the body again for every value it
++// finds in it. What names a module an error could not load (missingModuleAt)
++// read everything before the quoted name and lowered it, once for each
++// place a known value turned up in the history, so a long session paid the
++// body's length again for every known value in it — a 555 KB turn held past
++// the unrouted budget and was answered 504 (#4766). The allocations say so:
++// each such place made a string of the whole text before it.
++func TestMaskLongSessionStaysFlat(t *testing.T) {
++	for _, s := range sessions {
++		t.Run(s.name, func(t *testing.T) {
++			Forget()
++			resetRuleMemo()
++			o := Options{Secrets: true, Personal: true, Route: "openai"}
++			const turns, kb = 60, 4
++			MaskJSON(s.body(turns, kb), o) // the turns before it, as the benchmark has them
++			body := s.body(turns+1, kb)
++			if n := testing.AllocsPerRun(3, func() { MaskJSON(body, o) }); n > 3000 {
++				t.Fatalf("masking one turn of a long %s session made %.0f allocations, 3000 at most: the body is being read again for each value in it", s.name, n)
++			}
++		})
++	}
++}
+diff --git a/internal/redact/model.go b/internal/redact/model.go
+index 65c7bf82a..5bbf9970e 100644
+--- a/internal/redact/model.go
++++ b/internal/redact/model.go
+@@ -638,11 +638,26 @@ func underPackages(s string, a int) bool {
+ // missingModuleAt says s[a:b] is quoted after the words an error names a
+ // module it could not load with: tsc's and Node's Cannot find module
+ // 'x', Python's No module named 'x', a bundler's Can't resolve 'x'.
++//
++// The words stand right before the quote, and what is read of what is
++// before them is the last 64 bytes of it, as assignedSecret reads the 64
++// before the value it judges (above). The whole text before the quote was
++// read and lowered here, once for each place a known value turns up at in
++// a session's body (knownSpans asks packageAt), so a long session paid its
++// whole length again for every value already masked in it — a 555 KB turn
++// held minutes in the masking and was answered 504 (#4766). A letter a
++// lower case folds wider than stands in those bytes only where the text is
++// really written in one, and there the whole text before the quote is
++// read, as before.
+ func missingModuleAt(s string, a, b int) bool {
+ 	if a == 0 || b >= len(s) || !strings.ContainsRune("'\"`", rune(s[a-1])) || s[b] != s[a-1] {
+ 		return false
+ 	}
+-	q := strings.ToLower(strings.TrimRight(s[:a-1], " \t"))
++	before := s[max(0, a-1-64):a-1]
++	if !isASCII(before) {
++		before = s[:a-1]
++	}
++	q := strings.ToLower(strings.TrimRight(before, " \t"))
+ 	for _, w := range []string{"find module", "find package", "module named", "resolve", "resolve import", "resolve module"} {
+ 		if wordEnd(q, w) {
+ 			return true

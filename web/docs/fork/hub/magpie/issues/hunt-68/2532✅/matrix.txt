@@ -1,0 +1,28 @@
+# hunt68 #2532 Lane A 验证矩阵 (2026-10-23, worktree magpie-hunt68-a, 分支 hunt68/a @ 3b8bcc36)
+
+## 环境
+
+go1.26.8 CGO_ENABLED=1 -race 可用 (mingw64 gcc)
+
+## 定向测试（-run 'TestHunt68|TestCodexLaterDeveloperMessageKeepsTheSystem|TestCodexThreadKeepsItsClaudeRunAcrossAMemoryCall|TestCodexAsSent'）
+--- PASS: TestCodexAsSent (0.17s)
+--- PASS: TestCodexLaterDeveloperMessageKeepsTheSystem (0.00s)
+--- SKIP: TestCodexThreadKeepsItsClaudeRunAcrossAMemoryCall (0.00s)
+--- FAIL: TestHunt68FreshModeInstructionKeepsItsSystemWeight (0.09s)
+--- PASS: TestHunt68ModeSwitchWireShapeAsItIs (0.20s)
+--- PASS: TestHunt68CodexAsSentLeavesTheClaudeWireUnchanged (0.11s)
+--- PASS: TestHunt68ModeInstructionKeepsItsRoleOnAResponsesRelay (0.13s)
+FAIL
+FAIL	github.com/yetone/magpie/internal/gateway	1.634s
+FAIL
+
+## 同集 -race（逐测试明细见 matrix-race.txt：除 RED 见证外全 PASS，无 race 报告）
+FAIL
+FAIL	github.com/yetone/magpie/internal/gateway	2.572s
+FAIL
+
+## gofmt
+(空=干净)
+
+## go vet ./internal/gateway/
+vet: clean

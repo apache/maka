@@ -1,0 +1,29 @@
+gateway: a remote magpie's codex model gets Codex's Responses Lite as it was sent (#4445)
+
+What changed: a Codex Desktop turn on one of its own Lite models (gpt-6.1-sol)
+routed through Model Map to a Remote Magpie provider answered 400 "Remote
+magpie: Codex: X-OpenAI-Internal-Codex-Responses-Lite requires
+`reasoning.context` to be `all_turns`". liteKept treats a Remote Magpie like
+any plain Responses upstream, so passthrough ran fromLite (the additional_tools
+item lifted into tools, reasoning.context taken off) and forwardOnce dropped
+the Lite header. The remote serves codex/<model> through its ChatGPT account,
+which passes on what it got, and the ChatGPT backend refuses a request for one
+of its Lite models without reasoning context "all_turns" (#534): the request
+arrived stripped of exactly what that model demands. Had it gone as Codex sent
+it, the remote's account path keeps the Lite shape (liteKept true there) and
+its answer is 200, as the reporter's codex=as-sent workaround showed.
+
+liteKept now also keeps the shape, with the model it is asked for: a Remote
+Magpie's codex model, named codex/<model> — the ChatGPT account's namespace in
+every magpie's catalog, so the remote lists one only when that account is there
+to serve it. Its other models still get what Codex sends a model that isn't
+Lite (#350), header and reasoning context included in the lift (#350, TangForX).
+
+Run: go test -tags nogui -run 'TestRemoteMagpieCodexModelKeepsLite|
+TestRemoteMagpieOtherModelLeavesLite' ./internal/gateway/ — the first failed
+with the 400 above before the change and passes after; the second keeps the
+old behavior. go test -tags nogui ./internal/gateway/ passes.
+
+Fixes #4445
+
+Generated-by: GLM-5.3-Flash (ZCode)

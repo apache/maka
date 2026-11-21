@@ -1,0 +1,39 @@
+# 原件摘要：suite-log.txt
+
+> 原件超过 200KB，按 handbook/10 §5 改为摘要（2026-11-08 治理）。原件仍在 git 历史中。
+
+- 原文件名：`suite-log.txt`
+- 字节：725640
+- sha256：`71579a81819d355a9c3cf84a1c20a545d9d127e2672c7fd892375b36b6efbbd0`
+- 回取：`git -C /Users/ggbdpq/cc show dbdf77a4:guahub/fork/docs/hub/magpie/issues/hunt-123/3967-billing-200🚧/suite-log.txt > /tmp/suite-log.txt`
+- 用途：原始测试套件日志（验证矩阵留证）
+
+## 关键结论
+
+- `ok` 包行 0 条；`FAIL`/`--- FAIL` 行 24 条。
+- FAIL 行（前 15 条）：
+```
+--- FAIL: TestOutOfCreditLeavesFreeModels (0.44s)
+--- FAIL: TestSniffChatDeferredUsage (0.00s)
+--- FAIL: TestPluginTrySaysWhoSentIt (0.41s)
+--- FAIL: TestPluginFailover (1.80s)
+--- FAIL: TestPluginToldAnotherFollows (0.39s)
+--- FAIL: TestCursorPluginGroupFast (0.38s)
+--- FAIL: TestCursorPluginGroupFastSibling (0.38s)
+--- FAIL: TestCursorPluginFastPick (0.73s)
+--- FAIL: TestPluginProxyDownDoesNotRest (0.84s)
+--- FAIL: TestPluginStreamLargeReplies (188.61s)
+--- FAIL: TestPluginThinkingOff (3.38s)
+--- FAIL: TestPluginTiersGiveFastMode (0.49s)
+--- FAIL: TestCommandCodeZDRRefusalRestsNothing (0.32s)
+--- FAIL: TestSniffChatStreamSplitAcrossWrites (0.00s)
+--- FAIL: TestToolsOffWithoutToolsReachesPlugin (0.56s)
+```
+- 末 5 行：
+```
+2026/11/04 07:27:13 gateway: other's call to mockzai/glm-5.2 on mockzai failed: 429 after 0s: Z.ai: Z.ai: Usage limit reached for 5 hour. Your limit will reset at 2026-11-04 10:27:13 (out of its allow
+FAIL
+FAIL	github.com/yetone/magpie/internal/gateway	824.844s
+FAIL
+EXIT=1
+```

@@ -1,0 +1,14 @@
+{
+  "name": "visbug-dsv4",
+  "version": "0.4.10",
+  "description": "VisBug — Chrome extension reverse engineering (dsv4)",
+  "license": "UNLICENSED",
+  "scripts": {
+    "build": "tsc",
+    "check": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0",
+    "@types/chrome": "^0.0.268"
+  }
+}

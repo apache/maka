@@ -1,0 +1,10 @@
+{
+  "extensionName": {
+    "message": "WebInk: 智能网页转Markdown工具",
+    "description": "扩展名称。"
+  },
+  "extensionDescription": {
+    "message": "利用AI技术将网页智能转换为Markdown格式，支持智能目录生成、多语言翻译，提供流畅的阅读体验。",
+    "description": "扩展描述。"
+  }
+}

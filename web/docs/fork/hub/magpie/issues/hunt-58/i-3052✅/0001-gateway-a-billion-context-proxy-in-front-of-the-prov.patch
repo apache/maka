@@ -1,0 +1,148 @@
+From 1fd206c7d04a41e9395e08dfaf8a5a45a79e3d86 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Thu, 22 Oct 2026 00:04:57 +0800
+Subject: [PATCH] gateway: a billion-context proxy in front of the provider
+ gets the client's x-bili- headers (#3052)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+What changed: forwardOnce copies the client's x-bili-* headers on to the
+request it builds for the provider, by a biliHeader predicate beside
+claudeCodeHeader and codexClientHeader — an x-bili- prefix, in the shape
+of the anthropic-, x-stainless-, x-claude-code-, x-openai- and x-codex-
+families already on the allowlist. The headers carry the cooperative
+plugin's name, conversation and context window, never a key; a header no
+family allowlists, and the client's own key, still stay off.
+
+Why: forwardOnce builds the upstream request from nothing and copies only
+allowlisted headers, so a client talking to a billion-context (bili)
+proxy put in front of its provider lost the x-bili- ones that name its
+cooperative session — bili then saw an anonymous session and injected a
+duplicate set of compression tools beside the plugin's own (#3052).
+Whether to generalize this into a per-provider "pass-through client
+headers" setting, beside PassUserAgent (#1851) and a provider's own
+Headers, is the maintainer's call; this change only admits the family
+the issue reports.
+
+Run: go test -run TestForwardOnceCarriesBiliHeaders ./internal/gateway
+fails on the baseline with the three headers empty and passes with the
+change (httptest, no network); ablation (product file back at baseline,
+test kept) fails again. gofmt -l clean; go vet ./..., GOOS=linux and
+GOOS=windows go vet -tags nogui ./... clean; native, GOOS=linux -tags
+nogui and GOOS=windows builds clean; go test -tags nogui
+./internal/gateway green.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gateway/bili_headers_test.go | 63 +++++++++++++++++++++++++++
+ internal/gateway/gateway.go           | 16 +++++++
+ 2 files changed, 79 insertions(+)
+ create mode 100644 internal/gateway/bili_headers_test.go
+
+diff --git a/internal/gateway/bili_headers_test.go b/internal/gateway/bili_headers_test.go
+new file mode 100644
+index 00000000..06498af3
+--- /dev/null
++++ b/internal/gateway/bili_headers_test.go
+@@ -0,0 +1,63 @@
++package gateway
++
++import (
++	"context"
++	"io"
++	"net/http"
++	"net/http/httptest"
++	"sync"
++	"testing"
++
++	"github.com/yetone/magpie/internal/provider"
++)
++
++// TestForwardOnceCarriesBiliHeaders holds #3052: a billion-context proxy
++// put in front of the provider knows a cooperative plugin's session by the
++// x-bili- headers the agent sent, so forwardOnce copies them on. A header
++// no family allowlists, and the client's own key, still stay off.
++func TestForwardOnceCarriesBiliHeaders(t *testing.T) {
++	var mu sync.Mutex
++	got := http.Header{}
++	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		mu.Lock()
++		got = r.Header.Clone()
++		mu.Unlock()
++		w.Header().Set("Content-Type", "application/json")
++		io.WriteString(w, `{}`)
++	}))
++	defer up.Close()
++
++	in := http.Header{}
++	in.Set("User-Agent", "pi/0.0.56")
++	in.Set("x-bili-plugin", "pi")
++	in.Set("x-bili-plugin-conversation", "test-123")
++	in.Set("x-bili-plugin-context-window", "200000")
++	in.Set("X-Custom-Whatever", "never")
++	in.Set("Authorization", "Bearer client-key")
++
++	s := New()
++	p := provider.Provider{Responses: up.URL, Key: "provider-key"}
++	res, err := s.forwardOnce(context.Background(), p, provider.Responses, "/v1/responses", []byte(`{"model":"gpt-5.5","input":"hi"}`), in)
++	if err != nil {
++		t.Fatal(err)
++	}
++	res.Body.Close()
++
++	mu.Lock()
++	defer mu.Unlock()
++	for _, h := range []struct{ key, want string }{
++		{"X-Bili-Plugin", "pi"},
++		{"X-Bili-Plugin-Conversation", "test-123"},
++		{"X-Bili-Plugin-Context-Window", "200000"},
++	} {
++		if v := got.Get(h.key); v != h.want {
++			t.Errorf("%s = %q, want %q: the bili proxy reads it to know the cooperative session", h.key, v, h.want)
++		}
++	}
++	if v := got.Get("X-Custom-Whatever"); v != "" {
++		t.Errorf("X-Custom-Whatever = %q, want none: only allowlisted families go on", v)
++	}
++	if v := got.Get("Authorization"); v != "Bearer provider-key" {
++		t.Errorf("Authorization = %q, want the provider's key, never the client's", v)
++	}
++}
+diff --git a/internal/gateway/gateway.go b/internal/gateway/gateway.go
+index f315b819..637c884d 100644
+--- a/internal/gateway/gateway.go
++++ b/internal/gateway/gateway.go
+@@ -4029,6 +4029,15 @@ func (s *Server) forwardOnce(ctx context.Context, p provider.Provider, to provid
+ 		}
+ 		provider.SawClient(provider.ClientCodex, seen)
+ 	}
++	// a billion-context proxy put in front of the provider (#3052) knows a
++	// cooperative plugin's session by its x-bili- headers, which go on as
++	// the agent sent them: the plugin's name, the conversation and the
++	// context window it serves. None of them is a key.
++	for k, vs := range in {
++		if biliHeader(k) {
++			req.Header[k] = slices.Clone(vs)
++		}
++	}
+ 	if provider.OpenCodeURL(req.URL.String()) {
+ 		// as OpenCode itself sends it, which Zen's free tier asks for,
+ 		// with the conversation's own session, which Zen and Go route and
+@@ -4171,6 +4180,13 @@ func codexClientHeader(k string) bool {
+ 	return codexHeader(k)
+ }
+ 
++// biliHeader is one of the headers a billion-context (bili) proxy put in
++// front of the provider asks a cooperative plugin by: x-bili-plugin, its
++// conversation and its context window, all x-bili- prefixed and none a key.
++func biliHeader(k string) bool {
++	return strings.HasPrefix(strings.ToLower(k), "x-bili-")
++}
++
+ // passthrough relays a request the provider understands as-is, with the
+ // model name swapped for the provider's own. The token counts the reply
+ // carries are read on the way past into u. done is false, with nothing
+-- 
+2.50.1 (Apple Git-155)
+

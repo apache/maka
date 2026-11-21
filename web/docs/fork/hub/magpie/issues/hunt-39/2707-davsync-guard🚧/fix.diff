@@ -1,0 +1,115 @@
+diff --git a/docs/reference.md b/docs/reference.md
+index bfd30b4f..2485ec69 100644
+--- a/docs/reference.md
++++ b/docs/reference.md
+@@ -2548,8 +2548,12 @@ For GitHub:
+   creates a commit. Unchanged setup creates no backup commit.
+ - Use the same encryption passphrase on every computer. It must differ from
+   the GitHub token. The token and sync connection settings stay on each computer.
+-- The file limit is 64 MiB. Repository history retains encrypted old versions,
+-  including usage files if sharing is enabled.
++- A GitHub commit carries at most a 48 MiB backup: the Contents API receives
++  the file Base64-encoded, and its exact size threshold is undocumented, so
++  magpie refuses a larger backup before uploading — sync less (for example
++  without the library), keep a backup that size on WebDAV or S3, or update
++  it in a local clone and push it. Repository history retains encrypted old
++  versions, including usage files if sharing is enabled.
+ - Switching between WebDAV, S3 and GitHub keeps the other services' settings
+   and credentials for switching back; one service syncs at a time.
+ 
+diff --git a/docs/subsystems/sync-backup.md b/docs/subsystems/sync-backup.md
+index cbf52fc0..21e99703 100644
+--- a/docs/subsystems/sync-backup.md
++++ b/docs/subsystems/sync-backup.md
+@@ -113,8 +113,12 @@ repository can keep the token. The branch is part of the sync state key.
+   The initial write omits `branch` so GitHub creates its default branch; other
+   conflicts and missing branches are not treated as an empty repository.
+ - Large files are downloaded by blob SHA, preserving the version that was
+-  read. Sync files are limited to 64 MiB. Usage listing fails at the Contents
+-  API's 1,000-file limit rather than treating a truncated list as complete.
++  read. Sync files are limited to 64 MiB, and a GitHub commit carries at
++  most a 48 MiB backup: the Contents API receives the file Base64-encoded
++  and refuses an oversized upload, with no exact threshold documented, so a
++  larger backup is stopped before the upload, with the ways out. Usage
++  listing fails at the Contents API's 1,000-file limit rather than treating
++  a truncated list as complete.
+ - A stale SHA or a racing initial creation returns `errChanged`. Other 422
+   responses stay actionable errors. Authentication, permission and branch
+   failures remain distinct from missing files. Rate limits use sync backoff.
+@@ -134,6 +138,8 @@ empty repository and an unchanged second sync. `TestGitHubEmptyRepositoryFailure
+ covers missing branches, unrelated ref conflicts and another computer winning
+ the initial write. `TestGitHubNotBackup` covers backend-specific recovery
+ advice when the repository holds an empty or foreign file.
++`TestGitHubUploadOverTheEncodedLimit` covers a backup whose encoded form
++would pass the cap being stopped before the upload, with the ways out.
+ 
+ Go tests use `testenv` homes and HTTP fixtures. Browser tests use isolated
+ API fixtures in Chromium and WebKit. A live GitHub write requires a test
+diff --git a/internal/davsync/github.go b/internal/davsync/github.go
+index e593f570..cd03fb67 100644
+--- a/internal/davsync/github.go
++++ b/internal/davsync/github.go
+@@ -18,6 +18,12 @@ import (
+ 
+ const githubMaxFile = 64 << 20
+ 
++// GitHub receives a committed file Base64-encoded inside the JSON body and
++// judges the request, not the raw file; its refusal threshold is
++// undocumented (issue #2707), so magpie stops a commit whose encoded form
++// would pass what it reads rather than fail mid-upload.
++const githubMaxUpload = githubMaxFile / 4 * 3
++
+ type github struct {
+ 	repo, prefix, branch, token string
+ 	ready                       bool
+@@ -267,8 +273,8 @@ func (g *github) get(ctx context.Context, have version) ([]byte, version, error)
+ }
+ 
+ func (g *github) commit(ctx context.Context, name string, data []byte, sha string, remove bool) (version, error) {
+-	if len(data) > githubMaxFile {
+-		return version{}, errors.New("the GitHub sync file exceeds 64 MiB")
++	if len(data) > githubMaxUpload {
++		return version{}, fmt.Errorf("the GitHub sync file is %d MiB, over the %d MiB magpie commits through the Contents API: GitHub receives the file Base64-encoded and refuses an oversized upload, and its exact threshold is undocumented, so magpie stops the commit first. Sync less (for example without the library), keep a backup this size on WebDAV or S3, or update it in a local clone and push it", len(data)>>20, githubMaxUpload>>20)
+ 	}
+ 	if err := g.prepare(ctx); err != nil {
+ 		return version{}, err
+diff --git a/internal/davsync/github_test.go b/internal/davsync/github_test.go
+index 60313c03..591bfed4 100644
+--- a/internal/davsync/github_test.go
++++ b/internal/davsync/github_test.go
+@@ -559,6 +559,35 @@ func TestGitHubFailures(t *testing.T) {
+ 	})
+ }
+ 
++// GitHub judges a commit by the Base64-encoded request, not the raw file
++// (issue #2707): the reporter's 57,333,552-byte sealed backup (76,444,736
++// characters encoded) passed magpie's raw-file guard and came back as a
++// bare HTTP 422. The refusal now happens before the upload, with the ways
++// out; GitHub's exact threshold is undocumented, so the cap is what magpie
++// commits, not a limit GitHub is known to take.
++func TestGitHubUploadOverTheEncodedLimit(t *testing.T) {
++	f := newGithubFixture(t)
++	g, err := newGitHub(githubConfig())
++	if err != nil {
++		t.Fatal(err)
++	}
++	ctx := context.Background()
++	_, err = g.put(ctx, make([]byte, 57333552), "")
++	if err == nil || f.writes != 0 {
++		t.Fatalf("a backup GitHub would refuse must be stopped before upload: %v, writes %d", err, f.writes)
++	}
++	if !strings.Contains(err.Error(), "Base64") || !strings.Contains(err.Error(), "WebDAV or S3") {
++		t.Fatalf("the refusal should explain the encoded upload and the ways out: %v", err)
++	}
++	v, err := g.put(ctx, make([]byte, githubMaxFile/4*3), "")
++	if err != nil {
++		t.Fatalf("a backup whose encoded form is exactly the cap must still commit: %v", err)
++	}
++	if _, err := g.put(ctx, make([]byte, githubMaxFile/4*3+1), v.ETag); err == nil || f.writes != 1 {
++		t.Fatalf("one byte over the encoded cap must be refused: %v, writes %d", err, f.writes)
++	}
++}
++
+ // A public repository would give anyone every sealed version of the setup,
+ // its whole history, to try passphrases on: sync refuses it before writing.
+ func TestGitHubPublicRepositoryRefused(t *testing.T) {

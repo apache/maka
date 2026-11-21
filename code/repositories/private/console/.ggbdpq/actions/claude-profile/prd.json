@@ -1,0 +1,226 @@
+{
+  "project": {
+    "name": "claude-profile",
+    "repo_type": "single-app",
+    "description": "[已归档] cc-switch v2.1.0 —— Claude Code settings.json 桌面控制平面（Tauri 桌面壳，Web 化对账为二期对象）；旧 schema 工件已转换，原件见 prd.legacy.json"
+  },
+  "items": [
+    {
+      "id": "P0-00",
+      "component": "工程初始化（不可跳过）",
+      "priority": "P0",
+      "steps": [
+        "初始化 Tauri 2 + React + TypeScript + Vite 工程",
+        "引入 Tailwind + shadcn/ui 风格 + Zustand",
+        "统一 pnpm scripts（dev/build/typecheck/test）",
+        "配置 Vitest 测试框架"
+      ],
+      "passes": true
+    },
+    {
+      "id": "P0-01",
+      "component": "SettingsFSService（真实文件系统服务）",
+      "priority": "P0",
+      "steps": [
+        "Rust 侧实现 read_settings / write_settings / list_backups / restore_backup",
+        "所有写入前生成 settings.json.bak-时间戳",
+        "JSON parse 失败时禁止写入",
+        "返回结构化错误（中文）"
+      ],
+      "passes": true
+    },
+    {
+      "id": "P0-02",
+      "component": "Schema 校验与脱敏",
+      "priority": "P0",
+      "steps": [
+        "Zod 校验 enabledPlugins / env / language",
+        "env 默认显示 ****",
+        "显式 reveal 才短暂显示明文（5秒后自动隐藏）"
+      ],
+      "passes": true
+    },
+    {
+      "id": "P0-03",
+      "component": "插件真实开关（禁止 mock）",
+      "priority": "P0",
+      "steps": [
+        "从 enabledPlugins 动态生成插件列表",
+        "切换开关 → 写入 → 回读 → 校验一致",
+        "失败自动回滚并提示"
+      ],
+      "passes": true
+    },
+    {
+      "id": "P0-04",
+      "component": "Diff + 审计日志",
+      "priority": "P0",
+      "steps": [
+        "生成 before/after hash",
+        "记录 changed_keys",
+        "写入 audit jsonl",
+        "UI 展示最近变更"
+      ],
+      "passes": true
+    },
+    {
+      "id": "P0-05",
+      "component": "文件监听与冲突处理",
+      "priority": "P0",
+      "steps": [
+        "监听 settings.json",
+        "冲突弹窗：加载最新 / 保持本地",
+        "状态指示：是否与磁盘一致"
+      ],
+      "passes": true
+    },
+    {
+      "id": "P1-06",
+      "component": "内置预设（真实落盘）",
+      "priority": "P1",
+      "steps": [
+        "内置 learn / frontend / plan / ops / research",
+        "预设应用前显示 diff",
+        "应用失败可回滚"
+      ],
+      "passes": true
+    },
+    {
+      "id": "P1-07",
+      "component": "自定义预设 CRUD",
+      "priority": "P1",
+      "steps": [
+        "新建 / 编辑 / 删除 / 复制预设",
+        "预设存储在 appData",
+        "支持导入导出"
+      ],
+      "passes": true
+    },
+    {
+      "id": "P1-08",
+      "component": "cc-dev profile 合并引擎",
+      "priority": "P1",
+      "steps": [
+        "读取 profile 目录",
+        "dry-run 合并预览",
+        "apply 写入 settings.json"
+      ],
+      "passes": true
+    },
+    {
+      "id": "P1-09",
+      "component": "历史回滚 UI",
+      "priority": "P1",
+      "steps": [
+        "时间线展示历史",
+        "一键 restore backup"
+      ],
+      "passes": true
+    },
+    {
+      "id": "P2-10",
+      "component": "体验与打包",
+      "priority": "P2",
+      "steps": [
+        "暗色模式",
+        "快捷键",
+        "打包发布",
+        "安全与隐私说明"
+      ],
+      "passes": true
+    },
+    {
+      "id": "BF-01",
+      "component": "桌面端白屏修复与 SSOT 改造",
+      "priority": "P0",
+      "steps": [
+        "新增 ErrorBoundary 防止渲染错误导致白屏",
+        "useFileWatcher 添加 Tauri 环境检测",
+        "useApplyPreset 添加乐观更新与回滚",
+        "冲突检测添加写入窗口期忽略",
+        "新增回归测试 useSettings.test.ts"
+      ],
+      "passes": true
+    },
+    {
+      "id": "BF-02",
+      "component": "构建链路修复（tauri build/dev）",
+      "priority": "P0",
+      "steps": [
+        "Cargo.toml 添加 default-run 解决多 binary 问题",
+        "package.json 添加 tauri:dev/tauri:build 自动 source cargo env",
+        "README.md 添加常见问题排查章节"
+      ],
+      "passes": true
+    },
+    {
+      "id": "BF-03",
+      "component": "审计日志健壮性修复",
+      "priority": "P1",
+      "steps": [
+        "AuditEntry 添加 serde(rename_all = camelCase)",
+        "添加 alias 兼容旧 snake_case 数据",
+        "AuditLog.tsx 添加防御性检查"
+      ],
+      "passes": true
+    },
+    {
+      "id": "BF-04",
+      "component": "Web 真数据模式（File System Access API）",
+      "priority": "P1",
+      "steps": [
+        "新建 webFileService.ts 封装 File System Access API",
+        "支持用户选择 settings.json 文件",
+        "读写真实配置（非 mock）",
+        "移除 Demo Mode"
+      ],
+      "passes": true
+    },
+    {
+      "id": "N1",
+      "component": "官方插件库与恢复默认功能",
+      "priority": "P1",
+      "steps": [
+        "创建 pluginCatalog.ts 包含 15 个官方插件",
+        "创建 PluginCatalog.tsx 右侧参考面板",
+        "实现恢复默认功能（diff + 确认 + 审计）"
+      ],
+      "passes": true
+    },
+    {
+      "id": "N2",
+      "component": "插件详情页（路由页替代弹窗）",
+      "priority": "P1",
+      "steps": [
+        "PluginSwitch 添加右侧摘要区域（line-clamp-2）",
+        "新建 PluginDetailPage.tsx 独立详情页",
+        "App.tsx 添加 ViewState 虚拟路由",
+        "移除 PluginDetail 抽屉调用"
+      ],
+      "passes": true
+    },
+    {
+      "id": "N3",
+      "component": "调用统计（静态扫描）",
+      "priority": "P2",
+      "steps": [
+        "创建 scanPluginUsage.mjs 扫描脚本",
+        "生成 pluginUsageStats.json 统计文件",
+        "详情页展示引用次数和文件列表"
+      ],
+      "passes": true
+    },
+    {
+      "id": "N4",
+      "component": "CC Switch Plus 共存",
+      "priority": "P2",
+      "steps": [
+        "重命名 bundle id 为 com.ggbdpq.cc-switch-plus",
+        "重命名应用名称为 CC Switch Plus",
+        "自定义预设目录改为 ~/.claude/cc-switch-plus/",
+        "README.md 添加共存说明"
+      ],
+      "passes": true
+    }
+  ]
+}

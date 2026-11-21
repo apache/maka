@@ -1,0 +1,112 @@
+From a65d714036837797ef732460045ebf09a3172297 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Thu, 15 Oct 2026 23:22:11 +0800
+Subject: [PATCH] provider: a provider's Gemini URL counts as its host when
+ import and Add match the same account
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+What changed: sameProvider collected a provider's hosts from Chat,
+Responses, Anthropic and Decide but not Gemini, so a Gemini-protocol
+relay (#1346) was known to no comparison by its Gemini URL: adding the
+same relay and key again from the editor went through Add's duplicate
+check as a new provider (gemini-relay-2, its usage split — the exact
+split the check exists to prevent), and an import entry at the relay
+over another protocol read "new" instead of "same". The Gemini URL now
+joins both lists, and the two places that rebuild the provider magpie
+has (the key-join check in ImportFromApps, keyOf in settle) carry
+h.Gemini so the same holding works from the other side.
+
+Run: go test -tags nogui -run 'TestGeminiURLIsItsHost|TestImport|TestAdd'
+./internal/provider/ green; the new test red on the parent
+(same relay added again as "gemini-relay-2"); gofmt -l clean; go vet and
+build green on darwin (nogui), linux (nogui) and windows. Not run: the
+GUI suite; the trayimage cgo -Wenum-conversion and ld duplicate-library
+warnings on darwin are known noise.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/provider/importapps.go      |  8 +++----
+ internal/provider/importapps_test.go | 31 ++++++++++++++++++++++++++++
+ 2 files changed, 35 insertions(+), 4 deletions(-)
+
+diff --git a/internal/provider/importapps.go b/internal/provider/importapps.go
+index 8dcd2cdd..98edc60f 100644
+--- a/internal/provider/importapps.go
++++ b/internal/provider/importapps.go
+@@ -167,7 +167,7 @@ func ImportFromApps(picks []AppPick) ([]string, error) {
+ 			}
+ 			// a key joins a provider only at its own address: one taken
+ 			// to another host would be sent there
+-			if h.Account != nil || !sameProvider(Provider{Key: p.Key, Chat: h.Chat, Responses: h.Responses, Anthropic: h.Anthropic, Headers: h.Headers}, p) {
++			if h.Account != nil || !sameProvider(Provider{Key: p.Key, Chat: h.Chat, Responses: h.Responses, Anthropic: h.Anthropic, Gemini: h.Gemini, Headers: h.Headers}, p) {
+ 				return added, errorf("%s: %s isn't at %s; add it as a provider of its own", p.Name, h.Name, hostOf(firstURL(p)))
+ 			}
+ 			if err := AddKey(it.KeyOf, p.Name, p.Key, ""); err != nil {
+@@ -290,7 +290,7 @@ func settle(items []AppImport, have []Provider, used map[string]bool) []AppImpor
+ 				it.Status, it.Existing = "taken", h.Name
+ 			}
+ 			if it.KeyOf == "" && h.Key != "" && sameProvider(Provider{
+-				Key: p.Key, Chat: h.Chat, Responses: h.Responses, Anthropic: h.Anthropic, Headers: h.Headers,
++				Key: p.Key, Chat: h.Chat, Responses: h.Responses, Anthropic: h.Anthropic, Gemini: h.Gemini, Headers: h.Headers,
+ 			}, *p) {
+ 				it.KeyOf = h.ID
+ 			}
+@@ -332,12 +332,12 @@ func sameProvider(a, b Provider) bool {
+ 		return false
+ 	}
+ 	hosts := map[string]bool{}
+-	for _, u := range []string{a.Chat, a.Responses, a.Anthropic, a.Decide} {
++	for _, u := range []string{a.Chat, a.Responses, a.Anthropic, a.Gemini, a.Decide} {
+ 		if h := hostOf(u); h != "" {
+ 			hosts[h] = true
+ 		}
+ 	}
+-	for _, u := range []string{b.Chat, b.Responses, b.Anthropic} {
++	for _, u := range []string{b.Chat, b.Responses, b.Anthropic, b.Gemini} {
+ 		if hosts[hostOf(u)] {
+ 			return true
+ 		}
+diff --git a/internal/provider/importapps_test.go b/internal/provider/importapps_test.go
+index c34f024e..b656c209 100644
+--- a/internal/provider/importapps_test.go
++++ b/internal/provider/importapps_test.go
+@@ -478,3 +478,34 @@ func TestImportCCSwitchConfigWithBOM(t *testing.T) {
+ 		t.Fatalf("config.json with a BOM: %+v %v", items, err)
+ 	}
+ }
++
++// A provider's Gemini URL (#1346) names its host like its other endpoints
++// do: the same key at that host is the provider already here, not another
++// one to add beside it.
++func TestGeminiURLIsItsHost(t *testing.T) {
++	isolate(t)
++	home := t.TempDir()
++	t.Setenv("HOME", home)
++	t.Setenv("USERPROFILE", home)
++	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
++	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
++
++	// a Gemini-protocol relay added from the editor is known by its
++	// Gemini URL: the same key there again is the one already here
++	first := Provider{Name: "Gemini Relay", Key: "sk-g", Gemini: "https://g.example.com"}
++	if _, err := Add(first); err != nil {
++		t.Fatal(err)
++	}
++	if id, err := Add(Provider{Name: "Gemini Relay", Key: "sk-g", Gemini: "https://g.example.com"}); err == nil {
++		t.Fatalf("the same relay was added again as %q", id)
++	}
++
++	// an import entry at the relay over another protocol is the provider
++	// already here at its Gemini URL, the same key in hand
++	it := settle([]AppImport{{Ref: "r", Provider: Provider{
++		ID: "gr", Name: "Gemini Relay", Key: "sk-g", Chat: "https://g.example.com/v1",
++	}}}, All(), map[string]bool{})[0]
++	if it.Status != "same" || it.Existing != "Gemini Relay" {
++		t.Fatalf("the relay's import entry: %+v", it)
++	}
++}
+-- 
+2.50.1 (Apple Git-155)
+

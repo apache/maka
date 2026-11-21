@@ -1,0 +1,503 @@
+From f3416216a38d0a4727ca74296c93ad1c4ca62264 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Tue, 3 Nov 2026 07:08:39 +0800
+Subject: [PATCH] fix(gateway): translated requests keep the caller's
+ correlation carriers (#4899)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+What changed
+A provider configured by its URL alone speaks Chat Completions, so an
+Anthropic Messages or an OpenAI Responses request is translated for it —
+and the caller's correlation carriers never reached it: the body's
+metadata object, the X-Cid header and the URL's query string were all
+dropped on the way, which left a caller unable to pair its turns with
+what the provider served (yetone/magpie#4899).
+
+- The translation carries the caller's metadata on: an Anthropic
+  client's metadata went into the request it is built again from, and
+  a Responses client's is read beside its client_metadata now, so the
+  built Chat request has it as it was sent. An upstream that turns the
+  field away by name is asked again without it, and is not sent it
+  again, as the cache key already is.
+- The caller's X-Cid header goes on every request to the provider,
+  translated or relayed, the user's own header for the provider still
+  replacing it in the signing.
+- The caller's query string rides the path a translated request goes
+  by, the path's own parameters (Code Assist's alt=sse) standing, and
+  no parameter a caller's credential travels by with it: a gateway key
+  comes in the query (Gemini's clients), and a caller's key is
+  magpie's, never the provider's.
+
+Run
+go test -tags nogui -count=1 ./internal/gateway/ (the one red,
+TestCodexPoolSaysTheClientsVersion, went red in the full-suite run and
+is green alone and at -count=3 on both this branch and the parent
+commit: a known full-suite flake, not this change)
+go test -tags nogui -count=1 ./internal/... (TestHostToldTheGatewayAddress
+in internal/plugin is red on the parent commit too)
+go vet, gofmt, GOOS=linux GOARCH=amd64 go build, GOOS=windows
+GOARCH=amd64 go build, go build on darwin.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gateway/chat.go                     |   6 +
+ internal/gateway/continuation.go             |   2 +-
+ internal/gateway/draw.go                     |   2 +-
+ internal/gateway/gateway.go                  |  81 ++++++++-
+ internal/gateway/responses.go                |   3 +-
+ internal/gateway/search.go                   |   7 +-
+ internal/gateway/translated_carriers_test.go | 182 +++++++++++++++++++
+ internal/gateway/translated_probe.go         |   2 +-
+ 8 files changed, 274 insertions(+), 11 deletions(-)
+ create mode 100644 internal/gateway/translated_carriers_test.go
+
+diff --git a/internal/gateway/chat.go b/internal/gateway/chat.go
+index b269ff43d..e8f9fcf10 100644
+--- a/internal/gateway/chat.go
++++ b/internal/gateway/chat.go
+@@ -529,6 +529,12 @@ func buildChat(r *Request, model, host string, rejectTemp bool) []byte {
+ 	if r.CacheKey != "" {
+ 		out["prompt_cache_key"] = r.CacheKey
+ 	}
++	if len(r.Metadata) > 0 {
++		// the caller's metadata goes on translated as it was sent (#4899);
++		// an upstream that won't take it here is asked again without it
++		// (forwardTranslated)
++		out["metadata"] = r.Metadata
++	}
+ 	if r.Stream {
+ 		out["stream_options"] = map[string]any{"include_usage": true}
+ 	}
+diff --git a/internal/gateway/continuation.go b/internal/gateway/continuation.go
+index ef2096efd..a3ba13ce2 100644
+--- a/internal/gateway/continuation.go
++++ b/internal/gateway/continuation.go
+@@ -502,7 +502,7 @@ func (s *Server) streamTranslated(w http.ResponseWriter, r *http.Request, p prov
+ 		if cont.resume {
+ 			req = cont.request(request)
+ 		}
+-		res, actual, err := s.forwardTranslated(r.Context(), p, to, req, model, r.Header)
++		res, actual, err := s.forwardTranslated(r.Context(), p, to, req, model, r.Header, r.URL.RawQuery)
+ 		if err != nil {
+ 			if !cont.resume {
+ 				return writeError(w, from, 502, p.Name+": "+err.Error()), err.Error()
+diff --git a/internal/gateway/draw.go b/internal/gateway/draw.go
+index faa1d1083..eb86b138c 100644
+--- a/internal/gateway/draw.go
++++ b/internal/gateway/draw.go
+@@ -1858,7 +1858,7 @@ func (s *Server) drawCodeAssist(ctx context.Context, p provider.Provider, model
+ 	req := &Request{Messages: []Message{{Role: "user", Parts: parts}}, draws: true}
+ 	return s.eachDrawing(d.N, func() (drawn, int, error) {
+ 		// one each: the drawings are asked for at once
+-		ask := s.askTranslated(p, provider.CodeAssist, model, http.Header{}, http.Header{})
++		ask := s.askTranslated(p, provider.CodeAssist, model, http.Header{}, http.Header{}, "")
+ 		events, code, msg := ask(ctx, req)
+ 		if events == nil {
+ 			return drawn{}, code, errors.New(msg)
+diff --git a/internal/gateway/gateway.go b/internal/gateway/gateway.go
+index 02bd4b283..c326f463f 100644
+--- a/internal/gateway/gateway.go
++++ b/internal/gateway/gateway.go
+@@ -13,9 +13,11 @@ import (
+ 	"fmt"
+ 	"io"
+ 	"log"
++	"maps"
+ 	"net"
+ 	"net/http"
+ 	"net/http/httptrace"
++	"net/url"
+ 	"os"
+ 	"path/filepath"
+ 	"regexp"
+@@ -5205,6 +5207,12 @@ func (s *Server) forwardOnce(ctx context.Context, p provider.Provider, to provid
+ 			}
+ 		}
+ 	}
++	if v := in.Get("X-Cid"); v != "" {
++		// the caller's correlation id goes on every request to the
++		// provider, translated or relayed (#4899); the user's own header
++		// for the provider is put in its place by the signing, after
++		req.Header.Set("X-Cid", v)
++	}
+ 	if provider.OpenCodeURL(req.URL.String()) {
+ 		if zenFree {
+ 			// only what OpenCode 2.2.5 sends its gateway: an agent's own
+@@ -6610,7 +6618,7 @@ func (s *Server) usable(p provider.Provider, model string) []provider.Protocol {
+ // Claude models only /chat/completions — so when it says the model isn't
+ // served on this one, the request is built again for the next endpoint it
+ // speaks, and the model is remembered there.
+-func (s *Server) forwardTranslated(ctx context.Context, p provider.Provider, to provider.Protocol, req *Request, model string, in http.Header) (*http.Response, provider.Protocol, error) {
++func (s *Server) forwardTranslated(ctx context.Context, p provider.Provider, to provider.Protocol, req *Request, model string, in http.Header, query string) (*http.Response, provider.Protocol, error) {
+ 	if req.ThinkOff && req.Effort != "none" && slices.Contains(p.Efforts(model), "none") {
+ 		// the client turned reasoning off (Effort reads that as low), and
+ 		// the model can stop thinking: asked for none (#899)
+@@ -6695,6 +6703,12 @@ func (s *Server) forwardTranslated(ctx context.Context, p provider.Provider, to
+ 			r := *req
+ 			r.CacheKey, req = "", &r
+ 		}
++		if len(req.Metadata) > 0 && to == provider.Chat && !s.fits(p.ID, metadataField, to) {
++			// an upstream that turned the caller's metadata away before is
++			// not sent it again (#4899)
++			r := *req
++			r.Metadata, req = nil, &r
++		}
+ 		if want := to == provider.Responses && loadsInPlace(p) && s.fits(p.ID, additionalToolsItem, to); want != req.LoadedInPlace {
+ 			r := *req
+ 			r.LoadedInPlace, req = want, &r
+@@ -6893,7 +6907,7 @@ func (s *Server) forwardTranslated(ctx context.Context, p provider.Provider, to
+ 			p.Chat = strings.TrimSuffix(p.Chat, "/v1")
+ 			path = "/beta" + path
+ 		}
+-		res, err := s.forward(ctx, p, to, path, p.Prepare(body), in)
++		res, err := s.forward(ctx, p, to, withCallerQuery(path, query), p.Prepare(body), in)
+ 		if err != nil || res.StatusCode < 400 {
+ 			if dropped && err == nil {
+ 				// it was the key: not sent there again
+@@ -7158,6 +7172,15 @@ func (s *Server) forwardTranslated(ctx context.Context, p provider.Provider, to
+ 			r.CacheKey, req = "", &r
+ 			continue
+ 		}
++		if len(req.Metadata) > 0 && to == provider.Chat && badRequest(res.StatusCode) && !wrongEndpoint(res.StatusCode, b) && !provider.CopilotRefusal(b) && refusesField(res.StatusCode, b, metadataField) {
++			// the caller's metadata, which the translation carried on
++			// (#4899), turned away by name: asked again without it, and not
++			// sent it there again
++			s.markUnfit(p.ID, metadataField, to)
++			r := *req
++			r.Metadata, req = nil, &r
++			continue
++		}
+ 		dropped = false
+ 		// Responses is asked first there only for what it tells of the
+ 		// cache, not because the model needs it: a model the vendor doesn't
+@@ -7321,6 +7344,10 @@ func hourMarksRefusal(status int, b []byte) bool {
+ // (Request.Tier); a provider that refused it is remembered under it in unfit.
+ const tierField = "service_tier"
+ 
++// metadataField is the caller's metadata object a translation carries on
++// (#4899); a provider that refused it is remembered under it in unfit.
++const metadataField = "metadata"
++
+ // optionalFields are request fields OpenAI's APIs (or an agent's own
+ // vendor, Kimi's and Qwen's thinking switches) take that a request does
+ // without: an upstream that refuses one by name is asked again without it.
+@@ -7692,7 +7719,7 @@ func (s *Server) translate(w http.ResponseWriter, r *http.Request, p provider.Pr
+ 	}
+ 	if request.WebSearch {
+ 		if !searching(r.Context()) && canSearchFor(p) && (!searchesFor(p, to, model, request) || magpieSearches(r.Context(), p)) {
+-			ask := antigravityRound(w, p, s.askTranslated(p, to, model, r.Header, w.Header()))
++			ask := antigravityRound(w, p, s.askTranslated(p, to, model, r.Header, w.Header(), r.URL.RawQuery))
+ 			if zen != nil {
+ 				ask = zenRound(zen.z, ask)
+ 			}
+@@ -7706,7 +7733,7 @@ func (s *Server) translate(w http.ResponseWriter, r *http.Request, p provider.Pr
+ 	if stream {
+ 		return s.streamTranslated(w, r, p, from, to, request, model, zen, u)
+ 	}
+-	res, actual, err := s.forwardTranslated(r.Context(), p, to, request, model, r.Header)
++	res, actual, err := s.forwardTranslated(r.Context(), p, to, request, model, r.Header, r.URL.RawQuery)
+ 	if err != nil {
+ 		return writeError(w, from, 502, p.Name+": "+err.Error()), err.Error()
+ 	}
+@@ -7921,6 +7948,52 @@ func upstreamPath(p provider.Provider, proto provider.Protocol, model string) st
+ 	return pathOf(proto)
+ }
+ 
++// withCallerQuery merges the caller's query string into the path a
++// translated request goes by: what the caller put in its URL rides to the
++// provider (#4899), the path's own parameters (Code Assist's alt=sse)
++// standing, and no parameter a caller's credential travels by with it —
++// a gateway key comes in the query (Gemini's clients), and a caller's key
++// is magpie's, never the provider's.
++func withCallerQuery(path, query string) string {
++	if query == "" {
++		return path
++	}
++	base, own := path, ""
++	if at := strings.IndexByte(path, '?'); at >= 0 {
++		base, own = path[:at], path[at+1:]
++	}
++	out := url.Values{}
++	if own != "" {
++		if v, err := url.ParseQuery(own); err == nil {
++			out = v
++		}
++	}
++	caller, err := url.ParseQuery(query)
++	if err != nil {
++		return path
++	}
++	for _, k := range slices.Sorted(maps.Keys(caller)) {
++		if callerSecretQuery(k) || out.Has(k) {
++			continue
++		}
++		out[k] = caller[k]
++	}
++	if q := out.Encode(); q != "" {
++		return base + "?" + q
++	}
++	return base
++}
++
++// callerSecretQuery is a name a caller's credential travels by in a query:
++// none of them goes to a provider with the caller's query (#4899).
++func callerSecretQuery(k string) bool {
++	switch strings.ToLower(k) {
++	case "key", "api_key", "apikey", "access_token", "token":
++		return true
++	}
++	return false
++}
++
+ // parse is shared by translated routes and account/subscription backends.
+ // Only the allowlist contracts below promise a required callable function:
+ // other protocols have server, custom and MCP tools the IR cannot render.
+diff --git a/internal/gateway/responses.go b/internal/gateway/responses.go
+index 1a58cd30e..2b44dce0b 100644
+--- a/internal/gateway/responses.go
++++ b/internal/gateway/responses.go
+@@ -279,6 +279,7 @@ type rRequest struct {
+ 	PromptCacheRetention string          `json:"prompt_cache_retention,omitempty"`
+ 	Include              []string        `json:"include,omitempty"`
+ 	ClientMetadata       json.RawMessage `json:"client_metadata,omitempty"`
++	Metadata             json.RawMessage `json:"metadata,omitempty"`
+ 	AccessPrograms       json.RawMessage `json:"access_programs,omitempty"`
+ 	Text                 json.RawMessage `json:"text,omitempty"`
+ 	Reasoning            *struct {
+@@ -341,7 +342,7 @@ func readResponsesFor(body []byte, facts, keepInstructions bool) (*Request, erro
+ 	}
+ 	r := &Request{Model: q.Model, System: q.Instructions, MaxTokens: q.MaxOutputTokens, Temp: q.Temperature,
+ 		TopP: q.TopP, Stream: q.Stream, Parallel: q.ParallelToolCalls, Fast: q.ServiceTier == "priority" || q.ServiceTier == "ultrafast", Ultrafast: q.ServiceTier == "ultrafast", Tier: q.ServiceTier, CacheKey: q.PromptCacheKey, Include: q.Include,
+-		ClientMetadata: sentRaw(q.ClientMetadata), AccessPrograms: q.AccessPrograms}
++		ClientMetadata: sentRaw(q.ClientMetadata), Metadata: sentRaw(q.Metadata), AccessPrograms: q.AccessPrograms}
+ 	r.Text, r.Format = textFormat(sentRaw(q.Text))
+ 	// a Responses client's turns go to Claude with hour-long cache marks,
+ 	// unless it asked for its prompt to be kept in memory only
+diff --git a/internal/gateway/search.go b/internal/gateway/search.go
+index 95d7ae8f4..b276ef8b8 100644
+--- a/internal/gateway/search.go
++++ b/internal/gateway/search.go
+@@ -1347,13 +1347,14 @@ func (s *Server) searchRounds(ctx context.Context, q *Request, tool string, in <
+ 	}
+ }
+ 
+-// askTranslated is a round for a provider asked on to.
+-func (s *Server) askTranslated(p provider.Provider, to provider.Protocol, model string, in http.Header, reply http.Header) round {
++// askTranslated is a round for a provider asked on to. query is the
++// caller's own, which rides the ask for it (#4899); "" for magpie's own.
++func (s *Server) askTranslated(p provider.Provider, to provider.Protocol, model string, in http.Header, reply http.Header, query string) round {
+ 	first := true
+ 	return func(ctx context.Context, req *Request) (<-chan Event, int, string) {
+ 		q := *req
+ 		q.Stream = true
+-		res, actual, err := s.forwardTranslated(ctx, p, to, &q, model, in)
++		res, actual, err := s.forwardTranslated(ctx, p, to, &q, model, in, query)
+ 		if err != nil {
+ 			return nil, 502, p.Name + ": " + err.Error()
+ 		}
+diff --git a/internal/gateway/translated_carriers_test.go b/internal/gateway/translated_carriers_test.go
+new file mode 100644
+index 000000000..80820ce39
+--- /dev/null
++++ b/internal/gateway/translated_carriers_test.go
+@@ -0,0 +1,182 @@
++package gateway
++
++import (
++	"io"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"sync"
++	"testing"
++
++	"github.com/tidwall/gjson"
++	"github.com/yetone/magpie/internal/provider"
++)
++
++// carriers records what a caller's correlation carriers reached the
++// provider as: the query string, the headers and the raw body (#4899).
++var head = map[string]string{"X-Cid": "abc123"}
++
++type carriers struct {
++	mu    sync.Mutex
++	query string
++	head  http.Header
++	body  []byte
++	calls int
++	// refuseMetadata, when set, answers the first ask with it and serves
++	// the next as chatReply
++	refuseMetadata string
++}
++
++func (c *carriers) ServeHTTP(w http.ResponseWriter, r *http.Request) {
++	raw, _ := io.ReadAll(r.Body)
++	c.mu.Lock()
++	c.query, c.head, c.body, c.calls = r.URL.RawQuery, r.Header, raw, c.calls+1
++	refuse := c.refuseMetadata != "" && c.calls == 1
++	c.mu.Unlock()
++	if refuse {
++		w.Header().Set("Content-Type", "application/json")
++		w.WriteHeader(http.StatusBadRequest)
++		io.WriteString(w, c.refuseMetadata)
++		return
++	}
++	w.Header().Set("Content-Type", "text/event-stream")
++	io.WriteString(w, chatReply)
++}
++
++func (c *carriers) got() (string, http.Header, []byte, int) {
++	c.mu.Lock()
++	defer c.mu.Unlock()
++	return c.query, c.head, c.body, c.calls
++}
++
++// The caller's correlation carriers ride a translated request: the body's
++// metadata object, the X-Cid header and the URL's query string. A provider
++// configured by its URL alone speaks Chat Completions, so an Anthropic
++// Messages or an OpenAI Responses request is translated — and none of the
++// three reached the provider, which left a caller unable to pair its turns
++// with what the provider served (#4899). A gateway key the caller gave in
++// the query stays magpie's.
++func TestTranslatedRequestKeepsCallerCarriers(t *testing.T) {
++	ask := func(t *testing.T, path, body string, head map[string]string) (query, cid string, metadata gjson.Result, calls int) {
++		t.Helper()
++		fresh(t)
++		up := &carriers{}
++		hs := httptest.NewServer(up)
++		t.Cleanup(hs.Close)
++		if err := provider.Save(provider.Provider{ID: "fake", Name: "Fake", Key: "k", Models: []string{"m1"},
++			Chat: hs.URL + "/v1"}); err != nil {
++			t.Fatal(err)
++		}
++		code, reply := postWith(t, path, body, head)
++		if code != 200 {
++			t.Fatalf("status %d: %s", code, reply)
++		}
++		q, h, b, n := up.got()
++		return q, h.Get("X-Cid"), gjson.GetBytes(b, "metadata"), n
++	}
++	const inbound = `{"model":"m1","max_tokens":100,"metadata":{"cid":"abc123"},"messages":[{"role":"user","content":"hi"}]}`
++
++	t.Run("anthropic in", func(t *testing.T) {
++		query, cid, metadata, calls := ask(t, "/v1/messages?cid=abc123&key=magpie-gateway-key", inbound, head)
++		if !strings.Contains(query, "cid=abc123") {
++			t.Errorf("the caller's query %q lost its cid", query)
++		}
++		if strings.Contains(query, "magpie-gateway-key") {
++			t.Errorf("the caller's gateway key went to the provider: %q", query)
++		}
++		if cid != "abc123" {
++			t.Errorf("X-Cid %q lost", cid)
++		}
++		if metadata.Get("cid").String() != "abc123" {
++			t.Errorf("metadata %s lost", metadata.Raw)
++		}
++		if calls != 1 {
++			t.Errorf("asked %d times", calls)
++		}
++	})
++
++	t.Run("responses in", func(t *testing.T) {
++		query, cid, metadata, calls := ask(t, "/v1/responses?cid=r456",
++			`{"model":"m1","metadata":{"cid":"r456"},"input":"hi"}`, head)
++		if !strings.Contains(query, "cid=r456") {
++			t.Errorf("the caller's query %q lost its cid", query)
++		}
++		if cid != "abc123" {
++			t.Errorf("X-Cid %q lost", cid)
++		}
++		if metadata.Get("cid").String() != "r456" {
++			t.Errorf("metadata %s lost", metadata.Raw)
++		}
++		if calls != 1 {
++			t.Errorf("asked %d times", calls)
++		}
++	})
++
++	t.Run("anthropic in streamed", func(t *testing.T) {
++		fresh(t)
++		up := &carriers{}
++		hs := httptest.NewServer(up)
++		t.Cleanup(hs.Close)
++		if err := provider.Save(provider.Provider{ID: "fake", Name: "Fake", Key: "k", Models: []string{"m1"},
++			Chat: hs.URL + "/v1"}); err != nil {
++			t.Fatal(err)
++		}
++		code, reply := postWith(t, "/v1/messages?cid=abc123", `{"model":"m1","max_tokens":100,"stream":true,"metadata":{"cid":"abc123"},"messages":[{"role":"user","content":"hi"}]}`, head)
++		if code != 200 {
++			t.Fatalf("status %d: %s", code, reply)
++		}
++		q, h, b, _ := up.got()
++		if !strings.Contains(q, "cid=abc123") {
++			t.Errorf("the caller's query %q lost its cid", q)
++		}
++		if h.Get("X-Cid") != "abc123" {
++			t.Errorf("X-Cid %q lost", h.Get("X-Cid"))
++		}
++		if gjson.GetBytes(b, "metadata.cid").String() != "abc123" {
++			t.Errorf("metadata %s lost", gjson.GetBytes(b, "metadata").Raw)
++		}
++	})
++
++	t.Run("an upstream that turns the metadata away is asked without it", func(t *testing.T) {
++		fresh(t)
++		up := &carriers{refuseMetadata: `{"error":{"message":"Unrecognized request argument supplied: metadata","type":"invalid_request_error"}}`}
++		hs := httptest.NewServer(up)
++		t.Cleanup(hs.Close)
++		if err := provider.Save(provider.Provider{ID: "fake", Name: "Fake", Key: "k", Models: []string{"m1"},
++			Chat: hs.URL + "/v1"}); err != nil {
++			t.Fatal(err)
++		}
++		code, reply := postWith(t, "/v1/messages?cid=abc123", inbound, head)
++		if code != 200 {
++			t.Fatalf("status %d: %s", code, reply)
++		}
++		_, _, b, calls := up.got()
++		if calls != 2 {
++			t.Fatalf("asked %d times, want a refusal and a turn without the metadata", calls)
++		}
++		if gjson.GetBytes(b, "metadata").Exists() {
++			t.Errorf("the metadata came back after the refusal: %s", gjson.GetBytes(b, "metadata").Raw)
++		}
++	})
++}
++
++// The header rides a relayed request too: what the caller put on goes to
++// the provider as the caller sent it, its key to magpie never leaving.
++func TestRelayedRequestKeepsCallerCidHeader(t *testing.T) {
++	fresh(t)
++	up := &carriers{}
++	hs := httptest.NewServer(up)
++	t.Cleanup(hs.Close)
++	if err := provider.Save(provider.Provider{ID: "fake", Name: "Fake", Key: "k", Models: []string{"m1"},
++		Anthropic: hs.URL}); err != nil {
++		t.Fatal(err)
++	}
++	code, reply := postWith(t, "/v1/messages", `{"model":"m1","max_tokens":100,"metadata":{"cid":"abc123"},"messages":[{"role":"user","content":"hi"}]}`, head)
++	if code != 200 {
++		t.Fatalf("status %d: %s", code, reply)
++	}
++	_, h, _, _ := up.got()
++	if h.Get("X-Cid") != "abc123" {
++		t.Errorf("X-Cid %q lost on the relay", h.Get("X-Cid"))
++	}
++}
+diff --git a/internal/gateway/translated_probe.go b/internal/gateway/translated_probe.go
+index 7ad179d09..b6aa9b45b 100644
+--- a/internal/gateway/translated_probe.go
++++ b/internal/gateway/translated_probe.go
+@@ -20,7 +20,7 @@ func probeTranslated(ctx context.Context, p provider.Provider, proto provider.Pr
+ 	ctx, cancel := context.WithCancel(ctx)
+ 	defer cancel() // the reader stops once the first word is in
+ 	req := &Request{MaxTokens: 16, Messages: []Message{{Role: "user", Parts: []Part{{Kind: Text, Text: "hi"}}}}}
+-	events, code, msg := probeServer().askTranslated(p, proto, model, http.Header{}, http.Header{})(ctx, req)
++	events, code, msg := probeServer().askTranslated(p, proto, model, http.Header{}, http.Header{}, "")(ctx, req)
+ 	if events == nil {
+ 		return code, errors.New(msg)
+ 	}
+-- 
+2.50.1 (Apple Git-155)
+

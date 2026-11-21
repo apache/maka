@@ -1,0 +1,2 @@
+/* 样式基座（token/暗色板/防闪）统一由 @ggbdpq/console-ui 提供，改板只动包内 */
+@import "@ggbdpq/console-ui/base.css";

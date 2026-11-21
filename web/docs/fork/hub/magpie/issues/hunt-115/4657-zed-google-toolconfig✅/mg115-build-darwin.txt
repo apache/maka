@@ -1,0 +1,5 @@
+# github.com/yetone/magpie/internal/gui
+internal/gui/dockflap_darwin.go:42:77: warning: implicit conversion from enumeration type 'enum CGImageAlphaInfo' to different enumeration type 'CGBitmapInfo' (aka 'enum CGBitmapInfo') [-Wenum-conversion]
+internal/gui/dockflap_darwin.go:68:76: warning: implicit conversion from enumeration type 'enum CGImageAlphaInfo' to different enumeration type 'CGBitmapInfo' (aka 'enum CGBitmapInfo') [-Wenum-conversion]
+# github.com/yetone/magpie/internal/gui
+internal/gui/trayimage_darwin.go:131:67: warning: implicit conversion from enumeration type 'enum CGImageAlphaInfo' to different enumeration type 'CGBitmapInfo' (aka 'enum CGBitmapInfo') [-Wenum-conversion]

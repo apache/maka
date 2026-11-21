@@ -1,0 +1,14 @@
+{
+  "name": "copy-link-to-clipboard-dsv4",
+  "version": "15.1.3",
+  "description": "复制链接到剪贴板 — Chrome extension reverse engineering (dsv4)",
+  "license": "UNLICENSED",
+  "scripts": {
+    "build": "tsc",
+    "check": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0",
+    "@types/chrome": "^0.0.268"
+  }
+}

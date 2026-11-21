@@ -1,0 +1,354 @@
+<!-- 本地待发布稿（未发布）：2026-10-31 撞车——维护者 yetone d8cf4f74f 先落地（v0.1.2378），已发让坑帖 comment-6542274992。
+     本稿与 patch 留档作独立佐证；分支 hunt110-b-4558-plugin-name（95eeca28e）已推 fork 未删。 -->
+The row now shows what the package says of itself:
+
+**What was wrong.** Nothing read `magpie.name`. The installed row's name came from the market's list — a package the list names shows the list's name — and fell straight to the dependency key for a package it names no entry of, which is every `github:` install: the state told the page only `Package` (the key bun added the dependency under), and while the icon's field was read (`magpie.icon`, #1775), the name's never was. #3608's route — a file in `registry.d` — adds a market entry, and that stands and still wins; but a package that only says itself in its own `package.json` was heard nowhere.
+
+**The cure.** `plugin.InstalledName` (beside `InstalledIcon`) reads the installed copy's `package.json` and returns its `magpie.name`; the state passes it to the page, and the row shows the market's name if the market names the package, else the package's own, else the dependency key, else the spec — `shownName` in `plugins.js`, one lookup longer. So:
+
+- a `github:` install carrying `"magpie": { "name": "华为云 HUAWEI" }` lists as 华为云 HUAWEI, and the updates banner names it so too;
+- a package the market (the community list or `registry.d`) names keeps the market's name — a reviewed entry outranks the package's own word, as the icon's own rule does;
+- one giving none is shown by its dependency key as today.
+
+**What stands.** `magpie plugin list` keeps naming the key (`plugins_cli.go`, as the issue expects), and the Discover cards, the GitHub-tagged cards and npm search name what they are — listings, not installed copies. No restart is needed: the name is read the way the icon is, at each ask of `/api/plugins`, so the row picks it up when the page is next opened or refreshed.
+
+**The tests.** `TestPluginsStateGivesThePluginsOwnName`: the page's state carries the own name, and none when the package gives none — red on the parent (`the plugin's own name: "", want 华为云 HUAWEI`). `plugin-own-name.test.cjs` (Playwright, the API faked): three rows — one with the field shows it, one without shows its key, a community one keeps the market's name — red on the parent, where all three showed the key or the market's name. Ablation: the three product files back at the parent with the tests kept, both go red; restored, both green.
+
+**The cost.** One small local file read more per plugin, when the Plugins page is asked for — the same read `InstalledIcon` already makes, on a page open, nothing on request paths.
+
+**Verification**
+
+| Check | Result |
+|---|---|
+| `TestPluginsStateGivesThePluginsOwnName` on parent `841025836` | red: `the plugin's own name: "", want 华为云 HUAWEI` |
+| `plugin-own-name.test.cjs` against the parent's assets | red: the row showed `magpie-officeace` |
+| both with the fix, `-count=1` | pass; the Go one also under `-race` |
+| ablation: `market.go`, `gui/plugins.go`, `plugins.js` back at the parent, tests kept | both red; restored, both green |
+| `go test -tags nogui ./internal/plugin/ ./internal/gui/ -count=1` | 3 red, all pre-existing: the same three fail at the parent on the same lines (`host_addr_test.go:78`; `proxycheck_test.go:100`, needs a live proxy; `settings_keep_test.go:230`) |
+| `gofmt -l` on the touched Go files | clean |
+| `go vet ./...`; `GOOS=linux go vet -tags nogui ./...`; `GOOS=windows go vet ./...` | clean |
+| `go build`, darwin / linux (nogui) / windows | pass (the gui package's cgo warnings are pre-existing) |
+
+**Not verified**
+
+- WebKit: Playwright's WebKit isn't installed here; the row test ran on Chromium. It asserts the row's text, no layout, so no engine-specific behavior is in play.
+- Against the reporter's package itself: the fixture mirrors the issue's shape (a `github:` spec, `magpie.name` in the installed copy's `package.json`).
+
+Branch with the commit: [hunt110-b-4558-plugin-name](https://github.com/ggbdpq/magpie/tree/hunt110-b-4558-plugin-name) (head `95eeca28eeafd8f7704d5ce7e9541348a4b724f9`).
+
+**Attribution**: AI-written; I've read the whole diff and the tests pass. Please keep the author (`ggbdpq`) or add `Co-authored-by: ggbdpq <ggbdpq@gmail.com>`.
+
+<details><summary>patch: hunt110-b-4558-plugin-name (#4558) — git am applies it as is; SHA-256 first 16: 2e687136c9b14b0a</summary>
+
+```text
+From 95eeca28eeafd8f7704d5ce7e9541348a4b724f9 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Sat, 31 Oct 2026 18:23:12 +0800
+Subject: [PATCH] plugins: an installed plugin's own magpie.name is what its
+ row shows
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+MYCF711 (#4558): a plugin installed from a git repository that says what
+it is in its own package.json was listed by its dependency key in
+Settings → Plugins, while community packages showed the name the market
+gives them — nothing read magpie.name. A package the market names no
+entry of now says what it is in its own package.json, the way its
+magpie.icon is its own picture (#1775):
+
+- plugin.InstalledName (beside InstalledIcon) reads the installed copy's
+  magpie.name; a read that fails or a name that is blank says none.
+- pluginsState tells the page the plugin's own name, and the installed
+  row shows it where the market's list names no entry of the package.
+  The market's name still wins for a package it lists, a plugin giving
+  none is shown by its dependency key as before, and `magpie plugin
+  list` (the CLI) keeps naming the key, as the issue expects.
+
+Tests: TestPluginsStateGivesThePluginsOwnName (the page's state carries
+the own name, none when the package gives none) and
+plugin-own-name.test.cjs (the row: own name, dependency key, market's
+name winning). Both red on the parent, green here.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gui/assets/plugins.js              |   3 +-
+ internal/gui/plugins.go                     |   6 +-
+ internal/gui/plugins_own_name_test.go       |  77 +++++++++++++++
+ internal/gui/tests/plugin-own-name.test.cjs | 104 ++++++++++++++++++++
+ internal/plugin/market.go                   |  20 ++++
+ 5 files changed, 208 insertions(+), 2 deletions(-)
+ create mode 100644 internal/gui/plugins_own_name_test.go
+ create mode 100644 internal/gui/tests/plugin-own-name.test.cjs
+
+diff --git a/internal/gui/assets/plugins.js b/internal/gui/assets/plugins.js
+index f4b127634..eec444e93 100644
+--- a/internal/gui/assets/plugins.js
++++ b/internal/gui/assets/plugins.js
+@@ -1154,10 +1154,11 @@
+   }
+ 
+   // an installed plugin's name as its row shows it: the market's, else the
++  // one its own package.json gives (magpie.name, #4558), else the
+   // package's or the folder's
+   function shownName(e) {
+     const pkg = name(e.spec);
+-    return (listings || []).find((x) => x.package === pkg)?.name || (isGit(e.spec) && e.package) || label(e.spec);
++    return (listings || []).find((x) => x.package === pkg)?.name || e.name || (isGit(e.spec) && e.package) || label(e.spec);
+   }
+ 
+   function installedRow(e) {
+diff --git a/internal/gui/plugins.go b/internal/gui/plugins.go
+index c4cfaf1e1..dc6589e60 100644
+--- a/internal/gui/plugins.go
++++ b/internal/gui/plugins.go
+@@ -105,6 +105,10 @@ type pluginEntryJSON struct {
+ 	// Package is the package installed from a git repository, which its
+ 	// own package.json names
+ 	Package string `json:"package,omitempty"`
++	// Name is the one its own package.json gives itself (magpie.name),
++	// which its row shows when the market names no entry of the package
++	// (#4558); Package stays the key the dependency is installed under
++	Name string `json:"name,omitempty"`
+ 	// Commit is the commit of its repository a git one was installed at,
+ 	// and Head the commit the repository was at when last asked (asking
+ 	// it again is /api/plugins/git's): an update is out only when they
+@@ -297,7 +301,7 @@ func pluginsState(ctx context.Context, w Windows) pluginsJSON {
+ 		}
+ 	}
+ 	for _, e := range l.Plugins {
+-		j := pluginEntryJSON{Entry: e, Error: errs[e.Spec], Providers: names[e.Spec], Version: plugin.Installed(e.Spec), Named: answered}
++		j := pluginEntryJSON{Entry: e, Error: errs[e.Spec], Providers: names[e.Spec], Version: plugin.Installed(e.Spec), Name: plugin.InstalledName(e.Spec), Named: answered}
+ 		if plugin.Gateway(plugin.Target(e.Spec)) != "" {
+ 			j.IsGateway = true
+ 			j.GatewayOnly = plugin.GatewayOnly(plugin.Target(e.Spec))
+diff --git a/internal/gui/plugins_own_name_test.go b/internal/gui/plugins_own_name_test.go
+new file mode 100644
+index 000000000..186a0c3e5
+--- /dev/null
++++ b/internal/gui/plugins_own_name_test.go
+@@ -0,0 +1,77 @@
++package gui
++
++import (
++	"context"
++	"encoding/json"
++	"os"
++	"path/filepath"
++	"testing"
++
++	"github.com/yetone/magpie/internal/settings"
++)
++
++// #4558 (MYCF711): a git-installed plugin that says what it is in its own
++// package.json (magpie.name) was shown by its dependency key in
++// Settings → Plugins — nothing read the field. The state the page is told
++// carries the plugin's own name, none when it gives none, so the row can
++// show it where the market names no entry of the package.
++func TestPluginsStateGivesThePluginsOwnName(t *testing.T) {
++	h := t.TempDir()
++	t.Setenv("HOME", h)
++	t.Setenv("USERPROFILE", h)
++	t.Setenv("XDG_CONFIG_HOME", filepath.Join(h, ".config"))
++	t.Setenv("XDG_CACHE_HOME", filepath.Join(h, ".cache"))
++	t.Setenv("MAGPIE_BUN", "")
++	t.Setenv("PATH", "")
++	dir := func(name, own string) string {
++		d := filepath.Join(h, "src", name)
++		if err := os.MkdirAll(d, 0o755); err != nil {
++			t.Fatal(err)
++		}
++		pj := map[string]any{"name": name, "version": "1.0.0", "main": "index.js"}
++		if own != "" {
++			pj["magpie"] = map[string]any{"name": own}
++		}
++		b, _ := json.Marshal(pj)
++		if err := os.WriteFile(filepath.Join(d, "package.json"), b, 0o644); err != nil {
++			t.Fatal(err)
++		}
++		return d
++	}
++	named, plain := dir("magpie-officeace", "华为云 HUAWEI"), dir("magpie-magicrew-auth", "")
++	if err := os.MkdirAll(settings.Dir(), 0o755); err != nil {
++		t.Fatal(err)
++	}
++	b, _ := json.Marshal(map[string]any{"plugins": []map[string]any{{"spec": named}, {"spec": plain}}})
++	if err := os.WriteFile(filepath.Join(settings.Dir(), "plugins.json"), b, 0o644); err != nil {
++		t.Fatal(err)
++	}
++	// read as the page does, through the JSON: the row's name is new, and
++	// the Go struct would compile the want away
++	st, err := json.Marshal(pluginsState(context.Background(), nil))
++	if err != nil {
++		t.Fatal(err)
++	}
++	var got struct {
++		Plugins []struct {
++			Spec string `json:"spec"`
++			Name string `json:"name"`
++		} `json:"plugins"`
++	}
++	if json.Unmarshal(st, &got) != nil {
++		t.Fatal(err)
++	}
++	if len(got.Plugins) != 2 {
++		t.Fatalf("plugins: %v", got.Plugins)
++	}
++	bySpec := map[string]string{}
++	for _, p := range got.Plugins {
++		bySpec[p.Spec] = p.Name
++	}
++	if bySpec[named] != "华为云 HUAWEI" {
++		t.Errorf("the plugin's own name: %q, want 华为云 HUAWEI", bySpec[named])
++	}
++	if bySpec[plain] != "" {
++		t.Errorf("none given: %q, want none", bySpec[plain])
++	}
++}
+diff --git a/internal/gui/tests/plugin-own-name.test.cjs b/internal/gui/tests/plugin-own-name.test.cjs
+new file mode 100644
+index 000000000..87c3be97e
+--- /dev/null
++++ b/internal/gui/tests/plugin-own-name.test.cjs
+@@ -0,0 +1,104 @@
++// Run with Node's test runner and Playwright on the module path; see README.md.
++// MYCF711 (#4558): a plugin installed from a git repository that says what
++// it is in its own package.json (magpie.name) was listed by its dependency
++// key in Settings → Plugins → Installed, while community packages showed
++// the name the market gives them. A row now shows the plugin's own
++// magpie.name where the market names no entry of the package; a package
++// the market does name keeps the market's name. The API is faked.
++//
++// The row's title is the plugin's own data, not the page's words, so one
++// language carries the case; the name here is Chinese as the issue's is.
++const assert = require("node:assert/strict");
++const fs = require("node:fs/promises");
++const path = require("node:path");
++const { test } = require("node:test");
++const { chromium } = require("playwright");
++
++const assets = path.resolve(__dirname, "../assets");
++
++const OWN = "华为云 HUAWEI";
++// installed: what /api/plugins says is; listings: the market, which names
++// the community package alone
++const MINE = [
++  { spec: "github:officeace/magpie-officeace", package: "magpie-officeace", version: "0.2.4", name: OWN, providers: [], moved: [] },
++  { spec: "github:magicrew/magpie-magicrew-auth", package: "magpie-magicrew-auth", version: "1.0.0", providers: [], moved: [] },
++  { spec: "@magpie-community/workbuddy", version: "1.0.0", name: "the package's own", providers: [], moved: [] },
++];
++const LISTINGS = [{ package: "@magpie-community/workbuddy", name: "WorkBuddy", community: true }];
++
++function server() {
++  const state = () => ({ bun: true, bunVersion: "1.4.2", plugins: MINE, picker: false, movable: [] });
++  return async (route) => {
++    const url = new URL(route.request().url());
++    const json = (data) => route.fulfill({ json: data });
++    if (url.pathname === "/boot.js") return route.fulfill({ contentType: "text/javascript", body: `window.bootPrefs = {lang:"en",theme:"light",web:false};` });
++    if (url.pathname === "/wails/runtime.js") return route.fulfill({ contentType: "text/javascript", body: "export const Window = {};" });
++    if (url.pathname === "/api/state") return json({ agents: [], profiles: [], settings: { lang: "en", theme: "light" } });
++    if (url.pathname === "/api/providers") return json({ providers: [], presets: [], excluded: [], gateway: { running: true, window: true }, plugins: [] });
++    if (url.pathname === "/api/groups") return json({ groups: [], pools: [] });
++    if (url.pathname === "/api/gateway/trace") return json({ routes: [] });
++    if (url.pathname === "/api/plugins") return json(state());
++    if (url.pathname === "/api/plugins/listings") return json({ listings: LISTINGS });
++    if (url.pathname === "/api/plugins/npm") return json({ npm: {} });
++    if (url.pathname === "/api/plugins/updates") return json({ waiting: [], updated: [] });
++    if (url.pathname.startsWith("/api/")) return json({});
++    if (!/^\/[\w./-]*$/.test(url.pathname) || url.host !== "magpie.test") return route.fulfill({ status: 404, body: "" });
++    const file = path.join(assets, url.pathname === "/" ? "index.html" : url.pathname);
++    const contentType = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png" }[path.extname(file)];
++    try { await route.fulfill({ body: await fs.readFile(file), contentType }); } catch { await route.fulfill({ status: 404, body: "" }); }
++  };
++}
++
++// what the page asked the API and hasn't drawn yet: an ask counts until
++// its body is read and the task that read it has run, which is where the
++// page draws its answer
++function counting() {
++  let n = 0;
++  const f = window.fetch;
++  const done = () => setTimeout(() => n--, 0);
++  window.fetch = async (...a) => {
++    if (!String(a[0]).startsWith("/api/")) return f(...a);
++    n++;
++    let r;
++    try { r = await f(...a); } catch (e) { done(); throw e; }
++    if (r.status === 204) { done(); return r; }
++    for (const k of ["text", "json"]) {
++      const read = r[k].bind(r);
++      r[k] = () => read().finally(done);
++    }
++    return r;
++  };
++  window.asking = () => n;
++  try { localStorage.setItem("magpie.pluginTab", "installed"); } catch {}
++}
++
++// every answer drawn, and the list done arriving
++const settled = (page) => page.waitForFunction(() => window.asking() === 0 && !document.querySelector(".pm-arrive"), null, { polling: "raf" });
++
++for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium"])) {
++  test(engine + ": an installed plugin's own magpie.name is what its row shows", async (t) => {
++    assert(["chromium", "webkit"].includes(engine), "BROWSER must be chromium or webkit");
++    const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL || "chromium" });
++    t.after(() => browser.close());
++    const ctx = await browser.newContext({ viewport: { width: 980, height: 860 } });
++    await ctx.addInitScript(counting);
++    const page = await ctx.newPage();
++    page.setDefaultTimeout(5000);
++    page.setDefaultNavigationTimeout(60000);
++    const errors = [];
++    page.on("pageerror", (e) => errors.push(e.message));
++    await page.route("**/*", server());
++    await page.goto("http://magpie.test/?view=plugins", { timeout: 30000 });
++    await page.locator("#view-plugins").waitFor({ state: "visible" });
++    await settled(page);
++    const rows = page.locator("#view-plugins .pm-list .pm-row .name");
++    await rows.first().waitFor({ state: "visible" });
++    assert.equal(await rows.count(), 3, "three rows");
++    const shown = {};
++    for (let i = 0; i < 3; i++) shown[await rows.nth(i).locator("> span").first().textContent()] = true;
++    assert.ok(shown[OWN], `the plugin's own magpie.name is shown, got ${Object.keys(shown).join(" | ")}`);
++    assert.ok(shown["magpie-magicrew-auth"], "one giving none is shown by its dependency key as before");
++    assert.ok(shown["WorkBuddy"], "a package the market names keeps the market's name");
++    assert.deepEqual(errors, [], "no page errors");
++  });
++}
+diff --git a/internal/plugin/market.go b/internal/plugin/market.go
+index 3fdbfe086..923c03173 100644
+--- a/internal/plugin/market.go
++++ b/internal/plugin/market.go
+@@ -723,6 +723,26 @@ func InstalledIcon(spec string) string {
+ 	return ownIcon(p.Magpie.Icon)
+ }
+ 
++// InstalledName is the name the installed plugin spec's package.json gives
++// itself in magpie.name (#4558): a package the market names no entry of
++// says what it is in its own package.json, as InstalledIcon's picture is
++// its own. "" for none, or a plugin that is one file.
++func InstalledName(spec string) string {
++	b, err := os.ReadFile(filepath.Join(Target(spec), "package.json"))
++	if err != nil {
++		return ""
++	}
++	var p struct {
++		Magpie struct {
++			Name string `json:"name"`
++		} `json:"magpie"`
++	}
++	if json.Unmarshal(b, &p) != nil {
++		return ""
++	}
++	return strings.TrimSpace(p.Magpie.Name)
++}
++
+ // Upgrade installs the newest version of one plugin: npm's, or its git
+ // repository's commit now. One bun won't install says why.
+ func Upgrade(ctx context.Context, name string) error {
+-- 
+2.50.1 (Apple Git-155)
+
+```
+
+</details>

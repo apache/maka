@@ -1,0 +1,21 @@
+{
+  "id": "49",
+  "slug": "triangle",
+  "title": "三角形最小路径和",
+  "difficulty": "medium",
+  "tags": ["数组", "动态规划"],
+  "description": "给定一个三角形 `triangle`,找出自顶向下的最小路径和。每一步只能移动到下一行中相邻的结点上(即从第 `i` 行下标 `j` 可移动到第 `i+1` 行下标 `j` 或 `j+1`)。\n\n**示例 1:**\n\n- 输入:`triangle = [[2],[3,4],[6,5,7],[4,1,8,3]]`\n- 输出:`11`(路径 `2→3→5→1` 最小,和为 11)\n\n**进阶:** 可以只用 O(n) 额外空间吗?",
+  "solution": "## 思路\n\n**自底向上动态规划**:从倒数第二行开始,每个位置加上「下一行相邻两位置的较小者」。`dp[i][j] += min(dp[i+1][j], dp[i+1][j+1])`。顶点即答案。可只用一维数组。\n\n## 参考代码\n\n```js\nfunction minimumTotal(triangle) {\n  const dp = triangle.map((row) => [...row]);\n  for (let i = dp.length - 2; i >= 0; i--) {\n    for (let j = 0; j < dp[i].length; j++) {\n      dp[i][j] += Math.min(dp[i + 1][j], dp[i + 1][j + 1]);\n    }\n  }\n  return dp[0][0];\n}\n```\n\n## 复杂度\n\n- 时间:O(n²),n 为行数\n- 空间:O(n²)(可优化为 O(n))",
+  "signature": {
+    "language": "javascript",
+    "entry": "minimumTotal",
+    "params": [{ "name": "triangle", "type": "number[][]" }],
+    "returns": "number"
+  },
+  "testCases": [
+    { "sample": true, "input": [[[2], [3, 4], [6, 5, 7], [4, 1, 8, 3]]], "expected": 11 },
+    { "sample": true, "input": [[[-10]]], "expected": -10 },
+    { "sample": false, "input": [[[1], [2, 3]]], "expected": 3 },
+    { "sample": false, "input": [[[5]]], "expected": 5 }
+  ]
+}

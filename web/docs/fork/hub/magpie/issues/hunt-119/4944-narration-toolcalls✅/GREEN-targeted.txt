@@ -1,0 +1,16 @@
+=== RUN   TestNamelessCallWholeAsStreamDropped
+--- PASS: TestNamelessCallWholeAsStreamDropped (0.00s)
+=== RUN   TestToolCallsFinishWithNoCallsStaysWhole
+--- PASS: TestToolCallsFinishWithNoCallsStaysWhole (0.50s)
+=== RUN   TestChatCallsEndToolCalls
+--- PASS: TestChatCallsEndToolCalls (1.89s)
+=== RUN   TestChatNoCallToolCallsFinishEndsStop
+--- PASS: TestChatNoCallToolCallsFinishEndsStop (0.39s)
+=== RUN   TestChatRelayLegacyCallFinish
+--- PASS: TestChatRelayLegacyCallFinish (0.26s)
+=== RUN   TestStreamedEmptyFunctionCallLeftOut
+--- PASS: TestStreamedEmptyFunctionCallLeftOut (0.14s)
+=== RUN   TestStreamedNamedFunctionCallKept
+--- PASS: TestStreamedNamedFunctionCallKept (0.18s)
+PASS
+ok  	github.com/yetone/magpie/internal/gateway	4.120s

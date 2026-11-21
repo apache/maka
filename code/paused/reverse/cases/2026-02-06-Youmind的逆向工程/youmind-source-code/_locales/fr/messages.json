@@ -1,0 +1,23 @@
+{
+  "extName": {
+    "message": "YouMind: AI Web Clipper, Youtube Notes & Annotate | Claude Gemini Assistant"
+  },
+  "extDescription": {
+    "message": "YouMind est l'agent IA personnalisé n°1 pour l'apprentissage et la création."
+  },
+  "openYouMind": {
+    "message": "YouMind - Enregistrez en naviguant"
+  },
+  "startCapture": {
+    "message": "Démarrer la capture"
+  },
+  "saveWepageToYouMind": {
+    "message": "Enregistrer la page dans YouMind"
+  },
+  "startTranslate": {
+    "message": "Démarrer la traduction"
+  },
+  "startShadowVanish": {
+    "message": "Commencer à masquer les éléments"
+  }
+}

@@ -1,0 +1,39 @@
+# 原件摘要：nogui-full.txt
+
+> 原件超过 200KB，按 handbook/10 §5 改为摘要（2026-11-08 治理）。原件仍在 git 历史中。
+
+- 原文件名：`nogui-full.txt`
+- 字节：905724
+- sha256：`b975f47efe4cf3483995319d975d7cb8f9b2f9782007508186de82d5497bfedc`
+- 回取：`git -C /Users/ggbdpq/cc show dbdf77a4:guahub/fork/docs/hub/magpie/issues/hunt-115/4419-cursor-run-lifetime✅/nogui-full.txt > /tmp/nogui-full.txt`
+- 用途：原始测试套件日志（验证矩阵留证）
+
+## 关键结论
+
+- `ok` 包行 81 条；`FAIL`/`--- FAIL` 行 19 条。
+- FAIL 行（前 15 条）：
+```
+--- FAIL: TestMothX (0.05s)
+FAIL
+FAIL	github.com/yetone/magpie/internal/agent	514.470s
+--- FAIL: TestSettingsCLISetsWhatTheWindowSaves (0.01s)
+--- FAIL: TestEveryRouteHasACommandOrIsNamed (0.01s)
+FAIL
+FAIL	github.com/yetone/magpie/internal/cli	95.634s
+--- FAIL: TestCodexPoolSaysTheClientsVersion (0.08s)
+FAIL	github.com/yetone/magpie/internal/gateway	604.736s
+--- FAIL: TestProxyCheckSaysAProxyPassedBy (0.05s)
+FAIL
+FAIL	github.com/yetone/magpie/internal/gui	261.393s
+--- FAIL: TestHostToldTheGatewayAddress (0.17s)
+FAIL
+FAIL	github.com/yetone/magpie/internal/plugin	188.136s
+```
+- 末 5 行：
+```
+ok  	github.com/yetone/magpie/plugins/tools	5.581s
+?   	github.com/yetone/magpie/plugins/usage	[no test files]
+?   	github.com/yetone/magpie/plugins/warmups	[no test files]
+FAIL
+NOGUI_EXIT=1
+```

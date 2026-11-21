@@ -1,0 +1,935 @@
+import { o as e } from "./rolldown-runtime-CMxvf4Kt.js";
+import { i as t, t as n } from "./vendor-react.CV1S_bb1.js";
+import {
+  Bi as r,
+  Er as i,
+  Ia as a,
+  La as o,
+  Or as s,
+  Si as c,
+  Sn as l,
+  Vt as u,
+  Xr as d,
+  Yi as f,
+  _r as p,
+  da as m,
+  io as h,
+  po as g,
+  ro as _,
+  tn as v,
+  tr as y,
+  wr as b,
+} from "./vendor-antd.QfSgOu5e.js";
+import { n as x } from "./status-dict-D3T8Xf4E.js";
+import { r as S, t as C } from "./Table-DD5pd2xF.js";
+import { t as w } from "./TooltipEllipsis-4_dXZz0S.js";
+import { Q as T, dt as E } from "./index.B_LPe2F7.js";
+(o(), h(), l(), u());
+var D = e(g()),
+  O = e(t()),
+  k = n(),
+  A = [`key`, `name`],
+  j = function (e) {
+    var t = e.children,
+      n = e.menus,
+      a = e.onSelect,
+      o = e.className,
+      s = e.style,
+      c = (0, O.useContext)(m.ConfigContext).getPrefixCls,
+      l = c(`pro-table-dropdown`);
+    return (0, k.jsx)(
+      i,
+      _(
+        _(
+          {},
+          S({
+            onClick: function (e) {
+              return a && a(e.key);
+            },
+            items: n?.map(function (e) {
+              return { label: e.name, key: e.key };
+            }),
+          }),
+        ),
+        {},
+        {
+          className: (0, D.default)(l, o),
+          children: (0, k.jsxs)(f, {
+            style: s,
+            children: [t, ` `, (0, k.jsx)(r, {})],
+          }),
+        },
+      ),
+    );
+  },
+  M = function (e) {
+    var t = e.className,
+      n = e.style,
+      r = e.onSelect,
+      o = e.menus,
+      s = o === void 0 ? [] : o,
+      l = e.children,
+      u = (0, O.useContext)(m.ConfigContext).getPrefixCls,
+      d = u(`pro-table-dropdown`);
+    return (0, k.jsx)(
+      i,
+      _(
+        _(
+          {},
+          S({
+            onClick: function (e) {
+              r?.(e.key);
+            },
+            items: s.map(function (e) {
+              var t = e.key,
+                n = e.name,
+                r = a(e, A);
+              return _(_({ key: t }, r), {}, { title: r.title, label: n });
+            }),
+          }),
+        ),
+        {},
+        {
+          className: (0, D.default)(d, t),
+          children: (0, k.jsx)(`a`, {
+            style: n,
+            children: l || (0, k.jsx)(c, {}),
+          }),
+        },
+      ),
+    );
+  };
+M.Button = j;
+var N = {
+  "global-table-btn": `_global-table-btn_19lem_1`,
+  "td-status": `_td-status_19lem_5`,
+  "td-status-icon": `_td-status-icon_19lem_10`,
+  "td-status-label": `_td-status-label_19lem_15`,
+};
+u();
+function P({ data: e }) {
+  let t = E(),
+    n = (0, O.useMemo)(() => {
+      let n = (e || []).filter(({ menuCode: e }) => t.has(e));
+      if (n.length === 0) return null;
+      let r = [];
+      return (
+        n.forEach(({ children: e, key: t }, n) => {
+          (n > 0 &&
+            r.push((0, k.jsx)(d, { type: `vertical` }, `${t ?? n}-Divider`)),
+            r.push(
+              (0, k.jsx)(O.Fragment, { children: e }, `${t ?? n}-Fragment`),
+            ));
+        }),
+        r
+      );
+    }, [e, t]);
+  return (0, k.jsx)(`div`, { className: N[`global-table-btn`], children: n });
+}
+var F = ({ buttons: e, max: t = 2 }) => {
+  let n = E(),
+    { displayButtons: r, dropdownMenus: i } = (0, O.useMemo)(() => {
+      let r = (e || []).filter(
+        (e) => !e.hidden && (e.menuCode ? n.has(String(e.menuCode)) : !0),
+      );
+      return {
+        displayButtons: r.slice(0, t),
+        dropdownMenus: r.slice(t).map((e, t) => {
+          let {
+              label: n,
+              disabled: r,
+              className: i,
+              onClick: a,
+              popconfirm: o,
+            } = e,
+            s = o
+              ? (0, k.jsx)(y, {
+                  title: o.title,
+                  onConfirm: o.onConfirm,
+                  disabled: o.disabled,
+                  placement: o.placement,
+                  children: (0, k.jsx)(`span`, { children: n }),
+                })
+              : n;
+          return {
+            key: String(e.key ?? t),
+            name: s,
+            disabled: o?.disabled ?? r,
+            className: i,
+            onClick:
+              o?.onConfirm ??
+              ((e) => {
+                a?.(e?.domEvent || e);
+              }),
+          };
+        }),
+      };
+    }, [e, t, n]),
+    a = (0, O.useMemo)(() => {
+      let e = [];
+      return (
+        r.forEach((t, n) => {
+          let {
+              children: r,
+              key: i,
+              label: a,
+              className: o,
+              size: s = `small`,
+              type: c = `link`,
+              disabled: l,
+              onClick: u,
+              popconfirm: d,
+            } = t,
+            p = (0, k.jsx)(f, {
+              className: o,
+              size: s,
+              type: c,
+              disabled: l,
+              onClick: u,
+              children: a,
+            });
+          d &&
+            (p = (0, k.jsx)(y, {
+              title: d.title,
+              onConfirm: d.onConfirm,
+              disabled: d.disabled,
+              placement: d.placement,
+              children: p,
+            }));
+          let m = r ?? p;
+          e.push((0, k.jsx)(O.Fragment, { children: m }, `${i ?? n}-Fragment`));
+        }),
+        i.length > 0 &&
+          e.push(
+            (0, k.jsx)(
+              M,
+              {
+                children: (0, k.jsx)(f, {
+                  size: `small`,
+                  type: `link`,
+                  children: `更多`,
+                }),
+                menus: i,
+              },
+              `dropdown`,
+            ),
+          ),
+        e
+      );
+    }, [r, i]);
+  return r.length === 0 && i.length === 0
+    ? null
+    : (0, k.jsx)(b, { gap: 8, align: `center`, children: a });
+};
+(0, O.memo)(P);
+var I = {
+  "icon-name-box": `_icon-name-box_1lk77_1`,
+  icon: `_icon_1lk77_1`,
+  "name-text": `_name-text_1lk77_19`,
+};
+u();
+var L = (0, O.memo)(
+  ({ name: e, icon: t, fallbackIcon: n, onClick: r, className: i, style: a }) =>
+    (0, k.jsxs)(s, {
+      size: `small`,
+      className: `${I[`icon-name-box`]} ${i || ``}`,
+      style: a,
+      children: [
+        (0, k.jsx)(p, {
+          src: t || n,
+          style: { maxWidth: 32, maxHeight: 32 },
+          fallback: n,
+          wrapperClassName: I.icon,
+          loading: `lazy`,
+        }),
+        (0, k.jsx)(`div`, {
+          style: { maxWidth: 200, cursor: r ? `pointer` : `default` },
+          className: I[`name-text`],
+          onClick: r,
+          children: (0, k.jsx)(w, { style: { maxWidth: 200 }, children: e }),
+        }),
+      ],
+    }),
+);
+L.displayName = `TdIconName`;
+var R = ({ status: e, label: t, color: n }) => {
+  let r = n || x[e] || `#999999`;
+  return (0, k.jsxs)(`div`, {
+    className: N[`td-status`],
+    children: [
+      (0, k.jsx)(`span`, {
+        className: N[`td-status-icon`],
+        style: { backgroundColor: r },
+      }),
+      (0, k.jsx)(`span`, { className: N[`td-status-label`], children: t }),
+    ],
+  });
+};
+u();
+var z = ({ buttons: e }) => {
+    let t = E(),
+      n = (0, O.useMemo)(
+        () => e.filter((e) => (e.menuCode ? t.has(e.menuCode) : !0)),
+        [e, t],
+      );
+    return n.length === 0
+      ? null
+      : (0, k.jsx)(k.Fragment, {
+          children: n.map((e) =>
+            (0, k.jsx)(
+              f,
+              {
+                className: N[`global-table-btn`],
+                size: e.size || `small`,
+                type: e.type || `link`,
+                disabled: e.disabled,
+                icon: e.icon,
+                onClick: e.onClick,
+                children: e.label,
+              },
+              e.key,
+            ),
+          ),
+        });
+  },
+  B = { reload: !1, density: !1, setting: !1 },
+  V = (e) => {
+    if (e === !1) return !1;
+    let t = { ...B, ...(e && typeof e == `object` ? e : {}) };
+    return t.reload === !1 && t.density === !1 && t.setting === !1 ? !1 : t;
+  },
+  H = {
+    table: {
+      defaultSize: `large`,
+      search: { defaultCollapsed: !1 },
+      options: B,
+      tableLayout: `auto`,
+      cardProps: {
+        bodyStyle: {
+          paddingRight: 0,
+          paddingLeft: 0,
+          paddingBottom: 0,
+          paddingTop: 16,
+        },
+      },
+    },
+    column: { defaultWidth: 160 },
+    pagination: {
+      current: 1,
+      pageSize: 10,
+      defaultPageSize: 10,
+      showSizeChanger: !0,
+      size: `default`,
+      showQuickJumper: !0,
+      defaultCurrent: 1,
+    },
+    serialNumber: {
+      title: `序号`,
+      dataIndex: `index`,
+      fixed: `left`,
+      width: 100,
+      align: `center`,
+      startNumber: 1,
+    },
+    actionColumn: { valueType: `option`, width: 300, maxButtons: 2 },
+    apiAdapter: {
+      pageKey: `pageNum`,
+      pageSizeKey: `pageSize`,
+      listPath: `data.records`,
+      totalPath: `data.total`,
+    },
+    scroll: { x: `max-content`, scrollToFirstRowOnChange: !0 },
+    classNames: {
+      layoutScroll: `layout-content-scroll`,
+      toolbarKey: `toolbar-buttons`,
+    },
+  },
+  U = (e, t) => t.split(`.`).reduce((e, t) => e?.[t], e),
+  W = ({
+    api: e,
+    formatParams: t,
+    apiParamsMap: n = {},
+    apiDataMap: r = {},
+    onDataChange: i,
+  }) => {
+    let {
+        pageKey: a = H.apiAdapter.pageKey,
+        pageSizeKey: o = H.apiAdapter.pageSizeKey,
+      } = n,
+      {
+        listPath: s = H.apiAdapter.listPath,
+        totalPath: c = H.apiAdapter.totalPath,
+      } = r;
+    return (0, O.useCallback)(
+      async (n) => {
+        if (!e) return { data: [], success: !1, total: 0 };
+        try {
+          let { current: r, pageSize: l, ...u } = t ? t(n) : n,
+            d = await e({
+              ...u,
+              ...(r !== void 0 && { [a]: r }),
+              ...(l !== void 0 && { [o]: l }),
+            }),
+            f = U(d, s) || [],
+            p = U(d, c) || 0;
+          return (i?.(f, p), { data: f, success: !0, total: p });
+        } catch (e) {
+          return (
+            console.error(`AgentTable request failed:`, e),
+            { data: [], success: !1, total: 0 }
+          );
+        }
+      },
+      [e, t, a, o, s, c, i],
+    );
+  },
+  G = (e) =>
+    (0, O.useMemo)(() => {
+      let t = !1,
+        n = (e) => {
+          e.forEach((e) => {
+            ((e.fixed === `left` || e.fixed === `right`) && (t = !0),
+              e.children && Array.isArray(e.children) && n(e.children));
+          });
+        };
+      return (n(e), t);
+    }, [e]),
+  K = (e, t, n) =>
+    (0, O.useMemo)(() => {
+      let r = H.column.defaultWidth,
+        i = (e) => {
+          let a = { ...e };
+          return (
+            (t || n !== void 0) &&
+              a.width === void 0 &&
+              (a.width = a.valueType === `option` ? H.actionColumn.width : r),
+            a.children &&
+              Array.isArray(a.children) &&
+              (a.children = a.children.map(i)),
+            a
+          );
+        };
+      return e.map(i);
+    }, [e, t, n]),
+  q = ({ outerPagination: e }) => {
+    let [t, n] = (0, O.useState)(H.pagination);
+    return {
+      innerPagination: t,
+      mergedPagination: (0, O.useMemo)(
+        () =>
+          e === !1
+            ? !1
+            : e && typeof e.onChange == `function`
+              ? e
+              : e && !e.onChange
+                ? {
+                    ...t,
+                    ...e,
+                    onChange: (e, r) => n({ ...t, current: e, pageSize: r }),
+                  }
+                : {
+                    ...t,
+                    onChange: (e, r) => n({ ...t, current: e, pageSize: r }),
+                  },
+        [e, t],
+      ),
+    };
+  },
+  J = (e, t) =>
+    e.some((e) =>
+      e.hidden ? !1 : e.menuCode ? t.has(String(e.menuCode)) : !0,
+    ),
+  Y = (e, t, n, r) => {
+    if (t && Array.isArray(t)) {
+      let n = t.find((t) => t.value === e);
+      if (n) return n.label;
+    }
+    return n[r];
+  },
+  X = (e, t, n) =>
+    e == null
+      ? `-`
+      : O.createElement(R, { status: e, label: t || `-`, color: n }),
+  Z = (e) => {
+    let t = E();
+    return (0, O.useMemo)(
+      () =>
+        e
+          .map((e) => {
+            if (e.actionButtons && e.valueType === H.actionColumn.valueType) {
+              let {
+                actionButtons: n = () => [],
+                actionButtonsMax: r = H.actionColumn.maxButtons,
+                ...i
+              } = e;
+              return J(n({}), t)
+                ? {
+                    ...i,
+                    width: 150,
+                    fixed: `right`,
+                    render: (e, t) => (0, k.jsx)(F, { buttons: n(t), max: r }),
+                  }
+                : null;
+            }
+            if (e.fieldProps?.renderStatus === !0) {
+              let {
+                  dataIndex: t = `status`,
+                  labelIndex: n,
+                  fieldProps: r,
+                  ...i
+                } = e,
+                a = n || `${String(t)}Label`;
+              return {
+                ...i,
+                dataIndex: t,
+                fieldProps: r,
+                render: (e, n) => {
+                  let i = n[t],
+                    o = Y(i, r?.options, n, a),
+                    s = r?.options?.find((e) => e.value === i)?.color;
+                  return X(i, o, s);
+                },
+              };
+            }
+            if (
+              (e.ellipsis || e.copyable) &&
+              !e.render &&
+              (!e.valueType || e.valueType === `text`)
+            ) {
+              let { width: t, copyable: n, ellipsis: r, code: i, ...a } = e;
+              return {
+                ...a,
+                width: t,
+                render: (e) => {
+                  if (e == null || e === ``) return e;
+                  let r = e;
+                  if (typeof e == `object` && !(0, O.isValidElement)(e))
+                    try {
+                      r = JSON.stringify(e);
+                    } catch (e) {
+                      console.error(`JSON.stringify error`, e);
+                    }
+                  return (0, k.jsx)(w, {
+                    style: t ? { maxWidth: t } : void 0,
+                    copyable: n,
+                    code: i,
+                    children: r,
+                  });
+                },
+              };
+            }
+            return e;
+          })
+          .filter(Boolean),
+      [e, t],
+    );
+  },
+  ee = (e, t, n, r, i) =>
+    (0, O.useMemo)(() => {
+      if (e !== void 0) return e;
+      let a = {},
+        o = (e) =>
+          e.reduce((e, t) => {
+            let n =
+                typeof t.width == `string` ? parseInt(t.width, 10) : t.width,
+              r = Number.isFinite(n) ? n : 0,
+              i = t.children && Array.isArray(t.children) ? o(t.children) : 0;
+            return e + r + i;
+          }, 0),
+        s = o(r);
+      if (
+        ((i || t !== void 0) && s > 0 && (a.x = `max-content`), t !== void 0)
+      ) {
+        let e = typeof t == `number` ? t : n;
+        (e !== void 0 && (a.y = e),
+          (a.scrollToFirstRowOnChange = H.scroll?.scrollToFirstRowOnChange));
+      }
+      return Object.keys(a).length > 0 ? a : void 0;
+    }, [e, t, n, r, i]),
+  te = (e, t) => {
+    let n = typeof e == `number` ? e : e?.offset,
+      r = typeof e == `object` ? e?.type : void 0,
+      [i, a] = (0, O.useState)(() => {
+        if (!(typeof window > `u`) && n !== void 0)
+          return window.innerHeight - n;
+      });
+    return (
+      (0, O.useEffect)(() => {
+        if (typeof window > `u`) return;
+        let e,
+          i,
+          o = () => {
+            (clearTimeout(e),
+              i && cancelAnimationFrame(i),
+              (i = requestAnimationFrame(() => {
+                e = setTimeout(() => {
+                  if (n !== void 0) {
+                    a(window.innerHeight - n);
+                    return;
+                  }
+                  if (r === `flex` && t?.current)
+                    try {
+                      let e = t.current,
+                        n =
+                          e.querySelector(`.ant-table-body`) ||
+                          e.querySelector(`.ant-table-thead`) ||
+                          e.querySelector(`.ant-table`);
+                      if (n) {
+                        let e = n.getBoundingClientRect(),
+                          t = n.classList.contains(`ant-table-thead`)
+                            ? e.bottom
+                            : e.top,
+                          r = window.innerHeight - t - 108;
+                        a(Math.max(r, 200));
+                      } else {
+                        let t = e.getBoundingClientRect(),
+                          n = window.innerHeight - t.top - 150 - 84;
+                        a(Math.max(n, 200));
+                      }
+                    } catch (e) {
+                      console.warn(`Auto height calculation failed:`, e);
+                    }
+                }, 100);
+              })));
+          };
+        (o(), window.addEventListener(`resize`, o, { passive: !0 }));
+        let s = null;
+        return (
+          r === `flex` &&
+            t?.current &&
+            ((s = new ResizeObserver(o)), s.observe(t.current)),
+          () => {
+            (window.removeEventListener(`resize`, o),
+              clearTimeout(e),
+              i && cancelAnimationFrame(i),
+              s && s.disconnect());
+          }
+        );
+      }, [n, r, t]),
+      i
+    );
+  },
+  ne = ({ serialNumber: e, pagination: t, isPaginationDisabled: n }) =>
+    (0, O.useMemo)(
+      () =>
+        e
+          ? {
+              title: H.serialNumber.title,
+              dataIndex: H.serialNumber.dataIndex,
+              fixed: H.serialNumber.fixed,
+              width: H.serialNumber.width,
+              align: H.serialNumber.align,
+              hideInSearch: !0,
+              render: (e, r, i) => {
+                let a =
+                    t && typeof t != `boolean` && t.current
+                      ? t.current
+                      : H.pagination.current,
+                  o =
+                    t && typeof t != `boolean` && t.pageSize
+                      ? t.pageSize
+                      : H.pagination.pageSize,
+                  s = n ? H.pagination.current : a,
+                  c = n ? 2 ** 53 - 1 : o;
+                return (0, k.jsx)(`div`, {
+                  style: { color: `#aaa` },
+                  children:
+                    (s - H.serialNumber.startNumber) * c +
+                    i +
+                    H.serialNumber.startNumber,
+                });
+              },
+            }
+          : null,
+      [e, t, n],
+    ),
+  Q = {
+    "agent-table": `_agent-table_1uuus_2`,
+    "agent-table-fixed": `_agent-table-fixed_1uuus_68`,
+    "agent-table-card": `_agent-table-card_1uuus_71`,
+    "agent-table-scroll-container": `_agent-table-scroll-container_1uuus_78`,
+  },
+  re = ({
+    props: e,
+    restProps: t,
+    mergedPagination: n,
+    normalizedColumns: r,
+    finalRequest: i,
+    virtual: a,
+    scroll: o,
+    tableLayout: s,
+    isFixedLayout: c,
+  }) => {
+    let { toolbarButtons: l, className: u, search: d } = e,
+      f = (0, O.useMemo)(
+        () =>
+          !l || l.length === 0
+            ? (e.toolBarRender ?? H.table.toolBarRender)
+            : () => [(0, k.jsx)(z, { buttons: l }, H.classNames.toolbarKey)],
+        [e.toolBarRender, l],
+      ),
+      p = (0, O.useMemo)(
+        () =>
+          [
+            Q[`agent-table`],
+            c ? Q[`agent-table-fixed`] : void 0,
+            u,
+            H.classNames.layoutScroll,
+          ]
+            .filter(Boolean)
+            .join(` `),
+        [u, c],
+      ),
+      m = (0, O.useMemo)(() => V(e.options), [e.options]),
+      h = (0, O.useMemo)(() => {
+        let n = e.toolbar !== void 0 || t.toolbar !== void 0,
+          r = f !== !1 && ((l && l.length > 0) || t.toolBarRender);
+        return n || r || m !== !1;
+      }, [e.toolbar, t.toolbar, f, l, t.toolBarRender, m]),
+      g = (0, O.useMemo)(() => {
+        if (!e.toolbar)
+          return m === !1 && !l?.length && !t.toolBarRender ? !1 : f;
+      }, [e.toolbar, m, l, t.toolBarRender, f]),
+      _ = (0, O.useMemo)(() => {
+        let e = H.table.cardProps,
+          n = t.cardProps;
+        if (n === !1) return !1;
+        if (e === !1) return n;
+        let r = { ...e?.bodyStyle, ...n?.bodyStyle };
+        if (h)
+          if (typeof r.padding == `number`) {
+            let e = r.padding,
+              t = r.paddingBottom,
+              { padding: n, paddingBottom: i, ...a } = r;
+            Object.assign(r, a, {
+              paddingTop: 0,
+              paddingRight: e,
+              paddingBottom: t ?? e,
+              paddingLeft: e,
+            });
+          } else r.paddingTop = 0;
+        return { ...e, ...n, bodyStyle: r };
+      }, [t.cardProps, h]),
+      v = (0, O.useMemo)(() => d === !1 && !h, [d, h]);
+    return {
+      tableConfig: (0, O.useMemo)(
+        () => ({
+          size: H.table.size,
+          cardProps: v ? !1 : _,
+          pagination: n,
+          columns: r,
+          request: i,
+          virtual: a,
+          scroll: o,
+          tableLayout: s,
+          options: m,
+          toolbar: e.toolbar,
+          toolBarRender: g,
+          className: p,
+          search:
+            typeof d == `object`
+              ? { ...H.table.search, ...d }
+              : d === void 0
+                ? H.table.search
+                : d,
+        }),
+        [v, _, n, r, i, a, o, e.toolbar, g, p, s, m, d],
+      ),
+      needWrapCard: v,
+    };
+  },
+  ie = (e) => {
+    let { scrollY: t, scroll: n, mergedColumns: r } = e,
+      i = (0, O.useRef)(null),
+      a = te(typeof t == `object` || typeof t == `number` ? t : void 0, i),
+      o = G(r),
+      s = K(r, o, t),
+      c = ee(n, t, a, s, o),
+      l = o || t !== void 0;
+    return {
+      containerRef: i,
+      scroll: c,
+      columns: s,
+      tableLayout: l ? `fixed` : H.table.tableLayout,
+      isFixedLayout: l,
+    };
+  },
+  ae = ({
+    fetch: e,
+    setSearchParams: t,
+    clearKeys: n,
+    isPaginationDisabled: r,
+    actionRef: i,
+    onDataChange: a,
+  }) => {
+    let o = (0, O.useRef)(null),
+      s = (0, O.useRef)(!1),
+      c = (0, O.useRef)(null),
+      l = (0, O.useRef)(null);
+    return (0, O.useCallback)(
+      async (u) => {
+        if (!e) return { data: [], success: !1, total: 0 };
+        if (l.current) {
+          let e = l.current;
+          return (
+            (l.current = null),
+            a?.(e.data, e.total),
+            { data: e.data, success: !0, total: e.total }
+          );
+        }
+        let {
+            current: d = H.pagination.current,
+            pageSize: f = H.pagination.pageSize,
+            ...p
+          } = u,
+          m = (e) => {
+            let t = { ...(r ? {} : { pageIndex: e, pageRows: f }), ...p };
+            return (
+              n?.length &&
+                n.forEach((e) => {
+                  (!t[e] || t[e] === ``) && delete t[e];
+                }),
+              t
+            );
+          };
+        try {
+          let n = m(d);
+          t && t(n);
+          let { code: u, data: p } = (await e(n)) || {};
+          if (!u) {
+            let { list: t, records: n = [], total: u, pager: h } = p || {},
+              g = t || n,
+              _ = u || h?.totalRows || 0;
+            if (
+              !r &&
+              g.length === 0 &&
+              _ > 0 &&
+              d > 1 &&
+              !s.current &&
+              c.current !== d
+            ) {
+              let t = d - 1,
+                { code: n, data: r } = (await e(m(t))) || {};
+              if (((s.current = !0), (c.current = d), !n)) {
+                let { list: e, records: n = [], total: o, pager: s } = r || {},
+                  c = e || n,
+                  u = o ?? s?.totalRows ?? 0;
+                ((l.current = { data: c, total: u }),
+                  i?.current &&
+                    typeof i.current.setPageInfo == `function` &&
+                    i.current.setPageInfo({ current: t, pageSize: f }));
+                let d = { data: c, success: !0, total: u };
+                return (a?.(c, u), d);
+              }
+              return (
+                i?.current &&
+                  typeof i.current.setPageInfo == `function` &&
+                  i.current.setPageInfo({ current: t, pageSize: f }),
+                { data: [], success: !0, total: _ }
+              );
+            }
+            (g.length > 0 || d === 1) &&
+              ((s.current = !1),
+              (c.current = null),
+              o.current !== null && (o.current = null));
+            let v = { data: g, success: !0, total: _ };
+            return (a?.(g, _), v);
+          }
+          return { data: [], success: !1, total: 0 };
+        } catch (e) {
+          return (
+            console.error(`Table Request Failed:`, e),
+            { data: [], success: !1, total: 0 }
+          );
+        }
+      },
+      [e, t, n, r, i, a],
+    );
+  };
+u();
+var oe = T(),
+  $ = (e) => {
+    let {
+        fetch: t,
+        api: n,
+        apiParamsMap: r,
+        apiDataMap: i,
+        setSearchParams: a,
+        formatParams: o,
+        clearKeys: s,
+        columns: c,
+        pagination: l,
+        serialNumber: u = !0,
+        toolbarButtons: d,
+        scrollY: f,
+        className: p,
+        onDataChange: m,
+        search: h,
+        ...g
+      } = e,
+      _ = e.pagination === !1,
+      y = g.actionRef,
+      { innerPagination: b, mergedPagination: x } = q({
+        outerPagination: _ ? !1 : l,
+      }),
+      S = ne({ serialNumber: u, pagination: b, isPaginationDisabled: _ }),
+      w = Z(c || []),
+      T = (0, O.useMemo)(() => (S ? [S, ...w].filter(Boolean) : w), [S, w]),
+      E = W({
+        api: n,
+        formatParams: o,
+        apiParamsMap: r,
+        apiDataMap: i,
+        onDataChange: m,
+      }),
+      D = ae({
+        fetch: t,
+        setSearchParams: a,
+        clearKeys: s,
+        isPaginationDisabled: _,
+        actionRef: y,
+        onDataChange: m,
+      });
+    (0, oe.useActivate)(() => {
+      y?.current?.reload?.();
+    });
+    let A = e.virtual === void 0 ? !1 : e.virtual,
+      {
+        containerRef: j,
+        scroll: M,
+        columns: N,
+        tableLayout: P,
+        isFixedLayout: F,
+      } = ie({ scrollY: f, scroll: e.scroll, mergedColumns: T }),
+      { tableConfig: I, needWrapCard: L } = re({
+        props: e,
+        restProps: g,
+        mergedPagination: x,
+        normalizedColumns: N,
+        finalRequest: n ? E : t ? D : e.request,
+        virtual: A,
+        scroll: M,
+        tableLayout: P,
+        isFixedLayout: F,
+      }),
+      { token: R } = v.useToken(),
+      z = (0, O.useMemo)(
+        () => ({
+          "--scrollbar-thumb": R.colorPrimary,
+          "--scrollbar-track": R.colorFillSecondary,
+          "--scrollbar-thumb-hover": R.colorPrimaryTextHover,
+        }),
+        [R],
+      ),
+      B = (0, k.jsx)(`div`, {
+        ref: j,
+        className: Q[`agent-table-scroll-container`],
+        style: { width: `100%`, ...z },
+        children: (0, k.jsx)(C, { ...I, ...g }),
+      });
+    return L
+      ? (0, k.jsx)(`div`, { className: Q[`agent-table-card`], children: B })
+      : B;
+  };
+$.TdIconName = L;
+export { V as n, $ as t };

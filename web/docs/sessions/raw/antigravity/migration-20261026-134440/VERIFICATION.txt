@@ -1,0 +1,25 @@
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py antigravity baseline
+INPUT: CONFIG: fixed antigravity source allowlist
+OUTPUT: BASELINE PASS groups=1 files=2872 bytes=84931692 protected=1
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py antigravity archive
+INPUT: d59d83dc1683cf85cf3f30d1e63dc2f9274e4a645ea35ae7b2dff1ab29c26b5b
+OUTPUT: ARCHIVE PASS zip_files=1 files=2872 bytes=84931692
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py antigravity apply
+INPUT: b622881387973959f065dcbc782404df03a1477793961037973963d88820f4e5
+OUTPUT: APPLY PASS removed_files=2872 removed_bytes=84931692
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py antigravity verify
+INPUT: aea439890e9fa32b27fcc7fc7cec256fbc0e1bf2ca07e80ecf0fbc0c029067eb
+OUTPUT: MODIFIED PASS files=2872 bytes=84931692 originals_absent=true protected_unchanged=true
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py antigravity rollback-test
+INPUT: aea439890e9fa32b27fcc7fc7cec256fbc0e1bf2ca07e80ecf0fbc0c029067eb
+OUTPUT: ROLLBACK PASS restored_files=2872 restored_bytes=84931692 hashes_match=true originals_untouched=true
+EXIT: 0
+

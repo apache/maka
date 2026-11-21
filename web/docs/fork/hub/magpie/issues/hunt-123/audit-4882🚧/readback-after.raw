@@ -1,0 +1,95 @@
+Credit to @yinwu01 for the report (TestLongTurnCopiedFewTimes red once in a full run, 3.2× against a 3× bound, green alone 5 of 5).
+
+**What's wrong**
+
+`TestLongTurnCopiedFewTimes` measures allocations, and its measure reads a neighbor's noise as its own: `allocatedEach` timed its four runs inside **one** `allocated()` window — one `TotalAlloc` reading before, one after — and divided by four. `TotalAlloc` is process-wide, so anything else allocating during that window adds to it, and the division spreads the noise over every run. A ~1.6 MB bump landing in the window reads as +400 KB a run, which is exactly your capture's shape: 6,343,524 against a 5,963,961 bound (3.2×) once under load ~14, and green alone 5 of 5.
+
+**The fix** (test-only; no product file touched)
+
+A few windows of one run each, keeping the **least** (`long_turn_copies_test.go`): noise only ever adds to a window, so the least window is the run's own cost — the same shape the timing measures already settled on. The socket turn-body measure rides the same helper and is otherwise unchanged.
+
+**Verification**
+
+| Check | Result |
+| --- | --- |
+| Deterministic injection (1 of 4 runs polluted with 1.6 MB, old structure vs new) | old average 7,157,426 (3.60×) — the pollution/4, exactly; least-of-windows 6,754,624 (3.40×) — the clean cost. The old structure produces your 3.2× shape from the same bump. |
+| The real test, current tip `7785c4278`, `-count=10` | ok ×10, read steady at 4,764,0xx (2.40×) — the headroom it was written against |
+| Sizing family (`TestRequestBody*`, `TestMarshalSized*`, socket turn body, `-count=2`) | ok |
+| Full `go test -tags nogui ./internal/gateway/` | ok, 594.7s, no failures |
+| `gofmt -l` on the touched file, `go vet -tags nogui ./internal/gateway/`, `go build ./...` | clean / clean / ok |
+
+<details><summary>patch: gateway: the sized-allocation measure takes the least of its windows, not one shared window's average (#4882) — git am applies it as is; SHA-256 first 16: 963bcf7158567d62</summary>
+
+```patch
+From 2f1b7444fb6deb80512de680960b27022a46272d Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Wed, 4 Nov 2026 02:08:16 +0800
+Subject: [PATCH] gateway: the sized-allocation measure takes the least of its
+ windows, not one shared window's average (#4882)
+
+allocatedEach measured four runs inside one allocated() window and
+divided by four. TotalAlloc is process-wide, so anything else allocating
+during that window adds to it, and the division spread the noise over
+every run: a 1.6 MB bump landing in the window read as +400 KB a run,
+which is how TestLongTurnCopiedFewTimes went red once in a full run
+(read 3.2x against a 3x bound) under load ~14, and green alone 5 of 5.
+
+The measure now times a few windows of one run each and keeps the least.
+Noise only ever adds to a window, so the least is the run's own cost;
+an injected 1.6 MB into one run of four now reads 3.60x on the old
+average and 3.40x (the clean cost) on the least, and the real test
+stands at its usual 2.40x with the headroom it was written against.
+
+TestLongTurnCopiedFewTimes and the socket turn body measure ride the
+same helper and are unchanged otherwise.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gateway/long_turn_copies_test.go | 17 ++++++++++++-----
+ 1 file changed, 12 insertions(+), 5 deletions(-)
+
+diff --git a/internal/gateway/long_turn_copies_test.go b/internal/gateway/long_turn_copies_test.go
+index 67567b9d2..cb43abfa8 100644
+--- a/internal/gateway/long_turn_copies_test.go
++++ b/internal/gateway/long_turn_copies_test.go
+@@ -7,15 +7,22 @@ import (
+ 	"testing"
+ )
+ 
+-// allocatedEach is what f allocates a run, over a few runs.
++// allocatedEach is what f allocates a run, over a few runs: the least of
++// a few windows of one run each. TotalAlloc is process-wide, so anything
++// else allocating during a window only adds to it; the average of one
++// shared window carried such noise into every run (a 1.6 MB bump read as
++// +400 KB a run, 3.2× against a 3× bound), while the least window is the
++// run's own cost (#4882).
+ func allocatedEach(f func()) uint64 {
+ 	f()
+ 	const n = 4
+-	return allocated(func() {
+-		for range n {
+-			f()
++	var least uint64
++	for range n {
++		if got := allocated(f); least == 0 || got < least {
++			least = got
+ 		}
+-	}) / n
++	}
++	return least
+ }
+ 
+ // A long Responses turn sent to a Chat upstream is copied as few times
+-- 
+2.50.1 (Apple Git-155)
+
+```
+
+</details>
+
+**Branch with the commit**: [fix/4882-noisy-window-measure](https://github.com/ggbdpq/magpie/tree/fix/4882-noisy-window-measure) (head `2f1b7444fb6deb80512de680960b27022a46272d`).
+
+**Not verified**: which goroutine allocated the 1.6 MB in your original red stays unidentified — the injection reproduces the shape (one polluted window of four), not the culprit; on a quiet machine the old measure was already green, so this changes only what noise reads as.
+
+**Attribution**: AI-written (GLM-5.3-Flash via ZCode); I've read the whole diff and the tests pass. Please keep the author (`ggbdpq`) or add `Co-authored-by: ggbdpq <ggbdpq@gmail.com>`.
+

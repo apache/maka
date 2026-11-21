@@ -1,0 +1,112 @@
+From 9c6270f8b56e0e2fc867fe61f9115ec9802ed584 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Wed, 4 Nov 2026 17:31:29 +0800
+Subject: [PATCH] provider: a plugin saying a built-in icon's name for its
+ provider had it shown
+
+A plugin provider's icon was the picture its auth hook or package.json
+gave (kept as a user's picture is) or the market's, and a bare name said
+in either place was refused by both readers: host.js's iconOf carried
+only an https URL or a data:image URI, and pluginOwnIcon asked iconURL
+of it, which takes a URL. The market's own bare names went through
+(MarketIcon), so a plugin the market lists showed its mark and one
+installed by hand showed the generic glyph, whatever it said (#5103).
+
+A bare name (no scheme, no path) now passes both readers as it is, as a
+market name does; the page draws it from its bundled icons, falling back
+to the generic glyph for one it has no file of. A picture is still
+checked, fetched and kept as before.
+
+Fixes #5103
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/plugin/host.js                   | 11 +++++++----
+ internal/plugin/plugin_icon_test.go       |  5 +++++
+ internal/plugin/testdata/ownicon/index.js |  8 ++++++++
+ internal/provider/plugin_icon.go          |  8 ++++++--
+ 4 files changed, 26 insertions(+), 6 deletions(-)
+
+diff --git a/internal/plugin/host.js b/internal/plugin/host.js
+index 1f54881f2..b3338a03b 100644
+--- a/internal/plugin/host.js
++++ b/internal/plugin/host.js
+@@ -2185,13 +2185,16 @@ function methods(auth) {
+ 
+ // iconOf is the picture a plugin gives its provider, magpie's own field
+ // (OpenCode's providers have none): the auth hook's icon, else
+-// package.json's magpie.icon. An https URL or a data:image URI; magpie
+-// checks and keeps it (internal/provider), nothing is fetched here.
++// package.json's magpie.icon. An https URL, a data:image URI, or the name
++// of an icon magpie bundles, which the page draws from its own files
++// (#5103); magpie checks and keeps a picture (internal/provider), nothing
++// is fetched here.
+ function iconOf(a) {
+   const ok = (v) => {
+     const s = typeof v === "string" ? v.trim() : ""
+-    // a data URI of a picture over 1 MB, magpie's most, isn't carried
+-    return s.length <= 3 << 19 && /^(https:\/\/|data:image\/)/i.test(s) ? s : ""
++    // a data URI of a picture over 1 MB, magpie's most, isn't carried;
++    // a bare name has neither a scheme nor a path in it
++    return s.length <= 3 << 19 && (s !== "" && !/[:/]/.test(s) || /^(https:\/\/|data:image\/)/i.test(s)) ? s : ""
+   }
+   const own = ok(a.auth.icon)
+   if (own || !a.target) return own
+diff --git a/internal/plugin/plugin_icon_test.go b/internal/plugin/plugin_icon_test.go
+index 5cca7c7b1..29ad89827 100644
+--- a/internal/plugin/plugin_icon_test.go
++++ b/internal/plugin/plugin_icon_test.go
+@@ -36,6 +36,11 @@ func TestPluginOwnIconAndKeyHint(t *testing.T) {
+ 	if lime.Icon != "https://ownicon.example/icon.png" {
+ 		t.Errorf("lime's icon = %q, want package.json's", lime.Icon)
+ 	}
++	// a built-in icon's name said for a provider comes through as it is
++	// (#5103): the page draws it from its bundle
++	if by["orange"].Icon != "deepseek-color" {
++		t.Errorf("orange's icon = %q, want the built-in name as it is", by["orange"].Icon)
++	}
+ 	// how many requests each account takes at once (Discord, Lemon): the
+ 	// auth hook's, else package.json's when the hook's isn't a whole number
+ 	if lemon.MaxConcurrency != 3 || lime.MaxConcurrency != 5 {
+diff --git a/internal/plugin/testdata/ownicon/index.js b/internal/plugin/testdata/ownicon/index.js
+index 7f1a00985..9eb30ba62 100644
+--- a/internal/plugin/testdata/ownicon/index.js
++++ b/internal/plugin/testdata/ownicon/index.js
+@@ -25,3 +25,11 @@ export const Lime = async () => ({
+     methods: [{ type: "api", label: "API key", placeholder: 42 }],
+   },
+ })
++
++export const Orange = async () => ({
++  auth: {
++    provider: "orange",
++    icon: "deepseek-color", // a built-in icon's name, given as it is (#5103)
++    methods: [{ type: "api", label: "Orange API key" }],
++  },
++})
+diff --git a/internal/provider/plugin_icon.go b/internal/provider/plugin_icon.go
+index 2f8c4acce..6a79b301c 100644
+--- a/internal/provider/plugin_icon.go
++++ b/internal/provider/plugin_icon.go
+@@ -88,12 +88,16 @@ func keepPlugIcon(k, icon string) {
+ // pluginOwnIcon is the Icon value of the picture a plugin gave, "" while
+ // there is none to show. A data:image URI is kept at once; an https URL
+ // is fetched in the background, through FetchIcon's checks, and shows
+-// once it is in (a failure is tried again in an hour). Anything else is
+-// refused.
++// once it is in (a failure is tried again in an hour); a name without a
++// scheme or a path is a bundled icon's, given as it is as a market one
++// is (#5103). Anything else is refused.
+ func pluginOwnIcon(said string) string {
+ 	if said == "" {
+ 		return ""
+ 	}
++	if !MarketPicture(said) {
++		return said
++	}
+ 	sum := sha256.Sum256([]byte(said))
+ 	k := hex.EncodeToString(sum[:16])
+ 	plugIcons.Lock()
+-- 
+2.50.1 (Apple Git-155)
+

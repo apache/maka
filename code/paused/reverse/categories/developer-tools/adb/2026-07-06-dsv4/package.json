@@ -1,0 +1,19 @@
+{
+  "name": "adb-chrome-extension-re",
+  "version": "0.9.8",
+  "private": true,
+  "description": "逆向工程产物 — ADB Chrome 扩展 v0.9.8（用于 Android 设备远程调试，现已废弃）",
+  "scripts": {
+    "tsc": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0",
+    "@types/chrome": "^0.0.268"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/GoogleChrome/ADBPlugin"
+  },
+  "keywords": ["chrome-extension", "adb", "remote-debugging", "reverse-engineering"],
+  "license": "BSD-3-Clause"
+}

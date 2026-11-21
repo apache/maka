@@ -1,0 +1,10 @@
+node_modules
+dist
+*.local
+.DS_Store
+
+# 编辑器
+.idea
+.vscode/*
+!.vscode/launch.json
+*.sw?

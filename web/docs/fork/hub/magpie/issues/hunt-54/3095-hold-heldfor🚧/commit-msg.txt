@@ -1,0 +1,19 @@
+provider: TestHoldReadsMigrationsOnce holds past the wall clock (#3095)
+
+The test went red in a full-suite run on a loaded machine (load average
+25 to 57): its two reads of migrations.json were more than heldFor (1s)
+apart, the held copy expired, the file was read again, and the move
+written between the reads was seen mid-hold — "migrations.json read
+again while held". The test measures wall time rather than the hold.
+
+Raise heldFor for the test's duration, as its two siblings in this file
+(TestHoldKeptForTheNextRequest, TestHoldKeptUntilAWrite) already do: a
+loaded machine's pause between the reads isn't the change the test
+looks for. The production heldFor is untouched.
+
+Confirmed by injecting a 1.2s pause between the two reads: the test
+fails on the old form and passes with the fix, pause still in.
+
+Fixes #3095
+
+Generated-by: GLM-5.3-Flash (ZCode)

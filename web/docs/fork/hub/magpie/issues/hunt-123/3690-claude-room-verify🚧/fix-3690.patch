@@ -1,0 +1,210 @@
+From 56b4f3174abc0643854d4d82c1dc8a9b8660dc33 Mon Sep 17 00:00:00 2001
+From: vincent <vincent@users.noreply.github.com>
+Date: Tue, 27 Oct 2026 05:53:02 +1000
+Subject: [PATCH] gateway: a Claude Code run ending after its synctest bubble
+ crashes no more (#3690, JoeyWu-tech)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+claudeRoom.release closed its freed channel and made a new one every time a
+run ended, whether or not any ask waited for room — the way filememo's
+written did before #3632. A channel made in a synctest bubble can't be
+closed from another, so a run whose process outlived the bubble crashed the
+test binary: "fatal error: close of synctest channel from outside bubble".
+
+The channel is the waiters': the first ask that waits makes it, the ask that
+ends waiting leaves none behind, and release and nudge close it only while
+someone waits (wake, which both now call — nudge had the guard, release
+didn't). An ask reads the channel under the same lock it waits with, so it
+is never left on one that was closed and replaced without it.
+
+Verified: red without the fix — `go test -tags nogui
+./internal/gateway/ -count=1 -run
+TestClaudeRoomEndsOutsideItsSynctestBubble` died with "fatal error: close of
+synctest channel from outside bubble" at claude_room.go's release, called
+from the test's run ending after its bubble; green with it, and the room
+reports 0 runs and 0 waiting. The same test wakes an ask waiting for a full
+room through a release and has it take the room. gofmt -l silent, go vet
+-tags nogui ./internal/gateway/ silent, go build -tags nogui ./... ok.
+---
+ internal/gateway/claude_room.go      | 33 +++++++++----
+ internal/gateway/claude_room_test.go | 73 +++++++++++++++++++++++++++-
+ 2 files changed, 96 insertions(+), 10 deletions(-)
+
+diff --git a/internal/gateway/claude_room.go b/internal/gateway/claude_room.go
+index 00bded5d2..0a3944326 100644
+--- a/internal/gateway/claude_room.go
++++ b/internal/gateway/claude_room.go
+@@ -34,12 +34,15 @@ type claudeRoomT struct {
+ 	// magpie has asked to end, not ended yet; waiting how many asks wait
+ 	// for room
+ 	live, leaving, waiting int
+-	// freed is closed, and made anew, each time one ends, or a run comes
+-	// to wait for its next turn (nudge), which may be let go for room
++	// freed wakes the asks waiting for room: made by the first of them to
++	// wait, closed by one that ends (release) or a run that comes to wait
++	// for its next turn (nudge), and gone with its waiters, so a release
++	// no one waits on closes nothing (a channel made in one synctest
++	// bubble can't be closed from another: filememo's written, #3632)
+ 	freed chan struct{}
+ }
+ 
+-var claudeRoom = &claudeRoomT{freed: make(chan struct{})}
++var claudeRoom = &claudeRoomT{}
+ 
+ // claudeRoomWait is how long a Claude Code waits for room before its
+ // request is answered 503.
+@@ -219,6 +222,9 @@ func (c *claudeRoomT) take(ctx context.Context, what string) (func(left bool), e
+ 		if waiting {
+ 			c.mu.Lock()
+ 			c.waiting--
++			if c.waiting == 0 {
++				c.freed = nil // no ask waits on it any more: the next makes it
++			}
+ 			c.mu.Unlock()
+ 		}
+ 	}()
+@@ -238,6 +244,9 @@ func (c *claudeRoomT) take(ctx context.Context, what string) (func(left bool), e
+ 			c.waiting++
+ 			log.Printf("claude: %s waits for room: %d Claude Code processes run, %d may (%s)", what, c.live, most, why)
+ 		}
++		if c.freed == nil { // gone with the asks waiting before: this one makes it
++			c.freed = make(chan struct{})
++		}
+ 		freed, live := c.freed, c.live
+ 		evict := c.live-c.leaving >= most && c.leaving < c.waiting
+ 		c.mu.Unlock()
+@@ -277,10 +286,7 @@ var roomLook = 5 * time.Second
+ // for its next turn.
+ func (c *claudeRoomT) nudge() {
+ 	c.mu.Lock()
+-	if c.waiting > 0 {
+-		close(c.freed)
+-		c.freed = make(chan struct{})
+-	}
++	c.wake()
+ 	c.mu.Unlock()
+ }
+ 
+@@ -291,11 +297,20 @@ func (c *claudeRoomT) release(left bool) {
+ 	if left {
+ 		c.leaving--
+ 	}
+-	close(c.freed)
+-	c.freed = make(chan struct{})
++	c.wake()
+ 	c.mu.Unlock()
+ }
+ 
++// wake has the asks waiting for room look again, and only while one waits:
++// the channel is theirs, so a room freed with none waiting closes nothing
++// (#3690). c.mu is held.
++func (c *claudeRoomT) wake() {
++	if c.waiting > 0 && c.freed != nil {
++		close(c.freed)
++		c.freed = nil
++	}
++}
++
+ // letGoForRoom lets go of one run for room, of any bridge: the one idle
+ // longest, its session shelved for its conversation's next turn as when
+ // more than idleMost wait, else the one waiting longest on tool results
+diff --git a/internal/gateway/claude_room_test.go b/internal/gateway/claude_room_test.go
+index df859e838..a31f618ae 100644
+--- a/internal/gateway/claude_room_test.go
++++ b/internal/gateway/claude_room_test.go
+@@ -14,6 +14,7 @@ import (
+ 	"strings"
+ 	"sync"
+ 	"testing"
++	"testing/synctest"
+ 	"time"
+ 
+ 	"github.com/yetone/magpie/internal/provider"
+@@ -26,7 +27,7 @@ import (
+ func freshRoom(t *testing.T, most int) {
+ 	t.Helper()
+ 	old := claudeRoom
+-	claudeRoom = &claudeRoomT{freed: make(chan struct{})}
++	claudeRoom = &claudeRoomT{}
+ 	memRuns.Lock()
+ 	known, n, why := memRuns.known, memRuns.n, memRuns.why
+ 	memRuns.known, memRuns.n, memRuns.why = true, 0, ""
+@@ -398,3 +399,73 @@ func TestClaudeNoRoomPassesOnAndRestsNobody(t *testing.T) {
+ 	}
+ 	noneRested(t, "claude")
+ }
++
++// #3690 (JoeyWu-tech): a Claude Code run ending after its synctest bubble
++// had gone — the run's own process outliving the test — closed a freed
++// channel that had been made in that bubble: "fatal error: close of
++// synctest channel from outside bubble". The channel is made by the asks
++// waiting for room and goes with them, so a release no one waits on closes
++// nothing (as filememo's written, #3632).
++func TestClaudeRoomEndsOutsideItsSynctestBubble(t *testing.T) {
++	freshRoom(t, 1)
++	room := claudeRoom
++	// a run that begins and ends inside a bubble
++	synctest.Test(t, func(t *testing.T) {
++		release, err := room.take(context.Background(), "inside")
++		if err != nil {
++			t.Fatalf("the room's run: %v", err)
++		}
++		release(false)
++	})
++	// one that begins in a bubble and ends after it
++	var ended func(left bool)
++	synctest.Test(t, func(t *testing.T) {
++		release, err := room.take(context.Background(), "outliving")
++		if err != nil {
++			t.Fatalf("the room's run: %v", err)
++		}
++		ended = release
++	})
++	ended(false)
++	if live, waiting := roomCounts(room); live != 0 || waiting != 0 {
++		t.Errorf("%d runs, %d waiting after both ended: want none", live, waiting)
++	}
++	// the room full, an ask waiting for it, and the run that held it
++	// freeing it: the ask waiting is woken, and takes the room
++	synctest.Test(t, func(t *testing.T) {
++		first, err := room.take(context.Background(), "first")
++		if err != nil {
++			t.Fatalf("the room's first run: %v", err)
++		}
++		freed := make(chan func(left bool), 1)
++		go func() {
++			release, err := room.take(context.Background(), "second")
++			if err != nil {
++				t.Errorf("the room's second run: %v", err)
++			}
++			freed <- release
++		}()
++		synctest.Wait()
++		if live, waiting := roomCounts(room); live != 1 || waiting != 1 {
++			t.Fatalf("%d runs, %d waiting: want one of each", live, waiting)
++		}
++		first(false)
++		synctest.Wait()
++		if second := <-freed; second == nil {
++			t.Fatal("the ask waiting for room never got it")
++		} else {
++			second(false)
++		}
++	})
++	if live, waiting := roomCounts(room); live != 0 || waiting != 0 {
++		t.Errorf("%d runs, %d waiting after the woken ask ended: want none", live, waiting)
++	}
++}
++
++// roomCounts is how many Claude Code processes run and how many asks wait
++// for room, as the room holds them.
++func roomCounts(c *claudeRoomT) (live, waiting int) {
++	c.mu.Lock()
++	defer c.mu.Unlock()
++	return c.live, c.waiting
++}
+-- 
+2.50.1 (Apple Git-155)
+

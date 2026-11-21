@@ -1,0 +1,389 @@
+From f8de12fa1a69781a84847ee54bccadd84808900b Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Sun, 1 Nov 2026 19:45:31 +0800
+Subject: [PATCH] fix(library): Kiro CLI gets the Library's skills, MCP servers
+ and instructions (#4769)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The library's targets are agent.All plus apps, and apps held Claude
+Desktop alone: Kiro CLI, which magpie wires no model into and the Agents
+page rightly leaves alone, could be given none of the three, and a user
+of it copied skills, servers and instructions into ~/.kiro by hand
+(#4769, ump45nose).
+
+Kiro CLI is an app now, found by the kiro-cli program alone — PATH,
+~/.local/bin, Kiro CLI.app, where provider.KiroExecutable already
+looked — never by ~/.kiro, which Kiro Crew and the Kiro IDE keep too. It
+reads ~/.kiro/skills, ~/.kiro/settings/mcp.json and
+~/.kiro/steering/AGENTS.md, its global steering's AGENTS.md being always
+included (kiro.dev/docs). Its mcp.json has a format of its own: entries
+of command/args/env or url/headers, no type written, the user's fields
+(disabled, autoApprove, disabledTools, oauth) kept, no SSE named — a url
+is streamable HTTP, the docs give no way to say SSE — and a ${NAME} in
+headers or env passed through, Kiro expanding those its Mcp Approved Env
+Vars approves.
+
+What a kiro-cli in a WSL distro is given, and a project's .kiro, stays
+out: apps are this machine's, and per-tool off stays the user's.
+
+Run: go test -tags nogui ./internal/library (ok; TestKiroCLITarget,
+TestKiroCLINotByItsFolder and TestKiroMCP new); go vet (darwin, linux,
+windows; nogui) and gofmt -l clean on the package; builds for all three
+platforms.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/library/envref.go    |   5 +
+ internal/library/kiro_test.go | 177 ++++++++++++++++++++++++++++++++++
+ internal/library/mcp.go       |  33 ++++++-
+ internal/library/targets.go   |  30 +++++-
+ 4 files changed, 241 insertions(+), 4 deletions(-)
+ create mode 100644 internal/library/kiro_test.go
+
+diff --git a/internal/library/envref.go b/internal/library/envref.go
+index 9ef258178..e3585f20f 100644
+--- a/internal/library/envref.go
++++ b/internal/library/envref.go
+@@ -171,6 +171,11 @@ func (f *mcpFile) refsOf() envSyntax {
+ 		// (#1435): the server got the token, and with the variable unset
+ 		// dsh left the server out, saying its config is invalid.
+ 		return envSyntax{refDsh, refDsh}
++	case fmtKiro:
++		// Kiro expands ${VARIABLE_NAME} in mcp.json as it reads it
++		// (kiro.dev/docs/mcp/configuration), the ones its Mcp Approved Env
++		// Vars setting approves
++		return envSyntax{refDollar, refDollar}
+ 	}
+ 	// None: Claude Desktop gives a command its env as written and only
+ 	// HOME, LOGNAME, PATH, SHELL, TERM and USER of its own (2.7032's app.asar
+diff --git a/internal/library/kiro_test.go b/internal/library/kiro_test.go
+new file mode 100644
+index 000000000..e318ec3f2
+--- /dev/null
++++ b/internal/library/kiro_test.go
+@@ -0,0 +1,177 @@
++package library
++
++import (
++	"encoding/json"
++	"errors"
++	"os"
++	"path/filepath"
++	"strings"
++	"testing"
++
++	"github.com/yetone/magpie/internal/provider"
++)
++
++// Kiro CLI reads global skills from ~/.kiro/skills, its user-wide MCP
++// servers from ~/.kiro/settings/mcp.json and ~/.kiro/steering/AGENTS.md of
++// its global steering (kiro.dev/docs/skills, /docs/mcp/configuration,
++// /docs/steering), but the library gave it none of the three: its targets
++// are agent.All and apps, which held Claude Desktop alone, and Kiro CLI is
++// no agent magpie wires a model into (#4769, ump45nose).
++func TestKiroCLITarget(t *testing.T) {
++	h := sandbox(t)
++	holdCLI(t, h, "kiro-cli") // found by the kiro-cli program alone
++	tg := targetByID("kiro-cli")
++	if tg == nil {
++		t.Fatalf("kiro-cli is not a target: %v", ids(Targets()))
++	}
++	if tg.Instructions != filepath.Join(h, ".kiro", "steering", "AGENTS.md") {
++		t.Errorf("instructions: %q", tg.Instructions)
++	}
++	if tg.Skills != filepath.Join(h, ".kiro", "skills") {
++		t.Errorf("skills: %q", tg.Skills)
++	}
++	if tg.MCP == nil || tg.MCP.Path != filepath.Join(h, ".kiro", "settings", "mcp.json") {
++		t.Errorf("mcp: %+v", tg.MCP)
++	}
++	for _, kind := range []string{"instructions", "mcp", "skills"} {
++		if id, err := Takes("kiro-cli", kind); id != "kiro-cli" || err != nil {
++			t.Errorf("Takes(kiro-cli, %s): %q %v", kind, id, err)
++		}
++	}
++
++	// the three are given as the page ticks them
++	shared := "Be brief."
++	ok(t)(SaveInstructions(InstructionsChange{Shared: &shared, Agents: []string{"kiro-cli"}}))
++	if got := read(t, filepath.Join(h, ".kiro", "steering", "AGENTS.md")); !strings.Contains(got, "Be brief.") {
++		t.Errorf("kiro's steering has no instructions:\n%s", got)
++	}
++	src := filepath.Join(h, "src/skills")
++	skill(t, filepath.Join(src, "pdf"), "pdf", "Read PDFs")
++	if _, err := ProbeSkills(src); err != nil {
++		t.Fatal(err)
++	}
++	ok(t)(InstallSkills(src, []string{"pdf"}, []string{"kiro-cli"}))
++	if _, err := os.Stat(filepath.Join(h, ".kiro", "skills", "pdf", "SKILL.md")); err != nil {
++		t.Error("kiro has no pdf skill")
++	}
++}
++
++// ~/.kiro alone is no sign of it: Kiro Crew keeps ~/.kiro/crew and the
++// Kiro IDE keeps ~/.kiro too, with no kiro-cli installed (#4769). Found
++// by the program alone, where provider.KiroExecutable looks.
++func TestKiroCLINotByItsFolder(t *testing.T) {
++	sandbox(t)
++	old := provider.KiroExecutable
++	provider.KiroExecutable = func() string { return "" }
++	t.Cleanup(func() { provider.KiroExecutable = old })
++	write(t, filepath.Join(home(), ".kiro", "crew", "config.json"), "{}")
++	write(t, filepath.Join(home(), ".kiro", "settings", "mcp.json"), "{}")
++	write(t, filepath.Join(home(), ".kiro", "steering", "AGENTS.md"), "mine\n")
++	if tg := targetByID("kiro-cli"); tg != nil {
++		t.Errorf("~/.kiro alone made kiro-cli a target: %+v", tg)
++	}
++}
++
++// The mcp.json magpie writes is Kiro's own shape: mcpServers of
++// command/args/env, or url/headers — no type on an entry, the user's
++// fields kept, no SSE named, a ${NAME} passed through as the docs say
++// (kiro.dev/docs/mcp/configuration) (#4769).
++func TestKiroMCP(t *testing.T) {
++	h := sandbox(t)
++	holdCLI(t, h, "kiro-cli")
++	p := filepath.Join(h, ".kiro", "settings", "mcp.json")
++	write(t, p, `{
++  "mcpServers": {
++    "mine": {
++      "command": "uvx",
++      "args": ["mine-mcp"],
++      "autoApprove": ["read"],
++      "disabled": false
++    }
++  }
++}`)
++	tg := targetByID("kiro-cli")
++	if tg == nil || tg.MCP == nil {
++		t.Fatalf("kiro-cli has no MCP target: %+v", tg)
++	}
++	if tg.MCP.Format != fmtKiro {
++		t.Errorf("format: %v", tg.MCP.Format)
++	}
++
++	agents := []string{"kiro-cli"}
++	stdio := Server{Name: "fs", Transport: "stdio", Command: "npx", Args: []string{"-y", "@mcp/fs"}, Env: map[string]string{"K": "V"}, Agents: agents}
++	web := Server{Name: "web", Transport: "http", URL: "https://example.com/mcp", Headers: map[string]string{"Authorization": "Bearer ${TOKEN}"}, Agents: agents}
++	for _, s := range []Server{stdio, web} {
++		ok(t)(SaveServer("", s))
++	}
++
++	var f struct {
++		Servers map[string]map[string]any `json:"mcpServers"`
++	}
++	if err := json.Unmarshal([]byte(read(t, p)), &f); err != nil {
++		t.Fatalf("%v:\n%s", err, read(t, p))
++	}
++	for name, s := range f.Servers {
++		for _, k := range []string{"type", "transport"} {
++			if _, ok := s[k]; ok {
++				t.Errorf("%s has %q, which Kiro's entries never name:\n%s", name, k, read(t, p))
++			}
++		}
++	}
++	if fs := f.Servers["fs"]; fs["command"] != "npx" {
++		t.Errorf("fs: %v", fs)
++	} else if e, _ := fs["env"].(map[string]any); e["K"] != "V" {
++		t.Errorf("fs env: %v", fs)
++	}
++	if w := f.Servers["web"]; w["url"] != "https://example.com/mcp" {
++		t.Errorf("web: %v", w)
++	} else if hd, _ := w["headers"].(map[string]any); hd["Authorization"] != "Bearer ${TOKEN}" {
++		t.Errorf("web headers, ${NAME} passed through: %v", w)
++	}
++	if m := f.Servers["mine"]; m["command"] != "uvx" || m["autoApprove"] == nil || m["disabled"] != false {
++		t.Errorf("the user's fields kept: %v", m)
++	}
++
++	// read back, and left as they are by a sync that changes nothing
++	read1, err := tg.MCP.read()
++	if err != nil {
++		t.Fatal(err)
++	}
++	for _, want := range []Server{stdio, web} {
++		if s := read1[want.Name]; s == nil || !s.same(&want) {
++			t.Errorf("%s read back as %+v", want.Name, s)
++		}
++	}
++	before := read(t, p)
++	ok(t)(Sync())
++	if read(t, p) != before {
++		t.Errorf("a sync rewrote servers that are as the library has them:\n%s", read(t, p))
++	}
++
++	// no SSE named: a url is streamable HTTP, as the docs give no way to
++	// say SSE (kiro.dev/docs/mcp/configuration)
++	if err := tg.MCP.supports(&Server{Transport: "sse"}); !errors.Is(err, errNoSSE) {
++		t.Errorf("sse: %v", err)
++	}
++	if err := tg.MCP.supports(&Server{Transport: "http"}); err != nil {
++		t.Errorf("http: %v", err)
++	}
++	u, _ := tg.MCP.decode("by-url", map[string]any{"url": "https://example.com/sse", "transport": "sse"})
++	if u == nil || u.Transport != "http" {
++		t.Errorf("a url reads as streamable HTTP, got %+v", u)
++	}
++
++	for _, s := range []string{"fs", "web"} {
++		ok(t)(RemoveServer(s))
++	}
++	after, _ := tg.MCP.read()
++	if len(after) != 1 || after["mine"] == nil || after["mine"].Command != "uvx" {
++		t.Errorf("after: %+v\n%s", after, read(t, p))
++	}
++	got := read(t, p)
++	for _, want := range []string{"\"autoApprove\"", "\"disabled\""} {
++		if !strings.Contains(got, want) {
++			t.Errorf("lost the user's %s:\n%s", want, got)
++		}
++	}
++}
+diff --git a/internal/library/mcp.go b/internal/library/mcp.go
+index b5228a86e..334b91336 100644
+--- a/internal/library/mcp.go
++++ b/internal/library/mcp.go
+@@ -219,6 +219,10 @@ const (
+ 	// fmtZed is Zed's settings.json context_servers: command/args/env, or
+ 	// url/headers, which Zed speaks streamable HTTP to
+ 	fmtZed
++	// fmtKiro is Kiro CLI's ~/.kiro/settings/mcp.json: mcpServers of
++	// command/args/env or url/headers — no type on an entry, its shape
++	// saying which, and no way to name SSE (kiro.dev/docs/mcp/configuration)
++	fmtKiro
+ )
+ 
+ // mcpFile is the file an agent keeps its user-wide MCP servers in.
+@@ -269,7 +273,7 @@ func (f *mcpFile) supports(s *Server) error {
+ 	if f.Format == fmtDesktop && s.Remote() {
+ 		return errNoRemote
+ 	}
+-	if s.Transport == "sse" && (f.Format == fmtCodex || f.Format == fmtGoose || f.Format == fmtDsh || f.Format == fmtPiNative || f.Format == fmtGrok || f.Format == fmtCommandCode || f.Format == fmtZed) {
++	if s.Transport == "sse" && (f.Format == fmtCodex || f.Format == fmtGoose || f.Format == fmtDsh || f.Format == fmtPiNative || f.Format == fmtGrok || f.Format == fmtCommandCode || f.Format == fmtZed || f.Format == fmtKiro) {
+ 		return errNoSSE
+ 	}
+ 	if f.Format == fmtDsh && s.Name != "" && !dshServerName.MatchString(s.Name) {
+@@ -311,7 +315,8 @@ var errNoRemote = errors.New("no-remote")
+ // over SSE (Codex, Goose, DeepSeek Harness, Pi's own MCP, Grok Build — its
+ // type = "sse" is taken, but it speaks streamable HTTP to it all the same,
+ // Command Code, whose own add refuses sse, Zed, whose only remote transport
+-// POSTs to the url: crates/context_server/src/transport/http.rs).
++// POSTs to the url: crates/context_server/src/transport/http.rs, Kiro CLI,
++// whose docs name no SSE at all).
+ var errNoSSE = errors.New("no-sse")
+ 
+ // ordered is a JSON object that keeps its keys in the order given, so an
+@@ -651,6 +656,18 @@ func (f *mcpFile) encode(s *Server) ordered {
+ 				add("transport", "stdio")
+ 			}
+ 		}
++	case fmtKiro:
++		// as the docs show them: command/args/env, or url/headers — no
++		// type, the entry's shape saying which (kiro.dev/docs/mcp/
++		// configuration); an SSE server never comes this far
++		if s.Remote() {
++			add("url", s.URL)
++			optional("headers", s.Headers)
++		} else {
++			add("command", s.Command)
++			add("args", list(s.Args))
++			optional("env", s.Env)
++		}
+ 	case fmtCline:
+ 		// as `cline mcp add` writes it; a url with no type would be SSE
+ 		if s.Remote() {
+@@ -933,6 +950,15 @@ func (f *mcpFile) decode(name string, m map[string]any) (*Server, bool) {
+ 		} else {
+ 			local(str(m, "command"), m["args"], m["env"])
+ 		}
++	case fmtKiro:
++		// a url is streamable HTTP: the docs give no way to name SSE
++		// (kiro.dev/docs/mcp/configuration), so no transport in the entry
++		// is read as one
++		if u := str(m, "url"); u != "" {
++			remote("http", u, m["headers"])
++		} else {
++			local(str(m, "command"), m["args"], m["env"])
++		}
+ 	default: // Claude Code, Cursor, Copilot, Crush, ZCode, omp, Grok, Zed
+ 		t := str(m, "type")
+ 		if u := str(m, "url"); u != "" {
+@@ -1217,6 +1243,9 @@ var owned = map[mcpFormat][]string{
+ 	fmtCommandCode: {"transport", "type", "url", "headers", "command", "args", "env"},
+ 	// enabled, remote, timeout and oauth are the user's
+ 	fmtZed: {"url", "headers", "command", "args", "env"},
++	// disabled, autoApprove, disabledTools and oauth are the user's; a
++	// transport names nothing Kiro reads
++	fmtKiro: {"transport", "url", "headers", "command", "args", "env"},
+ 
+ 	// a url agy read in place of serverUrl goes when magpie writes one
+ 	fmtAntigravity: {"type", "serverUrl", "url", "headers", "command", "args", "env"},
+diff --git a/internal/library/targets.go b/internal/library/targets.go
+index 568f46bf4..8aadb0c55 100644
+--- a/internal/library/targets.go
++++ b/internal/library/targets.go
+@@ -16,6 +16,7 @@ import (
+ 	"github.com/yetone/magpie/internal/desktopdir"
+ 	"github.com/yetone/magpie/internal/edit"
+ 	"github.com/yetone/magpie/internal/plugin"
++	"github.com/yetone/magpie/internal/provider"
+ )
+ 
+ // Target is where one agent keeps each of the three: an empty path is
+@@ -484,6 +485,19 @@ func targetOf(a *agent.Agent) *Target {
+ 		// ProjectSettingsContent.context_servers, zed-industries/zed
+ 		// 2c99f547; lc on Discord)
+ 		t.MCP = &mcpFile{Path: a.Path, Format: fmtZed}
++	case "kiro-cli":
++		// Kiro CLI — and the Kiro IDE, which reads the same files — finds
++		// its global skills in ~/.kiro/skills, its user-wide MCP servers
++		// in ~/.kiro/settings/mcp.json, mcpServers of command/args/env or
++		// url/headers that hot-reloads, and ~/.kiro/steering/AGENTS.md of
++		// its global steering, always included (kiro.dev/docs/skills,
++		// /docs/mcp/configuration, /docs/steering; #4769). The app is
++		// found by the kiro-cli program alone (apps): ~/.kiro is Kiro
++		// Crew's and the Kiro IDE's too
++		d := filepath.Join(h, ".kiro")
++		t.Instructions = filepath.Join(d, "steering", "AGENTS.md")
++		t.MCP = &mcpFile{Path: filepath.Join(d, "settings", "mcp.json"), Format: fmtKiro}
++		t.Skills = filepath.Join(d, "skills")
+ 	case "claude-desktop":
+ 		// Claude Desktop reads only commands from its file: a remote server
+ 		// is added in its own Connectors settings. In its 3p mode (magpie's
+@@ -778,7 +792,8 @@ func wslOwnFolder(a *agent.Agent) *Target {
+ }
+ 
+ // apps are what the library can give MCP servers to that aren't agents
+-// magpie sets up: known by the folder they keep their settings in.
++// magpie sets up: known by the folder they keep their settings in
++// (Claude Desktop), or by their program alone (Kiro CLI).
+ func apps() []*agent.Agent {
+ 	// Desktop's own folder (%APPDATA%\Claude on Windows, the MSIX
+ 	// package's for a packaged Desktop, which doesn't see a file written
+@@ -789,9 +804,20 @@ func apps() []*agent.Agent {
+ 	if !isDir(dir) && isDir(d.ThreeP) {
+ 		dir = d.ThreeP
+ 	}
+-	return []*agent.Agent{
++	out := []*agent.Agent{
+ 		{ID: "claude-desktop", Name: "Claude Desktop", Icon: "claude-color", Dir: dir, Path: filepath.Join(dir, "claude_desktop_config.json")},
+ 	}
++	// Kiro CLI (#4769) is no agent magpie wires a model into, but the
++	// library can give it skills, MCP servers and instructions. It is
++	// found by the kiro-cli program alone — PATH, ~/.local/bin, Kiro
++	// CLI.app, where provider.KiroExecutable looks — never by ~/.kiro,
++	// which Kiro Crew and the Kiro IDE keep too. Bin is the path itself,
++	// so a copy the installer put where magpie's PATH doesn't reach is
++	// found as it was (Detected looks a Bin up by PATH alone)
++	if bin := provider.KiroExecutable(); bin != "" {
++		out = append(out, &agent.Agent{ID: "kiro-cli", Name: "Kiro CLI", Icon: "kiro-color", Bin: bin})
++	}
++	return out
+ }
+ 
+ // Targets are the agents on this machine that magpie can give any of the
+-- 
+2.50.1 (Apple Git-155)
+

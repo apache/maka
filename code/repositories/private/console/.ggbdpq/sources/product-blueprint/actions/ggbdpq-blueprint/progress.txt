@@ -1,0 +1,39 @@
+Project: product-blueprint
+Mode: Autonomous
+SSOT:
+- .ggbdpq/actions/product-blueprint/prd.json
+- .ggbdpq/actions/product-blueprint/progress.txt
+
+============================================================
+EXECUTION LOG (append-only)
+============================================================
+
+[2026-01-28] 迁移 optional 文件为英文命名
+- 执行宝典.md → execution.md
+- 夜间执行宝典.md → execution.night.md
+- Cursor沙盒作战手册.md → cursor-sandbox-playbook.md
+- 前端技术栈说明.md → frontend-stack.md
+- 必备技能与插件清单.md → required-tools.md
+- 说明.md → README.md
+
+[2026-01-28] prd.json 极简化
+- 移除 project.stack
+- 移除 project.step_format_rules
+- 新增 optional_refs 索引
+
+[2026-01-28] 创建 step-format-rules.md
+- 路径：.ggbdpq/optional/rules/step-format-rules.md
+
+[PATH_DECISION][2026-01-28]
+optional references:
+- .ggbdpq/optional/rules/step-format-rules.md
+- .ggbdpq/optional/toolchain/required-tools.md
+- .ggbdpq/optional/toolchain/frontend-stack.md
+- .ggbdpq/optional/execution/execution.md
+- .ggbdpq/optional/execution/execution.night.md
+- .ggbdpq/optional/cursor/cursor-sandbox-playbook.md
+
+[REF_FIX][2026-01-28]
+- synced refs to optional/execution, optional/rules, optional/toolchain, optional/cursor
+- no changes in archive/backups
+- learning-lab unchanged

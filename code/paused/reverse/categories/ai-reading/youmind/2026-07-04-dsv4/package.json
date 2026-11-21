@@ -1,0 +1,1 @@
+{"name":"youmind-dsv4","version":"0.3.0.33","description":"YouMind AI Web Clipper — 逆向工程 (dsv4)","license":"UNLICENSED","scripts":{"build":"tsc","check":"tsc --noEmit"},"devDependencies":{"typescript":"^5.5.0","@types/chrome":"^0.0.268"}}

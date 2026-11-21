@@ -1,0 +1,144 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Mon, 9 Nov 2026 22:09:09 +0800
+Subject: [PATCH] gateway: an image-count cap is a summary too large, asked
+ again as text
+
+Copilot answers a summary request carrying a session's screenshots
+400 "Exceeded maximum number of images (50) allowed in the request"
+(#5815). The count is a budget of its own: a request under the model's
+window and the vendor's byte cap still exceeds it, and neither the 413
+nor the window's words match it, so the refusal went back to Codex as
+the compaction's failure and the session could neither compact nor go
+on until its own history shrank below the cap by luck.
+
+summaryTooLarge now reads an image-count refusal too: asked again with
+the conversation as text, its images left out (plainCompact), what was
+over the count is under it. No vendor's number and no provider's name
+is matched, and a rate limit's "images per minute" matches nothing.
+Ordinary turns keep their images: only the summary's refusal is asked
+again, and overflowed's callers (retryable, the members a window is
+worth) keep their token-and-bytes reading.
+
+Fixes #5815
+---
+ internal/gateway/codex_backend.go             | 36 +++++++++++++---
+ .../gateway/codex_compact_too_large_test.go   | 43 +++++++++++++++++++
+ 2 files changed, 72 insertions(+), 7 deletions(-)
+
+diff --git a/internal/gateway/codex_backend.go b/internal/gateway/codex_backend.go
+index e260c0669..6a0c1d865 100644
+--- a/internal/gateway/codex_backend.go
++++ b/internal/gateway/codex_backend.go
+@@ -3886,18 +3886,40 @@ var upstreamFailedWords = regexp.MustCompile(`(?i)upstream request failed`)
+ 
+ // summaryTooLarge is a summary request refused for its size: past the
+ // vendor's byte cap (413; DeepSeek's "Failed to buffer the request body:
+-// length limit exceeded", celestial_eagle_99230 on Discord) or past the
+-// model's window. Codex's remote compaction asks nothing smaller after
+-// either (it trims only by its token estimate against the catalog's
+-// window, and a 1M window holds more bytes than the cap takes), so told
+-// of it, Codex could neither compact nor go on. The summary is asked
+-// again as text, its images left out and long outputs cut
++// length limit exceeded", celestial_eagle_99230 on Discord), past the
++// model's window, or carrying more images than the vendor takes in one
++// request (Copilot's 400 "Exceeded maximum number of images (50) allowed
++// in the request", #5815). The image count is a budget of its own: a
++// request under the window and the byte cap still exceeds it, and the
++// words of neither say so. Codex's remote compaction asks nothing smaller
++// after any of them (it trims only by its token estimate against the
++// catalog's window, and a 1M window holds more bytes than the cap takes),
++// so told of it, Codex could neither compact nor go on. The summary is
++// asked again as text, its images left out and long outputs cut
+ // (plainCompact), and compacted without a model when that is refused
+ // too.
+ func summaryTooLarge(rec *recorder) bool {
+-	return rec.status == http.StatusRequestEntityTooLarge || overflowed(rec.status, rec.body.Bytes())
++	if rec.status == http.StatusRequestEntityTooLarge || overflowed(rec.status, rec.body.Bytes()) {
++		return true
++	}
++	// an image-count refusal comes as a request error whose words say so:
++	// it is not a rate limit's ("images per minute"), which counts how
++	// fast, so asking again as text is no answer to that
++	switch rec.status {
++	case http.StatusBadRequest, http.StatusUnprocessableEntity:
++		return imageCountWords.Match(wordsOf(rec.body.Bytes()))
++	}
++	return false
+ }
+ 
++// imageCountWords say a request was turned away over how many images it
++// carries, not over its bytes or its tokens: Copilot's "Exceeded maximum
++// number of images (50) allowed in the request" (#5815). No vendor's
++// number is matched, and no provider is named, so another's cap and
++// another's count are read the same. Matched decoded, as the other
++// refusals are.
++var imageCountWords = regexp.MustCompile(`(?i)maximum number of images|too many images`)
++
+ // itemNotFound is a 400 refusing an item of the input by its id, as Azure
+ // OpenAI's and OpenAI's API answer one they never stored ("Item with id
+ // 'rs_…' not found", #1008), which a relay in front of them passes on.
+diff --git a/internal/gateway/codex_compact_too_large_test.go b/internal/gateway/codex_compact_too_large_test.go
+index f523ea162..8cce20a48 100644
+--- a/internal/gateway/codex_compact_too_large_test.go
++++ b/internal/gateway/codex_compact_too_large_test.go
+@@ -24,6 +24,13 @@ const deepseekBodyCap = "Failed to buffer the request body: length limit exceede
+ // window, OpenAI's words.
+ const deepseekOverflow = `{"error":{"message":"This model's maximum context length is 1048576 tokens. However, you requested 1100000 tokens (1100000 in the messages, 0 in the completion). Please reduce the length of the messages or completion.","type":"invalid_request_error","param":null,"code":"invalid_request_error"}}`
+ 
++// copilotImageCap is what Copilot answered a summary request carrying a
++// session's screenshots with (ghjkllasdf-fake, #5815): its cap on how
++// many images one request takes, an HTTP 400. The count is its own
++// budget: a request under the model's window and its byte cap still
++// exceeds it, and neither the words of the one nor of the other say so.
++const copilotImageCap = `{"error":{"message":"Copilot: Exceeded maximum number of images (50) allowed in the request.","type":"invalid_request_error"}}`
++
+ // capped is an upstream that refuses a body of more than most bytes with
+ // status and body (as ctype), and answers any other with a summary in its
+ // protocol's stream. Every body it is sent is kept.
+@@ -160,6 +167,42 @@ func TestCodexCompactTooLargeAsksSmaller(t *testing.T) {
+ 	}
+ }
+ 
++// A summary request refused for carrying more images than the vendor
++// takes in one — Copilot's 400 "Exceeded maximum number of images (50)
++// allowed in the request" (#5815) — went back to Codex as that failure:
++// the count is a budget of its own, matched by neither the 413 nor the
++// model's window's words, and Codex's remote compaction asks nothing
++// smaller on it. magpie asks again with the conversation as text, its
++// images left out, and Codex installs the model's summary.
++func TestCodexCompactImageLimitAsksSmaller(t *testing.T) {
++	for _, proto := range []provider.Protocol{provider.Chat, provider.Responses} {
++		t.Run(string(proto), func(t *testing.T) {
++			up := &capped{proto: proto, most: cappedMost, status: http.StatusBadRequest, ctype: "application/json", body: copilotImageCap}
++			cappedOn(t, up)
++			code, body := codexPost(t, bigCompaction())
++			if code != 200 {
++				t.Fatalf("Codex's compaction failed: %d %s", code, body)
++			}
++			if got := compactedText(t, body); got != "SUMMARY" {
++				t.Fatalf("summary %q", got)
++			}
++			calls := up.calls()
++			if len(calls) < 2 || len(calls[0]) <= cappedMost {
++				t.Fatalf("asked %d times", len(calls))
++			}
++			small := string(calls[len(calls)-1])
++			if len(small) > cappedMost || strings.Contains(small, "iVBORw0KGgo") {
++				t.Fatalf("asked again as large (%d bytes) or with the image", len(small))
++			}
++			for _, want := range []string{"fix the login bug", "now add a test", "I fixed main.go"} {
++				if !strings.Contains(small, want) {
++					t.Errorf("the smaller ask lacks %q", want)
++				}
++			}
++		})
++	}
++}
++
+ // When the conversation as text is refused too, magpie compacts without a
+ // model, so Codex still goes on.
+ func TestCodexCompactTooLargeCompactsLocally(t *testing.T) {
+-- 
+2.50.1 (Apple Git-155)
+

@@ -1,0 +1,94 @@
+From fbf99f7c8581169378fb13685562e166acb03b60 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Sat, 17 Oct 2026 20:21:53 +0800
+Subject: [PATCH 1/2] library: a double-quoted Windows path may end in a
+ backslash (#2685)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+What changed
+- words() let a backslash escape the closing double quote, so a path
+  typed "C:\Program Files\" — the trailing separator a folder leaves —
+  kept the quote open and the rest of the line folded into one word:
+  the review of 4e4191e1 asked for a decision and a test. Inside quotes
+  a backslash is now a byte, the way cmd and PowerShell take it, and
+  only a quote closes a quote; nothing this field carries needs a
+  literal " inside a double-quoted word. Outside quotes nothing moves:
+  my\ server is still one word with a space.
+
+Run
+- the new cases in library-mcp-windows-command.test.cjs — a double-
+  quoted path ending in a backslash, saved, then the server reopened
+  and saved again — red on 4e4191e1 under chromium, en and zh (the
+  quote never closed: command "C:\Program Files\" -y pkg saved as one
+  word), green after on chromium and webkit, en and zh, as are
+  library-mcp-copy-config and library-servers-bulk, and
+  mcp-editor-cancel alone (its busy-machine reds of the 4e4191e1 round
+  didn't come back).
+- the red on 4e4191e1 is the ablation too: branch client.js, new test
+  kept.
+- node --check client.js clean.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gui/assets/plugins/library/client.js       | 11 +++++++----
+ .../gui/tests/library-mcp-windows-command.test.cjs  | 13 +++++++++++++
+ 2 files changed, 20 insertions(+), 4 deletions(-)
+
+diff --git a/internal/gui/assets/plugins/library/client.js b/internal/gui/assets/plugins/library/client.js
+index 35040e0e..9cd1efc1 100644
+--- a/internal/gui/assets/plugins/library/client.js
++++ b/internal/gui/assets/plugins/library/client.js
+@@ -1911,9 +1911,13 @@ magpie.plugin("library", (ctx) => {
+   }
+ 
+   // A command line split the way a shell would, quotes and all. The line
+-  // becomes argv for exec, not a shell's words (#2685): a backslash takes
+-  // only the next blank or quote with it, so a Windows path — C:\Users\me,
+-  // "C:\Program Files\me", \\srv\share — keeps its separators.
++  // becomes argv for exec, not a shell's words (#2685): outside quotes a
++  // backslash takes only the next blank or quote with it, so a Windows
++  // path — C:\Users\me, "C:\Program Files\me", \\srv\share — keeps its
++  // separators. Inside quotes a backslash is a byte, as cmd and PowerShell
++  // take it: a double-quoted path may end in one and the quote still
++  // closes ("C:\Program Files\"); nothing this field carries needs a
++  // literal " inside a double-quoted word.
+   function words(s) {
+     const out = [];
+     let cur = "", q = "", any = false;
+@@ -1921,7 +1925,6 @@ magpie.plugin("library", (ctx) => {
+       const c = s[i];
+       if (q) {
+         if (c === q) q = "";
+-        else if (c === "\\" && q === '"' && i + 1 < s.length && s[i + 1] === '"') cur += s[++i];
+         else cur += c;
+       } else if (c === "'" || c === '"') { q = c; any = true; }
+       else if (c === "\\" && i + 1 < s.length && /[\s'"]/.test(s[i + 1])) { cur += s[++i]; any = true; }
+diff --git a/internal/gui/tests/library-mcp-windows-command.test.cjs b/internal/gui/tests/library-mcp-windows-command.test.cjs
+index 0c127fa8..91fd4b42 100644
+--- a/internal/gui/tests/library-mcp-windows-command.test.cjs
++++ b/internal/gui/tests/library-mcp-windows-command.test.cjs
+@@ -106,6 +106,19 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
+         await save();
+         assert.deepEqual(saves.pop(), { command: "C:\\Program Files\\nodejs\\npx.cmd", args: ["-y", "pkg"] }, "a double-quoted path");
+ 
++        // one that ends in a backslash, the way a folder separator leaves
++        // it: the quote still closes (`\` takes nothing with it in there),
++        // and the saved path survives its own editor
++        await row.locator(".name").click();
++        await ed.waitFor();
++        await line.fill('"C:\\Program Files\\" -y pkg');
++        await save();
++        assert.deepEqual(saves.pop(), { command: "C:\\Program Files\\", args: ["-y", "pkg"] }, "a double-quoted path ending in a backslash");
++        await row.locator(".name").click();
++        await ed.waitFor();
++        await save();
++        assert.deepEqual(saves.pop(), { command: "C:\\Program Files\\", args: ["-y", "pkg"] }, "a trailing separator survives its own editor");
++
+         // a UNC path keeps its leading double separator
+         await row.locator(".name").click();
+         await ed.waitFor();
+-- 
+2.50.1 (Apple Git-155)
+

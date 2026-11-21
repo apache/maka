@@ -1,0 +1,127 @@
+{
+  "items": [
+    {
+      "id": 1,
+      "category": "archive",
+      "component": "SnapshotFinal",
+      "description": "五源仓 verbatim 快照入 archive/snapshot-final/（含 .git，排除 node_modules/dist/.next），diffmap 以工作区现状为准",
+      "priority": "P0",
+      "steps": [
+        "mkdir -p archive/snapshot-final",
+        "rsync 五仓整目录（linkpull/prismctl/cbmini/interview-gym/diffmap）",
+        "核对五份快照目录完整（.git 在位、文件数对账）"
+      ],
+      "passes": true
+    },
+    {
+      "id": 2,
+      "category": "packages",
+      "component": "Cbmini",
+      "description": "cbmini 并入 packages/cbmini（verbatim：src+tests+scripts，零依赖纯 TS，补最小 tsconfig 接入 pnpm typecheck）",
+      "priority": "P0",
+      "steps": [
+        "迁 src/ tests/ build.sh check.sh，package.json 改 @ggbdpq/cbmini private",
+        "补最小 tsconfig 对齐 workspace（Node type-stripping 与 tsc 双轨并存）",
+        "Mac 侧 tsc 类型检查通过；check.sh WSL 回归标记为未验证项",
+        "pnpm typecheck 全绿后提交 Git"
+      ],
+      "passes": true
+    },
+    {
+      "id": 3,
+      "category": "packages+cli",
+      "component": "Prismctl",
+      "description": "prismctl 并入：引擎→packages/prism-core（endpoints/http/browser-context/smoke + vitest），CLI→apps/cli prism 子命令；bun test→vitest，去 Vite/Bun",
+      "priority": "P0",
+      "steps": [
+        "建 packages/prism-core：迁引擎源码与测试，bun:test 改 vitest",
+        "apps/cli 加 prism 命令组（list-endpoints/create-project/conversation-history 等）",
+        "核查 src 是否依赖 bun:api，有则改 Node 等价物",
+        "pnpm typecheck + 相关测试绿后提交 Git"
+      ],
+      "passes": true
+    },
+    {
+      "id": 4,
+      "category": "agent+cli",
+      "component": "Diffmap",
+      "description": "diffmap 并入：core→packages/diffmap-core（numstat/tree/extract/diffparse），web→apps/agent features/diffmap + app/api/diffmap 路由，CLI 语义保留为 apps/cli diffmap scan；server.ts 由 Next route handler 取代（单进程）",
+      "priority": "P0",
+      "steps": [
+        "建 packages/diffmap-core：迁 core 与测试（含工作区未跟踪 cli.test.ts 的语义）",
+        "features/diffmap：web 单页 App 移植（无路由，CSS 作用域化）",
+        "app/api/diffmap 路由承接 server.ts 端点（API 唯一入口）",
+        "apps/cli 加 diffmap scan 子命令（含 --base 校验，工作区脏改动一并带走）",
+        "不迁双锁文件；pnpm typecheck + 测试绿后提交 Git"
+      ],
+      "passes": true
+    },
+    {
+      "id": 5,
+      "category": "agent",
+      "component": "InterviewGym",
+      "description": "interview-gym 并入 apps/agent：features/interview-gym + app/interview-gym/** 路由；17 条 React Router 路由→App Router；proxy.mjs→route handler；sync-content 管线重定向",
+      "priority": "P0",
+      "steps": [
+        "features/interview-gym：组件/状态/库层 verbatim 移植，入口 dynamic(ssr:false) 适配层",
+        "App Router 路由：17 条 route 逐条落 page.tsx，Link/useNavigate→next 等价",
+        "CSS/Tailwind 主题作用域化（course 先例），check-style 豁免前缀登记",
+        "sync-content.mjs 重定位：默认路径从 console 根解析，保留 INTERVIEW_DOCS_DIR 覆盖，实跑一遍管线",
+        "proxy.mjs 改 Next route handler 代理（单进程宪法）",
+        "新依赖（react-markdown 等）并入 apps/agent package.json",
+        "pnpm typecheck + 测试 + dev 冒烟 /interview-gym 绿后提交 Git"
+      ],
+      "passes": true
+    },
+    {
+      "id": 6,
+      "category": "docs",
+      "component": "Wave6Ledger",
+      "description": "收尾文档：AGENTS.md 第六期对照表（含 linkpull 快照记录）+ README 模块清单 + 宪法 PNPM 11→12.6.0 漂移修正 + check-style.mjs 豁免前缀",
+      "priority": "P1",
+      "steps": [
+        "AGENTS.md 增「迁移来源对照（六期）」+ 补充约定",
+        "README 模块清单更新",
+        ".ggbdpq/progress.txt 留痕",
+        "scripts/check-style.mjs 豁免前缀补 apps/agent 的 interview-gym 与 diffmap",
+        "提交 Git"
+      ],
+      "passes": true
+    },
+    {
+      "id": 7,
+      "category": "verify",
+      "component": "FullGate",
+      "description": "全量验收：pnpm install（lock 重算）→ typecheck/test/style:check 全绿 → dev 冒烟 /interview-gym 与 /diffmap → apps/cli 两个新子命令各跑一次",
+      "priority": "P0",
+      "steps": [
+        "pnpm install && pnpm typecheck && pnpm test && pnpm style:check",
+        "dev 起 65504 冒烟两个新路由",
+        "apps/cli prism 与 diffmap scan 各执行一次",
+        "未验证项明示：cbmini check.sh 的 WSL 回归"
+      ],
+      "passes": true
+    },
+    {
+      "id": 8,
+      "category": "cleanup",
+      "component": "SourceRepos",
+      "description": "源仓收敛（验收全绿后，用户已授权）：push origin main → gh repo delete 删 5 远端仓（scope 不足则出清单）→ 删本地 5 源目录（删前列清单确认）",
+      "priority": "P1",
+      "steps": [
+        "git push origin main",
+        "列删除清单 → gh repo delete ×5（cbmini/interview-gym/diffmap/E-cc-ggbdpq-agents-prismctl/E-cc-ggbdpq-tools-workflow-linkpull）",
+        "删本地 ~/cc/ggbdpq 下 5 个源目录与空父目录",
+        ".ggbdpq/progress.txt 补收敛留痕"
+      ],
+      "passes": true
+    }
+  ],
+  "statistics": {
+    "total": 8,
+    "passing": 8,
+    "failing": 0,
+    "completion": "100%",
+    "blocked_reason": ""
+  }
+}

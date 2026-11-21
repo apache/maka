@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="30px" height="30px" viewBox="0 0 30 30" version="1.1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+    <title>set-icon/re/1</title>
+    <defs>
+        <linearGradient x1="32.2433852%" y1="50%" x2="73.3326996%" y2="80.1637991%" id="linearGradient-1">
+            <stop stop-color="#FFFFFF" offset="0%"></stop>
+            <stop stop-color="#C9C9C9" offset="100%"></stop>
+        </linearGradient>
+        <polygon id="path-2" points="6.96786609 9.56101908 12.470926 15.470926 12.470926 9.56101908"></polygon>
+        <filter x="-218.1%" y="-152.3%" width="536.1%" height="506.1%" filterUnits="objectBoundingBox" id="filter-3">
+            <feOffset dx="0" dy="3" in="SourceAlpha" result="shadowOffsetOuter1"></feOffset>
+            <feGaussianBlur stdDeviation="3.5" in="shadowOffsetOuter1" result="shadowBlurOuter1"></feGaussianBlur>
+            <feColorMatrix values="0 0 0 0 0   0 0 0 0 0   0 0 0 0 0  0 0 0 0.6 0" type="matrix" in="shadowBlurOuter1"></feColorMatrix>
+        </filter>
+    </defs>
+    <g id="set-icon/re/1" stroke="none" stroke-width="1" fill="none" fill-rule="evenodd">
+        <g id="编组" transform="translate(8.000000, 8.000000)">
+            <path d="M6.96786609,0 C8.86155911,0 10.6326337,0.801808038 11.9296181,2.19004818 C13.1371144,3.48250373 13.8531886,5.19665323 13.9290255,7.02993472 L13.9357322,7.35463006 L10.9938801,7.35463006 C10.9938801,6.14607834 10.5498821,5.0224903 9.77996123,4.19839788 C9.02849936,3.39406325 8.02963211,2.94185202 6.96786609,2.94185202 C4.76755351,2.94185202 2.94185202,4.89600963 2.94185202,7.35463006 C2.94185202,8.56318178 3.38585005,9.68676982 4.15577094,10.5108622 C4.90723281,11.3151969 5.90610006,11.7674081 6.96786609,11.7674081 C7.95379168,11.7674081 8.88548313,11.3774913 9.61521411,10.6777935 L9.77996123,10.5108622 L11.9296181,12.5192119 C10.6326337,13.9074521 8.86155911,14.7092601 6.96786609,14.7092601 C5.07417307,14.7092601 3.30309852,13.9074521 2.00611403,12.5192119 C0.727588563,11.1507296 0,9.30948309 0,7.35463006 C0,3.31429046 3.09642631,0 6.96786609,0 Z" id="路径" fill="url(#linearGradient-1)" fill-rule="nonzero"></path>
+            <g id="路径-6">
+                <use fill="black" fill-opacity="1" filter="url(#filter-3)" xlink:href="#path-2"></use>
+                <use fill="#FFFFFF" fill-rule="evenodd" xlink:href="#path-2"></use>
+            </g>
+        </g>
+    </g>
+</svg>

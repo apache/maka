@@ -1,0 +1,5 @@
+--- FAIL: TestImportAlma (0.42s)
+    importapps_test.go:192: g5: skip = "", want "its base URL isn't valid"
+FAIL
+FAIL	github.com/yetone/magpie/internal/provider	1.155s
+FAIL

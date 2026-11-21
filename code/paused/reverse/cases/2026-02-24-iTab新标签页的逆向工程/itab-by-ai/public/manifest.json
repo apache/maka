@@ -1,0 +1,62 @@
+{
+  "manifest_version": 3,
+  "name": "__MSG_appName__",
+  "description": "__MSG_appDesc__",
+  "version": "1.0.0",
+  "default_locale": "zh_CN",
+
+  "icons": {
+    "16": "icon/icon_16.png",
+    "32": "icon/icon_32.png",
+    "48": "icon/icon_48.png",
+    "64": "icon/icon_64.png",
+    "128": "icon/icon_128.png"
+  },
+
+  "action": {
+    "default_icon": {
+      "32": "icon/icon_32.png",
+      "48": "icon/icon_48.png"
+    },
+    "default_popup": "popup.html",
+    "default_title": "新标签页"
+  },
+
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+
+  "chrome_url_overrides": {
+    "newtab": "index.html"
+  },
+
+  "permissions": [
+    "bookmarks",
+    "activeTab",
+    "storage"
+  ],
+
+  "optional_permissions": [
+    "favicon",
+    "notifications",
+    "offscreen",
+    "desktopCapture"
+  ],
+
+  "optional_host_permissions": [
+    "https://google.com/",
+    "https://www.baidu.com/"
+  ],
+
+  "externally_connectable": {
+    "matches": ["*://*.codelife.cc/*"]
+  },
+
+  "web_accessible_resources": [
+    {
+      "resources": ["icon/*", "assets/*"],
+      "matches": ["<all_urls>"]
+    }
+  ]
+}

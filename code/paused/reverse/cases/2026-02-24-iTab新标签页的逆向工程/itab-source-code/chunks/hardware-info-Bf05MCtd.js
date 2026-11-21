@@ -1,0 +1,1 @@
+const e=()=>{try{const e=document.createElement("canvas").getContext("webgl"),t=null==e?void 0:e.getExtension("WEBGL_debug_renderer_info"),n=null==e?void 0:e.getParameter(t.UNMASKED_RENDERER_WEBGL);return n.includes("NVIDIA")||n.includes("Apple M")}catch(e){return!1}};export{e as isGoodGpu};

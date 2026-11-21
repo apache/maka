@@ -1,0 +1,253 @@
+From 1f6c5e214d8cfd20a22e6e163ec0892a271fde19 Mon Sep 17 00:00:00 2001
+From: crayon <hicrayon@outlook.com>
+Date: Sat, 31 Oct 2026 01:57:37 +0800
+Subject: [PATCH] gateway: a reply to another agent carries no Codex account
+ events (#4482)
+
+The ChatGPT backend says what it thinks of its own account before the
+reply, in codex.rate_limits (the account's windows) and
+codex.response.metadata (the model list's tag). Only Codex has names for
+those, and it reads its limits from them. A Responses client with a typed
+event enum reads an event it has no name for and gives up on the whole
+turn: Grok Build answered
+"Couldn't read the response: serialization error: unknown variant
+`codex.rate_limits`, expected one of `response.created`, ..." and the
+user saw the turn die with no reply.
+
+passthrough now runs the stream through codexLeadTidy for a Responses
+relay to a client that is neither Codex's User-Agent nor a key owned by
+the codex agent, dropping every frame whose event name or data type is
+in the backend's own codex. namespace. Codex's own request keeps the
+stream as it came. The quota tap (codexLimitsTap) and failover's sniff
+read the upstream bytes before the filter, so limit accounting and
+failover classification still see those events.
+
+Verified with TestCodexLeadEventsStayWithCodex: it fails without the
+filter (a nil leadTidy gives "event codex.rate_limits there=true, want
+false" for a client with no User-Agent and for Grok Build's) and passes
+with it, green under -race -count=20. gofmt -l clean; go vet ./...,
+GOOS=linux go vet -tags nogui ./... and GOOS=windows go vet ./... clean,
+and the matching three builds. internal/gateway as a whole keeps only
+the four reds it had before this change on this macOS machine, already
+filed as #3045, #3680 and #3547, and go test -tags nogui ./... has 79
+packages ok with those and internal/plugin's #2207 (Bun 1.4.4) red.
+---
+ internal/gateway/codex_lead.go      |  58 ++++++++++++++++
+ internal/gateway/codex_lead_test.go | 101 ++++++++++++++++++++++++++++
+ internal/gateway/gateway.go         |  13 ++++
+ 3 files changed, 172 insertions(+)
+ create mode 100644 internal/gateway/codex_lead.go
+ create mode 100644 internal/gateway/codex_lead_test.go
+
+diff --git a/internal/gateway/codex_lead.go b/internal/gateway/codex_lead.go
+new file mode 100644
+index 000000000..d29cb2440
+--- /dev/null
++++ b/internal/gateway/codex_lead.go
+@@ -0,0 +1,58 @@
++package gateway
++
++import (
++	"bytes"
++	"strings"
++
++	"github.com/tidwall/gjson"
++)
++
++// codexLeadTidy keeps what the ChatGPT backend says of its own account out
++// of a reply to a client that isn't Codex. It says it ahead of the reply, in
++// codex.rate_limits (the account's windows) and codex.response.metadata (the
++// model list's tag): names only Codex has, since it reads its limits from
++// there. A Responses client with a typed event enum reads an event it has no
++// name for and gives up on the whole turn, so a foreign client gets the reply
++// without them. Codex's own request still gets every event as it came.
++type codexLeadTidy struct {
++	buf []byte
++}
++
++func (t *codexLeadTidy) write(b []byte) []byte {
++	t.buf = append(t.buf, b...)
++	out, rest := tidyEvents(t.buf, t.event)
++	t.buf = rest
++	return out
++}
++
++func (t *codexLeadTidy) flush() []byte {
++	b := t.buf
++	t.buf = nil
++	return b
++}
++
++// event is one whole SSE event, dropped when it is Codex's own.
++func (t *codexLeadTidy) event(ev []byte) []byte {
++	if codexOwnEvent(ev) {
++		return nil
++	}
++	return ev
++}
++
++// codexOwnEvent says an event is one of Codex's own, by its SSE name or,
++// where the stream names none, by the type its data carries. A name it has
++// no prefix for goes through: only codex. is the backend's own namespace.
++func codexOwnEvent(ev []byte) bool {
++	for _, line := range bytes.Split(ev, []byte("\n")) {
++		name, ok := bytes.CutPrefix(bytes.TrimRight(line, "\r"), []byte("event:"))
++		if !ok {
++			continue
++		}
++		return strings.HasPrefix(strings.TrimSpace(string(name)), "codex.")
++	}
++	data := eventData(ev)
++	if len(data) == 0 {
++		return false
++	}
++	return strings.HasPrefix(gjson.GetBytes(data, "type").String(), "codex.")
++}
+diff --git a/internal/gateway/codex_lead_test.go b/internal/gateway/codex_lead_test.go
+new file mode 100644
+index 000000000..9de48480b
+--- /dev/null
++++ b/internal/gateway/codex_lead_test.go
+@@ -0,0 +1,101 @@
++package gateway
++
++import (
++	"encoding/base64"
++	"encoding/json"
++	"fmt"
++	"net/http"
++	"net/http/httptest"
++	"os"
++	"path/filepath"
++	"strings"
++	"testing"
++	"time"
++
++	"github.com/yetone/magpie/internal/provider"
++)
++
++// backendLeads is a turn as the ChatGPT backend answers it: it says what it
++// knows of the account first, in the two events only Codex has a name for
++// (codex.rate_limits with its windows, codex.response.metadata with the
++// model list's tag), then the reply itself.
++var backendLeads = sse(
++	`event: codex.rate_limits`+"\n"+`data: {"type":"codex.rate_limits","plan_type":"plus","rate_limits":{"allowed":true,"limit_reached":false,"primary":{"used_percent":3,"window_minutes":300,"reset_after_seconds":100}}}`,
++	`event: codex.response.metadata`+"\n"+`data: {"type":"codex.response.metadata","headers":{"x-models-etag":"W\"9e0\""}}`,
++	`event: response.created`+"\n"+`data: {"type":"response.created","response":{"id":"r1","model":"gpt-5.5"}}`,
++	`event: response.output_text.delta`+"\n"+`data: {"type":"response.output_text.delta","delta":"a cat"}`,
++	`event: response.completed`+"\n"+`data: {"type":"response.completed","response":{"id":"r1","status":"completed","usage":{"input_tokens":9,"output_tokens":2}}}`)
++
++// leadSignIn puts one ChatGPT sign-in in a temp home and points the
++// backend at f, as the ChatGPT answers come from there.
++func leadSignIn(t *testing.T, f http.Handler) {
++	t.Helper()
++	home := t.TempDir()
++	t.Setenv("HOME", home)
++	t.Setenv("USERPROFILE", home)
++	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
++	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
++	claims := func(m map[string]any) string {
++		b, _ := json.Marshal(m)
++		return "h." + base64.RawURLEncoding.EncodeToString(b) + ".s"
++	}
++	os.MkdirAll(filepath.Join(home, ".codex"), 0o755)
++	auth := fmt.Sprintf(`{"auth_mode":"chatgpt","tokens":{"id_token":%q,"access_token":%q,"refresh_token":"r","account_id":"acct-1"}}`,
++		claims(map[string]any{"email": "me@example.com"}),
++		claims(map[string]any{"exp": time.Now().Add(time.Hour).Unix()}))
++	if err := os.WriteFile(filepath.Join(home, ".codex", "auth.json"), []byte(auth), 0o600); err != nil {
++		t.Fatal(err)
++	}
++	up := httptest.NewServer(f)
++	t.Cleanup(up.Close)
++	old := provider.CodexBase
++	provider.CodexBase = up.URL + "/backend-api/codex"
++	t.Cleanup(func() { provider.CodexBase = old })
++}
++
++// leadTurn posts a Responses turn with some client's User-Agent.
++func leadTurn(t *testing.T, body, ua string) (int, string) {
++	t.Helper()
++	rec := httptest.NewRecorder()
++	req := httptest.NewRequest("POST", "/v1/responses", strings.NewReader(body))
++	req.Header.Set("Content-Type", "application/json")
++	req.Header.Set("Authorization", "Bearer magpie")
++	if ua != "" {
++		req.Header.Set("User-Agent", ua)
++	}
++	New().Handler().ServeHTTP(rec, req)
++	return rec.Code, rec.Body.String()
++}
++
++// A client that isn't Codex gets a ChatGPT account's reply with the
++// backend's own events gone: Grok Build reads the stream through a typed
++// event enum, and an event type it has no name for ends the turn with
++// "unknown variant codex.rate_limits" before any of the reply is seen.
++// Codex's own request still gets them, which is where it reads its windows.
++func TestCodexLeadEventsStayWithCodex(t *testing.T) {
++	const body = `{"model":"codex/gpt-5.5","stream":true,"input":"what is this?"}`
++	for _, who := range []struct {
++		ua   string
++		want bool // the account's events are for this client
++		says string
++	}{
++		{"", false, "a client with no User-Agent"},
++		{"xai-grok-shell/1.0.45", false, "Grok Build"},
++		{"codex_cli_rs/0.166.0", true, "Codex CLI"},
++	} {
++		f := &fake{t: t, ctype: "none", reply: backendLeads}
++		leadSignIn(t, f)
++		code, got := leadTurn(t, body, who.ua)
++		if code != 200 || !strings.Contains(got, `"delta":"a cat"`) || !strings.Contains(got, "response.completed") {
++			t.Fatalf("%s: %d %s", who.says, code, got)
++		}
++		for _, ev := range []string{"codex.rate_limits", "codex.response.metadata"} {
++			if has := strings.Contains(got, ev); has != who.want {
++				t.Errorf("%s: event %s there=%v, want %v: %s", who.says, ev, has, who.want, got)
++			}
++		}
++		if f.path != "/backend-api/codex/responses" {
++			t.Errorf("%s: asked %s", who.says, f.path)
++		}
++	}
++}
+diff --git a/internal/gateway/gateway.go b/internal/gateway/gateway.go
+index aa69ac1a2..448c65cbb 100644
+--- a/internal/gateway/gateway.go
++++ b/internal/gateway/gateway.go
+@@ -5435,6 +5435,13 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
+ 	if proto == provider.Anthropic {
+ 		thinkSigs = &sigFieldTidy{sse: sse}
+ 	}
++	// what the ChatGPT backend tells Codex of the account, in events only
++	// Codex has a name for (codex_lead.go); any other client gets the reply
++	// without them
++	var leadTidy *codexLeadTidy
++	if proto == provider.Responses && sse && !fromCodex(r.Header) && agentOf(r) != "codex" {
++		leadTidy = &codexLeadTidy{}
++	}
+ 	// out is what a filter let through, through ids, phases and thinkSigs
+ 	out := func(b []byte) []byte {
+ 		if ids != nil {
+@@ -5509,6 +5516,9 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
+ 			if thinkSigs != nil {
+ 				out = thinkSigs.write(out)
+ 			}
++			if leadTidy != nil {
++				out = leadTidy.write(out)
++			}
+ 			if _, werr := write(out); werr != nil {
+ 				return res.StatusCode, "", true
+ 			}
+@@ -5591,6 +5601,9 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
+ 	if thinkSigs != nil {
+ 		write(thinkSigs.flush())
+ 	}
++	if leadTidy != nil {
++		write(leadTidy.flush())
++	}
+ 	if sse {
+ 		sniff.drain()
+ 	} else {
+-- 
+2.50.1 (Apple Git-155)
+

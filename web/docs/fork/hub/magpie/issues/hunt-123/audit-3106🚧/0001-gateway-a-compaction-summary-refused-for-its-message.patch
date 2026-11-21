@@ -1,0 +1,164 @@
+From cbf216af738ef5f275bb9298e301705401026509 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Thu, 5 Nov 2026 01:57:38 +0800
+Subject: [PATCH] gateway: a compaction summary refused for its messages' shape
+ is asked again as text (#3106)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+A reply a network drop interrupted left an assistant message with
+neither content nor tool_calls in the conversation. Ordinary turns
+survive it — withoutSilentAssistants leaves the turn out of what a Chat
+upstream is sent (#2599) — but Codex's compaction is the one request
+that carries the whole conversation, so the one that still holds the
+turn: a relay turned its summary request away for it, "AUBO: Invalid
+assistant message: content or tool_calls must be set", on every model
+of that upstream, while a laxer one answered the very same request. The
+refusal was none of the asks-again-as-text cases, so codexCompact
+handed the 400 back to Codex as it came, the compaction aborted, and
+the turn reconnected.
+
+refusesMessages is a 400 whose words are about the messages themselves
+— the reported one, or the tool exchange a strict chat template refuses
+— and it goes with the other conditions on the plain-text ask, which
+has no assistant turns to refuse; when that fails too the summary is
+magpie's own, as with the other refusals.
+
+Fixes #3106
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gateway/codex_backend.go          | 25 +++++++-
+ internal/gateway/codex_compact_404_test.go | 67 ++++++++++++++++++++++
+ 2 files changed, 91 insertions(+), 1 deletion(-)
+
+diff --git a/internal/gateway/codex_backend.go b/internal/gateway/codex_backend.go
+index 7d1322dad..825861609 100644
+--- a/internal/gateway/codex_backend.go
++++ b/internal/gateway/codex_backend.go
+@@ -3557,7 +3557,7 @@ func (s *Server) codexCompact(w http.ResponseWriter, r *http.Request, body []byt
+ 		local = lateSummary()
+ 		rec, res, err = &recorder{header: http.Header{}, status: 200}, compactResult{}, nil
+ 	} else if first := rec.status; lacksEndpoint(first) || itemNotFound(rec) || upstreamFailed(rec) || protectionRefused(first, rec.body.Bytes()) ||
+-		summaryTooLarge(rec) || err != nil && protectionWords.MatchString(err.Error()) {
++		summaryTooLarge(rec) || refusesMessages(rec) || err != nil && protectionWords.MatchString(err.Error()) {
+ 		who, msg := compactFailure(body, rec)
+ 		if err != nil {
+ 			msg = "broken off: " + err.Error()
+@@ -3777,6 +3777,29 @@ func upstreamFailed(rec *recorder) bool {
+ 
+ var upstreamFailedWords = regexp.MustCompile(`(?i)upstream request failed`)
+ 
++// refusesMessages is a 400 turning the summary request's messages
++// themselves away — "AUBO: Invalid assistant message: content or
++// tool_calls must be set" (#3106, LionGaokk), or the tool exchange a
++// strict chat template refuses, "an assistant message with 'tool_calls'
++// must be followed by tool messages responding to each 'tool_call_id'":
++// the shape of the messages, not the model or the ask, so it failed on
++// every model of that upstream while a laxer one answered the very same
++// request. The turn a client's interrupted reply left in the conversation
++// stays out of what a Chat upstream is sent on ordinary turns
++// (withoutSilentAssistants, #2599); compaction is the one request that
++// carries the whole conversation, so the one that still holds it. The
++// summary asked as text (plainCompact) has no assistant turns to refuse,
++// so the recovery that saves the other refusals saves this one too.
++func refusesMessages(rec *recorder) bool {
++	return rec.status == http.StatusBadRequest && messagesRefusedWords.Match(rec.body.Bytes())
++}
++
++var messagesRefusedWords = regexp.MustCompile(`(?i)` +
++	`invalid assistant message` +
++	`|content or tool_calls must be set` +
++	`|must be a response to a preceding message with 'tool_calls'` +
++	`|must be followed by tool messages responding to each 'tool_call_id'`)
++
+ // summaryTooLarge is a summary request refused for its size: past the
+ // vendor's byte cap (413; DeepSeek's "Failed to buffer the request body:
+ // length limit exceeded", celestial_eagle_99230 on Discord) or past the
+diff --git a/internal/gateway/codex_compact_404_test.go b/internal/gateway/codex_compact_404_test.go
+index 0406a2782..b1e38b098 100644
+--- a/internal/gateway/codex_compact_404_test.go
++++ b/internal/gateway/codex_compact_404_test.go
+@@ -1,7 +1,9 @@
+ package gateway
+ 
+ import (
++	"bytes"
+ 	"encoding/base64"
++	"net/http"
+ 	"strings"
+ 	"testing"
+ 
+@@ -155,3 +157,68 @@ func TestCodexCompactUpstreamFailedAccountStays(t *testing.T) {
+ 		}
+ 	}
+ }
++
++// #3106 (LionGaokk): the turn a network drop interrupted left an assistant
++// message with neither content nor tool_calls in the conversation. Every
++// ordinary turn is answered — #2599's silentAssistant leaves the turn out
++// of what a Chat upstream is sent — but compaction is the one request that
++// carries the whole conversation, so the one that still holds the turn,
++// and the relay turned its summary request away for it, "AUBO: Invalid
++// assistant message: content or tool_calls must be set", on every model of
++// that upstream, while a laxer one answered the very same request. That
++// refusal is none of the asks-again-as-text cases, so codexCompact handed
++// the 400 back to Codex as it came and the compaction aborted,
++// reconnecting. Asked as text, the conversation has no assistant turns to
++// refuse.
++const compact3106Refusal = `{"error":{"message":"AUBO: Invalid assistant message: content or tool_calls must be set","type":"invalid_request_error"}}`
++
++func TestCodexCompactMessagesRefusedAsksAgainAsText(t *testing.T) {
++	f := &fake{t: t, reply: wholeSummary(provider.Chat)}
++	f.refuse = func(body []byte) (int, string) {
++		if strings.Contains(string(body), "This is the conversation so far") {
++			return 0, ""
++		}
++		return 400, compact3106Refusal
++	}
++	setup(t, provider.Chat, f)
++	code, body := codexPost(t, compact404Request)
++	if code != 200 {
++		t.Fatalf("%d %s", code, body)
++	}
++	if got := compactedText(t, body); got != "SUMMARY" {
++		t.Errorf("summary %q", got)
++	}
++	if f.calls != 2 || strings.Contains(string(f.got), `"role":"assistant"`) {
++		t.Errorf("asked %d times, the last with assistant turns in it: %s", f.calls, f.got)
++	}
++}
++
++// A refusal of the messages' shape is the messages, not the ask: only a
++// 400 saying so asks again as text. A 500 saying it is the upstream's
++// failure and a 400 saying anything else is another refusal — either goes
++// back to Codex as it came, the next candidate asked.
++func TestMessagesRefusedOnlyMatchesBadRequestShapeErrors(t *testing.T) {
++	for _, tc := range []struct {
++		name   string
++		status int
++		body   string
++		want   bool
++	}{
++		{"the reported error", http.StatusBadRequest, compact3106Refusal, true},
++		{"bare words", http.StatusBadRequest, `{"error":{"message":"Invalid assistant message"}}`, true},
++		{"tool order", http.StatusBadRequest, `{"error":{"message":"Invalid request: an assistant message with 'tool_calls' must be followed by tool messages responding to each 'tool_call_id'"}}`, true},
++		{"tool answer first", http.StatusBadRequest, `{"error":{"message":"messages with role 'tool' must be a response to a preceding message with 'tool_calls'"}}`, true},
++		{"another 400", http.StatusBadRequest, relayApex400, false},
++		{"nothing said", http.StatusBadRequest, ``, false},
++		{"at 500", http.StatusInternalServerError, compact3106Refusal, false},
++		{"at 401", http.StatusUnauthorized, compact3106Refusal, false},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			rec := &recorder{status: tc.status}
++			rec.body = *bytes.NewBufferString(tc.body)
++			if got := refusesMessages(rec); got != tc.want {
++				t.Errorf("refusesMessages(%d, %q) = %v", tc.status, tc.body, got)
++			}
++		})
++	}
++}
+-- 
+2.50.1 (Apple Git-155)
+

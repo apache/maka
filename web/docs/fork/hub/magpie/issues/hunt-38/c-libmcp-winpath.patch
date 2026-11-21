@@ -1,0 +1,204 @@
+From 4e4191e167e4a577f041eb2a0ffed3173e53972e Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Sat, 17 Oct 2026 17:10:19 +0800
+Subject: [PATCH] library: a Windows path typed into the MCP command field
+ saves whole (#2685)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+What changed
+- words() in the Library plugin's client.js took every backslash as an
+  escape, so a command typed as an absolute Windows path — the reporter's
+  C:\Users\...\npx.cmd -y chrome-devtools-mcp@latest — saved as
+  C:Users...npx.cmd and the server never started. A double-quoted path
+  ("C:\Program Files\...") lost its separators the same way, and a UNC
+  path lost its leading \\. The line is split into argv for exec, not a
+  shell's words: a backslash now takes only the next blank or quote with
+  it, in and out of quotes. my\ server still means one word with a
+  space, and a saved path still survives its own editor through quote().
+
+Run
+- new internal/gui/tests/library-mcp-windows-command.test.cjs (Playwright,
+  real page, faked API): the reporter's line byte for byte, a saved path
+  reopened and saved again, a double-quoted path with a blank, a UNC
+  path, a POSIX-escaped blank. On cb05dc2d before the fix both engines
+  saved C:UsersxxxAppDataRoamingfnmaliasesdefaultnpx.cmd (red, en and
+  zh); after, chromium and webkit are green, as are the sibling
+  library-mcp-copy-config and library-servers-bulk on both engines.
+- ablation: with client.js restored to cb05dc2d and the test kept, both
+  engines go red again; with the fix back, green.
+- node --check client.js clean. No Go files touched.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gui/assets/plugins/library/client.js |   9 +-
+ .../library-mcp-windows-command.test.cjs      | 127 ++++++++++++++++++
+ 2 files changed, 133 insertions(+), 3 deletions(-)
+ create mode 100644 internal/gui/tests/library-mcp-windows-command.test.cjs
+
+diff --git a/internal/gui/assets/plugins/library/client.js b/internal/gui/assets/plugins/library/client.js
+index 5e778f3a..35040e0e 100644
+--- a/internal/gui/assets/plugins/library/client.js
++++ b/internal/gui/assets/plugins/library/client.js
+@@ -1910,7 +1910,10 @@ magpie.plugin("library", (ctx) => {
+     openLib(ed);
+   }
+ 
+-  // A command line split the way a shell would, quotes and all.
++  // A command line split the way a shell would, quotes and all. The line
++  // becomes argv for exec, not a shell's words (#2685): a backslash takes
++  // only the next blank or quote with it, so a Windows path — C:\Users\me,
++  // "C:\Program Files\me", \\srv\share — keeps its separators.
+   function words(s) {
+     const out = [];
+     let cur = "", q = "", any = false;
+@@ -1918,10 +1921,10 @@ magpie.plugin("library", (ctx) => {
+       const c = s[i];
+       if (q) {
+         if (c === q) q = "";
+-        else if (c === "\\" && q === '"' && i + 1 < s.length) cur += s[++i];
++        else if (c === "\\" && q === '"' && i + 1 < s.length && s[i + 1] === '"') cur += s[++i];
+         else cur += c;
+       } else if (c === "'" || c === '"') { q = c; any = true; }
+-      else if (c === "\\" && i + 1 < s.length) { cur += s[++i]; any = true; }
++      else if (c === "\\" && i + 1 < s.length && /[\s'"]/.test(s[i + 1])) { cur += s[++i]; any = true; }
+       else if (/\s/.test(c)) { if (cur || any) out.push(cur); cur = ""; any = false; }
+       else cur += c;
+     }
+diff --git a/internal/gui/tests/library-mcp-windows-command.test.cjs b/internal/gui/tests/library-mcp-windows-command.test.cjs
+new file mode 100644
+index 00000000..0c127fa8
+--- /dev/null
++++ b/internal/gui/tests/library-mcp-windows-command.test.cjs
+@@ -0,0 +1,127 @@
++// Run with Node's test runner and Playwright on the module path; see README.md.
++// #2685 (ufec): on Windows, a command typed into the Library's MCP editor as
++// an absolute path — `C:\Users\me\...\npx.cmd -y pkg` — saved as
++// `C:Usersme...npx.cmd`: words() took every `\` as an escape, and a `\` in a
++// Windows path is a separator, so both the colon and the separators vanished
++// and the server never started ("cannot find npx"). A double-quoted path lost
++// its separators the same way ("C:\Program Files\..."); only a single-quoted
++// one survived, and a UNC path (\\srv\share) lost its leading `\\`. The line
++// is split for argv, not for a shell: a backslash now takes only the next
++// blank or quote with it, so a path keeps its separators while `my\ server`
++// still means one word with a space. Saved through the real page, API faked
++// here, in en and zh on Chromium.
++const assert = require("node:assert/strict");
++const fs = require("node:fs/promises");
++const path = require("node:path");
++const { test } = require("node:test");
++const { chromium, webkit } = require("playwright");
++const { strings } = require("./strings.cjs");
++
++const assets = path.resolve(__dirname, "../assets");
++const HOME = "/Users/xv";
++const agent = (id, name) => ({ id, name, icon: "", skills: `${HOME}/.${id}/skills`, mcp: `${HOME}/.${id}/mcp.json` });
++
++function server(lang, saves) {
++  const lib = {
++    dir: `${HOME}/.magpie/library`, backups: `${HOME}/.magpie/backups`, home: HOME,
++    agents: [agent("claude", "Claude Code")],
++    instructions: { agents: [], sets: [] }, foundServers: [], projects: [], foundSkills: [], skills: [],
++    servers: [{ name: "local", transport: "stdio", command: "npx", args: ["-y", "pkg"], agents: ["claude"] }],
++  };
++  return async (route) => {
++    const req = route.request(), url = new URL(req.url());
++    if (url.pathname === "/boot.js") return route.fulfill({ contentType: "text/javascript", body: `window.bootPrefs = {lang:"${lang}",theme:"light",web:true};` });
++    if (url.pathname === "/wails/runtime.js") return route.fulfill({ contentType: "text/javascript", body: "export const Window = {};" });
++    if (url.pathname === "/api/state") return route.fulfill({ json: { agents: [], profiles: [], settings: { lang, theme: "light" } } });
++    if (url.pathname === "/api/plugins") return route.fulfill({ json: { plugins: [] } });
++    if (url.pathname === "/api/library") return route.fulfill({ json: lib });
++    if (url.pathname === "/api/library/mcp/check") return route.fulfill({ json: { servers: {} } });
++    if (url.pathname === "/api/library/servers/save") {
++      const { server: s } = req.postDataJSON();
++      saves.push({ command: s.command, args: s.args });
++      const i = lib.servers.findIndex((x) => x.name === s.name);
++      lib.servers[i] = { ...lib.servers[i], ...s };
++      return route.fulfill({ json: { ...lib, result: { changed: ["claude"] } } });
++    }
++    if (url.pathname === "/api/usage/quotas") return route.fulfill({ json: [] });
++    if (url.pathname === "/api/groups") return route.fulfill({ json: { groups: [] } });
++    if (url.pathname === "/api/providers") return route.fulfill({ json: { providers: [], gateway: { running: true } } });
++    if (url.pathname.startsWith("/api/")) return route.fulfill({ json: {} });
++    const file = path.join(assets, url.pathname === "/" ? "index.html" : url.pathname);
++    const contentType = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png" }[path.extname(file)];
++    try { await route.fulfill({ body: await fs.readFile(file), contentType }); } catch { await route.fulfill({ status: 404, body: "" }); }
++  };
++}
++
++for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium", "webkit"])) {
++  test(engine + ": a Windows path typed in the MCP command field saves whole", async (t) => {
++    assert(["chromium", "webkit"].includes(engine), "BROWSER must be chromium or webkit");
++    const browser = await (engine === "webkit" ? webkit.launch() : chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL || "chromium" }));
++    const errors = [];
++    t.after(async () => {
++      if (errors.length) console.log(errors);
++      await browser.close();
++    });
++    for (const lang of ["en", "zh"]) {
++      await t.test(lang, async () => {
++        const { I18N } = strings();
++        const w = (s) => (lang === "en" ? s : I18N[lang][s]) || s;
++        const saves = [];
++        const ctx = await browser.newContext({ viewport: { width: 1100, height: 800 } });
++        await ctx.addInitScript(() => { try { localStorage.setItem("magpie.libTab", "mcp"); } catch {} });
++        const page = await ctx.newPage();
++        page.setDefaultTimeout(5000);
++        page.on("pageerror", (e) => errors.push(e.message));
++        await page.route("**/*", server(lang, saves));
++        await page.goto("http://magpie.test/");
++        await page.locator('button[data-view="library"]').click();
++        const row = page.locator("#view-library .lib-server", { has: page.locator('.lib-health[data-server="local"]') });
++        const ed = page.locator("#modal .lib-editor");
++        const line = ed.locator("input.mono").first();
++        const save = async () => {
++          await ed.locator("> .bar button.primary", { hasText: new RegExp("^" + w("Save") + "$") }).click();
++          await ed.waitFor({ state: "detached" });
++        };
++        // the reporter's line, byte for byte
++        const typed = "C:\\Users\\xxx\\AppData\\Roaming\\fnm\\aliases\\default\\npx.cmd -y chrome-devtools-mcp@latest";
++        const want = "C:\\Users\\xxx\\AppData\\Roaming\\fnm\\aliases\\default\\npx.cmd";
++
++        await row.locator(".name").click();
++        await ed.waitFor();
++        await line.fill(typed);
++        await save();
++        assert.deepEqual(saves.pop(), { command: want, args: ["-y", "chrome-devtools-mcp@latest"] }, "the reporter's path");
++
++        // reopening shows the saved server; saving it again keeps it whole
++        // (quote()'s single quotes are word-true in words())
++        await row.locator(".name").click();
++        await ed.waitFor();
++        await save();
++        assert.deepEqual(saves.pop(), { command: want, args: ["-y", "chrome-devtools-mcp@latest"] }, "a saved path survives its own editor");
++
++        // a path with a blank, double-quoted, keeps its separators too
++        await row.locator(".name").click();
++        await ed.waitFor();
++        await line.fill('"C:\\Program Files\\nodejs\\npx.cmd" -y pkg');
++        await save();
++        assert.deepEqual(saves.pop(), { command: "C:\\Program Files\\nodejs\\npx.cmd", args: ["-y", "pkg"] }, "a double-quoted path");
++
++        // a UNC path keeps its leading double separator
++        await row.locator(".name").click();
++        await ed.waitFor();
++        await line.fill("\\\\srv\\share\\svc.exe -l 8");
++        await save();
++        assert.deepEqual(saves.pop(), { command: "\\\\srv\\share\\svc.exe", args: ["-l", "8"] }, "a UNC path");
++
++        // a POSIX escape still means a blank inside one word
++        await row.locator(".name").click();
++        await ed.waitFor();
++        await line.fill("my\\ server -y pkg");
++        await save();
++        assert.deepEqual(saves.pop(), { command: "my server", args: ["-y", "pkg"] }, "a POSIX-escaped blank");
++        await ctx.close();
++      });
++    }
++    assert.deepEqual(errors, []);
++  });
++}
+-- 
+2.50.1 (Apple Git-155)
+

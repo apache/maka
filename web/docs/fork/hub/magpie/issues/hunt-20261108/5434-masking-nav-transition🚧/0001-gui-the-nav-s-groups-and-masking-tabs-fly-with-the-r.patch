@@ -1,0 +1,67 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Sun, 8 Nov 2026 14:20:09 +0800
+Subject: [PATCH] gui: the nav's groups and masking tabs fly with the rest as
+ the layouts trade places (#5434)
+
+The morph gives every tab in the nav a view-transition-name of its own
+(app.css .nav-morph), so each flies from its row in the sidebar to its
+place in the header's tabs and back. The groups and masking tabs came
+to the nav after the morph did and were left out of that list: while
+the other tabs flew, they only faded with the whole sidebar (#5434).
+They are in the list now, in the nav's order, and the morph's test
+holds every tab in the nav to a name of its own, so the next tab added
+there can't be left out.
+---
+ internal/gui/assets/app.css             |  2 ++
+ internal/gui/tests/side-toggle.test.cjs | 12 +++++++++++-
+ 2 files changed, 13 insertions(+), 1 deletion(-)
+
+diff --git a/internal/gui/assets/app.css b/internal/gui/assets/app.css
+index 82eb95480..4fef2a1ad 100644
+--- a/internal/gui/assets/app.css
++++ b/internal/gui/assets/app.css
+@@ -551,8 +551,10 @@ body:not(.side-nav) .side-toggle .st-pane { opacity: 0; }
+ .nav-morph #nav button[data-view="library"] { view-transition-name: nav-library; }
+ .nav-morph #nav button[data-view="providers"] { view-transition-name: nav-providers; }
+ .nav-morph #nav button[data-view="routing"] { view-transition-name: nav-routing; }
++.nav-morph #nav button[data-view="groups"] { view-transition-name: nav-groups; }
+ .nav-morph #nav button[data-view="gateway"] { view-transition-name: nav-gateway; }
+ .nav-morph #nav button[data-view="usage"] { view-transition-name: nav-usage; }
++.nav-morph #nav button[data-view="masking"] { view-transition-name: nav-masking; }
+ .nav-morph #nav button[data-view="plugins"] { view-transition-name: nav-plugins; }
+ ::view-transition-group(*) { z-index: 1; animation-duration: var(--morph-t); animation-timing-function: var(--morph-ease); }
+ ::view-transition-old(*), ::view-transition-new(*) { inline-size: auto; block-size: auto; }
+diff --git a/internal/gui/tests/side-toggle.test.cjs b/internal/gui/tests/side-toggle.test.cjs
+index 79b552225..8b8e7c733 100644
+--- a/internal/gui/tests/side-toggle.test.cjs
++++ b/internal/gui/tests/side-toggle.test.cjs
+@@ -202,7 +202,8 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
+       // what plays, read as the button is clicked: the old drawn, the new laid out
+       const playing = () => page.evaluate(() => new Promise((r) => {
+         const at = () => document.getAnimations().map((a) => a.effect?.pseudoElement).filter(Boolean);
+-        requestAnimationFrame(() => requestAnimationFrame(() => r({ anims: at(), morph: document.documentElement.classList.contains("nav-morph") })));
++        const named = () => [...document.querySelectorAll("#nav button[data-view]")].map((b) => [b.dataset.view, getComputedStyle(b).viewTransitionName]);
++        requestAnimationFrame(() => requestAnimationFrame(() => r({ anims: at(), names: named(), morph: document.documentElement.classList.contains("nav-morph") })));
+       }));
+       await page.locator("#sideToggle").click();
+       let p = await playing();
+@@ -210,6 +211,15 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
+       assert.ok(p.anims.includes("::view-transition-old(side)"), `the sidebar slides away: ${p.anims}`);
+       assert.ok(p.anims.includes("::view-transition-group(nav-usage)"), "each tab flies to the header");
+       assert.ok(p.anims.includes("::view-transition-group(page)"), "the page moves over");
++      // every tab in the nav flies with the others, the masking one too
++      // (#5434): the groups and masking tabs came to the nav after the morph
++      // and had no view-transition-name of their own, so while the rest flew
++      // they only faded with the whole sidebar
++      const seen = Object.fromEntries(p.names);
++      const views = await page.evaluate(() => [...document.querySelectorAll("#nav button[data-view]")].map((b) => b.dataset.view));
++      for (const v of views) assert.ok(seen[v] && seen[v] !== "none", `the ${v} tab has a view-transition-name of its own (${seen[v] || "none"})`);
++      assert.equal(new Set(Object.values(seen)).size, views.length, "the tabs' names are all different");
++      assert.ok(p.anims.includes("::view-transition-group(nav-masking)"), "the masking tab flies too");
+       // off from rest and settling, in a third of a second, as a Mac's
+       // sidebar: a curve leaving at speed made a frame the webview drops at
+       // the start a visible jerk (wangye1644294 on X), and every piece, the
+-- 
+2.50.1 (Apple Git-155)
+

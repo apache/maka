@@ -1,0 +1,269 @@
+2026/10/31 15:33:11 refused POST /v1/messages from 203.0.113.9:5000: no API key was sent: send a magpie gateway key as Authorization: Bearer <key> (or x-api-key)
+2026/10/31 15:33:11 refused POST /v1/messages from 198.51.100.7:5000: no API key was sent: send a magpie gateway key as Authorization: Bearer <key> (or x-api-key)
+2026/10/31 15:33:11 refused POST /v1/messages from 198.51.100.8: not on the allow list
+2026/10/31 15:33:11 refused POST /v1/messages from 11.0.0.1: not on the allow list
+2026/10/31 15:33:11 refused POST /v1/messages from 2001:db8:2::2: not on the allow list
+2026/10/31 15:33:11 refused POST /v1/messages from fe80::db8:dead:beef:1: not on the allow list
+2026/10/31 15:33:11 refused POST /v1/messages from garbage: not on the allow list
+2026/10/31 15:33:11 refused POST /v1/messages from 2001:db8::6: not on the allow list
+2026/10/31 15:33:11 refused POST /v1/messages from 198.51.100.7: not on the allow list
+2026/10/31 15:33:11 MAGPIE_ALLOW_IPS: "203.0.113.0/33" is not an IP address or range: write it as 203.0.113.7, 10.0.0.0/8 or 2001:db8::/32; it lets no address in
+2026/10/31 15:33:11 refused POST /v1/messages from 203.0.113.9: not on the allow list
+2026/10/31 15:33:11 refused POST /v1/messages from 198.51.100.7: not on the allow list
+2026/10/31 15:33:11 refused GET /v1/models from 198.51.100.1: not on the allow list
+2026/10/31 15:33:12 refused POST /v1/messages from 203.0.113.9: not on the allow list
+2026/10/31 15:33:12 allow list: could not read settings at C:\Users\802165\AppData\Local\Temp\TestAllowListUnreadableSettings2779603496\002\magpie\settings.json: unexpected end of JSON input; the list read last stays in force
+2026/10/31 15:33:12 refused POST /v1/messages from 203.0.113.9: not on the allow list
+2026/10/31 15:33:12 allow list: could not read settings at C:\Users\802165\AppData\Local\Temp\TestAllowListUnreadableSettings2779603496\002\magpie\settings.json: unexpected end of JSON input; only this computer is let in until it reads
+2026/10/31 15:33:12 refused POST /v1/messages from 203.0.113.9: not on the allow list
+2026/10/31 15:33:12 refused POST /v1/messages from 198.51.100.7: not on the allow list
+2026/10/31 15:33:12 refused POST /v1/messages from 2001:db8::9: not on the allow list
+2026/10/31 15:33:12 refused POST /v1/messages from 198.51.100.7: not on the allow list
+2026/10/31 15:33:12 gateway: fake turned away 1h cache marks for claude-sonnet-5 (400); marked for 5m from now on
+2026/10/31 15:33:13 antigravity u@example.com: loadCodeAssist at https://cloudcode-pa.googleapis.com: current tier standard-tier, paid tier -, project "p1"
+2026/10/31 15:33:13 antigravity u@example.com: fetchAvailableModels at https://daily-cloudcode-pa.googleapis.com (antigravity/hub/2.9.1 windows/amd64; project "p1", current tier "standard-tier", paid tier "", entitlement "standard-tier"): 1 models, 1 kept; left out 0 not for chat [], 0 completion-only []; disabled []; Claude []
+2026/10/31 15:33:13 antigravity u@example.com: fetchAvailableModels at https://daily-cloudcode-pa.googleapis.com (antigravity/hub/2.9.1 windows/amd64; project "p1", current tier "standard-tier", paid tier "", entitlement "standard-tier"): 1 models, 1 kept; left out 0 not for chat [], 0 completion-only []; disabled []; Claude []
+2026/10/31 15:33:14 antigravity u@example.com: fetchAvailableModels at https://daily-cloudcode-pa.googleapis.com (antigravity/hub/2.9.1 windows/amd64; project "p1", current tier "standard-tier", paid tier "", entitlement "standard-tier"): 1 models, 1 kept; left out 0 not for chat [], 0 completion-only []; disabled []; Claude []
+2026/10/31 15:33:14 antigravity u@example.com: fetchAvailableModels at https://daily-cloudcode-pa.googleapis.com (antigravity/hub/2.9.1 windows/amd64; project "p1", current tier "standard-tier", paid tier "", entitlement "standard-tier"): 1 models, 1 kept; left out 0 not for chat [], 0 completion-only []; disabled []; Claude []
+2026/10/31 15:33:14 antigravity u@example.com: fetchAvailableModels at https://daily-cloudcode-pa.googleapis.com (antigravity/hub/2.9.1 windows/amd64; project "p1", current tier "standard-tier", paid tier "", entitlement "standard-tier"): 1 models, 1 kept; left out 0 not for chat [], 0 completion-only []; disabled []; Claude []
+2026/10/31 15:33:14 antigravity u@example.com: fetchAvailableModels at https://daily-cloudcode-pa.googleapis.com (antigravity/hub/2.9.1 windows/amd64; project "p1", current tier "standard-tier", paid tier "", entitlement "standard-tier"): 1 models, 1 kept; left out 0 not for chat [], 0 completion-only []; disabled []; Claude []
+2026/10/31 15:33:15 antigravity u2@example.com: loadCodeAssist at https://cloudcode-pa.googleapis.com: current tier standard-tier, paid tier -, project "p1"
+2026/10/31 15:33:15 antigravity u2@example.com: fetchAvailableModels at https://daily-cloudcode-pa.googleapis.com (antigravity/hub/2.9.1 windows/amd64; project "p1", current tier "standard-tier", paid tier "", entitlement "standard-tier"): 1 models, 1 kept; left out 0 not for chat [], 0 completion-only []; disabled []; Claude []
+2026/10/31 15:33:15 antigravity u1@example.com: loadCodeAssist at https://cloudcode-pa.googleapis.com: current tier standard-tier, paid tier -, project "p1"
+2026/10/31 15:33:15 antigravity u1@example.com: fetchAvailableModels at https://daily-cloudcode-pa.googleapis.com (antigravity/hub/2.9.1 windows/amd64; project "p1", current tier "standard-tier", paid tier "", entitlement "standard-tier"): 1 models, 1 kept; left out 0 not for chat [], 0 completion-only []; disabled []; Claude []
+2026/10/31 15:33:15 antigravity u2@example.com: fetchAvailableModels at https://daily-cloudcode-pa.googleapis.com (antigravity/hub/2.9.1 windows/amd64; project "p1", current tier "standard-tier", paid tier "", entitlement "standard-tier"): 1 models, 1 kept; left out 0 not for chat [], 0 completion-only []; disabled []; Claude []
+2026/10/31 15:33:15 antigravity u1@example.com: fetchAvailableModels at https://daily-cloudcode-pa.googleapis.com (antigravity/hub/2.9.1 windows/amd64; project "p1", current tier "standard-tier", paid tier "", entitlement "standard-tier"): 1 models, 1 kept; left out 0 not for chat [], 0 completion-only []; disabled []; Claude []
+2026/10/31 15:33:15 antigravity u1@example.com: fetchAvailableModels at https://daily-cloudcode-pa.googleapis.com (antigravity/hub/2.9.1 windows/amd64; project "p1", current tier "standard-tier", paid tier "", entitlement "standard-tier"): 1 models, 1 kept; left out 0 not for chat [], 0 completion-only []; disabled []; Claude []
+2026/10/31 15:33:15 antigravity u2@example.com: fetchAvailableModels at https://daily-cloudcode-pa.googleapis.com (antigravity/hub/2.9.1 windows/amd64; project "p1", current tier "standard-tier", paid tier "", entitlement "standard-tier"): 1 models, 1 kept; left out 0 not for chat [], 0 completion-only []; disabled []; Claude []
+2026/10/31 15:33:15 antigravity u2@example.com: fetchAvailableModels at https://daily-cloudcode-pa.googleapis.com (antigravity/hub/2.9.1 windows/amd64; project "p1", current tier "standard-tier", paid tier "", entitlement "standard-tier"): 1 models, 1 kept; left out 0 not for chat [], 0 completion-only []; disabled []; Claude []
+2026/10/31 15:33:15 antigravity u1@example.com: fetchAvailableModels at https://daily-cloudcode-pa.googleapis.com (antigravity/hub/2.9.1 windows/amd64; project "p1", current tier "standard-tier", paid tier "", entitlement "standard-tier"): 1 models, 1 kept; left out 0 not for chat [], 0 completion-only []; disabled []; Claude []
+2026/10/31 15:33:15 antigravity new@example.com: loadCodeAssist: Post "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist": unexpected request to https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist; using the project kept with the sign-in, its tier not known
+2026/10/31 15:33:15 antigravity old@example.com: loadCodeAssist: Post "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist": unexpected request to https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist; using the project kept with the sign-in, its tier not known
+2026/10/31 15:33:15 antigravity new@example.com: fetchAvailableModels at https://daily-cloudcode-pa.googleapis.com (antigravity/hub/2.9.1 windows/amd64; project "project-new", current tier "", paid tier "", entitlement ""): 2 models, 2 kept; left out 0 not for chat [], 0 completion-only []; disabled []; Claude [claude-opus-5-5-high claude-opus-5-5-low]
+2026/10/31 15:33:15 antigravity old@example.com: fetchAvailableModels at https://daily-cloudcode-pa.googleapis.com (antigravity/hub/2.9.1 windows/amd64; project "project-old", current tier "", paid tier "", entitlement ""): 1 models, 1 kept; left out 0 not for chat [], 0 completion-only []; disabled []; Claude [claude-opus-4-6-thinking]
+2026/10/31 15:33:15 antigravity u@example.com: fetchAvailableModels at https://daily-cloudcode-pa.googleapis.com (antigravity/hub/2.9.1 windows/amd64; project "p1", current tier "standard-tier", paid tier "", entitlement "standard-tier"): 1 models, 1 kept; left out 0 not for chat [], 0 completion-only []; disabled []; Claude []
+2026/10/31 15:33:16 antigravity u@example.com: fetchAvailableModels at https://daily-cloudcode-pa.googleapis.com (antigravity/hub/2.9.1 windows/amd64; project "p1", current tier "standard-tier", paid tier "", entitlement "standard-tier"): 1 models, 1 kept; left out 0 not for chat [], 0 completion-only []; disabled []; Claude []
+2026/10/31 15:33:16 antigravity u@example.com: fetchAvailableModels at https://daily-cloudcode-pa.googleapis.com (antigravity/hub/2.9.1 windows/amd64; project "p1", current tier "standard-tier", paid tier "", entitlement "standard-tier"): 1 models, 1 kept; left out 0 not for chat [], 0 completion-only []; disabled []; Claude []
+2026/10/31 15:33:16 antigravity u@example.com: fetchAvailableModels at https://daily-cloudcode-pa.googleapis.com (antigravity/hub/2.9.1 windows/amd64; project "p1", current tier "standard-tier", paid tier "", entitlement "standard-tier"): 1 models, 1 kept; left out 0 not for chat [], 0 completion-only []; disabled []; Claude []
+2026/10/31 15:33:16 antigravity u@example.com: fetchAvailableModels at https://daily-cloudcode-pa.googleapis.com (antigravity/hub/2.9.1 windows/amd64; project "p1", current tier "standard-tier", paid tier "", entitlement "standard-tier"): 1 models, 1 kept; left out 0 not for chat [], 0 completion-only []; disabled []; Claude []
+2026/10/31 15:33:16 antigravity u@example.com: fetchAvailableModels at https://daily-cloudcode-pa.googleapis.com (antigravity/hub/2.9.1 windows/amd64; project "p1", current tier "standard-tier", paid tier "", entitlement "standard-tier"): 1 models, 1 kept; left out 0 not for chat [], 0 completion-only []; disabled []; Claude []
+2026/10/31 15:33:17 antigravity u@example.com: fetchAvailableModels at https://daily-cloudcode-pa.googleapis.com (antigravity/hub/2.9.1 windows/amd64; project "p1", current tier "standard-tier", paid tier "", entitlement "standard-tier"): 1 models, 1 kept; left out 0 not for chat [], 0 completion-only []; disabled []; Claude []
+2026/10/31 15:33:17 antigravity v@example.com: loadCodeAssist at https://cloudcode-pa.googleapis.com: current tier standard-tier, paid tier -, project "p1"
+2026/10/31 15:33:17 antigravity v@example.com: fetchAvailableModels at https://daily-cloudcode-pa.googleapis.com (antigravity/hub/2.9.1 windows/amd64; project "p1", current tier "standard-tier", paid tier "", entitlement "standard-tier"): 1 models, 1 kept; left out 0 not for chat [], 0 completion-only []; disabled []; Claude []
+2026/10/31 15:33:17 antigravity u@example.com: fetchAvailableModels at https://daily-cloudcode-pa.googleapis.com (antigravity/hub/2.9.1 windows/amd64; project "p1", current tier "standard-tier", paid tier "", entitlement "standard-tier"): 1 models, 1 kept; left out 0 not for chat [], 0 completion-only []; disabled []; Claude []
+2026/10/31 15:33:17 antigravity u@example.com: fetchAvailableModels at https://daily-cloudcode-pa.googleapis.com (antigravity/hub/2.9.1 windows/amd64; project "p1", current tier "standard-tier", paid tier "", entitlement "standard-tier"): 1 models, 1 kept; left out 0 not for chat [], 0 completion-only []; disabled []; Claude []
+2026/10/31 15:33:17 antigravity u@example.com: fetchAvailableModels at https://daily-cloudcode-pa.googleapis.com (antigravity/hub/2.9.1 windows/amd64; project "p1", current tier "standard-tier", paid tier "", entitlement "standard-tier"): 1 models, 1 kept; left out 0 not for chat [], 0 completion-only []; disabled []; Claude []
+2026/10/31 15:33:17 antigravity u@example.com: fetchAvailableModels at https://daily-cloudcode-pa.googleapis.com (antigravity/hub/2.9.1 windows/amd64; project "p1", current tier "standard-tier", paid tier "", entitlement "standard-tier"): 1 models, 1 kept; left out 0 not for chat [], 0 completion-only []; disabled []; Claude []
+2026/10/31 15:33:18 antigravity u@example.com: fetchAvailableModels at https://daily-cloudcode-pa.googleapis.com (antigravity/hub/2.9.1 windows/amd64; project "p1", current tier "standard-tier", paid tier "", entitlement "standard-tier"): 1 models, 1 kept; left out 0 not for chat [], 0 completion-only []; disabled []; Claude []
+2026/10/31 15:33:18 antigravity u@example.com: fetchAvailableModels at https://daily-cloudcode-pa.googleapis.com (antigravity/hub/2.9.1 windows/amd64; project "p1", current tier "standard-tier", paid tier "", entitlement "standard-tier"): 1 models, 1 kept; left out 0 not for chat [], 0 completion-only []; disabled []; Claude []
+2026/10/31 15:33:18 antigravity u@example.com: fetchAvailableModels at https://daily-cloudcode-pa.googleapis.com (antigravity/hub/2.9.1 windows/amd64; project "p1", current tier "standard-tier", paid tier "", entitlement "standard-tier"): 1 models, 1 kept; left out 0 not for chat [], 0 completion-only []; disabled []; Claude []
+2026/10/31 15:33:18 antigravity u@example.com: fetchAvailableModels at https://daily-cloudcode-pa.googleapis.com (antigravity/hub/2.9.1 windows/amd64; project "p1", current tier "standard-tier", paid tier "", entitlement "standard-tier"): 1 models, 1 kept; left out 0 not for chat [], 0 completion-only []; disabled []; Claude []
+2026/10/31 15:33:19 antigravity u@example.com: fetchAvailableModels at https://daily-cloudcode-pa.googleapis.com (antigravity/hub/2.9.1 windows/amd64; project "p1", current tier "standard-tier", paid tier "", entitlement "standard-tier"): 1 models, 1 kept; left out 0 not for chat [], 0 completion-only []; disabled []; Claude []
+2026/10/31 15:33:19 antigravity u2@example.com: fetchAvailableModels at https://daily-cloudcode-pa.googleapis.com (antigravity/hub/2.9.1 windows/amd64; project "p1", current tier "standard-tier", paid tier "", entitlement "standard-tier"): 1 models, 1 kept; left out 0 not for chat [], 0 completion-only []; disabled []; Claude []
+2026/10/31 15:33:19 antigravity u1@example.com: fetchAvailableModels at https://daily-cloudcode-pa.googleapis.com (antigravity/hub/2.9.1 windows/amd64; project "p1", current tier "standard-tier", paid tier "", entitlement "standard-tier"): 1 models, 1 kept; left out 0 not for chat [], 0 completion-only []; disabled []; Claude []
+2026/10/31 15:33:19 antigravity b@example.com: loadCodeAssist at https://cloudcode-pa.googleapis.com: current tier standard-tier, paid tier -, project "p1"
+2026/10/31 15:33:19 antigravity a@example.com: loadCodeAssist at https://cloudcode-pa.googleapis.com: current tier standard-tier, paid tier -, project "p1"
+2026/10/31 15:33:19 antigravity b@example.com: fetchAvailableModels at https://daily-cloudcode-pa.googleapis.com (antigravity/hub/2.9.1 windows/amd64; project "p1", current tier "standard-tier", paid tier "", entitlement "standard-tier"): 1 models, 1 kept; left out 0 not for chat [], 0 completion-only []; disabled []; Claude []
+2026/10/31 15:33:19 antigravity a@example.com: fetchAvailableModels at https://daily-cloudcode-pa.googleapis.com (antigravity/hub/2.9.1 windows/amd64; project "p1", current tier "standard-tier", paid tier "", entitlement "standard-tier"): 2 models, 2 kept; left out 0 not for chat [], 0 completion-only []; disabled []; Claude []
+2026/10/31 15:33:19 antigravity b@example.com: fetchAvailableModels at https://daily-cloudcode-pa.googleapis.com (antigravity/hub/2.9.1 windows/amd64; project "p1", current tier "standard-tier", paid tier "", entitlement "standard-tier"): 1 models, 1 kept; left out 0 not for chat [], 0 completion-only []; disabled []; Claude []
+2026/10/31 15:33:19 antigravity a@example.com: fetchAvailableModels at https://daily-cloudcode-pa.googleapis.com (antigravity/hub/2.9.1 windows/amd64; project "p1", current tier "standard-tier", paid tier "", entitlement "standard-tier"): 2 models, 2 kept; left out 0 not for chat [], 0 completion-only []; disabled []; Claude []
+2026/10/31 15:33:19 antigravity b@example.com: fetchAvailableModels at https://daily-cloudcode-pa.googleapis.com (antigravity/hub/2.9.1 windows/amd64; project "p1", current tier "standard-tier", paid tier "", entitlement "standard-tier"): 1 models, 1 kept; left out 0 not for chat [], 0 completion-only []; disabled []; Claude []
+2026/10/31 15:33:19 antigravity a@example.com: fetchAvailableModels at https://daily-cloudcode-pa.googleapis.com (antigravity/hub/2.9.1 windows/amd64; project "p1", current tier "standard-tier", paid tier "", entitlement "standard-tier"): 2 models, 2 kept; left out 0 not for chat [], 0 completion-only []; disabled []; Claude []
+2026/10/31 15:33:19 antigravity b@example.com: fetchAvailableModels at https://daily-cloudcode-pa.googleapis.com (antigravity/hub/2.9.1 windows/amd64; project "p1", current tier "standard-tier", paid tier "", entitlement "standard-tier"): 1 models, 1 kept; left out 0 not for chat [], 0 completion-only []; disabled []; Claude []
+2026/10/31 15:33:19 antigravity a@example.com: fetchAvailableModels at https://daily-cloudcode-pa.googleapis.com (antigravity/hub/2.9.1 windows/amd64; project "p1", current tier "standard-tier", paid tier "", entitlement "standard-tier"): 2 models, 2 kept; left out 0 not for chat [], 0 completion-only []; disabled []; Claude []
+2026/10/31 15:33:20 antigravity b@example.com: fetchAvailableModels at https://daily-cloudcode-pa.googleapis.com (antigravity/hub/2.9.1 windows/amd64; project "p1", current tier "standard-tier", paid tier "", entitlement "standard-tier"): 1 models, 1 kept; left out 0 not for chat [], 0 completion-only []; disabled []; Claude []
+2026/10/31 15:33:20 antigravity a@example.com: fetchAvailableModels at https://daily-cloudcode-pa.googleapis.com (antigravity/hub/2.9.1 windows/amd64; project "p1", current tier "standard-tier", paid tier "", entitlement "standard-tier"): 2 models, 2 kept; left out 0 not for chat [], 0 completion-only []; disabled []; Claude []
+2026/10/31 15:33:20 request archive: 2026-10-31/073320-ee844388edf90942 not uploaded: HTTP 403 AccessDenied
+2026/10/31 15:33:22 refused GET /v1/magpie/quotas from 192.168.1.9:5000: the API key ending in alue is not an enabled magpie gateway key: it is disabled, removed or mistyped
+2026/10/31 15:33:22 refused GET /v1/magpie/quotas from 192.168.1.9:5000: the API key ending in alue is not an enabled magpie gateway key: it is disabled, removed or mistyped
+2026/10/31 15:33:22 refused GET /v1/magpie/quotas from 192.168.1.9:5000: the API key ending in alue is not an enabled magpie gateway key: it is disabled, removed or mistyped
+2026/10/31 15:33:22 refused GET /v1/magpie/quotas from 192.168.1.9:5000: the API key ending in alue is not an enabled magpie gateway key: it is disabled, removed or mistyped
+2026/10/31 15:33:22 refused GET /v1/magpie/quotas from 192.168.1.9:5000: the API key ending in alue is not an enabled magpie gateway key: it is disabled, removed or mistyped
+2026/10/31 15:33:22 refused GET /v1/magpie/quotas from 192.168.1.9:5000: the API key ending in alue is not an enabled magpie gateway key: it is disabled, removed or mistyped
+2026/10/31 15:33:22 refused GET /v1/magpie/quotas from 192.168.1.9:5000: the API key ending in alue is not an enabled magpie gateway key: it is disabled, removed or mistyped
+2026/10/31 15:33:22 refused GET /v1/magpie/quotas from 192.168.1.9:5000: the API key ending in alue is not an enabled magpie gateway key: it is disabled, removed or mistyped
+2026/10/31 15:33:22 refused GET /v1/magpie/quotas from 192.168.1.9:5000: the API key ending in alue is not an enabled magpie gateway key: it is disabled, removed or mistyped
+2026/10/31 15:33:22 refused GET /v1/magpie/quotas from 192.168.1.9:5000: the API key ending in alue is not an enabled magpie gateway key: it is disabled, removed or mistyped
+2026/10/31 15:33:22 refused GET /v1/magpie/quotas from 192.168.1.9:5000: the API key ending in alue is not an enabled magpie gateway key: it is disabled, removed or mistyped
+2026/10/31 15:33:22 refused GET /v1/magpie/quotas from 192.168.1.9:5000: the API key ending in alue is not an enabled magpie gateway key: it is disabled, removed or mistyped
+2026/10/31 15:33:22 refused GET /v1/magpie/quotas from 192.168.1.9:5000: the API key ending in alue is not an enabled magpie gateway key: it is disabled, removed or mistyped
+2026/10/31 15:33:22 refused GET /v1/magpie/quotas from 192.168.1.9:5000: the API key ending in alue is not an enabled magpie gateway key: it is disabled, removed or mistyped
+2026/10/31 15:33:22 refused GET /v1/magpie/quotas from 192.168.1.9:5000: the API key ending in alue is not an enabled magpie gateway key: it is disabled, removed or mistyped
+2026/10/31 15:33:22 refused GET /v1/magpie/quotas from 192.168.1.9:5000: the API key ending in alue is not an enabled magpie gateway key: it is disabled, removed or mistyped
+2026/10/31 15:33:22 refused GET /v1/magpie/quotas from 192.168.1.9:5000: the API key ending in alue is not an enabled magpie gateway key: it is disabled, removed or mistyped
+2026/10/31 15:33:22 refused GET /v1/magpie/quotas from 192.168.1.9:5000: the API key ending in alue is not an enabled magpie gateway key: it is disabled, removed or mistyped
+2026/10/31 15:33:22 refused GET /v1/magpie/quotas from 192.168.1.9:5000: the API key ending in alue is not an enabled magpie gateway key: it is disabled, removed or mistyped
+2026/10/31 15:33:22 refused GET /v1/magpie/quotas from 192.168.1.9:5000: the API key ending in alue is not an enabled magpie gateway key: it is disabled, removed or mistyped
+2026/10/31 15:33:22 refused GET /v1/magpie/quotas from 192.168.1.9:5000: the API key ending in alue is not an enabled magpie gateway key: it is disabled, removed or mistyped
+2026/10/31 15:33:22 refused GET /v1/magpie/quotas from 192.168.1.9:5000: the API key ending in alue is not an enabled magpie gateway key: it is disabled, removed or mistyped
+2026/10/31 15:33:22 refused GET /v1/magpie/quotas from 192.168.1.9:5000: the API key ending in alue is not an enabled magpie gateway key: it is disabled, removed or mistyped
+2026/10/31 15:33:22 refused GET /v1/magpie/quotas from 192.168.1.9:5000: the API key ending in alue is not an enabled magpie gateway key: it is disabled, removed or mistyped
+2026/10/31 15:33:22 refused GET /v1/magpie/quotas from 192.168.1.9:5000: the API key ending in alue is not an enabled magpie gateway key: it is disabled, removed or mistyped
+2026/10/31 15:33:22 refused GET /v1/magpie/quotas from 192.168.1.9:5000: the API key ending in alue is not an enabled magpie gateway key: it is disabled, removed or mistyped
+2026/10/31 15:33:22 refused GET /v1/magpie/quotas from 192.168.1.9:5000: the API key ending in alue is not an enabled magpie gateway key: it is disabled, removed or mistyped
+2026/10/31 15:33:22 refused GET /v1/magpie/quotas from 192.168.1.9:5000: the API key ending in alue is not an enabled magpie gateway key: it is disabled, removed or mistyped
+2026/10/31 15:33:22 refused GET /v1/magpie/quotas from 192.168.1.9:5000: the API key ending in alue is not an enabled magpie gateway key: it is disabled, removed or mistyped
+2026/10/31 15:33:22 refused GET /v1/magpie/quotas from 192.168.1.9:5000: the API key ending in alue is not an enabled magpie gateway key: it is disabled, removed or mistyped
+2026/10/31 15:33:22 refused GET /v1/magpie/quotas from 192.168.1.9:5000: the API key ending in alue is not an enabled magpie gateway key: it is disabled, removed or mistyped
+2026/10/31 15:33:22 refused GET /v1/magpie/quotas from 192.168.1.9:5000: the API key ending in alue is not an enabled magpie gateway key: it is disabled, removed or mistyped
+2026/10/31 15:33:22 refused GET /v1/magpie/quotas from 192.168.1.9:5000: the API key ending in alue is not an enabled magpie gateway key: it is disabled, removed or mistyped
+2026/10/31 15:33:22 refused GET /v1/magpie/quotas from 192.168.1.9:5000: the API key ending in alue is not an enabled magpie gateway key: it is disabled, removed or mistyped
+2026/10/31 15:33:22 refused GET /v1/magpie/quotas from 192.168.1.9:5000: the API key ending in alue is not an enabled magpie gateway key: it is disabled, removed or mistyped
+2026/10/31 15:33:22 refused GET /v1/magpie/quotas from 192.168.1.9:5000: the API key ending in alue is not an enabled magpie gateway key: it is disabled, removed or mistyped
+2026/10/31 15:33:22 refused GET /v1/magpie/quotas from 192.168.1.9:5000: the API key ending in alue is not an enabled magpie gateway key: it is disabled, removed or mistyped
+2026/10/31 15:33:22 refused GET /v1/magpie/quotas from 192.168.1.9:5000: the API key ending in alue is not an enabled magpie gateway key: it is disabled, removed or mistyped
+2026/10/31 15:33:22 refused GET /v1/magpie/quotas from 192.168.1.9:5000: the API key ending in alue is not an enabled magpie gateway key: it is disabled, removed or mistyped
+2026/10/31 15:33:22 refused GET /v1/magpie/quotas from 192.168.1.9:5000: the API key ending in alue is not an enabled magpie gateway key: it is disabled, removed or mistyped
+2026/10/31 15:33:22 refused GET /v1/magpie/quotas from 192.168.1.9:5000: the API key ending in alue is not an enabled magpie gateway key: it is disabled, removed or mistyped
+2026/10/31 15:33:22 refused GET /v1/magpie/quotas from 192.168.1.9:5000: the API key ending in alue is not an enabled magpie gateway key: it is disabled, removed or mistyped
+2026/10/31 15:33:22 refused GET /v1/magpie/quotas from 192.168.1.9:5000: the API key ending in alue is not an enabled magpie gateway key: it is disabled, removed or mistyped
+2026/10/31 15:33:22 refused GET /v1/magpie/quotas from 192.168.1.9:5000: the API key ending in alue is not an enabled magpie gateway key: it is disabled, removed or mistyped
+2026/10/31 15:33:22 refused GET /v1/magpie/quotas from 192.168.1.9:5000: the API key ending in alue is not an enabled magpie gateway key: it is disabled, removed or mistyped
+2026/10/31 15:33:22 refused GET /v1/magpie/quotas from 192.168.1.9:5000: the API key ending in alue is not an enabled magpie gateway key: it is disabled, removed or mistyped
+2026/10/31 15:33:22 refused GET /v1/magpie/quotas from 192.168.1.9:5000: the API key ending in alue is not an enabled magpie gateway key: it is disabled, removed or mistyped
+2026/10/31 15:33:22 refused GET /v1/magpie/quotas from 192.168.1.9:5000: the API key ending in alue is not an enabled magpie gateway key: it is disabled, removed or mistyped
+2026/10/31 15:33:22 refused GET /v1/magpie/quotas from 192.168.1.9:5000: the API key ending in alue is not an enabled magpie gateway key: it is disabled, removed or mistyped
+2026/10/31 15:33:22 refused GET /v1/magpie/quotas from 192.168.1.9:5000: the API key ending in alue is not an enabled magpie gateway key: it is disabled, removed or mistyped
+2026/10/31 15:33:22 refused GET /v1/magpie/quotas from 10.0.0.7:5000: the API key ending in 9z7q is not an enabled magpie gateway key: it is disabled, removed or mistyped
+2026/10/31 15:33:22 Claude Code on : tool results answered by another request
+2026/10/31 15:33:22 Claude Code on : tool results answered by another request
+2026/10/31 15:33:29 gateway: a 45 MiB request body waits for room: 90 MiB of 100 MiB held (test)
+2026/10/31 15:33:29 gateway: a 200 MiB request body waits for room: 2 MiB of 64 MiB held (test)
+2026/10/31 15:33:29 gateway: a 40 MiB request body waits for room: 40 MiB of 64 MiB held (test)
+2026/10/31 15:33:29 gateway: a 2 MiB request body waits for room: 40 MiB of 64 MiB held (test)
+2026/10/31 15:33:29 gateway: a 30 MiB request body waits for room: 60 MiB of 64 MiB held (test)
+2026/10/31 15:33:29 gateway: a 30 MiB request body waits for room: 60 MiB of 64 MiB held (test)
+2026/10/31 15:33:29 gateway: a 30 MiB request body waits for room: 60 MiB of 64 MiB held (test)
+2026/10/31 15:33:31 refused POST /v1/chat/completions from 192.0.2.7:4000: the API key ending in 042x is not an enabled magpie gateway key: it is disabled, removed or mistyped
+2026/10/31 15:33:31 refused POST /v1/chat/completions from 192.0.2.7:4000: the API key ending in 0042 is not an enabled magpie gateway key: it is disabled, removed or mistyped
+2026/10/31 15:33:31 refused GET /v1/models from 192.168.1.9:5000: no API key was sent: send a magpie gateway key as Authorization: Bearer <key> (or x-api-key)
+2026/10/31 15:33:31 refused GET /v1/models from 192.168.1.9:5000: no API key was sent: send a magpie gateway key as Authorization: Bearer <key> (or x-api-key)
+2026/10/31 15:33:31 refused GET /v1/models from 192.168.1.9:5000: no API key was sent: send a magpie gateway key as Authorization: Bearer <key> (or x-api-key)
+2026/10/31 15:33:31 refused GET /v1/models from 192.168.1.9:5000: the API key sent is not an enabled magpie gateway key: it is disabled, removed or mistyped
+2026/10/31 15:33:31 refused GET /v1/models from 192.168.1.9:5000: the API key sent is not an enabled magpie gateway key: it is disabled, removed or mistyped
+2026/10/31 15:33:31 refused GET /v1/models from 192.168.1.9:5000: the API key sent is not an enabled magpie gateway key: it is disabled, removed or mistyped
+2026/10/31 15:33:31 refused GET /v1/models from 192.168.1.9:5000: the API key sent is not an enabled magpie gateway key: it is disabled, removed or mistyped
+2026/10/31 15:33:31 refused GET /v1/models from 192.168.1.9:5000: the API key sent is not an enabled magpie gateway key: it is disabled, removed or mistyped
+2026/10/31 15:33:31 refused GET /v1/models from 192.168.1.9:5000: the API key sent is not an enabled magpie gateway key: it is disabled, removed or mistyped
+2026/10/31 15:33:31 refused GET /v1/models from 192.168.1.9:5000: the API key ending in tale is not an enabled magpie gateway key: it is disabled, removed or mistyped
+2026/10/31 15:33:31 refused GET /v1/models from 192.168.1.9:5000: the API key ending in tale is not an enabled magpie gateway key: it is disabled, removed or mistyped
+2026/10/31 15:33:31 refused GET /v1/models from 192.168.1.9:5000: the API key ending in tale is not an enabled magpie gateway key: it is disabled, removed or mistyped
+2026/10/31 15:33:32 refused POST /v1/chat/completions from 192.0.2.1:1234: the API key ending in 27ee is not an enabled magpie gateway key: it is disabled, removed or mistyped
+2026/10/31 15:33:32 refused POST /v1/chat/completions from 192.0.2.1:1234: the API key ending in db63 is not an enabled magpie gateway key: it is disabled, removed or mistyped
+2026/10/31 15:33:33 refused POST /v1beta/models/m:generateContent from 192.168.1.9:5000: the API key ending in e229 is not an enabled magpie gateway key: it is disabled, removed or mistyped
+2026/10/31 15:33:33 refused POST /v1/chat/completions from 192.168.1.9:5000: the API key ending in -lan is not an enabled magpie gateway key: it is disabled, removed or mistyped
+2026/10/31 15:33:33 refused POST /v1/chat/completions from 192.168.1.9:5000: the API key ending in cbc8 is not an enabled magpie gateway key: it is disabled, removed or mistyped
+2000/01/01 08:00:00 routing: the classifier TestConcurrentClassificationSharesFailure/upstream couldn't say: classifier down
+2000/01/01 08:00:00 routing: the classifier TestConcurrentClassificationSharesFailure/answer couldn't say: not a number
+2026/10/31 15:33:45 routing: the classifier c/cls couldn't say: c/cls: C: classifier down
+2026/10/31 15:33:46 routing: the classifier c/cls couldn't say: it answered "maybe", not a number from 0 to 1
+2026/10/31 15:33:46 routing: the classifier c/cls couldn't say: c/cls: C: classifier down
+2026/10/31 15:33:47 routing: the classifier c/cls couldn't say: it answered "3", not a number from 0 to 2
+2026/10/31 15:33:47 routing: the classifier c/cls couldn't say: it answered "maybe", not a number from 0 to 2
+2026/10/31 15:33:47 routing: the classifier c/cls couldn't say: it answered "", not a number from 0 to 2
+2026/10/31 15:33:48 routing: the classifier c/cls couldn't say: c/cls: C: classifier down
+2026/10/31 15:33:48 routing: the classifier c/cls couldn't say: c/cls gave no answer in 200ms
+2026/10/31 15:33:50 routing: the classifier c/cls couldn't say: c/cls gave no answer in 800ms
+2026/10/31 15:33:52 routing: the classifier c/cls couldn't say: c/cls gave no answer in 800ms
+2026/10/31 15:33:53 routing: the classifier c/cls couldn't say: c/cls: C: classifier down
+2026/10/31 15:33:53 routing: the classifier c/cls couldn't say: it answered "", not a number from 0 to 1
+2026/10/31 15:33:55 routing: the classifier c/cls couldn't say: it answered "9", not a level from 1 to 4
+2026/10/31 15:33:55 claude: the run on Claude Code's own sign-in, "Claude Max" until it was named, goes on as "a@example.com"
+2026/10/31 15:33:55 refused POST /_magpie/claude-mcp/d6a6d17c043de90547a779f3c41ee19f96ce2fe9af6fb8d0 from 192.168.1.9:5000: no API key was sent: send a magpie gateway key as Authorization: Bearer <key> (or x-api-key)
+2026/10/31 15:33:55 refused POST /_magpie/claude-mcp/d6a6d17c043de90547a779f3c41ee19f96ce2fe9af6fb8d0 from 192.168.1.9:5000: the API key ending in 2fcc is not an enabled magpie gateway key: it is disabled, removed or mistyped
+2026/10/31 15:33:55 refused POST /_magpie/claude-mcp/2b2815c13343b05e9a38409f92fae2e1a2b7f59acc342fc from 192.168.1.9:5000: no API key was sent: send a magpie gateway key as Authorization: Bearer <key> (or x-api-key)
+2026/10/31 15:33:55 refused POST /_magpie/claude-mcp/2b2815c13343b05e9a38409f92fae2e1a2b7f59acc342fc from 192.168.1.9:5000: the API key ending in 2fcc is not an enabled magpie gateway key: it is disabled, removed or mistyped
+2026/10/31 15:33:55 refused POST /_magpie/claude-mcp/2b2815c13343b05e9a38409f92fae2e1a2b7f59acc342fcc0 from 192.168.1.9:5000: no API key was sent: send a magpie gateway key as Authorization: Bearer <key> (or x-api-key)
+2026/10/31 15:33:55 refused POST /_magpie/claude-mcp/2b2815c13343b05e9a38409f92fae2e1a2b7f59acc342fcc0 from 192.168.1.9:5000: the API key ending in 2fcc is not an enabled magpie gateway key: it is disabled, removed or mistyped
+2026/10/31 15:33:55 refused POST /_magpie/claude-mcp/ from 192.168.1.9:5000: no API key was sent: send a magpie gateway key as Authorization: Bearer <key> (or x-api-key)
+2026/10/31 15:33:55 refused POST /_magpie/claude-mcp/ from 192.168.1.9:5000: the API key ending in 2fcc is not an enabled magpie gateway key: it is disabled, removed or mistyped
+2026/10/31 15:33:55 refused POST /_magpie/claude-mcp/2b2815c13343b05e9a38409f92fae2e1a2b7f59acc342fcc/x from 192.168.1.9:5000: no API key was sent: send a magpie gateway key as Authorization: Bearer <key> (or x-api-key)
+2026/10/31 15:33:55 refused POST /_magpie/claude-mcp/2b2815c13343b05e9a38409f92fae2e1a2b7f59acc342fcc/x from 192.168.1.9:5000: the API key ending in 2fcc is not an enabled magpie gateway key: it is disabled, removed or mistyped
+2026/10/31 15:33:55 refused POST /_magpie/claude-mcp/2b2815c13343b05e9a38409f92fae2e1a2b7f59acc342fcc from 192.168.1.9:5000: no API key was sent: send a magpie gateway key as Authorization: Bearer <key> (or x-api-key)
+2026/10/31 15:33:55 refused POST /_magpie/claude-mcp/2b2815c13343b05e9a38409f92fae2e1a2b7f59acc342fcc from 192.168.1.9:5000: the API key ending in 2fcc is not an enabled magpie gateway key: it is disabled, removed or mistyped
+2026/10/31 15:33:55 refused POST /x/_magpie/claude-mcp/2b2815c13343b05e9a38409f92fae2e1a2b7f59acc342fcc from 192.168.1.9:5000: no API key was sent: send a magpie gateway key as Authorization: Bearer <key> (or x-api-key)
+2026/10/31 15:33:55 refused POST /x/_magpie/claude-mcp/2b2815c13343b05e9a38409f92fae2e1a2b7f59acc342fcc from 192.168.1.9:5000: the API key ending in 2fcc is not an enabled magpie gateway key: it is disabled, removed or mistyped
+2026/10/31 15:33:55 refused GET /_magpie/claude-mcp/2b2815c13343b05e9a38409f92fae2e1a2b7f59acc342fcc from 192.168.1.9:5000: no API key was sent: send a magpie gateway key as Authorization: Bearer <key> (or x-api-key)
+2026/10/31 15:33:55 refused GET /_magpie/claude-mcp/2b2815c13343b05e9a38409f92fae2e1a2b7f59acc342fcc from 192.168.1.9:5000: the API key ending in 2fcc is not an enabled magpie gateway key: it is disabled, removed or mistyped
+2026/10/31 15:33:55 refused POST /v1/messages from 192.168.1.9:5000: no API key was sent: send a magpie gateway key as Authorization: Bearer <key> (or x-api-key)
+2026/10/31 15:33:55 refused POST /v1/messages from 192.168.1.9:5000: the API key ending in 2fcc is not an enabled magpie gateway key: it is disabled, removed or mistyped
+2026/10/31 15:33:55 refused POST /v1/chat/completions from 192.168.1.9:5000: no API key was sent: send a magpie gateway key as Authorization: Bearer <key> (or x-api-key)
+2026/10/31 15:33:55 refused POST /v1/chat/completions from 192.168.1.9:5000: the API key ending in 2fcc is not an enabled magpie gateway key: it is disabled, removed or mistyped
+2026/10/31 15:33:55 refused GET /v1/models from 192.168.1.9:5000: no API key was sent: send a magpie gateway key as Authorization: Bearer <key> (or x-api-key)
+2026/10/31 15:33:55 refused GET /v1/models from 192.168.1.9:5000: the API key ending in 2fcc is not an enabled magpie gateway key: it is disabled, removed or mistyped
+2026/10/31 15:33:55 refused GET /v1/magpie/quotas from 192.168.1.9:5000: no API key was sent: send a magpie gateway key as Authorization: Bearer <key> (or x-api-key)
+2026/10/31 15:33:55 refused GET /v1/magpie/quotas from 192.168.1.9:5000: the API key ending in 2fcc is not an enabled magpie gateway key: it is disabled, removed or mistyped
+2026/10/31 15:33:55 refused POST /mcp/neon from 192.168.1.9:5000: no API key was sent: send a magpie gateway key as Authorization: Bearer <key> (or x-api-key)
+2026/10/31 15:33:55 refused POST /mcp/neon from 192.168.1.9:5000: the API key ending in 2fcc is not an enabled magpie gateway key: it is disabled, removed or mistyped
+2026/10/31 15:33:55 refused POST /_magpie/claude-mcp/2b2815c13343b05e9a38409f92fae2e1a2b7f59acc342fcc from 192.168.1.9:5000: no API key was sent: send a magpie gateway key as Authorization: Bearer <key> (or x-api-key)
+2026/10/31 15:33:55 claude: cache-mark report timed out before run selection; streaming without the dropped-mark header
+2026/10/31 15:33:57 claude: tool results go on in their run, the images before them taken out by the client
+2026/10/31 15:33:57 Claude Code run on claude-opus-5-5 let go: earlier messages changed while it waited for tool results
+2026/10/31 15:33:57 Claude Code run on claude-opus-5-5 let go: earlier messages changed while it waited for tool results
+2026/10/31 15:33:57 claude: a one-off waits for room: 1 Claude Code processes run, 1 may (claudeRunsMost in settings)
+2026/10/31 15:33:57 claude: an idle run on  is let go to make room (1 may run at once); its conversation's next turn resumes its session
+2026/10/31 15:33:57 claude: an idle run on  is let go to make room (1 may run at once); its conversation's next turn resumes its session
+panic: test timed out after 45m0s
+	running tests:
+		TestClaudeMemRunsFromTheCgroup (43m51s)
+
+goroutine 5879 [running]:
+testing.(*M).startAlarm.func1()
+	C:/Users/802165/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.8.windows-amd64/src/testing/testing.go:2802 +0x354
+created by time.goFunc
+	C:/Users/802165/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.8.windows-amd64/src/time/sleep.go:215 +0x2d
+
+goroutine 1 [chan receive, 43 minutes]:
+testing.(*T).Run(0x31732687c200, {0x7ff662b06fca?, 0x7ff660b8718e?}, 0x7ff662ec7bc0)
+	C:/Users/802165/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.8.windows-amd64/src/testing/testing.go:2109 +0x4c7
+testing.runTests.func1(0x31732687c200)
+	C:/Users/802165/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.8.windows-amd64/src/testing/testing.go:2585 +0x3e
+testing.tRunner(0x31732687c200, 0x317326e976e0)
+	C:/Users/802165/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.8.windows-amd64/src/testing/testing.go:2036 +0xc3
+testing.runTests({0x7ff662ae8452, 0x18}, {0x7ff662b3f79e, 0x29}, 0x3173269ce090, {0x7ff6643dbc00, 0xb9d, 0xb9d}, {0xc2b186eb2920d8c4, 0x274a7ace519, ...})
+	C:/Users/802165/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.8.windows-amd64/src/testing/testing.go:2583 +0x4f0
+testing.(*M).Run(0x31732709fae0)
+	C:/Users/802165/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.8.windows-amd64/src/testing/testing.go:2443 +0x6ac
+github.com/yetone/magpie/internal/gateway.isolatedTests(0x31732709fae0)
+	C:/Users/802165/AppData/Local/Temp/magpie-hunt108-a/internal/gateway/main_test.go:125 +0xbdb
+github.com/yetone/magpie/internal/gateway.TestMain(0x31732709fae0)
+	C:/Users/802165/AppData/Local/Temp/magpie-hunt108-a/internal/gateway/main_test.go:34 +0x207
+main.main()
+	_testmain.go:6030 +0xa5
+
+goroutine 1698 [chan receive, 44 minutes]:
+github.com/yetone/magpie/internal/gateway.archive.func1.1()
+	C:/Users/802165/AppData/Local/Temp/magpie-hunt108-a/internal/gateway/archive.go:200 +0x171
+created by github.com/yetone/magpie/internal/gateway.archive.func1 in goroutine 1639
+	C:/Users/802165/AppData/Local/Temp/magpie-hunt108-a/internal/gateway/archive.go:199 +0x4e
+
+goroutine 5704 [syscall]:
+syscall.syscalln(0x0?, 0x0?, {0x3173274c7668?, 0x0?, 0x0?})
+	C:/Users/802165/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.8.windows-amd64/src/runtime/syscall_windows.go:431 +0x4e
+syscall.SyscallN(0x86?, {0x3173274c7668?, 0x84?, 0x317327d0a5a0?})
+	C:/Users/802165/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.8.windows-amd64/src/syscall/dll_windows.go:99 +0x1e
+syscall.createFile(0x317327d0c2d0?, 0x80000000, 0x3, 0x2?, 0x3, 0x2000001, 0x0)
+	C:/Users/802165/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.8.windows-amd64/src/syscall/zsyscall_windows.go:507 +0xee
+syscall.Open({0x317327d0c2d0?, 0x83?}, 0x80000, 0x0)
+	C:/Users/802165/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.8.windows-amd64/src/syscall/syscall_windows.go:444 +0x1b1
+os.openFileNolog({0x317327d0c2d0, 0x85}, 0x0, 0x87?)
+	C:/Users/802165/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.8.windows-amd64/src/os/file_windows.go:158 +0xa7
+os.OpenFile({0x317327d0c2d0, 0x85}, 0x0, 0x0)
+	C:/Users/802165/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.8.windows-amd64/src/os/file.go:412 +0x3e
+os.Open(...)
+	C:/Users/802165/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.8.windows-amd64/src/os/file.go:390
+os.ReadFile({0x317327d0c2d0?, 0x317327cfb8c0?})
+	C:/Users/802165/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.8.windows-amd64/src/os/file.go:865 +0x4a
+github.com/yetone/magpie/internal/gateway.readLimit({0x317327d0c2d0?, 0x3?})
+	C:/Users/802165/AppData/Local/Temp/magpie-hunt108-a/internal/gateway/claude_room.go:194 +0x18
+github.com/yetone/magpie/internal/gateway.memLimit({0x7ff662a9c4dc?, 0x3173274eff00?}, {0x317326ef93b0, 0x4f})
+	C:/Users/802165/AppData/Local/Temp/magpie-hunt108-a/internal/gateway/claude_room.go:169 +0x6fa
+github.com/yetone/magpie/internal/gateway.TestClaudeMemRunsFromTheCgroup(0x317327142a00)
+	C:/Users/802165/AppData/Local/Temp/magpie-hunt108-a/internal/gateway/claude_room_test.go:257 +0x225
+testing.tRunner(0x317327142a00, 0x7ff662ec7bc0)
+	C:/Users/802165/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.8.windows-amd64/src/testing/testing.go:2036 +0xc3
+created by testing.(*T).Run in goroutine 1
+	C:/Users/802165/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.8.windows-amd64/src/testing/testing.go:2101 +0x4a9
+FAIL	github.com/yetone/magpie/internal/gateway	2701.966s
+FAIL
+exit=1

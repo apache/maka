@@ -1,0 +1,22 @@
+{
+  "id": "43",
+  "slug": "perfect-squares",
+  "title": "完全平方数",
+  "difficulty": "medium",
+  "tags": ["动态规划", "数学"],
+  "description": "给你一个整数 `n`,返回和为 `n` 的完全平方数的最少数量。\n\n完全平方数 是一个整数,其值等于另一个整数的平方(例如 `1`、`4`、`9`、`16` 是完全平方数)。\n\n**示例 1:**\n\n- 输入:`n = 12`\n- 输出:`3`(`12 = 4 + 4 + 4`)\n\n**示例 2:**\n\n- 输入:`n = 13`\n- 输出:`2`(`13 = 4 + 9`)",
+  "solution": "## 思路\n\n**动态规划**(类似完全背包):`dp[i]` 表示和为 `i` 的最少平方数个数。对每个 `i`,枚举平方根 `j`(`j*j <= i`),`dp[i] = min(dp[i], dp[i-j*j] + 1)`。\n\n## 参考代码\n\n```js\nfunction numSquares(n) {\n  const dp = new Array(n + 1).fill(Infinity);\n  dp[0] = 0;\n  for (let i = 1; i <= n; i++) {\n    for (let j = 1; j * j <= i; j++) {\n      dp[i] = Math.min(dp[i], dp[i - j * j] + 1);\n    }\n  }\n  return dp[n];\n}\n```\n\n## 复杂度\n\n- 时间:O(n * sqrt(n))\n- 空间:O(n)",
+  "signature": {
+    "language": "javascript",
+    "entry": "numSquares",
+    "params": [{ "name": "n", "type": "number" }],
+    "returns": "number"
+  },
+  "testCases": [
+    { "sample": true, "input": [12], "expected": 3 },
+    { "sample": true, "input": [13], "expected": 2 },
+    { "sample": false, "input": [1], "expected": 1 },
+    { "sample": false, "input": [4], "expected": 1 },
+    { "sample": false, "input": [9], "expected": 1 }
+  ]
+}

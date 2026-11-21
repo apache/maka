@@ -1,0 +1,6 @@
+=== RUN   TestCodexOwnModelRecordedAsCodexAccount
+--- PASS: TestCodexOwnModelRecordedAsCodexAccount (1.23s)
+=== RUN   TestCodexAPIKeyRecordedAsOpenAI
+--- PASS: TestCodexAPIKeyRecordedAsOpenAI (0.02s)
+PASS
+ok  	github.com/yetone/magpie/internal/gateway	1.775s

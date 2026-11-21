@@ -1,0 +1,300 @@
+From ad61cb30aac8f7f8880fe53da4355535f6edeeaa Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Tue, 3 Nov 2026 22:37:41 +0800
+Subject: [PATCH] gateway: a filter's finish code after the reply began asks
+ the group's next member (#5075)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+A vendor that answers with a canned refusal line as the content and has
+its finish_reason "content_filter" follow (#5075: CodeArts's
+deepseek-v4.1-flash, 10/10 on the same body, 47 tokens out, the line
+byte-identical) was a try that stood as a success: the line had gone out
+as content, so the scan's refusal paths were past, only refusedAfter was
+marked, the group's next member was never asked, and a client that reads
+finish reasons — Pi's and DeepSeek Harness's mapStopReason, Claude Code —
+failed the whole turn on it. Another member of the same group answered
+620 tokens.
+
+refusalAfter now hands the try over (handOffAfter) when the refusal is
+the vendor's own finish code (eventRefusal), the reply is passing, a
+candidate stands behind it reading Chat chunks, and no call of the reply
+has gone by: what of the write went by before the code goes out with the
+reply, the code, its usage and [DONE] do not, and the next member's
+chunks follow in the same stream, as a refusal after reasoning is
+(handOver). The member isn't set aside: the request was refused, not the
+account (#248). A refusal still held goes through the scan's own paths
+(flow, handOver) as before; an error event mid-reply stays as it came
+(#733); an Anthropic or Responses client's stream is numbered and what
+of it has gone by is untracked, so its refusal keeps going as it came.
+
+TestRefusalAfterThinkingAndTextStays becomes
+TestRefusalAfterThinkingAndTextFailsOver: a Chat client is handed over
+now, where it ended on the vendor's finish code before.
+
+Fixes #5075
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gateway/fallback.go              | 52 ++++++++++++++++++++---
+ internal/gateway/refusal_handover.go      | 41 +++++++++++++++++-
+ internal/gateway/refusal_handover_test.go | 20 ++++++---
+ internal/gateway/refusal_test.go          | 46 ++++++++++++++++++++
+ 4 files changed, 146 insertions(+), 13 deletions(-)
+
+diff --git a/internal/gateway/fallback.go b/internal/gateway/fallback.go
+index cc1c24495..c73f3d001 100644
+--- a/internal/gateway/fallback.go
++++ b/internal/gateway/fallback.go
+@@ -2310,6 +2310,10 @@ type holdWriter struct {
+ 	// through as it comes. A refusal isn't a failure of the account, so
+ 	// nobody rests for it, whatever its timing (#248)
+ 	refusedAfter bool
++	// calls: a tool call of some kind has gone by in the reply, so a
++	// refusal after it is not handed over (handsOff): the call the agent
++	// has would sit beside the next member's, broken or doubled
++	calls bool
+ 	// after is what came of the reply once it began, for a refusal in it
+ 	// to be read event by event
+ 	after []byte
+@@ -3063,30 +3067,55 @@ func (h *holdWriter) sent(b []byte) {
+ // the scan that reads a stream held for its first content never sees an
+ // event that comes after it, and the filter refusing a turn it had begun
+ // is no failure of the account, as one it refuses before any of it is said
+-// is not (#248). What is read is kept only as far as the event it is in is
+-// whole, as a write may end in the middle of one.
++// is not (#248). A refusal that is the vendor's own finish code — Chat
++// Completions' content_filter, Anthropic's stop_reason refusal — on a
++// client reading Chat chunks hands the try over (#5075, handOffAfter):
++// the line the vendor put out first stays, as the reasoning of a
++// handed-over try does. What is read is kept only as far as the event it
++// is in is whole, as a write may end in the middle of one.
+ func (h *holdWriter) refusalAfter(b []byte) {
+ 	// Every write is read, not only one that looks like a refusal: an
+ 	// event's name may come in one write and its data in the next (#2400).
+ 	// Only an unfinished event's bytes are kept.
++	if !h.calls {
++		h.calls = mayCall(b)
++	}
+ 	buf := b
+ 	if len(h.after) > 0 {
+ 		h.after = append(h.after, b...)
+ 		buf = h.after
+ 	}
++	at := len(buf) - len(b) // where this write's bytes begin in buf
++	gone := 0               // how much of buf whole events have taken
+ 	for {
+-		end := eventEnd(buf)
++		end := eventEnd(buf[gone:])
+ 		if end < 0 {
+ 			break
+ 		}
+-		ev := buf[:end]
+-		buf = buf[end:]
++		ev := buf[gone : gone+end]
++		gone += end
+ 		if mayRefuse(ev) {
+-			if kind, _, _ := streamEvent(ev); kind == eventRefusal || kind == eventRefusalError {
++			if kind, status, msg := streamEvent(ev); kind == eventRefusal || kind == eventRefusalError {
+ 				h.refusedAfter = true
++				// an error event mid-reply is a stream's accident, kept as
++				// it came (#733); the finish code is the vendor's word that
++				// the turn it had begun was never answered (#5075)
++				if kind == eventRefusal && h.handsOff() {
++					// what of this write went by before the code — the
++					// reply's last words — goes out with the rest; the
++					// code, and what came with it, does not
++					if start := gone - len(ev); start > at {
++						pre := buf[at:start]
++						h.sent(pre)
++						h.w.Write(pre)
++					}
++					h.handOffAfter(status, msg)
++					return
++				}
+ 			}
+ 		}
+ 	}
++	buf = buf[gone:]
+ 	if len(buf) == 0 || len(buf) > holdMost {
+ 		h.after = nil
+ 		return
+@@ -3094,6 +3123,17 @@ func (h *holdWriter) refusalAfter(b []byte) {
+ 	h.after = append([]byte(nil), buf...)
+ }
+ 
++// mayCall says whether a write of the reply carries a tool call of some
++// kind: Chat's delta.tool_calls or its legacy function_call, Anthropic's
++// tool_use, Responses' function_call. A word of it in plain text counts
++// too — the cost of missing one, a call the agent would run beside the
++// next member's, is the greater.
++func mayCall(b []byte) bool {
++	return bytes.Contains(b, []byte(`"tool_calls"`)) ||
++		bytes.Contains(b, []byte(`"tool_use"`)) ||
++		bytes.Contains(b, []byte(`"function_call"`))
++}
++
+ // mayRefuse is whether an event may be the safety filter's refusal, by the
+ // words its shapes carry, before it is read as JSON at all: every event of
+ // a reply that has begun goes through this.
+diff --git a/internal/gateway/refusal_handover.go b/internal/gateway/refusal_handover.go
+index 238267db4..14e7f5e52 100644
+--- a/internal/gateway/refusal_handover.go
++++ b/internal/gateway/refusal_handover.go
+@@ -119,7 +119,9 @@ func (h *holdWriter) passOver(b []byte) {
+ 		rest := o.pending
+ 		o.pending = nil
+ 		h.refusalAfter(rest)
+-		h.out(rest)
++		if !h.handedOver { // the refusal in it handed the try over (handOffAfter)
++			h.out(rest)
++		}
+ 	}
+ 	h.flush()
+ }
+@@ -133,6 +135,43 @@ func (h *holdWriter) out(b []byte) {
+ 	h.w.Write(b)
+ }
+ 
++// handsOff says whether a refusal that is the vendor's own finish code,
++// once its answer has gone out (refusalAfter), may hand the try over: the
++// reply is passing — what is still held goes through the scan, whose own
++// refusal paths (flow, handOver) ask the next candidate without it — a
++// candidate stands behind it reading Chat chunks, whose pieces carry no
++// index for the next stream's to collide with, and no call of the reply
++// has gone by, for the agent to be left holding beside the next member's.
++// An Anthropic or Responses client's stream is numbered, and what of it
++// has gone by untracked would number the next one's blocks wrong; its
++// refusal goes as it came, as before.
++func (h *holdWriter) handsOff() bool {
++	return h.passing && h.over != nil && h.over.proto == provider.Chat && !h.calls
++}
++
++// handOffAfter ends a passing try at the vendor's finish code saying the
++// turn it had begun was filtered (#5075): whatever it said first — the
++// canned line a word-list filter answers with — the code says the turn
++// was never answered, and a client that reads finish reasons fails the
++// whole turn on it, so the members left are asked in the same stream, as
++// a refusal after reasoning is (handOver). What went out first stays, as
++// that reasoning does; the refusal's own end (the finish chunk, usage,
++// [DONE]) isn't sent, and the next one's chunks follow without a second
++// 200. Its account doesn't rest: the request was refused, not the
++// account (#248).
++func (h *holdWriter) handOffAfter(status int, msg string) {
++	h.flush()
++	h.handedOver, h.passing = true, false
++	h.refused, h.failure, h.failMsg = true, status, msg
++	h.ended, h.tail = false, nil
++	if h.alive != nil {
++		h.alive.sent = true
++	}
++	if h.stop != nil {
++		h.stop()
++	}
++}
++
+ // handOver ends a passing try at its refusal (passOver): the agent has
+ // what went before it, an Anthropic block still open is stopped, and the
+ // try fails as a refusal with nothing said does, for the next candidate's
+diff --git a/internal/gateway/refusal_handover_test.go b/internal/gateway/refusal_handover_test.go
+index f7939f38c..ec18d25a2 100644
+--- a/internal/gateway/refusal_handover_test.go
++++ b/internal/gateway/refusal_handover_test.go
+@@ -203,9 +203,13 @@ func TestRefusalAfterShownThinkingWithNoOneElse(t *testing.T) {
+ 	}
+ }
+ 
+-// A refusal once the answer's text began is the agent's: what was said
+-// can't be taken back, and nobody else is asked.
+-func TestRefusalAfterThinkingAndTextStays(t *testing.T) {
++// A vendor's finish code for its filter once the answer's text began is
++// still its word that the turn was never answered (#5075): the next
++// member answers in the same stream, what went out first staying as the
++// reasoning of a handed-over try does. Before, the reply ended on the
++// vendor's finish code, and a client that reads finish reasons failed
++// the whole turn on it.
++func TestRefusalAfterThinkingAndTextFailsOver(t *testing.T) {
+ 	fresh(t)
+ 	late := sse(
+ 		`data: {"id":"c1","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"first thought"}}]}`,
+@@ -219,12 +223,16 @@ func TestRefusalAfterThinkingAndTextStays(t *testing.T) {
+ 	refusalGroup(t, "a/m", "b/m")
+ 	s := New()
+ 	code, body := sendTo(s, "/v1/chat/completions", chatStreamAsk)
+-	if code != 200 || body != late || b.n != 0 {
+-		t.Fatalf("%d (b %d): %s", code, b.n, body)
++	if code != 200 || a.n != 1 || b.n != 1 || !strings.Contains(body, "first thought") || !strings.Contains(body, "half") || !strings.Contains(body, "from b") || strings.Contains(body, "sensitive") {
++		t.Fatalf("%d (a %d, b %d): %s", code, a.n, b.n, body)
+ 	}
+-	if r := lastRoute(s); len(r.Tries) != 1 || r.Tries[0].Rest != nil {
++	checkChatSpliced(t, body)
++	if r := lastRoute(s); len(r.Tries) != 2 || r.Tries[0].Fail != failRefused || r.Tries[0].Rest != nil {
+ 		t.Fatalf("tries: %+v", r.Tries)
+ 	}
++	if s.resting("a") {
++		t.Fatal("the member that answered before its filter's code was set aside")
++	}
+ }
+ 
+ // Two members in a row refused after their reasoning: the third answers,
+diff --git a/internal/gateway/refusal_test.go b/internal/gateway/refusal_test.go
+index 92c25a50d..14a6b8af6 100644
+--- a/internal/gateway/refusal_test.go
++++ b/internal/gateway/refusal_test.go
+@@ -201,6 +201,52 @@ func TestContentFilterFailsOver(t *testing.T) {
+ 	}
+ }
+ 
++// Chat Completions' content_filter after a canned refusal line as the
++// whole content (#5075): CodeArts's word-list filter answers a fixed
++// politeness line and has its finish code say the turn was filtered —
++// 10/10 on the same body, the line byte-identical, while another member
++// of the group answered 620 tokens. A group kept the member that answered
++// with the line, its mates never asked; a client that reads finish
++// reasons ended the whole turn on it.
++var chatCannedRefusal = sse(`data: {"id":"c1","choices":[{"index":0,"delta":{"role":"assistant","content":""}}]}`,
++	`data: {"id":"c1","choices":[{"index":0,"delta":{"content":"As an AI language model I have not learned to answer this, please ask me something else"}}]}`,
++	`data: {"id":"c1","choices":[{"index":0,"delta":{},"finish_reason":"content_filter"}]}`,
++	`data: {"id":"c1","choices":[],"usage":{"prompt_tokens":44,"completion_tokens":47}}`,
++	`data: [DONE]`)
++
++var chatStreamsAnswer = sse(`data: {"id":"c2","choices":[{"index":0,"delta":{"role":"assistant","content":""}}]}`,
++	`data: {"id":"c2","choices":[{"index":0,"delta":{"content":"a pool is a container"}}]}`,
++	`data: {"id":"c2","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
++	`data: {"id":"c2","choices":[],"usage":{"prompt_tokens":44,"completion_tokens":5}}`,
++	`data: [DONE]`)
++
++// A vendor's finish code saying content_filter after its own canned
++// refusal line went out as the content (#5075) still says the turn was
++// never answered: the next member answers in the same stream, as a
++// refusal after reasoning does (refusalHandover), the line that went out
++// first staying as the reasoning of a handed-over try does. The member
++// isn't set aside: the request was refused, not the account (#248).
++func TestCannedRefusalFinishFailsOver(t *testing.T) {
++	fresh(t)
++	a := &scripted{replies: []reply{{200, "text/event-stream", chatCannedRefusal}}}
++	b := &scripted{replies: []reply{{200, "text/event-stream", chatStreamsAnswer}}}
++	scriptedOn(t, "a", provider.Chat, a)
++	scriptedOn(t, "b", provider.Chat, b)
++	refusalGroup(t, "a/m", "b/m")
++	s := New()
++	code, body := sendTo(s, "/v1/chat/completions", `{"model":"group/g","stream":true,"messages":[{"role":"user","content":"hi"}]}`)
++	if code != 200 || a.n != 1 || b.n != 1 || !strings.Contains(body, "a pool is a container") || strings.Contains(body, "content_filter") {
++		t.Fatalf("chat: %d %s (a %d, b %d)", code, body, a.n, b.n)
++	}
++	r := s.trace.routes[len(s.trace.routes)-1]
++	if len(r.Tries) != 2 || r.Tries[0].Fail != failRefused || r.Tries[0].Rest != nil || r.Tries[1].Fail != "" {
++		t.Fatalf("tries: %+v", r.Tries)
++	}
++	if s.resting("a") {
++		t.Fatal("the member that answered with the canned line was set aside")
++	}
++}
++
+ // With nobody else to ask, the agent is told it was refused, as a request
+ // not to send again as it is — not handed an empty reply that looks whole —
+ // and the usage says it failed. An agent on Anthropic's API has the
+-- 
+2.55.0.windows.4
+

@@ -1,0 +1,31 @@
+{
+  "base": "6f950653fcdb46c73044a071328cdc508f12ccef",
+  "source_directory": "/private/tmp/magpie-quality-20261017-2413",
+  "files": [
+    {
+      "file": "docs/subsystems/providers-accounts.md",
+      "baseline_sha256": "d587c18c97ec806c559f9808b1f4abbc44133205c804ec113c1eef12c5fb4eb2",
+      "modified_sha256": "d4a66e6e7ff2727a450c4862081f5fe71809ab5cceced2685b564a3db0285e3e"
+    },
+    {
+      "file": "internal/gui/assets/i18n.js",
+      "baseline_sha256": "a95ea297e2634fe8dafb64027f9857f5b4ba753cdf060a68c09732542c9a79c5",
+      "modified_sha256": "54f187c89c87b0cdb5b001a155e0a1ed12708fd51ae2fcc58d2fac76a4899b6b"
+    },
+    {
+      "file": "internal/provider/import_opencode.go",
+      "baseline_sha256": "33c473264c0b1d05801736eb1097db933ae077ff50cf7c2d2d94fa49e6817275",
+      "modified_sha256": "e0224dc6595a8ed050be7ad6f61d6e8e131090792c7aa5a222bfdfda59a38727"
+    },
+    {
+      "file": "internal/provider/importapps.go",
+      "baseline_sha256": "4cf3f0d45cb16be114b8f2d7d5b5e113a10facbc065686bbd8aaea82851daf9e",
+      "modified_sha256": "5f7ef5a3ad36ca513b476a426fa8c3a50c512cd77e3dfe1d625a2fe84ca54aef"
+    },
+    {
+      "file": "internal/provider/importapps_test.go",
+      "baseline_sha256": "6661447f9dfa6e150c963623d1a7968e1e3bcd0fbdc8c3c4862a10cd7c857184",
+      "modified_sha256": "b81632f2b317b7c8677fa147dec94505418319b63059da6422a186e7eb16f93a"
+    }
+  ]
+}

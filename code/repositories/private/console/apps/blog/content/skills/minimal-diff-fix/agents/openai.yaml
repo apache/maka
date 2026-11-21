@@ -1,0 +1,4 @@
+interface:
+  display_name: "最小改动修复"
+  short_description: "锁定直接阻断，只做必要修复、受控调试和轻量回归"
+  default_prompt: "使用 $minimal-diff-fix 锁定当前直接阻断链；调试请求只加受控 [DEBUG-myshow] 证据点，修复请求先写或定位最小失败验证，只改必要文件并报告未改事项。"

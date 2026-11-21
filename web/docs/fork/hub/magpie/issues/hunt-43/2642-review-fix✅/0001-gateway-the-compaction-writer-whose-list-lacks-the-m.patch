@@ -1,0 +1,168 @@
+From e1646488d08f1e221fdecdba5ce1e611d64584c5 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Sat, 17 Oct 2026 11:18:44 +0800
+Subject: [PATCH] gateway: the compaction writer whose list lacks the model is
+ found through routing groups too, and the routing page no longer tells it
+ both tried and skipped (#2642)
+
+What changed: both points of yetone's review of 0ab41eba.
+
+The writer left out as its own list no longer lists the model was kept
+only by plan's add. A conversation asked through a routing group is
+planned by planLevel's keys, which kept its left rows alone, so the
+request was refused 400 all the same; and a group in the group planned
+by weight passed its sub-plan's left and capped up, not these. keys
+records the unlisted beside their rows as add does, and the sub-plan
+passes sub.unlisted and sub.unlistedW up with the rest.
+
+And the writer chosen from the unlisted joined the order with its
+Unlisted row still in left, so the Routing page told it both tried and
+unlisted, skipped: its rows leave left with it.
+
+The tests say the spare, whose list has the model, is never asked, and
+that the writer, tried, is not in the routing page's left.
+
+Run at the head this sits on (parent 0ab41eba, itself on ebf3f48f):
+- go test -tags nogui -count=1 -p 2 -run 'TestNativeCompaction' ./internal/gateway/: ok.
+- go test -tags nogui -count=1 -p 2 -run 'TestCodex|TestCompact|TestCheckpoint' ./internal/gateway/: ok, 19.0s.
+- go test -tags nogui -count=1 -p 2 -timeout 45m ./internal/gateway/: ok, 296.5s.
+- go vet -tags nogui ./internal/gateway/: clean; gofmt -l internal/gateway/: clean; go build -tags nogui .: ok.
+
+Red and ablation, tests kept, the change lifted:
+- fallback.go back to 0ab41eba: the routed-through-group case red again, refused 400 "switched off, removed, or no longer serves", tried none; restored, green.
+- native_compaction.go back to 0ab41eba: both cases red saying the writer, tried, is still left out (Unlisted in Left); restored, green.
+- the group case was red at 0ab41eba itself before either: 400, tried "".
+
+Not tried: a real ChatGPT account whose plan dropped a model
+mid-conversation; the Routing page read through the trace's Left, not
+against the GUI itself.
+
+Fixes #2642
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gateway/fallback.go               |  4 ++
+ internal/gateway/native_compaction.go      | 11 ++++-
+ internal/gateway/native_compaction_test.go | 57 ++++++++++++++++++++++
+ 3 files changed, 71 insertions(+), 1 deletion(-)
+
+diff --git a/internal/gateway/fallback.go b/internal/gateway/fallback.go
+index ddde3bd9..09661e74 100644
+--- a/internal/gateway/fallback.go
++++ b/internal/gateway/fallback.go
+@@ -434,6 +434,8 @@ func planLevel(g provider.Group, ms []provider.Member, depth int, from provider.
+ 			w := weighed(c, m.Provider, weighing{}, false, from)
+ 			w.Unlisted, w.Via = true, m.Groups()
+ 			pl.left = append(pl.left, w)
++			pl.unlisted = append(pl.unlisted, c)
++			pl.unlistedW = append(pl.unlistedW, w)
+ 		}
+ 		return cs
+ 	}
+@@ -469,6 +471,8 @@ func planLevel(g provider.Group, ms []provider.Member, depth int, from provider.
+ 				cs, sub.order = sinkOwn(m.Via[depth], cs, sub.order)
+ 				pl.left = append(pl.left, sub.left...)
+ 				pl.capped = append(pl.capped, sub.capped...)
++				pl.unlisted = append(pl.unlisted, sub.unlisted...)
++				pl.unlistedW = append(pl.unlistedW, sub.unlistedW...)
+ 				if len(cs) > 0 {
+ 					add(unit{cs: cs, order: sub.order, member: m.Path[depth]}, firstAwake(cs))
+ 				}
+diff --git a/internal/gateway/native_compaction.go b/internal/gateway/native_compaction.go
+index dd67b448..a4a09945 100644
+--- a/internal/gateway/native_compaction.go
++++ b/internal/gateway/native_compaction.go
+@@ -283,7 +283,9 @@ func saveCheckpoints() {
+ // order with them; left says one is left, if only held or capped. One
+ // whose own list lacks the model now (planned.unlisted) is kept too: it
+ // is tried as the last resort an account whose list lacks the model is,
+-// and none other can read what it sealed.
++// and none other can read what it sealed. Its row goes from left to the
++// order with it, so the Routing page doesn't tell it both tried and
++// unlisted, skipped.
+ func checkpointReaders(cands []candidate, pl planned, who string) (_ []candidate, _ planned, left bool) {
+ 	kept, pl, ok := keepCandidates(cands, pl, func(c candidate) bool { return c.who() == who })
+ 	if ok {
+@@ -303,6 +305,13 @@ func checkpointReaders(cands []candidate, pl planned, who string) (_ []candidate
+ 	if len(found) == 0 {
+ 		return nil, pl, false
+ 	}
++	// the rows it goes to order with: they leave left, or the Routing page
++	// would have it both tried and unlisted, skipped
++	asked := make(map[string]bool, len(ws))
++	for _, w := range ws {
++		asked[w.ID] = true
++	}
++	pl.left = slices.DeleteFunc(pl.left, func(w Weighed) bool { return asked[w.ID] })
+ 	pl.order = append(pl.order, ws...)
+ 	return found, pl, true
+ }
+diff --git a/internal/gateway/native_compaction_test.go b/internal/gateway/native_compaction_test.go
+index 1bcec94a..69b2334e 100644
+--- a/internal/gateway/native_compaction_test.go
++++ b/internal/gateway/native_compaction_test.go
+@@ -344,4 +344,61 @@ func TestNativeCompactionWriterWhoseListLacksTheModel(t *testing.T) {
+ 	if !strings.Contains(body, "pong") {
+ 		t.Errorf("the writer's answer: %s", body)
+ 	}
++	if strings.Contains(tried, "acct-2") {
++		t.Errorf("the spare, whose list has the model, was asked: %q", tried)
++	}
++	// tried, its row leaves the routing page's left: not both attempted
++	// and unlisted, skipped
++	for _, w := range lastRoute(srv).Left {
++		if w.Who == "me@example.com" {
++			t.Errorf("the writer, tried, still left out: %+v", w)
++		}
++	}
++}
++
++// The same through a routing group: the conversation's model is the group,
++// whose member is the codex provider, so the plan is planLevel's keys, not
++// plan's add, and the writer whose own list has since dropped the model is
++// tried still, the spare never asked. (#2642: keys kept the left-out
++// writer's row alone, so a request routed through the group was refused
++// 400 all the same.)
++func TestNativeCompactionWriterThroughAGroupWhoseListLacksTheModel(t *testing.T) {
++	codexSignedIn(t, "spare@example.com")
++	b := newResetBackend(t)
++	// the spare's plan lists the model; the writer's no longer does
++	if err := catalog.SaveLive("codex@"+provider.KeyID("spare@example.com"), provider.CodexBase, []catalog.Model{{ID: "gpt-5.5"}}); err != nil {
++		t.Fatal(err)
++	}
++	if err := catalog.SaveLive("codex@"+provider.KeyID("me@example.com"), provider.CodexBase, []catalog.Model{{ID: "gpt-4.1"}}); err != nil {
++		t.Fatal(err)
++	}
++	nativeOn(t, "codex")
++	if err := provider.SaveGroup(provider.Group{Name: "G", Members: []string{"codex/gpt-5.5"}, Routing: provider.Ordered}); err != nil {
++		t.Fatal(err)
++	}
++	wroteCheckpoint("gAAAAB-sealed-by-me", candidate{p: provider.Provider{ID: "codex", Account: &provider.Account{User: "me@example.com"}}})
++	srv := New()
++	rec := httptest.NewRecorder()
++	req := httptest.NewRequest("POST", CodexPath+"/responses", strings.NewReader(`{"model":"group/g","stream":true,"input":[{"type":"compaction","encrypted_content":"gAAAAB-sealed-by-me"},{"type":"message","role":"user","content":[{"type":"input_text","text":"go on"}]}]}`))
++	req.Header.Set("Authorization", "Bearer chatgpt-token")
++	req.Header.Set("chatgpt-account-id", "acct-1")
++	srv.Handler().ServeHTTP(rec, req)
++	code, body := rec.Code, rec.Body.String()
++	tried, _ := b.seen()
++	if code != 200 || tried != "acct-1" {
++		t.Fatalf("%d tried %q: %s", code, tried, body)
++	}
++	if !strings.Contains(body, "pong") {
++		t.Errorf("the writer's answer: %s", body)
++	}
++	if strings.Contains(tried, "acct-2") {
++		t.Errorf("the spare, whose list has the model, was asked: %q", tried)
++	}
++	// tried, its row leaves the routing page's left: not both attempted
++	// and unlisted, skipped
++	for _, w := range lastRoute(srv).Left {
++		if w.Who == "me@example.com" {
++			t.Errorf("the writer, tried, still left out: %+v", w)
++		}
++	}
+ }
+-- 
+2.50.1 (Apple Git-155)
+

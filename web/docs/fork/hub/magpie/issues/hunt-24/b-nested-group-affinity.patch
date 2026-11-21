@@ -1,0 +1,233 @@
+From 7112fe69cf93589e02038396da5d1a19e3d7e95e Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Thu, 15 Oct 2026 20:51:29 +0800
+Subject: [PATCH] gateway: a group in the group keeps its conversations by its
+ own Affinity (#2259)
+
+Only the group the agent named had its Affinity read (scope and mode
+from g): a group nested inside it set its own in the editor, and
+nothing read it, so an inner group's strict let its conversations move
+to another key on the first refusal, and an off let them stick, where
+the outer group's value fell.
+
+Each candidate now carries the Affinity of the innermost group on the
+way down that sets one (innerAffinity, as innerFirstToken does for
+FirstToken, #2246); the conversation is kept by the answerer's, and
+the group asked for stands where none does. strictKeep takes the
+conversation back past a usage cap for an inner group's strict too.
+TestNestedGroupStrictAffinity.
+
+Run at this head (on 37fec124):
+- TestNestedGroupStrictAffinity fails on the old code ("second turn,
+  the inner group's strict: 200 ... from k2 ... tried k1,k2") and
+  passes with the fix; with both product files stashed it is red
+  again, same shape.
+- gofmt -l clean; go vet -tags nogui ./internal/gateway for darwin,
+  GOOS=linux and GOOS=windows; three-platform go build -tags nogui.
+- HOME=<scratch> go test -tags nogui -count=1 -p 2 ./internal/gateway:
+  ok.
+---
+ docs/subsystems/gateway-routing.md       |  2 +-
+ internal/gateway/affinity.go             | 19 ++++-
+ internal/gateway/fallback.go             | 18 +++++
+ internal/gateway/nested_affinity_test.go | 89 ++++++++++++++++++++++++
+ 4 files changed, 124 insertions(+), 4 deletions(-)
+ create mode 100644 internal/gateway/nested_affinity_test.go
+
+diff --git a/docs/subsystems/gateway-routing.md b/docs/subsystems/gateway-routing.md
+index 1c131481..08ec5201 100644
+--- a/docs/subsystems/gateway-routing.md
++++ b/docs/subsystems/gateway-routing.md
+@@ -35,7 +35,7 @@ backfilled; see [Gateway Session Aggregation](gateway-sessions.md).
+ | Limits | Each key or account (a candidate's `who()`) has at most `MaxConcurrency` requests out at once (its own `AccountConcurrency` over it); one more waits in its lane's queue, bounded by `QueueLimit` and `QueueWait` and turned away with a 429 past either (`lanes.take`). `MaxRPM` (coeo91 on Discord: OpenRouter's free models take 20 a minute) bounds how many requests it sends the vendor in any rolling 60 seconds (`rpms`), counting each for a second more (`rpmSlack`), since the vendor counts a request when it arrives and the first on a new connection arrives later by its dial: one more waits for room in the minute, in the order they came, after it has its slot and right before it is sent. A wait that would be longer than 2 minutes (or the provider's `QueueWait`, when shorter: `rpmWait`) is turned away at once with a 429 whose `Retry-After` is when the minute has room; nothing rests for it. An agent gone while it waits gives its place back. Every request that reaches the vendor counts: each try of the candidate loop (a retry, the next key, a fallback) waits in `serve`, and the requests a try makes on the way and the gateway's own asks (count_tokens, System One's decisions, embeddings, drawing, Kimi's search) are counted by `rpmTransport` on `s.client` (`metered`, `paidFor`). count_tokens never waits: a candidate with no room is skipped, and the local estimate answers. A full lane or a minute with no room gives way to a ready key or account of the provider or the group (`laneMate`, `ready`); a fallback is never asked for want of either. A plugin's account sends through its own transport, so only its tries are counted, not a plugin's own extra requests. Set in the provider editor (Concurrency, Requests per minute, Queue size, Queue wait) or with `magpie provider account-concurrency`, `queue` and `rpm`; a subscription's are kept with its picks, and every account of it keeps them, those on beside the first as well (`withPicks`, called by `All` and `AlsoOn`; #1899: a second WorkBuddy AI account had none, and queued 62s with the wait set to 1s). | [`concurrency.go`](../../internal/gateway/concurrency.go), [`rpm.go`](../../internal/gateway/rpm.go), [`internal/provider/concurrency.go`](../../internal/provider/concurrency.go) |
+ | Sink | With `Sink` on, a key or account that answers 429 while it still has quota goes to the back, behind every one not rate limited since. Held in memory until restart. A group in a group sinks by its own Sink, within its own order (`sinkOwn`, #2255), and the group asked for then sinks the whole by its own; `TestNestedGroupSinksItsOwnOrder`. | [`sink.go`](../../internal/gateway/sink.go) |
+ | Image generation | `/v1/images/generations` and `/v1/images/edits` are translated to the selected model's image API. OpenRouter image-only models use its `/images` endpoint and send reference images as `input_references`; OpenRouter models that return images through chat stay on Chat Completions. A routing group named for a drawing or a video (`drawingGroup`: `group/<id>`, or a bare id the group goes by that resolved to one of its members) is tried member by member in the order its routing plans for a chat (`drawingTries` over `planGroup`), each member over its own keys or accounts (`drawOnAccounts`, `startVideo`); the next member is asked while one fails as a chat's would move on (`retryable`: its vendor 5xx, out of quota, the model not served), never for a refusal of the request itself, and the call's `Fallback` names those tried first (#2005, tianxia3111: a group of two relays answered the first one's 502). Pause rules and a gateway key's group hold apply as for a chat. Nothing rests for a failed drawing. `TestImageGroupMovesOnToTheNextMember`, `TestVideoGroupMovesOnToTheNextMember`. | [`draw.go`](../../internal/gateway/draw.go), [`video.go`](../../internal/gateway/video.go), [`catalog.go`](../../internal/catalog/catalog.go) |
+-| Affinity | A conversation stays with the key or account that answered it, so the vendor's prompt cache is read again. Modes: auto (""), `session`, `turn`, `off`, `strict`. Stored in `affinity.json` next to `providers.json`. | [`affinity.go`](../../internal/gateway/affinity.go) |
++| Affinity | A conversation stays with the key or account that answered it, so the vendor's prompt cache is read again. Modes: auto (""), `session`, `turn`, `off`, `strict`. Stored in `affinity.json` next to `providers.json`. A group in a group keeps its conversations by its own Affinity, whichever innermost group on the way down sets one; the group asked for stands where none does (`innerAffinity`, `TestNestedGroupStrictAffinity`). | [`affinity.go`](../../internal/gateway/affinity.go) |
+ | One try | `attempt` sends one candidate the request. It goes through the proxy of the account or key it uses, else the provider's (`p.Via`, `ProxyChoice`: `AccountProxies` holds an account's by its name, a key's by its `KeyID`). A request magpie makes for one provider while serving another's (a web search, an image description, a classifier call) takes its own provider's proxy or the global one, never the outer one: `netproxy.With` replaces a choice the context already names, "" too, and `webSearch` starts from none, so the search APIs follow the global proxy (#1522). A subscription with its own client is served specially, such as Claude through the genuine Claude Code. The request is relayed as is (`passthrough`) when the model is usable on the agent's API, except that a Claude model where the provider has an Anthropic URL is translated to Messages from Chat or Responses too (`OnMessages`: OpenCode speaks Chat for every model, and a relay drops cache_control there), unless the user set the model's API or the vendor's list names its APIs. An account that only streams (`Account.Stream`: a plugin's, and most subscriptions magpie signs in to) has a request that asked for one body translated, which magpie always asks streamed, except a plugin's on Responses (`gathers`): that is relayed all the same, asked with `stream:true`, and the client given the `response` of the stream's `response.completed` (or `response.incomplete`) as one JSON body (`gathered` in [`gathered.go`](../../internal/gateway/gathered.go); its `output` filled from the stream's `response.output_item.done` items, or else its text, when that event's is empty). So the tools the vendor runs itself, and its response's `tools` and usage details, reach the client (plugins#112: a translation dropped Grok's `x_search`, and Grok answered without searching; `TestGrokPluginNonStreamKeepsHostedTools`). A stream that fails or ends before that event is a 502 (`TestGrokPluginNonStreamEndedShort`), never an empty 200. A Messages request is still translated, its stream having no event that holds the whole reply, and so is a subscription magpie signs in to itself (the ChatGPT backend's, Qoder's): its own code fits its requests. A request offering web search to a provider that doesn't search by itself is translated too, so magpie can search for it (`search.go`; a provider that searches for some of its models only, Command Code's Provider API, lists them in `searchModels` by API, and none count under its `x-cmd-zdr` header, #1590), but on the agent's own API where the provider serves it and no `ResponsesFirst`/`MessagesFirst` rule prefers another: Codex offers web_search on every turn, and each went out as Chat (#997). Otherwise it is translated (`translate`) to the first API `usable` gives: Chat, except Responses for OpenAI's models where their maker serves them (`ResponsesFirst`), Responses for every model at ModelScope, whose Chat API reports neither the tokens its cache answered nor reasoning while its Responses API reports both (`ResponsesTellsCache`, #1578; a 404 there sends the model to Chat, and only there), and Anthropic's Messages for a Claude model where the provider has an Anthropic URL (`MessagesFirst`, which keeps its cache breakpoints, #997). An API that answers the model is not served there (`wrongEndpoint`) is remembered in `unfit` until magpie restarts. When every API has turned the model away, the API the user picked for it (`ModelAPI`) is asked again, and without a pick each API the provider has a URL for (`Speaks`), Chat first. `Provider.Native`, the API agents with a per-model API (Pi, omp, droid) are wired to ask on, follows the same order. A custom provider with a Gemini URL (#1346) has Gemini last among the APIs it speaks: a Gemini client's request is relayed there, and any other is translated to it when it has no other, or when the user set Gemini as the model's API (`SetModelAPI` takes chat, responses, anthropic or gemini, each only where the provider has its URL; a model set to Gemini has no `Native`, so those agents ask it on their own API and it is translated). Upstream it is always asked `models/{model}:streamGenerateContent?alt=sse` under the base (`upstreamPath`), the model only in the path (`forwardOnce` drops the body's), so a Gemini client that asked for one JSON body is translated, as for Factory's generate route. | [`gateway.go`](../../internal/gateway/gateway.go) |
+ | Trace | The Routing view's record of each decision, written where the decision is made: candidates, rests, which try answered. `Route.Folder` is the folder the agent says it works in (`workDir`), its last two levels only (`shortFolder`, e.g. `workspace/magpie`), never the full path; a request that says none (a title, a topic check) takes its session's as said last (`trace.sessionFolder`), one without a session id has none (#1068). It is kept in the routing history on disk for as long as the route is (`history.go`: 30 days, 200 MB). The GUI shows it in By session's headings, a request row's tooltip, the stage's agent working in more than one folder, and the tray panel's agent tooltip. | [`trace.go`](../../internal/gateway/trace.go) |
+ | Prompt | What each request's prompt held, part by part: the agent's system prompt, tool definitions (an MCP server's tools as one item), instruction files and skills, files its tools read, their other output, and the conversation. `inspectPrompt` reads it from the body as the agent sent it, before translation; `calibrated` scales the estimate to the prompt the vendor counted and sets the window of the model that answered. The route keeps names and sizes only, never the text, so the routing history on disk holds none. For the card's text (masaka on Discord), the trace keeps the last `promptBodies` (10) request bodies in memory only (at most 32 MiB each, 64 MiB together), masked as the vendor got them; for a model let have it unmasked, the masked copy is kept all the same. `PromptText` reads a part's items and their text from that body again (`prompt_text.go`), served to the GUI as `/api/context/text`; once a body is dropped, or magpie quits, its text is gone. It goes on the trace as `Route.Prompt`, with `Route.Conv` naming a conversation that has no session id. The GUI's `/api/context` scores each agent from it (`internal/gui/context.go`). A session's line and its compactions are its own turns': a call with a `Kind`, a Claude Code subagent's (`Route.Sub`, from `x-claude-code-agent-id`), and, in a session whose turns carry tool definitions, a request without any (auto mode's classifier, the title, the quota check) are left out, so a classifier's 40K after a 100K turn is no compaction (`toolSessions`, `TestContextSideCallsAreNoCompaction`). | [`prompt.go`](../../internal/gateway/prompt.go) |
+diff --git a/internal/gateway/affinity.go b/internal/gateway/affinity.go
+index 1191f61a..60ef8688 100644
+--- a/internal/gateway/affinity.go
++++ b/internal/gateway/affinity.go
+@@ -268,15 +268,20 @@ func turnIn(req *Request) (turn int, within bool) {
+ // move either: held is it, for the request to be refused as held. Neither
+ // for another mode, nor for a conversation nobody has answered yet.
+ func strictKeep(scope, mode string, in http.Header, body []byte, cs []candidate, pl planned) ([]candidate, planned, []Weighed) {
+-	if mode != provider.AffinityStrict {
+-		return cs, pl, nil
+-	}
+ 	sticks.Lock()
+ 	st, had := stickOf(scope + "|" + conversationID(in, body))
+ 	sticks.Unlock()
+ 	if !had || time.Since(st.at) > stickKeep || slices.ContainsFunc(cs, func(c candidate) bool { return c.who() == st.who }) {
+ 		return cs, pl, nil
+ 	}
++	// strict, as the group asked for says, or as an inner group of the
++	// account's does: its conversation goes on there past the cap
++	if mode != provider.AffinityStrict &&
++		!slices.ContainsFunc(append(slices.Clone(pl.capped), pl.held...), func(c candidate) bool {
++			return c.who() == st.who && c.affinity == provider.AffinityStrict
++		}) {
++		return cs, pl, nil
++	}
+ 	// the left's line for c, as it was left out
+ 	leftAt := func(c candidate) int {
+ 		return slices.IndexFunc(pl.left, func(w Weighed) bool {
+@@ -377,6 +382,14 @@ func affine(scope, mode string, rotate bool, in http.Header, from provider.Proto
+ 			}
+ 		}
+ 	}
++	// the answerer's own group in the group keeps the conversation as it
++	// says (#…): a nested group's Affinity was read only where the group
++	// asked for set one, so an inner group's strict let its conversations
++	// drift
++	if at >= 0 && cs[at].affinity != "" {
++		mode = cs[at].affinity
++		a.Mode = mode
++	}
+ 	switch {
+ 	case mode == provider.AffinityOff:
+ 		a.Why = "off"
+diff --git a/internal/gateway/fallback.go b/internal/gateway/fallback.go
+index c00641da..403945c8 100644
+--- a/internal/gateway/fallback.go
++++ b/internal/gateway/fallback.go
+@@ -62,6 +62,11 @@ type candidate struct {
+ 	// member is in that sets one (#2246): a group in a group times its own
+ 	// members' first tokens, the group asked for only those that set none
+ 	firstToken int
++	// affinity is the Affinity of the innermost group of those the member
++	// is in that sets one: a group in a group keeps its own conversations
++	// on the key or account that answered them, the group asked for only
++	// where none of theirs does
++	affinity string
+ }
+ 
+ // capHold is how an account is held at its usage cap: the cap of the
+@@ -404,6 +409,18 @@ func innerFirstToken(m provider.Member) int {
+ 	return 0
+ }
+ 
++// innerAffinity is the Affinity of the innermost group m is in (m.Via, the
++// outermost first) that sets one, "" for none: the group asked for's own
++// stands where none does, as affine has it.
++func innerAffinity(m provider.Member) string {
++	for i := len(m.Via) - 1; i >= 0; i-- {
++		if m.Via[i].Affinity != "" {
++			return m.Via[i].Affinity
++		}
++	}
++	return ""
++}
++
+ // planLevel orders the models ms of g, a group depth groups down from the
+ // one asked for, adding to pl's order as it goes: those set aside and
+ // those unlisted it gathers for planGroup to put last.
+@@ -416,6 +433,7 @@ func planLevel(g provider.Group, ms []provider.Member, depth int, from provider.
+ 			for i := range l {
+ 				l[i].effort, l[i].fast = m.Effort, m.Fast
+ 				l[i].firstToken = innerFirstToken(m)
++				l[i].affinity = innerAffinity(m)
+ 			}
+ 		}
+ 		pl.left = append(pl.left, barredOf(barred, m.Provider, false, from, m.Groups())...)
+diff --git a/internal/gateway/nested_affinity_test.go b/internal/gateway/nested_affinity_test.go
+new file mode 100644
+index 00000000..9a430ba0
+--- /dev/null
++++ b/internal/gateway/nested_affinity_test.go
+@@ -0,0 +1,89 @@
++package gateway
++
++import (
++	"io"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"sync"
++	"testing"
++
++	"github.com/yetone/magpie/internal/provider"
++)
++
++// nestedKeys is a vendor that answers as each key, and refuses as told
++// for each, out of its allowance as ChatGPT says it.
++type nestedKeys struct {
++	mu    sync.Mutex
++	tried []string
++	fail  map[string]bool // key → refuse with a 429 out of allowance
++}
++
++func (k *nestedKeys) ServeHTTP(w http.ResponseWriter, r *http.Request) {
++	io.ReadAll(r.Body)
++	key := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
++	k.mu.Lock()
++	k.tried = append(k.tried, key)
++	refuse := k.fail[key]
++	k.mu.Unlock()
++	w.Header().Set("Content-Type", "application/json")
++	if refuse {
++		w.WriteHeader(http.StatusTooManyRequests)
++		io.WriteString(w, `{"error":{"type":"usage_limit_reached","message":"The usage limit has been reached","resets_in_seconds":7200}}`)
++		return
++	}
++	io.WriteString(w, `{"id":"x","choices":[{"index":0,"message":{"role":"assistant","content":"from `+key+`"},"finish_reason":"stop"}]}`)
++}
++
++// A nested group's own Affinity holds the requests that reach it through
++// the group asked for, as its own firstToken (#2246) and Sink (#2255) do:
++// only the group the agent named had its Affinity read, so an inner
++// group's strict let the conversation drift to another key.
++func TestNestedGroupStrictAffinity(t *testing.T) {
++	fresh(t)
++	k := &nestedKeys{fail: map[string]bool{}}
++	up := httptest.NewServer(k)
++	t.Cleanup(up.Close)
++	if err := provider.Save(provider.Provider{ID: "gw", Name: "GW", Key: "k1", Models: []string{"m"}, Chat: up.URL + "/v1",
++		Keys: []provider.KeyAccount{{Key: "k2"}}}); err != nil {
++		t.Fatal(err)
++	}
++	if err := provider.SaveGroup(provider.Group{ID: "inner", Name: "Inner", Members: []string{"gw/m"},
++		Affinity: provider.AffinityStrict, Routing: provider.Ordered}); err != nil {
++		t.Fatal(err)
++	}
++	if err := provider.SaveGroup(provider.Group{ID: "outer", Name: "Outer", Members: []string{"group/inner"},
++		Routing: provider.Ordered}); err != nil {
++		t.Fatal(err)
++	}
++	s := New()
++	const turn = `{"model":"group/outer","messages":[{"role":"user","content":"hi"}]}`
++	if code, body := postAs(t, s, "s1", turn); code != 200 || len(k.tried) != 1 {
++		t.Fatalf("first turn: %d %s tried %v", code, body, k.tried)
++	}
++	first, other := k.tried[0], ""
++	if first == "k1" {
++		other = "k2"
++	} else {
++		other = "k1"
++	}
++	// the key the conversation is on runs out: the inner group's strict
++	// keeps the conversation on it anyway, and its error is the agent's —
++	// not a move to the other key
++	k.mu.Lock()
++	k.fail[first] = true
++	k.tried = nil
++	k.mu.Unlock()
++	code, body := postAs(t, s, "s1", turn)
++	k.mu.Lock()
++	tried := strings.Join(k.tried, ",")
++	k.mu.Unlock()
++	if code != 429 || tried != first {
++		t.Fatalf("second turn, the inner group's strict: %d %s tried %s", code, body, tried)
++	}
++	a := s.trace.routes[len(s.trace.routes)-1].Affinity
++	if a == nil || a.Why != "strict" {
++		t.Fatalf("affinity %+v, want strict", a)
++	}
++	_ = other
++}
+-- 
+2.50.1 (Apple Git-155)
+

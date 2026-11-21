@@ -1,0 +1,62 @@
+=== RUN   TestCodexCompactFailureKeepsTheTurnRoute
+=== RUN   TestCodexCompactFailureKeepsTheTurnRoute/api-key-refused
+--- FAIL: TestCodexCompactFailureKeepsTheTurnRoute (1.15s)
+    --- FAIL: TestCodexCompactFailureKeepsTheTurnRoute/api-key-refused (1.15s)
+panic: runtime error: invalid memory address or nil pointer dereference [recovered, repanicked]
+[signal SIGSEGV: segmentation violation code=0x2 addr=0x60 pc=0x102c42aa8]
+
+goroutine 16 [running]:
+testing.tRunner.func1.2({0x1045a69e0, 0x1049b34f0})
+	/Users/ggbdpq/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.8.darwin-arm64/src/testing/testing.go:1974 +0x1a0
+testing.tRunner.func1()
+	/Users/ggbdpq/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.8.darwin-arm64/src/testing/testing.go:1977 +0x318
+panic({0x1045a69e0?, 0x1049b34f0?})
+	/Users/ggbdpq/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.8.darwin-arm64/src/runtime/panic.go:860 +0x12c
+github.com/yetone/magpie/internal/gateway.(*Server).Handler.(*Server).counted.func29.1.deferwrap1()
+	/private/tmp/magpie-quality-20261017-2481/internal/gateway/busy.go:52 +0x20
+github.com/yetone/magpie/internal/gateway.(*Server).Handler.(*Server).counted.func29.1()
+	/private/tmp/magpie-quality-20261017-2481/internal/gateway/busy.go:57 +0xe8
+panic({0x1045a69e0?, 0x1049b34f0?})
+	/Users/ggbdpq/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.8.darwin-arm64/src/runtime/panic.go:860 +0x12c
+github.com/yetone/magpie/internal/gateway.(*Server).codexUpstreamOn(0x62d37c3a4000, {0x1047a0db0, 0x62d37bcf6000}, 0x62d37bcae500, {0x62d37bc56057, 0x12}, {0x62d37bb7e400, 0x20, 0x200}, 0x0)
+	/private/tmp/magpie-quality-20261017-2481/internal/gateway/codex_backend.go:909 +0x2fb8
+github.com/yetone/magpie/internal/gateway.(*Server).codexUpstream(...)
+	/private/tmp/magpie-quality-20261017-2481/internal/gateway/codex_backend.go:688
+github.com/yetone/magpie/internal/gateway.(*Server).codexBackend(0x62d37c3a4000, {0x1047a0db0, 0x62d37bcf6000}, 0x62d37bcae500)
+	/private/tmp/magpie-quality-20261017-2481/internal/gateway/codex_backend.go:200 +0xd24
+net/http.HandlerFunc.ServeHTTP(0x62d37b7e2000?, {0x1047a0db0?, 0x62d37bcf6000?}, 0x0?)
+	/Users/ggbdpq/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.8.darwin-arm64/src/net/http/server.go:2286 +0x38
+net/http.(*ServeMux).ServeHTTP(0x0?, {0x1047a0db0, 0x62d37bcf6000}, 0x62d37bcae500)
+	/Users/ggbdpq/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.8.darwin-arm64/src/net/http/server.go:2828 +0x190
+github.com/yetone/magpie/internal/gateway.(*Server).Handler.keyLimited.func24({0x1047a0db0, 0x62d37bcf6000}, 0x62d37bcae500)
+	/private/tmp/magpie-quality-20261017-2481/internal/gateway/key_limit.go:41 +0x1e8
+net/http.HandlerFunc.ServeHTTP(0x62d37bcae280?, {0x1047a0db0?, 0x62d37bcf6000?}, 0x104a5c3c0?)
+	/Users/ggbdpq/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.8.darwin-arm64/src/net/http/server.go:2286 +0x38
+github.com/yetone/magpie/internal/gateway.(*Server).Handler.withCaller.func25({0x1047a0db0, 0x62d37bcf6000}, 0x62d37bcae280)
+	/private/tmp/magpie-quality-20261017-2481/internal/gateway/remote_magpie.go:82 +0x2fc
+net/http.HandlerFunc.ServeHTTP(0x1047a30b0?, {0x1047a0db0?, 0x62d37bcf6000?}, 0x102315ef0?)
+	/Users/ggbdpq/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.8.darwin-arm64/src/net/http/server.go:2286 +0x38
+github.com/yetone/magpie/internal/gateway.(*Server).Handler.callerGuard.func26({0x1047a0db0, 0x62d37bcf6000}, 0x62d37bcae280)
+	/private/tmp/magpie-quality-20261017-2481/internal/gateway/lan.go:403 +0x10c
+net/http.HandlerFunc.ServeHTTP(0x0?, {0x1047a0db0?, 0x62d37bcf6000?}, 0x10217150c?)
+	/Users/ggbdpq/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.8.darwin-arm64/src/net/http/server.go:2286 +0x38
+github.com/yetone/magpie/internal/gateway.(*Server).Handler.corsGuard.func27({0x1047a0db0, 0x62d37bcf6000}, 0x62d37bcae280)
+	/private/tmp/magpie-quality-20261017-2481/internal/gateway/cors.go:63 +0x108
+net/http.HandlerFunc.ServeHTTP(0x1045a6320?, {0x1047a0db0?, 0x62d37bcf6000?}, 0x62d37b93c280?)
+	/Users/ggbdpq/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.8.darwin-arm64/src/net/http/server.go:2286 +0x38
+github.com/yetone/magpie/internal/gateway.(*Server).Handler.holdCatalog.func28({0x1047a0db0, 0x62d37bcf6000}, 0x62d37bcae280)
+	/private/tmp/magpie-quality-20261017-2481/internal/gateway/holdcatalog.go:22 +0x78
+net/http.HandlerFunc.ServeHTTP(0x62d37c3a41d8?, {0x1047a0db0?, 0x62d37bcf6000?}, 0x102cd7084?)
+	/Users/ggbdpq/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.8.darwin-arm64/src/net/http/server.go:2286 +0x38
+github.com/yetone/magpie/internal/gateway.(*Server).Handler.(*Server).counted.func29({0x1047a0db0, 0x62d37bcf6000}, 0x62d37bcae140)
+	/private/tmp/magpie-quality-20261017-2481/internal/gateway/busy.go:58 +0x1d4
+net/http.HandlerFunc.ServeHTTP(0x62d37c3a4000?, {0x1047a0db0?, 0x62d37bcf6000?}, 0xd?)
+	/Users/ggbdpq/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.8.darwin-arm64/src/net/http/server.go:2286 +0x38
+github.com/yetone/magpie/internal/gateway.TestCodexCompactFailureKeepsTheTurnRoute.func1(0x62d37be96d88)
+	/private/tmp/magpie-quality-20261017-2481/internal/gateway/codex_backend_test.go:297 +0x7bc
+testing.tRunner(0x62d37be96d88, 0x62d37be94dc0)
+	/Users/ggbdpq/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.8.darwin-arm64/src/testing/testing.go:2036 +0xc4
+created by testing.(*T).Run in goroutine 15
+	/Users/ggbdpq/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.8.darwin-arm64/src/testing/testing.go:2101 +0x3a8
+FAIL	github.com/yetone/magpie/internal/gateway	1.815s
+FAIL

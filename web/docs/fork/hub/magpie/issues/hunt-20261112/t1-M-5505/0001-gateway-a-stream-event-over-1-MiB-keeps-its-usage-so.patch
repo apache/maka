@@ -1,0 +1,225 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Rick Chan <rick.chan.zhikun@gmail.com>
+Date: Fri, 6 Nov 2026 18:50:44 +0800
+Subject: [PATCH] gateway: a stream event over 1 MiB keeps its usage, so a turn
+ with a thousand tools counts (#5505)
+
+usageSniffer let go of any stream event past 1 MiB, in write for a line
+still arriving and in line for the data held, while the event's name still
+marked the stream ended. A Codex turn that sent 1,102 tools inline came back
+with a long last event, and was logged as a 200 of 0 tokens with no
+response_id, stop or served, though Codex counted about 313k input for it.
+
+Both caps are now sniffEventMost, 32 MiB, the line sse.go's readers take, so
+an unbounded event still can't pile up. write looks for a line end in what
+came new, so a line of megabytes isn't searched from its start on each 32 KiB
+write.
+
+Fails without it: TestSniffUsagePastOneMiB and
+TestCodexTurnWithALongLastEventCountsItsTokens, usage 0 where 313185 came.
+Either cap put back to 1<<20 alone turns TestSniffUsagePastOneMiB red. With
+no cap at all, TestSniffEventPastTheCapIsLetGo is red.
+
+Run at this head, on d6f59f9f, in golang:1.26.8 with GTK and WebKitGTK
+headers, network off, temp HOME: gofmt -l on the changed files, go vet
+-tags gtk3 ./..., GOOS=linux go vet -tags nogui ./..., GOOS=windows go vet
+./..., the three builds, go test -race -count=3 on the new tests, and
+go test -tags nogui ./...: 83 packages ok, and TestZedSecretService,
+TestKeyNote, TestSystemdStatus, TestBootSaysWhereItsGatewayListens,
+TestUpdateNotWritableSaysWhy and TestSteadyGCRetunesAfterACollection red. The
+same six are red on d6f59f9f itself in that container: the first five go by
+its D-Bus, systemd and Docker detection, the last is #5256.
+
+Real use: a nogui build with provider.CodexBase set by -ldflags to a local
+fake of the ChatGPT backend that echoes tools in response.completed, the
+Codex 0.166.0-alpha.5.1 binary, and a stdio MCP server of 1,100 tools, 24
+steps. Before: 13 of 26 requests logged at 0 tokens, 167,640 input in all
+against Codex's own 4,305,671. After: none at 0, 4,325,625.
+
+Not tried: the live ChatGPT backend, so that its response.completed echoes
+tools is read from the routing records, not captured. macOS and Windows at
+run time. The GUI suite, as no asset changed.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ internal/gateway/sniff.go                  |  17 ++-
+ internal/gateway/sniff_large_event_test.go | 118 +++++++++++++++++++++
+ 2 files changed, 132 insertions(+), 3 deletions(-)
+ create mode 100644 internal/gateway/sniff_large_event_test.go
+
+diff --git a/internal/gateway/sniff.go b/internal/gateway/sniff.go
+index 447c970cd..e2d59363e 100644
+--- a/internal/gateway/sniff.go
++++ b/internal/gateway/sniff.go
+@@ -8,6 +8,12 @@ import (
+ 	"github.com/yetone/magpie/internal/provider"
+ )
+ 
++// sniffEventMost is the longest stream event read for its usage, as long as
++// sse.go's readers take a line. A reply echoes the request's tools in its
++// last event, so a turn with a thousand tools has one of megabytes, with the
++// usage in it (#5505).
++const sniffEventMost = 32 << 20
++
+ // usageSniffer picks the usage block out of a provider reply that is being
+ // copied to the client untouched. Streams are read line by line as they
+ // pass; a plain JSON body is kept and parsed at the end.
+@@ -62,15 +68,20 @@ func (s *usageSniffer) write(b []byte) {
+ 		return
+ 	}
+ 	s.buf = append(s.buf, b...)
++	// what was held before b has no line end: a line of megabytes isn't
++	// searched again from its start on every write
++	from := len(s.buf) - len(b)
+ 	for {
+-		i := bytes.IndexByte(s.buf, '\n')
++		i := bytes.IndexByte(s.buf[from:], '\n')
+ 		if i < 0 {
+ 			break
+ 		}
++		i += from
+ 		s.line(bytes.TrimSuffix(s.buf[:i], []byte{'\r'}))
+ 		s.buf = s.buf[i+1:]
++		from = 0
+ 	}
+-	if len(s.buf) > 1<<20 { // a runaway line is not one we can use
++	if len(s.buf) > sniffEventMost { // a runaway line is not one we can use
+ 		s.buf = nil
+ 		s.data = nil
+ 	}
+@@ -90,7 +101,7 @@ func (s *usageSniffer) line(line []byte) {
+ 	}
+ 	if rest, ok := bytes.CutPrefix(line, []byte("data:")); ok {
+ 		rest = bytes.TrimPrefix(rest, []byte{' '})
+-		if len(s.data)+len(rest)+1 > 1<<20 {
++		if len(s.data)+len(rest)+1 > sniffEventMost {
+ 			s.data = nil // never let an unbounded event accumulate
+ 			return
+ 		}
+diff --git a/internal/gateway/sniff_large_event_test.go b/internal/gateway/sniff_large_event_test.go
+new file mode 100644
+index 000000000..1e91cf74a
+--- /dev/null
++++ b/internal/gateway/sniff_large_event_test.go
+@@ -0,0 +1,118 @@
++package gateway
++
++import (
++	"encoding/json"
++	"fmt"
++	"io"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"testing"
++	"time"
++
++	"github.com/yetone/magpie/internal/provider"
++	"github.com/yetone/magpie/internal/usage"
++)
++
++// bigCompleted is a Responses stream's last event carrying n tool
++// definitions, as a reply echoes the tools it was asked with: over a
++// thousand of them take such an event past 1 MiB.
++func bigCompleted(t *testing.T, n int) string {
++	t.Helper()
++	tools := make([]map[string]any, n)
++	for i := range tools {
++		tools[i] = map[string]any{
++			"type":        "function",
++			"name":        fmt.Sprintf("mcp__connector__tool_%d", i),
++			"description": strings.Repeat("Reads one record of the connector. ", 40),
++			"parameters":  map[string]any{"type": "object", "properties": map[string]any{"id": map[string]any{"type": "string"}}},
++		}
++	}
++	b, err := json.Marshal(map[string]any{
++		"type": "response.completed",
++		"response": map[string]any{
++			"id": "resp_big", "status": "completed", "model": "gpt-6-astra", "tools": tools,
++			"usage": map[string]any{
++				"input_tokens":          313185,
++				"input_tokens_details":  map[string]any{"cached_tokens": 7936},
++				"output_tokens":         107,
++				"output_tokens_details": map[string]any{"reasoning_tokens": 14},
++			},
++		},
++	})
++	if err != nil {
++		t.Fatal(err)
++	}
++	return "event: response.completed\ndata: " + string(b) + "\n\n"
++}
++
++// inChunks writes s as the gateway's copy loop hands a stream over.
++func inChunks(s *usageSniffer, b string) {
++	for len(b) > 0 {
++		n := min(32<<10, len(b))
++		s.write([]byte(b[:n]))
++		b = b[n:]
++	}
++}
++
++// A Codex turn that sends over a thousand tools gets them back in
++// response.completed. The usage in that event is the turn's, however long
++// the event is (#5505).
++func TestSniffUsagePastOneMiB(t *testing.T) {
++	stream := bigCompleted(t, 1102)
++	if len(stream) <= 1<<20 {
++		t.Fatalf("the event is %d bytes, not past the old cap", len(stream))
++	}
++	s := newSniffer(provider.Responses, "text/event-stream")
++	inChunks(s, stream)
++	if !s.whole() {
++		t.Fatal("the stream's last event wasn't seen")
++	}
++	u := s.usage()
++	if u.Input != 313185-7936 || u.CacheRead != 7936 || u.Output != 107 || u.ResponseID != "resp_big" {
++		t.Fatalf("usage %+v", u)
++	}
++}
++
++// An event past the cap is still let go, whole, with nothing of it kept,
++// and what the stream says after it is read.
++func TestSniffEventPastTheCapIsLetGo(t *testing.T) {
++	s := newSniffer(provider.Responses, "text/event-stream")
++	huge := `data: {"type":"response.output_item.done","item":"` + strings.Repeat("x", sniffEventMost+1) + `"}` + "\n\n"
++	inChunks(s, huge[:len(huge)-2])
++	if len(s.buf) > sniffEventMost || len(s.data) > sniffEventMost {
++		t.Fatalf("kept %d and %d bytes past the cap", len(s.buf), len(s.data))
++	}
++	inChunks(s, "\n\n"+`data: {"type":"response.completed","response":{"id":"r2","usage":{"input_tokens":9,"output_tokens":2}}}`+"\n\n")
++	if len(s.buf) != 0 || len(s.data) != 0 {
++		t.Fatalf("kept %d and %d bytes of a dropped event", len(s.buf), len(s.data))
++	}
++	if u := s.usage(); u.Input != 9 || u.Output != 2 || u.ResponseID != "r2" {
++		t.Fatalf("usage after the dropped event %+v", u)
++	}
++}
++
++// The whole path: a Codex turn relayed to the ChatGPT backend is in the
++// ledger with its tokens when its last event is long, not as a 200 of none.
++func TestCodexTurnWithALongLastEventCountsItsTokens(t *testing.T) {
++	setup(t, provider.Chat, &fake{t: t})
++	stream := bigCompleted(t, 1102)
++	chatgpt(t, func(w http.ResponseWriter, r *http.Request) {
++		w.Header().Set("Content-Type", "text/event-stream")
++		io.WriteString(w, stream)
++	})
++	codexChatGPTAuth(t, "me@example.com")
++	s := New()
++	rec := httptest.NewRecorder()
++	req := httptest.NewRequest("POST", CodexPath+"/responses", strings.NewReader(`{"model":"gpt-5.5","stream":true,"input":"hi"}`))
++	req.Header.Set("Authorization", "Bearer chatgpt-token")
++	req.Header.Set("session_id", "long-last-event")
++	s.Handler().ServeHTTP(rec, req)
++	if rec.Code != 200 || rec.Body.Len() != len(stream) {
++		t.Fatalf("%d, %d of %d bytes", rec.Code, rec.Body.Len(), len(stream))
++	}
++	u := usage.Load(time.Time{})
++	if len(u) != 1 || u[0].Input != 313185-7936 || u[0].CacheRead != 7936 || u[0].Output != 107 {
++		t.Fatalf("usage %+v", u)
++	}
++}
+-- 
+2.50.1 (Apple Git-155)
+

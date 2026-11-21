@@ -1,0 +1,331 @@
+anhuiwangwei's report — thanks for it. Here is the analysis, a fix, and the evidence.
+
+## What's wrong
+
+On OpenCode 2, magpie kept writing the OpenCode 1 spelling into `opencode.json`: with magpie's provider already living under `providers` (the key V2 reads) and none under `provider`, every start of magpie re-added `provider.magpie` — and so did picking a model of magpie's. OpenCode 2 prefers the block under `providers` and only logs a WARN for the v1 one, "retained native value over legacy value" (`packages/core/src/config/normalize.ts`, `mergeMaps`, checked at v2.1.4 and v2.2.5 by #3883). So the v1 key is dead weight that comes back after every deletion: gone today, back at the next restart.
+
+## Root cause
+
+`openCodeLike`'s Sync (internal/agent/agents.go) has a "put it back" branch: when `provider.magpie` is missing from the file and a model of magpie's is on, it writes `provider.magpie` again — blind to whether the file already keeps magpie's provider under `providers` (OpenCode 2's spelling, what OpenChamber's provider form writes while taking the v1 one out, `config-v2.js` `writeSectionEntry`). Since magpie syncs every agent at each start and update, that branch re-added the v1 key on every restart. The model-pick path (`openCodeRefAt`) and OpenChamber's Sync (openchamber.go) had the same blind spot. #3883/#3915 (in v0.1.2855) made magpie keep the copy under `providers` current and read it, but by design still wrote `provider.magpie` — so the re-add survived those two, and the reporter can well have been on a build that already had them.
+
+## The fix
+
+Where the file keeps magpie's provider under `providers` (`openCodeNativeOn`), the v1 key stays out: a sync and a pick bring the copy under `providers` current instead — which is the block OpenCode 2 reads. Three places quit putting the v1 one back: OpenCode's Sync and the pick (agents.go), OpenChamber's Sync (openchamber.go). A config without `providers.magpie` still gets `provider.magpie`, what OpenCode 1 and 2 both read (#3883's word). Stepping off magpie still removes both blocks.
+
+Sibling surface, changed vs not:
+
+- OpenCode's Sync and the pick (`openCodeRefAt`) — changed (the gate)
+- OpenChamber's Sync — changed (the same gate)
+- stepping off magpie (`set("")`, `tidy`) — not changed: already deletes both blocks
+- the read side (`openCodeSpelled`, `ownGatewayProvider`, `openCodeBaseURL`, `openCodeWiringOff`, the wiring check) — not changed: #3883/#3915 already read `providers`
+- MiMo Code and DevEco Code — not changed directly; they share `openCodeLike`, so the gate rides along (their configs carry no `providers` block unless something wrote one, per #3883)
+- Air — not changed: its `magpie-opencode.json` is magpie's own and holds `provider.magpie` alone (#3883's note)
+- Command Code, ZCode, Pi, Crush — not changed: other config schemas
+- library's `opencode.json` face (MCP server keys, `{env:...}` refs) — not changed: it never touches the provider key
+
+Patch (also attached below), branch with the commit: https://github.com/ggbdpq/magpie/tree/fix/5064-opencode-v2-providers (head 95e20fd8020cbd4f2c99176974a7033117a08331)
+
+SHA-256 (first 16): 7939371a8fd84751
+
+<details>
+<summary>0001-agent-an-opencode-2-config-keeping-magpies-provider-under-providers-gets-no-v1-provider-back.patch</summary>
+
+```diff
+From 95e20fd8020cbd4f2c99176974a7033117a08331 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Wed, 4 Nov 2026 00:13:13 +0800
+Subject: [PATCH] agent: an OpenCode 2 config keeping magpie's provider under
+ providers gets no v1 provider back (#5064)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+anhuiwangwei (#5064): every restart added the v1 provider to an OpenCode 2
+opencode.json — V2 reads providers, not provider. magpie's sync for
+OpenCode-shaped agents puts provider.magpie back whenever it is missing and
+a model of magpie's is on, and a model picked put it back too
+(openCodeRefAt). OpenChamber's form writes magpie's provider under
+providers and takes the v1 one out of provider (config-v2.js,
+writeSectionEntry), so on such a config, an OpenCode 2 user's, every start
+of magpie (SyncCatalog over every agent) re-added the obsolete v1 key.
+OpenCode 2 reads providers and warns on the one under provider,
+"retained native value over legacy value" (normalize.ts, mergeMaps), so
+the user's deletions never stuck: gone today, back at the next start.
+
+Where the file keeps magpie's provider under providers (openCodeNativeOn),
+the v1 key stays out: a sync and a pick bring the copy under providers
+current instead, which is what OpenCode 2 reads. Three places quit putting
+the v1 one back: OpenCode's Sync and the pick (agents.go), OpenChamber's
+Sync (openchamber.go). A config without providers.magpie still gets
+provider.magpie, what OpenCode 1 and 2 both read (#3883's word). A
+provider.magpie already beside providers.magpie is kept current as before,
+and taking magpie out still takes out both blocks.
+
+TestOpenCode2sConfigPutsNoV1ProviderBack, new: red before the fix — the
+v1 provider.magpie back after a sync and after a pick — green after.
+TestOpenChamberProvidersKeptCurrent grows the same assertion for its
+sync. providersCurrent reads the v1 block magpie writes where the file
+keeps none.
+
+What was run (darwin/arm64, go1.25.5, tree on 1e1068c86):
+- TestOpenCode2sConfigPutsNoV1ProviderBack, TestOpenCodeProvidersKeptCurrent,
+  TestOpenChamberProvidersKeptCurrent, TestOpenCodeCheckReadsProviders,
+  TestOpenCodeNativeIsOpenCode2s, TestOpenCodeNativeKeepsOrderAndCost: ok
+- the OpenCode, OpenChamber, MiMo and DevEco tests at -race -count=3: ok
+- go test -tags nogui -count=1 -timeout 25m ./internal/agent/...: 1 red,
+  TestMothX, on the house list of reds main has, the rest ok (156s)
+- gofmt -l clean; go vet -tags nogui ./internal/agent: exit 0;
+  go build ./...: exit 0 (internal/gui's cgo warnings, as on main)
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/agent/agents.go                  | 13 +++-
+ internal/agent/openchamber.go             |  5 +-
+ internal/agent/opencode_providers.go      | 10 +++
+ internal/agent/opencode_providers_test.go | 86 +++++++++++++++++++----
+ 4 files changed, 99 insertions(+), 15 deletions(-)
+
+diff --git a/internal/agent/agents.go b/internal/agent/agents.go
+index 6f494566b..5e7ef9192 100644
+--- a/internal/agent/agents.go
++++ b/internal/agent/agents.go
+@@ -1077,8 +1077,11 @@ func openCodeLike(at place, id, name, icon, bin, dir, auth string, ua []string,
+ 		Sync: func() error {
+ 			var err error
+ 			// a model of magpie's chosen, but its provider gone from the
+-			// file: put it back, or the agent has nothing to send it to
+-			if _, ok := edit.GetJSON(path, "provider."+magpieID); !ok && onMagpie() {
++			// file: put it back, or the agent has nothing to send it to —
++			// unless the file keeps it under providers, OpenCode 2's
++			// spelling: there the v1 key stays out, what the sync under
++			// providers brings current is what OpenCode 2 reads (#5064)
++			if _, ok := edit.GetJSON(path, "provider."+magpieID); !ok && onMagpie() && !openCodeNativeOn(path) {
+ 				err = edit.SetJSON(path, edit.KV{Path: "provider." + magpieID, Value: provider()})
+ 			} else {
+ 				err = syncJSONInOrder(path, "provider."+magpieID, provider)
+@@ -1125,6 +1128,12 @@ func openCodeRefAt(at place, path, id, v string) (string, error) {
+ 		return own + "/" + ref, nil
+ 	}
+ 	block := func() any { return magpieProviderJSONAt("opencode", id, at.gw()) }
++	// where the file keeps magpie's provider under providers, OpenCode 2's
++	// spelling, the v1 key stays out: the copy under providers is what the
++	// pick reads there, brought current (#5064)
++	if openCodeNativeOn(path) {
++		return v, syncOpenCodeNative(path, block)
++	}
+ 	if err := edit.SetJSON(path, edit.KV{Path: "provider." + magpieID, Value: openCodeKept(path, block)()}); err != nil {
+ 		return v, err
+ 	}
+diff --git a/internal/agent/openchamber.go b/internal/agent/openchamber.go
+index 8e1d054cb..77c281686 100644
+--- a/internal/agent/openchamber.go
++++ b/internal/agent/openchamber.go
+@@ -209,7 +209,10 @@ func openChamber(home, cfg string) *Agent {
+ 		ListOnly: true,
+ 		Sync: func() error {
+ 			var err error
+-			if _, ok := edit.GetJSON(ocPath, "provider."+magpieID); !ok && usesMagpie(s.model(), s.small()) {
++			// where the OpenCode config keeps magpie's provider under
++			// providers, its own form's spelling, the v1 key stays out
++			// there too (#5064)
++			if _, ok := edit.GetJSON(ocPath, "provider."+magpieID); !ok && usesMagpie(s.model(), s.small()) && !openCodeNativeOn(ocPath) {
+ 				err = edit.SetJSON(ocPath, edit.KV{Path: "provider." + magpieID, Value: provider()})
+ 			} else {
+ 				err = syncJSONInOrder(ocPath, "provider."+magpieID, provider)
+diff --git a/internal/agent/opencode_providers.go b/internal/agent/opencode_providers.go
+index 0626fca55..19a0b114e 100644
+--- a/internal/agent/opencode_providers.go
++++ b/internal/agent/opencode_providers.go
+@@ -196,6 +196,16 @@ func syncOpenCodeNative(path string, block func() any) error {
+ 	return syncJSONInOrder(path, openCodeNativeKey, openCodeNativeKept(path, block))
+ }
+ 
++// openCodeNativeOn is whether the OpenCode config at path keeps magpie's
++// provider under providers, OpenCode 2's spelling: there the v1
++// provider.magpie stays out, what OpenCode 2 reads is the copy under
++// providers, and putting the v1 one back had every restart re-add what the
++// user had taken out, OpenCode 2 warning on it (#5064).
++func openCodeNativeOn(path string) bool {
++	_, ok := edit.GetJSON(path, openCodeNativeKey)
++	return ok
++}
++
+ // openCodeWiringOff is wiringOff for magpie's provider in the OpenCode
+ // config at path: under provider, and under providers where the file keeps
+ // it there, which OpenCode 2 reads instead.
+diff --git a/internal/agent/opencode_providers_test.go b/internal/agent/opencode_providers_test.go
+index 7564cc2ab..956cbc96e 100644
+--- a/internal/agent/opencode_providers_test.go
++++ b/internal/agent/opencode_providers_test.go
+@@ -12,6 +12,7 @@ import (
+ 
+ 	"github.com/yetone/magpie/internal/catalog"
+ 	"github.com/yetone/magpie/internal/edit"
++	"github.com/yetone/magpie/internal/gateway"
+ 	"github.com/yetone/magpie/internal/provider"
+ )
+ 
+@@ -91,7 +92,9 @@ func openChamberSaved(t *testing.T, path string) {
+ 
+ // providersCurrent checks that magpie's provider under providers in the
+ // OpenCode config at path says what the one under provider says, with what
+-// openChamberSaved left of the user's kept.
++// openChamberSaved left of the user's kept. Where the file keeps no block
++// under provider — an OpenCode 2 config magpie keeps to providers alone
++// (#5064) — what magpie writes there is the measure.
+ func providersCurrent(t *testing.T, path string) {
+ 	t.Helper()
+ 	raw, ok := edit.GetJSON(path, openCodeNativeKey)
+@@ -111,10 +114,22 @@ func providersCurrent(t *testing.T, path string) {
+ 	if err := json.Unmarshal([]byte(raw), &got); err != nil {
+ 		t.Fatal(err)
+ 	}
++	raw1, ok := edit.GetJSON(path, "provider."+magpieID)
++	if !ok {
++		b, err := json.Marshal(magpieProviderJSONAt("opencode", "opencode", gateway.URL()))
++		if err != nil {
++			t.Fatal(err)
++		}
++		raw1 = string(b)
++	}
+ 	var v1 struct {
++		Options struct {
++			BaseURL string `json:"baseURL"`
++			APIKey  string `json:"apiKey"`
++		} `json:"options"`
+ 		Models map[string]json.RawMessage `json:"models"`
+ 	}
+-	if raw1, _ := edit.GetJSON(path, "provider."+magpieID); json.Unmarshal([]byte(raw1), &v1) != nil {
++	if json.Unmarshal([]byte(raw1), &v1) != nil {
+ 		t.Fatalf("provider: %s", raw1)
+ 	}
+ 	// think/old, gone from the catalog, goes; think/new is there
+@@ -123,11 +138,10 @@ func providersCurrent(t *testing.T, path string) {
+ 		t.Fatalf("models %v, provider's %v: %s", ids, want, raw)
+ 	}
+ 	// in the order magpie lists them under provider (#4575)
+-	if order, v1order := jsonKeyOrder(t, raw, "models"), jsonKeyOrder(t, raw1Of(path), "models"); !slices.Equal(order, v1order) {
++	if order, v1order := jsonKeyOrder(t, raw, "models"), jsonKeyOrder(t, raw1, "models"); !slices.Equal(order, v1order) {
+ 		t.Fatalf("models in the order %v, provider's %v", order, v1order)
+ 	}
+-	base, _ := edit.GetJSON(path, "provider."+magpieID+".options.baseURL")
+-	key, _ := edit.GetJSON(path, "provider."+magpieID+".options.apiKey")
++	base, key := v1.Options.BaseURL, v1.Options.APIKey
+ 	if base == "" || got.Settings["baseURL"] != base || got.Settings["apiKey"] != key || got.Package != "aisdk:@ai-sdk/openai-compatible" {
+ 		t.Fatalf("settings %v, package %q; provider's %s %s", got.Settings, got.Package, base, key)
+ 	}
+@@ -135,8 +149,14 @@ func providersCurrent(t *testing.T, path string) {
+ 		t.Fatalf("the user's setting or header is gone: %s", raw)
+ 	}
+ 	deep := got.Models["think/deep"]
+-	if name, _ := edit.GetJSON(path, "provider."+magpieID+".models.think/deep.name"); deep.Name != name {
+-		t.Fatalf("deep's name %q, provider's %q", deep.Name, name)
++	var deep1 struct {
++		Name string `json:"name"`
++	}
++	if json.Unmarshal(v1.Models["think/deep"], &deep1) != nil {
++		t.Fatalf("provider's think/deep: %s", v1.Models["think/deep"])
++	}
++	if deep.Name != deep1.Name {
++		t.Fatalf("deep's name %q, provider's %q", deep.Name, deep1.Name)
+ 	}
+ 	if in, _ := deep.Capabilities["input"].([]any); !slices.Contains(in, any("image")) {
+ 		t.Fatalf("deep's capabilities %v", deep.Capabilities)
+@@ -205,6 +225,49 @@ func TestOpenCodeProvidersKeptCurrent(t *testing.T) {
+ 	}
+ }
+ 
++// #5064: every restart's sync put the v1 provider.magpie back into an
++// OpenCode 2 config that keeps magpie's provider under providers —
++// OpenChamber's form having taken the v1 one out — and a model picked put
++// it back too. OpenCode 2 reads providers and warns on the one under
++// provider, "retained native value over legacy value", so the user's
++// deletions never stuck. Where the file keeps magpie's provider under
++// providers, the v1 key stays out: the copy there is what a sync and a
++// pick bring current. A config without providers.magpie still gets the v1
++// one, what OpenCode 1 and 2 both read (#3883).
++func TestOpenCode2sConfigPutsNoV1ProviderBack(t *testing.T) {
++	home, _ := codexHome(t, "", "")
++	thinkCatalog(t)
++	oc := opencode(home, filepath.Join(home, ".config"))
++	if err := oc.Apply("model", "magpie/think/deep"); err != nil {
++		t.Fatal(err)
++	}
++	openChamberSaved(t, oc.Path)
++	if err := oc.Sync(); err != nil {
++		t.Fatal(err)
++	}
++	if v, ok := edit.GetJSON(oc.Path, "provider."+magpieID); ok {
++		t.Fatalf("the v1 provider.magpie put back: %s", v)
++	}
++	providersCurrent(t, oc.Path)
++	// and a model picked doesn't put it back either
++	openChamberSaved(t, oc.Path)
++	if err := oc.Apply("model", "magpie/think/new"); err != nil {
++		t.Fatal(err)
++	}
++	if v, ok := edit.GetJSON(oc.Path, "provider."+magpieID); ok {
++		t.Fatalf("a pick put the v1 provider.magpie back: %s", v)
++	}
++	providersCurrent(t, oc.Path)
++	// a config without providers.magpie still gets the v1 one
++	writeFile(t, oc.Path, `{"model":"magpie/think/deep"}`)
++	if err := oc.Sync(); err != nil {
++		t.Fatal(err)
++	}
++	if _, ok := edit.GetJSON(oc.Path, "provider."+magpieID); !ok {
++		t.Fatalf("the v1 provider.magpie no longer written where providers keeps none of magpie's: %s", readFile(oc.Path))
++	}
++}
++
+ // OpenChamber, magpie's agent for the OpenCode it runs, writes magpie's
+ // provider into the same config: its sync, model and step off reach the
+ // block under providers as well.
+@@ -222,6 +285,10 @@ func TestOpenChamberProvidersKeptCurrent(t *testing.T) {
+ 		t.Fatal(err)
+ 	}
+ 	providersCurrent(t, path)
++	// its sync keeps the v1 key out where providers keeps magpie's (#5064)
++	if v, ok := edit.GetJSON(path, "provider."+magpieID); ok {
++		t.Fatalf("the v1 provider.magpie put back: %s", v)
++	}
+ 	openChamberSaved(t, path)
+ 	if err := ch.Apply("model", "magpie/think/new"); err != nil {
+ 		t.Fatal(err)
+@@ -265,11 +332,6 @@ func TestOpenCodeCheckReadsProviders(t *testing.T) {
+ 	}
+ }
+ 
+-func raw1Of(path string) string {
+-	raw, _ := edit.GetJSON(path, "provider."+magpieID)
+-	return raw
+-}
+-
+ // jsonKeyOrder is the order of the keys of the object under key in the
+ // JSON object raw.
+ func jsonKeyOrder(t *testing.T, raw, key string) []string {
+-- 
+2.50.1 (Apple Git-155)
+```
+
+</details>
+
+## Verification
+
+| Check | Result |
+|---|---|
+| RED: TestOpenCode2sConfigPutsNoV1ProviderBack (new) | red before the fix — "the v1 provider.magpie put back" after a sync, and after a pick; ok after the fix |
+| RED: TestOpenChamberProvidersKeptCurrent (new assertion) | red before the fix, ok after |
+| Ablation: product files alone back at the parent (1e1068c86), tests kept | the two reds above come back; TestOpenCodeProvidersKeptCurrent green, as on main; restoring the fix, green again |
+| go test -tags nogui -count=1 -timeout 25m ./internal/agent/... | 1 red, TestMothX — red on the parent too (house list of pre-existing reds), not touched; the rest ok (156s) |
+| -race -count=3 over the OpenCode / OpenChamber / MiMo / DevEco tests | ok |
+| gofmt -l / go vet -tags nogui ./internal/agent / go build ./... | clean / exit 0 / exit 0 (internal/gui's cgo warnings, as on main) |
+
+## Not verified
+
+- Not tried against a real OpenCode 2.2.x install, OpenChamber's app itself, or Windows; the behavior follows the same `normalize.ts` `mergeMaps` reading that #3883/#3915 checked at v2.1.4 and v2.2.5.
+- The suite beyond `./internal/agent/...` (gui, tui, gateway, the whole `-tags nogui ./...`) was not run for this patch.
+- A `provider.magpie` already sitting beside `providers.magpie` is not removed: it keeps being kept current, as #3883 has it. With this fix, deleting it once now sticks.
+- A config with a `providers` block but none of magpie's under it still gets the v1 `provider.magpie` — the only block both versions read there (#3883's stated design, kept).
+
+AI use: written by GLM-5.3-Flash (ZCode) from the analysis above; please keep the author (ggbdpq) or add `Co-authored-by: ggbdpq <ggbdpq@gmail.com>`

@@ -1,0 +1,5 @@
+--- FAIL: TestNestedGroupClassifierNotAskedWhenTheParentPicked (0.17s)
+    nested_classify_test.go:61: the group in it asked its classifier 1 times though the parent picked
+FAIL
+FAIL	github.com/yetone/magpie/internal/gateway	1.156s
+FAIL

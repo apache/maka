@@ -1,0 +1,42 @@
+=== 用户: 想给妈妈送生日礼物
+updates ModelCallLimitMiddleware.before_model {"ModelCallLimitMiddleware.before_model":{"messages":[{"lc":1,"type":"constructor","id":["langchain_core","messages","HumanMessage"],"kwargs":{"content":"想给妈妈送生
+messages AIMessageChunk "" tcc:present_recommendation node=model_request 
+updates model_request {"model_request":{"messages":[{"lc":1,"type":"constructor","id":["langchain_core","messages","AIMessageChunk"],"kwargs":{"content":"","tool_call_chunks":[{"type
+updates ModelCallLimitMiddleware.after_model {"ModelCallLimitMiddleware.after_model":{"messages":[{"lc":1,"type":"constructor","id":["langchain_core","messages","HumanMessage"],"kwargs":{"content":"想给妈妈送生日
+updates ToolCallLimitMiddleware.after_model {"ToolCallLimitMiddleware.after_model":{"messages":[{"lc":1,"type":"constructor","id":["langchain_core","messages","HumanMessage"],"kwargs":{"content":"想给妈妈送生日礼
+messages ToolMessage "Error: 引用了本轮未检索到的证据：ev-fake\n Please fi  node=tools error
+updates tools {"tools":{"messages":[{"lc":1,"type":"constructor","id":["langchain_core","messages","ToolMessage"],"kwargs":{"content":"Error: 引用了本轮未检索到的证据：ev-fake\n Please fi
+updates ModelCallLimitMiddleware.before_model {"ModelCallLimitMiddleware.before_model":{"messages":[{"lc":1,"type":"constructor","id":["langchain_core","messages","HumanMessage"],"kwargs":{"content":"想给妈妈送生
+messages AIMessageChunk "先查一下画像"  node=model_request 
+messages AIMessageChunk "。"  node=model_request 
+updates model_request {"model_request":{"messages":[{"lc":1,"type":"constructor","id":["langchain_core","messages","AIMessageChunk"],"kwargs":{"content":"先查一下画像。","additional_kwargs"
+updates ModelCallLimitMiddleware.after_model {"ModelCallLimitMiddleware.after_model":{"messages":[{"lc":1,"type":"constructor","id":["langchain_core","messages","HumanMessage"],"kwargs":{"content":"想给妈妈送生日
+updates ToolCallLimitMiddleware.after_model {"ToolCallLimitMiddleware.after_model":{"messages":[{"lc":1,"type":"constructor","id":["langchain_core","messages","HumanMessage"],"kwargs":{"content":"想给妈妈送生日礼
+messages ToolMessage "[ev-survey-02] 入会喜好问卷：喜欢低香味、浅色系"  node=tools success
+updates tools {"tools":{"messages":[{"lc":1,"type":"constructor","id":["langchain_core","messages","ToolMessage"],"kwargs":{"status":"success","content":"[ev-survey-02] 入会喜好问
+updates ModelCallLimitMiddleware.before_model {"ModelCallLimitMiddleware.before_model":{"messages":[{"lc":1,"type":"constructor","id":["langchain_core","messages","HumanMessage"],"kwargs":{"content":"想给妈妈送生
+messages AIMessageChunk "" tcc:present_recommendation node=model_request 
+updates model_request {"model_request":{"messages":[{"lc":1,"type":"constructor","id":["langchain_core","messages","AIMessageChunk"],"kwargs":{"content":"","tool_call_chunks":[{"type
+updates ModelCallLimitMiddleware.after_model {"ModelCallLimitMiddleware.after_model":{"messages":[{"lc":1,"type":"constructor","id":["langchain_core","messages","HumanMessage"],"kwargs":{"content":"想给妈妈送生日
+updates ToolCallLimitMiddleware.after_model {"ToolCallLimitMiddleware.after_model":{"messages":[{"lc":1,"type":"constructor","id":["langchain_core","messages","HumanMessage"],"kwargs":{"content":"想给妈妈送生日礼
+custom {"type":"card","payload":{"title":"送礼首选：轻奢礼盒","evidenceIds":["ev-survey-02"]}}
+messages ToolMessage "卡片已展示给顾客"  node=tools success
+updates tools {"tools":{"messages":[{"lc":1,"type":"constructor","id":["langchain_core","messages","ToolMessage"],"kwargs":{"status":"success","content":"卡片已展示给顾客","tool_call
+updates ModelCallLimitMiddleware.before_model {"ModelCallLimitMiddleware.before_model":{"messages":[{"lc":1,"type":"constructor","id":["langchain_core","messages","HumanMessage"],"kwargs":{"content":"想给妈妈送生
+messages AIMessageChunk "送礼场景我推"  node=model_request 
+messages AIMessageChunk "荐礼盒款。"  node=model_request 
+updates model_request {"model_request":{"messages":[{"lc":1,"type":"constructor","id":["langchain_core","messages","AIMessageChunk"],"kwargs":{"content":"送礼场景我推荐礼盒款。","additional_kwa
+updates ModelCallLimitMiddleware.after_model {"ModelCallLimitMiddleware.after_model":{"messages":[{"lc":1,"type":"constructor","id":["langchain_core","messages","HumanMessage"],"kwargs":{"content":"想给妈妈送生日
+updates ToolCallLimitMiddleware.after_model {"ToolCallLimitMiddleware.after_model":{}}
+updates ModelCallLimitMiddleware.after_agent {"ModelCallLimitMiddleware.after_agent":{"messages":[{"lc":1,"type":"constructor","id":["langchain_core","messages","HumanMessage"],"kwargs":{"content":"想给妈妈送生日
+updates ToolCallLimitMiddleware.after_agent {"ToolCallLimitMiddleware.after_agent":{"messages":[{"lc":1,"type":"constructor","id":["langchain_core","messages","HumanMessage"],"kwargs":{"content":"想给妈妈送生日礼
+=== 用户: 换个便宜点的
+updates ModelCallLimitMiddleware.before_model {"ModelCallLimitMiddleware.before_model":{"messages":[{"lc":1,"type":"constructor","id":["langchain_core","messages","HumanMessage"],"kwargs":{"content":"想给妈妈送生
+messages AIMessageChunk "第二轮：换成"  node=model_request 
+messages AIMessageChunk "便宜款。"  node=model_request 
+updates model_request {"model_request":{"messages":[{"lc":1,"type":"constructor","id":["langchain_core","messages","AIMessageChunk"],"kwargs":{"content":"第二轮：换成便宜款。","additional_kwar
+updates ModelCallLimitMiddleware.after_model {"ModelCallLimitMiddleware.after_model":{"messages":[{"lc":1,"type":"constructor","id":["langchain_core","messages","HumanMessage"],"kwargs":{"content":"想给妈妈送生日
+updates ToolCallLimitMiddleware.after_model {"ToolCallLimitMiddleware.after_model":{}}
+updates ModelCallLimitMiddleware.after_agent {"ModelCallLimitMiddleware.after_agent":{"messages":[{"lc":1,"type":"constructor","id":["langchain_core","messages","HumanMessage"],"kwargs":{"content":"想给妈妈送生日
+updates ToolCallLimitMiddleware.after_agent {"ToolCallLimitMiddleware.after_agent":{"messages":[{"lc":1,"type":"constructor","id":["langchain_core","messages","HumanMessage"],"kwargs":{"content":"想给妈妈送生日礼
+thread messages: 10 human,ai,tool,ai,tool,ai,tool,ai,human,ai

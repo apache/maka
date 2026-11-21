@@ -1,0 +1,23 @@
+{
+  "id": "6",
+  "slug": "longest-common-prefix",
+  "title": "最长公共前缀",
+  "difficulty": "easy",
+  "tags": ["字符串"],
+  "description": "编写一个函数来查找字符串数组中的最长公共前缀。\n\n如果不存在公共前缀,返回空字符串 `\"\"`。\n\n**示例 1:**\n\n- 输入:`strs = [\"flower\",\"flow\",\"flight\"]`\n- 输出:`\"fl\"`\n\n**示例 2:**\n\n- 输入:`strs = [\"dog\",\"racecar\",\"car\"]`\n- 输出:`\"\"`(不存在公共前缀)",
+  "solution": "## 思路\n\n以第一个字符串为初始前缀,依次与其余字符串比较:若前缀不是当前字符串的开头(`indexOf !== 0`),就逐字符缩短前缀,直到匹配或为空。\n\n## 参考代码\n\n```js\nfunction longestCommonPrefix(strs) {\n  if (strs.length === 0) return '';\n  let prefix = strs[0];\n  for (let i = 1; i < strs.length; i++) {\n    while (strs[i].indexOf(prefix) !== 0) {\n      prefix = prefix.slice(0, -1);\n      if (!prefix) return '';\n    }\n  }\n  return prefix;\n}\n```\n\n## 复杂度\n\n- 时间:O(S),S 为所有字符串字符总数\n- 空间:O(1)",
+  "signature": {
+    "language": "javascript",
+    "entry": "longestCommonPrefix",
+    "params": [{ "name": "strs", "type": "string[]" }],
+    "returns": "string"
+  },
+  "testCases": [
+    { "sample": true, "input": [["flower", "flow", "flight"]], "expected": "fl" },
+    { "sample": true, "input": [["dog", "racecar", "car"]], "expected": "" },
+    { "sample": false, "input": [["interspecies", "interstellar", "interstate"]], "expected": "inters" },
+    { "sample": false, "input": [["a"]], "expected": "a" },
+    { "sample": false, "input": [["", ""]], "expected": "" },
+    { "sample": false, "input": [["ab", "a"]], "expected": "a" }
+  ]
+}

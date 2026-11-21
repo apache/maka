@@ -1,0 +1,4 @@
+interface:
+  display_name: "技术文档终稿"
+  short_description: "整理 README、复盘、交接、代码逻辑和业务说明"
+  default_prompt: "使用 $tech-writer 先判断读者；给开发者保留路径、字段、接口和关键判断，给业务或新人去掉代码细节，输出可保存的中文文档。"

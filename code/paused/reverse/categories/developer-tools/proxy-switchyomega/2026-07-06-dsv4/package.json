@@ -1,0 +1,14 @@
+{
+  "name": "proxy-switchyomega-dsv4",
+  "version": "3.0.5",
+  "description": "Proxy SwitchyOmega (V3) — Chrome extension reverse engineering (dsv4)",
+  "license": "UNLICENSED",
+  "scripts": {
+    "build": "tsc",
+    "check": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0",
+    "@types/chrome": "^0.0.268"
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "name": "rea-agent-learning",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "rea": "rea",
+    "restore": "node tools/build/restore.mjs",
+    "start": "node server/server.mjs",
+    "verify": "node tools/verify/verify-all.mjs",
+    "analyze": "node tools/analyze/",
+    "summary": "node tools/build/summarize.mjs"
+  },
+  "dependencies": {
+    "rea-agents": "6.4.0"
+  },
+  "devDependencies": {
+    "prettier": "^3.9.10"
+  }
+}

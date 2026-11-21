@@ -1,0 +1,261 @@
+upstream/main:internal/agent/codex_async.go:145:func CodexAsyncHeld() []CodexReader {
+upstream/main:internal/agent/codex_compact_held.go:39:func CodexCompactHeld(home string) []CodexCompactHold {
+upstream/main:internal/agent/codex_compact_held.go:61:	for _, h := range CodexCompactHeld(home) {
+upstream/main:internal/agent/codex_compact_held_test.go:39:	got := CodexCompactHeld(home)
+upstream/main:internal/agent/codex_compact_held_test.go:56:	if h := CodexCompactHeld(home); len(h) != 0 {
+upstream/main:internal/agent/codex_compact_held_test.go:75:	if h := CodexCompactHeld(home); len(h) != 0 {
+upstream/main:internal/agent/gone.go:34:func (a *Agent) cliHeld() (held, known bool) {
+upstream/main:internal/agent/install.go:294:	held, known := a.cliHeld()
+upstream/main:internal/agent/preview_sweep_test.go:58:func TestRemovePreviewRetriesWhileFilesAreHeld(t *testing.T) {
+upstream/main:internal/edit/env.go:14:	raw, err := readHeld(path)
+upstream/main:internal/edit/file.go:47:func readHeld(path string) ([]byte, error) {
+upstream/main:internal/edit/file.go:67:func jsonHeld(path string) ([]byte, error) {
+upstream/main:internal/edit/held_test.go:76:func TestUnchangedWriteKeepsWhatIsHeld(t *testing.T) {
+upstream/main:internal/edit/json.go:21:	raw, err := jsonHeld(path)
+upstream/main:internal/edit/json.go:36:	raw, err := jsonHeld(path)
+upstream/main:internal/edit/jsonarray.go:21:	raw, err := jsonHeld(path)
+upstream/main:internal/edit/toml.go:302:	raw, err := readHeld(path)
+upstream/main:internal/edit/yaml_top.go:16:	raw, err := readHeld(path)
+upstream/main:internal/gateway/affinity.go:692:			cs, pl = leastHeld(scope, key, cs, pl, false)
+upstream/main:internal/gateway/affinity.go:698:			cs, pl = leastHeld(scope, key, cs, pl, true)
+upstream/main:internal/gateway/affinity.go:796:func leastHeld(scope, key string, cs []candidate, pl planned, ready bool) ([]candidate, planned) {
+upstream/main:internal/gateway/body_room_test.go:44:func roomHeld(b *bodyRoomT) int64 {
+upstream/main:internal/gateway/body_room_test.go:77:	if h := roomHeld(b); h != 90<<20 {
+upstream/main:internal/gateway/body_room_test.go:83:	for roomHeld(b) != 0 {
+upstream/main:internal/gateway/body_room_test.go:85:			t.Fatalf("held = %d after every request ended", roomHeld(b))
+upstream/main:internal/gateway/body_room_test.go:107:	if h := roomHeld(b); h != 200<<20 {
+upstream/main:internal/gateway/body_room_test.go:164:	if q != 0 || roomHeld(b) != 60<<20 {
+upstream/main:internal/gateway/body_room_test.go:165:		t.Fatalf("queue = %d, held = %d MiB after a refusal", q, roomHeld(b)>>20)
+upstream/main:internal/gateway/body_room_test.go:184:	if h := roomHeld(b); h != 60<<20 {
+upstream/main:internal/gateway/body_room_test.go:195:	if err := b.take(ctx, bodyRoomFree-1); err != nil || roomHeld(b) != 0 {
+upstream/main:internal/gateway/body_room_test.go:196:		t.Fatalf("a small body: %v, held %d", err, roomHeld(b))
+upstream/main:internal/gateway/body_room_test.go:198:	if err := b.take(context.Background(), 100<<20); err != nil || roomHeld(b) != 0 {
+upstream/main:internal/gateway/body_room_test.go:199:		t.Fatalf("a context never done: %v, held %d", err, roomHeld(b))
+upstream/main:internal/gateway/body_room_test.go:204:	if err := b.take(ctx, 40<<20); err != nil || roomHeld(b) != 40<<20 {
+upstream/main:internal/gateway/body_room_test.go:205:		t.Fatalf("one request's second read: %v, held %d MiB", err, roomHeld(b)>>20)
+upstream/main:internal/gateway/body_room_test.go:207:	if err := b.take(ctx, 50<<20); err != nil || roomHeld(b) != 50<<20 {
+upstream/main:internal/gateway/body_room_test.go:208:		t.Fatalf("a body read bigger than its request said: %v, held %d MiB", err, roomHeld(b)>>20)
+upstream/main:internal/gateway/body_room_test.go:211:	if err := unknown.take(ctx, 400<<20); err != nil || roomHeld(unknown) != 0 {
+upstream/main:internal/gateway/body_room_test.go:212:		t.Fatalf("memory not known: %v, held %d", err, roomHeld(unknown))
+upstream/main:internal/gateway/chat.go:1306:		d.giveHeld(emit)
+upstream/main:internal/gateway/chat.go:1411:			d.giveHeld(emit)
+upstream/main:internal/gateway/chat.go:1475:func (d *chatDecoder) giveHeld(emit func(Event)) {
+upstream/main:internal/gateway/codex_backend.go:239:			if who, held := compactSigninHeld(r, model, on); held {
+upstream/main:internal/gateway/codex_backend.go:691:func compactSigninHeld(r *http.Request, model string, on *provider.Provider) (access.Identity, bool) {
+upstream/main:internal/gateway/codex_compact_whole_test.go:170:func TestCodexCompactKeepsFailingIsHeld(t *testing.T) {
+upstream/main:internal/gateway/concurrency.go:488:	if refuseHeld(w, r, heldRefused) {
+upstream/main:internal/gateway/decide_group.go:299:	cs = slices.DeleteFunc(cs, func(c candidate) bool { return groupHeld(c, []provider.Group{g}) != "" })
+upstream/main:internal/gateway/fallback.go:128:func spendHeld(p provider.Provider, k provider.KeyAccount, now time.Time) *capHold {
+upstream/main:internal/gateway/fallback.go:389:			h := capHeld(p, c.p, model, time.Now())
+upstream/main:internal/gateway/fallback.go:442:		if h := spendHeld(p, k, time.Now()); h != nil {
+upstream/main:internal/gateway/fallback.go:563:		pl.held = append(pl.held, creditsHeld(barred)...)
+upstream/main:internal/gateway/fallback.go:727:					name := groupHeld(c, by)
+upstream/main:internal/gateway/fallback.go:752:		pl.held = append(pl.held, creditsHeld(barred)...)
+upstream/main:internal/gateway/fallback.go:950:func capHeld(p, acct provider.Provider, model string, now time.Time) *capHold {
+upstream/main:internal/gateway/fallback.go:966:	h := al.CapHeld(model, caps, now)
+upstream/main:internal/gateway/fallback.go:1161:func creditsHeld(cs []candidate) []candidate {
+upstream/main:internal/gateway/fallback.go:1366:func quotaHeld(cs []candidate) (Rest, time.Time, bool) {
+upstream/main:internal/gateway/fastjson_held_test.go:97:func TestDecodeJSONCopiesWhatIsNotHeld(t *testing.T) {
+upstream/main:internal/gateway/foreign_seal_test.go:652:func replayedHeld(acct, n string, sealed bool) string {
+upstream/main:internal/gateway/foreign_seal_test.go:723:					if got := up.took(); len(got) != 1 || got[0] != (sealedAsk{"acct-1", "message user, " + replayedHeld("acct-1", "1", true) + ", message user"}) {
+upstream/main:internal/gateway/foreign_seal_test.go:733:					sealed := "message user, " + replayedHeld("acct-1", "1", true) + ", message user, " + replayedHeld("acct-1", "2", true) + ", message user"
+upstream/main:internal/gateway/foreign_seal_test.go:734:					bare := "message user, " + replayedHeld("acct-1", "1", false) + ", message user, " + replayedHeld("acct-1", "2", false) + ", message user"
+upstream/main:internal/gateway/foreign_seal_test.go:748:					if got := up.took(); len(got) != 1 || got[0] != (sealedAsk{"acct-2", bare + ", " + replayedHeld("acct-2", "3", true) + ", message user"}) {
+upstream/main:internal/gateway/foreign_seal_test.go:800:				bare := "message user, " + replayedHeld("acct-2", "1", false) + ", message user"
+upstream/main:internal/gateway/foreign_seal_test.go:801:				if got := up.took(); len(got) != 2 || got[0] != (sealedAsk{"acct-1", "message user, " + replayedHeld("acct-2", "1", true) + ", message user"}) || got[1] != (sealedAsk{"acct-1", bare}) {
+upstream/main:internal/gateway/foreign_seal_test.go:809:				if got := up.took(); len(got) != 1 || got[0] != (sealedAsk{"acct-1", bare + ", " + replayedHeld("acct-1", "2", true) + ", message user"}) {
+upstream/main:internal/gateway/foreign_seal_test.go:831:	if got := up.took(); len(got) != 2 || got[0] != (sealedAsk{"acct-2", "message user, " + replayedHeld("acct-1", "1", true) + ", message user"}) ||
+upstream/main:internal/gateway/foreign_seal_test.go:832:		got[1] != (sealedAsk{"acct-2", "message user, " + replayedHeld("acct-1", "1", false) + ", message user"}) {
+upstream/main:internal/gateway/gateway.go:1181:		refuseHeld(w, r, heldRefused)
+upstream/main:internal/gateway/gateway.go:1240:	if refuseHeld(w, r, "this gateway key is held to a budget, models or accounts, so it uses none of this magpie's Codex resets: use a key with full access") {
+upstream/main:internal/gateway/gateway.go:1769:	if countHeld(w, r, provider.Anthropic, id) {
+upstream/main:internal/gateway/gateway.go:2070:		if countHeld(w, r, provider.Gemini, model) {
+upstream/main:internal/gateway/gateway.go:2787:		if sealer := checkpointHeld(checkpoint, held, pl); sealer != nil {
+upstream/main:internal/gateway/gateway.go:3155:			if _, _, ok := quotaHeld(cands[i:]); ok {
+upstream/main:internal/gateway/gateway.go:3510:		if said, ok := verifyHeld(c); ok && last {
+upstream/main:internal/gateway/gateway.go:3517:		} else if rested, back, ok := quotaHeld(cands[i:]); ok && last {
+upstream/main:internal/gateway/held_report.go:63:func writeHeld(report string) (string, error) {
+upstream/main:internal/gateway/held_report_test.go:83:		n, err := writeHeld(fmt.Sprintf("report %d", i))
+upstream/main:internal/gateway/key_limit_test.go:304:				checkHeld(after, 0) // status is right even before a new call arrives
+upstream/main:internal/gateway/key_limit_test.go:306:				checkHeld(after, 1)
+upstream/main:internal/gateway/key_limit_test.go:311:				checkHeld(after, 1)
+upstream/main:internal/gateway/key_limit_test.go:314:				checkHeld(after, 0)
+upstream/main:internal/gateway/key_models.go:389:func groupHeld(c candidate, gs []provider.Group) string {
+upstream/main:internal/gateway/key_models.go:514:func countHeld(w http.ResponseWriter, r *http.Request, proto provider.Protocol, id string) bool {
+upstream/main:internal/gateway/messages_tooluse_ids_test.go:388:func TestSaltedToolUseIDTranslatedAsHeld(t *testing.T) {
+upstream/main:internal/gateway/native.go:82:func nativeHeld(who access.Identity) bool {
+upstream/main:internal/gateway/native.go:86:	return who.Issuer != nil && nativeHeld(*who.Issuer)
+upstream/main:internal/gateway/native.go:100:	if k := access.Caller(r.Context()); nativeHeld(k) {
+upstream/main:internal/gateway/native_compaction.go:136:	for _, l := range [][]candidate{cs, aside, creditsHeld(barred), capHeldOnly(barred)} {
+upstream/main:internal/gateway/native_compaction.go:357:func checkpointHeld(cp *checkpointWriter, held []Weighed, pl planned) []Weighed {
+upstream/main:internal/gateway/prompt_test.go:274:func TestPromptHeld(t *testing.T) {
+upstream/main:internal/gateway/quiet_whole_test.go:369:func TestHeldUnsureStreamFailsHeld(t *testing.T) {
+upstream/main:internal/gateway/quotas_scope.go:47:		refuseHeld(w, r, heldQuotasOff)
+upstream/main:internal/gateway/quotas_scope.go:143:		refuseHeld(w, r, heldRefused)
+upstream/main:internal/gateway/rest_all_test.go:175:	if _, _, ok := quotaHeld([]candidate{key}); ok {
+upstream/main:internal/gateway/rest_all_test.go:179:	if _, _, ok := quotaHeld([]candidate{key}); !ok {
+upstream/main:internal/gateway/rest_all_test.go:184:	if _, _, ok := quotaHeld([]candidate{key, forbidden}); ok {
+upstream/main:internal/gateway/rest_all_test.go:189:	if _, _, ok := quotaHeld([]candidate{acct}); ok {
+upstream/main:internal/gateway/rest_all_test.go:193:	if _, _, ok := quotaHeld([]candidate{key, fresh}); ok {
+upstream/main:internal/gateway/route_events.go:224:	return !refuseHeld(w, r, "this gateway key is held to a budget, models or accounts, so it is told no one else's routing: GET /v1/magpie/usage/requests tells it its own calls")
+upstream/main:internal/gateway/routing.go:985:func verifyHeld(c candidate) (string, bool) {
+upstream/main:internal/gateway/routing.go:1909:	return spendsCredits(c.p, a) && a.CapHeld(c.model, provider.WindowCaps{Credits: true}, now) != nil
+upstream/main:internal/gateway/session_spread_test.go:163:			got, _ := leastHeld(scope, scope+"|c", cs, pl, true)
+upstream/main:internal/gateway/session_spread_test.go:175:			got, _ = leastHeld(scope, scope+"|d", cs, planned{order: []Weighed{{}, {}, c.last}}, false)
+upstream/main:internal/gateway/trace.go:903:	if refuseHeld(w, r, heldRefused) {
+upstream/main:internal/gateway/unrouted.go:734:	name, err := writeHeld(report)
+upstream/main:internal/gateway/usage_api.go:49:func refuseHeld(w http.ResponseWriter, r *http.Request, msg string) bool {
+upstream/main:internal/gateway/usage_api.go:62:	if refuseHeld(w, r, "this gateway key is held to a budget, models or accounts, so it is told its own calls alone: GET /v1/magpie/usage/requests") {
+upstream/main:internal/gateway/video.go:1339:func videoModelHeld(r *http.Request, p provider.Provider, model string) string {
+upstream/main:internal/gateway/video.go:1390:		if held := videoModelHeld(r, p, model); held != "" {
+upstream/main:internal/gateway/video.go:1406:	if held := videoModelHeld(r, p, model); held != "" {
+upstream/main:internal/gateway/video.go:1436:			if held := videoModelHeld(r, p, model); held != "" {
+upstream/main:internal/gateway/video.go:1449:	if held := videoModelHeld(r, p, cmp.Or(st.Model, "grok-imagine-video")); held != "" {
+upstream/main:internal/gateway/wsl.go:143:func WSLKeyMade() string { return wslKeyHeld() }
+upstream/main:internal/gateway/wsl.go:147:func wslKeyHeld() string {
+upstream/main:internal/gateway/wsl.go:198:	k := wslKeyHeld()
+upstream/main:internal/gateway/wsl.go:206:	k := wslKeyHeld()
+upstream/main:internal/gui/api.go:807:	s.CodexAsyncHeld = agent.CodexAsyncHeld()
+upstream/main:internal/gui/api.go:808:	s.CodexCompactKeys = codexKeysText(agent.CodexCompactHeld(""))
+upstream/main:internal/gui/assets/app.js:21157:  if (held.length) box.append(el("div", "hint codex-async-held", codexHeld(held)));
+upstream/main:internal/gui/assets/app.js:22992:function keepHeld() {
+upstream/main:internal/gui/assets/context.js:1461:    else if (as.held?.length) cav(codexHeld(as.held));
+upstream/main:internal/gui/clipboard.go:8:func copyHeld(read int, held, text string) bool {
+upstream/main:internal/gui/clipboard_gtk3.go:50:	return copyHeld(int(got), held, text)
+upstream/main:internal/gui/clipboard_gtk3_test.go:69:		if !copyHeld(read, held, text) {
+upstream/main:internal/gui/clipboard_gtk3_test.go:81:		if copyHeld(read, held, text) {
+upstream/main:internal/gui/clipboard_gtk3_test.go:91:		if !copyHeld(read, held, text) {
+upstream/main:internal/gui/clipboard_test.go:9:func TestCopyHeld(t *testing.T) {
+upstream/main:internal/gui/clipboard_test.go:24:		if got := copyHeld(c.read, c.held, text); got != c.want {
+upstream/main:internal/gui/clipboard_test.go:25:			t.Errorf("%s: copyHeld(%d, %q) = %v, want %v", c.name, c.read, c.held, got, c.want)
+upstream/main:internal/gui/cmdheld_darwin.go:10:static int commandHeld(void) {
+upstream/main:internal/gui/cmdheld_darwin.go:19:func cmdClick() bool { return C.commandHeld() != 0 }
+upstream/main:internal/gui/importapps.go:76:		had := provider.KeysHeld()
+upstream/main:internal/gui/providers.go:404:	return agent.FindIn(provider.Held("agent.All", agent.All), q)
+upstream/main:internal/gui/providers.go:2598:			held = provider.KeysHeld(in.ID)
+upstream/main:internal/library/kiro_test.go:186:func TestKiroCLIUninstalledHeld(t *testing.T) {
+upstream/main:internal/middleware/middleware_test.go:372:func TestStreamKeepaliveNotHeld(t *testing.T) {
+upstream/main:internal/netproxy/netproxy.go:65:	if err := Held(req.Context()); err != nil {
+upstream/main:internal/netproxy/netproxy.go:95:func Held(ctx context.Context) error {
+upstream/main:internal/netproxy/netproxy.go:242:			if err := Held(req.Context()); err != nil {
+upstream/main:internal/plugin/host.go:1796:	if err := netproxy.Held(ctx); err != nil {
+upstream/main:internal/plugin/host.go:1972:	if err := netproxy.Held(ctx); err != nil {
+upstream/main:internal/profile/profile.go:382:		if !provider.ModelListsHeld(p.Models) {
+upstream/main:internal/provider/account_caps.go:297:func (a Allowance) CapHeld(model string, caps WindowCaps, now time.Time) *CapHold {
+upstream/main:internal/provider/account_caps_test.go:14:func TestCapHeld(t *testing.T) {
+upstream/main:internal/provider/account_caps_test.go:23:	if h := a.CapHeld("gpt-6", all(70), now); h == nil || h.Used != 75 || h.Cap != 70 || !h.Back.Equal(five) || h.Credits {
+upstream/main:internal/provider/account_caps_test.go:26:	if h := a.CapHeld("gpt-6", all(80), now); h != nil {
+upstream/main:internal/provider/account_caps_test.go:29:	if h := a.CapHeld("gpt-6", all(0), now); h != nil {
+upstream/main:internal/provider/account_caps_test.go:33:	if h := a.CapHeld("claude-opus-5", all(90), now); h == nil || h.Used != 95 || !h.Back.Equal(week) {
+upstream/main:internal/provider/account_caps_test.go:36:	if h := a.CapHeld("claude-sonnet-5", all(90), now); h != nil {
+upstream/main:internal/provider/account_caps_test.go:40:	if h := a.CapHeld("gpt-6", all(70), five.Add(time.Minute)); h != nil {
+upstream/main:internal/provider/account_caps_test.go:44:	if h := (Allowance{{Used: 80}}).CapHeld("gpt-6", all(70), now); h == nil || !h.Back.IsZero() {
+upstream/main:internal/provider/account_caps_test.go:112:func TestWindowCapHeld(t *testing.T) {
+upstream/main:internal/provider/account_caps_test.go:124:	if h := read(60, 10).CapHeld("gpt-6", friend, now); h == nil || h.Cap != 50 || h.Used != 60 || !h.Back.Equal(five) {
+upstream/main:internal/provider/account_caps_test.go:128:	if h := read(20, 30).CapHeld("gpt-6", friend, now); h != nil {
+upstream/main:internal/provider/account_caps_test.go:132:	if h := read(20, 45).CapHeld("gpt-6", friend, now); h == nil || h.Cap != 40 || !h.Back.Equal(week) {
+upstream/main:internal/provider/account_caps_test.go:137:	if h := read(30, 5).CapHeld("gpt-6", mixed, now); h != nil {
+upstream/main:internal/provider/account_caps_test.go:140:	if h := read(30, 12).CapHeld("gpt-6", mixed, now); h == nil || h.Cap != 10 {
+upstream/main:internal/provider/account_caps_test.go:145:	if h := read(5, 95).CapHeld("gpt-6", free, now); h != nil {
+upstream/main:internal/provider/account_caps_test.go:150:	if h := read(5, 100).CapHeld("gpt-6", free, now); h == nil || h.Cap != 100 || !h.Credits {
+upstream/main:internal/provider/account_caps_test.go:249:	if h := allowanceOf(ws, now).CapHeld("gpt-6", WindowCaps{All: 70}, now); h == nil {
+upstream/main:internal/provider/account_caps_test.go:329:func TestPoolWindowCapHeld(t *testing.T) {
+upstream/main:internal/provider/account_caps_test.go:355:	if h := a.CapHeld("gemini-3.1-pro-high", gem, now); h == nil || h.Used != 60 || h.Cap != 50 || !h.Back.Equal(week) {
+upstream/main:internal/provider/account_caps_test.go:358:	if h := a.CapHeld("claude-sonnet-4-6", gem, now); h != nil {
+upstream/main:internal/provider/account_caps_test.go:361:	if h := a.CapHeld("gemini-3.1-pro-high", WindowCaps{Windows: map[string]int{"gemini · 7 days": 70}}, now); h != nil {
+upstream/main:internal/provider/account_caps_test.go:367:	if h := a.CapHeld("gemini-3.1-pro-low", WindowCaps{All: 55}, now); h == nil || h.Cap != 55 {
+upstream/main:internal/provider/claude_lock.go:38:		return nil, claudeHeld(err)
+upstream/main:internal/provider/claude_lock.go:47:		return nil, claudeHeld(err)
+upstream/main:internal/provider/claude_lock.go:55:	return release, claudeHeld(err)
+upstream/main:internal/provider/claude_lock.go:60:func claudeHeld(err error) error {
+upstream/main:internal/provider/codex_limits_test.go:81:	if h := handed["Me@example.com"].CapHeld("gpt-5.5", WindowCaps{All: 99}, now); h != nil {
+upstream/main:internal/provider/codex_limits_test.go:90:	h := m["Me@example.com"].CapHeld("gpt-5.5", WindowCaps{All: 99}, now)
+upstream/main:internal/provider/codex_list_tag_test.go:161:		dropHeld()
+upstream/main:internal/provider/copilot_auto.go:388:	if auto && !copilotRefuses(app.Token, model) && copilotAutoHeld(app.Token, &a) {
+upstream/main:internal/provider/copilot_auto.go:422:func copilotAutoHeld(token string, a *copilotAutoSession) bool {
+upstream/main:internal/provider/disabled.go:39:	r := heldOf("disabled", func() disabledRead {
+upstream/main:internal/provider/group.go:462:	f := heldOf("file", load)
+upstream/main:internal/provider/group.go:771:	return autoGroups(unskipped(foundFrom(entries, heldOffEntries()), heldOf("file", load).AutoGroupSkip), heldSettings().ModelSameAs)
+upstream/main:internal/provider/group_held_test.go:46:func TestServedSharedWhileHeld(t *testing.T) {
+upstream/main:internal/provider/group_held_test.go:70:func TestGroupEntriesBuiltOnceWhileHeld(t *testing.T) {
+upstream/main:internal/provider/group_held_test.go:109:func TestGroupLooksParseNoSettingsPerGroupWhileHeld(t *testing.T) {
+upstream/main:internal/provider/group_held_test.go:167:func TestGroupsBuiltOnceWhileHeld(t *testing.T) {
+upstream/main:internal/provider/group_held_test.go:290:func BenchmarkGroupLooksHeld(b *testing.B) {
+upstream/main:internal/provider/group_serve.go:65:	dropHeld()
+upstream/main:internal/provider/group_serve.go:72:			dropHeld()
+upstream/main:internal/provider/groupeffort.go:110:	return heldOf("has-model\x00"+id, func() bool { return providersHave(id) })
+upstream/main:internal/provider/groupfound_test.go:142:func TestAutoGroupsOffHeld(t *testing.T) {
+upstream/main:internal/provider/hold.go:153:	dropHeld()
+upstream/main:internal/provider/hold.go:158:func dropHeld() {
+upstream/main:internal/provider/hold.go:216:func Held[T any](key string, build func() T) T { return heldOf(key, build) }
+upstream/main:internal/provider/hold.go:327:	return heldOf("entries", func() []Entry {
+upstream/main:internal/provider/hold.go:405:	return heldOf("plugins", func() []plugin.Provider { return slices.Clip(plugin.Cached()) })
+upstream/main:internal/provider/hold.go:460:func heldSettings() settings.Settings { return heldOf("settings", settings.Load) }
+upstream/main:internal/provider/hold_test.go:27:	heldOf("t", build)
+upstream/main:internal/provider/hold_test.go:28:	heldOf("t", build)
+upstream/main:internal/provider/hold_test.go:33:	heldOf("t", build)
+upstream/main:internal/provider/hold_test.go:34:	heldOf("t", build)
+upstream/main:internal/provider/hold_test.go:39:	if heldOf("t", build); n != 4 {
+upstream/main:internal/provider/hold_test.go:44:	if heldOf("t", build); n != 5 {
+upstream/main:internal/provider/hold_test.go:65:		heldOf("t-next", build)
+upstream/main:internal/provider/hold_test.go:66:		heldOf("t-next", build)
+upstream/main:internal/provider/hold_test.go:75:		if heldOf("t-next", build); n != 2 {
+upstream/main:internal/provider/hold_test.go:82:		if heldOf("t-next", build); n != 3 {
+upstream/main:internal/provider/hold_test.go:86:	if heldOf("t-next", build); n != 4 {
+upstream/main:internal/provider/hold_test.go:107:		heldOf("t-write", build)
+upstream/main:internal/provider/hold_test.go:162:	heldOf("t-2449", build)
+upstream/main:internal/provider/hold_test.go:164:	if heldOf("t-2449", build); n != 2 {
+upstream/main:internal/provider/hold_test.go:404:func TestAllReadsNoSettingsPerLookWhileHeld(t *testing.T) {
+upstream/main:internal/provider/hold_test.go:452:		out <- heldOf(key, func() T { close(started); <-ahead; return v })
+upstream/main:internal/provider/hold_test.go:463:	go func() { out <- heldOf(key, func() T { n.Add(1); return v }) }()
+upstream/main:internal/provider/hold_test.go:496:			dropHeld()
+upstream/main:internal/provider/hold_test.go:509:			if v := heldOf("t-write", func() string { return "later" }); v != "after" {
+upstream/main:internal/provider/hold_test.go:548:	if v := heldOf("t-stuck", func() string { n.Add(1); return "own" }); v != "own" || n.Load() != 1 {
+upstream/main:internal/provider/hold_test.go:560:		heldOf("t-panic", func() string { close(started); <-ahead; panic("build") })
+upstream/main:internal/provider/key_models_prefill.go:31:func KeysHeld(ids ...string) map[string]map[string]bool {
+upstream/main:internal/provider/key_models_prefill_test.go:76:	had := KeysHeld("relay")
+upstream/main:internal/provider/key_models_prefill_test.go:96:	had = KeysHeld("relay")
+upstream/main:internal/provider/key_models_prefill_test.go:106:	if n := PrefillNewKeys(context.Background(), KeysHeld("relay"), "relay"); n != 0 {
+upstream/main:internal/provider/key_models_prefill_test.go:136:	had := KeysHeld("relay")
+upstream/main:internal/provider/key_models_prefill_test.go:178:	had := KeysHeld()
+upstream/main:internal/provider/key_models_prefill_test.go:217:	had := KeysHeld("relay")
+upstream/main:internal/provider/key_models_refresh_test.go:81:	had := KeysHeld("relay")
+upstream/main:internal/provider/login_usage.go:504:		return codexReadingHeld(codexHoldReading(ctx))
+upstream/main:internal/provider/login_usage.go:515:	return codexReadingHeld(someLoginUsage(ctx, "codex", active...))
+upstream/main:internal/provider/login_usage.go:558:	return codexReadingHeld(knownLoginUsage("codex"))
+upstream/main:internal/provider/login_usage.go:564:func codexReadingHeld(u map[string]SubscriptionQuota) bool {
+upstream/main:internal/provider/logins.go:977:	return slices.Clone(heldOf("logins\x00"+agent, func() []Login { return loginsNow(agent) }))
+upstream/main:internal/provider/logins.go:1706:		if h, ok := claudeRenewedHeld(ls, l); ok {
+upstream/main:internal/provider/logins.go:1717:func claudeRenewedHeld(ls []savedLogin, l savedLogin) (savedLogin, bool) {
+upstream/main:internal/provider/logins_held_test.go:65:	dropHeld() // a write magpie made: what is held is listed anew
+upstream/main:internal/provider/logins_on.go:112:	return heldOf("ownPaused\x00"+p.Account.Agent+"\x00"+p.Account.User, func() bool {
+upstream/main:internal/provider/member_groups_held_test.go:12:func TestMemberGroupsBuiltOnceWhileHeld(t *testing.T) {
+upstream/main:internal/provider/migrate.go:392:func readMigrations() map[string]Migration { return heldOf("migrations", readMigrationsFile) }
+upstream/main:internal/provider/modellist.go:73:func ModelListsHeld(ls map[string]ModelList) bool {
+upstream/main:internal/provider/models.go:144:		l := heldOf("plugin-listed", func() listed { at, ok := plugin.ListedAt(); return listed{at, ok} })
+upstream/main:internal/provider/models.go:163:	l := heldOf("fetched:"+p.ID, func() live { ms, at, ok := catalog.Live(p.ID); return live{ms, at, ok} })
+upstream/main:internal/provider/models.go:219:	l := heldOf("fetched-all:"+p.ID, func() live { ms, ok := catalog.LiveAll(p.ID); return live{ms, ok} })
+upstream/main:internal/provider/models.go:636:	return fetchNewHeld(timeout)
+upstream/main:internal/provider/models.go:640:func fetchNewHeld(timeout time.Duration) (missing bool) {
+upstream/main:internal/provider/models.go:2984:	if !slices.ContainsFunc(heldOf("file", load).Groups, func(g Group) bool { return g.Unlists }) {
+upstream/main:internal/provider/models.go:3070:	return heldOf("off entries", func() []Entry {
+upstream/main:internal/provider/models.go:3285:	for _, p := range heldOf("listed", func() map[string][]Provider { return keptOf("listed", listedBy) })[id] {
+upstream/main:internal/provider/partners_test.go:157:func TestPartnersFetchedLastIsHeld(t *testing.T) {
+upstream/main:internal/provider/plugins.go:109:	return heldOf("customIDs", func() map[string]bool {
+upstream/main:internal/provider/provider.go:788:	held := heldOf("all", allProviders)
+upstream/main:internal/provider/quota_asked.go:53:	if netproxy.Held(ctx) == nil && heldRead(ctx) {
+upstream/main:internal/provider/quota_asked.go:97:	return netproxy.Held(ctx) != nil || heldRead(ctx)
+upstream/main:internal/provider/subscription_usage.go:1076:	return data.PlanType, out, resets, credits, codexHeld(data), nil
+upstream/main:internal/provider/subscription_usage.go:1172:func codexHeld(u codexUsage) bool {
+upstream/main:internal/redact/restore_reporter_test.go:229:func TestBinaryReplyIsNotHeld(t *testing.T) {
+upstream/main:internal/redact/restore_test.go:163:func TestWriterStreamKeepaliveNotHeld(t *testing.T) {
+upstream/main:internal/sessions/agy_held_other.go:7:func agyHeld(string) bool { return false }
+upstream/main:internal/sessions/agy_held_unix.go:16:func agyHeld(p string) bool {
+upstream/main:internal/sessions/manage.go:452:	if agent == "agy" && agyHeld(filepath.Join(agyDataDir(fs), "presence", id+".lock")) {
+upstream/main:internal/tui/groupfast_test.go:51:func TestGroupTakeOutRefusedWhileHeld(t *testing.T) {
+upstream/main:internal/update/update.go:789:func waitHeld(i int, err error, start time.Time, retry bool) bool {
+upstream/main:internal/update/update.go:817:		if err == nil || !waitHeld(i, err, start, heldOpen(err)) {
+upstream/main:internal/update/update.go:872:		if err == nil || !waitHeld(i, err, start, heldOpen(err)) {
+upstream/main:internal/update/update.go:900:		if !waitHeld(i, err, start, !errors.Is(err, fs.ErrNotExist)) {
+upstream/main:internal/usage/block_price_test.go:16:func TestPricedBlocksSharedWhileHeld(t *testing.T) {
+upstream/main:internal/usage/row_zone_test.go:83:func BenchmarkCollectWithRowsHeld(b *testing.B) {

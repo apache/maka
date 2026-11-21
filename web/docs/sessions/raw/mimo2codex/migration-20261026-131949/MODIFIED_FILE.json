@@ -1,0 +1,43 @@
+{
+  "state": "migrated",
+  "groups": [
+    {
+      "name": "cache",
+      "source": "C:\\Users\\802165\\.mimo2codex\\cache",
+      "pattern": "**/*",
+      "remove_root": true,
+      "category": "cache",
+      "archive": "E:\\cc\\guahub\\sessions\\_trash\\mimo2codex-migration-20261026-131949\\cache.zip",
+      "files": [
+        {
+          "path": "images/451fe1b2cf988ab4.png",
+          "size": 16226,
+          "mtime_ns": 1780029065162361600,
+          "sha256": "4b66f41695f05243729d91315afc72f1cc4bc8d4b6ce43aba8e5ff79dd19132b"
+        },
+        {
+          "path": "images/544f1fd002952286.png",
+          "size": 397173,
+          "mtime_ns": 1780031182279034900,
+          "sha256": "1d2992a961541fbfceacce683576dbb1ae32280caac69b4e6a181b181c75ce98"
+        },
+        {
+          "path": "images/c336c07b1fb9703a.png",
+          "size": 38458,
+          "mtime_ns": 1780029065162361600,
+          "sha256": "294f0fa34b8342349b235c56abce188eef610164035d670e506fa4d1bea0d199"
+        },
+        {
+          "path": "images/f596c865e24e433d.png",
+          "size": 312935,
+          "mtime_ns": 1780030917470487600,
+          "sha256": "3e15c370a47a00dd2c941683ebb2efb01b2967a6ff97462f60625093d38ffa55"
+        }
+      ],
+      "directories": [
+        "images"
+      ]
+    }
+  ],
+  "protected": {}
+}

@@ -1,0 +1,16 @@
+{
+  "name": "original-apply",
+  "time_utc": "2026-10-16T23:37:31.402324+00:00",
+  "cwd": "/private/tmp/magpie-quality-20261017-2413",
+  "command": "git apply --check /Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2413/original.patch",
+  "input": "SQLite fixtures in internal/provider/importapps_test.go; no real credentials; temporary HOME via wrapper and provider TestMain testenv",
+  "environment": {
+    "GOTOOLCHAIN": "auto",
+    "GOPATH": "/Users/ggbdpq/go",
+    "GOMODCACHE": "/Users/ggbdpq/go/pkg/mod",
+    "GOCACHE": "/private/tmp/magpie-quality-go-cache",
+    "GOMAXPROCS": "2"
+  },
+  "output": "error: patch failed: internal/provider/importapps_test.go:5\nerror: internal/provider/importapps_test.go: patch does not apply\n",
+  "exit_status": 1
+}

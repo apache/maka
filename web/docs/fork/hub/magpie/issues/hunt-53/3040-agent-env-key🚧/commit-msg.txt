@@ -1,0 +1,51 @@
+agent: Droid's "${VAR}" and OpenCode's {env:VAR} api keys are read as the key they name, not as drift (#3040)
+
+The maintainer's own issue, found while fixing Hermes (b9d1cd36), whose
+body left the siblings out. Droid's custom model apiKey and an
+OpenCode-shaped agent's provider.magpie.options.apiKey were compared
+with the value as written, so a user who keeps the key out of the file
+with a reference to a variable — Droid's "${MAGPIE_API_KEY}"
+(docs.factory.com, Custom Models: "apiKey supports environment variable
+references using ${VAR_NAME} syntax", from the environment), OpenCode's
+{env:MAGPIE_API_KEY} (its config loader expands it from process.env as
+it reads the config, packages/core/src/config/variable.ts; the docs say
+the same) — was told the key "was changed, so magpie's gateway won't
+take its requests", and a sync or pick wrote magpie's literal key over
+the reference.
+
+Now envRefKey reads what the agent sends: a value that is one reference
+to a variable is the variable's value, from this machine's environment,
+which is where those agents read it (Hermes's .env reading stays
+hermesKey's). One that holds (keyHolds) isn't drift, and neither is a
+variable magpie can't see (one only the agent's shell sets), which is
+unknown, never drift. One naming a key the gateway doesn't take is
+drift, and a sync puts magpie's key in its place, a variable of the
+shell's being nowhere magpie can write it (Hermes's goes into its .env;
+these agents have no file to write, envRefKept). A value with more than
+the one reference in it is magpie's key again, as before. OpenCode's
+{file:path} form is left as it is. The two helpers sit beside keyHolds,
+which both go through, and Droid shares OpenCode's shape of the check.
+
+Test: TestDroidWithAKeyInTheEnvironment and
+TestOpenCodeWithAKeyInTheEnvironment, each with the reference naming a
+gateway key, magpie's own, an unset variable (unknown: not drift, kept)
+and a wrong key, then a composite value.
+Broken by hand: with droid.go at 318697dc the Droid one fails "a gateway
+key in the environment is drift: Droid's apiKey (settings.json) was
+changed"; with only the sync half removed, "a gateway key: the user's
+reference was written over". agents.go likewise for OpenCode's.
+
+Run (worktree, macOS arm64, load ~2):
+- gofmt -l internal/agent: nothing. go vet ./internal/agent/...,
+  GOOS=linux go vet -tags nogui ./internal/agent/... and GOOS=windows go
+  vet ./internal/agent/...: ok. go build, GOOS=linux GOARCH=amd64
+  -tags nogui and GOOS=windows GOARCH=amd64 builds: ok.
+- go test ./internal/agent -run 'TestDroid|TestOpenCode|TestHermes|
+  TestKeyHolds|TestGatewayKey|TestWiring|TestAir|TestOpenChamber|
+  TestMiMo|TestDevEco|TestCrush': ok. The same family under -race: ok.
+- go test ./internal/agent/... -count=1 -timeout 30m: one red,
+  TestMothX — red at 318697dc with this change's files away too (it
+  fails alone there, on this machine), so not this change's.
+
+Fixes #3040
+Generated-by: GLM-5.3-Flash (ZCode)

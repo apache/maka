@@ -1,0 +1,23 @@
+=== RUN   TestChatNoCallToolCallsFinishEndsStop
+    chattidy_finish_test.go:79: stream: calls map[] finish "tool_calls"
+        data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"The user said hi."}}]}
+        
+        data: {"choices":[{"delta":{"content":"收到"},"index":0}],"id":"c1","object":"chat.completion.chunk"}
+        
+        data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"reasoning_content":null},"logprobs":null,"finish_reason":"tool_calls","matched_stop":1}]}
+        
+        data: [DONE]
+        
+--- FAIL: TestChatNoCallToolCallsFinishEndsStop (0.26s)
+=== RUN   TestChatRelayLegacyCallFinish
+    chattidy_finish_test.go:108: stream, function_call null and no call: finish "tool_calls"
+        data: {"choices":[{"delta":{"content":"hi","function_call":null},"index":0}]}
+        
+        data: {"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}
+        
+        data: [DONE]
+        
+--- FAIL: TestChatRelayLegacyCallFinish (0.38s)
+FAIL
+FAIL	github.com/yetone/magpie/internal/gateway	1.453s
+FAIL

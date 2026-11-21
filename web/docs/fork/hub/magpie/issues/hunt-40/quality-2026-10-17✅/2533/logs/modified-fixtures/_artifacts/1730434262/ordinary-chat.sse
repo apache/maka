@@ -1,0 +1,5 @@
+: keepalive
+data: {"choices":[{"delta":{"content":"","role":"assistant"},"finish_reason":null,"index":0}],"created":1792194088,"id":"chatcmpl-18df270743469bf000000007","model":"","object":"chat.completion.chunk","usage":null}
+
+data: {"error":{"message":"A: invalid tool schema","type":"api_error"}}
+

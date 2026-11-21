@@ -1,0 +1,383 @@
+From 265c6f0963fea907a15845e7c9aca31a19247a0c Mon Sep 17 00:00:00 2001
+From: SadWood <24450652+SadWood@users.noreply.github.com>
+Date: Sun, 1 Nov 2026 10:43:16 +0800
+Subject: [PATCH] gateway: carry authenticated key identity to hooks
+
+---
+ docs/subsystems/gateway-request-hooks.md |  20 +++-
+ internal/gateway/gateway_hook_test.go    | 132 +++++++++++++++++++++--
+ internal/gateway/lan.go                  |   7 ++
+ internal/gateway/middleware.go           |   4 +-
+ internal/plugin/gateway.go               |  19 ++--
+ internal/plugin/host.js                  |  13 +--
+ 6 files changed, 165 insertions(+), 30 deletions(-)
+
+diff --git a/docs/subsystems/gateway-request-hooks.md b/docs/subsystems/gateway-request-hooks.md
+index 2a58389cb..40b05c7ff 100644
+--- a/docs/subsystems/gateway-request-hooks.md
++++ b/docs/subsystems/gateway-request-hooks.md
+@@ -42,7 +42,7 @@ reply it asked for). A rolled-back hook counts as failed and gets no `onResponse
+ for that request. It cannot reject requests or register tools. The synchronous middleware API remains available separately.
+ 
+ Context fields: `protocol` (`chat`, `responses`, `anthropic`, `gemini`), `model`,
+-`stream`, `path`, `origin`, `agent`, `session`, `cwd`, `query`, package `options`, private
++`stream`, `path`, `origin`, `callerKeyId`, `agent`, `session`, `cwd`, `query`, package `options`, private
+ request `state`, an `AbortSignal` and `report(code, bytes)`. Headers and client
+ credentials are not forwarded to the hook. Query extraction keeps original model
+ input intact while excluding client environment/instruction notices from recall.
+@@ -66,8 +66,22 @@ agents beyond `local` checks `magpie-key`, never `gateway-key`
+ (plugins#526). Hosts before `magpie-key` (v0.1.2208) sent `gateway-key` for
+ the sharing key too, so a plugin that trusts only `local` sees both as
+ not local, as before. Forwarded traffic stays
+-remote even with `MAGPIE_TRUST_PROXY=1`. No key, key name, peer address or
+-client-supplied origin claim is exposed. Missing origin on an older host means
++remote even with `MAGPIE_TRUST_PROXY=1`. No key secret, key name, peer address or
++client-supplied origin claim is exposed. `callerKeyId`, when present, is the
++ID of the gateway key authenticated for this request, not its secret or name.
++It identifies the credential, not a person or an application. An absent ID
++means unknown, including on older hosts and when a key did not authenticate;
++it must not be used to authorize access. A key's ID survives renaming and
++rotation; deleting and creating a key produces a different ID. Sharing a key
++shares its ID and any access granted to it. A plugin that grants a key access
++to private data must make that grant explicit and isolate its state per key.
++An unrecognized `sk-magpie-` key on loopback is still served by the gateway,
++but is classified `gateway-key` with no authenticated ID even after its
++header is replaced. Loopback accepts arbitrary tokens: once a user-supplied
++key value is removed, it may be indistinguishable from any other local token
++and classified `local`. This field does not establish a security boundary
++between programs running on the same computer.
++Missing origin on an older host means
+ unknown. This classification is not a user identity; plugins that export
+ conversations must obtain their own explicit opt-in and default to skipping
+ non-local or unknown origins. It is available in both lifecycle callbacks.
+diff --git a/internal/gateway/gateway_hook_test.go b/internal/gateway/gateway_hook_test.go
+index d0dc3b54f..fe71cc319 100644
+--- a/internal/gateway/gateway_hook_test.go
++++ b/internal/gateway/gateway_hook_test.go
+@@ -123,6 +123,20 @@ func TestAsyncGatewayThroughProtocols(t *testing.T) {
+ 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+ 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+ 	t.Cleanup(plugin.Settle)
++	if err := os.MkdirAll(filepath.Dir(catalog.CachePath()), 0o755); err != nil {
++		t.Fatal(err)
++	}
++	if err := os.WriteFile(catalog.CachePath(), []byte("{}"), 0o600); err != nil {
++		t.Fatal(err)
++	}
++	key, err := access.Update("add-key", access.Change{Name: "protocol-test"})
++	if err != nil {
++		t.Fatal(err)
++	}
++	who, ok := access.Authenticate(key)
++	if !ok {
++		t.Fatal("synthetic key did not authenticate")
++	}
+ 	upstream := make(chan []byte, 20)
+ 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+ 		b, _ := io.ReadAll(r.Body)
+@@ -159,7 +173,7 @@ func TestAsyncGatewayThroughProtocols(t *testing.T) {
+ 	abs := filepath.Join(t.TempDir(), "recall.hooks.js")
+ 	if err := os.WriteFile(abs, []byte(`
+ export async function onRequest(body,ctx) {
+- const response=await fetch(ctx.options.serverUrl,{method:"POST",headers:{"Authorization":ctx.options.authorization},body:JSON.stringify({session:ctx.session,query:ctx.query,origin:ctx.origin}),signal:ctx.signal})
++ const response=await fetch(ctx.options.serverUrl,{method:"POST",headers:{"Authorization":ctx.options.authorization},body:JSON.stringify({session:ctx.session,query:ctx.query,origin:ctx.origin,callerKeyId:ctx.callerKeyId}),signal:ctx.signal})
+  if(!response.ok)throw new Error("unavailable")
+  const result=await response.json()
+  if(typeof result.context!=="string")throw new Error("invalid")
+@@ -189,7 +203,7 @@ export async function onRequest(body,ctx) {
+ 			t.Fatal(err)
+ 		}
+ 		req.Header.Set("Content-Type", "application/json")
+-		req.Header.Set("Authorization", "Bearer magpie-codex")
++		req.Header.Set("Authorization", "Bearer "+key)
+ 		req.Header.Set(SessionHeader, session)
+ 		res, err := gw.Client().Do(req)
+ 		if err != nil {
+@@ -215,11 +229,11 @@ export async function onRequest(body,ctx) {
+ 			if strings.Count(got, "QUARTZ-8413") != 1 || !strings.Contains(got, "session-a") || !strings.Contains(got, "Quartz codename?") {
+ 				t.Fatalf("recall did not reach provider exactly once: %s", got)
+ 			}
+-			if strings.Contains(got, "context-test") || strings.Contains(got, "magpie-codex") {
++			if strings.Contains(got, "context-test") || strings.Contains(got, key) {
+ 				t.Fatalf("plugin credentials leaked upstream: %s", got)
+ 			}
+ 			query := <-queries
+-			if query["query"] != "Quartz codename?" || query["session"] != "session-a" || query["origin"] != "local" {
++			if query["query"] != "Quartz codename?" || query["session"] != "session-a" || query["origin"] != "gateway-key" || query["callerKeyId"] != who.KeyID {
+ 				t.Fatalf("wrong preparation: %+v", query)
+ 			}
+ 		})
+@@ -310,8 +324,8 @@ func TestAsyncGatewayOrigin(t *testing.T) {
+ 	WSLNets = func() []*net.IPNet { return []*net.IPNet{wslNet} }
+ 	t.Cleanup(func() { ownAddr, WSLNets = oldOwn, oldNets })
+ 	abs := filepath.Join(t.TempDir(), "origin.hooks.mjs")
+-	script := `export function onRequest(body,ctx){ctx.state.origin=ctx.origin;body.origin=ctx.origin;return body}
+-export async function onResponse(reply,ctx){await fetch(ctx.options.url,{method:"POST",body:JSON.stringify({origin:ctx.origin,before:ctx.state.origin}),signal:ctx.signal})}`
++	script := `export function onRequest(body,ctx){ctx.state.origin=ctx.origin;ctx.state.key=ctx.callerKeyId ?? "";body.origin=ctx.origin;body.key=ctx.state.key;ctx.callerKeyId="plugin-mutated";return body}
++export async function onResponse(reply,ctx){await fetch(ctx.options.url,{method:"POST",body:JSON.stringify({origin:ctx.origin,before:ctx.state.origin,key:ctx.callerKeyId ?? "",beforeKey:ctx.state.key}),signal:ctx.signal})}`
+ 	observed := make(chan map[string]string, 20)
+ 	observer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+ 		var got map[string]string
+@@ -326,6 +340,13 @@ export async function onResponse(reply,ctx){await fetch(ctx.options.url,{method:
+ 	if _, err := plugin.Add(t.Context(), abs); err != nil {
+ 		t.Fatal(err)
+ 	}
++	second := filepath.Join(t.TempDir(), "second.hooks.mjs")
++	if err := os.WriteFile(second, []byte(`export function onRequest(body,ctx){body.secondKey=ctx.callerKeyId ?? "";return body}`), 0o644); err != nil {
++		t.Fatal(err)
++	}
++	if _, err := plugin.Add(t.Context(), second); err != nil {
++		t.Fatal(err)
++	}
+ 	if err := plugin.SetOptions(abs, map[string]any{"url": observer.URL}); err != nil {
+ 		t.Fatal(err)
+ 	}
+@@ -355,6 +376,7 @@ export async function onResponse(reply,ctx){await fetch(ctx.options.url,{method:
+ 			req := httptest.NewRequest("POST", "http://127.0.0.1/v1/chat/completions", strings.NewReader(`{"model":"fake/m1","origin":"local","messages":[{"role":"user","content":"hello"}]}`))
+ 			req.RemoteAddr = tc.peer
+ 			req.Header.Set("X-Magpie-Origin", "local")
++			req.Header.Set("X-Magpie-Caller-Key-Id", "spoofed")
+ 			if tc.header != "" {
+ 				req.Header.Set(tc.header, "remote-client")
+ 			}
+@@ -369,14 +391,22 @@ export async function onResponse(reply,ctx){await fetch(ctx.options.url,{method:
+ 				}
+ 				return
+ 			}
++			wantKey := ""
++			if tc.key != "" {
++				who, ok := access.Authenticate(tc.key)
++				if !ok {
++					t.Fatal("synthetic key failed authentication")
++				}
++				wantKey = who.KeyID
++			}
+ 			w := httptest.NewRecorder()
+ 			lanGuard(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+ 				w, b, done := gatewayHooks(w, r, provider.Chat, []byte(`{"model":"fake/m1","origin":"local","messages":[{"role":"user","content":"hello"}]}`))
+ 				defer done()
+ 				var got map[string]any
+ 				json.Unmarshal(b, &got)
+-				if got["origin"] != tc.want {
+-					t.Errorf("request origin=%v, want %s", got["origin"], tc.want)
++				if got["origin"] != tc.want || got["key"] != wantKey || got["secondKey"] != wantKey {
++					t.Errorf("request origin/key=%v/%v, want %s/%s", got["origin"], got["key"], tc.want, wantKey)
+ 				}
+ 				w.Header().Set("Content-Type", "application/json")
+ 				io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`)
+@@ -386,8 +416,8 @@ export async function onResponse(reply,ctx){await fetch(ctx.options.url,{method:
+ 			}
+ 			select {
+ 			case got := <-observed:
+-				if got["origin"] != tc.want || got["before"] != tc.want {
+-					t.Fatalf("callback provenance=%v, want %s", got, tc.want)
++				if got["origin"] != tc.want || got["before"] != tc.want || got["key"] != wantKey || got["beforeKey"] != wantKey {
++					t.Fatalf("callback provenance=%v, want %s/%s", got, tc.want, wantKey)
+ 				}
+ 			case <-time.After(10 * time.Second):
+ 				t.Fatal("missing completion origin")
+@@ -396,6 +426,88 @@ export async function onResponse(reply,ctx){await fetch(ctx.options.url,{method:
+ 	}
+ }
+ 
++// A failed recognizable key is still allowed from loopback, but must not be
++// recast as an unkeyed request to hooks after the guard replaces its header.
++func TestAsyncGatewayUnrecognizedKeyOnLoopback(t *testing.T) {
++	t.Setenv("MAGPIE_BUN", testenv.Bun(t))
++	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
++	t.Setenv("XDG_CACHE_HOME", t.TempDir())
++	t.Cleanup(plugin.Settle)
++	if err := os.MkdirAll(filepath.Dir(catalog.CachePath()), 0o755); err != nil {
++		t.Fatal(err)
++	}
++	if err := os.WriteFile(catalog.CachePath(), []byte("{}"), 0o600); err != nil {
++		t.Fatal(err)
++	}
++	abs := filepath.Join(t.TempDir(), "identity.hooks.mjs")
++	if err := os.WriteFile(abs, []byte(`export function onRequest(body,ctx){body.seen={origin:ctx.origin,id:ctx.callerKeyId ?? ""};return body}`), 0o644); err != nil {
++		t.Fatal(err)
++	}
++	if _, err := plugin.Add(t.Context(), abs); err != nil {
++		t.Fatal(err)
++	}
++	add := func(name string) (string, string) {
++		t.Helper()
++		secret, err := access.Update("add-key", access.Change{Name: name})
++		if err != nil {
++			t.Fatal(err)
++		}
++		who, ok := access.Authenticate(secret)
++		if !ok {
++			t.Fatal("synthetic key did not authenticate")
++		}
++		return who.KeyID, secret
++	}
++	disabledID, disabled := add("disabled")
++	removedID, removed := add("removed")
++	rotatedID, stale := add("rotated")
++	if _, err := access.Update("off-key", access.Change{Key: disabledID}); err != nil {
++		t.Fatal(err)
++	}
++	if _, err := access.Update("remove-key", access.Change{Key: removedID}); err != nil {
++		t.Fatal(err)
++	}
++	if _, err := access.Update("rotate-key", access.Change{Key: rotatedID}); err != nil {
++		t.Fatal(err)
++	}
++	server := httptest.NewServer(lanGuard(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		w, b, done := gatewayHooks(w, r, provider.Chat, []byte(`{"model":"fake/m1","messages":[{"role":"user","content":"hello"}]}`))
++		defer done()
++		w.Header().Set("Content-Type", "application/json")
++		_, _ = w.Write(b)
++	})))
++	defer server.Close()
++	for _, tc := range []struct{ name, token, origin string }{
++		{"unkeyed", "", "local"}, {"ordinary local token", "anything", "local"},
++		{"disabled", disabled, "gateway-key"}, {"removed", removed, "gateway-key"},
++		{"rotated", stale, "gateway-key"}, {"fabricated", "sk-magpie-not-a-real-key", "gateway-key"},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			req, _ := http.NewRequestWithContext(t.Context(), "POST", server.URL+"/v1/chat/completions", nil)
++			if tc.token != "" {
++				req.Header.Set("Authorization", "Bearer "+tc.token)
++			}
++			res, err := server.Client().Do(req)
++			if err != nil {
++				t.Fatal(err)
++			}
++			defer res.Body.Close()
++			var got struct {
++				Seen struct {
++					Origin string `json:"origin"`
++					ID     string `json:"id"`
++				} `json:"seen"`
++			}
++			if err := json.NewDecoder(res.Body).Decode(&got); err != nil {
++				t.Fatal(err)
++			}
++			if res.StatusCode != 200 || got.Seen.Origin != tc.origin || got.Seen.ID != "" {
++				t.Fatalf("status=%d identity=%+v, want %s with no authenticated ID", res.StatusCode, got.Seen, tc.origin)
++			}
++		})
++	}
++}
++
+ // Codex hangs up as soon as it reads response.completed, while ChatGPT may
+ // hold the connection a moment longer. The reply was delivered whole, so
+ // onResponse still sees it, as a success: the run ends with the handler,
+diff --git a/internal/gateway/lan.go b/internal/gateway/lan.go
+index 90a270b27..ba4707eff 100644
+--- a/internal/gateway/lan.go
++++ b/internal/gateway/lan.go
+@@ -530,6 +530,11 @@ func callerGuard(next http.Handler) http.Handler {
+ 	})
+ }
+ 
++// unknownCallerKey marks a recognizable gateway key that did not authenticate.
++// identifyCaller replaces its header even on loopback, where requests are
++// allowed without authentication. Hooks must not mistake that for no key.
++type unknownCallerKey struct{}
++
+ func identifyCaller(w http.ResponseWriter, r *http.Request) (*http.Request, bool) {
+ 	var who access.Identity
+ 	ok := false
+@@ -569,6 +574,8 @@ func identifyCaller(w http.ResponseWriter, r *http.Request) (*http.Request, bool
+ 	}
+ 	if ok {
+ 		r = r.WithContext(access.WithIdentity(r.Context(), who))
++	} else if managedKey(r) {
++		r = r.WithContext(context.WithValue(r.Context(), unknownCallerKey{}, true))
+ 	}
+ 	r.Header = r.Header.Clone()
+ 	r.Header.Set("Authorization", "Bearer "+Token)
+diff --git a/internal/gateway/middleware.go b/internal/gateway/middleware.go
+index 42b3ee866..3b8ce5d2a 100644
+--- a/internal/gateway/middleware.go
++++ b/internal/gateway/middleware.go
+@@ -154,7 +154,7 @@ func gatewayHooks(w http.ResponseWriter, r *http.Request, from provider.Protocol
+ 	if !plugin.HasGateway() {
+ 		return w, body, func() {}
+ 	}
+-	info := plugin.GatewayContext{Origin: gatewayOrigin(r), Protocol: string(from), Model: modelOf(body), Stream: streamOf(body), Path: r.URL.Path, Agent: agentOf(r), Session: sessionOf(r.Header)}
++	info := plugin.GatewayContext{Origin: gatewayOrigin(r), CallerKeyID: access.Caller(r.Context()).KeyID, Protocol: string(from), Model: modelOf(body), Stream: streamOf(body), Path: r.URL.Path, Agent: agentOf(r), Session: sessionOf(r.Header)}
+ 	if req, err := parse(from, body); err == nil {
+ 		info.Cwd = workDir(req)
+ 		info.Query = gatewayQuery(req)
+@@ -202,7 +202,7 @@ func gatewayQuery(req *Request) string {
+ func gatewayOrigin(r *http.Request) string {
+ 	if who := access.Caller(r.Context()); who.KeyID != "" && who.Default && ownComputer(r) {
+ 		return "magpie-key"
+-	} else if who.KeyID != "" || managedKey(r) {
++	} else if who.KeyID != "" || r.Context().Value(unknownCallerKey{}) != nil || managedKey(r) {
+ 		return "gateway-key"
+ 	}
+ 	if local(r) && !forwarded(r) {
+diff --git a/internal/plugin/gateway.go b/internal/plugin/gateway.go
+index 4bdc0826e..3ac2462bb 100644
+--- a/internal/plugin/gateway.go
++++ b/internal/plugin/gateway.go
+@@ -80,15 +80,16 @@ func GatewayOnly(target string) bool {
+ // GatewayContext contains only the request identity and text, never its
+ // authorization headers. Empty fields mean the agent supplied no identity.
+ type GatewayContext struct {
+-	Origin   string `json:"origin"` // local, remote, magpie-key or gateway-key; empty means unknown
+-	Protocol string `json:"protocol"`
+-	Model    string `json:"model"`
+-	Stream   bool   `json:"stream"`
+-	Path     string `json:"path"`
+-	Agent    string `json:"agent"`
+-	Session  string `json:"session"`
+-	Cwd      string `json:"cwd"`
+-	Query    string `json:"query"`
++	Origin      string `json:"origin"`                // local, remote, magpie-key or gateway-key; empty means unknown
++	CallerKeyID string `json:"callerKeyId,omitempty"` // authenticated gateway key ID; empty when unknown
++	Protocol    string `json:"protocol"`
++	Model       string `json:"model"`
++	Stream      bool   `json:"stream"`
++	Path        string `json:"path"`
++	Agent       string `json:"agent"`
++	Session     string `json:"session"`
++	Cwd         string `json:"cwd"`
++	Query       string `json:"query"`
+ }
+ 
+ // GatewayState is aggregate diagnostics for this host's lifetime. Outcomes
+diff --git a/internal/plugin/host.js b/internal/plugin/host.js
+index 28b0aa872..d12318530 100644
+--- a/internal/plugin/host.js
++++ b/internal/plugin/host.js
+@@ -1412,7 +1412,9 @@ async function gatewayBegin(p, signal) {
+       }
+       if (JSON.stringify(next.config?.tools) !== JSON.stringify(body.config?.tools) || JSON.stringify(next.config?.toolConfig) !== JSON.stringify(body.config?.toolConfig)) throw new Error("context hook changed client tools")
+       body = next
+-      run.plugins.push({ h, ctx })
++      // Keep the authenticated ID outside the plugin's mutable context so a
++      // hook cannot accidentally change the identity of its response.
++      run.plugins.push({ h, ctx, callerKeyId: p.context?.callerKeyId })
+     } catch {
+       if (ownSignal.aborted) outcome = signal.aborted ? "cancelled" : "timeout"
+       else if (!["unbound", "unauthorized", "unavailable", "invalid"].includes(outcome)) outcome = "error"
+@@ -1441,16 +1443,15 @@ async function gatewayFinish(run, p, signal) {
+   run.finished = true
+   const total = AbortSignal.any([signal, run.controller.signal, AbortSignal.timeout(gatewayBudget())])
+   try {
+-    for (const { h, ctx } of run.plugins) {
++    for (const { h, ctx, callerKeyId } of run.plugins) {
+       if (total.aborted) break
+       if (typeof h.onResponse !== "function") continue
+       const ctl = new AbortController()
+       const timer = setTimeout(() => ctl.abort(), gatewayTimeout(h))
+-      ctx.signal = AbortSignal.any([total, ctl.signal])
+-      ctx.success = p.success === true
+-      if (p.request !== undefined) ctx.request = structuredClone(p.request)
++      const responseCtx = { ...ctx, callerKeyId, signal: AbortSignal.any([total, ctl.signal]), success: p.success === true }
++      if (p.request !== undefined) responseCtx.request = structuredClone(p.request)
+       try {
+-        await bounded(Promise.resolve().then(() => h.onResponse(structuredClone(p.reply), ctx)), ctx.signal)
++        await bounded(Promise.resolve().then(() => h.onResponse(structuredClone(p.reply), responseCtx)), responseCtx.signal)
+       } catch {
+         if (!signal.aborted) send({ event: "log", level: "warn", message: `${h.spec}: gateway response hook failed or timed out` })
+       } finally {
+-- 
+2.50.1 (Apple Git-155)
+

@@ -1,0 +1,118 @@
+{
+  "date": "2026-10-22",
+  "method": "Exact RGB comparison; no registration, resizing, crop or content masking for metrics. Different means any RGB channel differs. MAE is the average absolute difference across all RGB channels/pixels (0-255). Ratios describe static screenshot differences, not product acceptance thresholds. Data, tenant, content and rendering differences are included. Contact sheet previews resized only for visual reading.",
+  "pairs": [
+    {
+      "page": "app-manage",
+      "origin": "E:\\cc\\temp\\rea-agent\\evidence\\visual-compare\\origin-app-manage.png",
+      "local": "E:\\cc\\temp\\rea-agent\\evidence\\visual-compare\\local-app-manage.png",
+      "sizes": [
+        [
+          1280,
+          720
+        ],
+        [
+          1280,
+          720
+        ]
+      ],
+      "sha256": [
+        "0ac95dec9fbf7b06c5829ecbe98309291b462ad6440bc67719cfcfde6d19d15f",
+        "98b8aa31754a7ea9255ca7b9d618259fc2796c1d5aadb160a809f3aa5965eca9"
+      ],
+      "pixelCount": 921600,
+      "differentPixels": 98203,
+      "differentPixelRatio": 0.10655707465277778,
+      "maeRGB": [
+        3.660861545138889,
+        3.6926085069444445,
+        3.465795355902778
+      ],
+      "mae": 3.6064218026620374
+    },
+    {
+      "page": "knowledge",
+      "origin": "E:\\cc\\temp\\rea-agent\\evidence\\visual-compare\\origin-knowledge.png",
+      "local": "E:\\cc\\temp\\rea-agent\\evidence\\visual-compare\\local-knowledge.png",
+      "sizes": [
+        [
+          1280,
+          720
+        ],
+        [
+          1280,
+          720
+        ]
+      ],
+      "sha256": [
+        "0a410f15179687b1eca04e1a951ca4ee21424a1801cb24f508e2bf5b2d3f8f1a",
+        "59da923932fca7c2d93e3e323a638e35ef26bccb261b8f3ca7eb69ea882c3a12"
+      ],
+      "pixelCount": 921600,
+      "differentPixels": 78286,
+      "differentPixelRatio": 0.08494574652777778,
+      "maeRGB": [
+        2.585427517361111,
+        2.5811946614583334,
+        2.4946419270833333
+      ],
+      "mae": 2.5537547019675926
+    },
+    {
+      "page": "mcp-service",
+      "origin": "E:\\cc\\temp\\rea-agent\\evidence\\visual-compare\\origin-mcp-service.png",
+      "local": "E:\\cc\\temp\\rea-agent\\evidence\\visual-compare\\local-mcp-service.png",
+      "sizes": [
+        [
+          1280,
+          720
+        ],
+        [
+          1280,
+          720
+        ]
+      ],
+      "sha256": [
+        "817e97f27ff544cf6d7a958e44a2ba481634d8b187198f31d9a2ced43595e43e",
+        "2218db4dbccb17faba023d132271dc56c9412bbf59da390f7a9745c1141b02c0"
+      ],
+      "pixelCount": 921600,
+      "differentPixels": 97833,
+      "differentPixelRatio": 0.10615559895833333,
+      "maeRGB": [
+        3.4755902777777776,
+        3.4964637586805556,
+        3.207991536458333
+      ],
+      "mae": 3.3933485243055554
+    },
+    {
+      "page": "prompt-library",
+      "origin": "E:\\cc\\temp\\rea-agent\\evidence\\visual-compare\\origin-prompt-library.png",
+      "local": "E:\\cc\\temp\\rea-agent\\evidence\\visual-compare\\local-prompt-library.png",
+      "sizes": [
+        [
+          1280,
+          720
+        ],
+        [
+          1280,
+          720
+        ]
+      ],
+      "sha256": [
+        "9055f525e823943e3ab4f61359e3adf3c932ad9668403daeb47135a51fb11004",
+        "25cf2e94c4a23e1981fea40abfe50f1dd35329aab979a3ad9d303136651c5d48"
+      ],
+      "pixelCount": 921600,
+      "differentPixels": 74814,
+      "differentPixelRatio": 0.08117838541666667,
+      "maeRGB": [
+        2.4569390190972222,
+        2.4571712239583334,
+        2.404956597222222
+      ],
+      "mae": 2.4396889467592593
+    }
+  ]
+}

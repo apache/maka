@@ -1,0 +1,337 @@
+/* 样式基座（token/暗色板/防闪）统一由 @ggbdpq/console-ui 提供，改板只动包内 */
+@import "@ggbdpq/console-ui/base.css";
+
+/* ============================================================
+   pi-web-dev 设计系统 —— 「终端实验室」
+   主题跟随：浅色为亮色板，深色沿用原终端板（.dark 覆盖）
+   单一绿 accent（code dark + run green）
+   字体：Geist（界面）+ JetBrains Mono（代码/终端）
+   圆角：只有 panel(10px) / chip(6px) 两档，不混第三档
+   数据色是语义不是装饰：蓝=assistant 文本、金=tool_call、
+   绿=tool_result、紫=compaction、红=error，终端/地图/Context 三处一致
+   ------------------------------------------------------------
+   分层约定：
+   - React 管的 DOM → JSX 里写 Tailwind 工具类
+   - 核心文件生成的 DOM（tui.js 的 term-*）→ 这里的语义类
+   - SVG 地图内部状态 → 这里的语义类（工具类写 SVG 很别扭）
+   ============================================================ */
+
+/* —— lab 色板变量：浅色为默认，.dark 覆盖为终端深板 —— */
+:root {
+  --lab-base: #f6f8fa;        /* 页面底 */
+  --lab-surface: #ffffff;     /* 面板底 */
+  --lab-raised: #eff2f5;      /* 面板内的悬浮件（输入框/按钮/节点） */
+  --lab-overlay: #ffffff;     /* 再抬一档（弹窗/下拉） */
+  --lab-line: #d0d7de;        /* 边框 */
+  --lab-line-soft: #dae0e7;   /* 更弱的内分隔线 */
+  --lab-ink: #1f2328;         /* 主文字 */
+  --lab-ink-dim: #59636e;     /* 次文字 */
+  --lab-ink-faint: #8c959f;   /* 弱文字（行号/来源标签） */
+  --lab-accent: #1a7f37;      /* 唯一的 UI accent：运行绿 */
+  --lab-accent-soft: #dafbe1; /* 绿的浅底（选中态底色） */
+  --lab-assistant: #424a53;   /* assistant 正文 */
+  --lab-blue: #0969da;   /* assistant 文本 */
+  --lab-gold: #9a6700;   /* tool_call */
+  --lab-green: #1a7f37;  /* tool_result */
+  --lab-purple: #8250df; /* compaction */
+  --lab-cyan: #1b7c83;
+  --lab-amber: #9a6700;  /* 仪表盘预警 */
+  --lab-red: #cf222e;    /* error / 停止 */
+}
+
+.dark {
+  --lab-base: #0f172a;
+  --lab-surface: #141c30;
+  --lab-raised: #1b2336;
+  --lab-overlay: #232d45;
+  --lab-line: #2a3650;
+  --lab-line-soft: #223049;
+  --lab-ink: #e6edf3;
+  --lab-ink-dim: #9baac3;
+  --lab-ink-faint: #5d6e8c;
+  --lab-accent: #22c55e;
+  --lab-accent-soft: #173125;
+  --lab-assistant: #c8d3e6;
+  --lab-blue: #58a6ff;
+  --lab-gold: #d29922;
+  --lab-green: #3fb950;
+  --lab-purple: #a371f7;
+  --lab-cyan: #39c5cf;
+  --lab-amber: #e3b341;
+  --lab-red: #f85149;
+}
+
+@theme {
+  /* —— 色板（引用主题变量，随明暗切换）；lab- 前缀防与 Tailwind 命名空间碰撞
+        （--color-base 曾劫持 text-base 使其变成颜色 utility，字号规则丢失） —— */
+  --color-lab-base: var(--lab-base);
+  --color-surface: var(--lab-surface);
+  --color-raised: var(--lab-raised);
+  --color-overlay: var(--lab-overlay);
+  --color-line: var(--lab-line);
+  --color-line-soft: var(--lab-line-soft);
+  --color-ink: var(--lab-ink);
+  --color-ink-dim: var(--lab-ink-dim);
+  --color-ink-faint: var(--lab-ink-faint);
+  --color-lab-accent: var(--lab-accent);
+  --color-lab-accent-soft: var(--lab-accent-soft);
+
+  /* —— 语义数据色（与 session-store 的 PACKET_COLORS / PAIR_COLORS 对齐） —— */
+  --color-blue: var(--lab-blue);
+  --color-gold: var(--lab-gold);
+  --color-green: var(--lab-green);
+  --color-purple: var(--lab-purple);
+  --color-cyan: var(--lab-cyan);
+  --color-amber: var(--lab-amber);
+  --color-red: var(--lab-red);
+
+  /* —— 字体：由基座 base.css 统一声明（Geist + JetBrains Mono） —— */
+
+  /* —— 圆角（单一体系，两档） —— */
+  --radius-panel: 0.625rem; /* 10px：面板/弹窗 */
+  --radius-chip: 0.375rem;  /* 6px：按钮/标签/输入框 */
+
+  /* —— 动效 —— */
+  --animate-flash: flash 900ms ease-out both;
+  --animate-blink: blink 1.1s steps(2, jump-none) infinite;
+
+  @keyframes flash {
+    0% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--pair, var(--color-lab-accent)) 60%, transparent); }
+    100% { box-shadow: 0 0 0 3px transparent; }
+  }
+  @keyframes blink {
+    0%, 49% { opacity: 1; }
+    50%, 100% { opacity: 0; }
+  }
+}
+
+/* ============ 实验室基础层（.lab-root 作用域，不污染其他分区） ============ */
+
+.lab-root {
+  color-scheme: light;
+/* 深色下恢复终端暗色方案 */
+.dark .lab-root { color-scheme: dark; }
+  @apply bg-lab-base text-ink font-sans antialiased;
+  overflow: hidden;
+}
+.lab-root ::selection { background: rgb(34 197 94 / 0.30); }
+
+/* 细滚动条：调试工具要的是密度（仅实验室内） */
+.lab-root * { scrollbar-width: thin; scrollbar-color: var(--color-line) transparent; }
+.lab-root ::-webkit-scrollbar { width: 8px; height: 8px; }
+.lab-root ::-webkit-scrollbar-thumb { background: var(--color-line); border-radius: 4px; }
+.lab-root ::-webkit-scrollbar-track { background: transparent; }
+.lab-root :focus-visible { outline: 2px solid var(--color-lab-accent); outline-offset: 1px; }
+
+/* 教学场景读代码：等宽上下文统一关闭连字（=> 不合并） */
+.lab-root .term-out, .lab-root .src-code { font-variant-ligatures: none; }
+
+/* ============ 终端（tui.js 生成的 DOM，语义类） ============
+   每行 = [来源标签] 正文。来源标签是"这行是谁 yield 的"，
+   视觉上是行首小 chip；正文颜色按事件语义着色。 */
+
+.term-out {
+  flex: 1;
+  overflow-y: auto;
+  padding: 14px 16px 16px 26px; /* 左侧留白放断点扣住时的 ▶ 标记 */
+  font-family: var(--font-mono);
+  font-size: 13.5px;
+  line-height: 1.78;
+}
+
+.term-line {
+  position: relative;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: 9px;
+  padding: 1px 6px;
+  border-radius: var(--radius-chip);
+}
+
+/* 来源标签 [文件 · 函数] */
+.term-src {
+  flex: none;
+  font-size: 11px;
+  line-height: 1.7;
+  color: var(--color-ink-faint);
+  background: var(--color-raised);
+  border: 1px solid var(--color-line-soft);
+  border-radius: var(--radius-chip);
+  padding: 0 6px;
+  white-space: nowrap;
+}
+.term-src.clickable { cursor: pointer; transition: color 120ms, border-color 120ms, background 120ms; }
+.term-src.clickable:hover {
+  color: var(--color-lab-accent);
+  border-color: rgb(34 197 94 / 0.45);
+  background: var(--color-lab-accent-soft);
+}
+
+/* 事件语义色（与地图数据包同色） */
+.term-user span:last-child { color: var(--color-ink); }
+.term-assistant-text { color: var(--lab-assistant); white-space: pre-wrap; }
+.term-toolcall .tc-name { color: var(--color-gold); font-weight: 600; }
+.term-toolcall .tc-args { color: var(--color-ink-dim); word-break: break-all; }
+.term-toolresult .tr-name { color: var(--color-green); font-weight: 600; }
+.term-compact span:last-child { color: var(--color-purple); }
+.term-notice { color: var(--color-ink-faint); font-size: 12.5px; border-left: 2px solid var(--color-line); padding-left: 10px; margin: 2px 0; }
+.term-error { color: var(--color-red); }
+
+/* 回合分隔线 */
+.term-turnend span:last-child {
+  flex-basis: 100%;
+  text-align: center;
+  color: var(--color-ink-faint);
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  border-top: 1px dashed var(--color-line-soft);
+  padding-top: 9px;
+  margin-top: 7px;
+}
+
+/* 流式光标：正在生成时行尾闪烁 */
+.term-assistant.streaming .term-assistant-text::after {
+  content: "▍";
+  color: var(--color-lab-accent);
+  animation: var(--animate-blink);
+}
+
+/* tool 结果 / 摘要正文：长内容折叠，点击展开 */
+.tr-body {
+  flex-basis: 100%;
+  margin: 5px 0 3px;
+  padding: 8px 11px;
+  font-size: 12.5px;
+  line-height: 1.65;
+  color: var(--color-ink-dim);
+  background: var(--color-base);
+  border: 1px solid var(--color-line-soft);
+  border-radius: var(--radius-chip);
+  white-space: pre-wrap;
+  word-break: break-word;
+  cursor: pointer;
+  transition: border-color 120ms;
+}
+.tr-body:hover { border-color: var(--color-line); }
+.tr-body.collapsed {
+  max-height: 3.6em;
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(to bottom, #000 55%, transparent);
+  mask-image: linear-gradient(to bottom, #000 55%, transparent);
+}
+
+/* 断点扣住：程序计数器停在这 —— ▶ + 绿描边，全站最亮的时刻 */
+.term-line.is-current {
+  background: rgb(34 197 94 / 0.08);
+  box-shadow: inset 0 0 0 1px rgb(34 197 94 / 0.35);
+}
+.term-line.is-current::before {
+  content: "▶";
+  position: absolute;
+  left: -18px;
+  color: var(--color-lab-accent);
+  font-size: 10px;
+}
+
+/* 输入行 */
+.term-input-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 10px 14px;
+  border-top: 1px solid var(--color-line-soft);
+  background: var(--color-raised);
+}
+.term-prompt { color: var(--color-lab-accent); font-weight: 700; font-family: var(--font-mono); }
+.term-input {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--color-ink);
+  font-family: var(--font-mono);
+  font-size: 13.5px;
+}
+.term-input::placeholder { color: var(--color-ink-faint); }
+.term-input:disabled { opacity: 0.55; }
+.term-stop {
+  flex: none;
+  font-family: var(--font-sans);
+  font-size: 12.5px;
+  color: var(--color-red);
+  background: transparent;
+  border: 1px solid rgb(248 81 73 / 0.45);
+  border-radius: var(--radius-chip);
+  padding: 3px 12px;
+  cursor: pointer;
+  transition: background 120ms, border-color 120ms;
+}
+.term-stop:hover { background: rgb(248 81 73 / 0.12); border-color: var(--color-red); }
+
+/* ============ 数据流地图（SVG 内部状态） ============ */
+
+.flow-edge {
+  stroke: var(--color-line);
+  stroke-width: 1.5;
+  fill: none;
+  stroke-dasharray: 5 6;
+}
+.flow-node rect {
+  fill: var(--color-raised);
+  stroke: var(--color-line);
+  stroke-width: 1;
+  transition: fill 150ms, stroke 150ms, filter 150ms, transform 150ms;
+  transform-box: fill-box;
+  transform-origin: center;
+}
+.flow-node text {
+  fill: var(--color-ink-dim);
+  font-family: var(--font-mono);
+  font-size: 14px; /* viewBox 单位：顶栏 76px 高时实际约 10.5px */
+  user-select: none;
+  pointer-events: none;
+}
+.flow-node.clickable { cursor: pointer; }
+.flow-node:hover rect { stroke: var(--color-ink-faint); }
+.flow-node:hover text { fill: var(--color-ink); }
+.flow-node.active rect {
+  fill: var(--color-lab-accent-soft);
+  stroke: var(--color-lab-accent);
+  transform: scale(1.07);
+  filter: drop-shadow(0 0 9px rgb(34 197 94 / 0.35));
+}
+.flow-node.active text { fill: var(--color-lab-accent); }
+.flow-loop { fill: var(--color-ink-faint); font-size: 13px; font-family: var(--font-mono); }
+.packet { opacity: 0.95; }
+
+/* ============ 配对闪烁（tool_use ↔ tool_result 同色 ping） ============ */
+
+.pair-flash { animation: var(--animate-flash); }
+
+/* 配对色件（Context 卡片里的 tool chip / result block）：
+   颜色由内联 --pair 注入（pairColor(id)），同一个 tool_call 的两侧拿到同色 */
+.pair-chip {
+  color: var(--pair);
+  border: 1px solid color-mix(in srgb, var(--pair) 45%, transparent);
+  background: color-mix(in srgb, var(--pair) 10%, transparent);
+}
+.pair-block { border-left: 2px solid var(--pair); }
+
+/* 长正文折叠态：限高 + 底部渐隐，点击展开 */
+.clamp-pre {
+  max-height: 5.2em;
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(to bottom, #000 55%, transparent);
+  mask-image: linear-gradient(to bottom, #000 55%, transparent);
+}
+
+/* ============ 减弱动态（design-taste 硬规则） ============ */
+
+@media (prefers-reduced-motion: reduce) {
+  .packet { display: none; }              /* 数据包飞行取消，靠节点亮起表达 */
+  .term-assistant.streaming .term-assistant-text::after { animation: none; }
+  .pair-flash { animation: none; }
+  .flow-node rect, .term-src.clickable, .tr-body { transition: none; }
+}

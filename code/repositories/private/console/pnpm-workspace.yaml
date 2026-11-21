@@ -1,0 +1,14 @@
+packages:
+  - apps/*
+  - packages/*
+allowBuilds:
+  # esbuild 的 postinstall 安装平台二进制，vitest 转译依赖它
+  esbuild: true
+  # onnxruntime-node 是 @huggingface/transformers 的本地推理后端，postinstall 放置平台二进制
+  onnxruntime-node: true
+  # protobufjs postinstall 仅生成轻量 cli 兼容层
+  protobufjs: true
+  # sleep 是 puppeteer-real-browser 的原生依赖，需要 node-gyp 编译
+  sleep: true
+  # tesseract.js 动态导入 + CDN wasm；postinstall 仅校验产物
+  tesseract.js: true

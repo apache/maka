@@ -1,0 +1,17 @@
+// A reply that carries its thinking in both of DeepSeek's spellings, with no
+// tool call in the request at all, goes with reasoning_content alone: the
+// upstream reads the two as one field and would turn the request away as a
+// duplicate field otherwise.
+func TestChatBothReasoningSpellingsRelayed(t *testing.T) {
+	f := &fake{t: t, reply: chatWholeOK, ctype: "application/json", refuse: deepseekRefuseToolTurns}
+	up := setup(t, provider.Chat, f)
+	chatProvider(t, up.URL, provider.Provider{ID: "ds", Models: []string{"deepseek-v4.1-flash"}})
+	code, body := postTo(t, New(), "/v1/chat/completions", `{"model":"ds/deepseek-v4.1-flash","stream":false,"messages":[
+		{"role":"user","content":"hi"},
+		{"role":"assistant","content":"Hello!","reasoning":"the thinking","reasoning_content":"the thinking"},
+		{"role":"user","content":"again"}]}`)
+	if code != 200 || f.calls != 1 {
+		t.Fatalf("%d after %d calls: %s", code, f.calls, body)
+	}
+	sameJSON(t, sentMessages(t, f.got)[1], `{"role":"assistant","content":"Hello!","reasoning_content":"the thinking"}`)
+}

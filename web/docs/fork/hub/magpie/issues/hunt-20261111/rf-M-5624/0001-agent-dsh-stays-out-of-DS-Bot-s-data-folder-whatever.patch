@@ -1,0 +1,370 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Sun, 8 Nov 2026 04:10:28 +0800
+Subject: [PATCH] agent: dsh stays out of DS Bot's data folder, whatever
+ DSH_HOME says (#5624)
+
+---
+ internal/agent/dsbot.go               | 55 ++------------------
+ internal/agent/dsbot_test.go          | 13 ++---
+ internal/agent/dsh.go                 | 12 ++++-
+ internal/agent/dsh_dsbot_home_test.go | 69 ++++++++++++++++++++++++
+ internal/appdir/dsbot.go              | 75 +++++++++++++++++++++++++++
+ internal/sessions/dsh.go              |  9 +++-
+ 6 files changed, 172 insertions(+), 61 deletions(-)
+ create mode 100644 internal/agent/dsh_dsbot_home_test.go
+ create mode 100644 internal/appdir/dsbot.go
+
+diff --git a/internal/agent/dsbot.go b/internal/agent/dsbot.go
+index 6071e4c04..5ebed2a8f 100644
+--- a/internal/agent/dsbot.go
++++ b/internal/agent/dsbot.go
+@@ -12,9 +12,6 @@ package agent
+ // start in agent-default-model (dshOn).
+ 
+ import (
+-	"encoding/json"
+-	"errors"
+-	"os"
+ 	"path/filepath"
+ 	"strings"
+ 
+@@ -36,55 +33,11 @@ func dsbotFile(dir string) string {
+ 	return filepath.Join(dir, "profiles", dsbotProfile, "cordis.patch.yml")
+ }
+ 
+-// dsbotHome is the app's data folder, the DSH_HOME its DSH runs on, and
+-// whether it is known. chooseLocations (app/src/first-run.mjs) takes it
+-// from DS_BOT_HOME, which runs the app on throwaway folders, else from
+-// locations.json's dataDir in the app's Electron userData (DS_BOT_SHELL_DATA
+-// when set, else <appData>/DS Bot, or <appData>/DeepSeek Bot, its name
+-// before, while that one is there and DS Bot's has no locations.json:
+-// configureIdentity in app/src/legacy.mjs), else ~/.ds-bot, the folder its
+-// first run saves when the user keeps the default. A locations.json that
+-// can't be read or names no folder is unknown: never taken for the default,
+-// where magpie would wire a folder the app doesn't run on.
+-func dsbotHome() (string, bool) {
+-	if dir := appdir.Getenv("DS_BOT_HOME"); dir != "" {
+-		return dir, true
+-	}
+-	userData := appdir.Getenv("DS_BOT_SHELL_DATA")
+-	if userData == "" {
+-		cfg, err := os.UserConfigDir()
+-		if err != nil {
+-			return "", false
+-		}
+-		userData = filepath.Join(cfg, "DS Bot")
+-		if legacy := filepath.Join(cfg, "DeepSeek Bot"); !isFile(filepath.Join(userData, "locations.json")) && isDir(legacy) {
+-			userData = legacy
+-		}
+-	}
+-	b, err := os.ReadFile(filepath.Join(userData, "locations.json"))
+-	if errors.Is(err, os.ErrNotExist) {
+-		home, err := os.UserHomeDir()
+-		if err != nil {
+-			return "", false
+-		}
+-		return filepath.Join(home, ".ds-bot"), true
+-	}
+-	if err != nil {
+-		return "", false
+-	}
+-	var places struct {
+-		DataDir string `json:"dataDir"`
+-	}
+-	if json.Unmarshal(b, &places) != nil || strings.TrimSpace(places.DataDir) == "" {
+-		return "", false
+-	}
+-	return places.DataDir, true
+-}
+-
+-// dsbotDataDir is dsbotHome, "" when it is unknown, with the folder noted
+-// as DS Bot's (dshApps): the routes written there are DS Bot's models.
++// dsbotDataDir is DS Bot's data folder (appdir.DsbotHome), "" when it is
++// unknown, with the folder noted as DS Bot's (dshApps): the routes written
++// there are DS Bot's models.
+ func dsbotDataDir() string {
+-	dir, ok := dsbotHome()
++	dir, ok := appdir.DsbotHome()
+ 	if !ok {
+ 		return ""
+ 	}
+diff --git a/internal/agent/dsbot_test.go b/internal/agent/dsbot_test.go
+index 8b3d1732f..72e574bed 100644
+--- a/internal/agent/dsbot_test.go
++++ b/internal/agent/dsbot_test.go
+@@ -6,6 +6,7 @@ import (
+ 	"strings"
+ 	"testing"
+ 
++	"github.com/yetone/magpie/internal/appdir"
+ 	"github.com/yetone/magpie/internal/provider"
+ )
+ 
+@@ -155,7 +156,7 @@ func TestDsBotWired(t *testing.T) {
+ // the app doesn't run on then.
+ func TestDsBotDataFolder(t *testing.T) {
+ 	home, _, userData, _ := dsbotSandbox(t)
+-	if dir, ok := dsbotHome(); !ok || dir != filepath.Join(home, ".ds-bot") {
++	if dir, ok := appdir.DsbotHome(); !ok || dir != filepath.Join(home, ".ds-bot") {
+ 		t.Fatalf("no locations.json: %q %v", dir, ok)
+ 	}
+ 	picked := filepath.Join(home, "Documents", "bot-data")
+@@ -166,7 +167,7 @@ func TestDsBotDataFolder(t *testing.T) {
+ 	if err := os.WriteFile(loc, []byte(`{"dataDir":"`+filepath.ToSlash(picked)+`","workspace":"x","freeAtStart":false}`), 0o644); err != nil {
+ 		t.Fatal(err)
+ 	}
+-	if dir, ok := dsbotHome(); !ok || filepath.Clean(dir) != picked {
++	if dir, ok := appdir.DsbotHome(); !ok || filepath.Clean(dir) != picked {
+ 		t.Fatalf("locations.json's dataDir: %q %v", dir, ok)
+ 	}
+ 	a := dsbot(home)
+@@ -178,7 +179,7 @@ func TestDsBotDataFolder(t *testing.T) {
+ 	}
+ 
+ 	t.Setenv("DS_BOT_HOME", filepath.Join(home, "throwaway"))
+-	if dir, ok := dsbotHome(); !ok || dir != filepath.Join(home, "throwaway") {
++	if dir, ok := appdir.DsbotHome(); !ok || dir != filepath.Join(home, "throwaway") {
+ 		t.Fatalf("DS_BOT_HOME: %q %v", dir, ok)
+ 	}
+ 	t.Setenv("DS_BOT_HOME", "")
+@@ -187,7 +188,7 @@ func TestDsBotDataFolder(t *testing.T) {
+ 		if err := os.WriteFile(loc, []byte(bad), 0o644); err != nil {
+ 			t.Fatal(err)
+ 		}
+-		if dir, ok := dsbotHome(); ok {
++		if dir, ok := appdir.DsbotHome(); ok {
+ 			t.Fatalf("%s taken for %q", bad, dir)
+ 		}
+ 		a := dsbot(home)
+@@ -213,7 +214,7 @@ func TestDsBotDataFolder(t *testing.T) {
+ 	if err := os.WriteFile(filepath.Join(legacy, "locations.json"), []byte(`{"dataDir":"`+filepath.ToSlash(old)+`"}`), 0o644); err != nil {
+ 		t.Fatal(err)
+ 	}
+-	if dir, ok := dsbotHome(); !ok || filepath.Clean(dir) != old {
++	if dir, ok := appdir.DsbotHome(); !ok || filepath.Clean(dir) != old {
+ 		t.Fatalf("legacy userData: %q %v", dir, ok)
+ 	}
+ 	now := filepath.Join(cfg, "DS Bot")
+@@ -223,7 +224,7 @@ func TestDsBotDataFolder(t *testing.T) {
+ 	if err := os.WriteFile(filepath.Join(now, "locations.json"), []byte(`{"dataDir":"`+filepath.ToSlash(picked)+`"}`), 0o644); err != nil {
+ 		t.Fatal(err)
+ 	}
+-	if dir, ok := dsbotHome(); !ok || filepath.Clean(dir) != picked {
++	if dir, ok := appdir.DsbotHome(); !ok || filepath.Clean(dir) != picked {
+ 		t.Fatalf("DS Bot's own userData beside the legacy one: %q %v", dir, ok)
+ 	}
+ }
+diff --git a/internal/agent/dsh.go b/internal/agent/dsh.go
+index 0f851bd30..6a6efe0c6 100644
+--- a/internal/agent/dsh.go
++++ b/internal/agent/dsh.go
+@@ -98,7 +98,13 @@ func dshIn(at place) *Agent { return dshAt(at) }
+ // dshAt is DeepSeek Harness with its home at at.home, reaching the gateway
+ // as at does. A distro's DSH_HOME can't be read, so there it is ~/.dsh.
+ func dshAt(at place) *Agent {
++	// DSH_HOME the DS Bot app exports (its registry value on Windows, which
++	// appdir.Getenv follows while magpie runs) names its own data folder,
++	// its DSH's home: not this one's (#5624)
+ 	dir := at.getenv("DSH_HOME")
++	if dir != "" && appdir.DsbotOwns(dir) {
++		dir = ""
++	}
+ 	if dir == "" {
+ 		dir = at.join(".dsh")
+ 	}
+@@ -2767,9 +2773,11 @@ func dshWriteError(err error) string {
+ 	return err.Error()
+ }
+ 
+-// dshHome is where dsh keeps its profiles: $DSH_HOME, or ~/.dsh.
++// dshHome is where dsh keeps its profiles: $DSH_HOME, or ~/.dsh. A
++// DSH_HOME naming DS Bot's data folder is that folder's owner's, not this
++// one's (appdir.DsbotOwns, #5624).
+ func dshHome() string {
+-	if dir := appdir.Getenv("DSH_HOME"); dir != "" {
++	if dir := appdir.Getenv("DSH_HOME"); dir != "" && !appdir.DsbotOwns(dir) {
+ 		return dir
+ 	}
+ 	home, err := os.UserHomeDir()
+diff --git a/internal/agent/dsh_dsbot_home_test.go b/internal/agent/dsh_dsbot_home_test.go
+new file mode 100644
+index 000000000..93ddadc0a
+--- /dev/null
++++ b/internal/agent/dsh_dsbot_home_test.go
+@@ -0,0 +1,69 @@
++package agent
++
++import (
++	"os"
++	"path/filepath"
++	"testing"
++
++	"github.com/yetone/magpie/internal/sessions"
++)
++
++// #5624 (BErrybearl): DS Bot's app runs its own DSH with DSH_HOME at its
++// data folder — a value the registry holds on Windows, which appdir.Getenv
++// follows while magpie sits in the tray. With DSH_HOME naming DS Bot's data
++// folder, dsh's row bound there and the serving round wrote magpie's route
++// into ~/.ds-bot/profiles/ds-bot/cordis.patch.yml over DS Bot's own
++// provider, and its sessions and usage were the harness's. The folder is
++// DS Bot's (DsbotHome): dsh keeps ~/.dsh whatever DSH_HOME says when it
++// says that, and DS Bot's row keeps the folder.
++func TestDshLeavesDsBotsFolder(t *testing.T) {
++	home, dshDir, _, _ := dsbotSandbox(t)
++	data := filepath.Join(home, ".ds-bot")
++	file := dsbotFile(data)
++	// the app's own profile, as its first start makes it
++	if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil {
++		t.Fatal(err)
++	}
++	if err := os.WriteFile(file, []byte(dshProfileTemplate), 0o644); err != nil {
++		t.Fatal(err)
++	}
++	t.Setenv("DSH_HOME", data)
++
++	a := dsh(home)
++	if a.Dir != dshDir {
++		t.Fatalf("dsh bound to DS Bot's data folder: %s", a.Dir)
++	}
++	if a.Path != filepath.Join(dshDir, "profiles", "web", "cordis.patch.yml") {
++		t.Fatalf("dsh's patch list is %s", a.Path)
++	}
++	if dir := dshHome(); dir != dshDir {
++		t.Fatalf("the serving round keeps %s", dir)
++	}
++	if dir := sessions.DshDir(); dir != dshDir {
++		t.Fatalf("sessions read %s", dir)
++	}
++	// DS Bot's row still owns its folder
++	if b := dsbot(home); b.Path != file {
++		t.Fatalf("DS Bot's row names %s", b.Path)
++	}
++
++	// DS_BOT_HOME moves the folder; DSH_HOME there is still its
++	thrown := filepath.Join(home, "throwaway")
++	if err := os.MkdirAll(filepath.Join(thrown, "profiles", "ds-bot"), 0o755); err != nil {
++		t.Fatal(err)
++	}
++	if err := os.WriteFile(dsbotFile(thrown), []byte(dshProfileTemplate), 0o644); err != nil {
++		t.Fatal(err)
++	}
++	t.Setenv("DS_BOT_HOME", thrown)
++	t.Setenv("DSH_HOME", thrown)
++	if dir := dshHome(); dir != dshDir {
++		t.Fatalf("the serving round keeps %s with DS_BOT_HOME set", dir)
++	}
++	if a := dsh(home); a.Dir != dshDir {
++		t.Fatalf("dsh bound to %s with DS_BOT_HOME set", a.Dir)
++	}
++	if b := dsbot(home); b.Path != dsbotFile(thrown) {
++		t.Fatalf("DS Bot's row names %s with DS_BOT_HOME set", b.Path)
++	}
++}
+diff --git a/internal/appdir/dsbot.go b/internal/appdir/dsbot.go
+new file mode 100644
+index 000000000..623955d5e
+--- /dev/null
++++ b/internal/appdir/dsbot.go
+@@ -0,0 +1,75 @@
++package appdir
++
++import (
++	"encoding/json"
++	"errors"
++	"os"
++	"path/filepath"
++	"strings"
++)
++
++// DS Bot (github.com/Fei2411/DS-Bot) is a DSH plugin and an Electron
++// desktop app built on it. The app ships its own DSH and runs it with
++// DSH_HOME at a data folder of its own, booting the profile ds-bot, and
++// never reads ~/.dsh. Its folder is chosen by chooseLocations
++// (app/src/first-run.mjs): DS_BOT_HOME, which runs the app on throwaway
++// folders, else locations.json's dataDir in the app's Electron userData
++// (DS_BOT_SHELL_DATA when set, else <appData>/DS Bot, or <appData>/DeepSeek
++// Bot, its name before, while that one is there and DS Bot's has no
++// locations.json: configureIdentity in app/src/legacy.mjs), else ~/.ds-bot,
++// the folder its first run saves when the user keeps the default.
++
++// DsbotHome is DS Bot's data folder, the DSH_HOME its own DSH runs on, and
++// whether it is known. A locations.json that can't be read or names no
++// folder is unknown: never taken for the default, where an agent would be
++// wired onto a folder the app doesn't run on.
++func DsbotHome() (string, bool) {
++	if dir := Getenv("DS_BOT_HOME"); dir != "" {
++		return dir, true
++	}
++	userData := Getenv("DS_BOT_SHELL_DATA")
++	if userData == "" {
++		cfg, err := os.UserConfigDir()
++		if err != nil {
++			return "", false
++		}
++		userData = filepath.Join(cfg, "DS Bot")
++		if legacy := filepath.Join(cfg, "DeepSeek Bot"); !isFile(filepath.Join(userData, "locations.json")) && isDir(legacy) {
++			userData = legacy
++		}
++	}
++	b, err := os.ReadFile(filepath.Join(userData, "locations.json"))
++	if errors.Is(err, os.ErrNotExist) {
++		home, err := os.UserHomeDir()
++		if err != nil {
++			return "", false
++		}
++		return filepath.Join(home, ".ds-bot"), true
++	}
++	if err != nil {
++		return "", false
++	}
++	var places struct {
++		DataDir string `json:"dataDir"`
++	}
++	if json.Unmarshal(b, &places) != nil || strings.TrimSpace(places.DataDir) == "" {
++		return "", false
++	}
++	return places.DataDir, true
++}
++
++// DsbotOwns is whether dir is DS Bot's data folder: what its own DSH runs
++// on, and no other agent's to bind, read or write. DS Bot's app exports
++// DSH_HOME at that folder — a registry value on Windows, which Getenv
++// follows while magpie runs — and DeepSeek Harness took it for its own
++// home, writing its route over DS Bot's own (#5624).
++func DsbotOwns(dir string) bool {
++	if dir == "" {
++		return false
++	}
++	home, ok := DsbotHome()
++	return ok && sameDir(home) == sameDir(dir)
++}
++
++func isFile(p string) bool { st, err := os.Stat(p); return err == nil && !st.IsDir() }
++func isDir(p string) bool  { st, err := os.Stat(p); return err == nil && st.IsDir() }
+diff --git a/internal/sessions/dsh.go b/internal/sessions/dsh.go
+index a61db7e11..b503eaa82 100644
+--- a/internal/sessions/dsh.go
++++ b/internal/sessions/dsh.go
+@@ -41,10 +41,15 @@ import (
+ // inherited. They count where they were first written. dsh has no command
+ // that picks up a session by its id.
+ 
+-// DshDir is dsh's folder: $DSH_HOME, else ~/.dsh.
++// DshDir is dsh's folder: $DSH_HOME, else ~/.dsh. A DSH_HOME naming DS
++// Bot's data folder is that app's own (appdir.DsbotOwns, #5624): its
++// sessions are DS Bot's, not the harness's.
+ func DshDir() string {
+ 	if d := appdir.Getenv("DSH_HOME"); d != "" {
+-		return expandHome(d)
++		d = expandHome(d)
++		if !appdir.DsbotOwns(d) {
++			return d
++		}
+ 	}
+ 	home, _ := os.UserHomeDir()
+ 	return filepath.Join(home, ".dsh")
+-- 
+2.50.1 (Apple Git-155)
+

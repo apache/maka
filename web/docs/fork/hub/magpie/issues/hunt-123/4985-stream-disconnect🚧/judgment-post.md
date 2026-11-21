@@ -1,0 +1,18 @@
+Root cause found — this is the pre-routing hold limit, and the exact scenario was fixed on main the same day by #4775.
+
+**Where the 2m0s comes from.** `unroutedMost` in `internal/gateway/unrouted.go`: a request that has not begun routing is stopped after 2 minutes, or sooner/408 if its body is still arriving. The wording quoted here ("The client is sending its body slowly (or a proxy between them is). Send it again.") only exists in builds from `e2d7d1f54` (2026-10-31, first tagged v0.1.2255) until just before `df69ffe97` — that is, a build without the upload-time credit.
+
+**The chain.** The request went to a Remote magpie provider; the remote magpie held the request while its client (this magpie, or a proxy between them) was still sending the 5.5 MB body, and answered 408 at the 2-minute mark (read: 3.8 MB of 5.5 MB, the last 100ms ago — about 32.4 KiB/s average). The local magpie relayed that body as "stream disconnected before completion".
+
+**Already fixed (#4775, landed 2026-11-03, ~3 hours after this issue was filed):**
+- `df69ffe97` — a progressing upload earns 1 second of hold time per 32 KiB actually received on the wire, never more than the time spent reading, so a large conversation over a slow link finishes instead of being cut at 2 minutes.
+- `19d04425c` — earned time capped at 8 additional minutes (10 minutes overall non-masking), bytes clamped before duration arithmetic.
+- `639a15c50` — a chunked body between two reads counts as still arriving (408, not 504).
+- `b4e388547` — earned time banks nothing for later internal holds; empty gzip members / zstd skippable frames stay bounded.
+- `897e88d7e` — the re-check timer throttled to 1s while an upload earns.
+
+Maintainer confirmed the merge on #4775. Under the fixed code this exact request survives: at ~32.4 KiB/s the earned credit for 3.8 MB (~121.6s) covers the whole time spent reading, so the budget no longer runs out while the body keeps progressing, and the full 5.5 MB then routes. Only a trickle below the 32 KiB/s credit rate is still cut — now with accurate wording ("The upload exhausted its time allowance (32 KiB/s with a two-minute grace period, at most eight additional minutes)...").
+
+**What to do:** upgrade the magpie that produced this error (the Remote magpie side) to v0.1.2809 or later (current release v0.1.2862). If it still happens on such a build, the error text will read differently — in that case attach the held report (Routing page → Copy Report, or the newest file in `~/.cache/magpie/held`). #4775 is being kept open until reporters confirm, so follow-ups belong there.
+
+Suggest closing as a duplicate of #4775.

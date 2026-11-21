@@ -1,0 +1,25 @@
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py codebuddycn baseline
+INPUT: CONFIG: fixed codebuddycn source allowlist
+OUTPUT: BASELINE PASS groups=1 files=321 bytes=20425569 protected=0
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py codebuddycn archive
+INPUT: 96de183872177938355805009a128f3027da4368c236c71898be0f9583524205
+OUTPUT: ARCHIVE PASS zip_files=1 files=321 bytes=20425569
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py codebuddycn apply
+INPUT: 16cba6fa4aa097a36402b06ee1e609d4baaf72af03336196b7ec6b0636a83d52
+OUTPUT: APPLY PASS removed_files=321 removed_bytes=20425569
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py codebuddycn verify
+INPUT: 49bc863f0216aeb05fc1fd634ffb17a97fae246af55f5b460878d08fb8899d36
+OUTPUT: MODIFIED PASS files=321 bytes=20425569 originals_absent=true protected_unchanged=true
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py codebuddycn rollback-test
+INPUT: 49bc863f0216aeb05fc1fd634ffb17a97fae246af55f5b460878d08fb8899d36
+OUTPUT: ROLLBACK PASS restored_files=321 restored_bytes=20425569 hashes_match=true originals_untouched=true
+EXIT: 0
+

@@ -1,0 +1,18 @@
+import assert from 'node:assert/strict';
+import {readFile} from 'node:fs/promises';
+import {initialize,request} from '../../app/offline-api.js';
+import {initializeBusiness} from '../../app/offline-business.js';
+const cache=new Map();globalThis.localStorage={getItem:key=>cache.get(key)??null,setItem:(key,value)=>cache.set(key,value)};
+globalThis.fetch=async input=>{const name=String(input).split('/').pop();return new Response(await readFile(new URL('../../app/'+name,import.meta.url),'utf8'));};
+await initialize();await initializeBusiness();
+const call=async(path,data)=>request({url:'/agent-microapp/'+path,data});
+const source=(await call('microApp/findMicroAppPage',{runMode:6})).data.records[0];
+const copied=(await call('microApp/copy',{microAppId:source.microAppId})).data;
+const detail=await call('superAgent/config/detail',copied);
+assert.equal(detail.success,true);
+assert.equal(detail.data.appInfo.microAppId,copied.microAppId);
+assert.equal((await call('superAgent/config/save',{microAppId:copied.microAppId,microAppVersionId:copied.microAppVersionId,leadAgentPrompt:'副本提示词',plugins:[]})).success,true);
+await initialize();await initializeBusiness();
+assert.equal((await call('superAgent/config/detail',copied)).data.config.leadAgentPrompt,'副本提示词');
+assert.notEqual((await call('superAgent/config/detail',source)).data.config.leadAgentPrompt,'副本提示词');
+console.log('超级智能体复制隔离与刷新保存通过');

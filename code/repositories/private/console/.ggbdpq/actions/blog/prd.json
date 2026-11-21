@@ -1,0 +1,196 @@
+{
+  "project": {
+    "name": "blog",
+    "repo_type": "monorepo-app",
+    "description": "个人博客微服务：ggbdpq-site 为核心，并入 ghost-lab / agent-todo(文档) / date-playbook(Web 化) / agent-skills / product-blueprint(宪法) / spec-kit-me(脱敏一篇) / ui(经 shadcn 定制层承接) / skillbase(由 /skills 承接定位)",
+    "ssot": {
+      "prd": ".ggbdpq/actions/blog/prd.json",
+      "progress": ".ggbdpq/progress.txt"
+    }
+  },
+  "decisions": [
+    "位置与端口：console/apps/blog，包名 @ggbdpq/blog，端口 3100（console 3000 不冲突）；复用 @ggbdpq/console-ui 与工作区工具链",
+    "统一栈：React 19 + TS 7 + PNPM 11 + Next.js App Router + Zustand + fetch + Zod 4 + Tailwind 4 + shadcn/ui + node:sqlite；不引 React Router / 第二进程 / 第二 UI 框架",
+    "ggbdpq-site → 博客本体：文章 8 篇(TS 内联 markdown 原样保留) + 系列 3 + 朋友圈 10 + growth 4 + about + anime(11 图) + algo 题库(100 JSON) + rss + sitemap；admin/forum/database/daily/resume 缓迁(P1)",
+    "ghost-lab → 文章域系列「AI 工程实践」：14 篇视频精华 + AI使用心得，zip/backup 不迁",
+    "agent-todo → 文章域系列「Agent Todo 设计笔记」：docs 7 篇；Fastify 应用本体保留原地作参考实现，不迁",
+    "date-playbook-miniapp → /date-playbook Web 化：venues 种子 + node:sqlite + 收藏 API；archive.private.seed.ts 隐私数据禁止迁移；plans/review/timeline 缓迁",
+    "agent-skills → /skills 展示页：3 个 curated 技能 SKILL.md 原文迁入 content/skills/；公开仓库本体保持独立",
+    "product-blueprint → 文章域系列「知识库宪法」：3 篇宪法迁入；.ggbdpq/.cursor 治理工件不迁",
+    "spec-kit-me → 文章域系列「Spec 工作法」：仅「骨架标题中英对照」1 篇，产品功能名脱敏后迁入；rigor 篇含职场真人真事不迁；specs/skills-lock 不迁",
+    "skillbase → 不迁代码：强依赖本机 ~/.agents，搬走即失效；其技能管理定位由 /skills 页承接；原地归档",
+    "ui → 组件库本体不整体搬：1264 文件 + shineout/storybook 依赖违反工作区技术栈宪法；Blog 复用 @ggbdpq/console-ui，并吸收 BackToTop/CopyButton 思想用 Tailwind 重写；原地归档保留",
+    "隐私红线：不迁移 date-playbook archive.private.seed.ts、spec-kit rigor 篇、腾讯云验证文件、职场 spec 正文",
+    "文章双源合一：content.ts 内联 8 篇 + content/articles/*.md(新增约 25 篇，frontmatter 元数据)统一由 src/server/articles 输出，frontmatter 手写解析不新增依赖",
+    "数据：apps/blog/data/blog.db（node:sqlite，gitignore 已覆盖 data/ 与 *.db），venues + favorite 两张表，WAL",
+    "测试：vitest 三个单测(frontmatter 解析 / article-repo 双源合并 / venue-repo 内存库)先红后绿；e2e 不做",
+    "技能库：.ai/categories 310 个 SKILL.md 以快照拷贝进 content/skills-catalog + manifest.json，sync-skills.mjs 可重放同步；99-归档与淘汰分类收录并打徽标",
+    "algo judge：迁 Monaco 编辑器 + JS worker 判题；Python runner 依赖 wasm 运行时，缓迁",
+    "date-playbook 情侣空间：Web 无微信 openId，用演示双人切换(对应 mock 的 switchDemoUser)承载 couple 逻辑；family-tree/archive 用 demo 种子，私人聊天记忆数据禁迁",
+    "ui 30+ 核心组件建在 workspace 层 @ggbdpq/console-ui(console 同享)，blog 出 /ui 展示页，API 仿 ant-design/element-plus",
+    "三源项目删除(2026-08-30)：ggbdpq-site/date-playbook-miniapp/ui 核心内容核验迁移完成后已 git rm(747f2d3c)，全部文件在 git 历史可恢复；date-playbook 私人种子移入 inbox/_archive-private(gitignore 保护区)",
+    "配置归拢：product-blueprint/spec-kit-me/agent-skills 的治理配置统一收至 .ggbdpq/sources/（SSOT），三项目本体留在 inbox 作内容源",
+    "三内容型项目删除(2026-08-30)：agent-skills/spec-kit-me/product-blueprint 整合核验后 git rm；手册×2 收录为「Agent 工具手册」；.specify 全量与 config/ 收入 sources；职场 spec 与 .cursor/skills 副本有意不整合(仅历史)",
+    "ghost-lab 用户手动删除(2026-08-30)：15 篇文章已在 blog 随 git 存续；zip/backup 档案在 git 历史可恢复",
+    "agent-todo 保留(2026-08-30 用户决定)：应用代码(Fastify 七步流水线/审批流/SQLite 层)未迁入 blog,仅迁 7 篇设计文档；本体留 inbox 作参考实现",
+    "chat-viewer 并入 blog(2026-08-30)：Next.js 同构,features/chat-viewer 全量拷贝(5.5k 行,viewer/workbench/ui+lib 九域),/chat-viewer 挂载,数据不出浏览器(IndexedDB+OCR 客户端)",
+    "skillbase 并入 blog(2026-08-30,推翻此前不迁代码决策)：SPA 9 组件+api 全量拷贝为 /skill-manager;ops-server 与 generate-data 收编为同源 catch-all 路由;数据根适配 env→~/.ai→~/.agents;global 名单=目录∪manifest",
+    "私人种子存放(2026-08-30 用户指定)：archive.private.seed.ts 移至 .ggbdpq/sources/date-playbook/,gitignore 规则保持永不入库",
+    "inbox 删除由用户手动执行(2026-08-30)：chat-viewer/skillbase 已达删除条件(全量移植+运行时核验);ghost-lab 用户已删",
+    "blog 拆分(2026-08-30 用户确认)：日报/数据库对比/论坛/简历编辑器/约会攻略/技能管理/聊天查看器/组件陈列室/演示后台 九模块迁入新建 apps/toolbox(3101)；blog 收敛为个人内容(朋友圈/文章/算法/成长/动漫/技能展示/关于/RSS)；apps=可运行应用 packages=共享库的分层不变，packages/ui 与 shared 双侧复用",
+    "应用门户(2026-08-30)：新建 apps/portal(65515,零业务依赖)三卡片跳转 console/blog/toolbox；根 pnpm dev 改为 pnpm -r --parallel run dev 一键并行全启四应用,单开命令(dev:blog 等)保留"
+  ],
+  "items": [
+    {
+      "id": 0,
+      "component": "skeleton",
+      "priority": "P0",
+      "title": "脚手架（configs + globals + layout + workspace 接线）",
+      "steps": [
+        "操作：创建 apps/blog 的 package.json / tsconfig / next.config / postcss / components.json / vitest.config，globals.css 复制自 console\n产物：六个配置文件 + src/app/globals.css\n验收命令：test -f apps/blog/package.json && test -f apps/blog/src/app/globals.css && echo 'PASS'",
+        "操作：创建 layout.tsx(导航九入口 + 页脚)与占位首页，根 package.json 增加 dev:blog\n产物：src/app/layout.tsx、根 scripts.dev:blog\n验收命令：grep -q 'dev:blog' package.json && echo 'PASS'",
+        "操作：pnpm install 后 pnpm --filter @ggbdpq/blog run typecheck 全绿\n产物：typecheck exit 0\n验收命令：pnpm --filter @ggbdpq/blog run typecheck"
+      ],
+      "passes": true
+    },
+    {
+      "id": 1,
+      "component": "content",
+      "priority": "P0",
+      "title": "内容资产迁入（problems/anime/md 文章集/skills，含脱敏）",
+      "steps": [
+        "操作：拷贝 content/problems/*.json(100) 与 public/anime/*.jpg(11)\n产物：content/problems、public/anime\n验收命令：ls content/problems/*.json | wc -l 输出 100 且 ls public/anime/*.jpg | wc -l 输出 11",
+        "操作：脚本化拷贝并注入 frontmatter：ghost-lab 15 篇(系列 AI 工程实践)、agent-todo 7 篇(Agent Todo 设计笔记)、blueprint 宪法 3 篇(知识库宪法)、spec-kit 1 篇(Spec 工作法，功能名脱敏)\n产物：content/articles/*.md\n验收命令：node -e \"const fs=require('fs');const n=fs.readdirSync('content/articles').length;if(n<25)process.exit(1);console.log('PASS',n)\"",
+        "操作：拷贝 agent-skills 3 个 SKILL.md 至 content/skills/\n产物：content/skills/mentor-me|minimal-diff-fix|tech-writer\n验收命令：ls content/skills/*/SKILL.md | wc -l 输出 3"
+      ],
+      "passes": true
+    },
+    {
+      "id": 2,
+      "component": "articles",
+      "priority": "P0",
+      "title": "文章域（TDD：article-repo 双源合一 + /articles 列表与详情）",
+      "steps": [
+        "操作：先写会失败的测试：frontmatter 解析、双源合并排序、slug 唯一性\n产物：tests/articles.test.ts（先红）\n验收命令：pnpm --filter @ggbdpq/blog run test（预期失败）",
+        "操作：实现 schemas/content(迁移自 ggbdpq-site) + lib/frontmatter + server/articles(react cache 包裹)\n产物：src/schemas/content.ts、src/lib/frontmatter.ts、src/server/articles.ts\n验收命令：pnpm --filter @ggbdpq/blog run test（转绿）",
+        "操作：实现 /articles 列表(系列分组)与 /articles/[slug] 详情(react-markdown 渲染 + 上下篇)\n产物：src/app/articles/**\n验收命令：pnpm --filter @ggbdpq/blog run typecheck"
+      ],
+      "passes": true
+    },
+    {
+      "id": 3,
+      "component": "home",
+      "priority": "P0",
+      "title": "首页朋友圈 + growth + about + anime",
+      "steps": [
+        "操作：迁移 moments/growth 数据与 /、/growth、/about 页面\n产物：src/app/page.tsx、src/app/growth/page.tsx、src/app/about/page.tsx\n验收命令：pnpm --filter @ggbdpq/blog run typecheck",
+        "操作：迁移 anime 分层页与 11 张图片展示\n产物：src/app/anime/page.tsx\n验收命令：pnpm --filter @ggbdpq/blog run typecheck"
+      ],
+      "passes": true
+    },
+    {
+      "id": 4,
+      "component": "algo",
+      "priority": "P1",
+      "title": "算法题库（problem-repo + 列表与详情）",
+      "steps": [
+        "操作：problem schema + server/problems(读 JSON，react cache)\n产物：src/schemas/problem.ts、src/server/problems.ts\n验收命令：pnpm --filter @ggbdpq/blog run typecheck",
+        "操作：/algo 列表(难度徽标 + 标签)与 /algo/[slug] 详情(markdown 渲染题干与题解)\n产物：src/app/algo/**\n验收命令：pnpm --filter @ggbdpq/blog run typecheck"
+      ],
+      "passes": true
+    },
+    {
+      "id": 5,
+      "component": "date-playbook",
+      "priority": "P1",
+      "title": "约会攻略 Web 化（TDD：node:sqlite venue-repo + API + Zustand 页面）",
+      "steps": [
+        "操作：先写会失败的 venue-repo 测试(内存库 seed/favorite/分类筛选)\n产物：tests/venues.test.ts（先红）\n验收命令：pnpm --filter @ggbdpq/blog run test -- venues（预期失败）",
+        "操作：迁移 venues 种子(剥离 Taro 类型) + venue schema + sqlite repo(data/blog.db，WAL，空库自动建表播种)\n产物：src/server/date-playbook/**\n验收命令：pnpm --filter @ggbdpq/blog run test（转绿）",
+        "操作：GET /api/venues 与 POST /api/venues/[id]/favorite（Zod 校验出入参）\n产物：src/app/api/venues/**\n验收命令：pnpm --filter @ggbdpq/blog run typecheck",
+        "操作：/date-playbook 客户端页(Zustand 筛选/收藏态 + fetch)\n产物：src/app/date-playbook/**、src/stores/venues.ts\n验收命令：pnpm dev 冒烟 curl /api/venues 返回 venues 数组"
+      ],
+      "passes": true
+    },
+    {
+      "id": 6,
+      "component": "skills",
+      "priority": "P2",
+      "title": "技能展示页（agent-skills curated 三技能）",
+      "steps": [
+        "操作：server/skills 读 content/skills/*/SKILL.md frontmatter + 正文\n产物：src/server/skills.ts\n验收命令：pnpm --filter @ggbdpq/blog run typecheck",
+        "操作：/skills 卡片列表页\n产物：src/app/skills/page.tsx\n验收命令：pnpm --filter @ggbdpq/blog run typecheck"
+      ],
+      "passes": true
+    },
+    {
+      "id": 7,
+      "component": "feeds",
+      "priority": "P2",
+      "title": "RSS + sitemap",
+      "steps": [
+        "操作：rss.xml/route.ts 与 sitemap.ts(静态路由 + 文章 + 题目)\n产物：src/app/rss.xml/route.ts、src/app/sitemap.ts\n验收命令：pnpm --filter @ggbdpq/blog run typecheck"
+      ],
+      "passes": true
+    },
+    {
+      "id": 8,
+      "component": "acceptance",
+      "priority": "P0",
+      "title": "全量验收（typecheck/test/build/dev 冒烟 + AGENTS.md + 提交）",
+      "steps": [
+        "操作：apps/blog/AGENTS.md(技术栈宪法 + 架构边界 + 迁移对照表) 与 README\n产物：AGENTS.md、README.md\n验收命令：test -f apps/blog/AGENTS.md && echo 'PASS'",
+        "操作：pnpm -r typecheck、pnpm -r test、next build 全绿；dev 冒烟核心路由 200\n产物：验收记录\n验收命令：pnpm -r run typecheck && pnpm -r run test",
+        "操作：仅 add vibe/console 范围提交（blog + 治理工件 + 根 scripts），progress.txt 收尾\n产物：git log 出现 blog 提交\n验收命令：git log --oneline -1 -- vibe/console/apps/blog"
+      ],
+      "passes": true
+    },
+    {
+      "id": 9,
+      "component": "skills-catalog",
+      "priority": "P0",
+      "title": "技能库目录（.ai 310 技能全量介绍）",
+      "steps": [
+        "操作：scripts/sync-skills.mjs 遍历 .ai/categories 生成 manifest.json + 拷贝 SKILL.md 快照\n产物：content/skills-catalog/manifest.json + md 快照\n验收命令：node scripts/sync-skills.mjs 输出 310",
+        "操作：/skills 改造为目录页（统计条 + 分类筛选 + 搜索 + 310 卡片），新增 /skills/[...slug] 详情页\n产物：src/app/skills/**\n验收命令：pnpm --filter @ggbdpq/blog run typecheck",
+        "操作：manifest 契约测试（310 条、字段完整、抽查明细文件存在）\n产物：tests/skills.test.ts\n验收命令：pnpm --filter @ggbdpq/blog run test"
+      ],
+      "passes": true
+    },
+    {
+      "id": 10,
+      "component": "ggbdpq-site-features",
+      "priority": "P0",
+      "title": "ggbdpq-site 六大 feature 区补全（daily/database/forum/admin/resume/judge）",
+      "steps": [
+        "操作：迁 daily（AI 日报 5 页 + seed）与 database（对比/矩阵/分析 + 数据）\n产物：src/app/daily/**、src/app/database/**\n验收命令：typecheck + build",
+        "操作：迁 forum（话题/分类/详情/发帖，mock 数据）与 admin（localStorage RBAC 演示后台 7 页）\n产物：src/app/forum/**、src/app/admin/**\n验收命令：typecheck + build",
+        "操作：迁 resume（编辑器 + 预览，本地持久化）\n产物：src/app/resume/**\n验收命令：typecheck + build",
+        "操作：迁 algo judge（Monaco + JS worker 判题，接入题目 testCases）\n产物：src/app/algo/[slug]/judge/**\n验收命令：typecheck + build"
+      ],
+      "passes": true
+    },
+    {
+      "id": 11,
+      "component": "date-playbook-full",
+      "priority": "P0",
+      "title": "date-playbook 情侣空间完整版（计划/复盘/里程碑/时间线/档案）",
+      "steps": [
+        "操作：TDD 迁计划状态机与 sqlite 多表仓库（plans/reviews/proposals/timeline/couple）\n产物：src/server/date-playbook/** + tests\n验收命令：先红后绿",
+        "操作：API 与页面（/date-playbook/plans、/review、/timeline、/couple 演示双人、family-tree demo）\n产物：src/app/date-playbook/**\n验收命令：typecheck + dev 冒烟"
+      ],
+      "passes": true
+    },
+    {
+      "id": 12,
+      "component": "ui-library",
+      "priority": "P0",
+      "title": "UI 核心组件 30+（@ggbdpq/console-ui 扩容 + /ui 展示页）",
+      "steps": [
+        "操作：按 ant-design/element-plus 核心清单在 packages/ui 新增 30+ 组件（Radix + Tailwind，shadcn 风格）\n产物：packages/ui/src/**\n验收命令：typecheck + 组件数 grep ≥42",
+        "操作：blog /ui 展示页全量 live demo\n产物：src/app/ui/page.tsx\n验收命令：build"
+      ],
+      "passes": true
+    }
+  ]
+}

@@ -1,0 +1,38 @@
+upstream/main:internal/provider/disabled.go:39:	r := heldOf("disabled", func() disabledRead {
+upstream/main:internal/provider/group.go:462:	f := heldOf("file", load)
+upstream/main:internal/provider/group.go:771:	return autoGroups(unskipped(foundFrom(entries, heldOffEntries()), heldOf("file", load).AutoGroupSkip), heldSettings().ModelSameAs)
+upstream/main:internal/provider/groupeffort.go:110:	return heldOf("has-model\x00"+id, func() bool { return providersHave(id) })
+upstream/main:internal/provider/hold.go:216:func Held[T any](key string, build func() T) T { return heldOf(key, build) }
+upstream/main:internal/provider/hold.go:327:	return heldOf("entries", func() []Entry {
+upstream/main:internal/provider/hold.go:405:	return heldOf("plugins", func() []plugin.Provider { return slices.Clip(plugin.Cached()) })
+upstream/main:internal/provider/hold.go:460:func heldSettings() settings.Settings { return heldOf("settings", settings.Load) }
+upstream/main:internal/provider/hold_test.go:27:	heldOf("t", build)
+upstream/main:internal/provider/hold_test.go:28:	heldOf("t", build)
+upstream/main:internal/provider/hold_test.go:33:	heldOf("t", build)
+upstream/main:internal/provider/hold_test.go:34:	heldOf("t", build)
+upstream/main:internal/provider/hold_test.go:39:	if heldOf("t", build); n != 4 {
+upstream/main:internal/provider/hold_test.go:44:	if heldOf("t", build); n != 5 {
+upstream/main:internal/provider/hold_test.go:65:		heldOf("t-next", build)
+upstream/main:internal/provider/hold_test.go:66:		heldOf("t-next", build)
+upstream/main:internal/provider/hold_test.go:75:		if heldOf("t-next", build); n != 2 {
+upstream/main:internal/provider/hold_test.go:82:		if heldOf("t-next", build); n != 3 {
+upstream/main:internal/provider/hold_test.go:86:	if heldOf("t-next", build); n != 4 {
+upstream/main:internal/provider/hold_test.go:107:		heldOf("t-write", build)
+upstream/main:internal/provider/hold_test.go:162:	heldOf("t-2449", build)
+upstream/main:internal/provider/hold_test.go:164:	if heldOf("t-2449", build); n != 2 {
+upstream/main:internal/provider/hold_test.go:452:		out <- heldOf(key, func() T { close(started); <-ahead; return v })
+upstream/main:internal/provider/hold_test.go:463:	go func() { out <- heldOf(key, func() T { n.Add(1); return v }) }()
+upstream/main:internal/provider/hold_test.go:509:			if v := heldOf("t-write", func() string { return "later" }); v != "after" {
+upstream/main:internal/provider/hold_test.go:548:	if v := heldOf("t-stuck", func() string { n.Add(1); return "own" }); v != "own" || n.Load() != 1 {
+upstream/main:internal/provider/hold_test.go:560:		heldOf("t-panic", func() string { close(started); <-ahead; panic("build") })
+upstream/main:internal/provider/logins.go:977:	return slices.Clone(heldOf("logins\x00"+agent, func() []Login { return loginsNow(agent) }))
+upstream/main:internal/provider/logins_on.go:112:	return heldOf("ownPaused\x00"+p.Account.Agent+"\x00"+p.Account.User, func() bool {
+upstream/main:internal/provider/migrate.go:392:func readMigrations() map[string]Migration { return heldOf("migrations", readMigrationsFile) }
+upstream/main:internal/provider/models.go:144:		l := heldOf("plugin-listed", func() listed { at, ok := plugin.ListedAt(); return listed{at, ok} })
+upstream/main:internal/provider/models.go:163:	l := heldOf("fetched:"+p.ID, func() live { ms, at, ok := catalog.Live(p.ID); return live{ms, at, ok} })
+upstream/main:internal/provider/models.go:219:	l := heldOf("fetched-all:"+p.ID, func() live { ms, ok := catalog.LiveAll(p.ID); return live{ms, ok} })
+upstream/main:internal/provider/models.go:2984:	if !slices.ContainsFunc(heldOf("file", load).Groups, func(g Group) bool { return g.Unlists }) {
+upstream/main:internal/provider/models.go:3070:	return heldOf("off entries", func() []Entry {
+upstream/main:internal/provider/models.go:3285:	for _, p := range heldOf("listed", func() map[string][]Provider { return keptOf("listed", listedBy) })[id] {
+upstream/main:internal/provider/plugins.go:109:	return heldOf("customIDs", func() map[string]bool {
+upstream/main:internal/provider/provider.go:788:	held := heldOf("all", allProviders)

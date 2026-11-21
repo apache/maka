@@ -1,0 +1,1 @@
+030aa071972573d86e58412e2583376ed1761500f7d20be1e9025dae54fba9a0  /Users/ggbdpq/cc/guahub/fork/docs/hub/magpie/issues/hunt-123/3078-lightweight-test/0001-gui-tests-the-lightweight-click-fails-at-once-on-an-option-out-of-sight-3078.patch

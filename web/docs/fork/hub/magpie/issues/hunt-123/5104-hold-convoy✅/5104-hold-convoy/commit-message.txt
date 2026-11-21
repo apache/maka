@@ -1,0 +1,24 @@
+provider: requests missing together list logins once, and a plan asks OwnPaused of the held list
+
+Every request's routing plan lists the agent's accounts (perKeyEvery
+asks AlsoOn, and OwnPaused of the signed-in one), and each list took
+logins.json's lock. A write in a request (a token refresh) dropped what
+was held, and every request then in flight listed again: each rebuilt
+loginsNow one after another, each taking the lock when the one before it
+let go - 20 requests queued on the lock in a held dump (#5104), the
+routing plan waiting on a file lock it never needs to. And OwnPaused
+never was held at all: a provider with another account on asked it once
+a request, each ask its own read under the lock.
+
+heldOf now builds a missed list once: the first caller builds, the rest
+wait for it and take what it kept, or build again where a change dropped
+it while it was built. OwnPaused asks the held list too, its own key, a
+write listing it anew as for Logins.
+
+TestLoginsMissedTogetherListedOnce: 20 requests missing together listed
+20 times, want 1; TestOwnPausedListedOnceARequest: an ask under a held
+request took the lock again, and a write did not list it anew.
+
+Fixes #5104
+
+Generated-by: GLM-5.3-Flash (ZCode)

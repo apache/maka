@@ -1,0 +1,27 @@
+{
+  "reaVersion": "6.4.0",
+  "installation": "pass",
+  "staticAnalysis": [
+    {"scope": "管理页", "files": 12, "parseFailures": 0, "findings": 317},
+    {"scope": "核心工作流", "files": 6, "parseFailures": 0, "findings": 486}
+  ],
+  "capture": {"listRecords": 82, "workflowVersions": [{"id":5433,"nodes":3,"edges":2},{"id":5432,"nodes":13,"edges":18},{"id":5428,"nodes":15,"edges":19}], "nodeTypes":18, "credentialsStored":false},
+  "automatedChecks": {"command":"npm --prefix E:\\learn\\rea-agent run verify", "result":"pass", "covered":["分页与组合筛选","离线列表数据操作","真实工作流读取","坐标修改后保存回读","拒绝无效图 JSON","本地 HTTP 与连接边界"]},
+  "browserChecks": {
+    "managementRendering":"pass",
+    "managementSearch":"pass：企咨搜索只显示企咨助手-万能查",
+    "managementPagination":"pass：第二页出现自组规划的副本01",
+    "managementCreateDialog":"pass：原模式、名称、描述和头像表单显示",
+    "editToWorkflow":"pass：管理页编辑进入 /agent/workflow，显示真实三节点与两条连线",
+    "nodeCatalog":"pass：18 种节点显示",
+    "llmPanel":"pass：系统提示词1725字符、用户提示词1132字符、变量引用、模型和输入输出表单显示",
+    "dragAndAutosave":"pass：LLM 节点 y 从206修改为110.29383886255924，本地保存回读确认",
+    "reloadPersistence":"pass：重载后本地修改仍加载，提示词保留",
+    "runtimeErrors":[],
+    "resourceFailuresAtWorkflowAcceptance":[],
+    "zoomAndAllNodeTypes":"原功能代码保留，未逐项浏览器验证；缩放按钮自动化未取得状态变化证据",
+    "complexWorkflowRendering":"两条13/15节点原始数据已保存并通过 JSON 检查，未逐条浏览器渲染验收"
+  },
+  "siteSideEffects":"首次打开原站编辑页观察到原组件发出的 microAppVersion/update 请求；未主动改节点，未确认服务器是否写入。后续采用只读查询，本地操作走离线适配。",
+  "limitations":["原始TS/TSX、变量名、注释及后端源码未恢复","仅三条工作流原始数据，其他流程显示未采集提示","模型推理、API/MCP、上传和服务端脚本执行未接入","可读代码为发布JS排版，未运行Wakaru","未对所有节点类型、连线新建、撤销重做、发布等按钮逐项验收"]
+}

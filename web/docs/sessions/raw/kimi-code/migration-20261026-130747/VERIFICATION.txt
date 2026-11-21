@@ -1,0 +1,25 @@
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py kimi-code baseline
+INPUT: CONFIG: fixed kimi-code source allowlist
+OUTPUT: BASELINE PASS groups=3 files=37 bytes=4044255 protected=1
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py kimi-code archive
+INPUT: 8c2bb5ae64aadc2e697eda50d444c9e73a3add6110be5e80c18d2307f9749dc6
+OUTPUT: ARCHIVE PASS zip_files=3 files=37 bytes=4044255
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py kimi-code apply
+INPUT: c50588104be875dde857d2c07eb0daaf49a14f569f55c87cb8395f9745e87372
+OUTPUT: APPLY PASS removed_files=37 removed_bytes=4044255
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py kimi-code verify
+INPUT: f045c0c20a659fdb10d3ea9b785fc29eb8a4c309211dc4c077760c220daeba72
+OUTPUT: MODIFIED PASS files=37 bytes=4044255 originals_absent=true protected_unchanged=true
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py kimi-code rollback-test
+INPUT: f045c0c20a659fdb10d3ea9b785fc29eb8a4c309211dc4c077760c220daeba72
+OUTPUT: ROLLBACK PASS restored_files=37 restored_bytes=4044255 hashes_match=true originals_untouched=true
+EXIT: 0
+

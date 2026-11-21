@@ -1,0 +1,36 @@
+{
+  "CLAUDE_CODE_ATTRIBUTION_HEADER": "0",
+  "alwaysThinkingEnabled": true,
+  "attribution": {
+    "commit": "Generated with Claude Code",
+    "pr": ""
+  },
+  "autoUpdatesChannel": "stable",
+  "enabledPlugins": {
+    "code-review@claude-plugins-official": true,
+    "commit-commands@claude-plugins-official": true,
+    "context7@claude-plugins-official": true,
+    "frontend-design@claude-plugins-official": true,
+    "github@claude-plugins-official": true,
+    "security-guidance@claude-plugins-official": true
+  },
+  "env": {
+    "ANTHROPIC_AUTH_TOKEN": "94a0099b5dea43b2830b80e05f154620.gjI4A6uZ0nmQJvct",
+    "ANTHROPIC_BASE_URL": "https://open.bigmodel.cn/api/anthropic",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "glm-4.5-air",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "GLM-4.7",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "GLM-4.7",
+    "ANTHROPIC_MODEL": "GLM-4.7",
+    "CLAUDE_PROFILE": "learn",
+    "GITHUB_PERSONAL_ACCESS_TOKEN": "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"
+  },
+  "language": "Chinese",
+  "model": "sonnet",
+  "outputStyle": "Explanatory",
+  "permissions": {
+    "allow": []
+  },
+  "showTurnDuration": true,
+  "spinnerTipsEnabled": false,
+  "terminalProgressBarEnabled": true
+}

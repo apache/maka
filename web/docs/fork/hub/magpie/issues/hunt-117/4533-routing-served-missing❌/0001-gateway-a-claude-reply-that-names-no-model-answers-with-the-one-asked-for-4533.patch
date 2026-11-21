@@ -1,0 +1,151 @@
+From 990d6c5f10816313b7c145f84553a9a8d26dde1e Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Mon, 2 Nov 2026 21:40:49 +0800
+Subject: [PATCH] gateway: a claude reply that names no model answers with the
+ one asked for (#4533)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+A claude bridge row could read as a 200 that nothing answered: status
+200, usage billed, and no served, ttft or flow (21 of a day's 820 claude
+rows, tries [[null,200]], 360 tokens out in under 900ms). The row's
+served is the usage's, and the usage's Served is what the reply's
+messages name; a reply whose messages name no model left it empty. The
+absent ttft and flow say the reply was asked whole, which isn't timed
+(#196); magpie keeps no reply cache, so nothing was reused — the reply
+simply named no model.
+
+relay now records the model asked for as served when the reply names
+none, streamed or whole: a 200's row says what replied.
+
+Fixes #4533
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gateway/claude_served_test.go  | 82 +++++++++++++++++++++++++
+ internal/gateway/claude_subscription.go | 13 ++++
+ 2 files changed, 95 insertions(+)
+ create mode 100644 internal/gateway/claude_served_test.go
+
+diff --git a/internal/gateway/claude_served_test.go b/internal/gateway/claude_served_test.go
+new file mode 100644
+index 000000000..d6efa0741
+--- /dev/null
++++ b/internal/gateway/claude_served_test.go
+@@ -0,0 +1,82 @@
++package gateway
++
++import (
++	"net/http/httptest"
++	"strings"
++	"testing"
++
++	"github.com/yetone/magpie/internal/provider"
++)
++
++// claudeServedReply runs lines through readOutput and relay, and returns
++// the usage the call was given.
++func claudeServedReply(t *testing.T, stream bool, lines []string) Usage {
++	t.Helper()
++	run := &subscriptionRun{}
++	segment := run.attach()
++	go run.readOutput(strings.NewReader(strings.Join(lines, "\n") + "\n"))
++	rec := httptest.NewRecorder()
++	var usage Usage
++	code, msg := relay(rec, httptest.NewRequest("POST", "/v1/messages", nil), provider.Anthropic, "Claude Code",
++		&Request{Model: "claude-sonnet-5-5", Stream: stream}, segment, &usage,
++		func() {}, nil, func(string, string, bool) {})
++	if code != 200 || msg != "" {
++		t.Fatalf("reply: %d %s", code, msg)
++	}
++	return usage
++}
++
++// claudeServedCases runs a reply through both ways a client may ask, and
++// wants the usage's Served served.
++func claudeServedCases(t *testing.T, lines []string, want string) {
++	t.Helper()
++	for _, c := range []struct {
++		name   string
++		stream bool
++	}{{"stream", true}, {"whole", false}} {
++		t.Run(c.name, func(t *testing.T) {
++			if got := claudeServedReply(t, c.stream, lines).Served; got != want {
++				t.Fatalf("served %q, want %q", got, want)
++			}
++		})
++	}
++}
++
++// A reply whose messages name no model left the call's usage without
++// Served: the routing row read as a 200 that nothing answered, its reader
++// unable to tell what replied (#4533). The model asked for is recorded
++// instead, as far as the reply names nothing else.
++func TestClaudeReplyWithoutModelRecordsServed(t *testing.T) {
++	// told whole, as a reply Claude Code tells without a stream is
++	claudeServedCases(t, []string{
++		`{"type":"assistant","message":{"id":"msg_1","role":"assistant","content":[{"type":"text","text":"hello"}],"stop_reason":"end_turn","usage":{"input_tokens":10,"output_tokens":300}}}`,
++		`{"type":"result","subtype":"success","is_error":false,"result":"hello"}`,
++	}, "claude-sonnet-5-5")
++}
++
++// The same through a stream whose message_start names no model.
++func TestClaudeStreamWithoutModelRecordsServed(t *testing.T) {
++	claudeServedCases(t, []string{
++		`{"type":"stream_event","event":{"type":"message_start","message":{"id":"msg_2","usage":{"input_tokens":10,"output_tokens":5}}}}`,
++		`{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}}`,
++		`{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hello"}}}`,
++		`{"type":"stream_event","event":{"type":"content_block_stop","index":0}}`,
++		`{"type":"stream_event","event":{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":300}}}`,
++		`{"type":"stream_event","event":{"type":"message_stop"}}`,
++		`{"type":"result","subtype":"success","is_error":false,"result":"hello"}`,
++	}, "claude-sonnet-5-5")
++}
++
++// A reply that does name its model keeps it: the model asked for fills an
++// empty served alone.
++func TestClaudeReplyModelKept(t *testing.T) {
++	claudeServedCases(t, []string{
++		`{"type":"stream_event","event":{"type":"message_start","message":{"id":"msg_3","model":"claude-opus-5-5","usage":{"input_tokens":10,"output_tokens":5}}}}`,
++		`{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}}`,
++		`{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hello"}}}`,
++		`{"type":"stream_event","event":{"type":"content_block_stop","index":0}}`,
++		`{"type":"stream_event","event":{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":300}}}`,
++		`{"type":"stream_event","event":{"type":"message_stop"}}`,
++		`{"type":"result","subtype":"success","is_error":false,"result":"hello"}`,
++	}, "claude-opus-5-5")
++}
+diff --git a/internal/gateway/claude_subscription.go b/internal/gateway/claude_subscription.go
+index 86e7cb156..385c5a18e 100644
+--- a/internal/gateway/claude_subscription.go
++++ b/internal/gateway/claude_subscription.go
+@@ -5950,6 +5950,14 @@ func relay(w http.ResponseWriter, r *http.Request, from provider.Protocol, name
+ 		ended(said, stop, failed == "" && r.Context().Err() == nil)
+ 		// an error event already ended the reply in the client's protocol
+ 		if failed == "" {
++			// a reply whose messages name no model left the usage without
++			// Served: its row read as a 200 that nothing answered, the
++			// routing log's reader left guessing what replied (#4533).
++			// What answered was, the reply saying nothing else, the model
++			// asked for
++			if usage.Served == "" {
++				usage.add(Usage{Served: req.Model})
++			}
+ 			enc.finish()
+ 		}
+ 		return 200, failed
+@@ -5986,6 +5994,11 @@ func relay(w http.ResponseWriter, r *http.Request, from provider.Protocol, name
+ 	res := col.finish()
+ 	usage.add(res.Usage)
+ 	usage.add(Usage{Served: res.Model})
++	// as in a stream: a reply that names no model answers with the one
++	// asked for (#4533)
++	if usage.Served == "" {
++		usage.add(Usage{Served: req.Model})
++	}
+ 	w.Header().Set("Content-Type", "application/json")
+ 	w.WriteHeader(200)
+ 	_, _ = w.Write(renderUsage(from, res, req, usage))
+-- 
+2.50.1 (Apple Git-155)
+

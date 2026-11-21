@@ -1,0 +1,458 @@
+AI-written; please keep the author (ggbdpq) or add `Co-authored-by: ggbdpq <ggbdpq@gmail.com>`
+
+## What's wrong
+
+Claude Code keeps showing "was used at … but none of its requests reached magpie" (Drift, kind `bypassed`) even though the user ran nothing themselves, and "Reconnect" doesn't stick — the notice comes back after a while.
+
+## Root cause
+
+As @MEIZU16's analysis in this issue established (and #3224 mapped the same detection entry): Claude Code's `LastUsed` is the newest non-slash-command line of `~/.claude/history.jsonl`, while the gateway's `lastSeen` for agent `claude` only moves on requests that reach magpie. But the lines that keep moving `LastUsed` here are written by Claude Code processes **magpie itself started**:
+
+- a subscription warm-up ("hi" at Haiku) appends to the user's `history.jsonl` whatever its work folder is, and its request goes straight to Anthropic, never through the gateway;
+- the Claude Desktop bridge's helper runs in the user's own config directory whenever it resumes one of their sessions (`--resume`, no `CLAUDE_CONFIG_DIR`), so the Desktop user's messages land in the same `history.jsonl` with the user's real project as `project` — while the gateway only ever sees agent `claude-desktop` on those turns.
+
+So `LastUsed` advances with no gateway traffic to answer it, and `bypassed()` fires. Filtering by the `magpie-claude-work` project prefix can't cover the bridge case (the reporter's second trace has a real user project). Thank you @MEIZU16 for the complete root-cause work and the sessionId suggestion this patch follows.
+
+## The fix
+
+Every one of those runs has a session id magpie knows: the bridge reads it off the run's `init` message (helper or direct `claude -p` alike, resumed or new), a `-p` warm-up now tells claude its session up front (`--session-id`, the same flag the helper already passes for interactive runs), and a one-off interactive run's helper announces its own. The gateway keeps those ids (`usage.OwnSession`), and Claude Code's `LastUsed` passes `history.jsonl` lines that name one of them over (`sessionId`). The user's own lines count exactly as before; a real bypass still flags.
+
+<details>
+<summary>Patch (0001-agent-a-Claude-Code-run-magpie-started-itself-is-not-use.patch)</summary>
+
+```diff
+From 22d2d4ede781490e0d4308cf77dfabf555869a20 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Wed, 4 Nov 2026 00:22:40 +0800
+Subject: [PATCH] agent: a Claude Code run magpie started itself is not use
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The bridge's sessions and a warm-up's run write the user's history.jsonl
+as they go (the bridge's helper runs in the user's own config when it
+resumes a session of theirs, a warm-up's "hi" lands there whatever its
+work folder), and none of their requests reach the gateway as agent
+claude's: the bridge's go as claude-desktop's, a warm-up's straight to
+Anthropic. Drift took the newest such line for the user using Claude
+Code behind magpie's back, and said bypassed until a newer line came or
+the agent was set again — "Reconnect" fixed nothing, as the next warm-up
+or bridge turn moved LastUsed again (#5100).
+
+Every such run's session is one magpie knows: the bridge reads it off
+the run's init, a warm-up's is told to claude up front (--session-id),
+a one-off's helper says its own. The gateway keeps those ids
+(usage.OwnSession), and Claude Code's LastUsed passes history.jsonl
+lines that name one over. The user's own lines count as before.
+
+Tests: TestClaudeDriftOwnSessions (a warm-up's line, the bridge's on the
+user's own project, the user's own, and a run of magpie's above the
+user's still says used at the user's time),
+TestWarmClaudeSaysItsOwnSession, TestClaudeHelperSessionIsMagpiesOwn,
+TestClaudeBridgeSessionIsMagpiesOwn.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/agent/applied.go                  | 17 ++++-
+ internal/agent/claude.go                   | 13 +++-
+ internal/agent/claude_own_sessions_test.go | 87 ++++++++++++++++++++++
+ internal/gateway/claude_resume_test.go     | 19 +++++
+ internal/gateway/claude_subscription.go    |  3 +
+ internal/gateway/claude_warmup.go          | 17 ++++-
+ internal/gateway/claude_warmup_test.go     | 39 ++++++++++
+ internal/usage/usage.go                    | 35 +++++++++
+ 8 files changed, 224 insertions(+), 6 deletions(-)
+ create mode 100644 internal/agent/claude_own_sessions_test.go
+
+diff --git a/internal/agent/applied.go b/internal/agent/applied.go
+index 0b8fad061..b8e7ec676 100644
+--- a/internal/agent/applied.go
++++ b/internal/agent/applied.go
+@@ -995,9 +995,10 @@ func (a *Agent) reconnect(now map[string]string) (bool, error) {
+ 
+ // lastJSONLTime reads the newest Unix timestamp (seconds or milliseconds)
+ // under key in the last lines of a prompt log, passing over the lines whose
+-// text (under textKey) is a slash command: those an agent answers itself.
+-// Zero if there is none.
+-func lastJSONLTime(path, key, textKey string) time.Time {
++// text (under textKey) is a slash command: those an agent answers itself —
++// and any a skip says to leave out: the lines of runs magpie started itself
++// are not the user's (#5100). Zero if there is none.
++func lastJSONLTime(path, key, textKey string, skip ...func(map[string]json.RawMessage) bool) time.Time {
+ 	f, err := os.Open(path)
+ 	if err != nil {
+ 		return time.Time{}
+@@ -1019,6 +1020,16 @@ func lastJSONLTime(path, key, textKey string) time.Time {
+ 		if json.Unmarshal(m[textKey], &text) == nil && strings.HasPrefix(strings.TrimSpace(text), "/") {
+ 			continue
+ 		}
++		out := false
++		for _, s := range skip {
++			if s(m) {
++				out = true
++				break
++			}
++		}
++		if out {
++			continue
++		}
+ 		n, err := strconv.ParseInt(string(m[key]), 10, 64)
+ 		if err != nil {
+ 			continue
+diff --git a/internal/agent/claude.go b/internal/agent/claude.go
+index b33a12bab..478a5e3f8 100644
+--- a/internal/agent/claude.go
++++ b/internal/agent/claude.go
+@@ -21,6 +21,7 @@ import (
+ 	"github.com/yetone/magpie/internal/gateway"
+ 	"github.com/yetone/magpie/internal/provider"
+ 	"github.com/yetone/magpie/internal/settings"
++	"github.com/yetone/magpie/internal/usage"
+ )
+ 
+ // Claude Code reads its endpoint from the `env` block of settings.json.
+@@ -2415,9 +2416,17 @@ func claudeIn(at place) *Agent {
+ 			}
+ 			return wiringOff("Claude Code", path, getEnv, "ANTHROPIC_AUTH_TOKEN", at.gwKey())
+ 		},
+-		// every prompt typed into Claude Code goes into history.jsonl
++		// every prompt typed into Claude Code goes into history.jsonl —
++		// the user's, and those of the runs magpie started itself (the
++		// subscription bridge's, a warm-up's) as well: the latter are not
++		// use, and none of their requests reach the gateway as this
++		// agent's (#5100)
+ 		LastUsed: func() time.Time {
+-			return lastJSONLTime(filepath.Join(filepath.Dir(path), "history.jsonl"), "timestamp", "display")
++			return lastJSONLTime(filepath.Join(filepath.Dir(path), "history.jsonl"), "timestamp", "display",
++				func(m map[string]json.RawMessage) bool {
++					var sid string
++					return json.Unmarshal(m["sessionId"], &sid) == nil && usage.IsOwnSession(sid)
++				})
+ 		},
+ 		// a session takes a new CLAUDE_CODE_EFFORT_LEVEL on its next
+ 		// request, but settings.json's effort and ultracode, and the env's
+diff --git a/internal/agent/claude_own_sessions_test.go b/internal/agent/claude_own_sessions_test.go
+new file mode 100644
+index 000000000..16ae38f4b
+--- /dev/null
++++ b/internal/agent/claude_own_sessions_test.go
+@@ -0,0 +1,87 @@
++package agent
++
++import (
++	"encoding/json"
++	"os"
++	"path/filepath"
++	"strings"
++	"testing"
++	"time"
++
++	"github.com/yetone/magpie/internal/usage"
++)
++
++// The Claude Code runs magpie started itself — the subscription bridge's,
++// a warm-up's — write the user's history.jsonl as they go, and none of
++// their requests reach the gateway as agent claude's (the bridge's go as
++// claude-desktop's, a warm-up's straight to Anthropic): drift would take
++// them for the user using Claude Code behind magpie's back (#5100). A
++// session magpie started is not use; one the user started is.
++func TestClaudeDriftOwnSessions(t *testing.T) {
++	home, _ := codexHome(t, "", "")
++	t.Setenv("CLAUDE_CONFIG_DIR", "")
++	managed := claudeManaged
++	claudeManaged = func() string { return filepath.Join(home, "managed-settings.json") }
++	t.Cleanup(func() { claudeManaged = managed })
++	cl := claude(home)
++	defer func(s time.Time) { started = s }(started)
++	started = time.Now().Add(-time.Hour)
++	// a request reaching the gateway, kept to this run: usage.Saw's record
++	// lasts the process, so the next run (-count=2) would start with it
++	var saw time.Time
++	defer func(f func(string) time.Time) { lastSeen = f }(lastSeen)
++	lastSeen = func(string) time.Time { return saw }
++	if err := cl.Apply("model", "fake/m1"); err != nil {
++		t.Fatal(err)
++	}
++	// Apply stamped now; put it back to before the prompts
++	m := appliedLoad()
++	a := m["claude"]
++	a.At = time.Now().Add(-10 * time.Minute)
++	m["claude"] = a
++	appliedSave(m)
++	hist := filepath.Join(home, ".claude", "history.jsonl")
++	line := func(entries ...map[string]any) {
++		var b []byte
++		for _, e := range entries {
++			j, _ := json.Marshal(e)
++			b = append(b, j...)
++			b = append(b, '\n')
++		}
++		if err := os.WriteFile(hist, b, 0o600); err != nil {
++			t.Fatal(err)
++		}
++	}
++	prompt := func(sid, display, project string, at time.Time) map[string]any {
++		return map[string]any{"display": display, "timestamp": at.UnixMilli(), "project": project, "sessionId": sid}
++	}
++	work := filepath.Join(os.TempDir(), "magpie-claude-work-1000")
++	proj := filepath.Join(home, "work", "bdr")
++	// a warm-up's "hi", the log's newest line: its run asked Anthropic
++	// straight, so the gateway saw nothing — not the user's use
++	usage.OwnSession("warmup-sid")
++	line(prompt("warmup-sid", "hi", work, time.Now().Add(-time.Minute)))
++	if d := cl.Drift(); d != nil {
++		t.Fatalf("magpie's own warm-up: %+v", d)
++	}
++	// the bridge's session, on the user's own project — no magpie folder in
++	// its path to go by: the session magpie started is what says it isn't use
++	usage.OwnSession("bridge-sid")
++	line(prompt("bridge-sid", "[Image #6][Pasted text #7 +3 lines]", proj, time.Now().Add(-time.Minute)))
++	if d := cl.Drift(); d != nil {
++		t.Fatalf("magpie's own bridge session: %+v", d)
++	}
++	// the user's own use, none of it at the gateway: bypassed
++	used := time.Now().Add(-5 * time.Minute)
++	line(prompt("user-sid", "hi", proj, used))
++	if d := cl.Drift(); d == nil || d.Kind != "bypassed" {
++		t.Fatalf("the user's use: %+v", d)
++	}
++	// a run of magpie's own above the user's line: the use said is still
++	// the user's, at the user's time
++	usage.OwnSession("later-sid")
++	line(prompt("user-sid", "hi", proj, used), prompt("later-sid", "hi", work, time.Now().Add(-time.Minute)))
++	if d := cl.Drift(); d == nil || d.Kind != "bypassed" || !strings.Contains(d.Detail, "used at "+used.Format("15:04")) {
++		t.Fatalf("a run of magpie's own above the user's: %+v", d)
++	}
++}
+diff --git a/internal/gateway/claude_resume_test.go b/internal/gateway/claude_resume_test.go
+index eca54f557..f89ec300b 100644
+--- a/internal/gateway/claude_resume_test.go
++++ b/internal/gateway/claude_resume_test.go
+@@ -13,6 +13,7 @@ import (
+ 
+ 	"github.com/yetone/magpie/internal/provider"
+ 	"github.com/yetone/magpie/internal/testenv"
++	"github.com/yetone/magpie/internal/usage"
+ )
+ 
+ // resumeHarness runs Claude subscription requests through a script
+@@ -359,6 +360,24 @@ func containsStr(list []string, s string) bool {
+ 	return false
+ }
+ 
++// A conversation's run is magpie's own: the session its init names is kept,
++// so the lines it writes to the user's history.jsonl are never taken for
++// the user's use (#5100).
++func TestClaudeBridgeSessionIsMagpiesOwn(t *testing.T) {
++	h := newResumeHarness(t)
++	h.ask("rules A", "a1")
++	var sid string
++	for pid := range h.runs() {
++		sid = "s" + pid
++	}
++	if sid == "" {
++		t.Fatal("no run")
++	}
++	if !usage.IsOwnSession(sid) {
++		t.Fatalf("the bridge run's session %s is not kept as magpie's own", sid)
++	}
++}
++
+ // A client Claude Code's billing line changes every turn (cch,
+ // cc_prompt_id, cc_prev_req…), and a run is never told it. Its next turn
+ // still goes on in the run that had the conversation, told the new message
+diff --git a/internal/gateway/claude_subscription.go b/internal/gateway/claude_subscription.go
+index 84bdef8a7..aefdef58c 100644
+--- a/internal/gateway/claude_subscription.go
++++ b/internal/gateway/claude_subscription.go
+@@ -3602,6 +3602,9 @@ func (r *subscriptionRun) readOutput(rd io.Reader) {
+ 			return
+ 		}
+ 		if envelope.Type == "system" && envelope.Subtype == "init" && envelope.SessionID != "" {
++			// the session is the bridge's own: the lines its run writes to
++			// the user's history.jsonl are not the user's use (#5100)
++			ownClaudeSession(envelope.SessionID)
+ 			r.mu.Lock()
+ 			r.sessionID = envelope.SessionID
+ 			r.mu.Unlock()
+diff --git a/internal/gateway/claude_warmup.go b/internal/gateway/claude_warmup.go
+index 2f14cbe1a..5fe891145 100644
+--- a/internal/gateway/claude_warmup.go
++++ b/internal/gateway/claude_warmup.go
+@@ -24,6 +24,7 @@ import (
+ 	"github.com/yetone/magpie/internal/proc"
+ 	"github.com/yetone/magpie/internal/provider"
+ 	"github.com/yetone/magpie/internal/redact"
++	"github.com/yetone/magpie/internal/usage"
+ 	"golang.org/x/text/unicode/norm"
+ )
+ 
+@@ -62,7 +63,12 @@ func askClaude(ctx context.Context, configDir, model string) error {
+ 		return err
+ 	}
+ 	defer os.RemoveAll(tmp)
+-	cmd := binary.command(ctx, claudeWarmArgs(model)...)
++	// the run's session is magpie's own, told before it starts: its "hi"
++	// lands in the user's history.jsonl, and drift must not take it for the
++	// user's use (#5100)
++	sid := newUUID()
++	usage.OwnSession(sid)
++	cmd := binary.command(ctx, append(claudeWarmArgs(model), "--session-id", sid)...)
+ 	cmd.Dir = tmp
+ 	cmd.Stdin = strings.NewReader("hi")
+ 	env, err := binary.proxied(ctx, cleanClaudeEnv(os.Environ()))
+@@ -163,6 +169,9 @@ func (w *resultLines) Write(p []byte) (int, error) {
+ 		if json.Unmarshal(w.buf[:i], &r) == nil {
+ 			if r.SessionID != "" {
+ 				w.sid = r.SessionID
++				// the session is magpie's own: the lines its run writes to
++				// the user's history.jsonl are not the user's use (#5100)
++				usage.OwnSession(r.SessionID)
+ 			}
+ 			if r.Type == "result" {
+ 				w.res = &r
+@@ -538,3 +547,9 @@ func clip(s string) string {
+ 	}
+ 	return s
+ }
++
++// ownClaudeSession keeps the session id of a Claude Code run magpie started
++// itself (the bridge's, a warm-up's): its lines in the user's history.jsonl
++// are not the user's use (#5100). A wrapper, as the bridge's read of its
++// runs' stream-json has a usage of its own in scope.
++func ownClaudeSession(sid string) { usage.OwnSession(sid) }
+diff --git a/internal/gateway/claude_warmup_test.go b/internal/gateway/claude_warmup_test.go
+index 655c76499..0217ab685 100644
+--- a/internal/gateway/claude_warmup_test.go
++++ b/internal/gateway/claude_warmup_test.go
+@@ -14,6 +14,7 @@ import (
+ 
+ 	"github.com/yetone/magpie/internal/provider"
+ 	"github.com/yetone/magpie/internal/testenv"
++	"github.com/yetone/magpie/internal/usage"
+ )
+ 
+ // fakeWarmClaude is a claude that writes what it was run with to log and
+@@ -70,6 +71,44 @@ func TestWarmClaudeAsksClaudeCodeOnce(t *testing.T) {
+ 	}
+ }
+ 
++// A warm-up's session is magpie's own, told before the run starts and kept:
++// its "hi" lands in the user's history.jsonl, and drift must not take it
++// for the user's use (#5100).
++func TestWarmClaudeSaysItsOwnSession(t *testing.T) {
++	log := fakeWarmClaude(t, `{"type":"result","is_error":false,"result":"Hi!"}`, 0)
++	if err := warmClaude(context.Background(), ""); err != nil {
++		t.Fatal(err)
++	}
++	b, _ := os.ReadFile(log)
++	got := string(b)
++	i := strings.Index(got, "[--session-id][")
++	if i < 0 {
++		t.Fatalf("no session of its own told: %s", got)
++	}
++	sid := got[i+len("[--session-id]["):]
++	if j := strings.Index(sid, "]"); j >= 0 {
++		sid = sid[:j]
++	}
++	if !usage.IsOwnSession(sid) {
++		t.Errorf("the run's session %s is not kept as magpie's own", sid)
++	}
++}
++
++// The helper's init tells which session a one-off interactive run (a
++// warm-up, a /usage read) is: that session is magpie's own (#5100).
++func TestClaudeHelperSessionIsMagpiesOwn(t *testing.T) {
++	out := &resultLines{done: func() {}}
++	if _, err := out.Write([]byte(`{"type":"system","subtype":"init","session_id":"helper-sid"}` + "\n")); err != nil {
++		t.Fatal(err)
++	}
++	if out.sid != "helper-sid" {
++		t.Fatalf("sid %q", out.sid)
++	}
++	if !usage.IsOwnSession("helper-sid") {
++		t.Errorf("the helper's session is not kept as magpie's own")
++	}
++}
++
+ func TestWarmClaudeSaysWhyNot(t *testing.T) {
+ 	fakeWarmClaude(t, `{"type":"result","is_error":true,"result":"Invalid API key · Please run /login"}`, 1)
+ 	err := warmClaude(context.Background(), "")
+diff --git a/internal/usage/usage.go b/internal/usage/usage.go
+index 71daf4f73..0f1cbcb8c 100644
+--- a/internal/usage/usage.go
++++ b/internal/usage/usage.go
+@@ -1153,3 +1153,38 @@ func LastSeen(agent string) time.Time {
+ 	}
+ 	return last
+ }
++
++// ownClaude are the session ids of the Claude Code runs magpie started
++// itself: the subscription bridge's sessions, a warm-up's, a /usage read's.
++// Their prompts land in the user's history.jsonl beside the user's own, and
++// none of their requests reach the gateway as agent claude's (the bridge's
++// go as claude-desktop's, a warm-up's straight to Anthropic), so drift would
++// take them for the user using Claude Code behind magpie's back (#5100). An
++// entry is kept a week: a run tells its session each time it starts, and no
++// run lives longer than that.
++var ownClaude sync.Map // session id → time.Time
++
++// OwnSession notes the session id of a Claude Code run magpie started
++// itself.
++func OwnSession(sid string) {
++	if sid == "" {
++		return
++	}
++	ownClaude.Store(sid, time.Now())
++	ownClaude.Range(func(k, v any) bool {
++		if time.Since(v.(time.Time)) > 7*24*time.Hour {
++			ownClaude.Delete(k)
++		}
++		return true
++	})
++}
++
++// IsOwnSession says whether the Claude Code session was one magpie started
++// itself (OwnSession).
++func IsOwnSession(sid string) bool {
++	if sid == "" {
++		return false
++	}
++	_, ok := ownClaude.Load(sid)
++	return ok
++}
+-- 
+2.50.1 (Apple Git-155)
+
+```
+
+SHA-256 (first 16): 9de07742a85b6eb7
+
+</details>
+
+## Verification
+
+Red before the fix: with the fix's behavior reverted (the detector's skip and all three registrations; the session registry itself kept, inert then, so the tests still build), all four new tests fail; with the change in, they pass. Registry entries live a week and are re-registered at every run's start; an unregistered session still counts as use, so a real bypass still flags; a magpie restart empties the registry while `bypassed`'s `used.After(started)` keeps pre-restart lines out anyway. Also checked: `history.jsonl` has one other drift reader (Codex's own file — magpie never starts Codex headless, nothing to exclude) and the sessions-list reader (`internal/sessions`, untouched — bridge sessions showing in the user's session list there is #3983's separate concern); no other agent sets `LastUsed`. Cost on the drift poll's hot path: one small JSON field parse and a map lookup per line of the 64 KB tail.
+
+| Check | Result |
+|---|---|
+| `go test ./internal/agent/ -run TestClaudeDriftOwnSessions` (change in) | ok |
+| `go test ./internal/gateway/ -run 'TestWarmClaudeSaysItsOwnSession\|TestClaudeHelperSessionIsMagpiesOwn\|TestClaudeBridgeSessionIsMagpiesOwn'` (change in) | ok |
+| Ablation (behavior reverted, tests kept) | `--- FAIL: TestClaudeDriftOwnSessions` — "magpie's own warm-up: Kind:bypassed, Claude Code was used at 00:23 but none of its requests reached magpie" (the report's false positive, reproduced), `--- FAIL: TestClaudeBridgeSessionIsMagpiesOwn`, `--- FAIL: TestWarmClaudeSaysItsOwnSession`, `--- FAIL: TestClaudeHelperSessionIsMagpiesOwn` |
+| Restored | all four ok again |
+| `go test -tags nogui ./internal/usage/ ./internal/agent/` (full) | ok, except `TestMothX` — fails on the parent commit too (verified at 1e1068c86), untouched by this patch |
+| `go test -tags nogui ./internal/gateway/` (full) | ok (656.5s, 0 failures) |
+| `go test -race` (drift + usage targeted) | ok |
+| `gofmt -l` (changed files) | clean |
+| `go vet` (changed packages) | clean |
+| `go build ./...` (plain and `-tags nogui`) | ok (pre-existing cgo/ld warnings only) |
+
+## Not verified
+
+- Real Claude Code accepts `claude -p --session-id <uuid> --no-session-persistence` as expected: verified against magpie's fake-claude test harnesses, not against Anthropic's CLI; the helper already passes `--session-id` the same way for interactive runs, so this follows magpie's existing practice.
+- The report's exact weekly-limit failure path (a warm-up that errors mid-run) — covered indirectly: the `-p` warm-up registers its session before claude starts, so a failed run's line is excluded regardless of the error.
+- Windows and WSL were not exercised here (the shell-script harnesses skip on Windows); on WSL the helper's claude writes the distro's own `history.jsonl`, which the Windows-side drift check doesn't read.
+
+AI use: written by GLM-5.3-Flash (ZCode) from the reporter's analysis in this issue.
+
+Branch with the commit: https://github.com/ggbdpq/magpie/tree/fix/5100-drift-own-claude (head 22d2d4ede781490e0d4308cf77dfabf555869a20)

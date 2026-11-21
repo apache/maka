@@ -1,0 +1,1 @@
+var e=`https://ai-copilot.cos.clife.cn/web-agent-paas/assets/images/app-HyR_3gKT.png`;export{e as t};

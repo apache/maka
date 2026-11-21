@@ -1,0 +1,30 @@
+2026/11/02 23:48:36 claude: Claude Code pid 70129 started, a run on claude-sonnet-5
+2026/11/02 23:48:36 claude: Claude Code pid 70129 (claude-sonnet-5) holds 1 MiB after its turn; 6144 MiB may be kept (an eighth of 49152 MiB (the computer's memory), 1024 MiB at least)
+2026/11/02 23:48:36 claude: Claude Code pid 70129 (claude-sonnet-5) holds 1 MiB after its turn; 6144 MiB may be kept (an eighth of 49152 MiB (the computer's memory), 1024 MiB at least)
+2026/11/02 23:48:36 claude: the conversation's next turn goes on in its run, taken back from the side question it answered since
+2026/11/02 23:48:36 claude: Claude Code pid 70129 (claude-sonnet-5) holds 1 MiB after its turn; 6144 MiB may be kept (an eighth of 49152 MiB (the computer's memory), 1024 MiB at least)
+2026/11/02 23:48:36 claude: Claude Code pid 70129 (claude-sonnet-5) holds 1 MiB after its turn; 6144 MiB may be kept (an eighth of 49152 MiB (the computer's memory), 1024 MiB at least)
+2026/11/02 23:48:36 claude: Claude Code pid 70141 started, a run on claude-sonnet-5
+2026/11/02 23:48:36 claude: Claude Code pid 70141 (claude-sonnet-5) holds 1 MiB after its turn; 6144 MiB may be kept (an eighth of 49152 MiB (the computer's memory), 1024 MiB at least)
+2026/11/02 23:48:36 claude: Claude Code pid 70147 started, a run on claude-sonnet-5
+2026/11/02 23:48:36 claude: Claude Code pid 70147 (claude-sonnet-5) holds 1 MiB after its turn; 6144 MiB may be kept (an eighth of 49152 MiB (the computer's memory), 1024 MiB at least)
+2026/11/02 23:48:36 claude: Claude Code pid 70153 started, a run on claude-sonnet-5
+2026/11/02 23:48:36 claude: Claude Code pid 70153 (claude-sonnet-5) holds 1 MiB after its turn; 6144 MiB may be kept (an eighth of 49152 MiB (the computer's memory), 1024 MiB at least)
+2026/11/02 23:48:36 claude: Claude Code pid 70159 started, a run on claude-sonnet-5
+2026/11/02 23:48:36 claude: Claude Code pid 70159 (claude-sonnet-5) holds 1 MiB after its turn; 6144 MiB may be kept (an eighth of 49152 MiB (the computer's memory), 1024 MiB at least)
+2026/11/02 23:48:36 claude: Claude Code pid 70165 started, a run on claude-sonnet-5
+2026/11/02 23:48:36 claude: Claude Code pid 70165 (claude-sonnet-5) holds 1 MiB after its turn; 6144 MiB may be kept (an eighth of 49152 MiB (the computer's memory), 1024 MiB at least)
+2026/11/02 23:48:36 claude: Claude Code pid 70172 started, a run on claude-sonnet-5
+2026/11/02 23:48:36 claude: Claude Code pid 70172 (claude-sonnet-5) holds 1 MiB after its turn; 6144 MiB may be kept (an eighth of 49152 MiB (the computer's memory), 1024 MiB at least)
+2026/11/02 23:48:36 claude: Claude Code pid 70129 (claude-sonnet-5) ended after 0s (signal: terminated), 1 MiB resident at most
+2026/11/02 23:48:36 claude: Claude Code pid 70165 (claude-sonnet-5) ended after 0s (signal: terminated), 1 MiB resident at most
+2026/11/02 23:48:36 claude: Claude Code pid 70172 (claude-sonnet-5) ended after 0s (signal: terminated), 1 MiB resident at most
+2026/11/02 23:48:36 claude: Claude Code pid 70141 (claude-sonnet-5) ended after 0s (signal: terminated), 1 MiB resident at most
+2026/11/02 23:48:36 claude: Claude Code pid 70147 (claude-sonnet-5) ended after 0s (signal: terminated), 1 MiB resident at most
+2026/11/02 23:48:36 claude: Claude Code pid 70153 (claude-sonnet-5) ended after 0s (signal: terminated), 1 MiB resident at most
+2026/11/02 23:48:36 claude: Claude Code pid 70159 (claude-sonnet-5) ended after 0s (signal: terminated), 1 MiB resident at most
+--- FAIL: TestClaudeLetGoConversationAfterSuggestionResumesItsSession (0.81s)
+    claude_resume_test.go:249: shelf: 0, the session was not kept for the conversation's next turn
+FAIL
+FAIL	github.com/yetone/magpie/internal/gateway	1.340s
+FAIL

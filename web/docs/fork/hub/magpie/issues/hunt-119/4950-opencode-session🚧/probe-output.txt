@@ -1,0 +1,18 @@
+=== RUN   TestProbe4950BareCallerTurns
+    zz_probe_4950_test.go:84: turn 2 vs 1: changed=[] gone=[] added=[]
+    zz_probe_4950_test.go:84: turn 3 vs 2: changed=[] gone=[] added=[]
+--- PASS: TestProbe4950BareCallerTurns (0.12s)
+=== RUN   TestProbe4950LRUPressure
+    zz_probe_4950_test.go:140: session lost under LRU pressure: first "ses_e613e55c7ffeXKql5scEzyMcLX" last "ses_e613e3aa2ffeLaZ8QrpBQLYfZN"
+--- FAIL: TestProbe4950LRUPressure (6.96s)
+=== RUN   TestProbe4950SameFirstMessage
+    zz_probe_4950_test.go:177: sessions: alpha=ses_e613e3a93ffeSNgP beta=ses_e613e3a8bffel9Ht gamma=ses_e613e3a85ffeCeav delta=ses_e613e3a7fffeMiY6 alpha-turn2=ses_e613e3a93ffeSNgP
+--- PASS: TestProbe4950SameFirstMessage (0.04s)
+=== RUN   TestProbe4950IdenticalFirstMessage
+    zz_probe_4950_test.go:216: conv of the identical first messages: magpie-ee464ca38e08ee9a46e0e77d
+    zz_probe_4950_test.go:217: sessions: first=ses_e613e3a6cffeXYCG second=ses_e613e3a6cffeXYCG convA-turn2=ses_e613e3a6cffeXYCG
+    zz_probe_4950_test.go:219: two conversations with an IDENTICAL first user message share one upstream session (ses_e613e3a6cffeXYCGCpDa6W6Arl)
+--- FAIL: TestProbe4950IdenticalFirstMessage (0.02s)
+FAIL
+FAIL	github.com/yetone/magpie/internal/gateway	7.596s
+FAIL

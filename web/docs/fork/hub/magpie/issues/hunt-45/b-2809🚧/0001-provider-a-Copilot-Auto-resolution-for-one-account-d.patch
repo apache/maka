@@ -1,0 +1,319 @@
+From eeb96ee5eb4e0d2d0c99bc3fcd22930928da5fdb Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Mon, 19 Oct 2026 06:53:00 +0800
+Subject: [PATCH] provider: a Copilot Auto resolution for one account doesn't
+ hold the others' behind one lock (#2809)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+What changed:
+
+copilotAutoResolve kept copilotAutoMu from entry to return: the cache
+lookup, app.session, POST /auto (copilotAutoRoute) and the /models/session
+fallback all ran under it, so an account whose Copilot answered slowly held
+every account's Auto lookups and resolutions behind one lock. Now the lock
+is held for the cache read, the per-account flight bookkeeping and the
+answer's keeping alone, and the asking moved to copilotAutoAsk with no lock
+held; a resolution being asked for an account (copilotAutoInflight, keyed
+by token and fresh) is joined by the callers that land on it, which share
+its session or its error — a fresh ask still waits for its own ask, and a
+model the account was refused still forces the ask anew.
+
+Why:
+
+The lock has to serialize the sessions map, never the network. #2809 was
+found by source review; this makes the map-and-network split and its
+evidence concrete on main (1a3b9268).
+
+Run (darwin/arm64, go 1.26.8):
+
+- TestCopilotAutoConcurrent on base: B's cold resolution unanswered within
+  2s while A's upstream answer was held; the same account asked twice went
+  upstream 2 times. After the change: B answered, one upstream ask.
+- TestCopilotAuto* 8/8 pass; the package's 1226 tests pass in 68.7s.
+- -race on TestCopilotAuto* three runs: pass each.
+- go vet (darwin/linux/windows), gofmt, and builds for the three: clean.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/provider/copilot_auto.go      |  68 ++++++++++--
+ internal/provider/copilot_auto_test.go | 141 +++++++++++++++++++++++++
+ 2 files changed, 202 insertions(+), 7 deletions(-)
+
+diff --git a/internal/provider/copilot_auto.go b/internal/provider/copilot_auto.go
+index c40cd84f..94163dba 100644
+--- a/internal/provider/copilot_auto.go
++++ b/internal/provider/copilot_auto.go
+@@ -158,8 +158,29 @@ func pickRefused(ctx context.Context, model, said string) {
+ var (
+ 	copilotAutoMu       sync.Mutex
+ 	copilotAutoSessions = map[string]copilotAutoSession{} // by GitHub token
++	// copilotAutoInflight is the Auto session being asked for an account,
++	// by GitHub token and whether the ask was fresh: callers landing on it
++	// while it is being asked wait for its answer instead of asking Copilot
++	// again (#2809).
++	copilotAutoInflight = map[copilotAutoAsking]*copilotAutoWait{}
+ )
+ 
++// copilotAutoAsking says whose Auto session is being asked: the account,
++// and whether the ask was a fresh one (a fresh ask is answered by its own
++// ask, not by another caller's).
++type copilotAutoAsking struct {
++	token string
++	fresh bool
++}
++
++// copilotAutoWait is one account's Auto ask the others are waiting on: its
++// session, or why it has none, said once done is closed.
++type copilotAutoWait struct {
++	done chan struct{}
++	a    copilotAutoSession
++	err  error
++}
++
+ type copilotAutoKey struct{}
+ 
+ type copilotAutoPromptKey struct{}
+@@ -172,13 +193,49 @@ func WithAutoPrompt(ctx context.Context, prompt string) context.Context {
+ 
+ // copilotAutoResolve is the account's Auto session, asked again a couple of
+ // minutes before it expires, when fresh is set or once the account was
+-// refused its model.
++// refused its model. The ask is one per account at a time and its callers
++// share its session or its error; no account's ask holds another's, one
++// account's slow answer having held every account's lookups behind
++// copilotAutoMu (#2809). The lock is held for the cache and the answer's
++// keeping alone, never for the asking.
+ func copilotAutoResolve(ctx context.Context, app copilotApp, fresh bool) (copilotAutoSession, error) {
+ 	copilotAutoMu.Lock()
+-	defer copilotAutoMu.Unlock()
+ 	if a, ok := copilotAutoSessions[app.Token]; ok && !fresh && (a.ExpiresAt == 0 || time.Until(time.Unix(a.ExpiresAt, 0)) > 2*time.Minute) && !copilotRefuses(app.Token, a.Model) {
++		copilotAutoMu.Unlock()
+ 		return a, nil
+ 	}
++	key := copilotAutoAsking{app.Token, fresh}
++	call, waiting := copilotAutoInflight[key]
++	if !waiting {
++		call = &copilotAutoWait{done: make(chan struct{})}
++		copilotAutoInflight[key] = call
++	}
++	copilotAutoMu.Unlock()
++	if waiting {
++		select {
++		case <-call.done:
++			return call.a, call.err
++		case <-ctx.Done():
++			return copilotAutoSession{}, ctx.Err()
++		}
++	}
++	a, err := copilotAutoAsk(ctx, app)
++	copilotAutoMu.Lock()
++	if err == nil {
++		copilotAutoSessions[app.Token] = a
++	}
++	call.a, call.err = a, err
++	delete(copilotAutoInflight, key)
++	close(call.done)
++	copilotAutoMu.Unlock()
++	return a, err
++}
++
++// copilotAutoAsk asks Copilot the account's Auto session with no lock held:
++// the session (its endpoint may want asking), POST /auto as Copilot Chat
++// does, and /models/session when /auto doesn't answer. copilotAutoResolve
++// keeps what it answers for the callers waiting on it.
++func copilotAutoAsk(ctx context.Context, app copilotApp) (copilotAutoSession, error) {
+ 	s, err := app.session(ctx)
+ 	if err != nil {
+ 		return copilotAutoSession{}, err
+@@ -186,7 +243,6 @@ func copilotAutoResolve(ctx context.Context, app copilotApp, fresh bool) (copilo
+ 	base := s.apiBase(app.Host)
+ 	a, why, answered := copilotAutoRoute(ctx, app, s, base)
+ 	if why == "" {
+-		copilotAutoSessions[app.Token] = a
+ 		return a, nil
+ 	}
+ 	if answered {
+@@ -260,9 +316,7 @@ func copilotAutoResolve(ctx context.Context, app copilotApp, fresh bool) (copilo
+ 	if model == "" {
+ 		return copilotAutoSession{}, errors.New("Copilot Auto picked no model")
+ 	}
+-	a = copilotAutoSession{Token: v.Token, Model: model, ExpiresAt: v.ExpiresAt, Via: "/models/session", Skipped: why}
+-	copilotAutoSessions[app.Token] = a
+-	return a, nil
++	return copilotAutoSession{Token: v.Token, Model: model, ExpiresAt: v.ExpiresAt, Via: "/models/session", Skipped: why}, nil
+ }
+ 
+ // copilotAutoRoute asks POST /auto for the model, as Copilot Chat does, at
+@@ -341,7 +395,6 @@ func copilotAutoFallback(ctx context.Context, app copilotApp, why string) (copil
+ 		return copilotAutoSession{}, errors.New("Copilot doesn't offer Auto to this account (" + why + "), and lists no model it may pick by hand that it serves; check the plan at github.com/settings/copilot")
+ 	}
+ 	a := copilotAutoSession{Model: picks[0], ExpiresAt: time.Now().Add(10 * time.Minute).Unix(), Via: AutoFallback, Skipped: why}
+-	copilotAutoSessions[app.Token] = a
+ 	return a, nil
+ }
+ 
+@@ -462,6 +515,7 @@ func ForgetCopilotForTest() {
+ 	copilotMu.Unlock()
+ 	copilotAutoMu.Lock()
+ 	copilotAutoSessions = map[string]copilotAutoSession{}
++	copilotAutoInflight = map[copilotAutoAsking]*copilotAutoWait{}
+ 	copilotAutoMu.Unlock()
+ 	copilotTermsMu.Lock()
+ 	copilotTerms, copilotPicks = map[string]map[string]bool{}, map[string][]string{}
+diff --git a/internal/provider/copilot_auto_test.go b/internal/provider/copilot_auto_test.go
+index eba98470..23722be1 100644
+--- a/internal/provider/copilot_auto_test.go
++++ b/internal/provider/copilot_auto_test.go
+@@ -203,6 +203,147 @@ func TestCopilotAutoSessionAsVSCode(t *testing.T) {
+ 	}
+ }
+ 
++// autoHeld is an Auto upstream whose /models/session answer is held until
++// its gate is opened, counting the asks it was and saying so on arrived.
++type autoHeld struct {
++	mu      sync.Mutex
++	asks    int
++	gate    chan struct{}
++	open    sync.Once
++	arrived chan struct{}
++	srv     *httptest.Server
++}
++
++func newAutoHeld(t *testing.T) *autoHeld {
++	t.Helper()
++	h := &autoHeld{gate: make(chan struct{}), arrived: make(chan struct{}, 4)}
++	h.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		if r.URL.Path == "/auto" {
++			w.WriteHeader(404) // Auto v2 not offered: /models/session
++			return
++		}
++		if r.URL.Path != "/models/session" || r.Method != http.MethodPost {
++			w.WriteHeader(404)
++			return
++		}
++		h.mu.Lock()
++		h.asks++
++		h.mu.Unlock()
++		select {
++		case h.arrived <- struct{}{}:
++		default:
++		}
++		<-h.gate
++		io.WriteString(w, `{"session_token":"held-tok","selected_model":"m-held","available_models":["m-held"],"expires_at":0}`)
++	}))
++	t.Cleanup(func() {
++		h.open.Do(func() { close(h.gate) }) // let a held answer go before the server is closed
++		h.srv.Close()
++	})
++	return h
++}
++
++func (h *autoHeld) count() int {
++	h.mu.Lock()
++	defer h.mu.Unlock()
++	return h.asks
++}
++
++func (h *autoHeld) openNow() { h.open.Do(func() { close(h.gate) }) }
++
++// An account's Auto resolution asked while another account's answer is held
++// is answered all the same (#2809: one lock over every account's Auto asked
++// them one by one), and the same account asked twice together goes upstream
++// once, the second sharing the first's session.
++func TestCopilotAutoConcurrent(t *testing.T) {
++	signIn(t)
++	copilotAutoSessions = map[string]copilotAutoSession{}
++	sess := func(api string) copilotSession {
++		s := copilotSession{Token: "sess", ExpiresAt: time.Now().Add(time.Hour).Unix()}
++		s.Endpoints.API = api
++		return s
++	}
++	held := newAutoHeld(t)
++	free := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		if r.URL.Path == "/auto" {
++			w.WriteHeader(404)
++			return
++		}
++		if r.URL.Path != "/models/session" || r.Method != http.MethodPost {
++			w.WriteHeader(404)
++			return
++		}
++		io.WriteString(w, `{"session_token":"free-tok","selected_model":"m-free","available_models":["m-free"],"expires_at":0}`)
++	}))
++	defer free.Close()
++	copilotSessions = map[string]copilotSession{
++		"gho_held": sess(held.srv.URL),
++		"gho_free": sess(free.URL),
++	}
++	appA := copilotApp{User: "octocat", Token: "gho_held"}
++	appB := copilotApp{User: "hubot", Token: "gho_free"}
++
++	// A's answer is held upstream; B's cold resolution is asked meanwhile
++	// and answered, its session come within 2s
++	doneA := make(chan error, 1)
++	go func() { _, err := copilotAutoResolve(context.Background(), appA, false); doneA <- err }()
++	<-held.arrived
++	modelB := make(chan string, 1)
++	failedB := make(chan error, 1)
++	go func() {
++		a, err := copilotAutoResolve(context.Background(), appB, false)
++		if err != nil {
++			failedB <- err
++			return
++		}
++		modelB <- a.Model
++	}()
++	select {
++	case <-time.After(2 * time.Second):
++		t.Error("an account's Auto resolution held another account's: B's wasn't answered within 2s while A's upstream answer was held")
++	case err := <-failedB:
++		t.Errorf("B's Auto resolution failed instead of a session: %v", err)
++	case m := <-modelB:
++		if m != "m-free" {
++			t.Errorf("B's Auto picked %q, want m-free", m)
++		}
++	}
++	held.openNow()
++	if err := <-doneA; err != nil {
++		t.Errorf("A's Auto resolution: %v", err)
++	}
++
++	// the same account asked twice together (fresh, so no cache answers
++	// the second): one ask upstream, its session shared, not one ask each
++	held2 := newAutoHeld(t)
++	copilotSessions["gho_twice"] = sess(held2.srv.URL)
++	appC := copilotApp{User: "octocat", Token: "gho_twice"}
++	picked := make(chan copilotAutoSession, 2)
++	askErr := make(chan error, 2)
++	for i := 0; i < 2; i++ {
++		go func() {
++			a, err := copilotAutoResolve(context.Background(), appC, true)
++			picked <- a
++			askErr <- err
++		}()
++	}
++	<-held2.arrived
++	time.Sleep(100 * time.Millisecond) // the second caller lands on the first's ask
++	held2.openNow()
++	for i := 0; i < 2; i++ {
++		if err := <-askErr; err != nil {
++			t.Fatalf("the same account asked twice together: %v", err)
++		}
++	}
++	a1, a2 := <-picked, <-picked
++	if a1 != a2 || a1.Model != "m-held" {
++		t.Errorf("asked together picked %+v and %+v, want one session for m-held", a1, a2)
++	}
++	if n := held2.count(); n != 1 {
++		t.Errorf("the same account asked twice together went upstream %d times, want once", n)
++	}
++}
++
+ // An account Copilot has no Auto session for (404 however asked) is told
+ // so, and goes on with the first model it may pick by hand, when it has one.
+ func TestCopilotAutoUnavailable(t *testing.T) {
+-- 
+2.50.1 (Apple Git-155)
+

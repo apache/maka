@@ -1,0 +1,562 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=1280">
+<title>magpie · 更新内容 × 我的贡献</title>
+<style>
+  :root {
+    --bg-backdrop: rgba(20, 20, 24, 0.42);
+    --card-bg: #ffffff;
+    --card-radius: 16px;
+    --ink: #1d1d1f;
+    --ink-2: #6e6e73;
+    --ink-3: #98989d;
+    --line: #e5e5ea;
+    --side-bg: #f5f5f7;
+    --btn-purple: #7c5cf6;
+    --btn-purple-hover: #6b4be0;
+    --lvl-a-bg: #FFF3B8;   --lvl-a-bar: #F5C518;
+    --lvl-b-bg: #FFF9DB;   --lvl-b-bar: #E8B004;
+    --lvl-c-bg: #FFFDF0;   --lvl-c-bar: #E8D44D;
+    --suspense-border: #E8B004;
+    --focus-ring: 0 0 0 3px rgba(124, 92, 246, 0.35);
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { overflow-x: clip; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", "Microsoft YaHei", sans-serif;
+    background: #d8d8de;
+    color: var(--ink);
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 40px 24px;
+  }
+  .backdrop {
+    background: var(--bg-backdrop);
+    -webkit-backdrop-filter: blur(18px);
+    backdrop-filter: blur(18px);
+    border-radius: 24px;
+    padding: 48px;
+    display: flex;
+    justify-content: center;
+  }
+  .modal {
+    background: var(--card-bg);
+    border-radius: var(--card-radius);
+    max-width: 980px;
+    width: 980px;
+    display: grid;
+    grid-template-columns: 1fr 280px;
+    overflow: hidden;
+    box-shadow: 0 24px 64px rgba(0, 0, 0, 0.28);
+  }
+  /* ============ 左栏 ============ */
+  .main { display: flex; flex-direction: column; min-width: 0; }
+  .main-head {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 16px; padding: 22px 28px 14px;
+  }
+  .main-title { font-size: 17px; font-weight: 700; letter-spacing: 0.01em; }
+  /* 下拉框 */
+  .dropdown { position: relative; flex-shrink: 0; }
+  .dropdown-btn {
+    font: inherit; font-size: 13px; color: var(--ink);
+    background: #fff; border: 1px solid #d2d2d7; border-radius: 999px;
+    padding: 6px 14px; cursor: pointer;
+    display: inline-flex; align-items: center; gap: 6px;
+    transition: border-color 0.15s ease-out, background 0.15s ease-out;
+  }
+  .dropdown-btn:hover { border-color: #b8b8bf; background: #fafafa; }
+  .dropdown-btn:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+  .dropdown-btn .caret { font-size: 11px; color: var(--ink-2); transition: transform 0.18s ease-out; }
+  .dropdown.open .caret { transform: rotate(180deg); }
+  .dropdown-menu {
+    position: absolute; top: calc(100% + 6px); right: 0; z-index: 30;
+    min-width: 240px; background: #fff;
+    border: 1px solid var(--line); border-radius: 10px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+    padding: 5px; display: none;
+  }
+  .dropdown.open .dropdown-menu { display: block; }
+  .dropdown-item {
+    display: flex; align-items: center; gap: 8px;
+    font-size: 13px; color: var(--ink);
+    padding: 7px 10px; border-radius: 7px; cursor: pointer; white-space: nowrap;
+  }
+  .dropdown-item:hover { background: #f5f5f7; }
+  .dropdown-item .check { width: 14px; text-align: center; color: var(--ink); visibility: hidden; }
+  .dropdown-item.active .check { visibility: visible; }
+  .dropdown-item.hint { color: var(--ink-2); font-size: 12px; cursor: default; }
+  .dropdown-item.hint:hover { background: none; }
+  /* 悬置提示条 */
+  .banner {
+    margin: 0 28px 10px;
+    border: 1.5px dashed var(--suspense-border);
+    background: #fffdf4;
+    border-radius: 10px;
+    padding: 10px 14px;
+    font-size: 13px; line-height: 1.55; color: var(--ink);
+    display: flex; align-items: flex-start; gap: 10px;
+  }
+  .banner .banner-close {
+    margin-left: auto; flex-shrink: 0; cursor: pointer;
+    border: none; background: none; color: var(--ink-2); font-size: 15px; line-height: 1;
+    padding: 2px; border-radius: 5px;
+  }
+  .banner .banner-close:hover { color: var(--ink); background: rgba(0,0,0,0.05); }
+  .banner a { color: var(--btn-purple); text-decoration: none; }
+  .banner a:hover { text-decoration: underline; }
+  /* 日志体 */
+  .log {
+    flex: 1; overflow-y: auto; padding: 0 28px 18px;
+    max-height: 520px; min-height: 420px;
+  }
+  .meta { font-size: 12.5px; color: var(--ink-2); padding: 2px 0 14px; }
+  .group-title { font-size: 15px; font-weight: 700; margin: 18px 0 8px; }
+  .group-title:first-of-type { margin-top: 0; }
+  .entry {
+    position: relative;
+    display: flex; align-items: flex-start; gap: 10px;
+    padding: 6px 10px 6px 0;
+    border-radius: 8px;
+    font-size: 15px; line-height: 1.6;
+  }
+  .entry:hover { background: #f7f7f8; }
+  .entry .dot { flex-shrink: 0; width: 6px; height: 6px; border-radius: 50%; background: #c7c7cc; margin-top: 10px; margin-left: 8px; }
+  .entry .txt { flex: 1; min-width: 0; }
+  .entry .ver { flex-shrink: 0; font-size: 12px; color: var(--ink-3); margin-top: 4px; }
+  /* 黄色分级：行背景 + 左缘 3px 色条（规格 §4） */
+  .entry.lvl-A { background: var(--lvl-a-bg); padding-left: 10px; }
+  .entry.lvl-A::before, .entry.lvl-B::before, .entry.lvl-C::before {
+    content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; border-radius: 3px 0 0 3px;
+  }
+  .entry.lvl-A::before { background: var(--lvl-a-bar); }
+  .entry.lvl-B { background: var(--lvl-b-bg); padding-left: 10px; }
+  .entry.lvl-B::before { background: var(--lvl-b-bar); }
+  .entry.lvl-C { background: var(--lvl-c-bg); padding-left: 10px; }
+  .entry.lvl-C::before { background: var(--lvl-c-bar); }
+  .entry .lvl-tag {
+    flex-shrink: 0; margin-top: 4px; margin-left: 8px;
+    font-size: 10.5px; font-weight: 700; line-height: 1;
+    padding: 3px 6px; border-radius: 5px;
+  }
+  .lvl-tag.A { background: rgba(245, 197, 24, 0.35); color: #6b5200; }
+  .lvl-tag.B { background: rgba(232, 176, 4, 0.22); color: #6b5200; }
+  .lvl-tag.C { background: rgba(232, 212, 77, 0.28); color: #6b5a00; }
+  /* 脉冲（1.5s box-shadow 呼吸一次；reduced-motion 退化为静态描边） */
+  @media (prefers-reduced-motion: no-preference) {
+    @keyframes pulseGlow {
+      0%   { box-shadow: 0 0 0 0 rgba(245, 197, 24, 0.85); }
+      60%  { box-shadow: 0 0 0 12px rgba(245, 197, 24, 0); }
+      100% { box-shadow: 0 0 0 0 rgba(245, 197, 24, 0); }
+    }
+    .entry.pulse { animation: pulseGlow 1.5s ease-out 1; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .entry.pulse { outline: 2px solid var(--lvl-a-bar); outline-offset: 2px; }
+    .dropdown-btn, .dropdown.open .caret, .issue-card, .btn-close { transition: none; }
+  }
+  .empty-note { font-size: 13px; color: var(--ink-2); padding: 4px 0 12px; }
+  /* 底部按钮 */
+  .main-foot { display: flex; justify-content: flex-end; padding: 14px 28px 20px; border-top: 1px solid var(--line); }
+  .btn-close {
+    font: inherit; font-size: 14px; font-weight: 600;
+    color: #fff; background: var(--btn-purple);
+    border: none; border-radius: 10px;
+    padding: 9px 26px; cursor: pointer;
+    transition: background 0.15s ease-out, transform 0.1s ease-out;
+  }
+  .btn-close:hover { background: var(--btn-purple-hover); }
+  .btn-close:active { transform: scale(0.98); }
+  .btn-close:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+  /* ============ 右栏：我的贡献 ============ */
+  .side {
+    background: var(--side-bg);
+    border-left: 1px solid var(--line);
+    display: flex; flex-direction: column; min-height: 0;
+  }
+  .side-head { padding: 22px 18px 12px; }
+  .side-title { font-size: 14px; font-weight: 700; }
+  .side-sub { font-size: 11.5px; color: var(--ink-2); margin-top: 3px; }
+  .legend { padding: 4px 18px 14px; border-bottom: 1px solid var(--line); }
+  .legend-row { display: flex; align-items: flex-start; gap: 8px; margin-top: 8px; }
+  .swatch {
+    flex-shrink: 0; width: 18px; height: 18px; border-radius: 5px; margin-top: 1px;
+    border: 1px solid rgba(0,0,0,0.08); position: relative;
+  }
+  .swatch::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; border-radius: 3px 0 0 3px; }
+  .swatch.A { background: var(--lvl-a-bg); } .swatch.A::before { background: var(--lvl-a-bar); }
+  .swatch.B { background: var(--lvl-b-bg); } .swatch.B::before { background: var(--lvl-b-bar); }
+  .swatch.C { background: var(--lvl-c-bg); } .swatch.C::before { background: var(--lvl-c-bar); }
+  .swatch.S { background: #fff; border: 1.5px dashed var(--suspense-border); }
+  .legend-txt { font-size: 11.5px; line-height: 1.45; color: var(--ink-2); }
+  .legend-txt b { color: var(--ink); font-weight: 600; }
+  .issues { flex: 1; overflow-y: auto; padding: 10px 12px 16px; }
+  .issue-group-label { font-size: 11px; color: var(--ink-2); margin: 10px 6px 6px; }
+  .issue-card {
+    width: 100%; text-align: left; font: inherit;
+    display: flex; align-items: center; gap: 8px;
+    background: #fff; border: 1px solid var(--line); border-radius: 9px;
+    padding: 8px 10px; margin-bottom: 7px; cursor: pointer;
+    transition: border-color 0.15s ease-out, background 0.15s ease-out;
+  }
+  .issue-card:hover { border-color: #c9c9cf; background: #fdfdfd; }
+  .issue-card:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+  .issue-card.active { border-color: var(--lvl-a-bar); background: var(--lvl-c-bg); }
+  .issue-num { font-weight: 700; font-size: 12.5px; flex-shrink: 0; }
+  .issue-name { flex: 1; min-width: 0; font-size: 12px; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .issue-ver { flex-shrink: 0; font-size: 10.5px; color: var(--ink-2); background: #f0f0f3; border-radius: 5px; padding: 2px 5px; }
+  .issue-lvl { flex-shrink: 0; font-size: 10.5px; font-weight: 700; border-radius: 5px; padding: 2px 5px; }
+  .issue-lvl.A { background: rgba(245,197,24,0.35); color: #6b5200; }
+  .issue-lvl.B { background: rgba(232,176,4,0.22); color: #6b5200; }
+  .issue-lvl.C { background: rgba(232,212,77,0.28); color: #6b5a00; }
+  .issue-lvl.S { background: #fff; border: 1.5px dashed var(--suspense-border); color: #8a6d00; }
+  .issue-link {
+    flex-shrink: 0; display: inline-flex; color: var(--ink-3);
+    padding: 2px; border-radius: 4px;
+  }
+  .issue-link:hover { color: var(--btn-purple); background: rgba(0,0,0,0.05); }
+  /* 页脚快照说明 */
+  .snapshot { margin-top: 18px; font-size: 12px; color: #4c4c52; }
+  .snapshot a { color: inherit; }
+</style>
+</head>
+<body>
+
+<div class="backdrop">
+  <div class="modal">
+    <div class="main">
+      <div class="main-head">
+        <div class="main-title">v0.1.2288 更新内容</div>
+        <div class="dropdown" id="dropdown">
+          <button class="dropdown-btn" id="dropdownBtn" aria-haspopup="listbox" aria-expanded="false">
+            <span id="dropdownLabel">上次更新以来</span>
+            <span class="caret">˄</span>
+          </button>
+          <div class="dropdown-menu" id="dropdownMenu" role="listbox"></div>
+        </div>
+      </div>
+
+      <div id="bannerSlot"></div>
+
+      <div class="log" id="log"></div>
+
+      <div class="main-foot">
+        <button class="btn-close" id="closeBtn">关闭</button>
+      </div>
+    </div>
+
+    <aside class="side">
+      <div class="side-head">
+        <div class="side-title">我的贡献</div>
+        <div class="side-sub">ggbdpq · Discord: gua2100 · 点击定位左侧条目</div>
+      </div>
+      <div class="legend">
+        <div class="legend-row"><span class="swatch A"></span><span class="legend-txt"><b>A 级 · 补丁收编</b>：提交 author 保留</span></div>
+        <div class="legend-row"><span class="swatch B"></span><span class="legend-txt"><b>B 级 · 补丁收编</b>：移植 / 重做 + 署名（Co-authored-by 或文字 credit）</span></div>
+        <div class="legend-row"><span class="swatch C"></span><span class="legend-txt"><b>C 级 · 贡献被引用</b>：idea / 搬运 / 验证被实现引用</span></div>
+        <div class="legend-row"><span class="swatch S"></span><span class="legend-txt"><b>S 级 · 条目悬置</b>：已收编，release notes 尚未列出条目</span></div>
+      </div>
+      <div class="issues" id="issues"></div>
+    </aside>
+  </div>
+</div>
+
+<p class="snapshot">数据快照 2026-10-31 · v0.1.2290 · 归属判据见补丁与更新日志对照 §9</p>
+
+<script>
+"use strict";
+
+/* ================= 数据（种子 §6 + 对照档 §9.1 / §9.2，逐字引用） ================= */
+
+var ENTRIES = [
+  /* —— 当前窗口 v0.1.2278–2288（12 条，本窗口 0 条属于 ggbdpq：诚实空窗） —— */
+  { v: "0.1.2288", group: "fix",  zh: "将 WorkBuddy 插件支持更新为要求 0.2.6 或更高版本，并修复了处理逻辑，使空工具调用不再被当作实际调用。", mine: null },
+  { v: "0.1.2287", group: "fix",  zh: "修复了冷启动回合结束后临时匹配器数据未被释放的问题。", mine: null },
+  { v: "0.1.2286", group: "imp",  zh: "在主窗口中传递笔记不再需要任何点击。", mine: null },
+  { v: "0.1.2285", group: "fix",  zh: "Claude：现在会正确等待交互模式启动，如果挂起则回退到提示符。", mine: null },
+  { v: "0.1.2284", group: "imp",  zh: "减少了读取页面和预热期间的内存使用。", mine: null },
+  { v: "0.1.2283", group: "fix",  zh: "修复了之前已读取的 GLM 密钥在后续读取失败时可能丢失其卡片的问题。", mine: null },
+  { v: "0.1.2282", group: "fix",  zh: "修复了 WorkBuddy 插件过滤器未保留换行符的问题。", mine: null },
+  { v: "0.1.2281", group: "imp",  zh: "主窗口不再显示空白页脚栏；页面现在延伸到底部。", mine: null },
+  { v: "0.1.2280", group: "imp",  zh: "首次设置期间，启动问题和预热阅读提示现在会交替出现。", mine: null },
+  { v: "0.1.2279", group: "feat", zh: "添加了对 Claude Code 在 Windows 上使用伪控制台的交互模式的支持。", mine: null },
+  { v: "0.1.2278", group: "imp",  zh: "将 WorkBuddy 插件的最低版本要求更新为 0.2.4。", mine: null },
+  { v: "0.1.2278", group: "fix",  zh: "修复了 DeepSeek 的推理内容可能在模型拒绝回答后仍显示的问题。", mine: null },
+
+  /* —— A 级（对照档 §9.1，author 保留） —— */
+  { v: "0.1.2258", group: "fix",  zh: "当流以 finish_reason: \"error\" 结束时正确进行故障转移（#2471）", mine: { issue: 2471, level: "A", form: "author 保留 · 对照档 §9.1 · v0.1.2258 六单日志正文直接引用 issue 号" } },
+  { v: "0.1.2258", group: "fix",  zh: "当 LiteLLM 中继拒绝 priority 时，重试不带 service_tier 的请求（#3978）", mine: { issue: 3978, level: "A", form: "author 保留 · 对照档 §9.1 · v0.1.2258 日志正文引用 issue 号" } },
+  { v: "0.1.2258", group: "fix",  zh: "不再将 Azure 的 \"invalid encrypted summary\" 视为外部推理（#3994）", mine: { issue: 3994, level: "A", form: "author 保留 · 对照档 §9.1 · v0.1.2258 日志正文引用 issue 号" } },
+  { v: "0.1.2258", group: "fix",  zh: "修复了列表中的预算总额，并防止提供程序模型获取超出预算（#4065）", mine: { issue: 4065, level: "A", form: "author 保留 · 对照档 §9.1 · v0.1.2258 日志正文引用 issue 号" } },
+  { v: "0.1.2258", group: "fix",  zh: "关闭 RTK 现在与 Claude 实际存储的设置一致（#2879）", mine: { issue: 2879, level: "A", form: "author 保留 · 对照档 §9.1 · v0.1.2258 日志正文引用 issue 号" } },
+  { v: "0.1.2258", group: "fix",  zh: "更新未固定的 Git 源现在会重新解析分支，而不是保留锁定的旧提交（#2954）", mine: { issue: 2954, level: "A", form: "author 保留 · 对照档 §9.1 · v0.1.2258 日志正文引用 issue 号" } },
+  { v: "0.1.2257", group: "fix",  zh: "修复了 glm-5.3-flash 副本中的回车符被错误插入到工具调用参数中的问题。", mine: { issue: 4256, level: "A", form: "author 保留（r3）· 对照档 §9.1" } },
+  { v: "0.1.2224", group: "fix",  zh: "修复了网关缓存标记处理，使分类器自身的标记得以保留，移动的标记保留其原始块边界。", mine: { issue: 3835, level: "A", form: "author 保留 · 对照档 §9.1" } },
+  { v: "0.1.2216", group: "fix",  zh: "修复了 Kimi Code 拒绝关闭思考的问题；现在会再次请求并交由模型决定。", mine: { issue: 3739, level: "A", form: "author 保留 · 对照档 §9.1" } },
+  { v: "0.1.2038", group: "fix",  zh: "修复了插件模型在未返回任何文本时仍错误地保留在聊天列表中的问题。", mine: { issue: 3279, level: "A", form: "Co-authored-by（维护者移植 hunt65-c 分支 + review 修改）· 对照档 §9.1" } },
+  { v: "0.1.1833", group: "imp",  zh: "更新了 Codex 应用，使页面状态被视为背景上下文，而不是用户消息的一部分。", mine: { issue: 3418, level: "A", form: "author 保留 · 对照档 §9.1（改进）" } },
+
+  /* —— B 级（移植 / 重做 + 署名） —— */
+  { v: "0.1.2224", group: "fix",  zh: "修复了网关缓存键，一个对话的缓存不会在所有子代理之间共享；${subagentId} 正确指向 Claude Code 子代理。", mine: { issue: 2937, level: "B", form: "body 文字 credit · 对照档 §9.1" } },
+  { v: "0.1.2217", group: "fix",  zh: "修复了通过 Windows 联接点访问配置文件夹时插件页面未注册的问题。", mine: { issue: 4265, level: "B", form: "维护者重做（130 行复制改为 proc.RealPath）+ body 文字 credit · 对照档 §9.1" } },
+
+  /* —— C 级（idea / 搬运 / 验证被引用） —— */
+  { v: "0.1.2216", group: "fix",  zh: "修复了在翻译后的 Responses 轮次中切换 Codex 模式可能丢失开发者角色的问题。", mine: { issue: 2532, level: "C", form: "搬运落地（Cherry-picked by ggbdpq (gua2100)）+ Co-authored-by · 对照档 §9.2" } },
+  { v: "0.1.1986", group: "imp",  zh: "更新了 fine-clock 哈希测试，以基于追加时间戳而不是墙上时钟来计时读取。", mine: { issue: 3511, level: "C", form: "idea credit（body 明写 ggbdpq's patch proposed the same stamp-relative read）· 对照档 §9.2" } },
+  { v: "0.1.1782", group: "fix",  zh: "修复了 FileMemo 在 synctest bubble 中写入时发生崩溃的问题。", mine: { issue: 3632, level: "C", form: "验证 / pick 被引用（body 引 ggbdpq's pick on the issue）· 对照档 §9.2" } }
+];
+
+var ISSUES = [
+  { n: 3418, name: "Codex 页面状态 = 背景上下文",            v: "0.1.1833", level: "A" },
+  { n: 3279, name: "插件模型无文本不滞留聊天列表",            v: "0.1.2038", level: "A" },
+  { n: 3739, name: "Kimi Code 拒绝关思考被重问",              v: "0.1.2216", level: "A" },
+  { n: 3835, name: "分类器缓存标记保留",                      v: "0.1.2224", level: "A" },
+  { n: 4256, name: "glm-5.3-flash 回车符污染工具调用参数",    v: "0.1.2257", level: "A" },
+  { n: 2471, name: "finish_reason \"error\" 故障转移",        v: "0.1.2258", level: "A" },
+  { n: 3978, name: "LiteLLM service_tier 重试",               v: "0.1.2258", level: "A" },
+  { n: 3994, name: "Azure \"invalid encrypted summary\" 非外部推理", v: "0.1.2258", level: "A" },
+  { n: 4065, name: "列表预算总额",                            v: "0.1.2258", level: "A" },
+  { n: 2879, name: "RTK 关闭语义",                            v: "0.1.2258", level: "A" },
+  { n: 2954, name: "Git 源重解析分支",                        v: "0.1.2258", level: "A" },
+  { n: 4265, name: "Windows junction 插件页注册（重做+credit）", v: "0.1.2217", level: "B" },
+  { n: 2937, name: "缓存不跨子代理共享 + ${subagentId}",      v: "0.1.2224", level: "B" },
+  { n: 3511, name: "fine-clock 哈希测试按追加时间戳计时",     v: "0.1.1986", level: "C" },
+  { n: 2532, name: "Codex 模式切换不再丢 developer 角色",     v: "0.1.2216", level: "C" },
+  { n: 3632, name: "FileMemo synctest 写入崩溃",              v: "0.1.1782", level: "C" },
+  { n: 3747, name: "计划密钥额度窗口按 key 调用计算",         v: "0.1.2289", level: "S" },
+  { n: 3985, name: "Responses 流参数增量归属",                v: "0.1.2215", level: "S" }
+];
+
+/* S 级悬置详情（对照档 §9.2） */
+var SUSPENDED = {
+  3747: { msg: "#3747 已随 v0.1.2289 收编，条目待官方 release notes 补列",
+          link: "https://github.com/yetone/magpie-releases/releases/tag/v0.1.2289",
+          linkText: "查看 v0.1.2289 release",
+          form: "署名：\"Ported from gua2100's branch hunt91-l3-3747-key-card as written, reviewed line by line\" + Co-authored-by" },
+  3985: { msg: "#3985 已随 v0.1.2215 收编，该版本无 release notes（跳版直发 2216），条目缺位",
+          link: "https://github.com/yetone/magpie/issues/3985",
+          linkText: "查看 issue #3985",
+          form: "署名：author 保留" }
+};
+
+var GROUPS = [
+  { key: "feat", label: "新功能" },
+  { key: "imp",  label: "改进" },
+  { key: "fix",  label: "错误修复" }
+];
+
+/* 五档过滤（真实过滤，按版本号数值比较） */
+var LATEST = 2288, SINCE = 2278;
+var FILTERS = [
+  { key: "since", label: "上次更新以来",             menu: "上次更新以来",                    min: SINCE },
+  { key: "f10",   label: "当前版本及之前 10 个版本",  menu: "当前版本及之前 10 个版本",         min: LATEST - 9 },
+  { key: "f20",   label: "当前版本及之前 20 个版本",  menu: "当前版本及之前 20 个版本",         min: LATEST - 19 },
+  { key: "f50",   label: "当前版本及之前 50 个版本",  menu: "当前版本及之前 50 个版本",         min: LATEST - 49 },
+  { key: "f100",  label: "当前版本及之前 100 个版本", menu: "当前版本及之前 100 个版本",        min: LATEST - 99 },
+  { key: "all",   label: "全部数据",                 menu: "全部数据（含 2189 之前的历史条目）", min: 0 }
+];
+
+function vNum(v) { return parseInt(v.split(".")[2], 10); }
+function esc(s) { return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\"/g, "&quot;"); }
+function filterBy(key) {
+  var f = FILTERS.find(function (x) { return x.key === key; });
+  return ENTRIES.filter(function (e) { return vNum(e.v) >= f.min && vNum(e.v) <= LATEST; });
+}
+
+var state = { filter: "since", activeIssue: null };
+
+/* ================= 左栏渲染 ================= */
+
+function renderLog() {
+  var list = filterBy(state.filter);
+  var f = FILTERS.find(function (x) { return x.key === state.filter; });
+  var html = "";
+
+  var versions = {};
+  list.forEach(function (e) { versions[e.v] = true; });
+  var keys = Object.keys(versions).sort(function (a, b) { return vNum(b) - vNum(a); });
+  var rangeTxt = keys.length ? ("v0.1." + keys[keys.length - 1].split(".")[2] + " – v0.1." + keys[0].split(".")[2]) : "无条目";
+  html += '<div class="meta">' + keys.length + ' 个版本 · ' + rangeTxt + (state.filter === "all" ? " · 已自动扩展" : "") + '</div>';
+
+  if (state.filter === "since") {
+    var hasMine = list.some(function (e) { return e.mine; });
+    if (!hasMine) {
+      html += '<div class="empty-note">当前窗口（v0.1.2278 – v0.1.2288）没有属于 ggbdpq 的条目：这是诚实空窗。切换上方档位下拉，或点击右侧任一 issue 查看历史收编。</div>';
+    }
+  }
+
+  GROUPS.forEach(function (g) {
+    var items = list.filter(function (e) { return e.group === g.key; });
+    if (!items.length) return;
+    html += '<div class="group-title">' + g.label + " " + items.length + '</div>';
+    items.forEach(function (e) {
+      var cls = "entry" + (e.mine ? " lvl-" + e.mine.level : "");
+      var tag = e.mine ? '<span class="lvl-tag ' + e.mine.level + '">' + e.mine.level + '</span>' : "";
+      var tip = e.mine ? ' title="' + esc(e.mine.form) + '"' : "";
+      var anchor = e.mine ? ' id="entry-' + e.mine.issue + '"' : "";
+      html += '<div class="' + cls + '"' + anchor + tip + '><span class="dot"></span><span class="txt">' + esc(e.zh) + '</span>' + tag + '<span class="ver">v' + e.v + '</span></div>';
+    });
+  });
+
+  var log = document.getElementById("log");
+  log.innerHTML = html;
+  log.scrollTop = 0;
+}
+
+/* ================= 下拉 ================= */
+
+function renderMenu() {
+  var menu = document.getElementById("dropdownMenu");
+  var html = "";
+  FILTERS.forEach(function (f) {
+    /* 'all' 只在被动触发（自动定位）或当前选中时出现在菜单里 */
+    if (f.key === "all" && f.key !== state.filter && !state.allUsed) return;
+    html += '<div class="dropdown-item' + (state.filter === f.key ? " active" : "") + '" role="option" data-key="' + f.key + '"><span class="check">✓</span>' + f.menu + '</div>';
+  });
+  menu.innerHTML = html;
+  menu.querySelectorAll(".dropdown-item").forEach(function (item) {
+    item.addEventListener("click", function () {
+      setFilter(item.getAttribute("data-key"));
+      closeDropdown();
+    });
+  });
+}
+
+function setFilter(key) {
+  state.filter = key;
+  if (key === "all") state.allUsed = true;
+  var f = FILTERS.find(function (x) { return x.key === key; });
+  document.getElementById("dropdownLabel").textContent = f.label;
+  renderMenu();
+  renderLog();
+}
+
+function closeDropdown() {
+  document.getElementById("dropdown").classList.remove("open");
+  document.getElementById("dropdownBtn").setAttribute("aria-expanded", "false");
+}
+
+/* ================= 右栏 issue 列表 ================= */
+
+var LINK_SVG = '<svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M4.5 2h5.5v5.5M10 2 2.5 9.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
+function renderIssues() {
+  var box = document.getElementById("issues");
+  var html = "";
+  ["A", "B", "C", "S"].forEach(function (lvl) {
+    var items = ISSUES.filter(function (i) { return i.level === lvl; });
+    if (!items.length) return;
+    html += '<div class="issue-group-label">' + lvl + ' 级 · ' + items.length + ' 单</div>';
+    items.forEach(function (i) {
+      html += '<button class="issue-card" data-issue="' + i.n + '">' +
+        '<span class="issue-num">#' + i.n + '</span>' +
+        '<span class="issue-name">' + esc(i.name) + '</span>' +
+        '<span class="issue-ver">v' + i.v + '</span>' +
+        '<span class="issue-lvl ' + i.level + '">' + i.level + '</span>' +
+        '<a class="issue-link" href="https://github.com/yetone/magpie/issues/' + i.n + '" target="_blank" rel="noopener" title="在 GitHub 打开 #' + i.n + '" aria-label="在 GitHub 打开 issue ' + i.n + '">' + LINK_SVG + '</a>' +
+        '</button>';
+    });
+  });
+  box.innerHTML = html;
+  box.querySelectorAll(".issue-card").forEach(function (card) {
+    card.addEventListener("click", function (ev) {
+      if (ev.target.closest(".issue-link")) return; /* 外链直达，不触发定位 */
+      locateIssue(parseInt(card.getAttribute("data-issue"), 10));
+    });
+  });
+}
+
+/* ================= 定位 / 脉冲 / 悬置提示条 ================= */
+
+function showBanner(n) {
+  var s = SUSPENDED[n];
+  if (!s) return;
+  var slot = document.getElementById("bannerSlot");
+  slot.innerHTML =
+    '<div class="banner" role="status">' +
+    '<div>' + esc(s.msg) + '。<span style="color:var(--ink-2)">' + esc(s.form) + '</span> ' +
+    '<a href="' + s.link + '" target="_blank" rel="noopener">' + esc(s.linkText) + ' ↗</a></div>' +
+    '<button class="banner-close" aria-label="关闭提示条">×</button>' +
+    '</div>';
+  slot.querySelector(".banner-close").addEventListener("click", function () { slot.innerHTML = ""; });
+}
+
+function locateIssue(n) {
+  state.activeIssue = n;
+  document.querySelectorAll(".issue-card").forEach(function (c) {
+    c.classList.toggle("active", parseInt(c.getAttribute("data-issue"), 10) === n);
+  });
+
+  var suspended = ISSUES.some(function (i) { return i.n === n && i.level === "S"; });
+  if (suspended) { showBanner(n); return; }
+
+  var entry = ENTRIES.find(function (e) { return e.mine && e.mine.issue === n; });
+  if (!entry) return;
+
+  /* 不在当前窗口 → 自动切到含它的最小档位；没有档位含它 → 扩展为全部数据 */
+  var visible = filterBy(state.filter).some(function (e) { return e.mine && e.mine.issue === n; });
+  if (!visible) {
+    var target = null;
+    for (var i = 0; i < FILTERS.length; i++) {
+      var f = FILTERS[i];
+      if (f.key === "all") continue;
+      if (vNum(entry.v) >= f.min) { target = f.key; break; }
+    }
+    setFilter(target || "all");
+  }
+
+  requestAnimationFrame(function () {
+    var el = document.getElementById("entry-" + n);
+    if (!el) return;
+    el.scrollIntoView({ behavior: "smooth", block: "center" });
+    el.classList.remove("pulse");
+    void el.offsetWidth; /* 重启动画 */
+    el.classList.add("pulse");
+    setTimeout(function () { el.classList.remove("pulse"); }, 1600);
+  });
+}
+
+/* ================= 关闭（重置滚动与高亮） ================= */
+
+function resetAll() {
+  document.getElementById("bannerSlot").innerHTML = "";
+  state.activeIssue = null;
+  document.querySelectorAll(".issue-card").forEach(function (c) { c.classList.remove("active"); });
+  setFilter("since");
+}
+
+/* ================= 事件接线 ================= */
+
+document.getElementById("dropdownBtn").addEventListener("click", function (ev) {
+  ev.stopPropagation();
+  var dd = document.getElementById("dropdown");
+  dd.classList.toggle("open");
+  this.setAttribute("aria-expanded", dd.classList.contains("open") ? "true" : "false");
+});
+document.addEventListener("click", function (ev) {
+  if (!ev.target.closest("#dropdown")) closeDropdown();
+});
+document.getElementById("closeBtn").addEventListener("click", resetAll);
+
+/* 初始化 */
+renderMenu();
+renderIssues();
+renderLog();
+
+/* 深链：#f100 直达档位，#i-3835 直达某单（含悬置提示条） */
+(function () {
+  var h = location.hash.replace("#", "");
+  if (/^f(\d+|100)$/.test(h)) { setFilter(h); return; }
+  if (h.indexOf("i-") === 0) {
+    var n = parseInt(h.slice(2), 10);
+    if (ISSUES.some(function (i) { return i.n === n; })) locateIssue(n);
+  }
+})();
+</script>
+</body>
+</html>

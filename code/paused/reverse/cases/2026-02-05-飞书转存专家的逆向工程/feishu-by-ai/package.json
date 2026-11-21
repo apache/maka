@@ -1,0 +1,27 @@
+{
+  "name": "feishu-by-ai",
+  "version": "0.1.80",
+  "description": "飞书转存专家 - 文档复制与导出工具 (逆向工程还原)",
+  "author": "AI Reverse Engineering",
+  "license": "MIT",
+  "scripts": {
+    "build": "tsc",
+    "build:watch": "tsc --watch",
+    "type-check": "tsc --noEmit",
+    "copy:dist": "npm run copy:manifest && npm run copy:assets",
+    "copy:manifest": "cp manifest.json dist/",
+    "copy:assets": "cp -r icons _locales dist/ && cp -r ../feishu-source-code/*.png dist/ 2>/dev/null || true && cp -r ../feishu-source-code/*.html dist/ 2>/dev/null || true && cp -r ../feishu-source-code/chunks dist/ 2>/dev/null || true && cp -r ../feishu-source-code/assets dist/ 2>/dev/null || true",
+    "build:all": "npm run build && npm run copy:dist"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.0.254",
+    "@types/node": "^20.10.0",
+    "typescript": "^5.3.3"
+  },
+  "dependencies": {
+    "html2canvas": "^1.4.1",
+    "jspdf": "^2.5.1",
+    "docx": "^8.5.0",
+    "turndown": "^7.1.2"
+  }
+}

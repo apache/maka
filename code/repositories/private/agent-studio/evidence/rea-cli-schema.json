@@ -1,0 +1,32 @@
+args:
+  type: object
+  properties:
+    path:
+      type: string
+      description: ASAR or extracted application path
+  required[1]: path
+  additionalProperties: false
+options:
+  type: object
+  properties:
+    maxHeapMb:
+      description: Maximum V8 old-space heap in MiB for the isolated JavaScript source analyzer; defaults to 1024. This does not change the CLI/MCP process heap.
+      type: integer
+      minimum: 128
+      maximum: 16384
+    analysisTimeoutMs:
+      description: "Maximum startup, analysis and transfer time per JavaScript source, in milliseconds; defaults to 300000. On timeout, return collected partial Evidence and stop the analysis."
+      type: integer
+      minimum: 1
+      maximum: 2147483647
+    artifactFormat:
+      description: Application artifact format
+      default: auto
+      type: string
+      enum[3]: auto,asar,directory
+    integrityPolicy:
+      description: Behavior when declared application integrity does not match
+      default: fail
+      type: string
+      enum[2]: fail,record-and-continue
+  additionalProperties: false

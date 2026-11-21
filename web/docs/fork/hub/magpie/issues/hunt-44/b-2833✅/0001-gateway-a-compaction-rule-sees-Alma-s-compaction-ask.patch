@@ -1,0 +1,105 @@
+From 3d8ed8560fa3365aaa9ddbc7403ca902a5e6a417 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Mon, 19 Oct 2026 01:22:26 +0800
+Subject: [PATCH] gateway: a compaction rule sees Alma's compaction ask (#2833)
+
+What changed: compactAsks in internal/gateway/compacting.go gains Alma's
+compaction ask, "Merge the previous summary with the new conversation.",
+which opens the last user message of Alma's compaction request. A group's
+compact rule now matches it. No compactSystems entry was added: neither the
+repository nor the report carries the opening of Alma's compaction system
+prompt, so none is invented.
+
+Why: compacting.go matched the compaction prompts of Claude Code, Codex,
+OpenCode, Pi, Gemini CLI, Qwen Code, Minis and Kimi Code literally. Alma was
+not in the table, so its compaction fell through to the intent classifier and
+was routed by another rule's model, making every compaction cost more than
+the group's compact rule intended. The ask sits at byte 0 of the user message,
+well inside compactLead (2048), so one table entry recognises it.
+
+Test: TestRuleCompactAlma drives a group whose rule 1 is compact and rule 2 is
+tokens >= 1 through the gateway. With the fix the Alma request is answered by
+rule 1's member and X-Magpie-Model says a/small; without it the request goes
+to b/big. The same test asserts a long message that only quotes the ask past
+compactLead is not a compaction; raising compactLead makes that assertion
+fail, so the bound is what keeps notes from matching.
+
+Run: go test -tags nogui -count=1 -run 'TestCompact|TestCompacting|TestRule'
+./internal/gateway/ (ok, 2.839s); go test -tags nogui -count=1
+./internal/gateway/ (ok, 344.144s); go test -race -tags nogui -count=1 -run
+'TestCompact|TestCompacting' ./internal/gateway/ (ok, 2.172s); gofmt -l
+internal/gateway/ (empty); go vet -tags nogui ./internal/gateway/ and with
+GOOS=linux and GOOS=windows (all ok); go build -tags nogui ./..., GOOS=linux
+go build -tags nogui ./..., and GOOS=windows go build -tags nogui -o /dev/null .
+(all ok). Not tried against a real Alma client: the wording is quoted from
+the report.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gateway/compacting.go      |  3 +++
+ internal/gateway/compacting_test.go | 38 +++++++++++++++++++++++++++++
+ 2 files changed, 41 insertions(+)
+
+diff --git a/internal/gateway/compacting.go b/internal/gateway/compacting.go
+index 3a7c5574..f6a2bc3a 100644
+--- a/internal/gateway/compacting.go
++++ b/internal/gateway/compacting.go
+@@ -54,6 +54,9 @@ var compactAsks = []compactAsk{
+ 	{ask: "You are now given a task to compact this conversation context"},
+ 	// Minis, around the conversation it sends as one user message
+ 	{ask: "END OF CONVERSATION TO COMPACT.", opens: "Compact this conversation into a context summary:"},
++	// Alma, which opens the user message of its compaction with this ask
++	// and sends the conversation behind it (#2833, as the report quotes it)
++	{ask: "Merge the previous summary with the new conversation."},
+ }
+ 
+ // leads reports whether p begins within compactLead bytes of text's start.
+diff --git a/internal/gateway/compacting_test.go b/internal/gateway/compacting_test.go
+index 48cb6ad9..5407a833 100644
+--- a/internal/gateway/compacting_test.go
++++ b/internal/gateway/compacting_test.go
+@@ -330,3 +330,41 @@ func TestCompactingAsksWhereTheAgentPutsThem(t *testing.T) {
+ 		}
+ 	}
+ }
++
++// Alma's compaction ask, as the report on #2833 quotes it: the first bytes
++// of the last user message, the conversation behind it.
++const almaCompactAsk = "Merge the previous summary with the new conversation. Produce the <analysis>, then the merged structured summary exactly as instructed. The conversation continues after your summary — do not conclude it."
++
++// Alma compacting is recognised by its ask, at the start of the last user
++// message (#2833): a group's compact rule sends it to its model and says so
++// in X-Magpie-Model, while a note that only quotes the ask further into a
++// long message goes by the rule that matches it, as compactLead bounds it.
++func TestRuleCompactAlma(t *testing.T) {
++	s, _, _ := ruled(t, provider.Rule{Use: "a/small", Compact: true}, provider.Rule{Use: "b/big", Tokens: 1})
++	post := func(body string) (*httptest.ResponseRecorder, Route) {
++		t.Helper()
++		rec := httptest.NewRecorder()
++		req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(body))
++		req.Header.Set("x-session-id", "alma")
++		s.Handler().ServeHTTP(rec, req)
++		return rec, lastRoute(s)
++	}
++	alma := func(text string) string {
++		return `{"model":"group/r","messages":[{"role":"user","content":` + quote(text) + `}]}`
++	}
++
++	rec, r := post(alma(almaCompactAsk + "\n\n[user]: tidy up my desktop\n[assistant]: done"))
++	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "from ka") ||
++		rec.Header().Get(modelHeader) != "a/small" || r.Rule == nil || !r.Rule.Compact || r.Rule.N != 1 {
++		t.Fatalf("Alma compacting: %d %s %q %+v", rec.Code, rec.Body.String(), rec.Header().Get(modelHeader), r.Rule)
++	}
++
++	// a long message that quotes the ask deep in is no compaction: only
++	// compactLead keeps it from being one, as it does the agents' own asks
++	history := strings.Repeat("[user]: tidy up my desktop\n[assistant]: done\n", 200)
++	rec, r = post(alma(history + "\n" + almaCompactAsk + "\nWhat does this line in my log mean?"))
++	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "from kb") ||
++		rec.Header().Get(modelHeader) != "b/big" || r.Rule == nil || r.Rule.Compact || r.Rule.N != 2 {
++		t.Fatalf("a quoted Alma ask: %d %s %q %+v", rec.Code, rec.Body.String(), rec.Header().Get(modelHeader), r.Rule)
++	}
++}
+-- 
+2.50.1 (Apple Git-155)
+

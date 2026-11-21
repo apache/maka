@@ -1,0 +1,263 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Sat, 7 Nov 2026 22:31:15 +0800
+Subject: [PATCH] provider: a Codex credit that ran out is not the one that
+ runs out first (#5568)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The credits list keeps a card past its expiry until the vendor takes it
+off, and magpie read the soonest expiry among those still listed as when
+the account's resets run out (Until), and the soonest card as the one
+that runs out first (first; Each[0] at the spend, #5555). A card that
+ran out already was the soonest then, and it stayed so: the expiring use
+of the account waited on that dead card for good ("gone already",
+re-armed at every look), so the cards still to run out were never spent
+by themselves (#5568, vinwang: two accounts with "before one expires"
+on spent nothing and the cards ran out unused), and a spend put the dead
+card in the live one's place. first, soonest and each now take now and
+skip a credit whose expiry has passed: the soonest is the soonest still
+to run out, a spend is of a card that lives, and the card's own list
+(Each) says the same. When every one has run out, Until is nil — none
+runs out — as when none is held.
+
+Run (darwin/arm64, Go for go1.25):
+- RED first: TestCodexResetsRanOutSkipped (until stuck on the dead
+  card) and TestUseCodexResetCard ("" spent the dead card) red before,
+  green after
+- go test ./internal/provider/ -tags nogui: ok
+- go build ./...: ok
+- Broken by hand: the fix ablated (codex_resets.go back at the parent),
+  the two RED tests red again with the report's own shape (until stuck
+  on the card past its expiry; the dead card spent in the live one's
+  place), and green once restored
+
+Generated-by: GLM-5.3-Flash (ZCode)
+
+The reporter's own reading (a reset spent at 12:24 PT, the card running
+out at 14:56, a 30-minute lead set) reads as the #718 design, not as a
+bug this fixes: expiringResetSpent spends at once when the account is
+held up now (a window at 100%) and won't be free again before the lead's
+start — the numbers match a five-hour window stopped until 15:24 (back
+>= the lead's start 14:26), which the GUI tooltip and settings' help
+disclose (spent at once when held up until after the lead's start). That
+half is the maintainer's call; this patch only makes the soonest credit
+a live one, which never spends earlier than the lead itself. Not tried
+with the reporter's accounts (Windows, PT): the shapes are covered by
+the tests, run on darwin/arm64.
+---
+ internal/provider/codex_resets.go      | 27 ++++++---
+ internal/provider/codex_resets_test.go | 81 ++++++++++++++++++++++----
+ 2 files changed, 89 insertions(+), 19 deletions(-)
+
+diff --git a/internal/provider/codex_resets.go b/internal/provider/codex_resets.go
+index 655decad9..3274aad84 100644
+--- a/internal/provider/codex_resets.go
++++ b/internal/provider/codex_resets.go
+@@ -123,8 +123,12 @@ type codexResetCreditsWireCredit struct {
+ 
+ // first is the credit still to be used that runs out first, and when:
+ // one that never runs out comes after all that do. id is "" when none is
+-// left.
+-func (w codexResetCreditsWire) first() (id string, at *time.Time) {
++// left. One that ran out already is not it, and hides none behind it
++// (#5568): the list keeps a card past its expiry until the vendor takes
++// it off, and taken for the one that runs out first it was spent in the
++// live one's place, or, as when they run out (Until), it kept the ones
++// still to run out from ever being spent by themselves.
++func (w codexResetCreditsWire) first(now time.Time) (id string, at *time.Time) {
+ 	for _, c := range w.Credits {
+ 		if c.Status != "available" || c.ID == "" {
+ 			continue
+@@ -135,6 +139,9 @@ func (w codexResetCreditsWire) first() (id string, at *time.Time) {
+ 				t = &p
+ 			}
+ 		}
++		if t != nil && !t.After(now) {
++			continue // ran out: nothing to spend, and it hides the live ones
++		}
+ 		if id == "" || t != nil && (at == nil || t.Before(*at)) {
+ 			id, at = c.ID, t
+ 		}
+@@ -151,13 +158,13 @@ func (w codexResetCreditsWire) held(credit string) bool {
+ 
+ // soonest is when the first of the credits still to be used runs out, nil
+ // when none of them does.
+-func (w codexResetCreditsWire) soonest() *time.Time {
+-	_, at := w.first()
++func (w codexResetCreditsWire) soonest(now time.Time) *time.Time {
++	_, at := w.first(now)
+ 	return at
+ }
+ 
+ // each is every credit still to be used, as ResetCredits.Each lists them.
+-func (w codexResetCreditsWire) each() []ResetCard {
++func (w codexResetCreditsWire) each(now time.Time) []ResetCard {
+ 	var out []ResetCard
+ 	for _, c := range w.Credits {
+ 		if c.Status != "available" || c.ID == "" {
+@@ -166,6 +173,9 @@ func (w codexResetCreditsWire) each() []ResetCard {
+ 		r := ResetCard{ID: c.ID}
+ 		if c.ExpiresAt != nil {
+ 			if p, err := time.Parse(time.RFC3339, *c.ExpiresAt); err == nil {
++				if !p.After(now) {
++					continue // ran out: not one still to be used (#5568)
++				}
+ 				r.Until = &p
+ 			}
+ 		}
+@@ -193,10 +203,11 @@ func codexResets(ctx context.Context, base, token, accountID string, count int)
+ 	if err := accountJSON(ctx, base+"/wham/rate-limit-reset-credits", token, codexAccountHeaders(accountID), &w); err != nil {
+ 		out.untilUnread = true
+ 	} else {
+-		out.Until = w.soonest()
++		now := time.Now()
++		out.Until = w.soonest(now)
+ 		// listed only when they are the ones counted: a list that says
+ 		// otherwise isn't put on the card as if it were
+-		if each := w.each(); len(each) == count {
++		if each := w.each(now); len(each) == count {
+ 			out.Each = each
+ 		}
+ 	}
+@@ -291,7 +302,7 @@ func spendCodexReset(ctx context.Context, user, credit, why string) (ResetOutcom
+ 		return ResetOutcome{}, fmt.Errorf("couldn't read which reset runs out first, so none was used: %w", err)
+ 	}
+ 	if credit == "" {
+-		credit, _ = w.first()
++		credit, _ = w.first(time.Now())
+ 		if credit == "" {
+ 			return ResetOutcome{Code: "no_credit"}, nil
+ 		}
+diff --git a/internal/provider/codex_resets_test.go b/internal/provider/codex_resets_test.go
+index bc4ee8d71..7efe18d49 100644
+--- a/internal/provider/codex_resets_test.go
++++ b/internal/provider/codex_resets_test.go
+@@ -49,8 +49,9 @@ func fakeCodexResets(t *testing.T, count int, details any) *atomic.Int32 {
+ func TestCodexResetsCounted(t *testing.T) {
+ 	home := signIn(t)
+ 	dir := home + "/.codex"
+-	soon := "2026-10-03T14:30:00Z"
+-	later := "2026-11-01T00:00:00Z"
++	soon := time.Now().Add(2 * time.Hour).UTC().Format(time.RFC3339)
++	later := time.Now().Add(72 * time.Hour).UTC().Format(time.RFC3339)
++	gone := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)
+ 	for _, c := range []struct {
+ 		name    string
+ 		count   int
+@@ -67,7 +68,7 @@ func TestCodexResetsCounted(t *testing.T) {
+ 		}}, &ResetCredits{Count: 2, Each: []ResetCard{{ID: "a"}, {ID: "b"}}}, 1},
+ 		{"soonest of those left", 2, map[string]any{"available_count": 2, "credits": []any{
+ 			map[string]any{"id": "a", "status": "available", "granted_at": "2026-09-01T00:00:00Z", "expires_at": later},
+-			map[string]any{"id": "b", "status": "redeemed", "granted_at": "2026-09-01T00:00:00Z", "expires_at": "2026-09-20T00:00:00Z"},
++			map[string]any{"id": "b", "status": "redeemed", "granted_at": "2026-09-01T00:00:00Z", "expires_at": gone},
+ 			map[string]any{"id": "c", "status": "available", "granted_at": "2026-09-02T00:00:00Z", "expires_at": soon},
+ 			map[string]any{"id": "d", "status": "available", "granted_at": "2026-09-02T00:00:00Z", "expires_at": nil},
+ 		}}, &ResetCredits{Count: 2, Until: ptrTime(soon)}, 1},
+@@ -75,7 +76,7 @@ func TestCodexResetsCounted(t *testing.T) {
+ 		// runs out last; the redeemed one isn't
+ 		{"each of those left", 3, map[string]any{"available_count": 3, "credits": []any{
+ 			map[string]any{"id": "a", "status": "available", "granted_at": "2026-09-01T00:00:00Z", "expires_at": later},
+-			map[string]any{"id": "b", "status": "redeemed", "granted_at": "2026-09-01T00:00:00Z", "expires_at": "2026-09-20T00:00:00Z"},
++			map[string]any{"id": "b", "status": "redeemed", "granted_at": "2026-09-01T00:00:00Z", "expires_at": gone},
+ 			map[string]any{"id": "d", "status": "available", "granted_at": "2026-09-02T00:00:00Z", "expires_at": nil},
+ 			map[string]any{"id": "c", "status": "available", "granted_at": "2026-09-02T00:00:00Z", "expires_at": soon},
+ 		}}, &ResetCredits{Count: 3, Until: ptrTime(soon), Each: []ResetCard{{Until: ptrTime(soon), ID: "c"}, {Until: ptrTime(later), ID: "a"}, {ID: "d"}}}, 1},
+@@ -179,9 +180,9 @@ func TestUseCodexReset(t *testing.T) {
+ 	var spent atomic.Value
+ 	credits := map[string]any{"available_count": 3, "credits": []any{
+ 		map[string]any{"id": "never", "status": "available", "expires_at": nil},
+-		map[string]any{"id": "late", "status": "available", "expires_at": "2026-12-01T00:00:00Z"},
+-		map[string]any{"id": "used", "status": "redeemed", "expires_at": "2026-10-01T00:00:00Z"},
+-		map[string]any{"id": "soon", "status": "available", "expires_at": "2026-10-05T00:00:00Z"},
++		map[string]any{"id": "late", "status": "available", "expires_at": time.Now().Add(72 * time.Hour).UTC().Format(time.RFC3339)},
++		map[string]any{"id": "used", "status": "redeemed", "expires_at": time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)},
++		map[string]any{"id": "soon", "status": "available", "expires_at": time.Now().Add(2 * time.Hour).UTC().Format(time.RFC3339)},
+ 	}}
+ 	listed := true
+ 	fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+@@ -257,6 +258,60 @@ func TestUseCodexReset(t *testing.T) {
+ 	}
+ }
+ 
++// TestCodexResetsRanOutSkipped: a credit that ran out stays on the list
++// until the vendor takes it off, and is the soonest of those left then —
++// taken for when the account's resets run out (Until), it keeps every one
++// still to run out from being used by itself (#5568: "before one expires"
++// never spent a thing, and the cards ran out unused), and taken for the
++// one that runs out first, it is spent in the live one's place. The
++// soonest of those left is the soonest still to run out.
++func TestCodexResetsRanOutSkipped(t *testing.T) {
++	home := signIn(t)
++	dir := home + "/.codex"
++	gone := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)
++	live := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
++	asked := fakeCodexResets(t, 2, map[string]any{"available_count": 2, "credits": []any{
++		map[string]any{"id": "gone", "status": "available", "granted_at": gone, "expires_at": gone},
++		map[string]any{"id": "live", "status": "available", "granted_at": gone, "expires_at": live},
++	}})
++	q := codexSubscriptionUsage(context.Background(), dir)
++	if q.Error != "" || len(q.Windows) != 1 {
++		t.Fatalf("quota %+v", q)
++	}
++	if !sameTime(q.Resets.Until, ptrTime(live)) {
++		t.Fatalf("until %v, want the live credit's %s", q.Resets.Until, live)
++	}
++	if asked.Load() != 1 {
++		t.Fatalf("details asked %d times, want 1", asked.Load())
++	}
++
++	var spent []string
++	fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		switch r.URL.Path {
++		case "/backend-api/wham/rate-limit-reset-credits":
++			json.NewEncoder(w).Encode(map[string]any{"available_count": 2, "credits": []any{
++				map[string]any{"id": "gone", "status": "available", "expires_at": gone},
++				map[string]any{"id": "live", "status": "available", "expires_at": live},
++			}})
++		case "/backend-api/wham/rate-limit-reset-credits/consume":
++			var body map[string]string
++			json.NewDecoder(r.Body).Decode(&body)
++			spent = append(spent, body["credit_id"])
++			json.NewEncoder(w).Encode(map[string]any{"code": "reset", "windows_reset": 2})
++		default:
++			w.WriteHeader(404)
++		}
++	}))
++	defer fake.Close()
++	old := CodexBase
++	CodexBase = fake.URL + "/backend-api/codex"
++	t.Cleanup(func() { CodexBase = old })
++	out, err := UseCodexReset(context.Background(), "me@example.com")
++	if err != nil || out.Code != "reset" || len(spent) != 1 || spent[0] != "live" {
++		t.Fatalf("spent %v, %+v %v, want live", spent, out, err)
++	}
++}
++
+ // UseCodexResetCard spends the reset the user chose, not the one that
+ // runs out first (01huadalang on Discord), and only while the account still
+ // holds it: one used meanwhile, or never the account's, spends none, nor
+@@ -264,11 +319,15 @@ func TestUseCodexReset(t *testing.T) {
+ func TestUseCodexResetCard(t *testing.T) {
+ 	signIn(t)
+ 	var spent []string
+-	credits := map[string]any{"available_count": 3, "credits": []any{
++	soon := time.Now().Add(2 * time.Hour).UTC().Format(time.RFC3339)
++	late := time.Now().Add(72 * time.Hour).UTC().Format(time.RFC3339)
++	gone := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)
++	credits := map[string]any{"available_count": 4, "credits": []any{
++		map[string]any{"id": "gone", "status": "available", "expires_at": gone},
+ 		map[string]any{"id": "never", "status": "available", "expires_at": nil},
+-		map[string]any{"id": "late", "status": "available", "expires_at": "2026-12-01T00:00:00Z"},
+-		map[string]any{"id": "used", "status": "redeemed", "expires_at": "2026-10-01T00:00:00Z"},
+-		map[string]any{"id": "soon", "status": "available", "expires_at": "2026-10-05T00:00:00Z"},
++		map[string]any{"id": "late", "status": "available", "expires_at": late},
++		map[string]any{"id": "used", "status": "redeemed", "expires_at": gone},
++		map[string]any{"id": "soon", "status": "available", "expires_at": soon},
+ 	}}
+ 	fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+ 		switch r.URL.Path {
+-- 
+2.50.1 (Apple Git-155)
+

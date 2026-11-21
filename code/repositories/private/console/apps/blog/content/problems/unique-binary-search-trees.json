@@ -1,0 +1,22 @@
+{
+  "id": "68",
+  "slug": "unique-binary-search-trees",
+  "title": "不同的二叉搜索树",
+  "difficulty": "medium",
+  "tags": ["树", "动态规划", "数学"],
+  "description": "给你一个整数 `n`,求恰由 `n` 个节点组成且节点值从 `1` 到 `n` 互不相同的**二叉搜索树**有多少种结构(不考虑具体值,只看形状)。\n\n**示例 1:**\n\n- 输入:`n = 3`\n- 输出:`5`\n\n**示例 2:**\n\n- 输入:`n = 1`\n- 输出:`1`",
+  "solution": "## 思路\n\n**动态规划 / 卡塔兰数**:以 `j` 为根时,左子树 `j-1` 个节点、右子树 `i-j` 个节点,方案数相乘累加:`dp[i] = Σ dp[j-1]*dp[i-j]`。`dp[0]=1`。\n\n## 参考代码\n\n```js\nfunction numTrees(n) {\n  const dp = new Array(n + 1).fill(0);\n  dp[0] = 1;\n  dp[1] = 1;\n  for (let i = 2; i <= n; i++) {\n    for (let j = 1; j <= i; j++) {\n      dp[i] += dp[j - 1] * dp[i - j];\n    }\n  }\n  return dp[n];\n}\n```\n\n## 复杂度\n\n- 时间:O(n²)\n- 空间:O(n)",
+  "signature": {
+    "language": "javascript",
+    "entry": "numTrees",
+    "params": [{ "name": "n", "type": "number" }],
+    "returns": "number"
+  },
+  "testCases": [
+    { "sample": true, "input": [3], "expected": 5 },
+    { "sample": true, "input": [1], "expected": 1 },
+    { "sample": false, "input": [0], "expected": 1 },
+    { "sample": false, "input": [4], "expected": 14 },
+    { "sample": false, "input": [2], "expected": 2 }
+  ]
+}

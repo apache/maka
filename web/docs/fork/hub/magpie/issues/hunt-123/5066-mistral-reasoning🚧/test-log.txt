@@ -1,0 +1,22 @@
+== landed tests on upstream/main tip 1e1068c86 (#494 fix 6b89fb22f, v0.1.616) ==
+=== RUN   TestMistralRefusesStore
+--- PASS: TestMistralRefusesStore (0.13s)
+=== RUN   TestMistralReasoningAsThinking
+--- PASS: TestMistralReasoningAsThinking (0.06s)
+=== RUN   TestMessageReasoningRefused
+--- PASS: TestMessageReasoningRefused (0.04s)
+PASS
+ok  	github.com/yetone/magpie/internal/gateway	(cached)
+
+== probe #5066 exact shape, whole reply ==
+(probe file: zz_probe_5066_test.go, copied to this dir, removed from worktree)
+
+== probe #5066 exact shape (zz_probe_5066_test.go / zz_probe_5066_stream_test.go, copies in this dir) ==
+=== RUN   TestProbe5066Messages2ReasoningContent
+--- PASS: TestProbe5066Messages2ReasoningContent (0.20s)
+    --- PASS: TestProbe5066Messages2ReasoningContent/mistral_preset_converts_it_in_the_first_ask (0.15s)
+    --- PASS: TestProbe5066Messages2ReasoningContent/other_chat_upstream_refused_is_asked_again_without_it (0.05s)
+=== RUN   TestProbe5066Streamed
+--- PASS: TestProbe5066Streamed (0.17s)
+    --- PASS: TestProbe5066Streamed/mistral_preset_converts_it_in_the_first_ask (0.13s)
+    --- PASS: TestProbe5066Streamed/other_chat_upstream_refused_is_asked_again_without_it (0.04s)

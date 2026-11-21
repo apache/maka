@@ -1,0 +1,145 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Wed, 4 Nov 2026 07:18:18 +0800
+Subject: [PATCH] zed: zfs-zed, the ZFS Event Daemon, is not the editor (#5023)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+zfsutils-linux installs /usr/sbin/zed, whose command line matches Zed's
+own pgrep pattern — so a machine with the utilities installed got the
+restart notice while no editor ran, and a magpie whose PATH holds sbin
+listed the daemon as the editor's CLI.
+
+The notice's process check now reads the matched command lines and drops
+the daemon's (sbin directories are its home; the editor runs from bin
+directories and app bundles), keeping MAGPIE_ZED_PROCESS_NAMES working;
+the install side turns /usr/sbin/zed away through binNot, as copilot's
+already turns away editor launchers.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/agent/zed.go             | 45 ++++++++++++++++++++++++++++--
+ internal/agent/zed_notice_test.go | 46 +++++++++++++++++++++++++++++++
+ 2 files changed, 89 insertions(+), 2 deletions(-)
+ create mode 100644 internal/agent/zed_notice_test.go
+
+diff --git a/internal/agent/zed.go b/internal/agent/zed.go
+index 4d9df1c51..2afac312f 100644
+--- a/internal/agent/zed.go
++++ b/internal/agent/zed.go
+@@ -55,9 +55,9 @@ func zedAtWith(dir, bin string, processes []string) *Agent {
+ 	key := "zed:" + path + ":"
+ 	return atomic(&Agent{
+ 		ID: "zed", Name: "Zed", Icon: "zed", Bin: bin, Dir: dir, Path: path, Spelled: prefixed,
+-		UA: []string{"zed"},
++		UA: []string{"zed"}, binNot: zedCmdlineIsEditor,
+ 		Notice: func() string {
+-			if usesMagpie(model()) && Running(processes...) {
++			if usesMagpie(model()) && Running(processes...) && zedEditorRunning(processes) {
+ 				return noticeZed.String()
+ 			}
+ 			return ""
+@@ -152,6 +152,47 @@ func zedProcessNames() []string {
+ 	return out
+ }
+ 
++// zedCmdlineIsEditor says whether a matched command line is the editor and
++// not zfs-zed, the ZFS Event Daemon, whose plain binary (/usr/sbin/zed,
++// /sbin/zed — sbin, not bin) matches Zed's own pgrep pattern (#5023). The
++// daemon lives in sbin directories alone; the editor runs from bin
++// directories and app bundles.
++func zedCmdlineIsEditor(cmdline string) bool {
++	cmd := cmdline
++	if i := strings.IndexByte(cmd, ' '); i >= 0 {
++		cmd = cmd[:i]
++	}
++	dir, name := filepath.Split(cmd)
++	if name != "zed" && name != "zeditor" && name != "zed-editor" {
++		return true
++	}
++	return !strings.HasSuffix(dir, "/sbin/") && !strings.HasSuffix(dir, "/usr/sbin/")
++}
++
++// zedEditorRunning is Running over the patterns with the daemon's matches
++// dropped: a machine with zfsutils installed ran /usr/sbin/zed -F, and the
++// restart notice said so while no editor was open (#5023). The reads go
++// through runningLately, as every pattern's reader does — a state poll
++// already paid the pgrep, and its kept answer tells the daemon from the
++// editor all the same.
++func zedEditorRunning(patterns []string) bool {
++	var ps []runningProc
++	for _, pat := range patterns {
++		ps = append(ps, runningLately(pat)...)
++	}
++	return editorAmongZedMatches(ps)
++}
++
++// editorAmongZedMatches says whether any match is the editor, not zfs-zed.
++func editorAmongZedMatches(ps []runningProc) bool {
++	for _, p := range ps {
++		if zedCmdlineIsEditor(p.cmd) {
++			return true
++		}
++	}
++	return false
++}
++
+ // zedLevels are the reasoning_effort values magpie writes for Zed, weakest
+ // first: those every Zed that reads the field takes. Its settings take
+ // language_model_core's ReasoningEffort, lowercase; max and none came after
+diff --git a/internal/agent/zed_notice_test.go b/internal/agent/zed_notice_test.go
+new file mode 100644
+index 000000000..d9cfb8e0e
+--- /dev/null
++++ b/internal/agent/zed_notice_test.go
+@@ -0,0 +1,46 @@
++package agent
++
++import (
++	"path/filepath"
++	"runtime"
++	"testing"
++	"time"
++)
++
++// zfs-zed (the ZFS Event Daemon, /usr/sbin/zed -F) is not the editor: its
++// command line matches Zed's own pgrep pattern, and a machine with zfsutils
++// installed got told to restart an editor that wasn't running (#5023).
++// listRunningNow is fed the daemon's line and the editor's; the notice's
++// check must take the editor and drop the daemon.
++func TestZedRunningIgnoresTheZFSDaemon(t *testing.T) {
++	if runtime.GOOS == "windows" {
++		t.Skip("Windows cannot be asked what runs (Running answers yes)")
++	}
++	wasRunning := Running
++	t.Cleanup(func() { Running = wasRunning })
++	Running = func(patterns ...string) bool { return true }
++	// the notice through its own seam: a machine whose only zed match is
++	// the daemon gets no restart notice; an editor's line says so.
++	was := Running
++	t.Cleanup(func() { Running = was })
++	Running = func(patterns ...string) bool { return true }
++	home := syncHome(t)
++	a := zedAt(filepath.Join(home, ".config", "zed"))
++	writeFile(t, a.Path, `{"agent": {"default_model": {"provider": "magpie", "model": "magpie/relay/glm-4.6"}}, "language_models": {"openai_compatible": {"magpie": {"api_url": "http://127.0.0.1:1/v1", "available_models": [{"name": "relay/glm-4.6"}]}}}}`)
++	for _, c := range []struct {
++		cmdline string
++		want    bool
++	}{
++		{"/usr/sbin/zed -F", false},
++		{"zed", true},
++	} {
++		ps := zedProcessNames()
++		lately.put(ps[0], time.Now(), []runningProc{{0, c.cmdline}})
++		if got := a.Notice() != ""; got != c.want {
++			t.Errorf("notice with %q running = %v, want %v", c.cmdline, got, c.want)
++		}
++		lately.Lock()
++		delete(lately.by, ps[0])
++		lately.Unlock()
++	}
++}
+-- 
+2.50.1 (Apple Git-155)
+

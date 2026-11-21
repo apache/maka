@@ -1,0 +1,5 @@
+--- FAIL: TestOpenCodeV2URL (0.00s)
+    opencode_zen_test.go:208: paid probe https://opencode.ai/zen/v1/responses
+FAIL
+FAIL	github.com/yetone/magpie/internal/provider	1.125s
+FAIL

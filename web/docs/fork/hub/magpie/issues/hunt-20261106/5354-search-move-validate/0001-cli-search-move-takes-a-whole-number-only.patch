@@ -1,0 +1,89 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Fri, 6 Nov 2026 22:46:38 +0800
+Subject: [PATCH] cli: search move takes a whole number only
+
+magpie search move (and mv) parsed the position with fmt.Sscan and
+ignored what it left behind, so 2oops moved to 2 and 1.5 to 1, and the
+saved order was written all the same (#5354). Parse with strconv.Atoi,
+as the other commands do: a whole number within the saved API count or
+the usual error, the saved settings untouched. TestSearchCLIMoveMalformed
+Position pins it: the malformed inputs are refused, the order unchanged
+after every one, and mv still moves.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/cli/search_cli.go      |  5 ++++-
+ internal/cli/search_cli_test.go | 36 +++++++++++++++++++++++++++++++++
+ 2 files changed, 40 insertions(+), 1 deletion(-)
+
+diff --git a/internal/cli/search_cli.go b/internal/cli/search_cli.go
+index c384a8b27..3f78915e0 100644
+--- a/internal/cli/search_cli.go
++++ b/internal/cli/search_cli.go
+@@ -4,6 +4,7 @@ import (
+ 	"context"
+ 	"fmt"
+ 	"slices"
++	"strconv"
+ 	"strings"
+ 	"time"
+ 
+@@ -136,7 +137,9 @@ func searchCmd(args []string) error {
+ 	case "move", "mv":
+ 		n := 0
+ 		if len(args) == 3 {
+-			fmt.Sscan(args[2], &n)
++			// a whole number only: an integer prefix like 2oops or 1.5
++			// must not be taken for a position (#5354)
++			n, _ = strconv.Atoi(args[2])
+ 		}
+ 		as := provider.StoredSearchAPIs()
+ 		i := slices.IndexFunc(as, func(x provider.SearchAPI) bool { return len(args) > 1 && x.Vendor == strings.ToLower(args[1]) })
+diff --git a/internal/cli/search_cli_test.go b/internal/cli/search_cli_test.go
+index 2d9f40d30..92083197b 100644
+--- a/internal/cli/search_cli_test.go
++++ b/internal/cli/search_cli_test.go
+@@ -139,3 +139,39 @@ func TestSearchCLIOffAndMove(t *testing.T) {
+ 		}
+ 	}
+ }
++
++// magpie search move (and mv) takes a whole number only: 2oops or 1.5 is an
++// error and leaves the saved order unchanged (#5354).
++func TestSearchCLIMoveMalformedPosition(t *testing.T) {
++	t.Setenv("HOME", t.TempDir())
++	t.Setenv("USERPROFILE", os.Getenv("HOME"))
++	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
++	for _, args := range [][]string{{"add", "tavily", "tvly-1"}, {"add", "exa", "e-1"}, {"add", "brave", "b-1"}} {
++		if err := searchCmd(args); err != nil {
++			t.Fatalf("%v: %v", args, err)
++		}
++	}
++	order := func() (vs []string) {
++		for _, a := range provider.StoredSearchAPIs() {
++			vs = append(vs, a.Vendor)
++		}
++		return vs
++	}
++	for _, bad := range []string{"2oops", "1.5", "-1", "99999999999999999999", "4", ""} {
++		for _, cmd := range []string{"move", "mv"} {
++			if err := searchCmd([]string{cmd, "exa", bad}); err == nil {
++				t.Errorf("%s %s taken", cmd, bad)
++			}
++			if got := order(); !slices.Equal(got, []string{"tavily", "exa", "brave"}) {
++				t.Fatalf("%s %s reordered the saved APIs: %v", cmd, bad, got)
++			}
++		}
++	}
++	// mv still moves
++	if err := searchCmd([]string{"mv", "exa", "1"}); err != nil {
++		t.Fatal(err)
++	}
++	if got := order(); !slices.Equal(got, []string{"exa", "tavily", "brave"}) {
++		t.Fatalf("after mv %v", got)
++	}
++}
+-- 
+2.50.1 (Apple Git-155)
+

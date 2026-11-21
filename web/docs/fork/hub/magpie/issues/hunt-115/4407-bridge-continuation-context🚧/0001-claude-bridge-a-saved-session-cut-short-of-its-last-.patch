@@ -1,0 +1,177 @@
+From c19f59eb8c151e8470b2196c9fb026310abed0df Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Mon, 2 Nov 2026 00:54:02 +0800
+Subject: [PATCH] claude bridge: a saved session cut short of its last line is
+ not resumed (#4407)
+
+Claude Code writes its session file as it goes. A run shelved for its
+conversation's next turn is stopped the moment it is shelved (keepIdle
+shelves and SIGTERMs in one pass), so its file can be left without the
+last lines its agent held and its process never got to write. unshelve
+only checked the file was there (saved), so the conversation's next
+turn went on from the file as it stood, told only the messages since:
+the run's Claude Code asked Anthropic from a history that was no longer
+in the session, and answered with a context a fraction of the client's
+(#4407: a 467,984-token turn answered from a 2,171-token one, no
+compaction boundary in between).
+
+shelve now records the uuid of the last line of the session the run's
+Claude Code said it wrote (noteLines has it), and unshelve refuses a
+session whose file does not have that line, its file removed: the turn
+is told the whole conversation, as a first one would be. Sessions whose
+run named no line (a reply with no tool calls) are not checked, and a
+session the check cannot read goes on as before -- a --resume Claude
+Code refuses is answered the way start already answers it.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gateway/claude_resume_test.go  | 50 +++++++++++++++++++++++++
+ internal/gateway/claude_subscription.go | 48 +++++++++++++++++++++++-
+ 2 files changed, 97 insertions(+), 1 deletion(-)
+
+diff --git a/internal/gateway/claude_resume_test.go b/internal/gateway/claude_resume_test.go
+index 0a0b8bb30..98e92b619 100644
+--- a/internal/gateway/claude_resume_test.go
++++ b/internal/gateway/claude_resume_test.go
+@@ -332,3 +332,53 @@ func TestClaudeRunKeysLeaveOutTheBillingLine(t *testing.T) {
+ 		t.Fatal("a key leaves out the system prompt itself")
+ 	}
+ }
++
++// A saved session whose file lost its last lines — Claude Code writes a
++// session as it goes, and a run stopped as it was shelved may leave a file
++// cut short of what its agent held — is not resumed: a run resumed on it is
++// told the messages since alone, and answers from a history that is no
++// longer there (yetone/magpie#4407, a 468k-token turn answered from a
++// 2,171-token one). A file that has the line the run last heard, and one
++// whose run named no line, go on as before.
++func TestClaudeAShelvedSessionMissingItsLastLineIsNotResumed(t *testing.T) {
++	write := func(dir, sid, body string) {
++		if err := os.WriteFile(filepath.Join(dir, sid+".jsonl"), []byte(body), 0o600); err != nil {
++			t.Fatal(err)
++		}
++	}
++	at := time.Now()
++	req := func(last string) *Request {
++		return &Request{Model: "claude-sonnet-5", System: "rules", Messages: []Message{
++			{Role: "user", Parts: []Part{{Kind: Text, Text: "a1"}}},
++			{Role: "assistant", Parts: []Part{{Kind: Text, Text: "ok"}}},
++			{Role: "user", Parts: []Part{{Kind: Text, Text: last}}},
++		}}
++	}
++	ask := func(t *testing.T, dir, sid, line, body string) bool {
++		t.Helper()
++		b := newSubscriptionBridge()
++		key, _ := nextTurn(req("a2"), "")
++		s := &savedSession{session: sid, sessions: []string{dir}, key: key, line: line, at: at,
++			timer: time.AfterFunc(time.Minute, func() {})}
++		write(dir, sid, body)
++		b.shelf[key] = s
++		return b.unshelve(req("a2"), "") != nil
++	}
++	if !ask(t, t.TempDir(), "whole", "uuid-last",
++		"{\"type\":\"user\",\"uuid\":\"uuid-early\"}\n{\"type\":\"assistant\",\"uuid\":\"uuid-last\"}\n") {
++		t.Fatal("a session whose file has its last line was not resumed")
++	}
++	if ask(t, t.TempDir(), "short", "uuid-last",
++		"{\"type\":\"user\",\"uuid\":\"uuid-early\"}\n") {
++		t.Fatal("a session whose file was cut short of its last line was resumed")
++	}
++	if !ask(t, t.TempDir(), "blind", "",
++		"{\"type\":\"user\",\"uuid\":\"uuid-early\"}\n") {
++		t.Fatal("a session whose run named no line was not resumed")
++	}
++	// a file gone since it was shelved is the saved() check's case; the line
++	// check reads only what is there and says so either way
++	if ask(t, t.TempDir(), "gone", "uuid-last", "") {
++		t.Fatal("a session with no file at all was resumed")
++	}
++}
+diff --git a/internal/gateway/claude_subscription.go b/internal/gateway/claude_subscription.go
+index 2c38d26a3..8e1a1004f 100644
+--- a/internal/gateway/claude_subscription.go
++++ b/internal/gateway/claude_subscription.go
+@@ -2066,6 +2066,14 @@ type savedSession struct {
+ 	// tui: the session was made by Claude Code's interactive mode; a
+ 	// branch of it is too, where it can be (claudePrint)
+ 	tui bool
++	// line is the uuid of the last line of the session its run's Claude
++	// Code said it wrote (noteLines). Claude Code writes a session as it
++	// goes, and a run stopped as it was shelved may leave a file cut short
++	// of what its agent held; a run resumed on it is told the messages
++	// since alone, and answers from a history that is no longer there
++	// (yetone/magpie#4407: a 468k-token turn answered from a 2,171-token
++	// one). unshelve checks the file has the line.
++	line string
+ 
+ 	cachePrefix cachePrefix
+ 
+@@ -2079,12 +2087,20 @@ type savedSession struct {
+ func (b *subscriptionBridge) shelve(run *subscriptionRun) {
+ 	run.mu.Lock()
+ 	sid, sessions, rewound, tools := run.sessionID, run.sessions, run.rewound, maps.Clone(run.tools)
++	// the last line of the session the run's Claude Code said it wrote,
++	// which its file must have when the session goes on from it (unshelve)
++	line, top := "", 0
++	for _, l := range run.lines {
++		if l.uuid != "" && l.seq > top {
++			line, top = l.uuid, l.seq
++		}
++	}
+ 	run.mu.Unlock()
+ 	if sid == "" || len(sessions) == 0 || rewound || run.idleKey == "" {
+ 		return
+ 	}
+ 	key := run.idleKey
+-	s := &savedSession{session: sid, sessions: sessions, owner: run.owned(), conv: run.convKey, key: key, loose: run.loose, tools: tools, at: run.idleAt, cachePrefix: run.cachePrefix}
++	s := &savedSession{session: sid, sessions: sessions, owner: run.owned(), conv: run.convKey, key: key, loose: run.loose, tools: tools, at: run.idleAt, cachePrefix: run.cachePrefix, line: line}
+ 	if old := b.shelf[key]; old != nil {
+ 		go old.discard()
+ 	}
+@@ -2142,6 +2158,11 @@ func (b *subscriptionBridge) unshelve(req *Request, owner string) *savedSession
+ 		s.discard()
+ 		return nil
+ 	}
++	if s.line != "" && !sessionHasLine(s.sessions, s.session, s.line) {
++		log.Printf("claude: the saved session of a conversation was cut short; a new Claude Code is told the whole conversation")
++		s.discard()
++		return nil
++	}
+ 	s.since = since
+ 	return s
+ }
+@@ -2344,6 +2365,31 @@ func cutAfter(b, mark []byte, uuid string) int {
+ 	return -1
+ }
+ 
++// sessionHasLine says the session's file has its line uuid, reading the
++// file whole as cutSession does. false when none of the folders has it: a
++// file cut short of the line — Claude Code writes a session as it goes,
++// and a run stopped as it was shelved may leave one — cannot go on from
++// where the run left it, and the conversation is told whole instead.
++// true for a session the check cannot read, whose run guards itself: the
++// file a --resume names is Claude Code's to refuse ("No conversation
++// found with session ID", which start answers with a run told whole).
++func sessionHasLine(dirs []string, sid, uuid string) bool {
++	if sid == "" || uuid == "" || strings.ContainsAny(sid, `/\`) || strings.Contains(sid, "..") {
++		return true
++	}
++	mark := []byte(`"uuid":"` + uuid + `"`)
++	for _, dir := range dirs {
++		b, err := os.ReadFile(filepath.Join(dir, sid+".jsonl"))
++		if err != nil {
++			continue
++		}
++		if cutAfter(b, mark, uuid) >= 0 {
++			return true
++		}
++	}
++	return false
++}
++
+ // saved says its session's file is still there.
+ func (s *savedSession) saved() bool {
+ 	for _, dir := range s.sessions {
+-- 
+2.50.1 (Apple Git-155)
+

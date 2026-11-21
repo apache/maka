@@ -1,0 +1,51 @@
+{
+  "mcpServers": {
+    "fetch": {
+      "command": "uvx",
+      "args": [
+        "mcp-server-fetch"
+      ],
+      "env": {},
+      "disabled": false,
+      "autoApprove": []
+    },
+    "stripe": {
+      "url": "https://mcp.stripe.com",
+      "disabled": true
+    },
+    "aws-knowledge-mcp-server": {
+      "url": "https://knowledge-mcp.global.api.aws",
+      "disabled": false
+    },
+    "awslabs.dynamodb-mcp-server": {
+      "command": "uvx",
+      "args": [
+        "awslabs.dynamodb-mcp-server@latest"
+      ],
+      "env": {
+        "FASTMCP_LOG_LEVEL": "ERROR"
+      },
+      "disabled": false,
+      "autoApprove": []
+    },
+    "awslabs.aws-serverless-mcp": {
+      "command": "uvx",
+      "args": [
+        "awslabs.aws-serverless-mcp-server@latest"
+      ],
+      "env": {
+        "AWS_PROFILE": "<PROFILE>",
+        "AWS_REGION": "<REGION>",
+        "FASTMCP_LOG_LEVEL": "ERROR"
+      }
+    },
+    "playwright": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@executeautomation/playwright-mcp-server"
+      ],
+      "disabled": true
+    }
+  }
+}

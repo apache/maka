@@ -1,0 +1,5 @@
+--- FAIL: TestTranslatedRequestCarriesOnlyTheOptedInCidHeader (0.66s)
+    carry_cid_test.go:97: the opted-in provider's upstream got X-Cid "", want the caller's
+FAIL
+FAIL	github.com/yetone/magpie/internal/gateway	1.239s
+FAIL

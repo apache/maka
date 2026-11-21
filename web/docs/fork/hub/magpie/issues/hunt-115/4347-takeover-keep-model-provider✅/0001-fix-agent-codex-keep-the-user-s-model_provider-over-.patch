@@ -1,0 +1,144 @@
+From e2445d7d1b600ea83c6089f7bbf11c87b6681ba7 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Sun, 1 Nov 2026 21:26:36 +0800
+Subject: [PATCH] fix(agent/codex): keep the user's model_provider over a
+ takeover or reset (#4347)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+What changed: the beside wiring of a Codex takeover took the top-level
+model_provider down silently whenever a magpie model was picked beside
+the ChatGPT sign-in — a provider of the user's (CC Switch's custom, an
+older takeover's) went with it, and every Codex thread saved with that
+provider stopped resuming (modelProviderMismatch: Codex falls back to
+its built-in openai, the threads name the provider they were started
+on, #4347). The wiring now steps beside only from a provider magpie
+puts back itself (its own, none, CC Switch's mirror of OpenAI, as Join
+already has it); over a provider of the user's the takeover names
+magpie instead and keeps the user's spelling in the stash, for Unwire
+to put back, as any takeover does. A reset leaves the line where the
+user put it too: it takes magpie's keys out, not theirs.
+
+Run: go test -tags nogui -run 'TestCodexTakeoverKeepsUserProvider|TestCodexResetKeepsUserProvider' ./internal/agent/ (both fail on the parent, pass here); go test -tags nogui ./internal/agent/ passes.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/agent/codex.go                    | 27 ++++++++++--
+ internal/agent/codex_user_provider_test.go | 51 ++++++++++++++++++++++
+ 2 files changed, 75 insertions(+), 3 deletions(-)
+ create mode 100644 internal/agent/codex_user_provider_test.go
+
+diff --git a/internal/agent/codex.go b/internal/agent/codex.go
+index 02c8ac6a4..86d60c992 100644
+--- a/internal/agent/codex.go
++++ b/internal/agent/codex.go
+@@ -1342,7 +1342,15 @@ func codexIn(at place) *Agent {
+ 			if err := dropBase(); err != nil {
+ 				return err
+ 			}
+-			if err := edit.DelTOMLTop(path, "model", "model_provider", "model_catalog_json"); err != nil {
++			// Codex as installed: OpenAI, its own catalog, its default
++			// model. A provider of the user's at the top stays (#4347):
++			// a reset takes magpie's keys out, not theirs, and Codex
++			// goes on resuming the threads it saved with theirs
++			keys := []string{"model", "model_catalog_json"}
++			if p := get("model_provider"); p == "" || p == "openai" || p == magpieID {
++				keys = append(keys, "model_provider")
++			}
++			if err := edit.DelTOMLTop(path, keys...); err != nil {
+ 				return err
+ 			}
+ 			dropList()
+@@ -1374,8 +1382,18 @@ func codexIn(at place) *Agent {
+ 			// that. Wired so for that alone, it is marked (codex.out), for
+ 			// Sync to put it back beside the sign-in once the account has
+ 			// room again.
++			// Beside the sign-in only from a provider at the top that is
++			// magpie's to take down: its own, none, or CC Switch's mirror
++			// of OpenAI, as Join has it. A provider of the user's (CC
++			// Switch's custom, an older takeover's) is not taken down
++			// silently (#4347): every thread saved with it stopped
++			// resuming (modelProviderMismatch). The takeover names magpie
++			// and keeps the user's spelling in the stash, for Unwire to
++			// put back.
++			p := get("model_provider")
++			ours := asProvider() || p == "" || p == "openai" || isCCSwitchMirror(p)
+ 			chatgpt := !api() && chatGPT()
+-			if chatgpt && !out() {
++			if chatgpt && !out() && ours {
+ 				forget(at.key("codex.out"))
+ 				if err := dropProvider(); err != nil {
+ 					return err
+@@ -1401,7 +1419,10 @@ func codexIn(at place) *Agent {
+ 				}
+ 				return settle()
+ 			}
+-			if chatgpt {
++			// codex.out is for an account the takeover stands in for: a
++			// provider of the user's taken over is magpie's doing, not
++			// the account's, so Sync never steps Codex out of it
++			if chatgpt && ours {
+ 				stash(map[string]string{at.key("codex.out"): "1"})
+ 			} else {
+ 				forget(at.key("codex.out"))
+diff --git a/internal/agent/codex_user_provider_test.go b/internal/agent/codex_user_provider_test.go
+new file mode 100644
+index 000000000..329bed98d
+--- /dev/null
++++ b/internal/agent/codex_user_provider_test.go
+@@ -0,0 +1,51 @@
++package agent
++
++import (
++	"strings"
++	"testing"
++)
++
++// A Codex of the user's own provider (CC Switch's custom, an older
++// takeover's): model_provider at the top and its table. Picking a magpie
++// model beside the ChatGPT sign-in took the line down silently, and every
++// thread saved with the user's provider stopped resuming
++// (modelProviderMismatch, #4347). magpie goes by the provider instead,
++// the user's spelling kept in the stash, and stepping out puts it back.
++func TestCodexTakeoverKeepsUserProvider(t *testing.T) {
++	home, read := codexHome(t, chatGPTAuth,
++		"model = \"gpt-5.5\"\nmodel_provider = \"custom\"\n\n[model_providers.custom]\nname = \"Custom\"\nbase_url = \"http://127.0.0.1:9/v1\"\nwire_api = \"responses\"\n")
++	cx := codex(home)
++	if err := cx.Fields[0].Set("fake/m1"); err != nil {
++		t.Fatal(err)
++	}
++	cfg := read()
++	if !strings.Contains(cfg, `model_provider = "magpie"`) || !strings.Contains(cfg, `model = "fake/m1"`) ||
++		!strings.Contains(cfg, "[model_providers.custom]") || !strings.Contains(cfg, "[model_providers.magpie]") {
++		t.Fatalf("a magpie model over the user's provider:\n%s", cfg)
++	}
++	// and stepping out puts the user's provider back
++	if err := cx.Disconnect(); err != nil {
++		t.Fatal(err)
++	}
++	if cfg = read(); !strings.Contains(cfg, `model_provider = "custom"`) || strings.Contains(cfg, "openai_base_url") {
++		t.Fatalf("disconnected, the user's provider not put back:\n%s", cfg)
++	}
++}
++
++// A reset takes magpie's keys out, not the user's: a provider of the
++// user's at the top stays, and Codex goes on resuming the threads it
++// saved with (#4347).
++func TestCodexResetKeepsUserProvider(t *testing.T) {
++	home, read := codexHome(t, "",
++		"model = \"fake/m1\"\nmodel_provider = \"custom\"\nmodel_catalog_json = \"/x/list.json\"\n\n[model_providers.custom]\nname = \"Custom\"\nbase_url = \"http://127.0.0.1:9/v1\"\nwire_api = \"responses\"\n")
++	cx := codex(home)
++	if err := cx.Fields[0].Set(""); err != nil {
++		t.Fatal(err)
++	}
++	cfg := read()
++	if !strings.Contains(cfg, `model_provider = "custom"`) || !strings.Contains(cfg, "[model_providers.custom]") ||
++		strings.Contains(cfg, "model_catalog_json") || strings.Contains(cfg, `[model = "fake/m1"]`) {
++		t.Fatalf("reset over the user's provider:\n%s", cfg)
++	}
++	_ = home
++}
+-- 
+2.50.1 (Apple Git-155)
+

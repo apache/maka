@@ -1,0 +1,11 @@
+=== RUN   TestRemoteMagpieRestrictedRestsTheModel
+    remote_magpie_restricted_test.go:63: the whole remote magpie rests for one model's restricted account: {Why:restricted Status:403 Until:2026-10-15 00:27:31.177556 +0800 CST m=+7200.532724335 By:restricted Failures:0 Key:office Model: Link: agent: user: said: hold:{wall:0 ext:0 loc:<nil>}}
+    remote_magpie_restricted_test.go:67: the restricted model doesn't rest as restricted: {Why: Status:0 Until:0001-01-01 00:00:00 +0000 UTC By: Failures:0 Key: Model: Link: agent: user: said: hold:{wall:0 ext:0 loc:<nil>}} (map[office:2026-10-15 00:27:31.177556 +0800 CST m=+7200.532724335])
+    remote_magpie_restricted_test.go:72: kimi on the remote after glm was restricted: 200 {"id":"x","choices":[{"index":0,"message":{"role":"assistant","content":"from ko"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3000,"completion_tokens":5,"prompt_tokens_details":{"cached_tokens":2500}}}
+--- FAIL: TestRemoteMagpieRestrictedRestsTheModel (0.52s)
+=== RUN   TestRemoteMagpieVerifyAndKeyLimitScoping
+    remote_magpie_restricted_test.go:85: a restricted or verify refusal from the other magpie rests the whole remote, not the model
+--- FAIL: TestRemoteMagpieVerifyAndKeyLimitScoping (0.00s)
+FAIL
+FAIL	github.com/yetone/magpie/internal/gateway	0.948s
+FAIL

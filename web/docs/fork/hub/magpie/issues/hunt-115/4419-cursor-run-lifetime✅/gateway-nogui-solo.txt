@@ -1,0 +1,15 @@
+# continuation-lane re-verification 2026-11-02 (empty from dead lane; GOOS=linux go test cannot exec on darwin, vet/build is the nogui matrix)
+
+cd /tmp/mg115-a (fix/4419-cursor-run-lifetime, head 2cc906938)
+
+GOOS=linux go vet -tags nogui ./internal/gateway/   -> clean (LINUX_VET_GATEWAY_CLEAN)
+GOOS=windows go vet ./internal/gateway/             -> clean (WINDOWS_VET_GATEWAY_CLEAN)
+GOOS=linux go build -tags nogui ./internal/gateway/ -> ok    (LINUX_BUILD_GATEWAY_OK)
+go vet ./internal/gateway/                          -> clean (DARWIN_VET_GATEWAY_CLEAN)
+gofmt -l <4 changed files>                          -> empty (GOFMT_CLEAN)
+
+Targeted fresh green (this lane):
+go test ./internal/gateway/ -run 'TestRunExpiredSaysAskAgain|TestRunExpiredTranslatedSaysAskAgain' -count=1 -v
+--- PASS: TestRunExpiredSaysAskAgain (0.10s)
+--- PASS: TestRunExpiredTranslatedSaysAskAgain (0.01s)
+PASS  ok github.com/yetone/magpie/internal/gateway 1.161s

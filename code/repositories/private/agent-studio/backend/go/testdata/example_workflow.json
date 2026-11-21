@@ -1,0 +1,92 @@
+{
+  "nodes": [
+    {
+      "id": "start",
+      "type": "StartNode",
+      "title": "开始",
+      "data": {},
+      "position": {
+        "x": 100,
+        "y": 200
+      }
+    },
+    {
+      "id": "llm_analyze",
+      "type": "LLMNode",
+      "title": "分析顾客信息",
+      "data": {
+        "model": "gpt-3.5-turbo",
+        "systemPrompt": "你是一个专业的顾客信息分析助手。请根据对话内容提取关键信息。",
+        "userPrompt": "请分析以下对话并提取关键信息：\n${start.result.message}\n\n请用简洁的语言总结顾客的基本情况。",
+        "temperature": 0.7,
+        "maxTokens": 2000,
+        "outputType": "Text"
+      },
+      "position": {
+        "x": 400,
+        "y": 200
+      }
+    },
+    {
+      "id": "condition_check",
+      "type": "ConditionNode",
+      "title": "检查是否提取到信息",
+      "data": {
+        "leftValue": "${llm_analyze.result.content}",
+        "operator": "!=",
+        "rightValue": ""
+      },
+      "position": {
+        "x": 700,
+        "y": 200
+      }
+    },
+    {
+      "id": "end",
+      "type": "EndNode",
+      "title": "结束",
+      "data": {
+        "outputParams": [
+          {
+            "key": "analysis",
+            "value": "${llm_analyze.result.content}"
+          },
+          {
+            "key": "hasInfo",
+            "value": "${condition_check.result.matched}"
+          },
+          {
+            "key": "tokens",
+            "value": "${llm_analyze.result.tokens}"
+          }
+        ],
+        "outputType": "JSON"
+      },
+      "position": {
+        "x": 1000,
+        "y": 200
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "e1",
+      "source": "start",
+      "target": "llm_analyze",
+      "type": "default"
+    },
+    {
+      "id": "e2",
+      "source": "llm_analyze",
+      "target": "condition_check",
+      "type": "default"
+    },
+    {
+      "id": "e3",
+      "source": "condition_check",
+      "target": "end",
+      "type": "default"
+    }
+  ],
+  "sessionVariables": []
+}

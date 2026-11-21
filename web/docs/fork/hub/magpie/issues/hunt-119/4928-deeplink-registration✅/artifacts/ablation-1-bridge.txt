@@ -1,0 +1,14 @@
+=== RUN   TestClaudeSubscriptionPromptKeepsForeignHarnessOutOfSystem
+    claude_subscription_test.go:48: missing CLI contract "--settings {\"disableDeepLinkRegistration\":\"disable\"}" in "-p --output-format stream-json --input-format stream-json --include-partial-messages --verbose --model claude-sonnet-5 --tools  --strict-mcp-config --mcp-config {} --setting-sources  --dangerously-skip-permissions --no-session-persistence --effort medium --thinking-display summarized"
+--- FAIL: TestClaudeSubscriptionPromptKeepsForeignHarnessOutOfSystem (0.00s)
+=== RUN   TestAskClaudeTUIOn
+--- PASS: TestAskClaudeTUIOn (0.83s)
+=== RUN   TestClaudeUsageTUIOn
+--- PASS: TestClaudeUsageTUIOn (0.22s)
+=== RUN   TestWarmClaudeAsksClaudeCodeOnce
+--- PASS: TestWarmClaudeAsksClaudeCodeOnce (0.11s)
+=== RUN   TestClaudeUsageRunsClaudeCode
+--- PASS: TestClaudeUsageRunsClaudeCode (0.10s)
+FAIL
+FAIL	github.com/yetone/magpie/internal/gateway	1.752s
+FAIL

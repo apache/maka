@@ -1,0 +1,74 @@
+From 2edbff0a19b60790ed32c440e6a88e6f196c1fa9 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Tue, 20 Oct 2026 23:23:45 +0800
+Subject: [PATCH] proc: the shell-ask test asks with production's budget, and
+ its login ask is delayed as a busy machine's shell is (#3049)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The test asked each shell question with a 1s budget, in the name of
+keeping it quick. A busy machine takes longer than that to start the
+fixture shell — two forks before anything is printed — so the login
+ask, the second one, came up empty and the test went red in a full
+run at load ~440 (#3049). Production asks with 5s a question. The
+test now asks with the same; its too-slow profile sleeps past the
+budget again (sleep 6, which 4 no longer was); and the login ask
+itself is held 2s before it answers — slower than the old 1s budget,
+well within this one — so the case the suite went red in, a login
+shell that answers late, is in the test for good: red on the old
+budget, green on this one.
+
+askShell is unchanged: the second ask already had a budget of its own,
+a fresh context.WithTimeout per question (cc8eb5a7). What was broken
+was the test's shrunken budget, not a shared one.
+
+Run: go test ./internal/proc -run TestAskShellProfileExecsOrHangs
+-count=5 (5 passes, ~9s each); the whole package -count=1 (ok, 12.8s);
+-count=20 -parallel 1 under four yes loops (20 passes, 1-min load ~7);
+go test -race on it (ok); gofmt -l clean; go vet clean; builds for
+darwin/arm64, linux/amd64 -tags nogui and windows/amd64.
+On base 318697dc with the budget back at 1s the test fails:
+path_other_test.go:482: exec: PATH = "", vars false: the login shell wasn't asked again
+
+Fixes #3049
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/proc/path_other_test.go | 15 ++++++++++++---
+ 1 file changed, 12 insertions(+), 3 deletions(-)
+
+diff --git a/internal/proc/path_other_test.go b/internal/proc/path_other_test.go
+index cb21e5b5..e703f29c 100644
+--- a/internal/proc/path_other_test.go
++++ b/internal/proc/path_other_test.go
+@@ -457,15 +457,24 @@ func TestShellEnvRealFish(t *testing.T) {
+ func TestAskShellProfileExecsOrHangs(t *testing.T) {
+ 	home := t.TempDir()
+ 	t.Setenv("HOME", home)
++	// The budget a machine this busy still answers within is the one
++	// production asks with; the old 1s here was smaller than a busy
++	// machine takes to start the shell (issue #3049: red at load ~440).
+ 	old := shellAsk
+-	shellAsk = time.Second
++	shellAsk = 5 * time.Second
+ 	t.Cleanup(func() { shellAsk = old })
+ 	for name, interactive := range map[string]string{
++		// slow: slower than the budget, as a profile that is too slow
++		// to come up interactively is (sleep 4 would now be asked
++		// within the budget and answer the first ask).
+ 		"exec": "exec /bin/cat",
+-		"slow": "sleep 4",
++		"slow": "sleep 6",
+ 	} {
+ 		sh := filepath.Join(home, name)
+-		testenv.Program(t, sh, "#!/bin/sh\ncase \"$1\" in -i*) "+interactive+";; esac\n"+
++		// The login ask itself is delayed (sleep 2): slower than the old
++		// 1s budget this test asked with, well within the one production
++		// asks with, as a busy machine's shell is (#3049).
++		testenv.Program(t, sh, "#!/bin/sh\ncase \"$1\" in -i*) "+interactive+";; -l*) sleep 2;; esac\n"+
+ 			"PATH=/from/login:$PATH\n[ \"$MAGPIE_SHELL_PROBE\" = 1 ] && PATH=/told:$PATH\neval \"$2\"\n")
+ 		p, vars := askShell(sh)
+ 		dirs := filepath.SplitList(p)
+-- 
+2.50.1 (Apple Git-155)
+

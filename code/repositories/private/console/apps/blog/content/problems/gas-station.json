@@ -1,0 +1,24 @@
+{
+  "id": "79",
+  "slug": "gas-station",
+  "title": "加油站",
+  "difficulty": "medium",
+  "tags": ["贪心", "数组"],
+  "description": "在一条环路上有 `n` 个加油站,第 `i` 个加油站有汽油 `gas[i]` 升。从第 `i` 个加油站开往第 `i+1` 个加油站需要消耗汽油 `cost[i]` 升。\n\n你有一辆油箱容量无限的汽车,从其中一个加油站出发,初始油箱为空。给定两个整数数组 `gas` 和 `cost`,如果你可以按顺序绕环路行驶一周,则返回出发时加油站的编号,否则返回 `-1`。题目保证若存在解,则唯一。\n\n**示例 1:**\n\n- 输入:`gas = [1,2,3,4,5]`, `cost = [3,4,5,1,2]`\n- 输出:`3`\n\n**示例 2:**\n\n- 输入:`gas = [2,3,4]`, `cost = [3,4,3]`\n- 输出:`-1`",
+  "solution": "## 思路\n\n**贪心**:累加全程净油量 `total`,若 `total < 0` 一定无解;否则从某点出发,维护当前油箱 `tank`,一旦 `tank < 0` 就把起点换到下一站并清零 tank。最终起点即为答案。\n\n## 参考代码\n\n```js\nfunction canCompleteCircuit(gas, cost) {\n  let total = 0;\n  let tank = 0;\n  let start = 0;\n  for (let i = 0; i < gas.length; i++) {\n    const diff = gas[i] - cost[i];\n    total += diff;\n    tank += diff;\n    if (tank < 0) {\n      start = i + 1;\n      tank = 0;\n    }\n  }\n  return total >= 0 ? start : -1;\n}\n```\n\n## 复杂度\n\n- 时间:O(n)\n- 空间:O(1)",
+  "signature": {
+    "language": "javascript",
+    "entry": "canCompleteCircuit",
+    "params": [
+      { "name": "gas", "type": "number[]" },
+      { "name": "cost", "type": "number[]" }
+    ],
+    "returns": "number"
+  },
+  "testCases": [
+    { "sample": true, "input": [[1, 2, 3, 4, 5], [3, 4, 5, 1, 2]], "expected": 3 },
+    { "sample": true, "input": [[2, 3, 4], [3, 4, 3]], "expected": -1 },
+    { "sample": false, "input": [[5], [4]], "expected": 0 },
+    { "sample": false, "input": [[1], [2]], "expected": -1 }
+  ]
+}

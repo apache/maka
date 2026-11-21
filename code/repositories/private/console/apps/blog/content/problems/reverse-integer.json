@@ -1,0 +1,22 @@
+{
+  "id": "57",
+  "slug": "reverse-integer",
+  "title": "颠倒整数",
+  "difficulty": "medium",
+  "tags": ["数学"],
+  "description": "给你一个 32 位的有符号整数 `x`,返回将 `x` 中的数字部分反转后的结果。如果反转后整数超过 32 位有符号整数范围 `[-2^31, 2^31 - 1]`,就返回 `0`。\n\n假设环境不允许存储 64 位整数。\n\n**示例 1:**\n\n- 输入:`x = 123`\n- 输出:`321`\n\n**示例 2:**\n\n- 输入:`x = -123`\n- 输出:`-321`\n\n**示例 3:**\n\n- 输入:`x = 120`\n- 输出:`21`",
+  "solution": "## 思路\n\n反转数字:每次取末位 `x % 10` 拼接到结果 `rev = rev*10 + digit`,同时 `x` 整除 10。处理负号;最后检查是否超出 32 位范围(超过返回 0)。\n\n## 参考代码\n\n```js\nfunction reverse(x) {\n  const sign = x < 0 ? -1 : 1;\n  const rev = Number(String(Math.abs(x)).split('').reverse().join(''));\n  const result = sign * rev;\n  if (result < -2147483648 || result > 2147483647) return 0;\n  return result;\n}\n```\n\n## 复杂度\n\n- 时间:O(log x)(数字位数)\n- 空间:O(1)",
+  "signature": {
+    "language": "javascript",
+    "entry": "reverse",
+    "params": [{ "name": "x", "type": "number" }],
+    "returns": "number"
+  },
+  "testCases": [
+    { "sample": true, "input": [123], "expected": 321 },
+    { "sample": true, "input": [-123], "expected": -321 },
+    { "sample": true, "input": [120], "expected": 21 },
+    { "sample": false, "input": [0], "expected": 0 },
+    { "sample": false, "input": [1534236469], "expected": 0 }
+  ]
+}

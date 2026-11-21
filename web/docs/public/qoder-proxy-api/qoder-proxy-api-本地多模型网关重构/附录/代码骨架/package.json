@@ -1,0 +1,11 @@
+{
+  "name": "qpa-route-pipeline-skeleton",
+  "private": true,
+  "type": "module",
+  "description": "qoder-proxy-api 本地多模型网关：路由组 + 改道管线 + 路由事件 + OpenAI 兼容 Provider 的零依赖参考实现",
+  "scripts": {
+    "test": "node --test \"test/*.test.ts\"",
+    "demo": "node ./src/demoServer.ts"
+  },
+  "engines": { "node": ">=24" }
+}

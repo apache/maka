@@ -1,0 +1,23 @@
+{
+  "id": "97",
+  "slug": "arranging-coins",
+  "title": "排列硬币",
+  "difficulty": "easy",
+  "tags": ["数学", "二分查找"],
+  "description": "把 `n` 枚硬币排成阶梯形,第 `k` 行必须正好有 `k` 枚硬币。返回可以形成一个**完整**阶梯行的总行数。\n\n**示例 1:**\n\n- 输入:`n = 5`\n- 输出:`2`(第 1 行 1 枚、第 2 行 2 枚,用掉 3 枚;第 3 行需要 3 枚但只剩 2 枚,不完整)\n\n**示例 2:**\n\n- 输入:`n = 8`\n- 输出:`3`(1+2+3=6 ≤ 8,第 4 行需 4 枚但只剩 2 枚)",
+  "solution": "## 思路\n\n**二分**:找最大行数 `x`,使前 `x` 行硬币总数 `x*(x+1)/2 <= n`。\n\n## 参考代码\n\n```js\nfunction arrangeCoins(n) {\n  let left = 0;\n  let right = n;\n  while (left <= right) {\n    const mid = (left + right) >>> 1;\n    const need = (mid * (mid + 1)) / 2;\n    if (need === n) return mid;\n    if (need < n) left = mid + 1;\n    else right = mid - 1;\n  }\n  return right;\n}\n```\n\n## 复杂度\n\n- 时间:O(log n)\n- 空间:O(1)",
+  "signature": {
+    "language": "javascript",
+    "entry": "arrangeCoins",
+    "params": [{ "name": "n", "type": "number" }],
+    "returns": "number"
+  },
+  "testCases": [
+    { "sample": true, "input": [5], "expected": 2 },
+    { "sample": true, "input": [8], "expected": 3 },
+    { "sample": false, "input": [1], "expected": 1 },
+    { "sample": false, "input": [0], "expected": 0 },
+    { "sample": false, "input": [6], "expected": 3 },
+    { "sample": false, "input": [3], "expected": 2 }
+  ]
+}

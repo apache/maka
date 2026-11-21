@@ -1,0 +1,464 @@
+The dispatch has this since #4523 (`cb35d2fa9`): every request through it asks whether the global proxy moved, and a move drops the idle connections. Transports magpie builds itself were left out.
+
+## Symptom
+
+After a switch of the global proxy in Settings, a sync (WebDAV, S3, GitHub) went on through the old proxy's connection: the sync rides `http.DefaultTransport`, whose idle connections only a `DefaultClient` request would drop — an HTTP/2 connection pools by the target's authority alone, so the sync kept leaving by the old exit until some unrelated request happened to notice the move. The fetch of an import link's icon used a client of that fetch's own, whose connection nothing closed at all.
+
+## Minimal repro
+
+Two SOCKS proxies counting their connections, an HTTPS target over HTTP/2, and `syncClient` (`TestGlobalSwitchDialsTheSyncThroughTheNewProxy`, internal/davsync):
+
+1. save proxy A, one sync request — 1 connection through A, 0 through B;
+2. save proxy B, another sync request — the connection through A is reused: 1 through A, **0** through B.
+
+The test fails on the parent exactly so. `TestFetchIconLeavesNoIdleConnection` (internal/provider) is the icon half: once the fetch is done, its connection stays idle in the pool until the idle timeout, because the client is the fetch's alone.
+
+## Root cause
+
+#4523's check lives in `dispatch.RoundTrip`, so only requests through a dispatch notice a move. The sync goes over `stallTransport{http.DefaultTransport}` — no dispatch, no check. The clones of `DefaultTransport` wrapped in `Dispatch` were already covered (pii's model download, the update feed, the library's MCP check, mcpauth's sign-in, the gateway's MCP relay — a dispatch's `CloseIdleConnections` drops its own base's idle connections), and `claudebridge`'s MCP helper is `Proxy: nil` by design (#2440: the callback is magpie on this computer), so it has nothing to drop.
+
+## Fix
+
+- `netproxy.Watch` hands #4523's per-request check out: each check keeps its own last value, so each transport sees, and answers, a move on the first request it sends after it. The dispatch holds one (`d.moved`, in place of its own fields — same behavior, one copy of the logic); davsync's `stallTransport` asks its own before each request and drops `http.DefaultTransport`'s idle connections on a move.
+- `FetchIcon` closes the client's idle connections once the fetch is done.
+
+## Verification
+
+| Check | Result |
+|-------|--------|
+| `go test ./internal/davsync -run TestGlobalSwitchDialsTheSyncThroughTheNewProxy` | fails on the parent (`after the switch: 1 connections through A, 0 through B`), passes here |
+| `go test ./internal/provider -run TestFetchIconLeavesNoIdleConnection` | fails on the parent (`the fetch's connection is still idle`), passes here |
+| `go test ./internal/netproxy -run 'TestGlobalSwitchDropsTheOldProxyConnections\|TestWatchSeesTheGlobalProxyMove'` | passes — #4523's test stays green on the refactored check |
+| full suites of netproxy, davsync, provider, pii, update, library, claudebridge, gateway (`go test -tags nogui -count=1`) | pass, except the pre-existing gateway flake `TestCodexPoolSaysTheClientsVersion`, which fails in the full run and passes alone — on the parent too |
+| `go test -race -tags nogui` netproxy and davsync in full, provider's icon tests | pass |
+| `go vet ./...`, `gofmt -l` (touched dirs) | clean (one pre-existing cgo warning in internal/gui, untouched here) |
+| `GOOS=linux`, `GOOS=windows`, `GOOS=darwin`: `go vet` + `go build -tags nogui` | pass |
+| ablation: each fix point removed by hand, tests kept | the test above fails again; passes once restored |
+
+## Not verified
+
+- Not tried against a real proxy switch with a real WebDAV/S3 server or a real icon host: the dials are counted through local fake SOCKS proxies and httptest servers.
+- `internal/otlp`'s exporter also holds a long-lived transport of its own (`Proxy: netproxy.Func`, no dispatch). It is not in this issue's list, so it is left as it is — saying so in case it wants the same check.
+
+**Attribution**: AI-written; I've read the whole diff and the tests pass. Please keep the author (`ggbdpq`) or add `Co-authored-by: ggbdpq <ggbdpq@gmail.com>`.
+
+<details><summary>patch: fix(netproxy): a global proxy switch drops the idle connections of magpie's own transports (#4824) — git am applies it as is; SHA-256 first 16: 7fdca689139aed08</summary>
+
+```
+From 8e7dc95a3a2c35d8a618641f684ded16c76ae161 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Mon, 2 Nov 2026 07:56:58 +0800
+Subject: [PATCH] fix(netproxy): a global proxy switch drops the idle
+ connections of magpie's own transports (#4824)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+What changed
+- netproxy.Watch hands the dispatch's per-request check of the global
+  proxy's move (#4523) out to transports magpie keeps of its own: the
+  sync (davsync) rides http.DefaultTransport, so it drops the idle
+  connections itself when its request finds the proxy moved — until now
+  only a DefaultClient request dropped them, and a backup went on
+  through the old proxy's connection; FetchIcon closes the pool of the
+  client the fetch alone used, which nothing else closed.
+
+Run
+- go test ./internal/davsync -run TestGlobalSwitchDialsTheSyncThroughTheNewProxy
+  fails on the parent (after the switch: 1 connection through A, 0
+  through B), passes here; go test ./internal/provider -run
+  TestFetchIconLeavesNoIdleConnection fails on the parent (the fetch's
+  connection still idle), passes here; netproxy's
+  TestGlobalSwitchDropsTheOldProxyConnections (#4523) passes on the
+  refactored check; the touched packages' full suites pass (-tags
+  nogui), netproxy and davsync under -race too; go vet ./... and the
+  linux, windows and darwin builds pass.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/davsync/stall.go          |  14 ++++
+ internal/davsync/stall_test.go     | 121 +++++++++++++++++++++++++++++
+ internal/netproxy/netproxy.go      |  55 +++++++------
+ internal/netproxy/netproxy_test.go |  22 ++++++
+ internal/provider/icon.go          |   6 +-
+ internal/provider/icon_test.go     |  37 +++++++++
+ 6 files changed, 230 insertions(+), 25 deletions(-)
+
+diff --git a/internal/davsync/stall.go b/internal/davsync/stall.go
+index 79bd16d81..c3e1578f5 100644
+--- a/internal/davsync/stall.go
++++ b/internal/davsync/stall.go
+@@ -8,6 +8,8 @@ import (
+ 	"net/http"
+ 	"sync"
+ 	"time"
++
++	"github.com/yetone/magpie/internal/netproxy"
+ )
+ 
+ // A sync is never given a time to end in: a backup of tens of MB to a
+@@ -41,6 +43,13 @@ func (e *errStalled) Error() string {
+ // syncClient is the client WebDAV and S3 are reached with.
+ var syncClient = &http.Client{Transport: stallTransport{http.DefaultTransport}}
+ 
++// moved is whether the global proxy moved since the last sync request:
++// the sync rides http.DefaultTransport, whose idle connections a switch
++// would otherwise leave behind until some DefaultClient request dropped
++// them (#4824). The request after a move drops them itself, and dials
++// through the proxy in force.
++var moved = netproxy.Watch()
++
+ // bigBody says whether the request hauls a body that a live but slow line
+ // may take longer than the whole metaLimit to send: GitHub's blob POSTs
+ // carry up to 16 MiB of file, about 21 MB of base64, where a flat 30 s
+@@ -58,6 +67,11 @@ func bigBody(req *http.Request) bool {
+ type stallTransport struct{ base http.RoundTripper }
+ 
+ func (t stallTransport) RoundTrip(req *http.Request) (*http.Response, error) {
++	if moved() {
++		if tr, ok := t.base.(*http.Transport); ok {
++			tr.CloseIdleConnections()
++		}
++	}
+ 	moving := req.Method == http.MethodGet || req.Method == http.MethodPut || bigBody(req)
+ 	after := metaLimit
+ 	if moving {
+diff --git a/internal/davsync/stall_test.go b/internal/davsync/stall_test.go
+index 5542fb67a..738acfdd2 100644
+--- a/internal/davsync/stall_test.go
++++ b/internal/davsync/stall_test.go
+@@ -3,7 +3,10 @@ package davsync
+ import (
+ 	"bytes"
+ 	"context"
++	"crypto/tls"
++	"crypto/x509"
+ 	"encoding/base64"
++	"encoding/binary"
+ 	"encoding/json"
+ 	"errors"
+ 	"io"
+@@ -14,8 +17,11 @@ import (
+ 	"strconv"
+ 	"strings"
+ 	"sync"
++	"sync/atomic"
+ 	"testing"
+ 	"time"
++
++	"github.com/yetone/magpie/internal/settings"
+ )
+ 
+ // shortStall makes the watchdogs short for a test.
+@@ -377,3 +383,118 @@ func TestGitHubSmallPostKeepsTheLimit(t *testing.T) {
+ 		t.Fatalf("%v after %s, want the metadata limit on a small POST", err, took)
+ 	}
+ }
++
++// A switch of the global proxy leaves the sync riding the old one: the
++// sync goes over http.DefaultTransport, whose idle connections only a
++// DefaultClient request would ever drop (#4824). The sync's own request
++// sees the move, drops them, and dials through the proxy in force.
++func TestGlobalSwitchDialsTheSyncThroughTheNewProxy(t *testing.T) {
++	target := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "dav") }))
++	target.EnableHTTP2 = true
++	target.StartTLS()
++	t.Cleanup(target.Close)
++	pool := x509.NewCertPool()
++	pool.AddCert(target.Certificate())
++	a, na := fakeSOCKS(t)
++	b, nb := fakeSOCKS(t)
++	cur := atomic.Pointer[url.URL]{}
++	cur.Store(a)
++	tr := http.DefaultTransport.(*http.Transport)
++	oldProxy := tr.Proxy
++	cfg := tr.TLSClientConfig
++	wasNil := cfg == nil
++	if wasNil {
++		cfg = &tls.Config{}
++		tr.TLSClientConfig = cfg
++	}
++	oldRoots := cfg.RootCAs
++	cfg.RootCAs = pool
++	t.Cleanup(func() {
++		tr.Proxy = oldProxy
++		cfg.RootCAs = oldRoots
++		if wasNil {
++			tr.TLSClientConfig = nil
++		}
++	})
++	tr.Proxy = func(*http.Request) (*url.URL, error) { return cur.Load(), nil }
++	get := func() {
++		res, err := syncClient.Get(target.URL)
++		if err != nil {
++			t.Fatalf("the sync: %v", err)
++		}
++		io.Copy(io.Discard, res.Body)
++		res.Body.Close()
++		if res.ProtoMajor != 2 {
++			t.Fatalf("the sync went over %s, want HTTP/2", res.Proto)
++		}
++	}
++	if err := settings.Save(settings.Settings{Proxy: a.String()}); err != nil {
++		t.Fatal(err)
++	}
++	get()
++	if na.Load() != 1 || nb.Load() != 0 {
++		t.Fatalf("the first sync: %d connections through A, %d through B", na.Load(), nb.Load())
++	}
++	cur.Store(b)
++	if err := settings.Save(settings.Settings{Proxy: b.String()}); err != nil {
++		t.Fatal(err)
++	}
++	get()
++	if nb.Load() != 1 || na.Load() != 1 {
++		t.Fatalf("after the switch: %d connections through A, %d through B, want the sync to dial through B and no new one through A", na.Load(), nb.Load())
++	}
++}
++
++// fakeSOCKS is a SOCKS5 proxy counting the connections it carried.
++func fakeSOCKS(t *testing.T) (*url.URL, *atomic.Int32) {
++	t.Helper()
++	ln, err := net.Listen("tcp", "127.0.0.1:0")
++	if err != nil {
++		t.Fatal(err)
++	}
++	t.Cleanup(func() { ln.Close() })
++	var n atomic.Int32
++	go func() {
++		for {
++			c, err := ln.Accept()
++			if err != nil {
++				return
++			}
++			go func(c net.Conn) {
++				defer c.Close()
++				var h [2]byte
++				io.ReadFull(c, h[:])
++				io.CopyN(io.Discard, c, int64(h[1]))
++				c.Write([]byte{5, 0})
++				var r [4]byte
++				io.ReadFull(c, r[:])
++				var host string
++				switch r[3] {
++				case 1:
++					b := make([]byte, 4)
++					io.ReadFull(c, b)
++					host = net.IP(b).String()
++				case 3:
++					var l [1]byte
++					io.ReadFull(c, l[:])
++					b := make([]byte, l[0])
++					io.ReadFull(c, b)
++					host = string(b)
++				}
++				var pb [2]byte
++				io.ReadFull(c, pb[:])
++				up, err := net.Dial("tcp", net.JoinHostPort(host, strconv.Itoa(int(binary.BigEndian.Uint16(pb[:])))))
++				if err != nil {
++					c.Write([]byte{5, 5, 0, 1, 0, 0, 0, 0, 0, 0})
++					return
++				}
++				defer up.Close()
++				n.Add(1)
++				c.Write([]byte{5, 0, 0, 1, 127, 0, 0, 1, 0, 0})
++				go io.Copy(up, c)
++				io.Copy(c, up)
++			}(c)
++		}
++	}()
++	return &url.URL{Scheme: "socks5", Host: ln.Addr().String()}, &n
++}
+diff --git a/internal/netproxy/netproxy.go b/internal/netproxy/netproxy.go
+index a6e2e52ee..54c0ce65b 100644
+--- a/internal/netproxy/netproxy.go
++++ b/internal/netproxy/netproxy.go
+@@ -164,19 +164,17 @@ var HTTP1 func(u *url.URL) bool
+ // is dialed over IPv4 (v4Fallback).
+ func Dispatch(base *http.Transport) http.RoundTripper {
+ 	v4Fallback(base)
+-	return &dispatch{base: base, own: map[route]*http.Transport{}}
++	return &dispatch{base: base, own: map[route]*http.Transport{}, moved: Watch()}
+ }
+ 
+ type dispatch struct {
+ 	base *http.Transport
+ 	mu   sync.Mutex
+ 	own  map[route]*http.Transport
+-	// global is the proxy setting the last request to leave saw, and
+-	// seenGlobal whether any has: a move closes the idle connections,
+-	// which would carry the requests after a switch through the old
+-	// proxy (#4523).
+-	global     string
+-	seenGlobal bool
++	// moved is whether the global proxy moved since the dispatch's last
++	// request: a move drops the idle connections, which would carry the
++	// requests after a switch through the old proxy (#4523).
++	moved func() bool
+ }
+ 
+ // route is what a request needs of its transport other than base: a
+@@ -189,7 +187,7 @@ type route struct {
+ }
+ 
+ func (d *dispatch) RoundTrip(req *http.Request) (*http.Response, error) {
+-	if d.globalMoved() {
++	if d.moved() {
+ 		d.CloseIdleConnections()
+ 	}
+ 	r := route{choice: choiceOf(req.Context()), h1: HTTP1 != nil && HTTP1(req.URL), unchecked: uncheckedHost(req)}
+@@ -199,22 +197,31 @@ func (d *dispatch) RoundTrip(req *http.Request) (*http.Response, error) {
+ 	return v4Retry(d.transport(r), req)
+ }
+ 
+-// globalMoved says the proxy in magpie's settings changed since the last
+-// request to leave: base follows the setting at dial time (Func), but a
+-// transport pools by target host, and its HTTP/2 connections by the
+-// authority alone, so a connection dialled through the old proxy carried
+-// the requests after a switch too, and the Test left by the old exit
+-// while the new one was shown (#4523). Dropping the idle connections
+-// sends the request after it through the proxy in force; one a request
+-// is still reading is left to finish. The first request sees no move.
+-func (d *dispatch) globalMoved() bool {
+-	// Shared, not Load: this runs on every request
+-	now := strings.TrimSpace(settings.Shared().Proxy)
+-	d.mu.Lock()
+-	defer d.mu.Unlock()
+-	moved := d.seenGlobal && d.global != now
+-	d.global, d.seenGlobal = now, true
+-	return moved
++// Watch is a check a transport of its own makes before each request: it
++// says the global proxy in magpie's settings moved since the check's last
++// call, and the caller closes its transport's idle connections, which
++// would carry the request after a switch through the old proxy. The
++// setting is read at dial time (Func), but a transport pools by target
++// host, and its HTTP/2 connections by the authority alone, so a
++// connection dialled through the old proxy carries the requests after a
++// switch too, until it is dropped. Dropping the idle connections sends
++// the request after it through the proxy in force; one a request is
++// still reading is left to finish. Each check keeps its own last value,
++// so each transport sees, and answers, a move on the first request it
++// sends after it (#4523, #4824). The first call sees no move.
++func Watch() func() bool {
++	var mu sync.Mutex
++	var proxy string
++	var seen bool
++	return func() bool {
++		// Shared, not Load: this runs on every request
++		now := strings.TrimSpace(settings.Shared().Proxy)
++		mu.Lock()
++		defer mu.Unlock()
++		moved := seen && proxy != now
++		proxy, seen = now, true
++		return moved
++	}
+ }
+ 
+ func (d *dispatch) transport(r route) *http.Transport {
+diff --git a/internal/netproxy/netproxy_test.go b/internal/netproxy/netproxy_test.go
+index 1db81e966..ad38dafa2 100644
+--- a/internal/netproxy/netproxy_test.go
++++ b/internal/netproxy/netproxy_test.go
+@@ -324,3 +324,25 @@ func TestGlobalSwitchDropsTheOldProxyConnections(t *testing.T) {
+ 		t.Fatalf("after the switch: %d connections through A, %d through B, want the fresh dial through B and no new one through A", na.Load(), nb.Load())
+ 	}
+ }
++
++// Each check Watch hands out keeps its own last value: a move is seen,
++// once, by every check, on the first call it makes after it (#4824).
++func TestWatchSeesTheGlobalProxyMove(t *testing.T) {
++	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
++	w := Watch()
++	settings.Save(settings.Settings{Proxy: "socks5://127.0.0.1:1080"})
++	if w() {
++		t.Fatal("the first call sees a move")
++	}
++	settings.Save(settings.Settings{Proxy: "direct"})
++	if !w() {
++		t.Fatal("the move went unseen")
++	}
++	if w() {
++		t.Fatal("the setting standing is a move the second time")
++	}
++	v := Watch()
++	if v() {
++		t.Fatal("a check of its own starts in the middle")
++	}
++}
+diff --git a/internal/provider/icon.go b/internal/provider/icon.go
+index 66b755396..dfc2d94d1 100644
+--- a/internal/provider/icon.go
++++ b/internal/provider/icon.go
+@@ -80,7 +80,11 @@ func FetchIcon(ctx context.Context, rawURL string) (string, error) {
+ 	if err != nil {
+ 		return "", err
+ 	}
+-	return fetchIcon(ctx, iconClient(), iconproxy.URL(u))
++	c := iconClient()
++	// the client is this fetch's alone: the connection it made, left idle
++	// in the transport's pool, is dropped by nobody else (#4824)
++	defer c.CloseIdleConnections()
++	return fetchIcon(ctx, c, iconproxy.URL(u))
+ }
+ 
+ // iconClient is the client FetchIcon uses; tests point it at a local proxy.
+diff --git a/internal/provider/icon_test.go b/internal/provider/icon_test.go
+index 8f2326d3f..823d5839c 100644
+--- a/internal/provider/icon_test.go
++++ b/internal/provider/icon_test.go
+@@ -12,7 +12,9 @@ import (
+ 	"reflect"
+ 	"strconv"
+ 	"strings"
++	"sync/atomic"
+ 	"testing"
++	"time"
+ )
+ 
+ func TestStoreIcon(t *testing.T) {
+@@ -289,3 +291,38 @@ func TestGuardClientThroughLocalProxy(t *testing.T) {
+ 		t.Fatalf("the proxy was asked for a private site: %v", asked)
+ 	}
+ }
++
++// A fetch's client is that fetch's alone: the connection it made, left in
++// the transport's pool, is dropped by nobody else (#4824). The fetch
++// ends, the connection goes.
++func TestFetchIconLeavesNoIdleConnection(t *testing.T) {
++	home := t.TempDir()
++	t.Setenv("HOME", home)
++	t.Setenv("USERPROFILE", home)
++	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
++	png := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR")
++	var closed atomic.Int32
++	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		w.Header().Set("Content-Type", "image/png")
++		w.Write(png)
++	}))
++	srv.Config.ConnState = func(_ net.Conn, s http.ConnState) {
++		if s == http.StateClosed {
++			closed.Add(1)
++		}
++	}
++	srv.Start()
++	t.Cleanup(srv.Close)
++	t.Setenv("MAGPIE_ICON_PROXY", srv.URL+"/api/icon")
++	old := iconClient
++	iconClient = srv.Client
++	t.Cleanup(func() { iconClient = old })
++	if _, err := FetchIcon(context.Background(), "https://author.invalid/logo.png"); err != nil {
++		t.Fatal(err)
++	}
++	for now := time.Now(); closed.Load() == 0 && time.Since(now) < 2*time.Second; time.Sleep(5 * time.Millisecond) {
++	}
++	if closed.Load() == 0 {
++		t.Fatal("the fetch's connection is still idle: its pool was not closed")
++	}
++}
+-- 
+2.50.1 (Apple Git-155)
+```
+
+</details>
+
+Branch with the commit: [fix/4824-own-transports-idle-drop](https://github.com/ggbdpq/magpie/tree/fix/4824-own-transports-idle-drop) (head `8e7dc95a3a2c35d8a618641f684ded16c76ae161`).

@@ -1,0 +1,9 @@
+--- E:\cc\guahub\sessions\raw\codebuddy\migration-20261026-133813\ORIGINAL_FILE.json
++++ E:\cc\guahub\sessions\raw\codebuddy\migration-20261026-133813\MODIFIED_FILE.json
+@@ -1,5 +1,5 @@
+ {
+-  "state": "source_present",
++  "state": "migrated",
+   "groups": [
+     {
+       "name": "plugins",

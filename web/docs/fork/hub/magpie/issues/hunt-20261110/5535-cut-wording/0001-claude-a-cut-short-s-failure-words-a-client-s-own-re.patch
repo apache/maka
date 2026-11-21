@@ -1,0 +1,101 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Sat, 7 Nov 2026 03:34:12 +0800
+Subject: [PATCH] claude: a cut short's failure words a client's own retry
+ reads as transient (#5535)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+A stream Anthropic cut short mid tool call failed the reply with
+"Claude Code's stream from Anthropic was cut short after the reply had
+begun". The reply had begun — the call's name and half its arguments
+were already with the client — so the event's 502 was spent and the
+words are all the client gets, the stream's error event as prose. A
+client that retries on its own wording (pi's isRetryableAssistantError
+matches "stream was interrupted", "ended without", "terminated",
+"timeout") matched none, gave the turn up untried, and its next turn
+wrote the whole conversation to the subscription's cache again —
+~187k tokens of an hour's cache on darwesss-star's account, where a
+same-context retry would have read it from the cache. Every ending of
+failed now carries the phrase to retry on: "… (stream was interrupted;
+retry the request)", as the streamed 413 already says
+"(request_too_large)" for the same reason (#2372).
+
+Run at 416305451 + this change: TestClaudeCutStreamMidToolCallWordedToRetry
+red on the parent (the error event's message carries no phrase a retry
+matcher knows), green with the fix; the fix alone reverted, red again,
+restored green; the TestClaudeCutStream* family green; gateway whole,
+-tags nogui -count=1 -race -timeout 60m ok but for this machine's known
+TestBrowserKeyOffClosesItsBrowser, a data race between that test and
+browser.go's watchKey, both files byte-identical to the parent, the
+test green directed; gofmt -l internal/gateway empty; go vet -tags
+nogui ./internal/gateway ok on darwin and GOOS=windows; go build -tags
+nogui ./... ok on both.
+
+Fixes #5535
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gateway/claude_cut_stream_test.go | 22 ++++++++++++++++++++++
+ internal/gateway/claude_subscription.go    |  9 +++++++--
+ 2 files changed, 29 insertions(+), 2 deletions(-)
+
+diff --git a/internal/gateway/claude_cut_stream_test.go b/internal/gateway/claude_cut_stream_test.go
+index 58dbd2798..7e1d3b3f7 100644
+--- a/internal/gateway/claude_cut_stream_test.go
++++ b/internal/gateway/claude_cut_stream_test.go
+@@ -197,6 +197,28 @@ func TestClaudeCutStreamAfterWords(t *testing.T) {
+ 	}
+ }
+ 
++// A stream cut short mid tool call fails the reply with words the client
++// reads as prose, its status already spent on the reply that began: a
++// client that retries on its own wording knows "stream was interrupted",
++// not "cut short after the reply had begun", so the turn failed untried
++// and its next turn wrote the whole conversation to the cache again
++// (#5535). The failure names the phrase to retry on.
++func TestClaudeCutStreamMidToolCallWordedToRetry(t *testing.T) {
++	lines := []string{
++		cutStart,
++		`{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_w","name":"mcp__magpie__Write","input":{}}}}`,
++		`{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"path\":\"report.md\",\"content\":\"half o"}}}`,
++		`{"type":"stream_event","event":{"type":"message_stop"}}`,
++	}
++	_, stop, _, _, raw, _, ok := claudeReply(t, &subscriptionRun{}, lines, true)
++	if stop == "end_turn" || ok || !strings.Contains(raw, "cut short after the reply had begun") {
++		t.Fatalf("stop %q, ok %v:\n%s", stop, ok, raw)
++	}
++	if !strings.Contains(raw, "(stream was interrupted; retry the request)") {
++		t.Fatalf("the failure says nothing a client's own retry reads as transient:\n%s", raw)
++	}
++}
++
+ // A whole stream's output count is its message_delta's, which the client
+ // is told: no usage is lost on the way (#726's first question).
+ func TestClaudeStreamOutputCounted(t *testing.T) {
+diff --git a/internal/gateway/claude_subscription.go b/internal/gateway/claude_subscription.go
+index 71ff2d8bd..cf0d7127a 100644
+--- a/internal/gateway/claude_subscription.go
++++ b/internal/gateway/claude_subscription.go
+@@ -4021,10 +4021,15 @@ func (r *subscriptionRun) readOutput(rd io.Reader) {
+ 		return nil
+ 	}
+ 	// failed ends the reply with an error where it was cut short with
+-	// nothing to go on in
++	// nothing to go on in. The reply had begun, so the status is spent
++	// and the words are all the client has: named with a phrase its own
++	// retry reads as transient ("stream was interrupted"), the turn is
++	// asked again, and the conversation is not written to the cache
++	// whole again (pi matched none of its phrases and failed untried,
++	// #5535)
+ 	failed := func(why string) {
+ 		cut = false
+-		r.emit(Event{Kind: KError, Text: "Claude Code's stream from Anthropic was cut short " + why, Status: http.StatusBadGateway, RequestID: reqID})
++		r.emit(Event{Kind: KError, Text: "Claude Code's stream from Anthropic was cut short " + why + " (stream was interrupted; retry the request)", Status: http.StatusBadGateway, RequestID: reqID})
+ 		r.endSegment()
+ 	}
+ 	line := func(b []byte) {
+-- 
+2.50.1 (Apple Git-155)
+

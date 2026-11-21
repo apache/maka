@@ -1,0 +1,264 @@
+From 8868ec6df55477b6a9652558a575efd488471bd7 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Tue, 3 Nov 2026 18:16:50 +0800
+Subject: [PATCH] steady: a served write reaps the stale temps earlier writes
+ left beside the file (#4938)
+
+What changed: steady.WriteFile, on a write that went through, removes
+the temp files a crashed or failed write of the same file left beside
+it - its own .<file>.<digits> shape and edit.WriteAtomic's
+.<file>.<digits>.tmp alike, both old enough (10 minutes) to belong to
+no write still going on, and only ones whose remainder is digits, so
+another file's temps (.models.yml.bak.1.tmp is models.yml.bak's) stand.
+edit.WriteAtomic reaps through the same function: one reaper, both
+shapes, every folder magpie writes its own files in. Nothing reaped a
+steady temp before - edit reaped only its own .tmp shape - so a
+multi-instance start-up exiting mid-write (the reaping exists beside
+each write, and nothing swept) left hundreds beside magpie's own files
+over a run, and every O_EVTONLY descriptor the directory watcher holds
+per file with them (#4938 Bug 1: 758 temps, 839 descriptors). A write
+younger than the ten minutes stays, as another write may still be on
+it; a stalled write that loses its temp here fails its rename and
+leaves the file as it was.
+
+Bug 2 beside this one is yetone's b295d1196 (v0.1.2785); Bug 3 stays
+open.
+
+Run:
+- go test ./internal/steady -run TestWriteFileReapsStaleTemps -count=1
+  RED before (the .123 and .789.tmp temps a write leaves behind stay),
+  green after: this package's shape and edit's reaped, a younger one
+  and another file's stay.
+- go test ./internal/edit -count=1, ./internal/steady -count=1: ok.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/edit/file.go         | 43 +++---------------------------
+ internal/steady/steady.go     | 49 ++++++++++++++++++++++++++++++++++-
+ internal/steady/write_test.go | 49 +++++++++++++++++++++++++++++++++++
+ 3 files changed, 100 insertions(+), 41 deletions(-)
+
+diff --git a/internal/edit/file.go b/internal/edit/file.go
+index a7df5ba10..5edd7eb00 100644
+--- a/internal/edit/file.go
++++ b/internal/edit/file.go
+@@ -11,10 +11,8 @@ import (
+ 	"io/fs"
+ 	"os"
+ 	"path/filepath"
+-	"strings"
+ 	"sync"
+ 	"sync/atomic"
+-	"time"
+ 
+ 	"github.com/tidwall/jsonc"
+ 	"github.com/yetone/magpie/internal/appdir"
+@@ -128,7 +126,7 @@ func Filtered(f func(path string, data []byte) []byte, fn func() error) error {
+ // preserved. When path is a symlink (a config kept in a dotfiles repo) the
+ // file it points at is written and the link stays; a file with other hard
+ // links is written in place, see writeInPlace. Once written, temp files
+-// earlier writes of path left behind go, see removeStaleTemps.
++// earlier writes of path left behind go, see steady.RemoveStaleTemps.
+ func WriteAtomic(path string, data []byte) error {
+ 	path, err := Target(path)
+ 	if err != nil {
+@@ -154,7 +152,7 @@ func WriteAtomic(path string, data []byte) error {
+ 			if err := writeInPlace(f, data); err != nil {
+ 				return err
+ 			}
+-			removeStaleTemps(path)
++			steady.RemoveStaleTemps(path)
+ 			return nil
+ 		}
+ 		// A file that can't be opened for writing (mode 0444, or read-only
+@@ -215,7 +213,7 @@ func WriteAtomic(path string, data []byte) error {
+ 		cleanup()
+ 		return err
+ 	}
+-	removeStaleTemps(path)
++	steady.RemoveStaleTemps(path)
+ 	return nil
+ }
+ 
+@@ -277,41 +275,6 @@ func writeInPlace(f *os.File, data []byte) error {
+ 	return nil
+ }
+ 
+-// staleTemp is how long a temp file beside a config goes untouched before
+-// the next write of that config takes it for one a crash left. A write
+-// takes milliseconds, so a temp file that old belongs to no write still
+-// going on.
+-const staleTemp = 10 * time.Minute
+-
+-// removeStaleTemps removes the temp files that earlier writes of path left
+-// beside it when they crashed or failed part way, once a later write has
+-// gone through: the file then holds newer text than any of them. One
+-// younger than staleTemp stays, as another write may still be using it.
+-// Should a write stall longer than that (a laptop asleep mid-write) and
+-// lose its temp file here, its rename fails and leaves the file as it was,
+-// or, writing in place, it only loses the spare copy of its text.
+-func removeStaleTemps(path string) {
+-	dir, prefix := filepath.Dir(path), "."+filepath.Base(path)+"."
+-	es, err := os.ReadDir(dir)
+-	if err != nil {
+-		return
+-	}
+-	for _, e := range es {
+-		mid, ok := strings.CutPrefix(e.Name(), prefix)
+-		if ok {
+-			mid, ok = strings.CutSuffix(mid, ".tmp")
+-		}
+-		// os.CreateTemp puts digits for the *; anything else is another
+-		// file's, say .models.yml.bak.1.tmp is models.yml.bak's
+-		if !ok || mid == "" || strings.Trim(mid, "0123456789") != "" {
+-			continue
+-		}
+-		if fi, err := e.Info(); err == nil && time.Since(fi.ModTime()) > staleTemp {
+-			_ = os.Remove(filepath.Join(dir, e.Name()))
+-		}
+-	}
+-}
+-
+ // Target is the file a write to path should replace: path itself, or,
+ // when path is a symlink, the file at the end of its links — the path it
+ // names even when nothing is there yet. Renaming over the link instead
+diff --git a/internal/steady/steady.go b/internal/steady/steady.go
+index e60a6f4db..bc8d29b7f 100644
+--- a/internal/steady/steady.go
++++ b/internal/steady/steady.go
+@@ -16,6 +16,7 @@ import (
+ 	"os"
+ 	"path/filepath"
+ 	"runtime"
++	"strings"
+ 	"syscall"
+ 	"time"
+ )
+@@ -153,6 +154,8 @@ var Sync = (*os.File).Sync
+ // machine that went down between the two left logins.json and
+ // plugin-auth.json at their full length with every byte zero (#1505). A
+ // write or flush that fails removes the temp file and leaves p as it was.
++// A write that is served takes the stale temps earlier writes left beside
++// p when they died (RemoveStaleTemps) along with it.
+ func WriteFile(p string, b []byte, perm fs.FileMode) error {
+ 	tmp, err := os.CreateTemp(filepath.Dir(p), "."+filepath.Base(p)+".*")
+ 	if err != nil {
+@@ -173,6 +176,50 @@ func WriteFile(p string, b []byte, perm fs.FileMode) error {
+ 	}
+ 	if err != nil {
+ 		os.Remove(tmp.Name())
++		return err
++	}
++	RemoveStaleTemps(p)
++	return nil
++}
++
++// staleTemps is how long a temp file beside a file goes untouched before
++// the next write of that file takes it for one a crash left. A write takes
++// milliseconds, so a temp file that old belongs to no write still going on.
++const staleTemps = 10 * time.Minute
++
++// RemoveStaleTemps removes the temp files that earlier writes of path left
++// beside it when they died or failed part way, once a later write has gone
++// through: the file then holds newer text than any of them (#4938 — a
++// start-up that exits mid-write left hundreds beside magpie's own files,
++// and every file descriptor a directory watcher holds on them with it).
++// One younger than staleTemps stays, as another write may still be using
++// it. Should a write stall longer than that (a laptop asleep mid-write)
++// and lose its temp file here, its rename fails and leaves the file as it
++// was, or, writing in place, it only loses the spare copy of its text.
++func RemoveStaleTemps(path string) {
++	dir, prefix := filepath.Dir(path), "."+filepath.Base(path)+"."
++	es, err := os.ReadDir(dir)
++	if err != nil {
++		return
++	}
++	for _, e := range es {
++		mid, ok := strings.CutPrefix(e.Name(), prefix)
++		if !ok {
++			continue
++		}
++		// os.CreateTemp puts digits for the *: this package's temps are
++		// digits alone, edit.WriteAtomic's digits and ".tmp" (which the
++		// reaping of one file's temps takes with the other's, the two
++		// writers sharing the folder); anything else is another file's,
++		// say .models.yml.bak.1.tmp is models.yml.bak's
++		if t, hasTmp := strings.CutSuffix(mid, ".tmp"); hasTmp {
++			mid = t
++		}
++		if mid == "" || strings.Trim(mid, "0123456789") != "" {
++			continue
++		}
++		if fi, err := e.Info(); err == nil && time.Since(fi.ModTime()) > staleTemps {
++			_ = os.Remove(filepath.Join(dir, e.Name()))
++		}
+ 	}
+-	return err
+ }
+diff --git a/internal/steady/write_test.go b/internal/steady/write_test.go
+index 434faf8f5..bcdb972ec 100644
+--- a/internal/steady/write_test.go
++++ b/internal/steady/write_test.go
+@@ -5,6 +5,7 @@ import (
+ 	"os"
+ 	"path/filepath"
+ 	"testing"
++	"time"
+ )
+ 
+ // A file is flushed to the disk before it is renamed over the old one: a
+@@ -52,3 +53,51 @@ func TestWriteFileSyncsBeforeRename(t *testing.T) {
+ 		t.Fatalf("a failed write left %v", left)
+ 	}
+ }
++
++// A write that died between making its temp file and renaming it leaves the
++// temp beside the file: a multi-instance start-up exiting mid-write made
++// hundreds of them beside magpie's own files over a run, and nothing took
++// them — edit.WriteAtomic reaps its temps beside the file it wrote, but
++// steady.WriteFile never did (#4938). A served write reaps the ones old
++// enough to belong to no write still going on, its own shape and edit's
++// alike, and leaves a younger one alone and another file's temp alone.
++func TestWriteFileReapsStaleTemps(t *testing.T) {
++	dir := t.TempDir()
++	p := filepath.Join(dir, "quotas.json")
++	if err := os.WriteFile(p, []byte(`{}`), 0o600); err != nil {
++		t.Fatal(err)
++	}
++	old := time.Now().Add(-time.Hour)
++	temps := []struct {
++		name         string
++		stale, stays bool
++	}{
++		{".quotas.json.123", true, false},     // this package's shape, a crash left it
++		{".quotas.json.456", false, true},     // another write may still be on it
++		{".quotas.json.789.tmp", true, false}, // edit.WriteAtomic's shape, the same file's
++		{".quotas.json.x.012", true, true},    // .quotas.json.x's, not quotas.json's
++	}
++	for _, tt := range temps {
++		f := filepath.Join(dir, tt.name)
++		if err := os.WriteFile(f, []byte("half"), 0o600); err != nil {
++			t.Fatal(err)
++		}
++		if tt.stale {
++			if err := os.Chtimes(f, old, old); err != nil {
++				t.Fatal(err)
++			}
++		}
++	}
++	if err := WriteFile(p, []byte(`{"a":1}`), 0o600); err != nil {
++		t.Fatal(err)
++	}
++	if b, err := os.ReadFile(p); err != nil || string(b) != `{"a":1}` {
++		t.Fatalf("file = %q, %v", b, err)
++	}
++	for _, tt := range temps {
++		_, err := os.Stat(filepath.Join(dir, tt.name))
++		if stays := err == nil; stays != tt.stays {
++			t.Errorf("%s: stays %v, want %v", tt.name, stays, tt.stays)
++		}
++	}
++}
+-- 
+2.50.1 (Apple Git-155)
+

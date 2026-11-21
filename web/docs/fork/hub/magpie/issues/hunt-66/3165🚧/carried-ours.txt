@@ -1,0 +1,7 @@
+// A Chat request relayed as it came to a DeepSeek engine that streams its
+// thinking in `reasoning` (#3165): the client echoes that field back, and
+// the replay of a tool turn would put reasoning_content beside it, which
+// such a serde takes apart ("duplicate field `reasoning`"). The thinking
+// moves into reasoning_content instead: it is carried once, and a message
+// that echoed reasoning_content of its own loses the `reasoning` left
+// beside it.

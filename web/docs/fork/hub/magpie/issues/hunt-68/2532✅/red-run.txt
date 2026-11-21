@@ -1,0 +1,27 @@
+=== RUN   TestCodexAsSent
+--- PASS: TestCodexAsSent (0.18s)
+=== RUN   TestCodexLaterDeveloperMessageKeepsTheSystem
+--- PASS: TestCodexLaterDeveloperMessageKeepsTheSystem (0.00s)
+=== RUN   TestCodexThreadKeepsItsClaudeRunAcrossAMemoryCall
+    codex_developer_cache_test.go:73: a shell script stands in for Claude Code
+--- SKIP: TestCodexThreadKeepsItsClaudeRunAcrossAMemoryCall (0.00s)
+=== RUN   TestHunt68FreshModeInstructionKeepsItsSystemWeight
+    hunt68_2532_mode_wire_test.go:139: the mid-thread mode instruction lost the system's weight — the stale Plan mode stays in the system prompt and the fresh Default mode rides a user turn:
+        system: "You are Codex.\n\n<permissions instructions>mode: plan — research and plan only, do not modify files</permissions instructions>"
+        message[0] role=user:
+          text: "plan a fix for the bug"
+        message[1] role=assistant:
+          text: "here is the plan"
+        message[2] role=user:
+          text: "<system-reminder>\n<permissions instructions>mode: default — you may edit files and run commands</permissions instructions>\n</system-reminder>"
+          text: "execute the plan now"
+--- FAIL: TestHunt68FreshModeInstructionKeepsItsSystemWeight (0.09s)
+=== RUN   TestHunt68ModeSwitchWireShapeAsItIs
+--- PASS: TestHunt68ModeSwitchWireShapeAsItIs (0.18s)
+=== RUN   TestHunt68CodexAsSentLeavesTheClaudeWireUnchanged
+--- PASS: TestHunt68CodexAsSentLeavesTheClaudeWireUnchanged (0.13s)
+=== RUN   TestHunt68ModeInstructionKeepsItsRoleOnAResponsesRelay
+--- PASS: TestHunt68ModeInstructionKeepsItsRoleOnAResponsesRelay (0.13s)
+FAIL
+FAIL	github.com/yetone/magpie/internal/gateway	1.646s
+FAIL

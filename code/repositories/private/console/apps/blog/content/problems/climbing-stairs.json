@@ -1,0 +1,23 @@
+{
+  "id": "11",
+  "slug": "climbing-stairs",
+  "title": "爬楼梯",
+  "difficulty": "easy",
+  "tags": ["动态规划", "数学"],
+  "description": "假设你正在爬楼梯。需要 `n` 阶你才能到达楼顶。\n\n每次你可以爬 1 或 2 个台阶。你有多少种不同的方法可以爬到楼顶呢?\n\n**示例 1:**\n\n- 输入:`n = 2`\n- 输出:`2`(1+1 或 2)\n\n**示例 2:**\n\n- 输入:`n = 3`\n- 输出:`3`(1+1+1、1+2、2+1)",
+  "solution": "## 思路\n\n到达第 n 阶的方法 = 到第 n-1 阶(再跨 1)+ 到第 n-2 阶(再跨 2)。即 `f(n) = f(n-1) + f(n-2)`,本质是**斐波那契**。用两个变量滚动即可,空间 O(1)。\n\n## 参考代码\n\n```js\nfunction climbStairs(n) {\n  if (n <= 2) return n;\n  let a = 1;\n  let b = 2;\n  for (let i = 3; i <= n; i++) {\n    [a, b] = [b, a + b];\n  }\n  return b;\n}\n```\n\n## 复杂度\n\n- 时间:O(n)\n- 空间:O(1)",
+  "signature": {
+    "language": "javascript",
+    "entry": "climbStairs",
+    "params": [{ "name": "n", "type": "number" }],
+    "returns": "number"
+  },
+  "testCases": [
+    { "sample": true, "input": [2], "expected": 2 },
+    { "sample": true, "input": [3], "expected": 3 },
+    { "sample": false, "input": [1], "expected": 1 },
+    { "sample": false, "input": [4], "expected": 5 },
+    { "sample": false, "input": [5], "expected": 8 },
+    { "sample": false, "input": [10], "expected": 89 }
+  ]
+}

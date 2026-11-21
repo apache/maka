@@ -1,0 +1,1 @@
+b9da1859440ce0f5756e6cddbc95e3614816c1416408055279ab4c5e7345b921  /Users/ggbdpq/cc/guahub/fork/docs/hub/magpie/issues/hunt-123/4040-codex-400-context/0001-gateway-an-overflow-said-without-the-model-s-compact.patch

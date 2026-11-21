@@ -1,0 +1,26 @@
+gateway: a group's trace says what its classifier said, as it said it (#4598)
+
+What changed: Classified keeps the classifier's answer as it said it
+(said): the number a chat model answered with, 0 for none, or the choice
+a decision model named, "none of these" included. readIntent gives the
+number back, readJev keeps the choice, and the trace's rule.classified
+carries the said on. An answer that named no rule's intent — a chat
+classifier's 0, a decision model's own none-of-the-kinds option, a kind
+named under the sure-enough bar — all read "said none" in the trace
+before, so a group's fallback kind ("not any of the above") that never
+matched looked the same as an answer no rule could take.
+
+The matching itself is as it was: a classifier that answers the
+fallback kind's number still routes by that rule, which a test now
+holds (it passes unchanged); the said is only what the trace tells.
+
+Run: go test -tags nogui ./internal/gateway (pass; without the change
+TestClassifiedSaysTheClassifiersAnswer fails "the classifier said 0,
+the trace says \"\"" and TestClassifiedSaysWhatJevChose fails "Jev
+chose \"none of these\", the trace says \"\""); gofmt -l prints
+nothing; go vet and GOOS=linux/windows go vet on the package pass;
+go build on darwin, linux (-tags nogui) and windows pass.
+
+Fixes #4598
+
+Generated-by: GLM-5.3-Flash (ZCode)

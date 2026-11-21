@@ -1,0 +1,126 @@
+{
+  "reaVersion": "6.4.0",
+  "capturedAssets": 274,
+  "sourceMapStatus": "未在已采集脚本中声明 sourceMappingURL",
+  "readableFiles": [
+    "app-manage-BEP7X8Yl.js",
+    "app-version-Iwp2sV4h.js",
+    "super-agent-DC1upGdv.js",
+    "standard-agent-BeJtG62a.js",
+    "workflow-pIO8SJmW.js",
+    "task-app-CAGEY0oU.js",
+    "no-code-chat-4EydMoQm.js",
+    "low-code-chat-D6fop61f.js",
+    "sop-log-Byq24Tls.js",
+    "agent-team-2JcYUrVG.js",
+    "team-detail-C_ltYyhx.js",
+    "role-agent-CaTVbu1-.js",
+    "plugin-detail-iQ4QgUU6.js",
+    "agent-skill-BfEINSto.js",
+    "skill-detail-DnwZcdYV.js",
+    "mcp-service-BeVJ9oKQ.js",
+    "auth-policy-oLDGqBv_.js",
+    "detail-page-BFQ2kuy1.js",
+    "mcp-edit-PDS42ev_.js",
+    "tool-edit-yNOvuJlz.js",
+    "tool-details-BSDT7Lwh.js",
+    "mcp-details-BU34u9rb.js",
+    "plugin-manage-Dw1688ak.js",
+    "plugin-detail-legacy-DqFia5cc.js",
+    "prompt-word-library-vaeYAx4R.js",
+    "knowledge-Pvt-H7Zx.js",
+    "wiki-knowledge-1NdSMZaq.js",
+    "knowledge-doc-DXvXc9fv.js",
+    "qa-daatabase-CouSE0St.js",
+    "knowledge-audio-video-D7aW0PgS.js",
+    "AudioVideoEdit-JBva4r_L.js",
+    "tag-structure-RQmKisnT.js",
+    "doc-import-dispatcher-C_NVQjf0.js",
+    "doc-import-details-BnvSO9hb.js",
+    "tabledoc-import-BGZI1Jgn.js",
+    "tabledoc-detail-DJiYtKWs.js",
+    "doc-structure-BRa5tcTq.js",
+    "data-analysis-Cmwwc63s.js",
+    "agent-console-BxokT02m.js",
+    "platform-data-analysis-Cx2i07nt.js",
+    "detail-DWtylIE5.js",
+    "agent-debug-Dz_-3NKf.js",
+    "AgentTable-DMLUccn2.js",
+    "src-_hjT3BN9.js",
+    "constants-DGERUyiC.js",
+    "agent-C0JAlTor.js",
+    "status-dict-D3T8Xf4E.js",
+    "ListLayout-B8lj_6O3.js",
+    "LayoutHeader-DwNjoN8b.js",
+    "micro-app-DNjru_4h.js",
+    "Graph-B6k8QY9W.js",
+    "utils-DS1Vnd25.js",
+    "config-KnGHEPxL.js",
+    "hooks-C9yyjErO.js",
+    "intelligentEngine-BhRFRjx8.js",
+    "src--QpPaBte.js"
+  ],
+  "changes": [
+    {
+      "file": "client-BfElcTb7.js",
+      "change": "账号 SDK 使用本地租户展示数据，请求仍统一经过离线边界"
+    },
+    {
+      "file": "index.B_LPe2F7.js",
+      "change": "移除真实账号登录启动，恢复原 Layout 与全部编辑路由；原生 request、df、Axios 风格方法和账号 SDK 四个请求入口都使用离线数据"
+    },
+    {
+      "file": "low-code-chat-D6fop61f.js",
+      "change": "节点表单同步提交当前值，避免抽屉卸载后的延迟回调清空配置"
+    },
+    {
+      "file": "qa-daatabase-CouSE0St.js",
+      "change": "本地问答配置显示实际保存状态，不暗示后台向量化正在运行"
+    },
+    {
+      "file": "request-Cb6e7tFu.js",
+      "change": "请求发送替换为离线数据适配器，保留原导出接口"
+    }
+  ],
+  "agentRecords": 82,
+  "versions": 82,
+  "runModes": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6
+  ],
+  "workflowGraphs": {
+    "count": 78,
+    "nodes": 642,
+    "edges": 677
+  },
+  "businessCounts": {
+    "prompts": 27,
+    "promptLabels": 8,
+    "teams": 0,
+    "roles": 1,
+    "skills": 1,
+    "mcp": 10,
+    "plugins": 51,
+    "knowledge": 29
+  },
+  "knowledgeCounts": {
+    "bases": 29,
+    "documents": 55,
+    "segmentGroups": 25,
+    "segments": 73,
+    "tableGroups": 30,
+    "qaRows": 27,
+    "labelQueries": 29
+  },
+  "scope": "原发布 Layout、完整侧栏、7 种 Agent 模式编辑器与业务页面离线运行；服务端执行能力不在恢复范围",
+  "upstreamMissingAssets": [
+    "https://ai-copilot.cos.clife.cn/web-agent-paas/assets/css/icon.png",
+    "https://ai-copilot.cos.clife.cn/web-agent-paas/assets/images/nextIcon-active.png",
+    "https://ai-copilot.cos.clife.cn/web-agent-paas/assets/images/nextIcon.png"
+  ]
+}

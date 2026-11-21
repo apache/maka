@@ -1,0 +1,30 @@
+=== RUN   TestProbe2622ShapeChatToolsUnit
+    zz_hunt68_2622_probe_test.go:48: standard wrapper: parameters carried verbatim
+    zz_hunt68_2622_probe_test.go:48: mcp flat: parameters carried verbatim
+    zz_hunt68_2622_probe_test.go:48: anthropic flat: parameters carried verbatim
+    zz_hunt68_2622_probe_test.go:48: responses flat: parameters carried verbatim
+    zz_hunt68_2622_probe_test.go:56: standard tool: body relayed byte for byte
+--- PASS: TestProbe2622ShapeChatToolsUnit (0.00s)
+=== RUN   TestProbe2622RelayChat
+    zz_hunt68_2622_probe_test.go:87: RED-for-the-issue: $ref-to-oneOf schema relayed verbatim to the Chat upstream
+    zz_hunt68_2622_probe_test.go:88: upstream tools.0: {"type":"function","function":{"name":"observe_native_calls","parameters":{"type":"object","properties":{"x":{"type":"array","items":{"$ref":"#/$defs/T"}}},"$defs":{"T":{"oneOf":[{"type":"string"}]}}}}}
+    zz_hunt68_2622_probe_test.go:102: mcp flat + $ref-to-oneOf: wrapped to type/function, parameters still verbatim
+    zz_hunt68_2622_probe_test.go:103: upstream tools.0: {"function":{"name":"observe_native_calls","parameters":{"type":"object","properties":{"x":{"type":"array","items":{"$ref":"#/$defs/T"}}},"$defs":{"T":{"oneOf":[{"type":"string"}]}}}},"type":"function"}
+    zz_hunt68_2622_probe_test.go:117: inline oneOf control: verbatim upstream
+    zz_hunt68_2622_probe_test.go:117: ref to object control: verbatim upstream
+--- PASS: TestProbe2622RelayChat (0.28s)
+=== RUN   TestProbe2622TranslatedRoutes
+=== RUN   TestProbe2622TranslatedRoutes/messages
+    zz_hunt68_2622_probe_test.go:162: messages: schema carried through translation verbatim at tools.0.input_schema
+=== RUN   TestProbe2622TranslatedRoutes/responses
+    zz_hunt68_2622_probe_test.go:162: responses: schema carried through translation verbatim at tools.0.parameters
+--- PASS: TestProbe2622TranslatedRoutes (0.34s)
+    --- PASS: TestProbe2622TranslatedRoutes/messages (0.17s)
+    --- PASS: TestProbe2622TranslatedRoutes/responses (0.17s)
+=== RUN   TestProbe2622ChainGates
+    zz_hunt68_2622_probe_test.go:182: toolOneOfAsAnyOf: gate closed for host token.sensenova.cn, body unchanged
+    zz_hunt68_2622_probe_test.go:182: kimiToolEnumTypes: gate closed for host token.sensenova.cn, body unchanged
+    zz_hunt68_2622_probe_test.go:182: kimiToolRefTypes: gate closed for host token.sensenova.cn, body unchanged
+--- PASS: TestProbe2622ChainGates (0.00s)
+PASS
+ok  	github.com/yetone/magpie/internal/gateway	1.756s

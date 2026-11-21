@@ -1,0 +1,12 @@
+=== RUN   TestClaudeSubscriptionPromptKeepsForeignHarnessOutOfSystem
+--- PASS: TestClaudeSubscriptionPromptKeepsForeignHarnessOutOfSystem (0.00s)
+=== RUN   TestAskClaudeTUIOn
+--- PASS: TestAskClaudeTUIOn (0.82s)
+=== RUN   TestClaudeUsageTUIOn
+--- PASS: TestClaudeUsageTUIOn (0.21s)
+=== RUN   TestWarmClaudeAsksClaudeCodeOnce
+--- PASS: TestWarmClaudeAsksClaudeCodeOnce (0.10s)
+=== RUN   TestClaudeUsageRunsClaudeCode
+--- PASS: TestClaudeUsageRunsClaudeCode (0.09s)
+PASS
+ok  	github.com/yetone/magpie/internal/gateway	1.841s

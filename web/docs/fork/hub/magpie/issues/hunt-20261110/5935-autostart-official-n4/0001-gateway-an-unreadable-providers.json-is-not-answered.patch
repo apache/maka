@@ -1,0 +1,305 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Wed, 11 Nov 2026 00:50:43 +0800
+Subject: [PATCH] gateway: an unreadable providers.json is not answered from
+ the built-in subscriptions (Leelili-BY on GitHub, #5935)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Leelili-BY: with magpie starting at boot on Windows, requests now and
+then went to the signed-in account's quota instead of the configured
+provider's.
+
+A read of providers.json that fails — another program holding the file
+for a moment at a start-up, an antivirus or a sync client after it —
+is taken as an empty catalog by every read that goes on without it
+(load): the user's providers drop out of routing, while the built-in
+subscriptions, whose sign-ins are read beside the file, stay. A model
+the user's provider serves is then answered from the built-ins alone:
+
+- a bare model's name goes to the agent's own subscription
+  (ownFirst): the groups and picks that would have redirected it are
+  unreadable with the file;
+- a bare name resolves to the first provider exposing it, or to the
+  one provider that lists it (resolveIn): the built-in subscription;
+- a bare name names a routing group (GroupFor), and a found group
+  among the entries left is one of built-ins alone; a found group's
+  own id resolves the same way.
+
+The subscription's quota is spent in the provider's place, without a
+word, and the catalog built in that state is kept across requests for
+up to a minute after the file reads again (keptOf, whose stamp sees
+the file unchanged), so the minutes after a boot can all go there.
+
+Routing now refuses to guess from what an unreadable file leaves: with
+FileError set, OwnRoute picks no subscription, resolveIn answers only
+ids naming a provider it can see, a found group's id resolves to
+nothing, and GroupFor names no group; the gateway answers 503 with the
+file's own error ("... can't be read ... fix it or move it aside"), so
+the agent asks again and is served once the file reads again — the
+waiting the issue asked for, with the reason said. A file that isn't
+there reads as before (first use, FileError nil); one that parses
+answers as before; ids naming a provider the built-in view has
+("claude/...") still go.
+
+Run:
+- go test -tags nogui -count=1 -run
+  'TestUnreadableProvidersFile|OwnFirst|OwnRoute|BareName|GroupFor|AutoStandIn|UnknownModel'
+  ./internal/gateway ./internal/provider: ok; with -race: ok.
+- go test -tags nogui -count=1 ./internal/gateway ./internal/provider:
+  ok (whole packages).
+
+Ablated each gate alone: without resolveIn's, the bare name was
+answered 200 by the subscription — the issue's shape; without
+ownRouteIn's, ownFirst picked the subscription; without the gateway's
+refusal, the same refusal read as a 404 "magpie knows no model".
+GroupFor's gate alone stays green in this fixture (one built-in serves
+the model, so no group forms among the built-ins): it closes the same
+guess where two built-ins serve one model (codex and copilot, gemini
+and antigravity).
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gateway/gateway.go                   |  11 ++
+ internal/gateway/providers_unreadable_test.go | 135 ++++++++++++++++++
+ internal/provider/group.go                    |   6 +
+ internal/provider/models.go                   |  15 ++
+ internal/provider/ownroute.go                 |   7 +
+ 5 files changed, 174 insertions(+)
+ create mode 100644 internal/gateway/providers_unreadable_test.go
+
+diff --git a/internal/gateway/gateway.go b/internal/gateway/gateway.go
+index fdc16f5d0..0e9b8cc95 100644
+--- a/internal/gateway/gateway.go
++++ b/internal/gateway/gateway.go
+@@ -2591,6 +2591,17 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
+ 		s.rememberCodexTurn(r, call.Agent, agent, call.Kind, asked)
+ 	}
+ 	if !ok {
++		// providers.json unreadable (#5935): a model the user's providers
++		// serve must not be answered from the built-in subscriptions alone,
++		// which is all the reads of an unreadable file leave to resolve
++		// from. Refused, saying so: the agent asks again, and is served
++		// once the file reads again.
++		if ferr := provider.FileError(); ferr != nil {
++			call.Status, call.Error = http.StatusServiceUnavailable, "providers unreadable"
++			writeError(w, from, http.StatusServiceUnavailable, ferr.Error())
++			turnedAway()
++			return
++		}
+ 		call.Status, call.Error = 404, "unknown model"
+ 		if off, isOff := provider.SwitchedOff(asked); isOff {
+ 			call.Error = "provider switched off"
+diff --git a/internal/gateway/providers_unreadable_test.go b/internal/gateway/providers_unreadable_test.go
+new file mode 100644
+index 000000000..40c99c8bc
+--- /dev/null
++++ b/internal/gateway/providers_unreadable_test.go
+@@ -0,0 +1,135 @@
++package gateway
++
++import (
++	"io"
++	"net/http"
++	"net/http/httptest"
++	"os"
++	"strings"
++	"sync/atomic"
++	"testing"
++
++	"github.com/yetone/magpie/internal/filememo"
++	"github.com/yetone/magpie/internal/provider"
++)
++
++// unreadableHome: Codex signed in to ChatGPT (tierAccounts, the account's
++// own quota), and a relay first in the Providers order that serves
++// gpt-6-luna too, whose replies say "relay". It returns the requests the
++// subscription was tried with and the relay's hits.
++func unreadableHome(t *testing.T) (codexTried func() []string, relayHits func() int64) {
++	t.Helper()
++	tried := tierAccounts(t, nil, nil)
++	var hits atomic.Int64
++	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		io.ReadAll(r.Body)
++		hits.Add(1)
++		io.WriteString(w, sse(
++			`data: {"type":"response.created","response":{"id":"r3","model":"gpt-6-luna"}}`,
++			`data: {"type":"response.output_text.delta","delta":"relay"}`,
++			`data: {"type":"response.completed","response":{"id":"r3","usage":{"input_tokens":7,"output_tokens":1}}}`))
++	}))
++	t.Cleanup(up.Close)
++	if err := provider.Save(provider.Provider{ID: "relay", Name: "Relay", Key: "k", Responses: up.URL + "/v1", Models: []string{"gpt-6-luna"}}); err != nil {
++		t.Fatal(err)
++	}
++	if err := provider.SetOrder([]string{"relay"}); err != nil {
++		t.Fatal(err)
++	}
++	return tried, func() int64 { return hits.Swap(0) }
++}
++
++// breakProvidersFile puts a folder where providers.json is: the file is
++// there, and reads of it fail, as they do while another program holds it —
++// a moment at a start-up on Windows, and the state a broken file stays in.
++// The restore it returns puts the file back.
++func breakProvidersFile(t *testing.T) (restore func()) {
++	t.Helper()
++	p := provider.Path()
++	b, err := os.ReadFile(p)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if err := os.Remove(p); err != nil {
++		t.Fatal(err)
++	}
++	if err := os.Mkdir(p, 0o700); err != nil {
++		t.Fatal(err)
++	}
++	filememo.Look(p)
++	restore = func() {
++		os.RemoveAll(p)
++		os.WriteFile(p, b, 0o600)
++		filememo.Look(p)
++	}
++	t.Cleanup(restore)
++	return restore
++}
++
++// #5935 (Leelili-BY: after Windows started magpie at boot, requests went
++// to the signed-in account's quota instead of the provider's, now and
++// then): while providers.json can't be read, the user's providers are out
++// of every read of it and the built-in subscriptions stay. A model the
++// user's provider serves — asked as relay/model, or by its bare name —
++// is then resolved and routed from the built-ins alone: to the agent's
++// own subscription, whose quota is spent in the provider's place, without
++// a word. magpie refuses instead, and says the file can't be read, so the
++// agent asks again and is served once it reads again.
++func TestUnreadableProvidersFileRefusesRatherThanTheOwnSubscription(t *testing.T) {
++	codexTried, relayHits := unreadableHome(t)
++	s := New()
++	// readable: the relay answers; the subscription is not asked
++	if rec := postCodex(s, "relay/gpt-6-luna"); rec.Code != 200 || !strings.Contains(rec.Body.String(), "relay") {
++		t.Fatalf("readable: %d %s", rec.Code, rec.Body)
++	}
++	if tried := codexTried(); len(tried) != 0 {
++		t.Fatalf("readable: the subscription was asked %v", tried)
++	}
++	if n := relayHits(); n != 1 {
++		t.Fatalf("readable: the relay was asked %d times", n)
++	}
++	restore := breakProvidersFile(t)
++	for _, model := range []string{"relay/gpt-6-luna", "gpt-6-luna"} {
++		rec := postCodex(s, model)
++		if rec.Code != http.StatusServiceUnavailable || !strings.Contains(rec.Body.String(), "providers.json") {
++			t.Fatalf("unreadable, asked for %q: %d %s", model, rec.Code, rec.Body)
++		}
++	}
++	if tried := codexTried(); len(tried) != 0 {
++		t.Fatalf("unreadable: the subscription was asked %v", tried)
++	}
++	if n := relayHits(); n != 0 {
++		t.Fatalf("unreadable: the relay was asked %d times", n)
++	}
++	// readable again: the relay answers, as it did
++	restore()
++	if rec := postCodex(s, "relay/gpt-6-luna"); rec.Code != 200 || !strings.Contains(rec.Body.String(), "relay") {
++		t.Fatalf("readable again: %d %s", rec.Code, rec.Body)
++	}
++	if tried := codexTried(); len(tried) != 0 {
++		t.Fatalf("readable again: the subscription was asked %v", tried)
++	}
++}
++
++// The bare name goes to the subscription by design while the file reads
++// (ownFirst): the unreadable file takes that pick away with the rest.
++func TestUnreadableProvidersFileTakesTheBareNamePickAway(t *testing.T) {
++	unreadableHome(t)
++	r := httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
++	breakProvidersFile(t)
++	if to, ok := ownFirst(r, "codex", "gpt-6-luna"); ok {
++		t.Fatalf("unreadable: the bare name still picked %q", to)
++	}
++	if _, _, ok := provider.OwnRoute("codex", "gpt-6-luna"); ok {
++		t.Fatal("unreadable: OwnRoute still routes to the subscription")
++	}
++	if _, _, ok := provider.Resolve("relay/gpt-6-luna"); ok {
++		t.Fatal("unreadable: Resolve still answers a provider for it")
++	}
++	if _, ok := provider.GroupFor("gpt-6-luna"); ok {
++		t.Fatal("unreadable: GroupFor still names a group for the bare id")
++	}
++	if err := provider.FileError(); err == nil {
++		t.Fatal("unreadable: FileError says nil")
++	}
++}
+diff --git a/internal/provider/group.go b/internal/provider/group.go
+index 3dbb6688e..c5832928d 100644
+--- a/internal/provider/group.go
++++ b/internal/provider/group.go
+@@ -1094,6 +1094,12 @@ func GroupFor(id string) (string, bool) {
+ 	if id == "" || strings.Contains(id, "/") {
+ 		return "", false
+ 	}
++	// providers.json unreadable (#5935): the user's groups are not known,
++	// and a group found among the built-in subscriptions alone must not
++	// take the request in their place
++	if FileError() != nil {
++		return "", false
++	}
+ 	return groupForIn(Groups(), id)
+ }
+ 
+diff --git a/internal/provider/models.go b/internal/provider/models.go
+index 17fc2d818..24832d745 100644
+--- a/internal/provider/models.go
++++ b/internal/provider/models.go
+@@ -3604,6 +3604,13 @@ func Resolve(id string) (Provider, string, bool) {
+ 		// poll, every 15s)
+ 		entries := providerEntries()
+ 		if e, ok := entryIn(groupEntries(entries), id); ok {
++			// a found group among the built-in subscriptions alone (#5935):
++			// the user's groups are unreadable, and this one is not theirs
++			// to serve the request — the members in view are the built-ins
++			// the user's providers stand beside
++			if gid, isRef := GroupIDOf(id); isRef && strings.HasPrefix(gid, "auto-") && FileError() != nil {
++				return Provider{}, "", false
++			}
+ 			return e.Provider, e.Model, true
+ 		}
+ 		if e, ok := entryIn(Catalog(), id); ok {
+@@ -3637,6 +3644,14 @@ func resolveIn(entries []Entry, id string) (Provider, string, bool) {
+ 			return p.clone(), model, true
+ 		}
+ 	}
++	// providers.json unreadable (#5935): what follows answers a bare id
++	// from whoever lists it now, and with the user's providers unreadable
++	// that is the built-in subscriptions alone — their quota would be
++	// spent in the user's provider's place, without a word. Refused
++	// instead: the id is one the user's file may well answer.
++	if FileError() != nil {
++		return Provider{}, "", false
++	}
+ 	for i := range entries {
+ 		if e := &entries[i]; e.Model == id {
+ 			return e.Provider, e.Model, true // the first that serves it
+diff --git a/internal/provider/ownroute.go b/internal/provider/ownroute.go
+index f2cebdc8a..9d84d9fee 100644
+--- a/internal/provider/ownroute.go
++++ b/internal/provider/ownroute.go
+@@ -78,6 +78,13 @@ func ownRouteIn(entries []Entry, all []Group, agent, id string) (to, group strin
+ 	if !bare {
+ 		return "", "", false
+ 	}
++	// providers.json unreadable (#5935): the user's groups and picks, which
++	// say whether the agent's own subscription should have the request, are
++	// not known, so the subscription is not picked in their place — the
++	// request is refused where routing reads no entry for the id.
++	if FileError() != nil {
++		return "", "", false
++	}
+ 	if gid, found := groupForIn(all, id); found {
+ 		g, _ := groupOf(all, strings.TrimPrefix(gid, GroupPrefix))
+ 		if !g.Auto {
+-- 
+2.50.1 (Apple Git-155)
+

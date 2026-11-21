@@ -1,0 +1,22 @@
+{
+  "docs/subsystems/gateway-routing.md": {
+    "baseline_sha256": "ffaf31ab893fe0e0cbaf575977b8969a83b26732233fcfa2198a7376fc327cf2",
+    "modified_sha256": "12563d05e2f25dc1dcd1158a4f55454c470f6caf41dd97cc6e63c066982eb63d"
+  },
+  "internal/gateway/anthropic.go": {
+    "baseline_sha256": "d53db10e2b02c397ecec6c724df532a97e8562445abcb29b1d46bf45972734af",
+    "modified_sha256": "e3d8294e3f3de75fa5d6d3b40d755a45a78e961a23e89bfe14b365fc924d3338"
+  },
+  "internal/gateway/chat.go": {
+    "baseline_sha256": "bff661e0288ff9306a909751754f31bac4dcc07345aba08792677a6812a07863",
+    "modified_sha256": "be205e80854c13545c544e5ee36a7a18c541e49caf152c628a1aecea4663b83a"
+  },
+  "internal/gateway/gateway.go": {
+    "baseline_sha256": "29a87fa4b1ac485a79c31b204ea144f16702de57fc740ae21ad38c0226171790",
+    "modified_sha256": "4dba33f00437e1493fa273c4ccad60da40be04bb69e57c861c6d15f053b7fafc"
+  },
+  "internal/gateway/stream_byte_cap_test.go": {
+    "baseline_sha256": null,
+    "modified_sha256": "5d66f0ff13cd3d04c800d7f5d2e5e8cd6af313cdd78d7eaaeb6256d8fb0dd1f5"
+  }
+}

@@ -1,0 +1,62 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Wed, 4 Nov 2026 02:08:16 +0800
+Subject: [PATCH] gateway: the sized-allocation measure takes the least of its
+ windows, not one shared window's average (#4882)
+
+allocatedEach measured four runs inside one allocated() window and
+divided by four. TotalAlloc is process-wide, so anything else allocating
+during that window adds to it, and the division spread the noise over
+every run: a 1.6 MB bump landing in the window read as +400 KB a run,
+which is how TestLongTurnCopiedFewTimes went red once in a full run
+(read 3.2x against a 3x bound) under load ~14, and green alone 5 of 5.
+
+The measure now times a few windows of one run each and keeps the least.
+Noise only ever adds to a window, so the least is the run's own cost;
+an injected 1.6 MB into one run of four now reads 3.60x on the old
+average and 3.40x (the clean cost) on the least, and the real test
+stands at its usual 2.40x with the headroom it was written against.
+
+TestLongTurnCopiedFewTimes and the socket turn body measure ride the
+same helper and are unchanged otherwise.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gateway/long_turn_copies_test.go | 17 ++++++++++++-----
+ 1 file changed, 12 insertions(+), 5 deletions(-)
+
+diff --git a/internal/gateway/long_turn_copies_test.go b/internal/gateway/long_turn_copies_test.go
+index 67567b9d2..cb43abfa8 100644
+--- a/internal/gateway/long_turn_copies_test.go
++++ b/internal/gateway/long_turn_copies_test.go
+@@ -7,15 +7,22 @@ import (
+ 	"testing"
+ )
+ 
+-// allocatedEach is what f allocates a run, over a few runs.
++// allocatedEach is what f allocates a run, over a few runs: the least of
++// a few windows of one run each. TotalAlloc is process-wide, so anything
++// else allocating during a window only adds to it; the average of one
++// shared window carried such noise into every run (a 1.6 MB bump read as
++// +400 KB a run, 3.2× against a 3× bound), while the least window is the
++// run's own cost (#4882).
+ func allocatedEach(f func()) uint64 {
+ 	f()
+ 	const n = 4
+-	return allocated(func() {
+-		for range n {
+-			f()
++	var least uint64
++	for range n {
++		if got := allocated(f); least == 0 || got < least {
++			least = got
+ 		}
+-	}) / n
++	}
++	return least
+ }
+ 
+ // A long Responses turn sent to a Chat upstream is copied as few times
+-- 
+2.50.1 (Apple Git-155)
+

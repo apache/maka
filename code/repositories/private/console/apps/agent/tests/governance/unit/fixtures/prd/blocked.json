@@ -1,0 +1,25 @@
+{
+  "items": [
+    {
+      "id": "PRD-00",
+      "component": "TaskA",
+      "priority": "P0",
+      "steps": ["step 1", "step 2"],
+      "passes": true
+    },
+    {
+      "id": "PRD-01",
+      "component": "TaskB",
+      "priority": "P0",
+      "steps": ["step 1"],
+      "passes": false
+    }
+  ],
+  "statistics": {
+    "total": 2,
+    "passing": 1,
+    "failing": 1,
+    "completion": "50%",
+    "blocked_reason": "Blocked on API design decision. Need: confirm whether REST or GraphQL should be used."
+  }
+}

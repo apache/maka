@@ -1,0 +1,33 @@
+diff --git a/internal/provider/signin_removed_test.go b/internal/provider/signin_removed_test.go
+index 4673d7b8..f4e5d2a0 100644
+--- a/internal/provider/signin_removed_test.go
++++ b/internal/provider/signin_removed_test.go
+@@ -105,7 +105,14 @@ func TestSignInDoneOnceTheAccountIsBack(t *testing.T) {
+ 				t.Fatal("removed account still listed")
+ 			}
+ 
+-			// what the sign-in reads as the moment its account is shown again
++			// what the sign-in reads as the moment its account is shown again.
++			// The plugins' providers are asked in the background, and the
++			// answer tells the agents (catalog.Touched) in a goroutine that
++			// reads catalog.Changed; the asking and the telling are over
++			// before the hook is swapped in here and before it is swapped
++			// back, so none of them reads it as it is written (#3100)
++			plugin.Refreshed()
++			plugin.Told()
+ 			var mu sync.Mutex
+ 			id, back := "", ""
+ 			was := catalog.Changed
+@@ -117,7 +124,11 @@ func TestSignInDoneOnceTheAccountIsBack(t *testing.T) {
+ 					back = st.State
+ 				}
+ 			}
+-			t.Cleanup(func() { catalog.Changed = was })
++			t.Cleanup(func() {
++				plugin.Refreshed()
++				plugin.Told()
++				catalog.Changed = was
++			})
+ 
+ 			st := c.signIn(t)
+ 			mu.Lock()

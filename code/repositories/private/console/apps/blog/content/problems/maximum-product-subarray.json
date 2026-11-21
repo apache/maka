@@ -1,0 +1,22 @@
+{
+  "id": "46",
+  "slug": "maximum-product-subarray",
+  "title": "乘积最大子数组",
+  "difficulty": "medium",
+  "tags": ["数组", "动态规划"],
+  "description": "给你一个整数数组 `nums`,请你找出数组中乘积最大的非空连续子数组(该子数组中至少包含一个数字),并返回该子数组所对应的乘积。\n\n测试用例的答案是一个 32 位整数。\n\n**示例 1:**\n\n- 输入:`nums = [2,3,-2,4]`\n- 输出:`6`(子数组 `[2,3]` 的乘积最大,为 6)\n\n**示例 2:**\n\n- 输入:`nums = [-2,0,-1]`\n- 输出:`0`",
+  "solution": "## 思路\n\n由于负数会让最大变最小、最小变最大,需同时维护**当前最大 `curMax` 与当前最小 `curMin`**。每步从 `[n, curMax*n, curMin*n]` 中重新选最大最小,并更新全局最大。\n\n## 参考代码\n\n```js\nfunction maxProduct(nums) {\n  let max = nums[0];\n  let curMax = nums[0];\n  let curMin = nums[0];\n  for (let i = 1; i < nums.length; i++) {\n    const n = nums[i];\n    const a = n;\n    const b = curMax * n;\n    const c = curMin * n;\n    curMax = Math.max(a, b, c);\n    curMin = Math.min(a, b, c);\n    max = Math.max(max, curMax);\n  }\n  return max;\n}\n```\n\n## 复杂度\n\n- 时间:O(n)\n- 空间:O(1)",
+  "signature": {
+    "language": "javascript",
+    "entry": "maxProduct",
+    "params": [{ "name": "nums", "type": "number[]" }],
+    "returns": "number"
+  },
+  "testCases": [
+    { "sample": true, "input": [[2, 3, -2, 4]], "expected": 6 },
+    { "sample": true, "input": [[-2, 0, -1]], "expected": 0 },
+    { "sample": false, "input": [[-2, 3, -4]], "expected": 24 },
+    { "sample": false, "input": [[1]], "expected": 1 },
+    { "sample": false, "input": [[0]], "expected": 0 }
+  ]
+}

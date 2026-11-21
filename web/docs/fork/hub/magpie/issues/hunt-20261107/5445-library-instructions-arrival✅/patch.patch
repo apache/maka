@@ -1,0 +1,252 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Sun, 8 Nov 2026 03:24:20 +0800
+Subject: [PATCH] library: the Library's text for Claude reaches the sessions
+ magpie hosts (#5445)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Library -> Instructions writes its shared text into ~/.claude/CLAUDE.md,
+but magpie's own managed Claude spawns run with --setting-sources ""
+on purpose (the host's settings and the claude-cli:// handler stay out,
+#4928) — so the one agent the Library was on for never read it, and the
+Library could not deliver to the very sessions magpie hosts (#5445,
+luzhuang: the session's system.md held none of the text, A/B with the
+flag).
+
+The sync keeps a snapshot of the text it wrote for Claude beside
+library.json (instructions-claude.md, removed when the instructions go
+off), and a Claude run carries that snapshot the way a caller's own
+instructions ride --append-system-prompt-file: before them when a run
+has both, alone when it has none. The isolation is untouched — nothing
+of the host's is read; the gateway reads the snapshot by path
+(settings.Dir() is shared ground), so the hot path takes no library
+dependency.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ .../claude_library_instructions_test.go       | 70 +++++++++++++++++++
+ internal/gateway/claude_subscription.go       | 35 +++++++++-
+ internal/library/instructions.go              | 16 +++++
+ .../library/instructions_snapshot_test.go     | 40 +++++++++++
+ 4 files changed, 160 insertions(+), 1 deletion(-)
+ create mode 100644 internal/gateway/claude_library_instructions_test.go
+ create mode 100644 internal/library/instructions_snapshot_test.go
+
+diff --git a/internal/gateway/claude_library_instructions_test.go b/internal/gateway/claude_library_instructions_test.go
+new file mode 100644
+index 000000000..88f0c9dc0
+--- /dev/null
++++ b/internal/gateway/claude_library_instructions_test.go
+@@ -0,0 +1,70 @@
++package gateway
++
++import (
++	"strings"
++	"testing"
++
++)
++
++// TestClaudeSpawnCarriesLibraryInstructions: the Library's text for Claude
++// reaches the managed spawns, which run with --setting-sources "" and
++// never read ~/.claude/CLAUDE.md, so the Library could not deliver to the
++// very sessions magpie hosts (#5445, luzhuang). The sync keeps a snapshot
++// at library/instructions-claude.md; the run carries it the way a caller's
++// own instructions ride (--append-system-prompt-file) - alone on a run
++// with no caller instructions of its own, before them when both are there.
++// No snapshot, nothing extra; the caller's own path is untouched.
++func TestClaudeSpawnCarriesLibraryInstructions(t *testing.T) {
++	oldLib := claudeLibraryInstructions
++	t.Cleanup(func() { claudeLibraryInstructions = oldLib })
++	give := func(text string) { claudeLibraryInstructions = func() string { return text } }
++
++	// a print run: the library text rides alone
++	h, appended := appendHarness(t, false)
++	give("Library rules.")
++	h.post(`{"model":"claude-sonnet-5","max_tokens":64,"messages":[{"role":"user","content":"hi"}]}`)
++	runs := appended()
++	if len(runs) != 1 {
++		t.Fatalf("%d runs, want 1: %v", len(runs), runs)
++	}
++	for log, content := range runs {
++		if !strings.Contains(content, "Library rules.") {
++			t.Fatalf("run %s carried no library text: %q", log, content)
++		}
++	}
++
++	// gone: nothing extra is carried, and the caller's own path is
++	// untouched (its system stays in the run as it was). A fresh harness:
++	// each keeps its own copies.
++	claudeLibraryInstructions = oldLib
++	h2, appended2 := appendHarness(t, false)
++	h2.post(`{"model":"claude-sonnet-5","max_tokens":64,"system":"caller rules.","messages":[{"role":"user","content":"hi again"}]}`)
++	runs = appended2()
++	if len(runs) != 1 {
++		t.Fatalf("%d runs, want 1: %v", len(runs), runs)
++	}
++	for log, content := range runs {
++		if strings.Contains(content, "Library rules.") {
++			t.Fatalf("run %s carried a snapshot that is gone: %q", log, content)
++		}
++		if !strings.Contains(log, "caller rules.") {
++			t.Fatalf("run %s lost the caller's own instructions:\n%s", log, content)
++		}
++	}
++
++	// an interactive run with caller instructions: library first, caller last
++	h3, appended3 := appendHarness(t, true)
++	_ = h3
++	give("Library rules.")
++	h2.post(`{"model":"claude-sonnet-5","max_tokens":64,"system":"caller rules.","tools":[{"name":"read","input_schema":{"type":"object"}}],"messages":[{"role":"user","content":"hi"}]}`)
++	runs3 := appended3()
++	if len(runs3) != 1 {
++		t.Fatalf("%d runs, want 1: %v", len(runs3), runs3)
++	}
++	for log, content := range runs3 {
++		lib, caller := strings.Index(content, "Library rules."), strings.Index(content, "caller rules.")
++		if lib < 0 || caller < 0 || lib > caller {
++			t.Fatalf("run %s: library text %d and caller text %d out of order in:\n%s", log, lib, caller, content)
++		}
++	}
++}
+diff --git a/internal/gateway/claude_subscription.go b/internal/gateway/claude_subscription.go
+index be11e98a5..8354073d4 100644
+--- a/internal/gateway/claude_subscription.go
++++ b/internal/gateway/claude_subscription.go
+@@ -1140,6 +1140,11 @@ func (b *subscriptionBridge) startRun(ctx context.Context, req *Request, model,
+ 		// message, its earlier turns marked as such (renderClaudePrompt)
+ 		log.Printf("claude: a new Claude Code is told the whole conversation: %d messages, %d images, the last turn marked as the one to answer", len(req.Messages), countImages(req.Messages))
+ 	}
++	// the Library's text for Claude, as its sync last wrote it: the
++	// spawns run with --setting-sources "" on purpose, so
++	// ~/.claude/CLAUDE.md never reaches them and the Library could not
++	// deliver to the very sessions magpie hosts (#5445, luzhuang)
++	lib := claudeLibraryInstructions()
+ 	if req.appendPrompt {
+ 		// pasted, the caller's instructions lose their cache mark (the
+ 		// paste is one text), and every new run wrote them to the cache
+@@ -1152,11 +1157,25 @@ func (b *subscriptionBridge) startRun(ctx context.Context, req *Request, model,
+ 		// the run's own, as a lean run's
+ 		appendPath := filepath.Join(tmp, "append.md")
+ 		req.appendPrompt = true
+-		if err := os.WriteFile(appendPath, []byte(leanSystem(req)), 0o600); err != nil {
++		text := leanSystem(req)
++		if lib != "" {
++			// the Library's steadier shared text goes first, the caller's
++			// own last (#5445)
++			text = lib + "\n\n" + text
++		}
++		if err := os.WriteFile(appendPath, []byte(text), 0o600); err != nil {
+ 			cleanup()
+ 			return nil, nil, err
+ 		}
+ 		args = append(args, "--append-system-prompt-file", binary.file(appendPath))
++	} else if lib != "" {
++		// no caller instructions of this run's own: the Library's rides alone
++		libPath := filepath.Join(tmp, "append-library.md")
++		if err := os.WriteFile(libPath, []byte(lib), 0o600); err != nil {
++			cleanup()
++			return nil, nil, err
++		}
++		args = append(args, "--append-system-prompt-file", binary.file(libPath))
+ 	}
+ 	req.clientCache.selected(from == nil)
+ 	var prompt []map[string]any
+@@ -3451,6 +3470,20 @@ func messageWords(msgs []Message) []string {
+ 	return out
+ }
+ 
++// claudeLibraryInstructions is the text the Library last wrote for Claude,
++// from the snapshot its sync keeps at <settings dir>/library/
++// instructions-claude.md — the spawns run with --setting-sources "" on
++// purpose, so ~/.claude/CLAUDE.md never reaches them and the Library
++// could not deliver to the very sessions magpie hosts (#5445, luzhuang).
++// "" when there is none. A var so tests can stand in for it (stillExpiring).
++var claudeLibraryInstructions = func() string {
++	b, err := os.ReadFile(filepath.Join(settings.Dir(), "library", "instructions-claude.md"))
++	if err != nil {
++		return ""
++	}
++	return strings.TrimSpace(string(b))
++}
++
+ // claudeCLIArgs runs Claude Code with none of its own tools but, when the
+ // client offered a web search (Claude Code's own WebSearch tool asks for
+ // Anthropic's), its WebSearch, which searches as the subscription does.
+diff --git a/internal/library/instructions.go b/internal/library/instructions.go
+index e45e08c42..fe5cd1b0c 100644
+--- a/internal/library/instructions.go
++++ b/internal/library/instructions.go
+@@ -233,6 +233,22 @@ func (l *Library) syncInstructions(t *Target, b *backups, res *Result) {
+ 	if res.unreached(t) {
+ 		return
+ 	}
++	// the managed Claude spawns read this snapshot: they run with
++	// --setting-sources "" on purpose, so ~/.claude/CLAUDE.md never
++	// reaches them and the Library could not deliver to the very
++	// sessions magpie hosts (#5445, luzhuang). Off, or with no text for
++	// claude, the snapshot goes and the spawns read nothing.
++	if t.Agent.ID == "claude" {
++		snapshot := filepath.Join(Dir(), "instructions-claude.md")
++		if text := l.wanted(t.Agent.ID); text != "" {
++			if err := os.WriteFile(snapshot, []byte(text), 0o600); err != nil {
++				res.fail(t.Agent.ID, "instructions", err)
++				return
++			}
++		} else {
++			os.Remove(snapshot)
++		}
++	}
+ 	if t.Instructions == "" {
+ 		return
+ 	}
+diff --git a/internal/library/instructions_snapshot_test.go b/internal/library/instructions_snapshot_test.go
+new file mode 100644
+index 000000000..a02ee7a1d
+--- /dev/null
++++ b/internal/library/instructions_snapshot_test.go
+@@ -0,0 +1,40 @@
++package library
++
++import (
++	"os"
++	"path/filepath"
++	"strings"
++	"testing"
++)
++
++// The Library keeps a snapshot of the text it last wrote for Claude at
++// instructions-claude.md beside library.json, exactly so magpie's own
++// managed Claude spawns can carry it: they run with --setting-sources ""
++// and never read ~/.claude/CLAUDE.md, so the Library could not deliver
++// to the sessions magpie hosts (#5445, luzhuang). The snapshot follows
++// the instructions: written when the shared text is on for claude,
++// removed when it is off.
++func TestInstructionsClaudeSnapshot(t *testing.T) {
++	h := sandbox(t)
++	snap := filepath.Join(Dir(), "instructions-claude.md")
++
++	shared := "Be brief."
++	ok(t)(SaveInstructions(InstructionsChange{Shared: &shared, Agents: []string{"claude"}}))
++	if s := read(t, snap); !strings.Contains(s, "Be brief.") {
++		t.Fatalf("snapshot after enabling:\n%s", s)
++	}
++
++	// a set switch carries the snapshot along
++	work := "Work rules."
++	ok(t)(SaveInstructions(InstructionsChange{Create: &InstrSet{ID: "work", Name: "Work"}, Texts: map[string]*string{"work": &work}, Activate: "work"}))
++	if s := read(t, snap); !strings.Contains(s, "Work rules.") {
++		t.Fatalf("snapshot after a set switch:\n%s", s)
++	}
++
++	// switched off for claude: the snapshot goes, the spawns read nothing
++	ok(t)(SaveInstructions(InstructionsChange{Shared: &shared, Agents: []string{"codex"}}))
++	if _, err := os.Stat(snap); !os.IsNotExist(err) {
++		t.Fatalf("snapshot kept after claude was switched off")
++	}
++	_ = h
++}
+-- 
+2.50.1 (Apple Git-155)
+

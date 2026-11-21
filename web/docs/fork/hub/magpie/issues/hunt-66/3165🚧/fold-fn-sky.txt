@@ -1,0 +1,14 @@
+// foldReasoningAliases keeps the DeepSeek spelling: its serde reads both
+// names as one field and refuses a message carrying both (#3165).
+func foldReasoningAliases(body []byte) []byte {
+	return editMessages(body, []string{"reasoning"}, func(m map[string]json.RawMessage) bool {
+		if _, ok := m["reasoning"]; !ok {
+			return false
+		}
+		if _, ok := m["reasoning_content"]; !ok {
+			return false
+		}
+		delete(m, "reasoning")
+		return true
+	})
+}

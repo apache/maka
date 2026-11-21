@@ -1,0 +1,35 @@
+gateway: Codex side calls on its own models stay with magpie, not its sign-in (#4590)
+
+shruru: with magpie as Codex's model provider, picking any model in the
+Codex titles setting never took: the thread's title stayed the first
+message's truncation, and a request for gpt-5.6-luna, Codex's own title
+model, to /v1/responses was answered 404 "is one of Codex's own models...
+open ~/.codex/auth.json: no such file or directory".
+
+A thread started while magpie was Codex's provider sends to magpie's /v1
+(model_providers.magpie's base_url is magpie's /v1), and since
+4586307de a request there on one of Codex's own models is put on Codex's
+ChatGPT sign-in, or answered 404 when no sign-in can be had — before
+handle ever asks codexTitlesTo where the settings send a title. Codex's
+hidden side calls (a thread's title, description, summary, a composer
+prediction) on its own models were swept up in that: magpie has its own
+answer for each (codexTitlesTo and its siblings, further down handle),
+so with no ChatGPT account anywhere the title request died at the sign-in
+check and Codex fell back to naming the thread after its first message,
+whatever the settings said.
+
+Now codexOwnOffMagpie leaves side calls where they stand; a plain turn on
+one of Codex's own models goes on the sign-in as 4586307de says.
+
+Tests (internal/gateway/codex_own_v1_test.go): shruru's machine — Codex
+never signed in (no auth.json), gpt-5.6-luna in its models cache, no
+ChatGPT account in magpie, titles and descriptions set to a magpie model;
+a thread_title and a thread_description request to /v1/responses on
+gpt-5.6-luna: was 404 "one of Codex's own models...", now 200 with the
+{"title"} / {"description"} the settings' model wrote.
+
+Run (darwin arm64, -tags nogui):
+- go test -tags nogui -run 'TestCodexSideCallOnOwnModelNotPutOnSignIn|TestCodexOwnModelOnMagpieThread|TestCodexTitlesSetting|TestCodexTitleOnMagpieProvider|TestCodexDescriptionsSetting|TestCodexDescriptionFallbackOnMagpie' ./internal/gateway: ok
+  (the new test was red before the fix, with the reporter's 404 verbatim)
+
+Generated-by: GLM-5.3-Flash (ZCode)

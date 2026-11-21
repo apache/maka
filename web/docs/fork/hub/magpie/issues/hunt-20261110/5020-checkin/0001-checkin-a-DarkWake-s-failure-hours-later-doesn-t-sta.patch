@@ -1,0 +1,101 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Wed, 4 Nov 2026 07:26:49 +0800
+Subject: [PATCH] checkin: a DarkWake's failure hours later doesn't stack the
+ offline tries
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+A Mac that sleeps through midnight is woken now and then by a DarkWake
+too short for the check-in to finish (#5020: "The operation timed out"
+in a 2-7 s wake). Each of those failures counted as one more try in a
+row of them, and the backoff the row had earned, doubled to half an
+hour, stood between the machine's waking for good and the day's
+check-in: mufanmu's logs show the look two minutes after the lid opened
+kept back by the DarkWake of half an hour before, and the day went by
+without a check-in.
+
+Tries in a row are now only so while the last try's backoff was still
+running: a failure hours later is the day's first again, and the look
+on waking for good asks at once. What #265's backoff is for — tries
+close enough together that the network never came back between them —
+is kept.
+
+Fixes #5020
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/provider/checkin.go                |  6 +++-
+ internal/provider/workbuddy_checkin_test.go | 38 +++++++++++++++++++++
+ 2 files changed, 43 insertions(+), 1 deletion(-)
+
+diff --git a/internal/provider/checkin.go b/internal/provider/checkin.go
+index 8133311c4..ad52a6c91 100644
+--- a/internal/provider/checkin.go
++++ b/internal/provider/checkin.go
+@@ -131,7 +131,11 @@ func (c checkiner) checkinNow(ctx context.Context, soon bool) []WorkBuddyCheckin
+ 		// global proxy was refused there (#2777)
+ 		r := a.do(ViaLogin(ctx, a.provider, a.User))
+ 		r.Day, r.At = day, now
+-		if r.Offline && seen && prev.Day == day && prev.Offline {
++		// tries in a row are only so while the last try's backoff was
++		// still running, its own retry on the dot included: a DarkWake's
++		// failure hours later (#5020) is the day's first again, and the
++		// look on waking for good asks at once
++		if r.Offline && seen && prev.Day == day && prev.Offline && now.Sub(prev.At) <= prev.retryAfter() {
+ 			r.Tries = prev.Tries + 1
+ 		}
+ 		switch {
+diff --git a/internal/provider/workbuddy_checkin_test.go b/internal/provider/workbuddy_checkin_test.go
+index 424f96055..bdf802353 100644
+--- a/internal/provider/workbuddy_checkin_test.go
++++ b/internal/provider/workbuddy_checkin_test.go
+@@ -306,6 +306,44 @@ func TestWorkBuddyCheckinOfflineRetriesSoon(t *testing.T) {
+ 	}
+ }
+ 
++// A Mac that sleeps through midnight is woken now and then by a DarkWake
++// too short for the check-in to finish (#5020, mufanmu: "The operation
++// timed out" in a 2-7 s wake); each of those, hours apart, counted as a
++// try in a row of them, and the backoff the row had earned — up to half an
++// hour — stood between the machine's waking and the day's check-in, so the
++// day went by without one. A failure counts as the last try's again only
++// while the backoff was still running, which a DarkWake hours later is
++// past; on waking for good, the first look asks at once. The clock is
++// stepped, never slept.
++func TestWorkBuddyCheckinDarkWakeFailsNotStacked(t *testing.T) {
++	f := &fakeWBCheckin{active: true, down: true}
++	srv := f.serve(t)
++	// asleep at midnight; the first DarkWake, 03:40 Beijing, fails in 2 s
++	now := time.Date(2026, 11, 2, 19, 40, 0, 0, time.UTC) // 03:40 Beijing
++	c := wbCheckinFixture(t, srv, &now)
++	ctx := context.Background()
++	var l wbCheckinLoop
++	for _, dark := range []int{340, 751, 938} {
++		h, m := dark/100, dark%100
++		now = time.Date(2026, 11, 2, h-8, m, 0, 0, time.UTC)
++		if rs := l.tick(ctx, c); len(rs) != 1 || rs[0].Outcome != CheckinFailed || !rs[0].Offline || rs[0].Tries != 0 {
++			t.Fatalf("DarkWake at %02d:%02d: %+v, want the day's first offline try", h, m, rs)
++		}
++	}
++	// the lid opened, 09:40 Beijing; the loop's minute tick looks two
++	// minutes on, the network back
++	f.mu.Lock()
++	f.down = false
++	f.mu.Unlock()
++	now = time.Date(2026, 11, 2, 1, 42, 0, 0, time.UTC) // 09:42 Beijing
++	if rs := l.tick(ctx, c); len(rs) != 1 || rs[0].Outcome != CheckinClaimed || !rs[0].Asked {
++		t.Fatalf("awake for good: %+v, want the day's check-in", rs)
++	}
++	if _, cl := f.counts(); cl != 1 {
++		t.Fatalf("claims %d", cl)
++	}
++}
++
+ // A moved account's check-in goes through the plugin's fetch, whose failure
+ // comes back as Bun's text, not a net.Error. The connection reset that
+ // plugins #149 showed is a check-in that never got an answer: tried again a
+-- 
+2.50.1 (Apple Git-155)
+

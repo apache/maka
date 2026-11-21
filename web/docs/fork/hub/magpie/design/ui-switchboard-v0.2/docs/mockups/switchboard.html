@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<title>magpie · 接线台原型</title>
+<style>
+@property --sheen { syntax: '<angle>'; inherits: false; initial-value: 0deg; }
+:root{
+  --canvas:#F5F6F8; --surface:#FFFFFF; --raised:#FAFBFC; --ink:#14161B; --ink-2:#4A4F5C; --muted:#737887; --line:#E3E5EA; --line-2:#D5D8DF;
+  --river:#ECEEF3; --river-edge:#E1E4EA;
+  --sheen-a:#4F46E5; --sheen-b:#0E9F9A; --sheen-soft:#EEEDFD;
+  --amber:#B45309; --amber-soft:#FDF1E1; --green:#15803D; --green-soft:#E3F4E9; --red:#C2410C;
+  --mono-filter:none; --shadow:0 1px 2px rgba(20,24,40,.05),0 6px 16px rgba(20,24,40,.05);
+  --ui:"Segoe UI Variable","Segoe UI","Noto Sans SC","PingFang SC",system-ui,sans-serif;
+  --code:"Cascadia Mono","JetBrains Mono",Consolas,"Liberation Mono",monospace;
+}
+body.dark{
+  --canvas:#0F1116; --surface:#171A21; --raised:#1C2028; --ink:#ECEEF3; --ink-2:#B9BECB; --muted:#8A90A0; --line:#262A33; --line-2:#323744;
+  --river:#13161C; --river-edge:#1E222A;
+  --sheen-a:#8E8CFF; --sheen-b:#2DD4BF; --sheen-soft:#25264A;
+  --amber:#F2B544; --amber-soft:#3A2E1A; --green:#6FD99B; --green-soft:#183326; --red:#F28B82;
+  --mono-filter:invert(1); --shadow:0 1px 2px rgba(0,0,0,.4),0 8px 20px rgba(0,0,0,.25);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{width:1600px;height:1000px;background:var(--canvas);color:var(--ink);font:14px/1.45 var(--ui);overflow:hidden;position:relative;font-variant-numeric:tabular-nums}
+img.i{width:22px;height:22px;flex:none}
+img.mono{filter:var(--mono-filter)}
+.num{font-variant-numeric:tabular-nums}
+code,.code{font-family:var(--code);font-size:12.5px}
+
+/* header */
+header{position:absolute;inset:0 0 auto 0;height:56px;display:flex;align-items:center;padding:0 20px;gap:20px;border-bottom:1px solid var(--line);background:var(--canvas)}
+.brand{display:flex;align-items:center;gap:8px;font-weight:600;font-size:15px;letter-spacing:-.01em}
+.brand img{width:22px;height:22px;filter:var(--mono-filter)}
+.seg{display:flex;background:var(--river);border-radius:8px;padding:3px}
+.seg span{padding:5px 14px;border-radius:6px;color:var(--muted);font-size:13.5px}
+.seg span.on{background:var(--surface);color:var(--ink);box-shadow:0 1px 2px rgba(0,0,0,.08)}
+.intent{margin:0 auto;width:520px;height:34px;border:1px solid var(--line-2);background:var(--surface);border-radius:8px;display:flex;align-items:center;padding:0 10px 0 12px;gap:10px;color:var(--muted)}
+.intent svg{flex:none}
+.intent .ph{flex:1}
+kbd{font:500 11.5px var(--ui);border:1px solid var(--line-2);border-bottom-width:2px;border-radius:5px;padding:1px 6px;color:var(--ink-2);background:var(--raised)}
+.gw{display:flex;align-items:center;gap:8px;color:var(--ink-2);font-size:13px}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--green);box-shadow:0 0 0 3px var(--green-soft)}
+.iconbtn{width:32px;height:32px;display:grid;place-items:center;border-radius:8px;color:var(--ink-2)}
+
+/* stage */
+.stage{position:absolute;left:0;top:56px;width:1212px;height:812px}
+.bank-h{position:absolute;top:28px;font-size:13px;color:var(--muted)}
+.bank-h b{color:var(--ink);font-weight:600;font-size:15px;margin-right:8px}
+.river{position:absolute;left:356px;width:484px;top:0;bottom:0;background:linear-gradient(90deg,transparent,var(--river) 18%,var(--river) 82%,transparent)}
+.river-label{position:absolute;left:356px;width:484px;top:770px;text-align:center;font-size:12.5px;color:var(--muted)}
+.river-label code{color:var(--ink-2)}
+.pier{position:absolute;background:var(--surface);border:1px solid var(--line);border-radius:10px;box-shadow:var(--shadow);display:flex;align-items:center;gap:12px;padding:0 14px}
+.pier .t{font-weight:600;font-size:14.5px;letter-spacing:-.005em}
+.pier .s{color:var(--muted);font-size:12.5px;margin-top:1px}
+.pier.sel{border-color:var(--sheen-a);box-shadow:0 0 0 3px var(--sheen-soft),var(--shadow)}
+.pier.ghost{background:transparent;border-style:dashed;border-color:var(--line-2);box-shadow:none}
+.pier.ghost .t{color:var(--ink-2)}
+.chip{font-size:12px;padding:2px 8px;border-radius:6px;background:var(--river);color:var(--ink-2);margin-left:auto;white-space:nowrap}
+.chip.live{background:var(--sheen-soft);color:var(--sheen-a)}
+.btn{font:500 12.5px var(--ui);padding:5px 10px;border-radius:7px;border:1px solid var(--line-2);background:var(--surface);color:var(--ink);white-space:nowrap}
+.btn.pri{background:var(--ink);color:var(--canvas);border-color:var(--ink)}
+.more{position:absolute;left:40px;top:530px;width:316px;color:var(--muted);font-size:13px;line-height:1.6}
+.more u{color:var(--ink-2);text-decoration-color:var(--line-2);text-underline-offset:3px}
+
+/* group card */
+.group{position:absolute;left:840px;top:120px;width:332px;background:var(--surface);border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow);padding:14px 14px 10px}
+.group .hd{display:flex;align-items:center;gap:10px;margin-bottom:8px}
+.diamond{width:22px;height:22px;display:grid;place-items:center}
+.member{display:grid;grid-template-columns:18px 22px 1fr auto;gap:10px;align-items:center;padding:8px 6px;border-radius:8px}
+.member+.member{border-top:1px solid var(--line)}
+.member .n{color:var(--muted);font-size:12px;text-align:center}
+.member .t{font-weight:500;font-size:13.5px}
+.member .s{color:var(--muted);font-size:12px}
+.member.now{background:linear-gradient(90deg,var(--sheen-soft),transparent)}
+.bar{height:4px;border-radius:2px;background:var(--river);width:72px;overflow:hidden;margin-top:4px}
+.bar i{display:block;height:100%;border-radius:2px}
+.q{text-align:right;font-size:12px;color:var(--ink-2)}
+
+/* foresight callout on stage */
+.fore{position:absolute;left:560px;top:118px;width:250px;font-size:12.5px;color:var(--amber);line-height:1.45;text-align:right}
+.fore b{font-weight:600}
+
+/* inspector */
+aside{position:absolute;right:0;top:56px;width:388px;height:812px;background:var(--surface);border-left:1px solid var(--line);padding:22px 24px;overflow:hidden}
+aside h2{font-size:19px;font-weight:600;letter-spacing:-.015em;display:flex;align-items:center;gap:10px}
+aside h2 img{width:26px;height:26px}
+.sub{color:var(--muted);font-size:13px;margin:4px 0 16px}
+.tabs{display:flex;gap:18px;border-bottom:1px solid var(--line);margin-bottom:18px;font-size:13.5px}
+.tabs span{padding:0 0 9px;color:var(--muted)}
+.tabs span.on{color:var(--ink);box-shadow:inset 0 -2px 0 var(--ink)}
+.facts{display:grid;grid-template-columns:1fr 1fr 1fr;gap:1px;background:var(--line);border:1px solid var(--line);border-radius:10px;overflow:hidden;margin-bottom:18px}
+.facts div{background:var(--surface);padding:10px 12px}
+.facts b{display:block;font-size:17px;font-weight:600;letter-spacing:-.01em}
+.facts span{font-size:12px;color:var(--muted)}
+.foresight{border:1px solid color-mix(in srgb,var(--amber) 35%,transparent);background:var(--amber-soft);border-radius:10px;padding:12px 14px;margin-bottom:18px}
+.foresight p{font-size:13.5px;line-height:1.5;color:var(--ink)}
+.foresight .row{display:flex;gap:8px;margin-top:10px}
+.h3{font-size:13px;font-weight:600;margin:0 0 8px;color:var(--ink)}
+.diff{border:1px solid var(--line);border-radius:10px;overflow:hidden;margin-bottom:18px}
+.diff .f{padding:7px 12px;font-size:12px;color:var(--muted);border-bottom:1px solid var(--line);background:var(--raised)}
+.diff pre{font-family:var(--code);font-size:12px;line-height:1.7;padding:8px 0}
+.diff .a{background:color-mix(in srgb,var(--green) 12%,transparent);display:block;padding:0 12px;color:var(--ink)}
+.diff .d{background:color-mix(in srgb,var(--red) 10%,transparent);display:block;padding:0 12px;color:var(--ink-2)}
+.cmd{display:flex;align-items:center;gap:10px;border:1px solid var(--line);border-radius:10px;padding:9px 12px;background:var(--raised)}
+.cmd code{flex:1;color:var(--ink)}
+
+/* rewind */
+footer{position:absolute;left:0;right:0;bottom:0;height:132px;border-top:1px solid var(--line);background:var(--surface);padding:16px 28px 0}
+.rw-top{display:flex;align-items:baseline;gap:16px;margin-bottom:12px}
+.rw-top .t{font-weight:600;font-size:14px}
+.rw-top .s{color:var(--muted);font-size:13px}
+.rw-top .r{margin-left:auto;font-size:13.5px;color:var(--ink-2)}
+.rw-top .r b{color:var(--ink);font-weight:600;font-size:16px}
+.track{position:relative;height:44px;border-radius:8px;background:var(--canvas);border:1px solid var(--line)}
+.tick{position:absolute;bottom:8px;width:3px;border-radius:2px;background:var(--sheen-a);opacity:.75}
+.tick.amber{background:var(--amber);opacity:1}
+.play{position:absolute;top:-6px;bottom:-6px;width:2px;background:var(--ink);border-radius:1px}
+.play::after{content:"";position:absolute;top:-4px;left:-4px;width:10px;height:10px;border-radius:50%;background:var(--ink)}
+.hours{position:relative;height:20px;font-size:11.5px;color:var(--muted);margin-top:4px}
+.hours span{position:absolute;transform:translateX(-50%)}
+.flag{position:absolute;top:-30px;font-size:12px;background:var(--ink);color:var(--canvas);padding:3px 8px;border-radius:6px;white-space:nowrap;transform:translateX(-50%)}
+svg.wires{position:absolute;left:0;top:0;width:1212px;height:812px;overflow:visible}
+</style></head>
+<body class="light">
+<header>
+  <div class="brand"><img src="icons/magpie.svg" alt="">magpie</div>
+  <div class="seg"><span class="on">接线台</span><span>洞察</span></div>
+  <div class="intent">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+    <span class="ph">让 Codex 改用 DeepSeek，或搜索任何东西</span><kbd>Ctrl</kbd><kbd>K</kbd>
+  </div>
+  <div class="gw"><span class="dot"></span>网关正常 <code style="color:var(--muted)">127.0.0.1:8787</code></div>
+  <div class="iconbtn"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg></div>
+</header>
+
+<section class="stage">
+  <div class="river"></div>
+  <div class="bank-h" style="left:40px"><b>Agent</b>3 个已接入，1 个可接入</div>
+  <div class="bank-h" style="left:840px"><b>模型来源</b>14 个模型可用</div>
+  <div class="river-label">请求经过本机网关 <code>:8787</code></div>
+
+  <svg class="wires" viewBox="0 0 1212 812">
+    <defs>
+      <linearGradient id="sheen" x1="0" x2="1"><stop offset="0" stop-color="var(--sheen-a)"/><stop offset="1" stop-color="var(--sheen-b)"/></linearGradient>
+      <style>.glint{stroke-dasharray:2 140;animation:flow 2.4s linear infinite}@keyframes flow{to{stroke-dashoffset:-142}}@media (prefers-reduced-motion:reduce){.glint{animation:none;display:none}}</style>
+    </defs>
+    <!-- Claude Code (y=158) -> group Kimi member (y=172) : live bridge -->
+    <path d="M356 184 C 480 96, 720 106, 840 209" fill="none" stroke="url(#sheen)" stroke-width="3" stroke-linecap="round"/>
+    <path class="glint" d="M356 184 C 480 96, 720 106, 840 209" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" opacity=".9"/>
+    <circle cx="356" cy="184" r="4.5" fill="var(--sheen-a)"/><circle cx="840" cy="209" r="4.5" fill="var(--sheen-b)"/>
+    <!-- foresight: future landing on GLM -->
+    <path d="M700 134 C 770 170, 800 236, 840 263" fill="none" stroke="var(--amber)" stroke-width="1.6" stroke-dasharray="4 5" stroke-linecap="round"/>
+    <circle cx="840" cy="263" r="3.5" fill="none" stroke="var(--amber)" stroke-width="1.6"/>
+    <!-- Codex (y=240) -> ChatGPT (y=403): live -->
+    <path d="M356 276 C 500 226, 700 390, 840 464" fill="none" stroke="url(#sheen)" stroke-width="2.4" stroke-linecap="round"/>
+    <path class="glint" d="M356 276 C 500 226, 700 390, 840 464" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" opacity=".9" style="animation-delay:-1s"/>
+    <circle cx="356" cy="276" r="4" fill="var(--sheen-a)"/><circle cx="840" cy="464" r="4" fill="var(--sheen-b)"/>
+    <!-- Gemini (y=322) -> DeepSeek (y=489): idle -->
+    <path d="M356 368 C 500 336, 700 486, 840 554" fill="none" stroke="var(--line-2)" stroke-width="1.6" stroke-linecap="round"/>
+    <circle cx="356" cy="368" r="3.5" fill="var(--line-2)"/><circle cx="840" cy="554" r="3.5" fill="var(--line-2)"/>
+    <!-- OpenCode ghost suggestion -->
+    <path d="M356 460 C 520 460, 680 535, 840 554" fill="none" stroke="var(--line-2)" stroke-width="1.4" stroke-dasharray="2 6" stroke-linecap="round"/>
+  </svg>
+
+  <div class="fore" style="left:520px;top:58px;width:240px"><b>约 14:20</b> Kimi 额度用完<br>之后由 GLM-5.3 接手</div>
+
+  <div class="pier sel" style="left:40px;top:150px;width:316px;height:68px"><img class="i" src="icons/claudecode-color.svg" alt=""><div><div class="t">Claude Code</div><div class="s">走「永不卡住」，现在是 Kimi K3</div></div></div>
+  <div class="pier" style="left:40px;top:242px;width:316px;height:68px"><img class="i" src="icons/codex-color.svg" alt=""><div><div class="t">Codex</div><div class="s">gpt-6.1-sol，正在回答</div></div><span class="chip live">2 个请求</span></div>
+  <div class="pier" style="left:40px;top:334px;width:316px;height:68px"><img class="i" src="icons/geminicli-color.svg" alt=""><div><div class="t">Gemini CLI</div><div class="s">DeepSeek V4 Pro，空闲</div></div></div>
+  <div class="pier ghost" style="left:40px;top:426px;width:316px;height:68px"><img class="i mono" src="icons/opencode.svg" alt=""><div><div class="t">OpenCode</div><div class="s">在这台电脑上找到了</div></div><span class="btn" style="margin-left:auto">接入</span></div>
+  <div class="more">另有 52 个支持的 Agent 没在这台电脑上找到。<br><u>查看全部</u></div>
+
+  <div class="group">
+    <div class="hd"><span class="diamond"><svg width="18" height="18" viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="14" rx="2.5" transform="rotate(45 12 12)" fill="none" stroke="var(--ink)" stroke-width="1.8"/></svg></span><div><div style="font-weight:600;font-size:14.5px">永不卡住</div><div style="color:var(--muted);font-size:12.5px">按顺序接力，出错交给下一个</div></div></div>
+    <div class="member now"><span class="n">1</span><img class="i mono" src="icons/kimi.svg" alt=""><div><div class="t">Kimi K3</div><div class="s">正在用</div></div><div class="q">5 小时 92%<div class="bar"><i style="width:92%;background:var(--amber)"></i></div></div></div>
+    <div class="member"><span class="n">2</span><img class="i" src="icons/zhipu-color.svg" alt=""><div><div class="t">GLM-5.3</div><div class="s">候补</div></div><div class="q">今日 18%<div class="bar"><i style="width:18%;background:var(--ink-2)"></i></div></div></div>
+    <div class="member"><span class="n">3</span><img class="i" src="icons/deepseek-color.svg" alt=""><div><div class="t">DeepSeek V4 Pro</div><div class="s">候补</div></div><div class="q">余额 ¥38<div class="bar"><i style="width:40%;background:var(--ink-2)"></i></div></div></div>
+  </div>
+  <div class="pier" style="left:840px;top:430px;width:332px;height:68px"><img class="i mono" src="icons/openai.svg" alt=""><div><div class="t">ChatGPT Plus</div><div class="s">gpt-6.1-sol 等 4 个模型</div></div><div class="q" style="margin-left:auto">5 小时 41%<div class="bar"><i style="width:41%;background:var(--ink-2)"></i></div></div></div>
+  <div class="pier" style="left:840px;top:520px;width:332px;height:68px"><img class="i" src="icons/deepseek-color.svg" alt=""><div><div class="t">DeepSeek</div><div class="s">API 密钥，3 个模型</div></div><div class="q" style="margin-left:auto">余额 ¥38.20</div></div>
+  <div class="pier ghost" style="left:840px;top:610px;width:332px;height:52px;justify-content:center;color:var(--ink-2);font-size:13.5px">添加模型来源</div>
+</section>
+
+<aside>
+  <h2><img src="icons/claudecode-color.svg" alt="">Claude Code</h2>
+  <div class="sub">已接入，走路由组「永不卡住」</div>
+  <div class="tabs"><span class="on">概览</span><span>会话</span><span>请求</span><span>配置</span></div>
+  <div class="facts"><div><b>6</b><span>今天请求</span></div><div><b>1.2 秒</b><span>首字延迟</span></div><div><b>$0.02</b><span>今天花费</span></div></div>
+  <div class="foresight">
+    <p><b>预计 14:20</b> Kimi K3 的 5 小时额度会用完。之后 GLM-5.3 自动接手，Claude Code 不会看到报错。</p>
+    <div class="row"><span class="btn">现在就换到 GLM-5.3</span><span class="btn" style="border-color:transparent;background:transparent;color:var(--muted)">保持不变</span></div>
+  </div>
+  <div class="h3">magpie 改了这个文件</div>
+  <div class="diff"><div class="f">~/.claude/settings.json</div><pre><span class="d">-  "ANTHROPIC_BASE_URL": "api.anthropic.com"</span><span class="a">+  "ANTHROPIC_BASE_URL": "http://127.0.0.1:8787"</span><span class="a">+  "ANTHROPIC_MODEL": "group/never-stuck"</span></pre></div>
+  <div class="h3">在终端里做同样的事</div>
+  <div class="cmd"><code>magpie claude group/never-stuck</code><span class="btn">复制</span></div>
+</aside>
+
+<footer>
+  <div class="rw-top"><span class="t">今天</span><span class="s">拖动时间线，接线台会回到那一刻</span><span class="r"><b>20</b> 次请求　<b>13.5 万</b> token　<b>≈ $0.19</b></span></div>
+  <div class="track" id="track"><span class="flag" style="left:41.2%">10:41 Kimi 返回 429，GLM-5.3 接手</span></div>
+  <div class="hours" id="hours"></div>
+</footer>
+<script>
+const tr=document.getElementById('track'),hs=document.getElementById('hours');
+const ev=[[9.1,14],[9.3,22],[9.32,10],[9.8,18],[10.05,26],[10.2,12],[10.4,30],[10.66,20],[10.68,32,'a'],[10.9,16],[11.2,24],[11.3,14],[11.5,28],[11.72,18],[11.9,22],[12.1,10],[12.5,26],[12.9,16],[13.2,20],[13.4,30]];
+const pct=h=>((h-8)/(14.5-8)*100);
+ev.forEach(([h,v,a])=>{const t=document.createElement('i');t.className='tick'+(a?' amber':'');t.style.left=pct(h)+'%';t.style.height=v+'px';tr.appendChild(t)});
+const p=document.createElement('i');p.className='play';p.style.left=pct(13.55)+'%';tr.appendChild(p);
+for(let h=8;h<=13;h++){const s=document.createElement('span');s.style.left=pct(h)+'%';s.textContent=String(h).padStart(2,'0')+':00';hs.appendChild(s)}
+const n=document.createElement('span');n.style.left=pct(13.55)+'%';n.style.top='0';n.style.color='var(--ink)';n.textContent='现在';n.style.fontWeight='600';hs.appendChild(n);
+</script>
+</body></html>

@@ -1,0 +1,9 @@
+goos: darwin
+goarch: arm64
+pkg: github.com/yetone/magpie/internal/redact
+cpu: Apple M4 Pro
+BenchmarkMaskLongSession/chat-12         	       5	   6375708 ns/op	  46.09 MB/s	 5674052 B/op	   18233 allocs/op
+BenchmarkMaskLongSession/responses-12    	       5	   7001050 ns/op	  44.92 MB/s	 5822201 B/op	   20329 allocs/op
+BenchmarkMaskLongSession/messages-12     	       5	   8193275 ns/op	  38.95 MB/s	 5920604 B/op	   23519 allocs/op
+PASS
+ok  	github.com/yetone/magpie/internal/redact	1.103s

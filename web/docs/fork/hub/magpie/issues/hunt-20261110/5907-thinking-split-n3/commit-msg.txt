@@ -1,0 +1,35 @@
+f0b8d39fcd2fce7313e9f9421df13a102c6290e4
+ggbdpq <ggbdpq@gmail.com>
+vscode: the Custom Endpoint group asks the gateway's Responses API
+
+What changed: magpie wrote VS Code's Custom Endpoint group for the
+gateway's Chat Completions (apiType "chat-completions", each model at
+/v1/chat/completions, reasoningEffortFormat "chat-completions"). VS
+Code's chat-completions client takes a thinking part's id from GitHub
+CAPI's own fields alone (#5907, Lynn-zy), so the gateway's standard
+reasoning_content deltas reached its renderer without ids — and its
+renderer, finding the id empty, renamed it a timestamp a frame and split
+on the mismatch, chopping a full chain of thought into a bullet a frame.
+The group is written for the Responses API now (apiType "responses",
+each model at /v1/responses, reasoningEffortFormat "responses" beside
+supportsReasoningEffort), whose thinking deltas name a stable item_id;
+the reporter moved the three fields by hand and the chopping went away.
+The OpenAI Compatible provider (VSCodium's) and the JetBrains plugin go
+on asking Chat Completions, and Check reads the url the group was
+written for.
+
+Run: on the commit before, TestVSCode and
+TestVSCodeCustomEndpointAsksResponses (new) fail — apiType
+"chat-completions", url /v1/chat/completions, reasoningEffortFormat
+"chat-completions" (absent on a model without efforts); with the change
+all three read responses, the customoai group still reads
+chat-completions with no apiType, and TestVSCodeRoundTrip,
+TestVSCodeProfiles, TestVSCodeInsiders, TestVSCodeUA, TestVSCodium,
+TestVSCodiumCopilotChatOpenAICompatible,
+TestVSCodiumModelsUseTheirOwnVisibility and
+TestAgentsTakeTheUsersMaxOutput stay green. go test -tags nogui
+-count=1 ./internal/agent/ on those; gofmt clean; go vet -tags nogui
+./internal/agent/ clean.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+

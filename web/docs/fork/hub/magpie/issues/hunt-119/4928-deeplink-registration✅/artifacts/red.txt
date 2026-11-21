@@ -1,0 +1,62 @@
+go: downloading github.com/gen2brain/h265 v0.2.4
+go: downloading github.com/coder/websocket v1.8.14
+go: downloading github.com/klauspost/compress v1.18.3
+go: downloading github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
+go: downloading github.com/tidwall/gjson v1.19.0
+go: downloading golang.org/x/image v0.43.0
+go: downloading golang.org/x/net v0.56.0
+go: downloading golang.org/x/sys v0.46.0
+go: downloading golang.org/x/text v0.39.0
+go: downloading github.com/fsnotify/fsnotify v1.9.0
+go: downloading github.com/MoeForge/moejs v0.1.0-alpha.11
+go: downloading gopkg.in/yaml.v3 v3.0.1
+go: downloading github.com/pelletier/go-toml/v2 v2.2.4
+go: downloading github.com/tidwall/jsonc v0.3.3
+go: downloading github.com/google/uuid v1.6.0
+go: downloading github.com/tidwall/match v1.1.1
+go: downloading github.com/tidwall/pretty v1.2.0
+go: downloading modernc.org/libc v1.67.6
+go: downloading modernc.org/sqlite v1.44.3
+go: downloading github.com/clipperhouse/uax29/v2 v2.5.0
+go: downloading github.com/clipperhouse/stringish v0.1.1
+go: downloading github.com/dustin/go-humanize v1.0.1
+go: downloading modernc.org/memory v1.11.0
+go: downloading modernc.org/mathutil v1.7.1
+go: downloading golang.org/x/exp v0.0.0-20260410095643-746e56fc9e2f
+go: downloading github.com/mattn/go-isatty v0.0.20
+go: downloading github.com/ncruces/go-strftime v1.0.0
+go: downloading github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec
+=== RUN   TestClaudeSubscriptionPromptKeepsForeignHarnessOutOfSystem
+    claude_subscription_test.go:48: missing CLI contract "--settings {\"disableDeepLinkRegistration\":\"disable\"}" in "-p --output-format stream-json --input-format stream-json --include-partial-messages --verbose --model claude-sonnet-5 --tools  --strict-mcp-config --mcp-config {} --setting-sources  --dangerously-skip-permissions --no-session-persistence --effort medium --thinking-display summarized"
+--- FAIL: TestClaudeSubscriptionPromptKeepsForeignHarnessOutOfSystem (0.00s)
+=== RUN   TestAskClaudeTUIOn
+    claude_tui_no_print_test.go:115: Claude Code registers no URL handler, ran with "args -p --output-format stream-json --input-format stream-json --verbose --model haiku --tools  --strict-mcp-config --setting-sources "
+--- FAIL: TestAskClaudeTUIOn (0.85s)
+=== RUN   TestClaudeUsageTUIOn
+    claude_tui_usage_test.go:51: the helper's run lacks "[--settings][{\"disableDeepLinkRegistration\":\"disable\"}]":
+        args:[-p][--output-format][stream-json][--input-format][stream-json][--verbose][--tools][][--strict-mcp-config][--setting-sources][]
+        trust:1
+        traffic:
+        telemetry:1
+        told:{"type":"command","command":"/usage"}
+--- FAIL: TestClaudeUsageTUIOn (0.21s)
+=== RUN   TestWarmClaudeAsksClaudeCodeOnce
+    claude_warmup_test.go:52: run lacks "[--settings][{\"disableDeepLinkRegistration\":\"disable\"}]":
+        args:[-p][--output-format][json][--model][haiku][--tools][][--strict-mcp-config][--setting-sources][][--no-session-persistence]
+        dir:/saved/account
+        base:
+        pwd:/private/var/folders/l_/dcyyzzfx5k914sm7sy98xqfc0000gn/T/magpie-claude-4249589862
+        stdin:hi
+        traffic:1
+        telemetry:
+        errors:
+        updater:
+--- FAIL: TestWarmClaudeAsksClaudeCodeOnce (0.10s)
+=== RUN   TestClaudeUsageRunsClaudeCode
+    claude_warmup_test.go:125: run lacks "[--settings][{\"disableDeepLinkRegistration\":\"disable\"}]":
+        args:[-p][/usage][--output-format][json][--tools][][--strict-mcp-config][--setting-sources][][--no-session-persistence]
+        token:
+--- FAIL: TestClaudeUsageRunsClaudeCode (0.10s)
+FAIL
+FAIL	github.com/yetone/magpie/internal/gateway	1.742s
+FAIL

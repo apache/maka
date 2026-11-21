@@ -1,0 +1,25 @@
+{
+  "id": "70",
+  "slug": "minimum-size-subarray-sum",
+  "title": "长度最小的子数组",
+  "difficulty": "medium",
+  "tags": ["数组", "二分查找", "滑动窗口"],
+  "description": "给定一个含有 `n` 个正整数的数组和一个正整数 `target`。找出该数组中满足其和**至少**为 `target` 的长度最小的**连续子数组**,并返回其长度。若不存在,返回 `0`。\n\n**示例 1:**\n\n- 输入:`target = 7`, `nums = [2,3,1,2,4,3]`\n- 输出:`2`(子数组 `[4,3]` 是该条件下的最小长度)\n\n**示例 2:**\n\n- 输入:`target = 4`, `nums = [1,4,4]`\n- 输出:`1`\n\n**进阶:** 能否用 O(n log n) 的二分解法?",
+  "solution": "## 思路\n\n**滑动窗口**:右指针扩展累加 `sum`,当 `sum >= target` 时尝试收缩左指针并更新最短长度。O(n)。\n\n## 参考代码\n\n```js\nfunction minSubArrayLen(target, nums) {\n  let l = 0;\n  let sum = 0;\n  let min = Infinity;\n  for (let r = 0; r < nums.length; r++) {\n    sum += nums[r];\n    while (sum >= target) {\n      min = Math.min(min, r - l + 1);\n      sum -= nums[l];\n      l++;\n    }\n  }\n  return min === Infinity ? 0 : min;\n}\n```\n\n## 复杂度\n\n- 时间:O(n)\n- 空间:O(1)",
+  "signature": {
+    "language": "javascript",
+    "entry": "minSubArrayLen",
+    "params": [
+      { "name": "target", "type": "number" },
+      { "name": "nums", "type": "number[]" }
+    ],
+    "returns": "number"
+  },
+  "testCases": [
+    { "sample": true, "input": [7, [2, 3, 1, 2, 4, 3]], "expected": 2 },
+    { "sample": true, "input": [4, [1, 4, 4]], "expected": 1 },
+    { "sample": true, "input": [11, [1, 1, 1, 1, 1, 1, 1, 1]], "expected": 0 },
+    { "sample": false, "input": [1, [1]], "expected": 1 },
+    { "sample": false, "input": [5, [1, 2]], "expected": 0 }
+  ]
+}

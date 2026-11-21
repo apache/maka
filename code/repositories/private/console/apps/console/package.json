@@ -1,0 +1,43 @@
+{
+  "name": "@ggbdpq/console",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "next dev --port 65501",
+    "build": "next build",
+    "start": "next start --port 65501",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:e2e": "playwright test"
+  },
+  "dependencies": {
+    "@fontsource-variable/geist": "^5.3.0",
+    "@fontsource-variable/jetbrains-mono": "^5.3.0",
+    "@ggbdpq/console-shared": "workspace:*",
+    "@ggbdpq/console-ui": "workspace:*",
+    "@ggbdpq/inventory-core": "workspace:*",
+    "@phosphor-icons/react": "^2.1.10",
+    "@tanstack/react-query": "^5.104.5",
+    "@tanstack/react-table": "^8.21.3",
+    "lucide-react": "^1.61.0",
+    "next": "^16.4.3",
+    "openai": "^7.43.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "sonner": "^2.0.8",
+    "tar": "^7.5.22",
+    "zod": "^4.6.7",
+    "zustand": "^5.0.16"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.64.1",
+    "@tailwindcss/postcss": "^4.3.3",
+    "@types/node": "^26.6.5",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "tailwindcss": "^4.3.3",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.5"
+  }
+}

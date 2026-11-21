@@ -1,0 +1,46 @@
+gateway: saidWithResults no longer drops a background task's notice, so a background task-notification survives the trip (#3020)
+
+Claude Code sends a background task's <task-notification> with the next
+request: in the {role: "system"} message 2.1.296+ puts its other tail
+notices in (#2060), or, older clients, as a text of its own. Through the
+Claude subscription bridge, the run waiting on the request's tool results
+is handed the results and the words said beside them (saidWithResults)
+alone: the system-message case left the notification out, and so did
+agentNotice, whose injected leads hold "<task-notification>" from
+prompt.go's turn reading. The model went on as if no task had ended, and
+a foreground wait on the task had nothing to wait for — the A/B of #3020:
+2/2 SEEN direct, 3/3 NOT_SEEN through magpie. A run started anew is told
+the whole conversation, notification included; only the run kept for the
+results lost it.
+
+saidWithResults tells the run a text that carries the notification
+(taskNotice, a contains on the tag) before the system-message and
+agentNotice cases; hooks' notices and token counts stay out (#2060's
+tests hold).
+
+What changed:
+- internal/gateway/claude_subscription.go: taskNotice, and a
+  saidWithResults case for it before the two gates; the doc comment says
+  where the notification travels and why the run hears of it.
+- internal/gateway/claude_hook_notice_test.go: the notification goes on
+  with the results in both shapes (red on base f5b01574:
+  "Claude Code was written [], want the task-notification"), and a run
+  started anew is told it in its prompt.
+
+Run (GOTOOLCHAIN=auto, darwin/arm64):
+- go test ./internal/gateway/ -run 'TestClaudeTaskNotificationGoesOnWithTheResults|TestClaudePromptToldTheTaskNotification|TestClaudeHookNotices|TestClaudeUsersMessageAmongHookNoticesGoesOnAlone|TestClaudePromptToldHookNoticesNotAsTheUsers|TestAgentNoticeLeavesTheUsersWords' -count=1 -v: all pass; the two new ones fail on base.
+- Ablated: the fix reverted, the two fail as on base; restored, they pass.
+  taskNotice forced false, both fail; restored, they pass.
+- go test -race on the same -run: ok. gofmt -l on both files: clean.
+  go vet ./internal/gateway: clean.
+- go build ./... on darwin/arm64, GOOS=linux GOARCH=amd64 -tags nogui,
+  GOOS=windows GOARCH=amd64: all ok.
+- go test ./internal/gateway/ -count=1 -p 1 -timeout 30m: ok (320.989s).
+- Not tried: end to end with a real Claude Code 2.1.303 on a Claude
+  subscription. 2.1.303's exact notification bytes are inferred from
+  #2060's captured 2.1.296 shapes and the reporter's routing log, not
+  captured here.
+
+Fixes #3020
+
+Generated-by: GLM-5.3-Flash (ZCode)

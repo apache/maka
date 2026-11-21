@@ -1,0 +1,229 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Thu, 19 Nov 2026 00:34:52 +0800
+Subject: [PATCH] fix(provider): bound a persistent logins.json read failure's
+ log (#7008)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+What changed: sharedLogins logged its read failure on every ask, and
+filememo retries an unreadable file on every read, so an owner change
+making every read fail wrote ~500 identical lines a second — 14.7M lines,
+2.2 GB in 8 hours (#7008), then the disk. The first failure of a run is
+logged at once, the same error later once per 5 minutes with how many
+went by quiet in between, and a read that succeeds (or finds the file
+gone, or recovers the last good generation) logs a new failure at once.
+A different error is never held back. The kept-accounts semantics are
+unchanged: lastLogins is still served and kept, as
+TestLoginsKeptWhileAnotherMagpieWrites covers, and the .bak/.bad-
+recovery is untouched. providers-accounts.md notes the bounded log.
+
+Run: TestUnreadLoginsLogRateBounded (new) fails on base 1e2287758 with
+25 lines from 25 reads and passes with the fix; product-only ablation
+red, restored green. Targeted -race (unread/kept family) passes. gofmt
+and git diff --check clean; vet darwin/linux/windows and builds
+darwin/windows/linux pass. `go test -tags nogui -timeout=45m
+-count=1 ./internal/provider/` exits 1 with TestResolveVia alone, the
+documented local proxy-isolation failure: the same failure on bare base
+1e2287758 and with the new test skipped. (An earlier package run hit a
+TestHandOver panic that did not reproduce in three later runs, two with
+the new test present.)
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ docs/subsystems/providers-accounts.md   |  2 +-
+ internal/provider/logins.go             | 45 ++++++++++++-
+ internal/provider/logins_unread_test.go | 84 +++++++++++++++++++++++++
+ 3 files changed, 128 insertions(+), 3 deletions(-)
+
+diff --git a/docs/subsystems/providers-accounts.md b/docs/subsystems/providers-accounts.md
+index 66accdf6c..667012c5c 100644
+--- a/docs/subsystems/providers-accounts.md
++++ b/docs/subsystems/providers-accounts.md
+@@ -458,7 +458,7 @@ and `TestHistoricalWindowHoldsUsesEachWindowsOwnReading`.
+ - The Copilot account the editors and CLI keep is read by `copilotLogin` ([account.go](../../internal/provider/account.go)): an editor's github.com sign-in in `~/.config/github-copilot/apps.json` or `hosts.json` first, then the Copilot CLI's, then an editor's on GHE.com. When GitHub refuses the editor token's trade for a session token (401 or 403, `copilotRefusals`, retried after an hour), the CLI's sign-in of the same login on the same host takes its place, sent as the CLI sends it, from that request on and on the Usage card (`copilotStandIn`); a CLI signed in to another account is never used for it, and the error names the editors' file (#1238). A sign-in from magpie of the account whose editor token is refused is kept and stands for it (`copilotProbeEditor`, `addCopilotLogin`); while the editor token works, it is let go as the agent's own, as before.
+ - A keychain read that may have shown the user a dialog is not asked again for ten minutes after it was refused (`keychainDeniedTTL` in [account.go](../../internal/provider/account.go)): Copilot's token read backs a denial off (`copilotCLISecret`), and the Cursor token (`cursorKeychainToken`) and Claude Code's item (`readClaudeKeychainItem`, through `claudeCredential`'s cache) do too (#2408). 44, the item not being there, is no refusal and keeps the short TTL, so a sign-in made in the agent is still seen within it; a sign-in or out in magpie reads afresh (`forgetCursorStatus`, `forgetClaudeCredential`), backoff or not.
+ - An unreadable `providers.json` is an error, never an empty list. Saving over an empty list would lose every provider.
+-- When `logins.json` cannot be decoded as saved accounts, reads keep the accounts read before. Before saving a change, `lastgood.Keep` ([lastgood.go](../../internal/lastgood/lastgood.go)) keeps the file there now: as `logins.json.bak`, its last good generation, when it reads, or copied aside as `logins.json.bad-<time>` (`-2`, `-3`… for another within one second) when it doesn't, including valid JSON with invalid account field types, so its credentials can be recovered. If the existing file cannot be read or the copy fails, saving returns the error and leaves the original file unchanged. A missing file can be created normally.
++- When `logins.json` cannot be decoded as saved accounts, reads keep the accounts read before. A read that keeps failing is logged when it first happens and again once per five minutes with the count that went by quiet in between, so a file that stays unreadable cannot fill the log (#7008). Before saving a change, `lastgood.Keep` ([lastgood.go](../../internal/lastgood/lastgood.go)) keeps the file there now: as `logins.json.bak`, its last good generation, when it reads, or copied aside as `logins.json.bad-<time>` (`-2`, `-3`… for another within one second) when it doesn't, including valid JSON with invalid account field types, so its credentials can be recovered. If the existing file cannot be read or the copy fails, saving returns the error and leaves the original file unchanged. A missing file can be created normally.
+ - A Windows machine that went down mid-write left `logins.json` and `plugin-auth.json` at their full length, every byte zero (#1505): the rename reached the disk before the data. Every write of magpie's own state goes through `steady.WriteFile` (or `edit.WriteAtomic`), which flushes the temp file before renaming it in, and the plugin host's `writeDurable` does the same. So does every write of an agent's own sign-in (#2239): `codexToken`'s rotated tokens into Codex's `auth.json` (`~/.codex`, or `$CODEX_HOME` when set; its keychain item instead when Codex keeps the sign-in there) and `writeClaudeCredential`'s `.credentials.json` go through `writePrivate`, never a truncating `os.WriteFile`, so a machine going down mid-write leaves the old sign-in whole, and on Windows a file another program holds for a moment is waited out (`steady.Rename`) instead of the rotation being dropped while the refresh token on the disk is spent. A file that is there but doesn't read on a cold start is read from its `.bak` (`lastgood.Read`/`Fallback`): `logins.json`, `providers.json`, `migrations.json`, `settings.json`, `profiles.json`, `plugins.json`, `plugin-auth.json` and `mcp-signins.json`. `caller-keys.json` is flushed the same way but never read from a `.bak`: a key revoked in the last write would come back, so a store that doesn't read still refuses every key. The recovery is logged and listed in `/api/state`'s `recovered`, which the window tells once (`recoveredOnce`). The `.bak` lags one write behind on purpose: a crash zeroes the latest write, so a copy made with it could be zeroed too. With no good `.bak` the file is unknown, never empty: a sign-out leaves `plugin-auth.json` or `mcp-signins.json` as it is (magpie's own returns the error), and a sign-in added copies the file aside before it writes.
+ - A state file whose reader takes one that doesn't unmarshal into its type as empty is copied aside before it is written over (`lastgood.KeepUnparsed` with `lastgood.Into[T]`, #2263): valid JSON of another shape, `[]` for a map, counts as not parsing. A copy that can't be made stops the write. These are `stash.json`, `applied.json`, `wsl.json` and Codex's `magpie-models.json` ([agent](../../internal/agent/), whose hand-added model keys `codexcat.Keep` can't hold when the file doesn't parse), `sessions-wsl.json` and `gateway-sessions-hidden.json` ([sessions](../../internal/sessions/)), `stepfun-auth.json`, `qianfan-auth.json`, `login-returns.json`, `quota-history.json`, `balance-history.json` and `credits-daily.json` ([provider](../../internal/provider/)), `claude-desktop.tiers.json`, `plugin-updates.json`, `usage-computer.json` and `sync-state.json`. A daily check-in's file (`workbuddy-checkin.json`, `trae-checkin.json`, `minimax-checkin.json`, `qoder-checkin.json`, `plugin-checkin.json`) that is there but can't be read or doesn't parse into entries is unknown (`readCheckins` in [`workbuddy_checkin.go`](../../internal/provider/workbuddy_checkin.go)): its vendor's check-in asks nothing and writes nothing, so no account is checked in twice in a day and no entry is lost, the file is left as it is, each account's result is `failed` with the reason (the loop tries again after 30 minutes, a press says why), and the cards show what last read from it in this process. A file not there is empty. `TestCheckinUnreadableFileLeftAlone` covers it. Caches magpie fills again by itself (last quota readings, warm-up marks, plugin icons, npm and GitHub lookups, client shapes, seats, alert marks, `served.json`, `bun/state.json`) are still written over: losing one costs a refetch or a repeated notice.
+ - The gateway and a magpie run from a terminal change the same files (#1674). `loginsMu` is a [`filelock.Mutex`](../../internal/filelock/filelock.go): besides the mutex it holds an OS lock on `logins.json.lock` (flock, `LockFileEx` on Windows), and taking it has `logins.json` read afresh (`filememo.Look`), so every read a change is made from sees what another magpie wrote, and a refresh the gateway wrote is never written back over. `savedTokenMu` holds `logins.json.renew.lock` the same way, so two magpies never spend one refresh token. `caller-keys.json` (`access`) and `mcp-signins.json` (`mcpauth`, with `mcp-signins.json.renew.lock` around a renewal) are changed under such locks too; `plugin-auth.json` already was, under `plugin-auth.json.lock`, which `host.js` takes too. A lock another magpie holds is waited for up to `filelock.Wait` (10s), then gone on without, as before there was one. `rememberLogins` writes nothing when only `Seen` would move on and the saved one is less than `seenEvery` (10 minutes) old, so a run that only lists accounts (`magpie ls`, `providers`, `sessions`, `usage`) leaves `logins.json` as it is. [`logins_lock_test.go`](../../internal/provider/logins_lock_test.go) covers both, the second with another test process writing between this one's read and write.
+diff --git a/internal/provider/logins.go b/internal/provider/logins.go
+index 433930788..17f93d6a7 100644
+--- a/internal/provider/logins.go
++++ b/internal/provider/logins.go
+@@ -273,11 +273,13 @@ func sharedLogins() []savedLogin {
+ 	defer lastLoginsMu.Unlock()
+ 	switch {
+ 	case err == nil:
++		loginsReadOkay()
+ 		lastLogins, loginsKnown = ls, true
+ 	case errors.Is(err, fs.ErrNotExist):
++		loginsReadOkay()
+ 		lastLogins, loginsKnown = nil, true
+ 	case loginsKnown:
+-		log.Printf("logins.json: %v; the accounts read before are kept", err)
++		loginsReadFailure(fmt.Sprintf("logins.json: %v; the accounts read before are kept", err))
+ 		ls = lastLogins
+ 	default:
+ 		// magpie just started on a file that doesn't read (all zero after
+@@ -286,13 +288,52 @@ func sharedLogins() []savedLogin {
+ 		if b, ferr := lastgood.Fallback(loginsPath(), unreadBytes(loginsPath()), validLogins); ferr == nil {
+ 			ls, _ = parseLogins(b)
+ 			lastLogins, loginsKnown = ls, true
++			loginsReadOkay()
+ 		} else {
+-			log.Printf("logins.json: %v; %v", err, ferr)
++			loginsReadFailure(fmt.Sprintf("logins.json: %v; %v", err, ferr))
+ 		}
+ 	}
+ 	return slices.Clip(ls) // an append makes the caller's own
+ }
+ 
++// loginsReadLogEvery is how long the same read failure of logins.json is
++// held back before it is logged again: the file can stay unreadable for
++// days (#7008 — an owner change left every read refused, and ~500 identical
++// lines a second filled a 2.2 GB log in 8 hours, then the disk).
++var loginsReadLogEvery = 5 * time.Minute
++
++// loginsReadLog is the read failure logged last, when, and how many of the
++// same went by quiet since. Guarded by lastLoginsMu, which both call sites
++// hold. A read that succeeds, or finds the file gone, or recovers the last
++// good generation clears it, so a later failure is logged at once again.
++var (
++	loginsReadLogLine string
++	loginsReadLogAt   time.Time
++	loginsReadLogHeld int
++)
++
++// loginsReadFailure logs line for a read of logins.json that failed: the
++// first of a run at once, then once per loginsReadLogEvery with how many
++// of the same error went by quiet in between. A different error is logged
++// at once, whatever the interval says.
++func loginsReadFailure(line string) {
++	if loginsReadLogLine != "" && line == loginsReadLogLine && time.Since(loginsReadLogAt) < loginsReadLogEvery {
++		loginsReadLogHeld++
++		return
++	}
++	if loginsReadLogHeld > 0 {
++		log.Printf("%s (%d more of the same error while quiet)", loginsReadLogLine, loginsReadLogHeld)
++	}
++	log.Print(line)
++	loginsReadLogLine, loginsReadLogAt, loginsReadLogHeld = line, time.Now(), 0
++}
++
++// loginsReadOkay clears the held-back read failure: the file reads, or is
++// known to be gone, so the next failure starts a run of its own.
++func loginsReadOkay() {
++	loginsReadLogLine, loginsReadLogAt, loginsReadLogHeld = "", time.Time{}, 0
++}
++
+ // unreadBytes are a file's bytes, nil when it can't be read: for the log
+ // to say what was wrong with it.
+ func unreadBytes(path string) []byte {
+diff --git a/internal/provider/logins_unread_test.go b/internal/provider/logins_unread_test.go
+index 700581cac..73792a3a6 100644
+--- a/internal/provider/logins_unread_test.go
++++ b/internal/provider/logins_unread_test.go
+@@ -1,8 +1,10 @@
+ package provider
+ 
+ import (
++	"bytes"
+ 	"encoding/json"
+ 	"errors"
++	"log"
+ 	"os"
+ 	"path/filepath"
+ 	"slices"
+@@ -210,3 +212,85 @@ func TestUnreadLoginsNotWrittenOver(t *testing.T) {
+ 		t.Fatalf("kept %q", b)
+ 	}
+ }
++
++// A read of logins.json that keeps failing was logged on every attempt: an
++// owner change made each read fail, ~500 identical lines a second filled a
++// 2.2 GB log in 8 hours and the disk with it (#7008). The first failure of
++// a run is logged, the same error later once per interval with the count
++// that was held back, and a read that succeeds again logs a new failure at
++// once.
++func TestUnreadLoginsLogRateBounded(t *testing.T) {
++	azureHome(t)
++	synctest.Test(t, func(t *testing.T) {
++		p := loginsPath()
++		if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
++			t.Fatal(err)
++		}
++		good := []byte(`[{"agent":"gemini","user":"old@example.com","auth":{"refresh_token":"old-refresh-token"}}]`)
++		if err := os.WriteFile(p, good, 0o600); err != nil {
++			t.Fatal(err)
++		}
++		if ls := readLogins(); len(ls) != 1 || ls[0].User != "old@example.com" {
++			t.Fatalf("precondition: accounts = %v", ls)
++		}
++		// another process replaced the file and left it unreadable: the new
++		// file time makes every look miss what was parsed, and no read gets
++		// in (root's atomic save over a non-root service, #7008)
++		if err := os.WriteFile(p, good, 0o600); err != nil {
++			t.Fatal(err)
++		}
++		if err := os.Chmod(p, 0); err != nil {
++			t.Fatal(err)
++		}
++		t.Cleanup(func() { _ = os.Chmod(p, 0o600) })
++		if _, err := os.ReadFile(p); err == nil {
++			t.Skip("the filesystem does not enforce the unreadable mode")
++		}
++		var buf bytes.Buffer
++		log.SetOutput(&buf)
++		log.SetFlags(0)
++		t.Cleanup(func() { log.SetOutput(os.Stderr); log.SetFlags(log.LstdFlags) })
++
++		// every read of the file fails: a request, a page poll and a gateway
++		// look each came here, and each logged its own line before the fix
++		for i := 0; i < 25; i++ {
++			readLogins()
++		}
++		if n := strings.Count(buf.String(), "the accounts read before are kept"); n != 1 {
++			t.Fatalf("25 reads of an unreadable logins.json logged %d lines, want 1:\n%s", n, buf.String())
++		}
++
++		// the file stays unreadable past the interval: one line saying how
++		// many were held back, not one per read
++		readLogins()
++		time.Sleep(6 * time.Minute)
++		readLogins()
++		out := buf.String()
++		if !strings.Contains(out, "more of the same error while quiet") {
++			t.Fatalf("the held-back count is missing after the interval:\n%s", out)
++		}
++		if n := strings.Count(out, "the accounts read before are kept"); n != 3 {
++			t.Fatalf("logged %d lines after the interval, want 3 (first, held-back count, current):\n%s", n, out)
++		}
++
++		// the file reads again: a failure after that is logged at once, not
++		// suppressed by the run before it
++		if err := os.Chmod(p, 0o600); err != nil {
++			t.Fatal(err)
++		}
++		if ls := readLogins(); len(ls) != 1 || ls[0].User != "old@example.com" {
++			t.Fatalf("the accounts are gone once the file reads again: %v", ls)
++		}
++		buf.Reset()
++		if err := os.WriteFile(p, good, 0o600); err != nil {
++			t.Fatal(err)
++		}
++		if err := os.Chmod(p, 0); err != nil {
++			t.Fatal(err)
++		}
++		readLogins()
++		if n := strings.Count(buf.String(), "the accounts read before are kept"); n != 1 {
++			t.Fatalf("a failure after the file read again logged %d lines, want 1:\n%s", n, buf.String())
++		}
++	})
++}
+-- 
+2.50.1 (Apple Git-155)
+

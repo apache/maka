@@ -1,0 +1,175 @@
+{
+  "state": "source_present",
+  "groups": [
+    {
+      "name": "file-changes",
+      "source": "C:\\Users\\802165\\.amp\\file-changes",
+      "pattern": "**/*",
+      "remove_root": true,
+      "category": "archive",
+      "archive": "E:\\cc\\guahub\\sessions\\raw\\amp\\migration-20261026-130825\\file-changes.zip",
+      "files": [
+        {
+          "path": "T-019ddd3b-bd83-7703-97d1-31c390434cb6/toolu_vrtx_012N7dq8MfpRaY8TWz2GpSgj.10b5acfc-319e-484e-a11c-f4cbc9a6e762",
+          "size": 17140,
+          "mtime_ns": 1777534080598272300,
+          "sha256": "b445c803b470e525744605113482c51a76503b15d4ea88f5f5f60528f580693a"
+        },
+        {
+          "path": "T-019ddd3b-bd83-7703-97d1-31c390434cb6/toolu_vrtx_0136cJABw3FTzam6oM5d62Hy.21f7fcf0-34c3-4d2a-b0f5-fbd267c6a188",
+          "size": 7392,
+          "mtime_ns": 1777534818566949200,
+          "sha256": "a32e07791a0c05a85fbd2d906fc46798fdecc976da3f1faef6bef3605dcabe66"
+        },
+        {
+          "path": "T-019ddd3b-bd83-7703-97d1-31c390434cb6/toolu_vrtx_013X2nwdGdwuCCTabxaSvKEZ.0c091c35-15fe-40d5-8934-10098a91b7ef",
+          "size": 15547,
+          "mtime_ns": 1777533989565334500,
+          "sha256": "427c386503eefe36ba7f6124c4821719ac1d7e402cc6e26c859aa8183721f725"
+        },
+        {
+          "path": "T-019ddd3b-bd83-7703-97d1-31c390434cb6/toolu_vrtx_014637krtzthW8zoiQbNWqPR.9c85249b-7988-4ad1-b5ec-607062b75341",
+          "size": 17221,
+          "mtime_ns": 1777534080574339000,
+          "sha256": "1dffc7a69d7f7159a4fa6cb65e84b43aeaad4d5c2dc1d847e031a389cd974f19"
+        },
+        {
+          "path": "T-019ddd3b-bd83-7703-97d1-31c390434cb6/toolu_vrtx_0163jWmb1WWu1767aLPPRsKJ.92e3ce0e-7716-42eb-93f5-924da1503a8f",
+          "size": 17043,
+          "mtime_ns": 1777534080627856700,
+          "sha256": "814adda892dcba9fb352e57c84717811a9f825180fce38eae6a29ad355836ca4"
+        },
+        {
+          "path": "T-019ddd3b-bd83-7703-97d1-31c390434cb6/toolu_vrtx_01AiKPFR8tS7kouQmaVbuLjv.37543691-3686-4537-a48e-06450e3c0654",
+          "size": 19987,
+          "mtime_ns": 1777536427256406700,
+          "sha256": "120cb1c43fe8b693e41bdbf20f06b544fb90333f3c13d4094275651d8a669498"
+        },
+        {
+          "path": "T-019ddd3b-bd83-7703-97d1-31c390434cb6/toolu_vrtx_01Cr3bLy6nzG54GhkMjePRX7.2ddb36af-a79c-42e4-b770-76fee1bd7403",
+          "size": 16888,
+          "mtime_ns": 1777534080697674700,
+          "sha256": "d410c130425c9b75327b8e4eff1f1ff0ade890f0a9a6ea3999c34e0a0e0af5ec"
+        },
+        {
+          "path": "T-019ddd3b-bd83-7703-97d1-31c390434cb6/toolu_vrtx_01Eg8sAy5DH8LmodnPgd3bZx.a8a1da28-7401-4dc9-a5f9-5e434e0b342d",
+          "size": 6951,
+          "mtime_ns": 1777534080577355500,
+          "sha256": "b8c64fa24c6fc549167dc67c90eabe0045338d03885f899ec16833aca304e459"
+        },
+        {
+          "path": "T-019ddd3b-bd83-7703-97d1-31c390434cb6/toolu_vrtx_01EoKMqx2GM65ouVzWoymRwB.86bf9dc3-3001-40e6-96f8-21af0dab1177",
+          "size": 8516,
+          "mtime_ns": 1777535607333921400,
+          "sha256": "64e5365b23c1ed8fe14eab20d7410615fc6482b222009d0bd7224ccfc1caddd3"
+        },
+        {
+          "path": "T-019ddd3b-bd83-7703-97d1-31c390434cb6/toolu_vrtx_01K6di5MHHrvsg4DqDcszrgP.2749fcc3-859f-4914-a065-64f0a4051630",
+          "size": 16230,
+          "mtime_ns": 1777533989564338700,
+          "sha256": "362add1e7821b6b8ffcdd846d334f18d78c7e305cd9d61924a33b6b5fbe39a9b"
+        },
+        {
+          "path": "T-019ddd3b-bd83-7703-97d1-31c390434cb6/toolu_vrtx_01KaopZ69GaTH7keKxTQq5i9.4675cfe1-756b-4717-882b-5110c28b26d4",
+          "size": 21843,
+          "mtime_ns": 1777536427335009500,
+          "sha256": "6b96d9e5c413f0505d29df493c369b849e191cfe24d988afd7467d0460a637a3"
+        },
+        {
+          "path": "T-019ddd3b-bd83-7703-97d1-31c390434cb6/toolu_vrtx_01P1XADRSdGBsGyPG8sKN4cb.2bb4eb2d-937c-4655-9e9d-de04e2fffa80",
+          "size": 6119,
+          "mtime_ns": 1777533989565334500,
+          "sha256": "972de630cd6d02811874be4fac0a776ce81278323e4b4c04bee9e1bba78d1f31"
+        },
+        {
+          "path": "T-019ddd3b-bd83-7703-97d1-31c390434cb6/toolu_vrtx_01PAQd16S73jZXE8sxq1vscn.261cc1ca-dcd9-48a4-ba47-3128eb414304",
+          "size": 8579,
+          "mtime_ns": 1777535607375893300,
+          "sha256": "97602c548b17605f0424dd29921ec7f803f40adcd65c95fe94da637139f9480b"
+        },
+        {
+          "path": "T-019ddd3b-bd83-7703-97d1-31c390434cb6/toolu_vrtx_01PZNcbu4aK3a2zF3aJk2UQL.782e471e-1cea-48cd-bc0c-151b694e083c",
+          "size": 17125,
+          "mtime_ns": 1777535607384872900,
+          "sha256": "6deb51dd6614f19829ea7263cfede67e5d08b752565da5e0d19b364398a006c7"
+        },
+        {
+          "path": "T-019ddd3b-bd83-7703-97d1-31c390434cb6/toolu_vrtx_01UrJwh8Pu5qY6RHvijy981s.f7fa3499-a980-46ba-988d-30a7827d77ec",
+          "size": 34893,
+          "mtime_ns": 1777537831420076700,
+          "sha256": "955268b47af277ee93a8dcd2e893ebb77486266d4f8f59b6d4afedf607d4a4d9"
+        }
+      ],
+      "directories": [
+        "T-019d94bf-9977-75e7-b7b4-af978590d8d1",
+        "T-019db911-b9a9-7623-a405-37ff4fd60200",
+        "T-019ddd3b-bd83-7703-97d1-31c390434cb6",
+        "T-019e029c-f944-726f-a960-66c8b55ec178"
+      ]
+    },
+    {
+      "name": "threads",
+      "source": "C:\\Users\\802165\\.local\\share\\amp\\threads",
+      "pattern": "**/*",
+      "remove_root": true,
+      "category": "archive",
+      "archive": "E:\\cc\\guahub\\sessions\\raw\\amp\\migration-20261026-130825\\threads.zip",
+      "files": [
+        {
+          "path": "T-019d94bf-9977-75e7-b7b4-af978590d8d1.json",
+          "size": 108,
+          "mtime_ns": 1776317078477199000,
+          "sha256": "d386e9338db0152c5de5b56eb8037b3d0e670299b27b216f07bcb5e70970352d"
+        },
+        {
+          "path": "T-019db911-b9a9-7623-a405-37ff4fd60200.json",
+          "size": 108,
+          "mtime_ns": 1776926441956591800,
+          "sha256": "1731219b0043036d34a8a2651ee0abfa62b5a0a2a690ad594b7b3066e75f93c7"
+        },
+        {
+          "path": "T-019e029c-f944-726f-a960-66c8b55ec178.json",
+          "size": 108,
+          "mtime_ns": 1778160921768101400,
+          "sha256": "7430e15353c544ae897ab5d87dc3bcbb30be92163839091ef0a62b19acb2ea80"
+        }
+      ],
+      "directories": []
+    },
+    {
+      "name": "history",
+      "source": "C:\\Users\\802165\\.local\\share\\amp",
+      "pattern": "history.jsonl",
+      "remove_root": false,
+      "category": "archive",
+      "archive": "E:\\cc\\guahub\\sessions\\raw\\amp\\migration-20261026-130825\\history.zip",
+      "files": [
+        {
+          "path": "history.jsonl",
+          "size": 1485,
+          "mtime_ns": 1777537705362734900,
+          "sha256": "a59d72b75ede4253db8b98df829480d9b7be6a4ff9f7643678e65bf59476f64f"
+        }
+      ],
+      "directories": []
+    },
+    {
+      "name": "session",
+      "source": "C:\\Users\\802165\\.local\\share\\amp",
+      "pattern": "session.json",
+      "remove_root": false,
+      "category": "archive",
+      "archive": "E:\\cc\\guahub\\sessions\\raw\\amp\\migration-20261026-130825\\session.zip",
+      "files": [
+        {
+          "path": "session.json",
+          "size": 159,
+          "mtime_ns": 1781680431563409300,
+          "sha256": "10fac8c0421a4d02ddf799f2375e33d2e995232c5445af7c92a45361777b4774"
+        }
+      ],
+      "directories": []
+    }
+  ],
+  "protected": {}
+}

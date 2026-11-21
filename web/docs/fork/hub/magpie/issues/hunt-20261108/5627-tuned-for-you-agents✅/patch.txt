@@ -1,0 +1,686 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Sun, 8 Nov 2026 03:18:32 +0800
+Subject: [PATCH] usage: Tuned for you says why an agent has no card, not "too
+ few calls" (#5627)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The advice was worked out of claude's and codex's calls only, the two
+names carried three times in the gui (tuneOf, tuneCallsSince, adviseOf),
+so an agent past them was invisible to tune, and its blank pane said
+"Not enough calls in this range to tune on" — not why: Qoder's calls
+were plenty (jackyfan01), they just never reached tune, and an agent
+with no setting of tune's has no card for them to earn.
+
+The names come from agent.TuneAgents now, the one list beside the places
+tuneWhere reads settings from (TestTuneAgentsHavePlaces keeps the two
+from drifting). The answer names the rest: Others, the agents of the
+range with no setting of tune's — sessions.TouchedSince, the sessions
+page's listing, which reaches further than the calls pipeline does
+(Qoder's files are nowhere in callSources) — and Unread, the agents with
+a setting whose files magpie may not read here. The pane says so, and
+"Not enough calls" stays for a range that really is quiet.
+
+Verified: TestTuneTellsWhyAnAgentIsBlank and TestTuneAgentsHavePlaces
+(RED before, GREEN after; the answer names qoder-cn over /api/tune);
+context-tune-blanks.test.cjs (RED before, GREEN after, Chromium, en+zh);
+context-tune.test.cjs 284/284, context-tune-shapes.test.cjs 20/20,
+internal/sessions green; TestCoreScriptBudget paid for by comment cuts
+in context.js; go vet, builds (darwin, GOOS=linux, GOOS=windows).
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/agent/tune.go                        |  10 ++
+ internal/gui/assets/context.js                |  90 +++++++-------
+ internal/gui/assets/i18n.js                   |   8 ++
+ .../gui/tests/context-tune-blanks.test.cjs    |  94 ++++++++++++++
+ internal/gui/tune.go                          |  61 +++++++--
+ internal/gui/tune_others_test.go              | 116 ++++++++++++++++++
+ internal/sessions/sessions.go                 |  16 +++
+ 7 files changed, 337 insertions(+), 58 deletions(-)
+ create mode 100644 internal/gui/tests/context-tune-blanks.test.cjs
+ create mode 100644 internal/gui/tune_others_test.go
+
+diff --git a/internal/agent/tune.go b/internal/agent/tune.go
+index 886b31226..10eeb1e55 100644
+--- a/internal/agent/tune.go
++++ b/internal/agent/tune.go
+@@ -216,6 +216,16 @@ type tunePlace struct {
+ 	number bool
+ }
+ 
++// TuneAgents are the agents tune has a setting to put a value in, the
++// names tuneWhere answers for: an agent whose settings tune gains goes
++// into tuneWhere and this list, and nowhere else carries the names again
++// (#5627: the gui kept its own copy of the two, and an agent past them
++// was invisible to tune, its blank pane said "not enough calls").
++func TuneAgents() []string { return []string{"claude", "codex"} }
++
++// Tunable says whether tune has a setting for agent.
++func Tunable(agent string) bool { return slices.Contains(TuneAgents(), agent) }
++
+ func tuneWhere(home, agent, knob, model string) (tunePlace, error) {
+ 	home = tuneHome(home)
+ 	switch agent {
+diff --git a/internal/gui/assets/context.js b/internal/gui/assets/context.js
+index 337fa9afd..10384d7b8 100644
+--- a/internal/gui/assets/context.js
++++ b/internal/gui/assets/context.js
+@@ -2,10 +2,9 @@
+ // Context windows: what a request's prompt holds, as the gateway read it
+ // (gateway.Route.Prompt), drawn as a card — how full the window is, how
+ // much the vendor read from its cache, a grid of the window with a cell
+-// for each 1/400 of it coloured by what fills it, and the contents part by
+-// part. Routing shows the card for the request it tells of; the Usage
+-// page's Context tab scores each agent's use of its window, tags it, and
+-// lists its sessions' fill request by request.
++// for each 1/400 of it coloured by what fills it. Routing shows the card
++// for the request it tells of; the Usage page's Context tab scores each
++// agent's use of its window and lists its sessions' fill request by request.
+ (() => {
+   const PARTS = ["system", "tools", "skills", "memory", "files", "results", "chat"];
+   const PART_NAMES = {
+@@ -194,9 +193,9 @@
+   }
+ 
+   // Narrow layouts go by the card's own width, as classes (max520), not
+-  // container queries: WebKit pulled a view scrolled to its end up by a
+-  // card's height on each redraw (#1249). A redrawn card starts at the last
+-  // width in its place, so it never lays out wide and pulls the page up
++  // container queries: WebKit pulled a scrolled view up by a card's height
++  // on each redraw (#1249); a redrawn card starts at the last width in its
++  // place, so it never lays out wide and pulls the page up
+   const cardWidth = {};
+   const sizeCard = (card, w) => {
+     card.classList.toggle("max520", w <= 520);
+@@ -260,13 +259,12 @@
+     for (let i = kids.length; i < old.length; i++) old[i].remove();
+   }
+ 
+-  // ---------- the map: the window as tiles (flohoeller's context map) ----------
++  // the map: the window as tiles (flohoeller's context map)
+ 
+   // The card's window is drawn one of two ways, the reader's pick: the
+   // map, each item a tile sized by its tokens inside its part's, the free
+   // space a hatched tile of its share; or the grid, a cell for each 1/400
+-  // of the window. The map is the default; the grid is kept for those who
+-  // had it.
++  // of the window. The map is the default; the grid stays for those who had it.
+   let ctxLook = "map";
+   try { if (localStorage.getItem("magpie.ctxLook") === "grid") ctxLook = "grid"; } catch {}
+ 
+@@ -309,12 +307,12 @@
+   }
+ 
+   // tilesOf lays a prompt out on a map W×H px: the used share of the
+-  // window and the free space side by side along its long side (the
+-  // used share eased, see usedLen), the used
+-  // parts squarified in it, a part's items in the part. An item too small
+-  // to read goes in one tile with the part's other small ones; a part too
+-  // small for its items is one tile. Each tile: key (stays across draws),
+-  // kind, its item (it), the items it stands for (its), rect in px.
++  // window and the free space side by side along its long side (the used
++  // share eased, see usedLen), the used parts squarified in it, a part's
++  // items in the part. An item too small to read shares a tile with the
++  // part's other small ones; a part too small for its items is one tile.
++  // Each tile: key (stays across draws), kind, its item (it), its items
++  // (its), rect in px.
+   const TILE_MIN = 1500, TILE_MAX = 12, TILE_FLOOR = 700, TILE_SIDE = 16;
+   // the look switch's marks: tiles, and a grid of cells
+   const LOOK_MAP = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><rect x="1.5" y="2" width="5.5" height="12" rx="1.6"/><rect x="8.5" y="2" width="6" height="6.5" rx="1.6"/><rect x="8.5" y="10" width="6" height="4" rx="1.4"/></svg>';
+@@ -343,7 +341,7 @@
+     // area, and a part laid in a long row beside large ones met it as a
+     // strip (49 tokens of memory beside 70K: 190×4px, under the tiles' 3px
+     // gap, so it was hidden; AIGCFREE on Discord). One too thin has its
+-    // value raised by as much and the parts are laid again.
++    // value raised by as much and the parts are laid again
+     const partVals = floored(parts.map((x) => ({ v: x.tokens, x })), ur[2] * ur[3]);
+     let partRects = squarify(partVals, ...ur);
+     for (let n = 0; n < 8; n++) {
+@@ -397,12 +395,11 @@
+   // ctxCard draws a route's prompt. opts: series (the session's prompts,
+   // [{id, tokens, time}]), onPoint (a point of it clicked), cache ({read,
+   // total}, when the route carries no usage), crumbs (the footer's path),
+-  // place (for its width: see cardWidth). The card's ctxUpdate(r, opts)
+-  // draws another route in it, keeping the nodes that are the same (grid
+-  // cells too), so nothing flashes and the grid keeps its height.
+-  // A foldable card (Routing's) keeps the reader's choice: folded, it is its
+-  // head alone with how full the window is, so the request list has room
+-  // (0xBCD18E on X: it took most of the height)
++  // place (for its width: see cardWidth). ctxUpdate(r, opts) draws another
++  // route in it, keeping the nodes that are the same (grid cells too), so
++  // nothing flashes and the grid keeps its height. A foldable card
++  // (Routing's) keeps the reader's choice: folded, its head alone with how
++  // full the window is, so the request list has room (0xBCD18E on X)
+   let ctxShut = false;
+   try { ctxShut = localStorage.getItem("magpie.ctxShut") === "1"; } catch {}
+   // opts.open: this request was opened to see its context window (the
+@@ -831,11 +828,10 @@
+       const known = cache && p.counted !== false ? cache : null;
+       if (known || cacheShown) {
+         // once shown, the cache keeps its place, so nothing under it moves
+-        // up and back down. A request under way has read no cache yet:
+-        // the last request's stays, dimmed and named as the last one's,
+-        // until this one's answer says (dumplings on Discord: each new
+-        // request flashed it to "—" and an empty bar, the dash against
+-        // 命中). Nothing to show is said in words, with no bar
++        // up and back down. A request under way has read no cache yet: the
++        // last one's stays, dimmed and named as the last one's, until this
++        // one's answer says (dumplings on Discord: each new request flashed
++        // it to "—" and an empty bar). Nothing to show is said in words
+         const shown = known || (live ? lastCache : null);
+         const c = el("div", "ctx-stat ctx-cache" + (!known && shown ? " was" : shown ? "" : " none"));
+         c.append(el("div", "ctx-k", t("Prompt cache")));
+@@ -958,7 +954,7 @@
+   }
+   window.ctxCard = ctxCard;
+ 
+-  // clickable makes e a button for the keyboard too, its handlers set as
++  // clickable makes e a button for the keyboard too, handlers set as
+   // properties, so a morphed card keeps them
+   function clickable(e, go) {
+     e.setAttribute("role", "button");
+@@ -972,24 +968,23 @@
+     };
+   }
+ 
+-  // ---------- the text of a part (masaka on Discord) ----------
++  // the text of a part (masaka on Discord)
+ 
+   // A part of the card clicked opens what the request sent there, read
+-  // from the request's body: an item alone (a tool, a file, a turn), or
+-  // the part's items, each opened to its text (ctxtext.js, loaded then)
++  // from its body: an item alone (a tool, a file, a turn), or the part's
++  // items, each opened to its text (ctxtext.js, loaded then)
+   const openCtxText = (...a) => import("./ctxtext.js").then((m) => m.open({ fmtK, partName, itemName, itemLabel, tagOf }, ...a)).catch(statusErr);
+   window.openCtxText = openCtxText;
+   window.ctxFmt = fmtK;
+ 
+-  // ---------- the Usage page's Context tab ----------
++  // the Usage page's Context tab
+ 
+   const CTX_RANGES = [["1", "Today"], ["7", "7 days"], ["30", "30 days"]];
+   let ctxDays = "7";
+   try { const d = localStorage.getItem("magpie.ctxDays"); if (CTX_RANGES.some(([id]) => id === d)) ctxDays = d; } catch {}
+   let ctxData = null, ctxJSON = "", ctxRead = 0, ctxOpen = "", ctxAgent = "all";
+-  // the days the pane shows "Reading…" for: a second read before the history
+-  // answers (the page opened, then the first state's refresh) leaves it be,
+-  // so the advice drawn meanwhile keeps its entrance
++  // the days the pane shows "Reading…" for: a second read before the
++  // history answers leaves the advice drawn meanwhile keep its entrance
+   let ctxWaiting = "";
+ 
+   const SCORE_NAMES = { cache: "Cache", lean: "Lean start", pace: "Pace", reliable: "Reliability" };
+@@ -1160,7 +1155,7 @@
+   }
+ 
+ 
+-  // ---------- tuned for you: the settings that would have spent the fewest tokens ----------
++  // tuned for you: the settings that would have spent the fewest tokens
+ 
+   let tuneData = null, tuneJSON = "", tuneRead = 0, tuneBusy = "";
+   // whether the last draw showed the history and the advice: what was on
+@@ -1483,18 +1478,20 @@
+       return;
+     }
+     const shown = tuneData.agents.filter((a) => a.advice.length);
+-    if (!shown.length) {
+-      pane.append(el("p", "usage-note", t("Not enough calls in this range to tune on")));
+-      return;
+-    }
++    // why an agent has no card: its files unread, or no setting of tune's (#5627)
++    const blanks = (tuneData.unread || []).map((n) => t("{agent}'s session history isn't being read: Settings › Privacy turns it on", { agent: agentLabel(n) }))
++      .concat((tuneData.others || []).map((n) => t("{agent} has no setting to tune on", { agent: agentLabel(n) })));
+     const grid = el("div", "ctx-agents ctx-tunes");
+     for (const a of shown) grid.append(tuneCard(a));
+-    pane.append(grid);
++    if (shown.length) pane.append(grid);
++    else if (!blanks.length) blanks.push(t("Not enough calls in this range to tune on"));
++    for (const b of blanks) pane.append(el("p", "usage-note", b));
+   }
+ 
+   // what this page can draw: another version's reply can hold other rows
+   // (Linka on Discord: a page from before few rows threw on one, "r.cost")
+   const obj = (r) => !!r && typeof r == "object", objs = (l) => Array.isArray(l) ? l.filter(obj) : [];
++  const strs = (l) => Array.isArray(l) ? l.filter((s) => typeof s == "string") : [];
+ 
+   async function loadTune(force) {
+     const read = ++tuneRead, days = ctxDays;
+@@ -1503,7 +1500,7 @@
+     if (read !== tuneRead) return;
+     const json = JSON.stringify(data);
+     if (!force && tuneData && json === tuneJSON) return;
+-    tuneData = { days: +data.days || +days, gateway: !!data?.gateway, agents: objs(data?.agents).map((a) => ({ ...a, advice: objs(a.advice).filter((r) => obj(r.compact) || obj(r.ttl) || r.few).map((r) => ({ ...r, setting: obj(r.setting) ? r.setting : {} })) })) }, tuneJSON = json;
++    tuneData = { days: +data.days || +days, gateway: !!data?.gateway, agents: objs(data?.agents).map((a) => ({ ...a, advice: objs(a.advice).filter((r) => obj(r.compact) || obj(r.ttl) || r.few).map((r) => ({ ...r, setting: obj(r.setting) ? r.setting : {} })) })), others: strs(data?.others), unread: strs(data?.unread) }, tuneJSON = json;
+     renderContext();
+   }
+ 
+@@ -1564,10 +1561,9 @@
+     const data = await api("context?days=" + days);
+     if (read !== ctxRead) return;
+     // the auto refresh redraws only what changed: the same answer keeps the
+-    // pane (and what the pointer is on), and a new one comes in without its
+-    // entrance animations. What it is drawn with counts too: the agents'
+-    // names and icons come with the state, which can answer after a first
+-    // history, drawn by the agents' ids until then
++    // pane, and a new one comes in without its entrance animations. What it
++    // is drawn with counts too: the agents' names and icons come with the
++    // state, which can answer after a first history, drawn by ids until then
+     const json = JSON.stringify([data, (state.clients || state.agents || []).map((a) => [a.id, a.name, a.icon])]);
+     if (ctxData && json === ctxJSON) return;
+     ctxData = data, ctxJSON = json;
+diff --git a/internal/gui/assets/i18n.js b/internal/gui/assets/i18n.js
+index dd4209080..06d4be291 100644
+--- a/internal/gui/assets/i18n.js
++++ b/internal/gui/assets/i18n.js
+@@ -223,6 +223,8 @@ const I18N = {
+     "1 call": "1 次调用",
+     "Up to {pct} fewer": "最多少 {pct}",
+     "Not enough calls in this range to tune on": "这段时间的调用太少，还算不出建议",
++    "{agent} has no setting to tune on": "{agent} 没有可调的设置",
++    "{agent}'s session history isn't being read: Settings › Privacy turns it on": "{agent} 的会话历史未允许读取：可在 设置 › 隐私 › 智能体的会话历史 里开启",
+     "Tuned for you": "为你调优",
+     "Your own calls of the range, replayed setting by setting from your agents' session files: the settings that would have spent the fewest tokens, for how you work. Tokens are weighed as the vendor charges them: a cache read is a tenth of one.": "用你这段时间自己的调用（来自 agent 的会话文件）逐个设置重放：按你的用法，哪组设置花的 Token 最少。Token 按厂商计费的方式加权：一次缓存读取算十分之一。",
+     "Working it out from your sessions…": "正在从你的会话里计算…",
+@@ -4933,6 +4935,8 @@ const I18N = {
+     "1 call": "1 次呼叫",
+     "Up to {pct} fewer": "最多少 {pct}",
+     "Not enough calls in this range to tune on": "這段時間的呼叫太少，還算不出建議",
++    "{agent} has no setting to tune on": "{agent} 沒有可調的設定",
++    "{agent}'s session history isn't being read: Settings › Privacy turns it on": "{agent} 的會話歷史未允許讀取：可在 設定 › 隱私 › 智慧體的會話歷史 裡開啟",
+     "Tuned for you": "為你調校",
+     "Your own calls of the range, replayed setting by setting from your agents' session files: the settings that would have spent the fewest tokens, for how you work. Tokens are weighed as the vendor charges them: a cache read is a tenth of one.": "用你這段時間自己的呼叫（來自 agent 的工作階段檔案）逐個設定重播：按你的用法，哪組設定花的 Token 最少。Token 按廠商計費的方式加權：一次快取讀取算十分之一。",
+     "Working it out from your sessions…": "正在從你的工作階段裡計算…",
+@@ -9618,6 +9622,8 @@ const I18N = {
+     "1 call": "1 回の呼び出し",
+     "Up to {pct} fewer": "最大 {pct} 減",
+     "Not enough calls in this range to tune on": "この期間は呼び出しが少なく、まだ調整できません",
++    "{agent} has no setting to tune on": "{agent} には調整できる設定がありません",
++    "{agent}'s session history isn't being read: Settings › Privacy turns it on": "{agent} のセッション履歴は読み取っていません：設定 › プライバシー › エージェントのセッション履歴 でオンにできます",
+     "Tuned for you": "あなた向けの調整",
+     "Your own calls of the range, replayed setting by setting from your agents' session files: the settings that would have spent the fewest tokens, for how you work. Tokens are weighed as the vendor charges them: a cache read is a tenth of one.": "この期間のあなた自身の呼び出し（エージェントのセッションファイルから）を設定ごとに再生し、あなたの使い方で最もトークンが少なくなる設定を求めます。トークンはベンダーの課金どおりに重み付けし、キャッシュ読み取りは 10 分の 1 です。",
+     "Working it out from your sessions…": "セッションから計算中…",
+@@ -14310,6 +14316,8 @@ const I18N = {
+     "1 call": "1 Aufruf",
+     "Up to {pct} fewer": "Bis zu {pct} weniger",
+     "Not enough calls in this range to tune on": "Zu wenige Aufrufe in diesem Zeitraum zum Abstimmen",
++    "{agent} has no setting to tune on": "Bei {agent} gibt es keine Einstellung zum Abstimmen",
++    "{agent}'s session history isn't being read: Settings › Privacy turns it on": "Der Sitzungsverlauf von {agent} wird nicht gelesen: unter Einstellungen › Datenschutz › Sitzungsverlauf der Agenten einschalten",
+     "Tuned for you": "Für dich abgestimmt",
+     "Your own calls of the range, replayed setting by setting from your agents' session files: the settings that would have spent the fewest tokens, for how you work. Tokens are weighed as the vendor charges them: a cache read is a tenth of one.": "Deine eigenen Aufrufe des Zeitraums, aus den Sitzungsdateien deiner Agenten Einstellung für Einstellung nachgespielt: die Einstellungen, die für deine Arbeitsweise am wenigsten Tokens gekostet hätten. Tokens sind gewichtet wie der Anbieter abrechnet: ein Cache-Lesezugriff zählt ein Zehntel.",
+     "Working it out from your sessions…": "Wird aus deinen Sitzungen berechnet …",
+diff --git a/internal/gui/tests/context-tune-blanks.test.cjs b/internal/gui/tests/context-tune-blanks.test.cjs
+new file mode 100644
+index 000000000..488b572c6
+--- /dev/null
++++ b/internal/gui/tests/context-tune-blanks.test.cjs
+@@ -0,0 +1,94 @@
++// Run with Node's test runner and Playwright on the module path; see README.md.
++// Usage › Context's Tuned for you was blank for an agent with no setting
++// of tune's (Qoder) and said "not enough calls", which was not why
++// (#5627): the pane names the agents it has no card for, and why — no
++// setting tune can put in, or files magpie may not read — and says "not
++// enough calls" only when that is really why. In English and Chinese, on
++// Chromium.
++const assert = require("node:assert/strict");
++const fs = require("node:fs/promises");
++const path = require("node:path");
++const { test } = require("node:test");
++const { chromium } = require("playwright");
++
++const assets = path.resolve(process.env.MAGPIE_ASSETS || path.resolve(__dirname, "../assets"));
++const facts = { calls: 4100, streams: 60, compacts: 0, peak: 166000, after: 57000, growth: 1000, rework: 4700, quick: 0.95, pause: 0.045, away: 0.005, hour: 0.9 };
++const codex = { agent: "codex", calls: 900, advice: [
++  { knob: "compact", setting: {}, compact: { current: 200000, best: 160000, cost: 2e8, low: 1.6e8, curve: [{ value: 100000, cost: 3e8 }, { value: 160000, cost: 1.6e8 }, { value: 200000, cost: 2e8 }], facts } },
++] };
++const cases = {
++  // jackyfan01's pane: Qoder CN's calls were plenty, Claude Code's files
++  // were never allowed, and not a card to show — the reasons, not "too few"
++  "why the agents are blank": { tune: { days: 7, agents: [], others: ["qoder-cn"], unread: ["claude"] }, state: ["qoder-cn"] },
++  // a quiet range really is a quiet range
++  "too few, truly": { tune: { days: 7, agents: [], others: [], unread: [] }, state: [] },
++  // cards and notes at once: Codex advised, Qoder named
++  "cards beside the notes": { tune: { days: 7, agents: [codex], others: ["qoder-cn"], unread: [] }, state: ["qoder-cn"] },
++};
++
++function serve(lang, tune, qoder) {
++  const state = { agents: [
++    { id: "claude", name: "Claude Code", path: "/test/claude", fields: [] },
++    { id: "codex", name: "Codex", path: "/test/codex", fields: [] },
++    ...(qoder ? [{ id: "qoder-cn", name: "Qoder CN", path: "/test/qoder", fields: [] }] : []),
++  ], profiles: [], settings: { lang, theme: "light" } };
++  return async (r) => {
++    const url = new URL(r.request().url());
++    const json = (data) => r.fulfill({ json: data });
++    if (url.pathname === "/boot.js") return r.fulfill({ contentType: "text/javascript", body: `window.bootPrefs = {lang:"${lang}",theme:"light",web:true};` });
++    if (url.pathname === "/wails/runtime.js") return r.fulfill({ contentType: "text/javascript", body: "export const Window = {};" });
++    if (url.pathname === "/api/state") return json(state);
++    if (url.pathname === "/api/tune") return json(tune);
++    if (url.pathname === "/api/context") return json({ days: 7, agents: [], sessions: [] });
++    if (url.pathname === "/api/gateway/trace") {
++      if (url.searchParams.get("wait")) return new Promise(() => {});
++      return json({ mine: true, now: new Date().toISOString(), seq: 0, totals: { requests: 0, rerouted: 0, errors: 0 }, routes: [] });
++    }
++    if (url.pathname === "/api/providers") return json({ providers: [], presets: [], excluded: [], gateway: { running: true, window: true, url: "http://127.0.0.1:3999" } });
++    if (url.pathname === "/api/usage/quotas") return json([]);
++    if (url.pathname === "/api/groups") return json({ groups: [], models: [] });
++    if (url.pathname === "/api/plugins") return json({ plugins: [] });
++    if (url.pathname.startsWith("/api/")) return json({});
++    const file = path.join(assets, url.pathname === "/" ? "index.html" : url.pathname);
++    const contentType = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png" }[path.extname(file)];
++    await r.fulfill({ body: await fs.readFile(file).catch(() => ""), contentType, status: 200 });
++  };
++}
++
++const few = { en: "Not enough calls in this range to tune on", zh: "这段时间的调用太少，还算不出建议" };
++const noSetting = { en: "Qoder CN has no setting to tune on", zh: "Qoder CN 没有可调的设置" };
++const unread = { en: "Claude Code's session history isn't being read: Settings › Privacy turns it on", zh: "Claude Code 的会话历史未允许读取：可在 设置 › 隐私 › 智能体的会话历史 里开启" };
++
++for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium"])) {
++  for (const [name, { tune, state: qoder }] of Object.entries(cases)) test(`${engine}, ${name}: Tuned for you says why an agent is blank`, async (t) => {
++    const browser = await chromium.launch({ channel: "chromium" });
++    t.after(() => browser.close());
++    for (const lang of Object.keys(few)) {
++      await t.test(lang, async () => {
++        const ctx = await browser.newContext({ viewport: { width: 900, height: 760 }, reducedMotion: "reduce" });
++        await ctx.addInitScript(() => { try { localStorage.setItem("magpie.usageTab", "context"); } catch {} });
++        const page = await ctx.newPage();
++        page.setDefaultTimeout(5000);
++        page.setDefaultNavigationTimeout(60000);
++        const errors = [];
++        page.on("pageerror", (e) => errors.push(e.message));
++        await page.route("**/*", serve(lang, tune, qoder.includes("qoder-cn")));
++        await page.goto("http://magpie.test/?view=usage");
++        await page.locator(".ctx-tune-note").waitFor({ timeout: 10000 });
++        const body = await page.locator("#contextPane").innerText();
++        assert.deepEqual(errors, []);
++        if (name === "too few, truly") {
++          assert.ok(body.includes(few[lang]), "the quiet range says so: " + body);
++          return;
++        }
++        assert.ok(!body.includes(few[lang]), "no card is not always too few calls: " + body);
++        assert.ok(body.includes(noSetting[lang]), "Qoder named, its why told: " + body);
++        if (name === "why the agents are blank") assert.ok(body.includes(unread[lang]), "the unread agent's why told: " + body);
++        if (name === "cards beside the notes") {
++          await page.locator(".ctx-tune-row").waitFor({ timeout: 10000 });
++          assert.ok(!body.includes(few[lang]), "the note stays honest beside the cards: " + body);
++        }
++      });
++    }
++  });
++}
+diff --git a/internal/gui/tune.go b/internal/gui/tune.go
+index 73d85eeba..1fcd891c2 100644
+--- a/internal/gui/tune.go
++++ b/internal/gui/tune.go
+@@ -8,6 +8,7 @@ package gui
+ import (
+ 	"encoding/json"
+ 	"hash/fnv"
++	"maps"
+ 	"net/http"
+ 	"slices"
+ 	"sort"
+@@ -101,24 +102,41 @@ type tuneState struct {
+ 	// (linkaww on Discord: a Docker magpie's Claude Code card said 0
+ 	// calls beside the requests it routed); the page leaves the card out
+ 	Gateway bool `json:"gateway,omitempty"`
++	// Others are the agents of the range whose files magpie read that
++	// have no setting of tune's (qoder and its kin): the pane names them,
++	// so their blank is not told as "not enough calls", which for them is
++	// not why (#5627)
++	Others []string `json:"others,omitempty"`
++	// Unread are the agents with a setting of tune's whose session files
++	// magpie may not read here: their calls are missing for that, not for
++	// being few (#5627)
++	Unread []string `json:"unread,omitempty"`
+ }
+ 
+-// tuneOf works the advice out of the calls the agents' files hold.
++// tuneOf works the advice out of the calls the agents' files hold. An
++// agent with no setting of tune's is named in the state, not dropped
++// silently (#5627).
+ func tuneOf(cs []sessions.Call, days int, home string) tuneState {
+ 	by := map[string][]tune.Call{}
++	others := map[string]bool{}
+ 	for _, c := range cs {
+-		if c.Agent == "claude" || c.Agent == "codex" {
++		if agent.Tunable(c.Agent) {
+ 			by[c.Agent] = append(by[c.Agent], tune.FromCalls([]sessions.Call{c})...)
++		} else {
++			others[c.Agent] = true
+ 		}
+ 	}
+-	return adviseOf(by, days, home)
++	return adviseOf(by, slices.Sorted(maps.Keys(others)), days, home)
+ }
+ 
+-// adviseOf is tuneOf from each agent's calls made tune's already.
+-func adviseOf(by map[string][]tune.Call, days int, home string) tuneState {
+-	out := tuneState{Days: days, Agents: []tuneAgent{}}
++// adviseOf is tuneOf from each agent's calls made tune's already; others
++// are the agents of the range with no setting of tune's, named in the
++// state so the pane can say why they are blank (#5627).
++func adviseOf(by map[string][]tune.Call, others []string, days int, home string) tuneState {
++	out := tuneState{Days: days, Agents: []tuneAgent{}, Others: others}
++	found := sessions.Found()
+ 	weigh := pricedWeights(settings.Load())
+-	for _, name := range []string{"claude", "codex"} {
++	for _, name := range agent.TuneAgents() {
+ 		calls := by[name]
+ 		kept := agent.TuneKept(home, name)
+ 		if name == "claude" {
+@@ -133,6 +151,9 @@ func adviseOf(by map[string][]tune.Call, days int, home string) tuneState {
+ 			kept = here
+ 		}
+ 		if len(calls) == 0 && len(kept) == 0 {
++			if !sessions.Reads(name) && slices.Contains(found, name) {
++				out.Unread = append(out.Unread, name)
++			}
+ 			continue
+ 		}
+ 		ta := tuneAgent{Agent: name, Calls: len(calls), Advice: []tuneAdvice{}}
+@@ -447,7 +468,7 @@ func tuneFor(days int) tuneState {
+ 	if tuneAnswer.days == days && time.Since(tuneAnswer.at) < ctxAgain {
+ 		return tuneAnswer.out
+ 	}
+-	out := adviseOf(tuneCallsSince(time.Now().AddDate(0, 0, -days)), days, "")
++	out := adviseOf(tuneCallsSince(time.Now().AddDate(0, 0, -days)), othersOf(time.Now().AddDate(0, 0, -days)), days, "")
+ 	tuneAnswer.days, tuneAnswer.at, tuneAnswer.out = days, time.Now(), out
+ 	return out
+ }
+@@ -470,12 +491,13 @@ func msgHash(s string) uint64 {
+ 	return h.Sum64() | 1
+ }
+ 
+-// tuneCallsSince is each agent's calls since, as sessions.Calls has them:
+-// a message a resumed Claude Code session copied is the earlier file's.
++// tuneCallsSince is each tunable agent's calls since, as sessions.Calls
++// has them: a message a resumed Claude Code session copied is the earlier
++// file's.
+ func tuneCallsSince(since time.Time) map[string][]tune.Call {
+ 	var srcs []sessions.CallSource
+ 	for _, s := range sessions.CallSources() {
+-		if (s.Agent == "claude" || s.Agent == "codex") && !s.Modified.Before(since) {
++		if agent.Tunable(s.Agent) && !s.Modified.Before(since) {
+ 			srcs = append(srcs, s)
+ 		}
+ 	}
+@@ -536,6 +558,23 @@ func tuneCallsSince(since time.Time) map[string][]tune.Call {
+ 	return by
+ }
+ 
++// othersOf names the agents of the range tune has no card for: a session
++// file of theirs was touched in it, and they have no setting of tune's
++// (#5627). The listing is the sessions page's, which reaches further than
++// the calls pipeline does — Qoder's files, for one, are nowhere in
++// callSources.
++func othersOf(since time.Time) []string {
++	touched := sessions.TouchedSince(since)
++	names := make([]string, 0, len(touched))
++	for name := range touched {
++		if !agent.Tunable(name) {
++			names = append(names, name)
++		}
++	}
++	slices.Sort(names)
++	return names
++}
++
+ // claudeCacheJSON is one of Claude Code's prompt-cache lifetimes: its
+ // knob (agent.TuneCache, agent.TuneSubCache), the value it runs at ("" for
+ // Claude Code's own default), and the variable that sets it, when one does.
+diff --git a/internal/gui/tune_others_test.go b/internal/gui/tune_others_test.go
+new file mode 100644
+index 000000000..905929de0
+--- /dev/null
++++ b/internal/gui/tune_others_test.go
+@@ -0,0 +1,116 @@
++package gui
++
++import (
++	"os"
++	"path/filepath"
++	"testing"
++	"time"
++
++	"github.com/yetone/magpie/internal/agent"
++	"github.com/yetone/magpie/internal/sessions"
++	"github.com/yetone/magpie/internal/settings"
++)
++
++// jackyfan01 (#5627): 「为你调优」 was blank for Qoder with calls to
++// spare, and said "not enough calls" — not why. Tune read only claude and
++// codex, two names three places of the gui carried each on its own, and
++// an agent with no setting of tune's has no card for its calls to earn.
++// The names come from agent.TuneAgents now, and the state says why an
++// agent is blank: no setting of tune's (Others), or files magpie may not
++// read (Unread).
++func TestTuneTellsWhyAnAgentIsBlank(t *testing.T) {
++	h := sandboxHome(t)
++	// a test before this one may have left the consent written: reads as
++	// this test starts are magpie's own default, everything read
++	if err := settings.SetSessionReads(func(*settings.SessionReads) *settings.SessionReads { return nil }); err != nil {
++		t.Fatal(err)
++	}
++	sessions.Reset()
++	t.Cleanup(func() {
++		settings.SetSessionReads(func(*settings.SessionReads) *settings.SessionReads { return nil })
++		sessions.Reset()
++	})
++	home := t.TempDir()
++	qoder := tuneCalls("qoder-cn", "qoder-max", 40)
++	st := tuneOf(qoder, 1, home)
++	if len(st.Agents) != 0 {
++		t.Fatalf("qoder-cn has no setting of tune's: agents %+v", st.Agents)
++	}
++	if len(st.Others) != 1 || st.Others[0] != "qoder-cn" {
++		t.Fatalf("qoder-cn's calls with no setting of tune's: others %+v; want qoder-cn", st.Others)
++	}
++	if len(st.Unread) != 0 {
++		t.Fatalf("nothing keeps magpie from reading here: unread %+v", st.Unread)
++	}
++	// Claude Code's calls beside Qoder's make its card; Qoder's note stays
++	st = tuneOf(append(qoder, tuneCalls("claude", "claude-opus-4-5", 80)...), 1, home)
++	if len(st.Agents) != 1 || st.Agents[0].Agent != "claude" || len(st.Agents[0].Advice) == 0 {
++		t.Fatalf("claude's calls: agents %+v; want claude's card", st.Agents)
++	}
++	if len(st.Others) != 1 || st.Others[0] != "qoder-cn" {
++		t.Fatalf("claude's card and qoder-cn's note: others %+v; want qoder-cn", st.Others)
++	}
++	// the production route: the answer names the agent of the range it has
++	// no card for, from the sessions page's listing — callSources, what
++	// the calls are read from, has none of Qoder's files
++	proj := filepath.Join(h, ".qoder-cn", "projects", "-work-app")
++	if err := os.MkdirAll(proj, 0o755); err != nil {
++		t.Fatal(err)
++	}
++	line := `{"type":"user","timestamp":"` + time.Now().UTC().Format("2006-01-02T15:04:05Z") + `","message":{"role":"user","content":"hi"},"cwd":"/work/app","sessionId":"s1"}`
++	if err := os.WriteFile(filepath.Join(proj, "sess1.jsonl"), []byte(line+"\n"), 0o644); err != nil {
++		t.Fatal(err)
++	}
++	sessions.Reset()
++	if _, ok := sessions.TouchedSince(time.Now().Add(-24 * time.Hour))["qoder-cn"]; !ok {
++		t.Fatal("qoder-cn's file touched since, yet the listing has none")
++	}
++	var answer tuneState
++	getJSON(t, keptMux(t), "/api/tune?days=1", &answer)
++	if len(answer.Others) != 1 || answer.Others[0] != "qoder-cn" {
++		t.Fatalf("/api/tune: others %+v; want qoder-cn", answer.Others)
++	}
++	// an agent with a store here that magpie may not read is blank for
++	// that, not for being few: Codex's folder is here, the consent off
++	if err := os.MkdirAll(filepath.Join(h, ".codex", "sessions"), 0o755); err != nil {
++		t.Fatal(err)
++	}
++	if err := settings.SetSessionReads(func(*settings.SessionReads) *settings.SessionReads {
++		return &settings.SessionReads{}
++	}); err != nil {
++		t.Fatal(err)
++	}
++	sessions.Reset()
++	t.Cleanup(func() {
++		settings.SetSessionReads(func(*settings.SessionReads) *settings.SessionReads { return nil })
++		sessions.Reset()
++	})
++	st = tuneOf(tuneCalls("claude", "claude-opus-4-5", 80), 1, home)
++	if len(st.Agents) != 1 || st.Agents[0].Agent != "claude" {
++		t.Fatalf("claude's calls: agents %+v; want claude's card alone", st.Agents)
++	}
++	if len(st.Unread) != 1 || st.Unread[0] != "codex" {
++		t.Fatalf("codex here, reads off: unread %+v; want codex", st.Unread)
++	}
++	if len(st.Others) != 0 {
++		t.Fatalf("no qoder call any more: others %+v", st.Others)
++	}
++}
++
++// The names and the places can't drift apart: every agent TuneAgents
++// names has a place tuneWhere reads a setting from, and Qoder, whose
++// sessions magpie reads as Claude Code's are, has none — that is why it
++// had no card, and the pane has to say so, not count its calls as few
++// (#5627).
++func TestTuneAgentsHavePlaces(t *testing.T) {
++	sandboxHome(t)
++	home := t.TempDir()
++	for _, name := range agent.TuneAgents() {
++		if _, err := agent.TuneRead(home, name, agent.TuneCompact, "claude-opus-4-5"); err != nil {
++			t.Fatalf("%s is a name of tune's, yet no place for its window: %v", name, err)
++		}
++	}
++	if agent.Tunable("qoder-cn") {
++		t.Fatal("qoder-cn has no setting of tune's, yet Tunable says it has")
++	}
++}
+diff --git a/internal/sessions/sessions.go b/internal/sessions/sessions.go
+index 7421161f6..b6b3a9ff3 100644
+--- a/internal/sessions/sessions.go
++++ b/internal/sessions/sessions.go
+@@ -728,6 +728,22 @@ var filesHook func()
+ 
+ func allFiles() []file { return allFilesWith(zcodeFiles) }
+ 
++// TouchedSince is every agent with a session file modified since, named
++// with its newest file's time: the sessions page's listing, no file read
++// (tune names the agents of the range it has no card for, #5627).
++func TouchedSince(since time.Time) map[string]time.Time {
++	out := map[string]time.Time{}
++	for _, f := range allFiles() {
++		if f.mod.Before(since) {
++			continue
++		}
++		if at, ok := out[f.agent]; !ok || f.mod.After(at) {
++			out[f.agent] = f.mod
++		}
++	}
++	return out
++}
++
+ // allFilesForTitles is allFiles with ZCode's sessions listed from their own
+ // rows alone: a name poll needs titles, not every message counted
+ // (zcodeFiles joins them for a session's size and last activity).
+-- 
+2.50.1 (Apple Git-155)
+

@@ -1,0 +1,553 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Sun, 8 Nov 2026 02:48:55 +0800
+Subject: [PATCH] gateway: an answer that wasn't streamed tells its pace
+ (#5575)
+
+Speed first orders keys by how fast they answered lately, but it kept
+nothing from an answer that wasn't streamed: with no first token,
+DecodeOf told nothing, noteSpeed kept nothing, and a pool whose callers
+stream nothing had every key unmeasured for good -- Speed first went on
+sending the first key in the list everything, which is what the
+reporter saw (#5575). An unstreamed answer's pace is its output over
+its whole wait, the reading the reporter gave the Requests page: kept
+apart from a streamed one's average, which it would drag down (the
+review of #5575), enough to order the seat by, weighed without a first
+token. Fastest counts a told pace as measured, and the Routing page's
+story says the whole-reply pace of a key first by it, where before it
+said the key hadn't answered at all.
+---
+ internal/gateway/speed.go                     |  88 ++++++---
+ internal/gateway/unstreamed_speed_test.go     | 181 ++++++++++++++++++
+ internal/gui/assets/i18n.js                   |   4 +
+ internal/gui/assets/plugins/routing/client.js |  16 +-
+ .../gui/tests/routing-speed-first.test.cjs    |  20 ++
+ internal/routes/fastest.go                    |  29 +--
+ internal/routes/fastest_test.go               |  14 ++
+ 7 files changed, 311 insertions(+), 41 deletions(-)
+ create mode 100644 internal/gateway/unstreamed_speed_test.go
+
+diff --git a/internal/gateway/speed.go b/internal/gateway/speed.go
+index c1f1b1fae..32d76185a 100644
+--- a/internal/gateway/speed.go
++++ b/internal/gateway/speed.go
+@@ -9,12 +9,12 @@ import (
+ )
+ 
+ // Speed lately, for Speed first (routes.Fastest): of each account or key
+-// and model (restID), a decayed average of its streamed answers' time to
+-// first token and of how fast they wrote. Kept in memory, a few numbers
+-// each, written once as an answer ends (noteSpeed) and read with a map
+-// lookup per candidate as a pool routed by speed is weighed: the usage
+-// history is never read for it. A restart forgets them, and each is
+-// measured again as Fastest's probes give it a turn.
++// and model (restID), a decayed average of its answers' time to first
++// token and of how fast they wrote. Kept in memory, a few numbers each,
++// written once as an answer ends (noteSpeed) and read with a map lookup
++// per candidate as a pool routed by speed is weighed: the usage history
++// is never read for it. A restart forgets them, and each is measured
++// again as Fastest's probes give it a turn.
+ 
+ // speedHalfLife: a sample counts half after this, against those since.
+ // speedStale: this long after its last answer a seat counts as not
+@@ -29,9 +29,11 @@ const (
+ const speedMost = 4096
+ 
+ type speedRec struct {
+-	ttft, ttftW float64   // the average ms to the first token, and its samples' weight
+-	tps, tpsW   float64   // the average output tokens a second, and its samples' weight
+-	at, tpsAt   time.Time // the last sample of each
++	ttft, ttftW   float64   // the average ms to the first token, and its samples' weight
++	tps, tpsW     float64   // the average output tokens a second, and its samples' weight
++	whole, wholeW float64   // the same, of answers that weren't streamed: output over the whole wait
++	at, tpsAt     time.Time // the last sample of each
++	wholeAt       time.Time
+ }
+ 
+ var speeds = struct {
+@@ -52,27 +54,52 @@ func fold(avg, w float64, since time.Duration, x float64) (float64, float64) {
+ 	return (avg*w + x) / (w + 1), w + 1
+ }
+ 
++// fresh is when the record was measured last, whichever of its samples
++// that was: a pace can come without a first token (a reply that wasn't
++// streamed, #5575), and the record it makes is none the less recent.
++func (r speedRec) fresh() time.Time {
++	f := r.at
++	if r.tpsAt.After(f) {
++		f = r.tpsAt
++	}
++	if r.wholeAt.After(f) {
++		f = r.wholeAt
++	}
++	return f
++}
++
+ // noteSpeed records an answer of c's: ttft ms from its try's start to its
+ // first content, and, when its pace was told, tokens written in w ms
+-// after it (usage.DecodeOf). A reply that wasn't streamed has no ttft and
+-// tells nothing.
++// after it (usage.DecodeOf). A reply that wasn't streamed has no ttft,
++// and tells no ttft, but its pace is kept: it is what Speed first has
++// from a caller that streams nothing (#5575). The two paces are kept
++// apart: an unstreamed answer's pace is its output over its whole wait,
++// the first-token wait included, and folded into a streamed answer's
++// average it would drag the finer reading down (the review of #5575).
+ func noteSpeed(c candidate, ttft int64, tokens int, w int64, now time.Time) {
+-	if ttft <= 0 {
++	if ttft <= 0 && (tokens <= 0 || w <= 0) {
+ 		return
+ 	}
+ 	id := c.restID()
+ 	speeds.Lock()
+ 	defer speeds.Unlock()
+ 	r := speeds.m[id]
+-	r.ttft, r.ttftW = fold(r.ttft, r.ttftW, now.Sub(r.at), float64(ttft))
+-	r.at = now
++	if ttft > 0 {
++		r.ttft, r.ttftW = fold(r.ttft, r.ttftW, now.Sub(r.at), float64(ttft))
++		r.at = now
++	}
+ 	if tokens > 0 && w > 0 {
+-		r.tps, r.tpsW = fold(r.tps, r.tpsW, now.Sub(r.tpsAt), float64(tokens)*1000/float64(w))
+-		r.tpsAt = now
++		if ttft > 0 {
++			r.tps, r.tpsW = fold(r.tps, r.tpsW, now.Sub(r.tpsAt), float64(tokens)*1000/float64(w))
++			r.tpsAt = now
++		} else {
++			r.whole, r.wholeW = fold(r.whole, r.wholeW, now.Sub(r.wholeAt), float64(tokens)*1000/float64(w))
++			r.wholeAt = now
++		}
+ 	}
+ 	if _, had := speeds.m[id]; !had && len(speeds.m) >= speedMost {
+ 		for k, o := range speeds.m {
+-			if now.Sub(o.at) > speedStale {
++			if now.Sub(o.fresh()) > speedStale {
+ 				delete(speeds.m, k)
+ 			}
+ 		}
+@@ -81,31 +108,46 @@ func noteSpeed(c candidate, ttft int64, tokens int, w int64, now time.Time) {
+ }
+ 
+ // noteTrySpeed is noteSpeed of a try that answered, its pace as
+-// usage.DecodeOf counts it for the Requests and Usage pages.
++// usage.DecodeOf counts it for the Requests and Usage pages. A try that
++// answered without streaming tells DecodeOf nothing — it has no first
++// token for the window to start at — and its pace is its output over its
++// whole wait, the reading the reporter gave the Requests page (#5575):
++// coarser than a streamed one's, which counts the tokens after the first,
++// kept apart from it, and enough to order the seat by.
+ func noteTrySpeed(c candidate, t Try, out, reasoning int, now time.Time) {
+ 	tokens, w := 0, int64(0)
+ 	if !t.ReasoningHidden || t.FirstText > 0 {
+ 		tokens, w = usage.DecodeOf(out, reasoning, t.Millis, t.TTFT, t.FirstText, t.Flow, t.FirstReasoning)
++		if tokens == 0 && w == 0 && t.TTFT <= 0 && out > 0 && t.Millis > 0 {
++			tokens, w = out, t.Millis
++		}
+ 	}
+ 	noteSpeed(c, t.TTFT, tokens, w, now)
+ }
+ 
+ // speedOf is c's speed lately: its average ms to the first token and
+-// tokens a second, 0 for what wasn't measured lately.
++// tokens a second, 0 for what wasn't measured lately. The pace is the
++// streamed average when one is fresh; only a seat whose fresh samples
++// are all unstreamed is told by its whole-reply pace, and then with no
++// first token (the review of #5575: the two readings aren't averaged
++// together).
+ func speedOf(c candidate, now time.Time) (ttft, tps float64) {
+ 	speeds.Lock()
+ 	r, ok := speeds.m[c.restID()]
+ 	speeds.Unlock()
+-	if !ok {
++	if !ok || now.Sub(r.fresh()) > speedStale {
+ 		return 0, 0
+ 	}
+-	if now.Sub(r.at) > speedStale {
+-		return 0, 0
++	if now.Sub(r.at) <= speedStale {
++		ttft = r.ttft
+ 	}
+ 	if !r.tpsAt.IsZero() && now.Sub(r.tpsAt) <= speedStale {
+ 		tps = r.tps
+ 	}
+-	return r.ttft, tps
++	if tps == 0 && !r.wholeAt.IsZero() && now.Sub(r.wholeAt) <= speedStale {
++		tps = r.whole
++	}
++	return ttft, tps
+ }
+ 
+ // forgetSpeeds drops every speed: a test starts anew.
+diff --git a/internal/gateway/unstreamed_speed_test.go b/internal/gateway/unstreamed_speed_test.go
+new file mode 100644
+index 000000000..e69201f4e
+--- /dev/null
++++ b/internal/gateway/unstreamed_speed_test.go
+@@ -0,0 +1,181 @@
++package gateway
++
++import (
++	"io"
++	"math"
++	"net/http"
++	"strings"
++	"testing"
++	"time"
++
++	"github.com/yetone/magpie/internal/provider"
++)
++
++// A reply that wasn't streamed has no first token, so it told no speed at
++// all: DecodeOf answered nothing for it, noteSpeed kept nothing, and a key
++// whose caller streams nothing stayed unmeasured for good — Speed first
++// kept sending everything to the first key in the list, "the last ones
++// never having answered" (#5575). Its pace is its output over its whole
++// wait, the reading the reporter gave the Requests page, and it orders a
++// seat by though no first token was told.
++func TestAnUnstreamedReplyTellsItsPace(t *testing.T) {
++	forgetSpeeds()
++	t.Cleanup(forgetSpeeds)
++	c := candidate{p: provider.Provider{ID: "v"}, rest: "v", model: "m"}
++	t0 := time.Date(2026, 11, 7, 12, 0, 0, 0, time.UTC)
++
++	// noteSpeed keeps the pace of a reply with no first token
++	noteSpeed(c, 0, 50, 1000, t0)
++	ttft, tps := speedOf(c, t0)
++	if ttft != 0 {
++		t.Fatalf("an unstreamed reply told a first token: %v", ttft)
++	}
++	if math.Abs(tps-50) > 0.01 {
++		t.Fatalf("an unstreamed reply told no pace: %v, want 50 tokens a second", tps)
++	}
++
++	// its pace decays against its own samples like a streamed one's
++	noteSpeed(c, 0, 125, 1000, t0.Add(speedHalfLife))
++	if _, tps := speedOf(c, t0.Add(speedHalfLife)); math.Abs(tps-100) > 0.01 {
++		t.Fatalf("after a half-life: tps %v, want (50*0.5+125)/1.5 = 100", tps)
++	}
++
++	// noteTrySpeed measures a whole unstreamed try (no ttft, no first
++	// text) at the try's own pace
++	forgetSpeeds()
++	noteTrySpeed(c, Try{Millis: 4000}, 100, 0, t0)
++	ttft, tps = speedOf(c, t0)
++	if ttft != 0 || tps != 25 {
++		t.Fatalf("an unstreamed try: ttft %v tps %v, want 0 and 25", ttft, tps)
++	}
++
++	// nothing said, nothing kept: a failed or empty reply tells no pace
++	forgetSpeeds()
++	noteTrySpeed(c, Try{Millis: 4000}, 0, 0, t0)
++	if _, tps := speedOf(c, t0); tps != 0 {
++		t.Fatalf("a reply of no output told a pace: %v", tps)
++	}
++
++	// stale is stale, whichever sample was the last
++	forgetSpeeds()
++	noteSpeed(c, 0, 50, 1000, t0)
++	if _, tps := speedOf(c, t0.Add(speedStale+time.Second)); tps != 0 {
++		t.Fatalf("an hour and more on, still measured: %v", tps)
++	}
++}
++
++// plainReply is a vendor that answers one chat completion whole, no
++// stream: no first token is ever told it. A few ms, for a whole
++// millisecond's wait to be measured, as streamed's is.
++func plainReply(w http.ResponseWriter, r *http.Request) {
++	io.Copy(io.Discard, r.Body)
++	time.Sleep(3 * time.Millisecond)
++	w.Header().Set("Content-Type", "application/json")
++	io.WriteString(w, `{"id":"c","object":"chat.completion","model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":20,"total_tokens":23}}`)
++}
++
++// A Speed first group whose callers stream nothing: the first answer
++// measures the key that gave it — no first token, its whole wait for a
++// pace — and the next request goes to the faster key, though it is listed
++// second. Before, no key of such a pool was ever measured, and Speed
++// first went on sending the first in the list everything (#5575).
++func TestSpeedFirstMeasuresAnUnstreamedAnswer(t *testing.T) {
++	fresh(t)
++	forgetSpeeds()
++	t.Cleanup(forgetSpeeds)
++	serveOn(t, "slowv", "sk-slow", []string{"m"}, http.HandlerFunc(plainReply))
++	serveOn(t, "fastv", "sk-fast", []string{"m"}, http.HandlerFunc(plainReply))
++	if err := provider.SaveGroup(provider.Group{
++		Name: "G", Members: []string{"slowv/m", "fastv/m"}, Routing: provider.Fastest,
++	}); err != nil {
++		t.Fatal(err)
++	}
++	s := New()
++	ask := func() *Route {
++		t.Helper()
++		code, body := postAs(t, s, "", `{"model":"group/g","messages":[{"role":"user","content":"x"}]}`)
++		if code != 200 {
++			t.Fatalf("code %d: %s", code, body)
++		}
++		return s.trace.routes[len(s.trace.routes)-1]
++	}
++	// none measured: the list, and that answer is measured
++	if first := ask(); first.Order[0].Provider != "slowv" {
++		t.Fatalf("with nothing measured Speed first left the list: %+v", first.Order)
++	}
++	speeds.Lock()
++	said := 0
++	for id, r := range speeds.m {
++		// a pace with no first token: an unstreamed answer's whole-reply
++		// pace, kept on its own (#5575)
++		if strings.HasPrefix(id, "slowv") && (r.whole > 0 || r.tps > 0) && r.ttft == 0 {
++			said++
++		}
++	}
++	speeds.Unlock()
++	if said == 0 {
++		t.Fatal("the unstreamed answer measured no pace")
++	}
++	// slowv's pace is made slow and fastv's fast — fastv's from an answer
++	// it gave earlier, measured the same way — and the next request goes
++	// to fastv, though the list puts slowv first
++	var slowID string
++	speeds.Lock()
++	for id := range speeds.m {
++		if strings.HasPrefix(id, "slowv") {
++			slowID = id
++		}
++	}
++	speeds.Unlock()
++	if slowID == "" {
++		t.Fatal("the unstreamed answer measured no pace")
++	}
++	now := time.Now()
++	speeds.Lock()
++	speeds.m[slowID] = speedRec{tps: 10, tpsW: 5, tpsAt: now}
++	speeds.m[strings.Replace(slowID, "slowv", "fastv", 1)] = speedRec{tps: 100, tpsW: 5, tpsAt: now}
++	speeds.Unlock()
++	if last := ask(); last.Order[0].Provider != "fastv" {
++		t.Fatalf("Speed first went to %q first, want fastv by its told pace: %+v", last.Order[0].Provider, last.Order)
++	}
++}
++
++// The two paces are kept apart: an unstreamed answer's pace is its output
++// over its whole wait — its first-token wait included — while a streamed
++// one's is its tokens after the first. Folded into one average, the
++// coarser reading would drag the finer one down, and a seat both kinds of
++// caller ask would rank below a purely streamed one that answers the same
++// way (the review of #5575): the averages are separate, and a seat with
++// both is ordered by its streamed pace, the finer reading.
++func TestAStreamedPaceIsntDilutedByAnUnstreamedOne(t *testing.T) {
++	forgetSpeeds()
++	t.Cleanup(forgetSpeeds)
++	c := candidate{p: provider.Provider{ID: "v"}, rest: "v", model: "m"}
++	t0 := time.Date(2026, 11, 7, 12, 0, 0, 0, time.UTC)
++
++	// a streamed answer: its first token in 500ms, 200 tokens in the
++	// 2000ms after it — 100 a second
++	noteSpeed(c, 500, 200, 2000, t0)
++	// an unstreamed one: 100 tokens over its whole 5000ms wait — 20 a
++	// second, the wait to its first token included
++	noteSpeed(c, 0, 100, 5000, t0.Add(time.Minute))
++
++	// the streamed pace stands: the unstreamed one didn't drag it into
++	// its own average
++	ttft, tps := speedOf(c, t0.Add(time.Minute))
++	if ttft != 500 {
++		t.Fatalf("ttft %v, want 500", ttft)
++	}
++	if math.Abs(tps-100) > 0.01 {
++		t.Fatalf("the unstreamed pace diluted the streamed one: %v, want 100", tps)
++	}
++
++	// and the unstreamed pace is kept all the same, for the seat whose
++	// callers stream nothing: the same reading, on its own
++	forgetSpeeds()
++	noteSpeed(c, 0, 100, 5000, t0)
++	ttft, tps = speedOf(c, t0)
++	if ttft != 0 || math.Abs(tps-20) > 0.01 {
++		t.Fatalf("an unstreamed-only seat: ttft %v tps %v, want 0 and 20", ttft, tps)
++	}
++}
+diff --git a/internal/gui/assets/i18n.js b/internal/gui/assets/i18n.js
+index 04457c36d..4416612fd 100644
+--- a/internal/gui/assets/i18n.js
++++ b/internal/gui/assets/i18n.js
+@@ -2160,6 +2160,7 @@ const I18N = {
+     "Speed first: the member that answered fastest lately goes first, by its time to the first token and how fast it writes, each of its accounts or keys weighed on its own; those within a tenth keep their listed order, and one not measured lately gets one request in five, so it is measured again.": "速度优先：最近回答最快的成员先上，按首字时间和输出速度算，它的每个账号或密钥各算各的；相差不到一成的保持列出的顺序，最近没测过的每五个请求分到一个，好重新测一次。",
+     "first token in {s}s, {n} tokens a second": "首字 {s} 秒，每秒 {n} 个 token",
+     "first token in {s}s": "首字 {s} 秒",
++    "{n} tokens a second over the whole reply": "整段回复每秒 {n} 个 token",
+     "it answered fastest lately \u2014 {pace}.": "它最近回答最快——{pace}。",
+     "Speed first: {who} answered {model} fastest lately \u2014 {pace}.": "速度优先：最近 {who} 回答 {model} 最快——{pace}。",
+     "Speed first: {who} hasn't answered {model} lately, so it takes this request to be measured \u2014 one request in five goes to one not measured.": "速度优先：{who} 最近没回答过 {model}，所以这个请求给它，好测一下速度——每五个请求有一个给没测过的。",
+@@ -7241,6 +7242,7 @@ const I18N = {
+     "Speed first: the member that answered fastest lately goes first, by its time to the first token and how fast it writes, each of its accounts or keys weighed on its own; those within a tenth keep their listed order, and one not measured lately gets one request in five, so it is measured again.": "速度優先：最近回答最快的成員先上，按首字時間和輸出速度算，它的每個帳號或金鑰各算各的；相差不到一成的保持列出的順序，最近沒測過的每五個請求分到一個，好重新測一次。",
+     "first token in {s}s, {n} tokens a second": "首字 {s} 秒，每秒 {n} 個 token",
+     "first token in {s}s": "首字 {s} 秒",
++    "{n} tokens a second over the whole reply": "整段回覆每秒 {n} 個 token",
+     "it answered fastest lately \u2014 {pace}.": "它最近回答最快——{pace}。",
+     "Speed first: {who} answered {model} fastest lately \u2014 {pace}.": "速度優先：最近 {who} 回答 {model} 最快——{pace}。",
+     "Speed first: {who} hasn't answered {model} lately, so it takes this request to be measured \u2014 one request in five goes to one not measured.": "速度優先：{who} 最近沒回答過 {model}，所以這個請求給它，好測一下速度——每五個請求有一個給沒測過的。",
+@@ -12298,6 +12300,7 @@ const I18N = {
+     "Speed first: the member that answered fastest lately goes first, by its time to the first token and how fast it writes, each of its accounts or keys weighed on its own; those within a tenth keep their listed order, and one not measured lately gets one request in five, so it is measured again.": "速度優先：最近いちばん速く応答したメンバーが先です。最初のトークンまでの時間と出力の速さで比べ、アカウントやキーはそれぞれ個別に測ります。差が 1 割以内のものは並び順のままで、最近測っていないものには 5 件に 1 件を回して測り直します。",
+     "first token in {s}s, {n} tokens a second": "最初のトークンまで {s} 秒、毎秒 {n} トークン",
+     "first token in {s}s": "最初のトークンまで {s} 秒",
++    "{n} tokens a second over the whole reply": "応答全体で毎秒 {n} トークン",
+     "it answered fastest lately \u2014 {pace}.": "最近いちばん速く応答しました（{pace}）。",
+     "Speed first: {who} answered {model} fastest lately \u2014 {pace}.": "速度優先：最近 {model} にいちばん速く応答したのは {who} です（{pace}）。",
+     "Speed first: {who} hasn't answered {model} lately, so it takes this request to be measured \u2014 one request in five goes to one not measured.": "速度優先：{who} は最近 {model} に応答していないため、測るためにこのリクエストを受けます。5 件に 1 件は測っていないものに回ります。",
+@@ -17386,6 +17389,7 @@ const I18N = {
+     "Speed first: the member that answered fastest lately goes first, by its time to the first token and how fast it writes, each of its accounts or keys weighed on its own; those within a tenth keep their listed order, and one not measured lately gets one request in five, so it is measured again.": "Schnellste zuerst: Das Mitglied, das zuletzt am schnellsten geantwortet hat, kommt zuerst, nach der Zeit bis zum ersten Token und dem Schreibtempo, jedes seiner Konten oder Schlüssel für sich gemessen; wer weniger als ein Zehntel auseinanderliegt, behält die gelistete Reihenfolge, und wer zuletzt nicht gemessen wurde, bekommt eine von fünf Anfragen und wird so neu gemessen.",
+     "first token in {s}s, {n} tokens a second": "erstes Token nach {s} s, {n} Tokens pro Sekunde",
+     "first token in {s}s": "erstes Token nach {s} s",
++    "{n} tokens a second over the whole reply": "{n} Token pro Sekunde über die ganze Antwort",
+     "it answered fastest lately \u2014 {pace}.": "er hat zuletzt am schnellsten geantwortet — {pace}.",
+     "Speed first: {who} answered {model} fastest lately \u2014 {pace}.": "Schnellste zuerst: {who} hat {model} zuletzt am schnellsten beantwortet — {pace}.",
+     "Speed first: {who} hasn't answered {model} lately, so it takes this request to be measured \u2014 one request in five goes to one not measured.": "Schnellste zuerst: {who} hat {model} zuletzt nicht beantwortet und bekommt diese Anfrage, um gemessen zu werden — eine von fünf Anfragen geht an einen nicht Gemessenen.",
+diff --git a/internal/gui/assets/plugins/routing/client.js b/internal/gui/assets/plugins/routing/client.js
+index 974d364ca..d87ea792a 100644
+--- a/internal/gui/assets/plugins/routing/client.js
++++ b/internal/gui/assets/plugins/routing/client.js
+@@ -914,15 +914,19 @@ function routingPage(part) {
+       }
+       case "fast": {
+         // Speed first (routes.Fastest): its time to the first token and
+-        // pace lately, as the gateway measured them (Weighed.lateTtft)
+-        if (f.lateTtft) {
+-          const secs = (f.lateTtft / 1000).toFixed(1);
+-          const pace = f.lateTps ? t("first token in {s}s, {n} tokens a second", { s: secs, n: Math.round(f.lateTps) })
+-            : t("first token in {s}s", { s: secs });
++        // pace lately, as the gateway measured them (Weighed.lateTtft).
++        // An answer that wasn't streamed tells no first token, and its
++        // pace is its whole reply's alone (lateTps with no lateTtft,
++        // #5575): measured all the same, and said so.
++        if (f.lateTtft || f.lateTps) {
++          const secs = f.lateTtft ? (f.lateTtft / 1000).toFixed(1) : null;
++          const pace = f.lateTtft ? (f.lateTps ? t("first token in {s}s, {n} tokens a second", { s: secs, n: Math.round(f.lateTps) })
++            : t("first token in {s}s", { s: secs }))
++            : t("{n} tokens a second over the whole reply", { n: Math.round(f.lateTps) });
+           return restedTo(t("it answered fastest lately — {pace}.", { pace }))
+             || t("Speed first: {who} answered {model} fastest lately — {pace}.", { who: w, model: f.model, pace });
+         }
+-        if (r.order.some((x) => x !== f && !x.fallback && !x.rest && x.lateTtft))
++        if (r.order.some((x) => x !== f && !x.fallback && !x.rest && (x.lateTtft || x.lateTps)))
+           return t("Speed first: {who} hasn't answered {model} lately, so it takes this request to be measured — one request in five goes to one not measured.", { who: w, model: f.model });
+         return t("Speed first: none has answered {model} lately, so {who}, first in the list, goes first and its answer measures it.", { who: w, model: f.model });
+       }
+diff --git a/internal/gui/tests/routing-speed-first.test.cjs b/internal/gui/tests/routing-speed-first.test.cjs
+index 4e75ebe9a..292bdf1dc 100644
+--- a/internal/gui/tests/routing-speed-first.test.cjs
++++ b/internal/gui/tests/routing-speed-first.test.cjs
+@@ -24,6 +24,12 @@ const scenes = {
+   noPace: { order: [key("relay-a", { lateTtft: 1450 }), key("relay-b", { lateTtft: 3000 })] },
+   // c not measured lately took the probe's turn ahead of the measured a
+   probe: { order: [key("relay-c"), key("relay-a", { lateTtft: 900 })] },
++  // a answered without streaming: its whole reply's pace alone told it,
++  // and that is what it is first by (#5575)
++  paceOnly: { order: [key("relay-a", { lateTps: 55 }), key("relay-b")] },
++  // a's whole-reply pace alone, beside b's streamed measurement: a is
++  // first by its pace all the same
++  paceOnlyBesideMeasured: { order: [key("relay-a", { lateTps: 55 }), key("relay-b", { lateTtft: 900, lateTps: 40 })] },
+   // none measured: the list's first
+   none: { order: [key("relay-a"), key("relay-b")] },
+ };
+@@ -96,6 +102,20 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
+       assert.deepEqual(errors, []);
+     });
+ 
++    test(`${engine} ${lang}: a pace without a first token says its whole reply's pace`, async (t) => {
++      const { errors, say, why } = await open(t, engine, lang, "paceOnly");
++      const pace = await say("{n} tokens a second over the whole reply", { n: "55" });
++      assert.equal(await why(), await say("Speed first: {who} answered {model} fastest lately — {pace}.", { who: "relay-a", model: "deepseek-v4", pace }));
++      assert.deepEqual(errors, []);
++    });
++
++    test(`${engine} ${lang}: a pace without a first token counts beside a streamed one`, async (t) => {
++      const { errors, say, why } = await open(t, engine, lang, "paceOnlyBesideMeasured");
++      const pace = await say("{n} tokens a second over the whole reply", { n: "55" });
++      assert.equal(await why(), await say("Speed first: {who} answered {model} fastest lately — {pace}.", { who: "relay-a", model: "deepseek-v4", pace }));
++      assert.deepEqual(errors, []);
++    });
++
+     test(`${engine} ${lang}: one not measured lately took its turn to be measured`, async (t) => {
+       const { errors, say, why } = await open(t, engine, lang, "probe");
+       assert.equal(await why(), await say("Speed first: {who} hasn't answered {model} lately, so it takes this request to be measured — one request in five goes to one not measured.", { who: "relay-c", model: "deepseek-v4" }));
+diff --git a/internal/routes/fastest.go b/internal/routes/fastest.go
+index 158590e77..69c0c21c3 100644
+--- a/internal/routes/fastest.go
++++ b/internal/routes/fastest.go
+@@ -10,23 +10,26 @@ import (
+ // (a user comparing API channels by hand asked for it, X joeliu96872540).
+ //
+ // What "fast" is: the gateway keeps, for each account or key and model, a
+-// decayed average of how long its streamed answers took to their first
+-// token and how fast they wrote after it (gateway speed.go), and hands
+-// the strategy those of the last hour or so as Seat.TTFT and Seat.TPS. A
+-// seat is ranked by the time it would take to a short reply of
+-// RefTokens: its first token, then RefTokens at its pace. Those within a
+-// tenth of the fastest of their band count as alike and keep their
+-// listed order, so two channels a few milliseconds apart don't trade
+-// places on every request.
++// decayed average of how long its answers took to their first token and
++// how fast they wrote after it (gateway speed.go), and hands the strategy
++// those of the last hour or so as Seat.TTFT and Seat.TPS. An answer that
++// wasn't streamed tells no first token, and is weighed at its pace alone
++// (#5575): a caller that streams nothing would else keep every key of its
++// pool unmeasured for good, and Speed first would always send the first
++// in the list. A seat is ranked by the time it would take to a short
++// reply of RefTokens: its first token, then RefTokens at its pace. Those
++// within a tenth of the fastest of their band count as alike and keep
++// their listed order, so two channels a few milliseconds apart don't
++// trade places on every request.
+ //
+ // One not measured lately isn't starved: kept behind those measured, it
+ // would never answer and never be measured, and one that got slower an
+ // hour ago would never be found faster again. So one request in
+ // ProbeEvery, of those the pool has with both kinds awake, puts one not
+ // measured lately first: the probe's turn goes round them, so a seat
+-// that answers without telling its speed (a reply that isn't streamed)
+-// doesn't hold the turn from the others. When none is measured, they go
+-// in their order, and the first's answer measures it.
++// that answers without telling its speed doesn't hold the turn from the
++// others. When none is measured, they go in their order, and the first's
++// answer measures it.
+ //
+ // Speed only orders the awake: one resting after a failure goes behind
+ // them, in its listed order, and one all but used up (UsedShare) behind
+@@ -65,7 +68,9 @@ var Fastest = Strategy{BySpeed: true, Order: func(pool string, seats []Seat) []i
+ 			resting = append(resting, i)
+ 		case seatTier(s) == 2:
+ 			spent = append(spent, i)
+-		case s.TTFT > 0:
++		case s.TTFT > 0 || s.TPS > 0:
++			// measured: a first token, or, from an answer that wasn't
++			// streamed, a pace alone (#5575)
+ 			fast = append(fast, i)
+ 		default:
+ 			unmeasured = append(unmeasured, i)
+diff --git a/internal/routes/fastest_test.go b/internal/routes/fastest_test.go
+index 3a06c027c..67cdc4144 100644
+--- a/internal/routes/fastest_test.go
++++ b/internal/routes/fastest_test.go
+@@ -51,6 +51,20 @@ func TestFastestOrdersBySpeedLately(t *testing.T) {
+ 			seats: []Seat{{Key: "a"}, {Key: "b"}, {Key: "c"}},
+ 			want:  []int{0, 1, 2},
+ 		},
++		{
++			// b answered without streaming: no first token was told, but its
++			// pace was, and it counts — ahead of a, unmeasured (#5575)
++			name:  "a pace without a first token counts, ahead of the unmeasured",
++			seats: []Seat{{Key: "a"}, {Key: "b", TPS: 100}},
++			want:  []int{1, 0},
++		},
++		{
++			// b's 200 tokens at 100/s = 2s; a's first token 1500ms, then the
++			// middle pace (b's 100) for 200 more = 3.5s
++			name:  "a first token alone weighs against a told pace",
++			seats: []Seat{{Key: "a", TTFT: 1500}, {Key: "b", TPS: 100}},
++			want:  []int{1, 0},
++		},
+ 	}
+ 	for _, c := range cases {
+ 		t.Run(c.name, func(t *testing.T) {
+-- 
+2.50.1 (Apple Git-155)
+

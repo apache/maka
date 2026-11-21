@@ -1,0 +1,6 @@
+// a tool call the client kept no thinking for, which DeepSeek
+			// turns the whole request away for (#1462), and the thinking it
+			// did keep, once only: DeepSeek reads reasoning and
+			// reasoning_content as one field and turns a message with both
+			// away as a duplicate field
+			body = foldReasoningAliases(withReasoningOnToolTurns(body))

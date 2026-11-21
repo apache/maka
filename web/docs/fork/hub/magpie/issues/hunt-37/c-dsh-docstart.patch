@@ -1,0 +1,147 @@
+From b5c182c3d6b99570e66c3c8e691c1059a63ca7a2 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Sat, 17 Oct 2026 13:23:36 +0800
+Subject: [PATCH] agent, library: a dsh patch list that opens with a YAML
+ document start marker is edited, the marker kept
+
+What changed
+- dshParse (internal/agent/dsh.go) and dshRead (internal/library/dsh.go)
+  let a patch list open with "---", YAML's document start marker: it goes
+  in the head and is written back with it, where before it failed the file
+  as "not a list of entries magpie can edit" (#2667).
+
+Run
+- Red on e085d6e9 with the new tests over a baseline copy (product files
+  at HEAD): TestDshDocStart and TestDshDocStartPatchList fail with the
+  reported "cordis.patch.yml is not a list of entries magpie can edit".
+- Green with the fix: TestDshDocStart, TestDshDocStartPatchList, and the
+  whole of internal/sessions, internal/provider, internal/agent and
+  internal/library under -tags nogui -p 2.
+- gofmt -l internal/agent internal/library: clean. go vet -tags nogui for
+  darwin/arm64, linux/amd64 and windows/amd64: clean. go build for the
+  three: ok (trayimage_darwin.go's cgo warning is on the base commit).
+- Not run: the Playwright tests under internal/gui/tests.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/agent/dsh.go             |  5 +++-
+ internal/agent/dsh_flow_test.go   | 42 +++++++++++++++++++++++++++++++
+ internal/library/dsh.go           |  5 +++-
+ internal/library/dsh_flow_test.go | 19 ++++++++++++++
+ 4 files changed, 69 insertions(+), 2 deletions(-)
+
+diff --git a/internal/agent/dsh.go b/internal/agent/dsh.go
+index d5d9edcd..91fcf03d 100644
+--- a/internal/agent/dsh.go
++++ b/internal/agent/dsh.go
+@@ -448,7 +448,10 @@ func dshParse(path, raw string) (head []string, items []dshItem, err error) {
+ 		case strings.HasPrefix(l, "- ") || l == "-":
+ 			items = append(items, dshItem{lines: []string{l}})
+ 		case len(items) == 0:
+-			if t != "" && !strings.HasPrefix(t, "#") && t != "[]" {
++			// "---" is YAML's document start marker: a patch list may open
++			// with one (#2667), and it stays in the head it is written back
++			// with, so the file keeps it.
++			if t != "" && !strings.HasPrefix(t, "#") && t != "[]" && t != "---" {
+ 				return nil, nil, fmt.Errorf("%s is not a list of entries magpie can edit", path)
+ 			}
+ 			if t != "[]" {
+diff --git a/internal/agent/dsh_flow_test.go b/internal/agent/dsh_flow_test.go
+index cd28ca63..9faf10db 100644
+--- a/internal/agent/dsh_flow_test.go
++++ b/internal/agent/dsh_flow_test.go
+@@ -75,6 +75,48 @@ func TestDshFlowPatchList(t *testing.T) {
+ 	}
+ }
+ 
++// A patch list that starts with a YAML document start marker (---), as one
++// written by hand or by another tool may be, is edited like one without it,
++// and the marker stays at the head of the file (#2667).
++func TestDshDocStart(t *testing.T) {
++	home := t.TempDir()
++	testenv.SetHome(t, home)
++	t.Setenv("DSH_HOME", "")
++	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
++	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
++	if err := provider.Save(provider.Provider{ID: "deepseek", Name: "DeepSeek", Chat: "https://api.deepseek.com/v1", Key: "k", Models: []string{"pro"}}); err != nil {
++		t.Fatal(err)
++	}
++	dir := filepath.Join(home, ".dsh")
++	web := filepath.Join(dir, "profiles", "web", "cordis.patch.yml")
++	os.MkdirAll(filepath.Dir(web), 0o755)
++	// the reporter's file (#2667), down to its quoting and trailing spaces
++	os.WriteFile(web, []byte("---\n- \n  id: \"ui-settings-general\"\n  name: \"@deepseek-ai/dsh-client-ui-settings-general\"\n  config: \n    welcomeNoticeVersion: \"2026-09-28.1\"\n"), 0o644)
++	f := dsh(home).Field("model")
++	if err := f.Set("magpie/deepseek/pro"); err != nil {
++		t.Fatal(err)
++	}
++	b, err := os.ReadFile(web)
++	if err != nil {
++		t.Fatal(err)
++	}
++	s := string(b)
++	if !strings.HasPrefix(s, "---\n") {
++		t.Fatalf("the document start marker lost:\n%s", s)
++	}
++	if !strings.Contains(s, "id: \"ui-settings-general\"") {
++		t.Fatalf("the user's entry lost:\n%s", s)
++	}
++	for _, want := range []string{"- id: llm-pi-ai # magpie", "- id: agent-default-model # magpie", `model: "deepseek/pro"`} {
++		if !strings.Contains(s, want) {
++			t.Fatalf("missing %q in %s:\n%s", want, web, s)
++		}
++	}
++	if f.Get() != "magpie/deepseek/pro" {
++		t.Fatalf("get: %q", f.Get())
++	}
++}
++
+ // web's patch list is the first whatever the profiles are called.
+ func TestDshProfilesWebFirst(t *testing.T) {
+ 	dir := t.TempDir()
+diff --git a/internal/library/dsh.go b/internal/library/dsh.go
+index 47818107..dc7c935e 100644
+--- a/internal/library/dsh.go
++++ b/internal/library/dsh.go
+@@ -95,7 +95,10 @@ func dshRead(path string) (*dshPatches, error) {
+ 		case strings.HasPrefix(l, "- ") || l == "-":
+ 			p.items = append(p.items, []string{l})
+ 		case len(p.items) == 0:
+-			if t != "" && !strings.HasPrefix(t, "#") && t != "[]" {
++			// "---" is YAML's document start marker: a patch list may open
++			// with one (#2667), and it stays in the head it is written back
++			// with, so the file keeps it.
++			if t != "" && !strings.HasPrefix(t, "#") && t != "[]" && t != "---" {
+ 				return nil, fmt.Errorf("%s is not a list of entries magpie can edit", path)
+ 			}
+ 			if t != "[]" {
+diff --git a/internal/library/dsh_flow_test.go b/internal/library/dsh_flow_test.go
+index 78124c65..10f67ecc 100644
+--- a/internal/library/dsh_flow_test.go
++++ b/internal/library/dsh_flow_test.go
+@@ -20,3 +20,22 @@ func TestDshFlowPatchList(t *testing.T) {
+ 		}
+ 	}
+ }
++
++// A patch list that starts with a YAML document start marker (---) is read
++// and written like one without it, the marker kept at the head (#2667).
++func TestDshDocStartPatchList(t *testing.T) {
++	h := sandbox(t)
++	p := filepath.Join(h, ".dsh/profiles/web/cordis.patch.yml")
++	// the reporter's file (#2667), down to its quoting and trailing spaces
++	write(t, p, "---\n- \n  id: \"ui-settings-general\"\n  name: \"@deepseek-ai/dsh-client-ui-settings-general\"\n  config: \n    welcomeNoticeVersion: \"2026-09-28.1\"\n")
++	ok(t)(SaveServer("", Server{Name: "fs", Transport: "stdio", Command: "npx", Args: []string{"-y", "@mcp/fs"}, Agents: []string{"dsh"}}))
++	s := read(t, p)
++	if !strings.HasPrefix(s, "---\n") {
++		t.Fatalf("the document start marker lost:\n%s", s)
++	}
++	for _, want := range []string{"id: \"ui-settings-general\"", "- insert: # magpie\n    - id: magpie-mcp-fs\n"} {
++		if !strings.Contains(s, want) {
++			t.Fatalf("missing %q in\n%s", want, s)
++		}
++	}
++}
+-- 
+2.50.1 (Apple Git-155)
+

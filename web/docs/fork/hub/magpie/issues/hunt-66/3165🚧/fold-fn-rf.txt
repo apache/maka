@@ -1,0 +1,19 @@
+// foldReasoningAliases leaves one thinking field on a message that carries
+// the same earlier turn's thinking in both reasoning_content (DeepSeek's
+// spelling, which withReasoningOnToolTurns writes) and reasoning
+// (OpenRouter's): DeepSeek's Chat API reads either spelling, but a message
+// with both is turned away whole as "duplicate field `reasoning`" (checked
+// against the DeepSeek Chat API on 2026-10-22). reasoning_content stays; it
+// is the one chatReplaysReasoning exists to send.
+func foldReasoningAliases(body []byte) []byte {
+	return editMessages(body, []string{"reasoning"}, func(m map[string]json.RawMessage) bool {
+		if _, ok := m["reasoning"]; !ok {
+			return false
+		}
+		if _, ok := m["reasoning_content"]; !ok {
+			return false
+		}
+		delete(m, "reasoning")
+		return true
+	})
+}

@@ -1,0 +1,21 @@
+# 大体积逆向中间产物：cursor-byok 的 IDA/重建工作目录（约 3.3G，可重建）
+cases/2026-06-25-cursor-byok的逆向工程/work/
+
+# 依赖与构建缓存
+node_modules/
+__pycache__/
+.venv/
+.gocache/
+
+# 本地工具状态
+.mimosa/
+
+# .agents/skills 为本机 junction 运行时层（指向 ~/.ai/categories 真身，绝对路径跨机无效）
+.agents/
+
+# 编辑器与系统杂物
+.vscode/
+.idea/
+Thumbs.db
+Desktop.ini
+.DS_Store

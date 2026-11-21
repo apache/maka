@@ -1,0 +1,15 @@
+✔ chromium: a plugin's page draws in its frame, shut in (5154.725041ms)
+✔ chromium: a page plugin's tab comes and goes with it (10458.553709ms)
+✔ chromium: Plugins says what a page may read before it is on (6198.110291ms)
+✔ webkit: a plugin's page draws in its frame, shut in (5335.32525ms)
+✔ webkit: a page plugin's tab comes and goes with it (10419.419292ms)
+✔ webkit: Plugins says what a page may read before it is on (6604.316167ms)
+ℹ tests 6
+ℹ suites 0
+ℹ pass 6
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 44409.162
+exit=0

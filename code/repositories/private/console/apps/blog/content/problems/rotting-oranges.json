@@ -1,0 +1,22 @@
+{
+  "id": "32",
+  "slug": "rotting-oranges",
+  "title": "腐烂的橘子",
+  "difficulty": "medium",
+  "tags": ["广度优先搜索", "矩阵"],
+  "description": "在给定的 `m x n` 网格 `grid` 中,每个单元格可以有以下三个值之一:\n\n- 值 `0` 代表空单元格;\n- 值 `1` 代表新鲜橘子;\n- 值 `2` 代表腐烂的橘子。\n\n每分钟,腐烂的橘子周围 4 个方向上相邻的新鲜橘子都会腐烂。返回直到单元格中没有新鲜橘子为止所必须经过的最小分钟数;如果不可能,返回 `-1`。\n\n**示例 1:**\n\n- 输入:`grid = [[2,1,1],[1,1,0],[0,1,1]]`\n- 输出:`4`\n\n**示例 2:**\n\n- 输入:`grid = [[2,1,1],[0,1,1],[1,0,1]]`\n- 输出:`-1`(左下角橘子永远不会腐烂)",
+  "solution": "## 思路\n\n**多源 BFS**:把初始所有腐烂橘子入队,记录新鲜橘子数。每分钟(一层 BFS)把相邻新鲜橘子变腐烂,直到队列为空。若最后还有新鲜橘子剩余则返回 -1,否则返回层数。\n\n## 参考代码\n\n```js\nfunction orangesRotting(grid) {\n  const rows = grid.length;\n  const cols = grid[0].length;\n  const queue = [];\n  let fresh = 0;\n  for (let r = 0; r < rows; r++) {\n    for (let c = 0; c < cols; c++) {\n      if (grid[r][c] === 2) queue.push([r, c]);\n      else if (grid[r][c] === 1) fresh++;\n    }\n  }\n  let minutes = 0;\n  const dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]];\n  while (queue.length && fresh > 0) {\n    const size = queue.length;\n    for (let i = 0; i < size; i++) {\n      const [r, c] = queue.shift();\n      for (const [dr, dc] of dirs) {\n        const nr = r + dr;\n        const nc = c + dc;\n        if (nr >= 0 && nr < rows && nc >= 0 && nc < cols && grid[nr][nc] === 1) {\n          grid[nr][nc] = 2;\n          fresh--;\n          queue.push([nr, nc]);\n        }\n      }\n    }\n    minutes++;\n  }\n  return fresh === 0 ? minutes : -1;\n}\n```\n\n## 复杂度\n\n- 时间:O(m*n)\n- 空间:O(m*n)",
+  "signature": {
+    "language": "javascript",
+    "entry": "orangesRotting",
+    "params": [{ "name": "grid", "type": "number[][]" }],
+    "returns": "number"
+  },
+  "testCases": [
+    { "sample": true, "input": [[[2, 1, 1], [1, 1, 0], [0, 1, 1]]], "expected": 4 },
+    { "sample": true, "input": [[[2, 1, 1], [0, 1, 1], [1, 0, 1]]], "expected": -1 },
+    { "sample": false, "input": [[[0, 2]]], "expected": 0 },
+    { "sample": false, "input": [[[0]]], "expected": 0 },
+    { "sample": false, "input": [[[1]]], "expected": -1 }
+  ]
+}

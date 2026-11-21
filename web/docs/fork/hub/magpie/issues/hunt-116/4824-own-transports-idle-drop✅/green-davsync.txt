@@ -1,0 +1,3 @@
+=== RUN   TestGlobalSwitchDialsTheSyncThroughTheNewProxy
+--- PASS: TestGlobalSwitchDialsTheSyncThroughTheNewProxy (0.03s)
+ok  	github.com/yetone/magpie/internal/davsync	1.157s

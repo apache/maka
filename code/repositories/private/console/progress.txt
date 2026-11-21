@@ -1,0 +1,6 @@
+# 提交历史存档：vibe/apps/console（guahub 仓库，新 → 旧）
+# 生成于 2026-09-19。guahub 将重置为单提交孤儿历史，本文件即该项目在 guahub 时期的提交记录。
+# 完整旧史可还原：git clone E:\guahub-pre-rewrite-backup.bundle（内含全部对象，可用下方完整 SHA 定位）。
+
+6609bd1068eb09755446b33f08d964d7cba73c2f 2026-09-19 feat(agent): 新增 65504 AI agent 线并收拢 65501-65503 相关模块
+07b19455dfb23bbd2e9130967eef1fee02da0572 2026-09-15 chore(vibe): 分类移位 + figma-archive-gui 更名 design-archive

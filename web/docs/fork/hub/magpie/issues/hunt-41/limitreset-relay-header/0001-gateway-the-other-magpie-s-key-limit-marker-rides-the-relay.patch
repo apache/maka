@@ -1,0 +1,154 @@
+From f4f788baf44b11f8f75f47bc8667380f0a0eb64a Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Sun, 18 Oct 2026 12:58:44 +0800
+Subject: [PATCH] gateway: the other magpie's key-limit marker rides the relay
+ to the rest
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+What changed
+keepRetry copied Retry-After and ratelimit…reset headers from an
+upstream refusal onto the holdWriter the group fallback answers from,
+and dropped X-Magpie-Limit-Reset (#2077): restAfterMarked then read the
+relay's header without the marker, read the remote magpie key's own
+limit as one model's refusal and rested the model alone. The whole
+remote rested only where the upstream header arrives unfiltered
+(count_tokens, the decision groups), never on the chat fallback path
+the group turn rests by. The marker is in the relay whitelist now, so
+the key's own limit there rests the whole remote, as its keyLimited
+means it, and a markerless refusal still rests the model alone.
+
+Run
+go test -tags nogui -count=1 -run TestRemoteMagpieKeyLimitRestsTheRemote
+./internal/gateway/ fails without the change (the rest lands on
+office/glm/glm-5, not office) and passes with it; -count=2 -race on the
+new test and the remote magpie rest tests, the remote magpie, key limit,
+decision-group and retry-after/rest tests pass; gofmt is clean and go
+vet passes on darwin, GOOS=linux -tags nogui and GOOS=windows.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ .../gateway/remote_magpie_key_limit_test.go   | 76 +++++++++++++++++++
+ internal/gateway/routing.go                   |  7 +-
+ 2 files changed, 81 insertions(+), 2 deletions(-)
+
+diff --git a/internal/gateway/remote_magpie_key_limit_test.go b/internal/gateway/remote_magpie_key_limit_test.go
+index 441ee606..54aa21f6 100644
+--- a/internal/gateway/remote_magpie_key_limit_test.go
++++ b/internal/gateway/remote_magpie_key_limit_test.go
+@@ -2,10 +2,12 @@ package gateway
+ 
+ import (
+ 	"context"
++	"encoding/json"
+ 	"io"
+ 	"net/http"
+ 	"net/http/httptest"
+ 	"strings"
++	"sync"
+ 	"sync/atomic"
+ 	"testing"
+ 
+@@ -97,3 +99,77 @@ func TestRemoteMagpieKeyLimitRestsTheKey(t *testing.T) {
+ 		t.Error("a provider that isn't a remote magpie rests the model on a quota refusal")
+ 	}
+ }
++
++// The marker comes by wire: the other magpie's keyLimited answers a 429
++// with remoteKeyLimitHeader, and what reaches restAfterMarked here is what
++// the relay kept of the upstream reply. The key's own limit there rests
++// the whole remote, not the model it was asked for — the opposite of that
++// model's own rate limit, which rests it alone
++// (TestRemoteMagpieQuotaRestsTheModel). So asked again, the remote's
++// models are behind the next member, neither of them asked.
++func TestRemoteMagpieKeyLimitRestsTheRemote(t *testing.T) {
++	fresh(t)
++	forgetSinks(t)
++	var mu sync.Mutex
++	var asked []string
++	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		var req struct {
++			Model string `json:"model"`
++		}
++		json.NewDecoder(r.Body).Decode(&req)
++		mu.Lock()
++		asked = append(asked, req.Model)
++		mu.Unlock()
++		w.Header().Set("Content-Type", "application/json")
++		if req.Model == "glm/glm-5" {
++			// what keyLimited answers with: its 429 names when the key
++			// resets, and marks itself the key's own
++			w.Header().Set(remoteKeyLimitHeader, "2026-10-19T00:00:00Z")
++			w.Header().Set("Retry-After", "60")
++			w.WriteHeader(http.StatusTooManyRequests)
++			io.WriteString(w, `{"error":{"message":"gateway key over its request budget","type":"rate_limit_error"}}`)
++			return
++		}
++		if req.Model == "kimi/kimi-k3" {
++			// that model's own rate limit there, no marker: rests alone
++			w.WriteHeader(http.StatusTooManyRequests)
++			io.WriteString(w, `{"error":{"message":"rate limit exceeded, slow down"}}`)
++			return
++		}
++		io.WriteString(w, `{"id":"x","choices":[{"index":0,"message":{"role":"assistant","content":"from `+req.Model+`"},"finish_reason":"stop"}]}`)
++	}))
++	t.Cleanup(remote.Close)
++	if err := provider.Save(provider.Provider{ID: "office", Name: "Office", Preset: provider.RemoteMagpiePreset, Key: "k",
++		Chat: remote.URL + "/v1", Models: []string{"glm/glm-5", "kimi/kimi-k3"}}); err != nil {
++		t.Fatal(err)
++	}
++	other := &keyed{}
++	serveOn(t, "other", "ko", []string{"m"}, other)
++	if err := provider.SaveGroup(provider.Group{Name: "G", Members: []string{"office/glm/glm-5", "office/kimi/kimi-k3", "other/m"}, Routing: provider.Ordered}); err != nil {
++		t.Fatal(err)
++	}
++	s := New()
++	// neither of the remote's models answers: the turn goes to the next
++	// member
++	if code, body := postAs(t, s, "", `{"model":"group/g","messages":[{"role":"user","content":"hi"}]}`); code != 200 || !strings.Contains(body, "from ko") {
++		t.Fatalf("the remote's key limit and its model's rate limit: %d %s", code, body)
++	}
++	// the key's own limit there rests the remote whole; kimi's own rate
++	// limit rests kimi alone
++	if _, ok := restOf("office"); !ok {
++		t.Errorf("the key's own limit there didn't rest the remote whole: %v", rests())
++	}
++	if r, ok := restOf("office/glm/glm-5"); ok {
++		t.Errorf("the key's own limit rested glm alone: %+v %v", r, rests())
++	}
++	if _, ok := restOf("office/kimi/kimi-k3"); !ok {
++		t.Errorf("kimi's own rate limit there didn't rest kimi alone: %v", rests())
++	}
++	// asked again, the remote sits out whole: neither model is
++	mu.Lock()
++	asked = nil
++	mu.Unlock()
++	if code, body := postAs(t, s, "", `{"model":"group/g","messages":[{"role":"user","content":"hi"}]}`); code != 200 || !strings.Contains(body, "from ko") || len(asked) != 0 {
++		t.Fatalf("the remote's models were asked %v after its key limit: %d %s", asked, code, body)
++	}
++}
+diff --git a/internal/gateway/routing.go b/internal/gateway/routing.go
+index 1d81d570..a6554cdd 100644
+--- a/internal/gateway/routing.go
++++ b/internal/gateway/routing.go
+@@ -1016,11 +1016,14 @@ func (c candidate) allowance() (provider.Allowance, bool) {
+ // keepRetry passes on, with a vendor's error, what it said about when to
+ // try again: restAfter reads it to rest the candidate that long, and an
+ // agent given the error reads it too. When it said so in the error itself
+-// (ChatGPT's resets_at), that goes on as Retry-After.
++// (ChatGPT's resets_at), that goes on as Retry-After. The other magpie's
++// marker that its key's own limit came with goes on too (#2077): the
++// relay's holdWriter answers restAfterMarked, and without it the key's
++// limit reads as one model's refusal and rests the model alone.
+ func keepRetry(dst, src http.Header, body []byte) {
+ 	for k, vs := range src {
+ 		l := strings.ToLower(k)
+-		if l == "retry-after" || strings.Contains(l, "ratelimit") && strings.Contains(l, "reset") {
++		if l == "retry-after" || strings.EqualFold(k, remoteKeyLimitHeader) || strings.Contains(l, "ratelimit") && strings.Contains(l, "reset") {
+ 			dst[k] = vs
+ 		}
+ 	}
+-- 
+2.50.1 (Apple Git-155)
+

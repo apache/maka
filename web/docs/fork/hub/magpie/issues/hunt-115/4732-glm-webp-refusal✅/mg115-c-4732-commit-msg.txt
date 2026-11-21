@@ -1,0 +1,30 @@
+gateway: a webp a vendor can't read is written again as a JPEG, and GLM's word for one fails over (#4732)
+
+Claude Desktop's browser tool answers a screenshot as image/webp, and
+GLM can't read one: its 400 [1210] "图片输入格式/解析错误" turns the
+picture away, and its Anthropic-style endpoint says of the same picture
+400 [1214] "messages[0].content[0].file必须传入file_id、file_url、
+file_data至少之一", having taken it for a file of its own — the two
+alternating (zhangqingwen204's report). The picture rides in the
+conversation's history, so every later turn was refused the same way,
+and the session was stuck; another model or provider of the same
+conversation fared no better.
+
+Now the request is asked again with the picture written again as a JPEG
+(as PNG when it has transparency), the way a HEIC is (heic.go), and the
+provider is remembered (unfit, webpRefused) to have every webp of its
+requests written again before they leave — the session's later turns
+pay the refusal no more. The words themselves join the shape refusals
+(shapeRefused, retryable): a request no webp of whose can be written
+again (one gone as an URL, say) moves to the next member, which may
+take the picture as it is, and this one doesn't rest. Z.ai's bare
+"1210", its word for a model that always thinks, is none of this: the
+family is the double-bracket "[1210][" and "[1214][" forms and the two
+wordings, read decoded (#1669).
+
+Most vendors take webp, so nothing is written again for them until
+their first refusal says otherwise.
+
+Run: go test -tags nogui ./internal/gateway/
+
+Generated-by: GLM-5.3-Flash (ZCode)

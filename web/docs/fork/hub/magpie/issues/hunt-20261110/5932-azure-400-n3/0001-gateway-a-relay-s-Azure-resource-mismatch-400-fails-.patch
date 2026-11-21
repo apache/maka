@@ -1,0 +1,213 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Tue, 10 Nov 2026 23:08:56 +0800
+Subject: [PATCH] gateway: a relay's Azure resource-mismatch 400 fails over and
+ rests the failing relay (#5932)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+A relay fronting Azure OpenAI that spreads one key over several
+resources answers a conversation another of its resources began with
+400 "The requested item was created under a different Azure OpenAI
+resource." prevForeign knows the refusal, and passthrough asks once
+more with the items magpie holds taken out; but when no repair is
+available (Codex sends its own full history with store:false) or the
+repaired ask is refused again, retryable did not include the refusal,
+so a group stopped on it: the client got the 400, no other member was
+asked, the failing relay took no rest, and the next request could pick
+the same relay again (clhchan: eight group requests in five minutes,
+each on the failing relay, no rest record, affinity why:"back" coming
+back from the healthy spare).
+
+Now retryable counts a recognized prevForeign refusal as retryable:
+the next candidate answers before any reply reaches the client, and
+the failing candidate takes its normal error rest, capped by its
+rest-cap as any failure. A successful repair still returns normally
+and rests nobody, and an ordinary input-validation 400 still reaches
+the client without failover: the words of this refusal, and no word
+list retryable matches, overlap.
+
+From the reporter's own local patch on v0.1.3545 (five lines in
+retryable, this classification reused whole), reworked onto the
+current shape of the switch — the reporter holds the diagnosis, the
+reproduction and the live Windows verification (routing log: newapi
+400 rest.by:"backoff", api 200; the next route on api alone).
+
+Run:
+- TestAzureResourceMismatchFailsOverAndRests: a Codex-style
+  store:false full-history request and a stored-history one whose
+  repair is refused again both end 200 on the spare, the failing try
+  carries rest.by:"backoff" with the original error in it, and the
+  next group request skips the resting relay (red before the change:
+  client 400, spare called zero times, relay once without stored
+  history and three times with the first turn and failed repair in).
+- TestAzureResourceMismatchLeavesOtherBadRequestsAlone: a
+  `messages: field required` 400 reaches the client, one try, no rest.
+- TestPreviousResponse*, TestUnknownPreviousResponseRelayedAsSent,
+  TestNoFallbackForOtherErrors, TestRestCapOr, TestRestCapOff,
+  TestOneRequestDoesNotClimbTheBackoff: green.
+- Ablation: the prevForeign case taken out of retryable made both
+  resource-mismatch cases red again; restored, green.
+- Sibling scan: prevForeign is written nowhere else; its other reader,
+  the passthrough repair, is untouched. retryable's other readers take
+  the refusal the same way now: decideFailed rests a System One
+  candidate for it, a stream error frame naming it falls to
+  lateRests (refusedWords does not match it), an eventError after
+  thinking began hands the turn over, a held error lets another
+  provider answer, and draw and video try their next candidate —
+  route-problem semantics everywhere, none touching the repair.
+  6a253f8af..tip on fallback.go, prev_response.go and decide_group.go
+  never touched retryable or prevForeign.
+- Pre-existing red on this machine, parent commit too: TestMothX,
+  TestProxyCheckSaysAProxyPassedBy. TestLaneLimitRoutes passes here
+  with -tags nogui.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ docs/subsystems/gateway-routing.md           | 12 ++-
+ internal/gateway/azure_resource_rest_test.go | 91 ++++++++++++++++++++
+ internal/gateway/fallback.go                 |  6 ++
+ 3 files changed, 107 insertions(+), 2 deletions(-)
+ create mode 100644 internal/gateway/azure_resource_rest_test.go
+
+diff --git a/docs/subsystems/gateway-routing.md b/docs/subsystems/gateway-routing.md
+index 0ab62a56a..88233eb0e 100644
+--- a/docs/subsystems/gateway-routing.md
++++ b/docs/subsystems/gateway-routing.md
+@@ -2845,8 +2845,16 @@ included). `previousResponse` in
+   reproduced against Azure) is asked once more with the conversation
+   whole and those ids taken out. Only a request whose conversation magpie
+   holds is asked again, and only with a body that differs: an id magpie
+-  doesn't hold, or a refusal with nothing of magpie's to take out, is
+-  passed on as before.
++  doesn't hold, or a refusal with nothing of magpie's to take out, is not
++  sent again unchanged to that resource. If this specific resource-mismatch
++  refusal remains, `retryable` lets the next candidate answer before any
++  reply reaches the client, and the failing candidate takes its normal
++  error rest, subject to its provider's `rest-cap`. A successful repair
++  rests nobody; unrelated input-validation 400s still reach the client
++  without failover. `TestAzureResourceMismatchFailsOverAndRests` covers both
++  a failed repair and a Codex-style full-history request with `store:false`;
++  `TestAzureResourceMismatchLeavesOtherBadRequestsAlone` holds the input
++  error boundary.
+ - A ChatGPT account's streamed turn goes on its conversation's kept
+   socket as a delta after the backend's own `previous_response_id`
+   (`codexKept`, see [Providers and accounts](providers-accounts.md)).
+diff --git a/internal/gateway/azure_resource_rest_test.go b/internal/gateway/azure_resource_rest_test.go
+new file mode 100644
+index 000000000..d04c164ca
+--- /dev/null
++++ b/internal/gateway/azure_resource_rest_test.go
+@@ -0,0 +1,91 @@
++package gateway
++
++import (
++	"fmt"
++	"net/http"
++	"strings"
++	"testing"
++	"time"
++
++	"github.com/yetone/magpie/internal/provider"
++)
++
++// This is the refusal recorded by a relay serving Azure OpenAI resources.
++const azureResourceError = `{"error":{"message":"The requested item was created under a different Azure OpenAI resource. Use the same resource that created the item to access it.","type":"invalid_request_error"}}`
++
++const azureResourceAnswer = `{"id":"resp_resource","object":"response","status":"completed","output":[{"type":"message","id":"msg_resource","role":"assistant","content":[{"type":"output_text","text":"answer"}]}],"usage":{"input_tokens":3,"output_tokens":1}}`
++
++// Codex sends its own full history with store:false, so there may be no
++// stored conversation to repair. A repair that still fails has the same
++// outcome: another member answers, and later requests prefer that member
++// while the failing relay rests.
++func TestAzureResourceMismatchFailsOverAndRests(t *testing.T) {
++	for _, held := range []bool{false, true} {
++		t.Run(fmt.Sprintf("stored_history=%t", held), func(t *testing.T) {
++			fresh(t)
++			up := newPrevUp(t, func(n int, _ []byte) (int, string, string) {
++				if held && n == 1 {
++					return http.StatusOK, "application/json", azureResourceAnswer
++				}
++				return http.StatusBadRequest, "application/json", azureResourceError
++			})
++			spare := newPrevUp(t, func(_ int, _ []byte) (int, string, string) {
++				return http.StatusOK, "application/json", azureResourceAnswer
++			})
++			s := prevSandbox(t, provider.Provider{ID: "azure", Name: "Azure relay", Key: "k1", Models: []string{"m1"}, Responses: up.srv.URL + "/v1", RestCap: 720})
++			if err := provider.Save(provider.Provider{ID: "spare", Name: "Spare", Key: "k2", Models: []string{"m1"}, Responses: spare.srv.URL + "/v1"}); err != nil {
++				t.Fatal(err)
++			}
++			if err := provider.SaveGroup(provider.Group{Name: "G", Members: []string{"azure/m1", "spare/m1"}, Routing: provider.Ordered, Affinity: provider.AffinityOff}); err != nil {
++				t.Fatal(err)
++			}
++			body := `{"model":"group/g","store":false,"input":[{"role":"user","content":"continue"}]}`
++			wantCalls := 1
++			if held {
++				id := responseID(t, askResponses(t, s, "", `{"model":"azure/m1","input":"first turn"}`))
++				body = `{"model":"group/g","previous_response_id":"` + id + `","input":"second turn"}`
++				wantCalls = 3 // first turn, then the original and repaired requests
++			}
++			rec := askResponses(t, s, "", body)
++			if rec.Code != http.StatusOK || spare.calls() != 1 || up.calls() != wantCalls {
++				t.Fatalf("client got %d, relay calls %d, spare calls %d: %s", rec.Code, up.calls(), spare.calls(), rec.Body.String())
++			}
++			route := lastRoute(s)
++			if len(route.Tries) != 2 || route.Tries[0].ID != "azure" || route.Tries[0].Status != http.StatusBadRequest || route.Tries[0].Rest == nil || route.Tries[1].ID != "spare" {
++				t.Fatalf("resource refusal did not rest and fall back: %+v", route.Tries)
++			}
++			rest := route.Tries[0].Rest
++			if rest.By != "backoff" || !rest.Until.After(time.Now()) || !strings.Contains(rest.Error, "different Azure OpenAI resource") {
++				t.Fatalf("missing cooldown or original error: %+v", rest)
++			}
++			rec = askResponses(t, s, "", `{"model":"group/g","store":false,"input":"another request"}`)
++			if rec.Code != http.StatusOK || up.calls() != wantCalls || spare.calls() != 2 {
++				t.Fatalf("resting relay asked again before spare: status %d, relay %d, spare %d", rec.Code, up.calls(), spare.calls())
++			}
++		})
++	}
++}
++
++// A normal client-input 400 must still reach the client without routing
++// the same invalid request to every provider or resting working keys.
++func TestAzureResourceMismatchLeavesOtherBadRequestsAlone(t *testing.T) {
++	fresh(t)
++	up := newPrevUp(t, func(_ int, _ []byte) (int, string, string) {
++		return http.StatusBadRequest, "application/json", `{"error":{"message":"messages: field required"}}`
++	})
++	spare := newPrevUp(t, func(_ int, _ []byte) (int, string, string) {
++		return http.StatusOK, "application/json", azureResourceAnswer
++	})
++	s := prevSandbox(t, provider.Provider{ID: "azure", Name: "Azure relay", Key: "k1", Models: []string{"m1"}, Responses: up.srv.URL + "/v1"})
++	if err := provider.Save(provider.Provider{ID: "spare", Name: "Spare", Key: "k2", Models: []string{"m1"}, Responses: spare.srv.URL + "/v1"}); err != nil {
++		t.Fatal(err)
++	}
++	if err := provider.SaveGroup(provider.Group{Name: "G", Members: []string{"azure/m1", "spare/m1"}, Routing: provider.Ordered}); err != nil {
++		t.Fatal(err)
++	}
++	rec := askResponses(t, s, "", `{"model":"group/g","store":false,"input":"hi"}`)
++	route := lastRoute(s)
++	if rec.Code != http.StatusBadRequest || up.calls() != 1 || spare.calls() != 0 || len(route.Tries) != 1 || route.Tries[0].Rest != nil {
++		t.Fatalf("ordinary bad request retried or rested: status %d, relay %d, spare %d, tries %+v", rec.Code, up.calls(), spare.calls(), route.Tries)
++	}
++}
+diff --git a/internal/gateway/fallback.go b/internal/gateway/fallback.go
+index 20d769de7..e94256faa 100644
+--- a/internal/gateway/fallback.go
++++ b/internal/gateway/fallback.go
+@@ -1977,6 +1977,12 @@ func retryable(status int, body []byte) bool {
+ 		return false
+ 	case status == 401, status == 402, status == 403, status == 404, status == 408, status == 429, status >= 500:
+ 		return true
++	case prevForeign(status, raw):
++		// a relay's Azure resource cannot read this history (its own
++		// refusal, 400). Passthrough has already tried repairing the
++		// items it owns; another member may answer, and the failing
++		// relay takes its normal error rest (#5932)
++		return true
+ 	case modelRetired(status, body):
+ 		// another provider of the model may still serve it
+ 		return true
+-- 
+2.50.1 (Apple Git-155)
+

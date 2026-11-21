@@ -1,0 +1,23 @@
+{
+  "name": "@ggbdpq/prism-core",
+  "private": true,
+  "version": "0.1.0",
+  "description": "prismctl 引擎迁入：OpenAI Prism 本地接口直调（endpoints 注册表/请求构造与脱敏/四步 smoke/Chrome CDP browser-probe），CLI 挂 apps/cli prism",
+  "type": "module",
+  "main": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "commander": "^15.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.5"
+  }
+}

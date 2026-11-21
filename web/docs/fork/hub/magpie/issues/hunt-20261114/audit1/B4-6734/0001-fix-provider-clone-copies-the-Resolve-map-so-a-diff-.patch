@@ -1,0 +1,82 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Sun, 15 Nov 2026 13:08:15 +0800
+Subject: [PATCH] fix(provider): clone copies the Resolve map so a diff of two
+ snapshots sees its edits (#6734)
+
+clone() copied every other map and slice but left Resolve shared with the
+original. Edit-style callers build was and now from clone() and store the
+diff: a Resolve change lands in both snapshots, storedChanges sees none,
+and the second "provider set resolve.<host>=..." is dropped without an
+error.
+
+Upstream's own Save path writes the whole provider and never diffs, which
+is why the landed provider set resolve tests never caught it; qiqll's
+provider Edit (#5914 tree) was the first caller to trip - its
+TestProviderSetResolve is stably red there and green once clone() copies
+Resolve.
+
+Run: go test -run TestProviderCloneCopiesResolve ./internal/provider - red
+before, green after; ablation (block removed) red at provider_clone_test.go:19
+("clone shares the inner slice..."); full ./internal/provider ok but the
+standing TestResolveVia (host proxy, same red on the base commit); -race on
+the new test ok; gofmt/vet clean; GOOS linux/windows/darwin nogui builds ok.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/provider/provider.go            |  7 +++++++
+ internal/provider/provider_clone_test.go | 24 ++++++++++++++++++++++++
+ 2 files changed, 31 insertions(+)
+ create mode 100644 internal/provider/provider_clone_test.go
+
+diff --git a/internal/provider/provider.go b/internal/provider/provider.go
+index 5c1fcc8e4..33e5f2663 100644
+--- a/internal/provider/provider.go
++++ b/internal/provider/provider.go
+@@ -1005,6 +1005,13 @@ func (p Provider) clone() Provider {
+ 	p.KeySpendCaps = maps.Clone(p.KeySpendCaps)
+ 	p.KeyOwnBalances = maps.Clone(p.KeyOwnBalances)
+ 	p.KeyPriceRates = maps.Clone(p.KeyPriceRates)
++	if p.Resolve != nil {
++		m := make(map[string][]string, len(p.Resolve))
++		for k, v := range p.Resolve {
++			m[k] = slices.Clone(v)
++		}
++		p.Resolve = m
++	}
+ 	if p.AccountWindowCaps != nil {
+ 		m := make(map[string]map[string]int, len(p.AccountWindowCaps))
+ 		for k, v := range p.AccountWindowCaps {
+diff --git a/internal/provider/provider_clone_test.go b/internal/provider/provider_clone_test.go
+new file mode 100644
+index 000000000..e0c4a02fc
+--- /dev/null
++++ b/internal/provider/provider_clone_test.go
+@@ -0,0 +1,24 @@
++package provider
++
++import "testing"
++
++// clone feeds every diff-two-snapshots caller (Edit builds was and now from
++// it, and a CLI "provider set resolve.…=…" is one). A map clone() leaves
++// shared makes such a diff blind to Resolve changes: the edit lands in both
++// snapshots, storedChanges sees nothing, and the second set is dropped
++// without an error. qiqll's provider set (through Edit) was the first
++// caller to trip on this; clone must hand back a Resolve nothing shares.
++func TestProviderCloneCopiesResolve(t *testing.T) {
++	p := Provider{Name: "corp", Resolve: map[string][]string{"gw.example": {"10.0.0.1:8080"}}}
++
++	c := p.clone()
++	c.Resolve["gw.example"][0] = "10.0.0.2"
++	c.Resolve["other.example"] = []string{"10.0.0.3"}
++
++	if got := p.Resolve["gw.example"][0]; got != "10.0.0.1:8080" {
++		t.Fatalf("clone shares the inner slice: the original's address now reads %q", got)
++	}
++	if _, ok := p.Resolve["other.example"]; ok {
++		t.Fatalf("clone shares the map: a host added to the copy leaked into the original")
++	}
++}
+-- 
+2.50.1 (Apple Git-155)
+

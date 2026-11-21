@@ -1,0 +1,287 @@
+From 4622fff0f945bb1447794ae4fedc509199af1504 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Sat, 24 Oct 2026 15:05:41 +0800
+Subject: [PATCH] gateway: a member that refused this conversation as too long
+ is asked last, not first
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+What changed: an overflow (400, "prompt is too long") is the request's
+length, not the account's, so it rests nobody — and left no trace: the
+next request of the same conversation tried the member again, failed the
+same way, and fell back again, for every request (#3453: a rule sent
+every turn to a Claude subscription bridge that answered "Prompt is too
+long" and DeepSeek answered; two consecutive requests of one turn each
+paid the refused try first). Now the conversation remembers, per
+provider's model, how large the request was when it was refused, and the
+member is put behind the others — behind, not out: it is still asked
+when every other member has failed, a rule that names it is still
+heard (ruleOver has run), and what it answers makes magpie forget the
+refusal. A request smaller than what was refused — the agent has
+compacted the conversation — finds the member where the rule put it.
+Another conversation is unaffected, and a byte cap (413) is not
+remembered: it is not the conversation too long for the model.
+
+Run: GOCACHE=... GOMODCACHE=... go test -tags nogui -run
+'TestOverflowRefusedOnceIsAskedLast' ./internal/gateway/ (red on
+4683a038, green here); go test -tags nogui ./internal/gateway/; go vet
+./...; GOOS=linux go vet -tags nogui ./...; GOOS=windows go vet ./...;
+go build for darwin, linux, windows.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gateway/affinity.go            | 106 ++++++++++++++++++++++++
+ internal/gateway/gateway.go             |  14 ++++
+ internal/gateway/group_test.go          |   3 +
+ internal/gateway/overflow_learn_test.go |  68 +++++++++++++++
+ 4 files changed, 191 insertions(+)
+ create mode 100644 internal/gateway/overflow_learn_test.go
+
+diff --git a/internal/gateway/affinity.go b/internal/gateway/affinity.go
+index a30da86d..7543df0e 100644
+--- a/internal/gateway/affinity.go
++++ b/internal/gateway/affinity.go
+@@ -848,6 +848,112 @@ func withoutCompaction(body []byte) ([]byte, bool) {
+ 	return nil, false
+ }
+ 
++// overflowLearned remembers, per conversation and the provider's model
++// that refused it, how large the request was when the model answered it
++// too long (#3453: a rule sent every request of a conversation to a
++// member whose bridge refused it as too long; another member answered,
++// and the next request tried the first all over again — twice within one
++// turn). An overflow says nothing is wrong with the account — the
++// request was too long for the model — so nobody rests, and the memory
++// is the conversation's, not the member's: another conversation, or a
++// key or account of the model on it, goes to it as before. The next
++// request of the same conversation, grown or unchanged, is refused the
++// same way, the fallback each time spending the member's answer and the
++// agent's wait.
++var overflowLearned = struct {
++	sync.Mutex
++	m map[string]map[string]refusedLong // conversation → provider\x00model → what it refused
++}{m: map[string]map[string]refusedLong{}}
++
++// refusedLong is a request a conversation's member refused as too long:
++// its own bytes as they came, at the time it was refused. A conversation
++// only grows — so what is remembered holds — until its agent compacts
++// it, and one smaller than what was refused may hold now — so what is
++// remembered yields.
++type refusedLong struct {
++	at    time.Time
++	bytes int
++}
++
++// noteOverflow remembers that c's model refused this conversation as too
++// long at size bytes.
++func noteOverflow(key string, c candidate, size int) {
++	now := time.Now()
++	overflowLearned.Lock()
++	defer overflowLearned.Unlock()
++	m := overflowLearned.m[key]
++	if m == nil {
++		m = map[string]refusedLong{}
++		overflowLearned.m[key] = m
++	}
++	m[c.p.ID+"\x00"+c.model] = refusedLong{at: now, bytes: size}
++	if len(overflowLearned.m) > 4096 {
++		for k, m := range overflowLearned.m {
++			old := true
++			for _, r := range m {
++				if now.Sub(r.at) <= stickKeep {
++					old = false
++				}
++			}
++			if old {
++				delete(overflowLearned.m, k)
++			}
++		}
++	}
++}
++
++// forgetOverflow drops what was remembered of c's model refusing this
++// conversation: it has just answered it, whatever its size — the bridge
++// that refused it a moment ago may take it now.
++func forgetOverflow(key string, c candidate) {
++	overflowLearned.Lock()
++	defer overflowLearned.Unlock()
++	m := overflowLearned.m[key]
++	if m == nil {
++		return
++	}
++	delete(m, c.p.ID+"\x00"+c.model)
++	if len(m) == 0 {
++		delete(overflowLearned.m, key)
++	}
++}
++
++// behindOverflow puts, of cs, the members whose models refused this very
++// conversation as too long at no more than size — what it is now, or has
++// grown to since — behind the others, so the member that answered last
++// is asked first instead (#3453). The rule that sends the turn to one of
++// them has been heard (ruleOver has run); the member is still asked when
++// every other member has failed: it is put behind, not out, and when it
++// answers the memory of its refusal is dropped. A request smaller than
++// what was refused — the agent has compacted the conversation — leaves
++// the member where it was. What rests, or is all but used up, is ordered
++// as it was: this moves only who of those ready is asked first.
++func behindOverflow(key string, cs []candidate, pl planned, size int) ([]candidate, planned) {
++	if len(cs) < 2 || len(pl.order) != len(cs) {
++		return cs, pl
++	}
++	overflowLearned.Lock()
++	noted := overflowLearned.m[key]
++	overflowLearned.Unlock()
++	if len(noted) == 0 {
++		return cs, pl
++	}
++	var behind, ready []candidate
++	var behindW, readyW []Weighed
++	for i, c := range cs {
++		if r, ok := noted[c.p.ID+"\x00"+c.model]; ok && size >= r.bytes {
++			behind, behindW = append(behind, c), append(behindW, pl.order[i])
++			continue
++		}
++		ready, readyW = append(ready, c), append(readyW, pl.order[i])
++	}
++	if len(behind) == 0 || len(ready) == 0 {
++		return cs, pl
++	}
++	pl.order = append(readyW, behindW...)
++	return append(ready, behind...), pl
++}
++
+ // withoutKinds is a Responses request without its input items of these
+ // types.
+ func withoutKinds(body []byte, kinds ...string) ([]byte, bool) {
+diff --git a/internal/gateway/gateway.go b/internal/gateway/gateway.go
+index 9fb97de7..f3d0ec4d 100644
+--- a/internal/gateway/gateway.go
++++ b/internal/gateway/gateway.go
+@@ -2281,6 +2281,11 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
+ 	// asked: it would only refuse it. Those left out are the last resort,
+ 	// once every one with room is out of its allowance (small, below)
+ 	cands, pl, small, smallW := roomy(cands, pl, from, body)
++	// a member whose model refused this very conversation as too long at
++	// no more than this size is asked last: what it refused once the
++	// grown conversation is refused again, and the member that answered
++	// is asked first (#3453)
++	cands, pl = behindOverflow(stuck, cands, pl, len(body))
+ 	// of those resting, only the one back soonest is asked (#1799); the
+ 	// whole list still finds a Codex account to spend a reset on
+ 	all := cands
+@@ -3150,6 +3155,12 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
+ 				try.Fail = failOverflow
+ 				if hw.code() == http.StatusRequestEntityTooLarge {
+ 					try.Fail = failOther
++				} else {
++					// the conversation is remembered what this model
++					// refused as too long, to ask it last next time
++					// (#3453); a byte cap (413 above) isn't the
++					// conversation too long for the model, and isn't one
++					noteOverflow(stuck, c, len(body))
+ 				}
+ 				s.trace.update(tr, func(t *Route) { t.Tries[len(t.Tries)-1] = try })
+ 				skipped = append(skipped, c.label()+": "+call.Error)
+@@ -3562,6 +3573,9 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
+ 			// conversation, and the turn's size, where they were
+ 			if hit == nil || !hit.Compact {
+ 				answered(stuck, c, aff.Turn, call.Usage)
++				// what it answered, it holds: whatever it refused as too
++				// long on the way is forgotten (#3453)
++				forgetOverflow(stuck, c)
+ 			}
+ 			// the trigger was kept, so whoever answered sealed it: a
+ 			// fallback whose own native compaction is off too, whose seal
+diff --git a/internal/gateway/group_test.go b/internal/gateway/group_test.go
+index c9b11021..37c9c57b 100644
+--- a/internal/gateway/group_test.go
++++ b/internal/gateway/group_test.go
+@@ -49,6 +49,9 @@ func fresh(t *testing.T) {
+ 	refusedSeals.Lock()
+ 	refusedSeals.m = map[string]sealsRefused{}
+ 	refusedSeals.Unlock()
++	overflowLearned.Lock()
++	overflowLearned.m = map[string]map[string]refusedLong{}
++	overflowLearned.Unlock()
+ 	turnRules.Lock()
+ 	turnRules.m = map[string]turnRule{}
+ 	turnRules.Unlock()
+diff --git a/internal/gateway/overflow_learn_test.go b/internal/gateway/overflow_learn_test.go
+new file mode 100644
+index 00000000..85b2fc10
+--- /dev/null
++++ b/internal/gateway/overflow_learn_test.go
+@@ -0,0 +1,68 @@
++package gateway
++
++import (
++	"strings"
++	"testing"
++
++	"github.com/yetone/magpie/internal/provider"
++)
++
++// #3453 (hipposonCN): a rule sends every request of a conversation to a
++// member whose model refuses the conversation as too long; another member
++// takes it, and the next request tries the first all over again — twice
++// within one turn of the report's trace. What refused the conversation as
++// too long is put behind the member that answered it, for that
++// conversation alone: an overflow is the request's length, not the
++// account's, so nobody rests — and another conversation, or this one made
++// smaller by its agent's compacting, finds the member where the rule put
++// it, the size may hold now.
++func TestOverflowRefusedOnceIsAskedLast(t *testing.T) {
++	fresh(t)
++	over := `{"error":{"message":"prompt is too long: 674232 tokens > 200000 token maximum","type":"invalid_request_error"}}`
++	a := &scripted{replies: []reply{{400, "", over}, {400, "", over}, {400, "", over}}}
++	b := &scripted{replies: []reply{{200, "", chatOK}, {200, "", chatOK}, {200, "", chatOK}}}
++	scriptedOn(t, "a", provider.Chat, a)
++	scriptedOn(t, "b", provider.Chat, b)
++	if err := provider.SaveGroup(provider.Group{Name: "G", Members: []string{"a/m", "b/m"}, Routing: provider.Ordered, Affinity: provider.AffinitySession,
++		Rules: []provider.Rule{{Use: "a/m", Tokens: 1}}}); err != nil {
++		t.Fatal(err)
++	}
++	s := New()
++	body := `{"model":"group/g","messages":[{"role":"user","content":"say something about this"}]}`
++
++	// the rule puts a first; it refuses the conversation as too long, and
++	// b answers
++	code, out := postAs(t, s, "s1", body)
++	if code != 200 || !strings.Contains(out, "hello") || a.n != 1 || b.n != 1 {
++		t.Fatalf("first: %d %s (a %d, b %d)", code, out, a.n, b.n)
++	}
++	r := lastRoute(s)
++	if len(r.Tries) != 2 || r.Tries[0].Fail != failOverflow {
++		t.Fatalf("first tries: %+v", r.Tries)
++	}
++
++	// the next request of the same conversation, the rule heard as it
++	// was: b is asked first, what a refused as too long at this size it
++	// refuses again — the conversation has only grown
++	a.n, b.n = 0, 0
++	code, out = postAs(t, s, "s1", body)
++	if code != 200 || a.n != 0 || b.n != 1 {
++		t.Fatalf("second: %d %s (a %d, b %d)", code, out, a.n, b.n)
++	}
++
++	// another conversation begins with a, as the rule says: what a
++	// refused was the first conversation's length, not this one's
++	a.n, b.n = 0, 0
++	code, out = postAs(t, s, "s2", body)
++	if code != 200 || a.n != 1 || b.n != 1 {
++		t.Fatalf("another conversation: %d %s (a %d, b %d)", code, out, a.n, b.n)
++	}
++
++	// the first conversation compacted to less than what a refused: a is
++	// asked as the rule says again, the size may hold now
++	a.n, b.n = 0, 0
++	code, out = postAs(t, s, "s1", `{"model":"group/g","messages":[{"role":"user","content":"up"}]}`)
++	if code != 200 || a.n != 1 || b.n != 1 {
++		t.Fatalf("compacted: %d %s (a %d, b %d)", code, out, a.n, b.n)
++	}
++}
+-- 
+2.50.1 (Apple Git-155)
+

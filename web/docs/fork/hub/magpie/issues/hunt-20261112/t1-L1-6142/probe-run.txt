@@ -1,0 +1,9 @@
+=== RUN   TestSyncCatalogAgesCodexCache
+--- PASS: TestSyncCatalogAgesCodexCache (1.88s)
+=== RUN   TestProbe6142PoisonedCacheWithOwnETagAges
+--- PASS: TestProbe6142PoisonedCacheWithOwnETagAges (0.04s)
+=== RUN   TestProbe6142PoisonedCacheWithNoETagAges
+--- PASS: TestProbe6142PoisonedCacheWithNoETagAges (0.09s)
+=== RUN   TestProbe6142CacheEntriesReadableFromPoisonedCache
+--- PASS: TestProbe6142CacheEntriesReadableFromPoisonedCache (0.01s)
+ok  	github.com/yetone/magpie/internal/agent	2.809s

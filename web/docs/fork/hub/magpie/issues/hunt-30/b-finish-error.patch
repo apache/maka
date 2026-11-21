@@ -1,0 +1,164 @@
+From 30309fec3f696c7226be6e319e3684878be7090c Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Fri, 16 Oct 2026 12:04:23 +0800
+Subject: [PATCH] gateway: a 200 stream ended with finish_reason "error" fails
+ over
+
+What changed: a vendor that ends its 200 stream with finish_reason
+"error" - WorkBuddy's and a DeepSeek harness's word for a turn it failed
+rather than finished - had the chunk taken for content: the held stream
+went to the agent, the try stood as a 200 success, and the group's next
+member was never asked. streamEvent now reads the word as the failure it
+says, held for the next candidate as an error event before content is;
+in the candidate walk the try fails as an empty reply's or a cut-short
+summary's does (#1221, #2274): the next is asked, and nobody rests, as
+the reply's shape failed, not the account. Content already passed to the
+agent can't be taken back, and is not touched.
+
+Run: TestFinishReasonErrorFailsOver (new) red on a15e5765 before the fix
+(the reporter's shape: one try, status 200, Fail empty, the second member
+never asked), green after; red again with fallback.go and gateway.go
+stashed, tests kept. TestStreamErrorBeforeContentFailsOver, the
+streamEvent tables, and the stream families (Stream/Finish/Refusal/
+Overload/LastOneLeft/GroupFail/Retry, Loop/Hold/Pass/Queue/Patience/
+Incomplete/EndedShort/Grok) green. gofmt -l clean; vet on darwin, linux
+(nogui) and windows clean; build ok on all three.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ docs/subsystems/gateway-routing.md |  2 +-
+ internal/gateway/fallback.go       | 14 +++++++++++
+ internal/gateway/gateway.go        | 14 +++++++++++
+ internal/gateway/retry_test.go     | 39 ++++++++++++++++++++++++++++++
+ 4 files changed, 68 insertions(+), 1 deletion(-)
+
+diff --git a/docs/subsystems/gateway-routing.md b/docs/subsystems/gateway-routing.md
+index 4b8be8b4..0333489f 100644
+--- a/docs/subsystems/gateway-routing.md
++++ b/docs/subsystems/gateway-routing.md
+@@ -105,7 +105,7 @@ recorded as a prediction failure (`noPrediction`).
+ - A request whose key is a Claude sign-in (`claudeSignIn`: `Authorization: Bearer sk-ant-oat…`, Claude Code signed in to claude.ai with magpie as its base URL) is never told a 401, nor a 403 saying "OAuth token has been revoked". magpie never passes that sign-in on, so such an answer is a provider refusing magpie's credential, or one of magpie's own Claude accounts lapsing; told it, Claude Code renews its own sign-in before each of its retries (ten for one request) and then asks to `/login`. Any error whose message mentions x-api-key, whatever its status, Claude Code tells as "Not logged in · Please run /login" too. It is told as a 502 in magpie's words, an `api_error` saying "<provider> refused magpie's credential (HTTP 401): …" with x-api-key said as "API key", and any other error such a request is told keeps its status with x-api-key said as "API key", as does a stream's error after its 200 (`keepsSignIn`, `claude_signin.go`). Recent calls and the usage log keep the provider's status and message. Any other 403, and a request with magpie's key or an API key, is answered as before. The sign-in's beta (`oauth-…` in `anthropic-beta`) isn't passed on either (`askedBetas`), so a provider gets the request as Claude Code with magpie's key sends it; a provider's own `header.anthropic-beta` still goes.
+ - A 2xx that can't be an API's answer is the 502 it stands for (`notAnAPIReply`, #1012): a web page (`text/html`, or a body that begins as one: a sign-in page, Cloudflare's challenge), a body with nothing in it, or one sent as JSON that doesn't begin as JSON. Every upstream request goes through it (`forwardOnce`, and the built-in clients' own: the ChatGPT backend's `/responses`, Kiro, Zed, Qoder, Devin, Cursor, Command Code), so it fails over, rests and is logged as a 502 does, its reason naming the page's title. Only the first bytes are peeked, which a stream waits for anyway, and a compressed body is left as it came.
+ - A 2xx from Zhipu or Z.ai holding the platform's refusal envelope (`{"code":1000,"msg":…,"success":false}`, which their Responses API at `/api/v1` answers a refused key) is the refusal it stands for (`provider.ZhipuEnveloped` in `forwardOnce`): 401 for a key refused, 429 for a limit or no balance, as Zhipu's error codes give, so it fails over and rests as those do and the agent is told why. `TestZhipuResponsesRefusalIsRefusal`.
+-- A streamed request is never left silent while its vendor says nothing. `holdWriter.watch` runs beside each try: past `keepHeldAfter` (15s) it sends a held try's agent the stream's 200 and SSE comments (`keepAlive`), none of the try, so another candidate may still answer in the same stream; once the reply passes, it puts a comment between two of its lines after `keepaliveEvery` of quiet. It stops after `keepaliveLongest` (5 minutes) with nothing from the vendor. A try waiting for its key's or account's slot or for room in its minute (`lanes.take`, `rpms.wait`) is kept alive the same way (`keepQueued`), for as long as it waits; once the 200 is out, the try is held, and its failure or its queue turning it away reaches the agent as the stream's error (`failTo`), not a status (coeo91 on Discord). A wait shorter than `keepHeldAfter` sends nothing, so its 429 keeps its `Retry-After`. A proxy in front such as Cloudflare (125s) otherwise ends the request (#947). Gemini streams get no comments (#934). A vendor that then ignores `stream:true` and answers 200 with its reply whole has it sent as the agent's stream (`wholeAsStream`: Chat, Responses, Anthropic), not as the stream's error, while a reply under a type that says neither JSON nor a stream is held as a stream when its first bytes are one (`sseStart`), read event by event like one that says so, so an error among its frames still goes to the next candidate (#1418: it went through at once); a 200 that is no reply of the protocol's fails as a translated reply that didn't stream does (502, "… did not stream"), for the next candidate to answer, and the last one's reaches the agent as the stream's error. A held stream that has sent nothing but the frames before a reply (`response.created`, `response.in_progress`, `codex.rate_limits`, pings, an empty part begun, and any event `streamEvent` doesn't know to carry text, reasoning, a call or a reply's end (`replyEvent`), or an item not known that isn't a call or a tool's (`streamPart.said`): `eventLead`; Aliceonly on #1418: an unknown event was taken for content and let a frames-only 200 through, and its `server_is_overloaded` reached Codex with five candidates left) stays held as long as its agent is kept alive, up to `holdLead` (4 minutes, under the 300s Codex waits for an event; `keptQuiet`), so a `server_is_overloaded` that comes after it is a failure the next candidate answers (#1418: let through at 15s, the ChatGPT backend's failure 36s in ended Codex's turn with sub2api, next in the group, never asked). A stream whose agent can't be kept alive (Gemini's) is let through after `holdLongest` (15s), as before. Codex counts only events toward that 300s, not comments, so the bound is the request's, not each try's: once Codex on Responses has heard no event for `agentQuietMost` (4 minutes) since the request began or its last event (`keptAlive.tooQuiet`), the try in hand is let through (`scan`, `keepQuiet`), and no group replan or same-one retry is taken whose pause would end past it (fadenoob on Discord: held tries and replan pauses added up past 300s and Codex reconnected on "idle timeout waiting for SSE"). A translated reply whose upstream stream stops before it said its reply had — an Anthropic one with no stop_reason and no message_stop, a Responses one with no `response.completed`, the same two a relayed one is told by (`sniff.whole`; a Chat stream may end without `[DONE]` and be whole), a Gemini or Code Assist one whose last chunk has no candidate's `finishReason` (`geminiEnds`, #1643: `usageMetadata` is no end, Vertex AI sends it on every chunk; a chunk with no candidate at all is the empty reply's to answer, #667), and a relayed Gemini one told the same way (#1644; it ends in Gemini's own `{"error":{"code":502,…,"status":"UNAVAILABLE"}}` data line from `streamFailure`, `TestGeminiRelayEndedShort`; whatever a relayed stream gets appended, that error or a filled-in `finish_reason`, begins after a blank line, two newlines when the upstream's last write stopped inside a line, so it is an event of its own rather than more of the half-written one, #2446, `TestPassthroughStreamCutMidLine`, `TestGeminiCompatFinishAfterPartialLine`), and a Chat one from Gemini's OpenAI-compatible API (`geminiCompat`) with no `finish_reason`, relayed or translated (`saysItsEnd`; Linka on Discord: the upstream hung up between a whole function call and its `finish_reason`, and Pi threw the call away as "Stream ended without finish_reason"; that API counts the usage only once the generation is done, so when the last chunk carried it only the `finish_reason` was lost and it is filled in, `tool_calls` after a call and `stop` otherwise, as a relayed chunk before `[DONE]` or a translated reply's end, and the reply counts as whole (`chatTail`); only one with no usage at its end is a cut, `TestGeminiCompatRelayEndedShort`, `TestGeminiCompatTranslatedEndedShort`) — ends the turn with "the reply ended before it was complete" (`errEndedShort`, `TestResponsesUpstreamEndedShort`, `TestGeminiUpstreamEndedShort`), asked again in place where the upstream goes on from a prefill (`continuation.go`). A client that asked for no stream is told the same 502 of such a cut (`translate`, `TestNonStreamEndedShort`, `TestGeminiNonStreamEndedShort`), rather than handed what came as its whole reply. A translated reply from an Anthropic or Responses upstream that ended but said nothing (no text, call, search or image) and counted no token at all is no reply either, whatever its end says (`repliesCounted`, #2086: an Anthropic-compatible proxy's 200 ended a Codex turn as `response.completed` with no output, no usage and no served model, and Codex didn't ask again). It is the empty reply's to answer (#667): asked again in place, then failed with "an empty reply", streamed or not, for every client (`TestUncountedEmptyReplyFails`, `TestUncountedEmptyReplyFailsEveryClient`). Claude's own empty `end_turn` counts its prompt and stays a whole reply (`TestWellFormedStreamsStillComplete`). A reply passed through in its own protocol isn't read this way.
++- A streamed request is never left silent while its vendor says nothing. `holdWriter.watch` runs beside each try: past `keepHeldAfter` (15s) it sends a held try's agent the stream's 200 and SSE comments (`keepAlive`), none of the try, so another candidate may still answer in the same stream; once the reply passes, it puts a comment between two of its lines after `keepaliveEvery` of quiet. It stops after `keepaliveLongest` (5 minutes) with nothing from the vendor. A try waiting for its key's or account's slot or for room in its minute (`lanes.take`, `rpms.wait`) is kept alive the same way (`keepQueued`), for as long as it waits; once the 200 is out, the try is held, and its failure or its queue turning it away reaches the agent as the stream's error (`failTo`), not a status (coeo91 on Discord). A wait shorter than `keepHeldAfter` sends nothing, so its 429 keeps its `Retry-After`. A proxy in front such as Cloudflare (125s) otherwise ends the request (#947). Gemini streams get no comments (#934). A vendor that then ignores `stream:true` and answers 200 with its reply whole has it sent as the agent's stream (`wholeAsStream`: Chat, Responses, Anthropic), not as the stream's error, while a reply under a type that says neither JSON nor a stream is held as a stream when its first bytes are one (`sseStart`), read event by event like one that says so, so an error among its frames still goes to the next candidate (#1418: it went through at once); a Chat stream a vendor ends with `finish_reason:"error"` — WorkBuddy's and a DeepSeek harness's word for a turn it failed, not finished (#2471) — is the failure the word says, held for the group's next candidate, and nobody rests, as an empty reply's (`TestFinishReasonErrorFailsOver`); a 200 that is no reply of the protocol's fails as a translated reply that didn't stream does (502, "… did not stream"), for the next candidate to answer, and the last one's reaches the agent as the stream's error. A held stream that has sent nothing but the frames before a reply (`response.created`, `response.in_progress`, `codex.rate_limits`, pings, an empty part begun, and any event `streamEvent` doesn't know to carry text, reasoning, a call or a reply's end (`replyEvent`), or an item not known that isn't a call or a tool's (`streamPart.said`): `eventLead`; Aliceonly on #1418: an unknown event was taken for content and let a frames-only 200 through, and its `server_is_overloaded` reached Codex with five candidates left) stays held as long as its agent is kept alive, up to `holdLead` (4 minutes, under the 300s Codex waits for an event; `keptQuiet`), so a `server_is_overloaded` that comes after it is a failure the next candidate answers (#1418: let through at 15s, the ChatGPT backend's failure 36s in ended Codex's turn with sub2api, next in the group, never asked). A stream whose agent can't be kept alive (Gemini's) is let through after `holdLongest` (15s), as before. Codex counts only events toward that 300s, not comments, so the bound is the request's, not each try's: once Codex on Responses has heard no event for `agentQuietMost` (4 minutes) since the request began or its last event (`keptAlive.tooQuiet`), the try in hand is let through (`scan`, `keepQuiet`), and no group replan or same-one retry is taken whose pause would end past it (fadenoob on Discord: held tries and replan pauses added up past 300s and Codex reconnected on "idle timeout waiting for SSE"). A translated reply whose upstream stream stops before it said its reply had — an Anthropic one with no stop_reason and no message_stop, a Responses one with no `response.completed`, the same two a relayed one is told by (`sniff.whole`; a Chat stream may end without `[DONE]` and be whole), a Gemini or Code Assist one whose last chunk has no candidate's `finishReason` (`geminiEnds`, #1643: `usageMetadata` is no end, Vertex AI sends it on every chunk; a chunk with no candidate at all is the empty reply's to answer, #667), and a relayed Gemini one told the same way (#1644; it ends in Gemini's own `{"error":{"code":502,…,"status":"UNAVAILABLE"}}` data line from `streamFailure`, `TestGeminiRelayEndedShort`; whatever a relayed stream gets appended, that error or a filled-in `finish_reason`, begins after a blank line, two newlines when the upstream's last write stopped inside a line, so it is an event of its own rather than more of the half-written one, #2446, `TestPassthroughStreamCutMidLine`, `TestGeminiCompatFinishAfterPartialLine`), and a Chat one from Gemini's OpenAI-compatible API (`geminiCompat`) with no `finish_reason`, relayed or translated (`saysItsEnd`; Linka on Discord: the upstream hung up between a whole function call and its `finish_reason`, and Pi threw the call away as "Stream ended without finish_reason"; that API counts the usage only once the generation is done, so when the last chunk carried it only the `finish_reason` was lost and it is filled in, `tool_calls` after a call and `stop` otherwise, as a relayed chunk before `[DONE]` or a translated reply's end, and the reply counts as whole (`chatTail`); only one with no usage at its end is a cut, `TestGeminiCompatRelayEndedShort`, `TestGeminiCompatTranslatedEndedShort`) — ends the turn with "the reply ended before it was complete" (`errEndedShort`, `TestResponsesUpstreamEndedShort`, `TestGeminiUpstreamEndedShort`), asked again in place where the upstream goes on from a prefill (`continuation.go`). A client that asked for no stream is told the same 502 of such a cut (`translate`, `TestNonStreamEndedShort`, `TestGeminiNonStreamEndedShort`), rather than handed what came as its whole reply. A translated reply from an Anthropic or Responses upstream that ended but said nothing (no text, call, search or image) and counted no token at all is no reply either, whatever its end says (`repliesCounted`, #2086: an Anthropic-compatible proxy's 200 ended a Codex turn as `response.completed` with no output, no usage and no served model, and Codex didn't ask again). It is the empty reply's to answer (#667): asked again in place, then failed with "an empty reply", streamed or not, for every client (`TestUncountedEmptyReplyFails`, `TestUncountedEmptyReplyFailsEveryClient`). Claude's own empty `end_turn` counts its prompt and stays a whole reply (`TestWellFormedStreamsStillComplete`). A reply passed through in its own protocol isn't read this way.
+ - A vendor's error keeps its `code` and `param` on its way to an OpenAI-shaped client (`writeVendorError`), where `writeError` used to set both to null: a status error relayed or translated, and a request refused inside a Responses stream. A Responses stream's `error` event or failed response whose error is of type `invalid_request_error` is the request at fault (`requestRefused`, read by its type, not its words): its `Event` carries status 400 and the vendor's error (`Event.Said`), so a client answered whole gets the vendor's 400 with its code and param (the whole-translated path wrote 502 `api_error`), a reply cut by it isn't resumed (`continuation.again`), and a translated stream's error says the vendor's type, code and param (`saidError`), so `holdWriter` reads it as the 400 it is. Before, the hold read magpie's `api_error` as a 502: the same request was sent three times, then to the other accounts, and every one rested (magpie-releases#18: the ChatGPT backend answers `access_programs` naming a program the workspace hasn't got with a 200 stream whose error is `access_program_not_enabled`). Asked once, nobody rests ([`codex_access_programs_test.go`](../../internal/gateway/codex_access_programs_test.go)).
+ - An error that reaches the agent in a stream already begun can't carry its status, so `streamError` says it in the words (`saysPassing`, #2372, zminds): for a status that may pass (408, 429, 5xx) whose text names none of the words a text-judging agent retries on (Pi decides by its `errorMessage` alone), it appends `(<status>: you can retry your request)`; a request's own fault (400, 401, 404 …) and a text that already says so are left as they were. `TestStreamErrorSaysItPasses` holds Pi's own lists; `TestGroupLastFailureInStreamSaysItPasses` runs a group whose last member fails after the keepalive.
+ - Claude's, GPT's and Gemini's reasoning is held (`refusesAfterThinking`, up to `holdThinking`, 4 minutes) so that a refusal after it goes to the next candidate unseen (#248). It is held only while one could: on the last candidate a refusal isn't asked again, so Claude's and GPT's reasoning streams as it comes there, and a refusal after it reaches the agent as the vendor's own. Held there, a lone relay's Claude or GPT showed Claude Code its thinking all at once with the text, and Codex none until then (iTianbao on X). Gemini's stays held on the last candidate too, for a reply that only reasoned to be asked again (#667). Any other model's reasoning is never held.
+diff --git a/internal/gateway/fallback.go b/internal/gateway/fallback.go
+index 1fe4b4bd..6b4e8f0d 100644
+--- a/internal/gateway/fallback.go
++++ b/internal/gateway/fallback.go
+@@ -2503,6 +2503,12 @@ var filterReasons = map[string]string{
+ 	"IMAGE_SAFETY":             "safety",
+ }
+ 
++// finishFailed is what a 200 stream the vendor ends with finish_reason
++// "error" (#2471) says of itself, in the failure the hold keeps: the turn
++// failed, as the word says, and the group's next member answers it, while
++// taken for content it reached the agent and the try stood as a success.
++const finishFailed = `the reply ended with finish_reason "error"`
++
+ // refusedNote is what a refusal is noted as: the vendor's own reason.
+ func refusedNote(reason string) string {
+ 	return "safety filter: " + reason
+@@ -2799,6 +2805,14 @@ func streamEvent(ev []byte) (kind, status int, msg string) {
+ 				if r, ok := filterReasons[*c.FinishReason]; ok {
+ 					return refusal(r)
+ 				}
++				if *c.FinishReason == "error" {
++					// WorkBuddy's and a DeepSeek harness's word for a turn
++					// it failed, not finished (#2471): the failure an error
++					// event is, held for the group's next candidate, where
++					// taken for content it went to the agent and the try
++					// stood as a success
++					return eventError, streamStatus(finishFailed), finishFailed
++				}
+ 				return eventContent, 0, ""
+ 			}
+ 		}
+diff --git a/internal/gateway/gateway.go b/internal/gateway/gateway.go
+index 7a309f9a..9fce2b79 100644
+--- a/internal/gateway/gateway.go
++++ b/internal/gateway/gateway.go
+@@ -3050,6 +3050,20 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
+ 			matesLast(cands[i+1:], c)
+ 			continue
+ 		}
++		if !last && hw.failed() && strings.Contains(call.Error, finishFailed) {
++			// a 200 stream the vendor ended with finish_reason "error"
++			// (#2471): the turn failed, as the word says, but the account
++			// is at fault no more than one whose reply said nothing
++			// (#1221) or was cut short by its output limit (#2274): the
++			// next is asked, and nobody rests
++			if other == nil {
++				other = &Try{Status: call.Status, Error: call.Error}
++			}
++			try.Fail = failOther
++			s.trace.update(tr, func(t *Route) { t.Tries[len(t.Tries)-1] = try })
++			skipped = append(skipped, c.label()+": "+call.Error)
++			continue
++		}
+ 		if !last && hw.failed() {
+ 			if f := failure(hw.code(), hw.errBody()); other == nil && f != failQuota && f != failCredit {
+ 				other = &Try{Status: call.Status, Error: call.Error}
+diff --git a/internal/gateway/retry_test.go b/internal/gateway/retry_test.go
+index efd6d528..efbe0479 100644
+--- a/internal/gateway/retry_test.go
++++ b/internal/gateway/retry_test.go
+@@ -165,6 +165,8 @@ func TestStreamErrorBeforeContentFailsOver(t *testing.T) {
+ 		{`: keep-alive`, eventLead},
+ 		{`data: {"id":"c","choices":[{"index":0,"delta":{"role":"assistant","content":""}}]}`, eventLead},
+ 		{`data: {"id":"c","choices":[{"index":0,"delta":{"content":"hi"}}]}`, eventContent},
++		{`data: {"id":"c","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`, eventContent},
++		{`data: {"id":"c","choices":[{"index":0,"delta":{},"finish_reason":"error"}]}`, eventError},
+ 		{`data: {"error":{"message":"upstream failed"}}`, eventError},
+ 		{`event: response.created` + "\n" + `data: {"type":"response.created","response":{"id":"r"}}`, eventLead},
+ 		{`event: codex.rate_limits` + "\n" + `data: {"type":"codex.rate_limits","plan_type":"plus","rate_limits":{"allowed":true}}`, eventLead},
+@@ -178,6 +180,43 @@ func TestStreamErrorBeforeContentFailsOver(t *testing.T) {
+ 	}
+ }
+ 
++// A 200 stream a vendor ends with finish_reason "error" — the word
++// WorkBuddy's and a DeepSeek harness's replies carry when the turn is not
++// finished but failed (#2471) — is the failure it says, held for the
++// group's next member as an error event before content is, and nobody
++// rests: the reply's shape failed, not the account, as one that looped
++// (#1359).
++func TestFinishReasonErrorFailsOver(t *testing.T) {
++	fresh(t)
++	broken := sse(`data: {"id":"c","choices":[{"index":0,"delta":{"role":"assistant"}}]}`,
++		`data: {"id":"c","choices":[{"index":0,"delta":{},"finish_reason":"error"}],"usage":{"prompt_tokens":5,"completion_tokens":0,"total_tokens":5}}`,
++		`data: [DONE]`)
++	good := sse(`data: {"id":"c2","choices":[{"index":0,"delta":{"role":"assistant"}}]}`,
++		`data: {"id":"c2","choices":[{"index":0,"delta":{"content":"from b"}}]}`,
++		`data: {"id":"c2","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
++		`data: [DONE]`)
++	a := &scripted{replies: []reply{{200, "text/event-stream", broken}}}
++	b := &scripted{replies: []reply{{200, "text/event-stream", good}}}
++	scriptedOn(t, "a", provider.Chat, a)
++	scriptedOn(t, "b", provider.Chat, b)
++	if err := provider.SaveGroup(provider.Group{Name: "G", Members: []string{"a/m", "b/m"}, Routing: provider.Ordered}); err != nil {
++		t.Fatal(err)
++	}
++	s := New()
++	code, body := postAs(t, s, "", `{"model":"group/g","stream":true,"messages":[{"role":"user","content":"hi"}]}`)
++	if code != 200 || !strings.Contains(body, "from b") || strings.Contains(body, `"error"`) {
++		t.Fatalf("%d %s %+v", code, body, s.trace.routes[len(s.trace.routes)-1])
++	}
++	if a.n != 1 || b.n != 1 {
++		t.Fatalf("a asked %d, b asked %d", a.n, b.n)
++	}
++	r := s.trace.routes[len(s.trace.routes)-1]
++	if len(r.Tries) != 2 || r.Tries[0].Status != 502 || r.Tries[0].Fail != failOther || r.Tries[0].Rest != nil ||
++		!strings.Contains(r.Tries[0].Error, `finish_reason "error"`) {
++		t.Fatalf("tries: %+v", r.Tries)
++	}
++}
++
+ // The last one left — or the only one — is tried again after a failure
+ // that may pass, a moment later; one that won't is the agent's at once.
+ func TestLastOneLeftIsTriedAgain(t *testing.T) {
+-- 
+2.50.1 (Apple Git-155)
+

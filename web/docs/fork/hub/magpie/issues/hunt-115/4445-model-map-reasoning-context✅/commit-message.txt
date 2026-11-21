@@ -1,0 +1,17 @@
+fix(netproxy): a switch of the global proxy drops the old proxy's idle connections (#4523)
+
+What changed
+- Dispatch now remembers the proxy setting each request left under and,
+  when it moves, closes the idle connections it kept (base's and every
+  provider clone's), so the request after a switch dials through the
+  proxy in force. A transport pools by target host, and its HTTP/2
+  connections by the authority alone, so until now a Test after the
+  switch rode the old proxy's connection and left by the old exit while
+  the new proxy was the one shown.
+
+Run
+- go test ./internal/netproxy/ -run TestGlobalSwitchDropsTheOldProxyConnections
+  fails on the parent (1 connection through A, 0 through B after the
+  switch), passes here; the package's full suite passes (-tags nogui).
+
+Generated-by: GLM-5.3-Flash (ZCode)

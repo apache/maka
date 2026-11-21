@@ -1,0 +1,122 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Mon, 26 Oct 2026 03:54:10 +0800
+Subject: [PATCH] niri: the tests' fake niri answers past niri's second, so the
+ tests raise the deadline (#3639)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+place asks niri over the socket and gives it a second: niriDial dials
+with a second and niriRequest sets a second's deadline. The fake niri
+of the tests answers from another goroutine of the same test binary,
+and on a loaded machine that goroutine can go unscheduled longer than
+that second: the first request times out, place sends nothing, and a
+full run goes red once — TestPlacePanel's two cases with an empty
+"sent", TestPlacePanelNoOutput with "sent []".
+
+A gate that waits for the fake to listen can't close this window: the
+fake listens all along (net.Listen has returned before place runs); it
+is the answer that comes late, and the injected 1.1s delay that
+reproduces the flake outlives any readiness the fake could announce.
+So the deadline is what has to give: niriTimeout is a variable now,
+defaulting to production's second, and fakeNiri raises it to thirty
+seconds, since the niri it stands for may be left unscheduled that
+long. The 1.1s sleep stays in fakeNiri as the regression guard:
+against production's hard second every request of place times out and
+the tests go red again, as they did for #3639.
+
+Verified: with the sleep alone the two tests fail with the reported
+output ("clicked, already floating: sent" / "sent [], want only the
+question"); with the raise they pass, and reverting only the raise
+returns them to red.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/omarchy/niri.go      | 10 ++++++++--
+ internal/omarchy/niri_test.go | 10 +++++++++-
+ 2 files changed, 17 insertions(+), 3 deletions(-)
+
+diff --git a/internal/omarchy/niri.go b/internal/omarchy/niri.go
+index 5f0ac4cd7..ced5dde35 100644
+--- a/internal/omarchy/niri.go
++++ b/internal/omarchy/niri.go
+@@ -187,12 +187,18 @@ func niriAction(name string, args map[string]any) any {
+ 	return map[string]any{"Action": map[string]any{name: args}}
+ }
+ 
++// niriTimeout is how long niri gets to take the connection and to answer
++// one request. niri answers from memory, so a second serves it; the fake
++// niri of the tests can be left unscheduled longer than that by a busy
++// test binary (#3639), so the tests raise it.
++var niriTimeout = time.Second
++
+ func niriDial() (net.Conn, error) {
+ 	sock := os.Getenv("NIRI_SOCKET")
+ 	if sock == "" {
+ 		return nil, errors.New("niri: NIRI_SOCKET is not set")
+ 	}
+-	return net.DialTimeout("unix", sock, time.Second)
++	return net.DialTimeout("unix", sock, niriTimeout)
+ }
+ 
+ // niriRequest sends niri one request, a line of JSON, and reads its reply
+@@ -203,7 +209,7 @@ func niriRequest(req, v any) error {
+ 		return err
+ 	}
+ 	defer c.Close()
+-	_ = c.SetDeadline(time.Now().Add(time.Second))
++	_ = c.SetDeadline(time.Now().Add(niriTimeout))
+ 	b, err := json.Marshal(req)
+ 	if err != nil {
+ 		return err
+diff --git a/internal/omarchy/niri_test.go b/internal/omarchy/niri_test.go
+index b33d09267..744410ae3 100644
+--- a/internal/omarchy/niri_test.go
++++ b/internal/omarchy/niri_test.go
+@@ -11,6 +11,7 @@ import (
+ 	"strings"
+ 	"sync"
+ 	"testing"
++	"time"
+ )
+ 
+ // The JSON below is niri's own, as niri-ipc 26.4.0 (niri v26.04,
+@@ -111,7 +112,11 @@ func TestWatchWindowsRefused(t *testing.T) {
+ }
+ 
+ // fakeNiri answers on NIRI_SOCKET as niri does, one request a line, and
+-// keeps the requests.
++// keeps the requests. It answers past niri's production deadline: a busy
++// test binary can leave a goroutine unscheduled a second and more
++// (#3639), so the sleep below stands for that load, and niriTimeout is
++// raised to outlive it — with production's second the sleep times every
++// request of place out, which is the flake this guards against.
+ func fakeNiri(t *testing.T, answer func(req string) string) (sent func() []string) {
+ 	dir, err := os.MkdirTemp("", "niri") // a socket path fits in 104 bytes
+ 	if err != nil {
+@@ -133,6 +138,7 @@ func fakeNiri(t *testing.T, answer func(req string) string) (sent func() []strin
+ 			if err != nil {
+ 				return
+ 			}
++			time.Sleep(1100 * time.Millisecond) // the fake niri, unscheduled by a busy test binary (#3639)
+ 			sc := bufio.NewScanner(c)
+ 			for sc.Scan() {
+ 				mu.Lock()
+@@ -144,11 +150,13 @@ func fakeNiri(t *testing.T, answer func(req string) string) (sent func() []strin
+ 		}
+ 	}()
+ 	t.Cleanup(func() {
++		niriTimeout = time.Second
+ 		l.Close()
+ 		wg.Wait()
+ 		os.RemoveAll(dir)
+ 	})
+ 	t.Setenv("NIRI_SOCKET", sock)
++	niriTimeout = 30 * time.Second // the fake answers past production's second, and later still under load
+ 	return func() []string {
+ 		mu.Lock()
+ 		defer mu.Unlock()
+-- 
+2.50.1 (Apple Git-155)
+

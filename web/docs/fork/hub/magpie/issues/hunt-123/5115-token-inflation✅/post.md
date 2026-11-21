@@ -1,0 +1,356 @@
+Taken — here is the analysis, the fix and its proof. Your log-to-code chain checks out against current main (`c360d9d30`), and every number in it reproduces from the code read: the summing is the `before.plus(this, false)` fold in `streamTranslated`, and the fix is the split your last section asks for, done with the machinery magpie already has.
+
+## What's wrong
+
+A reply asked again for saying nothing (#667's retry, the `net.asks=4`) had every try's usage summed into the reply's — deliberately so since #853, whose commit fixed the ledger undercounting retries ("only the last try's was kept while the vendor billed each") by summing into "the client's and the ledger's" alike. The client half is what bites you: `prompt_tokens` reaching WorkBuddy is the sum of every ask's `input + cache_read`, and WorkBuddy reads it back as how full the conversation is. Your case A is the code path exactly: 4 asks × one conversation → `in 463651 + cache_read 1521361 = 1985012` saved as `rawUsage.prompt_tokens`, then `1985012 + 2059 + 65536 >= 1000000` → `emergency-auto / blocking_limit`. The context chart inflates the same way: `promptCounted` reads the route's last `RouteUsage`, which already carries the aggregate, and `calibrate` scales every category by it (your ×3.9856).
+
+Account switches are not part of this — each candidate try is its own `call` with its own `Usage`, and the client reads the successful call's; the accumulation is entirely inside one try's in-place re-asks (`streamTranslated`, three sites: the empty reply's #667, the loop-guard's #1359, the cut continuation's #853).
+
+## Root cause
+
+The reply's usage is one number doing two jobs. As billing, every try is real consumption and belongs in the ledger. As context occupancy, the reply's prompt is the conversation the one ask that answered counted — the earlier asks re-sent the same conversation, which the ledger should bill but no client should read as its context. The vocabulary for that split already exists: `Usage.Deferred`, built for a plugin's earlier steps ("billed with this one, never told as its prompt", #1053), which `routeUsage` prices as a tier of its own and `billed()` folds back for every ledger consumer — while `promptCounted` reads the request's own tier.
+
+## The fix
+
+At each of the three retry boundaries the try that ended is folded away: its input and cache reads go to the reply's `Deferred` (billed, never told as the prompt), and what it holds with the client stays in the reply's own counts — its output and reasoning, which were streamed as they came, and its cache writes, whose cross-try sum the client's `prompt_tokens_details` deliberately tells (the zero-split calibration, `TestCachePartialUpdateMatrix`/`TestProbe1717ContinuationTotalZeroSplit`, keeps every reading; your evidence carries no writes — Antigravity reports none — so the context figure comes out exact). A try that reports no input leaves none of a previous one's behind as the reply's own, so a counted try followed by one that counted nothing can't be billed twice. Both exits of `streamTranslated` land the bucket in `u.Deferred`, so failed replies (your row 2: 4 asks, error) also leave the chart the last try's single prompt. Your "don't divide by `asks`" hold is respected — no last-known count is ever destroyed, it is re-homed.
+
+Client-facing: `prompt_tokens` = the ask that answered's `input + cache_read + cache_write`; `completion_tokens` = everything the client was streamed across tries. Ledger-facing: `billed()` sums to exactly what it billed before — `routeUsage` now carries the retries as a Deferred tier beside the request's own. One pinned reading moves with the split: `TestStreamCutUsageSumsTries` asserted the client reads 7+11=18 after a cut continuation — it now asserts the client reads the continuation's 11 while the ledger still bills 18, which is the #853 intent (each try billed) with the client no longer told the aggregate. The same-shaped folds in the search rounds (`searchReply`, each round a distinct prompt with results appended) and the Claude Code subscription's per-message sums are left as they are — different flows with their own calibrations, worth their own look if you want the same treatment there.
+
+<details>
+<summary>Patch (c6161fac9)</summary>
+
+```diff
+From c6161fac99d18655ad39a38b1fd1a8f78cd30037 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Wed, 4 Nov 2026 04:23:53 +0800
+Subject: [PATCH] gateway: a retried try's prompt is billed as the reply's
+ Deferred, never told as its prompt (#5115)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+A reply asked again for saying nothing (#667) or cut mid-way (#853) had
+every try's input and cache reads summed into the reply's prompt — the
+client's and the ledger's alike — so a client reading prompt_tokens back
+as how full its context is read a reply asked four times at four times
+its size: WorkBuddy saved 1,985,012 input tokens for one ~500k
+conversation and compacted a session that had room, twice in one evening
+(emergency-auto, blocking_limit), and the context chart scaled itself up
+the same way.
+
+The tries are still each billed: the input and cache reads of the ones
+before the one that answered go to the reply's Deferred, which the
+ledger prices as a tier beside the request's own (routeUsage) and bills
+whole (billed), while the client is told the ask that answered — the
+same split a plugin's earlier steps already get (#1053). What a try
+holds with the client stays in the reply's own counts: its output and
+reasoning, streamed as it came, and its cache writes, whose sum across
+tries the client's prompt_tokens_details already tells (the zero-split
+calibration keeps its readings). A try that reports no input leaves none
+of a previous one's behind as the reply's own, so the ledger no longer
+counts a counted try twice when the ask after it counted nothing.
+
+The same fold ran on the loop-guard re-ask (#1359) and the cut-reply
+continuation, and is gone from all three. One pinned reading moves with
+the split: TestStreamCutUsageSumsTries, now
+TestStreamCutUsageBillsTriesTellsOwnPrompt — the client reads the
+continuation's 11, the ledger still bills 7+11. The search rounds
+(searchReply) and the Claude Code subscription's per-message sums keep
+their own accounting.
+
+New: TestGeminiEmptyRetryTellsThePromptThatAnswered (an empty try's
+prompt stays off the client's prompt_tokens, the ledger bills both
+tries), TestGeminiEmptyRetryCountsOnlyWhatWasCounted (a counted try
+followed by one that counted nothing is billed once).
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gateway/continuation.go            | 53 ++++++++++--
+ internal/gateway/continuation_test.go       | 15 ++--
+ internal/gateway/gemini_empty_reply_test.go | 96 +++++++++++++++++++++
+ 3 files changed, 152 insertions(+), 12 deletions(-)
+
+diff --git a/internal/gateway/continuation.go b/internal/gateway/continuation.go
+index ef2096efd..ca65a96fb 100644
+--- a/internal/gateway/continuation.go
++++ b/internal/gateway/continuation.go
+@@ -390,6 +390,22 @@ func (c *continuation) unecho(s string) string {
+ 	return s
+ }
+
++// deferTries bills the prompts of a reply's retried tries with the reply,
++// as its Deferred — what the ledger prices as a tier beside the request's
++// own (routeUsage), and the client is never told as the reply's prompt
++// (#5115): a client reading prompt_tokens back as how full its context is
++// (WorkBuddy's) read a reply asked four times four times its size, and
++// compacted a session that had room.
++func deferTries(u *Usage, retried Usage) {
++	if retried.Input+retried.CacheRead == 0 {
++		return
++	}
++	if u.Deferred == nil {
++		u.Deferred = &Usage{}
++	}
++	*u.Deferred = u.Deferred.plus(retried, false)
++}
++
+ // streamTranslated relays a translated reply's events to the client as
+ // they come. A reply the upstream's stream cut off mid-way is asked of
+ // the same conversation again, going on from what the client has, up to
+@@ -413,7 +429,24 @@ func (s *Server) streamTranslated(w http.ResponseWriter, r *http.Request, p prov
+ 	empties := 0 // the times such a reply was asked again here
+ 	said, stop := false, ""
+ 	var kept []Event       // the reply's end, while nothing is said in it
+-	var before, this Usage // what the tries before this one billed, and this try
++	var before, this Usage // what the tries before this one hold with the client, and this try
++	// retried is the prompts of the tries that said nothing or were cut:
++	// the conversation asked again, billed with the reply and never told
++	// as its prompt (#5115)
++	var retried Usage
++	defer func() { deferTries(u, retried) }()
++	// gaveUp folds the try that ended away: the prompt it asked again —
++	// its input and its cache reads — into retried, what the client holds
++	// of it (its output and its cache writes, billed where they landed)
++	// into before, and clears the reply's own input for the next try, so
++	// the reply's own counts are the try that answered's: one that
++	// reports none leaves none of a previous one's behind
++	gaveUp := func() {
++		retried = retried.plus(Usage{Input: this.Input, CacheRead: this.CacheRead}, false)
++		before, this = before.plus(Usage{Output: this.Output, Reasoning: this.Reasoning,
++			CacheWrite: this.CacheWrite, CacheWrite1h: this.CacheWrite1h}, false), Usage{}
++		u.Input, u.CacheRead = 0, 0
++	}
+ 	// spoke: the reply has said something, a text or a call; relooped: this
+ 	// try's reasoning was found stuck in a loop before it had, and it is
+ 	// let go to ask again (loopReasks)
+@@ -458,15 +491,21 @@ func (s *Server) streamTranslated(w http.ResponseWriter, r *http.Request, p prov
+ 			failed, failedCode, failedStatus = ev.Text, ev.Code, ev.Status
+ 			errSent = true
+ 		case KStart:
+-			// the tries are each billed, so their usages are summed into
+-			// the reply's — the client's and the ledger's (a cut try's is
+-			// only what it said before the cut)
++			// the try that answered is the reply's usage — the client's
++			// and the ledger's; the tries before it asked the same
++			// conversation again, which is billed as the reply's Deferred
++			// (gaveUp), never told as its prompt (#5115). What they hold
++			// with the client — their output, and their cache writes,
++			// billed where they landed — stays in the reply's own counts
+ 			this = ev.Usage
+ 			ev.Usage = ev.Usage.plus(before, false)
+ 			u.add(ev.Usage)
+ 			u.add(Usage{Served: ev.Model}) // the model the vendor says answered
+ 		case KUsage:
+ 			this.add(ev.Usage)
++			// before is what the tries before this one hold with the
++			// client: their output and their cache writes; the prompts
++			// they asked again went to the reply's Deferred (gaveUp)
+ 			ev.Usage = ev.Usage.carryUpdate(this, before)
+ 			u.add(ev.Usage)
+ 		case KStop:
+@@ -633,7 +672,7 @@ func (s *Server) streamTranslated(w http.ResponseWriter, r *http.Request, p prov
+ 			// it, as an empty reply's does (#667); a loop on that try too
+ 			// ends the reply with the loop's error.
+ 			relooped = false
+-			before, this = before.plus(this, false), Usage{}
++			gaveUp()
+ 			kept, stop = nil, ""
+ 			enc.keepalive()
+ 			select {
+@@ -655,7 +694,7 @@ func (s *Server) streamTranslated(w http.ResponseWriter, r *http.Request, p prov
+ 					// the error stops its run (#667, Pi). What reasoning
+ 					// the client has stays, the next try's follows it.
+ 					empties++
+-					before, this = before.plus(this, false), Usage{}
++					gaveUp()
+ 					kept, stop = nil, ""
+ 					enc.keepalive()
+ 					select {
+@@ -691,7 +730,7 @@ func (s *Server) streamTranslated(w http.ResponseWriter, r *http.Request, p prov
+ 			}
+ 			break
+ 		}
+-		before, this = before.plus(this, false), Usage{}
++		gaveUp()
+ 		enc.keepalive() // the client waits while the same conversation is asked again
+ 		select {
+ 		case <-time.After(retryPause << again):
+diff --git a/internal/gateway/continuation_test.go b/internal/gateway/continuation_test.go
+index 4ac4ebb72..2da1f703c 100644
+--- a/internal/gateway/continuation_test.go
++++ b/internal/gateway/continuation_test.go
+@@ -649,9 +649,10 @@ func TestStreamCutPrefillRefusedEndsAsBefore(t *testing.T) {
+ 	}
+ }
+
+-// The tries are each billed, so the reply's usage — the client's and the
+-// ledger's — sums them: the cut try's prompt with the continuation's.
+-func TestStreamCutUsageSumsTries(t *testing.T) {
++// The tries are each billed: the one that answered is the reply's usage —
++// what the client reads as its prompt (#5115) — and the cut try's is the
++// reply's Deferred, which the ledger bills beside it.
++func TestStreamCutUsageBillsTriesTellsOwnPrompt(t *testing.T) {
+ 	f := &cutAnthropic{
+ 		cuts:  map[int][]string{0: {anthStart("m", 7), anthText("hel")}},
+ 		whole: []string{anthStart("m", 11), anthText("lo"), anthStop(4)},
+@@ -661,8 +662,12 @@ func TestStreamCutUsageSumsTries(t *testing.T) {
+ 	if u == nil {
+ 		t.Fatalf("no usage in the stream: %s", body)
+ 	}
+-	if u["prompt_tokens"] != 18.0 || u["completion_tokens"] != 4.0 {
+-		t.Fatalf("usage = %v, want the tries summed: prompt 7+11=18, completion 4", u)
++	if u["prompt_tokens"] != 11.0 || u["completion_tokens"] != 4.0 {
++		t.Fatalf("usage = %v, want the try that answered: prompt 11, completion 4", u)
++	}
++	// the ledger bills both tries: the cut one with the continuation
++	if r := lastUsage(t); r.Input+r.CacheRead+r.CacheWrite != 18 {
++		t.Fatalf("ledger prompt %d, want both tries billed (7+11)", r.Input+r.CacheRead+r.CacheWrite)
+ 	}
+ }
+
+diff --git a/internal/gateway/gemini_empty_reply_test.go b/internal/gateway/gemini_empty_reply_test.go
+index 024bf1c18..dca81100c 100644
+--- a/internal/gateway/gemini_empty_reply_test.go
++++ b/internal/gateway/gemini_empty_reply_test.go
+@@ -8,8 +8,10 @@ import (
+ 	"path/filepath"
+ 	"strings"
+ 	"testing"
++	"time"
+
+ 	"github.com/yetone/magpie/internal/provider"
++	"github.com/yetone/magpie/internal/usage"
+ )
+
+ // A Gemini reply that says nothing — a STOP with no parts, only reasoning,
+@@ -75,6 +77,100 @@ func TestGeminiEmptyReplyIsAnError(t *testing.T) {
+ 	}
+ }
+
++// A reply asked again for saying nothing bills every try, but the prompt
++// it leaves the client is the one ask that answered: WorkBuddy reads
++// prompt_tokens back as how full the conversation is, and a reply asked
++// four times read four times its size and compacted a session that had
++// room (#5115). The tries before the one that answered are the reply's
++// Deferred — the ledger bills them (promptCounted reads the ask that
++// answered), and what they streamed the client stays in its completion.
++func TestGeminiEmptyRetryTellsThePromptThatAnswered(t *testing.T) {
++	home := t.TempDir()
++	t.Setenv("HOME", home)
++	t.Setenv("USERPROFILE", home)
++	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
++	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
++	t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
++
++	calls := 0
++	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		io.ReadAll(r.Body)
++		calls++
++		w.Header().Set("Content-Type", "text/event-stream")
++		if calls == 1 {
++			io.WriteString(w, `data: {"candidates":[{"content":{"role":"model","parts":[{"text":"Let me see.","thought":true}]}}]}`+"\n\n"+
++				`data: {"candidates":[{"content":{"role":"model","parts":[{"text":""}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":100,"candidatesTokenCount":7,"thoughtsTokenCount":5}}`+"\n\n")
++			return
++		}
++		io.WriteString(w, `data: {"candidates":[{"content":{"role":"model","parts":[{"text":"hello"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":200,"candidatesTokenCount":9,"thoughtsTokenCount":3}}`+"\n\n")
++	}))
++	t.Cleanup(up.Close)
++	saveGem(t, up.URL, "gemini-3.8-flash")
++
++	code, body := post(t, "/v1/chat/completions", `{"model":"gem/gemini-3.8-flash","stream":true,"messages":[{"role":"user","content":"hi"}]}`)
++	if code != 200 || !strings.Contains(body, "hello") || strings.Contains(body, "an empty reply") {
++		t.Fatalf("the empty reply wasn't asked past: %d %s", code, body)
++	}
++	if calls != 2 {
++		t.Fatalf("asked %d times, want 2", calls)
++	}
++	u := chatUsageOf(body)
++	if u == nil {
++		t.Fatalf("no usage in the stream: %s", body)
++	}
++	if u["prompt_tokens"] != 200.0 {
++		t.Fatalf("prompt_tokens = %v, want the ask that answered (200), not 100+200", u["prompt_tokens"])
++	}
++	if u["completion_tokens"] != 24.0 {
++		t.Fatalf("completion_tokens = %v, want what the client was streamed, both tries' output (7+5, 9+3)", u["completion_tokens"])
++	}
++	// the ledger bills both tries, the retry with the reply
++	if r := lastUsage(t); r.Input+r.CacheRead+r.CacheWrite != 300 || r.Output != 24 {
++		t.Fatalf("ledger in %d+%d+%d out %d, want both tries billed (300 in, 24 out)", r.Input, r.CacheRead, r.CacheWrite, r.Output)
++	}
++}
++
++// A try that counted its prompt and one that said nothing without counting
++// anything: the ledger bills the one that counted, once — the try that
++// reported nothing leaves none of the other's prompt behind as its own.
++func TestGeminiEmptyRetryCountsOnlyWhatWasCounted(t *testing.T) {
++	home := t.TempDir()
++	t.Setenv("HOME", home)
++	t.Setenv("USERPROFILE", home)
++	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
++	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
++	t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
++
++	calls := 0
++	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		io.ReadAll(r.Body)
++		calls++
++		w.Header().Set("Content-Type", "text/event-stream")
++		if calls == 1 {
++			io.WriteString(w, `data: {"candidates":[{"content":{"role":"model","parts":[{"text":""}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":100}}`+"\n\n")
++			return
++		}
++		io.WriteString(w, `data: {"candidates":[{"content":{"role":"model","parts":[]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":0}}`+"\n\n")
++	}))
++	t.Cleanup(up.Close)
++	saveGem(t, up.URL, "gemini-3.8-flash")
++
++	code, body := post(t, "/v1/chat/completions", `{"model":"gem/gemini-3.8-flash","stream":true,"messages":[{"role":"user","content":"hi"}]}`)
++	if code != 200 || !strings.Contains(body, "an empty reply") {
++		t.Fatalf("a model that never answers isn't told as the error: %d %s", code, body)
++	}
++	// the request's tries each get a record; only the one that counted
++	// has a prompt, and it is billed once — not twice, as its own and
++	// again as a previous try's
++	var in int
++	for _, r := range usage.Load(time.Time{}) {
++		in += r.Input + r.CacheRead + r.CacheWrite
++	}
++	if in != 100 {
++		t.Fatalf("ledger in %d, want the one try that counted (100), not twice that", in)
++	}
++}
++
+ // A Gemini reply that says nothing several times running is asked again
+ // on the same account before the request's own tries run out: on a long
+ // conversation antigravity/gemini-3.8-flash ended with only its reasoning
+--
+2.50.1 (Apple Git-155)
+
+```
+
+Patch file SHA-256 (first 16): `a6053fd179e70de9`
+
+</details>
+
+## Verification
+
+| Check | Result |
+| --- | --- |
+| RED: `TestGeminiEmptyRetryTellsThePromptThatAnswered` on the parent (`c360d9d30`) | fail — `prompt_tokens = 300`, want 200 (your 4× shape at small scale) |
+| RED: `TestStreamCutUsageBillsTriesTellsOwnPrompt` on the parent's code | fail — client reads 18, the sum |
+| GREEN: both after the fix | pass, plus the ledger rows (300 in / 24 out; 7+11) |
+| Ablation: `continuation.go` reverted to the parent, tests kept | red again on the same two; restored, green. `TestGeminiEmptyRetryCountsOnlyWhatWasCounted` stays green on the parent (it had no Deferred from retries to double-count) — it guards the new path, and it is what caught an intermediate draft that summed a counted try into the reply's own counts beside the Deferred |
+| Cache-write calibration untouched | `TestCachePartialUpdateMatrix` (12 cases × bridge/continuation/search), `TestProbe1717ContinuationTotalZeroSplit`, `TestProbe1717SearchTotalZeroSplit`, `TestStreamCutZeroCacheSplitKeepsWrites` all pass unchanged |
+| `go test -tags nogui -count=1 -timeout 25m ./internal/gateway/...` | ok, 579.0s |
+| `go test -tags nogui -race` (the touched tests + the cut/empty/Deferred families) | ok |
+| `gofmt -l` on the three files, `go vet -tags nogui ./internal/gateway/`, `go build ./...` | clean (`internal/gui`'s cgo `-Wenum-conversion` warnings pre-exist on the parent) |
+| Sibling face | every `plus(before`/`carryUpdate` fold found: `search.go` (searchReply rounds) and `claude_subscription.go` (per-message sums, pinned by `TestClaudeInternalMessagesKeepCacheWrites`) left unchanged as different flows; `routeUsage`/`billed`/`observe` consume `Deferred` unchanged; hot path: one small struct add per retry boundary and one merge per reply, nothing per chunk |
+
+## Not verified
+
+No Antigravity/Gemini account here: the fix is pinned against a Gemini-shaped fake upstream through the whole gateway (the report's own shape: an empty try with usage, then an answer), not against your account. WorkBuddy's side (`getLatestUsage().inputTokens` → `shouldCompact`) is read from your logs, not executed; the chart's rescaling is pinned via `promptCounted`/`routeUsage` semantics (the Deferred tier before the request's own), not by rendering a GUI chart. Whether your ×3.9856 chart now reads ~1.0 needs one real occurrence after a build with this in it.
+
+AI use: written by GLM-5.3-Flash (ZCode); keep the author as ggbdpq <ggbdpq@gmail.com>.
+
+**Branch with the commit**: [fix/5115-token-inflation](https://github.com/ggbdpq/magpie/tree/fix/5115-token-inflation) (head `c6161fac99d18655ad39a38b1fd1a8f78cd30037`).

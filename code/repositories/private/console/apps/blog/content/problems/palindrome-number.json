@@ -1,0 +1,22 @@
+{
+  "id": "2",
+  "slug": "palindrome-number",
+  "title": "回文数",
+  "difficulty": "easy",
+  "tags": ["数学"],
+  "description": "给你一个整数 `x`,如果 `x` 是一个回文整数,返回 `true`;否则返回 `false`。\n\n回文数是指正序(从左向右)和倒序(从右向左)读都是一样的整数。例如 `121` 是回文,`123` 不是。\n\n**进阶:** 不将整数转为字符串来解决。\n\n**示例 1:**\n\n- 输入:`x = 121`\n- 输出:`true`\n\n**示例 2:**\n\n- 输入:`x = -121`\n- 输出:`false`(从左读 -121,从右读 121-,不等)\n\n**示例 3:**\n\n- 输入:`x = 10`\n- 输出:`false`(读作 01)",
+  "solution": "## 思路\n\n负数一定不是回文(有负号)。末位为 0 且非 0 的数也不是(如 10)。\n\n**反转一半数字**:不断取出 `x` 的末位拼到 `reversed` 上,同时 `x` 去掉末位,直到 `x <= reversed`。最后比较 `x === reversed`(偶数位)或 `x === Math.floor(reversed / 10)`(奇数位,去掉中间位)。\n\n只反转一半既避免溢出,又无需转字符串。\n\n## 参考代码\n\n```js\nfunction isPalindrome(x) {\n  if (x < 0 || (x % 10 === 0 && x !== 0)) return false;\n  let reversed = 0;\n  while (x > reversed) {\n    reversed = reversed * 10 + (x % 10);\n    x = Math.floor(x / 10);\n  }\n  return x === reversed || x === Math.floor(reversed / 10);\n}\n```\n\n## 复杂度\n\n- 时间:O(log n)(处理一半数字)\n- 空间:O(1)",
+  "signature": {
+    "language": "javascript",
+    "entry": "isPalindrome",
+    "params": [{ "name": "x", "type": "number" }],
+    "returns": "boolean"
+  },
+  "testCases": [
+    { "sample": true, "input": [121], "expected": true },
+    { "sample": true, "input": [-121], "expected": false, "explanation": "负数不是回文" },
+    { "sample": false, "input": [10], "expected": false },
+    { "sample": false, "input": [0], "expected": true },
+    { "sample": false, "input": [12321], "expected": true }
+  ]
+}

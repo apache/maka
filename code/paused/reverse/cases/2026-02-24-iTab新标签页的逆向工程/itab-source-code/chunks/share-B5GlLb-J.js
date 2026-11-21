@@ -1,0 +1,1 @@
+import"./_virtual_wxt-html-plugins-Dqv5PPZA.js";import{_ as s,a as t,o as a,b as e,R as n,a8 as o}from"./index-D5wSwEZ6.js";const p={class:"box"};const r=s({},[["render",function(s,n){return a(),t("div",p,n[0]||(n[0]=[e("input",{type:"text",placeholder:"请输入"},null,-1)]))}],["__scopeId","data-v-bf93741d"]]);o({__name:"App",setup:s=>(s,t)=>(a(),n(r))}).mount("#share");

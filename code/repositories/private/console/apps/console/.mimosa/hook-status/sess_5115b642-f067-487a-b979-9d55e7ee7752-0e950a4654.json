@@ -1,0 +1,14 @@
+{
+  "schemaVersion": "mimosa-hook-status/v1",
+  "recordedAt": "2026-09-09T23:18:22.418Z",
+  "sessionId": "sess_5115b642-f067-487a-b979-9d55e7ee7752",
+  "event": "PostToolUse",
+  "toolName": "Edit",
+  "file": "e2e/assets-smoke.spec.ts",
+  "outcome": "clear",
+  "coverage": "complete",
+  "findingCount": 0,
+  "durationMs": 5,
+  "hostState": "hook_complete",
+  "reportHint": ".mimosa/reports/"
+}

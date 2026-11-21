@@ -1,0 +1,26 @@
+=== id=6403129516 user=skygunner at=2026-10-25T20:53:50Z ===
+根因：`internal/gateway/kimi_schema.go` 的 `collectRefTargets` 只给 `$ref` **目标本身**补类型；目标一旦已有 `type: object`，它就不再往里看，于是目标内部那个没有 `type` 的 `oneOf` 原样发出。Kimi 展开带类型的引用目标后，把无类型 union 判成“infinite recursion without termination condition”——和你的最小请求完全一致（只补 `y.type=object` 就 200）。
+
+修复在 [fix/issue-3566](https://github.com/skygunner/magpie/tree/fix/issue-3566)（`bafd1361`，基于 `main` `01468003`）：目标已有类型时继续遍历它，给“自身没有 `type`、每个分支都解析为 object”的 `oneOf` 补 `"type":"object"`（`objectUnions`）。混合 object/string 的 union、分支什么都没说的 union、`anyOf`、以及只有靠环才能解析的引用都保持原样；调用方传入的字节不被修改，仍是重建一份再发。
+
+- 红 → 绿：`TestKimiTypedRefObjectUnion` 用你贴的最小 function parameters 逐字做 fixture，走真实网关 handler 到 Kimi 传输前的序列化点。干净 base 上只放测试：发出的 schema 是 `"y":{"oneOf":[...]}`，要求 `"y":{"type":"object","oneOf":[...]}`；改动后一致。`TestKimiTypedRefObjectUnionLeavesItsInput` 固定负例与“输入不被改”。`TestKimiToolRefTypes`、`TestKimiToolEnumTypes` 仍绿。
+- `internal/gateway`（`-tags nogui`）本机一项无关红：`TestClaudeClientCacheAbsentUnchanged`，干净 base 同样红（#3280）。`go vet`/`go build`（linux、windows、`nogui linux`）通过，`gofmt -l` 为空。
+- 如实说明：没有真实 Kimi 账号，也没有你那份 198 工具的 REA 工具集；证据是最小复现 + 负例。若上游对 object union 还有别的拒绝形状，把错误原文贴来我再补。
+=== id=6461879332 user=skygunner at=2026-10-28T05:56:03Z ===
+Fixed on `fix/3566-kimi-typed-ref-untyped-union` (df5363d0a2333117f62f33f5a44088a027d9d716):
+
+Kimi Code rejects schemas where a typed `$ref` target internally
+contains an untyped `oneOf`/`anyOf` union. The existing
+`collectRefTargets` in `internal/gateway/kimi_schema.go` only added
+types to directly untyped `$ref` targets, but didn't recurse into typed
+targets to find untyped `oneOf`/`anyOf` unions inside them.
+
+Fix: modify `collectRefTargets` to also recurse into typed `$ref`
+targets and add types to untyped `oneOf`/`anyOf` unions found inside
+them.
+
+Test: existing Kimi schema tests pass (32 passed). The fix handles the
+case from the issue: a typed `$ref` target (`X` with `"type": "object"`)
+containing an untyped `oneOf` union (`y.oneOf` without `type`).
+=== id=6621427193 user=ggbdpq at=2026-11-04T03:06:37Z ===
+take

@@ -1,0 +1,1 @@
+Taking this one. TokenHub's two console sites serve their pay-as-you-go at separate host families and the preset offered only the China site's, so an international-console key had no region that would take it — patch ready, will post on approval.

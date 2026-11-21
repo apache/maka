@@ -1,0 +1,1314 @@
+Re-verified at current main (`eb1b83000`): every element below re-ran on that tip.
+
+| Element | Status / evidence at `eb1b83000` |
+| --- | --- |
+| Rebase | clean, range-diff `=` — zero semantic drift |
+| git am | the patch below applies to a clean `eb1b83000` tree; result tree-identical to the branch (`22e9178d12`) |
+| Tests | full `internal/gateway` package ok (1477.3s); the port's own matrix re-ran: `TestGeminiDeferred*` + `TestGeminiFailedTool*` + `TestGeminiUpstreamStop` + `TestGeminiFailureIsTerminalForContent` + `TestCodeAssistTextCalls` (upstream's "malformed" salvage case, unchanged) + `TestEmptyReplyAskedAgainOnce` ok, and the deferred/failed-tool family ok under `-race`; gofmt/vet clean; nogui build ok for linux/darwin/windows |
+| Ablation (red without the fix) | two behavior cuts in `codeassist.go` (each restored): cut 1 — the rejected-generation guard removed: `TestGeminiFailedToolDecoder` FAIL; cut 2 — the "say so, never read it as a normal end" fork removed: `TestGeminiFailedToolDecoder`, `TestGeminiFailedToolToAnthropic`, `TestGeminiFailureIsTerminalForContent` FAIL — verbatim: `gemini_failed_tool_test.go:44: failed generation was presented as a normal stop` |
+| Siblings | `MALFORMED_FUNCTION_CALL`/`UNEXPECTED_TOOL_CALL` at this tip: the decoder fork (`codeassist.go`), `stopFromGemini` (single caller), the matcher in `gemini_call_failure.go` — no other site maps these finishes; `decoderFor`'s three callers (gateway.go translate, continuation.go streamTranslated, search.go askTranslated) all carry the request as the patch left them; `Part.Loads` consumers unchanged — same face as the post below |
+| Field evidence | carried from the post below: the reporter's live bridge table predates this port; real `gemini-4-carbon` through the Antigravity plugin remains NOT-RUNNABLE here |
+
+New branch head: `821564a1249f7adc` — branch: https://github.com/ggbdpq/magpie/tree/hunt-20261112-t1-6288
+Patch below rebuilt at the new head — SHA-256 first 16: `27fbdcf6cf9d2ec6`
+
+**Not verified** (carried over): real `gemini-4-carbon` through the Antigravity plugin (the reporter's live path; their cache-read table and isolated Claude Code wire capture predate their final revision, as they note); real Claude Code against this port; the salvage path against a real Google `finishMessage` (upstream's own "Not tried" stands); production billing deltas.
+
+**Attribution**: AI-written (this re-verification comment, written with GLM-5.3-Flash (ZCode)); I've read the whole diff. Please keep the author (`ggbdpq`) or add `Co-authored-by: ggbdpq <ggbdpq@gmail.com>`.
+
+Patch: <details><summary>patch: gateway: Gemini's deferred tools load in place and a failed tool generation is said, not ended past (#6288) — git am applies it as is; SHA-256 first 16: 27fbdcf6cf9d2ec6</summary>
+
+````
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: HKTPlay <HKTPlay@users.noreply.github.com>
+Date: Fri, 13 Nov 2026 03:21:44 +0800
+Subject: [PATCH] gateway: Gemini's deferred tools load in place and a failed
+ tool generation is said, not ended past (#6288)
+
+Candidate from HKTPlay's #6288 (their diff, authored by them; ported onto
+9c33839de by ggbdpq), in internal/gateway:
+
+- Deferred tools on Gemini and Code Assist keep one fixed
+  magpie_deferred_tool declaration; a loaded tool's schema rides in the
+  tool result that loaded it (Part.Loads, the pattern #2660 set on the
+  Responses side), so successive loads keep the request prefix intact.
+  Calls come back through the bridge under the tool's own name, marked
+  history replays as bridge calls, thought signatures survive.
+- A MALFORMED_FUNCTION_CALL / UNEXPECTED_TOOL_CALL finish with no call
+  whole in finishMessage is an explicit 400 invalid_request_error with the
+  usage kept, not a normal stop. The rejected candidate's parts are not
+  forwarded, only a bounded tool name is surfaced from finishMessage, and
+  no account rests or retries over it.
+
+Ported with one composition, made for the review: the salvage of a whole
+call in finishMessage (8c0c2e8b6, fwxkogaia on X) stays first; the
+explicit failure covers only what the salvage cannot parse. stopFromGemini
+keeps its mapping for the salvaged path. The end-to-end test's
+finishMessage leaves the rejected call's braces open, so it pins the
+unparsable rest; the reporter's own decoder tests are unchanged.
+
+Run (darwin/arm64): gofmt clean, go vet ok, build nogui ok; go test -tags
+nogui ./internal/gateway -run 'TestGemini|TestCodeAssist|TestLateStreamErrorNotKept|TestTextCall|TestUpstreamStop'
+-count=1 -timeout=45s ok. Ablations and the full package are recorded in
+the issue thread.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ docs/subsystems/gateway-routing.md          |  55 +++
+ internal/gateway/anthropic.go               |  10 +
+ internal/gateway/codeassist.go              |  85 ++++-
+ internal/gateway/continuation.go            |   4 +-
+ internal/gateway/fallback.go                |   6 +
+ internal/gateway/gateway.go                 |  30 +-
+ internal/gateway/gemini.go                  |   5 +
+ internal/gateway/gemini_call_failure.go     |  30 ++
+ internal/gateway/gemini_deferred.go         | 188 +++++++++++
+ internal/gateway/gemini_deferred_test.go    | 353 ++++++++++++++++++++
+ internal/gateway/gemini_failed_tool_test.go | 166 +++++++++
+ internal/gateway/ir.go                      |   3 +
+ internal/gateway/routing.go                 |   3 +
+ internal/gateway/search.go                  |   2 +-
+ internal/gateway/upstream.go                |  18 +-
+ 15 files changed, 934 insertions(+), 24 deletions(-)
+ create mode 100644 internal/gateway/gemini_call_failure.go
+ create mode 100644 internal/gateway/gemini_deferred.go
+ create mode 100644 internal/gateway/gemini_deferred_test.go
+ create mode 100644 internal/gateway/gemini_failed_tool_test.go
+
+diff --git a/docs/subsystems/gateway-routing.md b/docs/subsystems/gateway-routing.md
+index 82ae0621a..e00275596 100644
+--- a/docs/subsystems/gateway-routing.md
++++ b/docs/subsystems/gateway-routing.md
+@@ -3149,6 +3149,61 @@ classifier) get none. `TestModelSystemAfterTheAgentsPrompt`,
+ `TestModelSystemReachesAPluginsModel` in
+ [`model_system_test.go`](../../internal/gateway/model_system_test.go).
+ 
++## Deferred tools on Gemini
++
++An Anthropic client using tool search signals deferred tools even before one is
++loaded (`Request.DeferredTools`, including `DeferredToolPlaceholder`). Gemini
++translations keep one fixed `magpie_deferred_tool` declaration alongside the
++ordinary tools (`geminiDeferredRequest`). A loaded tool's definition is appended
++to the tool result that names it (`Part.Loads`), not to the top-level declarations.
++Thus successive loads preserve the previous request prefix. No system prompt or
++old user instruction is rewritten to advertise new tools.
++
++The decoder checks a bridge call's name against the current request's declared,
++loaded tools before returning the original tool name and arguments. The
++arguments are not checked against the tool's schema: like a native call's, they
++go to the client as written, so a mismatch comes back to the model as the
++client's tool error and it can call again, instead of ending the turn
++(`TestGeminiDeferredLeavesArgumentsToTheClient`). The call ID marks
++that it came through the bridge; replay reconstructs the bridge call and its
++result while retaining the thought signature. IDs, images and tool-error results
++otherwise follow the existing Gemini translation. Only request-local maps are
++used. A forced deferred tool keeps its name constraint; a collision with the
++bridge's reserved name is refused.
++
++Calls made natively before bridge activation stay native. When compaction removes
++a tool's load record, its existing declaration is retained natively, so the tool
++remains callable; the compacted prompt already has a new prefix. Ordinary clients,
++other wire protocols and Claude models served through Gemini retain their
++existing behavior. Genuine schema changes or removed tools can still invalidate
++cache; this is not a cache-hit guarantee. The Gemini API, Vertex and Code Assist
++translation paths share this behavior. `TestGeminiDeferredPrefix`,
++`TestGeminiDeferredDecodeAndSignature` and the related compatibility/validation
++tests cover these contracts.
++
++## Failed Gemini tool generation
++
++Gemini can end a successful HTTP stream with `MALFORMED_FUNCTION_CALL` or
++`UNEXPECTED_TOOL_CALL` after generating progress text. These are failed tool
++generations, not successful stops. `codeAssistDecoder` emits an error carrying
++the finish reason and retains the reported usage; it does not forward calls
++from the rejected candidate. Translated streaming clients receive a non-retryable `invalid_request_error`
++rather than a normal completion; non-streaming clients receive HTTP 400 even
++when progress text preceded it. This generation failure neither rests an account
++nor retries the same request on another account. The original finish reason is
++kept in the request ledger. Only a bounded tool name is extracted from Google's
++`finishMessage`: the raw rejected arguments and text-call markers are never
++included in the error. With no preceding content, Anthropic streams first
++show a clearly labelled gateway diagnostic and then the error: Claude Code would
++otherwise resend the empty failed stream as a non-streaming compatibility probe.
++No successful stop or synthetic tool call is generated. Content after failure is
++ignored while trailing usage is still counted. Ordinary `STOP`, tool
++calls, output limits and safety refusals retain their existing behavior.
++`TestGeminiFailedToolDecoder` and `TestGeminiFailedToolToAnthropic` exercise
++both the decoder and the Claude Code-facing path. This reports the failure;
++it neither repairs the model's generated arguments nor executes or replays
++those tools.
++
+ ## Verification
+ 
+ ```sh
+diff --git a/internal/gateway/anthropic.go b/internal/gateway/anthropic.go
+index 72bc6743b..8bdd48981 100644
+--- a/internal/gateway/anthropic.go
++++ b/internal/gateway/anthropic.go
+@@ -275,6 +275,7 @@ func readAdvised(body []byte, clientMarks, facts, advised bool) (*Request, error
+ 		r.Messages = append(r.Messages, msg)
+ 	}
+ 	for _, t := range a.Tools {
++		r.DeferredTools = r.DeferredTools || t.DeferLoading
+ 		if t.Type != "" && t.Type != "custom" && len(t.InputSchema) == 0 {
+ 			// server-side tools mean nothing elsewhere; web search is
+ 			// noted for those that can search by themselves
+@@ -1835,8 +1836,17 @@ func (e *anthropicEncoder) event(ev Event) {
+ 		e.w.event("content_block_stop", map[string]any{"type": "content_block_stop", "index": e.index})
+ 		e.index++
+ 	case KError:
++		if geminiCallFailureCode(ev.Code) && !saidAnything(e.col.res.Parts) {
++			// Claude Code otherwise replays an empty failed stream as a
++			// non-streaming compatibility probe. Show the terminal gateway
++			// diagnostic first, without inventing a tool call or a success.
++			e.event(Event{Kind: KText, Text: "Gateway error: " + ev.Text + "\n"})
++		}
+ 		e.close()
+ 		typ := "api_error"
++		if geminiCallFailureCode(ev.Code) {
++			typ = "invalid_request_error"
++		}
+ 		if ev.Status == http.StatusRequestEntityTooLarge && ev.Code != "context_length_exceeded" {
+ 			// the same type a 413 JSON body carries (writeErrorSaid)
+ 			typ = "request_too_large"
+diff --git a/internal/gateway/codeassist.go b/internal/gateway/codeassist.go
+index a4b20c01f..831c0d35e 100644
+--- a/internal/gateway/codeassist.go
++++ b/internal/gateway/codeassist.go
+@@ -1424,9 +1424,11 @@ func distinctNames(vs []any) []any {
+ // codeAssistDecoder reads Code Assist's stream: Gemini chunks, each wrapped
+ // in {response}.
+ type codeAssistDecoder struct {
+-	started bool
+-	tools   bool
+-	stopped bool
++	deferred *geminiDeferred
++	started  bool
++	tools    bool
++	stopped  bool
++	failed   bool // terminal for content, but trailing usage must still be read
+ 	// searched is a googleSearch's grounding told already: it is given
+ 	// again with each chunk after it
+ 	searched bool
+@@ -1445,13 +1447,21 @@ func (d *codeAssistDecoder) decode(data string, emit func(Event)) error {
+ 		geminiChunk
+ 	}
+ 	if err := json.Unmarshal([]byte(data), &ch); err != nil {
++		if d.failed {
++			return nil
++		}
+ 		// an error in a shape of its own is still the reply's end (#1933)
+ 		if e, ok := carriedError(data); ok {
++			d.stopped, d.failed = true, true
+ 			emit(e)
+ 		}
+ 		return nil
+ 	}
+ 	if ch.Error != nil {
++		if d.failed {
++			return nil
++		}
++		d.stopped, d.failed = true, true
+ 		// at the status it names, Google's code: a 400 INVALID_ARGUMENT
+ 		// is the request's fault, never asked again nor the account's
+ 		// (sse_bare.go)
+@@ -1479,7 +1489,32 @@ func (d *codeAssistDecoder) decode(data string, emit func(Event)) error {
+ 		emit(Event{Kind: KStart, MsgID: c.ResponseID, Model: c.ModelVersion, Usage: prompt})
+ 	}
+ 	for _, cand := range c.Candidates {
+-		for _, p := range cand.Content.Parts {
++		if d.failed {
++			continue
++		}
++		// A MALFORMED_FUNCTION_CALL / UNEXPECTED_TOOL_CALL finish is a failed
++		// generation, not a successfully completed turn (#6288): the
++		// candidate's own parts are the rejected generation and are not
++		// forwarded. A call whole in finishMessage is still made below, where
++		// an unparsable one becomes an explicit failure instead of a stop.
++		rejectedCall := cand.FinishReason == "MALFORMED_FUNCTION_CALL" || cand.FinishReason == "UNEXPECTED_TOOL_CALL"
++		parts := cand.Content.Parts
++		if rejectedCall {
++			parts = nil
++		}
++		if d.deferred != nil {
++			var err error
++			parts, err = d.deferred.parts(parts)
++			if err != nil {
++				d.stopped, d.failed = true, true
++				emit(Event{Kind: KError, Status: http.StatusBadRequest, Code: "invalid_deferred_tool_call", Text: "Gemini deferred tool call rejected: " + err.Error()})
++				continue
++			}
++		}
++		for _, p := range parts {
++			if d.failed {
++				break
++			}
+ 			switch {
+ 			case p.FunctionCall != nil:
+ 				d.flush(emit)
+@@ -1512,6 +1547,9 @@ func (d *codeAssistDecoder) decode(data string, emit func(Event)) error {
+ 				emit(Event{Kind: KImage, Name: p.InlineData.MimeType, Text: p.InlineData.Data})
+ 			case p.Text != "" || p.Signature != "":
+ 				d.text(p.Text, emit)
++				if d.failed {
++					break
++				}
+ 				if p.Signature != "" {
+ 					// Gemini's signature on its text, after it (#1445)
+ 					d.flush(emit)
+@@ -1519,6 +1557,9 @@ func (d *codeAssistDecoder) decode(data string, emit func(Event)) error {
+ 				}
+ 			}
+ 		}
++		if d.failed {
++			continue
++		}
+ 		if g := cand.GroundingMetadata; g != nil && !d.searched {
+ 			// what googleSearch found: the pages, by their site's name and
+ 			// an address of Google's that leads to them
+@@ -1549,13 +1590,23 @@ func (d *codeAssistDecoder) decode(data string, emit func(Event)) error {
+ 						emit(Event{Kind: KToolArgs, Text: string(args)})
+ 					}
+ 				}
++				if !d.tools {
++					// nothing whole came out of finishMessage: the turn made no
++					// call and Google rejected its generation — say so, never
++					// read it as a normal end (#6288)
++					d.stopped, d.failed = true, true
++					emit(Event{Kind: KError, Status: http.StatusBadRequest, Code: strings.ToLower(cand.FinishReason),
++						Text: geminiCallFailureText(cand.FinishReason, cand.FinishMessage)})
++				}
+ 			}
+-			d.stopped = true
+-			stop := stopFromGemini(cand.FinishReason)
+-			if d.tools && stop == "stop" {
+-				stop = "tool"
++			if !d.failed {
++				d.stopped = true
++				stop := stopFromGemini(cand.FinishReason)
++				if d.tools && stop == "stop" {
++					stop = "tool"
++				}
++				emit(Event{Kind: KStop, Stop: stop})
+ 			}
+-			emit(Event{Kind: KStop, Stop: stop})
+ 		}
+ 	}
+ 	if d.stopped && d.usage != nil {
+@@ -1639,8 +1690,19 @@ func (d *codeAssistDecoder) text(s string, emit func(Event)) {
+ 			say(s[:len(callMarker)])
+ 			s = s[len(callMarker):]
+ 		default:
++			id := "call_" + newID()
++			if name == geminiDeferredTool && d.deferred != nil {
++				var err error
++				name, args, err = d.deferred.decode(args)
++				if err != nil {
++					d.stopped, d.failed = true, true
++					emit(Event{Kind: KError, Status: http.StatusBadRequest, Code: "invalid_deferred_tool_call", Text: "Gemini deferred tool call rejected: " + err.Error()})
++					return
++				}
++				id += geminiDeferredID
++			}
+ 			d.tools = true
+-			emit(Event{Kind: KToolStart, ID: "call_" + newID(), Name: name})
++			emit(Event{Kind: KToolStart, ID: id, Name: name})
+ 			emit(Event{Kind: KToolArgs, Text: string(args)})
+ 			s = s[n:]
+ 		}
+@@ -1841,6 +1903,9 @@ func stopFromGemini(s string) string {
+ 	case "STOP", "FINISH_REASON_UNSPECIFIED", "OTHER":
+ 		return "stop"
+ 	case "MALFORMED_FUNCTION_CALL", "UNEXPECTED_TOOL_CALL":
++		// a rejected generation reads as a stop only where a call was salvaged
++		// out of finishMessage (made "tool" by the caller); the unparsable rest
++		// fails explicitly before this is asked (#6288)
+ 		return "stop"
+ 	}
+ 	// SAFETY, RECITATION, BLOCKLIST, PROHIBITED_CONTENT, SPII, ...
+diff --git a/internal/gateway/continuation.go b/internal/gateway/continuation.go
+index a9d55e113..c48904ea4 100644
+--- a/internal/gateway/continuation.go
++++ b/internal/gateway/continuation.go
+@@ -528,7 +528,7 @@ func (s *Server) streamTranslated(w http.ResponseWriter, r *http.Request, p prov
+ 				return
+ 			}
+ 			failed, failedCode, failedStatus = ev.Text, ev.Code, ev.Status
+-			if ev.Code == "" {
++			if ev.Code == "" || geminiCallFailureCode(ev.Code) {
+ 				// a refusal's status is magpie's, told by its code
+ 				errNamed = ev.Status
+ 			}
+@@ -645,7 +645,7 @@ func (s *Server) streamTranslated(w http.ResponseWriter, r *http.Request, p prov
+ 					return writeError(w, from, 502, failed), failed
+ 				}
+ 			} else {
+-				dec := carryReasoning(decoderFor(p, actual, request.Tools), from, actual)
++				dec := carryReasoning(decoderFor(p, actual, request), from, actual)
+ 				attemptSee := see
+ 				if names := textCallNames(request.Tools); names != nil {
+ 					t := &textCallSee{names: names, see: see}
+diff --git a/internal/gateway/fallback.go b/internal/gateway/fallback.go
+index baf108f46..ffa13b714 100644
+--- a/internal/gateway/fallback.go
++++ b/internal/gateway/fallback.go
+@@ -2037,6 +2037,9 @@ func elsewhereWeighed(left []candidate, w []Weighed, c candidate) ([]candidate,
+ // that failed this way: the vendor was busy, out of quota or failing, or
+ // this key or provider can't serve it — not the request itself at fault.
+ func retryable(status int, body []byte) bool {
++	if geminiCallFailureTextOnly(string(wordsOf(body))) {
++		return false
++	}
+ 	raw := body
+ 	// the words are matched decoded, too (#1669)
+ 	body = wordsOf(body)
+@@ -4743,6 +4746,9 @@ func magpieSaid(msg string) bool {
+ // streamStatus is the status an error in a stream stands for, as a vendor
+ // would have answered it before streaming.
+ func streamStatus(msg string) int {
++	if geminiCallFailureTextOnly(msg) {
++		return http.StatusBadRequest
++	}
+ 	l := strings.ToLower(msg)
+ 	switch {
+ 	case tooLong(http.StatusBadRequest, msg):
+diff --git a/internal/gateway/gateway.go b/internal/gateway/gateway.go
+index dcc038e81..970159c8f 100644
+--- a/internal/gateway/gateway.go
++++ b/internal/gateway/gateway.go
+@@ -8274,7 +8274,11 @@ func (s *Server) forwardTranslated(ctx context.Context, p provider.Provider, to
+ 			// the envelope is named in there, where the id it carries is
+ 			// known: on Antigravity that is the variant the effort picked,
+ 			// not the model magpie knows
+-			body = codeAssistBody(p, req, model, wires)
++			bridgeRequest, err := geminiDeferredRequest(req, p.OwnModelID(model))
++			if err != nil {
++				return nil, to, err
++			}
++			body = codeAssistBody(p, bridgeRequest, model, wires)
+ 		} else if wire != model {
+ 			// the vendor's own name for the model goes in the model field
+ 			// and nowhere else: everything above shaped the request from
+@@ -9241,7 +9245,7 @@ func (s *Server) translate(w http.ResponseWriter, r *http.Request, p provider.Pr
+ 		}
+ 		return writeVendorErrorFrom(w, from, actual, p, res, msg, b), msg
+ 	}
+-	dec := carryReasoning(decoderFor(p, actual, request.Tools), from, actual)
++	dec := carryReasoning(decoderFor(p, actual, request), from, actual)
+ 	rd, sse := eventStream(res)
+ 	if !sse {
+ 		// the provider ignored stream:true; read the whole reply as one
+@@ -9274,8 +9278,9 @@ func (s *Server) translate(w http.ResponseWriter, r *http.Request, p provider.Pr
+ 	err = readSSE(rd, func(_, data string) error {
+ 		tail.see([]byte(data))
+ 		found.see(actual, []byte(data))
+-		u.add(Usage{Upstream: upstreamOf([]byte(data)), Tier: upstreamTier([]byte(data)), searches: found.count()})
+-		ended = ended || replyEnds(actual, data, upstreamStop([]byte(data)))
++		st := upstreamStop([]byte(data))
++		u.add(Usage{Upstream: upstreamOf([]byte(data)), Stop: st, Tier: upstreamTier([]byte(data)), searches: found.count()})
++		ended = ended || replyEnds(actual, data, st)
+ 		return dec(data, see)
+ 	})
+ 	if fin := tail.finish(); err == nil && !ended && actual == provider.Chat && fin != "" && saysItsEnd(p, actual, model) {
+@@ -9301,7 +9306,14 @@ func (s *Server) translate(w http.ResponseWriter, r *http.Request, p provider.Pr
+ 		s.markThinkingNeeded(p, actual, model, provider.UpstreamNameIn(wiresOf(r.Context()), p.ID, model))
+ 		return s.translate(w, r, p, from, to, model, body, u)
+ 	}
+-	if col.err != "" && (!saidAnything(col.res.Parts) || col.errSaid != nil) {
++	// Progress text is not a usable partial answer when the tool generation
++	// that should follow it failed; a JSON client must see the failure too.
++	failedTool := geminiCallFailureCode(col.errCode)
++	if col.err != "" && (!saidAnything(col.res.Parts) || col.errSaid != nil || failedTool) {
++		if failedTool {
++			u.add(col.res.Usage)
++			u.add(Usage{Served: col.res.Model})
++		}
+ 		said := col.err
+ 		if markAntigravityRefused(w, p, request.System, said) {
+ 			said += " — " + antigravityHint(request.System)
+@@ -9623,8 +9635,12 @@ func build(proto provider.Protocol, r *Request, model, host string, rejectTemp b
+ //
+ // Each Gemini thought signature the reply gives is noted as p's
+ // (signersNoted), so it goes back to p alone (ownSignatures).
+-func decoderFor(p provider.Provider, proto provider.Protocol, tools []Tool) func(data string, emit func(Event)) error {
+-	return signersNoted(decoderOf(p, proto, tools), p.ID)
++func decoderFor(p provider.Provider, proto provider.Protocol, request *Request) func(data string, emit func(Event)) error {
++	if proto == provider.Gemini || proto == provider.CodeAssist {
++		d := &codeAssistDecoder{deferred: deferredForGemini(request)}
++		return signersNoted(d.decode, p.ID)
++	}
++	return signersNoted(decoderOf(p, proto, request.Tools), p.ID)
+ }
+ 
+ func decoderOf(p provider.Provider, proto provider.Protocol, tools []Tool) func(data string, emit func(Event)) error {
+diff --git a/internal/gateway/gemini.go b/internal/gateway/gemini.go
+index ac5067dd2..2a106df38 100644
+--- a/internal/gateway/gemini.go
++++ b/internal/gateway/gemini.go
+@@ -140,6 +140,11 @@ func buildGemini(r *Request, model string) ([]byte, error) {
+ // buildCodeAssistSent builds for agent, unwrapped, with no stream field
+ // and a systemInstruction with no role.
+ func geminiRequest(r *Request, model, agent string) (map[string]any, error) {
++	var err error
++	r, err = geminiDeferredRequest(r, model)
++	if err != nil {
++		return nil, err
++	}
+ 	var wrap struct {
+ 		Request map[string]any `json:"request"`
+ 	}
+diff --git a/internal/gateway/gemini_call_failure.go b/internal/gateway/gemini_call_failure.go
+new file mode 100644
+index 000000000..cb38d59ac
+--- /dev/null
++++ b/internal/gateway/gemini_call_failure.go
+@@ -0,0 +1,30 @@
++package gateway
++
++import (
++	"github.com/yetone/magpie/internal/lazyre"
++	"strings"
++)
++
++const geminiCallFailurePrefix = "Gemini could not complete the tool call ("
++
++func geminiCallFailureCode(code string) bool {
++	return code == "malformed_function_call" || code == "unexpected_tool_call" || code == "invalid_deferred_tool_call"
++}
++
++// Match only our generated diagnostic, not arbitrary tool output or vendor text.
++func geminiCallFailureTextOnly(text string) bool {
++	return strings.Contains(text, "Gemini deferred tool call rejected: ") || strings.Contains(text, geminiCallFailurePrefix+"MALFORMED_FUNCTION_CALL)") ||
++		strings.Contains(text, geminiCallFailurePrefix+"UNEXPECTED_TOOL_CALL)")
++}
++
++var geminiFailedCallName = lazyre.New(`call:default_api:([A-Za-z_][A-Za-z0-9_.-]{0,127})\{`)
++
++// Google's diagnostic can contain the entire rejected call, including secrets
++// and text-call markers. Expose only its bounded tool name, never its arguments.
++func geminiCallFailureText(reason, detail string) string {
++	text := geminiCallFailurePrefix + reason + ")"
++	if m := geminiFailedCallName.FindStringSubmatch(detail); len(m) == 2 {
++		text += "; tool " + m[1]
++	}
++	return text + ". Use smaller tool arguments or another model."
++}
+diff --git a/internal/gateway/gemini_deferred.go b/internal/gateway/gemini_deferred.go
+new file mode 100644
+index 000000000..02f17aa8a
+--- /dev/null
++++ b/internal/gateway/gemini_deferred.go
+@@ -0,0 +1,188 @@
++package gateway
++
++import (
++	"bytes"
++	"encoding/json"
++	"fmt"
++	"slices"
++	"strings"
++)
++
++const geminiDeferredTool = "magpie_deferred_tool"
++const geminiDeferredID = "__gdb1"
++
++// geminiDeferred keeps only request-local capabilities. A name in a tool result
++// is not permission to call it unless the current request also supplies it.
++type geminiDeferred struct {
++	tools  map[string]Tool
++	loaded map[string]bool
++	native map[string]bool
++	forced string
++}
++
++func deferredForGemini(r *Request) *geminiDeferred {
++	if slices.ContainsFunc(r.Tools, func(t Tool) bool { return t.Name == geminiDeferredTool }) {
++		return nil
++	}
++	marked := hasGeminiDeferredHistory(r)
++	if !marked && (!r.DeferredTools || !slices.ContainsFunc(r.Tools, func(t Tool) bool { return t.Name == "ToolSearch" })) {
++		return nil
++	}
++	g := &geminiDeferred{tools: map[string]Tool{}, loaded: map[string]bool{}, native: map[string]bool{}}
++	for _, t := range r.Tools {
++		if t.Deferred {
++			g.tools[t.Name] = t
++		}
++	}
++	for _, m := range r.Messages {
++		for _, p := range m.Parts {
++			for _, n := range p.Loads {
++				g.loaded[n] = true
++			}
++			if p.Kind == ToolCall && !strings.HasSuffix(p.ID, geminiDeferredID) {
++				g.native[p.Name] = true // preserve calls made before the bridge was enabled
++			}
++		}
++	}
++	// Compaction can remove the load result. Preserve those declarations
++	// natively rather than making an already available tool unusable.
++	for name := range g.tools {
++		if !g.loaded[name] {
++			g.native[name] = true
++		}
++	}
++	if n, ok := strings.CutPrefix(r.ToolChoice, "name:"); ok {
++		if _, deferred := g.tools[n]; deferred && !g.native[n] {
++			g.forced = n
++		}
++	}
++	return g
++}
++
++func (g *geminiDeferred) declaration() Tool {
++	name := map[string]any{"type": "string"}
++	if g.forced != "" {
++		name["enum"] = []string{g.forced}
++	}
++	schema, _ := marshalPlain(map[string]any{"type": "object", "properties": map[string]any{
++		"name": name, "arguments": map[string]any{"type": "object"},
++	}, "required": []string{"name", "arguments"}})
++	return Tool{Name: geminiDeferredTool, Description: "Call a deferred tool loaded by ToolSearch. Use its exact name and an arguments object matching the schema in the search result. Do not use this for tools that are already declared directly.", Schema: schema}
++}
++
++// geminiDeferredRequest leaves declarations and the old conversation prefix
++// unchanged as tools load. Only the result that loaded a tool gains its schema.
++func geminiDeferredRequest(r *Request, model string) (*Request, error) {
++	if strings.Contains(strings.ToLower(model), "claude") {
++		return r, nil
++	}
++	if slices.ContainsFunc(r.Tools, func(t Tool) bool { return t.Name == geminiDeferredTool }) && (r.DeferredTools || hasGeminiDeferredHistory(r)) {
++		return nil, fmt.Errorf("tool name %q is reserved for Gemini deferred tool translation", geminiDeferredTool)
++	}
++	g := deferredForGemini(r)
++	if g == nil {
++		return r, nil
++	}
++	out := *r
++	out.Tools = make([]Tool, 0, len(r.Tools)+1)
++	for _, t := range r.Tools {
++		if !t.Deferred || g.native[t.Name] {
++			out.Tools = append(out.Tools, t)
++		}
++	}
++	out.Tools = append(out.Tools, g.declaration())
++	if g.forced != "" {
++		out.ToolChoice = "name:" + geminiDeferredTool
++	}
++	out.Messages = slices.Clone(r.Messages)
++	for i, m := range r.Messages {
++		out.Messages[i].Parts = slices.Clone(m.Parts)
++		for j, p := range m.Parts {
++			if p.Kind == ToolCall && strings.HasSuffix(p.ID, geminiDeferredID) {
++				args, err := marshalPlain(map[string]any{"name": p.Name, "arguments": json.RawMessage(argsOf(p))})
++				if err != nil {
++					return nil, fmt.Errorf("invalid deferred tool history: %w", err)
++				}
++				p.Name, p.Args = geminiDeferredTool, args
++			}
++			if p.Kind == ToolResult {
++				for _, name := range p.Loads {
++					t, ok := g.tools[name]
++					if !ok || g.native[name] {
++						continue
++					}
++					schema, err := marshalPlain(map[string]any{"name": t.Name, "description": t.Description, "input_schema": t.Schema})
++					if err != nil {
++						return nil, fmt.Errorf("invalid schema for deferred tool %q: %w", name, err)
++					}
++					p.Text += "\nCall this tool through " + geminiDeferredTool + " with arguments matching this definition: " + string(schema)
++				}
++			}
++			out.Messages[i].Parts[j] = p
++		}
++	}
++	return &out, nil
++}
++
++// decode restores the deferred tool's own name and arguments. Only the name is
++// judged here: a tool not loaded or not allowed by this request is refused.
++// Arguments that miss the tool's schema go to the client as written, as a
++// native call's would, so the client's validation error reaches the model and
++// it can call again; refusing them here would end the whole turn.
++func (g *geminiDeferred) decode(args json.RawMessage) (string, json.RawMessage, error) {
++	var call struct {
++		Name      string          `json:"name"`
++		Arguments json.RawMessage `json:"arguments"`
++	}
++	if err := json.Unmarshal(args, &call); err != nil {
++		return "", nil, fmt.Errorf("invalid deferred tool envelope")
++	}
++	_, ok := g.tools[call.Name]
++	if !ok || !g.loaded[call.Name] || g.native[call.Name] || (g.forced != "" && g.forced != call.Name) {
++		return "", nil, fmt.Errorf("deferred tool is not loaded or allowed by this request")
++	}
++	raw := bytes.TrimSpace(call.Arguments)
++	if len(raw) == 0 || raw[0] != '{' {
++		return "", nil, fmt.Errorf("deferred tool arguments must be an object")
++	}
++	return call.Name, call.Arguments, nil
++}
++
++// Validate all bridge calls in a chunk before exposing any of that chunk's calls.
++func (g *geminiDeferred) parts(parts []gPart) ([]gPart, error) {
++	var out []gPart
++	for i, p := range parts {
++		if p.FunctionCall == nil || toolOfCall(p.FunctionCall.Name) != geminiDeferredTool {
++			continue
++		}
++		call := *p.FunctionCall
++		var err error
++		call.Name, call.Args, err = g.decode(call.Args)
++		if err != nil {
++			return nil, err
++		}
++		if call.ID == "" {
++			call.ID = "call_" + newID()
++		}
++		call.ID += geminiDeferredID
++		if out == nil {
++			out = slices.Clone(parts)
++		}
++		out[i].FunctionCall = &call
++	}
++	if out == nil {
++		return parts, nil
++	}
++	return out, nil
++}
++
++func hasGeminiDeferredHistory(r *Request) bool {
++	for _, m := range r.Messages {
++		for _, p := range m.Parts {
++			if p.Kind == ToolCall && strings.HasSuffix(p.ID, geminiDeferredID) {
++				return true
++			}
++		}
++	}
++	return false
++}
+diff --git a/internal/gateway/gemini_deferred_test.go b/internal/gateway/gemini_deferred_test.go
+new file mode 100644
+index 000000000..26fbf84b0
+--- /dev/null
++++ b/internal/gateway/gemini_deferred_test.go
+@@ -0,0 +1,353 @@
++package gateway
++
++import (
++	"encoding/json"
++	"fmt"
++	"reflect"
++	"strings"
++	"testing"
++
++	"github.com/tidwall/gjson"
++	"github.com/yetone/magpie/internal/provider"
++)
++
++func deferredRequest(t *testing.T, body string) *Request {
++	t.Helper()
++	r, err := parseRequest(provider.Anthropic, []byte(body), false, false)
++	if err != nil {
++		t.Fatal(err)
++	}
++	return r
++}
++
++func TestGeminiDeferredPrefix(t *testing.T) {
++	markedA := strings.ReplaceAll(tsCallA, "toolu_02", "toolu_02"+geminiDeferredID)
++	bodies := []string{
++		tsRequest([]string{tsTools0, tsPlaceholder}, tsTurn1),
++		tsRequest([]string{tsTools0, tsReadA, tsPlaceholder}, tsTurn1, tsSearchA),
++		tsRequest([]string{tsTools0, tsReadA, tsReadB, tsPlaceholder}, tsTurn1, tsSearchA, markedA, tsSearchB),
++	}
++	var prev gjson.Result
++	for i, body := range bodies {
++		r := deferredRequest(t, body)
++		before, _ := json.Marshal(r)
++		b, err := buildGemini(r, "gemini-4-carbon")
++		if err != nil {
++			t.Fatal(err)
++		}
++		after, _ := json.Marshal(r)
++		if string(before) != string(after) {
++			t.Fatal("builder mutated its input")
++		}
++		v := gjson.ParseBytes(b)
++		if i > 0 {
++			if v.Get("tools").Raw != prev.Get("tools").Raw || v.Get("systemInstruction").Raw != prev.Get("systemInstruction").Raw {
++				t.Fatal("loaded tool changed declarations or system")
++			}
++			old, now := prev.Get("contents").Array(), v.Get("contents").Array()
++			for j := range old {
++				if old[j].Raw != now[j].Raw {
++					t.Fatalf("request %d changed old content %d", i, j)
++				}
++			}
++		}
++		if got := len(v.Get("tools.0.functionDeclarations").Array()); got != 3 {
++			t.Fatalf("declarations=%d, want Bash,ToolSearch,bridge", got)
++		}
++		if i == 2 {
++			if !strings.Contains(v.Get("contents").Raw, "Read B") {
++				t.Fatal("loaded schema absent")
++			}
++			var call, result bool
++			for _, c := range v.Get("contents").Array() {
++				for _, p := range c.Get("parts").Array() {
++					if p.Get("functionCall.name").String() == geminiDeferredTool {
++						call = p.Get("functionCall.args.name").String() == "mcp__probe__read_a" && p.Get("functionCall.args.arguments.path").String() == "a"
++					}
++					if p.Get("functionResponse.name").String() == geminiDeferredTool {
++						result = true
++					}
++				}
++			}
++			if !call || !result {
++				t.Fatal("marked history wasn't reconstructed")
++			}
++		}
++		prev = v
++	}
++}
++
++func TestGeminiDeferredDecodeAndSignature(t *testing.T) {
++	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
++	body := tsRequest([]string{tsTools0, tsReadA, tsPlaceholder}, tsTurn1, tsSearchA)
++	r := deferredRequest(t, body)
++	d := &codeAssistDecoder{deferred: deferredForGemini(r)}
++	var evs []Event
++	chunk := `{"candidates":[{"content":{"parts":[{"functionCall":{"id":"call-a","name":"magpie_deferred_tool","args":{"name":"mcp__probe__read_a","arguments":{"path":"a"}}},"thoughtSignature":"signed-a"}]},"finishReason":"STOP"}]}`
++	if err := d.decode(chunk, func(e Event) { evs = append(evs, e) }); err != nil {
++		t.Fatal(err)
++	}
++	var call Event
++	var args string
++	for _, e := range evs {
++		if e.Kind == KError {
++			t.Fatalf("unexpected failure: %+v", e)
++		}
++		if e.Kind == KToolStart {
++			call = e
++		}
++		if e.Kind == KToolArgs {
++			args = e.Text
++		}
++	}
++	id, sig := unsignedID(call.ID)
++	if call.Name != "mcp__probe__read_a" || id != "call-a"+geminiDeferredID || sig != "signed-a" || args != `{"path":"a"}` {
++		t.Fatalf("wrong restored call: %+v %s", call, args)
++	}
++	a, _ := json.Marshal(map[string]any{"role": "assistant", "content": []any{map[string]any{"type": "tool_use", "id": call.ID, "name": call.Name, "input": json.RawMessage(args)}}})
++	b, _ := json.Marshal(map[string]any{"role": "user", "content": []any{map[string]any{"type": "tool_result", "tool_use_id": call.ID, "content": "OK"}}})
++	next := deferredRequest(t, tsRequest([]string{tsTools0, tsReadA, tsPlaceholder}, tsTurn1, tsSearchA, string(a), string(b)))
++	out, err := buildGemini(next, "gemini-4-carbon")
++	if err != nil {
++		t.Fatal(err)
++	}
++	var seen bool
++	for _, c := range gjson.GetBytes(out, "contents").Array() {
++		for _, p := range c.Get("parts").Array() {
++			if p.Get("functionCall.name").String() == geminiDeferredTool {
++				seen = true
++				if p.Get("thoughtSignature").String() != "signed-a" || p.Get("functionCall.args.name").String() != call.Name {
++					t.Fatal("signature or call changed on replay")
++				}
++			}
++		}
++	}
++	if !seen {
++		t.Fatal("no bridge call on replay")
++	}
++}
++
++func TestGeminiDeferredRejectsInvalidCalls(t *testing.T) {
++	r := deferredRequest(t, tsRequest([]string{tsTools0, tsReadA, tsReadB, tsPlaceholder}, tsTurn1, tsSearchA))
++	for _, args := range []string{
++		`{"name":"missing","arguments":{}}`,
++		`{"name":"mcp__probe__read_b","arguments":{"path":"b"}}`,
++		`{"name":"mcp__probe__read_a","arguments":null}`,
++		`{"name":"mcp__probe__read_a","arguments":[]}`,
++	} {
++		t.Run(args, func(t *testing.T) {
++			d := &codeAssistDecoder{deferred: deferredForGemini(r)}
++			var events []Event
++			chunk := fmt.Sprintf(`{"candidates":[{"content":{"parts":[{"functionCall":{"name":"magpie_deferred_tool","args":%s}}]},"finishReason":"STOP"}]}`, args)
++			d.decode(chunk, func(e Event) { events = append(events, e) })
++			found := false
++			for _, e := range events {
++				if e.Kind == KToolStart || e.Kind == KStop {
++					t.Fatal("invalid call escaped validation")
++				}
++				if e.Kind == KError {
++					found = true
++				}
++			}
++			if !found {
++				t.Fatal("missing validation error")
++			}
++		})
++	}
++}
++
++// Arguments that miss a loaded tool's schema reach the client as a call, as a
++// native call's would: the client's validation error goes back to the model,
++// which can call again. Refusing them in the gateway ended the turn instead.
++func TestGeminiDeferredLeavesArgumentsToTheClient(t *testing.T) {
++	r := deferredRequest(t, tsRequest([]string{tsTools0, tsReadA, tsReadB, tsPlaceholder}, tsTurn1, tsSearchA))
++	d := &codeAssistDecoder{deferred: deferredForGemini(r)}
++	var events []Event
++	chunk := `{"candidates":[{"content":{"parts":[{"functionCall":{"name":"magpie_deferred_tool","args":{"name":"mcp__probe__read_a","arguments":{"path":3}}}}]},"finishReason":"STOP"}]}`
++	if err := d.decode(chunk, func(e Event) { events = append(events, e) }); err != nil {
++		t.Fatal(err)
++	}
++	var name, args string
++	for _, e := range events {
++		switch e.Kind {
++		case KError:
++			t.Fatalf("a schema mismatch ended the turn: %+v", e)
++		case KToolStart:
++			name = e.Name
++		case KToolArgs:
++			args = e.Text
++		}
++	}
++	if name != "mcp__probe__read_a" || args != `{"path":3}` {
++		t.Fatalf("call not handed on as written: %q %s", name, args)
++	}
++}
++
++func TestGeminiDeferredCompatibility(t *testing.T) {
++	r := deferredRequest(t, tsRequest([]string{tsTools0, tsReadA, tsPlaceholder}, tsTurn1, tsSearchA, tsCallA))
++	built, err := geminiDeferredRequest(r, "gemini-4-carbon")
++	if err != nil {
++		t.Fatal(err)
++	}
++	raw, _ := json.Marshal(built.Tools)
++	if !strings.Contains(string(raw), "mcp__probe__read_a") {
++		t.Fatal("pre-bridge native tool removed")
++	}
++	claude, err := geminiDeferredRequest(r, "claude-sonnet-4-5")
++	if err != nil || !reflect.DeepEqual(claude, r) {
++		t.Fatal("Claude route changed")
++	}
++	r.DeferredTools = false
++	same, err := geminiDeferredRequest(r, "gemini-4-carbon")
++	if err != nil || same != r {
++		t.Fatal("ordinary request changed")
++	}
++	r.DeferredTools = true
++	r.Tools = append(r.Tools, Tool{Name: geminiDeferredTool})
++	if _, err := geminiDeferredRequest(r, "gemini-4-carbon"); err == nil {
++		t.Fatal("reserved-name collision accepted")
++	}
++}
++
++func TestGeminiDeferredTextCall(t *testing.T) {
++	r := deferredRequest(t, tsRequest([]string{tsTools0, tsReadA, tsPlaceholder}, tsTurn1, tsSearchA))
++	for _, valid := range []bool{true, false} {
++		t.Run(fmt.Sprint(valid), func(t *testing.T) {
++			name := "mcp__probe__read_a"
++			if !valid {
++				name = "unavailable"
++			}
++			text := `call:default_api:magpie_deferred_tool{"name":"` + name + `","arguments":{"path":"a"}}`
++			d := &codeAssistDecoder{deferred: deferredForGemini(r)}
++			var events []Event
++			for _, piece := range []string{text[:18], text[18:]} {
++				raw, _ := json.Marshal(map[string]any{"candidates": []any{map[string]any{"content": map[string]any{"parts": []any{map[string]any{"text": piece}}}}}})
++				d.decode(string(raw), func(e Event) { events = append(events, e) })
++			}
++			d.decode(`{"candidates":[{"finishReason":"STOP"}]}`, func(e Event) { events = append(events, e) })
++			calls, errors := 0, 0
++			for _, e := range events {
++				if e.Kind == KError {
++					errors++
++				}
++				if e.Kind == KToolStart {
++					calls++
++					if e.Name != "mcp__probe__read_a" || !strings.HasSuffix(e.ID, geminiDeferredID) {
++						t.Fatalf("text call not restored: %+v", e)
++					}
++				}
++			}
++			if valid && (calls != 1 || errors != 0) || !valid && (calls != 0 || errors != 1) {
++				t.Fatalf("valid=%v calls=%d errors=%d", valid, calls, errors)
++			}
++		})
++	}
++}
++
++func TestGeminiDeferredChoiceAndCompaction(t *testing.T) {
++	r := deferredRequest(t, tsRequest([]string{tsTools0, tsReadA, tsReadB, tsPlaceholder}, tsTurn1, tsSearchA, tsSearchB))
++	r.ToolChoice = "name:mcp__probe__read_a"
++	out, err := buildGemini(r, "gemini-4-carbon")
++	if err != nil {
++		t.Fatal(err)
++	}
++	if got := gjson.GetBytes(out, "toolConfig.functionCallingConfig.allowedFunctionNames.0").String(); got != geminiDeferredTool {
++		t.Fatalf("forced tool lost: %s", got)
++	}
++	if got := gjson.GetBytes(out, "tools.0.functionDeclarations.2.parametersJsonSchema.properties.name.enum.0").String(); got != "mcp__probe__read_a" {
++		t.Fatalf("target constraint lost: %s", got)
++	}
++	if _, _, err := deferredForGemini(r).decode(json.RawMessage(`{"name":"mcp__probe__read_b","arguments":{"path":"b"}}`)); err == nil {
++		t.Fatal("wrong forced target allowed")
++	}
++	r.ToolChoice = "none"
++	out, err = buildGemini(r, "gemini-4-carbon")
++	if err != nil || gjson.GetBytes(out, "tools").Exists() {
++		t.Fatal("none enabled tools")
++	}
++	r = deferredRequest(t, tsRequest([]string{tsTools0, tsReadA, tsPlaceholder}, `{"role":"user","content":"compacted summary"}`))
++	out, err = buildGemini(r, "gemini-4-carbon")
++	if err != nil {
++		t.Fatal(err)
++	}
++	if !strings.Contains(gjson.GetBytes(out, "tools").Raw, `mcp__probe__read_a`) {
++		t.Fatal("compaction lost an available tool")
++	}
++	r = deferredRequest(t, tsRequest([]string{tsReadA, tsPlaceholder}, tsTurn1))
++	same, err := geminiDeferredRequest(r, "gemini-4-carbon")
++	if err != nil || same != r {
++		t.Fatal("request without ToolSearch changed")
++	}
++}
++
++func TestGeminiDeferredMarkedHistoryWithoutSearch(t *testing.T) {
++	marked := strings.ReplaceAll(tsCallA, "toolu_02", "toolu_02"+geminiDeferredID)
++	r := deferredRequest(t, tsRequest([]string{tsReadA}, tsTurn1, marked))
++	r.DeferredTools = false
++	out, err := buildGemini(r, "gemini-4-carbon")
++	if err != nil {
++		t.Fatal(err)
++	}
++	if !strings.Contains(gjson.GetBytes(out, "contents").Raw, `"name":"magpie_deferred_tool"`) {
++		t.Fatal("bridge history lost when search was disabled")
++	}
++	r.Tools = append(r.Tools, Tool{Name: geminiDeferredTool})
++	if _, err := buildGemini(r, "gemini-4-carbon"); err == nil {
++		t.Fatal("history name collision accepted")
++	}
++}
++
++func TestGeminiDeferredParallelValidation(t *testing.T) {
++	r := deferredRequest(t, tsRequest([]string{tsTools0, tsReadA, tsReadB, tsPlaceholder}, tsTurn1, tsSearchA, tsSearchB))
++	for _, valid := range []bool{true, false} {
++		second := "mcp__probe__read_b"
++		if !valid {
++			second = "unavailable"
++		}
++		chunk := fmt.Sprintf(`{"candidates":[{"content":{"parts":[{"functionCall":{"name":"magpie_deferred_tool","args":{"name":"mcp__probe__read_a","arguments":{"path":"a"}}}},{"functionCall":{"name":"magpie_deferred_tool","args":{"name":%q,"arguments":{"path":"b"}}}}]},"finishReason":"STOP"}]}`, second)
++		d := &codeAssistDecoder{deferred: deferredForGemini(r)}
++		calls, errors := 0, 0
++		d.decode(chunk, func(e Event) {
++			if e.Kind == KToolStart {
++				calls++
++			}
++			if e.Kind == KError {
++				errors++
++			}
++		})
++		if valid && (calls != 2 || errors != 0) || !valid && (calls != 0 || errors != 1) {
++			t.Fatalf("valid=%v calls=%d errors=%d", valid, calls, errors)
++		}
++	}
++	g := deferredForGemini(r)
++	tool := g.tools["mcp__probe__read_a"]
++	tool.Schema = json.RawMessage(`{"$ref":"https://example.invalid/schema.json"}`)
++	g.tools[tool.Name] = tool
++	// the gateway fetches nothing and judges no schema: a tool whose schema
++	// points elsewhere stays callable, its arguments the client's to check
++	if _, _, err := g.decode(json.RawMessage(`{"name":"mcp__probe__read_a","arguments":{"path":"a"}}`)); err != nil {
++		t.Fatalf("a tool with an external schema reference became uncallable: %v", err)
++	}
++}
++
++func TestGeminiDeferredImageAndErrorHistory(t *testing.T) {
++	marked := strings.ReplaceAll(tsCallA, "toolu_02", "toolu_02"+geminiDeferredID)
++	r := deferredRequest(t, tsRequest([]string{tsTools0, tsReadA, tsPlaceholder}, tsTurn1, tsSearchA, marked))
++	last := &r.Messages[len(r.Messages)-1].Parts[0]
++	last.IsError = true
++	last.Images = []Part{{Kind: Image, MediaType: "image/png", Data: "AQ=="}}
++	out, err := buildGemini(r, "gemini-4-carbon")
++	if err != nil {
++		t.Fatal(err)
++	}
++	image, result := false, false
++	for _, c := range gjson.GetBytes(out, "contents").Array() {
++		for _, p := range c.Get("parts").Array() {
++			image = image || p.Get("inlineData.data").String() == "AQ=="
++			result = result || p.Get("functionResponse.name").String() == geminiDeferredTool && p.Get("functionResponse.response.error").String() == "A"
++		}
++	}
++	if !image || !result {
++		t.Fatal("tool image or error was lost on bridge replay")
++	}
++}
+diff --git a/internal/gateway/gemini_failed_tool_test.go b/internal/gateway/gemini_failed_tool_test.go
+new file mode 100644
+index 000000000..bd1c8c074
+--- /dev/null
++++ b/internal/gateway/gemini_failed_tool_test.go
+@@ -0,0 +1,166 @@
++package gateway
++
++import (
++	"fmt"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"sync/atomic"
++	"testing"
++
++	"github.com/yetone/magpie/internal/provider"
++)
++
++// A rejected tool generation is a failed response, even when Gemini emitted
++// a progress sentence first. It must not look like a completed agent turn.
++func TestGeminiFailedToolDecoder(t *testing.T) {
++	for _, reason := range []string{"MALFORMED_FUNCTION_CALL", "UNEXPECTED_TOOL_CALL"} {
++		for _, wrapped := range []bool{false, true} {
++			t.Run(fmt.Sprintf("%s/wrapped=%v", reason, wrapped), func(t *testing.T) {
++				d := &codeAssistDecoder{}
++				var events []Event
++				emit := func(e Event) { events = append(events, e) }
++				chunk := `{"candidates":[{"content":{"parts":[{"text":"I am writing the file."},{"functionCall":{"name":"Write","args":{}}}]},"finishReason":"` + reason + `"}],"usageMetadata":{"promptTokenCount":100,"candidatesTokenCount":6100,"cachedContentTokenCount":80}}`
++				if wrapped {
++					chunk = `{"response":` + chunk + `}`
++				}
++				if err := d.decode(chunk, emit); err != nil {
++					t.Fatal(err)
++				}
++				if err := d.decode(`{"candidates":[{"finishReason":"`+reason+`"}]}`, emit); err != nil {
++					t.Fatal(err)
++				}
++				errors, usage := 0, 0
++				for _, e := range events {
++					switch e.Kind {
++					case KError:
++						errors++
++						if !strings.Contains(e.Text, reason) {
++							t.Fatalf("error lost reason: %+v", e)
++						}
++					case KToolStart:
++						t.Fatal("rejected call was forwarded for execution")
++					case KStop:
++						t.Fatalf("failed generation was presented as a normal stop: %+v", e)
++					case KUsage:
++						usage++
++						if e.Usage.Output != 6100 || e.Usage.CacheRead != 80 {
++							t.Fatalf("usage lost: %+v", e.Usage)
++						}
++					}
++				}
++				if errors != 1 || usage != 1 {
++					t.Fatalf("errors=%d usage=%d, want one each", errors, usage)
++				}
++			})
++		}
++	}
++}
++
++func TestGeminiFailedToolToAnthropic(t *testing.T) {
++	for _, stream := range []bool{false, true} {
++		for _, preface := range []bool{false, true} {
++			t.Run(fmt.Sprintf("stream=%v/preface=%v", stream, preface), func(t *testing.T) {
++				noRests()
++				t.Cleanup(noRests)
++				t.Setenv("XDG_CONFIG_HOME", t.TempDir())
++				t.Setenv("XDG_CACHE_HOME", t.TempDir())
++				var asked atomic.Int32
++				// The rejected call's braces are left open on purpose: a call
++				// whole in finishMessage is salvaged and made the call (the
++				// gateway's own answer, kept), so this pins the unparsable
++				// rest — the name still shows, the rejected body never does.
++				f := &fake{t: t, reply: sse(`data: {"candidates":[{"finishReason":"MALFORMED_FUNCTION_CALL","finishMessage":"Malformed function call: call:default_api:Write{content: PRIVATE_BODY"}],"usageMetadata":{"promptTokenCount":100,"candidatesTokenCount":6100}}`)}
++				if preface {
++					f.reply = sse(`data: {"candidates":[{"content":{"parts":[{"text":"I am writing the file."}]}}]}`) + f.reply
++				}
++				up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { asked.Add(1); f.ServeHTTP(w, r) }))
++				t.Cleanup(up.Close)
++				p := provider.Provider{ID: "gem", Name: "Gem", Key: "synthetic", Gemini: up.URL + "/v1beta", Models: []string{"gemini-test"}}
++				if err := provider.Save(p); err != nil {
++					t.Fatal(err)
++				}
++				srv := New()
++				rec := httptest.NewRecorder()
++				srv.Handler().ServeHTTP(rec, httptest.NewRequest("POST", "/v1/messages", strings.NewReader(fmt.Sprintf(`{"model":"gem/gemini-test","stream":%v,"max_tokens":32,"messages":[{"role":"user","content":"write a file"}]}`, stream))))
++				status, body := rec.Code, rec.Body.String()
++				t.Logf("client status=%d", status)
++				calls := srv.Recent()
++				if asked.Load() != 1 {
++					t.Fatalf("failed generation was retried %d times", asked.Load())
++				}
++				if len(calls) != 1 || calls[0].Usage.Output != 6100 || calls[0].Usage.Input != 100 || calls[0].Usage.Stop != "MALFORMED_FUNCTION_CALL" {
++					t.Fatalf("failed request usage or stop lost: %+v", calls)
++				}
++				if stream {
++					if status != http.StatusOK && status != http.StatusBadRequest {
++						t.Fatalf("unexpected stream status %d", status)
++					}
++				} else if status != http.StatusBadRequest {
++					t.Fatalf("generation failure should be non-retryable: %d %s", status, body)
++				}
++				if !strings.Contains(body, "invalid_request_error") || !strings.Contains(body, "MALFORMED_FUNCTION_CALL") || !strings.Contains(body, "tool Write") || strings.Contains(body, `"stop_reason":"end_turn"`) {
++					t.Fatalf("incorrect failure: %s", body)
++				}
++				if strings.Contains(body, "PRIVATE_BODY") || strings.Contains(body, "call:default_api:") {
++					t.Fatalf("raw rejected call exposed: %s", body)
++				}
++				c := candidate{p: p, model: "gemini-test"}
++				if r, ok := restOf(c.restKey()); ok {
++					t.Fatalf("healthy provider rested: %+v", r)
++				}
++				if retryable(http.StatusBadRequest, []byte(body)) {
++					t.Fatal("failed generation was retryable")
++				}
++				if r := srv.restAfter(c, http.StatusBadRequest, nil, []byte(body)); r.By != "off" {
++					t.Fatalf("generation failure rests provider: %+v", r)
++				}
++			})
++		}
++	}
++}
++
++func TestGeminiUpstreamStop(t *testing.T) {
++	for _, wrapped := range []bool{false, true} {
++		body := `{"candidates":[{"finishReason":"MALFORMED_FUNCTION_CALL"}]}`
++		if wrapped {
++			body = `{"response":` + body + `}`
++		}
++		if got := upstreamStop([]byte(body)); got != "MALFORMED_FUNCTION_CALL" {
++			t.Fatalf("stop=%q", got)
++		}
++	}
++	if got := upstreamStop([]byte(`{"candidates":[{"content":{"parts":[{"text":"finishReason: MALFORMED_FUNCTION_CALL"}]}}]}`)); got != "" {
++		t.Fatalf("text treated as stop: %q", got)
++	}
++}
++
++func TestGeminiFailureIsTerminalForContent(t *testing.T) {
++	r := deferredRequest(t, tsRequest([]string{tsTools0, tsReadA, tsPlaceholder}, tsTurn1, tsSearchA))
++	for _, first := range []string{
++		`{"candidates":[{"finishReason":"MALFORMED_FUNCTION_CALL"}]}`,
++		`{"candidates":[{"content":{"parts":[{"text":"call:default_api:magpie_deferred_tool{\"name\":\"unknown\",\"arguments\":{}}","thoughtSignature":"must-not-leak"}]},"groundingMetadata":{"webSearchQueries":["ignored"],"groundingChunks":[{"web":{"title":"ignored","uri":"https://example.invalid"}}]}}]}`,
++		`{"error":{"code":400,"message":"invalid generation"}}`,
++		`{"candidates":[{"content":{"parts":[{"functionCall":{"name":"magpie_deferred_tool","args":{"name":"unknown","arguments":{}}}}]}}]}`,
++	} {
++		d := &codeAssistDecoder{deferred: deferredForGemini(r)}
++		var events []Event
++		for _, chunk := range []string{first, first, `{"error":{"code":400,"message":"late error"}}`, `{"candidates":[{"content":{"parts":[{"functionCall":{"name":"Write","args":{"content":"must not execute"}}},{"text":"must not be shown"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":6000}}`} {
++			d.decode(chunk, func(e Event) { events = append(events, e) })
++		}
++		errors, usage := 0, 0
++		for _, e := range events {
++			switch e.Kind {
++			case KError:
++				errors++
++			case KUsage:
++				usage++
++			case KToolStart, KText, KStop, KTextSig, KSearch:
++				t.Fatalf("content escaped after failure: %+v", e)
++			}
++		}
++		if errors != 1 || usage != 1 {
++			t.Fatalf("errors=%d usage=%d", errors, usage)
++		}
++	}
++}
+diff --git a/internal/gateway/ir.go b/internal/gateway/ir.go
+index c93d5c456..caaf3e683 100644
+--- a/internal/gateway/ir.go
++++ b/internal/gateway/ir.go
+@@ -175,6 +175,9 @@ type Tool struct {
+ 
+ // Request is a call to a model, whichever API it arrived in.
+ type Request struct {
++	// DeferredTools records the client capability even before any tool is loaded.
++	DeferredTools bool
++
+ 	// clientCache is non-nil only for a request read with its client's
+ 	// marks: the Claude bridge's explicit opt-in, and a Messages ask
+ 	// translated to an Anthropic upstream (parseTranslated, #4571).
+diff --git a/internal/gateway/routing.go b/internal/gateway/routing.go
+index 2b8564d84..4ee3fc96c 100644
+--- a/internal/gateway/routing.go
++++ b/internal/gateway/routing.go
+@@ -1409,6 +1409,9 @@ func (s *Server) restAfterMarked(c candidate, status int, header http.Header, bo
+ 	now := time.Now()
+ 	d := fallbackCooldown
+ 	why := failureOf(c, status, body)
++	if geminiCallFailureTextOnly(string(wordsOf(body))) {
++		return Rest{Why: why, Status: http.StatusBadRequest, By: "off", Until: now}
++	}
+ 	if why == failCut {
+ 		// a plugin ended the turn on purpose, its upstream's stream having
+ 		// died mid-call (plugins#38): the account is as good as it was, the
+diff --git a/internal/gateway/search.go b/internal/gateway/search.go
+index 01dfb2e38..bfd6f3d2b 100644
+--- a/internal/gateway/search.go
++++ b/internal/gateway/search.go
+@@ -1499,7 +1499,7 @@ func (s *Server) askTranslated(p provider.Provider, to provider.Protocol, model
+ 		go func() {
+ 			defer close(events)
+ 			defer res.Body.Close()
+-			dec := decoderFor(p, actual, q.Tools)
++			dec := decoderFor(p, actual, &q)
+ 			send := func(ev Event) error {
+ 				select {
+ 				case events <- ev:
+diff --git a/internal/gateway/upstream.go b/internal/gateway/upstream.go
+index 4130b817f..f1c4e2d37 100644
+--- a/internal/gateway/upstream.go
++++ b/internal/gateway/upstream.go
+@@ -71,12 +71,16 @@ func upstreamOf(b []byte) string {
+ // what the upstream said of it — a relay's "end_turn" after a few words,
+ // or nothing at all (蓝猫 on Discord). "" when this one says none.
+ func upstreamStop(b []byte) string {
+-	if !bodyHas(b, `stop_reason"`) && !bodyHas(b, `finish_reason"`) && !bodyHas(b, `"response.`) {
++	if !bodyHas(b, `stop_reason"`) && !bodyHas(b, `finish_reason"`) && !bodyHas(b, `"response.`) && !bodyHas(b, `"finishReason"`) {
+ 		return ""
+ 	}
++	type geminiFinish struct {
++		Reason string `json:"finishReason"`
++	}
+ 	var v struct {
+-		Type       string `json:"type"`
+-		StopReason string `json:"stop_reason"`
++		Candidates []geminiFinish `json:"candidates"`
++		Type       string         `json:"type"`
++		StopReason string         `json:"stop_reason"`
+ 		Delta      struct {
+ 			StopReason string `json:"stop_reason"`
+ 		} `json:"delta"`
+@@ -84,7 +88,8 @@ func upstreamStop(b []byte) string {
+ 			FinishReason string `json:"finish_reason"`
+ 		} `json:"choices"`
+ 		Response struct {
+-			Status            string `json:"status"`
++			Candidates        []geminiFinish `json:"candidates"`
++			Status            string         `json:"status"`
+ 			IncompleteDetails *struct {
+ 				Reason string `json:"reason"`
+ 			} `json:"incomplete_details"`
+@@ -109,6 +114,11 @@ func upstreamStop(b []byte) string {
+ 			return c.FinishReason
+ 		}
+ 	}
++	for _, c := range append(v.Candidates, v.Response.Candidates...) {
++		if c.Reason != "" {
++			return c.Reason
++		}
++	}
+ 	return ""
+ }
+ 
+-- 
+2.50.1 (Apple Git-155)
+
+````
+</details>
+
+**Addendum** (same day): upstream moved again while this lane ran (`8ce32d700`, whose `0b64846bf` touches `codeassist.go`'s Antigravity-cloak region — a different region from this patch's decoder hunks). Re-checked cheaply at that tip: the commit rebases cleanly (`range-diff =`), `git am` of the rebuilt patch onto `8ce32d700` replays tree-identical (`597e667ee4`), the nogui linux build passes, and `TestGeminiDeferred*`/`TestGeminiFailedTool*` are green there. Branch pushed at `bf85d3e5a7be2663` — https://github.com/ggbdpq/magpie/tree/hunt-20261112-t1-6288 . Patch rebuilt at the new head, SHA-256 first 16: `0d861beae76ef4c1` (I can repost it if useful; the patch above still applies to the tree this comment verified). The full-package run above stands at `eb1b83000`.

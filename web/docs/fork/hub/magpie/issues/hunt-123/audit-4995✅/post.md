@@ -1,0 +1,179 @@
+Root cause — confirmed against current `main` (d8b3749ef). `parseClaudeUsage` runs the `claudeUsageDenied` scan over every line of the `/usage` output before it reads any window, so an account error anywhere wins over a partial reading (the #4532 semantics). The bare `\b(401|403)\b` alternative in that regex cannot tell a statistic from a status, and `/usage` closes with the machine's own activity — `Last 7d · 403 requests · 388 sessions` — so a whole reading with valid session and week windows came back `Claude Code's /usage told no allowance: Last 7d · 403 requests · 388 sessions` and the card kept none. Exactly your reproduction: the parser test built from your text fails on unpatched `main` with that same message.
+
+Fix — one skip in the denial scan (branch `fix/4995-usage-denied-words`, one commit). A line that reads, whole, as one of `/usage`'s count lines is no account error:
+
+```go
+// claudeUsageCounts is /usage's closing line of the account's local
+// activity ("Last 7d · 403 requests · 388 sessions"): counts, not the
+// HTTP statuses a count of 401 or 403 reads as (SCIYYDy, #4995).
+var claudeUsageCounts = regexp.MustCompile(`^Last (?:24h|7d) · [0-9]+ requests? · [0-9]+ sessions?$`)
+```
+
+```go
+for _, line := range lines {
+    if claudeUsageCounts.MatchString(strings.TrimSpace(line)) {
+        continue
+    }
+    if claudeUsageDenied.MatchString(line) { ...
+```
+
+The anchor is the whole line (after the ANSI strip `parseClaudeUsage` already does), so a line that says more still denies: `Last 7d · 403 requests · 388 sessions · HTTP 403 Forbidden` is not a count line, and a real `401 Unauthorized`, `403 Forbidden` or `authentication failed` still denies the account — on its own line and beside the windows both. The #4532 precedence keeps untouched: the scan order does not change, only lines that are nothing but counts fall out of it. `claudeUsageDenied` itself is untouched, so the four other readers of it (`quota_last.go`, `subscription_usage.go`, `codex_switch.go`) see no behaviour change — they consume the error strings `parseClaudeUsage` returns, and those no longer contain bare count lines. One scope note: a count with no windows around it (synthetic — real `/usage` always prints its `Current session` and week lines) still errors, as `no usage figures`, the plain unknown-panel error, not a denial; that path is pre-existing and untouched.
+
+Verification (all local, darwin/arm64, Go as in tree):
+
+| Check | Result |
+| --- | --- |
+| New `TestParseClaudeUsageCountsSayRequests` (your reproduction text as fixture) | red on unpatched `main`, green with the fix |
+| Ablation (test kept, fix reverted to parent d8b3749ef) | red again with your exact error message; restored, green |
+| Real denials kept: `Error: HTTP 401 Unauthorized`, `... 388 sessions · HTTP 403 Forbidden`, `authentication failed` beside windows | all still error |
+| `go test -tags nogui -count=1 -timeout 25m ./internal/provider/...` | ok (106s), no pre-existing red hit |
+| `go test -race -tags nogui` (claude usage tests) | ok |
+| `gofmt -l` on the two files / `go vet -tags nogui ./internal/provider` / `go build ./...` | clean / clean / ok |
+
+Scope — sibling surface checked, nothing else to change: `rg` finds the `Last 24h|7d · N requests · N sessions` shape nowhere else in `internal/`; `volcengine_usage.go` and `steady.go` carry their own auth-denied word lists for different inputs; `claude_setup_token.go` already takes care its words read as no refusal and its output is not `/usage`. Hot path: one extra compiled-regex match per line at parse time, which runs per usage read, not per request.
+
+Patch (`git am`), SHA-256 `3650f06f6c2f99c4`:
+
+<details>
+<summary>0001-claude-a-usage-count-of-401-or-403-is-a-count-not-a-.patch</summary>
+
+```diff
+From 0b7eed05ac49375ee2e411f3a9aac98e3da2a47c Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Wed, 4 Nov 2026 05:39:08 +0800
+Subject: [PATCH] claude: a /usage count of 401 or 403 is a count, not a denial
+ (SCIYYDy, #4995)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+SCIYYDy on the tracker read a Claude account whose /usage closed with the
+machine's own activity, "Last 7d · 403 requests · 388 sessions", and magpie
+read the count of 403 as the HTTP status: parseClaudeUsage scans every line
+for claudeUsageDenied before it reads the windows (account errors take
+precedence over notices and partial readings, #4532), and the bare
+\b(401|403)\b in that regex cannot tell a statistic from a status, so a
+whole reading with valid session and week windows came back "told no
+allowance" and the card kept none. A count of 401 denies as much.
+
+The scan now skips a line that reads, whole, as one of /usage's count lines
+("Last 24h|7d · N requests · N sessions"): counts say requests, not
+statuses (SCIYYDy, #4995). A line that says more — "Last 7d · 403 requests
+· 388 sessions · HTTP 403 Forbidden" — is no count line, and a real 401
+Unauthorized, 403 Forbidden or authentication failure still denies the
+account, on its own line and beside the windows both; the #4532 precedence
+keeps. A count with no windows around it (synthetic: /usage always prints
+its Current session and week lines) reads as no usage figures, as any
+unparseable panel does, not as a denial.
+
+Run at this head: go test -tags nogui -count=1 -timeout 25m
+./internal/provider/... ok (106s; TestParseClaudeUsageCountsSayRequests,
+red before the fix and on the ablated fix); the claude usage tests under
+go test -race -tags nogui ok; gofmt -l clean on the two files; go vet
+-tags nogui ./internal/provider ok; go build ./... ok.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/provider/claude_usage_cli.go  | 10 ++++++
+ internal/provider/claude_usage_test.go | 43 ++++++++++++++++++++++++++
+ 2 files changed, 53 insertions(+)
+
+diff --git a/internal/provider/claude_usage_cli.go b/internal/provider/claude_usage_cli.go
+index 9fe29402c..b411b79c5 100644
+--- a/internal/provider/claude_usage_cli.go
++++ b/internal/provider/claude_usage_cli.go
+@@ -82,6 +82,13 @@ var errClaudeCannotRun = errors.New("Claude Code can't be run from here")
+ // rate limit. It is not a temporary failure to read the usage endpoint.
+ var claudeUsageDenied = regexp.MustCompile(`(?i)\b(401|403)\b|not (logged|signed) in|signed out|sign-in (has )?expired|unauthorized|forbidden|authentication (failed|required)|invalid (access )?token|(session|usage) limit|hit your limit`)
+ 
++// claudeUsageCounts is /usage's closing line of the account's local
++// activity ("Last 7d · 403 requests · 388 sessions"): counts, not the
++// HTTP statuses a count of 401 or 403 reads as (SCIYYDy, #4995). Read
++// whole, the line is no account error; read with more words, as "Last
++// 7d · 403 requests · 388 sessions · HTTP 403 Forbidden", it is.
++var claudeUsageCounts = regexp.MustCompile(`^Last (?:24h|7d) · [0-9]+ requests? · [0-9]+ sessions?$`)
++
+ // claudeOverages is /usage's line for an account past its plan's limits
+ // and billed for what it uses ("You are currently using your overages to
+ // power your Claude Code usage. We will automatically switch you back to
+@@ -116,6 +123,9 @@ func parseClaudeUsage(text string, now time.Time) ([]QuotaWindow, error) {
+ 	lines := strings.Split(text, "\n")
+ 	// Account errors take precedence over notices (and partial readings).
+ 	for _, line := range lines {
++		if claudeUsageCounts.MatchString(strings.TrimSpace(line)) {
++			continue
++		}
+ 		if claudeUsageDenied.MatchString(line) {
+ 			return out, errors.New("Claude Code's /usage told no allowance: " + clipLine(strings.TrimSpace(line)))
+ 		}
+diff --git a/internal/provider/claude_usage_test.go b/internal/provider/claude_usage_test.go
+index 8200d0b65..bb57cd4cd 100644
+--- a/internal/provider/claude_usage_test.go
++++ b/internal/provider/claude_usage_test.go
+@@ -7,6 +7,7 @@ import (
+ 	"net/http/httptest"
+ 	"os"
+ 	"path/filepath"
++	"strings"
+ 	"sync/atomic"
+ 	"testing"
+ 	"time"
+@@ -186,6 +187,48 @@ What's contributing to your limits usage?
+ 	}
+ }
+ 
++func TestParseClaudeUsageCountsSayRequests(t *testing.T) {
++	now := time.Date(2026, 10, 1, 4, 0, 0, 0, time.UTC)
++	// /usage closes with the account's local activity. A count of 401 or
++	// 403 is not the HTTP status it reads as (SCIYYDy, #4995)
++	text := `Current session: 48% used
++Current week (all models): 57% used
++
++What's contributing to your usage?
++Approximate · sessions on this machine only · shares overlap
++
++Last 24h · 291 requests · 276 sessions
++Last 7d · 403 requests · 388 sessions`
++	ws, err := parseClaudeUsage(text, now)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if len(ws) != 2 {
++		t.Fatalf("windows %+v", ws)
++	}
++	if ws[0].Name != "5 hours" || ws[0].Used != 48 {
++		t.Errorf("session: %+v", ws[0])
++	}
++	if ws[1].Name != "7 days" || ws[1].Used != 57 {
++		t.Errorf("week: %+v", ws[1])
++	}
++	// a count alone tells no windows: unknown, not denied
++	if _, err := parseClaudeUsage("Last 24h · 401 requests · 403 sessions", now); err == nil || !strings.Contains(err.Error(), "no usage figures") {
++		t.Fatalf("counts: %v", err)
++	}
++	// a denial still reads as one: on its own line, with the account's
++	// windows around it, or on a count line that says more
++	for _, line := range []string{
++		"Error: HTTP 401 Unauthorized",
++		"Last 7d · 403 requests · 388 sessions · HTTP 403 Forbidden",
++		"Last 24h · 291 requests · 276 sessions\nError: authentication failed",
++	} {
++		if _, err := parseClaudeUsage("Current session: 48% used\n"+line, now); err == nil {
++			t.Errorf("%q: no error", line)
++		}
++	}
++}
++
+ // Where the clocks go back and read a reset's time twice, the reading not yet
+ // past is taken: west of UTC time.Date gives the first reading, east of it
+ // the second. A time alone is the next day's when the clocks skip it, as
+-- 
+2.50.1 (Apple Git-155)
+```
+
+Also as a file: https://github.com/ggbdpq/magpie/commit/0b7eed05ac49375ee2e411f3a9aac98e3da2a47c.patch
+</details>
+
+Branch: https://github.com/ggbdpq/magpie/tree/fix/4995-usage-denied-words (head 0b7eed05ac49375ee2e411f3a9aac98e3da2a47c)
+
+AI-written by GLM-5.3-Flash (ZCode), authored by ggbdpq.

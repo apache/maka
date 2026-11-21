@@ -1,0 +1,77 @@
+From 90830b0103a917eafb3235a2cd68e112ca7c260f Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Tue, 3 Nov 2026 07:02:13 +0800
+Subject: [PATCH] codex: Ultra on GPT-6.1 Terra wherever it is served (#4909)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Codex's catalog (models-manager/models.json, as this machine's Codex kept
+it in models_cache.json) now lists ultra on gpt-6.1-terra, alongside the
+Sols, Astra and GPT-5.6 Terra; the Lunas still stop at max. magpie's list
+of the models that offer it (#656) had no GPT-6.1 Terra, so one served by
+another vendor (Copilot's, a key's, a relay's) was listed up to max only,
+and Codex had no Ultra to pick on it — a thread pointed straight at the
+vendor (CC Switch's config) sends its own effort and keeps Ultra, a
+magpie-routed one was offered none. Now GPT-6.1 Terra is in the list: an
+entry for it that reaches max gains ultra, in Codex's catalog and
+/v1/models, and says multi_agent_version v2; a request's ultra still goes
+to the model as max (fitEffort), as before.
+
+TestUltraOnModelsThatOfferIt extends its table with gpt-6.1-terra (by the
+id a vendor serves: relay/… too) and an entry for Copilot's, and fails on
+the old code with OffersUltra("gpt-6.1-terra") = false and the entry left
+at [none low medium high xhigh max] v2=false. go vet, builds (darwin,
+GOOS=linux, GOOS=windows) and go test -tags nogui -count=1 on the touched
+packages pass.
+
+Fixes #4909
+---
+ internal/provider/ultra.go      | 5 +++--
+ internal/provider/ultra_test.go | 7 +++++++
+ 2 files changed, 10 insertions(+), 2 deletions(-)
+
+diff --git a/internal/provider/ultra.go b/internal/provider/ultra.go
+index 361e761a0..a19d6ce35 100644
+--- a/internal/provider/ultra.go
++++ b/internal/provider/ultra.go
+@@ -13,8 +13,9 @@ import (
+ // whose entry lists "ultra"; its own catalog (models-manager/models.json)
+ // lists it for these alone — GPT-6 Luna and GPT-5.6 Luna stop at max — so
+ // magpie offers it on them wherever they are served (Copilot's, a key's, a
+-// relay's: #656), never on every model that reaches max.
+-var ultraModels = []string{"gpt-6.1-sol", "gpt-6-sol", "gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra"}
++// relay's: #656), never on every model that reaches max. GPT-6.1 Terra
++// carries it since #4909.
++var ultraModels = []string{"gpt-6.1-sol", "gpt-6-sol", "gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-6.1-terra"}
+ 
+ // datedSuffix is a snapshot's date after a model's id (-2026-09-14, -20260914).
+ var datedSuffix = regexp.MustCompile(`-(\d{4}-\d{2}-\d{2}|\d{8})$`)
+diff --git a/internal/provider/ultra_test.go b/internal/provider/ultra_test.go
+index ae664ec61..29a76bba8 100644
+--- a/internal/provider/ultra_test.go
++++ b/internal/provider/ultra_test.go
+@@ -26,6 +26,7 @@ func TestUltraOnModelsThatOfferIt(t *testing.T) {
+ 	for id, want := range map[string]bool{
+ 		"gpt-6.1-sol": true, "openai/gpt-6.1-sol": true, "GPT-6.1-Sol": true, "gpt-6.1-sol-2026-09-14": true,
+ 		"gpt-6-astra": true, "gpt-6-sol": true, "gpt-5.6-sol": true, "gpt-5.6-terra": true,
++		"gpt-6.1-terra": true, "relay/gpt-6.1-terra": true,
+ 		"gpt-6-luna": false, "gpt-5.6-luna": false, "gpt-6.1-sol-mini": false, "claude-opus-5-5": false, "": false,
+ 	} {
+ 		if OffersUltra(id) != want {
+@@ -40,6 +41,12 @@ func TestUltraOnModelsThatOfferIt(t *testing.T) {
+ 	if !slices.Equal(sol.Efforts, append(slices.Clone(upToMax), "ultra")) || !sol.AgentsV2 {
+ 		t.Fatalf("copilot/gpt-6.1-sol: %v v2=%v", sol.Efforts, sol.AgentsV2)
+ 	}
++	// gpt-6.1-terra carries Ultra in Codex's catalog now (#4909), like the
++	// Sols and Astra: another vendor's entry up to max lists it too
++	terra := entryFor(copilot, catalog.Model{ID: "gpt-6.1-terra", Efforts: upToMax}, s)
++	if !slices.Equal(terra.Efforts, append(slices.Clone(upToMax), "ultra")) || !terra.AgentsV2 {
++		t.Fatalf("copilot/gpt-6.1-terra: %v v2=%v", terra.Efforts, terra.AgentsV2)
++	}
+ 	luna := entryFor(copilot, catalog.Model{ID: "gpt-6-luna", Efforts: upToMax}, s)
+ 	if !slices.Equal(luna.Efforts, upToMax) || luna.AgentsV2 {
+ 		t.Fatalf("copilot/gpt-6-luna: %v v2=%v", luna.Efforts, luna.AgentsV2)
+-- 
+2.50.1 (Apple Git-155)
+

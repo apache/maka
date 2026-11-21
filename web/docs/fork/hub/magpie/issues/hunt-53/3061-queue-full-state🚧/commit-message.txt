@@ -1,0 +1,25 @@
+gateway: TestQueueFullAndWaitedOut judges "immediate" by the lane's state, not the wall clock (#3061)
+
+What changed: the test's check that c is turned away at once held
+c's reply to a wall-clock bound (arrived within 900ms); under a full
+-suite run at load ~380 that bound failed while the reply itself was
+right (429, Retry-After, "queue is full"). The bound is replaced by
+the state the maintainer pointed at: when c's 429 is in hand, b is
+still in the queue (the lane's Waiting is 1 — c was answered before
+b's one-second QueueWait ran out) and the vendor has been asked once,
+for a alone (c never reached it). No product code changes.
+
+Run: go test ./internal/gateway/ -run TestQueueFullAndWaitedOut
+-count=10 and -race -count=3 pass; -count=20 passes with four busy
+loops loaded on top (12-core arm64 Mac, load ~4-6). The red is
+reproduced the way the issue suggests, by delaying the read of c's
+reply 950ms on the pre-fix test (the wall-clock bound fails with the
+same message as in the issue), and the new state check still has
+teeth: with a 1.2s delay b has already waited out of the queue and
+the check fails with "want b still in the queue". gofmt clean, go vet
+clean, go build (darwin/arm64, linux/amd64 -tags nogui,
+windows/amd64 -tags nogui) fine.
+
+Fixes #3061
+
+Generated-by: GLM-5.3-Flash (ZCode)

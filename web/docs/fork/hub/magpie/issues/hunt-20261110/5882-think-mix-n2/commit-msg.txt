@@ -1,0 +1,50 @@
+gateway: a plain Gemini 4 goes to high at medium, where Argon's thinking leaks into the reply (#5882)
+
+Codex on antigravity/gemini-4-argon at effort medium got the model's
+reasoning drafts as part of the reply itself — 58.5% of a week's main
+session requests carried them as text (out > 0, reasoning 0) against
+2.8% at high, and a first turn at medium seeded a thread that went on
+leaking (#5882). The wire asks for it: #2083 taught thinkingConfig a
+level for a later Gemini and sent the medium its id lists as the
+medium it was asked, on the plain id every Gemini-protocol request is
+built under, Cloud Code Assist's among them. At that medium the model
+writes its reasoning into the reply more often than not; the id's list
+is right about the words it takes, not about what medium does there.
+
+So a later Gemini asked medium goes to high where its id names no
+level, as 3 Pro's has all along (it took low and high only). Its own
+tiered ids keep the level they name (Antigravity serves Argon at -high
+and -low; no -medium), and a Flash of any generation still takes the
+medium it was asked. The OpenCode Zen Go route (#2168) builds on the
+same thinkingConfig, so an argon-contributor follows the rule too, and
+its test asks high now.
+
+Run:
+- TestGeminiLaterGenerationsToldALevel: Argon medium asked, goes at
+  high (red on the old code: "thinkingLevel medium, want high" — the
+  report's wire shape), low and high as asked, 3.8 Flash unchanged,
+  3 Pro medium high, 2.5 Flash a budget. TestGeminiGeneration
+  unchanged.
+- TestOpenCodeGoGeminiModelOnGeminiAPI: argon-contributor medium at
+  high, low and high as asked (red on the old code).
+- TestCodeAssistAntigravityLevels, with a row on the report's own
+  surface — the plain gemini-4-argon id Antigravity serves with no
+  tiers, asked medium on the antigravity account — at high (red on the
+  old code).
+- The effort neighborhood:
+  TestCodeAssistReasoningOffAtLow, TestAgyAgentEffort,
+  TestWithGeminiEffort, TestSearcherEffortOnGemini,
+  TestSideEffortChecked, and the Zen, thought-tag and compat-cut
+  batches — green.
+- go test -tags nogui ./internal/gateway/ (whole package, 845s).
+- gofmt -l empty; go vet, GOOS=linux and GOOS=windows builds with
+  -tags nogui clean.
+
+Not tried: a real gemini-4-argon request (the report's Antigravity
+account isn't on this machine); the tests pin the wire shape the
+report's telemetry names. A thinking-only reply that ends on
+filter/length still finishes 200 without a word (the report's second
+mechanism, streamTranslated's !said fall-through): this change takes
+away its main feeder — the report's own table ties that failure to
+medium sessions — but whether such a reply should fail loudly is its
+own change.

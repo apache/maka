@@ -1,0 +1,130 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Aryz <aryz0713@gmail.com>
+Date: Thu, 12 Nov 2026 21:07:19 +0800
+Subject: [PATCH 10/11] library: retain website origins and parse only skill
+ metadata
+
+Preserve scheme, port and path case in website group identities and Open requests without GitHub owner folding. Listed support files are opaque bytes: validate index JSON and root SKILL.md front matter with their parsers instead of rejecting Markdown documents that start with HTML comments.
+
+RED evidence: Actions 43213792487 attempts 5 and 6 show the grouping and Markdown cases fail before these fixes; the real browser test merges five complete website addresses into two groups. Re-run the platform checks, race tests and full Library suite for this tree; reproduce the unrelated root guard failure on the original baseline separately.
+---
+ docs/subsystems/library.md                     | 5 +++--
+ internal/gui/assets/plugins/library/client.js  | 6 +++---
+ internal/gui/tests/library-well-known.test.cjs | 4 ++--
+ internal/library/skill_from.go                 | 4 ++--
+ internal/library/skillwellknown.go             | 8 +-------
+ 5 files changed, 11 insertions(+), 16 deletions(-)
+
+diff --git a/docs/subsystems/library.md b/docs/subsystems/library.md
+index d7e26eb09..66add42fe 100644
+--- a/docs/subsystems/library.md
++++ b/docs/subsystems/library.md
+@@ -63,8 +63,9 @@ entries are offered as skills; supporting `SKILL.md` templates stay files of
+ their entry. No downloaded content is executed, and no GitHub token or agent
+ credential is sent to the website.
+ 
+-These skills are grouped by their website, with a source link and the same
+-update controls as repository skills. Checks compare the fetched content
++These skills are grouped by their complete website address, retaining the
++scheme, port and path case, with a source link and the same update controls
++as repository skills. Checks compare the fetched content
+ with the installed hash. Updates retain the existing protection for local
+ edits and the existing backup and replacement path. An unreadable or invalid
+ index, an incomplete download or an invalid skill is an error, not evidence
+diff --git a/internal/gui/assets/plugins/library/client.js b/internal/gui/assets/plugins/library/client.js
+index 6041ed98b..ad23aa010 100644
+--- a/internal/gui/assets/plugins/library/client.js
++++ b/internal/gui/assets/plugins/library/client.js
+@@ -5473,7 +5473,7 @@ magpie.plugin("library", (ctx) => {
+   // Immortal on Discord). owner/repo on GitHub, host/path elsewhere.
+   const skillRepo = (s) => s.repo || (s.kind === "github" ? repoOf(s.source) : s.origin ? repoOf(s.origin) : "");
+   // a host's (with a path, or a site's kit of skills alone, #1862) or GitHub's
+-  const repoURL = (r) => (/^[^/]+\.[^/]+(\/|$)/.test(r) ? "https://" + r : "https://github.com/" + r);
++  const repoURL = (r) => (/^https?:\/\//i.test(r) ? r : /^[^/]+\.[^/]+(\/|$)/.test(r) ? "https://" + r : "https://github.com/" + r);
+   const MANY = 40;   // a group bigger than this starts folded, and so do its parts
+   const SPLIT = 8;   // a group bigger than this is split by folder, or by name
+   // Heights the rows are held to (library.css): a list's room is known
+@@ -5511,7 +5511,7 @@ magpie.plugin("library", (ctx) => {
+       const own = inMine.get(s.name);
+       if (own) { own.skills.push(s); continue; }
+       const repo = skillRepo(s);
+-      const key = repo ? "gh:" + repo.toLowerCase() : "local";
++      const key = repo ? "gh:" + (s.kind === "well-known" ? repo : repo.toLowerCase()) : "local";
+       let g = by.get(key);
+       if (!g) by.set(key, (g = { key, repo, skills: [] }));
+       g.skills.push(s);
+@@ -5528,7 +5528,7 @@ magpie.plugin("library", (ctx) => {
+     const up = repos.filter((g) => g.skills.some(online)), down = repos.filter((g) => !g.skills.some(online));
+     const owners = new Map();
+     for (const g of up) {
+-      if (/^[^/]+\.[^/]+(\/|$)/.test(g.repo)) continue; // another git host or a website
++      if (/^https?:\/\//i.test(g.repo) || /^[^/]+\.[^/]+(\/|$)/.test(g.repo)) continue; // another git host or a website
+       const o = g.repo.split("/")[0].toLowerCase();
+       if (!owners.has(o)) owners.set(o, []);
+       owners.get(o).push(g);
+diff --git a/internal/gui/tests/library-well-known.test.cjs b/internal/gui/tests/library-well-known.test.cjs
+index 89d218c3b..2477d86db 100644
+--- a/internal/gui/tests/library-well-known.test.cjs
++++ b/internal/gui/tests/library-well-known.test.cjs
+@@ -13,7 +13,7 @@ const library = () => ({
+   dir: `${home}/.config/magpie/library`, backups: `${home}/.config/magpie/backups`, home,
+   agents: [{ id: "claude", name: "Claude Code", skills: `${home}/.claude/skills`, mcp: `${home}/.claude.json` }],
+   instructions: { agents: [], sets: [] }, servers: [], projects: [], foundServers: [], foundSkills: [],
+-  skills: [{ name: "ui-taste", description: "UI taste", kind: "well-known", source, repo: "uizze.sh", agents: [] }],
++  skills: [{ name: "ui-taste", description: "UI taste", kind: "well-known", source, repo: source, agents: [] }],
+ });
+ 
+ function serve(lang, posts, data = library(), opened = []) {
+@@ -84,7 +84,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
+     const context = await browser.newContext({ viewport: { width: 980, height: 800 } });
+     t.after(() => context.close());
+     await context.addInitScript(() => { try { localStorage.setItem("magpie.libTab", "skills"); } catch {} });
+-    const origins = ["http://localhost:8080/kit", "http://example.com:8080/kit", "http://example.com:8081/kit", "https://example.com:8443/Kit"];
++    const origins = ["http://localhost:8080/kit", "http://example.com:8080/kit", "http://example.com:8081/kit", "https://example.com:8443/Kit", "https://example.com:8443/kit"];
+     const data = library(), opened = [];
+     data.skills = origins.map((address, i) => ({ name: `website-${i}`, description: "Website skill", kind: "well-known", source: address, repo: address, agents: [] }));
+     const page = await context.newPage();
+diff --git a/internal/library/skill_from.go b/internal/library/skill_from.go
+index 1125a64ad..f18ab3819 100644
+--- a/internal/library/skill_from.go
++++ b/internal/library/skill_from.go
+@@ -28,7 +28,7 @@ import (
+ // then is the repository's skill (noteFrom).
+ 
+ // repoOf is the repository a library skill came from: owner/repo on
+-// GitHub, host/path elsewhere, "" when it can't be told.
++// GitHub, host/path for git, full URL for websites, "" when it can't be told.
+ func (tr *tracer) repoOf(s *Skill) string {
+ 	if s.Source != nil && s.Source.Kind == "github" {
+ 		return s.Source.Repo
+@@ -37,7 +37,7 @@ func (tr *tracer) repoOf(s *Skill) string {
+ 		return remoteRepo(s.Source.Repo) // host/path, as a checkout of it is
+ 	}
+ 	if s.Source != nil && s.Source.Kind == "well-known" {
+-		return siteOf(s.Source.Repo)
++		return s.Source.Repo
+ 	}
+ 	if o, ok := ccSwitchOrigin(s); ok {
+ 		return o.Repo
+diff --git a/internal/library/skillwellknown.go b/internal/library/skillwellknown.go
+index ec5d83e1d..017fe9c22 100644
+--- a/internal/library/skillwellknown.go
++++ b/internal/library/skillwellknown.go
+@@ -202,13 +202,7 @@ func wellKnownGet(ctx context.Context, client *http.Client, address string, max
+ 	if int64(len(body)) > max {
+ 		return nil, fmt.Errorf("%s is over the most magpie reads", address)
+ 	}
+-	kind := strings.ToLower(resp.Header.Get("Content-Type"))
+-	sniff := http.DetectContentType(body)
+-	ext := strings.ToLower(filepath.Ext(req.URL.Path))
+-	htmlFile := ext == ".html" || ext == ".htm" || ext == ".xhtml"
+-	if !htmlFile && (strings.Contains(kind, "text/html") || strings.Contains(kind, "application/xhtml+xml") || strings.HasPrefix(sniff, "text/html")) {
+-		return nil, fmt.Errorf("%s returned an HTML page instead of a skills file", address)
+-	}
++	// Metadata has its own parsers; listed supporting files are opaque bytes.
+ 	return body, nil
+ }
+ 
+-- 
+2.50.1 (Apple Git-155)
+

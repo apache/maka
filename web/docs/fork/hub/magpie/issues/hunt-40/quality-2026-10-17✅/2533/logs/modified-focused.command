@@ -1,0 +1,1 @@
+go test -tags nogui -count=1 -p 2 -timeout 4m -artifacts -outputdir /Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/modified-fixtures -run \^Test\(StreamedByteCap\|PayloadTooLargeSaysRequestTooLargeToPi\|StreamErrorSaysItPasses\|GroupLastFailureInStreamSaysItPasses\|ContextOverflowSaidTheClientsWay\|BodyRejectionErrorShapes\) -v ./internal/gateway 

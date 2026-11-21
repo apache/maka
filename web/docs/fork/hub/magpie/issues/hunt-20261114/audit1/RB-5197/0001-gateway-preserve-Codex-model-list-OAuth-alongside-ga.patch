@@ -1,0 +1,362 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: NightGlowww <44762336+NightGlowww@users.noreply.github.com>
+Date: Wed, 4 Nov 2026 17:23:33 +0800
+Subject: [PATCH] gateway: preserve Codex model-list OAuth alongside gateway
+ keys
+
+A managed x-api-key made identifyCaller overwrite Codex's valid ChatGPT
+bearer with the internal token. /models then forwarded that token and
+returned 401, losing the configured model metadata (#5197).
+
+Keep the bearer privately only for the native model-list GET after key
+validation. Restore it on a request copy used by both the model-list
+cache and its upstream ask, removing gateway authentication fields.
+Key-only requests remain refused; other routes keep normalization.
+
+Verification on Go 1.27.3, macOS arm64, based on 17154e165:
+- TestCodexModelsKeepOAuthBesideGatewayKey fails on the unmodified base
+  with 401 invalid client sign-in, then passes with this fix.
+- Four new test groups pass, including -race -count=20.
+- Full nogui suite completed: 84 packages passed, 3 packages failed.
+  Existing gateway JSONv2 parity (#3547, including a separate invalid
+  UTF-8 sizing difference) and WSL probe (#3680) failures reproduced
+  on unmodified base. GUI: core budget (#5139, reproduced on base),
+  lane-test isolation (#5150), system-proxy isolation (#2562).
+  Plugin git-update tests failed with PATH Bun 1.3.14 on base and patch,
+  then passed with bundled Bun 1.4.4. Existing issue patches reviewed;
+  separate fixes are not bundled into this OAuth change.
+  TestRemoveServerDropsItsIcon skipped: user forbids Playwright setup.
+  The full suite is not claimed green.
+- gofmt -l and git diff --check are clean.
+- macOS, Linux (nogui), Windows: go vet ./... and go build pass.
+- Isolated patched Server.Front plus a real OAuth and fresh gateway key:
+  GET /models returns 200 and Astra's native 272000/max 872000 entry.
+  The explicit 872000 override is checked by the regression fixture.
+
+Tests isolate HOME and pin Go caches. No production replacement or
+inference probe; no Linux/Windows runtime or GUI/Playwright run.
+
+Fixes #5197
+---
+ docs/subsystems/gateway-routing.md         |   3 +-
+ internal/gateway/codex_backend.go          |  42 ++++
+ internal/gateway/codex_models_auth_test.go | 223 +++++++++++++++++++++
+ internal/gateway/lan.go                    |   1 +
+ 4 files changed, 268 insertions(+), 1 deletion(-)
+ create mode 100644 internal/gateway/codex_models_auth_test.go
+
+diff --git a/docs/subsystems/gateway-routing.md b/docs/subsystems/gateway-routing.md
+index 82ae0621a..002d30b73 100644
+--- a/docs/subsystems/gateway-routing.md
++++ b/docs/subsystems/gateway-routing.md
+@@ -337,7 +337,8 @@ recorded as a prediction failure (`noPrediction`).
+ - A translated Chat stream's tool calls are read by `index`, not as one after another (`chatDecoder.toolCall` in [`chat.go`](../../internal/gateway/chat.go)). An upstream may send several calls' fragments by turns (index 0, 1, 0, 1…), the first of each with its id and name; read as a new call at each change of index, two calls reached Codex as six `function_call` items, the first two with `{}` and four with no name (mysterious_dove on Discord). The open call streams as it comes; a call that starts while the open one's arguments aren't yet whole JSON is held by its index and given whole, in index order, at `finish_reason` or `[DONE]`. Every translation from Chat (Responses, Messages, Gemini, a whole reply) reads the stream through it. `TestInterleavedToolCallsToResponses`, `TestInterleavedToolCallsToAnthropic`, `TestInterleavedToolCallsWhole`, `TestToolCallsNamedFirstThenArgued` in [`translate_stream_test.go`](../../internal/gateway/translate_stream_test.go).
+ - A relayed Chat reply whose choice made calls and ended `stop` ends `tool_calls`, streamed (`chatTidy`) and whole (`chatWhole`), as the translations' collector already ends it (`collector.finish`): told it stopped, a client that reads `finish_reason` ends its turn with the calls not run (喜欢一个人 on Discord, a relay in front of deepseek-v4.1-flash). Any other reason stays as it came. `TestChatCallsEndToolCalls` in [`chattidy_finish_test.go`](../../internal/gateway/chattidy_finish_test.go).
+ - A Chat reply's call whose function names nothing in a JSON string — no name, null, another kind — is dropped, its later fragments with it, and a finish of `tool_calls` with no call left after the drop ends `stop` (a reply that came with no calls keeps its finish), and a whole reply given as a stream numbers the calls it keeps with no gap: streamed (`chatTidy`), whole (`chatWhole`) and a whole reply given to the agent as the stream it asked for (`chatWholeEvents`), since a client that checks the shape of every frame refuses the whole reply for one — the turn not retryable, the call already in the history, the session dead, while the gateway's own log says the reply went (AricRedemption, #1475). A nameless call runs nowhere, so it is no call, as a written block naming no offered tool is; a name the client reads as a string, empty included, goes as it came. `TestNamelessCallStreamDropped`, `TestNameAbsentStreamDropped`, `TestNamelessCallBesideAGoodOne`, `TestNamelessCallWholeDropped`, `TestNamelessCallWholeAsStreamDropped`, `TestNamelessCallWithoutAnIDStaysDropped`, `TestNamelessCallBesideAGoodOneWholeAsStream`, `TestToolCallsFinishWithNoCallsStaysWhole` in [`chat_call_name_test.go`](../../internal/gateway/chat_call_name_test.go).
+-- Codex's model list from the backend path (`codexModels`) is the ChatGPT backend's for its sign-in and then magpie's (`provider.CodexListedBeside`): every model but a ChatGPT account's own the sign-in's list has already, so a model only another account on in magpie has (a Team or Pro one beside a Free sign-in) is listed by magpie's id, `codex/<slug>`, and routed to that account (bigfisheatsmall on X: Codex kept signed in to a Free account, the Team account's models in dsh and not in Codex; `TestCodexListHasAnotherAccountsModels`, `TestCodexListOneAccountNoneTwice`). Its ETag and every reply's `X-Models-Etag` tagged with `provider.CodexListTag` so a change has Codex ask again. A Codex there only for account failover, not connected (`CodexOwnOnly`, `agent.CodexOwnOnly`; #1385), gets the backend's alone, tagged with `provider.CodexOwnListTag`; neither tag contains the other, so connecting or disconnecting has Codex fetch the list again. The user's picks on the codex provider (`provider.CodexNativePicked`) narrow the backend's listed models. They keep its hidden ones (`visibility: "hide"`), which no picker shows. One of those is `codex-auto-review`: when the list lacks it and no reviewer is set, Codex's auto-review runs on the conversation's model at low effort (#1460, `TestCodexModelListPicksKeepHidden`). The account's own models stay in it when they are kept out of other agents' lists for routing groups, by the codex provider "Only through routing groups" (`Provider.Unlisted`) or a group that unlists its members (`Group.Unlists`): Codex's own catalog (`catalogOf("codex")`, behind `ListedFor`/`CatalogFor`) keeps `CodexOwn` entries, so the Agents page shows its Codex section, its picker offers them as magpie's, and the desk file and `spawnChoices` list them. #1602 dropped them here, and the picker then still offered them through the own-models switch while the Codex app had none (士奇 on Discord, 10-28). They are hidden from Codex through Codex's list (`provider.CodexNativeHidden`, `TestCodexModelListKeepsOwnForGroups`, `TestCodexOwnModelsListedOnlyThroughGroups`). Every other agent, and every client of `/v1/models` (one that names no agent is `other` or its User-Agent's name, never `""`), is given `Catalog()`: a group listing alone keeps a signed-in subscription's models out of its list too. 88e6fb9cf had kept them for every agent (`SubscriptionKept`), so for a group of subscription models the option changed no list fetched over HTTP (shaoyang. on Discord, 11-03; `TestGroupAloneKeepsSubscriptionModelsOutOfEveryAgentsList`, `TestGroupAloneKeepsSubscriptionModelsOffAgentsModelList`). The group stands in for them only for a caller given it: a gateway key that may use none of the groups listing a model alone is listed the model, when it may use it (`keyListed` over `provider.GroupStandIns`, on `/v1/models` and every list `catalogFor` feeds, `/v1/models/{id}`, the key's page, Codex's catalog and spawn choices), beside its provider's other models; a key given the group is given the group in its place. The Gateway page's key picker (`/api/caller-keys/models`) offers them too (luckymanjc on Discord, 11-05: a Remote magpie's key held to `codex/*` was listed GPT-6-Luna alone; `TestKeyNotGivenTheGroupIsListedItsMembers`, `TestCallerKeyModelsOfferGroupKept`). A backend answer that says the sign-in itself is revoked (`provider.SignInRevoked`, a 401 `token_revoked`; jjt on Discord, #4308) isn't passed through: the list is Codex's cached one (`codexcat.CacheEntries`) and magpie's, so the picker keeps magpie's models; any other refusal, a 401 `token_expired` among them, still is. The desk file does the same while the live list says revoked (`provider.CodexListRevoked`, `codexDesk.revoked`) (`TestCodexModelListRevokedSignIn`, `TestCodexDesktopCatalogRevokedSignIn`).
++- A native Codex model-list request (`GET /backend-api/codex/models`) may carry its ChatGPT bearer beside a managed gateway key (`x-api-key`, `x-goog-api-key` or `?key=`). `identifyCaller` checks the gateway key and records its caller as usual, keeping the ChatGPT authorization separately (`keepCodexListAuth`). Only `codexModels`, after the gateway guards, restores it on a request copy for both the backend cache identity and the upstream ask; gateway credentials are removed from that copy. A gateway key alone is not a ChatGPT sign-in and gets 401 rather than borrowing the server's account. Other routes keep the internal-token normalization. `TestCodexModelsKeepOAuthBesideGatewayKey` covers the full server path (#5197).
++- Codex's model list from the backend path (`codexModels`) is the ChatGPT backend's for its sign-in and then magpie's (`provider.CodexListed`), its ETag and every reply's `X-Models-Etag` tagged with `provider.CodexListTag` so a change has Codex ask again. A Codex there only for account failover, not connected (`CodexOwnOnly`, `agent.CodexOwnOnly`; #1385), gets the backend's alone, tagged with `provider.CodexOwnListTag`; neither tag contains the other, so connecting or disconnecting has Codex fetch the list again. The user's picks on the codex provider (`provider.CodexNativePicked`) narrow the backend's listed models. They keep its hidden ones (`visibility: "hide"`), which no picker shows. One of those is `codex-auto-review`: when the list lacks it and no reviewer is set, Codex's auto-review runs on the conversation's model at low effort (#1460, `TestCodexModelListPicksKeepHidden`). The account's own models stay in it when they are kept out of other agents' lists for routing groups, by the codex provider "Only through routing groups" (`Provider.Unlisted`) or a group that unlists its members (`Group.Unlists`): Codex's own catalog (`catalogOf("codex")`, behind `ListedFor`/`CatalogFor`) keeps `CodexOwn` entries, so the Agents page shows its Codex section, its picker offers them as magpie's, and the desk file and `spawnChoices` list them. #1602 dropped them here, and the picker then still offered them through the own-models switch while the Codex app had none (士奇 on Discord, 10-28). They are hidden from Codex through Codex's list (`provider.CodexNativeHidden`, `TestCodexModelListKeepsOwnForGroups`, `TestCodexOwnModelsListedOnlyThroughGroups`). Every other agent, and every client of `/v1/models` (one that names no agent is `other` or its User-Agent's name, never `""`), is given `Catalog()`: a group listing alone keeps a signed-in subscription's models out of its list too. 88e6fb9cf had kept them for every agent (`SubscriptionKept`), so for a group of subscription models the option changed no list fetched over HTTP (shaoyang. on Discord, 11-03; `TestGroupAloneKeepsSubscriptionModelsOutOfEveryAgentsList`, `TestGroupAloneKeepsSubscriptionModelsOffAgentsModelList`). A backend answer that says the sign-in itself is revoked (`provider.SignInRevoked`, a 401 `token_revoked`; jjt on Discord, #4308) isn't passed through: the list is Codex's cached one (`codexcat.CacheEntries`) and magpie's, so the picker keeps magpie's models; any other refusal, a 401 `token_expired` among them, still is. The desk file does the same while the live list says revoked (`provider.CodexListRevoked`, `codexDesk.revoked`) (`TestCodexModelListRevokedSignIn`, `TestCodexDesktopCatalogRevokedSignIn`).
+ - The Codex app and its VS Code extension read only the first 100 of that list by priority, hidden entries counted: each asks its app-server for `model/list` with `limit: 100` and never for the next page (ChatGPT.app 26.1013, openai.chatgpt 26.51021; the CLI's `/model` lists every one). So `codexcat.FitOwn` ranks the list last of all: hidden entries after every listed one, and, with more than 100 listed (`codexcat.AppList`), Codex's own listed models (the backend's entries in `codexMerged`; a ChatGPT account's `codex/…` ones, `codexcat.ChatGPTOwn`, on the other two routes) and then the models Codex used in the last 30 days (`usage.CodexUsed`, most recent first, at most 100) brought into the first 100 in the order they stood, the rest kept in theirs. The user's own order (`codexcat.Order`, #855) goes first, so an order that names only magpie's models (set while Codex's list had no Codex section, or before OpenAI added a model) no longer puts every GPT model past the 100th (maiya on Discord); the user takes one out of the app by hiding it in Codex's list. The same holds for `/v1/codex/models` (with the models that key's Codex used alone, `usage.CodexUsedBy`, before the 1 MiB cut) and the `model_catalog_json` magpie writes (`codexcat.CatalogUsed`). `codexListTag` carries a tag of the used set (`codexcat.UsedTag`), so the ETag and `X-Models-Etag` change when Codex uses a model it hadn't; `usage.CodexUsed` is read again a minute on, or at once when `Append` writes a Codex call to a model it doesn't hold (`codexUsedNew`). `TestCodexModelListKeepsUsedModelsInTheAppsHundred`, `TestCodexCatalogKeepsTheKeysUsedModelsFirst`, `TestFitKeepsUsedModelsWhereTheCodexAppReads`, `TestCodexUsed`, `TestCodexModelListKeepsOwnModelsInTheAppsHundred`, `TestFitOwnKeepsCodexsOwnInTheAppsHundred` and `TestCatalogUsedKeepsChatGPTOwn` cover it (@ZhenLuoTTAWDTT on X).
+ - Reasoning state goes through magpie's translation as the vendor wrote it when the agent and the upstream speak the same API (#1445, XYenon): a non-streaming Messages request to a stream-only account, web search on the agent's own API, a plugin, failover. The IR carries it sealed (`Part.Sealed`, `SealedBy`; events `KThinkStart`, `KSealed`, `KTextSig` in [`ir.go`](../../internal/gateway/ir.go)), so each thinking block or reasoning item stays apart, whole or streamed, and a seal is written only for its own API (`sealedBy`). Anthropic's `redacted_thinking` goes back raw (to DeepSeek as a thinking block, below), and a thinking block signed with no text keeps its signature (`aBlock` still writes `"thinking": ""`, #1447), on Claude's subscription too. A Responses reasoning item keeps its id, summary and `encrypted_content`, and goes back to a Responses upstream as it came when it has no reasoning text (`sealedReasoning`; text, another vendor's, is still left out for OpenAI, #1411). Gemini's `thoughtSignature` stays on the call it signed and on text; a later call of a signed step goes without one, and only an unsigned step or Claude on Antigravity gets `skip_thought_signature_validator`. Another API's agent gets the call's signature in its id, as on chat (#687), with its length in the mark (`__ts<n>__`), so an id a client shortened carries no signature and the call goes as unsigned (#1536); it gets no one else's seal. The signature itself is kept in magpie's folder, `gemini-signatures/<key>`, named by its hash (`keepSignature` in [`gemini_sigstore.go`](../../internal/gateway/gemini_sigstore.go)), and the id carries only the key (`__tsk16__<key>`), so an id stays under 64 characters however long the step's signature (#2411: LobeHub's PostgreSQL index turned away a 3KB id). A key magpie no longer has, or whose file doesn't hash to it, reads as no signature; one not read for 90 days is removed. Where the folder can't be written, the id carries the signature as before. A signature goes back only to the provider that gave it (mimi001234: a group of Vertex AI and AI Studio moved on Vertex AI's 429, and AI Studio answered its signatures "Corrupted thought signature." on every try): the provider is noted beside it (`gemini-signatures/<key>.by`, `noteSigner`) where a reply is decoded (`decoderFor`, `signersNoted`) or relayed (`sigTidy`, a Gemini client's reply in `native` mode), and every request is fitted to its provider (`ownSignatures` in `forwardTranslated`, `chatCallSignatures` and `geminiBodySignatures` in `passthrough`): another provider's signature goes as `skip_thought_signature_validator` on a call and not at all on text. One of no known provider (an id from before, or a note that couldn't be written) goes as before, and the 400 retry above covers it. The provider is the provider id, not the account. `TestSignatureGoesOnlyToItsSigner`, `TestSignatureGoesOnlyToItsSignerTranslated`, `TestCorruptedSignatureTriedWithout`, `TestGeminiBodyKeepsOnlyItsOwn`. Across APIs, only Claude's reasoning is carried to a Responses client, below.
+ - A Responses upstream reads only the reasoning it sealed itself (`encrypted_content`). When one answers that it can't read the sealed reasoning or compaction it was sent (`foreignReasoning` in [`affinity.go`](../../internal/gateway/affinity.go): OpenAI's and Codex's "could not be verified", xAI's "Could not decrypt", Azure's "invalid encrypted summary", a relay's compaction-blob refusal), `serve` asks once more without it and remembers its hashes for that conversation (`stickKey`) and key or account (`candidate.vendor`, `refusedSeals`), so the conversation's later turns there go without it the first time; the try is `fail: foreign`. A Responses client's own items go first (`withoutReasoning`, `withoutRefused`), then OpenAI's compaction (`withoutCompaction`). A Chat, Messages or Gemini client holds a Responses upstream's sealed reasoning in its calls' ids instead (`<id>__rk<n>__<key>`, `carryReasoning` and `unreasonCalls` in [`reasoning_carry.go`](../../internal/gateway/reasoning_carry.go), 9da9bfabd), and every later turn of its history sends it again, so a conversation that moved to another Responses upstream or account (Grok to Codex after a 402, and back) was refused on that turn and every one after it (#4798, zane668, ZanderH-code). Such a refusal is asked again once too: `refuseCarried` remembers what the request's calls carried as refused by that key or account, and `translate` leaves those items out of this and every later request to it (`withoutRefusedCarry`, scoped to the try's provider through `withSealScope`). The calls, their arguments and results and the text go as the client wrote them, under the calls' own ids; the one that sealed an item, and every other key or account, is still given it. As for a Responses client, all the reasoning the request carried goes, the upstream's own earlier items among them; what it seals next goes along. `TestForeignSealAcrossGroupMembers`, `TestForeignCarriedReasoningAskedAgainWithout`.
+diff --git a/internal/gateway/codex_backend.go b/internal/gateway/codex_backend.go
+index 432c63241..dbc1a8e54 100644
+--- a/internal/gateway/codex_backend.go
++++ b/internal/gateway/codex_backend.go
+@@ -2389,10 +2389,52 @@ func (s *Server) askCodexList(rctx context.Context, h http.Header, query string,
+ 	}
+ }
+ 
++// codexListAuth keeps the client's ChatGPT sign-in apart from the gateway
++// key identifyCaller replaces with its internal token (#5197).
++type codexListAuth struct{}
++
++func keepCodexListAuth(r *http.Request, identified bool) *http.Request {
++	if r.Method != http.MethodGet || r.URL.Path != CodexPath+"/models" {
++		return r
++	}
++	auth := ""
++	if identified {
++		auth = r.Header.Get("Authorization")
++	}
++	a := strings.TrimSpace(auth)
++	if len(a) <= 7 || !strings.EqualFold(a[:7], "Bearer ") {
++		auth = ""
++	} else {
++		token := strings.TrimSpace(a[7:])
++		if token == "" || token == Token || strings.HasPrefix(token, Token+"-") || access.Named(token) || access.Default(token) {
++			auth = ""
++		}
++	}
++	return r.WithContext(context.WithValue(r.Context(), codexListAuth{}, auth))
++}
++
+ // codexModels is the ChatGPT backend's model list for this sign-in, with
+ // magpie's models after it. Should the backend not answer, or not in
+ // time, Codex's last list of its own stands in.
+ func (s *Server) codexModels(w http.ResponseWriter, r *http.Request) {
++	if auth, kept := r.Context().Value(codexListAuth{}).(string); kept {
++		if auth == "" {
++			writeError(w, provider.Responses, http.StatusUnauthorized, "a ChatGPT sign-in is required for the Codex backend model list")
++			return
++		}
++		// Both the cache key and the backend ask use the client's sign-in,
++		// after the gateway's guards have judged its key. No gateway key
++		// or internal token belongs in the request to ChatGPT.
++		r = r.Clone(r.Context())
++		r.Header.Set("Authorization", auth)
++		for _, h := range []string{"x-api-key", "x-goog-api-key", "x-openai-actor-authorization"} {
++			r.Header.Del(h)
++		}
++		if q := r.URL.Query(); q.Has("key") {
++			q.Del("key")
++			r.URL.RawQuery = q.Encode()
++		}
++	}
+ 	var own []any
+ 	body, etag, deny, denyBody := s.codexBackendList(r)
+ 	// A sign-in the backend calls revoked (401 token_revoked, "Encountered
+diff --git a/internal/gateway/codex_models_auth_test.go b/internal/gateway/codex_models_auth_test.go
+new file mode 100644
+index 000000000..501b36880
+--- /dev/null
++++ b/internal/gateway/codex_models_auth_test.go
+@@ -0,0 +1,223 @@
++package gateway
++
++import (
++	"encoding/json"
++	"io"
++	"net/http"
++	"net/url"
++	"sync/atomic"
++	"testing"
++	"time"
++
++	"github.com/yetone/magpie/internal/access"
++	"github.com/yetone/magpie/internal/provider"
++)
++
++const codexAuthList = CodexPath + "/models?client_version=0.166.0&auth_test=kept"
++
++// Codex sends its ChatGPT OAuth token beside the gateway key. Both guards
++// must keep their identities apart, including when the key came in a URL.
++func TestCodexModelsKeepOAuthBesideGatewayKey(t *testing.T) {
++	for _, tc := range []struct{ name, from, keyAt string }{
++		{"local x-api-key", fromHere, "x-api-key"},
++		{"local x-goog-api-key", fromHere, "x-goog-api-key"},
++		{"local query key", fromHere, "query"},
++		{"LAN x-api-key", fromThere, "x-api-key"},
++		{"local OAuth alone", fromHere, ""},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			fresh(t)
++			var asks atomic.Int32
++			chatgpt(t, func(w http.ResponseWriter, r *http.Request) {
++				if r.URL.Query().Get("auth_test") == "kept" {
++					asks.Add(1)
++					if r.URL.Path != CodexPath+"/models" || r.URL.Query().Get("client_version") != "0.166.0" {
++						t.Errorf("model-list route changed: %s", r.URL)
++					}
++					if r.Header.Get("Authorization") != "Bearer client-oauth" || r.Header.Get("chatgpt-account-id") != "client-account" {
++						t.Error("the client's OAuth token or account id did not reach ChatGPT")
++						w.WriteHeader(http.StatusUnauthorized)
++						io.WriteString(w, `{"detail":"invalid client sign-in"}`)
++						return
++					}
++					for _, key := range []string{"x-api-key", "x-goog-api-key", "x-openai-actor-authorization"} {
++						if r.Header.Get(key) != "" {
++							t.Errorf("gateway credential header %s reached ChatGPT", key)
++						}
++					}
++					if r.URL.Query().Has("key") {
++						t.Error("gateway key reached ChatGPT in the query")
++					}
++				}
++				w.Header().Set("Content-Type", "application/json")
++				io.WriteString(w, `{"models":[{"slug":"gpt-6-astra","priority":1,"context_window":272000,"max_context_window":872000,"effective_context_window_percent":95}]}`)
++			})
++			codexChatGPTAuth(t, "local-account@example.com")
++			if err := provider.Save(provider.Provider{ID: "codex", Contexts: map[string]int{"gpt-6-astra": 872000}}); err != nil {
++				t.Fatal(err)
++			}
++			_, secrets := newCaller(t, "Codex")
++			path := codexAuthList
++			headers := []string{"chatgpt-account-id", "client-account"}
++			if tc.keyAt == "query" {
++				path += "&key=" + url.QueryEscape(secrets[0])
++			} else if tc.keyAt != "" {
++				headers = append(headers, tc.keyAt, secrets[0], "x-openai-actor-authorization", "Bearer "+secrets[0])
++			}
++			w := keysCall(lanGuard(New().Handler()), "GET", path, tc.from, "client-oauth", "", headers...)
++			if w.Code != http.StatusOK {
++				t.Fatalf("model list: %d %s", w.Code, w.Body.String())
++			}
++			var got struct {
++				Models []struct {
++					Slug    string `json:"slug"`
++					Window  int    `json:"context_window"`
++					Maximum int    `json:"max_context_window"`
++					Percent int    `json:"effective_context_window_percent"`
++				} `json:"models"`
++			}
++			if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
++				t.Fatal(err)
++			}
++			found := false
++			for _, m := range got.Models {
++				if m.Slug == "gpt-6-astra" {
++					found = true
++					if m.Window != 872000 || m.Maximum != 872000 || m.Percent != 95 {
++						t.Errorf("Astra lost the configured window or backend reserve: %+v", m)
++					}
++				}
++			}
++			if !found || asks.Load() != 1 {
++				t.Fatalf("Astra listed=%v, upstream requests=%d; want the authenticated backend list", found, asks.Load())
++			}
++		})
++	}
++}
++
++// A gateway key authorizes access to magpie, never to the ChatGPT account
++// stored on this computer. Missing OAuth stays a refusal, without a fetch.
++func TestCodexModelsGatewayKeyIsNotOAuth(t *testing.T) {
++	for _, bearer := range []string{"", "managed", Token, TokenFor("codex")} {
++		t.Run(bearer, func(t *testing.T) {
++			fresh(t)
++			var asks atomic.Int32
++			chatgpt(t, func(w http.ResponseWriter, r *http.Request) {
++				if r.URL.Query().Get("auth_test") == "kept" {
++					asks.Add(1)
++				}
++				io.WriteString(w, `{"models":[{"slug":"gpt-local-account","priority":1}]}`)
++			})
++			codexChatGPTAuth(t, "local-account@example.com")
++			_, secrets := newCaller(t, "Codex")
++			if bearer == "managed" {
++				bearer = secrets[0]
++			}
++			w := keysCall(lanGuard(New().Handler()), "GET", codexAuthList, fromHere, bearer, "", "x-api-key", secrets[0])
++			if w.Code != http.StatusUnauthorized || asks.Load() != 0 {
++				t.Fatalf("without client OAuth: status %d, upstream requests %d; want a local 401", w.Code, asks.Load())
++			}
++		})
++	}
++}
++
++// Keeping OAuth must not bypass the gateway's LAN, disabled-key or expiry
++// checks. All these requests carry an otherwise valid client sign-in.
++func TestCodexModelsOAuthStillNeedsAnEnabledGatewayKey(t *testing.T) {
++	fresh(t)
++	var asks atomic.Int32
++	chatgpt(t, func(w http.ResponseWriter, r *http.Request) {
++		if r.URL.Query().Get("auth_test") == "kept" {
++			asks.Add(1)
++		}
++		io.WriteString(w, `{"models":[{"slug":"gpt-6-astra","priority":1}]}`)
++	})
++	keys, secrets := newCaller(t, "Disabled")
++	if _, err := access.Update("off-key", access.Change{Key: keys[0].ID}); err != nil {
++		t.Fatal(err)
++	}
++	issued, err := access.IssueKey(access.Issue{Name: "Expired", TTL: time.Hour})
++	if err != nil {
++		t.Fatal(err)
++	}
++	was := access.Now
++	t.Cleanup(func() { access.Now = was })
++	access.Now = func() time.Time { return was().Add(61 * time.Minute) }
++	h := lanGuard(New().Handler())
++	for _, tc := range []struct{ name, from, key string }{
++		{"LAN without key", fromThere, ""},
++		{"local disabled key", fromHere, secrets[0]},
++		{"LAN disabled key", fromThere, secrets[0]},
++		{"local expired key", fromHere, issued.Key},
++		{"LAN expired key", fromThere, issued.Key},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			w := keysCall(h, "GET", codexAuthList, tc.from, "client-oauth", "", "x-api-key", tc.key)
++			if w.Code != http.StatusUnauthorized || asks.Load() != 0 {
++				t.Fatalf("status %d, upstream requests %d; want a local 401", w.Code, asks.Load())
++			}
++		})
++	}
++}
++
++// Without account-id, the OAuth token distinguishes backend catalogs.
++// Normalizing both to the same gateway token must not merge those caches.
++func TestCodexModelsCacheUsesClientOAuth(t *testing.T) {
++	fresh(t)
++	var asks atomic.Int32
++	chatgpt(t, func(w http.ResponseWriter, r *http.Request) {
++		if r.URL.Query().Get("auth_test") != "kept" {
++			io.WriteString(w, `{"models":[]}`)
++			return
++		}
++		asks.Add(1)
++		slug := ""
++		switch r.Header.Get("Authorization") {
++		case "Bearer oauth-a":
++			slug = "gpt-client-a"
++		case "Bearer oauth-b":
++			slug = "gpt-client-b"
++		default:
++			w.WriteHeader(http.StatusUnauthorized)
++			io.WriteString(w, `{"detail":"invalid client sign-in"}`)
++			return
++		}
++		if r.Header.Get("chatgpt-account-id") != "" {
++			t.Error("a local account id was added to the client's request")
++		}
++		io.WriteString(w, `{"models":[{"slug":"`+slug+`","priority":1}]}`)
++	})
++	_, secrets := newCaller(t, "Shared gateway key")
++	h := lanGuard(New().Handler())
++	for _, tc := range []struct{ token, slug string }{
++		{"oauth-a", "gpt-client-a"},
++		{"oauth-a", "gpt-client-a"},
++		{"oauth-b", "gpt-client-b"},
++		{"oauth-a", "gpt-client-a"},
++	} {
++		w := keysCall(h, "GET", codexAuthList, fromHere, tc.token, "", "x-api-key", secrets[0])
++		if w.Code != http.StatusOK {
++			t.Fatalf("%s list: %d %s", tc.token, w.Code, w.Body.String())
++		}
++		var list struct {
++			Models []struct{ Slug string } `json:"models"`
++		}
++		if err := json.Unmarshal(w.Body.Bytes(), &list); err != nil {
++			t.Fatal(err)
++		}
++		found := false
++		for _, m := range list.Models {
++			if m.Slug == tc.slug {
++				found = true
++			} else if m.Slug == "gpt-client-a" || m.Slug == "gpt-client-b" {
++				t.Errorf("%s received another sign-in's model %s", tc.token, m.Slug)
++			}
++		}
++		if !found {
++			t.Fatalf("%s did not receive its own model %s", tc.token, tc.slug)
++		}
++	}
++	if asks.Load() != 2 {
++		t.Fatalf("%d upstream requests, want one per OAuth token with reuse", asks.Load())
++	}
++}
+diff --git a/internal/gateway/lan.go b/internal/gateway/lan.go
+index 2ab173072..92f35de0a 100644
+--- a/internal/gateway/lan.go
++++ b/internal/gateway/lan.go
+@@ -836,6 +836,7 @@ func identifyCaller(w http.ResponseWriter, r *http.Request) (*http.Request, bool
+ 		// the names the key gives models, before any route reads one
+ 		r = aliasRequest(r, who)
+ 	}
++	r = keepCodexListAuth(r, ok)
+ 	r.Header = r.Header.Clone()
+ 	r.Header.Set("Authorization", "Bearer "+Token)
+ 	for _, h := range []string{"x-api-key", "x-goog-api-key"} {
+-- 
+2.50.1 (Apple Git-155)
+

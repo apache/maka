@@ -1,0 +1,16 @@
+{
+  "name": "format",
+  "time_utc": "2026-10-16T23:41:47.698845+00:00",
+  "cwd": "/private/tmp/magpie-quality-20261017-2413",
+  "command": "gofmt -l internal/provider/importapps.go internal/provider/import_opencode.go internal/provider/importapps_test.go",
+  "input": "SQLite fixtures in internal/provider/importapps_test.go; no real credentials; temporary HOME via wrapper and provider TestMain testenv",
+  "environment": {
+    "GOTOOLCHAIN": "auto",
+    "GOPATH": "/Users/ggbdpq/go",
+    "GOMODCACHE": "/Users/ggbdpq/go/pkg/mod",
+    "GOCACHE": "/Users/ggbdpq/Library/Caches/go-build",
+    "GOMAXPROCS": "2"
+  },
+  "output": "",
+  "exit_status": 0
+}

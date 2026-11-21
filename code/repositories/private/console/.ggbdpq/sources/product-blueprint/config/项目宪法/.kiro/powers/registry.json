@@ -1,0 +1,446 @@
+{
+  "version": "1.0.0",
+  "powers": {
+    "postman": {
+      "name": "postman",
+      "description": "Automate API testing and collection management with Postman - create workspaces, collections, environments, and run tests programmatically",
+      "author": "Postman",
+      "license": "",
+      "keywords": [],
+      "displayName": "API Testing with Postman",
+      "iconUrl": "https://prod.download.desktop.kiro.dev/powers/icons/postman.png",
+      "repositoryUrl": "https://github.com/kirodotdev/powers/tree/main/postman",
+      "repositoryCloneUrl": "git@github.com:kirodotdev/powers.git",
+      "pathInRepo": "postman",
+      "repositoryBranch": "main",
+      "installed": false,
+      "source": {
+        "type": "registry"
+      }
+    },
+    "figma": {
+      "name": "figma",
+      "description": "Connect Figma designs to code components - automatically generate design system rules, map UI components to Figma designs, and maintain design-code consistency",
+      "mcpServers": [
+        "figma"
+      ],
+      "author": "Figma",
+      "license": "",
+      "keywords": [
+        "ui",
+        "design",
+        "code",
+        "layout",
+        "mockup",
+        "frame",
+        "component",
+        "frontend"
+      ],
+      "displayName": "Design to Code with Figma",
+      "iconUrl": "https://prod.download.desktop.kiro.dev/powers/icons/figma.png",
+      "repositoryUrl": "https://github.com/kirodotdev/powers/tree/main/figma",
+      "repositoryCloneUrl": "git@github.com:kirodotdev/powers.git",
+      "pathInRepo": "figma",
+      "repositoryBranch": "main",
+      "installed": true,
+      "installedAt": "2025-12-31T12:44:07.247Z",
+      "installPath": "/Users/ggbdpq/.kiro/powers/installed/figma",
+      "installedCommitSha": "c23595f7c6737f52da59bc8eb635916ef24e1b46",
+      "source": {
+        "type": "registry",
+        "cloneId": "clone-figma"
+      }
+    },
+    "netlify-deployment": {
+      "name": "netlify-deployment",
+      "description": "Deploy React, Next.js, Vue, and other modern web apps to Netlify's global CDN with automatic builds.",
+      "author": "Netlify",
+      "license": "",
+      "keywords": [
+        "netlify",
+        "deploy",
+        "hosting",
+        "cli",
+        "deployment",
+        "web",
+        "static-site"
+      ],
+      "displayName": "Deploy web apps with Netlify",
+      "iconUrl": "https://prod.download.desktop.kiro.dev/powers/icons/netlify.png",
+      "repositoryUrl": "https://github.com/netlify/context-and-tools/tree/main/context/steering/netlify-deployment-power",
+      "repositoryCloneUrl": "git@github.com:netlify/context-and-tools.git",
+      "pathInRepo": "context/steering/netlify-deployment-power",
+      "repositoryBranch": "main",
+      "installed": true,
+      "installedAt": "2025-12-31T12:43:53.915Z",
+      "installPath": "/Users/ggbdpq/.kiro/powers/installed/netlify-deployment",
+      "installedCommitSha": "fde70cf71660f7dbd4e1fda642e64a4a1f55bfd4",
+      "source": {
+        "type": "registry",
+        "cloneId": "clone-netlify-deployment"
+      }
+    },
+    "supabase-hosted": {
+      "name": "supabase-hosted",
+      "description": "Build applications with Supabase's Postgres database, authentication, storage, and real-time subscriptions",
+      "mcpServers": [
+        "supabase"
+      ],
+      "author": "Supabase",
+      "license": "",
+      "keywords": [
+        "database",
+        "postgres",
+        "auth",
+        "storage",
+        "realtime",
+        "backend",
+        "supabase",
+        "rls"
+      ],
+      "displayName": "Build a backend with Supabase",
+      "iconUrl": "https://prod.download.desktop.kiro.dev/powers/icons/supabase.png",
+      "repositoryUrl": "https://github.com/supabase-community/kiro-powers/tree/main/powers/supabase-hosted",
+      "repositoryCloneUrl": "git@github.com:supabase-community/kiro-powers.git",
+      "pathInRepo": "powers/supabase-hosted",
+      "repositoryBranch": "main",
+      "installed": true,
+      "installedAt": "2025-12-31T12:45:22.989Z",
+      "installPath": "/Users/ggbdpq/.kiro/powers/installed/supabase-hosted",
+      "installedCommitSha": "b5052a63c3afd67d8875c3b7f61d3b32af5477e6",
+      "source": {
+        "type": "registry",
+        "cloneId": "clone-supabase-hosted"
+      }
+    },
+    "supabase-local": {
+      "name": "supabase-local",
+      "description": "Local development with Supabase allows you to work on your projects in a self-contained environment on your local machine.",
+      "author": "Supabase",
+      "license": "",
+      "keywords": [],
+      "displayName": "Build a backend (local) with Supabase",
+      "iconUrl": "https://prod.download.desktop.kiro.dev/powers/icons/supabase.png",
+      "repositoryUrl": "https://github.com/supabase-community/kiro-powers/tree/main/powers/supabase-local",
+      "repositoryCloneUrl": "git@github.com:supabase-community/kiro-powers.git",
+      "pathInRepo": "powers/supabase-local",
+      "repositoryBranch": "main",
+      "installed": false,
+      "source": {
+        "type": "registry"
+      }
+    },
+    "terraform": {
+      "name": "terraform",
+      "description": "Build and manage Infrastructure as Code with Terraform - access registry providers, modules, policies, and HCP Terraform workflow management",
+      "author": "HashiCorp",
+      "license": "",
+      "keywords": [],
+      "displayName": "Deploy infrastructure with Terraform",
+      "iconUrl": "https://prod.download.desktop.kiro.dev/powers/icons/terraform.png",
+      "repositoryUrl": "https://github.com/kirodotdev/powers/tree/main/terraform",
+      "repositoryCloneUrl": "git@github.com:kirodotdev/powers.git",
+      "pathInRepo": "terraform",
+      "repositoryBranch": "main",
+      "installed": false,
+      "source": {
+        "type": "registry"
+      }
+    },
+    "strands": {
+      "name": "strands",
+      "description": "Build AI agents with Strands Agent SDK using Bedrock, Anthropic, OpenAI, Gemini, or Llama models",
+      "author": "AWS",
+      "license": "",
+      "keywords": [],
+      "displayName": "Build an agent with Strands",
+      "iconUrl": "https://prod.download.desktop.kiro.dev/powers/icons/strands.png",
+      "repositoryUrl": "https://github.com/kirodotdev/powers/tree/main/strands",
+      "repositoryCloneUrl": "git@github.com:kirodotdev/powers.git",
+      "pathInRepo": "strands",
+      "repositoryBranch": "main",
+      "installed": false,
+      "source": {
+        "type": "registry"
+      }
+    },
+    "aws-agentcore": {
+      "name": "aws-agentcore",
+      "description": "Amazon Bedrock AgentCore is an agentic platform for building, deploying, and operating effective agents.",
+      "author": "AWS",
+      "license": "",
+      "keywords": [],
+      "displayName": "Build an agent with Amazon Bedrock AgentCore",
+      "iconUrl": "https://prod.download.desktop.kiro.dev/powers/icons/agentcore.png",
+      "repositoryUrl": "https://github.com/kirodotdev/powers/tree/main/aws-agentcore",
+      "repositoryCloneUrl": "git@github.com:kirodotdev/powers.git",
+      "pathInRepo": "aws-agentcore",
+      "repositoryBranch": "main",
+      "installed": false,
+      "source": {
+        "type": "registry"
+      }
+    },
+    "neon": {
+      "name": "neon",
+      "description": "Serverless Postgres with database branching, autoscaling, and scale-to-zero - perfect for modern development workflows",
+      "author": "Neon",
+      "license": "",
+      "keywords": [],
+      "displayName": "Build a database with Neon",
+      "iconUrl": "https://prod.download.desktop.kiro.dev/powers/icons/neon.png",
+      "repositoryUrl": "https://github.com/kirodotdev/powers/tree/main/neon",
+      "repositoryCloneUrl": "git@github.com:kirodotdev/powers.git",
+      "pathInRepo": "neon",
+      "repositoryBranch": "main",
+      "installed": false,
+      "source": {
+        "type": "registry"
+      }
+    },
+    "cloud-architect": {
+      "name": "cloud-architect",
+      "description": "Build AWS infrastructure with CDK in Python following AWS Well-Architected framework best practices",
+      "author": "Christian Bonzelet",
+      "license": "",
+      "keywords": [],
+      "displayName": "Build infrastructure on AWS",
+      "iconUrl": "https://prod.download.desktop.kiro.dev/powers/icons/power.png",
+      "repositoryUrl": "https://github.com/kirodotdev/powers/tree/main/cloud-architect",
+      "repositoryCloneUrl": "git@github.com:kirodotdev/powers.git",
+      "pathInRepo": "cloud-architect",
+      "repositoryBranch": "main",
+      "installed": false,
+      "source": {
+        "type": "registry"
+      }
+    },
+    "datadog": {
+      "name": "datadog",
+      "description": "Query logs, metrics, traces, RUM events, incidents, and monitors from Datadog for production debugging and performance analysis",
+      "author": "Datadog",
+      "license": "",
+      "keywords": [],
+      "displayName": "Datadog Observability",
+      "iconUrl": "https://prod.download.desktop.kiro.dev/powers/icons/datadog.png",
+      "repositoryUrl": "https://github.com/kirodotdev/powers/tree/main/datadog",
+      "repositoryCloneUrl": "git@github.com:kirodotdev/powers.git",
+      "pathInRepo": "datadog",
+      "repositoryBranch": "main",
+      "installed": false,
+      "source": {
+        "type": "registry"
+      }
+    },
+    "dynatrace": {
+      "name": "dynatrace",
+      "description": "Query logs, metrics, traces, problems, and Kubernetes events from Dynatrace using DQL for production debugging and performance analysis",
+      "author": "Dynatrace",
+      "license": "",
+      "keywords": [],
+      "displayName": "Dynatrace Observability",
+      "iconUrl": "https://prod.download.desktop.kiro.dev/powers/icons/dynatrace.png",
+      "repositoryUrl": "https://github.com/kirodotdev/powers/tree/main/dynatrace",
+      "repositoryCloneUrl": "git@github.com:kirodotdev/powers.git",
+      "pathInRepo": "dynatrace",
+      "repositoryBranch": "main",
+      "installed": false,
+      "source": {
+        "type": "registry"
+      }
+    },
+    "saas-builder": {
+      "name": "saas-builder",
+      "description": "Build production ready multi-tenant SaaS applications with serverless architecture, integrated billing, and enterprise grade security",
+      "mcpServers": [
+        "fetch",
+        "stripe",
+        "aws-knowledge-mcp-server",
+        "awslabs.dynamodb-mcp-server",
+        "awslabs.aws-serverless-mcp",
+        "playwright"
+      ],
+      "author": "Allen Helton",
+      "license": "",
+      "keywords": [
+        "saas",
+        "multi-tenant",
+        "serverless",
+        "aws",
+        "lambda",
+        "dynamodb",
+        "stripe",
+        "billing",
+        "react",
+        "typescript"
+      ],
+      "displayName": "SaaS Builder",
+      "iconUrl": "https://prod.download.desktop.kiro.dev/powers/icons/power.png",
+      "repositoryUrl": "https://github.com/kirodotdev/powers/tree/main/saas-builder",
+      "repositoryCloneUrl": "git@github.com:kirodotdev/powers.git",
+      "pathInRepo": "saas-builder",
+      "repositoryBranch": "main",
+      "installed": true,
+      "installedAt": "2025-12-31T12:44:41.317Z",
+      "installPath": "/Users/ggbdpq/.kiro/powers/installed/saas-builder",
+      "installedCommitSha": "c23595f7c6737f52da59bc8eb635916ef24e1b46",
+      "source": {
+        "type": "registry",
+        "cloneId": "clone-saas-builder"
+      }
+    },
+    "stripe": {
+      "name": "stripe",
+      "description": "Build payment integrations with Stripe - accept payments, manage subscriptions, handle billing, and process refunds",
+      "author": "Stripe",
+      "license": "",
+      "keywords": [],
+      "displayName": "Stripe Payments",
+      "iconUrl": "https://prod.download.desktop.kiro.dev/powers/icons/stripe.png",
+      "repositoryUrl": "https://github.com/kirodotdev/powers/tree/main/stripe",
+      "repositoryCloneUrl": "git@github.com:kirodotdev/powers.git",
+      "pathInRepo": "stripe",
+      "repositoryBranch": "main",
+      "installed": false,
+      "source": {
+        "type": "registry"
+      }
+    },
+    "power-builder": {
+      "name": "power-builder",
+      "description": "Complete guide for building and testing new Kiro Powers with templates, best practices, and validation",
+      "author": "Kiro Team",
+      "license": "",
+      "keywords": [],
+      "displayName": "Build a Power",
+      "iconUrl": "https://prod.download.desktop.kiro.dev/powers/icons/power.png",
+      "repositoryUrl": "https://github.com/kirodotdev/powers/tree/main/power-builder",
+      "repositoryCloneUrl": "git@github.com:kirodotdev/powers.git",
+      "pathInRepo": "power-builder",
+      "repositoryBranch": "main",
+      "installed": false,
+      "source": {
+        "type": "registry"
+      }
+    },
+    "amazon-aurora-postgresql": {
+      "name": "amazon-aurora-postgresql",
+      "description": "Build applications backed by Aurora PostgreSQL by leveraging Aurora PostgreSQL specific best practices.",
+      "author": "AWS",
+      "license": "",
+      "keywords": [],
+      "displayName": "Build applications with Aurora PostgreSQL",
+      "iconUrl": "https://prod.download.desktop.kiro.dev/powers/icons/amazon-aurora.png",
+      "repositoryUrl": "https://github.com/awslabs/mcp/tree/main/src/postgres-mcp-server/kiro_power",
+      "repositoryCloneUrl": "git@github.com:awslabs/mcp.git",
+      "pathInRepo": "src/postgres-mcp-server/kiro_power",
+      "repositoryBranch": "main",
+      "installed": false,
+      "source": {
+        "type": "registry"
+      }
+    },
+    "aws-infrastructure-as-code": {
+      "name": "aws-infrastructure-as-code",
+      "description": "Build well-architected AWS infrastructure with CDK using latest documentation, best practices, and code samples. Validate CloudFormation templates, check resource configuration security compliance, and troubleshoot deployments.",
+      "author": "AWS",
+      "license": "",
+      "keywords": [],
+      "displayName": "Build AWS infrastructure with CDK and CloudFormation",
+      "iconUrl": "https://prod.download.desktop.kiro.dev/powers/icons/iac.png",
+      "repositoryUrl": "https://github.com/kirodotdev/powers/tree/main/aws-infrastructure-as-code",
+      "repositoryCloneUrl": "git@github.com:kirodotdev/powers.git",
+      "pathInRepo": "aws-infrastructure-as-code",
+      "repositoryBranch": "main",
+      "installed": false,
+      "source": {
+        "type": "registry"
+      }
+    },
+    "amazon-aurora-dsql": {
+      "name": "amazon-aurora-dsql",
+      "description": "Build and deploy a PostgreSQL-compatible serverless distributed SQL database with Aurora DSQL - manage schemas, execute queries, and handle migrations with DSQL-specific requirements.",
+      "author": "AWS",
+      "license": "",
+      "keywords": [],
+      "displayName": "Build a database with Aurora DSQL",
+      "iconUrl": "https://prod.download.desktop.kiro.dev/powers/icons/amazon-aurora.png",
+      "repositoryUrl": "https://github.com/awslabs/mcp/tree/main/src/aurora-dsql-mcp-server/kiro_power",
+      "repositoryCloneUrl": "git@github.com:awslabs/mcp.git",
+      "pathInRepo": "src/aurora-dsql-mcp-server/kiro_power",
+      "repositoryBranch": "main",
+      "installed": false,
+      "source": {
+        "type": "registry"
+      }
+    }
+  },
+  "repoSources": {
+    "clone-netlify-deployment": {
+      "name": "netlify-deployment",
+      "type": "git",
+      "enabled": true,
+      "branch": "main",
+      "lastCommitSha": "fde70cf71660f7dbd4e1fda642e64a4a1f55bfd4",
+      "cloneUrl": "git@github.com:netlify/context-and-tools.git",
+      "pathInRepo": "context/steering/netlify-deployment-power",
+      "localPath": "/Users/ggbdpq/.kiro/powers/repos/netlify-deployment",
+      "clonedAt": "2025-12-31T12:43:53.910Z",
+      "powerCount": 1,
+      "powers": [
+        "netlify-deployment"
+      ]
+    },
+    "clone-figma": {
+      "name": "figma",
+      "type": "git",
+      "enabled": true,
+      "branch": "main",
+      "lastCommitSha": "c23595f7c6737f52da59bc8eb635916ef24e1b46",
+      "cloneUrl": "git@github.com:kirodotdev/powers.git",
+      "pathInRepo": "figma",
+      "localPath": "/Users/ggbdpq/.kiro/powers/repos/figma",
+      "clonedAt": "2025-12-31T12:44:07.245Z",
+      "powerCount": 1,
+      "powers": [
+        "figma"
+      ]
+    },
+    "clone-saas-builder": {
+      "name": "saas-builder",
+      "type": "git",
+      "enabled": true,
+      "branch": "main",
+      "lastCommitSha": "c23595f7c6737f52da59bc8eb635916ef24e1b46",
+      "cloneUrl": "git@github.com:kirodotdev/powers.git",
+      "pathInRepo": "saas-builder",
+      "localPath": "/Users/ggbdpq/.kiro/powers/repos/saas-builder",
+      "clonedAt": "2025-12-31T12:44:41.313Z",
+      "powerCount": 1,
+      "powers": [
+        "saas-builder"
+      ]
+    },
+    "clone-supabase-hosted": {
+      "name": "supabase-hosted",
+      "type": "git",
+      "enabled": true,
+      "branch": "main",
+      "lastCommitSha": "b5052a63c3afd67d8875c3b7f61d3b32af5477e6",
+      "cloneUrl": "git@github.com:supabase-community/kiro-powers.git",
+      "pathInRepo": "powers/supabase-hosted",
+      "localPath": "/Users/ggbdpq/.kiro/powers/repos/supabase-hosted",
+      "clonedAt": "2025-12-31T12:45:22.985Z",
+      "powerCount": 1,
+      "powers": [
+        "supabase-hosted"
+      ]
+    }
+  },
+  "kiroRecommendedRepo": {
+    "url": "https://prod.download.desktop.kiro.dev/powers/default_registry.json",
+    "lastFetch": "2026-01-20T09:13:24.628Z",
+    "powerCount": 18
+  },
+  "lastUpdated": "2026-01-20T09:13:24.628Z"
+}

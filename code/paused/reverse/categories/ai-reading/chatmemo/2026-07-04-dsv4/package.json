@@ -1,0 +1,21 @@
+{
+  "name": "chatmemo-dsv4",
+  "version": "1.3.3",
+  "description": "Chat Memo — AI 聊天记录自动保存 Chrome 扩展（逆向工程还原项目）",
+  "author": "一泽Eze (原作者) / dsv4 (逆向还原)",
+  "license": "UNLICENSED",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc --watch",
+    "check": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0",
+    "@types/chrome": "^0.0.268"
+  },
+  "keywords": ["chrome-extension", "reverse-engineering", "chatgpt", "claude", "gemini"],
+  "repository": {
+    "type": "local",
+    "directory": "chatmemo-dsv4"
+  }
+}

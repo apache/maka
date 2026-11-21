@@ -1,0 +1,321 @@
+{
+  "issue": 2533,
+  "verified_date": "2026-10-17 Asia/Macau",
+  "base_sha": "6f950653fcdb46c73044a071328cdc508f12ccef",
+  "status": "TARGETED_PASS; full repository acceptance pending combined verification",
+  "scope": "local isolated archives, no commit/push/GitHub edits",
+  "seam": "gateway Handler HTTP/SSE bytes -> installed Pi 1.2.0 SDK parser -> actual isContextOverflow consumer",
+  "changed_branch_fields": [
+    "gateway.streamError: non-context 413, non-Gemini adds request_too_large text once",
+    "chatEncoder.event(KError): 413 non-context error.type=request_too_large",
+    "anthropicEncoder.event(KError): 413 non-context error.type=request_too_large"
+  ],
+  "artifacts": {
+    "MODIFIED_FILE": "/private/tmp/magpie-quality-20261017-2533/internal/gateway/gateway.go",
+    "DIFF_FILE": "/Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/updated.patch",
+    "VERIFICATION.txt": "/Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/VERIFICATION.txt",
+    "ROLLBACK.sh": "/Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/ROLLBACK.sh"
+  },
+  "environment": {
+    "HOME": "/private/tmp/magpie-quality-20261017-2533-home",
+    "GOPATH": "/Users/ggbdpq/go",
+    "GOMODCACHE": "/Users/ggbdpq/go/pkg/mod",
+    "GOCACHE": "/Users/ggbdpq/Library/Caches/go-build",
+    "GOTOOLCHAIN": "auto",
+    "effective_go": "go1.26.8",
+    "GOPROXY": "off",
+    "go_parallelism": 2
+  },
+  "original_patch_sha256": "2e8219457e122a1747cd5b9702a7e7c9a265cb2bdbf2c58f79e5e84e58e665db",
+  "updated_patch_sha256": "57d218a5b7dc09235bcfadf7fc5930b3239ea25868117594e2d51fa024bf35dd",
+  "source_hashes": {
+    "docs/subsystems/gateway-routing.md": {
+      "baseline_sha256": "ffaf31ab893fe0e0cbaf575977b8969a83b26732233fcfa2198a7376fc327cf2",
+      "modified_sha256": "12563d05e2f25dc1dcd1158a4f55454c470f6caf41dd97cc6e63c066982eb63d"
+    },
+    "internal/gateway/anthropic.go": {
+      "baseline_sha256": "d53db10e2b02c397ecec6c724df532a97e8562445abcb29b1d46bf45972734af",
+      "modified_sha256": "e3d8294e3f3de75fa5d6d3b40d755a45a78e961a23e89bfe14b365fc924d3338"
+    },
+    "internal/gateway/chat.go": {
+      "baseline_sha256": "bff661e0288ff9306a909751754f31bac4dcc07345aba08792677a6812a07863",
+      "modified_sha256": "be205e80854c13545c544e5ee36a7a18c541e49caf152c628a1aecea4663b83a"
+    },
+    "internal/gateway/gateway.go": {
+      "baseline_sha256": "29a87fa4b1ac485a79c31b204ea144f16702de57fc740ae21ad38c0226171790",
+      "modified_sha256": "4dba33f00437e1493fa273c4ccad60da40be04bb69e57c861c6d15f053b7fafc"
+    },
+    "internal/gateway/stream_byte_cap_test.go": {
+      "baseline_sha256": null,
+      "modified_sha256": "5d66f0ff13cd3d04c800d7f5d2e5e8cd6af313cdd78d7eaaeb6256d8fb0dd1f5"
+    }
+  },
+  "pi": {
+    "metadata": {
+      "versions": {
+        "pi-coding-agent": "1.2.0",
+        "pi-ai": "1.2.0"
+      },
+      "hashes": {
+        "/Users/ggbdpq/.local/share/fnm/aliases/default/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/api/openai-completions.js": "5a79cc5aa41dee180692695e65771720d1ea556e9a978649dc2040278be51753",
+        "/Users/ggbdpq/.local/share/fnm/aliases/default/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/api/anthropic-messages.js": "504e3ece928779fbe370d36e0e16572e8f5a43e6d8bbe9eff409cd2edcf210fa",
+        "/Users/ggbdpq/.local/share/fnm/aliases/default/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/api/openai-responses.js": "8de25051531f131c4ae3d730f371fa0e15559ed7f865765a744c64d5edd2e067",
+        "/Users/ggbdpq/.local/share/fnm/aliases/default/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/utils/overflow.js": "85570a78e9ba3e0322fe1b3f14c991b6a439b1d3eb89af306e2e7e9ade3d53b4"
+      }
+    },
+    "actual_results": [
+      {
+        "fixture": "/Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/modified-fixtures/_artifacts/1037225698/byte-responses.sse",
+        "requests": 1,
+        "stopReason": "error",
+        "errorMessage": "server_error: A: 413 Request Entity Too Large (request_too_large)",
+        "overflow": true,
+        "expected": true
+      },
+      {
+        "fixture": "/Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/modified-fixtures/_artifacts/1366222595/byte-anthropic.sse",
+        "requests": 1,
+        "stopReason": "error",
+        "errorMessage": "{\"error\":{\"message\":\"A: 413 Request Entity Too Large (request_too_large)\",\"type\":\"request_too_large\"},\"type\":\"error\"}",
+        "overflow": true,
+        "expected": true
+      },
+      {
+        "fixture": "/Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/modified-fixtures/_artifacts/1730434262/ordinary-chat.sse",
+        "requests": 1,
+        "stopReason": "error",
+        "errorMessage": "A: invalid tool schema",
+        "overflow": false,
+        "expected": false
+      },
+      {
+        "fixture": "/Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/modified-fixtures/_artifacts/1784547613/context-chat.sse",
+        "requests": 1,
+        "stopReason": "error",
+        "errorMessage": "A: prompt is too long: 210000 tokens > 200000 maximum",
+        "overflow": true,
+        "expected": true
+      },
+      {
+        "fixture": "/Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/modified-fixtures/_artifacts/2079924175/byte-chat.sse",
+        "requests": 1,
+        "stopReason": "error",
+        "errorMessage": "A: 413 Request Entity Too Large (request_too_large)",
+        "overflow": true,
+        "expected": true
+      },
+      {
+        "fixture": "/Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/modified-fixtures/_artifacts/3114788270/ordinary-anthropic.sse",
+        "requests": 1,
+        "stopReason": "error",
+        "errorMessage": "{\"error\":{\"message\":\"A: invalid tool schema\",\"type\":\"api_error\"},\"type\":\"error\"}",
+        "overflow": false,
+        "expected": false
+      },
+      {
+        "fixture": "/Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/modified-fixtures/_artifacts/3630116289/ordinary-responses.sse",
+        "requests": 1,
+        "stopReason": "error",
+        "errorMessage": "server_error: A: invalid tool schema",
+        "overflow": false,
+        "expected": false
+      },
+      {
+        "fixture": "/Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/modified-fixtures/_artifacts/3881289988/context-anthropic.sse",
+        "requests": 1,
+        "stopReason": "error",
+        "errorMessage": "{\"error\":{\"code\":\"context_length_exceeded\",\"message\":\"A: prompt is too long: 210000 tokens \\u003e 200000 maximum\",\"type\":\"api_error\"},\"type\":\"error\"}",
+        "overflow": true,
+        "expected": true
+      },
+      {
+        "fixture": "/Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/modified-fixtures/_artifacts/4103169748/context-responses.sse",
+        "requests": 1,
+        "stopReason": "error",
+        "errorMessage": "context_length_exceeded: A: prompt is too long: 210000 tokens > 200000 maximum",
+        "overflow": true,
+        "expected": true
+      }
+    ],
+    "observed": "SDK consumes gateway output, byte cap classified overflow=true after fix, false after all-product ablation; context=true and ordinary=false remain",
+    "unverified": "automatic summary/compaction and retry with a real upstream; actual customer sessions; other Pi versions"
+  },
+  "rollback": {
+    "copy": "/private/tmp/magpie-quality-20261017-2533-replay",
+    "command_exit_status": 0,
+    "hash_comparison": "PASS",
+    "behavior_probe_exit_status": 1,
+    "restored_behavior": "byte cap lacks request_too_large; three byte protocol branches FAIL as expected; context/ordinary/Gemini PASS",
+    "modified_source_left_changed": true
+  },
+  "commands": [
+    {
+      "name": "baseline-chat-red",
+      "command": "go test -tags nogui -count=1 -p 2 -timeout 2m -artifacts -outputdir /Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/baseline-fixtures -run \\^TestStreamedByteCapErrorShapes\\$ -v ./internal/gateway",
+      "cwd": "/private/tmp/magpie-quality-20261017-2533",
+      "input": "see command and original/updated patch as applicable",
+      "literal_output": "=== RUN   TestStreamedByteCapErrorShapes\n=== RUN   TestStreamedByteCapErrorShapes/chat\n=== ARTIFACTS TestStreamedByteCapErrorShapes/chat /Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/baseline-fixtures/_artifacts/1921490349\n    stream_byte_cap_test.go:84: byte cap in a stream already begun: 200 : keepalive\n        data: {\"choices\":[{\"delta\":{\"content\":\"\",\"role\":\"assistant\"},\"finish_reason\":null,\"index\":0}],\"created\":1792193953,\"id\":\"chatcmpl-18df26e7b3d5022800000001\",\"model\":\"\",\"object\":\"chat.completion.chunk\",\"usage\":null}\n        \n        data: {\"error\":{\"message\":\"A: 413 Request Entity Too Large\",\"type\":\"api_error\"}}\n        \n--- FAIL: TestStreamedByteCapErrorShapes (0.78s)\n    --- FAIL: TestStreamedByteCapErrorShapes/chat (0.78s)\nFAIL\nFAIL\tgithub.com/yetone/magpie/internal/gateway\t1.144s\nFAIL\n",
+      "exit_status": 1,
+      "log": "/Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/baseline-chat-red.log"
+    },
+    {
+      "name": "green-chat",
+      "command": "go test -tags nogui -count=1 -p 2 -timeout 2m -artifacts -outputdir /Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/green-chat-fixtures -run \\^TestStreamedByteCapErrorShapes\\$ -v ./internal/gateway",
+      "cwd": "/private/tmp/magpie-quality-20261017-2533",
+      "input": "see command and original/updated patch as applicable",
+      "literal_output": "=== RUN   TestStreamedByteCapErrorShapes\n=== RUN   TestStreamedByteCapErrorShapes/chat\n=== ARTIFACTS TestStreamedByteCapErrorShapes/chat /Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/green-chat-fixtures/_artifacts/3599749550\n--- PASS: TestStreamedByteCapErrorShapes (0.56s)\n    --- PASS: TestStreamedByteCapErrorShapes/chat (0.56s)\nPASS\nok  \tgithub.com/yetone/magpie/internal/gateway\t1.065s\n",
+      "exit_status": 0,
+      "log": "/Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/green-chat.log"
+    },
+    {
+      "name": "anthropic-red",
+      "command": "go test -tags nogui -count=1 -p 2 -timeout 2m -artifacts -outputdir /Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/anthropic-red-fixtures -run \\^TestStreamedByteCapErrorShapes\\$ -v ./internal/gateway",
+      "cwd": "/private/tmp/magpie-quality-20261017-2533",
+      "input": "see command and original/updated patch as applicable",
+      "literal_output": "=== RUN   TestStreamedByteCapErrorShapes\n=== RUN   TestStreamedByteCapErrorShapes/chat\n=== ARTIFACTS TestStreamedByteCapErrorShapes/chat /Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/anthropic-red-fixtures/_artifacts/1455203436\n=== RUN   TestStreamedByteCapErrorShapes/anthropic\n=== ARTIFACTS TestStreamedByteCapErrorShapes/anthropic /Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/anthropic-red-fixtures/_artifacts/2687769102\n    stream_byte_cap_test.go:85: byte cap in a stream already begun: 200 : keepalive\n        event: message_start\n        data: {\"message\":{\"content\":[],\"id\":\"msg_18df26f87f3cbe7800000002\",\"model\":\"\",\"role\":\"assistant\",\"stop_reason\":null,\"stop_sequence\":null,\"type\":\"message\",\"usage\":{\"input_tokens\":0,\"output_tokens\":0,\"cache_read_input_tokens\":0,\"cache_creation_input_tokens\":0}},\"type\":\"message_start\"}\n        \n        event: error\n        data: {\"error\":{\"message\":\"A: 413 Request Entity Too Large (request_too_large)\",\"type\":\"api_error\"},\"type\":\"error\"}\n        \n--- FAIL: TestStreamedByteCapErrorShapes (0.62s)\n    --- PASS: TestStreamedByteCapErrorShapes/chat (0.56s)\n    --- FAIL: TestStreamedByteCapErrorShapes/anthropic (0.05s)\nFAIL\nFAIL\tgithub.com/yetone/magpie/internal/gateway\t1.058s\nFAIL\n",
+      "exit_status": 1,
+      "log": "/Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/anthropic-red.log"
+    },
+    {
+      "name": "green-anthropic",
+      "command": "go test -tags nogui -count=1 -p 2 -timeout 2m -artifacts -outputdir /Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/green-anthropic-fixtures -run \\^TestStreamedByteCapErrorShapes\\$ -v ./internal/gateway",
+      "cwd": "/private/tmp/magpie-quality-20261017-2533",
+      "input": "see command and original/updated patch as applicable",
+      "literal_output": "=== RUN   TestStreamedByteCapErrorShapes\n=== RUN   TestStreamedByteCapErrorShapes/chat\n=== ARTIFACTS TestStreamedByteCapErrorShapes/chat /Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/green-anthropic-fixtures/_artifacts/3654505359\n=== RUN   TestStreamedByteCapErrorShapes/anthropic\n=== ARTIFACTS TestStreamedByteCapErrorShapes/anthropic /Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/green-anthropic-fixtures/_artifacts/1111792325\n--- PASS: TestStreamedByteCapErrorShapes (0.93s)\n    --- PASS: TestStreamedByteCapErrorShapes/chat (0.88s)\n    --- PASS: TestStreamedByteCapErrorShapes/anthropic (0.05s)\nPASS\nok  \tgithub.com/yetone/magpie/internal/gateway\t1.361s\n",
+      "exit_status": 0,
+      "log": "/Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/green-anthropic.log"
+    },
+    {
+      "name": "modified-focused",
+      "command": "go test -tags nogui -count=1 -p 2 -timeout 4m -artifacts -outputdir /Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/modified-fixtures -run \\^Test\\(StreamedByteCap\\|PayloadTooLargeSaysRequestTooLargeToPi\\|StreamErrorSaysItPasses\\|GroupLastFailureInStreamSaysItPasses\\|ContextOverflowSaidTheClientsWay\\|BodyRejectionErrorShapes\\) -v ./internal/gateway",
+      "cwd": "/private/tmp/magpie-quality-20261017-2533",
+      "input": "nginx 413 HTML; token context error (413); ordinary invalid tool schema (400)",
+      "literal_output": "=== RUN   TestPayloadTooLargeSaysRequestTooLargeToPi\n--- PASS: TestPayloadTooLargeSaysRequestTooLargeToPi (0.52s)\n=== RUN   TestBodyRejectionErrorShapes\n--- PASS: TestBodyRejectionErrorShapes (0.00s)\n=== RUN   TestStreamedByteCapErrorShapes\n=== RUN   TestStreamedByteCapErrorShapes/byte/chat\n=== ARTIFACTS TestStreamedByteCapErrorShapes/byte/chat /Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/modified-fixtures/_artifacts/2079924175\n=== RUN   TestStreamedByteCapErrorShapes/byte/anthropic\n=== ARTIFACTS TestStreamedByteCapErrorShapes/byte/anthropic /Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/modified-fixtures/_artifacts/1366222595\n=== RUN   TestStreamedByteCapErrorShapes/byte/responses\n=== ARTIFACTS TestStreamedByteCapErrorShapes/byte/responses /Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/modified-fixtures/_artifacts/1037225698\n=== RUN   TestStreamedByteCapErrorShapes/context/chat\n=== ARTIFACTS TestStreamedByteCapErrorShapes/context/chat /Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/modified-fixtures/_artifacts/1784547613\n=== RUN   TestStreamedByteCapErrorShapes/context/anthropic\n=== ARTIFACTS TestStreamedByteCapErrorShapes/context/anthropic /Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/modified-fixtures/_artifacts/3881289988\n=== RUN   TestStreamedByteCapErrorShapes/context/responses\n=== ARTIFACTS TestStreamedByteCapErrorShapes/context/responses /Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/modified-fixtures/_artifacts/4103169748\n=== RUN   TestStreamedByteCapErrorShapes/ordinary/chat\n=== ARTIFACTS TestStreamedByteCapErrorShapes/ordinary/chat /Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/modified-fixtures/_artifacts/1730434262\n=== RUN   TestStreamedByteCapErrorShapes/ordinary/anthropic\n=== ARTIFACTS TestStreamedByteCapErrorShapes/ordinary/anthropic /Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/modified-fixtures/_artifacts/3114788270\n=== RUN   TestStreamedByteCapErrorShapes/ordinary/responses\n=== ARTIFACTS TestStreamedByteCapErrorShapes/ordinary/responses /Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/modified-fixtures/_artifacts/3630116289\n--- PASS: TestStreamedByteCapErrorShapes (0.50s)\n    --- PASS: TestStreamedByteCapErrorShapes/byte/chat (0.05s)\n    --- PASS: TestStreamedByteCapErrorShapes/byte/anthropic (0.05s)\n    --- PASS: TestStreamedByteCapErrorShapes/byte/responses (0.05s)\n    --- PASS: TestStreamedByteCapErrorShapes/context/chat (0.06s)\n    --- PASS: TestStreamedByteCapErrorShapes/context/anthropic (0.06s)\n    --- PASS: TestStreamedByteCapErrorShapes/context/responses (0.06s)\n    --- PASS: TestStreamedByteCapErrorShapes/ordinary/chat (0.05s)\n    --- PASS: TestStreamedByteCapErrorShapes/ordinary/anthropic (0.06s)\n    --- PASS: TestStreamedByteCapErrorShapes/ordinary/responses (0.05s)\n=== RUN   TestStreamedByteCapLeavesGeminiShape\n--- PASS: TestStreamedByteCapLeavesGeminiShape (0.01s)\n=== RUN   TestStreamErrorSaysItPasses\n--- PASS: TestStreamErrorSaysItPasses (0.00s)\n=== RUN   TestGroupLastFailureInStreamSaysItPasses\n--- PASS: TestGroupLastFailureInStreamSaysItPasses (1.35s)\n=== RUN   TestContextOverflowSaidTheClientsWay\n--- PASS: TestContextOverflowSaidTheClientsWay (0.00s)\nPASS\nok  \tgithub.com/yetone/magpie/internal/gateway\t2.765s\n",
+      "exit_status": 0,
+      "log": "/Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/modified-focused.log"
+    },
+    {
+      "name": "pi-baseline",
+      "command": "node /Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/pi-consumer-check.mjs /Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/baseline-fixtures baseline",
+      "cwd": "/private/tmp/magpie-quality-20261017-2533",
+      "input": "captured SSE directory named by command",
+      "literal_output": "{\"versions\":{\"pi-coding-agent\":\"1.2.0\",\"pi-ai\":\"1.2.0\"},\"hashes\":{\"/Users/ggbdpq/.local/share/fnm/aliases/default/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/api/openai-completions.js\":\"5a79cc5aa41dee180692695e65771720d1ea556e9a978649dc2040278be51753\",\"/Users/ggbdpq/.local/share/fnm/aliases/default/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/api/anthropic-messages.js\":\"504e3ece928779fbe370d36e0e16572e8f5a43e6d8bbe9eff409cd2edcf210fa\",\"/Users/ggbdpq/.local/share/fnm/aliases/default/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/api/openai-responses.js\":\"8de25051531f131c4ae3d730f371fa0e15559ed7f865765a744c64d5edd2e067\",\"/Users/ggbdpq/.local/share/fnm/aliases/default/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/utils/overflow.js\":\"85570a78e9ba3e0322fe1b3f14c991b6a439b1d3eb89af306e2e7e9ade3d53b4\"}}\n{\"fixture\":\"/Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/baseline-fixtures/_artifacts/1921490349/chat.sse\",\"requests\":1,\"stopReason\":\"error\",\"errorMessage\":\"A: 413 Request Entity Too Large\",\"overflow\":false,\"expected\":false}\nPASS: real Pi 1.2.0 consumed 1 gateway SSE fixture(s); no summary request or live vendor was run\n",
+      "exit_status": 0,
+      "log": "/Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/pi-baseline.log"
+    },
+    {
+      "name": "pi-modified",
+      "command": "node /Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/pi-consumer-check.mjs /Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/modified-fixtures",
+      "cwd": "/private/tmp/magpie-quality-20261017-2533",
+      "input": "captured SSE directory named by command",
+      "literal_output": "{\"versions\":{\"pi-coding-agent\":\"1.2.0\",\"pi-ai\":\"1.2.0\"},\"hashes\":{\"/Users/ggbdpq/.local/share/fnm/aliases/default/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/api/openai-completions.js\":\"5a79cc5aa41dee180692695e65771720d1ea556e9a978649dc2040278be51753\",\"/Users/ggbdpq/.local/share/fnm/aliases/default/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/api/anthropic-messages.js\":\"504e3ece928779fbe370d36e0e16572e8f5a43e6d8bbe9eff409cd2edcf210fa\",\"/Users/ggbdpq/.local/share/fnm/aliases/default/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/api/openai-responses.js\":\"8de25051531f131c4ae3d730f371fa0e15559ed7f865765a744c64d5edd2e067\",\"/Users/ggbdpq/.local/share/fnm/aliases/default/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/utils/overflow.js\":\"85570a78e9ba3e0322fe1b3f14c991b6a439b1d3eb89af306e2e7e9ade3d53b4\"}}\n{\"fixture\":\"/Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/modified-fixtures/_artifacts/1037225698/byte-responses.sse\",\"requests\":1,\"stopReason\":\"error\",\"errorMessage\":\"server_error: A: 413 Request Entity Too Large (request_too_large)\",\"overflow\":true,\"expected\":true}\n{\"fixture\":\"/Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/modified-fixtures/_artifacts/1366222595/byte-anthropic.sse\",\"requests\":1,\"stopReason\":\"error\",\"errorMessage\":\"{\\\"error\\\":{\\\"message\\\":\\\"A: 413 Request Entity Too Large (request_too_large)\\\",\\\"type\\\":\\\"request_too_large\\\"},\\\"type\\\":\\\"error\\\"}\",\"overflow\":true,\"expected\":true}\n{\"fixture\":\"/Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/modified-fixtures/_artifacts/1730434262/ordinary-chat.sse\",\"requests\":1,\"stopReason\":\"error\",\"errorMessage\":\"A: invalid tool schema\",\"overflow\":false,\"expected\":false}\n{\"fixture\":\"/Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/modified-fixtures/_artifacts/1784547613/context-chat.sse\",\"requests\":1,\"stopReason\":\"error\",\"errorMessage\":\"A: prompt is too long: 210000 tokens > 200000 maximum\",\"overflow\":true,\"expected\":true}\n{\"fixture\":\"/Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/modified-fixtures/_artifacts/2079924175/byte-chat.sse\",\"requests\":1,\"stopReason\":\"error\",\"errorMessage\":\"A: 413 Request Entity Too Large (request_too_large)\",\"overflow\":true,\"expected\":true}\n{\"fixture\":\"/Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/modified-fixtures/_artifacts/3114788270/ordinary-anthropic.sse\",\"requests\":1,\"stopReason\":\"error\",\"errorMessage\":\"{\\\"error\\\":{\\\"message\\\":\\\"A: invalid tool schema\\\",\\\"type\\\":\\\"api_error\\\"},\\\"type\\\":\\\"error\\\"}\",\"overflow\":false,\"expected\":false}\n{\"fixture\":\"/Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/modified-fixtures/_artifacts/3630116289/ordinary-responses.sse\",\"requests\":1,\"stopReason\":\"error\",\"errorMessage\":\"server_error: A: invalid tool schema\",\"overflow\":false,\"expected\":false}\n{\"fixture\":\"/Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/modified-fixtures/_artifacts/3881289988/context-anthropic.sse\",\"requests\":1,\"stopReason\":\"error\",\"errorMessage\":\"{\\\"error\\\":{\\\"code\\\":\\\"context_length_exceeded\\\",\\\"message\\\":\\\"A: prompt is too long: 210000 tokens \\\\u003e 200000 maximum\\\",\\\"type\\\":\\\"api_error\\\"},\\\"type\\\":\\\"error\\\"}\",\"overflow\":true,\"expected\":true}\n{\"fixture\":\"/Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/modified-fixtures/_artifacts/4103169748/context-responses.sse\",\"requests\":1,\"stopReason\":\"error\",\"errorMessage\":\"context_length_exceeded: A: prompt is too long: 210000 tokens > 200000 maximum\",\"overflow\":true,\"expected\":true}\nPASS: real Pi 1.2.0 consumed 9 gateway SSE fixture(s); no summary request or live vendor was run\n",
+      "exit_status": 0,
+      "log": "/Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/pi-modified.log"
+    },
+    {
+      "name": "ablation-red",
+      "command": "go test -tags nogui -count=1 -p 2 -timeout 2m -artifacts -outputdir /Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/ablation-fixtures -run \\^TestStreamedByteCap -v ./internal/gateway",
+      "cwd": "/private/tmp/magpie-quality-20261017-2533",
+      "input": "nginx 413 HTML; token context error (413); ordinary invalid tool schema (400)",
+      "literal_output": "=== RUN   TestStreamedByteCapErrorShapes\n=== RUN   TestStreamedByteCapErrorShapes/byte/chat\n=== ARTIFACTS TestStreamedByteCapErrorShapes/byte/chat /Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/ablation-fixtures/_artifacts/3892238470\n    stream_byte_cap_test.go:104: failure class changed: 200 : keepalive\n        data: {\"choices\":[{\"delta\":{\"content\":\"\",\"role\":\"assistant\"},\"finish_reason\":null,\"index\":0}],\"created\":1792194129,\"id\":\"chatcmpl-18df2710cd9788d800000001\",\"model\":\"\",\"object\":\"chat.completion.chunk\",\"usage\":null}\n        \n        data: {\"error\":{\"message\":\"A: 413 Request Entity Too Large\",\"type\":\"api_error\"}}\n        \n=== RUN   TestStreamedByteCapErrorShapes/byte/anthropic\n=== ARTIFACTS TestStreamedByteCapErrorShapes/byte/anthropic /Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/ablation-fixtures/_artifacts/574488786\n    stream_byte_cap_test.go:104: failure class changed: 200 : keepalive\n        event: message_start\n        data: {\"message\":{\"content\":[],\"id\":\"msg_18df2710d0a570d000000002\",\"model\":\"\",\"role\":\"assistant\",\"stop_reason\":null,\"stop_sequence\":null,\"type\":\"message\",\"usage\":{\"input_tokens\":0,\"output_tokens\":0,\"cache_read_input_tokens\":0,\"cache_creation_input_tokens\":0}},\"type\":\"message_start\"}\n        \n        event: error\n        data: {\"error\":{\"message\":\"A: 413 Request Entity Too Large\",\"type\":\"api_error\"},\"type\":\"error\"}\n        \n=== RUN   TestStreamedByteCapErrorShapes/byte/responses\n=== ARTIFACTS TestStreamedByteCapErrorShapes/byte/responses /Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/ablation-fixtures/_artifacts/3646635469\n    stream_byte_cap_test.go:104: failure class changed: 200 : keepalive\n        event: response.created\n        data: {\"response\":{\"created_at\":1792194129,\"id\":\"resp_18df2710d3bec69000000003\",\"model\":\"\",\"object\":\"response\",\"output\":[],\"parallel_tool_calls\":true,\"status\":\"in_progress\",\"tool_choice\":\"auto\",\"tools\":[]},\"sequence_number\":0,\"type\":\"response.created\"}\n        \n        event: response.in_progress\n        data: {\"response\":{\"created_at\":1792194129,\"id\":\"resp_18df2710d3bec69000000003\",\"model\":\"\",\"object\":\"response\",\"output\":[],\"parallel_tool_calls\":true,\"status\":\"in_progress\",\"tool_choice\":\"auto\",\"tools\":[]},\"sequence_number\":1,\"type\":\"response.in_progress\"}\n        \n        event: response.failed\n        data: {\"response\":{\"created_at\":1792194129,\"error\":{\"code\":\"server_error\",\"message\":\"A: 413 Request Entity Too Large\"},\"id\":\"resp_18df2710d3bec69000000003\",\"model\":\"\",\"object\":\"response\",\"output\":[],\"parallel_tool_calls\":true,\"status\":\"failed\",\"tool_choice\":\"auto\",\"tools\":[]},\"sequence_number\":2,\"type\":\"response.failed\"}\n        \n=== RUN   TestStreamedByteCapErrorShapes/context/chat\n=== ARTIFACTS TestStreamedByteCapErrorShapes/context/chat /Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/ablation-fixtures/_artifacts/493235162\n=== RUN   TestStreamedByteCapErrorShapes/context/anthropic\n=== ARTIFACTS TestStreamedByteCapErrorShapes/context/anthropic /Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/ablation-fixtures/_artifacts/2648753372\n=== RUN   TestStreamedByteCapErrorShapes/context/responses\n=== ARTIFACTS TestStreamedByteCapErrorShapes/context/responses /Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/ablation-fixtures/_artifacts/1668409845\n=== RUN   TestStreamedByteCapErrorShapes/ordinary/chat\n=== ARTIFACTS TestStreamedByteCapErrorShapes/ordinary/chat /Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/ablation-fixtures/_artifacts/209056275\n=== RUN   TestStreamedByteCapErrorShapes/ordinary/anthropic\n=== ARTIFACTS TestStreamedByteCapErrorShapes/ordinary/anthropic /Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/ablation-fixtures/_artifacts/482438092\n=== RUN   TestStreamedByteCapErrorShapes/ordinary/responses\n=== ARTIFACTS TestStreamedByteCapErrorShapes/ordinary/responses /Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/ablation-fixtures/_artifacts/2208086950\n--- FAIL: TestStreamedByteCapErrorShapes (0.99s)\n    --- FAIL: TestStreamedByteCapErrorShapes/byte/chat (0.58s)\n    --- FAIL: TestStreamedByteCapErrorShapes/byte/anthropic (0.05s)\n    --- FAIL: TestStreamedByteCapErrorShapes/byte/responses (0.05s)\n    --- PASS: TestStreamedByteCapErrorShapes/context/chat (0.05s)\n    --- PASS: TestStreamedByteCapErrorShapes/context/anthropic (0.05s)\n    --- PASS: TestStreamedByteCapErrorShapes/context/responses (0.05s)\n    --- PASS: TestStreamedByteCapErrorShapes/ordinary/chat (0.05s)\n    --- PASS: TestStreamedByteCapErrorShapes/ordinary/anthropic (0.05s)\n    --- PASS: TestStreamedByteCapErrorShapes/ordinary/responses (0.05s)\n=== RUN   TestStreamedByteCapLeavesGeminiShape\n--- PASS: TestStreamedByteCapLeavesGeminiShape (0.01s)\nFAIL\nFAIL\tgithub.com/yetone/magpie/internal/gateway\t1.382s\nFAIL\n",
+      "exit_status": 1,
+      "log": "/Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/ablation-red.log"
+    },
+    {
+      "name": "pi-ablation",
+      "command": "node /Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/pi-consumer-check.mjs /Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/ablation-fixtures baseline",
+      "cwd": "/private/tmp/magpie-quality-20261017-2533",
+      "input": "captured SSE directory named by command",
+      "literal_output": "{\"versions\":{\"pi-coding-agent\":\"1.2.0\",\"pi-ai\":\"1.2.0\"},\"hashes\":{\"/Users/ggbdpq/.local/share/fnm/aliases/default/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/api/openai-completions.js\":\"5a79cc5aa41dee180692695e65771720d1ea556e9a978649dc2040278be51753\",\"/Users/ggbdpq/.local/share/fnm/aliases/default/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/api/anthropic-messages.js\":\"504e3ece928779fbe370d36e0e16572e8f5a43e6d8bbe9eff409cd2edcf210fa\",\"/Users/ggbdpq/.local/share/fnm/aliases/default/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/api/openai-responses.js\":\"8de25051531f131c4ae3d730f371fa0e15559ed7f865765a744c64d5edd2e067\",\"/Users/ggbdpq/.local/share/fnm/aliases/default/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/utils/overflow.js\":\"85570a78e9ba3e0322fe1b3f14c991b6a439b1d3eb89af306e2e7e9ade3d53b4\"}}\n{\"fixture\":\"/Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/ablation-fixtures/_artifacts/1668409845/context-responses.sse\",\"requests\":1,\"stopReason\":\"error\",\"errorMessage\":\"context_length_exceeded: A: prompt is too long: 210000 tokens > 200000 maximum\",\"overflow\":true,\"expected\":true}\n{\"fixture\":\"/Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/ablation-fixtures/_artifacts/209056275/ordinary-chat.sse\",\"requests\":1,\"stopReason\":\"error\",\"errorMessage\":\"A: invalid tool schema\",\"overflow\":false,\"expected\":false}\n{\"fixture\":\"/Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/ablation-fixtures/_artifacts/2208086950/ordinary-responses.sse\",\"requests\":1,\"stopReason\":\"error\",\"errorMessage\":\"server_error: A: invalid tool schema\",\"overflow\":false,\"expected\":false}\n{\"fixture\":\"/Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/ablation-fixtures/_artifacts/2648753372/context-anthropic.sse\",\"requests\":1,\"stopReason\":\"error\",\"errorMessage\":\"{\\\"error\\\":{\\\"code\\\":\\\"context_length_exceeded\\\",\\\"message\\\":\\\"A: prompt is too long: 210000 tokens \\\\u003e 200000 maximum\\\",\\\"type\\\":\\\"api_error\\\"},\\\"type\\\":\\\"error\\\"}\",\"overflow\":true,\"expected\":true}\n{\"fixture\":\"/Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/ablation-fixtures/_artifacts/3646635469/byte-responses.sse\",\"requests\":1,\"stopReason\":\"error\",\"errorMessage\":\"server_error: A: 413 Request Entity Too Large\",\"overflow\":false,\"expected\":false}\n{\"fixture\":\"/Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/ablation-fixtures/_artifacts/3892238470/byte-chat.sse\",\"requests\":1,\"stopReason\":\"error\",\"errorMessage\":\"A: 413 Request Entity Too Large\",\"overflow\":false,\"expected\":false}\n{\"fixture\":\"/Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/ablation-fixtures/_artifacts/482438092/ordinary-anthropic.sse\",\"requests\":1,\"stopReason\":\"error\",\"errorMessage\":\"{\\\"error\\\":{\\\"message\\\":\\\"A: invalid tool schema\\\",\\\"type\\\":\\\"api_error\\\"},\\\"type\\\":\\\"error\\\"}\",\"overflow\":false,\"expected\":false}\n{\"fixture\":\"/Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/ablation-fixtures/_artifacts/493235162/context-chat.sse\",\"requests\":1,\"stopReason\":\"error\",\"errorMessage\":\"A: prompt is too long: 210000 tokens > 200000 maximum\",\"overflow\":true,\"expected\":true}\n{\"fixture\":\"/Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/ablation-fixtures/_artifacts/574488786/byte-anthropic.sse\",\"requests\":1,\"stopReason\":\"error\",\"errorMessage\":\"{\\\"error\\\":{\\\"message\\\":\\\"A: 413 Request Entity Too Large\\\",\\\"type\\\":\\\"api_error\\\"},\\\"type\\\":\\\"error\\\"}\",\"overflow\":false,\"expected\":false}\nPASS: real Pi 1.2.0 consumed 9 gateway SSE fixture(s); no summary request or live vendor was run\n",
+      "exit_status": 0,
+      "log": "/Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/pi-ablation.log"
+    },
+    {
+      "name": "restored-green",
+      "command": "go test -tags nogui -count=1 -p 2 -timeout 2m -artifacts -outputdir /Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/restored-fixtures -run \\^TestStreamedByteCap -v ./internal/gateway",
+      "cwd": "/private/tmp/magpie-quality-20261017-2533",
+      "input": "nginx 413 HTML; token context error (413); ordinary invalid tool schema (400)",
+      "literal_output": "=== RUN   TestStreamedByteCapErrorShapes\n=== RUN   TestStreamedByteCapErrorShapes/byte/chat\n=== ARTIFACTS TestStreamedByteCapErrorShapes/byte/chat /Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/restored-fixtures/_artifacts/623077275\n=== RUN   TestStreamedByteCapErrorShapes/byte/anthropic\n=== ARTIFACTS TestStreamedByteCapErrorShapes/byte/anthropic /Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/restored-fixtures/_artifacts/46741455\n=== RUN   TestStreamedByteCapErrorShapes/byte/responses\n=== ARTIFACTS TestStreamedByteCapErrorShapes/byte/responses /Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/restored-fixtures/_artifacts/3030956960\n=== RUN   TestStreamedByteCapErrorShapes/context/chat\n=== ARTIFACTS TestStreamedByteCapErrorShapes/context/chat /Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/restored-fixtures/_artifacts/349268882\n=== RUN   TestStreamedByteCapErrorShapes/context/anthropic\n=== ARTIFACTS TestStreamedByteCapErrorShapes/context/anthropic /Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/restored-fixtures/_artifacts/413940334\n=== RUN   TestStreamedByteCapErrorShapes/context/responses\n=== ARTIFACTS TestStreamedByteCapErrorShapes/context/responses /Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/restored-fixtures/_artifacts/4174231103\n=== RUN   TestStreamedByteCapErrorShapes/ordinary/chat\n=== ARTIFACTS TestStreamedByteCapErrorShapes/ordinary/chat /Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/restored-fixtures/_artifacts/3802207050\n=== RUN   TestStreamedByteCapErrorShapes/ordinary/anthropic\n=== ARTIFACTS TestStreamedByteCapErrorShapes/ordinary/anthropic /Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/restored-fixtures/_artifacts/1182170995\n=== RUN   TestStreamedByteCapErrorShapes/ordinary/responses\n=== ARTIFACTS TestStreamedByteCapErrorShapes/ordinary/responses /Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/restored-fixtures/_artifacts/3028479358\n--- PASS: TestStreamedByteCapErrorShapes (0.97s)\n    --- PASS: TestStreamedByteCapErrorShapes/byte/chat (0.55s)\n    --- PASS: TestStreamedByteCapErrorShapes/byte/anthropic (0.05s)\n    --- PASS: TestStreamedByteCapErrorShapes/byte/responses (0.05s)\n    --- PASS: TestStreamedByteCapErrorShapes/context/chat (0.05s)\n    --- PASS: TestStreamedByteCapErrorShapes/context/anthropic (0.05s)\n    --- PASS: TestStreamedByteCapErrorShapes/context/responses (0.05s)\n    --- PASS: TestStreamedByteCapErrorShapes/ordinary/chat (0.05s)\n    --- PASS: TestStreamedByteCapErrorShapes/ordinary/anthropic (0.05s)\n    --- PASS: TestStreamedByteCapErrorShapes/ordinary/responses (0.06s)\n=== RUN   TestStreamedByteCapLeavesGeminiShape\n--- PASS: TestStreamedByteCapLeavesGeminiShape (0.01s)\nPASS\nok  \tgithub.com/yetone/magpie/internal/gateway\t1.347s\n",
+      "exit_status": 0,
+      "log": "/Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/restored-green.log"
+    },
+    {
+      "name": "focused-race",
+      "command": "go test -race -tags nogui -count=1 -p 2 -timeout 3m -run \\^TestStreamedByteCap ./internal/gateway",
+      "cwd": "/private/tmp/magpie-quality-20261017-2533",
+      "input": "nginx 413 HTML; token context error (413); ordinary invalid tool schema (400)",
+      "literal_output": "ok  \tgithub.com/yetone/magpie/internal/gateway\t2.589s\n",
+      "exit_status": 0,
+      "log": "/Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/focused-race.log"
+    },
+    {
+      "name": "original-apply-check",
+      "command": "git -C /private/tmp/magpie-quality-20261017-2533-replay apply --check /Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/original.patch",
+      "cwd": "/private/tmp/magpie-quality-20261017-2533",
+      "input": "see command and original/updated patch as applicable",
+      "literal_output": "error: patch failed: internal/gateway/chat.go:7\nerror: internal/gateway/chat.go: patch does not apply\n",
+      "exit_status": 1,
+      "log": "/Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/original-apply-check.log"
+    },
+    {
+      "name": "updated-apply-check",
+      "command": "git -C /private/tmp/magpie-quality-20261017-2533-replay apply --check /Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/updated.patch",
+      "cwd": "/private/tmp/magpie-quality-20261017-2533",
+      "input": "see command and original/updated patch as applicable",
+      "literal_output": "",
+      "exit_status": 0,
+      "log": "/Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/updated-apply-check.log"
+    },
+    {
+      "name": "updated-apply",
+      "command": "git -C /private/tmp/magpie-quality-20261017-2533-replay apply /Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/updated.patch",
+      "cwd": "/private/tmp/magpie-quality-20261017-2533",
+      "input": "see command and original/updated patch as applicable",
+      "literal_output": "",
+      "exit_status": 0,
+      "log": "/Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/updated-apply.log"
+    },
+    {
+      "name": "rollback",
+      "command": "/Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/ROLLBACK.sh /private/tmp/magpie-quality-20261017-2533-replay",
+      "cwd": "/private/tmp/magpie-quality-20261017-2533",
+      "input": "see command and original/updated patch as applicable",
+      "literal_output": "ROLLBACK: restored 3 product files and routing reference; removed the added regression test\n",
+      "exit_status": 0,
+      "log": "/Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/rollback.log"
+    },
+    {
+      "name": "rollback-behavior",
+      "command": "go -C /private/tmp/magpie-quality-20261017-2533-replay test -tags nogui -count=1 -p 2 -timeout 2m -run \\^TestStreamedByteCap -v ./internal/gateway",
+      "cwd": "/private/tmp/magpie-quality-20261017-2533",
+      "input": "nginx 413 HTML; token context error (413); ordinary invalid tool schema (400)",
+      "literal_output": "=== RUN   TestStreamedByteCapErrorShapes\n=== RUN   TestStreamedByteCapErrorShapes/byte/chat\n    stream_byte_cap_test.go:104: failure class changed: 200 : keepalive\n        data: {\"choices\":[{\"delta\":{\"content\":\"\",\"role\":\"assistant\"},\"finish_reason\":null,\"index\":0}],\"created\":1792194241,\"id\":\"chatcmpl-18df272abfa8242000000001\",\"model\":\"\",\"object\":\"chat.completion.chunk\",\"usage\":null}\n        \n        data: {\"error\":{\"message\":\"A: 413 Request Entity Too Large\",\"type\":\"api_error\"}}\n        \n=== RUN   TestStreamedByteCapErrorShapes/byte/anthropic\n    stream_byte_cap_test.go:104: failure class changed: 200 : keepalive\n        event: message_start\n        data: {\"message\":{\"content\":[],\"id\":\"msg_18df272ac33682d000000002\",\"model\":\"\",\"role\":\"assistant\",\"stop_reason\":null,\"stop_sequence\":null,\"type\":\"message\",\"usage\":{\"input_tokens\":0,\"output_tokens\":0,\"cache_read_input_tokens\":0,\"cache_creation_input_tokens\":0}},\"type\":\"message_start\"}\n        \n        event: error\n        data: {\"error\":{\"message\":\"A: 413 Request Entity Too Large\",\"type\":\"api_error\"},\"type\":\"error\"}\n        \n=== RUN   TestStreamedByteCapErrorShapes/byte/responses\n    stream_byte_cap_test.go:104: failure class changed: 200 : keepalive\n        event: response.created\n        data: {\"response\":{\"created_at\":1792194241,\"id\":\"resp_18df272ac644303000000003\",\"model\":\"\",\"object\":\"response\",\"output\":[],\"parallel_tool_calls\":true,\"status\":\"in_progress\",\"tool_choice\":\"auto\",\"tools\":[]},\"sequence_number\":0,\"type\":\"response.created\"}\n        \n        event: response.in_progress\n        data: {\"response\":{\"created_at\":1792194241,\"id\":\"resp_18df272ac644303000000003\",\"model\":\"\",\"object\":\"response\",\"output\":[],\"parallel_tool_calls\":true,\"status\":\"in_progress\",\"tool_choice\":\"auto\",\"tools\":[]},\"sequence_number\":1,\"type\":\"response.in_progress\"}\n        \n        event: response.failed\n        data: {\"response\":{\"created_at\":1792194241,\"error\":{\"code\":\"server_error\",\"message\":\"A: 413 Request Entity Too Large\"},\"id\":\"resp_18df272ac644303000000003\",\"model\":\"\",\"object\":\"response\",\"output\":[],\"parallel_tool_calls\":true,\"status\":\"failed\",\"tool_choice\":\"auto\",\"tools\":[]},\"sequence_number\":2,\"type\":\"response.failed\"}\n        \n=== RUN   TestStreamedByteCapErrorShapes/context/chat\n=== RUN   TestStreamedByteCapErrorShapes/context/anthropic\n=== RUN   TestStreamedByteCapErrorShapes/context/responses\n=== RUN   TestStreamedByteCapErrorShapes/ordinary/chat\n=== RUN   TestStreamedByteCapErrorShapes/ordinary/anthropic\n=== RUN   TestStreamedByteCapErrorShapes/ordinary/responses\n--- FAIL: TestStreamedByteCapErrorShapes (1.09s)\n    --- FAIL: TestStreamedByteCapErrorShapes/byte/chat (0.63s)\n    --- FAIL: TestStreamedByteCapErrorShapes/byte/anthropic (0.05s)\n    --- FAIL: TestStreamedByteCapErrorShapes/byte/responses (0.05s)\n    --- PASS: TestStreamedByteCapErrorShapes/context/chat (0.05s)\n    --- PASS: TestStreamedByteCapErrorShapes/context/anthropic (0.06s)\n    --- PASS: TestStreamedByteCapErrorShapes/context/responses (0.06s)\n    --- PASS: TestStreamedByteCapErrorShapes/ordinary/chat (0.06s)\n    --- PASS: TestStreamedByteCapErrorShapes/ordinary/anthropic (0.06s)\n    --- PASS: TestStreamedByteCapErrorShapes/ordinary/responses (0.06s)\n=== RUN   TestStreamedByteCapLeavesGeminiShape\n--- PASS: TestStreamedByteCapLeavesGeminiShape (0.02s)\nFAIL\nFAIL\tgithub.com/yetone/magpie/internal/gateway\t1.503s\nFAIL\n",
+      "exit_status": 1,
+      "log": "/Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/rollback-behavior.log"
+    },
+    {
+      "name": "rollback-hashes",
+      "command": "python3: compare source-hashes.json baseline_sha256 with replay copy and modified_sha256 with modified source, then assert new test absent on rollback copy",
+      "cwd": "/private/tmp/magpie-quality-20261017-2533",
+      "input": "see command and original/updated patch as applicable",
+      "literal_output": "PASS: rollback copy exactly matches baseline hashes; modified source remains changed\n",
+      "exit_status": 0,
+      "log": "/Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/rollback-hashes.log"
+    },
+    {
+      "name": "gofmt",
+      "command": "gofmt -l internal/gateway/gateway.go internal/gateway/chat.go internal/gateway/anthropic.go internal/gateway/stream_byte_cap_test.go",
+      "cwd": "/private/tmp/magpie-quality-20261017-2533",
+      "input": "see command and original/updated patch as applicable",
+      "literal_output": "",
+      "exit_status": 0,
+      "log": "/Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/gofmt.log"
+    }
+  ],
+  "not_run_here": [
+    "standalone full gateway suite; delegated to combined archive full-repository run",
+    "full cross-platform vet/build and complete repository acceptance",
+    "actual summary completion and retried answer on real upstream"
+  ],
+  "not_publication_ready_reason": "targeted evidence complete; final combined suite and official acceptance not yet recorded"
+}

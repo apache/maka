@@ -1,0 +1,10 @@
+{
+  "source": "vibe/inbox/agent-skills(独立公开仓库,保持原地)",
+  "install": "npx skills add ggbdpq/agent-skills",
+  "curated": [
+    { "name": "mentor-me", "blogCard": "/skills", "fullText": "apps/blog/content/skills/" },
+    { "name": "minimal-diff-fix", "blogCard": "/skills", "fullText": "apps/blog/content/skills/" },
+    { "name": "tech-writer", "blogCard": "/skills", "fullText": "apps/blog/content/skills/" }
+  ],
+  "note": "公开仓库本体不入 console;此处仅登记收录关系与安装契约"
+}

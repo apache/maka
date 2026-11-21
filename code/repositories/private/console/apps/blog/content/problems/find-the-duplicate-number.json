@@ -1,0 +1,22 @@
+{
+  "id": "53",
+  "slug": "find-the-duplicate-number",
+  "title": "寻找重复数",
+  "difficulty": "medium",
+  "tags": ["位运算", "数组", "双指针", "二分查找"],
+  "description": "给定一个包含 `n + 1` 个整数的数组 `nums`,其数字都在 `[1, n]` 范围内(含边界),可知至少存在一个重复的整数。\n\n假设只有一个重复的整数,返回这个重复的数。你设计的解决方案必须不修改数组 `nums`,且只用常量级 O(1) 额外空间。\n\n**示例 1:**\n\n- 输入:`nums = [1,3,4,2,2]`\n- 输出:`2`\n\n**示例 2:**\n\n- 输入:`nums = [3,1,3,4,2]`\n- 输出:`3`",
+  "solution": "## 思路\n\n**Floyd 快慢指针**(把值当下标看成链表,重复数即环入口):快慢指针相遇后,慢指针回到起点,二者同速前进再次相遇处即为重复数。不修改原数组,O(1) 空间。\n\n## 参考代码\n\n```js\nfunction findDuplicate(nums) {\n  let slow = nums[0];\n  let fast = nums[0];\n  do {\n    slow = nums[slow];\n    fast = nums[nums[fast]];\n  } while (slow !== fast);\n  slow = nums[0];\n  while (slow !== fast) {\n    slow = nums[slow];\n    fast = nums[fast];\n  }\n  return slow;\n}\n```\n\n## 复杂度\n\n- 时间:O(n)\n- 空间:O(1)",
+  "signature": {
+    "language": "javascript",
+    "entry": "findDuplicate",
+    "params": [{ "name": "nums", "type": "number[]" }],
+    "returns": "number"
+  },
+  "testCases": [
+    { "sample": true, "input": [[1, 3, 4, 2, 2]], "expected": 2 },
+    { "sample": true, "input": [[3, 1, 3, 4, 2]], "expected": 3 },
+    { "sample": false, "input": [[1, 1, 2]], "expected": 1 },
+    { "sample": false, "input": [[2, 2, 2, 2, 2]], "expected": 2 },
+    { "sample": false, "input": [[1, 2, 3, 4, 5, 6, 7, 8, 9, 9]], "expected": 9 }
+  ]
+}

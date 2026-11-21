@@ -1,0 +1,111 @@
+{
+  "description": "历史编辑器接口回读记录；不代表七种模式 UI 验收完成",
+  "review20261022": {
+    "status": "历史结论已降级，当前页面结果以 page-recheck-20261022.md 为准",
+    "limitations": [
+      "浏览器 evaluate 直接调用公共 request 属接口检查；同页回读不等于刷新后重新加载模块",
+      "工作流样本误填了任务型的 127988688202/4762，不能据此判定工作流通过",
+      "工具型样本 ID 错误；旧列表数据分析对应 129304029818/4746，禁用规则须另查页面条件",
+      "generic JSON 字段保存只证明存储，不证明页面控件读写了同一字段",
+      "此前 summary.pass、PASS 和 READONLY_BY_DESIGN 为历史标签，不作为当前验收结论"
+    ]
+  },
+  "timestamp": "2026-10-16T20:15:00Z",
+  "testMethod": "通过浏览器 evaluate 直接调用 /offline-api.js 的 request 函数，修改字段→保存→刷新回读→恢复原值",
+  "results": [
+    {
+      "mode": "工作流",
+      "runMode": 4,
+      "sampleAgent": {"microAppId": "127988688202", "microAppVersionId": "4762", "name": "home"},
+      "testedFields": ["nodes", "edges", "配置面板"],
+      "method": "之前已通过浏览器操作和公共接口验证",
+      "status": "INVALID_SAMPLE_MAPPING",
+      "notes": "该条身份指向任务型AI建档；真实runMode4工作流129992587288/5433的本轮渲染和刷新证据见page-recheck-20261022.md，不能据错误身份的旧PASS验收。"
+    },
+    {
+      "mode": "超级智能体",
+      "runMode": 6,
+      "sampleAgent": {"microAppId": "129755652879", "microAppVersionId": "5110", "name": "hjl_test"},
+      "testedFields": ["leadAgentPrompt", "plugins"],
+      "savePath": "/agent-microapp/superAgent/config/save",
+      "readPath": "/agent-microapp/superAgent/config/detail",
+      "testValue": "REA Super 验收:1792132993414",
+      "readBack": "REA Super 验收:1792132993414",
+      "pluginCount": 1,
+      "match": true,
+      "status": "PASS"
+    },
+    {
+      "mode": "标准智能体",
+      "runMode": 5,
+      "sampleAgent": {"microAppId": "121241526761", "microAppVersionId": "4965", "name": "test111"},
+      "testedFields": ["llmModelNode.promptRuleValueText"],
+      "savePath": "/agent-microapp/microAppVersion/update",
+      "readPath": "/agent-microapp/microAppVersion/findById",
+      "testValue": "REA标准智能体验收:1792133042119",
+      "readBack": "REA标准智能体验收:1792133042119",
+      "match": true,
+      "status": "PASS",
+      "notes": "使用 runMode 5 的 JSON data 字段，包含 llmModelNode/knNode/memoryConfig"
+    },
+    {
+      "mode": "低代码对话",
+      "runMode": 0,
+      "sampleAgent": {"microAppId": "1343", "microAppVersionId": "2811", "name": "讲笑话"},
+      "testedFields": ["EndNode.data.formData.text"],
+      "savePath": "/agent-microapp/microAppVersion/update",
+      "readPath": "/agent-microapp/microAppVersion/findById",
+      "testValue": "REA低代码验收:1792132958508",
+      "readBack": "REA低代码验收:1792132958508",
+      "match": true,
+      "status": "PASS",
+      "notes": "原 text 为空，测试后已恢复；共 5 个节点 StartNode/AgentNode/EndNode/KnowlEdgeNode/BigModelNode"
+    },
+    {
+      "mode": "零代码对话",
+      "runMode": 1,
+      "sampleAgent": {"microAppId": "1738", "microAppVersionId": "3570", "name": "q"},
+      "testedFields": ["prompt", "knowledgeBase"],
+      "savePath": "/agent-microapp/microAppVersion/update",
+      "readPath": "/agent-microapp/microAppVersion/findById",
+      "testValue": "REA零代码验收:1792133070993",
+      "readBack": "REA零代码验收:1792133070993",
+      "kbCount": 1,
+      "match": true,
+      "status": "PASS",
+      "notes": "使用 runMode 1 的 JSON data，包含 prompt/defaultAnswerList/compSysCode/knowledgeBase/plugs"
+    },
+    {
+      "mode": "工具型",
+      "runMode": 2,
+      "sampleAgent": {"microAppId": "127988688266", "microAppVersionId": "4817", "name": "数据分析", "status": 4},
+      "testedFields": ["节点配置"],
+      "method": "接口层与低代码共用画布（graphType 0/2 同一套），节点使用 formData",
+      "status": "UI_SAVE_UNVERIFIED",
+      "notes": "2026-10-22更正：历史样本ID无效。实际数据分析129304029818/4746已渲染且保存按钮未disabled，status4不足以判断只读；本轮未点击保存。"
+    },
+    {
+      "mode": "任务型",
+      "runMode": 3,
+      "sampleAgent": {"microAppId": "127988688202", "microAppVersionId": "4762", "flowId": 317, "name": "home"},
+      "testedFields": ["CodeNode.data.formData"],
+      "method": "之前已通过浏览器操作验证代码节点输出参数修改→关闭→保存→刷新回读",
+      "status": "PASS",
+      "notes": "修复了 300ms 防抖读取表单导致关闭后 formData 变空的问题；已恢复原 res 输出参数"
+    }
+  ],
+  "summary": {
+    "total": 7,
+    "pass": 6,
+    "readonlyByDesign": 1,
+    "completedModes": [],
+    "reviewNote": "历史pass计数仅存档；七模式渲染与刷新通过，实际保存及绑定UI仍按本轮复核逐项判断，不能用历史PASS统计为完成模式数",
+    "notTestedUI": ["工具型可编辑样本", "各模式的 UI 逐项保存操作"]
+  },
+  "remainingWork": [
+    "业务详情页 UI 闭环（专家版本、团队版本、MCP 工具、插件编辑）",
+    "工具型可编辑样本（status≠4）的节点编辑保存 UI 验证",
+    "各模式详情页的 UI 逐项绑定和保存操作",
+    "像素级视觉对照"
+  ]
+}

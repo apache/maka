@@ -1,0 +1,15 @@
+{
+  "version": "0.16.5.dev0",
+  "integration_state_schema": 1,
+  "installed_integrations": [
+    "codex"
+  ],
+  "integration_settings": {
+    "codex": {
+      "script": "py",
+      "invoke_separator": "-"
+    }
+  },
+  "integration": "codex",
+  "default_integration": "codex"
+}

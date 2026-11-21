@@ -1,0 +1,1 @@
+import{b as t}from"./baseRequest-cLAYUkE1.js";import"./getClientId-D9RtL220.js";import"./tailwind-ChlWv2gU.js";import"./index-D5wSwEZ6.js";import"./userInfo-KkUgCWeV.js";import"./localforage-BUwrrJyZ.js";import"./version-B8Swz69J.js";const o=()=>t.get("xyzrank/list",{});export{o as getXyzrankApi};

@@ -1,0 +1,29 @@
+--- FAIL: TestCodexListTagKeptWhileNothingChanged (2.09s)
+    codex_list_tag_test.go:94: CodexListTag and CodexOwnListTag: 342 allocs, 49360 bytes a call
+    codex_list_tag_test.go:96: with nothing changed, the tags took 342 allocations (49360 bytes) a call: the catalog built again
+    codex_list_tag_test.go:101: held: 342 allocs, 49360 bytes a call
+    codex_list_tag_test.go:103: held, the tags took 342 allocations (49360 bytes) a call
+--- FAIL: TestCodexSignedInInKeychain (0.08s)
+    --- FAIL: TestCodexSignedInInKeychain/keyring (0.04s)
+        codex_store_test.go:175: no Codex provider from the keychain item: false <nil>
+    --- FAIL: TestCodexSignedInInKeychain/auto (0.04s)
+        codex_store_test.go:175: no Codex provider from the keychain item: false <nil>
+--- FAIL: TestCodexKeychainRefreshWritesItem (0.05s)
+    codex_store_test.go:236: codexToken: "" Codex keeps its sign-in in Codex's encrypted auth storage (features.secret_auth_storage) (cli_auth_credentials_store = "keyring" in C:\Users\802165\AppData\Local\Temp\TestCodexKeychainRefreshWritesItem4008504053\001\.codex\config.toml), which magpie doesn't read
+--- FAIL: TestCodexKeychainSwitch (0.14s)
+    codex_store_test.go:262: switch: "" Codex keeps its sign-in in Codex's encrypted auth storage (features.secret_auth_storage) (cli_auth_credentials_store = "keyring" in C:\Users\802165\AppData\Local\Temp\TestCodexKeychainSwitch3773945314\001\.codex\config.toml), which magpie doesn't read
+--- FAIL: TestCodexKeychainAskedSeldom (0.04s)
+    codex_store_test.go:359: not read
+--- FAIL: TestCodexKeychainPromptWaitedFor (0.10s)
+    codex_store_test.go:461: readCodexLogin while the prompt is up: Codex keeps its sign-in in Codex's encrypted auth storage (features.secret_auth_storage) (cli_auth_credentials_store = "keyring" in C:\Users\802165\AppData\Local\Temp\TestCodexKeychainPromptWaitedFor1511551464\001\.codex\config.toml), which magpie doesn't read
+--- FAIL: TestCodexKeychainRetry (0.14s)
+    codex_store_test.go:493: refused: &{Agent:codex Provider: Name: Why:1 account is saved in magpie, and they are only offered beside the account Codex is signed in to. Codex keeps its sign-in in Codex's encrypted auth storage (features.secret_auth_storage) (cli_auth_credentials_store = "keyring" in C:\Users\802165\AppData\Local\Temp\TestCodexKeychainRetry88507072\001\.codex\config.toml), which magpie doesn't read: here it reads only C:\Users\802165\AppData\Local\Temp\TestCodexKeychainRetry88507072\001\.codex\auth.json. Set cli_auth_credentials_store = "file" there and sign in again (codex login). SignedOut:true Users:[me@example.com] Quiet:false Tucked:false Retry:false}
+--- FAIL: TestCodexKeychainSignOut (0.04s)
+    codex_store_test.go:550: the item was left
+--- FAIL: TestCodexSignInKnown (0.07s)
+    codex_store_test.go:589: keyring, the keychain refusing: ok false known true, want false false
+--- FAIL: TestSavedButSignedOut (0.08s)
+    signedout_test.go:68: keyring, no item: &{Agent:codex Provider: Name: Why:2 accounts are saved in magpie, and they are only offered beside the account Codex is signed in to. Codex keeps its sign-in in Codex's encrypted auth storage (features.secret_auth_storage) (cli_auth_credentials_store = "keyring" in C:\Users\802165\AppData\Local\Temp\TestSavedButSignedOut888927262\001\.codex\config.toml), which magpie doesn't read: here it reads only C:\Users\802165\AppData\Local\Temp\TestSavedButSignedOut888927262\001\.codex\auth.json. Set cli_auth_credentials_store = "file" there and sign in again (codex login). SignedOut:true Users:[a@x.com b@x.com] Quiet:false Tucked:false Retry:false}
+FAIL
+FAIL	github.com/yetone/magpie/internal/provider	3.882s
+FAIL

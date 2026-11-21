@@ -1,0 +1,77 @@
+From 86f9707e8058848662e35db0b85462e35751122a Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Wed, 21 Oct 2026 23:23:33 +0800
+Subject: [PATCH] gateway: the past-the-budget images test counts its budget on
+ the shots as they fit
+
+TestCodexFittedImagesPastTheBudget went red standalone on machines whose
+Go is 1.27 ("turn 2 made 19 of 30 images, with 10 kept", twice), with no
+product change in sight: the test and the byte-budget cache it pins came
+together in 11173c8a, and the test passes on go1.26. What moved is the
+standard library's PNG encoder. The test measured one fitted screenshot
+(the first) and budgeted 10.5 of that size; the thirty fitted shots are
+not one size, a few bytes of PNG each way, and the encoder shifts them
+between releases. On this tree, go1.26.8 fits them at 278-282 bytes
+(budget 2940, the last eleven 3088: eleven does not fit, ten kept) and
+go1.27.0 at 336-387 (budget 4032, the last eleven 4008: eleven fits, so
+eleven are kept and a turn remakes 19).
+
+What changed: only the test. The budget is counted on the shots as they
+fit - the last ten, and half of the eleventh from the end - so ten kept
+and no eleven holds by construction on any toolchain, instead of by
+where the encoder's bytes happen to leave the boundary. The pinned
+expectations (the first turn makes 30, later turns 20, what is held
+stays within the budget) are unchanged.
+
+Run (go1.26.8 unless said otherwise):
+- the test alone under GOTOOLCHAIN=go1.27.0, before the change: red as
+  filed, exit 1; after it: ok
+- the test alone, twice: ok, ok; under GOTOOLCHAIN=go1.27.0: ok, ok
+- the test alone with -race -count=5: ok
+- go test -tags nogui -run TestCodex ./internal/gateway/: ok on go1.26.8
+  and go1.27.0
+- go test -tags nogui -count=1 ./internal/gateway/ under a temp HOME
+  with the Go caches pinned: ok 552.980s
+- gofmt -l on the changed file: clean
+- go vet ./..., GOOS=linux go vet -tags nogui ./..., GOOS=windows go
+  vet ./...: clean (a pre-existing cgo warning in
+  internal/gui/trayimage_darwin.go stays; the file is not touched)
+- go build ./..., GOOS=linux go build -tags nogui ./..., GOOS=windows
+  go build ./...: ok
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gateway/codex_images_test.go | 17 +++++++++++++++--
+ 1 file changed, 15 insertions(+), 2 deletions(-)
+
+diff --git a/internal/gateway/codex_images_test.go b/internal/gateway/codex_images_test.go
+index c0e58478..dce1e284 100644
+--- a/internal/gateway/codex_images_test.go
++++ b/internal/gateway/codex_images_test.go
+@@ -350,8 +350,21 @@ func TestCodexScreenshotsAreNotFittedAgainEachTurn(t *testing.T) {
+ // What is held stays within the budget.
+ func TestCodexFittedImagesPastTheBudget(t *testing.T) {
+ 	shots := wideShots(t, 30)
+-	one := len(fitKeyEntry(t, shots[0]).data)
+-	made := freshFitted(t, 10*one+one/2)
++	// The shots fit to no one size: a few bytes of PNG each way, and the
++	// standard library's encoder shifts them from release to release
++	// (past a budget counted on the first shot alone, go1.26 kept 10 of
++	// these and go1.27 kept 11). The budget is counted on the shots as
++	// they fit: the last ten, and half of the eleventh from the end past
++	// it, which keeps ten and no eleven on any release.
++	sizes := make([]int, len(shots))
++	for i, shot := range shots {
++		sizes[i] = len(fitKeyEntry(t, shot).data)
++	}
++	budget := sizes[len(sizes)-11] / 2
++	for _, one := range sizes[len(sizes)-10:] {
++		budget += one
++	}
++	made := freshFitted(t, budget)
+ 	body := computerUseRequest(shots)
+ 	was := int64(0)
+ 	for turn := 1; turn <= 3; turn++ {
+-- 
+2.50.1 (Apple Git-155)
+

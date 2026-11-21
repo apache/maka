@@ -1,0 +1,30 @@
+unit	branch	verdict	new_sha	solver
+4034	hunt-20261111-rf-4034	RESOLVED-PUSHED	4c5b6d1c83b94d82c42d1f8e1d0154bf19af41b2	M
+5273	hunt-20261112-t1-5273	RESOLVED-PUSHED	997ff7a5b96b882cc6fae6e9578eea52c47eeb02	M
+5440	verify/5440-request-cache-dirty-paths	RESOLVED-PUSHED	608c5258b323dd728b5b77cd288a2bcce1b79117	M
+5463	fix/5463-gwmw-caller-key	RESOLVED-PUSHED	50ca5ab49713e6c3dda246613d90c5cce04dabe7	M
+5627	fix/5627-tuned-for-you-agents	RESOLVED-PUSHED	1f3c5fdce84965fa8cf30d7a257e129bbfbb83b4	M
+5418	fix/5418-provider-kind-sections	RESOLVED-PUSHED	9217c40bbf495290015a431caffe7d22d42d5899	M
+3208	fix/3208-go-xnet-bump	RESOLVED-PUSHED	6b084eddbd55faa357f5de63f23e9b6394699276	M
+4863	fix/4863-replay-cache-diagnose	RESOLVED-PUSHED	f76e80bb14ac7f1e	L16
+5455	fix/5455-antigravity-0token-turn	RESOLVED-PUSHED	a2b2ff6008c511e6	L16
+5480	fix/5480-codex-handback-unknown-reading	RESOLVED-PUSHED	9601d612071ef1ee	L16
+4324	fix/4324-muse-phase-verify	RESOLVED-PUSHED	8e653a3c76a4ada7	L16
+5445	fix/5445-library-instructions-arrival	RESOLVED-PUSHED	bacc89b751a4ec9c	L16
+5478	fix/5478-discovery-rest-suspended	RESOLVED-PUSHED	0852af616032f221	L16
+5876	fix/5876-kimi-quota-400-empty	RESOLVED-PUSHED	b1dd66962eba826e	L16
+3106	fix/3106-compaction-silent-assistant	RESOLVED-PUSHED	1910b41da92aaf58	L16
+5065	fix/5065-omp-remote-compaction2	RESOLVED-PUSHED	4df4017354a7b5fa	L16
+6288	hunt-20261112-t1-6288	RESOLVED-PUSHED	c6a924d128a95a69	L16
+6320	hunt-20261112-t1-6320	RESOLVED-PUSHED	d347540ccc8120eb	L16
+4668	fix/4668-socket-rebuild-memory	RESOLVED-PUSHED	2c91121c237a9395	L16
+4069	hunt-20261111-r5-4069	SUPERSEDED	6af80e41a8cbd810	(L16: 上游 7b5c069c3 同修,分支留档)
+4899	hunt-20261111-r1-4899-rework	RESOLVED-PUSHED	15fbdfffb43c8c9c	L17
+5692	fix/5692-provider-failwords	RESOLVED-PUSHED	59aacd713fb4559c3	L17
+5914	hunt-20261111-rf-5914	RESOLVED-PUSHED	a41c0243ea0fcab4	L17
+5935	fix/5935-unreadable-providers-file	RESOLVED-PUSHED	863bbd57deae3ba0	L17
+4144	hunt-20261112-t1-4144	RESOLVED-PUSHED	367ce6f8a4056445	L17
+5710	verify/5710-antigravity-step-speed	RESOLVED-PUSHED	31b53746a3da4cc4	L17
+5100	fix/5100-drift-own-claude	RESOLVED-PUSHED	42ab9a87ddc39551	L17
+5476	fix/5476-appserver-switch-resume	RESOLVED-PUSHED	21ee5bee1ac358aa	L17
+5064	fix/5064-opencode-v2-providers	SUPERSEDED	5241d3dba	(L17: 上游 03a800ac6 同修,分支留档)

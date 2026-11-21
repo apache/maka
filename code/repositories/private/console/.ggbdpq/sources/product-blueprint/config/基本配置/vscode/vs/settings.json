@@ -1,0 +1,369 @@
+{
+  // ==================== 编辑器基础配置 ====================
+  // 设置编辑器字体族
+  "editor.fontFamily": "\"JetBrains Mono\", Consolas, 'Courier New', monospace",
+  // 设置编辑器字体大小
+  "editor.fontSize": 14,
+  // 启用字体连字功能
+  "editor.fontLigatures": true,
+  // 设置编辑器行高
+  "editor.lineHeight": 20,
+  // 显示行号
+  "editor.lineNumbers": "on",
+  // 设置制表符大小
+  "editor.tabSize": 2,
+  // 使用空格替代制表符
+  "editor.insertSpaces": true,
+  // 禁用自动检测缩进
+  "editor.detectIndentation": false,
+  // 禁用大文件优化
+  "editor.largeFileOptimizations": false,
+  // 不高亮显示不可见的Unicode字符
+  "editor.unicodeHighlight.invisibleCharacters": false,
+  // ==================== 编辑器行为配置 ====================
+  // 保存时自动格式化
+  "editor.formatOnSave": true,
+  // 粘贴时自动格式化
+  "editor.formatOnPaste": true,
+  // 输入时自动格式化
+  "editor.formatOnType": true,
+  // 保存时执行ESLint自动修复
+  "editor.codeActionsOnSave": {
+    "source.fixAll.eslint": "explicit"
+  },
+  // ==================== 代码格式化配置 ====================
+  // 设置默认代码格式化工具
+  "editor.defaultFormatter": "esbenp.prettier-vscode",
+  // 启用ESLint格式化功能
+  "eslint.format.enable": true,
+  // 对指定文件类型启用ESLint验证
+  "eslint.validate": [
+    "javascript",
+    "javascriptreact",
+    "typescript",
+    "typescriptreact",
+    "vue"
+  ],
+  // 始终显示ESLint状态
+  "eslint.alwaysShowStatus": true,
+  // ==================== Prettier 格式化规则 ====================
+  // 每行最大字符数
+  "prettier.printWidth": 120,
+  // 缩进大小
+  "prettier.tabWidth": 2,
+  // 使用空格而不是制表符
+  "prettier.useTabs": false,
+  // 语句末尾不加分号
+  "prettier.semi": false,
+  // 使用单引号替代双引号
+  "prettier.singleQuote": true,
+  // Markdown文本折行方式
+  "prettier.proseWrap": "preserve",
+  // 箭头函数单参数时省略括号
+  "prettier.arrowParens": "avoid",
+  // 对象和数组括号内加空格
+  "prettier.bracketSpacing": true,
+  // 禁用ESLint集成
+  "prettier.eslintIntegration": false,
+  // JSX标签右括号不单独一行
+  "prettier.jsxBracketSameLine": false,
+  // JSX中不使用单引号
+  "prettier.jsxSingleQuote": false,
+  // 不需要prettier配置文件
+  "prettier.requireConfig": false,
+  // 禁用stylelint集成
+  "prettier.stylelintIntegration": false,
+  // ES5中尾随逗号
+  "prettier.trailingComma": "es5",
+  // 禁用tslint集成
+  "prettier.tslintIntegration": false,
+  // HTML空白敏感度
+  "prettier.htmlWhitespaceSensitivity": "ignore",
+  // ==================== JavaScript/TypeScript 配置 ====================
+  // 移动JS文件时不自动更新导入
+  "javascript.updateImportsOnFileMove.enabled": "never",
+  // 移动TS文件时自动更新导入
+  "typescript.updateImportsOnFileMove.enabled": "always",
+  // 函数名和括号之间加空格
+  "javascript.format.insertSpaceBeforeFunctionParenthesis": true,
+  // 构造函数和括号之间加空格
+  "javascript.format.insertSpaceAfterConstructor": true,
+  // JSX表达式括号内加空格
+  "javascript.format.insertSpaceAfterOpeningAndBeforeClosingJsxExpressionBraces": true,
+  // 非空括号内加空格
+  "javascript.format.insertSpaceAfterOpeningAndBeforeClosingNonemptyParenthesis": true,
+  // 模板字符串括号内加空格
+  "javascript.format.insertSpaceAfterOpeningAndBeforeClosingTemplateStringBraces": true,
+  // for语句分号后加空格
+  "javascript.format.insertSpaceAfterSemicolonInForStatements": true,
+  // 二元运算符前后加空格
+  "javascript.format.insertSpaceBeforeAndAfterBinaryOperators": true,
+  // 显示所有TypeScript提示
+  "totalTypeScript.hideAllTips": false,
+  // 显示基础TypeScript提示
+  "totalTypeScript.hideBasicTips": false,
+  // ==================== 语言特定格式化配置 ====================
+  // HTML文件格式化配置
+  "[html]": {
+    "editor.defaultFormatter": "esbenp.prettier-vscode",
+    "editor.tabSize": 4
+  },
+  // CSS文件格式化配置
+  "[css]": {
+    "editor.defaultFormatter": "esbenp.prettier-vscode"
+  },
+  // Less文件格式化配置
+  "[less]": {
+    "editor.defaultFormatter": "vscode.css-language-features"
+  },
+  // JavaScript文件格式化配置
+  "[javascript]": {
+    "editor.defaultFormatter": "esbenp.prettier-vscode",
+    "editor.tabSize": 2
+  },
+  // JSX文件格式化配置
+  "[javascriptreact]": {
+    "editor.defaultFormatter": "esbenp.prettier-vscode"
+  },
+  // TypeScript文件格式化配置
+  "[typescript]": {
+    "editor.defaultFormatter": "esbenp.prettier-vscode"
+  },
+  // TSX文件格式化配置
+  "[typescriptreact]": {
+    "editor.defaultFormatter": "esbenp.prettier-vscode"
+  },
+  // Vue文件格式化配置
+  "[vue]": {
+    "editor.defaultFormatter": "Vue.volar"
+  },
+  // JSON文件格式化配置
+  "[json]": {
+    "editor.defaultFormatter": "esbenp.prettier-vscode"
+  },
+  // JSONC文件格式化配置
+  "[jsonc]": {
+    "editor.defaultFormatter": "vscode.json-language-features"
+  },
+  // Nginx配置文件格式化配置
+  "[nginx]": {
+    "editor.defaultFormatter": "raynigon.nginx-formatter"
+  },
+  // ==================== CSS/LESS/SCSS 校验配置 ====================
+  // CSS浮动属性警告
+  "css.lint.float": "warning",
+  // CSS ID选择器警告
+  "css.lint.idSelector": "warning",
+  // CSS important声明警告
+  "css.lint.important": "warning",
+  // CSS import语句错误
+  "css.lint.importStatement": "error",
+  // CSS通用选择器警告
+  "css.lint.universalSelector": "warning",
+  // Less浮动属性警告
+  "less.lint.float": "warning",
+  // SCSS ID选择器警告
+  "scss.lint.idSelector": "warning",
+  // SCSS颜色值长度警告
+  "scss.lint.hexColorLength": "warning",
+  // SCSS浮动属性警告
+  "scss.lint.float": "warning",
+  // SCSS import语句警告
+  "scss.lint.importStatement": "warning",
+  // SCSS通用选择器警告
+  "scss.lint.universalSelector": "warning",
+  // ==================== 工作区外观配置 ====================
+  // 设置颜色主题
+  "workbench.colorTheme": "Dracula Theme",
+  // 设置图标主题
+  "workbench.iconTheme": "vscode-great-icons",
+  // 禁用编辑器预览模式
+  "workbench.editor.enablePreview": false,
+  // ==================== 调试控制台配置 ====================
+  // 调试控制台字体大小
+  "debug.console.fontSize": 14,
+  // ==================== 文件管理配置 ====================
+  // 显示所有隐藏文件
+  "files.exclude": {
+    "**/.**": false
+  },
+  // 删除文件时不需确认
+  "explorer.confirmDelete": false,
+  // ==================== Git 配置 ====================
+  // 忽略Git rebase警告
+  "git.ignoreRebaseWarning": true,
+  // 自动获取Git更新
+  "git.autofetch": true,
+  // ==================== 差异编辑器配置 ====================
+  // 比较文件时忽略行尾空白字符
+  "diffEditor.ignoreTrimWhitespace": true,
+  // ==================== 预览和显示配置 ====================
+  // SVG文件以图片模式预览
+  "svg.preview.mode": "img",
+  // 禁用Markdown预览禅模式
+  "markdown-preview-enhanced.enablePreviewZenMode": false,
+  // ==================== 终端配置 ====================
+  // Windows终端配置文件
+  "terminal.integrated.profiles.windows": {
+    "PowerShell": {
+      "source": "PowerShell",
+      "icon": "terminal-powershell"
+    },
+    "Command Prompt": {
+      "path": [
+        "${env:windir}\\Sysnative\\cmd.exe",
+        "${env:windir}\\System32\\cmd.exe"
+      ],
+      "args": [],
+      "icon": "terminal-cmd"
+    },
+    "Git Bash": {
+      "source": "Git Bash"
+    }
+  },
+  // Windows默认终端
+  "terminal.integrated.defaultProfile.windows": "Git Bash",
+  // macOS/Linux 终端字体（支持 Nerd Font 图标）
+  "terminal.integrated.fontFamily": "MesloLGS NF",
+  "terminal.integrated.fontSize": 14,
+  // ==================== 安全配置 ====================
+  // 允许打开不受信任的文件
+  "security.workspace.trust.untrustedFiles": "open",
+  // 允许访问的UNC主机地址
+  "security.allowedUNCHosts": [
+    "192.168.0.6"
+  ],
+  // 不提示本地文件协议处理
+  "security.promptForLocalFileProtocolHandling": false,
+  // ==================== 数据库配置 ====================
+  // SQL Server连接组配置
+  "mssql.connectionGroups": [
+    {
+      "name": "ROOT",
+      "id": "F2A26EC5-48F9-45A3-8943-3012CF8240CF"
+    }
+  ],
+  // SQL Server连接列表
+  "mssql.connections": [],
+  // ==================== AI 代码助手配置 ====================
+  // MarsCode代码补全配置
+  "marscode.codeCompletionPro": {},
+  // 禁用GitHub Copilot
+  "github.copilot.enable": {
+    "*": false
+  },
+  // 设置Copilot聊天语言为中文
+  "github.copilot.chat.localeOverride": "zh-CN",
+  // 启用Copilot自动补全
+  "github.copilot.editor.enableAutoCompletions": true,
+  // ==================== Cursor 特定配置 ====================
+  // 在指定语言中禁用C++功能
+  "cursor.cpp.disabledLanguages": [
+    "plaintext",
+    "markdown",
+    "scminput"
+  ],
+  // 禁用HTTP/2协议
+  "cursor.general.disableHttp2": true,
+  // ==================== 其他工具集成 ====================
+  // 拼写检查自定义词典
+  "cSpell.userWords": [
+    "Batis",
+    "Coderwhy",
+    "dicom",
+    "Matchs",
+    "mybatis"
+  ],
+  // 编辑器跳转工具配置
+  "editorjumper.ideConfigurations": [
+    {
+      "name": "IDEA",
+      "isCustom": false,
+      "hidden": false,
+      "commandPath": null
+    },
+    {
+      "name": "WebStorm",
+      "isCustom": false,
+      "hidden": false,
+      "commandPath": null
+    },
+    {
+      "name": "PyCharm",
+      "isCustom": false,
+      "hidden": false,
+      "commandPath": null
+    },
+    {
+      "name": "GoLand",
+      "isCustom": false,
+      "hidden": false,
+      "commandPath": null
+    },
+    {
+      "name": "CLion",
+      "isCustom": false,
+      "hidden": false,
+      "commandPath": null
+    },
+    {
+      "name": "PhpStorm",
+      "isCustom": false,
+      "hidden": false,
+      "commandPath": null
+    },
+    {
+      "name": "RubyMine",
+      "isCustom": false,
+      "hidden": false,
+      "commandPath": null
+    },
+    {
+      "name": "Rider",
+      "isCustom": false,
+      "hidden": false,
+      "commandPath": null
+    },
+    {
+      "name": "Android Studio",
+      "isCustom": false,
+      "hidden": false,
+      "commandPath": null
+    },
+    {
+      "name": "Xcode",
+      "commandPath": null,
+      "isCustom": false,
+      "hidden": false
+    }
+  ],
+  // 启用MCP画廊
+  "chat.mcp.gallery.enabled": true,
+  // ==================== 更新配置 ====================
+  // 使用预发布版本更新
+  "update.releaseTrack": "prerelease",
+  "database-client.autoSync": true,
+  "amp.url": "https://ampcode.com/",
+  "editor.wordBasedSuggestions": "off",
+  "amp.tab.enabled": true,
+  "claudeCode.preferredLocation": "panel",
+  "agCockpit.manualToken": "{\"access_token\":\"ya29.a0Aa7pCA_BmrLix8VQW0ztAVFDCNCvBoQKW8RvsFTZVuvTVuBgAbVMpfQsi1ifvDgOfeZtt6AjdCMOSFnr-_D8MFdD9bB0Haii6IMWUkIBg5Js-oil_1VS6uW3sF-AmqY-69SNNwgRcZ9ce-lapA7oQ12n8eAR0jvH-qOB_2jcWwO8G_5G1_mTgp_hraKkdbY18XqCyCH4D9Q0uQaCgYKAfESARUSFQHGX2Mi0KatuZe2-9XzIwN88gpdWQ0213\",\"refresh_token\":\"1//0e9GRD-5p8XFnCgYIARAAGA4SNwF-L9IrbMMONvbG1cKA0XNEZ_BWHSiTA_6i2KrzrwfPDwkAHH0k_eKOUdZbSWyHSrT4LLZlQtQ\",\"expires_in\":3599,\"token_type\":\"Bearer\",\"email\":\"ggbdpq@gmail.com\",\"projectId\":\"sharp-synthesis-dw11z\",\"timestamp\":1767184838892,\"expiresAt\":\"2025-12-31T11:40:35.715Z\",\"expired\":\"2025-12-31T13:40:37.892Z\"}",
+  "agCockpit.groupMappings": {
+    "claude-opus-4-5-thinking": "claude-opus-4-5-thinking_claude-sonnet-4-5_claude-sonnet-4-5-thinking_gemini-2.5-flash_gemini-2.5-flash-lite_gemini-2.5-flash-thinking_gemini-2.5-pro_gemini-3-flash_gemini-3-pro-high_gemini-3-pro-image_gemini-3-pro-low_gpt-oss-120b-medium_rev19-uic3-1p",
+    "claude-sonnet-4-5": "claude-opus-4-5-thinking_claude-sonnet-4-5_claude-sonnet-4-5-thinking_gemini-2.5-flash_gemini-2.5-flash-lite_gemini-2.5-flash-thinking_gemini-2.5-pro_gemini-3-flash_gemini-3-pro-high_gemini-3-pro-image_gemini-3-pro-low_gpt-oss-120b-medium_rev19-uic3-1p",
+    "claude-sonnet-4-5-thinking": "claude-opus-4-5-thinking_claude-sonnet-4-5_claude-sonnet-4-5-thinking_gemini-2.5-flash_gemini-2.5-flash-lite_gemini-2.5-flash-thinking_gemini-2.5-pro_gemini-3-flash_gemini-3-pro-high_gemini-3-pro-image_gemini-3-pro-low_gpt-oss-120b-medium_rev19-uic3-1p",
+    "gemini-2.5-flash": "claude-opus-4-5-thinking_claude-sonnet-4-5_claude-sonnet-4-5-thinking_gemini-2.5-flash_gemini-2.5-flash-lite_gemini-2.5-flash-thinking_gemini-2.5-pro_gemini-3-flash_gemini-3-pro-high_gemini-3-pro-image_gemini-3-pro-low_gpt-oss-120b-medium_rev19-uic3-1p",
+    "gemini-2.5-flash-lite": "claude-opus-4-5-thinking_claude-sonnet-4-5_claude-sonnet-4-5-thinking_gemini-2.5-flash_gemini-2.5-flash-lite_gemini-2.5-flash-thinking_gemini-2.5-pro_gemini-3-flash_gemini-3-pro-high_gemini-3-pro-image_gemini-3-pro-low_gpt-oss-120b-medium_rev19-uic3-1p",
+    "gemini-2.5-flash-thinking": "claude-opus-4-5-thinking_claude-sonnet-4-5_claude-sonnet-4-5-thinking_gemini-2.5-flash_gemini-2.5-flash-lite_gemini-2.5-flash-thinking_gemini-2.5-pro_gemini-3-flash_gemini-3-pro-high_gemini-3-pro-image_gemini-3-pro-low_gpt-oss-120b-medium_rev19-uic3-1p",
+    "gemini-2.5-pro": "claude-opus-4-5-thinking_claude-sonnet-4-5_claude-sonnet-4-5-thinking_gemini-2.5-flash_gemini-2.5-flash-lite_gemini-2.5-flash-thinking_gemini-2.5-pro_gemini-3-flash_gemini-3-pro-high_gemini-3-pro-image_gemini-3-pro-low_gpt-oss-120b-medium_rev19-uic3-1p",
+    "gemini-3-flash": "claude-opus-4-5-thinking_claude-sonnet-4-5_claude-sonnet-4-5-thinking_gemini-2.5-flash_gemini-2.5-flash-lite_gemini-2.5-flash-thinking_gemini-2.5-pro_gemini-3-flash_gemini-3-pro-high_gemini-3-pro-image_gemini-3-pro-low_gpt-oss-120b-medium_rev19-uic3-1p",
+    "gemini-3-pro-high": "claude-opus-4-5-thinking_claude-sonnet-4-5_claude-sonnet-4-5-thinking_gemini-2.5-flash_gemini-2.5-flash-lite_gemini-2.5-flash-thinking_gemini-2.5-pro_gemini-3-flash_gemini-3-pro-high_gemini-3-pro-image_gemini-3-pro-low_gpt-oss-120b-medium_rev19-uic3-1p",
+    "gemini-3-pro-image": "claude-opus-4-5-thinking_claude-sonnet-4-5_claude-sonnet-4-5-thinking_gemini-2.5-flash_gemini-2.5-flash-lite_gemini-2.5-flash-thinking_gemini-2.5-pro_gemini-3-flash_gemini-3-pro-high_gemini-3-pro-image_gemini-3-pro-low_gpt-oss-120b-medium_rev19-uic3-1p",
+    "gemini-3-pro-low": "claude-opus-4-5-thinking_claude-sonnet-4-5_claude-sonnet-4-5-thinking_gemini-2.5-flash_gemini-2.5-flash-lite_gemini-2.5-flash-thinking_gemini-2.5-pro_gemini-3-flash_gemini-3-pro-high_gemini-3-pro-image_gemini-3-pro-low_gpt-oss-120b-medium_rev19-uic3-1p",
+    "gpt-oss-120b-medium": "claude-opus-4-5-thinking_claude-sonnet-4-5_claude-sonnet-4-5-thinking_gemini-2.5-flash_gemini-2.5-flash-lite_gemini-2.5-flash-thinking_gemini-2.5-pro_gemini-3-flash_gemini-3-pro-high_gemini-3-pro-image_gemini-3-pro-low_gpt-oss-120b-medium_rev19-uic3-1p",
+    "rev19-uic3-1p": "claude-opus-4-5-thinking_claude-sonnet-4-5_claude-sonnet-4-5-thinking_gemini-2.5-flash_gemini-2.5-flash-lite_gemini-2.5-flash-thinking_gemini-2.5-pro_gemini-3-flash_gemini-3-pro-high_gemini-3-pro-image_gemini-3-pro-low_gpt-oss-120b-medium_rev19-uic3-1p"
+  },
+  "agCockpit.pinnedGroups": [
+    "claude-opus-4-5-thinking_claude-sonnet-4-5_claude-sonnet-4-5-thinking_gemini-2.5-flash_gemini-2.5-flash-lite_gemini-2.5-flash-thinking_gemini-2.5-pro_gemini-3-flash_gemini-3-pro-high_gemini-3-pro-image_gemini-3-pro-low_gpt-oss-120b-medium_rev19-uic3-1p"
+  ]
+}

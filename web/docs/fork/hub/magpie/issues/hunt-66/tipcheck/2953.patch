@@ -1,0 +1,360 @@
+diff --git a/docs/subsystems/agent-wiring.md b/docs/subsystems/agent-wiring.md
+index ff1a82e1..4a72b49d 100644
+--- a/docs/subsystems/agent-wiring.md
++++ b/docs/subsystems/agent-wiring.md
+@@ -47,6 +47,7 @@ field navigation, paths and fallback status.
+ ## Constraints and failure behavior
+ 
+ - magpie only removes what it wrote. Anything else in an agent's config stays as it was.
++- JSON/JSONC key paths written by `edit.SetJSON` and previewed by `edit.PatchJSON` index an existing array numerically: an existing index replaces that element, the index at its length appends, and a larger or nonnumeric index is refused without writing the file (#2953). Missing numeric parents start an array at index zero; numeric keys under an existing object remain object keys. Appends accept trailing commas and preserve existing elements, comments and CRLF line endings ([`internal/edit/json.go`](../../internal/edit/json.go), `TestJSONSetArray*` and `TestJSONSetNestedArray`).
+ - A sync brings magpie's models up to date, not where the agent reaches magpie. Every `Sync` that `SyncCatalog` runs (each start and update of magpie, a provider added, and a plugin signed in to, out of or renewed, or listing other models than the last time: `plugin.OnChange` and `plugin.OnListed` call `catalog.Touched`, #2373) goes through `synced`, which passes each file written through `kept.away` (`edit.Filtered`, [`keptaway.go`](../../internal/agent/keptaway.go)). The filter sees every file written through `edit` while it is on, from any goroutine and under whatever lock the writer holds, so it takes none a writer may hold: the gateway's address and the LAN key are read before it is on (`keeping`), and magpie's own files (`magpieFile`: its folder as named or where its links lead, such as a `~/.config` linked into a dotfiles repo) are left as they are (ylorn on Discord: `settings.Save` under the settings' lock reached a filter that read the settings, and the app hung ~10s after every start; `TestOwnWritesDuringASyncWithALinkedConfig`). In a file without the gateway's own address, whose magpie the user pointed at an address on another machine (a NAS's, or this machine's LAN address), and with no address a WSL distro was seen at, that address stays in place of `gateway.URL()`, with the path before magpie's every URL at it had (`awayPath`: a reverse proxy's `/magpie`; on loopback, a local proxy's route where magpie answered or hasn't been asked), and so does the key that went with it in place of magpie's own (coeo91 on Discord: the base URL went back to 127.0.0.1 after an update or restart). An address on this machine's loopback follows the gateway; with more than one address or key gone, the write is left as it is. Picking a model in magpie still points the agent at this magpie, but for Claude Code at a proxy to it (above). ZCode and WorkBuddy keep such an address in their own writers too (`zcodeAddress`, `buddyWriteAt`).
+ - `SyncCatalog` holds the catalog it builds (`provider.Hold`), the plugins' providers and sign-ins among it, for up to a second. Those `catalog.Touched` drops are told in the background, so a plugin change also drops what is held at once (`plugin.OnChangeNow`, [`hold.go`](../../internal/provider/hold.go)): the host's "auth" event is read before its reply to the sign-in that saved it, and a look at the accounts once the sign-in returns sees it (#2449: `magpie plugin login` found no account while a sync ran; `TestHeldGoesWithAPluginChange`).
+ - JetBrains Air's `magpie-opencode.json` keeps user-added fields in `provider.magpie`, including nested options, on sync and model picks (`air` in [`air.go`](../../internal/agent/air.go), using `theirsKept` in [`sync.go`](../../internal/agent/sync.go)). The gateway fields and complete model list are still replaced, so removed models leave the list.
+diff --git a/internal/edit/json.go b/internal/edit/json.go
+index 79a71d5f..8ca23f8a 100644
+--- a/internal/edit/json.go
++++ b/internal/edit/json.go
+@@ -4,6 +4,7 @@ import (
+ 	"bytes"
+ 	"encoding/json"
+ 	"fmt"
++	"strconv"
+ 	"strings"
+ 
+ 	"github.com/tidwall/gjson"
+@@ -120,21 +121,88 @@ func setJSONBytes(raw []byte, keyPath string, value any) ([]byte, error) {
+ 		if !r.Exists() {
+ 			continue
+ 		}
++		if i < len(parts) && r.IsArray() {
++			// A numeric key under an array indexes it.
++			return setArrayElem(raw, stripped, r, keyPath, parts[i:], value)
++		}
+ 		if i == len(parts) || !r.IsObject() {
+ 			// Exact key exists (replace value), or an ancestor exists but is a
+ 			// scalar (replace it with the nested object we need).
+-			return splice(raw, r.Index, len(r.Raw), marshalAt(raw, r.Index, nest(parts[i:], value)))
++			v, err := nest(parts[i:], value, keyPath)
++			if err != nil {
++				return nil, err
++			}
++			return splice(raw, r.Index, len(r.Raw), marshalAt(raw, r.Index, v))
++		}
++		v, err := nest(parts[i+1:], value, keyPath)
++		if err != nil {
++			return nil, err
++		}
++		return insertKey(raw, stripped, r.Index, unescapeKey(parts[i]), v)
++	}
++	v, err := nest(parts[1:], value, keyPath)
++	if err != nil {
++		return nil, err
++	}
++	return insertKey(raw, stripped, 0, unescapeKey(parts[0]), v)
++}
++
++// setArrayElem writes into the array r at the numeric key that heads parts:
++// the element at an index the array has is replaced (a longer key path would
++// have matched it above), one at its length is appended, anything past that
++// is refused.
++func setArrayElem(raw, stripped []byte, r gjson.Result, keyPath string, parts []string, value any) ([]byte, error) {
++	idx, ok := arrayIndex(parts[0])
++	if !ok {
++		return nil, fmt.Errorf("key %q in %q addresses an array: want a numeric index", unescapeKey(parts[0]), keyPath)
++	}
++	n := len(r.Array())
++	if idx < n {
++		// An existing element would have matched a longer prefix above; only
++		// a key gjson cannot read as an index (a leading zero) lands here.
++		return nil, fmt.Errorf("cannot address element %d in %q", idx, keyPath)
++	}
++	if idx > n {
++		return nil, fmt.Errorf("index %d in %q is past the end of the array (length %d)", idx, keyPath, n)
++	}
++	v, err := nest(parts[1:], value, keyPath)
++	if err != nil {
++		return nil, err
++	}
++	return insertElem(raw, r, v)
++}
++
++// arrayIndex is a key path's part as an array index: a plain decimal number.
++func arrayIndex(part string) (int, bool) {
++	if part == "" {
++		return 0, false
++	}
++	for i := 0; i < len(part); i++ {
++		if part[i] < '0' || part[i] > '9' {
++			return 0, false
+ 		}
+-		return insertKey(raw, stripped, r.Index, unescapeKey(parts[i]), nest(parts[i+1:], value))
+ 	}
+-	return insertKey(raw, stripped, 0, unescapeKey(parts[0]), nest(parts[1:], value))
++	n, err := strconv.Atoi(part)
++	if err != nil {
++		return 0, false
++	}
++	return n, true
+ }
+ 
+-func nest(parts []string, value any) any {
++func nest(parts []string, value any, keyPath string) (any, error) {
+ 	for i := len(parts) - 1; i >= 0; i-- {
++		if idx, ok := arrayIndex(parts[i]); ok {
++			// A numeric part builds an array. Every container here is being
++			// created empty, so an index other than 0 is past its end.
++			if idx != 0 {
++				return nil, fmt.Errorf("index %d in %q is past the end of the array being created (length 0)", idx, keyPath)
++			}
++			value = []any{value}
++			continue
++		}
+ 		value = map[string]any{unescapeKey(parts[i]): value}
+ 	}
+-	return value
++	return value, nil
+ }
+ 
+ // splitPath splits a key path at its dots, as gjson does: a dot escaped
+@@ -201,6 +269,33 @@ func insertKey(raw, stripped []byte, from int, key string, value any) ([]byte, e
+ 	return splice(raw, open+1, 0, []byte("\n"+kv+","))
+ }
+ 
++// insertElem appends without rewriting the existing elements or comments.
++func insertElem(raw []byte, r gjson.Result, value any) ([]byte, error) {
++	at, sep := r.Index+1, ""
++	items := r.Array()
++	if len(items) > 0 {
++		last := items[len(items)-1]
++		at, sep = last.Index+len(last.Raw), ","
++		// A trailing comma is blanked by jsonc; use it as the separator.
++		if j := nextToken(raw, at); j < r.Index+len(r.Raw)-1 && raw[j] == ',' {
++			at, sep = j+1, ""
++		}
++	}
++	if bytes.IndexByte(raw, '\n') < 0 {
++		v, _ := json.Marshal(value)
++		return splice(raw, at, 0, []byte(sep+string(v)))
++	}
++	base := lineIndent(raw, r.Index)
++	unit := indentUnit(raw, r.Index, base)
++	child := base + unit
++	v, _ := json.MarshalIndent(value, child, unit)
++	ins := sep + "\n" + child + string(v)
++	if len(items) == 0 && !bytes.Contains(raw[r.Index+1:r.Index+len(r.Raw)-1], []byte("\n")) {
++		ins += "\n" + base
++	}
++	return splice(raw, at, 0, []byte(ins))
++}
++
+ // marshalAt renders value with indentation matching the line that holds pos.
+ func marshalAt(raw []byte, pos int, value any) []byte {
+ 	if bytes.IndexByte(raw, '\n') < 0 {
+diff --git a/internal/edit/json_array_set_test.go b/internal/edit/json_array_set_test.go
+new file mode 100644
+index 00000000..69b9faa1
+--- /dev/null
++++ b/internal/edit/json_array_set_test.go
+@@ -0,0 +1,202 @@
++package edit
++
++import (
++	"bytes"
++	"encoding/json"
++	"github.com/tidwall/gjson"
++	"github.com/tidwall/jsonc"
++	"testing"
++)
++
++// A numeric key under a JSON array indexes it: the element at an index the
++// array has is replaced, one at its length is appended, anything past that
++// is refused. The array never becomes an object and no element is dropped.
++func TestJSONSetArrayIndex(t *testing.T) {
++	one := "{\n  \"customModels\": [\n    {\"model\": \"mine\"}\n  ]\n}\n"
++	two := "{\n  \"customModels\": [\n    {\"model\": \"mine\"},\n    {\"model\": \"old\"}\n  ]\n}\n"
++	tests := []struct {
++		name    string
++		in      string
++		path    string
++		value   any
++		want    string // the file after SetJSON
++		wantErr bool
++	}{
++		{
++			name:  "replace the element at its index",
++			in:    two,
++			path:  "customModels.1",
++			value: map[string]any{"model": "new"},
++			want:  "{\n  \"customModels\": [\n    {\"model\": \"mine\"},\n    {\n      \"model\": \"new\"\n    }\n  ]\n}\n",
++		},
++		{
++			name:  "replace a member of an element",
++			in:    two,
++			path:  "customModels.1.model",
++			value: "new",
++			want:  "{\n  \"customModels\": [\n    {\"model\": \"mine\"},\n    {\"model\": \"new\"}\n  ]\n}\n",
++		},
++		{
++			name:  "insert a member into an element",
++			in:    "{\n  \"customModels\": [\n    {\n      \"name\": \"mine\"\n    }\n  ]\n}\n",
++			path:  "customModels.0.model",
++			value: "x",
++			want:  "{\n  \"customModels\": [\n    {\n      \"model\": \"x\",\n      \"name\": \"mine\"\n    }\n  ]\n}\n",
++		},
++		{
++			name:  "append at the length",
++			in:    one,
++			path:  "customModels.1",
++			value: map[string]any{"model": "other"},
++			want:  "{\n  \"customModels\": [\n    {\"model\": \"mine\"},\n    {\n      \"model\": \"other\"\n    }\n  ]\n}\n",
++		},
++		{
++			name:  "append at the length through a deeper key",
++			in:    one,
++			path:  "customModels.1.model",
++			value: "new",
++			want:  "{\n  \"customModels\": [\n    {\"model\": \"mine\"},\n    {\n      \"model\": \"new\"\n    }\n  ]\n}\n",
++		},
++		{
++			name:  "append into an empty array",
++			in:    "{\n  \"customModels\": []\n}\n",
++			path:  "customModels.0",
++			value: map[string]any{"model": "mine"},
++			want:  "{\n  \"customModels\": [\n    {\n      \"model\": \"mine\"\n    }\n  ]\n}\n",
++		},
++		{
++			name:  "create the array when the key is missing",
++			in:    "{\n  \"a\": 1\n}\n",
++			path:  "customModels.0.model",
++			value: "x",
++			want:  "{\n  \"customModels\": [\n    {\n      \"model\": \"x\"\n    }\n  ],\n  \"a\": 1\n}\n",
++		},
++		{
++			name:    "refuse past the length",
++			in:      one,
++			path:    "customModels.2",
++			value:   map[string]any{"model": "other"},
++			wantErr: true,
++		},
++		{
++			name:    "refuse a non-numeric key under an array",
++			in:      one,
++			path:    "customModels.model",
++			value:   "x",
++			wantErr: true,
++		},
++		{
++			name:    "refuse creating past the array that is missing",
++			in:      "{\n  \"a\": 1\n}\n",
++			path:    "customModels.1.model",
++			value:   "x",
++			wantErr: true,
++		},
++		{
++			name:  "a numeric key under an object stays a key",
++			in:    "{\n  \"settings\": {}\n}\n",
++			path:  "settings.0.model",
++			value: "x",
++			want:  "{\n  \"settings\": {\n    \"0\": {\n      \"model\": \"x\"\n    }\n  }\n}\n",
++		},
++		{
++			name:  "append into a compact file",
++			in:    `{"customModels":[{"model":"mine"}]}`,
++			path:  "customModels.1",
++			value: map[string]any{"model": "other"},
++			want:  `{"customModels":[{"model":"mine"},{"model":"other"}]}`,
++		},
++	}
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			p := tmpFile(t, "settings.json", tt.in)
++			err := SetJSON(p, KV{Path: tt.path, Value: tt.value})
++			if tt.wantErr {
++				if err == nil {
++					t.Fatalf("SetJSON(%q): want an error, got nil; file:\n%s", tt.path, read(t, p))
++				}
++				if got := read(t, p); got != tt.in {
++					t.Fatalf("a refused set changed the file:\n%s\nwas:\n%s", got, tt.in)
++				}
++				return
++			}
++			if err != nil {
++				t.Fatal(err)
++			}
++			if got := read(t, p); got != tt.want {
++				t.Fatalf("got:\n%s\nwant:\n%s", got, tt.want)
++			}
++		})
++	}
++}
++
++// SetJSON and its preview share array semantics, including JSONC punctuation.
++func TestJSONSetArrayComments(t *testing.T) {
++	for _, in := range []string{
++		`{"a":[/*keep*/]}`,
++		"{\n  \"a\": [\n    // keep\n  ]\n}\n",
++		`{"a":[{"model":"mine"},/*keep*/]}`,
++		"{\n  \"a\": [\n    {\"model\":\"mine\"} // keep\n  ]\n}\n",
++		"{\r\n  \"a\": [\r\n    {\"model\":\"mine\"}, // keep\r\n  ]\r\n}\r\n",
++	} {
++		t.Run(in, func(t *testing.T) {
++			before := gjson.GetBytes(jsonc.ToJSON([]byte(in)), "a").Array()
++			key := "a.0.model"
++			if len(before) != 0 {
++				key = "a.1.model"
++			}
++			kv := KV{Path: key, Value: "new"}
++			preview, err := PatchJSON([]byte(in), []KV{kv}, nil)
++			if err != nil {
++				t.Fatal(err)
++			}
++			p := tmpFile(t, "settings.json", in)
++			if err := SetJSON(p, kv); err != nil {
++				t.Fatal(err)
++			}
++			out := []byte(read(t, p))
++			clean := jsonc.ToJSON(out)
++			if !json.Valid(clean) {
++				t.Fatalf("invalid JSONC: %s", out)
++			}
++			a := gjson.GetBytes(clean, "a")
++			if !a.IsArray() || len(a.Array()) != len(before)+1 || gjson.GetBytes(clean, key).String() != "new" {
++				t.Fatalf("not appended: %s", out)
++			}
++			if len(before) > 0 && a.Array()[0].Raw != before[0].Raw {
++				t.Fatalf("existing element changed: %s", out)
++			}
++			if !bytes.Contains(out, []byte("keep")) {
++				t.Fatalf("comment lost: %s", out)
++			}
++			if !bytes.Equal(preview, out) {
++				t.Fatalf("preview differs: %s vs %s", preview, out)
++			}
++			if bytes.Contains([]byte(in), []byte("\r\n")) && bytes.Contains(bytes.ReplaceAll(out, []byte("\r\n"), nil), []byte("\n")) {
++				t.Fatalf("CRLF changed: %q", out)
++			}
++		})
++	}
++}
++
++func TestJSONSetArrayRefusalKeepsAllKeys(t *testing.T) {
++	in := `{"other":"mine","a":[{"model":"mine"}]}`
++	p := tmpFile(t, "settings.json", in)
++	if err := SetJSON(p, KV{"other", "changed"}, KV{"a.3.model", "new"}); err == nil {
++		t.Fatal("past-end index was accepted")
++	}
++	if got := read(t, p); got != in {
++		t.Fatalf("refused edit changed the file: %s", got)
++	}
++}
++
++func TestJSONSetNestedArray(t *testing.T) {
++	p := tmpFile(t, "settings.json", `{"other":true,"a":[{"nested":[{"model":"mine"}]}]}`)
++	if err := SetJSON(p, KV{"a.0.nested.1.model", "new"}); err != nil {
++		t.Fatal(err)
++	}
++	want := `{"other":true,"a":[{"nested":[{"model":"mine"},{"model":"new"}]}]}`
++	if got := read(t, p); got != want {
++		t.Fatalf("got %s, want %s", got, want)
++	}
++}

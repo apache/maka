@@ -1,0 +1,219 @@
+From fb6554d67d06f80d726f45582c8bb062912b7679 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Tue, 10 Nov 2026 06:58:43 +0800
+Subject: [PATCH] gateway: an image beside its tool result carries the turn
+ (#5767)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+pi sends a tool's picture in a user message after its text-only tool
+message ("Attached image(s) from tool result:"). turnIn read that
+message as the user's next ask — an image of theirs begins a turn —
+and ended the turn there. The bridge reads it as the result's, and
+hands the picture to the waiting run (match); the router, told the
+turn was over, stopped keeping the conversation to the account that
+answered it, and re-decided it per request. When the pick landed on
+another account, the bridge let the run go — another account's Claude
+Code must not spend its quota — and a new one was told the whole
+conversation: "tool results account changed", the fixed prefix read
+from the cache, everything after it written again, at each of the
+session's image reads. The same results as text carry no picture
+message, the turn held, and nothing restarted.
+
+An image beside the turn's results now carries the turn on, as the
+bridge tells it; the user's own image with no result of the turn's
+waiting still begins one. And when a changed owner still lets a run
+go, the log names both sides — "account changed: the run was on
+claude (a@example.com), this request goes to claude (b@example.com)",
+own sign-ins and plan-named accounts marked — instead of a bare
+"account changed" that left the reporter guessing at image hashes.
+
+Ablation: with the carries-the-turn case out,
+TestTurnInCarriesAnImageBesideItsToolResult fails at "turn 2 within
+false, want 1 true" — the reporter's shape. Whole, it passes, and
+the user's own image still counts a turn.
+
+Run at upstream/main e3ab7f3bf + this commit, macOS 15 (darwin/arm64):
+TestTurnIn*, TestToolResultsNameTheChangedOwner, the turn/affinity/
+bridge family, and internal/gateway whole (-tags nogui, 826s) ok.
+---
+ internal/gateway/affinity.go                 | 16 +++-
+ internal/gateway/claude_subscription.go      | 23 +++++-
+ internal/gateway/turn_in_tool_images_test.go | 87 ++++++++++++++++++++
+ 3 files changed, 124 insertions(+), 2 deletions(-)
+ create mode 100644 internal/gateway/turn_in_tool_images_test.go
+
+diff --git a/internal/gateway/affinity.go b/internal/gateway/affinity.go
+index c6385061c8..ed6e4011bd 100644
+--- a/internal/gateway/affinity.go
++++ b/internal/gateway/affinity.go
+@@ -394,11 +394,22 @@ func turnOf(from provider.Protocol, body []byte) (turn int, within bool) {
+ // todo nudge, an agent list, Codex's context — begins none: after an
+ // answer it carries the turn on, and right after the user's own message
+ // it leaves that as it was.
++//
++// An image beside the turn's tool results is the result's, as the bridge
++// tells it (match): a client whose tool messages hold text only sends it
++// in a user message after (pi's "Attached image(s) from tool result:").
++// It carries the turn on, a turn of the user's own begun none (#5767):
++// counted one, the router re-decided the conversation's account at every
++// image result, and the bridge let the waiting run go under the other
++// owner ("tool results account changed"), a new Claude Code told the
++// whole conversation, the prompt cache rewritten each time.
+ func turnIn(req *Request) (turn int, within bool) {
+-	answered := false
++	answered, results := false, false
+ 	for _, m := range req.Messages {
+ 		if m.Role == "assistant" {
+ 			answered = true
++			results = false
++			continue
+ 		}
+ 		if m.Role != "user" {
+ 			continue
+@@ -415,6 +426,9 @@ func turnIn(req *Request) (turn int, within bool) {
+ 		switch {
+ 		case result:
+ 			within = true
++			results = true
++		case said && results:
++			within = true
+ 		case said:
+ 			turn++
+ 			within = false
+diff --git a/internal/gateway/claude_subscription.go b/internal/gateway/claude_subscription.go
+index 71ff2d8bd0..87bedc6c31 100644
+--- a/internal/gateway/claude_subscription.go
++++ b/internal/gateway/claude_subscription.go
+@@ -6437,6 +6437,26 @@ func (r *subscriptionRun) owned() string {
+ 	return ""
+ }
+ 
++// ownerSaid is an owner as the log tells it (#5767): the provider, and
++// whose account it is, its own sign-in marked, a plan-named one unnamed.
++// "account changed" alone left a reporter guessing at image hashes, when
++// the router had served the request from another account.
++func ownerSaid(owner string) string {
++	f := strings.Split(owner, "\x00")
++	said := f[0]
++	if len(f) < 2 || f[1] == "" {
++		return said
++	}
++	said += " (" + f[1]
++	if len(f) > 2 && f[2] == ownHome {
++		said += ", Claude Code's own sign-in"
++		if len(f) > 3 && f[3] == unnamedOwner {
++			said += ", unnamed"
++		}
++	}
++	return said + ")"
++}
++
+ // takeNamedOwner has a run started on Claude Code's own sign-in while it
+ // was known by no name (unnamedOwner) go on as owner, that sign-in named
+ // since: a run in Claude Code's own home runs as whatever it is signed in
+@@ -6798,8 +6818,9 @@ func (s *Server) serveSubscriptionAs(w http.ResponseWriter, r *http.Request, fro
+ 	// Claude Code's config, so its tool results come back on the same
+ 	// sign-in named by its email, and the run goes on under that name.
+ 	if run != nil && run.owned() != owner && !run.takeNamedOwner(owner) {
++		was := run.owned()
+ 		run.abort()
+-		run, how = nil, accountChanged
++		run, how = nil, accountChanged+": the run was on "+ownerSaid(was)+", this request goes to "+ownerSaid(owner)
+ 	}
+ 	// the request's conversation was rewritten since the run's last reply —
+ 	// the client's own, as Pi does compacting it mid-turn, or another
+diff --git a/internal/gateway/turn_in_tool_images_test.go b/internal/gateway/turn_in_tool_images_test.go
+new file mode 100644
+index 0000000000..1550fb478d
+--- /dev/null
++++ b/internal/gateway/turn_in_tool_images_test.go
+@@ -0,0 +1,87 @@
++package gateway
++
++import (
++	"strings"
++	"testing"
++
++	"github.com/yetone/magpie/internal/provider"
++)
++
++// An image a client sends beside a tool result is the result's, as the
++// bridge tells it (match): pi-ai's "Attached image(s) from tool result:"
++// over Chat, a separate user message after the tool's. It begins no turn
++// of the user's (#5767): counted one, the router re-decided the
++// conversation's account on every image result, the bridge let the run go
++// under another owner ("tool results account changed"), and a new Claude
++// Code was told the whole conversation, the prompt cache rewritten each
++// time — while the same results as text kept the account and the run.
++func TestTurnInCarriesAnImageBesideItsToolResult(t *testing.T) {
++	ask := userMsg("read the screenshot")
++	call := Message{Role: "assistant", Parts: []Part{{Kind: ToolCall, ID: "t1", Name: "read"}}}
++	img := Message{Role: "user", Parts: []Part{
++		{Kind: Text, Text: "Attached image(s) from tool result:"},
++		{Kind: Image, URL: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUg"},
++	}}
++	for _, tc := range []struct {
++		name   string
++		ms     []Message
++		turn   int
++		within bool
++	}{
++		// pi's shape: the tool's text, then the image beside it
++		{"image beside its result", []Message{ask, call, Message{Role: "user", Parts: []Part{{Kind: ToolResult, CallID: "t1", Text: "(see attached image)"}}}, img}, 1, true},
++		// a user's own mid-turn image rides with the results, as the bridge
++		// tells it (match), and the turn's account holds for the tool loop
++		{"the user's image beside a result", []Message{ask, call, Message{Role: "user", Parts: []Part{{Kind: ToolResult, CallID: "t1", Text: "ok"}}}, img}, 1, true},
++		// a plain result, as before
++		{"a text result", []Message{ask, call, Message{Role: "user", Parts: []Part{{Kind: ToolResult, CallID: "t1", Text: "ok"}}}}, 1, true},
++	} {
++		if turn, within := turnIn(&Request{Messages: tc.ms}); turn != tc.turn || within != tc.within {
++			t.Errorf("%s: turn %d within %v, want %d %v", tc.name, turn, within, tc.turn, tc.within)
++		}
++	}
++	// as pi sends it over Chat: the tool's message, then the image's
++	body := `{"model":"m","messages":[` +
++		`{"role":"user","content":"read the screenshot"},` +
++		`{"role":"assistant","content":null,"tool_calls":[{"id":"t1","type":"function","function":{"name":"read","arguments":"{}"}}]},` +
++		`{"role":"tool","tool_call_id":"t1","content":"(see attached image)"},` +
++		`{"role":"user","content":[{"type":"text","text":"Attached image(s) from tool result:"},{"type":"image_url","image_url":{"url":"data:image/png;base64,iVBORw0KGgoAAAANSUhEUg"}}]}]}`
++	if turn, within := turnOf(provider.Chat, []byte(body)); turn != 1 || !within {
++		t.Errorf("pi's image result: turn %d within %v", turn, within)
++	}
++}
++
++// An image of the user's own still begins a turn, when no result of the
++// turn's is waiting: a screenshot pasted with the next ask is a turn.
++func TestTurnInCountsTheUsersOwnImage(t *testing.T) {
++	ask := Message{Role: "user", Parts: []Part{{Kind: Image, URL: "data:image/png;base64,iVBORw0KGgo"}, {Kind: Text, Text: "what is wrong here"}}}
++	answer := Message{Role: "assistant", Parts: []Part{{Kind: Text, Text: "the tests are red"}}}
++	next := Message{Role: "user", Parts: []Part{{Kind: Image, URL: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUg"}, {Kind: Text, Text: "and now here"}}}
++	if turn, within := turnIn(&Request{Messages: []Message{ask, answer, next}}); turn != 2 || within {
++		t.Errorf("the user's next image: turn %d within %v, want 2 false", turn, within)
++	}
++	if turn, within := turnIn(&Request{Messages: []Message{ask}}); turn != 1 || within {
++		t.Errorf("the first image: turn %d within %v, want 1 false", turn, within)
++	}
++}
++
++// When a run is let go for a changed owner, the log says whose process it
++// was and whose account the request goes to (#5767): "account changed"
++// alone left the reporter guessing at image hashes.
++func TestToolResultsNameTheChangedOwner(t *testing.T) {
++	run := &subscriptionRun{}
++	o := "claude\x00a@example.com"
++	run.owner.Store(&o)
++	said := ownerSaid(run.owned())
++	if !strings.Contains(said, "a@example.com") || !strings.Contains(said, "claude") {
++		t.Fatalf("ownerSaid(%q) = %q", run.owned(), said)
++	}
++	o = "claude\x00Claude Max\x00" + ownHome + "\x00" + unnamedOwner
++	run.owner.Store(&o)
++	if said = ownerSaid(run.owned()); !strings.Contains(said, "Claude Max") || !strings.Contains(said, "own sign-in") || !strings.Contains(said, "unnamed") {
++		t.Fatalf("ownerSaid(%q) = %q", run.owned(), said)
++	}
++	if said = ownerSaid("claude\x00"); said != "claude" {
++		t.Fatalf("ownerSaid of a userless owner: %q", said)
++	}
++}

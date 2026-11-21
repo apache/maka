@@ -1,0 +1,22 @@
+{
+  "id": "36",
+  "slug": "decode-string",
+  "title": "字符串解码",
+  "difficulty": "medium",
+  "tags": ["栈", "递归", "字符串"],
+  "description": "给定一个经过编码的字符串,返回它解码后的字符串。编码规则为 `k[encoded_string]`,表示括号中的字符串重复 `k` 次。`k` 保证为正整数。输入字符串总是合法的,且数字只表示重复次数。\n\n你可以认为输入字符串中没有多余空格,且方括号总是满足格式要求的。可以嵌套。\n\n**示例 1:**\n\n- 输入:`s = \"3[a]2[bc]\"`\n- 输出:`\"aaabcbc\"`\n\n**示例 2:**\n\n- 输入:`s = \"3[a2[c]]\"`\n- 输出:`\"accaccacc\"`\n\n**示例 3:**\n\n- 输入:`s = \"2[abc]3[cd]ef\"`\n- 输出:`\"abcabccdcdcdef\"`",
+  "solution": "## 思路\n\n**两个栈**(数字栈、字符串栈):遇到数字累加;遇 `[` 把当前数字与已拼字符串压栈并重置;遇 `]` 弹出重复次数与上层字符串,把当前串重复后接回去;字母直接拼接。支持嵌套。\n\n## 参考代码\n\n```js\nfunction decodeString(s) {\n  let num = 0;\n  const numStack = [];\n  const strStack = [];\n  let res = '';\n  for (const ch of s) {\n    if (ch >= '0' && ch <= '9') num = num * 10 + Number(ch);\n    else if (ch === '[') { numStack.push(num); strStack.push(res); num = 0; res = ''; }\n    else if (ch === ']') {\n      const times = numStack.pop();\n      res = strStack.pop() + res.repeat(times);\n    } else res += ch;\n  }\n  return res;\n}\n```\n\n## 复杂度\n\n- 时间:O(n)(n 为输出长度)\n- 空间:O(n)",
+  "signature": {
+    "language": "javascript",
+    "entry": "decodeString",
+    "params": [{ "name": "s", "type": "string" }],
+    "returns": "string"
+  },
+  "testCases": [
+    { "sample": true, "input": ["3[a]2[bc]"], "expected": "aaabcbc" },
+    { "sample": true, "input": ["3[a2[c]]"], "expected": "accaccacc" },
+    { "sample": true, "input": ["2[abc]3[cd]ef"], "expected": "abcabccdcdcdef" },
+    { "sample": false, "input": ["abc3[cd]xyz"], "expected": "abccdcdcdxyz" },
+    { "sample": false, "input": ["10[a]"], "expected": "aaaaaaaaaa" }
+  ]
+}

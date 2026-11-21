@@ -1,0 +1,22 @@
+{
+  "id": "22",
+  "slug": "valid-triangle-number",
+  "title": "有效三角形的个数",
+  "difficulty": "medium",
+  "tags": ["贪心", "双指针", "排序"],
+  "description": "给定一个包含非负整数的数组,你的任务是统计其中可以组成三角形三条边的三元组个数。\n\n**示例 1:**\n\n- 输入:`nums = [2,2,3,4]`\n- 输出:`3`(有效的组合是 `2,3,4`、`2,3,4` 使用第二个 2、`2,2,3`)\n\n**示例 2:**\n\n- 输入:`nums = [4,2,3,4]`\n- 输出:`4`",
+  "solution": "## 思路\n\n先**排序**。固定最长边 `nums[k]`(从后往前),用双指针 `l`、`r` 在 `[0, k-1]` 找满足 `nums[l]+nums[r] > nums[k]` 的对数:一旦满足,`l..r-1` 都能与 `r`、`k` 组成三角形,共 `r-l` 个。\n\n## 参考代码\n\n```js\nfunction triangleNumber(nums) {\n  nums = nums.slice().sort((a, b) => a - b);\n  let count = 0;\n  for (let k = nums.length - 1; k >= 2; k--) {\n    let l = 0;\n    let r = k - 1;\n    while (l < r) {\n      if (nums[l] + nums[r] > nums[k]) { count += r - l; r--; }\n      else l++;\n    }\n  }\n  return count;\n}\n```\n\n## 复杂度\n\n- 时间:O(n²)\n- 空间:O(n)(拷贝排序)",
+  "signature": {
+    "language": "javascript",
+    "entry": "triangleNumber",
+    "params": [{ "name": "nums", "type": "number[]" }],
+    "returns": "number"
+  },
+  "testCases": [
+    { "sample": true, "input": [[2, 2, 3, 4]], "expected": 3 },
+    { "sample": true, "input": [[4, 2, 3, 4]], "expected": 4 },
+    { "sample": false, "input": [[1, 1, 1, 1]], "expected": 4 },
+    { "sample": false, "input": [[]], "expected": 0 },
+    { "sample": false, "input": [[2, 2, 3]], "expected": 1 }
+  ]
+}

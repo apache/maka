@@ -1,0 +1,2 @@
+    zz_probe_byte_test.go:36: UPSTREAM-SHA 03643e8466e5955bb49987fb3949d091759c9f4a60c562d4833cd7c02b7cd476
+    zz_probe_byte_test.go:37: UPSTREAM-BODY {"input":[{"content":[{"text":"Plan a change.","type":"input_text"}],"role":"user","type":"message"},{"content":[{"text":"The plan is ready.","type":"output_text"}],"role":"assistant","type":"message"},{"content":[{"text":"Implement it.","type":"input_text"}],"role":"user","type":"message"}],"instructions":"You are a coding assistant.","model":"example-model","store":false,"stream":true}

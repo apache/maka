@@ -1,0 +1,4 @@
+=== RUN   TestCodexKeyRefusedCarriesItsRoute
+--- PASS: TestCodexKeyRefusedCarriesItsRoute (0.52s)
+PASS
+ok  	github.com/yetone/magpie/internal/gateway	1.028s

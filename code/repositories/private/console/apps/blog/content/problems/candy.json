@@ -1,0 +1,22 @@
+{
+  "id": "80",
+  "slug": "candy",
+  "title": "分发糖果",
+  "difficulty": "hard",
+  "tags": ["贪心", "数组"],
+  "description": "`n` 个孩子站成一排。给你一个整数数组 `ratings` 表示每个孩子的评分。你需要给这些孩子分发糖果,满足:\n\n- 每个孩子至少分配到 `1` 个糖果。\n- 相邻两个孩子评分更高的孩子会获得更多的糖果。\n\n请你返回需要准备的**最少糖果数目**。\n\n**示例 1:**\n\n- 输入:`ratings = [1,0,2]`\n- 输出:`5`(分发 `[2,1,2]`)\n\n**示例 2:**\n\n- 输入:`ratings = [1,2,2]`\n- 输出:`4`(分发 `[1,2,1]`)",
+  "solution": "## 思路\n\n**两次遍历**:每人先发 1 颗。从左到右,若比左边评分高则 = 左边+1;再从右到左,若比右边评分高则 = max(当前, 右边+1)。两次遍历后取最大满足双向约束。\n\n## 参考代码\n\n```js\nfunction candy(ratings) {\n  const n = ratings.length;\n  const candies = new Array(n).fill(1);\n  for (let i = 1; i < n; i++) {\n    if (ratings[i] > ratings[i - 1]) candies[i] = candies[i - 1] + 1;\n  }\n  for (let i = n - 2; i >= 0; i--) {\n    if (ratings[i] > ratings[i + 1]) candies[i] = Math.max(candies[i], candies[i + 1] + 1);\n  }\n  return candies.reduce((a, b) => a + b, 0);\n}\n```\n\n## 复杂度\n\n- 时间:O(n)\n- 空间:O(n)",
+  "signature": {
+    "language": "javascript",
+    "entry": "candy",
+    "params": [{ "name": "ratings", "type": "number[]" }],
+    "returns": "number"
+  },
+  "testCases": [
+    { "sample": true, "input": [[1, 0, 2]], "expected": 5 },
+    { "sample": true, "input": [[1, 2, 2]], "expected": 4 },
+    { "sample": false, "input": [[1]], "expected": 1 },
+    { "sample": false, "input": [[1, 3, 2, 2, 1]], "expected": 7 },
+    { "sample": false, "input": [[1, 2, 3]], "expected": 6 }
+  ]
+}

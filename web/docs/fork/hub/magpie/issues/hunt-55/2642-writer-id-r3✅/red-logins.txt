@@ -1,0 +1,5 @@
+--- FAIL: TestLoginIDKeptThroughALiveSignIn (0.01s)
+    logins_id_test.go:61: the sign-in moved the id: ""
+FAIL
+FAIL	github.com/yetone/magpie/internal/provider	1.016s
+FAIL

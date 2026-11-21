@@ -1,0 +1,362 @@
+[
+  {
+    "microAppId": "129992587288",
+    "picUrl": "https://meiye.cos.clife.cn/material/T000000/209e1407eeb1485fa761eaf7aacff8ac.png",
+    "cells": [
+      [
+        "顾客基础信息提取的副本01",
+        "129992587288"
+      ],
+      [
+        "工作流"
+      ],
+      [
+        "面诊AI听分析"
+      ],
+      [
+        "-"
+      ],
+      [
+        "未发布"
+      ],
+      [
+        "2026-10-12 17:23"
+      ],
+      [
+        "编辑",
+        "复制",
+        "更多"
+      ]
+    ],
+    "microAppName": "顾客基础信息提取的副本01",
+    "description": "面诊AI听分析",
+    "modelCode": "-",
+    "status": 4,
+    "runMode": 4,
+    "updateDate": "2026-10-12 17:23"
+  },
+  {
+    "microAppId": "129614280788",
+    "picUrl": "https://meiye.cos.clife.cn/material/T000000/209e1407eeb1485fa761eaf7aacff8ac.png",
+    "cells": [
+      [
+        "顾问待办-顾客邀约回访的副本01",
+        "129614280788"
+      ],
+      [
+        "工作流"
+      ],
+      [
+        "-"
+      ],
+      [
+        "-"
+      ],
+      [
+        "未发布"
+      ],
+      [
+        "2026-10-12 17:23"
+      ],
+      [
+        "编辑",
+        "复制",
+        "更多"
+      ]
+    ],
+    "microAppName": "顾问待办-顾客邀约回访的副本01",
+    "description": "-",
+    "modelCode": "-",
+    "status": 4,
+    "runMode": 4,
+    "updateDate": "2026-10-12 17:23"
+  },
+  {
+    "microAppId": "121587670223",
+    "picUrl": "https://meiye.cos.clife.cn/material/T000000/209e1407eeb1485fa761eaf7aacff8ac.png",
+    "cells": [
+      [
+        "获取服务报告总结的副本01",
+        "121587670223"
+      ],
+      [
+        "工作流"
+      ],
+      [
+        "-"
+      ],
+      [
+        "-"
+      ],
+      [
+        "未发布"
+      ],
+      [
+        "2026-09-21 15:36"
+      ],
+      [
+        "编辑",
+        "复制",
+        "更多"
+      ]
+    ],
+    "microAppName": "获取服务报告总结的副本01",
+    "description": "-",
+    "modelCode": "-",
+    "status": 4,
+    "runMode": 4,
+    "updateDate": "2026-09-21 15:36"
+  },
+  {
+    "microAppId": "121824910034",
+    "picUrl": "https://agent-paas-test-1323116912.cos.ap-guangzhou.myqcloud.com/agent/paas-llm/image/909461788951493796.png",
+    "cells": [
+      [
+        "企咨助手-万能查",
+        "121824910034"
+      ],
+      [
+        "工作流"
+      ],
+      [
+        "万能查：查项目、查方案、查产品、查对比等"
+      ],
+      [
+        "-"
+      ],
+      [
+        "未发布"
+      ],
+      [
+        "2026-09-09 19:16"
+      ],
+      [
+        "编辑",
+        "复制",
+        "更多"
+      ]
+    ],
+    "microAppName": "企咨助手-万能查",
+    "description": "万能查：查项目、查方案、查产品、查对比等",
+    "modelCode": "-",
+    "status": 4,
+    "runMode": 4,
+    "updateDate": "2026-09-09 19:16"
+  },
+  {
+    "microAppId": "120910060238",
+    "picUrl": "https://meiye.cos.clife.cn/material/T000000/209e1407eeb1485fa761eaf7aacff8ac.png",
+    "cells": [
+      [
+        "高质量话术生成通道",
+        "120910060238"
+      ],
+      [
+        "工作流"
+      ],
+      [
+        "支持多场景适配"
+      ],
+      [
+        "-"
+      ],
+      [
+        "未发布"
+      ],
+      [
+        "2026-08-27 15:04"
+      ],
+      [
+        "编辑",
+        "复制",
+        "更多"
+      ]
+    ],
+    "microAppName": "高质量话术生成通道",
+    "description": "支持多场景适配",
+    "modelCode": "-",
+    "status": 4,
+    "runMode": 4,
+    "updateDate": "2026-08-27 15:04"
+  },
+  {
+    "microAppId": "120686746866",
+    "picUrl": "https://meiye.cos.clife.cn/material/T000000/209e1407eeb1485fa761eaf7aacff8ac.png",
+    "cells": [
+      [
+        "[itest]-每日一客-项目话术示例",
+        "120686746866"
+      ],
+      [
+        "工作流"
+      ],
+      [
+        "-"
+      ],
+      [
+        "-"
+      ],
+      [
+        "已发布"
+      ],
+      [
+        "2026-08-06 16:26"
+      ],
+      [
+        "查看",
+        "复制",
+        "更多"
+      ]
+    ],
+    "microAppName": "[itest]-每日一客-项目话术示例",
+    "description": "-",
+    "modelCode": "-",
+    "status": 1,
+    "runMode": 4,
+    "updateDate": "2026-08-06 16:26"
+  },
+  {
+    "microAppId": "120454773123",
+    "picUrl": "https://meiye.cos.clife.cn/material/T000000/209e1407eeb1485fa761eaf7aacff8ac.png",
+    "cells": [
+      [
+        "生成服务护前提醒",
+        "120454773123"
+      ],
+      [
+        "工作流"
+      ],
+      [
+        "-"
+      ],
+      [
+        "-"
+      ],
+      [
+        "已发布"
+      ],
+      [
+        "2026-09-18 11:38"
+      ],
+      [
+        "查看",
+        "复制",
+        "更多"
+      ]
+    ],
+    "microAppName": "生成服务护前提醒",
+    "description": "-",
+    "modelCode": "-",
+    "status": 1,
+    "runMode": 4,
+    "updateDate": "2026-09-18 11:38"
+  },
+  {
+    "microAppId": "123845318128",
+    "picUrl": "https://meiye.cos.clife.cn/material/T000000/209e1407eeb1485fa761eaf7aacff8ac.png",
+    "cells": [
+      [
+        "美容师工作台-生成回访邀约话术",
+        "123845318128"
+      ],
+      [
+        "工作流"
+      ],
+      [
+        "-"
+      ],
+      [
+        "-"
+      ],
+      [
+        "已发布"
+      ],
+      [
+        "2026-08-12 11:29"
+      ],
+      [
+        "查看",
+        "复制",
+        "更多"
+      ]
+    ],
+    "microAppName": "美容师工作台-生成回访邀约话术",
+    "description": "-",
+    "modelCode": "-",
+    "status": 1,
+    "runMode": 4,
+    "updateDate": "2026-08-12 11:29"
+  },
+  {
+    "microAppId": "122317452015",
+    "picUrl": "https://meiye.cos.clife.cn/material/T000000/209e1407eeb1485fa761eaf7aacff8ac.png",
+    "cells": [
+      [
+        "AI识别客户工作流编排",
+        "122317452015"
+      ],
+      [
+        "工作流"
+      ],
+      [
+        "数联美业开发组-AI美管家，用于AI识别客户。"
+      ],
+      [
+        "-"
+      ],
+      [
+        "未发布"
+      ],
+      [
+        "2026-09-24 15:12"
+      ],
+      [
+        "编辑",
+        "复制",
+        "更多"
+      ]
+    ],
+    "microAppName": "AI识别客户工作流编排",
+    "description": "数联美业开发组-AI美管家，用于AI识别客户。",
+    "modelCode": "-",
+    "status": 4,
+    "runMode": 4,
+    "updateDate": "2026-09-24 15:12"
+  },
+  {
+    "microAppId": "128453247282",
+    "picUrl": "https://meiye.cos.clife.cn/material/T000000/209e1407eeb1485fa761eaf7aacff8ac.png",
+    "cells": [
+      [
+        "顾问对话智能体",
+        "128453247282"
+      ],
+      [
+        "工作流"
+      ],
+      [
+        "-"
+      ],
+      [
+        "-"
+      ],
+      [
+        "未发布"
+      ],
+      [
+        "2026-08-07 16:22"
+      ],
+      [
+        "编辑",
+        "复制",
+        "更多"
+      ]
+    ],
+    "microAppName": "顾问对话智能体",
+    "description": "-",
+    "modelCode": "-",
+    "status": 4,
+    "runMode": 4,
+    "updateDate": "2026-08-07 16:22"
+  }
+]

@@ -1,0 +1,16 @@
+{
+  "name": "updated-apply",
+  "time_utc": "2026-10-16T23:41:23.222187+00:00",
+  "cwd": "/private/tmp/magpie-quality-20261017-2413-rollback",
+  "command": "git apply --check /Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2413/updated.patch && git apply /Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2413/updated.patch && echo UPDATED_PATCH_APPLIES",
+  "input": "SQLite fixtures in internal/provider/importapps_test.go; no real credentials; temporary HOME via wrapper and provider TestMain testenv",
+  "environment": {
+    "GOTOOLCHAIN": "auto",
+    "GOPATH": "/Users/ggbdpq/go",
+    "GOMODCACHE": "/Users/ggbdpq/go/pkg/mod",
+    "GOCACHE": "/Users/ggbdpq/Library/Caches/go-build",
+    "GOMAXPROCS": "2"
+  },
+  "output": "UPDATED_PATCH_APPLIES\n",
+  "exit_status": 0
+}

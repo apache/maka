@@ -1,0 +1,147 @@
+From aa378a4f6928fbce231744467724e59d0c8ec24c Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Sun, 1 Nov 2026 21:05:39 +0800
+Subject: [PATCH] fix(gateway): a model the user said sees is picked though its
+ ID carries a namespace colon (#4359)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+What changed
+
+AutoVision never picked a model of a relay whose IDs carry a vendor
+namespace (cn:deepseek-v4.1-flash, gateway key 21/cn:…), though the user
+had marked every one as taking images in settings.json's modelImages:
+smallCands dropped every model whose lowercased ID holds a colon or a
+tilde, and the drop came after keep (seesAt) had read the user's answer,
+so their word never reached the pick — the pool came out empty and seer()
+said no model sees, while naming the model in vision worked.
+
+smallCands now reads the pool's settings once and leaves a model the
+user gave an answer about (ImageOverride) in the pool whatever characters
+its ID carries: their answer names one of the vendor's models in full,
+which is exactly what the colon, the tilde and the nano/lite/image/…
+words were guessing at. The shape filters stand for every model they
+said nothing of, and the structural ones — a group's, a found group's,
+and, on a subscription, what magpie wrote into its agent — stand even
+for a model they did name. The searcher's pool reads the same answer:
+the filters are one judgment, and a model the user proved real can be
+searched with too; a relay is asked to search only where it was before.
+
+Run
+
+- TestAutoVisionPicksANamespacedIDTheUserSaidSees (new) fails on the old
+  smallCands with "AutoVision = \"\", want
+  relay/cn:deepseek-v4.1-flash, the model the user said sees" and passes
+  now; it also holds that with no answer of the user's the model stays
+  out, and that their "takes no images" keeps it out.
+- go test -tags nogui -count=1 ./internal/gateway/ (whole package).
+
+Fixes #4359
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gateway/search.go          | 22 ++++++++++----
+ internal/gateway/small_kept_test.go | 47 +++++++++++++++++++++++++++++
+ 2 files changed, 63 insertions(+), 6 deletions(-)
+
+diff --git a/internal/gateway/search.go b/internal/gateway/search.go
+index 5747aa199..6cc15961b 100644
+--- a/internal/gateway/search.go
++++ b/internal/gateway/search.go
+@@ -560,18 +560,28 @@ type smallCand struct {
+ }
+ 
+ // smallCands is the provider's models smallModel picks among, of those
+-// keep holds, in the order it picks them (rankSmall).
++// keep holds, in the order it picks them (rankSmall). What the user said
++// of a model named in full (ImageOverride) is their word that the ID is
++// the vendor's own, not one of the shapes guessed at below: their model
++// stays in the pool though its ID carries a namespace colon (a relay's
++// cn:deepseek-v4.1-flash, #4359) or one of the words, and keep has said
++// whether it sees. An ID that starts a group, a found group or, on a
++// subscription, what magpie wrote into its agent, is magpie's own shape
++// whatever the user said of it, and stays out.
+ func smallCands(p provider.Provider, keep func(catalog.Model) bool) []smallCand {
+ 	var ms []catalog.Model
++	s := settings.Shared()
+ 	for _, m := range p.Exposed() {
+ 		if keep != nil && !keep(m) {
+ 			continue
+ 		}
+-		l := strings.ToLower(m.ID)
+-		// a subscription's list can have what magpie wrote into its agent
+-		if strings.HasPrefix(m.ID, provider.GroupPrefix) || strings.HasPrefix(m.ID, provider.AutoPrefix) || (p.Account != nil && strings.Contains(m.ID, "/")) ||
+-			strings.ContainsAny(l, ":~") || slices.ContainsFunc([]string{"nano", "lite", "image", "audio", "tts", "embed", "free"}, func(w string) bool { return strings.Contains(l, w) }) {
+-			continue
++		if _, said := provider.ImageOverrideIn(s, p.ID, m.ID); !said {
++			l := strings.ToLower(m.ID)
++			// a subscription's list can have what magpie wrote into its agent
++			if strings.HasPrefix(m.ID, provider.GroupPrefix) || strings.HasPrefix(m.ID, provider.AutoPrefix) || (p.Account != nil && strings.Contains(m.ID, "/")) ||
++				strings.ContainsAny(l, ":~") || slices.ContainsFunc([]string{"nano", "lite", "image", "audio", "tts", "embed", "free"}, func(w string) bool { return strings.Contains(l, w) }) {
++				continue
++			}
+ 		}
+ 		ms = append(ms, m)
+ 	}
+diff --git a/internal/gateway/small_kept_test.go b/internal/gateway/small_kept_test.go
+index 1f276fb1c..fdc7a957a 100644
+--- a/internal/gateway/small_kept_test.go
++++ b/internal/gateway/small_kept_test.go
+@@ -177,6 +177,53 @@ func TestAutoVisionKeptListsAskAllowanceEachTime(t *testing.T) {
+ 	}
+ }
+ 
++// A relay's model IDs can carry a namespace colon, cn:deepseek-v4.1-flash
++// and the like (#4359). The pool the small models are picked from leaves
++// IDs with a colon out, as magpie's own effort-suffixed ones have one;
++// the user's answer about a model named in full is about one of the
++// vendor's models, not one of magpie's shapes: their "it takes images"
++// keeps it in the pool, for AutoVision to pick, and their "it takes
++// none" keeps it out. Without an answer of theirs, it stays out as it
++// was.
++func TestAutoVisionPicksANamespacedIDTheUserSaidSees(t *testing.T) {
++	fresh(t)
++	if err := provider.Save(provider.Provider{ID: "relay", Name: "Relay", Chat: "http://relay.invalid/v1", Key: "k",
++		Models: []string{"cn:deepseek-v4.1-flash", "cn:glm-5v-turbo"}}); err != nil {
++		t.Fatal(err)
++	}
++	// the vendor's list, as a relay's is, says nothing of images
++	if err := catalog.SaveLive("relay", "http://relay.invalid/v1", []catalog.Model{
++		{ID: "cn:deepseek-v4.1-flash", Price: &catalog.Price{Input: 0.1, Output: 0.1}},
++		{ID: "cn:glm-5v-turbo", Price: &catalog.Price{Input: 0.2, Output: 0.2}},
++	}); err != nil {
++		t.Fatal(err)
++	}
++	if m := AutoVision(); m != "" {
++		t.Fatalf("AutoVision = %q though no model of the relay is known to see and the user said nothing", m)
++	}
++
++	// the user marks the relay's models as taking images (#4359's
++	// settings.json): the one with flash in its ID is picked
++	st := settings.Load()
++	st.ModelImages = map[string]bool{"relay/cn:deepseek-v4.1-flash": true, "relay/cn:glm-5v-turbo": true}
++	if err := settings.Save(st); err != nil {
++		t.Fatal(err)
++	}
++	if m := AutoVision(); m != "relay/cn:deepseek-v4.1-flash" {
++		t.Fatalf("AutoVision = %q, want relay/cn:deepseek-v4.1-flash, the model the user said sees", m)
++	}
++
++	// the user's "takes no images" keeps it out again
++	st = settings.Load()
++	st.ModelImages = map[string]bool{"relay/cn:deepseek-v4.1-flash": false}
++	if err := settings.Save(st); err != nil {
++		t.Fatal(err)
++	}
++	if m := AutoVision(); m != "" {
++		t.Fatalf("AutoVision = %q, a model the user said takes no images", m)
++	}
++}
++
+ // rankSmall's order is pickSmall's pick of every subset, as pickSmall
+ // was before the ranking: the first of a subset is its pick.
+ func TestRankSmallIsPickSmall(t *testing.T) {
+-- 
+2.50.1 (Apple Git-155)
+

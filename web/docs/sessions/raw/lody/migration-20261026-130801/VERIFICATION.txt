@@ -1,0 +1,25 @@
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py lody baseline
+INPUT: CONFIG: fixed lody source allowlist
+OUTPUT: BASELINE PASS groups=1 files=4 bytes=70492 protected=0
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py lody archive
+INPUT: 863ef2b85eaf876fffc10c9cb9b7d938e62d60581ad8fea0894d571c0b05c6b6
+OUTPUT: ARCHIVE PASS zip_files=1 files=4 bytes=70492
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py lody apply
+INPUT: cc5d0e5d5bed77a782d2de65d6b8b7e8017b73ee29a5acb93c640e9f69c5d9d5
+OUTPUT: APPLY PASS removed_files=4 removed_bytes=70492
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py lody verify
+INPUT: 6302e01489635d44a1f6a9ed95097d31c2d3fbcae3788ed6888b309b17f09652
+OUTPUT: MODIFIED PASS files=4 bytes=70492 originals_absent=true protected_unchanged=true
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py lody rollback-test
+INPUT: 6302e01489635d44a1f6a9ed95097d31c2d3fbcae3788ed6888b309b17f09652
+OUTPUT: ROLLBACK PASS restored_files=4 restored_bytes=70492 hashes_match=true originals_untouched=true
+EXIT: 0
+

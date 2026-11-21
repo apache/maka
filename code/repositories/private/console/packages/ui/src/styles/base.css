@@ -1,0 +1,174 @@
+/* 样式基座（唯一住址）：四个 app 的 globals.css 仅 @import 本文件。
+   改浅色/深色板只动这里，不要再往 app 里复制。 */
+@import "tailwindcss";
+@import "tw-animate-css";
+
+/* 显式注册包内源码：badge 变体等类只出现在本包，自动内容检测覆盖不到 */
+@source "../";
+
+@custom-variant dark (&:is(.dark *));
+
+/* 浅色板：GitHub Primer（2026-09-10 换皮，米金品牌退役）。
+   primary = GitHub 主按钮绿 #1f883d；info/链接蓝 #0969da；success/warning/danger 同 Primer。
+   实底色 -foreground 对比度已逐对预演算 ≥4.5:1。success/warning/info 的
+   -foreground 供 Badge/状态块实底配色（暗板一律深字，亮板白字）。 */
+:root {
+  --background: #ffffff;
+  --foreground: #1f2328;
+  --card: #ffffff;
+  --card-foreground: #1f2328;
+  --popover: #ffffff;
+  --popover-foreground: #1f2328;
+  --primary: #1f883d;
+  --primary-foreground: #ffffff;
+  --secondary: #f6f8fa;
+  --secondary-foreground: #1f2328;
+  --muted: #f6f8fa;
+  --muted-foreground: #59636e;
+  --accent: #eaeef2;
+  --accent-foreground: #1f2328;
+  --destructive: #cf222e;
+  --destructive-foreground: #ffffff;
+  --success: #1a7f37;
+  --success-foreground: #ffffff;
+  --warning: #9a6700;
+  --warning-foreground: #ffffff;
+  --info: #0969da;
+  --info-foreground: #ffffff;
+  --border: #d0d7de;
+  --input: #d0d7de;
+  --ring: #0969da;
+  /* GitHub UnderlineNav 激活底线橙 */
+  --nav-accent: #fd8c73;
+  --radius: 0.375rem;
+  --sidebar: #f6f8fa;
+  --sidebar-foreground: #1f2328;
+  --sidebar-accent: #eaeef2;
+  --sidebar-accent-foreground: #1f2328;
+  --sidebar-border: #d8dee4;
+}
+
+/* 深色板：GitHub 经典 dark（#0d1117 画布 / #161b22 卡面 / #30363d 边框）。
+   实底 success/warning/info 用暗板原色 + 深字（亮绿/亮琥珀上的近黑字 ≥5:1）。 */
+.dark {
+  --background: #0d1117;
+  --foreground: #e6edf3;
+  --card: #161b22;
+  --card-foreground: #e6edf3;
+  --popover: #161b22;
+  --popover-foreground: #e6edf3;
+  --primary: #238636;
+  --primary-foreground: #ffffff;
+  --secondary: #21262d;
+  --secondary-foreground: #e6edf3;
+  --muted: #21262d;
+  --muted-foreground: #9198a1;
+  --accent: #30363d;
+  --accent-foreground: #e6edf3;
+  --destructive: #f85149;
+  --destructive-foreground: #0d1117;
+  --success: #3fb950;
+  --success-foreground: #0d1117;
+  --warning: #d29922;
+  --warning-foreground: #0d1117;
+  --info: #2f81f7;
+  --info-foreground: #0d1117;
+  --border: #30363d;
+  --input: #30363d;
+  --ring: #2f81f7;
+  --nav-accent: #f78166;
+  --sidebar: #0d1117;
+  --sidebar-foreground: #e6edf3;
+  --sidebar-accent: #161b22;
+  --sidebar-accent-foreground: #e6edf3;
+  --sidebar-border: #21262d;
+}
+
+@theme inline {
+  /* —— 字体（字体文件由各 app 经 @fontsource-variable/* 引入） —— */
+  --font-sans: "Geist Variable", system-ui, "Segoe UI", "Microsoft YaHei", sans-serif;
+  --font-mono: "JetBrains Mono Variable", ui-monospace, Consolas, "Cascadia Mono", monospace;
+
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-info: var(--info);
+  --color-info-foreground: var(--info-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-nav-accent: var(--nav-accent);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  /* 苹果式正文再抬一档：根字号 18px，全部 rem 尺寸（字号/间距/控件）跟随放大 */
+  html {
+    font-size: 18px;
+  }
+  /* 明暗跟随原生控件（滚动条/select 弹层/表单焦点），修 Windows 深色 select 白底白字 */
+  :root {
+    color-scheme: light;
+  }
+  .dark {
+    color-scheme: dark;
+  }
+  body {
+    @apply bg-background text-foreground font-sans;
+  }
+}
+
+/* 数字排版：计数/金额/时间戳用等宽数字（15 处业务代码已在用此工具类） */
+@utility tnum {
+  font-variant-numeric: tabular-nums;
+}
+
+/* 触屏设备输入控件 ≥16px：iOS Safari 聚焦 <16px 输入会自动放大页面（Vercel 防缩放线）。
+   置于 layers 之外以压过 text-sm/text-xs 工具类；pointer:fine 的桌面端不受影响；
+   max() 只抬底不压顶（全仓输入框仅用 text-sm/text-xs，无更大字号被覆盖）。 */
+@media (pointer: coarse) {
+  input,
+  select,
+  textarea {
+    font-size: max(0.875rem, 16px);
+  }
+}
+
+/* 全局减弱动态（Vercel/interaction-design 硬规则；lab 作用域另有细分降级） */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

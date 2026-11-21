@@ -1,0 +1,391 @@
+From 59a84c4e485634f32b6fdbaba05789bf7b445ef2 Mon Sep 17 00:00:00 2001
+From: vincent <vincent@users.noreply.github.com>
+Date: Wed, 28 Oct 2026 08:46:41 +1000
+Subject: [PATCH] gateway: a tool call answered by no result stops after 8
+ turns (#3615)
+
+easonlao (#3615): zcode on Windows made 1088 requests to
+group/auto-kimi-k3 in 5h08m, every one answered 200 with
+stop=tool_calls and a ~150-token tool call, the prompt growing from
+139,956 to 431,953 tokens. The client never sent a tool result back, so
+every turn was the same call answered by nothing, and magpie counted
+none of them as a loop.
+
+The tool loop guard only read turns that have results: exchanges and
+exchangeOf (internal/gateway/tool_loop.go) break at a turn without one,
+and mayLoop (internal/gateway/tool_loop.go:74) parsed only a body
+holding 8 tool results. A conversation of the same call with nothing
+answering it was therefore never read.
+
+stoppedToolLoop now also asks toolLoopUnansweredOf
+(internal/gateway/tool_loop.go). It walks the request's own messages
+back from the newest and counts the calls asked in a row with no result
+after them, the same name and arguments (key order ignored, call ids
+ignored). Eight in a row answer the turn here, in the agent's own
+protocol, with a notice saying the result never came back, so nothing
+claims whether the call ran, and the turn goes nowhere. A turn asking a
+different call, a reply that says something else, a result, or a word
+from the user starts the count again, as the result-shaped check does.
+mayLoop reads a body with 8 tool calls as well as 8 tool results
+(toolCallMarks, matched loosely: a mark that also matches a result only
+costs a parse). No new setting and no GUI string: Settings' Stop
+looping replies turns it off with the reply guard, and the usage row is
+the same "tool loop:" rejection the result-shaped check writes.
+
+Every protocol's path runs through stoppedToolLoop, so the Codex
+backend's passthrough is covered by the same change, and each API is
+tested: Responses (stream and whole), Codex's own path, Chat (stream
+and whole), Anthropic (stream and whole) and Gemini.
+
+Run at this commit:
+- gofmt -l internal/gateway/tool_loop.go internal/gateway/tool_loop_test.go: nothing.
+- go build ./...: nothing.
+- go vet ./internal/gateway/: nothing.
+- go test -tags nogui ./internal/gateway/ -run 'TestToolLoop' -count=1: ok,
+  39 tests pass. TestToolLoopStuckWithoutResults stops 8 answerless turns
+  of one call on all eight protocol cases with the vendor asked 0 times
+  and the usage row magpie, rejected, "tool loop ... no result", and sends
+  7 such turns on; TestToolLoopStuckNeedsTheSameCallAndNoWord lets
+  differing calls and a word from the user between the calls through.
+- With tool_loop.go reverted and the test kept, the same test fails on all
+  eight cases: "the agent wasn't told of the loop in its API", the
+  vendor's reply reaching the agent.
+- go test -tags nogui ./internal/gateway/ -count=1 was run once and failed
+  only in five tests that fail on clean upstream/main too: with every change
+  here reverted (git diff saved and applied back, no stash), the same five
+  fail in the same way (TestClaudeClientCacheAbsentUnchanged,
+  TestCodexFittedImagesPastTheBudget, TestMarshalRawIsEncodingJSON and
+  FuzzMarshalRaw's \u2028 escaping, TestServeWSLListensBesideLoopback).
+  A second full-suite run at this commit was not completed.
+
+Not tried:
+- A real zcode session: the reporter's 1088 routing entries are not
+  available, so the fixture is the shape its numbers describe (one call a
+  turn, no result, the prompt growing by the call alone).
+- The issue's other option, a per-session windowed cap or a refusal: it
+  needs a new setting and session state, and is left to the maintainer.
+- The Windows box.
+---
+ docs/subsystems/gateway-routing.md |   2 +-
+ internal/gateway/tool_loop.go      | 109 +++++++++++++++++++++++++++--
+ internal/gateway/tool_loop_test.go | 104 +++++++++++++++++++++++++++
+ 3 files changed, 210 insertions(+), 5 deletions(-)
+
+diff --git a/docs/subsystems/gateway-routing.md b/docs/subsystems/gateway-routing.md
+index 1dcda1a44..11ff7bfa6 100644
+--- a/docs/subsystems/gateway-routing.md
++++ b/docs/subsystems/gateway-routing.md
+@@ -204,7 +204,7 @@ recorded as a prediction failure (`noPrediction`).
+ - An error that reaches the agent in a stream already begun can't carry its status, so `streamError` says it in the words (`saysPassing`, #2372, zminds): for a status that may pass (408, 429, 5xx) whose text names none of the words a text-judging agent retries on (Pi decides by its `errorMessage` alone), it appends `(<status>: you can retry your request)`; a request's own fault (400, 401, 404 …) and a text that already says so are left as they were. `TestStreamErrorSaysItPasses` holds Pi's own lists; `TestGroupLastFailureInStreamSaysItPasses` runs a group whose last member fails after the keepalive. A 413 byte cap in that stream says `request_too_large` in the error text, and Chat and Anthropic name that type, so Pi compacts; Gemini keeps its own status shape (`TestStreamedByteCapSaysRequestTooLargeToPi`, `TestStreamErrorByteCapInEveryShape`). Responses' `response.failed` code for it is `context_length_exceeded`, the one code Codex compacts on: with `server_error` it sent the same body five more times ("reconnecting 5/5"), each refused, and never compacted (celestial_eagle_99230 on Discord, an nginx 413 page in front of a DeepSeek model; `TestCodexByteCapInStreamCompacts`). An overload told so (a 529, or a 5xx whose words say overloaded, `saidOverloaded`) is `server_is_overloaded` there, as the ChatGPT backend says one in a stream: Codex shows the model at capacity and stops, where `server_error` had it reconnect five times, each turn asked again by magpie, and end on the last error alone (wjh66 on Discord; `TestCodexKeptAliveOverloadSaysServerIsOverloaded`). Codex reads a 413, or a 400 `context_length_exceeded`, told by HTTP status as an unexpected status or an invalid request and compacts on neither, so when Codex (`fromCodex`) asked for a stream, a byte cap or an overflow is told in a stream even before one began (`keptAlive.compactsInStream`, `failTo`; `TestCodexByteCapBeforeStreamCompacts`). Another client keeps its status (`TestByteCapBeforeStreamStaysStatusForOthers`). Nobody rests for either. Wherever the protocol says a model with the error (Chat's first chunk, Anthropic's `message_start`, Responses' `response.created` and the events after it), it is the model the agent asked for, as `serve` has it, an effort on it kept (`keptAlive.model`; on Codex's own sign-in, the one Codex wrote) (#3728, jilen: with `"model":""` fx took Chat's first chunk for a broken one and stopped there; `TestStreamErrorNamesTheModel`, `TestKeptAliveChatErrorNamesTheModel`, `TestKeptAliveChatOnCodexErrorNamesTheModel`, `TestKeptAliveCodexErrorNamesTheModel`). An error after a reply that already went, a loop cut's, still starts a message of its own after the vendor's, under a new id and no model (#3792).
+ - Claude's, GPT's, Gemini's and DeepSeek's reasoning is held (`refusesAfterThinking`, up to `holdThinking`, 4 minutes) so that a refusal after it goes to the next candidate unseen (#248). It is held only while one could: on the last candidate a refusal isn't asked again, so their reasoning streams as it comes there, and a refusal after it reaches the agent as the vendor's own. Held there, a lone relay's Claude or GPT showed Claude Code its thinking all at once with the text, and Codex none until then (iTianbao on X). Gemini's streams there too: a reply that only reasoned is asked again in place by `streamTranslated`, the reasoning the agent has kept and the next try's after it (#667), so holding it only kept Codex on a Gemini model with nothing at all, not even `response.created`, for the whole of its thinking (LuckymanJC on Discord; `TestThinkingStreamsWithNoOneElse`'s gemini cases). DeepSeek's is held since plugins #540: deepseek-v4.1-flash on WorkBuddy reasoned, then ended `content_filter` with nothing said (the WorkBuddy plugin takes the filter's canned "Sorry, I can't respond to this question." out of such a reply), and with its reasoning already through, the group's next member was never asked (`TestDeepSeekRefusalAfterThinkingFailsOver`). Any other model's reasoning (GLM's, Kimi's…) is never held.
+ - A streamed reply stuck in a loop is ended, not let run to its output limit (#1359, Moody-Sin: WorkBuddy's DeepSeek v4.1 flash reasoned round "Now." "Writing." "Go." "Let me write." "OK." until max tokens while dsh and Pi waited). `holdWriter.Write` feeds every streamed try, passed through or translated, a key's, a built-in subscription's or a plugin's (a moved WorkBuddy's fetch in the plugin host, `TestLoopEndsWorkBuddysReply`), in each of the agent's protocols, to a `loopGuard` ([`loop_guard.go`](../../internal/gateway/loop_guard.go)). It cuts the reasoning and the text, each apart, into units, its lines and sentences (a list's `1.` or a decimal is no sentence's end), compared without case or a closing stop. A unit with no word in it (a letter run with no digit: not a brace, a rule, `0x00`, a hash or a row of numbers) isn't counted. When the last `loopWindow` (256) counted units of either are among no more than `loopDistinct` (24) different ones, the try is cut (`cutLoop`): what came with that write goes out, then, after a blank line (two newlines when that write stopped inside a line, `holdWriter.atLine`, #2446), the protocol's stream error (`streamError`, 502) naming the loop and quoting its units, and the vendor's request is cancelled. It falls back to nobody and rests nobody (`failLoop`); its usage record's error type is `reply_loop` (`usage.LoopErrType`), and Usage counts them per model (`Totals.Loops`), as "{n} looped" beside the model's failures in the Overview's rows and the Requests ranking (#1858, `TestLoopsCountedPerModel`, `usage-loops.test.cjs`). A reply magpie translates into the agent's protocol (`streamTranslated`) whose *reasoning* loops before it has said a text or a call, and isn't a continuation, is asked again once in place instead (`loopReasks`, through `holdWriter.onLoop`; cdredfox on X, WorkBuddy AI's DeepSeek v4 flash): the agent keeps the reasoning it has, the next try's follows it in the same stream, as an empty reply's re-ask does (#667), and only a loop on that try ends the reply with the error (`TestReasoningLoopIsAskedAgain`). A reply passed through in the agent's own protocol is asked again once too, at the fallback loop (`holdWriter.mayReloop`, `letGoLoop`; #2436, lqisgod: pi's Chat stream to WorkBuddy was cut at once): when nothing of the try has reached the agent yet, in any protocol, its held bytes are dropped; when its reasoning is already passing, only a Chat stream goes on, written up to the end of the tripping event, with the next try's chunks after it. An Anthropic or Responses stream already passing still ends with the error, since a second `message_start` or `response.created` can't follow. Each re-ask, in place or at the fallback loop, counts in the usage record's tries. A loop in the text, or after a text or call, is ended at once (`TestLoopAfterTextIsNotAskedAgain`). A cycle need not be exact. Code, tables, lists, logs, CSV and base64 differ line to line or have no words, and don't trip it (`TestLoopGuardLeavesOrdinaryRepliesAlone` feeds magpie's own sources and docs through it). A reply sent whole (no stream, or Gemini without `alt=sse`) isn't read. Settings › Models › Replies › *Stop looping replies* (`noLoopGuard`) turns it off.
+-- A conversation going round one tool call is answered by magpie and sent nowhere (audie on Discord: Codex Desktop on WorkBuddy's deepseek-v4-pro read the same file 308 times in half an hour, and 340 times that evening, 537 credits). `stoppedToolLoop` ([`tool_loop.go`](../../internal/gateway/tool_loop.go)) runs in `serveAgent` before hooks, middleware and routing, and in the Codex backend's passthrough on Codex's own sign-in. It reads the request's own history, so it is per conversation and keeps no state: when the last `toolLoopRepeats` (8) turns are each the same calls (name and arguments, keys in any order, call ids ignored) answered with the same results (with Codex's `Wall time`, `Chunk ID` and `duration_seconds` taken out, `runNoise`) and nothing else from the user, the turn is answered in the agent's own protocol, streamed or whole (`writeLocalText` through `relayStatus`), with a notice naming the call. Any different result, or a word of the user's, starts the count again; the notice is a turn without calls, so the user's next word goes on. A body with fewer than 8 tool results isn't parsed (`mayLoop`), and only the newest 64 items of a long one are (`tailOf`, gjson), ~1ms for a 1.5MB turn (`BenchmarkToolLoopCheck`). The turn is recorded as Codex's title turns are (`answeredHere`): the Routing trace as "Tool loop stopped", and a usage row with provider `magpie`, rejected, its session and an error starting `tool loop:`. A poll that gets the same answer 8 times in a row is stopped too. Settings › Models › Replies › *Stop looping replies* (`noLoopGuard`) turns it off with the reply guard. Verification: `go test -tags nogui ./internal/gateway -run 'TestToolLoop'`.
++- A conversation going round one tool call is answered by magpie and sent nowhere (audie on Discord: Codex Desktop on WorkBuddy's deepseek-v4-pro read the same file 308 times in half an hour, and 340 times that evening, 537 credits). `stoppedToolLoop` ([`tool_loop.go`](../../internal/gateway/tool_loop.go)) runs in `serveAgent` before hooks, middleware and routing, and in the Codex backend's passthrough on Codex's own sign-in. It reads the request's own history, so it is per conversation and keeps no state: when the last `toolLoopRepeats` (8) turns are each the same calls (name and arguments, keys in any order, call ids ignored) answered with the same results (with Codex's `Wall time`, `Chunk ID` and `duration_seconds` taken out, `runNoise`) and nothing else from the user, the turn is answered in the agent's own protocol, streamed or whole (`writeLocalText` through `relayStatus`), with a notice naming the call. Any different result, or a word of the user's, starts the count again; the notice is a turn without calls, so the user's next word goes on. A body with fewer than 8 tool results isn't parsed (`mayLoop`), and only the newest 64 items of a long one are (`tailOf`, gjson), ~1ms for a 1.5MB turn (`BenchmarkToolLoopCheck`). The turn is recorded as Codex's title turns are (`answeredHere`): the Routing trace as "Tool loop stopped", and a usage row with provider `magpie`, rejected, its session and an error starting `tool loop:`. A poll that gets the same answer 8 times in a row is stopped too. The same call asked 8 times in a row with no result after any of them is stopped as well (`toolLoopUnansweredOf`, #3615, easonlao: zcode on Windows made 1088 requests in 5h08m, every reply a ~150-token tool call, the prompt growing by the call alone and no tool result ever sent back, so the result-shaped check saw no loop): its notice says the result never came back, so nothing the user reads claims whether the call ran. A turn asking a different call, a reply that says something else, a result, or a word of the user's starts that count again too. Settings › Models › Replies › *Stop looping replies* (`noLoopGuard`) turns it off with the reply guard. Verification: `go test -tags nogui ./internal/gateway -run 'TestToolLoop'`.
+ - A Chat request's earlier turns carry the assistant's thinking back in the spelling its own client used: `reasoning_content` (DeepSeek's, which OpenCode and most clients send), `reasoning` (OpenRouter's) or `reasoning_details` (OpenRouter's structured one). A request translated to a non-Chat upstream reads whichever of the three the turn has, in that order, as the turn's thinking (`messageReasoning`, `reasoningText`, read by `parseChat` in [chat.go](../../internal/gateway/chat.go)); the passthrough has read all three since `mistralThinking` (#494), which was the one place that did. Before that the parse layer read `reasoning_content` alone, so a tool-calling session whose client spelled it another way went on from its second turn without the model's own reasoning.
+ - The order of the steps a request's accounts go through, how much the accounts' own order (*Make first*) counts under each routing, and how often an allowance is read are described for users in [How magpie picks an account](../reference.md#how-magpie-picks-an-account). Smart compares renewals window by window, biggest first, each truncated to the hour (`weighRouted`), so the order decides only when every window falls in the same hour. A window's renewal is its reset, or, when what it has left runs out sooner or it has no reset, that moment (`Limit.RunsOut`, from `QuotaWindow.RunsOutAt`; `Allowance.Renewal`): the WorkBuddy plugin (0.1.14) sends it on its Credits window as the soonest end of a package with credits left (cdredfox on X). When the renewals tie to the hour, Smart goes by that moment once more (`Allowance.Lapse`, `Seat.Lapse`), so of accounts renewing together (WorkBuddy's free accounts all reset at the month's end, plugin 0.1.35) the one whose credits left lapse first, after that end, goes first, and one telling none goes after (zhaocai_83020 on Discord). Only Smart reads it; Use before expiry, the 90%/98% tiers and rests go by the window's share and reset as before. A row on the Routing page says the share used (the fullest window's, `Allowance.For`) with when that same window renews (`Allowance.Fullest`, the trace's `usedRenews`), not the biggest window's: a Factory account 32% into its week and 16% into its month reads "32% used · renews in 3 days" while Smart still ranks it by its month (#1778). A route from before `usedRenews` says when only for an account of one window. Affinity keeps a conversation on an account at 90–97%: only `SpentShareOf` (98%, 100% In order) stops it (`affine`), while the 90% tier (`lowShare`) orders only conversations nobody has answered.
+ - A turn's end is told to the app for the "Task done alert" notification (itieniu on X, `turndone.go`). The trace follows each agent session's turn (`turns`, keyed by agent and session): a request is of the turn unless it has a `Kind` or is a Claude Code subagent's (`agentTurnOf`), and its reply is scanned on the way to the agent for a tool call in any wire format (`toolScan`, a JSON value such as `"type":"tool_use"` or `"finish_reason":"tool_calls"`, never a key or text). The turn is done when no request of it is going, the last reply was whole, under 400 and called no tool, and nothing more came for `turnQuiet` (4s); a session idle past `turnStale` (30m) starts over. Only a turn that ran at least `settings.TurnDoneAlert` seconds is told (`TurnDone`, set by the GUI; nil under `magpie serve`, so nothing is followed). The ChatGPT backend path (`codexBackend`) is followed the same way. `TestTurnDoneSaidAtTheTurnsEnd`, `TestTurnDoneCodexBackend`, `TestToolScan`, `turn-done.test.cjs`.
+diff --git a/internal/gateway/tool_loop.go b/internal/gateway/tool_loop.go
+index 126b9f5cf..691ed1c76 100644
+--- a/internal/gateway/tool_loop.go
++++ b/internal/gateway/tool_loop.go
+@@ -24,8 +24,13 @@ import (
+ // conversation, so the loop is in the request itself: its newest turns are
+ // the same calls with the same arguments answered with the same results.
+ //
++// The other way is a client that never sends a result back: every turn asks
++// the same call and nothing answers it, so the model asks again, and the
++// request's own history is all that shows it (#3615).
++//
+ // stoppedToolLoop answers a request whose last toolLoopRepeats turns are
+-// all that one exchange here, in the agent's own API, with a notice that
++// all that one exchange, or all the same call with no result back, here, in
++// the agent's own API, with a notice that
+ // ends the agent's turn, and sends it nowhere. A turn that got a different
+ // result (a poll whose answer moved, a file that changed) is progress and
+ // starts the count again, as does anything the user says: the notice
+@@ -33,8 +38,9 @@ import (
+ // the conversation. It is on with Settings' Stop looping replies
+ // (settings.NoLoopGuard off), as loopGuard is.
+ 
+-// toolLoopRepeats is how many turns in a row of the same calls answered
+-// with the same results stop the next: the ninth is answered here.
++// toolLoopRepeats is how many turns in a row of the same calls, answered
++// with the same results or with none, stop the next: the ninth is answered
++// here.
+ const toolLoopRepeats = 8
+ 
+ // toolLoopWho is who answered such a turn, as the Routing view names it.
+@@ -49,6 +55,18 @@ var toolResultMarks = map[provider.Protocol][][]byte{
+ 	provider.Gemini:    {[]byte(`"functionResponse"`), []byte(`"function_response"`)},
+ }
+ 
++// toolCallMarks are what each API writes a tool call with, for a
++// conversation whose results never came back to be read too. They are
++// matched loosely, a mark counting a result beside a call as well: too
++// many only makes the guard read the body, where too few would let a loop
++// by unread.
++var toolCallMarks = map[provider.Protocol][][]byte{
++	provider.Responses: {[]byte(`"function_call"`), []byte(`"custom_tool_call"`)},
++	provider.Chat:      {[]byte(`"tool_calls"`)},
++	provider.Anthropic: {[]byte(`"tool_use"`)},
++	provider.Gemini:    {[]byte(`"functionCall"`)},
++}
++
+ // stoppedToolLoop answers r here when its conversation is stuck in a tool
+ // loop, and says whether it did.
+ func (s *Server) stoppedToolLoop(w http.ResponseWriter, r *http.Request, from provider.Protocol, body []byte) bool {
+@@ -60,6 +78,9 @@ func (s *Server) stoppedToolLoop(w http.ResponseWriter, r *http.Request, from pr
+ 		return false // serve says what is wrong with it
+ 	}
+ 	loop, ok := toolLoopOf(req.Messages)
++	if !ok {
++		loop, ok = toolLoopUnansweredOf(req.Messages)
++	}
+ 	if !ok {
+ 		return false
+ 	}
+@@ -70,12 +91,15 @@ func (s *Server) stoppedToolLoop(w http.ResponseWriter, r *http.Request, from pr
+ 	return true
+ }
+ 
+-// mayLoop: body has results enough to hold a loop.
++// mayLoop: body has calls or results enough to hold a loop.
+ func mayLoop(from provider.Protocol, body []byte) bool {
+ 	n := 0
+ 	for _, m := range toolResultMarks[from] {
+ 		n += bytes.Count(body, m)
+ 	}
++	for _, m := range toolCallMarks[from] {
++		n += bytes.Count(body, m)
++	}
+ 	return n >= toolLoopRepeats
+ }
+ 
+@@ -130,6 +154,9 @@ func tailOf(from provider.Protocol, body []byte) []byte {
+ type toolLoop struct {
+ 	calls []Part // the turn's calls, for the notice to name
+ 	turns int
++	// unanswered: none of the turns' results came back, so nothing in the
++	// conversation says whether the calls ran
++	unanswered bool
+ }
+ 
+ // toolLoopOf is the loop msgs end in, when their last toolLoopRepeats
+@@ -223,6 +250,73 @@ func isWait(c Part) bool {
+ 	return true
+ }
+ 
++// toolLoopUnansweredOf is the loop msgs end in where the results never came
++// back: toolLoopRepeats assistant turns in a row, each the same calls, with
++// no result after any of them (#3615). A client that never sends a tool's
++// result, as zcode did for 1088 turns in five hours, leaves the model asking
++// for it again and again, and the request's own history is all that shows
++// it. A turn asking a different call, a reply that says anything else, and
++// a result or a word from the user are progress and start the count again,
++// as toolLoopOf's do.
++func toolLoopUnansweredOf(msgs []Message) (toolLoop, bool) {
++	var key string
++	var calls []Part
++	asked := 0
++walk:
++	for i := len(msgs) - 1; i >= 0; i-- {
++		m := msgs[i]
++		if m.Role != "assistant" {
++			if len(m.Parts) > 0 {
++				break // a result, or a word from the user
++			}
++			continue // a turn with nothing in it
++		}
++		newest := asked == 0
++		here := 0
++		for j := len(m.Parts) - 1; j >= 0; j-- {
++			p := m.Parts[j]
++			if p.Kind != ToolCall {
++				continue
++			}
++			k := p.Name + "\x00" + steadyArgs(p.Args)
++			if asked == 0 {
++				key = k
++			} else if k != key {
++				break walk // a turn asking a different call
++			}
++			asked++
++			here++
++		}
++		if here == 0 {
++			if saidOn(m.Parts) {
++				break // a reply that said something, not a call
++			}
++			continue // a reasoning turn between the calls
++		}
++		if newest {
++			for _, p := range m.Parts { // the newest turn's calls, for the notice to name
++				if p.Kind == ToolCall {
++					calls = append(calls, p)
++				}
++			}
++		}
++	}
++	if asked < toolLoopRepeats {
++		return toolLoop{}, false
++	}
++	return toolLoop{calls: calls, turns: asked, unanswered: true}, true
++}
++
++// saidOn is whether parts say something the user reads.
++func saidOn(parts []Part) bool {
++	for _, p := range parts {
++		if p.Kind == Text && strings.TrimSpace(p.Text) != "" {
++			return true
++		}
++	}
++	return false
++}
++
+ // exchange is one turn of tool use: the assistant's calls and the results
+ // the agent sent back, summed without their ids, which differ every turn.
+ type exchange struct {
+@@ -379,11 +473,18 @@ func (l toolLoop) called() string {
+ 
+ // why is what the Routing, Usage and Sessions views say of the turn.
+ func (l toolLoop) why() string {
++	if l.unanswered {
++		return fmt.Sprintf("tool loop: the same tool call was asked %d turns in a row and no result came back for it (%s); answered by magpie, sent nowhere", l.turns, l.called())
++	}
+ 	return fmt.Sprintf("tool loop: the same tool call got the same result %d turns in a row (%s); answered by magpie, sent nowhere", l.turns, l.called())
+ }
+ 
+ // notice is what the agent shows the user, as the turn's answer.
+ func (l toolLoop) notice() string {
++	if l.unanswered {
++		return fmt.Sprintf("magpie stopped this turn before it reached the model: the agent asked the same tool call %d times in a row and never sent back a result for it (%s). No result reaching the model means nothing says whether the call ran, and each further turn would spend your quota with no progress. Tell the agent how to go on and the conversation continues; Settings › Models › Replies › Stop looping replies turns this check off.",
++			l.turns, l.called())
++	}
+ 	return fmt.Sprintf("magpie stopped this turn before it reached the model: the agent ran the same tool call %d times in a row and got the same result every time (%s). The model is stuck repeating it, and each further turn would spend your quota with no progress, so this turn was sent nowhere. Tell the agent how to go on and the conversation continues; Settings › Models › Replies › Stop looping replies turns this check off.",
+ 		l.turns, l.called())
+ }
+diff --git a/internal/gateway/tool_loop_test.go b/internal/gateway/tool_loop_test.go
+index 5421af51a..d7f3470b6 100644
+--- a/internal/gateway/tool_loop_test.go
++++ b/internal/gateway/tool_loop_test.go
+@@ -111,6 +111,40 @@ func toolTurns(from provider.Protocol, n int, turn exchangeOfTurn, stream bool,
+ 	return fmt.Sprintf(`{"tools":[{"functionDeclarations":[{"name":"run_shell_command","parameters":{"type":"object"}}]}],"contents":[%s]}`, strings.Join(items, ","))
+ }
+ 
++// answerlessTurns is a request of from's API whose newest n turns each ask
++// what arg says and are answered by nothing: the client never sends a tool
++// result back. It is the reporter's session (#3615: zcode on Windows made
++// 1088 requests to group/auto-kimi-k3 in 5h08m, stop=tool_calls on every
++// one, the prompt growing by the call alone, and no result ever added).
++func answerlessTurns(from provider.Protocol, n int, arg func(i int) string, stream bool) string {
++	var items []string
++	switch from {
++	case provider.Responses:
++		items = append(items, `{"type":"message","role":"user","content":[{"type":"input_text","text":"why does parse panic?"}]}`)
++		for i := range n {
++			items = append(items, fmt.Sprintf(`{"type":"function_call","name":"exec_command","arguments":%q,"call_id":"call_%d"}`, arg(i), i))
++		}
++		return fmt.Sprintf(`{"model":"wb/deepseek-v4-pro","stream":%t,"store":false,"instructions":"You are Codex.","tools":[{"type":"function","name":"exec_command","parameters":{"type":"object","properties":{"cmd":{"type":"string"}}}}],"input":[%s]}`, stream, strings.Join(items, ","))
++	case provider.Chat:
++		items = append(items, `{"role":"user","content":"why does parse panic?"}`)
++		for i := range n {
++			items = append(items, fmt.Sprintf(`{"role":"assistant","content":null,"tool_calls":[{"id":"call_%d","type":"function","function":{"name":"exec_command","arguments":%q}}]}`, i, arg(i)))
++		}
++		return fmt.Sprintf(`{"model":"wb/deepseek-v4-pro","stream":%t,"tools":[{"type":"function","function":{"name":"exec_command","parameters":{"type":"object"}}}],"messages":[%s]}`, stream, strings.Join(items, ","))
++	case provider.Anthropic:
++		items = append(items, `{"role":"user","content":"why does parse panic?"}`)
++		for i := range n {
++			items = append(items, fmt.Sprintf(`{"role":"assistant","content":[{"type":"tool_use","id":"toolu_%d","name":"Bash","input":%s}]}`, i, arg(i)))
++		}
++		return fmt.Sprintf(`{"model":"wb/deepseek-v4-pro","max_tokens":8000,"stream":%t,"tools":[{"name":"Bash","input_schema":{"type":"object"}}],"messages":[%s]}`, stream, strings.Join(items, ","))
++	}
++	items = append(items, `{"role":"user","parts":[{"text":"why does parse panic?"}]}`)
++	for i := range n {
++		items = append(items, fmt.Sprintf(`{"role":"model","parts":[{"functionCall":{"name":"run_shell_command","args":%s}}]}`, arg(i)))
++	}
++	return fmt.Sprintf(`{"tools":[{"functionDeclarations":[{"name":"run_shell_command","parameters":{"type":"object"}}]}],"contents":[%s]}`, strings.Join(items, ","))
++}
++
+ var toolLoopAsks = []struct {
+ 	name   string
+ 	from   provider.Protocol
+@@ -264,6 +298,76 @@ func TestToolLoopLetsProgressBy(t *testing.T) {
+ 	}
+ }
+ 
++// The reporter's session (easonlao, #3615): zcode on Windows made 1088
++// requests in 5h08m, stop=tool_calls on every one, and the prompt grew by
++// the call alone — the client never sent a tool result back. Every turn was
++// the same call answered by nothing, so stoppedToolLoop, which reads the
++// turns' results, saw no loop and sent all of them upstream. Once the same
++// call is asked toolLoopRepeats turns in a row with no result for any of
++// them, the next turn is answered by magpie and sent nowhere, and it says
++// the result never came back.
++func TestToolLoopStuckWithoutResults(t *testing.T) {
++	same := func(int) string {
++		return `{"cmd":"sed -n 1,200p src/parser.rs","workdir":"/Users/eason/code/app"}`
++	}
++	for _, x := range toolLoopAsks {
++		t.Run(x.name, func(t *testing.T) {
++			v := &countingVendor{}
++			gw := toolLoopOn(t, v)
++			// one turn short of the loop goes on to the vendor
++			got := askAgent(t, gw+x.path, answerlessTurns(x.from, toolLoopRepeats-1, same, x.stream))
++			if strings.Contains(got, "magpie stopped") || v.asked.Load() != 1 {
++				t.Fatalf("%d answerless turns of the same call were stopped (vendor asked %d):\n%s", toolLoopRepeats-1, v.asked.Load(), got)
++			}
++			got = askAgent(t, gw+x.path, answerlessTurns(x.from, toolLoopRepeats, same, x.stream))
++			if !strings.Contains(got, "magpie stopped this turn") || !strings.Contains(got, x.done) || !strings.Contains(got, "never sent back a result") {
++				t.Fatalf("the agent wasn't told of the loop in its API:\n%s", got)
++			}
++			if !strings.Contains(got, "sed -n 1,200p src/parser.rs") {
++				t.Fatalf("the notice doesn't name the call:\n%s", got)
++			}
++			if n := v.asked.Load(); n != 1 {
++				t.Fatalf("the vendor was asked %d times for a looping turn", n)
++			}
++			var rec usage.Record
++			for range 50 {
++				if recs := usage.Load(time.Time{}); len(recs) > 0 {
++					rec = recs[len(recs)-1]
++					break
++				}
++				time.Sleep(20 * time.Millisecond)
++			}
++			if rec.Provider != "magpie" || !rec.Rejected || !strings.Contains(rec.Error, "tool loop") || !strings.Contains(rec.Error, "no result") {
++				t.Fatalf("usage record %+v", rec)
++			}
++		})
++	}
++}
++
++// A turn that asks a different call, or a word from the user between the
++// calls, is progress: the count starts again, as toolLoopOf's does.
++func TestToolLoopStuckNeedsTheSameCallAndNoWord(t *testing.T) {
++	v := &countingVendor{}
++	gw := toolLoopOn(t, v)
++	differing := func(i int) string { return fmt.Sprintf(`{"path":"src/f%d.rs"}`, i) }
++	got := askAgent(t, gw+"/v1/messages", answerlessTurns(provider.Anthropic, toolLoopRepeats, differing, true))
++	if strings.Contains(got, "magpie stopped") || v.asked.Load() != 1 {
++		t.Fatalf("turns asking different calls were stopped (vendor asked %d):\n%s", v.asked.Load(), got)
++	}
++	var items []string
++	items = append(items, `{"role":"user","content":"why does parse panic?"}`)
++	for i := range toolLoopRepeats {
++		items = append(items,
++			fmt.Sprintf(`{"role":"assistant","content":[{"type":"tool_use","id":"toolu_%d","name":"Bash","input":{"path":"src/parser.rs"}}]}`, i),
++			`{"role":"user","content":"go on"}`)
++	}
++	body := fmt.Sprintf(`{"model":"wb/deepseek-v4-pro","max_tokens":8000,"stream":true,"tools":[{"name":"Bash","input_schema":{"type":"object"}}],"messages":[%s]}`, strings.Join(items, ","))
++	got = askAgent(t, gw+"/v1/messages", body)
++	if strings.Contains(got, "magpie stopped") || v.asked.Load() != 2 {
++		t.Fatalf("the user's words between the calls were stopped (vendor asked %d):\n%s", v.asked.Load(), got)
++	}
++}
++
+ // What tells one exchange from another: the call's name and arguments
+ // (whatever their keys' order), its result less what Codex writes of the
+ // run, and whether it failed; never the call's id.
+-- 
+2.50.1 (Apple Git-155)
+

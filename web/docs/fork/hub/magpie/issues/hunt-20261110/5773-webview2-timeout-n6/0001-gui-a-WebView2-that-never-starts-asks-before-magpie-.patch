@@ -1,0 +1,452 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Wed, 11 Nov 2026 05:27:11 +0800
+Subject: [PATCH] gui: a WebView2 that never starts asks before magpie ends
+ (#5773, BHXGGGGG)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+On Windows, Wails waits 60s for the WebView2 controller and, on a
+timeout, reports through ErrorHandler and exits the whole process — the
+reporter's log shows magpie 0.1.3226 ending with its gateway after
+"timed out after 1m0s waiting for the WebView2 controller", the fourth
+such exit in the log in five days. The desktop build has no console for
+the reason to land in, so from Explorer the exit is silent, the way a
+magpie with no runtime came up to nothing (#1806, ufec).
+
+Wails' errorCallback takes no override: it runs the ErrorHandler magpie
+sets and then os.Exit(1) itself, skipping OnShutdown. Two things now
+happen before that exit, on Windows and for the initialisation failures
+that exit follows (the controller wait timing out, the loader not
+answering, the runtime version untold, the browser path gone, the
+controller not made — the strings errorCallback hands over; errors
+reported without exiting, a shortcut that didn't register or an event
+handler's panic, keep getting only the log):
+
+- A box of Windows' own asks whether to start magpie again, in the
+  app's languages (the webView2Notice way of #1806). The box can't be
+  shown from ErrorHandler itself — it runs on the thread Wails makes
+  its windows on, and ufec measured one hanging 122s there — so it goes
+  up on a thread of its own and ErrorHandler waits, a bounded 5 minutes:
+  a box nobody answers must not hang a half-started magpie. Yes starts
+  magpie again beside this one (RelaunchBinary; the new process waits
+  for this one to exit before it takes the gateway's port,
+  AwaitPredecessor).
+- The tidying OnShutdown would have done runs either way (one closure
+  now shared by both): that exit is os.Exit, and the failover Codex was
+  left pointing at this process would retry a gateway that is gone, the
+  harm OnShutdown's own comment records (Leon920717).
+
+Elsewhere ErrorHandler keeps logging only: Wails exits over webview
+errors on Windows alone, and runtime ones (a Navigate that failed, a
+script that didn't run) keep doing so — a box naming WebView2 would say
+the wrong reason; those leave with the log.
+
+Run (darwin):
+- go test -race -count=1 -run 'TestWebView2Fatal|TestWebView2ExitNotice|
+  TestWebview2ExitAskRestartTidyUp|TestWebView2Missing|TestWebView2Notice|
+  TestWebView2ArgsMergeTheUsers' ./internal/gui: ok.
+- TestDataFolderMoveRestarts, TestGatewayFixQuitsOnlyAMagpie: ok.
+- gofmt -l clean; GOOS=windows go build ./internal/gui, also -tags nogui,
+  and go vet: ok.
+- Ablation: the orchestration hunk out of runWebview2Exit →
+  TestWebview2ExitAskRestartTidyUp red ("ran [], want [restart
+  shutdown]") → restored → green.
+- Not tried on real Windows (none here): the box, the restart and the
+  tidying on a live exit. The reporter's log is the live shape; the
+  tests pin the dispatch and the orchestration around it.
+
+Fixes #5773
+
+Generated-by: GLM-5.3-Flash (ZCode)
+Co-authored-by: ggbdpq <ggbdpq@gmail.com>
+---
+ internal/gui/app.go                |  64 +++++++++-------
+ internal/gui/webview2.go           |  91 +++++++++++++++++++++++
+ internal/gui/webview2_exit_test.go | 115 +++++++++++++++++++++++++++++
+ internal/gui/webview2_other.go     |   4 +
+ internal/gui/webview2_windows.go   |  35 +++++++++
+ 5 files changed, 282 insertions(+), 27 deletions(-)
+ create mode 100644 internal/gui/webview2_exit_test.go
+
+diff --git a/internal/gui/app.go b/internal/gui/app.go
+index 9585239ae..c5dcee4d0 100644
+--- a/internal/gui/app.go
++++ b/internal/gui/app.go
+@@ -422,6 +422,36 @@ func Run(version string, showMain bool, link string) error {
+ 	// a quiet start joins the Dock once started (below): Wails activates
+ 	// an app that starts in it
+ 	policy := dockPolicy(settings.Load().Dock && !quiet)
++	// The tidying on the way out: a normal quit runs it through OnShutdown,
++	// and the WebView2 failure Wails answers by exiting does too (#5773) —
++	// that exit is os.Exit, which skips OnShutdown, and the failover Codex
++	// was left pointing at this process would retry a gateway that is gone.
++	onShutdown := func() {
++		proc.EndProbes()
++		if handedOver.Load() {
++			return
++		}
++		if served.Load() != nil {
++			ended, err := agent.EndCodexFailover()
++			if err != nil {
++				log.Println("codex failover:", err)
++			}
++			// the threads Codex has open keep the gateway's address
++			// they began with: a relay serves them there on Codex's
++			// own sign-in once the gateway has let go (codexrelay;
++			// idkatbro on X: 503 "Unknown error" till magpie reopened)
++			if ended {
++				if err := agent.RelayOpenCodex(); err != nil {
++					log.Println("codex relay:", err)
++				}
++			}
++		}
++		// the compactions magpie made in Codex's threads written as
++		// Codex's own, for the threads no Codex has open: with magpie
++		// gone they still go on (LukeMa on X)
++		agent.PortCodexRollouts(3 * time.Second)
++		updates.install(false)
++	}
+ 	h.app = application.New(application.Options{
+ 		// Windows and Linux start a new process for a magpie:// link (or a
+ 		// second launch); it hands its arguments to the running one and quits.
+@@ -445,34 +475,14 @@ func Run(version string, showMain bool, link string) error {
+ 		// A magpie that handed the gateway to the new version (handover.go)
+ 		// leaves both to it: the failover goes on through the new one, and
+ 		// so do the threads.
+-		OnShutdown: func() {
+-			proc.EndProbes()
+-			if handedOver.Load() {
+-				return
+-			}
+-			if served.Load() != nil {
+-				ended, err := agent.EndCodexFailover()
+-				if err != nil {
+-					log.Println("codex failover:", err)
+-				}
+-				// the threads Codex has open keep the gateway's address
+-				// they began with: a relay serves them there on Codex's
+-				// own sign-in once the gateway has let go (codexrelay;
+-				// idkatbro on X: 503 "Unknown error" till magpie reopened)
+-				if ended {
+-					if err := agent.RelayOpenCodex(); err != nil {
+-						log.Println("codex relay:", err)
+-					}
+-				}
+-			}
+-			// the compactions magpie made in Codex's threads written as
+-			// Codex's own, for the threads no Codex has open: with magpie
+-			// gone they still go on (LukeMa on X)
+-			agent.PortCodexRollouts(3 * time.Second)
+-			updates.install(false)
++		OnShutdown: onShutdown,
++		// Wails exits on some webview errors; say why before it does. On
++		// Windows the WebView2 initialisation ones (#5773) also ask whether
++		// to start again, and run the tidying above that os.Exit skips.
++		ErrorHandler: func(err error) {
++			log.Println("magpie:", err)
++			webview2Exit(err, onShutdown)
+ 		},
+-		// Wails exits on some webview errors; say why before it does.
+-		ErrorHandler: func(err error) { log.Println("magpie:", err) },
+ 	})
+ 	// Windows without the WebView2 runtime can make no window: Wails would
+ 	// exit on the first, with nothing on screen to say why (#1806). The
+diff --git a/internal/gui/webview2.go b/internal/gui/webview2.go
+index b59d09ffe..e6e0774cf 100644
+--- a/internal/gui/webview2.go
++++ b/internal/gui/webview2.go
+@@ -2,8 +2,10 @@ package gui
+ 
+ import (
+ 	"fmt"
++	"log"
+ 	"slices"
+ 	"strings"
++	"time"
+ )
+ 
+ // magpie's windows are WebView2 on Windows, a runtime Windows 10 doesn't
+@@ -11,6 +13,95 @@ import (
+ // and the desktop build has no console for that to land in: a double-click
+ // came up to nothing (#1806, ufec). Run asks before any window is made and,
+ // missing, says so in a box of Windows' own.
++//
++// A WebView2 that is there but never finishes starting ends magpie the same
++// way (#5773, BHXGGGGG: the controller wait timed out after 1m0s and magpie
++// 0.1.3226, its gateway with it, was gone). webview2Exit says why in a box
++// before that exit, and asks whether to start again.
++
++// webView2Fatal reports whether err is one Wails kills magpie over on
++// Windows: the WebView2 initialisation failures edge/chromium.go hands
++// errorCallback before its os.Exit(1) — the controller wait timing out,
++// the loader not answering, the runtime version not told, the browser path
++// gone, the controller not made — name WebView2, the browser path or the
++// controller; errors reported without exiting (a shortcut that didn't
++// register, an event handler's panic) don't.
++func webView2Fatal(err error) bool {
++	if err == nil {
++		return false
++	}
++	s := strings.ToLower(err.Error())
++	return strings.Contains(s, "webview2") ||
++		strings.Contains(s, "browser path") ||
++		strings.Contains(s, "error creating controller")
++}
++
++// webView2ExitNotice is the exit box's title and text in lang (trayLang's),
++// English where it has none. It says magpie is about to end with its
++// gateway, and asks whether to start it again.
++func webView2ExitNotice(lang string) (title, body string) {
++	t, ok := webView2ExitWords[lang]
++	if !ok {
++		t = webView2ExitWords["en"]
++	}
++	return t[0], t[1]
++}
++
++var webView2ExitWords = map[string][2]string{
++	"en": {"magpie's WebView2 failed",
++		"magpie's window could not start: the WebView2 runtime did not finish initialising in time.\r\n\r\n" +
++			"magpie ends now. Its gateway and proxy go with it; starting it again brings them back.\r\n\r\n" +
++			"Until then, \"magpie web\" opens magpie in your browser and \"magpie tui\" in a terminal.\r\n\r\n" +
++			"Start magpie again now?"},
++	"zh": {"magpie 的 WebView2 启动失败",
++		"magpie 的窗口未能启动：WebView2 运行时没有在时限内完成初始化。\r\n\r\n" +
++			"magpie 即将退出，它的网关与代理服务也随之结束；重新启动即可恢复。\r\n\r\n" +
++			"在此之前，可以用 \"magpie web\" 在浏览器里打开 magpie，或用 \"magpie tui\" 在终端里打开。\r\n\r\n" +
++			"现在重新启动 magpie 吗？"},
++	"zh-TW": {"magpie 的 WebView2 啟動失敗",
++		"magpie 的視窗未能啟動：WebView2 執行階段沒有在時限內完成初始化。\r\n\r\n" +
++			"magpie 即將結束，它的閘道與代理服務也隨之結束；重新啟動即可恢復。\r\n\r\n" +
++			"在此之前，可以用 \"magpie web\" 在瀏覽器裡開啟 magpie，或用 \"magpie tui\" 在終端機裡開啟。\r\n\r\n" +
++			"現在重新啟動 magpie 嗎？"},
++	"ja": {"magpie の WebView2 の起動に失敗しました",
++		"magpie のウィンドウを起動できませんでした：WebView2 ランタイムが制限時間内に初期化を終えませんでした。\r\n\r\n" +
++			"magpie は今すぐ終了します。ゲートウェイとプロキシも一緒に終わりますが、再度起動すれば戻ります。\r\n\r\n" +
++			"それまでは \"magpie web\" でブラウザーから、\"magpie tui\" でターミナルから magpie を使えます。\r\n\r\n" +
++			"今すぐ magpie を再起動しますか？"},
++	"de": {"magpies WebView2 ist fehlgeschlagen",
++		"Das Fenster von magpie ließ sich nicht starten: die WebView2 Runtime hat die Initialisierung nicht rechtzeitig abgeschlossen.\r\n\r\n" +
++			"magpie endet jetzt. Sein Gateway und sein Proxy enden mit; ein erneuter Start bringt sie zurück.\r\n\r\n" +
++			"Bis dahin öffnet \"magpie web\" magpie im Browser und \"magpie tui\" im Terminal.\r\n\r\n" +
++			"magpie jetzt wieder starten?"},
++}
++
++// webview2ExitWait is how long the exit box gets answered: a box nobody
++// clicks must not keep a half-started magpie hanging on it.
++const webview2ExitWait = 5 * time.Minute
++
++// runWebview2Exit asks ask whether to start magpie again and, on Yes,
++// restarts; either way it runs onShutdown before returning to Wails' exit:
++// that exit is os.Exit, which skips OnShutdown, and the failover Codex was
++// left pointing at this process would retry a gateway that is gone. ask
++// runs on a goroutine of its own (#1806: a box on Wails' window thread
++// never finishes — ufec measured it hanging 122s there), and nobody
++// answering within wait ends the same way.
++func runWebview2Exit(ask func() bool, restart func() error, onShutdown func(), wait time.Duration) {
++	answer := make(chan bool, 1)
++	go func() { answer <- ask() }()
++	retry := false
++	select {
++	case retry = <-answer:
++	case <-time.After(wait):
++		log.Println("magpie: nobody answered the WebView2 exit box in", wait)
++	}
++	if retry {
++		if err := restart(); err != nil {
++			log.Println("magpie: starting magpie again:", err)
++		}
++	}
++	onShutdown()
++}
+ 
+ // webView2Page is Microsoft's download page for the runtime.
+ const webView2Page = "https://developer.microsoft.com/microsoft-edge/webview2/"
+diff --git a/internal/gui/webview2_exit_test.go b/internal/gui/webview2_exit_test.go
+new file mode 100644
+index 000000000..0542bd3d9
+--- /dev/null
++++ b/internal/gui/webview2_exit_test.go
+@@ -0,0 +1,115 @@
++//go:build !nogui
++
++package gui
++
++import (
++	"errors"
++	"fmt"
++	"strings"
++	"testing"
++	"time"
++)
++
++// #5773 (BHXGGGGG): on Windows Wails reports a WebView2 initialisation
++// failure through ErrorHandler and then exits the whole process — the
++// reporter's log shows the controller wait timing out after 1m0s and
++// magpie 0.1.3226 ending with it. The errors are the strings Wails'
++// edge/chromium.go hands errorCallback before its os.Exit(1). Errors
++// reported without exiting (a shortcut that didn't register, an event
++// handler's panic) are none of these.
++func TestWebView2Fatal(t *testing.T) {
++	for _, c := range []struct {
++		name string
++		err  error
++		want bool
++	}{
++		{"the reporter's timeout", errors.New("magpie: timed out after 1m0s waiting for the WebView2 controller; the WebView2 runtime did not complete initialisation"), true},
++		{"loader call failed", errors.New("error calling Webview2Loader: no webview2 found"), true},
++		{"runtime version failed", errors.New("error getting Webview2 runtime version: some status"), true},
++		{"browser path gone", fmt.Errorf("browser path '%s' does not exist", `C:\missing`), true},
++		{"controller create failed", errors.New("error creating controller with 800713de: The object was not found."), true},
++		{"shortcut not fatal", fmt.Errorf("failed to register global shortcut %q: %w", "Ctrl+R", errors.New("taken")), false},
++		{"event error not fatal", errors.New("event handler failed: boom"), false},
++		{"none", nil, false},
++	} {
++		if got := webView2Fatal(c.err); got != c.want {
++			t.Errorf("%s: webView2Fatal=%v, want %v", c.name, got, c.want)
++		}
++	}
++}
++
++// The exit box names WebView2, says magpie is about to end, and asks
++// whether to start it again, in each language the app speaks, English
++// where it has none.
++func TestWebView2ExitNotice(t *testing.T) {
++	for _, lang := range []string{"en", "zh", "zh-TW", "ja", "de", "pt"} {
++		title, body := webView2ExitNotice(lang)
++		if !strings.Contains(title, "WebView2") || !strings.Contains(body, "WebView2") {
++			t.Errorf("%s: doesn't name WebView2: %q / %q", lang, title, body)
++		}
++		if !strings.Contains(body, "magpie web") || !strings.Contains(body, "magpie tui") {
++			t.Errorf("%s: doesn't say what works without windows: %q", lang, body)
++		}
++		if strings.Contains(body, "%!") {
++			t.Errorf("%s: bad format: %q", lang, body)
++		}
++		if !strings.HasSuffix(body, "?") && !strings.HasSuffix(body, "？") {
++			t.Errorf("%s: doesn't end asking whether to start again: %q", lang, body)
++		}
++	}
++}
++
++// The exit asks in a box on a thread of its own (#1806: a box on Wails'
++// window thread never finishes), gives Yes to starting magpie again, and
++// tidies up onShutdown before Wails' exit either way: os.Exit skips
++// OnShutdown, and the failover Codex was left pointing at this process
++// would retry a gateway that is gone. A box nobody answers within the
++// wait ends the same way, not as a hung magpie.
++func TestWebview2ExitAskRestartTidyUp(t *testing.T) {
++	for _, c := range []struct {
++		name       string
++		answer     bool
++		answerIn   time.Duration
++		wait       time.Duration
++		restartErr error
++		want       []string
++	}{
++		{"yes restarts then tidies", true, 0, time.Second, nil,
++			[]string{"restart", "shutdown"}},
++		{"no tidies without restart", false, 0, time.Second, nil,
++			[]string{"shutdown"}},
++		{"restart failing still tidies", true, 0, time.Second, errors.New("exe gone"),
++			[]string{"restart", "shutdown"}},
++		{"a box nobody answers tidies alone", false, 20 * time.Millisecond, 5 * time.Millisecond,
++			nil, []string{"shutdown"}},
++	} {
++		var order []string
++		var restarted bool
++		runWebview2Exit(
++			func() bool {
++				if c.answerIn > 0 {
++					time.Sleep(c.answerIn)
++				}
++				return c.answer
++			},
++			func() error {
++				restarted = true
++				order = append(order, "restart")
++				return c.restartErr
++			},
++			func() { order = append(order, "shutdown") },
++			c.wait,
++		)
++		if len(order) != len(c.want) {
++			t.Fatalf("%s: ran %v, want %v", c.name, order, c.want)
++		}
++		for i, who := range c.want {
++			if order[i] != who {
++				t.Fatalf("%s: ran %v, want %v", c.name, order, c.want)
++			}
++		}
++		if wantRestart := c.answer && c.answerIn <= c.wait; restarted != wantRestart {
++			t.Errorf("%s: restarted=%v, want %v", c.name, restarted, wantRestart)
++		}
++	}
++}
+diff --git a/internal/gui/webview2_other.go b/internal/gui/webview2_other.go
+index 6fa846572..30560efaa 100644
+--- a/internal/gui/webview2_other.go
++++ b/internal/gui/webview2_other.go
+@@ -6,3 +6,7 @@ import "github.com/wailsapp/wails/v3/pkg/application"
+ 
+ // webView2Check: only Windows' windows are WebView2.
+ func webView2Check(*application.App) bool { return true }
++
++// webview2Exit: only Windows' Wails exits over WebView2 errors; elsewhere
++// ErrorHandler's log is all there is to do.
++func webview2Exit(err error, onShutdown func()) {}
+diff --git a/internal/gui/webview2_windows.go b/internal/gui/webview2_windows.go
+index e4dac4bcb..1469abf1c 100644
+--- a/internal/gui/webview2_windows.go
++++ b/internal/gui/webview2_windows.go
+@@ -8,6 +8,7 @@ import (
+ 
+ 	"github.com/wailsapp/wails/v3/pkg/application"
+ 	"github.com/yetone/magpie/internal/settings"
++	"github.com/yetone/magpie/internal/update"
+ 	"golang.org/x/sys/windows"
+ )
+ 
+@@ -50,3 +51,37 @@ func webView2Box(title, body string) int {
+ 		webView2BoxStyle)
+ 	return int(r)
+ }
++
++// webview2Exit is what ErrorHandler does with the WebView2 initialisation
++// failures Wails follows with os.Exit(1) (#5773, BHXGGGGG: the controller
++// wait timing out ended magpie 0.1.3226, its gateway with it, with no word
++// on screen). The desktop build has no console for the reason to land in
++// (#1806), and the box can't be shown from here — ErrorHandler runs on the
++// thread Wails makes its windows on, and a box shown there never finishes
++// (ufec measured it hanging 122s in #1806). The box goes up on a thread of
++// its own, this one waits a bounded webview2ExitWait for the answer, Yes
++// starts magpie again beside this one, and onShutdown runs either way: the
++// tidying os.Exit would have skipped.
++func webview2Exit(err error, onShutdown func()) {
++	if !webView2Fatal(err) {
++		return
++	}
++	title, body := webView2ExitNotice(trayLang(settings.Load().Lang, systemLang))
++	runWebview2Exit(
++		func() bool { return webView2Box(title, body) == idYes },
++		restartMagpie,
++		onShutdown,
++		webview2ExitWait,
++	)
++}
++
++// restartMagpie starts magpie again with its window (none ever showed):
++// the new process waits for this one to exit (MAGPIE_REPLACES,
++// AwaitPredecessor) before it takes the gateway's port.
++func restartMagpie() error {
++	exe, err := update.Executable()
++	if err != nil {
++		return err
++	}
++	return update.RelaunchBinary(exe, "", true, "")
++}
+-- 
+2.50.1 (Apple Git-155)
+

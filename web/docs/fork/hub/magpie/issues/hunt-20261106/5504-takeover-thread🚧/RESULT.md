@@ -1,0 +1,4 @@
+- #5504 分析帖: https://github.com/yetone/magpie/issues/5504#issuecomment-6694252095
+- #5517 落地注: https://github.com/yetone/magpie/issues/5517#issuecomment-6694254051
+- take #5504: https://github.com/yetone/magpie/issues/5504#issuecomment-6694062776
+- 合并树: fix/5504-takeover-thread @ f5888ffa1（父链 2e4f7b4e7=5504 分支 docs 解冲突合并, 416305451=main）——本地未推，车道让位不交付

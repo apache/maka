@@ -1,0 +1,10 @@
+--- FAIL: TestImportCodexLogins (0.01s)
+    login_import_test.go:99: got cpa@example.com:added,native@example.com:added,c@example.com:failed,live@example.com:exists,used@example.com:failed,cpa@example.com:failed
+        want cpa@example.com:added,native@example.com:added,c@example.com:failed,live@example.com:updated,used@example.com:failed,cpa@example.com:failed
+--- FAIL: TestImportCodexTakeOver (0.00s)
+    login_import_test.go:168: take-over: a@example.com:exists
+--- FAIL: TestImportCodexSignedOutAlone (0.01s)
+    login_import_test.go:209: auth.json written: <nil>
+FAIL
+FAIL	github.com/yetone/magpie/internal/provider	1.194s
+FAIL

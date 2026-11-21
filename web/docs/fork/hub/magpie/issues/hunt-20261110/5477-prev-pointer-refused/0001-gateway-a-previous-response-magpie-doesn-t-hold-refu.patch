@@ -1,0 +1,183 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Sun, 8 Nov 2026 09:23:50 +0800
+Subject: [PATCH] gateway: a previous response magpie doesn't hold, refused
+ over by the relay it went to as written, is asked again without the pointer
+ (#5477)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+dorokuma: a routing group moved a conversation from provider A to
+provider B, and the next request to B came back 400, an
+invalid-request-class error over a resource not B's; on A the same
+conversation kept working. A Responses client names the id the previous
+turn's reply gave it; when magpie holds that turn (store true), it gives
+the conversation whole and the pointer is deleted, so no provider sees
+another's id. But a client that says store false has nothing kept, and
+an id magpie doesn't hold is relayed as written, for the provider it
+names may hold the response — one member of a group does, the one that
+answered the turn. The member that didn't refused the request whole, and
+the agent was left with that 400; the same relay had no answer for it,
+where magpie's own delta turns are asked again whole on one.
+
+So is the relay: refused over the pointer it carried (OpenAI's own
+previous_response_not_found shape, prevRefused), it is asked again once
+without the pointer. The input a Responses client sends carries the
+conversation whole (Pi's, omp's, droid's and dsh's do), so the member
+answers with the history it needs; a pointer-only client loses nothing
+that wasn't already lost, as magpie holds no history to inline. A
+refusal over anything else is asked again by no one new: the 400 stays
+the vendor's, and the working relay to the provider that holds the
+response goes as written as before. A translation keeps refusing an id
+magpie doesn't hold with previous_response_not_found, as it did.
+
+Run (macOS, at this head on 0fc3455e2):
+- go test -tags nogui -run 'TestUnknownPreviousResponse|TestPreviousResponse|TestPrevStore|TestKeptTurn' ./internal/gateway: ok; the new
+  TestUnknownPreviousResponseRefusedIsAskedAgainWithoutIt red before,
+  green after
+- TestGroupOnResponses, TestGroupOfResponses, remote delta and
+  passthrough neighbours: ok
+---
+ docs/subsystems/gateway-routing.md     |  6 ++-
+ internal/gateway/gateway.go            | 20 +++++++++
+ internal/gateway/prev_response_test.go | 61 ++++++++++++++++++++++++++
+ 3 files changed, 86 insertions(+), 1 deletion(-)
+
+diff --git a/docs/subsystems/gateway-routing.md b/docs/subsystems/gateway-routing.md
+index 55fdd0b58..c7dd76d97 100644
+--- a/docs/subsystems/gateway-routing.md
++++ b/docs/subsystems/gateway-routing.md
+@@ -2704,7 +2704,11 @@ included). `previousResponse` in
+   lost to a restart) gets OpenAI's 400 `previous_response_not_found`
+   (`writePrevNotFound`) on a route that translates, before anything is
+   sent. A Responses relay is sent the request as it came, and its own
+-  answer reaches the client.
++  answer reaches the client; a relay that refuses the request over the
++  pointer (`prevRefused`, a routing group's other member can't read the
++  one that answered the turn's id, #5477) is asked again once without
++  it, the input a Responses client sends carrying the conversation
++  whole (`TestUnknownPreviousResponseRefusedIsAskedAgainWithoutIt`).
+ - Where the provider keeps responses itself (`prevKeeps`: an API key, no
+   plugin, on api.openai.com, Azure, or Ark's `/api/v3` pay-as-you-go
+   Responses) and it answered the previous turn on the same key
+diff --git a/internal/gateway/gateway.go b/internal/gateway/gateway.go
+index 40b6b4696..c6a4cbf74 100644
+--- a/internal/gateway/gateway.go
++++ b/internal/gateway/gateway.go
+@@ -6609,6 +6609,26 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
+ 			}
+ 		}
+ 	}
++	// A pointer the client named that magpie doesn't hold went as written,
++	// for the provider it names may hold the response it follows. One
++	// member of a routing group does, the one that answered the turn;
++	// another refuses the request whole over it, the agent left with that
++	// 400 (dorokuma's #5477: the conversation moved from provider A to
++	// provider B, and B can't read A's id). Asked again without the
++	// pointer: the input a Responses client sends carries the conversation
++	// whole (Pi's, omp's, droid's and dsh's do), as a translation would
++	// have inlined it.
++	if !delta && prevLost(r) != "" && (badRequest(res.StatusCode) || res.StatusCode == http.StatusNotFound) {
++		b, _ := io.ReadAll(io.LimitReader(res.Body, 1<<20))
++		res.Body.Close()
++		res.Body = io.NopCloser(bytes.NewReader(b))
++		if prevRefused(res.StatusCode, b) {
++			body = withoutFields(body, "previous_response_id")
++			if res, err = s.forward(r.Context(), p, proto, path, p.Prepare(body), r.Header); err != nil {
++				return writeError(w, proto, 502, p.Name+": "+err.Error()), err.Error(), true
++			}
++		}
++	}
+ 	if proto == provider.Responses {
+ 		route := ""
+ 		if prevKeptBy(p) && !storeOff(body) {
+diff --git a/internal/gateway/prev_response_test.go b/internal/gateway/prev_response_test.go
+index 426b4689b..5e504ce97 100644
+--- a/internal/gateway/prev_response_test.go
++++ b/internal/gateway/prev_response_test.go
+@@ -1,6 +1,7 @@
+ package gateway
+ 
+ import (
++	"bytes"
+ 	"context"
+ 	"encoding/json"
+ 	"fmt"
+@@ -164,6 +165,9 @@ func TestPreviousResponseNotFound(t *testing.T) {
+ 	notFound(askResponses(t, s, "", `{"model":"fake/m1","previous_response_id":"`+off+`","input":"again"}`), off)
+ }
+ 
++// An id magpie doesn't hold, to a provider on Responses the request is
++// relayed to, goes as it came: a response the provider made before
++// magpie restarted is still its own to find.
+ // An id magpie doesn't hold, to a provider on Responses the request is
+ // relayed to, goes as it came: a response the provider made before
+ // magpie restarted is still its own to find.
+@@ -178,6 +182,63 @@ func TestUnknownPreviousResponseRelayedAsSent(t *testing.T) {
+ 	}
+ }
+ 
++// A pointer the client names that magpie doesn't hold goes as written, for
++// the provider it names may hold the response — one of a routing group
++// does, the one that answered the turn, and another member refuses the
++// request whole over it, the agent left with that 400 (dorokuma's #5477:
++// the conversation moved from provider A to provider B, and B can't read
++// A's id). Asked again without the pointer: the input a Responses client
++// sends carries the conversation whole (Pi's, omp's, droid's and dsh's
++// do), as the provider's own answer shows. A refusal over something else
++// is the client's, no second ask.
++func TestUnknownPreviousResponseRefusedIsAskedAgainWithoutIt(t *testing.T) {
++	var mode atomic.Value // "ok", "pointer", "other"
++	mode.Store("ok")
++	up := newPrevUp(t, func(n int, body []byte) (int, string, string) {
++		switch mode.Load() {
++		case "pointer":
++			if bytes.Contains(body, []byte("previous_response_id")) {
++				return 400, "application/json", `{"error":{"message":"Previous response with id 'resp_stored1' not found.","type":"invalid_request_error","param":"previous_response_id","code":"previous_response_not_found"}}`
++			}
++		case "other":
++			return 400, "application/json", `{"error":{"message":"Invalid request: this key is not allowed that model.","type":"invalid_request_error"}}`
++		}
++		return 200, "application/json", fmt.Sprintf(`{"id":"resp_stored%d","object":"response","status":"completed","output":[{"type":"message","id":"msg_%d","role":"assistant","content":[{"type":"output_text","text":"answer %d"}]}],"usage":{"input_tokens":3,"output_tokens":1}}`, n, n, n)
++	})
++	s := prevSandbox(t, provider.Provider{ID: "fake", Name: "Fake", Key: "k", Models: []string{"m1"}, Responses: up.srv.URL + "/v1"})
++	// a store false turn magpie keeps nothing of, whose id is the
++	// upstream's own (one that stores past store false)
++	off := responseID(t, askResponses(t, s, "", `{"model":"fake/m1","store":false,"input":"hi"}`))
++	// the next turn names it: refused once over the pointer, asked again
++	// without it, and the answer comes
++	mode.Store("pointer")
++	rec := askResponses(t, s, "", `{"model":"fake/m1","previous_response_id":"`+off+`","input":"and again?"}`)
++	if responseID(t, rec) == "" {
++		t.Fatal(rec.Body.String())
++	}
++	// the store false turn's, the refused one's and the asked-again one's
++	if got := up.calls(); got != 3 {
++		t.Fatalf("asked %d times", got)
++	}
++	q := up.last()
++	if q["previous_response_id"] != nil {
++		t.Fatalf("the pointer went again: %v", q)
++	}
++	if in, _ := json.Marshal(q["input"]); !strings.Contains(string(in), "and again?") {
++		t.Fatalf("the turn's own input lost: %s", in)
++	}
++	// a refusal over something else: once, and the 400 is the client's
++	calls := up.calls()
++	mode.Store("other")
++	rec = askResponses(t, s, "", `{"model":"fake/m1","previous_response_id":"resp_stored2","input":"more"}`)
++	if rec.Code != 400 {
++		t.Fatalf("%d %s", rec.Code, rec.Body.String())
++	}
++	if got := up.calls(); got != calls+1 {
++		t.Fatalf("a refusal over something else asked %d more times", got-calls)
++	}
++}
++
+ // A provider that keeps responses (OpenAI's, Ark's) and answered the one
+ // named is sent the new input alone after its own id: the images it holds
+ // aren't sent again. One that no longer holds it is sent the whole.
+-- 
+2.50.1 (Apple Git-155)
+

@@ -1,0 +1,5 @@
+upstream/main:internal/agent/agents.go:1198:	return openCodeLike(here(home), "opencode", "OpenCode", "opencode", "opencode",
+upstream/main:internal/agent/agents.go:1207:	return openCodeLike(at, "opencode", "OpenCode", "opencode", "opencode",
+upstream/main:internal/agent/agents.go:1215:	return openCodeLike(at, "mimocode", "MiMo Code", "mimocode", "mimo",
+upstream/main:internal/agent/agents.go:1242:	return openCodeLike(here(home), "mimocode", "MiMo Code", "mimocode", "mimo",
+upstream/main:internal/agent/agents.go:1258:	return openCodeLike(here(home), "deveco", "DevEco Code", "deveco-color", "deveco",

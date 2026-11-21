@@ -1,0 +1,478 @@
+From cb438ebb165578bc1b8c4eca36cb485c7f1c137c Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Sat, 17 Oct 2026 03:51:34 +0800
+Subject: [PATCH] gateway: an assistant turn cut off before it said anything is
+ left out of what a Chat upstream is sent (#2599)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+What changed
+- A turn the agent interrupted before it produced text or tool calls —
+  thinking only, an empty text, nothing — stayed in the agent's history
+  and went to Chat upstreams with "content": "" (reasoning_content alone
+  included), which DeepSeek, Kimi and the like turn away with "content
+  or tool_calls must be set" on every later turn of the conversation.
+  The translated build now leaves such a turn out and joins the user
+  messages around it into one (toolAsUser's way); a Resume's prefill
+  turn and a reply to a tool result stay, where the strict template
+  wants them.
+- A relayed Chat request gets the same pass (emptyAssistantTurnsOut,
+  next to developerAsSystem): empty assistant turns are dropped and the
+  user messages around them join; a turn that answers a tool result
+  stays; a turn with real content or calls is untouched.
+
+Run
+- New TestChatEmptyAssistantLeftOutFromAnthropic (six cut-off shapes:
+  thinking, empty text, thinking+text, no blocks, sealed only, empty
+  string, against a fake upstream that refuses as DeepSeek does),
+  TestChatEmptyAssistantLeftOutFromResponses (isolated reasoning item),
+  TestChatRelayLeavesOutEmptyAssistant (relayed and translated, two
+  upstreams), TestChatThinkingOnlyAssistantLeftOutOutsideExchange,
+  TestChatEmptyAssistantBetweenCallsAndUserDropped,
+  TestChatResumeEmptyPrefillKept: red with both product files back at
+  the parent 25dc5013, green with the fix — the sent request is one
+  user message "hi\n\ncontinue" where main sent user, assistant(""), user.
+- go test -tags nogui -p 2 -count=1 -run 'TestChatEmptyAssistant|
+  TestChatThinkingOnlyAssistant|TestChatRelayLeavesOut|TestChatResume|
+  TestChatSessionShape|TestChatTool' ./internal/gateway/: ok.
+  gofmt -l internal/gateway/: clean. go vet -tags nogui darwin / linux /
+  windows: clean. go build darwin / linux nogui / windows: ok, with the
+  known trayimage cgo warning and ld duplicate-library warnings.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gateway/chat.go                      |  35 ++++-
+ internal/gateway/chat_empty_assistant_test.go | 138 ++++++++++++++++++
+ internal/gateway/chat_tool_pairing_test.go    |  66 ++++++++-
+ internal/gateway/gateway.go                   |  95 ++++++++++++
+ 4 files changed, 325 insertions(+), 9 deletions(-)
+ create mode 100644 internal/gateway/chat_empty_assistant_test.go
+
+diff --git a/internal/gateway/chat.go b/internal/gateway/chat.go
+index 8b508b04..27e47eb9 100644
+--- a/internal/gateway/chat.go
++++ b/internal/gateway/chat.go
+@@ -297,10 +297,15 @@ func buildChat(r *Request, model, host string, rejectTemp bool) []byte {
+ 			seen = append(seen, map[string]any{"type": "image_url", "image_url": map[string]any{"url": dataURL(im)}})
+ 		}
+ 	}
++	// dropJoin: the turn just built was left out as empty (#2599), so the
++	// user's next message joins the user message before it instead of
++	// standing alone or leaving two user messages in a row
++	dropJoin := false
+ 	showSeen := func() {
+ 		if len(seen) > 0 {
+ 			msgs = append(msgs, map[string]any{"role": "user", "content": seen})
+ 			seen = nil
++			dropJoin = false
+ 		}
+ 	}
+ 	turns := joinSplitCalls(r.Messages)
+@@ -353,6 +358,19 @@ func buildChat(r *Request, model, host string, rejectTemp bool) []byte {
+ 			if len(calls) > 0 {
+ 				am["tool_calls"] = calls
+ 			}
++			// a turn the agent cut off before it said anything — thinking
++			// only, an empty text, nothing — is left out (#2599): DeepSeek,
++			// Kimi and the like refuse the whole request over an assistant
++			// message with neither content nor tool_calls, on every later
++			// turn of the conversation, and reasoning_content is not
++			// content. The user messages around it join into one, the way
++			// toolAsUser joins. A Resume's prefill turn is magpie's own ask
++			// to go on from and stays; so does a reply to a tool result.
++			if len(calls) == 0 && !afterTool && !(r.Resume && i == len(r.Messages)-1) && strings.TrimSpace(t) == "" {
++				dropJoin = true
++				continue
++			}
++			dropJoin = false
+ 			// a reply cut short and sent back to go on from (Resume) is marked
+ 			// with the upstream's own prefill mode — DeepSeek's prefix, Kimi's
+ 			// partial (continuation.go; an upstream without one is never asked
+@@ -397,8 +415,20 @@ func buildChat(r *Request, model, host string, rejectTemp bool) []byte {
+ 				for _, c := range content {
+ 					b.WriteString(c["text"].(string))
+ 				}
++				// a user message after a turn left out as empty (#2599)
++				// joins the user message before it, so none of the cut
++				// turn remains and no two user messages stand in a row
++				if n := len(msgs); dropJoin && n > 0 {
++					if prev, ok := msgs[n-1]["content"].(string); ok && msgs[n-1]["role"] == "user" {
++						msgs[n-1]["content"] = prev + "\n\n" + b.String()
++						content, plain, dropJoin = nil, true, false
++						return
++					}
++				}
++				dropJoin = false
+ 				msgs = append(msgs, map[string]any{"role": "user", "content": b.String()})
+ 			} else {
++				dropJoin = false
+ 				msgs = append(msgs, map[string]any{"role": "user", "content": content})
+ 			}
+ 			content, plain = nil, true
+@@ -442,7 +472,10 @@ func buildChat(r *Request, model, host string, rejectTemp bool) []byte {
+ 				seeLater(p)
+ 			}
+ 		}
+-		msgs = append(msgs, tools...)
++		if len(tools) > 0 {
++			msgs = append(msgs, tools...)
++			dropJoin = false
++		}
+ 		afterTool = len(tools) > 0 && len(content) == 0 && len(seen) == 0
+ 		flush()
+ 	}
+diff --git a/internal/gateway/chat_empty_assistant_test.go b/internal/gateway/chat_empty_assistant_test.go
+new file mode 100644
+index 00000000..bc56d588
+--- /dev/null
++++ b/internal/gateway/chat_empty_assistant_test.go
+@@ -0,0 +1,138 @@
++package gateway
++
++import (
++	"encoding/json"
++	"strings"
++	"testing"
++
++	"github.com/yetone/magpie/internal/provider"
++)
++
++// dsRefuseEmptyAssistant answers as DeepSeek's and Kimi's Chat APIs do for
++// a turn the agent cut off mid-reply (#2599): an assistant message with
++// neither content nor tool_calls is invalid however much reasoning_content
++// it carries — reasoning is not content — and the whole request is turned
++// away, every later turn of the conversation with it.
++func dsRefuseEmptyAssistant(body []byte) (int, string) {
++	var q struct {
++		Messages []map[string]json.RawMessage `json:"messages"`
++	}
++	json.Unmarshal(body, &q)
++	for _, m := range q.Messages {
++		if string(m["role"]) != `"assistant"` {
++			continue
++		}
++		if _, ok := m["tool_calls"]; ok {
++			continue
++		}
++		empty := false
++		var s string
++		if decodeJSON(m["content"], &s) == nil {
++			empty = strings.TrimSpace(s) == ""
++		} else if m["content"] == nil || string(m["content"]) == "null" {
++			empty = true
++		}
++		if empty {
++			return 400, `{"error":{"message":"Invalid assistant message: content or tool_calls must be set","type":"invalid_request_error","param":null,"code":"invalid_request_error"}}`
++		}
++	}
++	return 0, ""
++}
++
++const emptyOKStream = `data: {"id":"c1","object":"chat.completion.chunk","model":"m1","choices":[{"index":0,"delta":{"role":"assistant","content":"Yes."},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":2,"total_tokens":7}}` + "\n\ndata: [DONE]\n\n"
++
++// A reply the agent cut off before it said anything — only its thinking,
++// only an empty text, nothing at all — stays in the agent's history and is
++// sent again with every later turn. Translated to a Chat upstream
++// (Claude Code here) it went out with "content": "" and DeepSeek, Kimi and
++// the like turned the whole request away. The turn is left out and the two
++// user messages around it join into one, as toolAsUser's do (#2599).
++func TestChatEmptyAssistantLeftOutFromAnthropic(t *testing.T) {
++	f := &fake{t: t, reply: emptyOKStream, refuse: dsRefuseEmptyAssistant}
++	up := setup(t, provider.Chat, f)
++	chatProvider(t, up.URL, provider.Provider{ID: "ds", Models: []string{"deepseek-v4.1-flash"}})
++	for name, turn := range map[string]string{
++		"thinking":        `[{"type":"thinking","thinking":"mid-thought","signature":"sig"}]`,
++		"empty text":      `[{"type":"text","text":""}]`,
++		"thinking + text": `[{"type":"thinking","thinking":"mid-thought","signature":"sig"},{"type":"text","text":""}]`,
++		"no blocks":       `[]`,
++		"sealed only":     `[{"type":"redacted_thinking","data":"gAAAAABpZm9vYmFy"}]`,
++		"empty string":    `""`,
++	} {
++		f.calls = 0
++		code, body := postTo(t, New(), "/v1/messages", `{"model":"ds/deepseek-v4.1-flash","max_tokens":32,"messages":[
++			{"role":"user","content":"hi"},
++			{"role":"assistant","content":`+turn+`},
++			{"role":"user","content":"continue"}]}`)
++		if code != 200 || f.calls != 1 {
++			t.Errorf("%s: %d after %d calls, sent %s: %s", name, code, f.calls, f.got, body)
++			continue
++		}
++		ms := sentMessages(t, f.got)
++		if len(ms) != 1 {
++			t.Errorf("%s: %d messages sent: %s", name, len(ms), f.got)
++			continue
++		}
++		sameJSON(t, ms[0], `{"role":"user","content":"hi\n\ncontinue"}`)
++	}
++}
++
++// The same from Codex: an isolated reasoning item of a cut-off reply
++// becomes an assistant message with nothing on it, which went out the same
++// way.
++func TestChatEmptyAssistantLeftOutFromResponses(t *testing.T) {
++	f := &fake{t: t, reply: emptyOKStream, refuse: dsRefuseEmptyAssistant}
++	up := setup(t, provider.Chat, f)
++	chatProvider(t, up.URL, provider.Provider{ID: "ds", Models: []string{"deepseek-v4.1-flash"}})
++	code, body := postTo(t, New(), "/v1/responses", `{"model":"ds/deepseek-v4.1-flash","stream":false,"input":[
++		{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]},
++		{"type":"reasoning","id":"rs_1","summary":[{"type":"summary_text","text":"mid-thought"}]},
++		{"type":"message","role":"user","content":[{"type":"input_text","text":"continue"}]}]}`)
++	if code != 200 || f.calls != 1 {
++		t.Fatalf("%d after %d calls, sent %s: %s", code, f.calls, f.got, body)
++	}
++	ms := sentMessages(t, f.got)
++	if len(ms) != 1 {
++		t.Fatalf("%d messages sent: %s", len(ms), f.got)
++	}
++	sameJSON(t, ms[0], `{"role":"user","content":"hi\n\ncontinue"}`)
++}
++
++// A Chat client's own empty assistant (a turn it cut off, which it keeps
++// replaying) is left out of what any Chat upstream is sent, relayed or
++// not; a request without one is relayed as it came.
++func TestChatRelayLeavesOutEmptyAssistant(t *testing.T) {
++	f := &fake{t: t, reply: emptyOKStream, refuse: dsRefuseEmptyAssistant}
++	up := setup(t, provider.Chat, f)
++	chatProvider(t, up.URL, provider.Provider{ID: "ds", Models: []string{"deepseek-v4.1-flash", "glm-5.2"}})
++	srv := New()
++	for _, model := range []string{"ds/deepseek-v4.1-flash", "ds/glm-5.2"} {
++		f.calls = 0
++		code, body := postTo(t, srv, "/v1/chat/completions", `{"model":"`+model+`","stream":false,"messages":[
++			{"role":"user","content":"hi"},
++			{"role":"assistant","content":"","reasoning_content":"halfway"},
++			{"role":"user","content":"continue"}]}`)
++		if code != 200 || f.calls != 1 {
++			t.Fatalf("%s: %d after %d calls, sent %s: %s", model, code, f.calls, f.got, body)
++		}
++		ms := sentMessages(t, f.got)
++		if len(ms) != 1 {
++			t.Fatalf("%s: %d messages sent: %s", model, len(ms), f.got)
++		}
++		sameJSON(t, ms[0], `{"role":"user","content":"hi\n\ncontinue"}`)
++	}
++
++	// a clean body loses nothing: an assistant with content stands, and no
++	// message comes out emptied
++	f.calls = 0
++	code, body := postTo(t, srv, "/v1/chat/completions", `{"model":"ds/glm-5.2","stream":false,"messages":[
++		{"role":"user","content":"hi"},
++		{"role":"assistant","content":"doing it"},
++		{"role":"user","content":"go"}]}`)
++	if code != 200 || f.calls != 1 {
++		t.Fatalf("clean: %d after %d calls: %s", code, f.calls, body)
++	}
++	if strings.Contains(string(f.got), `"content":""`) || !strings.Contains(string(f.got), `"content":"doing it"`) {
++		t.Errorf("a clean body was rewritten: %s", f.got)
++	}
++}
+diff --git a/internal/gateway/chat_tool_pairing_test.go b/internal/gateway/chat_tool_pairing_test.go
+index b71b413e..b4d10ca7 100644
+--- a/internal/gateway/chat_tool_pairing_test.go
++++ b/internal/gateway/chat_tool_pairing_test.go
+@@ -8,10 +8,19 @@ import (
+ 
+ // chatTrace renders the message sequence of a Chat request built for an
+ // upstream: roles with tool call ids, e.g.
+-// "user assistant(A,B) tool(A) tool(B) user".
++// "user assistant(A,B) tool(A) tool(B) user". buildChatReq parameterizes
++// the model and host the next traces build against (the default is Kimi's).
++var traceModel, traceHost = "kimi-k3", "api.moonshot.cn"
++
++func buildChatReq(t *testing.T, r *Request, model, host string) *Request {
++	t.Helper()
++	traceModel, traceHost = model, host
++	return r
++}
++
+ func chatTrace(t *testing.T, r *Request) (string, []map[string]any) {
+ 	t.Helper()
+-	body := buildChat(r, "kimi-k3", "api.moonshot.cn", false)
++	body := buildChat(r, traceModel, traceHost, false)
+ 	var q struct {
+ 		Messages []map[string]any `json:"messages"`
+ 	}
+@@ -272,20 +281,61 @@ func TestChatThinkingOnlyAssistantDroppedInsideExchange(t *testing.T) {
+ 	}
+ }
+ 
+-// Outside an exchange a thinking-only turn passes through, as on main:
+-// dropping it would leave two user messages in a row, which some models'
+-// chat templates refuse.
+-func TestChatThinkingOnlyAssistantKeptOutsideExchange(t *testing.T) {
++// Outside an exchange a thinking-only turn is left out too (#2599): it has
++// no content and no calls, and DeepSeek, Kimi and the like refuse the
++// request over it ("content or tool_calls must be set") on every turn of
++// the conversation from the interruption on. The drop would leave two user
++// messages in a row, which some models' chat templates refuse, so the two
++// around it join into one, as toolAsUser's do.
++func TestChatThinkingOnlyAssistantLeftOutOutsideExchange(t *testing.T) {
+ 	r := &Request{Messages: []Message{
+ 		{Role: "user", Parts: []Part{{Kind: Text, Text: "hi"}}},
+ 		{Role: "assistant", Parts: []Part{{Kind: Thinking, Text: "hmm", Signature: "sig"}}},
+ 		{Role: "user", Parts: []Part{{Kind: Text, Text: "继续"}}},
+ 	}}
+-	trace, _ := chatTrace(t, r)
+-	want := "user assistant user"
++	trace, msgs := chatTrace(t, r)
++	want := "user"
++	if trace != want {
++		t.Fatalf("trace = %q, want %q", trace, want)
++	}
++	if c, _ := msgs[0]["content"].(string); c != "hi\n\n继续" {
++		t.Fatalf("joined content = %q", c)
++	}
++}
++
++// An empty assistant with no user message on one side of it is dropped
++// without anything joining: a turn of text keeps its place ahead of the
++// user's, and the exchange shape stays valid.
++func TestChatEmptyAssistantBetweenCallsAndUserDropped(t *testing.T) {
++	r := &Request{Messages: []Message{
++		{Role: "assistant", Parts: []Part{{Kind: Text, Text: "on it"}}},
++		{Role: "assistant", Parts: []Part{{Kind: Thinking, Text: "hmm", Signature: "sig"}}},
++		{Role: "user", Parts: []Part{{Kind: Text, Text: "go on"}}},
++	}}
++	trace, msgs := chatTrace(t, r)
++	want := "assistant user"
+ 	if trace != want {
+ 		t.Fatalf("trace = %q, want %q", trace, want)
+ 	}
++	if c, _ := msgs[0]["content"].(string); c != "on it" || !kimiValid(msgs) {
++		t.Fatalf("content = %q", c)
++	}
++}
++
++// A Resume's prefill turn is magpie's own ask to go on from: one whose
++// text the interruption cut to nothing keeps its prefix mark and its
++// reasoning, empty as it is — without it the upstream would answer from
++// scratch instead of going on.
++func TestChatResumeEmptyPrefillKept(t *testing.T) {
++	r := &Request{Resume: true, Messages: []Message{
++		{Role: "user", Parts: []Part{{Kind: Text, Text: "go on"}}},
++		{Role: "assistant", Parts: []Part{{Kind: Thinking, Text: "half"}}},
++	}}
++	_, msgs := chatTrace(t, buildChatReq(t, r, "deepseek-chat", "api.deepseek.com"))
++	last := msgs[len(msgs)-1]
++	if last["prefix"] != true || last["reasoning_content"] != "half" {
++		t.Fatalf("prefill = %v, want prefix and the reasoning kept", last)
++	}
+ }
+ 
+ // The shape a real Claude Code session replays to (97 clean exchanges in
+diff --git a/internal/gateway/gateway.go b/internal/gateway/gateway.go
+index a6a49973..858bb784 100644
+--- a/internal/gateway/gateway.go
++++ b/internal/gateway/gateway.go
+@@ -4017,6 +4017,7 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
+ 		}
+ 	case provider.Chat:
+ 		body = developerAsSystem(body)
++		body = emptyAssistantTurnsOut(body)
+ 		if mistral := p.Preset == "mistral" || p.Host() == "api.mistral.ai"; !mistral && (chatReplaysReasoning(buildHost(p), model) || chatReplaysReasoning(buildHost(p), upstream)) {
+ 			// a tool call the client kept no thinking for, which DeepSeek
+ 			// turns the whole request away for (#1462)
+@@ -6025,6 +6026,100 @@ func developerAsSystem(body []byte) []byte {
+ 	return out
+ }
+ 
++// emptyAssistantTurnsOut takes assistant turns that say nothing out of a
++// relayed Chat request — no content, no tool_calls, `reasoning_content`
++// alone included (#2599): the agent cut its reply off before it said
++// anything, the turn stays in the agent's history, and DeepSeek, Kimi and
++// the like refuse the whole request over it on every later turn of the
++// conversation. The user messages around a dropped turn join into one, so
++// no two user messages stand in a row (some models' chat templates turn
++// those away). An assistant turn that answers a tool result stays — a
++// strict template wants the reply right behind its tool message.
++func emptyAssistantTurnsOut(body []byte) []byte {
++	if !bytes.Contains(body, []byte(`"assistant"`)) {
++		return body
++	}
++	dec := json.NewDecoder(bytes.NewReader(body))
++	dec.UseNumber()
++	var m map[string]any
++	if err := dec.Decode(&m); err != nil {
++		return body
++	}
++	msgs, ok := m["messages"].([]any)
++	if !ok {
++		return body
++	}
++	out := make([]any, 0, len(msgs))
++	changed := false
++	dropped := false
++	for _, v := range msgs {
++		msg, ok := v.(map[string]any)
++		if !ok {
++			out = append(out, v)
++			dropped = false
++			continue
++		}
++		role, _ := msg["role"].(string)
++		if role != "assistant" {
++			// a user message after a dropped turn joins the user message
++			// before it, when both carry plain string content
++			if role == "user" && dropped && len(out) > 0 {
++				if prev, ok := out[len(out)-1].(map[string]any); ok {
++					if pr, _ := prev["role"].(string); pr == "user" {
++						a, aok := prev["content"].(string)
++						b, bok := msg["content"].(string)
++						if aok && bok {
++							prev["content"] = a + "\n\n" + b
++							changed = true
++							continue
++						}
++					}
++				}
++			}
++			out = append(out, v)
++			dropped = false
++			continue
++		}
++		if _, hasCalls := msg["tool_calls"]; hasCalls {
++			out = append(out, v)
++			dropped = false
++			continue
++		}
++		if s, ok := msg["content"].(string); ok && strings.TrimSpace(s) != "" {
++			out = append(out, v)
++			dropped = false
++			continue
++		}
++		if arr, ok := msg["content"].([]any); ok && len(arr) > 0 {
++			out = append(out, v)
++			dropped = false
++			continue
++		}
++		if n := len(out); n > 0 {
++			if prev, ok := out[n-1].(map[string]any); ok {
++				if pr, _ := prev["role"].(string); pr == "tool" {
++					// the turn answers this tool result; a strict template
++					// wants the reply right behind it — keep it
++					out = append(out, v)
++					dropped = false
++					continue
++				}
++			}
++		}
++		dropped = true
++		changed = true
++	}
++	if !changed {
++		return body
++	}
++	m["messages"] = out
++	out2, err := json.Marshal(m)
++	if err != nil {
++		return body
++	}
++	return out2
++}
++
+ // sessionHeaders are where agents already name their conversation: OpenCode
+ // (to its own gateway, and to everyone else), Pi, Codex, Claude Code and
+ // WorkBuddy / CodeBuddy (X-Conversation-ID).
+-- 
+2.50.1 (Apple Git-155)
+

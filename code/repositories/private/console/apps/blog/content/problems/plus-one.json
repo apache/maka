@@ -1,0 +1,23 @@
+{
+  "id": "9",
+  "slug": "plus-one",
+  "title": "加一",
+  "difficulty": "easy",
+  "tags": ["数组", "数学"],
+  "description": "给定一个由整数组成的非空数组所表示的非负整数,在该数的基础上加一。\n\n最高位数字存放在数组的首位,数组中每个元素只存储单个数字。\n\n你可以假设除了整数 0 之外,这个整数不会以零开头。\n\n**示例 1:**\n\n- 输入:`digits = [1,2,3]`\n- 输出:`[1,2,4]`(数组表示整数 123 + 1 = 124)\n\n**示例 2:**\n\n- 输入:`digits = [4,3,2,1]`\n- 输出:`[4,3,2,2]`\n\n**示例 3:**\n\n- 输入:`digits = [9]`\n- 输出:`[1,0]`(9 + 1 = 10,需进位)",
+  "solution": "## 思路\n\n从**最低位**向前遍历:\n\n- 当前位 `< 9`,直接 +1 返回(无需进位);\n- 当前位 `== 9`,置 0,继续处理前一位(进位);\n- 全部处理完仍有进位(如 999 → 000),在最前面补 1。\n\n## 参考代码\n\n```js\nfunction plusOne(digits) {\n  for (let i = digits.length - 1; i >= 0; i--) {\n    if (digits[i] < 9) { digits[i]++; return digits; }\n    digits[i] = 0;\n  }\n  return [1, ...digits];\n}\n```\n\n## 复杂度\n\n- 时间:O(n)\n- 空间:O(1)(原地;进位溢出时 O(n))",
+  "signature": {
+    "language": "javascript",
+    "entry": "plusOne",
+    "params": [{ "name": "digits", "type": "number[]" }],
+    "returns": "number[]"
+  },
+  "testCases": [
+    { "sample": true, "input": [[1, 2, 3]], "expected": [1, 2, 4] },
+    { "sample": true, "input": [[4, 3, 2, 1]], "expected": [4, 3, 2, 2] },
+    { "sample": true, "input": [[9]], "expected": [1, 0] },
+    { "sample": false, "input": [[0]], "expected": [1] },
+    { "sample": false, "input": [[9, 9, 9]], "expected": [1, 0, 0, 0] },
+    { "sample": false, "input": [[1, 0, 0]], "expected": [1, 0, 1] }
+  ]
+}

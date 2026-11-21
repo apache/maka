@@ -1,0 +1,566 @@
+# Config-Orchestrator Agent 开发进度记录
+> 只追加，不删除历史
+> 唯一真相源：plans/prd.json + plans/progress.txt
+
+---
+
+## 2026-01-11 初始化项目规划
+
+### 完成内容
+- 建立第一版 PRD：覆盖 P0/P1/P2 的闭环与迭代路线
+- 明确工程规则：一次只做一个 PRD、必须 typecheck、必须记录 progress、必须规范提交
+
+### Git 提交记录
+chore(core): init plans and agent workflow
+
+### 下一步计划
+
+Next: PRD #1 RepoInit - 初始化 monorepo（pnpm workspace）并跑通 pnpm typecheck
+
+---
+
+## 2026-01-11 PRD #1: RepoInit 完成
+
+### 完成内容
+- 创建目录结构：apps/engine、apps/web、packages/shared、configs/、runs/
+- 初始化 pnpm workspace：根 package.json + pnpm-workspace.yaml
+- 配置 TypeScript：tsconfig.base.json + 各包 tsconfig.json
+- 配置基础脚本：pnpm dev / build / typecheck
+- 创建 .gitignore + .editorconfig
+- 运行 pnpm typecheck 验证类型通过
+
+### 关键决策
+- 使用 pnpm 9.15.4 作为包管理器
+- TypeScript 5.7.3+，ESM 模块，ES2022 target
+- typecheck 脚本先 build shared 包再运行各包 typecheck，确保 workspace 依赖可正确解析
+- packages/shared 通过 workspace:* 协议被 engine 和 web 引用
+
+### 相关 PRD
+- id: 1
+- component: RepoInit
+- passes: true
+
+### Git 提交
+chore(core): init monorepo workspace
+
+### 下一步计划
+Next: PRD #2 SharedTypes - 定义 Zod schema + 类型（RunRecord/Plan/PatchStep/Target）
+
+---
+
+## 2026-01-11 PRD #2: SharedTypes 完成
+
+### 完成内容
+- 在 packages/shared 添加 Zod 依赖（zod ^4.3.5）
+- 定义 Target/TargetType/ConfigFileType 类型及 schema
+- 定义 PatchStep/PatchOp 类型及 schema
+- 定义 Plan/PlanSummary 类型及 schema
+- 定义 RunRecord/RunMode/RunResult/TimelineEvent 类型及 schema
+- 定义 RunIndexItem 类型及 schema（用于列表展示）
+- 定义 ProfileConfig 类型及 schema
+- 定义 API 相关类型：ExecuteRequest/RollbackRequest/ApiError
+- 在 engine 和 web 中 re-export 共享类型
+- 运行 pnpm typecheck 验证通过
+
+### 关键决策
+- 使用 Zod 4.x 作为 schema 验证库（支持运行时验证 + 类型推断）
+- 采用 dot-notation (如 "editor.fontSize") 作为配置路径格式
+- PatchStep 设计支持 set/delete 操作，预留 highRisk 标记
+- Timeline 事件类型完整覆盖：scan/plan/backup/patch/validate/done/error/rollback
+- 修复 Zod 4.x 的 z.record() API 变化（需要两个参数）
+
+### 相关 PRD
+- id: 2
+- component: SharedTypes
+- passes: true
+
+### Git 提交
+feat(core): add shared types and zod schemas
+
+### 下一步计划
+Next: PRD #3 RunStoreJson - JSON RunStore 实现
+
+---
+
+## 2026-01-11 PRD #3: RunStoreJson 完成
+
+### 完成内容
+- 实现 JsonRunStore 类：createRun / appendTimeline / finalizeRun / listRuns / readRun / ensureRunDir
+- index.json 列出历史 run（最新在前，使用 unshift 插入）
+- run.json 包含完整 RunRecord（timeline、result、error 等字段）
+- 为 apply 模式预留 backups/artifacts 目录（在 ensureRunDir 中自动创建）
+- 添加 @types/node 依赖以支持 Node.js API 类型
+- 运行 pnpm typecheck 验证通过
+
+### 关键决策
+- 目录结构：runs/index.json + runs/<runId>/run.json + backups/ + artifacts/
+- 使用 node:fs/promises + node:path + node:crypto 标准库
+- 索引更新采用 unshift 保证最新记录在前
+- JsonRunStore 采用类实现，提供 createJsonRunStore 工厂函数
+
+### 相关 PRD
+- id: 3
+- component: RunStoreJson
+- passes: true
+
+### Git 提交
+feat(engine): add json run store for auditable history
+
+### 下一步计划
+Next: PRD #4 ScannerAdapters - VSCode/Cursor settings.json 路径读取
+
+---
+
+## 2026-01-11 PRD #4: ScannerAdapters 完成
+
+### 完成内容
+- 实现 paths.ts：VSCode/Cursor 配置目录路径解析（macOS）
+- 实现 getConfigDir/getConfigPaths/getConfigFilePath 路径获取函数
+- 实现 validatePathAllowed/isPathAllowed 白名单校验
+- 实现 scanner.ts：readSettingsJson 读取 settings.json（不存在返回 {}）
+- 实现 scanSettings 批量扫描多个目标
+- 运行 pnpm typecheck 验证通过
+
+### 关键决策
+- macOS 路径：~/Library/Application Support/{Code|Cursor}/User/
+- 白名单校验：只允许写入 VSCode 和 Cursor 配置目录
+- 文件不存在时返回 { content: {}, exists: false }，不抛异常
+- 使用 ENOENT 错误码判断文件不存在
+
+### 相关 PRD
+- id: 4
+- component: ScannerAdapters
+- passes: true
+
+### Git 提交
+feat(engine): add vscode/cursor adapters for macOS
+
+### 下一步计划
+Next: PRD #5 Planner - 强覆盖策略 + managedScopes diff 生成
+
+---
+
+## 2026-01-11 PRD #5: Planner 完成
+
+### 完成内容
+- 实现 json-path.ts：flatten/unflatten + setByPath/getByPath/deleteByPath
+- 实现 managed-scopes.ts：isInManagedScope 前缀匹配判断
+- 实现 planner.ts：generateSteps + createPlan
+- 强覆盖策略：主配置声明 -> set，managedScopes 内未声明 -> delete，非 managedScopes -> 不处理
+- 稳定排序：先按 op (delete < set)，再按 path 字典序
+- 摘要计算：changed/deleted/highRisk
+- 高风险检测：defaultFormatter/files.exclude/colorTheme 等模式
+- 运行 pnpm typecheck 验证通过
+
+### 关键决策
+- flatten 递归处理嵌套对象，数组保持原样不展开
+- managedScopes 采用前缀匹配（支持双向：scope 是 path 前缀或 path 是 scope 前缀）
+- 高风险路径使用正则模式匹配，便于扩展
+- deepEqual 用于值比较，避免不必要的 set 操作
+
+### 相关 PRD
+- id: 5
+- component: Planner
+- passes: true
+
+### Git 提交
+feat(engine): implement planner for managed-scope override
+
+### 下一步计划
+Next: PRD #6 Executor - dry-run/apply/rollback 实现
+
+---
+
+## 2026-01-11 PRD #6: Executor 完成
+
+### 完成内容
+- 实现 Executor 类：execute(plan, mode) + rollback(runId)
+- dry-run 模式：只记录 timeline，不写入文件
+- apply 模式：备份 -> 原子写入 -> 验证
+- 备份到 runs/<runId>/backups/<targetType>/settings.json
+- 原子写入：临时文件 + fs.rename
+- 验证：reread + JSON.parse + 类型检查
+- rollback：从 backups 恢复到原路径
+- Timeline 事件：scan/plan/backup/patch/validate/done/error/rollback
+- 运行 pnpm typecheck 验证通过
+
+### 关键决策
+- 使用 os.tmpdir() + randomUUID 生成临时文件路径
+- 文件不存在时备份空对象 {}
+- applySteps 使用 setByPath/deleteByPath 修改配置
+- 按 target 分组处理 steps，每个 target 独立备份和写入
+
+### 相关 PRD
+- id: 6
+- component: Executor
+- passes: true
+
+### Git 提交
+feat(engine): add executor with backup/atomic write/rollback
+
+### 下一步计划
+Next: PRD #7 HttpApi - HTTP API 路由实现
+
+---
+
+## 2026-01-11 PRD #7: HttpApi 完成
+
+### 完成内容
+- 添加 Hono + @hono/node-server 依赖
+- 实现 routes.ts：createApi 工厂函数 + 所有路由
+- GET /api/runs - 列出所有 Run 记录
+- GET /api/runs/:runId - 获取单个 Run 记录
+- POST /api/runs/dry-run - 执行 dry-run
+- POST /api/runs/apply - 执行 apply
+- POST /api/runs/:runId/rollback - 执行 rollback
+- 实现 server.ts：startServer 启动服务器（端口 7777）
+- 临时 hardcode getDefaultProfile（后续 PRD #10 替换）
+- 运行 pnpm typecheck 验证通过
+
+### 关键决策
+- 使用 Hono 框架（轻量、类型安全、ESM 友好）
+- 默认端口 7777，可通过 config 覆盖
+- 临时 Profile 包含常见 editor 设置作为演示
+- executeRun 统一处理 dry-run 和 apply 逻辑
+
+### 相关 PRD
+- id: 7
+- component: HttpApi
+- passes: true
+
+### Git 提交
+feat(engine): add http api routes for runs and execution
+
+### 下一步计划
+Next: PRD #8 WebInit - React Dashboard 初始化
+
+---
+
+## 2026-01-11 PRD #8: WebInit 完成
+
+### 完成内容
+- 添加 React 19 + React DOM 依赖
+- 添加 Vite 7 + @vitejs/plugin-react 构建工具
+- 添加 Tailwind CSS 4 + @tailwindcss/vite 样式框架
+- 添加 React Router 7 + TanStack Query 5 + Zustand 5
+- 配置 vite.config.ts：proxy /api -> localhost:7777
+- 创建 index.html + main.tsx 入口
+- 创建 index.css：深色主题 CSS 变量
+- 创建 Layout 组件：导航栏 + 页面容器
+- 创建 UI 组件：Button/Card/Input/Checkbox
+- 创建页面：Overview/Runs/RunDetail
+- 运行 pnpm typecheck 验证通过
+
+### 关键决策
+- 使用深色主题（类 shadcn/ui 风格）
+- UI 组件手动实现（不依赖 shadcn CLI）
+- Overview 页面支持选择目标 + dry-run/apply
+- Runs 页面列出历史记录并链接到详情
+- RunDetail 页面展示 timeline + rollback 按钮
+
+### 相关 PRD
+- id: 8
+- component: WebInit
+- passes: true
+
+### Git 提交
+feat(web): init dashboard stack and routing
+
+### 下一步计划
+Next: PRD #9 DashboardPages - Dashboard 页面闭环
+
+---
+
+## 2026-01-11 PRD #9: DashboardPages 完成
+
+### 完成内容
+- 创建 AlertDialog 组件：使用原生 dialog 元素 + showModal API
+- 创建 DiffViewer 组件：按 target 分组展示 steps + highRisk 标记
+- 更新 Overview 页面：显示 plan summary + diff + 高风险确认弹窗
+- 更新 Runs 页面：显示 targets 标签
+- 更新 RunDetail 页面：添加 diff 展示 + rollback 确认弹窗
+- 所有页面支持 highRisk 过滤
+- 运行 pnpm typecheck 验证通过
+
+### 关键决策
+- AlertDialog 使用原生 dialog 元素（无需外部库）
+- DiffViewer 按 target:fileType 分组，delete 显示红色，set 显示绿色
+- 高风险操作左侧黄色边框 + HIGH RISK 标签
+- 弹窗展示高风险变更列表供用户确认
+
+### 相关 PRD
+- id: 9
+- component: DashboardPages
+- passes: true
+
+### Git 提交
+feat(web): implement overview/runs/detail/diff pages
+
+### 下一步计划
+Next: PRD #10 SourceOfTruth - 主配置源实现（P1）
+
+---
+
+## 2026-01-11 PRD #10: SourceOfTruth 完成
+
+### 完成内容
+- 添加 yaml 依赖用于解析 YAML 配置文件
+- 实现 ProfileLoader 类：load/getProfile/listProfiles
+- 创建 configs/config.schema.yaml 示例配置（3 个 profiles）
+- 更新 API routes：添加 GET /api/profiles 端点
+- 更新 server.ts：启动时加载 ProfileLoader
+- 移除临时 hardcode 的 profile getter
+- 运行 pnpm typecheck 验证通过
+
+### 关键决策
+- 使用 yaml 库解析 YAML（轻量、无依赖）
+- ProfileLoader 采用异步加载模式（需要先 load() 再 getProfile()）
+- 配置文件不存在时 fallback 到默认 profile
+- 支持多 profile（default/minimal/development）
+
+### 相关 PRD
+- id: 10
+- component: SourceOfTruth
+- passes: true
+
+### Git 提交
+feat(config): add source-of-truth profiles from yaml
+
+### 下一步计划
+Next: PRD #11 JsoncSupport - JSONC 兼容支持（P1）
+
+---
+
+## 2026-01-11 PRD #11: JsoncSupport 完成
+
+### 完成内容
+- 添加 jsonc-parser 依赖
+- 更新 scanner.ts：使用 parseJsonc 替换 JSON.parse
+- 支持 VSCode/Cursor settings.json 中的注释和尾逗号
+- 写回仍使用标准 JSON.stringify（保持简洁）
+- 运行 pnpm typecheck 验证通过
+
+### 关键决策
+- 使用 jsonc-parser（VSCode 官方使用的解析器）
+- 读取时解析 JSONC，写入时输出标准 JSON
+- 这样既兼容用户的注释，又保证输出格式一致
+
+### 相关 PRD
+- id: 11
+- component: JsoncSupport
+- passes: true
+
+### Git 提交
+fix(engine): support jsonc parsing for editor settings
+
+### 下一步计划
+Next: PRD #12 Keybindings - keybindings.json 支持（P1）
+
+---
+
+## 2026-01-11 PRD #12: Keybindings 完成
+
+### 完成内容
+- 实现 keybindings.ts：readKeybindingsJson/scanKeybindings
+- 定义 KeybindingItem/KeybindingsScanResult/KeybindingStep 类型
+- 实现 generateKeybindingSteps：按 key+when 匹配，生成 add/update 步骤
+- 实现 applyKeybindingSteps：应用变更到 keybindings 数组
+- 最小策略：仅强覆盖声明的 bindings，不删除现有绑定
+- 支持 JSONC 格式读取
+- 运行 pnpm typecheck 验证通过
+
+### 关键决策
+- keybindings 匹配策略：按 key + when 组合唯一标识
+- 不删除现有绑定，只添加或更新声明的绑定
+- 步骤类型：add（新增）和 update（更新命令）
+- UI diff 展示待后续 PR 完善（基础类型已导出）
+
+### 相关 PRD
+- id: 12
+- component: Keybindings
+- passes: true
+
+### Git 提交
+feat(engine): add keybindings support for vscode/cursor
+
+### 下一步计划
+Next: PRD #13 DocsAndRules - 补齐文档（P1）
+
+---
+
+## 2026-01-11 PRD #13: DocsAndRules 完成
+
+### 完成内容
+- 完善 README.md：
+  - ASCII 架构图
+  - 强覆盖策略说明
+  - 受管范围示例
+  - 快速开始指南
+  - 项目结构说明
+  - API 端点列表
+  - 安全特性
+  - Roadmap 进度
+- 创建 docs/demo-script.md：
+  - 6 个场景的录屏脚本
+  - Dashboard -> Dry Run -> Apply -> History -> Detail -> Rollback
+  - 录屏要点和关键卖点
+- AGENTS.md 已存在（在项目初始化时创建）
+- 运行 pnpm typecheck 验证通过
+
+### 关键决策
+- README 采用 Markdown 格式，包含徽章和表格
+- 架构图使用 ASCII 艺术，便于版本控制
+- Roadmap 分 P0/P1/P2 三个优先级展示进度
+
+### 相关 PRD
+- id: 13
+- component: DocsAndRules
+- passes: true
+
+### Git 提交
+docs(core): add README and demo recording script
+
+### 下一步计划
+Next: PRD #14 Snippets - snippets 同步支持（P2）
+
+---
+
+## 2026-01-11 PRD #14: Snippets 完成
+
+### 完成内容
+- 实现 snippets.ts：readSnippetsDir/scanSnippets
+- 定义 SnippetItem/SnippetFile/SnippetsScanResult 类型
+- 实现 generateSnippetSteps：按文件覆盖策略，生成 add/update 步骤
+- 实现 applySnippetSteps：应用变更到 snippets 文件
+- 扫描 snippets 目录下所有 .json 文件
+- 支持 JSONC 格式解析
+- 运行 pnpm typecheck 验证通过
+
+### 关键决策
+- 采用按文件覆盖策略（而非按 snippet name）
+- 声明的 snippet 会覆盖或添加，未声明的保留
+- 不删除现有 snippets（与 keybindings 策略一致）
+- 按文件名 + snippet 名称排序保持稳定
+
+### 相关 PRD
+- id: 14
+- component: Snippets
+- passes: true
+
+### Git 提交
+feat(engine): add snippets sync support
+
+### 下一步计划
+Next: PRD #15 CrossPlatform - 跨平台路径支持（P2）
+
+---
+
+## 2026-01-11 PRD #15: CrossPlatform 完成
+
+### 完成内容
+- 更新 paths.ts：支持 macOS / Windows / Linux 三平台
+- 新增 getPlatform() 函数：自动检测当前平台
+- 新增 Platform 类型：'darwin' | 'win32' | 'linux'
+- Windows 路径：%APPDATA%\{Code|Cursor}\User
+- Linux 路径：$XDG_CONFIG_HOME/{Code|Cursor}/User（默认 ~/.config）
+- 所有路径函数支持可选的 platform 参数（便于测试）
+- 运行 pnpm typecheck 验证通过
+
+### 关键决策
+- 使用 os.platform() 检测平台
+- 未知平台默认使用 linux 路径规则
+- Windows 使用 APPDATA 环境变量，fallback 到 ~/AppData/Roaming
+- Linux 使用 XDG_CONFIG_HOME 环境变量，fallback 到 ~/.config
+
+### 相关 PRD
+- id: 15
+- component: CrossPlatform
+- passes: true
+
+### Git 提交
+feat(core): add cross-platform path resolving
+
+### 下一步计划
+Next: PRD #16 RunStoreSqlite - SQLite RunStore 实现（P2）
+
+---
+
+## 2026-01-11 PRD #16: RunStoreSqlite 完成
+
+### 完成内容
+- 添加 sql.js + @types/sql.js 依赖（SQLite WebAssembly 版本）
+- 实现 SqliteRunStore 类：init/createRun/appendTimeline/finalizeRun/readRun/listRuns
+- 支持与 JsonRunStore 相同的目录结构（backups/artifacts）
+- 异步初始化模式：需要先调用 init() 再使用
+- 数据库自动持久化到 runs/runs.db
+- 保留 JsonRunStore 作为 fallback
+- 运行 pnpm typecheck 验证通过
+
+### 关键决策
+- 使用 sql.js（WebAssembly）而非 better-sqlite3（需要本地编译）
+- 每次操作后自动 save() 到磁盘
+- 表结构：id/mode/result/plan/timeline/error/created_at/completed_at
+- plan 和 timeline 字段使用 JSON 序列化存储
+
+### 相关 PRD
+- id: 16
+- component: RunStoreSqlite
+- passes: true
+
+### Git 提交
+feat(engine): add sqlite run store implementation
+
+### 下一步计划
+Next: PRD #17 PluginSystem - 插件化适配器（P2）
+
+---
+
+## 2026-01-11 PRD #17: PluginSystem 完成
+
+### 完成内容
+- 定义 TargetAdapter 接口：id/displayName/supportedFileTypes/getPaths/read/backup/write/validate
+- 定义 AdapterFactory 类型和 AdapterOptions
+- 实现 AdapterRegistry：register/unregister/get/has/list/clear
+- 实现 VSCodeAdapter 类（实现 TargetAdapter 接口）
+- 实现 CursorAdapter 类（实现 TargetAdapter 接口）
+- 实现 registerDefaultAdapters()：自动注册 VSCode 和 Cursor
+- 导出 registerAdapter/getAdapter/listAdapters 简化 API
+- 运行 pnpm typecheck 验证通过
+
+### 关键决策
+- 使用工厂模式 + 单例注册表
+- 适配器实例缓存按 id + platform 组合键
+- 保留原有 scanner 函数作为兼容层
+- 新增编辑器只需实现 TargetAdapter 接口并调用 registerAdapter
+
+### 相关 PRD
+- id: 17
+- component: PluginSystem
+- passes: true
+
+### Git 提交
+refactor(engine): introduce adapter plugin system
+
+---
+
+## 🎉 所有 PRD 已完成！
+
+完成度: 17/17 (100%)
+
+### 总结
+- P0 核心闭环（9 项）：全部完成
+- P1 增强功能（4 项）：全部完成
+- P2 扩展功能（4 项）：全部完成
+
+项目已具备：
+- 完整的 monorepo 架构
+- 共享类型 + Zod schema
+- JSON/SQLite 双存储支持
+- 跨平台路径解析（macOS/Windows/Linux）
+- 强覆盖策略 Planner
+- 安全的 Executor（备份/原子写入/回滚）
+- HTTP API（Hono）
+- Web Dashboard（React 19 + Vite）
+- JSONC 兼容
+- Keybindings/Snippets 同步
+- 插件化适配器系统

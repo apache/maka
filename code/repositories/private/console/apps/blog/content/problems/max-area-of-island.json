@@ -1,0 +1,21 @@
+{
+  "id": "78",
+  "slug": "max-area-of-island",
+  "title": "岛屿的最大面积",
+  "difficulty": "medium",
+  "tags": ["深度优先搜索", "广度优先搜索", "矩阵"],
+  "description": "给定一个由 `0` 和 `1` 组成的二维矩阵 `grid`,其中 `1` 代表陆地、`0` 代表水。岛屿由水平/垂直相邻的陆地连接而成。返回网格中最大的岛屿面积;若没有岛屿,返回 `0`。\n\n**示例 1:**\n\n- 输入:LeetCode 经典示例盘面\n- 输出:`6`\n\n**示例 2:**\n\n- 输入:`grid = [[0,0,0,0,0,0,0,0]]`\n- 输出:`0`",
+  "solution": "## 思路\n\n遍历每个格子,遇到 `1` 就 DFS 统计该岛面积(同时把访问过的格子置 `0` 避免重复),更新最大值。\n\n## 参考代码\n\n```js\nfunction maxAreaOfIsland(grid) {\n  const rows = grid.length;\n  const cols = grid[0].length;\n  const dfs = (r, c) => {\n    if (r < 0 || r >= rows || c < 0 || c >= cols || grid[r][c] !== 1) return 0;\n    grid[r][c] = 0;\n    return 1 + dfs(r + 1, c) + dfs(r - 1, c) + dfs(r, c + 1) + dfs(r, c - 1);\n  };\n  let max = 0;\n  for (let r = 0; r < rows; r++) {\n    for (let c = 0; c < cols; c++) {\n      if (grid[r][c] === 1) max = Math.max(max, dfs(r, c));\n    }\n  }\n  return max;\n}\n```\n\n## 复杂度\n\n- 时间:O(m*n)\n- 空间:O(m*n)(递归栈最坏)",
+  "signature": {
+    "language": "javascript",
+    "entry": "maxAreaOfIsland",
+    "params": [{ "name": "grid", "type": "number[][]" }],
+    "returns": "number"
+  },
+  "testCases": [
+    { "sample": true, "input": [[[0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0], [0, 1, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0], [0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 1, 0, 0], [0, 1, 0, 0, 1, 1, 0, 0, 1, 1, 1, 0, 0], [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0], [0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0], [0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0]]], "expected": 6 },
+    { "sample": true, "input": [[[0, 0, 0, 0, 0, 0, 0, 0]]], "expected": 0 },
+    { "sample": false, "input": [[[1]]], "expected": 1 },
+    { "sample": false, "input": [[[1, 1], [1, 0]]], "expected": 3 }
+  ]
+}

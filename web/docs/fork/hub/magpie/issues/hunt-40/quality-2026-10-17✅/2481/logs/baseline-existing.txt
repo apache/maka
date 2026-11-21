@@ -1,0 +1,4 @@
+# ./internal/gateway
+open /Users/ggbdpq/Library/Caches/go-build/6e/6ebb71950add55e90ef32998b0a4ac71e8e0eba774b62fd7939c7d3fdfc96621-d: operation not permitted
+FAIL	./internal/gateway [setup failed]
+FAIL

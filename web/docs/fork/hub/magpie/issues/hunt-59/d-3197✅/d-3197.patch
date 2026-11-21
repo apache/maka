@@ -1,0 +1,257 @@
+From 52f5fbaaa2d88c368b7b082cb6a5fd684a354402 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Thu, 22 Oct 2026 04:32:28 +0800
+Subject: [PATCH] gateway: a severed upstream leaves the client no half event,
+ and a Chat stream ends [DONE] (#3197)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+An upstream that died mid-line (Z.ai's 502 mid-reply, a connection
+reset) left the relay's last line half written, and the blank line
+before the failure event magpie appends completed it into an event of
+its own: the client read its truncated JSON as "malformed server-sent
+event JSON" and hung, the error event after it unread. A Chat stream
+ended there with no [DONE] either. Failover before the first byte was
+never the problem.
+
+What changed: a relayed stream's last line, the one a read left
+unfinished, is no longer the client's until it ends — held back,
+handed on when the stream ends cleanly, dropped when the read fails,
+so a severed upstream can leave no half event behind. A stream the
+read failed on ends, after its error event, with data: [DONE] for
+Chat, the end a Chat client reads to; one that ended cleanly ends at
+the error event as before, where [DONE] would read the cut reply as
+whole (TestGeminiCompatRelayEndedShort). Anthropic, Responses and
+Gemini end on their error event; Gemini has no [DONE]. Whole streams
+are untouched: a line is only held until its end or the stream's, and
+one that outgrows an event (1 MiB, the sniffer's runaway-line bound)
+goes through as it came. Whether a mid-stream failure joins the
+group's own failover stays as it is today: the client retries its own
+stream, and nobody rests or re-asks here.
+
+Run: TestPassthroughChatSeveredMidLine and TestPassthroughChatSeveredAtLineEnd
+(internal/gateway/passthrough_severed_test.go, a fake upstream serving
+valid chunks then dying mid-line under a lying Content-Length, no
+network) fail on the unfixed tree — the first reads an event whose
+data is `{"id":"c1","model":"m","cho`, the second finds no [DONE]
+after the error; with the fix every event the client can read parses,
+the error stands, and [DONE] follows. Ablation: the product back to
+base with the tests kept, both fail again; restored, green. The whole
+severed and Gemini-compat families pass, gofmt is clean, go vet ./...
+and GOOS=linux and GOOS=windows go vet -tags nogui ./... are clean,
+the build is fine on darwin, linux (nogui) and windows, and the full
+gateway package is green under -tags nogui (a first run at an earlier
+shape of this fix turned up TestGeminiCompatRelayEndedShort, whose
+"ends at the error" suffix the [DONE] broke; the [DONE] is the severed
+case's since).
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gateway/gateway.go                  | 66 +++++++++++++++-
+ internal/gateway/passthrough_severed_test.go | 81 ++++++++++++++++++++
+ 2 files changed, 144 insertions(+), 3 deletions(-)
+
+diff --git a/internal/gateway/gateway.go b/internal/gateway/gateway.go
+index a9a868a2..c790edbb 100644
+--- a/internal/gateway/gateway.go
++++ b/internal/gateway/gateway.go
+@@ -4746,12 +4746,49 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
+ 	// client reads one event it can't parse where the protocol's error was
+ 	// meant (TestPassthroughStreamCutMidLine)
+ 	atLine := true
++	// pending is the line a stream's last read left unfinished. It is not
++	// the client's until its end: held here, given on when the stream ends
++	// cleanly, dropped when the read fails — the half event the old blank
++	// line closing made of it is what Pi read as "malformed server-sent
++	// event JSON" and hung on, the error event after it unread (#3197).
++	// A body that is no events goes through as it comes.
++	var pending []byte
+ 	write := func(b []byte) (int, error) {
+ 		if len(b) > 0 {
+ 			atLine = b[len(b)-1] == '\n'
+ 		}
+ 		return w.Write(b)
+ 	}
++	if sse {
++		write = func(b []byte) (int, error) {
++			if len(pending) > 0 {
++				nb := make([]byte, 0, len(pending)+len(b))
++				nb = append(nb, pending...)
++				nb = append(nb, b...)
++				b, pending = nb, pending[:0]
++			}
++			if i := bytes.LastIndexByte(b, '\n'); i >= 0 {
++				pending = append(pending, b[i+1:]...)
++				b = b[:i+1]
++			} else {
++				pending = append(pending, b...)
++				b = b[:0]
++			}
++			if len(pending) > 1<<20 {
++				// a line that outgrew any event is no event's data any
++				// more: it goes as it came, held no longer, where the
++				// sniffer gives up on one this long for the same reason
++				atLine = false
++				w.Write(pending)
++				pending = pending[:0]
++			}
++			if len(b) > 0 {
++				atLine = b[len(b)-1] == '\n'
++				return w.Write(b)
++			}
++			return 0, nil
++		}
++	}
+ 	// apart is what goes before an event magpie appends: a blank line,
+ 	// after the line still pending if the upstream's last write stopped
+ 	// inside one
+@@ -4862,6 +4899,19 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
+ 	if phases != nil {
+ 		write(phases.flush())
+ 	}
++	// what a stream's last read left of a line: a clean end hands it on
++	// as when the stream went through as it came, a failed one drops it —
++	// half an event is nothing a client can read (#3197)
++	if len(pending) > 0 {
++		if rerr == nil || rerr == io.EOF {
++			atLine = pending[len(pending)-1] == '\n'
++			w.Write(pending)
++			if f != nil {
++				f.Flush()
++			}
++		}
++		pending = nil
++	}
+ 	if sse {
+ 		sniff.drain()
+ 	}
+@@ -4904,10 +4954,20 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
+ 			failed = p.Name + ": " + errEndedShort.Error()
+ 		}
+ 		if failed != "" {
+-			// what is appended begins after a blank line: the event still
+-			// pending is left to stand, and the failure is read as an
+-			// event of its own (TestPassthroughStreamEndsOnLineEnd)
++			// what is appended begins after a blank line: the line the
++			// upstream finished stands as the event it completed, and the
++			// failure is read as an event of its own
++			// (TestPassthroughStreamEndsOnLineEnd)
+ 			w.Write(append(apart(), streamFailure(proto, failed)...))
++			if proto == provider.Chat && rerr != nil && rerr != io.EOF {
++				// a Chat stream the upstream severed ends on [DONE] too: a
++				// client that reads to it stops there and says the error it
++				// read, instead of waiting on a connection that only
++				// closes (#3197). One that ended cleanly ends at the error,
++				// as a cut reply is not to end as if whole
++				// (TestGeminiCompatRelayEndedShort).
++				w.Write([]byte("data: [DONE]\n\n"))
++			}
+ 			if f != nil {
+ 				f.Flush()
+ 			}
+diff --git a/internal/gateway/passthrough_severed_test.go b/internal/gateway/passthrough_severed_test.go
+index 853590c7..37f086bc 100644
+--- a/internal/gateway/passthrough_severed_test.go
++++ b/internal/gateway/passthrough_severed_test.go
+@@ -2,9 +2,14 @@ package gateway
+ 
+ import (
+ 	"encoding/json"
++	"fmt"
++	"io"
++	"net/http"
+ 	"net/http/httptest"
+ 	"strings"
+ 	"testing"
++
++	"github.com/yetone/magpie/internal/provider"
+ )
+ 
+ // postMessages sends an Anthropic Messages request to the gateway, as dsh's
+@@ -91,6 +96,82 @@ func atLineEnd(t *testing.T, body string) {
+ 	}
+ }
+ 
++// severedChat is severed for an upstream the client speaks Chat to, as Pi
++// does an OpenAI-compatible provider (#3197).
++func severedChat(t *testing.T, events ...string) {
++	t.Helper()
++	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		io.ReadAll(r.Body)
++		hj, ok := w.(http.Hijacker)
++		if !ok {
++			panic("no hijacker")
++		}
++		conn, buf, err := hj.Hijack()
++		if err != nil {
++			panic(err)
++		}
++		defer conn.Close()
++		body := strings.Join(events, "")
++		fmt.Fprintf(buf, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: %d\r\n\r\n", len(body)+100)
++		io.WriteString(buf, body)
++		buf.Flush()
++	}))
++	t.Cleanup(up.Close)
++	p := provider.Provider{ID: "up", Name: "UP", Key: "k", Models: []string{"m"}, Chat: up.URL + "/v1"}
++	if err := provider.Save(p); err != nil {
++		t.Fatal(err)
++	}
++}
++
++// chatEventsSevered asks a Chat relay of the severed upstream and fails
++// when any event it left the client is no JSON a client can read, or the
++// stream doesn't end error, then [DONE].
++func chatEventsSevered(t *testing.T) {
++	t.Helper()
++	code, body := post(t, "/v1/chat/completions", `{"model":"up/m","stream":true,"messages":[{"role":"user","content":"hi"}]}`)
++	if code != 200 {
++		t.Fatalf("status = %d, want 200; body: %s", code, body)
++	}
++	readSSE(strings.NewReader(body), func(_, data string) error {
++		if data != "[DONE]" && json.Valid([]byte(data)) == false {
++			t.Fatalf("the severed stream left an event no client can read: %q", data)
++		}
++		return nil
++	})
++	i := strings.Index(body, "connection lost mid-reply")
++	if i < 0 {
++		t.Fatalf("the severed stream ended without the failure said: %s", body)
++	}
++	if !strings.Contains(body[i:], "data: [DONE]\n\n") {
++		t.Fatalf("the error event was not followed by [DONE]: %s", body[i:])
++	}
++}
++
++// A Chat stream the upstream severs inside a data line: what the client
++// has is half an event, and the blank line the relay's ending writes made
++// it one — Pi read its truncated JSON as "malformed server-sent event
++// JSON" and hung, the error event after it unread (#3197). The half line
++// never goes out, and the stream ends with the error and the [DONE] a
++// Chat client reads to.
++func TestPassthroughChatSeveredMidLine(t *testing.T) {
++	fresh(t)
++	severedChat(t,
++		`data: {"id":"c1","model":"m","choices":[{"index":0,"delta":{"role":"assistant"}}]}`+"\n\n",
++		`data: {"id":"c1","model":"m","choices":[{"index":0,"delta":{"content":"hel"}}]}`+"\n\n",
++		`data: {"id":"c1","model":"m","cho`)
++	chatEventsSevered(t)
++}
++
++// One severed at a line's end keeps the line it finished: the event it
++// completes stands, and the error and [DONE] follow as events of their own.
++func TestPassthroughChatSeveredAtLineEnd(t *testing.T) {
++	fresh(t)
++	severedChat(t,
++		`data: {"id":"c1","model":"m","choices":[{"index":0,"delta":{"role":"assistant"}}]}`+"\n\n",
++		`data: {"id":"c1","model":"m","choices":[{"index":0,"delta":{"content":"lo"}}]}`+"\n")
++	chatEventsSevered(t)
++}
++
+ // A reply the loop guard cuts (cutLoop) while the client is mid-line ends
+ // in the same joined event: what is appended after it must begin after a
+ // blank line too.
+-- 
+2.50.1 (Apple Git-155)
+

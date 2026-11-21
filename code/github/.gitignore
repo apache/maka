@@ -1,0 +1,14 @@
+# 只跟踪账本文档；收藏内容(含 paid/ 付费源码)一律不入库
+*
+!.gitignore
+!README.md
+!项目清单.md
+# （2026-11-07 收编 miniprogram：放行 wxa-compat-extension.js 与浏览器调试教程；
+#   wxa-runner 为自带 .git 的独立仓（origin=ggbdpq/wxa-runner），按根 .gitignore
+#   嵌套仓先例整目录排除，不在此存 gitlink；node_modules 随之不涉及外层仓。）
+!miniprogram/
+!miniprogram/**
+miniprogram/wxa-runner/
+# （2026-11-20 wxa-runner 副本迁入 fsy0718/ 子目录，随嵌套仓先例整目录排除，
+#   不在此存 gitlink；构建产物 wxa-runner-0.14.0.tgz 照常入库。）
+miniprogram/fsy0718/

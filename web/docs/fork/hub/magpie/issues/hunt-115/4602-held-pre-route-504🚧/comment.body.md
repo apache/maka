@@ -1,0 +1,21 @@
+I took this one (the `take` above) and read the attached report end to end. No patch from me: the report explains itself, and what it shows is the machine's file system stalling, not routing holding the request by choice. Timeline and evidence below.
+
+**What the report says happened** (0.1.2404, windows/amd64)
+
+1. ~15:55:33Z — your request arrives (`POST /v1/chat/completions`, `workbuddy-ai/deepseek-v4.1-flash`, agent dsh), and the whole 272.7 KB body is read.
+2. JS middleware 200ms and masking 5.5s pass — both waits magpie accounts for, both finish.
+3. Routing then plans a route: for an account-based provider it checks, per account, whether it serves the model and whether it is held at a usage cap. That check reads magpie's own files — for your stack, `providers.json`.
+4. The read never comes back: the goroutine sits inside `os.Open` — a `CreateFile` in the Windows kernel (the `syscall.Open+0x1b0 syscall/syscall_windows.go:444` frame in the dump). The wait-out for a file being replaced under magpie (`internal/steady`, at most half a second) never even gets a turn: the first kernel call itself doesn't return.
+5. 15:56:09Z — held 36s, more than 30s of them in no wait magpie knows of — the unrouted-hold watchdog fires: 504, "Send it again", and the report you attached is the file it saved.
+
+**Why a 504 and not a failover**: the watchdog only stops a request no provider has been tried for (it returns at once the moment any try has begun, and failover then runs on). Yours never reached one — planning itself was stuck — so there was nothing to fail over from. Cutting an unattributable wait at 30s, answering, and saving the report is the designed exit (the one that turned #3682's silent minutes into visible errors). The report is that machinery working as intended, and it did the diagnosis.
+
+**What the rest of the dump shows**: this is not magpie waiting on itself. 21 goroutines are blocked inside kernel file syscalls at that moment — 10 in `CreateFile`, 11 in `GetFileAttributesEx` — across subsystems that share no lock: your request and a second one in the same cap check, a third opening the plugin lock file (`internal/filelock`), a fourth statting the settings for the model list — that is all 4 "requests in flight" — plus `KeepListsFresh`, the three quota loops, the Codex daemon watcher, the tray, GUI pages. Five more goroutines queue behind the plugin lock's in-process mutex, held by the one stuck opening its lock file. One common cause fits: something on the machine — an antivirus filter driver, or a sync/backup tool — was holding up file opens process-wide for 30+ seconds. magpie's own source already names this pattern where it bit before (#1665: "each an antivirus filter driver's work"), and another Windows user on your same 0.1.2404 hit it from the other side that day: an update held by a scanner, fixed for that path in v0.1.2440.
+
+**Why I'm not sending a patch**: nothing in magpie can shorten a kernel call that doesn't return — the goroutine is parked before any code of magpie's that could bound it. Making planning's file reads a "known wait" would not have routed your request either; it would have held your client up to 2 minutes instead of answering at 30s. And the exact spot your request hung — `storedPicks` re-reading and re-parsing all of `providers.json` for every request — was replaced with a parse kept across requests hours after you reported this (`9fa11784d`, first in v0.1.2429), so current builds already touch the disk less on this path.
+
+**What I'd do**:
+
+1. Upgrade past **v0.1.2440** (current is v0.1.2550). Your exact stack is gone from the request path, and the scanner-held update fix is in.
+2. Give whatever holds the files less to hold: magpie keeps its state in `%USERPROFILE%\.config\magpie` (unless you run it portable or set `XDG_CONFIG_HOME`) — exclude that folder from real-time scanning, and check whether a sync or backup tool covers it.
+3. If it still happens on v0.1.2550, attach the newest `held-*.txt` and name the antivirus. A stall that survives the parse cache (the per-request stat, and the plugin lock file's open, still touch the disk) would be fresh evidence — and would make a case for planning giving up sooner with a named reason instead of 30s of "no wait magpie knows of".

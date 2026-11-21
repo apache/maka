@@ -1,0 +1,392 @@
+One upstream wedged on `initialize` stretched **every** hub operation — `tools/list` and every `tools/call`, healthy servers' tools included — past the client's own timeout, because every `tools/call` re-ran the whole upstream reconciliation just to resolve the tool's name, all upstreams under one shared budget, and a server whose dial had failed was started again at **every ask**, so every ask paid the wedged server's dial again.
+
+## What changed
+
+Two independent pieces, each at the point the asks share:
+
+1. **A call resolves against the tools it was already listed** (`internal/gateway/hub_mcp.go`). The last listing each agent was given is kept, and `tools/call` looks the name up there first; a tool that listing told the agent of runs at once, and the servers are asked again only for a name the table doesn't know (what they say is kept). This is the piece that takes the healthy tools' calls off the wedged listing entirely.
+2. **A server the hub couldn't reach stays where it fell a while** (`internal/library/mcp_hub.go`). Failures in a row park it 1s, 2s, 4s … a minute at most, instead of restarting it at every ask; the asks that come while it is parked are told why at once, and it is started again once its wait is over. A server that answers is back at once. This is the piece that stops `tools/list` and unknown-name calls paying a wedged server's dial on every round.
+
+A listing still waits for a server still starting, inside the budget it had — a server still starting is left out, and listed once it has; during the one dial of a parked retry's window a listing may still wait it out. A call of a listed tool never waits on a listing again.
+
+## Verification
+
+| check | result |
+| --- | --- |
+| `go test ./internal/gateway/ -run TestHubMCPCallNotWedgedByListing -count=1 -v` | PASS (0.00s) |
+| ablation: `internal/gateway/hub_mcp.go` reverted to the parent (`1fac66c06`), test kept | FAIL: `a call of a listed tool waited out the wedged listing: 5.001459875s` |
+| `go test ./internal/library/ -run 'TestHubParksAFailedServer\|TestHubRetryWait' -count=1 -v` | PASS (2.45s, 0.00s) |
+| ablation: the parked check in `connect` removed, test kept | FAIL: `a parked server was started again: 2 starts`; `past the park, 3 starts, want 2` |
+| `go test ./internal/gateway/ -run TestHubMCP -count=1` | ok |
+| `go test ./internal/library/ -run 'TestHub\|TestKeepsSession\|TestCheck' -count=1` | ok |
+| `go test -race -tags nogui ./internal/gateway/ ./internal/library/ -run 'TestHub\|TestKeepsSession' -count=1` | ok |
+| `go test -tags nogui -count=1 ./internal/gateway/ ./internal/library/` (whole packages) | ok |
+| `gofmt -l` on the four touched files | no output |
+| `go vet` / `GOOS=linux go vet -tags nogui` / `GOOS=windows go vet`, both packages | clean |
+| `go build`: darwin / `GOOS=linux -tags nogui` / `GOOS=windows` | ok |
+
+
+## Not verified
+
+- The reporter's exact wedges (an unreachable remote URL, an npx first-run download) weren't driven end to end; the RED stands on a listing that never comes back inside its budget, and on the test binary started as a real stdio server whose starts are counted (`MAGPIE_FAKE_MCP_LOG`).
+- No multi-client concurrent probe was run; concurrent calls are covered by the `-race` pass of both packages' hub tests.
+- The 30s client-side timeout itself wasn't reproduced; what the patch pins is magpie's side: a listed tool's call no longer waits out a listing, so a client budget shorter than magpie's stops seeing failures of healthy tools.
+
+**Attribution**: AI-written; I've read the whole diff and the tests pass. Please keep the author (`ggbdpq`) or add `Co-authored-by: ggbdpq <ggbdpq@gmail.com>`.
+
+Branch with the commit: [hunt115-d4-4606](https://github.com/ggbdpq/magpie/tree/hunt115-d4-4606) (head `674c123f73c7a10df23eb8f2b8d5fa11d938787b`).
+
+<details><summary>patch: mcp hub: a call of a listed tool doesn't wait out a listing a wedged upstream holds (#4606) — git am applies it as is; SHA-256 first 16: bb97b08fbdf1df88</summary>
+
+```patch
+From 674c123f73c7a10df23eb8f2b8d5fa11d938787b Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Sun, 1 Nov 2026 18:20:24 +0800
+Subject: [PATCH] mcp hub: a call of a listed tool doesn't wait out a listing a
+ wedged upstream holds (#4606)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Every tools/call re-ran the whole upstream reconciliation to resolve the
+tool's name, under one budget all upstreams share, and a server whose
+dial had failed was started again at every ask — so one upstream that
+wedges on initialize (a URL that never answers, a slow npx cold start)
+stretched every hub operation, tools/list and every tools/call alike,
+past the client's own timeout, healthy servers' tools included (#4606:
+a call that answered right, at 30023 ms, after the client gave up).
+
+What changed:
+- gateway: the tools the last listing gave each agent are kept, and a
+  call of a tool that listing told the agent of resolves against them;
+  the servers are asked again only for a name they don't know
+- library: a server the hub couldn't reach stays where it fell a while
+  (failures in a row wait 1s, 2s, 4s, a minute at most) instead of being
+  started again at every ask, so a wedged server's dial is paid once per
+  wait, not by every listing and call; a server that answers is back at
+  once
+
+A listing still waits for a server still starting, inside the budget it
+had; a call of a listed tool never waits on a listing again.
+
+Fixes #4606
+
+Run: go test ./internal/gateway/ -run TestHubMCP -count=1;
+     go test ./internal/library/ -run 'TestHub|TestKeepsSession' -count=1
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gateway/hub_mcp.go      | 61 +++++++++++++++++++++++++++-----
+ internal/gateway/hub_mcp_test.go | 50 ++++++++++++++++++++++++--
+ internal/library/mcp_hub.go      | 33 +++++++++++++++++
+ internal/library/mcp_hub_test.go | 61 ++++++++++++++++++++++++++++++++
+ 4 files changed, 193 insertions(+), 12 deletions(-)
+
+diff --git a/internal/gateway/hub_mcp.go b/internal/gateway/hub_mcp.go
+index 67210a17a..a10717ef0 100644
+--- a/internal/gateway/hub_mcp.go
++++ b/internal/gateway/hub_mcp.go
+@@ -11,6 +11,7 @@ import (
+ 	"slices"
+ 	"strconv"
+ 	"strings"
++	"sync"
+ 	"time"
+ 
+ 	"github.com/yetone/magpie/internal/access"
+@@ -168,7 +169,45 @@ func hubTools(ctx context.Context, agent string) []hubTool {
+ 	}
+ 	ctx, cancel := context.WithTimeout(ctx, hubListWait)
+ 	defer cancel()
+-	return hubNamed(MCPHub.Tools(ctx, agent))
++	ts := hubNamed(MCPHub.Tools(ctx, agent))
++	hubKeepTools(agent, ts)
++	return ts
++}
++
++// hubTables is the tools the last listing gave each agent: a call of a
++// tool that listing told the agent of resolves against it, so a call
++// never waits out a listing again — one server that wedges (its
++// initialize never answers) holds the listing it is in, and that must
++// not hold every call of every healthy server's tool with it (#4606).
++// A name the table doesn't know asks the servers again, and what they
++// say is kept.
++var hubTables = struct {
++	sync.Mutex
++	m map[string][]hubTool
++}{m: map[string][]hubTool{}}
++
++// hubKeepTools keeps ts as the tools agent was last listed.
++func hubKeepTools(agent string, ts []hubTool) {
++	hubTables.Lock()
++	hubTables.m[agent] = ts
++	hubTables.Unlock()
++}
++
++// hubKeptTools is the tools agent was last listed, nil before any.
++func hubKeptTools(agent string) []hubTool {
++	hubTables.Lock()
++	defer hubTables.Unlock()
++	return hubTables.m[agent]
++}
++
++// hubNamedTool is the tool of ts a call names.
++func hubNamedTool(ts []hubTool, name string) (hubTool, bool) {
++	for _, t := range ts {
++		if t.name == name {
++			return t, true
++		}
++	}
++	return hubTool{}, false
+ }
+ 
+ func (s *Server) hubMCPCall(r *http.Request, agent string, m mcpMessage) (any, map[string]any) {
+@@ -230,15 +269,19 @@ func (s *Server) hubMCPCall(r *http.Request, agent string, m mcpMessage) (any, m
+ 		if MCPHub == nil || !MCPHub.On() {
+ 			return toolResult(errHubOff, true), nil
+ 		}
+-		for _, t := range hubTools(r.Context(), agent) {
+-			if t.name == p.Name {
+-				c := HubCaller{Session: hubSession(r, agent, p.Meta)}
+-				if t.Roots {
+-					c.Roots, c.Client = hubRoots(r, p.Meta), hubClient(r)
+-				}
+-				r = r.WithContext(WithHubCaller(r.Context(), c))
+-				return s.hubMCPRun(r, agent, t, p.Arguments), nil
++		t, ok := hubNamedTool(hubKeptTools(agent), p.Name)
++		if !ok {
++			// a name the last listing didn't have: the servers are asked
++			// again, and what they say is kept
++			t, ok = hubNamedTool(hubTools(r.Context(), agent), p.Name)
++		}
++		if ok {
++			c := HubCaller{Session: hubSession(r, agent, p.Meta)}
++			if t.Roots {
++				c.Roots, c.Client = hubRoots(r, p.Meta), hubClient(r)
+ 			}
++			r = r.WithContext(WithHubCaller(r.Context(), c))
++			return s.hubMCPRun(r, agent, t, p.Arguments), nil
+ 		}
+ 		if agent == "" {
+ 			return nil, map[string]any{"code": -32602, "message": "unknown tool " + p.Name + ": no MCP server in magpie's Library gives it"}
+diff --git a/internal/gateway/hub_mcp_test.go b/internal/gateway/hub_mcp_test.go
+index 113d6bdaf..286d2ab9e 100644
+--- a/internal/gateway/hub_mcp_test.go
++++ b/internal/gateway/hub_mcp_test.go
+@@ -21,13 +21,21 @@ type fakeHub struct {
+ 	mu    sync.Mutex
+ 	on    bool
+ 	tools map[string][]HubTool // by agent
+-	calls []string
+-	call  func(ctx context.Context, server, tool string) (json.RawMessage, error)
++	// toolsFunc, when set, is what Tools is: a listing the hub waits on
++	toolsFunc func(ctx context.Context, agent string) []HubTool
++	calls     []string
++	call      func(ctx context.Context, server, tool string) (json.RawMessage, error)
+ }
+ 
+ func (f *fakeHub) On() bool { f.mu.Lock(); defer f.mu.Unlock(); return f.on }
+ 
+-func (f *fakeHub) Tools(_ context.Context, agent string) []HubTool {
++func (f *fakeHub) Tools(ctx context.Context, agent string) []HubTool {
++	f.mu.Lock()
++	tf := f.toolsFunc
++	f.mu.Unlock()
++	if tf != nil {
++		return tf(ctx, agent)
++	}
+ 	f.mu.Lock()
+ 	defer f.mu.Unlock()
+ 	return f.tools[agent]
+@@ -244,6 +252,42 @@ func TestHubMCPServerDown(t *testing.T) {
+ 	}
+ }
+ 
++// One wedged upstream holds the listing it is in (its initialize never
++// answers, and the budget runs out), so a call of a tool the agent was
++// already listed runs on the tools of that listing and doesn't wait out
++// the listing again; the servers are asked only for a name they don't
++// know (#4606).
++func TestHubMCPCallNotWedgedByListing(t *testing.T) {
++	fresh(t)
++	f := &fakeHub{on: true, tools: map[string][]HubTool{"claude": {{Server: "fs", Tool: "read", Spec: hubSpec("read")}}}}
++	withHub(t, f)
++	h := lanGuard(New().Handler())
++
++	// the fleet listed, then one of its servers wedged: no listing comes
++	// back inside the budget any more
++	if m := readMCP(t, hubPost(h, "claude", here, toolsList)); m.Error != nil || len(m.Result.Tools) != 1 {
++		t.Fatalf("the first listing: %+v", m)
++	}
++	wait := hubListWait
++	hubListWait = 5 * time.Second
++	t.Cleanup(func() { hubListWait = wait })
++	f.mu.Lock()
++	f.toolsFunc = func(ctx context.Context, agent string) []HubTool {
++		<-ctx.Done() // the wedged server's initialize never answers
++		return nil
++	}
++	f.mu.Unlock()
++
++	start := time.Now()
++	m := readMCP(t, hubPost(h, "claude", here, toolsCall("fs__read", `{"q":"x"}`)))
++	if d := time.Since(start); d > 2*time.Second {
++		t.Errorf("a call of a listed tool waited out the wedged listing: %v", d)
++	}
++	if m.Error != nil || m.Result.IsError || m.Result.Content[0].Text != "ran fs read" {
++		t.Fatalf("the call: %+v", m)
++	}
++}
++
+ // Off, the hub lists no tool and runs none, and says how to turn it on.
+ func TestHubMCPOff(t *testing.T) {
+ 	fresh(t)
+diff --git a/internal/library/mcp_hub.go b/internal/library/mcp_hub.go
+index 3111882f8..6cca0b053 100644
+--- a/internal/library/mcp_hub.go
++++ b/internal/library/mcp_hub.go
+@@ -58,6 +58,22 @@ const HubEntry = "magpie"
+ // hubIdle is how long a server the hub started is kept with no call.
+ var hubIdle = 10 * time.Minute
+ 
++// hubRetryWait is how long the hub leaves a server it couldn't reach
++// before starting it again: each failure in a row waits a little longer
++// than the one before, a minute at most, so a server that wedges (its
++// initialize never answers) doesn't have every ask that comes wait out
++// its dial (#4606). A server that answers is back at once.
++var hubRetryWait = func(fails int) time.Duration {
++	w := time.Second
++	for i := 1; i < fails && w < time.Minute; i++ {
++		w *= 2
++	}
++	if w > time.Minute {
++		w = time.Minute
++	}
++	return w
++}
++
+ // SetMCPHub turns the hub on or off: on, each agent that can reach it is
+ // given magpie's one entry in place of its servers; off, their own entries
+ // again, and the servers the hub started are ended.
+@@ -393,6 +409,8 @@ type backend struct {
+ 	conn    hubConn
+ 	ready   chan struct{} // while it is being connected to
+ 	err     error         // why the last connection failed
++	fails   int           // connections failed in a row
++	retryAt time.Time     // when the next one may be tried
+ 	list    []map[string]json.RawMessage
+ 	listed  bool
+ 	busy    int
+@@ -421,6 +439,15 @@ func (b *backend) connect(ctx context.Context) (hubConn, error) {
+ 		return c, nil
+ 	}
+ 	if b.ready == nil {
++		if time.Now().Before(b.retryAt) {
++			// a dial that failed is left where it fell a while: the ask
++			// that comes while it waits is told why at once, and the
++			// server is started again when its wait is over, not at every
++			// ask, each of which paid its dial (#4606)
++			err := b.err
++			b.mu.Unlock()
++			return nil, err
++		}
+ 		b.ready = make(chan struct{})
+ 		go b.start(b.ready)
+ 	}
+@@ -457,6 +484,12 @@ func (b *backend) start(ready chan struct{}) {
+ 		c = nil
+ 	}
+ 	b.conn, b.err, b.ready = c, err, nil
++	if err != nil {
++		b.fails++
++		b.retryAt = time.Now().Add(hubRetryWait(b.fails))
++	} else {
++		b.fails, b.retryAt = 0, time.Time{}
++	}
+ 	close(ready)
+ }
+ 
+diff --git a/internal/library/mcp_hub_test.go b/internal/library/mcp_hub_test.go
+index 6d7fec2a9..a717e56eb 100644
+--- a/internal/library/mcp_hub_test.go
++++ b/internal/library/mcp_hub_test.go
+@@ -7,6 +7,7 @@ import (
+ 	"net/http"
+ 	"net/http/httptest"
+ 	"net/url"
++	"os"
+ 	"path/filepath"
+ 	"slices"
+ 	"strings"
+@@ -715,3 +716,63 @@ func TestKeepsSession(t *testing.T) {
+ 		}
+ 	}
+ }
++
++// A server the hub couldn't reach stays where it fell a while: the asks
++// that come while it is parked are told why at once, and it is started
++// again only once its wait is over, so one wedged server's dial isn't
++// waited out again by every listing and call that comes (#4606).
++func TestHubParksAFailedServer(t *testing.T) {
++	hubSandbox(t)
++	pids := filepath.Join(t.TempDir(), "pids")
++	wait := hubRetryWait
++	hubRetryWait = func(int) time.Duration { return 200 * time.Millisecond }
++	t.Cleanup(func() { hubRetryWait = wait })
++	b := &backend{s: fakeStdio(t, "exit", map[string]string{"MAGPIE_FAKE_MCP_LOG": pids})}
++	ctx := context.Background()
++	starts := func() int {
++		p, err := os.ReadFile(pids)
++		if err != nil {
++			return 0
++		}
++		return len(strings.Fields(string(p)))
++	}
++	if _, err := b.connect(ctx); err == nil {
++		t.Fatal("a server that exits as it starts connected")
++	}
++	if n := starts(); n != 1 {
++		t.Fatalf("%d starts, want 1", n)
++	}
++	if _, err := b.connect(ctx); err == nil {
++		t.Fatal("a parked server connected")
++	}
++	if n := starts(); n != 1 {
++		t.Errorf("a parked server was started again: %d starts", n)
++	}
++	// the park is a wait, not a verdict: once it is over the hub dials again
++	time.Sleep(400 * time.Millisecond)
++	if _, err := b.connect(ctx); err == nil {
++		t.Fatal("a server that exits as it starts connected")
++	}
++	if n := starts(); n != 2 {
++		t.Errorf("past the park, %d starts, want 2", n)
++	}
++}
++
++// Each failure parks a server a little longer than the one before it, a
++// minute at most.
++func TestHubRetryWait(t *testing.T) {
++	for _, c := range []struct {
++		fails int
++		want  time.Duration
++	}{
++		{1, time.Second},
++		{2, 2 * time.Second},
++		{3, 4 * time.Second},
++		{7, time.Minute},
++		{100, time.Minute},
++	} {
++		if got := hubRetryWait(c.fails); got != c.want {
++			t.Errorf("%d failures: %v, want %v", c.fails, got, c.want)
++		}
++	}
++}
+-- 
+2.50.1 (Apple Git-155)
+
+
+```
+
+</details>
+

@@ -1,0 +1,25 @@
+{
+  "id": "69",
+  "slug": "coin-change-ii",
+  "title": "零钱兑换 II",
+  "difficulty": "medium",
+  "tags": ["数组", "动态规划"],
+  "description": "给你一个整数数组 `coins` 表示不同面额的硬币,以及一个整数 `amount` 表示总金额。请你计算并返回可以凑成总金额的硬币**组合数**。每种硬币的数量是无限的。\n\n**示例 1:**\n\n- 输入:`amount = 5`, `coins = [1,2,5]`\n- 输出:`4`(5=5、2+2+1、2+1+1+1、1+1+1+1+1)\n\n**示例 2:**\n\n- 输入:`amount = 3`, `coins = [2]`\n- 输出:`0`\n\n**示例 3:**\n\n- 输入:`amount = 10`, `coins = [10]`\n- 输出:`1`",
+  "solution": "## 思路\n\n**完全背包计数**(组合,外层硬币内层金额):`dp[j]` 表示凑成金额 `j` 的组合数。`dp[0]=1`,每种硬币从 `c` 到 `amount` 累加 `dp[j] += dp[j-c]`。外层遍历硬币保证「组合」而非排列。\n\n## 参考代码\n\n```js\nfunction change(amount, coins) {\n  const dp = new Array(amount + 1).fill(0);\n  dp[0] = 1;\n  for (const c of coins) {\n    for (let j = c; j <= amount; j++) {\n      dp[j] += dp[j - c];\n    }\n  }\n  return dp[amount];\n}\n```\n\n## 复杂度\n\n- 时间:O(amount * len(coins))\n- 空间:O(amount)",
+  "signature": {
+    "language": "javascript",
+    "entry": "change",
+    "params": [
+      { "name": "amount", "type": "number" },
+      { "name": "coins", "type": "number[]" }
+    ],
+    "returns": "number"
+  },
+  "testCases": [
+    { "sample": true, "input": [5, [1, 2, 5]], "expected": 4 },
+    { "sample": true, "input": [3, [2]], "expected": 0 },
+    { "sample": true, "input": [10, [10]], "expected": 1 },
+    { "sample": false, "input": [0, [1, 2, 5]], "expected": 1 },
+    { "sample": false, "input": [4, [1, 2]], "expected": 3 }
+  ]
+}

@@ -1,0 +1,464 @@
+Refreshed on current `main` (`2bb201162`) — refreshed, not redesigned: same change as before, cherry-picked clean onto today's tip (upstream reworked the models path heavily since `7e5cebb86`; none of it reaches the two orderings this is about).
+
+**Red without the fix** (bare `2bb201162`, the test and fixture from this branch): the three tests fail as the report says — a plugin provider with `decide: true` is unreachable before its first list:
+
+```
+--- FAIL: TestPluginDecideFetchAsksTheListFirst
+    fetch: HMind's plugin lists no decision models
+--- FAIL: TestPluginDecideTestLeavesNoDecideRowWithoutModels
+    the decide row came back: {Protocol:decide OK:false Error:HMind's plugin lists no decision models}
+--- FAIL: TestPluginDecideFetchBeforeItsFirstList
+    the fetch stopped at the decision API: FakeCo's plugin lists no decision models
+```
+
+With the fix: all three `ok`. When the read fails: `Find(p.ID)` in `Test` misses → the caller's endpoints stand, as before; an account lister that errors answers its error, as before.
+
+**Verification** (all on `2bb201162`):
+| What | Result |
+| --- | --- |
+| `go test ./internal/provider -run TestPluginDecide` | ok, 3 tests |
+| full `go test ./internal/provider` | zero failures (the four reds on yesterday's main are fixed upstream by `7e8214d60`/`1751eeaf1`; bare tip runs green too) |
+| `gofmt` / `go vet` | clean |
+| `GOOS=linux/windows go build ./internal/provider` | ok |
+| ablation 1 (`fetchList` orderings swapped back, tests kept) | 2 tests red at the same lines; restored, green |
+| ablation 2 (`Test` plugin branch dropped, tests kept) | 2 tests red at the same lines; restored, green |
+| `git am` on detached `2bb201162` | applies as is; tree identical to the branch head |
+
+**Siblings**: `DecideOnly()` itself is untouched — its ~60 callers keep their meaning. The two orderings only matter where `Account.fetch` and `DecideOnly()` meet, which for a non-plugin provider never happens (a lister of its own and no conversation endpoints do not coexist — the comment in the diff says why); the plugin before its first list is the one shape that does. `TestAs`, `modelkind`, video/draw checks read the provider as it stands and are unaffected. `decideModels()` is the existing helper (`decide.go:434`).
+
+**Branch with the commit**: [hunt-20261111-rf-5793](https://github.com/ggbdpq/magpie/tree/hunt-20261111-rf-5793) (head `dbdaa909808f2dc7`).
+
+**Not verified**: HMind's real plugin (the fixture `testdata/fake/index.js` exercises the decide-before-first-list shape against a real host).
+
+**Attribution**: AI-written; I've read the whole diff and can answer questions on it myself. Please keep the author (`ggbdpq`) or add `Co-authored-by: ggbdpq <ggbdpq@gmail.com>`.
+
+**Patch**: <details><summary>patch: plugin: a provider that says decide fetches its list before it looks decision-only (#5793) — git am applies it as is; SHA-256 first 16: a5df8f05c1ac75a6</summary>
+
+```patch
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Tue, 10 Nov 2026 00:03:45 +0800
+Subject: [PATCH] plugin: a provider that says decide fetches its list before
+ it looks decision-only
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+A plugin whose config hook says decide and that lists every model
+itself, none marked a decision model, builds a provider that reads
+decision-only until its first list arrives: decide set, and no
+conversation endpoint a listing without models could derive. Its fetch
+then went to the decision API alone, which is empty before the first
+list, and failed with "X's plugin lists no decision models" (#5793,
+ZY-WANG-0304) — the account's list, the one that fills the listing in,
+was never asked. After a restart the list kept on disk made the
+provider whole, and the same action worked: the state was transient,
+and the fetch took it for the provider's shape.
+
+fetchList now asks an account's lister first and falls to the decision
+API only when there is none — no provider with a lister of its own has
+ever served conversations on an endpoint of its own beside it. Test no
+longer enters testDecide on a plugin that reads decision-only: it
+fetches the list, takes the conversation endpoints the listing now
+serves, and tests those, as every other provider's test does; a plugin
+whose listing names no decision model says so no more on every test's
+decide row, where there was nothing its decision API could answer.
+
+Run (mote, at ddd6c649b plus this change):
+- go test -tags nogui -run TestPluginDecide ./internal/provider/
+  -count=1: three tests red before the change at the issue's own words
+  ("HMind's plugin lists no decision models"), green after; one of them
+  through the plugin's host (bun), with a vendor that refuses its list
+  first and serves it after — FAKE_DECIDE=dynamic, a plugin that says
+  decide and lists no model of its own
+- go test -tags nogui -count=1 ./... -timeout 60m: ok, but for the
+  machine's standing reds (TestMothX, TestProxyCheckSaysAProxyPassedBy,
+  this host's TestHostToldTheGatewayAddress, red at ddd6c649b too)
+  and TestProviderTestAsksAnAccountThatServesItsModel, red at the
+  first cut of this change — a test's provider value carries the
+  caller's account models, and the re-read took them away; the re-read
+  now moves the endpoints alone, and the package is green again
+- go test -tags nogui -count=1 ./internal/provider/ ./internal/gui/:
+  ok, but for TestProxyCheckSaysAProxyPassedBy (the machine's proxy)
+- gofmt -l: clean; go vet ./..., GOOS=linux go vet -tags nogui ./...,
+  GOOS=windows go vet ./...: ok; go build ./..., GOOS=linux, GOOS=windows:
+  ok
+
+Reported-by: ZY-WANG-0304 (yetone/magpie#5793)
+Attribution: 分析与补丁由 GLM-5.3-Flash (ZCode) 协助完成
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/plugin/testdata/fake/index.js        |  22 +-
+ internal/provider/models.go                   |  13 +-
+ .../provider/plugin_decide_first_list_test.go | 238 ++++++++++++++++++
+ internal/provider/test.go                     |  20 +-
+ 4 files changed, 284 insertions(+), 9 deletions(-)
+ create mode 100644 internal/provider/plugin_decide_first_list_test.go
+
+diff --git a/internal/plugin/testdata/fake/index.js b/internal/plugin/testdata/fake/index.js
+index f70eb0d9e..b854df20e 100644
+--- a/internal/plugin/testdata/fake/index.js
++++ b/internal/plugin/testdata/fake/index.js
+@@ -174,11 +174,19 @@ export const FakePlugin = async ({ client }) => ({
+     // $FAKE_DECIDE: the provider serves a decision API too (#1514), asked
+     // at its base /systemone through the loader's fetch: fake-clef is a
+     // decision model it marks, jev-9 one magpie knows by its name.
+-    // "models" marks them without saying decide.
++    // "models" marks them without saying decide. "dynamic" says decide and
++    // lists no model of its own, as a plugin that reads its vendor's list
++    // does (#5793): before its first list the provider reads decision-only.
+     if (process.env.FAKE_DECIDE) {
+       if (process.env.FAKE_DECIDE !== "models") cfg.provider[ID].decide = true
+-      cfg.provider[ID].models["fake-clef"] = { name: "Fake Clef", decides: true, limit: { context: 1000, output: 0 } }
+-      cfg.provider[ID].models["jev-9"] = { name: "Jev 9", limit: { context: 1000, output: 0 } }
++      if (process.env.FAKE_DECIDE !== "dynamic") {
++        cfg.provider[ID].models["fake-clef"] = { name: "Fake Clef", decides: true, limit: { context: 1000, output: 0 } }
++        cfg.provider[ID].models["jev-9"] = { name: "Jev 9", limit: { context: 1000, output: 0 } }
++      } else {
++        // its models are the hook's alone: none in the config, so before
++        // its first list the provider reads decision-only (#5793)
++        cfg.provider[ID].models = {}
++      }
+     }
+     // $FAKE_OFF: a model that stops thinking at none and one that can't,
+     // as Factory's plugin has Kimi K3 and GLM-5.3 (#899)
+@@ -414,6 +422,12 @@ export const FakePlugin = async ({ client }) => ({
+         }
+         await client.auth.set({ path: { id: ID }, body: { ...auth, refresh: auth.refresh + "+" } })
+       }
++      // $FAKE_DECIDE=dynamic: its models are the hook's alone, two
++      // ordinary chat models, none marked a decision model (#5793)
++      if (process.env.FAKE_DECIDE === "dynamic") {
++        p.models["fake-1"] ??= { name: "Fake One", limit: { context: 1000, output: 100 } }
++        p.models["fake-claude"] ??= { name: "Fake Claude", provider: { npm: "@ai-sdk/anthropic" }, modalities: { input: ["text", "image"], output: ["text"] }, limit: { context: 2000, output: 200 } }
++      }
+       // fake-1 costs the plan nothing, as a WorkBuddy model of x0.00
+       // credits ($FAKE_NO_FREE: a list with no free model, as ZCode's was
+       // before 0.1.58 and a coding-plan-only account's is)
+@@ -458,7 +472,7 @@ export const FakePlugin = async ({ client }) => ({
+       if (process.env.FAKE_SEARCHER) p.models["fake-search"] = { ...p.models["fake-1"], id: "fake-search", name: "Fake Search", api: { ...p.models["fake-1"].api, id: "fake-search" }, free: false, searches: true }
+       // $FAKE_DECIDE: one more decision model, marked on the list the hook
+       // gives, as a plugin that reads its vendor's list marks one
+-      if (process.env.FAKE_DECIDE) p.models["fake-judge"] = { ...p.models["fake-1"], id: "fake-judge", name: "Fake Judge", api: { ...p.models["fake-1"].api, id: "fake-judge" }, free: false, decides: true }
++      if (process.env.FAKE_DECIDE && process.env.FAKE_DECIDE !== "dynamic") p.models["fake-judge"] = { ...p.models["fake-1"], id: "fake-judge", name: "Fake Judge", api: { ...p.models["fake-1"].api, id: "fake-judge" }, free: false, decides: true }
+       // $FAKE_FAST=tier: as Cursor's plugin 0.2.x lists a model, once per
+       // context size, and from 0.2.2 says fast on the sizes Cursor has a
+       // fast variant at (Opus 5.5's 300k, not its 1m); no -fast model
+diff --git a/internal/provider/models.go b/internal/provider/models.go
+index 1821efa1e..8db35f17a 100644
+--- a/internal/provider/models.go
++++ b/internal/provider/models.go
+@@ -477,12 +477,19 @@ func (p Provider) fetchList(ctx context.Context) ([]catalog.Model, error) {
+ 		return nil, ErrListOff
+ 	}
+ 	ctx = p.ownRequests(p.Via(ctx), probelog.KindList)
+-	if p.DecideOnly() {
+-		return p.fetchDecide(ctx)
+-	}
++	// an account's list first, even when p looks decision-only: a plugin
++	// with decide said reads so before its first list, and its decision
++	// API is empty then — the account's list is what fills the listing in
++	// (#5793). A provider with a lister of its own serves its
++	// conversations through the same account, never on an endpoint of its
++	// own beside it, so nothing that had both ever asked here the other
++	// way round.
+ 	if p.Account != nil && p.Account.fetch != nil {
+ 		return p.Account.fetch(ctx)
+ 	}
++	if p.DecideOnly() {
++		return p.fetchDecide(ctx)
++	}
+ 	if p.Account != nil && p.Account.models != nil {
+ 		// a plan with no list to ask (ZCode's, WorkBuddy's): its models
+ 		// are the ones it has, and its endpoint's /models isn't one
+diff --git a/internal/provider/plugin_decide_first_list_test.go b/internal/provider/plugin_decide_first_list_test.go
+new file mode 100644
+index 000000000..1ad97e95d
+--- /dev/null
++++ b/internal/provider/plugin_decide_first_list_test.go
+@@ -0,0 +1,238 @@
++package provider
++
++import (
++	"context"
++	"encoding/json"
++	"net/http"
++	"net/http/httptest"
++	"os"
++	"path/filepath"
++	"slices"
++	"strings"
++	"sync"
++	"testing"
++	"time"
++
++	"github.com/yetone/magpie/internal/catalog"
++	"github.com/yetone/magpie/internal/plugin"
++	"github.com/yetone/magpie/internal/settings"
++	"github.com/yetone/magpie/internal/testenv"
++)
++
++// A plugin whose config hook says decide and that lists every model
++// itself, none marked a decision model (HMind's, #5793), builds a
++// provider that reads decision-only until its first list arrives: decide
++// said, no conversation endpoint a listing without models could derive.
++// Its fetch then went to the decision API alone, which is empty before
++// the first list, and failed with "X's plugin lists no decision models"
++// — the account's list, the one that fills the listing in, was never
++// asked. Test asked it too, at its early testDecide.
++
++// writePluginFile is a file of magpie's settings folder, as the plugin
++// host and magpie keep them.
++func writePluginFile(t *testing.T, name string, v any) {
++	t.Helper()
++	b, _ := json.Marshal(v)
++	os.MkdirAll(settings.Dir(), 0o700)
++	if err := os.WriteFile(filepath.Join(settings.Dir(), name), b, 0o600); err != nil {
++		t.Fatal(err)
++	}
++}
++
++// hmindBeforeItsList is the provider as magpie serves it before the
++// plugin's first model list: decide said, no model listed.
++func hmindBeforeItsList(t *testing.T) Provider {
++	t.Helper()
++	spec := "@example/hmind-auth"
++	writePluginFile(t, "plugins.json", map[string]any{"plugins": []map[string]any{{"spec": spec}}})
++	writePluginFile(t, "plugin-auth.json", map[string]map[string]any{"hmind": {"type": "api", "key": "sk-hmind"}})
++	plugin.UseCached([]plugin.Provider{{
++		ID:       "hmind",
++		Spec:     spec,
++		Name:     "HMind",
++		Methods:  []plugin.Method{{Type: "api", Label: "API key"}},
++		Decide:   true,
++		Accounts: []plugin.Account{{Key: "hmind", Type: "api"}},
++	}})
++	t.Cleanup(func() { plugin.UseCached(nil) })
++	saveLogins(t, savedLogin{Agent: "plugin:hmind", User: "one@hmind", Home: "hmind", On: true})
++	ps := pluginAccounts()
++	i := slices.IndexFunc(ps, func(p Provider) bool { return p.ID == "hmind" })
++	if i < 0 {
++		t.Fatalf("no hmind provider among the accounts: %v", ps)
++	}
++	return ps[i]
++}
++
++// Fetching the list of a plugin that reads decision-only before its first
++// list asks the plugin's account list, whose answer fills the listing in
++// — it doesn't stop at the empty decision API (#5793).
++func TestPluginDecideFetchAsksTheListFirst(t *testing.T) {
++	claudeHome(t)
++	t.Setenv("MAGPIE_BUN", "")
++	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
++	defer cancel()
++	p := hmindBeforeItsList(t)
++	if !p.DecideOnly() {
++		t.Fatalf("before its first list the provider reads decision-only: chat %q, responses %q, decide %q", p.Chat, p.Responses, p.Decide)
++	}
++	asked := false
++	p.Account.fetch = func(context.Context) ([]catalog.Model, error) {
++		asked = true
++		return []catalog.Model{{ID: "hmind-chat-1"}, {ID: "hmind-chat-2"}}, nil
++	}
++	ms, err := p.Fetch(ctx)
++	if err != nil {
++		t.Fatalf("fetch: %v", err)
++	}
++	if !asked {
++		t.Fatal("the plugin's account list was never asked")
++	}
++	if len(ms) != 2 || ms[0].ID != "hmind-chat-1" || ms[1].ID != "hmind-chat-2" {
++		t.Fatalf("the fetch gave %v", ms)
++	}
++}
++
++// Testing the same provider enters no testDecide while its listing has no
++// decision model: the decide row it answered is the error #5793 is about.
++func TestPluginDecideTestLeavesNoDecideRowWithoutModels(t *testing.T) {
++	claudeHome(t)
++	t.Setenv("MAGPIE_BUN", "")
++	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
++	defer cancel()
++	p := hmindBeforeItsList(t)
++	p.Account.fetch = func(context.Context) ([]catalog.Model, error) {
++		return nil, context.DeadlineExceeded
++	}
++	for _, r := range p.Test(ctx) {
++		if r.Protocol == "decide" || strings.Contains(r.Error, "lists no decision models") {
++			t.Fatalf("the decide row came back: %+v", r)
++		}
++	}
++}
++
++// The whole way, through the plugin's host: a plugin that says decide and
++// lists no model of its own ($FAKE_DECIDE=dynamic) whose vendor refuses
++// its list at first. Fetching its models asks the vendor (the account's
++// list), not the empty decision API; once the vendor answers, the same
++// fetch gives its chat models, and a test probes the conversation
++// endpoint it lists instead of saying "FakeCo's plugin lists no decision
++// models" (#5793).
++func TestPluginDecideFetchBeforeItsFirstList(t *testing.T) {
++	bun := testenv.Bun(t)
++	claudeHome(t)
++	t.Setenv("MAGPIE_BUN", bun)
++	t.Setenv("FAKE_DECIDE", "dynamic")
++	t.Setenv("FAKE_MODELS_THROW", "1")
++	t.Cleanup(plugin.Settle)
++	// the vendor refuses its /models at first (the connection hangs up
++	// mid-answer, as a stuck vendor's does), and serves conversations once
++	// its list is asked for
++	var mu sync.Mutex
++	refuse, asked := true, 0
++	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		mu.Lock()
++		defer mu.Unlock()
++		if strings.HasSuffix(r.URL.Path, "/models") {
++			asked++
++			if refuse {
++				if conn, _, err := w.(http.Hijacker).Hijack(); err == nil {
++					conn.Close()
++					return
++				}
++				panic("the vendor refuses its list")
++			}
++			w.Write([]byte("later"))
++			return
++		}
++		if strings.HasSuffix(r.URL.Path, "/chat/completions") {
++			w.Header().Set("Content-Type", "text/event-stream")
++			w.Write([]byte("data: {\"id\":\"c\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"from the plugin\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"))
++			return
++		}
++		http.NotFound(w, r)
++	}))
++	t.Cleanup(up.Close)
++	t.Setenv("FAKE_BASE", up.URL+"/v1")
++	t.Setenv("FAKE_MODELS", up.URL+"/models")
++	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
++	defer cancel()
++	abs, _ := filepath.Abs("../plugin/testdata/fake/index.js")
++	if _, err := plugin.Add(ctx, abs); err != nil {
++		t.Fatal(err)
++	}
++	key, err := plugin.Import(ctx, "fakeco", map[string]any{"type": "oauth", "refresh": "r-ok", "access": "a", "expires": 9e15, "accountId": "a@fake"})
++	if err != nil {
++		t.Fatal(err)
++	}
++	saveLogins(t, savedLogin{Agent: "plugin:fakeco", User: "a@fake", Home: key, On: true})
++	// the first listing: the models hook asks the vendor, which refuses,
++	// and the row keeps what the config said — decide, and no model
++	ps, err := plugin.Providers(ctx)
++	if err != nil {
++		t.Fatal(err)
++	}
++	i := slices.IndexFunc(ps, func(pp plugin.Provider) bool { return pp.ID == "fakeco" })
++	if i < 0 {
++		t.Fatalf("no fakeco among the listed: %v", ps)
++	}
++	if !ps[i].Decide || len(ps[i].Models) != 0 {
++		var ids []string
++		for _, m := range ps[i].Models {
++			ids = append(ids, m.ID)
++		}
++		t.Fatalf("before its first list the plugin says decide %v with %d models: %v", ps[i].Decide, len(ps[i].Models), ids)
++	}
++	p, err := Find(PluginID("fakeco"))
++	if err != nil {
++		t.Fatal(err)
++	}
++	if !p.DecideOnly() {
++		t.Fatalf("before its first list the provider reads decision-only: chat %q, responses %q, anthropic %q, decide %q", p.Chat, p.Responses, p.Anthropic, p.Decide)
++	}
++
++	// Fetch models before the first list: the vendor is asked — the
++	// account's list, which says why it couldn't — and the answer is not
++	// the decision API's empty hand (#5793)
++	_, err = p.Fetch(ctx)
++	mu.Lock()
++	hits, stillRefusing := asked, refuse
++	mu.Unlock()
++	if hits == 0 {
++		t.Fatal("the vendor was never asked for its list")
++	}
++	if err != nil && strings.Contains(err.Error(), "lists no decision models") {
++		t.Fatalf("the fetch stopped at the decision API: %v", err)
++	}
++	if !stillRefusing {
++		t.Fatal("the vendor should still be refusing here")
++	}
++
++	// the vendor serves its list now: the same fetch gives its chat models
++	mu.Lock()
++	refuse = false
++	mu.Unlock()
++	ms, err := p.Fetch(ctx)
++	if err != nil {
++		t.Fatalf("fetch after the list: %v", err)
++	}
++	if !slices.ContainsFunc(ms, func(m catalog.Model) bool { return m.ID == "fake-1" }) {
++		t.Fatalf("the fetch after the list gave %v", ms)
++	}
++
++	// and a test probes the conversation endpoints the list named, with no
++	// decide row saying the plugin lists no decision models
++	rs := p.Test(ctx)
++	chat := false
++	for _, r := range rs {
++		if r.Protocol == "decide" || strings.Contains(r.Error, "lists no decision models") {
++			t.Errorf("the decide row came back: %+v", r)
++		}
++		if r.Protocol == "chat" {
++			chat = true
++		}
++	}
++	if !chat {
++		t.Errorf("no conversation endpoint was tested: %+v", rs)
++	}
++}
+diff --git a/internal/provider/test.go b/internal/provider/test.go
+index 403d90263..657d443eb 100644
+--- a/internal/provider/test.go
++++ b/internal/provider/test.go
+@@ -53,10 +53,24 @@ type Result struct {
+ // sees, and reports what came back.
+ func (p Provider) Test(ctx context.Context) []Result {
+ 	ctx = withUnreached(p.ownRequests(p.Via(ctx), probelog.KindTest))
+-	if p.DecideOnly() {
++	// a plugin reads decision-only before its first list, and its
++	// decision API is empty then (#5793): the list is fetched below, and
++	// what the plugin serves — its conversation endpoints among them — is
++	// tested instead. Any decision model it lists asks at the bottom, as
++	// every other provider's does.
++	if p.DecideOnly() && !p.IsPlugin() {
+ 		return p.testDecide(ctx)
+ 	}
+ 	_, listErr := p.Fetch(ctx)
++	if p.IsPlugin() {
++		// the list fetched may be the plugin's first: the conversation
++		// endpoints it discovered are what the tests below ask, taken
++		// from the provider the listing now serves — the caller's value
++		// keeps its account, its keys and its picks (#5793)
++		if q, err := Find(p.ID); err == nil && q.IsPlugin() {
++			p.Chat, p.Responses, p.Anthropic = q.Chat, q.Responses, q.Anthropic
++		}
++	}
+ 	if client := testClient(ctx); client != "" {
+ 		// the one endpoint that agent's requests go to
+ 		proto := clientProto(client, p.Speaks())
+@@ -114,7 +128,9 @@ func (p Provider) Test(ctx context.Context) []Result {
+ 		if model := p.Jev(); listErr == nil && model != "" {
+ 			out = append(out, Result{Protocol: "decide", Model: model, OK: true, Status: http.StatusOK})
+ 		}
+-	} else if p.Decides() {
++	} else if p.Decides() && (!p.IsPlugin() || len(p.decideModels()) > 0) {
++		// a plugin that lists no decision model has none its decision API
++		// could answer (#5793): saying so on every test is no answer
+ 		out = append(out, p.testDecide(ctx)...)
+ 	}
+ 	return out
+-- 
+2.50.1 (Apple Git-155)
+
+```
+</details>
+

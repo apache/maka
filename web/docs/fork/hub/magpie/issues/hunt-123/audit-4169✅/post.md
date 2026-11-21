@@ -1,0 +1,53 @@
+Credit to @MisonL for the report — the CPU diagnostic catching the atfork parent handler is what pinned the fork as the killer.
+
+The read of the system's proxy is the only place magpie forks a process on the request path, and a fork is what killed the process here: `fork()` in a multithreaded process runs libmalloc's `pthread_atfork` parent handler, which takes the zone locks before forking and releases them after — and on your machine the parent-side release found the lock not owned by the forking thread and spun in `_os_unfair_lock_unowned_abort` for 57 minutes (the crash writer needs malloc too, which is why there is no `.ips`).
+
+Where the reads fail — no proxy set in System Settings, so `parseScutil` returns an empty URL and the 2-second `noneKeep` window applies — `System()` forked `scutil --proxy` twice a minute while requests flowed, each fork a fresh roll of those dice.
+
+**Fix** (7da88d973): the reads after failed ones are put off longer each time — twice the none window after the first failure (4 s), twice that after the next (8 s), up to `failKeep` = 1 minute; one that answers resets the run. A set proxy is still kept 15 s, and a read that answers within `readWait` is still what the request waiting for it goes through (#3421 untouched). Failure backoff is fail-open as before: a request never waits for a backoff-window read; it takes what was read before at once.
+
+On the reported machine this cuts the fork cadence from one per 2 s to one per 60 s (30x), and on a healthy machine (reads succeed) nothing changes: the first failed read is retried at 4 s, well inside the old 2 s–per-request steady churn.
+
+## Verification
+
+| Check | Result |
+| --- | --- |
+| `go test -tags nogui -count=1 ./internal/netproxy/` | pass (3.4 s) |
+| `go test -race -tags nogui -count=1 ./internal/netproxy/` | pass (4.6 s) |
+| `gofmt -l internal/netproxy/` | clean |
+| `go vet ./internal/netproxy/` | clean |
+| `go build -tags nogui ./...` | pass |
+| Ablation (tests against base df7c94bdf) | red: no `failKeep`/`nextKeep` on the base, `sysCache.failed` is a bool — the fork cadence stays `noneKeep` forever |
+| `./internal/gateway/` suite | pre-existing: the suite exceeds its own 8 m timeout on this machine, identically on the base worktree (different test at the cut each run) — not touched by this patch |
+| Real `fork()` + libmalloc abort reproduction | Not verified — the atfork abort needs another thread holding a malloc zone lock mid-fork; not injectable in a unit test |
+
+## Why not the bigger options
+
+- **`SCDynamicStoreCopyProxies` (cgo, no child process)** — the same dictionary without a fork, but it pulls CoreFoundation into every binary that links netproxy, and on the `nogui`/non-cgo builds it needs a second implementation to fall back to. Worth doing, but it is a larger change than this bug's own risk profile; the backoff removes the request-path coupling first and the reporter's option 3 (back off) covers the fork-rate harm.
+- **Refresh from a ticker** — moves the fork off the request path but keeps the 2 s cadence (a fork every 2 s forever, healthy machine or not); the backoff keeps the cache lazy as #3421/#1518 shaped it and adds no goroutine.
+
+## Patch
+
+<details>
+<summary>git am patch — 7da88d973 (SHA-256 first 16: efc82e1adb12ca5b)</summary>
+
+Patch file: [7da88d973.patch](https://github.com/ggbdpq/magpie/commit/7da88d973f9dc3f7c0153f7b5000ef8e7bba2e9f.patch) (same bytes as the attached copy in the fork docs; apply with `git am`)
+
+```
+From 7da88d973f9dc3f7c0153f7b5000ef8e7bba2e9f Mon Sep 17 00:00:00 2001
+Date: Wed, 4 Nov 2026 08:57:21 +0800
+Subject: [PATCH] netproxy: the read after failed ones of the system's proxy
+ is put off longer each time (#4169)
+
+(fix commit on branch fix/4169-scutil-atfork, based on upstream df7c94bdf;
+ full diff in the attached patch / the branch below)
+```
+
+</details>
+
+Branch: https://github.com/ggbdpq/magpie/tree/fix/4169-scutil-atfork (head 7da88d973f9dc3f7c0153f7b5000ef8e7bba2e9f)
+
+## AI use
+
+Written by GLM-5.3-Flash (ZCode) — analysis, patch and tests are AI-written; author ggbdpq.
+

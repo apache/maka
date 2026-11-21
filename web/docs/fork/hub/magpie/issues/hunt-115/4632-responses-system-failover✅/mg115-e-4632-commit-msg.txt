@@ -1,0 +1,42 @@
+gateway: a translated system turn is folded for a Responses upstream, and a relay's "Upstream request failed" 400 fails a group over (#4632)
+
+Two faults, one turn. Claude Code 2.1.296 and later send their
+environment as a message with role "system" inside messages
+(Request.envInTurns). The Chat and Anthropic builds fold such a message
+into the system prompt (responseInstructions); buildResponses wrote the
+role as it came, and a relay whose Responses endpoint fronts the ChatGPT
+backend — which takes user, assistant and developer alone — answered
+every translated turn 400 "Upstream request failed". That 400 matched
+none of the wordings that make a 4xx retryable, so the holdWriter held
+it as final and the group's second member never ran: the relay's answer
+went to the agent, every turn.
+
+What changed: buildResponses folds a translated request's system and
+developer messages the way the Chat and Anthropic builds do, keyed on
+the read. A Responses client's own instruction items are kept by the
+read (#2532) and go where they stood; so do a codex account's, which
+its send says as developer ones in place (codexBody — the fold would
+move them out of conversation order, so buildFor marks the account's
+requests kept). A translated request's system message is the harness's,
+so it is said in the instructions, and one after a reply is told as a
+user <system-reminder>, as on every other target. A relay's own word
+that the provider behind it turned the request away ("sub2api: Upstream
+request failed", type upstream_error — the words the Codex compaction
+already reads, #866, #1511) joins the wordings that make a 400 or 422
+retryable (retryable) and fail a group over (shapeRefused): the next
+member is asked, and nobody rests. A 400 that says nothing of the kind
+still ends the route, as a bad request would fail on every member
+alike.
+
+Run: TestClaudeSystemTurnSaidInTheInstructionsOnResponses and
+TestGroupFailsOverARelaysUpstreamFailed, red at upstream/main 77e853588
+and green here; TestUpstreamFailedWordsFailARelayOver's guards (a 401,
+403 or 429 with the words, a plain bad request, and an
+insufficient_quota beside them keep their reading); the codex account's
+own shape (TestCodexAccountUpstream, both clients), the instruction
+roles contract (TestResponsesInstructionRolesThroughSearch,
+TestResponsesInstructionsOtherAPIsUnchanged), the compaction, group and
+retry families, the full gateway package, gofmt, vet on darwin, linux
+and windows, and builds of all three (-tags nogui).
+
+Generated-by: GLM-5.3-Flash (ZCode)

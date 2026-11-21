@@ -1,0 +1,15 @@
+{
+  "enabled": true,
+  "name": "Update README",
+  "description": "Monitors changes to README.md and triggers an agent to review and update the documentation",
+  "version": "1",
+  "when": {
+    "type": "userTriggered"
+  },
+  "then": {
+    "type": "askAgent",
+    "prompt": "The README.md file contains details about each power in this repo. Please review the codebase and make changes to README.md to create, update or remove details regarding each power."
+  },
+  "workspaceFolderName": "kiro-powers",
+  "shortName": "update-readme"
+}

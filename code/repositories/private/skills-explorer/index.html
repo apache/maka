@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#ffffff" />
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#1a1a1a" />
+    <title>Skills Explorer · 技能浏览器</title>
+    <script>
+      // 暗色随系统：首帧前挂 .dark 类，避免闪烁
+      try {
+        if (matchMedia("(prefers-color-scheme: dark)").matches)
+          document.documentElement.classList.add("dark");
+      } catch {}
+    </script>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

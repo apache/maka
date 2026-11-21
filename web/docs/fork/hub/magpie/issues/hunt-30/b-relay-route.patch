@@ -1,0 +1,136 @@
+From f4958d931469a716e66959e76044b2d3da354b2e Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Fri, 16 Oct 2026 11:39:25 +0800
+Subject: [PATCH] gateway: a refused or empty-failed Codex relay's call carries
+ its route
+
+What changed: af601541 wired Call.Route where serve, the Codex backend and
+a refused title record a call, but of the Codex relay's three record exits
+only the success one got it. The key OpenAI refuses (401) and the failure
+said in nothing (>=400, empty body) recorded their calls bare, so the
+Routing page's "Request and response" on such a turn said the request was
+gone though its call was one of the last 40 - and the archive the note
+offers can never have a Codex relay's bodies. The 401 exit is reached for
+a compact relay too, where no route opens, so it takes the route only
+when there is one.
+
+Run: TestCodexKeyRefusedCarriesItsRoute and TestCodexEmptyFailureCarriesItsRoute
+(new) red on 7597c132 before the fix ("route ...: no call in the ring"),
+green after; red again with only codex_backend.go stashed. TestCodex*
+21.7s ok. TestRoutingRequestOpensItsBodies, TestArchiveWholeBodies ok.
+gofmt -l clean; vet on darwin, linux (nogui) and windows clean; build ok
+on all three.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gateway/codex_backend.go      | 10 ++--
+ internal/gateway/codex_backend_test.go | 64 ++++++++++++++++++++++++++
+ 2 files changed, 71 insertions(+), 3 deletions(-)
+
+diff --git a/internal/gateway/codex_backend.go b/internal/gateway/codex_backend.go
+index 6e06c1e8..ea6d9113 100644
+--- a/internal/gateway/codex_backend.go
++++ b/internal/gateway/codex_backend.go
+@@ -900,9 +900,13 @@ func (s *Server) codexUpstreamOn(w http.ResponseWriter, r *http.Request, rest st
+ 		// models was picked, which goes out with Codex's own sign-in
+ 		msg, _ := io.ReadAll(io.LimitReader(res.Body, 1<<20))
+ 		writeError(w, provider.Responses, res.StatusCode, codexKeyRefused(msg))
+-		s.record(Call{Time: start, From: provider.Responses, To: provider.Responses, Model: modelOf(body),
++		refused := Call{Time: start, From: provider.Responses, To: provider.Responses, Model: modelOf(body),
+ 			Provider: "openai", Agent: agentOf(r), Status: res.StatusCode,
+-			Millis: time.Since(start).Milliseconds(), Error: res.Status})
++			Millis: time.Since(start).Milliseconds(), Error: res.Status}
++		if tr != nil {
++			refused.Route = tr.ID
++		}
++		s.record(refused)
+ 		end(res.StatusCode, res.Status, 0, 0)
+ 		return
+ 	}
+@@ -914,7 +918,7 @@ func (s *Server) codexUpstreamOn(w http.ResponseWriter, r *http.Request, rest st
+ 			// "Unknown error" alone (#409): said where the turn went
+ 			said := codexFailedEmpty(modelOf(body), res.Status)
+ 			writeError(w, provider.Responses, res.StatusCode, said)
+-			s.record(Call{Time: start, From: provider.Responses, To: provider.Responses, Model: modelOf(body),
++			s.record(Call{Route: tr.ID, Time: start, From: provider.Responses, To: provider.Responses, Model: modelOf(body),
+ 				Provider: "openai", Agent: agentOf(r), Kind: callKind(r.Header), Status: res.StatusCode,
+ 				Millis: time.Since(start).Milliseconds(), Error: said})
+ 			end(res.StatusCode, said, 0, 0)
+diff --git a/internal/gateway/codex_backend_test.go b/internal/gateway/codex_backend_test.go
+index 781a0d17..454e67d1 100644
+--- a/internal/gateway/codex_backend_test.go
++++ b/internal/gateway/codex_backend_test.go
+@@ -182,6 +182,70 @@ func TestCodexAPIKeyRecordedAsOpenAI(t *testing.T) {
+ 	}
+ }
+ 
++// A Codex relay OpenAI refuses (an API key it turns away) is still the
++// request its Routing row is: the call it records carries the route, so
++// the Routing page's "Request and response" opens it while the recent
++// calls have it, instead of saying it is gone.
++func TestCodexKeyRefusedCarriesItsRoute(t *testing.T) {
++	setup(t, provider.Chat, &fake{t: t})
++	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		w.Header().Set("Content-Type", "application/json")
++		w.WriteHeader(http.StatusUnauthorized)
++		io.WriteString(w, `{"error":{"message":"invalid_api_key"}}`)
++	}))
++	t.Cleanup(up.Close)
++	was := codexAPIBase
++	codexAPIBase = up.URL + "/v1"
++	t.Cleanup(func() { codexAPIBase = was })
++	s := New()
++	rec := httptest.NewRecorder()
++	req := httptest.NewRequest("POST", CodexPath+"/responses", strings.NewReader(`{"model":"gpt-5.5","stream":true,"input":"hi"}`))
++	req.Header.Set("Authorization", "Bearer sk-synthetic")
++	s.Handler().ServeHTTP(rec, req)
++	if rec.Code != http.StatusUnauthorized {
++		t.Fatalf("%d %s", rec.Code, rec.Body.String())
++	}
++	st := s.Trace(t.Context(), 0, 0)
++	if len(st.Routes) != 1 {
++		t.Fatalf("routing view has %d routes, want the turn", len(st.Routes))
++	}
++	c, ok := s.RouteCall(st.Routes[0].ID)
++	if !ok {
++		t.Fatalf("route %d: no call in the ring, so Request and response says the request is gone though its call is one of the last 40", st.Routes[0].ID)
++	}
++	if c.Status != http.StatusUnauthorized {
++		t.Errorf("route %d is the call %d (%d), not the refusal", st.Routes[0].ID, c.ID, c.Status)
++	}
++}
++
++// A Codex relay the backend fails with nothing said (Codex shows it as
++// "Unknown error" alone) is the request its Routing row is too: its call
++// carries the route the same way.
++func TestCodexEmptyFailureCarriesItsRoute(t *testing.T) {
++	chatgpt(t, func(w http.ResponseWriter, r *http.Request) {
++		w.WriteHeader(http.StatusInternalServerError)
++	})
++	s := New()
++	rec := httptest.NewRecorder()
++	req := httptest.NewRequest("POST", CodexPath+"/responses", strings.NewReader(`{"model":"gpt-5.5","stream":true,"input":"hi"}`))
++	req.Header.Set("Authorization", "Bearer chatgpt-token")
++	s.Handler().ServeHTTP(rec, req)
++	if rec.Code != http.StatusInternalServerError {
++		t.Fatalf("%d %s", rec.Code, rec.Body.String())
++	}
++	st := s.Trace(t.Context(), 0, 0)
++	if len(st.Routes) != 1 {
++		t.Fatalf("routing view has %d routes, want the turn", len(st.Routes))
++	}
++	c, ok := s.RouteCall(st.Routes[0].ID)
++	if !ok {
++		t.Fatalf("route %d: no call in the ring, so Request and response says the request is gone though its call is one of the last 40", st.Routes[0].ID)
++	}
++	if c.Status != http.StatusInternalServerError {
++		t.Errorf("route %d is the call %d (%d), not the failure", st.Routes[0].ID, c.ID, c.Status)
++	}
++}
++
+ // A compaction signed by another account is that account's, not the
+ // sign-in the request would have relayed on. A request naming another
+ // ChatGPT account than the sign-in magpie reads (a Codex in WSL, or
+-- 
+2.50.1 (Apple Git-155)
+

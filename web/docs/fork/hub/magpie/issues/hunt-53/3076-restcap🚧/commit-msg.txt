@@ -1,0 +1,31 @@
+provider: a provider's rest-cap and quota rest reach its signed-in accounts (#3076)
+
+`magpie provider rest-cap <id>` (and quota-rest) on a provider the agent
+is signed in to, codex and friends, was written to providers.json and
+never reached the accounts the gateway routes with: withPicks lays the
+user's picks over every signed-in account and copied the queue, the
+limits and the models, not the rests. The save kept the rests (the
+account copy in Save carries the three fields), the read dropped them,
+so every Codex account kept the gateway's own 10/30-minute ladder after
+a 529 and sat out most of the reporter's pool at peak. The command's own
+echo, GET /api/providers and the editor's save (whose old provider comes
+from Find) all read the merged provider, which had none.
+
+withPicks now carries QuotaRest, QuotaResetAt and RestCap with the rest
+of the picks. Unset, an account rests as the gateway always did;
+RestCapOff still means no rest at all after a failure that says nothing
+of why. The same copy covers AlsoOn, which goes through withPicks too.
+
+Fixes #3076
+
+Run (worktree at 318697dcea4e): go test ./internal/provider -run
+'TestWithPicksKeepsTheRest|TestRestCapReachesTheAccount' -count=1 -v —
+two new tests, both fail on the base and pass here; go test
+./internal/provider/... -count=1 — ok, 80s; go test ./internal/gateway
+-run 'Rest|rest' -count=1 — ok; go test -race on the two new tests —
+ok; gofmt -l clean; go vet ./internal/provider clean; go build ./... on
+darwin/arm64 and windows/amd64, and on linux/amd64 with -tags nogui (the
+Makefile's cross-compile path; a plain ./... there fails in wails's own
+webview_window_linux.go, which this change doesn't touch).
+
+Generated-by: GLM-5.3-Flash (ZCode)

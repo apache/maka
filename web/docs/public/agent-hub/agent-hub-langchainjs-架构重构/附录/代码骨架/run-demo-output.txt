@@ -1,0 +1,83 @@
+
+=== 这周想买点花放客厅
+  thought seq=1 final=false "解析请求：这是日常自用场"
+  thought seq=1 final=false "景。"
+  thought seq=2 final=false "检索顾客画像与历史记录…"
+  thought seq=3 final=false "查询在售花材与价格…"
+  thought seq=4 final=false "整理推荐方案…"
+  thought seq=4 final=true ""
+  card "本周自用鲜花组合" items=fl-001:6900,fl-002:3500 refs=ev-purchase-01,ev-care-03
+  evidence ev-purchase-01 可信度 88
+  evidence ev-care-03 可信度 91
+  token × "根据你的订单记录，玫瑰类是最稳的选择；上次反馈尤加利难养护，这次换成好打理的洋桔梗盆栽，花期更长。"
+  done {"type":"done","replyId":"8e5b44f2f4dd"}
+
+=== 想给妈妈送生日礼物
+  thought seq=1 final=false "解析请求：这是送礼场景。"
+  thought seq=2 final=false "检索顾客画像与历史记录…"
+  thought seq=3 final=false "查询在售花材与价格…"
+  thought seq=4 final=false "整理推荐方案…"
+  thought seq=4 final=true ""
+  card "送礼首选：轻奢礼盒" items=fl-101:12800,fl-102:19800 refs=ev-survey-02
+  evidence ev-survey-02 可信度 72
+  token × "送礼场景我推荐礼盒款：香槟色系符合你浅色系的偏好，永生花款适合希望纪念意义更久的场合。"
+  done {"type":"done","replyId":"da9116b7c286"}
+
+=== 下周去医院探望朋友
+  thought seq=1 final=false "解析请求：这是探望慰问场"
+  thought seq=1 final=false "景。"
+  thought seq=2 final=false "检索顾客画像与历史记录…"
+  thought seq=3 final=false "查询在售花材与价格…"
+  thought seq=4 final=false "整理推荐方案…"
+  thought seq=4 final=true ""
+  card "探望慰问：素雅安神" items=fl-201:8800,fl-202:4200 refs=ev-care-03
+  evidence ev-care-03 可信度 91
+  token × "探望慰问以素雅为宜：白绿桔梗无浓香，小雏菊好打理，收花人不需要费心照顾。"
+  done {"type":"done","replyId":"228291ee5ffe"}
+
+=== 第二轮（同 thread scene-1）
+  thought seq=1 final=false "解析请求：这是探望慰问场"
+  thought seq=1 final=false "景。"
+  thought seq=2 final=false "检索顾客画像与历史记录…"
+  thought seq=3 final=false "查询在售花材与价格…"
+  thought seq=4 final=false "整理推荐方案…"
+  thought seq=4 final=true ""
+  card "探望慰问：素雅安神" items=fl-201:8800,fl-202:4200 refs=ev-care-03
+  evidence ev-care-03 可信度 91
+  token × "探望慰问以素雅为宜：白绿桔梗无浓香，小雏菊好打理，收花人不需要费心照顾。"
+  done {"type":"done","replyId":"95899061f060"}
+  thread scene-1 共 16 条消息，用户消息 2 条
+
+=== 幻觉证据 → 校验失败 → 自我修正
+  thought seq=1 final=false "我直接给你推荐吧。"
+  thought seq=2 final=false "整理推荐方案…"
+  thought seq=3 final=false "校验未通过，重新检索后再推荐…"
+  thought seq=4 final=false "解析请求：这是送礼场景。"
+  thought seq=5 final=false "检索顾客画像与历史记录…"
+  thought seq=6 final=false "查询在售花材与价格…"
+  thought seq=7 final=false "整理推荐方案…"
+  thought seq=7 final=true ""
+  card "送礼首选：轻奢礼盒" items=fl-101:12800,fl-102:19800 refs=ev-survey-02
+  evidence ev-survey-02 可信度 72
+  token × "送礼场景我推荐礼盒款：香槟色系符合你浅色系的偏好，永生花款适合希望纪念意义更久的场合。"
+  done {"type":"done","replyId":"bbebfadc56fc"}
+
+=== 死循环模型 → 超限
+  thought seq=1 final=false "检索顾客画像与历史记录…"
+  thought seq=2 final=false "检索顾客画像与历史记录…"
+  thought seq=3 final=false "检索顾客画像与历史记录…"
+  thought seq=4 final=false "检索顾客画像与历史记录…"
+  thought seq=5 final=false "检索顾客画像与历史记录…"
+  thought seq=6 final=false "检索顾客画像与历史记录…"
+  thought seq=7 final=false "检索顾客画像与历史记录…"
+  error {"type":"error","code":"server","message":"本轮推理步数超出上限，请换个说法再试"}
+[agent] run failed: 500 upstream exploded sk-xxx
+
+=== 上游 500
+  error {"type":"error","code":"server","message":"模型服务暂不可用（500）"}
+
+=== 中止
+  thought seq=1 final=false "解析请求：这是送礼场景。"
+  error {"type":"error","code":"aborted","message":"已停止生成"}
+
+全部断言通过 ✅

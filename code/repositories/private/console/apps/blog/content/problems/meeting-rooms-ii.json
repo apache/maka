@@ -1,0 +1,22 @@
+{
+  "id": "91",
+  "slug": "meeting-rooms-ii",
+  "title": "会议室 II",
+  "difficulty": "medium",
+  "tags": ["贪心", "排序", "堆"],
+  "description": "给你一个会议时间安排的数组 `intervals`,每个会议 `intervals[i] = [starti, endi]`。计算所需会议室的**最少数量**。\n\n**示例 1:**\n\n- 输入:`intervals = [[0,30],[5,10],[15,20]]`\n- 输出:`2`\n\n**示例 2:**\n\n- 输入:`intervals = [[7,10],[2,4]]`\n- 输出:`1`",
+  "solution": "## 思路\n\n**分离时间点**:把所有开始时间和结束时间分别排序。用两个指针扫描开始时间:若当前会议开始早于「最早结束」(即 `starts[i] < ends[endPtr]`),需要新开一间会议室;否则有一间空出(`endPtr++`)。\n\n## 参考代码\n\n```js\nfunction minMeetingRooms(intervals) {\n  if (intervals.length === 0) return 0;\n  const starts = intervals.map((i) => i[0]).sort((a, b) => a - b);\n  const ends = intervals.map((i) => i[1]).sort((a, b) => a - b);\n  let rooms = 0;\n  let endPtr = 0;\n  for (let i = 0; i < starts.length; i++) {\n    if (starts[i] < ends[endPtr]) rooms++;\n    else endPtr++;\n  }\n  return rooms;\n}\n```\n\n## 复杂度\n\n- 时间:O(n log n)\n- 空间:O(n)",
+  "signature": {
+    "language": "javascript",
+    "entry": "minMeetingRooms",
+    "params": [{ "name": "intervals", "type": "number[][]" }],
+    "returns": "number"
+  },
+  "testCases": [
+    { "sample": true, "input": [[[0, 30], [5, 10], [15, 20]]], "expected": 2 },
+    { "sample": true, "input": [[[7, 10], [2, 4]]], "expected": 1 },
+    { "sample": false, "input": [[]], "expected": 0 },
+    { "sample": false, "input": [[[1, 5], [5, 10]]], "expected": 1 },
+    { "sample": false, "input": [[[1, 3], [2, 4], [3, 5]]], "expected": 2 }
+  ]
+}

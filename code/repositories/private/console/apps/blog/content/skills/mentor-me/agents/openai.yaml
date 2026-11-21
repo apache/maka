@@ -1,0 +1,4 @@
+interface:
+  display_name: "导师讲解"
+  short_description: "循序渐进把概念讲透，用当下项目作贯穿案例"
+  default_prompt: "用 $mentor-me 把这个概念从零讲到能上手，一次推进一层"

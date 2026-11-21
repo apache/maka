@@ -1,0 +1,22 @@
+{
+  "id": "77",
+  "slug": "valid-palindrome-ii",
+  "title": "验证回文串 II",
+  "difficulty": "easy",
+  "tags": ["贪心", "双指针", "字符串"],
+  "description": "给定一个非空字符串 `s`,最多删除一个字符。判断是否能把它变成回文串。\n\n**示例 1:**\n\n- 输入:`s = \"aba\"`\n- 输出:`true`\n\n**示例 2:**\n\n- 输入:`s = \"abca\"`\n- 输出:`true`(删除字符 `'c'` 可得到回文串 `\"aba\"`)\n\n**示例 3:**\n\n- 输入:`s = \"abc\"`\n- 输出:`false`",
+  "solution": "## 思路\n\n双指针从两端向中间扫描,遇到不等的字符时,分别尝试「跳过左边」或「跳过右边」,只要其中之一能让剩余区间成为回文即可。\n\n## 参考代码\n\n```js\nfunction validPalindrome(s) {\n  const isPal = (l, r) => {\n    while (l < r) {\n      if (s[l] !== s[r]) return false;\n      l++;\n      r--;\n    }\n    return true;\n  };\n  let l = 0;\n  let r = s.length - 1;\n  while (l < r) {\n    if (s[l] !== s[r]) return isPal(l + 1, r) || isPal(l, r - 1);\n    l++;\n    r--;\n  }\n  return true;\n}\n```\n\n## 复杂度\n\n- 时间:O(n)\n- 空间:O(1)",
+  "signature": {
+    "language": "javascript",
+    "entry": "validPalindrome",
+    "params": [{ "name": "s", "type": "string" }],
+    "returns": "boolean"
+  },
+  "testCases": [
+    { "sample": true, "input": ["aba"], "expected": true },
+    { "sample": true, "input": ["abca"], "expected": true },
+    { "sample": true, "input": ["abc"], "expected": false },
+    { "sample": false, "input": ["a"], "expected": true },
+    { "sample": false, "input": ["deeee"], "expected": true }
+  ]
+}

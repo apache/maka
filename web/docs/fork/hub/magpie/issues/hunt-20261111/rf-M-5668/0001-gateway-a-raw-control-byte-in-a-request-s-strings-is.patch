@@ -1,0 +1,400 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Sun, 8 Nov 2026 15:34:21 +0800
+Subject: [PATCH] gateway: a raw control byte in a request's strings is
+ escaped, and the turn goes on
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+A Codex turn that read a binary file whole carried a raw control byte
+(0x00-0x1F) inside one of its strings, and the gateway refused the
+whole turn: 6.8 MB and 7.5 MB bodies of one thread, refused on
+`invalid character '\x00' in string literal` - magpie's own 400, no
+usage row, nothing routed (AnxForever, #5668). A raw control byte in a
+string is what JSON forbids, and \u00XX is the same character in the
+only spelling the grammar takes. A control byte outside a string is a
+broken structure escaping cannot mend, and that refusal stays.
+
+decodeRequest is the one JSON gate a client request passes before
+fields are rewritten or it is routed: handle, countTokens, gemini and
+the Codex backend's own /responses all read through it, and now
+Ollama's /api/chat and /api/generate do too, whose own json.Unmarshal
+refused the same way - what they route is the rebuild of what they
+decoded, so the mended parse is what goes out. A body that parses is
+walked never, rewritten never, logged never: the fallback costs one
+failed parse, nothing more. A body that failed is walked once, its
+strings' raw control bytes escaped, the copy parsed again, and what
+parses is the body routed, with one line said of it - how many, the
+offset of the first, an excerpt. A body the copy does not mend is
+refused with the first parse's error, not the repair's.
+
+The translators read the body decodeRequest hands them, so a turn that
+needed no escape is translated byte for byte as before, and one that
+did goes out valid whatever protocol it is spoken in.
+
+Run: go test -tags nogui -run 'RawControlByte|EscapeRawControlBytes|
+DecodeRequest|ParsedRequest|EscapeFallback|OllamaChatRawControl'
+./internal/gateway ok, 9 named tests, Gemini/Codex/Count/Ollama
+domains green. The codex one is red with the escape branch dead again
+(the NUL rides to the backend as a 400), green restored. gofmt -l
+clean.
+Not tried: the reporter's Codex CLI 0.167.0 on Windows against a real
+6.8 MB turn; the shape is reproduced on a fake upstream instead.
+
+Reported-by: AnxForever
+Attribution: 分析与补丁由 GLM-5.3-Flash (ZCode) 协助完成
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gateway/escape_raw_control_test.go | 213 ++++++++++++++++++++
+ internal/gateway/gateway.go                 |  79 +++++++-
+ internal/gateway/ollama_chat.go             |   7 +-
+ 3 files changed, 287 insertions(+), 12 deletions(-)
+ create mode 100644 internal/gateway/escape_raw_control_test.go
+
+diff --git a/internal/gateway/escape_raw_control_test.go b/internal/gateway/escape_raw_control_test.go
+new file mode 100644
+index 000000000..ad926d57f
+--- /dev/null
++++ b/internal/gateway/escape_raw_control_test.go
+@@ -0,0 +1,213 @@
++package gateway
++
++import (
++	"bytes"
++	"io"
++	"log"
++	"net/http"
++	"os"
++	"strings"
++	"testing"
++	"time"
++
++	"github.com/yetone/magpie/internal/provider"
++	"github.com/yetone/magpie/internal/usage"
++)
++
++// A raw control byte inside a JSON string is what JSON forbids, and \u00XX
++// is the same character in the only spelling the grammar takes: the turn is
++// escaped and served, not refused (#5668). The reporter's shape: a long
++// thread whose text carries a raw NUL, on Codex's own backend path, where
++// the refusal was magpie's own 400 with no usage row written.
++func TestRawControlByteInStringEscapedAndRouted(t *testing.T) {
++	setup(t, provider.Chat, &fake{t: t})
++	var got []byte
++	chatgpt(t, func(w http.ResponseWriter, r *http.Request) {
++		got, _ = io.ReadAll(r.Body)
++		w.Header()["Content-Type"] = nil // as the ChatGPT backend sends it
++		io.WriteString(w, sse(
++			`data: {"type":"response.created","response":{"id":"r1"}}`,
++			`data: {"type":"response.completed","response":{"id":"r1","usage":{"input_tokens":9,"output_tokens":2}}}`))
++	})
++	text := strings.Repeat("x", 6_800_000) // as long a turn as the reporter's
++	body := `{"model":"gpt-5.5","stream":true,"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"` + text + "\x00end\"}]}]}"
++	code, reply := codexPost(t, body)
++	if code != 200 {
++		t.Fatalf("status %d: %s", code, reply)
++	}
++	if i := bytes.IndexByte(got, 0); i >= 0 {
++		t.Fatalf("upstream got the raw NUL still in place, first at %d", i)
++	}
++	if !bytes.Contains(got, []byte(`x\u0000end`)) {
++		t.Errorf("upstream body lacks the escaped NUL (len %d)", len(got))
++	}
++	// the turn served is a turn counted: the refusal the issue reports
++	// writes no usage row, this does
++	if u := usage.Load(time.Time{}); len(u) != 1 || u[0].Input != 9 || u[0].Output != 2 {
++		t.Errorf("usage %+v", u)
++	}
++}
++
++// The same byte on a magpie model's own route, and the one line the issue
++// asks be logged: how many, the offset of the first, an excerpt.
++func TestRawControlByteInStringEscapedOnResponses(t *testing.T) {
++	f := &fake{t: t, reply: sse(
++		`data: {"type":"response.created","response":{"id":"r1","model":"m1"}}`,
++		`data: {"type":"response.completed","response":{"id":"r1","output":[],"usage":{"input_tokens":5,"output_tokens":2}}}`)}
++	setup(t, provider.Responses, f)
++	var logs bytes.Buffer
++	log.SetOutput(&logs)
++	t.Cleanup(func() { log.SetOutput(os.Stderr) })
++	code, reply := post(t, "/v1/responses", `{"model":"fake/m1","stream":true,"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"tab`+"\x01"+`stop"}]}]}`)
++	if code != 200 {
++		t.Fatalf("status %d: %s", code, reply)
++	}
++	if i := bytes.IndexByte(f.got, 1); i >= 0 {
++		t.Fatalf("upstream got the raw \\x01 still in place, first at %d", i)
++	}
++	if !bytes.Contains(f.got, []byte(`tab\u0001stop`)) {
++		t.Errorf("upstream body lacks the escaped byte: %.120q", f.got)
++	}
++	if line := logs.String(); !strings.Contains(line, "escaped 1 raw control byte") ||
++		!strings.Contains(line, "first at offset") {
++		t.Errorf("log: %q", line)
++	}
++}
++
++// A raw control byte outside a string is a broken structure escaping cannot
++// mend: refused as before, with the first parse's error, and the upstream
++// never asked.
++func TestRawControlByteOutsideStringStillRefused(t *testing.T) {
++	f := &fake{t: t, reply: sse(
++		`data: {"type":"response.completed","response":{"id":"r1","usage":{"input_tokens":1,"output_tokens":1}}}`)}
++	setup(t, provider.Responses, f)
++	code, reply := post(t, "/v1/responses", "{\x00\"model\":\"fake/m1\",\"input\":\"hi\"}")
++	if code != 400 || !strings.Contains(reply, "invalid character") {
++		t.Fatalf("status %d: %s", code, reply)
++	}
++	if f.calls != 0 {
++		t.Errorf("upstream asked %d times", f.calls)
++	}
++}
++
++// A body that parses is walked never and logged never: the fallback costs
++// a valid request one failed parse, nothing more (#5668's performance
++// note). Byte for byte, the body served is the body read.
++func TestParsedRequestEscapesNothing(t *testing.T) {
++	f := &fake{t: t, reply: sse(
++		`data: {"type":"response.created","response":{"id":"r1","model":"m1"}}`,
++		`data: {"type":"response.completed","response":{"id":"r1","output":[],"usage":{"input_tokens":5,"output_tokens":2}}}`)}
++	setup(t, provider.Responses, f)
++	var logs bytes.Buffer
++	log.SetOutput(&logs)
++	t.Cleanup(func() { log.SetOutput(os.Stderr) })
++	code, reply := post(t, "/v1/responses", `{"model":"fake/m1","stream":true,"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"line\nbreak\ttab \\ quoted \" end"}]}]}`)
++	if code != 200 {
++		t.Fatalf("status %d: %s", code, reply)
++	}
++	if line := logs.String(); strings.Contains(line, "escaped") {
++		t.Errorf("logged for a body that parses: %q", line)
++	}
++	if !bytes.Contains(f.got, []byte(`line\nbreak\ttab \\ quoted \" end`)) {
++		t.Errorf("upstream body lost the text as sent: %.200q", f.got)
++	}
++}
++
++func TestEscapeRawControlBytes(t *testing.T) {
++	for _, c := range []struct {
++		name, in, want string // want "" says: returned as it came
++		n, off         int
++	}{
++		{"in a string", "{\"a\":\"x\x01y\"}", "{\"a\":\"x\\u0001y\"}", 1, 7},
++		{"whitespace between tokens stays", "{\n\"a\":\n1}", "", 0, -1},
++		{"an escaped newline stays", `{"a":"x\ny"}`, "", 0, -1},
++		{"past an escaped quote", "{\"a\":\"x\\\"y\x00z\"}", "{\"a\":\"x\\\"y\\u0000z\"}", 1, 10},
++		{"past an escaped backslash", "{\"a\":\"x\\\\\x00\"}", "{\"a\":\"x\\\\\\u0000\"}", 1, 9},
++		{"outside a string stays", "{\"a\":\"ok\"}\x00", "", 0, -1},
++		{"two strings, one byte each", "{\"a\":\"\x02\",\"b\":\"\x1f\"}", "{\"a\":\"\\u0002\",\"b\":\"\\u001f\"}", 2, 6},
++	} {
++		t.Run(c.name, func(t *testing.T) {
++			got, n, off := escapeRawControlBytes([]byte(c.in))
++			want := c.want
++			if want == "" {
++				want = c.in
++			}
++			if string(got) != want || n != c.n || off != c.off {
++				t.Fatalf("got %q n=%d off=%d, want %q n=%d off=%d", got, n, off, want, c.n, c.off)
++			}
++		})
++	}
++}
++
++// A body that parses comes back the very bytes it came as, the whitespace
++// around it included: the fallback owns only what it mended.
++func TestDecodeRequestReturnsTheBodyItTook(t *testing.T) {
++	body := []byte("  {\"model\":\"m1\"}\n\t")
++	var q struct {
++		Model string `json:"model"`
++	}
++	fixed, err := decodeRequest(body, &q)
++	if err != nil {
++		t.Fatalf("decodeRequest: %v", err)
++	}
++	if q.Model != "m1" {
++		t.Errorf("model %q", q.Model)
++	}
++	if len(fixed) != len(body) || &fixed[0] != &body[0] {
++		t.Errorf("a parsed body was rewritten: %q", fixed)
++	}
++}
++
++// The mended body is what comes back to be routed: an escape the client
++// never sent is what the upstream would refuse, so the repaired copy, not
++// the raw one, goes on.
++func TestDecodeRequestEscapesAndReturnsTheMendedBody(t *testing.T) {
++	var q struct {
++		Model string `json:"model"`
++	}
++	fixed, err := decodeRequest([]byte("{\"model\":\"m1\",\"note\":\"a\x00b\"}"), &q)
++	if err != nil {
++		t.Fatalf("decodeRequest: %v", err)
++	}
++	if q.Model != "m1" {
++		t.Errorf("model %q", q.Model)
++	}
++	if string(fixed) != `{"model":"m1","note":"a\u0000b"}` {
++		t.Errorf("got %q", fixed)
++	}
++}
++
++// A body the mended copy does not parse either is refused with the first
++// parse's error, not the repair's: the client is told of the body it sent.
++func TestEscapeFallbackKeepsTheOriginalError(t *testing.T) {
++	_, err := decodeRequest([]byte("{\"model\":\"m1\",\"a\":\"x\x00y\",\"b\":}"), &struct{}{})
++	if err == nil {
++		t.Fatal("decodeRequest accepted a body broken past its control byte")
++	}
++	if !strings.Contains(err.Error(), `invalid character '\x00' in string literal`) {
++		t.Errorf("error %q, want the first parse's", err)
++	}
++	if strings.Contains(err.Error(), "'}'") || strings.Contains(err.Error(), "looking for beginning of value") {
++		t.Errorf("error %q names the repair's parse, not the body's", err)
++	}
++}
++
++// Ollama's door reads the request itself (ollamaChat), and what it routes
++// is the rebuild of what it decoded: a raw control byte in a message goes
++// out escaped there too (#5668).
++func TestOllamaChatRawControlByteInStringEscaped(t *testing.T) {
++	fresh(t)
++	var got []string
++	ollamaPlan(t, ollamaUpstream(t, &got).URL+"/v1")
++	h := lanGuard(New().Handler())
++	w := ollamaCall(t, h, "/api/chat", `{"model":"plan/seer","messages":[{"role":"user","content":"tab`+"\x01"+`stop"}],"stream":false}`)
++	if w.Code != 200 || len(got) != 1 {
++		t.Fatalf("chat: %d %s (upstream %d)", w.Code, w.Body, len(got))
++	}
++	if strings.Contains(got[0], "\x01") {
++		t.Errorf("upstream got the raw byte: %s", got[0])
++	}
++	if !strings.Contains(got[0], `tab\u0001stop`) {
++		t.Errorf("upstream body lacks the escaped byte: %s", got[0])
++	}
++}
+diff --git a/internal/gateway/gateway.go b/internal/gateway/gateway.go
+index 607f8c2b6..fd2d54f3b 100644
+--- a/internal/gateway/gateway.go
++++ b/internal/gateway/gateway.go
+@@ -2277,7 +2277,7 @@ func (s *Server) gemini(w http.ResponseWriter, r *http.Request) {
+ 	// that can't see is shown in words of (image_input.go) too (#934)
+ 	body = geminiCamel(body)
+ 	var err error
+-	if err := decodeRequest(body, &struct{}{}); err != nil {
++	if body, err = decodeRequest(body, &struct{}{}); err != nil {
+ 		writeError(w, provider.Gemini, 400, err.Error())
+ 		return
+ 	}
+@@ -9661,16 +9661,74 @@ func streamOf(body []byte) bool {
+ }
+ 
+ // decodeRequest requires one complete JSON object before fields are rewritten
+-// or a request is routed. In particular, null is not an empty object.
+-func decodeRequest(body []byte, dst any) error {
+-	body = bytes.TrimSpace(body)
+-	if len(body) == 0 || body[0] != '{' {
+-		return errors.New("invalid request: expected a JSON object")
++// or a request is routed. In particular, null is not an empty object. The
++// body comes back as it was read, or, when it did not parse over raw control
++// bytes inside its strings and escaping them mended it, as those bytes
++// escaped: the copy routed is the copy that parses (#5668).
++func decodeRequest(body []byte, dst any) ([]byte, error) {
++	raw := bytes.TrimSpace(body)
++	if len(raw) == 0 || raw[0] != '{' {
++		return body, errors.New("invalid request: expected a JSON object")
++	}
++	err := decodeJSON(raw, dst)
++	if err == nil {
++		return body, nil
++	}
++	// A raw control byte inside a string is what JSON forbids, and \u00XX is
++	// the same character in the only spelling the grammar takes: a tool
++	// result that read a binary file whole carried one, and the turn was lost
++	// over a byte magpie can spell (AnxForever, #5668). The walk is paid only
++	// by a body that failed to parse; a repaired copy that parses again is
++	// the body routed, with one line said of it; one the copy does not mend
++	// is refused with the first parse's error, as before.
++	if fixed, n, off := escapeRawControlBytes(raw); n > 0 {
++		if err2 := decodeJSON(fixed, dst); err2 == nil {
++			excerpt := raw[max(0, off-12):min(len(raw), off+12)]
++			log.Printf("gateway: escaped %d raw control byte(s) in a request string, first at offset %d: %q", n, off, excerpt)
++			return fixed, nil
++		}
++	}
++	return body, fmt.Errorf("invalid request: %w", err)
++}
++
++// escapeRawControlBytes escapes the raw control bytes (0x00–0x1F) body holds
++// inside its string literals, as \u00XX, and reports how many it escaped and
++// where the first was. Only a body that failed to parse comes here, so a
++// valid body is never walked, let alone copied. A control byte outside a
++// string stays as it is — \n, \t and \r are the whitespace JSON allows
++// between tokens, and any other is a broken structure escaping cannot mend.
++func escapeRawControlBytes(body []byte) ([]byte, int, int) {
++	var out []byte
++	n, first := 0, -1
++	inString, escaped := false, false
++	for i, c := range body {
++		switch {
++		case escaped:
++			escaped = false
++		case inString && c == '\\':
++			escaped = true
++		case c == '"':
++			inString = !inString
++		case inString && c < 0x20:
++			if out == nil {
++				out = append(make([]byte, 0, len(body)+64), body[:i]...)
++			}
++			const hex = "0123456789abcdef"
++			out = append(out, '\\', 'u', '0', '0', hex[c>>4], hex[c&0xF])
++			if first < 0 {
++				first = i
++			}
++			n++
++			continue
++		}
++		if out != nil {
++			out = append(out, c)
++		}
+ 	}
+-	if err := decodeJSON(body, dst); err != nil {
+-		return fmt.Errorf("invalid request: %w", err)
++	if out == nil {
++		return body, 0, -1
+ 	}
+-	return nil
++	return out, n, first
+ }
+ 
+ func validateModel(model string) (string, error) {
+@@ -9715,7 +9773,8 @@ func requestModel(body []byte) ([]byte, string, error) {
+ 	var q struct {
+ 		Model string `json:"model"`
+ 	}
+-	if err := decodeRequest(body, &q); err != nil {
++	body, err := decodeRequest(body, &q)
++	if err != nil {
+ 		return nil, "", err
+ 	}
+ 	model, err := validateModel(q.Model)
+diff --git a/internal/gateway/ollama_chat.go b/internal/gateway/ollama_chat.go
+index 445d05e50..bd494cd50 100644
+--- a/internal/gateway/ollama_chat.go
++++ b/internal/gateway/ollama_chat.go
+@@ -71,8 +71,11 @@ func (s *Server) ollamaChat(generate bool) http.HandlerFunc {
+ 			return
+ 		}
+ 		var req ollamaRequest
+-		if err := json.Unmarshal(body, &req); err != nil {
+-			ollamaError(w, http.StatusBadRequest, "invalid request: "+err.Error())
++		// decodeRequest, not json.Unmarshal: a raw control byte in one of the
++		// strings is escaped and served, as every route's body is (#5668);
++		// the body routed is ollamaChatBody's rebuild of what this decoded
++		if _, err := decodeRequest(body, &req); err != nil {
++			ollamaError(w, http.StatusBadRequest, err.Error())
+ 			return
+ 		}
+ 		req.Model = strings.TrimSpace(req.Model)
+-- 
+2.50.1 (Apple Git-155)
+

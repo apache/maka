@@ -1,0 +1,251 @@
+From f599af7e475c5e9e02c6e2cfc845bcd8383b30e4 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Mon, 19 Oct 2026 07:25:14 +0800
+Subject: [PATCH] gateway: a plugin provider that speaks Anthropic with a key
+ gets Claude Code's headers as a custom provider does (#2817)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+What changed: the two gates #179 added for relays widen to a plugin's
+account that speaks Anthropic and whose loader gave a key —
+provider.LoaderKeyed asks the loader for its Options (cached, and asked
+on every request through the plugin anyway): forwardOnce copies Claude
+Code's headers (user-agent, x-app, anthropic-*, x-stainless-*,
+x-claude-code-*, never the key it was given) and passthrough appends
+?beta=true for it as for a provider of the user's own. The plugin's own
+key still signs the request, and its fetch carries the headers on as
+magpie put them (host.js sets the caller's headers over the SDK's, the
+chat.headers hooks over those).
+
+Why: a plugin provider always has an account (&Account{Agent: "plugin"},
+internal/provider/plugins.go), so p.Account == nil never held for it and
+it got none of it: an upstream serving the official Claude Code client
+alone (sub2api's restricted groups) answered every request through the
+plugin 403 while the same key through a custom provider went 200, and
+routing backed the subscription account off to the next. Its loader and
+chat.headers hooks never see the agent's original headers, so the plugin
+cannot add them itself.
+
+Scope: plugin accounts only, and on Anthropic's API alone, where the two
+gates already stand — a plugin whose model speaks OpenAI (Chat,
+Responses) is untouched, and so is a signed-in subscription. The User-Agent
+gate of #1851 (provider.PassesUserAgent) stays as it is: the forwarded set
+includes user-agent itself, which overwrites magpie's for the plugin
+exactly as for a custom provider.
+
+Run (darwin/arm64, go1.26, bun 1.4.2), all -tags nogui:
+- new TestClaudeCodeHeadersReachAnthropicPlugin: red on 1a3b9268 (UA
+  "magpie/dev", x-app, x-stainless-*, x-claude-code-* and ?beta=true all
+  missing), green after; both sides of an ablation (product files
+  restored from upstream/main) and of two single-hunk mutations rechecked
+- go test -run 'TestForward|TestPlugin|TestPassthrough|TestClaudeCode'
+  ./internal/gateway/: ok 40.4s
+- go test ./internal/gateway/ (full): ok 313.8s
+- go test -race -run 'TestForward|TestPlugin' ./internal/gateway/: ok 60.2s
+- gofmt -l internal/gateway internal/provider: none
+- go vet ./internal/gateway ./internal/provider on darwin, linux,
+  windows: clean
+- builds: darwin ./..., linux ./... (-tags nogui) and the touched
+  packages plain, GOOS=windows go build -o /dev/null .: all ok
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gateway/claude_code_headers_test.go | 103 +++++++++++++++++++
+ internal/gateway/gateway.go                  |  14 ++-
+ internal/provider/plugins.go                 |  16 +++
+ 3 files changed, 131 insertions(+), 2 deletions(-)
+
+diff --git a/internal/gateway/claude_code_headers_test.go b/internal/gateway/claude_code_headers_test.go
+index 3bbb5820..156377b6 100644
+--- a/internal/gateway/claude_code_headers_test.go
++++ b/internal/gateway/claude_code_headers_test.go
+@@ -2,12 +2,20 @@ package gateway
+ 
+ import (
+ 	"bytes"
++	"context"
++	"fmt"
++	"io"
+ 	"net/http"
+ 	"net/http/httptest"
++	"path/filepath"
+ 	"strings"
++	"sync"
+ 	"testing"
++	"time"
+ 
++	"github.com/yetone/magpie/internal/plugin"
+ 	"github.com/yetone/magpie/internal/provider"
++	"github.com/yetone/magpie/internal/testenv"
+ )
+ 
+ // A relay that serves only Claude Code (#179: packy's "only accessible via
+@@ -87,3 +95,98 @@ func TestClaudeCodeHeadersReachAnthropicRelay(t *testing.T) {
+ 		t.Errorf("other agent: %q %v %q", ua, f.head, query)
+ 	}
+ }
++
++// A plugin's provider whose model speaks Anthropic and whose loader gave a
++// key is relayed a Claude Code request as a custom provider is (#2817): an
++// upstream that serves the official client alone (#179) knows it by its own
++// headers and ?beta=true, which go through the plugin's fetch as they go to
++// a relay, the plugin's own key signing the request as ever.
++func TestClaudeCodeHeadersReachAnthropicPlugin(t *testing.T) {
++	bun := testenv.Bun(t)
++	fresh(t)
++	t.Setenv("MAGPIE_BUN", bun)
++	t.Cleanup(plugin.Settle)
++
++	var mu sync.Mutex
++	var head http.Header
++	var query, got string
++	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		b, _ := io.ReadAll(r.Body)
++		mu.Lock()
++		head, query, got = r.Header, r.URL.RawQuery, string(b)
++		mu.Unlock()
++		w.Header().Set("Content-Type", "text/event-stream")
++		for _, e := range []string{
++			`{"type":"message_start","message":{"id":"m","type":"message","role":"assistant","model":"fake-claude","content":[],"usage":{"input_tokens":1,"output_tokens":0}}}`,
++			`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`,
++			`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi from claude"}}`,
++			`{"type":"content_block_stop","index":0}`,
++			`{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":2}}`,
++			`{"type":"message_stop"}`,
++		} {
++			fmt.Fprintf(w, "data: %s\n\n", e)
++		}
++	}))
++	defer up.Close()
++	t.Setenv("FAKE_BASE", up.URL+"/v1")
++
++	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
++	defer cancel()
++	abs, _ := filepath.Abs("../plugin/testdata/fake/index.js")
++	if _, err := plugin.Add(ctx, abs); err != nil {
++		t.Fatal(err)
++	}
++	if _, err := plugin.Providers(ctx); err != nil {
++		t.Fatal(err)
++	}
++	if _, err := plugin.APIKey(ctx, "fakeco", 0, nil, "k1", plugin.NewAccount); err != nil {
++		t.Fatal(err)
++	}
++	if p, err := provider.Find("fakeco"); err != nil || !p.IsPlugin() {
++		t.Fatalf("Find = %+v, %v", p, err)
++	}
++
++	claude := http.Header{
++		"User-Agent":               {"claude-cli/2.1.0 (external, cli)"},
++		"X-App":                    {"cli"},
++		"Anthropic-Beta":           {"claude-code-20250219,interleaved-thinking-2025-05-14"},
++		"X-Stainless-Lang":         {"js"},
++		"X-Claude-Code-Session-Id": {"ses-1"},
++		"Anthropic-Dangerous-Direct-Browser-Access": {"true"},
++	}
++	// streamed, as Claude Code asks: a plugin's account only streams, so the
++	// request is relayed as it was sent
++	body := `{"model":"fakeco/fake-claude","stream":true,"max_tokens":5,"system":[{"type":"text","text":"You are Claude Code, Anthropic's official CLI for Claude."}],"metadata":{"user_id":"user_abc_account__session_123"},"messages":[{"role":"user","content":"hi"}]}`
++	rec := httptest.NewRecorder()
++	req := httptest.NewRequest("POST", "/v1/messages?beta=true", strings.NewReader(body))
++	for k, v := range claude {
++		req.Header[k] = v
++	}
++	New().Handler().ServeHTTP(rec, req)
++	if rec.Code != 200 {
++		t.Fatalf("%d %s", rec.Code, rec.Body.String())
++	}
++	if !strings.Contains(rec.Body.String(), "hi from claude") {
++		t.Fatalf("the reply didn't come back: %s", rec.Body.String())
++	}
++	mu.Lock()
++	defer mu.Unlock()
++	for _, k := range []string{"User-Agent", "X-App", "Anthropic-Beta", "Anthropic-Dangerous-Direct-Browser-Access", "X-Stainless-Lang", "X-Claude-Code-Session-Id"} {
++		if h := head.Get(k); h != claude.Get(k) {
++			t.Errorf("%s: got %q, want %q", k, h, claude.Get(k))
++		}
++	}
++	if a := head.Get("Authorization"); a != "Bearer k1" {
++		t.Errorf("the plugin's own key: %q", a)
++	}
++	// the body went through as Claude Code sent it, its system line and
++	// metadata kept, as to a relay
++	for _, want := range []string{`"You are Claude Code, Anthropic's official CLI for Claude."`, `"metadata":{"user_id":"user_abc_account__session_123"}`} {
++		if !strings.Contains(got, want) {
++			t.Errorf("body lost %s: %s", want, got)
++		}
++	}
++	if query != "beta=true" {
++		t.Errorf("query %q, want beta=true", query)
++	}
++}
+diff --git a/internal/gateway/gateway.go b/internal/gateway/gateway.go
+index 30b87946..5ea761ed 100644
+--- a/internal/gateway/gateway.go
++++ b/internal/gateway/gateway.go
+@@ -3832,7 +3832,7 @@ func (s *Server) forwardOnce(ctx context.Context, p provider.Provider, to provid
+ 				req.Header.Set(h, v)
+ 			}
+ 		}
+-		if p.Account == nil && fromClaudeCode(in) {
++		if claudeCodeRelay(ctx, p) && fromClaudeCode(in) {
+ 			// a relay that serves only Claude Code (#179: "only accessible
+ 			// via the official Claude CLI") knows it by its own headers,
+ 			// which go on as it sent them; its key to magpie never does
+@@ -3980,6 +3980,16 @@ func claudeCodeHeader(k string) bool {
+ 	return false
+ }
+ 
++// claudeCodeRelay is whether p is asked a Claude Code request as a relay
++// is (#179): a provider of the user's own, or a plugin's account whose
++// model speaks Anthropic and whose loader gave a key (#2817) — the
++// plugin's fetch carries the headers on as magpie put them, its own key
++// signing the request as ever. Asked on Anthropic's API alone, where the
++// gate's callers stand; a subscription signed in to is neither.
++func claudeCodeRelay(ctx context.Context, p provider.Provider) bool {
++	return p.Account == nil || p.LoaderKeyed(ctx)
++}
++
+ // fromCodex is a request Codex sent — its CLI, exec, the IDE extension,
+ // desktop app or ACP adapter — by the User-Agent (codex_cli_rs/0.159.2
+ // (Mac OS 26.6.0; arm64) kitty, Codex Desktop/0.162.3 …) or the originator it gives
+@@ -4177,7 +4187,7 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
+ 	if proto == provider.Gemini && p.IsVertex() && geminiWhole {
+ 		path = provider.VertexWholePath(upstream) // answered as one JSON body
+ 	}
+-	if proto == provider.Anthropic && p.Account == nil && fromClaudeCode(r.Header) && r.URL.Query().Get("beta") == "true" {
++	if proto == provider.Anthropic && claudeCodeRelay(r.Context(), p) && fromClaudeCode(r.Header) && r.URL.Query().Get("beta") == "true" {
+ 		path += "?beta=true" // as Claude Code asks it
+ 	}
+ 	if proto != provider.Anthropic {
+diff --git a/internal/provider/plugins.go b/internal/provider/plugins.go
+index d9814e66..dcc7dd07 100644
+--- a/internal/provider/plugins.go
++++ b/internal/provider/plugins.go
+@@ -454,6 +454,22 @@ func (p Provider) Origin(ctx context.Context) string {
+ 	return scheme + "://" + HostOf(rest)
+ }
+ 
++// LoaderKeyed is whether the account's loader gave a key (its Options'
++// apiKey, an API-key sign-in's): such a provider's requests are signed
++// with it, as a provider of the user's own are (#2817). false for any
++// other provider, and when the loader can't be asked.
++func (p Provider) LoaderKeyed(ctx context.Context) bool {
++	if !p.IsPlugin() {
++		return false
++	}
++	pp := *p.Account.plugin
++	if cur, ok := PluginOf(p.ID); ok {
++		pp = cur
++	}
++	o, err := plugin.LoaderOptions(ctx, pp.ID, p.Account.pluginKey)
++	return err == nil && o.APIKey != ""
++}
++
+ // pluginFetch sends a request the gateway made for a plugin's provider
+ // through the plugin: to the base URL its loader gave (else the model's,
+ // the provider's, the AI SDK package's), with what the loader adds.
+-- 
+2.50.1 (Apple Git-155)
+

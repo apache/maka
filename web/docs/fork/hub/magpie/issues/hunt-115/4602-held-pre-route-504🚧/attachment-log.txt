@@ -1,0 +1,1120 @@
+magpie held a request before routing it, and stopped it with 504
+
+time: 2026-10-31T15:56:09Z
+magpie: 0.1.2404 (windows/amd64, served by app)
+request: POST /v1/chat/completions
+model: workbuddy-ai/deepseek-v4.1-flash
+agent: dsh
+held: 36s, 30s of it in no wait magpie knows of
+known waits: in body 0s, JS middleware 200ms, masking 5.5s
+body read: 272.7 KB of 272.7 KB, the last 33.1s ago
+body room: 0 of 0 bytes held (unset), 0 waiting
+requests in flight: 4
+
+where every goroutine stood:
+goroutine profile: total 96
+3 @ 0x7ff66e87a30e 0x7ff66e83cd37 0x7ff66e879445 0x7ff66e90ab07 0x7ff66e90bdec 0x7ff66e90c445 0x7ff66e90d04e 0x7ff66e9df845 0x7ff66e9eec85 0x7ff66eb35493 0x7ff66e881e81
+#	0x7ff66e879444	internal/poll.runtime_pollWait+0x84		runtime/netpoll.go:351
+#	0x7ff66e90ab06	internal/poll.(*pollDesc).wait+0x26		internal/poll/fd_poll_runtime.go:84
+#	0x7ff66e90bdeb	internal/poll.(*FD).waitIO+0x4b			internal/poll/fd_windows.go:228
+#	0x7ff66e90c444	internal/poll.(*FD).execIO+0x364		internal/poll/fd_windows.go:311
+#	0x7ff66e90d04d	internal/poll.(*FD).Read+0x20d			internal/poll/fd_windows.go:600
+#	0x7ff66e9df844	net.(*netFD).Read+0x24				net/fd_posix.go:68
+#	0x7ff66e9eec84	net.(*conn).Read+0x44				net/net.go:196
+#	0x7ff66eb35492	net/http.(*connReader).backgroundRead+0x32	net/http/server.go:702
+
+2 @ 0x7ff66e876d5e 0x7ff66e87e3ee 0x7ff66e89d49e 0x7ff66e8a636e 0x7ff66e8a1bd1 0x7ff66e91cb67 0x7ff66e91b05e 0x7ff66e91b86a 0x7ff66e91b861 0x7ff66eb9140b 0x7ff66eb90f7f 0x7ff66eb9138c 0x7ff66f2112aa 0x7ff66f222aba 0x7ff66f222a3e 0x7ff66f007c0c 0x7ff66f06a6d6 0x7ff66fabe490 0x7ff66fab43c8 0x7ff66fd1f382 0x7ff66fd1f29e 0x7ff66fab3b45 0x7ff66fab5b50 0x7ff66fab4e57 0x7ff66fb16871 0x7ff66fbd9155 0x7ff66fb02e4c 0x7ff66eb3d749 0x7ff66eb3f547 0x7ff66faea256 0x7ff66eb3d749 0x7ff66fae9d0b 0x7ff66eb3d749 0x7ff66fae988b 0x7ff66eb3d749 0x7ff66fae96f2 0x7ff66eb3d749 0x7ff66fae8ff5 0x7ff66eb3d749 0x7ff66fae8e51 0x7ff66eb3d749 0x7ff66fae8b27 0x7ff66eb3d749 0x7ff66fae8816 0x7ff66eb3d749 0x7ff66fae86c9 0x7ff66eb3d749 0x7ff66fbf2791 0x7ff66eb3d749 0x7ff66fbf2536 0x7ff66eb3d749 0x7ff66fbf23e9 0x7ff66eb3d749 0x7ff66fae7fb5 0x7ff66eb3d749 0x7ff66eb5cd4e 0x7ff66eb3b790 0x7ff66e881e81
+#	0x7ff66e87e3ed	syscall.syscalln+0x4d												runtime/syscall_windows.go:431
+#	0x7ff66e89d49d	syscall.SyscallN+0x1d												syscall/dll_windows.go:99
+#	0x7ff66e8a636d	syscall.createFile+0xed												syscall/zsyscall_windows.go:507
+#	0x7ff66e8a1bd0	syscall.Open+0x1b0												syscall/syscall_windows.go:444
+#	0x7ff66e91cb66	os.openFileNolog+0xa6												os/file_windows.go:158
+#	0x7ff66e91b05d	os.OpenFile+0x3d												os/file.go:412
+#	0x7ff66e91b869	os.Open+0x49													os/file.go:390
+#	0x7ff66e91b860	os.ReadFile+0x40												os/file.go:865
+#	0x7ff66eb9140a	github.com/yetone/magpie/internal/steady.ReadFile.func1+0x2a							github.com/yetone/magpie/internal/steady/steady.go:100
+#	0x7ff66eb90f7e	github.com/yetone/magpie/internal/steady.retry+0x1e								github.com/yetone/magpie/internal/steady/steady.go:51
+#	0x7ff66eb9138b	github.com/yetone/magpie/internal/steady.ReadFile+0x4b								github.com/yetone/magpie/internal/steady/steady.go:99
+#	0x7ff66f2112a9	github.com/yetone/magpie/internal/provider.read+0x69								github.com/yetone/magpie/internal/provider/provider.go:595
+#	0x7ff66f222ab9	github.com/yetone/magpie/internal/provider.load+0x99								github.com/yetone/magpie/internal/provider/provider.go:572
+#	0x7ff66f222a3d	github.com/yetone/magpie/internal/provider.storedPicks+0x1d							github.com/yetone/magpie/internal/provider/proxy.go:100
+#	0x7ff66f007c0b	github.com/yetone/magpie/internal/provider.Provider.CapsOf+0xab							github.com/yetone/magpie/internal/provider/account_caps.go:116
+#	0x7ff66f06a6d5	github.com/yetone/magpie/internal/provider.HoldCaps+0xb5							github.com/yetone/magpie/internal/provider/codex_credits.go:52
+#	0x7ff66fabe48f	github.com/yetone/magpie/internal/gateway.capHeld+0xef								github.com/yetone/magpie/internal/gateway/fallback.go:777
+#	0x7ff66fab43c7	github.com/yetone/magpie/internal/gateway.perKeyBarred.func4+0x147						github.com/yetone/magpie/internal/gateway/fallback.go:268
+#	0x7ff66fd1f381	slices.IndexFunc[...]+0x121											slices/slices.go:109
+#	0x7ff66fd1f29d	slices.DeleteFunc[...]+0x3d											slices/slices.go:240
+#	0x7ff66fab3b44	github.com/yetone/magpie/internal/gateway.perKeyBarred+0x2044							github.com/yetone/magpie/internal/gateway/fallback.go:267
+#	0x7ff66fab5b4f	github.com/yetone/magpie/internal/gateway.(*Server).planPaused.func1+0xcf					github.com/yetone/magpie/internal/gateway/fallback.go:420
+#	0x7ff66fab4e56	github.com/yetone/magpie/internal/gateway.(*Server).planPaused+0x156						github.com/yetone/magpie/internal/gateway/fallback.go:441
+#	0x7ff66fb16870	github.com/yetone/magpie/internal/gateway.(*Server).serve+0x55b0						github.com/yetone/magpie/internal/gateway/gateway.go:2366
+#	0x7ff66fbd9154	github.com/yetone/magpie/internal/gateway.(*Server).serveAgent+0x894						github.com/yetone/magpie/internal/gateway/middleware.go:75
+#	0x7ff66fb02e4b	github.com/yetone/magpie/internal/gateway.(*Server).routes.(*Server).handle.func5+0x80b				github.com/yetone/magpie/internal/gateway/gateway.go:1725
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28										net/http/server.go:2286
+#	0x7ff66eb3f546	net/http.(*ServeMux).ServeHTTP+0x1c6										net/http/server.go:2828
+#	0x7ff66faea255	github.com/yetone/magpie/internal/gateway.(*Server).Handler.keyLimited.func1+0x515				github.com/yetone/magpie/internal/gateway/key_limit.go:44
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28										net/http/server.go:2286
+#	0x7ff66fae9d0a	github.com/yetone/magpie/internal/gateway.(*Server).Handler.withCaller.func2+0x20a				github.com/yetone/magpie/internal/gateway/remote_magpie.go:63
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28										net/http/server.go:2286
+#	0x7ff66fae988a	github.com/yetone/magpie/internal/gateway.(*Server).Handler.readOnlyGuard.func3+0x14a				github.com/yetone/magpie/internal/gateway/readonly.go:72
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28										net/http/server.go:2286
+#	0x7ff66fae96f1	github.com/yetone/magpie/internal/gateway.(*Server).Handler.callerGuard.func4+0x171				github.com/yetone/magpie/internal/gateway/lan.go:522
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28										net/http/server.go:2286
+#	0x7ff66fae8ff4	github.com/yetone/magpie/internal/gateway.(*Server).Handler.corsGuard.func5+0x134				github.com/yetone/magpie/internal/gateway/cors.go:63
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28										net/http/server.go:2286
+#	0x7ff66fae8e50	github.com/yetone/magpie/internal/gateway.(*Server).Handler.holdCatalog.func6+0xb0				github.com/yetone/magpie/internal/gateway/holdcatalog.go:27
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28										net/http/server.go:2286
+#	0x7ff66fae8b26	github.com/yetone/magpie/internal/gateway.(*Server).Handler.(*Server).counted.func7+0x2c6			github.com/yetone/magpie/internal/gateway/busy.go:111
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28										net/http/server.go:2286
+#	0x7ff66fae8815	github.com/yetone/magpie/internal/gateway.(*Server).Handler.(*Server).dumpFirst.func8+0x115			github.com/yetone/magpie/internal/gateway/goroutines.go:71
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28										net/http/server.go:2286
+#	0x7ff66fae86c8	github.com/yetone/magpie/internal/gateway.(*Server).Handler.socketEntry.func9+0x1a8				github.com/yetone/magpie/internal/gateway/responses_ws.go:73
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28										net/http/server.go:2286
+#	0x7ff66fbf2790	github.com/yetone/magpie/internal/gateway.(*Server).Front.func1.lanGuard.1+0x210				github.com/yetone/magpie/internal/gateway/lan.go:394
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28										net/http/server.go:2286
+#	0x7ff66fbf2535	github.com/yetone/magpie/internal/gateway.(*Server).Front.func1.(*Server).dumpFirst.2+0x115			github.com/yetone/magpie/internal/gateway/goroutines.go:71
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28										net/http/server.go:2286
+#	0x7ff66fbf23e8	github.com/yetone/magpie/internal/gateway.(*Server).Front.func1.socketEntry.3+0x1a8				github.com/yetone/magpie/internal/gateway/responses_ws.go:73
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28										net/http/server.go:2286
+#	0x7ff66fae7fb4	github.com/yetone/magpie/internal/gateway.(*Server).ListenAndServe.(*Server).closesWhenHandedOff.func7+0x94	github.com/yetone/magpie/internal/gateway/handover.go:187
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28										net/http/server.go:2286
+#	0x7ff66eb5cd4d	net/http.serverHandler.ServeHTTP+0x8d										net/http/server.go:3311
+#	0x7ff66eb3b78f	net/http.(*conn).serve+0x68f											net/http/server.go:2067
+
+2 @ 0x7ff66e87a30e 0x7ff66e85a145 0x7ff66e85a117 0x7ff66e87b96e 0x7ff66e88f985 0x7ff66f621552 0x7ff66f629bb5 0x7ff66f6296fc 0x7ff66f630bdb 0x7ff66f62fe05 0x7ff66e881e81
+#	0x7ff66e87b96d	sync.runtime_SemacquireWaitGroup+0x2d					runtime/sema.go:114
+#	0x7ff66e88f984	sync.(*WaitGroup).Wait+0x84						sync/waitgroup.go:206
+#	0x7ff66f621551	github.com/yetone/magpie/internal/pii/guard.(*Model).Find+0x391		github.com/yetone/magpie/internal/pii/guard/guard.go:214
+#	0x7ff66f629bb4	github.com/yetone/magpie/internal/pii.guardClassifyTurn+0x194		github.com/yetone/magpie/internal/pii/astrlink.go:211
+#	0x7ff66f6296fb	github.com/yetone/magpie/internal/pii.guardClassify+0x1b		github.com/yetone/magpie/internal/pii/astrlink.go:181
+#	0x7ff66f630bda	github.com/yetone/magpie/internal/pii.classifySafely+0x7a		github.com/yetone/magpie/internal/pii/find.go:298
+#	0x7ff66f62fe04	github.com/yetone/magpie/internal/pii.(*backend).find.func2+0x4e4	github.com/yetone/magpie/internal/pii/find.go:252
+
+1 @ 0x7ff66e810911 0x7ff66e87c158 0x7ff66f5fc593 0x7ff66e881e81
+#	0x7ff66e87c157	os/signal.signal_recv+0x97	runtime/sigqueue.go:152
+#	0x7ff66f5fc592	os/signal.loop+0x12		os/signal/signal_unix.go:23
+
+1 @ 0x7ff66e8394f1 0x7ff66e8790bd 0x7ff66f655011 0x7ff66f654e45 0x7ff66f651cc9 0x7ff66fb8aaf5 0x7ff66fb8a452 0x7ff66fcd1a93 0x7ff66fccfdd5 0x7ff66e881e81
+#	0x7ff66f655010	runtime/pprof.writeRuntimeProfile+0xb0						runtime/pprof/pprof.go:851
+#	0x7ff66f654e44	runtime/pprof.writeGoroutine+0x44						runtime/pprof/pprof.go:784
+#	0x7ff66f651cc8	runtime/pprof.(*Profile).WriteTo+0x148						runtime/pprof/pprof.go:408
+#	0x7ff66fb8aaf4	github.com/yetone/magpie/internal/gateway.heldStacks+0xf4			github.com/yetone/magpie/internal/gateway/held_report.go:186
+#	0x7ff66fb8a451	github.com/yetone/magpie/internal/gateway.(*Server).heldReport+0x7f1		github.com/yetone/magpie/internal/gateway/held_report.go:141
+#	0x7ff66fcd1a92	github.com/yetone/magpie/internal/gateway.(*unroutedHold).giveUp+0x512		github.com/yetone/magpie/internal/gateway/unrouted.go:636
+#	0x7ff66fccfdd4	github.com/yetone/magpie/internal/gateway.(*unroutedHold).checkUnknown+0xd4	github.com/yetone/magpie/internal/gateway/unrouted.go:437
+
+1 @ 0x7ff66e876d5e 0x7ff66e87e3ee 0x7ff66e89d49e 0x7ff66e89d9bc 0x7ff66e89ddaa 0x7ff6700fd62e 0x7ff6700fd576 0x7ff6700e9885 0x7ff6700e5fa2 0x7ff6701eaf5e 0x7ff67032668d 0x7ff670364892 0x7ff670377c05 0x7ff6703769e7 0x7ff6704153d9 0x7ff66e845de7 0x7ff66e881e81
+#	0x7ff66e87e3ed	syscall.syscalln+0x4d								runtime/syscall_windows.go:431
+#	0x7ff66e89d49d	syscall.SyscallN+0x1d								syscall/dll_windows.go:99
+#	0x7ff66e89d9bb	syscall.(*Proc).Call+0x1b							syscall/dll_windows.go:256
+#	0x7ff66e89dda9	syscall.(*LazyProc).Call+0x49							syscall/dll_windows.go:376
+#	0x7ff6700fd62d	github.com/wailsapp/wails/v3/pkg/w32.GetMessage+0x16d				github.com/wailsapp/wails/v3@v3.0.0-beta.24/pkg/w32/user32.go:509
+#	0x7ff6700fd575	github.com/wailsapp/wails/v3/pkg/application.(*windowsApp).runMainLoop+0xb5	github.com/wailsapp/wails/v3@v3.0.0-beta.24/pkg/application/mainthread_windows.go:62
+#	0x7ff6700e9884	github.com/wailsapp/wails/v3/pkg/application.(*windowsApp).run+0x3a4		github.com/wailsapp/wails/v3@v3.0.0-beta.24/pkg/application/application_windows.go:191
+#	0x7ff6700e5fa1	github.com/wailsapp/wails/v3/pkg/application.(*App).Run+0x341			github.com/wailsapp/wails/v3@v3.0.0-beta.24/pkg/application/application.go:774
+#	0x7ff6701eaf5d	github.com/yetone/magpie/internal/gui.Run+0x143d				github.com/yetone/magpie/internal/gui/app.go:678
+#	0x7ff67032668c	github.com/yetone/magpie/internal/cli.init.func6+0x6c				github.com/yetone/magpie/internal/cli/gui_on.go:27
+#	0x7ff670364891	github.com/yetone/magpie/internal/cli.runGUI+0x51				github.com/yetone/magpie/internal/cli/gui_on.go:18
+#	0x7ff670377c04	github.com/yetone/magpie/internal/cli.run+0x10e4				github.com/yetone/magpie/internal/cli/main.go:438
+#	0x7ff6703769e6	github.com/yetone/magpie/internal/cli.Main+0x4c6				github.com/yetone/magpie/internal/cli/main.go:212
+#	0x7ff6704153d8	main.main+0x58									github.com/yetone/magpie/main.go:27
+#	0x7ff66e845de6	runtime.main+0x2c6								runtime/proc.go:290
+
+1 @ 0x7ff66e876d5e 0x7ff66e87e3ee 0x7ff66e89d49e 0x7ff66e8a636e 0x7ff66e8a1bd1 0x7ff66e91cb67 0x7ff66e91b05e 0x7ff66e91b86a 0x7ff66e91b861 0x7ff66eb9140b 0x7ff66eb90f7f 0x7ff66eb9138c 0x7ff66f2112aa 0x7ff66f01d91f 0x7ff66f01d96f 0x7ff66f01d777 0x7ff66e881e81
+#	0x7ff66e87e3ed	syscall.syscalln+0x4d						runtime/syscall_windows.go:431
+#	0x7ff66e89d49d	syscall.SyscallN+0x1d						syscall/dll_windows.go:99
+#	0x7ff66e8a636d	syscall.createFile+0xed						syscall/zsyscall_windows.go:507
+#	0x7ff66e8a1bd0	syscall.Open+0x1b0						syscall/syscall_windows.go:444
+#	0x7ff66e91cb66	os.openFileNolog+0xa6						os/file_windows.go:158
+#	0x7ff66e91b05d	os.OpenFile+0x3d						os/file.go:412
+#	0x7ff66e91b869	os.Open+0x49							os/file.go:390
+#	0x7ff66e91b860	os.ReadFile+0x40						os/file.go:865
+#	0x7ff66eb9140a	github.com/yetone/magpie/internal/steady.ReadFile.func1+0x2a	github.com/yetone/magpie/internal/steady/steady.go:100
+#	0x7ff66eb90f7e	github.com/yetone/magpie/internal/steady.retry+0x1e		github.com/yetone/magpie/internal/steady/steady.go:51
+#	0x7ff66eb9138b	github.com/yetone/magpie/internal/steady.ReadFile+0x4b		github.com/yetone/magpie/internal/steady/steady.go:99
+#	0x7ff66f2112a9	github.com/yetone/magpie/internal/provider.read+0x69		github.com/yetone/magpie/internal/provider/provider.go:595
+#	0x7ff66f01d91e	github.com/yetone/magpie/internal/provider.load+0x7e		github.com/yetone/magpie/internal/provider/provider.go:572
+#	0x7ff66f01d96e	github.com/yetone/magpie/internal/provider.refreshDueLists+0xce	github.com/yetone/magpie/internal/provider/autolist.go:294
+#	0x7ff66f01d776	github.com/yetone/magpie/internal/provider.KeepListsFresh+0x96	github.com/yetone/magpie/internal/provider/autolist.go:281
+
+1 @ 0x7ff66e876d5e 0x7ff66e87e3ee 0x7ff66e89d49e 0x7ff66e8a636e 0x7ff66e8a1bd1 0x7ff66e91cb67 0x7ff66e91b05e 0x7ff66e91b86a 0x7ff66e91b861 0x7ff66eb9140b 0x7ff66eb90f7f 0x7ff66eb9138c 0x7ff66f2112aa 0x7ff66f21103c 0x7ff66f2e2942 0x7ff66f1d4b54 0x7ff66f1d482b 0x7ff66f1d45d0 0x7ff66f2a2a52 0x7ff66f2a2712 0x7ff66fed8daa 0x7ff66fe083e5 0x7ff66fdfe1f8 0x7ff66fdf6e9c 0x7ff66fd90eb2 0x7ff66fd8f829 0x7ff670288887 0x7ff66eb3d749 0x7ff66eb3f547 0x7ff6701e084a 0x7ff66eb3d749 0x7ff6701e0664 0x7ff66eb3d749 0x7ff6701ec0de 0x7ff66eb3d749 0x7ff6700a9b02 0x7ff6700a8ff5 0x7ff66eb3d749 0x7ff6701262f8 0x7ff66eb3d749 0x7ff6700e39de 0x7ff66eb3d749 0x7ff6700a92b6 0x7ff6700ab647 0x7ff6700aa8ff 0x7ff66e881e81
+#	0x7ff66e87e3ed	syscall.syscalln+0x4d											runtime/syscall_windows.go:431
+#	0x7ff66e89d49d	syscall.SyscallN+0x1d											syscall/dll_windows.go:99
+#	0x7ff66e8a636d	syscall.createFile+0xed											syscall/zsyscall_windows.go:507
+#	0x7ff66e8a1bd0	syscall.Open+0x1b0											syscall/syscall_windows.go:444
+#	0x7ff66e91cb66	os.openFileNolog+0xa6											os/file_windows.go:158
+#	0x7ff66e91b05d	os.OpenFile+0x3d											os/file.go:412
+#	0x7ff66e91b869	os.Open+0x49												os/file.go:390
+#	0x7ff66e91b860	os.ReadFile+0x40											os/file.go:865
+#	0x7ff66eb9140a	github.com/yetone/magpie/internal/steady.ReadFile.func1+0x2a						github.com/yetone/magpie/internal/steady/steady.go:100
+#	0x7ff66eb90f7e	github.com/yetone/magpie/internal/steady.retry+0x1e							github.com/yetone/magpie/internal/steady/steady.go:51
+#	0x7ff66eb9138b	github.com/yetone/magpie/internal/steady.ReadFile+0x4b							github.com/yetone/magpie/internal/steady/steady.go:99
+#	0x7ff66f2112a9	github.com/yetone/magpie/internal/provider.read+0x69							github.com/yetone/magpie/internal/provider/provider.go:595
+#	0x7ff66f21103b	github.com/yetone/magpie/internal/provider.load+0x7b							github.com/yetone/magpie/internal/provider/provider.go:572
+#	0x7ff66f2e2941	github.com/yetone/magpie/internal/provider.heldOf[...]+0x341						github.com/yetone/magpie/internal/provider/hold.go:196
+#	0x7ff66f1d4b53	github.com/yetone/magpie/internal/provider.unlistedByGroups+0x53					github.com/yetone/magpie/internal/provider/models.go:2742
+#	0x7ff66f1d482a	github.com/yetone/magpie/internal/provider.catalogKeeping+0x14a						github.com/yetone/magpie/internal/provider/models.go:2728
+#	0x7ff66f1d45cf	github.com/yetone/magpie/internal/provider.catalogOf+0x4f						github.com/yetone/magpie/internal/provider/models.go:2707
+#	0x7ff66f2a2a51	github.com/yetone/magpie/internal/provider.ListedFor+0x31						github.com/yetone/magpie/internal/provider/visible.go:83
+#	0x7ff66f2a2711	github.com/yetone/magpie/internal/provider.CatalogFor+0x31						github.com/yetone/magpie/internal/provider/visible.go:68
+#	0x7ff66fed8da9	github.com/yetone/magpie/internal/agent.viaMagpie+0x49							github.com/yetone/magpie/internal/agent/route.go:33
+#	0x7ff66fe083e4	github.com/yetone/magpie/internal/agent.codexViaMagpieFor+0x1e4						github.com/yetone/magpie/internal/agent/codex.go:2161
+#	0x7ff66fdfe1f7	github.com/yetone/magpie/internal/agent.codexIn.func60+0x957						github.com/yetone/magpie/internal/agent/codex.go:1248
+#	0x7ff66fdf6e9b	github.com/yetone/magpie/internal/agent.codexIn.func76+0x1b						github.com/yetone/magpie/internal/agent/codex.go:1814
+#	0x7ff66fd90eb1	github.com/yetone/magpie/internal/agent.magpieValue+0x131						github.com/yetone/magpie/internal/agent/applied.go:312
+#	0x7ff66fd8f828	github.com/yetone/magpie/internal/agent.(*Agent).Drift+0x2e8						github.com/yetone/magpie/internal/agent/applied.go:181
+#	0x7ff670288886	github.com/yetone/magpie/internal/gui.Handler.func5+0x66						github.com/yetone/magpie/internal/gui/api.go:1097
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28									net/http/server.go:2286
+#	0x7ff66eb3f546	net/http.(*ServeMux).ServeHTTP+0x1c6									net/http/server.go:2828
+#	0x7ff6701e0849	github.com/yetone/magpie/internal/gui.Handler.held.func76+0x1a9						github.com/yetone/magpie/internal/gui/api.go:2760
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28									net/http/server.go:2286
+#	0x7ff6701e0663	github.com/yetone/magpie/internal/gui.Handler.noFramedAPI.func77+0x83					github.com/yetone/magpie/internal/gui/api.go:2722
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28									net/http/server.go:2286
+#	0x7ff6701ec0dd	github.com/yetone/magpie/internal/gui.Run.ownWindow.func27+0xdd						github.com/yetone/magpie/internal/gui/window_peer.go:27
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28									net/http/server.go:2286
+#	0x7ff6700a9b01	github.com/wailsapp/wails/v3/internal/assetserver.(*AssetServer).serveHTTP+0x3c1			github.com/wailsapp/wails/v3@v3.0.0-beta.24/internal/assetserver/assetserver.go:128
+#	0x7ff6700a8ff4	github.com/wailsapp/wails/v3/internal/assetserver.NewAssetServer.func1+0x34				github.com/wailsapp/wails/v3@v3.0.0-beta.24/internal/assetserver/assetserver.go:48
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28									net/http/server.go:2286
+#	0x7ff6701262f7	github.com/wailsapp/wails/v3/pkg/application.(*HTTPTransport).Handler.func1.1+0x77			github.com/wailsapp/wails/v3@v3.0.0-beta.24/pkg/application/transport_http.go:164
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28									net/http/server.go:2286
+#	0x7ff6700e39dd	github.com/wailsapp/wails/v3/pkg/application.New.func3.1+0x29d						github.com/wailsapp/wails/v3@v3.0.0-beta.24/pkg/application/application.go:154
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28									net/http/server.go:2286
+#	0x7ff6700a92b5	github.com/wailsapp/wails/v3/internal/assetserver.(*AssetServer).ServeHTTP+0x275			github.com/wailsapp/wails/v3@v3.0.0-beta.24/internal/assetserver/assetserver.go:70
+#	0x7ff6700ab646	github.com/wailsapp/wails/v3/internal/assetserver.(*AssetServer).processWebViewRequestInternal+0xc66	github.com/wailsapp/wails/v3@v3.0.0-beta.24/internal/assetserver/assetserver_webview.go:213
+#	0x7ff6700aa8fe	github.com/wailsapp/wails/v3/internal/assetserver.(*AssetServer).processWebViewRequest+0x5e		github.com/wailsapp/wails/v3@v3.0.0-beta.24/internal/assetserver/assetserver_webview.go:106
+
+1 @ 0x7ff66e876d5e 0x7ff66e87e3ee 0x7ff66e89d49e 0x7ff66e8a636e 0x7ff66e8a1bd1 0x7ff66e91cb67 0x7ff66e91b05e 0x7ff66e91b86a 0x7ff66e91b861 0x7ff66eb9140b 0x7ff66eb90f7f 0x7ff66eb9138c 0x7ff66f2112aa 0x7ff66f2138c9 0x7ff66f213916 0x7ff66f2da34c 0x7ff66f2121c5 0x7ff66f23cde5 0x7ff66f23d132 0x7ff66f235505 0x7ff66e881e81
+#	0x7ff66e87e3ed	syscall.syscalln+0x4d						runtime/syscall_windows.go:431
+#	0x7ff66e89d49d	syscall.SyscallN+0x1d						syscall/dll_windows.go:99
+#	0x7ff66e8a636d	syscall.createFile+0xed						syscall/zsyscall_windows.go:507
+#	0x7ff66e8a1bd0	syscall.Open+0x1b0						syscall/syscall_windows.go:444
+#	0x7ff66e91cb66	os.openFileNolog+0xa6						os/file_windows.go:158
+#	0x7ff66e91b05d	os.OpenFile+0x3d						os/file.go:412
+#	0x7ff66e91b869	os.Open+0x49							os/file.go:390
+#	0x7ff66e91b860	os.ReadFile+0x40						os/file.go:865
+#	0x7ff66eb9140a	github.com/yetone/magpie/internal/steady.ReadFile.func1+0x2a	github.com/yetone/magpie/internal/steady/steady.go:100
+#	0x7ff66eb90f7e	github.com/yetone/magpie/internal/steady.retry+0x1e		github.com/yetone/magpie/internal/steady/steady.go:51
+#	0x7ff66eb9138b	github.com/yetone/magpie/internal/steady.ReadFile+0x4b		github.com/yetone/magpie/internal/steady/steady.go:99
+#	0x7ff66f2112a9	github.com/yetone/magpie/internal/provider.read+0x69		github.com/yetone/magpie/internal/provider/provider.go:595
+#	0x7ff66f2138c8	github.com/yetone/magpie/internal/provider.load+0x68		github.com/yetone/magpie/internal/provider/provider.go:572
+#	0x7ff66f213915	github.com/yetone/magpie/internal/provider.allProviders+0xb5	github.com/yetone/magpie/internal/provider/provider.go:763
+#	0x7ff66f2da34b	github.com/yetone/magpie/internal/provider.heldOf[...]+0x20b	github.com/yetone/magpie/internal/provider/hold.go:196
+#	0x7ff66f2121c4	github.com/yetone/magpie/internal/provider.All+0x44		github.com/yetone/magpie/internal/provider/provider.go:694
+#	0x7ff66f23cde4	github.com/yetone/magpie/internal/provider.remoteMagpies+0x24	github.com/yetone/magpie/internal/provider/remote_quotas.go:180
+#	0x7ff66f23d131	github.com/yetone/magpie/internal/provider.RemoteCards+0x31	github.com/yetone/magpie/internal/provider/remote_quotas.go:190
+#	0x7ff66f235504	github.com/yetone/magpie/internal/provider.quotas.func3+0x24	github.com/yetone/magpie/internal/provider/quotas.go:57
+
+1 @ 0x7ff66e876d5e 0x7ff66e87e3ee 0x7ff66e89d49e 0x7ff66e8a636e 0x7ff66e8a1bd1 0x7ff66e91cb67 0x7ff66e91b05e 0x7ff66e91b86a 0x7ff66e91b861 0x7ff66eb9140b 0x7ff66eb90f7f 0x7ff66eb9138c 0x7ff66f2112aa 0x7ff66f2138c9 0x7ff66f213916 0x7ff66f2da34c 0x7ff66f2121c5 0x7ff67026d0df 0x7ff66eb3d749 0x7ff66eb3f547 0x7ff6701e084a 0x7ff66eb3d749 0x7ff6701e0664 0x7ff66eb3d749 0x7ff6701ec0de 0x7ff66eb3d749 0x7ff6700a9b02 0x7ff6700a8ff5 0x7ff66eb3d749 0x7ff6701262f8 0x7ff66eb3d749 0x7ff6700e39de 0x7ff66eb3d749 0x7ff6700a92b6 0x7ff6700ab647 0x7ff6700aa8ff 0x7ff66e881e81
+#	0x7ff66e87e3ed	syscall.syscalln+0x4d											runtime/syscall_windows.go:431
+#	0x7ff66e89d49d	syscall.SyscallN+0x1d											syscall/dll_windows.go:99
+#	0x7ff66e8a636d	syscall.createFile+0xed											syscall/zsyscall_windows.go:507
+#	0x7ff66e8a1bd0	syscall.Open+0x1b0											syscall/syscall_windows.go:444
+#	0x7ff66e91cb66	os.openFileNolog+0xa6											os/file_windows.go:158
+#	0x7ff66e91b05d	os.OpenFile+0x3d											os/file.go:412
+#	0x7ff66e91b869	os.Open+0x49												os/file.go:390
+#	0x7ff66e91b860	os.ReadFile+0x40											os/file.go:865
+#	0x7ff66eb9140a	github.com/yetone/magpie/internal/steady.ReadFile.func1+0x2a						github.com/yetone/magpie/internal/steady/steady.go:100
+#	0x7ff66eb90f7e	github.com/yetone/magpie/internal/steady.retry+0x1e							github.com/yetone/magpie/internal/steady/steady.go:51
+#	0x7ff66eb9138b	github.com/yetone/magpie/internal/steady.ReadFile+0x4b							github.com/yetone/magpie/internal/steady/steady.go:99
+#	0x7ff66f2112a9	github.com/yetone/magpie/internal/provider.read+0x69							github.com/yetone/magpie/internal/provider/provider.go:595
+#	0x7ff66f2138c8	github.com/yetone/magpie/internal/provider.load+0x68							github.com/yetone/magpie/internal/provider/provider.go:572
+#	0x7ff66f213915	github.com/yetone/magpie/internal/provider.allProviders+0xb5						github.com/yetone/magpie/internal/provider/provider.go:763
+#	0x7ff66f2da34b	github.com/yetone/magpie/internal/provider.heldOf[...]+0x20b						github.com/yetone/magpie/internal/provider/hold.go:196
+#	0x7ff66f2121c4	github.com/yetone/magpie/internal/provider.All+0x44							github.com/yetone/magpie/internal/provider/provider.go:694
+#	0x7ff67026d0de	github.com/yetone/magpie/internal/gui.providerRoutes.func2+0x3e						github.com/yetone/magpie/internal/gui/providers.go:1129
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28									net/http/server.go:2286
+#	0x7ff66eb3f546	net/http.(*ServeMux).ServeHTTP+0x1c6									net/http/server.go:2828
+#	0x7ff6701e0849	github.com/yetone/magpie/internal/gui.Handler.held.func76+0x1a9						github.com/yetone/magpie/internal/gui/api.go:2760
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28									net/http/server.go:2286
+#	0x7ff6701e0663	github.com/yetone/magpie/internal/gui.Handler.noFramedAPI.func77+0x83					github.com/yetone/magpie/internal/gui/api.go:2722
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28									net/http/server.go:2286
+#	0x7ff6701ec0dd	github.com/yetone/magpie/internal/gui.Run.ownWindow.func27+0xdd						github.com/yetone/magpie/internal/gui/window_peer.go:27
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28									net/http/server.go:2286
+#	0x7ff6700a9b01	github.com/wailsapp/wails/v3/internal/assetserver.(*AssetServer).serveHTTP+0x3c1			github.com/wailsapp/wails/v3@v3.0.0-beta.24/internal/assetserver/assetserver.go:128
+#	0x7ff6700a8ff4	github.com/wailsapp/wails/v3/internal/assetserver.NewAssetServer.func1+0x34				github.com/wailsapp/wails/v3@v3.0.0-beta.24/internal/assetserver/assetserver.go:48
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28									net/http/server.go:2286
+#	0x7ff6701262f7	github.com/wailsapp/wails/v3/pkg/application.(*HTTPTransport).Handler.func1.1+0x77			github.com/wailsapp/wails/v3@v3.0.0-beta.24/pkg/application/transport_http.go:164
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28									net/http/server.go:2286
+#	0x7ff6700e39dd	github.com/wailsapp/wails/v3/pkg/application.New.func3.1+0x29d						github.com/wailsapp/wails/v3@v3.0.0-beta.24/pkg/application/application.go:154
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28									net/http/server.go:2286
+#	0x7ff6700a92b5	github.com/wailsapp/wails/v3/internal/assetserver.(*AssetServer).ServeHTTP+0x275			github.com/wailsapp/wails/v3@v3.0.0-beta.24/internal/assetserver/assetserver.go:70
+#	0x7ff6700ab646	github.com/wailsapp/wails/v3/internal/assetserver.(*AssetServer).processWebViewRequestInternal+0xc66	github.com/wailsapp/wails/v3@v3.0.0-beta.24/internal/assetserver/assetserver_webview.go:213
+#	0x7ff6700aa8fe	github.com/wailsapp/wails/v3/internal/assetserver.(*AssetServer).processWebViewRequest+0x5e		github.com/wailsapp/wails/v3@v3.0.0-beta.24/internal/assetserver/assetserver_webview.go:106
+
+1 @ 0x7ff66e876d5e 0x7ff66e87e3ee 0x7ff66e89d49e 0x7ff66e8a636e 0x7ff66e8a1bd1 0x7ff66e91cb67 0x7ff66e91b05e 0x7ff66e91b86a 0x7ff66e91b861 0x7ff66eb9140b 0x7ff66eb90f7f 0x7ff66eb9138c 0x7ff66f2112aa 0x7ff66f222aba 0x7ff66f222a3e 0x7ff66f007c0c 0x7ff66f06a6d6 0x7ff66fabe490 0x7ff66fab43c8 0x7ff66fd1f382 0x7ff66fd1f29e 0x7ff66fab3b45 0x7ff66fac373c 0x7ff66fc71185 0x7ff66fcf2ce9 0x7ff66fcf2735 0x7ff66fcf20eb 0x7ff66fcf20e6 0x7ff66fd08e0f 0x7ff66feda7a4 0x7ff66fe2c928 0x7ff66fe26a25 0x7ff66fd8f90e 0x7ff670288887 0x7ff66eb3d749 0x7ff66eb3f547 0x7ff6701e084a 0x7ff66eb3d749 0x7ff6701e0664 0x7ff66eb3d749 0x7ff6701ec0de 0x7ff66eb3d749 0x7ff6700a9b02 0x7ff6700a8ff5 0x7ff66eb3d749 0x7ff6701262f8 0x7ff66eb3d749 0x7ff6700e39de 0x7ff66eb3d749 0x7ff6700a92b6 0x7ff6700ab647 0x7ff6700aa8ff 0x7ff66e881e81
+#	0x7ff66e87e3ed	syscall.syscalln+0x4d											runtime/syscall_windows.go:431
+#	0x7ff66e89d49d	syscall.SyscallN+0x1d											syscall/dll_windows.go:99
+#	0x7ff66e8a636d	syscall.createFile+0xed											syscall/zsyscall_windows.go:507
+#	0x7ff66e8a1bd0	syscall.Open+0x1b0											syscall/syscall_windows.go:444
+#	0x7ff66e91cb66	os.openFileNolog+0xa6											os/file_windows.go:158
+#	0x7ff66e91b05d	os.OpenFile+0x3d											os/file.go:412
+#	0x7ff66e91b869	os.Open+0x49												os/file.go:390
+#	0x7ff66e91b860	os.ReadFile+0x40											os/file.go:865
+#	0x7ff66eb9140a	github.com/yetone/magpie/internal/steady.ReadFile.func1+0x2a						github.com/yetone/magpie/internal/steady/steady.go:100
+#	0x7ff66eb90f7e	github.com/yetone/magpie/internal/steady.retry+0x1e							github.com/yetone/magpie/internal/steady/steady.go:51
+#	0x7ff66eb9138b	github.com/yetone/magpie/internal/steady.ReadFile+0x4b							github.com/yetone/magpie/internal/steady/steady.go:99
+#	0x7ff66f2112a9	github.com/yetone/magpie/internal/provider.read+0x69							github.com/yetone/magpie/internal/provider/provider.go:595
+#	0x7ff66f222ab9	github.com/yetone/magpie/internal/provider.load+0x99							github.com/yetone/magpie/internal/provider/provider.go:572
+#	0x7ff66f222a3d	github.com/yetone/magpie/internal/provider.storedPicks+0x1d						github.com/yetone/magpie/internal/provider/proxy.go:100
+#	0x7ff66f007c0b	github.com/yetone/magpie/internal/provider.Provider.CapsOf+0xab						github.com/yetone/magpie/internal/provider/account_caps.go:116
+#	0x7ff66f06a6d5	github.com/yetone/magpie/internal/provider.HoldCaps+0xb5						github.com/yetone/magpie/internal/provider/codex_credits.go:52
+#	0x7ff66fabe48f	github.com/yetone/magpie/internal/gateway.capHeld+0xef							github.com/yetone/magpie/internal/gateway/fallback.go:777
+#	0x7ff66fab43c7	github.com/yetone/magpie/internal/gateway.perKeyBarred.func4+0x147					github.com/yetone/magpie/internal/gateway/fallback.go:268
+#	0x7ff66fd1f381	slices.IndexFunc[...]+0x121										slices/slices.go:109
+#	0x7ff66fd1f29d	slices.DeleteFunc[...]+0x3d										slices/slices.go:240
+#	0x7ff66fab3b44	github.com/yetone/magpie/internal/gateway.perKeyBarred+0x2044						github.com/yetone/magpie/internal/gateway/fallback.go:267
+#	0x7ff66fac373b	github.com/yetone/magpie/internal/gateway.spentModel+0xbb						github.com/yetone/magpie/internal/gateway/fallback.go:1158
+#	0x7ff66fc71184	github.com/yetone/magpie/internal/gateway.smallReadyOf+0x1a4						github.com/yetone/magpie/internal/gateway/search.go:524
+#	0x7ff66fcf2ce8	github.com/yetone/magpie/internal/gateway.seersRanked+0x568						github.com/yetone/magpie/internal/gateway/vision.go:265
+#	0x7ff66fcf2734	github.com/yetone/magpie/internal/gateway.autoVision+0x14						github.com/yetone/magpie/internal/gateway/vision.go:221
+#	0x7ff66fcf20ea	github.com/yetone/magpie/internal/gateway.AutoVision+0xca						github.com/yetone/magpie/internal/gateway/vision.go:215
+#	0x7ff66fcf20e5	github.com/yetone/magpie/internal/gateway.seer+0xc5							github.com/yetone/magpie/internal/gateway/vision.go:129
+#	0x7ff66fd08e0e	github.com/yetone/magpie/internal/gateway.init.6.func1+0xe						github.com/yetone/magpie/internal/gateway/vision.go:33
+#	0x7ff66feda7a3	github.com/yetone/magpie/internal/agent.magpieModels+0xc3						github.com/yetone/magpie/internal/agent/route.go:194
+#	0x7ff66fe2c927	github.com/yetone/magpie/internal/agent.dshCheck+0x2e7							github.com/yetone/magpie/internal/agent/dsh.go:890
+#	0x7ff66fe26a24	github.com/yetone/magpie/internal/agent.dshAt.func6+0x44						github.com/yetone/magpie/internal/agent/dsh.go:157
+#	0x7ff66fd8f90d	github.com/yetone/magpie/internal/agent.(*Agent).Drift+0x3cd						github.com/yetone/magpie/internal/agent/applied.go:193
+#	0x7ff670288886	github.com/yetone/magpie/internal/gui.Handler.func5+0x66						github.com/yetone/magpie/internal/gui/api.go:1097
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28									net/http/server.go:2286
+#	0x7ff66eb3f546	net/http.(*ServeMux).ServeHTTP+0x1c6									net/http/server.go:2828
+#	0x7ff6701e0849	github.com/yetone/magpie/internal/gui.Handler.held.func76+0x1a9						github.com/yetone/magpie/internal/gui/api.go:2760
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28									net/http/server.go:2286
+#	0x7ff6701e0663	github.com/yetone/magpie/internal/gui.Handler.noFramedAPI.func77+0x83					github.com/yetone/magpie/internal/gui/api.go:2722
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28									net/http/server.go:2286
+#	0x7ff6701ec0dd	github.com/yetone/magpie/internal/gui.Run.ownWindow.func27+0xdd						github.com/yetone/magpie/internal/gui/window_peer.go:27
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28									net/http/server.go:2286
+#	0x7ff6700a9b01	github.com/wailsapp/wails/v3/internal/assetserver.(*AssetServer).serveHTTP+0x3c1			github.com/wailsapp/wails/v3@v3.0.0-beta.24/internal/assetserver/assetserver.go:128
+#	0x7ff6700a8ff4	github.com/wailsapp/wails/v3/internal/assetserver.NewAssetServer.func1+0x34				github.com/wailsapp/wails/v3@v3.0.0-beta.24/internal/assetserver/assetserver.go:48
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28									net/http/server.go:2286
+#	0x7ff6701262f7	github.com/wailsapp/wails/v3/pkg/application.(*HTTPTransport).Handler.func1.1+0x77			github.com/wailsapp/wails/v3@v3.0.0-beta.24/pkg/application/transport_http.go:164
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28									net/http/server.go:2286
+#	0x7ff6700e39dd	github.com/wailsapp/wails/v3/pkg/application.New.func3.1+0x29d						github.com/wailsapp/wails/v3@v3.0.0-beta.24/pkg/application/application.go:154
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28									net/http/server.go:2286
+#	0x7ff6700a92b5	github.com/wailsapp/wails/v3/internal/assetserver.(*AssetServer).ServeHTTP+0x275			github.com/wailsapp/wails/v3@v3.0.0-beta.24/internal/assetserver/assetserver.go:70
+#	0x7ff6700ab646	github.com/wailsapp/wails/v3/internal/assetserver.(*AssetServer).processWebViewRequestInternal+0xc66	github.com/wailsapp/wails/v3@v3.0.0-beta.24/internal/assetserver/assetserver_webview.go:213
+#	0x7ff6700aa8fe	github.com/wailsapp/wails/v3/internal/assetserver.(*AssetServer).processWebViewRequest+0x5e		github.com/wailsapp/wails/v3@v3.0.0-beta.24/internal/assetserver/assetserver_webview.go:106
+
+1 @ 0x7ff66e876d5e 0x7ff66e87e3ee 0x7ff66e89d49e 0x7ff66e8a636e 0x7ff66e8a1bd1 0x7ff66e91cb67 0x7ff66e91b05e 0x7ff66e91b86a 0x7ff66e91b861 0x7ff66fd9ecbc 0x7ff66fd9ed7f 0x7ff66fd9fbc7 0x7ff66fd9cf47 0x7ff66fd693ec 0x7ff66fd693ae 0x7ff66fd68e45 0x7ff66fd68c86 0x7ff66fd65fdf 0x7ff67028884f 0x7ff66eb3d749 0x7ff66eb3f547 0x7ff6701e084a 0x7ff66eb3d749 0x7ff6701e0664 0x7ff66eb3d749 0x7ff6701ec0de 0x7ff66eb3d749 0x7ff6700a9b02 0x7ff6700a8ff5 0x7ff66eb3d749 0x7ff6701262f8 0x7ff66eb3d749 0x7ff6700e39de 0x7ff66eb3d749 0x7ff6700a92b6 0x7ff6700ab647 0x7ff6700aa8ff 0x7ff66e881e81
+#	0x7ff66e87e3ed	syscall.syscalln+0x4d											runtime/syscall_windows.go:431
+#	0x7ff66e89d49d	syscall.SyscallN+0x1d											syscall/dll_windows.go:99
+#	0x7ff66e8a636d	syscall.createFile+0xed											syscall/zsyscall_windows.go:507
+#	0x7ff66e8a1bd0	syscall.Open+0x1b0											syscall/syscall_windows.go:444
+#	0x7ff66e91cb66	os.openFileNolog+0xa6											os/file_windows.go:158
+#	0x7ff66e91b05d	os.OpenFile+0x3d											os/file.go:412
+#	0x7ff66e91b869	os.Open+0x49												os/file.go:390
+#	0x7ff66e91b860	os.ReadFile+0x40											os/file.go:865
+#	0x7ff66fd9ecbb	github.com/yetone/magpie/internal/agent.asidePicked+0x1b						github.com/yetone/magpie/internal/agent/aside_account.go:105
+#	0x7ff66fd9ed7e	github.com/yetone/magpie/internal/agent.asideChoice+0x1e						github.com/yetone/magpie/internal/agent/aside_account.go:122
+#	0x7ff66fd9fbc6	github.com/yetone/magpie/internal/agent.newAsideConnection+0x66						github.com/yetone/magpie/internal/agent/aside_native.go:66
+#	0x7ff66fd9cf46	github.com/yetone/magpie/internal/agent.asideIn+0x66							github.com/yetone/magpie/internal/agent/aside.go:15
+#	0x7ff66fd693eb	github.com/yetone/magpie/internal/agent.aside+0x38b							github.com/yetone/magpie/internal/agent/aside.go:12
+#	0x7ff66fd693ad	github.com/yetone/magpie/internal/agent.onMachine+0x34d							github.com/yetone/magpie/internal/agent/agents.go:226
+#	0x7ff66fd68e44	github.com/yetone/magpie/internal/agent.builtins+0x24							github.com/yetone/magpie/internal/agent/agents.go:196
+#	0x7ff66fd68c85	github.com/yetone/magpie/internal/agent.All+0x25							github.com/yetone/magpie/internal/agent/agents.go:181
+#	0x7ff66fd65fde	github.com/yetone/magpie/internal/agent.Detected+0x1e							github.com/yetone/magpie/internal/agent/agent.go:621
+#	0x7ff67028884e	github.com/yetone/magpie/internal/gui.Handler.func5+0x2e						github.com/yetone/magpie/internal/gui/api.go:1096
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28									net/http/server.go:2286
+#	0x7ff66eb3f546	net/http.(*ServeMux).ServeHTTP+0x1c6									net/http/server.go:2828
+#	0x7ff6701e0849	github.com/yetone/magpie/internal/gui.Handler.held.func76+0x1a9						github.com/yetone/magpie/internal/gui/api.go:2760
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28									net/http/server.go:2286
+#	0x7ff6701e0663	github.com/yetone/magpie/internal/gui.Handler.noFramedAPI.func77+0x83					github.com/yetone/magpie/internal/gui/api.go:2722
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28									net/http/server.go:2286
+#	0x7ff6701ec0dd	github.com/yetone/magpie/internal/gui.Run.ownWindow.func27+0xdd						github.com/yetone/magpie/internal/gui/window_peer.go:27
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28									net/http/server.go:2286
+#	0x7ff6700a9b01	github.com/wailsapp/wails/v3/internal/assetserver.(*AssetServer).serveHTTP+0x3c1			github.com/wailsapp/wails/v3@v3.0.0-beta.24/internal/assetserver/assetserver.go:128
+#	0x7ff6700a8ff4	github.com/wailsapp/wails/v3/internal/assetserver.NewAssetServer.func1+0x34				github.com/wailsapp/wails/v3@v3.0.0-beta.24/internal/assetserver/assetserver.go:48
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28									net/http/server.go:2286
+#	0x7ff6701262f7	github.com/wailsapp/wails/v3/pkg/application.(*HTTPTransport).Handler.func1.1+0x77			github.com/wailsapp/wails/v3@v3.0.0-beta.24/pkg/application/transport_http.go:164
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28									net/http/server.go:2286
+#	0x7ff6700e39dd	github.com/wailsapp/wails/v3/pkg/application.New.func3.1+0x29d						github.com/wailsapp/wails/v3@v3.0.0-beta.24/pkg/application/application.go:154
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28									net/http/server.go:2286
+#	0x7ff6700a92b5	github.com/wailsapp/wails/v3/internal/assetserver.(*AssetServer).ServeHTTP+0x275			github.com/wailsapp/wails/v3@v3.0.0-beta.24/internal/assetserver/assetserver.go:70
+#	0x7ff6700ab646	github.com/wailsapp/wails/v3/internal/assetserver.(*AssetServer).processWebViewRequestInternal+0xc66	github.com/wailsapp/wails/v3@v3.0.0-beta.24/internal/assetserver/assetserver_webview.go:213
+#	0x7ff6700aa8fe	github.com/wailsapp/wails/v3/internal/assetserver.(*AssetServer).processWebViewRequest+0x5e		github.com/wailsapp/wails/v3@v3.0.0-beta.24/internal/assetserver/assetserver_webview.go:106
+
+1 @ 0x7ff66e876d5e 0x7ff66e87e3ee 0x7ff66e89d49e 0x7ff66e8a636e 0x7ff66e8a1bd1 0x7ff66e91cb67 0x7ff66e91b05e 0x7ff66e91b86a 0x7ff66e91b861 0x7ff66fee53d9 0x7ff66fe15351 0x7ff66fe0e710 0x7ff66fe0ee42 0x7ff66e881e81
+#	0x7ff66e87e3ed	syscall.syscalln+0x4d							runtime/syscall_windows.go:431
+#	0x7ff66e89d49d	syscall.SyscallN+0x1d							syscall/dll_windows.go:99
+#	0x7ff66e8a636d	syscall.createFile+0xed							syscall/zsyscall_windows.go:507
+#	0x7ff66e8a1bd0	syscall.Open+0x1b0							syscall/syscall_windows.go:444
+#	0x7ff66e91cb66	os.openFileNolog+0xa6							os/file_windows.go:158
+#	0x7ff66e91b05d	os.OpenFile+0x3d							os/file.go:412
+#	0x7ff66e91b869	os.Open+0x49								os/file.go:390
+#	0x7ff66e91b860	os.ReadFile+0x40							os/file.go:865
+#	0x7ff66fee53d8	github.com/yetone/magpie/internal/agent.stashLoad+0x58			github.com/yetone/magpie/internal/agent/stash.go:33
+#	0x7ff66fe15350	github.com/yetone/magpie/internal/agent.(*Agent).changedAt+0x290	github.com/yetone/magpie/internal/agent/connectinfo.go:239
+#	0x7ff66fe0e70f	github.com/yetone/magpie/internal/agent.codexDaemonCheck+0xcf		github.com/yetone/magpie/internal/agent/codex_daemon.go:51
+#	0x7ff66fe0ee41	github.com/yetone/magpie/internal/agent.KeepCodexDaemonCurrent+0x1e1	github.com/yetone/magpie/internal/agent/codex_daemon.go:105
+
+1 @ 0x7ff66e876d5e 0x7ff66e87e3ee 0x7ff66e89d49e 0x7ff66e8a636e 0x7ff66e8a1bd1 0x7ff66e91cb67 0x7ff66e91b05e 0x7ff66ebde705 0x7ff66ebdeaf3 0x7ff66f1f4a3b 0x7ff66f1f7ade 0x7ff66f18f645 0x7ff66f18f1f2 0x7ff66fab1c25 0x7ff66fab5b50 0x7ff66fab4e57 0x7ff66fb16871 0x7ff66fbd9155 0x7ff66fb02e4c 0x7ff66eb3d749 0x7ff66eb3f547 0x7ff66faea256 0x7ff66eb3d749 0x7ff66fae9d0b 0x7ff66eb3d749 0x7ff66fae988b 0x7ff66eb3d749 0x7ff66fae96f2 0x7ff66eb3d749 0x7ff66fae8ff5 0x7ff66eb3d749 0x7ff66fae8e51 0x7ff66eb3d749 0x7ff66fae8b27 0x7ff66eb3d749 0x7ff66fae8816 0x7ff66eb3d749 0x7ff66fae86c9 0x7ff66eb3d749 0x7ff66fbf2791 0x7ff66eb3d749 0x7ff66fbf2536 0x7ff66eb3d749 0x7ff66fbf23e9 0x7ff66eb3d749 0x7ff66fae7fb5 0x7ff66eb3d749 0x7ff66eb5cd4e 0x7ff66eb3b790 0x7ff66e881e81
+#	0x7ff66e87e3ed	syscall.syscalln+0x4d												runtime/syscall_windows.go:431
+#	0x7ff66e89d49d	syscall.SyscallN+0x1d												syscall/dll_windows.go:99
+#	0x7ff66e8a636d	syscall.createFile+0xed												syscall/zsyscall_windows.go:507
+#	0x7ff66e8a1bd0	syscall.Open+0x1b0												syscall/syscall_windows.go:444
+#	0x7ff66e91cb66	os.openFileNolog+0xa6												os/file_windows.go:158
+#	0x7ff66e91b05d	os.OpenFile+0x3d												os/file.go:412
+#	0x7ff66ebde704	github.com/yetone/magpie/internal/filelock.Lock+0x64								github.com/yetone/magpie/internal/filelock/filelock.go:37
+#	0x7ff66ebdeaf2	github.com/yetone/magpie/internal/filelock.(*Mutex).Lock+0x52							github.com/yetone/magpie/internal/filelock/filelock.go:81
+#	0x7ff66f1f4a3a	github.com/yetone/magpie/internal/provider.pluginLogins+0x41a							github.com/yetone/magpie/internal/provider/plugin_accounts.go:227
+#	0x7ff66f1f7add	github.com/yetone/magpie/internal/provider.pluginAlsoOn+0x7d							github.com/yetone/magpie/internal/provider/plugin_accounts.go:370
+#	0x7ff66f18f644	github.com/yetone/magpie/internal/provider.Provider.alsoOn+0x164						github.com/yetone/magpie/internal/provider/logins_on.go:133
+#	0x7ff66f18f1f1	github.com/yetone/magpie/internal/provider.Provider.AlsoOn+0x91							github.com/yetone/magpie/internal/provider/logins_on.go:122
+#	0x7ff66fab1c24	github.com/yetone/magpie/internal/gateway.perKeyBarred+0x124							github.com/yetone/magpie/internal/gateway/fallback.go:230
+#	0x7ff66fab5b4f	github.com/yetone/magpie/internal/gateway.(*Server).planPaused.func1+0xcf					github.com/yetone/magpie/internal/gateway/fallback.go:420
+#	0x7ff66fab4e56	github.com/yetone/magpie/internal/gateway.(*Server).planPaused+0x156						github.com/yetone/magpie/internal/gateway/fallback.go:441
+#	0x7ff66fb16870	github.com/yetone/magpie/internal/gateway.(*Server).serve+0x55b0						github.com/yetone/magpie/internal/gateway/gateway.go:2366
+#	0x7ff66fbd9154	github.com/yetone/magpie/internal/gateway.(*Server).serveAgent+0x894						github.com/yetone/magpie/internal/gateway/middleware.go:75
+#	0x7ff66fb02e4b	github.com/yetone/magpie/internal/gateway.(*Server).routes.(*Server).handle.func5+0x80b				github.com/yetone/magpie/internal/gateway/gateway.go:1725
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28										net/http/server.go:2286
+#	0x7ff66eb3f546	net/http.(*ServeMux).ServeHTTP+0x1c6										net/http/server.go:2828
+#	0x7ff66faea255	github.com/yetone/magpie/internal/gateway.(*Server).Handler.keyLimited.func1+0x515				github.com/yetone/magpie/internal/gateway/key_limit.go:44
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28										net/http/server.go:2286
+#	0x7ff66fae9d0a	github.com/yetone/magpie/internal/gateway.(*Server).Handler.withCaller.func2+0x20a				github.com/yetone/magpie/internal/gateway/remote_magpie.go:63
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28										net/http/server.go:2286
+#	0x7ff66fae988a	github.com/yetone/magpie/internal/gateway.(*Server).Handler.readOnlyGuard.func3+0x14a				github.com/yetone/magpie/internal/gateway/readonly.go:72
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28										net/http/server.go:2286
+#	0x7ff66fae96f1	github.com/yetone/magpie/internal/gateway.(*Server).Handler.callerGuard.func4+0x171				github.com/yetone/magpie/internal/gateway/lan.go:522
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28										net/http/server.go:2286
+#	0x7ff66fae8ff4	github.com/yetone/magpie/internal/gateway.(*Server).Handler.corsGuard.func5+0x134				github.com/yetone/magpie/internal/gateway/cors.go:63
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28										net/http/server.go:2286
+#	0x7ff66fae8e50	github.com/yetone/magpie/internal/gateway.(*Server).Handler.holdCatalog.func6+0xb0				github.com/yetone/magpie/internal/gateway/holdcatalog.go:27
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28										net/http/server.go:2286
+#	0x7ff66fae8b26	github.com/yetone/magpie/internal/gateway.(*Server).Handler.(*Server).counted.func7+0x2c6			github.com/yetone/magpie/internal/gateway/busy.go:111
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28										net/http/server.go:2286
+#	0x7ff66fae8815	github.com/yetone/magpie/internal/gateway.(*Server).Handler.(*Server).dumpFirst.func8+0x115			github.com/yetone/magpie/internal/gateway/goroutines.go:71
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28										net/http/server.go:2286
+#	0x7ff66fae86c8	github.com/yetone/magpie/internal/gateway.(*Server).Handler.socketEntry.func9+0x1a8				github.com/yetone/magpie/internal/gateway/responses_ws.go:73
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28										net/http/server.go:2286
+#	0x7ff66fbf2790	github.com/yetone/magpie/internal/gateway.(*Server).Front.func1.lanGuard.1+0x210				github.com/yetone/magpie/internal/gateway/lan.go:394
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28										net/http/server.go:2286
+#	0x7ff66fbf2535	github.com/yetone/magpie/internal/gateway.(*Server).Front.func1.(*Server).dumpFirst.2+0x115			github.com/yetone/magpie/internal/gateway/goroutines.go:71
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28										net/http/server.go:2286
+#	0x7ff66fbf23e8	github.com/yetone/magpie/internal/gateway.(*Server).Front.func1.socketEntry.3+0x1a8				github.com/yetone/magpie/internal/gateway/responses_ws.go:73
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28										net/http/server.go:2286
+#	0x7ff66fae7fb4	github.com/yetone/magpie/internal/gateway.(*Server).ListenAndServe.(*Server).closesWhenHandedOff.func7+0x94	github.com/yetone/magpie/internal/gateway/handover.go:187
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28										net/http/server.go:2286
+#	0x7ff66eb5cd4d	net/http.serverHandler.ServeHTTP+0x8d										net/http/server.go:3311
+#	0x7ff66eb3b78f	net/http.(*conn).serve+0x68f											net/http/server.go:2067
+
+1 @ 0x7ff66e876d5e 0x7ff66e87e3ee 0x7ff66e89d49e 0x7ff66e8a7ae5 0x7ff66e9204d9 0x7ff66e92023d 0x7ff66e92020f 0x7ff66eb911cb 0x7ff66eb90f7f 0x7ff66eb9103c 0x7ff66eb91165 0x7ff66eba47a8 0x7ff66eca8649 0x7ff66eca8ffc 0x7ff66ecbb49a 0x7ff66ecba7d5 0x7ff66ecba7e9 0x7ff66ecbc505 0x7ff66ecbc4d0 0x7ff66fae4c65 0x7ff66fae4c5b 0x7ff66fe38cb2 0x7ff66fe383fc 0x7ff66fe38347 0x7ff66e881e81
+#	0x7ff66e87e3ed	syscall.syscalln+0x4d						runtime/syscall_windows.go:431
+#	0x7ff66e89d49d	syscall.SyscallN+0x1d						syscall/dll_windows.go:99
+#	0x7ff66e8a7ae4	syscall.GetFileAttributesEx+0x84				syscall/zsyscall_windows.go:750
+#	0x7ff66e9204d8	os.stat+0x1b8							os/stat_windows.go:37
+#	0x7ff66e92023c	os.statNolog+0x3c						os/stat_windows.go:127
+#	0x7ff66e92020e	os.Stat+0xe							os/stat.go:13
+#	0x7ff66eb911ca	github.com/yetone/magpie/internal/steady.Stat.func1+0x2a	github.com/yetone/magpie/internal/steady/steady.go:79
+#	0x7ff66eb90f7e	github.com/yetone/magpie/internal/steady.retry+0x1e		github.com/yetone/magpie/internal/steady/steady.go:51
+#	0x7ff66eb9103b	github.com/yetone/magpie/internal/steady.retryGone+0x1b		github.com/yetone/magpie/internal/steady/steady.go:65
+#	0x7ff66eb91164	github.com/yetone/magpie/internal/steady.Stat+0x44		github.com/yetone/magpie/internal/steady/steady.go:78
+#	0x7ff66eba47a7	github.com/yetone/magpie/internal/filememo.statFile+0xc7	github.com/yetone/magpie/internal/filememo/filememo.go:254
+#	0x7ff66eca8648	github.com/yetone/magpie/internal/filememo.read[...]+0x3e8	github.com/yetone/magpie/internal/filememo/filememo.go:190
+#	0x7ff66eca8ffb	github.com/yetone/magpie/internal/filememo.Read[...]+0x3b	github.com/yetone/magpie/internal/filememo/filememo.go:165
+#	0x7ff66ecbb499	github.com/yetone/magpie/internal/settings.loadChecked+0x99	github.com/yetone/magpie/internal/settings/settings.go:1548
+#	0x7ff66ecba7d4	github.com/yetone/magpie/internal/settings.load+0xb4		github.com/yetone/magpie/internal/settings/settings.go:1534
+#	0x7ff66ecba7e8	github.com/yetone/magpie/internal/settings.Load+0xc8		github.com/yetone/magpie/internal/settings/settings.go:1430
+#	0x7ff66ecbc504	github.com/yetone/magpie/internal/settings.SavedAddr+0x24	github.com/yetone/magpie/internal/settings/settings.go:1683
+#	0x7ff66ecbc4cf	github.com/yetone/magpie/internal/settings.GatewayAddr+0x2f	github.com/yetone/magpie/internal/settings/settings.go:1676
+#	0x7ff66fae4c64	github.com/yetone/magpie/internal/gateway.Addr+0x24		github.com/yetone/magpie/internal/gateway/gateway.go:282
+#	0x7ff66fae4c5a	github.com/yetone/magpie/internal/gateway.URL+0x1a		github.com/yetone/magpie/internal/gateway/gateway.go:291
+#	0x7ff66fe38cb1	github.com/yetone/magpie/internal/agent.(*dshRounds).once+0x111	github.com/yetone/magpie/internal/agent/dsh.go:2123
+#	0x7ff66fe383fb	github.com/yetone/magpie/internal/agent.keepDshWired+0x7b	github.com/yetone/magpie/internal/agent/dsh.go:2000
+#	0x7ff66fe38346	github.com/yetone/magpie/internal/agent.KeepDshWired+0x26	github.com/yetone/magpie/internal/agent/dsh.go:1990
+
+1 @ 0x7ff66e876d5e 0x7ff66e87e3ee 0x7ff66e89d49e 0x7ff66e8a7ae5 0x7ff66e9204d9 0x7ff66e92023d 0x7ff66e92020f 0x7ff66eb911cb 0x7ff66eb90f7f 0x7ff66eb9103c 0x7ff66eb91165 0x7ff66eba47a8 0x7ff66eca8649 0x7ff66eca8ffc 0x7ff66ecbb49a 0x7ff66ecba7d5 0x7ff66ecba7e9 0x7ff66f22acbe 0x7ff66f22acb4 0x7ff66f02fa45 0x7ff66f2355c5 0x7ff66e881e81
+#	0x7ff66e87e3ed	syscall.syscalln+0x4d						runtime/syscall_windows.go:431
+#	0x7ff66e89d49d	syscall.SyscallN+0x1d						syscall/dll_windows.go:99
+#	0x7ff66e8a7ae4	syscall.GetFileAttributesEx+0x84				syscall/zsyscall_windows.go:750
+#	0x7ff66e9204d8	os.stat+0x1b8							os/stat_windows.go:37
+#	0x7ff66e92023c	os.statNolog+0x3c						os/stat_windows.go:127
+#	0x7ff66e92020e	os.Stat+0xe							os/stat.go:13
+#	0x7ff66eb911ca	github.com/yetone/magpie/internal/steady.Stat.func1+0x2a	github.com/yetone/magpie/internal/steady/steady.go:79
+#	0x7ff66eb90f7e	github.com/yetone/magpie/internal/steady.retry+0x1e		github.com/yetone/magpie/internal/steady/steady.go:51
+#	0x7ff66eb9103b	github.com/yetone/magpie/internal/steady.retryGone+0x1b		github.com/yetone/magpie/internal/steady/steady.go:65
+#	0x7ff66eb91164	github.com/yetone/magpie/internal/steady.Stat+0x44		github.com/yetone/magpie/internal/steady/steady.go:78
+#	0x7ff66eba47a7	github.com/yetone/magpie/internal/filememo.statFile+0xc7	github.com/yetone/magpie/internal/filememo/filememo.go:254
+#	0x7ff66eca8648	github.com/yetone/magpie/internal/filememo.read[...]+0x3e8	github.com/yetone/magpie/internal/filememo/filememo.go:190
+#	0x7ff66eca8ffb	github.com/yetone/magpie/internal/filememo.Read[...]+0x3b	github.com/yetone/magpie/internal/filememo/filememo.go:165
+#	0x7ff66ecbb499	github.com/yetone/magpie/internal/settings.loadChecked+0x99	github.com/yetone/magpie/internal/settings/settings.go:1548
+#	0x7ff66ecba7d4	github.com/yetone/magpie/internal/settings.load+0xb4		github.com/yetone/magpie/internal/settings/settings.go:1534
+#	0x7ff66ecba7e8	github.com/yetone/magpie/internal/settings.Load+0xc8		github.com/yetone/magpie/internal/settings/settings.go:1430
+#	0x7ff66f22acbd	github.com/yetone/magpie/internal/provider.readsAsked+0x5d	github.com/yetone/magpie/internal/provider/quota_asked.go:44
+#	0x7ff66f22acb3	github.com/yetone/magpie/internal/provider.heldRead+0x53	github.com/yetone/magpie/internal/provider/quota_asked.go:48
+#	0x7ff66f02fa44	github.com/yetone/magpie/internal/provider.KeyBalances+0x124	github.com/yetone/magpie/internal/provider/balance.go:1461
+#	0x7ff66f2355c4	github.com/yetone/magpie/internal/provider.quotas.func1+0x24	github.com/yetone/magpie/internal/provider/quotas.go:55
+
+1 @ 0x7ff66e876d5e 0x7ff66e87e3ee 0x7ff66e89d49e 0x7ff66e8a7ae5 0x7ff66e9204d9 0x7ff66e92023d 0x7ff66e92020f 0x7ff66eb911cb 0x7ff66eb90f7f 0x7ff66eb9103c 0x7ff66eb91165 0x7ff66eba47a8 0x7ff66eca8649 0x7ff66eca8ffc 0x7ff66ecbb49a 0x7ff66ecba7d5 0x7ff66ecba7e9 0x7ff66f22acbe 0x7ff66f22acb4 0x7ff66f1efe05 0x7ff66f235565 0x7ff66e881e81
+#	0x7ff66e87e3ed	syscall.syscalln+0x4d						runtime/syscall_windows.go:431
+#	0x7ff66e89d49d	syscall.SyscallN+0x1d						syscall/dll_windows.go:99
+#	0x7ff66e8a7ae4	syscall.GetFileAttributesEx+0x84				syscall/zsyscall_windows.go:750
+#	0x7ff66e9204d8	os.stat+0x1b8							os/stat_windows.go:37
+#	0x7ff66e92023c	os.statNolog+0x3c						os/stat_windows.go:127
+#	0x7ff66e92020e	os.Stat+0xe							os/stat.go:13
+#	0x7ff66eb911ca	github.com/yetone/magpie/internal/steady.Stat.func1+0x2a	github.com/yetone/magpie/internal/steady/steady.go:79
+#	0x7ff66eb90f7e	github.com/yetone/magpie/internal/steady.retry+0x1e		github.com/yetone/magpie/internal/steady/steady.go:51
+#	0x7ff66eb9103b	github.com/yetone/magpie/internal/steady.retryGone+0x1b		github.com/yetone/magpie/internal/steady/steady.go:65
+#	0x7ff66eb91164	github.com/yetone/magpie/internal/steady.Stat+0x44		github.com/yetone/magpie/internal/steady/steady.go:78
+#	0x7ff66eba47a7	github.com/yetone/magpie/internal/filememo.statFile+0xc7	github.com/yetone/magpie/internal/filememo/filememo.go:254
+#	0x7ff66eca8648	github.com/yetone/magpie/internal/filememo.read[...]+0x3e8	github.com/yetone/magpie/internal/filememo/filememo.go:190
+#	0x7ff66eca8ffb	github.com/yetone/magpie/internal/filememo.Read[...]+0x3b	github.com/yetone/magpie/internal/filememo/filememo.go:165
+#	0x7ff66ecbb499	github.com/yetone/magpie/internal/settings.loadChecked+0x99	github.com/yetone/magpie/internal/settings/settings.go:1548
+#	0x7ff66ecba7d4	github.com/yetone/magpie/internal/settings.load+0xb4		github.com/yetone/magpie/internal/settings/settings.go:1534
+#	0x7ff66ecba7e8	github.com/yetone/magpie/internal/settings.Load+0xc8		github.com/yetone/magpie/internal/settings/settings.go:1430
+#	0x7ff66f22acbd	github.com/yetone/magpie/internal/provider.readsAsked+0x5d	github.com/yetone/magpie/internal/provider/quota_asked.go:44
+#	0x7ff66f22acb3	github.com/yetone/magpie/internal/provider.heldRead+0x53	github.com/yetone/magpie/internal/provider/quota_asked.go:48
+#	0x7ff66f1efe04	github.com/yetone/magpie/internal/provider.PlanQuotas+0x164	github.com/yetone/magpie/internal/provider/planquota.go:732
+#	0x7ff66f235564	github.com/yetone/magpie/internal/provider.quotas.func2+0x24	github.com/yetone/magpie/internal/provider/quotas.go:56
+
+1 @ 0x7ff66e876d5e 0x7ff66e87e3ee 0x7ff66e89d49e 0x7ff66e8a7ae5 0x7ff66e9204d9 0x7ff66e92023d 0x7ff66e92020f 0x7ff66eb911cb 0x7ff66eb90f7f 0x7ff66eb9103c 0x7ff66eb91165 0x7ff66eba47a8 0x7ff66eca8649 0x7ff66eca8ffc 0x7ff66ecbb49a 0x7ff66ecba7d5 0x7ff66ecba7e9 0x7ff66f22acbe 0x7ff66f22acb4 0x7ff66f22b371 0x7ff66f17a3fc 0x7ff66f17a1bc 0x7ff66f179cc8 0x7ff66e881e81
+#	0x7ff66e87e3ed	syscall.syscalln+0x4d							runtime/syscall_windows.go:431
+#	0x7ff66e89d49d	syscall.SyscallN+0x1d							syscall/dll_windows.go:99
+#	0x7ff66e8a7ae4	syscall.GetFileAttributesEx+0x84					syscall/zsyscall_windows.go:750
+#	0x7ff66e9204d8	os.stat+0x1b8								os/stat_windows.go:37
+#	0x7ff66e92023c	os.statNolog+0x3c							os/stat_windows.go:127
+#	0x7ff66e92020e	os.Stat+0xe								os/stat.go:13
+#	0x7ff66eb911ca	github.com/yetone/magpie/internal/steady.Stat.func1+0x2a		github.com/yetone/magpie/internal/steady/steady.go:79
+#	0x7ff66eb90f7e	github.com/yetone/magpie/internal/steady.retry+0x1e			github.com/yetone/magpie/internal/steady/steady.go:51
+#	0x7ff66eb9103b	github.com/yetone/magpie/internal/steady.retryGone+0x1b			github.com/yetone/magpie/internal/steady/steady.go:65
+#	0x7ff66eb91164	github.com/yetone/magpie/internal/steady.Stat+0x44			github.com/yetone/magpie/internal/steady/steady.go:78
+#	0x7ff66eba47a7	github.com/yetone/magpie/internal/filememo.statFile+0xc7		github.com/yetone/magpie/internal/filememo/filememo.go:254
+#	0x7ff66eca8648	github.com/yetone/magpie/internal/filememo.read[...]+0x3e8		github.com/yetone/magpie/internal/filememo/filememo.go:190
+#	0x7ff66eca8ffb	github.com/yetone/magpie/internal/filememo.Read[...]+0x3b		github.com/yetone/magpie/internal/filememo/filememo.go:165
+#	0x7ff66ecbb499	github.com/yetone/magpie/internal/settings.loadChecked+0x99		github.com/yetone/magpie/internal/settings/settings.go:1548
+#	0x7ff66ecba7d4	github.com/yetone/magpie/internal/settings.load+0xb4			github.com/yetone/magpie/internal/settings/settings.go:1534
+#	0x7ff66ecba7e8	github.com/yetone/magpie/internal/settings.Load+0xc8			github.com/yetone/magpie/internal/settings/settings.go:1430
+#	0x7ff66f22acbd	github.com/yetone/magpie/internal/provider.readsAsked+0x5d		github.com/yetone/magpie/internal/provider/quota_asked.go:44
+#	0x7ff66f22acb3	github.com/yetone/magpie/internal/provider.heldRead+0x53		github.com/yetone/magpie/internal/provider/quota_asked.go:48
+#	0x7ff66f22b370	github.com/yetone/magpie/internal/provider.holding+0x70			github.com/yetone/magpie/internal/provider/quota_asked.go:97
+#	0x7ff66f17a3fb	github.com/yetone/magpie/internal/provider.cachedLoginReading+0xdb	github.com/yetone/magpie/internal/provider/login_usage.go:242
+#	0x7ff66f17a1bb	github.com/yetone/magpie/internal/provider.loginReading+0xbb		github.com/yetone/magpie/internal/provider/login_usage.go:224
+#	0x7ff66f179cc7	github.com/yetone/magpie/internal/provider.loginUsageOf.func1+0x107	github.com/yetone/magpie/internal/provider/login_usage.go:170
+
+1 @ 0x7ff66e876d5e 0x7ff66e87e3ee 0x7ff66e89d49e 0x7ff66e8a7ae5 0x7ff66e9204d9 0x7ff66e92023d 0x7ff66e92020f 0x7ff66eb911cb 0x7ff66eb90f7f 0x7ff66eb9103c 0x7ff66eb91165 0x7ff66eba47a8 0x7ff66eca8649 0x7ff66eca8ffc 0x7ff66ecbb49a 0x7ff66ecba7d5 0x7ff66ecba7e9 0x7ff67020b539 0x7ff66e881e81
+#	0x7ff66e87e3ed	syscall.syscalln+0x4d						runtime/syscall_windows.go:431
+#	0x7ff66e89d49d	syscall.SyscallN+0x1d						syscall/dll_windows.go:99
+#	0x7ff66e8a7ae4	syscall.GetFileAttributesEx+0x84				syscall/zsyscall_windows.go:750
+#	0x7ff66e9204d8	os.stat+0x1b8							os/stat_windows.go:37
+#	0x7ff66e92023c	os.statNolog+0x3c						os/stat_windows.go:127
+#	0x7ff66e92020e	os.Stat+0xe							os/stat.go:13
+#	0x7ff66eb911ca	github.com/yetone/magpie/internal/steady.Stat.func1+0x2a	github.com/yetone/magpie/internal/steady/steady.go:79
+#	0x7ff66eb90f7e	github.com/yetone/magpie/internal/steady.retry+0x1e		github.com/yetone/magpie/internal/steady/steady.go:51
+#	0x7ff66eb9103b	github.com/yetone/magpie/internal/steady.retryGone+0x1b		github.com/yetone/magpie/internal/steady/steady.go:65
+#	0x7ff66eb91164	github.com/yetone/magpie/internal/steady.Stat+0x44		github.com/yetone/magpie/internal/steady/steady.go:78
+#	0x7ff66eba47a7	github.com/yetone/magpie/internal/filememo.statFile+0xc7	github.com/yetone/magpie/internal/filememo/filememo.go:254
+#	0x7ff66eca8648	github.com/yetone/magpie/internal/filememo.read[...]+0x3e8	github.com/yetone/magpie/internal/filememo/filememo.go:190
+#	0x7ff66eca8ffb	github.com/yetone/magpie/internal/filememo.Read[...]+0x3b	github.com/yetone/magpie/internal/filememo/filememo.go:165
+#	0x7ff66ecbb499	github.com/yetone/magpie/internal/settings.loadChecked+0x99	github.com/yetone/magpie/internal/settings/settings.go:1548
+#	0x7ff66ecba7d4	github.com/yetone/magpie/internal/settings.load+0xb4		github.com/yetone/magpie/internal/settings/settings.go:1534
+#	0x7ff66ecba7e8	github.com/yetone/magpie/internal/settings.Load+0xc8		github.com/yetone/magpie/internal/settings/settings.go:1430
+#	0x7ff67020b538	github.com/yetone/magpie/internal/gui.(*host).lighten+0xb8	github.com/yetone/magpie/internal/gui/lightweight.go:218
+
+1 @ 0x7ff66e876d5e 0x7ff66e87e3ee 0x7ff66e89d49e 0x7ff66e8a7ae5 0x7ff66e9204d9 0x7ff66e92023d 0x7ff66e92020f 0x7ff66eb911cb 0x7ff66eb90f7f 0x7ff66eb9103c 0x7ff66eb91165 0x7ff66eba47a8 0x7ff66eca8649 0x7ff66eca8ffc 0x7ff66ecbb49a 0x7ff66ecba7d5 0x7ff66ecba7e9 0x7ff67024c89e 0x7ff67024c899 0x7ff66e881e81
+#	0x7ff66e87e3ed	syscall.syscalln+0x4d								runtime/syscall_windows.go:431
+#	0x7ff66e89d49d	syscall.SyscallN+0x1d								syscall/dll_windows.go:99
+#	0x7ff66e8a7ae4	syscall.GetFileAttributesEx+0x84						syscall/zsyscall_windows.go:750
+#	0x7ff66e9204d8	os.stat+0x1b8									os/stat_windows.go:37
+#	0x7ff66e92023c	os.statNolog+0x3c								os/stat_windows.go:127
+#	0x7ff66e92020e	os.Stat+0xe									os/stat.go:13
+#	0x7ff66eb911ca	github.com/yetone/magpie/internal/steady.Stat.func1+0x2a			github.com/yetone/magpie/internal/steady/steady.go:79
+#	0x7ff66eb90f7e	github.com/yetone/magpie/internal/steady.retry+0x1e				github.com/yetone/magpie/internal/steady/steady.go:51
+#	0x7ff66eb9103b	github.com/yetone/magpie/internal/steady.retryGone+0x1b				github.com/yetone/magpie/internal/steady/steady.go:65
+#	0x7ff66eb91164	github.com/yetone/magpie/internal/steady.Stat+0x44				github.com/yetone/magpie/internal/steady/steady.go:78
+#	0x7ff66eba47a7	github.com/yetone/magpie/internal/filememo.statFile+0xc7			github.com/yetone/magpie/internal/filememo/filememo.go:254
+#	0x7ff66eca8648	github.com/yetone/magpie/internal/filememo.read[...]+0x3e8			github.com/yetone/magpie/internal/filememo/filememo.go:190
+#	0x7ff66eca8ffb	github.com/yetone/magpie/internal/filememo.Read[...]+0x3b			github.com/yetone/magpie/internal/filememo/filememo.go:165
+#	0x7ff66ecbb499	github.com/yetone/magpie/internal/settings.loadChecked+0x99			github.com/yetone/magpie/internal/settings/settings.go:1548
+#	0x7ff66ecba7d4	github.com/yetone/magpie/internal/settings.load+0xb4				github.com/yetone/magpie/internal/settings/settings.go:1534
+#	0x7ff66ecba7e8	github.com/yetone/magpie/internal/settings.Load+0xc8				github.com/yetone/magpie/internal/settings/settings.go:1430
+#	0x7ff67024c89d	github.com/yetone/magpie/internal/gui.trayUsageEvery+0x61d			github.com/yetone/magpie/internal/gui/trayusage.go:33
+#	0x7ff67024c898	github.com/yetone/magpie/internal/gui.(*host).watchTrayUsage.func3+0x618	github.com/yetone/magpie/internal/gui/trayusage_tray.go:101
+
+1 @ 0x7ff66e876d5e 0x7ff66e87e3ee 0x7ff66e89d49e 0x7ff66e8a7ae5 0x7ff66e9204d9 0x7ff66e92023d 0x7ff66e92020f 0x7ff66eb911cb 0x7ff66eb90f7f 0x7ff66eb9103c 0x7ff66eb91165 0x7ff66eba47a8 0x7ff66ecc4734 0x7ff66ecbae38 0x7ff66ecbae06 0x7ff66f16d83d 0x7ff66f16e550 0x7ff66f1b4029 0x7ff66fb156e7 0x7ff66fbd9155 0x7ff66fb02e4c 0x7ff66eb3d749 0x7ff66eb3f547 0x7ff66faea256 0x7ff66eb3d749 0x7ff66fae9d0b 0x7ff66eb3d749 0x7ff66fae988b 0x7ff66eb3d749 0x7ff66fae96f2 0x7ff66eb3d749 0x7ff66fae8ff5 0x7ff66eb3d749 0x7ff66fae8e51 0x7ff66eb3d749 0x7ff66fae8b27 0x7ff66eb3d749 0x7ff66fae8816 0x7ff66eb3d749 0x7ff66fae86c9 0x7ff66eb3d749 0x7ff66fbf2791 0x7ff66eb3d749 0x7ff66fbf2536 0x7ff66eb3d749 0x7ff66fbf23e9 0x7ff66eb3d749 0x7ff66fae7fb5 0x7ff66eb3d749 0x7ff66eb5cd4e 0x7ff66eb3b790 0x7ff66e881e81
+#	0x7ff66e87e3ed	syscall.syscalln+0x4d												runtime/syscall_windows.go:431
+#	0x7ff66e89d49d	syscall.SyscallN+0x1d												syscall/dll_windows.go:99
+#	0x7ff66e8a7ae4	syscall.GetFileAttributesEx+0x84										syscall/zsyscall_windows.go:750
+#	0x7ff66e9204d8	os.stat+0x1b8													os/stat_windows.go:37
+#	0x7ff66e92023c	os.statNolog+0x3c												os/stat_windows.go:127
+#	0x7ff66e92020e	os.Stat+0xe													os/stat.go:13
+#	0x7ff66eb911ca	github.com/yetone/magpie/internal/steady.Stat.func1+0x2a							github.com/yetone/magpie/internal/steady/steady.go:79
+#	0x7ff66eb90f7e	github.com/yetone/magpie/internal/steady.retry+0x1e								github.com/yetone/magpie/internal/steady/steady.go:51
+#	0x7ff66eb9103b	github.com/yetone/magpie/internal/steady.retryGone+0x1b								github.com/yetone/magpie/internal/steady/steady.go:65
+#	0x7ff66eb91164	github.com/yetone/magpie/internal/steady.Stat+0x44								github.com/yetone/magpie/internal/steady/steady.go:78
+#	0x7ff66eba47a7	github.com/yetone/magpie/internal/filememo.statFile+0xc7							github.com/yetone/magpie/internal/filememo/filememo.go:254
+#	0x7ff66ecc4733	github.com/yetone/magpie/internal/filememo.read[...]+0x3d3							github.com/yetone/magpie/internal/filememo/filememo.go:190
+#	0x7ff66ecbae37	github.com/yetone/magpie/internal/filememo.Read[...]+0x77							github.com/yetone/magpie/internal/filememo/filememo.go:165
+#	0x7ff66ecbae05	github.com/yetone/magpie/internal/settings.SharedModelIDs+0x45							github.com/yetone/magpie/internal/settings/settings.go:1479
+#	0x7ff66f16d83c	github.com/yetone/magpie/internal/provider.modelIDsOf+0x1c							github.com/yetone/magpie/internal/provider/localid.go:43
+#	0x7ff66f16e54f	github.com/yetone/magpie/internal/provider.Provider.ids+0x14f							github.com/yetone/magpie/internal/provider/localid.go:153
+#	0x7ff66f1b4028	github.com/yetone/magpie/internal/provider.Provider.Available+0x228						github.com/yetone/magpie/internal/provider/models.go:38
+#	0x7ff66fb156e6	github.com/yetone/magpie/internal/gateway.(*Server).serve+0x4426						github.com/yetone/magpie/internal/gateway/gateway.go:2265
+#	0x7ff66fbd9154	github.com/yetone/magpie/internal/gateway.(*Server).serveAgent+0x894						github.com/yetone/magpie/internal/gateway/middleware.go:75
+#	0x7ff66fb02e4b	github.com/yetone/magpie/internal/gateway.(*Server).routes.(*Server).handle.func5+0x80b				github.com/yetone/magpie/internal/gateway/gateway.go:1725
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28										net/http/server.go:2286
+#	0x7ff66eb3f546	net/http.(*ServeMux).ServeHTTP+0x1c6										net/http/server.go:2828
+#	0x7ff66faea255	github.com/yetone/magpie/internal/gateway.(*Server).Handler.keyLimited.func1+0x515				github.com/yetone/magpie/internal/gateway/key_limit.go:44
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28										net/http/server.go:2286
+#	0x7ff66fae9d0a	github.com/yetone/magpie/internal/gateway.(*Server).Handler.withCaller.func2+0x20a				github.com/yetone/magpie/internal/gateway/remote_magpie.go:63
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28										net/http/server.go:2286
+#	0x7ff66fae988a	github.com/yetone/magpie/internal/gateway.(*Server).Handler.readOnlyGuard.func3+0x14a				github.com/yetone/magpie/internal/gateway/readonly.go:72
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28										net/http/server.go:2286
+#	0x7ff66fae96f1	github.com/yetone/magpie/internal/gateway.(*Server).Handler.callerGuard.func4+0x171				github.com/yetone/magpie/internal/gateway/lan.go:522
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28										net/http/server.go:2286
+#	0x7ff66fae8ff4	github.com/yetone/magpie/internal/gateway.(*Server).Handler.corsGuard.func5+0x134				github.com/yetone/magpie/internal/gateway/cors.go:63
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28										net/http/server.go:2286
+#	0x7ff66fae8e50	github.com/yetone/magpie/internal/gateway.(*Server).Handler.holdCatalog.func6+0xb0				github.com/yetone/magpie/internal/gateway/holdcatalog.go:27
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28										net/http/server.go:2286
+#	0x7ff66fae8b26	github.com/yetone/magpie/internal/gateway.(*Server).Handler.(*Server).counted.func7+0x2c6			github.com/yetone/magpie/internal/gateway/busy.go:111
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28										net/http/server.go:2286
+#	0x7ff66fae8815	github.com/yetone/magpie/internal/gateway.(*Server).Handler.(*Server).dumpFirst.func8+0x115			github.com/yetone/magpie/internal/gateway/goroutines.go:71
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28										net/http/server.go:2286
+#	0x7ff66fae86c8	github.com/yetone/magpie/internal/gateway.(*Server).Handler.socketEntry.func9+0x1a8				github.com/yetone/magpie/internal/gateway/responses_ws.go:73
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28										net/http/server.go:2286
+#	0x7ff66fbf2790	github.com/yetone/magpie/internal/gateway.(*Server).Front.func1.lanGuard.1+0x210				github.com/yetone/magpie/internal/gateway/lan.go:394
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28										net/http/server.go:2286
+#	0x7ff66fbf2535	github.com/yetone/magpie/internal/gateway.(*Server).Front.func1.(*Server).dumpFirst.2+0x115			github.com/yetone/magpie/internal/gateway/goroutines.go:71
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28										net/http/server.go:2286
+#	0x7ff66fbf23e8	github.com/yetone/magpie/internal/gateway.(*Server).Front.func1.socketEntry.3+0x1a8				github.com/yetone/magpie/internal/gateway/responses_ws.go:73
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28										net/http/server.go:2286
+#	0x7ff66fae7fb4	github.com/yetone/magpie/internal/gateway.(*Server).ListenAndServe.(*Server).closesWhenHandedOff.func7+0x94	github.com/yetone/magpie/internal/gateway/handover.go:187
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28										net/http/server.go:2286
+#	0x7ff66eb5cd4d	net/http.serverHandler.ServeHTTP+0x8d										net/http/server.go:3311
+#	0x7ff66eb3b78f	net/http.(*conn).serve+0x68f											net/http/server.go:2067
+
+1 @ 0x7ff66e876d5e 0x7ff66e87e3ee 0x7ff66e89d49e 0x7ff66e8a7ae5 0x7ff66e9204d9 0x7ff66e92023d 0x7ff66e92020f 0x7ff66eb911cb 0x7ff66eb90f7f 0x7ff66eb9103c 0x7ff66eb91165 0x7ff66eba47a8 0x7ff66ecc4734 0x7ff66ecc3bb3 0x7ff66ecc3b81 0x7ff66f539b45 0x7ff66f56dabf 0x7ff66f5af89d 0x7ff66f5af6d2 0x7ff66f94c4a5 0x7ff670260d8a 0x7ff670259cd9 0x7ff66eb3d749 0x7ff66eb3f547 0x7ff6701e084a 0x7ff66eb3d749 0x7ff6701e0664 0x7ff66eb3d749 0x7ff6701ec0de 0x7ff66eb3d749 0x7ff6700a9b02 0x7ff6700a8ff5 0x7ff66eb3d749 0x7ff6701262f8 0x7ff66eb3d749 0x7ff6700e39de 0x7ff66eb3d749 0x7ff6700a92b6 0x7ff6700ab647 0x7ff6700aa8ff 0x7ff66e881e81
+#	0x7ff66e87e3ed	syscall.syscalln+0x4d											runtime/syscall_windows.go:431
+#	0x7ff66e89d49d	syscall.SyscallN+0x1d											syscall/dll_windows.go:99
+#	0x7ff66e8a7ae4	syscall.GetFileAttributesEx+0x84									syscall/zsyscall_windows.go:750
+#	0x7ff66e9204d8	os.stat+0x1b8												os/stat_windows.go:37
+#	0x7ff66e92023c	os.statNolog+0x3c											os/stat_windows.go:127
+#	0x7ff66e92020e	os.Stat+0xe												os/stat.go:13
+#	0x7ff66eb911ca	github.com/yetone/magpie/internal/steady.Stat.func1+0x2a						github.com/yetone/magpie/internal/steady/steady.go:79
+#	0x7ff66eb90f7e	github.com/yetone/magpie/internal/steady.retry+0x1e							github.com/yetone/magpie/internal/steady/steady.go:51
+#	0x7ff66eb9103b	github.com/yetone/magpie/internal/steady.retryGone+0x1b							github.com/yetone/magpie/internal/steady/steady.go:65
+#	0x7ff66eb91164	github.com/yetone/magpie/internal/steady.Stat+0x44							github.com/yetone/magpie/internal/steady/steady.go:78
+#	0x7ff66eba47a7	github.com/yetone/magpie/internal/filememo.statFile+0xc7						github.com/yetone/magpie/internal/filememo/filememo.go:254
+#	0x7ff66ecc4733	github.com/yetone/magpie/internal/filememo.read[...]+0x3d3						github.com/yetone/magpie/internal/filememo/filememo.go:190
+#	0x7ff66ecc3bb2	github.com/yetone/magpie/internal/filememo.Read[...]+0xd2						github.com/yetone/magpie/internal/filememo/filememo.go:165
+#	0x7ff66ecc3b80	github.com/yetone/magpie/internal/settings.ClientAgentsNow+0xa0						github.com/yetone/magpie/internal/settings/settings.go:2389
+#	0x7ff66f539b44	github.com/yetone/magpie/internal/usage.readClientAgents+0x24						github.com/yetone/magpie/internal/usage/client_agents.go:25
+#	0x7ff66f56dabe	github.com/yetone/magpie/internal/usage.readLogSnapshot+0x3e						github.com/yetone/magpie/internal/usage/log_index.go:104
+#	0x7ff66f5af89c	github.com/yetone/magpie/internal/usage.topSummary+0x9c							github.com/yetone/magpie/internal/usage/summary_cache.go:70
+#	0x7ff66f5af6d1	github.com/yetone/magpie/internal/usage.SummarizeTopIn+0x131						github.com/yetone/magpie/internal/usage/summary_cache.go:65
+#	0x7ff66f94c4a4	github.com/yetone/magpie/internal/usageapi.PageIn+0x64							github.com/yetone/magpie/internal/usageapi/usageapi.go:83
+#	0x7ff670260d89	github.com/yetone/magpie/internal/gui.usageRoutes.func1+0xc9						github.com/yetone/magpie/internal/gui/usage.go:103
+#	0x7ff670259cd8	github.com/yetone/magpie/internal/gui.usageRoutes.coldTurn.func20+0x158					github.com/yetone/magpie/internal/gui/sessions.go:763
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28									net/http/server.go:2286
+#	0x7ff66eb3f546	net/http.(*ServeMux).ServeHTTP+0x1c6									net/http/server.go:2828
+#	0x7ff6701e0849	github.com/yetone/magpie/internal/gui.Handler.held.func76+0x1a9						github.com/yetone/magpie/internal/gui/api.go:2760
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28									net/http/server.go:2286
+#	0x7ff6701e0663	github.com/yetone/magpie/internal/gui.Handler.noFramedAPI.func77+0x83					github.com/yetone/magpie/internal/gui/api.go:2722
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28									net/http/server.go:2286
+#	0x7ff6701ec0dd	github.com/yetone/magpie/internal/gui.Run.ownWindow.func27+0xdd						github.com/yetone/magpie/internal/gui/window_peer.go:27
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28									net/http/server.go:2286
+#	0x7ff6700a9b01	github.com/wailsapp/wails/v3/internal/assetserver.(*AssetServer).serveHTTP+0x3c1			github.com/wailsapp/wails/v3@v3.0.0-beta.24/internal/assetserver/assetserver.go:128
+#	0x7ff6700a8ff4	github.com/wailsapp/wails/v3/internal/assetserver.NewAssetServer.func1+0x34				github.com/wailsapp/wails/v3@v3.0.0-beta.24/internal/assetserver/assetserver.go:48
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28									net/http/server.go:2286
+#	0x7ff6701262f7	github.com/wailsapp/wails/v3/pkg/application.(*HTTPTransport).Handler.func1.1+0x77			github.com/wailsapp/wails/v3@v3.0.0-beta.24/pkg/application/transport_http.go:164
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28									net/http/server.go:2286
+#	0x7ff6700e39dd	github.com/wailsapp/wails/v3/pkg/application.New.func3.1+0x29d						github.com/wailsapp/wails/v3@v3.0.0-beta.24/pkg/application/application.go:154
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28									net/http/server.go:2286
+#	0x7ff6700a92b5	github.com/wailsapp/wails/v3/internal/assetserver.(*AssetServer).ServeHTTP+0x275			github.com/wailsapp/wails/v3@v3.0.0-beta.24/internal/assetserver/assetserver.go:70
+#	0x7ff6700ab646	github.com/wailsapp/wails/v3/internal/assetserver.(*AssetServer).processWebViewRequestInternal+0xc66	github.com/wailsapp/wails/v3@v3.0.0-beta.24/internal/assetserver/assetserver_webview.go:213
+#	0x7ff6700aa8fe	github.com/wailsapp/wails/v3/internal/assetserver.(*AssetServer).processWebViewRequest+0x5e		github.com/wailsapp/wails/v3@v3.0.0-beta.24/internal/assetserver/assetserver_webview.go:106
+
+1 @ 0x7ff66e876d5e 0x7ff66e87e3ee 0x7ff66e89d49e 0x7ff66e8a7ae5 0x7ff66e9204d9 0x7ff66e92023d 0x7ff66e92020f 0x7ff66eb911cb 0x7ff66eb90f7f 0x7ff66eb9103c 0x7ff66eb91165 0x7ff66eba47a8 0x7ff66f2d6294 0x7ff66f22e873 0x7ff66f22e841 0x7ff670263294 0x7ff66eb3d749 0x7ff66eb3f547 0x7ff6701e084a 0x7ff66eb3d749 0x7ff6701e0664 0x7ff66eb3d749 0x7ff6701ec0de 0x7ff66eb3d749 0x7ff6700a9b02 0x7ff6700a8ff5 0x7ff66eb3d749 0x7ff6701262f8 0x7ff66eb3d749 0x7ff6700e39de 0x7ff66eb3d749 0x7ff6700a92b6 0x7ff6700ab647 0x7ff6700aa8ff 0x7ff66e881e81
+#	0x7ff66e87e3ed	syscall.syscalln+0x4d											runtime/syscall_windows.go:431
+#	0x7ff66e89d49d	syscall.SyscallN+0x1d											syscall/dll_windows.go:99
+#	0x7ff66e8a7ae4	syscall.GetFileAttributesEx+0x84									syscall/zsyscall_windows.go:750
+#	0x7ff66e9204d8	os.stat+0x1b8												os/stat_windows.go:37
+#	0x7ff66e92023c	os.statNolog+0x3c											os/stat_windows.go:127
+#	0x7ff66e92020e	os.Stat+0xe												os/stat.go:13
+#	0x7ff66eb911ca	github.com/yetone/magpie/internal/steady.Stat.func1+0x2a						github.com/yetone/magpie/internal/steady/steady.go:79
+#	0x7ff66eb90f7e	github.com/yetone/magpie/internal/steady.retry+0x1e							github.com/yetone/magpie/internal/steady/steady.go:51
+#	0x7ff66eb9103b	github.com/yetone/magpie/internal/steady.retryGone+0x1b							github.com/yetone/magpie/internal/steady/steady.go:65
+#	0x7ff66eb91164	github.com/yetone/magpie/internal/steady.Stat+0x44							github.com/yetone/magpie/internal/steady/steady.go:78
+#	0x7ff66eba47a7	github.com/yetone/magpie/internal/filememo.statFile+0xc7						github.com/yetone/magpie/internal/filememo/filememo.go:254
+#	0x7ff66f2d6293	github.com/yetone/magpie/internal/filememo.read[...]+0x3d3						github.com/yetone/magpie/internal/filememo/filememo.go:190
+#	0x7ff66f22e872	github.com/yetone/magpie/internal/filememo.Read[...]+0x92						github.com/yetone/magpie/internal/filememo/filememo.go:165
+#	0x7ff66f22e840	github.com/yetone/magpie/internal/provider.QuotaHistories+0x60						github.com/yetone/magpie/internal/provider/quota_history.go:386
+#	0x7ff670263293	github.com/yetone/magpie/internal/gui.usageRoutes.func17+0xb3						github.com/yetone/magpie/internal/gui/usage.go:358
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28									net/http/server.go:2286
+#	0x7ff66eb3f546	net/http.(*ServeMux).ServeHTTP+0x1c6									net/http/server.go:2828
+#	0x7ff6701e0849	github.com/yetone/magpie/internal/gui.Handler.held.func76+0x1a9						github.com/yetone/magpie/internal/gui/api.go:2760
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28									net/http/server.go:2286
+#	0x7ff6701e0663	github.com/yetone/magpie/internal/gui.Handler.noFramedAPI.func77+0x83					github.com/yetone/magpie/internal/gui/api.go:2722
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28									net/http/server.go:2286
+#	0x7ff6701ec0dd	github.com/yetone/magpie/internal/gui.Run.ownWindow.func27+0xdd						github.com/yetone/magpie/internal/gui/window_peer.go:27
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28									net/http/server.go:2286
+#	0x7ff6700a9b01	github.com/wailsapp/wails/v3/internal/assetserver.(*AssetServer).serveHTTP+0x3c1			github.com/wailsapp/wails/v3@v3.0.0-beta.24/internal/assetserver/assetserver.go:128
+#	0x7ff6700a8ff4	github.com/wailsapp/wails/v3/internal/assetserver.NewAssetServer.func1+0x34				github.com/wailsapp/wails/v3@v3.0.0-beta.24/internal/assetserver/assetserver.go:48
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28									net/http/server.go:2286
+#	0x7ff6701262f7	github.com/wailsapp/wails/v3/pkg/application.(*HTTPTransport).Handler.func1.1+0x77			github.com/wailsapp/wails/v3@v3.0.0-beta.24/pkg/application/transport_http.go:164
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28									net/http/server.go:2286
+#	0x7ff6700e39dd	github.com/wailsapp/wails/v3/pkg/application.New.func3.1+0x29d						github.com/wailsapp/wails/v3@v3.0.0-beta.24/pkg/application/application.go:154
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28									net/http/server.go:2286
+#	0x7ff6700a92b5	github.com/wailsapp/wails/v3/internal/assetserver.(*AssetServer).ServeHTTP+0x275			github.com/wailsapp/wails/v3@v3.0.0-beta.24/internal/assetserver/assetserver.go:70
+#	0x7ff6700ab646	github.com/wailsapp/wails/v3/internal/assetserver.(*AssetServer).processWebViewRequestInternal+0xc66	github.com/wailsapp/wails/v3@v3.0.0-beta.24/internal/assetserver/assetserver_webview.go:213
+#	0x7ff6700aa8fe	github.com/wailsapp/wails/v3/internal/assetserver.(*AssetServer).processWebViewRequest+0x5e		github.com/wailsapp/wails/v3@v3.0.0-beta.24/internal/assetserver/assetserver_webview.go:106
+
+1 @ 0x7ff66e876d5e 0x7ff66e87e3ee 0x7ff66e89d49e 0x7ff66e8a7ae5 0x7ff66e9204d9 0x7ff66e92023d 0x7ff66e92020f 0x7ff66ed26e88 0x7ff66f90b917 0x7ff66f90b912 0x7ff66f90b48d 0x7ff66f912b28 0x7ff66f9129bd 0x7ff66e881e81
+#	0x7ff66e87e3ed	syscall.syscalln+0x4d								runtime/syscall_windows.go:431
+#	0x7ff66e89d49d	syscall.SyscallN+0x1d								syscall/dll_windows.go:99
+#	0x7ff66e8a7ae4	syscall.GetFileAttributesEx+0x84						syscall/zsyscall_windows.go:750
+#	0x7ff66e9204d8	os.stat+0x1b8									os/stat_windows.go:37
+#	0x7ff66e92023c	os.statNolog+0x3c								os/stat_windows.go:127
+#	0x7ff66e92020e	os.Stat+0xe									os/stat.go:13
+#	0x7ff66ed26e87	github.com/yetone/magpie/internal/plugin.listStamp+0x1c7			github.com/yetone/magpie/internal/plugin/store.go:287
+#	0x7ff66f90b916	github.com/yetone/magpie/internal/plugin.ListStamp+0x36				github.com/yetone/magpie/internal/plugin/middleware.go:56
+#	0x7ff66f90b911	github.com/yetone/magpie/internal/middleware.stamp+0x31				github.com/yetone/magpie/internal/middleware/middleware.go:146
+#	0x7ff66f90b48c	github.com/yetone/magpie/internal/middleware.current+0xec			github.com/yetone/magpie/internal/middleware/middleware.go:104
+#	0x7ff66f912b27	github.com/yetone/magpie/internal/middleware.(*observer).refresh+0x27		github.com/yetone/magpie/internal/middleware/points.go:473
+#	0x7ff66f9129bc	github.com/yetone/magpie/internal/middleware.(*observer).Serve.func1+0x7c	github.com/yetone/magpie/internal/middleware/points.go:425
+
+1 @ 0x7ff66e876d5e 0x7ff66e87e3ee 0x7ff66e89d49e 0x7ff66e8a7ae5 0x7ff66e9204d9 0x7ff66e92023d 0x7ff66e92020f 0x7ff66f66efe5 0x7ff66f66f1c1 0x7ff66e881e81
+#	0x7ff66e87e3ed	syscall.syscalln+0x4d							runtime/syscall_windows.go:431
+#	0x7ff66e89d49d	syscall.SyscallN+0x1d							syscall/dll_windows.go:99
+#	0x7ff66e8a7ae4	syscall.GetFileAttributesEx+0x84					syscall/zsyscall_windows.go:750
+#	0x7ff66e9204d8	os.stat+0x1b8								os/stat_windows.go:37
+#	0x7ff66e92023c	os.statNolog+0x3c							os/stat_windows.go:127
+#	0x7ff66e92020e	os.Stat+0xe								os/stat.go:13
+#	0x7ff66f66efe4	github.com/yetone/magpie/internal/pluginrt.KeepFresh.func1+0x184	github.com/yetone/magpie/internal/pluginrt/config.go:368
+#	0x7ff66f66f1c0	github.com/yetone/magpie/internal/pluginrt.KeepFresh+0x360		github.com/yetone/magpie/internal/pluginrt/config.go:380
+
+1 @ 0x7ff66e876d5e 0x7ff66e87e3ee 0x7ff66e89d49e 0x7ff66e8a8c5a 0x7ff66e90d3ea 0x7ff66e90d3d3 0x7ff66e90c3a9 0x7ff66e90d0d0 0x7ff66e91a4af 0x7ff66e91a4aa 0x7ff66eaad143 0x7ff66eaadbe9 0x7ff66ed0bab1 0x7ff66ed0af28 0x7ff66e881e81
+#	0x7ff66e87e3ed	syscall.syscalln+0x4d						runtime/syscall_windows.go:431
+#	0x7ff66e89d49d	syscall.SyscallN+0x1d						syscall/dll_windows.go:99
+#	0x7ff66e8a8c59	syscall.readFile+0xb9						syscall/zsyscall_windows.go:1030
+#	0x7ff66e90d3e9	syscall.ReadFile+0x49						syscall/syscall_windows.go:510
+#	0x7ff66e90d3d2	internal/poll.(*FD).Read.func1+0x32				internal/poll/fd_windows.go:586
+#	0x7ff66e90c3a8	internal/poll.(*FD).execIO+0x2c8				internal/poll/fd_windows.go:304
+#	0x7ff66e90d0cf	internal/poll.(*FD).Read+0x28f					internal/poll/fd_windows.go:585
+#	0x7ff66e91a4ae	os.(*File).read+0x4e						os/file_posix.go:30
+#	0x7ff66e91a4a9	os.(*File).Read+0x49						os/file.go:144
+#	0x7ff66eaad142	bufio.(*Reader).fill+0x102					bufio/bufio.go:113
+#	0x7ff66eaadbe8	bufio.(*Reader).ReadSlice+0x28					bufio/bufio.go:377
+#	0x7ff66ed0bab0	github.com/yetone/magpie/internal/plugin.readLine+0x50		github.com/yetone/magpie/internal/plugin/host.go:1149
+#	0x7ff66ed0af27	github.com/yetone/magpie/internal/plugin.(*host).read+0x1a7	github.com/yetone/magpie/internal/plugin/host.go:1077
+
+1 @ 0x7ff66e876d5e 0x7ff66e87e3ee 0x7ff66e89d49e 0x7ff66e8a8c5a 0x7ff66e90d3ea 0x7ff66e90d3d3 0x7ff66e90c3a9 0x7ff66e90d0d0 0x7ff66e91a4af 0x7ff66e91a4aa 0x7ff66eaafd3b 0x7ff66ed0ab8f 0x7ff66e881e81
+#	0x7ff66e87e3ed	syscall.syscalln+0x4d						runtime/syscall_windows.go:431
+#	0x7ff66e89d49d	syscall.SyscallN+0x1d						syscall/dll_windows.go:99
+#	0x7ff66e8a8c59	syscall.readFile+0xb9						syscall/zsyscall_windows.go:1030
+#	0x7ff66e90d3e9	syscall.ReadFile+0x49						syscall/syscall_windows.go:510
+#	0x7ff66e90d3d2	internal/poll.(*FD).Read.func1+0x32				internal/poll/fd_windows.go:586
+#	0x7ff66e90c3a8	internal/poll.(*FD).execIO+0x2c8				internal/poll/fd_windows.go:304
+#	0x7ff66e90d0cf	internal/poll.(*FD).Read+0x28f					internal/poll/fd_windows.go:585
+#	0x7ff66e91a4ae	os.(*File).read+0x4e						os/file_posix.go:30
+#	0x7ff66e91a4a9	os.(*File).Read+0x49						os/file.go:144
+#	0x7ff66eaafd3a	bufio.(*Scanner).Scan+0x47a					bufio/scan.go:219
+#	0x7ff66ed0ab8e	github.com/yetone/magpie/internal/plugin.drainStderr+0x16e	github.com/yetone/magpie/internal/plugin/host.go:1065
+
+1 @ 0x7ff66e876d5e 0x7ff66e87e3ee 0x7ff66e89d49e 0x7ff66e905fa5 0x7ff66e9048c6 0x7ff66e91d265 0x7ff66e91b13d 0x7ff66eb916e5 0x7ff66eb90f7f 0x7ff66eb91615 0x7ff66eb915d7 0x7ff66f169232 0x7ff66f22b736 0x7ff66f22d8a6 0x7ff66f276698 0x7ff66e881e81
+#	0x7ff66e87e3ed	syscall.syscalln+0x4d							runtime/syscall_windows.go:431
+#	0x7ff66e89d49d	syscall.SyscallN+0x1d							syscall/dll_windows.go:99
+#	0x7ff66e905fa4	internal/syscall/windows.MoveFileEx+0x84				internal/syscall/windows/zsyscall_windows.go:455
+#	0x7ff66e9048c5	internal/syscall/windows.Rename+0x85					internal/syscall/windows/syscall_windows.go:366
+#	0x7ff66e91d264	os.rename+0x84								os/file_windows.go:260
+#	0x7ff66e91b13c	os.Rename+0x1c								os/file.go:438
+#	0x7ff66eb916e4	github.com/yetone/magpie/internal/steady.WriteFile.Rename.func1+0x24	github.com/yetone/magpie/internal/steady/steady.go:108
+#	0x7ff66eb90f7e	github.com/yetone/magpie/internal/steady.retry+0x1e			github.com/yetone/magpie/internal/steady/steady.go:51
+#	0x7ff66eb91614	github.com/yetone/magpie/internal/steady.Rename+0x1b4			github.com/yetone/magpie/internal/steady/steady.go:108
+#	0x7ff66eb915d6	github.com/yetone/magpie/internal/steady.WriteFile+0x176		github.com/yetone/magpie/internal/steady/steady.go:136
+#	0x7ff66f169231	github.com/yetone/magpie/internal/provider.writeFileAtomic+0x51		github.com/yetone/magpie/internal/provider/kiro.go:469
+#	0x7ff66f22b735	github.com/yetone/magpie/internal/provider.writeQuotaHist+0x95		github.com/yetone/magpie/internal/provider/quota_history.go:123
+#	0x7ff66f22d8a5	github.com/yetone/magpie/internal/provider.noteQuotaHistory+0xc25	github.com/yetone/magpie/internal/provider/quota_history.go:320
+#	0x7ff66f276697	github.com/yetone/magpie/internal/provider.SubscriptionUsage.func1+0x97	github.com/yetone/magpie/internal/provider/subscription_usage.go:309
+
+1 @ 0x7ff66e876d5e 0x7ff66e87e3ee 0x7ff66e89d49e 0x7ff66eb9b78c 0x7ff66eba1e55 0x7ff66e881e81
+#	0x7ff66e87e3ed	syscall.syscalln+0x4d						runtime/syscall_windows.go:431
+#	0x7ff66e89d49d	syscall.SyscallN+0x1d						syscall/dll_windows.go:99
+#	0x7ff66eb9b78b	golang.org/x/sys/windows.GetQueuedCompletionStatus+0xab		golang.org/x/sys@v0.46.0/windows/zsyscall_windows.go:2657
+#	0x7ff66eba1e54	github.com/fsnotify/fsnotify.(*readDirChangesW).readEvents+0x74	github.com/fsnotify/fsnotify@v1.9.0/backend_windows.go:491
+
+1 @ 0x7ff66e87a30e 0x7ff66e80939c 0x7ff66e808f97 0x7ff66f621e06 0x7ff66f621dce 0x7ff66f621ccc 0x7ff66e88fb0a 0x7ff66e881e81
+#	0x7ff66f621e05	github.com/yetone/magpie/internal/pii/guard.take+0xa5			github.com/yetone/magpie/internal/pii/guard/guard.go:141
+#	0x7ff66f621dcd	github.com/yetone/magpie/internal/pii/guard.(*Model).Find.func2.1+0x6d	github.com/yetone/magpie/internal/pii/guard/guard.go:207
+#	0x7ff66f621ccb	github.com/yetone/magpie/internal/pii/guard.(*Model).Find.func2+0xcb	github.com/yetone/magpie/internal/pii/guard/guard.go:210
+#	0x7ff66e88fb09	sync.(*WaitGroup).Go.func1+0x49						sync/waitgroup.go:258
+
+1 @ 0x7ff66e87a30e 0x7ff66e80a3ae 0x7ff66e809ed2 0x7ff66f234d35 0x7ff66f23450f 0x7ff670262706 0x7ff66eb3d749 0x7ff66eb3f547 0x7ff6701e084a 0x7ff66eb3d749 0x7ff6701e0664 0x7ff66eb3d749 0x7ff6701ec0de 0x7ff66eb3d749 0x7ff6700a9b02 0x7ff6700a8ff5 0x7ff66eb3d749 0x7ff6701262f8 0x7ff66eb3d749 0x7ff6700e39de 0x7ff66eb3d749 0x7ff6700a92b6 0x7ff6700ab647 0x7ff6700aa8ff 0x7ff66e881e81
+#	0x7ff66f234d34	github.com/yetone/magpie/internal/provider.quotas+0x1d4							github.com/yetone/magpie/internal/provider/quotas.go:58
+#	0x7ff66f23450e	github.com/yetone/magpie/internal/provider.Quotas+0x2e							github.com/yetone/magpie/internal/provider/quotas.go:17
+#	0x7ff670262705	github.com/yetone/magpie/internal/gui.usageRoutes.func10+0x105						github.com/yetone/magpie/internal/gui/usage.go:268
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28									net/http/server.go:2286
+#	0x7ff66eb3f546	net/http.(*ServeMux).ServeHTTP+0x1c6									net/http/server.go:2828
+#	0x7ff6701e0849	github.com/yetone/magpie/internal/gui.Handler.held.func76+0x1a9						github.com/yetone/magpie/internal/gui/api.go:2760
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28									net/http/server.go:2286
+#	0x7ff6701e0663	github.com/yetone/magpie/internal/gui.Handler.noFramedAPI.func77+0x83					github.com/yetone/magpie/internal/gui/api.go:2722
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28									net/http/server.go:2286
+#	0x7ff6701ec0dd	github.com/yetone/magpie/internal/gui.Run.ownWindow.func27+0xdd						github.com/yetone/magpie/internal/gui/window_peer.go:27
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28									net/http/server.go:2286
+#	0x7ff6700a9b01	github.com/wailsapp/wails/v3/internal/assetserver.(*AssetServer).serveHTTP+0x3c1			github.com/wailsapp/wails/v3@v3.0.0-beta.24/internal/assetserver/assetserver.go:128
+#	0x7ff6700a8ff4	github.com/wailsapp/wails/v3/internal/assetserver.NewAssetServer.func1+0x34				github.com/wailsapp/wails/v3@v3.0.0-beta.24/internal/assetserver/assetserver.go:48
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28									net/http/server.go:2286
+#	0x7ff6701262f7	github.com/wailsapp/wails/v3/pkg/application.(*HTTPTransport).Handler.func1.1+0x77			github.com/wailsapp/wails/v3@v3.0.0-beta.24/pkg/application/transport_http.go:164
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28									net/http/server.go:2286
+#	0x7ff6700e39dd	github.com/wailsapp/wails/v3/pkg/application.New.func3.1+0x29d						github.com/wailsapp/wails/v3@v3.0.0-beta.24/pkg/application/application.go:154
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28									net/http/server.go:2286
+#	0x7ff6700a92b5	github.com/wailsapp/wails/v3/internal/assetserver.(*AssetServer).ServeHTTP+0x275			github.com/wailsapp/wails/v3@v3.0.0-beta.24/internal/assetserver/assetserver.go:70
+#	0x7ff6700ab646	github.com/wailsapp/wails/v3/internal/assetserver.(*AssetServer).processWebViewRequestInternal+0xc66	github.com/wailsapp/wails/v3@v3.0.0-beta.24/internal/assetserver/assetserver_webview.go:213
+#	0x7ff6700aa8fe	github.com/wailsapp/wails/v3/internal/assetserver.(*AssetServer).processWebViewRequest+0x5e		github.com/wailsapp/wails/v3@v3.0.0-beta.24/internal/assetserver/assetserver_webview.go:106
+
+1 @ 0x7ff66e87a30e 0x7ff66e80a3ae 0x7ff66e809ed2 0x7ff66fae7609 0x7ff66e881e81
+#	0x7ff66fae7608	github.com/yetone/magpie/internal/gateway.(*Server).ListenAndServe.func6+0x68	github.com/yetone/magpie/internal/gateway/gateway.go:735
+
+1 @ 0x7ff66e87a30e 0x7ff66e80a3ae 0x7ff66e809ed2 0x7ff6700e02d6 0x7ff66e881e81
+#	0x7ff6700e02d5	github.com/wailsapp/wails/v3/internal/signal.(*SignalHandler).Start.func1+0x35	github.com/wailsapp/wails/v3@v3.0.0-beta.24/internal/signal/signal.go:35
+
+1 @ 0x7ff66e87a30e 0x7ff66e80a3ae 0x7ff66e809ed2 0x7ff6700e66e9 0x7ff66e881e81
+#	0x7ff6700e66e8	github.com/wailsapp/wails/v3/pkg/application.(*App).Run.func1.7+0x48	github.com/wailsapp/wails/v3@v3.0.0-beta.24/pkg/application/application.go:735
+
+1 @ 0x7ff66e87a30e 0x7ff66e80a3ae 0x7ff66e809ed2 0x7ff6700e67e5 0x7ff66e881e81
+#	0x7ff6700e67e4	github.com/wailsapp/wails/v3/pkg/application.(*App).Run.func1.6+0x44	github.com/wailsapp/wails/v3@v3.0.0-beta.24/pkg/application/application.go:728
+
+1 @ 0x7ff66e87a30e 0x7ff66e80a3ae 0x7ff66e809ed2 0x7ff6700e68c5 0x7ff66e881e81
+#	0x7ff6700e68c4	github.com/wailsapp/wails/v3/pkg/application.(*App).Run.func1.5+0x44	github.com/wailsapp/wails/v3@v3.0.0-beta.24/pkg/application/application.go:722
+
+1 @ 0x7ff66e87a30e 0x7ff66e80a3ae 0x7ff66e809ed2 0x7ff6700e69a5 0x7ff66e881e81
+#	0x7ff6700e69a4	github.com/wailsapp/wails/v3/pkg/application.(*App).Run.func1.4+0x44	github.com/wailsapp/wails/v3@v3.0.0-beta.24/pkg/application/application.go:716
+
+1 @ 0x7ff66e87a30e 0x7ff66e80a3ae 0x7ff66e809ed2 0x7ff6700e6a85 0x7ff66e881e81
+#	0x7ff6700e6a84	github.com/wailsapp/wails/v3/pkg/application.(*App).Run.func1.3+0x44	github.com/wailsapp/wails/v3@v3.0.0-beta.24/pkg/application/application.go:710
+
+1 @ 0x7ff66e87a30e 0x7ff66e80a3ae 0x7ff66e809ed2 0x7ff6700e6b65 0x7ff66e881e81
+#	0x7ff6700e6b64	github.com/wailsapp/wails/v3/pkg/application.(*App).Run.func1.2+0x44	github.com/wailsapp/wails/v3@v3.0.0-beta.24/pkg/application/application.go:704
+
+1 @ 0x7ff66e87a30e 0x7ff66e80a3ae 0x7ff66e809ed2 0x7ff6700e6c45 0x7ff66e881e81
+#	0x7ff6700e6c44	github.com/wailsapp/wails/v3/pkg/application.(*App).Run.func1.1+0x44	github.com/wailsapp/wails/v3@v3.0.0-beta.24/pkg/application/application.go:698
+
+1 @ 0x7ff66e87a30e 0x7ff66e80a3ae 0x7ff66e809ef2 0x7ff670117ac5 0x7ff66e881e81
+#	0x7ff670117ac4	github.com/wailsapp/wails/v3/pkg/application.newSingleInstanceManager.func1.1+0x84	github.com/wailsapp/wails/v3@v3.0.0-beta.24/pkg/application/single_instance.go:79
+
+1 @ 0x7ff66e87a30e 0x7ff66e80a3ae 0x7ff66e809ef2 0x7ff6703e0772 0x7ff66e881e81
+#	0x7ff6703e0771	github.com/yetone/magpie/internal/cli.endProbesOnSignal.func1+0x31	github.com/yetone/magpie/internal/cli/signals.go:38
+
+1 @ 0x7ff66e87a30e 0x7ff66e83cd37 0x7ff66e879445 0x7ff66e90ab07 0x7ff66e90bdec 0x7ff66e90c445 0x7ff66e911359 0x7ff66e9116d0 0x7ff66e9e180b 0x7ff66e9f723b 0x7ff66e9f63b0 0x7ff66eb40f4c 0x7ff66fae73b4 0x7ff6701f0093 0x7ff66e881e81
+#	0x7ff66e879444	internal/poll.runtime_pollWait+0x84						runtime/netpoll.go:351
+#	0x7ff66e90ab06	internal/poll.(*pollDesc).wait+0x26						internal/poll/fd_poll_runtime.go:84
+#	0x7ff66e90bdeb	internal/poll.(*FD).waitIO+0x4b							internal/poll/fd_windows.go:228
+#	0x7ff66e90c444	internal/poll.(*FD).execIO+0x364						internal/poll/fd_windows.go:311
+#	0x7ff66e911358	internal/poll.(*FD).acceptOne+0x78						internal/poll/fd_windows.go:1129
+#	0x7ff66e9116cf	internal/poll.(*FD).Accept+0x18f						internal/poll/fd_windows.go:1164
+#	0x7ff66e9e180a	net.(*netFD).accept+0x4a							net/fd_windows.go:202
+#	0x7ff66e9f723a	net.(*TCPListener).accept+0x1a							net/tcpsock_posix.go:159
+#	0x7ff66e9f63af	net.(*TCPListener).Accept+0x2f							net/tcpsock.go:387
+#	0x7ff66eb40f4b	net/http.(*Server).Serve+0x30b							net/http/server.go:3434
+#	0x7ff66fae73b3	github.com/yetone/magpie/internal/gateway.(*Server).ListenAndServe+0x1073	github.com/yetone/magpie/internal/gateway/gateway.go:759
+#	0x7ff6701f0092	github.com/yetone/magpie/internal/gui.serveGatewayLocked.func1+0xb2		github.com/yetone/magpie/internal/gui/backend.go:165
+
+1 @ 0x7ff66e87a30e 0x7ff66e859285 0x7ff66eba4e6c 0x7ff66e881e81
+#	0x7ff66eba4e6b	github.com/yetone/magpie/internal/filememo.Watch+0x54b	github.com/yetone/magpie/internal/filememo/watch.go:61
+
+1 @ 0x7ff66e87a30e 0x7ff66e859285 0x7ff66ecf7e32 0x7ff66e881e81
+#	0x7ff66ecf7e31	github.com/yetone/magpie/internal/plugin.KeepBunUpdated+0xf1	github.com/yetone/magpie/internal/plugin/bunupdate.go:307
+
+1 @ 0x7ff66e87a30e 0x7ff66e859285 0x7ff66ed0ce8c 0x7ff66e881e81
+#	0x7ff66ed0ce8b	github.com/yetone/magpie/internal/plugin.(*host).writerLoop+0x8b	github.com/yetone/magpie/internal/plugin/host.go:1317
+
+1 @ 0x7ff66e87a30e 0x7ff66e859285 0x7ff66ed0d705 0x7ff66e881e81
+#	0x7ff66ed0d704	github.com/yetone/magpie/internal/plugin.(*host).ctrlLoop+0x64	github.com/yetone/magpie/internal/plugin/host.go:1421
+
+1 @ 0x7ff66e87a30e 0x7ff66e859285 0x7ff66ed32592 0x7ff66e881e81
+#	0x7ff66ed32591	github.com/yetone/magpie/internal/plugin.KeepUpdated+0xf1	github.com/yetone/magpie/internal/plugin/updates.go:283
+
+1 @ 0x7ff66e87a30e 0x7ff66e859285 0x7ff66f010fce 0x7ff66e881e81
+#	0x7ff66f010fcd	github.com/yetone/magpie/internal/provider.KeepAccountsListed+0xed	github.com/yetone/magpie/internal/provider/account_relist.go:34
+
+1 @ 0x7ff66e87a30e 0x7ff66e859285 0x7ff66f063e15 0x7ff66e881e81
+#	0x7ff66f063e14	github.com/yetone/magpie/internal/provider.KeepCodexAppOnItsProvider+0x114	github.com/yetone/magpie/internal/provider/codex_app_server.go:329
+
+1 @ 0x7ff66e87a30e 0x7ff66e859285 0x7ff66f070c6a 0x7ff66e881e81
+#	0x7ff66f070c69	github.com/yetone/magpie/internal/provider.KeepResetsFromRunningOut+0x109	github.com/yetone/magpie/internal/provider/codex_expiring.go:276
+
+1 @ 0x7ff66e87a30e 0x7ff66e859285 0x7ff66f08f94c 0x7ff66e881e81
+#	0x7ff66f08f94b	github.com/yetone/magpie/internal/provider.KeepOnAnAccountWithRoom+0x12b	github.com/yetone/magpie/internal/provider/codex_switch.go:556
+
+1 @ 0x7ff66e87a30e 0x7ff66e859285 0x7ff66f095785 0x7ff66f05c0db 0x7ff66e881e81
+#	0x7ff66f095784	github.com/yetone/magpie/internal/provider.keepWarm+0x264		github.com/yetone/magpie/internal/provider/codex_warmup.go:579
+#	0x7ff66f05c0da	github.com/yetone/magpie/internal/provider.KeepClaudeWindowsWarm+0x17a	github.com/yetone/magpie/internal/provider/claude_warmup.go:82
+
+1 @ 0x7ff66e87a30e 0x7ff66e859285 0x7ff66f095785 0x7ff66f0954df 0x7ff66e881e81
+#	0x7ff66f095784	github.com/yetone/magpie/internal/provider.keepWarm+0x264		github.com/yetone/magpie/internal/provider/codex_warmup.go:579
+#	0x7ff66f0954de	github.com/yetone/magpie/internal/provider.KeepCodexWindowsWarm+0xfe	github.com/yetone/magpie/internal/provider/codex_warmup.go:554
+
+1 @ 0x7ff66e87a30e 0x7ff66e859285 0x7ff66f1567df 0x7ff66e881e81
+#	0x7ff66f1567de	github.com/yetone/magpie/internal/provider.KeepLoginsAlive+0xfe	github.com/yetone/magpie/internal/provider/keepalive.go:302
+
+1 @ 0x7ff66e87a30e 0x7ff66e859285 0x7ff66f19cb7c 0x7ff66e881e81
+#	0x7ff66f19cb7b	github.com/yetone/magpie/internal/provider.KeepRetiringMoved+0xdb	github.com/yetone/magpie/internal/provider/migrate.go:1130
+
+1 @ 0x7ff66e87a30e 0x7ff66e859285 0x7ff66f1e58e5 0x7ff66e881e81
+#	0x7ff66f1e58e4	github.com/yetone/magpie/internal/provider.KeepPartnersFresh+0x104	github.com/yetone/magpie/internal/provider/partners.go:184
+
+1 @ 0x7ff66e87a30e 0x7ff66e859285 0x7ff66f1ff676 0x7ff66e881e81
+#	0x7ff66f1ff675	github.com/yetone/magpie/internal/provider.KeepPluginsListed+0x155	github.com/yetone/magpie/internal/provider/plugin_relist.go:56
+
+1 @ 0x7ff66e87a30e 0x7ff66e859285 0x7ff66f22a729 0x7ff67023384a 0x7ff66e881e81
+#	0x7ff66f22a728	github.com/yetone/magpie/internal/provider.WatchQuotas+0x128		github.com/yetone/magpie/internal/provider/quota_alert.go:273
+#	0x7ff670233849	github.com/yetone/magpie/internal/gui.(*host).watchAlerts.func2+0x269	github.com/yetone/magpie/internal/gui/quota_alert_notify.go:193
+
+1 @ 0x7ff66e87a30e 0x7ff66e859285 0x7ff66f2b4ff0 0x7ff66f1a7c4c 0x7ff66e881e81
+#	0x7ff66f2b4fef	github.com/yetone/magpie/internal/provider.keepCheckedIn+0x12f		github.com/yetone/magpie/internal/provider/workbuddy_checkin.go:572
+#	0x7ff66f1a7c4b	github.com/yetone/magpie/internal/provider.KeepMiniMaxCheckedIn+0xab	github.com/yetone/magpie/internal/provider/minimax_checkin.go:316
+
+1 @ 0x7ff66e87a30e 0x7ff66e859285 0x7ff66f2b4ff0 0x7ff66f1fbf91 0x7ff66e881e81
+#	0x7ff66f2b4fef	github.com/yetone/magpie/internal/provider.keepCheckedIn+0x12f		github.com/yetone/magpie/internal/provider/workbuddy_checkin.go:572
+#	0x7ff66f1fbf90	github.com/yetone/magpie/internal/provider.KeepPluginsCheckedIn+0x70	github.com/yetone/magpie/internal/provider/plugin_checkin.go:389
+
+1 @ 0x7ff66e87a30e 0x7ff66e859285 0x7ff66f2b4ff0 0x7ff66f227e17 0x7ff66e881e81
+#	0x7ff66f2b4fef	github.com/yetone/magpie/internal/provider.keepCheckedIn+0x12f		github.com/yetone/magpie/internal/provider/workbuddy_checkin.go:572
+#	0x7ff66f227e16	github.com/yetone/magpie/internal/provider.KeepQoderCheckedIn+0xb6	github.com/yetone/magpie/internal/provider/qoder_checkin.go:289
+
+1 @ 0x7ff66e87a30e 0x7ff66e859285 0x7ff66f2b4ff0 0x7ff66f29a88c 0x7ff66e881e81
+#	0x7ff66f2b4fef	github.com/yetone/magpie/internal/provider.keepCheckedIn+0x12f		github.com/yetone/magpie/internal/provider/workbuddy_checkin.go:572
+#	0x7ff66f29a88b	github.com/yetone/magpie/internal/provider.KeepTraeCheckedIn+0xab	github.com/yetone/magpie/internal/provider/trae_checkin.go:264
+
+1 @ 0x7ff66e87a30e 0x7ff66e859285 0x7ff66f2b4ff0 0x7ff66f2b4e7c 0x7ff66e881e81
+#	0x7ff66f2b4fef	github.com/yetone/magpie/internal/provider.keepCheckedIn+0x12f		github.com/yetone/magpie/internal/provider/workbuddy_checkin.go:572
+#	0x7ff66f2b4e7b	github.com/yetone/magpie/internal/provider.KeepWorkBuddyCheckedIn+0x7b	github.com/yetone/magpie/internal/provider/workbuddy_checkin.go:562
+
+1 @ 0x7ff66e87a30e 0x7ff66e859285 0x7ff66f66857c 0x7ff66e881e81
+#	0x7ff66f66857b	github.com/yetone/magpie/internal/awake.Keep+0x4bb	github.com/yetone/magpie/internal/awake/awake.go:109
+
+1 @ 0x7ff66e87a30e 0x7ff66e859285 0x7ff66f912557 0x7ff66e881e81
+#	0x7ff66f912556	github.com/yetone/magpie/internal/middleware.(*observer).Serve.func2+0x156	github.com/yetone/magpie/internal/middleware/points.go:433
+
+1 @ 0x7ff66e87a30e 0x7ff66e859285 0x7ff66fb93a78 0x7ff66e881e81
+#	0x7ff66fb93a77	github.com/yetone/magpie/internal/gateway.keepHubPruned+0xb7	github.com/yetone/magpie/internal/gateway/hub_mcp.go:343
+
+1 @ 0x7ff66e87a30e 0x7ff66e859285 0x7ff66fd054ce 0x7ff66e881e81
+#	0x7ff66fd054cd	github.com/yetone/magpie/internal/gateway.(*Server).serveWSL+0x1cd	github.com/yetone/magpie/internal/gateway/wsl.go:276
+
+1 @ 0x7ff66e87a30e 0x7ff66e859285 0x7ff66fd09bd9 0x7ff66e881e81
+#	0x7ff66fd09bd8	github.com/yetone/magpie/internal/gateway.init.3.func1+0x1f8	github.com/yetone/magpie/internal/gateway/issue_keys.go:168
+
+1 @ 0x7ff66e87a30e 0x7ff66e859285 0x7ff66fd0a23c 0x7ff66e881e81
+#	0x7ff66fd0a23b	github.com/yetone/magpie/internal/gateway.init.2.func1+0x15b	github.com/yetone/magpie/internal/gateway/conversations.go:38
+
+1 @ 0x7ff66e87a30e 0x7ff66e859285 0x7ff66fddfc87 0x7ff66e881e81
+#	0x7ff66fddfc86	github.com/yetone/magpie/internal/agent.KeepClaudeScience+0xc6	github.com/yetone/magpie/internal/agent/claudescience.go:326
+
+1 @ 0x7ff66e87a30e 0x7ff66e859285 0x7ff66fe0fa59 0x7ff66e881e81
+#	0x7ff66fe0fa58	github.com/yetone/magpie/internal/agent.KeepCodexRolloutsPortable+0x158	github.com/yetone/magpie/internal/agent/codex_portable.go:72
+
+1 @ 0x7ff66e87a30e 0x7ff66e859285 0x7ff670125d93 0x7ff66e881e81
+#	0x7ff670125d92	github.com/wailsapp/wails/v3/pkg/application.(*HTTPTransport).cleanupChunks+0x132	github.com/wailsapp/wails/v3@v3.0.0-beta.24/pkg/application/transport_http.go:110
+
+1 @ 0x7ff66e87a30e 0x7ff66e859285 0x7ff67015ad86 0x7ff67015ac07 0x7ff66e881e81
+#	0x7ff67015ad85	github.com/yetone/magpie/internal/davsync.run+0x145	github.com/yetone/magpie/internal/davsync/davsync.go:749
+#	0x7ff67015ac06	github.com/yetone/magpie/internal/davsync.Run+0x26	github.com/yetone/magpie/internal/davsync/davsync.go:739
+
+1 @ 0x7ff66e87a30e 0x7ff66e859285 0x7ff6701ed714 0x7ff66e881e81
+#	0x7ff6701ed713	github.com/yetone/magpie/internal/gui.(*appPage).run+0x53	github.com/yetone/magpie/internal/gui/apppage.go:168
+
+1 @ 0x7ff66e87a30e 0x7ff66e859285 0x7ff6701ef936 0x7ff66e881e81
+#	0x7ff6701ef935	github.com/yetone/magpie/internal/gui.watchGateway+0xd5	github.com/yetone/magpie/internal/gui/backend.go:92
+
+1 @ 0x7ff66e87a30e 0x7ff66e859285 0x7ff670407c07 0x7ff66e881e81
+#	0x7ff670407c06	github.com/yetone/magpie/internal/otlp.(*otelExporter).run+0x226	github.com/yetone/magpie/internal/otlp/otel.go:243
+
+1 @ 0x7ff66e87a30e 0x7ff66e859285 0x7ff67040abd9 0x7ff66e881e81
+#	0x7ff67040abd8	github.com/yetone/magpie/internal/otlp.(*otelExporter).watchSessions+0x2d8	github.com/yetone/magpie/internal/otlp/otel_sessions.go:127
+
+1 @ 0x7ff66e87a30e 0x7ff66e85a145 0x7ff66e85a117 0x7ff66e81d6d2 0x7ff66e81d6bb 0x7ff66e8221fd 0x7ff66e813486 0x7ff66e8778a7 0x7ff66e87c369 0x7ff66f61e6eb 0x7ff66f61e81a 0x7ff66f61f7ac 0x7ff66f61f446 0x7ff66f621eac 0x7ff66f621ccc 0x7ff66e88fb0a 0x7ff66e881e81
+#	0x7ff66f61e6ea	github.com/yetone/magpie/internal/pii/guard.quant+0x12a			github.com/yetone/magpie/internal/pii/guard/bert.go:200
+#	0x7ff66f61e819	github.com/yetone/magpie/internal/pii/guard.(*qmat).matmul+0x39		github.com/yetone/magpie/internal/pii/guard/bert.go:214
+#	0x7ff66f61f7ab	github.com/yetone/magpie/internal/pii/guard.(*net).encode+0x6b		github.com/yetone/magpie/internal/pii/guard/bert.go:346
+#	0x7ff66f61f445	github.com/yetone/magpie/internal/pii/guard.(*net).logits+0x45		github.com/yetone/magpie/internal/pii/guard/bert.go:302
+#	0x7ff66f621eab	github.com/yetone/magpie/internal/pii/guard.(*Model).Find.func2.1+0x14b	github.com/yetone/magpie/internal/pii/guard/guard.go:209
+#	0x7ff66f621ccb	github.com/yetone/magpie/internal/pii/guard.(*Model).Find.func2+0xcb	github.com/yetone/magpie/internal/pii/guard/guard.go:210
+#	0x7ff66e88fb09	sync.(*WaitGroup).Go.func1+0x49						sync/waitgroup.go:258
+
+1 @ 0x7ff66e87a30e 0x7ff66e85a145 0x7ff66e85a117 0x7ff66e87b845 0x7ff66e88d97d 0x7ff66ebdead6 0x7ff66ebdeab9 0x7ff66ebdeab8 0x7ff66f186fdc 0x7ff66f18f799 0x7ff66f18f1f2 0x7ff66fab1c25 0x7ff66fac373c 0x7ff66fc71185 0x7ff66fcf2ce9 0x7ff66fcf2735 0x7ff66fcf20eb 0x7ff66fcf20e6 0x7ff66fd08e0f 0x7ff66feda7a4 0x7ff66fe2c928 0x7ff66fe26a25 0x7ff66fd8f90e 0x7ff670288887 0x7ff66eb3d749 0x7ff66eb3f547 0x7ff6701e084a 0x7ff66eb3d749 0x7ff6701e0664 0x7ff66eb3d749 0x7ff6701ec0de 0x7ff66eb3d749 0x7ff6700a9b02 0x7ff6700a8ff5 0x7ff66eb3d749 0x7ff6701262f8 0x7ff66eb3d749 0x7ff6700e39de 0x7ff66eb3d749 0x7ff6700a92b6 0x7ff6700ab647 0x7ff6700aa8ff 0x7ff66e881e81
+#	0x7ff66e87b844	internal/sync.runtime_SemacquireMutex+0x24								runtime/sema.go:95
+#	0x7ff66e88d97c	internal/sync.(*Mutex).lockSlow+0x15c									internal/sync/mutex.go:149
+#	0x7ff66ebdead5	internal/sync.(*Mutex).Lock+0x35									internal/sync/mutex.go:70
+#	0x7ff66ebdeab8	sync.(*Mutex).Lock+0x18											sync/mutex.go:46
+#	0x7ff66ebdeab7	github.com/yetone/magpie/internal/filelock.(*Mutex).Lock+0x17						github.com/yetone/magpie/internal/filelock/filelock.go:80
+#	0x7ff66f186fdb	github.com/yetone/magpie/internal/provider.Logins+0x39b							github.com/yetone/magpie/internal/provider/logins.go:992
+#	0x7ff66f18f798	github.com/yetone/magpie/internal/provider.Provider.alsoOn+0x2b8					github.com/yetone/magpie/internal/provider/logins_on.go:148
+#	0x7ff66f18f1f1	github.com/yetone/magpie/internal/provider.Provider.AlsoOn+0x91						github.com/yetone/magpie/internal/provider/logins_on.go:122
+#	0x7ff66fab1c24	github.com/yetone/magpie/internal/gateway.perKeyBarred+0x124						github.com/yetone/magpie/internal/gateway/fallback.go:230
+#	0x7ff66fac373b	github.com/yetone/magpie/internal/gateway.spentModel+0xbb						github.com/yetone/magpie/internal/gateway/fallback.go:1158
+#	0x7ff66fc71184	github.com/yetone/magpie/internal/gateway.smallReadyOf+0x1a4						github.com/yetone/magpie/internal/gateway/search.go:524
+#	0x7ff66fcf2ce8	github.com/yetone/magpie/internal/gateway.seersRanked+0x568						github.com/yetone/magpie/internal/gateway/vision.go:265
+#	0x7ff66fcf2734	github.com/yetone/magpie/internal/gateway.autoVision+0x14						github.com/yetone/magpie/internal/gateway/vision.go:221
+#	0x7ff66fcf20ea	github.com/yetone/magpie/internal/gateway.AutoVision+0xca						github.com/yetone/magpie/internal/gateway/vision.go:215
+#	0x7ff66fcf20e5	github.com/yetone/magpie/internal/gateway.seer+0xc5							github.com/yetone/magpie/internal/gateway/vision.go:129
+#	0x7ff66fd08e0e	github.com/yetone/magpie/internal/gateway.init.6.func1+0xe						github.com/yetone/magpie/internal/gateway/vision.go:33
+#	0x7ff66feda7a3	github.com/yetone/magpie/internal/agent.magpieModels+0xc3						github.com/yetone/magpie/internal/agent/route.go:194
+#	0x7ff66fe2c927	github.com/yetone/magpie/internal/agent.dshCheck+0x2e7							github.com/yetone/magpie/internal/agent/dsh.go:890
+#	0x7ff66fe26a24	github.com/yetone/magpie/internal/agent.dshAt.func6+0x44						github.com/yetone/magpie/internal/agent/dsh.go:157
+#	0x7ff66fd8f90d	github.com/yetone/magpie/internal/agent.(*Agent).Drift+0x3cd						github.com/yetone/magpie/internal/agent/applied.go:193
+#	0x7ff670288886	github.com/yetone/magpie/internal/gui.Handler.func5+0x66						github.com/yetone/magpie/internal/gui/api.go:1097
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28									net/http/server.go:2286
+#	0x7ff66eb3f546	net/http.(*ServeMux).ServeHTTP+0x1c6									net/http/server.go:2828
+#	0x7ff6701e0849	github.com/yetone/magpie/internal/gui.Handler.held.func76+0x1a9						github.com/yetone/magpie/internal/gui/api.go:2760
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28									net/http/server.go:2286
+#	0x7ff6701e0663	github.com/yetone/magpie/internal/gui.Handler.noFramedAPI.func77+0x83					github.com/yetone/magpie/internal/gui/api.go:2722
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28									net/http/server.go:2286
+#	0x7ff6701ec0dd	github.com/yetone/magpie/internal/gui.Run.ownWindow.func27+0xdd						github.com/yetone/magpie/internal/gui/window_peer.go:27
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28									net/http/server.go:2286
+#	0x7ff6700a9b01	github.com/wailsapp/wails/v3/internal/assetserver.(*AssetServer).serveHTTP+0x3c1			github.com/wailsapp/wails/v3@v3.0.0-beta.24/internal/assetserver/assetserver.go:128
+#	0x7ff6700a8ff4	github.com/wailsapp/wails/v3/internal/assetserver.NewAssetServer.func1+0x34				github.com/wailsapp/wails/v3@v3.0.0-beta.24/internal/assetserver/assetserver.go:48
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28									net/http/server.go:2286
+#	0x7ff6701262f7	github.com/wailsapp/wails/v3/pkg/application.(*HTTPTransport).Handler.func1.1+0x77			github.com/wailsapp/wails/v3@v3.0.0-beta.24/pkg/application/transport_http.go:164
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28									net/http/server.go:2286
+#	0x7ff6700e39dd	github.com/wailsapp/wails/v3/pkg/application.New.func3.1+0x29d						github.com/wailsapp/wails/v3@v3.0.0-beta.24/pkg/application/application.go:154
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28									net/http/server.go:2286
+#	0x7ff6700a92b5	github.com/wailsapp/wails/v3/internal/assetserver.(*AssetServer).ServeHTTP+0x275			github.com/wailsapp/wails/v3@v3.0.0-beta.24/internal/assetserver/assetserver.go:70
+#	0x7ff6700ab646	github.com/wailsapp/wails/v3/internal/assetserver.(*AssetServer).processWebViewRequestInternal+0xc66	github.com/wailsapp/wails/v3@v3.0.0-beta.24/internal/assetserver/assetserver_webview.go:213
+#	0x7ff6700aa8fe	github.com/wailsapp/wails/v3/internal/assetserver.(*AssetServer).processWebViewRequest+0x5e		github.com/wailsapp/wails/v3@v3.0.0-beta.24/internal/assetserver/assetserver_webview.go:106
+
+1 @ 0x7ff66e87a30e 0x7ff66e85a145 0x7ff66e85a117 0x7ff66e87b845 0x7ff66e88d97d 0x7ff66ebdead6 0x7ff66ebdeab9 0x7ff66ebdeab8 0x7ff66f1f4a3b 0x7ff66f1f5d36 0x7ff66f1f617e 0x7ff66f2009e7 0x7ff66f17c33c 0x7ff66f17900d 0x7ff66f24e4db 0x7ff66f24e4b4 0x7ff66e881e81
+#	0x7ff66e87b844	internal/sync.runtime_SemacquireMutex+0x24				runtime/sema.go:95
+#	0x7ff66e88d97c	internal/sync.(*Mutex).lockSlow+0x15c					internal/sync/mutex.go:149
+#	0x7ff66ebdead5	internal/sync.(*Mutex).Lock+0x35					internal/sync/mutex.go:70
+#	0x7ff66ebdeab8	sync.(*Mutex).Lock+0x18							sync/mutex.go:46
+#	0x7ff66ebdeab7	github.com/yetone/magpie/internal/filelock.(*Mutex).Lock+0x17		github.com/yetone/magpie/internal/filelock/filelock.go:80
+#	0x7ff66f1f4a3a	github.com/yetone/magpie/internal/provider.pluginLogins+0x41a		github.com/yetone/magpie/internal/provider/plugin_accounts.go:227
+#	0x7ff66f1f5d35	github.com/yetone/magpie/internal/provider.pluginSide+0x75		github.com/yetone/magpie/internal/provider/plugin_accounts.go:273
+#	0x7ff66f1f617d	github.com/yetone/magpie/internal/provider.pluginLoginList+0x4bd	github.com/yetone/magpie/internal/provider/plugin_accounts.go:294
+#	0x7ff66f2009e6	github.com/yetone/magpie/internal/provider.pluginUsageLogins+0xa6	github.com/yetone/magpie/internal/provider/plugin_usage.go:77
+#	0x7ff66f17c33b	github.com/yetone/magpie/internal/provider.usageLogins+0x15b		github.com/yetone/magpie/internal/provider/login_usage.go:325
+#	0x7ff66f17900c	github.com/yetone/magpie/internal/provider.loginUsageOf+0x14c		github.com/yetone/magpie/internal/provider/login_usage.go:156
+#	0x7ff66f24e4da	github.com/yetone/magpie/internal/provider.loginUsageAt+0xfa		github.com/yetone/magpie/internal/provider/login_usage.go:109
+#	0x7ff66f24e4b3	github.com/yetone/magpie/internal/provider.Allowances.func1+0xd3	github.com/yetone/magpie/internal/provider/routing.go:621
+
+1 @ 0x7ff66e87a30e 0x7ff66e85a145 0x7ff66e85a117 0x7ff66e87b845 0x7ff66e88d97d 0x7ff66ebdead6 0x7ff66ebdeab9 0x7ff66ebdeab8 0x7ff66f1f4a3b 0x7ff66f203d31 0x7ff66effdd65 0x7ff66f2139dc 0x7ff66f2da34c 0x7ff66f2121c5 0x7ff66f1d7fae 0x7ff66f1d7cc7 0x7ff66feda266 0x7ff66feda596 0x7ff66feda205 0x7ff66fd90e11 0x7ff66fd8f829 0x7ff670288887 0x7ff66eb3d749 0x7ff66eb3f547 0x7ff6701e084a 0x7ff66eb3d749 0x7ff6701e0664 0x7ff66eb3d749 0x7ff6701ec0de 0x7ff66eb3d749 0x7ff6700a9b02 0x7ff6700a8ff5 0x7ff66eb3d749 0x7ff6701262f8 0x7ff66eb3d749 0x7ff6700e39de 0x7ff66eb3d749 0x7ff6700a92b6 0x7ff6700ab647 0x7ff6700aa8ff 0x7ff66e881e81
+#	0x7ff66e87b844	internal/sync.runtime_SemacquireMutex+0x24								runtime/sema.go:95
+#	0x7ff66e88d97c	internal/sync.(*Mutex).lockSlow+0x15c									internal/sync/mutex.go:149
+#	0x7ff66ebdead5	internal/sync.(*Mutex).Lock+0x35									internal/sync/mutex.go:70
+#	0x7ff66ebdeab8	sync.(*Mutex).Lock+0x18											sync/mutex.go:46
+#	0x7ff66ebdeab7	github.com/yetone/magpie/internal/filelock.(*Mutex).Lock+0x17						github.com/yetone/magpie/internal/filelock/filelock.go:80
+#	0x7ff66f1f4a3a	github.com/yetone/magpie/internal/provider.pluginLogins+0x41a						github.com/yetone/magpie/internal/provider/plugin_accounts.go:227
+#	0x7ff66f203d30	github.com/yetone/magpie/internal/provider.pluginAccounts+0x190						github.com/yetone/magpie/internal/provider/plugins.go:174
+#	0x7ff66effdd64	github.com/yetone/magpie/internal/provider.Accounts+0xd44						github.com/yetone/magpie/internal/provider/account.go:909
+#	0x7ff66f2139db	github.com/yetone/magpie/internal/provider.allProviders+0x17b						github.com/yetone/magpie/internal/provider/provider.go:765
+#	0x7ff66f2da34b	github.com/yetone/magpie/internal/provider.heldOf[...]+0x20b						github.com/yetone/magpie/internal/provider/hold.go:196
+#	0x7ff66f2121c4	github.com/yetone/magpie/internal/provider.All+0x44							github.com/yetone/magpie/internal/provider/provider.go:694
+#	0x7ff66f1d7fad	github.com/yetone/magpie/internal/provider.resolveIn+0x1cd						github.com/yetone/magpie/internal/provider/models.go:3020
+#	0x7ff66f1d7cc6	github.com/yetone/magpie/internal/provider.Resolve+0x246						github.com/yetone/magpie/internal/provider/models.go:3006
+#	0x7ff66feda265	github.com/yetone/magpie/internal/agent.isMagpie.func1+0x25						github.com/yetone/magpie/internal/agent/route.go:126
+#	0x7ff66feda595	github.com/yetone/magpie/internal/agent.(*stampedRefs).get+0x315					github.com/yetone/magpie/internal/agent/route.go:165
+#	0x7ff66feda204	github.com/yetone/magpie/internal/agent.isMagpie+0xa4							github.com/yetone/magpie/internal/agent/route.go:125
+#	0x7ff66fd90e10	github.com/yetone/magpie/internal/agent.magpieValue+0x90						github.com/yetone/magpie/internal/agent/applied.go:301
+#	0x7ff66fd8f828	github.com/yetone/magpie/internal/agent.(*Agent).Drift+0x2e8						github.com/yetone/magpie/internal/agent/applied.go:181
+#	0x7ff670288886	github.com/yetone/magpie/internal/gui.Handler.func5+0x66						github.com/yetone/magpie/internal/gui/api.go:1097
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28									net/http/server.go:2286
+#	0x7ff66eb3f546	net/http.(*ServeMux).ServeHTTP+0x1c6									net/http/server.go:2828
+#	0x7ff6701e0849	github.com/yetone/magpie/internal/gui.Handler.held.func76+0x1a9						github.com/yetone/magpie/internal/gui/api.go:2760
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28									net/http/server.go:2286
+#	0x7ff6701e0663	github.com/yetone/magpie/internal/gui.Handler.noFramedAPI.func77+0x83					github.com/yetone/magpie/internal/gui/api.go:2722
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28									net/http/server.go:2286
+#	0x7ff6701ec0dd	github.com/yetone/magpie/internal/gui.Run.ownWindow.func27+0xdd						github.com/yetone/magpie/internal/gui/window_peer.go:27
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28									net/http/server.go:2286
+#	0x7ff6700a9b01	github.com/wailsapp/wails/v3/internal/assetserver.(*AssetServer).serveHTTP+0x3c1			github.com/wailsapp/wails/v3@v3.0.0-beta.24/internal/assetserver/assetserver.go:128
+#	0x7ff6700a8ff4	github.com/wailsapp/wails/v3/internal/assetserver.NewAssetServer.func1+0x34				github.com/wailsapp/wails/v3@v3.0.0-beta.24/internal/assetserver/assetserver.go:48
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28									net/http/server.go:2286
+#	0x7ff6701262f7	github.com/wailsapp/wails/v3/pkg/application.(*HTTPTransport).Handler.func1.1+0x77			github.com/wailsapp/wails/v3@v3.0.0-beta.24/pkg/application/transport_http.go:164
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28									net/http/server.go:2286
+#	0x7ff6700e39dd	github.com/wailsapp/wails/v3/pkg/application.New.func3.1+0x29d						github.com/wailsapp/wails/v3@v3.0.0-beta.24/pkg/application/application.go:154
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28									net/http/server.go:2286
+#	0x7ff6700a92b5	github.com/wailsapp/wails/v3/internal/assetserver.(*AssetServer).ServeHTTP+0x275			github.com/wailsapp/wails/v3@v3.0.0-beta.24/internal/assetserver/assetserver.go:70
+#	0x7ff6700ab646	github.com/wailsapp/wails/v3/internal/assetserver.(*AssetServer).processWebViewRequestInternal+0xc66	github.com/wailsapp/wails/v3@v3.0.0-beta.24/internal/assetserver/assetserver_webview.go:213
+#	0x7ff6700aa8fe	github.com/wailsapp/wails/v3/internal/assetserver.(*AssetServer).processWebViewRequest+0x5e		github.com/wailsapp/wails/v3@v3.0.0-beta.24/internal/assetserver/assetserver_webview.go:106
+
+1 @ 0x7ff66e87a30e 0x7ff66e85a145 0x7ff66e85a117 0x7ff66e87b845 0x7ff66e88d97d 0x7ff66ebdead6 0x7ff66ebdeab9 0x7ff66ebdeab8 0x7ff66f1f4a3b 0x7ff66f203d31 0x7ff66effdd65 0x7ff66fe098d7 0x7ff66fdfe0e5 0x7ff66fdf6e9c 0x7ff66fd90eb2 0x7ff66fd8f829 0x7ff670288887 0x7ff66eb3d749 0x7ff66eb3f547 0x7ff6701e084a 0x7ff66eb3d749 0x7ff6701e0664 0x7ff66eb3d749 0x7ff6701ec0de 0x7ff66eb3d749 0x7ff6700a9b02 0x7ff6700a8ff5 0x7ff66eb3d749 0x7ff6701262f8 0x7ff66eb3d749 0x7ff6700e39de 0x7ff66eb3d749 0x7ff6700a92b6 0x7ff6700ab647 0x7ff6700aa8ff 0x7ff66e881e81
+#	0x7ff66e87b844	internal/sync.runtime_SemacquireMutex+0x24								runtime/sema.go:95
+#	0x7ff66e88d97c	internal/sync.(*Mutex).lockSlow+0x15c									internal/sync/mutex.go:149
+#	0x7ff66ebdead5	internal/sync.(*Mutex).Lock+0x35									internal/sync/mutex.go:70
+#	0x7ff66ebdeab8	sync.(*Mutex).Lock+0x18											sync/mutex.go:46
+#	0x7ff66ebdeab7	github.com/yetone/magpie/internal/filelock.(*Mutex).Lock+0x17						github.com/yetone/magpie/internal/filelock/filelock.go:80
+#	0x7ff66f1f4a3a	github.com/yetone/magpie/internal/provider.pluginLogins+0x41a						github.com/yetone/magpie/internal/provider/plugin_accounts.go:227
+#	0x7ff66f203d30	github.com/yetone/magpie/internal/provider.pluginAccounts+0x190						github.com/yetone/magpie/internal/provider/plugins.go:174
+#	0x7ff66effdd64	github.com/yetone/magpie/internal/provider.Accounts+0xd44						github.com/yetone/magpie/internal/provider/account.go:909
+#	0x7ff66fe098d6	github.com/yetone/magpie/internal/agent.codexFailover+0x36						github.com/yetone/magpie/internal/agent/codex.go:2314
+#	0x7ff66fdfe0e4	github.com/yetone/magpie/internal/agent.codexIn.func60+0x844						github.com/yetone/magpie/internal/agent/codex.go:1245
+#	0x7ff66fdf6e9b	github.com/yetone/magpie/internal/agent.codexIn.func76+0x1b						github.com/yetone/magpie/internal/agent/codex.go:1814
+#	0x7ff66fd90eb1	github.com/yetone/magpie/internal/agent.magpieValue+0x131						github.com/yetone/magpie/internal/agent/applied.go:312
+#	0x7ff66fd8f828	github.com/yetone/magpie/internal/agent.(*Agent).Drift+0x2e8						github.com/yetone/magpie/internal/agent/applied.go:181
+#	0x7ff670288886	github.com/yetone/magpie/internal/gui.Handler.func5+0x66						github.com/yetone/magpie/internal/gui/api.go:1097
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28									net/http/server.go:2286
+#	0x7ff66eb3f546	net/http.(*ServeMux).ServeHTTP+0x1c6									net/http/server.go:2828
+#	0x7ff6701e0849	github.com/yetone/magpie/internal/gui.Handler.held.func76+0x1a9						github.com/yetone/magpie/internal/gui/api.go:2760
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28									net/http/server.go:2286
+#	0x7ff6701e0663	github.com/yetone/magpie/internal/gui.Handler.noFramedAPI.func77+0x83					github.com/yetone/magpie/internal/gui/api.go:2722
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28									net/http/server.go:2286
+#	0x7ff6701ec0dd	github.com/yetone/magpie/internal/gui.Run.ownWindow.func27+0xdd						github.com/yetone/magpie/internal/gui/window_peer.go:27
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28									net/http/server.go:2286
+#	0x7ff6700a9b01	github.com/wailsapp/wails/v3/internal/assetserver.(*AssetServer).serveHTTP+0x3c1			github.com/wailsapp/wails/v3@v3.0.0-beta.24/internal/assetserver/assetserver.go:128
+#	0x7ff6700a8ff4	github.com/wailsapp/wails/v3/internal/assetserver.NewAssetServer.func1+0x34				github.com/wailsapp/wails/v3@v3.0.0-beta.24/internal/assetserver/assetserver.go:48
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28									net/http/server.go:2286
+#	0x7ff6701262f7	github.com/wailsapp/wails/v3/pkg/application.(*HTTPTransport).Handler.func1.1+0x77			github.com/wailsapp/wails/v3@v3.0.0-beta.24/pkg/application/transport_http.go:164
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28									net/http/server.go:2286
+#	0x7ff6700e39dd	github.com/wailsapp/wails/v3/pkg/application.New.func3.1+0x29d						github.com/wailsapp/wails/v3@v3.0.0-beta.24/pkg/application/application.go:154
+#	0x7ff66eb3d748	net/http.HandlerFunc.ServeHTTP+0x28									net/http/server.go:2286
+#	0x7ff6700a92b5	github.com/wailsapp/wails/v3/internal/assetserver.(*AssetServer).ServeHTTP+0x275			github.com/wailsapp/wails/v3@v3.0.0-beta.24/internal/assetserver/assetserver.go:70
+#	0x7ff6700ab646	github.com/wailsapp/wails/v3/internal/assetserver.(*AssetServer).processWebViewRequestInternal+0xc66	github.com/wailsapp/wails/v3@v3.0.0-beta.24/internal/assetserver/assetserver_webview.go:213
+#	0x7ff6700aa8fe	github.com/wailsapp/wails/v3/internal/assetserver.(*AssetServer).processWebViewRequest+0x5e		github.com/wailsapp/wails/v3@v3.0.0-beta.24/internal/assetserver/assetserver_webview.go:106
+
+1 @ 0x7ff66e87a30e 0x7ff66e85a145 0x7ff66e85a117 0x7ff66e87b845 0x7ff66e88d97d 0x7ff66ebdead6 0x7ff66ebdeab9 0x7ff66ebdeab8 0x7ff66f1f7fd1 0x7ff66f2013e5 0x7ff66f17c8eb 0x7ff66f17b8e5 0x7ff66e881e81
+#	0x7ff66e87b844	internal/sync.runtime_SemacquireMutex+0x24					runtime/sema.go:95
+#	0x7ff66e88d97c	internal/sync.(*Mutex).lockSlow+0x15c						internal/sync/mutex.go:149
+#	0x7ff66ebdead5	internal/sync.(*Mutex).Lock+0x35						internal/sync/mutex.go:70
+#	0x7ff66ebdeab8	sync.(*Mutex).Lock+0x18								sync/mutex.go:46
+#	0x7ff66ebdeab7	github.com/yetone/magpie/internal/filelock.(*Mutex).Lock+0x17			github.com/yetone/magpie/internal/filelock/filelock.go:80
+#	0x7ff66f1f7fd0	github.com/yetone/magpie/internal/provider.keepPluginPlan+0x70			github.com/yetone/magpie/internal/provider/plugin_accounts.go:384
+#	0x7ff66f2013e4	github.com/yetone/magpie/internal/provider.pluginLoginQuota+0x9c4		github.com/yetone/magpie/internal/provider/plugin_usage.go:126
+#	0x7ff66f17c8ea	github.com/yetone/magpie/internal/provider.loginQuota+0x18a			github.com/yetone/magpie/internal/provider/login_usage.go:364
+#	0x7ff66f17b8e4	github.com/yetone/magpie/internal/provider.cachedLoginReading.func2+0x144	github.com/yetone/magpie/internal/provider/login_usage.go:290
+
+1 @ 0x7ff66e87a30e 0x7ff66e85a145 0x7ff66e85a117 0x7ff66e87b845 0x7ff66e88d97d 0x7ff66f22cd08 0x7ff66f22cce1 0x7ff66f22cce0 0x7ff66eff3005 0x7ff66f1796c3 0x7ff66f24e4db 0x7ff66f24e4b4 0x7ff66e881e81
+#	0x7ff66e87b844	internal/sync.runtime_SemacquireMutex+0x24				runtime/sema.go:95
+#	0x7ff66e88d97c	internal/sync.(*Mutex).lockSlow+0x15c					internal/sync/mutex.go:149
+#	0x7ff66f22cd07	internal/sync.(*Mutex).Lock+0x87					internal/sync/mutex.go:70
+#	0x7ff66f22cce0	sync.(*Mutex).Lock+0x60							sync/mutex.go:46
+#	0x7ff66f22ccdf	github.com/yetone/magpie/internal/provider.noteQuotaHistory+0x5f	github.com/yetone/magpie/internal/provider/quota_history.go:252
+#	0x7ff66eff3004	github.com/yetone/magpie/internal/provider.init.func48+0x24		github.com/yetone/magpie/internal/provider/login_usage.go:212
+#	0x7ff66f1796c2	github.com/yetone/magpie/internal/provider.loginUsageOf+0x802		github.com/yetone/magpie/internal/provider/login_usage.go:202
+#	0x7ff66f24e4da	github.com/yetone/magpie/internal/provider.loginUsageAt+0xfa		github.com/yetone/magpie/internal/provider/login_usage.go:109
+#	0x7ff66f24e4b3	github.com/yetone/magpie/internal/provider.Allowances.func1+0xd3	github.com/yetone/magpie/internal/provider/routing.go:621
+
+1 @ 0x7ff66e87a30e 0x7ff66e85a145 0x7ff66e85a117 0x7ff66e87b96e 0x7ff66e88f985 0x7ff66f1793f8 0x7ff66f24e4db 0x7ff66f24e4b4 0x7ff66e881e81
+#	0x7ff66e87b96d	sync.runtime_SemacquireWaitGroup+0x2d					runtime/sema.go:114
+#	0x7ff66e88f984	sync.(*WaitGroup).Wait+0x84						sync/waitgroup.go:206
+#	0x7ff66f1793f7	github.com/yetone/magpie/internal/provider.loginUsageOf+0x537		github.com/yetone/magpie/internal/provider/login_usage.go:180
+#	0x7ff66f24e4da	github.com/yetone/magpie/internal/provider.loginUsageAt+0xfa		github.com/yetone/magpie/internal/provider/login_usage.go:109
+#	0x7ff66f24e4b3	github.com/yetone/magpie/internal/provider.Allowances.func1+0xd3	github.com/yetone/magpie/internal/provider/routing.go:621
+
+1 @ 0x7ff66e87a30e 0x7ff66e87e6c7 0x7ff66ebb586b 0x7ff670285e3b 0x7ff66e881e81
+#	0x7ff66e87e6c6	time.Sleep+0x166						runtime/time.go:363
+#	0x7ff66ebb586a	github.com/yetone/magpie/internal/catalog.KeepFresh+0x2a	github.com/yetone/magpie/internal/catalog/fresh.go:43
+#	0x7ff670285e3a	github.com/yetone/magpie/internal/gui.startBackend.func2+0xfa	github.com/yetone/magpie/internal/gui/backend.go:77
+
+1 @ 0x7ff66e87a30e 0x7ff66e87e6c7 0x7ff66ff7aa96 0x7ff670287e2b 0x7ff66e881e81
+#	0x7ff66e87e6c6	time.Sleep+0x166						runtime/time.go:363
+#	0x7ff66ff7aa95	github.com/yetone/magpie/internal/library.KeepLinked+0x35	github.com/yetone/magpie/internal/library/instructions.go:709
+#	0x7ff670287e2a	github.com/yetone/magpie/internal/gui.Run.func16+0xca		github.com/yetone/magpie/internal/gui/app.go:550
+
+1 @ 0x7ff66e87a30e 0x7ff66e87e6c7 0x7ff67014bf34 0x7ff66e881e81
+#	0x7ff66e87e6c6	time.Sleep+0x166					runtime/time.go:363
+#	0x7ff67014bf33	github.com/yetone/magpie/internal/stats.Run+0x93	github.com/yetone/magpie/internal/stats/stats.go:63
+
+1 @ 0x7ff66e87a30e 0x7ff66e87e6c7 0x7ff670251c76 0x7ff66e881e81
+#	0x7ff66e87e6c6	time.Sleep+0x166							runtime/time.go:363
+#	0x7ff670251c75	github.com/yetone/magpie/internal/gui.(*updater).start.func1+0x75	github.com/yetone/magpie/internal/gui/update.go:156
+
+1 @ 0x7ff66e881e81
+
+1 @ 0x7ff66f622976 0x7ff66f61ecc5 0x7ff66f61efa3 0x7ff66f61ea32 0x7ff66f61f8f3 0x7ff66f61f446 0x7ff66f621eac 0x7ff66f621ccc 0x7ff66e88fb0a 0x7ff66e881e81
+#	0x7ff66f622975	github.com/yetone/magpie/internal/pii/guard.dot4+0x115			github.com/yetone/magpie/internal/pii/guard/kernel.go:11
+#	0x7ff66f61ecc4	github.com/yetone/magpie/internal/pii/guard.(*qmat).matmul.func1+0x224	github.com/yetone/magpie/internal/pii/guard/bert.go:235
+#	0x7ff66f61efa2	github.com/yetone/magpie/internal/pii/guard.parallel+0x82		github.com/yetone/magpie/internal/pii/guard/bert.go:258
+#	0x7ff66f61ea31	github.com/yetone/magpie/internal/pii/guard.(*qmat).matmul+0x251	github.com/yetone/magpie/internal/pii/guard/bert.go:227
+#	0x7ff66f61f8f2	github.com/yetone/magpie/internal/pii/guard.(*net).encode+0x1b2		github.com/yetone/magpie/internal/pii/guard/bert.go:327
+#	0x7ff66f61f445	github.com/yetone/magpie/internal/pii/guard.(*net).logits+0x45		github.com/yetone/magpie/internal/pii/guard/bert.go:302
+#	0x7ff66f621eab	github.com/yetone/magpie/internal/pii/guard.(*Model).Find.func2.1+0x14b	github.com/yetone/magpie/internal/pii/guard/guard.go:209
+#	0x7ff66f621ccb	github.com/yetone/magpie/internal/pii/guard.(*Model).Find.func2+0xcb	github.com/yetone/magpie/internal/pii/guard/guard.go:210
+#	0x7ff66e88fb09	sync.(*WaitGroup).Go.func1+0x49						sync/waitgroup.go:258
+

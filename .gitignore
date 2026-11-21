@@ -1,0 +1,90 @@
+# cc 私人仓：白名单制（2026-10-08 目录整合）
+# guahub 合并个人项目、知识资产；只跟踪白名单子树。
+# fork 及其余独立项目、上游克隆各自管理，不入本仓——本仓对各独立区只留 README 作轮廓。
+# （2026-10-12 收编 interview 与 agents/console；2026-10-23 收编 web、sessions、tools
+#   与 reverse 全量；reverse 自带 .git 仍在本地独立管理，其内容以本仓为准。
+#   同日 guahub 下 .agents/.claude/scripts 上移至仓根，guahub/tools 手动删除不再跟踪。）
+# （2026-10-28 晚：guahub/AGENTS.md 与 CLAUDE.md 上移仓根作全仓 AI 指导入口；reverse 弃
+#   gitlink 转普通目录全量跟踪（自带 .git 的 4 个嵌套仓仍按下方规则排除）；guahub/code
+#   空壳删除；guahub/tools 与 fork 各 *-hub 死白名单规则清理——目录已不存在或零跟踪。）
+*
+!/.gitignore
+!/README.md
+!/AGENTS.md
+!/CLAUDE.md
+!/.agents/
+!/.agents/**
+!/.claude/
+!/.claude/**
+!/code/
+!/code/github/
+!/code/github/**
+!/code/repositories/
+!/code/repositories/**
+# （2026-10-28 五区上移：interview/passkeys/reverse/sessions/web 从 guahub 移至仓根，
+#   白名单由旧 guahub 路径切换为新根路径；sessions 的 _tmp/_trash 排除随迁。）
+!/code/paused/
+!/code/paused/interview/
+!/code/paused/interview/**
+!/code/paused/passkeys/
+!/code/paused/passkeys/**
+!/code/paused/reverse/
+!/code/paused/reverse/**
+!/web/
+!/web/**
+/web/docs/sessions/_tmp/
+/web/docs/sessions/_trash/
+# （2026-10-25 收编 work 与 lab 全量；排除 linkpull 可再下载视频缓存与真实 .env 凭证。
+#   work/lab 下 5 个自带 .git 的项目按 reverse 先例以内容入仓，.git 目录本身不入。
+#   同日 work/lab 整体迁移至 repositories/private，白名单由旧路径切换为放行 repositories 全部目录。）
+/code/repositories/private/lab/linkpull/downloads/
+.env
+# macOS Finder 元数据：放在白名单之后，覆盖上面所有 ! 规则
+.DS_Store
+
+# （2026-10-26 嵌套仓库指针退役：reverse/code 与 repositories/public 下各独立仓
+#   的裸 gitlink 不再入本仓——外层只存指针，内层一动静就常年 M 且易误提交；
+#   各仓自带 .git 继续本地独立管理。白名单放行在先，按 gitignore 后者优先重新忽略。）
+code/paused/reverse/code/ARTIFEX/
+code/paused/reverse/code/autonomous-pentest-agent/
+code/paused/reverse/code/rea/
+code/paused/reverse/code/reverse-engineering-assistant/
+code/repositories/public/agent-hub/
+code/repositories/public/agent-skills/
+code/repositories/public/react-helper-toolkit/
+code/repositories/public/coding-agent/
+code/repositories/public/cursor-loc/
+code/repositories/public/language/
+code/repositories/public/profile/
+code/repositories/public/qoder-proxy-api/
+code/repositories/public/syntax-party/
+# （2026-11-16 收编旧 root 区：chrome/read-frog 为 fork 本地副本，按 public 先例不入跟踪；
+#   fork 整区由 guahub/fork 迁至 code/fork，白名单未放行故整体不入跟踪。）
+code/repositories/private/chrome/read-frog/
+# （2026-11-16 console 运行时数据与历史备份随旧 root 区迁入，均不入跟踪：
+#   各 app 的 data 为 SQLite 运行库，archive 为 agents-console-monorepo 历史 bundle+快照，
+#   interview-gym 为 interview 内容的衍生拷贝，正本在 code/paused/interview。）
+code/repositories/private/console/apps/admin/data/
+code/repositories/private/console/apps/console/data/
+code/repositories/private/console/apps/toolbox/data/
+code/repositories/private/console/apps/agent/public/interview-gym/
+code/repositories/private/console/archive/
+
+# （2026-10-28 原 guahub/.gitignore 对五区的扩展名兜底改由仓根统一承担：
+#   依赖目录、日志、超 GitHub 100MB 限制的大文件扩展名。不影响已跟踪文件；
+#   构建产物目录名（dist/build 等）暂不全局忽略，哪个树出现再补哪行。）
+node_modules/
+__pycache__/
+*.pyc
+.venv/
+*.log
+*.rar
+*.gbf
+*.dmg
+*.apk
+*.exe
+*.crx
+*.mp4
+*.mov
+*.zip
+*.tar.gz

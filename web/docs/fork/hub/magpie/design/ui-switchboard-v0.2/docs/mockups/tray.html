@@ -1,0 +1,51 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><style>
+@property --sheen { syntax: '<angle>'; inherits: false; initial-value: 0deg; }
+:root{
+  --canvas:#F5F6F8; --surface:#FFFFFF; --raised:#FAFBFC; --ink:#14161B; --ink-2:#4A4F5C; --muted:#737887; --line:#E3E5EA; --line-2:#D5D8DF;
+  --river:#ECEEF3; --river-edge:#E1E4EA;
+  --sheen-a:#4F46E5; --sheen-b:#0E9F9A; --sheen-soft:#EEEDFD;
+  --amber:#B45309; --amber-soft:#FDF1E1; --green:#15803D; --green-soft:#E3F4E9; --red:#C2410C;
+  --mono-filter:none; --shadow:0 1px 2px rgba(20,24,40,.05),0 6px 16px rgba(20,24,40,.05);
+  --ui:"Segoe UI Variable","Segoe UI","Noto Sans SC","PingFang SC",system-ui,sans-serif;
+  --code:"Cascadia Mono","JetBrains Mono",Consolas,"Liberation Mono",monospace;
+}
+body.dark{
+  --canvas:#0F1116; --surface:#171A21; --raised:#1C2028; --ink:#ECEEF3; --ink-2:#B9BECB; --muted:#8A90A0; --line:#262A33; --line-2:#323744;
+  --river:#13161C; --river-edge:#1E222A;
+  --sheen-a:#8E8CFF; --sheen-b:#2DD4BF; --sheen-soft:#25264A;
+  --amber:#F2B544; --amber-soft:#3A2E1A; --green:#6FD99B; --green-soft:#183326; --red:#F28B82;
+  --mono-filter:invert(1); --shadow:0 1px 2px rgba(0,0,0,.4),0 8px 20px rgba(0,0,0,.25);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{width:1600px;height:1000px;background:var(--canvas);color:var(--ink);font:14px/1.45 var(--ui);overflow:hidden;position:relative;font-variant-numeric:tabular-nums}
+img.i{width:22px;height:22px;flex:none}
+img.mono{filter:var(--mono-filter)}
+.num{font-variant-numeric:tabular-nums}
+code,.code{font-family:var(--code);font-size:12.5px}
+
+
+body{width:380px;height:500px;background:var(--surface);border-radius:14px}
+.top{padding:18px 18px 14px;display:flex;align-items:center;gap:10px;border-bottom:1px solid var(--line)}
+.top .t{font-weight:600;font-size:15px} .top .r{margin-left:auto;font-weight:600;font-size:15px}
+.top .r span{color:var(--muted);font-weight:400;font-size:12.5px;margin-right:6px}
+.row{display:flex;align-items:center;gap:12px;padding:12px 18px}
+.row+.row{border-top:1px solid var(--line)}
+.row .n{font-weight:600;font-size:14px} .row .s{color:var(--muted);font-size:12.5px}
+.tgt{margin-left:auto;display:flex;align-items:center;gap:6px;font-size:13px;padding:5px 8px 5px 10px;border-radius:7px;background:var(--river);color:var(--ink)}
+.live{width:7px;height:7px;border-radius:50%;background:linear-gradient(135deg,var(--sheen-a),var(--sheen-b))}
+.warn{margin:6px 14px;padding:10px 12px;border-radius:10px;background:var(--amber-soft);font-size:13px;line-height:1.5}
+.warn b{color:var(--amber)}
+.bot{position:absolute;left:0;right:0;bottom:0;padding:12px 14px;border-top:1px solid var(--line);display:flex;gap:10px;align-items:center}
+.bot .in{flex:1;height:34px;border:1px solid var(--line-2);border-radius:8px;display:flex;align-items:center;padding:0 10px;color:var(--muted);font-size:13px;gap:8px}
+img.i{width:22px;height:22px}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--green);box-shadow:0 0 0 3px var(--green-soft)}
+.btn{font:500 12.5px var(--ui);padding:5px 10px;border-radius:7px;border:1px solid var(--line-2);background:var(--surface);color:var(--ink);white-space:nowrap}
+</style></head><body class="light">
+<div class="top"><span class="dot"></span><span class="t">一切正常</span><span class="r"><span>今天</span>≈ $0.19</span></div>
+<div class="row"><img class="i" src="icons/claudecode-color.svg"><div><div class="n">Claude Code</div><div class="s">正在用 Kimi K3</div></div><span class="tgt"><span class="live"></span>永不卡住 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 9 6 6 6-6"/></svg></span></div>
+<div class="row"><img class="i" src="icons/codex-color.svg"><div><div class="n">Codex</div><div class="s">正在回答 2 个请求</div></div><span class="tgt"><span class="live"></span>gpt-6.1-sol <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 9 6 6 6-6"/></svg></span></div>
+<div class="row"><img class="i" src="icons/geminicli-color.svg"><div><div class="n">Gemini CLI</div><div class="s">空闲</div></div><span class="tgt">DeepSeek V4 Pro <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 9 6 6 6-6"/></svg></span></div>
+<div class="row"><img class="i mono" src="icons/opencode.svg"><div><div class="n">OpenCode</div><div class="s">找到了，还没接入</div></div><span class="btn" style="margin-left:auto">接入</span></div>
+<div class="warn"><b>约 14:20</b> Kimi K3 额度用完，之后由 GLM-5.3 接手。</div>
+<div class="bot"><div class="in"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>搜索或下指令</div><span class="btn">打开窗口</span></div>
+</body></html>

@@ -1,0 +1,506 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Chaoyi Liu <liuchaoyi@akane.waseda.jp>
+Date: Sun, 8 Nov 2026 23:17:11 +0900
+Subject: [PATCH] usage: an Antigravity desktop step's speed, from its first
+ token and end
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The Antigravity desktop app's rows on the Usage page and in `magpie usage`
+had tokens but no TTFT and no tok/s, while Codex's beside them had both.
+The app's conversation database has the times for it: a step's metadata
+holds field 1 (its start), 6 (its first token) and 8 (its end), each a
+Timestamp. Only field 1 was read.
+
+Before: an antigravity call had Millis and TTFT 0, so no speed and no floor.
+After: readAntigravityCalls keeps Millis = end - start and TTFT = first -
+start (agAppCall.times). A step with no end, or an end before its start,
+tells no time; a first token outside start..end is dropped and the step
+keeps its time alone.
+
+Gemini can send a step's tool call whole: a real step on this machine wrote
+599 tokens 0.3 s after a first token at 16.6 s, and yygutn's step 1 on
+#2190 (the existing fixture) 621 tokens in 9 ms. So a step is held to a
+Codex turn's bounds, CodexWindowMs and CodexBodyTokens
+(usage.Row.antigravityStep, page.js ledAntigravityStep), and antigravity
+joins FloorAgents / LED_FLOOR_AGENTS: its time runs from the step's start,
+before the model is asked, so output over it is a floor.
+The antigravity call parse version goes to 2 so cached calls are read again.
+
+Run at this head (rebased on origin/main ec7a18d12):
+- go test ./internal/sessions ./internal/usage: ok.
+- go test ./internal/gui (before the rebase, on 7cce4b4d7): TestLaneLimitRoutes and
+  TestPanelHiddenByWailsMarksPageOutOfSight fail, and fail the same on
+  origin/main 7cce4b4d7 (just fetched) on this machine (macOS 27; the lane
+  test reads the lanes of the magpie running here). Not run again after
+  the rebase.
+- node --test usage-antigravity-speed (new): 22 of 22, Chromium and WebKit,
+  five languages; usage-speed-count and usage-ledger-ttft: 64 of 64.
+- gofmt -l and GOOS=linux/windows go vet on the two packages: clean.
+- Broken by hand: the Decode/FloorAgents change reverted, the new usage
+  test is red on 4 rows; Millis/TTFT zeroed, TestAntigravityAppCallTimes
+  is red.
+- Real data: this branch's `magpie usage today` in a sandbox HOME with
+  copies of today's 33 conversation databases (Antigravity 2.x, macOS):
+  Antigravity ttft 13.7 s · 117 tok/s, gemini-4-argon 115, gemini-3.8-flash
+  392. An independent Python read of the same databases with the same
+  bounds: 670 of 2,157 steps measured, 117.4 tok/s.
+
+Not tried: the Insiders store (same reader), Windows or Linux Antigravity.
+Not known: whether field 6 is the first thought or the first answer token;
+output counts thoughts as the gateway counts a Gemini reply, and Reasoning
+stays unset as before.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+Co-authored-by: ggbdpq <ggbdpq@gmail.com> (rebased onto aa3d11d5b; independently verified)
+---
+ docs/reference.md                             |  10 +-
+ docs/subsystems/gateway-sessions.md           |   9 +-
+ internal/gui/assets/plugins/usage/page.js     |   8 +-
+ .../tests/usage-antigravity-speed.test.cjs    | 105 ++++++++++++++++++
+ internal/sessions/antigravity_app.go          |  31 ++++++
+ internal/sessions/antigravity_app_test.go     |  52 +++++++++
+ internal/sessions/call_cache.go               |   3 +-
+ internal/sessions/calls.go                    |   3 +-
+ internal/usage/ledger.go                      |  17 ++-
+ internal/usage/speed_count_test.go            |  36 ++++++
+ 10 files changed, 263 insertions(+), 11 deletions(-)
+ create mode 100644 internal/gui/tests/usage-antigravity-speed.test.cjs
+
+diff --git a/docs/reference.md b/docs/reference.md
+index 71a8e9f7a..c8766f917 100644
+--- a/docs/reference.md
++++ b/docs/reference.md
+@@ -466,7 +466,7 @@ the first token is never under it. Only a reply of 1,000 tokens or more
+ written over a second or more shows one; a shorter reply's wait is too much
+ of its time to tell anything; a count of tokens bounds that share, a
+ duration doesn't (a 5 s reply can be 4 s of wait). Claude Code's, Claude
+-Desktop's and Codex's rows show one: Claude's line that asked for a reply is
++Desktop's, Codex's and the Antigravity desktop app's rows show one: Claude's line that asked for a reply is
+ written before it is sent, and a Codex call in a turn of several is timed
+ from what the model had last been given before the call's first output
+ item to its last, never from the output of a tool the call itself ran,
+@@ -487,8 +487,12 @@ least it wrote at over the whole turn, the wait for the first token in it
+ (`≥120 tok/s` for 1,200 tokens in 10 s), by the same rule as any floor over
+ a whole time: 1,000 tokens or more over a second or more. Under that the
+ wait is too much of the time to tell anything, so an 11-token answer in
+-2.75 s shows none, as an 815-token Claude Code reply does. Gateway rows and other agents' keep their own
+-speed. A floor never mixes into a measured speed: the Speed trend and
++2.75 s shows none, as an 815-token Claude Code reply does. A step of the
++Antigravity desktop app is timed by its own database, from the step's start
++through its first token to its end, and is held to the same bounds and
++floors as a Codex turn of one call: Gemini can send a step's tool call
++whole, 599 tokens 0.3 s after a first token at 16.6 s. Gateway rows and
++other agents' keep their own speed. A floor never mixes into a measured speed: the Speed trend and
+ `magpie usage` count timed calls only.
+ 
+ A group's speed (a row of the Usage page's ranking, by model, provider or
+diff --git a/docs/subsystems/gateway-sessions.md b/docs/subsystems/gateway-sessions.md
+index d8461d5a6..4f8c95423 100644
+--- a/docs/subsystems/gateway-sessions.md
++++ b/docs/subsystems/gateway-sessions.md
+@@ -761,7 +761,14 @@ The Antigravity desktop app's stable and Insiders stores are read by
+ store. Each conversation takes its title and workspace from the
+ `conversation_summaries.db` beside its own store, including later title
+ updates. Model calls reuse the app's read-only SQLite/protobuf reader,
+-including response folding and gateway matching. Insiders session ids
++including response folding and gateway matching. Each call keeps its
++step's time and first token from the step's metadata (field 1 its start,
++6 its first token, 8 its end; `agAppCall.times`), so the Usage page tells
++its speed under a Codex turn's bounds (`usage.Row.antigravityStep`); a
++step with no end tells no time (`TestAntigravityAppCallTimes`,
++`TestAntigravityAppCallTimesPartial`,
++`TestAntigravityStepMeasuredOnlyOverASecondAndAHundredTokens`,
++`usage-antigravity-speed.test.cjs`). Insiders session ids
+ have an `insiders-` prefix in magpie, leaving stable ids unchanged and
+ keeping equal UUIDs in the two stores from sharing a session or call id.
+ The files themselves are not renamed. Sessions stay read-only with no
+diff --git a/internal/gui/assets/plugins/usage/page.js b/internal/gui/assets/plugins/usage/page.js
+index 84739e201..344cb7b4b 100644
+--- a/internal/gui/assets/plugins/usage/page.js
++++ b/internal/gui/assets/plugins/usage/page.js
+@@ -2160,7 +2160,7 @@ const ledDecode = (r) => {
+   if (r.flow_ms > 0 && r.flow_ms * 4 < w) return null;
+   if (ledHeldShort_(w, from)) return null;
+   if (think && r.first_text_ms > 0 && n * (r.first_text_ms - r.ttft_ms) > 20 * r.reasoning * w) return null;
+-  if (ledCodexTurn(r) && (w < LED_CODEX_WINDOW_MS || n < LED_CODEX_BODY)) return null;
++  if ((ledCodexTurn(r) || ledAntigravityStep(r)) && (w < LED_CODEX_WINDOW_MS || n < LED_CODEX_BODY)) return null;
+   return { n, w };
+ };
+ // a Codex turn of one call read from its session file, its first token
+@@ -2171,6 +2171,10 @@ const ledDecode = (r) => {
+ // least it wrote at over the whole turn
+ const LED_CODEX_WINDOW_MS = 1000, LED_CODEX_BODY = 100;
+ const ledCodexTurn = (r) => r.source === "log" && r.agent === "codex" && r.ttft_ms > 0;
++// a step of the Antigravity desktop app read from its database, its first
++// token known: Gemini can send a step's tool call whole, so it is held to the
++// same bounds (usage.Row.antigravityStep)
++const ledAntigravityStep = (r) => r.source === "log" && r.agent === "antigravity" && r.ttft_ms > 0;
+ // how fast a reply wrote, in tokens a second: 0 when it can't tell
+ const ledRowSpeed = (r) => { const d = ledDecode(r); return d ? d.n / (d.w / 1000) : 0; };
+ // the least a reply read from a session file wrote at, in tokens a second:
+@@ -2201,7 +2205,7 @@ const ledRowSpeed = (r) => { const d = ledDecode(r); return d ? d.n / (d.w / 100
+ // the first token, unless its content came in a burst; else one not streamed,
+ // or not timed, its output over its whole time, by the 1,000-token rule.
+ // ledFloor_ says the tokens, the ms, and which it is (answer, turn, gateway).
+-const LED_FLOOR_AGENTS = new Set(["claude", "claude-desktop", "codex"]);
++const LED_FLOOR_AGENTS = new Set(["claude", "claude-desktop", "codex", "antigravity"]);
+ const ledWhole_ = (r) => r.out >= 1000 && r.ms >= 1000 && r.out * 1000 <= 10000 * r.ms;
+ const ledFloor_ = (r) => {
+   if (ledFailed_(r) || r.canceled || ledRowSpeed(r)) return null;
+diff --git a/internal/gui/tests/usage-antigravity-speed.test.cjs b/internal/gui/tests/usage-antigravity-speed.test.cjs
+new file mode 100644
+index 000000000..b187c8396
+--- /dev/null
++++ b/internal/gui/tests/usage-antigravity-speed.test.cjs
+@@ -0,0 +1,105 @@
++// Run with Node's test runner and Playwright on the module path; see README.md.
++// The Antigravity desktop app's steps tell a speed on the Usage page's
++// Requests tab: each step's database row has when it began, when its first
++// token came and when it ended (sessions.agAppCall.times), so a step is
++// measured over the time after its first token, as a Codex turn of one call
++// is. Gemini can send a step's tool call whole (a real step: 599 tokens 0.3 s
++// after a first token at 16.6 s), so the same bounds hold: a second or more
++// and 100 tokens or more after the first token (usage.Row.antigravityStep);
++// a step that tells neither tells the least it wrote at over the whole step
++// when that is 1,000 tokens or more (usage.FloorAgents). Every language, both
++// engines, wide and narrow; no backend, the API is faked.
++const assert = require("node:assert/strict");
++const fs = require("node:fs/promises");
++const path = require("node:path");
++const { test } = require("node:test");
++const { chromium, webkit } = require("playwright");
++
++const assets = process.env.MAGPIE_AG_SPEED_ASSETS || path.resolve(__dirname, "../assets");
++const now = Date.now();
++const at = (i) => new Date(now - (i + 1) * 60e3).toISOString();
++const AG = {
++  source: "log", agent: "antigravity", agentName: "Antigravity", icon: "antigravity-color", provider: "session-unknown", providerName: "Local session",
++  model: "gemini-4-argon", req: "gemini-4-argon", served: "gemini-4-argon", in: 9000, cache_read: 0, cache_write: 0, status: 0, cost: 0, priced: false,
++};
++const ROWS = [
++  // a real step: 3,681 tokens in the 49.6 s after a 19.1 s first token, 74 tok/s
++  { ...AG, t: at(0), out: 3681, ms: 68760, ttft_ms: 19140 },
++  // yygutn's step 5 on #2190: 194 tokens in the 5.9 s after its first, 33 tok/s
++  { ...AG, t: at(1), out: 194, ms: 9702, ttft_ms: 3800 },
++  // 400 tokens in the 999 ms after a 0.3 s first token: could be one push, none
++  { ...AG, t: at(2), out: 400, ms: 1299, ttft_ms: 300 },
++  // 60 tokens over 2 s: too few to tell, none
++  { ...AG, t: at(3), out: 60, ms: 3000, ttft_ms: 1000 },
++  // 1,200 tokens in one push 0.5 s after a 9.5 s first token: at least 120
++  // over the whole step
++  { ...AG, t: at(4), out: 1200, ms: 10000, ttft_ms: 9500 },
++];
++
++function server(lang) {
++  return async (route) => {
++    const url = new URL(route.request().url());
++    const json = (data) => route.fulfill({ json: data });
++    if (url.pathname === "/boot.js") return route.fulfill({ contentType: "text/javascript", body: `window.bootPrefs = {lang:"${lang}",theme:"light",web:false};` });
++    if (url.pathname === "/wails/runtime.js") return route.fulfill({ contentType: "text/javascript", body: "export const Window = {};" });
++    if (url.pathname === "/api/state") return json({ agents: [], profiles: [], settings: { lang, theme: "light" } });
++    if (url.pathname === "/api/usage/requests") {
++      return json({ period: url.searchParams.get("period"), rows: ROWS, offset: 0, total: ROWS.length, calls: ROWS.length, errors: 0, input: 45000, output: 5535, cache_read: 0, cache_write: 0, cost: 0, unpriced: ROWS.length, agents: [{ id: "antigravity", name: "Antigravity", icon: "antigravity-color" }] });
++    }
++    if (url.pathname === "/api/usage/quotas") return json([]);
++    if (url.pathname === "/api/usage") return json({ calls: 0, errors: 0, input: 0, output: 0, reasoning: 0, unpriced: 0, cost: 0, bucket: "day", series: [], agents: [], models: [], path: "" });
++    if (url.pathname === "/api/providers") return json({ providers: [], presets: [], excluded: [], models: [], gateway: { running: false } });
++    if (url.pathname === "/api/sessions") return json({ sessions: [], dirs: [] });
++    if (url.pathname === "/api/sessions/stats") return json({ from: "", to: "", days: [], agents: {} });
++    if (url.pathname === "/api/groups") return json({ groups: [], models: [] });
++    if (url.pathname.startsWith("/api/")) return json({});
++    const file = path.join(assets, url.pathname === "/" ? "index.html" : url.pathname);
++    const contentType = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png" }[path.extname(file)];
++    await route.fulfill({ body: await fs.readFile(file), contentType });
++  };
++}
++
++const L = {
++  en: (n) => `${n} tok/s`,
++  zh: (n) => `${n} token/秒`,
++  "zh-TW": (n) => `${n} token/秒`,
++  ja: (n) => `${n} トークン/秒`,
++  de: (n) => `${n} Token/s`,
++};
++
++for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium", "webkit"])) {
++  test(engine + ": an Antigravity step tells its speed, a push or a short one none", async (t) => {
++    assert(["chromium", "webkit"].includes(engine), "BROWSER must be chromium or webkit");
++    const browser = await (engine === "webkit" ? webkit.launch() : chromium.launch({ channel: "chromium" }));
++    t.after(() => browser.close());
++    for (const lang of Object.keys(L)) for (const width of [1400, 1100]) {
++      const s = L[lang];
++      await t.test(lang + " " + width, async () => {
++        const errors = [];
++        const ctx = await browser.newContext({ viewport: { width, height: 900 }, reducedMotion: "reduce" });
++        t.after(() => ctx.close());
++        const p = await ctx.newPage();
++        p.setDefaultTimeout(5000);
++        p.setDefaultNavigationTimeout(60000);
++        p.on("pageerror", (e) => errors.push(e.message));
++        await p.route("**/*", server(lang));
++        await p.goto("http://magpie.test/");
++        await p.locator('[data-view="usage"]').first().click();
++        await p.locator(":is(#usageTab .opt, .nav-s):visible").nth(1).click();
++        await p.locator("#ledWrap .led tbody tr").first().waitFor();
++        await p.waitForTimeout(200);
++
++        const cell = (i) => p.locator(".led tbody tr.led-row").nth(i).locator("td.speed");
++        const text = async (i) => (await cell(i).textContent()).trim();
++        assert.equal(await text(0), s(74), "a real step's speed after its first token");
++        assert.equal(await text(1), s(33), "yygutn's step");
++        assert.equal(await text(2), "—", "400 tokens in 999 ms could be one push");
++        assert.equal(await text(3), "—", "60 tokens are too few to tell");
++        assert.equal(await text(4), "≥" + s(120), "a push of 1,200 tokens tells the least over the whole step");
++        for (const i of [0, 1, 2, 3, 4]) assert((await cell(i).getAttribute("title")).length > 0, "row " + i + " says why in its tooltip");
++        assert(await p.evaluate(() => { const v = document.querySelector("#view-usage"); return v.scrollWidth <= v.clientWidth + 1; }), "the page doesn't scroll sideways");
++        assert.deepEqual(errors, []);
++      });
++    }
++  });
++}
+diff --git a/internal/sessions/antigravity_app.go b/internal/sessions/antigravity_app.go
+index 5dc06ec42..0797b637a 100644
+--- a/internal/sessions/antigravity_app.go
++++ b/internal/sessions/antigravity_app.go
+@@ -31,6 +31,8 @@ import (
+ // steps.metadata is a plain protobuf message:
+ //
+ //	1   the step's start (google.protobuf.Timestamp: 1 seconds, 2 nanos)
++//	6   when the model call's first token came, a Timestamp
++//	8   when the step ended, a Timestamp
+ //	9   the model call's usage, on a model's step:
+ //	      2 input tokens, less what was read from the cache
+ //	      3 output tokens
+@@ -135,6 +137,8 @@ func antigravityCallFiles() []file { return antigravityFiles() }
+ type agAppCall struct {
+ 	step     int64
+ 	at       time.Time
++	first    time.Time // its first token, zero when the step has none
++	end      time.Time // its end, zero when the step has none
+ 	model    string
+ 	tokens   Tokens
+ 	response string
+@@ -211,6 +215,14 @@ func agAppStep(b []byte) (c agAppCall, gen int64, ok bool) {
+ 			if d != nil {
+ 				c.at = pbTime(d)
+ 			}
++		case 6:
++			if d != nil {
++				c.first = pbTime(d)
++			}
++		case 8:
++			if d != nil {
++				c.end = pbTime(d)
++			}
+ 		case 9:
+ 			usage = d
+ 		case 20:
+@@ -397,10 +409,29 @@ func readAntigravityCalls(f file) (*callFile, bool) {
+ 		return st, false
+ 	}
+ 	for _, c := range calls {
++		ms, ttft := c.times()
+ 		st.Calls = append(st.Calls, Call{
+ 			Agent: "antigravity", Time: c.at, Session: st.Session, Model: c.model, Tokens: c.tokens,
++			Millis: ms, TTFT: ttft,
+ 			Msg: st.str("antigravity:" + st.Session + ":" + strconv.FormatInt(c.step, 10)),
+ 		})
+ 	}
+ 	return st, true
+ }
++
++// times is how long the call took, from its step's start to its end, and
++// when its first token came after the start, in ms: what the Usage page
++// tells its speed by. The start is before the model was asked, so the time
++// holds the wait for the first token as a Codex turn's does. A step with
++// no end, or times out of order, tells neither; one with an end and no
++// first token tells its time alone.
++func (c agAppCall) times() (ms, ttft int64) {
++	if c.end.IsZero() || !c.end.After(c.at) {
++		return 0, 0
++	}
++	ms = c.end.Sub(c.at).Milliseconds()
++	if !c.first.IsZero() && c.first.After(c.at) && !c.first.After(c.end) {
++		ttft = max(c.first.Sub(c.at).Milliseconds(), 1)
++	}
++	return ms, ttft
++}
+diff --git a/internal/sessions/antigravity_app_test.go b/internal/sessions/antigravity_app_test.go
+index 24be275b9..eba3550c4 100644
+--- a/internal/sessions/antigravity_app_test.go
++++ b/internal/sessions/antigravity_app_test.go
+@@ -310,3 +310,55 @@ func TestAntigravityAppParseBeforeFolderReadAgain(t *testing.T) {
+ 		t.Fatal("a parse from before the folder was read is kept")
+ 	}
+ }
++
++// A step's times are read from its own metadata: field 1 its start, 6 its
++// first token, 8 its end, so the Usage page can tell its speed (Antigravity
++// rows showed no tok/s beside Codex's). The figures are yygutn's real rows
++// on #2190; step 1 wrote 621 tokens in the 9 ms after a 10.5 s first token,
++// which the Usage page's bounds leave untold (usage.Row.antigravityStep).
++func TestAntigravityAppCallTimes(t *testing.T) {
++	claude, _ := setup(t)
++	home := filepath.Join(filepath.Dir(claude), "home")
++	antigravityFixture(t, home, "37c3c786-9a11-44be-97df-b8fc1ccebc78")
++
++	var got []Call
++	for _, c := range Calls(time.Time{}) {
++		if c.Agent == "antigravity" {
++			got = append(got, c)
++		}
++	}
++	slices.SortFunc(got, func(a, b Call) int { return a.Time.Compare(b.Time) })
++	want := [][2]int64{{10475, 10466}, {4842, 4837}, {9702, 3800}, {10521, 6055}}
++	if len(got) != len(want) {
++		t.Fatalf("want %d calls, got %d: %+v", len(want), len(got), got)
++	}
++	for i, w := range want {
++		if got[i].Millis != w[0] || got[i].TTFT != w[1] {
++			t.Errorf("call %d: %d ms, first token at %d ms; want %d, %d", i, got[i].Millis, got[i].TTFT, w[0], w[1])
++		}
++	}
++}
++
++// A step with no end, or times out of order, tells no time; one with an end
++// and no first token tells its time alone.
++func TestAntigravityAppCallTimesPartial(t *testing.T) {
++	start := time.Unix(1791860318, 0)
++	s := func(d time.Duration) time.Time { return start.Add(d) }
++	for _, c := range []struct {
++		name       string
++		first, end time.Time
++		ms, ttft   int64
++	}{
++		{"both", s(2 * time.Second), s(5 * time.Second), 5000, 2000},
++		{"no end", s(2 * time.Second), time.Time{}, 0, 0},
++		{"no first token", time.Time{}, s(5 * time.Second), 5000, 0},
++		{"an end before the start", s(2 * time.Second), s(-time.Second), 0, 0},
++		{"a first token after the end", s(6 * time.Second), s(5 * time.Second), 5000, 0},
++		{"a first token before the start", s(-time.Second), s(5 * time.Second), 5000, 0},
++	} {
++		ms, ttft := agAppCall{at: start, first: c.first, end: c.end}.times()
++		if ms != c.ms || ttft != c.ttft {
++			t.Errorf("%s: %d ms, first token at %d; want %d, %d", c.name, ms, ttft, c.ms, c.ttft)
++		}
++	}
++}
+diff --git a/internal/sessions/call_cache.go b/internal/sessions/call_cache.go
+index 36df4408d..eaf0d13ab 100644
+--- a/internal/sessions/call_cache.go
++++ b/internal/sessions/call_cache.go
+@@ -66,7 +66,8 @@ const callCacheVersion = "calls-v15"
+ // (zcode 1 left out every call of a session holding one copy).
+ // antigravity 1: a Gemini deployment's name with any one letter after it
+ // (gemini-4-argon-d) is its model's (GeminiDeployment).
+-var callParseVersions = map[string]int{"antigravity": 1, "cindy": 1, "codex": 3, "zcode": 2}
++// antigravity 2: a call keeps its step's time and first token (Millis, TTFT).
++var callParseVersions = map[string]int{"antigravity": 2, "cindy": 1, "codex": 3, "zcode": 2}
+ 
+ // CallCacheVersion is callCacheVersion and callParseVersions, for a cache
+ // of what is made of the calls (usage's requests-v1.bin and heatmap): a
+diff --git a/internal/sessions/calls.go b/internal/sessions/calls.go
+index cd2631f05..0c437e3e2 100644
+--- a/internal/sessions/calls.go
++++ b/internal/sessions/calls.go
+@@ -44,7 +44,8 @@ type Call struct {
+ 	UserID    string `json:"user_id,omitempty"`
+ 	Error     string `json:"error,omitempty"`      // Claude: the API error's kind (rate_limit, server_error …); such a call has no tokens
+ 	ErrorText string `json:"error_text,omitempty"` // its message, the first 400 characters
+-	// Codex: the turn's own figures, set only when the turn made just this call
++	// Codex: the turn's own figures, set only when the turn made just this call;
++	// the Antigravity desktop app: its step's first token, from the step's start
+ 	TTFT int64 `json:"ttft_ms,omitempty"`
+ 	// Compaction is Codex's explicit marker that this response compacted the context.
+ 	Compaction bool `json:"compaction,omitempty"`
+diff --git a/internal/usage/ledger.go b/internal/usage/ledger.go
+index b51643f7e..d6d8a5126 100644
+--- a/internal/usage/ledger.go
++++ b/internal/usage/ledger.go
+@@ -916,10 +916,12 @@ func (t *Totals) plus(d *Totals) {
+ // Claude Desktop's from the line that asked, written before it was sent;
+ // Codex's call in a turn of several from what the model had last been given
+ // before the call's first output item, to its last (sessions' codexTiming).
++// The Antigravity desktop app's calls are timed from their step's start,
++// before the model is asked, to the step's end.
+ // Their calls' tokens over that time are a floor of how fast the reply
+ // wrote. OpenCode's isn't checked against real sessions, so it tells none.
+ // app.js's LED_FLOOR_AGENTS has the same.
+-var FloorAgents = map[string]bool{"claude": true, "claude-desktop": true, "codex": true}
++var FloorAgents = map[string]bool{"claude": true, "claude-desktop": true, "codex": true, "antigravity": true}
+ 
+ // A Codex turn of one call read from its session file is timed by the
+ // turn's time_to_first_token_ms and its end, and that window can be one
+@@ -941,11 +943,20 @@ func (r Row) codexTurn() bool {
+ 	return r.Source == "log" && r.Agent == "codex" && r.TTFT > 0
+ }
+ 
++// antigravityStep is whether r is a step of the Antigravity desktop app read
++// from its conversation's database, its first token known. Gemini can send a
++// step's tool call whole: a real step wrote 599 tokens 0.3 s after a first
++// token at 16.6 s, and yygutn's on #2190 621 tokens in 9 ms. So its window
++// after the first token is held to the same bounds as a Codex turn's.
++func (r Row) antigravityStep() bool {
++	return r.Source == "log" && r.Agent == "antigravity" && r.TTFT > 0
++}
++
+ // Decode is the row's DecodeOf, a Codex turn of one call from its session
+-// file held to CodexWindowMs and CodexBodyTokens.
++// file, or an Antigravity step, held to CodexWindowMs and CodexBodyTokens.
+ func (r Row) Decode() (tokens int, w int64) {
+ 	n, w := r.Record.Decode()
+-	if w > 0 && r.codexTurn() && (w < CodexWindowMs || n < CodexBodyTokens) {
++	if w > 0 && (r.codexTurn() || r.antigravityStep()) && (w < CodexWindowMs || n < CodexBodyTokens) {
+ 		return 0, 0
+ 	}
+ 	return n, w
+diff --git a/internal/usage/speed_count_test.go b/internal/usage/speed_count_test.go
+index af5083a65..3f190393a 100644
+--- a/internal/usage/speed_count_test.go
++++ b/internal/usage/speed_count_test.go
+@@ -217,3 +217,39 @@ func TestCodexTurnMeasuredOnlyOverASecondAndAHundredTokens(t *testing.T) {
+ 		t.Fatalf("part: %+v", p)
+ 	}
+ }
++
++// An Antigravity desktop app's step, read from its database with its first
++// token, is held to a Codex turn's bounds: Gemini can send a step's tool
++// call whole (a real step: 599 tokens 0.3 s after a 16.6 s first token), so
++// it is measured only over a second or more and 100 tokens or more after
++// its first token; else it tells the least it wrote at over the whole step,
++// 1,000 tokens or more over a second or more. Its time is from the step's
++// start, before the model is asked, so that is a floor.
++func TestAntigravityStepMeasuredOnlyOverASecondAndAHundredTokens(t *testing.T) {
++	row := func(out int, ms, ttft int64) Row {
++		return Row{Source: "log", Record: Record{Agent: "antigravity", Model: "gemini-4-argon", Output: out, Millis: ms, TTFT: ttft}}
++	}
++	for _, c := range []struct {
++		name    string
++		r       Row
++		dn      int
++		dw      int64
++		floorN  int
++		floorMs int64
++	}{
++		{"a real step, 3,681 tokens over 49.6 s", row(3681, 68760, 19140), 3681, 49620, 0, 0},
++		{"yygutn's step 5, 194 tokens over 5.9 s", row(194, 9702, 3800), 194, 5902, 0, 0},
++		{"yygutn's step 1, 621 tokens in 9 ms", row(621, 10475, 10466), 0, 0, 0, 0},
++		{"400 tokens over 999 ms after a short wait", row(400, 1299, 300), 0, 0, 0, 0},
++		{"60 tokens over 2 s", row(60, 3000, 1000), 0, 0, 0, 0},
++		{"1,200 tokens in one push", row(1200, 10000, 9500), 0, 0, 1200, 10000},
++		{"a step with no first token, 1,500 over 30 s", row(1500, 30000, 0), 0, 0, 1500, 30000},
++	} {
++		if n, w := c.r.Decode(); n != c.dn || w != c.dw {
++			t.Errorf("%s: measured %d/%d ms, want %d/%d", c.name, n, w, c.dn, c.dw)
++		}
++		if n, ms := c.r.Floor(); n != c.floorN || ms != c.floorMs {
++			t.Errorf("%s: floor %d/%d ms, want %d/%d", c.name, n, ms, c.floorN, c.floorMs)
++		}
++	}
++}
+-- 
+2.50.1 (Apple Git-155)
+

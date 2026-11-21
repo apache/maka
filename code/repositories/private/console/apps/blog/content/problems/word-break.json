@@ -1,0 +1,25 @@
+{
+  "id": "44",
+  "slug": "word-break",
+  "title": "单词拆分",
+  "difficulty": "medium",
+  "tags": ["字典树", "记忆化搜索", "动态规划"],
+  "description": "给你一个字符串 `s` 和一个字符串列表 `wordDict` 作为字典。请你判断是否可以利用字典中出现的单词拼接出 `s`。\n\n**注意:** 不要求字典中出现的单词全部都使用,并且字典中的单词可以重复使用。\n\n**示例 1:**\n\n- 输入:`s = \"leetcode\"`, `wordDict = [\"leet\",\"code\"]`\n- 输出:`true`\n\n**示例 2:**\n\n- 输入:`s = \"applepenapple\"`, `wordDict = [\"apple\",\"pen\"]`\n- 输出:`true`\n\n**示例 3:**\n\n- 输入:`s = \"catsandog\"`, `wordDict = [\"cats\",\"dog\",\"sand\",\"and\",\"cat\"]`\n- 输出:`false`",
+  "solution": "## 思路\n\n**动态规划**:`dp[i]` 表示 `s[0..i)` 能否被拆分。`dp[0]=true`;对每个 `i`,枚举切分点 `j`,若 `dp[j]` 且 `s[j..i)` 在字典中,则 `dp[i]=true`。\n\n## 参考代码\n\n```js\nfunction wordBreak(s, wordDict) {\n  const wordSet = new Set(wordDict);\n  const dp = new Array(s.length + 1).fill(false);\n  dp[0] = true;\n  for (let i = 1; i <= s.length; i++) {\n    for (let j = 0; j < i; j++) {\n      if (dp[j] && wordSet.has(s.slice(j, i))) { dp[i] = true; break; }\n    }\n  }\n  return dp[s.length];\n}\n```\n\n## 复杂度\n\n- 时间:O(n²)(子串哈希平均 O(1))\n- 空间:O(n)",
+  "signature": {
+    "language": "javascript",
+    "entry": "wordBreak",
+    "params": [
+      { "name": "s", "type": "string" },
+      { "name": "wordDict", "type": "string[]" }
+    ],
+    "returns": "boolean"
+  },
+  "testCases": [
+    { "sample": true, "input": ["leetcode", ["leet", "code"]], "expected": true },
+    { "sample": true, "input": ["applepenapple", ["apple", "pen"]], "expected": true },
+    { "sample": true, "input": ["catsandog", ["cats", "dog", "sand", "and", "cat"]], "expected": false },
+    { "sample": false, "input": ["a", ["a"]], "expected": true },
+    { "sample": false, "input": ["aaaaaaa", ["aaaa", "aaa"]], "expected": true }
+  ]
+}

@@ -1,0 +1,2 @@
+== gofmt -l (touched files) ==
+gofmt exit=0 (empty list = clean)

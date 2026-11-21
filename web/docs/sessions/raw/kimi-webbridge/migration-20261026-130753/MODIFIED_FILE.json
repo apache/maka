@@ -1,0 +1,35 @@
+{
+  "state": "migrated",
+  "groups": [
+    {
+      "name": "logs",
+      "source": "C:\\Users\\802165\\.kimi-webbridge\\logs",
+      "pattern": "**/*",
+      "remove_root": true,
+      "category": "archive",
+      "archive": "E:\\cc\\guahub\\sessions\\raw\\kimi-webbridge\\migration-20261026-130753\\logs.zip",
+      "files": [
+        {
+          "path": "daemon.log",
+          "size": 2283,
+          "mtime_ns": 1792222836299014000,
+          "sha256": "64864fdc4f61dc92f936aa751afc575c77b0043eb0597588370cf55ae479e024"
+        },
+        {
+          "path": "daemon.log.prev",
+          "size": 2283,
+          "mtime_ns": 1789669972716588400,
+          "sha256": "cc6f8a9a196f871b6615cfa64cab96bc4175167214a92c825a79986dc1a9d29e"
+        },
+        {
+          "path": "desktop-daemon.log",
+          "size": 41296,
+          "mtime_ns": 1792238941514135000,
+          "sha256": "0bd7c27b3f6e58cacb283f346754b8e36682188247576bd5a8a328c81c1059ba"
+        }
+      ],
+      "directories": []
+    }
+  ],
+  "protected": {}
+}

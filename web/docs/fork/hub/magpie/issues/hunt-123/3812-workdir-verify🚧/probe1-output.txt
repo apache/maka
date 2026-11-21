@@ -1,0 +1,4 @@
+os.Stat(dir)                  -> fi=true err=<nil> isDir=true
+os.Stat(dir+"/.")             -> err=<nil>
+exec.Dir=<chmod000 dir>       -> err=fork/exec /var/folders/l_/dcyyzzfx5k914sm7sy98xqfc0000gn/T/probe3812-1252499467/claude: permission denied output=""
+exec.Dir=<chmod755 dir>       -> err=<nil> output="ok\n"

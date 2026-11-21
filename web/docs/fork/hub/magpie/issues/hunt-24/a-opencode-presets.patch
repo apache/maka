@@ -1,0 +1,147 @@
+From 36c7d33048fe1d3a9fa23854f2c933b2d49c4ed3 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Thu, 15 Oct 2026 20:55:30 +0800
+Subject: [PATCH] import: OpenCode's ids for the vendors magpie has presets for
+ come in on them
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+openCodePresets held 19 of models.dev's ids. 15 more name a provider whose
+preset serves the very host models.dev gives as the id's api — Zhipu, Z.ai,
+Qwen and Qwen China (Alibaba's dashscope ids), MiniMax, ModelScope, Kilo,
+ClinePass, both Kimi Code plans, both Step Plans, Volcengine's Coding Plan,
+Bailian's and Tencent Cloud's Token Plans — and were listed and skipped as
+"it has no base URL", which is not true of them: magpie has the preset at
+that address. Each now comes in on its preset, the way openai's or
+deepseek's key does.
+
+Left out, where a region would be the target and auth.json says nothing to
+pick it by: zhipuai-coding-plan and zai-coding-plan (the plan regions),
+minimax-coding-plan, the pay-as-you-go ids of plan-first presets (stepfun,
+stepfun-ai, volcengine), tencent-coding-plan, and the ids of subscriptions
+magpie moved to plugins (the Xiaomi MiMo token plans).
+
+Run (macOS arm64, go1.26.8, worktree at 37fec124):
+- TestImportOpenCodeVendorPresets, new: red before (15 items, each
+  "skipped: it has no base URL"), green with the map filled; red again
+  with import_opencode.go stashed, green on pop.
+- go test -tags nogui -count=1 ./internal/provider: ok.
+- gofmt -l internal: clean. go vet -tags nogui ./internal/provider,
+  GOOS=linux -tags nogui, GOOS=windows: clean.
+- go build, GOOS=linux -tags nogui, GOOS=windows: ok.
+---
+ internal/provider/import_opencode.go      | 12 +++++
+ internal/provider/import_opencode_test.go | 59 +++++++++++++++++++++++
+ 2 files changed, 71 insertions(+)
+
+diff --git a/internal/provider/import_opencode.go b/internal/provider/import_opencode.go
+index 24a71c96..1b2173d4 100644
+--- a/internal/provider/import_opencode.go
++++ b/internal/provider/import_opencode.go
+@@ -31,6 +31,12 @@ func openCodeAuthPath() string {
+ // openCodePresets are OpenCode's provider ids by the magpie preset at the
+ // same address. An id at a host the preset doesn't serve (SiliconFlow's
+ // .com beside the preset's .cn) is left out: its key would be sent there.
++// The ids' hosts are models.dev's api for each, what OpenCode itself sends
++// to, and it is the preset's own address, not one of its regions. Where a
++// region would be the right target — Zhipu's, Z.ai's, StepFun's and
++// Volcengine's pay-as-you-go ids beside plan-first defaults, MiniMax's and
++// Tencent's coding plans — auth.json says nothing to pick a region by, so
++// those ids stay out and are skipped with a reason that says why.
+ var openCodePresets = map[string]string{
+ 	"opencode": "opencode-zen", "opencode-go": "opencode-go",
+ 	"openai": "openai", "anthropic": "anthropic", "google": "google", "deepseek": "deepseek",
+@@ -38,6 +44,12 @@ var openCodePresets = map[string]string{
+ 	"groq": "groq", "openrouter": "openrouter", "togetherai": "together", "fireworks-ai": "fireworks",
+ 	"siliconflow-cn": "siliconflow", "nvidia": "nvidia", "aihubmix": "aihubmix", "302ai": "302ai",
+ 	"ollama-cloud": "ollama-cloud",
++	"zhipuai":      "zhipu", "zai": "zai", "alibaba": "qwen", "alibaba-cn": "qwen-cn",
++	"minimax": "minimax", "modelscope": "modelscope", "kilo": "kilo", "cline-pass": "clinepass",
++	"kimi-code-plan-cn": "kimi-code-cn", "kimi-code-plan-global": "kimi-code",
++	"stepfun-step-plan": "stepfun-cn", "stepfun-ai-step-plan": "stepfun",
++	"volcengine-coding-plan": "volcengine",
++	"alibaba-token-plan-cn":  "bailian-token-plan", "tencent-token-plan": "tencent-cloud",
+ }
+ 
+ func readOpenCodeAuth(path string) ([]AppImport, error) {
+diff --git a/internal/provider/import_opencode_test.go b/internal/provider/import_opencode_test.go
+index 3a3d2aef..e8c11939 100644
+--- a/internal/provider/import_opencode_test.go
++++ b/internal/provider/import_opencode_test.go
+@@ -1,9 +1,12 @@
+ package provider
+ 
+ import (
++	"fmt"
++	"maps"
+ 	"os"
+ 	"path/filepath"
+ 	"runtime"
++	"slices"
+ 	"testing"
+ 	"time"
+ )
+@@ -203,3 +206,59 @@ func TestImportOpenCodeAuthUnknown(t *testing.T) {
+ 		t.Fatalf("unreadable folder: %+v", s)
+ 	}
+ }
++
++// A vendor's key whose OpenCode id is a provider magpie has a preset for
++// comes in on that preset: the id's host in models.dev's catalog is the
++// preset's own address. Each entry here is api, so a key lands on the
++// preset with no skip, the way openai's or deepseek's does.
++func TestImportOpenCodeVendorPresets(t *testing.T) {
++	home := openCodeHome(t)
++	data := filepath.Join(home, "data")
++	t.Setenv("XDG_DATA_HOME", data)
++	want := map[string]string{
++		"zhipuai":                "zhipu",
++		"zai":                    "zai",
++		"alibaba":                "qwen",
++		"alibaba-cn":             "qwen-cn",
++		"minimax":                "minimax",
++		"modelscope":             "modelscope",
++		"kilo":                   "kilo",
++		"cline-pass":             "clinepass",
++		"kimi-code-plan-cn":      "kimi-code-cn",
++		"kimi-code-plan-global":  "kimi-code",
++		"stepfun-step-plan":      "stepfun-cn",
++		"stepfun-ai-step-plan":   "stepfun",
++		"volcengine-coding-plan": "volcengine",
++		"alibaba-token-plan-cn":  "bailian-token-plan",
++		"tencent-token-plan":     "tencent-cloud",
++	}
++	entries := ""
++	for id := range want {
++		entries += fmt.Sprintf(",\n  %q: {\"type\": \"api\", \"key\": \"sk-oc-%s\"}", id, id)
++	}
++	p := filepath.Join(data, "opencode", "auth.json")
++	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
++		t.Fatal(err)
++	}
++	if err := os.WriteFile(p, []byte("{"+entries[1:]+"\n}"), 0o600); err != nil {
++		t.Fatal(err)
++	}
++	items := itemsOf(t, "opencode")
++	if len(items) != len(want) {
++		t.Fatalf("items: %d, want %d", len(items), len(want))
++	}
++	for _, id := range slices.Sorted(maps.Keys(want)) {
++		it := items[id]
++		if it.Skip != "" {
++			t.Errorf("%s: skipped: %s", id, it.Skip)
++			continue
++		}
++		pr := Preset(want[id])
++		if pr == nil {
++			t.Fatalf("preset %s: none", want[id])
++		}
++		if it.Provider.Preset != pr.ID || it.Provider.Name != pr.Name || it.Provider.Chat != pr.Chat || it.Provider.Key != "sk-oc-"+id {
++			t.Errorf("%s: got %+v, want the %s preset", id, it.Provider, pr.ID)
++		}
++	}
++}
+-- 
+2.50.1 (Apple Git-155)
+

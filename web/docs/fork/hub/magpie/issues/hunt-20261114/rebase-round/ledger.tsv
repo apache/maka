@@ -1,0 +1,145 @@
+TIP	63c91cae5fa4c550727c1923f35005396f8e70c6
+2945	fix/2945-upstream-hammer	PUSHED	eeebcd4249dc881629722583c6c65c2ba11a3f5a	new=7ab966ace84e6ccec0280ada691a17754cdc0f1c drift=0 dropped=0
+3012	fix/3012-kimi-usage-empty	PUSHED	9bda9aea37e35edebecf3a0f2232d279cc1b798f	new=4407ac12288a3a8267e748cd22e71c4e26ec9b77 drift=0 dropped=0
+3096	fix/3096-rule-remove-flake	PUSHED	a9cb8649c389049c6c2a1c3a0ec4c52fd645b06b	new=4c6e121c7b354e226306b568c8182275118cc880 drift=0 dropped=0
+3106	fix/3106-compaction-silent-assistant	DEFER-CONFLICT	596e88dba49a6995b0cdfa4739f41dab19efc0b5	files=internal/gateway/codex_backend.go
+3197	hunt-20261112-t1-3197	PUSHED	abe40fd1486611f652f68ef953048f585cbedc51	new=79bee0bc4826aae47cb71ad346d6c0bd5518c847 drift=0 dropped=0
+3208	fix/3208-go-xnet-bump	DEFER-CONFLICT	c03fe50e51188c6bac16a0de55e5e979bd96a72d	files=go.mod,go.sum
+3209	hunt60-c-3209-gateway-selfport	PUSHED	590b81957b569b045b2517a632e79a690c39093a	new=40549cd0262576fcbd25755a6af52e045dc3797a drift=0 dropped=0
+3479	hunt80-b-3479	PUSHED	b850862a75ee4790cff36548e447d974038478e3	new=de579e34c5fcd1de5a6b6a8079c77455c6b82a42 drift=0 dropped=0
+3509	hunt79-l-3509	PUSHED	623f6e0a33b18205f99c93115e196c2244a0771c	new=6259e689eb4023a52e1fd755235e04fc0d0a86c7 drift=0 dropped=0
+3524	hunt81-d-3524	PUSHED	7b630d0202afbf197e25e103deff730c4d3fcedd	new=7a15c349ab55e4e61d9df9df478609228a58fb2d drift=0 dropped=0
+3639	hunt87-la-3639-niri-wait	PUSHED	af007c6555cc9eceee3f0d6e3cdeb182fb9f4c90	new=664e608c0e423fe132ace89a68631bb10244ef54 drift=0 dropped=0
+3967	fix/3967-billing-200	PUSHED-DRIFT	1802ff375d6781d11c0c9028b40408c76369f1f5	new=25c612dbe3335f422935ad51ffbf43fbe7051d85 drift=1 dropped=0
+4030	hunt-20261111-rf-4030	PUSHED	5ec718b74ceb5ce7e327b4540748dae46f50bb95	new=a6b2ffa7545b15070a6fc2f554453db1a5d7c206 drift=0 dropped=0
+4034	hunt-20261111-rf-4034	DEFER-CONFLICT	bfe0cc56beaa1139d2f21630b8bff0e05508f5a9	files=docs/subsystems/providers-accounts.md
+4056	hunt-20261111-rf-4056	PUSHED	125977b65d9d632faf7f76c7b3192599e87571f4	new=0e7ce4ed8124f436ea3aad59cc282ed0edde1753 drift=0 dropped=0
+4069	hunt-20261111-r5-4069	DEFER-CONFLICT	6af80e41a8cbd8101d1c0ed96e4ec48af59f4f3f	files=internal/gateway/gemini_model_last_test.go
+4077	hunt-20261111-rf-4077	PUSHED	d23ec8a08023a6d79151389c551d7bdb4ac2d8b5	new=82c86798d7003811a28f038ad326fca383eadf67 drift=0 dropped=0
+4108	hunt-20261111-rf-4108	PUSHED	d3a35ed177268fed1f750d55a5e7b521db647d47	new=e46b188dce4e0ca82e844bbc6c899ef2ac0d5d69 drift=0 dropped=0
+4144	hunt-20261112-t1-4144	DEFER-CONFLICT	eb23419a05aa0cddb0953edf33aa91c4ad13681f	files=internal/sessions/call_cache.go,internal/sessions/sessions.go
+4148	fix/4148-compact-at-min-verify	PUSHED	0c93d291a8b6e34cdc4781076f6183fa00f4bace	new=2072bed5cb37483fb7e90f742159606ba1ba49e3 drift=0 dropped=0
+4165	fix/4165-passthrough-thinking	PUSHED	edfb8eda73064711d2164085a72d92a39d6f84ca	new=095489b2a09f219d2fa9ceb49ee5788ebb89f6d0 drift=0 dropped=0
+4169	hunt-20261111-r6-4169	PUSHED	213e22b5da944d220ccaa14c07f7df4b5a42e5fe	new=5a53869eb621fd4d26bb08e53f35dd1822471cb6 drift=0 dropped=0
+4197	fix/4197-codex-headers	PUSHED-DRIFT	c62e8ae643016edb2da5fd8c7c4b2087c21263ef	new=b42bae55585f6d1a0fd6d87157a03d1764df59d2 drift=1 dropped=0
+4202	fix/4202-nested-retryafter	PUSHED	b331fe5fe3f365483d07618ebcdb9e1f41d26d2a	new=8b77af7b1e385e8cbd2e60187594e558482bea5b drift=0 dropped=0
+4241	fix/4241-overage-window-verify	PUSHED	a0a8f0118ec31dac5c144871fb2bdd13bcc17035	new=fd8c90c7339398a6ae9cc40dbb43a3166b72d2ec drift=0 dropped=0
+4271	fix/4271-plugin-count	PUSHED	cdda83a0d2a998f288757c6312e6fe3679e170e8	new=0e04c356b519335c7e68005e30a68ba2566e5eab drift=0 dropped=0
+4282	fix/4282-body-size-limit	PUSHED	2f4a9673180d93adfc1d339fd4bf618790f36c5f	new=91e3da02d4140046cea49adbee8a13b068ecd578 drift=0 dropped=0
+4314	fix/4314-workdir-permission	PUSHED	5faa03e64b1ef838469b7ac422feb9234858a21c	new=5937434b67b70a0720227b7cb71024847c34b555 drift=0 dropped=0
+4317	hunt-20261111-rf-4317	PUSHED	08c4a4ebe92181bbdab2557e8ad64a76c56e2781	new=7c614fac7effaf9ac94ef8b3bf4977f591017c42 drift=0 dropped=0
+4324	fix/4324-muse-phase-verify	DEFER-CONFLICT	6fb16202eb3997c7e1eaa90e4635a0da3405b4b7	files=internal/gateway/claude_subscription.go
+4328	hunt-20261111-rf-4328	PUSHED	870ac14cb54427cd004fd34345bbcfcf60c8d901	new=f074be87dc418a73179950366852eb944aaff427 drift=0 dropped=0
+4407	fix/4407-bridge-continuation-context	PUSHED	36b5684d0708b80883be3e1cd8ff5ef31235158a	new=1fc0d2d937c86f3b346ea553eb2f60372ea90c28 drift=0 dropped=0
+4666	hunt-20261112-t1-4666	PUSHED	9345a92df451fb47efbf44a1b0a553bdd446c0bc	new=cf8d4f0d20e68ceb3bad338bd98ea760f98f4fd5 drift=0 dropped=0
+4668	fix/4668-socket-rebuild-memory	DEFER-CONFLICT	89bb55d2769efe4f86dff3f40581877f122b20d2	files=internal/gateway/responses_ws_test.go
+4779	hunt-20261111-rf-4779	PUSHED	7a83cc39d778d49ae2ea0df64ee48447bb6df7a4	new=c06ac934fef24f1f52d82e34eebb3f73402bc374 drift=0 dropped=0
+4782	fix/4782-callback-stage-diagnostics	PUSHED	d300a7f4154052780effeb41afe497635cea4c6c	new=f509308bcc0a82d018ba22e905c22712cbddc825 drift=0 dropped=0
+4785	hunt-20261112-t1-4785	PUSHED	d349bc957ab14aaa609a03125d81dd0443cfb8a4	new=8211d0fccdae1bcfee4de7eb02d6def692818753 drift=0 dropped=0
+4863	fix/4863-replay-cache-diagnose	DEFER-CONFLICT	68bd99fcb9e0078b2b81e0425c05544f43264b0d	files=internal/gateway/continuation.go
+4882	fix/4882-noisy-window-measure	PUSHED	e44dd15e8f349513edb3abe0ed1c02b636106e09	new=65625ff72858e28771e8ca07bc01576d8ed2c7cd drift=0 dropped=0
+4893	fix/4893-sniffer-bench-clean	PUSHED	b6a92c9dee2807bf3a5cf1451ef1b1477a54841d	new=8531f87ae1ba96f82b9c62f54b5bf9522e89bfeb drift=0 dropped=0
+4899	hunt-20261111-r1-4899-rework	DEFER-CONFLICT	6e4e0ae428e39356d46055c662549ed6548edef6	files=internal/gui/providers.go,internal/provider/provider.go
+4978	hunt-20261111-rf-4978	PUSHED	7bcc58ed331d80d8198838b58d4d2c4c0a149d49	new=63ee5c8696333c082f67175142d7bb6b337d64b5 drift=0 dropped=0
+5020	hunt-20261111-rf-5020	PUSHED	8ad12a12ef55de062d66835cd149abfe65dc1c97	new=c7a4e1b704b8a9cfbab2998919e582b523468d3e drift=0 dropped=0
+5021	fix/5021-both-auth-headers	PUSHED	1ff97d8826a1246bc95210b96dc21adcfc2ee1ac	new=85b0531f61282eafad4c4f2f71a861ddb2a24d42 drift=0 dropped=0
+5023	fix/5023-zfs-zed-pickup	PUSHED-DRIFT	b3c1243d0f8e0133ba154cc4229758fa87c30c5d	new=e906b73ef17ab477a5859fa3613e96714af629e4 drift=1 dropped=0
+5029	fix/5029-pace-stale-affinity	PUSHED-DRIFT	72a72edf1b121e934212379b6be6cc0bc55d6843	new=88cb5a155f3b742703a5420708ff794a8eefbdbc drift=2 dropped=0
+5064	fix/5064-opencode-v2-providers	DEFER-CONFLICT	5241d3dba6d9ecc4f61b96a82346bcd4e3d1165f	files=internal/agent/agents.go,internal/agent/openchamber.go
+5065	fix/5065-omp-remote-compaction2	DEFER-CONFLICT	0fff83a5496a81a1ce1c1ae968378e5414f0e792	files=internal/gateway/gateway.go
+5074	fix/5074-secret-url-scope	PUSHED-DRIFT	b5e33d814c199e691bd81bd7e826f9c57b20fe26	new=231af275a61373c7961cd4775db47e9d972f229e drift=2 dropped=0
+5082	hunt-20261111-rf-5082	PUSHED	c179db1f1204515214be5a85cff1136f8e13315b	new=e7827bd5304596952ae59b3f0360e34dce1cd8ec drift=0 dropped=0
+5083	fix/5083-editor-kept-proxies-verify	PUSHED	cd1f19df0b16ac8a9f5cde296f6c0f2985404948	new=537c0d7427a78298504ff5a6567aba37b0ab4c60 drift=-2 dropped=0
+5085	hunt-20261111-m-5085-rework	PUSHED	7daed09e1fcc435a2eef2dc91980f99dbfe3b9ab	new=20337661c4f3a5525e0c585c432722046356b5cf drift=0 dropped=0
+5086	fix/5086-catalog-absolute-verify	PUSHED-DRIFT	0d03f4bb9eae59d96fcd5634549b313d51c0903a	new=875661cadfde877d571c8eeb4d275d3c4235900d drift=1 dropped=0
+5100	fix/5100-drift-own-claude	DEFER-CONFLICT	c6eded8572f6621ee3ecb2c2a5e88e5c8fcb6970	files=internal/agent/applied.go,internal/agent/claude.go
+5102	fix/5102-otlp-systemone-bodies	PUSHED	bdaba3fa834b9a04fb6e4c5ba0f96cf9d0d0605e	new=c714223c0f17b7bfddeea3ddd84c185a30d7b7c9 drift=0 dropped=0
+5103	fix/5103-provider-icon	PUSHED-DRIFT	ac22f82f349f7aa91d975b82d6a51b7fa1641315	new=aefac2ba0693a1bde5cb5df50e3cd0b57d9aee67 drift=1 dropped=0
+5197	hunt-20261112-t1-5197	PUSHED	eddaca1f35932e06493f03f16f01dbd1a02e83db	new=af2530c0210440007d44d4f8da413fad18e617ab drift=0 dropped=0
+5198	hunt-20261112-t1-5198	PUSHED	c632654a1ae28dca85cd65e10afd147f3c1cd474	new=0a989dd55335c5a9f6e66a4205a69a6b46fe7528 drift=-1 dropped=0
+5205	hunt-20261112-t1-5205	PUSHED	929c479e5fb96514559dc9fbaecb5f2b97590b7a	new=68b74201aa5c0336ed677f13d153ff81391e2a97 drift=0 dropped=0
+5252	hunt-20261112-t1-5252	PUSHED	8b7a41291edf98827cd6f59a5f9dee8ae1eb45fe	new=e5520031a2d964d7948ba8c14f2d7b5b65332dea drift=0 dropped=0
+5260	hunt-20261112-t1-5260	PUSHED	6ba7ffbc0e306f060dadf1fcc5dabf8de883a59c	new=a78ab6f424f36eea29e9e4bbacd7a33877f664f7 drift=0 dropped=0
+5273	hunt-20261112-t1-5273	DEFER-CONFLICT	b0c80a5b45a0fe114a437e2031127b495b0719a4	files=internal/gui/core_budget_test.go
+5411	hunt-20261111-rf-5411	PUSHED	271a5fb312dd8a96d0543373819906504b16bfb4	new=78437c31b1081f259a7ca88bd630d2adbde21de8 drift=0 dropped=0
+5416	hunt-20261111-rf-5416	PUSHED	34b9f8f76f7c1b29647a75dc74e80e73b1c561b1	new=4ad374627b5a7f83aa596e992f521d509ee34861 drift=0 dropped=0
+5418	fix/5418-provider-kind-sections	DEFER-CONFLICT	4a14707c76dcdae842b3b9e88bb8f5778ce98384	files=internal/gateway/gateway.go,internal/gui/assets/app.js,internal/gui/providers.go
+5424	fix/5424-dav-tls-handshake-retry	PUSHED	746d3d2a0dc2a36ba880f8c1f2ff77f6d6d7c78d	new=f5abbb40440057593d5d808d64b3c4455744a490 drift=0 dropped=0
+5429	verify/5429-deadline-test-slow-start	PUSHED	04f91f9818446945ae148c129c5ee7de01ca1947	new=a7a867823be109496d393a0006fa9233cf20299d drift=0 dropped=0
+5430	hunt-20261111-rf-5430	PUSHED	f46c7380dfc1527e2ae37419500bff2a0bf40091	new=e02767d95def85eba3ae489030c995c3556f7564 drift=0 dropped=0
+5436	hunt-20261111-rf-5436	PUSHED	b9450bdf97df3ad6d50b5407fa7b160d4403fe25	new=29bc2aab9b44510bc89f8042b516447aa7ab785c drift=0 dropped=0
+5440	verify/5440-request-cache-dirty-paths	DEFER-CONFLICT	45d1408e3f0dfe3bf2848c346af85bbeb5bd260c	files=internal/usage/request_page.go
+5445	fix/5445-library-instructions-arrival	DEFER-CONFLICT	3d62c4f5626bc8b9a736d86d6adc553319e87b49	files=internal/gateway/claude_subscription.go
+5446	fix/5446-agy-shell-fish-test	PUSHED	ba78665abc370d194c3e475c3f8ae239a8f97939	new=5ff5f167874f7232c6e25142a939f9ccc3ff7318 drift=0 dropped=0
+5447	hunt-20261111-rf-5447	PUSHED	86e6989c2def9a4b608657cd60280fec205702ab	new=88d1a8049602251d88289b9e950db24adcaf89c2 drift=0 dropped=0
+5448	hunt-20261111-rf-5448	PUSHED	31c43e1ea9be5cb86f109f8f4c55dd2e6ab40649	new=43458b449fbc39ca8a8fc2c6d62b9756a919e284 drift=0 dropped=0
+5449	verify/5449-r2-usage-endpoint	PUSHED-DRIFT	915f9f203397da1449b73f9f766b3a99fb02db66	new=e8d07747178539f8f1b303422585d42620d3173c drift=1 dropped=0
+5450	fix/5450-wsl-sync-skill-memo	PUSHED	76b1d75fa4dc5db57c164121e1031648cfda228d	new=423b19d0c63e3c1df2db36e50b5b8212322c44df drift=0 dropped=0
+5452	hunt-20261112-t1-5452	PUSHED	d0090b3c3458e0963222235bf4419a63d50b621c	new=ebe9f670b2af0361929bb7d94262f9df8b4b3286 drift=0 dropped=0
+5455	fix/5455-antigravity-0token-turn	DEFER-CONFLICT	6de33bd5f1d0568eb090e3f101314c0206c1f015	files=internal/gateway/continuation.go
+5457	fix/5457-remote-catalog-truncated	PUSHED-DRIFT	8f4d3967cd652b1903ff6a8e4095394d83e81084	new=c5995220f47c9a0940a044d8e78c59968273037c drift=1 dropped=0
+5463	fix/5463-gwmw-caller-key	DEFER-CONFLICT	c93292f06652fdd28ee6fb3c9fcc27c555922b83	files=docs/subsystems/gateway-request-hooks.md,internal/gateway/middleware.go
+5465	hunt-20261112-t1-5465	PUSHED	d1942933d4f654d854a1c3ef51da5503ff7d5726	new=911c9777104344c9b0844573fc2a3a0c0fe1795b drift=0 dropped=0
+5469	fix/5469-claude-max-output-tokens	PUSHED	0b8c3effe77fb5f45c6be9e3586ab495be632eb3	new=188d2588a7813bc37822ed45458841025d88d1a6 drift=0 dropped=0
+5476	fix/5476-appserver-switch-resume	DEFER-CONFLICT	aa5d8fd4d81e99a2080c2e4f33c441df1dcb9738	files=docs/subsystems/agent-wiring.md,internal/provider/codex_app_crash.go
+5477	fix/5477-prev-pointer-refused	PUSHED	a5ab60c83b5e12550c8151b46f737d4281392b6e	new=36a2bf105002a4e0f201ee610c24df018063442a drift=0 dropped=0
+5478	fix/5478-discovery-rest-suspended	DEFER-CONFLICT	650065eee9f0e832cbac076961e00223d80cada5	files=internal/gateway/routing.go
+5480	fix/5480-codex-handback-unknown-reading	DEFER-CONFLICT	fdf6166d0e5df3ea78fae88a6eee63fe762c4327	files=internal/gateway/continuation.go
+5494	fix/5494-codex-session-fallback-r2	PUSHED	43abff63c02c447c9688945bf15e49b3c23617e5	new=bf93c386e20c9cadb6c20f67b22c50a6b7fca830 drift=0 dropped=0
+5509	fix/5509-opencode-429	PUSHED	7682c105e954e23425f76a77811064f97deec048	new=1e2cf22612cea58e4c7bb9b70a16e21e66a48330 drift=0 dropped=0
+5514	hunt-20261111-rf-5514	PUSHED	fa801670baab664ce8b7b69684326070985810e1	new=1927a39165702b7a970f7c925367771ce92aa7d8 drift=0 dropped=0
+5521	hunt-20261111-rf-5521	PUSHED	dae9e2edcec07d18400fe4e38cbb413855f81ef2	new=ad9b3aa1a3d8018971259915403c8da48cac9af4 drift=0 dropped=0
+5535	hunt-20261111-rf-5535	PUSHED	cb3ed2a9f7b2d200b3bfc5b88737d82cdd940a6e	new=47008c073d1a19d32de34d47f0a1f9e3c508d3f2 drift=0 dropped=0
+5537	hunt-20261111-rf-5537	PUSHED	bc8892e84ab2ed5f9dc00bbfaa9b8aeba95daa19	new=92909c7dc94312d8b251e8d899cd536e820c1a5f drift=-1 dropped=0
+5558	hunt-20261111-rf-5558	PUSHED	c5c82bf32cfc0417a24e637707b3c77436f4dce0	new=718470972cd081ea77fa83a3c80410bf63bfbba0 drift=0 dropped=0
+5568	hunt-20261111-rf-5568	PUSHED	707f26b346f86017fbb7fe3da6c9273c05e85897	new=c6ac1f6521e936e5dd7a7966db7ce970d40bb045 drift=0 dropped=0
+5575	fix/5575-unstreamed-speed-r3	PUSHED	ab3a908a0c66c67937655860201ce3c1dbf81941	new=dbd3abc0fb6a793df81575229651c88bcbdb1b1f drift=0 dropped=0
+5593	hunt-20261111-rf-5593	PUSHED	2c290901e6bb3918429a14f1b56a29ce9cb20bb3	new=f59a13f462260669f7160331e3a6c4e09b4cdd19 drift=0 dropped=0
+5599	hunt-20261111-rf-5599	PUSHED	42f09641d72245d4173189ee8f47b0b312378e8a	new=2b38e3384c2d4cda9110eebcbe59e3ef5a34bdce drift=0 dropped=0
+5601	hunt-20261111-rf-5601	PUSHED	69e37fca8f14991dd5c5a9ada55ce4d55463adc4	new=dac95013b54e8009538a5be08a103dcb422a02ef drift=0 dropped=0
+5606	hunt-20261111-rf-5606	PUSHED	11a377ce0f5f2279a162380d001f3dcaeb67255c	new=1bc6b3daab2ae4e7fc3c0b2ed03834d3cc7fc2f6 drift=0 dropped=0
+5612	hunt-20261111-rf-5612	PUSHED	d002ed5701fa4ce61a858fe83ccfefe19a18eb84	new=373368e31cad19788abf9ac8bb8afd48a7dbf1b5 drift=0 dropped=0
+5621	hunt-20261111-rf-5621	PUSHED	2541689973845d3f0c7a7cf2d9c0ad37e29f1029	new=d50a4c25d6811f582a3bf1455683d0f1556254e3 drift=0 dropped=0
+5624	hunt-20261111-rf-5624	PUSHED	414f0de2cb418854c6c25253898ffa65dbcea5c4	new=03ea60c86683c658a4c2827c90d98e6bb95a13e4 drift=0 dropped=0
+5627	fix/5627-tuned-for-you-agents	DEFER-CONFLICT	ebe6c67cc85e5731017e3e5d9a83fdbaf885eee5	files=internal/gui/assets/context.js
+5630	hunt-20261111-rf-5630	PUSHED	4bb5c8f59accf141778531deda6d697f43759376	new=4bc919462904406bda9605169396306941642937 drift=0 dropped=0
+5631	fix/5631-codex-stdio-mcp	PUSHED	4dec37fb5bef4a7973982a178052f5026981080e	new=b9bbd48dab86b09da7bd51c2a9d741150fe667c1 drift=0 dropped=0
+5638	hunt-20261111-rf-5638	PUSHED	b37e0261516d9d378778ea737d528b4861f3805e	new=7b4618b021434d8ef3f33a6a11c8b2d07f728510 drift=0 dropped=0
+5668	hunt-20261111-rf-5668	PUSHED	f9b87e18020873d2406cf752f491a344af518391	new=193a587707404ab88a3283a67e91a07347f98fb3 drift=0 dropped=0
+5674	hunt-20261111-rf-5674	PUSHED	22401e1ff7f942def5903db80e7c54ce491fb92b	new=e3dc7f2619597c73903cf3064c0940300baca8f2 drift=0 dropped=0
+5679	hunt-20261111-rf-5679	PUSHED	37087f493fff0eea4f4ce93004aa8aca8a0fdde8	new=e395c5a0f13df7b7c1c41a439411aa6f43c3866f drift=0 dropped=0
+5686	hunt-20261111-rf-5686	PUSHED	61d3888fe84b3863d49804797575fed33cf66d97	new=1db73958579d6b6283b772a91ce1c4e6b5b14e91 drift=0 dropped=0
+5692	fix/5692-provider-failwords	DEFER-CONFLICT	d175626fda25fc1c500db26551d62f9bc7238943	files=internal/provider/provider.go
+5698	fix/5698-subagent-affinity	PUSHED	de843a3f0cabdd3c17841efad65df9a9e4a6211c	new=93f0bf3f7416827dae3b2bac2bac9aaac007958b drift=0 dropped=0
+5699	hunt-20261111-rf-5699	PUSHED	14947afc47d12fe30fa5d96dabc613dde2c9a85b	new=3b11a61499dbec8b97778e1d3c56be32b88d4335 drift=0 dropped=0
+5710	verify/5710-antigravity-step-speed	DEFER-CONFLICT	a6dee3b9f628b15a4007f7bb282f8bd4a3f37927	files=internal/sessions/call_cache.go
+5711	fix/5711-rtk-sandbox-toml-hooks	PUSHED	d4a45281c45b898978c366c5285ecbdda9602549	new=d7d117ca39595de02d7c4a9349b5a4256d83c26f drift=0 dropped=0
+5713	hunt-20261111-rf-5713	PUSHED	f10d07eea1d07da3d00aa4fb99c7c470695857d3	new=e24d05c7aed4d1d7c08589ce910924999fb7892a drift=0 dropped=0
+5752	hunt-20261111-rf-5752	PUSHED	d097bf152fb98c38f282d2f605b1d0c050644cf0	new=ed078e29bc277e874e9c8268baf18208243b6362 drift=0 dropped=0
+5759	hunt-20261111-rf-5759	PUSHED	0002944358172220e1be73f0460accabc542280d	new=70f95be48b2ddeb07467f141618a78f5b255c9c9 drift=0 dropped=0
+5782	hunt-20261111-rf-5782	PUSHED	109d992b6093fb6f9ecaa8240f12b744d343c0cb	new=0c3281517a58b86bbce25de5bf0e077756aa4edb drift=0 dropped=0
+5791	hunt-20261111-rf-5791	PUSHED	303f9ec0ab2a386771aeaa73da0062a8018d4774	new=705cb4a6d15f0fe3028d5dd13b8274066d3c4fc2 drift=0 dropped=0
+5793	hunt-20261111-rf-5793	PUSHED	bd344fb47cfdae8d4b4a476ee149f96111396920	new=70007b97145878f1c14454ad53832030bfe895e7 drift=0 dropped=0
+5805	hunt-20261111-rf-5805	PUSHED	e6c3c179dde8a895bf7dd087021338a3da4a1924	new=102279bb6b9900119260ea69f487c8635e39aec9 drift=0 dropped=0
+5812	hunt-20261111-rf-5812	PUSHED	38fad3b282ccbd83636db324a2bf4deae6e61ace	new=a6d463387daa2cb5ed16989b27338fe6d600543e drift=0 dropped=0
+5815	hunt-20261111-rf-5815	PUSHED	c9fef1ffaa60c9451e64eedbb6f44c9a752fb675	new=5ed653f8d6030597320a1297207243cb7ad9a17d drift=0 dropped=0
+5822	fix/5822-bridge-root-oneof	PUSHED	827effe5867bdb756db63bf989d2b8ec492a0dbd	new=bd8e5969c368b05171585adf68683a25985c858f drift=0 dropped=0
+5863	fix/5863-quota-visible-when-off	PUSHED-DRIFT	973b5cd8d22ee58499caba43778cfe802cd6026b	new=e62fe7b55a4cd14132dc2c59e9acffee032793b6 drift=1 dropped=0
+5876	fix/5876-kimi-quota-400-empty	DEFER-CONFLICT	0d3b52d2387b26fc01075c1520f9224118fcfb22	files=internal/gateway/fallback.go,internal/gateway/routing.go
+5877	verify/5877-ark-kimi-temp	PUSHED	ef70cece83607cabbaedcbf698193878148e2692	new=eb25a78c6af932baf889aa4b6c519495ef9e9bde drift=0 dropped=0
+5882	fix-5882-think-level	PUSHED	33cf8271f5989a11c0927008a136874b3194f691	new=ffb7839aeb82ae9ee367c18ab3de8b3c24927520 drift=0 dropped=0
+5895	fix/5895-deleted-account-acts	PUSHED	7556ff8ffed31e6558b09a0c02cebf50dd3386a5	new=81bd7c6e83c08ca7c53b1feecd215dd78ec042ab drift=0 dropped=0
+5908	hunt-20261112-t1-5908	PUSHED	e4b0b60657c0bb3c26c0b4d73fc411dbc189ca82	new=73a9a63fb078d68308aef45bc2968d074d5dc67c drift=0 dropped=0
+5911	verify/5911-auth-failed-wall	PUSHED	f4724b23f7c0ea50d5fb444a69a87cafe565b279	new=a904e3a85000c27633d337f3b0137c1ce5cd4431 drift=0 dropped=0
+5914	hunt-20261111-rf-5914	DEFER-CONFLICT	02d76378f5ef147c1d7d9e42cac8c48ed420686a	files=internal/provider/account_caps.go,internal/provider/key_spend.go,internal/provider/keys.go
+5921	fix/5921-stale-claudeusage	PUSHED	1724af304661a8efb0bb97a6f77cd7e04b961d4d	new=2f23deae0201693c95ee83377556fc9313e586f4 drift=0 dropped=0
+5923	hunt-20261112-t1-5923	PUSHED	0a83bd03fc1ccec2fd28470d5d66d487ce048e01	new=ee41caf419efa6cc0174e1dda423d9366d0904e3 drift=0 dropped=0
+5932	fix/5932-azure-400-rest	PUSHED	d5376482be5f8060799ac9f361865d86f75ae622	new=1d89a5a68ce8fd64750c8baf1b4fa6f0f757751c drift=0 dropped=0
+5934	fix/5934-lateid-turn-end-clear	PUSHED	e323c93a520ad941c647fed5567449b99f95f6ae	new=280ec90a3cfb1d4b26b8e8bfd26be8d9d7e84940 drift=0 dropped=0
+5935	fix/5935-unreadable-providers-file	DEFER-CONFLICT	99c5704db8787f05ce8a815f57430f4116332fb1	files=internal/provider/models.go
+5969	hunt-20261112-t1-5969	PUSHED	baca9477b137da16043fd10beaf4c9879d06f7b8	new=04667d0934dd3e3919bf1913b7d43aad8f9da8bf drift=0 dropped=0
+5971	fix/5971-restart-shelf	PUSHED-DRIFT	ae6b8d1b75f3b58d09ff5d99b275e13862396abb	new=f18083aa8fbd22b9b14fcdbccdeee403dd516404 drift=1 dropped=0
+6131	hunt-20261112-t1-6131	PUSHED	34933cdc8cb71e93ff407741980b6fe92ee72e3c	new=6d564e6b5dfe1b302768bfded5831e6397307f76 drift=0 dropped=0
+6288	hunt-20261112-t1-6288	DEFER-CONFLICT	fdbd66e6f1ba909d4d903948efc44e911d93e811	files=internal/gateway/upstream.go
+6320	hunt-20261112-t1-6320	DEFER-CONFLICT	bb236afa164aa5e6523891bdd1b14deef07f0e8d	files=internal/gateway/prev_response.go
+6336	hunt-20261112-t1-6336	PUSHED	e372c3b87f36a1b7303a62611215744ef0f5bf13	new=149e364e5a2d2f3007c749a71b4b2faa82f873fe drift=-9 dropped=0

@@ -1,0 +1,78 @@
+### 下一步计划
+
+Next: PRD PRD-02 CoreTypes - 核心类型定义
+
+---
+
+## 2026-01-12 PRD-01 完成（ProjectScaffold）
+
+### 完成内容
+
+- 初始化 Vite + React 19 + TypeScript 项目
+- 配置 TypeScript strict 模式
+- 添加 sanity test
+
+### What（做了什么）
+
+完成项目骨架搭建。
+
+### Why（为什么这样做）
+
+项目骨架是后续开发的基础。
+
+### 相关 PRD
+
+- id: PRD-01
+- component: ProjectScaffold
+- priority: P0
+- passes: true
+
+### typecheck 结果
+
+pnpm typecheck 通过（exit code 0）
+
+### Git 提交
+
+chore(core): scaffold react vite project
+
+### 下一步计划
+
+Next: PRD PRD-02 CoreTypes - 核心类型定义
+
+---
+
+## 2026-01-11 PRD-00 完成（BlockingDecision）
+
+### 完成内容
+
+- 决定运行形态：Node 后端 + Vite 前端
+- 定义 FS_ROOT 边界
+- 定义 File Watch 策略
+- 定义 Git 信息获取边界
+
+### What（做了什么）
+
+完成架构决策。
+
+### Why（为什么这样做）
+
+明确技术边界，避免后续返工。
+
+### 相关 PRD
+
+- id: PRD-00
+- component: BlockingDecision
+- priority: P0
+- passes: true
+
+### typecheck 结果
+
+pnpm typecheck 通过
+
+### Git 提交
+
+docs(core): decide runtime boundaries for control plane
+
+### 下一步计划
+
+Next: PRD PRD-01 ProjectScaffold - 项目骨架搭建

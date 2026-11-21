@@ -1,0 +1,51 @@
+provider: a careful re-read reads a saved Claude account too (#5079)
+
+A saved Claude account's usage is read only when its card is refreshed,
+when the refresh of every allowance reaches it, when the switch off a
+spent one needs it, or when the keep-alive runs (claudeWindows, #1630);
+any other reading of it is what was kept. A careful provider's re-read
+was none of these: readCareful asked ReadUsageNow, which dropped the
+caches and asked again, and claudeWindows handed the kept reading back,
+so the ask never became a read. An account held as unknown stayed held,
+asked again at most carefulRetry later, answered with the same kept
+reading, held again: #5085's saved account under its cap was kept out
+for good, and #5079's pool answered 429 at every request after a
+restart until a card was refreshed by hand.
+
+ReadUsageNow now records the ask (readAsked, by agent/user), and
+claudeWindows answers it for a saved account: the ask is the reach into
+it that its card's refresh, the refresh of every allowance, the switch
+and the keep-alive already were. The ask is taken at the account's next
+sight, read or kept, and the careful re-read asks again at most
+carefulRetry later, so what spaces the runs is what already capped
+them: the 30-second floor (claudeAskFloor) and a failed read's wait. An
+account whose /usage keeps failing is held as before — unknown is not
+spent (plugins#349) — without a Claude Code started on every request
+that holds it.
+
+With the read real, careful judges the account by the reading's real
+age: one read back in time, the saved account under its cap takes the
+request (#5085). TestCarefulRereadsASavedClaudeAccount walks it at the
+gateway, in the reporter's shape: two Claude accounts, each capped at
+90% of its five hours, the first past its cap, the saved one at 30%
+with nothing read since magpie started, careful on — red on main (429,
+every account held or unread, the saved account's /usage never run),
+green here. TestReadUsageNowReadsASavedClaudeAccount pins the ask at
+the provider seam: ReadUsageNow of a saved account runs its /usage, and
+routing reads it fresh after.
+
+Fixes #5079, the root; with the read real, #5085's saved account is no
+longer held while under its cap, so it is fixed here too. The
+Routing-page copy — a held account told "past the cap" whatever held it,
+and the unread reason interpolated untranslated — is left to its own
+patch per review.
+
+Run at this change: go test -tags nogui -count=1 ./internal/provider/
+and ./internal/gateway/ ok; TestCareful*, TestCapStop*, TestUsageRead*,
+TestClaude* ok; the new tests red on main and after ablation of the
+reread clause, green on it; gofmt -l clean; go vet -tags nogui of
+provider, gateway and cli clean on darwin/arm64 and linux/amd64; go
+build -tags nogui ok on both; targeted -race of the careful, cap and
+usage-read tests ok.
+
+Generated-by: GLM-5.3-Flash (ZCode)

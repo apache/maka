@@ -1,0 +1,152 @@
+From d9c9addedbd695fe7e1ec95e64131deab77933fe Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Sun, 1 Nov 2026 19:49:36 +0800
+Subject: [PATCH] fix(redact): an error's words for a missing module are read
+ before the quote, not the whole body before it (#4766)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+What changed
+
+missingModuleAt said a quoted name is a module an error could not load by
+lowering everything before the quote. A session's body holds a place a known
+value turns up at for each turn it has been in the history, and knownSpans
+asks packageAt at each of them, so every such place paid the body's whole
+length again — a 555 KB turn held 1m54s in the masking, past the unrouted
+budget, and was answered 504 (#4766). The words stand right before the
+quote; what is read of what is before them is the last 64 bytes of it now,
+as assignedSecret reads the 64 before the value it judges. A letter a lower
+case folds wider than in those bytes reads the whole text before the quote,
+as before. Nothing of what is masked changes.
+
+Run
+
+- RED (product file reverted, test kept): TestMissingModuleReadsOnlyTheWordsBeforeTheQuote
+  fails with "judging the words made 401440 bytes, 8 KiB at most".
+- GREEN: the test passes; go test -tags nogui ./internal/redact/ passes.
+- A session that grows turn by turn, Personal on and config-dense as the
+  report has it: a 925 KB turn went from 3.8s to 0.76s, a 560 KB turn
+  masks in 0.2s; the rest of the cost is the rules' own linear scan.
+- go vet on darwin, linux/amd64 and windows/amd64; builds on all three;
+  gofmt clean; BenchmarkMaskLongSession unchanged on its shape.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/redact/model.go              | 18 +++++++-
+ internal/redact/package_known_test.go | 62 +++++++++++++++++++++++++++
+ 2 files changed, 79 insertions(+), 1 deletion(-)
+
+diff --git a/internal/redact/model.go b/internal/redact/model.go
+index 65c7bf82a..73422ed25 100644
+--- a/internal/redact/model.go
++++ b/internal/redact/model.go
+@@ -638,11 +638,27 @@ func underPackages(s string, a int) bool {
+ // missingModuleAt says s[a:b] is quoted after the words an error names a
+ // module it could not load with: tsc's and Node's Cannot find module
+ // 'x', Python's No module named 'x', a bundler's Can't resolve 'x'.
++//
++// The words stand right before the quote, and what is read of what is
++// before them is the last 64 bytes of it, as assignedSecret reads the 64
++// before the value it judges (above). The whole text before the quote was
++// read and lowered here, once for each place a known value turns up at in
++// a session's body (knownSpans asks packageAt), so a long session paid its
++// whole length again for every value already masked in it — a 555 KB turn
++// held minutes in the masking and was answered 504 (#4766). A letter a
++// lower case folds wider than stands in those bytes only where the text is
++// really written in one, and there the whole text before the quote is
++// read, as before.
+ func missingModuleAt(s string, a, b int) bool {
+ 	if a == 0 || b >= len(s) || !strings.ContainsRune("'\"`", rune(s[a-1])) || s[b] != s[a-1] {
+ 		return false
+ 	}
+-	q := strings.ToLower(strings.TrimRight(s[:a-1], " \t"))
++	e := a - 1
++	before := s[max(0, e-64):e]
++	if !isASCII(before) {
++		before = s[:e]
++	}
++	q := strings.ToLower(strings.TrimRight(before, " \t"))
+ 	for _, w := range []string{"find module", "find package", "module named", "resolve", "resolve import", "resolve module"} {
+ 		if wordEnd(q, w) {
+ 			return true
+diff --git a/internal/redact/package_known_test.go b/internal/redact/package_known_test.go
+index 313e8eac8..3e84f5ab2 100644
+--- a/internal/redact/package_known_test.go
++++ b/internal/redact/package_known_test.go
+@@ -2,6 +2,7 @@ package redact
+ 
+ import (
+ 	"encoding/json"
++	"runtime"
+ 	"strings"
+ 	"testing"
+ )
+@@ -104,3 +105,64 @@ func TestPackageShapesKeepSecrets(t *testing.T) {
+ 		}
+ 	}
+ }
++
++// The words that name a module an error could not load are read where
++// they stand, right before the quote — not by reading everything before
++// them. A session's body holds a place a known value turns up at for each
++// turn it has been in it, and knownSpans asks packageAt at each: reading
++// the whole text before the quote there paid the body's length again for
++// every value already masked in it, so a long session's turn held minutes
++// in the masking and was answered 504 (#4766). What is read is the last
++// 64 bytes of it now, as assignedSecret reads the 64 before the value it
++// judges.
++func TestMissingModuleReadsOnlyTheWordsBeforeTheQuote(t *testing.T) {
++	const cue = "Cannot find module "
++	const name = "drizzle-orm"
++	run := func(s string, a int) bool { return missingModuleAt(s, a, a+len(name)) }
++	for _, pad := range []int{10, 200, 200000} {
++		s := strings.Repeat("x", pad) + " " + cue + "'" + name + "' or its type declarations"
++		if !run(s, len(strings.Repeat("x", pad)+" "+cue)+1) {
++			t.Fatalf("%d bytes before it: not named by the error", pad)
++		}
++	}
++	// a value quoted under no such words is not a module
++	s := strings.Repeat("x", 200000) + " " + `"drizzle-orm"`
++	if run(s, len(strings.Repeat("x", 200000)+" ")) {
++		t.Fatal("a plain quoted value named by the error")
++	}
++	// the words are read as a word's end: one that only ends in them is not
++	s = strings.Repeat("x", 200000) + " Cannot find moduleX'" + name + "'"
++	if run(s, len(strings.Repeat("x", 200000)+" Cannot find moduleX")+1) {
++		t.Fatal("a word that only ends in the error's words named by it")
++	}
++	// the words stand whole, however long the text before them is
++	s = "Python says: ModuleNotFoundError: No module named '" + name + "'"
++	if !run(s, len("Python says: ModuleNotFoundError: No module named '")) {
++		t.Fatal("No module named: not named by the error")
++	}
++	s = strings.Repeat("x", 200000) + " Can't resolve '" + name + "'"
++	if !run(s, len(strings.Repeat("x", 200000)+" Can't resolve '")) {
++		t.Fatal("Can't resolve: not named by the error")
++	}
++	// a letter a lower case folds wider than in the text before: read as
++	// before, and still named
++	s = "İSTANBUL " + strings.Repeat("x", 128) + " " + cue + "'" + name + "'"
++	if !run(s, len("İSTANBUL "+strings.Repeat("x", 128)+" "+cue)+1) {
++		t.Fatal("a wider fold before it: not named by the error")
++	}
++
++	// the bytes one call makes: a string of everything before the quote,
++	// twice lowered, is what made a long turn hold. Nothing of the size
++	// of the text before it is made now.
++	s = strings.Repeat("x", 400000) + " " + cue + "'" + name + "'"
++	a := len(strings.Repeat("x", 400000)+" "+cue) + 1
++	run(s, a) // once, so lazy init is no part of the count
++	var m0, m1 runtime.MemStats
++	runtime.GC()
++	runtime.ReadMemStats(&m0)
++	run(s, a)
++	runtime.ReadMemStats(&m1)
++	if made := m1.TotalAlloc - m0.TotalAlloc; made > 8<<10 {
++		t.Fatalf("judging the words made %d bytes, 8 KiB at most: the text before the quote is being read whole", made)
++	}
++}
+-- 
+2.50.1 (Apple Git-155)
+

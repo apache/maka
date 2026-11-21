@@ -1,0 +1,14 @@
+{
+  "status": "PASS",
+  "original_files": 99,
+  "original_markdown": 85,
+  "moved": 97,
+  "git_mv": 87,
+  "raw_hashes_passed": 13,
+  "markdown_reopened": 133,
+  "local_links_checked": 603,
+  "external_links_preserved_not_live_checked": 109,
+  "restored_copy_files": 99,
+  "restore_location": "archive/raw-evidence/rollback-check",
+  "errors": []
+}

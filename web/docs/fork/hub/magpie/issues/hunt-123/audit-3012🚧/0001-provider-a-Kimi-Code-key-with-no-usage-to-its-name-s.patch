@@ -1,0 +1,86 @@
+From 45b47844681c05c0083b7b34199f21e61e7f6fd4 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Thu, 5 Nov 2026 02:20:35 +0800
+Subject: [PATCH] provider: a Kimi Code key with no usage to its name says so,
+ not "no usage in the reply" (#3012)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+A key Kimi takes can be answered HTTP 200 with {} — bigbitbox's did, two
+bytes, on every read-only ask, while /models listed fine — and the card
+could only say "no usage in the reply", which the Usage page shows under
+its generic "Allowance unavailable" heading, no different from a read
+that failed: nothing said the key was taken, and nothing kept an empty
+reply from reading as an allowance of 0% used.
+
+The empty branch now says what the reply carries, shapeOf as an OpenCode
+Go card does: "(an empty object)" for {}, "(fields …)" when something is
+there that magpie reads none of — "Kimi took this key but its reply
+tells no usage (an empty object): the plan's allowance is unknown, not
+unused". A refused key is still said at the ask itself (401 and the
+like never reach this branch).
+
+The windows' shape the issue also asks for — usages' limit_5h, limit_7d
+and the month's total and code shares, a ratio of number or text, a
+reset as text or epoch — was read here already (cf3a2cc83), with the
+month however Kimi tells it; this is the empty reply only.
+
+Fixes #3012
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/provider/planquota.go      |  6 +++++-
+ internal/provider/planquota_test.go | 19 +++++++++++++++++++
+ 2 files changed, 24 insertions(+), 1 deletion(-)
+
+diff --git a/internal/provider/planquota.go b/internal/provider/planquota.go
+index 7459f984b..78306742e 100644
+--- a/internal/provider/planquota.go
++++ b/internal/provider/planquota.go
+@@ -570,7 +570,11 @@ func readKimiCode(b []byte) (string, []QuotaWindow, error) {
+ 		})
+ 	}
+ 	if len(out) == 0 {
+-		return "", nil, fmt.Errorf("no usage in the reply")
++		// a key Kimi takes can have no usage to tell: {} (bigbitbox: HTTP
++		// 200, two bytes, on every read-only ask), so what the reply
++		// carries is said, and an empty reply reads as nothing told, not
++		// as an allowance nothing is used of
++		return "", nil, fmt.Errorf("Kimi took this key but its reply tells no usage (%s): the plan's allowance is unknown, not unused", shapeOf(b))
+ 	}
+ 	return "", out, nil
+ }
+diff --git a/internal/provider/planquota_test.go b/internal/provider/planquota_test.go
+index 6677474d5..8dda2fe2c 100644
+--- a/internal/provider/planquota_test.go
++++ b/internal/provider/planquota_test.go
+@@ -527,6 +527,25 @@ func TestReadKimiCodeMonthEveryWay(t *testing.T) {
+ 	}
+ }
+ 
++// A key Kimi takes can be told no usage at all: {} (bigbitbox: HTTP 200,
++// two bytes, on every read-only ask, while /models lists fine). The card
++// says the key is taken and nothing came back, with what the reply
++// carries, not a bare "no usage in the reply", and no window is guessed
++// of it — an empty reply is not an unused allowance.
++func TestReadKimiCodeEmptyReply(t *testing.T) {
++	_, ws, err := readKimiCode([]byte(`{}`))
++	if err == nil || len(ws) != 0 {
++		t.Fatalf("%+v %v", ws, err)
++	}
++	if !strings.Contains(err.Error(), "took this key") || !strings.Contains(err.Error(), "an empty object") {
++		t.Fatalf("the empty reply isn't told as Kimi having no usage for a taken key: %v", err)
++	}
++	// a reply that carries fields nothing reads names them
++	if _, _, err := readKimiCode([]byte(`{"hello":"world"}`)); err == nil || !strings.Contains(err.Error(), "fields hello") {
++		t.Fatalf("fields nothing reads aren't named: %v", err)
++	}
++}
++
+ // Every way a Kimi Code key is added shows the month Kimi tells: the
+ // China and global presets, a provider of its own at the Anthropic base
+ // alone, and a key imported from OpenCode's auth.json. Each card is read
+-- 
+2.50.1 (Apple Git-155)
+

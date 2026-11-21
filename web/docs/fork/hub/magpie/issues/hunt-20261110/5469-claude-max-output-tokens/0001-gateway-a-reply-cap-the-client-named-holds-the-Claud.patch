@@ -1,0 +1,192 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Sun, 8 Nov 2026 13:12:01 +0800
+Subject: [PATCH] gateway: a reply cap the client named holds the Claude
+ bridge's reply
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The cap went nowhere on the Claude subscription: a Responses or
+Messages request naming max_output_tokens was translated with its
+MaxTokens intact, and every translated turn to a keyed Anthropic API
+sent it as max_tokens — but the subscription's bridge runs Claude
+Code, which takes no such field, so the model wrote past the cap and
+the reply went to the client whole, told completed (#5469 frostming:
+32 asked, a 1119-token essay came back, status completed, where
+Gemini's and DeepSeek's own APIs stop at the cap and say incomplete,
+reason max_output_tokens).
+
+The run now carries the cap (replyCap) and the bridge counts the
+reply's words against it — magpie's own count of a request's tokens,
+its bytes over four — and stops telling the client once the cap is
+used up, ending the reply as one cut at its length, the same
+incomplete a vendor's own cut is. The run itself goes on as it would:
+a one-off's Claude Code finishes its attempt, and a kept run is left
+whole for the turns after. Thinking, sealed reasoning and tool calls
+are not counted nor cut, as the bridge's Claude Code offers no budget
+for them and cutting a call's arguments would break the reply the
+client is mid-way acting on.
+---
+ internal/gateway/automode_test.go            |  2 +-
+ internal/gateway/claude_output_drain_test.go |  4 +-
+ internal/gateway/claude_reply_cap_test.go    | 44 ++++++++++++++++++++
+ internal/gateway/claude_subscription.go      | 40 +++++++++++++++++-
+ 4 files changed, 87 insertions(+), 3 deletions(-)
+ create mode 100644 internal/gateway/claude_reply_cap_test.go
+
+diff --git a/internal/gateway/automode_test.go b/internal/gateway/automode_test.go
+index bd6e9f0df..60bc75106 100644
+--- a/internal/gateway/automode_test.go
++++ b/internal/gateway/automode_test.go
+@@ -688,7 +688,7 @@ for line in sys.stdin:
+ 	messages := []map[string]any{{"role": "assistant", "content": "seed"}, {"role": "user", "content": "hi"}}
+ 	var pid string
+ 	for i, context := range []string{"first", "second", "", "third", "reject"} {
+-		b := map[string]any{"model": "claude-sonnet-5", "max_tokens": 64, "stream": false, "messages": messages}
++		b := map[string]any{"model": "claude-sonnet-5", "max_tokens": 400000, "stream": false, "messages": messages}
+ 		effort := []string{"high", "low"}[i%2]
+ 		b["thinking"] = map[string]any{"type": "adaptive"}
+ 		b["output_config"] = map[string]any{"effort": effort}
+diff --git a/internal/gateway/claude_output_drain_test.go b/internal/gateway/claude_output_drain_test.go
+index 4e18c0bdb..bdde31e2b 100644
+--- a/internal/gateway/claude_output_drain_test.go
++++ b/internal/gateway/claude_output_drain_test.go
+@@ -39,7 +39,9 @@ echo '{"type":"stream_event","event":{"type":"message_stop"}}'
+ 	for i := 0; i < 5; i++ {
+ 		s := New()
+ 		p := provider.Provider{ID: "claude", Account: &provider.Account{Agent: "claude", User: "u"}}
+-		body := `{"model":"claude-sonnet-5","max_tokens":100,"stream":true,"messages":[{"role":"user","content":"say a lot"}]}`
++		// the cap is one the bridge now holds the reply to itself (replyCap);
++		// the long reply here is what the test reads to the end
++		body := `{"model":"claude-sonnet-5","max_tokens":400000,"stream":true,"messages":[{"role":"user","content":"say a lot"}]}`
+ 		rec := httptest.NewRecorder()
+ 		var u Usage
+ 		s.serveClaudeSubscription(rec, httptest.NewRequest("POST", "/v1/messages", strings.NewReader(body)), provider.Anthropic, p, "claude-sonnet-5", []byte(body), &u)
+diff --git a/internal/gateway/claude_reply_cap_test.go b/internal/gateway/claude_reply_cap_test.go
+new file mode 100644
+index 000000000..6b08d0345
+--- /dev/null
++++ b/internal/gateway/claude_reply_cap_test.go
+@@ -0,0 +1,44 @@
++package gateway
++
++import (
++	"encoding/json"
++	"strings"
++	"testing"
++)
++
++// The client named a reply cap (max_output_tokens) and the model is on the
++// Claude subscription, whose bridge's Claude Code takes no such field: the
++// cap went nowhere and the whole reply was made, told completed (#5469
++// frostming: 32 asked, 1119 came back, status completed). The bridge stops
++// the reply's words here once their estimate reaches the cap, and ends the
++// reply as one cut at its length, the same incomplete a vendor's own cut
++// is.
++func TestClaudeReplyStopsAtTheClientCap(t *testing.T) {
++	long := strings.Repeat("ocean wave ", 40) // 440 bytes, far past a 32-token cap
++	deltas := []string{long[:110], long[110:220], long[220:330], long[330:]}
++	lines := []string{
++		`{"type":"stream_event","event":{"type":"message_start","message":{"id":"msg_cap","model":"claude-opus-5-5","usage":{"input_tokens":9,"output_tokens":1}}}}`,
++		`{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}}`,
++	}
++	for _, part := range deltas {
++		b, _ := json.Marshal(part)
++		lines = append(lines, `{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":`+string(b)+`}}}`)
++	}
++	lines = append(lines,
++		`{"type":"stream_event","event":{"type":"content_block_stop","index":0}}`,
++		`{"type":"stream_event","event":{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1119}}}`,
++		`{"type":"stream_event","event":{"type":"message_stop"}}`,
++		`{"type":"result","subtype":"success","is_error":false,"result":`+func() string { b, _ := json.Marshal(long); return string(b) }()+`}`,
++	)
++	run := &subscriptionRun{replyCap: 32}
++	text, stop, _, _, raw, ended, ok := claudeReply(t, run, lines, true)
++	if stop != "max_tokens" || ended != "length" || !ok {
++		t.Fatalf("stop %q, run ended %q %v:\n%s", stop, ended, ok, raw)
++	}
++	// the estimate is len/4, magpie's own count of a request's tokens: the
++	// words stop at the cap's worth of bytes, the rest of the attempt and
++	// its end_turn are not the client's to hear
++	if want := long[:32*4]; text != want {
++		t.Fatalf("reply %d bytes, want the %d the cap leaves room for:\n%s", len(text), len(want), raw)
++	}
++}
+diff --git a/internal/gateway/claude_subscription.go b/internal/gateway/claude_subscription.go
+index 71ff2d8bd..e2c47133a 100644
+--- a/internal/gateway/claude_subscription.go
++++ b/internal/gateway/claude_subscription.go
+@@ -186,6 +186,10 @@ type subscriptionRun struct {
+ 	// schema says the client asked for an answer fitting a JSON schema,
+ 	// which Claude Code gives as its StructuredOutput call
+ 	schema bool
++	// replyCap is the reply's token cap the client named (Request.MaxTokens):
++	// the bridge's Claude Code takes no such field, so magpie stops the
++	// reply's words here once their estimate reaches it (#5469)
++	replyCap int
+ 
+ 	// the tools its agent was told of, as it started and since
+ 	tools map[string]bool
+@@ -1282,7 +1286,7 @@ func (b *subscriptionBridge) startRun(ctx context.Context, req *Request, model,
+ 	}
+ 	cmd.Stdout, cmd.Stderr = stdoutW, stderrW
+ 
+-	run := &subscriptionRun{bridge: b, token: token, model: model, cmd: cmd, tmp: tmp, schema: len(req.Format.schema()) > 0, pending: map[string]chan mcpToolResult{}, stdin: stdin, effort: req.Effort, sessions: sessions, started: time.Now()}
++	run := &subscriptionRun{bridge: b, token: token, model: model, cmd: cmd, tmp: tmp, schema: len(req.Format.schema()) > 0, pending: map[string]chan mcpToolResult{}, stdin: stdin, effort: req.Effort, sessions: sessions, started: time.Now(), replyCap: req.MaxTokens}
+ 	run.owner.Store(&owner)
+ 	run.names = bridgeNames(req.Tools)
+ 	run.safeguardBeta = req.SafeguardBeta
+@@ -3818,8 +3822,36 @@ func (r *subscriptionRun) readOutput(rd io.Reader) {
+ 	retold := false      // this reply was told so
+ 	var pmu sync.Mutex   // held for each line, and by quiet's settle
+ 	var quiet *time.Timer
++	// The reply cap the client named (replyCap) reaches Claude Code's model
++	// through no field of the bridge's, so the words stop here: once their
++	// estimate — magpie counts a request's tokens as its bytes over four —
++	// uses the cap up, what room is left goes and the reply ends as one cut
++	// at its length, the same incomplete a vendor's own cut is (#5469).
++	// The run itself goes on as it would: a one-off's Claude Code finishes
++	// its attempt, and a kept run is left whole for the turns after.
++	capped := false  // the words stopped, the reply's end said
++	cappedBytes := 0 // what the reply's words have said, in bytes
++	tell := func(s string) string {
++		if capped || s == "" {
++			return ""
++		}
++		if r.replyCap <= 0 {
++			return s
++		}
++		if room := r.replyCap*4 - cappedBytes; len(s) >= room {
++			s = strings.ToValidUTF8(s[:max(room, 0)], "")
++			capped = true
++			log.Printf("claude: the reply's words stopped at the client's cap of %d tokens", r.replyCap)
++			r.emit(Event{Kind: KStop, Stop: "length"})
++		}
++		cappedBytes += len(s)
++		return s
++	}
+ 	text := func(s string) {
+ 		if s != "" && !r.schema {
++			if s = tell(s); s == "" {
++				return
++			}
+ 			shown = true
+ 			r.emit(Event{Kind: KText, Text: s})
+ 		}
+@@ -3834,6 +3866,12 @@ func (r *subscriptionRun) readOutput(rd io.Reader) {
+ 			inside, refused, calls = true, true, textCalls{}
+ 		} else if why != "" {
+ 			held, seen := calls.end()
++			if capped {
++				// the reply's end was said where its words stopped; the
++				// attempt's own end and what it held back are not the
++				// client's to hear
++				return
++			}
+ 			switch {
+ 			case seen && !theirs && why == "end_turn" && !retold && r.stdin != nil:
+ 				retell, retold, inside = true, true, true
+-- 
+2.50.1 (Apple Git-155)
+

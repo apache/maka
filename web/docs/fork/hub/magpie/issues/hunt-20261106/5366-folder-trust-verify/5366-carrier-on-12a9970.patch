@@ -1,0 +1,89 @@
+From 2463a75f3dba3da73a3d454073685a24f091a639 Mon Sep 17 00:00:00 2001
+From: chocolatemale <chocolatemale@users.noreply.github.com>
+Date: Thu, 5 Nov 2026 17:02:30 +0800
+Subject: [PATCH] claudetui: read trust selection from the rendered terminal
+ grid
+
+Port of chocolatemale/magpie 0c9f9b5 (issue #5366) onto upstream/main
+12a9970d6. The trust block gained a bypassYes term (#5042) since the
+original base 331f201, so the hunk was applied by hand: trustNo/trustYes
+now match the current grid from looks(), bypassYes keeps reading the
+plain history as on main. Test and doc hunks carried over unchanged.
+
+Claude Code 2.1.318 redraws only the selection arrow after a navigation
+key. Reading stripped terminal history keeps seeing No selected and
+prevents initialization. Match the current grid instead, retaining the
+trust opt-in and settled-selection checks.
+---
+ docs/subsystems/claude-subscription-bridge.md |  3 ++-
+ internal/claudetui/tui.go                     |  3 ++-
+ internal/claudetui/tui_test.go                | 20 +++++++++++++++++++
+ 3 files changed, 24 insertions(+), 2 deletions(-)
+
+diff --git a/docs/subsystems/claude-subscription-bridge.md b/docs/subsystems/claude-subscription-bridge.md
+index d51bb6210..ab9a93b5e 100644
+--- a/docs/subsystems/claude-subscription-bridge.md
++++ b/docs/subsystems/claude-subscription-bridge.md
+@@ -318,7 +318,8 @@ on Discord). `TestClaudeTUIUntrustedFolderKeepsItsSession`,
+ `TestClaudeTUIFolderTrustedLaterRunInAtOnce` and
+ `TestClaudeTrustedFolders` hold it. The question opens on "No, exit", and a key
+ sent as it is first drawn can be lost to its being drawn again, so the
+-helper presses ↓ until "Yes" is the last choice drawn and Enter only once
++helper reads the current terminal grid (Claude Code can redraw only the
++selection arrow), presses ↓ until "Yes" is selected and Enter only once
+ it has stayed so for 300ms (`ready`, `trustSettle`). Pressing Enter blind
+ chose "No, exit" in the real gateway, and no run started.
+ 
+diff --git a/internal/claudetui/tui.go b/internal/claudetui/tui.go
+index 522498b1b..cfe77482b 100644
+--- a/internal/claudetui/tui.go
++++ b/internal/claudetui/tui.go
+@@ -544,7 +544,8 @@ func (s *shim) ready() error {
+ 			// first. A key sent as the question is first drawn can be lost
+ 			// to its being drawn again on No, so Enter goes only to a Yes
+ 			// drawn trustSettle ago and not drawn over since.
+-			no, yes := lastAt(trustNo, p), lastAt(trustYes, p)
++			drawn, _ := s.looks()
++			no, yes := lastAt(trustNo, drawn), lastAt(trustYes, drawn)
+ 			if b := lastAt(bypassYes, p); b > yes {
+ 				yes = b
+ 			}
+diff --git a/internal/claudetui/tui_test.go b/internal/claudetui/tui_test.go
+index be1ad81bf..c72966772 100644
+--- a/internal/claudetui/tui_test.go
++++ b/internal/claudetui/tui_test.go
+@@ -45,7 +45,20 @@ func TestMain(m *testing.M) {
+ func fakeTrust(r *bufio.Reader, always bool) {
+ 	var mu sync.Mutex
+ 	yes, deaf := false, true
++	drawn := false
+ 	draw := func() {
++		if os.Getenv("FAKE_TRUST") == "diff" {
++			if !drawn {
++				fmt.Print("\x1b[2J\x1b[HDo you trust this folder?\r\n  No, exit\r\n  Yes, I trust this folder\r\n")
++				drawn = true
++			}
++			if yes {
++				fmt.Print("\x1b[2;1H \x1b[3;1H❯")
++			} else {
++				fmt.Print("\x1b[3;1H \x1b[2;1H❯")
++			}
++			return
++		}
+ 		marks := map[bool]string{true: "\x1b[38;2;177;185;249m❯\x1b[39m", false: " "}
+ 		fmt.Printf("\x1b[2GDo\x1b[5Gyou\x1b[9Gtrust\x1b[15Gthis\x1b[20Gfolder?\r\n\x1b[2G%s\x1b[4GNo,\x1b[8Gexit\r\n\x1b[2G%s\x1b[4GYes,\x1b[9GI\x1b[11Gtrust\x1b[17Gthis\x1b[22Gfolder\r\n", marks[!yes], marks[yes])
+ 	}
+@@ -1254,3 +1267,10 @@ func TestShimEndedAfterLastWordsRead(t *testing.T) {
+ 		})
+ 	}
+ }
++
++func TestShimTrustCursorOnlyRedraw(t *testing.T) {
++	out := runShim(t, []string{"FAKE_TRUST=diff", TrustEnv + "=1"}, append([]string{fakePath(t)}, pArgs...), []string{"hello"}, 3)
++	if out[0]["subtype"] != "init" || out[1]["type"] != "assistant" {
++		t.Fatalf("got %v, want an interactive turn", out)
++	}
++}
+-- 
+2.50.1 (Apple Git-155)
+

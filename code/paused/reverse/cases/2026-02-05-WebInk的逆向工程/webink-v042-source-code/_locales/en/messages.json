@@ -1,0 +1,10 @@
+{
+  "extensionName": {
+    "message": "WebInk: Intelligent Web to Markdown Converter",
+    "description": "Name of the extension."
+  },
+  "extensionDescription": {
+    "message": "Transform web pages into Markdown with AI conversion, smart TOC generation, multi-language translation, and seamless reading.",
+    "description": "Description of the extension."
+  }
+}

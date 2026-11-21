@@ -1,0 +1,2 @@
+ok  	github.com/yetone/magpie/internal/gateway	585.778s
+EXIT=0

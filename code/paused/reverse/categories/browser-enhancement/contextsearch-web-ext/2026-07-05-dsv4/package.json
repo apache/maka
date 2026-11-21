@@ -1,0 +1,28 @@
+{
+  "name": "contextsearch-web-ext-re",
+  "version": "1.48.4.13-rev",
+  "description": "ContextSearch web-ext Chrome Extension 逆向工程文档与类型定义",
+  "private": true,
+  "license": "UNLICENSED",
+  "author": "",
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.0.270",
+    "typescript": "^5.4.0"
+  },
+  "keywords": [
+    "chrome-extension",
+    "reverse-engineering",
+    "context-search",
+    "webextension"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ssborbis/ContextSearch-web-ext"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

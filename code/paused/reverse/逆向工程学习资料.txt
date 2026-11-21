@@ -1,0 +1,5 @@
+https://github.com/cyberkaida/reverse-engineering-assistant
+
+https://github.com/kutukam/autonomous-pentest-agent
+
+https://github.com/sebastian93921/ARTIFEX

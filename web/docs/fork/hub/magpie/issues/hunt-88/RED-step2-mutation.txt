@@ -1,0 +1,5 @@
+--- FAIL: TestKeyAllowanceElapsedResetStartsAgain (2.17s)
+    key_allowance_started_test.go:93: the reset passed since the last successful reading: OnStarted was told nothing
+FAIL
+FAIL	github.com/yetone/magpie/internal/provider	2.387s
+FAIL

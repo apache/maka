@@ -1,0 +1,30 @@
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py codex baseline
+INPUT: CONFIG: fixed codex source allowlist
+OUTPUT: RuntimeError: Process detected for codex; source files retained
+EXIT: 1
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py codex baseline
+INPUT: CONFIG: fixed codex source allowlist
+OUTPUT: BASELINE PASS groups=10 files=236 bytes=79598082 protected=1
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py codex archive
+INPUT: c0c4677da85a52669203baa7c43a611259e7bdb32d214c26a1e5cd7081783eb2
+OUTPUT: ARCHIVE PASS zip_files=10 files=236 bytes=79598082
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py codex apply
+INPUT: d1aa8c98f3682e60c4929990a7f0af1205ac57b8c9dcbb304e4d8d267061fa54
+OUTPUT: APPLY PASS removed_files=236 removed_bytes=79598082
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py codex verify
+INPUT: 9d4c260f9e25ce9b569e38c83fa1d3442974c7b43227d584729f46abe0a08910
+OUTPUT: MODIFIED PASS files=236 bytes=79598082 originals_absent=true protected_unchanged=true
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py codex rollback-test
+INPUT: 9d4c260f9e25ce9b569e38c83fa1d3442974c7b43227d584729f46abe0a08910
+OUTPUT: ROLLBACK PASS restored_files=236 restored_bytes=79598082 hashes_match=true originals_untouched=true
+EXIT: 0
+

@@ -1,0 +1,154 @@
+From 03b9f53e705da9dc19566c25c403a17205a8dd79 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Sat, 24 Oct 2026 09:37:47 +0800
+Subject: [PATCH] kimi: a model whose levels have no off gets always_thinking;
+ kimi-cli isn't told (#3399)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Kimi Code's new k3.1-pro and k3.1-pro-highspeed think and cannot have
+their thinking turned off: Kimi's own entries for them declare
+always_thinking, and their upstream refuses a session run with thinking
+off — "400 … does not support disabled thinking mode". Magpie's tables
+for them said thinking alone once their levels were known (models.dev
+lists effort low, high, max, no none), so Kimi Code still offered Off
+beside the levels, and a session left at off was refused. The word
+itself belongs to the new Kimi Code's schema; kimi-cli, which refuses
+words it doesn't know as it does tool_use, isn't told.
+
+So a model whose efforts have no none now gets always_thinking beside
+thinking — the same read as WorkBuddy's canDisableThinking, which is
+true exactly when none is among the efforts — and a model with none
+(k3, kimi-for-coding) doesn't. The levels and default_effort are
+unchanged (#333).
+
+TestKimiAlwaysThinking fails without the change, and so does the wide
+row of TestKimiEfforts.
+
+Run: go test -tags nogui -run 'TestKimiAlwaysThinking|TestKimiEfforts'
+./internal/agent/ red on dd1e8822, green here; go test -tags nogui
+-count=1 ./internal/agent/ green but for TestMothX, red the same on a
+clean dd1e8822 worktree (a mothx on this machine's PATH); gofmt -l on
+the touched files clean; go vet ./..., GOOS=linux go vet -tags nogui
+./... and GOOS=windows go vet ./... clean; go build -tags nogui and
+GOOS=linux and GOOS=windows builds pass.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/agent/kimi.go              |  7 +++
+ internal/agent/kimi_efforts_test.go | 75 ++++++++++++++++++++++++++++-
+ 2 files changed, 81 insertions(+), 1 deletion(-)
+
+diff --git a/internal/agent/kimi.go b/internal/agent/kimi.go
+index 9f9c3a7c..e136cdcb 100644
+--- a/internal/agent/kimi.go
++++ b/internal/agent/kimi.go
+@@ -96,6 +96,13 @@ func kimiModelTables(path string, legacy bool, wrote map[string]map[string]strin
+ 		var caps []string
+ 		if len(m.Efforts) > 0 {
+ 			caps = append(caps, strconv.Quote("thinking"))
++			// a model with no none among its levels can't have its thinking
++			// turned off (Kimi's own k3.1-pro entries read always_thinking,
++			// and its upstream refuses a session run at off with a 400,
++			// #3399). kimi-cli has no word for it, as for tool_use.
++			if !legacy && !slices.Contains(m.Efforts, "none") {
++				caps = append(caps, strconv.Quote("always_thinking"))
++			}
+ 		}
+ 		if m.Images {
+ 			caps = append(caps, strconv.Quote("image_in"))
+diff --git a/internal/agent/kimi_efforts_test.go b/internal/agent/kimi_efforts_test.go
+index 09aaacaa..c750e921 100644
+--- a/internal/agent/kimi_efforts_test.go
++++ b/internal/agent/kimi_efforts_test.go
+@@ -62,8 +62,10 @@ func TestKimiEfforts(t *testing.T) {
+ 	}
+ 	ms := read(path)
+ 	for k, want := range map[string]model{
++		// wide has no none among its levels: its thinking can't go off
++		// (always_thinking, #3399)
+ 		"magpie/think/deep":  {[]string{"thinking", "tool_use"}, []string{"high", "max"}, "high"},
+-		"magpie/think/wide":  {[]string{"thinking", "tool_use"}, []string{"low", "medium"}, ""},
++		"magpie/think/wide":  {[]string{"thinking", "always_thinking", "tool_use"}, []string{"low", "medium"}, ""},
+ 		"magpie/think/plain": {[]string{"tool_use"}, nil, ""},
+ 	} {
+ 		if got := ms[k]; !reflect.DeepEqual(got, want) {
+@@ -81,3 +83,74 @@ func TestKimiEfforts(t *testing.T) {
+ 		t.Errorf("kimi-cli's: %+v", got)
+ 	}
+ }
++
++// #3399: a thinking model with no none among its levels — Kimi's k3.1-pro —
++// cannot have its thinking turned off: Kimi's own entry for it declares
++// always_thinking, and its upstream refuses a session run at off with a
++// 400. magpie's table for it says so too; one with none (k3) doesn't, and
++// kimi-cli, which has no word for it as for tool_use, gets neither.
++func TestKimiAlwaysThinking(t *testing.T) {
++	home := t.TempDir()
++	t.Setenv("HOME", home)
++	t.Setenv("USERPROFILE", home)
++	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
++	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
++	t.Setenv("KIMI_SHARE_DIR", "")
++	t.Setenv("KIMI_CODE_HOME", "")
++	if err := provider.Save(provider.Provider{
++		ID: "moonshot", Name: "Moonshot", Chat: "https://example.test/v1", Key: "key",
++		Models: []string{"k3.1-pro", "k3"},
++	}); err != nil {
++		t.Fatal(err)
++	}
++	if err := catalog.SaveLive("moonshot", "https://example.test/v1", []catalog.Model{
++		{ID: "k3.1-pro", Efforts: []string{"low", "high", "max"}},
++		{ID: "k3", Efforts: []string{"none", "low", "high", "max"}},
++	}); err != nil {
++		t.Fatal(err)
++	}
++	type model struct {
++		Capabilities   []string `toml:"capabilities"`
++		SupportEfforts []string `toml:"support_efforts"`
++		DefaultEffort  string   `toml:"default_effort"`
++	}
++	read := func(path string) map[string]model {
++		t.Helper()
++		b, err := os.ReadFile(path)
++		if err != nil {
++			t.Fatal(err)
++		}
++		var c struct {
++			Models map[string]model
++		}
++		if err := toml.Unmarshal(b, &c); err != nil {
++			t.Fatalf("%v\n%s", err, b)
++		}
++		return c.Models
++	}
++
++	path := filepath.Join(home, ".kimi-code", "config.toml")
++	writeFile(t, path, "")
++	if err := kimi(home).Field("model").Set("magpie/moonshot/k3.1-pro"); err != nil {
++		t.Fatal(err)
++	}
++	ms := read(path)
++	for k, want := range map[string]model{
++		"magpie/moonshot/k3.1-pro": {[]string{"thinking", "always_thinking", "tool_use"}, []string{"low", "high", "max"}, "high"},
++		"magpie/moonshot/k3":       {[]string{"thinking", "tool_use"}, []string{"low", "high", "max"}, "high"},
++	} {
++		if got := ms[k]; !reflect.DeepEqual(got, want) {
++			t.Errorf("%s: %+v, want %+v", k, got, want)
++		}
++	}
++
++	os.RemoveAll(filepath.Join(home, ".kimi-code"))
++	legacy := filepath.Join(home, ".kimi", "config.toml")
++	writeFile(t, legacy, "")
++	if err := kimi(home).Field("model").Set("magpie/moonshot/k3.1-pro"); err != nil {
++		t.Fatal(err)
++	}
++	if got := read(legacy)["magpie/moonshot/k3.1-pro"]; !reflect.DeepEqual(got, model{Capabilities: []string{"thinking"}}) {
++		t.Errorf("kimi-cli's: %+v", got)
++	}
++}
+-- 
+2.50.1 (Apple Git-155)
+

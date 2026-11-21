@@ -1,0 +1,73 @@
+From 7e3f194b2025f37452457da506fd81886145598c Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Wed, 4 Nov 2026 00:45:45 +0800
+Subject: [PATCH] gateway: a Chat reply's leading <thinking> block is read as
+ thinking
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+A Chat reply may open its reasoning with <thinking>…</thinking> in the
+text. thoughtTags held only <thought> and <think>, so neither tag matched:
+chatDecoder.text took the block for the answer's own text and no thinking
+block went out (#5106). In a recorded day on one OpenAI-compatible host,
+47 of 2832 turns carried a literal <thinking in the answer's text, 44 of
+them at offset 0 (neighbads).
+
+<thinking> is added beside the two, closed by </thinking>. It shares no
+whole prefix with <think> — they diverge at the seventh byte, 'i' against
+'>' — so the wait in text covers the shared lead (< through <think>) and
+no lead can name two opening tags. markedThought reads the same map, so a
+Gemini-marked chunk opening with <thinking> is thought's text too.
+
+afterThought, which strips a leading block for titles and descriptions,
+keeps its own <think> — untouched here.
+
+Test: TestChatThoughtTags gains the whole, split-tag, open-tag-alone and
+never-closed <thinking> cases, red on the old map, green 20 runs in a row.
+
+The tag and the two whole/split cases follow neighbads' patch on their
+fork, verified here on top of main.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gateway/aistudio_thinking_test.go | 4 ++++
+ internal/gateway/chat.go                   | 6 +++---
+ 2 files changed, 7 insertions(+), 3 deletions(-)
+
+diff --git a/internal/gateway/aistudio_thinking_test.go b/internal/gateway/aistudio_thinking_test.go
+index 5841158ab..58cdc892e 100644
+--- a/internal/gateway/aistudio_thinking_test.go
++++ b/internal/gateway/aistudio_thinking_test.go
+@@ -103,6 +103,10 @@ func TestChatThoughtTags(t *testing.T) {
+ 		think, text string
+ 	}{
+ 		{"whole", []string{"<thought>Greeting.</thought>Hello"}, "Greeting.", "Hello"},
++		{"<thinking> whole", []string{"<thinking>Let me think</thinking>Hi"}, "Let me think", "Hi"},
++		{"<thinking> split tags", []string{"<thin", "king>Let me", " think</thin", "king>Hi"}, "Let me think", "Hi"},
++		{"<thinking> the open tag a chunk alone", []string{"<thinking>", "Let me think", "</thinking>", "Hi"}, "Let me think", "Hi"},
++		{"<thinking> never closed", []string{"<thinking>half", " a thought</thi"}, "half a thought</thi", ""},
+ 		{"split tags", []string{"<tho", "ught>Let me", " think</tho", "ught>\n\nHello", " there"}, "Let me think", "Hello there"},
+ 		{"one byte a chunk", strings.Split("<thought>ab</thought>cd", ""), "ab", "cd"},
+ 		{"leading newline", []string{"\n", "<thought>x</thought>", "y"}, "x", "y"},
+diff --git a/internal/gateway/chat.go b/internal/gateway/chat.go
+index b269ff43d..3d5dae8b4 100644
+--- a/internal/gateway/chat.go
++++ b/internal/gateway/chat.go
+@@ -1126,10 +1126,10 @@ const leadSpace = " \t\r\n"
+ 
+ // thoughtTags are the tags a leading block of thinking comes between in a
+ // Chat reply's text, by its opening tag.
+-var thoughtTags = map[string]string{"<thought>": "</thought>", "<think>": "</think>"}
++var thoughtTags = map[string]string{"<thought>": "</thought>", "<thinking>": "</thinking>", "<think>": "</think>"}
+ 
+-// text sends a piece of the reply's text, a leading <thought> or <think>
+-// block of it as thinking.
++// text sends a piece of the reply's text, a leading <thought>, <thinking> or
++// <think> block of it as thinking.
+ func (d *chatDecoder) text(s string, emit func(Event)) {
+ 	if !d.past && !d.thought {
+ 		d.lead += s
+-- 
+2.50.1 (Apple Git-155)
+

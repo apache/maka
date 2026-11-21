@@ -1,0 +1,23 @@
+{
+  "name": "@ggbdpq/admin",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev --port 65505",
+    "build": "next build",
+    "start": "next start --port 65505",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "next": "^16.4.3",
+    "node-cron": "^4.6.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "typescript": "^7.0.2"
+  }
+}

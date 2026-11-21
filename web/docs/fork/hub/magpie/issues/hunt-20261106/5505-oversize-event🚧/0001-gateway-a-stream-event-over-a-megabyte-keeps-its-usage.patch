@@ -1,0 +1,217 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Fri, 6 Nov 2026 23:00:31 +0800
+Subject: [PATCH] gateway: a stream event over a megabyte keeps its usage
+
+R1cK-ChaN: a Codex turn over ChatGPT with 1,102 tools sent inline had a
+response.completed that echoed the tools back, an event of megabytes,
+and the 27 largest turns of a day (all over 300k tokens) were recorded
+as in: 0, out: 0, with no response_id, stop or served, on a 200 that
+finished normally (#5505): the sniffer gave the event up, and only the
+numbers went missing.
+
+Cause: usageSniffer held an event to 1 MiB in two places, both dating
+from the usage page itself (30c489a0) - a data line that pushed s.data
+past 1 MiB dropped it, and a line still in s.buf past 1 MiB dropped the
+buf. sse.go's readers already take a line of 32 MiB; the sniffer never
+had the room, and the reply's own copy to the client is untouched by
+either cap.
+
+What changed: both caps are sniffEventMost now (32 MiB), the line
+sse.go's scanner takes, so an unbounded event still can't pile up; and
+write searches only what came new for the line's end (scanned), so a
+line of megabytes is not searched from its start on each 32 KiB write.
+
+Tests: TestSniffUsagePastOneMiB (a response.completed of over a
+megabyte, written as the copy loops write, keeps its usage and the
+stream still reads as ended), TestSniffEventPastTheCapIsLetGo (an event
+past sniffEventMost is let go, a runaway line is dropped, and what
+follows is counted; the giant event comes last, with figures of its
+own, so a removed cap reads its counts over the first reply's).
+
+Broken by hand, each caught by a FAIL: the data-line cap back at 1 MiB
+(usage 0 again); both caps off (the giant event's counts read over the
+first reply's); the buf cap back at 1 MiB alone left the test green -
+with a line just past the cap, the crossing 32 KiB write carries the
+line's end, so that cap bites only a line that stays runaway, which the
+never-ending subtest holds.
+
+Run at this head (base upstream/main dbaeaec12), darwin/arm64,
+go1.25.5:
+- gofmt -l on the changed files: nothing.
+- go vet -tags nogui ./internal/gateway/, GOOS=linux and GOOS=windows
+  too: clean. go build -tags nogui ./... on the three: ok.
+- go test -tags nogui -count=1 -run TestSniff ./internal/gateway/: ok.
+- go test -tags nogui -count=1 -timeout 25m -race ./internal/gateway/:
+  23m47s, one FAIL, TestBrowserKeyOffClosesItsBrowser, a data race the
+  base fails the same way (checked at dbaeaec12 on a clean worktree);
+  every Sniff test green under -race.
+- known reds on this machine, red at dbaeaec12 too: TestMothX,
+  TestLaneLimitRoutes, TestProxyCheckSaysAProxyPassedBy.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gateway/sniff.go      | 29 +++++++++++++++----
+ internal/gateway/sniff_test.go | 52 ++++++++++++++++++++++++++++++++++
+ internal/gateway/sse.go        |  2 +-
+ 3 files changed, 76 insertions(+), 7 deletions(-)
+
+diff --git a/internal/gateway/sniff.go b/internal/gateway/sniff.go
+index 77bec829f..bcb3ec7be 100644
+--- a/internal/gateway/sniff.go
++++ b/internal/gateway/sniff.go
+@@ -15,9 +15,13 @@ type usageSniffer struct {
+ 	proto provider.Protocol
+ 	sse   bool
+ 	buf   []byte
+-	data  []byte // SSE data lines of the event in progress
+-	over  bool   // the JSON body outgrew the cap; give up on it
+-	u     Usage
++	// scanned is how much of buf has already been searched for a line's
++	// end: each write searches only what came new, so a line of megabytes
++	// isn't searched from its start on every write
++	scanned int
++	data    []byte // SSE data lines of the event in progress
++	over    bool   // the JSON body outgrew the cap; give up on it
++	u       Usage
+ 	// served: the model the reply says answered it, the last it named
+ 	served string
+ 	// ended: the stream's last event went by (message_stop, [DONE],
+@@ -39,6 +43,14 @@ func newSniffer(proto provider.Protocol, contentType string) *usageSniffer {
+ 	return &usageSniffer{proto: proto, sse: strings.HasPrefix(contentType, "text/event-stream")}
+ }
+ 
++// sniffEventMost is the most a stream event, or a line still arriving, may
++// hold before the sniffer gives up on it: the line sse.go's readers take.
++// A bigger event is let go whole, never accumulated without bound. It used
++// to be a meagre megabyte, and a response.completed that echoes a long
++// tool list grows past one, so the largest Codex turns were counted as 0
++// tokens (#5505).
++const sniffEventMost = 32 << 20
++
+ func (s *usageSniffer) write(b []byte) {
+ 	if !s.sse {
+ 		if len(s.buf)+len(b) > 8<<20 {
+@@ -50,16 +62,20 @@ func (s *usageSniffer) write(b []byte) {
+ 	}
+ 	s.buf = append(s.buf, b...)
+ 	for {
+-		i := bytes.IndexByte(s.buf, '\n')
++		i := bytes.IndexByte(s.buf[s.scanned:], '\n')
+ 		if i < 0 {
++			s.scanned = len(s.buf)
+ 			break
+ 		}
++		i += s.scanned
+ 		s.line(bytes.TrimSuffix(s.buf[:i], []byte{'\r'}))
+ 		s.buf = s.buf[i+1:]
++		s.scanned = 0
+ 	}
+-	if len(s.buf) > 1<<20 { // a runaway line is not one we can use
++	if len(s.buf) > sniffEventMost { // a runaway line is not one we can use
+ 		s.buf = nil
+ 		s.data = nil
++		s.scanned = 0
+ 	}
+ }
+ 
+@@ -77,7 +93,7 @@ func (s *usageSniffer) line(line []byte) {
+ 	}
+ 	if rest, ok := bytes.CutPrefix(line, []byte("data:")); ok {
+ 		rest = bytes.TrimPrefix(rest, []byte{' '})
+-		if len(s.data)+len(rest)+1 > 1<<20 {
++		if len(s.data)+len(rest)+1 > sniffEventMost {
+ 			s.data = nil // never let an unbounded event accumulate
+ 			return
+ 		}
+@@ -272,6 +288,7 @@ func (s *usageSniffer) drain() {
+ 		if len(s.buf) > 0 {
+ 			s.line(bytes.TrimSuffix(s.buf, []byte{'\r'}))
+ 			s.buf = nil
++			s.scanned = 0
+ 		}
+ 		s.flushEvent()
+ 	}
+diff --git a/internal/gateway/sniff_test.go b/internal/gateway/sniff_test.go
+index 5acb3c13b..5fecd3593 100644
+--- a/internal/gateway/sniff_test.go
++++ b/internal/gateway/sniff_test.go
+@@ -1,6 +1,7 @@
+ package gateway
+ 
+ import (
++	"strings"
+ 	"testing"
+ 
+ 	"github.com/yetone/magpie/internal/provider"
+@@ -86,3 +87,54 @@ func TestSniffSingleNewlineEvents(t *testing.T) {
+ 		t.Errorf("usage %+v", got)
+ 	}
+ }
++
++// A stream event over a megabyte keeps its usage: a Codex turn with a long
++// tool list has a response.completed that echoes the tools, and those turns
++// used to be counted as 0 tokens (#5505). The copy loops feed the sniffer
++// in 32 KiB writes, so the event sits in the buf with no line end in sight
++// for most of its length.
++func TestSniffUsagePastOneMiB(t *testing.T) {
++	s := newSniffer(provider.Responses, "text/event-stream")
++	payload := "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_big\",\"tools\":[\"" + strings.Repeat("x", 1<<20) + "\"],\"usage\":{\"input_tokens\":313000,\"output_tokens\":9000}}}\n\n"
++	for i := 0; i < len(payload); i += 32 << 10 {
++		end := i + (32 << 10)
++		if end > len(payload) {
++			end = len(payload)
++		}
++		s.write([]byte(payload[i:end]))
++	}
++	if got := s.usage(); got != (Usage{Input: 313000, Output: 9000, ResponseID: "resp_big"}) {
++		t.Fatalf("usage %+v", got)
++	}
++	if !s.whole() {
++		t.Fatal("the stream does not read as ended")
++	}
++}
++
++// An event past the cap itself is still let go — the sniffer never
++// accumulates without bound — and the stream goes on reading: what follows
++// is counted, and the end still reads as one.
++func TestSniffEventPastTheCapIsLetGo(t *testing.T) {
++	t.Run("a whole event past the cap", func(t *testing.T) {
++		s := newSniffer(provider.Responses, "text/event-stream")
++		s.write([]byte("event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_big\",\"usage\":{\"input_tokens\":5,\"output_tokens\":2}}}\n\n"))
++		// last, and with figures of its own: were the cap gone, its counts
++		// would overwrite the first reply's and the test would read them
++		s.write([]byte("event: response.completed\ndata: {\"type\":\"response.completed\",\"tools\":[\"" + strings.Repeat("x", sniffEventMost) + "\"],\"response\":{\"id\":\"resp_giant\",\"usage\":{\"input_tokens\":999999,\"output_tokens\":888888}}}\n\n"))
++		if got := s.usage(); got != (Usage{Input: 5, Output: 2, ResponseID: "resp_big"}) {
++			t.Fatalf("usage %+v", got)
++		}
++		if !s.whole() {
++			t.Fatal("the stream does not read as ended")
++		}
++	})
++	t.Run("a line that never ends", func(t *testing.T) {
++		s := newSniffer(provider.Responses, "text/event-stream")
++		s.write([]byte("data: " + strings.Repeat("x", sniffEventMost+(4<<10))))
++		s.write([]byte("\n\n"))
++		s.write([]byte("event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_big\",\"usage\":{\"input_tokens\":5,\"output_tokens\":2}}}\n\n"))
++		if got := s.usage(); got != (Usage{Input: 5, Output: 2, ResponseID: "resp_big"}) {
++			t.Fatalf("usage %+v", got)
++		}
++	})
++}
+diff --git a/internal/gateway/sse.go b/internal/gateway/sse.go
+index 927cd5f80..10fc02e09 100644
+--- a/internal/gateway/sse.go
++++ b/internal/gateway/sse.go
+@@ -26,7 +26,7 @@ func readSSEAlive(r io.Reader, fn func(event, data string) error, alive func())
+ 		r = bareErrors(r)
+ 	}
+ 	sc := bufio.NewScanner(r)
+-	sc.Buffer(make([]byte, 0, 64<<10), 32<<20)
++	sc.Buffer(make([]byte, 0, 64<<10), sniffEventMost)
+ 	var event string
+ 	var data []string
+ 	flush := func() error {
+-- 
+2.50.1 (Apple Git-155)
+

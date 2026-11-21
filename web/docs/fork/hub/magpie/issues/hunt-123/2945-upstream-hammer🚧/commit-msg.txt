@@ -1,0 +1,45 @@
+gateway: an outage twice failed is answered from the rests, not asked
+
+A relay that went dark kept being really asked for as long as its
+clients kept asking. Every request probed a key resting after its
+ladder — probeOne keeps the one back soonest for a real answer, and
+the planner's hold answers from the rests out of quota or credit
+alone (#1772), so a rest after the vendor could not be reached held
+nothing: huluma1314's #2945 saw agentrouter.org, down for 32
+minutes, really asked 706 times over 55 conversations, and 928 more
+asks turned away by the keys' own MaxRPM, every one of them the
+probe a resting key still got, each its patience's rounds.
+
+Now a rest twice failed after the vendor could not be reached at all
+— a 5xx, a 408, no answer of its own (the class the background list
+is asked over, rest_probe.go, which is what lifts it again as soon
+as the vendor answers) — holds the request where a quota rest holds
+one: every key that was left resting so is answered from its rest,
+with the soonest one back as Retry-After, and no upstream call is
+made. A first failure may be a moment's, so only a ladder twice
+climbed holds, as a key is held once refused twice. probeable reads
+the outage class from outageRest beside outageHeld, and an answer
+held this way is not asked again within the request.
+
+The patience of a group, and the same-one retries before it, still
+ride a first, momentary 5xx out as they did: nothing holds until
+the ladder has climbed twice, and nothing rests that didn't before.
+
+Test: internal/gateway/outage_hold_test.go, an upstream that takes
+the connection and dies before a word (Go's client left reading
+EOF, as a dark relay answers):
+- TestAllRestingOutageAnswersFromRest: two keys fail, rest, and
+  their ladder climbs over an ended rest; the requests after that
+  are answered 502 with the provider named, when it is asked again,
+  and a Retry-After of the soonest rest, and the vendor is asked
+  not at all.
+
+Run: the rest, plain5xx, proxy-down, backoff-ladder, rest-probe,
+Codex-own-EOF and patience tests above them (23 green), the compaction,
+protection, overflow and byte-cap tests my first draft's resting of
+the last one left had broken (16 green again), gofmt -l, go vet
+-tags nogui, and the whole gateway suite with -tags nogui.
+
+Fixes #2945
+
+Generated-by: GLM-5.3-Flash (ZCode)

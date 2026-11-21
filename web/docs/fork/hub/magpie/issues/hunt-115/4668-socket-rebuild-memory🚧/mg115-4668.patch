@@ -1,0 +1,288 @@
+From 446f55f6811b5dae025549f7e4f986d59bb6f2a8 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Sun, 1 Nov 2026 20:41:14 +0800
+Subject: [PATCH] gateway: a socket turn's body is handed on whole, and the
+ ended line says the longest turn
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+A socket's turn rebuilt the conversation into the body the HTTP route
+would have had, and handed it over as a reader: readRequestBody read it
+out again, byte by byte into a slice of its size — a second copy of tens
+of MB on every turn of a long session (#4668). A turn's body is whole in
+memory and sent as it is (no Content-Encoding), so readRequestBody takes
+its bytes as they are, and nothing after it is the wiser. The request a
+thread started on magpie hands to Codex's own sign-in (codexOwnOffMagpie)
+is the conversation whole in memory too, and takes the same road.
+
+The socket's ended line now says the longest turn's body as well: a
+session's turns differ by tens of MB, and the average the sent count
+gives hid which socket's body it was that set the app's peak.
+
+Run:
+- TestSocketTurnBodyReadOnce: a 1,151,959-byte turn's body handed on
+  allocates 6,528 bytes; broken by hand (the whole-body check taken
+  out), it is red: 2,211,820 — what reading the body out again spent.
+- TestResponsesSocketLogsLongestTurn: the ended line says "the longest
+  turn N" with N the bigger turn's body, under the turns' sum; red
+  before, the line saying nothing of it.
+- go test -tags nogui -run 'TestResponsesSocket|TestCodexSocket|TestTurnBody|TestCodexOwn|ReadOnce|RequestBody|BodyReads' ./internal/gateway ok.
+- go vet -tags nogui ./internal/gateway, also GOOS=linux and windows; builds for
+  darwin, linux and windows (-tags nogui); gofmt clean.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gateway/codex_own_v1.go          |  4 +-
+ internal/gateway/request_bounds.go        | 22 +++++++++
+ internal/gateway/responses_ws.go          | 12 +++--
+ internal/gateway/responses_ws_test.go     | 59 +++++++++++++++++++++++
+ internal/gateway/socket_turn_body_test.go | 30 ++++++++++++
+ 5 files changed, 120 insertions(+), 7 deletions(-)
+
+diff --git a/internal/gateway/codex_own_v1.go b/internal/gateway/codex_own_v1.go
+index 7ad9d868a..f8481cd23 100644
+--- a/internal/gateway/codex_own_v1.go
++++ b/internal/gateway/codex_own_v1.go
+@@ -1,10 +1,8 @@
+ package gateway
+ 
+ import (
+-	"bytes"
+ 	"errors"
+ 	"fmt"
+-	"io"
+ 	"net/http"
+ 	"strings"
+ 
+@@ -79,7 +77,7 @@ func codexOwnOffMagpie(r *http.Request, body []byte, model string) (to *http.Req
+ 	r2.URL.Path = CodexPath + "/responses"
+ 	r2.URL.RawPath = ""
+ 	r2.RequestURI = ""
+-	r2.Body = io.NopCloser(bytes.NewReader(body))
++	r2.Body = newWholeBody(body)
+ 	r2.ContentLength = int64(len(body))
+ 	r2.Header.Del("Content-Encoding")
+ 	r2.Header.Del("Content-Length")
+diff --git a/internal/gateway/request_bounds.go b/internal/gateway/request_bounds.go
+index d0db1bf13..d2eb08b3a 100644
+--- a/internal/gateway/request_bounds.go
++++ b/internal/gateway/request_bounds.go
+@@ -1,6 +1,7 @@
+ package gateway
+ 
+ import (
++	"bytes"
+ 	"compress/gzip"
+ 	"errors"
+ 	"fmt"
+@@ -35,6 +36,21 @@ type requestLimits struct {
+ 	readTimeout time.Duration
+ }
+ 
++// wholeBody is a request body already whole in memory: a socket turn's
++// (request, responses_ws.go). readRequestBody hands its bytes on as they
++// are: reading them out again was a second copy of a turn's body — the
++// conversation whole, tens of MB for a long session — on every turn
++// (#4668).
++type wholeBody struct {
++	*bytes.Reader
++	b []byte
++}
++
++func newWholeBody(b []byte) *wholeBody { return &wholeBody{bytes.NewReader(b), b} }
++
++// Close does nothing: the bytes are the turn's, not a connection's.
++func (*wholeBody) Close() error { return nil }
++
+ func (s *Server) requestBody(w http.ResponseWriter, r *http.Request, from provider.Protocol) ([]byte, bool) {
+ 	return s.readRequestBody(w, r, from, 0)
+ }
+@@ -195,6 +211,12 @@ func readBoundedRequestBody(w http.ResponseWriter, r *http.Request, limits reque
+ 	original := r.Body
+ 	r.Body = &idleBody{original, controller, limits.readTimeout}
+ 	defer func() { r.Body = original }()
++	// a body whole in memory already, sent as it is (declared is its
++	// length: no Content-Encoding), is not read out again — a socket
++	// turn's, the conversation whole, tens of MB (#4668)
++	if wb, ok := original.(*wholeBody); ok && declared == int64(wb.Len()) {
++		return wb.b, 0, nil
++	}
+ 	rd, err := decodedBody(r)
+ 	if errors.Is(err, errBodyEncoding) {
+ 		return reject(http.StatusUnsupportedMediaType, err)
+diff --git a/internal/gateway/responses_ws.go b/internal/gateway/responses_ws.go
+index cfbbc94e3..2b44fb891 100644
+--- a/internal/gateway/responses_ws.go
++++ b/internal/gateway/responses_ws.go
+@@ -178,6 +178,7 @@ type responsesSocket struct {
+ 	// for the log
+ 	frames, continued int
+ 	got, sent         int64
++	peak              int64 // the longest turn's body
+ }
+ 
+ // serveResponsesSocket serves a WebSocket upgrade on a Responses route,
+@@ -208,8 +209,8 @@ func (s *Server) serveResponsesSocket(w http.ResponseWriter, r *http.Request) bo
+ 	defer s.sockets.remove(sock)
+ 	sock.serve()
+ 	if sock.frames > 0 {
+-		log.Printf("responses socket from %s ended: %d turns, %d continued, %d bytes received, %d sent on as whole requests",
+-			r.RemoteAddr, sock.frames, sock.continued, sock.got, sock.sent)
++		log.Printf("responses socket from %s ended: %d turns, %d continued, %d bytes received, %d sent on as whole requests, the longest turn %d",
++			r.RemoteAddr, sock.frames, sock.continued, sock.got, sock.sent, sock.peak)
+ 	}
+ 	return true
+ }
+@@ -493,6 +494,9 @@ func (rs *responsesSocket) turn(ctx context.Context, t *socketTurnRun, frame []b
+ 		return
+ 	}
+ 	rs.sent += int64(len(body))
++	if n := int64(len(body)); n > rs.peak {
++		rs.peak = n
++	}
+ 	req := rs.request(ctx, body)
+ 	out := &socketTurnWriter{rs: rs, ctx: ctx, run: t, h: http.Header{}}
+ 	rs.o.via.ServeHTTP(out, req)
+@@ -621,8 +625,8 @@ func (rs *responsesSocket) request(ctx context.Context, body []byte) *http.Reque
+ 	if strings.EqualFold(gjson.GetBytes(body, `client_metadata.ws_request_header_x_openai_internal_codex_responses_lite`).String(), "true") {
+ 		req.Header.Set("X-OpenAI-Internal-Codex-Responses-Lite", "true")
+ 	}
+-	req.Body = io.NopCloser(bytes.NewReader(body))
+-	req.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(body)), nil }
++	req.Body = newWholeBody(body)
++	req.GetBody = func() (io.ReadCloser, error) { return newWholeBody(body), nil }
+ 	req.ContentLength = int64(len(body))
+ 	req.Header.Set("Content-Length", strconv.Itoa(len(body)))
+ 	req.RequestURI = ""
+diff --git a/internal/gateway/responses_ws_test.go b/internal/gateway/responses_ws_test.go
+index 74c8001a6..be2324f26 100644
+--- a/internal/gateway/responses_ws_test.go
++++ b/internal/gateway/responses_ws_test.go
+@@ -1,12 +1,16 @@
+ package gateway
+ 
+ import (
++	"bytes"
+ 	"context"
+ 	"encoding/json"
+ 	"fmt"
+ 	"io"
++	"log"
+ 	"net/http"
+ 	"net/http/httptest"
++	"os"
++	"regexp"
+ 	"strings"
+ 	"sync"
+ 	"testing"
+@@ -698,3 +702,58 @@ func TestHeldTurnOwnsItsInput(t *testing.T) {
+ 		t.Fatalf("held after the frame was written over: %s", got)
+ 	}
+ }
++
++// The socket's ended line says the longest turn's body (#4668): a
++// session's turns differ by tens of MB, and the average the sent count
++// gives hid which of its sockets had the body that set the app's peak.
++func TestResponsesSocketLogsLongestTurn(t *testing.T) {
++	fresh(t)
++	sockUp(t, &respUp{})
++	_, ts := sockServer(t)
++	var logs lockedLogs
++	log.SetOutput(&logs)
++	defer log.SetOutput(os.Stderr)
++	c, _, err := dialSock(t, ts, "/v1/responses", nil)
++	if err != nil {
++		t.Fatal(err)
++	}
++	first := c.turn(create("", userHi))
++	id := last(first).Get("response.id").String()
++	if id == "" {
++		t.Fatalf("no reply: %v", first)
++	}
++	// the second turn's instructions put its body far past the first's
++	c.turn(create(id, userMore, `"instructions":"`+strings.Repeat("x", 6000)+`"`))
++	c.c.CloseNow()
++	deadline := time.Now().Add(10 * time.Second)
++	for time.Now().Before(deadline) && !strings.Contains(logs.String(), "the longest turn") {
++		time.Sleep(20 * time.Millisecond)
++	}
++	m := regexp.MustCompile(`(\d+) sent on as whole requests, the longest turn (\d+)`).FindStringSubmatch(logs.String())
++	if m == nil {
++		t.Fatalf("no ended line with the longest turn: %s", logs.String())
++	}
++	var sent, peak int64
++	fmt.Sscan(m[1], &sent)
++	fmt.Sscan(m[2], &peak)
++	if peak < 6000 || peak >= sent {
++		t.Errorf("the longest turn %d, sent %d; the peak is the second turn's body, the first's and second's sum sent", peak, sent)
++	}
++}
++
++type lockedLogs struct {
++	mu  sync.Mutex
++	buf bytes.Buffer
++}
++
++func (l *lockedLogs) Write(p []byte) (int, error) {
++	l.mu.Lock()
++	defer l.mu.Unlock()
++	return l.buf.Write(p)
++}
++
++func (l *lockedLogs) String() string {
++	l.mu.Lock()
++	defer l.mu.Unlock()
++	return l.buf.String()
++}
+diff --git a/internal/gateway/socket_turn_body_test.go b/internal/gateway/socket_turn_body_test.go
+index 6172d0db7..3b72b5038 100644
+--- a/internal/gateway/socket_turn_body_test.go
++++ b/internal/gateway/socket_turn_body_test.go
+@@ -3,9 +3,12 @@ package gateway
+ import (
+ 	"bytes"
+ 	"encoding/json"
++	"net/http/httptest"
+ 	"strconv"
+ 	"strings"
+ 	"testing"
++
++	"github.com/yetone/magpie/internal/provider"
+ )
+ 
+ // oldTurnBody is what a socket's turn wrote before turnBody.
+@@ -79,3 +82,30 @@ func TestTurnBodyWrittenOnce(t *testing.T) {
+ 	}
+ 	t.Logf("body %d: turnBody %d, json.Marshal %d", size, got, allocatedEach(func() { oldTurnBody(q, input) }))
+ }
++
++// A socket turn's body is whole in memory already (turnBody's, in the
++// request request built): readRequestBody handed it on as it is, rather
++// than reading it out again — a second copy of the conversation whole,
++// tens of MB for a long session, on every turn (#4668).
++func TestSocketTurnBodyReadOnce(t *testing.T) {
++	text := strings.Repeat("读这个文件 if a < b && c > d { return }\n", 40)
++	var items []string
++	for i := range 600 {
++		items = append(items, `{"type":"message","role":"user","content":[{"type":"input_text","text":`+strconv.Quote(text+strconv.Itoa(i))+`}]}`)
++	}
++	body := []byte(`{"model":"fake/m1","stream":true,"instructions":"be brief","input":[` + strings.Join(items, ",") + `]}`)
++	s := New()
++	read := func() {
++		req := httptest.NewRequest("POST", CodexPath+"/responses", nil)
++		req.Body = newWholeBody(body)
++		req.ContentLength = int64(len(body))
++		got, ok := s.readRequestBody(httptest.NewRecorder(), req, provider.Responses, 0)
++		if !ok || !bytes.Equal(got, body) {
++			t.Fatalf("read %d bytes, ok %v; want the body as it is (%d bytes)", len(got), ok, len(body))
++		}
++	}
++	read()
++	if spent := allocatedEach(read); spent > uint64(len(body))/4 {
++		t.Errorf("handing a %d-byte turn's body on allocated %d bytes", len(body), spent)
++	}
++}
+-- 
+2.50.1 (Apple Git-155)
+

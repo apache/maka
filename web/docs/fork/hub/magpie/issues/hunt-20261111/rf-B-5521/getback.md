@@ -1,0 +1,169 @@
+Refreshed on current `main` (`e6bf4adf1`) — refreshed, not redesigned: same change (the source-side narrowing the reporter's fix suggested — an OpenAI-compatible base's model list is asked Bearer alone), cherry-picked clean onto today's tip.
+
+**Red without the fix** (bare `e6bf4adf1`, the test from this branch): the list fetch to an OpenAI-shaped base still carried `x-api-key` beside `Authorization` — the relay the reporter uses answers 401 to that pair:
+
+```
+--- FAIL: TestListBearerOnlyOnOpenAIBase
+```
+
+With the fix: `ok` — the OpenAI base's list is asked `Authorization: Bearer` alone; an Anthropic base keeps `x-api-key` (its own header).
+
+**Verification** (all on `e6bf4adf1`, darwin/arm64):
+| What | Result |
+| --- | --- |
+| `go test ./internal/catalog -run TestListBearerOnlyOnOpenAIBase` | ok |
+| full `go test ./internal/catalog` | ok 2.3s, zero failures |
+| `gofmt` / `go vet` | clean |
+| ablation (the narrowing hunk reverse-applied, tests kept) | red again; restored, green |
+| `git am` on detached `e6bf4adf1^` | applies as is; tree identical to the branch head |
+
+**Siblings**: the `x-api-key` negotiation family (`authheader.go` — `BothAuthRefused`, `OneAuth`) stays: it is the after-a-401 face, and this patch is the before-any-request face — a base that never asks Anthropic's header never needs the negotiation. The Anthropic base keeps its own `x-api-key` (`live.go`, its own comment).
+
+On the PR question: this repo's patches land as issue attachments (`git am`), not PRs — the branch above carries the commit for CI or a local build anytime.
+
+**Branch with the commit**: [hunt-20261111-rf-5521](https://github.com/ggbdpq/magpie/tree/hunt-20261111-rf-5521) (head `dae9e2edcec07d18`).
+
+**Not verified**: the reporter's LightVela endpoint with a real key (their 401 shape is pinned by the test).
+
+**Attribution**: AI-written; I've read the whole diff and can answer questions on it myself. Please keep the author (`ggbdpq`) or add `Co-authored-by: ggbdpq <ggbdpq@gmail.com>`.
+
+**Patch**: <details><summary>patch: live: an OpenAI-compatible base's model list is asked Bearer alone (#5521) — git am applies it as is; SHA-256 first 16: 8abd6f3507821150</summary>
+
+```patch
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Sat, 7 Nov 2026 03:50:50 +0800
+Subject: [PATCH] live: an OpenAI-compatible base's model list is asked Bearer
+ alone (#5521)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+A relay's gateway can read x-api-key as the key of its Anthropic
+branch and send any request carrying it on to that upstream, which
+answers 401 for a key it does not know — Authorization alone the
+gateway answers itself (wabxn514's lightvela: chat fine, the list
+401 Invalid token, its body verbatim in the new test). The list
+request wrote x-api-key at every base; the chat requests never do
+(AuthHeaders). x-api-key stays the Anthropic base's, asked as it
+always was, and OneAuth and the learning are unchanged.
+
+A remote magpie's list keeps its key as x-api-key: its listHeaders
+said the key goes there whatever the user's headers say, and that
+rode on the both-header default ask; it carries its key itself now,
+as remoteKey signs its other requests.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/catalog/live.go           |  9 +++++-
+ internal/catalog/live_test.go      | 51 ++++++++++++++++++++++++++++++
+ internal/provider/remote_magpie.go |  4 +++
+ 3 files changed, 63 insertions(+), 1 deletion(-)
+
+diff --git a/internal/catalog/live.go b/internal/catalog/live.go
+index 5d481665c..1332bea94 100644
+--- a/internal/catalog/live.go
++++ b/internal/catalog/live.go
+@@ -754,7 +754,14 @@ func fetchPage(ctx context.Context, url, key string, anthropic bool, headers map
+ 		req.Header.Set("User-Agent", "magpie")
+ 		if key != "" {
+ 			req.Header.Set("Authorization", "Bearer "+key)
+-			req.Header.Set("x-api-key", key)
++			if anthropic {
++				// x-api-key is the Anthropic base's header; an
++				// OpenAI-compatible base is asked as its chat requests
++				// are (AuthHeaders), Bearer alone — a relay whose gateway
++				// reads x-api-key as its Anthropic branch's key answers
++				// the pair 401 for a key it was handed (#5521)
++				req.Header.Set("x-api-key", key)
++			}
+ 			// a vendor that takes one of the two alone
+ 			OneAuth(req.Header, only)
+ 		}
+diff --git a/internal/catalog/live_test.go b/internal/catalog/live_test.go
+index f8198be15..8005426d3 100644
+--- a/internal/catalog/live_test.go
++++ b/internal/catalog/live_test.go
+@@ -7,6 +7,7 @@ import (
+ 	"net/http"
+ 	"net/http/httptest"
+ 	"strings"
++	"sync"
+ 	"testing"
+ )
+ 
+@@ -309,3 +310,53 @@ func TestFetchRelayDrawerNames(t *testing.T) {
+ 		t.Errorf("the chat list lost a model: omni_flash-10s %v, claude-sonnet-4-5 %v", chat["omni_flash-10s"], chat["claude-sonnet-4-5"])
+ 	}
+ }
++
++// #5521 (wabxn514): lightvela's gateway forwards any request that carries
++// x-api-key to its new-api upstream, which answers 401 for the key it was
++// handed — Authorization alone the gateway answers itself. An
++// OpenAI-compatible base is asked as its chat requests are (AuthHeaders):
++// Bearer alone. x-api-key stays the Anthropic base's, asked as it always
++// was, the version header beside it.
++func TestListBearerOnlyOnOpenAIBase(t *testing.T) {
++	var mu sync.Mutex
++	var asked []http.Header
++	srv := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
++		mu.Lock()
++		asked = append(asked, r.Header.Clone())
++		mu.Unlock()
++		if r.Header.Get("anthropic-version") == "" && r.Header.Get("x-api-key") != "" {
++			// lightvela: the gateway sends it on, the upstream refuses it
++			http.Error(rw, `{"error":{"message":"Invalid token (request id: 202611060939163895096998268d9d6bo12ykfZ)","type":"new_api_error"}}`, http.StatusUnauthorized)
++			return
++		}
++		rw.Write([]byte(`{"data":[{"id":"auto"},{"id":"deepseek-v4-pro-202606"},{"id":"ep-hyasr3"}]}`))
++	}))
++	defer srv.Close()
++	ms, _, err := FetchAt(context.Background(), srv.URL+"/v1", "sk-lightvela", false, nil)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if len(ms) != 3 {
++		t.Errorf("listed %d models", len(ms))
++	}
++	mu.Lock()
++	h := asked[0]
++	mu.Unlock()
++	if h.Get("Authorization") != "Bearer sk-lightvela" {
++		t.Errorf("Authorization %q", h.Get("Authorization"))
++	}
++	if h.Get("x-api-key") != "" {
++		t.Errorf("x-api-key %q went to an OpenAI-compatible base", h.Get("x-api-key"))
++	}
++
++	// the Anthropic base keeps both, and its version header
++	if _, _, err := FetchAt(context.Background(), srv.URL, "sk-lightvela", true, nil); err != nil {
++		t.Fatal(err)
++	}
++	mu.Lock()
++	h = asked[len(asked)-1]
++	mu.Unlock()
++	if h.Get("x-api-key") != "sk-lightvela" || h.Get("Authorization") != "Bearer sk-lightvela" || h.Get("anthropic-version") == "" {
++		t.Errorf("anthropic asked x-api-key %q, Authorization %q, version %q", h.Get("x-api-key"), h.Get("Authorization"), h.Get("anthropic-version"))
++	}
++}
+diff --git a/internal/provider/remote_magpie.go b/internal/provider/remote_magpie.go
+index 19c0304e7..20586404f 100644
+--- a/internal/provider/remote_magpie.go
++++ b/internal/provider/remote_magpie.go
+@@ -127,6 +127,10 @@ func (p Provider) listHeaders() map[string]string {
+ 			delete(h, k)
+ 		}
+ 	}
++	// its key as x-api-key in place, as remoteKey signs its other requests:
++	// the list asked an OpenAI-compatible base Bearer alone now, which the
++	// default both-header ask used to carry it on (#5521)
++	h["x-api-key"] = p.Key
+ 	h[DrawersHeader] = "1"
+ 	h[VideomakersHeader] = "1"
+ 	h[PricesHeader] = "1"
+-- 
+2.50.1 (Apple Git-155)
+
+```
+</details>
+

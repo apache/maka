@@ -1,0 +1,7 @@
+Both of these ran on trees older than the fix: the `request 1 built the providers 2 times` batch (load ~380) was on dee5c9d75 and the `request 2 built the providers 1 times, want 0` full run on c8c0985df (four commits on 4bb93b325). 6a050eeb (10-21, "the catalog a request built is kept for the next requests") is in neither tree — both predate it — and neither carries the patch from my comment above, so the reds don't say anything about either.
+
+On main since 6a050eeb, the trigger this issue was filed for no longer makes the old test red: re-running the construction from my comment (a 1.2s gap put between request 2's start and its build, an experiment, not committed), request 2 doesn't build at all now — the catalog 6a050eeb keeps across requests answers it. So the original shape looks absorbed; worth watching for the signature after 10-21 rather than assuming it is gone.
+
+The `request 1 built 2 times` shape is a different one, and nothing would paper over it: under the patch request 1 still wants exactly 1, so two builds inside it stay red. On pre-kept code a request that took over a second to reach a later look-up would rightly rebuild once the hold let go, so that red at load ~380 may have been the hold working, not the #2502 class returning.
+
+The patch from my comment above still applies on current main (ba1dc7f9) and its guard passes `-count=4` there. Depending on how 6a050eeb soaks I can rebase it or withdraw it — if the signature stays quiet, 6a050eeb has the original case and the patch isn't needed.

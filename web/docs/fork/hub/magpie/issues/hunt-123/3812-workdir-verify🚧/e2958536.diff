@@ -1,0 +1,33 @@
+commit e29585369bffeec7ad8968eb52cdb9888cad0613
+Author: vincent <vincent@users.noreply.github.com>
+Date:   Tue Oct 27 17:59:26 2026 +1000
+
+    gateway: a non-enterable working directory falls back to magpie's (#3812, zx3332352)
+    
+    clientWorkDir accepted any stat-able directory, including mode 0644 ones
+    that cannot be entered: os.Stat succeeds on them, but the child's exec
+    fails EACCES ("fork/exec …/claude: permission denied", 502). Resolving
+    "." inside the directory needs search permission, so probe
+    os.Stat(filepath.Join(dir, ".")) and fall back to claudeWorkDir() (the
+    same fallback the "" case already uses) when it fails.
+    
+    go vet, go build clean.
+
+diff --git a/internal/gateway/claude_subscription.go b/internal/gateway/claude_subscription.go
+index 8304cf700..2fe9424af 100644
+--- a/internal/gateway/claude_subscription.go
++++ b/internal/gateway/claude_subscription.go
+@@ -416,6 +416,13 @@ func clientWorkDir(req *Request) string {
+ 	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
+ 		return ""
+ 	}
++	// a directory that can be stat-ed but not entered (mode 0644, or a
++	// sandbox parent) passes the check above and is then used as the
++	// child's working directory, where exec fails EACCES: resolving "."
++	// inside it needs search permission (#3812).
++	if _, err := os.Stat(filepath.Join(dir, ".")); err != nil {
++		return ""
++	}
+ 	return dir
+ }
+ 

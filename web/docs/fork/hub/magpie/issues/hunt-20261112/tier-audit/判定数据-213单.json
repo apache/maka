@@ -1,0 +1,1247 @@
+{
+ "1375": {
+  "status": "merged",
+  "tag": "——已收编 v0.1.1136 (2c36d3f2)",
+  "verdict": [
+   "merged",
+   "v0.1.1136",
+   "2c36d3f2",
+   "维护者稳化落地；我方 11-09 stand down 确认语义已 landed"
+  ]
+ },
+ "1462": {
+  "status": "merged",
+  "tag": "——已收编 v0.1.1156 (ea84c99c)",
+  "verdict": [
+   "merged",
+   "v0.1.1156",
+   "ea84c99c",
+   "维护者末评已修复+发布"
+  ]
+ },
+ "1702": {
+  "status": "merged",
+  "tag": "——已收编 v0.1.1220 (bf60d32b)",
+  "verdict": [
+   "merged",
+   "v0.1.1220",
+   "bf60d32b",
+   "维护者末评 Shipped in（closed）"
+  ]
+ },
+ "1714": {
+  "status": "merged",
+  "tag": "——已收编 v0.1.1230 (eb22f635)",
+  "verdict": [
+   "faithful",
+   "v0.1.1230",
+   "eb22f635",
+   "我方 author=ggbdpq 保留；patch-id 等价；维护者末评公告"
+  ]
+ },
+ "2083": {
+  "status": "merged",
+  "tag": "——已收编 v0.1.1233 (52be997b)",
+  "verdict": [
+   "merged",
+   "v0.1.1233",
+   "52be997b",
+   "维护者末评已随发布"
+  ]
+ },
+ "2278": {
+  "status": "merged",
+  "tag": "——已收编 v0.1.3983(系列持续) (a095e4027)",
+  "verdict": [
+   "merged",
+   "v0.1.3983(系列持续)",
+   "a095e4027",
+   "维护者亲单工程系列 108+ 提交主题命中，持续落实"
+  ]
+ },
+ "2372": {
+  "status": "merged",
+  "tag": "——已收编 v0.1.2675 (b6112150)",
+  "verdict": [
+   "merged",
+   "v0.1.2675",
+   "b6112150",
+   "维护者末评 Shipped remaining part（closed）"
+  ]
+ },
+ "2599": {
+  "status": "merged",
+  "tag": "——已收编 v0.1.1278 (ed0335f7)",
+  "verdict": [
+   "coauthor",
+   "v0.1.1278",
+   "ed0335f7",
+   "维护者明文 credit ggbdpq co-author（重写落地，closed）"
+  ]
+ },
+ "2868": {
+  "status": "merged",
+  "tag": "——已收编 v0.1.3851 (a168d4dd9)",
+  "verdict": [
+   "upstream-indep",
+   "v0.1.3851",
+   "a168d4dd9",
+   "上游 a168d4dd9（#6277 同面）覆盖本单面；编年 L4 判定"
+  ]
+ },
+ "2945": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "3012": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "3096": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "3106": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "3183": {
+  "status": "merged",
+  "tag": "——已收编 v0.1.2747 (3b961f29)",
+  "verdict": [
+   "faithful",
+   "v0.1.2747",
+   "3b961f29",
+   "我方 author=ggbdpq 保留；维护者 a45dd9c6 另补 sealed 面"
+  ]
+ },
+ "3197": {
+  "status": "inflight",
+  "tag": "——在途（原单面已收编（70a40aaa0 署名在案）；orphan event 新边界面在途（abe40fd1））",
+  "verdict": [
+   "pending",
+   "",
+   "",
+   "原单面已收编（70a40aaa0 署名在案）；orphan event 新边界面在途（abe40fd1）"
+  ]
+ },
+ "3208": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "3209": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "3479": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "3509": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "3524": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "3639": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "3700": {
+  "status": "merged",
+  "tag": "——已收编 v0.1.2903 (1987fe22)",
+  "verdict": [
+   "merged",
+   "v0.1.2903",
+   "1987fe22",
+   "维护者提交 body 明点 #3700 (Raters0) second half"
+  ]
+ },
+ "3844": {
+  "status": "merged",
+  "tag": "——已收编 v0.1.1710 (32ea16c5)",
+  "verdict": [
+   "author-kept",
+   "v0.1.1710",
+   "32ea16c5",
+   "报告者 JoeyWu-tech 实现 am 保 author；我方 11-12 复验重发帖在收编后"
+  ]
+ },
+ "3967": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "4030": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "4034": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "4056": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "4069": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "4077": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "4108": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "4144": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "4148": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "4165": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "4169": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "4197": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "4202": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "4241": {
+  "status": "inflight",
+  "tag": "——在途（Codex 面 ec104b86 系另一报告者单；Claude overage 面未修）",
+  "verdict": [
+   "pending",
+   "",
+   "",
+   "Codex 面 ec104b86 系另一报告者单；Claude overage 面未修"
+  ]
+ },
+ "4271": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "4282": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "4314": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "4317": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "4324": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "4328": {
+  "status": "inflight",
+  "tag": "——在途（维护者 e0930b1d body 亲笔等 ggbdpq host half（未落实锤））",
+  "verdict": [
+   "pending",
+   "",
+   "",
+   "维护者 e0930b1d body 亲笔等 ggbdpq host half（未落实锤）"
+  ]
+ },
+ "4407": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "4470": {
+  "status": "merged",
+  "tag": "——已收编 v0.1.2260 (ce8b67de)",
+  "verdict": [
+   "merged",
+   "v0.1.2260",
+   "ce8b67de",
+   "维护者 Fixed in（closed）；我方 11-07 guard 跟进帖为增量面"
+  ]
+ },
+ "4584": {
+  "status": "out",
+  "tag": "——出列（判定帖：按设计工作，报告者确认恢复）",
+  "verdict": null
+ },
+ "4601": {
+  "status": "untouched",
+  "tag": "——未动（深度诊断帖已发 (10-31)）",
+  "verdict": null
+ },
+ "4660": {
+  "status": "untouched",
+  "tag": "——未动（判定跟进：四问等报告者）",
+  "verdict": null
+ },
+ "4666": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "4668": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "4779": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "4782": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "4785": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "4863": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "4868": {
+  "status": "merged",
+  "tag": "——已收编 v0.1.2861 (f168dd27)",
+  "verdict": [
+   "coauthor",
+   "v0.1.2861",
+   "f168dd27",
+   "维护者 ported，co-authors 明文"
+  ]
+ },
+ "4882": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "4893": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "4899": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "4973": {
+  "status": "out",
+  "tag": "——出列（判定帖 working as designed (11-04)）",
+  "verdict": null
+ },
+ "4977": {
+  "status": "out",
+  "tag": "——出列（VERDICT：renderPools 与 tip diff 为空，按钮删除说不成立）",
+  "verdict": null
+ },
+ "4978": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "5001": {
+  "status": "merged",
+  "tag": "——已收编 v0.1.3316/3230 (627fd1a3b+325dc3ab3)",
+  "verdict": [
+   "upstream-indep",
+   "v0.1.3316/3230",
+   "627fd1a3b+325dc3ab3",
+   "无声收编（主题无单号，痛点扫描抓回；编年 L3 实证）"
+  ]
+ },
+ "5020": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "5021": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "5023": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "5029": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "5064": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "5065": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "5074": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "5082": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "5083": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "5085": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "5086": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "5087": {
+  "status": "merged",
+  "tag": "——已收编 v0.1.3109 (8216592a8+1c45645b5)",
+  "verdict": [
+   "upstream-indep",
+   "v0.1.3109",
+   "8216592a8+1c45645b5",
+   "维护者独立实现 mistral_plan.go（归因 dhanyqaz on Discord；issue 零公告；-S 扫描命中）"
+  ]
+ },
+ "5089": {
+  "status": "merged",
+  "tag": "——已收编 v0.1.3052 (c2dd693d)",
+  "verdict": [
+   "faithful",
+   "v0.1.3052",
+   "c2dd693d",
+   "我方 author=ggbdpq 保留；patch-id 等价；维护者末评 Merged in（closed）"
+  ]
+ },
+ "5100": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "5102": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "5103": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "5134": {
+  "status": "untouched",
+  "tag": "——未动（引用单（#5686 行边界项））",
+  "verdict": null
+ },
+ "5168": {
+  "status": "untouched",
+  "tag": "——未动（引用单（#5699 行根 đau+拷贝开销面））",
+  "verdict": null
+ },
+ "5197": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "5198": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "5205": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "5220": {
+  "status": "out",
+  "tag": "——出列（判定帖：stopped 例外三层声明设计）",
+  "verdict": null
+ },
+ "5247": {
+  "status": "out",
+  "tag": "——出列（指路帖：上游 v0.1.3828 (80dcd3472) 即解）",
+  "verdict": null
+ },
+ "5252": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "5260": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "5273": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "5299": {
+  "status": "merged",
+  "tag": "——已收编 v0.1.3860 (531b27783)",
+  "verdict": [
+   "upstream-indep",
+   "v0.1.3860",
+   "531b27783",
+   "上游 claude-shelf 修复即其 ask7 面；编年 L6 判定"
+  ]
+ },
+ "5333": {
+  "status": "out",
+  "tag": "——出列（判定帖：Codex 三档已含完全覆盖）",
+  "verdict": null
+ },
+ "5364": {
+  "status": "merged",
+  "tag": "——已收编 v0.1.3101 (7301c070)",
+  "verdict": [
+   "coauthor",
+   "v0.1.3101",
+   "7301c070",
+   "维护者末评 Released in，ggbdpq co-author"
+  ]
+ },
+ "5381": {
+  "status": "untouched",
+  "tag": "——未动（triage 归族（族单全 OPEN），索证清单已发）",
+  "verdict": null
+ },
+ "5390": {
+  "status": "merged",
+  "tag": "——已收编 v0.1.3096 (b712adb8)",
+  "verdict": [
+   "author-kept",
+   "v0.1.3096",
+   "b712adb8",
+   "维护者末评 Ported in，ggbdpq patch"
+  ]
+ },
+ "5393": {
+  "status": "untouched",
+  "tag": "——未动（诊断帖：插件 opencode-trae-auth 0.2.30→0.2.34 四版未修）",
+  "verdict": null
+ },
+ "5411": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "5416": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "5418": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "5423": {
+  "status": "out",
+  "tag": "——出列（出列：纯咨询社区已答）",
+  "verdict": null
+ },
+ "5424": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "5428": {
+  "status": "untouched",
+  "tag": "——未动（判定帖：四诉求全在 main，要 runs 实测）",
+  "verdict": null
+ },
+ "5429": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "5430": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "5436": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "5437": {
+  "status": "untouched",
+  "tag": "——未动（判定帖：vendor 侧拒，要三件数据）",
+  "verdict": null
+ },
+ "5439": {
+  "status": "out",
+  "tag": "——出列（判定帖：旧版行为，#4868 已修且晚于报告者版本）",
+  "verdict": null
+ },
+ "5440": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "5444": {
+  "status": "out",
+  "tag": "——出列（判定帖：设计内）",
+  "verdict": null
+ },
+ "5445": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "5446": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "5447": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "5448": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "5449": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "5450": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "5452": {
+  "status": "inflight",
+  "tag": "——在途（上游 b4fc29a6e/880da8c1 两笔明文 PDF 面未修）",
+  "verdict": [
+   "pending",
+   "",
+   "",
+   "上游 b4fc29a6e/880da8c1 两笔明文 PDF 面未修"
+  ]
+ },
+ "5455": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "5457": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "5463": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "5465": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "5469": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "5476": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "5477": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "5478": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "5480": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "5483": {
+  "status": "untouched",
+  "tag": "——未动（判定帖：两方向留拍板）",
+  "verdict": null
+ },
+ "5490": {
+  "status": "out",
+  "tag": "——出列（判定帖无代码回归；closed 非收编）",
+  "verdict": null
+ },
+ "5492": {
+  "status": "untouched",
+  "tag": "——未动（判定帖：leak 断言不成立，要三件数据）",
+  "verdict": null
+ },
+ "5494": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "5509": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "5514": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "5519": {
+  "status": "merged",
+  "tag": "——已收编 v0.1.3290 (d4a6e931)",
+  "verdict": [
+   "merged",
+   "v0.1.3290",
+   "d4a6e931",
+   "维护者末评 Fixed in（closed）"
+  ]
+ },
+ "5521": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "5523": {
+  "status": "untouched",
+  "tag": "——未动（判定帖：失败三叉等四件数据）",
+  "verdict": null
+ },
+ "5535": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "5537": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "5558": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "5568": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "5575": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "5593": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "5599": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "5601": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "5602": {
+  "status": "merged",
+  "tag": "——已收编 v0.1.3559 (15acba53)",
+  "verdict": [
+   "upstream-indep",
+   "v0.1.3559",
+   "15acba53",
+   "维护者 15acba53 修复，body 归因列表明列；编年 L2 核对帖实证"
+  ]
+ },
+ "5603": {
+  "status": "untouched",
+  "tag": "——未动（判定帖：三决策面留拍板）",
+  "verdict": null
+ },
+ "5606": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "5612": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "5621": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "5624": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "5627": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "5630": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "5631": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "5638": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "5657": {
+  "status": "untouched",
+  "tag": "——未动（澄清定性帖：前提不成立，索五项钉面数据）",
+  "verdict": null
+ },
+ "5668": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "5674": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "5679": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "5684": {
+  "status": "out",
+  "tag": "——出列（竞速判定：skygunner dab6c4f8 已交付，我方让位背书）",
+  "verdict": null
+ },
+ "5686": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "5692": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "5698": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "5699": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "5702": {
+  "status": "merged",
+  "tag": "——已收编 v0.1.3559 (15acba53)",
+  "verdict": [
+   "partial",
+   "v0.1.3559",
+   "15acba53",
+   "部分：15acba53 盖 projects 恢复面（归因列表明列）；codex-rs 根因面判定帖定性 magpie 无可修面"
+  ]
+ },
+ "5703": {
+  "status": "merged",
+  "tag": "——已收编 v0.1.3328 (2c31815c+778b8e07)",
+  "verdict": [
+   "upstream-indep",
+   "v0.1.3328",
+   "2c31815c+778b8e07",
+   "上游插件 mover 0.1.32/0.1.33 落地（closed；编年 L6 判定）"
+  ]
+ },
+ "5709": {
+  "status": "merged",
+  "tag": "——已收编 v0.1.3363 (3480f822)",
+  "verdict": [
+   "author-kept",
+   "v0.1.3363",
+   "3480f822",
+   "维护者末评 building on ggbdpq's patch"
+  ]
+ },
+ "5710": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "5711": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "5713": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "5752": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "5759": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "5782": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "5791": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "5793": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "5802": {
+  "status": "out",
+  "tag": "——出列（判定帖：Codex Desktop 自身额度锁，透传刻意设计）",
+  "verdict": null
+ },
+ "5803": {
+  "status": "untouched",
+  "tag": "——未动（判定帖：记账链三层核验，要 app.log 分账）",
+  "verdict": null
+ },
+ "5805": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "5809": {
+  "status": "untouched",
+  "tag": "——未动（判定帖：两条正路留拍板）",
+  "verdict": null
+ },
+ "5812": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "5815": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "5818": {
+  "status": "untouched",
+  "tag": "——未动（判定帖：12 形状矩阵全绿，要三件数据）",
+  "verdict": null
+ },
+ "5822": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "5863": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "5876": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "5877": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "5882": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "5890": {
+  "status": "merged",
+  "tag": "——已收编 v0.1.3538 (86825005)",
+  "verdict": [
+   "merged",
+   "v0.1.3538",
+   "86825005",
+   "维护者末评 Fixed in"
+  ]
+ },
+ "5895": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "5907": {
+  "status": "untouched",
+  "tag": "——未动（空占位条目（无描述无动作无分支））",
+  "verdict": null
+ },
+ "5908": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "5911": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "5914": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "5921": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "5923": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "5932": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "5934": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "5935": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "5936": {
+  "status": "merged",
+  "tag": "——已收编 v0.1.3880 (48875e58)",
+  "verdict": [
+   "faithful",
+   "v0.1.3880",
+   "48875e58",
+   "我方 author=ggbdpq 保留（patch-id 等价）；维护者 2e92d71a 扩展另两面并明文 credit"
+  ]
+ },
+ "5969": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "5971": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "6006": {
+  "status": "out",
+  "tag": "——出列（判定跟进闭合：报告者期望形态反而是真错配）",
+  "verdict": null
+ },
+ "6037": {
+  "status": "out",
+  "tag": "——出列（判定帖：openaiAuth() 设计契约（#5702 族））",
+  "verdict": null
+ },
+ "6066": {
+  "status": "out",
+  "tag": "——出列（判定帖：重置卡=Codex 独占设计）",
+  "verdict": null
+ },
+ "6115": {
+  "status": "out",
+  "tag": "——出列（triage：当前 tip 不可复现（探针六形态全对））",
+  "verdict": null
+ },
+ "6131": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "6135": {
+  "status": "merged",
+  "tag": "——已收编 v0.1.3754 (b4fc29a6)",
+  "verdict": [
+   "merged",
+   "v0.1.3754",
+   "b4fc29a6",
+   "维护者末评亲修（closed 面由报告者复测确认）"
+  ]
+ },
+ "6142": {
+  "status": "out",
+  "tag": "——出列（判定帖：三层防护已在位；上游 138d806f 明文 separate cause not changed）",
+  "verdict": null
+ },
+ "6150": {
+  "status": "merged",
+  "tag": "——已收编 v0.1.3139 (ff415f39c)",
+  "verdict": [
+   "partial",
+   "v0.1.3139",
+   "ff415f39c",
+   "部分：同款错误上游已修；报告者残余面（serveAgent 无回退）判定帖定性待数据"
+  ]
+ },
+ "6155": {
+  "status": "out",
+  "tag": "——出列（判定帖：gatewayMode 有意隐藏 warm-up）",
+  "verdict": null
+ },
+ "6163": {
+  "status": "out",
+  "tag": "——出列（判定帖：杀手在路径（mihomo TUN），四 ask 逐一定性）",
+  "verdict": null
+ },
+ "6288": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "6320": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "6335": {
+  "status": "untouched",
+  "tag": "——未动（判定帖：三条设计约束留维护者拍板）",
+  "verdict": null
+ },
+ "6336": {
+  "status": "inflight",
+  "tag": "——在途",
+  "verdict": null
+ },
+ "636": {
+  "status": "merged",
+  "tag": "——已收编 v0.1.709 (090f7733)",
+  "verdict": [
+   "merged",
+   "v0.1.709",
+   "090f7733",
+   "维护者末评 Fixed in（Bug3 另修 v0.1.750）"
+  ]
+ },
+ "718": {
+  "status": "merged",
+  "tag": "——已收编 v0.1.792/796 (da46cd21)",
+  "verdict": [
+   "merged",
+   "v0.1.792/796",
+   "da46cd21",
+   "维护者末评已随 #717 实现（closed）"
+  ]
+ },
+ "848": {
+  "status": "merged",
+  "tag": "——已收编 v0.1.943 (721e8822)",
+  "verdict": [
+   "merged",
+   "v0.1.943",
+   "721e8822",
+   "他方 author=Zhizhen He merged；注：档内出现处为 plugins#848 插件仓引用号"
+  ]
+ }
+}

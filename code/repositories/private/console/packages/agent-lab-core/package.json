@@ -1,0 +1,11 @@
+{
+  "name": "@ggbdpq/agent-lab-core",
+  "private": true,
+  "version": "0.1.0",
+  "description": "pi-web-dev 教学核心：零依赖纯 JS。禁止 TS 化、禁止加依赖（见仓库 AGENTS.md 豁免规则）。",
+  "type": "module",
+  "main": "./src/index.js",
+  "scripts": {
+    "test": "node tests/smoke.mjs && node tests/pump-test.mjs && node tests/diff-test.mjs && node tests/source-locate-test.mjs && node tests/compact-test.mjs && node tests/tour-test.mjs"
+  }
+}

@@ -1,0 +1,5 @@
+--- FAIL: TestImportAlma (0.46s)
+    importapps_test.go:180: g4 imported despite "it has no API key"
+FAIL
+FAIL	github.com/yetone/magpie/internal/provider	1.011s
+FAIL

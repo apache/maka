@@ -1,0 +1,25 @@
+{
+  "id": "94",
+  "slug": "longest-substring-with-at-least-k-repeating-characters",
+  "title": "至少有 K 个重复字符的最长子串",
+  "difficulty": "medium",
+  "tags": ["哈希表", "字符串", "分治"],
+  "description": "给你一个字符串 `s` 和一个整数 `k`,请你找出 `s` 中的最长子串,要求该子串中的每一字符出现次数都**不少于** `k`。返回这一子串的长度。\n\n**示例 1:**\n\n- 输入:`s = \"aaabb\"`, `k = 3`\n- 输出:`3`(子串 `\"aaa\"`,其中 `a` 出现 3 次)\n\n**示例 2:**\n\n- 输入:`s = \"ababbc\"`, `k = 2`\n- 输出:`5`(子串 `\"ababb\"`,`a` 出现 2 次、`b` 出现 3 次)",
+  "solution": "## 思路\n\n**分治**:统计区间内字符频次,若某字符出现次数 `< k`,它不可能出现在结果中——以它为分割点递归左右两段。若区间内所有字符都 `>= k`,则整个区间就是合法子串。\n\n## 参考代码\n\n```js\nfunction longestSubstring(s, k) {\n  const helper = (start, end) => {\n    if (end - start < k) return 0;\n    const count = new Map();\n    for (let i = start; i < end; i++) count.set(s[i], (count.get(s[i]) || 0) + 1);\n    for (let i = start; i < end; i++) {\n      if (count.get(s[i]) < k) {\n        let j = i + 1;\n        while (j < end && count.get(s[j]) < k) j++;\n        return Math.max(helper(start, i), helper(j, end));\n      }\n    }\n    return end - start;\n  };\n  return helper(0, s.length);\n}\n```\n\n## 复杂度\n\n- 时间:平均 O(n log k)\n- 空间:O(k)",
+  "signature": {
+    "language": "javascript",
+    "entry": "longestSubstring",
+    "params": [
+      { "name": "s", "type": "string" },
+      { "name": "k", "type": "number" }
+    ],
+    "returns": "number"
+  },
+  "testCases": [
+    { "sample": true, "input": ["aaabb", 3], "expected": 3 },
+    { "sample": true, "input": ["ababbc", 2], "expected": 5 },
+    { "sample": false, "input": ["a", 1], "expected": 1 },
+    { "sample": false, "input": ["abcd", 1], "expected": 4 },
+    { "sample": false, "input": ["aaabbb", 3], "expected": 6 }
+  ]
+}

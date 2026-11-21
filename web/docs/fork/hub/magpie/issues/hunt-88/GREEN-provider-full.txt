@@ -1,0 +1,200 @@
+2026/10/26 13:14:21 codex: new@example.com has used 98% or more of its allowance; signed it in to me@example.com
+2026/10/26 13:14:21 codex: new@example.com has room again; signed it back in to it
+2026/10/26 13:14:28 antigravity new@example.com: loadCodeAssist: unexpected end of JSON input; using the project kept with the sign-in, its tier not known
+2026/10/26 13:14:28 antigravity old@example.com: loadCodeAssist: unexpected end of JSON input; using the project kept with the sign-in, its tier not known
+2026/10/26 13:14:28 antigravity new@example.com: fetchAvailableModels at http://127.0.0.1:53616/daily (antigravity/hub/3.1.4 windows/amd64; project "project-new", current tier "", paid tier "", entitlement ""): 4 models, 4 kept; left out 0 not for chat [], 0 completion-only []; disabled []; Claude [claude-opus-5-5-high claude-opus-5-5-low]
+2026/10/26 13:14:28 antigravity old@example.com: fetchAvailableModels at http://127.0.0.1:53616/daily (antigravity/hub/3.1.4 windows/amd64; project "project-old", current tier "", paid tier "", entitlement ""): 3 models, 3 kept; left out 0 not for chat [], 0 completion-only []; disabled []; Claude [claude-opus-4-6-thinking]
+2026/10/26 13:14:28 antigravity old@example.com: fetchAvailableModels at http://127.0.0.1:53616/daily (antigravity/hub/3.1.4 windows/amd64; project "project-old", current tier "", paid tier "", entitlement ""): 3 models, 3 kept; left out 0 not for chat [], 0 completion-only []; disabled []; Claude [claude-opus-4-6-thinking]
+2026/10/26 13:14:28 antigravity new@example.com: fetchAvailableModels at http://127.0.0.1:53616/daily (project "project-new", no entitlement): Antigravity: unavailable
+2026/10/26 13:14:28 antigravity new@example.com: models not refreshed: Antigravity: unavailable; keeping the 4 it listed before
+2026/10/26 13:14:28 antigravity old@example.com: fetchAvailableModels at http://127.0.0.1:53616/daily (project "project-old", no entitlement): Antigravity: unavailable
+2026/10/26 13:14:28 antigravity new@example.com: fetchAvailableModels at http://127.0.0.1:53616/daily (project "project-new", no entitlement): Antigravity: unavailable
+2026/10/26 13:14:28 antigravity old@example.com: models not refreshed: Antigravity: unavailable; keeping the 0 it listed before
+2026/10/26 13:14:28 antigravity new@example.com: models not refreshed: Antigravity: unavailable; keeping the 4 it listed before
+2026/10/26 13:14:28 antigravity old@example.com: fetchAvailableModels at http://127.0.0.1:53616/daily (project "project-old", no entitlement): Antigravity: unavailable
+2026/10/26 13:14:28 antigravity new@example.com: fetchAvailableModels at http://127.0.0.1:53616/daily (project "project-new", no entitlement): Antigravity: unavailable
+2026/10/26 13:14:28 antigravity old@example.com: models not refreshed: Antigravity: unavailable; keeping the 0 it listed before
+2026/10/26 13:14:28 antigravity new@example.com: models not refreshed: Antigravity: unavailable; keeping the 0 it listed before
+2026/10/26 13:14:28 antigravity old@example.com: fetchAvailableModels at http://127.0.0.1:53616/daily (antigravity/hub/3.1.4 windows/amd64; project "project-old", current tier "", paid tier "", entitlement ""): 3 models, 3 kept; left out 0 not for chat [], 0 completion-only []; disabled []; Claude [claude-opus-4-6-thinking]
+2026/10/26 13:14:28 antigravity b@example.com: loadCodeAssist: unexpected end of JSON input; using the project kept with the sign-in, its tier not known
+2026/10/26 13:14:28 antigravity a@example.com: loadCodeAssist: unexpected end of JSON input; using the project kept with the sign-in, its tier not known
+2026/10/26 13:14:28 antigravity b@example.com: fetchAvailableModels at http://127.0.0.1:53621/daily (antigravity/hub/3.1.4 windows/amd64; project "project-b", current tier "", paid tier "", entitlement ""): 1 models, 1 kept; left out 0 not for chat [], 0 completion-only []; disabled []; Claude []
+2026/10/26 13:14:28 antigravity a@example.com: fetchAvailableModels at http://127.0.0.1:53621/daily (antigravity/hub/3.1.4 windows/amd64; project "project-a", current tier "", paid tier "", entitlement ""): 2 models, 1 kept; left out 0 not for chat [], 0 completion-only []; disabled [gemini-4-argon-disabled]; Claude []
+2026/10/26 13:14:28 antigravity a@example.com: fetchAvailableModels at http://127.0.0.1:53621/daily (antigravity/hub/3.1.4 windows/amd64; project "project-a", current tier "", paid tier "", entitlement ""): 2 models, 1 kept; left out 0 not for chat [], 0 completion-only []; disabled [gemini-4-argon-disabled]; Claude []
+2026/10/26 13:14:28 antigravity off@example.com: loadCodeAssist: unexpected end of JSON input; using the project kept with the sign-in, its tier not known
+2026/10/26 13:14:28 antigravity off@example.com: fetchAvailableModels at http://127.0.0.1:53621/daily (antigravity/hub/3.1.4 windows/amd64; project "project-off", current tier "", paid tier "", entitlement ""): 2 models, 2 kept; left out 0 not for chat [], 0 completion-only []; disabled []; Claude []
+2026/10/26 13:14:28 antigravity b@example.com: fetchAvailableModels at http://127.0.0.1:53621/daily (antigravity/hub/3.1.4 windows/amd64; project "project-b", current tier "", paid tier "", entitlement ""): 2 models, 2 kept; left out 0 not for chat [], 0 completion-only []; disabled []; Claude []
+2026/10/26 13:14:28 antigravity test@example.com: loadCodeAssist at http://127.0.0.1:53626/prod: current tier -, paid tier -, project "test-project"
+2026/10/26 13:14:28 antigravity test@example.com: fetchAvailableModels at http://127.0.0.1:53626/daily (antigravity/hub/3.1.4 windows/amd64; project "test-project", current tier "", paid tier "", entitlement ""): 4 models, 4 kept; left out 0 not for chat [], 0 completion-only []; disabled []; Claude []
+2026/10/26 13:14:30 relay: fetched its list on schedule, 1 models
+2026/10/26 13:14:30 relay: fetched its list on schedule, 3 models; taken by rule: gpt-7
+2026/10/26 13:14:30 relay: its scheduled list fetch failed: no model list: http://127.0.0.1:53656/v1/models: 502 Bad Gateway — type its model ids in by hand, or give the URL its list is at (tried again in 15m0s)
+2026/10/26 13:14:30 relay: its scheduled list fetch failed: no model list: http://127.0.0.1:53656/v1/models: 502 Bad Gateway — type its model ids in by hand, or give the URL its list is at (tried again in 15m0s)
+2026/10/26 13:14:30 office: fetched its list on schedule, 1 models
+2026/10/26 13:14:30 office: fetched its list on schedule, 3 models
+2026/10/26 13:14:36 check-in: C:\Users\802165\AppData\Local\Temp\TestCheckinUnreadableFileLeftAlonecut_short1108847758\001\workbuddy-checkin.json doesn't parse (unexpected end of JSON input): magpie leaves it as it is and checks in no account of it until it does
+2026/10/26 13:14:36 check-in: C:\Users\802165\AppData\Local\Temp\TestCheckinUnreadableFileLeftAlonezeroed1919986586\001\workbuddy-checkin.json doesn't parse (invalid character '\x00' looking for beginning of value): magpie leaves it as it is and checks in no account of it until it does
+2026/10/26 13:14:36 check-in: C:\Users\802165\AppData\Local\Temp\TestCheckinUnreadableFileLeftAloneempty875344204\001\workbuddy-checkin.json doesn't parse (unexpected end of JSON input): magpie leaves it as it is and checks in no account of it until it does
+2026/10/26 13:14:36 check-in: C:\Users\802165\AppData\Local\Temp\TestCheckinUnreadableFileLeftAlonea_list2647424274\001\workbuddy-checkin.json doesn't parse (json: cannot unmarshal array into Go value of type map[string]provider.WorkBuddyCheckin): magpie leaves it as it is and checks in no account of it until it does
+2026/10/26 13:14:36 check-in: C:\Users\802165\AppData\Local\Temp\TestCheckinUnreadableFileLeftAlonenull4063077812\001\workbuddy-checkin.json doesn't parse (it holds null): magpie leaves it as it is and checks in no account of it until it does
+2026/10/26 13:14:36 check-in: C:\Users\802165\AppData\Local\Temp\TestCheckinUnreadableFileLeftAloneunreadable2343532394\001\plugin-checkin.json can't be read (read C:\Users\802165\AppData\Local\Temp\TestCheckinUnreadableFileLeftAloneunreadable2343532394\001\plugin-checkin.json: Incorrect function.): magpie leaves it as it is and checks in no account of it until it can
+2026/10/26 13:14:36 check-in: C:\Users\802165\AppData\Local\Temp\TestCheckinUnreadableKeepsLastGood233729383\001\workbuddy-checkin.json doesn't parse (unexpected end of JSON input): magpie leaves it as it is and checks in no account of it until it does
+2026/10/26 13:14:40 claude: Claude Code sessions started from now on go through b@example.com's proxy http://10.0.0.9:8080
+2026/10/26 13:14:40 claude: settings.json's env has a proxy of the user's own; magpie leaves it, and writes no account's proxy
+2026/10/26 13:14:40 claude: settings.json's env has a proxy of the user's own; magpie leaves it, and writes no account's proxy
+2026/10/26 13:14:40 claude: Claude Code sessions started from now on go through b@example.com's proxy http://10.0.0.9:8080
+2026/10/26 13:14:41 claude: settings.json's env has a proxy of the user's own; magpie leaves it, and writes no account's proxy
+2026/10/26 13:14:41 claude: b@example.com's proxy socks5://127.0.0.1:1080 is SOCKS, which Claude Code can't use; its sessions go the way they did
+2026/10/26 13:14:41 claude: b@example.com's proxy socks5://127.0.0.1:1080 is SOCKS, which Claude Code can't use; its sessions go the way they did
+2026/10/26 13:14:41 claude: writing the account's proxy to settings.json: C:\Users\802165\AppData\Local\Temp\TestClaudeAccountProxyLeavesABrokenSettings3329941198\001\.claude\settings.json can't be read; its proxy left as it is
+2026/10/26 13:14:42 claude: b@example.com's proxy socks5://127.0.0.1:1080 is SOCKS, which Claude Code can't use; its sessions go the way they did
+2026/10/26 13:14:42 claude: b@example.com's proxy socks5h://127.0.0.1:1080 is SOCKS, which Claude Code can't use; its sessions go the way they did
+2026/10/26 13:14:42 claude: b@example.com's proxy socks5://127.0.0.1:1080 is SOCKS, which Claude Code can't use; its sessions go the way they did
+2026/10/26 13:14:46 claude: Claude Code sessions started from now on go through max@x.com's proxy http://127.0.0.1:17902
+2026/10/26 13:14:47 claude-test warm-up: started a@x's 5 hours, 7 days window
+testenv: a test asked decide.test:443, refused: tests stay off the network
+2026/10/26 13:14:50 C:\Users\802165\AppData\Local\Temp\TestAutoResetUnreadableKeptAside1843090149\001\.config\magpie\codex-autoreset.json: invalid character '\x00' looking for beginning of value; kept aside as C:\Users\802165\AppData\Local\Temp\TestAutoResetUnreadableKeptAside1843090149\001\.config\magpie\codex-autoreset.json.bad-20261026T051450.440019200; what was spent is taken from C:\Users\802165\AppData\Local\Temp\TestAutoResetUnreadableKeptAside1843090149\001\.config\magpie\codex-resets-used.json
+2026/10/26 13:14:50 C:\Users\802165\AppData\Local\Temp\TestAutoResetUnreadableReadsResetsUsedauto-used_an_hour_ago3919051966\001\.config\magpie\codex-autoreset.json: invalid character '\x00' looking for beginning of value; kept aside as C:\Users\802165\AppData\Local\Temp\TestAutoResetUnreadableReadsResetsUsedauto-used_an_hour_ago3919051966\001\.config\magpie\codex-autoreset.json.bad-20261026T051450.565619100; what was spent is taken from C:\Users\802165\AppData\Local\Temp\TestAutoResetUnreadableReadsResetsUsedauto-used_an_hour_ago3919051966\001\.config\magpie\codex-resets-used.json
+2026/10/26 13:14:50 C:\Users\802165\AppData\Local\Temp\TestAutoResetUnreadableReadsResetsUsedauto-used_8_days_ago3742428972\001\.config\magpie\codex-autoreset.json: invalid character '\x00' looking for beginning of value; kept aside as C:\Users\802165\AppData\Local\Temp\TestAutoResetUnreadableReadsResetsUsedauto-used_8_days_ago3742428972\001\.config\magpie\codex-autoreset.json.bad-20261026T051450.624973700; what was spent is taken from C:\Users\802165\AppData\Local\Temp\TestAutoResetUnreadableReadsResetsUsedauto-used_8_days_ago3742428972\001\.config\magpie\codex-resets-used.json
+2026/10/26 13:14:50 C:\Users\802165\AppData\Local\Temp\TestAutoResetUnreadableReadsResetsUsedused_by_hand3517230794\001\.config\magpie\codex-autoreset.json: invalid character '\x00' looking for beginning of value; kept aside as C:\Users\802165\AppData\Local\Temp\TestAutoResetUnreadableReadsResetsUsedused_by_hand3517230794\001\.config\magpie\codex-autoreset.json.bad-20261026T051450.781713800; what was spent is taken from C:\Users\802165\AppData\Local\Temp\TestAutoResetUnreadableReadsResetsUsedused_by_hand3517230794\001\.config\magpie\codex-resets-used.json
+2026/10/26 13:14:50 C:\Users\802165\AppData\Local\Temp\TestAutoResetUnreadableReadsResetsUsedanother_accounts_use1972767278\001\.config\magpie\codex-autoreset.json: invalid character '\x00' looking for beginning of value; kept aside as C:\Users\802165\AppData\Local\Temp\TestAutoResetUnreadableReadsResetsUsedanother_accounts_use1972767278\001\.config\magpie\codex-autoreset.json.bad-20261026T051450.900724300; what was spent is taken from C:\Users\802165\AppData\Local\Temp\TestAutoResetUnreadableReadsResetsUsedanother_accounts_use1972767278\001\.config\magpie\codex-resets-used.json
+2026/10/26 13:14:51 C:\Users\802165\AppData\Local\Temp\TestAutoResetNothingKnownSpendsNone1515696743\001\.config\magpie\codex-autoreset.json: invalid character '\x00' looking for beginning of value; kept aside as C:\Users\802165\AppData\Local\Temp\TestAutoResetNothingKnownSpendsNone1515696743\001\.config\magpie\codex-autoreset.json.bad-20261026T051451.018210300; C:\Users\802165\AppData\Local\Temp\TestAutoResetNothingKnownSpendsNone1515696743\001\.config\magpie\codex-resets-used.json: invalid character '\x00' looking for beginning of value too, so no Codex account spends a reset by itself until 2026-11-02T13:14:51+08:00
+2026/10/26 13:14:52 codex reset about to run out: me@example.com used it: 2 windows started again
+2026/10/26 13:14:52 codex reset about to run out: me@example.com used it: 2 windows started again
+--- FAIL: TestCodexListTagKeptWhileNothingChanged (1.94s)
+    codex_list_tag_test.go:94: CodexListTag and CodexOwnListTag: 342 allocs, 49328 bytes a call
+    codex_list_tag_test.go:96: with nothing changed, the tags took 342 allocations (49328 bytes) a call: the catalog built again
+    codex_list_tag_test.go:101: held: 342 allocs, 49328 bytes a call
+    codex_list_tag_test.go:103: held, the tags took 342 allocations (49328 bytes) a call
+2026/10/26 13:15:15 codex reset about to run out: me@example.com used it: 2 windows started again
+--- FAIL: TestCodexSignedInInKeychain (0.08s)
+    --- FAIL: TestCodexSignedInInKeychain/keyring (0.04s)
+        codex_store_test.go:175: no Codex provider from the keychain item: false <nil>
+    --- FAIL: TestCodexSignedInInKeychain/auto (0.04s)
+        codex_store_test.go:175: no Codex provider from the keychain item: false <nil>
+--- FAIL: TestCodexKeychainRefreshWritesItem (0.04s)
+    codex_store_test.go:236: codexToken: "" Codex keeps its sign-in in Codex's encrypted auth storage (features.secret_auth_storage) (cli_auth_credentials_store = "keyring" in C:\Users\802165\AppData\Local\Temp\TestCodexKeychainRefreshWritesItem151750932\001\.codex\config.toml), which magpie doesn't read
+--- FAIL: TestCodexKeychainSwitch (0.12s)
+    codex_store_test.go:262: switch: "" Codex keeps its sign-in in Codex's encrypted auth storage (features.secret_auth_storage) (cli_auth_credentials_store = "keyring" in C:\Users\802165\AppData\Local\Temp\TestCodexKeychainSwitch3408026482\001\.codex\config.toml), which magpie doesn't read
+--- FAIL: TestCodexKeychainAskedSeldom (0.04s)
+    codex_store_test.go:359: not read
+--- FAIL: TestCodexKeychainPromptWaitedFor (0.09s)
+    codex_store_test.go:461: readCodexLogin while the prompt is up: Codex keeps its sign-in in Codex's encrypted auth storage (features.secret_auth_storage) (cli_auth_credentials_store = "keyring" in C:\Users\802165\AppData\Local\Temp\TestCodexKeychainPromptWaitedFor591183335\001\.codex\config.toml), which magpie doesn't read
+--- FAIL: TestCodexKeychainRetry (0.15s)
+    codex_store_test.go:493: refused: &{Agent:codex Provider: Name: Why:1 account is saved in magpie, and they are only offered beside the account Codex is signed in to. Codex keeps its sign-in in Codex's encrypted auth storage (features.secret_auth_storage) (cli_auth_credentials_store = "keyring" in C:\Users\802165\AppData\Local\Temp\TestCodexKeychainRetry3040189076\001\.codex\config.toml), which magpie doesn't read: here it reads only C:\Users\802165\AppData\Local\Temp\TestCodexKeychainRetry3040189076\001\.codex\auth.json. Set cli_auth_credentials_store = "file" there and sign in again (codex login). SignedOut:true Users:[me@example.com] Quiet:false Tucked:false Retry:false}
+--- FAIL: TestCodexKeychainSignOut (0.03s)
+    codex_store_test.go:550: the item was left
+--- FAIL: TestCodexSignInKnown (0.06s)
+    codex_store_test.go:589: keyring, the keychain refusing: ok false known true, want false false
+2026/10/26 13:15:17 codex: work@example.com has used 98% or more of its allowance; signed it in to spare@example.com
+2026/10/26 13:15:17 codex: work@example.com has room again; signed it back in to it
+2026/10/26 13:15:17 codex: work@example.com has used 98% or more of its allowance; signed it in to spare@example.com
+2026/10/26 13:15:17 codex: work@example.com has used 100% or more of its allowance; signed it in to spare@example.com
+2026/10/26 13:15:17 codex: work@example.com has room again; signed it back in to it
+2026/10/26 13:15:18 codex: work@example.com has used 98% or more of its allowance; signed it in to spare@example.com
+2026/10/26 13:15:18 codex: work@example.com has room again; signed it back in to it
+2026/10/26 13:15:18 codex: work@example.com has used 98% or more of its allowance; signed it in to spare@example.com
+2026/10/26 13:15:18 codex: work@example.com has room again; signed it back in to it
+2026/10/26 13:15:18 codex: work@example.com has used 98% or more of its allowance; signed it in to spare@example.com
+2026/10/26 13:15:19 claude: a@example.com has used 98% or more of its allowance; signed it in to b@example.com
+2026/10/26 13:15:19 codex: work@example.com has used 98% or more of its allowance; signed it in to spare@example.com
+2026/10/26 13:15:19 codex: work@example.com has room again; signed it back in to it
+2026/10/26 13:15:22 copilot sign-in on github.com: GitHub gave the token; asking whose account it is
+2026/10/26 13:15:25 copilot sign-in on acme.ghe.com: GitHub gave the token; asking whose account it is
+2026/10/26 13:15:25 copilot sign-in on a.ghe.com: GitHub gave the token; asking whose account it is
+2026/10/26 13:15:25 copilot sign-in on b.ghe.com: GitHub gave the token; asking whose account it is
+2026/10/26 13:15:25 copilot sign-in on a.ghe.com: GitHub gave the token; asking whose account it is
+2026/10/26 13:15:25 copilot sign-in on a.ghe.com: GitHub gave the token; asking whose account it is
+2026/10/26 13:15:26 copilot sign-in on github.com: GitHub gave the token; asking whose account it is
+testenv: a test asked api.github.com:443, refused: tests stay off the network
+2026/10/26 13:15:26 copilot accounts renamed with their host (#1220): their settings couldn't be moved (C:\Users\802165\AppData\Local\Temp\TestCopilotRenameWaitsForSettings1855245000\001\.config\magpie\providers.json can't be read (unexpected end of JSON input); magpie left it unchanged — fix it or move it aside); kept under their old names for now
+2026/10/26 13:15:26 copilot accounts renamed with their host (#1220): their settings couldn't be moved (C:\Users\802165\AppData\Local\Temp\TestCopilotRenameWaitsForSettings1855245000\001\.config\magpie\providers.json can't be read (unexpected end of JSON input); magpie left it unchanged — fix it or move it aside); kept under their old names for now
+2026/10/26 13:15:28 copilot sign-in on github.com: asking GitHub for the token failed (1 in a row): GitHub: upstream connect error
+2026/10/26 13:15:28 copilot sign-in on github.com: asking GitHub for the token failed (2 in a row): GitHub: upstream connect error
+2026/10/26 13:15:28 copilot sign-in on github.com failed: couldn't get the token from GitHub: GitHub: upstream connect error
+2026/10/26 13:15:28 copilot sign-in on github.com: asking GitHub for the token failed (1 in a row): GitHub: 502 Bad Gateway
+2026/10/26 13:15:28 copilot sign-in on github.com: asking GitHub for the token failed (1 in a row): GitHub: 502 Bad Gateway
+2026/10/26 13:15:28 copilot sign-in on github.com: GitHub gave the token; asking whose account it is
+2026/10/26 13:15:28 copilot sign-in on github.com: GitHub gave the token; asking whose account it is
+2026/10/26 13:15:28 copilot sign-in on github.com failed: GitHub gave the token, but didn't answer within 300ms whose account it is: GitHub didn't say whose account this is: Get "http://127.0.0.1:54238/user": context deadline exceeded
+2026/10/26 13:15:29 codex: the refreshed sign-in didn't reach C:\Users\802165\AppData\Local\Temp\TestCodexRefreshFlushesAuthJSONBeforeReplacingIt3839505978\001\.codex\auth.json: the disk went away
+testenv: a test asked elsewhere.invalid:443, refused: tests stay off the network
+2026/10/26 13:15:35 disabled models: could not read settings at C:\Users\802165\AppData\Local\Temp\TestDisabledUnreadSettings1191904330\001\.config\magpie\settings.json: invalid character 'n' looking for beginning of object key string; the list read last stays in force
+2026/10/26 13:15:38 codex: ChatGPT models: 502 Bad Gateway
+2026/10/26 13:15:39 codex: ChatGPT models: 502 Bad Gateway
+2026/10/26 13:15:40 antigravity n@x.com: loadCodeAssist at http://127.0.0.1:54470/prod: current tier -, paid tier g1-pro-tier (Google AI Pro), project "found-proj"
+2026/10/26 13:15:40 antigravity a@x.com: loadCodeAssist at http://127.0.0.1:54470/prod: current tier -, paid tier g1-pro-tier (Google AI Pro), project "found-proj"
+2026/10/26 13:15:40 antigravity c@x.com: loadCodeAssist at http://127.0.0.1:54470/prod: current tier -, paid tier g1-pro-tier (Google AI Pro), project "found-proj"
+2026/10/26 13:15:40 antigravity a@x.com: loadCodeAssist at http://127.0.0.1:54470/prod: current tier -, paid tier g1-pro-tier (Google AI Pro), project "found-proj"
+2026/10/26 13:15:41 antigravity ag@example.com: loadCodeAssist at http://127.0.0.1:54496/prod: current tier -, paid tier -, project ""
+2026/10/26 13:15:41 antigravity ag@example.com: loadCodeAssist at http://127.0.0.1:54498/prod: current tier -, paid tier -, project ""
+2026/10/26 13:15:41 antigravity ag@example.com: fetchAvailableModels at http://127.0.0.1:54498/daily (antigravity/hub/3.1.4 windows/amd64; project "ag-proj", current tier "free-tier", paid tier "", entitlement ""): 7 models, 6 kept; left out 1 not for chat [tab_flash_lite_preview], 0 completion-only []; disabled []; Claude [claude-opus-4-6-thinking claude-sonnet-4-6]
+2026/10/26 13:15:41 antigravity ag@example.com: loadCodeAssist at http://127.0.0.1:54500/prod: current tier -, paid tier -, project ""
+2026/10/26 13:15:41 antigravity ag@example.com: fetchAvailableModels at http://127.0.0.1:54500/daily (antigravity/hub/3.1.4 windows/amd64; project "ag-proj", current tier "free-tier", paid tier "", entitlement ""): 4 models, 4 kept; left out 0 not for chat [], 0 completion-only []; disabled []; Claude [claude-opus-4-6-thinking]
+2026/10/26 13:15:41 antigravity ag@example.com: fetchAvailableModels at http://127.0.0.1:54500/daily (antigravity/hub/3.1.4 windows/amd64; project "ag-proj", current tier "free-tier", paid tier "", entitlement ""): 4 models, 4 kept; left out 0 not for chat [], 0 completion-only []; disabled []; Claude [claude-opus-4-6-thinking]
+2026/10/26 13:15:41 antigravity ag@example.com: fetchAvailableModels at http://127.0.0.1:54500/daily (antigravity/hub/3.1.4 windows/amd64; project "ag-proj", current tier "free-tier", paid tier "", entitlement ""): 4 models, 4 kept; left out 0 not for chat [], 0 completion-only []; disabled []; Claude [claude-opus-4-6-thinking]
+2026/10/26 13:15:42 antigravity ag@example.com: loadCodeAssist at http://127.0.0.1:54502/prod: current tier -, paid tier -, project ""
+2026/10/26 13:15:42 antigravity ag@example.com: fetchAvailableModels at http://127.0.0.1:54502/daily (antigravity/hub/3.1.4 windows/amd64; project "ag-proj", current tier "free-tier", paid tier "", entitlement ""): 6 models, 6 kept; left out 0 not for chat [], 0 completion-only []; disabled []; Claude [claude-opus-4-6-thinking claude-opus-5-5]
+2026/10/26 13:15:42 antigravity ag@example.com: loadCodeAssist at http://127.0.0.1:54504/prod: current tier -, paid tier -, project ""
+2026/10/26 13:15:42 antigravity ag@example.com: fetchAvailableModels at http://127.0.0.1:54504/daily (antigravity/hub/3.1.4 windows/amd64; project "ag-proj", current tier "free-tier", paid tier "", entitlement ""): 6 models, 5 kept; left out 1 not for chat [gemini-2.5-flash-thinking], 0 completion-only []; disabled []; Claude []
+2026/10/26 13:15:42 antigravity ag@example.com: fetchAvailableModels at http://127.0.0.1:54504/daily (antigravity/hub/3.1.4 windows/amd64; project "ag-proj", current tier "free-tier", paid tier "", entitlement ""): 6 models, 5 kept; left out 1 not for chat [gemini-2.5-flash-thinking], 0 completion-only []; disabled []; Claude []
+2026/10/26 13:15:42 antigravity ag@example.com: loadCodeAssist at http://127.0.0.1:54506/prod: current tier -, paid tier -, project ""
+2026/10/26 13:15:42 antigravity ag@example.com: fetchAvailableModels at http://127.0.0.1:54506/daily (antigravity/hub/3.1.4 windows/amd64; project "ag-proj", current tier "free-tier", paid tier "", entitlement ""): 22 models, 16 kept; left out 6 not for chat [chat_20706 chat_23310 gemini-2.5-flash-thinking gemini-2.5-pro tab_flash_lite_preview tab_jump_flash_lite_preview], 0 completion-only []; disabled []; Claude [claude-opus-4-6-thinking claude-sonnet-4-6]
+2026/10/26 13:15:42 antigravity ag@example.com: fetchAvailableModels at http://127.0.0.1:54506/daily (antigravity/hub/3.1.4 windows/amd64; project "ag-proj", current tier "free-tier", paid tier "", entitlement ""): 22 models, 16 kept; left out 6 not for chat [chat_20706 chat_23310 gemini-2.5-flash-thinking gemini-2.5-pro tab_flash_lite_preview tab_jump_flash_lite_preview], 0 completion-only []; disabled []; Claude [claude-opus-4-6-thinking claude-sonnet-4-6]
+2026/10/26 13:15:42 antigravity ag@example.com: loadCodeAssist at http://127.0.0.1:54508/prod: current tier -, paid tier -, project ""
+2026/10/26 13:15:42 antigravity ag@example.com: fetchAvailableModels at http://127.0.0.1:54508/daily (antigravity/hub/3.1.4 windows/amd64; project "ag-proj", current tier "free-tier", paid tier "", entitlement ""): 21 models, 15 kept; left out 6 not for chat [chat_20706 chat_23310 gemini-2.5-flash-thinking gemini-2.5-pro tab_flash_lite_preview tab_jump_flash_lite_preview], 0 completion-only []; disabled []; Claude [claude-opus-4-6-thinking claude-sonnet-4-6]
+2026/10/26 13:15:42 antigravity ag@example.com: fetchAvailableModels at http://127.0.0.1:54508/daily (antigravity/hub/3.1.4 windows/amd64; project "ag-proj", current tier "free-tier", paid tier "", entitlement ""): 21 models, 15 kept; left out 6 not for chat [chat_20706 chat_23310 gemini-2.5-flash-thinking gemini-2.5-pro tab_flash_lite_preview tab_jump_flash_lite_preview], 0 completion-only []; disabled []; Claude [claude-opus-4-6-thinking claude-sonnet-4-6]
+2026/10/26 13:15:42 antigravity ag@example.com: loadCodeAssist at http://127.0.0.1:54510/prod: current tier -, paid tier -, project ""
+2026/10/26 13:15:42 antigravity ag@example.com: fetchAvailableModels at http://127.0.0.1:54510/daily (antigravity/hub/3.1.4 windows/amd64; project "ag-proj", current tier "free-tier", paid tier "", entitlement ""): 22 models, 16 kept; left out 6 not for chat [chat_20706 chat_23310 gemini-2.5-flash-thinking gemini-2.5-pro tab_flash_lite_preview tab_jump_flash_lite_preview], 0 completion-only []; disabled []; Claude [claude-opus-4-6-thinking claude-sonnet-4-6]
+2026/10/26 13:15:42 antigravity ag@example.com: fetchAvailableModels at http://127.0.0.1:54510/daily (antigravity/hub/3.1.4 windows/amd64; project "ag-proj", current tier "free-tier", paid tier "", entitlement ""): 22 models, 16 kept; left out 6 not for chat [chat_20706 chat_23310 gemini-2.5-flash-thinking gemini-2.5-pro tab_flash_lite_preview tab_jump_flash_lite_preview], 0 completion-only []; disabled []; Claude [claude-opus-4-6-thinking claude-sonnet-4-6]
+2026/10/26 13:15:42 antigravity ag@example.com: loadCodeAssist at http://127.0.0.1:54512/prod: current tier -, paid tier -, project ""
+2026/10/26 13:15:42 antigravity ag@example.com: fetchAvailableModels at http://127.0.0.1:54512/daily (antigravity/hub/3.1.4 windows/amd64; project "ag-proj", current tier "free-tier", paid tier "", entitlement ""): 3 models, 3 kept; left out 0 not for chat [], 0 completion-only []; disabled []; Claude [claude-sonnet-4-6]
+2026/10/26 13:15:42 antigravity ag@example.com: fetchAvailableModels at http://127.0.0.1:54512/daily (antigravity/hub/3.1.4 windows/amd64; project "ag-proj", current tier "free-tier", paid tier "", entitlement ""): 3 models, 3 kept; left out 0 not for chat [], 0 completion-only []; disabled []; Claude [claude-sonnet-4-6]
+2026/10/26 13:15:42 antigravity ag@example.com: fetchAvailableModels at http://127.0.0.1:54512/daily (antigravity/hub/3.1.4 windows/amd64; project "ag-proj", current tier "free-tier", paid tier "", entitlement ""): 3 models, 3 kept; left out 0 not for chat [], 0 completion-only []; disabled []; Claude [claude-sonnet-4-6]
+2026/10/26 13:16:15 codex: kept signed in to me@example.com; signed it back in to it from spare@example.com
+2026/10/26 13:16:34 logins.json: json: cannot unmarshal string into Go struct field savedLogin.on of type bool; the accounts read before are kept
+2026/10/26 13:16:34 logins.json can't be read (it doesn't parse); it is kept as logins.json.bad-20261026-131634
+2026/10/26 13:16:34 logins.json: parsing time "yesterday" as "2006-01-02T15:04:05Z07:00": cannot parse "yesterday" as "2006"; the accounts read before are kept
+2026/10/26 13:16:34 logins.json can't be read (it doesn't parse); it is kept as logins.json.bad-20261026-131634
+2026/10/26 13:16:34 logins.json: json: cannot unmarshal object into Go value of type []provider.savedLogin; the accounts read before are kept
+2026/10/26 13:16:34 logins.json can't be read (it doesn't parse); it is kept as logins.json.bad-20261026-131634
+2026/10/26 13:16:34 logins.json: unexpected end of JSON input; the accounts read before are kept
+2026/10/26 13:16:34 logins.json: unexpected end of JSON input; the accounts read before are kept
+2026/10/26 13:16:34 logins.json can't be read (it doesn't parse); it is kept as logins.json.bad-20261026-131634
+2026/10/26 13:16:34 logins.json: unexpected end of JSON input; the accounts read before are kept
+2026/10/26 13:16:34 logins.json can't be read (it doesn't parse); it is kept as logins.json.bad-20261026-131634
+2026/10/26 13:17:01 partners: the list couldn't be fetched from http://127.0.0.1:55044, asked again in 10m0s: partners: invalid character 'o' in literal null (expecting 'u')
+2026/10/26 13:17:02 partners: the list couldn't be fetched from http://127.0.0.1:55059, asked again in 10m0s: partners: EOF
+2026/10/26 13:17:03 partners.json can't be read (it doesn't parse); it is kept as partners.json.bad-20261026-131703
+2026/10/26 13:17:03 partners: the list couldn't be fetched from http://127.0.0.1:55088, asked again in 10m0s: partners: 503 Service Unavailable
+2026/10/26 13:17:05 check-in: C:\Users\802165\AppData\Local\Temp\TestPluginCheckinCarriesNothingOverAnUnreadableFile3368921795\001\plugin-checkin.json doesn't parse (unexpected end of JSON input): magpie leaves it as it is and checks in no account of it until it does
+2026/10/26 13:17:06 our-free-model: [qoder/claude-x kiro/claude-y] left its plugin's list, and its picks until it lists them again
+2026/10/26 13:17:09 opencode-zen-free: [glm-5-free] left its plugin's list, and its picks until it lists them again
+2026/10/26 13:17:09 listing the plugins' models again: context canceled (the last lists stay)
+--- FAIL: TestSavedButSignedOut (0.14s)
+    signedout_test.go:68: keyring, no item: &{Agent:codex Provider: Name: Why:2 accounts are saved in magpie, and they are only offered beside the account Codex is signed in to. Codex keeps its sign-in in Codex's encrypted auth storage (features.secret_auth_storage) (cli_auth_credentials_store = "keyring" in C:\Users\802165\AppData\Local\Temp\TestSavedButSignedOut4091186369\001\.codex\config.toml), which magpie doesn't read: here it reads only C:\Users\802165\AppData\Local\Temp\TestSavedButSignedOut4091186369\001\.codex\auth.json. Set cli_auth_credentials_store = "file" there and sign in again (codex login). SignedOut:true Users:[a@x.com b@x.com] Quiet:false Tucked:false Retry:false}
+2026/10/26 13:17:32 copilot sign-in on github.com: GitHub gave the token; asking whose account it is
+2026/10/26 13:17:37 stepfun-auth.json can't be read (it doesn't parse); it is kept as stepfun-auth.json.bad-20261026-131737
+testenv: a test asked chatgpt.com:443, refused: tests stay off the network
+2026/10/26 13:17:52 codex: me@example.com · acct-me@ has used 98% or more of its allowance; signed it in to spare@example.com
+2026/10/26 13:17:52 codex: me@example.com · acct-me@ has room again; signed it back in to it
+2026/10/26 13:17:53 stepfun-auth.json can't be read (it doesn't parse); it is kept as stepfun-auth.json.bad-20261026-131753
+2026/10/26 13:17:53 stepfun-auth.json can't be read (it doesn't parse); it is kept as stepfun-auth.json.bad-20261026-131753
+2026/10/26 13:17:53 login-returns.json can't be read (it doesn't parse); it is kept as login-returns.json.bad-20261026-131753
+2026/10/26 13:17:53 login-returns.json can't be read (it doesn't parse); it is kept as login-returns.json.bad-20261026-131753
+2026/10/26 13:17:53 quota-history.json can't be read (it doesn't parse); it is kept as quota-history.json.bad-20261026-131753
+2026/10/26 13:17:53 quota-history.json can't be read (it doesn't parse); it is kept as quota-history.json.bad-20261026-131753
+2026/10/26 13:17:53 balance-history.json can't be read (it doesn't parse); it is kept as balance-history.json.bad-20261026-131753
+2026/10/26 13:17:53 balance-history.json can't be read (it doesn't parse); it is kept as balance-history.json.bad-20261026-131753
+2026/10/26 13:17:53 credits-daily.json can't be read (it doesn't parse); it is kept as credits-daily.json.bad-20261026-131753
+2026/10/26 13:17:53 credits-daily.json can't be read (it doesn't parse); it is kept as credits-daily.json.bad-20261026-131753
+2026/10/26 13:17:59 logins.json can't be read (10783 bytes, every one zero); what it held at 2026-10-26 13:17:59 is used, from logins.json.bak
+2026/10/26 13:17:59 logins.json: invalid character '\x00' looking for beginning of value; the accounts read before are kept
+2026/10/26 13:17:59 logins.json can't be read (10783 bytes, every one zero); it is kept as logins.json.bad-20261026-131759
+2026/10/26 13:17:59 logins.json: invalid character '\x00' looking for beginning of value; C:\Users\802165\AppData\Local\Temp\TestZeroedLoginsWithoutBackupKeptAside1599702698\001\.config\magpie\logins.json can't be read (10783 bytes, every one zero) and has no good backup
+2026/10/26 13:17:59 logins.json can't be read (10783 bytes, every one zero); it is kept as logins.json.bad-20261026-131759
+2026/10/26 13:17:59 migrations.json can't be read (4096 bytes, every one zero); what it held at 2026-10-26 13:17:59 is used, from migrations.json.bak
+2026/10/26 13:17:59 providers.json can't be read (2048 bytes, every one zero); what it held at 2026-10-26 13:17:59 is used, from providers.json.bak
+FAIL
+FAIL	github.com/yetone/magpie/internal/provider	219.538s
+FAIL

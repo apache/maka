@@ -1,0 +1,576 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Tue, 10 Nov 2026 23:38:25 +0800
+Subject: [PATCH] gateway: a Claude conversation's session waits out a restart
+ on the shelf (#5971)
+
+Every conversation that had a run waits for its next turn in a run of
+its own, and the runs let go past idleMost leave their sessions on the
+shelf - both only in the gateway's memory. After a restart, its own
+update's handover included, nothing mapped a conversation to a session:
+its next turn went to a new Claude Code from a transcript of the whole
+conversation (replaySession), a prefix Anthropic's cache has never
+seen, so every open conversation wrote itself to the prompt cache
+again, only Claude Code's own system prompt and tools read back.
+
+The shelf is now a file beside the providers' list (claude-shelf.json),
+written at each change of the shelf: a run let go onto it, one taken
+off (unshelve), one retired (retire), one waited out. The gateway
+shelves every waiting run as it ends, before its runs are aborted, and
+magpie ending on a signal shelves them too (ShelveIdle) - a quit and a
+handover both reach one of the two. A turn that finds no run reads the
+file (loadShelf) and goes on from the session its run cached, told the
+turn alone, dropping entries past what their run would have waited
+(idleLongest: the cache is gone either way) and ones this magpie took
+(another magpie's final write may still have them). A session whose
+file is gone resumes as nothing, a transcript as before.
+
+The sweep at the next start spares them: an entry is only kept while
+its run would have waited, and a session file newer than that is never
+swept.
+
+Ablations: without loadShelf the restart tests fail at "did not resume
+its session after the restart"; without shelveIdle,
+TestClaudeWaitingRunsShelveForTheRestart fails the same way while
+TestClaudeShelfWaitsOutTheRestart passes (its session was shelved by
+the idleMost overflow, not by the quit); without the stale-entry drop
+(its expiry timer neutralized with it, else the timer's immediate fire
+races the lookup), the stale entry is resumed past what its run would
+have waited. Whole, all pass.
+
+Run at upstream/main db0f2f20d + this commit, macOS 15 (darwin/arm64):
+TestClaudeShelfWaitsOutTheRestart, TestClaudeWaitingRunsShelveForTheRestart,
+TestClaudeRestartDropsStaleShelfEntries, TestClaudeSweepSparesShelvedSessions,
+TestClaudeLetGoConversationResumesItsSession, TestClaudeSessionFilesAreRemoved,
+TestClaudeOldSessionsAreSwept, TestClaudeAsideLeavesTheConversationsRun
+(-tags nogui, -race too) ok.
+
+Reported-by: Suge8
+---
+ internal/cli/signals.go                 |   1 +
+ internal/gateway/claude_shelf_test.go   | 204 +++++++++++++++++++++++
+ internal/gateway/claude_subscription.go | 213 ++++++++++++++++++++++++
+ internal/gateway/gateway.go             |   1 +
+ 4 files changed, 419 insertions(+)
+ create mode 100644 internal/gateway/claude_shelf_test.go
+
+diff --git a/internal/cli/signals.go b/internal/cli/signals.go
+index b5af80d59..05eab5280 100644
+--- a/internal/cli/signals.go
++++ b/internal/cli/signals.go
+@@ -45,6 +45,7 @@ func endProbesOnSignal() {
+ 			if !handled {
+ 				provider.FlushServed() // a gateway's last answers, noted and not yet written
+ 				gateway.FlushSticks()  // and who answered which conversation
++				gateway.ShelveIdle()   // and every conversation waiting for its next turn keeps its session out the restart (#5971)
+ 				// and the session index, or the next start reads every
+ 				// file a scan read since the last save again
+ 				savedWithin(sessionsSaved, saveOnSignal)
+diff --git a/internal/gateway/claude_shelf_test.go b/internal/gateway/claude_shelf_test.go
+new file mode 100644
+index 000000000..82de732c3
+--- /dev/null
++++ b/internal/gateway/claude_shelf_test.go
+@@ -0,0 +1,204 @@
++package gateway
++
++import (
++	"encoding/json"
++	"fmt"
++	"os"
++	"path/filepath"
++	"strings"
++	"testing"
++	"time"
++)
++
++// restart quits the gateway this harness drives and opens a new one, as
++// magpie restarting does: the runs it had die with it, whatever its shelf
++// kept and the sessions' files stay on disk. The shelf file is read as a
++// new process reads it, having written none of it.
++func (h *resumeHarness) restart() {
++	h.t.Helper()
++	h.s.subscription.abortAll()
++	shelfFile.Lock()
++	shelfFile.from, shelfFile.mod, shelfFile.last = "", time.Time{}, ""
++	shelfFile.Unlock()
++	h.s = New()
++	h.t.Cleanup(h.s.subscription.abortAll)
++}
++
++// A conversation whose run was let go past idleMost goes on from its run's
++// saved session after magpie restarts — its own update included — told the
++// turn alone, where a restart lost the shelf and the conversation's next
++// turn went to a new Claude Code from a transcript of it, a prefix the
++// cache has never seen, the whole of it written again (#5971).
++func TestClaudeShelfWaitsOutTheRestart(t *testing.T) {
++	h := newResumeHarness(t)
++	h.ask("rules A", "a1")
++	var sidA string
++	for pid := range h.runs() {
++		sidA = "s" + pid
++	}
++	// let go past idleMost, A's session waits on the shelf
++	for i := range idleMost {
++		h.ask(fmt.Sprintf("rules %d", i), "x")
++	}
++	eventually(t, "A shelved", func() bool {
++		h.s.subscription.mu.Lock()
++		defer h.s.subscription.mu.Unlock()
++		return len(h.s.subscription.shelf) == 1
++	})
++	h.restart()
++	before := h.runs()
++	h.ask("rules A", "a1", "a2")
++	var resumed string
++	for pid, log := range h.runs() {
++		if _, ok := before[pid]; !ok {
++			resumed = log
++		}
++	}
++	if !strings.Contains(resumed, "--resume "+sidA) {
++		t.Fatalf("A's next turn did not resume its session after the restart:\n%s", resumed)
++	}
++	told := resumed[strings.Index(resumed, "\ntold "):]
++	if !strings.Contains(told, "a2") || strings.Contains(told, "a1") {
++		t.Fatalf("the resumed run was told more than the turn:\n%s", told)
++	}
++}
++
++// Every conversation that had a run waits for its next turn in a run of
++// its own, none of them shelved while it waits. When magpie quits — a
++// plain quit, its own update's handover included — the gateway ends, and
++// each waiting run's session is shelved (shelveIdle, before the runs are
++// aborted, as one let go past idleMost is), so the next turn of each goes
++// on from the session it cached, not from a transcript of the whole
++// conversation (#5971).
++func TestClaudeWaitingRunsShelveForTheRestart(t *testing.T) {
++	h := newResumeHarness(t)
++	h.ask("rules A", "a1")
++	var sidA string
++	for pid := range h.runs() {
++		sidA = "s" + pid
++	}
++	// the gateway ends: shelveIdle then abortAll, as its end does
++	h.s.subscription.shelveIdle()
++	h.s.subscription.abortAll()
++	eventually(t, "A's session file left on disk", func() bool {
++		return containsStr(h.sessions(), sidA)
++	})
++	h.restart()
++	before := h.runs()
++	h.ask("rules A", "a1", "a2")
++	var resumed string
++	for pid, log := range h.runs() {
++		if _, ok := before[pid]; !ok {
++			resumed = log
++		}
++	}
++	if !strings.Contains(resumed, "--resume "+sidA) {
++		t.Fatalf("A's next turn did not resume its session after the restart:\n%s", resumed)
++	}
++	told := resumed[strings.Index(resumed, "\ntold "):]
++	if !strings.Contains(told, "a2") || strings.Contains(told, "a1") {
++		t.Fatalf("the resumed run was told more than the turn:\n%s", told)
++	}
++}
++
++// An entry of the shelf file past what its run would have waited
++// (idleLongest) is dropped at the next start: the cache it was to read is
++// gone either way, and the conversation's next turn is told whole, as it
++// was before the shelf waited out the restart.
++func TestClaudeRestartDropsStaleShelfEntries(t *testing.T) {
++	h := newResumeHarness(t)
++	h.ask("rules A", "a1")
++	var sidA string
++	for pid := range h.runs() {
++		sidA = "s" + pid
++	}
++	h.s.subscription.shelveIdle()
++	h.s.subscription.abortAll()
++	// hours pass before magpie is opened again
++	b, err := os.ReadFile(shelfPath())
++	if err != nil {
++		t.Fatalf("the shelf file: %v", err)
++	}
++	var saved map[string]savedShelf
++	if err := json.Unmarshal(b, &saved); err != nil {
++		t.Fatalf("the shelf file: %v", err)
++	}
++	if len(saved) != 1 {
++		t.Fatalf("the shelf file has %d entries", len(saved))
++	}
++	for k, v := range saved {
++		v.At = time.Now().Add(-2 * idleLongest)
++		saved[k] = v
++	}
++	b, err = json.Marshal(saved)
++	if err != nil {
++		t.Fatalf("the shelf file: %v", err)
++	}
++	os.WriteFile(shelfPath(), b, 0o600)
++	shelfFile.Lock()
++	shelfFile.from, shelfFile.mod, shelfFile.last = "", time.Time{}, ""
++	shelfFile.Unlock()
++	h.restart()
++	before := h.runs()
++	h.ask("rules A", "a1", "a2")
++	for pid, log := range h.runs() {
++		if _, ok := before[pid]; ok {
++			continue
++		}
++		if strings.Contains(log, "--resume "+sidA) {
++			t.Fatalf("the conversation went on from its session past what its run would have waited:\n%s", log)
++		}
++		told := log[strings.Index(log, "\ntold "):]
++		if !strings.Contains(told, "a1") || !strings.Contains(told, "a2") {
++			t.Fatalf("the stale conversation's next turn was not told the conversation whole:\n%s", told)
++		}
++	}
++}
++
++// The sweep at the next start leaves the sessions the shelf file keeps:
++// each is newer than a session may be left to be swept, its entry within
++// what its run would have waited. One the gateway that stopped long ago
++// left beside it, past that, goes.
++func TestClaudeSweepSparesShelvedSessions(t *testing.T) {
++	h := newResumeHarness(t)
++	h.ask("rules A", "a1")
++	var sidA string
++	for pid := range h.runs() {
++		sidA = "s" + pid
++	}
++	h.s.subscription.shelveIdle()
++	h.s.subscription.abortAll()
++	// a session a gateway that stopped long ago left beside it
++	projects, _ := filepath.Glob(filepath.Join(h.config, "projects", "*"))
++	var dir string
++	for _, d := range projects {
++		if _, err := os.Stat(filepath.Join(d, sidA+".jsonl")); err == nil {
++			dir = d
++		}
++	}
++	if dir == "" {
++		t.Fatalf("A's session file is gone: %v", h.sessions())
++	}
++	shelved := filepath.Join(dir, sidA+".jsonl")
++	stale := filepath.Join(dir, "older.jsonl")
++	os.WriteFile(stale, []byte("{}"), 0o600)
++	long := time.Now().Add(-2 * idleLongest)
++	os.Chtimes(stale, long, long)
++	h.restart()
++	if !containsStr(h.sessions(), sidA) {
++		t.Fatalf("A's session file is gone after the restart: %v", h.sessions())
++	}
++	for _, d := range projects {
++		h.s.subscription.sweepSessions([]string{d})
++	}
++	eventually(t, "the stale session swept", func() bool {
++		_, err := os.Stat(stale)
++		return os.IsNotExist(err)
++	})
++	// the sweep's pass over the folder's entries is done with the stale
++	// one gone of it, and the shelved one a moment behind at most
++	time.Sleep(100 * time.Millisecond)
++	if _, err := os.Stat(shelved); err != nil {
++		t.Fatalf("the shelved session was swept: %v", err)
++	}
++}
+diff --git a/internal/gateway/claude_subscription.go b/internal/gateway/claude_subscription.go
+index 3c446d7ef..0804f0387 100644
+--- a/internal/gateway/claude_subscription.go
++++ b/internal/gateway/claude_subscription.go
+@@ -70,6 +70,7 @@ import (
+ 	"github.com/yetone/magpie/internal/proc"
+ 	"github.com/yetone/magpie/internal/provider"
+ 	"github.com/yetone/magpie/internal/settings"
++	"github.com/yetone/magpie/internal/steady"
+ 	"github.com/yetone/magpie/internal/wslrun"
+ )
+ 
+@@ -82,6 +83,11 @@ type subscriptionBridge struct {
+ 	baseURL string
+ 	sweep   sync.Once
+ 	swept   sync.Map // Claude Code's project folders sweepSessions went through
++	// takenShelf is when an entry of the shelf file was taken here, by its
++	// key: the file a magpie that handed over wrote last may still have
++	// the entry, and loadShelf leaves it out rather than hand a session a
++	// run here already goes on with to another
++	takenShelf map[string]time.Time
+ 	// lost is why each run that had a conversation ended, by that
+ 	// conversation (convKey), and lostCalls by the tool calls it waited
+ 	// on or was last handed results for, for the log of a request that
+@@ -2300,12 +2306,18 @@ func (b *subscriptionBridge) retire(owner string, req *Request) {
+ 		}
+ 	}
+ 	var gone []*savedSession
++	retired := false
+ 	for key, s := range b.shelf {
+ 		if s.owner == owner && s.conv != "" && slices.Contains(keys, s.conv) && !(aside(req) && len(s.tools) > 0) {
+ 			delete(b.shelf, key)
+ 			gone = append(gone, s)
++			retired = true
+ 		}
+ 	}
++	if retired {
++		// the file doesn't have them back at the next start (loadShelf)
++		b.saveShelfLocked()
++	}
+ 	b.mu.Unlock()
+ 	for _, s := range gone {
+ 		s.discard()
+@@ -2568,6 +2580,7 @@ func (b *subscriptionBridge) shelve(run *subscriptionRun) {
+ 		b.mu.Lock()
+ 		if b.shelf[key] == s {
+ 			delete(b.shelf, key)
++			b.saveShelfLocked()
+ 		}
+ 		b.mu.Unlock()
+ 		s.discard()
+@@ -2583,6 +2596,7 @@ func (b *subscriptionBridge) shelve(run *subscriptionRun) {
+ 		delete(b.shelf, oldKey)
+ 		go oldest.discard()
+ 	}
++	b.saveShelfLocked()
+ }
+ 
+ // unshelve takes the saved session a request's conversation goes on
+@@ -2594,6 +2608,7 @@ func (b *subscriptionBridge) unshelve(req *Request, owner string) *savedSession
+ 		return nil
+ 	}
+ 	b.mu.Lock()
++	b.loadShelf()
+ 	s, behind := b.shelf[key], false
+ 	if s == nil {
+ 		// rewritten (resume); its Claude Code is told the tools the
+@@ -2620,6 +2635,13 @@ func (b *subscriptionBridge) unshelve(req *Request, owner string) *savedSession
+ 		}
+ 	}
+ 	delete(b.shelf, key)
++	if s != nil {
++		if b.takenShelf == nil {
++			b.takenShelf = map[string]time.Time{}
++		}
++		b.takenShelf[key] = s.at
++		b.saveShelfLocked()
++	}
+ 	b.mu.Unlock()
+ 	if s == nil {
+ 		return nil
+@@ -2661,6 +2683,167 @@ func (s *savedSession) cutBehind() bool {
+ 	return true
+ }
+ 
++// shelfPath is the shelf file, beside the providers' list: what the shelf
++// keeps waits out a restart there — a quit, magpie's own update's handover
++// included — so the next turn of every conversation that had a run goes on
++// from the session its run cached, not from a transcript of the whole
++// conversation, a prefix the cache has never seen, all of it written again
++// (#5971).
++func shelfPath() string {
++	return filepath.Join(filepath.Dir(provider.Path()), "claude-shelf.json")
++}
++
++// savedShelf is a savedSession as the shelf file has it.
++type savedShelf struct {
++	Session    string    `json:"session"`
++	Sessions   []string  `json:"sessions"`
++	Owner      string    `json:"owner"`
++	Conv       string    `json:"conv,omitempty"`
++	Behind     string    `json:"behind,omitempty"`
++	BehindTurn string    `json:"behindTurn,omitempty"`
++	BehindLine string    `json:"behindLine,omitempty"`
++	BehindMsg  string    `json:"behindMsg,omitempty"`
++	Tools      []string  `json:"tools,omitempty"`
++	At         time.Time `json:"at"`
++	Tui        bool      `json:"tui,omitempty"`
++	Appended   bool      `json:"appended,omitempty"`
++	// CacheCount, CacheFloor and CacheTTL are its cachePrefix: the run
++	// that goes on from the entry keeps the marks, and the cache lifetime,
++	// its run had
++	CacheCount int    `json:"cacheCount,omitempty"`
++	CacheFloor string `json:"cacheFloor,omitempty"`
++	CacheTTL   string `json:"cacheTtl,omitempty"`
++}
++
++// shelfFile is the shelf file as it was last read or written: what this
++// magpie wrote isn't read back as another's, and a magpie before this one,
++// the one that handed over, is read again when the file changed since.
++var shelfFile struct {
++	sync.Mutex
++	from string
++	mod  time.Time
++	last string
++}
++
++// saveShelfLocked writes the shelf file, only for this user to read, at
++// each change of the shelf: a run let go onto it, one taken off, one
++// waited out. Called with b.mu held.
++func (b *subscriptionBridge) saveShelfLocked() {
++	saved := make(map[string]savedShelf, len(b.shelf))
++	for key, s := range b.shelf {
++		s.mu.Lock()
++		gone := s.gone
++		s.mu.Unlock()
++		if gone {
++			continue
++		}
++		saved[key] = savedShelf{
++			Session: s.session, Sessions: s.sessions, Owner: s.owner, Conv: s.conv,
++			Behind: s.behind, BehindTurn: s.behindTurn, BehindLine: s.behindLine, BehindMsg: s.behindMsg,
++			Tools: slices.Sorted(maps.Keys(s.tools)), At: s.at, Tui: s.tui, Appended: s.appended,
++			CacheCount: s.cachePrefix.count, CacheFloor: s.cachePrefix.floor, CacheTTL: s.cachePrefix.ttl,
++		}
++	}
++	bsh, err := json.Marshal(saved)
++	if err != nil {
++		return
++	}
++	shelfFile.Lock()
++	defer shelfFile.Unlock()
++	path := shelfPath()
++	if shelfFile.from == path && shelfFile.last == string(bsh) {
++		return
++	}
++	if os.MkdirAll(filepath.Dir(path), 0o700) != nil {
++		return
++	}
++	target, err := edit.Target(path) // a symlink stays, its target written
++	if err != nil {
++		return
++	}
++	tmp := target + ".magpie-tmp"
++	if os.WriteFile(tmp, bsh, 0o600) != nil {
++		return
++	}
++	if steady.Rename(tmp, target) != nil {
++		os.Remove(tmp)
++		return
++	}
++	shelfFile.from, shelfFile.last = path, string(bsh)
++	if fi, err := os.Stat(target); err == nil {
++		shelfFile.mod = fi.ModTime()
++	}
++}
++
++// loadShelf has the shelf file's entries onto the shelf, when the file
++// changed since it was last read or written here: what a magpie before
++// this one shelved waits for its conversation's next turn as anything
++// shelved here does. An entry past what its run would have waited is
++// dropped, the cache it was to read gone either way, and so is one this
++// magpie took, or one that names no session of a folder. Called with
++// b.mu held.
++func (b *subscriptionBridge) loadShelf() {
++	path := shelfPath()
++	fi, err := os.Stat(path)
++	if err != nil {
++		return
++	}
++	shelfFile.Lock()
++	changed := path != shelfFile.from || !fi.ModTime().Equal(shelfFile.mod)
++	shelfFile.Unlock()
++	if !changed {
++		return
++	}
++	bsh, err := os.ReadFile(path)
++	if err != nil {
++		return
++	}
++	var saved map[string]savedShelf
++	if decodeJSON(bsh, &saved) != nil {
++		return
++	}
++	shelfFile.Lock()
++	shelfFile.from, shelfFile.mod = path, fi.ModTime()
++	shelfFile.Unlock()
++	now := time.Now()
++	for key, v := range saved {
++		if at, taken := b.takenShelf[key]; taken && !v.At.After(at) {
++			continue
++		}
++		if _, ok := b.shelf[key]; ok {
++			continue // ours stands
++		}
++		if v.Session == "" || len(v.Sessions) == 0 || v.Owner == "" ||
++			strings.ContainsAny(v.Session, `/\`) || strings.Contains(v.Session, "..") ||
++			now.Sub(v.At) > idleLongest {
++			continue
++		}
++		var tools map[string]bool
++		if len(v.Tools) > 0 {
++			tools = make(map[string]bool, len(v.Tools))
++			for _, name := range v.Tools {
++				tools[name] = true
++			}
++		}
++		s := &savedSession{
++			session: v.Session, sessions: v.Sessions, owner: v.Owner, conv: v.Conv, key: key,
++			behind: v.Behind, behindTurn: v.BehindTurn, behindLine: v.BehindLine, behindMsg: v.BehindMsg,
++			tools: tools, at: v.At, tui: v.Tui, appended: v.Appended,
++			cachePrefix: cachePrefix{count: v.CacheCount, floor: v.CacheFloor, ttl: v.CacheTTL},
++		}
++		s.timer = time.AfterFunc(idleLongest-time.Since(v.At), func() {
++			b.mu.Lock()
++			if b.shelf[key] == s {
++				delete(b.shelf, key)
++				b.saveShelfLocked()
++			}
++			b.mu.Unlock()
++			s.discard()
++		})
++		b.shelf[key] = s
++	}
++}
++
+ // noteLines keeps where in the run's session a line calling the client's
+ // tools ids was written: uuid, as Claude Code's output tells it. Claude
+ // Code's own lines (<synthetic>) are no reply's.
+@@ -7621,3 +7804,33 @@ func (b *subscriptionBridge) letGoIdle(why string) []*subscriptionRun {
+ 	claudeRoom.nudge()
+ 	return drop
+ }
++
++// shelveIdle shelves every run waiting for its conversation's next turn,
++// as one let go past idleMost is, and takes it out of the wait: its
++// session, and the shelf it is on, outlive magpie on disk (saveShelfLocked,
++// loadShelf). The gateway calls it as it ends, before its runs are aborted
++// (abortAll), and magpie ending on a signal calls ShelveIdle — a quit, its
++// own update's handover included, used to leave every conversation that had
++// a run to a new Claude Code told it whole from a transcript, all of it
++// written to the prompt cache again (#5971). A run in a turn is left to
++// finish it.
++func (b *subscriptionBridge) shelveIdle() {
++	b.mu.Lock()
++	for key, run := range b.idle {
++		if run.idleKey == key {
++			b.shelve(run)
++		}
++		delete(b.idle, key)
++		run.idleKey = ""
++	}
++	b.mu.Unlock()
++}
++
++// ShelveIdle is shelveIdle on every bridge, for magpie ending on a signal
++// before the gateway's own end.
++func ShelveIdle() {
++	bridges.Range(func(b, _ any) bool {
++		b.(*subscriptionBridge).shelveIdle()
++		return true
++	})
++}
+diff --git a/internal/gateway/gateway.go b/internal/gateway/gateway.go
+index fdc16f5d0..fd44e6265 100644
+--- a/internal/gateway/gateway.go
++++ b/internal/gateway/gateway.go
+@@ -953,6 +953,7 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
+ 		if !s.waitSightSaves(c) {
+ 			log.Printf("gateway: ending before image descriptions could all be saved; the next start may describe them again")
+ 		}
++		s.subscription.shelveIdle() // every conversation waiting for its next turn keeps its session out the restart (#5971)
+ 		s.subscription.abortAll()
+ 		provider.FlushServed() // what answered last, kept for the next start and the CLI
+ 		flushSticks()          // who answered which conversation, for the next start or the magpie handed over to
+-- 
+2.50.1 (Apple Git-155)
+

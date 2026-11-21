@@ -1,0 +1,301 @@
+Took this one (the `take` above). This lands the skip you asked for in point 2 ("skip the child's classification when the parent already produced a pick"); point 1 (documenting the layer rules) is answered in `group set --help` as part of it; point 3 (warning at set time for slow `classifier=group/<id>`) needs its own look and is untouched here.
+
+**Symptom**
+
+A group reached through a parent group ran its own classifier on the same turn even after the parent's classifier had already picked the turn's reasoning — an answer the turn then throws away, since the effort sent is the outermost group's pick (a nested pick only fills in when the parent gave none). On your day the group in it answered 27 of 28 such turns, 2,031–8,001 ms each, and the 14 turns where the parent picked discarded the child's answer; both classifications sit on the request's path before its first byte, so those turns paid both waits. Neither answer was cached across the layers because the classify cache keys on the classifier model.
+
+**Minimal repro**
+
+`internal/gateway/nested_classify_test.go` (`TestNestedGroupClassifierNotAskedWhenTheParentPicked`) builds exactly your setup: parent group `r` (`effort=auto`, classifier `cp/cls`) holding `group/quality` (`effort=auto`, classifier `cc/cls`, member `f1/m`), one turn that asks for reasoning. Before the change the child classifier is asked and its answer (low) discarded while the request goes out at the parent's pick (high); the test fails with `the group in it asked its classifier 1 times though the parent picked`. After the change the child classifier is asked nothing and the request still goes out at high; with the parent's classifier failing, the child is asked as before and its low is what goes out.
+
+**Root cause**
+
+`nestedRules` runs `ruleFor` for each ruled group in the group, and `ruleFor` decided to ask the effort from that group's own config alone — nothing told it a pick already stood above it, so it asked for one the consumer (`gateway.go`, "the outermost group's that did") would drop.
+
+**Fix**
+
+`ruleFor` now takes the pick a group above it already made, and with one standing it does not ask the effort again. The intents, when the group's rules have them, are still asked — they route that group and are not the parent's to answer. The fallback keeps working: the group in it is asked as before whenever the group above gave no pick (its pick then stands, as on your 14 no-pick turns), and once the parent fails on later turns its own pick chain is kept as it was. The trace now says why nothing was asked (`classified.error` = "the group above already picked this turn's reasoning") instead of leaving the nested `classified` out. `magpie group set --help` says the rule under `effort auto`. The change's own cost per request is two string comparisons on the routing path; what it saves is the whole second classifier round on every turn the parent picks.
+
+One corner worth stating: on the first fallback turn after a parent-picked turn, the child's own chain no longer remembers the pick it was never allowed to send. That memory never matched what the child's members had served (they served the parent's level), so the old kept level could send a reasoning amount the child's vendor cache didn't hold; the fresh pick sent now is the honest one.
+
+**Verification**
+
+| Check | Result |
+| --- | --- |
+| `go test -tags nogui -run TestNestedGroupClassifierNotAskedWhenTheParentPicked ./internal/gateway` | green; red before the fix, red again with the fix reverted and the tests kept |
+| `go test -tags nogui ./internal/gateway` | one failure, `TestCodexPoolSaysTheClientsVersion`, which the parent commit's own full run fails the same way and both pass alone — every other test passes |
+| `go test -race -tags nogui -run 'TestGroup|TestNested|TestIntent|TestJev|TestRule|TestClassifier|TestChatClassifier|TestFixedMember|TestDecide' ./internal/gateway` | pass |
+| `gofmt -l internal/gateway internal/cli` | prints nothing |
+| `go vet ./...`, `GOOS=linux go vet ./internal/gateway/...`, `GOOS=windows go vet ./internal/gateway/...` | pass (the cgo warnings vet prints in `internal/gui` print at the parent commit too) |
+| `go build ./...` (darwin, windows) | pass |
+| `GOOS=linux go build ./...` | fails inside the wails dependency's own linux sources, byte-for-byte the failure the parent commit gives; `GOOS=linux go build ./internal/gateway/...` passes |
+| `go test -tags nogui ./internal/cli` | fails `TestSettingsCLISetsWhatTheWindowSaves` and `TestEveryRouteHasACommandOrIsNamed`, both failing the same way at the parent commit |
+
+Not verified: no live traffic or real accounts — the latency and counts on my side are the test's (a classifier upstream asked 1 vs 0 times), the 2–8 s figures are yours; the Routing page's rendering of the new `classified.error` text is unchecked (no GUI suite run) — it already renders `classified.error` strings such as "the group has no classifier", so I expect it to read as-is; and `classifier=group/<id>` spending the whole classifier wait (your second finding) is unchanged by this patch.
+
+**Attribution**: AI-written; I've read the whole diff and the tests pass. Please keep the author (`ggbdpq`) or add `Co-authored-by: ggbdpq <ggbdpq@gmail.com>`.
+
+<details><summary>patch: fix(gateway): skip a nested group's effort classifier when the group above picked (#4358) — git am applies it as is; SHA-256 first 16: 109fcf27a27cd0f2</summary>
+
+```patch
+From 9f22642943c362063e6716c426a6e049eba11ff0 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Mon, 2 Nov 2026 03:05:57 +0800
+Subject: [PATCH] fix(gateway): skip a nested group's effort classifier when
+ the group above picked (#4358)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+A group reached through a parent group runs its own classifier when it is
+effort=auto, even after the parent's classifier already picked the turn's
+reasoning: the request goes out at the parent's pick (the outermost pick
+stands, gateway.go), so the group in it pays for an answer the turn throws
+away. On one reporter's day the group in it answered 27 of 28 such turns,
+2-8 s each, and 14 of the 28 parent picks discarded the answer.
+
+ruleFor now takes the pick a group above it already made: with one standing,
+the classifier is not asked for the effort again. The intents, when the
+group's rules have them, are still asked — they are the group's own routing.
+The trace says why nothing was asked. The fallback keeps working: the group
+in it is asked as before whenever the group above gave no pick.
+
+Fixes #4358
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/cli/groups_cli.go               |  4 +-
+ internal/gateway/classify_test.go        |  2 +-
+ internal/gateway/gateway.go              |  8 +-
+ internal/gateway/nested_classify_test.go | 95 ++++++++++++++++++++++++
+ internal/gateway/rules.go                | 30 ++++++--
+ 5 files changed, 130 insertions(+), 9 deletions(-)
+ create mode 100644 internal/gateway/nested_classify_test.go
+
+diff --git a/internal/cli/groups_cli.go b/internal/cli/groups_cli.go
+index ffaa77981..8b98f34bb 100644
+--- a/internal/cli/groups_cli.go
++++ b/internal/cli/groups_cli.go
+@@ -113,7 +113,9 @@ const groupUsage = `usage:
+                    asked in words — rates how hard it is, and the turn's requests
+                    reason at low, medium, high or xhigh in place of the agent's level; only those
+                    the agent asked to reason, never one it turned off (none). A route's effort
+-                   is what the agent asked, each try's what its model was sent
++                   is what the agent asked, each try's what its model was sent. A group in the
++                   group, effort=auto of its own, is asked only when this one gave no pick:
++                   the outermost pick stands
+ 
+   e.g. magpie group add "Opus anywhere" models=claude/claude-opus-5-5,copilot/claude-opus-5.5 routing=order
+        magpie group set opus-anywhere stays=session models+=openrouter/anthropic/claude-opus-5.5
+diff --git a/internal/gateway/classify_test.go b/internal/gateway/classify_test.go
+index 537f4e53a..30a2dac83 100644
+--- a/internal/gateway/classify_test.go
++++ b/internal/gateway/classify_test.go
+@@ -251,7 +251,7 @@ func TestIntentNotAskedWhenItCantMatter(t *testing.T) {
+ 	hit := ruleFor("img", g, ms, img, "claude", func(string, []string, before, bool, string) (verdict, error) {
+ 		asked++
+ 		return verdict{Intent: "debugging"}, nil
+-	})
++	}, "")
+ 	if hit.N != 0 || hit.Classified == nil || !strings.Contains(hit.Classified.Error, "no words") || asked != 0 {
+ 		t.Fatalf("image: %+v %+v", hit, hit.Classified)
+ 	}
+diff --git a/internal/gateway/gateway.go b/internal/gateway/gateway.go
+index 36294888c..09550ec74 100644
+--- a/internal/gateway/gateway.go
++++ b/internal/gateway/gateway.go
+@@ -2332,7 +2332,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
+ 		}
+ 	}
+ 	if ruleReq != nil && g.Ruled() {
+-		hit = ruleFor(ruleAt, g, ms, ruleReq, agent, ask)
++		hit = ruleFor(ruleAt, g, ms, ruleReq, agent, ask, "")
+ 	}
+ 	// Some clients send images even when the selected model is known to
+ 	// accept text only. Reject a new image and omit images from history.
+@@ -2636,7 +2636,11 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
+ 	var nested []NestedRule
+ 	var nestedAt []string
+ 	if ruleReq != nil && !modelRuled(hit, ms, cands) {
+-		nested, nestedAt, cands, pl = s.nestedRules(ruleAt, ruleReq, agent, ask, ruled, cands, pl, aff)
++		picked := ""
++		if hit != nil {
++			picked = hit.Pick
++		}
++		nested, nestedAt, cands, pl = s.nestedRules(ruleAt, ruleReq, agent, ask, ruled, cands, pl, aff, picked)
+ 	}
+ 	// the effort a group's decision model picked for the turn: the
+ 	// outermost group's that did
+diff --git a/internal/gateway/nested_classify_test.go b/internal/gateway/nested_classify_test.go
+new file mode 100644
+index 000000000..85c9f6df0
+--- /dev/null
++++ b/internal/gateway/nested_classify_test.go
+@@ -0,0 +1,95 @@
++package gateway
++
++import (
++	"net/http/httptest"
++	"strings"
++	"testing"
++
++	"github.com/yetone/magpie/internal/catalog"
++	"github.com/yetone/magpie/internal/provider"
++)
++
++// #4358: a group in the group, itself effort=auto with a classifier of
++// its own, is asked its classifier even when the group above it already
++// picked the turn's reasoning — an answer the turn throws away, the
++// requests going out at the parent's pick. The parent's pick stands, and
++// the group in it is asked only when the parent gave no pick.
++func TestNestedGroupClassifierNotAskedWhenTheParentPicked(t *testing.T) {
++	fresh(t)
++	parent, child := &clsUp{answer: "3"}, &clsUp{answer: "1"} // parent picks high, child low
++	for _, x := range []struct {
++		id string
++		up *clsUp
++	}{{"cp", parent}, {"cc", child}} {
++		srv := httptest.NewServer(x.up)
++		t.Cleanup(srv.Close)
++		if err := provider.Save(provider.Provider{ID: x.id, Name: strings.ToUpper(x.id), Key: "k" + x.id, Models: []string{"cls"}, Chat: srv.URL + "/v1"}); err != nil {
++			t.Fatal(err)
++		}
++		if err := catalog.SaveLive(x.id, srv.URL+"/v1", []catalog.Model{{ID: "cls", Context: 32000}}); err != nil {
++			t.Fatal(err)
++		}
++	}
++	f := &ruleUp{key: "kf"}
++	fs := httptest.NewServer(f)
++	t.Cleanup(fs.Close)
++	if err := provider.Save(provider.Provider{ID: "f1", Name: "F1", Key: "kf1", Models: []string{"m"}, Chat: fs.URL + "/v1"}); err != nil {
++		t.Fatal(err)
++	}
++	if err := catalog.SaveLive("f1", fs.URL+"/v1", []catalog.Model{{ID: "m", Context: 32000}}); err != nil {
++		t.Fatal(err)
++	}
++	for _, g := range []provider.Group{
++		{Name: "Quality", Members: []string{"f1/m"}, Routing: provider.Ordered, Effort: provider.EffortAuto, Classifier: "cc/cls"},
++		{Name: "R", Members: []string{"group/quality"}, Routing: provider.Ordered, Effort: provider.EffortAuto, Classifier: "cp/cls"},
++	} {
++		if err := provider.SaveGroup(g); err != nil {
++			t.Fatal(err)
++		}
++	}
++	s := New()
++	// the parent's classifier answers: its pick is the one sent, and the
++	// group in it is asked nothing
++	out, r := postOK(t, s, "s1", chat("fix the bug", nil, 0, `,"reasoning_effort":"medium"`))
++	if !strings.Contains(out, "from kf") {
++		t.Fatalf("%s", out)
++	}
++	if parent.n() != 1 {
++		t.Fatalf("the parent's classifier asked %d times", parent.n())
++	}
++	if n := child.n(); n != 0 {
++		t.Fatalf("the group in it asked its classifier %d times though the parent picked", n)
++	}
++	if !strings.Contains(f.last, `"reasoning_effort":"high"`) {
++		t.Fatalf("the parent's pick not sent: %s", f.last)
++	}
++	if r.Rule == nil || r.Rule.Pick != "high" || r.Rule.Classified == nil || r.Rule.Classified.By != "cp/cls" {
++		t.Fatalf("parent traced %+v", r.Rule)
++	}
++	if len(r.Nested) != 1 || r.Nested[0].Group != "quality" || r.Nested[0].Rule == nil || r.Nested[0].Rule.Pick != "" {
++		t.Fatalf("nested traced %+v", r.Nested)
++	}
++	// the parent's classifier giving nothing, the group in it is asked as
++	// before: its pick is what the turn goes by
++	parent.set("", 500)
++	was := parent.n()
++	out, r = postOK(t, s, "s2", chat("write the parser", nil, 0, `,"reasoning_effort":"medium"`))
++	if !strings.Contains(out, "from kf") {
++		t.Fatalf("%s", out)
++	}
++	// a failing upstream is asked again (and again, the pipeline's
++	// same-one retries of a 500, seen on the plain intent path too);
++	// the turn asked it afresh, whatever the count came to
++	if parent.n() <= was {
++		t.Fatalf("the parent's classifier asked %d times, was %d", parent.n(), was)
++	}
++	if child.n() != 1 {
++		t.Fatalf("the fallback asked %d times", child.n())
++	}
++	if !strings.Contains(f.last, `"reasoning_effort":"low"`) {
++		t.Fatalf("the group in it's pick not sent: %s", f.last)
++	}
++	if r.Rule == nil || r.Rule.Pick != "" || len(r.Nested) != 1 || r.Nested[0].Rule == nil || r.Nested[0].Rule.Pick != "low" {
++		t.Fatalf("traced %+v %+v", r.Rule, r.Nested)
++	}
++}
+diff --git a/internal/gateway/rules.go b/internal/gateway/rules.go
+index ad390b87c..cb45beccf 100644
+--- a/internal/gateway/rules.go
++++ b/internal/gateway/rules.go
+@@ -173,9 +173,13 @@ func firstWords(req *Request) string {
+ // the conversation has grown past what that model can take and a rule
+ // sends it to one with more room. A group whose decision model picks the
+ // effort (provider.EffortAuto) has it pick as the turn begins, when the
+-// agent asked for reasoning, and the turn keeps it. It returns nil for a
+-// group that decides nothing.
+-func ruleFor(key string, g provider.Group, ms []provider.Member, req *Request, agent string, ask classifier) *RuleHit {
++// agent asked for reasoning, and the turn keeps it. pick is the reasoning
++// a group above this one already picked for the turn, when there is one:
++// its answer is the one sent (#4358), so this group's classifier is not
++// asked for the effort again — the intents, when its rules have them, are
++// still this group's own routing. It returns nil for a group that decides
++// nothing.
++func ruleFor(key string, g provider.Group, ms []provider.Member, req *Request, agent string, ask classifier, pick string) *RuleHit {
+ 	if !g.Ruled() || req == nil {
+ 		return nil
+ 	}
+@@ -288,6 +292,16 @@ func ruleFor(key string, g provider.Group, ms []provider.Member, req *Request, a
+ 	// never be sent (withEffort leaves "none" as it is), only shown (#2247)
+ 	intents := provider.Intents(g.Rules, q)
+ 	effort := g.Effort == provider.EffortAuto && hit.Effort != "" && !req.ThinkOff
++	if effort && pick != "" {
++		// the group above picked this turn's reasoning (#4358): its answer
++		// is the one sent, so asking here again is paid for and thrown
++		// away (a group in it answered 27 of 28 turns on one reporter's
++		// day, several seconds each, and the turn sent the group above's)
++		effort = false
++		if len(intents) == 0 {
++			hit.Classified = &Classified{By: g.Classifier, Error: "the group above already picked this turn's reasoning"}
++		}
++	}
+ 	if len(intents) > 0 || effort {
+ 		c := &Classified{By: g.Classifier, Intents: intents}
+ 		if had && slices.Contains(intents, tr.intent) {
+@@ -481,7 +495,7 @@ func keepsEffort(tr turnRule, pick string, tokens int, now time.Time) bool {
+ // their own key (at, the group's, and the group's way down), asking ask
+ // of the message as the group's own rules do. It gives what each decided
+ // and their keys.
+-func (s *Server) nestedRules(at string, req *Request, agent string, ask classifier, ms []provider.Member, cands []candidate, pl planned, aff *Affinity) ([]NestedRule, []string, []candidate, planned) {
++func (s *Server) nestedRules(at string, req *Request, agent string, ask classifier, ms []provider.Member, cands []candidate, pl planned, aff *Affinity, picked string) ([]NestedRule, []string, []candidate, planned) {
+ 	var out []NestedRule
+ 	var keys []string
+ 	for depth := 0; ; depth++ { // as deep as the one going first is
+@@ -501,9 +515,15 @@ func (s *Server) nestedRules(at string, req *Request, agent string, ask classifi
+ 				subMs = append(subMs, m.Below(depth+1))
+ 			}
+ 		}
+-		h := ruleFor(at, sub, subMs, req, agent, ask)
++		// the outermost pick stands (#4358): a group in the group asked
++		// once one above it has picked only pays for an answer the turn
++		// would throw away
++		h := ruleFor(at, sub, subMs, req, agent, ask, picked)
+ 		keys = append(keys, at)
+ 		out = append(out, NestedRule{Group: sub.ID, Name: sub.Name, Rule: h})
++		if h != nil && h.Pick != "" && picked == "" {
++			picked = h.Pick
++		}
+ 		if h == nil || h.Use == "" {
+ 			continue
+ 		}
+-- 
+2.50.1 (Apple Git-155)
+
+
+```
+</details>
+
+Branch with the commit: [fix/4358-nested-group-classifier](https://github.com/ggbdpq/magpie/tree/fix/4358-nested-group-classifier) (head `9f22642943c362063e6716c426a6e049eba11ff0`).

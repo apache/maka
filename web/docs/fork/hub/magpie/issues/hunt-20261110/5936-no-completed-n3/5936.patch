@@ -1,0 +1,269 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Tue, 10 Nov 2026 23:23:49 +0800
+Subject: [PATCH] gateway: a Chat upstream's [DONE] ends a translated reply's
+ read, not its hangup (#5936)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+A relay that streams a reply whole, says it over (finish_reason, [DONE])
+and holds the connection kept the client waiting on the translated
+reply's end: the read went on, the end was said only when the reading
+gave up, and the client — Codex on a Chat-only provider, its turn stuck
+in progress — gave up first. The reply now ends at the [DONE] its
+protocol says it over with, its usage in the chunks before it; a reply
+that said nothing is still the empty reply's to answer, and an upstream
+whose end is told by its finish_reason (Gemini's OpenAI-compatible,
+Command Code) is read as it was.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gateway/continuation.go      |  17 +++-
+ internal/gateway/continuation_test.go | 123 ++++++++++++++++++++++++++
+ internal/gateway/responses_ws_test.go |  52 +++++++++++
+ 3 files changed, 191 insertions(+), 1 deletion(-)
+
+diff --git a/internal/gateway/continuation.go b/internal/gateway/continuation.go
+index 974cf6207..76b180a83 100644
+--- a/internal/gateway/continuation.go
++++ b/internal/gateway/continuation.go
+@@ -78,6 +78,14 @@ var errStreamCut = errors.New("stream cut mid-reply")
+ // and be whole, so Chat is not one.
+ var errEndedShort = errors.New("the reply ended before it was complete")
+ 
++// errDoneSaid ends a reply's read at the [DONE] a Chat upstream says its
++// reply over with: the reply is whole by its protocol, its usage in the
++// chunks before it, and a vendor that holds the connection after it — a
++// relay slow to hang up (#5936) — kept the client waiting on the
++// translated reply's end, said only when the reading gave up, until the
++// client gave up first.
++var errDoneSaid = errors.New("the stream said its reply over")
++
+ // endsAtProbeCap says whether a reply that stopped short of its end, its
+ // connection closed cleanly, is taken as one that ended at its length:
+ // the request capped it at a short probe's worth (cutVoidTokens) and the
+@@ -661,6 +669,11 @@ func (s *Server) streamTranslated(w http.ResponseWriter, r *http.Request, p prov
+ 					if cut || relooped {
+ 						return errStreamCut
+ 					}
++					if actual == provider.Chat && strings.TrimSpace(data) == "[DONE]" {
++						// the upstream's own end: what the reply has is
++						// whole, hold or not (#5936)
++						return errDoneSaid
++					}
+ 					return nil
+ 				}, func() {
+ 					wmu.Lock()
+@@ -670,7 +683,9 @@ func (s *Server) streamTranslated(w http.ResponseWriter, r *http.Request, p prov
+ 				})
+ 				stopKeep()
+ 				res.Body.Close()
+-				if errors.Is(serr, errStreamCut) {
++				if errors.Is(serr, errStreamCut) || errors.Is(serr, errDoneSaid) {
++					// a cut's error event is in hand; a [DONE] said
++					// the reply over: neither is the read's to fail on
+ 					serr = nil
+ 				}
+ 				if serr == nil && failed == "" && !ended && !relooped &&
+diff --git a/internal/gateway/continuation_test.go b/internal/gateway/continuation_test.go
+index 77adf3008..99565302f 100644
+--- a/internal/gateway/continuation_test.go
++++ b/internal/gateway/continuation_test.go
+@@ -1,6 +1,7 @@
+ package gateway
+ 
+ import (
++	"bufio"
+ 	"encoding/json"
+ 	"fmt"
+ 	"io"
+@@ -748,3 +749,125 @@ func TestBuildChatResumePrefillMarks(t *testing.T) {
+ 		t.Errorf("an upstream without a prefill mode got one marked: %v", m)
+ 	}
+ }
++
++// doneHold is a Chat upstream that streams a short reply, says it over
++// (finish_reason, usage, [DONE]) and then holds the connection open —
++// a relay that serves a reply whole and dawdles over the hangup (#5936):
++// the client reads the reply, then waits on the translated reply's end,
++// which only the hangup said, and gives up first. held closes once the
++// reply is over and the connection held.
++type doneHold struct {
++	mu   sync.Mutex
++	n    int
++	held chan struct{}
++}
++
++func (f *doneHold) serve(t *testing.T, w http.ResponseWriter, r *http.Request) {
++	t.Helper()
++	io.ReadAll(r.Body)
++	f.mu.Lock()
++	f.n++
++	f.mu.Unlock()
++	w.Header().Set("Content-Type", "text/event-stream")
++	fl := w.(http.Flusher)
++	write := func(ev string) {
++		io.WriteString(w, "data: "+ev+"\n\n")
++		fl.Flush()
++	}
++	write(chatText("glm-5.2", "hello"))
++	write(chatStop("glm-5.2"))
++	write("[DONE]")
++	if f.held != nil {
++		close(f.held)
++	}
++	<-r.Context().Done() // the hangup never comes while the client waits
++}
++
++func doneHoldUp(t *testing.T, f *doneHold) *httptest.Server {
++	t.Helper()
++	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { f.serve(t, w, r) }))
++	t.Cleanup(up.Close)
++	return up
++}
++
++func (f *doneHold) calls() int {
++	f.mu.Lock()
++	defer f.mu.Unlock()
++	return f.n
++}
++
++// A Chat upstream that has said its reply over ([DONE]) and holds the
++// connection open leaves the client waiting on the translated reply's
++// end, which the hangup alone said (#5936, a Codex turn stuck in
++// progress on a Chat-only provider): the reply ends whole as soon as
++// [DONE] is read, its usage with it, while the upstream still holds.
++func TestChatDoneEndsTranslatedReply(t *testing.T) {
++	fresh(t)
++	f := &doneHold{held: make(chan struct{})}
++	up := doneHoldUp(t, f)
++	p := provider.Provider{ID: "up", Name: "UP", Key: "k", Models: []string{"glm-5.2"}, Chat: up.URL + "/v1"}
++	if err := provider.Save(p); err != nil {
++		t.Fatal(err)
++	}
++	srv := httptest.NewServer(New().Handler())
++	t.Cleanup(srv.Close)
++	res, err := http.Post(srv.URL+"/v1/responses", "application/json",
++		strings.NewReader(`{"model":"up/glm-5.2","stream":true,"input":[{"role":"user","content":"hi"}]}`))
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer res.Body.Close()
++	if res.StatusCode != 200 {
++		b, _ := io.ReadAll(res.Body)
++		t.Fatalf("%d %s", res.StatusCode, b)
++	}
++	select {
++	case <-f.held:
++	case <-time.After(10 * time.Second):
++		t.Fatal("the upstream never got to its hold")
++	}
++	done := make(chan string, 1)
++	var usage map[string]any
++	go func() {
++		var end string
++		var text strings.Builder
++		sc := bufio.NewScanner(res.Body)
++		for sc.Scan() {
++			data, ok := strings.CutPrefix(sc.Text(), "data: ")
++			if !ok {
++				continue
++			}
++			var ev struct {
++				Type     string         `json:"type"`
++				Delta    string         `json:"delta"`
++				Response map[string]any `json:"response"`
++			}
++			if json.Unmarshal([]byte(data), &ev) != nil {
++				continue
++			}
++			if ev.Type == "response.output_text.delta" {
++				text.WriteString(ev.Delta)
++			}
++			if ev.Type == "response.completed" || ev.Type == "response.failed" || ev.Type == "response.incomplete" {
++				end = ev.Type
++				usage, _ = ev.Response["usage"].(map[string]any)
++				break
++			}
++		}
++		if end == "response.completed" && text.String() != "hello" {
++			end = "text " + text.String()
++		}
++		done <- end
++	}()
++	select {
++	case end := <-done:
++		if end != "response.completed" {
++			t.Fatalf("the reply ended %q, want response.completed", end)
++		}
++	case <-time.After(5 * time.Second):
++		t.Fatal("no end of the reply while the upstream holds its connection")
++	}
++	if usage == nil || usage["input_tokens"] != float64(9) || usage["output_tokens"] != float64(4) {
++		t.Errorf("completed's usage = %v, want 9 in and 4 out", usage)
++	}
++}
+diff --git a/internal/gateway/responses_ws_test.go b/internal/gateway/responses_ws_test.go
+index 869b2c38f..c9ad5a521 100644
+--- a/internal/gateway/responses_ws_test.go
++++ b/internal/gateway/responses_ws_test.go
+@@ -698,3 +698,55 @@ func TestHeldTurnOwnsItsInput(t *testing.T) {
+ 		t.Fatalf("held after the frame was written over: %s", got)
+ 	}
+ }
++
++// A Chat upstream that has said its reply over ([DONE]) and holds the
++// connection open: the turn is completed on the socket all the same, its
++// usage with it, and the socket stays open for the next turn (#5936 — a
++// Codex conversation stuck in progress on a Chat-only provider, the turn
++// canceled by the client after the reply was whole on its side).
++func TestResponsesSocketChatDoneTurn(t *testing.T) {
++	fresh(t)
++	f := &doneHold{held: make(chan struct{})}
++	up := doneHoldUp(t, f)
++	if err := provider.Save(provider.Provider{ID: "fake", Name: "Fake", Key: "k", Chat: up.URL + "/v1", Models: []string{"m1"}}); err != nil {
++		t.Fatal(err)
++	}
++	_, ts := sockServer(t)
++	c, _, err := dialSock(t, ts, "/v1/responses", nil)
++	if err != nil {
++		t.Fatal(err)
++	}
++	turn := func(frame string) []gjson.Result {
++		t.Helper()
++		c.send(frame)
++		got, err := c.until("response.completed", "response.failed", "response.incomplete", "error")
++		if err != nil {
++			t.Fatalf("%v after %v", err, got)
++		}
++		return got
++	}
++	got := turn(create("", userHi))
++	if last(got).Get("type").String() != "response.completed" {
++		t.Fatalf("turn 1: %v", got)
++	}
++	var text string
++	for _, fr := range got {
++		if fr.Get("type").String() == "response.output_text.delta" {
++			text += fr.Get("delta").String()
++		}
++	}
++	if text != "hello" {
++		t.Errorf("turn 1 text = %q, want hello", text)
++	}
++	if in, out := last(got).Get("response.usage.input_tokens").Int(), last(got).Get("response.usage.output_tokens").Int(); in != 9 || out != 4 {
++		t.Errorf("turn 1 usage = %d in, %d out, want 9 in and 4 out", in, out)
++	}
++	id := last(got).Get("response.id").String()
++	got = turn(create(id, userMore))
++	if last(got).Get("type").String() != "response.completed" {
++		t.Fatalf("turn 2: %v", got)
++	}
++	if f.calls() != 2 {
++		t.Errorf("%d upstream calls, want 2", f.calls())
++	}
++}
+-- 
+2.50.1 (Apple Git-155)
+

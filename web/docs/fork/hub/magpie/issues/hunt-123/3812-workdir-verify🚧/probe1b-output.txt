@@ -1,0 +1,5 @@
+stat(dir)            err=<nil>
+stat(dir/.)          err=<nil>
+stat(dir/foo)        err=stat /var/folders/l_/dcyyzzfx5k914sm7sy98xqfc0000gn/T/probe3812b-1104359482/locked/foo: permission denied
+access(dir, X_OK)    err=permission denied
+open(dir)            err=open /var/folders/l_/dcyyzzfx5k914sm7sy98xqfc0000gn/T/probe3812b-1104359482/locked: permission denied

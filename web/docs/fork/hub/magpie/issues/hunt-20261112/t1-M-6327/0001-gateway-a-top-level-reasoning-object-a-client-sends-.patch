@@ -1,0 +1,122 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Fri, 13 Nov 2026 00:32:47 +0800
+Subject: [PATCH] gateway: a top-level reasoning object a client sends beside
+ its effort is asked once more without for Mistral (#6327)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+A Chat client naming its effort in both fields — reasoning_effort, and
+the top-level reasoning object new-api's and OpenRouter's spell — was
+relayed to Mistral as it came, and Mistral's strict body turned the
+whole request away with 422 extra_forbidden on the object (Tanimodori:
+mistral/deepseek-v4-1-flash-1017, direct and through a routing group).
+
+reasoning joins the optional fields the gateway learns: the request is
+asked once more without the object Mistral named, and from then on it
+is not sent it again. The level reasoning_effort carries goes as it is,
+so a client that says it twice loses nothing; one that names it in the
+object alone does without it on the retry, which is Mistral's word for
+its own body.
+
+And the relayed request now strips what an upstream has refused before
+(s.withoutRefused, which the translated paths ran already): without it
+the learned refusal only shortened the retry, and every new request
+carried the object for Mistral to refuse again.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gateway/gateway.go                   |  7 ++-
+ .../gateway/mistral_top_reasoning_test.go     | 54 +++++++++++++++++++
+ 2 files changed, 60 insertions(+), 1 deletion(-)
+ create mode 100644 internal/gateway/mistral_top_reasoning_test.go
+
+diff --git a/internal/gateway/gateway.go b/internal/gateway/gateway.go
+index f14bf99a7..0c8377485 100644
+--- a/internal/gateway/gateway.go
++++ b/internal/gateway/gateway.go
+@@ -6611,6 +6611,11 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
+ 			body = mistralThinking(body)
+ 			body = mistralImageLimit(body)
+ 		}
++		// what an upstream has turned a field of this request away for is
++		// not sent again, on the relayed one too (#6327: Mistral's strict
++		// body and a top-level reasoning object a client that names its
++		// effort twice keeps sending)
++		body = s.withoutRefused(p.ID, proto, body)
+ 		if isKimi(p, proto) {
+ 			// another vendor's reasoning_details (MiMo's, with a stream's
+ 			// index in each entry), which Kimi turns away in any shape:
+@@ -8694,7 +8699,7 @@ const tierField = "service_tier"
+ // vendor, Kimi's and Qwen's thinking switches) take that a request does
+ // without: an upstream that refuses one by name is asked again without it.
+ var optionalFields = []string{"store", "metadata", tierField, cacheKeyField, "prompt_cache_retention",
+-	"prompt_cache_options", "safety_identifier", "stream_options", "parallel_tool_calls", "verbosity", "thinking", "enable_thinking"}
++	"prompt_cache_options", "safety_identifier", "stream_options", "parallel_tool_calls", "verbosity", "thinking", "enable_thinking", "reasoning"}
+ 
+ // refusedOptional lists optional fields an upstream explicitly rejects as
+ // unsupported. An invalid value must reach the client without dropping the
+diff --git a/internal/gateway/mistral_top_reasoning_test.go b/internal/gateway/mistral_top_reasoning_test.go
+new file mode 100644
+index 000000000..b408469d2
+--- /dev/null
++++ b/internal/gateway/mistral_top_reasoning_test.go
+@@ -0,0 +1,54 @@
++package gateway
++
++import (
++	"encoding/json"
++	"strings"
++	"testing"
++
++	"github.com/yetone/magpie/internal/provider"
++)
++
++// A Chat client that names the effort in both fields — reasoning_effort and
++// new-api's/OpenRouter's top-level reasoning object — is asked once more
++// without the object Mistral's strict body turns away (422
++// extra_forbidden, Tanimodori #6327), and not sent it again. The level
++// reasoning_effort carries goes as it is.
++func TestTopLevelReasoningNeverReachesMistral(t *testing.T) {
++	f := &fake{t: t, reply: chatWholeOK, ctype: "application/json", refuse: mistralRefuse}
++	up := setup(t, provider.Chat, f)
++	chatProvider(t, up.URL, provider.Provider{ID: "mistral", Preset: "mistral", Models: []string{"mistral-medium-3.5"}})
++	srv := New()
++	code, body := postTo(t, srv, "/v1/chat/completions", `{"model":"mistral/mistral-medium-3.5","stream":false,
++		"reasoning_effort":"max",
++		"reasoning":{"effort":"max"},
++		"messages":[{"role":"user","content":"hi"}]}`)
++	if code != 200 || !strings.Contains(body, `"No."`) {
++		t.Fatalf("%d after %d calls: %s", code, f.calls, body)
++	}
++	if f.calls != 2 {
++		t.Errorf("%d upstream calls, want the refused one and the retry", f.calls)
++	}
++	var sent map[string]json.RawMessage
++	if err := json.Unmarshal(f.got, &sent); err != nil {
++		t.Fatalf("Mistral was sent %s", f.got)
++	}
++	if _, ok := sent["reasoning"]; ok {
++		t.Errorf("the top-level reasoning object reached Mistral: %s", f.got)
++	}
++	if string(sent["reasoning_effort"]) != `"max"` {
++		t.Errorf("the effort reasoning_effort carries: %s", f.got)
++	}
++	// the next request goes without the object from the start
++	calls := f.calls
++	if code, body := postTo(t, srv, "/v1/chat/completions", `{"model":"mistral/mistral-medium-3.5","stream":false,
++		"reasoning_effort":"max",
++		"reasoning":{"effort":"max"},
++		"messages":[{"role":"user","content":"hi"}]}`); code != 200 || f.calls-calls != 1 || !strings.Contains(body, `"No."`) {
++		t.Errorf("the learned refusal didn't hold: %d after %d calls: %s", code, f.calls-calls, body)
++	}
++	var again map[string]json.RawMessage
++	json.Unmarshal(f.got, &again)
++	if _, ok := again["reasoning"]; ok {
++		t.Errorf("the object was sent again: %s", f.got)
++	}
++}
+-- 
+2.50.1 (Apple Git-155)
+

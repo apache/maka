@@ -1,0 +1,6 @@
+upstream/main:internal/davsync/dav.go:52:		return map[string]string{"If-None-Match": v.ETag}
+upstream/main:internal/davsync/dav.go:54:		return map[string]string{"If-Modified-Since": v.Modified}
+upstream/main:internal/davsync/s3.go:20:// with If-Match, the first one with If-None-Match: *. The address is
+upstream/main:internal/davsync/s3.go:142:// (If-Match, If-None-Match, If-Modified-Since). SigV4 needs only the host
+upstream/main:internal/davsync/s3.go:215:// errNotModified when it is still have: the If-None-Match is signed with
+upstream/main:internal/davsync/s3.go:260:			h["If-None-Match"] = "*"

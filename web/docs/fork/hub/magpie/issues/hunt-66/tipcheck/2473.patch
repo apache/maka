@@ -1,0 +1,219 @@
+diff --git a/docs/subsystems/gateway-routing.md b/docs/subsystems/gateway-routing.md
+index 9138cc37..4d49e3ff 100644
+--- a/docs/subsystems/gateway-routing.md
++++ b/docs/subsystems/gateway-routing.md
+@@ -97,6 +97,7 @@ recorded as a prediction failure (`noPrediction`).
+    - A model the user disabled (#1867) gets a 403 for every caller (`idOff`), before anything is sent; see [Disabled models](#disabled-models).
+    - Sealed tasks (#619) are checked here. A Codex subagent's task its lead's `spawn_agent` sealed goes only to a ChatGPT account, or back to the Responses provider that answered the lead (`leadProvider`, a relay of the ChatGPT backend such as Sub2API, #1109), relayed as it came even when web search is offered. A lead's turn carrying its subagent's sealed reply (`send_message`) goes back to the Responses provider that answered the lead's own conversation (`leadProvider` of the request's `conversationID`, #1237); otherwise it is refused before anyone is asked (`sealedReader`, `sealedTaskError`). A sealed message (`Message Type: MESSAGE`, not a task) that nobody asked can open is left out instead, an `input_text` note naming its sender in its place (`withoutSealedMessages`, #1613): a lead on a chat provider whose subagent is on one of Codex's own models goes on, as the subagent's final result still reaches it as text. Only a sealed task (`NEW_TASK`, or an item with neither header) is refused. Who answered is first what affinity remembers; when affinity has let it go (a day since, a restart past the 512 conversations `affinity.json` keeps, or the lead's last reply broken off, `unanswered`), the usage log's answers to the lead's thread and the request's own conversation in the last 30 days count too (`loggedAnswers`, #1367), and `leadFirst` reads the lead's key or account from them. A refused or failed call and a title answer nothing, and Codex's own sign-in is told of as the ChatGPT backend. The refusal names who sealed the task when it is known, and says how to go on with it. It also says what is sealed (`sealedTaskItself`, #1855): the task itself, `spawn_agent`'s `message`, which the backend returns sealed (`encrypted_function_args`) and Codex hands the subagent as it came, so `fork_turns="none"`, which only leaves the lead's turns out, doesn't help; nothing in it can be left out for the subagent to go on.
+    - A model set for Codex's subagents (`settings.CodexSubagentModel`, the Agents page's Codex "subagent model", willz on Discord) is put on a Codex subagent's request (`x-openai-subagent` read as `kind:collab_spawn`) before this check, whatever model its lead's `spawn_agent` asked for (`codexSubagentPick` in [`codex_subagent.go`](../../internal/gateway/codex_subagent.go)): in `codexBackend` for one of Codex's own bare models, which then goes through `serveAgent`, and in `serve` for any other. Any model magpie serves can be set (`provider.SetCodexSubagentModel`, #1633): a task handed as text (a lead magpie served on a chat provider, or multi-agent V1) is read by any model. A request carrying a task the ChatGPT backend sealed (`sealedTaskIn`: a sealed agent message that isn't a `MESSAGE`, which `withoutSealedMessages` leaves out) is put only on a ChatGPT account's model; set to another, the subagent stays on the model asked for, which the sealed gate below handles as with nothing set. When magpie doesn't serve the model set now, or a gateway key held to some models may not use it, the subagent goes on the model asked for too. The route trace keeps both models and the reason it stayed (`Route.Subagent`), and the Routing page's `kindWhy` says it. The lead's turns, titles and every other kind are never moved.
++   - Claude Desktop's tool-less title requests follow its saved session model only when their system prompt identifies a title (`desktopTitle` in [`desktop.go`](../../internal/gateway/desktop.go)). Small output limits alone do not identify titles: its one-token credential probe and Claude Code's classifiers keep the model they name and do not update the saved session pick (`TestDesktopProbeKeepsItsModel`), even when an older pick names a switched-off provider.
+    - A model set for Claude Desktop's subagents (`settings.DesktopSubagentModel`, the Agents page's Claude Desktop "subagent model") is put on a subagent's turn in Desktop's Code tab or Cowork after `desktopTurn`, the tiers and the groups, whatever model its lead or its tier asked for (`desktopSubagentPick` in [`desktop_subagent.go`](../../internal/gateway/desktop_subagent.go)). Desktop runs its Claude Code with `CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST=1`, under which Claude Code ignores the `CLAUDE_CODE_SUBAGENT_MODEL` magpie writes into its settings (see [agent wiring](agent-wiring.md)). A subagent's request is one with `x-claude-code-agent-id` (`subagentOf`) from `claude-desktop`, and only one that offers tools is its turn: Claude Code's tool-less helper calls inside a subagent, on the haiku tier's model, stay where they are, and so do the lead's turns, terminal Claude Code's and every other agent's. The model set must be served by its exact id (`provider.DesktopSubagentUnserved`: `Resolve` takes any model name under a provider that is on), enabled, and allowed to a gateway key held to some models (`groupAllowed` for a group); otherwise the subagent goes on the model asked for and the route trace says why (`Route.Subagent`, said on the Routing page by `subagentWhy`, its `Kind` staying empty). `Route.Model` and the ledger's `Requested` keep the model the subagent asked for. `count_tokens` counts on the model set the same way (`countTokens`). The setting is read on each request, so a change needs no restart of Desktop, and a provider renamed since it was set is read by its new id (`RenamedRef`). A Desktop on another computer that reaches magpie with a named gateway key is read as Claude Code (`agentOf`), so none of Desktop's routing, this included, applies to it. A subagent's turn, moved or not, is never kept as the session's model in `claude-desktop.model` (`desktopTurn`'s `bySubagent`): a subagent on the opus tier's model took the session's place until the lead's next turn, and Desktop's titles asked for meanwhile went to it.
+    - Desktop's subagent effort (`settings.DesktopSubagentEffort`, `desktopSubagentEffort` in [`desktop_subagent.go`](../../internal/gateway/desktop_subagent.go)) applies to the same subagent tool turns, independently of model replacement. Empty leaves requests unchanged. Set, it takes the place of a request model's effort suffix before the existing attempt-level effort fitting: a member fixed at an effort wins, then this pick fitted within group/model levels, then the turn's or request's effort. `withFixedEffort` can enable reasoning when it was disabled, or disable it with `none` on a model that supports that level; a reasonless model is still sent no reasoning fields. `countTokens` applies the pick after restoring any unmasked body. `Route.Effort` keeps the incoming effort, `Route.SubagentEffort` the configured pick, and each try and usage record the level actually sent; the Routing story explains the configured pick even when no model was replaced. A nonempty model pick already classifies the turn, so the effort check reuses it; empty effort costs only a held-settings read. The next request takes a changed or cleared effort without a Desktop restart.
+    - Every Claude Code subagent's turn, Desktop's or a terminal's, moved or not, keeps its `x-claude-code-agent-id` in `Route.SubagentID` (`subagentTurnOf` in [`desktop_subagent.go`](../../internal/gateway/desktop_subagent.go)): a request with the id that offers tools and names no kind, the turn the two settings above take. Claude Code 2.1.295 sends the id from any agent context but the main one; its `x-claude-code-request-class` and `x-claude-code-agent-type` hints go only to a first-party base URL or with `CLAUDE_CODE_GATEWAY_HINT_HEADERS`, so magpie doesn't get them. A Desktop pick or effort that found the turn is trusted, so the body isn't decoded again, and a request without the id isn't decoded at all. The Routing page tags it as Codex's subagents are (`tagKind` in [`routing.js`](../../internal/gui/assets/routing.js)): in the request list, the story, the replay and the tray panel, with the reason `kindWhy` gives Codex's. `Kind` stays empty, so its purpose stays unmarked in the Purpose filter, as in the ledger and on the Usage page. The ledger's `Subagent` keeps the same id, and also marks a subagent's tool-less helper calls, which aren't tagged. A route recorded before this has no id and no tag.
+diff --git a/internal/gateway/desktop.go b/internal/gateway/desktop.go
+index 463863b8..75b8f118 100644
+--- a/internal/gateway/desktop.go
++++ b/internal/gateway/desktop.go
+@@ -444,9 +444,8 @@ func isClaudeDesktop(r *http.Request) bool {
+ // claude-haiku-… by name for small tasks too.
+ //
+ // A session's turns carry tools; the model the latest one is for is the one
+-// the user picked. A small tool-less request (a title's max_tokens is 200,
+-// a turn's tens of thousands) for a model whose id reads as Claude's, and
+-// any request for a model magpie doesn't serve, goes to that model instead,
++// the user picked. A tool-less title request for a model whose id reads
++// as Claude's, and any request for a model magpie doesn't serve, goes to that model instead,
+ // so a chat the user started on a Claude model of their own stays on it. It is
+ // kept on disk, so a title asked for before the first turn after a restart
+ // goes there too; before any turn at all it goes to desktopDefault.
+@@ -459,8 +458,7 @@ var desktopPicked struct {
+ func desktopPickedPath() string { return filepath.Join(settings.Dir(), "claude-desktop.model") }
+ 
+ // desktopTurn is the model a Claude Desktop request for asked is served by.
+-// byClaudeCode is a request Claude Code sent (its claude-cli/ User-Agent)
+-// rather than Desktop's own client. bySubagent is a subagent's request
++// bySubagent is a subagent's request
+ // (x-claude-code-agent-id): its turns carry tools too, but its model is
+ // the one its tier or definition asked for, not the user's pick, so it is
+ // never kept as the session's model. Before, a subagent on the opus tier's
+@@ -470,13 +468,14 @@ func desktopPickedPath() string { return filepath.Join(settings.Dir(), "claude-d
+ // Claude Code names the model of each of its own background requests on
+ // purpose: its auto mode's safety classifier asks for its sonnet with no
+ // tools and a max_tokens of 64 or 256, its notification classifier with
+-// 1024 (#1539, tete1030). So a tool-less request from it goes to the
++// 1024 (#1539, tete1030). Desktop also probes credentials with one token
++// and no tools (#2473). A tool-less request from either client goes to the
+ // session's model only when it is Desktop's title, which Desktop asks
+ // Claude Code for when its own request fails (`claude -p --model <its
+ // pick> --system-prompt "You write short session titles…" --tools ""`,
+ // sent with max_tokens 64000); one for a model magpie doesn't serve still
+ // goes there whoever sent it.
+-func desktopTurn(asked string, body []byte, byClaudeCode, bySubagent bool) string {
++func desktopTurn(asked string, body []byte, bySubagent bool) string {
+ 	if asked == "" {
+ 		return asked
+ 	}
+@@ -494,11 +493,7 @@ func desktopTurn(asked string, body []byte, byClaudeCode, bySubagent bool) strin
+ 	if asked == picked {
+ 		return asked
+ 	}
+-	aside := small(body)
+-	if byClaudeCode {
+-		aside = desktopTitle(body)
+-	}
+-	title := !tools && aside && desktopAccepts(asked)
++	title := !tools && desktopTitle(body) && desktopAccepts(asked)
+ 	gone := unserved(asked)
+ 	if gone && !title {
+ 		if m := servedBeside(asked, picked); m != "" {
+diff --git a/internal/gateway/desktop_probe_test.go b/internal/gateway/desktop_probe_test.go
+new file mode 100644
+index 00000000..61b4267c
+--- /dev/null
++++ b/internal/gateway/desktop_probe_test.go
+@@ -0,0 +1,79 @@
++package gateway
++
++import (
++	"fmt"
++	"net/http/httptest"
++	"os"
++	"strings"
++	"testing"
++
++	"github.com/yetone/magpie/internal/provider"
++	"github.com/yetone/magpie/internal/settings"
++)
++
++func TestDesktopProbeKeepsItsModel(t *testing.T) {
++	for _, c := range []struct{ off, stream bool }{{true, false}, {false, false}, {true, true}, {false, true}} {
++		off := c.off
++		t.Run(fmt.Sprintf("old_provider_off_%v/stream_%v", off, c.stream), func(t *testing.T) {
++			f := &fake{reply: sse(
++				`event: message_start`+"\n"+`data: {"type":"message_start","message":{"id":"m","type":"message","role":"assistant","model":"claude-sonnet-5","content":[],"usage":{"input_tokens":1,"output_tokens":0}}}`,
++				`event: message_stop`+"\n"+`data: {"type":"message_stop"}`)}
++			up := setup(t, provider.Anthropic, f)
++			if err := provider.Save(provider.Provider{ID: "fake", Name: "Fake", Key: "k", Anthropic: up.URL,
++				Models: []string{"claude-sonnet-5"}}); err != nil {
++				t.Fatal(err)
++			}
++			desktopPicked.Lock()
++			desktopPicked.model, desktopPicked.from = "", ""
++			desktopPicked.Unlock()
++			// A probe keeps its model whether the previous provider is on or off.
++			if err := provider.Save(provider.Provider{ID: "any", Name: "Any", Key: "k", Anthropic: "http://127.0.0.1:1",
++				Models: []string{"claude-fable-5-1-reversed"}, Off: off}); err != nil {
++				t.Fatal(err)
++			}
++			if err := os.MkdirAll(settings.Dir(), 0o755); err != nil {
++				t.Fatal(err)
++			}
++			if err := os.WriteFile(desktopPickedPath(), []byte("any/claude-fable-5-1-reversed\n"), 0o600); err != nil {
++				t.Fatal(err)
++			}
++			const electron = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Claude/1.6608.0 Chrome/142.0.7444.235 Electron/39.2.7 Safari/537.36"
++			f.got = nil
++			req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(fmt.Sprintf(`{"model":"fake/claude-sonnet-5","max_tokens":1,"stream":%v,"messages":[{"role":"user","content":"."}]}`, c.stream)))
++			req.Header.Set("x-api-key", Token+"-claude-desktop")
++			req.Header.Set("User-Agent", electron)
++			rec := httptest.NewRecorder()
++			New().Handler().ServeHTTP(rec, req)
++			if rec.Code != 200 {
++				t.Fatalf("probe: %d %.200s", rec.Code, rec.Body)
++			}
++			if got := modelOf(f.got); got != "claude-sonnet-5" {
++				t.Fatalf("probe sent %q, want claude-sonnet-5", got)
++			}
++			// a probe is no session: the pick stands
++			if b, err := os.ReadFile(desktopPickedPath()); err != nil || strings.TrimSpace(string(b)) != "any/claude-fable-5-1-reversed" {
++				t.Fatalf("pick %q, want the stale one kept (%v)", b, err)
++			}
++			// and a title, known by its prompt, still follows the session's pick:
++			// here a session the fake serves
++			if err := os.WriteFile(desktopPickedPath(), []byte("fake/claude-sonnet-5\n"), 0o600); err != nil {
++				t.Fatal(err)
++			}
++			desktopPicked.Lock()
++			desktopPicked.model, desktopPicked.from = "", ""
++			desktopPicked.Unlock()
++			f.got = nil
++			title := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(`{"model":"claude-sonnet-5","max_tokens":200,"stream":true,"system":"You write short session titles. Reply with only the tagged fields the prompt asks for.","messages":[{"role":"user","content":"hi"}]}`))
++			title.Header.Set("x-api-key", Token+"-claude-desktop")
++			title.Header.Set("User-Agent", electron)
++			rec = httptest.NewRecorder()
++			New().Handler().ServeHTTP(rec, title)
++			if rec.Code != 200 {
++				t.Fatalf("title: %d %.200s", rec.Code, rec.Body)
++			}
++			if got := modelOf(f.got); got != "claude-sonnet-5" {
++				t.Fatalf("title sent %q, want the session's pick", got)
++			}
++		})
++	}
++}
+diff --git a/internal/gateway/desktop_turn_test.go b/internal/gateway/desktop_turn_test.go
+index 4399f35e..7b99c1c1 100644
+--- a/internal/gateway/desktop_turn_test.go
++++ b/internal/gateway/desktop_turn_test.go
+@@ -126,7 +126,7 @@ func TestClaudeDesktopDefault(t *testing.T) {
+ 		Models: []string{"m1", "claude-opus-4-8"}}); err != nil {
+ 		t.Fatal(err)
+ 	}
+-	title := []byte(`{"max_tokens":200,"messages":[{"role":"user","content":"hi"}]}`)
++	title := []byte(`{"system":"You write short session titles.","max_tokens":200,"messages":[{"role":"user","content":"hi"}]}`)
+ 	turn := []byte(`{"max_tokens":32000,"tools":[{"name":"Bash"}],"messages":[{"role":"user","content":"hi"}]}`)
+ 	if got := desktopDefault("claude-sonnet-5"); got != "fake/m1" {
+ 		t.Fatalf("default = %q", got)
+@@ -134,7 +134,7 @@ func TestClaudeDesktopDefault(t *testing.T) {
+ 	if got := desktopDefault("fake/m1"); got != "" {
+ 		t.Fatalf("default for the first model itself = %q", got)
+ 	}
+-	if got := desktopTurn("claude-haiku-4-5", title, false, false); got != "fake/m1" {
++	if got := desktopTurn("claude-haiku-4-5", title, false); got != "fake/m1" {
+ 		t.Fatalf("title = %q", got)
+ 	}
+ 	StandIn = func(agent, model string) string {
+@@ -144,11 +144,11 @@ func TestClaudeDesktopDefault(t *testing.T) {
+ 		return ""
+ 	}
+ 	t.Cleanup(func() { StandIn = nil })
+-	if got := desktopTurn("claude-haiku-4-5", title, false, false); got != "fake/claude-opus-4-8" {
++	if got := desktopTurn("claude-haiku-4-5", title, false); got != "fake/claude-opus-4-8" {
+ 		t.Fatalf("title with a stand-in = %q", got)
+ 	}
+ 	// a session on a real Claude model magpie serves keeps it
+-	if got := desktopTurn("fake/claude-opus-4-8", turn, false, false); got != "fake/claude-opus-4-8" {
++	if got := desktopTurn("fake/claude-opus-4-8", turn, false); got != "fake/claude-opus-4-8" {
+ 		t.Fatalf("turn = %q", got)
+ 	}
+ }
+@@ -249,14 +249,14 @@ func TestDesktopSubagentTurnKeepsSessionPick(t *testing.T) {
+ 		{"fake/m2", true, "fake/m1"},
+ 		{"fake/m2", false, "fake/m2"},
+ 	} {
+-		if got := desktopTurn(turn.model, body, true, turn.sub); got != turn.model {
++		if got := desktopTurn(turn.model, body, turn.sub); got != turn.model {
+ 			t.Fatalf("turn sent %q, want %q", got, turn.model)
+ 		}
+ 		if b, err := os.ReadFile(desktopPickedPath()); err != nil || strings.TrimSpace(string(b)) != turn.picked {
+ 			t.Fatalf("subagent %v: picked %q, want %q (%v)", turn.sub, b, turn.picked, err)
+ 		}
+ 	}
+-	if got := desktopTurn("claude-haiku-unserved", body, true, true); got != "fake/m2" {
++	if got := desktopTurn("claude-haiku-unserved", body, true); got != "fake/m2" {
+ 		t.Fatalf("unserved subagent sent %q, want the session's model", got)
+ 	}
+ }
+diff --git a/internal/gateway/gateway.go b/internal/gateway/gateway.go
+index 3b3bd5f6..f0bab7a8 100644
+--- a/internal/gateway/gateway.go
++++ b/internal/gateway/gateway.go
+@@ -1692,7 +1692,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
+ 	asked = call.Model
+ 	if agent == "claude-desktop" {
+ 		sub, _ := subagentOf(r.Header)
+-		asked = desktopTurn(asked, body, fromClaudeCode(r.Header), sub != "")
++		asked = desktopTurn(asked, body, sub != "")
+ 	} else if agent == ScienceID {
+ 		asked = scienceTurn(asked, body)
+ 	}

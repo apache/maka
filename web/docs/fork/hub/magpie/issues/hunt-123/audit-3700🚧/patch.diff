@@ -1,0 +1,130 @@
+From 90d8baffa07fe01c107bfa11b0c47813ff7cbd97 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Wed, 4 Nov 2026 11:20:11 +0800
+Subject: [PATCH] agent restart: the reopen waits for the app's own process,
+ not every helper under the bundle
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+On macOS, Restart for WorkBuddy AI quit the app and never opened it
+again: the GUI really quits, but it leaves a detached sidecar running
+under Contents/ (holding the IPC sockets for a next start, with the
+codebuddy child hanging off it), and reopenBundle waited for every
+process under the bundle to end — so it ran out the whole 30s wait on
+the sidecar every time and returned "still open" before ever asking
+`open` to bring the app back (#3700, with the reporter's process
+evidence).
+
+The reopen now waits for the process findRestartable counts alone, the
+bundle's own executable at Contents/MacOS/<exe>, looked up from the
+bundle's Info.plist as the running check already does. Helpers that
+outlive their GUI — WorkBuddy AI's sidecar, and any other agent's — no
+longer hold the reopen. An app whose executable can't be read from the
+plist keeps the old whole-bundle wait.
+
+Fixes #3700
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/agent/apprestart.go              | 16 ++++++--
+ internal/agent/apprestart_sidecar_test.go | 49 +++++++++++++++++++++++
+ 2 files changed, 61 insertions(+), 4 deletions(-)
+ create mode 100644 internal/agent/apprestart_sidecar_test.go
+
+diff --git a/internal/agent/apprestart.go b/internal/agent/apprestart.go
+index 9a2f0653c..fdf7574c4 100644
+--- a/internal/agent/apprestart.go
++++ b/internal/agent/apprestart.go
+@@ -320,7 +320,7 @@ func (a *Agent) RestartApp(ctx context.Context) error {
+ 		return restartErr(noticeRestartCurrent, a)
+ 	}
+ 	if c.bundle != "" {
+-		return reopenBundle(ctx, a, c.bundle)
++		return reopenBundle(ctx, a, c.bundle, r.mac)
+ 	}
+ 	return a.restartWin(ctx, r, c)
+ }
+@@ -417,13 +417,21 @@ func waitGone(ctx context.Context, r restartable, limit time.Duration) bool {
+ 	}
+ }
+ 
+-// reopenBundle quits the app at bundle, as ⌘Q does, waits for every
+-// process under it to end and opens it again (codex_app.go's way).
+-func reopenBundle(ctx context.Context, a *Agent, bundle string) error {
++// reopenBundle quits the app at bundle, as ⌘Q does, waits for the app's
++// own process to end and opens it again (codex_app.go's way). The app's
++// own process is the one findRestartable counts, Contents/MacOS/<exe>:
++// WorkBuddy AI leaves a detached sidecar under Contents/ behind when its
++// GUI quits — it holds the IPC sockets for a next start — and waiting for
++// every process under the bundle ran out the whole wait on it every time,
++// so the app was quit and never opened again (#3700).
++func reopenBundle(ctx context.Context, a *Agent, bundle string, mac desktopApp) error {
+ 	if err := appQuit(ctx, bundle); err != nil {
+ 		return restartErr(noticeRestartAsk, a)
+ 	}
+ 	pat := regexp.QuoteMeta(bundle + "/Contents/")
++	if exe := bundleExecutable(bundle, mac.id); exe != "" {
++		pat = "^" + regexp.QuoteMeta(filepath.Join(bundle, "Contents", "MacOS", exe)) + "( |$)"
++	}
+ 	end := time.Now().Add(appQuitWait)
+ 	for len(running(pat)) > 0 {
+ 		if time.Now().After(end) {
+diff --git a/internal/agent/apprestart_sidecar_test.go b/internal/agent/apprestart_sidecar_test.go
+new file mode 100644
+index 000000000..d5cd88243
+--- /dev/null
++++ b/internal/agent/apprestart_sidecar_test.go
+@@ -0,0 +1,49 @@
++package agent
++
++import (
++	"context"
++	"path/filepath"
++	"regexp"
++	"slices"
++	"strings"
++	"testing"
++	"time"
++)
++
++// The reopen waits for the app's own process, not every helper under the
++// bundle: WorkBuddy AI leaves a detached sidecar running when its GUI
++// quits — it holds the IPC sockets for a next start — and waiting for it
++// ran out the whole wait every time, so Restart quit the app and never
++// opened it again (#3700).
++func TestReopenBundleWaitsForTheAppAlone(t *testing.T) {
++	home := restartSandbox(t)
++	apps := filepath.Join(home, "Applications")
++	bundle := macApp(t, apps, "WorkBuddy AI.app", "com.workbuddy.workbuddy-ai", "Electron")
++	restartOnMac = true
++	var pats []string
++	running = func(pat string) []runningProc {
++		pats = append(pats, pat)
++		// the GUI quit; the sidecar it left under the bundle keeps running
++		sidecar := bundle + "/Contents/Resources/app.asar/main/sidecar-entry.js --token x"
++		if regexp.MustCompile(pat).MatchString(sidecar) {
++			return []runningProc{{time.Hour, sidecar}}
++		}
++		return nil
++	}
++	a := workbuddyAI(home)
++	appQuit = func(_ context.Context, b string) error { return nil }
++	var opened []string
++	appOpen = func(_ context.Context, b string) error { opened = append(opened, b); return nil }
++	appQuitWait = 200 * time.Millisecond
++	if err := reopenBundle(context.Background(), a, bundle, workbuddyAIApp); err != nil {
++		t.Fatalf("a sidecar left behind held the reopen: %v (asked %q)", err, pats)
++	}
++	if len(opened) != 1 || opened[0] != bundle {
++		t.Fatalf("opened %q, want the app back once", opened)
++	}
++	if !slices.ContainsFunc(pats, func(p string) bool {
++		return strings.Contains(p, `WorkBuddy AI\.app/Contents/MacOS/Electron`)
++	}) {
++		t.Fatalf("not asked by the bundle's executable: %q", pats)
++	}
++}
+-- 
+2.50.1 (Apple Git-155)
+

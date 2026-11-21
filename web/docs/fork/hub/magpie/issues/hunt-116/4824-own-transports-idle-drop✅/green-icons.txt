@@ -1,0 +1,3 @@
+=== RUN   TestFetchIconLeavesNoIdleConnection
+--- PASS: TestFetchIconLeavesNoIdleConnection (0.01s)
+ok  	github.com/yetone/magpie/internal/provider	1.056s

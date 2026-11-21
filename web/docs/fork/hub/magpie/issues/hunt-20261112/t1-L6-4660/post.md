@@ -1,0 +1,11 @@
+Closing the loop with what moved on magpie's side since my read above (at `f3551387c`, 11-02) — your report has had no new details, so this is the current verdict:
+
+**Upstream hardened the one write-path gap this family turned out to have**: `04ed05733` (11-08, darwish4021's Discord case, in v0.1.3308) — a Codex sign-in refresh that raced an account switch used to write the refreshed sign-in back unconditionally, switching the Codex app back to the account it had been switched away from. Now magpie re-reads the store before writing and leaves it alone unless it still holds the token the refresh started from, and account switches take the same lock the refresh holds. If your Codex was switched accounts (or signed out and back) around Oct 31, that was the likeliest path — and it is fixed in current builds.
+
+**What remains is the shared-refresh-token trade itself**, which matches your screenshot's server-side `token_revoked`: with magpie's Codex provider on, magpie and the Codex app spend one OpenAI refresh token, OpenAI rotates it on every spend, and two processes can spend the same still-unspent token — the loser gets `refresh_token_reused`, OpenAI ends the session, and codex-rs treats a refused refresh as permanent, which is the forced sign-in you saw. No lock spans both processes, so this cannot be excluded from magpie's side; it is the same trade's cost side the takeover family's verdicts record (#5702, #6037 — there the traded thing is the config key, here it is the refresh token), and it is rare: your login survived two days of shared use before it fired.
+
+So the verdict is: **recorded trade cost, with the switch-overwrite gap that used to be a second path now fixed upstream**. If it happens again on a current build, the four facts from my earlier comment still split the paths in one look — the token endpoint's error code (`refresh_token_reused` vs `refresh_token_invalidated`) is the decisive one. The avoidance recipe stands: keep the ChatGPT account magpie uses separate from the one Codex is signed in to, or turn the Codex provider off, or Settings → Privacy → Subscription accounts off.
+
+Not verified: your real accounts; the Oct 31 error code (not in your screenshot).
+
+Attribution: AI-written (written with GLM-5.3-Flash (ZCode)); I've re-read the commits cited above.

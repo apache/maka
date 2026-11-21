@@ -1,0 +1,9 @@
+int main(void) {
+    int a;
+    a = 7 + 3 * 4 - 10 / 5;
+    print_int(a);
+    print_int(-a + 20);
+    print_int(17 % 5);
+    print_int(100 / 7);
+    return 0;
+}

@@ -1,0 +1,44 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Sun, 25 Oct 2026 01:27:22 +0800
+Subject: [PATCH] gui tests: usage-card-refresh reads the row's position after
+ its text is laid out (#3509)
+
+Under a busy run the hover in showRefresh was reached before the row's
+text had been laid out, where textAt finds no client rect with a width
+and the baseline read comes back undefined; the assertion then compared
+the drawn position against that undefined (578.75 vs undefined, once in
+a 91-file GUI run at 598dfee32, load ~88; alone at the same tree it
+passed 3 of 3).
+
+Wait before reading the baseline: poll until textAt returns a number
+and returns that same number again, so the line is drawn and holding
+still, then read where it starts. The assertion itself is unchanged.
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gui/tests/usage-card-refresh.test.cjs | 9 ++++++++-
+ 1 file changed, 8 insertions(+), 1 deletion(-)
+
+diff --git a/internal/gui/tests/usage-card-refresh.test.cjs b/internal/gui/tests/usage-card-refresh.test.cjs
+index ba5723e62..8caf51a05 100644
+--- a/internal/gui/tests/usage-card-refresh.test.cjs
++++ b/internal/gui/tests/usage-card-refresh.test.cjs
+@@ -148,7 +148,14 @@ const textAt = (row) => row.evaluate((e) => {
+ });
+ 
+ async function showRefresh(row) {
+-  const was = await textAt(row);
++  // under load the hover is reached before the row's text is laid out,
++  // where textAt reads undefined: wait for the line to be drawn and to
++  // hold still, then read where it starts
++  let was = await textAt(row);
++  while (was === undefined || was !== await textAt(row)) {
++    await row.evaluate(() => new Promise((r) => requestAnimationFrame(r)));
++    was = await textAt(row);
++  }
+   await row.hover();
+   await row.locator(".quota-refresh").evaluate(e => new Promise(done => {
+     const tick = () => getComputedStyle(e).opacity === "1" && e.getBoundingClientRect().width >= 14 ? done() : requestAnimationFrame(tick);
+-- 
+2.50.1 (Apple Git-155)
+

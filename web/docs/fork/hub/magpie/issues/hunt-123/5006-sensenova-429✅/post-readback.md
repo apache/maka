@@ -1,0 +1,160 @@
+## Root cause
+
+The same error text was read two ways because it was classified from two different inputs, and on one of them the credit words came from a code field, not from what the vendor said.
+
+SenseNova's token-plan gateway (`token.sensenova.cn`) answers its throttle in OpenAI's shape: `code: "insufficient_quota"` beside `type: "rate_limit_error"` and the message `inference exceeds tpm/rpm limit` (that gateway reuses `insufficient_quota` as its throttle code — it does not mean the pool is spent; your own readings had 97% of the pool readings above 50%, none of the texts of the day says anything of money). In `failure()` the bare string check
+
+```go
+|| bytes.Contains(body, []byte("insufficient_quota"))
+```
+
+took any such body, at **any status**, for out of credit — the credit case sits before the per-minute case, so `type: "rate_limit_error"` and the `tpm/rpm` wording never got a say — and the account rested `creditRest` (30 min, `rest.by = "credit"`), which is exactly the 24 `glm-5.2` records: `until − trigger` = 1800.3–1804.8 s, `fail`/`rest.why`/`rest.by` all `credit`.
+
+The other verdict came from the last candidate's booking, which reads the failure from the words magpie gave the agent (`"SenseNova: inference exceeds tpm/rpm limit"`, no `code`/`type` fields) — on those words the per-minute case answers and it is a rate limit. Hence one text, two verdicts, the same day: `deepseek-flash` 910 rate / 0 credit, `glm-5.2` 123 rate / 24 credit. Why the two models differ: the credit reading needs the raw body's `insufficient_quota` code, so it appears only where the upstream pool's gateway writes that code (glm's pool); that part rests on the counts above, since `tries[]` keeps no raw body (your point 4).
+
+## Fix
+
+`internal/gateway/routing.go`, two touches:
+
+- the credit case: an `insufficient_quota` code no longer makes credit when the body's own words name a rate per minute (`minuteWords`, nothing longer or spent beside them) — the code is the gateway's throttle code, not its balance;
+- the 429 per-minute case reads `minuteRate` (the old `minuteLimit` without its now-unreachable `insufficient_quota` bar), so the same body is a rate limit whichever input it is classified from — the verdict no longer depends on the booking path.
+
+Unchanged on purpose: OpenAI's own out-of-credit (its message names no rate), Zhipu's 1113 `余额不足`, WorkBuddy's credits-exhausted (all still `failCredit`), and Gemini/Azure's per-minute quota wordings (already `failRate`).
+
+## Verification
+
+| Check | Result |
+| --- | --- |
+| `TestRateLimitIsNotQuota` with the gateway's body as it comes and as magpie words it | RED before (`credit, want rate`) → GREEN after |
+| Ablation (revert `routing.go` to the parent, keep the test) | RED again |
+| Restore | GREEN |
+| `go test -tags nogui -timeout 25m ./internal/gateway/...` | ok (623s) |
+| `go test -tags nogui -race -run 'TestRateLimitIsNotQuota\|TestFailure\|TestRest\|TestCredit' ./internal/gateway/` | ok |
+| `gofmt -l` on the two files / `go vet -tags nogui ./internal/gateway/` | clean |
+| `go build ./...` | ok (pre-existing darwin cgo warnings in `internal/gui` only) |
+
+Sibling sweep: every other `insufficient_quota` fixture in the tree (OpenAI real quota, spend limit, legacy, WorkBuddy 14018, `"code":"insufficient_quota"` alone) has no per-minute wording — none flips; `minuteRate` is a strict superset of the old `minuteLimit` for bodies without the code, so Gemini/Azure rows are untouched.
+
+## Sources
+
+- the 429 shape (`code=insufficient_quota`, `type=rate_limit_error`, message `inference exceeds tpm/rpm limit`): [dsh-autoresume plugin notes](https://deepshplugins.com/plugins/dsh-autoresume)
+- the uniformly-formatted 429 body at `token.sensenova.cn`: [Phoeky/st-rotator README](https://github.com/Phoeky/st-rotator/blob/main/README.md), [CSDN: SenseNova gateway is OpenAI-compatible](https://blog.csdn.net/user_admin_god/article/details/166370632)
+
+## Not verified
+
+- no live SenseNova account here: the raw 429 body shape is taken from the public sources above and from your records' verdicts, not reproduced against the vendor;
+- whether deepseek-flash's pool writes the same code could not be pinned from the data you have (no raw bodies in `tries[]`) — if it does and still reads all-rate everywhere, tell me and I'll re-examine.
+
+<details>
+<summary>Patch (<code>git am</code> format) — SHA-256 (first 16): <code>4efce5a8945bba00</code></summary>
+
+```
+From a2b76e64f281dff3797d0f6234c066321fb1b4b1 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Wed, 4 Nov 2026 05:51:06 +0800
+Subject: [PATCH] gateway: a 429 whose quota code rides beside a per-minute
+ wording is a rate limit (#5006)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+SenseNova's token-plan gateway answers its throttle in OpenAI's shape: the
+code insufficient_quota beside the type rate_limit_error and the message
+"inference exceeds tpm/rpm limit". The bare string check took any such
+body, at any status, for out of credit — over a pool half up — and parked
+the account the half hour of a top-up, while the last candidate's failure
+was booked from the words magpie gave the agent, which say a per-minute
+rate: the same text was rate and credit the same day, glm-5.2's 24 credit
+rests beside its 123 rate ones, deepseek-flash's 910 rate and none
+credit. An insufficient_quota that words a rate per minute (minuteWords,
+nothing longer or spent beside it) is a rate limit now, on the body as
+the words were; OpenAI's own out-of-credit (its message names no rate)
+reads credit as before, as does Zhipu's 1113.
+
+TestRateLimitIsNotQuota has the gateway's body as it comes and as magpie
+words it, and fails without the change.
+
+Fixes #5006
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gateway/ratewords_test.go |  7 +++++++
+ internal/gateway/routing.go        | 22 +++++++++++++++-------
+ 2 files changed, 22 insertions(+), 7 deletions(-)
+
+diff --git a/internal/gateway/ratewords_test.go b/internal/gateway/ratewords_test.go
+index e9fd89bba..1e8a6afc2 100644
+--- a/internal/gateway/ratewords_test.go
++++ b/internal/gateway/ratewords_test.go
+@@ -22,6 +22,13 @@ func TestRateLimitIsNotQuota(t *testing.T) {
+ 		`{"error":{"code":"1113","message":"余额不足或无可用资源包,请充值。"}}`:                                              failCredit,
+ 		`{"error":{"message":"Zhipu GLM: 余额不足或无可用资源包,请充值。","type":"rate_limit_error"}}`:                       failCredit,
+ 		`{"error":{"code":"1113","message":"Insufficient balance or no resource package. Please recharge."}}`: failCredit,
++		// SenseNova's token-plan gateway answers its throttle in OpenAI's
++		// shape, the code insufficient_quota beside the type
++		// rate_limit_error and a per-minute message, over a pool half up
++		// (hzyqn: the same text read credit from the body and rate from
++		// the words magpie gave the agent, #5006)
++		`{"error":{"code":"insufficient_quota","message":"inference exceeds tpm/rpm limit","type":"rate_limit_error"}}`: failRate,
++		`SenseNova: inference exceeds tpm/rpm limit`: failRate,
+ 	} {
+ 		if got := failure(429, []byte(body)); got != want {
+ 			t.Errorf("%s: %s, want %s", body, got, want)
+diff --git a/internal/gateway/routing.go b/internal/gateway/routing.go
+index 694a71394..488af231d 100644
+--- a/internal/gateway/routing.go
++++ b/internal/gateway/routing.go
+@@ -520,7 +520,8 @@ func failure(status int, body []byte) string {
+ 		// Standard's pool, which counts some models only, and read as the
+ 		// account out of credit it rested Droid Core with it (#1979)
+ 		return failQuota
+-	case status == 402, creditWords.Match(body) && (status != 429 || brokeWords.Match(body)) || bytes.Contains(body, []byte("insufficient_quota")):
++	case status == 402, creditWords.Match(body) && (status != 429 || brokeWords.Match(body)),
++		bytes.Contains(body, []byte("insufficient_quota")) && !minuteRate(body):
+ 		return failCredit
+ 	case status == 429 && resetsWhen.Match(body):
+ 		// out until the time it names, in whichever language it said so:
+@@ -528,7 +529,7 @@ func failure(status int, body []byte) string {
+ 		// English one as a rate limit, and each rested its own fallback
+ 		// (#1669)
+ 		return failQuota
+-	case status == 429 && minuteLimit(body):
++	case status == 429 && minuteRate(body):
+ 		// a limit per minute, whatever it calls itself: back in a
+ 		// minute, not a plan used up (minuteWords)
+ 		return failRate
+@@ -551,13 +552,20 @@ func failure(status int, body []byte) string {
+ 	return failOther
+ }
+ 
+-// minuteLimit says a 429's words name a limit per minute or less
++// minuteRate says a 429's words name a limit per minute or less
+ // (minuteWords), and nothing longer or spent beside it: no longer window
+-// (longWords), no balance spent (brokeWords, insufficient_quota). Words
+-// in a link don't count.
+-func minuteLimit(body []byte) bool {
++// (longWords), no balance spent (brokeWords). Words in a link don't
++// count. A body carrying the quota code insufficient_quota reads here
++// too when its words say a rate: SenseNova's token-plan gateway answers
++// its throttle with the code beside the type rate_limit_error and the
++// message "inference exceeds tpm/rpm limit" over a pool half up — read
++// from its body it was out of credit, from the words magpie gave the
++// agent a rate limit, and the same text was both the same day (#5006).
++// The code is the gateway's throttle code, not its balance: OpenAI's own
++// out-of-credit (its message names no rate) reads credit as before.
++func minuteRate(body []byte) bool {
+ 	body = urlWords.ReplaceAll(body, nil)
+-	return minuteWords.Match(body) && !longWords.Match(body) && !brokeWords.Match(body) && !bytes.Contains(body, []byte("insufficient_quota"))
++	return minuteWords.Match(body) && !longWords.Match(body) && !brokeWords.Match(body)
+ }
+ 
+ // dashScopeTokenRate: DashScope's (Model Studio's) 429 for the tokens
+-- 
+2.50.1 (Apple Git-155)
+
+```
+
+</details>
+
+- Branch: https://github.com/ggbdpq/magpie/tree/fix/5006-sensenova-429 (head a2b76e64f281dff3797d0f6234c066321fb1b4b1)
+- Attribution: written by GLM-5.3-Flash (ZCode) from ggbdpq's analysis and verification; commit author ggbdpq.
+

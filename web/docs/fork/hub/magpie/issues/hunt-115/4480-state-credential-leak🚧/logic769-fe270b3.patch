@@ -1,0 +1,110 @@
+From fe270b3f86610afbcd449abab723d5aa5a6f0173 Mon Sep 17 00:00:00 2001
+From: Logic769 <78853392+Logic769@users.noreply.github.com>
+Date: Sat, 31 Oct 2026 16:24:14 +0800
+Subject: [PATCH] gui: the state stops carrying the GitHub token and the LAN
+ key (#4480)
+
+/api/state and /api/state?last=1 returned settings.githubToken and
+settings.lanKey in plain text, and the page reads neither: it takes the
+token masked from /api/settings, and laststate's copy on disk must not hold
+them either. stateSettings now loads the settings without them, and both the
+state and the kept one use it.
+---
+ internal/gui/api.go            | 11 ++++++++++-
+ internal/gui/laststate.go      |  2 +-
+ internal/gui/laststate_test.go | 21 ++++++++++++++++-----
+ 3 files changed, 27 insertions(+), 7 deletions(-)
+
+diff --git a/internal/gui/api.go b/internal/gui/api.go
+index 6d4753bc04..970b9a067a 100644
+--- a/internal/gui/api.go
++++ b/internal/gui/api.go
+@@ -2759,8 +2759,17 @@ func held(h http.Handler) http.Handler {
+ 	})
+ }
+ 
++// stateSettings is settings.Load without the two credentials it keeps: the
++// state is the page's, and neither the GitHub token nor the LAN key belongs
++// in it. The page reads them masked from /api/settings (settingsState).
++func stateSettings() settings.Settings {
++	st := settings.Load()
++	st.GitHubToken, st.LANKey = "", ""
++	return st
++}
++
+ func state() stateJSON {
+-	s := stateJSON{Agents: []agentJSON{}, Profiles: []profileJSON{}, Catalog: catalog.Source(), Settings: settings.Load()}
++	s := stateJSON{Agents: []agentJSON{}, Profiles: []profileJSON{}, Catalog: catalog.Source(), Settings: stateSettings()}
+ 	// state() is asked for after nearly every click, so the rate — a
+ 	// network fetch once every TTL — is only worth its rare latency when
+ 	// cny is actually chosen; usd never looks at it
+diff --git a/internal/gui/laststate.go b/internal/gui/laststate.go
+index 71c11d1ee4..9ee081242f 100644
+--- a/internal/gui/laststate.go
++++ b/internal/gui/laststate.go
+@@ -78,7 +78,7 @@ func lastKnown() (stateJSON, bool) {
+ 	if len(b) == 0 || json.Unmarshal(b, &f) != nil || f.Version != Version || f.State.Agents == nil {
+ 		return stateJSON{}, false
+ 	}
+-	f.State.Settings = settings.Load()
++	f.State.Settings = stateSettings()
+ 	f.State.Last = true
+ 	return f.State, true
+ }
+diff --git a/internal/gui/laststate_test.go b/internal/gui/laststate_test.go
+index 253a72fbb6..b876a57263 100644
+--- a/internal/gui/laststate_test.go
++++ b/internal/gui/laststate_test.go
+@@ -21,7 +21,8 @@ func forgetLastState() {
+ 
+ // #1519: the Agents page draws the state kept from the last read at once
+ // (?last=1), this run's or the run before's, with the settings as they are
+-// now; none kept is null, and the settings' secrets never reach the file.
++// now; none kept is null, and the settings' secrets reach neither the file
++// nor the page (#4480).
+ func TestLastKnownState(t *testing.T) {
+ 	h := sandboxHome(t)
+ 	t.Setenv("CODEX_HOME", filepath.Join(h, ".codex"))
+@@ -29,6 +30,7 @@ func TestLastKnownState(t *testing.T) {
+ 	os.WriteFile(filepath.Join(h, ".codex", "config.toml"), []byte("model = \"gpt-5.4\"\n"), 0o600)
+ 	s := settings.Load()
+ 	s.GitHubToken = "ghp_secret1519"
++	s.LANKey = "sk-lan-1519"
+ 	s.Theme = "light"
+ 	if err := settings.Save(s); err != nil {
+ 		t.Fatal(err)
+@@ -62,12 +64,15 @@ func TestLastKnownState(t *testing.T) {
+ 	if fresh.Last || !hasCodex(fresh) {
+ 		t.Fatalf("fresh state: last=%v codex=%v", fresh.Last, hasCodex(fresh))
+ 	}
++	if fresh.Settings.GitHubToken != "" || fresh.Settings.LANKey != "" {
++		t.Errorf("state carried the credentials: token %q lanKey %q", fresh.Settings.GitHubToken, fresh.Settings.LANKey)
++	}
+ 	file, err := os.ReadFile(lastStatePath())
+ 	if err != nil {
+ 		t.Fatalf("the read was not kept: %v", err)
+ 	}
+-	if strings.Contains(string(file), "ghp_secret1519") {
+-		t.Error("the kept state holds the GitHub token")
++	if strings.Contains(string(file), "ghp_secret1519") || strings.Contains(string(file), "sk-lan-1519") {
++		t.Error("the kept state holds the credentials")
+ 	}
+ 
+ 	// the user changes a setting, and magpie starts again
+@@ -82,8 +87,14 @@ func TestLastKnownState(t *testing.T) {
+ 	if !last.Last || !hasCodex(last) {
+ 		t.Fatalf("last-known state: last=%v codex=%v", last.Last, hasCodex(last))
+ 	}
+-	if last.Settings.Theme != "dark" || last.Settings.GitHubToken != "ghp_secret1519" {
+-		t.Errorf("last-known state's settings are not today's: theme %q token %q", last.Settings.Theme, last.Settings.GitHubToken)
++	if last.Settings.Theme != "dark" {
++		t.Errorf("last-known state's settings are not today's: theme %q", last.Settings.Theme)
++	}
++	if last.Settings.GitHubToken != "" || last.Settings.LANKey != "" {
++		t.Errorf("last-known state carried the credentials: token %q lanKey %q", last.Settings.GitHubToken, last.Settings.LANKey)
++	}
++	if b := get("/api/state?last=1"); strings.Contains(b, "ghp_secret1519") || strings.Contains(b, "sk-lan-1519") {
++		t.Error("the page was served the credentials")
+ 	}
+ 
+ 	// another version's is not drawn

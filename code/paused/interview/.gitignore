@@ -1,0 +1,7 @@
+code/
+profile/
+.DS_Store
+
+# 迁移与工具运行产物不进入日常知识检索。
+**/.mimosa/
+**/__pycache__/

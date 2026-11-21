@@ -1,0 +1,20 @@
+Credit to @Jirentian for the report (a hand-installed plugin's provider fell back to the generic glyph whatever icon name it declared).
+
+The icon a plugin's provider wears had only two sources: the picture its auth hook (or its package.json's `magpie.icon`) gives — an https URL or a `data:image` URI, which magpie checks and keeps — and the one the plugin market lists for it, where a bare name (`deepseek-color`) goes through as it is. A plugin installed by hand that said a bare icon name was refused by both readers, so its provider fell back to the generic glyph no matter what it declared: `host.js`'s `iconOf` carried only a URL or a data URI, and `provider.pluginOwnIcon` asked `iconURL` of the value, which takes a URL. That is why so many third-party plugins showed the same plain mark.
+
+A bare name — one with no scheme and no path in it — now passes both readers as it is, exactly as a market name does; the page already draws such a name from its bundled icons and falls back to the generic glyph for one it has no file of. A picture is still checked, fetched and kept as before, and the market fallback is untouched, so a plugin that says nothing shows what the market gives it, and one that says nothing at all keeps the generic mark.
+
+| What | Result |
+| --- | --- |
+| `TestPluginSaidIconName` (new, provider): a bare name passes, a URL is still kept as a picture | fails without the fix, passes with it |
+| `TestPluginOwnIconAndKeyHint` (plugin, extended): a plugin's auth hook says `deepseek-color`, it reaches the provider list as that name | fails without the fix, passes with it |
+| Ablation | both fail again with only the two implementation files reverted |
+| `go test -tags nogui ./internal/provider ./internal/plugin ./internal/agent` | provider and plugin green; the two failures (`TestHostToldTheGatewayAddress`, `TestMothX`) fail the same way on clean `upstream/main` (pre-existing, not touched by this patch) |
+| `gofmt` / `go vet -tags nogui` / `CGO_ENABLED=0 go build -tags nogui` | clean |
+
+**Attribution**: AI-written; I've read the whole diff and the tests pass. Please keep the author (ggbdpq) or add Co-authored-by: ggbdpq ggbdpq@gmail.com
+
+**Branch with the commit**: `fix/5103-provider-icon` on [ggbdpq/magpie](https://github.com/ggbdpq/magpie) (head 724edc87d (the commit rebased; `git am -3`-tested against the rebased base)).
+
+What this does not take on, for a maintainer's call first: a per-provider icon picked in the editor (today only a provider the user added has the picker, and a signed-in account's save drops an icon from its body), and serving a local file as one. Both grow the settings surface; this patch keeps to what a plugin already declares.
+

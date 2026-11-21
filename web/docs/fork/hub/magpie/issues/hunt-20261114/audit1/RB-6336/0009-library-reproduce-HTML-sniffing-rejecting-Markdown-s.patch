@@ -1,0 +1,60 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Aryz <aryz0713@gmail.com>
+Date: Thu, 12 Nov 2026 20:59:52 +0800
+Subject: [PATCH 09/11] library: reproduce HTML sniffing rejecting Markdown
+ support files
+
+Exercise a listed Markdown reference beginning with an HTML comment, and require HTML masquerading as SKILL.md to fail its metadata validation. Supporting files are opaque bytes; their transport content type must not decide whether they are installable.
+---
+ .../library/skillwellknown_content_test.go    | 39 +++++++++++++++++++
+ 1 file changed, 39 insertions(+)
+ create mode 100644 internal/library/skillwellknown_content_test.go
+
+diff --git a/internal/library/skillwellknown_content_test.go b/internal/library/skillwellknown_content_test.go
+new file mode 100644
+index 000000000..1b1feec43
+--- /dev/null
++++ b/internal/library/skillwellknown_content_test.go
+@@ -0,0 +1,39 @@
++package library
++
++import (
++	"os"
++	"path/filepath"
++	"strings"
++	"testing"
++)
++
++func TestWellKnownMarkdownWithHTMLCommentIsInstalled(t *testing.T) {
++	sandbox(t)
++	const note = "<!-- Shared layout rules. -->\n# Layout\nKeep a clear hierarchy.\n"
++	files := map[string]string{}
++	files["/.well-known/skills/index.json"] = `{"skills":[{"name":"ui-taste","description":"UI taste","files":["SKILL.md","reference/layout.md"]}]}`
++	files["/.well-known/skills/ui-taste/SKILL.md"] = websiteSkill
++	files["/.well-known/skills/ui-taste/reference/layout.md"] = note
++	base, _ := websiteFixture(t, files)
++	if _, err := ProbeSkills(base); err != nil {
++		t.Fatal(err)
++	}
++	if _, err := InstallSkills(base, []string{"ui-taste"}, []string{}); err != nil {
++		t.Fatal(err)
++	}
++	got, err := os.ReadFile(filepath.Join(SkillPath("ui-taste"), "reference", "layout.md"))
++	if err != nil || string(got) != note {
++		t.Fatalf("the listed Markdown document must be installed unchanged: %q, %v", got, err)
++	}
++}
++
++func TestWellKnownHTMLIsNotSkillMetadata(t *testing.T) {
++	sandbox(t)
++	files := map[string]string{}
++	files["/.well-known/skills/index.json"] = `{"skills":[{"name":"ui-taste","description":"UI taste","files":["SKILL.md"]}]}`
++	files["/.well-known/skills/ui-taste/SKILL.md"] = "<!doctype html><title>Not a skill</title>"
++	base, _ := websiteFixture(t, files)
++	if _, err := ProbeSkills(base); err == nil || !strings.Contains(err.Error(), "SKILL.md is invalid") {
++		t.Fatalf("the metadata parser must reject an HTML landing page: %v", err)
++	}
++}
+-- 
+2.50.1 (Apple Git-155)
+

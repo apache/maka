@@ -1,0 +1,82 @@
+From ed2e053c5fd93961c7f6699c795e5a9d4cbf1417 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Sat, 17 Oct 2026 20:22:12 +0800
+Subject: [PATCH 2/2] library: the MCP command field's hint says a Windows path
+ goes in as it is (#2685)
+
+What changed
+- the command field's hint, "The command and its arguments, as you'd
+  type them", read like a shell's, and a Windows path typed that way was
+  exactly what the editor broke. The review of 4e4191e1 asked it to say
+  the two things the field now means: a Windows path goes in as it is,
+  and a path with a blank in it goes in quotes. Translated for zh,
+  zh-TW, ja and de.
+
+Run
+- i18n-keys green: the new key lives in the plugin's four dictionaries,
+  no kernel duplicate, every locale has it.
+- library-mcp-windows-command, library-mcp-copy-config and
+  library-servers-bulk green on chromium and webkit after the change.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gui/assets/plugins/library/client.js | 2 +-
+ internal/gui/assets/plugins/library/i18n.js   | 8 ++++----
+ 2 files changed, 5 insertions(+), 5 deletions(-)
+
+diff --git a/internal/gui/assets/plugins/library/client.js b/internal/gui/assets/plugins/library/client.js
+index 9cd1efc1..5e8a9b7c 100644
+--- a/internal/gui/assets/plugins/library/client.js
++++ b/internal/gui/assets/plugins/library/client.js
+@@ -2089,7 +2089,7 @@ magpie.plugin("library", (ctx) => {
+       if (d.transport === "stdio") {
+         const line = field2([d.command, ...(d.args || [])].filter((x, i) => i > 0 || x).map(quote).join(" "), "npx -y @modelcontextprotocol/server-github", (v) => { const w = words(v); d.command = w[0] || ""; d.args = w.slice(1); });
+         line.classList.add("mono");
+-        g.append(...field(t("Command"), line, t("The command and its arguments, as you'd type them")));
++        g.append(...field(t("Command"), line, t("The command and its arguments, as you'd type them. A Windows path goes in as it is; quote a path with a blank in it")));
+         g.append(...field(t("Environment"), pairs(d.env, "GITHUB_TOKEN", t("value"), (v) => { d.env = v; drawAgents(); }), refHint()));
+       } else {
+         const url = field2(d.url, "https://example.com/mcp", (v) => { d.url = v.trim(); signBox?.redraw(); });
+diff --git a/internal/gui/assets/plugins/library/i18n.js b/internal/gui/assets/plugins/library/i18n.js
+index bfc39a5c..429c94ee 100644
+--- a/internal/gui/assets/plugins/library/i18n.js
++++ b/internal/gui/assets/plugins/library/i18n.js
+@@ -410,7 +410,7 @@ magpie.strings({
+     "e.g. github": "例如 github",
+     "Letters, digits, - and _ — what the agents call it": "字母、数字、- 和 _ — Agent 用这个名字称呼它",
+     "Runs as": "运行方式",
+-    "The command and its arguments, as you'd type them": "命令及参数，就像在终端里输入的那样",
++    "The command and its arguments, as you'd type them. A Windows path goes in as it is; quote a path with a blank in it": "命令及参数，就像在终端里输入的那样。Windows 路径直接写就行，带空格的路径用引号包起来",
+     "Remove from the library": "从资源库移除",
+     "{name} is out of the library and the agents it was given to": "{name} 已从资源库及相关 Agent 中移除",
+     "Filled in from what you pasted": "已根据粘贴内容填写",
+@@ -1011,7 +1011,7 @@ magpie.strings({
+     "e.g. github": "例如 github",
+     "Letters, digits, - and _ — what the agents call it": "字母、數字、- 和 _ — Agent 用這個名字稱呼它",
+     "Runs as": "執行方式",
+-    "The command and its arguments, as you'd type them": "命令及參數，就像在終端機裡輸入的那樣",
++    "The command and its arguments, as you'd type them. A Windows path goes in as it is; quote a path with a blank in it": "命令及參數，就像在終端機裡輸入的那樣。Windows 路徑直接寫就行，帶空格的路徑用引號包起來",
+     "Remove from the library": "從資源庫移除",
+     "{name} is out of the library and the agents it was given to": "{name} 已從資源庫及相關 Agent 中移除",
+     "Filled in from what you pasted": "已根據貼上內容填寫",
+@@ -1607,7 +1607,7 @@ magpie.strings({
+     "e.g. github": "例：github",
+     "Letters, digits, - and _ — what the agents call it": "英字、数字、- と _ — エージェントがこの名前で呼びます",
+     "Runs as": "実行方法",
+-    "The command and its arguments, as you'd type them": "コマンドとその引数（入力するとおりに）",
++    "The command and its arguments, as you'd type them. A Windows path goes in as it is; quote a path with a blank in it": "コマンドとその引数（入力するとおりに）。Windows のパスはそのまま書けます。空白を含むパスは引用符で囲んでください",
+     "Remove from the library": "ライブラリから削除",
+     "{name} is out of the library and the agents it was given to": "{name} をライブラリと渡していたエージェントから削除しました",
+     "Filled in from what you pasted": "貼り付けた内容から入力しました",
+@@ -2206,7 +2206,7 @@ magpie.strings({
+     "e.g. github": "z. B. github",
+     "Letters, digits, - and _ — what the agents call it": "Buchstaben, Ziffern, - und _ – so nennen die Agenten ihn",
+     "Runs as": "Ausführung als",
+-    "The command and its arguments, as you'd type them": "Der Befehl und seine Argumente, wie Sie sie eintippen würden",
++    "The command and its arguments, as you'd type them. A Windows path goes in as it is; quote a path with a blank in it": "Der Befehl und seine Argumente, wie Sie sie eintippen würden. Ein Windows-Pfad wird übernommen, wie er ist; einen Pfad mit Leerzeichen in Anführungszeichen setzen",
+     "Remove from the library": "Aus der Bibliothek entfernen",
+     "{name} is out of the library and the agents it was given to": "{name} ist aus der Bibliothek und den Agenten entfernt, denen er gegeben war",
+     "Filled in from what you pasted": "Aus dem Eingefügten ausgefüllt",
+-- 
+2.50.1 (Apple Git-155)
+

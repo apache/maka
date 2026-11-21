@@ -1,0 +1,1 @@
+function t(){const t=location.search;if(!t)return{};let e=t.slice(1).split("&"),n={};return e.forEach((t=>{let e=t.split("=");n[e[0]]=e[1]})),n}function e(t){if(!t)return{};t="?"==t[0]?t.slice(1):t;let e={};return t.split("&").forEach((t=>{let n=t.split("=");e[n[0]]=decodeURIComponent(n[1])})),e}export{t as g,e as p};

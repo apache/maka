@@ -1,0 +1,25 @@
+{
+  "id": "55",
+  "slug": "add-strings",
+  "title": "字符串相加",
+  "difficulty": "easy",
+  "tags": ["字符串", "模拟"],
+  "description": "给定两个字符串形式的非负整数 `num1` 和 `num2`,计算它们的和并同样以字符串形式返回。\n\n你不能使用任何內建的用于处理大整数的库(如 BigInteger),也不能直接将输入的字符串转换为整数形式。\n\n**示例 1:**\n\n- 输入:`num1 = \"11\"`, `num2 = \"123\"`\n- 输出:`\"134\"`\n\n**示例 2:**\n\n- 输入:`num1 = \"456\"`, `num2 = \"77\"`\n- 输出:`\"533\"`",
+  "solution": "## 思路\n\n**模拟竖式加法**:双指针从末位向前,逐位相加并处理进位。用字符的 `charCode - '0'` 取数字,避免直接转整数。\n\n## 参考代码\n\n```js\nfunction addStrings(num1, num2) {\n  let i = num1.length - 1;\n  let j = num2.length - 1;\n  let carry = 0;\n  let res = '';\n  while (i >= 0 || j >= 0 || carry) {\n    const a = i >= 0 ? num1[i--].charCodeAt(0) - 48 : 0;\n    const b = j >= 0 ? num2[j--].charCodeAt(0) - 48 : 0;\n    const sum = a + b + carry;\n    res = (sum % 10) + res;\n    carry = Math.floor(sum / 10);\n  }\n  return res;\n}\n```\n\n## 复杂度\n\n- 时间:O(max(m,n))\n- 空间:O(1)(不计输出)",
+  "signature": {
+    "language": "javascript",
+    "entry": "addStrings",
+    "params": [
+      { "name": "num1", "type": "string" },
+      { "name": "num2", "type": "string" }
+    ],
+    "returns": "string"
+  },
+  "testCases": [
+    { "sample": true, "input": ["11", "123"], "expected": "134" },
+    { "sample": true, "input": ["456", "77"], "expected": "533" },
+    { "sample": false, "input": ["0", "0"], "expected": "0" },
+    { "sample": false, "input": ["1", "9"], "expected": "10" },
+    { "sample": false, "input": ["999", "1"], "expected": "1000" }
+  ]
+}

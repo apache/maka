@@ -1,0 +1,1 @@
+import{setDialogApp as o}from"./global-EXf6K3i3.js";import{g as i}from"./getUrlQuery-gfMbDo_g.js";import"./index-l6UTc3K0.js";import"./tailwind-ChlWv2gU.js";import"./index-D5wSwEZ6.js";import"./localforage-BUwrrJyZ.js";import"./getAudio-qpHoZEn3.js";const t=i();t.open&&o({component:t.open,insetType:""});

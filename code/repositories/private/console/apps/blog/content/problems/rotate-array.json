@@ -1,0 +1,25 @@
+{
+  "id": "28",
+  "slug": "rotate-array",
+  "title": "轮转数组",
+  "difficulty": "medium",
+  "tags": ["数组"],
+  "description": "给定一个整数数组 `nums`,将数组中的元素向右轮转 `k` 个位置,其中 `k` 是非负数。本题要求**返回轮转后的新数组**(非原地修改)。\n\n**示例 1:**\n\n- 输入:`nums = [1,2,3,4,5,6,7]`, `k = 3`\n- 输出:`[5,6,7,1,2,3,4]`\n\n**示例 2:**\n\n- 输入:`nums = [-1,-100,3,99]`, `k = 2`\n- 输出:`[3,99,-1,-100]`",
+  "solution": "## 思路\n\n向右轮转 `k` 位,等价于把**末尾 `k % n` 个元素**搬到数组开头。直接切片拼接即可。注意 `k` 可能大于 `n`,先取模。\n\n## 参考代码\n\n```js\nfunction rotate(nums, k) {\n  const n = nums.length;\n  if (n === 0) return [];\n  k = k % n;\n  return nums.slice(n - k).concat(nums.slice(0, n - k));\n}\n```\n\n## 复杂度\n\n- 时间:O(n)\n- 空间:O(n)",
+  "signature": {
+    "language": "javascript",
+    "entry": "rotate",
+    "params": [
+      { "name": "nums", "type": "number[]" },
+      { "name": "k", "type": "number" }
+    ],
+    "returns": "number[]"
+  },
+  "testCases": [
+    { "sample": true, "input": [[1, 2, 3, 4, 5, 6, 7], 3], "expected": [5, 6, 7, 1, 2, 3, 4] },
+    { "sample": true, "input": [[-1, -100, 3, 99], 2], "expected": [3, 99, -1, -100] },
+    { "sample": false, "input": [[1, 2, 3], 0], "expected": [1, 2, 3] },
+    { "sample": false, "input": [[1], 1], "expected": [1] },
+    { "sample": false, "input": [[1, 2], 3], "expected": [2, 1] }
+  ]
+}

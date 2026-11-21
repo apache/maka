@@ -1,0 +1,24 @@
+{
+  "id": "10",
+  "slug": "sqrtx",
+  "title": "x 的平方根",
+  "difficulty": "easy",
+  "tags": ["数学", "二分查找"],
+  "description": "给你一个非负整数 `x`,计算并返回 `x` 的**算术平方根**的整数部分(向下取整)。\n\n注意:不允许使用任何内置指数函数和算符(如 `pow`、`**`)。\n\n**示例 1:**\n\n- 输入:`x = 4`\n- 输出:`2`\n\n**示例 2:**\n\n- 输入:`x = 8`\n- 输出:`2`(8 的算术平方根是 2.82842...,向下取整为 2)",
+  "solution": "## 思路\n\n**二分查找**:在 `[1, x]` 区间找最大的 `mid` 满足 `mid * mid <= x`。用乘法代替开方。\n\n## 参考代码\n\n```js\nfunction mySqrt(x) {\n  if (x < 2) return x;\n  let lo = 1;\n  let hi = x;\n  while (lo <= hi) {\n    const mid = Math.floor((lo + hi) / 2);\n    if (mid * mid === x) return mid;\n    if (mid * mid < x) lo = mid + 1;\n    else hi = mid - 1;\n  }\n  return hi;\n}\n```\n\n## 复杂度\n\n- 时间:O(log x)\n- 空间:O(1)",
+  "signature": {
+    "language": "javascript",
+    "entry": "mySqrt",
+    "params": [{ "name": "x", "type": "number" }],
+    "returns": "number"
+  },
+  "testCases": [
+    { "sample": true, "input": [4], "expected": 2 },
+    { "sample": true, "input": [8], "expected": 2 },
+    { "sample": false, "input": [0], "expected": 0 },
+    { "sample": false, "input": [1], "expected": 1 },
+    { "sample": false, "input": [9], "expected": 3 },
+    { "sample": false, "input": [15], "expected": 3 },
+    { "sample": false, "input": [2147483647], "expected": 46340 }
+  ]
+}

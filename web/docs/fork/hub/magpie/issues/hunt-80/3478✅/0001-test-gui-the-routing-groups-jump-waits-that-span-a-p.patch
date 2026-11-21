@@ -1,0 +1,73 @@
+From 6167af9291bca62ff95c9864963c943309b3cd86 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Sun, 25 Oct 2026 03:01:44 +0800
+Subject: [PATCH] test(gui): the routing-groups-jump waits that span a page
+ load get 15s
+
+Under the whole suite's load (the routing files run together, load ~130,
+concurrency 2), webkit en 480px web once waited past the 5s default for
+the head button's fit (#3478): the page sizes the button a frame after
+the head's layout, and a loaded machine serves those first frames late,
+the fit with them. The file alone in webkit passed 3 of 3 (15/15) right
+after. The waits that span the page's boot (the goto, the rows it fills,
+the head and the fit it gets in the first frames) now get 15s; the ones
+inside a loaded page (the click's jump and its settle) keep the quick
+5s. Nothing asserted changes: the fit's value, the tooltip, the jump and
+where the view settles are read as before.
+
+An injected 8s frame starvation (requestAnimationFrame deferred, the way
+a loaded machine runs it) reproduces the red on the old waits: all 15
+webkit cases time out at the fit's wait with the reported wording. With
+the new budget the injected run passes on both engines, and without the
+injection the file passes 30/30 in ten runs on Chromium and WebKit.
+
+Fixes #3478
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ .../gui/tests/routing-groups-jump.test.cjs    | 19 ++++++++++++++-----
+ 1 file changed, 14 insertions(+), 5 deletions(-)
+
+diff --git a/internal/gui/tests/routing-groups-jump.test.cjs b/internal/gui/tests/routing-groups-jump.test.cjs
+index 30789561..ccb7522b 100644
+--- a/internal/gui/tests/routing-groups-jump.test.cjs
++++ b/internal/gui/tests/routing-groups-jump.test.cjs
+@@ -62,6 +62,15 @@ function serve(lang, web) {
+   };
+ }
+ 
++// Under the whole suite's load webkit en once waited past the 5s default
++// for the head button's fit (#3478): the page sizes the button a frame
++// after the head's layout, and a loaded machine serves those first frames
++// late, the fit with them. The waits that span the page's boot (the goto,
++// the rows it fills, the head and the fit it gets in the first frames) get
++// 15s; the ones inside a loaded page (the click's jump and its settle)
++// keep the quick 5s.
++const boot = 15000;
++
+ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium", "webkit"])) {
+   for (const lang of Object.keys(words)) {
+     for (const { width, web } of [{ width: 1000, web: true }, { width: 480, web: true }, { width: 640, web: false }]) {
+@@ -80,14 +89,14 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
+         const errors = [];
+         page.on("pageerror", (e) => errors.push(e.message));
+         await page.route("**/*", serve(lang, web));
+-        await page.goto("http://magpie.test/?view=routing");
+-        await page.locator(".rt-group", { hasText: "Model M" }).waitFor({ state: "attached" });
+-        await page.locator(".rt-reqs > *").first().waitFor({ state: "attached" });
++        await page.goto("http://magpie.test/?view=routing", { timeout: boot });
++        await page.locator(".rt-group", { hasText: "Model M" }).waitFor({ state: "attached", timeout: boot });
++        await page.locator(".rt-reqs > *").first().waitFor({ state: "attached", timeout: boot });
+ 
+         const view = page.locator("#view-routing");
+         const go = page.locator("#view-routing > .row-head #rtGoGroups");
+-        await go.waitFor({ state: "attached" });
+-        await page.waitForFunction(() => document.getElementById("rtGoGroups").dataset.fit);
++        await go.waitFor({ state: "attached", timeout: boot });
++        await page.waitForFunction(() => document.getElementById("rtGoGroups").dataset.fit, null, { timeout: boot });
+         await page.waitForTimeout(100); // the fit settles in the frame after a resize
+         const fit = await go.getAttribute("data-fit");
+         if (width === 1000) assert.equal(fit, "full", "a wide head names it");
+-- 
+2.50.1 (Apple Git-155)
+

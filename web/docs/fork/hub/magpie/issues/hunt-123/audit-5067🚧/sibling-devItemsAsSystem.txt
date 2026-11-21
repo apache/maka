@@ -1,0 +1,4 @@
+upstream/main:internal/gateway/codex_backend.go:3261:// as the system ones they are (developerItemsAsSystem) — Codex's own turns
+upstream/main:internal/gateway/codex_backend.go:3272:		body = developerItemsAsSystem(body)
+upstream/main:internal/gateway/codex_backend.go:3414:// developerItemsAsSystem turns the developer messages of a Responses
+upstream/main:internal/gateway/codex_backend.go:3427:func developerItemsAsSystem(body []byte) []byte {

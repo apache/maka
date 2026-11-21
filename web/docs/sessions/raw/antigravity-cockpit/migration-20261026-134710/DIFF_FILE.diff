@@ -1,0 +1,9 @@
+--- E:\cc\guahub\sessions\raw\antigravity-cockpit\migration-20261026-134710\ORIGINAL_FILE.json
++++ E:\cc\guahub\sessions\raw\antigravity-cockpit\migration-20261026-134710\MODIFIED_FILE.json
+@@ -1,5 +1,5 @@
+ {
+-  "state": "source_present",
++  "state": "migrated",
+   "groups": [
+     {
+       "name": "platform-packages",

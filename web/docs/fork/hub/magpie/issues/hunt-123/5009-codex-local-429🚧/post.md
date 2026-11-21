@@ -1,0 +1,13 @@
+I took this. The headline mechanism — a locally synthesized 429 whose `Retry-After` is days away, which Codex obeys to the minute — is **already fixed on the open #2526 branch**, so I'm not attaching a duplicate patch; what's left open after it is your ask 3. Credit @guo-yu for the fix shape on #2526 (proposed, independently verified, rebased onto `3b10a403` as `hunt/2526-retry-after-sync` @ `928da841`, awaiting review).
+
+**Your reading confirmed at current main (`1e1068c86`)**
+
+- The `429 after 8.88s` with `on (none)` is magpie's own all-accounts-held refusal (`cappedError` branch). At the write site it sets `Retry-After` to the soonest renewal among the held accounts — here account A's weekly reset, hence 99,966s ≈ your 11-04 14:36.
+- Your case is the `unread` variant of that refusal ("...or its usage unread"): B was held as its usage couldn't be told at that moment (a restart had wiped the reading), A at 95% over its cap. The message itself says the held reading is re-read **at the next request** — yet the header tells Codex to sleep 27.8 hours. The header contradicts the message; that contradiction is exactly what #2526's fix bounds (a short re-check window on magpie's own all-held refusals for Codex, upstream `Retry-After`s relayed as they came).
+- Your ask 2 (why didn't the request fall to B at 80%?) is **downstream of ask 1**: B wasn't skipped for quota, it was held as unread — and the client that could have triggered the re-read was the one the `Retry-After` had just frozen for 27.8 hours. Bound the header (the #2526 fix) and the next request arrives within its window, the re-read runs, and B — under its cap — serves. If the re-read itself then misbehaves on Codex accounts, that's the #5079/#5085 careful-read family, worth its own record with the log.
+
+**What stays open here — your ask 3.** `gateway: codex's call to … failed: 429 after 8.88s` names neither the candidates nor why each was skipped (capped / unread / resting). That diagnosability gap is real, uncovered by #2526's fix, and the held reasons are already in hand at the write site (`cappedError` builds them to compose the message) — a maintainer's call whether the refusal log should carry the same per-account reasons the body does.
+
+**Not verified:** no two-account Codex setup here; the B-held-as-unread reconstruction follows from the refusal variant in your log plus the code at `1e1068c86`, not a reproduction. The #2526 branch's tests (`TestCodexQuotaRecheck*`) cover the header bound on the same write site.
+
+AI use: analysis written with GLM-5.3-Flash (ZCode) from a code read of the repo; no requests were sent to any upstream.

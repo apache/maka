@@ -1,0 +1,517 @@
+From 474f0e5fd8ec1a3574497e1168e3580f0379f26c Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Thu, 22 Oct 2026 07:30:04 +0800
+Subject: [PATCH] gateway: a Chat tool call naming no function is dropped, not
+ sent to be refused
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+AricRedemption on #1475: a long Qoder turn ended with an upstream tool
+call whose function.name was no string, and the client that checks the
+shape of every frame (the AI SDK) refused the whole reply — "Expected
+'function.name' to be a string" — the turn not retryable and the call
+already in the conversation's history, so the session was dead; the
+gateway's own log said status=200, done=true. The parsers that read a
+call a model wrote into its text already refuse a nameless one
+(textcalls' parser wants a name among the tools offered), but the calls
+an upstream made itself went out as they came: chatWholeEvents numbered
+a whole reply's calls and patched nothing else, chatTidy's repairs only
+dropped an empty repeated name on later fragments, and chatWhole gave
+ids and mended the finish, never the name.
+
+A call no client can read runs nowhere, so it is no call: it is dropped
+— what the family does with a written block naming no offered tool —
+with the later fragments of the same call in a stream, and a finish of
+tool_calls with no call left ends stop, as a reply that made no call.
+Every path a Chat reply leaves by: a stream relayed as it comes
+(chatTidy), a whole reply relayed as one (chatWhole) and a whole reply
+given to the agent as the stream it asked for (chatWholeEvents), whose
+input need not have been through chatWhole (a reply under a type that
+says neither JSON nor a stream). A name the client reads as a string,
+empty included, goes as it came: the translations' names are strings by
+construction, and a nameless call there fails as an unknown tool — one
+tool lost, not the session.
+
+TestNamelessCallStreamDropped, TestNameAbsentStreamDropped,
+TestNamelessCallBesideAGoodOne, TestNamelessCallWholeDropped and
+TestNamelessCallWholeAsStreamDropped fail on 7dd965ed and pass now;
+TestChatCallsEndToolCalls, TestEmptyCallID*, TestTextWritten* and
+TestQuietWholeReplyStreamed stand. relayedChat's reader no longer
+indexes a name that was never sent. gofmt -l clean.
+
+Fixes #1475
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ docs/subsystems/gateway-routing.md      |   1 +
+ internal/gateway/chat_call_ids.go       |  42 +++++++
+ internal/gateway/chat_call_name_test.go | 116 +++++++++++++++++++
+ internal/gateway/chattidy.go            | 146 ++++++++++++++++++++++--
+ internal/gateway/textcalls_test.go      |   3 +
+ internal/gateway/whole_stream.go        |  30 ++++-
+ 6 files changed, 325 insertions(+), 13 deletions(-)
+ create mode 100644 internal/gateway/chat_call_name_test.go
+
+diff --git a/docs/subsystems/gateway-routing.md b/docs/subsystems/gateway-routing.md
+index fd541dd8..4a88a468 100644
+--- a/docs/subsystems/gateway-routing.md
++++ b/docs/subsystems/gateway-routing.md
+@@ -151,6 +151,7 @@ recorded as a prediction failure (`noPrediction`).
+ - A Chat request has every tool call that came with no id (`""`, null or none) given one in `attempt`, before it is relayed or translated, plugins included (`chatCallIDs` in [`chat_call_ids.go`](../../internal/gateway/chat_call_ids.go), #2611, RunMintOn). An upstream that sometimes streams a call without an id (OpenCode Zen's free DeepSeek) has the agent keep it as `""`, which that upstream takes back, while WorkBuddy AI turns a streamed request carrying one away (400, code 11133) and Anthropic takes no empty `tool_use` id. The id is made from the call's place in the request, its name and its arguments, never at random, so the next turn's history goes byte for byte and the upstream's prompt cache holds; the tool messages after the call that answer with no `tool_call_id` take the made ids in the calls' order. A body whose calls all have ids goes as it came. On the reply side, a relayed Chat stream's call whose first fragment has no id is given one, and a later fragment's empty id is left out (`chatTidy`); a whole reply's call is given one too (`chatWhole`). `TestEmptyCallIDRelayedWithOne`, `TestEmptyCallIDReachesPluginWithOne`, `TestEmptyCallIDTranslatedWithOne`, `TestStreamedCallGivenAnID` in [`chat_call_ids_test.go`](../../internal/gateway/chat_call_ids_test.go).
+ - A relayed Chat stream's tool call fragment with no `index` (none, or null) is given its call's (`streamCallIndexes` in [`chattidy.go`](../../internal/gateway/chattidy.go), #3386). Gemini's OpenAI-compatible API sends its calls with none, where the OpenAI contract has one on every fragment: the AI SDK's OpenAI provider (Cursor's Private Inference) turned the chunk away ("expected number, received undefined" at `tool_calls[0].index`), and OpenAI's node SDK's stream helper kept no call at all. A fragment with an id other than the open call's, or after the first in its delta, is the next call; any other goes on with the open one. So two calls in chunks of their own are 0 and 1, never both 0, which that helper merges into one call. A fragment with an index keeps it. `TestChatTidyGivesCallsAnIndex` in [`chattidy_test.go`](../../internal/gateway/chattidy_test.go), `TestGeminiCompatRelayedCallsHaveAnIndex` in [`gemini_compat_cut_test.go`](../../internal/gateway/gemini_compat_cut_test.go).
+ - A relayed Chat reply whose choice made calls and ended `stop` ends `tool_calls`, streamed (`chatTidy`) and whole (`chatWhole`), as the translations' collector already ends it (`collector.finish`): told it stopped, a client that reads `finish_reason` ends its turn with the calls not run (喜欢一个人 on Discord, a relay in front of deepseek-v4.1-flash). Any other reason stays as it came. `TestChatCallsEndToolCalls` in [`chattidy_finish_test.go`](../../internal/gateway/chattidy_finish_test.go).
++- A Chat reply's call whose function names nothing in a JSON string — no name, null, another kind — is dropped, its later fragments with it, and a finish of `tool_calls` with no call left ends `stop`: streamed (`chatTidy`), whole (`chatWhole`) and a whole reply given to the agent as the stream it asked for (`chatWholeEvents`), since a client that checks the shape of every frame refuses the whole reply for one — the turn not retryable, the call already in the history, the session dead, while the gateway's own log says the reply went (AricRedemption, #1475). A nameless call runs nowhere, so it is no call, as a written block naming no offered tool is; a name the client reads as a string, empty included, goes as it came. `TestNamelessCallStreamDropped`, `TestNameAbsentStreamDropped`, `TestNamelessCallBesideAGoodOne`, `TestNamelessCallWholeDropped`, `TestNamelessCallWholeAsStreamDropped` in [`chat_call_name_test.go`](../../internal/gateway/chat_call_name_test.go).
+ - Codex's model list from the backend path (`codexModels`) is the ChatGPT backend's for its sign-in and then magpie's (`provider.CodexListed`), its ETag and every reply's `X-Models-Etag` tagged with `provider.CodexListTag` so a change has Codex ask again. A Codex there only for account failover, not connected (`CodexOwnOnly`, `agent.CodexOwnOnly`; #1385), gets the backend's alone, tagged with `provider.CodexOwnListTag`; neither tag contains the other, so connecting or disconnecting has Codex fetch the list again. The user's picks on the codex provider (`provider.CodexNativePicked`) narrow the backend's listed models. They keep its hidden ones (`visibility: "hide"`), which no picker shows. One of those is `codex-auto-review`: when the list lacks it and no reviewer is set, Codex's auto-review runs on the conversation's model at low effort (#1460, `TestCodexModelListPicksKeepHidden`). The account's own models kept out of agents' lists for routing groups (`provider.CodexNativeUnlisted`) are dropped from it too, hidden ones kept: every one when the codex provider is "Only through routing groups" (`Provider.Unlisted`), and those a group that unlists its members names (`Group.Unlists`). A Codex there only for failover keeps them, as it is handed no groups; `spawnChoices` drops the same ones (#1602, `TestCodexModelListUnlistedForGroups`).
+ - Reasoning state goes through magpie's translation as the vendor wrote it when the agent and the upstream speak the same API (#1445, XYenon): a non-streaming Messages request to a stream-only account, web search on the agent's own API, a plugin, failover. The IR carries it sealed (`Part.Sealed`, `SealedBy`; events `KThinkStart`, `KSealed`, `KTextSig` in [`ir.go`](../../internal/gateway/ir.go)), so each thinking block or reasoning item stays apart, whole or streamed, and a seal is written only for its own API (`sealedBy`). Anthropic's `redacted_thinking` goes back raw (to DeepSeek as a thinking block, below), and a thinking block signed with no text keeps its signature (`aBlock` still writes `"thinking": ""`, #1447), on Claude's subscription too. A Responses reasoning item keeps its id, summary and `encrypted_content`, and goes back to a Responses upstream as it came when it has no reasoning text (`sealedReasoning`; text, another vendor's, is still left out for OpenAI, #1411). Gemini's `thoughtSignature` stays on the call it signed and on text; a later call of a signed step goes without one, and only an unsigned step or Claude on Antigravity gets `skip_thought_signature_validator`. Another API's agent gets the call's signature in its id, as on chat (#687), with its length in the mark (`__ts<n>__`), so an id a client shortened carries no signature and the call goes as unsigned (#1536); it gets no one else's seal. The signature itself is kept in magpie's folder, `gemini-signatures/<key>`, named by its hash (`keepSignature` in [`gemini_sigstore.go`](../../internal/gateway/gemini_sigstore.go)), and the id carries only the key (`__tsk16__<key>`), so an id stays under 64 characters however long the step's signature (#2411: LobeHub's PostgreSQL index turned away a 3KB id). A key magpie no longer has, or whose file doesn't hash to it, reads as no signature; one not read for 90 days is removed. Where the folder can't be written, the id carries the signature as before. Carrying reasoning across APIs (an envelope) isn't done.
+ - A translated Responses reply gives Codex the reasoning items a Responses upstream sent, as it sent them; any other upstream's reasoning becomes items magpie made: an `rs_` id and a summary, nothing sealed. Codex hands them back on every turn. A request relayed as is to OpenAI's API or Azure OpenAI goes without them (`withoutBareReasoning`) unless `store` is true, because both look the id up among stored items and answer 400 "Item with id 'rs_…' not found" (#1008). Any other Responses upstream gets them, because a DeepSeek model wants its reasoning back (#388). When one answers 400 naming the input (`refusesInput`: `param` is `input`, or the error names an item by id), as a relay in front of OpenAI does with a message of its own, `passthrough` asks once more without them and, once that works, leaves them out for that provider and model from then on (`bareReasoningRefused`, #1044). Codex's compaction offers no tools, so it is relayed even when its turns were translated. The summary request magpie makes offers none either: `codexInputAs` sends `tools: []` and leaves out the `additional_tools` input item, where Codex's Responses Lite (the entry of a ChatGPT account's gpt-6 model, copied from Codex's own) puts every tool; left in, the model may call one in place of the summary (the likely cause of WuSix's codex/gpt-6-astra "the model wrote no summary" on Discord, not confirmed on a real reply), and a reply with no summary says what it held instead (`answeredWith`). When a provider answers its summary request 404, or 400 for an item it didn't find (`itemNotFound`, a relay in front of either), `codexCompact` asks once more with the conversation as text (`plainCompact`), then compacts locally (#866, #1008). So does the ChatGPT backend's 502 "response protection is unavailable" (`protectionRefused`): a long history refused so was answered as text. Codex also compacts remotely, a `compaction_trigger` on `/responses` that wants exactly one compaction item back, on any provider table named "OpenAI", as CC Switch names its relay tables. magpie points those at `/v1` while a magpie model is on, so `handle` makes the summary there too (`codexInput`, `codexCompact`), and magpie's summaries go back to the model as text (#1301). A summary is wanted only whole (`askWhole`, `holdWriter.wantWhole`): its stream is held to its end, not let through at its first words, so a reply cut short (`errEndedShort`), failed halfway (a 429 "Individual quota reached" after some of it) or ended `incomplete` (`endedIncomplete`, `incompleteReply`) fails over to the next candidate like a failure before any of it, and rests the account as that failure would; one that reached its output limit rests nobody. With nobody left, `codexCompact` answers 502 and never hands Codex the words before the cut as the summary (#2274, huangzuomin: Antigravity cutting each summary short). Codex with context_management's experimental mode compacts in the background at every step while the conversation is over its threshold and drops a failed compaction without a word, so a conversation whose summaries keep failing is asked again every few seconds, each paying for the whole history (1169 compactions in 6 hours there). After `compactFailsMost` (3) failed summaries in a row of one conversation (`prompt_cache_key`) on one model, each within `compactHeldFor` (5 minutes) of the last, the next is answered at once with a 400 naming the last failure, which Codex doesn't ask again, and no model is asked until 5 minutes have passed (`compactFails` in [`codex_compact_guard.go`](../../internal/gateway/codex_compact_guard.go)); a summary that comes clears the count, and a sign-in's 401 or 403 isn't counted. `TestCodexCompactCutSummaryFailsOver`, `TestCodexCompactCutSummaryIsNoSummary`, `TestCodexCompactKeepsFailingIsHeld`.
+diff --git a/internal/gateway/chat_call_ids.go b/internal/gateway/chat_call_ids.go
+index a3d3cd95..6e4b2e43 100644
+--- a/internal/gateway/chat_call_ids.go
++++ b/internal/gateway/chat_call_ids.go
+@@ -137,3 +137,45 @@ func wholeCallIDs(msg map[string]json.RawMessage) bool {
+ 	}
+ 	return changed
+ }
++
++// wholeNameless drops the tool calls of a whole reply's message whose
++// function names nothing in a JSON string — no name, null, another kind
++// (#1475) — and reports whether any was dropped.
++func wholeNameless(msg map[string]json.RawMessage) bool {
++	var calls []map[string]json.RawMessage
++	if decodeJSON(msg["tool_calls"], &calls) != nil {
++		return false
++	}
++	var kept []map[string]json.RawMessage
++	for _, c := range calls {
++		var fn map[string]json.RawMessage
++		if decodeJSON(c["function"], &fn) == nil && aName(fn["name"]) {
++			kept = append(kept, c)
++		}
++	}
++	if len(kept) == len(calls) {
++		return false
++	}
++	if kept == nil {
++		delete(msg, "tool_calls")
++		return true
++	}
++	msg["tool_calls"], _ = marshalPlain(kept)
++	return true
++}
++
++// wholeNamedCall says whether a whole reply's message still carries a
++// tool call whose function names itself in a string.
++func wholeNamedCall(msg map[string]json.RawMessage) bool {
++	var calls []map[string]json.RawMessage
++	if decodeJSON(msg["tool_calls"], &calls) != nil {
++		return false
++	}
++	for _, c := range calls {
++		var fn map[string]json.RawMessage
++		if decodeJSON(c["function"], &fn) == nil && aName(fn["name"]) {
++			return true
++		}
++	}
++	return false
++}
+diff --git a/internal/gateway/chat_call_name_test.go b/internal/gateway/chat_call_name_test.go
+new file mode 100644
+index 00000000..5dd4ebca
+--- /dev/null
++++ b/internal/gateway/chat_call_name_test.go
+@@ -0,0 +1,116 @@
++package gateway
++
++import (
++	"encoding/json"
++	"strings"
++	"testing"
++)
++
++// AricRedemption on #1475: a long Qoder turn ended with an upstream tool
++// call whose function.name was no string, and the client that checks the
++// shape of every frame (the AI SDK) refused the whole reply — "Expected
++// 'function.name' to be a string" — the turn not retryable and the call
++// already in the history, so the session was dead; magpie's own log said
++// status=200, done=true. A call no client can read runs nowhere, so it is
++// no call: it is dropped, its later fragments with it, and a finish of
++// tool_calls with no call left ends stop — what textcalls' parser does
++// with a written block that names no offered tool. A name the client
++// reads as a string, empty included, goes as it came.
++
++// The first fragment of a streamed call naming no function in a string,
++// its argument fragments dropped with it, a finish of tool_calls ended
++// stop, the text before the call kept.
++func TestNamelessCallStreamDropped(t *testing.T) {
++	first := `data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_up","type":"function","function":{"name":null,"arguments":""}}]},"finish_reason":null}]}`
++	args := `data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"cmd\":\"ls -la\"}"}}]},"finish_reason":null}]}`
++	ended := strings.Replace(stopChunk, `"stop"`, `"tool_calls"`, 1)
++	text, calls, finish, raw := relayedChat(t,
++		`{"model":"a/m","stream":true,"messages":[{"role":"user","content":"go"}],`+execChatTool+`}`,
++		chunkOf("Running it."), first, args, ended)
++	if text != "Running it." || len(calls) != 0 || finish != "stop" {
++		t.Fatalf("text %q, calls %v, finish %q\n%s", text, calls, finish, raw)
++	}
++	if strings.Contains(raw, `"tool_calls":[`) {
++		t.Fatalf("a call naming no function reached the client:\n%s", raw)
++	}
++}
++
++// The same with the name field absent, as the merged deltas leave it for
++// a client to read.
++func TestNameAbsentStreamDropped(t *testing.T) {
++	first := `data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_up","type":"function","function":{"arguments":""}}]},"finish_reason":null}]}`
++	args := `data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"cmd\":\"ls\"}"}}]},"finish_reason":null}]}`
++	_, calls, finish, raw := relayedChat(t,
++		`{"model":"a/m","stream":true,"messages":[{"role":"user","content":"go"}],`+execChatTool+`}`,
++		first, args, stopChunk)
++	if len(calls) != 0 || finish != "stop" {
++		t.Fatalf("calls %v, finish %q\n%s", calls, finish, raw)
++	}
++	if strings.Contains(raw, `"tool_calls":[`) {
++		t.Fatalf("a call naming no function reached the client:\n%s", raw)
++	}
++}
++
++// A call with a name stands beside one without: the named one goes, the
++// nameless one alone is dropped, and the finish stays tool_calls.
++func TestNamelessCallBesideAGoodOne(t *testing.T) {
++	mixed := `data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_up","type":"function","function":{"name":"exec_command","arguments":"{\"cmd\":\"ls\"}"}},{"index":1,"id":"call_bad","type":"function","function":{"name":null,"arguments":""}}]},"finish_reason":null}]}`
++	_, calls, finish, raw := relayedChat(t,
++		`{"model":"a/m","stream":true,"messages":[{"role":"user","content":"go"}],`+execChatTool+`}`,
++		mixed, stopChunk)
++	if len(calls) != 1 || calls["exec_command"] != `{"cmd":"ls"}` || finish != "tool_calls" {
++		t.Fatalf("calls %v, finish %q\n%s", calls, finish, raw)
++	}
++	if strings.Contains(raw, "call_bad") {
++		t.Fatalf("the nameless call reached the client:\n%s", raw)
++	}
++}
++
++// A whole reply's call naming no function is dropped before it is
++// relayed, and its finish of tool_calls ends stop; the text is kept.
++func TestNamelessCallWholeDropped(t *testing.T) {
++	up := `{"id":"c1","object":"chat.completion","created":1791370000,"model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"Let me.","tool_calls":[{"id":"call_up","type":"function","function":{"name":null,"arguments":"{\"cmd\":\"ls\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}`
++	text, calls, finish, raw := wholeChat(t,
++		`{"model":"a/m","stream":false,"messages":[{"role":"user","content":"go"}],`+execChatTool+`}`,
++		"application/json", up)
++	if text == nil || *text != "Let me." || len(calls) != 0 || finish != "stop" {
++		t.Fatalf("text %v, calls %v, finish %q\n%s", text, calls, finish, raw)
++	}
++	if strings.Contains(raw, `"tool_calls"`) {
++		t.Fatalf("a call naming no function reached the client:\n%s", raw)
++	}
++}
++
++// The whole reply a vendor gave after the agent was kept alive goes out
++// as the stream the agent asked for (wholeAsStream): its call naming no
++// function is dropped there too, and the finish with no call left ends
++// stop.
++func TestNamelessCallWholeAsStreamDropped(t *testing.T) {
++	up := `{"id":"c1","object":"chat.completion","created":1791370000,"model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"Let me.","tool_calls":[{"id":"call_up","type":"function","function":{"name":null,"arguments":"{\"cmd\":\"ls\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}`
++	var sawToolCalls, saidNull bool
++	var finish string
++	for _, e := range chatWholeEvents([]byte(up)) {
++		b, _ := json.Marshal(e.data)
++		s := string(b)
++		if strings.Contains(s, `"name":null`) || strings.Contains(s, `"name":`) && !strings.Contains(s, `"name":"`) {
++			saidNull = true
++		}
++		if strings.Contains(s, `"tool_calls"`) {
++			sawToolCalls = true
++		}
++		var ch struct {
++			Choices []struct {
++				FinishReason string `json:"finish_reason"`
++			} `json:"choices"`
++		}
++		if json.Unmarshal([]byte(s), &ch) == nil && len(ch.Choices) > 0 && ch.Choices[0].FinishReason != "" {
++			finish = ch.Choices[0].FinishReason
++		}
++	}
++	if sawToolCalls || saidNull {
++		t.Fatalf("the events carried a call naming no function (tool_calls %v, null name %v)", sawToolCalls, saidNull)
++	}
++	if finish != "stop" {
++		t.Fatalf("finish %q, want stop", finish)
++	}
++}
+diff --git a/internal/gateway/chattidy.go b/internal/gateway/chattidy.go
+index 24a7c562..682f8c16 100644
+--- a/internal/gateway/chattidy.go
++++ b/internal/gateway/chattidy.go
+@@ -61,12 +61,26 @@ import (
+ // never made (#3386). A fragment with none is given its call's: a new id,
+ // or a later place in its delta, is the next call.
+ //
++// And a call whose first fragment names no function in a JSON string —
++// no name, null, another kind — is dropped, its later fragments with it,
++// and a finish of tool_calls with no call left ends stop (#1475): a
++// client that checks the shape of every frame refuses the chunk for it
++// and the whole reply with it, the turn not retryable and the call
++// already in the history, so the session is dead — while the gateway's
++// own log says the reply went (AricRedemption). A nameless call runs
++// nowhere, so it is no call, as a written block naming no offered tool
++// is; a name of another kind on a later fragment is left out, the first
++// one's kept.
++//
+ // Lines pass whole, as they came, unless one has any of them.
+ type chatTidy struct {
+ 	buf     []byte
+ 	ids     streamCallIDs
+ 	indexes streamCallIndexes
+-	called  map[int]bool // the choices that made a call
++	called  map[int]bool    // the choices that made a call
++	named   map[int]bool    // the choices with a call whose name a client reads
++	seen    map[[2]int]bool // the streamed calls, to know a first fragment
++	bad     map[[2]int]bool // the calls naming no function, with their later fragments
+ }
+ 
+ var (
+@@ -184,29 +198,51 @@ func (t *chatTidy) line(line []byte) []byte {
+ 				calls, delta["tool_calls"] = given, given
+ 				inDelta = true
+ 			}
+-			if t.ids == nil {
+-				t.ids = streamCallIDs{}
+-			}
+ 			if t.called == nil {
+ 				t.called = map[int]bool{}
+ 			}
+ 			t.called[choice] = true
+-			if mended, chg := t.ids.mend(choice, calls); chg {
+-				calls, delta["tool_calls"] = mended, mended
++			if kept, chg := t.nameless(choice, calls); chg {
++				if kept == nil {
++					delete(delta, "tool_calls")
++				} else {
++					calls, delta["tool_calls"] = kept, kept
++				}
+ 				inDelta = true
+ 			}
+-			if mended, chg := withoutEmptyNames(calls); chg {
+-				delta["tool_calls"] = mended
+-				inDelta = true
++			if calls != nil {
++				if t.ids == nil {
++					t.ids = streamCallIDs{}
++				}
++				if mended, chg := t.ids.mend(choice, calls); chg {
++					calls, delta["tool_calls"] = mended, mended
++					inDelta = true
++				}
++				if mended, chg := withoutEmptyNames(calls); chg {
++					delta["tool_calls"] = mended
++					inDelta = true
++				}
+ 			}
+ 		}
+ 		if inDelta {
+ 			c["delta"], _ = json.Marshal(delta)
+ 			changed = true
+ 		}
+-		if t.called[choice] && string(bytes.TrimSpace(c["finish_reason"])) == `"stop"` {
+-			c["finish_reason"] = json.RawMessage(`"tool_calls"`)
+-			changed = true
++		if t.called[choice] {
++			switch end := string(bytes.TrimSpace(c["finish_reason"])); end {
++			case `"stop"`:
++				if t.named[choice] {
++					c["finish_reason"] = json.RawMessage(`"tool_calls"`)
++					changed = true
++				}
++			case `"tool_calls"`:
++				if !t.named[choice] {
++					// the call the finish named named no function: it ends
++					// stop, as a reply that made no call (#1475)
++					c["finish_reason"] = json.RawMessage(`"stop"`)
++					changed = true
++				}
++			}
+ 		}
+ 	}
+ 	if !changed {
+@@ -310,6 +346,83 @@ func (s streamCallIndexes) give(choice int, raw json.RawMessage) (json.RawMessag
+ 	return out, true
+ }
+ 
++// nameless drops the fragments of a streamed call whose first one names
++// no function in a JSON string — no name, null, another kind — with the
++// later fragments of the same call (#1475): a client that checks the
++// shape of every frame refuses the chunk for it and the whole reply with
++// it, the turn not retryable and the call already in the history, so the
++// session is dead. A nameless call runs nowhere, so it is no call, as a
++// written block naming no offered tool is. A name of another kind on a
++// later fragment only loses the field, the first one's kept. It reports
++// the fragments kept, nil when none, and whether any was dropped.
++func (t *chatTidy) nameless(choice int, raw json.RawMessage) (json.RawMessage, bool) {
++	var calls []map[string]json.RawMessage
++	if decodeJSON(raw, &calls) != nil {
++		return raw, false
++	}
++	var kept []map[string]json.RawMessage
++	changed := false
++	for _, call := range calls {
++		idx := 0
++		decodeJSON(call["index"], &idx)
++		key := [2]int{choice, idx}
++		if t.bad[key] {
++			changed = true
++			continue
++		}
++		first := !t.seen[key]
++		if t.seen == nil {
++			t.seen = map[[2]int]bool{}
++		}
++		t.seen[key] = true
++		var fn map[string]json.RawMessage
++		var name json.RawMessage
++		var has bool
++		if decodeJSON(call["function"], &fn) == nil {
++			name, has = fn["name"]
++		}
++		switch {
++		case has && aName(name):
++			if t.named == nil {
++				t.named = map[int]bool{}
++			}
++			t.named[choice] = true
++			kept = append(kept, call)
++		case has && !first:
++			// it would write itself over the name the first fragment
++			// carried, as an empty one would
++			delete(fn, "name")
++			call["function"], _ = json.Marshal(fn)
++			kept = append(kept, call)
++			changed = true
++		default:
++			if !first {
++				// a later fragment: the name went with the first
++				kept = append(kept, call)
++				continue
++			}
++			// no name the client reads, and a call's name goes with its
++			// first fragment: no fragment of this call will name it
++			if t.bad == nil {
++				t.bad = map[[2]int]bool{}
++			}
++			t.bad[key] = true
++			changed = true
++		}
++	}
++	if !changed {
++		return raw, false
++	}
++	if kept == nil {
++		return nil, true
++	}
++	out, err := json.Marshal(kept)
++	if err != nil {
++		return raw, false
++	}
++	return out, true
++}
++
+ // partsText reads a content that is an array of typed parts: its text,
+ // and the text of its thinking parts. ok is false for any other content,
+ // a string or null.
+@@ -414,6 +527,9 @@ func (t *chatWhole) flush() []byte {
+ 		mended := parts && flattenContent(msg, true)
+ 		// a call the upstream gave no id (#2611)
+ 		mended = wholeCallIDs(msg) || mended
++		// a call naming no function runs nowhere and no client can read
++		// it (#1475)
++		mended = wholeNameless(msg) || mended
+ 		if wrote, called := wholeTextCalls(msg, t.names); wrote {
+ 			if called {
+ 				c["finish_reason"] = json.RawMessage(`"tool_calls"`)
+@@ -426,6 +542,12 @@ func (t *chatWhole) flush() []byte {
+ 			c["finish_reason"] = json.RawMessage(`"tool_calls"`)
+ 			changed = true
+ 		}
++		// the call the finish named naming no function, it ends stop, as a
++		// reply that made no call (#1475)
++		if string(bytes.TrimSpace(c["finish_reason"])) == `"tool_calls"` && !wholeNamedCall(msg) {
++			c["finish_reason"] = json.RawMessage(`"stop"`)
++			changed = true
++		}
+ 		if !mended {
+ 			continue
+ 		}
+diff --git a/internal/gateway/textcalls_test.go b/internal/gateway/textcalls_test.go
+index 16dbad38..19e0bc31 100644
+--- a/internal/gateway/textcalls_test.go
++++ b/internal/gateway/textcalls_test.go
+@@ -64,6 +64,9 @@ func relayedChat(t *testing.T, body string, up ...string) (text string, calls ma
+ 				if tc.Function.Name != "" {
+ 					names = append(names, tc.Function.Name)
+ 				}
++				if len(names) == 0 {
++					continue // a fragment with no name before it
++				}
+ 				calls[names[len(names)-1]] += tc.Function.Arguments
+ 			}
+ 			if c.FinishReason != nil {
+diff --git a/internal/gateway/whole_stream.go b/internal/gateway/whole_stream.go
+index 55ee0398..90d7f8a9 100644
+--- a/internal/gateway/whole_stream.go
++++ b/internal/gateway/whole_stream.go
+@@ -1,6 +1,7 @@
+ package gateway
+ 
+ import (
++	"bytes"
+ 	"encoding/json"
+ 	"maps"
+ 	"net/http"
+@@ -60,6 +61,15 @@ func str(m obj, k string) string {
+ 	return s
+ }
+ 
++// aName says whether raw is a JSON string: a call name a client's shape
++// check takes, empty or not. No name, null and any other kind are not
++// (#1475): a client that checks the shape of every frame refuses the
++// whole reply for one.
++func aName(r json.RawMessage) bool {
++	t := bytes.TrimSpace(r)
++	return len(t) > 0 && t[0] == '"'
++}
++
+ // chatWholeEvents streams a chat.completion as its chunks: each choice's
+ // message as one delta, its tool calls numbered as a stream numbers them,
+ // then its finish reason with the usage, then [DONE].
+@@ -101,12 +111,30 @@ func chatWholeEvents(b []byte) []wholeEvent {
+ 		delta := maps.Clone(c.Message)
+ 		var calls []obj
+ 		if json.Unmarshal(delta["tool_calls"], &calls) == nil && len(calls) > 0 {
++			var kept []obj
+ 			for n, call := range calls {
++				var fn obj
++				if json.Unmarshal(call["function"], &fn) == nil && !aName(fn["name"]) {
++					// a call naming no function in a string runs nowhere
++					// and no client can read (#1475): dropped, as a written
++					// block naming no offered tool is
++					continue
++				}
+ 				if _, ok := call["index"]; !ok {
+ 					call["index"] = raw(n)
+ 				}
++				kept = append(kept, call)
++			}
++			if kept == nil {
++				delete(delta, "tool_calls")
++			} else {
++				delta["tool_calls"] = raw(kept)
++			}
++			if len(kept) < len(calls) && string(bytes.TrimSpace(c.FinishReason)) == `"tool_calls"` {
++				// the call the finish named named no function: it ends
++				// stop, as a reply that made no call
++				c.FinishReason = raw("stop")
+ 			}
+-			delta["tool_calls"] = raw(calls)
+ 		}
+ 		d := obj{"index": index, "delta": raw(delta), "finish_reason": raw(nil)}
+ 		if c.Logprobs != nil {
+-- 
+2.50.1 (Apple Git-155)
+

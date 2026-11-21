@@ -1,0 +1,1 @@
+const n=async()=>await o(),o=async()=>await new Promise(s=>{chrome.storage.local.get("USER_INFO",e=>{s(e.USER_INFO)})}),r=async()=>{const t=await n();return t?.isLogin&&!t?.inWaitlist};export{r as c,n as g};

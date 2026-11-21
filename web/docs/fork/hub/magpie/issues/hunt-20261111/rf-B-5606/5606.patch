@@ -1,0 +1,160 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Sun, 8 Nov 2026 01:09:47 +0800
+Subject: [PATCH] gui: a name that is both an account's and a provider's hides
+ as the account's (#5606)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+names() builds the never-hide set from every provider's id/name/agent
+and every quota card's provider/name/plan, then filters the account
+names through it — so an account named like its provider sat in the
+clear on the Usage page, in text and tooltips, while every other
+account hid (#5606, v5tech). The reporter's own read: the labels keep
+their element exemptions (.plan, .acct-plan, .model-value,
+.subscription-head > b), so a name that is both is the account's to
+hide. The brand words in NOT_ACCOUNTS stay put (#3656): only the names
+the page's own providers, cards, plugins and agents carry give way when
+an account bears them — a provider row named like its account hides its
+name too, whose .name has no exemption of its own.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gui/assets/app.js                    |   7 ++
+ .../gui/tests/account-mask-namesake.test.cjs  | 105 ++++++++++++++++++
+ 2 files changed, 112 insertions(+)
+ create mode 100644 internal/gui/tests/account-mask-namesake.test.cjs
+
+diff --git a/internal/gui/assets/app.js b/internal/gui/assets/app.js
+index 433177595..b702e741a 100644
+--- a/internal/gui/assets/app.js
++++ b/internal/gui/assets/app.js
+@@ -24267,6 +24267,13 @@ window.noteAccounts = noteAccounts;
+       if (q.alias && !q.named && q.alias !== q.seat) all.add(q.alias.trim());
+     }
+     for (const a of state?.agents || []) for (const n of [a.id, a.name]) if (n) not.add(String(n).toLowerCase());
++    // a name that is both an account's and a provider's is the account's
++    // to hide (#5606, v5tech: a provider named like the account left the
++    // account in the clear): the card labels it could sit on have their
++    // own exemptions (.plan, .subscription-head > b, .acct-plan,
++    // .model-value), while the words in NOT_ACCOUNTS stay put (#3656)
++    const mine = new Set([...all].map((n) => String(n).toLowerCase().replace(/ \(\d+\)$/, "")));
++    for (const n of [...not]) if (!NOT_ACCOUNTS.has(n) && mine.has(n)) not.delete(n);
+     return [...all].filter((n) => nameLike(n) && !IS_EMAIL.test(n) && !not.has(n.toLowerCase().replace(/ \(\d+\)$/, ""))).sort((a, b) => b.length - a.length);
+   }
+   let findKey = null, find = EMAIL;
+diff --git a/internal/gui/tests/account-mask-namesake.test.cjs b/internal/gui/tests/account-mask-namesake.test.cjs
+new file mode 100644
+index 000000000..33d165223
+--- /dev/null
++++ b/internal/gui/tests/account-mask-namesake.test.cjs
+@@ -0,0 +1,105 @@
++// Run with Node's test runner and Playwright on the module path; see README.md.
++// Hide accounts hides the account whose name is also a provider's (#5606,
++// v5tech): a provider's id/name/plan and a card's labels go into the
++// never-hide set, and an account named the same sat in the clear beside
++// them. Now a name that is both is the account's to hide — the card's
++// labels keep their own element exemptions (.plan, .subscription-head > b,
++// .acct-plan, .model-value), and the brand words in NOT_ACCOUNTS stay put
++// (#3656). A provider named like nothing is untouched.
++const assert = require("node:assert/strict");
++const fs = require("node:fs/promises");
++const path = require("node:path");
++const { test } = require("node:test");
++const { chromium, webkit } = require("playwright");
++
++const assets = path.resolve(__dirname, "../assets");
++const SAME = "demo", OTHER = "raw@example.com", PLAN = "Google AI Pro";
++const base = { icon: "generic", chat: "", responses: "", anthropic: "", catalog: "", agents: [], fallback: [], headers: {}, keyList: [], proxy: "", models: [{ id: "m", name: "", on: true }] };
++const providers = () => ({ providers: [
++  { ...base, id: "antigravity", name: "Antigravity", icon: "antigravity-color",
++    account: { agent: "antigravity", agentName: "Antigravity", user: "Google", plan: PLAN,
++      logins: [{ user: "Google", plan: PLAN, active: true, on: true }, { user: OTHER, plan: PLAN, on: true }] } },
++  { ...base, id: SAME, name: SAME, icon: "generic",
++    account: { agent: SAME, agentName: SAME, user: SAME, plan: "Pro",
++      logins: [{ user: SAME, plan: "Pro", active: true, on: true }] } },
++], presets: [], excluded: [], gateway: { running: true, window: true } });
++const quotas = () => [
++  { provider: "antigravity", name: "Antigravity", icon: "antigravity-color", plan: PLAN, user: "Google", windows: [{ name: "Gemini", used: 5 }] },
++  { provider: "antigravity", name: "Antigravity", icon: "antigravity-color", plan: PLAN, user: OTHER, alias: "Work laptop", named: true, windows: [{ name: "Gemini", used: 30 }] },
++  { provider: SAME, name: SAME, icon: "generic", plan: "Pro", user: SAME, windows: [{ name: "Credits", used: 10 }] },
++];
++
++function serve(lang) {
++  const settings = { theme: "light", lang, tray: "panel", quotaLeft: false, currency: "usd" };
++  return async (route) => {
++    const url = new URL(route.request().url());
++    const json = (data) => route.fulfill({ json: data });
++    if (url.pathname === "/boot.js") return route.fulfill({ contentType: "text/javascript", body: `window.bootPrefs = {lang:${JSON.stringify(lang)},theme:"light",web:false};` });
++    if (url.pathname === "/wails/runtime.js") return route.fulfill({ contentType: "text/javascript", body: "export const Window = {};" });
++    if (url.pathname === "/api/state") return json({ agents: [], profiles: [], settings });
++    if (url.pathname === "/api/settings") return json(settings);
++    if (url.pathname === "/api/providers") return json(providers());
++    if (url.pathname === "/api/usage/quotas") return json(quotas());
++    if (url.pathname === "/api/groups") return json({ groups: [], models: [] });
++    if (url.pathname === "/api/plugins") return json({ plugins: [] });
++    if (url.pathname === "/api/login/usage") return json({});
++    if (url.pathname.startsWith("/api/")) return json({});
++    const file = path.join(assets, url.pathname === "/" ? "index.html" : url.pathname);
++    const contentType = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png" }[path.extname(file)];
++    try { await route.fulfill({ body: await fs.readFile(file), contentType }); } catch { await route.fulfill({ status: 404, body: "" }); }
++  };
++}
++
++const raws = (loc) => loc.evaluate((e) => [...e.querySelectorAll(".pii")].map((p) => p.dataset.raw));
++
++for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium", "webkit"])) {
++  for (const lang of (process.env.LANGS ? process.env.LANGS.split(",") : ["en", "zh"])) {
++    test(`${engine} ${lang}: a name that is both an account's and a provider's is hidden as the account's`, async (t) => {
++      const browser = await (engine === "webkit" ? webkit.launch() : chromium.launch({ channel: "chromium" }));
++      t.after(() => browser.close());
++      const context = await browser.newContext({ viewport: { width: 1100, height: 800 }, reducedMotion: "reduce" });
++      const page = await context.newPage();
++      page.setDefaultTimeout(5000);
++      page.setDefaultNavigationTimeout(60000);
++      page.on("pageerror", (e) => t.fail("pageerror: " + e.message));
++      await page.route("**/*", serve(lang));
++      await page.goto("http://magpie.test/?view=usage");
++      await page.locator(".subscription-account .quota-alias").first().waitFor();
++      await page.evaluate(() => {
++        const d = document.createElement("div");
++        d.id = "sample";
++        d.textContent = "demo answered · demo waited";
++        d.title = "demo";
++        document.querySelector("#view-usage").append(d);
++      });
++      await page.evaluate(() => hideAccounts.set(true, true));
++      await page.waitForFunction(() => document.querySelector("#sample .pii"));
++
++      // the account named like its provider: hidden in its row, sentence
++      // and tooltip
++      const acct = page.locator(".subscription-account", { has: page.locator(`.pii[data-raw="${SAME}"]`) }).first();
++      assert.ok(await acct.count(), "the namesake account is hidden");
++      assert.deepEqual(await raws(page.locator("#sample")), [SAME, SAME], "the namesake is hidden in the sample's text and tooltip");
++      assert.ok(!(await page.locator("#sample").textContent()).includes(SAME), "no bare namesake in the sample");
++
++      // the provider card's title and plan stay in sight: their own
++      // element exemptions hold
++      await page.evaluate(() => show("providers"));
++      // the provider row: the namesake is the account's now, hidden in
++      // the row too (its .name carries no label exemption); the plan
++      // beside it keeps its own
++      const prow = page.locator(".row.provider").nth(1);
++      await prow.waitFor({ state: "attached" });
++      await page.waitForFunction(() => document.querySelector("#view-providers .pii"));
++      assert.ok(await prow.locator(`.pii[data-raw="${SAME}"]`).count(), "the namesake is hidden in its provider row too");
++      const plan = prow.locator(".acct-plan").first();
++      if (await plan.count()) assert.ok((await plan.textContent()).includes("Pro"), "the plan stays in sight");
++
++      // the other account hides as before
++      assert.ok(await page.locator(`.pii[data-raw="${OTHER}"]`).first().count(), "the plain account hides as before");
++      await page.evaluate(() => hideAccounts.set(false, true));
++      await page.waitForFunction(() => !document.querySelector("#view-usage .pii"));
++      assert.equal(await page.locator("#sample").textContent(), "demo answered · demo waited");
++    });
++  }
++}
+-- 
+2.50.1 (Apple Git-155)
+

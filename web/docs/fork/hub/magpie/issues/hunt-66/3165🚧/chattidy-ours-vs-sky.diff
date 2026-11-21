@@ -1,0 +1,68 @@
+49a50,54
+> // And a choice that made calls and ended "stop" ends "tool_calls": told
+> // it stopped, a client that reads finish_reason ends its turn there with
+> // the calls not run (喜欢一个人 on Discord, a relay in front of
+> // deepseek-v4.1-flash), as the translations' collector already has it.
+> //
+52,53c57,59
+< 	buf []byte
+< 	ids streamCallIDs
+---
+> 	buf    []byte
+> 	ids    streamCallIDs
+> 	called map[int]bool // the choices that made a call
+87c93
+< 	if !needsTidy(b) {
+---
+> 	if !t.needs(b) {
+114a121,127
+> // needs is needsTidy, and a finish_reason once a choice made a call.
+> func (t *chatTidy) needs(b []byte) bool {
+> 	return needsTidy(b) || len(t.called) > 0 && bytes.Contains(b, finishReasonField)
+> }
+> 
+> var finishReasonField = []byte(`"finish_reason"`)
+> 
+119c132
+< 	if !needsTidy(line) {
+---
+> 	if !t.needs(line) {
+141a155,156
+> 		choice := k
+> 		decodeJSON(c["index"], &choice)
+158,159c173,176
+< 			choice := k
+< 			decodeJSON(c["index"], &choice)
+---
+> 			if t.called == nil {
+> 				t.called = map[int]bool{}
+> 			}
+> 			t.called[choice] = true
+172a190,193
+> 		if t.called[choice] && string(bytes.TrimSpace(c["finish_reason"])) == `"stop"` {
+> 			c["finish_reason"] = json.RawMessage(`"tool_calls"`)
+> 			changed = true
+> 		}
+326a348,353
+> 		// calls the upstream made, ended "stop" (chatTidy)
+> 		var native []json.RawMessage
+> 		if string(bytes.TrimSpace(c["finish_reason"])) == `"stop"` && decodeJSON(msg["tool_calls"], &native) == nil && len(native) > 0 {
+> 			c["finish_reason"] = json.RawMessage(`"tool_calls"`)
+> 			changed = true
+> 		}
+435a463,477
+> 		return true
+> 	})
+> }
+> 
+> // foldReasoningAliases keeps the DeepSeek spelling: its serde reads both
+> // names as one field and refuses a message carrying both (#3165).
+> func foldReasoningAliases(body []byte) []byte {
+> 	return editMessages(body, []string{"reasoning"}, func(m map[string]json.RawMessage) bool {
+> 		if _, ok := m["reasoning"]; !ok {
+> 			return false
+> 		}
+> 		if _, ok := m["reasoning_content"]; !ok {
+> 			return false
+> 		}
+> 		delete(m, "reasoning")

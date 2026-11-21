@@ -1,0 +1,29 @@
+{
+  "_comment": "所有 CSS 选择器集中配置。修复 demo 里选择器硬编码在 2280 行代码各处的问题。OpenAI 改 DOM 只改这里。",
+  "signup": {
+    "phoneInput": "input[name='phoneNumberInput'], input[type='tel'], input[name='phone']",
+    "phoneSubmit": "button[type='submit']"
+  },
+  "password": {
+    "input": "input[type='password'], input[name='new-password'], input[name='password']",
+    "submit": "button[type='submit']"
+  },
+  "aboutYou": {
+    "nameInput": "input[name='name'], input[name='full_name'], input[name='fullName']",
+    "birthInput": "input[type='date'], input[name='birthday'], input[name='birth_date']",
+    "ageInput": "input[name='age']",
+    "submit": "button[type='submit']"
+  },
+  "oauth": {
+    "emailInput": "input[type='email'], input[name='email'], input[name='username'], input[name='identifier']",
+    "passwordInput": "input[type='password']",
+    "submit": "button[type='submit']"
+  },
+  "smsCode": {
+    "input": "input[autocomplete='one-time-code'], input[inputmode='numeric'], input[name='code']"
+  },
+  "cloudflare": {
+    "titleHints": ["just a moment", "checking your browser", "请稍候"],
+    "bodyHints": ["just a moment", "checking", "cf-please-wait", "turnstile", "challenge"]
+  }
+}

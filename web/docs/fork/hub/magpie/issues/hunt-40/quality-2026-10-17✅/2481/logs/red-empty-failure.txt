@@ -1,0 +1,6 @@
+=== RUN   TestCodexEmptyFailureCarriesItsRoute
+    codex_backend_test.go:242: route 1792193954816: no call in the ring, so Request and response says the request is gone though its call is one of the last 40
+--- FAIL: TestCodexEmptyFailureCarriesItsRoute (0.51s)
+FAIL
+FAIL	github.com/yetone/magpie/internal/gateway	1.049s
+FAIL

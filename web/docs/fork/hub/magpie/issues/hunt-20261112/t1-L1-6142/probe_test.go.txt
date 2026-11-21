@@ -1,0 +1,110 @@
+package agent
+
+// A probe for #6142: Codex's own refresh timed out while magpie's gateway
+// was down and Codex persisted its bundled 10-model list into
+// models_cache.json. Two shapes Codex could have written — its own ETag
+// from an earlier answer, or no ETag at all — both fresh. The sync must age
+// both, so the next Codex to start asks the gateway again, and the gateway
+// fallback must still be able to hand magpie's models from the poisoned
+// cache's read.
+
+import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"github.com/yetone/magpie/internal/catalog"
+	"github.com/yetone/magpie/internal/codexcat"
+)
+
+var probe6142Bundled = []map[string]any{
+	{"slug": "gpt-6.1-sol"}, {"slug": "gpt-6-astra"}, {"slug": "gpt-6.1-terra"},
+	{"slug": "gpt-6-sol"}, {"slug": "gpt-reserve"}, {"slug": "gpt-6-luna"},
+	{"slug": "gpt-5.6-sol"}, {"slug": "gpt-5.6-terra"}, {"slug": "gpt-5.6-luna"},
+	{"slug": "codex-auto-review"},
+}
+
+func probe6142WriteCache(t *testing.T, cache string, etag string) {
+	t.Helper()
+	b, _ := json.Marshal(probe6142Bundled)
+	var doc string
+	if etag == "" {
+		// Codex's bundled fallback may carry no ETag at all
+		doc = `{"fetched_at":"` + time.Now().UTC().Format(time.RFC3339) + `","client_version":"0.167.0","models":` + string(b) + `}`
+	} else {
+		doc = `{"fetched_at":"` + time.Now().UTC().Format(time.RFC3339) + `","etag":` + jsonMustQuote(etag) + `,"client_version":"0.167.0","models":` + string(b) + `}`
+	}
+	if err := os.WriteFile(cache, []byte(doc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func jsonMustQuote(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
+}
+
+func probe6142SyncAndRead(t *testing.T, cache string) (at string) {
+	t.Helper()
+	SyncCatalog()
+	b, err := os.ReadFile(cache)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var c struct {
+		At     string           `json:"fetched_at"`
+		Models []map[string]any `json:"models"`
+	}
+	if json.Unmarshal(b, &c) != nil {
+		t.Fatalf("cache no longer parses: %s", b)
+	}
+	if len(c.Models) != len(probe6142Bundled) {
+		t.Errorf("bundled entries disturbed: %d models", len(c.Models))
+	}
+	return c.At
+}
+
+// Codex wrote its bundled list with an ETag of its own (one magpie never
+// handed out): a sync ages it so the next Codex to start asks again.
+func TestProbe6142PoisonedCacheWithOwnETagAges(t *testing.T) {
+	home := syncHome(t)
+	dir := filepath.Join(home, ".codex")
+	writeFile(t, filepath.Join(dir, "auth.json"), `{"tokens":{"access_token":"x","id_token":"x.e30.x"}}`)
+	writeFile(t, filepath.Join(dir, "config.toml"), "model = \"relay/glm-4.6\"\nopenai_base_url = \""+codexGatewayURL()+"\"\n")
+	cache := filepath.Join(dir, "models_cache.json")
+	probe6142WriteCache(t, cache, `W/"bundled-2026-11-10"`)
+	if at := probe6142SyncAndRead(t, cache); at != "1970-01-01T00:00:00Z" {
+		t.Errorf("poisoned cache with its own etag not aged: fetched_at=%q", at)
+	}
+}
+
+// The same, with no ETag field at all.
+func TestProbe6142PoisonedCacheWithNoETagAges(t *testing.T) {
+	home := syncHome(t)
+	dir := filepath.Join(home, ".codex")
+	writeFile(t, filepath.Join(dir, "auth.json"), `{"tokens":{"access_token":"x","id_token":"x.e30.x"}}`)
+	writeFile(t, filepath.Join(dir, "config.toml"), "model = \"relay/glm-4.6\"\nopenai_base_url = \""+codexGatewayURL()+"\"\n")
+	cache := filepath.Join(dir, "models_cache.json")
+	probe6142WriteCache(t, cache, "")
+	if at := probe6142SyncAndRead(t, cache); at != "1970-01-01T00:00:00Z" {
+		t.Errorf("poisoned cache with no etag not aged: fetched_at=%q", at)
+	}
+}
+
+// From the poisoned cache the gateway's fallback still reads Codex's own
+// entries, so the answer it hands once asked again carries magpie's models
+// after them (codexMerged) — the refresh that heals the picker.
+func TestProbe6142CacheEntriesReadableFromPoisonedCache(t *testing.T) {
+	syncHome(t)
+	os.MkdirAll(filepath.Dir(catalog.CodexModelsCache()), 0o755)
+	probe6142WriteCache(t, catalog.CodexModelsCache(), "")
+	entries := codexcat.CacheEntries()
+	if len(entries) != len(probe6142Bundled) {
+		t.Fatalf("CacheEntries from the poisoned cache: %d entries, want %d", len(entries), len(probe6142Bundled))
+	}
+	if _, ok := entries["gpt-6-luna"]; !ok {
+		t.Error("bundled slug gpt-6-luna missing from CacheEntries")
+	}
+}

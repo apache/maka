@@ -1,0 +1,4725 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: "yjqi@YjdeMacBook-Pro.localdomain"
+ <yanjie@5466053088715162.onaliyun.com>
+Date: Tue, 10 Nov 2026 16:03:40 +0800
+Subject: [PATCH] providers.json: two changes at once write each other over
+
+Every change to providers.json reads the file, changes its copy and writes
+the whole file back (`store`), with no lock between the read and the write.
+A change that lands in between is lost. Setters of one setting
+(`SetAccountCap`, `SetRPM`, `SetQueue`, key weights, routing, ...) also
+`Save` the whole provider as they read it. So a second setting set on the
+same provider meanwhile is written over even when the two writes don't
+overlap in the file.
+
+Seen on main 71fbb33a:
+- A cap set on one Codex account while a cap is written to another: one cap
+  is lost.
+- A provider added while a cap is written: the new provider is gone from
+  providers.json.
+
+The gateway, the GUI, a terminal's `magpie` and the TUI all write
+providers.json. A user's cap, limit or new provider can silently disappear,
+with no error. A cap that guards spend is then not there.
+
+A one-line test seam in `store` (`beforeProvidersWrite`, called just before
+the write) lets a test start the second change at the moment the first is
+about to write:
+
+```go
+// interleave runs first, and as it is about to write providers.json, runs
+// second to its end in another goroutine (or for 2s, should it wait).
+func interleave(t *testing.T, first, second func()) { ... }
+
+func TestProvidersTwoCapsBothKept(t *testing.T) {
+	twoCodexAccounts(t)
+	interleave(t, func() { SetAccountCap("codex", "me@example.com", 70) },
+		func() { SetAccountCap("codex", "work@example.com", 50) })
+	// both caps must be there
+}
+
+func TestProvidersAddKeptWhileCapWritten(t *testing.T) {
+	twoCodexAccounts(t)
+	interleave(t, func() { SetAccountCap("codex", "me@example.com", 70) },
+		func() { Save(Provider{ID: "relay", ...}) })
+	// relay must be in providers.json, and the cap too
+}
+```
+
+```
+go test -count=1 -run 'TestProvidersTwoCapsBothKept|TestProvidersAddKeptWhileCapWritten' -v ./internal/provider
+
+--- FAIL: TestProvidersTwoCapsBothKept
+    providers_race_test.go:63: work@example.com's 50% cap read as 0%: written over
+--- FAIL: TestProvidersAddKeptWhileCapWritten
+    providers_race_test.go:80: the provider added meanwhile is gone from providers.json: written over
+```
+
+Both tests are in the patch below (in `providers_lock_test.go`), with the
+seam.
+
+The patch below / linked branch (46 files, +2567/-616):
+
+- `providersMu`, a new `filelock.Strict` on `providers.json.lock`, is held
+  from the read a change is made from to its write, in this process and
+  across magpie processes. If another magpie holds it, the change waits
+  half of `filelock.Wait` (5s), tries once more, then fails with
+  `*filelock.BusyError` and writes nothing. The GUI shows that as "another
+  magpie is changing providers.json right now, so this change wasn't saved:
+  try again in a moment", with i18n in zh, zh-TW, ja and de. The CLI prints
+  it. The holder writes its pid into the lock file, and
+  `provider.ClearLeftLock` runs as any magpie starts and clears a pid left by
+  a magpie that ended while holding the lock. Every other `filelock.Mutex`
+  is unchanged.
+- `editStored`/`editFound`: a setter of one setting changes only that field
+  on the record as it is under the lock (caps, models, names, weights,
+  order, keys, routing, concurrency, spend caps, limits a minute, queue).
+  `Save` reads the accounts before it takes the lock (`prepare`,
+  `listedNow`), so nothing under `providersMu` takes `loginsMu`.
+- `provider.Edit`: `magpie provider set`, `key`, `icon`, `fallback`,
+  `listed` and `models`, and the TUI's provider keys and model picker,
+  write only the fields they changed.
+- docs/subsystems/providers-accounts.md describes `providersMu`, the
+  setters, `provider.Edit` and the strict lock, in the bullet on "The
+  gateway and a magpie run from a terminal change the same files (#1674)".
+
+A change made while another magpie holds the lock is refused ("try again")
+rather than written over the other one. Today such a change is never
+refused; one of the two is silently lost instead. If the owner prefers
+going on without the lock after the wait, as `filelock.Mutex` does, only
+`filelock.Strict` changes.
+
+Run at this tree (base origin/main 2219fdd4, macOS arm64, go1.26.8):
+- go test -count=1 -timeout 45m ./internal/provider ./internal/filelock: ok (provider 157s, filelock 3s)
+- gofmt -l internal: clean; GOOS=windows go vet on the changed packages: ok.
+Not run: the full suite.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ docs/subsystems/providers-accounts.md         |   2 +-
+ internal/cli/main.go                          |   3 +
+ internal/cli/provider_edit_cli_test.go        |  54 +++
+ internal/cli/providers_cli.go                 | 112 ++---
+ internal/filelock/filelock.go                 |  44 +-
+ internal/filelock/strict.go                   | 167 ++++++++
+ internal/filelock/strict_test.go              | 142 +++++++
+ internal/gui/api.go                           |  10 +
+ internal/gui/assets/i18n.js                   |   4 +
+ internal/gui/file_busy_test.go                |  32 ++
+ internal/provider/account_caps.go             | 189 +++++----
+ internal/provider/account_models.go           |  45 +-
+ internal/provider/account_names.go            |  28 +-
+ internal/provider/account_order.go            |  50 +--
+ internal/provider/account_weight.go           |  28 +-
+ internal/provider/authheader.go               |   4 +
+ internal/provider/autolist.go                 |  21 +-
+ internal/provider/backup.go                   |  12 +
+ internal/provider/concurrency.go              |  77 ++--
+ internal/provider/copilot_accounts.go         |   4 +
+ internal/provider/edit.go                     | 197 +++++++++
+ internal/provider/edit_test.go                | 218 ++++++++++
+ internal/provider/fold.go                     |  61 +--
+ internal/provider/group.go                    |  99 ++++-
+ internal/provider/group_order.go              |  10 +-
+ internal/provider/keep_login_as.go            |   6 +-
+ internal/provider/key_models_prefill.go       |  32 +-
+ internal/provider/key_spend.go                |  40 +-
+ internal/provider/keys.go                     | 386 ++++++++++--------
+ internal/provider/localid.go                  |   4 +
+ internal/provider/migrate_kiro.go             |   4 +
+ internal/provider/models.go                   |  34 +-
+ internal/provider/native_compaction.go        |   6 +-
+ internal/provider/plugin_left.go              |   8 +
+ internal/provider/provider.go                 | 332 ++++++++++++---
+ internal/provider/provider_order.go           |  10 +-
+ internal/provider/providers_busy_test.go      | 126 ++++++
+ internal/provider/providers_lock_test.go      | 123 ++++++
+ .../provider/providers_setters_lock_test.go   | 193 +++++++++
+ internal/provider/proxy.go                    |   4 +
+ internal/provider/rename.go                   |  75 ++--
+ internal/provider/routing.go                  |  70 +++-
+ internal/provider/search_api.go               |  24 ++
+ internal/provider/zhipu_coding.go             |   4 +
+ internal/tui/pages.go                         |  58 +--
+ internal/tui/provider_edit_test.go            |  56 +++
+ 46 files changed, 2578 insertions(+), 630 deletions(-)
+ create mode 100644 internal/cli/provider_edit_cli_test.go
+ create mode 100644 internal/filelock/strict.go
+ create mode 100644 internal/filelock/strict_test.go
+ create mode 100644 internal/gui/file_busy_test.go
+ create mode 100644 internal/provider/edit.go
+ create mode 100644 internal/provider/edit_test.go
+ create mode 100644 internal/provider/providers_busy_test.go
+ create mode 100644 internal/provider/providers_lock_test.go
+ create mode 100644 internal/provider/providers_setters_lock_test.go
+ create mode 100644 internal/tui/provider_edit_test.go
+
+diff --git a/docs/subsystems/providers-accounts.md b/docs/subsystems/providers-accounts.md
+index a23a7ce50..abd9a4c3a 100644
+--- a/docs/subsystems/providers-accounts.md
++++ b/docs/subsystems/providers-accounts.md
+@@ -408,7 +408,7 @@ and `TestHistoricalWindowHoldsUsesEachWindowsOwnReading`.
+ - When `logins.json` cannot be decoded as saved accounts, reads keep the accounts read before. Before saving a change, `lastgood.Keep` ([lastgood.go](../../internal/lastgood/lastgood.go)) keeps the file there now: as `logins.json.bak`, its last good generation, when it reads, or copied aside as `logins.json.bad-<time>` (`-2`, `-3`… for another within one second) when it doesn't, including valid JSON with invalid account field types, so its credentials can be recovered. If the existing file cannot be read or the copy fails, saving returns the error and leaves the original file unchanged. A missing file can be created normally.
+ - A Windows machine that went down mid-write left `logins.json` and `plugin-auth.json` at their full length, every byte zero (#1505): the rename reached the disk before the data. Every write of magpie's own state goes through `steady.WriteFile` (or `edit.WriteAtomic`), which flushes the temp file before renaming it in, and the plugin host's `writeDurable` does the same. So does every write of an agent's own sign-in (#2239): `codexToken`'s rotated tokens into Codex's `auth.json` (`~/.codex`, or `$CODEX_HOME` when set; its keychain item instead when Codex keeps the sign-in there) and `writeClaudeCredential`'s `.credentials.json` go through `writePrivate`, never a truncating `os.WriteFile`, so a machine going down mid-write leaves the old sign-in whole, and on Windows a file another program holds for a moment is waited out (`steady.Rename`) instead of the rotation being dropped while the refresh token on the disk is spent. A file that is there but doesn't read on a cold start is read from its `.bak` (`lastgood.Read`/`Fallback`): `logins.json`, `providers.json`, `migrations.json`, `settings.json`, `profiles.json`, `plugins.json`, `plugin-auth.json` and `mcp-signins.json`. `caller-keys.json` is flushed the same way but never read from a `.bak`: a key revoked in the last write would come back, so a store that doesn't read still refuses every key. The recovery is logged and listed in `/api/state`'s `recovered`, which the window tells once (`recoveredOnce`). The `.bak` lags one write behind on purpose: a crash zeroes the latest write, so a copy made with it could be zeroed too. With no good `.bak` the file is unknown, never empty: a sign-out leaves `plugin-auth.json` or `mcp-signins.json` as it is (magpie's own returns the error), and a sign-in added copies the file aside before it writes.
+ - A state file whose reader takes one that doesn't unmarshal into its type as empty is copied aside before it is written over (`lastgood.KeepUnparsed` with `lastgood.Into[T]`, #2263): valid JSON of another shape, `[]` for a map, counts as not parsing. A copy that can't be made stops the write. These are `stash.json`, `applied.json`, `wsl.json` and Codex's `magpie-models.json` ([agent](../../internal/agent/), whose hand-added model keys `codexcat.Keep` can't hold when the file doesn't parse), `sessions-wsl.json` and `gateway-sessions-hidden.json` ([sessions](../../internal/sessions/)), `stepfun-auth.json`, `login-returns.json`, `quota-history.json`, `balance-history.json` and `credits-daily.json` ([provider](../../internal/provider/)), `claude-desktop.tiers.json`, `plugin-updates.json`, `usage-computer.json` and `sync-state.json`. A daily check-in's file (`workbuddy-checkin.json`, `trae-checkin.json`, `minimax-checkin.json`, `qoder-checkin.json`, `plugin-checkin.json`) that is there but can't be read or doesn't parse into entries is unknown (`readCheckins` in [`workbuddy_checkin.go`](../../internal/provider/workbuddy_checkin.go)): its vendor's check-in asks nothing and writes nothing, so no account is checked in twice in a day and no entry is lost, the file is left as it is, each account's result is `failed` with the reason (the loop tries again after 30 minutes, a press says why), and the cards show what last read from it in this process. A file not there is empty. `TestCheckinUnreadableFileLeftAlone` covers it. Caches magpie fills again by itself (last quota readings, warm-up marks, plugin icons, npm and GitHub lookups, client shapes, seats, alert marks, `served.json`, `bun/state.json`) are still written over: losing one costs a refetch or a repeated notice.
+-- The gateway and a magpie run from a terminal change the same files (#1674). `loginsMu` is a [`filelock.Mutex`](../../internal/filelock/filelock.go): besides the mutex it holds an OS lock on `logins.json.lock` (flock, `LockFileEx` on Windows), and taking it has `logins.json` read afresh (`filememo.Look`), so every read a change is made from sees what another magpie wrote, and a refresh the gateway wrote is never written back over. `savedTokenMu` holds `logins.json.renew.lock` the same way, so two magpies never spend one refresh token. `caller-keys.json` (`access`) and `mcp-signins.json` (`mcpauth`, with `mcp-signins.json.renew.lock` around a renewal) are changed under such locks too; `plugin-auth.json` already was, under `plugin-auth.json.lock`, which `host.js` takes too. A lock another magpie holds is waited for up to `filelock.Wait` (10s), then gone on without, as before there was one. `rememberLogins` writes nothing when only `Seen` would move on and the saved one is less than `seenEvery` (10 minutes) old, so a run that only lists accounts (`magpie ls`, `providers`, `sessions`, `usage`) leaves `logins.json` as it is. [`logins_lock_test.go`](../../internal/provider/logins_lock_test.go) covers both, the second with another test process writing between this one's read and write.
++- The gateway and a magpie run from a terminal change the same files (#1674). `loginsMu` is a [`filelock.Mutex`](../../internal/filelock/filelock.go): besides the mutex it holds an OS lock on `logins.json.lock` (flock, `LockFileEx` on Windows), and taking it has `logins.json` read afresh (`filememo.Look`), so every read a change is made from sees what another magpie wrote, and a refresh the gateway wrote is never written back over. `savedTokenMu` holds `logins.json.renew.lock` the same way, so two magpies never spend one refresh token. `providersMu` holds `providers.json.lock` the same way around every read of `providers.json` a change is made from and its write (`store`), so settings moved to an account's new name (`moveAccountSettings`), a header or plan magpie learned in the background (`LearnAuthHeader`, `LearnZhipuCoding`) and an edit the user saves (`Save`, groups, order, search APIs) never write one another over ([`providers_lock_test.go`](../../internal/provider/providers_lock_test.go)). `Save` writes the provider as its caller read it but for `Was` and `Gave`, read again under the lock; the setters of one setting change only it in the record as it is under the lock (`editStored`, and `editFound` for one found before: the caps, an account's or key's models, name, weight, limit and spend cap, the keys added, removed, renamed, replaced, ordered or turned off, routing, queue, rests, limits a minute, windows, Off and the rest of `concurrency.go`, `routing.go` and `keys.go`; [`providers_setters_lock_test.go`](../../internal/provider/providers_setters_lock_test.go)), so a setting set while another is, or while the account's settings move, keeps both, and a provider removed meanwhile isn't made again. `magpie provider set`, `key`, `icon`, `fallback`, `listed` and `models` and the TUI's provider keys and model picker go through `provider.Edit` ([`edit_test.go`](../../internal/provider/edit_test.go)): the change is checked and normalized as `Save` does it, and only the fields it changed are written onto the record as it is under the lock, the picks' `pickedFrom` worked out again when the picks changed; a provider `Save` would refuse as it was read is still saved whole. `Save` itself (the editor, `SetModels`, a provider added) still writes the provider as its caller read it. `moveAccountSettings` takes `providersMu` under `loginsMu`, so nothing held under `providersMu` reads the accounts (`All`, `Find`, `Accounts`, a provider's `Available`), which can take `loginsMu`: what a change needs of them is read first (`listedNow` for `Save`, `SaveGroup`'s checks), and a provider's picks or a group checked against the accounts are put in the file as it is when the lock is taken. `caller-keys.json` (`access`) and `mcp-signins.json` (`mcpauth`, with `mcp-signins.json.renew.lock` around a renewal) are changed under such locks too; `plugin-auth.json` already was, under `plugin-auth.json.lock`, which `host.js` takes too. A lock another magpie holds is waited for up to `filelock.Wait` (10s), then gone on without, as before there was one; `providersMu` is the exception. It is a [`filelock.Strict`](../../internal/filelock/strict.go), which never goes on without the lock: it waits half of `filelock.Wait`, tries once more, and then refuses the change unwritten with `*filelock.BusyError` (the GUI says it in the reader's language through `fail`'s `said`, the CLI prints it; a background write such as `LearnAuthHeader` drops it unwritten). A lock file that can't be opened is tried once more too, then refused with the open's error (a folder not the user's still reads as `config_blocked`); only a file system with no locks at all goes on without one. The OS lets go of the lock when the process holding it ends, however it ends, so a crashed magpie never keeps it; the holder writes its pid in `providers.json.lock` while it holds it, and `provider.ClearLeftLock` (from `cli.Main`, as any magpie starts) clears one left by a magpie that ended holding it. The lock file itself is kept: removed, one magpie could lock the old file while another locked a new one ([`providers_busy_test.go`](../../internal/provider/providers_busy_test.go), [`strict_test.go`](../../internal/filelock/strict_test.go)). `rememberLogins` writes nothing when only `Seen` would move on and the saved one is less than `seenEvery` (10 minutes) old, so a run that only lists accounts (`magpie ls`, `providers`, `sessions`, `usage`) leaves `logins.json` as it is. [`logins_lock_test.go`](../../internal/provider/logins_lock_test.go) covers both, the second with another test process writing between this one's read and write.
+ - The account Codex or Claude Code is signed in to can be paused (`SetLoginOn` off, #263) only while another of its accounts is on. The gateway then sends it nothing: Codex's own-model turns go through routing, which passes over it (`OwnPaused`), and a native compaction (`/responses/compact`) goes to the first account on that isn't resting, signed as that account (`compactOn` in [codex_backend.go](../../internal/gateway/codex_backend.go)). The last other account off, the paused one is used again. A switched-off Codex provider is not a pause: Codex's own-model requests still relay on its sign-in as they came.
+ - A switched-off provider (`Off`, #163) stays saved. The gateway says it is off instead of saying the model is unknown.
+ - A subscription switched off (`Off`) or whose account was removed from magpie (`Hidden`) is left alone in the background (`leftAlone` in [`left_alone.go`](../../internal/provider/left_alone.go); Riko on Discord, whose Claude switched off still ran `claude auth status --json` every minute). No CLI is asked who is signed in (`claudeIdentity`, `cliIdentity.get` for Cursor and Devin): what it said last, in memory or `cli-identity.json`, is served, so the account stays listed to switch on again. Nor is its allowance read (`fetchSubscriptionUsage`, `loginUsageAt`), a saved ChatGPT sign-in renewed (`RenewLogins`), the agent's account switched (`NextLogin`), a window warmed (`keepWarm`), its model list fetched (`newDue`), a daily check-in made by the loop (`checkinNow` with `soon` false; a press still checks in), a plugin's idle sign-in renewed (`KeepPluginsSignedIn`, #5080), or a Codex reset about to run out read and spent (`SpendExpiringCodexResets`, #2226; `TestExpiringResetLeftAlone`). A Cursor switched off that was never asked who is signed in isn't listed until it is switched on. `TestLeftAloneRunsNoCLI` runs those paths with fake `claude`, `cursor-agent` and `devin` CLIs on PATH and checks none ran. Plugins' model lists (`KeepPluginsListed`, and every listing after a sign-in or a plugin changes) are asked of the plugin host all at once, and a plugin provider switched off in magpie is named in the call (`plugin.ListingOff`, `pluginsOff` in [`plugins.go`](../../internal/provider/plugins.go)): `host.js` runs no models hook for it, nor the sign-in renewal before one, and tells its list as fallen back, so the list told last is kept (ChangQiu on Discord: `TestOffPluginProviderAskedNoModels`, `TestPluginsOffNamesThePluginsOwnIDs`). Refreshing every list (the window's Refresh, `POST /api/sync`, and `magpie sync`) goes through `RefreshLists`, which asks no provider switched off, and a key added to one isn't given its own list (`PrefillNewKeys`), nor is a provider switched off asked for its list when it is saved or a key is switched on in its editor (`TestRefreshListsAsksNoProviderSwitchedOff`, `TestPrefillAsksNoProviderSwitchedOff`).
+diff --git a/internal/cli/main.go b/internal/cli/main.go
+index ce490c751..4b91e936a 100644
+--- a/internal/cli/main.go
++++ b/internal/cli/main.go
+@@ -239,6 +239,9 @@ func Main(v string) {
+ 	for _, v := range ignored {
+ 		fmt.Fprintf(os.Stderr, "magpie: ignoring %s: not an absolute path (the programs magpie starts still get it)\n", v)
+ 	}
++	// a magpie that crashed holding providers.json's lock left its pid
++	// in the lock file; the lock went with it
++	provider.ClearLeftLock()
+ 	if provider.TookOpenedURL(os.Args[1:]) {
+ 		// Claude Code, signing in for magpie, handed over the page to open
+ 		return
+diff --git a/internal/cli/provider_edit_cli_test.go b/internal/cli/provider_edit_cli_test.go
+new file mode 100644
+index 000000000..2a838778b
+--- /dev/null
++++ b/internal/cli/provider_edit_cli_test.go
+@@ -0,0 +1,54 @@
++package cli
++
++import (
++	"slices"
++	"testing"
++
++	"github.com/yetone/magpie/internal/provider"
++)
++
++// meanwhile has every change a command makes to a provider see another
++// written first, between its read of the provider and its write: the GUI
++// or another magpie setting the queue.
++func meanwhile(t *testing.T, also func()) {
++	t.Helper()
++	t.Cleanup(func() { editProvider = provider.Edit })
++	editProvider = func(id string, change func(p *provider.Provider) error) (provider.Provider, provider.Provider, error) {
++		return provider.Edit(id, func(p *provider.Provider) error {
++			also()
++			return change(p)
++		})
++	}
++}
++
++// The commands magpie provider set, listed, fallback, key, icon and models write
++// only what they change, so a setting set meanwhile stays.
++func TestProviderCommandsKeepWhatWasSetMeanwhile(t *testing.T) {
++	groupsHome(t)
++	n := 0
++	meanwhile(t, func() {
++		n++
++		if err := provider.SetRPM("a", 10+n); err != nil {
++			t.Fatal(err)
++		}
++	})
++	for _, args := range [][]string{
++		{"provider", "set", "a", "family=relay"},
++		{"provider", "listed", "a", "no"},
++		{"provider", "fallback", "a", "b/gpt-5.5"},
++		{"provider", "key", "a", "ka-2"},
++		{"provider", "icon", "a", "openai"},
++		{"provider", "models", "a", "m", "only-a"},
++	} {
++		if _, err := printed(t, func() error { return providerCmd(args) }); err != nil {
++			t.Fatalf("%v: %v", args, err)
++		}
++		if p := mustFind(t, "a"); p.MaxRPM != 10+n {
++			t.Fatalf("%v wrote over the limit a minute set meanwhile: %d, want %d", args, p.MaxRPM, 10+n)
++		}
++	}
++	p := mustFind(t, "a")
++	if p.Family != "relay" || !p.Unlisted || !slices.Equal(p.Fallback, []string{"b/gpt-5.5"}) || p.Key != "ka-2" || p.Icon != "openai" || !slices.Equal(p.Models, []string{"m", "only-a"}) {
++		t.Fatalf("a command's change wasn't written: %+v", p)
++	}
++}
+diff --git a/internal/cli/providers_cli.go b/internal/cli/providers_cli.go
+index 0c11e9a5b..7ae165629 100644
+--- a/internal/cli/providers_cli.go
++++ b/internal/cli/providers_cli.go
+@@ -510,22 +510,23 @@ func providerCmd(args []string) error {
+ 		if len(rest) < 2 {
+ 			return fmt.Errorf("magpie provider set <id> k=v…\n\n%s", providerUsage)
+ 		}
+-		p, err := provider.Find(rest[0])
+-		if err != nil {
+-			return err
+-		}
+ 		// id= renames it: the rest is saved under the id it has, then the
+-		// groups and agents on its models move to the new one
+-		from := p.ID
+-		before := *p
+-		if err := applyPairs(p, rest[1:]); err != nil {
+-			return err
+-		}
+-		to := strings.ToLower(strings.TrimSpace(p.ID))
+-		p.ID = from
+-		if err := provider.Save(*p); err != nil {
++		// groups and agents on its models move to the new one. Only the
++		// pairs given are written, on providers.json as it is then
++		var to string
++		before, saved, err := editProvider(rest[0], func(p *provider.Provider) error {
++			from := p.ID
++			if err := applyPairs(p, rest[1:]); err != nil {
++				return err
++			}
++			to = strings.ToLower(strings.TrimSpace(p.ID))
++			p.ID = from
++			return nil
++		})
++		if err != nil {
+ 			return err
+ 		}
++		p, from := &saved, saved.ID
+ 		if to != from {
+ 			moved, err := agent.RenameProvider(from, to)
+ 			if err != nil {
+@@ -546,37 +547,35 @@ func providerCmd(args []string) error {
+ 		if len(rest) != 2 {
+ 			return fmt.Errorf("magpie provider key <id> <key>")
+ 		}
+-		p, err := provider.Find(rest[0])
++		_, p, err := editProvider(rest[0], func(p *provider.Provider) error {
++			p.Key = rest[1]
++			return nil
++		})
+ 		if err != nil {
+ 			return err
+ 		}
+-		p.Key = rest[1]
+-		if err := provider.Save(*p); err != nil {
+-			return err
+-		}
+ 		fmt.Println(green.Render("✓"), p.Name, "key", muted.Render(provider.Mask(p.Key)))
+ 		return nil
+ 	case "icon":
+ 		if len(rest) != 2 {
+ 			return fmt.Errorf("magpie provider icon <id> <picture file | built-in name | \"\">")
+ 		}
+-		p, err := provider.Find(rest[0])
++		_, p, err := editProvider(rest[0], func(p *provider.Provider) error {
++			if p.Account != nil || p.Preset != "" {
++				return fmt.Errorf("%s has its own icon; only a custom provider takes one", p.Name)
++			}
++			p.Icon = rest[1]
++			if err := applyPairs(p, []string{"icon=" + rest[1]}); err != nil {
++				return err
++			}
++			if p.Icon == "" {
++				p.Icon = "generic"
++			}
++			return nil
++		})
+ 		if err != nil {
+ 			return err
+ 		}
+-		if p.Account != nil || p.Preset != "" {
+-			return fmt.Errorf("%s has its own icon; only a custom provider takes one", p.Name)
+-		}
+-		p.Icon = rest[1]
+-		if err := applyPairs(p, []string{"icon=" + rest[1]}); err != nil {
+-			return err
+-		}
+-		if p.Icon == "" {
+-			p.Icon = "generic"
+-		}
+-		if err := provider.Save(*p); err != nil {
+-			return err
+-		}
+ 		fmt.Println(green.Render("✓"), p.Name, "icon", muted.Render(p.Icon))
+ 		return nil
+ 	case "fallback":
+@@ -590,7 +589,7 @@ func providerCmd(args []string) error {
+ 			return err
+ 		}
+ 		if len(rest) > 1 {
+-			p.Fallback = nil
++			var fallback []string
+ 			if !(len(rest) == 2 && rest[1] == "none") {
+ 				for _, id := range rest[1:] {
+ 					// a routing group's id ("group/<id>") resolves too: the
+@@ -598,10 +597,13 @@ func providerCmd(args []string) error {
+ 					if _, _, ok := provider.Resolve(id); !ok {
+ 						return fmt.Errorf("magpie knows no model or group %q (magpie models lists them)", id)
+ 					}
+-					p.Fallback = append(p.Fallback, id)
++					fallback = append(fallback, id)
+ 				}
+ 			}
+-			if err := provider.Save(*p); err != nil {
++			if _, _, err := editProvider(p.ID, func(p *provider.Provider) error {
++				p.Fallback = fallback
++				return nil
++			}); err != nil {
+ 				return err
+ 			}
+ 			if p, err = provider.Find(p.ID); err != nil {
+@@ -714,14 +716,13 @@ func providerCmd(args []string) error {
+ 		if len(rest) != 2 || (rest[1] != "yes" && rest[1] != "no") {
+ 			return fmt.Errorf("magpie provider listed <id> yes|no")
+ 		}
+-		p, err := provider.Find(rest[0])
++		_, p, err := editProvider(rest[0], func(p *provider.Provider) error {
++			p.Unlisted = rest[1] == "no"
++			return nil
++		})
+ 		if err != nil {
+ 			return err
+ 		}
+-		p.Unlisted = rest[1] == "no"
+-		if err := provider.Save(*p); err != nil {
+-			return err
+-		}
+ 		if p.Unlisted {
+ 			fmt.Println(green.Render("✓"), p.Name, muted.Render("serves only through routing groups"))
+ 		} else {
+@@ -780,26 +781,28 @@ func providerCmd(args []string) error {
+ 			return fmt.Errorf("magpie provider %s <id> fetches its list · magpie provider models <id> <ids…> picks from it", verb)
+ 		}
+ 		if len(rest) > 1 {
+-			before := *p
+ 			// none: no model served at all, the provider kept for its
+ 			// balance and usage (#1818); best: the newest of each family
+ 			// the vendor lists (Best in family); all is the vendor's list
+ 			// again
+ 			none := len(rest) == 2 && rest[1] == "none"
+ 			best := len(rest) == 2 && rest[1] == "best"
+-			picks, err := editPicks(*p, rest[1:])
+-			if none || best {
+-				picks, err = nil, nil
+-			}
++			before, saved, err := editProvider(p.ID, func(p *provider.Provider) error {
++				picks, err := editPicks(*p, rest[1:])
++				if none || best {
++					picks, err = nil, nil
++				}
++				if err != nil {
++					return err
++				}
++				p.Models, p.NoModels, p.BestInFamily = picks, none, best
++				return nil
++			})
+ 			if err != nil {
+ 				return err
+ 			}
+-			p.Models, p.NoModels, p.BestInFamily = picks, none, best
+-			if err := provider.Save(*p); err != nil {
+-				return err
+-			}
+-			printPicksChange(before, *p, rest[1:])
+-			return showProvider(*p)
++			printPicksChange(before, saved, rest[1:])
++			return showProvider(saved)
+ 		}
+ 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+ 		defer cancel()
+@@ -827,6 +830,13 @@ func providerCmd(args []string) error {
+ 	return showProvider(*p)
+ }
+ 
++// editProvider is provider.Edit: a command's change to a provider written
++// on providers.json as it is then, so a change made meanwhile (the GUI,
++// another magpie) stays. A change refused because another magpie
++// holds providers.json says so (filelock.BusyError), and nothing is
++// written. A test puts a change meanwhile in.
++var editProvider = provider.Edit
++
+ // addProvider: `magpie provider add <preset> [key]` or `magpie provider add <name> k=v…`
+ func addProvider(rest []string) error {
+ 	if len(rest) == 0 {
+diff --git a/internal/filelock/filelock.go b/internal/filelock/filelock.go
+index 38267c044..bc7d360ff 100644
+--- a/internal/filelock/filelock.go
++++ b/internal/filelock/filelock.go
+@@ -30,32 +30,56 @@ var mkdirAll = os.MkdirAll
+ // held is false when it went on without the lock: on a file system
+ // without locks, or after wait.
+ func Lock(path string, wait time.Duration) (unlock func(), held bool) {
++	f, got, _ := take(path, wait)
++	switch got {
++	case taken:
++		return func() { Unlock(f); f.Close() }, true
++	case timedOut:
++		log.Printf("%s: another magpie held it for %v; going on without it", path, wait)
++	}
++	// noLocks and openFailed: no lock to be had here, gone on without
++	return func() {}, false
++}
++
++// what take got
++const (
++	taken      = iota
++	noLocks    // no lock to be had on this file system
++	openFailed // the lock file couldn't be opened (no file to change either, mostly)
++	timedOut   // another process held it all through the wait
++)
++
++// take opens the lock file at path and takes its lock, waiting up to wait
++// for another process to let it go; f is open and locked when it is taken,
++// and err says why the file couldn't be opened.
++func take(path string, wait time.Duration) (f *os.File, got int, err error) {
+ 	// the folder is made only when the file can't be opened for want of
+ 	// it: made first, each lock asked the system for the folder too, on
+ 	// every take (#1665: ~190 times in a Windows start's first 25s, each
+ 	// an antivirus filter driver's work)
+-	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
++	f, err = os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+ 	if errors.Is(err, fs.ErrNotExist) {
+-		mkdirAll(filepath.Dir(path), 0o700)
+-		f, err = os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
++		merr := mkdirAll(filepath.Dir(path), 0o700)
++		if f, err = os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600); err != nil && merr != nil {
++			err = merr // why it isn't there: a folder not the user's, as a rule
++		}
+ 	}
+ 	if err != nil {
+-		return func() {}, false // no lock to be had here: no file to change either
++		return nil, openFailed, err
+ 	}
+ 	start := time.Now()
+ 	for {
+-		got, err := TryLock(f)
++		ok, err := TryLock(f)
+ 		if err != nil { // a file system without locks, as an NFS home with no lockd
+ 			f.Close()
+-			return func() {}, false
++			return nil, noLocks, nil
+ 		}
+-		if got {
+-			return func() { Unlock(f); f.Close() }, true
++		if ok {
++			return f, taken, nil
+ 		}
+ 		if time.Since(start) > wait {
+ 			f.Close()
+-			log.Printf("%s: another magpie held it for %v; going on without it", path, wait)
+-			return func() {}, false
++			return nil, timedOut, nil
+ 		}
+ 		time.Sleep(5 * time.Millisecond)
+ 	}
+diff --git a/internal/filelock/strict.go b/internal/filelock/strict.go
+new file mode 100644
+index 000000000..a74ec1797
+--- /dev/null
++++ b/internal/filelock/strict.go
+@@ -0,0 +1,167 @@
++package filelock
++
++import (
++	"fmt"
++	"io"
++	"log"
++	"os"
++	"path/filepath"
++	"strconv"
++	"strings"
++	"sync"
++	"time"
++)
++
++// Strict is a Mutex that never goes on without the file's lock: a
++// change to a file the user's own settings are in is better not made at
++// all than made over another magpie's. Take waits for another magpie to
++// let go, tries once more, and then answers BusyError, for the change to
++// be refused and the user asked to make it again. On a file system with
++// no locks at all it goes on without one, as Mutex does: nothing could
++// ever be changed there otherwise. A lock file that can't be opened is
++// not such a system (too many files open, one another user made): it is
++// tried once more and the change refused with the open's error, which a
++// caller tells apart as it would the file's own (a folder not the user's).
++//
++// The lock is the system's own (flock, LockFileEx), on the open file: it
++// is let go when the process holding it ends, however it ends, so a magpie
++// that crashed or was killed never keeps another from it. The holder's pid
++// is written in the lock file while it is held, to say who held it; one
++// left there by a magpie that ended holding it is cleared as the next one
++// starts (Clear).
++type Strict struct {
++	mu sync.Mutex
++	// Path is the lock file: the file guarded, with ".lock".
++	Path func() string
++	// Locked, when set, is called once both locks are held: to have the
++	// file guarded read afresh.
++	Locked func()
++	// wait is how long each of the two tries waits for another magpie;
++	// 0 is half of Wait, so both together wait as long as Mutex does.
++	wait time.Duration
++	f    *os.File
++}
++
++// SetWait sets how long each of the two tries waits.
++func (s *Strict) SetWait(d time.Duration) {
++	s.mu.Lock()
++	s.wait = d
++	s.mu.Unlock()
++}
++
++// BusyError is a change refused because another magpie held the file's
++// lock through a try and the one after it. The change wasn't made.
++type BusyError struct {
++	// Path is the lock file; Pid the magpie said to hold it, 0 unknown.
++	Path string
++	Pid  int
++}
++
++func (e *BusyError) Error() string {
++	return "another magpie is changing " + e.File() + " right now, so this change wasn't saved: try again in a moment"
++}
++
++// File is the name of the file guarded, as the user knows it.
++func (e *BusyError) File() string { return strings.TrimSuffix(filepath.Base(e.Path), ".lock") }
++
++// Take takes the lock, or answers *BusyError with neither lock held.
++func (s *Strict) Take() error {
++	s.mu.Lock()
++	path := s.Path()
++	wait := s.wait
++	if wait <= 0 {
++		wait = Wait / 2
++	}
++	f, got, err := take(path, wait)
++	switch got {
++	case timedOut:
++		log.Printf("%s: another magpie%s held it for %v; trying once more", path, pidSaid(holder(path)), wait)
++		f, got, err = take(path, wait)
++	case openFailed:
++		log.Printf("%s: %v; trying once more", path, err)
++		time.Sleep(100 * time.Millisecond) // no other magpie to wait for
++		f, got, err = take(path, wait)
++	}
++	switch got {
++	case openFailed:
++		s.mu.Unlock()
++		log.Printf("%s: %v, a try and one more; the change wasn't saved", path, err)
++		return fmt.Errorf("this change wasn't saved: %w", err)
++	case timedOut:
++		s.mu.Unlock()
++		e := &BusyError{Path: path, Pid: holder(path)}
++		log.Printf("%s: another magpie%s held it through a try and one more; the change wasn't saved", path, pidSaid(e.Pid))
++		return e
++	case taken:
++		s.f = f
++		// who holds it, for another magpie to say: only ever said, so a
++		// write that fails costs nothing but the name
++		f.Truncate(0)
++		f.WriteAt([]byte(strconv.Itoa(os.Getpid())+"\n"), 0)
++	}
++	if s.Locked != nil {
++		s.Locked()
++	}
++	return nil
++}
++
++// Unlock lets go of what Take took.
++func (s *Strict) Unlock() {
++	if f := s.f; f != nil {
++		s.f = nil
++		f.Truncate(0) // held by no one now
++		Unlock(f)
++		f.Close()
++	}
++	s.mu.Unlock()
++}
++
++// Clear looks at the lock file at path as a magpie starts, and clears
++// what a magpie that ended while holding it left there: the pid it wrote.
++// The lock itself went with that magpie (the system lets go of it); the
++// file is kept, as Lock says why. Held now, it is another magpie's that is
++// running, and left alone. left is the pid cleared, -1 for a record that
++// says none, 0 for nothing cleared.
++func Clear(path string) (left int) {
++	f, err := os.OpenFile(path, os.O_RDWR, 0)
++	if err != nil {
++		return 0 // none there, or not to be opened: nothing left in it either
++	}
++	defer f.Close()
++	if ok, err := TryLock(f); err != nil || !ok {
++		return 0
++	}
++	defer Unlock(f)
++	b, err := io.ReadAll(f)
++	if err != nil || len(b) == 0 {
++		return 0
++	}
++	if f.Truncate(0) != nil {
++		return 0
++	}
++	left = -1
++	if pid, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil && pid > 0 {
++		left = pid
++	}
++	// nothing logged: magpie's log isn't open yet as it starts, and a
++	// terminal's command isn't to print it
++	return left
++}
++
++// holder is the pid written in the lock file at path, 0 when it can't be
++// read: on Windows another process's lock keeps the file from being read.
++func holder(path string) int {
++	b, err := os.ReadFile(path)
++	if err != nil {
++		return 0
++	}
++	pid, _ := strconv.Atoi(strings.TrimSpace(string(b)))
++	return pid
++}
++
++func pidSaid(pid int) string {
++	if pid <= 0 {
++		return ""
++	}
++	return " (pid " + strconv.Itoa(pid) + ")"
++}
+diff --git a/internal/filelock/strict_test.go b/internal/filelock/strict_test.go
+new file mode 100644
+index 000000000..75991e278
+--- /dev/null
++++ b/internal/filelock/strict_test.go
+@@ -0,0 +1,142 @@
++package filelock
++
++import (
++	"bufio"
++	"errors"
++	"io"
++	"io/fs"
++	"os"
++	"os/exec"
++	"path/filepath"
++	"runtime"
++	"strconv"
++	"testing"
++	"time"
++)
++
++// TestStrictHolder is the other magpie of TestStrictAcrossProcesses: it
++// takes a Strict, says so, and holds it until its stdin is closed or it is
++// killed.
++func TestStrictHolder(t *testing.T) {
++	path := os.Getenv("MAGPIE_FILELOCK_STRICT")
++	if path == "" {
++		t.Skip("run by TestStrictAcrossProcesses")
++	}
++	s := Strict{Path: func() string { return path }}
++	if err := s.Take(); err != nil {
++		t.Fatal(err)
++	}
++	os.Stdout.WriteString("locked\n")
++	io.Copy(io.Discard, os.Stdin)
++}
++
++// A Strict held by another magpie is waited for, tried once more,
++// then refused with BusyError naming it; the magpie killed, Clear clears
++// the pid it left and the lock is taken again.
++func TestStrictAcrossProcesses(t *testing.T) {
++	path := filepath.Join(t.TempDir(), "f.json.lock")
++	holder := exec.Command(os.Args[0], "-test.run=^TestStrictHolder$", "-test.count=1")
++	holder.Env = append(os.Environ(), "MAGPIE_FILELOCK_STRICT="+path)
++	in, _ := holder.StdinPipe()
++	out, _ := holder.StdoutPipe()
++	if err := holder.Start(); err != nil {
++		t.Fatal(err)
++	}
++	t.Cleanup(func() { in.Close(); holder.Process.Kill(); holder.Wait() })
++	if line, _ := bufio.NewReader(out).ReadString('\n'); line != "locked\n" {
++		t.Fatalf("the other magpie: %q", line)
++	}
++
++	s := Strict{Path: func() string { return path }}
++	s.SetWait(200 * time.Millisecond)
++	start := time.Now()
++	err := s.Take()
++	var busy *BusyError
++	if !errors.As(err, &busy) {
++		s.Unlock()
++		t.Fatalf("taken while another magpie held it: %v", err)
++	}
++	if took := time.Since(start); took < 400*time.Millisecond {
++		t.Errorf("refused after %v: not after a try and one more", took)
++	}
++	// on Windows the holder's lock keeps its pid from being read
++	if (busy.Pid != holder.Process.Pid && !(runtime.GOOS == "windows" && busy.Pid == 0)) || busy.File() != "f.json" {
++		t.Errorf("said %q held by %d, want f.json by %d", busy.File(), busy.Pid, holder.Process.Pid)
++	}
++	// refused, it holds nothing: the next Take isn't kept on its mutex
++	done := make(chan error, 1)
++	go func() { done <- s.Take() }()
++	select {
++	case err := <-done:
++		if !errors.As(err, &busy) {
++			t.Fatalf("second take: %v", err)
++		}
++	case <-time.After(10 * time.Second):
++		t.Fatal("a refused Take kept its mutex")
++	}
++
++	// in Clear, a lock held by a magpie still running is left alone
++	if left := Clear(path); left != 0 {
++		t.Fatalf("cleared %d while its magpie ran", left)
++	}
++	holder.Process.Kill()
++	holder.Wait()
++	// the system lets go of a killed process's lock at once on Unix, and
++	// soon after on Windows
++	left := Clear(path)
++	for deadline := time.Now().Add(5 * time.Second); left == 0 && time.Now().Before(deadline); left = Clear(path) {
++		time.Sleep(10 * time.Millisecond)
++	}
++	if left != holder.Process.Pid {
++		t.Fatalf("cleared %d, want the killed magpie's %d", left, holder.Process.Pid)
++	}
++	if b, _ := os.ReadFile(path); len(b) != 0 {
++		t.Fatalf("left in the lock file: %q", b)
++	}
++	if left := Clear(path); left != 0 {
++		t.Fatalf("cleared %d from a lock file left empty", left)
++	}
++	if left := Clear(filepath.Join(t.TempDir(), "none.lock")); left != 0 {
++		t.Fatalf("cleared %d from no file", left)
++	}
++
++	if err := s.Take(); err != nil {
++		t.Fatalf("not taken once the other magpie ended: %v", err)
++	}
++	if b, _ := os.ReadFile(path); string(b) != strconv.Itoa(os.Getpid())+"\n" {
++		t.Errorf("held, the lock file says %q", b)
++	}
++	s.Unlock()
++	if b, _ := os.ReadFile(path); len(b) != 0 {
++		t.Errorf("let go, the lock file says %q", b)
++	}
++}
++
++// A lock file that can't be opened is no file system without locks: the
++// change is tried once more and refused, never made without the lock.
++func TestStrictRefusesALockFileItCantOpen(t *testing.T) {
++	if runtime.GOOS == "windows" {
++		t.Skip("a folder's permissions are ACLs there")
++	}
++	dir := filepath.Join(t.TempDir(), "locked")
++	if err := os.Mkdir(dir, 0o500); err != nil {
++		t.Fatal(err)
++	}
++	t.Cleanup(func() { os.Chmod(dir, 0o700) })
++	if f, err := os.Create(filepath.Join(dir, "probe")); err == nil {
++		f.Close()
++		t.Skip("this user writes into a folder it can't write to (root)")
++	}
++	s := Strict{Path: func() string { return filepath.Join(dir, "f.json.lock") }}
++	s.SetWait(50 * time.Millisecond)
++	err := s.Take()
++	if err == nil {
++		s.Unlock()
++	}
++	// the open's own error, for a caller to tell a folder not the user's
++	if !errors.Is(err, fs.ErrPermission) {
++		t.Fatalf("a lock file that can't be opened answered %v", err)
++	}
++	// refused, it holds nothing: this would wait on its mutex
++	s.SetWait(50 * time.Millisecond)
++}
+diff --git a/internal/gui/api.go b/internal/gui/api.go
+index ea5a81cb6..5fedf58b8 100644
+--- a/internal/gui/api.go
++++ b/internal/gui/api.go
+@@ -37,6 +37,7 @@ import (
+ 	"github.com/yetone/magpie/internal/catalog"
+ 	"github.com/yetone/magpie/internal/codexcat"
+ 	"github.com/yetone/magpie/internal/desktopiso"
++	"github.com/yetone/magpie/internal/filelock"
+ 	"github.com/yetone/magpie/internal/filememo"
+ 	"github.com/yetone/magpie/internal/fonts"
+ 	"github.com/yetone/magpie/internal/fx"
+@@ -3686,6 +3687,9 @@ func writeJSONRows[T any](rw http.ResponseWriter, r *http.Request, key string, r
+ 	return tag
+ }
+ 
++// busyKey is the i18n.js key of filelock.BusyError's words.
++const busyKey = "another magpie is changing {file} right now, so this change wasn't saved: try again in a moment"
++
+ func fail(rw http.ResponseWriter, err error) {
+ 	rw.Header().Set("Content-Type", "application/json")
+ 	rw.WriteHeader(http.StatusBadRequest)
+@@ -3719,6 +3723,12 @@ func fail(rw http.ResponseWriter, err error) {
+ 		out["code"] = "all_hidden"
+ 		out["agent"] = allHidden.Agent
+ 	}
++	// a change refused while another magpie held the file: said
++	// in the reader's language, for the user to make it again
++	var busy *filelock.BusyError
++	if errors.As(err, &busy) {
++		out["error"], out["said"], out["file"] = busy.Error(), busyKey, busy.File()
++	}
+ 	var signedIn *provider.SignedInError
+ 	if errors.As(err, &signedIn) {
+ 		out["code"], out["agent"], out["user"] = "signed_in", signedIn.Agent, signedIn.User
+diff --git a/internal/gui/assets/i18n.js b/internal/gui/assets/i18n.js
+index 7dfadcde4..fb9a91e61 100644
+--- a/internal/gui/assets/i18n.js
++++ b/internal/gui/assets/i18n.js
+@@ -1738,6 +1738,7 @@ const I18N = {
+     "Starts with {p}": "以 {p} 开头",
+     "Matches {re}": "匹配 {re}",
+     "that masking rule is no longer there: it was changed or removed meanwhile": "那条脱敏规则已不在了：它刚被修改或移除",
++    "another magpie is changing {file} right now, so this change wasn't saved: try again in a moment": "另一个 magpie 正在修改 {file}，这次的改动没有保存：请稍后再试一次",
+     "a masking rule needs a prefix or a regular expression": "脱敏规则需要一个前缀或正则表达式",
+     // web search APIs (#419)
+     "Web search": "联网搜索",
+@@ -7056,6 +7057,7 @@ const I18N = {
+     "Starts with {p}": "以 {p} 開頭",
+     "Matches {re}": "匹配 {re}",
+     "that masking rule is no longer there: it was changed or removed meanwhile": "那條脫敏規則已不在了：它剛被修改或移除",
++    "another magpie is changing {file} right now, so this change wasn't saved: try again in a moment": "另一個 magpie 正在修改 {file}，這次的改動沒有儲存：請稍後再試一次",
+     "a masking rule needs a prefix or a regular expression": "脫敏規則需要一個前綴或正規表示式",
+     "Web search": "聯網搜尋",
+     "Search APIs": "搜尋 API",
+@@ -12342,6 +12344,7 @@ const I18N = {
+     "Starts with {p}": "{p} で始まる",
+     "Matches {re}": "{re} に一致",
+     "that masking rule is no longer there: it was changed or removed meanwhile": "そのマスキングルールはもうありません：その間に変更または削除されました",
++    "another magpie is changing {file} right now, so this change wasn't saved: try again in a moment": "別の magpie が {file} を変更中のため、この変更は保存されませんでした：少し待ってからもう一度お試しください",
+     "a masking rule needs a prefix or a regular expression": "マスキングルールにはプレフィックスか正規表現が必要です",
+     "Web search": "ウェブ検索",
+     "Search APIs": "検索 API",
+@@ -17659,6 +17662,7 @@ const I18N = {
+     "Starts with {p}": "Beginnt mit {p}",
+     "Matches {re}": "Entspricht {re}",
+     "that masking rule is no longer there: it was changed or removed meanwhile": "Diese Maskierungsregel gibt es nicht mehr: Sie wurde inzwischen geändert oder entfernt",
++    "another magpie is changing {file} right now, so this change wasn't saved: try again in a moment": "Ein anderes magpie ändert gerade {file}, daher wurde diese Änderung nicht gespeichert: Versuchen Sie es gleich noch einmal",
+     "a masking rule needs a prefix or a regular expression": "Eine Maskierungsregel braucht ein Präfix oder einen regulären Ausdruck",
+     "Web search": "Websuche",
+     "Search APIs": "Such-APIs",
+diff --git a/internal/gui/file_busy_test.go b/internal/gui/file_busy_test.go
+new file mode 100644
+index 000000000..1c03e430a
+--- /dev/null
++++ b/internal/gui/file_busy_test.go
+@@ -0,0 +1,32 @@
++package gui
++
++import (
++	"encoding/json"
++	"fmt"
++	"net/http/httptest"
++	"os"
++	"strings"
++	"testing"
++
++	"github.com/yetone/magpie/internal/filelock"
++)
++
++// A change refused while another magpie held providers.json is
++// answered with the words the page says in the reader's language (said,
++// with the file's name), not only the Go error it was wrapped in.
++func TestFailSaysFileBusy(t *testing.T) {
++	rec := httptest.NewRecorder()
++	fail(rec, fmt.Errorf("set the limit: %w", &filelock.BusyError{Path: "/home/u/.magpie/providers.json.lock", Pid: 42}))
++	var out map[string]string
++	json.Unmarshal(rec.Body.Bytes(), &out)
++	if rec.Code != 400 || out["said"] != busyKey || out["file"] != "providers.json" || !strings.Contains(out["error"], "try again") {
++		t.Fatalf("%d %s", rec.Code, rec.Body)
++	}
++	b, err := os.ReadFile("assets/i18n.js")
++	if err != nil {
++		t.Fatal(err)
++	}
++	if n := strings.Count(string(b), fmt.Sprintf("%q:", busyKey)); n != 4 {
++		t.Fatalf("i18n.js has the busy words in %d languages, want 4 (zh, zh-TW, ja, de)", n)
++	}
++}
+diff --git a/internal/provider/account_caps.go b/internal/provider/account_caps.go
+index c82b4f4c6..082dac794 100644
+--- a/internal/provider/account_caps.go
++++ b/internal/provider/account_caps.go
+@@ -270,29 +270,33 @@ func SetWindowCaps(id, ref string, windows []string, cap int) error {
+ 		return fmt.Errorf("%s has no account %q", p.Name, ref)
+ 	}
+ 	k := accountKey(r)
+-	if !slices.ContainsFunc(ws, func(w string) bool { return p.AccountWindowCaps[k][w] != cap || p.AccountWindowAmounts[k][w] > 0 }) {
+-		return nil
+-	}
+-	p.AccountWindowAmounts = withoutAmounts(p.AccountWindowAmounts, k, ws)
+-	all := map[string]map[string]int{}
+-	for u, m := range p.AccountWindowCaps {
+-		all[u] = maps.Clone(m)
+-	}
+-	if all[k] == nil {
+-		all[k] = map[string]int{}
+-	}
+-	for _, w := range ws {
+-		if cap == 0 {
+-			delete(all[k], w)
+-		} else {
+-			all[k][w] = cap
++	// the windows' caps as they are stored when the cap is set, not as
++	// they were read: another set meanwhile stays
++	return editStored(p.ID, func(q *Provider) bool {
++		if !slices.ContainsFunc(ws, func(w string) bool { return q.AccountWindowCaps[k][w] != cap || q.AccountWindowAmounts[k][w] > 0 }) {
++			return false
+ 		}
+-	}
+-	if len(all[k]) == 0 {
+-		delete(all, k)
+-	}
+-	p.AccountWindowCaps = all
+-	return Save(*p)
++		q.AccountWindowAmounts = withoutAmounts(q.AccountWindowAmounts, k, ws)
++		all := map[string]map[string]int{}
++		for u, m := range q.AccountWindowCaps {
++			all[u] = maps.Clone(m)
++		}
++		if all[k] == nil {
++			all[k] = map[string]int{}
++		}
++		for _, w := range ws {
++			if cap == 0 {
++				delete(all[k], w)
++			} else {
++				all[k][w] = cap
++			}
++		}
++		if len(all[k]) == 0 {
++			delete(all, k)
++		}
++		q.AccountWindowCaps = normalWindowCaps(all)
++		return true
++	})
+ }
+ 
+ // SetWindowAmount caps the windows named windows of the account ref of the
+@@ -325,42 +329,46 @@ func SetWindowAmount(id, ref string, windows []string, amount float64) error {
+ 		return fmt.Errorf("%s has no account %q", p.Name, ref)
+ 	}
+ 	k := accountKey(r)
+-	if !slices.ContainsFunc(ws, func(w string) bool {
+-		_, own := p.AccountWindowCaps[k][w]
+-		return p.AccountWindowAmounts[k][w] != amount || own
+-	}) {
+-		return nil
+-	}
+-	amts := withoutAmounts(p.AccountWindowAmounts, k, nil)
+-	if amount > 0 {
+-		if amts == nil {
+-			amts = map[string]map[string]float64{}
+-		}
+-		if amts[k] == nil {
+-			amts[k] = map[string]float64{}
+-		}
+-		for _, w := range ws {
+-			amts[k][w] = amount
+-		}
+-	} else {
+-		amts = withoutAmounts(amts, k, ws)
+-	}
+-	p.AccountWindowAmounts = amts
+-	// an amount stands in for the window's own share
+-	if own := p.AccountWindowCaps[k]; own != nil {
+-		all := map[string]map[string]int{}
+-		for u, m := range p.AccountWindowCaps {
+-			all[u] = maps.Clone(m)
+-		}
+-		for _, w := range ws {
+-			delete(all[k], w)
+-		}
+-		if len(all[k]) == 0 {
+-			delete(all, k)
++	// on the windows' caps and amounts as they are stored then, not as
++	// they were read: another set meanwhile stays
++	return editStored(p.ID, func(q *Provider) bool {
++		if !slices.ContainsFunc(ws, func(w string) bool {
++			_, own := q.AccountWindowCaps[k][w]
++			return q.AccountWindowAmounts[k][w] != amount || own
++		}) {
++			return false
++		}
++		amts := withoutAmounts(q.AccountWindowAmounts, k, nil)
++		if amount > 0 {
++			if amts == nil {
++				amts = map[string]map[string]float64{}
++			}
++			if amts[k] == nil {
++				amts[k] = map[string]float64{}
++			}
++			for _, w := range ws {
++				amts[k][w] = amount
++			}
++		} else {
++			amts = withoutAmounts(amts, k, ws)
++		}
++		q.AccountWindowAmounts = normalWindowAmounts(amts)
++		// an amount stands in for the window's own share
++		if own := q.AccountWindowCaps[k]; own != nil {
++			all := map[string]map[string]int{}
++			for u, m := range q.AccountWindowCaps {
++				all[u] = maps.Clone(m)
++			}
++			for _, w := range ws {
++				delete(all[k], w)
++			}
++			if len(all[k]) == 0 {
++				delete(all, k)
++			}
++			q.AccountWindowCaps = normalWindowCaps(all)
+ 		}
+-		p.AccountWindowCaps = all
+-	}
+-	return Save(*p)
++		return true
++	})
+ }
+ 
+ // withoutAmounts is a copy of m with account k's amounts on windows ws
+@@ -402,20 +410,25 @@ func SetAccountCap(id, ref string, cap int) error {
+ 	if !ok {
+ 		return fmt.Errorf("%s has no account %q", p.Name, ref)
+ 	}
+-	if cap == 0 && p.AccountCaps[accountKey(r)] == 0 {
+-		return nil
+-	}
+-	caps := map[string]int{}
+-	for k, v := range p.AccountCaps {
+-		caps[k] = v
+-	}
+-	if cap == 0 {
+-		delete(caps, accountKey(r))
+-	} else {
+-		caps[accountKey(r)] = cap
+-	}
+-	p.AccountCaps = caps
+-	return Save(*p)
++	k := accountKey(r)
++	// the caps as they are stored when the cap is set, not as they were
++	// read: another set meanwhile stays
++	return editStored(p.ID, func(q *Provider) bool {
++		if q.AccountCaps[k] == cap {
++			return false
++		}
++		caps := maps.Clone(q.AccountCaps)
++		if caps == nil {
++			caps = map[string]int{}
++		}
++		if cap == 0 {
++			delete(caps, k)
++		} else {
++			caps[k] = cap
++		}
++		q.AccountCaps = normalAccountCaps(caps)
++		return true
++	})
+ }
+ 
+ // ParseCap reads a cap as the CLI takes it: "70", "70%", or off (none, 0,
+@@ -585,6 +598,40 @@ func (a Allowance) extraCapped(model string, caps WindowCaps, now time.Time) Win
+ 	return caps
+ }
+ 
++// Room is how many points of its allowance, as last known, an account has
++// for model at now before something holds it: of every window that
++// counts model, its own share of caps (WindowCaps.Of), else 100, less
++// what it has used, the least of those; a pool's window holds at a cap
++// only. A window whose reset has passed is empty again.
++func (a Allowance) Room(model string, caps WindowCaps, now time.Time) float64 {
++	model = strings.ToLower(model)
++	room := 100.0
++	at := func(l Limit, pool bool) {
++		share, _ := caps.Of(l.Name)
++		limit := 100.0
++		if share > 0 {
++			limit = float64(share)
++		} else if pool {
++			return
++		}
++		used := l.Used
++		if !l.Resets.IsZero() && !l.Resets.After(now) {
++			used = 0
++		}
++		room = min(room, limit-used)
++	}
++	for _, l := range a {
++		if !l.applies(model) {
++			continue
++		}
++		at(l, false)
++		for _, q := range l.pool {
++			at(q, true)
++		}
++	}
++	return max(room, 0)
++}
++
+ // NearCap says whether an allowance, as last known, has some window
+ // counting model within points of its own share of caps (or past it) at
+ // now, not renewed since: a careful provider reads such an account again
+diff --git a/internal/provider/account_models.go b/internal/provider/account_models.go
+index 4caf0968a..8b33f0c6f 100644
+--- a/internal/provider/account_models.go
++++ b/internal/provider/account_models.go
+@@ -212,27 +212,32 @@ func SetAccountModels(id, ref string, models []string) error {
+ 	if len(ms) == 0 && p.AccountModels[accountKey(r)] == nil && (!all || p.AccountModelsAll[accountKey(r)]) {
+ 		return nil
+ 	}
+-	am := map[string][]string{}
+-	for k, v := range p.AccountModels {
+-		am[k] = v
+-	}
+-	if len(ms) == 0 {
+-		delete(am, accountKey(r))
+-	} else {
+-		am[accountKey(r)] = ms
+-	}
+-	p.AccountModels = am
+-	ma := maps.Clone(p.AccountModelsAll)
+-	if all {
+-		if ma == nil {
+-			ma = map[string]bool{}
++	k := accountKey(r)
++	// the models as they are stored when these are set: another account's
++	// set meanwhile stays
++	return editFound(p, func(q *Provider) error {
++		am := maps.Clone(q.AccountModels)
++		if am == nil {
++			am = map[string][]string{}
+ 		}
+-		ma[accountKey(r)] = true
+-	} else {
+-		delete(ma, accountKey(r))
+-	}
+-	p.AccountModelsAll = ma
+-	return Save(*p)
++		if len(ms) == 0 {
++			delete(am, k)
++		} else {
++			am[k] = ms
++		}
++		q.AccountModels = normalAccountModels(am)
++		ma := maps.Clone(q.AccountModelsAll)
++		if all {
++			if ma == nil {
++				ma = map[string]bool{}
++			}
++			ma[k] = true
++		} else {
++			delete(ma, k)
++		}
++		q.AccountModelsAll = ma
++		return nil
++	})
+ }
+ 
+ // AccountModelsOf is the models the account or key ref of the provider id
+diff --git a/internal/provider/account_names.go b/internal/provider/account_names.go
+index 607296a97..2b4028eb2 100644
+--- a/internal/provider/account_names.go
++++ b/internal/provider/account_names.go
+@@ -14,6 +14,7 @@ package provider
+ import (
+ 	"cmp"
+ 	"fmt"
++	"maps"
+ 	"strings"
+ 	"unicode"
+ 	"unicode/utf8"
+@@ -212,20 +213,21 @@ func SetAccountName(id, ref, name string) error {
+ 		return fmt.Errorf("%s has no account %q", p.Name, ref)
+ 	}
+ 	k := accountKey(r)
+-	if p.AccountNames[k] == name {
++	// the names as they are stored when this one is given: another given
++	// meanwhile stays
++	return editFound(p, func(q *Provider) error {
++		names := maps.Clone(q.AccountNames)
++		if names == nil {
++			names = map[string]string{}
++		}
++		if name == "" {
++			delete(names, k)
++		} else {
++			names[k] = name
++		}
++		q.AccountNames = normalAccountNames(names)
+ 		return nil
+-	}
+-	names := map[string]string{}
+-	for u, v := range p.AccountNames {
+-		names[u] = v
+-	}
+-	if name == "" {
+-		delete(names, k)
+-	} else {
+-		names[k] = name
+-	}
+-	p.AccountNames = names
+-	return Save(*p)
++	})
+ }
+ 
+ // withAccountNames is qs with each account's name of the user's own on
+diff --git a/internal/provider/account_order.go b/internal/provider/account_order.go
+index 70a1d24a8..f0a246fda 100644
+--- a/internal/provider/account_order.go
++++ b/internal/provider/account_order.go
+@@ -58,29 +58,33 @@ func setAccountOrder(id string, order []string) error {
+ 	if p.Account != nil {
+ 		return arrangeLogins(p.Account.Agent, order)
+ 	}
+-	var available []string
+-	keys := map[string]KeyAccount{}
+-	if p.Key != "" {
+-		keys[keyID(p.Key)] = p.first()
+-	}
+-	for _, k := range p.Keys {
+-		keys[keyID(k.Key)] = k
+-	}
+-	for _, k := range p.KeyList() {
+-		available = append(available, k.ID)
+-	}
+-	if err := validateAccountOrder(available, order); err != nil {
+-		return err
+-	}
+-	if keys[order[0]].Off {
+-		return fmt.Errorf("turn this account on before moving it first")
+-	}
+-	p.setFirst(keys[order[0]])
+-	p.Keys = nil
+-	for _, ref := range order[1:] {
+-		p.Keys = append(p.Keys, keys[ref])
+-	}
+-	return Save(*p)
++	// the keys as they are stored when they are put in order: one
++	// changed meanwhile is put in order as it is now
++	return editFound(p, func(q *Provider) error {
++		var available []string
++		keys := map[string]KeyAccount{}
++		if q.Key != "" {
++			keys[keyID(q.Key)] = q.first()
++		}
++		for _, k := range q.Keys {
++			keys[keyID(k.Key)] = k
++		}
++		for _, k := range q.KeyList() {
++			available = append(available, k.ID)
++		}
++		if err := validateAccountOrder(available, order); err != nil {
++			return err
++		}
++		if keys[order[0]].Off {
++			return fmt.Errorf("turn this account on before moving it first")
++		}
++		q.setFirst(keys[order[0]])
++		q.Keys = nil
++		for _, ref := range order[1:] {
++			q.Keys = append(q.Keys, keys[ref])
++		}
++		return nil
++	})
+ }
+ 
+ func arrangeLogins(agent string, order []string) error {
+diff --git a/internal/provider/account_weight.go b/internal/provider/account_weight.go
+index 70c5aa215..77abfa783 100644
+--- a/internal/provider/account_weight.go
++++ b/internal/provider/account_weight.go
+@@ -11,6 +11,7 @@ package provider
+ 
+ import (
+ 	"fmt"
++	"maps"
+ 	"strconv"
+ 	"strings"
+ )
+@@ -42,20 +43,21 @@ func SetAccountWeight(id, ref string, weight int) error {
+ 		return fmt.Errorf("%s has no account %q", p.Name, ref)
+ 	}
+ 	k := accountKey(r)
+-	if max(p.AccountWeights[k], 1) == max(weight, 1) {
++	// the weights as they are stored when this one is set: another set
++	// meanwhile stays
++	return editFound(p, func(q *Provider) error {
++		m := maps.Clone(q.AccountWeights)
++		if m == nil {
++			m = map[string]int{}
++		}
++		if weight <= 1 {
++			delete(m, k)
++		} else {
++			m[k] = weight
++		}
++		q.AccountWeights = normalAccountWeights(m)
+ 		return nil
+-	}
+-	m := map[string]int{}
+-	for u, w := range p.AccountWeights {
+-		m[u] = w
+-	}
+-	if weight <= 1 {
+-		delete(m, k)
+-	} else {
+-		m[k] = weight
+-	}
+-	p.AccountWeights = m
+-	return Save(*p)
++	})
+ }
+ 
+ // ParseWeight reads a weight as the CLI takes it: a whole number from 1
+diff --git a/internal/provider/authheader.go b/internal/provider/authheader.go
+index 279c7d230..78f3780b5 100644
+--- a/internal/provider/authheader.go
++++ b/internal/provider/authheader.go
+@@ -80,6 +80,10 @@ var learnMu sync.Mutex
+ func LearnAuthHeader(id, only string) {
+ 	learnMu.Lock()
+ 	defer learnMu.Unlock()
++	if err := providersMu.Take(); err != nil {
++		return
++	}
++	defer providersMu.Unlock()
+ 	f, err := read()
+ 	if err != nil {
+ 		return
+diff --git a/internal/provider/autolist.go b/internal/provider/autolist.go
+index 97e6639e7..d4611f74d 100644
+--- a/internal/provider/autolist.go
++++ b/internal/provider/autolist.go
+@@ -132,14 +132,17 @@ func SetRefreshEvery(id, every string) error {
+ 	if !p.ownList() {
+ 		return errNotOwnList(*p)
+ 	}
+-	p.RefreshEvery = ""
++	refresh := ""
+ 	if d > 0 {
+-		p.RefreshEvery = strings.ToLower(strings.TrimSpace(every))
++		refresh = strings.ToLower(strings.TrimSpace(every))
+ 	} else if p.IsRemoteMagpie() {
+ 		// kept as said: none set is RemoteMagpieEvery for a Remote magpie
+-		p.RefreshEvery = "off"
++		refresh = "off"
+ 	}
+-	return Save(*p)
++	return editFound(p, func(q *Provider) error {
++		q.RefreshEvery = refresh
++		return nil
++	})
+ }
+ 
+ // CleanAutoInclude are AutoInclude's patterns as they are kept: trimmed,
+@@ -179,8 +182,10 @@ func SetAutoInclude(id string, rules []string) ([]string, error) {
+ 	if !p.ownList() {
+ 		return nil, errNotOwnList(*p)
+ 	}
+-	p.AutoInclude = rules
+-	if err := Save(*p); err != nil {
++	if err := editFound(p, func(q *Provider) error {
++		q.AutoInclude = rules
++		return nil
++	}); err != nil {
+ 		return nil, err
+ 	}
+ 	if len(rules) == 0 {
+@@ -226,6 +231,10 @@ func takeMatching(id string, isNew func(string) bool) ([]string, error) {
+ 	if len(taken) == 0 {
+ 		return nil, nil
+ 	}
++	if err := providersMu.Take(); err != nil {
++		return nil, err
++	}
++	defer providersMu.Unlock()
+ 	f, err := read()
+ 	if err != nil {
+ 		return nil, err
+diff --git a/internal/provider/backup.go b/internal/provider/backup.go
+index 6ad59b99e..6348745db 100644
+--- a/internal/provider/backup.go
++++ b/internal/provider/backup.go
+@@ -27,6 +27,10 @@ func Stored() ([]Provider, error) {
+ // one without an access key or balance token keeps those (KeepSecrets). It
+ // returns how many were new and how many replaced one here.
+ func Restore(ps []Provider) (added, replaced int, err error) {
++	if err := providersMu.Take(); err != nil {
++		return 0, 0, err
++	}
++	defer providersMu.Unlock()
+ 	f, err := read()
+ 	if err != nil {
+ 		return 0, 0, err
+@@ -75,6 +79,10 @@ func RestoreGroups(gs []Group) error {
+ 	if len(gs) == 0 {
+ 		return nil
+ 	}
++	if err := providersMu.Take(); err != nil {
++		return err
++	}
++	defer providersMu.Unlock()
+ 	f, err := read()
+ 	if err != nil {
+ 		return err
+@@ -105,6 +113,10 @@ func RestoreGroups(gs []Group) error {
+ // provider kept on this computer (ThisDevice) is neither replaced nor
+ // removed by them.
+ func Mirror(ps []Provider, gs []Group) error {
++	if err := providersMu.Take(); err != nil {
++		return err
++	}
++	defer providersMu.Unlock()
+ 	f, err := read()
+ 	if err != nil {
+ 		return err
+diff --git a/internal/provider/concurrency.go b/internal/provider/concurrency.go
+index fe1ab5320..38ca8109b 100644
+--- a/internal/provider/concurrency.go
++++ b/internal/provider/concurrency.go
+@@ -2,6 +2,7 @@ package provider
+ 
+ import (
+ 	"fmt"
++	"maps"
+ 	"strconv"
+ 	"strings"
+ 	"time"
+@@ -74,8 +75,10 @@ func SetAtOnce(id string, n *int) error {
+ 	if err != nil {
+ 		return err
+ 	}
+-	p.MaxAccounts = n
+-	return Save(*p)
++	return editFound(p, func(q *Provider) error {
++		q.MaxAccounts = n
++		return nil
++	})
+ }
+ 
+ // One account's or key's own limit (#892: a Claude account kept to two
+@@ -151,20 +154,22 @@ func SetAccountConcurrency(id, ref string, limit *int) error {
+ 		}
+ 		return fmt.Errorf("%s has no account %q", p.Name, ref)
+ 	}
+-	m := map[string]int{}
+-	for k, v := range p.AccountConcurrency {
+-		m[k] = v
+-	}
+-	if limit == nil {
+-		if _, had := m[accountKey(r)]; !had {
+-			return nil
++	k := accountKey(r)
++	// the limits as they are stored when this one is set: another set
++	// meanwhile stays
++	return editFound(p, func(q *Provider) error {
++		m := maps.Clone(q.AccountConcurrency)
++		if m == nil {
++			m = map[string]int{}
+ 		}
+-		delete(m, accountKey(r))
+-	} else {
+-		m[accountKey(r)] = *limit
+-	}
+-	p.AccountConcurrency = m
+-	return Save(*p)
++		if limit == nil {
++			delete(m, k)
++		} else {
++			m[k] = *limit
++		}
++		q.AccountConcurrency = normalAccountConcurrency(m)
++		return nil
++	})
+ }
+ 
+ // CheckQueue says what is wrong with a queue's bound or wait, nil when
+@@ -189,8 +194,10 @@ func SetQueue(id string, limit, wait int) error {
+ 	if err != nil {
+ 		return err
+ 	}
+-	p.QueueLimit, p.QueueWait = limit, wait
+-	return Save(*p)
++	return editFound(p, func(q *Provider) error {
++		q.QueueLimit, q.QueueWait = limit, wait
++		return nil
++	})
+ }
+ 
+ // ParseLimit reads a limit as the CLI takes it: a whole number, 0 or off
+@@ -273,11 +280,13 @@ func SetQuotaRest(id string, minutes int) error {
+ 	if err != nil {
+ 		return err
+ 	}
+-	p.QuotaRest = minutes
+-	if minutes > 0 {
+-		p.QuotaResetAt = "" // the one set last is the one that counts
+-	}
+-	return Save(*p)
++	return editFound(p, func(q *Provider) error {
++		q.QuotaRest = minutes
++		if minutes > 0 {
++			q.QuotaResetAt = "" // the one set last is the one that counts
++		}
++		return nil
++	})
+ }
+ 
+ // OwnQuotaRest is how long, from now, one of p's keys sits out of quota
+@@ -361,11 +370,13 @@ func SetQuotaResetAt(id, at string) error {
+ 	if err != nil {
+ 		return err
+ 	}
+-	p.QuotaResetAt = strings.TrimSpace(at)
+-	if p.QuotaResetAt != "" {
+-		p.QuotaRest = 0
+-	}
+-	return Save(*p)
++	return editFound(p, func(q *Provider) error {
++		q.QuotaResetAt = strings.TrimSpace(at)
++		if q.QuotaResetAt != "" {
++			q.QuotaRest = 0
++		}
++		return nil
++	})
+ }
+ 
+ // RestCapOff is RestCap set to off (`magpie provider rest-cap <id> off`):
+@@ -403,8 +414,10 @@ func SetRestCap(id string, minutes int) error {
+ 	if err != nil {
+ 		return err
+ 	}
+-	p.RestCap = minutes
+-	return Save(*p)
++	return editFound(p, func(q *Provider) error {
++		q.RestCap = minutes
++		return nil
++	})
+ }
+ 
+ // SetRPM sets how many requests a minute each of the provider's keys or
+@@ -417,6 +430,8 @@ func SetRPM(id string, n int) error {
+ 	if err != nil {
+ 		return err
+ 	}
+-	p.MaxRPM = n
+-	return Save(*p)
++	return editFound(p, func(q *Provider) error {
++		q.MaxRPM = n
++		return nil
++	})
+ }
+diff --git a/internal/provider/copilot_accounts.go b/internal/provider/copilot_accounts.go
+index 35027b07c..e277cb1b7 100644
+--- a/internal/provider/copilot_accounts.go
++++ b/internal/provider/copilot_accounts.go
+@@ -150,6 +150,10 @@ func moveAccountSettings(id string, moves map[string]string) error {
+ 	if len(moves) == 0 {
+ 		return nil
+ 	}
++	if err := providersMu.Take(); err != nil {
++		return err
++	}
++	defer providersMu.Unlock()
+ 	f, err := read()
+ 	if err != nil {
+ 		return err
+diff --git a/internal/provider/edit.go b/internal/provider/edit.go
+new file mode 100644
+index 000000000..3dfcb2ee6
+--- /dev/null
++++ b/internal/provider/edit.go
+@@ -0,0 +1,197 @@
++package provider
++
++import (
++	"bytes"
++	"encoding/json"
++	"errors"
++	"fmt"
++	"slices"
++	"strings"
++)
++
++// Edit changes the provider id as change changes it and saves it, checked
++// and normalized as Save saves it, but writes only what change changed onto
++// the record providers.json has when its lock is taken: a command
++// or a TUI key that sets a setting or a few, so that what was written since
++// the provider was read (another setting set from the GUI or another
++// magpie, an account's day noted, a key added) stays, as Save of the
++// provider read would write it over. A provider removed meanwhile isn't
++// made again. It answers the provider as read and as changed.
++//
++// What is written is field by field: a field the change changed is
++// written whole, a map or list too (its headers, its windows), so only
++// another change to that same field made meanwhile is written over.
++func Edit(id string, change func(p *Provider) error) (was, now Provider, err error) {
++	p, err := Find(id)
++	if err != nil {
++		return Provider{}, Provider{}, err
++	}
++	was, now = p.clone(), p.clone()
++	if err := change(&now); err != nil {
++		return was, now, err
++	}
++	return was, now, saveEdit(was, now)
++}
++
++// keptStored are the fields magpie keeps of a provider, never one a change
++// sets: as the record has them, the picks' list worked out again as Save
++// works it out when the picks changed.
++var keptStored = []string{"pickedFrom", "delisted", "delistedAt", "accountAdded", "was", "gave"}
++
++// pickFields are those whose change has the picks' list worked out again.
++var pickFields = []string{"models", "noModels", "bestInFamily"}
++
++// saveEdit saves p, read as was, writing only the fields of it Save would
++// write otherwise than was's.
++func saveEdit(was, p Provider) error {
++	next, account, err := prepare(p)
++	if err != nil {
++		return err
++	}
++	base, _, err := prepare(was)
++	if err != nil {
++		// the provider read is one Save refuses (put in by hand, a key
++		// gone): what was changed can't be told, so it is saved whole, as
++		// it was before
++		return Save(p)
++	}
++	changed, err := storedChanges(base, next)
++	if err != nil || len(changed) == 0 {
++		return err
++	}
++	var now *listing
++	picks := slices.ContainsFunc(pickFields, func(k string) bool { return changed[k] })
++	if picks && len(next.Models) > 0 { // listedWith asks it only of picks
++		now = listedNow(next) // the accounts are read before the lock
++	}
++	wrote := false
++	err = editRecord(next.ID, account, func(q *Provider) (bool, error) {
++		cur := *q
++		if !account {
++			// as Find reads it and Save writes it
++			cur = normalize(cur)
++			cur.AccountProxies = keyProxies(cur)
++		}
++		before, err := json.Marshal(cur)
++		if err != nil {
++			return false, err
++		}
++		merged, err := withChanges(cur, next, changed)
++		if err != nil {
++			return false, err
++		}
++		if !account {
++			merged.AccountProxies = keyProxies(merged)
++			// what Save checks of one field against another, on the
++			// record as it is now: another change meanwhile can have
++			// changed the other (a preset given, Vertex AI picked)
++			if err := checkMerged(&merged); err != nil {
++				return false, err
++			}
++		}
++		if picks {
++			merged.PickedFrom, _ = listedWith(merged, &cur, account, now)
++			merged.Delisted = delistedWith(merged, &cur)
++			merged.DelistedAt = delistedAtWith(merged, &cur)
++		}
++		after, err := json.Marshal(merged)
++		if err != nil || bytes.Equal(before, after) {
++			return false, err
++		}
++		*q = merged
++		wrote = true
++		return true, nil
++	})
++	if err == nil && wrote && next.ID == "claude" {
++		syncClaudeProxyEnvNow() // as Save does (#1807)
++	}
++	return err
++}
++
++// checkMerged refuses p as Save would for what one field of it says of
++// another, and drops a picture's source from an icon that isn't one, as
++// Save does; nothing it checks reads the accounts, so it is made under
++// providersMu.
++func checkMerged(p *Provider) error {
++	// as Save refuses them: a key of Vertex AI's own, or a base URL with
++	// no key (Google credentials are sent only to Google's own address)
++	if p.IsVertex() && len(p.Keys) > 0 {
++		return errors.New("Google Vertex AI takes one API key")
++	}
++	if p.IsVertex() && p.Vertex != nil && strings.TrimSpace(p.Vertex.BaseURL) != "" && strings.TrimSpace(p.Key) == "" {
++		return errors.New("a base URL is for an API key: Google credentials are sent only to Google's own address")
++	}
++	if p.InsecureTLS && !p.TakesInsecureTLS() {
++		return fmt.Errorf("%s is a preset's: only a provider you added with your own base URL can skip the certificate check", p.Name)
++	}
++	if !strings.HasPrefix(p.Icon, iconPrefix) {
++		p.IconFrom = ""
++	}
++	return nil
++}
++
++// storedChanges are the fields of providers.json's record a and b are
++// written with otherwise, but those magpie keeps (keptStored).
++func storedChanges(a, b Provider) (map[string]bool, error) {
++	x, err := fields(a)
++	if err != nil {
++		return nil, err
++	}
++	y, err := fields(b)
++	if err != nil {
++		return nil, err
++	}
++	changed := map[string]bool{}
++	for k, v := range x {
++		if !bytes.Equal(v, y[k]) {
++			changed[k] = true
++		}
++	}
++	for k := range y {
++		if _, ok := x[k]; !ok {
++			changed[k] = true
++		}
++	}
++	for _, k := range keptStored {
++		delete(changed, k)
++	}
++	return changed, nil
++}
++
++// withChanges is cur with the fields changed as next has them: one next
++// leaves out (cleared) left out too.
++func withChanges(cur, next Provider, changed map[string]bool) (Provider, error) {
++	m, err := fields(cur)
++	if err != nil {
++		return Provider{}, err
++	}
++	n, err := fields(next)
++	if err != nil {
++		return Provider{}, err
++	}
++	for k := range changed {
++		if v, ok := n[k]; ok {
++			m[k] = v
++		} else {
++			delete(m, k)
++		}
++	}
++	b, err := json.Marshal(m)
++	if err != nil {
++		return Provider{}, err
++	}
++	var out Provider
++	err = json.Unmarshal(b, &out)
++	return out, err
++}
++
++// fields are p's fields as providers.json has them, by name.
++func fields(p Provider) (map[string]json.RawMessage, error) {
++	b, err := json.Marshal(p)
++	if err != nil {
++		return nil, err
++	}
++	var m map[string]json.RawMessage
++	err = json.Unmarshal(b, &m)
++	return m, err
++}
+diff --git a/internal/provider/edit_test.go b/internal/provider/edit_test.go
+new file mode 100644
+index 000000000..d57bafe54
+--- /dev/null
++++ b/internal/provider/edit_test.go
+@@ -0,0 +1,218 @@
++package provider
++
++import (
++	"bytes"
++	"errors"
++	"os"
++	"path/filepath"
++	"slices"
++	"strings"
++	"testing"
++	"time"
++
++	"github.com/yetone/magpie/internal/appdir"
++	"github.com/yetone/magpie/internal/filelock"
++)
++
++// Edit, what a command or a TUI key changes a provider with, writes
++// only what its change changed onto providers.json as it is when written:
++// a setting set between its read of the provider and its write stays.
++
++func editRelay(t *testing.T) {
++	t.Helper()
++	providersLockHome(t)
++	if err := Save(Provider{ID: "relay", Name: "Relay", Chat: "https://relay.test/v1", Key: "sk-personal-1111", Models: []string{"a", "b"}}); err != nil {
++		t.Fatal(err)
++	}
++}
++
++// A provider of the user's own: Unlisted, a fallback, a key and its picks
++// changed while its queue, its limit a minute and a key's weight are set.
++func TestEditKeepsWhatWasSetMeanwhile(t *testing.T) {
++	editRelay(t)
++	_, now, err := Edit("relay", func(p *Provider) error {
++		// meanwhile: the GUI, or another magpie
++		if err := SetQueue("relay", 5, 60); err != nil {
++			t.Fatal(err)
++		}
++		if err := SetKeyWeight("relay", keyID("sk-personal-1111"), 4); err != nil {
++			t.Fatal(err)
++		}
++		p.Unlisted = true
++		p.Fallback = []string{"relay/a"}
++		p.Models = []string{"b"}
++		return nil
++	})
++	if err != nil {
++		t.Fatal(err)
++	}
++	if !now.Unlisted || len(now.Fallback) != 1 {
++		t.Fatalf("Edit answered %+v", now)
++	}
++	s, _ := storedPicks("relay")
++	if !s.Unlisted || !slices.Equal(s.Fallback, []string{"relay/a"}) || !slices.Equal(s.Models, []string{"b"}) {
++		t.Errorf("the change wasn't written: unlisted %v fallback %v models %v", s.Unlisted, s.Fallback, s.Models)
++	}
++	if s.QueueLimit != 5 || s.QueueWait != 60 {
++		t.Errorf("the queue set meanwhile was written over: %d, %ds", s.QueueLimit, s.QueueWait)
++	}
++	if p, _ := Find("relay"); p.KeyWeight != 4 {
++		t.Errorf("the key's weight set meanwhile was written over: %d", p.KeyWeight)
++	}
++}
++
++// A subscription's own settings, changed as an account's name and another's
++// cap are given: all stay.
++func TestEditOfAnAccountKeepsWhatWasSetMeanwhile(t *testing.T) {
++	providersLockHome(t)
++	if _, _, err := Edit("codex", func(p *Provider) error {
++		if err := SetAccountName("codex", "new@example.com", "Work"); err != nil {
++			t.Fatal(err)
++		}
++		if err := SetAccountCap("codex", "me@example.com", 70); err != nil {
++			t.Fatal(err)
++		}
++		p.Unlisted = true
++		return nil
++	}); err != nil {
++		t.Fatal(err)
++	}
++	s, _ := storedPicks("codex")
++	if !s.Unlisted {
++		t.Error("Unlisted wasn't written")
++	}
++	if s.AccountNames["new@example.com"] != "Work" {
++		t.Errorf("the name given meanwhile was written over: %+v", s.AccountNames)
++	}
++	if s, _ := AccountCapsOf("codex", "me@example.com").Of("5 hours"); s != 70 {
++		t.Errorf("the cap set meanwhile was written over: %d%%", s)
++	}
++}
++
++// A change Save refuses is refused, and one to a provider removed meanwhile
++// doesn't make it again: providers.json byte for byte as it was.
++func TestEditRefusedWritesNothing(t *testing.T) {
++	editRelay(t)
++	file := filepath.Join(appdir.Config(), "providers.json")
++	was, err := os.ReadFile(file)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if _, _, err := Edit("relay", func(p *Provider) error {
++		p.Chat = ""
++		return nil
++	}); err == nil || !strings.Contains(err.Error(), "base URL") {
++		t.Fatalf("a provider left with no base URL: %v", err)
++	}
++	if now, _ := os.ReadFile(file); !bytes.Equal(was, now) {
++		t.Fatalf("a refused change wrote providers.json:\n%s", now)
++	}
++	if _, _, err := Edit("relay", func(p *Provider) error {
++		if err := Delete("relay"); err != nil {
++			t.Fatal(err)
++		}
++		p.Unlisted = true
++		return nil
++	}); err == nil || !strings.Contains(err.Error(), "removed meanwhile") {
++		t.Fatalf("a change to a provider removed meanwhile: %v", err)
++	}
++	if _, ok := storedPicks("relay"); ok {
++		t.Fatal("a provider removed meanwhile was made again")
++	}
++}
++
++// A change that changes nothing writes nothing, and a field cleared is
++// cleared.
++func TestEditClearsAndLeavesAlone(t *testing.T) {
++	editRelay(t)
++	if _, _, err := Edit("relay", func(p *Provider) error { p.Fallback = []string{"relay/a"}; return nil }); err != nil {
++		t.Fatal(err)
++	}
++	file := filepath.Join(appdir.Config(), "providers.json")
++	st, err := os.Stat(file)
++	if err != nil {
++		t.Fatal(err)
++	}
++	was, _ := os.ReadFile(file)
++	if _, _, err := Edit("relay", func(p *Provider) error { return nil }); err != nil {
++		t.Fatal(err)
++	}
++	if now, _ := os.ReadFile(file); !bytes.Equal(was, now) {
++		t.Fatal("a change of nothing rewrote providers.json")
++	}
++	if st2, _ := os.Stat(file); !st2.ModTime().Equal(st.ModTime()) {
++		t.Fatal("a change of nothing wrote providers.json")
++	}
++	if _, _, err := Edit("relay", func(p *Provider) error { p.Fallback = nil; return nil }); err != nil {
++		t.Fatal(err)
++	}
++	if s, _ := storedPicks("relay"); len(s.Fallback) != 0 {
++		t.Fatalf("the fallback cleared stayed: %v", s.Fallback)
++	}
++}
++
++// The picks changed by Edit are saved with the list they were picked from,
++// as Save saves them.
++func TestEditPicksAsSaveDoes(t *testing.T) {
++	editRelay(t)
++	if _, _, err := Edit("relay", func(p *Provider) error { p.Models = []string{"b"}; return nil }); err != nil {
++		t.Fatal(err)
++	}
++	byEdit, _ := storedPicks("relay")
++	p, err := Find("relay")
++	if err != nil {
++		t.Fatal(err)
++	}
++	p.Models = []string{"a"}
++	if err := Save(*p); err != nil {
++		t.Fatal(err)
++	}
++	p.Models = []string{"b"}
++	if err := Save(*p); err != nil {
++		t.Fatal(err)
++	}
++	bySave, _ := storedPicks("relay")
++	if !slices.Equal(byEdit.PickedFrom, bySave.PickedFrom) || !slices.Equal(byEdit.Delisted, bySave.Delisted) {
++		t.Fatalf("Edit saved the picks from %v (set aside %v), Save from %v (%v)", byEdit.PickedFrom, byEdit.Delisted, bySave.PickedFrom, bySave.Delisted)
++	}
++}
++
++// What Save checks of one field against another is checked on the record
++// as it is when written: a certificate check skipped on a provider made a
++// preset's meanwhile is refused, nothing written.
++func TestEditChecksTheRecordAsItIsThen(t *testing.T) {
++	editRelay(t)
++	_, _, err := Edit("relay", func(p *Provider) error {
++		if err := editStored("relay", func(q *Provider) bool { q.Preset = "openai"; return true }); err != nil {
++			t.Fatal(err)
++		}
++		p.InsecureTLS = true
++		return nil
++	})
++	if err == nil || !strings.Contains(err.Error(), "certificate check") {
++		t.Fatalf("a certificate check skipped on a preset's provider: %v", err)
++	}
++	if s, _ := storedPicks("relay"); s.InsecureTLS {
++		t.Fatal("the refused change was written")
++	}
++}
++
++// while another magpie holds providers.json, Edit is
++// refused with BusyError and providers.json is as it was.
++func TestEditRefusedWhileAnotherMagpieHolds(t *testing.T) {
++	editRelay(t)
++	before, err := os.ReadFile(Path())
++	if err != nil {
++		t.Fatal(err)
++	}
++	shortWait(t, 200*time.Millisecond)
++	holdProviders(t)
++	_, _, err = Edit("relay", func(p *Provider) error { p.Unlisted = true; return nil })
++	var busy *filelock.BusyError
++	if !errors.As(err, &busy) || !strings.Contains(err.Error(), "another magpie is changing providers.json") {
++		t.Fatalf("an edit while another magpie held providers.json answered %v", err)
++	}
++	if now, _ := os.ReadFile(Path()); !bytes.Equal(before, now) {
++		t.Fatalf("a refused edit wrote providers.json:\n%s", now)
++	}
++}
+diff --git a/internal/provider/fold.go b/internal/provider/fold.go
+index 3f04a80c4..153f9acfa 100644
+--- a/internal/provider/fold.go
++++ b/internal/provider/fold.go
+@@ -248,27 +248,49 @@ func copiesByName(ps []Provider) [][]int {
+ // into providers.json's list in the order the user put them), those alike
+ // but for their keys into the first of them that is on.
+ func foldWhere(candidates func([]Provider) [][]int) (int, error) {
++	stepfunMu.Lock()
++	stepfun := loadStepFun()
++	stepfunMu.Unlock()
++	s := settings.Load()
++	gone, folds, ps, ref, err := foldRead(candidates, stepfun, &s)
++	if err != nil || len(gone) == 0 {
++		return 0, err
++	}
++	for id := range gone {
++		// the list last fetched for it is the one it went into's
++		_ = os.Remove(catalog.LivePath(id))
++		_ = os.Remove(catalog.LivePath(decisionsID(id)))
++	}
++	foldSettings(&s, gone, ref)
++	foldHistories(folds, ps)
++	return len(gone), nil
++}
++
++// foldRead is foldWhere's change to providers.json, under providersMu:
++// gone is each folded provider's id with the one it went into, folds the
++// sets folded (indexes into ps, the providers as they were in the user's
++// order), and ref a model ref with the folded ones' ids moved.
++func foldRead(candidates func([]Provider) [][]int, stepfun map[string]stepfunSession, s *settings.Settings) (gone map[string]string, folds [][]int, ps []Provider, ref func(string) string, err error) {
++	if err := providersMu.Take(); err != nil {
++		return nil, nil, nil, nil, err
++	}
++	defer providersMu.Unlock()
+ 	// read from its last good generation, the file is the user's to mend:
+ 	// a fold would write that generation over it
+ 	if b, err := os.ReadFile(Path()); err == nil && !validProviders(b) {
+-		return 0, &unreadableError{Path(), errors.New("it doesn't parse")}
++		return nil, nil, nil, nil, &unreadableError{Path(), errors.New("it doesn't parse")}
+ 	}
+ 	f, err := read()
+ 	if err != nil {
+-		return 0, err
++		return nil, nil, nil, nil, err
+ 	}
+ 	if len(f.Providers) < 2 {
+-		return 0, nil
++		return nil, nil, nil, nil, nil
+ 	}
+-	ps := ordered(slices.Clone(f.Providers), f.Order)
+-	stepfunMu.Lock()
+-	stepfun := loadStepFun()
+-	stepfunMu.Unlock()
+-	s := settings.Load()
+-	refs := foldRefs(f, &s)
++	ps = ordered(slices.Clone(f.Providers), f.Order)
++	refs := foldRefs(f, s)
+ 
+ 	// each set of copies alike, by its shape, in the order of ps
+-	var folds [][]int
+ 	for _, set := range candidates(ps) {
+ 		byShape := map[string][]int{}
+ 		var shapes []string
+@@ -277,7 +299,7 @@ func foldWhere(candidates func([]Provider) [][]int) (int, error) {
+ 			if !foldable(p, stepfun) {
+ 				continue
+ 			}
+-			sh := foldShape(p, modelPrefs(&s, p.ID)+"\x00"+strings.Join(refs[p.ID], "\x02"))
++			sh := foldShape(p, modelPrefs(s, p.ID)+"\x00"+strings.Join(refs[p.ID], "\x02"))
+ 			if sh == "" {
+ 				continue
+ 			}
+@@ -293,11 +315,11 @@ func foldWhere(candidates func([]Provider) [][]int) (int, error) {
+ 		}
+ 	}
+ 	if len(folds) == 0 {
+-		return 0, nil
++		return nil, nil, nil, nil, nil
+ 	}
+ 
+ 	now := time.Now()
+-	gone := map[string]string{} // a folded provider's id → the one it went into
++	gone = map[string]string{} // a folded provider's id → the one it went into
+ 	into := map[string]Provider{}
+ 	for _, set := range folds {
+ 		p, ids := foldSet(ps, set)
+@@ -341,7 +363,7 @@ func foldWhere(candidates func([]Provider) [][]int) (int, error) {
+ 		}
+ 		return id
+ 	}
+-	ref := func(m string) string { return foldedRef(m, to) }
++	ref = func(m string) string { return foldedRef(m, to) }
+ 	f.Order = compact(mapEach(f.Order, to))
+ 	for j := range f.Providers {
+ 		f.Providers[j].Fallback = compact(mapEach(f.Providers[j].Fallback, ref))
+@@ -363,16 +385,9 @@ func foldWhere(candidates func([]Provider) [][]int) (int, error) {
+ 		g.Pick = ref(g.Pick)
+ 	}
+ 	if err := store(f); err != nil {
+-		return 0, err
++		return nil, nil, nil, nil, err
+ 	}
+-	for id := range gone {
+-		// the list last fetched for it is the one it went into's
+-		_ = os.Remove(catalog.LivePath(id))
+-		_ = os.Remove(catalog.LivePath(decisionsID(id)))
+-	}
+-	foldSettings(&s, gone, ref)
+-	foldHistories(folds, ps)
+-	return len(gone), nil
++	return gone, folds, ps, ref, nil
+ }
+ 
+ // foldSet is the provider the copies ps[set…] fold into — the first of
+diff --git a/internal/provider/group.go b/internal/provider/group.go
+index 64004dfa0..2e4d5a5e6 100644
+--- a/internal/provider/group.go
++++ b/internal/provider/group.go
+@@ -792,6 +792,14 @@ func AutoGroupsOn() bool { return !load().NoAutoGroups }
+ // taken out, as DeleteGroup keeps it: the user's group would lose it
+ // unsaid.
+ func SetAutoGroups(on bool) error {
++	var all []Group
++	if !on {
++		all = groupsIn(providerEntries()) // read before providersMu is taken
++	}
++	if err := providersMu.Take(); err != nil {
++		return err
++	}
++	defer providersMu.Unlock()
+ 	f, err := read()
+ 	if err != nil {
+ 		return err
+@@ -800,7 +808,6 @@ func SetAutoGroups(on bool) error {
+ 		return nil
+ 	}
+ 	if !on {
+-		all := groupsIn(providerEntries())
+ 		found := func(ref string) bool {
+ 			gid, ok := strings.CutPrefix(ref, GroupPrefix)
+ 			return ok && slices.ContainsFunc(all, func(o Group) bool { return o.ID == gid && o.Auto && !o.Hidden })
+@@ -963,6 +970,10 @@ func AutoGroupSkip() []string { return slices.Clone(load().AutoGroupSkip) }
+ // are the user's. A request still naming a found group skipping took away
+ // goes to its model from one provider (AutoStandIn).
+ func SetAutoGroupSkip(ids []string) error {
++	if err := providersMu.Take(); err != nil {
++		return err
++	}
++	defer providersMu.Unlock()
+ 	f, err := read()
+ 	if err != nil {
+ 		return err
+@@ -2034,6 +2045,16 @@ func SaveGroup(g Group) error {
+ 		g.Seen = seenIn(g.ID, was, own, entries)
+ 	}
+ 	g.Disabled = false
++	// what is checked above reads the accounts (providerEntries, Resolve,
++	// ResolveAccount), never under providersMu: the group is put in the
++	// file as it is now
++	if err := providersMu.Take(); err != nil {
++		return err
++	}
++	defer providersMu.Unlock()
++	if f, err = read(); err != nil {
++		return err
++	}
+ 	dropFormer(f.Groups, g.ID)
+ 	for i := range f.Groups {
+ 		if f.Groups[i].ID == g.ID {
+@@ -2217,10 +2238,6 @@ func memberGroupsIn(entries []Entry) map[string][]string {
+ // to come back with ShowGroup. A group another has in it, or classifies
+ // with, stays until it is taken out of that one.
+ func DeleteGroup(id string) error {
+-	f, err := read()
+-	if err != nil {
+-		return err
+-	}
+ 	if in := GroupsWith(id); len(in) > 0 {
+ 		var names []string
+ 		for _, g := range in {
+@@ -2233,6 +2250,16 @@ func DeleteGroup(id string) error {
+ 			return fmt.Errorf("%s is %s's classifier: choose another first", id, g.Name)
+ 		}
+ 	}
++	// read before providersMu is taken
++	foundHere := slices.ContainsFunc(foundGroups(providerEntries()), func(g Group) bool { return g.ID == id })
++	if err := providersMu.Take(); err != nil {
++		return err
++	}
++	defer providersMu.Unlock()
++	f, err := read()
++	if err != nil {
++		return err
++	}
+ 	found := false
+ 	f.Groups = slices.DeleteFunc(f.Groups, func(g Group) bool {
+ 		if g.ID == id {
+@@ -2241,7 +2268,7 @@ func DeleteGroup(id string) error {
+ 		}
+ 		return false
+ 	})
+-	if slices.ContainsFunc(foundGroups(providerEntries()), func(g Group) bool { return g.ID == id }) {
++	if foundHere {
+ 		f.Groups = append(f.Groups, Group{ID: id, Hidden: true})
+ 		found = true
+ 	}
+@@ -2313,16 +2340,35 @@ func DeleteGroups(ids []string) error {
+ // switched off; and one that classifies for another stays on, or that
+ // group's rules would have no one to ask.
+ func SwitchGroup(id string, on bool) error {
++	err := switchGroupRead(id, on)
++	if errors.Is(err, errNoGroup) {
++		// told apart outside providersMu: reading the groups found reads
++		// the accounts
++		if g, ok := groupOf(groupsIn(providerEntries()), id); ok && g.Auto {
++			return fmt.Errorf("%s was found by magpie: remove it, or change it to make it yours, to switch it off", g.Name)
++		}
++		return fmt.Errorf("magpie has no group %q", id)
++	}
++	return err
++}
++
++// errNoGroup is no group of the user's under an id.
++var errNoGroup = errors.New("no such group")
++
++// switchGroupRead is SwitchGroup's change to providers.json, under
++// providersMu: errNoGroup when the user has no group id.
++func switchGroupRead(id string, on bool) error {
++	if err := providersMu.Take(); err != nil {
++		return err
++	}
++	defer providersMu.Unlock()
+ 	f, err := read()
+ 	if err != nil {
+ 		return err
+ 	}
+ 	i := slices.IndexFunc(f.Groups, func(g Group) bool { return g.ID == id && !g.Hidden })
+ 	if i < 0 {
+-		if g, ok := groupOf(groupsIn(providerEntries()), id); ok && g.Auto {
+-			return fmt.Errorf("%s was found by magpie: remove it, or change it to make it yours, to switch it off", g.Name)
+-		}
+-		return fmt.Errorf("magpie has no group %q", id)
++		return errNoGroup
+ 	}
+ 	if f.Groups[i].Disabled == !on {
+ 		return nil
+@@ -2343,6 +2389,10 @@ func SwitchGroup(id string, on bool) error {
+ // from wherever the user switches it: the tray panel (#2489) too. Nothing
+ // else of the group changes, and only a Manual group can be switched so.
+ func PickGroup(id, pick string) error {
++	if err := providersMu.Take(); err != nil {
++		return err
++	}
++	defer providersMu.Unlock()
+ 	f, err := read()
+ 	if err != nil {
+ 		return err
+@@ -2396,6 +2446,10 @@ func RemovedGroups() []string {
+ 
+ // ShowGroup brings back a group magpie found that the user had removed.
+ func ShowGroup(id string) error {
++	if err := providersMu.Take(); err != nil {
++		return err
++	}
++	defer providersMu.Unlock()
+ 	f, err := read()
+ 	if err != nil {
+ 		return err
+@@ -2417,11 +2471,28 @@ func RenameGroup(from, to string) error {
+ 	if to == from {
+ 		return nil
+ 	}
++	// read before providersMu is taken
++	all := groupsIn(providerEntries())
++	found := slices.ContainsFunc(foundGroups(providerEntries()), func(o Group) bool { return o.ID == from })
++	old, now := GroupPrefix+from, GroupPrefix+to
++	if err := renameGroupRead(from, to, all, found); err != nil {
++		return err
++	}
++	return renameGroupPicks(old, now)
++}
++
++// renameGroupRead is RenameGroup's change to providers.json, under
++// providersMu: all are the groups read before it, found whether from is
++// one magpie found.
++func renameGroupRead(from, to string, all []Group, found bool) error {
++	if err := providersMu.Take(); err != nil {
++		return err
++	}
++	defer providersMu.Unlock()
+ 	f, err := read()
+ 	if err != nil {
+ 		return err
+ 	}
+-	all := groupsIn(providerEntries())
+ 	g, ok := groupOf(all, from)
+ 	if !ok {
+ 		return fmt.Errorf("no group %q", from)
+@@ -2430,7 +2501,6 @@ func RenameGroup(from, to string) error {
+ 		slices.ContainsFunc(f.Groups, func(o Group) bool { return o.ID == to }) {
+ 		return fmt.Errorf("there is a group %q already", to)
+ 	}
+-	found := slices.ContainsFunc(foundGroups(providerEntries()), func(o Group) bool { return o.ID == from })
+ 	g.ID, g.Auto, g.Hidden = to, false, false
+ 	g.Former = append(slices.DeleteFunc(slices.Clone(g.Former), func(id string) bool { return id == from || id == to }), from)
+ 	f.Groups = slices.DeleteFunc(f.Groups, func(o Group) bool { return o.ID == from })
+@@ -2488,10 +2558,7 @@ func RenameGroup(from, to string) error {
+ 			f.Groups[i].Classifier = now
+ 		}
+ 	}
+-	if err := store(f); err != nil {
+-		return err
+-	}
+-	return renameGroupPicks(old, now)
++	return store(f)
+ }
+ 
+ // renameGroupPicks moves what each agent's list says of a group to its new
+diff --git a/internal/provider/group_order.go b/internal/provider/group_order.go
+index 08a7bf4a7..569ed72b4 100644
+--- a/internal/provider/group_order.go
++++ b/internal/provider/group_order.go
+@@ -35,11 +35,15 @@ func orderedGroups(gs []Group, order []string) []Group {
+ // as they are now, and the whole order is kept, so a group made or found
+ // later goes after them all.
+ func SetGroupOrder(ids []string) error {
++	all := groupsIn(providerEntries()) // read before providersMu is taken
++	if err := providersMu.Take(); err != nil {
++		return err
++	}
++	defer providersMu.Unlock()
+ 	f, err := read()
+ 	if err != nil {
+ 		return err
+ 	}
+-	all := groupsIn(providerEntries())
+ 	seen := map[string]bool{}
+ 	for _, id := range ids {
+ 		if seen[id] {
+@@ -75,6 +79,10 @@ func MirrorGroupOrder(order []string) error {
+ 	if len(order) == 0 {
+ 		return nil
+ 	}
++	if err := providersMu.Take(); err != nil {
++		return err
++	}
++	defer providersMu.Unlock()
+ 	f, err := read()
+ 	if err != nil {
+ 		return err
+diff --git a/internal/provider/keep_login_as.go b/internal/provider/keep_login_as.go
+index 32b30a726..acd57df81 100644
+--- a/internal/provider/keep_login_as.go
++++ b/internal/provider/keep_login_as.go
+@@ -133,8 +133,10 @@ func SetKeepLoginAs(id, user string) error {
+ 			return err
+ 		}
+ 	}
+-	p.KeepLogin, p.KeepLoginAs = true, to.User
+-	if err := Save(*p); err != nil {
++	if err := editFound(p, func(q *Provider) error {
++		q.KeepLogin, q.KeepLoginAs = true, to.User
++		return nil
++	}); err != nil {
+ 		return err
+ 	}
+ 	if to.Active {
+diff --git a/internal/provider/key_models_prefill.go b/internal/provider/key_models_prefill.go
+index 31999b5ca..9c923e0ab 100644
+--- a/internal/provider/key_models_prefill.go
++++ b/internal/provider/key_models_prefill.go
+@@ -17,6 +17,7 @@ package provider
+ 
+ import (
+ 	"context"
++	"maps"
+ 	"slices"
+ 	"sync"
+ 	"time"
+@@ -148,23 +149,24 @@ func PrefillNewKeys(ctx context.Context, before map[string]map[string]bool, ids
+ 		if err != nil {
+ 			continue
+ 		}
+-		am := map[string][]string{}
+-		for k, v := range p.AccountModels {
+-			am[k] = v
+-		}
++		// and again as stored when they are given
+ 		changed := 0
+-		for kid, ms := range keys {
+-			if am[accountKey(kid)] != nil || !p.HasKeyID(kid) {
+-				continue
++		if editFound(p, func(q *Provider) error {
++			changed = 0
++			am := maps.Clone(q.AccountModels)
++			if am == nil {
++				am = map[string][]string{}
+ 			}
+-			am[accountKey(kid)] = ms
+-			changed++
+-		}
+-		if changed == 0 {
+-			continue
+-		}
+-		p.AccountModels = am
+-		if Save(*p) == nil {
++			for kid, ms := range keys {
++				if am[accountKey(kid)] != nil || !q.HasKeyID(kid) {
++					continue
++				}
++				am[accountKey(kid)] = ms
++				changed++
++			}
++			q.AccountModels = normalAccountModels(am)
++			return nil
++		}) == nil {
+ 			n += changed
+ 		}
+ 	}
+diff --git a/internal/provider/key_spend.go b/internal/provider/key_spend.go
+index d24d25dec..b89fe9cfe 100644
+--- a/internal/provider/key_spend.go
++++ b/internal/provider/key_spend.go
+@@ -20,6 +20,7 @@ import (
+ 	"fmt"
+ 	"github.com/yetone/magpie/internal/dayzone"
+ 	"github.com/yetone/magpie/internal/settings"
++	"maps"
+ 	"math"
+ 	"strconv"
+ 	"strings"
+@@ -97,28 +98,29 @@ func SetKeySpendCap(id, ref string, c *SpendCap) error {
+ 		return fmt.Errorf("%s has no key %q", p.Name, ref)
+ 	}
+ 	k := strings.ToLower(r)
+-	m := map[string]SpendCap{}
+-	for id, v := range p.KeySpendCaps {
+-		m[id] = v
+-	}
+-	if c == nil {
+-		if _, had := m[k]; !had {
+-			return nil
++	// the caps as they are stored when this one is set: another set
++	// meanwhile stays
++	return editFound(p, func(q *Provider) error {
++		m := maps.Clone(q.KeySpendCaps)
++		if m == nil {
++			m = map[string]SpendCap{}
+ 		}
+-		delete(m, k)
+-	} else {
+-		v := *c
+-		v.Since = time.Time{}
+-		if v.Period == SpendTotal {
+-			v.Since = time.Now().UTC().Truncate(time.Second)
+-			if was, had := m[k]; had && was.Period == SpendTotal && !was.Since.IsZero() {
+-				v.Since = was.Since
++		if c == nil {
++			delete(m, k)
++		} else {
++			v := *c
++			v.Since = time.Time{}
++			if v.Period == SpendTotal {
++				v.Since = time.Now().UTC().Truncate(time.Second)
++				if was, had := m[k]; had && was.Period == SpendTotal && !was.Since.IsZero() {
++					v.Since = was.Since
++				}
+ 			}
++			m[k] = v
+ 		}
+-		m[k] = v
+-	}
+-	p.KeySpendCaps = m
+-	return Save(*p)
++		q.KeySpendCaps = normalKeySpendCaps(m)
++		return nil
++	})
+ }
+ 
+ // checkSpendCap says what is wrong with c, nil when nothing is.
+diff --git a/internal/provider/keys.go b/internal/provider/keys.go
+index 7649501d4..34c810ccd 100644
+--- a/internal/provider/keys.go
++++ b/internal/provider/keys.go
+@@ -206,27 +206,33 @@ func AddKey(id, name, key string, proto Protocol) error {
+ 	if p.Account != nil {
+ 		return errors.New("a signed-in account has no keys")
+ 	}
+-	// nothing pasted: the key the provider is asked with when the user has
+-	// none (OpenCode Zen's public, #1795); for any other, nothing to add
+-	anon := false
+-	if key == "" {
+-		if key = p.AnonymousKey(); key == "" {
+-			return errors.New("paste the key to add")
++	// added to the keys as they are stored then: one added or changed
++	// meanwhile stays
++	return editFound(p, func(q *Provider) error {
++		key := key
++		// nothing pasted: the key the provider is asked with when the user
++		// has none (OpenCode Zen's public, #1795); for any other, nothing
++		// to add
++		anon := false
++		if key == "" {
++			if key = q.AnonymousKey(); key == "" {
++				return errors.New("paste the key to add")
++			}
++			anon = true
+ 		}
+-		anon = true
+-	}
+-	if p.HasKey(key) {
+-		if anon {
+-			return fmt.Errorf("%s already has %s, the key its free models answer with none of yours", p.Name, key)
++		if q.HasKey(key) {
++			if anon {
++				return fmt.Errorf("%s already has %s, the key its free models answer with none of yours", p.Name, key)
++			}
++			return fmt.Errorf("%s already has this key", p.Name)
+ 		}
+-		return fmt.Errorf("%s already has this key", p.Name)
+-	}
+-	if p.Key == "" {
+-		p.Key, p.KeyName, p.KeyProtocol = key, name, proto
+-	} else {
+-		p.Keys = append(p.Keys, KeyAccount{Name: name, Key: key, Protocol: proto})
+-	}
+-	return Save(*p)
++		if q.Key == "" {
++			q.Key, q.KeyName, q.KeyProtocol = key, name, proto
++		} else {
++			q.Keys = append(q.Keys, KeyAccount{Name: name, Key: key, Protocol: proto})
++		}
++		return nil
++	})
+ }
+ 
+ // AnonymousKey is the key the provider is asked with when the user has
+@@ -312,34 +318,39 @@ func AddKeys(id string, keys []string, proto Protocol) (added, had int, err erro
+ 	if p.Account != nil {
+ 		return 0, 0, errors.New("a signed-in account has no keys")
+ 	}
+-	seen := map[string]bool{}
+-	for _, k := range p.KeyList() {
+-		seen[k.ID] = true
+-	}
+-	for _, key := range keys {
+-		key = strings.TrimSpace(key)
+-		if key == "" {
+-			continue
++	// added to the keys as they are stored then
++	err = editFound(p, func(q *Provider) error {
++		added, had = 0, 0
++		seen := map[string]bool{}
++		for _, k := range q.KeyList() {
++			seen[k.ID] = true
+ 		}
+-		if seen[keyID(key)] {
+-			had++
+-			continue
+-		}
+-		seen[keyID(key)] = true
+-		added++
+-		if p.Key == "" {
+-			p.Key, p.KeyName, p.KeyProtocol = key, "", proto
+-		} else {
+-			p.Keys = append(p.Keys, KeyAccount{Key: key, Protocol: proto})
++		for _, key := range keys {
++			key = strings.TrimSpace(key)
++			if key == "" {
++				continue
++			}
++			if seen[keyID(key)] {
++				had++
++				continue
++			}
++			seen[keyID(key)] = true
++			added++
++			if q.Key == "" {
++				q.Key, q.KeyName, q.KeyProtocol = key, "", proto
++			} else {
++				q.Keys = append(q.Keys, KeyAccount{Key: key, Protocol: proto})
++			}
+ 		}
+-	}
+-	if added == 0 {
+-		if had > 0 {
+-			return 0, had, fmt.Errorf("%s already has these keys", p.Name)
++		if added == 0 {
++			if had > 0 {
++				return fmt.Errorf("%s already has these keys", p.Name)
++			}
++			return errors.New("paste the keys to add")
+ 		}
+-		return 0, 0, errors.New("paste the keys to add")
+-	}
+-	return added, had, Save(*p)
++		return nil
++	})
++	return added, had, err
+ }
+ 
+ // keyReadsAtOnce is how many of one provider's keys have their balance,
+@@ -401,16 +412,20 @@ func SetKeyProtocol(id, keyRef string, proto Protocol) error {
+ 	if err != nil {
+ 		return err
+ 	}
+-	i, ok := findKey(p, keyRef)
+-	if !ok {
+-		return fmt.Errorf("%s has no such key", p.Name)
+-	}
+-	if i < 0 {
+-		p.KeyProtocol = proto
+-	} else {
+-		p.Keys[i].Protocol = proto
+-	}
+-	return Save(*p)
++	// set on the key as it is stored then: another key's setting, or a
++	// key added, meanwhile stays
++	return editFound(p, func(q *Provider) error {
++		i, ok := findKey(q, keyRef)
++		if !ok {
++			return fmt.Errorf("%s has no such key", p.Name)
++		}
++		if i < 0 {
++			q.KeyProtocol = proto
++		} else {
++			q.Keys[i].Protocol = proto
++		}
++		return nil
++	})
+ }
+ 
+ // SetKeyPlan says which of the preset's plans (a Region's id) a key is
+@@ -436,16 +451,20 @@ func SetKeyPlan(id, keyRef, plan string) error {
+ 			plan = ""
+ 		}
+ 	}
+-	i, ok := findKey(p, keyRef)
+-	if !ok {
+-		return fmt.Errorf("%s has no such key", p.Name)
+-	}
+-	if i < 0 {
+-		p.KeyPlan = plan
+-	} else {
+-		p.Keys[i].Plan = plan
+-	}
+-	return Save(*p)
++	// set on the key as it is stored then: another key's setting, or a
++	// key added, meanwhile stays
++	return editFound(p, func(q *Provider) error {
++		i, ok := findKey(q, keyRef)
++		if !ok {
++			return fmt.Errorf("%s has no such key", p.Name)
++		}
++		if i < 0 {
++			q.KeyPlan = plan
++		} else {
++			q.Keys[i].Plan = plan
++		}
++		return nil
++	})
+ }
+ 
+ // MaxKeyWeight is the most a key's weight can be.
+@@ -461,19 +480,23 @@ func SetKeyWeight(id, keyRef string, weight int) error {
+ 	if err != nil {
+ 		return err
+ 	}
+-	i, ok := findKey(p, keyRef)
+-	if !ok {
+-		return fmt.Errorf("%s has no such key", p.Name)
+-	}
+-	if weight == 1 {
+-		weight = 0 // the default: kept out of the file
+-	}
+-	if i < 0 {
+-		p.KeyWeight = weight
+-	} else {
+-		p.Keys[i].Weight = weight
+-	}
+-	return Save(*p)
++	// set on the key as it is stored then: another key's setting, or a
++	// key added, meanwhile stays
++	return editFound(p, func(q *Provider) error {
++		i, ok := findKey(q, keyRef)
++		if !ok {
++			return fmt.Errorf("%s has no such key", p.Name)
++		}
++		if weight == 1 {
++			weight = 0 // the default: kept out of the file
++		}
++		if i < 0 {
++			q.KeyWeight = weight
++		} else {
++			q.Keys[i].Weight = weight
++		}
++		return nil
++	})
+ }
+ 
+ // WeightOf is the key's weight as Weighted routing counts it: 1 when none.
+@@ -548,18 +571,21 @@ func UseKey(id, keyRef string) error {
+ 	if err != nil {
+ 		return err
+ 	}
+-	i, ok := findKey(p, keyRef)
+-	if !ok {
+-		return fmt.Errorf("%s has no such key", p.Name)
+-	}
+-	if i < 0 {
++	// the keys as they are stored then
++	return editFound(p, func(q *Provider) error {
++		i, ok := findKey(q, keyRef)
++		if !ok {
++			return fmt.Errorf("%s has no such key", p.Name)
++		}
++		if i < 0 {
++			return nil
++		}
++		k := q.Keys[i]
++		rest := append([]KeyAccount{q.first()}, append(q.Keys[:i:i], q.Keys[i+1:]...)...)
++		q.setFirst(k)
++		q.Keys = rest
+ 		return nil
+-	}
+-	k := p.Keys[i]
+-	rest := append([]KeyAccount{p.first()}, append(p.Keys[:i:i], p.Keys[i+1:]...)...)
+-	p.setFirst(k)
+-	p.Keys = rest
+-	return Save(*p)
++	})
+ }
+ 
+ // promote takes the first key out of use: the next key that's on takes
+@@ -582,24 +608,25 @@ func SetKeyOn(id, keyRef string, on bool) error {
+ 	if err != nil {
+ 		return err
+ 	}
+-	i, ok := findKey(p, keyRef)
+-	if !ok {
+-		return fmt.Errorf("%s has no such key", p.Name)
+-	}
+-	switch {
+-	case i >= 0:
+-		p.Keys[i].Off = !on
+-	case !on:
+-		old, ok := promote(p)
++	// the keys as they are stored then
++	return editFound(p, func(q *Provider) error {
++		i, ok := findKey(q, keyRef)
+ 		if !ok {
+-			return errors.New("that's the only key in use; turn another on first")
++			return fmt.Errorf("%s has no such key", p.Name)
++		}
++		switch {
++		case i >= 0:
++			q.Keys[i].Off = !on
++		case !on:
++			old, ok := promote(q)
++			if !ok {
++				return errors.New("that's the only key in use; turn another on first")
++			}
++			old.Off = true
++			q.Keys = append([]KeyAccount{old}, q.Keys...)
+ 		}
+-		old.Off = true
+-		p.Keys = append([]KeyAccount{old}, p.Keys...)
+-	default:
+ 		return nil
+-	}
+-	return Save(*p)
++	})
+ }
+ 
+ // RemoveKey forgets a key. The last key in use stays: turn another on first.
+@@ -608,16 +635,19 @@ func RemoveKey(id, keyRef string) error {
+ 	if err != nil {
+ 		return err
+ 	}
+-	i, ok := findKey(p, keyRef)
+-	if !ok {
+-		return fmt.Errorf("%s has no such key", p.Name)
+-	}
+-	if i >= 0 {
+-		p.Keys = append(p.Keys[:i], p.Keys[i+1:]...)
+-	} else if _, ok := promote(p); !ok {
+-		return errors.New("that's the only key in use; turn another on before removing it")
+-	}
+-	return Save(*p)
++	// taken from the keys as they are stored then
++	return editFound(p, func(q *Provider) error {
++		i, ok := findKey(q, keyRef)
++		if !ok {
++			return fmt.Errorf("%s has no such key", p.Name)
++		}
++		if i >= 0 {
++			q.Keys = append(q.Keys[:i:i], q.Keys[i+1:]...)
++		} else if _, ok := promote(q); !ok {
++			return errors.New("that's the only key in use; turn another on before removing it")
++		}
++		return nil
++	})
+ }
+ 
+ // RemoveKeys forgets several keys at once (361 on Discord: hundreds of
+@@ -633,29 +663,37 @@ func RemoveKeys(id string, refs []string) (removed int, err error) {
+ 	for _, r := range refs {
+ 		gone[r] = true
+ 	}
+-	var kept []KeyAccount
+-	for _, k := range p.Keys {
+-		if gone[keyID(k.Key)] {
++	// taken from the keys as they are stored then
++	err = editFound(p, func(q *Provider) error {
++		removed = 0
++		var kept []KeyAccount
++		for _, k := range q.Keys {
++			if gone[keyID(k.Key)] {
++				removed++
++				continue
++			}
++			kept = append(kept, k)
++		}
++		firstGone := q.Key != "" && gone[keyID(q.Key)]
++		if firstGone {
+ 			removed++
+-			continue
+ 		}
+-		kept = append(kept, k)
+-	}
+-	firstGone := p.Key != "" && gone[keyID(p.Key)]
+-	if firstGone {
+-		removed++
+-	}
+-	if removed == 0 {
+-		return 0, fmt.Errorf("%s has none of these keys", p.Name)
+-	}
+-	p.Keys = kept
+-	// the first key is always on: only its removal can leave none in use
+-	if firstGone {
+-		if _, ok := promote(p); !ok {
+-			return 0, errors.New("those are all the keys in use; keep one on")
++		if removed == 0 {
++			return fmt.Errorf("%s has none of these keys", p.Name)
++		}
++		q.Keys = kept
++		// the first key is always on: only its removal can leave none in use
++		if firstGone {
++			if _, ok := promote(q); !ok {
++				return errors.New("those are all the keys in use; keep one on")
++			}
+ 		}
++		return nil
++	})
++	if err != nil {
++		return 0, err
+ 	}
+-	return removed, Save(*p)
++	return removed, nil
+ }
+ 
+ // RenameKey names one of a provider's keys, "Personal", "Team".
+@@ -664,17 +702,21 @@ func RenameKey(id, keyRef, name string) error {
+ 	if err != nil {
+ 		return err
+ 	}
+-	i, ok := findKey(p, keyRef)
+-	if !ok {
+-		return fmt.Errorf("%s has no such key", p.Name)
+-	}
+-	name = strings.TrimSpace(name)
+-	if i < 0 {
+-		p.KeyName = name
+-	} else {
+-		p.Keys[i].Name = name
+-	}
+-	return Save(*p)
++	// set on the key as it is stored then: another key's setting, or a
++	// key added, meanwhile stays
++	return editFound(p, func(q *Provider) error {
++		i, ok := findKey(q, keyRef)
++		if !ok {
++			return fmt.Errorf("%s has no such key", p.Name)
++		}
++		name = strings.TrimSpace(name)
++		if i < 0 {
++			q.KeyName = name
++		} else {
++			q.Keys[i].Name = name
++		}
++		return nil
++	})
+ }
+ 
+ // ReplaceKey puts a new value in place of one of a provider's keys (#1869:
+@@ -692,33 +734,41 @@ func ReplaceKey(id, keyRef, key string) (was, now string, err error) {
+ 	if err != nil {
+ 		return "", "", err
+ 	}
+-	i, ok := findKey(p, keyRef)
+-	if !ok {
+-		return "", "", fmt.Errorf("%s has no such key", p.Name)
+-	}
+ 	now = keyID(key)
+-	if now == keyRef {
+-		return keyRef, now, nil
+-	}
+-	if p.HasKey(key) {
+-		return "", "", fmt.Errorf("%s already has this key", p.Name)
++	// put in place in the keys as they are stored then, with what is set
++	// for it as it is then
++	err = editFound(p, func(q *Provider) error {
++		i, ok := findKey(q, keyRef)
++		if !ok {
++			return fmt.Errorf("%s has no such key", p.Name)
++		}
++		if now == keyRef {
++			return nil
++		}
++		if q.HasKey(key) {
++			return fmt.Errorf("%s already has this key", p.Name)
++		}
++		if i < 0 {
++			q.Key = key
++		} else {
++			q.Keys[i].Key = key
++		}
++		moveKeyed(q.AccountModels, keyRef, now)
++		moveKeyed(q.AccountModelsAll, keyRef, now)
++		moveKeyed(q.AccountProxies, keyRef, now)
++		moveKeyed(q.AccountConcurrency, keyRef, now)
++		moveKeyed(q.KeySpendCaps, keyRef, now)
++		moveKeyed(q.KeyOwnBalances, keyRef, now)
++		moveKeyed(q.KeyPriceRates, keyRef, now)
++		moveKeyed(q.AccountCaps, keyRef, now)
++		moveKeyed(q.AccountWindowCaps, keyRef, now)
++		moveKeyed(q.AccountWindowAmounts, keyRef, now)
++		return nil
++	})
++	if err != nil {
++		return "", "", err
+ 	}
+-	if i < 0 {
+-		p.Key = key
+-	} else {
+-		p.Keys[i].Key = key
+-	}
+-	moveKeyed(p.AccountModels, keyRef, now)
+-	moveKeyed(p.AccountModelsAll, keyRef, now)
+-	moveKeyed(p.AccountProxies, keyRef, now)
+-	moveKeyed(p.AccountConcurrency, keyRef, now)
+-	moveKeyed(p.KeySpendCaps, keyRef, now)
+-	moveKeyed(p.AccountCaps, keyRef, now)
+-	moveKeyed(p.AccountWindowCaps, keyRef, now)
+-	moveKeyed(p.AccountWindowAmounts, keyRef, now)
+-	moveKeyed(p.KeyOwnBalances, keyRef, now)
+-	moveKeyed(p.KeyPriceRates, keyRef, now)
+-	return keyRef, now, Save(*p)
++	return keyRef, now, nil
+ }
+ 
+ // moveKeyed moves m's entry for the key was, if it has one, to now.
+diff --git a/internal/provider/localid.go b/internal/provider/localid.go
+index d3fb4d48e..025db4ae6 100644
+--- a/internal/provider/localid.go
++++ b/internal/provider/localid.go
+@@ -323,6 +323,10 @@ var ModelMoved func(from, to string) error
+ // there only once the user has set something on it (withPicks): with
+ // none kept (account), only the other providers' refs to it move.
+ func moveModelRefs(pid, from, to string, account bool) error {
++	if err := providersMu.Take(); err != nil {
++		return err
++	}
++	defer providersMu.Unlock()
+ 	f, err := read()
+ 	if err != nil {
+ 		return err
+diff --git a/internal/provider/migrate_kiro.go b/internal/provider/migrate_kiro.go
+index 2f8d0bd11..4be71b471 100644
+--- a/internal/provider/migrate_kiro.go
++++ b/internal/provider/migrate_kiro.go
+@@ -152,6 +152,10 @@ func kiroOut(home, user, plan string) (map[string]any, error) {
+ 
+ // setKiroKey sets (or, "", clears) the key saved on the Kiro provider.
+ func setKiroKey(k string) error {
++	if err := providersMu.Take(); err != nil {
++		return err
++	}
++	defer providersMu.Unlock()
+ 	f, err := read()
+ 	if err != nil {
+ 		return err
+diff --git a/internal/provider/models.go b/internal/provider/models.go
+index 4a3b24ac6..d9e203cc8 100644
+--- a/internal/provider/models.go
++++ b/internal/provider/models.go
+@@ -413,6 +413,10 @@ func liveIDs(id string) map[string]bool {
+ // not forgotten, and those of its Delisted now has go back among the picks
+ // (relistPicks): a list that shrank for a while gives back what it took.
+ func dropGonePicks(id string, before, now map[string]bool) ([]string, error) {
++	if err := providersMu.Take(); err != nil {
++		return nil, err
++	}
++	defer providersMu.Unlock()
+ 	f, err := read()
+ 	if err != nil {
+ 		return nil, err
+@@ -1448,6 +1452,10 @@ func (p Provider) servesAtBase(ctx context.Context, base string) bool {
+ func (p Provider) setV1(base string) string {
+ 	base = strings.TrimRight(strings.TrimSpace(base), "/")
+ 	fixed := base + "/v1"
++	if err := providersMu.Take(); err != nil {
++		return base
++	}
++	defer providersMu.Unlock()
+ 	f, err := read()
+ 	if err != nil {
+ 		return base
+@@ -4250,11 +4258,15 @@ func SetContext(p Provider, model string, n int) error {
+ 		return fmt.Errorf("%s has no model %s (magpie provider %s lists them)", p.ID, model, p.ID)
+ 	}
+ 	if n > 0 {
+-		if p.Contexts == nil {
+-			p.Contexts = map[string]int{}
+-		}
+-		p.Contexts[model] = n
+-		return Save(p)
++		// on the windows as they are stored then: another set meanwhile
++		// stays
++		return editFound(&p, func(q *Provider) error {
++			if q.Contexts == nil {
++				q.Contexts = map[string]int{}
++			}
++			q.Contexts[model] = n
++			return nil
++		})
+ 	}
+ 	// a removal goes the way DropModelOutput's does: the provider is not
+ 	// saved over a window that is not there, so nothing is written and the
+@@ -4278,9 +4290,15 @@ func DropContext(p Provider, model string) (bool, error) {
+ 	if _, ok := p.Contexts[model]; !ok {
+ 		return false, nil
+ 	}
+-	delete(p.Contexts, model)
+-	if err := Save(p); err != nil {
++	// taken off the windows as they are stored then: one taken
++	// off meanwhile was not there to take
++	had := false
++	if err := editFound(&p, func(q *Provider) error {
++		_, had = q.Contexts[model]
++		delete(q.Contexts, model)
++		return nil
++	}); err != nil {
+ 		return false, err
+ 	}
+-	return true, nil
++	return had, nil
+ }
+diff --git a/internal/provider/native_compaction.go b/internal/provider/native_compaction.go
+index e6340bbd7..6e5fcbd8a 100644
+--- a/internal/provider/native_compaction.go
++++ b/internal/provider/native_compaction.go
+@@ -44,6 +44,8 @@ func SetNativeCompaction(id string, on bool) error {
+ 	if on && !p.CarriesCompaction() {
+ 		return fmt.Errorf("%s can't carry Codex's native compaction: only a provider with a Responses API, a ChatGPT account or GitHub Copilot can", p.Name)
+ 	}
+-	p.NativeCompaction = on
+-	return Save(*p)
++	return editFound(p, func(q *Provider) error {
++		q.NativeCompaction = on
++		return nil
++	})
+ }
+diff --git a/internal/provider/plugin_left.go b/internal/provider/plugin_left.go
+index 18f5585d6..8d624a6bc 100644
+--- a/internal/provider/plugin_left.go
++++ b/internal/provider/plugin_left.go
+@@ -76,6 +76,10 @@ func setAside(pkg string, ids []string) error {
+ 	if len(ids) == 0 {
+ 		return nil
+ 	}
++	if err := providersMu.Take(); err != nil {
++		return err
++	}
++	defer providersMu.Unlock()
+ 	f, err := read()
+ 	if err != nil {
+ 		return err
+@@ -104,6 +108,10 @@ func setAside(pkg string, ids []string) error {
+ // gave the id to a provider since) stays aside.
+ func takeBackLeft(spec string) error {
+ 	pkg := plugin.PackageName(spec)
++	if err := providersMu.Take(); err != nil {
++		return err
++	}
++	defer providersMu.Unlock()
+ 	f, err := read()
+ 	if err != nil {
+ 		return err
+diff --git a/internal/provider/provider.go b/internal/provider/provider.go
+index 5c1fcc8e4..a7cbb8712 100644
+--- a/internal/provider/provider.go
++++ b/internal/provider/provider.go
+@@ -26,6 +26,7 @@ import (
+ 
+ 	"github.com/yetone/magpie/internal/appdir"
+ 	"github.com/yetone/magpie/internal/catalog"
++	"github.com/yetone/magpie/internal/filelock"
+ 	"github.com/yetone/magpie/internal/filememo"
+ 	"github.com/yetone/magpie/internal/lastgood"
+ 	"github.com/yetone/magpie/internal/lazyre"
+@@ -912,9 +913,40 @@ func Routings() ([]string, error) {
+ 	return out, nil
+ }
+ 
++// providersMu is held for every read of providers.json a change is made
++// from, and the write: in this magpie, and across magpies, so that a
++// change made meanwhile is never written back over with what was read
++// before it — an account's day noted as logins.json is written
++// (noteAdded) and a cap the user sets (Save) among them. Taken, it has
++// providers.json read afresh.
++//
++// noteAdded and moveAccountSettings take it under loginsMu, so nothing
++// held under it reads the accounts (All, Find, Accounts, Logins, a
++// provider's Available), which can take loginsMu: what a change needs of
++// them is read before it is taken.
++//
++// It never goes on without the lock (filelock.Strict): held by another
++// magpie through a wait and one more, a change is refused unmade with
++// *filelock.BusyError, which asks the user to make it again.
++var providersMu = filelock.Strict{
++	Path:   func() string { return Path() + ".lock" },
++	Locked: func() { filememo.Look(Path()) },
++}
++
++// ClearLeftLock is called as magpie starts: what a magpie that ended
++// while holding providersMu (crashed, or was killed) left in
++// providers.json.lock is cleared. The lock itself went with it. left is
++// filelock.Clear's.
++func ClearLeftLock() (left int) { return filelock.Clear(Path() + ".lock") }
++
++// beforeProvidersWrite is called as providers.json is about to be
++// written: for a test to have another change come at that moment.
++var beforeProvidersWrite = func() {}
++
+ // store replaces providers.json whole, through a file renamed over it, so
+ // that a read at that moment sees the old catalog or the new one, never a
+-// file cut short.
++// file cut short. The read the change was made from is made under
++// providersMu, held until store returns.
+ func store(f file) error {
+ 	p := Path()
+ 	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+@@ -930,6 +962,7 @@ func store(f file) error {
+ 	if err != nil {
+ 		return err
+ 	}
++	beforeProvidersWrite()
+ 	if err := lastgood.Keep(p, validProviders, 0o600); err != nil {
+ 		return err
+ 	}
+@@ -1256,14 +1289,47 @@ func Slug(name string) string {
+ 
+ // Save adds or replaces a provider.
+ func Save(p Provider) error {
++	p, account, err := prepare(p)
++	if err != nil {
++		return err
++	}
++	// what it lists now, asked outside providersMu once the picks are
++	// found new (listedWith)
++	var now *listing
++	for {
++		wrote, asked, err := saveRead(&p, account, now)
++		if err != nil {
++			return err
++		}
++		if !asked {
++			now = listedNow(p)
++			continue
++		}
++		if !wrote {
++			return nil
++		}
++		break
++	}
++	if p.ID == "claude" {
++		// an account's proxy picked in the editor reaches Claude Code at
++		// once, not at the gateway's next look (#1807)
++		syncClaudeProxyEnvNow()
++	}
++	return nil
++}
++
++// prepare is p as Save writes it, normalized and checked, and whether it
++// is a signed-in account's; or why Save refuses it. It reads the accounts,
++// so it is never called under providersMu.
++func prepare(p Provider) (Provider, bool, error) {
+ 	// a key given a Vertex AI provider is refused here, before normalize
+ 	// drops it: it would never be sent
+ 	if p.IsVertex() && len(p.Keys) > 0 {
+-		return errors.New("Google Vertex AI takes one API key")
++		return Provider{}, false, errors.New("Google Vertex AI takes one API key")
+ 	}
+ 	// a base URL with no key is refused before normalize drops it
+ 	if p.IsVertex() && p.Vertex != nil && strings.TrimSpace(p.Vertex.BaseURL) != "" && strings.TrimSpace(p.Key) == "" {
+-		return errors.New("a base URL is for an API key: Google credentials are sent only to Google's own address")
++		return Provider{}, false, errors.New("a base URL is for an API key: Google credentials are sent only to Google's own address")
+ 	}
+ 	p = normalize(p)
+ 	p.IconURL = "" // import-only: never stored
+@@ -1279,27 +1345,28 @@ func Save(p Provider) error {
+ 	// editor could neither change it nor rename it to one that is right
+ 	// (01huadalang on Discord: 我不管改成什么都显示不能用 b.ai)
+ 	if p.ID == "" || p.ID != Slug(p.ID) && !stored(p.ID) {
+-		return fmt.Errorf("provider id must be lowercase letters, digits and dashes, not %q", p.ID)
++		return Provider{}, false, fmt.Errorf("provider id must be lowercase letters, digits and dashes, not %q", p.ID)
+ 	}
+ 	if p.ID == "magpie" {
+-		return errors.New(`"magpie" is what agents call the gateway itself; pick another id`)
++		return Provider{}, false, errors.New(`"magpie" is what agents call the gateway itself; pick another id`)
+ 	}
+ 	if p.ID == strings.TrimSuffix(GroupPrefix, "/") {
+-		return errors.New(`"group" starts the ids of routing groups; pick another id`)
++		return Provider{}, false, errors.New(`"group" starts the ids of routing groups; pick another id`)
+ 	}
+ 	if p.ID == autoID && !stored(p.ID) { // one saved before keeps it (autoRefsOn)
+-		return errAutoID
++		return Provider{}, false, errAutoID
+ 	}
+ 	if err := settings.CheckProxy(p.Proxy); err != nil {
+-		return err
++		return Provider{}, false, err
+ 	}
+ 	if err := checkAccountProxies(p.AccountProxies); err != nil {
+-		return err
++		return Provider{}, false, err
+ 	}
+ 	if p.Name == "" {
+ 		p.Name = p.ID
+ 	}
+-	if _, ok := find(Accounts(), p.ID); ok || p.ID == "kiro" && (p.Key != "" || stored(p.ID)) {
++	_, account := find(Accounts(), p.ID)
++	if account || p.ID == "kiro" && (p.Key != "" || stored(p.ID)) {
+ 		// an account keeps only the user's model picks; the rest is the
+ 		// agent's own sign-in. One the user removed stays removed: only
+ 		// ShowAccount brings it back. Kiro's alone also keeps a key, which
+@@ -1314,76 +1381,91 @@ func Save(p Provider) error {
+ 		p.AccountProxies = keyProxies(p) // a provider of keys proxies each key apart
+ 		if subscriptionID(p.ID) && !stored(p.ID) {
+ 			// taken, it would hide that subscription once signed in
+-			return fmt.Errorf("%q is the id of the %s subscription; pick another name", p.ID, p.ID)
++			return Provider{}, false, fmt.Errorf("%q is the id of the %s subscription; pick another name", p.ID, p.ID)
+ 		}
+ 		if p.IsVertex() {
+ 			if err := p.Vertex.check(p.Key != ""); err != nil {
+-				return err
++				return Provider{}, false, err
+ 			}
+ 		} else if !hasEndpoint(p) {
+ 			if p.Preset == AzurePreset {
+-				return errors.New("Azure OpenAI needs your resource's endpoint, e.g. https://<resource>.openai.azure.com")
++				return Provider{}, false, errors.New("Azure OpenAI needs your resource's endpoint, e.g. https://<resource>.openai.azure.com")
+ 			}
+-			return errors.New("a provider needs a base URL")
++			return Provider{}, false, errors.New("a provider needs a base URL")
+ 		}
+ 		if p.InsecureTLS && !p.TakesInsecureTLS() {
+-			return fmt.Errorf("%s is a preset's: only a provider you added with your own base URL can skip the certificate check", p.Name)
++			return Provider{}, false, fmt.Errorf("%s is a preset's: only a provider you added with your own base URL can skip the certificate check", p.Name)
+ 		}
+ 		if len(p.Resolve) > 0 {
+ 			if !p.TakesResolve() {
+-				return fmt.Errorf("%s: a connect address is only for a provider you added with a base URL of its own, or a preset you pointed at your own server", p.ID)
++				return Provider{}, false, fmt.Errorf("%s: a connect address is only for a provider you added with a base URL of its own, or a preset you pointed at your own server", p.ID)
+ 			}
+ 			r, err := netproxy.CheckResolve(p.Resolve)
+ 			if err != nil {
+-				return fmt.Errorf("%s: %w", p.ID, err)
++				return Provider{}, false, fmt.Errorf("%s: %w", p.ID, err)
+ 			}
+ 			p.Resolve = r
+ 		}
+ 		if p.HTTP1 && !p.TakesInsecureTLS() {
+-			return fmt.Errorf("%s is a preset's: only a provider you added with your own base URL can be held to HTTP/1.1", p.Name)
++			return Provider{}, false, fmt.Errorf("%s is a preset's: only a provider you added with your own base URL can be held to HTTP/1.1", p.Name)
+ 		}
+ 		if v := strings.TrimSpace(p.ServerPin); v != "" {
+ 			if p.ServerPin = netproxy.NormalPin(v); p.ServerPin == "" {
+-				return fmt.Errorf("%s: %q isn't a certificate's SHA-256 fingerprint (64 hex digits)", p.ID, v)
++				return Provider{}, false, fmt.Errorf("%s: %q isn't a certificate's SHA-256 fingerprint (64 hex digits)", p.ID, v)
+ 			}
+ 			if !p.TakesServerPin() {
+-				return fmt.Errorf("%s: a trusted server certificate is only for an https:// address of your own: a provider you added with a base URL of its own, Remote magpie, or a preset you pointed at your own server", p.ID)
++				return Provider{}, false, fmt.Errorf("%s: a trusted server certificate is only for an https:// address of your own: a provider you added with a base URL of its own, Remote magpie, or a preset you pointed at your own server", p.ID)
+ 			}
+ 		}
+ 		if p.ClientCert != "" || p.ClientKey != "" || p.ServerCA != "" {
+ 			if !p.TakesClientCert() {
+-				return fmt.Errorf("%s: a client certificate or server CA is only for a provider you added with a base URL of its own, or Remote magpie", p.ID)
++				return Provider{}, false, fmt.Errorf("%s: a client certificate or server CA is only for a provider you added with a base URL of its own, or Remote magpie", p.ID)
+ 			}
+ 			for _, f := range []*string{&p.ClientCert, &p.ClientKey, &p.ServerCA} {
+ 				v, err := CertPath(*f)
+ 				if err != nil {
+-					return fmt.Errorf("%s: %w", p.ID, err)
++					return Provider{}, false, fmt.Errorf("%s: %w", p.ID, err)
+ 				}
+ 				*f = v
+ 			}
+ 			if err := netproxy.CheckClientCert(p.ClientCert, p.ClientKey, p.ServerCA); err != nil {
+-				return fmt.Errorf("%s: %w", p.ID, err)
++				return Provider{}, false, fmt.Errorf("%s: %w", p.ID, err)
+ 			}
+ 		}
+ 		if strings.Contains(p.Decide, WorkspaceID) {
+-			return errors.New("Bailian's decision model is asked at your workspace's host: give its workspace ID (workspace=… or the editor's Workspace ID), or pick the Token Plan")
++			return Provider{}, false, errors.New("Bailian's decision model is asked at your workspace's host: give its workspace ID (workspace=… or the editor's Workspace ID), or pick the Token Plan")
+ 		}
+ 		if p.Key == "" && !keyOptional(p) && !p.IsVertex() {
+-			return fmt.Errorf("%s needs an API key", p.Name)
++			return Provider{}, false, fmt.Errorf("%s needs an API key", p.Name)
+ 		}
+ 	}
++	return p, account, nil
++}
++
++// saveRead is Save's change to providers.json, under providersMu: p as it
++// is saved with what it keeps of the provider there (*p is changed so),
++// written unless it is there alike. account is whether p is a signed-in
++// account's. asked is false, and nothing written, when the models the
++// provider lists now are needed and now hasn't them.
++func saveRead(p *Provider, account bool, now *listing) (wrote, asked bool, err error) {
++	if err := providersMu.Take(); err != nil {
++		return false, false, err
++	}
++	defer providersMu.Unlock()
+ 	f, err := read()
+ 	if err != nil {
+-		return err
++		return false, true, err
+ 	}
+ 	i := slices.IndexFunc(f.Providers, func(q Provider) bool { return q.ID == p.ID })
+ 	var was *Provider
+ 	if i >= 0 {
+ 		was = &f.Providers[i]
+ 	}
+-	p.PickedFrom = listedWith(p, was)
+-	p.Delisted = delistedWith(p, was)
+-	p.DelistedAt = delistedAtWith(p, was)
++	if p.PickedFrom, asked = listedWith(*p, was, account, now); !asked {
++		return false, false, nil
++	}
++	p.Delisted = delistedWith(*p, was)
++	p.DelistedAt = delistedAtWith(*p, was)
+ 	if was != nil {
+ 		if p.Was == nil {
+ 			p.Was = was.Was
+@@ -1391,29 +1473,103 @@ func Save(p Provider) error {
+ 		if p.Gave == nil {
+ 			p.Gave = was.Gave
+ 		}
+-		if sameStored(*was, p) {
++		if sameStored(*was, *p) {
+ 			// Save pressed on an editor left as it was: providers.json
+ 			// would be written byte for byte as it is, and its write
+ 			// handed the catalog to every agent again (agent.SyncCatalog),
+ 			// seconds of CPU with many agents set up (#1962, witt-bit)
+-			return nil
++			return false, true, nil
+ 		}
+-		f.Providers[i] = p
++		f.Providers[i] = *p
+ 	} else {
+ 		// a new provider under an id another had: what was recorded under
+ 		// it until now stays that one's
+ 		giveID(f.Providers, -1, p.ID, time.Now())
+-		f.Providers = append(f.Providers, p)
++		f.Providers = append(f.Providers, *p)
+ 	}
+-	if err := store(f); err != nil {
++	return true, true, store(f)
++}
++
++// editStored has change make its change to the record providers.json keeps
++// of the provider id (made when there is none, as Save makes one for an
++// account), under providersMu, and writes it when change says it changed
++// it: for a setter of one setting, so that what changed in the record
++// since the setter read the provider (another setting set, an account's
++// day noted, its settings moved to its new name) is kept, as Save of the
++// provider read would write it over.
++func editStored(id string, change func(q *Provider) bool) error {
++	return editRecord(id, true, func(q *Provider) (bool, error) { return change(q), nil })
++}
++
++// editRecord is editStored with change able to refuse the change (its
++// error, nothing written); a record there is none of is made only when
++// made is true, else the provider is told gone.
++func editRecord(id string, made bool, change func(q *Provider) (bool, error)) error {
++	if err := providersMu.Take(); err != nil {
+ 		return err
+ 	}
+-	if p.ID == "claude" {
+-		// an account's proxy picked in the editor reaches Claude Code at
+-		// once, not at the gateway's next look (#1807)
+-		syncClaudeProxyEnvNow()
++	defer providersMu.Unlock()
++	f, err := read()
++	if err != nil {
++		return err
+ 	}
+-	return nil
++	// an id written by hand in another case or with spaces is the one Find
++	// read, normalized
++	i := slices.IndexFunc(f.Providers, func(q Provider) bool { return strings.ToLower(strings.TrimSpace(q.ID)) == id })
++	if i < 0 {
++		if !made {
++			return fmt.Errorf("no provider %q: it was removed meanwhile", id)
++		}
++		f.Providers = append(f.Providers, Provider{ID: id})
++		i = len(f.Providers) - 1
++	}
++	changed, err := change(&f.Providers[i])
++	if err != nil || !changed {
++		return err
++	}
++	return store(f)
++}
++
++// editFound is editStored for a setter of the provider p, found before:
++// change makes its change to the record as it is under the lock, so what
++// another change wrote since p was read stays, and it is written when
++// change changed it. A provider of the user's own is changed as Find reads it (normalized, with each key's
++// proxy kept only while it has that key), as Save writes it; one gone from
++// providers.json meanwhile isn't made again. A signed-in account's record
++// is changed as it is, and made when it has none. The record is not
++// normalized again after change, nor checked as Save checks it: a setter
++// checks what it sets itself.
++func editFound(p *Provider, change func(q *Provider) error) error {
++	own := p.Account == nil
++	return editRecord(p.ID, !own, func(q *Provider) (bool, error) {
++		next := *q
++		if own {
++			next = normalize(next)
++			next.AccountProxies = keyProxies(next)
++		}
++		// a change that changes nothing writes nothing, a record not
++		// written normalized included
++		was, err := json.Marshal(next)
++		if err != nil {
++			return false, err
++		}
++		next = next.clone()
++		if err := change(&next); err != nil {
++			return false, err
++		}
++		if own {
++			next.AccountProxies = keyProxies(next)
++		}
++		now, err := json.Marshal(next)
++		if err != nil {
++			return false, err
++		}
++		if bytes.Equal(was, now) {
++			return false, nil
++		}
++		*q = next
++		return true, nil
++	})
+ }
+ 
+ // sameStored is whether a and b are written to providers.json alike.
+@@ -1470,25 +1626,28 @@ func delistedAtWith(p Provider, was *Provider) time.Time {
+ // provider of keys saved before PickedFrom was kept is given it at its next
+ // Save, the same picks too, as withNewlyListed serves those picks as they
+ // are until it has one (TestLegacyPicksOfEveryModelGetPickedFromAtSave).
+-func listedWith(p Provider, was *Provider) []string {
++//
++// account is whether p is a signed-in account's. The models listed now
++// are now, asked by listedNow; asked is false when they are needed and now
++// is nil.
++func listedWith(p Provider, was *Provider, account bool, now *listing) (picked []string, asked bool) {
+ 	if len(p.Models) == 0 {
+-		return nil
++		return nil, true
+ 	}
+ 	same := was != nil && slices.Equal(normalModels(was.Models), normalModels(p.Models))
+ 	if same && was.PickedFrom != nil {
+-		return was.PickedFrom
++		return was.PickedFrom, true
+ 	}
+-	from := p
+-	if q, err := Find(p.ID); err == nil {
+-		from = *q // with its account, whose list it is
++	if same && (account || p.Account != nil) {
++		return was.PickedFrom, true // a subscription keeps the date rule
+ 	}
+-	if same && (from.Account != nil || p.Account != nil) {
+-		return was.PickedFrom // a subscription keeps the date rule
++	if now == nil {
++		return nil, false
+ 	}
+-	var ids []string
+-	for _, m := range from.Available() {
+-		ids = append(ids, m.ID)
++	if same && now.account {
++		return was.PickedFrom, true
+ 	}
++	ids := slices.Clone(now.ids)
+ 	if was != nil && len(ids) > 0 && len(delistedWith(p, was)) > 0 {
+ 		for _, id := range was.PickedFrom {
+ 			if !slices.Contains(ids, id) {
+@@ -1496,7 +1655,28 @@ func listedWith(p Provider, was *Provider) []string {
+ 			}
+ 		}
+ 	}
+-	return ids
++	return ids, true
++}
++
++// listing is what a provider lists now, for listedWith: whether it is a
++// signed-in account's, and its models' ids.
++type listing struct {
++	account bool
++	ids     []string
++}
++
++// listedNow is what p lists now, read with its account, whose list it is:
++// a read of the accounts, never made under providersMu.
++func listedNow(p Provider) *listing {
++	from := p
++	if q, err := Find(p.ID); err == nil {
++		from = *q
++	}
++	l := &listing{account: from.Account != nil}
++	for _, m := range from.Available() {
++		l.ids = append(l.ids, m.ID)
++	}
++	return l
+ }
+ 
+ // Add saves a provider the user just added, beside those already here: an
+@@ -1704,6 +1884,10 @@ func tuckedAccount(id string) bool {
+ // magpie" too (on), or lists it there again (off). Tucked, it is quiet as
+ // well: no reminder line either (#116).
+ func TuckAccount(id string, on bool) error {
++	if err := providersMu.Take(); err != nil {
++		return err
++	}
++	defer providersMu.Unlock()
+ 	f, err := read()
+ 	if err != nil {
+ 		return err
+@@ -1723,6 +1907,10 @@ func TuckAccount(id string, on bool) error {
+ // QuietAccount stops reminding the user of an account they removed: its
+ // "Add it back" line goes, and it is offered only from the Add sheet.
+ func QuietAccount(id string) error {
++	if err := providersMu.Take(); err != nil {
++		return err
++	}
++	defer providersMu.Unlock()
+ 	f, err := read()
+ 	if err != nil {
+ 		return err
+@@ -1755,6 +1943,10 @@ func forgetKeptAccount(id string) error {
+ // ShowAccount brings back the signed-in account of an agent the user had
+ // removed from magpie.
+ func ShowAccount(id string) error {
++	if err := providersMu.Take(); err != nil {
++		return err
++	}
++	defer providersMu.Unlock()
+ 	f, err := read()
+ 	if err != nil {
+ 		return err
+@@ -1772,11 +1964,29 @@ func ShowAccount(id string) error {
+ // only hidden from magpie (its accounts and model picks kept, shown again
+ // from Hidden or by signing in); signing out is each account's Remove.
+ func Delete(id string) error {
++	_, account := find(Accounts(), id) // read before providersMu is taken
++	if err := deleteRead(id, account); err != nil || account {
++		return err
++	}
++	// its StepFun and Qwen AI platform sign-ins go with it, not to a
++	// provider added later under the same id
++	if err := forgetStepFun(id); err != nil {
++		return err
++	}
++	return forgetQianwen(id)
++}
++
++// deleteRead is Delete's change to providers.json, under providersMu.
++func deleteRead(id string, account bool) error {
++	if err := providersMu.Take(); err != nil {
++		return err
++	}
++	defer providersMu.Unlock()
+ 	f, err := read()
+ 	if err != nil {
+ 		return err
+ 	}
+-	if _, ok := find(Accounts(), id); ok {
++	if account {
+ 		for i := range f.Providers {
+ 			if f.Providers[i].ID == id {
+ 				f.Providers[i].Hidden = true
+@@ -1802,15 +2012,7 @@ func Delete(id string) error {
+ 		return fmt.Errorf("no provider %q", id)
+ 	}
+ 	f.Providers = keep
+-	if err := store(f); err != nil {
+-		return err
+-	}
+-	// its StepFun and Qwen AI platform sign-ins go with it, not to a
+-	// provider added later under the same id
+-	if err := forgetStepFun(id); err != nil {
+-		return err
+-	}
+-	return forgetQianwen(id)
++	return store(f)
+ }
+ 
+ // keyOptional is true for a server on this computer or on the user's own
+@@ -1967,7 +2169,7 @@ func normalize(p Provider) Provider {
+ 	if p.Decide == "" {
+ 		p.Decide = p.arkSystemOne()
+ 	}
+-	if p.Routing != Ordered && p.Routing != Rotate && p.Routing != LeastUsed && p.Routing != Pace && p.Routing != Weighted && p.Routing != FreeFirst && p.Routing != Fastest && p.Routing != Drain && !PluginRouting(p.Routing) {
++	if !KnownRouting(p.Routing) {
+ 		p.Routing = ""
+ 	}
+ 	if !slices.Contains(Affinities, p.Affinity) {
+@@ -2603,8 +2805,10 @@ func SetOff(id string, off bool) error {
+ 	if err != nil {
+ 		return err
+ 	}
+-	p.Off = off
+-	return Save(*p)
++	return editFound(p, func(q *Provider) error {
++		q.Off = off
++		return nil
++	})
+ }
+ 
+ // SwitchedOff is the provider switched off in magpie that a model id
+diff --git a/internal/provider/provider_order.go b/internal/provider/provider_order.go
+index cb29169f1..afa3cae27 100644
+--- a/internal/provider/provider_order.go
++++ b/internal/provider/provider_order.go
+@@ -69,11 +69,15 @@ func samePlace(id string) string {
+ // Every id must be a provider's, once; the ones left out follow those
+ // named, as they are now, so a provider added later goes after them all.
+ func SetOrder(ids []string) error {
++	all := All() // read before providersMu is taken
++	if err := providersMu.Take(); err != nil {
++		return err
++	}
++	defer providersMu.Unlock()
+ 	f, err := read()
+ 	if err != nil {
+ 		return err
+ 	}
+-	all := All()
+ 	seen := map[string]bool{}
+ 	for _, id := range ids {
+ 		if seen[id] {
+@@ -110,6 +114,10 @@ func MirrorOrder(order []string) error {
+ 	if len(order) == 0 {
+ 		return nil
+ 	}
++	if err := providersMu.Take(); err != nil {
++		return err
++	}
++	defer providersMu.Unlock()
+ 	f, err := read()
+ 	if err != nil {
+ 		return err
+diff --git a/internal/provider/providers_busy_test.go b/internal/provider/providers_busy_test.go
+new file mode 100644
+index 000000000..0981500eb
+--- /dev/null
++++ b/internal/provider/providers_busy_test.go
+@@ -0,0 +1,126 @@
++package provider
++
++import (
++	"bufio"
++	"bytes"
++	"errors"
++	"io"
++	"os"
++	"os/exec"
++	"runtime"
++	"testing"
++	"time"
++
++	"github.com/yetone/magpie/internal/filelock"
++)
++
++// TestProvidersLockHolder is the other magpie of the tests below: it takes
++// providers.json's lock as a magpie does, says so, and holds it until its
++// stdin is closed (or it is killed).
++func TestProvidersLockHolder(t *testing.T) {
++	path := os.Getenv("MAGPIE_PROVIDERS_HOLD")
++	if path == "" {
++		t.Skip("run by TestProvidersChangeRefusedWhileAnotherMagpieHolds")
++	}
++	s := filelock.Strict{Path: func() string { return path }}
++	if err := s.Take(); err != nil {
++		t.Fatal(err)
++	}
++	os.Stdout.WriteString("locked\n")
++	io.Copy(io.Discard, os.Stdin)
++}
++
++// holdProviders starts another magpie holding providers.json's lock, ended
++// when the test is.
++func holdProviders(t *testing.T) *exec.Cmd {
++	t.Helper()
++	holder := exec.Command(os.Args[0], "-test.run=^TestProvidersLockHolder$", "-test.count=1")
++	holder.Env = append(os.Environ(), "MAGPIE_PROVIDERS_HOLD="+Path()+".lock")
++	in, _ := holder.StdinPipe()
++	out, _ := holder.StdoutPipe()
++	if err := holder.Start(); err != nil {
++		t.Fatal(err)
++	}
++	t.Cleanup(func() { in.Close(); holder.Process.Kill(); holder.Wait() })
++	if line, _ := bufio.NewReader(out).ReadString('\n'); line != "locked\n" {
++		t.Fatalf("the other magpie: %q", line)
++	}
++	return holder
++}
++
++// shortWait makes each of providersMu's two tries wait d.
++func shortWait(t *testing.T, d time.Duration) {
++	t.Helper()
++	providersMu.SetWait(d)
++	t.Cleanup(func() { providersMu.SetWait(0) })
++}
++
++// While another magpie holds providers.json's lock, a change waits,
++// tries once more, and is then refused with BusyError, providers.json as
++// it was; it never goes on without the lock. Once that magpie is killed,
++// the next magpie to start clears what it left in the lock file, and the
++// change is made.
++func TestProvidersChangeRefusedWhileAnotherMagpieHolds(t *testing.T) {
++	providersLockHome(t)
++	if err := Save(Provider{ID: "relay", Name: "Relay", Chat: "https://relay.test/v1", Key: "sk-personal-1111"}); err != nil {
++		t.Fatal(err)
++	}
++	before, err := os.ReadFile(Path())
++	if err != nil {
++		t.Fatal(err)
++	}
++	shortWait(t, 300*time.Millisecond)
++	holder := holdProviders(t)
++
++	start := time.Now()
++	err = SetRPM("relay", 30)
++	var busy *filelock.BusyError
++	if !errors.As(err, &busy) {
++		t.Fatalf("a change while another magpie held providers.json answered %v", err)
++	}
++	if took := time.Since(start); took < 600*time.Millisecond {
++		t.Errorf("refused after %v: not after a try and one more", took)
++	}
++	// on Windows the holder's lock keeps its pid from being read
++	if busy.Pid != holder.Process.Pid && !(runtime.GOOS == "windows" && busy.Pid == 0) {
++		t.Errorf("said held by pid %d, not the other magpie's %d", busy.Pid, holder.Process.Pid)
++	}
++	if busy.File() != "providers.json" {
++		t.Errorf("said of %q", busy.File())
++	}
++	if after, _ := os.ReadFile(Path()); !bytes.Equal(after, before) {
++		t.Fatalf("providers.json was written while another magpie held it:\n%s", after)
++	}
++	// nothing held here after the refusal: another change in this magpie
++	// isn't kept waiting on it
++	if err := SetAccountCap("codex", "new@example.com", 70); !errors.As(err, &busy) {
++		t.Fatalf("a second change answered %v", err)
++	}
++
++	// the other magpie crashes, leaving its pid in the lock file
++	holder.Process.Kill()
++	holder.Wait()
++	if b, _ := os.ReadFile(Path() + ".lock"); len(bytes.TrimSpace(b)) == 0 {
++		t.Fatal("the other magpie left nothing to clear in the lock file")
++	}
++	// the system lets go of a killed process's lock at once on Unix, and
++	// soon after on Windows
++	for deadline := time.Now().Add(5 * time.Second); ClearLeftLock() == 0; {
++		if time.Now().After(deadline) {
++			t.Fatal("nothing cleared once the other magpie was killed")
++		}
++		time.Sleep(10 * time.Millisecond)
++	}
++	if b, _ := os.ReadFile(Path() + ".lock"); len(b) != 0 {
++		t.Errorf("the lock file still says %q once a magpie started", b)
++	}
++	if err := SetRPM("relay", 30); err != nil {
++		t.Fatalf("a change after the other magpie ended: %v", err)
++	}
++	if p, err := Find("relay"); err != nil || p.MaxRPM != 30 {
++		t.Fatalf("the change wasn't written: %+v %v", p.MaxRPM, err)
++	}
++	if b, _ := os.ReadFile(Path() + ".lock"); len(b) != 0 {
++		t.Errorf("the lock file says %q after this magpie let go", b)
++	}
++}
+diff --git a/internal/provider/providers_lock_test.go b/internal/provider/providers_lock_test.go
+new file mode 100644
+index 000000000..5b0758d60
+--- /dev/null
++++ b/internal/provider/providers_lock_test.go
+@@ -0,0 +1,123 @@
++package provider
++
++import (
++	"testing"
++	"time"
++)
++
++// interleave runs first, and as it is about to write providers.json, runs
++// second in another goroutine: second writes then if it can; with the lock
++// held by first it waits for first's write instead.
++func interleave(t *testing.T, first, second func()) {
++	t.Helper()
++	done := make(chan struct{})
++	started := false
++	// set and read under providersMu, as store is called under it
++	setWriteHook(func() {
++		beforeProvidersWrite = func() {}
++		started = true
++		go func() {
++			defer close(done)
++			second()
++		}()
++		select {
++		case <-done:
++			t.Error("the second change wrote while the first held providers.json")
++		case <-time.After(2 * time.Second):
++		}
++	})
++	t.Cleanup(func() { setWriteHook(func() {}) })
++	first()
++	if !started {
++		t.Fatal("the first change wrote nothing")
++	}
++	select {
++	case <-done:
++	case <-time.After(30 * time.Second):
++		t.Fatal("the second change never ended")
++	}
++}
++
++func setWriteHook(f func()) {
++	if err := providersMu.Take(); err != nil {
++		panic(err)
++	}
++	beforeProvidersWrite = f
++	providersMu.Unlock()
++}
++
++// providersLockHome is a home with two codex accounts, looked at just now,
++// so no change comes but the test's.
++func providersLockHome(t *testing.T) {
++	t.Helper()
++	home := signIn(t)
++	rememberLogins(true)
++	codexSignIn(t, home, "new@example.com", "r-new")
++	rememberLogins(true)
++}
++
++// Caps the user sets on two accounts of one subscription, one
++// while the other is being written, are both kept.
++func TestProvidersTwoCapsBothKept(t *testing.T) {
++	providersLockHome(t)
++	interleave(t, func() {
++		if err := SetAccountCap("codex", "me@example.com", 70); err != nil {
++			t.Error(err)
++		}
++	}, func() {
++		if err := SetAccountCap("codex", "new@example.com", 50); err != nil {
++			t.Error(err)
++		}
++	})
++	if s, _ := AccountCapsOf("codex", "me@example.com").Of("5 hours"); s != 70 {
++		t.Errorf("me@example.com's 70%% cap read as %d%%: written over", s)
++	}
++	if s, _ := AccountCapsOf("codex", "new@example.com").Of("5 hours"); s != 50 {
++		t.Errorf("new@example.com's 50%% cap read as %d%%: written over", s)
++	}
++}
++
++// A provider the user adds while a cap is written to another is
++// kept, and so is the cap.
++func TestProvidersAddKeptWhileCapWritten(t *testing.T) {
++	providersLockHome(t)
++	interleave(t, func() {
++		if err := SetAccountCap("codex", "me@example.com", 70); err != nil {
++			t.Error(err)
++		}
++	}, func() {
++		if err := Save(Provider{ID: "relay", Name: "Relay", Chat: "https://relay.example/v1", Key: "sk-relay", Models: []string{"m"}}); err != nil {
++			t.Error(err)
++		}
++	})
++	if !stored("relay") {
++		t.Error("the provider added meanwhile is gone from providers.json: written over")
++	}
++	if s, _ := AccountCapsOf("codex", "me@example.com").Of("5 hours"); s != 70 {
++		t.Errorf("me@example.com's 70%% cap read as %d%%: written over", s)
++	}
++}
++
++// Settings moved to an account's new name while another's cap is set:
++// both stay.
++func TestProvidersMoveKeepsACapSetMeanwhile(t *testing.T) {
++	providersLockHome(t)
++	if err := SetAccountCap("codex", "new@example.com", 60); err != nil {
++		t.Fatal(err)
++	}
++	interleave(t, func() {
++		if err := moveAccountSettings("codex", map[string]string{"new@example.com": "renamed@example.com"}); err != nil {
++			t.Error(err)
++		}
++	}, func() {
++		if err := SetAccountCap("codex", "me@example.com", 70); err != nil {
++			t.Error(err)
++		}
++	})
++	if s, _ := AccountCapsOf("codex", "me@example.com").Of("5 hours"); s != 70 {
++		t.Errorf("me@example.com's 70%% cap read as %d%%: written over", s)
++	}
++	if s, _ := AccountCapsOf("codex", "renamed@example.com").Of("5 hours"); s != 60 {
++		t.Errorf("new@example.com's 60%% cap didn't move to its new name: %d%%", s)
++	}
++}
+diff --git a/internal/provider/providers_setters_lock_test.go b/internal/provider/providers_setters_lock_test.go
+new file mode 100644
+index 000000000..3b2b15b24
+--- /dev/null
++++ b/internal/provider/providers_setters_lock_test.go
+@@ -0,0 +1,193 @@
++package provider
++
++import (
++	"os"
++	"strings"
++	"testing"
++)
++
++// A setter of one setting changes it on the record as it is when it
++// writes, so another setting set between its read of the provider and its
++// write stays.
++
++// Two settings of one account set at once: its name and its weight.
++func TestProvidersAccountNameAndWeightSetAtOnce(t *testing.T) {
++	providersLockHome(t)
++	interleave(t, func() {
++		if err := SetAccountName("codex", "new@example.com", "Work"); err != nil {
++			t.Error(err)
++		}
++	}, func() {
++		if err := SetAccountWeight("codex", "new@example.com", 3); err != nil {
++			t.Error(err)
++		}
++	})
++	s, _ := storedPicks("codex")
++	if s.AccountNames["new@example.com"] != "Work" {
++		t.Errorf("the name given was lost: %+v", s.AccountNames)
++	}
++	if s.AccountWeights["new@example.com"] != 3 {
++		t.Errorf("the weight set was lost: %+v", s.AccountWeights)
++	}
++}
++
++// A subscription's limit a minute set while its queue is, and while an
++// account's cap is set: all three stay.
++func TestProvidersRPMKeepsAQueueAndACapSetMeanwhile(t *testing.T) {
++	providersLockHome(t)
++	interleave(t, func() {
++		if err := SetRPM("codex", 30); err != nil {
++			t.Error(err)
++		}
++	}, func() {
++		if err := SetQueue("codex", 5, 60); err != nil {
++			t.Error(err)
++		}
++		if err := SetAccountCap("codex", "me@example.com", 70); err != nil {
++			t.Error(err)
++		}
++	})
++	s, _ := storedPicks("codex")
++	if s.MaxRPM != 30 {
++		t.Errorf("the limit a minute read as %d", s.MaxRPM)
++	}
++	if s.QueueLimit != 5 || s.QueueWait != 60 {
++		t.Errorf("the queue read as %d, %ds", s.QueueLimit, s.QueueWait)
++	}
++	if c, _ := AccountCapsOf("codex", "me@example.com").Of("5 hours"); c != 70 {
++		t.Errorf("the cap set meanwhile read as %d%%", c)
++	}
++}
++
++// A key's weight set while another key is added: the key added stays, and
++// the weight is on the key it was set on.
++func TestProvidersKeyWeightKeepsAKeyAddedMeanwhile(t *testing.T) {
++	providersLockHome(t)
++	if err := Save(Provider{ID: "relay", Name: "Relay", Chat: "https://relay.test/v1", Key: "sk-personal-1111"}); err != nil {
++		t.Fatal(err)
++	}
++	interleave(t, func() {
++		if err := SetKeyWeight("relay", keyID("sk-personal-1111"), 4); err != nil {
++			t.Error(err)
++		}
++	}, func() {
++		if err := AddKey("relay", "Team", "sk-team-2222", ""); err != nil {
++			t.Error(err)
++		}
++	})
++	p, err := Find("relay")
++	if err != nil {
++		t.Fatal(err)
++	}
++	if !p.HasKey("sk-team-2222") {
++		t.Errorf("the key added meanwhile was lost: %+v", p.KeyList())
++	}
++	if p.Key != "sk-personal-1111" || p.KeyWeight != 4 {
++		t.Errorf("the first key's weight read as %d on %q", p.KeyWeight, p.Key)
++	}
++}
++
++// A key's own limit at once set while the provider's routing is: both stay.
++func TestProvidersKeyLimitKeepsRoutingSetMeanwhile(t *testing.T) {
++	providersLockHome(t)
++	if err := Save(Provider{ID: "relay", Name: "Relay", Chat: "https://relay.test/v1", Key: "sk-personal-1111"}); err != nil {
++		t.Fatal(err)
++	}
++	two := 2
++	interleave(t, func() {
++		if err := SetAccountConcurrency("relay", keyID("sk-personal-1111"), &two); err != nil {
++			t.Error(err)
++		}
++	}, func() {
++		if err := SetRouting("relay", Rotate); err != nil {
++			t.Error(err)
++		}
++	})
++	p, err := Find("relay")
++	if err != nil {
++		t.Fatal(err)
++	}
++	if p.Routing != Rotate {
++		t.Errorf("the routing set meanwhile read as %q", p.Routing)
++	}
++	if n, ok := p.AccountConcurrencyOf(keyID("sk-personal-1111")); !ok || n != 2 {
++		t.Errorf("the key's limit read as %d (%v)", n, ok)
++	}
++}
++
++// A setter on a provider removed after it was found doesn't make it again.
++func TestProvidersSetterDoesNotBringARemovedProviderBack(t *testing.T) {
++	providersLockHome(t)
++	if err := Save(Provider{ID: "relay", Name: "Relay", Chat: "https://relay.test/v1", Key: "sk-personal-1111"}); err != nil {
++		t.Fatal(err)
++	}
++	interleave(t, func() {
++		if err := Delete("relay"); err != nil {
++			t.Error(err)
++		}
++	}, func() {
++		if err := SetRPM("relay", 30); err == nil || !strings.Contains(err.Error(), "removed meanwhile") {
++			t.Errorf("a limit set on a provider removed meanwhile answered %v", err)
++		}
++	})
++	if stored("relay") {
++		t.Error("the provider removed was saved again")
++	}
++}
++
++// A key added to Vertex AI is kept: the provider takes one API key of its
++// own (upstream's express mode), which the refusal this patch first carried
++// predates.
++func TestVertexAddKeyKept(t *testing.T) {
++	home := vertexHome(t)
++	newVertexGoogle(t)
++	writeFile(t, gcloudCredentials(home), vertexUser("1//0g-test-refresh"))
++	if err := Save(Provider{ID: "vertex-prod", Name: "Vertex prod", Preset: VertexPreset, Vertex: &Vertex{Project: "acme-vertex"}}); err != nil {
++		t.Fatal(err)
++	}
++	if err := AddKey("vertex-prod", "", "AIzaSyD-stray-1111", ""); err != nil {
++		t.Fatalf("AddKey answered %v", err)
++	}
++	b, err := os.ReadFile(Path())
++	if err != nil {
++		t.Fatal(err)
++	}
++	if !strings.Contains(string(b), "AIzaSyD-stray-1111") {
++		t.Errorf("the key was not written for Vertex AI: %s", b)
++	}
++}
++
++// A routing or affinity magpie doesn't know is refused, not written.
++func TestUnknownRoutingRefused(t *testing.T) {
++	providersLockHome(t)
++	if err := SetRouting("codex", "bogus"); err == nil {
++		t.Error("an unknown routing was taken")
++	}
++	if err := SetAffinity("codex", "nonsense"); err == nil {
++		t.Error("an unknown affinity was taken")
++	}
++	if err := SetRouting("codex", ""); err != nil {
++		t.Errorf("the default routing was refused: %v", err)
++	}
++	if s, _ := storedPicks("codex"); s.Routing != "" || s.Affinity != "" {
++		t.Errorf("stored routing %q, affinity %q", s.Routing, s.Affinity)
++	}
++}
++
++// A window taken off meanwhile wasn't there to take off: DropContext says so.
++func TestDropContextTakenOffMeanwhile(t *testing.T) {
++	providersLockHome(t)
++	if err := Save(Provider{ID: "relay", Name: "Relay", Chat: "https://relay.test/v1", Key: "sk-personal-1111", Models: []string{"m"}, Contexts: map[string]int{"m": 1000}}); err != nil {
++		t.Fatal(err)
++	}
++	p, err := Find("relay")
++	if err != nil {
++		t.Fatal(err)
++	}
++	if dropped, err := DropContext(*p, "m"); err != nil || !dropped {
++		t.Fatalf("dropped %v, %v", dropped, err)
++	}
++	if dropped, err := DropContext(*p, "m"); err != nil || dropped {
++		t.Errorf("a window taken off already read as dropped again: %v, %v", dropped, err)
++	}
++}
+diff --git a/internal/provider/proxy.go b/internal/provider/proxy.go
+index 7d1547f64..303aae1b7 100644
+--- a/internal/provider/proxy.go
++++ b/internal/provider/proxy.go
+@@ -181,6 +181,10 @@ func keepSignInProxy(id, user, proxy string) error {
+ 			alone = false
+ 		}
+ 	}
++	if err := providersMu.Take(); err != nil {
++		return err
++	}
++	defer providersMu.Unlock()
+ 	f, err := read()
+ 	if err != nil {
+ 		return err
+diff --git a/internal/provider/rename.go b/internal/provider/rename.go
+index 02c8cf5ed..6b44b6bbe 100644
+--- a/internal/provider/rename.go
++++ b/internal/provider/rename.go
+@@ -36,6 +36,41 @@ func Rename(from, to string) error {
+ 	if to == from {
+ 		return nil
+ 	}
++	// read before providersMu is taken
++	_, signedIn := find(Accounts(), from)
++	if err := renameRead(from, to, signedIn, subscriptionID(from), subscriptionID(to)); err != nil {
++		return err
++	}
++	// so are its StepFun and Qwen AI platform sign-ins, kept by provider id
++	if err := renameStepFun(from, to); err != nil {
++		return err
++	}
++	if err := renameQianwen(from, to); err != nil {
++		return err
++	}
++	s := settings.Load()
++	changed := renameModelPrefs(&s, from, to)
++	for a, names := range s.Visible {
++		for k, n := range names {
++			if strings.EqualFold(n, from) {
++				s.Visible[a][k], changed = to, true
++			}
++		}
++	}
++	if changed {
++		return settings.Save(s)
++	}
++	return nil
++}
++
++// renameRead is Rename's change to providers.json, under providersMu:
++// signedIn is whether from is an account signed in, sub and subTo whether
++// from and to are subscriptions' ids.
++func renameRead(from, to string, signedIn, sub, subTo bool) error {
++	if err := providersMu.Take(); err != nil {
++		return err
++	}
++	defer providersMu.Unlock()
+ 	f, err := read()
+ 	if err != nil {
+ 		return err
+@@ -45,8 +80,6 @@ func Rename(from, to string) error {
+ 	// (a "WorkBuddy" key before v0.1.261) can be moved off it; the
+ 	// subscription itself can't
+ 	custom := i >= 0 && hasEndpoint(f.Providers[i])
+-	_, signedIn := find(Accounts(), from)
+-	sub := subscriptionID(from)
+ 	if (signedIn || sub) && !custom {
+ 		return fmt.Errorf("%s is a subscription: its id is its agent's", from)
+ 	}
+@@ -57,7 +90,7 @@ func Rename(from, to string) error {
+ 		return errors.New(`"group" starts the ids of routing groups; pick another id`)
+ 	case to == autoID:
+ 		return errAutoID
+-	case subscriptionID(to):
++	case subTo:
+ 		return fmt.Errorf("%q is the id of the %s subscription; pick another", to, to)
+ 	}
+ 	if i < 0 {
+@@ -98,29 +131,7 @@ func Rename(from, to string) error {
+ 	// the vendor's list last fetched goes with it
+ 	os.Rename(catalog.LivePath(from), catalog.LivePath(to))
+ 	os.Rename(catalog.LivePath(decisionsID(from)), catalog.LivePath(decisionsID(to)))
+-	if err := store(f); err != nil {
+-		return err
+-	}
+-	// so are its StepFun and Qwen AI platform sign-ins, kept by provider id
+-	if err := renameStepFun(from, to); err != nil {
+-		return err
+-	}
+-	if err := renameQianwen(from, to); err != nil {
+-		return err
+-	}
+-	s := settings.Load()
+-	changed := renameModelPrefs(&s, from, to)
+-	for a, names := range s.Visible {
+-		for k, n := range names {
+-			if strings.EqualFold(n, from) {
+-				s.Visible[a][k], changed = to, true
+-			}
+-		}
+-	}
+-	if changed {
+-		return settings.Save(s)
+-	}
+-	return nil
++	return store(f)
+ }
+ 
+ // mapModelRefs gives every model ref the file keeps for routing — the
+@@ -608,6 +619,12 @@ func deletedAt(f *file, id string) (int, error) {
+ // added later under the deleted one's id is not merged.
+ func MergeDeleted(id, into string) error {
+ 	into = strings.ToLower(strings.TrimSpace(into))
++	// read before providersMu is taken
++	there := into == "" || slices.ContainsFunc(All(), func(p Provider) bool { return p.ID == into })
++	if err := providersMu.Take(); err != nil {
++		return err
++	}
++	defer providersMu.Unlock()
+ 	f, err := read()
+ 	if err != nil {
+ 		return err
+@@ -621,7 +638,7 @@ func MergeDeleted(id, into string) error {
+ 		d.Into, d.MergedAt = "", time.Time{}
+ 		return store(f)
+ 	}
+-	if !slices.ContainsFunc(All(), func(p Provider) bool { return p.ID == into }) {
++	if !there {
+ 		return fmt.Errorf("no provider %q to merge into", into)
+ 	}
+ 	d.Into, d.MergedAt = into, time.Now()
+@@ -631,6 +648,10 @@ func MergeDeleted(id, into string) error {
+ // NameDeleted names the deleted provider the Usage page lists under id
+ // as the user wants it shown there; "" shows it by its own name again.
+ func NameDeleted(id, name string) error {
++	if err := providersMu.Take(); err != nil {
++		return err
++	}
++	defer providersMu.Unlock()
+ 	f, err := read()
+ 	if err != nil {
+ 		return err
+diff --git a/internal/provider/routing.go b/internal/provider/routing.go
+index 728ab1288..105e2834c 100644
+--- a/internal/provider/routing.go
++++ b/internal/provider/routing.go
+@@ -82,15 +82,30 @@ var pluginRouting = lazyre.New(`^[A-Za-z0-9._-]+/[A-Za-z0-9][A-Za-z0-9._-]*$`)
+ // its listed order.
+ func PluginRouting(routing string) bool { return pluginRouting.MatchString(routing) }
+ 
++// KnownRouting says whether routing is one providers.json keeps: magpie's
++// own, a plugin's, or none ("", the default).
++func KnownRouting(routing string) bool {
++	switch routing {
++	case Ordered, Rotate, LeastUsed, Pace, Weighted, FreeFirst, Fastest, Drain:
++		return true
++	}
++	return PluginRouting(routing)
++}
++
+ // SetRouting changes how a provider's requests spread over its keys or
+ // accounts.
+ func SetRouting(id, routing string) error {
++	if routing != "" && !KnownRouting(routing) {
++		return fmt.Errorf("unknown routing %q", routing)
++	}
+ 	p, err := Find(id)
+ 	if err != nil {
+ 		return err
+ 	}
+-	p.Routing = routing
+-	return Save(*p)
++	return editFound(p, func(q *Provider) error {
++		q.Routing = routing
++		return nil
++	})
+ }
+ 
+ // SetSink sends a provider's keys or accounts rate limited with quota
+@@ -101,8 +116,10 @@ func SetSink(id string, sink bool) error {
+ 	if err != nil {
+ 		return err
+ 	}
+-	p.Sink = sink
+-	return Save(*p)
++	return editFound(p, func(q *Provider) error {
++		q.Sink = sink
++		return nil
++	})
+ }
+ 
+ // SetUseFirst puts a provider's keys or accounts ahead of the other
+@@ -136,8 +153,10 @@ func SetCapStop(id string, on bool) error {
+ 	if err != nil {
+ 		return err
+ 	}
+-	p.CapStop = on
+-	return Save(*p)
++	return editFound(p, func(q *Provider) error {
++		q.CapStop = on
++		return nil
++	})
+ }
+ 
+ // SetCapCareful has a subscription's capped accounts read again near
+@@ -148,8 +167,10 @@ func SetCapCareful(id string, on bool) error {
+ 	if err != nil {
+ 		return err
+ 	}
+-	p.CapCareful = on
+-	return Save(*p)
++	return editFound(p, func(q *Provider) error {
++		q.CapCareful = on
++		return nil
++	})
+ }
+ 
+ // SetCountFree has every model of a provider count as free for the
+@@ -160,8 +181,10 @@ func SetCountFree(id string, on bool) error {
+ 	if err != nil {
+ 		return err
+ 	}
+-	p.CountFree = on
+-	return Save(*p)
++	return editFound(p, func(q *Provider) error {
++		q.CountFree = on
++		return nil
++	})
+ }
+ 
+ // SetKeepLogin keeps Codex or Claude Code signed in to the account the
+@@ -180,8 +203,10 @@ func SetKeepLogin(id string, keep bool) error {
+ 		return errSwitchOnly(*p)
+ 	}
+ 	chosen := p.keepsLogin() && p.KeepLoginAs != ""
+-	p.KeepLogin, p.KeepLoginAs = keep, ""
+-	if err := Save(*p); err != nil {
++	if err := editFound(p, func(q *Provider) error {
++		q.KeepLogin, q.KeepLoginAs = keep, ""
++		return nil
++	}); err != nil {
+ 		return err
+ 	}
+ 	if chosen {
+@@ -202,8 +227,10 @@ func SetSwitchOnly(id string, on bool) error {
+ 	if p.Account == nil || p.Account.Agent != p.ID || p.ID != "codex" && p.ID != "claude" {
+ 		return fmt.Errorf("magpie doesn't route %s's own requests for account failover", p.Name)
+ 	}
+-	p.SwitchOnly = on
+-	return Save(*p)
++	return editFound(p, func(q *Provider) error {
++		q.SwitchOnly = on
++		return nil
++	})
+ }
+ 
+ // SetRestartApp has magpie restart the Codex app's app-server when it
+@@ -217,8 +244,10 @@ func SetRestartApp(id string, on bool) error {
+ 	if p.ID != "codex" || p.Account == nil || p.Account.Agent != p.ID {
+ 		return fmt.Errorf("magpie restarts no app of %s's", p.Name)
+ 	}
+-	p.RestartApp = on
+-	return Save(*p)
++	return editFound(p, func(q *Provider) error {
++		q.RestartApp = on
++		return nil
++	})
+ }
+ 
+ // codexRestartsApp is whether the user had magpie restart the Codex app's
+@@ -259,12 +288,17 @@ func SwitchOnly(agent string) bool {
+ // SetAffinity changes how long a provider's conversations stay with the key
+ // or account that answered them.
+ func SetAffinity(id, affinity string) error {
++	if !slices.Contains(Affinities, affinity) {
++		return fmt.Errorf("unknown affinity %q", affinity)
++	}
+ 	p, err := Find(id)
+ 	if err != nil {
+ 		return err
+ 	}
+-	p.Affinity = affinity
+-	return Save(*p)
++	return editFound(p, func(q *Provider) error {
++		q.Affinity = affinity
++		return nil
++	})
+ }
+ 
+ var usedCache struct {
+diff --git a/internal/provider/search_api.go b/internal/provider/search_api.go
+index 71b0faded..7994777d6 100644
+--- a/internal/provider/search_api.go
++++ b/internal/provider/search_api.go
+@@ -363,6 +363,10 @@ func SetSearchAPI(a SearchAPI) error {
+ 	a.Vendor = strings.ToLower(strings.TrimSpace(a.Vendor))
+ 	a.Key, a.URL = strings.Join(a.Keys(), ","), strings.TrimSpace(a.URL)
+ 	pick := strings.ToLower(strings.TrimSpace(a.Pick))
++	if err := providersMu.Take(); err != nil {
++		return err
++	}
++	defer providersMu.Unlock()
+ 	f, err := read()
+ 	if err != nil {
+ 		return err
+@@ -401,6 +405,10 @@ func SetSearchAPI(a SearchAPI) error {
+ 
+ // RemoveSearchAPI takes the vendor's search API away.
+ func RemoveSearchAPI(vendor string) error {
++	if err := providersMu.Take(); err != nil {
++		return err
++	}
++	defer providersMu.Unlock()
+ 	f, err := read()
+ 	if err != nil {
+ 		return err
+@@ -416,6 +424,10 @@ func RemoveSearchAPI(vendor string) error {
+ // SwitchSearchAPI switches the vendor's search API on or off (#2286),
+ // keeping its key, address and place.
+ func SwitchSearchAPI(vendor string, on bool) error {
++	if err := providersMu.Take(); err != nil {
++		return err
++	}
++	defer providersMu.Unlock()
+ 	f, err := read()
+ 	if err != nil {
+ 		return err
+@@ -461,6 +473,10 @@ func MixSearchAPIs(vendors []string) error {
+ // after them; a name of none set up is refused, so an order sent from a
+ // page drawn before one was removed changes nothing.
+ func ArrangeSearchAPIs(order []string) error {
++	if err := providersMu.Take(); err != nil {
++		return err
++	}
++	defer providersMu.Unlock()
+ 	f, err := read()
+ 	if err != nil {
+ 		return err
+@@ -493,6 +509,10 @@ func RestoreSearchAPIs(as []SearchAPI) error {
+ 	if len(as) == 0 {
+ 		return nil
+ 	}
++	if err := providersMu.Take(); err != nil {
++		return err
++	}
++	defer providersMu.Unlock()
+ 	f, err := read()
+ 	if err != nil {
+ 		return err
+@@ -519,6 +539,10 @@ func RestoreSearchAPIs(as []SearchAPI) error {
+ // MirrorSearchAPIs makes the search APIs exactly these, as sync brings
+ // them; one that came without a key keeps the key it has here.
+ func MirrorSearchAPIs(as []SearchAPI) error {
++	if err := providersMu.Take(); err != nil {
++		return err
++	}
++	defer providersMu.Unlock()
+ 	f, err := read()
+ 	if err != nil {
+ 		return err
+diff --git a/internal/provider/zhipu_coding.go b/internal/provider/zhipu_coding.go
+index 2368d88a3..ade71ea23 100644
+--- a/internal/provider/zhipu_coding.go
++++ b/internal/provider/zhipu_coding.go
+@@ -158,6 +158,10 @@ func LearnZhipuCoding(p Provider, from string) {
+ 	}
+ 	learnMu.Lock()
+ 	defer learnMu.Unlock()
++	if err := providersMu.Take(); err != nil {
++		return
++	}
++	defer providersMu.Unlock()
+ 	f, err := read()
+ 	if err != nil {
+ 		return
+diff --git a/internal/tui/pages.go b/internal/tui/pages.go
+index 0ceff331c..c712ab6bd 100644
+--- a/internal/tui/pages.go
++++ b/internal/tui/pages.go
+@@ -8,6 +8,7 @@ package tui
+ import (
+ 	"cmp"
+ 	"context"
++	"errors"
+ 	"fmt"
+ 	"math"
+ 	"net/url"
+@@ -259,21 +260,25 @@ func reseatCmd(change func() error, done string) tea.Cmd {
+ 	}
+ }
+ 
+-// saveProvider changes one provider and saves it.
++// saveProvider changes one provider and saves what it changed, on
++// providers.json as it is then, so a change made meanwhile (the GUI,
++// another magpie) stays; one refused because another magpie holds
++// providers.json says so.
+ func saveProvider(id string, change func(*provider.Provider), done string) tea.Cmd {
+ 	return func() tea.Msg {
+-		p, err := provider.Find(id)
+-		if err != nil {
+-			return flashMsg{text: err.Error()}
+-		}
+-		change(p)
+-		if err := provider.Save(*p); err != nil {
++		if _, _, err := editProvider(id, func(p *provider.Provider) error {
++			change(p)
++			return nil
++		}); err != nil {
+ 			return flashMsg{text: err.Error()}
+ 		}
+ 		return flashMsg{text: done, ok: true}
+ 	}
+ }
+ 
++// editProvider is provider.Edit; a test puts a change meanwhile in.
++var editProvider = provider.Edit
++
+ // refetchCmd asks the provider's vendor for its model list again and says
+ // how many it has and how many agents are offered, or why there is none:
+ // the app editor's Fetch models, which the TUI had no way to do (akic404 on
+@@ -402,28 +407,27 @@ func (m *model) openProviderModels(id string) {
+ 		// (#2113), as m does on the providers list
+ 		refetch: func() tea.Cmd { return refetchCmd(id) },
+ 		toggle: func(model string) ([]agent.Option, string, bool) {
+-			p, err := provider.Find(id)
+-			if err != nil {
+-				return nil, err.Error(), false
+-			}
+-			ids := p.Picks()
+-			if len(ids) == 0 {
+-				for _, x := range p.Exposed() {
+-					ids = append(ids, x.ID)
+-				}
+-			}
++			// worked out on the picks read, and only the picks written
+ 			verb := "on"
+-			if i := slices.Index(ids, model); i >= 0 {
+-				if len(ids) == 1 {
+-					return nil, tr("one model has to stay on"), false
++			if _, _, err := editProvider(id, func(p *provider.Provider) error {
++				ids := p.Picks()
++				if len(ids) == 0 {
++					for _, x := range p.Exposed() {
++						ids = append(ids, x.ID)
++					}
+ 				}
+-				ids = slices.Delete(slices.Clone(ids), i, i+1)
+-				verb = "off"
+-			} else {
+-				ids = append(slices.Clone(ids), model)
+-			}
+-			p.Models = ids
+-			if err := provider.Save(*p); err != nil {
++				if i := slices.Index(ids, model); i >= 0 {
++					if len(ids) == 1 {
++						return errors.New(tr("one model has to stay on"))
++					}
++					ids = slices.Delete(slices.Clone(ids), i, i+1)
++					verb = "off"
++				} else {
++					ids = append(slices.Clone(ids), model)
++				}
++				p.Models = ids
++				return nil
++			}); err != nil {
+ 				return nil, err.Error(), false
+ 			}
+ 			items := modelOptions(id)
+diff --git a/internal/tui/provider_edit_test.go b/internal/tui/provider_edit_test.go
+new file mode 100644
+index 000000000..95ba3b72b
+--- /dev/null
++++ b/internal/tui/provider_edit_test.go
+@@ -0,0 +1,56 @@
++package tui
++
++import (
++	"slices"
++	"testing"
++
++	"github.com/yetone/magpie/internal/provider"
++)
++
++// A key on the providers page writes only what it changes, so a
++// setting set meanwhile (the GUI, another magpie) stays.
++func TestTUIProviderKeysKeepWhatWasSetMeanwhile(t *testing.T) {
++	home(t)
++	if err := provider.Save(provider.Provider{ID: "relay", Name: "Relay", Key: "sk-r", Models: []string{"m", "n"}, Chat: "https://relay.example.com/v1"}); err != nil {
++		t.Fatal(err)
++	}
++	n := 0
++	t.Cleanup(func() { editProvider = provider.Edit })
++	editProvider = func(id string, change func(p *provider.Provider) error) (provider.Provider, provider.Provider, error) {
++		return provider.Edit(id, func(p *provider.Provider) error {
++			n++
++			if err := provider.SetRPM(id, 10+n); err != nil {
++				t.Fatal(err)
++			}
++			return change(p)
++		})
++	}
++	m := press(t, model{w: 140, h: 40}, "2")
++	m.reloadProviders()
++	i := slices.IndexFunc(m.provs, func(p provider.Provider) bool { return p.ID == "relay" })
++	if i < 0 {
++		t.Fatal("no provider relay")
++	}
++	m.prow = i
++	m = press(t, m, "u")
++	wantFlash(t, m, true, "serves only through routing groups")
++	p, err := provider.Find("relay")
++	if err != nil {
++		t.Fatal(err)
++	}
++	if !p.Unlisted {
++		t.Fatal("u wasn't written")
++	}
++	if p.MaxRPM != 11 {
++		t.Fatalf("u wrote over the limit a minute set meanwhile: %d", p.MaxRPM)
++	}
++
++	// a model turned off in the picker, as the queue is set meanwhile
++	m.openProviderModels("relay")
++	if _, text, ok := m.pk.toggle("n"); !ok {
++		t.Fatalf("toggle: %s", text)
++	}
++	if p, _ = provider.Find("relay"); !slices.Equal(p.Models, []string{"m"}) || p.MaxRPM != 12 {
++		t.Fatalf("after the toggle: models %v, limit a minute %d", p.Models, p.MaxRPM)
++	}
++}
+-- 
+2.50.1 (Apple Git-155)
+

@@ -1,0 +1,25 @@
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py factory baseline
+INPUT: CONFIG: fixed factory source allowlist
+OUTPUT: BASELINE PASS groups=7 files=359 bytes=168022181 protected=1
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py factory archive
+INPUT: f61090177d590b4b0ea3f06bbc71d4850da843639c7314084f2f0ff838f06689
+OUTPUT: ARCHIVE PASS zip_files=7 files=359 bytes=168022181
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py factory apply
+INPUT: ba9968aacb7e41c62c1f225bb3268b65d32e7ac48565eb9eafde1f3c62c4062d
+OUTPUT: APPLY PASS removed_files=359 removed_bytes=168022181
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py factory verify
+INPUT: 7cd69553670e23b1fda79a6dc6ddd1b584833afbc0339b5ca951f98ea0aeadce
+OUTPUT: MODIFIED PASS files=359 bytes=168022181 originals_absent=true protected_unchanged=true
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py factory rollback-test
+INPUT: 7cd69553670e23b1fda79a6dc6ddd1b584833afbc0339b5ca951f98ea0aeadce
+OUTPUT: ROLLBACK PASS restored_files=359 restored_bytes=168022181 hashes_match=true originals_untouched=true
+EXIT: 0
+

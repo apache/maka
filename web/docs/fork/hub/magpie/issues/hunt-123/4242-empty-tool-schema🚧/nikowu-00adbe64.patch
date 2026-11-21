@@ -1,0 +1,332 @@
+From 00adbe64a65c2729d69c9baa44ed9682d3bf742a Mon Sep 17 00:00:00 2001
+From: Niko Wu <wwh930329@163.com>
+Date: Thu, 29 Oct 2026 18:01:49 +0800
+Subject: [PATCH] gateway: a tool whose parameters have no root at all gets an
+ object root, for an upstream that checks them strictly (#4242)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Claude Code sends a tool named DeferredToolPlaceholder with
+"input_schema": {} while tool search is on, and any client or MCP server
+publishing "input_schema": {} — the shortcut for a tool with no parameters —
+does the same. magpie relayed that empty root as it came, and an upstream
+that validates tool definitions refuses the whole request over it: wb2api
+answers 400 code 11129 invalid_function_parameters to "parameters": {} and
+200 to {"type":"object"}, measured on one tool (Reign9201).
+
+- objectSchema fills an empty root in, beside the union fold it already does.
+- emptyObjectRoot is the narrow form the Chat and Responses encoders use:
+  objectSchema also folds a union at the root, and using it there changed
+  what the first ask to a relay looks like (TestRootUnionFoldedWhereRefused).
+- emptyRootsBody repairs a raw passthrough body for all three protocols,
+  beside foldsRoots and gated on the "{}" the body must contain.
+
+Tests: object_root_test.go's TestEmptyToolSchemaGetsObjectRoot,
+TestEmptyToolSchemaBodyGetsObjectRoot and TestEmptyToolSchemaTranslatedToChat
+(Anthropic /v1/messages with input_schema {} to a Chat upstream, which must
+be asked once with parameters {"type":"object"}).
+
+Ran: gofmt -l internal/gateway (clean), go vet ./internal/gateway/,
+go test ./internal/gateway/ -timeout 45m — 428s, green but for four that are
+red on upstream/main 4534561f on this machine (macOS 27, Go 1.27.3):
+TestCodexFittedImagesPastTheBudget, TestMarshalRawIsEncodingJSON,
+TestServeWSLListensBesideLoopback and FuzzMarshalRaw/seed#7.
+
+Co-Authored-By: Claude Code <noreply@anthropic.com>
+---
+ internal/gateway/anthropic.go        |   9 ++
+ internal/gateway/chat.go             |   2 +-
+ internal/gateway/gateway.go          |   3 +
+ internal/gateway/object_root.go      |  65 +++++++++++++
+ internal/gateway/object_root_test.go | 137 ++++++++++++++++++++++++++-
+ internal/gateway/responses.go        |   2 +-
+ 6 files changed, 215 insertions(+), 3 deletions(-)
+
+diff --git a/internal/gateway/anthropic.go b/internal/gateway/anthropic.go
+index 12e8e358b..926579789 100644
+--- a/internal/gateway/anthropic.go
++++ b/internal/gateway/anthropic.go
+@@ -1836,6 +1836,15 @@ func newID() string {
+ // to every request offering it (#646). A schema that has none is sent as
+ // it came.
+ func objectSchema(schema json.RawMessage) json.RawMessage {
++	if len(schema) == 0 {
++		return schema
++	}
++	// an empty root ({}) is no object root to a strict upstream, though
++	// a tool's arguments are always an object: given the type it lacks
++	// (#4242, Claude Code's DeferredToolPlaceholder)
++	if bytes.Equal(bytes.TrimSpace(schema), []byte(`{}`)) {
++		return json.RawMessage(`{"type":"object"}`)
++	}
+ 	if !bytes.Contains(schema, []byte(`Of"`)) {
+ 		return schema
+ 	}
+diff --git a/internal/gateway/chat.go b/internal/gateway/chat.go
+index 0fca9b3ef..140b9c161 100644
+--- a/internal/gateway/chat.go
++++ b/internal/gateway/chat.go
+@@ -563,7 +563,7 @@ func buildChat(r *Request, model, host string, rejectTemp bool) []byte {
+ 		for _, t := range r.Tools {
+ 			fn := map[string]any{"name": t.Name, "description": t.Description}
+ 			if len(t.Schema) > 0 {
+-				fn["parameters"] = t.Schema
++				fn["parameters"] = emptyObjectRoot(t.Schema)
+ 			}
+ 			tools = append(tools, map[string]any{"type": "function", "function": fn})
+ 		}
+diff --git a/internal/gateway/gateway.go b/internal/gateway/gateway.go
+index 6797ce8ff..fbf9120d5 100644
+--- a/internal/gateway/gateway.go
++++ b/internal/gateway/gateway.go
+@@ -4788,6 +4788,9 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
+ 	if dropImage && !s.fits(p.ID, imageToolRefused, proto) {
+ 		body, _ = withoutImageTool(body)
+ 	}
++	// a tool's parameters with no root at all, to any upstream that
++	// validates tools strictly (object_root.go, #4242)
++	body, _ = emptyRootsBody(proto, body)
+ 	// a tool with a union at its parameters' root, to an upstream that
+ 	// takes none (object_root.go, #1271)
+ 	if s.foldsRoots(p, model, proto) {
+diff --git a/internal/gateway/object_root.go b/internal/gateway/object_root.go
+index c886ef5ae..3c4ce05fb 100644
+--- a/internal/gateway/object_root.go
++++ b/internal/gateway/object_root.go
+@@ -36,6 +36,71 @@ func (s *Server) foldsRoots(p provider.Provider, model string, proto provider.Pr
+ 	return p.Host() == "api.x.ai" || !s.fits(p.ID, rootUnionRefused(model), proto)
+ }
+ 
++// emptyObjectRoot gives a tool's empty parameters root ({}) the object
++// type a strict upstream requires, and leaves any other schema as sent
++// (#4242: Claude Code's DeferredToolPlaceholder, refused by wb2api with
++// "Invalid tool definition"). Folding a union root stays with
++// objectSchema, which only an upstream that refuses one is asked for.
++func emptyObjectRoot(schema json.RawMessage) json.RawMessage {
++	if len(schema) > 0 && bytes.Equal(bytes.TrimSpace(schema), []byte(`{}`)) {
++		return json.RawMessage(`{"type":"object"}`)
++	}
++	return schema
++}
++
++// emptyRootsBody is a Chat or Responses body whose function tools' empty
++// parameters ({}) are given the object root a strict upstream requires
++// (#4242: Claude Code's DeferredToolPlaceholder, refused by wb2api with
++// "Invalid tool definition"), and whether any was changed.
++func emptyRootsBody(proto provider.Protocol, body []byte) ([]byte, bool) {
++	if (proto != provider.Chat && proto != provider.Responses) || !bytes.Contains(body, []byte(`{}`)) {
++		return body, false
++	}
++	dec := json.NewDecoder(bytes.NewReader(body))
++	dec.UseNumber()
++	var m map[string]any
++	if dec.Decode(&m) != nil || m == nil {
++		return body, false
++	}
++	tools, _ := m["tools"].([]any)
++	if !fillEmptyRoots(proto, tools) {
++		return body, false
++	}
++	out, err := marshalPlain(m)
++	if err != nil {
++		return body, false
++	}
++	return out, true
++}
++
++// fillEmptyRoots gives an empty parameters object the object root among
++// tools, a namespace's included, and reports whether it changed any.
++func fillEmptyRoots(proto provider.Protocol, tools []any) bool {
++	changed := false
++	for _, t := range tools {
++		tm, _ := t.(map[string]any)
++		if tm == nil {
++			continue
++		}
++		if proto == provider.Responses && tm["type"] == "namespace" {
++			nested, _ := tm["tools"].([]any)
++			if fillEmptyRoots(proto, nested) {
++				changed = true
++			}
++			continue
++		}
++		fn := tm
++		if proto == provider.Chat {
++			fn, _ = tm["function"].(map[string]any)
++		}
++		if ps, _ := fn["parameters"].(map[string]any); ps != nil && len(ps) == 0 {
++			ps["type"] = "object"
++			changed = true
++		}
++	}
++	return changed
++}
++
+ // objectRootsBody is a Chat or Responses body whose function tools'
+ // parameters have an object root, and whether any was changed.
+ func objectRootsBody(proto provider.Protocol, body []byte) ([]byte, bool) {
+diff --git a/internal/gateway/object_root_test.go b/internal/gateway/object_root_test.go
+index 274ef714f..af4a7b97d 100644
+--- a/internal/gateway/object_root_test.go
++++ b/internal/gateway/object_root_test.go
+@@ -13,7 +13,142 @@ import (
+ 	"github.com/yetone/magpie/internal/provider"
+ )
+ 
+-// The refusals of a union at a tool's root, as each vendor words them.
++// An empty parameters root ({}) is no object root to an upstream that
++// validates tool definitions strictly: wb2api refuses Claude Code's
++// DeferredToolPlaceholder with "Invalid tool definition" (#4242). A tool's
++// arguments are always an object, so the root is given the type it lacks
++// on every surface, and a schema that has one is left as sent.
++func TestEmptyToolSchemaGetsObjectRoot(t *testing.T) {
++	empty := json.RawMessage(`{}`)
++	r := &Request{Tools: []Tool{{Name: "DeferredToolPlaceholder", Description: "d", Schema: empty}}}
++
++	var chat struct {
++		Tools []struct {
++			Function struct {
++				Parameters map[string]any `json:"parameters"`
++			} `json:"function"`
++		} `json:"tools"`
++	}
++	if err := json.Unmarshal(buildChat(r, "m", "h", false), &chat); err != nil || len(chat.Tools) != 1 {
++		t.Fatalf("chat: %v %+v", err, chat)
++	}
++	if ps := chat.Tools[0].Function.Parameters; ps["type"] != "object" || len(ps) != 1 {
++		t.Fatalf("chat parameters = %v, want {\"type\":\"object\"}", ps)
++	}
++
++	var an struct {
++		Tools []struct {
++			InputSchema map[string]any `json:"input_schema"`
++		} `json:"tools"`
++	}
++	if err := json.Unmarshal(buildAnthropic(r, "m"), &an); err != nil || len(an.Tools) != 1 {
++		t.Fatalf("anthropic: %v %+v", err, an)
++	}
++	if ps := an.Tools[0].InputSchema; ps["type"] != "object" || len(ps) != 1 {
++		t.Fatalf("input_schema = %v, want {\"type\":\"object\"}", ps)
++	}
++
++	if ps, _ := responsesTool(r.Tools[0])["parameters"].(json.RawMessage); string(ps) != `{"type":"object"}` {
++		t.Fatalf("responses parameters = %s, want {\"type\":\"object\"}", ps)
++	}
++
++	// A root that already names its type is not touched.
++	plain := `{"type":"object","properties":{"x":{"type":"string"}}}`
++	if got := objectSchema(json.RawMessage(plain)); string(got) != plain {
++		t.Fatalf("a well-formed root was changed: %s", got)
++	}
++}
++
++// The same repair on a body relayed as sent, on Chat and Responses.
++func TestEmptyToolSchemaBodyGetsObjectRoot(t *testing.T) {
++	for proto, body := range map[provider.Protocol]string{
++		provider.Chat:      `{"model":"m","messages":[],"tools":[{"type":"function","function":{"name":"P","parameters":{}}}]}`,
++		provider.Responses: `{"model":"m","input":[],"tools":[{"type":"function","name":"P","parameters":{}}]}`,
++	} {
++		out, changed := emptyRootsBody(proto, []byte(body))
++		if !changed {
++			t.Fatalf("%v: empty root not changed: %s", proto, out)
++		}
++		var m map[string]any
++		json.Unmarshal(out, &m)
++		tools, _ := m["tools"].([]any)
++		tm, _ := tools[0].(map[string]any)
++		fn := tm
++		if proto == provider.Chat {
++			fn, _ = tm["function"].(map[string]any)
++		}
++		ps, _ := fn["parameters"].(map[string]any)
++		if ps["type"] != "object" {
++			t.Fatalf("%v: parameters = %v, want an object root", proto, ps)
++		}
++	}
++	// A body with no empty root is returned as sent.
++	same := `{"model":"m","messages":[],"tools":[{"type":"function","function":{"name":"P","parameters":{"type":"object"}}}]}`
++	if out, changed := emptyRootsBody(provider.Chat, []byte(same)); changed || string(out) != same {
++		t.Fatalf("a body with an object root was changed: %s", out)
++	}
++}
++
++// The reporter's case (#4242): Claude Code offers a placeholder tool with
++// input_schema {}, and the model resolves to a Chat upstream that validates
++// tools strictly (wb2api, 400 code 11129). The translated request carries
++// an object root on the first ask, so the upstream never refuses it.
++func TestEmptyToolSchemaTranslatedToChat(t *testing.T) {
++	fresh(t)
++	var mu sync.Mutex
++	var got []map[string]any
++	strict := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		b, _ := io.ReadAll(r.Body)
++		var q map[string]any
++		json.Unmarshal(b, &q)
++		mu.Lock()
++		got = append(got, q)
++		mu.Unlock()
++		tools, _ := q["tools"].([]any)
++		for _, t := range tools {
++			tm, _ := t.(map[string]any)
++			if fn, ok := tm["function"].(map[string]any); ok {
++				tm = fn
++			}
++			ps, _ := tm["parameters"].(map[string]any)
++			if ps == nil || ps["type"] != "object" {
++				w.Header().Set("Content-Type", "application/json")
++				w.WriteHeader(400)
++				io.WriteString(w, `{"code":11129,"msg":"invalid function call parameters"}`)
++				return
++			}
++		}
++		answer(w, r)
++	}))
++	t.Cleanup(strict.Close)
++	p := provider.Provider{ID: "wb", Name: "WB", Key: "k", Models: []string{"m"}, Chat: strict.URL + "/v1"}
++	if err := provider.Save(p); err != nil {
++		t.Fatal(err)
++	}
++	s := New()
++	body := `{"model":"wb/m","max_tokens":16,"messages":[{"role":"user","content":"hi"}],` +
++		`"tools":[{"name":"P","description":"d","input_schema":{}}]}`
++	rec := httptest.NewRecorder()
++	s.Handler().ServeHTTP(rec, httptest.NewRequest("POST", "/v1/messages", strings.NewReader(body)))
++	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "ok") {
++		t.Fatalf("messages: %d %s", rec.Code, rec.Body)
++	}
++	if len(got) != 1 {
++		t.Fatalf("upstream was asked %d times, want 1", len(got))
++	}
++	t.Logf("upstream body: %v", got[0])
++	tools, _ := got[0]["tools"].([]any)
++	if len(tools) != 1 {
++		t.Fatalf("upstream got tools %v, want one", got[0]["tools"])
++	}
++	tm, _ := tools[0].(map[string]any)
++	fn, _ := tm["function"].(map[string]any)
++	ps, _ := fn["parameters"].(map[string]any)
++	if ps["type"] != "object" || len(ps) != 1 {
++		t.Fatalf("upstream got parameters %v, want {\"type\":\"object\"}", ps)
++	}
++}
++
+ var rootUnionRefusals = map[string]string{
+ 	// Grok behind a relay (AiHubMix's grok-4.7, 2026-10-08, its bytes)
+ 	"xAI": `{"error":{"message":"Failed to start sampling: [invalid_client_tool_schema] mcp__codex_app__automation_update: tool parameter root must be an object type (root schema is an anyOf/oneOf union with a non-object branch) (tid: 2026100808425178410684649237042)","type":"upstream_error","param":"400","code":"bad_response_status_code"}}`,
+diff --git a/internal/gateway/responses.go b/internal/gateway/responses.go
+index b056cd80e..a83cc9d01 100644
+--- a/internal/gateway/responses.go
++++ b/internal/gateway/responses.go
+@@ -1373,7 +1373,7 @@ func buildResponses(r *Request, model, host string, rejectTemp bool) []byte {
+ func responsesTool(t Tool) map[string]any {
+ 	tool := map[string]any{"type": "function", "name": t.Name, "description": t.Description, "strict": t.Strict}
+ 	if len(t.Schema) > 0 {
+-		tool["parameters"] = t.Schema
++		tool["parameters"] = emptyObjectRoot(t.Schema)
+ 	}
+ 	return tool
+ }
+-- 
+2.50.1 (Apple Git-155)
+

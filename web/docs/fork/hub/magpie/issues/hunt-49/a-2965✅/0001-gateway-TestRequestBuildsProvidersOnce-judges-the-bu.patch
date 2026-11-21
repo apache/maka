@@ -1,0 +1,138 @@
+From d71367984e0fad098e84c355f6904f4d2b9cd4e0 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Tue, 20 Oct 2026 05:37:09 +0800
+Subject: [PATCH] gateway: TestRequestBuildsProvidersOnce judges the build's
+ ask, not the request's start (#2965)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Cause: the test judged the second request by when it began, letting it
+want 0 rebuilds only within 900ms of the first, while what was built is
+held for a second. On a loaded machine a request can begin at, say,
+850ms and reach the build after the hold has let the built providers
+go, so it builds again — want 0, got 1 — and the test went red once in
+a package run at load ~280–400. Alone it passes.
+
+Fix: allProviders notes when the build it counts was asked for
+(AllBuiltAt, beside AllBuilt), and the test judges a rebuild within the
+second by that, not by the request's start: a build asked a second or
+more after the first is the hold letting go, rightly; a build asked
+within it is the hold failing, and stays red. The 900ms guess at how
+far behind the request's start its build can fall is gone — nothing
+rests on how fast the machine gets from the request to the build. The
+rebuild the loaded machine asked for is the only one let past, and only
+when it is exactly one: two builds in a request is the #2502 bug, still
+red.
+
+Red first, by construction (the flake doesn't reproduce on an idle
+machine, 8/8 green alone before the fix): with a 1.2s lag put between
+the second request's start and its build (in holdCatalog, an experiment
+not committed), the old test failed "request 2 built the providers 1
+times, want 0"; the new test passed the same lag; the old test failed
+it again with the new hook in place (ablation: the test is what
+guards).
+
+Run (macOS arm64, go1.26.8, load ~4–7):
+- go test -tags nogui -count=8 -run 'TestRequestBuildsProvidersOnce$'
+  ./internal/gateway/: ok.
+- go test -tags nogui -race -count=4 -run
+  'TestRequestBuildsProvidersOnce$' ./internal/gateway/: ok.
+- go test -tags nogui -count=1 ./internal/gateway/: ok (446s).
+- go test -tags nogui -count=1 ./internal/provider/: ok (78s).
+- gofmt -l internal/gateway/ internal/provider/: clean.
+- go vet -tags nogui ./internal/gateway/ ./internal/provider/ for
+  darwin, linux, windows: ok.
+- CGO_ENABLED=0 go build -tags nogui, darwin/linux/windows arm64: ok.
+
+Fixes #2965
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gateway/request_builds_once_test.go | 31 ++++++++++++--------
+ internal/provider/provider.go                |  7 +++++
+ 2 files changed, 26 insertions(+), 12 deletions(-)
+
+diff --git a/internal/gateway/request_builds_once_test.go b/internal/gateway/request_builds_once_test.go
+index 63ed12f7..caab9c63 100644
+--- a/internal/gateway/request_builds_once_test.go
++++ b/internal/gateway/request_builds_once_test.go
+@@ -14,29 +14,36 @@ import (
+ // 100–350% CPU under seven agents at once (#2502). The next request,
+ // within a second and nothing written, builds none: one request after
+ // another built the providers again each time. After a write it builds
+-// once more.
++// once more. What a request within that second is judged by is when its
++// build was asked, not when the request began: on a loaded machine a
++// request can begin within the second what was built is held for and
++// reach the build after the hold has let it go, and that build is right
++// (#2965).
+ func TestRequestBuildsProvidersOnce(t *testing.T) {
+ 	plugin.UseCached(nil)
+ 	setup(t, provider.Chat, &fake{t: t, reply: sse(`{"choices":[{"delta":{"content":"hi"}}]}`, "[DONE]")})
+-	var first time.Time
++	var asked time.Time // when the first build was asked for
+ 	for i, want := range []int64{1, 0, 1} {
+ 		if i == 2 {
+ 			provider.Changed() // a provider saved
+ 		}
+-		n, start := provider.AllBuilt.Load(), time.Now()
+-		if i == 1 && start.Sub(first) > 900*time.Millisecond {
+-			// what was built is held for a second: a request this late
+-			// (a loaded machine) builds again, rightly
+-			want = 1
+-		}
+-		if i == 0 {
+-			first = start
+-		}
++		n := provider.AllBuilt.Load()
+ 		code, body := post(t, "/v1/chat/completions", `{"model":"fake/m1","stream":true,"messages":[{"role":"user","content":"hi"}]}`)
+ 		if code != 200 {
+ 			t.Fatalf("%d %s", code, body)
+ 		}
+-		if got := provider.AllBuilt.Load() - n; got != want {
++		got := provider.AllBuilt.Load() - n
++		at := time.Unix(0, provider.AllBuiltAt.Load())
++		if i == 0 {
++			asked = at
++		}
++		if i == 1 && got == 1 && at.Sub(asked) >= time.Second {
++			// the request began within the second the built providers are
++			// held for, but its build was asked after the hold: built
++			// again, rightly (a loaded machine)
++			want = 1
++		}
++		if got != want {
+ 			t.Fatalf("request %d built the providers %d times, want %d", i+1, got, want)
+ 		}
+ 	}
+diff --git a/internal/provider/provider.go b/internal/provider/provider.go
+index dc4241bf..5945bb03 100644
+--- a/internal/provider/provider.go
++++ b/internal/provider/provider.go
+@@ -23,6 +23,7 @@ import (
+ 	"strings"
+ 	"sync"
+ 	"sync/atomic"
++	"time"
+ 
+ 	"github.com/yetone/magpie/internal/appdir"
+ 	"github.com/yetone/magpie/internal/catalog"
+@@ -636,8 +637,14 @@ func (p Provider) clone() Provider {
+ // AllBuilt counts the times All built the list anew, for tests.
+ var AllBuilt atomic.Int64
+ 
++// AllBuiltAt is when the build All last counted was asked for (allProviders
++// entered, the hold's rule read at once after), for a test to judge a build
++// by when it was asked, not by when the request that asked began (#2965).
++var AllBuiltAt atomic.Int64
++
+ func allProviders() []Provider {
+ 	AllBuilt.Add(1)
++	AllBuiltAt.Store(time.Now().UnixNano())
+ 	f := load()
+ 	stored := f.Providers
+ 	picks := map[string]Provider{}
+-- 
+2.50.1 (Apple Git-155)
+

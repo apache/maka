@@ -1,0 +1,283 @@
+From 601530b1f665269cc7ffd54fcad66772b9d785fd Mon Sep 17 00:00:00 2001
+From: CaC033 <34328295+CaC033@users.noreply.github.com>
+Date: Tue, 3 Nov 2026 22:49:25 +0800
+Subject: [PATCH] claudetui: acknowledge image pastes from the rendered screen
+
+Claude Code can redraw just the changed digit of an image chip. Read the
+existing terminal grid from the last input prompt instead of searching
+ANSI-stripped output. Keep the current timeout and exit behavior, and
+reject earlier prompts and unchanged markers. Document the confirmation
+rule and cover split redraws, UTF-8, erasure, and failed-send behavior.
+
+Validated on Windows/amd64, Go 1.26.8, based on 50265256ba. Tests use a
+temporary HOME/USERPROFILE and app-data/XDG folders with pinned Go caches
+and no real service credentials. gofmt and git diff --check are clean.
+The new image tests pass. Restoring only the old pasteImage loop fails
+TestPasteImageAcceptsIncrementalRedraw with "did not take an image pasted
+as its path: 8", and incorrectly accepts history/no-prompt markers.
+
+Windows go vet ./... and go build pass; Linux go vet -tags nogui ./...
+and go build -tags nogui pass. The full claudetui package fails on
+TestShimFirstMessageWaitsForTools (0 lines in 30s), matching open #4810.
+The package's -race run fails on that same test with no data race reported.
+The image tests and TestShimPastesImages pass together with -race.
+
+Full go test -tags nogui -timeout 45m ./... was attempted but the execution
+session ended without a complete result; it is not a pass. The real CLI
+22-image/mock-API acceptance was not run: no Docker or configured WSL is
+available. Keep the PR Draft pending full acceptance; downstream results
+are not evidence that this head passed those checks.
+---
+ docs/subsystems/claude-subscription-bridge.md |  11 +-
+ internal/claudetui/image_redraw_test.go       | 164 ++++++++++++++++++
+ internal/claudetui/tui.go                     |  30 +++-
+ 3 files changed, 200 insertions(+), 5 deletions(-)
+ create mode 100644 internal/claudetui/image_redraw_test.go
+
+diff --git a/docs/subsystems/claude-subscription-bridge.md b/docs/subsystems/claude-subscription-bridge.md
+index 8bbe71a0f0..c54a319af1 100644
+--- a/docs/subsystems/claude-subscription-bridge.md
++++ b/docs/subsystems/claude-subscription-bridge.md
+@@ -184,7 +184,15 @@ talks to it as it talks to `-p`: stream-json in and out. The helper:
+   other words stays words). Claude Code reads the file after the paste
+   returns, so the helper waits for `[Image #N]` with N past the last
+   before pasting the next piece; without that wait the second of two
+-  images was lost. The transcript holds real image blocks, and Claude Code
++  images was lost. `imageAfter` reads the rendered terminal grid from
++  the last input prompt (`❯`), including its continuation rows, so a
++  chip redrawn only at its changed digit is still recognized. Earlier
++  prompts and unchanged markers don't confirm a paste. `clearScreen`
++  clears the raw diagnostic output but keeps the grid's cells for those
++  partial redraws. A missing newer marker still fails the send after
++  `pasteWait`; the helper never skips an unconfirmed image. The marker's
++  number can share a sequence with pasted text and isn't an image count.
++  The transcript holds real image blocks, and Claude Code
+   notes each one's path to the model (`[Image: source: …]`). The folder
+   is removed once its message is sent (Claude Code has read the files
+   by then), and when the helper ends, on SIGINT, SIGTERM and SIGHUP too:
+@@ -1448,6 +1456,7 @@ go test -tags nogui ./internal/gateway/ -run '^TestClaudeClientCache' -count=1
+ go test -tags nogui ./internal/gateway/ -run '^TestClaudeLeanPrompt' -count=1
+ go test -tags nogui ./internal/gateway/ -run '^TestClaudeTUIChosen$' -count=1
+ go test ./internal/claudetui/ -count=1
++go test -tags nogui ./internal/claudetui/ -run 'TestPasteImage|TestImageRedraw|TestImageAfter' -count=1
+ go test -tags nogui ./internal/claudecode/ -count=1
+ go test -tags nogui ./internal/claudecode/ -run TestKeepCurrent -count=1
+ go test -tags nogui ./internal/gateway/ -run '^TestClaudeCodeGivenTheBridgeForASOCKSProxy$' -count=1
+diff --git a/internal/claudetui/image_redraw_test.go b/internal/claudetui/image_redraw_test.go
+new file mode 100644
+index 0000000000..68cfe7b3b2
+--- /dev/null
++++ b/internal/claudetui/image_redraw_test.go
+@@ -0,0 +1,164 @@
++package claudetui
++
++import (
++	"io"
++	"slices"
++	"strings"
++	"testing"
++	"testing/synctest"
++)
++
++// imageTerminal feeds each chunk through shim.read as a separate PTY
++// read. A paste can redraw just one cell, with no complete marker in the
++// raw output left after clearScreen.
++type imageTerminal struct {
++	chunks  []string
++	writes  []string
++	onWrite func()
++}
++
++func (p *imageTerminal) Read(b []byte) (int, error) {
++	if len(p.chunks) == 0 {
++		return 0, io.EOF
++	}
++	n := copy(b, p.chunks[0])
++	p.chunks[0] = p.chunks[0][n:]
++	if p.chunks[0] == "" {
++		p.chunks = p.chunks[1:]
++	}
++	return n, nil
++}
++
++func (p *imageTerminal) Write(b []byte) (int, error) {
++	p.writes = append(p.writes, string(b))
++	if p.onWrite != nil {
++		p.onWrite()
++	}
++	return len(b), nil
++}
++
++func imageShim(initial string, redraw ...string) (*shim, *imageTerminal) {
++	p := &imageTerminal{chunks: []string{initial}}
++	s := &shim{pty: p, changed: make(chan struct{}, 1), exited: make(chan struct{})}
++	s.read()
++	p.onWrite = func() {
++		p.chunks = slices.Clone(redraw)
++		s.read()
++	}
++	return s, p
++}
++
++func TestPasteImageAcceptsIncrementalRedraw(t *testing.T) {
++	for name, redraw := range map[string][]string{
++		"one read":   {"\x1b[1;12H8"},
++		"split ANSI": {"\x1b", "[1;", "12", "H", "8"},
++	} {
++		t.Run(name, func(t *testing.T) {
++			synctest.Test(t, func(t *testing.T) {
++				s, p := imageShim("❯ [Image #17]", redraw...)
++				n, err := s.pasteImage("image-18.png", 17)
++				if err != nil || n != 18 {
++					t.Fatalf("incrementally drawn image was not acknowledged: number=%d err=%v", n, err)
++				}
++				if want := []string{"\x1b[200~image-18.png\x1b[201~"}; !slices.Equal(p.writes, want) {
++					t.Fatalf("image path was not pasted exactly once: %q", p.writes)
++				}
++				if strings.Contains(s.plain(), "[Image #18]") {
++					t.Fatal("fixture unexpectedly contains a complete marker in the raw output")
++				}
++			})
++		})
++	}
++}
++
++func TestPasteImageRejectsOldScreenMarkers(t *testing.T) {
++	for name, screen := range map[string]string{
++		"history":   "❯ [Image #18]\r\nanswer\r\n❯ ",
++		"no prompt": "[Image #18]",
++		"unchanged": "❯ [Image #17]",
++		"older":     "❯ [Image #16]",
++	} {
++		t.Run(name, func(t *testing.T) {
++			synctest.Test(t, func(t *testing.T) {
++				s, p := imageShim(screen, "\x1b[2J\x1b[H"+screen)
++				n, err := s.pasteImage("image-18.png", 17)
++				if n != 0 || err == nil || !strings.Contains(err.Error(), "did not take an image") {
++					t.Fatalf("stale marker acknowledged: number=%d err=%v", n, err)
++				}
++				if want := []string{"\x1b[200~image-18.png\x1b[201~"}; !slices.Equal(p.writes, want) {
++					t.Fatalf("failed paste was retried or submitted: %q", p.writes)
++				}
++			})
++		})
++	}
++}
++
++func TestImageRedrawGridKeepsSplitUTF8AndErases(t *testing.T) {
++	s, p := imageShim("❯ [Image #17]")
++	s.clearScreen()
++	// Erase the old chip, split the Chinese character across reads, and
++	// draw the new chip after its two terminal cells.
++	p.chunks = []string{"\x1b[1;3H\x1b[K\xe4", "\xb8", "\xad [Image #18]"}
++	s.read()
++	if n := s.imageAfter(17); n != 18 {
++		t.Fatalf("split UTF-8 lost the image: number=%d", n)
++	}
++	now, _ := s.looks()
++	if !strings.HasPrefix(now, "❯ 中 [Image #18]\n") {
++		t.Fatalf("wide character misdrawn: %q", now)
++	}
++	// Column 6 follows the prompt, space, wide character and space.
++	p.chunks = []string{"\x1b[1;6H\x1b[K"}
++	s.read()
++	if n := s.imageAfter(0); n != 0 {
++		t.Fatalf("erased image still acknowledged: number=%d", n)
++	}
++	p.chunks = []string{"\x1b[2J"}
++	s.read()
++	if now, _ := s.looks(); strings.TrimSpace(now) != "" {
++		t.Fatalf("screen not erased: %q", now)
++	}
++}
++
++func TestPasteImageFailureStopsSend(t *testing.T) {
++	for _, exited := range []bool{false, true} {
++		synctest.Test(t, func(t *testing.T) {
++			s, p := imageShim("❯ ")
++			wantError := "did not take an image"
++			if exited {
++				close(s.exited)
++				wantError = "Claude Code ended"
++			}
++			err := s.send([]piece{{image: "image-1.png"}, {text: "answer this"}})
++			if err == nil || !strings.Contains(err.Error(), wantError) {
++				t.Fatalf("unconfirmed image did not fail the send: %v", err)
++			}
++			if want := []string{"\x1b[200~image-1.png\x1b[201~"}; !slices.Equal(p.writes, want) {
++				t.Fatalf("send continued after an unconfirmed image: %q", p.writes)
++			}
++		})
++	}
++}
++
++func TestImageAfterCurrentPrompt(t *testing.T) {
++	for _, tc := range []struct {
++		name, screen string
++		after, want  int
++	}{
++		{"wrapped input", "❯ words\r\n  [Image #18]", 17, 18},
++		{"shared paste numbering", "  ❯ [Pasted text #18] [Image #19]", 17, 19},
++		{"last prompt", "❯ [Image #99]\r\n❯ [Image #18]", 17, 18},
++		{"unchanged before new", "❯ [Image #17] [Image #18]", 17, 18},
++		{"overflow", "❯ [Image #999999999999999999999999999999]", 17, 0},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			s, _ := imageShim(tc.screen)
++			if n := s.imageAfter(tc.after); n != tc.want {
++				t.Fatalf("imageAfter(%d) = %d, want %d", tc.after, n, tc.want)
++			}
++		})
++	}
++	if n := (&shim{}).imageAfter(0); n != 0 {
++		t.Fatalf("unread screen acknowledged an image: %d", n)
++	}
++}
+diff --git a/internal/claudetui/tui.go b/internal/claudetui/tui.go
+index d964034371..bcab4fd126 100644
+--- a/internal/claudetui/tui.go
++++ b/internal/claudetui/tui.go
+@@ -1043,6 +1043,30 @@ func (s *shim) send(pieces []piece) error {
+ 
+ var imageShown = regexp.MustCompile(`\[Image #(\d+)\]`)
+ 
++// imageAfter reads the current input prompt from the rendered screen:
++// Claude Code can draw only the changed digit of an existing image chip.
++// Earlier prompts and unchanged chips don't acknowledge a new paste.
++func (s *shim) imageAfter(after int) int {
++	s.screenMu.Lock()
++	defer s.screenMu.Unlock()
++	if s.grid == nil {
++		return 0
++	}
++	lines := strings.Split(s.grid.text(), "\n")
++	for i := len(lines) - 1; i >= 0; i-- {
++		if !strings.HasPrefix(strings.TrimSpace(lines[i]), "❯") {
++			continue
++		}
++		for _, m := range imageShown.FindAllStringSubmatch(strings.Join(lines[i:], "\n"), -1) {
++			if n, err := strconv.Atoi(m[1]); err == nil && n > after {
++				return n
++			}
++		}
++		break
++	}
++	return 0
++}
++
+ // path is where Claude Code reads a file of the helper's at path: one in
+ // WSL under the distro's mount of the drive.
+ func (s *shim) path(path string) string {
+@@ -1062,10 +1086,8 @@ func (s *shim) pasteImage(path string, after int) (int, error) {
+ 	}
+ 	by := time.After(pasteWait)
+ 	for {
+-		for _, m := range imageShown.FindAllStringSubmatch(s.plain(), -1) {
+-			if n, _ := strconv.Atoi(m[1]); n > after {
+-				return n, nil
+-			}
++		if n := s.imageAfter(after); n > 0 {
++			return n, nil
+ 		}
+ 		select {
+ 		case <-s.changed:

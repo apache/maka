@@ -1,0 +1,25 @@
+{
+  "id": "51",
+  "slug": "edit-distance",
+  "title": "编辑距离",
+  "difficulty": "hard",
+  "tags": ["字符串", "动态规划"],
+  "description": "给你两个单词 `word1` 和 `word2`,请返回将 `word1` 转换成 `word2` 所使用的最少操作数。\n\n你可以对一个单词进行三种操作:插入一个字符、删除一个字符、替换一个字符。\n\n**示例 1:**\n\n- 输入:`word1 = \"horse\"`, `word2 = \"ros\"`\n- 输出:`3`(horse → rorse → rose → ros)\n\n**示例 2:**\n\n- 输入:`word1 = \"intention\"`, `word2 = \"execution\"`\n- 输出:`5`",
+  "solution": "## 思路\n\n**二维动态规划**:`dp[i][j]` 表示 `word1[0..i)` 变成 `word2[0..j)` 的最少操作数。字符相等则 `dp[i][j]=dp[i-1][j-1]`;否则 `dp[i][j] = 1 + min(删 dp[i-1][j], 增 dp[i][j-1], 改 dp[i-1][j-1])`。\n\n## 参考代码\n\n```js\nfunction minDistance(word1, word2) {\n  const m = word1.length;\n  const n = word2.length;\n  const dp = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));\n  for (let i = 0; i <= m; i++) dp[i][0] = i;\n  for (let j = 0; j <= n; j++) dp[0][j] = j;\n  for (let i = 1; i <= m; i++) {\n    for (let j = 1; j <= n; j++) {\n      if (word1[i - 1] === word2[j - 1]) dp[i][j] = dp[i - 1][j - 1];\n      else dp[i][j] = 1 + Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1]);\n    }\n  }\n  return dp[m][n];\n}\n```\n\n## 复杂度\n\n- 时间:O(m*n)\n- 空间:O(m*n)",
+  "signature": {
+    "language": "javascript",
+    "entry": "minDistance",
+    "params": [
+      { "name": "word1", "type": "string" },
+      { "name": "word2", "type": "string" }
+    ],
+    "returns": "number"
+  },
+  "testCases": [
+    { "sample": true, "input": ["horse", "ros"], "expected": 3 },
+    { "sample": true, "input": ["intention", "execution"], "expected": 5 },
+    { "sample": false, "input": ["", ""], "expected": 0 },
+    { "sample": false, "input": ["a", ""], "expected": 1 },
+    { "sample": false, "input": ["abc", "abc"], "expected": 0 }
+  ]
+}

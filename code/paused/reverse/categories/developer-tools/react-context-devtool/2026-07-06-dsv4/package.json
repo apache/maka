@@ -1,0 +1,14 @@
+{
+  "name": "react-context-devtool-dsv4",
+  "version": "4.4.0",
+  "description": "React Context DevTool — Chrome extension reverse engineering (dsv4)",
+  "license": "UNLICENSED",
+  "scripts": {
+    "build": "tsc",
+    "check": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.0.268",
+    "typescript": "5.5"
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "id": "1",
+  "slug": "two-sum",
+  "title": "两数之和",
+  "difficulty": "easy",
+  "tags": ["数组", "哈希表"],
+  "description": "给定一个整数数组 `nums` 和一个整数 `target`,返回数组中和为 `target` 的两个**不同**元素的下标。\n\n你可以假设每个输入恰好有一个解,且同一元素不能使用两次。答案可以按任意顺序返回。\n\n**示例 1:**\n\n- 输入:`nums = [2,7,11,15]`, `target = 9`\n- 输出:`[0,1]`\n- 解释:`nums[0] + nums[1] == 9`,返回 `[0, 1]`\n\n**示例 2:**\n\n- 输入:`nums = [3,2,4]`, `target = 6`\n- 输出:`[1,2]`\n\n**进阶:** 你能想出一个时间复杂度小于 O(n²) 的算法吗?",
+  "solution": "## 思路\n\n暴力法是双重循环 O(n²)。用**哈希表**可以一次遍历完成 O(n):\n\n遍历数组,用哈希表记录「值 → 下标」。对当前元素 `nums[i]`,计算 `need = target - nums[i]`,若 `need` 已在表中,则找到答案;否则把 `nums[i] → i` 存入表中。\n\n## 参考代码\n\n```js\nfunction twoSum(nums, target) {\n  const map = new Map();\n  for (let i = 0; i < nums.length; i++) {\n    const need = target - nums[i];\n    if (map.has(need)) return [map.get(need), i];\n    map.set(nums[i], i);\n  }\n  return [];\n}\n```\n\n## 复杂度\n\n- 时间:O(n)\n- 空间:O(n)",
+  "signature": {
+    "language": "javascript",
+    "entry": "twoSum",
+    "params": [
+      { "name": "nums", "type": "number[]" },
+      { "name": "target", "type": "number" }
+    ],
+    "returns": "number[]"
+  },
+  "testCases": [
+    { "sample": true, "input": [[2, 7, 11, 15], 9], "expected": [0, 1], "explanation": "nums[0]+nums[1]=2+7=9" },
+    { "sample": true, "input": [[3, 2, 4], 6], "expected": [1, 2], "explanation": "nums[1]+nums[2]=2+4=6" },
+    { "sample": false, "input": [[3, 3], 6], "expected": [0, 1], "explanation": "同一值出现两次,需用两个不同下标" },
+    { "sample": false, "input": [[1, 5, 8, 12, 13, 21], 20], "expected": [2, 3] }
+  ]
+}

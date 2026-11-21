@@ -1,0 +1,1 @@
+Verified on upstream/main b14784c03fd9e410f34e6aa8ff1ae357dfe6078b: TestNativeCompactionCompactJudgesItsWriter and TestNativeCompactionCompactKeepsTheKeysAccounts pass in an isolated HOME. The legacy compact now goes to the writer on in magpie, signed as that account, and a writer that is gone is refused here with the reason its state gives.

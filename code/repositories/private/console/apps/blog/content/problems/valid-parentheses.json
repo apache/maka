@@ -1,0 +1,24 @@
+{
+  "id": "4",
+  "slug": "valid-parentheses",
+  "title": "有效的括号",
+  "difficulty": "easy",
+  "tags": ["栈", "字符串"],
+  "description": "给定一个只包括 `(`、`)`、`{`、`}`、`[`、`]` 的字符串 `s`,判断字符串是否有效。\n\n有效字符串需满足:\n\n1. 左括号必须用相同类型的右括号闭合。\n2. 左括号必须以正确的顺序闭合。\n3. 每个右括号都有一个对应的相同类型的左括号。\n\n**示例 1:**\n\n- 输入:`s = \"()\"`\n- 输出:`true`\n\n**示例 2:**\n\n- 输入:`s = \"()[]{}\"`\n- 输出:`true`\n\n**示例 3:**\n\n- 输入:`s = \"(]\"`\n- 输出:`false`",
+  "solution": "## 思路\n\n用**栈**扫描字符串:\n\n- 遇到左括号,把对应的右括号入栈;\n- 遇到右括号,检查栈顶是否等于它(不等于则不匹配);\n- 扫描结束后,栈必须为空(所有括号都已闭合)。\n\n## 参考代码\n\n```js\nfunction isValid(s) {\n  const map = { '(': ')', '[': ']', '{': '}' };\n  const stack = [];\n  for (const ch of s) {\n    if (map[ch]) stack.push(map[ch]);\n    else if (stack.pop() !== ch) return false;\n  }\n  return stack.length === 0;\n}\n```\n\n## 复杂度\n\n- 时间:O(n)\n- 空间:O(n)",
+  "signature": {
+    "language": "javascript",
+    "entry": "isValid",
+    "params": [{ "name": "s", "type": "string" }],
+    "returns": "boolean"
+  },
+  "testCases": [
+    { "sample": true, "input": ["()"], "expected": true },
+    { "sample": true, "input": ["()[]{}"], "expected": true },
+    { "sample": true, "input": ["(]"], "expected": false },
+    { "sample": false, "input": ["([)]"], "expected": false },
+    { "sample": false, "input": ["{[]}"], "expected": true },
+    { "sample": false, "input": [""], "expected": true },
+    { "sample": false, "input": ["("], "expected": false }
+  ]
+}

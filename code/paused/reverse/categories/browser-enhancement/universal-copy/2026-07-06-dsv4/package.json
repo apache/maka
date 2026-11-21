@@ -1,0 +1,36 @@
+{
+  "name": "universal-copy-reverse",
+  "version": "1.0.28",
+  "private": true,
+  "description": "Chrome 扩展 网页万能复制 (Universal Copy - Enable Copy) v1.0.28 逆向还原项目",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "lint": "echo 'No lint configured'",
+    "build": "echo 'This is a reverse-engineering project. Build is not applicable.'"
+  },
+  "dependencies": {
+    "clipboard": "^2.0.11",
+    "jquery": "^3.6.0",
+    "bootstrap": "^3.4.1",
+    "vue": "^2.7.14"
+  },
+  "devDependencies": {
+    "typescript": "^5.3.0",
+    "@types/chrome": "^0.0.254",
+    "@types/jquery": "^3.5.29",
+    "@types/clipboard": "^2.0.7"
+  },
+  "keywords": [
+    "chrome-extension",
+    "reverse-engineering",
+    "manifest-v3",
+    "copy-enable",
+    "universal-copy"
+  ],
+  "author": "Reverse Engineering Project",
+  "license": "UNLICENSED",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/guahub/scripts-reverse-engineer"
+  }
+}

@@ -1,0 +1,37 @@
+gateway: the compaction writer whose list lacks the model is found through routing groups too, and the routing page no longer tells it both tried and skipped (#2642)
+
+What changed: both points of yetone's review of 0ab41eba.
+
+The writer left out as its own list no longer lists the model was kept
+only by plan's add. A conversation asked through a routing group is
+planned by planLevel's keys, which kept its left rows alone, so the
+request was refused 400 all the same; and a group in the group planned
+by weight passed its sub-plan's left and capped up, not these. keys
+records the unlisted beside their rows as add does, and the sub-plan
+passes sub.unlisted and sub.unlistedW up with the rest.
+
+And the writer chosen from the unlisted joined the order with its
+Unlisted row still in left, so the Routing page told it both tried and
+unlisted, skipped: its rows leave left with it.
+
+The tests say the spare, whose list has the model, is never asked, and
+that the writer, tried, is not in the routing page's left.
+
+Run at the head this sits on (parent 0ab41eba, itself on ebf3f48f):
+- go test -tags nogui -count=1 -p 2 -run 'TestNativeCompaction' ./internal/gateway/: ok.
+- go test -tags nogui -count=1 -p 2 -run 'TestCodex|TestCompact|TestCheckpoint' ./internal/gateway/: ok, 19.0s.
+- go test -tags nogui -count=1 -p 2 -timeout 45m ./internal/gateway/: ok, 296.5s.
+- go vet -tags nogui ./internal/gateway/: clean; gofmt -l internal/gateway/: clean; go build -tags nogui .: ok.
+
+Red and ablation, tests kept, the change lifted:
+- fallback.go back to 0ab41eba: the routed-through-group case red again, refused 400 "switched off, removed, or no longer serves", tried none; restored, green.
+- native_compaction.go back to 0ab41eba: both cases red saying the writer, tried, is still left out (Unlisted in Left); restored, green.
+- the group case was red at 0ab41eba itself before either: 400, tried "".
+
+Not tried: a real ChatGPT account whose plan dropped a model
+mid-conversation; the Routing page read through the trace's Left, not
+against the GUI itself.
+
+Fixes #2642
+
+Generated-by: GLM-5.3-Flash (ZCode)

@@ -1,0 +1,221 @@
+diff --git a/internal/gateway/codex_quota_recheck.go b/internal/gateway/codex_quota_recheck.go
+new file mode 100644
+index 0000000..824c815
+--- /dev/null
++++ b/internal/gateway/codex_quota_recheck.go
+@@ -0,0 +1,18 @@
++package gateway
++
++import (
++	"net/http"
++	"time"
++)
++
++// quotaRecheck bounds only a Codex client's next look at routing, without
++// changing the account/key cooldowns chosen from the original headers. A
++// long Retry-After otherwise leaves Codex asleep after a fresh allowance
++// reading has already brought an account back (#2526). It neither renews
++// an allowance nor changes Codex's retry budget or a terminal error.
++// Call only for a quota refusal, never for a rate limit or credit failure.
++func quotaRecheck(h http.Header) {
++	if h.Get("Retry-After") != "" && retryAfter(h, time.Now()) > time.Minute {
++		h.Set("Retry-After", "60")
++	}
++}
+diff --git a/internal/gateway/codex_quota_recheck_test.go b/internal/gateway/codex_quota_recheck_test.go
+new file mode 100644
+index 0000000..f53cf97
+--- /dev/null
++++ b/internal/gateway/codex_quota_recheck_test.go
+@@ -0,0 +1,156 @@
++package gateway
++
++import (
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"testing"
++	"time"
++
++	"github.com/yetone/magpie/internal/provider"
++)
++
++func quotaRecheckPost(s *Server, path, model string) *httptest.ResponseRecorder {
++	rec := httptest.NewRecorder()
++	req := httptest.NewRequest("POST", path, strings.NewReader(`{"model":"`+model+`","stream":true,"input":"ping"}`))
++	req.Header.Set("User-Agent", "codex_cli_rs/0.162.1")
++	req.Header.Set("Authorization", "Bearer chatgpt-token")
++	req.Header.Set("chatgpt-account-id", "acct-1")
++	s.Handler().ServeHTTP(rec, req)
++	return rec
++}
++
++// The client rechecks routing after a minute, while existing real rests
++// and subscription probing are preserved. Credits/overage can restore an
++// account with windows still full, without a window-renewal notification.
++func TestCodexQuotaRecheckAccountsRecover(t *testing.T) {
++	codexSignedIn(t, "spare@example.com")
++	b := newResetBackend(t, "acct-1", "acct-2")
++	capUsage(t, map[string]float64{"me@example.com": 100, "spare@example.com": 100})
++	srv := New()
++	post := func() *httptest.ResponseRecorder {
++		return quotaRecheckPost(srv, CodexPath+"/responses", "gpt-5.5")
++	}
++	rec := post()
++	if rec.Code != 429 || rec.Header().Get("Retry-After") != "60" {
++		t.Fatalf("first: %d Retry-After %q: %s", rec.Code, rec.Header().Get("Retry-After"), rec.Body)
++	}
++	tried, spent := b.seen()
++	if tried != "acct-1,acct-2" || spent != "" {
++		t.Fatalf("first tried %q spent %q", tried, spent)
++	}
++	c := candidate{p: provider.Provider{ID: "codex", Account: &provider.Account{Agent: "codex", User: "me@example.com"}}, rest: "codex#me@example.com"}
++	original, ok := restingOf(c)
++	if !ok || original.Why != failQuota || time.Until(original.Until) < 2*time.Hour-time.Minute {
++		t.Fatalf("first account lost real cooldown: %+v %v", original, ok)
++	}
++	for range 2 {
++		rec = post()
++		got, spent := b.seen()
++		attempts := len(strings.Split(got, ",")) - len(strings.Split(tried, ","))
++		if rec.Code != 429 || rec.Header().Get("Retry-After") != "60" || attempts < 1 || attempts > 2 || spent != "" {
++			t.Fatalf("recheck: %d Retry-After %q tried %q spent %q", rec.Code, rec.Header().Get("Retry-After"), got, spent)
++		}
++		tried = got
++	}
++	// The windows remain at 100%; simulate credits/overage restoring the
++	// backend's ability to answer, without calling renewed or lifting rest.
++	b.mu.Lock()
++	b.out["acct-1"], b.out["acct-2"] = false, false
++	b.mu.Unlock()
++	rec = post()
++	if got, spent := b.seen(); rec.Code != 200 || !strings.Contains(rec.Body.String(), "pong") || (got != tried+",acct-1" && got != tried+",acct-2") || spent != "" {
++		t.Fatalf("recovered: %d %s tried %q spent %q", rec.Code, rec.Body, got, spent)
++	}
++	rests := 0
++	for _, user := range []string{"me@example.com", "spare@example.com"} {
++		c := candidate{p: provider.Provider{ID: "codex", Account: &provider.Account{Agent: "codex", User: user}}, rest: "codex#" + user}
++		if rest, ok := restingOf(c); ok && rest.Why == failQuota && time.Until(rest.Until) >= 2*time.Hour-time.Minute {
++			rests++
++		}
++	}
++	if rests == 0 {
++		t.Fatal("client rechecks cleared every account's real cooldown")
++	}
++}
++
++func TestCodexQuotaRecheckHeldKeys(t *testing.T) {
++	d, srv := deadChain(t, "dead-a", "dead-b")
++	for i := range 3 {
++		rec := quotaRecheckPost(srv, "/v1/responses", "mockdead/glm-5.3-flash")
++		if rec.Code != 429 || rec.Header().Get("Retry-After") != "60" {
++			t.Fatalf("request %d: %d Retry-After %q: %s", i, rec.Code, rec.Header().Get("Retry-After"), rec.Body)
++		}
++		got := d.took()
++		if i == 0 && strings.Join(got, ",") != "dead-a,dead-b" || i > 0 && len(got) != 0 {
++			t.Fatalf("request %d asked %v", i, got)
++		}
++	}
++}
++
++func TestCodexQuotaRecheckCaps(t *testing.T) {
++	codexSignedIn(t, "spare@example.com")
++	b := newResetBackend(t)
++	capUsage(t, map[string]float64{"me@example.com": 80, "spare@example.com": 80})
++	for _, user := range []string{"me@example.com", "spare@example.com"} {
++		if err := provider.SetAccountCap("codex", user, 70); err != nil {
++			t.Fatal(err)
++		}
++	}
++	rec := quotaRecheckPost(New(), CodexPath+"/responses", "gpt-5.5")
++	if tried, spent := b.seen(); rec.Code != http.StatusTooManyRequests || rec.Header().Get("Retry-After") != "60" || tried != "" || spent != "" {
++		t.Fatalf("cap: %d Retry-After %q tried %q spent %q", rec.Code, rec.Header().Get("Retry-After"), tried, spent)
++	}
++}
++
++// Quota rechecks are only for Codex Responses callers. A short vendor
++// delay stays short; rate and credit limits keep their original delay.
++func TestCodexQuotaRecheckHeaders(t *testing.T) {
++	quota := `{"error":{"message":"weekly usage limit reached"}}`
++	for _, tc := range []struct {
++		name, agent, body, after, want string
++	}{
++		{"long quota", "codex_cli_rs/0.162.1", quota, "7200", "60"},
++		{"short quota", "codex_cli_rs/0.162.1", quota, "17", "17"},
++		{"one minute", "codex_cli_rs/0.162.1", quota, "60", "60"},
++		{"date quota", "codex_cli_rs/0.162.1", quota, time.Now().Add(2 * time.Hour).UTC().Format(http.TimeFormat), "60"},
++		{"rate", "codex_cli_rs/0.162.1", `{"error":{"message":"too many requests"}}`, "7200", "7200"},
++		{"credit", "codex_cli_rs/0.162.1", `{"error":{"message":"insufficient balance"}}`, "7200", "7200"},
++		{"other agent", "opencode/1.0", quota, "7200", "7200"},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			fresh(t)
++			a := &scripted{limited: http.Header{"Retry-After": {tc.after}}, replies: []reply{{429, "", tc.body}}}
++			scriptedOn(t, "a", provider.Chat, a)
++			rec := httptest.NewRecorder()
++			req := httptest.NewRequest("POST", "/v1/responses", strings.NewReader(`{"model":"a/m","input":"ping"}`))
++			req.Header.Set("User-Agent", tc.agent)
++			New().Handler().ServeHTTP(rec, req)
++			if rec.Code != 429 || rec.Header().Get("Retry-After") != tc.want || a.n != 1 {
++				t.Fatalf("%d Retry-After %q after %d upstream calls; want 429 %q once", rec.Code, rec.Header().Get("Retry-After"), a.n, tc.want)
++			}
++		})
++	}
++}
++
++// A user enabling automatic resets still gets the existing reset policy.
++// Shorter client rechecks never enable spending by themselves.
++func TestCodexQuotaRecheckKeepsAutoReset(t *testing.T) {
++	codexSignedIn(t, "spare@example.com")
++	b := newResetBackend(t, "acct-1", "acct-2")
++	capUsage(t, map[string]float64{"me@example.com": 100, "spare@example.com": 100})
++	srv := New()
++	if rec := quotaRecheckPost(srv, CodexPath+"/responses", "gpt-5.5"); rec.Code != 429 {
++		t.Fatalf("first: %d %s", rec.Code, rec.Body)
++	}
++	if tried, spent := b.seen(); tried != "acct-1,acct-2" || spent != "" {
++		t.Fatalf("before permission: tried %q spent %q", tried, spent)
++	}
++	if err := provider.SetCodexAutoReset("me@example.com", true); err != nil {
++		t.Fatal(err)
++	}
++	rec := quotaRecheckPost(srv, CodexPath+"/responses", "gpt-5.5")
++	if tried, spent := b.seen(); rec.Code != 200 || !strings.Contains(rec.Body.String(), "pong") || tried != "acct-1,acct-2,acct-2,acct-1,acct-1" || spent != "acct-1" {
++		t.Fatalf("after permission: %d %s tried %q spent %q", rec.Code, rec.Body, tried, spent)
++	}
++}
+diff --git a/internal/gateway/gateway.go b/internal/gateway/gateway.go
+index 87b90e9..65574c1 100644
+--- a/internal/gateway/gateway.go
++++ b/internal/gateway/gateway.go
+@@ -1641,6 +1641,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
+ 	// on from for a remote magpie's request; agent the one that sent it,
+ 	// which what is done with it goes by
+ 	who, agent := callerOf(r), agentOf(r)
++	codexRecheck := from == provider.Responses && (who.agent == "codex" || fromCodex(r.Header))
+ 	metadata := requestSessionMetadata(r.Header, body)
+ 	var clientResponseID string // only a reply released to the client owns this ID
+ 	call := Call{Time: start, From: from, Model: unprefixed(modelOf(body)), Agent: who.agent, Via: who.via, Kind: requestCallKind(r.Header, metadata),
+@@ -2123,6 +2124,9 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
+ 		}
+ 		if d := time.Until(back); d > 0 {
+ 			w.Header().Set("Retry-After", strconv.Itoa(int(d.Seconds())+1))
++			if codexRecheck {
++				quotaRecheck(w.Header())
++			}
+ 		}
+ 		call.Status, call.Error = 429, record
+ 		writeError(w, from, 429, msg)
+@@ -3491,6 +3495,12 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
+ 			// No member left took the body; only now add the byte-limit hint.
+ 			failTo(w, kept, from, call.Status, call.Error)
+ 		} else {
++			if codexRecheck && !hw.passing && hw.code() == http.StatusTooManyRequests && failure(hw.code(), hw.errBody()) == failQuota {
++				// Only the client's recheck changes. All rests above read
++				// the vendor's real headers before they are shortened.
++				quotaRecheck(hw.header)
++				quotaRecheck(w.Header())
++			}
+ 			hw.release()
+ 			if hw.passing {
+ 				clientResponseID = call.Usage.ResponseID

@@ -1,0 +1,233 @@
+From 5c3436012b984079702e56625898ed9ec7cf750f Mon Sep 17 00:00:00 2001
+From: ChanorJia <6811200+ChanorJia@users.noreply.github.com>
+Date: Fri, 30 Oct 2026 06:38:27 +0000
+Subject: [PATCH] claude bridge: a run's session file is removed once its
+ Claude Code has exited
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+A run let go is asked to end (abort: SIGTERM, killed at stopGrace), and
+its session file was removed at once (removeRun -> removeSession). Claude
+Code, still exiting, then appends its last prompt and cost (last-prompt,
+atis-latch, cost-state) to that file, so the file is written again: a
+session of those three lines alone. In a caller's folder, which is never
+swept, it stays, and Claude Code's session lists show one empty session
+per run let go, titled with the prompt magpie told it
+("Human: <system-reminder> Codebase and user instructions…"). On one
+machine most of the session files in a caller's project were like that.
+
+removeSessionAfter waits for the run's exited channel (bounded by
+stopGrace + outputDrain + 5s) before removing. Both removal paths take it:
+removeRun, and a savedSession's discard, whose run is let go as it is
+shelved and may still be exiting.
+
+Old data: files already left this way are not removed; a caller's folder
+is still never swept, as a sweep can't tell them from the user's own.
+
+Run:
+- Real Claude Code 2.1.314 (stream-json, a mock Messages API): after one
+  turn, its session file removed, then SIGTERM. The file comes back with
+  exactly last-prompt, atis-latch and cost-state.
+- TestClaudeSessionRemovedAfterItsClaudeCodeExits and
+  TestClaudeSavedSessionRemovedAfterItsClaudeCodeExits: red on the old
+  code (the fake's TERM trap writes the file again), green -count=3.
+- go test -race -run TestClaude ./internal/gateway: ok.
+- go test -timeout 45m ./internal/gateway ./internal/proc: proc ok;
+  gateway one red, TestPrivateDialerRefusesPrivateAddresses ([::1]:9:
+  address family not supported), red the same without this change: the
+  machine has no IPv6.
+- gofmt -l, go vet ./internal/gateway: clean.
+Not tried: a real subscription through the gateway end to end.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ docs/subsystems/claude-subscription-bridge.md |  6 ++-
+ internal/gateway/claude_resume_test.go        | 53 ++++++++++++++++--
+ internal/gateway/claude_subscription.go       | 54 +++++++++++++++++--
+ 3 files changed, 106 insertions(+), 7 deletions(-)
+
+diff --git a/docs/subsystems/claude-subscription-bridge.md b/docs/subsystems/claude-subscription-bridge.md
+index fadfcc184..7338ded91 100644
+--- a/docs/subsystems/claude-subscription-bridge.md
++++ b/docs/subsystems/claude-subscription-bridge.md
+@@ -620,7 +620,11 @@ there as the user's own sessions do; a sweep can't tell them apart.
+ 
+ - Its session: `<config>/projects/<work project>/<session>.jsonl`, for
+   `--resume` (`claudeSessions`). It is removed when the run ends unless
+-  shelved, and when a saved session is discarded (`removeSession`).
++  shelved, and when a saved session is discarded (`removeSession`), in
++  both cases once the run's Claude Code has exited (`removeSessionAfter`):
++  asked to end, Claude Code writes its last prompt and cost to the end of
++  the file as it exits, and a file removed before then is written again,
++  a session of those lines alone left in the caller's folder.
+   `sweepSessions` removes those a stopped gateway left in magpie's own
+   work folder's project, once older than `idleLongest`; a caller's folder
+   is never swept (`clientWorkDir`).
+diff --git a/internal/gateway/claude_resume_test.go b/internal/gateway/claude_resume_test.go
+index 0a0b8bb30..69f98d6ad 100644
+--- a/internal/gateway/claude_resume_test.go
++++ b/internal/gateway/claude_resume_test.go
+@@ -235,15 +235,62 @@ func TestClaudeSessionFilesAreRemoved(t *testing.T) {
+ 		t.Fatal("the shelved session has no file")
+ 	}
+ 	saved.discard()
+-	if saved.saved() {
+-		t.Fatal("a discarded session's file stayed")
+-	}
++	// removed once the Claude Code it was saved from has exited
++	eventually(t, "a discarded session's file stayed", func() bool { return !saved.saved() })
+ 
+ 	// the runs waiting end: their sessions go with them
+ 	h.s.subscription.abortAll()
+ 	eventually(t, "sessions left", func() bool { return len(h.sessions()) == 0 })
+ }
+ 
++// A run let go is asked to end, and Claude Code, as it exits, writes its
++// last prompt and its cost to the end of its session's file. Removed
++// before then, the file was written again: a session of those lines alone,
++// which Claude Code's lists showed in the caller's folder, titled with the
++// prompt magpie told it ("Human: <system-reminder> …"), one for each run
++// let go. The file is removed once Claude Code has exited.
++func TestClaudeSessionRemovedAfterItsClaudeCodeExits(t *testing.T) {
++	h := newScriptHarness(t, "ok", `trap 'sleep 0.3; [ -n "$file" ] && echo "{\"type\":\"cost-state\"}" >> "$file"; echo exited >> $log; exit 0' TERM`)
++	h.ask("rules", "x")
++	if got := h.sessions(); len(got) != 1 {
++		t.Fatalf("sessions %v, want the run's", got)
++	}
++	h.s.subscription.abortAll()
++	eventually(t, "Claude Code did not exit", func() bool {
++		for _, log := range h.runs() {
++			if !strings.Contains(log, "\nexited\n") {
++				return false
++			}
++		}
++		return true
++	})
++	eventually(t, "the session's file was left, written again as Claude Code exited", func() bool { return len(h.sessions()) == 0 })
++}
++
++// The same for a saved session discarded while the run it was saved from,
++// let go as it was shelved, is still exiting.
++func TestClaudeSavedSessionRemovedAfterItsClaudeCodeExits(t *testing.T) {
++	h := newScriptHarness(t, "ok", `trap 'sleep 0.3; [ -n "$file" ] && echo "{\"type\":\"cost-state\"}" >> "$file"; echo exited >> $log; exit 0' TERM`)
++	for i := range idleMost + 1 {
++		h.ask(fmt.Sprintf("rules %d", i), "x")
++	}
++	var saved *savedSession
++	eventually(t, "the shelf", func() bool {
++		h.s.subscription.mu.Lock()
++		defer h.s.subscription.mu.Unlock()
++		for _, s := range h.s.subscription.shelf {
++			saved = s
++		}
++		return saved != nil
++	})
++	saved.discard()
++	eventually(t, "the shelved run's Claude Code did not exit", func() bool {
++		log := h.runs()[strings.TrimPrefix(saved.session, "s")]
++		return strings.Contains(log, "\nexited\n")
++	})
++	eventually(t, "the discarded session's file was left, written again as Claude Code exited", func() bool { return !saved.saved() })
++}
++
+ // A gateway that stopped leaves the sessions of its shelf: the next one
+ // removes those older than a session is kept, and leaves the newer, which
+ // may be another gateway's on the same account.
+diff --git a/internal/gateway/claude_subscription.go b/internal/gateway/claude_subscription.go
+index 2d41c1f84..61ee7de44 100644
+--- a/internal/gateway/claude_subscription.go
++++ b/internal/gateway/claude_subscription.go
+@@ -1509,6 +1509,10 @@ type savedSession struct {
+ 	since    []Message // the turn's messages, once unshelved
+ 
+ 	cachePrefix cachePrefix
++	// exited closes once the Claude Code of the run it was saved from
++	// has exited: the run is let go as it is shelved, and its file is
++	// removed only after (removeSessionAfter)
++	exited <-chan struct{}
+ 
+ 	mu   sync.Mutex
+ 	gone bool // taken by a run, or discarded
+@@ -1525,7 +1529,7 @@ func (b *subscriptionBridge) shelve(run *subscriptionRun) {
+ 		return
+ 	}
+ 	key := run.idleKey
+-	s := &savedSession{session: sid, sessions: sessions, owner: run.owned(), conv: run.convKey, key: key, loose: run.loose, tools: tools, at: run.idleAt, cachePrefix: run.cachePrefix}
++	s := &savedSession{session: sid, sessions: sessions, owner: run.owned(), conv: run.convKey, key: key, loose: run.loose, tools: tools, at: run.idleAt, cachePrefix: run.cachePrefix, exited: run.exitedChan()}
+ 	if old := b.shelf[key]; old != nil {
+ 		go old.discard()
+ 	}
+@@ -1614,7 +1618,7 @@ func (s *savedSession) discard() {
+ 		s.timer.Stop()
+ 	}
+ 	if !gone {
+-		removeSession(s.sessions, s.session)
++		removeSessionAfter(s.exited, s.sessions, s.session)
+ 	}
+ }
+ 
+@@ -1635,6 +1639,39 @@ func claudeSessions(configDir, work string) []string {
+ 	return dirs
+ }
+ 
++// removeSessionAfter is removeSession once exited is closed: once the
++// Claude Code that wrote the session has exited. Asked to end (abort), it
++// is still writing as it exits -- its last prompt and its cost go to the
++// end of the session's file -- so a file removed before then is written
++// again, a session of those lines alone that Claude Code's lists show
++// titled with the prompt magpie told it. A run that never started has no
++// channel and nothing that writes. The wait is bounded all the same: the
++// tree is killed at stopGrace, and its output drained within outputDrain.
++func removeSessionAfter(exited <-chan struct{}, dirs []string, sid string) {
++	if exited == nil {
++		removeSession(dirs, sid)
++		return
++	}
++	select {
++	case <-exited:
++		removeSession(dirs, sid)
++		return
++	default:
++	}
++	go func() {
++		select {
++		case <-exited:
++		case <-time.After(sessionExitWait):
++		}
++		removeSession(dirs, sid)
++	}()
++}
++
++// sessionExitWait is how long a session's removal waits for its Claude
++// Code to exit: past stopGrace, when its tree is killed, and the
++// outputDrain after it.
++var sessionExitWait = stopGrace + outputDrain + 5*time.Second
++
+ // removeSession removes a session's file, and the folder of its own
+ // Claude Code may keep beside it.
+ func removeSession(dirs []string, sid string) {
+@@ -4230,8 +4267,19 @@ func (b *subscriptionBridge) removeRun(run *subscriptionRun) {
+ 	sid, sessions, shelved := run.sessionID, run.sessions, run.shelved
+ 	run.mu.Unlock()
+ 	if !shelved {
+-		removeSession(sessions, sid)
++		removeSessionAfter(run.exitedChan(), sessions, sid)
++	}
++}
++
++// exitedChan is the channel closed once the run's Claude Code has exited;
++// nil when it never started.
++func (r *subscriptionRun) exitedChan() <-chan struct{} {
++	r.mu.Lock()
++	defer r.mu.Unlock()
++	if r.exited == nil {
++		return nil
+ 	}
++	return r.exited
+ }
+ 
+ // owned is the account the run runs as (serveClaudeSubscription's owner).
+-- 
+2.50.1 (Apple Git-155)
+

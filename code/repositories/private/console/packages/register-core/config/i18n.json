@@ -1,0 +1,24 @@
+{
+  "_comment": "页面文案/URL 特征集中配置。pageDetector 读取本文件判断'当前页面是哪一步'。OpenAI 改文案只需改这里,不改代码。",
+  "urlPatterns": {
+    "signup": ["auth.openai.com", "/signup", "/create", "/log-in", "/login"],
+    "chatgptHome": ["chatgpt.com"],
+    "authorize": ["auth.openai.com/oauth/authorize", "/oauth/"],
+    "googleAccounts": ["accounts.google.com"],
+    "aboutYou": ["about-you", "about_you", "/onboarding"],
+    "contactVerification": ["contact-verification", "/verify", "/code"],
+    "emailVerification": ["email-verification", "verify-email"],
+    "addEmail": ["add-email", "add_email", "/account/manage"]
+  },
+  "pageStateText": {
+    "password": ["create password", "创建密码", "enter your password", "set a password", "密码"],
+    "smsCode": ["enter the code", "验证码", "verification code", "we sent a code", "code we texted", "短信"],
+    "emailCode": ["check your email", "邮箱验证码", "code we sent to", "enter the code we sent"],
+    "aboutYou": ["tell us about you", "了解一下您", "your name", "birthday", "生日", "你的名字"],
+    "errorPage": ["something went wrong", "出错了", "try again", "重试", "missing_email", "request failed"],
+    "phoneRegistered": ["already associated with an account", "与此电话号码", "already exists"],
+    "accountDeactivated": ["account_deactivated", "account is deactivated", "已被停用", "deactivated"],
+    "loginMethod": ["continue with phone", "使用手机号", "continue with email", "使用邮箱", "log in", "登录", "sign up", "注册"],
+    "authorize": ["authorize", "授权", "allow", "允许", "approve"]
+  }
+}

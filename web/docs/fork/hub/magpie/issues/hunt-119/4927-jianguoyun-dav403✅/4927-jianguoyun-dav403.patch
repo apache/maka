@@ -1,0 +1,174 @@
+From 9163c360f7bb3636452190cdd4103caa8c8dc777 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Tue, 3 Nov 2026 00:17:22 +0800
+Subject: [PATCH 1/2] davsync: the refused-write error is told apart by
+ magpie's own folder (#4927)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+A 403 on the write, with everything listing fine, now has a test for
+each of its two shapes: magpie's folder on the server (a refusal to
+change files in it - 坚果云 (Nutstore)'s free tier answers 403 on a
+write once the account's upload quota is used up) and magpie's folder
+missing (a refusal to have magpie make it). The error as it stands
+names the address's folder (/dav) for both, though the write went to
+the folder inside it.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/davsync/dav_test.go | 49 ++++++++++++++++++++++++++++++++++++
+ 1 file changed, 49 insertions(+)
+
+diff --git a/internal/davsync/dav_test.go b/internal/davsync/dav_test.go
+index 9f40759bf..2574f548d 100644
+--- a/internal/davsync/dav_test.go
++++ b/internal/davsync/dav_test.go
+@@ -53,6 +53,55 @@ func TestDAVForbidden(t *testing.T) {
+ 	}
+ }
+ 
++// A 403 on the write itself, with everything listing fine, is told apart by
++// magpie's own folder: there, the server refuses to change files in it —
++// 坚果云 (Nutstore)'s free tier refuses writes with 403 once the account's
++// upload quota is used up (#4927) — and the error names the folder the write
++// went to, not just the address's, and says the quota. Missing, the server
++// refused to have magpie make it, and the error says to make it by hand.
++func TestDAVWriteRefused(t *testing.T) {
++	ctx := context.Background()
++	refuse := func(statusOf func(r *http.Request) int) *dav {
++		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++			w.WriteHeader(statusOf(r))
++		}))
++		t.Cleanup(srv.Close)
++		d, err := newDAV(Config{URL: srv.URL + "/dav/"})
++		if err != nil {
++			t.Fatal(err)
++		}
++		return d
++	}
++
++	// the folder is there (an earlier sync made it), the write is refused
++	d := refuse(func(r *http.Request) int {
++		switch {
++		case r.Method == "PROPFIND" && (r.URL.Path == "/dav/" || r.URL.Path == "/dav/magpie/"):
++			return http.StatusMultiStatus
++		default:
++			return http.StatusForbidden
++		}
++	})
++	if _, err := d.put(ctx, []byte("x"), ""); err == nil || !strings.Contains(err.Error(), "change files in /dav/magpie") || !strings.Contains(err.Error(), "quota") {
++		t.Fatalf("a refused write into the folder there: %v", err)
++	}
++
++	// the folder isn't there, and the server refuses to have magpie make it
++	d = refuse(func(r *http.Request) int {
++		switch {
++		case r.Method == "PROPFIND" && r.URL.Path == "/dav/":
++			return http.StatusMultiStatus
++		case r.Method == "MKCOL":
++			return http.StatusForbidden
++		default:
++			return http.StatusConflict
++		}
++	})
++	if _, err := d.put(ctx, []byte("x"), ""); err == nil || !strings.Contains(err.Error(), "doesn't let magpie make its folder /dav/magpie") || !strings.Contains(err.Error(), "make the folder magpie there first") {
++		t.Fatalf("a refused folder: %v", err)
++	}
++}
++
+ // OpenList's and Alist's /dav/ lists their storages: a folder can't be made
+ // there (MKCOL 405, as if it were) and a file can't be put (404). The error
+ // says to put a storage in the address, naming them.
+-- 
+2.50.1 (Apple Git-155)
+
+
+From 6a08e932f8efd443a36c7f298a7e19a08e3d9a39 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Tue, 3 Nov 2026 00:18:29 +0800
+Subject: [PATCH 2/2] davsync: a 403 on the write names the folder it went to,
+ and a full quota (#4927)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The error for a write the server refused, with the address's folder
+listing fine, said the account couldn't write in that folder (/dav) -
+but the write went to magpie's own folder inside it, and the listing
+never proved anything about writing. On 坚果云 (Nutstore) the refusal
+is usually the free tier's upload quota used up, which answers 403 on
+a PUT with everything else fine (#4927), so the old text sent the user
+to check a thing they can't check.
+
+The error now looks at magpie's own folder first: there, the server
+refused to change files in it, and the text says so and mentions the
+quota; missing, the server refused to have magpie make it, and the
+text says to make the folder by hand, or put an existing folder in
+the address.
+
+Fixes #4927
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/davsync/dav.go      | 14 ++++++++++++--
+ internal/davsync/dav_test.go |  4 ++--
+ 2 files changed, 14 insertions(+), 4 deletions(-)
+
+diff --git a/internal/davsync/dav.go b/internal/davsync/dav.go
+index 87e393d00..bc0630bad 100644
+--- a/internal/davsync/dav.go
++++ b/internal/davsync/dav.go
+@@ -201,7 +201,8 @@ var errLogin = errors.New("the WebDAV server refused the user name or password (
+ 
+ // forbidden says why a 403 was: servers answer it for a folder that isn't
+ // there as much as for one the account may not use — a Synology does for a
+-// shared folder not made — so the folder in the address is looked at first.
++// shared folder not made — so the folder in the address is looked at first,
++// and then magpie's own folder inside it, where the write went.
+ func (d *dav) forbidden(ctx context.Context) error {
+ 	dir := d.base.Path
+ 	if dir == "" {
+@@ -221,7 +222,16 @@ func (d *dav) forbidden(ctx context.Context) error {
+ 			case res.StatusCode == http.StatusNotFound || res.StatusCode == http.StatusConflict || res.StatusCode == http.StatusGone:
+ 				return fmt.Errorf("there is no folder %s on the WebDAV server (HTTP 403): make it there first, or leave it out of the address", dir)
+ 			case res.StatusCode >= 200 && res.StatusCode < 300:
+-				return fmt.Errorf("the WebDAV server doesn't let this account write in %s (HTTP 403): check the account may change files in that folder", dir)
++				// the address's folder lists fine, so the refusal is about
++				// magpie's own folder inside it, where the write went: the
++				// server may have kept the account from making it, or, with
++				// it there, from changing files in it — 坚果云 (Nutstore)'s
++				// free tier refuses writes with 403 once the account's
++				// upload quota is used up (#4927)
++				if !d.there(ctx, d.url(folder)+"/") {
++					return fmt.Errorf("the WebDAV server doesn't let magpie make its folder %s/%s (HTTP 403): make the folder %s there first, or put an existing folder in the address", dir, folder, folder)
++				}
++				return fmt.Errorf("the WebDAV server doesn't let this account change files in %s/%s (HTTP 403): check the account may change files in that folder, and the account's storage quota is not used up", dir, folder)
+ 			}
+ 		}
+ 	}
+diff --git a/internal/davsync/dav_test.go b/internal/davsync/dav_test.go
+index 2574f548d..8129afd78 100644
+--- a/internal/davsync/dav_test.go
++++ b/internal/davsync/dav_test.go
+@@ -21,7 +21,7 @@ func TestDAVForbidden(t *testing.T) {
+ 		}
+ 		path := strings.TrimSuffix(r.URL.Path, "/")
+ 		switch {
+-		case r.Method == "PROPFIND" && (path == "" || path == "/ro"):
++		case r.Method == "PROPFIND" && (path == "" || path == "/ro" || path == "/ro/magpie"):
+ 			w.WriteHeader(http.StatusMultiStatus)
+ 		case r.Method == "PROPFIND" && path == "/missing":
+ 			w.WriteHeader(http.StatusNotFound)
+@@ -35,7 +35,7 @@ func TestDAVForbidden(t *testing.T) {
+ 	ctx := context.Background()
+ 	for _, c := range []struct{ dir, pass, want string }{
+ 		{"/missing", "pw", "there is no folder /missing"},
+-		{"/ro", "pw", "doesn't let this account write in /ro"},
++		{"/ro", "pw", "doesn't let this account change files in /ro/magpie"},
+ 		{"/secret", "pw", "doesn't let this account use /secret"},
+ 		{"/missing", "bad", "user name or password"},
+ 	} {
+-- 
+2.50.1 (Apple Git-155)
+

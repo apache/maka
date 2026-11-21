@@ -1,0 +1,34 @@
+# 二进制文件
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+/server
+agent-studio-backend
+
+# 测试文件
+*.test
+*.out
+coverage.txt
+
+# 环境变量
+.env
+.env.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 依赖
+vendor/
+
+# 日志
+*.log
+
+# 临时文件
+tmp/
+temp/

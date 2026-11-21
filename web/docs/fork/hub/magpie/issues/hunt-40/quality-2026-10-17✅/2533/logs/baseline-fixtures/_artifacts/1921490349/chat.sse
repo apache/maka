@@ -1,0 +1,5 @@
+: keepalive
+data: {"choices":[{"delta":{"content":"","role":"assistant"},"finish_reason":null,"index":0}],"created":1792193953,"id":"chatcmpl-18df26e7b3d5022800000001","model":"","object":"chat.completion.chunk","usage":null}
+
+data: {"error":{"message":"A: 413 Request Entity Too Large","type":"api_error"}}
+

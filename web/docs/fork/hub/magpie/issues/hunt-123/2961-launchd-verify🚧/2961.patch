@@ -1,0 +1,79 @@
+From 14343ce5c062bdd38f24088a145181e2a34bfe56 Mon Sep 17 00:00:00 2001
+From: Edward4226 <Edward4226@users.noreply.github.com>
+Date: Tue, 3 Nov 2026 06:48:04 +0800
+Subject: [PATCH] daemon: the macOS gateway runs as Standard, not Background
+ (#2961)
+
+Generate ProcessType Standard for the gateway launch agent so launchd does not apply Background throttling on an interactive request path. KeepAlive, throttling interval, logs, environment, and lifecycle behavior are unchanged. Verified with gofmt, git diff --check, TestLaunchdPlistProcessType, and TestLaunchdInstall. Not tried: a real macOS launchd reload, plutil on macOS, and a current-main performance A/B.
+---
+ internal/daemon/daemon_test.go | 17 +++++++++++++++++
+ internal/daemon/launchd.go     |  4 +++-
+ 2 files changed, 20 insertions(+), 1 deletion(-)
+
+diff --git a/internal/daemon/daemon_test.go b/internal/daemon/daemon_test.go
+index 79f1a637e..79fac4a9f 100644
+--- a/internal/daemon/daemon_test.go
++++ b/internal/daemon/daemon_test.go
+@@ -258,6 +258,7 @@ func TestLaunchdInstall(t *testing.T) {
+ 		"<key>Label</key><string>com.yetone.magpie.serve</string>",
+ 		"<array><string>/opt/my magpie/magpie%1</string><string>serve</string></array>",
+ 		"<key>SuccessfulExit</key><false/>",
++		"<key>ProcessType</key><string>Standard</string>",
+ 		"<key>HTTP_PROXY</key><string>http://a&amp;b&lt;c&gt;@proxy</string>",
+ 		"<key>PATH</key><string>" + os.Getenv("PATH") + "</string>",
+ 	} {
+@@ -265,6 +266,9 @@ func TestLaunchdInstall(t *testing.T) {
+ 			t.Errorf("the plist has no %q:\n%s", want, p)
+ 		}
+ 	}
++	if strings.Contains(p, "Background") {
++		t.Errorf("the plist still says Background:\n%s", p)
++	}
+ 	if lint := "/usr/bin/plutil"; runtime.GOOS == "darwin" {
+ 		if out, err := exec.Command(lint, "-lint", file).CombinedOutput(); err != nil {
+ 			t.Errorf("plutil: %s", out)
+@@ -316,6 +320,19 @@ func TestLaunchdInstall(t *testing.T) {
+ 	}
+ }
+ 
++// The daemon's launch agent is Standard, not Background, on every platform:
++// plist only builds text, so this runs without the shell fakes and without
++// a Mac.
++func TestLaunchdPlistProcessType(t *testing.T) {
++	p := plist("/opt/magpie", []string{"serve"}, nil)
++	if want := "<key>ProcessType</key><string>Standard</string>"; !strings.Contains(p, want) {
++		t.Errorf("the plist has no %q:\n%s", want, p)
++	}
++	if bad := "<key>ProcessType</key><string>Background</string>"; strings.Contains(p, bad) {
++		t.Errorf("the plist says %q:\n%s", bad, p)
++	}
++}
++
+ // Windows and Android have no service of this kind: the error points to
+ // what they have.
+ func TestUnsupported(t *testing.T) {
+diff --git a/internal/daemon/launchd.go b/internal/daemon/launchd.go
+index c327c7b40..4406e1084 100644
+--- a/internal/daemon/launchd.go
++++ b/internal/daemon/launchd.go
+@@ -32,6 +32,8 @@ func domain() string  { return "gui/" + strconv.Itoa(os.Getuid()) }
+ func service() string { return domain() + "/" + Label }
+ 
+ // plist is the launch agent running exe with args, with env set in it.
++// ProcessType is Standard, not Background: the gateway is on the request
++// path of interactive agents, and Background throttles it on macOS.
+ func plist(exe string, args, env []string) string {
+ 	s := func(v string) string { return "<string>" + html.EscapeString(v) + "</string>" }
+ 	var b strings.Builder
+@@ -47,7 +49,7 @@ func plist(exe string, args, env []string) string {
+ 	<key>KeepAlive</key>
+ 	<dict><key>SuccessfulExit</key><false/></dict>
+ 	<key>ThrottleInterval</key><integer>5</integer>
+-	<key>ProcessType</key><string>Background</string>
++	<key>ProcessType</key><string>Standard</string>
+ 	<key>StandardOutPath</key>` + s(logFile()) + `
+ 	<key>StandardErrorPath</key>` + s(logFile()) + `
+ `)
+-- 
+2.50.1 (Apple Git-155)
+

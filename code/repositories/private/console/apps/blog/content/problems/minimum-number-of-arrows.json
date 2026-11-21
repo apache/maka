@@ -1,0 +1,22 @@
+{
+  "id": "87",
+  "slug": "minimum-number-of-arrows-to-burst-balloons",
+  "title": "用最少数量的箭引爆气球",
+  "difficulty": "medium",
+  "tags": ["贪心", "排序"],
+  "description": "气球在一个水平数轴上,用区间 `[xstart, xend]` 表示。一支弓箭可以沿着 x 轴从不同点射出,只要一支箭射出的 x 坐标处于某气球的 `[xstart, xend]` 范围内,该气球就会被引爆(边界也算)。\n\n给定数组 `points`,返回引爆所有气球所必须发射的最小弓箭数。\n\n**示例 1:**\n\n- 输入:`points = [[10,16],[2,8],[1,6],[7,12]]`\n- 输出:`2`(在 x=6 射爆 [2,8],[1,6],[10,16]? 实际一支在 6、一支在 11 或 12)\n\n**示例 2:**\n\n- 输入:`points = [[1,2],[3,4],[5,6],[7,8]]`\n- 输出:`4`",
+  "solution": "## 思路\n\n**贪心**:按右端点排序。维护当前一箭能射到的最远右端 `end`,遇到左端 `> end` 的气球就需要新一箭。左端 `<= end` 的气球可被当前箭覆盖。\n\n## 参考代码\n\n```js\nfunction findMinArrowShots(points) {\n  if (points.length === 0) return 0;\n  points.sort((a, b) => a[1] - b[1]);\n  let arrows = 1;\n  let end = points[0][1];\n  for (let i = 1; i < points.length; i++) {\n    if (points[i][0] > end) { arrows++; end = points[i][1]; }\n  }\n  return arrows;\n}\n```\n\n## 复杂度\n\n- 时间:O(n log n)\n- 空间:O(1)",
+  "signature": {
+    "language": "javascript",
+    "entry": "findMinArrowShots",
+    "params": [{ "name": "points", "type": "number[][]" }],
+    "returns": "number"
+  },
+  "testCases": [
+    { "sample": true, "input": [[[10, 16], [2, 8], [1, 6], [7, 12]]], "expected": 2 },
+    { "sample": true, "input": [[[1, 2], [3, 4], [5, 6], [7, 8]]], "expected": 4 },
+    { "sample": true, "input": [[[1, 2], [2, 3], [3, 4], [4, 5]]], "expected": 2 },
+    { "sample": false, "input": [[]], "expected": 0 },
+    { "sample": false, "input": [[[1, 2]]], "expected": 1 }
+  ]
+}

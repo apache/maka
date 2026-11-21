@@ -1,0 +1,23 @@
+{
+  "id": "45",
+  "slug": "longest-increasing-subsequence",
+  "title": "最长递增子序列",
+  "difficulty": "medium",
+  "tags": ["数组", "动态规划", "二分查找"],
+  "description": "给你一个整数数组 `nums`,找到其中最长**严格递增**子序列的长度。\n\n子序列是由数组派生而来的序列,删除(或不删除)数组中的元素而不改变其余元素的顺序。\n\n**示例 1:**\n\n- 输入:`nums = [10,9,2,5,3,7,101,18]`\n- 输出:`4`(最长递增子序列是 `[2,3,7,101]`,长度为 4)\n\n**示例 2:**\n\n- 输入:`nums = [0,1,0,3,2,3]`\n- 输出:`4`\n\n**进阶:** 能否将算法的时间复杂度降低到 O(n log n)?",
+  "solution": "## 思路\n\n**动态规划** O(n²):`dp[i]` 为以 `nums[i]` 结尾的最长递增子序列长度。对每个 `i`,枚举 `j < i`,若 `nums[j] < nums[i]` 则 `dp[i] = max(dp[i], dp[j]+1)`。全局最大即答案。(进阶可用「耐心排序」+ 二分做到 O(n log n)。)\n\n## 参考代码\n\n```js\nfunction lengthOfLIS(nums) {\n  if (nums.length === 0) return 0;\n  const dp = new Array(nums.length).fill(1);\n  let max = 1;\n  for (let i = 1; i < nums.length; i++) {\n    for (let j = 0; j < i; j++) {\n      if (nums[j] < nums[i]) dp[i] = Math.max(dp[i], dp[j] + 1);\n    }\n    max = Math.max(max, dp[i]);\n  }\n  return max;\n}\n```\n\n## 复杂度\n\n- 时间:O(n²)\n- 空间:O(n)",
+  "signature": {
+    "language": "javascript",
+    "entry": "lengthOfLIS",
+    "params": [{ "name": "nums", "type": "number[]" }],
+    "returns": "number"
+  },
+  "testCases": [
+    { "sample": true, "input": [[10, 9, 2, 5, 3, 7, 101, 18]], "expected": 4 },
+    { "sample": true, "input": [[0, 1, 0, 3, 2, 3]], "expected": 4 },
+    { "sample": true, "input": [[7, 7, 7, 7]], "expected": 1 },
+    { "sample": false, "input": [[1]], "expected": 1 },
+    { "sample": false, "input": [[]], "expected": 0 },
+    { "sample": false, "input": [[1, 2, 3, 4, 5]], "expected": 5 }
+  ]
+}

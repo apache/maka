@@ -1,0 +1,365 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Sun, 8 Nov 2026 09:05:50 +0800
+Subject: [PATCH] codex: a chat the app's reconnect failed to resume after a
+ restart is reopened when idle (#5476)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+ZeroP27: after magpie switches Codex's ChatGPT account (the allowance
+used up) and ends the app's app-server for the account switch, the app
+sometimes comes back without the "hit a snag" page: its reconnect
+thread fails to resume the chat it had open instead —
+websocket_reconnect_thread_resume_failed, "Hosted AppServerManager
+identity is not ready" — and the chat stays disconnected. magpie's
+60s read of the app's logs after each end it makes watched for the
+page's fatal_error_broadcasted line only, so this shape was left as it
+is.
+
+The read now takes the resume-failure line too, with the identity error
+on it (a resume failed for another reason is none of it), and the same
+follow-up applies: when no request has gone through magpie nor a Codex
+turn started since the line, the app is quit and opened once, which
+resumes the chat with the new identity established (the page shape's
+recovery, and the one that worked in the same report's earlier
+incident). A request or a turn since the line means the app came back
+by itself and is never cut short. The wording of the log lines and the
+Agents row's snag says both shapes now.
+
+Run (macOS, at this head on 350599a0f):
+- go test -tags nogui ./internal/agent: ok, but for the pre-existing
+  TestMothX (the local proxy's, filed); the new
+  TestCodexAppCrashedReadsTheChatItsReconnectFailedToResume red before,
+  green after
+- go test -tags nogui ./internal/provider: ok
+- gofmt -l clean; go vet -tags nogui ./internal/agent ./internal/provider:
+  clean
+---
+ docs/subsystems/agent-wiring.md        |  2 +-
+ internal/agent/codex_app_crash.go      | 53 ++++++++++++++-------
+ internal/agent/codex_app_crash_test.go | 46 ++++++++++++++++++
+ internal/gui/api.go                    |  5 +-
+ internal/provider/codex_app_crash.go   | 66 ++++++++++++++------------
+ 5 files changed, 122 insertions(+), 50 deletions(-)
+
+diff --git a/docs/subsystems/agent-wiring.md b/docs/subsystems/agent-wiring.md
+index 511c5d6c9..0828c2c0a 100644
+--- a/docs/subsystems/agent-wiring.md
++++ b/docs/subsystems/agent-wiring.md
+@@ -108,7 +108,7 @@ something else shows up as drift.
+ - Codex's model picker tags each of its own models by where a pick on the Agents page sends it: via magpie while routed, joined, or failing over, and direct while it is only beside its sign-in on one of magpie's models (`beside`, not joined, failover off), where such a pick takes magpie out (#940) and the GUI asks first (`TestCodexBesideOwnModelsSayDirect`).
+ - Every other agent's own models (`ownProvider` in [`agents.go`](../../internal/agent/agents.go), the provider list read from its own auth file or config: Pi, OpenCode, Goose, Crush, Cline, Hermes, the WSL twins and the rest; omp's `ompOwnOptions`) say `Direct` with the provider's name: each is asked of that vendor on the agent's own sign-in or key, so a pick takes the agent off magpie. The picker tags them direct, lists them after magpie's, and asks before such a pick turns 「接入」 off (maxleebeta on Discord: Pi's own OpenCode Go model switched it off with nothing said; `TestOwnModelsSayTheyGoDirect`, `agent-own-direct.test.cjs`).
+ - A line magpie writes into an agent's TOML, YAML or dotenv config gets a comment line of its own just above it, `# magpie: <what it is>; <how to undo it>` (`edit.Mark`, set to `agent.lineNote` by the CLI's `run` in [`mark.go`](../../internal/agent/mark.go); the edit side in [`internal/edit/mark.go`](../../internal/edit/mark.go)). Jevik_AI on X deleted magpie's folders by hand, and Codex's `config.toml` kept `openai_base_url` on the gateway with nothing in it naming magpie: every turn was a 502. Only a one-line scalar that points at the gateway or names magpie's model list gets one, and only when the write adds or changes that line, or it had a note already; a line of the user's own that magpie leaves as it is gets none. The note is never on the value's line: Grok App's `providers.rs` reads the rest of a line as the value. Every write takes the notes out first and puts them back over the lines that still need one, so a note goes with its line and a Disconnect leaves none. A YAML note that would change what the file reads as isn't added (`sameYAMLValue`). JSON has no comments and gets none. Tests set no `Mark`, so their exact bytes stay; `TestMarkedLinesEveryAgent` connects every agent with notes on and checks each gateway line has one, a second sync writes nothing, and Disconnect leaves none; `TestCodexMarkedLines`, `internal/edit`'s `TestMark*`.
+-- Codex signed in to ChatGPT stays beside its sign-in (`openai_base_url`) unless the user picks magpie API. magpie becomes its provider only while the Codex app holds the active account, which it sends nothing for: `/wham/usage` says it isn't allowed, and it has no credits and isn't a workspace still within its overage (`codexHeld`, read by `provider.CodexUsedUp`). With Codex switched off or removed in magpie (`leftAlone`), whose allowance magpie otherwise reads nothing of, the active account is still read for this alone while Codex takes magpie's models beside its sign-in or magpie is its provider for the held account (`Agent.HoldMatters`, through the `provider.CodexHoldMatters` hook; `codexHoldReading`): once a minute at most, with the token as Codex keeps it, never renewed or written (`codexTokenAsKept`), and nothing shown on the Usage page. Before, turning Codex off in magpie after its allowance ran out left the Codex app greying Send for magpie's models through restarts, and one already moved was put back on the held account (sherlock_23333 on X; `TestCodexHoldReadLeftAlone`, `TestCodexHoldMatters`). Where the app goes by what usage can't show (an experiment's gate, a reserve, a Team plan's overage under the reserve experiment), it counts as held: a wrong move costs ChatGPT extras, a missed one every turn. A saved reading kept through a failed read stops saying held once its used-up window has started again; a hold with no window used up stays till a fresh read. The app then loses its ChatGPT state (durable threads, remote control), so a window at 100% alone, which credits get past, doesn't move it (with no credits it does when the backend says `allowed` false, and only then: `codexAtLimit`. The app's composer gate greys Send on that alone, in ChatGPT.app 26.1029 as in 26.1021, and keeps a window of an allowed account at 1% or more, so allowed not said or allowed with a window at 100% is an account it still sends for. A used-up 5h window with the week open is held through it: the backend says allowed false there, as the real Team reply in testdata does with its 5h at 100% and its week at 63%; xiaoq6285 on Discord) (`codex.out` marks the move, and Sync undoes it once the account has room). The same holds on one of Codex's own models joined beside the sign-in (MasterYi on Discord: the Codex app greyed Send for every model on a used-up account): Sync makes magpie the provider on that model as magpie serves it (`codexOwnViaMagpie`, `codex/<model>`), keeps the model picked in `codex.out_own`, and once the account has room puts Codex back joined on it; a model the user picked meanwhile stays theirs. With no ChatGPT account in magpie to serve it, Codex is left as it is (`TestCodexOwnModelGoesThroughMagpieWhileUsedUp`, `TestCodexOwnModelKeptOnChatGPT`). Where magpie would serve that model on the same used-up account alone (no fallback on the Codex subscription and no other ChatGPT account not known out: `provider.CodexServesWhileOut` false), every turn on it would be refused too, but the Codex app greys Send for every model while the account is out, so keeping the account's menu costs a grey Send (shamen, chenhan and xiaoq6285 on Discord). Sync then makes magpie the provider on a stand-in model of magpie's that is on no ChatGPT account (`codexOtherModel`, kept in `codex.out_stand` beside `codex.out_own`), once per held/unheld transition: on the stand-in the model is magpie's, so the branch isn't met again and a steady held state writes nothing and ends no app-server. At the reset Codex is put back joined on its own model; another model picked meanwhile stays theirs (the stand-in itself picked can't be told from staying on it, and gives way to the own model). This reverses f37742e14, which left Codex on its sign-in to keep the account's menu and usage (the app-server restarts it cost, #4550, are the two the takeover makes). With nothing else in magpie to offer (no stand-in) Codex stays on its sign-in, as no takeover could send (`TestCodexOwnModelOneSpentAccountStaysOnItsSignIn`, `TestCodexOwnModelOneSpentAccountTakenOverForOtherModels`, `TestCodexServesWhileOut`). The account is read again at once when a reply says it may be out (a `usage_limit_reached` rest, or an `x-codex-*` window heard at 100%; `provider.CodexMayBeUsedUp`, at most every 20s, the active account only), not only on the five-minute look. A turn relayed to Codex's own sign-in, the one account on (`codexUpstreamOn` with no account, the gateway's `codexRelayedAccount`), is heard the same way: its `x-codex-*` windows and `codex.rate_limits` event kept as the sign-in's usage (`heardCodexLimits`), and a `usage_limit_reached` refusal reading it again. Before, only turns served through magpie's accounts were, so with one account magpie learned the account was out only at the next look, minutes on, and the Codex app kept Send greyed until it was restarted (unsplashz on Discord; `TestCodexUsedUpRelayedAsksAtOnce`, `TestCodexRelayedWindowsHeard`). A Codex started before magpie became its provider keeps sending its own model's turns to its built-in provider; while the sign-in is known out (`provider.CodexUsedUpKnown`) and the request signs as it, those go through routing as `codex/<model>` (`codexAccounts`), as a restarted Codex's do (`TestCodexHeldSignInServedWithoutRestart`). The Codex app greys Send for every model, magpie's too, while its `authMethod` is `chatgpt` and its rate limit says not allowed (its composer's gate in ChatGPT.app 26.1013), and reads `authMethod` from its app-server's `account/read` only as the app-server starts; with magpie the provider (`requires_openai_auth` false) that answers no account, so the gate lifts. So the gateway process restarts the app's own app-server each time magpie becomes Codex's provider for the used-up account (`Agent.AppOut`) and again when Codex is put back on the account after its reset, and likewise whenever what the app-server reads as it starts and magpie writes changes, which is where its requests go (`model_provider`, `openai_base_url` and the magpie table's `base_url`, and its `requires_openai_auth` while that table is Codex's `model_provider`: beside the sign-in the app-server reads the built-in provider's account, so the key following the account out and back is nothing it reads; `codexAppRoute`, through the `provider.CodexAppRoute` hook): a Disconnect, a Connect, failover written or taken out. The model list is not part of it: neither `model_catalog_json` nor what the catalog holds. The catalog follows magpie's names and the effort new sessions start at, which the Codex app saves on each pick, and the ChatGPT app takes an ended app-server as a crash and relaunches, so a route that hashed the catalog (from lucis0116 on X until #4550) ended the app every few minutes (indekkusu141209 on X). A new list is read at the app's next launch or on the Agents row's Restart (`StaleCopies`) A list that drops a model and has it back at the next fetch, the same list in another order, and a catalog read half-written leave the route as it was (`TestCodexEffortPickKeepsTheAppRunning`, `TestCodexAppRouteIgnoresARename`, `TestCodexAppRouteKeepsThroughListFlaps`). Before this an app-server started while Codex was connected kept sending to the gateway after Disconnect until the app was restarted (JiangLiuer222 on X). At the watcher's first look only a used-up account's app-servers are ended, since what the others read before magpie started isn't known. What magpie changes by itself that the app works without waits for the user, though, unless they ticked Restart the Codex app when magpie switches its account back (`Provider.RestartApp`, `provider/restartapp`, off by default, this computer's own like KeepLogin): its switch back once the account it moved off has room (`SwitchWhenSpent` → `switchLoginBy(…, true)`, `codexApp.auto`) and giving Codex its account back at the reset. Those leave the app-server running, log why, and the switch notice's Restart is the way to follow; a switch the user makes, a Connect, a Disconnect and failover written or taken out still restart it. So does whatever leaves the app-server on a used-up account, tick or not: the takeover in, the first look on one, and magpie's switch off one (`needed` in `codexAppStep`), since the app greys Send there and reads the account only as its app-server starts, so with the tick off a takeover at the limit left Send grey and the fallback unreachable (v0.1.2826 to its fix). An app-server left running on the account magpie switched Codex back off is restarted too once that account is read held (`restartCodexAppLeftOnSpent`, on each full look of `KeepOnAnAccountWithRoom`, once per app-server left): it keeps the account it started on (`CodexAppStale`), so when that ran out the app greyed Send for every model while the account Codex is signed in to had room and nothing else read the old one (nb5p on Discord: B first in magpie, the app still on A; `TestCodexAppLeftOnASpentAccountIsRestarted`). atom0964 on Discord had both sign-in ticks off and the ChatGPT app relaunched at every switch between two Plus accounts (`TestCodexAppLeftRunningForMagpiesOwnChanges`, `TestCodexAppFirstLookOnAUsedUpAccountRestarts`, `restart-app.test.cjs`). It runs on every system (`KeepCodexAppOnItsProvider`, every 3s; Ethereal499 and Isdavexxx on X, MasterYi on Discord, #540: the earlier once-only reopen ran on macOS from the GUI process only, so Windows, Linux, a GUI-less magpie and the switch back stayed greyed). It ends only app-servers on magpie's Codex home (`codexAppHomeIs`: the process's `CODEX_HOME`, else `HOME/.codex`, read by `proc.EnvOf`; Windows can't tell and counts every one), only once no Codex request is in flight through the gateway nor ended in the last 10s (`Server.CodexBusy`) and no session under the Codex home has a turn started and not ended (`codexTurnOpen`), and with a clean exit (`proc.End`: SIGTERM, `TerminateProcess` with code 0), since the app shows any other exit as a crash. Each end is logged with what made the app-server stale: the account switched, the route changed, or the used-up takeover (`codex: ended the Codex app's app-server [pid] for the app to start another: <why>`), so a crash a user reports can be put down to one of them (#4550, `TestCodexAppEndSaysWhy`). The app starts another app-server at once and keeps its window, threads and drafts (tried in the real app in a sandbox `CODEX_HOME`, both ways). An app-server that outlives three ends, or may not be ended, leaves the row saying to quit and reopen the app (`CodexAppStuck`). An ended app-server's pid gone doesn't mean the app has another: the Windows app (MSIX `OpenAI.Codex`, stdio) starts one only once the old one's stdout closes, and a child it left (an MCP server, a tool command) holds that pipe open, so the app answered "Codex app-server process is not available" until it was restarted (蛋仔 on Discord). The watcher waits `codexAppBackWait` (30s) for another app-server; when none came and the app is still open (`CodexAppOpen`), it quits and opens the app as the Agents row's Restart does (`CodexAppReopen`, Windows only), else the row says to (`CodexAppStuck`). `RestartCodexApp`, uninstall's `RestartCodexAppWhenIdle` and the switch notice's Restart (`RestartSwitchedCodexApp`) wait for it the same way and reopen or say so alike, and `recheckLeft` keeps the record while the app is open with no app-server. A signed-in ChatGPT app (26.1021) can still fail on the app-server it starts next ("Hosted AppServerManager identity is not ready") and show "ChatGPT hit a snag" until it is quit and opened again (ysm119 on Discord, #4550), a fault in the app the clean end can't avoid. So for `codexAppCrashWait` (60s) after each of these ends ([`codex_app_crash.go`](../../internal/provider/codex_app_crash.go)) the app's own logs are read (`CodexAppCrashed`, [`agent/codex_app_crash.go`](../../internal/agent/codex_app_crash.go): `~/Library/Logs/com.openai.codex`, `%LOCALAPPDATA%\Codex\Logs` and the Store package's, `$XDG_STATE_HOME/codex/logs`) for a whole `fatal_error_broadcasted` line stamped after the end. When the page shows and no request has gone through magpie or been in flight since, and no Codex turn has opened since, the app is quit and opened once (`CodexAppRelaunch`: ⌘Q's quit and `open` on macOS, never forced, ChatGPT.app by its bundle id only; `CodexAppReopen` on Windows); where that can't be done (Linux, an app that didn't quit) the Agents row says to quit and reopen it (`CodexAppSnagged`, `appSnag`) until the app-servers seen then are gone or the app is closed. Logs that can't be read reopen nothing (`TestCodexAppReopenedWhenItShowsItsErrorPage`, `TestCodexAppInUseAfterItsErrorPageIsLeft`, `TestCodexAppCrashedReadsItsOwnLogs`, `TestCodexAppRelaunchOnlyTheCodexApp`, `codex-app-snag.test.cjs`). A turn left open in Codex's sessions holds the restart for up to `codexTurnWindow` (30m), except where the app-server is on a used-up account: after a switch off one (`SwitchWhenSpent` → `codexAppSpentSwitch`, or a switch by hand off an account last read held, `codexHeldKnown` in `noteCodexSwitch`) and when magpie becomes Codex's provider for one (`codexAppStep`'s `into`; xiaoq6285 on Discord: quota out, then another account or provider picked, and Send stayed grey; `TestCodexAppServerRestartedPastATurnStuckWhenMagpieTakesOver`, `TestCodexHandSwitchOffAHeldAccountIsSpent`). There a turn that has written no session file and sent nothing through magpie for `codexTurnStuckAfter` (2m) counts stuck and the app-server is restarted past it, since its next request would be refused on that account (蛋仔 on Discord: quota ran out mid-task and the app hung till restarted; `TestCodexAppServerRestartedPastATurnStuckOnTheSpentAccount`). An account switch restarts nothing, and neither the app nor the background daemon is said to be left on the old account (`CodexAppStale`, `CodexDaemonStale`, the CLI's switch line), while the provider Codex's config.toml names takes no ChatGPT account (`provider.CodexNoAccount`, `codexNoAccount` in [`agents.go`](../../internal/agent/agents.go)): a top-level `model_provider` other than `openai` whose `[model_providers]` table doesn't say `requires_openai_auth = true`, such as magpie's with the user's own `false` (danzi002 on Discord). Codex then sends the table's key and its app-server reads no account (codex-rs `account_state`, `resolve_provider_auth`); tried with codex-cli 0.165.0 in a sandbox `CODEX_HOME`: `account/read` and `getAuthStatus` said no account before and after auth.json was switched, and `codex exec` sent `Bearer` the table's key on both accounts. A route change still restarts it, and so does a switch under a profile, the built-in provider, a provider with no table or a config that can't be read (`TestCodexNoAccountSwitchRestartsNothing`, `TestCodexNoAccountOfEachConfig`, `TestCodexNoAccountFollowsRequiresOpenAIAuth`). Until the reset the app's ChatGPT side is off (cloud tasks, its usage meter, Log out); the Agents row says so with the reset's time (`appOut` in `/api/state`, `CodexOutUntil`), and it all comes back at the reset. While the active account is held or a window is at 90% or more, its usage is read every minute rather than every five (`codexLookEvery`). `TestCodexAppServerRestartedEachWay`, `TestCodexAppServerRestartedOnDisconnect`, `TestCodexAppRouteFollowsConnectAndDisconnect`, `TestCodexEffortPickKeepsTheAppRunning`, `TestCodexAppRouteIgnoresARename`, `TestCodexAppServerUnknown`, `TestCodexAppServerStuck`, `TestCodexAppServersOnHome`, `TestCodexTurnOpen`, `TestCodexBusy`, `codex-app-out.test.cjs`.
++- Codex signed in to ChatGPT stays beside its sign-in (`openai_base_url`) unless the user picks magpie API. magpie becomes its provider only while the Codex app holds the active account, which it sends nothing for: `/wham/usage` says it isn't allowed, and it has no credits and isn't a workspace still within its overage (`codexHeld`, read by `provider.CodexUsedUp`). With Codex switched off or removed in magpie (`leftAlone`), whose allowance magpie otherwise reads nothing of, the active account is still read for this alone while Codex takes magpie's models beside its sign-in or magpie is its provider for the held account (`Agent.HoldMatters`, through the `provider.CodexHoldMatters` hook; `codexHoldReading`): once a minute at most, with the token as Codex keeps it, never renewed or written (`codexTokenAsKept`), and nothing shown on the Usage page. Before, turning Codex off in magpie after its allowance ran out left the Codex app greying Send for magpie's models through restarts, and one already moved was put back on the held account (sherlock_23333 on X; `TestCodexHoldReadLeftAlone`, `TestCodexHoldMatters`). Where the app goes by what usage can't show (an experiment's gate, a reserve, a Team plan's overage under the reserve experiment), it counts as held: a wrong move costs ChatGPT extras, a missed one every turn. A saved reading kept through a failed read stops saying held once its used-up window has started again; a hold with no window used up stays till a fresh read. The app then loses its ChatGPT state (durable threads, remote control), so a window at 100% alone, which credits get past, doesn't move it (with no credits it does when the backend says `allowed` false, and only then: `codexAtLimit`. The app's composer gate greys Send on that alone, in ChatGPT.app 26.1029 as in 26.1021, and keeps a window of an allowed account at 1% or more, so allowed not said or allowed with a window at 100% is an account it still sends for. A used-up 5h window with the week open is held through it: the backend says allowed false there, as the real Team reply in testdata does with its 5h at 100% and its week at 63%; xiaoq6285 on Discord) (`codex.out` marks the move, and Sync undoes it once the account has room). The same holds on one of Codex's own models joined beside the sign-in (MasterYi on Discord: the Codex app greyed Send for every model on a used-up account): Sync makes magpie the provider on that model as magpie serves it (`codexOwnViaMagpie`, `codex/<model>`), keeps the model picked in `codex.out_own`, and once the account has room puts Codex back joined on it; a model the user picked meanwhile stays theirs. With no ChatGPT account in magpie to serve it, Codex is left as it is (`TestCodexOwnModelGoesThroughMagpieWhileUsedUp`, `TestCodexOwnModelKeptOnChatGPT`). Where magpie would serve that model on the same used-up account alone (no fallback on the Codex subscription and no other ChatGPT account not known out: `provider.CodexServesWhileOut` false), every turn on it would be refused too, but the Codex app greys Send for every model while the account is out, so keeping the account's menu costs a grey Send (shamen, chenhan and xiaoq6285 on Discord). Sync then makes magpie the provider on a stand-in model of magpie's that is on no ChatGPT account (`codexOtherModel`, kept in `codex.out_stand` beside `codex.out_own`), once per held/unheld transition: on the stand-in the model is magpie's, so the branch isn't met again and a steady held state writes nothing and ends no app-server. At the reset Codex is put back joined on its own model; another model picked meanwhile stays theirs (the stand-in itself picked can't be told from staying on it, and gives way to the own model). This reverses f37742e14, which left Codex on its sign-in to keep the account's menu and usage (the app-server restarts it cost, #4550, are the two the takeover makes). With nothing else in magpie to offer (no stand-in) Codex stays on its sign-in, as no takeover could send (`TestCodexOwnModelOneSpentAccountStaysOnItsSignIn`, `TestCodexOwnModelOneSpentAccountTakenOverForOtherModels`, `TestCodexServesWhileOut`). The account is read again at once when a reply says it may be out (a `usage_limit_reached` rest, or an `x-codex-*` window heard at 100%; `provider.CodexMayBeUsedUp`, at most every 20s, the active account only), not only on the five-minute look. A turn relayed to Codex's own sign-in, the one account on (`codexUpstreamOn` with no account, the gateway's `codexRelayedAccount`), is heard the same way: its `x-codex-*` windows and `codex.rate_limits` event kept as the sign-in's usage (`heardCodexLimits`), and a `usage_limit_reached` refusal reading it again. Before, only turns served through magpie's accounts were, so with one account magpie learned the account was out only at the next look, minutes on, and the Codex app kept Send greyed until it was restarted (unsplashz on Discord; `TestCodexUsedUpRelayedAsksAtOnce`, `TestCodexRelayedWindowsHeard`). A Codex started before magpie became its provider keeps sending its own model's turns to its built-in provider; while the sign-in is known out (`provider.CodexUsedUpKnown`) and the request signs as it, those go through routing as `codex/<model>` (`codexAccounts`), as a restarted Codex's do (`TestCodexHeldSignInServedWithoutRestart`). The Codex app greys Send for every model, magpie's too, while its `authMethod` is `chatgpt` and its rate limit says not allowed (its composer's gate in ChatGPT.app 26.1013), and reads `authMethod` from its app-server's `account/read` only as the app-server starts; with magpie the provider (`requires_openai_auth` false) that answers no account, so the gate lifts. So the gateway process restarts the app's own app-server each time magpie becomes Codex's provider for the used-up account (`Agent.AppOut`) and again when Codex is put back on the account after its reset, and likewise whenever what the app-server reads as it starts and magpie writes changes, which is where its requests go (`model_provider`, `openai_base_url` and the magpie table's `base_url`, and its `requires_openai_auth` while that table is Codex's `model_provider`: beside the sign-in the app-server reads the built-in provider's account, so the key following the account out and back is nothing it reads; `codexAppRoute`, through the `provider.CodexAppRoute` hook): a Disconnect, a Connect, failover written or taken out. The model list is not part of it: neither `model_catalog_json` nor what the catalog holds. The catalog follows magpie's names and the effort new sessions start at, which the Codex app saves on each pick, and the ChatGPT app takes an ended app-server as a crash and relaunches, so a route that hashed the catalog (from lucis0116 on X until #4550) ended the app every few minutes (indekkusu141209 on X). A new list is read at the app's next launch or on the Agents row's Restart (`StaleCopies`) A list that drops a model and has it back at the next fetch, the same list in another order, and a catalog read half-written leave the route as it was (`TestCodexEffortPickKeepsTheAppRunning`, `TestCodexAppRouteIgnoresARename`, `TestCodexAppRouteKeepsThroughListFlaps`). Before this an app-server started while Codex was connected kept sending to the gateway after Disconnect until the app was restarted (JiangLiuer222 on X). At the watcher's first look only a used-up account's app-servers are ended, since what the others read before magpie started isn't known. What magpie changes by itself that the app works without waits for the user, though, unless they ticked Restart the Codex app when magpie switches its account back (`Provider.RestartApp`, `provider/restartapp`, off by default, this computer's own like KeepLogin): its switch back once the account it moved off has room (`SwitchWhenSpent` → `switchLoginBy(…, true)`, `codexApp.auto`) and giving Codex its account back at the reset. Those leave the app-server running, log why, and the switch notice's Restart is the way to follow; a switch the user makes, a Connect, a Disconnect and failover written or taken out still restart it. So does whatever leaves the app-server on a used-up account, tick or not: the takeover in, the first look on one, and magpie's switch off one (`needed` in `codexAppStep`), since the app greys Send there and reads the account only as its app-server starts, so with the tick off a takeover at the limit left Send grey and the fallback unreachable (v0.1.2826 to its fix). An app-server left running on the account magpie switched Codex back off is restarted too once that account is read held (`restartCodexAppLeftOnSpent`, on each full look of `KeepOnAnAccountWithRoom`, once per app-server left): it keeps the account it started on (`CodexAppStale`), so when that ran out the app greyed Send for every model while the account Codex is signed in to had room and nothing else read the old one (nb5p on Discord: B first in magpie, the app still on A; `TestCodexAppLeftOnASpentAccountIsRestarted`). atom0964 on Discord had both sign-in ticks off and the ChatGPT app relaunched at every switch between two Plus accounts (`TestCodexAppLeftRunningForMagpiesOwnChanges`, `TestCodexAppFirstLookOnAUsedUpAccountRestarts`, `restart-app.test.cjs`). It runs on every system (`KeepCodexAppOnItsProvider`, every 3s; Ethereal499 and Isdavexxx on X, MasterYi on Discord, #540: the earlier once-only reopen ran on macOS from the GUI process only, so Windows, Linux, a GUI-less magpie and the switch back stayed greyed). It ends only app-servers on magpie's Codex home (`codexAppHomeIs`: the process's `CODEX_HOME`, else `HOME/.codex`, read by `proc.EnvOf`; Windows can't tell and counts every one), only once no Codex request is in flight through the gateway nor ended in the last 10s (`Server.CodexBusy`) and no session under the Codex home has a turn started and not ended (`codexTurnOpen`), and with a clean exit (`proc.End`: SIGTERM, `TerminateProcess` with code 0), since the app shows any other exit as a crash. Each end is logged with what made the app-server stale: the account switched, the route changed, or the used-up takeover (`codex: ended the Codex app's app-server [pid] for the app to start another: <why>`), so a crash a user reports can be put down to one of them (#4550, `TestCodexAppEndSaysWhy`). The app starts another app-server at once and keeps its window, threads and drafts (tried in the real app in a sandbox `CODEX_HOME`, both ways). An app-server that outlives three ends, or may not be ended, leaves the row saying to quit and reopen the app (`CodexAppStuck`). An ended app-server's pid gone doesn't mean the app has another: the Windows app (MSIX `OpenAI.Codex`, stdio) starts one only once the old one's stdout closes, and a child it left (an MCP server, a tool command) holds that pipe open, so the app answered "Codex app-server process is not available" until it was restarted (蛋仔 on Discord). The watcher waits `codexAppBackWait` (30s) for another app-server; when none came and the app is still open (`CodexAppOpen`), it quits and opens the app as the Agents row's Restart does (`CodexAppReopen`, Windows only), else the row says to (`CodexAppStuck`). `RestartCodexApp`, uninstall's `RestartCodexAppWhenIdle` and the switch notice's Restart (`RestartSwitchedCodexApp`) wait for it the same way and reopen or say so alike, and `recheckLeft` keeps the record while the app is open with no app-server. A signed-in ChatGPT app (26.1021) can still fail on the app-server it starts next ("Hosted AppServerManager identity is not ready") and show "ChatGPT hit a snag" until it is quit and opened again (ysm119 on Discord, #4550), a fault in the app the clean end can't avoid; sometimes the same identity error has the app's reconnect thread fail to resume the chat it had open instead (`websocket_reconnect_thread_resume_failed`, no page, the chat left disconnected till the app is quit and opened again; ZeroP27, #5476). So for `codexAppCrashWait` (60s) after each of these ends ([`codex_app_crash.go`](../../internal/provider/codex_app_crash.go)) the app's own logs are read (`CodexAppCrashed`, [`agent/codex_app_crash.go`](../../internal/agent/codex_app_crash.go): `~/Library/Logs/com.openai.codex`, `%LOCALAPPDATA%\Codex\Logs` and the Store package's, `$XDG_STATE_HOME/codex/logs`) for a whole line of either stamped after the end (`codexCrashLines`; a resume failed for another reason is none of them). When one shows and no request has gone through magpie or been in flight since, and no Codex turn has opened since, the app is quit and opened once (`CodexAppRelaunch`: ⌘Q's quit and `open` on macOS, never forced, ChatGPT.app by its bundle id only; `CodexAppReopen` on Windows); where that can't be done (Linux, an app that didn't quit) the Agents row says to quit and reopen it (`CodexAppSnagged`, `appSnag`) until the app-servers seen then are gone or the app is closed. Logs that can't be read reopen nothing (`TestCodexAppReopenedWhenItShowsItsErrorPage`, `TestCodexAppInUseAfterItsErrorPageIsLeft`, `TestCodexAppCrashedReadsItsOwnLogs`, `TestCodexAppCrashedReadsTheChatItsReconnectFailedToResume`, `TestCodexAppRelaunchOnlyTheCodexApp`, `codex-app-snag.test.cjs`). A turn left open in Codex's sessions holds the restart for up to `codexTurnWindow` (30m), except where the app-server is on a used-up account: after a switch off one (`SwitchWhenSpent` → `codexAppSpentSwitch`, or a switch by hand off an account last read held, `codexHeldKnown` in `noteCodexSwitch`) and when magpie becomes Codex's provider for one (`codexAppStep`'s `into`; xiaoq6285 on Discord: quota out, then another account or provider picked, and Send stayed grey; `TestCodexAppServerRestartedPastATurnStuckWhenMagpieTakesOver`, `TestCodexHandSwitchOffAHeldAccountIsSpent`). There a turn that has written no session file and sent nothing through magpie for `codexTurnStuckAfter` (2m) counts stuck and the app-server is restarted past it, since its next request would be refused on that account (蛋仔 on Discord: quota ran out mid-task and the app hung till restarted; `TestCodexAppServerRestartedPastATurnStuckOnTheSpentAccount`). An account switch restarts nothing, and neither the app nor the background daemon is said to be left on the old account (`CodexAppStale`, `CodexDaemonStale`, the CLI's switch line), while the provider Codex's config.toml names takes no ChatGPT account (`provider.CodexNoAccount`, `codexNoAccount` in [`agents.go`](../../internal/agent/agents.go)): a top-level `model_provider` other than `openai` whose `[model_providers]` table doesn't say `requires_openai_auth = true`, such as magpie's with the user's own `false` (danzi002 on Discord). Codex then sends the table's key and its app-server reads no account (codex-rs `account_state`, `resolve_provider_auth`); tried with codex-cli 0.165.0 in a sandbox `CODEX_HOME`: `account/read` and `getAuthStatus` said no account before and after auth.json was switched, and `codex exec` sent `Bearer` the table's key on both accounts. A route change still restarts it, and so does a switch under a profile, the built-in provider, a provider with no table or a config that can't be read (`TestCodexNoAccountSwitchRestartsNothing`, `TestCodexNoAccountOfEachConfig`, `TestCodexNoAccountFollowsRequiresOpenAIAuth`). Until the reset the app's ChatGPT side is off (cloud tasks, its usage meter, Log out); the Agents row says so with the reset's time (`appOut` in `/api/state`, `CodexOutUntil`), and it all comes back at the reset. While the active account is held or a window is at 90% or more, its usage is read every minute rather than every five (`codexLookEvery`). `TestCodexAppServerRestartedEachWay`, `TestCodexAppServerRestartedOnDisconnect`, `TestCodexAppRouteFollowsConnectAndDisconnect`, `TestCodexEffortPickKeepsTheAppRunning`, `TestCodexAppRouteIgnoresARename`, `TestCodexAppServerUnknown`, `TestCodexAppServerStuck`, `TestCodexAppServersOnHome`, `TestCodexTurnOpen`, `TestCodexBusy`, `codex-app-out.test.cjs`.
+ - Moving a field from one of magpie's models to another (the agent's own picker) is not drift. Moving it off magpie is.
+ - Claude Desktop applying a configLibrary profile other than magpie's is not drift when that profile is a gateway profile for this magpie's gateway (`desktopAppliedGateway` in [`claudedesktop.go`](../../internal/agent/claudedesktop.go)): Desktop's "Import configuration" adds a file exported on another computer, magpie's profile there with the user's connectors (`managedMcpServers`), as a new entry under a random id (aa86222 on Discord). magpie keeps it applied on Reconnect and through Sync, and writes in it only `inferenceGatewayApiKey` (with a missing auth scheme) when the gateway would refuse its key (`desktopKeyApplied`; magpie's own keys count as taken, `desktopKeyTaken`). A profile for another gateway, CC Switch's among them, is still drift, and Reconnect applies magpie's. The first switch-on still starts magpie's profile from an applied one (#2035). `TestClaudeDesktopImportedProfileIsOnMagpie`.
+ - Claude Desktop 4.4212 (10-29) seals the secrets of its configLibrary profiles at rest: at every start it writes `inferenceGatewayApiKey` (and every other string secret its schema drops on export) back as `__sealed__:v1:` + base64 of `{"configLibrary":{"key":…,"value":…}}` behind `anthropic.claude.crossProfileSecret.v1:`, protected with the user's DPAPI on Windows (entropy `anthropic.claude.crossProfileSecret.v1`, claude-native's `userDpapiProtect`) and Electron's safeStorage (the Keychain) on macOS, and it sends the gateway the key as it was. `desktopOpen` ([`desktopseal.go`](../../internal/agent/desktopseal.go)) reads the key as Desktop does: on Windows it opens the seal (`desktopUnprotect`, `CryptUnprotectData`, never prompting) and judges what is in it; a seal it can't open (macOS, another user's) is unknown, so Check doesn't call it changed and `desktopKeyApplied` doesn't write over it. Before this the key read as changed after every Desktop start and Reconnect only wrote it in the clear for Desktop to seal again (a Windows user on Discord). A key in the clear that isn't one the gateway takes, a missing key and another address are still drift (`TestClaudeDesktopSealedKeyIsNotChanged`, `TestClaudeDesktopImportedSealedKeyStays`, `TestClaudeDesktopSealedKeyOpened` on Windows).
+diff --git a/internal/agent/codex_app_crash.go b/internal/agent/codex_app_crash.go
+index 475262a5b..6cc6184e8 100644
+--- a/internal/agent/codex_app_crash.go
++++ b/internal/agent/codex_app_crash.go
+@@ -12,9 +12,10 @@ import (
+ 	"time"
+ )
+ 
+-// The Codex app's own logs, read for the page it shows when it can't go on
+-// after magpie restarted its app-server (provider.CodexAppCrashed, see
+-// provider/codex_app_crash.go). The app writes them as its file logger
++// The Codex app's own logs, read for what it logs when it can't take the
++// app-server magpie restarted: the page it shows then, and the resume of
++// the chat it had open failing (codexCrashLines below; provider.
++// CodexAppCrashed, see provider/codex_app_crash.go). The app writes them as its file logger
+ // does in 26.1021 (file-based-logger: macOS ~/Library/Logs/<bundle id>,
+ // Windows %LOCALAPPDATA%\Codex\Logs, Linux $XDG_STATE_HOME/codex/logs,
+ // each with a YYYY/MM/DD folder for the UTC day a file was opened), one
+@@ -60,21 +61,39 @@ const codexLogDays = 7
+ // codexLogTail is how much of the end of a log file is read.
+ const codexLogTail = 512 << 10
+ 
+-// codexFatalLine is what the app's AppServerConnection logs as it shows the
+-// page (broadcastFatalError).
+-const codexFatalLine = " [AppServerConnection] fatal_error_broadcasted"
++// codexCrashLines are the lines the app logs when it can't take the
++// app-server magpie restarted, each with all its parts on one line: the
++// page (broadcastFatalError), and the reconnect thread's resume of the
++// chat it had open failing on the same identity not ready — the page's
++// error without the page, the chat left disconnected till the app is quit
++// and opened again (ZeroP27, #5476). A resume failed for another reason
++// (a connection lost) is none of them.
++var codexCrashLines = [][]string{
++	{" [AppServerConnection] fatal_error_broadcasted"},
++	{"websocket_reconnect_thread_resume_failed", "Hosted AppServerManager identity is not ready"},
++}
++
++// crashLine is whether a log line is one of codexCrashLines.
++func crashLine(line []byte) bool {
++	for _, parts := range codexCrashLines {
++		if !slices.ContainsFunc(parts, func(s string) bool { return !bytes.Contains(line, []byte(s)) }) {
++			return true
++		}
++	}
++	return false
++}
+ 
+-// codexAppCrashed is provider.CodexAppCrashed: the first page the app
+-// logged at or after since (less a second for the clock's grain), read in
+-// the files written to since then. known is false when no root can be
+-// read; a root that isn't there is the app never having run on it.
++// codexAppCrashed is provider.CodexAppCrashed: the first of those lines
++// the app logged at or after since (less a second for the clock's grain),
++// read in the files written to since then. known is false when no root
++// can be read; a root that isn't there is the app never having run on it.
+ func codexAppCrashed(since time.Time) (at time.Time, crashed, known bool) {
+ 	from := since.Add(-time.Second)
+ 	for _, root := range codexAppLogRoots() {
+ 		files, ok := codexLogFiles(root, from)
+ 		known = known || ok
+ 		for _, f := range files {
+-			if t, ok := codexFatalIn(f, from); ok && (!crashed || t.Before(at)) {
++			if t, ok := codexCrashIn(f, from); ok && (!crashed || t.Before(at)) {
+ 				at, crashed = t, true
+ 			}
+ 		}
+@@ -134,11 +153,11 @@ func codexLogDirs(dir string) []string {
+ 	return out
+ }
+ 
+-// codexFatalIn is the time of the first page logged in the file at path
+-// at or after from, read in its last codexLogTail bytes. A line the app
+-// is still writing (no newline yet) and the part line the tail cuts into
+-// are left out.
+-func codexFatalIn(path string, from time.Time) (time.Time, bool) {
++// codexCrashIn is the time of the first of codexCrashLines logged in the
++// file at path at or after from, read in its last codexLogTail bytes. A
++// line the app is still writing (no newline yet) and the part line the
++// tail cuts into are left out.
++func codexCrashIn(path string, from time.Time) (time.Time, bool) {
+ 	f, err := os.Open(path)
+ 	if err != nil {
+ 		return time.Time{}, false
+@@ -166,7 +185,7 @@ func codexFatalIn(path string, from time.Time) (time.Time, bool) {
+ 		return time.Time{}, false
+ 	}
+ 	for line := range bytes.Lines(b) {
+-		if !bytes.Contains(line, []byte(codexFatalLine)) {
++		if !crashLine(line) {
+ 			continue
+ 		}
+ 		stamp, _, _ := bytes.Cut(line, []byte(" "))
+diff --git a/internal/agent/codex_app_crash_test.go b/internal/agent/codex_app_crash_test.go
+index 5661ee796..c9605e7ac 100644
+--- a/internal/agent/codex_app_crash_test.go
++++ b/internal/agent/codex_app_crash_test.go
+@@ -39,6 +39,14 @@ func fatalLine(at time.Time) string {
+ 	return at.UTC().Format("2006-01-02T15:04:05.000Z") + " error [AppServerConnection] fatal_error_broadcasted initialized=true listenerCount=2 pendingRequestCount=0 transportKind=stdio\n"
+ }
+ 
++// the line as the app writes it when the reconnect thread fails to resume
++// the chat it had open on the same identity not ready (ZeroP27's #5476:
++// `websocket_reconnect_thread_resume_failed: Hosted AppServerManager
++// identity is not ready`), and one failed for another reason
++func resumeFailedLine(at time.Time, err string) string {
++	return at.UTC().Format("2006-01-02T15:04:05.000Z") + " error [WebSocketManager] websocket_reconnect_thread_resume_failed error=" + err + "\n"
++}
++
+ // The page the Codex app shows when it can't go on after magpie restarted
+ // its app-server (ysm119 on Discord) is read from the app's own logs: a
+ // complete fatal_error_broadcasted line at or after the end, in a file
+@@ -193,6 +201,44 @@ func TestCodexAppCrashedReadsEachSystemsFolder(t *testing.T) {
+ 	}
+ }
+ 
++// The same identity error surfaces without the page, as the app's
++// reconnect thread failing to resume the chat it had open: the chat is
++// left disconnected, no page shows, and the app comes only to be quit and
++// opened again (ZeroP27's #5476). The line counts as the app not taking
++// the restart; a resume failed for another reason is none of it.
++func TestCodexAppCrashedReadsTheChatItsReconnectFailedToResume(t *testing.T) {
++	home := restartSandbox(t)
++	restartOnMac = true
++	root := filepath.Join(home, "Library", "Logs", "com.openai.codex")
++	since := time.Date(2026, 11, 6, 6, 29, 58, 0, time.UTC)
++
++	p := codexLog(t, root, since.Add(-2*time.Hour), exitedLine(since.Add(time.Second)), since.Add(time.Second))
++	if _, crashed, _ := codexAppCrashed(since); crashed {
++		t.Fatal("the clean exit read as the app not taking it")
++	}
++	// the resume failed for another reason
++	os.WriteFile(p, []byte(exitedLine(since.Add(time.Second))+resumeFailedLine(since.Add(2*time.Second), "connection closed")), 0o644)
++	os.Chtimes(p, since.Add(2*time.Second), since.Add(2*time.Second))
++	if _, crashed, _ := codexAppCrashed(since); crashed {
++		t.Fatal("a resume failed for another reason read as it")
++	}
++	// failed on the identity not ready, whole, in the file opened the day
++	// before
++	os.WriteFile(p, []byte(exitedLine(since.Add(time.Second))+resumeFailedLine(since.Add(2*time.Second), "Hosted AppServerManager identity is not ready")), 0o644)
++	os.Chtimes(p, since.Add(2*time.Second), since.Add(2*time.Second))
++	at, crashed, known := codexAppCrashed(since)
++	if !crashed || !known || !at.Equal(since.Add(2*time.Second)) {
++		t.Fatalf("the failed resume: at %v, crashed %v, known %v", at, crashed, known)
++	}
++	// one from before the end (past the stamp's second of slack) is none
++	// of it
++	os.WriteFile(p, []byte(exitedLine(since.Add(time.Second))+resumeFailedLine(since.Add(-2*time.Second), "Hosted AppServerManager identity is not ready")), 0o644)
++	os.Chtimes(p, since.Add(2*time.Second), since.Add(2*time.Second))
++	if _, crashed, _ := codexAppCrashed(since); crashed {
++		t.Fatal("a resume failed before the end read as it")
++	}
++}
++
+ // The app is reopened as the Agents row's Restart reopens an app on a Mac:
+ // ChatGPT.app, known by its bundle id, quit as ⌘Q does and opened once it
+ // has ended, never another bundle (a Codex.app of another id), and never
+diff --git a/internal/gui/api.go b/internal/gui/api.go
+index 53bd616f1..57eda907a 100644
+--- a/internal/gui/api.go
++++ b/internal/gui/api.go
+@@ -247,8 +247,9 @@ type agentJSON struct {
+ 	// was its provider, which shows no account or usage till it restarts
+ 	// (provider.CodexAppBack), for the row's Restart
+ 	AppBack bool `json:"appBack,omitempty"`
+-	// AppSnag: the Codex app showed its error page after magpie restarted
+-	// its app-server and magpie couldn't reopen it (provider.CodexAppSnagged)
++	// AppSnag: the Codex app couldn't take the app-server magpie restarted
++	// (its error page, or the resume of the chat it had open failed) and
++	// magpie couldn't reopen it (provider.CodexAppSnagged)
+ 	AppSnag bool `json:"appSnag,omitempty"`
+ 	// Failover: not connected, yet its requests go through magpie for
+ 	// account failover alone (agent.Agent.FailingOver, #1385)
+diff --git a/internal/provider/codex_app_crash.go b/internal/provider/codex_app_crash.go
+index 96219d934..0d45418a3 100644
+--- a/internal/provider/codex_app_crash.go
++++ b/internal/provider/codex_app_crash.go
+@@ -12,36 +12,40 @@ import (
+ // app-server magpie ended: the one it starts in its place answers its
+ // handshake, and then the app's own Hosted AppServerManager finds the
+ // account it had cached cleared with the old connection ("Hosted
+-// AppServerManager identity is not ready"), logs fatal_error_broadcasted
+-// and shows "ChatGPT hit a snag / Please try again" over the whole window
+-// till it is quit and opened again (ysm119 on Discord, #4550: sljdxde,
+-// wang9262, Indekkusu545). That is in the app, out of magpie's reach; the
++// AppServerManager identity is not ready"). Mostly that has the app log
++// fatal_error_broadcasted and show "ChatGPT hit a snag / Please try
++// again" over the whole window till it is quit and opened again (ysm119
++// on Discord, #4550: sljdxde, wang9262, Indekkusu545); sometimes it has
++// the app's reconnect thread fail to resume the chat it had open instead,
++// no page, the chat left disconnected till the app is quit and opened
++// again (ZeroP27, #5476). Both are in the app, out of magpie's reach; the
+ // app-server's own exit is clean (code 0, which it counts expected).
+ //
+ // So for codexAppCrashWait after magpie ends an app-server, its logs are
+-// read for that line (CodexAppCrashed, the agent package's: the app's own
+-// log folder, a line stamped after the end). When the app shows the page
+-// and no Codex turn has started since nor a request gone through magpie
+-// (the page has no composer: one that ran means it came back), magpie
+-// quits the app and opens it again, once (CodexAppRelaunch: ⌘Q's quit on
+-// macOS, never forced; the Agents row's Restart on Windows). Where that
+-// can't be done, or the app didn't quit, the Agents row says to (snag,
+-// CodexAppSnagged) until the app-servers seen then are gone.
++// read for a line of either (CodexAppCrashed, the agent package's: the
++// app's own log folder, a line stamped after the end). When one shows and
++// no Codex turn has started since nor a request gone through magpie (one
++// that ran means the app came back), magpie quits the app and opens it
++// again, once (CodexAppRelaunch: ⌘Q's quit on macOS, never forced; the
++// Agents row's Restart on Windows). Where that can't be done, or the app
++// didn't quit, the Agents row says to (snag, CodexAppSnagged) until the
++// app-servers seen then are gone.
+ 
+ // CodexAppCrashed and CodexAppRelaunch are set by the agent package.
+-// CodexAppCrashed says whether the Codex app logged the page it shows
+-// when it can't go on (fatal_error_broadcasted) at or after since, and
+-// when; known false when its logs can't be read. CodexAppRelaunch quits
+-// the app and opens it again, erring where it can't.
++// CodexAppCrashed says whether the Codex app logged one of the lines of
++// an app that can't go on (the error page's, or the resume of its open
++// chat failed, codexCrashLines) at or after since, and when; known false
++// when its logs can't be read. CodexAppRelaunch quits the app and opens
++// it again, erring where it can't.
+ var (
+ 	CodexAppCrashed  func(since time.Time) (at time.Time, crashed, known bool)
+ 	CodexAppRelaunch func(ctx context.Context) error
+ 	// codexAppCrashWait is how long after an end the logs are read: the
+-	// app logs the page within seconds of the new app-server's start
++	// app logs either within seconds of the new app-server's start
+ 	codexAppCrashWait = 60 * time.Second
+ )
+ 
+-// watchCodexAppCrash starts reading the app's logs for the page, from
++// watchCodexAppCrash starts reading the app's logs for those lines, from
+ // now, or carries a watch already running on to now's window.
+ func watchCodexAppCrash(now time.Time) {
+ 	c := &codexApp
+@@ -58,8 +62,8 @@ func watchCodexAppCrashLocked(now time.Time) {
+ 	c.crashBy = now.Add(codexAppCrashWait)
+ }
+ 
+-// CodexAppSnagged is whether the Codex app showed the page it shows when
+-// it can't go on after magpie restarted its app-server, and magpie
++// CodexAppSnagged is whether the Codex app logged one of the lines of an
++// app that can't go on after magpie restarted its app-server, and magpie
+ // couldn't reopen it: the user quits it and opens it again.
+ func CodexAppSnagged() bool {
+ 	c := &codexApp
+@@ -69,8 +73,9 @@ func CodexAppSnagged() bool {
+ }
+ 
+ // codexAppCrashStep is codexAppStep's look at the app after an end: it
+-// reads the logs while a watch runs, reopens the app that shows the page,
+-// and forgets a snag once the app-servers running at it are gone.
++// reads the logs while a watch runs, reopens an app that logged one of
++// the lines, and forgets a snag once the app-servers running at it are
++// gone.
+ func codexAppCrashStep(ctx context.Context, now time.Time, busy func() (int, time.Time)) {
+ 	c := &codexApp
+ 	c.Lock()
+@@ -100,8 +105,8 @@ func codexAppCrashStep(ctx context.Context, now time.Time, busy func() (int, tim
+ 	}
+ 	at, crashed, _ := CodexAppCrashed(since)
+ 	if !crashed {
+-		// a page not seen in the window, or logs that can't be read, end
+-		// the watch: an unread log never reopens the app
++		// no line of the two seen in the window, or logs that can't be
++		// read, end the watch: an unread log never reopens the app
+ 		if !now.Before(by) {
+ 			c.Lock()
+ 			if c.crashBy.Equal(by) {
+@@ -114,16 +119,17 @@ func codexAppCrashStep(ctx context.Context, now time.Time, busy func() (int, tim
+ 	c.Lock()
+ 	c.crashSince, c.crashBy = time.Time{}, time.Time{}
+ 	c.Unlock()
+-	// the page has no composer: a request or a turn since means the app
+-	// came back (its Try again) and is in use, never cut short
++	// the page has no composer and a failed resume leaves the chat quiet:
++	// a request or a turn since means the app came back and is in use,
++	// never cut short
+ 	if busy != nil {
+ 		if n, last := busy(); n > 0 || last.After(at) {
+-			log.Printf("codex: the Codex app showed its error page after magpie restarted its app-server, and has sent since; left as it is")
++			log.Printf("codex: the Codex app couldn't take the app-server magpie restarted (its error page, or the resume of the chat it had open failed), and has sent since; left as it is")
+ 			return
+ 		}
+ 	}
+ 	if codexTurnRunning(home, now, at) {
+-		log.Printf("codex: the Codex app showed its error page after magpie restarted its app-server, and a Codex turn runs since; left as it is")
++		log.Printf("codex: the Codex app couldn't take the app-server magpie restarted (its error page, or the resume of the chat it had open failed), and a Codex turn runs since; left as it is")
+ 		return
+ 	}
+ 	lctx, cancel := context.WithTimeout(ctx, codexAppListWait)
+@@ -134,10 +140,10 @@ func codexAppCrashStep(ctx context.Context, now time.Time, busy func() (int, tim
+ 		err = CodexAppRelaunch(ctx)
+ 	}
+ 	if err == nil {
+-		log.Printf("codex: the Codex app showed its error page after magpie restarted its app-server; quit it and opened it again")
++		log.Printf("codex: the Codex app couldn't take the app-server magpie restarted (its error page, or the resume of the chat it had open failed); quit it and opened it again")
+ 		return
+ 	}
+-	log.Printf("codex: the Codex app showed its error page after magpie restarted its app-server; reopening it: %v", err)
++	log.Printf("codex: the Codex app couldn't take the app-server magpie restarted (its error page, or the resume of the chat it had open failed); reopening it: %v", err)
+ 	c.Lock()
+ 	c.snag, c.snagPids = true, pids
+ 	c.Unlock()
+-- 
+2.50.1 (Apple Git-155)
+

@@ -1,0 +1,6 @@
+upstream/main:internal/claudetui/tap.go:37:// extra body (CLAUDE_CODE_EXTRA_BODY) of the client's latest turn: tap.js
+upstream/main:internal/claudetui/tap.js:11:// CLAUDE_CODE_EXTRA_BODY a turn of the client's gave (its safeguards).
+upstream/main:internal/claudetui/tap.js:81:    if (process.env.CLAUDE_CODE_EXTRA_BODY !== extra) process.env.CLAUDE_CODE_EXTRA_BODY = extra;
+upstream/main:internal/gateway/claude_subscription.go:776:	"CLAUDE_CODE_EXTRA_BODY", "DISABLE_PROMPT_CACHING"}
+upstream/main:internal/gateway/claude_subscription.go:1166:	// The interactive mode's Claude Code reads CLAUDE_CODE_EXTRA_BODY from
+upstream/main:internal/gateway/claude_subscription.go:1176:		env = append(env, "CLAUDE_CODE_EXTRA_BODY="+tuiBody)

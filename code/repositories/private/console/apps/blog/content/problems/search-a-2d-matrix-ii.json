@@ -1,0 +1,25 @@
+{
+  "id": "30",
+  "slug": "search-a-2d-matrix-ii",
+  "title": "搜索二维矩阵 II",
+  "difficulty": "medium",
+  "tags": ["数组", "二分查找", "矩阵"],
+  "description": "编写一个高效的算法来搜索 `m x n` 矩阵 `matrix` 中的一个目标值 `target`。该矩阵具有以下特性:\n\n- 每行的元素从左到右升序排列。\n- 每列的元素从上到下升序排列。\n\n**示例 1:**\n\n- 输入:`matrix = [[1,4,7,11,15],[2,5,8,12,19],[3,6,9,16,22],[10,13,14,17,24],[18,21,23,26,30]]`, `target = 5`\n- 输出:`true`\n\n**示例 2:**\n\n- 输入:同上矩阵, `target = 20`\n- 输出:`false`",
+  "solution": "## 思路\n\n从**右上角**出发:当前值等于目标则命中;大于目标则向左移一列(排除当前列);小于目标则向下移一行(排除当前行)。每步排除一行或一列,O(m+n)。\n\n## 参考代码\n\n```js\nfunction searchMatrix(matrix, target) {\n  if (matrix.length === 0) return false;\n  let row = 0;\n  let col = matrix[0].length - 1;\n  while (row < matrix.length && col >= 0) {\n    if (matrix[row][col] === target) return true;\n    if (matrix[row][col] > target) col--;\n    else row++;\n  }\n  return false;\n}\n```\n\n## 复杂度\n\n- 时间:O(m+n)\n- 空间:O(1)",
+  "signature": {
+    "language": "javascript",
+    "entry": "searchMatrix",
+    "params": [
+      { "name": "matrix", "type": "number[][]" },
+      { "name": "target", "type": "number" }
+    ],
+    "returns": "boolean"
+  },
+  "testCases": [
+    { "sample": true, "input": [[[1, 4, 7, 11, 15], [2, 5, 8, 12, 19], [3, 6, 9, 16, 22], [10, 13, 14, 17, 24], [18, 21, 23, 26, 30]], 5], "expected": true },
+    { "sample": true, "input": [[[1, 4, 7, 11, 15], [2, 5, 8, 12, 19], [3, 6, 9, 16, 22], [10, 13, 14, 17, 24], [18, 21, 23, 26, 30]], 20], "expected": false },
+    { "sample": false, "input": [[[1]], 1], "expected": true },
+    { "sample": false, "input": [[[1]], 2], "expected": false },
+    { "sample": false, "input": [[[1, 2], [3, 4]], 3], "expected": true }
+  ]
+}

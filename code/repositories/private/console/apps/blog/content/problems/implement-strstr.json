@@ -1,0 +1,25 @@
+{
+  "id": "76",
+  "slug": "implement-strstr",
+  "title": "找出字符串中第一个匹配项的下标",
+  "difficulty": "easy",
+  "tags": ["双指针", "字符串", "字符串匹配"],
+  "description": "给你两个字符串 `haystack` 和 `needle`,请你在 `haystack` 字符串中找出 `needle` 字符串的第一个匹配项的下标(下标从 0 开始)。如果 `needle` 不是 `haystack` 的一部分,则返回 `-1`。\n\n**示例 1:**\n\n- 输入:`haystack = \"sadbutsad\"`, `needle = \"sad\"`\n- 输出:`0`\n\n**示例 2:**\n\n- 输入:`haystack = \"leetcode\"`, `needle = \"leeto\"`\n- 输出:`-1`\n\n**说明:** 当 `needle` 是空字符串时,返回 `0`(本题约定)。",
+  "solution": "## 思路\n\n朴素匹配:对每个起点检查 `needle` 是否匹配。也可直接用 `indexOf`。\n\n## 参考代码\n\n```js\nfunction strStr(haystack, needle) {\n  if (needle === '') return 0;\n  return haystack.indexOf(needle);\n}\n```\n\n## 复杂度\n\n- 时间:O(n*m)\n- 空间:O(1)",
+  "signature": {
+    "language": "javascript",
+    "entry": "strStr",
+    "params": [
+      { "name": "haystack", "type": "string" },
+      { "name": "needle", "type": "string" }
+    ],
+    "returns": "number"
+  },
+  "testCases": [
+    { "sample": true, "input": ["sadbutsad", "sad"], "expected": 0 },
+    { "sample": true, "input": ["leetcode", "leeto"], "expected": -1 },
+    { "sample": false, "input": ["hello", "ll"], "expected": 2 },
+    { "sample": false, "input": ["aaaaa", "bba"], "expected": -1 },
+    { "sample": false, "input": ["", ""], "expected": 0 }
+  ]
+}

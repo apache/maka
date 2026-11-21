@@ -1,0 +1,76 @@
+gateway: a browser's CORS preflight from another machine is answered, not asked for a key (#4931)
+
+From the report (magpie 0.1.2698, macOS 27.0.1, LAN sharing on, gateway
+port 3425): a page at https://learn.trancy.org, listed in Settings ->
+Network and sharing -> Web pages, failed to add itself as a custom
+engine ("Failed to fetch"). The same OPTIONS preflight for /v1/models,
+declaring GET and the authorization header with no key on it, was
+answered 204 with the CORS headers at http://127.0.0.1:3425 and refused
+401 with no CORS headers at the machine's LAN address and behind an
+HTTPS reverse proxy (Nginx Proxy Manager, no CORS handling of its own);
+the browser logged net::ERR_FAILED,
+corsError: PreflightMissingAllowOriginHeader, and gave up before the
+keyed POST. The 401 body was the gateway's own "no API key was sent:
+send a magpie gateway key as Authorization: Bearer <key> (or
+x-api-key)".
+
+lanGuard sits in front of Handler (Front, oneport.go), and corsGuard is
+inside Handler, so a request from another machine met the key check
+first: with the gateway shared (or listening on the network),
+identifyCaller refused the keyless preflight 401 before corsGuard could
+see it. On loopback lanGuard asks no key, which is why the same
+preflight was answered there. A preflight is an OPTIONS that declares
+the call to come, and per what CORS asks of it carries no key and no
+body: the browser cannot send one.
+
+lanGuard now hands a preflight (corsPreflight: an OPTIONS with an
+Origin and an Access-Control-Request-Method) to corsGuard instead,
+after the allow list and the shared/on-network rules have judged it as
+they judge every request. corsGuard answers a listed origin's with its
+204 and headers and refuses any other page's as on loopback; the call
+the preflight asks after still needs an enabled gateway key, and an
+OPTIONS that declares no call is no preflight. `magpie web`'s page
+port, which hands client routes to the same Front, is covered by the
+same change.
+
+Tests (internal/gateway/cors_test.go), from the report's three-row
+table:
+- TestCORSPreflightFromLAN: the loopback preflight answered 204 (the
+  row that already worked), the LAN-direct one and the reverse-proxy
+  one (X-Forwarded-For, loopback peer) answered 204 with Allow-Origin
+  and Allow-Headers; an unlisted origin's preflight refused with no
+  CORS headers; a keyless GET and a plain OPTIONS from the LAN still
+  401; a preflight while magpie isn't shared still refused.
+
+Broken by hand (the preflight handoff taken back out of lanGuard): the
+LAN-direct and reverse-proxy rows go red, 401 with the report's own
+error body, while the loopback row stays green; restored, ok.
+
+Run (macOS arm64, this tree, -tags nogui):
+- go test -run 'TestCORS|TestLAN|TestForeignPages|TestOpaqueOrigin|
+  TestLocalhostSubdomain|TestRebound|TestOnePort|TestFront'
+  ./internal/gateway: ok.
+- the same with -race: ok.
+- go vet ./internal/gateway, and with GOOS=linux and GOOS=windows: ok.
+- go build . with GOOS=darwin, GOOS=linux and GOOS=windows: ok (the
+  darwin cgo enum-conversion warnings in internal/gui are pre-existing).
+- gofmt -l on the three touched files: clean.
+- go test -count=1 -timeout 50m -tags nogui ./internal/gateway: every
+  test ok except TestCodexPoolSaysTheClientsVersion, the known #4807
+  (another test's Codex identity reaches it in a full package run); it
+  passes run alone at this head.
+- go test -tags nogui -count=1 ./internal/access ./internal/settings .:
+  ok. ./internal/gui: TestProxyCheckSaysAProxyPassedBy fails, and fails
+  the same way run alone on the untouched base a3768cdd1 — this
+  machine's environment, not this change (the test drives checkProxy's
+  ALL_PROXY walk, nothing of the gateway).
+
+Not tried: a real Trancy page against a real LAN address and a real
+Nginx Proxy Manager install; the report's LAN and proxy rows are taken
+from its measured curl and browser evidence, and reproduced here at the
+lanGuard/corsGuard seam with httptest instead. A preflight arriving
+while magpie isn't shared is still refused, so the browser reports the
+preflight, not the later call, as the failure — the network's rules
+come first, as the report asks.
+
+Generated-by: GLM-5.3-Flash (ZCode)

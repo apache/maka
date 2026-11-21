@@ -1,0 +1,51 @@
+provider: a usage reading kept from before no one asked for again is not a failed one (#5085)
+
+A saved Claude account's usage is read only when its card is refreshed,
+when the switch off a spent account needs it, or when the keep-alive
+runs (claudeWindows, #1630); any other reading of it is what was kept.
+What was kept comes back through keepLast with AsOf set and
+ReadDeferred set (no read was made this time), and state() counted
+every reading with AsOf as a failed one. So a saved account sat in
+"its usage couldn't be read" for a careful provider: capHold held it at
+its cap with its own reading in hand (30% used of a 90% cap in #5085),
+and the careful re-read came back as kept as it was, so nothing but a
+manual card refresh ever brought it back. It was held whatever the
+distance from its cap.
+
+A kept reading no one asked for again is what the account last said,
+not a failed one. It stands as its reading, dated as the rounds see it,
+as a kept reading in memory already does, so a careful provider passes
+it while it is under its cap and holds it by its age near one. A kept
+reading shown in place of a read that failed keeps counting as failed,
+as of the good one: what can't be told is still not spent
+(plugins#349). TestUsageReadDeferredIsNotAFailedRead pins both — red on
+the old state(), green here.
+
+The Routing page said "past the cap" of a held account whatever held
+it: leftWhy and unlistedWord now say so when the trace's unread says
+the usage can't be told, in the four languages the page speaks, and the
+routing subsystem doc names the distinction.
+
+Same root as #5079, the other half of it: there the careful re-read
+never reaches Claude's saved accounts; here the kept reading counted as
+a failed one kept the account held even far under its cap. This touches
+neither ReadUsageNow nor claudeWindows, so the two compose.
+
+Run at this change (on 94d0fbfcd): go test -tags nogui -count=1
+./internal/provider/ ok (136s) and ./internal/gateway/ ok (671s);
+TestCareful*, TestCapStop*, TestUsageRead* and the Claude usage tests
+ok; TestPageFilesRevalidate ok; gofmt -l clean; go vet -tags nogui of
+provider, gateway and cli for linux/amd64, darwin/arm64 (gui's cgo
+enum-conversion warnings are pre-existing) and windows/amd64 ok; go
+build -tags nogui for the three ok. go test ./internal/gui/ (the whole
+package) was not completed on this machine: it outgrew 300s under load,
+so only its assets-revalidate tests were run; node --check of the two
+edited plugin files is clean. No -race run: the change is a boolean
+branch in a pure function, nothing concurrent.
+
+Not tried: no real two-account Claude subscription was available, so
+the reported routing log line was not reproduced live; the deferred
+reading's shape (AsOf with ReadDeferred, windows kept) stands in for
+it, the way keepLast hands it over.
+
+Generated-by: GLM-5.3-Flash (ZCode)

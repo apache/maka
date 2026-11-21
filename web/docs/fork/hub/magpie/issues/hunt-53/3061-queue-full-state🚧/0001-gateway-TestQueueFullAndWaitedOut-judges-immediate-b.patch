@@ -1,0 +1,66 @@
+From 19cd883b5e34945e2879a09d522e6cd43c5844ad Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Wed, 21 Oct 2026 00:04:47 +0800
+Subject: [PATCH] gateway: TestQueueFullAndWaitedOut judges "immediate" by the
+ lane's state, not the wall clock (#3061)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+What changed: the test's check that c is turned away at once held
+c's reply to a wall-clock bound (arrived within 900ms); under a full
+-suite run at load ~380 that bound failed while the reply itself was
+right (429, Retry-After, "queue is full"). The bound is replaced by
+the state the maintainer pointed at: when c's 429 is in hand, b is
+still in the queue (the lane's Waiting is 1 — c was answered before
+b's one-second QueueWait ran out) and the vendor has been asked once,
+for a alone (c never reached it). No product code changes.
+
+Run: go test ./internal/gateway/ -run TestQueueFullAndWaitedOut
+-count=10 and -race -count=3 pass; -count=20 passes with four busy
+loops loaded on top (12-core arm64 Mac, load ~4-6). The red is
+reproduced the way the issue suggests, by delaying the read of c's
+reply 950ms on the pre-fix test (the wall-clock bound fails with the
+same message as in the issue), and the new state check still has
+teeth: with a 1.2s delay b has already waited out of the queue and
+the check fails with "want b still in the queue". gofmt clean, go vet
+clean, go build (darwin/arm64, linux/amd64 -tags nogui,
+windows/amd64 -tags nogui) fine.
+
+Fixes #3061
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gateway/concurrency_account_test.go | 12 ++++++++++--
+ 1 file changed, 10 insertions(+), 2 deletions(-)
+
+diff --git a/internal/gateway/concurrency_account_test.go b/internal/gateway/concurrency_account_test.go
+index 4c5d0f48..22473e40 100644
+--- a/internal/gateway/concurrency_account_test.go
++++ b/internal/gateway/concurrency_account_test.go
+@@ -162,12 +162,20 @@ func TestQueueFullAndWaitedOut(t *testing.T) {
+ 	within(t, "b queued", func() bool { return lane().Waiting == 1 })
+ 
+ 	// the queue full: c turned away at once, as OpenAI says a 429
+-	began := time.Now()
+ 	g.send(context.Background(), "/v1/chat/completions", "slow/m", "c")
+ 	r := g.reply()
+-	if r.tag != "c" || r.status != 429 || r.header.Get("Retry-After") == "" || time.Since(began) > 900*time.Millisecond {
++	if r.tag != "c" || r.status != 429 || r.header.Get("Retry-After") == "" {
+ 		t.Fatalf("c = %+v, want an immediate 429 with Retry-After", r)
+ 	}
++	// "immediate" by the lane's state, not the wall clock (#3061): c was
++	// answered before b left the queue — b still waits and the vendor was
++	// asked once, for a alone
++	if l := lane(); l.Waiting != 1 {
++		t.Fatalf("lane after c = %+v, want b still in the queue when c's 429 arrived", l)
++	}
++	if got := v.seen(); len(got) != 1 {
++		t.Fatalf("vendor saw %v, want a alone", got)
++	}
+ 	var oe struct {
+ 		Error struct{ Message, Type string } `json:"error"`
+ 	}
+-- 
+2.50.1 (Apple Git-155)
+

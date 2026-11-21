@@ -1,0 +1,297 @@
+Refresh of the rebase I posted above (2026-11-10, onto `7e5cebb86`), itself a refresh of the patch — same commit, one more carry onto current `upstream/main` (`0781d2214`), zero textual conflicts, verification re-run. Since that post, `internal/usage` gained three upstream commits (`ca5e537ec` traffic chart, `3b261932e` idle-keep window, `4921bf5a9` group id option); all three are inside the tree the runs below cover, and the patch's namespaces (`matchHash` ids vs the text-pairing `maphash` keys of #5674-era `msgKey`) stay apart on the current tip.
+
+Unchanged, as delivered: a Claude call's message id is matched to the gateway reply's id (`hintsOf`'s rowMsg slot and `matchedBlocks`' slot-25 alias), so a Claude Code call through the gateway is no longer counted again as a "local session" when the requestId is missing and the fallback matching would hold the residue.
+
+<details><summary>patch: usage: a Claude call's message id is matched to the gateway's reply's id (#5674) — git am applies it as is; SHA-256 first 16: 4168b28992a68028</summary>
+
+```text
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Mon, 9 Nov 2026 05:50:32 +0800
+Subject: [PATCH] usage: a Claude call's message id is matched to the gateway's
+ reply's id (#5674)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+A Claude call through the gateway and its session file's copy share no
+request id: Claude Code's file names the reply's message id, and no
+request id of the gateway's own, so the two logs met only in the ±2s
+window's fallback, which a copy 5s apart or of other token counts
+misses — the call stayed behind as a second, local one, counted twice,
+once through magpie and once as not.
+
+The reply's id is now the gateway call's other name: the local calls
+naming either id find the call's group, on the ledger's, the page's and
+the direct calls' matching alike. The request ids' matching, and the
+fallback for the calls neither log names an id of, are as they were.
+
+Attribution: 分析与补丁由 GLM-5.3-Flash (ZCode) 协助完成
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ .../usage/claude_responseid_match_test.go     | 144 ++++++++++++++++++
+ internal/usage/match_chunks.go                |   5 +
+ internal/usage/request_page.go                |  32 +++-
+ 3 files changed, 177 insertions(+), 4 deletions(-)
+ create mode 100644 internal/usage/claude_responseid_match_test.go
+
+diff --git a/internal/usage/claude_responseid_match_test.go b/internal/usage/claude_responseid_match_test.go
+new file mode 100644
+index 000000000..a582b7309
+--- /dev/null
++++ b/internal/usage/claude_responseid_match_test.go
+@@ -0,0 +1,144 @@
++package usage
++
++import (
++	"testing"
++	"time"
++
++	"github.com/yetone/magpie/internal/sessions"
++)
++
++// A Claude call through the gateway and the session file's copy of that
++// call share no request id: Claude Code's file names the API's message id,
++// which the gateway recorded as the reply's id, and names no request id of
++// the gateway's own (#5674). Matching the two logs by that id tells one
++// call, where the ±2s fallback alone matched neither a copy whose end lies
++// beyond the window (#5674, case A) nor one whose token counts differ
++// (#5674, case B), and left it behind as a second, local call.
++func claudePair(at time.Time, localEnd time.Duration, gwOut, localOut int) ([]Record, []sessions.Call) {
++	recs := []Record{{
++		Time: at, Agent: "claude", Provider: "anthropic", Model: "claude-sonnet-4-5",
++		Input: 100, Output: gwOut, Millis: 1000, Status: 200,
++		RequestID: "mgp-1", ResponseID: "msg_abc", Session: "s",
++	}}
++	logs := []sessions.Call{{
++		Time: at.Add(localEnd), Agent: "claude", Session: "s", Model: "claude-sonnet-4-5",
++		Tokens: sessions.Tokens{Input: 100, Output: localOut}, Millis: 1000, Msg: "msg_abc",
++	}}
++	return recs, logs
++}
++
++// The gateway's reply id and the session file's message id are one call's
++// two names: matched even where the ±2s window's fallback is not, and
++// counted once, not once through magpie and once as a local call.
++func TestClaudeMessageIDMatchesGatewayResponseID(t *testing.T) {
++	now := time.Date(2026, 10, 1, 13, 0, 0, 0, time.UTC)
++	recs, logs := claudePair(now, 5*time.Second, 50, 50) // case A: 5s apart, the same tokens
++	matched := gatewayMatches(recs, logs)
++	if !matched[0] {
++		t.Fatal("the file's call of the reply's id was left as a second, local call")
++	}
++	rows, _, _, _ := ledgerWith(time.Time{}, Filter{}, recs, logs)
++	if len(rows) != 1 {
++		t.Fatalf("one call told %d rows apart", len(rows))
++	}
++	if len(rows) == 1 && rows[0].Source == "log" {
++		t.Fatal("the gateway's own call was read away as a local one")
++	}
++}
++
++// The same reply id tells the call though its two logs split the tokens
++// differently, as the window's fallback, which matches on the counts, did
++// not.
++func TestClaudeMessageIDMatchesDespiteTokenMismatch(t *testing.T) {
++	now := time.Date(2026, 10, 1, 13, 0, 0, 0, time.UTC)
++	recs, logs := claudePair(now, time.Second, 50, 60) // case B: within the window, tokens apart
++	matched := gatewayMatches(recs, logs)
++	if !matched[0] {
++		t.Fatal("the file's call of the reply's id was left as a second, local call")
++	}
++	rows, _, _, _ := ledgerWith(time.Time{}, Filter{}, recs, logs)
++	if len(rows) != 1 {
++		t.Fatalf("one call told %d rows apart", len(rows))
++	}
++}
++
++// A call the gateway and the file name by the same request id is matched as
++// it was, whatever the reply ids say.
++func TestCodexRequestIDMatchUnchanged(t *testing.T) {
++	now := time.Date(2026, 10, 1, 13, 0, 0, 0, time.UTC)
++	recs := []Record{{
++		Time: now, Agent: "codex", Provider: "openai", Model: "gpt-5.2",
++		Input: 10, Output: 2, Millis: 1000, Status: 200, RequestID: "req-1",
++	}}
++	logs := []sessions.Call{{
++		Time: now.Add(time.Second), Agent: "codex", Session: "native", Model: "gpt-5.2",
++		Tokens: sessions.Tokens{Input: 10, Output: 2}, Millis: 1000, RequestID: "req-1",
++	}}
++	if !gatewayMatches(recs, logs)[0] {
++		t.Fatal("the request id's match was lost")
++	}
++	// Codex's own pairing, by the reply's id, is Codex's still, and the
++	// message id a Claude call names is no Codex reply's.
++	pairs := codexResponseMatches(recs, logs, nil)
++	if len(pairs) != 0 {
++		t.Fatal("a call with no reply id of its own was paired by one")
++	}
++	recs[0].ResponseID = "resp-1"
++	logs[0].ResponseID = "resp-1"
++	if pairs = codexResponseMatches(recs, logs, nil); len(pairs) != 1 {
++		t.Fatal("Codex's reply-id pairing was lost")
++	}
++	if !gatewayMatches(recs, logs)[0] {
++		t.Fatal("Codex's reply-id pairing stopped matching the call")
++	}
++}
++
++// A call neither log names an id of is matched as it was, by its session,
++// tokens and end within the window.
++func TestNoIDFallbackMatchUnchanged(t *testing.T) {
++	now := time.Date(2026, 10, 1, 13, 0, 0, 0, time.UTC)
++	recs := []Record{{
++		Time: now, Agent: "claude", Provider: "anthropic", Model: "claude-sonnet-4-5",
++		Input: 100, Output: 50, Millis: 1000, Status: 200, Session: "s",
++	}}
++	logs := []sessions.Call{{
++		Time: now.Add(time.Second), Agent: "claude", Session: "s", Model: "claude-sonnet-4-5",
++		Tokens: sessions.Tokens{Input: 100, Output: 50}, Millis: 1000,
++	}}
++	if !gatewayMatches(recs, logs)[0] {
++		t.Fatal("the window's fallback match was lost")
++	}
++	recs[0].Time = now.Add(5 * time.Second)
++	if gatewayMatches(recs, logs)[0] {
++		t.Fatal("a call 5s apart matched without an id or the window")
++	}
++}
++
++// The page's own pairing matches the two names too, and reads the file it
++// would have skipped: the chunk's message ids are among what the gateway's
++// reply ids name.
++func TestClaudeMessageIDMatchOpensNamedChunk(t *testing.T) {
++	now := time.Date(2026, 10, 1, 13, 0, 0, 0, time.UTC)
++	recs, logs := claudePair(now, 5*time.Second, 50, 50)
++	gateway := &rowChunk{}
++	gateway.add(Row{Record: recs[0]}, "", 0, false)
++	local := &rowChunk{Source: sessions.CallSource{Path: "/local/cc-session"}}
++	local.add(Row{Record: logRecord(logs[0]), Source: "log"}, logs[0].Msg, 0, false)
++	local.serial = nextChunkSerial()
++	var opened []*rowChunk
++	matchOpening = func(c *rowChunk) { opened = append(opened, c) }
++	t.Cleanup(func() { matchOpening = nil })
++	ps := pairRows(All, now, []*rowChunk{gateway}, []*rowChunk{local}, nil, nil)
++	matched := false
++	for chunk := range ps.matched {
++		if chunk.Source.Path == "/local/cc-session" && ps.matched.has(rowRef{chunk, 0}) {
++			matched = true
++		}
++	}
++	if !matched {
++		t.Fatal("the page's pairing left the file's call as a second, local one")
++	}
++	if len(opened) == 0 {
++		t.Fatal("matching never read the file whose message id the gateway's reply names")
++	}
++}
+diff --git a/internal/usage/match_chunks.go b/internal/usage/match_chunks.go
+index 2bc9d9023..4b2714fa7 100644
+--- a/internal/usage/match_chunks.go
++++ b/internal/usage/match_chunks.go
+@@ -70,6 +70,11 @@ func hintsOf(chunks []*rowChunk, rows *chunkRows) []*chunkHints {
+ 			if id := open.Strings[open.text(p, 11)]; id != "" {
+ 				h.ids = append(h.ids, uint32(matchHash(id)))
+ 			}
++			// A Claude call's message id names the gateway's reply (#5674):
++			// a file of such calls is one the reply ids open.
++			if id := open.Strings[open.text(p, rowMsg)]; id != "" {
++				h.ids = append(h.ids, uint32(matchHash(id)))
++			}
+ 			if p.Tokens[0]+p.Tokens[1]+p.Tokens[2]+p.Tokens[3] == 0 && p.Flags&16 == 0 {
+ 				continue
+ 			}
+diff --git a/internal/usage/request_page.go b/internal/usage/request_page.go
+index f8bf741cf..d29c907c5 100644
+--- a/internal/usage/request_page.go
++++ b/internal/usage/request_page.go
+@@ -2087,8 +2087,10 @@ func matchedBlocks(gateways []*rowChunk, chunks []*rowChunk, skip refSet, respon
+ 	withID := 0
+ 	for _, gateway := range gateways {
+ 		for i := range gateway.Rows {
+-			if gateway.text(&gateway.Rows[i], 11) != 0 && matchable(gateway, i) {
+-				withID++
++			if gateway.text(&gateway.Rows[i], 11) != 0 || gateway.text(&gateway.Rows[i], 25) != 0 {
++				if matchable(gateway, i) {
++					withID++
++				}
+ 			}
+ 		}
+ 	}
+@@ -2103,14 +2105,30 @@ func matchedBlocks(gateways []*rowChunk, chunks []*rowChunk, skip refSet, respon
+ 				continue
+ 			}
+ 			p := &gateway.Rows[i]
++			// The reply's id is the call's other name (a Claude reply's
++			// message id is, its session file names the same id, and no
++			// request id of the gateway's own, #5674): the local calls
++			// naming either find this call's group.
++			group := int32(-1)
+ 			if id := gateway.Strings[gateway.text(p, 11)]; id != "" {
+ 				if k, ok := byID[id]; ok {
+ 					calls[k].more = append(calls[k].more, ref)
++					group = k
+ 				} else {
+-					byID[id] = int32(len(calls))
++					group = int32(len(calls))
++					byID[id] = group
+ 					calls = append(calls, idCalls{first: ref})
+ 				}
+ 			}
++			if id := gateway.Strings[gateway.text(p, 25)]; id != "" {
++				if _, ok := byID[id]; !ok {
++					if group < 0 {
++						group = int32(len(calls))
++						calls = append(calls, idCalls{first: ref})
++					}
++					byID[id] = group
++				}
++			}
+ 		}
+ 	}
+ 	// the local calls that name an id, chained from its calls[k].last in
+@@ -2139,12 +2157,18 @@ func matchedBlocks(gateways []*rowChunk, chunks []*rowChunk, skip refSet, respon
+ 			if skip.has(ref) || reserved.has(ref) || p.Time().Before(since) {
+ 				continue
+ 			}
+-			if open.text(p, 11) == 0 {
++			// A call names the request id the gateway made its own and, a
++			// Claude call, the message's id, which is the gateway's reply's
++			// id (#5674).
++			if open.text(p, 11) == 0 && open.text(p, rowMsg) == 0 {
+ 				continue
+ 			}
+ 			if k, ok := byID[open.Strings[open.text(p, 11)]]; ok {
+ 				found = append(found, idLocal{calls[k].last, timedOf(ref, p)})
+ 				calls[k].last = int32(len(found))
++			} else if k, ok := byID[open.Strings[open.text(p, rowMsg)]]; ok {
++				found = append(found, idLocal{calls[k].last, timedOf(ref, p)})
++				calls[k].last = int32(len(found))
+ 			}
+ 		}
+ 	}
+-- 
+2.50.1 (Apple Git-155)
+
+```
+
+</details>
+
+**Branch with the commit**: [`hunt-20261111-rf-5674`](https://github.com/ggbdpq/magpie/tree/hunt-20261111-rf-5674) (head `22401e1ff7f942def5903db80e7c54ce491fb92b`), rebased onto current `upstream/main` (`0781d2214`); on a fresh checkout at that tip `git am` applies it as is (replayed on a detached worktree, resulting tree identical to the branch head, checked by tree hash).
+
+Verification this round (on `0781d2214` + this commit, `GOCACHE` pinned):
+
+| Check | Result |
+| --- | --- |
+| `go test -tags nogui ./internal/usage -count=1` (whole package; `TestClaudeMessageIDMatchOpensNamedChunk`, `TestClaudeMessageIDMatchesDespiteTokenMismatch`, `TestClaudeMessageIDMatchesGatewayResponseID`, `TestCodexRequestIDMatchUnchanged`, `TestLogRecordResponseIDRemainsCodexOnly`, `TestNoIDFallbackMatchUnchanged` new) | ok (30.8s), zero failures |
+| `go test -race -tags nogui ./internal/usage -count=1` | ok (58.8s) |
+| Ablation: both product files (`match_chunks.go`, `request_page.go`) back at the parent, tests kept | red: `TestClaudeMessageIDMatchesGatewayResponseID`, `TestClaudeMessageIDMatchesDespiteTokenMismatch`, `TestClaudeMessageIDMatchOpensNamedChunk`; restored: green |
+| `gofmt -l` on the three touched files | prints nothing |
+| `go vet -tags nogui ./internal/usage/` | clean |
+| `go build -tags nogui ./...` darwin / `GOOS=linux` | clean |
+
+**Siblings** (re-checked on the current tip): `matchedBlocks` now has four consumers — `ledger.go`'s page pairing, `request_page.go`'s page and newest-ids paths, and `direct.go`'s direct-call reconciliation — all reached through the one function this patch widens, so the ids match covers every face at once; `hintsOf`'s one reader is the same file's page path. `TestLogRecordResponseIDRemainsCodexOnly` pins that the log-record face stays Codex-only, `TestCodexRequestIDMatchUnchanged` that Codex's own pairing is untouched.
+
+**Not verified**: a real Claude Code double-count against a live gateway (NOT-RUNNABLE here, as posted — the fixtures cover the ledger/page/direct shapes the mechanism runs on).
+
+**Attribution**: AI-written; I've read the whole diff and the tests pass. Please keep the author (`ggbdpq`) or add `Co-authored-by: ggbdpq <ggbdpq@gmail.com>`.

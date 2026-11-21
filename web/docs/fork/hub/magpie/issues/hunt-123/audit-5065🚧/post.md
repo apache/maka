@@ -1,0 +1,353 @@
+omp 18.15 with magpie as its provider never started remote compaction on its own, and when it sent a trigger magpie could not carry, the answer was a summary that looked like a seal.
+
+## What's wrong
+
+omp asks a provider for its own compaction (`POST {baseUrl}/responses` with a `compaction_trigger`) only when `remoteCompaction` is enabled on the provider — and on a loopback http gateway, with `v2StreamingEnabled: true` as well. magpie wrote no such block, so every trigger was answered `codexCompact`'s `magpie1:` compaction item. omp's V2 check takes that shape for a successful seal: it does not fall back to its local summarization, and the conversation goes on from magpie's summary unasked.
+
+## Root cause
+
+`ompKept` (#2030) left `remoteCompaction` as a user key and magpie never wrote one, so nothing told omp to send triggers. And when a trigger did arrive and `nativeCompactionFor` was false, `handle`'s compaction branch ran `codexCompact` for every agent — right for Codex, which falls back on a failure, wrong for omp, whose V2 check reads the `magpie1:` item as success.
+
+## The fix
+
+- `ompKept` now writes `remoteCompaction: {enabled: true, v2StreamingEnabled: true}` under magpie's provider in models.yml when every model the write lists as `openai-responses` — a routing group by its every member — compacts natively (`provider.CompactsOn`: the provider's Compaction row on, a Responses wire, the model asked on Responses there). The check reads the write's own list, not the catalog at sync time (`nativeCompactionFor` also needs a `plannedCarrier`, which a file written ahead has none of). No listed Responses model, no block — with one, omp would send triggers `codexCompact` answers `magpie1:` to, the global switch #1099 rejected. A block the user wrote, `enabled: false` included, is never touched.
+- When omp's trigger cannot be carried, the answer is a 400 saying so, never `codexCompact`'s item; Codex keeps the summary path.
+- Not done, per the report: `remoteCompaction.api` (it would send the models asked on other APIs down the Responses compact path), omp's default protocol (#4982), and `POST /v1/responses/compact`.
+
+The fix follows the reporter's spec — thanks wwwhynot3 for reading omp 18.15's binaries and defining the write rule, the error and the exclusions exactly.
+
+Patch (base 93d5c76c0, `git am -3`-tested on a clean tree; sha256 da2102706145a3d9…):
+
+<details>
+<summary><code>0001-omp-enable-remote-compaction-when-the-provider-compa.patch</code></summary>
+
+```diff
+diff --git a/internal/agent/omp.go b/internal/agent/omp.go
+index c1ad0e008..9090df826 100644
+--- a/internal/agent/omp.go
++++ b/internal/agent/omp.go
+@@ -783,8 +783,76 @@ func ompGeminiMode(id string) string {
+ // ProviderConfigSchema). Each stays; the address, API, auth, key and model
+ // list are magpie's, an auth or key it no longer writes gone with it, so a
+ // loopback's auth: none never sits beside the key a WSL omp needs (#2030).
++// remoteCompaction is written where e's write calls for it (ompRemoteCompaction):
++// a block the user wrote, one with enabled: false included, is never touched.
+ func ompKept(path string, e ompProviderEntry) any {
+-	return yamlKept(path, "providers."+magpieID, e, "baseUrl", "api", "auth", "apiKey", "models")
++	v := yamlKept(path, "providers."+magpieID, e, "baseUrl", "api", "auth", "apiKey", "models")
++	if rc, ok := ompRemoteCompaction(path, e); ok {
++		if m, ok := v.(map[string]any); ok {
++			m["remoteCompaction"] = rc
++			return m
++		}
++	}
++	return v
++}
++
++// ompRemoteCompaction is the remoteCompaction block magpie writes under its
++// provider in omp's models.yml, and whether to write it (#5065): enabled,
++// with v2StreamingEnabled for the loopback omp asks V2 of. omp 18.15 asks a
++// provider for its own compaction only with the block, so without it a
++// compaction_trigger is answered magpie's summary, which omp's V2 check
++// takes for a successful seal and never falls back from. It is written when
++// every model this write lists as openai-responses — the only ones whose
++// compact call goes to the Responses API omp points at magpie — compacts
++// natively (provider.Provider.CompactsOn: the provider's Compaction row
++// on, its wire carrying the trigger, the model asked on Responses there),
++// a routing group by its every member. That is asked of the write's own
++// list, not of the catalog at sync time: nativeCompactionFor also needs a
++// key or account the request would go over now (plannedCarrier), which a
++// file written ahead of none has. No model listed as openai-responses (one
++// can't compact natively included), no block: with it omp would send
++// triggers codexCompact answers "magpie1:" to, the very thing the block is
++// to keep out of. A block the user wrote is theirs, and stays (ompKept);
++// the test at hand is skipped when there is one.
++func ompRemoteCompaction(path string, e ompProviderEntry) (any, bool) {
++	if _, ok := edit.GetYAMLText(path, "providers."+magpieID+".remoteCompaction"); ok {
++		return nil, false
++	}
++	if !ompModelsCompacts(e) {
++		return nil, false
++	}
++	return map[string]any{"enabled": true, "v2StreamingEnabled": true}, true
++}
++
++// ompModelsCompacts says whether every model of e listed as
++// openai-responses compacts natively; false when none is listed so. A
++// routing group's every member is asked, as any of them may answer.
++func ompModelsCompacts(e ompProviderEntry) bool {
++	any := false
++	for _, m := range e.Models {
++		if m.API != "openai-responses" {
++			continue
++		}
++		if provider.IsGroupRef(m.ID) {
++			_, ms, ok := provider.FindGroup(m.ID)
++			if !ok || len(ms) == 0 {
++				return false
++			}
++			for _, mm := range ms {
++				if !mm.Provider.CompactsOn(mm.Model) {
++					return false
++				}
++			}
++			any = true
++			continue
++		}
++		p, model, ok := provider.Resolve(m.ID)
++		if !ok || !p.CompactsOn(model) {
++			return false
++		}
++		any = true
++	}
++	return any
+ }
+ 
+ // ompOwnOptions lists the models of the providers the user added to omp's
+diff --git a/internal/agent/omp_remote_compaction_test.go b/internal/agent/omp_remote_compaction_test.go
+new file mode 100644
+index 000000000..2bc2cdb2d
+--- /dev/null
++++ b/internal/agent/omp_remote_compaction_test.go
+@@ -0,0 +1,125 @@
++package agent
++
++import (
++	"os"
++	"path/filepath"
++	"testing"
++
++	"github.com/yetone/magpie/internal/edit"
++	"github.com/yetone/magpie/internal/provider"
++	"gopkg.in/yaml.v3"
++)
++
++// omp's remote compaction (#5065): omp 18.15 asks a provider for its own
++// compaction (POST {baseUrl}/responses, a compaction_trigger) only with
++// remoteCompaction enabled, and on loopback with v2StreamingEnabled too.
++// Where every model magpie's write lists as openai-responses compacts
++// natively (the provider's Compaction row on, a Responses wire, the model
++// asked on Responses there), magpie writes the block, so omp compacts on
++// the provider instead of taking magpie's summary for a successful one and
++// never falling back. A block the user wrote stays as it is, enabled: false
++// included; one listed Responses model that can't compact natively — and no
++// block is written, and none that is there is taken away.
++func TestOmpRemoteCompaction(t *testing.T) {
++	home := syncHome(t)
++	was := ompVersion
++	ompVersion = func() string { return "18.15.0" }
++	t.Cleanup(func() { ompVersion = was })
++	dir := filepath.Join(home, ".omp", "agent")
++	modelsPath := filepath.Join(dir, "models.yml")
++	os.MkdirAll(dir, 0o755)
++	os.WriteFile(filepath.Join(dir, "config.yml"), []byte("modelRoles:\n  default: anthropic/claude-opus-5\n"), 0o644)
++	if err := provider.Save(provider.Provider{ID: "resp", Name: "Resp", Key: "k", Responses: "http://127.0.0.1:1/v1", Models: []string{"grok-5", "grok-6"}}); err != nil {
++		t.Fatal(err)
++	}
++	a := omp(home)
++	f := a.Field("model")
++	block := func() map[string]any {
++		var m struct {
++			Providers map[string]map[string]any `yaml:"providers"`
++		}
++		b, err := os.ReadFile(modelsPath)
++		if err != nil {
++			t.Fatal(err)
++		}
++		if err := yaml.Unmarshal(b, &m); err != nil {
++			t.Fatalf("%v\n%s", err, b)
++		}
++		mp, _ := m.Providers[magpieID]
++		if mp == nil {
++			return nil
++		}
++		rc, _ := mp["remoteCompaction"].(map[string]any)
++		return rc
++	}
++
++	// native compaction off: omp is sent no triggers it can't have answered
++	if err := f.Set("magpie/resp/grok-5"); err != nil {
++		t.Fatal(err)
++	}
++	if rc := block(); rc != nil {
++		t.Fatalf("native compaction off, a block anyway: %v", rc)
++	}
++
++	// on: the block, its two keys alone — no api of its own, which would
++	// send the models asked on other APIs down the Responses compact path
++	if err := provider.SetNativeCompaction("resp", true); err != nil {
++		t.Fatal(err)
++	}
++	if err := f.Set("magpie/resp/grok-6"); err != nil {
++		t.Fatal(err)
++	}
++	rc := block()
++	if rc == nil || rc["enabled"] != true || rc["v2StreamingEnabled"] != true || len(rc) != 2 {
++		t.Fatalf("native compaction on: %v", rc)
++	}
++
++	// the user's own block stays as it is, enabled: false included
++	if err := edit.SetYAML(modelsPath, edit.KV{Path: "providers.magpie.remoteCompaction", Value: map[string]any{"enabled": false}}); err != nil {
++		t.Fatal(err)
++	}
++	if err := a.Sync(); err != nil {
++		t.Fatal(err)
++	}
++	if rc = block(); rc == nil || rc["enabled"] != false || rc["v2StreamingEnabled"] != nil {
++		t.Fatalf("the user's block rewritten:\n%s", rc)
++	}
++
++	// a listed Responses model that can't compact natively: none written.
++	// Here a group the gateway serves on Responses (every member best
++	// there), one of whose members is set to compact natively no more —
++	// omp would send it triggers were the block written
++	if err := provider.SetNativeCompaction("resp", false); err != nil {
++		t.Fatal(err)
++	}
++	if err := provider.Save(provider.Provider{ID: "resp2", Name: "Resp2", Key: "k", Responses: "http://127.0.0.1:1/v1", Models: []string{"grok-5"}}); err != nil {
++		t.Fatal(err)
++	}
++	if err := provider.SaveGroup(provider.Group{ID: "pair", Name: "Pair", Members: []string{"resp/grok-5", "resp2/grok-5"}}); err != nil {
++		t.Fatal(err)
++	}
++	edit.DelYAML(modelsPath, "providers.magpie.remoteCompaction")
++	if err := f.Set("magpie/group/pair"); err != nil {
++		t.Fatal(err)
++	}
++	if rc := block(); rc != nil {
++		t.Fatalf("a member of the group can't compact natively, a block anyway: %v", rc)
++	}
++
++	// both members on: the block is written for the group as for a model
++	if err := provider.SetNativeCompaction("resp2", true); err != nil {
++		t.Fatal(err)
++	}
++	if rc := block(); rc != nil {
++		t.Fatalf("the other member on its own wrote a block: %v", rc)
++	}
++	if err := provider.SetNativeCompaction("resp", true); err != nil {
++		t.Fatal(err)
++	}
++	if err := a.Sync(); err != nil {
++		t.Fatal(err)
++	}
++	if rc = block(); rc == nil || rc["enabled"] != true || rc["v2StreamingEnabled"] != true || len(rc) != 2 {
++		t.Fatalf("the group's members both compact natively: %v", rc)
++	}
++}
+diff --git a/internal/gateway/gateway.go b/internal/gateway/gateway.go
+index b0e876a6d..3d8d14acf 100644
+--- a/internal/gateway/gateway.go
++++ b/internal/gateway/gateway.go
+@@ -2018,9 +2018,19 @@ func (s *Server) handle(from provider.Protocol) http.HandlerFunc {
+ 			// which magpie points here, #1301): the summary is magpie's to
+ 			// make, as on CodexPath, and magpie's summaries go back as text;
+ 			// a provider set to compact natively is asked Codex's own (#1099)
++			// omp, with remoteCompaction enabled (#5065), sends the same
++			// trigger — and its V2 check takes a "magpie1:" compaction item
++			// for a successful seal, never falling back to its local
++			// summarization. So when its trigger can't be carried, the error
++			// goes back as the compaction's, and omp shows it; Codex keeps
++			// the summary path, which it does fall back from.
+ 			if bytes.Contains(body, []byte(`"compaction`)) {
+ 				var compact bool
+ 				if body, compact = codexInputAs(body, true, s.nativeCompactionFor(modelOf(body))); compact {
++					if agentOf(r) == "omp" {
++						writeError(w, from, http.StatusBadRequest, ompTriggerError(modelOf(body)))
++						return
++					}
+ 					s.codexCompact(w, r, body)
+ 					return
+ 				}
+diff --git a/internal/gateway/native_compaction.go b/internal/gateway/native_compaction.go
+index 2b0637aec..9bf929793 100644
+--- a/internal/gateway/native_compaction.go
++++ b/internal/gateway/native_compaction.go
+@@ -495,6 +495,17 @@ func carrierError(model string) string {
+ 	return fmt.Sprintf("Codex asked %s for its own compaction (native compaction), and none of the keys or accounts that serve %s now can be asked it on the Responses API. magpie doesn't turn it into a summary of its own unasked. Turn native compaction off for the provider to have magpie summarise the conversation instead.", model, model)
+ }
+ 
++// ompTriggerError is what omp is told when the compaction_trigger it sent
++// can't be carried (#5065): its provider is not set to compact natively.
++// The "magpie1:" compaction item codexCompact would write instead is no
++// answer to omp — its V2 check takes one for a successful seal and never
++// falls back to its own summarization, so the conversation would go on
++// from magpie's summary unasked. An error has omp show the compaction as
++// failed, its turn unharmed.
++func ompTriggerError(model string) string {
++	return fmt.Sprintf("omp asked %s for its own compaction (remote compaction), and the provider serving %s is not set to compact natively, so the trigger can't be carried. magpie doesn't answer one of its own summaries in its place: omp's V2 check would take it for a successful seal and never fall back. Turn native compaction on for the provider (its Compaction row), or turn remoteCompaction off for it in omp's models.yml to have magpie summarise again.", model, model)
++}
++
+ // compactionWatch reads, on the way past, the compaction a native
+ // compaction request's reply seals, for wroteCheckpoint.
+ type compactionWatch struct {
+diff --git a/internal/gateway/omp_remote_compaction_test.go b/internal/gateway/omp_remote_compaction_test.go
+new file mode 100644
+index 000000000..2e8a94f55
+--- /dev/null
++++ b/internal/gateway/omp_remote_compaction_test.go
+@@ -0,0 +1,37 @@
++package gateway
++
++import (
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"testing"
++
++	"github.com/yetone/magpie/internal/provider"
++)
++
++// #5065: omp with remoteCompaction enabled sends a compaction_trigger on
++// /v1/responses. When it can't be carried — the model's provider is not set
++// to compact natively — the answer is an error, never the "magpie1:"
++// compaction item codexCompact writes: omp's V2 check takes that for a
++// successful seal and never falls back, so the conversation would go on
++// from magpie's summary unasked.
++func TestOmpTriggerUncarriedIsAnError(t *testing.T) {
++	f := &fake{t: t, reply: sse(
++		`data: {"type":"response.output_item.done","output_index":0,"item":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"SUMMARY"}]}}`,
++		`data: {"type":"response.completed","response":{"id":"resp_s","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`)}
++	setup(t, provider.Responses, f)
++	chatgpt(t, func(w http.ResponseWriter, r *http.Request) {
++		t.Error("omp's compaction reached OpenAI")
++	})
++	rec := httptest.NewRecorder()
++	req := httptest.NewRequest("POST", "/v1/responses", strings.NewReader(
++		`{"model":"fake/m1","stream":true,"input":[{"type":"compaction_trigger"},{"type":"message","role":"user","content":[{"type":"input_text","text":"fix the bug"}]}]}`))
++	req.Header.Set("Authorization", "Bearer "+TokenFor("omp"))
++	New().Handler().ServeHTTP(rec, req)
++	if rec.Code == 200 || strings.Contains(rec.Body.String(), magpieCompaction) {
++		t.Fatalf("omp's trigger answered %d %s", rec.Code, rec.Body.String())
++	}
++	if f.calls != 0 {
++		t.Errorf("the summary was asked of the provider anyway (%d calls)", f.calls)
++	}
++}
+-- 
+2.50.1 (Apple Git-155)
+
+```
+
+</details>
+
+## Verification
+
+| Check | Result |
+| --- | --- |
+| `TestOmpRemoteCompaction` (agent): block written with both flags and no keys beside them when every listed Responses model compacts natively (model and group); user's `enabled: false` kept; a member that can't compact — none written | red before, green after |
+| `TestOmpTriggerUncarriedIsAnError` (gateway): omp's uncarried trigger answered 400, no `magpie1:` item, upstream asked 0 times | red before, green after |
+| Ablation (both, stash of the implementation): fail again without the fix | red |
+| `go test -tags nogui -count=1 ./internal/gateway/` | ok (664s) |
+| `go test -tags nogui -count=1 ./internal/provider/` | ok (133s) |
+| `go test -tags nogui -count=1 ./internal/agent/` | only `TestMothX` — pre-existing: fails on the untouched base too |
+| `go vet -tags nogui` (agent, gateway, provider) · `gofmt -l` · `go build -tags nogui ./...` | clean |
+
+Branch (head 95e4e2660b1b78aad80517aeddc7509809d04fc3): https://github.com/ggbdpq/magpie/tree/fix/5065-omp-remote-compaction2
+
+## Not verified
+
+- Not run as a live omp 18.15 session: the write rule is tested through `ompProviderAt`/`ompKept` against the report's reading of omp's models-config, and the error path through the gateway with a request that carries omp's token — a real `POST {baseUrl}/responses` from the omp binary is untested here.
+- omp's V2 failure shapes (a stream closed before `response.completed`, an item count ≠ 1) are taken from the report; none of them is exercised.
+
+AI use: written by GLM-5.3-Flash (ZCode) at ggbdpq's direction.

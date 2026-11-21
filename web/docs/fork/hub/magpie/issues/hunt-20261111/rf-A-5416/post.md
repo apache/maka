@@ -1,0 +1,487 @@
+Refresh of my patch above, not a redesign: the same commit rebased onto current `upstream/main` (`f590987e7`) and the verification re-run. The seams this patch closes are unchanged on main: `catalog.ServesOf` still knows only `embed`/`bge-`/`voyage-`/`rerank` without this patch, and no upstream commit has taken the `model_type` word since — the retrieval-only vendor face stands as analyzed.
+
+Unchanged, as delivered: `ServesOf` reads the `gte-`, `e5-`, `m3e-` and `text2vec-` families, the fetch reads `model_type` where the list carries it (the vendor's word over the id's; a kind no route serves, `"LLM"`, leaves the id's word), and what the list says reaches `detectModel`, `testOne`/`tiny` and `testModel` through the one seam (`Serves` on the fetched `[]catalog.Model`) — detection, test and routing need no change of their own.
+
+<details><summary>patch: catalog, provider: an embedding or rerank model its id's family or the vendor's list names is kept apart (#5416) — git am applies it as is; SHA-256 first 16: d3d2d392509440af</summary>
+
+```text
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Sun, 8 Nov 2026 11:01:28 +0800
+Subject: [PATCH] catalog, provider: an embedding or rerank model its id's
+ family or the vendor's list names is kept apart (#5416)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+yetone (#5416, found shipping acde144a7: heatonz on Discord #help): a
+vendor of embedding or rerank models whose ids name neither — gte-*,
+e5-*, m3e-*, text2vec-* — was detected as before, asked to chat,
+nothing answered; and a kind a vendor's /v1/models says of a model
+(Xinference's model_type: "embedding", "rerank") went unread.
+
+- catalog.ServesOf reads the gte-, e5-, m3e- and text2vec- families
+  (ids are lowercased already, so a family's case is no matter), and
+  fetchPage reads model_type where the list carries it, over what the
+  id alone says; a kind no route of magpie's serves ("LLM") leaves the
+  id's word. Such a model stays out of the chat lists and answers on
+  /v1/embeddings and /v1/rerank, as #5339 and acde144a7 route it.
+- provider: what the list says reaches the seams that read the id
+  alone (retrievalOf): detectModel picks the model a detection asks
+  from the models with their Serves (a fresh fetch's included),
+  testOne asks a saved provider's model where the list it keeps says,
+  and testModel's retrieval pool keeps a model of the list's word, not
+  of the id's family alone.
+
+Run (darwin arm64, at this tree on upstream/main 0fc3455e2):
+- go test ./internal/catalog ./internal/provider: ok. go test
+  ./internal/gateway -timeout 30m: ok. go test -tags nogui -timeout
+  30m ./... (temp HOME): 85 packages ok; the red are the known
+  TestMothX, TestProxyCheckSaysAProxyPassedBy,
+  TestHostToldTheGatewayAddress, red on upstream/main 0fc3455e2 too.
+- targeted -race of the new tests: ok.
+- gofmt -l: clean. go vet ./..., GOOS=linux go vet -tags nogui ./...,
+  GOOS=windows go vet ./...: clean. go build, GOOS=linux go build
+  -tags nogui, GOOS=windows go build: ok. GOOS=linux go build (no
+  tag): red at wails v3.0.0-beta.24 `undefined: pointer`, red on
+  upstream/main 0fc3455e2 too.
+
+Broken by hand (each restored after):
+- ServesOf's new families off: TestServesOf red (gte-*, e5-*, m3e-*,
+  text2vec-*), TestFetchReadsTheKindTheListSays red (m3e-base).
+- fetchPage's model_type read off: TestFetchReadsTheKindTheListSays
+  red (my-ranker), and detection asked my-ranker to chat — the
+  reporter's shape.
+- provider's Serves propagation off (retrievalOfModel reading the id
+  alone): detection asked my-ranker to chat again.
+---
+ internal/catalog/catalog.go      |  7 +++-
+ internal/catalog/live.go         | 17 +++++++-
+ internal/catalog/serves_test.go  | 45 ++++++++++++++++++++
+ internal/provider/detect.go      | 71 ++++++++++++++++----------------
+ internal/provider/detect_test.go | 67 ++++++++++++++++++++++++++++++
+ internal/provider/test.go        | 33 +++++++++++++--
+ 6 files changed, 197 insertions(+), 43 deletions(-)
+
+diff --git a/internal/catalog/catalog.go b/internal/catalog/catalog.go
+index e341085b4..071122783 100644
+--- a/internal/catalog/catalog.go
++++ b/internal/catalog/catalog.go
+@@ -2031,7 +2031,9 @@ const (
+ // vendors' OpenAI-style lists say no more (text-embedding-3-small,
+ // bge-reranker-v2-m3, tts-1, gpt-4o-mini-tts, whisper-1,
+ // gpt-4o-transcribe). Voyage AI makes embedding models alone, and names
+-// them voyage-* (voyage-4, voyage-code-3), with no "embed" in the id.
++// them voyage-* (voyage-4, voyage-code-3), with no "embed" in the id; so
++// do the gte-*, e5-*, m3e-* and text2vec-* families (#5416). A list that
++// says more than the id is read where it says it (live.go's model_type).
+ func ServesOf(id string) string {
+ 	id = strings.ToLower(id)
+ 	if i := strings.LastIndex(id, "/"); i >= 0 {
+@@ -2040,7 +2042,8 @@ func ServesOf(id string) string {
+ 	switch {
+ 	case strings.Contains(id, "rerank"):
+ 		return ServesRerank
+-	case strings.Contains(id, "embed") || strings.HasPrefix(id, "bge-") || strings.HasPrefix(id, "voyage-"):
++	case strings.Contains(id, "embed") || strings.HasPrefix(id, "bge-") || strings.HasPrefix(id, "voyage-") ||
++		strings.HasPrefix(id, "gte-") || strings.HasPrefix(id, "e5-") || strings.HasPrefix(id, "m3e-") || strings.HasPrefix(id, "text2vec-"):
+ 		return ServesEmbedding
+ 	case strings.Contains(id, "whisper") || strings.Contains(id, "transcribe"):
+ 		return ServesTranscription
+diff --git a/internal/catalog/live.go b/internal/catalog/live.go
+index 5d481665c..4ef0c95b6 100644
+--- a/internal/catalog/live.go
++++ b/internal/catalog/live.go
+@@ -877,7 +877,19 @@ func fetchPage(ctx context.Context, url, key string, anthropic bool, headers map
+ 		// them
+ 		serves := ""
+ 		if !drawer && !films && !decision && headers["X-Magpie-Drawers"] == "" {
+-			serves = ServesOf(id)
++			// the kind the vendor's own list says of the model
++			// ("model_type", Xinference's) is its word, over what the id
++			// alone says (#5416); a kind no route of magpie's serves ("LLM")
++			// leaves the id's word
++			switch strings.ToLower(r.ModelType) {
++			case "embedding":
++				serves = ServesEmbedding
++			case "rerank":
++				serves = ServesRerank
++			}
++			if serves == "" {
++				serves = ServesOf(id)
++			}
+ 		}
+ 		// Vercel's AI Gateway says what each row is (its "type"), which
+ 		// the id and modalities don't always: its decision models
+@@ -1006,6 +1018,9 @@ type liveModel struct {
+ 	// what Volcengine Ark's list says a model is for: "LLM",
+ 	// "VideoGeneration", "ImageGeneration"…
+ 	Domain string `json:"domain"`
++	// what Xinference's list says a model is for: "embedding", "rerank"
++	// (#5416)
++	ModelType string `json:"model_type"`
+ 	// the paths the model is served on, where the vendor says: Command
+ 	// Code's Claude models on /messages alone, its open ones on
+ 	// /chat/completions and /responses
+diff --git a/internal/catalog/serves_test.go b/internal/catalog/serves_test.go
+index 75f61fa46..6bfd0866b 100644
+--- a/internal/catalog/serves_test.go
++++ b/internal/catalog/serves_test.go
+@@ -81,9 +81,54 @@ func TestServesOf(t *testing.T) {
+ 		// Voyage AI's, which name no "embed" (heatonz on Discord)
+ 		"voyage-4-large": ServesEmbedding, "voyage-code-3": ServesEmbedding, "voyage/voyage-3.5-lite": ServesEmbedding,
+ 		"rerank-3": ServesRerank, "rerank-2.5-lite": ServesRerank,
++		// and the families whose ids name no embed either (#5416)
++		"gte-Qwen2-7B-instruct": ServesEmbedding, "gte-large": ServesEmbedding,
++		"e5-large-v2": ServesEmbedding, "m3e-base": ServesEmbedding, "text2vec-base-chinese": ServesEmbedding,
+ 	} {
+ 		if got := ServesOf(id); got != want {
+ 			t.Errorf("ServesOf(%q) = %q, want %q", id, got, want)
+ 		}
+ 	}
+ }
++
++// A vendor's list that says what each model is for ("model_type",
++// Xinference's) is read where the id alone says less: the list's word is
++// the model's Serves, a kind no route of magpie's serves leaves the id's
++// word, and one the list says nothing of is read from the id (#5416).
++func TestFetchReadsTheKindTheListSays(t *testing.T) {
++	srv := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
++		rw.Write([]byte(`{"object":"list","data":[` +
++			`{"id":"gte-base","model_type":"embedding"},` +
++			`{"id":"my-ranker","model_type":"rerank"},` +
++			`{"id":"qwen3","model_type":"LLM"},` +
++			`{"id":"BAAI/bge-reranker-v2-m3"},` +
++			`{"id":"m3e-base"}]}`))
++	}))
++	defer srv.Close()
++	ms, _, err := FetchAt(context.Background(), srv.URL+"/v1", "k", false, nil)
++	if err != nil {
++		t.Fatal(err)
++	}
++	got := map[string]string{}
++	for _, m := range ms {
++		got[m.ID] = m.Serves
++	}
++	want := map[string]string{
++		"gte-base":                ServesEmbedding,
++		"my-ranker":               ServesRerank,
++		"qwen3":                   "",
++		"BAAI/bge-reranker-v2-m3": ServesRerank,
++		"m3e-base":                ServesEmbedding,
++	}
++	if len(got) != len(want) {
++		t.Fatalf("kept %v, want %v", got, want)
++	}
++	for id, s := range want {
++		if v, ok := got[id]; !ok || v != s {
++			t.Errorf("%s: %q %v, want %q", id, v, ok, s)
++		}
++	}
++	if c := Chat(ms); len(c) != 1 || c[0].ID != "qwen3" {
++		t.Errorf("Chat %v", c)
++	}
++}
+diff --git a/internal/provider/detect.go b/internal/provider/detect.go
+index 375051ea9..00d9f84ba 100644
+--- a/internal/provider/detect.go
++++ b/internal/provider/detect.go
+@@ -86,15 +86,15 @@ func (p Provider) Detect(ctx context.Context, base, model string, picked ...stri
+ 	}
+ 	ctx = q.ownRequests(q.Via(ctx), probelog.KindDetect)
+ 	model = strings.TrimSpace(model)
+-	var ids []string
++	var ms []catalog.Model
+ 	if model == "" {
+ 		for _, m := range picked {
+-			if m = strings.TrimSpace(m); m != "" && !slices.Contains(ids, m) {
+-				ids = append(ids, m)
++			if m = strings.TrimSpace(m); m != "" && !slices.ContainsFunc(ms, func(x catalog.Model) bool { return x.ID == m }) {
++				ms = append(ms, catalog.Model{ID: m})
+ 			}
+ 		}
+-		if len(ids) == 0 {
+-			ids = q.detectModels(ctx)
++		if len(ms) == 0 {
++			ms = q.detectModels(ctx)
+ 		}
+ 	}
+ 	out := make([]Detection, len(detectProtocols))
+@@ -102,7 +102,7 @@ func (p Provider) Detect(ctx context.Context, base, model string, picked ...stri
+ 	for i, proto := range detectProtocols {
+ 		m := model
+ 		if m == "" {
+-			m = detectModel(ids, proto)
++			m = detectModel(ms, proto)
+ 		}
+ 		var ask func(context.Context) Result
+ 		out[i], ask = q.detectOne(proto, m, testWait)
+@@ -318,62 +318,61 @@ func (p Provider) DetectModels(ctx context.Context, base string, models []string
+ }
+ 
+ // detectModels are the models a detection may ask for: those p exposes and
+-// lists, else the vendor's list, asked for now and not kept.
+-func (p Provider) detectModels(ctx context.Context) []string {
+-	var ids []string
++// lists, else the vendor's list, asked for now and not kept — with what
++// each is made for, where the list says so (Model.Serves, #5416).
++func (p Provider) detectModels(ctx context.Context) []catalog.Model {
++	var ms []catalog.Model
+ 	if p.ID != "" {
+-		for _, ms := range [][]catalog.Model{p.Exposed(), p.Available()} {
+-			for _, m := range ms {
+-				if !slices.Contains(ids, m.ID) {
+-					ids = append(ids, m.ID)
++		for _, pool := range [][]catalog.Model{p.Exposed(), p.Available()} {
++			for _, m := range pool {
++				if !slices.ContainsFunc(ms, func(x catalog.Model) bool { return x.ID == m.ID }) {
++					ms = append(ms, m)
+ 				}
+ 			}
+ 		}
+ 	}
+-	if len(ids) > 0 {
+-		return ids
++	if len(ms) > 0 {
++		return ms
+ 	}
+ 	l, err := p.fetchOne(ctx)
+ 	if err != nil {
+ 		return nil
+ 	}
+-	for _, m := range l.models {
+-		ids = append(ids, m.ID)
+-	}
+-	return ids
++	return append(ms, l.models...)
+ }
+ 
+-// detectModel is the model of ids to ask proto for: one made for it — a
++// detectModel is the model of ms to ask proto for: one made for it — a
+ // Claude model on Anthropic's, an OpenAI one on Responses, a Gemini one on
+ // Gemini's, any other on Chat — else the first that chats, else, on Chat,
+-// an embedding or rerank model.
+-func detectModel(ids []string, proto Protocol) string {
+-	made := func(id string) bool {
++// an embedding or rerank model, as the vendor's list says of one or its id
++// does (retrievalOfModel).
++func detectModel(ms []catalog.Model, proto Protocol) string {
++	made := func(m catalog.Model) bool {
+ 		switch proto {
+ 		case Anthropic:
+-			return isClaude(id)
++			return isClaude(m.ID)
+ 		case Responses:
+-			return openAIModel(id)
++			return openAIModel(m.ID)
+ 		case Gemini:
+-			return strings.Contains(strings.ToLower(id), "gemini")
++			return strings.Contains(strings.ToLower(m.ID), "gemini")
+ 		}
+-		return !isClaude(id)
++		return !isClaude(m.ID)
+ 	}
+-	chats := func(id string) bool { return !catalog.ImagesAPI(id) && retrievalOf(id) == "" }
+-	for _, want := range []func(string) bool{
+-		func(id string) bool { return made(id) && chats(id) }, chats,
++	chats := func(m catalog.Model) bool { return !catalog.ImagesAPI(m.ID) && retrievalOfModel(m) == "" }
++	for _, want := range []func(catalog.Model) bool{
++		func(m catalog.Model) bool { return made(m) && chats(m) }, chats,
+ 		// none chats: an embedding or rerank model, which OpenAI's base
+ 		// is asked for at /embeddings or /rerank (tiny)
+-		func(id string) bool { return proto == Chat && retrievalOf(id) != "" },
++		func(m catalog.Model) bool { return proto == Chat && retrievalOfModel(m) != "" },
+ 	} {
+-		for _, id := range ids {
+-			if want(id) {
+-				return id
++		for _, m := range ms {
++			if want(m) {
++				return m.ID
+ 			}
+ 		}
+ 	}
+-	if len(ids) > 0 {
+-		return ids[0]
++	if len(ms) > 0 {
++		return ms[0].ID
+ 	}
+ 	return ""
+ }
+diff --git a/internal/provider/detect_test.go b/internal/provider/detect_test.go
+index 74e576661..96a4f3a91 100644
+--- a/internal/provider/detect_test.go
++++ b/internal/provider/detect_test.go
+@@ -648,7 +648,74 @@ func TestDetectEmbeddingOnly(t *testing.T) {
+ 	}
+ }
+ 
++// A vendor whose only models are for another API is detected on
++// /embeddings and /rerank, by the list's own word ("model_type",
++// Xinference's) as by the id's family (gte-*, m3e-*, text2vec-*): asked
++// to chat, none answers (#5416, heatonz on Discord: a vendor of gte-*).
++func TestDetectRetrievalOnlyByIdFamilyAndKind(t *testing.T) {
++	detectHome(t)
++	for _, c := range []struct {
++		name, list, model string
++	}{
++		{"by the list's word", `{"data":[{"id":"gte-base","model_type":"embedding"},{"id":"my-ranker","model_type":"rerank"}]}`, "gte-base"},
++		{"by the id's family", `{"data":[{"id":"m3e-base"},{"id":"text2vec-base-chinese"}]}`, "m3e-base"},
++	} {
++		var mu sync.Mutex
++		var got []asked
++		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++			b, _ := io.ReadAll(r.Body)
++			var body map[string]any
++			json.Unmarshal(b, &body)
++			m, _ := body["model"].(string)
++			mu.Lock()
++			got = append(got, asked{r.Method, r.URL.Path, r.Header.Get("Authorization"), m, body})
++			mu.Unlock()
++			switch r.Method + " " + r.URL.Path {
++			case "GET /v1/models":
++				io.WriteString(w, c.list)
++			case "POST /v1/embeddings":
++				io.WriteString(w, `{"object":"list","data":[{"object":"embedding","index":0,"embedding":[0.1,0.2]}]}`)
++			case "POST /v1/rerank":
++				io.WriteString(w, `{"results":[{"index":0,"relevance_score":0.9}]}`)
++			case "POST /v1/chat/completions":
++				// an embedding model asked to chat, as heatonz's vendor answers
++				http.Error(w, `{"error":{"message":"The model `+m+` does not support chat"}}`, http.StatusBadRequest)
++			default:
++				http.Error(w, `{"error":{"message":"Invalid URL (POST `+r.URL.Path+`)"}}`, http.StatusNotFound)
++			}
++		}))
++		res, err := Provider{Key: "sk-relay"}.Detect(context.Background(), srv.URL, "")
++		srv.Close()
++		if err != nil {
++			t.Fatalf("%s: %v", c.name, err)
++		}
++		if len(res) != 4 || res[0].Protocol != Chat || !res[0].OK || res[0].Model != c.model || res[0].Base != srv.URL+"/v1" {
++			t.Fatalf("%s: chat = %+v", c.name, res)
++		}
++		for _, r := range res[1:] {
++			if r.OK || r.Model != c.model || !strings.Contains(r.Error, "model: asked at OpenAI's URL") || r.Status != 0 {
++				t.Fatalf("%s on %s: %+v", c.name, r.Protocol, r)
++			}
++		}
++		var posts []asked
++		for _, a := range got {
++			if a.method == "POST" {
++				posts = append(posts, a)
++			}
++		}
++		if len(posts) != 1 || posts[0].path != "/v1/embeddings" || posts[0].model != c.model || posts[0].auth != "Bearer sk-relay" {
++			t.Fatalf("%s: asked %+v", c.name, posts)
++		}
++		for _, k := range []string{"max_tokens", "messages", "stream", "temperature"} {
++			if _, ok := posts[0].body[k]; ok {
++				t.Fatalf("%s: %s sent %s: %v", c.name, posts[0].path, k, posts[0].body)
++			}
++		}
++	}
++}
++
+ // Saved, such a provider's Test asks a model its list keeps apart where
++
+ // the gateway sends it, and a model's own test too; the extra body a chat
+ // carries isn't sent to /embeddings or /rerank, as the gateway sends none.
+ func TestTestEmbeddingOnly(t *testing.T) {
+diff --git a/internal/provider/test.go b/internal/provider/test.go
+index 403d90263..5ca29ac2c 100644
+--- a/internal/provider/test.go
++++ b/internal/provider/test.go
+@@ -123,7 +123,7 @@ func (p Provider) Test(ctx context.Context) []Result {
+ // tiny is the smallest request for model on proto's endpoint, streamed
+ // to a backend that only streams.
+ func tiny(q Provider, proto Protocol, model string) (url, body string) {
+-	if kind := retrievalOf(model); kind != "" && proto == Chat && q.Account == nil {
++	if kind := q.retrievalOf(model); kind != "" && proto == Chat && q.Account == nil {
+ 		// an embedding or rerank model chats nowhere: it is asked where
+ 		// the gateway sends it (retrieve), the OpenAI-style base's
+ 		// /embeddings or /rerank (heatonz on Discord: a relay serving
+@@ -153,6 +153,31 @@ func retrievalOf(model string) string {
+ 	return ""
+ }
+ 
++// retrievalOfModel is the retrieval API the vendor's list says m is made
++// for (Model.Serves, #5416), or, where the list says nothing, the one its
++// id does (retrievalOf): embeddings or rerank, else "".
++func retrievalOfModel(m catalog.Model) string {
++	switch m.Serves {
++	case catalog.ServesEmbedding, catalog.ServesRerank:
++		return m.Serves
++	}
++	return retrievalOf(m.ID)
++}
++
++// retrievalOf is p's model's retrieval API: what the list p keeps of the
++// vendor's says of it (a fetched list keeps a model made for another API
++// apart, its Serves), else what the id alone says.
++func (p Provider) retrievalOf(model string) string {
++	if ms, ok := catalog.LiveAll(p.ID); ok {
++		for _, m := range ms {
++			if m.ID == model {
++				return retrievalOfModel(m)
++			}
++		}
++	}
++	return retrievalOf(model)
++}
++
+ // tinyRetrieval is the smallest request for a model of kind's at an
+ // OpenAI-style base: one input to embed, or one document to rank.
+ func tinyRetrieval(base, kind, model string) (url, body string) {
+@@ -464,7 +489,7 @@ func (p Provider) testOne(ctx context.Context, model string) Result {
+ 		proto = clientProto(client, protos)
+ 	} else if draws {
+ 		proto = Chat
+-	} else if retrievalOf(model) != "" && slices.Contains(protos, Chat) {
++	} else if p.retrievalOf(model) != "" && slices.Contains(protos, Chat) {
+ 		// an embedding or rerank model, at the OpenAI-style base's
+ 		// /embeddings or /rerank, where the gateway sends it (tiny)
+ 		proto = Chat
+@@ -510,7 +535,7 @@ func (p Provider) testOne(ctx context.Context, model string) Result {
+ 			return d
+ 		}
+ 	}
+-	if !r.OK && r.otherAPI && client != ClientClaudeCode && retrievalOf(model) == "" {
++	if !r.OK && r.otherAPI && client != ClientClaudeCode && p.retrievalOf(model) == "" {
+ 		// the vendor's word that the model isn't served on that API: it
+ 		// is asked on the next one that may serve it, as the gateway asks
+ 		// a request there (usable), and that one's answer is the model's
+@@ -720,7 +745,7 @@ func (p Provider) testModel(q Provider, proto Protocol) string {
+ 		// sends it (heatonz on Discord: a provider serving only those)
+ 		// or one its preset names (Voyage AI, which lists none)
+ 		for _, m := range append(catalog.LiveServing(p.ID, ""), p.PlanRetrieval("")...) {
+-			if retrievalOf(m.ID) != "" && !off(p.ID, m.ID) && sees(m.ID) {
++			if retrievalOfModel(m) != "" && !off(p.ID, m.ID) && sees(m.ID) {
+ 				return m.ID
+ 			}
+ 		}
+-- 
+2.50.1 (Apple Git-155)
+
+```
+
+</details>
+
+**Branch with the commit**: [`hunt-20261111-rf-5416`](https://github.com/ggbdpq/magpie/tree/hunt-20261111-rf-5416) (head `34b9f8f76f7c1b29647a75dc74e80e73b1c561b1`), rebased onto current `upstream/main` (`f590987e7`); on a fresh checkout at that tip `git am` applies it as is (replayed on a detached worktree, resulting tree identical to the branch head, checked by tree hash).
+
+Verification this round (on `f590987e7` + this commit, `GOCACHE` pinned):
+
+| Check | Result |
+| --- | --- |
+| `go test -tags nogui ./internal/catalog ./internal/provider -count=1` (both packages whole, `TestServesOf` / `TestFetchReadsTheKindTheListSays` / `TestDetectEmbeddingOnly` / `TestDetectRetrievalOnlyByIdFamilyAndKind` / `TestTestEmbeddingOnly` among the new) | ok (2.5s / 148.1s), zero failures |
+| Ablation 1: the four id families unnamed in `ServesOf` (build intact) | red: `ServesOf("gte-Qwen2-7B-instruct") = "", want "embedding"`, same for `text2vec-base-chinese` and `e5-large-v2` — the chat-misread the report shows; restored: green |
+| Ablation 2: the `model_type` read made dead (build intact) | red: `my-ranker: "", want "rerank"` — an id that names nothing, only the list's word knows; restored: green |
+| targeted `-race` on the kind tests | ok |
+| `gofmt -l` on the six touched files | prints nothing |
+| `go vet -tags nogui ./internal/catalog/ ./internal/provider/` | clean |
+| `go build -tags nogui ./...` darwin / `GOOS=linux` | clean |
+
+**Siblings** (re-checked): the readers of a model's retrieval kind are the four the patch reaches through the one seam — `live.go`'s fetch (writes `Serves`), `detect.go` (picks the detection's model), `provider/test.go` (the test pool), `media_group.go`'s `servesKind` (routes) — none needed a change of their own; the saved list keeps what a fresh fetch said. A vendor list that says nothing (`model_type` absent) reads the id, as before.
+
+**Not verified**: a real Xinference or gte-only vendor end to end (the tests shape the lists as the analysis describes); the GUI detection page's display of a retrieval-only vendor.
+
+**Attribution**: AI-written; I've read the whole diff and the tests pass. Please keep the author (`ggbdpq`) or add `Co-authored-by: ggbdpq <ggbdpq@gmail.com>`.

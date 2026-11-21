@@ -1,0 +1,6 @@
+=== RUN   TestReadingKeepsARefusalsRest
+--- PASS: TestReadingKeepsARefusalsRest (2.35s)
+=== RUN   TestAutoVisionKeepsOffARefusedAccount
+--- PASS: TestAutoVisionKeepsOffARefusedAccount (2.47s)
+PASS
+ok  	github.com/yetone/magpie/internal/gateway	5.041s

@@ -1,0 +1,57 @@
+{
+"update_url": "https://clients2.google.com/service/update2/crx",
+
+    "manifest_version": 3,
+    "name": "__MSG_extName__",
+    "version": "1.3.1",
+    "description": "__MSG_extDescription__",
+    "default_locale": "en",
+    "permissions": [
+        "storage"
+    ],
+    "host_permissions": [
+        "https://*.x.com/*",
+        "https://*.twitter.com/*"
+    ],
+    "action": {
+        "default_popup": "popup.html",
+        "default_title": "X-Track",
+        "default_icon": {
+            "16": "icons/icon16.png",
+            "48": "icons/icon48.png",
+            "128": "icons/icon128.png"
+        }
+    },
+    "background": {
+        "service_worker": "background.js",
+        "type": "module"
+    },
+    "content_scripts": [
+        {
+            "matches": [
+                "https://twitter.com/*",
+                "https://x.com/*"
+            ],
+            "js": [
+                "content.js"
+            ],
+            "run_at": "document_idle"
+        }
+    ],
+    "icons": {
+        "16": "icons/icon16.png",
+        "48": "icons/icon48.png",
+        "128": "icons/icon128.png"
+    },
+    "web_accessible_resources": [
+        {
+            "resources": [
+                "inject.js"
+            ],
+            "matches": [
+                "https://*.x.com/*",
+                "https://*.twitter.com/*"
+            ]
+        }
+    ]
+}

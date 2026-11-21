@@ -1,0 +1,23 @@
+Verified `665af2426e7923646b1b6997121b058024f23d67` on Windows/amd64 (Go 1.26.8) against `yetone/magpie@be002aca`. The touched file has zero drift: `internal/provider/hold_test.go` is blob `6b5c415e` both at the commit's base and at `be002aca` — the exact blob this diff is written against — and the failing assertion is still `hold_test.go:316` (`migrations.json read again while held`).
+
+**What it does.** One file, `hold_test.go`, +9 lines: the four cache-count tests (`TestHoldBuildsOnce`, `TestHoldReadsSettingsOnce`, `TestHoldBuildsProvidersOnce`, `TestHoldReadsMigrationsOnce`) pin the package-level `heldFor` to an hour for their own duration and restore it with the in-file `defer` pattern; `TestHoldBuildsOnce` additionally starts with `Changed()` so no key survives from a prior repetition. Production expiry is untouched — `var heldFor = time.Second` (hold.go:109 at `be002aca`) and every consumer of it are outside the diff, which matches the boundary stated in my original comment ("the production hold is untouched").
+
+**Relationship to my two-line fix (`de90e3ea`): this commit supersedes it.** Same mechanism and same pattern for the issue's test (my `heldFor = time.Minute` is now `time.Hour`), so nothing mine did is missing here — and it is strictly broader: four tests instead of one, a stronger hold per test, plus the `Changed()` line. That extra line is not cosmetic: at `be002aca` without the fix, `go test ./internal/provider -run '^TestHoldBuildsOnce$' -count=5` fails 4 of 5 repetitions (first `hold_test.go:34: held: built 2 times, want 3`, then the leaked hold from that fatal poisons the rest: `hold_test.go:28: not held: built 0 times, want 2`) — a pre-existing repetition sensitivity my patch never touched, which this commit fixes (20 of 20 pass with it).
+
+**Ablation.** Neither the reporter's exact load (25–57) nor a synthetic `yes`-driven load was reproduced; expiry was forced by injecting `time.Sleep(1200*time.Millisecond)` between the two held reads, which exercises the same wall-clock mechanism the issue describes:
+
+- Unfixed + injection: `go test ./internal/provider -run TestHoldReadsMigrationsOnce -count=3 -cpu=1,8` → 6 of 6 FAIL, each 1.23s: `hold_test.go:317: migrations.json read again while held` (the injected line shifts the assertion from :316 to :317; same assertion).
+- Fixed + same injection: 6 of 6 PASS, each ~1.24s — the pause runs and the hour-long hold does not expire.
+- Sibling spot-check, unfixed `TestHoldReadsSettingsOnce` + injection, `-count=2` → 2 of 2 FAIL: `hold_test.go:182: settings.json read again while held`. (`TestHoldBuildsProvidersOnce` was only verified green under the fix; its red claim is taken from the commit message, not re-injected.)
+
+So the red is deterministic under injection in both forms, not a probabilistic load-flake proxy.
+
+**Race and checks.** All four tests `-race -count=3` → 12 of 12 pass, no races. `gofmt -l internal/provider/` empty; `go vet ./internal/provider/...` clean. One caveat: a full `go test ./internal/provider/... -count=1` on this Windows box fails in 9 codex keychain/list-tag tests — I re-ran three of them on a detached `be002aca` and they fail identically there, so those are pre-existing environment failures (Windows keyring credential store), unrelated to this commit; the four hold tests pass in that run.
+
+**Attribution.** Checked the commit itself: author is `vincent <webmaster@palmit.com.au>`, and the message carries both the adaptation credit — `Adapt ggbdpq/magpie de90e3eaf61693d5432583f38e2d183aecb335f1` — and the exact trailer `Co-authored-by: ggbdpq <ggbdpq@gmail.com>`. Credit landed as requested; thank you.
+
+**Drift and landing.** `git apply --3way --check` of the formatted patch is clean at `be002aca`, and `hold_test.go` is still blob `6b5c415e` at current `origin/main` (`da6fd87e`), so it lands unchanged there too. `665af242` is an ancestor of the combined verification head `4671590d` (whose `hold_test.go` is the post-fix blob `790283ef`). The branch diverged from `7aad6a50` (51 commits ahead on the fork side, 19 on main's side), so upstreaming goes through a PR/cherry-pick rather than a fast-forward.
+
+**Remaining gaps.** A reproduction under the reporter's actual load is still pending from everyone — the issue can stay open on that point if desired, though the injection shows the exact mechanism. And `TestAllReadsNoSettingsPerLookWhileHeld` still relies on its budget comment "the held catalog is kept 1s"; that is correct while the production `heldFor` stays 1s, and worth revisiting if that constant ever changes.
+
+Verified with AI assistance (GLM-5.3-Flash via ZCode); I've read the diff and re-ran the checks above.

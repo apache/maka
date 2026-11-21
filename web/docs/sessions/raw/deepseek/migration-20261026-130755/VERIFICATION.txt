@@ -1,0 +1,40 @@
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py deepseek baseline
+INPUT: CONFIG: fixed deepseek source allowlist
+OUTPUT: BASELINE PASS groups=4 files=31 bytes=14234304 protected=1
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py deepseek archive
+INPUT: dfbb129332fd63dcd7fc46f4c2cd1134d1a0890ac78b35ceb0f263acab51e6ea
+OUTPUT: ARCHIVE PASS zip_files=4 files=31 bytes=14234304
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py deepseek apply
+INPUT: 83a0f9d263b55132a5164158de7d658814cb50c17c6b5f8f032a53bd174a97b5
+OUTPUT: PermissionError: [WinError 5] 拒绝访问。: 'C:\\Users\\802165\\.deepseek\\snapshots\\9f9789ed0f0b4645\\9f9789ed0f0b4645\\.git\\objects\\0a\\5a3b7b6f691ff26564b1aa6c6aab79576bee1e'
+EXIT: 1
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py deepseek verify
+INPUT: 83a0f9d263b55132a5164158de7d658814cb50c17c6b5f8f032a53bd174a97b5
+OUTPUT: ValueError: Expected migrated
+EXIT: 1
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py deepseek rollback-test
+INPUT: 83a0f9d263b55132a5164158de7d658814cb50c17c6b5f8f032a53bd174a97b5
+OUTPUT: ValueError: Expected migrated
+EXIT: 1
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py deepseek apply
+INPUT: 83a0f9d263b55132a5164158de7d658814cb50c17c6b5f8f032a53bd174a97b5
+OUTPUT: APPLY PASS removed_files=31 removed_bytes=14234304
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py deepseek verify
+INPUT: 6cfa883a8a0eb4507d64c9bc6e3ef230f2f542f82ff45eac155dc60872e7a0ce
+OUTPUT: MODIFIED PASS files=31 bytes=14234304 originals_absent=true protected_unchanged=true
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py deepseek rollback-test
+INPUT: 6cfa883a8a0eb4507d64c9bc6e3ef230f2f542f82ff45eac155dc60872e7a0ce
+OUTPUT: ROLLBACK PASS restored_files=31 restored_bytes=14234304 hashes_match=true originals_untouched=true
+EXIT: 0
+

@@ -1,0 +1,975 @@
+From 4a14707c76dcdae842b3b9e88bb8f5778ce98384 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Sun, 8 Nov 2026 14:09:16 +0800
+Subject: [PATCH] provider, gateway, gui: a provider's speech and embedding
+ models sit in its editor, and /v1/models says what a kind model is for
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Fish-under-sea (#5418) had nowhere to put a provider's whisper-1, tts-1
+and embedding models: its editor lists its image models (a hidden-drawers
+pick) and its video ones, and the models made for another API sat in no
+list; nor did /v1/models say what a model is for, so an SDK reading a
+flat list guessed from ids.
+
+- provider: HiddenSpeech and HiddenEmbeddings, kept and carried as
+  HiddenDrawers and HiddenVideomakers are, read by SpeechHidden and
+  EmbeddingHidden. A plugin's models its capabilities.output says are
+  made for another API — audio alone a TTS, nothing said an embedding,
+  the speechless ones #3279 drops from the chat lists — are kept apart
+  (PluginServing), told by what the plugin declares, not the id.
+- gateway: ServingOf is the models a provider serves of an API that is
+  no chat: a fetched list's, another magpie's under an id that says so,
+  a preset plan's, a plugin's declared ones. servesKind reads it, and
+  /v1/models' ?kind= takes embedding, rerank, speech and transcription,
+  each row marked with its kind (servingObjects), less those unticked in
+  their provider's editor, as OfferedDrawers are of the image ones. A
+  request that names a hidden one still serves.
+- gui: the editor lists its speech models and its embedding and rerank
+  ones apart (speechIds, embedIds), each ticked, a click unticking it
+  into hiddenSpeech / hiddenEmbeddings, as its image and video ones are;
+  and the core scripts' budget says why it grew.
+
+Refreshed onto upstream/main af3334533 (2026-11-12): the budget gate now
+counts code only, not comments (#5918), so the editor's addition is
+re-measured that way — 1,104 bytes of code over the core's scripts (app.js
+stays within its own cap), coreScriptBudget raised to 1,264,437, with no
+room added. Conflicts on the new base: core_budget_test.go (the gate's new
+shape kept; the old chain entries it replaced are gone with it), and three
+union merges in app.js (draftOf and the save body gain upstream's billing /
+clientCert / clientKey / serverCA / serverPin / socket / upstreamProviders
+fields beside this patch's hiddenSpeech / hiddenEmbeddings; the editor's
+speech and embedding sections go in beside the subscription's own warm-up,
+check-in and resets row).
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gateway/gateway.go                   |  78 +++++++++--
+ internal/gateway/media_group.go               |  36 ++++-
+ internal/gateway/models_kind_test.go          |   2 +-
+ internal/gateway/serving_kind_test.go         | 124 +++++++++++++++++
+ internal/gui/assets/app.js                    |  21 ++-
+ internal/gui/assets/i18n.js                   |  16 +++
+ internal/gui/providers.go                     |  52 ++++++-
+ internal/gui/speech_hidden_test.go            |  80 +++++++++++
+ .../gui/tests/speech-embeddings-hide.test.cjs | 130 ++++++++++++++++++
+ internal/provider/modelkind.go                |  15 ++
+ internal/provider/plugin_serving_test.go      |  44 ++++++
+ internal/provider/plugins.go                  |  45 ++++++
+ internal/provider/provider.go                 |  17 +++
+ 13 files changed, 634 insertions(+), 26 deletions(-)
+ create mode 100644 internal/gateway/serving_kind_test.go
+ create mode 100644 internal/gui/speech_hidden_test.go
+ create mode 100644 internal/gui/tests/speech-embeddings-hide.test.cjs
+ create mode 100644 internal/provider/plugin_serving_test.go
+
+diff --git a/internal/gateway/gateway.go b/internal/gateway/gateway.go
+index 64a4efdbdd..c808115b96 100644
+--- a/internal/gateway/gateway.go
++++ b/internal/gateway/gateway.go
+@@ -1593,6 +1593,48 @@ func videomakerObjects(r *http.Request) []map[string]any {
+ 	return out
+ }
+ 
++// servingObjects are a kind's models (catalog.Serves*), as another SDK
++// asks for them in its list (?kind=embedding, rerank, speech or
++// transcription): "kind" says what a model is for, which an agent's list
++// never has, so it takes none for a model to chat with, and a client need
++// not guess from ids (Fish-under-sea, #5418). Those unticked in their
++// provider's editor are left out (provider.HiddenSpeech,
++// provider.HiddenEmbeddings), as OfferedDrawers are of the image models;
++// a request that names a hidden one still serves. A gateway key held to
++// some models is told of those alone, as its chat list is (#2579).
++func servingObjects(r *http.Request, kind string) []map[string]any {
++	who, held := keyListHolds(r)
++	var out []map[string]any
++	for _, p := range provider.All() {
++		if !p.On() || p.DecideOnly() {
++			continue
++		}
++		for _, m := range ServingOf(p, kind) {
++			if p.SpeechHidden(m.ID) || p.EmbeddingHidden(m.ID) {
++				continue
++			}
++			if held && (!modelAllowed(who, p, m.ID) || !accountServes(who, p, m.ID)) {
++				continue
++			}
++			name := cmp.Or(m.Name, m.ID)
++			in, outKinds := []string{"text"}, []string{"embedding"}
++			switch kind {
++			case catalog.ServesRerank:
++				outKinds = []string{"relevance"}
++			case catalog.ServesSpeech:
++				outKinds = []string{"audio"}
++			case catalog.ServesTranscription:
++				in, outKinds = []string{"audio"}, []string{"text"}
++			}
++			out = append(out, map[string]any{"id": p.ID + "/" + m.ID, "object": "model", "type": "model", "kind": kind, "created": 0,
++				"owned_by": p.ID, "display_name": name, "magpie_label": name + " · " + p.Name,
++				"modalities": map[string]any{"input": in, "output": outKinds},
++				"magpie_via": catalog.ViaHere(m.Via)})
++		}
++	}
++	return out
++}
++
+ // viaOf is the magpies e's model passes through after this one, as the
+ // remote magpie serving it listed them; nil for a provider's own model.
+ // A routing group's are its members' together: a group with a remote
+@@ -1624,18 +1666,21 @@ func catalogFor(r *http.Request) []provider.Entry {
+ 
+ // listKinds is which of magpie's models a /v1/models call lists: its chat
+ // models alone, unless it names the kinds it wants in ?kind= (chat, image,
+-// video, comma separated; all for the three). Image and video models are
+-// listed only when asked for, each marked "kind" (drawerObjects,
+-// videomakerObjects): OpenAI's own list puts gpt-image and sora among its
+-// chat models with nothing to tell them apart, and the clients and agents
+-// that offer every id this list gives as a model to chat with (OpenCode's,
+-// Cherry Studio's, ZCode's pasted ?format=text) would offer an image model
+-// in their chat pickers (axelburks on Discord asked for them here). A kind
+-// it doesn't know is refused, not read as none.
+-func listKinds(r *http.Request) (chat, image, video bool, err error) {
++// video, embedding, rerank, speech, transcription, comma separated; all
++// for chat, image and video). Image and video models are listed only when
++// asked for, each marked "kind" (drawerObjects, videomakerObjects):
++// OpenAI's own list puts gpt-image and sora among its chat models with
++// nothing to tell them apart, and the clients and agents that offer every
++// id this list gives as a model to chat with (OpenCode's, Cherry Studio's,
++// ZCode's pasted ?format=text) would offer an image model in their chat
++// pickers (axelburks on Discord asked for them here). The models made for
++// another API are likewise listed only when their kind is asked for, each
++// marked with it (servingObjects, Fish-under-sea #5418). A kind it doesn't
++// know is refused, not read as none.
++func listKinds(r *http.Request) (chat, image, video bool, serves []string, err error) {
+ 	q, ok := r.URL.Query()["kind"]
+ 	if !ok {
+-		return true, false, false, nil
++		return true, false, false, nil, nil
+ 	}
+ 	for _, v := range q {
+ 		for k := range strings.SplitSeq(v, ",") {
+@@ -1646,14 +1691,18 @@ func listKinds(r *http.Request) (chat, image, video bool, err error) {
+ 				image = true
+ 			case "video":
+ 				video = true
++			case catalog.ServesEmbedding, catalog.ServesRerank, catalog.ServesSpeech, catalog.ServesTranscription:
++				if !slices.Contains(serves, strings.ToLower(strings.TrimSpace(k))) {
++					serves = append(serves, strings.ToLower(strings.TrimSpace(k)))
++				}
+ 			case "all":
+ 				chat, image, video = true, true, true
+ 			default:
+-				return false, false, false, fmt.Errorf("kind %q: /v1/models lists the kinds chat, image and video (or all), comma separated", k)
++				return false, false, false, nil, fmt.Errorf("kind %q: /v1/models lists the kinds chat, image, video, embedding, rerank, speech and transcription (or all), comma separated", k)
+ 			}
+ 		}
+ 	}
+-	return chat, image, video, nil
++	return chat, image, video, serves, nil
+ }
+ 
+ func (s *Server) models(w http.ResponseWriter, r *http.Request) {
+@@ -1672,7 +1721,7 @@ func (s *Server) models(w http.ResponseWriter, r *http.Request) {
+ 
+ func (s *Server) listModels(w http.ResponseWriter, r *http.Request) {
+ 	data := []map[string]any{}
+-	chat, images, videos, err := listKinds(r)
++	chat, images, videos, serves, err := listKinds(r)
+ 	if err != nil {
+ 		writeError(w, provider.Chat, 400, err.Error())
+ 		return
+@@ -1783,6 +1832,9 @@ func (s *Server) listModels(w http.ResponseWriter, r *http.Request) {
+ 	if videos || r.Header.Get(provider.VideomakersHeader) != "" {
+ 		data = append(data, videomakerObjects(r)...)
+ 	}
++	for _, kind := range serves {
++		data = append(data, servingObjects(r, kind)...)
++	}
+ 	if r.Header.Get(provider.DecidersHeader) != "" {
+ 		// the decision models its own pickers offer: of a provider with
+ 		// picks (OpenRouter's twenty-odd), the picked ones, so another
+diff --git a/internal/gateway/media_group.go b/internal/gateway/media_group.go
+index 53f412d3d4..3c5e14f0ba 100644
+--- a/internal/gateway/media_group.go
++++ b/internal/gateway/media_group.go
+@@ -70,14 +70,38 @@ func servesKind(kind string) func(p provider.Provider, model string) bool {
+ 		}
+ 	}
+ 	return func(p provider.Provider, model string) bool {
+-		if slices.ContainsFunc(catalog.LiveServing(p.ID, kind), func(m catalog.Model) bool { return is(m, model) }) {
+-			return true
+-		}
+-		if catalog.ServesOf(model) == kind && slices.ContainsFunc(provider.KeptListing(p).Available, func(m catalog.Model) bool { return is(m, model) }) {
+-			return true
++		return slices.ContainsFunc(ServingOf(p, kind), func(m catalog.Model) bool { return is(m, model) })
++	}
++}
++
++// ServingOf are the models p serves of an API that is no chat, kind's
++// (catalog.Serves*), in the order its sources say them: its fetched list's
++// (catalog.LiveServing), those its kept list has under an id that says so
++// (another magpie's list, which keeps them as it lists them and marks
++// none), its preset plan's (PlanRetrieval) and its plugin's declared ones
++// (PluginServing). Each id once: the sources name no model twice that
++// matters. Hidden ones are still here — a request that names one still
++// serves — the lists to pick from take them out (servingObjects,
++// provider.HiddenSpeech, provider.HiddenEmbeddings, Fish-under-sea
++// #5418).
++func ServingOf(p provider.Provider, kind string) []catalog.Model {
++	if p.DecideOnly() {
++		return nil
++	}
++	out := catalog.LiveServing(p.ID, kind)
++	add := func(ms []catalog.Model) {
++		for _, m := range ms {
++			if slices.ContainsFunc(out, func(o catalog.Model) bool { return o.ID == m.ID }) {
++				continue
++			}
++			m.Provider = p.ID
++			out = append(out, m)
+ 		}
+-		return slices.ContainsFunc(p.PlanRetrieval(kind), func(m catalog.Model) bool { return is(m, model) })
+ 	}
++	add(slices.DeleteFunc(slices.Clone(provider.KeptListing(p).Available), func(m catalog.Model) bool { return catalog.ServesOf(m.ID) != kind }))
++	add(p.PlanRetrieval(kind))
++	add(provider.PluginServing(p, kind))
++	return out
+ }
+ 
+ // retrievalKind is the kind of model an operation of serveRetrieval's is
+diff --git a/internal/gateway/models_kind_test.go b/internal/gateway/models_kind_test.go
+index ad141d0f16..9e2f252b25 100644
+--- a/internal/gateway/models_kind_test.go
++++ b/internal/gateway/models_kind_test.go
+@@ -94,7 +94,7 @@ func TestModelsListMediaOnlyWhenAsked(t *testing.T) {
+ 	if _, body := get("/v1/models?kind=image&format=text", nil); !strings.Contains(body, image) || strings.Contains(body, video) {
+ 		t.Fatalf("kind=image&format=text:\n%s", body)
+ 	}
+-	for _, bad := range []string{"images", "embedding", "", "chat,"} {
++	for _, bad := range []string{"images", "decide", "", "chat,"} {
+ 		if code, body := get("/v1/models?kind="+bad, nil); code != 400 {
+ 			t.Errorf("kind=%q: %d %s", bad, code, body)
+ 		}
+diff --git a/internal/gateway/serving_kind_test.go b/internal/gateway/serving_kind_test.go
+new file mode 100644
+index 0000000000..9fa116b680
+--- /dev/null
++++ b/internal/gateway/serving_kind_test.go
+@@ -0,0 +1,124 @@
++package gateway
++
++import (
++	"encoding/json"
++	"net/http/httptest"
++	"strings"
++	"testing"
++
++	"github.com/yetone/magpie/internal/provider"
++)
++
++// Fish-under-sea (#5418): a provider's own /v1/models lists whisper-1,
++// tts-1 and an embedding model next to its chat ones, and magpie's own
++// list said nothing of what a model is for, so an SDK reading a flat list
++// had to guess from ids. The models made for another API are listed only
++// when the caller asks for their kind (?kind=embedding, rerank, speech,
++// transcription, comma separated), each marked by its "kind", as image
++// and video models are: an agent that offers every id its list gives as a
++// model to chat with would offer a TTS. Those unticked in their
++// provider's editor (hiddenSpeech, hiddenEmbeddings) are left out of the
++// list, and a request that names one still serves.
++func TestModelsListServingKindsWhenAsked(t *testing.T) {
++	fresh(t)
++	busy, free := newKindVendor(t, true), newKindVendor(t, false)
++	saveFetched(t, provider.Provider{ID: "busy", Name: "Busy", Chat: busy.URL + "/v1", Key: "k", Models: []string{"chat-model"}})
++	saveFetched(t, provider.Provider{ID: "free", Name: "Free", Chat: free.URL + "/v1", Key: "k", Models: []string{"chat-model"}})
++	h := New().Handler()
++	rows := func(query string) map[string]string {
++		t.Helper()
++		if !strings.HasPrefix(query, "/v1/models") {
++			query = "/v1/models" + query
++		}
++		rec := httptest.NewRecorder()
++		h.ServeHTTP(rec, httptest.NewRequest("GET", query, nil))
++		if rec.Code != 200 {
++			t.Fatalf("%s: %d %s", query, rec.Code, rec.Body.String())
++		}
++		var l struct {
++			Data []struct {
++				ID   string
++				Kind string
++			}
++		}
++		if err := json.Unmarshal(rec.Body.Bytes(), &l); err != nil {
++			t.Fatalf("%s: %v\n%s", query, err, rec.Body.String())
++		}
++		out := map[string]string{}
++		for _, m := range l.Data {
++			out[m.ID] = m.Kind
++		}
++		return out
++	}
++	plain := rows("/v1/models")
++	for _, id := range []string{"busy/embed-1", "free/embed-1", "busy/tts-1", "free/whisper-1", "free/bge-reranker-1"} {
++		if _, ok := plain[id]; ok {
++			t.Errorf("the plain list offers %s", id)
++		}
++	}
++	want := []struct{ query, id, kind string }{
++		{"?kind=embedding", "busy/embed-1", "embedding"},
++		{"?kind=embedding", "free/embed-1", "embedding"},
++		{"?kind=rerank", "busy/bge-reranker-1", "rerank"},
++		{"?kind=rerank", "free/bge-reranker-1", "rerank"},
++		{"?kind=speech", "busy/tts-1", "speech"},
++		{"?kind=speech", "free/tts-1", "speech"},
++		{"?kind=transcription", "busy/whisper-1", "transcription"},
++		{"?kind=transcription", "free/whisper-1", "transcription"},
++		{"?kind=speech,transcription", "busy/tts-1", "speech"},
++		{"?kind=speech,transcription", "free/whisper-1", "transcription"},
++	}
++	for _, w := range want {
++		got := rows(w.query)
++		if got[w.id] != w.kind {
++			t.Errorf("%s lists %s as kind %q, want %q (list %v)", w.query, w.id, got[w.id], w.kind, got)
++		}
++	}
++	if got := rows("?kind=speech"); got["busy/whisper-1"] != "" {
++		t.Errorf("a transcription model listed as speech: %v", got)
++	}
++	badRec := httptest.NewRecorder()
++	h.ServeHTTP(badRec, httptest.NewRequest("GET", "/v1/models?kind=decide", nil))
++	if badRec.Code != 400 {
++		t.Errorf("an unknown kind: %d %s", badRec.Code, badRec.Body.String())
++	}
++
++	// those unticked in the editor are not listed, and the rest still is
++	p, err := provider.Find("busy")
++	if err != nil {
++		t.Fatal(err)
++	}
++	p.HiddenSpeech = []string{"tts-1"}
++	p.HiddenEmbeddings = []string{"embed-1"}
++	if err := provider.Save(*p); err != nil {
++		t.Fatal(err)
++	}
++	if got := rows("?kind=speech"); got["busy/tts-1"] != "" || got["free/tts-1"] != "speech" {
++		t.Errorf("the hidden speech model still listed: %v", got)
++	}
++	if got := rows("?kind=embedding"); got["busy/embed-1"] != "" || got["free/embed-1"] != "embedding" {
++		t.Errorf("the hidden embedding still listed: %v", got)
++	}
++	if got := rows("?kind=transcription"); got["busy/whisper-1"] != "transcription" {
++		t.Errorf("the unticked one's kindmates lost: %v", got)
++	}
++}
++
++// Fish-under-sea (#5418): a model unticked in its provider's editor still
++// serves when a request names it, as a hidden image model still draws
++// (OfferedDrawers, DrawerHidden).
++func TestHiddenServingModelStillServes(t *testing.T) {
++	fresh(t)
++	free := newKindVendor(t, false)
++	saveFetched(t, provider.Provider{ID: "solo", Name: "Solo", Chat: free.URL + "/v1", Key: "k", Models: []string{"chat-model"}, HiddenEmbeddings: []string{"embed-1"}})
++	s := New()
++	if code, raw := postRetrieval(t, s, "/v1/embeddings", `{"model":"embed-1","input":"hi"}`); code != 200 || !strings.Contains(raw, `[0.5,0.25]`) {
++		t.Fatalf("embeddings by a hidden model's id: %d %s", code, raw)
++	}
++	for _, asked := range free.log() {
++		if asked == "POST /v1/embeddings" {
++			return
++		}
++	}
++	t.Fatalf("the vendor was asked %v", free.log())
++}
+diff --git a/internal/gui/assets/app.js b/internal/gui/assets/app.js
+index 8861ca81e2..0c02622817 100644
+--- a/internal/gui/assets/app.js
++++ b/internal/gui/assets/app.js
+@@ -9233,7 +9233,7 @@ function baseAPIOf(p) {
+ 
+ // draftOf is a saved provider as its editor's form holds it.
+ function draftOf(p) {
+-  return { id: p.id, name: p.name, preset: p.preset, chat: p.chat, responses: p.responses, anthropic: p.anthropic, gemini: p.gemini || "", catalog: p.catalog, decide: p.decide || "", key: "", api: baseAPIOf(p), chosen: pickedOf(p), none: !!p.noModels, best: !!p.bestInFamily, extra: [], headers: headerRows(p.headers), extraBody: extraBodyText(p.extraBody), replyHeaders: (p.replyHeaders || []).join(", "), passHeaders: (p.passHeaders || []).join(", "), icon: p.icon || "", iconFrom: p.iconFrom || "", fallback: [...(p.fallback || [])], unlisted: !!p.unlisted, hiddenDrawers: [...(p.hiddenDrawers || [])], hiddenVideomakers: [...(p.hiddenVideomakers || [])], searches: !!p.searches, unredacted: !!p.unredacted, countFree: !!p.countFree, billing: p.billing || "", insecureTLS: !!p.insecureTLS, http1: !!p.http1, clientCert: p.clientCert || "", clientKey: p.clientKey || "", serverCA: p.serverCA || "", serverPin: p.serverPin || "", socket: p.socket || "", limitRestOff: !!p.limitRestOff, upstreamProviders: !!p.upstreamProviders, passErrors: !!p.passErrors, imageFilesOff: !!p.imageFilesOff, nativeCompaction: !!p.nativeCompaction, passUserAgent: p.passUserAgent !== false, pinUpstream: !!p.pinUpstream, authHeader: p.authHeader || "", balanceURL: p.balanceURL || "", balancePath: p.balancePath || "", balanceMethod: p.balanceMethod || "", modelsURL: p.modelsURL || "", listOff: !!p.listOff, contexts: contextsText(p.contexts), outputs: contextsText(p.outputs), compacts: contextsText(p.compacts), keysUrl: p.keysUrl || "", ...proxyDraft(p), ...concurrencyDraft(p), rateWindows: (p.rateWindows || []).map((w) => ({ ...w })) };
++  return { id: p.id, name: p.name, preset: p.preset, chat: p.chat, responses: p.responses, anthropic: p.anthropic, gemini: p.gemini || "", catalog: p.catalog, decide: p.decide || "", key: "", api: baseAPIOf(p), chosen: pickedOf(p), none: !!p.noModels, best: !!p.bestInFamily, extra: [], headers: headerRows(p.headers), extraBody: extraBodyText(p.extraBody), replyHeaders: (p.replyHeaders || []).join(", "), passHeaders: (p.passHeaders || []).join(", "), icon: p.icon || "", iconFrom: p.iconFrom || "", fallback: [...(p.fallback || [])], unlisted: !!p.unlisted, hiddenDrawers: [...(p.hiddenDrawers || [])], hiddenVideomakers: [...(p.hiddenVideomakers || [])], hiddenSpeech: [...(p.hiddenSpeech || [])], hiddenEmbeddings: [...(p.hiddenEmbeddings || [])], searches: !!p.searches, unredacted: !!p.unredacted, countFree: !!p.countFree, billing: p.billing || "", insecureTLS: !!p.insecureTLS, http1: !!p.http1, clientCert: p.clientCert || "", clientKey: p.clientKey || "", serverCA: p.serverCA || "", serverPin: p.serverPin || "", socket: p.socket || "", limitRestOff: !!p.limitRestOff, upstreamProviders: !!p.upstreamProviders, passErrors: !!p.passErrors, imageFilesOff: !!p.imageFilesOff, nativeCompaction: !!p.nativeCompaction, passUserAgent: p.passUserAgent !== false, pinUpstream: !!p.pinUpstream, authHeader: p.authHeader || "", balanceURL: p.balanceURL || "", balancePath: p.balancePath || "", balanceMethod: p.balanceMethod || "", modelsURL: p.modelsURL || "", listOff: !!p.listOff, contexts: contextsText(p.contexts), outputs: contextsText(p.outputs), compacts: contextsText(p.compacts), keysUrl: p.keysUrl || "", ...proxyDraft(p), ...concurrencyDraft(p), rateWindows: (p.rateWindows || []).map((w) => ({ ...w })) };
+ }
+ 
+ // duplicateProvider opens the Add form on a copy of p, its key p's unless another is pasted (#268).
+@@ -9524,7 +9524,8 @@ function drawEditor(p, presetID) {
+     ed.append(...field(t("Models"), renderModels(p), pluginFilterNote(subOf(a.agent))));
+     if (p.drawIds?.length) ed.append(...renderDrawers(p));
+     if (p.filmIds?.length) ed.append(...renderVideomakers(p));
+-    // the subscription's own warm-up, check-in and resets first
++    if (p.speechIds?.length) ed.append(...renderSpeech(p));
++    if (p.embedIds?.length) ed.append(...renderEmbeddings(p));    // the subscription's own warm-up, check-in and resets first
+     if (subOf(a.agent)) advIn.append(...provPrefsField(a.agent));
+     // a subscription's window too: Codex's backend says 272K for models
+     // that take 872K (#120)
+@@ -9587,7 +9588,7 @@ function drawEditor(p, presetID) {
+       if (priceTypedError(ed)) return;
+       const picked = accountModelsDraft(p);
+       if (picked === false) return pickError();
+-      const body = { id: p.id, models: chosenIds(), noModels: noneChosen(), bestInFamily: bestChosen(), unlisted: draft.unlisted, hiddenDrawers: draft.hiddenDrawers, hiddenVideomakers: draft.hiddenVideomakers, fallback: draft.fallback, contexts: cx.map, outputs: ox.map, compacts: cpx.map, proxy, accountProxies: own.map, maxConcurrency, maxAccounts, ...queue, priceRate, rateWindows, modelPrefs: modelPrefsOfDraft(), pinUpstream: !!draft.pinUpstream, unredacted: !!draft.unredacted, countFree: !!draft.countFree, billing: draft.billing || "", ...(p.carriesCompaction ? { nativeCompaction: !!draft.nativeCompaction } : {}), ...routingOfDraft(p) };
++      const body = { id: p.id, models: chosenIds(), noModels: noneChosen(), bestInFamily: bestChosen(), unlisted: draft.unlisted, hiddenDrawers: draft.hiddenDrawers, hiddenVideomakers: draft.hiddenVideomakers, hiddenSpeech: draft.hiddenSpeech, hiddenEmbeddings: draft.hiddenEmbeddings, fallback: draft.fallback, contexts: cx.map, outputs: ox.map, compacts: cpx.map, proxy, accountProxies: own.map, maxConcurrency, maxAccounts, ...queue, priceRate, rateWindows, modelPrefs: modelPrefsOfDraft(), pinUpstream: !!draft.pinUpstream, unredacted: !!draft.unredacted, countFree: !!draft.countFree, billing: draft.billing || "", ...(p.carriesCompaction ? { nativeCompaction: !!draft.nativeCompaction } : {}), ...routingOfDraft(p) };
+       saving(saveBtn, t("Saving…"));
+       saveAccountModelsDraft(picked).then(() => savePluginOptions(subOf(a.agent))).then(() => providerAction("save", body, t("{name} saved", { name: p.name })), (e) => { doneSaving(saveBtn); editorError(e.message || String(e)); }); };
+     bar.append(cancel, saveBtn);
+@@ -10025,6 +10026,8 @@ function drawEditor(p, presetID) {
+   else if (pr?.id === "azure") ed.append(...field(t("Models"), el("div", "hint azure-models", t("No need to type them: once added, magpie lists the deployments this key can call. Type a deployment's name as a model id only if that list can't be fetched.")), ""));
+   if (p?.drawIds?.length) ed.append(...renderDrawers(p));
+   if (p?.filmIds?.length) ed.append(...renderVideomakers(p));
++  if (p?.speechIds?.length) ed.append(...renderSpeech(p));
++  if (p?.embedIds?.length) ed.append(...renderEmbeddings(p));
+   {
+     // the window agents are told a model has, over what the vendor or
+     // models.dev says: one for all of them, and model=size for one
+@@ -10237,7 +10240,7 @@ function drawEditor(p, presetID) {
+     }
+     if (custom) { body.icon = draft.icon || "generic"; body.iconFrom = draft.iconFrom || ""; body.balanceURL = (draft.balanceURL || "").trim(); body.balancePath = (draft.balancePath || "").trim(); body.balanceMethod = draft.balanceMethod || ""; body.modelsURL = (draft.modelsURL || "").trim(); }
+     if (p?.takesListOff) body.listOff = !!draft.listOff;
+-    if (p) { body.fallback = draft.fallback; body.unlisted = draft.unlisted; body.hiddenDrawers = draft.hiddenDrawers; body.hiddenVideomakers = draft.hiddenVideomakers; body.noModels = noneChosen(); body.bestInFamily = bestChosen(); body.modelPrefs = modelPrefsOfDraft(); Object.assign(body, routingOfDraft(p)); }
++    if (p) { body.fallback = draft.fallback; body.unlisted = draft.unlisted; body.hiddenDrawers = draft.hiddenDrawers; body.hiddenVideomakers = draft.hiddenVideomakers; body.hiddenSpeech = draft.hiddenSpeech; body.hiddenEmbeddings = draft.hiddenEmbeddings; body.noModels = noneChosen(); body.bestInFamily = bestChosen(); body.modelPrefs = modelPrefsOfDraft(); Object.assign(body, routingOfDraft(p)); }
+     body.searches = !!draft.searches && searchable();
+     if (draft.libraryMCP != null) body.libraryMCP = draft.libraryMCP;
+     if (draft.libraryShared != null) body.libraryShared = draft.libraryShared;
+@@ -12112,6 +12115,16 @@ function renderVideomakers(p) {
+   return field(t("Video models"), mediaChips("mchips videomakers", p.filmIds, "hiddenVideomakers", p), t("Only the ticked ones are offered when making a video. Agents don't chat with these, so they aren't among its models."));
+ }
+ 
++// renderSpeech: its speech models, ticked to be served and listed (Fish-under-sea, #5418)
++function renderSpeech(p) {
++  return field(t("Speech models"), mediaChips("mchips speech", p.speechIds, "hiddenSpeech", p), t("Asked for on /v1/audio/speech and /v1/audio/transcriptions. Agents don't chat with these, so they aren't among its models."));
++}
++
++// renderEmbeddings: its embedding and rerank models, ticked to be served and listed (#5418)
++function renderEmbeddings(p) {
++  return field(t("Embedding models"), mediaChips("mchips embeddings", p.embedIds, "hiddenEmbeddings", p), t("Asked for on /v1/embeddings and /v1/rerank. Agents don't chat with these, so they aren't among its models."));
++}
++
+ function mediaChips(cls, ids, key, p, names) {
+   const chips = el("div", cls);
+   draft[key] ||= [...(p[key] || [])];
+diff --git a/internal/gui/assets/i18n.js b/internal/gui/assets/i18n.js
+index 473ec60ef9..b1316943b9 100644
+--- a/internal/gui/assets/i18n.js
++++ b/internal/gui/assets/i18n.js
+@@ -1873,6 +1873,10 @@ const I18N = {
+     "Settings → Models → Images lists the ticked ones. Agents don't chat with these, so they aren't among its models.": "设置 → 模型 → 图像 只列出已勾选的。Agent 不与它们对话，故不在模型列表中。",
+     "Video models": "视频模型",
+     "Only the ticked ones are offered when making a video. Agents don't chat with these, so they aren't among its models.": "生成视频时只提供已勾选的。Agent 不与它们对话，故不在模型列表中。",
++    "Speech models": "语音模型",
++    "Embedding models": "嵌入模型",
++    "Asked for on /v1/audio/speech and /v1/audio/transcriptions. Agents don't chat with these, so they aren't among its models.": "在 /v1/audio/speech 和 /v1/audio/transcriptions 上调用。Agent 不与它们对话，故不在模型列表中。",
++    "Asked for on /v1/embeddings and /v1/rerank. Agents don't chat with these, so they aren't among its models.": "在 /v1/embeddings 和 /v1/rerank 上调用。Agent 不与它们对话，故不在模型列表中。",
+     "{model}, picked here, is unticked in its provider's Image models: it still draws, but leaves this list once another is picked. Tick it there to keep it listed.": "{model} 是此处选中的，但在其供应商的“图像模型”中未勾选：它仍用于生图，改选其他模型后便不再列在这里。在那里勾选它即可留在列表中。",
+     "no models exposed": "未暴露模型",
+     "signed in as {user}": "已登录 {user}",
+@@ -6957,6 +6961,10 @@ const I18N = {
+     "Settings → Models → Images lists the ticked ones. Agents don't chat with these, so they aren't among its models.": "設定 → 模型 → 影像 只列出已勾選的。Agent 不與它們對話，故不在模型列表中。",
+     "Video models": "影片模型",
+     "Only the ticked ones are offered when making a video. Agents don't chat with these, so they aren't among its models.": "生成影片時只提供已勾選的。Agent 不與它們對話，故不在模型列表中。",
++    "Speech models": "語音模型",
++    "Embedding models": "嵌入模型",
++    "Asked for on /v1/audio/speech and /v1/audio/transcriptions. Agents don't chat with these, so they aren't among its models.": "在 /v1/audio/speech 和 /v1/audio/transcriptions 上呼叫。Agent 不與它們對話，故不在模型列表中。",
++    "Asked for on /v1/embeddings and /v1/rerank. Agents don't chat with these, so they aren't among its models.": "在 /v1/embeddings 和 /v1/rerank 上呼叫。Agent 不與它們對話，故不在模型列表中。",
+     "{model}, picked here, is unticked in its provider's Image models: it still draws, but leaves this list once another is picked. Tick it there to keep it listed.": "{model} 是此處選取的，但在其供應商的「影像模型」中未勾選：它仍用於生圖，改選其他模型後便不再列在這裡。在那裡勾選它即可留在列表中。",
+     "no models exposed": "未暴露模型",
+     "signed in as {user}": "已登入 {user}",
+@@ -12015,6 +12023,10 @@ const I18N = {
+     "Settings → Models → Images lists the ticked ones. Agents don't chat with these, so they aren't among its models.": "設定 → モデル → 画像 にはチェックしたものだけが表示されます。エージェントはこれらと会話しないため、モデル一覧には含まれません。",
+     "Video models": "動画モデル",
+     "Only the ticked ones are offered when making a video. Agents don't chat with these, so they aren't among its models.": "動画を作るときは、チェックしたものだけが候補になります。エージェントはこれらと会話しないため、モデル一覧には含まれません。",
++    "Speech models": "音声モデル",
++    "Embedding models": "埋め込みモデル",
++    "Asked for on /v1/audio/speech and /v1/audio/transcriptions. Agents don't chat with these, so they aren't among its models.": "/v1/audio/speech と /v1/audio/transcriptions で呼び出します。エージェントはこれらと会話しないため、モデル一覧には含まれません。",
++    "Asked for on /v1/embeddings and /v1/rerank. Agents don't chat with these, so they aren't among its models.": "/v1/embeddings と /v1/rerank で呼び出します。エージェントはこれらと会話しないため、モデル一覧には含まれません。",
+     "{model}, picked here, is unticked in its provider's Image models: it still draws, but leaves this list once another is picked. Tick it there to keep it listed.": "ここで選んだ {model} は、プロバイダの「画像モデル」でチェックが外されています。描画には引き続き使われますが、別のモデルを選ぶとこの一覧から消えます。一覧に残すには、そちらでチェックしてください。",
+     "no models exposed": "公開されているモデルなし",
+     "signed in as {user}": "{user} としてサインイン中",
+@@ -17104,6 +17116,10 @@ const I18N = {
+     "Settings → Models → Images lists the ticked ones. Agents don't chat with these, so they aren't among its models.": "Einstellungen → Modelle → Bilder listet die angehakten. Agenten chatten nicht mit diesen Modellen, daher stehen sie nicht bei seinen Modellen.",
+     "Video models": "Videomodelle",
+     "Only the ticked ones are offered when making a video. Agents don't chat with these, so they aren't among its models.": "Beim Erstellen eines Videos werden nur die angehakten angeboten. Agenten chatten nicht mit diesen Modellen, daher stehen sie nicht bei seinen Modellen.",
++    "Speech models": "Sprachmodelle",
++    "Embedding models": "Embedding-Modelle",
++    "Asked for on /v1/audio/speech and /v1/audio/transcriptions. Agents don't chat with these, so they aren't among its models.": "Über /v1/audio/speech und /v1/audio/transcriptions abgefragt. Agenten chatten nicht mit diesen Modellen, daher stehen sie nicht bei seinen Modellen.",
++    "Asked for on /v1/embeddings and /v1/rerank. Agents don't chat with these, so they aren't among its models.": "Über /v1/embeddings und /v1/rerank abgefragt. Agenten chatten nicht mit diesen Modellen, daher stehen sie nicht bei seinen Modellen.",
+     "{model}, picked here, is unticked in its provider's Image models: it still draws, but leaves this list once another is picked. Tick it there to keep it listed.": "{model}, hier gewählt, ist bei den Bildmodellen seines Anbieters abgehakt: Es zeichnet weiter, verschwindet aber aus dieser Liste, sobald ein anderes gewählt ist. Haken Sie es dort an, damit es gelistet bleibt.",
+     "no models exposed": "keine Modelle freigegeben",
+     "signed in as {user}": "angemeldet als {user}",
+diff --git a/internal/gui/providers.go b/internal/gui/providers.go
+index bd754c4274..2e042c787a 100644
+--- a/internal/gui/providers.go
++++ b/internal/gui/providers.go
+@@ -412,8 +412,17 @@ type providerJSON struct {
+ 	// (provider.HiddenVideomakers)
+ 	FilmIDs           []string `json:"filmIds,omitempty"`
+ 	HiddenVideomakers []string `json:"hiddenVideomakers,omitempty"`
+-	Unlisted          bool     `json:"unlisted"` // its models serve only through routing groups
+-	NoModels          bool     `json:"noModels"` // Select none: none of its models served (#1818)
++	// its speech models (a fetched list's or a plugin's TTS and
++	// transcription ones, gateway.ServingOf) and its embedding and rerank
++	// ones, listed apart in its editor as its image models are, and those
++	// unticked there (provider.HiddenSpeech, provider.HiddenEmbeddings,
++	// Fish-under-sea #5418)
++	SpeechIDs        []string `json:"speechIds,omitempty"`
++	HiddenSpeech     []string `json:"hiddenSpeech,omitempty"`
++	EmbedIDs         []string `json:"embedIds,omitempty"`
++	HiddenEmbeddings []string `json:"hiddenEmbeddings,omitempty"`
++	Unlisted         bool     `json:"unlisted"` // its models serve only through routing groups
++	NoModels         bool     `json:"noModels"` // Select none: none of its models served (#1818)
+ 	// Best in family: with nothing picked, only the newest model of each
+ 	// family it lists is served (provider.Provider.BestInFamily)
+ 	BestInFamily bool `json:"bestInFamily"`
+@@ -1249,6 +1258,35 @@ func providerInfoWith(p provider.Provider, ls provider.Listing, agents []agentUs
+ 			out.HiddenVideomakers = append(out.HiddenVideomakers, m.ID)
+ 		}
+ 	}
++	// its speech and embedding models likewise (#5418, Fish-under-sea): a
++	// TTS or a transcription, an embedding or a rerank model sits nowhere
++	// else, so its editor is where it is ticked or unticked
++	speech := map[string]bool{}
++	for _, kind := range []string{catalog.ServesSpeech, catalog.ServesTranscription} {
++		for _, m := range gateway.ServingOf(p, kind) {
++			if speech[m.ID] {
++				continue
++			}
++			speech[m.ID] = true
++			out.SpeechIDs = append(out.SpeechIDs, m.ID)
++			if p.SpeechHidden(m.ID) {
++				out.HiddenSpeech = append(out.HiddenSpeech, m.ID)
++			}
++		}
++	}
++	embeds := map[string]bool{}
++	for _, kind := range []string{catalog.ServesEmbedding, catalog.ServesRerank} {
++		for _, m := range gateway.ServingOf(p, kind) {
++			if embeds[m.ID] {
++				continue
++			}
++			embeds[m.ID] = true
++			out.EmbedIDs = append(out.EmbedIDs, m.ID)
++			if p.EmbeddingHidden(m.ID) {
++				out.HiddenEmbeddings = append(out.HiddenEmbeddings, m.ID)
++			}
++		}
++	}
+ 	if t, ok := p.Listed(); ok {
+ 		out.Fetched = &t
+ 	}
+@@ -2007,6 +2045,8 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
+ 				pr.Unlisted = in.Unlisted
+ 				pr.HiddenDrawers = in.HiddenDrawers
+ 				pr.HiddenVideomakers = in.HiddenVideomakers
++				pr.HiddenSpeech = in.HiddenSpeech
++				pr.HiddenEmbeddings = in.HiddenEmbeddings
+ 				pr.AccountProxies = in.AccountProxies
+ 				if in.Name != "" {
+ 					pr.Name = in.Name
+@@ -2297,6 +2337,14 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
+ 				if in.HiddenVideomakers == nil && old != nil {
+ 					in.HiddenVideomakers = old.HiddenVideomakers
+ 				}
++				// its speech and embedding models unticked there likewise
++				// (#5418)
++				if in.HiddenSpeech == nil && old != nil {
++					in.HiddenSpeech = old.HiddenSpeech
++				}
++				if in.HiddenEmbeddings == nil && old != nil {
++					in.HiddenEmbeddings = old.HiddenEmbeddings
++				}
+ 				// a Zhipu key's team likewise: {} clears it
+ 				if in.ZhipuTeam == nil && old != nil {
+ 					in.ZhipuTeam = old.ZhipuTeam
+diff --git a/internal/gui/speech_hidden_test.go b/internal/gui/speech_hidden_test.go
+new file mode 100644
+index 0000000000..0de43b8c46
+--- /dev/null
++++ b/internal/gui/speech_hidden_test.go
+@@ -0,0 +1,80 @@
++package gui
++
++import (
++	"net/http"
++	"net/http/httptest"
++	"os"
++	"slices"
++	"strings"
++	"testing"
++
++	"github.com/yetone/magpie/internal/catalog"
++	"github.com/yetone/magpie/internal/provider"
++)
++
++// Fish-under-sea (#5418): a provider's editor lists its speech models
++// (TTS and transcription) and its embedding models (embedding and
++// rerank) apart, as its image and video ones are; those unticked there
++// are saved as hiddenSpeech and hiddenEmbeddings, kept by a Save that
++// leaves them out and cleared by [], and a save of one leaves the other's
++// alone.
++func TestSpeechAndEmbeddingModelsHidden(t *testing.T) {
++	t.Setenv("HOME", t.TempDir())
++	t.Setenv("USERPROFILE", os.Getenv("HOME"))
++	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
++	t.Setenv("XDG_CACHE_HOME", t.TempDir())
++	mux := http.NewServeMux()
++	providerRoutes(mux, nil)
++	post := func(body string) {
++		t.Helper()
++		w := httptest.NewRecorder()
++		mux.ServeHTTP(w, httptest.NewRequest("POST", "/api/provider/save", strings.NewReader(body)))
++		if w.Code != 200 {
++			t.Fatalf("%d %s", w.Code, w.Body.String())
++		}
++	}
++	const base = `"id":"films","name":"Films","key":"sk-f","chat":"https://films.example/v1","icon":"generic"`
++	post(`{` + base + `,"new":true}`)
++	if err := catalog.SaveLive("films", "https://films.example/v1", []catalog.Model{
++		{ID: "text"},
++		{ID: "tts-a", Serves: catalog.ServesSpeech},
++		{ID: "tts-b", Serves: catalog.ServesSpeech},
++		{ID: "wh-a", Serves: catalog.ServesTranscription},
++		{ID: "emb-a", Serves: catalog.ServesEmbedding},
++		{ID: "rer-a", Serves: catalog.ServesRerank},
++	}); err != nil {
++		t.Fatal(err)
++	}
++	info := func() providerJSON {
++		t.Helper()
++		p, err := provider.Find("films")
++		if err != nil {
++			t.Fatal(err)
++		}
++		return providerInfo(*p, nil)
++	}
++	got := info()
++	if !slices.Equal(got.SpeechIDs, []string{"tts-a", "tts-b", "wh-a"}) {
++		t.Fatalf("editor's speech models %v", got.SpeechIDs)
++	}
++	if !slices.Equal(got.EmbedIDs, []string{"emb-a", "rer-a"}) {
++		t.Fatalf("editor's embedding models %v", got.EmbedIDs)
++	}
++
++	post(`{` + base + `,"from":"films","models":[],"headers":{},"hiddenSpeech":["tts-a"],"hiddenEmbeddings":["emb-a"]}`)
++	if got := info(); !slices.Equal(got.HiddenSpeech, []string{"tts-a"}) || !slices.Equal(got.HiddenEmbeddings, []string{"emb-a"}) {
++		t.Fatalf("saved speech %v, embeddings %v", got.HiddenSpeech, got.HiddenEmbeddings)
++	}
++	post(`{` + base + `,"from":"films","models":[],"headers":{}}`)
++	if got := info(); !slices.Equal(got.HiddenSpeech, []string{"tts-a"}) || !slices.Equal(got.HiddenEmbeddings, []string{"emb-a"}) {
++		t.Fatalf("a Save that left them out changed them: %v, %v", got.HiddenSpeech, got.HiddenEmbeddings)
++	}
++	post(`{` + base + `,"from":"films","models":[],"headers":{},"hiddenSpeech":[],"hiddenEmbeddings":[]}`)
++	if got := info(); len(got.HiddenSpeech) != 0 || len(got.HiddenEmbeddings) != 0 {
++		t.Fatalf("[] kept speech %v, embeddings %v", got.HiddenSpeech, got.HiddenEmbeddings)
++	}
++	post(`{` + base + `,"from":"films","models":[],"headers":{},"hiddenSpeech":["tts-b"]}`)
++	if got := info(); !slices.Equal(got.HiddenSpeech, []string{"tts-b"}) || !slices.Equal(got.HiddenEmbeddings, []string{}) {
++		t.Fatalf("a save of one changed the other's: %v, %v", got.HiddenSpeech, got.HiddenEmbeddings)
++	}
++}
+diff --git a/internal/gui/tests/speech-embeddings-hide.test.cjs b/internal/gui/tests/speech-embeddings-hide.test.cjs
+new file mode 100644
+index 0000000000..b9cbd97411
+--- /dev/null
++++ b/internal/gui/tests/speech-embeddings-hide.test.cjs
+@@ -0,0 +1,130 @@
++// Run with Node's test runner and Playwright on the module path; see README.md.
++// Fish-under-sea (#5418): a provider's editor had nowhere to put its speech
++// and embedding models — a fetched list's whisper-1, tts-1 and embedding
++// models just sat in nothing. Now each is ticked in its own section, a
++// click unticks it (and ticks it back), and Save writes the unticked ones
++// as hiddenSpeech and hiddenEmbeddings, which the /v1/models kind lists
++// then leave out. The API is faked here.
++const assert = require("node:assert/strict");
++const fs = require("node:fs/promises");
++const path = require("node:path");
++const { test } = require("node:test");
++const { chromium, webkit } = require("playwright");
++
++const assets = path.resolve(__dirname, "../assets");
++const fetched = new Date(Date.now() - 3600e3).toISOString();
++const speechIds = ["tts-1", "whisper-1"];
++const embedIds = ["text-embedding-3-small", "bge-reranker-v2"];
++
++function providerFor(hidden) {
++  return {
++    id: "openai", name: "OpenAI", icon: "openai", host: "", chat: "https://api.openai.com/v1", responses: "", anthropic: "", catalog: "",
++    models: [{ id: "gpt-6", name: "GPT-6", on: true }], chosen: [], fetched, agents: [], fallback: [], headers: {},
++    key: { set: true, masked: "sk-…one", optional: false }, keyList: [], balanceToken: { takes: false, set: false }, proxy: "", ready: true,
++    speechIds, embedIds, hiddenSpeech: hidden.speech, hiddenEmbeddings: hidden.embeds,
++  };
++}
++
++function settingsPayload(lang, over) {
++  return {
++    theme: "light", lang, tray: "panel", quotaLeft: false, currency: "usd", textSize: 100,
++    dock: false, dockWindow: false, proxy: "", redact: false, redactPersonal: false, redactWords: [],
++    codexWarmup: "", claudeWarmup: "", codexWarmAt: "", claudeWarmAt: "", workbuddyCheckin: false, noStats: false,
++    trayUsage: "", trayUsageEvery: 3, vision: "", imageGen: "",
++    version: "0.1.400", dir: "~/.config/magpie", gateway: "http://127.0.0.1:3425",
++    proxyNow: "none", proxySource: "none", login: false,
++    visionModels: [], imageGenModels: [],
++    imageGenAuto: "", workbuddyCheckins: [], lanURLs: [],
++    fx: { rate: 7.2, at: new Date().toISOString(), stale: false },
++    ...over,
++  };
++}
++
++function serve(lang, saves) {
++  const hidden = { speech: ["whisper-1"], embeds: [] };
++  const providers = () => ({ providers: [providerFor(hidden)], presets: [], excluded: [], gateway: { running: true, window: true }, plugins: [] });
++  return async (route) => {
++    const req = route.request(), url = new URL(req.url());
++    const json = (data) => route.fulfill({ json: data });
++    if (url.pathname === "/boot.js") return route.fulfill({ contentType: "text/javascript", body: `window.bootPrefs = {lang:"${lang}",theme:"light",web:true,textSize:100};` });
++    if (url.pathname === "/wails/runtime.js") return route.fulfill({ contentType: "text/javascript", body: "export const Window = {};" });
++    if (url.pathname === "/api/state") return json({ agents: [], profiles: [], settings: { lang, theme: "light", textSize: 100 } });
++    if (url.pathname === "/api/settings") return json(settingsPayload(lang, {}));
++    if (url.pathname === "/api/plugins") return json({ plugins: [] });
++    if (url.pathname === "/api/providers") return json(providers());
++    if (url.pathname === "/api/provider/save") {
++      const body = req.postDataJSON();
++      saves.push(body);
++      if (body.hiddenSpeech) hidden.speech = body.hiddenSpeech;
++      if (body.hiddenEmbeddings) hidden.embeds = body.hiddenEmbeddings;
++      return json(providers());
++    }
++    if (url.pathname === "/api/usage/quotas") return json([]);
++    if (url.pathname === "/api/groups") return json({ groups: [], pools: [], models: [] });
++    if (url.pathname === "/api/gateway/trace") return json({ routes: [] });
++    if (url.pathname === "/api/window/fit") return route.fulfill({ status: 204 });
++    if (url.pathname.startsWith("/api/")) return json({});
++    const file = path.join(assets, url.pathname === "/" ? "index.html" : url.pathname);
++    const contentType = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png" }[path.extname(file)];
++    const body = await fs.readFile(file).catch(() => null);
++    await (body ? route.fulfill({ body, contentType }) : route.fulfill({ status: 404, body: "" }));
++  };
++}
++
++const words = {
++  en: { save: "Save", speech: "Speech models", embeds: "Embedding models" },
++  zh: { save: "保存", speech: "语音模型", embeds: "嵌入模型" },
++};
++
++for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium"])) {
++  test(engine + ": a provider's speech and embedding models can be unticked", async (t) => {
++    assert(["chromium", "webkit"].includes(engine), "BROWSER must be chromium or webkit");
++    const browser = await (engine === "webkit" ? webkit.launch() : chromium.launch({ channel: "chromium" }));
++    t.after(() => browser.close());
++    const open = async (lang, width, saves) => {
++      const page = await (await browser.newContext({ viewport: { width, height: 760 }, reducedMotion: "reduce" })).newPage();
++      page.setDefaultTimeout(5000);
++      page.setDefaultNavigationTimeout(60000);
++      page.errors = [];
++      page.on("pageerror", (e) => page.errors.push(e.message));
++      await page.route("**/*", serve(lang, saves));
++      await page.goto("http://magpie.test/?view=providers");
++      return page;
++    };
++    for (const lang of Object.keys(words)) {
++      const w = words[lang];
++      for (const width of [1000, 360]) {
++        await t.test(`${lang} at ${width}px: the editor unticks and ticks back speech and embedding models`, async () => {
++          const saves = [];
++          const page = await open(lang, width, saves);
++          const editor = page.locator("#modal:not([hidden]) .editor");
++          const chips = (cls) => editor.locator(`.mchips.${cls} .mchip`);
++          const ticked = (cls) => editor.locator(`.mchips.${cls} .mchip.on`).evaluateAll((cs) => cs.map((c) => c.textContent));
++          const chip = (cls, id) => editor.locator(`.mchips.${cls} .mchip`, { has: page.locator(`span:text-is("${id}")`) });
++          await page.locator(".row.provider", { hasText: "OpenAI" }).first().click();
++          await editor.locator(".mchips.speech .mchip").first().waitFor();
++          await editor.getByText(w.speech, { exact: true }).first().waitFor();
++          await editor.getByText(w.embeds, { exact: true }).first().waitFor();
++          assert.equal(await chips("speech").count(), 2);
++          assert.equal(await chips("embeddings").count(), 2);
++          assert.deepEqual(await ticked("speech"), ["tts-1"], "the saved hidden one opens unticked");
++          assert.deepEqual(await ticked("embeddings"), ["text-embedding-3-small", "bge-reranker-v2"]);
++          await chip("speech", "tts-1").click();
++          assert.deepEqual(await ticked("speech"), []);
++          await chip("embeddings", "bge-reranker-v2").click();
++          assert.deepEqual(await ticked("embeddings"), ["text-embedding-3-small"]);
++          await editor.getByRole("button", { name: w.save, exact: true }).click();
++          await editor.waitFor({ state: "detached" });
++          assert.deepEqual(saves.at(-1).hiddenSpeech, ["tts-1", "whisper-1"]);
++          assert.deepEqual(saves.at(-1).hiddenEmbeddings, ["bge-reranker-v2"]);
++          await page.locator(".row.provider", { hasText: "OpenAI" }).first().click();
++          await editor.locator(".mchips.speech .mchip").first().waitFor();
++          assert.deepEqual(await ticked("speech"), [], "reopened as saved");
++          assert.deepEqual(await ticked("embeddings"), ["text-embedding-3-small"]);
++          assert.deepEqual(page.errors, []);
++          await page.context().close();
++        });
++      }
++    }
++  });
++}
+diff --git a/internal/provider/modelkind.go b/internal/provider/modelkind.go
+index f04d02b05e..af29957427 100644
+--- a/internal/provider/modelkind.go
++++ b/internal/provider/modelkind.go
+@@ -140,3 +140,18 @@ func (p Provider) DrawerHidden(model string) bool {
+ func (p Provider) VideomakerHidden(model string) bool {
+ 	return slices.Contains(p.HiddenVideomakers, model)
+ }
++
++// SpeechHidden is whether the user unticked p's speech model (a TTS or a
++// transcription) in its editor (HiddenSpeech): it is left out of the
++// lists a speech model is picked from, and still serves when named
++// (Fish-under-sea, #5418).
++func (p Provider) SpeechHidden(model string) bool {
++	return slices.Contains(p.HiddenSpeech, model)
++}
++
++// EmbeddingHidden is whether the user unticked p's embedding or rerank
++// model in its editor (HiddenEmbeddings), as SpeechHidden its speech
++// ones (#5418).
++func (p Provider) EmbeddingHidden(model string) bool {
++	return slices.Contains(p.HiddenEmbeddings, model)
++}
+diff --git a/internal/provider/plugin_serving_test.go b/internal/provider/plugin_serving_test.go
+new file mode 100644
+index 0000000000..36e3ac9009
+--- /dev/null
++++ b/internal/provider/plugin_serving_test.go
+@@ -0,0 +1,44 @@
++package provider
++
++import (
++	"slices"
++	"testing"
++
++	"github.com/yetone/magpie/internal/catalog"
++)
++
++// Fish-under-sea (#5418): a plugin that says what its models give gets
++// each one its section without a new API. What #3279 drops from the chat
++// lists — an embedding ({"text": false}) and a TTS (audio alone) — is
++// kept apart instead, tagged with its API (Model.Serves), so it sits in
++// its editor section, is listed on /v1/models with its kind, and is
++// found on its API's route. A model said nothing of stays out of all of
++// that whatever its id (embedder-chat), and an image keeps its place
++// (#2792's to place), as the speechless tests hold.
++func TestPluginServingMapsWhatThePluginSays(t *testing.T) {
++	gaiPlugin(t)
++	p, err := Find("google-ai-studio")
++	if err != nil {
++		t.Fatal(err)
++	}
++	ids := func(kind string) []string {
++		t.Helper()
++		var out []string
++		for _, m := range PluginServing(*p, kind) {
++			out = append(out, m.ID)
++		}
++		return out
++	}
++	if got := ids(catalog.ServesEmbedding); !slices.Equal(got, []string{"gemini-embedding-001", "bge-m3"}) {
++		t.Fatalf("embeddings %v", got)
++	}
++	if got := ids(catalog.ServesSpeech); !slices.Equal(got, []string{"gemini-2.5-flash-preview-tts"}) {
++		t.Fatalf("speech %v", got)
++	}
++	if got := ids(catalog.ServesRerank); len(got) != 0 {
++		t.Fatalf("rerank %v", got)
++	}
++	if got := ids(""); !slices.Equal(got, []string{"gemini-embedding-001", "bge-m3", "gemini-2.5-flash-preview-tts"}) {
++		t.Fatalf("every serving model %v", got)
++	}
++}
+diff --git a/internal/provider/plugins.go b/internal/provider/plugins.go
+index c1ee66e74a..4e5a550c27 100644
+--- a/internal/provider/plugins.go
++++ b/internal/provider/plugins.go
+@@ -430,6 +430,51 @@ func pluginTalks(m plugin.Model) bool {
+ 	return slices.ContainsFunc(m.Outputs, func(k string) bool { return k == "text" || k == "image" || k == "video" })
+ }
+ 
++// PluginServing are the models p, a plugin's provider, lists that its
++// plugin says are made for the API kind names (Model.Serves), in the
++// plugin's order; "" is every such model, whatever its API. What #3279
++// drops from the chat lists is kept apart here instead (Fish-under-sea,
++// #5418): an embedding ({"text": false}) and a TTS (audio alone) are told
++// by what the plugin declares, not the model's id, so one whose id names
++// nothing is still found, and a model said nothing of is none of them.
++func PluginServing(p Provider, kind string) []catalog.Model {
++	if !p.IsPlugin() {
++		return nil
++	}
++	pp, ok := PluginOf(p.ID)
++	if !ok {
++		return nil
++	}
++	var out []catalog.Model
++	for _, m := range pp.Models {
++		serves := pluginServesOf(m)
++		if serves == "" || kind != "" && serves != kind {
++			continue
++		}
++		name := m.Name
++		if name == "" || name == m.ID {
++			name = m.ID
++		}
++		out = append(out, catalog.Model{ID: m.ID, Name: name, Provider: p.ID, Serves: serves})
++	}
++	return out
++}
++
++// pluginServesOf is the API a plugin's model is made for, as its plugin
++// declares (capabilities.output): audio alone is speech, outputs said and
++// none given ({"text": false}) is an embedding. A model to talk with (a
++// text among the outputs, an image's or a video's place, or nothing said)
++// is made for none.
++func pluginServesOf(m plugin.Model) string {
++	if pluginTalks(m) {
++		return ""
++	}
++	if slices.Contains(m.Outputs, "audio") {
++		return catalog.ServesSpeech
++	}
++	return catalog.ServesEmbedding
++}
++
+ // pluginPrice is m's price as its plugin gives it (m.Cost), if it gives
+ // one: OpenCode's price of a model it has none for is 0, so only an input
+ // or output price above it is one. A cache price of 0 is none given.
+diff --git a/internal/provider/provider.go b/internal/provider/provider.go
+index 412b063895..61c74f86c7 100644
+--- a/internal/provider/provider.go
++++ b/internal/provider/provider.go
+@@ -682,6 +682,15 @@ type Provider struct {
+ 	// magpie's, /v1/models' ?kind=video) and of Automatic's choice. A
+ 	// request that names one still makes its video.
+ 	HiddenVideomakers []string `json:"hiddenVideomakers,omitempty"`
++	// HiddenSpeech are its speech models unticked in its editor, as
++	// HiddenDrawers are its image models: a fetched list's TTS and
++	// transcription models and a plugin's (capabilities.output), listed
++	// apart in its editor and, asked for, on /v1/models' ?kind= (Fish-
++	// under-sea, #5418). A request that names one still serves.
++	HiddenSpeech []string `json:"hiddenSpeech,omitempty"`
++	// HiddenEmbeddings are its embedding and rerank models unticked in
++	// its editor, as HiddenSpeech are its speech ones (#5418).
++	HiddenEmbeddings []string `json:"hiddenEmbeddings,omitempty"`
+ 	// Off switches the provider off without removing it: its keys and
+ 	// settings stay, but agents aren't given its models, no request,
+ 	// routing group or fallback goes to it, and its balance isn't asked,
+@@ -1126,6 +1135,8 @@ func accountSettings(a, pk Provider) Provider {
+ 	// the image models unticked in its editor (HiddenDrawers)
+ 	a.HiddenDrawers = pk.HiddenDrawers
+ 	a.HiddenVideomakers = pk.HiddenVideomakers
++	a.HiddenSpeech = pk.HiddenSpeech
++	a.HiddenEmbeddings = pk.HiddenEmbeddings
+ 	// and the headers of its replies passed on (#4145)
+ 	a.ReplyHeaders = pk.ReplyHeaders
+ 	// and the headers of the agent's requests passed on
+@@ -1556,6 +1567,12 @@ func AddCopy(p Provider, from string) (string, error) {
+ 	if p.HiddenVideomakers == nil {
+ 		p.HiddenVideomakers = slices.Clone(src.HiddenVideomakers)
+ 	}
++	if p.HiddenSpeech == nil {
++		p.HiddenSpeech = slices.Clone(src.HiddenSpeech)
++	}
++	if p.HiddenEmbeddings == nil {
++		p.HiddenEmbeddings = slices.Clone(src.HiddenEmbeddings)
++	}
+ 	p.Searches = p.Searches || src.Searches
+ 	p.Unredacted = p.Unredacted || src.Unredacted
+ 	p.NoStandIn = p.NoStandIn || src.NoStandIn

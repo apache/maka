@@ -1,0 +1,198 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Sun, 8 Nov 2026 10:05:21 +0800
+Subject: [PATCH] gateway: a Gemini candidate that says nothing and names no
+ end is an empty reply, not a cut (#5455, JZongf)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Antigravity's Code Assist, serving gemini-4-argon a turn whose last
+message is a tool's result the model has nothing to say after, ends the
+stream with one ~487-byte chunk: a candidate carrying a role and no
+parts, usageMetadata counting no output token, and no finishReason, the
+connection closing right after. geminiEnds took the chunk for no end —
+its candidates are there, their finishReason is not — so the reply was a
+cut one, "the reply ended before it was complete", a transport failure
+the request asked again of the same account and handed on, five or six
+200 KB asks of the same silence per HTTP request, and the 502 the agent
+got sent Claude Code into nine retries of its own: some sixty identical
+upstream calls and a turn hanging near half an hour (magpie v0.1.3101,
+usage.jsonl over four runs). A candidate that says nothing and names no
+end is the same silence a reply with no candidate at all is (#667): the
+empty reply's to answer, asked again on the same account and failed as
+"an empty reply (the model answered nothing; try again)", never a cut
+one's. `"candidates":[]` without a finishReason, which the old early
+return also left to the cut's, is the same nothing. A candidate with
+parts keeps the cut's error for the stream that stops before its
+finishReason (#1643), and a reply that ends with a proper finishReason,
+STOP as an error to a client that asked for no stream, is unchanged.
+
+TestGeminiSilentCandidateIsEmptyReply runs the reporter's wire shape
+through the Anthropic, Chat and whole-reply paths of a fake Gemini
+upstream (the decoder Code Assist shares), fails on the old code with
+the cut's error, and passes asked again as the empty reply's; a reply
+that said something before its silent candidate still goes as it came.
+---
+ internal/gateway/continuation.go              | 31 ++++++-
+ .../gateway/gemini_silent_candidate_test.go   | 87 +++++++++++++++++++
+ internal/gateway/gemini_upstream_cut_test.go  |  5 ++
+ 3 files changed, 121 insertions(+), 2 deletions(-)
+ create mode 100644 internal/gateway/gemini_silent_candidate_test.go
+
+diff --git a/internal/gateway/continuation.go b/internal/gateway/continuation.go
+index ffc12d1be..9b03c2bd9 100644
+--- a/internal/gateway/continuation.go
++++ b/internal/gateway/continuation.go
+@@ -87,10 +87,37 @@ var errEndedShort = errors.New("the reply ended before it was complete")
+ // stream cut after any of them would read as whole. A chunk with no
+ // candidate at all — usage alone, or a prompt blocked — ends it too: such
+ // a reply said nothing, and is the empty reply's to answer (#667), not a
+-// cut one's.
++// cut one's. So is one whose candidate carries no parts and no
++// finishReason — Code Assist's turn-end when the model has nothing to
++// say, a role alone or an empty object, usage counting no output token,
++// then the stream closes (#5455, JZongf): a candidate that says nothing
++// and names no end is the same silence.
+ func geminiEnds(data []byte) bool {
+ 	if !bytes.Contains(data, []byte(`"finishReason"`)) && bytes.Contains(data, []byte(`"candidates"`)) {
+-		return false
++		type chunk struct {
++			Candidates []struct {
++				Content struct {
++					Parts []json.RawMessage `json:"parts"`
++				} `json:"content"`
++			} `json:"candidates"`
++		}
++		var ch struct {
++			chunk
++			Response *chunk `json:"response"`
++		}
++		if json.Unmarshal(data, &ch) != nil {
++			return false
++		}
++		c := ch.chunk
++		if ch.Response != nil {
++			c = *ch.Response
++		}
++		for _, cand := range c.Candidates {
++			if len(cand.Content.Parts) > 0 {
++				return false // said something, its end is a finishReason's to tell
++			}
++		}
++		return true
+ 	}
+ 	type chunk struct {
+ 		Candidates []struct {
+diff --git a/internal/gateway/gemini_silent_candidate_test.go b/internal/gateway/gemini_silent_candidate_test.go
+new file mode 100644
+index 000000000..216d521dd
+--- /dev/null
++++ b/internal/gateway/gemini_silent_candidate_test.go
+@@ -0,0 +1,87 @@
++package gateway
++
++import (
++	"net/http/httptest"
++	"path/filepath"
++	"strings"
++	"testing"
++)
++
++// A Code Assist (Antigravity) reply that ends its stream with a candidate
++// that carries no parts and no finishReason — the model answered nothing,
++// now and then right after a tool's result — went to the agent as a reply
++// cut short ("the reply ended before it was complete"): asked again as a
++// transport failure, the whole 200 KB prompt resent several times over,
++// then a 502 the agent spends its own ten retries on — minutes of the
++// same 0-token ask, ~60 upstream calls in a reporter's session (#5455,
++// JZongf). Such a candidate says the reply is over with nothing said in
++// it, as a reply with no candidate at all does (#667): the empty reply's
++// to answer, asked again on the same account and failed as that error,
++// not a cut one's. The reporter's wire shape: one ~487-byte chunk with
++// usageMetadata (in: 2049, out: 0) and a role-only candidate, then the
++// stream closes.
++
++// silentCandidates is the shapes on the wire: the Gemini API's bare chunk
++// and Code Assist's, wrapped in a response, and a candidate that is an
++// empty object outright.
++var silentCandidates = map[string]string{
++	"role only":   `data: {"candidates":[{"content":{"role":"model"}}],"usageMetadata":{"promptTokenCount":2049,"candidatesTokenCount":0,"thoughtsTokenCount":0,"cachedContentTokenCount":52607}}` + "\n\n",
++	"wrapped":     `data: {"response":{"candidates":[{"content":{"role":"model"}}],"usageMetadata":{"promptTokenCount":2049,"candidatesTokenCount":0,"thoughtsTokenCount":0}}}` + "\n\n",
++	"bare object": `data: {"candidates":[{}],"usageMetadata":{"promptTokenCount":4098,"candidatesTokenCount":0}}` + "\n\n",
++}
++
++func askSilentCandidate(t *testing.T, reply, path, body string) (*fake, int, string) {
++	t.Helper()
++	home := t.TempDir()
++	t.Setenv("HOME", home)
++	t.Setenv("USERPROFILE", home)
++	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
++	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
++	t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
++
++	f := &fake{t: t}
++	up := httptest.NewServer(f)
++	t.Cleanup(up.Close)
++	saveGem(t, up.URL, "gemini-4-argon")
++	f.reply = reply
++	code, out := post(t, path, body)
++	return f, code, out
++}
++
++func TestGeminiSilentCandidateIsEmptyReply(t *testing.T) {
++	for what, reply := range silentCandidates {
++		for _, a := range []struct{ name, path, body string }{
++			{"anthropic", "/v1/messages", `{"model":"gem/gemini-4-argon","stream":true,"max_tokens":256,"messages":[{"role":"user","content":"hi"},{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"wait","input":{}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"matched: []"}]}]}`},
++			{"chat", "/v1/chat/completions", `{"model":"gem/gemini-4-argon","stream":true,"messages":[{"role":"user","content":"hi"}]}`},
++		} {
++			f, code, body := askSilentCandidate(t, reply, a.path, a.body)
++			if strings.Contains(body, "ended before it was complete") {
++				t.Errorf("%s, %s: the silent candidate read as a cut: %d %s", what, a.name, code, body)
++			}
++			if !strings.Contains(body, "an empty reply") {
++				t.Errorf("%s, %s: not the empty reply's error: %d %s", what, a.name, code, body)
++			}
++			if f.calls < 2 {
++				t.Errorf("%s, %s: asked %d times, not again", what, a.name, f.calls)
++			}
++		}
++		// a client that asked for no stream is told the same error
++		_, code, body := askSilentCandidate(t, reply, "/v1/chat/completions",
++			`{"model":"gem/gemini-4-argon","messages":[{"role":"user","content":"hi"}]}`)
++		if code != 502 || !strings.Contains(body, "an empty reply") || strings.Contains(body, "ended before") {
++			t.Errorf("%s, not streamed: %d %s", what, code, body)
++		}
++	}
++}
++
++// A reply that has the silent candidate among its chunks, but said
++// something before it, is no empty reply: it goes as it came.
++func TestGeminiTextThenSilentCandidateIsSaid(t *testing.T) {
++	reply := `data: {"candidates":[{"content":{"role":"model","parts":[{"text":"Done."}]}}]}` + "\n\n" +
++		`data: {"candidates":[{"content":{"role":"model"}}],"usageMetadata":{"promptTokenCount":100,"candidatesTokenCount":3}}` + "\n\n"
++	_, code, body := askSilentCandidate(t, reply, "/v1/chat/completions",
++		`{"model":"gem/gemini-4-argon","stream":true,"messages":[{"role":"user","content":"hi"}]}`)
++	if code != 200 || !strings.Contains(body, "Done.") || strings.Contains(body, "an empty reply") {
++		t.Errorf("text then silent candidate: %d %s", code, body)
++	}
++}
+diff --git a/internal/gateway/gemini_upstream_cut_test.go b/internal/gateway/gemini_upstream_cut_test.go
+index e083c851e..ed26cc312 100644
+--- a/internal/gateway/gemini_upstream_cut_test.go
++++ b/internal/gateway/gemini_upstream_cut_test.go
+@@ -93,6 +93,11 @@ func TestGeminiEnds(t *testing.T) {
+ 		`{"usageMetadata":{"promptTokenCount":0}}`:                true,
+ 		`{"promptFeedback":{"blockReason":"PROHIBITED_CONTENT"}}`: true,
+ 		`{"response":{"usageMetadata":{"promptTokenCount":0}}}`:   true,
++		// a candidate with no parts and no finishReason: the same silence,
++		// Code Assist's turn-end with nothing in it (#5455)
++		`{"candidates":[{"content":{"role":"model"}}],"usageMetadata":{"promptTokenCount":2049,"candidatesTokenCount":0,"thoughtsTokenCount":0,"cachedContentTokenCount":52607}}`: true,
++		`{"candidates":[{}]}`: true,
++		`{"response":{"candidates":[{"content":{"role":"model"}}],"usageMetadata":{"promptTokenCount":2049}}}`: true,
+ 		`not json`: false,
+ 	} {
+ 		if got := geminiEnds([]byte(chunk)); got != want {
+-- 
+2.50.1 (Apple Git-155)
+

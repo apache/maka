@@ -1,0 +1,1 @@
+const t=t=>{let e=0,c=t;for(;c;)e+=c.offsetTop,c=c.offsetParent;return e},e=(e,c)=>Math.abs(t(e)-t(c)),c=t=>{let e,c;return"touchend"===t.type?(c=t.changedTouches[0].clientY,e=t.changedTouches[0].clientX):t.type.startsWith("touch")?(c=t.touches[0].clientY,e=t.touches[0].clientX):(c=t.clientY,e=t.clientX),{clientX:e,clientY:c}};export{c as a,e as g};

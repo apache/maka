@@ -1,0 +1,397 @@
+From 1020b7b423a0f091d5e11b425b5ef46c39f16777 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Sat, 17 Oct 2026 21:35:07 +0800
+Subject: [PATCH] usage: the Sessions tab's token totals count the cache, as
+ the Overview's do (#2591)
+
+n1majne3 reports the usage totals ignoring the cache reads the same page
+shows beside them. The Overview's totals have counted the cache on request
+since #2378 (magpie.usageWithCache); the Sessions tab counted tokens in and
+out alone wherever they showed: the tokens tile, a session's row in both
+lists (the Usage page's and the Sessions page's, sessSpent), the projects
+and models bars and pickers (sessSums, spent), the day chart's bars,
+tooltips and calendar, and the top sessions. A reader who asked for the
+cache on the Overview saw two different totals for the same period.
+
+The tab now reads usageTokens everywhere, so the one pick decides for both
+pages. Its tokens tile carries the same label pop-up and says the cache's
+count in its line; a pick made there refreshes the tab it is on, not the
+Overview. The chart's day and week buckets carry the cache's counts now
+that their value reads them, and the top sessions, ranked without the
+cache, are ranked again by the count the reader sees. The default stays
+without the cache, as #2378 left it; the per-session median and p90 stay
+counted in and out (Stats.Overview ranks them), and the Requests tab's
+totals always counted every token (allTokens).
+
+Run at 89521b03 + this: sessions-cache-tokens.test.cjs (new; Chromium and
+WebKit, en and zh, APIs faked) fails on the base with "AssertionError: the
+tile's tokens: '57.0K' !== '168K'" and passes with the change;
+sessions-overview, usage-overview-fold, api-key-usage and
+sessions-usage-open pass with it (120 tests, both engines, en and zh).
+Broken by hand, each red at its own assertion: the pick's callback pinned
+back to renderUsage() (the tab doesn't follow the pick), the top list's
+re-ranking left out ("ranked by the count shown"), and the day buckets
+without their cache counts ("the day's tokens count the cache").
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ docs/subsystems/gui-shell.md                  |   2 +-
+ internal/gui/assets/plugins/usage/page.js     |  56 ++++--
+ .../gui/tests/sessions-cache-tokens.test.cjs  | 166 ++++++++++++++++++
+ 3 files changed, 204 insertions(+), 20 deletions(-)
+ create mode 100644 internal/gui/tests/sessions-cache-tokens.test.cjs
+
+diff --git a/docs/subsystems/gui-shell.md b/docs/subsystems/gui-shell.md
+index 7039c52d..00717485 100644
+--- a/docs/subsystems/gui-shell.md
++++ b/docs/subsystems/gui-shell.md
+@@ -359,7 +359,7 @@ covers it in both engines, every language and a narrow window.
+ - There are no native `<select>` elements and no colored left-border stripes. State is shown with a dot or a swatch.
+ - The Usage page's cards and the tray panel's Allowances tab share one order, `settings.UsageOrder` (`byUsageOrder`). In the panel a balance-only card stands where that order puts it, and balances next to each other share one *Balances* grid (`panelBalances`, #1510); none is gathered after the plans. The panel's *Arrange* (`panelArrange`) moves rows in it and hides subscriptions from that tab alone (`settings.PanelUsageHidden`); both save through `POST /api/usage/arrange`, which changes only the field it is sent, and the Settings save keeps both. Hiding is display only: a menu bar cell's card shows though hidden (`panelPeek`). See `TestUsageArrangePanelHidden`, `panel-arrange.test.cjs` and `panel-balance-order.test.cjs`.
+ - A client in the Usage page's Agents list can be hidden from that list (ikunbots on X): its row's "…" button or right-click opens the row menu with *Hide from this list*, saved by client id in `settings.UsageAgentsHidden` through the same `POST /api/usage/arrange` (`agentsHidden`), and kept by the Settings save. The ledger, the totals and the chart still count a hidden client. A quiet "{n} hidden" line under the list opens them, each with *Unhide* (`hideUsageAgent`). See `TestUsageArrangeAgentsHidden` and `usage-agents-hide.test.cjs`.
+-- Usage › Overview's Agents, Models, Accounts and Gateway keys lists each fold under their heading (#2378): the heading is a `.fold` button with its chevron, as on the Gateway page, and the click doesn't move the page (`backToReader`). What is folded is kept per viewer in localStorage `magpie.usageFolded` (`mountUsageFolds`, `showUsageFolds`). The totals leave the cache out, as before, unless the tokens tile's label, a pop-up button (`usageTokensPick`, the app menu), is set to *With cache*: then the tile, the chart and every row's count and share add cache read and written (`usageTokens`), and the tile says the cache's count; kept in localStorage `magpie.usageWithCache`. The Requests tab's total already counts every token (`allTokens`). A token line in parts (the Requests strip's Tokens card, the Overview's tokens tile) wraps between its counts and keeps each whole (`usageParts`, `.parts`); only a count wider than its card on its own is cut. See `usage-overview-fold.test.cjs`.
++- Usage › Overview's Agents, Models, Accounts and Gateway keys lists each fold under their heading (#2378): the heading is a `.fold` button with its chevron, as on the Gateway page, and the click doesn't move the page (`backToReader`). What is folded is kept per viewer in localStorage `magpie.usageFolded` (`mountUsageFolds`, `showUsageFolds`). The totals leave the cache out, as before, unless the tokens tile's label, a pop-up button (`usageTokensPick`, the app menu), is set to *With cache*: then the tile, the chart and every row's count and share add cache read and written (`usageTokens`), and the tile says the cache's count; kept in localStorage `magpie.usageWithCache`. The Sessions tab counts by the same pick (#2591): its tokens tile carries the same label pop-up and says the cache's count, and the list's rows, the projects and models bars and pickers, the day chart (whose day and week buckets carry the cache's counts), the calendar and the top sessions read `usageTokens` too, the top list ranked again by the count shown (`sessTokens`, `sessSums`, `renderSessChart`, `renderSessTop`); a pick made on that tab refreshes the tab, not the Overview. The per-session median and p90 stay counted in and out (`Stats.Overview`). The Requests tab's total already counts every token (`allTokens`). A token line in parts (the Requests strip's Tokens card, the Overview's and the Sessions tab's tokens tiles) wraps between its counts and keeps each whole (`usageParts`, `.parts`); only a count wider than its card on its own is cut. See `usage-overview-fold.test.cjs` and `sessions-cache-tokens.test.cjs`.
+ - A request's details in the Usage ledger say its tokens at every width (#1839, `ledDetail`): "{i} in · {o} out · {r} cache read · {w} cache creation", 0 said as 0, with how much was written for 5 minutes and for an hour when it says so. A failure that spent nothing has no Tokens row. See `ledger-cache-tokens.test.cjs` and `usage-ledger-detail.test.cjs`.
+ - The requests magpie makes by itself (a routing classifier's, a web search's, an image description's) are told apart from the agents' on the Usage page (#1839): magpie's row among the agents and its rows in the ledger carry a "magpie's own" mark (`ownBadge`), an account's, key's or model's row adds "{n} by magpie itself" from the summary's `own`, and an account's card says how many of the period's requests were magpie's own (`ownLine`, drawn again once the summary comes after the allowances). See `own-requests.test.cjs` and `TestSummaryCountsMagpiesOwnCallsApart`.
+ - Opening the allowances is asking to see them (#1588, `quotasOpened` in `app.js`): the Usage page from the nav or its Overview tab picked, the window brought back to the front on the Overview, the tray panel's Allowances tab picked or the panel brought up on it, and a menu bar cell clicked each load `usage/quotas?asked=1`, as Refresh now does. An asked read makes the backend read every account again (`AskClaudeUsage`), so an opening within 30s (`QUOTAS_OPEN_GAP`) of the last asked read sends an ordinary read instead, which joins one on its way; Refresh now always asks. A panel page loaded while it is put away (hidden, or without focus) doesn't ask. The timed refresh is unchanged and never asks. See `allowance-open-read.test.cjs`.
+diff --git a/internal/gui/assets/plugins/usage/page.js b/internal/gui/assets/plugins/usage/page.js
+index ff62d9b1..95a9cc3a 100644
+--- a/internal/gui/assets/plugins/usage/page.js
++++ b/internal/gui/assets/plugins/usage/page.js
+@@ -339,10 +339,11 @@ function usageParts(texts) {
+   return out;
+ }
+ 
+-// The Overview's token totals count what went in and out; the cache's
++// The Usage pages' token totals count what went in and out; the cache's
+ // tokens, read and written, can be counted in them too (#2378), as the
+-// Requests tab's total always has them. Kept as the reader left it
+-// (magpie.usageWithCache).
++// Requests tab's total always has them — the Overview's tiles, chart and
++// lists and, since #2591, the Sessions tab's alike. Kept as the reader
++// left it (magpie.usageWithCache).
+ let usageWithCache = false;
+ try { usageWithCache = localStorage.getItem("magpie.usageWithCache") === "1"; } catch {}
+ const cacheOf = (x) => (x.cache_read || 0) + (x.cache_write || 0);
+@@ -363,7 +364,9 @@ function usageTokensPick() {
+     ], usageWithCache ? "1" : "", (v) => {
+       usageWithCache = v === "1";
+       try { localStorage.setItem("magpie.usageWithCache", usageWithCache ? "1" : "0"); } catch {}
+-      renderUsage();
++      // the tab it was picked on follows; the pick lives on the Overview's
++      // and the Sessions tab's tokens tiles (#2591)
++      (usageTab === "sessions" ? renderSessions : renderUsage)();
+     }, "Token totals", "sess-menu");
+   };
+   return b;
+@@ -2155,7 +2158,9 @@ function hexA(hex, a) {
+   return `rgba(${n >> 16},${(n >> 8) & 255},${n & 255},${a})`;
+ }
+ const sessKey = (s) => s.agent + ":" + s.id;
+-const sessTokens = (s) => s.input + s.output;
++// counted the way the tokens tiles count, cache and all when the reader
++// asked for it (#2591); both lists' rows spend it (sessSpent)
++const sessTokens = (s) => usageTokens(s);
+ // a session's cost: "—" when none of its models has a known price
+ function sessCost(s) {
+   if (!s.models.some((m) => m.priced && (m.input || m.output || m.cache_read || m.cache_write))) return "—";
+@@ -2239,7 +2244,7 @@ function renderSessions() {
+   const byFolder = (x) => !sessFolder || x.cwd === sessFolder;
+   const spent = (list, key) => {
+     const m = new Map();
+-    for (const r of list) if (r[key]) m.set(r[key], (m.get(r[key]) || 0) + r.input + r.output);
++    for (const r of list) if (r[key]) m.set(r[key], (m.get(r[key]) || 0) + usageTokens(r));
+     return [...m.entries()].sort((a, b) => b[1] - a[1]);
+   };
+   const models = spent(rows.filter((r) => byAgent(r) && byFolder(r)), "model").map(([v, n]) => ({ v, name: v, note: t("{n} tokens", { n: fmtN(n) }) }));
+@@ -2329,15 +2334,22 @@ function renderSessions() {
+       if (cls?.includes("dur")) for (const part of n.split(/(\d+)/)) part && b.append(/^\d+$/.test(part) ? part : el("i", "u", part.trim()));
+       else b.textContent = n;
+       b.title = n;
+-      e.append(b, el("span", "", label));
+-      if (sub) e.append(el("small", "", sub));
++      e.append(b, typeof label === "string" ? el("span", "", label) : label);
++      // a line in parts keeps each whole, wrapping between them rather
++      // than cutting the last off, as the Overview's tiles do
++      if (Array.isArray(sub)) {
++        const s = el("small", "parts");
++        s.append(...usageParts(sub));
++        e.append(s);
++      } else if (sub) e.append(el("small", "", sub));
+       stats.append(e);
+     };
+     const days = new Set(used.map((r) => r.date)).size;
+     // how many sessions, and what the middle one and the one in ten spent
+     tile(ov.count == null ? "—" : fmtN(ov.count), t("sessions"), ov.count ? t("median {m} · p90 {p}", { m: fmtN(ov.median), p: fmtN(ov.p90) }) : "",
+       t("Tokens in and out per session: the middle session's, and what nine in ten stay under"), stale ? "stale" : "");
+-    tile(fmtN(tot.input + tot.output), t("tokens"), t("{a} in · {b} out", { a: fmtN(tot.input), b: fmtN(tot.output) }));
++    // counted as the Overview's tokens tile is, by the same pick (#2591)
++    tile(fmtN(usageTokens(tot)), usageTokensPick(), [t("{a} in · {b} out", { a: fmtN(tot.input), b: fmtN(tot.output) }), ...(usageWithCache && cacheOf(tot) ? [t("{a} cache", { a: fmtN(cacheOf(tot)) })] : [])]);
+     tile(c ? "≈" + c : "—", t("cost"), unpricedModels || t("at effective prices"), unpricedNote);
+     // input leaves out what was read from the cache and written to it
+     const prompt = tot.input + tot.cache_read + tot.cache_write;
+@@ -2401,7 +2413,7 @@ function sessSums(list, key) {
+   for (const r of list) {
+     if (!r[key]) continue;
+     const s = m.get(r[key]) || { v: r[key], n: 0, cost: 0, unpriced: 0 };
+-    s.n += r.input + r.output;
++    s.n += usageTokens(r);
+     s.cost += r.cost;
+     if (!r.priced) s.unpriced++;
+     m.set(r[key], s);
+@@ -2465,7 +2477,7 @@ function renderSessChart(chart, st, used, ov, acts) {
+   if (chart.hidden) { chart.dataset.drawn = ""; return; }
+   const days = [], at = new Map();
+   for (let i = 0, d = new Date(first); i < n; i++, d.setDate(d.getDate() + 1)) {
+-    const x = { day: new Date(d), input: 0, output: 0, cost: 0, unpriced: 0, sessions: perDay?.length === n ? perDay[i] : 0,
++    const x = { day: new Date(d), input: 0, output: 0, cache_read: 0, cache_write: 0, cost: 0, unpriced: 0, sessions: perDay?.length === n ? perDay[i] : 0,
+       messages: msgs?.length === n ? msgs[i] : 0, active: 0 };
+     days.push(x);
+     at.set(sessISO(d), x);
+@@ -2474,16 +2486,17 @@ function renderSessChart(chart, st, used, ov, acts) {
+     const x = at.get(r.date);
+     if (!x) continue;
+     x.input += r.input; x.output += r.output; x.cost += r.cost;
++    x.cache_read += r.cache_read || 0; x.cache_write += r.cache_write || 0;
+     if (!r.priced) x.unpriced++;
+   }
+   for (const a of acts || []) { const x = at.get(a.date); if (x) x.active += a.seconds; }
+   const off = { sessions: perDay?.length === n ? "" : t("Still counting"), messages: msgs?.length === n ? "" : t("Still counting"), active: acts ? "" : t("not kept by model") };
+   const metric = off[sessMetric] ? "tokens" : sessMetric;
+   const value = (x) => metric === "cost" ? x.cost : metric === "sessions" ? x.sessions : metric === "messages" ? x.messages :
+-    metric === "active" ? x.active : metric === "output" ? x.output : x.input + x.output;
++    metric === "active" ? x.active : metric === "output" ? x.output : usageTokens(x);
+   const show = (v) => metric === "cost" ? "≈" + fmtCost({ cost: v }) : metric === "active" ? fmtDur(v) : fmtN(v);
+   const tip = (x, when) => {
+-    const parts = [x.input + x.output ? t("{n} tokens", { n: fmtN(x.input + x.output) }) : "", x.cost && fmtCost(x) ? "≈" + fmtCost(x) : "",
++    const parts = [usageTokens(x) ? t("{n} tokens", { n: fmtN(usageTokens(x)) }) : "", x.cost && fmtCost(x) ? "≈" + fmtCost(x) : "",
+       x.messages ? t(x.messages === 1 ? "{n} message" : "{n} messages", { n: fmtN(x.messages) }) : "",
+       x.sessions ? t(x.sessions === 1 ? "{n} session" : "{n} sessions", { n: x.sessions }) : "", x.active ? t("{d} active", { d: fmtDur(x.active) }) : ""].filter(Boolean);
+     return parts.length ? when + " · " + parts.join(" · ") : t("{when} · nothing", { when });
+@@ -2527,8 +2540,8 @@ function renderSessChart(chart, st, used, ov, acts) {
+   const step = shape === "week" ? 7 : 1;
+   const buckets = [];
+   for (let i = 0; i < n; i += step) {
+-    const b = { day: days[i].day, input: 0, output: 0, cost: 0, unpriced: 0, sessions: 0, messages: 0, active: 0 };
+-    for (const x of days.slice(i, i + step)) for (const k of ["input", "output", "cost", "unpriced", "sessions", "messages", "active"]) b[k] += x[k];
++    const b = { day: days[i].day, input: 0, output: 0, cache_read: 0, cache_write: 0, cost: 0, unpriced: 0, sessions: 0, messages: 0, active: 0 };
++    for (const x of days.slice(i, i + step)) for (const k of ["input", "output", "cache_read", "cache_write", "cost", "unpriced", "sessions", "messages", "active"]) b[k] += x[k];
+     buckets.push(b);
+   }
+   const peak = Math.max(metric === "cost" ? 0.001 : 1, ...buckets.map(value));
+@@ -2536,7 +2549,9 @@ function renderSessChart(chart, st, used, ov, acts) {
+     const [top, low] = bar.children;
+     if (metric === "tokens") {
+       top.style.height = (100 * b.output / peak).toFixed(1) + "%";
+-      low.style.height = (100 * b.input / peak).toFixed(1) + "%";
++      // the input's bar carries the cache's tokens too, as the Overview's
++      // chart does (#2591)
++      low.style.height = (100 * (usageTokens(b) - b.output) / peak).toFixed(1) + "%";
+     } else top.style.height = (100 * value(b) / peak).toFixed(1) + "%";
+     const label = sessDay(b.day);
+     bar.title = tip(b, step === 7 ? t("week of {label}", { label }) : label);
+@@ -2663,7 +2678,7 @@ function sessCalSide(days, value, show) {
+     if (sub) f.append(el("small", "", sub));
+     side.append(f);
+   };
+-  const busy = (x) => x.input + x.output || x.active || x.sessions;
++  const busy = (x) => usageTokens(x) || x.active || x.sessions;
+   let run = 0, streak = 0, best = null;
+   for (const x of days) {
+     run = busy(x) ? run + 1 : 0;
+@@ -2731,7 +2746,10 @@ function renderSessTop() {
+   head.append(el("span", "grow"), seg);
+   box.append(head);
+   slide(seg, "sessTop");
+-  const list = ov.top?.[sessTopBy] || [];
++  let list = ov.top?.[sessTopBy] || [];
++  // ranked without the cache, shown with it: ranked again by the count the
++  // reader sees, so the numbers still run down (#2591)
++  if (sessTopBy === "tokens" && usageWithCache) list = [...list].sort((a, b) => usageTokens(b) - usageTokens(a));
+   const body = el("div", "sess-tops");
+   if (!list.length) body.append(el("div", "sess-none", ov.top ? t("Nothing in this range.") : "…"));
+   const icons = new Map((sessions?.sessions || []).map((s) => [s.agent, s.icon]));
+@@ -2751,7 +2769,7 @@ function renderSessTop() {
+     who.append(sub);
+     r.append(who);
+     const fc = fmtCost({ cost: s.cost, unpriced: !s.priced });
+-    const v = sessTopBy === "cost" ? (fc ? "≈" + fc : "—") : sessTopBy === "active" ? fmtDur(s.active) : fmtN(s.input + s.output);
++    const v = sessTopBy === "cost" ? (fc ? "≈" + fc : "—") : sessTopBy === "active" ? fmtDur(s.active) : fmtN(usageTokens(s));
+     r.append(el("div", "v", v));
+     r.onclick = () => {
+       if (window.getSelection()?.toString()) return;
+diff --git a/internal/gui/tests/sessions-cache-tokens.test.cjs b/internal/gui/tests/sessions-cache-tokens.test.cjs
+new file mode 100644
+index 00000000..88556c1e
+--- /dev/null
++++ b/internal/gui/tests/sessions-cache-tokens.test.cjs
+@@ -0,0 +1,166 @@
++// Run with Node's test runner and Playwright on the module path; see README.md.
++// #2591 (Usage › Sessions): the token totals count the cache the way the
++// Overview's have since #2378 (magpie.usageWithCache), once the reader has
++// asked for it there: the tokens tile with its label pop-up, a session's row
++// in the list, the projects and models bars, the day chart and the top
++// sessions (whose order follows the count shown); a pick made on the
++// Sessions tab refreshes that tab, not the Overview, and is kept across a
++// reload. The default stays without the cache, as #2378 left it.
++const assert = require("node:assert/strict");
++const fs = require("node:fs/promises");
++const path = require("node:path");
++const { test } = require("node:test");
++const { chromium, webkit } = require("playwright");
++
++const assets = path.resolve(__dirname, "../assets");
++const to = new Date(2026, 9, 17);
++const back = (i) => { const d = new Date(to); d.setDate(d.getDate() - i); return d; };
++const iso = (d) => [d.getFullYear(), d.getMonth() + 1, d.getDate()].map((n) => String(n).padStart(2, "0")).join("-");
++const days = [back(1), back(0)].map((d, i) => ({
++  date: iso(d),
++  usage: i ? [
++    // 31K with the cache, 11K without
++    { agent: "claude", cwd: "/work/alpha", model: "claude-opus-4", input: 10000, output: 1000, cache_read: 20000, cache_write: 0, cost: 1.5, priced: true },
++  ] : [
++    // 125K with the cache, 46K with the codex row, 34K without it
++    { agent: "claude", cwd: "/work/alpha", model: "claude-opus-4", input: 30000, output: 4000, cache_read: 90000, cache_write: 1000, cost: 1.5, priced: true },
++    { agent: "codex", cwd: "/work/beta", model: "gpt-5", input: 10000, output: 2000, cache_read: 0, cache_write: 0, cost: 0.4, priced: true },
++  ],
++  active: [{ agent: "claude", cwd: "/work/alpha", seconds: 600, hours: Object.assign(new Array(24).fill(0), { 9: 600 }) }],
++}));
++// the sessions in the list are the top sessions: the first ranked by tokens
++// in and out, the second below it there but above it once the cache counts
++const spent = (key, title, input, output, cache_read) => ({
++  key, agent: "claude", id: key.split(":")[1], title, cwd: "/work/alpha", last: to.toISOString(),
++  input, output, cache_read, cache_write: 0, cost: 12, priced: true, active: 600, models: ["claude-opus-4"],
++});
++const TOPS = [spent("claude:s0", "Latest cache", 900000, 5000, 50000), spent("claude:s1", "Plain small", 400000, 4000, 1000000)];
++const full = (key) => ({
++  key, agent: "claude", name: "Claude Code", icon: "claude", id: key.split(":")[1], cwd: "/work/alpha", title: "Latest", start: back(1).toISOString(), last: to.toISOString(),
++  input: 900000, output: 5000, cache_read: 50000, cache_write: 0, cost: 12, priced: true,
++  models: [{ model: "claude-opus-4", input: 900000, output: 5000, cost: 12, priced: true }],
++});
++const sessions = TOPS.map((t) => ({ ...full(t.key), title: t.title, input: t.input, output: t.output, cache_read: t.cache_read }));
++
++function serve(lang) {
++  const state = { agents: [{ id: "claude", name: "Claude Code", path: "/test/settings.json", fields: [] }], profiles: [], settings: { lang, theme: "light" } };
++  return async (route) => {
++    const url = new URL(route.request().url());
++    const json = (data) => route.fulfill({ json: data });
++    if (url.pathname === "/boot.js") return route.fulfill({ contentType: "text/javascript", body: `window.bootPrefs = {lang:"${lang}",theme:"light",web:true};` });
++    if (url.pathname === "/wails/runtime.js") return route.fulfill({ contentType: "text/javascript", body: "export const Window = {};" });
++    if (url.pathname === "/api/state") return json(state);
++    if (url.pathname === "/api/sessions/progress") return json({ indexing: false });
++    if (url.pathname === "/api/sessions") return json({ sessions, dirs: ["/test/sessions"] });
++    if (url.pathname === "/api/sessions/stats") return json({ from: days[0].date, to: iso(to), days, agents: { claude: "Claude Code", codex: "Codex" } });
++    if (url.pathname === "/api/sessions/overview") {
++      return json({
++        count: 2, median: 654000, p90: 905000, days: days.map((d) => d.usage.length ? 1 : 0),
++        top: { tokens: TOPS, cost: TOPS, active: TOPS },
++        messages: days.map((d) => d.usage.length ? 10 : 0), output: days.map(() => 0),
++        shape: {
++          messages: { edges: [1, 6, 16, 31, 61, 121], counts: [2], total: 2 },
++          minutes: { edges: [1, 6, 16, 31, 61, 121], counts: [2], total: 2 },
++          autonomy: { edges: [0, 1, 3, 6, 11, 21], counts: [2], total: 2 },
++        },
++        tools: {
++          calls: 10, sessions: 2,
++          top: [["Bash", "Bash", 8, 2], ["Read", "Read", 2, 1]].map(([name, category, calls, sessions]) => ({ name, category, calls, sessions })),
++          categories: [["Bash", 8], ["Read", 2]].map(([name, calls]) => ({ name, calls, sessions: 1 })),
++          weeks: [iso(back(7))].map((start) => ({ start, calls: { Bash: 8, Read: 2 } })),
++        },
++        skills: { calls: 0, count: 0, top: [] },
++      });
++    }
++    if (url.pathname === "/api/sessions/one") return json(full(new URL(route.request().url()).searchParams.get("key")));
++    if (url.pathname === "/api/groups") return json({ groups: [] });
++    if (url.pathname === "/api/usage/quotas") return json([]); // an array, as the Go side writes it
++    if (url.pathname.startsWith("/api/")) return json({});
++    const file = path.join(assets, url.pathname === "/" ? "index.html" : url.pathname);
++    const contentType = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png" }[path.extname(file)];
++    const body = await fs.readFile(file).catch(() => null);
++    await (body ? route.fulfill({ body, contentType }) : route.fulfill({ status: 404, body: "" }));
++  };
++}
++
++// the words the reader sees on the tile's label and in its pop-up
++const want = {
++  en: { tokens: "tokens", withCache: "tokens with cache", without: "Without cache", with: "With cache", head: "Token totals" },
++  zh: { tokens: "token", withCache: "token（含缓存）", without: "不含缓存", with: "含缓存", head: "token 汇总" },
++};
++
++for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium", "webkit"])) {
++  for (const lang of ["en", "zh"]) {
++    test(`${engine} ${lang}: the Sessions tab's token totals count the cache once the Overview's pick says so`, async (t) => {
++      const browser = await (engine === "webkit" ? webkit.launch() : chromium.launch({ channel: "chromium" }));
++      const context = await browser.newContext({ viewport: { width: 1100, height: 760 }, reducedMotion: "reduce", timezoneId: "Asia/Shanghai" });
++      const page = await context.newPage();
++      page.setDefaultTimeout(5000);
++      const errors = [];
++      page.on("pageerror", (e) => errors.push(e.message));
++      await page.route("**/*", serve(lang));
++      // the Overview's pick, made before the page loads, is the only thing
++      // that changes the Sessions tab's counts
++      await page.addInitScript(() => {
++        localStorage.setItem("magpie.usageTab", "sessions");
++        localStorage.setItem("magpie.sessRange", "all");
++        if (!localStorage.getItem("magpie.usageWithCache")) localStorage.setItem("magpie.usageWithCache", "1");
++      });
++      t.after(async () => await browser.close());
++      await page.goto("http://magpie.test/?view=usage");
++      await page.locator("#sessGrid:not([hidden])").waitFor();
++      await page.waitForFunction(() => !document.querySelector("#sessStats .kpi.stale") && document.querySelectorAll("#sessTop .sess-top").length === 2);
++      const fmt = (n) => page.evaluate((n) => fmtN(n), n);
++
++      // the tokens tile: with the cache, and said so
++      const tile = page.locator("#sessStats .kpi").nth(1);
++      const pick = tile.locator(".kpi-pick");
++      assert.equal((await tile.locator("b").textContent()).trim(), await fmt(168000), "the tile's tokens");
++      assert.equal((await pick.textContent()).trim(), want[lang].withCache, "the tile's label");
++      assert.equal(await tile.locator("small.parts > span").count(), 3, "in, out and the cache");
++
++      // a session's row, the projects bar and the day chart count it too
++      const row = page.locator("#sessList .row.sess", { hasText: "Latest cache" });
++      assert.equal((await row.locator(".num b").textContent()).trim(), await fmt(955000), "the list row's tokens");
++      const bar = page.locator("#sessProjects .sess-bar", { hasText: "alpha" });
++      assert.equal((await bar.locator(".v").textContent()).trim(), await fmt(156000), "the project bar's tokens");
++      const day = await page.locator("#sessChart .bars .bar").first().getAttribute("title");
++      assert.match(day, new RegExp((await fmt(137000)).replace(/[.]/g, "\\.")), "the day's tokens count the cache");
++
++      // the top sessions read as the count they are ranked by
++      const top = page.locator("#sessTop .sess-top").first();
++      assert.equal(await top.locator(".name").textContent(), "Plain small", "ranked by the count shown");
++      assert.equal((await top.locator(".v").textContent()).trim(), await fmt(1404000));
++
++      // picked back to without the cache, on the Sessions tab: the tab
++      // follows and stays
++      await pick.scrollIntoViewIfNeeded();
++      await pick.click();
++      const menu = page.locator(".proto-menu:visible");
++      await menu.waitFor();
++      assert.equal((await menu.locator(".pm-head").textContent()).trim(), want[lang].head);
++      assert.deepEqual(await menu.locator(".pm-name").allTextContents(), [want[lang].without, want[lang].with]);
++      await menu.locator(".pm-item").first().click();
++      await page.waitForTimeout(150);
++      assert.equal(await page.evaluate(() => localStorage.getItem("magpie.usageWithCache")), "0");
++      assert(await page.locator("#sessStats").isVisible(), "still on the Sessions tab");
++      assert.equal((await tile.locator("b").textContent()).trim(), await fmt(57000), "the tile's tokens");
++      assert.equal((await tile.locator(".kpi-pick").textContent()).trim(), want[lang].tokens, "the tile's label");
++      assert.equal(await tile.locator("small.parts > span").count(), 2, "in and out");
++      assert.equal((await page.locator("#sessList .row.sess", { hasText: "Latest cache" }).locator(".num b").textContent()).trim(), await fmt(905000), "the list row's tokens");
++      assert.equal((await page.locator("#sessProjects .sess-bar", { hasText: "alpha" }).locator(".v").textContent()).trim(), await fmt(45000), "the project bar's tokens");
++      assert.equal(await page.locator("#sessTop .sess-top").first().locator(".name").textContent(), "Latest cache", "ranked by the count shown");
++      assert.equal((await page.locator("#sessTop .sess-top").first().locator(".v").textContent()).trim(), await fmt(905000));
++      const dayOff = await page.locator("#sessChart .bars .bar").first().getAttribute("title");
++      assert.match(dayOff, new RegExp((await fmt(46000)).replace(/[.]/g, "\\.")), "the day's tokens");
++
++      // kept across a reload
++      await page.reload();
++      await page.locator("#sessGrid:not([hidden])").waitFor();
++      await page.waitForFunction(() => !document.querySelector("#sessStats .kpi.stale") && document.querySelectorAll("#sessTop .sess-top").length === 2);
++      assert.equal((await page.locator("#sessStats .kpi").nth(1).locator("b").textContent()).trim(), await fmt(57000), "the choice is kept");
++
++      assert.deepEqual(errors, []);
++    });
++  }
++}
+-- 
+2.50.1 (Apple Git-155)
+

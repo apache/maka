@@ -1,0 +1,61 @@
+{
+  "enabled": true,
+  "notices": [
+    {
+      "id": "system-2026-06-30-01",
+      "kind": "system",
+      "title": {
+        "zh": "公告"
+      },
+      "body": {
+        "zh": "<red>由于官方限制</red>，会出现额度正常仍然提示<red>今日免费计划额度已用完</red>的情况"
+      },
+      "level": "warn",
+      "date": "2026-06-30",
+      "showOnce": true,
+      "showOnStartup": true
+    },
+    {
+      "id": "temporary-2026-06-30-02",
+      "kind": "temporary",
+      "title": {
+        "zh": "福利"
+      },
+      "body": {
+        "zh": "继续放送一波zcode账号(密码为邮箱前缀):\n<red>使用方法</red>：点击导入选择oauth网页授权登录，导入后点击切换登录\n1.示例\n账号：dtkxs1i1sdec@ditapi.info\n密码：dtkxs1i1sdec\n2. qc4zasvgo9pp@ditapi.info\n3. u6ffl8obh9cg@ditapi.info\n4. i9xx969hz382@ditapi.info\n5. sxcc4y18hkvb@ditapi.info\n6. bkzo6zvc4dzh@attachmy.site\n7. s35abzmmmpk8@attachmy.site\n8. i2cvkjjmmv2q@attachmy.site\n9. jihmkyvestxx@attachmy.site\n10. vfj2tivq1hw0@attachmy.site"
+      },
+      "level": "warn",
+      "date": "2026-06-30",
+      "showOnce": true,
+      "showOnStartup": true
+    },
+    {
+      "id": "temporary-2026-07-05-04",
+      "kind": "temporary",
+      "title": {
+        "zh": "限时福利（已用完）"
+      },
+      "body": {
+        "zh": "deepseek官方apikey  用完即无\nmodel-id：deepseek-v4-pro\n<red>sk-已用完</red>\n\nbase_url (OpenAI)\t\nhttps://api.deepseek.com\nbase_url (Anthropic)\nhttps://api.deepseek.com/anthropic"
+      },
+      "level": "warn",
+      "date": "2026-07-05",
+      "showOnce": true,
+      "showOnStartup": false
+    },
+    {
+      "id": "system-2026-07-05-04",
+      "kind": "system",
+      "title": {
+        "zh": "福利推送"
+      },
+      "body": {
+        "zh": "deepseek官方apikey  用完即无\nmodel-id：deepseek-v4-pro\n<red>sk-eb4d640d09b7447688e36504d28f87ba</red>\n\nbase_url (OpenAI)\t\nhttps://api.deepseek.com\nbase_url (Anthropic)\nhttps://api.deepseek.com/anthropic"
+      },
+      "level": "info",
+      "date": "2026-07-05",
+      "showOnce": true,
+      "showOnStartup": true
+    }
+  ]
+}

@@ -1,0 +1,7 @@
+--- PASS: TestInvokeReportedParsed (0.00s)
+--- PASS: TestInvokeReportedRelayed (0.16s)
+--- PASS: TestInvokeReportedAnthropicPassthrough (0.04s)
+--- PASS: TestInvokeReportedResponsesPassthrough (0.03s)
+--- PASS: TestInvokeReportedGeminiPassthrough (0.05s)
+--- PASS: TestInvokeReportedTranslated (0.02s)
+ok  	github.com/yetone/magpie/internal/gateway	1.328s

@@ -1,0 +1,7 @@
+- 单: yetone/magpie#5514 (UNIARG, c=0; take=comment 6694279118)
+- 分支: fix/5514-advisor-remote @ 72f0a847d15a02280b4a3083446796d9b9934116 (父=upstream/main 542ee03b4), 已推 origin (ggbdpq/magpie), ls-remote 证实
+- patch: 0001-gateway-a-Claude-Code-turn-that-declares-its-advisor.patch, sha256前16=e686fda3cb339d27
+- RED→GREEN: TestClaudeSubscriptionSaysWhenTheAdvisorIsLeftOut (红→绿), TestClaudeSubscriptionWithoutAnAdvisorSaysNothing (恒绿); 消融=仅回退产品文件→红→恢复→绿
+- 矩阵: gateway 全包 -tags nogui -timeout 25m -count=1 = ok 682.9s; 定向 -race 绿; gofmt -l 净; vet darwin+GOOS=linux 净; go build ./... OK
+- 帖: https://github.com/yetone/magpie/issues/5514#issuecomment-6694664127 (PATCH 两次修正: 反引号行渲染+补 sha256), 回读 OK(6127字符全要素)
+- 修复决策: 报告者诉求1(接线子进程 advisor)=CLI 接口不可验证+常驻进程跨 caller 干扰+设置归属, 留设计题; 交付诉求2(不静默)=订阅线上一行日志

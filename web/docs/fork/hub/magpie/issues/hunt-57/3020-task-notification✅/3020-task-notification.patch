@@ -1,0 +1,155 @@
+From d0a9ef61745d9d9900e26e7c32d05ecb7dacd303 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Wed, 21 Oct 2026 21:35:29 +0800
+Subject: [PATCH] gateway: saidWithResults no longer drops a background task's
+ notice, so a background task-notification survives the trip (#3020)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Claude Code sends a background task's <task-notification> with the next
+request: in the {role: "system"} message 2.1.296+ puts its other tail
+notices in (#2060), or, older clients, as a text of its own. Through the
+Claude subscription bridge, the run waiting on the request's tool results
+is handed the results and the words said beside them (saidWithResults)
+alone: the system-message case left the notification out, and so did
+agentNotice, whose injected leads hold "<task-notification>" from
+prompt.go's turn reading. The model went on as if no task had ended, and
+a foreground wait on the task had nothing to wait for — the A/B of #3020:
+2/2 SEEN direct, 3/3 NOT_SEEN through magpie. A run started anew is told
+the whole conversation, notification included; only the run kept for the
+results lost it.
+
+saidWithResults tells the run a text that carries the notification
+(taskNotice, a contains on the tag) before the system-message and
+agentNotice cases; hooks' notices and token counts stay out (#2060's
+tests hold).
+
+What changed:
+- internal/gateway/claude_subscription.go: taskNotice, and a
+  saidWithResults case for it before the two gates; the doc comment says
+  where the notification travels and why the run hears of it.
+- internal/gateway/claude_hook_notice_test.go: the notification goes on
+  with the results in both shapes (red on base f5b01574:
+  "Claude Code was written [], want the task-notification"), and a run
+  started anew is told it in its prompt.
+
+Run (GOTOOLCHAIN=auto, darwin/arm64):
+- go test ./internal/gateway/ -run 'TestClaudeTaskNotificationGoesOnWithTheResults|TestClaudePromptToldTheTaskNotification|TestClaudeHookNotices|TestClaudeUsersMessageAmongHookNoticesGoesOnAlone|TestClaudePromptToldHookNoticesNotAsTheUsers|TestAgentNoticeLeavesTheUsersWords' -count=1 -v: all pass; the two new ones fail on base.
+- Ablated: the fix reverted, the two fail as on base; restored, they pass.
+  taskNotice forced false, both fail; restored, they pass.
+- go test -race on the same -run: ok. gofmt -l on both files: clean.
+  go vet ./internal/gateway: clean.
+- go build ./... on darwin/arm64, GOOS=linux GOARCH=amd64 -tags nogui,
+  GOOS=windows GOARCH=amd64: all ok.
+- go test ./internal/gateway/ -count=1 -p 1 -timeout 30m: ok (320.989s).
+- Not tried: end to end with a real Claude Code 2.1.303 on a Claude
+  subscription. 2.1.303's exact notification bytes are inferred from
+  #2060's captured 2.1.296 shapes and the reporter's routing log, not
+  captured here.
+
+Fixes #3020
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gateway/claude_hook_notice_test.go | 34 +++++++++++++++++++++
+ internal/gateway/claude_subscription.go     | 17 +++++++++++
+ 2 files changed, 51 insertions(+)
+
+diff --git a/internal/gateway/claude_hook_notice_test.go b/internal/gateway/claude_hook_notice_test.go
+index 9768fd5a..54d97b7b 100644
+--- a/internal/gateway/claude_hook_notice_test.go
++++ b/internal/gateway/claude_hook_notice_test.go
+@@ -36,6 +36,13 @@ const (
+ 		`{"type":"text","text":"<system-reminder>\n</system-reminder>"}]}]}`
+ )
+ 
++// A background task's completion beside the results (#3020): in the system
++// message 2.1.296+ sends, and as 2.1.296 sent one, a user message of its own.
++var (
++	ccTaskNotificationSystem = hookCallStart + `{"role":"system","content":[{"type":"text","text":` + quote(taskNotification) + `}]}]}`
++	ccTaskNotificationOwn    = hookCallStart + `{"role":"user","content":` + quote(taskNotification) + `}]}`
++)
++
+ // A hook's notices and the token count after a tool's results are Claude
+ // Code's, not a message of the user's: the results go on in their run with
+ // nothing written to its Claude Code as the user's, which told its model
+@@ -64,6 +71,33 @@ func TestClaudeUsersMessageAmongHookNoticesGoesOnAlone(t *testing.T) {
+ 	}
+ }
+ 
++// A background task's <task-notification> rides with the results the way
++// the notices do (#3020): 2.1.303 sends it in the system message beside
++// them; 2.1.296 sent it as a text of its own. It is not the user's words,
++// but the run's model is to hear of the task: a request that carries it
++// alone tells a run started anew it whole, so the run kept for the results
++// hears it too.
++func TestClaudeTaskNotificationGoesOnWithTheResults(t *testing.T) {
++	for name, body := range map[string]string{"in the system message": ccTaskNotificationSystem, "a message of its own": ccTaskNotificationOwn} {
++		t.Run(name, func(t *testing.T) {
++			_, said, _ := continuing(t, body)
++			if len(said) != 1 || !strings.Contains(said[0], "<task-notification>") {
++				t.Fatalf("Claude Code was written %q, want the task-notification", said)
++			}
++		})
++	}
++}
++
++// A run started anew is told the notification with the conversation, as it
++// is told every message (#3020): the run kept for the results is the one
++// that lost it.
++func TestClaudePromptToldTheTaskNotification(t *testing.T) {
++	got := promptText(t, parsed(t, ccTaskNotificationSystem))
++	if !strings.Contains(got, "<task-notification>") {
++		t.Fatalf("the notification isn't told a run started anew:\n%s", got)
++	}
++}
++
+ // A run started anew, or a turn resumed, is told a notice after a result
+ // with the result closed, not marked as the user's.
+ func TestClaudePromptToldHookNoticesNotAsTheUsers(t *testing.T) {
+diff --git a/internal/gateway/claude_subscription.go b/internal/gateway/claude_subscription.go
+index 656d9a86..cf87c864 100644
+--- a/internal/gateway/claude_subscription.go
++++ b/internal/gateway/claude_subscription.go
+@@ -3254,6 +3254,13 @@ func (r *subscriptionRun) untold(tools []Tool) (int, string) {
+ // with a message the user sent mid-turn among them (midTurnSaid): only
+ // those words are the user's. A system message is never the user's
+ // otherwise.
++//
++// A background task's <task-notification> travels with them (#3020), in
++// the system message or as a text of its own. It is not the user's either,
++// but the run is told it (taskNotice): a request that carries it alone
++// tells a run started anew the whole conversation, and the model answered
++// as if no task had ended when the run kept for the results heard nothing
++// of it.
+ func saidWithResults(msgs []Message) string {
+ 	i := len(msgs)
+ 	for i > 0 && msgs[i-1].Role != "assistant" {
+@@ -3270,6 +3277,8 @@ func saidWithResults(msgs []Message) string {
+ 			case p.Kind != Text || !results || captions:
+ 			case midTurnHead.MatchString(p.Text):
+ 				said = append(said, midTurnSaid(p.Text)...)
++			case taskNotice(p.Text):
++				said = append(said, p.Text)
+ 			case m.Role == "system" || m.Role == "developer":
+ 			case !agentNotice(p.Text):
+ 				said = append(said, p.Text)
+@@ -3282,6 +3291,14 @@ func saidWithResults(msgs []Message) string {
+ 	return strings.Join(said, "\n\n")
+ }
+ 
++// taskNotice is a background task's notice, a <task-notification>: Claude
++// Code sends it with the request that carries the results, in the system
++// message beside the notices (#3020), or, older clients, as a text of its
++// own. Not the user's words, but the run's model is to hear of the task:
++// told nothing of it, the model went on as if no task had ended, and a
++// foreground wait on the task found nothing to wait for.
++func taskNotice(text string) bool { return strings.Contains(text, "<task-notification>") }
++
+ var (
+ 	// midTurnHead heads a message the user sent while a tool ran, as
+ 	// Claude Code tells its model one: "The user sent a new message while
+-- 
+2.50.1 (Apple Git-155)
+

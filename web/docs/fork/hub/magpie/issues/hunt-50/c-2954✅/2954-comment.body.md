@@ -1,0 +1,608 @@
+The reporter's forensics pin this one down, and they are right: `~/.config/magpie/plugins/package.json` still has the dependency as the unfixed URL they added it with (`git+https://<git-host>/<owner>/<repo>.git`, no `#commit`, no `#tag`), while `~/.config/magpie/plugins/bun.lock` records what Bun resolved back at the first install — `magpie-copilot-tencent@git+https://...#bb961b2c71a78c1439e36cc3662678a8d0659c59` — and both the update and the uninstall-then-reinstall kept landing on that same old commit while `magpie plugin list` and the installed `package.json` went on saying 0.1.3.
+
+I reproduced all of it locally with Bun 1.4.2 (the version magpie runs) against a local repository served as `git+file://…` — no intranet needed. Bun resolves a git spec through its own bare clone of the repository in the install cache (`$BUN_INSTALL_CACHE_DIR/<16-hex>.git`), and after the remote's branch moved, that clone's `refs/heads/main` still pointed at the first install's commit (Bun's fetch updates `FETCH_HEAD`, not the clone's own refs). Measured from there:
+
+- `bun update my-plugin` (what `reinstall` runs): "Checked 1 install across 2 packages (no changes)", exit 0, version and `#<sha>` unchanged — the false success.
+- `bun install` with the package's entry deleted from `bun.lock`: re-resolved, re-saved the lock with the same old commit. `bun update --force` and `bun install --force`: same. The lock is the record of the resolution, not its cause.
+- remove + `bun add` again: resolved through the same stale clone, old commit again.
+- `git -C <cache>/<hash>.git fetch origin "+refs/heads/*:refs/heads/*" "+refs/tags/*:refs/tags/*"`, then the very same `bun update my-plugin`: installed the branch's commit now, `bun.lock` updated with it.
+
+So the fix does the last one, at the two places magpie resolves a git spec.
+
+Branch: [`hunt50-c-git-plugin-lock`](https://github.com/ggbdpq/magpie/tree/hunt50-c-git-plugin-lock), one commit on top of upstream `79160455`; the patch below applies with `git am`.
+
+## What changed
+
+- `refreshGitCache` (new, in `internal/plugin/gitrev.go`): before Bun resolves a git plugin's spec, fetch the branches and tags of its repository into the clone in Bun's install cache. The clone is found by its `remote.origin.url` next to the spec's URL (the `git+` prefix, a `.git` suffix and letter case aside), so nothing about Bun's internal cache naming is assumed. A spec that names a commit (`#<sha>`) is left alone: nothing is resolved for one, and its pin stands (checked: even with the clone's refs refreshed, Bun keeps a `#<sha>` spec at its pin). No clone of the repository (GitHub's, which Bun fetches as tarballs, or a first install) means nothing to refresh.
+- `install` (`bun add`) runs it best-effort: a remote that can't be reached leaves the install to what the cache has, as before — a plugin installed again for being missing must not become uninstallable because its host is down.
+- `reinstall` (`bun update`, the path of the page's update, Update all and `magpie plugin update`) runs it strictly: if the fetch fails, the update says so instead of quietly re-resolving to the old commit. And after `bun update` exits 0, `reinstall` compares what was installed with the commit the update checks last saw the repository at (the same answer that put the dot on the page) and reports the truth when the plugin is still behind it — the issue's "clear message" ask; asked afresh only when it is about to say so, so the common path costs no extra request.
+- `docs/subsystems/provider-plugins.md`: one paragraph on this update path.
+
+## Red before the fix
+
+`TestGitUpdateInstallsTheBranchsCommitNow` — a real `bun` on PATH, a local `git+file://` repository, the real machinery (`Add`, push a new `package.json` version, `Update`):
+
+```
+--- FAIL: TestGitUpdateInstallsTheBranchsCommitNow
+    plugin_gitupdate_test.go:78: the update said it is done, the plugin is still at 1.0.0, want 2.0.0
+```
+
+`Update` returned nil while the installed package stayed at the old commit — the reported "update succeeded, still at the old commit". Same test green after the fix, and it now also covers the reporter's uninstall-then-reinstall (remove, add again → the branch's commit, not the cache's).
+
+## Verification
+
+| Check | Command | Result |
+| --- | --- | --- |
+| Plugin package, full suite | `go test ./internal/plugin/ -count=1` | ok, 161s, exit 0 (twice: before the commit and at it) |
+| New tests | `TestGitUpdateInstallsTheBranchsCommitNow`, `TestGitUpdateKeepsACommitPin` (real bun), `TestGitUpdateSaysWhenItDidnt` (fake bun keeping the lock's commit, as Bun's stale cache did), `TestRefFixed`, `TestSameRepoAndCloneOrigin` | pass |
+| Neighbors that drive installs | `go test ./internal/cli/ ./internal/provider/ -count=1` | ok (95s / 131s), exit 0 |
+| Format | `gofmt -l` (whole repo) | clean |
+| Vet | `go vet ./internal/plugin/` on darwin, linux, windows | ok |
+| Builds | darwin app; windows app (`CGO_ENABLED=0 GOOS=windows go build -tags production`, as the Makefile cross-compiles it); the 79 Linux packages that need no Linux GTK cgo | all ok |
+
+Ablations and mutations, each restored afterwards: reverting the wiring in `store.go` put both update tests back to red (the pin test stayed green — Bun keeps a `#<sha>` spec at its pin by itself); dropping only the fetch made `TestGitUpdateInstallsTheBranchsCommitNow` red; dropping only the still-behind report made `TestGitUpdateSaysWhenItDidnt` red; treating `#<sha>` specs as unfixed left all tests green, which is the point — the pin is Bun's own spec semantics, the skip exists so a pinned plugin's update spends no fetch and cannot fail on a remote that is down.
+
+## Siblings
+
+Other readers of `bun.lock`: `GitCommit` reads it for the commit a git plugin is at (the lock now records the commit that was actually resolved, so the page's compare gets truer); `listStamp` stats it for host restarts (its mtime changes when an update really changes something); `dist.go` only comments on it. None of them parse the git entries' shape beyond what this fix leaves as Bun wrote it. The fake bun (`plugin_git_test.go`) gained one env-gated mode, `MAGPIE_FAKE_BUN_STUCK`, that makes its `update` keep the lock's commit — standing in for the stale-cache Bun so the false-success report is testable; without the variable set, every existing test runs as before.
+
+## Not verified
+
+- The reporter's intranet HTTPS host is not reproduced; everything above is a local `git+file://` remote with the bundled Bun version (1.4.2). The https path goes through the same `git fetch` Bun runs, and the reporter's own isolation experiment (§3 of the issue) saw the same stale-clone mechanism, but an intranet server's ref advertisement quirks are not something I can check from here.
+- Bun's `<16-hex>.git` cache name is not assumed anywhere; if a Bun version changes the layout, `refreshGitCache` finds no clone and the behavior is today's, not worse.
+- Not measured: how long the first update takes on a big repository (the fetch is bounded by a minute per clone).
+- `bun update` does not re-resolve a `#<tag>` spec even with fresh refs (unchanged by this fix); only fresh resolution benefits from the tags now being fetched, which is the case the reporter hit as "old cache can't find #v0.1.5".
+
+**AI**: written with an AI coding agent; I've read the whole diff and can answer questions on it myself. The model name is in the commit's trailer.
+
+**Attribution**: If you apply the patch, please keep its author (ggbdpq) or add a `Co-authored-by: ggbdpq <ggbdpq@gmail.com>` line.
+
+<details><summary>patch (0001-plugins-an-update-of-an-unfixed-git-source-re-resolv.patch, sha256 3972138b17f75897…)</summary>
+
+```patch
+From 009ba8037f7b009ccdffb860a7a062a30bbd675b Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Tue, 20 Oct 2026 08:23:37 +0800
+Subject: [PATCH] plugins: an update of an unfixed git source re-resolves the
+ branch, not the lock's old commit (#2954)
+
+What changed
+- Before Bun resolves a git plugin's spec, the branches and tags of its
+  repository are fetched into the bare clone Bun keeps in its install
+  cache (refreshGitCache in gitrev.go): best-effort before install's
+  bun add (a remote that can't be reached leaves the install to what the
+  cache has), an error before reinstall's bun update (an update that
+  didn't happen is not reported as done).
+- When bun update exits 0 but the plugin is still behind the commit the
+  update checks saw the repository at, reinstall says so instead of
+  claiming the update.
+- A spec that names a commit (#<sha>) is left alone: nothing is resolved
+  for one, and its pin stands.
+- docs/subsystems/provider-plugins.md: this git update path.
+
+Why
+A plugin added from an unfixed git+https://... URL could not be updated
+(#2954): plugins/package.json named no commit, but Bun resolves a git
+spec through its own bare clone of the repository in the install cache,
+whose refs stay at the first install - a fetch there moves FETCH_HEAD,
+not the clone's refs/heads. Every resolve after the first, bun update as
+much as a bun add after a remove, therefore named the old commit again,
+bun.lock re-recorded it (name@git+...#bb961b2...), and the update said it
+had installed while node_modules kept 0.1.3. The lock is the record of
+that resolution, not its cause. Verified with Bun 1.4.2 (the version
+magpie runs) against a local git+file:// repository: after the branch
+moved, bun update my-plugin answered "no changes" and exited 0, and so
+did bun install with the lock entry dropped, bun update --force and bun
+install --force; with the clone's refs fetched, the same bun update
+installed the branch's commit now.
+
+Run
+go test ./internal/plugin/ -count=1 (ok; new: TestGitUpdateInstallsTheBran
+chsCommitNow and TestGitUpdateKeepsACommitPin on the bun on PATH against
+a local git+file:// repository, TestGitUpdateSaysWhenItDidnt with the
+fake bun keeping the lock's commit, TestRefFixed,
+TestSameRepoAndCloneOrigin)
+go test ./internal/cli/ ./internal/provider/ -count=1 (ok)
+gofmt -l (clean); go vet ./internal/plugin/ on darwin, linux and windows
+(ok); builds of darwin and of windows (CGO_ENABLED=0 -tags production,
+as the Makefile cross-compiles it) and of the 79 Linux packages that
+don't need Linux GTK cgo (the GUI and cli are built natively per machine,
+as the Makefile says).
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ docs/subsystems/provider-plugins.md      |   2 +
+ internal/plugin/bun.go                   |   9 +-
+ internal/plugin/gitrev.go                | 124 ++++++++++++++
+ internal/plugin/plugin_git_test.go       |   8 +-
+ internal/plugin/plugin_gitupdate_test.go | 200 +++++++++++++++++++++++
+ internal/plugin/store.go                 |  33 +++-
+ 6 files changed, 369 insertions(+), 7 deletions(-)
+ create mode 100644 internal/plugin/plugin_gitupdate_test.go
+
+diff --git a/docs/subsystems/provider-plugins.md b/docs/subsystems/provider-plugins.md
+index b6cfbf4a..39367da1 100644
+--- a/docs/subsystems/provider-plugins.md
++++ b/docs/subsystems/provider-plugins.md
+@@ -156,6 +156,8 @@ A `@magpie-community` package npm doesn't give is installed from the community r
+ 
+ A plugin on the list whose package isn't in `plugins/` is installed again from its own spec, switched off or not, by `plugin.InstallMissing`. `KeepUpdated` runs it 30 seconds after start and then hourly, before `CheckUpdates`. Nothing else did this. An update skips a plugin with no installed version, so the host said `no such plugin: …\node_modules\…` at every start until the user removed the plugin and added it again (#2002, Windows, after an update). Every bun command that changes `plugins/` runs one at a time under `installMu`: `install` (with the first `package.json` it writes), `reinstall`'s `bun update`, and `Remove`'s and `add`'s `bun remove`. At start, `KeepUpdated` and `keepMovedCurrent` both run `bun add`. Two at once each read `package.json` before either writes it, so one change was lost (reproduced with Bun 1.4.3 on Windows), and a git plugin whose dependency was dropped can't be found. `TestMissingPluginsInstalledAgain` and `TestBunCommandsOneAtATime` in [`plugin_missing_test.go`](../../internal/plugin/plugin_missing_test.go) cover both.
+ 
++A plugin added from a git repository is reinstalled by `reinstall`'s `bun update`, which re-resolves its branch or tag where `bun add` keeps the commit `bun.lock` has. Bun resolves a git spec through its own bare clone of the repository, kept in the install cache (`bunCacheDir` in [`bun.go`](../../internal/plugin/bun.go)), and a fetch there moves `FETCH_HEAD` but not the clone's `refs/heads`, so every resolve after the first named the first install's commit again: an update of a plugin added as an unfixed `git+https://…` URL said it had installed while the plugin, `bun.lock` and the clone all stayed at the old commit, and an uninstall followed by an add again resolved it too (#2954). `refreshGitCache` ([`gitrev.go`](../../internal/plugin/gitrev.go)) now fetches the clone's branches and tags before `install`'s `bun add` (best-effort: a remote that can't be reached leaves the install to what the cache has) and before `reinstall`'s `bun update` (an error: an update that didn't happen is not reported as done); a spec that names a commit (`#<sha>`) is left alone, for nothing is resolved for one and its pin stands. When `bun update` exits 0 but the plugin is still behind the commit the checks saw the repository at, `reinstall` says so rather than claiming the update. `TestGitUpdateInstallsTheBranchsCommitNow` and `TestGitUpdateKeepsACommitPin` (on the bun on PATH, against a local `git+file://` repository) and `TestGitUpdateSaysWhenItDidnt` (with the fake bun keeping the lock's commit, as Bun's stale cache did) in [`plugin_gitupdate_test.go`](../../internal/plugin/plugin_gitupdate_test.go) cover these.
++
+ A plugin the user turned off stays off through every install path: `add` keeps `Off` when it replaces an existing entry, so Add, Update, Update all and Upgrade all leave it as the user left it.
+ 
+ ## Constraints for fixes
+diff --git a/internal/plugin/bun.go b/internal/plugin/bun.go
+index c22f909f..cb71e406 100644
+--- a/internal/plugin/bun.go
++++ b/internal/plugin/bun.go
+@@ -310,6 +310,13 @@ func getURLFrom(ctx context.Context, url string, limit int64, mirror bool) ([]by
+ 	return b, nil
+ }
+ 
++// bunCacheDir is the install cache bun is run with (bunCommand): among it
++// are the bare clones bun makes of the repositories git dependencies come
++// from.
++func bunCacheDir() string {
++	return filepath.Join(filepath.Dir(catalog.CachePath()), "bun", "install-cache")
++}
++
+ // bunCommand runs bun with args in dir, the environment's proxy settings
+ // passed on (a SOCKS5 one bridged, as Bun can't use it: #1409), the roots
+ // the system trusts added to Bun's (caEnv), and npm's registry in China
+@@ -318,7 +325,7 @@ func getURLFrom(ctx context.Context, url string, limit int64, mirror bool) ([]by
+ var bunCommand = func(ctx context.Context, bun, dir string, args ...string) *exec.Cmd {
+ 	cmd := command(ctx, bun, args...)
+ 	cmd.Dir = dir
+-	cmd.Env = append(netproxy.EnvForBun(env()), "BUN_INSTALL_CACHE_DIR="+filepath.Join(filepath.Dir(catalog.CachePath()), "bun", "install-cache"))
++	cmd.Env = append(netproxy.EnvForBun(env()), "BUN_INSTALL_CACHE_DIR="+bunCacheDir())
+ 	cmd.Env = append(cmd.Env, caEnv(cmd.Env, dir)...)
+ 	cmd.Env = append(cmd.Env, registryEnv(cmd.Env)...)
+ 	return cmd
+diff --git a/internal/plugin/gitrev.go b/internal/plugin/gitrev.go
+index 23c1cb22..1bd84e24 100644
+--- a/internal/plugin/gitrev.go
++++ b/internal/plugin/gitrev.go
+@@ -19,6 +19,7 @@ import (
+ 	"os"
+ 	"path/filepath"
+ 	"regexp"
++	"slices"
+ 	"strings"
+ 	"sync"
+ 	"time"
+@@ -26,6 +27,129 @@ import (
+ 
+ var hexSHA = regexp.MustCompile(`^[0-9a-f]{7,40}$`)
+ 
++// refFixed is whether a git spec names the exact commit to install
++// (#<commit>): nothing is resolved for one, so no cache is fetched for it
++// either — the commit is in bun's clone of the repository already, and
++// the install keeps the pin whatever the clone's refs say.
++func refFixed(spec string) bool {
++	_, ref, _ := strings.Cut(spec, "#")
++	return hexSHA.MatchString(strings.ToLower(ref))
++}
++
++// gitURLs is the URLs the repository a git spec names is cloned from, the
++// spec's own first, then a shorthand's https one (github:owner/repo,
++// owner/repo, gitlab:, bitbucket:).
++func gitURLs(spec string) []string {
++	s, _, _ := strings.Cut(spec, "#")
++	s = strings.TrimPrefix(s, "git+")
++	var out []string
++	add := func(u string) {
++		u = strings.TrimSuffix(u, "/")
++		if u != "" && !slices.Contains(out, u) {
++			out = append(out, u)
++		}
++	}
++	add(s)
++	var shorthand string
++	switch {
++	case strings.HasPrefix(s, "github:"):
++		shorthand = "https://github.com/" + strings.TrimPrefix(s, "github:")
++	case strings.HasPrefix(s, "gitlab:"):
++		shorthand = "https://gitlab.com/" + strings.TrimPrefix(s, "gitlab:")
++	case strings.HasPrefix(s, "bitbucket:"):
++		shorthand = "https://bitbucket.org/" + strings.TrimPrefix(s, "bitbucket:")
++	case !strings.Contains(s, ":") && strings.Contains(s, "/"):
++		shorthand = "https://github.com/" + s
++	}
++	if shorthand != "" {
++		add(shorthand)
++	}
++	return out
++}
++
++// sameRepo is whether two URLs name one git repository: the git+ prefix,
++// the .git suffix and the letter case are nothing.
++func sameRepo(a, b string) bool {
++	trim := func(u string) string {
++		u = strings.TrimSpace(u)
++		u = strings.TrimSuffix(strings.TrimSuffix(strings.TrimPrefix(u, "git+"), "/"), ".git")
++		return u
++	}
++	return strings.EqualFold(trim(a), trim(b))
++}
++
++// cloneOrigin is the URL a bare clone in bun's cache was cloned from, ""
++// when its config names none: the origin remote's, else the first
++// remote's.
++func cloneOrigin(dir string) string {
++	b, err := os.ReadFile(filepath.Join(dir, "config"))
++	if err != nil {
++		return ""
++	}
++	first, atOrigin := "", false
++	for _, l := range strings.Split(string(b), "\n") {
++		l = strings.TrimSpace(l)
++		if strings.HasPrefix(l, "[") {
++			atOrigin = strings.HasPrefix(l, `[remote "origin`)
++			continue
++		}
++		if v, ok := strings.CutPrefix(l, "url"); ok {
++			v = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(v), "="))
++			if atOrigin {
++				return v
++			}
++			if first == "" {
++				first = v
++			}
++		}
++	}
++	return first
++}
++
++// fetchEach is how long a fetch into bun's cache is waited for.
++const fetchEach = time.Minute
++
++// refreshGitCache fetches the branches and tags of the repository a git
++// spec names into the clone of it bun keeps in its install cache, so
++// resolving the spec names the commit the remote is at now, not the one
++// it was at when bun cloned it first: bun fetches without moving the
++// clone's own refs, so every resolve of a branch after the first (a
++// plugin added as an unfixed git+https://… spec) found the old commit
++// again, bun.lock kept it, and an update said it had installed while
++// nothing changed (#2954). A spec pinned to a commit is left alone. With
++// no clone of the repository (bun fetches GitHub's as tarballs; a first
++// install hasn't cloned yet) there is nothing to refresh, and this is nil.
++func refreshGitCache(ctx context.Context, spec string) error {
++	if !IsGit(spec) || refFixed(spec) {
++		return nil
++	}
++	urls := gitURLs(spec)
++	es, err := os.ReadDir(bunCacheDir())
++	if err != nil {
++		return nil // no cache yet: bun clones from the remote now
++	}
++	var errs []error
++	for _, e := range es {
++		if !strings.HasSuffix(e.Name(), ".git") || !e.IsDir() {
++			continue
++		}
++		dir := filepath.Join(bunCacheDir(), e.Name())
++		u := cloneOrigin(dir)
++		if !slices.ContainsFunc(urls, func(want string) bool { return sameRepo(want, u) }) {
++			continue
++		}
++		fctx, cancel := context.WithTimeout(ctx, fetchEach)
++		cmd := command(fctx, "git", "-C", dir, "fetch", "--quiet", "origin", "+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*")
++		cmd.Env = append(env(), "GIT_TERMINAL_PROMPT=0", "GIT_SSH_COMMAND=ssh -o BatchMode=yes")
++		out, err := cmd.CombinedOutput()
++		cancel()
++		if err != nil {
++			errs = append(errs, fmt.Errorf("fetching %s into Bun's cache: %v: %s", u, err, lastLines(string(out), 4)))
++		}
++	}
++	return errors.Join(errs...)
++}
++
+ // GitCommit is the commit bun installed of the git plugin spec, as bun
+ // recorded it (7 hex digits for a GitHub one, 40 for one fetched with
+ // git); "" for one that isn't git, or isn't installed.
+diff --git a/internal/plugin/plugin_git_test.go b/internal/plugin/plugin_git_test.go
+index d16424bd..682cd449 100644
+--- a/internal/plugin/plugin_git_test.go
++++ b/internal/plugin/plugin_git_test.go
+@@ -129,6 +129,9 @@ func fakeBun(args []string) error {
+ 		}
+ 		deps[name], lock[name] = spec, commit
+ 	case "update":
++		if os.Getenv("MAGPIE_FAKE_BUN_STUCK") == "1" {
++			return nil // as bun whose cache's clone of the repository is stale: the lock's commit stays (#2954)
++		}
+ 		for _, n := range args[2:] {
+ 			if deps[n] == "" {
+ 				return fmt.Errorf("no dependency %s", n)
+@@ -430,10 +433,7 @@ func gitPluginRest(t *testing.T, ctx context.Context, repo gitRepo, spec string,
+ 	}
+ 
+ 	// the same package from another URL takes the entry's place
+-	file := "git+file://" + filepath.ToSlash(repo.bare)
+-	if !strings.HasPrefix(file, "git+file:///") {
+-		file = "git+file:///" + strings.TrimPrefix(file, "git+file://")
+-	}
++	file := gitFileURL(repo.bare)
+ 	if _, err := Add(ctx, file); err != nil {
+ 		t.Fatal(err)
+ 	}
+diff --git a/internal/plugin/plugin_gitupdate_test.go b/internal/plugin/plugin_gitupdate_test.go
+new file mode 100644
+index 00000000..3e8881ff
+--- /dev/null
++++ b/internal/plugin/plugin_gitupdate_test.go
+@@ -0,0 +1,200 @@
++package plugin
++
++import (
++	"context"
++	"os"
++	"os/exec"
++	"path/filepath"
++	"strings"
++	"testing"
++	"time"
++)
++
++// gitFileURL is a bare repository's git+file:// URL, as a plugin spec.
++func gitFileURL(bare string) string {
++	u := "git+file://" + filepath.ToSlash(bare)
++	if !strings.HasPrefix(u, "git+file:///") {
++		u = "git+file:///" + strings.TrimPrefix(u, "git+file://")
++	}
++	return u
++}
++
++// realBunSandbox is a HOME of the test's own where bun is the one on PATH,
++// not the fake: how bun resolves a git spec (through the clone of the
++// repository it keeps in its install cache) is the one thing the fake
++// can't stand in for.
++func realBunSandbox(t *testing.T) {
++	t.Helper()
++	if _, err := exec.LookPath("git"); err != nil {
++		t.Skip("no git on PATH")
++	}
++	bun, err := exec.LookPath("bun")
++	if err != nil {
++		t.Skip("no bun on PATH")
++	}
++	dir := t.TempDir()
++	t.Setenv("HOME", dir)
++	t.Setenv("USERPROFILE", dir)
++	t.Setenv("XDG_CONFIG_HOME", filepath.Join(dir, "config"))
++	t.Setenv("XDG_CACHE_HOME", filepath.Join(dir, "cache"))
++	t.Setenv("MAGPIE_BUN", bun) // never downloaded
++	t.Cleanup(Settle)
++	forgetHeads()
++}
++
++// repoHead is the commit the repository's main is at now.
++func repoHead(t *testing.T, repo gitRepo) string {
++	t.Helper()
++	out, err := exec.Command("git", "--git-dir", repo.bare, "rev-parse", "main").Output()
++	if err != nil {
++		t.Fatal(err)
++	}
++	return strings.TrimSpace(string(out))
++}
++
++// A plugin added from a git URL that names no commit or tag stayed at the
++// commit of its first install: bun resolves the spec's branch through the
++// clone of the repository in its install cache, whose refs stay at what
++// they were when bun cloned it first, so an update (and an uninstall
++// followed by an add again) said it had installed while node_modules kept
++// the old commit (#2954). Fetched before bun resolves, the clone's refs
++// name the commit the repository is at now.
++func TestGitUpdateInstallsTheBranchsCommitNow(t *testing.T) {
++	realBunSandbox(t)
++	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
++	defer cancel()
++	repo := newGitRepo(t, filepath.Join(t.TempDir(), "repo.git"))
++	spec := gitFileURL(repo.bare)
++	if _, err := Add(ctx, spec); err != nil {
++		t.Fatal(err)
++	}
++	if v := Installed(spec); v != "1.0.0" {
++		t.Fatalf("installed %s, want 1.0.0", v)
++	}
++	repo.release("2.0.0")
++	if err := Update(ctx); err != nil {
++		t.Fatalf("update: %v", err)
++	}
++	if v := Installed(spec); v != "2.0.0" {
++		t.Fatalf("the update said it is done, the plugin is still at %s, want 2.0.0", v)
++	}
++	if c := GitCommit(spec); !SameCommit(c, repoHead(t, repo)) {
++		t.Fatalf("installed commit %s, want the repository's %s", c, repoHead(t, repo))
++	}
++
++	// an uninstall followed by an add again resolved the old commit just
++	// the same (#2954); it resolves the branch's commit now
++	repo.release("3.0.0")
++	if err := Remove(ctx, "my-oc-plugin"); err != nil {
++		t.Fatal(err)
++	}
++	if _, err := Add(ctx, spec); err != nil {
++		t.Fatal(err)
++	}
++	if v := Installed(spec); v != "3.0.0" {
++		t.Fatalf("installed again: %s, want 3.0.0", v)
++	}
++}
++
++// An update that left the plugin at the commit it was at, though the
++// repository's check had said there was a newer one, is not reported as
++// done: bun resolving a branch through a stale cache has done exactly
++// that, and exited 0 (#2954). The fake bun stands in for that bun: its
++// update keeps the commit the lock has.
++func TestGitUpdateSaysWhenItDidnt(t *testing.T) {
++	github, _ := gitSandbox(t)
++	t.Setenv("MAGPIE_FAKE_BUN_STUCK", "1")
++	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
++	defer cancel()
++	repo := newGitRepo(t, filepath.Join(github, "owner", "repo.git"))
++	const spec = "github:owner/repo"
++	if _, err := Add(ctx, spec); err != nil {
++		t.Fatal(err)
++	}
++	repo.release("2.0.0")
++	// the page's check asked the repository and found the new commit, as
++	// it does before an update is offered
++	if h, err := GitHead(ctx, spec, true); err != nil || h == "" {
++		t.Fatalf("GitHead = %q, %v", h, err)
++	}
++	if err := Update(ctx); err == nil {
++		t.Fatal("the update said it is done, though the plugin is still at the commit it was at")
++	}
++}
++
++// A plugin whose spec names the commit to install keeps it: nothing is
++// re-resolved for one, and an update moves everything but its pin (#2954).
++func TestGitUpdateKeepsACommitPin(t *testing.T) {
++	realBunSandbox(t)
++	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
++	defer cancel()
++	repo := newGitRepo(t, filepath.Join(t.TempDir(), "repo.git"))
++	pin := repoHead(t, repo)
++	spec := gitFileURL(repo.bare) + "#" + pin
++	if _, err := Add(ctx, spec); err != nil {
++		t.Fatal(err)
++	}
++	if v := Installed(spec); v != "1.0.0" {
++		t.Fatalf("installed %s, want 1.0.0", v)
++	}
++	repo.release("2.0.0")
++	if err := Update(ctx); err != nil {
++		t.Fatalf("update: %v", err)
++	}
++	if v := Installed(spec); v != "1.0.0" {
++		t.Fatalf("a commit-pinned plugin moved to %s", v)
++	}
++	if c := GitCommit(spec); !SameCommit(c, pin) {
++		t.Fatalf("a commit-pinned plugin is at %s, want its pin %s", c, pin)
++	}
++	if b, err := os.ReadFile(filepath.Join(Dir(), "bun.lock")); err != nil || !strings.Contains(string(b), "#"+pin) {
++		t.Fatalf("bun.lock no longer pins %s: %v", pin, err)
++	}
++}
++
++func TestRefFixed(t *testing.T) {
++	for spec, want := range map[string]bool{
++		"github:owner/repo":                                                 false,
++		"github:owner/repo#main":                                            false,
++		"github:owner/repo#v1.2.0":                                          false,
++		"git+https://host/x/y.git":                                          false,
++		"git+https://host/x/y.git#semver:>=1.0":                             false,
++		"git+file:///tmp/repo.git#MAIN":                                     false,
++		"git+https://host/x/y.git#8c49a23":                                  true,
++		"git+https://host/x/y.git#8c49a230beef":                             true,
++		"git+file:///tmp/repo.git#75068205e8ef0d146deef13b1ca6cf80e6432ab0": true,
++	} {
++		if got := refFixed(spec); got != want {
++			t.Errorf("refFixed(%q) = %v, want %v", spec, got, want)
++		}
++	}
++}
++
++func TestSameRepoAndCloneOrigin(t *testing.T) {
++	for _, c := range []struct {
++		a, b string
++		want bool
++	}{
++		{"git+https://git.example.com/a/b.git", "https://git.example.com/a/b.git", true},
++		{"git+https://git.example.com/a/b", "https://git.example.com/a/b.git", true},
++		{"https://GitHub.com/a/b.git", "https://github.com/a/b", true},
++		{"git+https://git.example.com/a/b.git", "https://git.example.com/a/c.git", false},
++		{"git+file:///tmp/x/repo.git", "file:///tmp/x/repo.git", true},
++		{"", "https://git.example.com/a/b.git", false},
++	} {
++		if got := sameRepo(c.a, c.b); got != c.want {
++			t.Errorf("sameRepo(%q, %q) = %v, want %v", c.a, c.b, got, c.want)
++		}
++	}
++	dir := t.TempDir()
++	cfg := "[core]\n\trepositoryformatversion = 0\n[remote \"origin\"]\n\turl = https://git.example.com/a/b.git\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n"
++	if err := os.WriteFile(filepath.Join(dir, "config"), []byte(cfg), 0o644); err != nil {
++		t.Fatal(err)
++	}
++	if got, want := cloneOrigin(dir), "https://git.example.com/a/b.git"; got != want {
++		t.Errorf("cloneOrigin = %q, want %q", got, want)
++	}
++	if got := cloneOrigin(t.TempDir()); got != "" {
++		t.Errorf("cloneOrigin of a folder with no config = %q", got)
++	}
++}
+diff --git a/internal/plugin/store.go b/internal/plugin/store.go
+index 28f660f8..04e21939 100644
+--- a/internal/plugin/store.go
++++ b/internal/plugin/store.go
+@@ -707,6 +707,13 @@ func install(ctx context.Context, spec string) error {
+ 		}
+ 	}
+ 	defer installMu.Unlock()
++	// the clone bun resolves a git spec through may be stale, its refs
++	// still at the first install's: fetched here so a fresh resolve (an
++	// add after a remove, a plugin installed again for being missing)
++	// names the commit the remote is at now. Best-effort: a remote that
++	// can't be reached leaves the install to what the cache has, as
++	// before (#2954)
++	_ = refreshGitCache(ctx, spec)
+ 	err = bunAdd(ctx, bun, spec)
+ 	// a @magpie-community package or version npm doesn't have (a new
+ 	// one waits for an owner to publish it there) comes from the
+@@ -885,8 +892,9 @@ func ensurePi(ctx context.Context, target string) error {
+ }
+ 
+ // reinstall installs spec again: an npm one with bun add, a git one with
+-// bun update, which fetches its branch's (or tag's) commit now where bun
+-// add keeps the one bun.lock has.
++// bun update, which re-resolves its branch (or tag) where bun add keeps
++// the one bun.lock has — through bun's cache's clone of the repository,
++// whose refs refreshGitCache fetches first (#2954).
+ func reinstall(ctx context.Context, spec string) error {
+ 	name := Name(spec)
+ 	if !IsGit(spec) || name == spec {
+@@ -896,6 +904,13 @@ func reinstall(ctx context.Context, spec string) error {
+ 	if err != nil {
+ 		return err
+ 	}
++	// the update is to install what the repository is at now, which bun
++	// can only resolve through a clone whose refs are current: without
++	// the fetch it re-resolved the commit the lock already had and still
++	// said it had installed
++	if err := refreshGitCache(ctx, spec); err != nil {
++		return err
++	}
+ 	out, err := runBun(ctx, bun, "update", "--ignore-scripts", name)
+ 	if err != nil {
+ 		if hint := missingLibs(string(out)); hint != "" {
+@@ -903,6 +918,20 @@ func reinstall(ctx context.Context, spec string) error {
+ 		}
+ 		return fmt.Errorf("bun update %s: %v: %s", name, cantStart(bun, err), lastLines(string(out), 6))
+ 	}
++	// what the checks saw the repository at (the page's, before the
++	// reader pressed update) is what the update was to install: bun
++	// exiting 0 has meant the old commit stayed before, and the reader is
++	// to hear so rather than be told the update is done (#2954)
++	if head := GitHeadCached(spec); head != "" && GitBehind(spec, head) {
++		// the answer stood for a while: the repository may have moved on
++		// again since, so it is asked now before this is reported
++		if now, err := GitHead(ctx, spec, true); err == nil && now != "" {
++			head = now
++		}
++		if GitBehind(spec, head) {
++			return fmt.Errorf("bun update %s left it at %s, though its repository is at %s", name, short(GitCommit(spec)), short(head))
++		}
++	}
+ 	return nil
+ }
+ 
+-- 
+2.50.1 (Apple Git-155)
+
+
+```
+
+</details>

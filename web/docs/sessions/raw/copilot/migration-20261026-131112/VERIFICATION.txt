@@ -1,0 +1,25 @@
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py copilot baseline
+INPUT: CONFIG: fixed copilot source allowlist
+OUTPUT: BASELINE PASS groups=1 files=47 bytes=98673 protected=1
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py copilot archive
+INPUT: 185dda3ca9c1631803fcc8e8fd1660b1e2bf5f2f90c5ecd84ddd5d2d9c049fa8
+OUTPUT: ARCHIVE PASS zip_files=1 files=47 bytes=98673
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py copilot apply
+INPUT: 51a388eebb832437cacd5d5af23212c7d93ba6f9750ec57d4ba9c117d7c5e255
+OUTPUT: APPLY PASS removed_files=47 removed_bytes=98673
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py copilot verify
+INPUT: 8e37bf9075f9228b43eb2cce54b02c38be6045dc1d6e3506d2c7e4d5f79cbeb5
+OUTPUT: MODIFIED PASS files=47 bytes=98673 originals_absent=true protected_unchanged=true
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py copilot rollback-test
+INPUT: 8e37bf9075f9228b43eb2cce54b02c38be6045dc1d6e3506d2c7e4d5f79cbeb5
+OUTPUT: ROLLBACK PASS restored_files=47 restored_bytes=98673 hashes_match=true originals_untouched=true
+EXIT: 0
+

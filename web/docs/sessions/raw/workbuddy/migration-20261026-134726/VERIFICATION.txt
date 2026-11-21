@@ -1,0 +1,40 @@
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py workbuddy baseline
+INPUT: CONFIG: fixed workbuddy source allowlist
+OUTPUT: BASELINE PASS groups=6 files=6825 bytes=204689424 protected=1
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py workbuddy archive
+INPUT: 430b420d02f744060c86964176be85232027d37b71ee663b74bad2000c0811a3
+OUTPUT: ARCHIVE PASS zip_files=6 files=6825 bytes=204689424
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py workbuddy apply
+INPUT: 8d3bde6af1d920fdb528a07103c127de7291fdf2a9dea3614f36d2348402f3d9
+OUTPUT: PermissionError: [WinError 5] 拒绝访问。: 'C:\\Users\\802165\\.workbuddy\\logs\\2026-10-17\\daemon-memory-diag.log'
+EXIT: 1
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py workbuddy verify
+INPUT: 8d3bde6af1d920fdb528a07103c127de7291fdf2a9dea3614f36d2348402f3d9
+OUTPUT: ValueError: Expected migrated
+EXIT: 1
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py workbuddy rollback-test
+INPUT: 8d3bde6af1d920fdb528a07103c127de7291fdf2a9dea3614f36d2348402f3d9
+OUTPUT: ValueError: Expected migrated
+EXIT: 1
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py workbuddy apply
+INPUT: 8d3bde6af1d920fdb528a07103c127de7291fdf2a9dea3614f36d2348402f3d9
+OUTPUT: APPLY PASS removed_files=6825 removed_bytes=204689424 skipped=16
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py workbuddy verify
+INPUT: f8fdbdf724c1bd20f38c99f2bc513fe094701003d6f7ee9f9009ff1a62c2bad4
+OUTPUT: MODIFIED PASS files=6825 bytes=204689424 originals_absent=true protected_unchanged=true
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py workbuddy rollback-test
+INPUT: f8fdbdf724c1bd20f38c99f2bc513fe094701003d6f7ee9f9009ff1a62c2bad4
+OUTPUT: ROLLBACK PASS restored_files=6825 restored_bytes=204689424 hashes_match=true originals_untouched=true
+EXIT: 0
+

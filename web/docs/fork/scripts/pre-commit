@@ -1,0 +1,19 @@
+#!/bin/sh
+# git pre-commit：暂存区含 docs 下 .md 改动时跑 docs_lint，阻断项非零则拒绝提交。
+# 位置无关：docs 根是本脚本的上一级（现在是 web/docs/fork/）。
+# 安装（推荐软链，脚本据此反推 docs 位置）：
+#   ln -sf "$(pwd)/<到docs的路径>/scripts/pre-commit" "$(git rev-parse --git-path hooks)/pre-commit"
+# 复制安装时需设置环境变量 DOCS_DIR=<docs 绝对路径>。
+top=$(git rev-parse --show-toplevel) || exit 1
+real=$(python3 -c 'import os,sys;print(os.path.realpath(sys.argv[1]))' "$0")
+docs=${DOCS_DIR:-$(dirname "$(dirname "$real")")}
+[ -f "$docs/scripts/docs_lint.py" ] || { echo "pre-commit: 找不到 $docs/scripts/docs_lint.py，请设置 DOCS_DIR" >&2; exit 1; }
+prefix=$(python3 -c 'import os,sys;print(os.path.relpath(sys.argv[1],sys.argv[2]))' "$docs" "$top")
+git diff --cached --name-only | grep -q "^$prefix/.*\.md\$" || exit 0
+out=$(mktemp)
+python3 "$docs/scripts/docs_lint.py" "$docs" >"$out" 2>&1
+rc=$?
+grep '^ERROR' "$out"
+tail -1 "$out"
+rm -f "$out"
+exit $rc

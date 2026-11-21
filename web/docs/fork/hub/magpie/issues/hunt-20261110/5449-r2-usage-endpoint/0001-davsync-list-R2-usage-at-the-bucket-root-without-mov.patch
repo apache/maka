@@ -1,0 +1,253 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ns2kracy <ns2kracy@gmail.com>
+Date: Fri, 6 Nov 2026 11:51:27 +0800
+Subject: [PATCH] davsync: list R2 usage at the bucket root without moving
+ existing objects
+
+Reported and reproduced by Ns2Kracy. An R2 endpoint saved with a path
+could read and write the setup and usage objects, but sent the usage
+listing to an object path and failed with 404 NoSuchKey. Move that path
+into the runtime object-key prefix, preserving the exact object URLs and
+saved sync-state identity. Handle both addressing modes, reject a
+conflicting path-style bucket, and keep non-R2 proxy paths unchanged.
+
+Base: yetone/main 83545a5d8f84bad1076e85282ec916331f8c57f3.
+Regression before the fix: all five cases of
+TestS3R2EndpointPathKeepsObjectsAndListsBucket fail with HTTP 404
+NoSuchKey; TestS3R2PathStyleEndpointNamesItsBucket accepts the conflicting
+bucket. Both pass with the fix; the tests use signed local HTTP fixtures.
+
+Verified under an isolated HOME with Go caches pinned:
+- gofmt -l on both Go files: no output; git diff --check: clean.
+- go test -tags nogui ./internal/davsync -count=1 -timeout=15m: ok.
+- R2/proxy/address/shared-S3 tests with -race -count=5: ok.
+- go test -tags nogui ./internal/cli -run TestS3Cmd -count=1: ok.
+- Linux nogui and Windows go vet ./...: ok.
+- Linux nogui and Windows builds: ok (outputs outside the checkout).
+
+Not green/completed: the full nogui suite was stopped after about 19m.
+The completed agent package failed TestAgyShell and TestGrokInstalled;
+both fail unchanged at the exact base above too. The fish/POSIX fixture
+mismatch is #5446, the WSL MZ fake binary issue is #3548. Other slow
+packages had not finished; no full-suite pass is claimed. Native Linux
+GUI vet/build are blocked by missing pkg-config. GUI browser tests and
+native Windows execution were not run. This is submitted as a draft.
+
+Real-use evidence was collected before rebasing: the existing R2 backup
+HEAD returned 200 while the old listing returned 404; the corrected
+listing and an existing usage download returned 200. An equivalent local
+configuration correction preserved merge state and let the running
+magpie finish usage sharing without error. No credentials or diagnostic
+scripts are included.
+---
+ docs/subsystems/sync-backup.md   |   8 ++
+ internal/davsync/r2_path_test.go | 151 +++++++++++++++++++++++++++++++
+ internal/davsync/s3.go           |  15 +++
+ 3 files changed, 174 insertions(+)
+ create mode 100644 internal/davsync/r2_path_test.go
+
+diff --git a/docs/subsystems/sync-backup.md b/docs/subsystems/sync-backup.md
+index 12116a6a3..9cf942ece 100644
+--- a/docs/subsystems/sync-backup.md
++++ b/docs/subsystems/sync-backup.md
+@@ -19,6 +19,14 @@ clone a working tree or synchronize arbitrary files.
+   403 SignatureDoesNotMatch once a sync had an ETag to ask with. [`github.go`](../../internal/davsync/github.go)
+   interprets `github://owner/repo[/prefix]`, with `Config.Branch` selecting a
+   branch or using the repository's default.
++- R2 endpoints with a path retain the existing object URLs: `newS3`
++  treats the path as an object-key prefix and sends bucket listings to
++  the account root, including that prefix in `ListObjectsV2`. Earlier
++  versions could read and write the setup and usage files at those URLs,
++  but sent the usage listing to an object path and received `404 NoSuchKey`.
++  No object is moved, no saved sync state is reset, and other S3 services'
++  reverse-proxy base paths are unchanged. With path-style addressing, a
++  bucket named in the R2 endpoint must match the configured bucket.
+ - [`backup.go`](../../internal/backup/backup.go) owns bundle contents and
+   sealing. Sync divides the setup into providers, settings, profiles, agents
+   and library. Provider keys, agent models, library and usage have their own
+diff --git a/internal/davsync/r2_path_test.go b/internal/davsync/r2_path_test.go
+new file mode 100644
+index 000000000..451e34920
+--- /dev/null
++++ b/internal/davsync/r2_path_test.go
+@@ -0,0 +1,151 @@
++package davsync
++
++import (
++	"context"
++	"fmt"
++	"net/http"
++	"net/url"
++	"strings"
++	"testing"
++)
++
++// R2's bucket API is at the account root, not at an object prefix pasted
++// into Endpoint. Existing objects must stay at exactly the same URLs.
++func TestS3R2EndpointPathKeepsObjectsAndListsBucket(t *testing.T) {
++	for _, tc := range []struct {
++		path      string
++		pathStyle bool
++		prefix    string
++	}{
++		{"/bkt", false, "bkt/"},
++		{"/bkt/", false, "bkt/"},
++		{"/team x+y/nested", false, "team x+y/nested/"},
++		{"/bkt", true, "bkt/"},
++		{"/bkt/team", true, "team/bkt/"},
++	} {
++		t.Run(fmt.Sprintf("%s/path-style=%v", tc.path, tc.pathStyle), func(t *testing.T) {
++			f, srv := newFakeS3(t)
++			target, _ := url.Parse(srv.URL)
++			cfg := f.config(srv)
++			cfg.Endpoint = "https://acct.r2.cloudflarestorage.com" + tc.path
++			cfg.PathStyle = tc.pathStyle
++			cfg.Region = "us-east-1"
++			key := tc.prefix + "team x+y/magpie/"
++			name := "0123456789abcdef-2026-01-01.magpie-usage"
++			f.store(key+file, []byte("backup"))
++			f.store(key+usageFolder+"/"+name, []byte("sealed usage"))
++			srv.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++				if r.URL.Query().Get("list-type") == "2" {
++					f.mu.Lock()
++					defer f.mu.Unlock()
++					root := "/"
++					if tc.pathStyle {
++						root = "/bkt"
++					}
++					if r.URL.Path != root {
++						f.fail(w, http.StatusNotFound, "NoSuchKey")
++						return
++					}
++					prefix := r.URL.Query().Get("prefix")
++					if prefix != key+usageFolder+"/" {
++						t.Errorf("listing prefix %q, want %q", prefix, key+usageFolder+"/")
++					}
++					if !f.signed(r, nil) {
++						f.fail(w, http.StatusForbidden, "SignatureDoesNotMatch")
++						return
++					}
++					fmt.Fprint(w, `<ListBucketResult>`)
++					for k := range f.objects {
++						if strings.HasPrefix(k, prefix) {
++							fmt.Fprintf(w, `<Contents><Key>%s</Key><ETag>%s</ETag></Contents>`, k, f.etags[k])
++						}
++					}
++					fmt.Fprint(w, `<IsTruncated>false</IsTruncated></ListBucketResult>`)
++					return
++				}
++				if !tc.pathStyle {
++					f.mu.Lock()
++					defer f.mu.Unlock()
++					if !f.signed(r, nil) {
++						f.fail(w, http.StatusForbidden, "SignatureDoesNotMatch")
++						return
++					}
++					key := strings.TrimPrefix(r.URL.Path, "/")
++					data, ok := f.objects[key]
++					if !ok {
++						f.fail(w, http.StatusNotFound, "NoSuchKey")
++						return
++					}
++					w.Header().Set("ETag", f.etags[key])
++					w.Write(data)
++					return
++				}
++				f.ServeHTTP(w, r)
++			})
++			s, err := newS3(cfg)
++			if err != nil {
++				t.Fatal(err)
++			}
++			endpoint, _ := url.Parse(strings.TrimRight(cfg.Endpoint, "/"))
++			old := &s3{endpoint: endpoint, bucket: "bkt", key: "team x+y/magpie/" + file, pathStyle: tc.pathStyle}
++			if s.objectURL().String() != old.objectURL().String() {
++				t.Fatalf("backup moved: %s, was %s", s.objectURL(), old.objectURL())
++			}
++			old.key = "team x+y/magpie/" + usageFolder + "/" + name
++			if s.urlOf(s.usageKey(name)).String() != old.objectURL().String() {
++				t.Fatalf("usage moved: %s, was %s", s.urlOf(s.usageKey(name)), old.objectURL())
++			}
++			s.client = &http.Client{Transport: r2FixtureTransport{target: target, base: http.DefaultTransport}}
++			got, err := s.list(context.Background())
++			if err != nil || len(got) != 1 {
++				t.Fatalf("usage list: %v, %v", got, err)
++			}
++			backup, _, err := s.get(context.Background(), version{})
++			if err != nil || string(backup) != "backup" {
++				t.Fatalf("backup read: %q, %v", backup, err)
++			}
++			data, err := s.read(context.Background(), name)
++			if err != nil || string(data) != "sealed usage" {
++				t.Fatalf("usage read: %q, %v", data, err)
++			}
++		})
++	}
++}
++
++type r2FixtureTransport struct {
++	target *url.URL
++	base   http.RoundTripper
++}
++
++func (p r2FixtureTransport) RoundTrip(r *http.Request) (*http.Response, error) {
++	copy := r.Clone(r.Context())
++	u := *r.URL
++	copy.URL = &u
++	copy.Host = r.URL.Host
++	u.Scheme = p.target.Scheme
++	u.Host = p.target.Host
++	return p.base.RoundTrip(copy)
++}
++
++func TestS3R2PathStyleEndpointNamesItsBucket(t *testing.T) {
++	_, err := newS3(Config{URL: "s3://bkt", Endpoint: "https://acct.r2.cloudflarestorage.com/other", PathStyle: true})
++	if err == nil || !strings.Contains(err.Error(), "other, not bkt") {
++		t.Fatalf("conflicting bucket in endpoint was accepted: %v", err)
++	}
++}
++
++func TestS3ProxyEndpointPathStillRoutesToProxy(t *testing.T) {
++	for _, pathStyle := range []bool{false, true} {
++		s, err := newS3(Config{URL: "s3://bkt/team", Endpoint: "https://s3.example.com/proxy/s3", PathStyle: pathStyle})
++		if err != nil {
++			t.Fatal(err)
++		}
++		want := "https://bkt.s3.example.com/proxy/s3/"
++		if pathStyle {
++			want = "https://s3.example.com/proxy/s3/bkt"
++		}
++		if s.bucketURL().String() != want || s.key != "team/magpie/"+file {
++			t.Fatalf("proxy path changed: %s, key %s", s.bucketURL(), s.key)
++		}
++	}
++}
+diff --git a/internal/davsync/s3.go b/internal/davsync/s3.go
+index 6ed961f30..fbc1344bc 100644
+--- a/internal/davsync/s3.go
++++ b/internal/davsync/s3.go
+@@ -76,6 +76,21 @@ func newS3(c Config) (*s3, error) {
+ 	if net.ParseIP(host) != nil || !strings.Contains(host, ".") || e.Scheme == "https" && strings.Contains(s.bucket, ".") {
+ 		s.pathStyle = true
+ 	}
++	if strings.HasSuffix(strings.ToLower(host), ".r2.cloudflarestorage.com") && e.Path != "" {
++		// R2 has no proxy base path: a path here is part of the object
++		// name. Keep existing objects where they are, but list at the
++		// bucket root with that path included in the listing's prefix.
++		prefix := strings.TrimPrefix(e.Path, "/")
++		if s.pathStyle {
++			bucket, rest, _ := strings.Cut(prefix, "/")
++			if bucket != s.bucket {
++				return nil, fmt.Errorf("the R2 endpoint names bucket %s, not %s: use the account endpoint without a path", bucket, s.bucket)
++			}
++			prefix = strings.TrimPrefix(rest+"/"+s.bucket, "/")
++		}
++		s.key = prefix + "/" + s.key
++		e.Path, e.RawPath = "", ""
++	}
+ 	return s, nil
+ }
+ 
+-- 
+2.50.1 (Apple Git-155)
+

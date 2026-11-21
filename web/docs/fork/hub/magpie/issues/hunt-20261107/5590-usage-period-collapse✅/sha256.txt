@@ -1,0 +1,2 @@
+a39fc9c1079f22f44e65d6804ad3b69c3c5a49f7  fix/5590-usage-period-collapse.patch (zero-commit, 12981 bytes)
+SHA-256 first 16: 1055a08e23db4136

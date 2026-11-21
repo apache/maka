@@ -1,0 +1,311 @@
+From d7affd027e00dc84f8d0a5bde4d28cdb7a6c00a9 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Wed, 4 Nov 2026 11:11:14 +0800
+Subject: [PATCH] uninstall: Codex's config gives up what magpie wrote even
+ with the marks gone
+
+adamzmsun uninstalled magpie and Codex kept failing every turn: its
+config.toml still had openai_base_url on magpie's gateway, a port
+nothing answered any more.
+
+Uninstalling disconnects the agents magpie is in, and the failover's
+own end takes the base URL out first. Both name what magpie wrote by
+the marks in magpie's own files (codex.joined, codex.beside,
+codex.failover): with those gone -- the folder deleted by hand before
+uninstalling, a fresh install beside an old config.toml, a magpie from
+before the marks existed -- Codex reads as not connected (Wired wants a
+mark or a magpie model, and a base URL beside one of Codex's own models
+is neither, #1385), and failover says no (FailingOver wants its mark),
+so nothing named the base URL, and it stayed: every turn a connection
+failure that says nothing of magpie (the issue's http_connection_failed
+after some fifty seconds). magpie as Codex's provider with the marks
+gone was left the same way, model_provider and all.
+
+Now uninstalling ends with a leftovers pass: the base URL naming
+magpie's gateway and magpie as its provider go by the same gates a
+Disconnect takes them by (dropBase by viaBase, dropProvider by
+asProvider), marks or not -- once magpie is gone for good, nothing
+serves that address, whoever wrote it there. Codex's own model,
+provider and keys stay, and so does magpie's provider table, whose
+threads started on magpie name it; the pass is this machine's Codex,
+like EndCodexFailover. Taking something restarts the Codex app's
+app-server, which read the old config as it started.
+
+Fixes #3866
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/agent/agent.go                |  7 +++
+ internal/agent/codex.go                | 31 ++++++++++
+ internal/agent/codex_leftovers_test.go | 85 ++++++++++++++++++++++++++
+ internal/uninstall/uninstall.go        | 15 +++++
+ internal/uninstall/uninstall_test.go   | 38 +++++++++++-
+ 5 files changed, 173 insertions(+), 3 deletions(-)
+ create mode 100644 internal/agent/codex_leftovers_test.go
+
+diff --git a/internal/agent/agent.go b/internal/agent/agent.go
+index 9345f00b3..8dd998481 100644
+--- a/internal/agent/agent.go
++++ b/internal/agent/agent.go
+@@ -229,6 +229,13 @@ type Agent struct {
+ 	// no longer answers, and retry till magpie is open again (Leon920717
+ 	// on X). The next start's Sync writes it again.
+ 	EndFailover func() error
++	// TakeLeftovers takes out what magpie wrote that no Disconnect could
++	// name: an address at magpie's gateway whose marks are gone (magpie's
++	// folder deleted by hand, a fresh install beside an old config), which
++	// reads as not connected, so uninstalling would leave it pointing at a
++	// gateway that is gone for good (#3866). Uninstall runs it after the
++	// disconnects. It answers whether it changed anything.
++	TakeLeftovers func() (bool, error)
+ 	// Follow, for an agent whose own picker moves its main model where
+ 	// magpie keeps other settings following it (Claude Code's /model and
+ 	// its tiers), brings those along to the model picked there. Run as the
+diff --git a/internal/agent/codex.go b/internal/agent/codex.go
+index 636c1dc13..d5a0a23d4 100644
+--- a/internal/agent/codex.go
++++ b/internal/agent/codex.go
+@@ -1597,6 +1597,24 @@ func codexIn(at place) *Agent {
+ 			}
+ 			return errors.Join(dropMirrorFailover(), dropBase())
+ 		},
++		// what no Disconnect could name, marks gone: only what names magpie
++		// itself goes, by the same gates a Disconnect takes them by
++		TakeLeftovers: func() (bool, error) {
++			took := false
++			if viaBase() {
++				if err := dropBase(); err != nil {
++					return false, err
++				}
++				took = true
++			}
++			if asProvider() {
++				if err := dropProvider(); err != nil {
++					return false, err
++				}
++				took = true
++			}
++			return took, nil
++		},
+ 		OwnVia: codexOwnViaMagpie,
+ 		SideModel: func() string {
+ 			if m := get("model"); viaBase() && !asProvider() && isMagpie(m) {
+@@ -2442,6 +2460,19 @@ func EndCodexFailover() (ended bool, err error) {
+ 	return true, nil
+ }
+ 
++// TakeCodexLeftovers takes out of this machine's Codex config what magpie
++// wrote that no Disconnect could name: the base URL at magpie's gateway,
++// and magpie as its provider, where the marks magpie keeps them by are
++// gone with magpie's own files (#3866). It answers whether it changed
++// anything.
++func TakeCodexLeftovers() (bool, error) {
++	home, err := os.UserHomeDir()
++	if err != nil {
++		return false, err
++	}
++	return codex(home).TakeLeftovers()
++}
++
+ // RelayOpenCodex leaves a relay at the gateway's address for the Codex
+ // processes running as magpie quits (codexrelay.Start), when the address
+ // is this computer's own and Codex is running at all.
+diff --git a/internal/agent/codex_leftovers_test.go b/internal/agent/codex_leftovers_test.go
+new file mode 100644
+index 000000000..21977e6fd
+--- /dev/null
++++ b/internal/agent/codex_leftovers_test.go
+@@ -0,0 +1,85 @@
++package agent
++
++import (
++	"path/filepath"
++	"strings"
++	"testing"
++
++	"github.com/yetone/magpie/internal/edit"
++)
++
++// Uninstalling takes magpie's dead addresses out of Codex's config even
++// where no Disconnect could name them (#3866): the marks magpie keeps its
++// writes by are gone (magpie's folder deleted by hand, a fresh install
++// beside an old config, a magpie from before the marks), so Codex reads as
++// not connected, and the base URL at magpie's gateway sends every turn to
++// a port nothing answers any more. Codex's own model and provider stay,
++// and so does magpie's provider table, whose threads name it.
++func TestCodexLeftoversGoAtUninstallWithoutTheMarks(t *testing.T) {
++	home, read := codexHome(t, `{"tokens":{"access_token":"x","id_token":"x.e30.x"}}`,
++		"model = \"gpt-5.4\"\nopenai_base_url = \""+codexGatewayURL()+"\"\n\n"+
++			"[model_providers.magpie]\nname = \"magpie\"\nbase_url = \""+codexGatewayURL()+"\"\nwire_api = \"responses\"\n")
++	cx := codex(home)
++	if cx.Wired() {
++		t.Fatalf("read as connected with no marks of magpie's:\n%s", read())
++	}
++	took, err := TakeCodexLeftovers()
++	if err != nil || !took {
++		t.Fatalf("took %v, err %v", took, err)
++	}
++	cfg := read()
++	if strings.Contains(cfg, "openai_base_url") {
++		t.Fatalf("magpie's base URL left for a gateway that is gone:\n%s", cfg)
++	}
++	if !strings.Contains(cfg, `model = "gpt-5.4"`) || strings.Contains(cfg, "model_provider =") || strings.Contains(cfg, "model_catalog_json") {
++		t.Fatalf("Codex's own pick disturbed:\n%s", cfg)
++	}
++	if !strings.Contains(cfg, "[model_providers.magpie]") {
++		t.Fatal("magpie's provider table taken: threads started on it name it")
++	}
++	// nothing of magpie's the second time
++	if took, err := TakeCodexLeftovers(); err != nil || took {
++		t.Fatalf("took again: %v, %v", took, err)
++	}
++}
++
++// magpie its provider with the marks gone: the pick and the name of
++// magpie's model list go with it, or Codex is left on a provider of a dead
++// gateway (and loading no config at all once its list file is gone).
++func TestCodexProviderLeftoversGoAtUninstallWithoutTheMarks(t *testing.T) {
++	home, read := codexHome(t, "",
++		"model = \"gpt-5.4\"\nmodel_provider = \"magpie\"\nopenai_base_url = \""+codexGatewayURL()+"\"\n\n"+
++			"[model_providers.magpie]\nname = \"magpie\"\nbase_url = \""+codexGatewayURL()+"\"\nwire_api = \"responses\"\n\n[projects.\"/x\"]\ntrust_level = \"trusted\"\n")
++	path := filepath.Join(home, ".codex", "config.toml")
++	// the list magpie wrote for its provider, named as Codex reads it
++	if err := edit.SetTOMLTop(path, edit.KV{Path: "model_catalog_json", Value: filepath.Join(home, ".codex", "magpie-models.json")}); err != nil {
++		t.Fatal(err)
++	}
++	cx := codex(home)
++	if cx.Wired() {
++		t.Fatalf("read as connected with no marks of magpie's:\n%s", read())
++	}
++	if took, err := TakeCodexLeftovers(); err != nil || !took {
++		t.Fatalf("took %v, err %v", took, err)
++	}
++	cfg := read()
++	if strings.Contains(cfg, "openai_base_url") || strings.Contains(cfg, `model_provider = "magpie"`) || strings.Contains(cfg, "model_catalog_json") {
++		t.Fatalf("magpie's provider pick left:\n%s", cfg)
++	}
++	if !strings.Contains(cfg, `model = "gpt-5.4"`) || !strings.Contains(cfg, `trust_level = "trusted"`) {
++		t.Fatalf("Codex's own keys disturbed:\n%s", cfg)
++	}
++}
++
++// The user's own addresses stay, and nothing of theirs is taken.
++func TestCodexLeftoversLeaveTheUsersOwn(t *testing.T) {
++	const config = "model = \"gpt-5.4\"\nopenai_base_url = \"https://api.openai.com/v1\"\nmodel_provider = \"mine\"\n\n" +
++		"[model_providers.mine]\nname = \"mine\"\nbase_url = \"https://mine.example/v1\"\n"
++	_, read := codexHome(t, "", config)
++	if took, err := TakeCodexLeftovers(); err != nil || took {
++		t.Fatalf("took %v, err %v", took, err)
++	}
++	if cfg := read(); cfg != config {
++		t.Fatalf("the user's own config changed:\n%s", cfg)
++	}
++}
+diff --git a/internal/uninstall/uninstall.go b/internal/uninstall/uninstall.go
+index 65aced3fa..a27e168f2 100644
+--- a/internal/uninstall/uninstall.go
++++ b/internal/uninstall/uninstall.go
+@@ -75,6 +75,7 @@ func (r *Report) Failed() bool {
+ var (
+ 	agents          = agent.All
+ 	endFailover     = agent.EndCodexFailover
++	endLeftovers    = agent.TakeCodexLeftovers
+ 	portRollouts    = agent.PortCodexRollouts
+ 	restartCodexApp = provider.RestartCodexAppWhenIdle
+ 	removeService   = func() error {
+@@ -125,6 +126,20 @@ func Agents(ctx context.Context, r *Report) {
+ 		r.Agents = append(r.Agents, d)
+ 		codex = codex || a.ID == "codex"
+ 	}
++	// what no Disconnect could name: an agent whose config points at
++	// magpie's gateway with the marks magpie kept gone (its folder deleted
++	// by hand, a fresh install beside an old config) reads as not
++	// connected, and Codex left on that address knocks on a port nothing
++	// answers any more (#3866)
++	took, err := endLeftovers()
++	if took || err != nil {
++		d := Done{What: "Codex's leftover settings"}
++		if err != nil {
++			d.Err = err.Error()
++		}
++		r.Agents = append(r.Agents, d)
++		codex = true
++	}
+ 	// the threads Codex ran on magpie's models open without magpie
+ 	portRollouts(10 * time.Second)
+ 	if codex {
+diff --git a/internal/uninstall/uninstall_test.go b/internal/uninstall/uninstall_test.go
+index 845f986c4..19131d022 100644
+--- a/internal/uninstall/uninstall_test.go
++++ b/internal/uninstall/uninstall_test.go
+@@ -23,11 +23,11 @@ func fakes(t *testing.T, list []*agent.Agent, isWired map[string]bool, failing m
+ 	t.Helper()
+ 	var did []string
+ 	wasAgents, wasWired, wasDisconnect := agents, wired, disconnectOne
+-	wasFailover, wasPort, wasRestart := endFailover, portRollouts, restartCodexApp
++	wasFailover, wasLeftovers, wasPort, wasRestart := endFailover, endLeftovers, portRollouts, restartCodexApp
+ 	wasService, wasAutostart, wasShortcut, wasScheme, wasPII, wasExe := removeService, autostartOff, removeShortcut, removeScheme, endPII, executable
+ 	t.Cleanup(func() {
+ 		agents, wired, disconnectOne = wasAgents, wasWired, wasDisconnect
+-		endFailover, portRollouts, restartCodexApp = wasFailover, wasPort, wasRestart
++		endFailover, endLeftovers, portRollouts, restartCodexApp = wasFailover, wasLeftovers, wasPort, wasRestart
+ 		removeService, autostartOff, removeShortcut, removeScheme, endPII, executable = wasService, wasAutostart, wasShortcut, wasScheme, wasPII, wasExe
+ 	})
+ 	agents = func() []*agent.Agent { return list }
+@@ -41,6 +41,7 @@ func fakes(t *testing.T, list []*agent.Agent, isWired map[string]bool, failing m
+ 		return nil
+ 	}
+ 	endFailover = func() (bool, error) { did = append(did, "failover"); return true, nil }
++	endLeftovers = func() (bool, error) { did = append(did, "leftovers"); return false, nil }
+ 	portRollouts = func(time.Duration) { did = append(did, "rollouts") }
+ 	restartCodexApp = func(context.Context, time.Duration) (int, bool, error) {
+ 		did = append(did, "codex app")
+@@ -89,7 +90,7 @@ func TestRunOrder(t *testing.T) {
+ 
+ 	r := Run(context.Background())
+ 
+-	want := []string{"service", "autostart", "shortcut", "scheme", "pii", "failover", "disconnect codex", "disconnect claude", "rollouts", "codex app"}
++	want := []string{"service", "autostart", "shortcut", "scheme", "pii", "failover", "disconnect codex", "disconnect claude", "leftovers", "rollouts", "codex app"}
+ 	if !slices.Equal(*did, want) {
+ 		t.Fatalf("did %q, want %q", *did, want)
+ 	}
+@@ -140,6 +141,37 @@ func TestRunCodexAppLeft(t *testing.T) {
+ 	}
+ }
+ 
++// What no Disconnect could name (the marks gone with magpie's folder) goes
++// even with no agent connected, says so, and restarts the Codex app's
++// app-server for it alone; one that can't be taken is said.
++func TestRunTakesCodexLeftovers(t *testing.T) {
++	t.Run("taken", func(t *testing.T) {
++		did := fakes(t, nil, map[string]bool{}, nil)
++		endLeftovers = func() (bool, error) { return true, nil }
++		r := Run(context.Background())
++		if !slices.Contains(*did, "codex app") {
++			t.Fatalf("the Codex app not restarted for its leftovers alone: %q", *did)
++		}
++		if len(r.Agents) != 1 || r.Agents[0].What != "Codex's leftover settings" || r.Agents[0].Err != "" {
++			t.Fatalf("agents %+v", r.Agents)
++		}
++	})
++	t.Run("failed", func(t *testing.T) {
++		fakes(t, nil, map[string]bool{}, nil)
++		endLeftovers = func() (bool, error) { return false, errors.New("config.toml: permission denied") }
++		r := Run(context.Background())
++		if r.CodexApp {
++			t.Fatal("the Codex app restarted over a leftover that failed")
++		}
++		if !r.Failed() {
++			t.Fatal("not failed")
++		}
++		if says := strings.Join(r.Says(), "\n"); !strings.Contains(says, "! disconnected Codex's leftover settings: config.toml: permission denied") {
++			t.Fatalf("says:\n%s", says)
++		}
++	})
++}
++
+ // Skills and servers the user's agents use from the Library stay; the
+ // rest of magpie's folder goes.
+ func TestDataKeepsLibraryInUse(t *testing.T) {
+-- 
+2.50.1 (Apple Git-155)
+

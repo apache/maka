@@ -1,0 +1,18 @@
+Ablation A: the moved() check in internal/davsync/stall.go removed (test kept)
+--- FAIL: TestGlobalSwitchDropsTheOldProxyConnections...
+--- FAIL: TestGlobalSwitchDialsTheSyncThroughTheNewProxy (0.02s)
+    stall_test.go:444: after the switch: 1 connections through A, 0 through B, want the sync to dial through B and no new one through A
+FAIL
+(restored -> ok  github.com/yetone/magpie/internal/davsync	1.160s)
+
+Ablation B: the defer c.CloseIdleConnections() in internal/provider/icon.go removed (test kept)
+--- FAIL: TestFetchIconLeavesNoIdleConnection (2.01s)
+    icon_test.go:326: the fetch's connection is still idle: its pool was not closed
+FAIL
+(restored -> ok  github.com/yetone/magpie/internal/provider	1.140s)
+
+Ablation C: netproxy.Watch's move comparison disabled (moved := false && ...) (tests kept)
+--- FAIL: TestGlobalSwitchDropsTheOldProxyConnections (0.03s)
+    netproxy_test.go:324: after the switch: 1 connections through A, 0 through B, want the fresh dial through B and no new one through A
+FAIL
+(restored -> ok  github.com/yetone/magpie/internal/netproxy	1.146s [TestGlobalSwitchDropsTheOldProxyConnections + TestWatchSeesTheGlobalProxyMove])

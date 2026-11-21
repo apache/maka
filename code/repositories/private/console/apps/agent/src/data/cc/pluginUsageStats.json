@@ -1,0 +1,112 @@
+{
+  "scannedAt": "2026-01-14T01:59:40.827Z",
+  "totalFiles": 43,
+  "plugins": {
+    "learning-output-style": {
+      "referenceCount": 8,
+      "files": [
+        "src/data/pluginCatalog.ts",
+        "src/hooks/useSettings.test.ts",
+        "src/lib/presets.ts"
+      ]
+    },
+    "explanatory-output-style": {
+      "referenceCount": 8,
+      "files": [
+        "src/data/pluginCatalog.ts",
+        "src/hooks/useSettings.test.ts",
+        "src/lib/presets.ts"
+      ]
+    },
+    "code-review": {
+      "referenceCount": 11,
+      "files": [
+        "src/data/pluginCatalog.ts",
+        "src/hooks/useSettings.test.ts",
+        "src/lib/presets.ts"
+      ]
+    },
+    "code-simplifier": {
+      "referenceCount": 7,
+      "files": [
+        "src/data/pluginCatalog.ts",
+        "src/lib/presets.ts"
+      ]
+    },
+    "security-guidance": {
+      "referenceCount": 6,
+      "files": [
+        "src/data/pluginCatalog.ts",
+        "src/types/settings.test.ts"
+      ]
+    },
+    "feature-dev": {
+      "referenceCount": 8,
+      "files": [
+        "src/data/pluginCatalog.ts",
+        "src/lib/presets.ts"
+      ]
+    },
+    "frontend-design": {
+      "referenceCount": 8,
+      "files": [
+        "src/data/pluginCatalog.ts",
+        "src/lib/presets.ts"
+      ]
+    },
+    "commit-commands": {
+      "referenceCount": 7,
+      "files": [
+        "src/data/pluginCatalog.ts",
+        "src/lib/presets.ts"
+      ]
+    },
+    "hookify": {
+      "referenceCount": 6,
+      "files": [
+        "src/data/pluginCatalog.ts",
+        "src/lib/presets.ts"
+      ]
+    },
+    "context7": {
+      "referenceCount": 7,
+      "files": [
+        "src/data/pluginCatalog.ts",
+        "src/hooks/useSettings.test.ts",
+        "src/lib/presets.ts"
+      ]
+    },
+    "playwright": {
+      "referenceCount": 4,
+      "files": [
+        "src/data/pluginCatalog.ts"
+      ]
+    },
+    "github": {
+      "referenceCount": 5,
+      "files": [
+        "src/data/pluginCatalog.ts",
+        "src/lib/presets.ts"
+      ]
+    },
+    "vercel": {
+      "referenceCount": 5,
+      "files": [
+        "src/data/pluginCatalog.ts",
+        "src/lib/presets.ts"
+      ]
+    },
+    "ralph-loop": {
+      "referenceCount": 4,
+      "files": [
+        "src/data/pluginCatalog.ts"
+      ]
+    },
+    "ralph-wiggum": {
+      "referenceCount": 4,
+      "files": [
+        "src/data/pluginCatalog.ts"
+      ]
+    }
+  }
+}

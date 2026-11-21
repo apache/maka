@@ -1,0 +1,37 @@
+2024-08-05|ggbdpq|[GYLJG-3946] refactor: sso-sdk版本升级到0.1.2
+2024-06-06|ggbdpq|[GYLJG-3420] feat(sso): 改用新的单点登陆方式
+2024-04-09|ggbdpq|[GYLJG-2890] refactor: 设置shineout组件跟随bbl切换语言
+2024-04-08|ggbdpq|[GYLJG-2890] refactor: 变更变量命名useHooks为useHook
+2024-04-07|ggbdpq|[GYLJG-2890] refactor: 修复bbl中npid属性区别不同开发环境的问题
+2024-04-07|ggbdpq|[GYLJG-2890] refactor: 完善bbl相关设置
+2023-12-08|ggbdpq|[fix-GYLJG-1508] refactor: 优化Table组件重置分页默认值显示
+2023-12-05|ggbdpq|[fix-GYLJG-1508] fix: 点击搜索发送请求,手动重置页码和条数
+2023-11-03|ggbdpq|[GYLJG-1508] refactor: 指令记录查看详情页面去掉更新TraceId字段
+2023-11-03|ggbdpq|[GYLJG-1508] refactor: 优化校验页面匹配动态路由的权限
+2023-11-02|ggbdpq|[GYLJG-1508] refactor: 修复左侧菜单栏收起样式渲染问题
+2023-11-02|ggbdpq|[GYLJG-1508] refactor: 优化左侧菜单的checkActive函数
+2023-10-25|ggbdpq|[GYLJG-1508] style: 样式优化;设备编号校验修正
+2023-10-24|ggbdpq|[GYLJG-1508] style: 修复字段命名大小写
+2023-10-24|ggbdpq|[GYLJG-1508] refactor: 把操作编码改名为指令类型;修复切换页面重置搜索条件；
+2023-10-23|ggbdpq|[GYLJG-1508] style: 修复样式
+2023-10-20|ggbdpq|[GYLJG-1508] refactor: 修复样式问题
+2023-10-20|ggbdpq|[GYLJG-1508] feat: 新增首页和404图像样式
+2023-10-19|ggbdpq|[GYLJG-1508] refactor: 增加注释
+2023-10-19|ggbdpq|[GYLJG-1508] refactor: 修复搜索加载状态,删减不必要的注释代码,修改详情页面样式
+2023-10-19|ggbdpq|[GYLJG-1508] refactor: 列表首列项由ID改为序号;实现登录失效自动跳转到当前页
+2023-10-18|ggbdpq|[GYLJG-1508] refactor: 修改请求序列号字段;增加退出白名单;设置输入框字符限制;修复控制显示
+2023-10-18|ggbdpq|[GYLJG-1508] feat(task-manage): 开发回调指令记录相关页面;修复一些命名和样式问题;
+2023-10-18|ggbdpq|[GYLJG-1508] refactor(device-manage): 修复设备详情页面表单底部固定按钮，下发指令记录状态枚举值
+2023-10-17|ggbdpq|[GYLJG-1508] feat(task-manage): 开发下发指令详情页
+2023-10-17|ggbdpq|[GYLJG-1508] refactor(device-manage): 查漏补缺，优化设备管理相关代码
+2023-10-17|ggbdpq|Merge branch 'main' into GYLJG-1508
+2023-10-17|ggbdpq|[GYLJG-1508] feat(task-manage): 开发下发指令列表;增加dayjs和react-json-view相关依赖;增加处理日期辅助函数;
+2023-10-16|ggbdpq|[GYLJG-1508] refactor(device-manage): 完善页面加载状态;修复切换页面销毁表单值
+2023-10-16|ggbdpq|[GYLJG-1508] fix(device-manage): 规范函数注释和参数类型检查;增加设备详情页面加载状态;修复设备IP表单校验
+2023-10-16|ggbdpq|[GYLJG-1508] fix(device-manage): 修改新增编辑数据类型;修复表单提交传值问题;修复重置搜索条件问题
+2023-10-16|ggbdpq|[GYLJG-1508] fix(device-manage): 新增已存在设备保留当前页面表单数据
+2023-10-13|ggbdpq|[GYLJG-1508] feat(device-manage): 拆分设备IP为4个Input组件;给变量、函数声明增加数据类型、规范代码写法;
+2023-10-12|ggbdpq|[GYLJG-1508] feat(device-manage): 开发新增/编辑/查看详情页；新增表单文本显示组件；修复Table组件过滤传值、分页问题；
+2023-10-12|ggbdpq|Merge branch 'main' into GYLJG-1508
+2023-10-11|ggbdpq|Merge branch 'main' into GYLJG-1508
+2023-10-11|ggbdpq|[GYLJG-1508] feat(device-manage): 更新SearchArea依赖;新增设备管理枚举接口;完善搜索条件业务逻辑

@@ -1,0 +1,75 @@
+---
+name: aws-serverless
+description: Builds, deploys, manages, debugs, configures, and optimizes serverless applications on AWS using Lambda, API Gateway, Step Functions, EventBridge, and SAM/CDK. Covers cold starts, CORS debugging, event source mappings, troubleshooting, concurrency, SnapStart, Powertools, function URLs, EventBridge Scheduler, Lambda layers, and production readiness. Triggers on mentions of Lambda, API Gateway, Step Functions, SAM templates, CDK serverless stacks, DynamoDB stream triggers, SQS event sources, cold starts, timeouts, 502/504 errors, throttling, concurrency, CORS, Powertools, or any event-driven architecture on AWS, even without the word "serverless." Does not apply to EC2, ECS/Fargate containers, or Amplify hosting.
+metadata:
+  version: "4"
+---
+
+# AWS Serverless
+
+Domain expertise for building serverless applications on AWS: Lambda, API Gateway, Step Functions, EventBridge, event source mappings, concurrency, cold starts, deployment, and troubleshooting.
+
+**Works best with** the [AWS MCP server](https://docs.aws.amazon.com/aws-mcp/) — run CLI commands, query CloudWatch, validate configs directly. All guidance also works with standard AWS CLI access.
+
+## Specialized skills — check these first
+
+These cover capabilities and procedures the general references below do **not**. Several are specialized features or step-by-step tested procedures you would otherwise miss. Route to the matching skill before falling back to the references.
+
+### Advanced Lambda compute (easy to overlook)
+
+| Use this skill                   | When the workload involves                                                                                                                                                                                                                                                                                                   |
+| -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **aws-lambda-microvms**          | Strong tenant isolation, sandboxed/untrusted code execution (AI agent code sandboxes, REPLs, notebooks, CI runners), long-lived sessions, suspend/resume with preserved state, port-listening servers (gRPC, WebSocket, custom TCP), Firecracker microVMs, snapshot-resumable compute, up to 8-hour lifetimes                |
+| **aws-lambda-durable-functions** | Durable execution, checkpoint-and-replay, long-running multi-step workflows written as plain code (TS/Python/Java), automatic state persistence, saga pattern in code, human-in-the-loop callbacks, executions up to 1 year, `context.step`/`context.wait`/`context.invoke`, `withDurableExecution`, `durable-execution-sdk` |
+| **aws-lambda-managed-instances** | Lambda Managed Instances (LMI), capacity providers, EC2-backed Lambda, steady high-volume traffic (50M+ req/mo) wanting Savings Plans / Reserved Instance pricing, `PerExecutionEnvironmentMaxConcurrency`, `CapacityProviderConfig`, multi-concurrent execution environments                                                |
+
+### Workflow orchestration
+
+Route here when the user wants to coordinate multiple steps, services, or functions. Triggers include "orchestration", "workflow", "state machine", "multi-step coordination", "coordinate Lambda functions", "durable execution", "pipeline with retries", or intent to build saga/compensation, human-in-the-loop approval, fan-out, or long-running async coordination.
+
+When starting a new orchestration or multi-step workflow, you MUST surface the choice between AWS Step Functions and AWS Lambda Durable Functions before implementing — do not silently pick one. Route on the signals below. When the request names only a generic pattern (saga/compensation, human-in-the-loop, fan-out, or "workflow orchestration") with no technology, present both options and the one-line tradeoff, then let the user decide. Do not lead with the tradeoff caveats when the signals already point to one service.
+
+| Use this skill                   | When the workload involves                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **aws-step-functions**           | Orchestration whose primary work is calling AWS services directly; coordinating non-Lambda compute (ECS/Fargate, Glue, SageMaker, Batch) through native managed integrations; a visual, auditable workflow definition required for compliance, cross-team operational observability, or as a shared contract between teams that do not share a codebase (ASL is the specification, not application code); authoring or editing state machines and Amazon States Language (ASL) — state types, JSONata data transformation, Retry/Catch error handling, `.sync`/`waitForTaskToken` service integrations, Distributed Map, TestState unit testing, JSONPath-to-JSONata migration                                                                 |
+| **aws-lambda-durable-functions** | Code-first orchestration in-process when already building on Lambda (`context.step`/`context.wait`/`context.invoke`, `withDurableExecution`); many fine-grained steps per execution where cumulative Step Functions Standard state-transition cost may be significant — compare Step Functions pricing (Standard vs Express) against Lambda invocation cost at the expected volume before choosing; orchestration steps written in a general-purpose language within the same application codebase (share modules, data types, and test suites with application code); teams applying standard software-engineering practices (unit tests, code review, type checking) to orchestration logic without learning a declarative workflow language |
+
+**Tradeoff (use when either fits):** Durable Functions keeps orchestration in your Lambda codebase; Step Functions externalizes it into a managed, visual state machine with built-in service integrations.
+
+**Security:** Both services persist workflow state and payloads — Step Functions records full input/output in execution history (viewable in the console and, if logging is enabled, CloudWatch Logs). As a baseline, enable execution logging (CloudTrail) and CloudWatch alarms on execution failures, and use least-privilege per-workflow execution roles. Do not pass secrets, tokens, or PII through workflow state; reference them by Secrets Manager/ARN pointer, and apply a customer-managed KMS key to encrypt state when the data is sensitive.
+
+### Event-driven architectures
+
+Route here when the user is designing or operating an event-driven system rather than orchestrating a known sequence of steps. Triggers include "event bus", "event-driven architecture", "pub/sub", "publish/subscribe", "fan-out", "event ordering", "ordered delivery", "FIFO events", "event replay", "replay events", "event retention", "event store", "CloudEvents", "Avro", "Protobuf", "schema registry", "deduplication", "choreography", "decoupling", "asynchronous integration", "event broker", or a central bus shared across teams and accounts.
+
+| Use this skill                   | When the workload involves                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **amazon-eventbridge-event-bus** | A new event-driven workload; a platform team owning a central bus that many teams and accounts publish to and subscribe from; governance of that bus (subscriber control, revocation, per-account throttling, cost allocation, end-to-end observability); open event formats (Avro, Protobuf, CloudEvents) decoded through a schema registry; ordered or FIFO delivery per event group; high fan-out where per-account forwarding cost matters; durable retention and replay of past events into a newly created subscriber; per-subscriber JSONata transformation; deduplication; choreography and decoupling across services; event-driven architecture spanning multiple accounts. **This skill MUST NOT be used for questions regarding the EventBridge classic custom event bus, EventBridge Scheduler, EventBridge Pipes, EventBridge Global Endpoints, the EventBridge Schema Registry, EventBridge API Destinations, or EventBridge Connections.** |
+
+### Step-by-step task procedures (tested CLI SOPs)
+
+| Use this skill                                | For the task                                                                                                                                    |
+| --------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| **connecting-lambda-to-api-gateway**          | Wire an existing Lambda to a new REST/HTTP API: proxy integration, permissions, CORS, throttling, access logging, deployment                    |
+| **connecting-lambda-to-dynamodb**             | Connect Lambda to DynamoDB: IAM execution role, read/write permissions, stream event source mapping                                             |
+| **creating-api-gateway-stage**                | Create an API Gateway stage with CloudWatch logging, X-Ray tracing, throttling, WAF association, and authorization                              |
+| **deploying-custom-domain-rest-api**          | Deploy a Regional REST API with custom domain: ACM cert, Lambda backend, request authorizer, base path mapping, Route 53 DNS                    |
+| **debugging-lambda-timeouts**                 | Systematically diagnose a timing-out Lambda: config, CloudWatch logs/metrics, VPC, cold starts, memory, downstream calls                        |
+| **processing-s3-uploads-with-step-functions** | Deploy an event-driven workflow: S3 upload → EventBridge → Step Functions → Lambda (small files) or Fargate (large files), with VPC/ECR/ECS/IAM |
+
+## Routing (general references in this skill)
+
+| User need                                                                      | Read                                                  |
+| ------------------------------------------------------------------------------ | ----------------------------------------------------- |
+| Building a new serverless app — pattern selection                              | [architecture.md](references/architecture.md)         |
+| Lambda config, cold starts, SnapStart, memory, VPC, layers, Function URLs      | [lambda.md](references/lambda.md)                     |
+| Concurrency (reserved, provisioned, ESM controls)                              | [concurrency.md](references/concurrency.md)           |
+| Event sources (SQS, DynamoDB Streams, SNS, Kinesis), filtering, batch failures | [event-sources.md](references/event-sources.md)       |
+| Step Functions, EventBridge rules/pipes/scheduler                              | [orchestration.md](references/orchestration.md)       |
+| API Gateway quotas, authorizers, WebSocket                                     | [api-gateway.md](references/api-gateway.md)           |
+| SAM/CDK resource types and fast iteration                                      | [deployment.md](references/deployment.md)             |
+| Production readiness, observability, anti-patterns                             | [production.md](references/production.md)             |
+| Debugging an error (exact string → cause → fix)                                | [troubleshooting.md](references/troubleshooting.md)   |
+| Powertools handler template                                                    | [powertools-handler.py](assets/powertools-handler.py) |
+
+**Note:** Reference files contain specific runtime versions, quotas, and feature matrices that change. When precision matters (production, runtime choice, quotas), confirm against current AWS documentation. The references focus on values and gotchas that are easy to get wrong — not on basics.

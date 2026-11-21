@@ -1,0 +1,788 @@
+From 4e7a832f6706a3aaa7548a87513effbde0047815 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Mon, 2 Nov 2026 22:45:50 +0800
+Subject: [PATCH] fix(gateway): salt a relayed Messages reply's tool_use id the
+ client has seen again (#4910)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Claude Code keeps every tool_use id of a session in one Set and drops a
+block whose id it has already seen; a turn whose only block is dropped
+becomes "[Tool use interrupted]", and the agent loops on calls that did
+run (#4910). An upstream that speaks Messages itself and is relayed as it
+came may number its calls' ids by their place in the reply (LiteLLM's
+bridge: fc_0 on every turn), so the id one turn went out under comes again
+on the next, and every later call of the session is dropped.
+
+A relayed reply's tool_use id the client already holds — an assistant
+block of the request the reply answers, or one the reply itself said
+before — now goes out under the mark, the upstream's own id and a fresh
+salt, which nothing the client holds names; an id the client has seen no
+more goes as it came, so an upstream whose ids are its own is relayed
+byte for byte. The answer comes back under the salted id and goes to the
+upstream as the id it gave, on the call and on the result answering it,
+so a strict upstream keeps its own pairing and its prompt cache.
+
+A reply translated from another wire needed nothing: the model's own
+call ids pass through there, one fresh a reply.
+
+Run: TestMessagesRelayedToolUseIDsUniqueAcrossTurns fails on the old
+code with the one fc_0 on both turns and passes with the change;
+TestMessagesRelayedToolUseIDsUniqueInATurn,
+TestMessagesRelayedOwnToolUseIDsUntouched,
+TestMessagesTranslatedToolUseIDsUniqueAcrossTurns green.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gateway/gateway.go                   |  34 +-
+ internal/gateway/messages_tooluse_ids_test.go | 382 ++++++++++++++++++
+ internal/gateway/tool_use_ids.go              | 267 ++++++++++++
+ 3 files changed, 680 insertions(+), 3 deletions(-)
+ create mode 100644 internal/gateway/messages_tooluse_ids_test.go
+ create mode 100644 internal/gateway/tool_use_ids.go
+
+diff --git a/internal/gateway/gateway.go b/internal/gateway/gateway.go
+index 9d59860a6..36365a794 100644
+--- a/internal/gateway/gateway.go
++++ b/internal/gateway/gateway.go
+@@ -5421,8 +5421,9 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
+ 		gather = &gathered{h: http.Header{}, status: http.StatusOK}
+ 		body = withFields(body, map[string]any{"stream": true})
+ 	}
+-	searchFn := false    // Codex's tool search sent as a function
+-	geminiWhole := false // a Gemini client's generateContent
++	searchFn := false            // Codex's tool search sent as a function
++	geminiWhole := false         // a Gemini client's generateContent
++	var toolSeen map[string]bool // the call ids the client holds (tool_use_ids.go)
+ 	// a model that wants its reasoning text back (#388, #1104)
+ 	replay := proto == provider.Responses && (replaysReasoning(model, p.Host()) || replaysReasoning(upstream, p.Host()))
+ 	switch proto {
+@@ -5556,6 +5557,11 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
+ 		geminiWhole = !streamOf(body)
+ 		body = withoutFields(body, "stream")
+ 	case provider.Anthropic:
++		// what the client holds, taken before the upstream gets its own
++		// call ids back below, and those given back to it (tool_use_ids.go,
++		// #4910)
++		toolSeen = clientToolUseIDs(body)
++		body = saltedCallIDsBack(body)
+ 		// Claude Code's advisor, named by magpie's id (advisor.go)
+ 		body = advisorTools(body, p, upstream, wiresOf(r.Context()))
+ 		if p.IsBedrock() {
+@@ -6142,7 +6148,14 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
+ 	if proto == provider.Anthropic {
+ 		thinkSigs = &sigFieldTidy{sse: sse}
+ 	}
+-	// out is what a filter let through, through ids, phases and thinkSigs
++	// and a tool_use id the client has seen again is salted, so Claude
++	// Code's Set of the session keeps both (#4910, tool_use_ids.go)
++	var toolIDs *toolUseIDs
++	if proto == provider.Anthropic {
++		toolIDs = &toolUseIDs{seen: toolSeen, sse: sse}
++	}
++	// out is what a filter let through, through ids, phases, toolIDs and
++	// thinkSigs
+ 	out := func(b []byte) []byte {
+ 		if ids != nil {
+ 			b = ids.write(b)
+@@ -6150,6 +6163,9 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
+ 		if phases != nil {
+ 			b = phases.write(b)
+ 		}
++		if toolIDs != nil {
++			b = toolIDs.write(b)
++		}
+ 		if thinkSigs != nil {
+ 			b = thinkSigs.write(b)
+ 		}
+@@ -6264,6 +6280,9 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
+ 			if phases != nil {
+ 				out = phases.write(out)
+ 			}
++			if toolIDs != nil {
++				out = toolIDs.write(out)
++			}
+ 			if thinkSigs != nil {
+ 				out = thinkSigs.write(out)
+ 			}
+@@ -6371,6 +6390,15 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
+ 	if phases != nil {
+ 		write(phases.flush())
+ 	}
++	if toolIDs != nil {
++		// the salted tail goes on through thinkSigs, which holds a whole
++		// reply until its own drain below
++		b := toolIDs.flush()
++		if thinkSigs != nil {
++			b = thinkSigs.write(b)
++		}
++		write(b)
++	}
+ 	if thinkSigs != nil {
+ 		write(thinkSigs.flush())
+ 	}
+diff --git a/internal/gateway/messages_tooluse_ids_test.go b/internal/gateway/messages_tooluse_ids_test.go
+new file mode 100644
+index 000000000..74dcd3054
+--- /dev/null
++++ b/internal/gateway/messages_tooluse_ids_test.go
+@@ -0,0 +1,382 @@
++package gateway
++
++import (
++	"bufio"
++	"encoding/json"
++	"fmt"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"sync"
++	"testing"
++
++	"github.com/yetone/magpie/internal/provider"
++)
++
++// toolsUpstream is a Responses relay in front of a Chat model (LiteLLM's
++// bridge, #4910): every ask is answered with one Bash call whose call_id is
++// fresh each reply, streamed the way Responses does.
++type toolsUpstream struct {
++	mu   sync.Mutex
++	n    int
++	got  []string
++	item string // the id field of the function_call item, as the bridge writes it
++}
++
++func (u *toolsUpstream) ServeHTTP(w http.ResponseWriter, r *http.Request) {
++	var b []byte
++	buf := make([]byte, 1<<20)
++	n, _ := r.Body.Read(buf)
++	b = buf[:n]
++	u.mu.Lock()
++	u.n++
++	call := fmt.Sprintf("call_00_%05d", u.n)
++	u.got = append(u.got, string(b))
++	u.mu.Unlock()
++	w.Header().Set("Content-Type", "text/event-stream")
++	item := u.item
++	if item == "" {
++		item = call // the bridge writes the model's own id on the item too
++	}
++	io := func(s string) { fmt.Fprint(w, s) }
++	io("data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_" + call + "\",\"status\":\"in_progress\"}}\n\n")
++	io("data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"function_call\",\"id\":\"" + item + "\",\"call_id\":\"" + call + "\",\"name\":\"Bash\",\"arguments\":\"\"}}\n\n")
++	io("data: {\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"" + item + "\",\"delta\":\"{\\\"command\\\":\\\"date\\\"}\"}\n\n")
++	io("data: {\"type\":\"response.function_call_arguments.done\",\"item_id\":\"" + item + "\",\"arguments\":\"{\\\"command\\\":\\\"date\\\"}\"}\n\n")
++	io("data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"function_call\",\"id\":\"" + item + "\",\"call_id\":\"" + call + "\",\"name\":\"Bash\",\"arguments\":\"{\\\"command\\\":\\\"date\\\"}\"}}\n\n")
++	io("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_" + call + "\",\"status\":\"completed\",\"output\":[{\"type\":\"function_call\",\"id\":\"" + item + "\",\"call_id\":\"" + call + "\",\"name\":\"Bash\",\"arguments\":\"{\\\"command\\\":\\\"date\\\"}\"}],\"usage\":{\"input_tokens\":5,\"output_tokens\":3}}}\n\n")
++}
++
++func (u *toolsUpstream) asked() []string {
++	u.mu.Lock()
++	defer u.mu.Unlock()
++	return append([]string(nil), u.got...)
++}
++
++// messagesUpstream is an upstream that speaks Messages itself, and answers
++// every ask with Bash calls under the ids a bridge numbers by their place
++// in the reply (#4910): fc_0 for the first block of every reply, so the
++// same id on every turn of a session. minted is what each reply names its
++// calls.
++type messagesUpstream struct {
++	mu      sync.Mutex
++	n       int
++	got     []string
++	minted  []string                // what every reply names its calls; none, fc_0 each turn
++	perTurn func(turn int) []string // or fresh ids of its own, one turn to the next
++}
++
++func (u *messagesUpstream) ids() []string {
++	if u.perTurn != nil {
++		return u.perTurn(u.n)
++	}
++	if len(u.minted) > 0 {
++		return u.minted
++	}
++	return []string{"fc_0"}
++}
++
++func (u *messagesUpstream) ServeHTTP(w http.ResponseWriter, r *http.Request) {
++	var b []byte
++	buf := make([]byte, 1<<20)
++	n, _ := r.Body.Read(buf)
++	b = buf[:n]
++	u.mu.Lock()
++	u.n++
++	turn := u.n
++	u.got = append(u.got, string(b))
++	u.mu.Unlock()
++	w.Header().Set("Content-Type", "text/event-stream")
++	if !streamOf(b) {
++		// a reply that came whole: its content carries the calls directly
++		var content []string
++		for _, id := range u.ids() {
++			content = append(content, `{"type":"tool_use","id":"`+id+`","name":"Bash","input":{"command":"date"}}`)
++		}
++		w.Header().Set("Content-Type", "application/json")
++		fmt.Fprint(w, `{"id":"msg_l`+fmt.Sprint(turn)+`","type":"message","role":"assistant","model":"m","content":[`+strings.Join(content, ",")+`],"stop_reason":"tool_use","usage":{"input_tokens":5,"output_tokens":3}}`)
++		return
++	}
++	io := func(s string) { fmt.Fprint(w, s) }
++	io("event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_l" + fmt.Sprint(turn) + "\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"m\",\"content\":[],\"usage\":{\"input_tokens\":5,\"output_tokens\":0}}}\n\n")
++	for i, id := range u.ids() {
++		io("event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":" + fmt.Sprint(i) + ",\"content_block\":{\"type\":\"tool_use\",\"id\":\"" + id + "\",\"name\":\"Bash\",\"input\":{}}}\n\n")
++		io("event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":" + fmt.Sprint(i) + ",\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"command\\\":\\\"date\\\"}\"}}\n\n")
++		io("event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":" + fmt.Sprint(i) + "}\n\n")
++	}
++	io("event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"output_tokens\":3}}\n\n")
++	io("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
++}
++
++func (u *messagesUpstream) asked() []string {
++	u.mu.Lock()
++	defer u.mu.Unlock()
++	return append([]string(nil), u.got...)
++}
++
++// messageToolUseIDs is the ids of every tool_use block of a Messages reply,
++// streamed or whole, in the order the reply said them.
++func messageToolUseIDs(t *testing.T, body string) []string {
++	t.Helper()
++	var ids []string
++	sc := bufio.NewScanner(strings.NewReader(body))
++	sc.Buffer(make([]byte, 1<<20), 1<<20)
++	for sc.Scan() {
++		data, ok := strings.CutPrefix(sc.Text(), "data: ")
++		if !ok {
++			continue
++		}
++		var ev struct {
++			ContentBlock struct {
++				Type string
++				ID   string
++			} `json:"content_block"`
++		}
++		if json.Unmarshal([]byte(data), &ev) == nil && ev.ContentBlock.Type == "tool_use" && ev.ContentBlock.ID != "" {
++			ids = append(ids, ev.ContentBlock.ID)
++		}
++	}
++	if len(ids) > 0 {
++		return ids
++	}
++	var m struct {
++		Content []struct {
++			Type string
++			ID   string
++		}
++	}
++	json.Unmarshal([]byte(body), &m)
++	for _, p := range m.Content {
++		if p.Type == "tool_use" && p.ID != "" {
++			ids = append(ids, p.ID)
++		}
++	}
++	if len(ids) == 0 {
++		t.Fatalf("no tool_use in the reply: %s", body)
++	}
++	return ids
++}
++
++// callAndResults asks for a call on a turn of its own, then answers it the
++// way Claude Code does, under the id it was given, and asks again on a new
++// prompt: the ids the client saw on the first and the second reply, the
++// id its answer went back under, and the upstream's second request.
++func callAndResults(t *testing.T, s http.Handler, up *messagesUpstream, model string) (first, second, answered string) {
++	t.Helper()
++	post := func(prompt string, history string) string {
++		rec := httptest.NewRecorder()
++		body := `{"model":"` + model + `","max_tokens":100,"stream":true,` +
++			`"tools":[{"name":"Bash","description":"run","input_schema":{"type":"object","properties":{"command":{"type":"string"}},"required":["command"]}}],` +
++			`"messages":[{"role":"user","content":"Call the Bash tool with command: ` + prompt + `"}` + history + `]}`
++		s.ServeHTTP(rec, httptest.NewRequest("POST", "/v1/messages", strings.NewReader(body)))
++		if rec.Code != 200 {
++			t.Fatalf("%d %s", rec.Code, rec.Body.String())
++		}
++		return rec.Body.String()
++	}
++	turns := func() int {
++		up.mu.Lock()
++		defer up.mu.Unlock()
++		return up.n
++	}
++	firstIDs := messageToolUseIDs(t, post("echo alpha", ""))
++	first = firstIDs[0]
++	before := turns()
++	quoted, _ := json.Marshal(first)
++	secondIDs := messageToolUseIDs(t, post("echo beta", `,
++ {"role":"assistant","content":[{"type":"tool_use","id":`+string(quoted)+`,"name":"Bash","input":{"command":"date"}}]},
++ {"role":"user","content":[{"type":"tool_result","tool_use_id":`+string(quoted)+`,"content":"Thu Oct  8 10:00:00 CST 2026"}]}`))
++	second = secondIDs[0]
++	if turns() != before+1 {
++		t.Fatalf("the answer made %d requests at the upstream, want 1", turns()-before)
++	}
++	// the answer to the first call goes back under the id the client was
++	// given: on the reply it answers and on the result answering it
++	body := func() string {
++		up.mu.Lock()
++		defer up.mu.Unlock()
++		return up.got[len(up.got)-1]
++	}()
++	var q struct {
++		Messages []struct {
++			Content json.RawMessage `json:"content"`
++		} `json:"messages"`
++	}
++	if err := json.Unmarshal([]byte(body), &q); err != nil {
++		t.Fatalf("upstream request: %v: %s", err, body)
++	}
++	var uses, results []string
++	for _, m := range q.Messages {
++		var blocks []struct {
++			Type      string `json:"type"`
++			ID        string `json:"id"`
++			ToolUseID string `json:"tool_use_id"`
++		}
++		if json.Unmarshal(m.Content, &blocks) != nil {
++			continue // a content of text alone
++		}
++		for _, b := range blocks {
++			switch b.Type {
++			case "tool_use":
++				uses = append(uses, b.ID)
++			case "tool_result":
++				results = append(results, b.ToolUseID)
++			}
++		}
++	}
++	if len(uses) != 1 || len(results) != 1 {
++		t.Fatalf("upstream request carried calls %q, results %q: %s", uses, results, body)
++	}
++	return first, second, uses[0] + " " + results[0]
++}
++
++// A tool call on a turn of its own, then one on a later turn, at an
++// upstream that speaks Messages itself and is relayed as it came: whatever
++// bridge numbered the call's id, the client may not see the one id twice
++// across a session. Claude Code keeps every tool_use id of a session in one
++// Set and drops a block whose id it has seen again (#4910): the whole later
++// turn then collapses into "[Tool use interrupted]". The first id passes as
++// it came, the second goes out salted, and the upstream that made the call
++// gets its own back on the result answering it.
++func TestMessagesRelayedToolUseIDsUniqueAcrossTurns(t *testing.T) {
++	fresh(t)
++	up := &messagesUpstream{}
++	srv := httptest.NewServer(up)
++	t.Cleanup(srv.Close)
++	if err := provider.Save(provider.Provider{ID: "bridge", Name: "Bridge", Key: "k", Models: []string{"ds-v4"}, Anthropic: srv.URL}); err != nil {
++		t.Fatal(err)
++	}
++	first, second, answered := callAndResults(t, New().Handler(), up, "bridge/ds-v4")
++	if first != "fc_0" {
++		t.Fatalf("the first turn's id %q was changed; an id the client has seen no more goes as it came", first)
++	}
++	if second == first {
++		t.Fatalf("both turns carried the one tool_use id %q; Claude Code drops the second as one it has seen (#4910)", first)
++	}
++	if want := "fc_0 fc_0"; answered != want {
++		t.Fatalf("the answer went back under %q, want %q: the upstream gets the id it gave, on the call and on the result", answered, want)
++	}
++}
++
++// Two calls of one reply that a bridge numbered alike are two to the
++// client, or the second is dropped the same as a later turn's (#4910).
++func TestMessagesRelayedToolUseIDsUniqueInATurn(t *testing.T) {
++	fresh(t)
++	up := &messagesUpstream{minted: []string{"fc_0", "fc_0"}}
++	srv := httptest.NewServer(up)
++	t.Cleanup(srv.Close)
++	if err := provider.Save(provider.Provider{ID: "bridge", Name: "Bridge", Key: "k", Models: []string{"ds-v4"}, Anthropic: srv.URL}); err != nil {
++		t.Fatal(err)
++	}
++	rec := httptest.NewRecorder()
++	body := `{"model":"bridge/ds-v4","max_tokens":100,"stream":true,` +
++		`"tools":[{"name":"Bash","description":"run","input_schema":{"type":"object","properties":{"command":{"type":"string"}},"required":["command"]}}],` +
++		`"messages":[{"role":"user","content":"Call the Bash tool twice"}]}`
++	New().Handler().ServeHTTP(rec, httptest.NewRequest("POST", "/v1/messages", strings.NewReader(body)))
++	if rec.Code != 200 {
++		t.Fatalf("%d %s", rec.Code, rec.Body.String())
++	}
++	ids := messageToolUseIDs(t, rec.Body.String())
++	if len(ids) != 2 || ids[0] == ids[1] {
++		t.Fatalf("one reply carried tool_use ids %q, want two different ones", ids)
++	}
++}
++
++// An upstream whose ids are its own, fresh one turn to the next, is
++// relayed as it came: no id changes on the way out, and the answer goes
++// back under it untouched.
++func TestMessagesRelayedOwnToolUseIDsUntouched(t *testing.T) {
++	fresh(t)
++	up := &messagesUpstream{perTurn: func(turn int) []string {
++		return []string{fmt.Sprintf("toolu_01A09q90qw90lq9178%02dlq9", turn)}
++	}}
++	srv := httptest.NewServer(up)
++	t.Cleanup(srv.Close)
++	if err := provider.Save(provider.Provider{ID: "bridge", Name: "Bridge", Key: "k", Models: []string{"ds-v4"}, Anthropic: srv.URL}); err != nil {
++		t.Fatal(err)
++	}
++	first, second, answered := callAndResults(t, New().Handler(), up, "bridge/ds-v4")
++	one, two := "toolu_01A09q90qw90lq917801lq9", "toolu_01A09q90qw90lq917802lq9"
++	if first != one || second != two || answered != one+" "+one {
++		t.Fatalf("an upstream's own ids went out %q and %q and were answered %q; they go as they came", first, second, answered)
++	}
++}
++
++// A tool call on a turn of its own, then one on a later turn, translated
++// from a Responses upstream (a relay in front of LiteLLM's): the ids are
++// the model's own there already, one fresh a reply.
++func TestMessagesTranslatedToolUseIDsUniqueAcrossTurns(t *testing.T) {
++	for _, c := range []struct {
++		name string
++		item string // the function_call item's own id field
++	}{
++		{"item id like its call id", ""},
++		{"item id the bridge numbered", "fc_0"},
++	} {
++		t.Run(c.name, func(t *testing.T) {
++			fresh(t)
++			up := &toolsUpstream{item: c.item}
++			srv := httptest.NewServer(up)
++			t.Cleanup(srv.Close)
++			if err := provider.Save(provider.Provider{ID: "litellm", Name: "LiteLLM", Key: "k", Models: []string{"ds-v4"}, Responses: srv.URL + "/v1"}); err != nil {
++				t.Fatal(err)
++			}
++			s := New().Handler()
++			post := func(prompt string) string {
++				rec := httptest.NewRecorder()
++				body := `{"model":"litellm/ds-v4","max_tokens":100,"stream":true,` +
++					`"tools":[{"name":"Bash","description":"run","input_schema":{"type":"object","properties":{"command":{"type":"string"}},"required":["command"]}}],` +
++					`"messages":[{"role":"user","content":"Call the Bash tool with command: ` + prompt + `"}]}`
++				s.ServeHTTP(rec, httptest.NewRequest("POST", "/v1/messages", strings.NewReader(body)))
++				if rec.Code != 200 {
++					t.Fatalf("%d %s", rec.Code, rec.Body.String())
++				}
++				return rec.Body.String()
++			}
++			first := messageToolUseIDs(t, post("echo alpha"))[0]
++			second := messageToolUseIDs(t, post("echo beta"))[0]
++			if first == second {
++				t.Fatalf("both turns carried the one tool_use id %q (#4910)", first)
++			}
++		})
++	}
++}
++
++// The same disease in a reply that came whole, which the relay hands on as
++// one JSON body: an id the client holds goes out salted there too (#4910).
++func TestMessagesRelayedWholeToolUseIDsUniqueAcrossTurns(t *testing.T) {
++	fresh(t)
++	up := &messagesUpstream{}
++	srv := httptest.NewServer(up)
++	t.Cleanup(srv.Close)
++	if err := provider.Save(provider.Provider{ID: "bridge", Name: "Bridge", Key: "k", Models: []string{"ds-v4"}, Anthropic: srv.URL}); err != nil {
++		t.Fatal(err)
++	}
++	s := New().Handler()
++	ask := func(prompt string, history string) string {
++		rec := httptest.NewRecorder()
++		body := `{"model":"bridge/ds-v4","max_tokens":100,` +
++			`"tools":[{"name":"Bash","description":"run","input_schema":{"type":"object","properties":{"command":{"type":"string"}},"required":["command"]}}],` +
++			`"messages":[{"role":"user","content":"Call the Bash tool with command: ` + prompt + `"}` + history + `]}`
++		s.ServeHTTP(rec, httptest.NewRequest("POST", "/v1/messages", strings.NewReader(body)))
++		if rec.Code != 200 {
++			t.Fatalf("%d %s", rec.Code, rec.Body.String())
++		}
++		return rec.Body.String()
++	}
++	first := messageToolUseIDs(t, ask("echo alpha", ""))
++	second := messageToolUseIDs(t, ask("echo beta", `,
++ {"role":"assistant","content":[{"type":"tool_use","id":"fc_0","name":"Bash","input":{"command":"date"}}]},
++ {"role":"user","content":[{"type":"tool_result","tool_use_id":"fc_0","content":"Thu Oct  8 10:00:00 CST 2026"}]}`))
++	if len(first) != 1 || first[0] != "fc_0" {
++		t.Fatalf("the first turn's id %q was changed; an id the client has seen no more goes as it came", first)
++	}
++	if second[0] == first[0] {
++		t.Fatalf("both turns carried the one tool_use id %q (#4910)", first)
++	}
++	// and the whole reply is still a whole reply the client can parse
++	var m map[string]any
++	if err := json.Unmarshal([]byte(ask("echo gamma", "")), &m); err != nil {
++		t.Fatalf("a whole reply came back as %v: %s", err, ask("echo gamma", ""))
++	}
++}
+diff --git a/internal/gateway/tool_use_ids.go b/internal/gateway/tool_use_ids.go
+new file mode 100644
+index 000000000..260c7c5b6
+--- /dev/null
++++ b/internal/gateway/tool_use_ids.go
+@@ -0,0 +1,267 @@
++package gateway
++
++import (
++	"bytes"
++	"encoding/base64"
++	"encoding/json"
++	"strings"
++	"unicode/utf8"
++
++	"github.com/tidwall/gjson"
++)
++
++// Claude Code keeps every tool_use id of a session in one Set, and drops a
++// block whose id it has already seen; a turn whose only block is dropped
++// becomes the placeholder "[Tool use interrupted]" (#4910). An upstream
++// that speaks Messages itself and is relayed as it came may number its
++// calls' ids by their place in the reply (LiteLLM's bridge: fc_0 on every
++// turn), so the id the client saw on one turn comes again on the next, and
++// every later call of the session is lost. A reply whose tool_use id is one
++// the client already holds — an assistant block of the request the reply
++// answers, or one the reply itself said before it — goes out under the
++// mark, the upstream's own id and a fresh salt (saltCallID), which nothing
++// the client holds names; the answer comes back under the salted id and
++// goes to the upstream as the id it gave (saltedCallIDsBack). An id the
++// client has seen no more goes as it came, so an upstream whose ids are its
++// own is relayed byte for byte.
++
++// saltCallID is id for a Messages client, salted so that no two replies of
++// a session make it alike: the mark and the base64url of the id, a NUL and
++// the salt, which unsaltCallID turns back into the id alone.
++func saltCallID(id, salt string) string {
++	return anthropicIDMark + base64.RawURLEncoding.EncodeToString([]byte(id+"\x00"+salt))
++}
++
++// unsaltCallID is the id saltCallID was given, and whether it was one. An
++// id that wasn't — a client's own, or one another mark holds — is none.
++func unsaltCallID(id string) (string, bool) {
++	if !strings.HasPrefix(id, anthropicIDMark) || !safeIDChars.MatchString(id) {
++		return "", false
++	}
++	raw, err := base64.RawURLEncoding.DecodeString(id[len(anthropicIDMark):])
++	if err != nil || !utf8.Valid(raw) {
++		return "", false
++	}
++	at := bytes.IndexByte(raw, 0)
++	if at <= 0 || at == len(raw)-1 {
++		return "", false // no salt, or no id
++	}
++	return string(raw[:at]), true
++}
++
++// clientToolUseIDs is every tool_use id of a Messages request's assistant
++// turns: what the client holds, and would drop a reply's block over saying
++// again (#4910).
++func clientToolUseIDs(body []byte) map[string]bool {
++	if !bytes.Contains(body, toolUseType) {
++		return nil
++	}
++	var q struct {
++		Messages []struct {
++			Content json.RawMessage `json:"content"`
++		} `json:"messages"`
++	}
++	if decodeJSON(body, &q) != nil {
++		return nil
++	}
++	var seen map[string]bool
++	for _, m := range q.Messages {
++		var blocks []struct {
++			Type string `json:"type"`
++			ID   string `json:"id"`
++		}
++		if decodeJSON(m.Content, &blocks) != nil {
++			continue // a content of text alone, or a string
++		}
++		for _, b := range blocks {
++			if b.Type == "tool_use" && b.ID != "" {
++				if seen == nil {
++					seen = map[string]bool{}
++				}
++				seen[b.ID] = true
++			}
++		}
++	}
++	return seen
++}
++
++// saltedCallIDsBack gives a Messages request the ids the upstream made: an
++// id that went out salted comes back as the client holds it, and the
++// upstream that made the call gets its own again, on the call and on the
++// result answering it. The rest goes as it came.
++func saltedCallIDsBack(body []byte) []byte {
++	if !bytes.Contains(body, []byte(`"`+anthropicIDMark)) {
++		return body
++	}
++	var reply map[string]json.RawMessage
++	if decodeJSON(body, &reply) != nil || reply == nil {
++		return body
++	}
++	var msgs []json.RawMessage
++	if decodeJSON(reply["messages"], &msgs) != nil {
++		return body
++	}
++	changed := false
++	for i, m := range msgs {
++		var one map[string]json.RawMessage
++		if decodeJSON(m, &one) != nil || one == nil {
++			continue
++		}
++		var blocks []map[string]json.RawMessage
++		if decodeJSON(one["content"], &blocks) != nil {
++			continue
++		}
++		mended := false
++		for _, b := range blocks {
++			for _, field := range []string{"id", "tool_use_id"} {
++				var id string
++				if decodeJSON(b[field], &id) != nil || id == "" {
++					continue
++				}
++				raw, ok := unsaltCallID(id)
++				if !ok {
++					continue
++				}
++				b[field], _ = marshalPlain(raw)
++				mended, changed = true, true
++			}
++		}
++		if mended {
++			one["content"], _ = marshalPlain(blocks)
++			msgs[i], _ = marshalPlain(one)
++		}
++	}
++	if !changed {
++		return body
++	}
++	reply["messages"], _ = marshalPlain(msgs)
++	nb, err := marshalPlain(reply)
++	if err != nil {
++		return body
++	}
++	return nb
++}
++
++// toolUseType is the kind of block whose id the client holds against a
++// reply's own.
++var toolUseType = []byte(`"tool_use"`)
++
++// toolUseIDs salts the tool_use ids of a Messages reply relayed as it came:
++// one the client already holds, or one this reply itself has said, goes out
++// salted, so no block of the session names another's id again (#4910). A
++// line that names no tool_use, or an id the client holds no more, passes as
++// it came; a reply that isn't a stream is held whole and gone through at
++// the end.
++type toolUseIDs struct {
++	seen map[string]bool // the client's, and this reply's own, so far
++	sse  bool
++	buf  []byte
++}
++
++func (t *toolUseIDs) write(b []byte) []byte {
++	t.buf = append(t.buf, b...)
++	if !t.sse {
++		return nil
++	}
++	out, rest := tidyEvents(t.buf, t.event)
++	t.buf = rest
++	return out
++}
++
++func (t *toolUseIDs) flush() []byte {
++	b := t.buf
++	t.buf = nil
++	if !t.sse {
++		return t.whole(b)
++	}
++	// what events remain go as they came, the reply may end inside one
++	out, rest := tidyEvents(b, t.event)
++	return append(out, rest...)
++}
++
++func (t *toolUseIDs) event(ev []byte) []byte {
++	data := eventData(ev)
++	if len(data) == 0 || !bytes.Contains(data, toolUseType) || !gjson.ValidBytes(data) {
++		return ev
++	}
++	e := gjson.ParseBytes(data)
++	if e.Get("type").String() != "content_block_start" ||
++		e.Get("content_block.type").String() != "tool_use" {
++		return ev
++	}
++	id := e.Get("content_block.id").String()
++	if id == "" {
++		return ev
++	}
++	if !t.seen[id] {
++		if t.seen == nil {
++			t.seen = map[string]bool{}
++		}
++		t.seen[id] = true
++		return ev
++	}
++	salted := saltCallID(id, newID())
++	var m map[string]any
++	if decodeNumbers(data, &m) != nil {
++		return ev
++	}
++	if cb, _ := m["content_block"].(map[string]any); cb != nil {
++		cb["id"] = salted
++	} else {
++		return ev
++	}
++	nd, err := marshalPlain(m)
++	if err != nil {
++		return ev
++	}
++	if t.seen == nil {
++		t.seen = map[string]bool{}
++	}
++	t.seen[salted] = true
++	return withData(ev, nd)
++}
++
++// whole is a reply that came whole: the tool_use ids of its content the
++// client already holds, or an earlier block of the reply said, go out
++// salted.
++func (t *toolUseIDs) whole(b []byte) []byte {
++	if !bytes.Contains(b, toolUseType) {
++		return b
++	}
++	var reply map[string]json.RawMessage
++	if decodeJSON(b, &reply) != nil || reply == nil {
++		return b
++	}
++	var blocks []map[string]json.RawMessage
++	if decodeJSON(reply["content"], &blocks) != nil {
++		return b
++	}
++	changed := false
++	for _, cb := range blocks {
++		var typ, id string
++		if decodeJSON(cb["type"], &typ) != nil || typ != "tool_use" {
++			continue
++		}
++		if decodeJSON(cb["id"], &id) != nil || id == "" {
++			continue
++		}
++		if !t.seen[id] {
++			if t.seen == nil {
++				t.seen = map[string]bool{}
++			}
++			t.seen[id] = true
++			continue
++		}
++		cb["id"], _ = marshalPlain(saltCallID(id, newID()))
++		changed = true
++	}
++	if !changed {
++		return b
++	}
++	reply["content"], _ = marshalPlain(blocks)
++	nb, err := marshalPlain(reply)
++	if err != nil {
++		return b
++	}
++	return nb
++}
+-- 
+2.50.1 (Apple Git-155)
+

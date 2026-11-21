@@ -1,0 +1,51 @@
+{
+  "ordinary_request": {
+    "method": "POST",
+    "path": "/backend-api/codex/responses",
+    "body": "{\"model\":\"gpt-5.5\",\"stream\":true,\"input\":\"hi\"}"
+  },
+  "compact_request": {
+    "method": "POST",
+    "path": "/backend-api/codex/responses/compact",
+    "body": "{\"model\":\"gpt-5.5\",\"input\":\"hi\"}"
+  },
+  "red_key_refused_upstream": {
+    "status": 401,
+    "body": "{\"error\":{\"message\":\"invalid_api_key\"}}"
+  },
+  "red_empty_failure_upstream": {
+    "status": 500,
+    "body": ""
+  },
+  "protective_cases": [
+    {
+      "name": "api-key-refused",
+      "auth": "Bearer sk-synthetic",
+      "status": 401,
+      "body": "{\"error\":{\"message\":\"invalid_api_key\"}}"
+    },
+    {
+      "name": "api-key-empty-failure",
+      "auth": "Bearer sk-synthetic",
+      "status": 500,
+      "body": ""
+    },
+    {
+      "name": "chatgpt-empty-failure",
+      "auth": "Bearer chatgpt-token",
+      "status": 500,
+      "body": ""
+    },
+    {
+      "name": "chatgpt-refused",
+      "auth": "Bearer chatgpt-token",
+      "status": 403,
+      "body": "{\"error\":{\"message\":\"denied\"}}"
+    }
+  ],
+  "prior_turn_reply": "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"usage\":{\"input_tokens\":4,\"output_tokens\":1}}}\n\n",
+  "notes": [
+    "Synthetic local fixtures, not captured live service traffic",
+    "CodexPath is /backend-api/codex on the fixed main"
+  ]
+}

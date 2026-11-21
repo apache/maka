@@ -1,0 +1,31 @@
+{
+  "name": "webink-by-ai",
+  "version": "0.4.1",
+  "description": "WebInk - 智能网页转Markdown工具 (逆向工程还原)",
+  "author": "AI Reverse Engineering",
+  "license": "MIT",
+  "scripts": {
+    "build": "tsc",
+    "build:watch": "tsc --watch",
+    "type-check": "tsc --noEmit",
+    "lint": "eslint src --ext .ts",
+    "format": "prettier --write \"src/**/*.ts\"",
+    "copy:dist": "npm run copy:manifest && npm run copy:assets && npm run copy:source",
+    "copy:manifest": "cp manifest.json dist/",
+    "copy:assets": "cp -r icons _locales dist/ && cp -r ../webink-source-code/*.png dist/ 2>/dev/null || true",
+    "copy:source": "mkdir -p dist/static && cp -r ../webink-source-code/static/* dist/static/ 2>/dev/null || true",
+    "build:all": "npm run build && npm run copy:dist"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.0.254",
+    "@types/node": "^20.10.0",
+    "typescript": "^5.3.3"
+  },
+  "dependencies": {
+    "@plasmo-core": "latest",
+    "turndown": "^7.1.2",
+    "@mozilla/readability": "^0.5.0",
+    "turndown-plugin-gfm": "^1.0.2",
+    "tldts": "^6.1.0"
+  }
+}

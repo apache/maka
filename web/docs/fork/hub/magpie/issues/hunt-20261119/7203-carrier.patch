@@ -1,0 +1,457 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Thu, 19 Nov 2026 23:53:23 +0800
+Subject: [PATCH] agent: grok compacts by the window it is given (#7203)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Released Grok Build compacts at 85% of context_window and reads no
+auto_compact_threshold_percent off a [model."<id>"] table: 1.0.89 and
+1.0.91 parse the key and never act on it (0xRichardH's #7203: a table
+told 27% sat at 72% of its window un-compacted and first compacted at
+the default), so 4f94b8a8's percent never reached the resolver and Long
+conversations went nowhere until Grok's own 85% — a 1M model held to
+300K compacted near 850K.
+
+- The window is the one knob: grokWindow places it for where Long
+  conversations compacts, rounded up so Grok never compacts before that
+  size and never over the model's own, where Grok's 85% is the closest
+  it can come (300K becomes 352942, 85% of which is 300K).
+- magpie writes no auto_compact_threshold_percent of its own: with the
+  window placed for it, one of magpie's would move the very compaction
+  it names if a Grok that reads it ever ships. One 4f94b8a8 wrote is
+  dropped as the tables are rewritten, one the user set stays.
+- A [session] percent, the user's for every model, still keeps the
+  windows the models' own, and a window equal to the model's whole one
+  is a magpie's now (4f94b8a8 gave every model its whole window), so a
+  config of that vintage is placed on its next sync.
+
+What was run: gofmt -l on the changed files (nothing); go vet on
+darwin/linux nogui and windows, clean; go build, GOOS=windows go build
+and GOOS=linux go build -tags nogui, all built; go test -tags nogui
+-count=1 -run 'TestGrok' ./internal/agent/ green, and
+TestGrokCompactsByTheWindowItIsGiven red without the change (windows
+pro 1000000, flash 200000, want 352942 and 200000).
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ docs/subsystems/agent-wiring.md |   2 +-
+ internal/agent/grok.go          |  86 +++++++++++--------
+ internal/agent/grok_test.go     | 144 +++++++++++++++++++++++---------
+ internal/settings/settings.go   |   3 +-
+ 4 files changed, 159 insertions(+), 76 deletions(-)
+
+diff --git a/docs/subsystems/agent-wiring.md b/docs/subsystems/agent-wiring.md
+index 3a8e09a08..5300fc2ff 100644
+--- a/docs/subsystems/agent-wiring.md
++++ b/docs/subsystems/agent-wiring.md
+@@ -128,7 +128,7 @@ something else shows up as drift.
+ - NewMax (newmax.cc, an Electron app on the Claude Agent SDK) keeps its settings as JSON in the row `app` of the `settings` table of `newmax.db`, a SQLite database in WAL mode in `$NEWMAX_USER_DATA_DIR`, else `~/.newmax` on every system (`newMax` in [`newmax.go`](../../internal/agent/newmax.go); its main bundle's `configureAppDataPaths`, `loadPersistedAppSettings` and the renderer's `mergeProviders`, v1.1.22). magpie adds one entry to `providers` in the shape NewMax's own import writes, `id: magpie-gateway` (its own preset is `magpie`, its import's ids hold `%3A`), `apiFormat: anthropic` at the gateway's root (NewMax appends `/v1/messages`) with `ANTHROPIC_AUTH_TOKEN` and a key naming NewMax, at most 20 models (`MAX_MODELS`) as `models` and `enabledModels` with their context windows, and its id at the end of `providerOrder`. The row is edited in place in one immediate transaction, so every other byte stays; the user's `name` and `enabled` for magpie's entry and the fields NewMax adds to it stay through a sync, and a sync with nothing to change doesn't write. A row that isn't a JSON object, or whose `providers` or `providerOrder` isn't a list, is left alone. With no row (NewMax at its defaults), magpie writes one with its entry alone, as NewMax lays its defaults and presets under the row; with no database yet, it asks to open NewMax once. Disconnect takes the entry and the id out, sets a pick of it back to `default`, and takes the row out when only what magpie made is left. NewMax holds its settings in memory and writes the whole row back whenever one changes, so a change is refused while `NewMax` (`newmax` on Linux) runs (Windows can't be asked, so the notice says to quit it first). The model is picked in NewMax's model picker, so the field is whether magpie is in it (`ListsModels`). Detected by its data folder or `NewMax.app` (`cc.newmax.desktop`).
+ - LiveAgent (Stack-Cairn/LiveAgent v2, a Tauri app) runs its models through K-brain, a Go backend it starts with its data folder, which keeps every provider in `config.json` there: `$LIVEAGENT_HOME`, else `$K_BRAIN_HOME`, else the folder `~/.liveagent/data-dir.json` points to (`{"path": …}`, set when the user moves LiveAgent's data), else `~/.liveagent` on every system (`liveAgent` in [`liveagent.go`](../../internal/agent/liveagent.go); LiveAgent's `data_home.rs` and `kbrain_backend.rs`, K-brain v0.107.12's `internal/config`). The file is JSONC in Pi's provider shape, decoded with unknown fields refused, so magpie writes only K-brain's fields. K-brain asks all of a provider's models on its one API, so magpie writes up to three providers and puts each model on the one of the API it is served on natively (`catalog.Model.APIs`, as dsh's routes): `providers.magpie-responses` for Responses and `providers.magpie` for every other OpenAI-side model (Chat Completions), each `type: codex` with `api` and `requestFormat` as LiveAgent's own settings write an OpenAI-compatible provider, `baseUrl` the gateway's `/v1` (K-brain appends only `/chat/completions` or `/responses`); `providers.magpie-anthropic` for Messages, `type: claude_code` and `api: anthropic-messages`, `baseUrl` the gateway's root (K-brain appends `/v1` and posts to `/messages` with `X-Api-Key`). LiveAgent's settings lock an Anthropic provider's API and let the user switch an OpenAI one between Chat Completions and Responses; a sync keeps the format they picked (Discord, xiaoxiaofei). A provider left with no model is taken out. Each has a key naming LiveAgent, `activeModels: null` (every model on), magpie's order as `modelOrder`, and `models` sorted by id as K-brain writes them, with each one's display name, context window, output limit and `input: [text, image]` when it takes images. Comments and every other key stay. Through a sync the user's name for each entry, the models they turned off (`activeModels`), their order and the fields K-brain adds (its `metadata`) stay; a model that moves to another of magpie's providers (a `config.json` from before, with every model on one Anthropic `magpie`) brings its name and off with it, and a pick of it follows; a model new to magpie's list is on and goes last, and a sync with nothing to change doesn't write. A model of magpie's the user deleted in LiveAgent, or a whole provider of magpie's, stays out until they put it back or magpie is turned off and on for LiveAgent (zero2sin on Discord: every sync, so every restart, wrote magpie's twenty or thirty models back): magpie keeps, per `config.json`, which of its models and providers LiveAgent has had (`liveAgentKept`, in the stash). One magpie added while LiveAgent ran is pending under the processes then (`liveAgentPIDs`), since LiveAgent's next save drops a model it never read: missing under those processes, or after they quit, it is written again; once other processes run it counts as had. On Windows, which can't be asked what runs, each counts as had at once. A default (or compact) model still K-brain's own, `model1` of its endpoint-less `demo` provider, becomes magpie's first; one the user picked stays. A file K-brain wouldn't read as providers (not an object, `providers` not an object, a top-level `models`, one provider written bare) is left alone. Disconnect takes magpie's entries out and a pick of them back to K-brain's default; a file left with no provider gets K-brain's `demo` back, since K-brain takes one with none as written over and restores `config.json.bak`, which can still hold magpie's; a file with nothing but what magpie made goes. LiveAgent's backend makes the file as `{}` when there is none (so a disconnect that takes the file away is undone the next start, harmlessly), reads it when it starts and writes it whole whenever a setting changes, so a change is refused while `liveagent` or `k-brain` runs (Windows can't be asked, so the notice says to quit it first). A model id another provider of the user's lists too has its metadata shared by K-brain, so a sync may write that model's limits back each time. The model is picked in LiveAgent's model picker, so the field is whether magpie is in it (`ListsModels`). Detected by its data folder, `LiveAgent.app` (`com.xiaofei.liveagent`) or its Windows install. Its logo is the app's own 64px icon (`src-tauri/icons/64x64.png`, MIT) in an SVG.
+ - DevEco Code (Huawei's OpenCode fork, #1885) is wired as OpenCode is (`deveco` in [`agents.go`](../../internal/agent/agents.go)): magpie's provider goes into the first of `deveco.jsonc`, `deveco.json` and `config.json` in `~/.config/deveco` (the one DevEco merges last, so the one that wins), or in `$DEVECO_CONFIG_DIR` when that is absolute, read after them. 0.2.3 sends `deveco/0.2.3 ai-sdk/…` to a provider of its config, but much of the OpenCode code it keeps still sends OpenCode's own User-Agent (`opencode/<version>`), so its provider's key is `magpie-deveco` (`openCodeKeyAt`), not the plain `magpie` OpenCode and MiMo Code send, and Check asks for that key. Its npm package has no Linux binary, so no install command is offered there (`cliSpec.only`).
+-- Grok Build keeps magpie's models as one `[model."magpie/<provider>/<model>"]` table each in `config.toml` under `$GROK_HOME`, else `~/.grok` (`grok` in [`grok.go`](../../internal/agent/grok.go)), each on the gateway's `/v1` with magpie's key. Grok Build takes `api_backend` per model table, `"chat_completions"` (its default), `"responses"` or `"messages"` (Anthropic Messages), and sends each to `base_url` joined with `/chat/completions`, `/responses` or `/messages` (the "Supported API Backends" page bundled in its binary; grok 1.0.67). magpie writes each model's native API (`grokBackend`, from `catalog.Model.APIs` as Pi, droid and dsh pick theirs; uk.jent on Discord), so the gateway relays the request as it is: Responses for a model served best there, Messages for a Claude on an Anthropic endpoint, Chat for the rest, a group whose members differ, or one not known. Each table's `context_window` is the model's whole window (the catalog's), which Grok Build sends with and shows; it compacts at a percent of it, `auto_compact_threshold_percent` in the `[model.<id>]` table, else `[session]`'s, else 85 (`resolve_auto_compact_threshold_percent` and `DEFAULT_AUTO_COMPACT_THRESHOLD_PERCENT` in xai-org/grok-build; `GROK_AUTO_COMPACT_THRESHOLD_PERCENT` above all). Where Long conversations has Codex compact (`grokCompactAt`, codexcat's rule: a threshold set on the model or its provider, else `settings.Working` of the model's window, none under Full window) goes in as that percent of the window written, rounded down (`grokPercent`); none leaves Grok's 85. magpie once wrote the threshold as the window, so a 1M model told 300K compacted at 255K and never had its 1M (@xiancrong on X); a table an older magpie wrote that way, its threshold on record, gets the whole window back. A `[session]` percent is the user's for every model, so magpie writes no per-model one over it. Long conversations is in Grok Build's sheet on the Agents page (`AGENT_PREFS`). A `context_window` or `auto_compact_threshold_percent` the user set in one of magpie's tables by hand stays through a sync and a new pick (uk.jent on Discord: dozens of 1M models set to 300K one by one): what magpie last gave each model is stashed (`grok:<path>:windows`, `grok:<path>:percents`), and a value other than it is the user's (`grokOwnWindow`, `grokOwnPercent`). With no record of windows yet (a config an older magpie wrote, which gave every model its whole window), a value other than the model's whole window and other than magpie's now is taken for the user's; a percent magpie has no record of giving is the user's. Disconnect drops the records with the tables. `TestGrokKeepsAWindowSetByHand`, `TestGrokKeepsAWindowSetBeforeTheRecord`, `TestGrokWindowFollowsLongConversations`, `TestGrokWindowIsTheModelsAndCompactsAtThePercent`, `TestGrokKeepsTheUsersCompactPercent`.
++- Grok Build keeps magpie's models as one `[model."magpie/<provider>/<model>"]` table each in `config.toml` under `$GROK_HOME`, else `~/.grok` (`grok` in [`grok.go`](../../internal/agent/grok.go)), each on the gateway's `/v1` with magpie's key. Grok Build takes `api_backend` per model table, `"chat_completions"` (its default), `"responses"` or `"messages"` (Anthropic Messages), and sends each to `base_url` joined with `/chat/completions`, `/responses` or `/messages` (the "Supported API Backends" page bundled in its binary; grok 1.0.67). magpie writes each model's native API (`grokBackend`, from `catalog.Model.APIs` as Pi, droid and dsh pick theirs; uk.jent on Discord), so the gateway relays the request as it is: Responses for a model served best there, Messages for a Claude on an Anthropic endpoint, Chat for the rest, a group whose members differ, or one not known. Each table's `context_window` is placed for where the model compacts: released Grok Build compacts at 85% of it (`DEFAULT_AUTO_COMPACT_THRESHOLD_PERCENT`) and reads no `auto_compact_threshold_percent` off a `[model.<id>]` table — 1.0.89 and 1.0.91 parse the key and never act on it (#7203, 0xRichardH: a table told 27% sat at 72% of its window un-compacted and first compacted at the default; the ones it reads are `[session]`'s percent and `GROK_AUTO_COMPACT_THRESHOLD_PERCENT` above all) — so 4f94b8a8's percent never reached the resolver and Long conversations went nowhere until the next sync placed the window. Where Long conversations has Grok Build compact (`grokCompactAt`, codexcat's rule: a threshold set on the model or its provider, else `settings.Working` of the model's window, none under Full window) goes in as the window rounded up to it (`grokWindow`: 300K becomes 352942, 85% of which is 300K), never over the model's own, where Grok's 85% is the closest it can come; a `[session]` percent is the user's for every model, and under it the windows stay the models' own. magpie writes no percent of its own — with the window placed for it, one of magpie's would move the very compaction it names if a Grok that reads it ever ships; one 4f94b8a8 wrote is dropped as the tables are rewritten, one the user set by hand stays. magpie before 4f94b8a8 wrote the threshold as the window, so a 1M model told 300K compacted at 255K and never had its 1M (@xiancrong on X); a table an older magpie wrote that way, its threshold on record, is placed the same way. Long conversations is in Grok Build's sheet on the Agents page (`AGENT_PREFS`). A `context_window` or `auto_compact_threshold_percent` the user set in one of magpie's tables by hand stays through a sync and a new pick (uk.jent on Discord: dozens of 1M models set to 300K one by one): what magpie last gave each model is stashed (`grok:<path>:windows`, `grok:<path>:percents`), and a value other than it is the user's (`grokOwnWindow`, `grokOwnPercent`). With no record of windows yet (a config an older magpie wrote, which gave every model its whole window), a value other than the model's whole window and other than magpie's now is taken for the user's; a percent magpie has no record of giving is the user's. Disconnect drops the records with the tables. `TestGrokCompactsByTheWindowItIsGiven`, `TestGrokKeepsAWindowSetByHand`, `TestGrokKeepsAWindowSetBeforeTheRecord`, `TestGrokWindowFollowsLongConversations`, `TestGrokWindowCarriesTheCompactPoint`, `TestGrokKeepsTheUsersCompactPercent`.
+ - Droid keeps magpie's models as `customModels` entries in `~/.factory/settings.json` (`droidIn` in [`droid.go`](../../internal/agent/droid.go)), each with `provider` `openai` (Responses, `baseUrl` the gateway's `/v1`), `anthropic` (the gateway root) or `generic-chat-completion-api` (Chat, `/v1`). droid reads a custom model's `model` itself and, at every session start, warns about one whose name looks like OpenAI's (`/\bgpt[-_.]?\d/i`, `/codex/i`, `/\bo[1-9](?:[-_.]|$)/i`) on any provider but `openai`, or like a Claude (`/claude|haiku|sonnet|opus/i`) on neither `anthropic` nor `bedrock-converse` (droid 0.231.0's bundle, `xs` and `g2`; ji233 on Discord: `ultrafast/gpt-6.1-sol` on Chat). So `droidWants` puts such a model on the provider droid asks for, whatever its provider speaks, and the gateway translates; any other model goes on its `APIs`, as Pi, omp and dsh pick theirs. A `provider`, `displayName`, `maxContextLimit`, `maxOutputTokens` or `noImageSupport` the user changed in one of magpie's entries stays through a sync and a new pick (`droidMerge`): what magpie last gave each entry is stashed (`droid:<path>:wrote`), and a value other than it is the user's; keys magpie doesn't write stay too, droid's `index` aside. `baseUrl` follows the entry's provider and `apiKey` is the wiring, both put back at every sync. With no record (entries an older magpie wrote, which every sync wrote over anyway), magpie's values are taken. Disconnect drops the record with the entries. `TestDroidWantsItsOwnRule`, `TestDroidProviderByName`, `TestDroidKeepsAnEntryEditedByHand`.
+ - A provider of the user's own in an OpenCode config that sends to magpie's gateway and lists the model, as a layout of one provider per family of magpie's models has, stays theirs: a magpie model picked there is written as `<theirs>/<model>`, with no `provider.magpie` beside it (`ownGatewayProvider` in [`agents.go`](../../internal/agent/agents.go)), and a model on one named as a provider of magpie's counts as magpie's (`openCodeSpelled`). Both read such a provider under `provider` and under `providers`, OpenCode 2's spelling, which OpenChamber's provider form writes; a name under both is the one under `providers`, as OpenCode 2 reads it (#3915, `TestOpenCodeKeepsItsOwnGatewayProvidersUnderProviders`).
+ - Grok App (RongleCat/grok-app, a desktop front end that starts Grok Build over ACP) keeps its provider channels in `agent-home/config.toml` under its data folder: `$GROK_APP_HOME`, else where its `directories` crate puts it, or its `~/.grok-app` fallback when that is the one there (`grokApp` in [`grokapp.go`](../../internal/agent/grokapp.go)). Its composer lists only Grok Build's official catalog, never the `[model."magpie/…"]` tables of Grok Build's row, so magpie adds itself as a channel, `[model.magpie]`, with the keys the App's Providers page writes: the gateway's `/v1`, a key naming Grok App, `api_backend = "chat_completions"`, `app_provider_mode = "generic"`, and `app_models`, a JSON list of magpie's models with `contextWindow`, `supportsVision` and their effort levels (no `none`; a default the user marks in the App stays, else medium). The picked model's `context_window` (a bare integer) and `supports_reasoning_effort` (a bare bool, Grok Build's gate for `--reasoning-effort`) are on the channel, as the App puts them there when a model is picked in its composer. `[models] default` is the route, and magpie does not set it: setting it to `"magpie"` makes the App drop its own sign-in (`ensure_independent_for_custom_route`). The route stays whatever the App had. Pressing Use on magpie under Accounts is what switches it. A magpie that already set the route puts the old one back once, on the next sync or connect (`grokAppReleased`); a Use after that stays. Disconnect drops only the channel, and puts the route back only when it is still `"magpie"`: the one stashed at connect, else the one `connect.was` holds. One of the App's own routes picked in magpie's model field is written as the route and takes magpie's channel out, as picking another provider does elsewhere. A sync with no channel and a route other than `"magpie"` writes nothing, magpie's stash included, and Check says so when the route is `"magpie"` with the channel gone. A model picked in the App's composer since is the user's and stays through a sync, and a sync with nothing to change doesn't write. Shared mode keeps `GROK_HOME` at `~/.grok` (Grok Build's library row). Independent mode, which Use turns on, reads agent-home: the Library writes `AGENTS.md`, `[mcp_servers]` in the same `config.toml`, and `skills/` there, and Grok App also reads `~/.agents/skills`. RTK has no Grok hook, so the Library lists Grok App with the switch off. The notice, while the App runs, says magpie is a custom provider in Settings › Account, a chat can pick its models in the model picker, and the App stays on its current route until Use.
+diff --git a/internal/agent/grok.go b/internal/agent/grok.go
+index c7e30b416..f48dc2c2e 100644
+--- a/internal/agent/grok.go
++++ b/internal/agent/grok.go
+@@ -43,11 +43,11 @@ var grokEfforts = []string{"none", "minimal", "low", "medium", "high", "xhigh",
+ var grokModelTable = `model."` + magpieID + "/"
+ 
+ // grokModelTables are magpie's model tables, for a Grok that reaches the
+-// gateway's /v1 at v1, with the context_window and the
+-// auto_compact_threshold_percent magpie gives each model (by its catalog
+-// id), which the caller stashes. A value the user set in a table themselves
+-// (grokOwnWindow, grokOwnPercent: had is what the tables hold now, wrote and
+-// wrotePct what magpie last gave them) stays as they set it.
++// gateway's /v1 at v1, with the context_window magpie gives each model (by
++// its catalog id), which the caller stashes. A value the user set in a
++// table themselves (grokOwnWindow, grokOwnPercent: had is what the tables
++// hold now, wrote and wrotePct what magpie last gave them) stays as they
++// set it.
+ func grokModelTables(v1 string, had grokHad, wrote, wrotePct map[string]int) ([]edit.Table, map[string]int, map[string]int) {
+ 	var out []edit.Table
+ 	st, gave, gavePct := settings.Load().ForAgent("grok"), map[string]int{}, map[string]int{}
+@@ -61,17 +61,27 @@ func grokModelTables(v1 string, had grokHad, wrote, wrotePct map[string]int) ([]
+ 		}
+ 		window := 0
+ 		if c := m.Context; c > 0 {
+-			gave[m.ID], window = c, c
+-			if n, ok := grokOwnWindow(m, c, had.windows, wrote); ok {
++			// a [session] auto_compact_threshold_percent is the user's for
++			// every model: they alone say when it compacts, so the window
++			// stays the model's own; otherwise the window is placed for
++			// where Long conversations compacts, the one knob released
++			// Grok Build compacts by
++			placed := c
++			if !had.sessionPercent {
++				placed = grokWindow(c, grokCompactAt(st, m))
++			}
++			gave[m.ID], window = placed, placed
++			if n, ok := grokOwnWindow(m, placed, had.windows, wrote); ok {
+ 				window = n
+ 			}
+ 			kvs = append(kvs, edit.KV{Path: "context_window", Value: window})
+ 		}
++		// a percent magpie has no record of giving is the user's and stays;
++		// the window above is all of magpie's reach — released Grok Build
++		// reads no auto_compact_threshold_percent off a [model."<id>"]
++		// table, so magpie writes none of its own
+ 		if p, ok := grokOwnPercent(m, had.percents, wrotePct); ok {
+ 			kvs = append(kvs, edit.KV{Path: "auto_compact_threshold_percent", Value: p})
+-		} else if p := grokPercent(grokCompactAt(st, m), window); p > 0 && !had.sessionPercent {
+-			gavePct[m.ID] = p
+-			kvs = append(kvs, edit.KV{Path: "auto_compact_threshold_percent", Value: p})
+ 		}
+ 		var efforts []string
+ 		for _, e := range grokEfforts { // in Grok's order
+@@ -104,37 +114,42 @@ func grokCompactAt(st settings.Settings, m catalog.Model) int {
+ 	return st.Working(c)
+ }
+ 
+-// grokPercent is the auto_compact_threshold_percent that has Grok Build
+-// compact at tokens on a window of window: 0 (Grok's own default) when it
+-// compacts at none of it. Grok Build's context_window is the model's
+-// window, sent to the model and shown as such, and it compacts at a
+-// percent of it, 85 unless [model.<id>] or [session]
+-// auto_compact_threshold_percent says otherwise (grok-build's
+-// resolve_auto_compact_threshold_percent). magpie once wrote the
+-// threshold as the window, so a 1M model told 300K compacted at 255K and
+-// never reached 300K (@xiancrong on X). Rounded down, so it never
+-// compacts later than tokens.
+-func grokPercent(tokens, window int) int {
+-	if tokens <= 0 || window <= 0 || tokens >= window {
+-		return 0
++// grokWindow is the context_window that has Grok Build compact at tokens
++// on a model whose whole window is c. Released Grok Build compacts at 85%
++// of context_window (its DEFAULT_AUTO_COMPACT_THRESHOLD_PERCENT) and takes
++// no auto_compact_threshold_percent from a [model."<id>"] table: 1.0.89
++// and 1.0.91 parse the key off the table and never act on it (#7203,
++// 0xRichardH: a table told 27% sat at 72% of its window un-compacted and
++// first compacted at the default), so the window is the one knob and
++// 4f94b8a8's percent never reached the resolver. Rounded up, so Grok never
++// compacts before tokens, and capped at c, where Grok's 85% is the
++// closest it can come. tokens at or above c, or none, leaves c.
++func grokWindow(c, tokens int) int {
++	if tokens <= 0 || tokens >= c {
++		return c
+ 	}
+-	return max(1, tokens*100/window)
++	if w := (tokens*100 + 84) / 85; w < c {
++		return w
++	}
++	return c
+ }
+ 
+ // grokOwnWindow is a context_window the user set in magpie's table for m
+-// themselves, which a sync keeps: one other than magpie last gave it. With
+-// no record of magpie's (wrote nil, a config an older magpie wrote, or a
+-// model new to the record), one other than the model's whole window, which
+-// an older magpie wrote, and other than w, which magpie gives it now.
++// themselves, which a sync keeps: one other than magpie last gave it, and
++// one other than the model's whole window, which a magpie wrote (4f94b8a8
++// gave every model its whole one). With no record of magpie's (wrote nil,
++// a config an older magpie wrote, or a model new to the record), one
++// other than the model's whole window and other than w, which magpie
++// gives it now.
+ func grokOwnWindow(m catalog.Model, w int, had, wrote map[string]int) (int, bool) {
+ 	n, ok := had[m.ID]
+-	if !ok || n <= 0 || n == w {
++	if !ok || n <= 0 || n == w || n == m.Context {
+ 		return 0, false
+ 	}
+ 	if prev, ok := wrote[m.ID]; ok {
+ 		return n, n != prev
+ 	}
+-	return n, n != m.Context
++	return n, true
+ }
+ 
+ // grokOwnPercent is an auto_compact_threshold_percent the user set in
+@@ -154,7 +169,7 @@ func grokOwnPercent(m catalog.Model, had, wrote map[string]int) (int, bool) {
+ // grokHad is what the config holds now: each of magpie's model tables'
+ // context_window and auto_compact_threshold_percent by catalog id, and
+ // whether [session] sets auto_compact_threshold_percent, the user's for
+-// every model, which magpie's per-model one would win over.
++// every model, under which magpie places no window.
+ type grokHad struct {
+ 	windows, percents map[string]int
+ 	sessionPercent    bool
+@@ -247,9 +262,12 @@ func grokIn(at place) *Agent {
+ 		}
+ 		return false, nil
+ 	}
+-	// keyWindows and keyPercents are the context_window and
+-	// auto_compact_threshold_percent magpie last gave each of its models, so
+-	// one the user set by hand since is told from it and kept
++	// keyWindows and keyPercents are the context_window and the
++	// auto_compact_threshold_percent magpie last gave each of its models:
++	// a window the user set by hand since is told from it and kept, and a
++	// percent of magpie's own — 4f94b8a8 wrote some, magpie writes none
++	// now — is dropped as the tables are rewritten, one the user set is
++	// kept
+ 	keyWindows, keyPercents := "grok:"+path+":windows", "grok:"+path+":percents"
+ 	writeMagpie := func() error {
+ 		had, err := grokHadIn(path)
+diff --git a/internal/agent/grok_test.go b/internal/agent/grok_test.go
+index f7fd99d46..3efc271ed 100644
+--- a/internal/agent/grok_test.go
++++ b/internal/agent/grok_test.go
+@@ -374,7 +374,9 @@ func grokPercents(t *testing.T, path string) (int, int) {
+ // A context_window the user set by hand in one of magpie's tables stays
+ // through a sync and a new pick (uk.jent on Discord: dozens of models told
+ // 1M, set to 300K one by one, and written over on the next sync), while
+-// the tables they didn't touch follow magpie's catalog.
++// the tables they didn't touch follow magpie's catalog — windows the user
++// typed (the sandbox's), which Long conversations' default gives way to
++// (#1809), are placed as themselves.
+ func TestGrokKeepsAWindowSetByHand(t *testing.T) {
+ 	home, path := grokSandbox(t)
+ 	a := grok(home)
+@@ -421,8 +423,9 @@ func TestGrokKeepsAWindowSetByHand(t *testing.T) {
+ 
+ // A config an older magpie wrote, with no record of what it gave: a window
+ // other than the model's whole one is the user's and stays; the whole one,
+-// which that magpie wrote, stays the whole window, and Long conversations
+-// goes in its auto_compact_threshold_percent.
++// which that magpie wrote, is placed for Long conversations, and magpie
++// writes no auto_compact_threshold_percent — released Grok Build reads
++// none off a model table.
+ func TestGrokKeepsAWindowSetBeforeTheRecord(t *testing.T) {
+ 	home, path := grokSandbox(t)
+ 	os.MkdirAll(filepath.Dir(path), 0o755)
+@@ -440,24 +443,25 @@ func TestGrokKeepsAWindowSetBeforeTheRecord(t *testing.T) {
+ 	if err := grok(home).Sync(); err != nil {
+ 		t.Fatal(err)
+ 	}
+-	if pro, flash := grokWindows(t, path); pro != 300000 || flash != 200000 {
++	if pro, flash := grokWindows(t, path); pro != 300000 || flash != 176471 {
+ 		raw, _ := os.ReadFile(path)
+-		t.Fatalf("pro %d (the user's 300000), flash %d (its whole 200000)\n%s", pro, flash, raw)
++		t.Fatalf("pro %d (the user's 300000), flash %d (85%% of it is the 150K Long conversations says)\n%s", pro, flash, raw)
+ 	}
+-	if pro, flash := grokPercents(t, path); pro != 50 || flash != 75 {
++	if pro, flash := grokPercents(t, path); pro != -1 || flash != -1 {
+ 		raw, _ := os.ReadFile(path)
+-		t.Fatalf("compact at 150K: pro %d%% of the user's 300K, flash %d%% of 200K\n%s", pro, flash, raw)
++		t.Fatalf("percents pro %d, flash %d, want none of magpie's\n%s", pro, flash, raw)
+ 	}
+ }
+ 
+ // Grok Build compacts at a percent of context_window (85 by default,
+-// grok-build's DEFAULT_AUTO_COMPACT_THRESHOLD_PERCENT), and context_window
+-// is the model's window. magpie wrote Long conversations' threshold as the
+-// window, so a 1M model told 300K compacted at 255K and never had its 1M
+-// (@xiancrong on X). The window is the model's own and the threshold is a
+-// percent of it, and a config the old magpie wrote, its threshold on
+-// record, is brought up the same.
+-func TestGrokWindowIsTheModelsAndCompactsAtThePercent(t *testing.T) {
++// grok-build's DEFAULT_AUTO_COMPACT_THRESHOLD_PERCENT) and reads no
++// auto_compact_threshold_percent off a [model."<id>"] table (1.0.89 and
++// 1.0.91, #7203), so the window carries where Long conversations compacts
++// — 4f94b8a8's percent never reached the resolver — and under Full window,
++// where magpie holds nothing back, the window is the model's own (#4319).
++// A config the old magpie wrote, its threshold on record, is brought up
++// the same.
++func TestGrokWindowCarriesTheCompactPoint(t *testing.T) {
+ 	home, path := grokSandbox(t)
+ 	s := settings.Load()
+ 	s.CompactAt = 300000
+@@ -470,37 +474,60 @@ func TestGrokWindowIsTheModelsAndCompactsAtThePercent(t *testing.T) {
+ 	}
+ 	check := func(when string) {
+ 		t.Helper()
+-		if pro, flash := grokWindows(t, path); pro != 1000000 || flash != 200000 {
++		if pro, flash := grokWindows(t, path); pro != 352942 || flash != 200000 {
+ 			raw, _ := os.ReadFile(path)
+-			t.Fatalf("%s: windows pro %d, flash %d, want the models' 1M and 200K\n%s", when, pro, flash, raw)
++			t.Fatalf("%s: windows pro %d, flash %d, want 352942 (85%% of it is 300K) and 200000 (its whole window: 300K is over 85%% of it)\n%s", when, pro, flash, raw)
+ 		}
+-		if pro, flash := grokPercents(t, path); pro != 30 || flash != -1 {
++		if pro, flash := grokPercents(t, path); pro != -1 || flash != -1 {
+ 			raw, _ := os.ReadFile(path)
+-			t.Fatalf("%s: percents pro %d (want 30: 300K of 1M), flash %d (want none)\n%s", when, pro, flash, raw)
++			t.Fatalf("%s: percents pro %d, flash %d, want none of magpie's\n%s", when, pro, flash, raw)
+ 		}
+ 	}
+ 	check("new")
+-	// what the old magpie left: the threshold as pro's window, on record
++	// what 4f94b8a8's magpie left: the threshold as pro's window and a
++	// percent of magpie's in the table, both on record — the window comes
++	// back and the percent is dropped
+ 	if err := edit.SetTOMLTables(path, []string{grokModelTable}, nil); err != nil {
+ 		t.Fatal(err)
+ 	}
+-	old := "[model.\"magpie/deepseek/pro\"]\nmodel = \"deepseek/pro\"\ncontext_window = 300000\n\n" +
++	old := "[model.\"magpie/deepseek/pro\"]\nmodel = \"deepseek/pro\"\ncontext_window = 300000\nauto_compact_threshold_percent = 30\n\n" +
+ 		"[model.\"magpie/deepseek/flash\"]\nmodel = \"deepseek/flash\"\ncontext_window = 200000\n"
+ 	b, _ := os.ReadFile(path)
+ 	if err := os.WriteFile(path, append(b, []byte("\n"+old)...), 0o644); err != nil {
+ 		t.Fatal(err)
+ 	}
+-	forget("grok:" + path + ":percents")
+-	stash(map[string]string{"grok:" + path + ":windows": `{"deepseek/pro":300000,"deepseek/flash":200000}`})
++	stash(map[string]string{
++		"grok:" + path + ":windows":  `{"deepseek/pro":300000,"deepseek/flash":200000}`,
++		"grok:" + path + ":percents": `{"deepseek/pro":30}`,
++	})
+ 	if err := a.Sync(); err != nil {
+ 		t.Fatal(err)
+ 	}
+ 	check("the old magpie's config")
++	// Full window holds nothing back: the windows are the models' own
++	// (#4319), and Grok compacts at its own 85%
++	s = settings.Load()
++	s.FullContext = true
++	if err := settings.Save(s); err != nil {
++		t.Fatal(err)
++	}
++	if err := a.Sync(); err != nil {
++		t.Fatal(err)
++	}
++	if pro, flash := grokWindows(t, path); pro != 1000000 || flash != 200000 {
++		raw, _ := os.ReadFile(path)
++		t.Fatalf("full window: windows pro %d, flash %d, want the models' own 1M and 200K\n%s", pro, flash, raw)
++	}
++	if pro, flash := grokPercents(t, path); pro != -1 || flash != -1 {
++		raw, _ := os.ReadFile(path)
++		t.Fatalf("full window: percents pro %d, flash %d, want none of magpie's\n%s", pro, flash, raw)
++	}
+ }
+ 
+ // An auto_compact_threshold_percent the user set in one of magpie's tables
+-// stays, and one in [session], the user's for every model, is not
+-// outranked by a per-model one of magpie's.
++// stays (inert on released Grok Builds, theirs if one ever reads it), and
++// one in [session], the user's for every model, keeps the windows the
++// models' own: they alone say when their models compact.
+ func TestGrokKeepsTheUsersCompactPercent(t *testing.T) {
+ 	home, path := grokSandbox(t)
+ 	s := settings.Load()
+@@ -518,8 +545,8 @@ func TestGrokKeepsTheUsersCompactPercent(t *testing.T) {
+ 	if err := a.Sync(); err != nil {
+ 		t.Fatal(err)
+ 	}
+-	if pro, flash := grokPercents(t, path); pro != 60 || flash != 75 {
+-		t.Fatalf("pro set by hand to 60: pro %d, flash %d (want magpie's 75)", pro, flash)
++	if pro, flash := grokPercents(t, path); pro != 60 || flash != -1 {
++		t.Fatalf("pro set by hand to 60: pro %d, flash %d (want none of magpie's)", pro, flash)
+ 	}
+ 	if err := edit.SetTOMLKey(path, "session", "auto_compact_threshold_percent", 70); err != nil {
+ 		t.Fatal(err)
+@@ -531,12 +558,18 @@ func TestGrokKeepsTheUsersCompactPercent(t *testing.T) {
+ 		raw, _ := os.ReadFile(path)
+ 		t.Fatalf("[session] at 70: pro %d (want the user's 60), flash %d (want none of magpie's)\n%s", pro, flash, raw)
+ 	}
++	if pro, flash := grokWindows(t, path); pro != 1000000 || flash != 200000 {
++		raw, _ := os.ReadFile(path)
++		t.Fatalf("[session] at 70: windows pro %d, flash %d, want the models' own\n%s", pro, flash, raw)
++	}
+ }
+ 
+-// Grok Build is told where Long conversations has Codex and Claude Code
+-// compact, as a percent of the model's window: the size typed there on a
+-// longer window, none under Full window, and a threshold set on the model
+-// in its provider before either.
++// Grok Build's window follows where Long conversations has Codex and
++// Claude Code compact: the size typed there on a longer window, the
++// model's own under Full window and on one at or under it, and a
++// threshold set on the model in its provider before either — placed as
++// 85% of it, the compaction released Grok Build runs (no per-model
++// percent of magpie's, #7203).
+ func TestGrokWindowFollowsLongConversations(t *testing.T) {
+ 	home, path := grokSandbox(t)
+ 	a := grok(home)
+@@ -556,30 +589,61 @@ func TestGrokWindowFollowsLongConversations(t *testing.T) {
+ 	}
+ 	want := func(when string, pro, flash int) {
+ 		t.Helper()
+-		if p, f := grokWindows(t, path); p != 1000000 || f != 200000 {
+-			t.Fatalf("%s: windows pro %d, flash %d, want the models' own", when, p, f)
++		if p, f := grokWindows(t, path); p != pro || f != flash {
++			t.Fatalf("%s: windows pro %d, flash %d, want %d and %d", when, p, f, pro, flash)
+ 		}
+-		if p, f := grokPercents(t, path); p != pro || f != flash {
+-			t.Fatalf("%s: percents pro %d, flash %d, want %d and %d", when, p, f, pro, flash)
++		if p, f := grokPercents(t, path); p != -1 || f != -1 {
++			t.Fatalf("%s: percents pro %d, flash %d, want none of magpie's", when, p, f)
+ 		}
+ 	}
+ 	set(func(s *settings.Settings) { s.CompactAt = 300000 })
+-	want("compact at 300K", 30, -1)
++	want("compact at 300K", 352942, 200000)
+ 	set(func(s *settings.Settings) { s.FullContext = true })
+-	want("full window", -1, -1)
++	want("full window", 1000000, 200000)
+ 	set(func(s *settings.Settings) {
+ 		s.FullContext, s.ModelCompacts = false, map[string]int{"deepseek/pro": 400000}
+ 	})
+-	want("pro's own threshold", 40, -1)
++	want("pro's own threshold", 470589, 200000)
+ 	// Grok Build's own Long conversations (molianyin4227) over every
+ 	// agent's, a model's own still first; another agent's is not Grok's
+ 	set(func(s *settings.Settings) {
+ 		s.ModelCompacts, s.CompactAt = nil, 300000
+ 		s.AgentCompacts = map[string]settings.AgentCompact{"grok": {At: 500000}, "codex": {At: 250000}}
+ 	})
+-	want("grok's own 500K", 50, -1)
++	want("grok's own 500K", 588236, 200000)
+ 	set(func(s *settings.Settings) { s.AgentCompacts = map[string]settings.AgentCompact{"grok": {Full: true}} })
+-	want("grok's own full window", -1, -1)
++	want("grok's own full window", 1000000, 200000)
+ 	set(func(s *settings.Settings) { s.AgentCompacts = map[string]settings.AgentCompact{"codex": {Full: true}} })
+-	want("codex's full window reached grok", 30, -1)
++	want("codex's full window reached grok", 352942, 200000)
++}
++
++// Released Grok Build compacts at 85% of context_window and takes no
++// auto_compact_threshold_percent from a [model."<id>"] table: 1.0.89 and
++// 1.0.91 parse the key off the table and never act on it (#7203, 0xRichardH:
++// a table told 27% sat at 72% of its window un-compacted and first compacted
++// at the default), so the window is the one knob that moves the compaction —
++// it is placed for where Long conversations compacts, rounded up so Grok
++// never compacts before that size and never over the model's own, and
++// magpie writes no percent of its own: with the window placed for it, a
++// percent of magpie's would move the very compaction it names if a Grok
++// that reads it ever ships.
++func TestGrokCompactsByTheWindowItIsGiven(t *testing.T) {
++	home, path := grokSandbox(t)
++	s := settings.Load()
++	s.CompactAt = 300000
++	if err := settings.Save(s); err != nil {
++		t.Fatal(err)
++	}
++	a := grok(home)
++	if err := a.Field("model").Set("magpie/deepseek/pro"); err != nil {
++		t.Fatal(err)
++	}
++	if pro, flash := grokWindows(t, path); pro != 352942 || flash != 200000 {
++		raw, _ := os.ReadFile(path)
++		t.Fatalf("compact at 300K: windows pro %d, flash %d, want 352942 (85%% of it is 300K) and 200000 (its whole window: 300K is over 85%% of it)\n%s", pro, flash, raw)
++	}
++	if pro, flash := grokPercents(t, path); pro != -1 || flash != -1 {
++		raw, _ := os.ReadFile(path)
++		t.Fatalf("compact at 300K: percents pro %d, flash %d, want none of magpie's: released Grok Build reads none off a model table\n%s", pro, flash, raw)
++	}
+ }
+diff --git a/internal/settings/settings.go b/internal/settings/settings.go
+index 72a0d7a2b..0924ed2c8 100644
+--- a/internal/settings/settings.go
++++ b/internal/settings/settings.go
+@@ -1772,7 +1772,8 @@ type AgentCompact struct {
+ // window into, by the key each reads: Codex's model catalog
+ // (auto_compact_token_limit), Claude Code's settings.json
+ // (CLAUDE_CODE_AUTO_COMPACT_WINDOW, autoCompactWindow) and Grok Build's
+-// model tables (auto_compact_threshold_percent of the model's window).
++// model tables (context_window, placed for the compaction point: released
++// Grok Build compacts at 85% of it and reads no per-model percent).
+ // Only these take an AgentCompact.
+ var CompactAgents = []string{"codex", "claude", "grok"}
+ 
+-- 
+2.50.1 (Apple Git-155)
+

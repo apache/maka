@@ -1,0 +1,1 @@
+import{b as o}from"./baseRequest-cLAYUkE1.js";import"./getClientId-D9RtL220.js";import"./tailwind-ChlWv2gU.js";import"./index-D5wSwEZ6.js";import"./userInfo-KkUgCWeV.js";import"./localforage-BUwrrJyZ.js";import"./version-B8Swz69J.js";const t=(t={})=>o.get("/todayShici",{params:t});export{t as todayShiciApi};

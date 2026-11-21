@@ -1,0 +1,61 @@
+{
+  "mcpServers": {},
+  "powers": {
+    "mcpServers": {
+      "power-figma-figma": {
+        "url": "https://mcp.figma.com/mcp",
+        "disabled": false,
+        "disabledTools": []
+      },
+      "power-saas-builder-fetch": {
+        "command": "uvx",
+        "args": [
+          "mcp-server-fetch"
+        ],
+        "env": {},
+        "disabled": false
+      },
+      "power-saas-builder-stripe": {
+        "url": "https://mcp.stripe.com",
+        "disabled": true
+      },
+      "power-saas-builder-aws-knowledge-mcp-server": {
+        "url": "https://knowledge-mcp.global.api.aws",
+        "disabled": false
+      },
+      "power-saas-builder-awslabs.dynamodb-mcp-server": {
+        "command": "uvx",
+        "args": [
+          "awslabs.dynamodb-mcp-server@latest"
+        ],
+        "env": {
+          "FASTMCP_LOG_LEVEL": "ERROR"
+        },
+        "disabled": false
+      },
+      "power-saas-builder-awslabs.aws-serverless-mcp": {
+        "command": "uvx",
+        "args": [
+          "awslabs.aws-serverless-mcp-server@latest"
+        ],
+        "env": {
+          "AWS_PROFILE": "<PROFILE>",
+          "AWS_REGION": "<REGION>",
+          "FASTMCP_LOG_LEVEL": "ERROR"
+        }
+      },
+      "power-saas-builder-playwright": {
+        "command": "npx",
+        "args": [
+          "-y",
+          "@executeautomation/playwright-mcp-server"
+        ],
+        "disabled": true
+      },
+      "power-supabase-hosted-supabase": {
+        "url": "https://mcp.supabase.com/mcp",
+        "disabled": false
+      }
+    }
+  }
+}

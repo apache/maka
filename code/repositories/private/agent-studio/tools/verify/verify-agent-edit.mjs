@@ -1,0 +1,17 @@
+import assert from 'node:assert/strict';
+import {readFile} from 'node:fs/promises';
+import {initialize,request} from '../../app/offline-api.js';
+const cache=new Map();globalThis.localStorage={getItem:key=>cache.get(key)??null,setItem:(key,value)=>cache.set(key,value)};
+globalThis.fetch=async path=>({json:async()=>JSON.parse(await readFile(new URL('../../app'+path,import.meta.url),'utf8'))});
+await initialize();
+const call=async(name,data)=>request({url:'/decision/agent-microapp/'+name,data});
+const copied=(await call('microApp/copy',{microAppId:'129992587288'})).data;
+const changed=await call('microApp/update',{id:copied.microAppId,microAppName:'本地编辑保存回归',description:'修改描述'});
+assert.equal(changed.success,true);
+await initialize();
+assert.equal((await call('microApp/findById',{id:copied.microAppId})).data.microAppName,'本地编辑保存回归');
+assert.equal((await call('microAppVersion/findById',{id:copied.microAppVersionId})).data.microAppName,'本地编辑保存回归');
+const page=await call('microAppVersion/getVersionPage',{microAppId:copied.microAppId,pageNum:1,pageSize:36});
+assert.equal(page.data.total,1);
+assert.equal(page.data.records[0].microAppVersionId,copied.microAppVersionId);
+console.log('Agent 元数据编辑和版本列表通过');

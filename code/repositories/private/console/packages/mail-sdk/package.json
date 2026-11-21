@@ -1,0 +1,30 @@
+{
+  "name": "@ggbdpq/mail-sdk",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "main": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "description": "通用邮件收信 SDK：IMAP/Graph/Gmail/mail.tm 四协议适配器 + 聚合查询（自 gpt-free-register 迁入）",
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@azure/identity": "^4.14.0",
+    "@microsoft/microsoft-graph-client": "^3.0.7",
+    "axios": "^1.20.0",
+    "googleapis": "^188.0.0",
+    "imapflow": "^2.9.1",
+    "mailparser": "^3.12.4",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/mailparser": "^3.9.0",
+    "@types/node": "^26.6.5",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.5"
+  }
+}

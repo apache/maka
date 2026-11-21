@@ -1,0 +1,112 @@
+{
+  "state": "source_present",
+  "groups": [
+    {
+      "name": "sessions",
+      "source": "C:\\Users\\802165\\.grok\\sessions",
+      "pattern": "**/*",
+      "remove_root": true,
+      "category": "archive",
+      "archive": "E:\\cc\\guahub\\sessions\\raw\\grok\\migration-20261026-130727\\sessions.zip",
+      "files": [
+        {
+          "path": "session_search.sqlite",
+          "size": 36864,
+          "mtime_ns": 1792717162106827300,
+          "sha256": "b2b6780bb87e1f061056ed0c0b546c847bfd57f3cde991dbd693b4ef3b59f5ff"
+        }
+      ],
+      "directories": []
+    },
+    {
+      "name": "logs",
+      "source": "C:\\Users\\802165\\.grok\\logs",
+      "pattern": "**/*",
+      "remove_root": true,
+      "category": "archive",
+      "archive": "E:\\cc\\guahub\\sessions\\raw\\grok\\migration-20261026-130727\\logs.zip",
+      "files": [
+        {
+          "path": "unified.jsonl",
+          "size": 221419,
+          "mtime_ns": 1792980256648362800,
+          "sha256": "6cba6736c0421f02d1850b83ca208dbeb20dfa97b1e05e2de5194eb1043c1ace"
+        }
+      ],
+      "directories": []
+    },
+    {
+      "name": "downloads",
+      "source": "C:\\Users\\802165\\.grok\\downloads",
+      "pattern": "**/*",
+      "remove_root": true,
+      "category": "cache",
+      "archive": "E:\\cc\\guahub\\sessions\\_trash\\grok-migration-20261026-130727\\downloads.zip",
+      "files": [
+        {
+          "path": "grok-1.0.62-windows-x86_64",
+          "size": 172906128,
+          "mtime_ns": 1792468991799855200,
+          "sha256": "86c6c766b7961597c2a327f77e43a7b73cbc44f5cee9da6dd74ba73b45ae8b68"
+        },
+        {
+          "path": "grok-1.0.67-windows-x86_64",
+          "size": 174993040,
+          "mtime_ns": 1792636616394128100,
+          "sha256": "9891863f48c0cd973930d1e54fb28b02adb10521b2704d0ba7a3c625c26bb94d"
+        },
+        {
+          "path": "grok-windows-x86_64.exe",
+          "size": 140810568,
+          "mtime_ns": 1788164659305284400,
+          "sha256": "bf43dc75f5478a106eab1e86d422c963e4dbe9666cf14dab363733d27bf1e672"
+        }
+      ],
+      "directories": []
+    },
+    {
+      "name": "memtrace",
+      "source": "C:\\Users\\802165\\.grok\\memtrace",
+      "pattern": "**/*",
+      "remove_root": true,
+      "category": "cache",
+      "archive": "E:\\cc\\guahub\\sessions\\_trash\\grok-migration-20261026-130727\\memtrace.zip",
+      "files": [
+        {
+          "path": "1791767115-1152.jsonl",
+          "size": 749,
+          "mtime_ns": 1791767626112787400,
+          "sha256": "2493521b9e7a71dfa397d616d47016d4ceda23580d3b43b7dcb4b38cb8b0de1d"
+        },
+        {
+          "path": "1791864687-19740.jsonl",
+          "size": 390,
+          "mtime_ns": 1791864927520030100,
+          "sha256": "4214d92583884b71454fb7b4d6511fea793ef376979e8d61f1a6691cdfb7743d"
+        },
+        {
+          "path": "1792222887-25984.jsonl",
+          "size": 150,
+          "mtime_ns": 1792222947292414900,
+          "sha256": "6858174183aa4e100edacd29248a49120e1f94133952dfeb6fcdea59ccddaf0c"
+        },
+        {
+          "path": "1792468974-43776.jsonl",
+          "size": 110,
+          "mtime_ns": 1792469004254879200,
+          "sha256": "3bb5cacadc8502f5b0687d43f49b9c13218ba27fbeff5722904f41f1eb33be83"
+        },
+        {
+          "path": "1792636516-26924.jsonl",
+          "size": 230,
+          "mtime_ns": 1792636636602240100,
+          "sha256": "a5518d25a2ba44e77ccea43c1f08c3c490417a8ffcc8a56739f8075132f1e754"
+        }
+      ],
+      "directories": []
+    }
+  ],
+  "protected": {
+    "C:\\Users\\802165\\.grok\\config.toml": "b484156855a47d5a5ab8118494535a55559a258b627c619b328848abf808ccdf"
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "name": "multi-highlight-reverse-engineered",
+  "version": "2.11.1-dsv4",
+  "private": true,
+  "description": "Multi Highlight Chrome Extension - 逆向工程分析项目",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "lint": "echo 'No linter configured'",
+    "clean": "rm -rf dist/"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0",
+    "@types/chrome": "^0.0.268"
+  },
+  "keywords": [
+    "chrome-extension",
+    "highlight",
+    "text-search",
+    "reverse-engineering",
+    "manifest-v3"
+  ],
+  "license": "UNLICENSED",
+  "author": "",
+  "repository": {
+    "type": "local",
+    "directory": "multi-highlight-dsv4"
+  }
+}

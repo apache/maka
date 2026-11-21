@@ -1,0 +1,377 @@
+From 78cd4e6dd4cd4ba380496b3467e6b1becc582cb2 Mon Sep 17 00:00:00 2001
+From: yetone <yetoneful@gmail.com>
+Date: Tue, 3 Nov 2026 17:53:54 +0800
+Subject: [PATCH 1/2] sessions: a call through magpie in Cindy is counted once,
+ as the gateway's (jealousy03888)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+jealousy03888 on Discord: "cindy里用Zcode订阅 同一个请求两个记录是特性吗".
+Their Routing list had one ZCode GLM-5.3 request twice: the gateway's row
+(ZCode · api.z.ai, 135/37/84,736 tokens, ~$0.026) and five seconds later
+a "local session" row on the provider "magpie-beedee1a" with the same
+tokens and cost, so Usage and the Requests totals counted it twice too.
+
+Cause: Cindy's import parser gives a custom provider the link's id plus
+eight hex digits of a new UUID (`${id.slice(0,24)}-${randomUUID()
+.slice(0,8)}`, read in Cindy 0.1.94's app.asar), so magpie's link (id
+"magpie") becomes "magpie-<8 hex>", and Cindy's Pi writes that id on
+every reply. The Pi reader left out only "magpie"/"dial", so Cindy's
+calls through magpie were read as Cindy's own beside the gateway's.
+
+Now piGateway(agent, provider) also takes "magpie-" + eight lowercase
+hex digits as magpie's entry, in Cindy's files only (Pi's own and omp's
+providers are named by the user; magpie writes "magpie" there). A
+provider the user adds by hand in Cindy under the name Magpie gets the
+slug "magpie" or "magpie-2", never this shape. callParseVersions raises
+cindy to 1, so Cindy's call shards written before are read again once
+on update and the duplicates already shown go away (usage's request and
+heat caches key on CallCacheVersion, so they are rebuilt too); no other
+agent's shards are re-read.
+
+Every other agent's reader was checked for the same gap (an id the app
+chooses rather than magpie): OpenCode and ZCode ("magpie", written by
+magpie), dsh (magpie's three route names), MiniMax Code
+(custom_provider:magpie), Kimi ("magpie/" model prefix), WorkBuddy and
+CodeBuddy (models.json vendor magpie), Grok Build (its config.toml
+tables), Pi, omp and Raft (models.json "magpie"), Claude Code, Codex
+and Antigravity (paired with the gateway's rows by session, response id
+or tokens and time). Cindy is the only one whose provider id is made by
+the app; Lody and AionUi also import a link but their sessions aren't
+read.
+
+TestCindyGatewayCallsCountedOnce puts a Cindy Pi session shaped like
+the report (provider magpie-beedee1a, zcode/GLM-5.3, 135/37/84,736,
+durationMs 5292) and a reply on a user's own "magpie-relay" into
+Cindy's session folder; the first must not be a call, the second must
+be one. TestCallParseVersionRaiseReadsThatAgentAlone now restores the
+real versions after it.
+
+Run (on mote): gofmt -l internal/sessions (nothing); go vet;
+GOOS=linux go vet -tags nogui ./...; GOOS=windows go vet ./...; go build
+./... all ok. go test -tags nogui -timeout 45m ./... at 40a287b21+this:
+86 packages ok, internal/cli red on two filed reds outside this change:
+TestEveryRouteHasACommandOrIsNamed (GET /api/context/reply, #5026,
+red alone too) and TestLibraryMCPHub (#4140, passes alone). Rebased on
+c3593dc49 (no sessions or usage change between) and run again at the
+pushed head: internal/sessions ok, internal/usage ok.
+
+Broken by hand: piGateway's Cindy branch replaced by `return false`:
+TestCindyGatewayCallsCountedOnce FAIL ("a call through magpie's link in
+Cindy counted as Cindy's own: ... Upstream:magpie-beedee1a ...").
+
+Not tried: a real Cindy session through magpie (none on this machine;
+the shape is from Cindy's source and the reporter's screenshot); the
+Sessions overview's session count for Cindy, which counts sessions,
+not calls, and was not changed.
+---
+ internal/sessions/call_cache.go         |  5 ++-
+ internal/sessions/call_versions_test.go |  3 +-
+ internal/sessions/calls_pi.go           | 37 +++++++++++++++--
+ internal/sessions/cindy_test.go         | 53 +++++++++++++++++++++++++
+ 4 files changed, 92 insertions(+), 6 deletions(-)
+
+diff --git a/internal/sessions/call_cache.go b/internal/sessions/call_cache.go
+index 344c4923a..e0756d190 100644
+--- a/internal/sessions/call_cache.go
++++ b/internal/sessions/call_cache.go
+@@ -57,7 +57,10 @@ const callCacheVersion = "calls-v15"
+ // for one agent read every agent's history again, every call shard of a
+ // long history (~16,000 files, minutes of CPU) after an update. An agent
+ // not named here is at 0, as every shard written before this was.
+-var callParseVersions = map[string]int{}
++//
++// cindy 1: a call through magpie's link (provider "magpie-<8 hex>") is
++// the gateway's, and left out (cindyGatewayProvider).
++var callParseVersions = map[string]int{"cindy": 1}
+ 
+ // CallCacheVersion is callCacheVersion and callParseVersions, for a cache
+ // of what is made of the calls (usage's requests-v1.bin and heatmap): a
+diff --git a/internal/sessions/call_versions_test.go b/internal/sessions/call_versions_test.go
+index ce6a8f10d..ce011b2a7 100644
+--- a/internal/sessions/call_versions_test.go
++++ b/internal/sessions/call_versions_test.go
+@@ -56,8 +56,9 @@ func TestCallParseVersionRaiseReadsThatAgentAlone(t *testing.T) {
+ 	}
+ 
+ 	unraised := CallCacheVersion()
++	kept := callParseVersions
+ 	callParseVersions = map[string]int{"claude": 1}
+-	t.Cleanup(func() { callParseVersions = map[string]int{} })
++	t.Cleanup(func() { callParseVersions = kept })
+ 	if CallCacheVersion() == unraised || !strings.Contains(CallCacheVersion(), "claude=1") {
+ 		t.Fatalf("raised Claude's calls, and what is made of them is still %q", CallCacheVersion())
+ 	}
+diff --git a/internal/sessions/calls_pi.go b/internal/sessions/calls_pi.go
+index 60de8918f..270c854ed 100644
+--- a/internal/sessions/calls_pi.go
++++ b/internal/sessions/calls_pi.go
+@@ -32,7 +32,14 @@ import (
+ // A call made through magpie's own entry (provider "magpie", which
+ // internal/agent's pi.go and omp.go write, "dial" before the rename) is the
+ // gateway's to count: it logged the call itself, with the provider and
+-// account that answered.
++// account that answered. Cindy's Pi names it otherwise: Cindy gives a
++// custom provider it imports the link's id and eight hex digits of a new
++// UUID (its import parser: `${id.slice(0,24)}-${randomUUID().slice(0,8)}`),
++// so magpie's link, id "magpie" (internal/agent's cindy.go), is
++// "magpie-beedee1a" there, and a call through it was counted twice: by the
++// gateway, and again here as Cindy's own (jealousy03888 on Discord, ZCode's
++// GLM-5.3 in Cindy listed once as a gateway request and once as a local
++// session).
+ //
+ // A fork (pi --fork, /fork) starts with a copy of its parent's entries, ids
+ // and times kept: they are the parent's calls, left out of the fork as
+@@ -47,8 +54,30 @@ func piCallFiles() []file {
+ 	return append(out, wslFiles("pi", "raft", "omp")...)
+ }
+ 
+-// piGateway is whether a provider is magpie's own entry.
+-func piGateway(provider string) bool { return provider == "magpie" || provider == "dial" }
++// piGateway is whether a provider is magpie's own entry, in agent's files.
++func piGateway(agent, provider string) bool {
++	if provider == "magpie" || provider == "dial" {
++		return true
++	}
++	return agent == "cindy" && cindyGatewayProvider(provider)
++}
++
++// cindyGatewayProvider is whether a provider id is the one Cindy gives
++// magpie's import link: "magpie-" and eight lowercase hex digits. A
++// provider the user adds in Cindy by hand under the name Magpie is
++// "magpie", or "magpie-2" beside another (its slug), never this shape.
++func cindyGatewayProvider(id string) bool {
++	rest, ok := strings.CutPrefix(id, "magpie-")
++	if !ok || len(rest) != 8 {
++		return false
++	}
++	for _, r := range rest {
++		if !('0' <= r && r <= '9' || 'a' <= r && r <= 'f') {
++			return false
++		}
++	}
++	return true
++}
+ 
+ type piCallLine struct {
+ 	Type      string   `json:"type"`
+@@ -156,7 +185,7 @@ func piCall(st *callFile, agent string, l piCallLine, provider, model string) (C
+ 	default:
+ 		return Call{}, false
+ 	}
+-	if u == nil || model == "" || piGateway(provider) {
++	if u == nil || model == "" || piGateway(agent, provider) {
+ 		return Call{}, false
+ 	}
+ 	if u.Input < 0 || u.Output < 0 || u.CacheRead < 0 || u.CacheWrite < 0 {
+diff --git a/internal/sessions/cindy_test.go b/internal/sessions/cindy_test.go
+index 59b7cff2d..70ac7943d 100644
+--- a/internal/sessions/cindy_test.go
++++ b/internal/sessions/cindy_test.go
+@@ -143,3 +143,56 @@ func TestCindyGatewaySessionListedOnce(t *testing.T) {
+ 		t.Fatal("Cindy's native ids leave its files out")
+ 	}
+ }
++
++// TestCindyGatewayCallsCountedOnce: Cindy imports magpie's link as the
++// provider "magpie-<8 hex>" (its import parser adds eight hex digits of a
++// new UUID to the link's id), and its Pi writes that id on each reply. A
++// reply through it is the gateway's, already counted there with the
++// account that answered; read again here it was listed and priced twice
++// (jealousy03888 on Discord: ZCode's GLM-5.3 in Cindy, one gateway row and
++// one "local session" row of the same 135/37/84,736 tokens). A provider
++// of the user's own whose name only begins with magpie stays Cindy's.
++func TestCindyGatewayCallsCountedOnce(t *testing.T) {
++	global, _ := cindySetup(t)
++	const id = "019a4c2e-5b1d-7f3a-9c6e-2d8f0a1b3c4d"
++	lines := []string{
++		`{"type":"session","version":3,"id":"` + id + `","timestamp":"2026-11-03T09:30:52.410Z","cwd":"/work/app"}`,
++		`{"type":"model_change","id":"a1b2c3d4","parentId":null,"timestamp":"2026-11-03T09:30:52.611Z","provider":"magpie-beedee1a","modelId":"zcode/GLM-5.3"}`,
++		`{"type":"thinking_level_change","id":"b2c3d4e5","parentId":"a1b2c3d4","timestamp":"2026-11-03T09:30:52.611Z","thinkingLevel":"high"}`,
++		`{"type":"message","id":"c3d4e5f6","parentId":"b2c3d4e5","timestamp":"2026-11-03T09:30:57.802Z","message":{"role":"user","content":[{"type":"text","text":"hi"}],"timestamp":1793611857800}}`,
++		`{"type":"message","id":"d4e5f6a7","parentId":"c3d4e5f6","timestamp":"2026-11-03T09:31:03.122Z","message":{"role":"assistant","content":[{"type":"text","text":"Hello!"}],"api":"openai-completions","provider":"magpie-beedee1a","model":"zcode/GLM-5.3","usage":{"input":135,"output":37,"cacheRead":84736,"cacheWrite":0,"reasoning":0,"totalTokens":84908,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"stop","timestamp":1793611857830,"responseId":"chatcmpl-5d2e","durationMs":5292,"thinkingLevel":"high"}}`,
++		`{"type":"message","id":"e5f6a7b8","parentId":"d4e5f6a7","timestamp":"2026-11-03T09:32:10.001Z","message":{"role":"user","content":[{"type":"text","text":"again"}],"timestamp":1793611930000}}`,
++		`{"type":"message","id":"f6a7b8c9","parentId":"e5f6a7b8","timestamp":"2026-11-03T09:32:12.500Z","message":{"role":"assistant","content":[{"type":"text","text":"ok"}],"api":"openai-completions","provider":"magpie-relay","model":"glm-5","usage":{"input":40,"output":5,"cacheRead":0,"cacheWrite":0,"reasoning":0,"totalTokens":45,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"stop","timestamp":1793611930010,"responseId":"chatcmpl-6e3f","durationMs":2400,"thinkingLevel":"high"}}`,
++	}
++	p := filepath.Join(global, "2026-11-03T09-30-52-410Z_"+id+".jsonl")
++	if err := os.WriteFile(p, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
++		t.Fatal(err)
++	}
++	old := time.Now().Add(-time.Hour)
++	os.Chtimes(p, old, old)
++	Reset()
++	var own int
++	for _, c := range Calls(time.Time{}) {
++		if c.Session != id {
++			continue
++		}
++		if c.Upstream == "magpie-beedee1a" {
++			t.Errorf("a call through magpie's link in Cindy counted as Cindy's own: %+v", c)
++		}
++		if c.Upstream == "magpie-relay" && c.Agent == "cindy" && c.Tokens == (Tokens{Input: 40, Output: 5}) {
++			own++
++		}
++	}
++	if own != 1 {
++		t.Fatalf("the call on the user's own magpie-relay counted %d times, want 1", own)
++	}
++	// Pi's own files name providers the user chose: the shape is Cindy's alone
++	if piGateway("pi", "magpie-beedee1a") || !piGateway("pi", "magpie") || !piGateway("cindy", "magpie-beedee1a") {
++		t.Fatal("piGateway's scope")
++	}
++	for _, s := range []string{"magpie-2", "magpie-BEEDEE1A", "magpie-beedee1", "magpie-beedee1a0", "magpie-beedee1g"} {
++		if cindyGatewayProvider(s) {
++			t.Errorf("%q taken for magpie's link", s)
++		}
++	}
++}
+-- 
+2.50.1 (Apple Git-155)
+
+
+From 52cdd22d679a061ee34a76722f477916501edbfd Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Tue, 3 Nov 2026 19:55:24 +0800
+Subject: [PATCH 2/2] gateway: a model the vendor lists after the codex picks
+ were saved still reaches the desktop catalog (#5062)
+
+What changed
+- CodexNativePicked built its keep-set from p.Models, the account list
+  frozen at the moment the user last picked - so a model the vendor
+  began listing afterwards (gpt-6.1-terra, the reporter's case) was
+  excluded from the desktop catalog the gateway writes for Codex
+  Desktop's model_catalog_json, and the picker could not see it even
+  though the gateway's own /v1/models served it. The keep-set now comes
+  from p.Picks(): the picked ids stay picked, and anything the vendor
+  lists since is kept beside them.
+
+Run
+- TestCodexDesktopCatalogKeepsNewlyListedBesidePicks on a3768cdd1-era
+  product (reverted, tests kept): FAIL - the newly listed model was
+  dropped from the catalog; with the fix: ok. gofmt clean; vet -tags
+  nogui (provider+gateway) clean.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gateway/codex_desktop_test.go | 64 ++++++++++++++++++++++++++
+ internal/provider/codex_models.go      | 10 ++--
+ 2 files changed, 71 insertions(+), 3 deletions(-)
+
+diff --git a/internal/gateway/codex_desktop_test.go b/internal/gateway/codex_desktop_test.go
+index 3c04585bb..63b824e7f 100644
+--- a/internal/gateway/codex_desktop_test.go
++++ b/internal/gateway/codex_desktop_test.go
+@@ -1,6 +1,7 @@
+ package gateway
+ 
+ import (
++	"context"
+ 	"encoding/base64"
+ 	"encoding/json"
+ 	"io"
+@@ -8,6 +9,7 @@ import (
+ 	"net/http/httptest"
+ 	"os"
+ 	"path/filepath"
++	"slices"
+ 	"strings"
+ 	"sync/atomic"
+ 	"testing"
+@@ -200,3 +202,65 @@ func TestCodexDesktopCatalogFollowsTheSignIn(t *testing.T) {
+ 		t.Fatalf("the Pro account's list: %v\n%s", ok, b)
+ 	}
+ }
++
++// A model the vendor lists after the picks were saved (OpenAI listed
++// GPT-6.1 Terra to ChatGPT accounts on 10-26) stays in the account's own
++// list: the picks it is narrowed by are the picks with those listed since
++// (provider.Picks), as magpie's catalog serves them — or the file and the
++// list Codex reads froze at what was listed when the user picked, while
++// /v1/models had the model (wenzijie2002: codex/gpt-6.1-terra picked in
++// magpie, the Codex app's picker without it, the log "fetched its list
++// again, 8 models" and 7 in the file).
++func TestCodexDesktopCatalogKeepsNewlyListedBesidePicks(t *testing.T) {
++	codexSignedIn(t)
++	codexDeskReset(t)
++	list := `{"models":[{"slug":"gpt-6-sol","priority":1,"visibility":"list"}]}`
++	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		io.WriteString(w, list)
++	}))
++	defer up.Close()
++	was := provider.CodexBase
++	provider.CodexBase = up.URL + "/backend-api/codex"
++	defer func() { provider.CodexBase = was }()
++
++	// picks saved while the account listed gpt-6-sol alone
++	p, err := provider.Find("codex")
++	if err != nil {
++		t.Fatal(err)
++	}
++	if _, err := p.Fetch(context.Background()); err != nil {
++		t.Fatal(err)
++	}
++	if err := provider.Save(provider.Provider{ID: "codex", Models: []string{"gpt-6-sol"}}); err != nil {
++		t.Fatal(err)
++	}
++
++	// gpt-6.1-terra listed since; the account's list asked for again
++	list = `{"models":[{"slug":"gpt-6-sol","priority":1,"visibility":"list"},` +
++		`{"slug":"gpt-6.1-terra","priority":2,"visibility":"list","base_instructions":"You are Codex, based on GPT-6.1 Terra."}]}`
++	if _, err := p.Fetch(context.Background()); err != nil {
++		t.Fatal(err)
++	}
++
++	CodexDesktopCatalog()
++	codexDeskAsked(t)
++	b, ok := CodexDesktopCatalog()
++	if !ok {
++		t.Fatal("not known after the backend answered")
++	}
++	var got struct {
++		Models []map[string]any `json:"models"`
++	}
++	if err := json.Unmarshal(b, &got); err != nil {
++		t.Fatal(err)
++	}
++	var own []string
++	for _, m := range got.Models {
++		if s, _ := m["slug"].(string); slices.Contains([]string{"gpt-6-sol", "gpt-6.1-terra"}, s) {
++			own = append(own, s)
++		}
++	}
++	if !slices.Equal(own, []string{"gpt-6-sol", "gpt-6.1-terra"}) {
++		t.Errorf("the account's own models beside the picks: %v\n%s", own, b)
++	}
++}
+diff --git a/internal/provider/codex_models.go b/internal/provider/codex_models.go
+index 33985ae40..463765060 100644
+--- a/internal/provider/codex_models.go
++++ b/internal/provider/codex_models.go
+@@ -644,7 +644,10 @@ func buildCodexListTag(kind string) string {
+ // user kept, and whether they narrowed that list at all. The backend lists
+ // every model the account can reach; when the user has picked among them on
+ // the codex provider, the gateway keeps its /models answer to those (see
+-// codexModels). Not narrowed — the account's list is left whole.
++// codexModels). Not narrowed — the account's list is left whole. The picks
++// are Picks: a model the vendor listed since they were saved is kept, as
++// magpie's catalog serves it, or the account's own list froze at what was
++// listed when the user picked (#5062).
+ //
+ // A provider switched off picks nothing, as it serves no agent anything
+ // (Provider.Off): its picks are kept for when it is switched on again and
+@@ -671,8 +674,9 @@ func CodexNativePicked() (map[string]bool, bool) {
+ 	if len(p.Models) == 0 {
+ 		return nil, false
+ 	}
+-	keep := make(map[string]bool, len(p.Models))
+-	for _, id := range p.Models {
++	picks := p.Picks()
++	keep := make(map[string]bool, len(picks))
++	for _, id := range picks {
+ 		keep[id] = true
+ 	}
+ 	return keep, true
+-- 
+2.50.1 (Apple Git-155)
+

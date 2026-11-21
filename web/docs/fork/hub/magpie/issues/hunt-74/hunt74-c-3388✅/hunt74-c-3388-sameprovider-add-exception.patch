@@ -1,0 +1,134 @@
+From 25b2a490ce718a07b2eabfa525a53de101fe8fcb Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Sat, 24 Oct 2026 09:38:52 +0800
+Subject: [PATCH] provider: two different presets on one host are not the one
+ twice, so OpenCode Go goes beside Zen (#3388)
+
+Adding a provider was refused when one already here held the same key
+at the same host with the same headers. OpenCode Zen and OpenCode Go
+are two presets of one vendor on opencode.ai, at /zen and /zen/go, and
+one account's key works for both: with Zen in, adding Go was answered
+"OpenCode Zen is already added with that key (opencode-zen)". The
+refusal now steps aside when what is here and what is added carry two
+different presets. The same preset twice, and a custom provider at the
+host of what is here with the same key, are still refused as the one
+already here.
+
+The check stays as sameProvider has it: its host is load-bearing.
+Providers are stored with protocol paths trimmed (an Anthropic base
+kept without its /v1) while import entries name them with it, and a
+Gemini-protocol relay is known by its bare host, so the host matches
+an account however each app writes its URLs. The import side takes
+nothing of this change.
+
+Run: TestAddSameKeyOtherPathOfHost, new, fails without the change with
+the reported answer and passes with it; TestAddSameKeySameHostCustom,
+new, holds the refusal for customs at one host; go test -tags nogui
+./internal/provider green; go vet for darwin, linux (nogui) and
+windows green; go build for the three green.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/provider/provider.go               | 10 ++-
+ internal/provider/sameprovider_path_test.go | 67 +++++++++++++++++++++
+ 2 files changed, 75 insertions(+), 2 deletions(-)
+ create mode 100644 internal/provider/sameprovider_path_test.go
+
+diff --git a/internal/provider/provider.go b/internal/provider/provider.go
+index a36e7df0..2277790b 100644
+--- a/internal/provider/provider.go
++++ b/internal/provider/provider.go
+@@ -961,9 +961,15 @@ func add(p Provider, once bool) (string, error) {
+ 	}
+ 	// the same key on the same host with the same headers is the one
+ 	// already here, not another: adding it twice would only split its usage.
+-	// A copy the user asked for is taken (AddCopy).
++	// A copy the user asked for is taken (AddCopy). Two different presets
++	// on one host are two products of the vendor, not the one twice: one
++	// key of the account reaches both (OpenCode's Zen and Go, #3388).
++	np := normalize(p)
+ 	for _, h := range All() {
+-		if once && h.Account == nil && sameProvider(h, normalize(p)) {
++		if once && h.Account == nil && sameProvider(h, np) {
++			if h.Preset != "" && np.Preset != "" && h.Preset != np.Preset {
++				continue
++			}
+ 			return "", fmt.Errorf("%s is already added with that key (%s); magpie provider key %s <key> changes its key", h.Name, h.ID, h.ID)
+ 		}
+ 	}
+diff --git a/internal/provider/sameprovider_path_test.go b/internal/provider/sameprovider_path_test.go
+new file mode 100644
+index 00000000..d781b3d5
+--- /dev/null
++++ b/internal/provider/sameprovider_path_test.go
+@@ -0,0 +1,67 @@
++package provider
++
++import (
++	"path/filepath"
++	"testing"
++)
++
++// #3388: OpenCode Zen and OpenCode Go are two presets of one vendor on one
++// host, at different paths (/zen, /zen/go), and one account's key works for
++// both. Adding Go beside Zen must not be refused as the one already there;
++// the same thing twice still is.
++func TestAddSameKeyOtherPathOfHost(t *testing.T) {
++	isolate(t)
++	home := t.TempDir()
++	t.Setenv("HOME", home)
++	t.Setenv("USERPROFILE", home)
++	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
++	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
++	zen, _ := FromPreset("opencode-zen")
++	zen.Key = "sk-opencode"
++	if _, err := Add(zen); err != nil {
++		t.Fatal(err)
++	}
++	goprov, _ := FromPreset("opencode-go")
++	goprov.Key = "sk-opencode"
++	id, err := Add(goprov)
++	if err != nil {
++		t.Fatalf("Go beside Zen, same key: %v", err)
++	}
++	got, err := Find(id)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if got.Chat != "https://opencode.ai/zen/go/v1" || got.Anthropic != "https://opencode.ai/zen/go" {
++		t.Fatalf("Go's endpoints moved: %+v", got)
++	}
++	// the same preset twice with the same key is still the one already here
++	dup, _ := FromPreset("opencode-go")
++	dup.Key = "sk-opencode"
++	if _, err := Add(dup); err == nil {
++		t.Fatal("a duplicate of Go was added")
++	}
++}
++
++// The dedup's host holds beyond the presets: a custom provider at one host
++// with a key of the account there is the one already here, at any path —
++// an address of a provider's is its host, as the import list reads it.
++func TestAddSameKeySameHostCustom(t *testing.T) {
++	isolate(t)
++	home := t.TempDir()
++	t.Setenv("HOME", home)
++	t.Setenv("USERPROFILE", home)
++	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
++	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
++	if _, err := Add(Provider{Name: "Relay", Chat: "https://relay.example/v1", Key: "sk-1"}); err != nil {
++		t.Fatal(err)
++	}
++	for _, u := range []string{"https://relay.example/v2", "https://relay.example"} {
++		if _, err := Add(Provider{Name: "Relay again", Chat: u, Key: "sk-1"}); err == nil {
++			t.Fatalf("%s was added beside the relay", u)
++		}
++	}
++	// another host is another provider, as it always was
++	if _, err := Add(Provider{Name: "Elsewhere", Chat: "https://other.example/v1", Key: "sk-1"}); err != nil {
++		t.Fatalf("another host: %v", err)
++	}
++}
+-- 
+2.50.1 (Apple Git-155)
+

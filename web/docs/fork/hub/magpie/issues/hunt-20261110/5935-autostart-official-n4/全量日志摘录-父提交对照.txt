@@ -1,0 +1,6 @@
+--- FAIL: TestClientPathCoversHandler (0.00s)
+--- FAIL: TestReadOnlyKeyEveryRoute (0.15s)
+FAIL
+FAIL	github.com/yetone/magpie/internal/gateway	862.090s
+FAIL
+exit=1

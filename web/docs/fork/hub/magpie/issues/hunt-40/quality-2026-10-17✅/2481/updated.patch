@@ -1,0 +1,196 @@
+diff --git a/internal/gateway/codex_backend.go b/internal/gateway/codex_backend.go
+--- a/internal/gateway/codex_backend.go
++++ b/internal/gateway/codex_backend.go
+@@ -903,9 +903,13 @@
+ 		// models was picked, which goes out with Codex's own sign-in
+ 		msg, _ := io.ReadAll(io.LimitReader(res.Body, 1<<20))
+ 		writeError(w, provider.Responses, res.StatusCode, codexKeyRefused(msg))
+-		s.record(Call{Time: start, From: provider.Responses, To: provider.Responses, Model: modelOf(body),
++		refused := Call{Time: start, From: provider.Responses, To: provider.Responses, Model: modelOf(body),
+ 			Provider: "openai", Agent: agentOf(r), Status: res.StatusCode,
+-			Millis: time.Since(start).Milliseconds(), Error: res.Status})
++			Millis: time.Since(start).Milliseconds(), Error: res.Status}
++		if tr != nil {
++			refused.Route = tr.ID
++		}
++		s.record(refused)
+ 		end(res.StatusCode, res.Status, 0, 0)
+ 		return
+ 	}
+@@ -917,7 +921,7 @@
+ 			// "Unknown error" alone (#409): said where the turn went
+ 			said := codexFailedEmpty(modelOf(body), res.Status)
+ 			writeError(w, provider.Responses, res.StatusCode, said)
+-			s.record(Call{Time: start, From: provider.Responses, To: provider.Responses, Model: modelOf(body),
++			s.record(Call{Route: tr.ID, Time: start, From: provider.Responses, To: provider.Responses, Model: modelOf(body),
+ 				Provider: "openai", Agent: agentOf(r), Kind: callKind(r.Header), Status: res.StatusCode,
+ 				Millis: time.Since(start).Milliseconds(), Error: said})
+ 			end(res.StatusCode, said, 0, 0)
+diff --git a/internal/gateway/codex_backend_test.go b/internal/gateway/codex_backend_test.go
+--- a/internal/gateway/codex_backend_test.go
++++ b/internal/gateway/codex_backend_test.go
+@@ -179,6 +179,145 @@
+ 	u := usage.Load(time.Time{})
+ 	if len(u) != 1 || u[0].Provider != "openai" || u[0].ProviderAccount != "" || u[0].Input != 4 {
+ 		t.Fatalf("usage %+v", u)
++	}
++}
++
++// A Codex relay OpenAI refuses (an API key it turns away) is still the
++// request its Routing row is: the call it records carries the route, so
++// the Routing page's "Request and response" opens it while the recent
++// calls have it, instead of saying it is gone.
++func TestCodexKeyRefusedCarriesItsRoute(t *testing.T) {
++	setup(t, provider.Chat, &fake{t: t})
++	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		w.Header().Set("Content-Type", "application/json")
++		w.WriteHeader(http.StatusUnauthorized)
++		io.WriteString(w, `{"error":{"message":"invalid_api_key"}}`)
++	}))
++	t.Cleanup(up.Close)
++	was := codexAPIBase
++	codexAPIBase = up.URL + "/v1"
++	t.Cleanup(func() { codexAPIBase = was })
++	s := New()
++	rec := httptest.NewRecorder()
++	req := httptest.NewRequest("POST", CodexPath+"/responses", strings.NewReader(`{"model":"gpt-5.5","stream":true,"input":"hi"}`))
++	req.Header.Set("Authorization", "Bearer sk-synthetic")
++	s.Handler().ServeHTTP(rec, req)
++	if rec.Code != http.StatusUnauthorized {
++		t.Fatalf("%d %s", rec.Code, rec.Body.String())
++	}
++	st := s.Trace(t.Context(), 0, 0)
++	if len(st.Routes) != 1 {
++		t.Fatalf("routing view has %d routes, want the turn", len(st.Routes))
++	}
++	c, ok := s.RouteCall(st.Routes[0].ID)
++	if !ok {
++		t.Fatalf("route %d: no call in the ring, so Request and response says the request is gone though its call is one of the last 40", st.Routes[0].ID)
++	}
++	if c.Status != http.StatusUnauthorized {
++		t.Errorf("route %d is the call %d (%d), not the refusal", st.Routes[0].ID, c.ID, c.Status)
++	}
++}
++
++// A Codex relay the backend fails with nothing said (Codex shows it as
++// "Unknown error" alone) is the request its Routing row is too: its call
++// carries the route the same way.
++func TestCodexEmptyFailureCarriesItsRoute(t *testing.T) {
++	chatgpt(t, func(w http.ResponseWriter, r *http.Request) {
++		w.WriteHeader(http.StatusInternalServerError)
++	})
++	s := New()
++	rec := httptest.NewRecorder()
++	req := httptest.NewRequest("POST", CodexPath+"/responses", strings.NewReader(`{"model":"gpt-5.5","stream":true,"input":"hi"}`))
++	req.Header.Set("Authorization", "Bearer chatgpt-token")
++	s.Handler().ServeHTTP(rec, req)
++	if rec.Code != http.StatusInternalServerError {
++		t.Fatalf("%d %s", rec.Code, rec.Body.String())
++	}
++	st := s.Trace(t.Context(), 0, 0)
++	if len(st.Routes) != 1 {
++		t.Fatalf("routing view has %d routes, want the turn", len(st.Routes))
++	}
++	c, ok := s.RouteCall(st.Routes[0].ID)
++	if !ok {
++		t.Fatalf("route %d: no call in the ring, so Request and response says the request is gone though its call is one of the last 40", st.Routes[0].ID)
++	}
++	if c.Status != http.StatusInternalServerError {
++		t.Errorf("route %d is the call %d (%d), not the failure", st.Routes[0].ID, c.ID, c.Status)
++	}
++}
++
++// 原生 compact 没有自己的 Routing turn；它的失败不能占用上一轮的 route。
++func TestCodexCompactFailureKeepsTheTurnRoute(t *testing.T) {
++	for _, tc := range []struct {
++		name   string
++		auth   string
++		status int
++		body   string
++	}{
++		{name: "api-key-refused", auth: "Bearer sk-synthetic", status: http.StatusUnauthorized, body: `{"error":{"message":"invalid_api_key"}}`},
++		{name: "api-key-empty-failure", auth: "Bearer sk-synthetic", status: http.StatusInternalServerError},
++		{name: "chatgpt-empty-failure", auth: "Bearer chatgpt-token", status: http.StatusInternalServerError},
++		{name: "chatgpt-refused", auth: "Bearer chatgpt-token", status: http.StatusForbidden, body: `{"error":{"message":"denied"}}`},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			setup(t, provider.Chat, &fake{t: t})
++			up := chatgpt(t, func(w http.ResponseWriter, r *http.Request) {
++				if strings.HasSuffix(r.URL.Path, "/responses/compact") {
++					w.Header().Set("Content-Type", "application/json")
++					w.WriteHeader(tc.status)
++					io.WriteString(w, tc.body)
++					return
++				}
++				w.Header().Set("Content-Type", "text/event-stream")
++				io.WriteString(w, sse(`data: {"type":"response.completed","response":{"id":"r1","usage":{"input_tokens":4,"output_tokens":1}}}`))
++			})
++			was := codexAPIBase
++			codexAPIBase = up.URL + "/v1"
++			t.Cleanup(func() { codexAPIBase = was })
++			s := New()
++			req := httptest.NewRequest("POST", CodexPath+"/responses", strings.NewReader(`{"model":"gpt-5.5","stream":true,"input":"hi"}`))
++			req.Header.Set("Authorization", tc.auth)
++			rec := httptest.NewRecorder()
++			s.Handler().ServeHTTP(rec, req)
++			if rec.Code != http.StatusOK {
++				t.Fatalf("turn: %d %s", rec.Code, rec.Body.String())
++			}
++			before := s.Trace(t.Context(), 0, 0)
++			if len(before.Routes) != 1 {
++				t.Fatalf("turn has %d routes, want 1", len(before.Routes))
++			}
++			route := before.Routes[0].ID
++			turn, ok := s.RouteCall(route)
++			if !ok || turn.Status != http.StatusOK {
++				t.Fatalf("turn route %d: call %+v, found %v", route, turn, ok)
++			}
++			req = httptest.NewRequest("POST", CodexPath+"/responses/compact", strings.NewReader(`{"model":"gpt-5.5","input":"hi"}`))
++			req.Header.Set("Authorization", tc.auth)
++			rec = httptest.NewRecorder()
++			s.Handler().ServeHTTP(rec, req)
++			if rec.Code != tc.status {
++				t.Fatalf("compact: %d %s, want %d", rec.Code, rec.Body.String(), tc.status)
++			}
++			if tc.status != http.StatusUnauthorized && rec.Body.String() != tc.body {
++				t.Errorf("compact body %q, want upstream's %q", rec.Body.String(), tc.body)
++			}
++			after := s.Trace(t.Context(), 0, 0)
++			if len(after.Routes) != 1 || after.Routes[0].ID != route || after.Routes[0].Status != http.StatusOK {
++				t.Fatalf("compact changed the turn's routes: %+v", after.Routes)
++			}
++			got, ok := s.RouteCall(route)
++			if !ok || got.ID != turn.ID || got.Status != http.StatusOK {
++				t.Errorf("compact replaced turn call %d with %+v (found %v)", turn.ID, got, ok)
++			}
++			if _, ok := s.RouteCall(0); ok {
++				t.Error("compact without a route became a Routing request")
++			}
++			for _, call := range s.Recent() {
++				if call.ID != turn.ID && call.Route != 0 {
++					t.Errorf("compact call acquired turn route: %+v", call)
++				}
++			}
++		})
+ 	}
+ }
+ 
+diff --git a/docs/subsystems/gateway-routing.md b/docs/subsystems/gateway-routing.md
+--- a/docs/subsystems/gateway-routing.md
++++ b/docs/subsystems/gateway-routing.md
+@@ -41,6 +41,15 @@
+ | Prompt | What each request's prompt held, part by part: the agent's system prompt, tool definitions (an MCP server's tools as one item), instruction files and skills, files its tools read, their other output, and the conversation. `inspectPrompt` reads it from the body as the agent sent it, before translation; `calibrated` scales the estimate to the prompt the vendor counted and sets the window of the model that answered. The route keeps names and sizes only, never the text, so the routing history on disk holds none. For the card's text (masaka on Discord), the trace keeps the last `promptBodies` (10) request bodies in memory only (at most 32 MiB each, 64 MiB together), masked as the vendor got them; for a model let have it unmasked, the masked copy is kept all the same. `PromptText` reads a part's items and their text from that body again (`prompt_text.go`), served to the GUI as `/api/context/text`; once a body is dropped, or magpie quits, its text is gone. It goes on the trace as `Route.Prompt`, with `Route.Conv` naming a conversation that has no session id. The GUI's `/api/context` scores each agent from it (`internal/gui/context.go`). A session's line and its compactions are its own turns': a call with a `Kind`, a Claude Code subagent's (`Route.Sub`, from `x-claude-code-agent-id`), and, in a session whose turns carry tool definitions, a request without any (auto mode's classifier, the title, the quota check) are left out, so a classifier's 40K after a 100K turn is no compaction (`toolSessions`, `TestContextSideCallsAreNoCompaction`). | [`prompt.go`](../../internal/gateway/prompt.go) |
+ | Vertex AI | A [Google Vertex AI provider](providers-accounts.md#responsibilities-and-sources-of-truth) speaks Gemini alone. A request goes to `<base>/publishers/google/models/<model>:streamGenerateContent?alt=sse` (`provider.VertexPath`, `upstreamPath`), the model named as the user's upstream name for it says (`UpstreamNameIn`, which the usage log's endpoint names too), with no `model` or `stream` field in its body (`passthrough`, `forwardOnce`, `geminiRequest`). A Gemini client's request is relayed as it came, its own `thinkingConfig`, `safetySettings` and the rest kept: streamed there, asked whole to `:generateContent` (`provider.VertexWholePath`), which answers one JSON body (Factory's rule of translating a whole request, as its route only streams, isn't Vertex AI's). Every other API's is translated (`buildFor`, `buildVertex`) and its stream read by `codeAssistDecoder`, which gives thought parts as reasoning, never as the answer's text. Effort: `vertexEffort` fits it to the model's levels, reasoning turned off going as `minimal` fitted the same way, and holds a model whose levels aren't known to `low`…`high`. `vertexThinking` sends Gemini 3 a `thinkingLevel` (`includeThoughts` false with reasoning off) and 2.5 a `thinkingBudget` in the model's range (`vertexBudgets`): turned off, the budget that stops its thinking, or Pro's least, as Pro can't stop. Thought signatures are every Gemini path's (#1445): a call's signature reaches the client in its id (`signedID`) and goes back on the call it came on, while a call with none in a step Vertex AI signed goes without; a step with nothing to give back has every call sent `skip_thought_signature_validator`. A 400 `Invalid thought signature.` is asked again with every call sent so (`withoutSignatures`), for that request only. A 400 refusing `minimal` (`geminiRefusedLevel`) is asked again at the model's lowest other level (`onEffort`), and `markUnfit(offRefused)` keeps that level until magpie restarts. Both retries are the translated path's. Vertex AI's own Google Search grounding isn't used: `searchHosts` names only `generativelanguage.googleapis.com` for Gemini, so magpie searches for it (`search.go`). | [`vertex.go`](../../internal/gateway/vertex.go), [`gateway.go`](../../internal/gateway/gateway.go), [`codeassist.go`](../../internal/gateway/codeassist.go), [`gemini.go`](../../internal/gateway/gemini.go), [`gemini_signature.go`](../../internal/gateway/gemini_signature.go), [`search.go`](../../internal/gateway/search.go) |
+ | Bedrock Mantle | A request on chat completions or Responses to an [Amazon Bedrock Mantle provider](providers-accounts.md#responsibilities-and-sources-of-truth) goes to the prefix that serves its model (`mantleRoutes`, `provider.MantleBase` in `forwardOnce`): `/openai/v1` for OpenAI's closed GPTs and xAI's Grok, `/v1` for the rest. A model Mantle refuses there with "model `x` isn't supported on this route" (a maker the rule doesn't know yet) is asked once more at the other prefix, and when it is taken there that prefix is remembered for the model in `unfit` (`mantleRouteKey`) until the gateway restarts. A model refused at both gets the first refusal and nothing is remembered (`mantleReroute`). Messages go to `/anthropic` alone. | [`mantle.go`](../../internal/gateway/mantle.go), [`gateway.go`](../../internal/gateway/gateway.go) |
++
++Codex's native `/responses` relay records the recent call with its route,
++including an API-key 401 or an empty upstream failure. `Server.RouteCall`
++in [`gateway.go`](../../internal/gateway/gateway.go) can then find that call
++while it remains in the last 40. Native `/responses/compact` has no turn
++route; a refusal there keeps `Call.Route` zero and does not reuse a previous
++turn's route. This association does not add whole-body capture or an archive
++to the relay (`codexUpstreamOn` in
++[`codex_backend.go`](../../internal/gateway/codex_backend.go)).
+ 
+ ## Codex titles, descriptions and predictions
+ 

@@ -1,0 +1,5 @@
+{
+  "name": "X-Track: Twitter Footprint & Bookmark Manager",
+  "description": "A dashboard for managing synced Twitter bookmarks, tracking browsing history/footprints, and analyzing interests using Gemini AI. This serves as the management UI for the browser extension.",
+  "requestFramePermissions": []
+}

@@ -1,0 +1,382 @@
+From dcb00beb56d465d8a913a163f2fb9ddb284b4683 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Sat, 17 Oct 2026 04:21:36 +0800
+Subject: [PATCH] gateway, gui: the Providers page says the number Claude
+ Desktop brackets a model's row with, so a row of that menu can be matched to
+ its provider (#2578)
+
+Two providers serving the same Claude model read alike in Claude Desktop's
+menu: it names a row after its own catalog and brackets the folded rows
+with the ten digits of the id magpie lists the model by (aliasNumber, in
+claudeLooking). That number is stable per model, but nothing in magpie
+said it, so the user could not tell which provider a menu row is on.
+
+DesktopNumber says the number in the id Desktop is shown a model by, ""
+when it is shown the model's own id. providerInfo sends it as `desktop`
+on each model the gateway serves (a hand-picked model that isn't served
+says none), and the editor draws it as a small badge on the model's chip,
+with the words in all four languages.
+
+Run (macOS, darwin arm64, sandboxed HOME with pinned Go caches):
+- TestProviderModelsSayDesktopNumber red before (models carried no
+  desktop), green after; TestDesktopNumber green
+- model-desktop-number.test.cjs (new) red 4/4 on the old app.js, green
+  4/4; models-fold, models-free-only, model-rate, model-copy-id,
+  model-kind, provider-none-picked, i18n-keys all green, Chromium and
+  WebKit, en/zh/de
+- TestCoreScriptBudget green (app.js 1,248,015 of 1,250,000)
+- gofmt -l clean; go vet ./..., GOOS=linux vet -tags nogui ./...,
+  GOOS=windows vet ./...; go build, GOOS=linux build -tags nogui,
+  GOOS=windows build
+
+Addresses part of #2578
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gateway/desktop.go                   | 14 +++
+ internal/gateway/desktop_test.go              | 30 +++++++
+ internal/gui/assets/app.js                    |  7 ++
+ internal/gui/assets/i18n.js                   |  4 +
+ internal/gui/providers.go                     | 15 ++++
+ internal/gui/providers_desktop_test.go        | 75 ++++++++++++++++
+ .../gui/tests/model-desktop-number.test.cjs   | 89 +++++++++++++++++++
+ 7 files changed, 234 insertions(+)
+ create mode 100644 internal/gui/providers_desktop_test.go
+ create mode 100644 internal/gui/tests/model-desktop-number.test.cjs
+
+diff --git a/internal/gateway/desktop.go b/internal/gateway/desktop.go
+index 5bd7d5c8..225b98c8 100644
+--- a/internal/gateway/desktop.go
++++ b/internal/gateway/desktop.go
+@@ -177,6 +177,20 @@ func claudeLooking(e provider.Entry) string {
+ // Claude Code (claudeLooking).
+ func DesktopID(e provider.Entry) string { return claudeLooking(e) }
+ 
++// DesktopNumber is the ten digits of the id Claude Desktop is shown e by
++// (claudeLooking) that magpie made for it: the fragment its menu brackets
++// a row with when it folds rows of one catalog name into one, so the
++// Providers page says it beside the model and a row of its menu can be
++// matched back to its provider (#2578). "" when Desktop is shown e's own
++// id, which carries none.
++func DesktopNumber(e provider.Entry) string {
++	n := aliasNumber(e.ID)
++	if !strings.Contains(claudeLooking(e), n) {
++		return "" // Desktop is shown the model's own id
++	}
++	return n
++}
++
+ // desktopModels is /v1/models as Claude Desktop is shown it: every model
+ // picked for it (provider.CatalogFor, the Agents page's model list) by an id
+ // it keeps (claudeLooking), named as the agents' lists name models
+diff --git a/internal/gateway/desktop_test.go b/internal/gateway/desktop_test.go
+index 6cff01e3..b4b4998f 100644
+--- a/internal/gateway/desktop_test.go
++++ b/internal/gateway/desktop_test.go
+@@ -143,3 +143,33 @@ type desktopRow struct {
+ 	DisplayName string `json:"display_name"`
+ 	Description string `json:"description"`
+ }
++
++// DesktopNumber is the number in the id Claude Desktop is shown a model by
++// (claudeLooking), and "" when it is shown the model's own id: the
++// Providers page says it beside the model, so a row of Desktop's menu can
++// be matched back to its provider (#2578)
++func TestDesktopNumber(t *testing.T) {
++	for _, c := range []struct {
++		e    provider.Entry
++		want func(id string) string
++	}{
++		// an effort Claude model: magpie-<n>.anthropic.claude-opus-5-5
++		{provider.Entry{ID: "a/claude-opus-5-5", Model: "claude-opus-5-5", Efforts: []string{"low"}}, aliasNumber},
++		// any other with levels: mythos-magpie-<n>
++		{provider.Entry{ID: "a/glm-5.3", Model: "glm-5.3", Efforts: []string{"low"}}, aliasNumber},
++		// no levels and no word Desktop keeps: anthropic/magpie-<n>
++		{provider.Entry{ID: "a/glm-5.3", Model: "glm-5.3"}, aliasNumber},
++	} {
++		if got := DesktopNumber(c.e); got == "" || got != c.want(c.e.ID) {
++			t.Errorf("%s: DesktopNumber = %q", c.e.ID, got)
++		}
++		if got := DesktopNumber(c.e); !strings.Contains(claudeLooking(c.e), got) {
++			t.Errorf("%s: %q is not in the id Desktop is shown (%s)", c.e.ID, got, claudeLooking(c.e))
++		}
++	}
++	// a Claude model without levels is shown by its own id, which carries
++	// no number
++	if got := DesktopNumber(provider.Entry{ID: "a/claude-opus-5-5", Model: "claude-opus-5-5"}); got != "" {
++		t.Errorf("a Claude model's own id: DesktopNumber = %q", got)
++	}
++}
+diff --git a/internal/gui/assets/app.js b/internal/gui/assets/app.js
+index f8d1402c..823ed5e7 100644
+--- a/internal/gui/assets/app.js
++++ b/internal/gui/assets/app.js
+@@ -10761,6 +10761,13 @@ function renderModels(p) {
+       if (rate) c.append(rate);
+       const ctx = contextTag(m.context, m.name);
+       if (ctx) c.append(ctx);
++      // the number Claude Desktop's menu brackets this model's row with
++      // (#2578), so a row of that menu can be matched to this provider
++      if (m.desktop) {
++        const d = el("span", "badge ctx", m.desktop);
++        d.title = t("The number Claude Desktop's menu shows beside this model");
++        c.append(d);
++      }
+       if (m.default) c.title = `${m.id} · ${m.default}`;
+       else if (m.name && m.name !== m.id) c.title = m.id;
+       if (free) c.title = (c.title || m.id) + " · " + t(m.free ? "free: it doesn't use the plan's credits" : "free: so its name says");
+diff --git a/internal/gui/assets/i18n.js b/internal/gui/assets/i18n.js
+index 956630bd..3d4ff23b 100644
+--- a/internal/gui/assets/i18n.js
++++ b/internal/gui/assets/i18n.js
+@@ -2126,6 +2126,7 @@ const I18N = {
+     "Asked as {agent} asks, for a relay that serves only {agent}": "按 {agent} 的请求方式发送，适用于只服务 {agent} 的中转站",
+     "no Claude Code request has come through magpie yet: run Claude Code through magpie once, then test again": "还没有 Claude Code 请求经过 magpie：先通过 magpie 运行一次 Claude Code，再来测试",
+     "Copy model ID": "复制模型 ID",
++    "The number Claude Desktop's menu shows beside this model": "Claude Desktop 菜单在该模型旁显示的编号",
+     "Model ID {model} copied": "已复制模型 ID {model}",
+     "A classifier's models aren't sent test requests: Test under Endpoints asks Jev's endpoint for them.": "分类器模型不单独发测试请求：「端点」下的「测试」会向 Jev 端点检测它们。",
+     "{name} is reached through its own API, which magpie translates each agent request for, so a test request can't be sent to it on its own. Ask the model from an agent to try it.": "{name} 使用自有接口，由 magpie 转换 Agent 的请求，无法单独发测试请求。请在 Agent 中使用该模型测试。",
+@@ -5788,6 +5789,7 @@ const I18N = {
+     "Asked as {agent} asks, for a relay that serves only {agent}": "依 {agent} 的請求方式傳送，適用於只服務 {agent} 的中轉站",
+     "no Claude Code request has come through magpie yet: run Claude Code through magpie once, then test again": "還沒有 Claude Code 請求經過 magpie：先透過 magpie 執行一次 Claude Code，再來測試",
+     "Copy model ID": "複製模型 ID",
++    "The number Claude Desktop's menu shows beside this model": "Claude Desktop 選單在該模型旁顯示的編號",
+     "Model ID {model} copied": "已複製模型 ID {model}",
+     "A classifier's models aren't sent test requests: Test under Endpoints asks Jev's endpoint for them.": "分類器模型不單獨發測試請求：「端點」下的「測試」會向 Jev 端點檢測它們。",
+     "{name} is reached through its own API, which magpie translates each agent request for, so a test request can't be sent to it on its own. Ask the model from an agent to try it.": "{name} 使用自有介面，由 magpie 轉換 Agent 的請求，無法單獨發測試請求。請在 Agent 中使用該模型測試。",
+@@ -9469,6 +9471,7 @@ const I18N = {
+     "Asked as {agent} asks, for a relay that serves only {agent}": "{agent} と同じ形式で送信します（{agent} 専用の中継サービス向け）",
+     "no Claude Code request has come through magpie yet: run Claude Code through magpie once, then test again": "まだ Claude Code のリクエストが magpie を通っていません。magpie 経由で一度 Claude Code を使ってから、もう一度テストしてください",
+     "Copy model ID": "モデル ID をコピー",
++    "The number Claude Desktop's menu shows beside this model": "Claude Desktop のメニューでこのモデルの横に表示される番号",
+     "Model ID {model} copied": "モデル ID {model} をコピーしました",
+     "A classifier's models aren't sent test requests: Test under Endpoints asks Jev's endpoint for them.": "分類器のモデルにはテストリクエストを送りません。「エンドポイント」の「テスト」で Jev のエンドポイントに問い合わせます。",
+     "{name} is reached through its own API, which magpie translates each agent request for, so a test request can't be sent to it on its own. Ask the model from an agent to try it.": "{name} は独自の API で接続され、magpie がエージェントの各リクエストを変換するため、テストリクエストを単独で送ることはできません。エージェントからこのモデルを使って試してください。",
+@@ -13160,6 +13163,7 @@ const I18N = {
+     "Asked as {agent} asks, for a relay that serves only {agent}": "So gesendet, wie {agent} fragt – für ein Relay, das nur {agent} bedient",
+     "no Claude Code request has come through magpie yet: run Claude Code through magpie once, then test again": "Noch keine Anfrage von Claude Code lief über magpie: Claude Code einmal über magpie nutzen, dann erneut testen",
+     "Copy model ID": "Modell-ID kopieren",
++    "The number Claude Desktop's menu shows beside this model": "Die Nummer, die Claude Desktops Menü neben diesem Modell zeigt",
+     "Model ID {model} copied": "Modell-ID {model} kopiert",
+     "A classifier's models aren't sent test requests: Test under Endpoints asks Jev's endpoint for them.": "An die Modelle eines Klassifikators gehen keine Testanfragen: „Testen“ unter „Endpunkte“ fragt sie beim Endpunkt von Jev ab.",
+     "{name} is reached through its own API, which magpie translates each agent request for, so a test request can't be sent to it on its own. Ask the model from an agent to try it.": "{name} wird über eine eigene API erreicht, für die magpie jede Agentenanfrage übersetzt; eine eigenständige Testanfrage ist daher nicht möglich. Fragen Sie das Modell aus einem Agenten heraus an, um es auszuprobieren.",
+diff --git a/internal/gui/providers.go b/internal/gui/providers.go
+index 54eaf40e..bd5ea77a 100644
+--- a/internal/gui/providers.go
++++ b/internal/gui/providers.go
+@@ -54,6 +54,12 @@ type modelJSON struct {
+ 	Same       string   `json:"same,omitempty"`      // the model the user said it is the same as, for the groups magpie finds (#583)
+ 	Merge      string   `json:"merge,omitempty"`     // what those groups merge it by when the user says nothing
+ 	Kind       string   `json:"kind,omitempty"`      // what the user said it makes: image or video (#1399)
++	// Desktop is the number Claude Desktop brackets this model's menu row
++	// with when it folds rows of one name into one (#2578): the page says
++	// it on the model's row, so a row of that menu can be matched to its
++	// provider. "" when Desktop is shown the model's own id, and for a
++	// model it isn't served.
++	Desktop string `json:"desktop,omitempty"`
+ 	// what it costs, USD per million tokens (#819): the price the user set
+ 	// for it, and its list price, its vendor's else its maker's, before the
+ 	// provider's price rate
+@@ -679,6 +685,12 @@ func providerInfo(p provider.Provider, agents []agentUse) providerJSON {
+ 	// was most of the Providers page's wait with many models (lml on
+ 	// Discord, Windows)
+ 	set := settings.Load()
++	// the models the gateway serves, by id: each says the number Claude
++	// Desktop brackets its menu row with (#2578)
++	desktop := map[string]provider.Entry{}
++	for _, e := range provider.Catalog() {
++		desktop[e.ID] = e
++	}
+ 	named := func(m catalog.Model, on bool) modelJSON {
+ 		images := m.Images || catalog.SeesImages(m.ID)
+ 		if m.ImageInput != nil {
+@@ -712,6 +724,9 @@ func providerInfo(p provider.Provider, agents []agentUse) providerJSON {
+ 		j.Same = sames[p.ID+"/"+m.ID]
+ 		j.Kind = p.ModelKind(m.ID)
+ 		j.Merge = provider.MergeName(m.ID)
++		if e, ok := desktop[p.ID+"/"+m.ID]; ok {
++			j.Desktop = gateway.DesktopNumber(e)
++		}
+ 		if mp, ok := held.ModelPrices[p.ID+"/"+m.ID]; ok {
+ 			if pr, bad := mp.Price(); bad == "" {
+ 				j.Price = &pr
+diff --git a/internal/gui/providers_desktop_test.go b/internal/gui/providers_desktop_test.go
+new file mode 100644
+index 00000000..f78debfb
+--- /dev/null
++++ b/internal/gui/providers_desktop_test.go
+@@ -0,0 +1,75 @@
++package gui
++
++import (
++	"encoding/json"
++	"os"
++	"regexp"
++	"testing"
++
++	"github.com/yetone/magpie/internal/gateway"
++	"github.com/yetone/magpie/internal/provider"
++)
++
++// The number Claude Desktop brackets a model's menu row with (#2578) is
++// said on the Providers page too, on the model's own row, so a menu row
++// there can be matched back to its provider: the number the page says is
++// the one in the id Claude Desktop is shown (gateway.DesktopID).
++func TestProviderModelsSayDesktopNumber(t *testing.T) {
++	t.Setenv("HOME", t.TempDir())
++	t.Setenv("USERPROFILE", os.Getenv("HOME"))
++	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
++	t.Setenv("XDG_CACHE_HOME", t.TempDir())
++	p := provider.Provider{ID: "relay", Name: "Relay", Key: "k", Chat: "http://127.0.0.1:1/v1", Models: []string{"claude-opus-5-5", "m2", "sonnet-5-1m"}}
++	if err := provider.Save(p); err != nil {
++		t.Fatal(err)
++	}
++	if err := provider.SetModelEfforts("relay/claude-opus-5-5", []string{"low", "high"}); err != nil {
++		t.Fatal(err)
++	}
++	var num = regexp.MustCompile(`magpie-(\d+)`)
++	// the number in the id Claude Desktop is shown, "" when the id there
++	// is the model's own
++	want := func(id string) string {
++		desktop := ""
++		for _, e := range provider.Catalog() {
++			if e.ID == id {
++				if m := num.FindStringSubmatch(gateway.DesktopID(e)); m != nil {
++					desktop = m[1]
++				}
++			}
++		}
++		return desktop
++	}
++	raw, err := json.Marshal(providerInfo(p, nil))
++	if err != nil {
++		t.Fatal(err)
++	}
++	var page struct {
++		Models []map[string]any `json:"models"`
++	}
++	if err := json.Unmarshal(raw, &page); err != nil {
++		t.Fatal(err)
++	}
++	said := map[string]any{}
++	for _, m := range page.Models {
++		said[m["id"].(string)] = m["desktop"]
++	}
++	for _, c := range []struct{ id, form string }{
++		// an effort Claude model: magpie-<n>.anthropic.claude-opus-5-5,
++		// the shape the issue's menu row folds into a catalog name
++		{"relay/claude-opus-5-5", "magpie-<n>.anthropic.<model>"},
++		// no efforts and no Claude word in it: anthropic/magpie-<n>
++		{"relay/m2", "anthropic/magpie-<n>"},
++		// a Claude word but no level and no Claude model's shape: its own
++		// id, which carries no number
++		{"relay/sonnet-5-1m", "own"},
++	} {
++		w := want(c.id)
++		if c.form == "own" && w != "" {
++			t.Fatalf("%s: Desktop is shown %q, want its own id", c.id, w)
++		}
++		if got := said[c.id[len("relay/"):]]; got != w && !(w == "" && got == nil) {
++			t.Errorf("%s: the page says desktop %v, want %q (%s)", c.id, got, w, c.form)
++		}
++	}
++}
+diff --git a/internal/gui/tests/model-desktop-number.test.cjs b/internal/gui/tests/model-desktop-number.test.cjs
+new file mode 100644
+index 00000000..0336725b
+--- /dev/null
++++ b/internal/gui/tests/model-desktop-number.test.cjs
+@@ -0,0 +1,89 @@
++// Run with Node's test runner and Playwright on the module path; see README.md.
++// Claude Desktop folds the rows of one catalog name into one and brackets
++// them with the ten digits of the model's id (#2578), so two providers'
++// Claude model read alike there. The Providers page says the number on the
++// model's own chip, so a row of that menu can be matched back to its
++// provider. A model Desktop shows by its own id carries no number, and no
++// badge. In English and Chinese, Chromium and WebKit.
++const assert = require("node:assert/strict");
++const fs = require("node:fs/promises");
++const path = require("node:path");
++const { test } = require("node:test");
++const { chromium, webkit } = require("playwright");
++
++const assets = path.resolve(__dirname, "../assets");
++const fetched = new Date(Date.now() - 3600e3).toISOString();
++const relay = (models) => ({
++  id: "relay", name: "Relay", icon: "generic", host: "relay.example.com", chat: "https://relay.example.com/v1", responses: "", anthropic: "", catalog: "",
++  models, chosen: [], fetched, agents: [], fallback: [], headers: {},
++  key: { set: true, masked: "sk-…one" }, keyList: [], balanceToken: { takes: false, set: false }, proxy: "",
++});
++// the number is the one the gateway puts in the id Claude Desktop is shown:
++// two providers' same Claude model, one carrying it, one its own id
++const models = [
++  { id: "claude-opus-5-5", name: "Opus 5.5", on: true, desktop: "3233491987" },
++  { id: "claude-sonnet-5", name: "Sonnet 5", on: true },
++];
++
++function serve(lang) {
++  const providers = { providers: [relay(models)], presets: [], excluded: [], gateway: { running: true, window: true } };
++  const state = { agents: [], profiles: [], settings: { lang, theme: "light" } };
++  return async (route) => {
++    const req = route.request(), url = new URL(req.url());
++    const json = (data) => route.fulfill({ json: data });
++    if (url.pathname === "/boot.js") return route.fulfill({ contentType: "text/javascript", body: `window.bootPrefs = {lang:"${lang}",theme:"light",web:true};` });
++    if (url.pathname === "/wails/runtime.js") return route.fulfill({ contentType: "text/javascript", body: "export const Window = {};" });
++    if (url.pathname === "/api/state") return json(state);
++    if (url.pathname === "/api/plugins") return json({ plugins: [] });
++    if (url.pathname === "/api/providers") return json(providers);
++    if (url.pathname === "/api/groups") return json({ groups: [] });
++    if (url.pathname.startsWith("/api/")) return json({});
++    const file = path.join(assets, url.pathname === "/" ? "index.html" : url.pathname);
++    const contentType = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png" }[path.extname(file)];
++    await route.fulfill({ body: await fs.readFile(file), contentType });
++  };
++}
++
++const words = {
++  en: "The number Claude Desktop's menu shows beside this model",
++  zh: "Claude Desktop 菜单在该模型旁显示的编号",
++};
++
++for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium", "webkit"])) {
++  for (const lang of ["en", "zh"]) {
++    test(`${engine} ${lang}: the Desktop number is said on the model's chip`, async (t) => {
++      const browser = await (engine === "webkit" ? webkit.launch() : chromium.launch({ channel: "chromium" }));
++      const page = await (await browser.newContext({ viewport: { width: 900, height: 600 }, reducedMotion: "reduce" })).newPage();
++      t.after(async () => {
++        if (process.env.ARTIFACT_DIR) {
++          await fs.mkdir(process.env.ARTIFACT_DIR, { recursive: true });
++          await page.screenshot({ path: path.join(process.env.ARTIFACT_DIR, `${engine}-${lang}-model-desktop-number.png`) });
++        }
++        await browser.close();
++      });
++      page.setDefaultTimeout(5000);
++      const errors = [];
++      page.on("pageerror", (e) => errors.push(e.message));
++      await page.route("**/*", serve(lang));
++      await page.goto("http://magpie.test/?view=providers");
++
++      const editor = page.locator("#modal:not([hidden]) .editor");
++      await page.locator(".row.provider", { hasText: "Relay" }).click();
++      await editor.locator(".ehead b", { hasText: "Relay" }).waitFor();
++      await editor.locator(".mchips .mchip").first().waitFor();
++
++      // the number on its model's chip, said where a hover reads it
++      const chip = editor.locator(".mchips .mchip", { hasText: "Opus 5.5" });
++      const badge = chip.locator(".badge", { hasText: "3233491987" });
++      assert.equal(await badge.count(), 1, "the number is on the chip");
++      assert.equal(await badge.getAttribute("title"), words[lang]);
++
++      // a model Desktop shows by its own id carries no number
++      assert.equal(await editor.locator(".mchips .mchip", { hasText: "Sonnet 5" }).locator(".badge").count(), 0, "no number on its own id");
++
++      const missing = await page.evaluate(() => ["The number Claude Desktop's menu shows beside this model"].filter((k) => !I18N.zh[k]));
++      assert.deepEqual(missing, [], "every string has its Chinese");
++      assert.deepEqual(errors, []);
++    });
++  }
++}
+-- 
+2.50.1 (Apple Git-155)
+

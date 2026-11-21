@@ -1,0 +1,2224 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: eisen0419 <usetoken0419@gmail.com>
+Date: Sat, 21 Nov 2026 06:32:13 +0800
+Subject: [PATCH] library: billion-context uses the configured bili port when
+ 8787 is taken
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+#7382, wxy0626. Enabling Zed, Hermes or dsh no longer probes a hardcoded
+127.0.0.1:8787. The shared bili start uses ACP_PORT, then PORT, then
+port in billion-context.json, otherwise 8787, and the health probe and
+the /bili/ prefix use that same origin. A foreign listener on the default
+8787 (a 401, not bili's health) is left alone; a bili already answering
+from 18787 is used instead. A port the file sets is not replaced.
+
+A 503 {"ok":false,"reason":"starting"} is bili itself, bound before
+registration finishes, so the child is kept until health is ok. Health
+probing separates TCP dialing (biliDialTimeout = 3s; any connect failure,
+including Windows' ~2s loopback RST retry, is biliDown) from post-connect
+HTTP replies (biliProbeTimeout = 2s + conn deadline; disconnect or stall
+after TCP accept is biliStalled). Pre-spawn probes skip biliStalled and
+biliOther on lane ports, while biliStartAt waits out biliStalled while our
+own child stays alive rather than killing it as a port conflict.
+
+BILI_CONFIG_FILE and XDG_CONFIG_HOME are read through appdir.LookupEnv /
+appdir.Getenv so rooted XDG paths, Windows registry updates, relative
+BILI_CONFIG_FILE paths and bare named configs work cleanly. Blank
+whitespace-only BILI_CONFIG_FILE is treated as unset rather than flagging
+a missing named config (matching checkNamedConfigRef), and unreadable or
+malformed config files fall back to default 8787 (matching loadConfigFile).
+An empty ACP_PORT or PORT is an error and does not fall through; JSON
+null is 8787 and 8787.5 is 8787, as parseInt does.
+
+Moving the daemon rewrites only the outer /bili/ prefix on magpie's own
+provider entries in active URL-lane agents: Zed, Hermes (magpie,
+magpie-anthropic) and dsh (following dshFiles: profile patch lists, home
+patch and settings.yaml when profiles exist, else legacy config.yaml
+llm-deepseek), leaving user-defined providers on other /bili/ ports and
+YAML comments untouched. Alignment runs under biliMu, logs errors from
+other active agents without failing the toggled agent's switch, backs up
+each aligned agent's main file, and stops the started daemon if bili was
+disabled while startup was in flight.
+
+#7310 is the other side of that split. bili's Claude plugin writes the
+lane port 18787 into ANTHROPIC_BASE_URL, while bili start's user-zone
+daemon is 8787 unless the file or the environment names another port.
+This does not rewrite the URL bili's own plugin writes.
+
+Verified:
+- gofmt -l clean on all touched Go files
+- go test -race -count=1 -run 'TestBili|Test.*Bili|TestAlignBili|TestKeepBili|TestMoveBili|TestSetBiliURL' ./internal/library/ ./internal/agent/ (PASS)
+- go test -race -count=1 ./internal/appdir/ (PASS)
+- go vet ./internal/library/ ./internal/agent/ ./internal/appdir/ (darwin, GOOS=linux -tags nogui, GOOS=windows — all clean)
+- TestBiliUsesConfiguredPortWhen8787Answers401 fails without this change.
+---
+ docs/subsystems/library.md           |   4 +-
+ internal/agent/agent.go              |   3 +
+ internal/agent/bili_prefix.go        | 253 +++++++++++
+ internal/agent/bili_prefix_test.go   | 144 +++++++
+ internal/agent/dsh.go                |   1 +
+ internal/agent/hermes.go             |   1 +
+ internal/appdir/env.go               |  18 +-
+ internal/library/bili_config.go      |  88 +++-
+ internal/library/bili_config_test.go |  53 +++
+ internal/library/bili_port_test.go   | 602 +++++++++++++++++++++++++++
+ internal/library/bili_test.go        | 146 +++++++
+ internal/library/bili_url.go         | 583 ++++++++++++++++++++++++--
+ 12 files changed, 1838 insertions(+), 58 deletions(-)
+ create mode 100644 internal/agent/bili_prefix.go
+ create mode 100644 internal/agent/bili_prefix_test.go
+ create mode 100644 internal/library/bili_port_test.go
+
+diff --git a/docs/subsystems/library.md b/docs/subsystems/library.md
+index 52c70ba7b..c11dcc4e2 100644
+--- a/docs/subsystems/library.md
++++ b/docs/subsystems/library.md
+@@ -47,8 +47,8 @@ Pi's extensions and packages.
+ | Backups | Before a change first writes an agent file, `backups` copies it to `BackupDir`, one folder per change. The last `keepBackups` (30) changes are kept. The Backups button at the top of every tab, beside Library folder, opens that folder (`libHead`; Dade on Discord found it at the foot of a long page). | [`backup.go`](../../internal/library/backup.go) |
+ | RTK | `SetRTK` runs rtk's own installer (`rtk init -g …`) for an agent being switched on. For one being switched off, it removes exactly what the installer wrote, using magpie's own code, which works even with rtk gone. An rtk.exe in one of winget's folders that winget has no record of (`winget list` says so, or its records name another folder; netube99 on X, 0x8A150014) is upgraded from rtk's own Windows release over the file a `WinGet\Links` link points to, not by `winget upgrade`. `ReadRTK` reads each agent's files to say which have the hook. An agent gone for its CLI (`CLIMissing`, #2254) isn't offered rtk, but one that still has the hook is listed so it can be taken out. `rtkSpec.blocked` stops the installer where it would break an agent. `rtkSpec.env` tells the installer the agent's folder where rtk would pick another: Hermes Agent's is `appdir.HermesHome` (`%LOCALAPPDATA%\hermes` on Windows), which rtk is given as `HERMES_HOME`, since rtk 0.51 knows only `$HERMES_HOME` and `~/.hermes`. Antigravity CLI (`agy`, #2202) gets rtk 0.51's own plugin for Antigravity, `plugins/rtk` in its global customization folder `~/.gemini/config` (`plugin.json`, `hooks.json` with `PreToolUse` → `rtk hook antigravity`, `rules/AGENTS.md`), which `agy plugin list` lists; switching it off takes that one folder out. rtk 0.50 knows Antigravity only per project and fails `rtk init -g --agent antigravity`, so an older rtk is `blocked` (`agyBlocked`) and the row says to update RTK. OpenCode 2 loads only the plugin rtk 0.52 on writes (one default object with `id` and `setup()`, rtk-ai/rtk#4187); an older rtk's plugin is for OpenCode 1 and OpenCode 2 refuses it, so with an OpenCode 2 here an older rtk is `blocked` (`openCodeBlocked`) and the row says to update RTK (#2295). Under OpenCode 2, an old plugin left from before an rtk update counts as off once the rtk here can write the new one (`openCodeHas`), so switching it on writes the new one over it; with an older rtk it counts as on, so it can be switched off. Factory's Droid (lml0664 on Discord) gets rtk's own `rtk init -g --agent droid`, given Droid's folder as `FACTORY_HOME_OVERRIDE`; rtk puts its `Execute` group (`rtk hook droid`) in the root `hooks.json`, or in `settings.json`'s `hooks.PreToolUse` where Droid's hooks already are, so `droidHookFiles` reads and switches off all three places rtk 1.1.0 may use (`hooks.json`, `hooks/hooks.json`, `settings.json`), leaving the user's own hooks. rtk before 0.44 has no Droid agent, so it is `blocked` (`droidBlocked`). A detected agent RTK has no hook for at all is still listed, from `rtkNoHook`, with the reason and a switch that can't be turned on (dsh: its hooks can allow or deny a command but not rewrite it, and `rtk init` has no `--agent dsh`; Grok Build and Grok App: `rtk init` has no Grok or Grok App agent, so both are listed with the switch off; Qoder and Qoder CN: rtk 1.1.0 has no Qoder agent; Cline and Kimi Code: `rtk init --agent cline|kimi` writes only one project's `.clinerules` or `AGENTS.md`, instructions with no hook, and Kimi's refuses `-g`). RTK 1.1.0's Trae, Windsurf, Kilo Code and Mistral Vibe have no magpie agent. The page's No RTK hook tag gives each agent's own reason and rtk-ai/rtk issue (`rtkNoHookWhy` in plugins/library/client.js: dsh #3847, Grok Build and Grok App #2136, Qoder and Qoder CN #1327, Cline #3841), and an agent with no entry gets no link; `TestRTKNoHookIssuesAreEachAgents` fails when the page and `rtkNoHook` cite different issues, or two agents cite the same ones without a reason in `sharedRTKIssues`. | [`rtk.go`](../../internal/library/rtk.go) |
+ | RTK in WSL | An agent in a WSL distro (`claude@wsl:Ubuntu`) is listed by its kind (`rtkKind`), and its hook runs in the distro, where Windows' rtk.exe is no command, so it gets the distro's own rtk (lex on Discord). `rtkDistroOf` asks the distro with `wsl.exe -d <distro> -e sh -lc` where rtk is (a login or interactive shell's PATH; else `~/.local/bin` or `~/.cargo/bin`, `offPath`), kept 15s; `ReadRTK` lists one `RTKDistro` for each distro its agents are in. Install RTK in WSL `<distro>` (`InstallRTKIn`, `POST /api/library/rtk/install` with `distro`, `magpie library rtk install <distro>`) runs RTK's own Linux installer in the distro (`curl -fsSL …/install.sh \| sh`, wget where there's no curl). Switching an agent on runs the distro's rtk there (`rtkInstallWSL`: `rtk init -g …` with its folder on PATH, Claude Code pointed at a folder of its own for the OpenCode and Cursor installers), and reads and edits its files under the distro's home as magpie opens it (`rtkClaudeDir`, `rtkCodexDir`, `rtkHome`). A distro that isn't running is never started (#3896): `rtkWSLLive` and `rtkDistroOf` check `agent.WSLRunning` first, its agents are listed `asleep` with the switch off, and switching or installing says to start it (`TestRTKWSLAsleep`). The page gives each distro a card (`rtkDistroCard` in plugins/library/client.js; library-rtk-wsl.test.cjs). | [`rtk_wsl.go`](../../internal/library/rtk_wsl.go) |
+-| billion-context | `SetBili` runs bili's own `bili plugin install <agent>` for an agent switched on and `bili plugin remove <agent>` for one switched off; `ReadBili` reads `bili plugin list` (the agent column, then the status; `installed…` is on, `not installed` off, anything else shown as it is). `InstallBili` runs its README's `npm install -g billion-context --prefix=~/.local` (`npm install -g billion-context` on Windows), and `biliPath` finds bili there when it isn't on PATH. Offered only where bili's plugin works with magpie in front (`biliLanes`): Pi, omp and OpenCode load it in process and still send to magpie, and Claude Code goes through bili's proxy, which forwards to the gateway (`ANTHROPIC_BASE_URL` `…/bili/<magpie's address>`). Codex's lane is an MCP server only, ZCode's routes only its own provider, Kimi Code's renames `default_model` to `bili-kimi` at every start and dsh's install failed through dsh's pnpm, so none of those is offered; neither is an agent in WSL. bili's remove doesn't restore a file: it leaves `"packages": []` in Pi's settings and `extensions:` in omp's config, and after magpie rewrote Claude Code's settings.json it deleted `ANTHROPIC_BASE_URL` (Claude Code then went to Anthropic) and put back its own `DISABLE_AUTO_COMPACT`. So switching on keeps each file it writes as it was before and after (`bili-plugins.json` in magpie's config folder), and `biliRestore` after the remove writes the file before back byte for byte when nothing changed it since, else merges JSON (`biliMergeJSON`): what the install changed and is still as installed goes back, a value changed since stays, and what the remove changed beyond the install is put back. Without a record (bili installed outside magpie), only a Claude Code `ANTHROPIC_BASE_URL` the remove took out goes back to the address bili forwarded to. The `.bili-bak` and `.bili-last` files bili leaves beside each file go with it. bili's Claude Code install also writes `DISABLE_AUTO_COMPACT` "1" into the shared settings.json, so a session bili doesn't fold (the Claude desktop app's Code tab, which sets its own `ANTHROPIC_BASE_URL`, bili's #2290, or a window larger than the one magpie serves) has no compaction left and Claude Code answers every message with "Prompt is too long" without sending it. `biliKeepCompact` writes "0" in its place after the install (bili's own reinstall keeps a value that isn't "1"), unless the file had a `DISABLE_AUTO_COMPACT` of the user's own before; `keepBiliCompact`, from `KeepLinked` at start, does the same for a plugin installed before and has the record say "0", so switching off still takes it away. Zed has no plugin of bili's; bili's README lists it through the launcher (`bili zed`, Linux only, which leaves a provider on loopback direct, so it never passes magpie's gateway) and, on every system, the `/bili/` prefix its docs give for a client whose model address can be edited. So Zed is a URL lane (`biliURLLanes`, [`bili_url.go`](../../internal/library/bili_url.go)): switched on, `biliServe` has `bili start --port 8787` answer (`GET /__bili/health` says `{"ok":true}`; one the user runs is used as it is, else magpie runs its own under `KeepLinked`'s context, logging to `bili-start.log`), then `agent.ZedThrough` puts the magpie provider's `api_url` at `http://127.0.0.1:8787/bili/<gateway>/v1` and saves the key for that address in the system's credential store, where Zed looks it up by the address. Zed must be on magpie first. A pick and a sync keep the prefix while magpie answers through it (`zedReach`, the proxy recognition of #1985); switched off, `api_url` goes back to the gateway and magpie's `bili start` ends when no agent goes through the prefix. `keepBiliServe`, from `KeepLinked`, starts it again at magpie's start while Zed is on. `TestBiliZedThroughPrefix`, `TestZedThroughBili`. Hermes is a URL lane too: bili's Hermes plugin (`bili plugin install hermes`, `hermes-plugin/__init__.py` `apply_env`) routes Hermes by setting `HTTPS_PROXY` in its process and nothing else, so magpie's provider at `http://127.0.0.1` never passes it and nothing would fold. Switched on, `agent.HermesThrough` puts the `base_url` of magpie's entries (`magpie`, `magpie-anthropic`) behind the prefix in the connected config and every profile that has them; `hermesEntries` keeps a prefix on loopback with a path (`hermesPrefix`) across a pick and a sync, and `wiringOff` takes it as magpie's (`reachesMagpie`). A profile that gets magpie's entries later goes to the gateway until Hermes is switched on again. `TestBiliHermesThroughPrefix`, `TestHermesThroughBili`. dsh is a URL lane too, for the same reason (`dsh plugin add billion-context` rides dsh's process proxy settings, which a route at `http://127.0.0.1` never takes): `agent.DshThrough` runs `dshSyncFresh` with the gateway's address behind the prefix, so magpie's route in every profile and the home layer has its `baseURL` there, and `dshReach` reads the prefix back from the profiles' routes (a loopback path before the gateway's address) so a sync, a pick, `Check` and the serving round (`dshWiredWith`) keep it. A profile dsh makes later gets it with its route. `TestDshThroughBili`, `TestBiliDshThroughPrefix`. What bili saved is its own count ([`bili_saved.go`](../../internal/library/bili_saved.go)): bili 0.1.213 has no command that prints it, and its running proxy serves its dashboard's numbers at `GET /__bili/overview`, summed over every session in its one store for every agent and lane. `readBiliSaved` asks the bilis registered in `<state>/instances/<id>.json` (`$XDG_STATE_HOME` or `~/.local/state`, then `billion-context`, on every system), newest `startedAt` first, loopback `http` origins only, within 3s in all; a file a crashed bili left behind just fails. The first answer is `BiliView.Saved` (`netSavedTotal` as `net`, only with `hasFoldData`; `grossSavedTotal`, which bili calls an upper bound; `foldsTotal`, `sessions`, `requests`) and is kept in `bili-saved.json` in magpie's config folder, shown with `live: false` and its time when no bili answers. magpie never starts a bili to ask (it would auto-update and start watchers). `TestBiliSavedFromRunningBili` (the literal overview in `testdata/bili`), `TestBiliSavedNoFolds`, `TestBiliSavedNoneYet`, `TestBiliSavedOnThePage`, `TestBiliLoopback`. `TestBiliClaudeKeepsAutoCompact`, `TestBiliOnOffExact`, `TestBiliClaudeKeepsMagpiesRoute`, `TestBiliOffWithoutRecord`; the page's tab is `renderBili` (library-bili.test.cjs). | [`bili.go`](../../internal/library/bili.go) |
+-| billion-context.json | The tab's Settings (@Luxzinw on X) change bili's own config, found by bili's `src/paths.ts`: `BILI_CONFIG_FILE`, else `$XDG_CONFIG_HOME` (or `~/.config`, `%USERPROFILE%\.config` on Windows) then `billion-context/billion-context.json` (`BiliConfigFile`). `ReadBiliSettings` reads it as JSONC; `SetBiliSettings` changes five of its `compress` keys and nothing else, through `edit.PatchJSON` (comments, BOM and every other key kept) and a temporary file renamed in: `nudgeGrowthTokens` (1000 to 10,000,000; empty takes it out, bili's 50000), `requireNudge` (off takes it out), `externalSummary` (`enabled` with `targets`, the picked one first, at most 16) and `prompts.compressPhilosophy` with `acknowledgePromptsRisk`, which bili needs before it reads a prompt override (under Advanced). `visibilityMarkers` (@JamesYu32 on X, under Advanced): bili's 📦/❌ lines after a compress, decompress or search_context call, on by default; off writes `false`, on takes the key out, and a provider's or model's own `compress.visibilityMarkers` is left as it is. bili turns off the whole compress section on one bad value, so magpie writes only values bili accepts and refuses a summary with no target. A model of magpie's is a recipe `providers.magpie` (`api: openai`, the gateway's `/v1`, `credentialRef: magpie`), its key the gateway's for the agent `billion-context` saved in bili's own credential store `<config>.summary-credentials.json` the way bili writes it (0600, an `O_EXCL` `.lock`, a temporary file renamed in); a user's own `providers.magpie` is never taken over. A file bili can't read is said so and left alone. After a change every running bili (`biliOrigins`, loopback only) is asked `POST /__bili/config/reload`; bili reloads routes and compress there, and the page says when none did. The file is carried in the library part (see [sync and backup](sync-backup.md)), the credential store never. `TestBiliConfigFileWhereBiliLooks`, `TestBiliSettingsChanged`, `TestBiliSettingsRefused`, `TestBiliMarkersSwitch`, `TestBiliKeyStoreKeptPrivate`, `TestBiliSettingsRoute`; the page is `biliSettings` (library-bili-settings.test.cjs). | [`bili_config.go`](../../internal/library/bili_config.go) |
++| billion-context | `SetBili` runs bili's own `bili plugin install <agent>` for an agent switched on and `bili plugin remove <agent>` for one switched off; `ReadBili` reads `bili plugin list` (the agent column, then the status; `installed…` is on, `not installed` off, anything else shown as it is). `InstallBili` runs its README's `npm install -g billion-context --prefix=~/.local` (`npm install -g billion-context` on Windows), and `biliPath` finds bili there when it isn't on PATH. Offered only where bili's plugin works with magpie in front (`biliLanes`): Pi, omp and OpenCode load it in process and still send to magpie, and Claude Code goes through bili's proxy, which forwards to the gateway (`ANTHROPIC_BASE_URL` `…/bili/<magpie's address>`). Codex's lane is an MCP server only, ZCode's routes only its own provider, Kimi Code's renames `default_model` to `bili-kimi` at every start and dsh's install failed through dsh's pnpm, so none of those is offered; neither is an agent in WSL. bili's remove doesn't restore a file: it leaves `"packages": []` in Pi's settings and `extensions:` in omp's config, and after magpie rewrote Claude Code's settings.json it deleted `ANTHROPIC_BASE_URL` (Claude Code then went to Anthropic) and put back its own `DISABLE_AUTO_COMPACT`. So switching on keeps each file it writes as it was before and after (`bili-plugins.json` in magpie's config folder), and `biliRestore` after the remove writes the file before back byte for byte when nothing changed it since, else merges JSON (`biliMergeJSON`): what the install changed and is still as installed goes back, a value changed since stays, and what the remove changed beyond the install is put back. Without a record (bili installed outside magpie), only a Claude Code `ANTHROPIC_BASE_URL` the remove took out goes back to the address bili forwarded to. The `.bili-bak` and `.bili-last` files bili leaves beside each file go with it. bili's Claude Code install also writes `DISABLE_AUTO_COMPACT` "1" into the shared settings.json, so a session bili doesn't fold (the Claude desktop app's Code tab, which sets its own `ANTHROPIC_BASE_URL`, bili's #2290, or a window larger than the one magpie serves) has no compaction left and Claude Code answers every message with "Prompt is too long" without sending it. `biliKeepCompact` writes "0" in its place after the install (bili's own reinstall keeps a value that isn't "1"), unless the file had a `DISABLE_AUTO_COMPACT` of the user's own before; `keepBiliCompact`, from `KeepLinked` at start, does the same for a plugin installed before and has the record say "0", so switching off still takes it away. Zed has no plugin of bili's; bili's README lists it through the launcher (`bili zed`, Linux only, which leaves a provider on loopback direct, so it never passes magpie's gateway) and, on every system, the `/bili/` prefix its docs give for a client whose model address can be edited. So Zed is a URL lane (`biliURLLanes`, [`bili_url.go`](../../internal/library/bili_url.go)): switched on, `biliServe` resolves the port the way `bili start` does (`ACP_PORT`, then `PORT`, then `port` in `billion-context.json`, otherwise 8787) and has `bili start --port` that port answer (`GET /__bili/health` says `{"ok":true}`; one already answering there is used as it is, else magpie runs its own under `KeepLinked`'s context, logging to `bili-start.log`). A port the file or the environment sets is used as it is. When the port is still the default and 8787 answers as something else (not bili's health: a 401 from another program on the port, #7382), magpie uses a bili already registered on loopback, or else the first free port from 18787, and Zed, Hermes and dsh are given that same origin. Then `agent.ZedThrough` puts the magpie provider's `api_url` at `http://127.0.0.1:<port>/bili/<gateway>/v1` and saves the key for that address in the system's credential store, where Zed looks it up by the address. Zed must be on magpie first. A pick and a sync keep the prefix while magpie answers through it (`zedReach`, the proxy recognition of #1985); switched off, `api_url` goes back to the gateway and magpie's `bili start` ends when no agent goes through the prefix. `keepBiliServe`, from `KeepLinked`, starts it again at magpie's start while Zed is on. `TestBiliZedThroughPrefix`, `TestZedThroughBili`. Hermes is a URL lane too: bili's Hermes plugin (`bili plugin install hermes`, `hermes-plugin/__init__.py` `apply_env`) routes Hermes by setting `HTTPS_PROXY` in its process and nothing else, so magpie's provider at `http://127.0.0.1` never passes it and nothing would fold. Switched on, `agent.HermesThrough` puts the `base_url` of magpie's entries (`magpie`, `magpie-anthropic`) behind the prefix in the connected config and every profile that has them; `hermesEntries` keeps a prefix on loopback with a path (`hermesPrefix`) across a pick and a sync, and `wiringOff` takes it as magpie's (`reachesMagpie`). A profile that gets magpie's entries later goes to the gateway until Hermes is switched on again. `TestBiliHermesThroughPrefix`, `TestHermesThroughBili`. dsh is a URL lane too, for the same reason (`dsh plugin add billion-context` rides dsh's process proxy settings, which a route at `http://127.0.0.1` never takes): `agent.DshThrough` runs `dshSyncFresh` with the gateway's address behind the prefix, so magpie's route in every profile and the home layer has its `baseURL` there, and `dshReach` reads the prefix back from the profiles' routes (a loopback path before the gateway's address) so a sync, a pick, `Check` and the serving round (`dshWiredWith`) keep it. A profile dsh makes later gets it with its route. `TestDshThroughBili`, `TestBiliDshThroughPrefix`. What bili saved is its own count ([`bili_saved.go`](../../internal/library/bili_saved.go)): bili 0.1.213 has no command that prints it, and its running proxy serves its dashboard's numbers at `GET /__bili/overview`, summed over every session in its one store for every agent and lane. `readBiliSaved` asks the bilis registered in `<state>/instances/<id>.json` (`$XDG_STATE_HOME` or `~/.local/state`, then `billion-context`, on every system), newest `startedAt` first, loopback `http` origins only, within 3s in all; a file a crashed bili left behind just fails. The first answer is `BiliView.Saved` (`netSavedTotal` as `net`, only with `hasFoldData`; `grossSavedTotal`, which bili calls an upper bound; `foldsTotal`, `sessions`, `requests`) and is kept in `bili-saved.json` in magpie's config folder, shown with `live: false` and its time when no bili answers. magpie never starts a bili to ask (it would auto-update and start watchers). `TestBiliSavedFromRunningBili` (the literal overview in `testdata/bili`), `TestBiliSavedNoFolds`, `TestBiliSavedNoneYet`, `TestBiliSavedOnThePage`, `TestBiliLoopback`. `TestBiliClaudeKeepsAutoCompact`, `TestBiliOnOffExact`, `TestBiliClaudeKeepsMagpiesRoute`, `TestBiliOffWithoutRecord`; the page's tab is `renderBili` (library-bili.test.cjs). | [`bili.go`](../../internal/library/bili.go) |
++| billion-context.json | The tab's Settings (@Luxzinw on X) change bili's own config, found by bili's `src/paths.ts`: `BILI_CONFIG_FILE` when set (an absolute path, a relative path, or a bare name `NAME` for `billion-context/NAME.json`; a file of that name in the working folder wins over the name, a directory there does not), else `$XDG_CONFIG_HOME` (or `~/.config`, `%USERPROFILE%\.config` on Windows) then `billion-context/billion-context.json` (`BiliConfigFile`). `ReadBiliSettings` reads it as JSONC; `SetBiliSettings` changes five of its `compress` keys and nothing else, through `edit.PatchJSON` (comments, BOM and every other key kept) and a temporary file renamed in: `nudgeGrowthTokens` (1000 to 10,000,000; empty takes it out, bili's 50000), `requireNudge` (off takes it out), `externalSummary` (`enabled` with `targets`, the picked one first, at most 16) and `prompts.compressPhilosophy` with `acknowledgePromptsRisk`, which bili needs before it reads a prompt override (under Advanced). `visibilityMarkers` (@JamesYu32 on X, under Advanced): bili's 📦/❌ lines after a compress, decompress or search_context call, on by default; off writes `false`, on takes the key out, and a provider's or model's own `compress.visibilityMarkers` is left as it is. bili turns off the whole compress section on one bad value, so magpie writes only values bili accepts and refuses a summary with no target. A model of magpie's is a recipe `providers.magpie` (`api: openai`, the gateway's `/v1`, `credentialRef: magpie`), its key the gateway's for the agent `billion-context` saved in bili's own credential store `<config>.summary-credentials.json` the way bili writes it (0600, an `O_EXCL` `.lock`, a temporary file renamed in); a user's own `providers.magpie` is never taken over. A file bili can't read is said so and left alone. After a change every running bili (`biliOrigins`, loopback only) is asked `POST /__bili/config/reload`; bili reloads routes and compress there, and the page says when none did. The file is carried in the library part (see [sync and backup](sync-backup.md)), the credential store never. `TestBiliConfigFileWhereBiliLooks`, `TestBiliSettingsChanged`, `TestBiliSettingsRefused`, `TestBiliMarkersSwitch`, `TestBiliKeyStoreKeptPrivate`, `TestBiliSettingsRoute`; the page is `biliSettings` (library-bili-settings.test.cjs). | [`bili_config.go`](../../internal/library/bili_config.go) |
+ | Pi extensions | Each Pi here, this computer's and each WSL distro's (`piPlaces`), with the extensions and packages it loads, read by Pi's own rules (`@earendil-works/pi-coding-agent` 1.4: `resolveExtensionEntries`, `isEnabledByOverrides`, `applyPatterns`). An extension is a `.ts`/`.js` file or a folder (package.json `pi.extensions`, else `index.ts`, else `index.js`) in `<agentDir>/extensions`, or a path its settings.json `extensions` lists; a package is an entry of settings.json `packages`. Built-in extensions (`builtin:mcp` and the rest) aren't listed: `builtin:mcp` carries the MCP servers magpie gives Pi. `SetPiExtension` writes what `pi config` writes (`-path` off; the `-` taken out and `+path` only where still excluded, on); `SetPiPackage` sets a package's four filters to `[]` (off) or takes them out (on), and refuses an entry that already picks some parts (`filtered`, changed in `pi config`). `CopyPi` gives a package to another Pi as its settings.json entry, which Pi installs itself when it next starts (npm into `<agentDir>/npm`, git into `<agentDir>/git`), never as copied files; it refuses a local package, and one the other Pi has already by Pi's identity (npm name, git host/path). An extension is copied as its file or folder into the other's `extensions`, leaving out `node_modules`, `.git` and symlinks, never over one of the same name, and the page says to run `npm install` there when it has dependencies (leokon3 on Discord). A settings.json that can't be parsed lists nothing and is never written; a stopped distro is never started (`asleep`); every write is backed up first. `GET`/`POST /api/library/pi`, `POST /api/library/pi/copy`; the Library's Pi packages tab, shown while a Pi is here (`renderPi` in plugins/library/client.js; library-pi-extensions.test.cjs). | [`piext.go`](../../internal/library/piext.go) |
+ | Pi market | `MarketPiPackages` lists npm's packages with the keyword `pi-package`, the way pi.dev's gallery finds them: the 500 most downloaded (two pages of npm's search, sorted by last month's downloads), cached 6h in memory and on disk, else the bundled `market_pi.json`; a search of two or more characters adds npm's own `keywords:pi-package <q>` search, and a search npm doesn't answer keeps the popular matches with a `SearchError` (the page says so). Every name is held to npm's rules (`piNameRe`), and a repository link is https only. `InstallPiPackage` runs `pi install npm:<name>` with `PI_CODING_AGENT_DIR` set to that Pi's folder (`piRun`), then checks settings.json lists it; `RemovePiPackage` runs `pi remove <source>`, which drops every entry of the same identity and uninstalls it. A Pi with no `pi` here (a WSL distro's, or this computer's with no CLI on PATH) gets the settings.json entry written, or taken out, instead, and Pi installs it when it next starts (`pending`). Both refuse an unreadable settings.json, install refuses a package the Pi has by Pi's identity, and each write is backed up first. `GET /api/library/market/pi`, `POST /api/library/pi/install`, `POST /api/library/pi/remove`; Discover under the Pi packages tab (`piCard`, `installPi`, `confirmRemovePi` in plugins/library/client.js; library-pi-market.test.cjs) marks a package every running Pi has Installed, and Install asks which Pi when several lack it (nineruiing on X). | [`pimarket.go`](../../internal/library/pimarket.go) |
+ | Native inventory | `ReadNative` (`GET /api/library/native`, `magpie library native`; #7244, jinpwng) lists what the plugins Codex installed itself and the packages Pi installed itself declare, so the skills, MCP servers and hooks they bring are in the Library's tabs once, with their origin and scope. Read only: nothing is copied, linked or registered, the agent keeps loading them, and `Loaded` is always `unknown` because only a session shows it. Codex (`codexNative`, codex-rs `core-plugins` loader.rs): `plugins/cache/<marketplace>/<plugin>/<version>/.codex-plugin/plugin.json` (`.claude-plugin` and `.cursor-plugin` too); the version folder stands for the plugin, a `latest` copy only when alone; skills are the manifest's `skills` folders, else `skills/`; servers its `mcpServers` (a file or inline), else `.mcp.json`; hooks its `hooks` (files or inline objects, as chrome's), else `hooks/hooks.json`; every path stays inside the plugin (`inside`); `[plugins."p@m"] enabled` in config.toml is `Enabled`, unset is nil. Pi (`piNativePlugins`): each package in a Pi's settings.json that is on disk (`packageDir`, shared with `installed`), its skills from package.json `pi.skills` (with `!` drops matched against each skill's path) or `skills/` when it has no `pi` object, and the `.pi/settings.json` packages of the library's projects with scope `project` and `Enabled` unknown (Pi loads them only once it trusts the project). Claude Code (`claudeNative`, #7266, jinpwng): each record of `plugins/installed_plugins.json` whose `installPath` is on disk, one for each scope (`user`, or `project`/`local` with its `projectPath`; a managed or unknown scope isn't listed), named by its `<plugin>@<marketplace>` id; its parts read as Claude Code reads a plugin, the manifest's paths added to the default `skills/`, `agents/`, `hooks/hooks.json` and `.mcp.json` rather than read instead (`manifestParts` with `also`), and its `agents` Markdown files with a description are `subagent` parts; `Enabled` is `enabledPlugins.<id>` in `settings.json` (user), the project's `.claude/settings.json` (project) or `.claude/settings.local.json` (local), unset nil. The Subagents tab lists them under its own, and a project's row for a Claude Code plugin (#7254's whole-plugin choice) says the parts it brings (`claudeNativeParts`). Codex has no subagents in a plugin, and a Pi package declares no servers or hooks here. Asked for when a tab is drawn (Skills, MCP, Hooks, Subagents, Plugins), not part of the polled `/api/library` (`TestNativeClaudePlugins`, `library-native.test.cjs`, `project-claude-plugins.test.cjs`). A row's plugin or package name in its origin is a button: the section shows only what that agent's plugin or package declares, under the bar an imported plugin's "In" tag gives, whose Show all brings the rest back (`nativeOnly`, per tab, keyed by agent and name; nothing is written; jinpwng on X, `library-native-filter.test.cjs`). | [`native.go`](../../internal/library/native.go) |
+diff --git a/internal/agent/agent.go b/internal/agent/agent.go
+index 673228746..351259ec0 100644
+--- a/internal/agent/agent.go
++++ b/internal/agent/agent.go
+@@ -370,6 +370,9 @@ type Agent struct {
+ 	// the gateway behind a proxy's prefix ("" for the gateway itself):
+ 	// Hermes's, through billion-context's /bili/ (HermesThrough)
+ 	through func(prefix string) error
++	// moveBili, when set, rewrites only the outer /bili/ prefix on URLs
++	// that already use one (MoveBiliPrefix). A custom URL stays.
++	moveBili func(prefix string) error
+ 	// dirShared says Dir is a folder another agent keeps its files in too
+ 	// (omp's, when PI_CODING_AGENT_DIR points it at Pi's): that it is there
+ 	// says nothing of this agent.
+diff --git a/internal/agent/bili_prefix.go b/internal/agent/bili_prefix.go
+new file mode 100644
+index 000000000..07f27e635
+--- /dev/null
++++ b/internal/agent/bili_prefix.go
+@@ -0,0 +1,253 @@
++package agent
++
++import (
++	"bytes"
++	"errors"
++	"fmt"
++	"os"
++	"path/filepath"
++	"strconv"
++	"strings"
++
++	"github.com/yetone/magpie/internal/edit"
++	"gopkg.in/yaml.v3"
++)
++
++// MoveBiliPrefix rewrites only the outer billion-context prefix
++// (http://127.0.0.1:<port>/bili/) on magpie's own provider URLs that already
++// use one, to prefix. The rest of each URL — a custom upstream, path, and
++// query — stays. User-defined providers, comments, URLs without that outer
++// prefix, and profiles that have none are left untouched.
++func MoveBiliPrefix(a *Agent, prefix string) error {
++	if a == nil {
++		return nil
++	}
++	if a.moveBili != nil {
++		return a.moveBili(prefix)
++	}
++	if a.ID == "zed" {
++		return zedMoveBili(a, prefix)
++	}
++	return nil
++}
++
++func hermesMoveBili(at place, path, prefix string) error {
++	seen := map[string]bool{}
++	var errs []error
++	for _, p := range append([]string{path}, hermesProfiles(at)...) {
++		if p == "" {
++			continue
++		}
++		clean := filepath.Clean(p)
++		if seen[clean] {
++			continue
++		}
++		seen[clean] = true
++		if _, err := os.Stat(p); err != nil {
++			if os.IsNotExist(err) {
++				continue
++			}
++			errs = append(errs, err)
++			continue
++		}
++		err := edit.EditYAMLNode(p, "providers", func(n *yaml.Node) (bool, bool) {
++			if n == nil || n.Kind != yaml.MappingNode {
++				return false, false
++			}
++			changed := false
++			for _, name := range []string{magpieID, hermesAnthropicID} {
++				v := yamlKey(yamlKey(n, name), "base_url")
++				if v == nil || v.Kind != yaml.ScalarNode {
++					continue
++				}
++				if next, ok := swapBiliPrefix(v.Value, prefix); ok {
++					v.Value = next
++					changed = true
++				}
++			}
++			return changed, false
++		})
++		if err != nil {
++			errs = append(errs, err)
++		}
++	}
++	return errors.Join(errs...)
++}
++
++func dshMoveBili(dir, prefix string) error {
++	dshWrites.Lock()
++	defer dshWrites.Unlock()
++	// Follow dshFiles: use profile patch lists plus the home patch and
++	// settings.yaml when profiles exist; only touch legacy config.yaml when
++	// no profiles exist.
++	profiles := dshProfiles(dir)
++	var files []string
++	if len(profiles) > 0 {
++		files = append(files, profiles...)
++		if st, err := os.Stat(dshHomePatch(dir)); err == nil && st.Mode().IsRegular() {
++			files = append(files, dshHomePatch(dir))
++		}
++	} else {
++		legacy := filepath.Join(dir, "config.yaml")
++		if st, err := os.Stat(legacy); err == nil && st.Mode().IsRegular() {
++			files = append(files, legacy)
++		}
++	}
++	seen := map[string]bool{}
++	var errs []error
++	for _, f := range files {
++		if f == "" {
++			continue
++		}
++		clean := filepath.Clean(f)
++		if seen[clean] {
++			continue
++		}
++		seen[clean] = true
++		if err := dshMoveBiliPatchFile(f, prefix); err != nil {
++			errs = append(errs, err)
++		}
++	}
++	if len(profiles) > 0 {
++		if st, err := os.Stat(dshSettings(dir)); err == nil && st.Mode().IsRegular() {
++			if err := dshMoveBiliSettings(dshSettings(dir), prefix); err != nil {
++				errs = append(errs, err)
++			}
++		}
++	}
++	return errors.Join(errs...)
++}
++
++func dshMoveBiliPatchFile(path, prefix string) error {
++	head, items, err := dshRead(path)
++	if err != nil {
++		if os.IsNotExist(err) {
++			return nil
++		}
++		return err
++	}
++	changed := false
++	if i := dshConfigIndex(items, dshPiRow); i >= 0 {
++		if n, err := dshNode(items[i]); err == nil {
++			providers := yamlKey(yamlKey(n, "config"), "providers")
++			itemChanged := false
++			for _, k := range dshKinds {
++				v := yamlKey(yamlKey(providers, k.key), "baseURL")
++				if v == nil || v.Kind != yaml.ScalarNode {
++					continue
++				}
++				if next, ok := swapBiliPrefix(v.Value, prefix); ok {
++					v.Value = next
++					itemChanged = true
++				}
++			}
++			if itemChanged {
++				lines, err := dshNodeLines(n)
++				if err != nil {
++					return err
++				}
++				items[i].lines = lines
++				changed = true
++			}
++		}
++	}
++	if dshOldWiring(items) {
++		if i := dshFind(items, "llm-deepseek"); i >= 0 {
++			if n, err := dshNode(items[i]); err == nil {
++				v := yamlKey(yamlKey(n, "config"), "baseURL")
++				if v != nil && v.Kind == yaml.ScalarNode {
++					if next, ok := swapBiliPrefix(v.Value, prefix); ok {
++						v.Value = next
++						lines, err := dshNodeLines(n)
++						if err != nil {
++							return err
++						}
++						items[i].lines = lines
++						changed = true
++					}
++				}
++			}
++		}
++	}
++	if !changed {
++		return nil
++	}
++	return dshWrite(path, head, items)
++}
++
++func dshMoveBiliSettings(path, prefix string) error {
++	raw, err := os.ReadFile(path)
++	if err != nil {
++		if os.IsNotExist(err) {
++			return nil
++		}
++		return err
++	}
++	if len(bytes.TrimSpace(raw)) == 0 {
++		return nil
++	}
++	var doc yaml.Node
++	if yaml.Unmarshal(raw, &doc) != nil || len(doc.Content) == 0 || doc.Content[0].Kind != yaml.MappingNode {
++		return nil
++	}
++	return edit.EditYAMLNode(path, dshPiRow, func(n *yaml.Node) (bool, bool) {
++		if n == nil || n.Kind != yaml.MappingNode {
++			return false, false
++		}
++		providers := yamlKey(n, "providers")
++		if providers == nil || providers.Kind != yaml.MappingNode {
++			return false, false
++		}
++		changed := false
++		for _, k := range dshKinds {
++			v := yamlKey(yamlKey(providers, k.key), "baseURL")
++			if v == nil || v.Kind != yaml.ScalarNode {
++				continue
++			}
++			if next, ok := swapBiliPrefix(v.Value, prefix); ok {
++				v.Value = next
++				changed = true
++			}
++		}
++		return changed, false
++	})
++}
++
++func zedMoveBili(a *Agent, prefix string) error {
++	before := ZedURL(a)
++	next, ok := swapBiliPrefix(before, prefix)
++	if !ok {
++		return nil
++	}
++	if err := zedCredential(next); err != nil {
++		return fmt.Errorf("configure Zed gateway credential: %w", err)
++	}
++	return edit.SetJSON(a.Path, edit.KV{Path: zedProvider + ".api_url", Value: next})
++}
++
++// swapBiliPrefix replaces an outer http://127.0.0.1:<port>/bili/ prefix on
++// url with prefix. Everything after that prefix — the inner address, path,
++// and query — stays unchanged. A URL without that outer prefix, or already
++// using prefix, returns (url, false).
++func swapBiliPrefix(url, prefix string) (string, bool) {
++	const mark = "http://127.0.0.1:"
++	s := strings.TrimSpace(url)
++	rest, ok := strings.CutPrefix(s, mark)
++	if !ok {
++		return url, false
++	}
++	j := strings.Index(rest, "/bili/")
++	if j <= 0 {
++		return url, false
++	}
++	port := rest[:j]
++	n, err := strconv.Atoi(port)
++	if err != nil || n < 1 || n > 65535 || strconv.Itoa(n) != port {
++		return url, false
++	}
++	old := mark + port + "/bili/"
++	if old == prefix {
++		return url, false
++	}
++	return prefix + rest[j+len("/bili/"):], true
++}
+diff --git a/internal/agent/bili_prefix_test.go b/internal/agent/bili_prefix_test.go
+new file mode 100644
+index 000000000..6908960b1
+--- /dev/null
++++ b/internal/agent/bili_prefix_test.go
+@@ -0,0 +1,144 @@
++package agent
++
++import (
++	"path/filepath"
++	"strings"
++	"testing"
++
++	"github.com/yetone/magpie/internal/edit"
++)
++
++// TestMoveBiliPrefixKeepsZedPathAndQuery: only the outer /bili/ port
++// changes. The path, the query, and a provider that is not bili stay.
++func TestMoveBiliPrefixKeepsZedPathAndQuery(t *testing.T) {
++	home := syncHome(t)
++	cred := ""
++	was := zedCredential
++	zedCredential = func(url string) error { cred = url; return nil }
++	t.Cleanup(func() { zedCredential = was })
++	a := zedAt(filepath.Join(home, ".config", "zed"))
++	gw := gatewayV1()
++	old := "http://127.0.0.1:8787/bili/" + gw + "/extra?q=1"
++	next := "http://127.0.0.1:18787/bili/" + gw + "/extra?q=1"
++	writeFile(t, a.Path, `{
++  // kept
++  "language_models": {"openai_compatible": {
++    "other": {"api_url": "https://custom.example/v1/mine?keep=1"},
++    "magpie": {"api_url": "`+old+`"}
++  }}
++}
++`)
++	if err := MoveBiliPrefix(a, "http://127.0.0.1:18787/bili/"); err != nil {
++		t.Fatal(err)
++	}
++	if got := ZedURL(a); got != next {
++		t.Fatalf("api_url %q, want %q", got, next)
++	}
++	if cred != next {
++		t.Fatalf("credential saved for %q, want %q", cred, next)
++	}
++	if got, _ := edit.GetJSON(a.Path, "language_models.openai_compatible.other.api_url"); got != "https://custom.example/v1/mine?keep=1" {
++		t.Fatalf("other provider %q", got)
++	}
++	if !strings.Contains(readFile(a.Path), "// kept") {
++		t.Fatalf("comment dropped:\n%s", readFile(a.Path))
++	}
++	cred = ""
++	if err := MoveBiliPrefix(a, "http://127.0.0.1:18787/bili/"); err != nil {
++		t.Fatal(err)
++	}
++	if cred != "" {
++		t.Fatalf("an unchanged prefix saved a credential for %q", cred)
++	}
++}
++
++// TestMoveBiliPrefixScopesHermesAndDshToMagpie: moving the shared daemon's
++// prefix touches only magpie's own provider entries in Hermes and dsh.
++// User-defined providers pointed at another /bili/ port and YAML comments stay.
++func TestMoveBiliPrefixScopesHermesAndDshToMagpie(t *testing.T) {
++	home := syncHome(t)
++	gw := gatewayV1()
++	old := "http://127.0.0.1:8787/bili/"
++	next := "http://127.0.0.1:18787/bili/"
++	otherBili := "http://127.0.0.1:19555/bili/https://openrouter.ai/api/v1"
++
++	t.Run("hermes", func(t *testing.T) {
++		root := filepath.Join(home, ".hermes", "config.yaml")
++		bot := filepath.Join(home, ".hermes", "profiles", "bot", "config.yaml")
++		writeFile(t, root, "# keep comment http://127.0.0.1:8787/bili/ignored\nproviders:\n  magpie:\n    base_url: "+old+gw+"/extra?q=1\n  magpie-anthropic:\n    base_url: "+old+"http://127.0.0.1:4567/anthropic\n  openrouter:\n    base_url: "+otherBili+"\n")
++		writeFile(t, bot, "providers:\n  openrouter:\n    base_url: "+otherBili+"\n")
++		a := hermesIn(here(home))
++		if err := MoveBiliPrefix(a, next); err != nil {
++			t.Fatal(err)
++		}
++		gotRoot := readFile(root)
++		if !strings.Contains(gotRoot, "# keep comment http://127.0.0.1:8787/bili/ignored") {
++			t.Fatalf("comment modified:\n%s", gotRoot)
++		}
++		if v, _ := edit.GetYAML(root, "providers.magpie.base_url"); v != next+gw+"/extra?q=1" {
++			t.Fatalf("magpie base_url %q", v)
++		}
++		if v, _ := edit.GetYAML(root, "providers.magpie-anthropic.base_url"); v != next+"http://127.0.0.1:4567/anthropic" {
++			t.Fatalf("magpie-anthropic base_url %q", v)
++		}
++		if v, _ := edit.GetYAML(root, "providers.openrouter.base_url"); v != otherBili {
++			t.Fatalf("non-magpie openrouter base_url clobbered: %q", v)
++		}
++		if gotBot := readFile(bot); !strings.Contains(gotBot, otherBili) {
++			t.Fatalf("profile openrouter clobbered:\n%s", gotBot)
++		}
++	})
++
++	t.Run("dsh", func(t *testing.T) {
++		dir := filepath.Join(home, ".dsh")
++		web := filepath.Join(dir, "profiles", "web", "cordis.patch.yml")
++		homePatch := filepath.Join(dir, "cordis.patch.yml")
++		settingsPath := filepath.Join(dir, "settings.yaml")
++		// When profiles exist, a non-list legacy config.yaml must be ignored (matching dshFiles).
++		nonList := filepath.Join(dir, "config.yaml")
++		writeFile(t, web, "# keep comment http://127.0.0.1:8787/bili/ignored\n- id: llm-pi-ai\n  config:\n    providers:\n      magpie:\n        baseURL: "+old+gw+"/extra?q=1\n      magpie-anthropic:\n        baseURL: "+old+"http://127.0.0.1:4567\n      openrouter:\n        baseURL: "+otherBili+"\n")
++		writeFile(t, homePatch, "- id: llm-pi-ai\n  config:\n    providers:\n      openrouter:\n        baseURL: "+otherBili+"\n")
++		writeFile(t, settingsPath, "llm-pi-ai:\n  providers:\n    magpie:\n      baseURL: "+old+gw+"\n    openrouter:\n      baseURL: "+otherBili+"\n")
++		writeFile(t, nonList, "not_a_list: true\n")
++		a := dshIn(here(home))
++		if err := MoveBiliPrefix(a, next); err != nil {
++			t.Fatal(err)
++		}
++		gotWeb := readFile(web)
++		if !strings.Contains(gotWeb, "# keep comment http://127.0.0.1:8787/bili/ignored") {
++			t.Fatalf("web comment modified:\n%s", gotWeb)
++		}
++		if !strings.Contains(gotWeb, "baseURL: "+next+gw+"/extra?q=1") || !strings.Contains(gotWeb, "baseURL: "+next+"http://127.0.0.1:4567") {
++			t.Fatalf("magpie routes not moved:\n%s", gotWeb)
++		}
++		if !strings.Contains(gotWeb, otherBili) {
++			t.Fatalf("web openrouter clobbered:\n%s", gotWeb)
++		}
++		if gotHome := readFile(homePatch); !strings.Contains(gotHome, otherBili) {
++			t.Fatalf("home patch openrouter clobbered:\n%s", gotHome)
++		}
++		if v, _ := edit.GetYAML(settingsPath, "llm-pi-ai.providers.magpie.baseURL"); v != next+gw {
++			t.Fatalf("settings.yaml magpie baseURL %q", v)
++		}
++		if v, _ := edit.GetYAML(settingsPath, "llm-pi-ai.providers.openrouter.baseURL"); v != otherBili {
++			t.Fatalf("settings.yaml openrouter clobbered: %q", v)
++		}
++		if gotNonList := readFile(nonList); gotNonList != "not_a_list: true\n" {
++			t.Fatalf("non-list config.yaml modified while profiles exist:\n%s", gotNonList)
++		}
++	})
++
++	t.Run("dsh legacy without profiles", func(t *testing.T) {
++		legacyHome := t.TempDir()
++		dir := filepath.Join(legacyHome, ".dsh")
++		legacy := filepath.Join(dir, "config.yaml")
++		writeFile(t, legacy, "- id: llm-deepseek # magpie\n  config:\n    baseURL: "+old+gw+"\n")
++		a := dshIn(here(legacyHome))
++		if err := MoveBiliPrefix(a, next); err != nil {
++			t.Fatal(err)
++		}
++		if gotLegacy := readFile(legacy); !strings.Contains(gotLegacy, next+gw) || !strings.Contains(gotLegacy, "# magpie") {
++			t.Fatalf("legacy config.yaml:\n%s", gotLegacy)
++		}
++	})
++}
+diff --git a/internal/agent/dsh.go b/internal/agent/dsh.go
+index 4b1fcc0fd..8a5a7f29c 100644
+--- a/internal/agent/dsh.go
++++ b/internal/agent/dsh.go
+@@ -297,6 +297,7 @@ func dshOn(at place, dir, list string, fresh, lead func() string) *Agent {
+ 		a.Fields = append(a.Fields, dshCompactField(func() bool { return !at.cold && joined() }, list))
+ 	}
+ 	a.through = func(prefix string) error { return dshThrough(at, dir, prefix, fresh) }
++	a.moveBili = func(prefix string) error { return dshMoveBili(dir, prefix) }
+ 	return a
+ }
+ 
+diff --git a/internal/agent/hermes.go b/internal/agent/hermes.go
+index e390a45f5..e16fce8ec 100644
+--- a/internal/agent/hermes.go
++++ b/internal/agent/hermes.go
+@@ -249,6 +249,7 @@ func hermesIn(at place) *Agent {
+ 	}
+ 	a.Fields = append(a.Fields, hermesProfileFields(at, dir)...)
+ 	a.through = func(prefix string) error { return hermesThrough(at, dir, path, prefix) }
++	a.moveBili = func(prefix string) error { return hermesMoveBili(at, path, prefix) }
+ 	return a
+ }
+ 
+diff --git a/internal/appdir/env.go b/internal/appdir/env.go
+index 4e16de970..dbfacf644 100644
+--- a/internal/appdir/env.go
++++ b/internal/appdir/env.go
+@@ -84,6 +84,13 @@ var pathVars = sync.OnceValue(func() map[string]bool {
+ // whose readers expand it. Most agent paths, like the XDG and Windows
+ // folders, are used as given and would put a literal ~ under the working folder.
+ func usable(name, v string) bool {
++	// billion-context reads BILI_CONFIG_FILE as a path or a bare name
++	// (src/paths.ts resolveConfigFileRef). A relative path or a name such
++	// as "work" is the config, and dropping it made magpie read the default
++	// file and pass --port over the one bili would bind.
++	if name == "BILI_CONFIG_FILE" {
++		return true
++	}
+ 	if rooted(v) {
+ 		return true
+ 	}
+@@ -99,11 +106,12 @@ func usable(name, v string) bool {
+ // LookupEnv is os.LookupEnv for what magpie itself reads: a folder variable
+ // (pathVars) holding a relative path reads as unset, as the XDG spec asks of
+ // one, so no file of magpie's or an agent's is written under the working
+-// folder. The environment is left as it is: the programs magpie starts get
+-// the variable as the user set it. The variables a login shell lends the
+-// desktop app (proc.UserPath) are read through here too. On Windows an
+-// agent's variable is the registry's now, not the one magpie started with
+-// (follow.go).
++// folder (except BILI_CONFIG_FILE, which billion-context resolves as a
++// relative path or bare named config; see usable). The environment is left
++// as it is: the programs magpie starts get the variable as the user set it.
++// The variables a login shell lends the desktop app (proc.UserPath) are read
++// through here too. On Windows an agent's variable is the registry's now,
++// not the one magpie started with (follow.go).
+ func LookupEnv(name string) (string, bool) {
+ 	v, ok := lookupEnv(name)
+ 	if ok && v != "" && pathVars()[name] && !usable(name, v) {
+diff --git a/internal/library/bili_config.go b/internal/library/bili_config.go
+index 9e90fd726..2fe60f12c 100644
+--- a/internal/library/bili_config.go
++++ b/internal/library/bili_config.go
+@@ -34,23 +34,89 @@ import (
+ // key order and every key magpie doesn't know stay as they were.
+ 
+ // BiliConfigFile is billion-context.json where bili itself looks for it
+-// (src/paths.ts): BILI_CONFIG_FILE, else billion-context/ under
+-// XDG_CONFIG_HOME, else under ~/.config — on Windows too, where bili's
+-// homedir() is %USERPROFILE%.
++// (src/paths.ts configFile): BILI_CONFIG_FILE when it is set and not empty,
++// else billion-context/billion-context.json under XDG_CONFIG_HOME, else
++// under ~/.config — on Windows too, where bili's homedir() is %USERPROFILE%.
++// A set BILI_CONFIG_FILE is resolveConfigFileRef: a path (it contains a
++// separator, or names a file in the working folder) is made absolute; a
++// bare name is <config dir>/NAME.json. A directory in the working folder
++// does not count as that file.
+ func BiliConfigFile() string {
+-	if f := appdir.Getenv("BILI_CONFIG_FILE"); f != "" {
+-		if abs, err := filepath.Abs(f); err == nil {
+-			return abs
+-		}
+-		return f
++	if ref, ok := biliConfigRef(); ok {
++		p, _ := resolveBiliConfigRef(ref)
++		return p
+ 	}
++	return filepath.Join(biliConfigDir(), "billion-context.json")
++}
++
++// biliConfigRef is BILI_CONFIG_FILE when set and non-blank.
++// bili's checkNamedConfigRef trims whitespace and returns null (no error)
++// for a blank value, so whitespace-only values are treated as unset rather
++// than flagging a missing named config; non-blank values are returned as
++// set, matching bili's configFile.
++func biliConfigRef() (string, bool) {
++	ref, ok := appdir.LookupEnv("BILI_CONFIG_FILE")
++	if !ok || strings.TrimSpace(ref) == "" {
++		return "", false
++	}
++	return ref, true
++}
++
++// biliConfigDir is billion-context's config directory (src/paths.ts
++// configDir): XDG_CONFIG_HOME when set and rooted, else ~/.config, then
++// billion-context.
++func biliConfigDir() string {
+ 	base := appdir.Getenv("XDG_CONFIG_HOME")
+ 	if base == "" {
+ 		base = filepath.Join(home(), ".config")
+-	} else if abs, err := filepath.Abs(base); err == nil {
+-		base = abs
+ 	}
+-	return filepath.Join(base, "billion-context", "billion-context.json")
++	return filepath.Join(base, "billion-context")
++}
++
++// resolveBiliConfigRef is src/paths.ts resolveConfigFileRef. named is a
++// bare name, whose file is <config dir>/NAME.json.
++func resolveBiliConfigRef(ref string) (path string, named bool) {
++	if strings.ContainsAny(ref, `/\`) || biliConfigIsFile(ref) {
++		if abs, err := filepath.Abs(ref); err == nil {
++			return abs, false
++		}
++		return ref, false
++	}
++	return filepath.Join(biliConfigDir(), ref+".json"), true
++}
++
++// biliConfigIsFile reports a path that names a file, not a directory.
++// stat of a missing path is not a file, so a bare name stays a name.
++func biliConfigIsFile(ref string) bool {
++	st, err := os.Stat(ref)
++	return err == nil && st.Mode().IsRegular()
++}
++
++// biliNamedConfigError is src/paths.ts checkNamedConfigRef: a bare name
++// whose file is missing. bili start exits before it would listen, so the
++// port is not the default and --port is not passed for it.
++func biliNamedConfigError(ref, path string) error {
++	dir := filepath.Dir(path)
++	var names []string
++	if es, err := os.ReadDir(dir); err == nil {
++		for _, e := range es {
++			n := e.Name()
++			if !strings.HasSuffix(n, ".json") || strings.Contains(n, ".json.") {
++				continue
++			}
++			info, err := e.Info()
++			if err != nil || !info.Mode().IsRegular() {
++				continue
++			}
++			names = append(names, strings.TrimSuffix(n, ".json"))
++		}
++	}
++	slices.Sort(names)
++	msg := fmt.Sprintf("bili: named config %q not found (looked for %s)", ref, path)
++	if len(names) > 0 {
++		msg += ". Available: " + strings.Join(names, ", ") + " (in " + dir + ")"
++	}
++	return fmt.Errorf("%s", msg)
+ }
+ 
+ // biliCredFile is bili's private store of the keys its summary models
+diff --git a/internal/library/bili_config_test.go b/internal/library/bili_config_test.go
+index 7628aa8a1..762e90229 100644
+--- a/internal/library/bili_config_test.go
++++ b/internal/library/bili_config_test.go
+@@ -103,6 +103,59 @@ func TestBiliConfigFileWhereBiliLooks(t *testing.T) {
+ 	}
+ }
+ 
++// TestBiliConfigFileNamedAndRelative is src/paths.ts resolveConfigFileRef:
++// a bare name is <config dir>/NAME.json, a relative path is absolute from
++// the working folder, a file of that name in the working folder wins, and
++// a directory there does not.
++func TestBiliConfigFileNamedAndRelative(t *testing.T) {
++	h := sandbox(t)
++	t.Chdir(h)
++	// Relative XDG_CONFIG_HOME is ignored per appdir.Getenv; rooted XDG_CONFIG_HOME is used.
++	t.Setenv("XDG_CONFIG_HOME", "xdg")
++	t.Setenv("BILI_CONFIG_FILE", "")
++	if got, want := BiliConfigFile(), filepath.Join(h, ".config", "billion-context", "billion-context.json"); got != want {
++		t.Fatalf("relative XDG_CONFIG_HOME not ignored: %s, want %s", got, want)
++	}
++	t.Setenv("XDG_CONFIG_HOME", filepath.Join(h, "xdg"))
++	dir := filepath.Join(h, "xdg", "billion-context")
++	write(t, filepath.Join(dir, "work.json"), "{}\n")
++	write(t, filepath.Join(dir, "billion-context.json"), "{}\n")
++	// Whitespace-only BILI_CONFIG_FILE is treated as unset.
++	t.Setenv("BILI_CONFIG_FILE", "   ")
++	if got, want := BiliConfigFile(), filepath.Join(dir, "billion-context.json"); got != want {
++		t.Fatalf("whitespace BILI_CONFIG_FILE: %s, want %s", got, want)
++	}
++	t.Setenv("BILI_CONFIG_FILE", "work")
++	if got, want := BiliConfigFile(), filepath.Join(dir, "work.json"); got != want {
++		t.Fatalf("named: %s, want %s", got, want)
++	}
++	if err := os.Mkdir(filepath.Join(h, "work"), 0o755); err != nil {
++		t.Fatal(err)
++	}
++	if got, want := BiliConfigFile(), filepath.Join(dir, "work.json"); got != want {
++		t.Fatalf("a directory named work shadowed the named config: %s, want %s", got, want)
++	}
++	rel := filepath.Join("rel", "bili.json")
++	write(t, filepath.Join(h, rel), "{}\n")
++	t.Setenv("BILI_CONFIG_FILE", filepath.ToSlash(rel))
++	// a backslash is also a path, as bili treats both separators
++	if runtime.GOOS == "windows" {
++		t.Setenv("BILI_CONFIG_FILE", rel)
++	}
++	abs, err := filepath.Abs(rel)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if got := BiliConfigFile(); got != abs {
++		t.Fatalf("relative: %s, want %s", got, abs)
++	}
++	write(t, filepath.Join(h, "cwd.json"), "{}\n")
++	t.Setenv("BILI_CONFIG_FILE", "cwd.json")
++	if got, want := BiliConfigFile(), filepath.Join(h, "cwd.json"); got != want {
++		t.Fatalf("cwd file: %s, want %s", got, want)
++	}
++}
++
+ // TestBiliFileCarried: a sync carries billion-context.json as it is,
+ // comments and all, with magpie's recipe at the default address; the
+ // other computer gets it with its own gateway in the recipe and the key
+diff --git a/internal/library/bili_port_test.go b/internal/library/bili_port_test.go
+new file mode 100644
+index 000000000..a6175bc23
+--- /dev/null
++++ b/internal/library/bili_port_test.go
+@@ -0,0 +1,602 @@
++package library
++
++import (
++	"context"
++	"io"
++	"net"
++	"net/http"
++	"os"
++	"path/filepath"
++	"runtime"
++	"slices"
++	"strings"
++	"sync/atomic"
++	"testing"
++	"time"
++
++	"github.com/yetone/magpie/internal/agent"
++	"github.com/yetone/magpie/internal/gateway"
++	"github.com/yetone/magpie/internal/testenv"
++)
++
++// TestBiliUsesConfiguredPortWhen8787Answers401 is #7382 (wxy0626):
++// something else owns 127.0.0.1:8787 and answers 401, and
++// billion-context.json says "port": 18787, which bili start itself
++// listens on. Enabling the shared daemon must probe, start and write
++// the /bili/ prefix on that port, not on 8787.
++func TestBiliUsesConfiguredPortWhen8787Answers401(t *testing.T) {
++	h := sandbox(t)
++	for _, k := range []string{"HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"} {
++		t.Setenv(k, "")
++	}
++	unsetEnv(t, "ACP_PORT", "PORT")
++	listenHTTP(t, "127.0.0.1:8787", func(w http.ResponseWriter, r *http.Request) {
++		w.WriteHeader(http.StatusUnauthorized)
++		_, _ = io.WriteString(w, "missing or bad bearer token")
++	})
++
++	wasWait := biliWait
++	biliWait = 500 * time.Millisecond
++	t.Cleanup(func() {
++		biliWait = wasWait
++		resetBiliListen()
++	})
++
++	dir := filepath.Join(h, "zed-config")
++	t.Setenv("MAGPIE_ZED_CONFIG_DIR", dir)
++	zs := filepath.Join(dir, "settings.json")
++	gw := gateway.URL() + "/v1"
++	write(t, zs, `{"language_models":{"openai_compatible":{"magpie":{"api_url":"`+gw+`","available_models":[]}}}}`)
++
++	bin, log := biliRecorder(t, h)
++	wasPath := biliPath
++	biliPath = func() string { return bin }
++	var through []string
++	wasThrough := zedThrough
++	zedThrough = func(a *agent.Agent, prefix string) error {
++		through = append(through, prefix)
++		body := read(t, a.Path)
++		out := strings.Replace(body, gw, prefix+gw, 1)
++		return os.WriteFile(a.Path, []byte(out), 0o600)
++	}
++	t.Cleanup(func() {
++		biliPath = wasPath
++		zedThrough = wasThrough
++	})
++
++	healthy := func(t *testing.T) {
++		t.Helper()
++		listenHTTP(t, "127.0.0.1:18787", func(w http.ResponseWriter, r *http.Request) {
++			if r.URL.Path != "/__bili/health" {
++				http.NotFound(w, r)
++				return
++			}
++			w.Header().Set("Content-Type", "application/json")
++			_, _ = io.WriteString(w, `{"ok":true}`)
++		})
++	}
++	clearRuns := func(t *testing.T) {
++		t.Helper()
++		os.Remove(log)
++		through = nil
++		resetBiliListen()
++	}
++	wantPrefix := "http://127.0.0.1:18787/bili/"
++
++	t.Run("configured port already answering", func(t *testing.T) {
++		clearRuns(t)
++		write(t, BiliConfigFile(), "// kept\n{\n  \"port\": 18787\n}\n")
++		healthy(t)
++		if _, err := SetBili("zed", true); err != nil {
++			t.Fatal(err)
++		}
++		if strings.Join(through, " ") != wantPrefix {
++			t.Fatalf("prefix %q, want %s", through, wantPrefix)
++		}
++		if got := read(t, zs); !strings.Contains(got, `"api_url":"`+wantPrefix+gw+`"`) || strings.Contains(got, "127.0.0.1:8787") {
++			t.Fatalf("zed api_url:\n%s", got)
++		}
++		for _, line := range biliRuns(t, log) {
++			if strings.Contains(line, "start") {
++				t.Fatalf("bili start ran while 18787 was already bili: %q", biliRuns(t, log))
++			}
++		}
++	})
++
++	t.Run("bili start is given the configured port", func(t *testing.T) {
++		clearRuns(t)
++		write(t, BiliConfigFile(), `{"port":18787}`+"\n")
++		_, err := SetBili("zed", true)
++		if err == nil {
++			t.Fatal("expected bili start to fail when 18787 never answers")
++		}
++		if !strings.Contains(err.Error(), "127.0.0.1:18787") || strings.Contains(err.Error(), "127.0.0.1:8787") {
++			t.Fatalf("error %q, want the configured port and not 8787", err)
++		}
++		if !slices.Contains(biliRuns(t, log), "start --port 18787") {
++			t.Fatalf("runs %q, want start --port 18787", biliRuns(t, log))
++		}
++	})
++
++	t.Run("no configured port leaves a foreign 8787", func(t *testing.T) {
++		clearRuns(t)
++		os.Remove(BiliConfigFile())
++		healthy(t)
++		if _, err := SetBili("zed", true); err != nil {
++			t.Fatal(err)
++		}
++		if strings.Join(through, " ") != wantPrefix {
++			t.Fatalf("prefix %q, want %s (the lane already answering)", through, wantPrefix)
++		}
++		for _, line := range biliRuns(t, log) {
++			if strings.Contains(line, "8787") {
++				t.Fatalf("started on 8787: %q", biliRuns(t, log))
++			}
++		}
++	})
++
++	t.Run("a configured port that is itself foreign is kept", func(t *testing.T) {
++		clearRuns(t)
++		write(t, BiliConfigFile(), `{"port":18787}`+"\n")
++		listenHTTP(t, "127.0.0.1:18787", func(w http.ResponseWriter, r *http.Request) {
++			w.WriteHeader(http.StatusUnauthorized)
++			_, _ = io.WriteString(w, "missing or bad bearer token")
++		})
++		_, err := SetBili("zed", true)
++		if err == nil || !strings.Contains(err.Error(), "127.0.0.1:18787") || strings.Contains(err.Error(), "127.0.0.1:8787") {
++			t.Fatalf("error %v, want the configured port refused and 8787 left alone", err)
++		}
++		for _, line := range biliRuns(t, log) {
++			if strings.Contains(line, "start") {
++				t.Fatalf("bili start ran on a port something else owns: %q", biliRuns(t, log))
++			}
++		}
++	})
++
++	t.Run("a port out of range is not replaced with 8787", func(t *testing.T) {
++		clearRuns(t)
++		write(t, BiliConfigFile(), `{"port":70000}`+"\n")
++		healthy(t)
++		_, err := SetBili("zed", true)
++		if err == nil || strings.Contains(err.Error(), "127.0.0.1:8787") || !strings.Contains(err.Error(), "70000") {
++			t.Fatalf("error %v, want the bad port named and 8787 unused", err)
++		}
++		for _, line := range biliRuns(t, log) {
++			if strings.Contains(line, "start") {
++				t.Fatalf("bili start ran despite a bad port: %q", biliRuns(t, log))
++			}
++		}
++	})
++
++	t.Run("PORT wins when ACP_PORT is unset, the way bili start does", func(t *testing.T) {
++		clearRuns(t)
++		os.Remove(BiliConfigFile())
++		t.Setenv("PORT", "18787")
++		healthy(t)
++		if _, err := SetBili("zed", true); err != nil {
++			t.Fatal(err)
++		}
++		if strings.Join(through, " ") != wantPrefix {
++			t.Fatalf("prefix %q, want %s from PORT", through, wantPrefix)
++		}
++	})
++
++	t.Run("ACP_PORT wins over the file, the way bili start does", func(t *testing.T) {
++		clearRuns(t)
++		write(t, BiliConfigFile(), `{"port":8787}`+"\n")
++		t.Setenv("ACP_PORT", "18787")
++		healthy(t)
++		if _, err := SetBili("zed", true); err != nil {
++			t.Fatal(err)
++		}
++		if strings.Join(through, " ") != wantPrefix {
++			t.Fatalf("prefix %q, want %s from ACP_PORT", through, wantPrefix)
++		}
++	})
++
++	t.Run("an unreadable or malformed config falls back to default 8787 like bili", func(t *testing.T) {
++		clearRuns(t)
++		p := BiliConfigFile()
++		write(t, p, "{ not valid json\n")
++		healthy(t)
++		if _, err := SetBili("zed", true); err != nil {
++			t.Fatalf("malformed config blocked startup instead of falling back to 8787: %v", err)
++		}
++		if strings.Join(through, " ") != wantPrefix {
++			t.Fatalf("prefix %q, want %s after fallback off foreign 8787", through, wantPrefix)
++		}
++		if runtime.GOOS == "windows" {
++			return
++		}
++		clearRuns(t)
++		write(t, p, `{"port":19999}`+"\n")
++		if err := os.Chmod(p, 0o000); err != nil {
++			t.Fatal(err)
++		}
++		t.Cleanup(func() { _ = os.Chmod(p, 0o600) })
++		if _, err := SetBili("zed", true); err != nil {
++			t.Fatalf("unreadable config blocked startup instead of falling back to 8787: %v", err)
++		}
++		if strings.Join(through, " ") != wantPrefix {
++			t.Fatalf("prefix %q, want %s after unreadable config fallback", through, wantPrefix)
++		}
++	})
++}
++
++// TestBiliDefaultPortStays8787WhenItIsFree: with no port in the file and
++// nothing on 8787, the shared daemon is still bili's own default.
++func TestBiliDefaultPortStays8787WhenItIsFree(t *testing.T) {
++	h := sandbox(t)
++	for _, k := range []string{"HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"} {
++		t.Setenv(k, "")
++	}
++	unsetEnv(t, "ACP_PORT", "PORT")
++	ln, err := net.Listen("tcp", "127.0.0.1:8787")
++	if err != nil {
++		t.Fatalf("8787 is not free, so this can't tell the default from a fallback: %v", err)
++	}
++	ln.Close()
++	wasWait := biliWait
++	biliWait = 500 * time.Millisecond
++	t.Cleanup(func() {
++		biliWait = wasWait
++		resetBiliListen()
++	})
++	bin, log := biliRecorder(t, h)
++	wasPath := biliPath
++	biliPath = func() string { return bin }
++	t.Cleanup(func() { biliPath = wasPath })
++	os.Remove(BiliConfigFile())
++	err = biliServe(bin)
++	if err == nil || !strings.Contains(err.Error(), "127.0.0.1:8787") {
++		t.Fatalf("error %v, want the default port", err)
++	}
++	if !slices.Contains(biliRuns(t, log), "start --port 8787") {
++		t.Fatalf("runs %q, want start --port 8787", biliRuns(t, log))
++	}
++}
++
++func listenHTTP(t *testing.T, addr string, h http.HandlerFunc) {
++	t.Helper()
++	ln, err := net.Listen("tcp", addr)
++	if err != nil {
++		t.Fatalf("listen %s: %v", addr, err)
++	}
++	srv := &http.Server{Handler: h}
++	go func() { _ = srv.Serve(ln) }()
++	t.Cleanup(func() { _ = srv.Close() })
++}
++
++func biliRecorder(t *testing.T, h string) (bin, log string) {
++	t.Helper()
++	log = filepath.Join(h, "bili-runs.txt")
++	if runtime.GOOS == "windows" {
++		bin = filepath.Join(h, "bin", "bili.cmd")
++		write(t, bin, "@echo off\r\necho %*>>"+log+"\r\nexit /b 0\r\n")
++		return bin, log
++	}
++	bin = filepath.Join(h, "bin", "bili")
++	testenv.Program(t, bin, "#!/bin/sh\nprintf '%s\\n' \"$*\" >> "+shSingle(log)+"\nexit 0\n")
++	return bin, log
++}
++
++func shSingle(s string) string {
++	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
++}
++
++// unsetEnv clears a variable for the test. An empty string is not unset:
++// bili treats ACP_PORT="" and PORT="" as set, and parseInt of "" is an error.
++func unsetEnv(t *testing.T, keys ...string) {
++	t.Helper()
++	for _, k := range keys {
++		t.Setenv(k, "")
++		if err := os.Unsetenv(k); err != nil {
++			t.Fatal(err)
++		}
++	}
++}
++
++// TestBiliStartWaitsOutStarting503 is billion-context binding its port
++// before registration finishes: 503 {"ok":false,"reason":"starting"} is
++// bili, and the child just started is kept until health is ok.
++func TestBiliStartWaitsOutStarting503(t *testing.T) {
++	h := sandbox(t)
++	unsetEnv(t, "ACP_PORT", "PORT")
++	var n atomic.Int32
++	listenHTTP(t, "127.0.0.1:8787", func(w http.ResponseWriter, r *http.Request) {
++		if n.Add(1) < 3 {
++			w.WriteHeader(http.StatusServiceUnavailable)
++			_, _ = io.WriteString(w, `{"ok":false,"reason":"starting"}`)
++			return
++		}
++		w.Header().Set("Content-Type", "application/json")
++		_, _ = io.WriteString(w, `{"ok":true}`)
++	})
++	was := biliWait
++	biliWait = 3 * time.Second
++	t.Cleanup(func() {
++		biliWait = was
++		resetBiliListen()
++	})
++	bin := filepath.Join(h, "bin", "bili")
++	if runtime.GOOS == "windows" {
++		bin = filepath.Join(h, "bin", "bili.cmd")
++		write(t, bin, "@echo off\r\n:loop\r\ngoto loop\r\n")
++	} else {
++		// /bin/sleep, not sleep: the test's PATH is only its own bin.
++		testenv.Program(t, bin, "#!/bin/sh\n/bin/sleep 30\n")
++	}
++	err, conflict := biliStartAt(bin, "http://127.0.0.1:8787", 8787)
++	if err != nil || conflict {
++		t.Fatalf("starting 503 was treated as another program: conflict %v, err %v", conflict, err)
++	}
++}
++
++// TestBiliStartWaitsOutSlowFirstProbe: our own just-started child may bind
++// its port and take longer than biliProbeTimeout to answer the first health
++// probe. The timeout is biliStalled, not biliOther, so the child stays alive
++// until the next probe succeeds.
++func TestBiliStartWaitsOutSlowFirstProbe(t *testing.T) {
++	if runtime.GOOS == "windows" {
++		t.Skip("shell sleep helper is POSIX-only")
++	}
++	h := sandbox(t)
++	unsetEnv(t, "ACP_PORT", "PORT")
++	var n atomic.Int32
++	listenHTTP(t, "127.0.0.1:28787", func(w http.ResponseWriter, r *http.Request) {
++		if n.Add(1) == 1 {
++			time.Sleep(350 * time.Millisecond)
++		}
++		w.Header().Set("Content-Type", "application/json")
++		_, _ = io.WriteString(w, `{"ok":true}`)
++	})
++	wasT, wasW := biliProbeTimeout, biliWait
++	biliProbeTimeout, biliWait = 150*time.Millisecond, 3*time.Second
++	t.Cleanup(func() {
++		biliProbeTimeout, biliWait = wasT, wasW
++		resetBiliListen()
++	})
++	bin := filepath.Join(h, "bin", "bili")
++	testenv.Program(t, bin, "#!/bin/sh\n/bin/sleep 30\n")
++	err, conflict := biliStartAt(bin, "http://127.0.0.1:28787", 28787)
++	if err != nil || conflict {
++		t.Fatalf("slow first health probe killed own child: conflict %v, err %v", conflict, err)
++	}
++}
++
++// TestBiliProbeDistinguishesDialFailureFromStalledListener: a TCP connect
++// failure (such as a dial timeout during Windows' ~2s loopback RST retry)
++// reports biliDown so free ports are not treated as taken, while a listener
++// that accepts TCP and stalls or drops without HTTP reports biliStalled.
++func TestBiliProbeDistinguishesDialFailureFromStalledListener(t *testing.T) {
++	t.Run("dial timeout is biliDown", func(t *testing.T) {
++		wasDial := biliDial
++		biliDial = func(context.Context, string, string) (net.Conn, error) {
++			return nil, context.DeadlineExceeded
++		}
++		t.Cleanup(func() { biliDial = wasDial })
++		if got := biliProbe("http://127.0.0.1:28788"); got != biliDown {
++			t.Fatalf("dial timeout gave %v, want biliDown (%v)", got, biliDown)
++		}
++	})
++
++	t.Run("connected silent listener is biliStalled", func(t *testing.T) {
++		wasT := biliProbeTimeout
++		biliProbeTimeout = 120 * time.Millisecond
++		t.Cleanup(func() { biliProbeTimeout = wasT })
++		hold := make(chan struct{})
++		t.Cleanup(func() { close(hold) })
++		listenRaw(t, "127.0.0.1:28789", func(c net.Conn) {
++			go func() {
++				defer c.Close()
++				<-hold
++			}()
++		})
++		if got := biliProbe("http://127.0.0.1:28789"); got != biliStalled {
++			t.Fatalf("stalled TCP listener gave %v, want biliStalled (%v)", got, biliStalled)
++		}
++	})
++}
++
++// TestBiliPortParseMatchesBili is src/config.ts loadOptions: parseInt of
++// ACP_PORT ?? PORT ?? (file port ?? 8787). null falls back, a fraction
++// truncates, and a set empty variable does not fall through.
++func TestBiliPortParseMatchesBili(t *testing.T) {
++	sandbox(t)
++	unsetEnv(t, "ACP_PORT", "PORT", "BILI_CONFIG_FILE")
++
++	t.Run("null port is the default", func(t *testing.T) {
++		write(t, BiliConfigFile(), `{"port":null}`+"\n")
++		p, user, err := biliListenPort()
++		if err != nil || p != biliDefaultPort || user {
++			t.Fatalf("port %d user %v err %v, want %d and not a user port", p, user, err, biliDefaultPort)
++		}
++	})
++
++	t.Run("8787.5 is 8787", func(t *testing.T) {
++		write(t, BiliConfigFile(), `{"port":8787.5}`+"\n")
++		p, user, err := biliListenPort()
++		if err != nil || p != 8787 || !user {
++			t.Fatalf("port %d user %v err %v, want 8787 set by the file", p, user, err)
++		}
++	})
++
++	t.Run("empty ACP_PORT does not fall through", func(t *testing.T) {
++		t.Setenv("ACP_PORT", "")
++		t.Setenv("PORT", "18787")
++		write(t, BiliConfigFile(), `{"port":18787}`+"\n")
++		if _, _, err := biliListenPort(); err == nil {
++			t.Fatal("ACP_PORT=\"\" fell through to PORT or the file")
++		}
++	})
++
++	t.Run("empty PORT does not fall through", func(t *testing.T) {
++		t.Setenv("PORT", "")
++		write(t, BiliConfigFile(), `{"port":18787}`+"\n")
++		if _, _, err := biliListenPort(); err == nil {
++			t.Fatal("PORT=\"\" fell through to the file")
++		}
++	})
++
++	t.Run("a missing named config is not the default port", func(t *testing.T) {
++		t.Setenv("BILI_CONFIG_FILE", "no-such-model")
++		if _, _, err := biliListenPort(); err == nil || !strings.Contains(err.Error(), "no-such-model") {
++			t.Fatalf("err %v, want the missing name and not port 8787", err)
++		}
++	})
++
++	t.Run("whitespace-only BILI_CONFIG_FILE falls back to default", func(t *testing.T) {
++		os.Remove(BiliConfigFile())
++		t.Setenv("BILI_CONFIG_FILE", "   ")
++		p, user, err := biliListenPort()
++		if err != nil || p != biliDefaultPort || user {
++			t.Fatalf("port %d user %v err %v, want default %d", p, user, err, biliDefaultPort)
++		}
++	})
++
++	t.Run("malformed config falls back to default", func(t *testing.T) {
++		unsetEnv(t, "BILI_CONFIG_FILE")
++		write(t, BiliConfigFile(), "{ not json\n")
++		p, user, err := biliListenPort()
++		if err != nil || p != biliDefaultPort || user {
++			t.Fatalf("port %d user %v err %v, want default %d", p, user, err, biliDefaultPort)
++		}
++	})
++}
++
++// TestBiliNamedConfigPortIsNotOverridden: BILI_CONFIG_FILE=work is
++// billion-context/work.json, and bili start is given that file's port.
++// The default file's port is not passed over it.
++func TestBiliNamedConfigPortIsNotOverridden(t *testing.T) {
++	h := sandbox(t)
++	unsetEnv(t, "ACP_PORT", "PORT")
++	for _, k := range []string{"HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"} {
++		t.Setenv(k, "")
++	}
++	write(t, filepath.Join(h, ".config", "billion-context", "billion-context.json"), `{"port":8787}`+"\n")
++	write(t, filepath.Join(h, ".config", "billion-context", "work.json"), `{"port":19001}`+"\n")
++	t.Setenv("BILI_CONFIG_FILE", "work")
++	was := biliWait
++	biliWait = 400 * time.Millisecond
++	t.Cleanup(func() {
++		biliWait = was
++		resetBiliListen()
++	})
++	bin, log := biliRecorder(t, h)
++	wasPath := biliPath
++	biliPath = func() string { return bin }
++	t.Cleanup(func() { biliPath = wasPath })
++	err := biliServe(bin)
++	if err == nil || !strings.Contains(err.Error(), "127.0.0.1:19001") || strings.Contains(err.Error(), "127.0.0.1:8787") {
++		t.Fatalf("error %v, want the named config's port and not 8787", err)
++	}
++	if !slices.Contains(biliRuns(t, log), "start --port 19001") {
++		t.Fatalf("runs %q, want start --port 19001", biliRuns(t, log))
++	}
++	for _, line := range biliRuns(t, log) {
++		if strings.Contains(line, "8787") {
++			t.Fatalf("default port overridden the named config: %q", biliRuns(t, log))
++		}
++	}
++}
++
++// TestBiliFallbackSkipsOccupiedLanePorts: a foreign 8787, a non-HTTP
++// listener on 18787, and a bind that fails on a port the probe thought
++// was free, each move on to 18788.
++func TestBiliFallbackSkipsOccupiedLanePorts(t *testing.T) {
++	h := sandbox(t)
++	unsetEnv(t, "ACP_PORT", "PORT", "BILI_CONFIG_FILE")
++	for _, k := range []string{"HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"} {
++		t.Setenv(k, "")
++	}
++	listenHTTP(t, "127.0.0.1:8787", func(w http.ResponseWriter, r *http.Request) {
++		w.WriteHeader(http.StatusUnauthorized)
++		_, _ = io.WriteString(w, "missing or bad bearer token")
++	})
++	was := biliWait
++	biliWait = 400 * time.Millisecond
++	t.Cleanup(func() {
++		biliWait = was
++		resetBiliListen()
++	})
++	os.Remove(BiliConfigFile())
++
++	t.Run("non-HTTP TCP on 18787", func(t *testing.T) {
++		resetBiliListen()
++		listenRaw(t, "127.0.0.1:18787", nil)
++		bin, log := biliRecorder(t, h)
++		err := biliServe(bin)
++		if err == nil || !strings.Contains(err.Error(), "127.0.0.1:18788") {
++			t.Fatalf("error %v, want the next free port 18788", err)
++		}
++		runs := biliRuns(t, log)
++		if slices.Contains(runs, "start --port 18787") || !slices.Contains(runs, "start --port 18788") {
++			t.Fatalf("runs %q, want 18788 and not 18787", runs)
++		}
++	})
++
++	t.Run("bind conflict on 18787", func(t *testing.T) {
++		resetBiliListen()
++		log := filepath.Join(h, "bind-runs.txt")
++		os.Remove(log)
++		bin := biliBindScript(t, h, log)
++		err := biliServe(bin)
++		if err == nil || !strings.Contains(err.Error(), "127.0.0.1:18788") {
++			t.Fatalf("error %v, want the next free port 18788", err)
++		}
++		runs := biliRuns(t, log)
++		if !slices.Contains(runs, "start --port 18787") || !slices.Contains(runs, "start --port 18788") {
++			t.Fatalf("runs %q, want 18787 tried and 18788 next", runs)
++		}
++	})
++}
++
++func listenRaw(t *testing.T, addr string, on func(net.Conn)) {
++	t.Helper()
++	ln, err := net.Listen("tcp", addr)
++	if err != nil {
++		t.Fatalf("listen %s: %v", addr, err)
++	}
++	go func() {
++		for {
++			c, err := ln.Accept()
++			if err != nil {
++				return
++			}
++			if on != nil {
++				on(c)
++				continue
++			}
++			c.Close()
++		}
++	}()
++	t.Cleanup(func() { _ = ln.Close() })
++}
++
++func biliBindScript(t *testing.T, h, log string) string {
++	t.Helper()
++	if runtime.GOOS == "windows" {
++		bin := filepath.Join(h, "bin", "bili-bind.cmd")
++		write(t, bin, "@echo off\r\necho %*>>"+log+"\r\necho %*| find \"18787\" >nul && (echo Error: listen EADDRINUSE: address already in use 127.0.0.1:18787& exit /b 1)\r\nexit /b 0\r\n")
++		return bin
++	}
++	bin := filepath.Join(h, "bin", "bili-bind")
++	testenv.Program(t, bin, "#!/bin/sh\nprintf '%s\\n' \"$*\" >> "+shSingle(log)+"\ncase \"$*\" in\n*18787*)\nprintf '%s\\n' 'Error: listen EADDRINUSE: address already in use 127.0.0.1:18787'\nexit 1\n;;\nesac\nexit 0\n")
++	return bin
++}
++
++func biliRuns(t *testing.T, log string) []string {
++	t.Helper()
++	b, err := os.ReadFile(log)
++	if os.IsNotExist(err) {
++		return nil
++	}
++	if err != nil {
++		t.Fatal(err)
++	}
++	text := strings.TrimSpace(string(b))
++	if text == "" {
++		return nil
++	}
++	return strings.Split(text, "\n")
++}
+diff --git a/internal/library/bili_test.go b/internal/library/bili_test.go
+index c1d3067a6..3e598a221 100644
+--- a/internal/library/bili_test.go
++++ b/internal/library/bili_test.go
+@@ -668,6 +668,152 @@ func TestBiliDshThroughPrefix(t *testing.T) {
+ 	}
+ }
+ 
++// TestAlignBiliURLsKeepsCustomProfiles: moving the shared daemon's port
++// rewrites only the outer /bili/ prefix on URLs that already use one.
++// Another profile's https URL, and a path or query behind the prefix, stay.
++func TestAlignBiliURLsKeepsCustomProfiles(t *testing.T) {
++	h := sandbox(t)
++	unsetEnv(t, "ACP_PORT", "PORT")
++	holdCLI(t, h, "hermes")
++	gw := gateway.URL() + "/v1"
++	old := "http://127.0.0.1:8787/bili/"
++	next := "http://127.0.0.1:18787/bili/"
++	root := filepath.Join(h, ".hermes", "config.yaml")
++	bot := filepath.Join(h, ".hermes", "profiles", "bot", "config.yaml")
++	bot2 := filepath.Join(h, ".hermes", "profiles", "bot2", "config.yaml")
++	mainURL := old + gw + "/extra?q=1"
++	custom := "https://custom.example/v1/mine?keep=1"
++	inner := old + "https://api.example/v1/custom?x=2"
++	otherBili := "http://127.0.0.1:19555/bili/https://openrouter.ai/api/v1"
++	write(t, root, "# mine\nproviders:\n  magpie:\n    base_url: "+mainURL+"\n  openrouter:\n    base_url: "+otherBili+"\n")
++	write(t, bot, "# custom\nproviders:\n  magpie:\n    base_url: "+custom+"\n")
++	write(t, bot2, "# inner\nproviders:\n  magpie:\n    base_url: "+inner+"\n")
++	web := filepath.Join(h, ".dsh", "profiles", "web", "cordis.patch.yml")
++	other := filepath.Join(h, ".dsh", "profiles", "other", "cordis.patch.yml")
++	third := filepath.Join(h, ".dsh", "profiles", "third", "cordis.patch.yml")
++	webBody := "# web\n- id: llm-pi-ai\n  config:\n    providers:\n      magpie:\n        baseURL: " + mainURL + "\n      openrouter:\n        baseURL: " + otherBili + "\n"
++	otherBody := "# other\n- id: llm-pi-ai\n  config:\n    providers:\n      mine:\n        baseURL: " + custom + "\n"
++	thirdBody := "# third\n- id: llm-pi-ai\n  config:\n    providers:\n      magpie:\n        baseURL: " + inner + "\n"
++	write(t, web, webBody)
++	write(t, other, otherBody)
++	write(t, third, thirdBody)
++	biliRemember("http://127.0.0.1:18787")
++	t.Cleanup(resetBiliListen)
++	if err := alignBiliURLs(detected()); err != nil {
++		t.Fatal(err)
++	}
++	if got, want := read(t, root), "# mine\nproviders:\n  magpie:\n    base_url: "+next+gw+"/extra?q=1\n  openrouter:\n    base_url: "+otherBili+"\n"; got != want {
++		t.Fatalf("hermes root:\n%s\nwant:\n%s", got, want)
++	}
++	if got, want := read(t, bot), "# custom\nproviders:\n  magpie:\n    base_url: "+custom+"\n"; got != want {
++		t.Fatalf("custom hermes profile:\n%s", got)
++	}
++	if got, want := read(t, bot2), "# inner\nproviders:\n  magpie:\n    base_url: "+next+"https://api.example/v1/custom?x=2\n"; got != want {
++		t.Fatalf("hermes inner:\n%s\nwant:\n%s", got, want)
++	}
++	if got := read(t, other); got != otherBody {
++		t.Fatalf("custom dsh profile:\n%s", got)
++	}
++	if got, want := read(t, web), strings.Replace(webBody, old, next, 1); got != want {
++		t.Fatalf("dsh web:\n%s\nwant:\n%s", got, want)
++	}
++	if got, want := read(t, third), strings.Replace(thirdBody, old, next, 1); got != want {
++		t.Fatalf("dsh third:\n%s\nwant:\n%s", got, want)
++	}
++}
++
++// TestKeepBiliServeDoesNotUndoDisable: a disable that lands while the
++// background start is in flight is still off afterwards. The migration
++// must not write the bili prefix back onto the direct URL.
++func TestKeepBiliServeDoesNotUndoDisable(t *testing.T) {
++	h := sandbox(t)
++	unsetEnv(t, "ACP_PORT", "PORT")
++	holdCLI(t, h, "hermes")
++	gw := gateway.URL() + "/v1"
++	old := biliPrefix
++	cfg := filepath.Join(h, ".hermes", "config.yaml")
++	write(t, cfg, "# mine\nmodel:\n  default: deepseek/pro\n  provider: magpie\nproviders:\n  magpie:\n    name: magpie\n    base_url: "+old+gw+"\n    api_key: magpie\n    api_mode: chat_completions\n")
++	biliRemember("http://127.0.0.1:18787")
++	t.Cleanup(resetBiliListen)
++	wasPath, wasServe, wasStop, wasServing := biliPath, biliServe, biliStop, biliServing
++	stopped := 0
++	biliPath = func() string { return filepath.Join(h, "bin", "bili") }
++	biliStop = func() { stopped++ }
++	biliServing = func() bool { return false }
++	biliServe = func(string) error {
++		body := read(t, cfg)
++		return os.WriteFile(cfg, []byte(strings.Replace(body, old+gw, gw, 1)), 0o600)
++	}
++	t.Cleanup(func() {
++		biliPath = wasPath
++		biliServe = wasServe
++		biliStop = wasStop
++		biliServing = wasServing
++	})
++	keepBiliServe(context.Background())
++	got := read(t, cfg)
++	if strings.Contains(got, "/bili/") || !strings.Contains(got, "base_url: "+gw+"\n") {
++		t.Fatalf("a disable during startup was written back:\n%s", got)
++	}
++	if stopped != 1 {
++		t.Fatalf("biliStop called %d times, want 1 when disable lands mid-start", stopped)
++	}
++}
++
++// TestSetBiliURLSurvivesBrokenOtherAgent: enabling bili for one agent must
++// not fail and discard its Restart/Backup view when an unrelated agent has a
++// malformed config file.
++func TestSetBiliURLSurvivesBrokenOtherAgent(t *testing.T) {
++	h := sandbox(t)
++	unsetEnv(t, "ACP_PORT", "PORT")
++	holdCLI(t, h, "hermes")
++	gw := gateway.URL() + "/v1"
++
++	// Zed configured on magpie (target of SetBili).
++	zdir := filepath.Join(h, "zed-config")
++	t.Setenv("MAGPIE_ZED_CONFIG_DIR", zdir)
++	zs := filepath.Join(zdir, "settings.json")
++	write(t, zs, `{"language_models":{"openai_compatible":{"magpie":{"api_url":"`+gw+`","available_models":[]}}}}`)
++
++	// Hermes is ON bili in root, with a broken secondary profile YAML.
++	write(t, filepath.Join(h, ".hermes", "config.yaml"), "providers:\n  magpie:\n    base_url: http://127.0.0.1:8787/bili/"+gw+"\n")
++	write(t, filepath.Join(h, ".hermes", "profiles", "bot", "config.yaml"), "providers:\n  magpie: [unclosed\n")
++
++	// dsh has a valid profile plus a non-list legacy config.yaml.
++	write(t, filepath.Join(h, ".dsh", "profiles", "web", "cordis.patch.yml"), "- id: llm-pi-ai\n  config:\n    providers:\n      magpie:\n        baseURL: "+gw+"\n")
++	write(t, filepath.Join(h, ".dsh", "config.yaml"), "not_a_list: true\n")
++
++	wasPath, wasServe, wasThrough := biliPath, biliServe, zedThrough
++	biliPath = func() string { return filepath.Join(h, "bin", "bili") }
++	biliServe = func(string) error {
++		biliRemember("http://127.0.0.1:18787")
++		return nil
++	}
++	zedThrough = func(a *agent.Agent, prefix string) error {
++		body := read(t, a.Path)
++		return os.WriteFile(a.Path, []byte(strings.Replace(body, gw, prefix+gw, 1)), 0o600)
++	}
++	t.Cleanup(func() {
++		biliPath, biliServe, zedThrough = wasPath, wasServe, wasThrough
++		resetBiliListen()
++	})
++
++	v, err := SetBili("zed", true)
++	if err != nil {
++		t.Fatalf("SetBili(zed, true) failed because of another agent's broken file: %v", err)
++	}
++	if len(v.Restart) != 1 || v.Restart[0] != "zed" || v.Backup == "" {
++		t.Fatalf("unexpected view: Restart=%v Backup=%q", v.Restart, v.Backup)
++	}
++	if got := read(t, zs); !strings.Contains(got, "http://127.0.0.1:18787/bili/"+gw) {
++		t.Fatalf("zed not updated:\n%s", got)
++	}
++	// Hermes root was still aligned to 18787 despite bot/config.yaml being broken.
++	if got := read(t, filepath.Join(h, ".hermes", "config.yaml")); !strings.Contains(got, "http://127.0.0.1:18787/bili/"+gw) {
++		t.Fatalf("hermes root not aligned:\n%s", got)
++	}
++}
++
+ // TestBiliVersionPastItsWarnings: `bili --version` is read with stderr,
+ // and bili 0.1.213 on mote wrote a config warning before the version; the
+ // card said "2026-11-09T23:44:06.211" for the version.
+diff --git a/internal/library/bili_url.go b/internal/library/bili_url.go
+index 0abc0e7dd..4e05bff3b 100644
+--- a/internal/library/bili_url.go
++++ b/internal/library/bili_url.go
+@@ -3,16 +3,24 @@ package library
+ import (
+ 	"context"
+ 	"encoding/json"
++	"errors"
+ 	"fmt"
++	"io"
+ 	"log"
++	"net"
+ 	"net/http"
+ 	"os"
+ 	"path/filepath"
++	"strconv"
+ 	"strings"
+ 	"sync"
++	"sync/atomic"
+ 	"time"
+ 
++	"github.com/tidwall/gjson"
++
+ 	"github.com/yetone/magpie/internal/agent"
++	"github.com/yetone/magpie/internal/gateway"
+ 	"github.com/yetone/magpie/internal/proc"
+ 	"github.com/yetone/magpie/internal/settings"
+ )
+@@ -23,19 +31,36 @@ import (
+ // system, the /bili/ prefix its docs give for any client whose model
+ // address can be edited ("Adopting unlisted clients", docs/clients.md):
+ // language_models.openai_compatible.<provider>.api_url as
+-// http://127.0.0.1:8787/bili/<the address>, with bili's daemon (bili start)
+-// answering there. That is what magpie writes into Zed's magpie provider
+-// (agent.ZedThrough, which keeps it across picks and syncs and saves the
+-// key for it, Zed looking that up by the address). magpie keeps a bili
+-// start of its own running while such an agent is on (keepBiliServe, from
+-// KeepLinked), ended with magpie; one the user started is used as it is.
++// http://127.0.0.1:<port>/bili/<the address>, with bili's daemon (bili
++// start) answering there. That is what magpie writes into Zed's magpie
++// provider (agent.ZedThrough, which keeps it across picks and syncs and
++// saves the key for it, Zed looking that up by the address). magpie keeps
++// a bili start of its own running while such an agent is on (keepBiliServe,
++// from KeepLinked), ended with magpie; one the user started is used as it
++// is. The port is the one bili start itself would bind (biliListenPort):
++// ACP_PORT, then PORT, then "port" in billion-context.json, otherwise
++// 8787. A foreign listener on the default 8787 (a 401, not bili's health)
++// is not that daemon (#7382).
++
++// biliDefaultPort is bili start's port when nothing else names one
++// (src/config.ts, fileConfig.port ?? 8787). bili's lanes take
++// ZONE_PORT_BASE, 18787, and up.
++const biliDefaultPort = 8787
++
++// biliZonePort is the first port bili keeps for a lane (ZONE_PORT_BASE
++// in src/config.ts). When the default 8787 answers as something other
++// than bili, the shared daemon uses a bili already there, or the first
++// port from here that is free.
++const biliZonePort = 18787
+ 
+-// biliOrigin is where bili start listens: 8787, the port bili keeps for
+-// it (its lanes take 18787 and up).
+-const biliOrigin = "http://127.0.0.1:8787"
++// biliPortSpan is how many ports past biliZonePort are tried. A lane
++// that drifted a long way is still found from its registry file first.
++const biliPortSpan = 16
+ 
+-// biliPrefix is what goes before the gateway's address.
+-const biliPrefix = biliOrigin + "/bili/"
++// biliPrefix is the /bili/ prefix on the default port. Tests and a
++// machine with no other port still write this. The prefix actually
++// written is biliPrefixNow.
++const biliPrefix = "http://127.0.0.1:8787/bili/"
+ 
+ // biliURLLane is an agent bili folds through its /bili/ prefix: whether
+ // its magpie provider goes through it, and putting it there (prefix
+@@ -59,11 +84,11 @@ var zedThrough = agent.ZedThrough
+ 
+ var biliURLLanes = map[string]biliURLLane{
+ 	"zed": {
+-		on:  func(a *agent.Agent) bool { return strings.HasPrefix(agent.ZedURL(a), biliPrefix) },
++		on:  func(a *agent.Agent) bool { return biliThroughURL(agent.ZedURL(a)) },
+ 		set: func(a *agent.Agent, prefix string) error { return zedThrough(a, prefix) },
+ 	},
+ 	"hermes": {
+-		on:  func(a *agent.Agent) bool { return strings.HasPrefix(agent.HermesURL(a), biliPrefix) },
++		on:  func(a *agent.Agent) bool { return biliThroughURL(agent.HermesURL(a)) },
+ 		set: agent.HermesThrough,
+ 	},
+ 	// dsh's own plugin for bili (dsh plugin add billion-context) rides proxy
+@@ -71,25 +96,388 @@ var biliURLLanes = map[string]biliURLLane{
+ 	// takes; its route's baseURL is editable, so it goes through the prefix
+ 	// as Hermes does, in every profile (VantH_off on X).
+ 	"dsh": {
+-		on:  func(a *agent.Agent) bool { return strings.HasPrefix(agent.DshURL(a), biliPrefix) },
++		on:  func(a *agent.Agent) bool { return biliThroughURL(agent.DshURL(a)) },
+ 		set: agent.DshThrough,
+ 	},
+ }
+ 
+-// biliServing says bili start answers at biliOrigin: its health is
+-// {"ok":true}, which something else on the port doesn't say. A var for
+-// tests.
+-var biliServing = func() bool {
+-	c := &http.Client{Timeout: 2 * time.Second}
+-	res, err := c.Get(biliOrigin + "/__bili/health")
+-	if err != nil {
++// biliThroughURL says url is a magpie provider put behind bili's prefix
++// on loopback. The port varies (biliPrefixNow); 8787 is only the default.
++func biliThroughURL(url string) bool {
++	rest, ok := strings.CutPrefix(url, "http://127.0.0.1:")
++	if !ok {
++		return false
++	}
++	i := strings.Index(rest, "/bili/")
++	if i <= 0 {
+ 		return false
+ 	}
++	n, err := strconv.Atoi(rest[:i])
++	return err == nil && n >= 1 && n <= 65535
++}
++
++// biliHeard is what a probe of /__bili/health found.
++type biliHeard int
++
++const (
++	biliDown     biliHeard = iota // nothing accepted the connection
++	biliUp                        // {"ok":true}
++	biliStarting                  // 503 {"ok":false,"reason":"starting"} — bound, not registered yet
++	biliStalled                   // TCP accepted, no HTTP answer (slow boot, non-HTTP listener, drop)
++	biliOther                     // HTTP answer that is not bili's health
++)
++
++// biliDialTimeout is how long a health probe waits to establish TCP.
++// Windows retries loopback RSTs for ~2s before reporting WSAECONNREFUSED,
++// so dialing gets its own budget separate from biliProbeTimeout.
++var biliDialTimeout = 3 * time.Second
++
++// biliProbeTimeout is how long a health probe waits for an HTTP reply
++// after TCP has connected. A stall past this is a listener, not a free port.
++var biliProbeTimeout = 2 * time.Second
++
++// biliDial establishes the TCP connection for biliProbe. A var for tests.
++var biliDial = func(ctx context.Context, network, addr string) (net.Conn, error) {
++	d := net.Dialer{Timeout: biliDialTimeout}
++	return d.DialContext(ctx, network, addr)
++}
++
++// biliProbe asks origin whether bili is the thing listening. A proxy in
++// the environment is not asked: the daemon is on this computer, and a
++// proxy would hide a 401 from the program that owns the port (#7382).
++// Any TCP connect failure (refused, or a dial timeout) is biliDown. Once
++// TCP accepts, a disconnect or stall before a complete HTTP reply within
++// biliProbeTimeout is biliStalled: occupied during pre-spawn probes, but
++// waited out while our own newly started child is still alive. A non-bili
++// HTTP response (e.g. 401) is biliOther. 503 {"ok":false,"reason":"starting"}
++// is bili itself, bound before registration finishes (src/server/admin.ts);
++// it is not another program.
++func biliProbe(origin string) biliHeard {
++	var connected atomic.Bool
++	c := &http.Client{
++		Transport: &http.Transport{
++			Proxy:                 nil,
++			DisableKeepAlives:     true,
++			ResponseHeaderTimeout: biliProbeTimeout,
++			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
++				conn, err := biliDial(ctx, network, addr)
++				if err != nil {
++					return nil, err
++				}
++				connected.Store(true)
++				_ = conn.SetDeadline(time.Now().Add(biliProbeTimeout))
++				return conn, nil
++			},
++		},
++		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
++	}
++	res, err := c.Get(origin + "/__bili/health")
++	if err != nil {
++		if !connected.Load() {
++			return biliDown
++		}
++		return biliStalled
++	}
+ 	defer res.Body.Close()
++	body, err := io.ReadAll(io.LimitReader(res.Body, 4096))
++	if err != nil {
++		return biliStalled
++	}
+ 	var h struct {
+-		OK bool `json:"ok"`
++		OK     bool   `json:"ok"`
++		Reason string `json:"reason"`
++	}
++	_ = json.Unmarshal(body, &h)
++	if res.StatusCode == http.StatusServiceUnavailable && !h.OK && h.Reason == "starting" {
++		return biliStarting
++	}
++	if res.StatusCode == http.StatusOK && h.OK {
++		return biliUp
++	}
++	return biliOther
++}
++
++func biliOriginOf(port int) string { return "http://127.0.0.1:" + strconv.Itoa(port) }
++
++// biliPortNow is the origin the shared daemon last resolved, empty until
++// then. The prefix tests compare against stays biliPrefix until a run
++// picks another port.
++var biliPortNow struct {
++	sync.Mutex
++	origin string
++}
++
++func biliRemember(origin string) {
++	biliPortNow.Lock()
++	biliPortNow.origin = strings.TrimSuffix(origin, "/")
++	biliPortNow.Unlock()
++}
++
++func biliPrefixNow() string {
++	biliPortNow.Lock()
++	defer biliPortNow.Unlock()
++	if biliPortNow.origin != "" {
++		return biliPortNow.origin + "/bili/"
++	}
++	return biliPrefix
++}
++
++// resetBiliListen stops magpie's bili and forgets the port it resolved.
++// Tests use it so a later test still sees the default prefix.
++func resetBiliListen() {
++	biliStop()
++	biliPortNow.Lock()
++	biliPortNow.origin = ""
++	biliPortNow.Unlock()
++}
++
++// biliListenPort is the port `bili start` binds when magpie does not pass
++// --port (src/config.ts loadOptions): ACP_PORT, then PORT, then the
++// file's port, then 8787, joined with ?? and parseInt. userSet is false
++// only for that default, including a file port of null. A variable that
++// is set, even to "", is used and does not fall through. A file that can't
++// be read or isn't JSON falls back to 8787, matching bili's loadConfigFile
++// returning {}. A named BILI_CONFIG_FILE whose file is missing is an error,
++// as bili start's checkNamedConfigRef exits before it listens.
++func biliListenPort() (port int, userSet bool, err error) {
++	if p, ok, err := biliEnvPort("ACP_PORT"); ok || err != nil {
++		return p, true, err
++	}
++	if p, ok, err := biliEnvPort("PORT"); ok || err != nil {
++		return p, true, err
++	}
++	return biliFilePort()
++}
++
++func biliEnvPort(name string) (int, bool, error) {
++	s, ok := os.LookupEnv(name)
++	if !ok {
++		return 0, false, nil
++	}
++	n, num := biliJSParseInt(s)
++	if !num || n < 1 || n > 65535 {
++		return 0, true, fmt.Errorf("bili's %s is %q, which isn't a port from 1 to 65535", name, s)
++	}
++	return n, true, nil
++}
++
++func biliFilePort() (int, bool, error) {
++	p := BiliConfigFile()
++	if ref, ok := biliConfigRef(); ok {
++		if _, named := resolveBiliConfigRef(ref); named {
++			if _, err := os.Stat(p); os.IsNotExist(err) {
++				return 0, true, biliNamedConfigError(ref, p)
++			}
++		}
++	}
++	text, ok, err := biliText(p)
++	if err != nil {
++		log.Printf("library: billion-context: ignoring unreadable config %s: %v", p, err)
++		return biliDefaultPort, false, nil
++	}
++	if !ok || strings.TrimSpace(text) == "" {
++		return biliDefaultPort, false, nil
++	}
++	r, parsed := biliParse(text)
++	if !parsed {
++		log.Printf("library: billion-context: ignoring unparseable config %s", p)
++		return biliDefaultPort, false, nil
++	}
++	v := r.Get("port")
++	// missing, or JSON null: fileConfig.port ?? 8787
++	if !v.Exists() || v.Type == gjson.Null {
++		return biliDefaultPort, false, nil
++	}
++	s, raw := biliPortText(v)
++	n, num := biliJSParseInt(s)
++	if !num || n < 1 || n > 65535 {
++		if raw == "" {
++			raw = s
++		}
++		return 0, true, fmt.Errorf("billion-context.json port %s isn't a port from 1 to 65535", raw)
++	}
++	return n, true, nil
++}
++
++// biliPortText is the text parseInt sees for a file port: a JSON number
++// the way JS stringifies it (`${8787.5}` is "8787.5"), or a string as stored.
++func biliPortText(v gjson.Result) (s, raw string) {
++	switch v.Type {
++	case gjson.Number:
++		return strconv.FormatFloat(v.Float(), 'f', -1, 64), strings.TrimSpace(v.Raw)
++	case gjson.String:
++		return v.String(), v.String()
++	default:
++		raw = strings.TrimSpace(v.Raw)
++		if raw == "" {
++			raw = v.String()
++		}
++		return raw, raw
++	}
++}
++
++// biliJSParseInt is JS parseInt(s, 10): leading ASCII whitespace is
++// skipped, an optional sign, then digits, and the rest is ignored.
++// "8787.5" is 8787. num is false when there is no digit (NaN), which an
++// empty ACP_PORT or PORT is.
++func biliJSParseInt(s string) (n int, num bool) {
++	i := 0
++	for i < len(s) {
++		switch s[i] {
++		case ' ', '\t', '\n', '\r', '\v', '\f':
++			i++
++			continue
++		}
++		break
++	}
++	if i >= len(s) {
++		return 0, false
++	}
++	sign := 1
++	if s[i] == '+' || s[i] == '-' {
++		if s[i] == '-' {
++			sign = -1
++		}
++		i++
+ 	}
+-	return res.StatusCode == http.StatusOK && json.NewDecoder(res.Body).Decode(&h) == nil && h.OK
++	if i >= len(s) || s[i] < '0' || s[i] > '9' {
++		return 0, false
++	}
++	for i < len(s) && s[i] >= '0' && s[i] <= '9' {
++		n = n*10 + int(s[i]-'0')
++		if n > 1_000_000_000 {
++			return 0, false
++		}
++		i++
++	}
++	return sign * n, true
++}
++
++// biliTarget is where the shared daemon should answer. up means a bili
++// is already there. stick means the user chose the port (the file or the
++// environment). A fallback off a foreign default is not sticky: a bind
++// conflict there tries the next free lane port.
++func biliTarget() (origin string, port int, up, stick bool, err error) {
++	return biliTargetSkip(nil)
++}
++
++func biliTargetSkip(failed map[int]bool) (origin string, port int, up, stick bool, err error) {
++	port, userSet, err := biliListenPort()
++	if err != nil {
++		return "", 0, false, false, err
++	}
++	origin = biliOriginOf(port)
++	if !failed[port] {
++		switch biliClassify(origin) {
++		case biliUp:
++			return origin, port, true, true, nil
++		case biliOther, biliStalled:
++			if userSet {
++				return origin, port, false, true, fmt.Errorf("bili start didn't answer at %s: something else is answering there", origin)
++			}
++		case biliStarting:
++			return origin, port, false, true, fmt.Errorf("bili start didn't answer at %s: still starting", origin)
++		default:
++			return origin, port, false, userSet, nil
++		}
++	} else if userSet {
++		return origin, port, false, true, fmt.Errorf("bili start didn't answer at %s: something else is answering there", origin)
++	}
++	o, p, up, ferr := biliNextFree(origin, failed)
++	if ferr != nil {
++		return "", 0, false, false, ferr
++	}
++	return o, p, up, false, nil
++}
++
++// biliClassify is biliProbe, waiting out a 503 starting response until
++// bili is ready, something else answers, or the wait ends.
++func biliClassify(origin string) biliHeard {
++	h := biliProbe(origin)
++	if h != biliStarting {
++		return h
++	}
++	return biliAwait(origin)
++}
++
++// biliAwait polls origin until it is up or plainly not bili.
++func biliAwait(origin string) biliHeard {
++	heard := biliStarting
++	deadline := time.Now().Add(biliWait)
++	for time.Now().Before(deadline) {
++		heard = biliProbe(origin)
++		if heard == biliUp || heard == biliOther {
++			return heard
++		}
++		time.Sleep(250 * time.Millisecond)
++	}
++	return heard
++}
++
++// biliNextFree is a bili other than blocked. A registered loopback
++// instance wins; otherwise the first lane port that is bili or has
++// nothing on it. failed ports already lost a bind and are skipped.
++// Occupied ports (another HTTP server, a non-HTTP TCP listener) are
++// skipped too.
++func biliNextFree(blocked string, failed map[int]bool) (origin string, port int, up bool, err error) {
++	if o, p, ok := biliUpElsewhere(blocked); ok && !failed[p] {
++		return o, p, true, nil
++	}
++	gw, _ := strconv.Atoi(gateway.Port())
++	for p := biliZonePort; p < biliZonePort+biliPortSpan; p++ {
++		if p == gw || failed[p] {
++			continue
++		}
++		o := biliOriginOf(p)
++		if o == blocked {
++			continue
++		}
++		switch biliClassify(o) {
++		case biliUp:
++			return o, p, true, nil
++		case biliDown:
++			return o, p, false, nil
++		}
++	}
++	return "", 0, false, fmt.Errorf("bili start didn't answer at %s: something else is answering there", blocked)
++}
++
++func biliUpElsewhere(blocked string) (origin string, port int, ok bool) {
++	gw, _ := strconv.Atoi(gateway.Port())
++	for _, o := range biliOrigins() {
++		p, good := portOfOrigin(o)
++		if !good || p == gw || biliOriginOf(p) == blocked {
++			continue
++		}
++		if biliProbe(biliOriginOf(p)) == biliUp {
++			return biliOriginOf(p), p, true
++		}
++	}
++	return "", 0, false
++}
++
++func portOfOrigin(origin string) (int, bool) {
++	i := strings.LastIndex(origin, ":")
++	if i < 0 || i == len(origin)-1 {
++		return 0, false
++	}
++	s := strings.TrimSuffix(origin[i+1:], "/")
++	n, err := strconv.Atoi(s)
++	if err != nil || n < 1 || n > 65535 {
++		return 0, false
++	}
++	return n, true
++}
++
++// biliServing says a bili magpie would use is already answering. A var
++// for tests.
++var biliServing = func() bool {
++	origin, _, up, _, err := biliTarget()
++	if err != nil || !up {
++		return false
++	}
++	biliRemember(origin)
++	return true
+ }
+ 
+ // biliServer is the bili start magpie runs: under ctx (KeepLinked's,
+@@ -105,16 +493,49 @@ func biliServeLog() string { return filepath.Join(settings.Dir(), "bili-start.lo
+ // biliWait is how long a bili start just run has to answer.
+ var biliWait = 20 * time.Second
+ 
+-// biliServe has bili start answer at biliOrigin: one there already is
+-// used as it is, else magpie runs its own. A var for tests.
++// biliServe has bili answer at the port biliListenPort names. One there
++// already is used as it is, else magpie runs its own. A foreign server
++// on the default 8787 is skipped for a port in bili's lane zone. A var
++// for tests.
+ var biliServe = func(bin string) error {
+ 	biliServer.Lock()
+ 	defer biliServer.Unlock()
+-	if biliServing() {
+-		return nil
++	failed := map[int]bool{}
++	var last error
++	for attempts := 0; attempts < biliPortSpan+1; attempts++ {
++		origin, port, up, stick, err := biliTargetSkip(failed)
++		if err != nil {
++			return err
++		}
++		if up {
++			biliRemember(origin)
++			return nil
++		}
++		err, conflict := biliStartAt(bin, origin, port)
++		if err == nil {
++			biliRemember(origin)
++			return nil
++		}
++		last = err
++		// A user-chosen port stays put. A port that only looked free, then
++		// refused the bind or turned out to be another program, does not.
++		if !conflict || stick {
++			return err
++		}
++		failed[port] = true
+ 	}
++	if last != nil {
++		return last
++	}
++	return fmt.Errorf("bili start didn't answer: the fallback ports are taken")
++}
++
++// biliStartAt runs bili start --port and waits until that origin answers
++// as bili. conflict means the port is taken: something else answered, or
++// bili start reported EADDRINUSE. A 503 starting response is bili itself
++// and is waited out, not a conflict.
++func biliStartAt(bin, origin string, port int) (error, bool) {
+ 	if biliServer.cancel != nil {
+-		// magpie's own, which stopped answering
+ 		biliServer.cancel()
+ 		biliServer.cancel = nil
+ 	}
+@@ -123,21 +544,21 @@ var biliServe = func(bin string) error {
+ 		parent = context.Background()
+ 	}
+ 	if err := os.MkdirAll(settings.Dir(), 0o700); err != nil {
+-		return err
++		return err, false
+ 	}
+ 	out, err := os.Create(biliServeLog())
+ 	if err != nil {
+-		return err
++		return err, false
+ 	}
+ 	ctx, cancel := context.WithCancel(parent)
+-	cmd := proc.CommandContext(ctx, bin, "start", "--port", "8787")
++	cmd := proc.CommandContext(ctx, bin, "start", "--port", strconv.Itoa(port))
+ 	cmd.Stdin = nil
+ 	cmd.Stdout, cmd.Stderr = out, out
+ 	cmd.Env = append(os.Environ(), "PATH="+filepath.Dir(bin)+string(os.PathListSeparator)+os.Getenv("PATH"))
+ 	if err := cmd.Start(); err != nil {
+ 		cancel()
+ 		out.Close()
+-		return fmt.Errorf("bili start: %w", err)
++		return fmt.Errorf("bili start: %w", err), false
+ 	}
+ 	done := make(chan struct{})
+ 	go func() {
+@@ -146,9 +567,14 @@ var biliServe = func(bin string) error {
+ 		close(done)
+ 	}()
+ 	biliServer.cancel = cancel
++	heard := biliDown
+ 	for end := time.Now().Add(biliWait); time.Now().Before(end); {
+-		if biliServing() {
+-			return nil
++		heard = biliProbe(origin)
++		if heard == biliUp {
++			return nil, false
++		}
++		if heard == biliOther {
++			break
+ 		}
+ 		select {
+ 		case <-done:
+@@ -158,12 +584,30 @@ var biliServe = func(bin string) error {
+ 	}
+ 	cancel()
+ 	biliServer.cancel = nil
++	<-done
+ 	said, _ := os.ReadFile(biliServeLog())
+-	why := lastLines(strings.TrimSpace(string(said)), 3)
++	text := string(said)
++	why := lastLines(strings.TrimSpace(text), 3)
++	conflict := heard == biliOther || biliBindConflict(text)
++	if heard == biliOther {
++		why = "something else is answering there"
++	}
++	if heard == biliStarting {
++		why = "still starting"
++	}
+ 	if why == "" {
+ 		why = "nothing answered"
+ 	}
+-	return fmt.Errorf("bili start didn't answer at %s: %s", biliOrigin, why)
++	return fmt.Errorf("bili start didn't answer at %s: %s", origin, why), conflict
++}
++
++// biliBindConflict is bili start failing to listen because the port was
++// taken after the probe (Node's EADDRINUSE).
++func biliBindConflict(text string) bool {
++	if strings.Contains(text, "EADDRINUSE") {
++		return true
++	}
++	return strings.Contains(strings.ToLower(text), "address already in use")
+ }
+ 
+ // biliStop ends the bili start magpie runs, if it runs one. A var for
+@@ -187,6 +631,25 @@ func biliURLOn(agents []*agent.Agent) bool {
+ 	return false
+ }
+ 
++// alignBiliURLs points every active URL-lane agent that already goes through
++// a /bili/ prefix at the origin just resolved, so a Zed left on 8787 is not
++// still sent there after the daemon moved (#7382). Only that outer prefix on
++// magpie's own entries changes. Agents whose lane is off, a custom URL, path,
++// or query, and a profile that is not on bili stay as they are. Caller holds
++// biliMu.
++func alignBiliURLs(agents []*agent.Agent) error {
++	prefix := biliPrefixNow()
++	var errs []error
++	for _, a := range agents {
++		l, ok := biliURLLanes[a.ID]
++		if !ok || !l.on(a) {
++			continue
++		}
++		errs = append(errs, agent.MoveBiliPrefix(a, prefix))
++	}
++	return errors.Join(errs...)
++}
++
+ // setBiliURL puts an agent's magpie provider through bili's prefix, with
+ // bili start answering there first, or back on the gateway, and ends
+ // magpie's bili start when nothing goes through it any more.
+@@ -200,9 +663,29 @@ func setBiliURL(a *agent.Agent, agents []*agent.Agent, bin string, on bool) (*Bi
+ 		if err := biliServe(bin); err != nil {
+ 			return nil, err
+ 		}
+-		if err := l.set(a, biliPrefix); err != nil {
++		prefix := biliPrefixNow()
++		if err := l.set(a, prefix); err != nil {
+ 			return nil, err
+ 		}
++		// Align other active URL-lane agents to the resolved prefix without
++		// letting a broken file in an unrelated agent fail this switch after
++		// a's own file and daemon have already been updated.
++		for _, x := range agents {
++			if x.ID == a.ID {
++				continue
++			}
++			xl, ok := biliURLLanes[x.ID]
++			if !ok || !xl.on(x) {
++				continue
++			}
++			if err := b.keep(x.ID, x.Path); err != nil {
++				log.Println("library: billion-context:", err)
++				continue
++			}
++			if err := agent.MoveBiliPrefix(x, prefix); err != nil {
++				log.Println("library: billion-context:", err)
++			}
++		}
+ 	} else {
+ 		if err := l.set(a, ""); err != nil {
+ 			return nil, err
+@@ -228,14 +711,34 @@ func keepBiliServe(ctx context.Context) {
+ 		biliServer.ctx = ctx
+ 	}
+ 	biliServer.Unlock()
+-	if !biliURLOn(detected()) {
++	biliMu.Lock()
++	agents := detected()
++	on := biliURLOn(agents)
++	biliMu.Unlock()
++	if !on {
+ 		return
+ 	}
+ 	bin := biliPath()
+-	if bin == "" || biliServing() {
++	if bin == "" {
++		return
++	}
++	if !biliServing() {
++		if err := biliServe(bin); err != nil {
++			log.Println("library: billion-context:", err)
++			return
++		}
++	}
++	// SetBili holds biliMu across its own write. Re-read under that lock
++	// so a disable that landed while bili was starting is not undone by
++	// writing the prefix back onto the direct URL.
++	biliMu.Lock()
++	defer biliMu.Unlock()
++	agents = detected()
++	if !biliURLOn(agents) {
++		biliStop()
+ 		return
+ 	}
+-	if err := biliServe(bin); err != nil {
++	if err := alignBiliURLs(agents); err != nil {
+ 		log.Println("library: billion-context:", err)
+ 	}
+ }
+-- 
+2.50.1 (Apple Git-155)
+

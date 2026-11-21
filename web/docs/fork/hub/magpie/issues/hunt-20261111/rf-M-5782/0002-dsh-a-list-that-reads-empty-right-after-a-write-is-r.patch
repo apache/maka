@@ -1,0 +1,277 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Thu, 12 Nov 2026 00:15:24 +0800
+Subject: [PATCH 2/2] dsh: a list that reads empty right after a write is
+ reread before one is written (#5782)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The half stevenpisces' machine lost through was not the again path's: the
+list read as its comment head and no entries, magpie filled its route in
+under a start that still named one of its models, and the fresh generation
+went back as head plus those two entries — the user's 51 lines gone, the
+half matching 4 of them. The model-set path said nothing as it did.
+
+dshSettledRead is the read a writer's write cannot hide behind, the same
+shape dshRouteAgainSaid's gate uses, on every path that generates fresh
+into a list that read empty: the model set (dshSetFile), the profile the
+round fills (dshFillNewProfiles), and the effort pick (dshSetEffort). A
+list read empty but written moments ago is reread after a beat, and the
+write comes from the settled read; a still-empty one is dsh's own. The
+model-set write says what it wrote where, so the next loss is findable in
+minutes.
+
+Ablation: with the reread out, TestDshSetWritesOnAListThatSettled,
+TestDshFillNewProfilesWritesOnAListThatSettled and
+TestDshSetEffortWritesOnAListThatSettled fail at "the user's entries are
+gone" — the reporter's shape; with the log line out,
+TestDshSetSaysWhatItWrote fails. A list that reads empty and stays empty
+still takes the route (TestDshSetWritesThroughAStableEmptyList).
+
+Run at upstream/main 2bb201162 + the #5782 gate rebased (e625dfc20) + this
+commit, macOS 15 (darwin/arm64): the dsh family green, -race green;
+internal/agent builds on linux, windows and darwin. A real Windows dsh
+desktop mid-save is NOT-RUNNABLE here.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/agent/dsh.go                |  34 +++++++
+ internal/agent/dsh_halfwrite_test.go | 140 +++++++++++++++++++++++++++
+ 2 files changed, 174 insertions(+)
+
+diff --git a/internal/agent/dsh.go b/internal/agent/dsh.go
+index 6d3507b31..1565eeef0 100644
+--- a/internal/agent/dsh.go
++++ b/internal/agent/dsh.go
+@@ -1268,6 +1268,26 @@ var dshSettle = 400 * time.Millisecond
+ 
+ var dshWrites sync.Mutex
+ 
++// dshSettled is a read a writer's write cannot hide behind: a list that
++// reads as no entries at all right after the file was touched is that
++// writer's head, not dsh's own empty list — a fresh generation written
++// from it (a route, a start model, an effort) went back as head plus
++// magpie's entries alone, the user's gone with it (#5782, stevenpisces:
++// the half matched 4 of 51 lines of the real list). The list is reread
++// after a beat, and what is written comes from the settled read; a
++// still-empty one is dsh's own and written as it is.
++func dshSettledRead(path string, head []string, items []dshItem) ([]string, []dshItem, error) {
++	if len(items) != 0 {
++		return head, items, nil
++	}
++	st, err := os.Stat(path)
++	if err != nil || time.Since(st.ModTime()) >= dshJustWritten {
++		return head, items, nil
++	}
++	time.Sleep(dshSettle)
++	return dshRead(path)
++}
++
+ // dshSet writes v as the model new sessions start on: a catalog model
+ // through the gateway, one of dsh's own models directly, or "" for dsh's own
+ // default. Every profile gets it; config.yaml only where there are none.
+@@ -1631,6 +1651,9 @@ func dshSetFile(path, v string, modern bool, models []catalog.Model, gw string)
+ 	if err != nil {
+ 		return err
+ 	}
++	if head, items, err = dshSettledRead(path, head, items); err != nil {
++		return err
++	}
+ 	ref, viaGateway := strings.CutPrefix(v, magpieID+"/")
+ 	effort := ""
+ 	if modern {
+@@ -1703,6 +1726,11 @@ func dshSetFile(path, v string, modern bool, models []catalog.Model, gw string)
+ 		drop("llm-deepseek")
+ 		put("agent-loop", dshLoopLines(v))
+ 	}
++	// the model-set path wrote silently; one line here would have found
++	// #5782's loss in minutes (stevenpisces)
++	if v != "" {
++		log.Printf("wrote dsh's route in %s", path)
++	}
+ 	return dshWrite(path, head, items)
+ }
+ 
+@@ -2887,6 +2915,9 @@ func dshFillNewProfiles(files []string, models []catalog.Model, gw string) error
+ 		if err != nil {
+ 			continue
+ 		}
++		if head, items, err = dshSettledRead(f, head, items); err != nil {
++			continue
++		}
+ 		if i := dshFind(items, "agent-default-model"); model != "" && (i < 0 || dshOurs(items[i])) {
+ 			if err := dshSetFile(f, magpieID+"/"+model, true, models, gw); err != nil {
+ 				return err
+@@ -3005,6 +3036,9 @@ func dshSetEffort(dir, v, gw, lead string) error {
+ 			if err != nil {
+ 				continue
+ 			}
++			if head, items, err = dshSettledRead(f, head, items); err != nil {
++				continue
++			}
+ 			// each profile keeps the model it starts on
+ 			p, m := "deepseek-official", ref
+ 			if viaGateway {
+diff --git a/internal/agent/dsh_halfwrite_test.go b/internal/agent/dsh_halfwrite_test.go
+index 9d1827bab..e0ab15f08 100644
+--- a/internal/agent/dsh_halfwrite_test.go
++++ b/internal/agent/dsh_halfwrite_test.go
+@@ -9,10 +9,15 @@ package agent
+ // under us is left to the next round, which reads it whole.
+ 
+ import (
++	"bytes"
++	"log"
+ 	"os"
++	"path/filepath"
+ 	"strings"
+ 	"testing"
+ 	"time"
++
++	"github.com/yetone/magpie/internal/gateway"
+ )
+ 
+ // dshHalfPair builds the desktop's list and its mid-write head: the route
+@@ -65,3 +70,138 @@ func TestDshRouteAgainSkipsAFileBeingWritten(t *testing.T) {
+ 		t.Fatalf("the half-state was fixed as the list — the user's entries are gone:\n%s", b[:min(700, len(b))])
+ 	}
+ }
++
++// dshUsersEntries is the body a desktop's save lands: the user's own
++// entries, no route of magpie's among them.
++func dshUsersEntries(n int) string {
++	return strings.Repeat("- id: user-entry\n  config:\n    step: done\n    note: keep me\n", n)
++}
++
++// The model-set path reads the same list the rounds do: one that reads as
++// its comment head and no entries right after the file was touched is a
++// writer's head, not dsh's own empty — the fresh generation written from it
++// went back as head plus magpie's two entries, the user's entries gone with
++// it (#5782, stevenpisces: the half matched 4 of 51 lines of the real
++// list). The list is reread after a beat, and the pick lands on the
++// settled read.
++func TestDshSetWritesOnAListThatSettled(t *testing.T) {
++	home, dir, web := dshRouteHome(t)
++	dshKeyFixture(dir)
++	os.WriteFile(web, []byte("# Your patch layer for this dsh profile.\n"), 0o644)
++	// the desktop's save lands the body inside the settle beat
++	go func() {
++		time.Sleep(150 * time.Millisecond)
++		os.WriteFile(web, []byte("# Your patch layer for this dsh profile.\n"+dshUsersEntries(40)), 0o644)
++	}()
++	a := dsh(home)
++	if err := a.Field("model").Set("magpie/deepseek/flash"); err != nil {
++		t.Fatal(err)
++	}
++	b, _ := os.ReadFile(web)
++	if s := string(b); strings.Count(s, "note: keep me") != 40 {
++		t.Fatalf("the fresh generation fixed the half as the list — the user's entries are gone:\n%s", s[:min(700, len(s))])
++	}
++}
++
++// A list that reads empty and stays empty is dsh's own: the fresh
++// generation goes out as before, one beat later at most.
++func TestDshSetWritesThroughAStableEmptyList(t *testing.T) {
++	home, dir, web := dshRouteHome(t)
++	dshKeyFixture(dir)
++	template := "# Your patch layer for this dsh profile.\n[]\n"
++	os.WriteFile(web, []byte(template), 0o644)
++	past := time.Now().Add(-10 * time.Second)
++	os.Chtimes(web, past, past)
++	a := dsh(home)
++	if err := a.Field("model").Set("magpie/deepseek/flash"); err != nil {
++		t.Fatal(err)
++	}
++	b, _ := os.ReadFile(web)
++	for _, want := range []string{"id: llm-pi-ai", "displayName: Magpie", "provider: magpie", "id: deepseek/flash"} {
++		if !strings.Contains(string(b), want) {
++			t.Fatalf("a stable empty list not filled with %q:\n%s", want, b)
++		}
++	}
++}
++
++// and the round that fills a profile dsh has just made reads it settled:
++// the desktop app's first save caught mid-write was the reporter's other
++// half (#5782). The start here is the user's own, so the fill goes out
++// through dshPutRoute and the write itself, not dshSetFile.
++func TestDshFillNewProfilesWritesOnAListThatSettled(t *testing.T) {
++	_, dir, web := dshRouteHome(t)
++	dshKeyFixture(dir)
++	os.WriteFile(web, []byte("# Your patch layer for this dsh profile.\n"+
++		dshRouteFixture("deepseek/pro", "deepseek/flash")+
++		"- id: agent-default-model\n  config:\n    provider: deepseek-official\n    model: deepseek-v4-pro\n"), 0o644)
++	desktop := filepath.Join(dir, "profiles", "desktop", "cordis.patch.yml")
++	os.MkdirAll(filepath.Dir(desktop), 0o755)
++	os.WriteFile(desktop, []byte("# Your patch layer for this dsh profile.\n"), 0o644)
++	// the desktop's save lands its body a round behind the fill's first
++	// read, inside the settle beat
++	go func() {
++		time.Sleep(500 * time.Millisecond)
++		os.WriteFile(desktop, []byte("# Your patch layer for this dsh profile.\n"+dshUsersEntries(40)), 0o644)
++	}()
++	if err := dshSync(dir, gateway.URL()); err != nil {
++		t.Fatal(err)
++	}
++	b, _ := os.ReadFile(desktop)
++	s := string(b)
++	if strings.Count(s, "note: keep me") != 40 {
++		t.Fatalf("the fill fixed the half as the list — the user's entries are gone:\n%s", s[:min(700, len(s))])
++	}
++	if !strings.Contains(s, "      magpie:\n") {
++		t.Fatalf("the fill did not land on the settled list:\n%s", s[:min(900, len(s))])
++	}
++}
++
++// and the effort pick the same: agent-default-model generated on a
++// head-only read went back alone (#5782). The start the pick keeps sits in
++// the home layer while the profile's own list is dsh's save caught
++// mid-write.
++func TestDshSetEffortWritesOnAListThatSettled(t *testing.T) {
++	home, dir, web := dshRouteHome(t)
++	dshKeyFixture(dir)
++	hp := filepath.Join(dir, "cordis.patch.yml")
++	os.WriteFile(hp, []byte("# shared by every profile\n"+
++		"- id: agent-default-model # magpie\n  config:\n    provider: deepseek-official\n    model: deepseek-v4-pro\n"), 0o644)
++	os.WriteFile(web, []byte("# Your patch layer for this dsh profile.\n"), 0o644)
++	// the desktop's save lands the body inside the settle beat
++	go func() {
++		time.Sleep(150 * time.Millisecond)
++		os.WriteFile(web, []byte("# Your patch layer for this dsh profile.\n"+dshUsersEntries(40)), 0o644)
++	}()
++	a := dsh(home)
++	if err := a.Field("effort").Set("high"); err != nil {
++		t.Fatal(err)
++	}
++	b, _ := os.ReadFile(web)
++	s := string(b)
++	if strings.Count(s, "note: keep me") != 40 {
++		t.Fatalf("the effort pick fixed the half as the list — the user's entries are gone:\n%s", s[:min(700, len(s))])
++	}
++	if !strings.Contains(s, "reasoningEffort: \"high\"") {
++		t.Fatalf("the effort did not land on the settled list:\n%s", s[:min(700, len(s))])
++	}
++}
++
++// The model-set path wrote silently; one line there would have found the
++// loss in minutes (stevenpisces). A pick says what it wrote where.
++func TestDshSetSaysWhatItWrote(t *testing.T) {
++	home, dir, web := dshRouteHome(t)
++	dshKeyFixture(dir)
++	os.WriteFile(web, []byte("# Your patch layer for this dsh profile.\n[]\n"), 0o644)
++	past := time.Now().Add(-10 * time.Second)
++	os.Chtimes(web, past, past)
++	var buf bytes.Buffer
++	log.SetOutput(&buf)
++	t.Cleanup(func() { log.SetOutput(os.Stderr) })
++	a := dsh(home)
++	if err := a.Field("model").Set("magpie/deepseek/flash"); err != nil {
++		t.Fatal(err)
++	}
++	if !strings.Contains(buf.String(), "wrote dsh's route in "+web) {
++		t.Fatalf("the model-set write said nothing:\n%s", buf.String())
++	}
++}
+-- 
+2.50.1 (Apple Git-155)
+

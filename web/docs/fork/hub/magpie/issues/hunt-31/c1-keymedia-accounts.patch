@@ -1,0 +1,134 @@
+From 0b85683f17a572becd70a2e848cd7438c3ffc3e5 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Fri, 16 Oct 2026 20:29:10 +0800
+Subject: [PATCH] gateway: a key held to accounts is told in the image and
+ video lists of what an account it may use serves, as its chat list is
+
+What changed: drawerObjects and videomakerObjects dropped only what the
+key's models hold (8b84dc90); the chat list also drops what no account or
+key it may use serves (#905, an account's own models #474), and they
+didn't. A key held to grok's account set to serve a chat model alone was
+told of all four grok-imagine models in /v1/models' image and video
+entries, and its requests with them are refused. accountServes is asked
+beside modelAllowed, as entryAllowed does for chat and keyAllowed for the
+deciders.
+
+Run at 7170b5d8 + this change: TestGatewayKeyAccountsHoldTheImageAndVideo-
+Lists red on 7170b5d8 without it (a key whose account serves the media
+models not was told of image [grok-imagine-image, -image-quality] and
+video [grok-imagine-video, -video-1.5]), green with it; go test -tags nogui
+-p 2 ./internal/gateway ok. gofmt -l clean; GOOS=darwin/linux/windows
+go vet clean; GOOS=darwin/linux/windows go build ok (the darwin warnings
+are trayimage_darwin.go's -Wenum-conversion and ld's duplicate libraries,
+known).
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gateway/gateway.go         |  9 ++---
+ internal/gateway/key_models_test.go | 52 +++++++++++++++++++++++++++++
+ 2 files changed, 57 insertions(+), 4 deletions(-)
+
+diff --git a/internal/gateway/gateway.go b/internal/gateway/gateway.go
+index 6286099f..84699204 100644
+--- a/internal/gateway/gateway.go
++++ b/internal/gateway/gateway.go
+@@ -938,7 +938,7 @@ func nativeEndpoints(e provider.Entry) []string {
+ // asks for them in its list (provider.DrawersHeader): "kind": "image",
+ // which an agent's list never has, so it takes none for a model to chat
+ // with. A gateway key held to some models is told of those alone, as its
+-// chat list is.
++// chat list is, and held to some accounts, of what one it may use serves.
+ func drawerObjects(r *http.Request) []map[string]any {
+ 	who, held := keyHolds(r)
+ 	var out []map[string]any
+@@ -947,7 +947,7 @@ func drawerObjects(r *http.Request) []map[string]any {
+ 			continue
+ 		}
+ 		for _, m := range Drawers(p) {
+-			if held && !modelAllowed(who, p, m.ID) {
++			if held && (!modelAllowed(who, p, m.ID) || !accountServes(who, p, m.ID)) {
+ 				continue
+ 			}
+ 			name := cmp.Or(m.Name, m.ID)
+@@ -965,7 +965,8 @@ func drawerObjects(r *http.Request) []map[string]any {
+ 
+ // videomakerObjects are the video models magpie makes videos with, as
+ // another magpie asks for them (provider.VideomakersHeader): "kind": "video".
+-// A gateway key held to some models is told of those alone.
++// A gateway key held to some models is told of those alone, and held to
++// some accounts, of what one it may use serves.
+ func videomakerObjects(r *http.Request) []map[string]any {
+ 	who, held := keyHolds(r)
+ 	var out []map[string]any
+@@ -974,7 +975,7 @@ func videomakerObjects(r *http.Request) []map[string]any {
+ 			continue
+ 		}
+ 		for _, m := range Videomakers(p) {
+-			if held && !modelAllowed(who, p, m.ID) {
++			if held && (!modelAllowed(who, p, m.ID) || !accountServes(who, p, m.ID)) {
+ 				continue
+ 			}
+ 			name := cmp.Or(m.Name, m.ID)
+diff --git a/internal/gateway/key_models_test.go b/internal/gateway/key_models_test.go
+index 1153b5b9..f2970ffc 100644
+--- a/internal/gateway/key_models_test.go
++++ b/internal/gateway/key_models_test.go
+@@ -394,3 +394,55 @@ func TestGatewayKeyModelsHoldTheImageAndVideoLists(t *testing.T) {
+ 		t.Fatalf("a key held to one video model is told of image %v, video %v", image, video)
+ 	}
+ }
++
++// A gateway key held to some accounts (#905) is told in the chat list only
++// of what an account or key it may use serves; its image and video lists
++// were told of every provider's, though the account the key may use is set
++// to serve none of the media models (#474), as a request through the
++// account fan-out would refuse them (gateway/fallback.go).
++func TestGatewayKeyAccountsHoldTheImageAndVideoLists(t *testing.T) {
++	grokSignedIn(t)
++	newGrokMedia(t)
++	keys, secrets := newCaller(t, "Held", "Free")
++	if _, err := access.Update("accounts-key", access.Change{Key: keys[0].ID, Accounts: []string{"grok/me@x.ai"}}); err != nil {
++		t.Fatal(err)
++	}
++	// grok's account is kept for a chat model alone (#474): the media
++	// models are not its, as the chat list says
++	if err := provider.SetAccountModels("grok", "me@x.ai", []string{"grok-4"}); err != nil {
++		t.Fatal(err)
++	}
++	h := New().Handler()
++	listed := func(secret string) (image, video []string) {
++		r := httptest.NewRequest("GET", "/v1/models", nil)
++		if secret != "" {
++			r.Header.Set("Authorization", "Bearer "+secret)
++		}
++		r.Header.Set(provider.DrawersHeader, "1")
++		r.Header.Set(provider.VideomakersHeader, "1")
++		w := httptest.NewRecorder()
++		h.ServeHTTP(w, r)
++		var l struct{ Data []struct{ ID, Kind string } }
++		if err := json.Unmarshal(w.Body.Bytes(), &l); err != nil {
++			t.Fatal(w.Body.String())
++		}
++		for _, m := range l.Data {
++			switch m.Kind {
++			case "image":
++				image = append(image, m.ID)
++			case "video":
++				video = append(video, m.ID)
++			}
++		}
++		return image, video
++	}
++	if image, video := listed(""); !slices.Contains(image, "grok/grok-imagine-image") || !slices.Contains(video, "grok/grok-imagine-video") {
++		t.Fatalf("this computer is told of image %v, video %v", image, video)
++	}
++	if image, video := listed(secrets[1]); !slices.Contains(image, "grok/grok-imagine-image") || !slices.Contains(video, "grok/grok-imagine-video") {
++		t.Fatalf("a key held to no account is told of image %v, video %v", image, video)
++	}
++	if image, video := listed(secrets[0]); len(image) != 0 || len(video) != 0 {
++		t.Fatalf("a key whose account serves the media models not is told of image %v, video %v", image, video)
++	}
++}
+-- 
+2.50.1 (Apple Git-155)
+

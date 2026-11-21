@@ -1,0 +1,285 @@
+{
+  "items": [
+    {
+      "id": 1,
+      "category": "core",
+      "component": "RepoInit",
+      "description": "初始化 monorepo（pnpm workspace）+ 基础工程脚手架",
+      "priority": "P0",
+      "steps": [
+        "创建目录结构：apps/engine、apps/web、packages/shared、plans/、configs/、runs/",
+        "初始化 pnpm workspace（根 package.json + pnpm-workspace.yaml）",
+        "配置 TypeScript：shared tsconfig.base.json + 各包引用",
+        "配置基础脚本：pnpm dev / build / typecheck",
+        "创建 .gitignore + editorconfig（可选）",
+        "运行 pnpm typecheck 验证类型",
+        "提交 Git（示例：chore(core): init monorepo workspace）"
+      ],
+      "passes": true
+    },
+    {
+      "id": 2,
+      "category": "core",
+      "component": "SharedTypes",
+      "description": "packages/shared：定义 Zod schema + 类型（RunRecord/Plan/PatchStep/Target）",
+      "priority": "P0",
+      "steps": [
+        "在 packages/shared 建立 src/ 目录与入口导出",
+        "定义 Target/ConfigFile/PatchStep/Plan/RunRecord 类型",
+        "定义与后端返回一致的 Zod schema（前后端共享或后端单独）",
+        "在 engine 和 web 中引用 shared（workspace 协议）",
+        "运行 pnpm typecheck 验证类型",
+        "提交 Git（示例：feat(core): add shared types and schemas）"
+      ],
+      "passes": true
+    },
+    {
+      "id": 3,
+      "category": "engine",
+      "component": "RunStoreJson",
+      "description": "JSON RunStore：runs/index.json + runs/<runId>/run.json + backups/artifacts 目录约定",
+      "priority": "P0",
+      "steps": [
+        "实现 JsonRunStore：createRun / appendTimeline / finalizeRun / listRuns / readRun / ensureRunDir",
+        "保证 index.json 可列出历史 run（最新在前）",
+        "写入 run.json 包含 timeline、result、error 等字段",
+        "为 apply 模式预留 backups/artifacts 目录",
+        "运行 pnpm typecheck 验证类型",
+        "提交 Git（示例：feat(engine): add json run store for auditable history）"
+      ],
+      "passes": true
+    },
+    {
+      "id": 4,
+      "category": "engine",
+      "component": "ScannerAdapters",
+      "description": "扫描适配：仅支持 macOS 的 VSCode + Cursor settings.json 路径读取",
+      "priority": "P0",
+      "steps": [
+        "实现 VSCode/Cursor settings.json 路径解析（macOS）",
+        "实现 allowlist 校验：只允许写入目标目录",
+        "实现读取 settings.json（不存在返回 {}）",
+        "运行 pnpm typecheck 验证类型",
+        "提交 Git（示例：feat(engine): add vscode/cursor adapters for macOS）"
+      ],
+      "passes": true
+    },
+    {
+      "id": 5,
+      "category": "engine",
+      "component": "Planner",
+      "description": "Planner：强覆盖策略（authoritative override）+ managedScopes 的 diff 生成",
+      "priority": "P0",
+      "steps": [
+        "实现 flatten/unflatten 或 jsonPath 工具",
+        "实现 managedScopes 命中判断（前缀匹配）",
+        "规则：主配置声明的 key -> set；managedScopes 内但未声明 -> delete；非 managedScopes -> 不处理",
+        "生成稳定排序 steps（方便可重复 diff）",
+        "生成 summary：changed/deleted/highRisk",
+        "补充 3 个 vitest 用例验证 diff 规则（建议）",
+        "运行 pnpm typecheck 验证类型",
+        "提交 Git（示例：feat(engine): implement planner for managed-scope override）"
+      ],
+      "passes": true
+    },
+    {
+      "id": 6,
+      "category": "engine",
+      "component": "Executor",
+      "description": "Executor：dry-run/apply/rollback（backup + atomic write + validate）",
+      "priority": "P0",
+      "steps": [
+        "实现 apply：生成 next settings（内存）并在 apply 模式写盘",
+        "apply 前备份原文件到 runs/<runId>/backups/<target>/settings.json",
+        "写入采用 atomic rename（临时文件 -> rename 覆盖）",
+        "落盘后 reread validate（JSON 可 parse 且为 object）",
+        "实现 rollback：从 backups 恢复到 originalPath",
+        "将关键步骤写入 timeline（scan/plan/backup/patch/validate/done/error）",
+        "运行 pnpm typecheck 验证类型",
+        "提交 Git（示例：feat(engine): add executor with backup/atomic write/rollback）"
+      ],
+      "passes": true
+    },
+    {
+      "id": 7,
+      "category": "engine",
+      "component": "HttpApi",
+      "description": "HTTP API：/api/runs /api/runs/:id + dry-run/apply/rollback 路由",
+      "priority": "P0",
+      "steps": [
+        "提供 GET /api/runs（listRuns）",
+        "提供 GET /api/runs/:runId（readRun）",
+        "提供 POST /api/runs/dry-run（scan + plan + executePlan(dry-run)）",
+        "提供 POST /api/runs/apply（scan + plan + executePlan(apply)）",
+        "提供 POST /api/runs/:runId/rollback（rollbackRun）",
+        "本地端口固定：7777",
+        "运行 pnpm typecheck 验证类型",
+        "提交 Git（示例：feat(engine): add http api routes for runs and execution）"
+      ],
+      "passes": true
+    },
+    {
+      "id": 8,
+      "category": "web",
+      "component": "WebInit",
+      "description": "React Dashboard 初始化（React19 + Vite8 + Tailwind4 + Router + Query + Zustand + shadcn/ui）",
+      "priority": "P0",
+      "steps": [
+        "初始化 apps/web（Vite + React 19）并接入 Tailwind CSS 4",
+        "接入 React Router + TanStack Query + Zustand + Zod",
+        "初始化 shadcn/ui（Button/Card/Input/Checkbox 等）",
+        "配置 Vite proxy：/api -> http://localhost:7777",
+        "运行 pnpm typecheck 验证类型",
+        "提交 Git（示例：feat(web): init dashboard stack and routing）"
+      ],
+      "passes": true
+    },
+    {
+      "id": 9,
+      "category": "web",
+      "component": "DashboardPages",
+      "description": "Dashboard 页面闭环：Overview / Runs / RunDetail / Diff",
+      "priority": "P0",
+      "steps": [
+        "Overview：选择 profile/targets，触发 dry-run/apply",
+        "Runs：列出历史 runs（含 mode/result/createdAt/targets）",
+        "RunDetail：展示 timeline + error + rollback 按钮",
+        "Diff：展示 plan.steps（按 target/op/path）+ highRisk 过滤",
+        "Apply 前高风险确认弹窗（AlertDialog）",
+        "运行 pnpm typecheck 验证类型",
+        "提交 Git（示例：feat(web): implement overview/runs/detail/diff pages）"
+      ],
+      "passes": true
+    },
+
+    {
+      "id": 10,
+      "category": "config",
+      "component": "SourceOfTruth",
+      "description": "主配置源：configs/agents.md + configs/config.schema.yaml（读取并转 ProfileConfig）",
+      "priority": "P1",
+      "steps": [
+        "定义 ProfileConfig：profile/managedScopes/settings(flat dot-keys)",
+        "实现读取 config.schema.yaml（支持多个 profile）",
+        "可选：agents.md 作为人读文档（不强依赖解析）",
+        "将 dry-run/apply 接口接入 profile 读取（替换临时 hardcode）",
+        "运行 pnpm typecheck 验证类型",
+        "提交 Git（示例：feat(config): add source-of-truth profiles from yaml）"
+      ],
+      "passes": true
+    },
+    {
+      "id": 11,
+      "category": "engine",
+      "component": "JsoncSupport",
+      "description": "兼容 JSONC（VSCode/Cursor settings 可能含注释/尾逗号）",
+      "priority": "P1",
+      "steps": [
+        "引入 jsonc-parser 或等价方案，支持读取 JSONC",
+        "写回保持标准 JSON（JSON.stringify）",
+        "为 JSONC 输入补充一个测试用例（建议）",
+        "运行 pnpm typecheck 验证类型",
+        "提交 Git（示例：fix(engine): support jsonc parsing for editor settings）"
+      ],
+      "passes": true
+    },
+    {
+      "id": 12,
+      "category": "engine",
+      "component": "Keybindings",
+      "description": "支持 keybindings.json（强覆盖 + managedScopes 策略先做最小版）",
+      "priority": "P1",
+      "steps": [
+        "实现 keybindings.json 的读取与备份",
+        "定义最小策略：仅强覆盖主配置明确声明的 bindings（不做 delete）",
+        "在 UI diff 页面展示 keybindings steps（与 settings 分开展示）",
+        "运行 pnpm typecheck 验证类型",
+        "提交 Git（示例：feat(engine): add keybindings support for vscode/cursor）"
+      ],
+      "passes": true
+    },
+    {
+      "id": 13,
+      "category": "docs",
+      "component": "DocsAndRules",
+      "description": "补齐文档：README + AGENTS 规则 + Demo 录屏指引",
+      "priority": "P1",
+      "steps": [
+        "完善 README：架构图、强覆盖策略、受管范围、运行方式、Roadmap",
+        "新增 AGENTS.md：强制规则 + commit message 规范",
+        "新增 docs/：录屏脚本（dry-run->diff->apply->timeline->rollback）",
+        "运行 pnpm typecheck 验证类型",
+        "提交 Git（示例：docs(core): add README and agent rules）"
+      ],
+      "passes": true
+    },
+
+    {
+      "id": 14,
+      "category": "engine",
+      "component": "Snippets",
+      "description": "支持 snippets/*.json（按语言分文件）",
+      "priority": "P2",
+      "steps": [
+        "扫描 snippets 目录并读取各 json 文件",
+        "定义受管策略：按 snippet name 覆盖或按文件覆盖（二选一）",
+        "支持备份与回滚",
+        "UI 展示 snippets diff（按文件分组）",
+        "运行 pnpm typecheck 验证类型",
+        "提交 Git（示例：feat(engine): add snippets sync support）"
+      ],
+      "passes": true
+    },
+    {
+      "id": 15,
+      "category": "core",
+      "component": "CrossPlatform",
+      "description": "跨平台路径支持：Windows/Linux（仍只支持 VSCode+Cursor）",
+      "priority": "P2",
+      "steps": [
+        "补齐 VSCode/Cursor Windows/Linux 路径解析",
+        "加入平台判断与路径测试（建议）",
+        "运行 pnpm typecheck 验证类型",
+        "提交 Git（示例：feat(core): add cross-platform path resolving）"
+      ],
+      "passes": true
+    },
+    {
+      "id": 16,
+      "category": "engine",
+      "component": "RunStoreSqlite",
+      "description": "RunStore 升级：SQLite（替换 JSON index，提高查询与并发安全）",
+      "priority": "P2",
+      "steps": [
+        "引入 SQLite（better-sqlite3 或等价）",
+        "实现 RunStore 接口的 SQLite 版本",
+        "保留 JSON 版本为 fallback（可选）",
+        "运行 pnpm typecheck 验证类型",
+        "提交 Git（示例：feat(engine): add sqlite run store implementation）"
+      ],
+      "passes": true
+    },
+    {
+      "id": 17,
+      "category": "engine",
+      "component": "PluginSystem",
+      "description": "插件化：新增工具适配（Windsurf/Kiro/Claude Code 等）无需改核心",
+      "priority": "P2",
+      "steps": [
+        "抽象 TargetAdapter 接口：paths/read/backup/write/validate",
+        "将 vscode/cursor 迁移为 adapter 实现",
+        "提供注册机制（registry）",
+        "运行 pnpm typecheck 验证类型",
+        "提交 Git（示例：refactor(engine): introduce adapter plugin system）"
+      ],
+      "passes": true
+    }
+  ],
+  "statistics": {
+    "total": 17,
+    "passing": 17,
+    "failing": 0,
+    "completion": "100%",
+    "blocked_reason": ""
+  }
+}

@@ -1,0 +1,72 @@
+From c16baa88351b0c3331a625f5ecfe242a8908f23b Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Sat, 24 Oct 2026 17:18:16 +0800
+Subject: [PATCH] tests: a request the handover's keep-alive close cut short is
+ retried (#3451)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The magpie handing over closes its idle keep-alive connections when it
+stops serving (http.Server.Shutdown closes them before it waits for the
+requests in flight), and a request sent the moment one dies reads EOF:
+once in a full suite, 1 of 13 requests along the restart (#3451). A real
+client retries such a death and is answered — the socket is never closed
+on the way, the new magpie serves it — but the test's asking loop took
+its plain http.Post at its word. Three tries, 10ms apart, ask the way a
+real client does; the assertion stays that every request sent along the
+restart is answered (200, "quick").
+
+The handover itself needs no change: the socket is never closed, so no
+dial is ever refused, the requests in flight are waited for (15min), and
+closing pooled idle connections at the end is how every HTTP server
+quits; Go's own transport absorbs it the same way, and only its narrowest
+races (a first request on a fresh connection, a response line that reads
+EOF) can surface at all.
+
+Run:
+- fault injection (test-only transport answering the first POST sent
+  while the handover is pending with io.EOF, the report's own failure):
+  red on the old test at the report's line and message, green with this
+  change; three injected handovers in a row, green.
+- TestRestartHandsTheGatewayOver alone: 5 of 5.
+- gofmt -l internal/gui (clean); go vet ./internal/gui on darwin, linux
+  and windows (clean); go build ./... on the three (clean); the gui
+  package's full suite (see the issue comment for the split).
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gui/handover_unix_test.go | 17 ++++++++++++++++-
+ 1 file changed, 16 insertions(+), 1 deletion(-)
+
+diff --git a/internal/gui/handover_unix_test.go b/internal/gui/handover_unix_test.go
+index 566b4260..b4657f8f 100644
+--- a/internal/gui/handover_unix_test.go
++++ b/internal/gui/handover_unix_test.go
+@@ -187,7 +187,22 @@ func TestRestartHandsTheGatewayOver(t *testing.T) {
+ 			default:
+ 			}
+ 			asked.Add(1)
+-			r, err := http.Post("http://"+addr+"/v1/chat/completions", "application/json", strings.NewReader(`{"model":"plan/m1","messages":[{"role":"user","content":"hi"}]}`))
++			// the magpie handing over closes its idle keep-alive
++			// connections when it stops serving (http.Server.Shutdown),
++			// and a request sent the moment one dies reads EOF; any real
++			// client retries, and the socket is never closed (the new
++			// magpie serves it), so the retry is answered
++			var r *http.Response
++			var err error
++			for try := 0; try < 3; try++ {
++				if try > 0 {
++					time.Sleep(10 * time.Millisecond)
++				}
++				r, err = http.Post("http://"+addr+"/v1/chat/completions", "application/json", strings.NewReader(`{"model":"plan/m1","messages":[{"role":"user","content":"hi"}]}`))
++				if err == nil {
++					break
++				}
++			}
+ 			if err != nil {
+ 				t.Errorf("a request during the restart: %v", err)
+ 				return
+-- 
+2.50.1 (Apple Git-155)
+

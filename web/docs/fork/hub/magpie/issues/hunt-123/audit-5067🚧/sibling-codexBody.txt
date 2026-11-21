@@ -1,0 +1,2 @@
+upstream/main:internal/gateway/codex_backend.go:3819:func plainCompact(body []byte) []byte {
+upstream/main:internal/gateway/codex_backend.go:3859:func localSummary(body []byte, why string) string {

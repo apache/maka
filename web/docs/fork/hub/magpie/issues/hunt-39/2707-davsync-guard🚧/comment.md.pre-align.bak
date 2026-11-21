@@ -1,0 +1,43 @@
+<!-- Draft for a comment on yetone/magpie#2707. NOT posted this round; read the diff yourself before posting. Scope: the guard/explanation half only — the Git-transport half is the reporter's declared lane, yielded in the text. -->
+
+Confirmed from your numbers — this is the guard/explanation half. The Git-transport half is yours (see the end).
+
+**Root cause.** `commit` in `internal/davsync/github.go` guards the raw sealed file (`len(data) > 64 MiB`), but the Contents API receives the file Base64-encoded inside the JSON body, and GitHub judges the request, not the raw file. Your 57,333,552-byte backup became a 76,444,736-character request, passed magpie's guard, and came back as a bare 422.
+
+**What the official docs actually say: no single number.**
+
+- Contents API, "Create or update a file" — no documented size limit; the `content` parameter is "The new file content, using Base64 encoding" (docs.github.com/en/rest/repos/contents).
+- Git blobs — "Create a blob" has no documented size limit either; "Get a blob" notes it "supports blobs up to 100 megabytes" (docs.github.com/en/rest/git/blobs), which is a read limit.
+- The REST troubleshooting and best-practices pages state no request-body limit.
+- The only published numbers are about a different transport: git pushes warn above 50 MiB and block above 100 MiB (docs.github.com/en/repositories/working-with-files/managing-large-files/about-large-files-on-github) — which is why your local clone + push worked.
+- So your "do not establish the exact GitHub rejection threshold" stands; GitHub's own refusal text is the only in-band signal. Third-party data points agree it sits below 64 MiB of raw file: in github.com/orgs/community/discussions/155856 a 10 MB file uploaded fine while 50/90/100 MB came back 422 with the same text you saw.
+
+**What I changed (guard + explanation only, no new transport).**
+
+- The guard now measures the encoded upload: at most 64 MiB of Base64 in one request, i.e. about 48 MiB of sealed backup (`githubMaxFile/4*3`). An oversized file is refused before anything is sent, with an error that says why and the ways out: sync less (for example without the library), or update the backup in a local clone and push — the path you already verified.
+- A 422 whose message says "too large" no longer passes as a bare `GitHub sync: HTTP 422: ...`. GitHub's own text arrives verbatim, and magpie adds its own lever (sync less to fit). The `"sha" wasn't supplied` race still maps to the normal re-merge, and other 422s keep the generic passthrough.
+- `docs/subsystems/sync-backup.md` and `docs/reference.md` now state the real upload cap instead of a bare "64 MiB".
+
+One honest note on the cap: 48 MiB sits below every known rejection (yours at 54.68 MiB raw / 76.4 MB encoded; 50 MB raw in the community thread), but no data point above 10 MB shows acceptance, so the guard is deliberately conservative and the 422 surface catches anything GitHub refuses inside it. A library backup your size still won't sync through the Contents API after this — it is refused up front with an explanation instead of failing mid-upload.
+
+**The transport half is yours.** Chunking, a Git-transport fallback, packing — this patch does none of that, on purpose: your local experimental fallback is exactly the direction that would make a 54 MiB library syncable, and I don't want to collide with it. Happy to test/review when you open it.
+
+---
+**Source**: reported in #2707 (reporter's bytes and refusal text); reproduced locally against the project's GitHub httptest fixture at those exact sizes.
+
+**Red without the fix** (base `bad4508c`): with `internal/davsync/github.go` reverted and the new tests kept, `go test -tags nogui -run 'TestGitHubUploadOverTheEncodedLimit|TestGitHub422TooLargeExplained' ./internal/davsync` fails:
+```
+--- FAIL: TestGitHubUploadOverTheEncodedLimit
+    github_test.go:575: a backup GitHub would refuse must be stopped before upload: <nil>, writes 1
+--- FAIL: TestGitHub422TooLargeExplained
+    github_test.go:610: GitHub's refusal and the way out should reach the user: GitHub sync: HTTP 422: Sorry, the file is too large to be processed. ...
+```
+With the fix: both pass, and `go test -tags nogui ./internal/davsync` is `ok` (136.9s).
+
+**Siblings**: `rg -n "githubMaxFile|64<<20|422|Unprocessable" internal/davsync internal/backup` → the Contents-API guard and its 422 handling exist only in `github.go`; the WebDAV and S3 backends have no upload-side guard (no documented API limit; their servers' own failure texts already pass through) and were left unchanged. `internal/library/carry.go` budgets the sealed backup against the 64 MiB read limit and was left alone: its collection budget is a read-side contract, and re-deriving it against an undocumented upload threshold would spread the uncertainty into another subsystem.
+
+**When the read fails**: a too-large 422 body that isn't valid JSON, or is cut off at the 64 KiB read limit, decodes to an empty message and falls back to the generic `githubError` passthrough — the behavior GitHub's race handling and every other 422 already have (TestGitHubFailures still passes).
+
+**Not verified**: nothing was run against the real GitHub API (per this issue's request not to retest on the real repository; the reporter's own uploads are the live evidence). The 48 MiB cap's acceptance at GitHub is untested by construction — no acceptance data point above 10 MB exists anywhere.
+
+**AI**: written with GLM-5.3-Flash (ZCode); I've read the whole diff and can answer questions on it myself.

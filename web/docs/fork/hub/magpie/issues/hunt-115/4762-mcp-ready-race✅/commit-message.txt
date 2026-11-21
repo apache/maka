@@ -1,0 +1,28 @@
+gateway: the interactive mode's first turn waits for the MCP tools (#4762)
+
+minhuw: a first request went upstream with tools: [], and Claude Code's
+tools/list to the bridge's helper came 200ms after. The interactive mode
+takes its first message once the prompt shows, and the helper connects
+as Claude Code starts: the two race, and the model answered with no
+tools, or wrote its calls as words.
+
+The helper now tells magpie at its callback when Claude Code has listed
+its tools, and the interactive mode's first message waits for that word
+before it is told - no longer than mcpReadyWait (5s), for a helper that
+never connects: the turn goes out without the tools then, as it did
+before. A run in claude -p is unchanged: it takes its first message at
+launch, with no prompt to wait beside.
+
+Fixes #4762
+
+Run:
+- go test -tags nogui -run 'TestClaudeTUIFirstTurn' ./internal/gateway:
+  the new tests red before (the first turn went out before the tools
+  were listed: 200; didn't wait out the tools' loading: 26ms), green
+  after
+- go test -tags nogui ./internal/gateway ./internal/claudebridge
+- go test -race -tags nogui -run 'TestClaudeTUIFirstTurn' ./internal/gateway
+- go vet -tags nogui ./internal/gateway ./internal/claudebridge;
+  GOOS=linux and GOOS=windows go vet on both; gofmt -l clean
+
+Generated-by: GLM-5.3-Flash (ZCode)

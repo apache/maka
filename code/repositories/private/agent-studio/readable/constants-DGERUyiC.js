@@ -1,0 +1,75 @@
+import { o as e } from "./rolldown-runtime-CMxvf4Kt.js";
+import { i as t } from "./vendor-react.CV1S_bb1.js";
+import { n, r } from "./agent-C0JAlTor.js";
+import { t as i } from "./status-dict-D3T8Xf4E.js";
+import { Tt as a } from "./index.B_LPe2F7.js";
+var o = (e) => (e && i.find((t) => t.value === e)?.label) || `对话型`,
+  s = (e, t) =>
+    e === 3
+      ? a.AGENT_TASK_APP
+      : e === 1
+        ? t === a.AGENT_APP_VERSION
+          ? a.AGENT_NO_CODE_CHAT_BY_VERSION
+          : a.AGENT_NO_CODE_CHAT
+        : e === 4
+          ? a.AGENT_WORKFLOW
+          : e === 5
+            ? a.AGENT_STANDARD_AGENT
+            : e === 6
+              ? a.AGENT_SUPER_AGENT
+              : t === a.AGENT_APP_VERSION
+                ? a.AGENT_LOW_CODE_CHAT_BY_VERSION
+                : a.AGENT_LOW_CODE_CHAT,
+  c = (e) => {
+    let { microAppId: t, microAppVersionId: n, runMode: r } = e,
+      i = { microAppId: t, microAppVersionId: n };
+    return (
+      r === 1 ? (i.runMode = r || 0) : r === 3 || (i.graphType = r || 0),
+      `microAppName` in e && `description` in e ? { ...i, ...e } : i
+    );
+  },
+  l = (e, t) => ({ url: s(e.runMode, t), state: c(e) }),
+  u = (e, t) =>
+    e === t
+      ? { background: `#716AE5`, cursor: `pointer` }
+      : e > t
+        ? { background: `#34B363` }
+        : {},
+  d = (e) => (typeof e == `number` ? e : Number(e) || 0),
+  f = e(t(), 1),
+  p = `data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAAEEfUpiAAAAAXNSR0IArs4c6QAAAERlWElmTU0AKgAAAAgAAYdpAAQAAAABAAAAGgAAAAAAA6ABAAMAAAABAAEAAKACAAQAAAABAAAAIKADAAQAAAABAAAAIAAAAACshmLzAAAFBklEQVRYCdVXTWhcVRT+3s+kDcWNLoxRiItaRBe1YsimojZKNC20KiK1G8m+C6UURG2xgkIpbly4Mm7UUoSCYMcWtVBwExLxpxu12Qgas3JX02Tmvef3nZlzvfNmpuNOvTC555577nd+77kvQG0kWl//FJNJjvMo8WzqAtyZqUpUxkhSJGUbd6YZ3nSBMCcbTSyXLRwUZ8dBrCU3LmJnsYk/xUhz/BZAxRjfj8TUaqGj3L1KNW9R2xUqemT7k1g1gc0mFtstvCZBwcgCpw2yBObEsJFgzUnNQYUWGxdQadaQ/g414m+QstMlHqb8FFJ86AgmcKOJi0ULC2mCbWWFTYHKWAmlPPm2NsWscrykWSN4QoijHRZPVXjQaZ/TNMVjvmCA3nM6adASDrNBBjqkC6QNXB2fx20mJWOyBq5YMmhcnuNRbQYEPxXPMp6Zeo6hm6gqfJtleHnsKSzHMn0ADMcWmZfd67pwNo4dVQs/5xWeaBzAl9o3E0XIDx68Oz7cyHBIZmtfo9jAdflaALup7Jp4BsDFKitYWeoZZYpDPYzuoihwlm7t1NIAGN7fSU9198NEa16sRzdsdolOlA9QO+tDPsYCTMVy7ILvkfcNDx7R2vLoG63P8Hg7wRdJhWMy0/kmyMSTv8wTY57CeP/fo3tccDO2Psc0XXiHhbSHJq8z4p+wGl/x/XjO44V6SFXgWlHxXlc4jhxLLJwJtqAF1QnBVuj/dHwmWBAC2MAuFUws5DTvwyLpfdvnMeY8S6MWij7r4a74cJajychnLtyt0svqYc4zAJWlUkeA0HUkwMVu3ttZF9ZsIBUecp4BqCzreXcBBvJ+p31m7/lAt1Xr4IJv9s0l7qvzygKLdtX/EUCCW+oAdGudl+928XvSWBccdpGY2hmm9DvJBxe8ycUgdpmiphj2MpxWhwoARDliFyVIdIkKk0zi6ZhtN5Z8b29mwbb9+Fi3jBV3KhaWC3zuQuXpcVRLSzLc43LBBbuiKZ7WXR/kDk0+TIBf1Q/18DlAKGVnbF7AC3zvPvK1z0zbKks4aHb+/3/uC8EglxSWKsEb3skHycQ8hYtVcdKSG28MoIcaYO0lxTne6Ft5bp2AZ/jMnGMVMEXDhwogLfE8DT5GqQlW1x851/4Q1k/2GWBNscSSKa7wPr0+We8ydZBha5Uto3GKRizIEK5n4grUuVDGWlio2ZGpfIue7GLTODFMOT8n9+rJ0y8bwwM6Xx86S4zXhSVMdXvpiOWCAXpHrPz5mcfwTceNOT7gdJbgXqeZlL6WGfZICEuYjMKadEiX7wcD9IgZs8DxUXk2uepvAxjmmxogecMktuigi3QwgCB7tMlwLWkeNfjahAjQq76eP+i8Y7suyQQDGJ51MWjphOaRI8GrBPqJVfwjb8iJkfIUCNhdXToTDNC3gzH4CaB51ODb+j1/+4o2Zvn7YZS89vV5odl1ie65hnrc1WzoUd+3mYTjobeKlT1pPBVX9GrEck7rMWAhnmHUenp6iIAErdnz40eC+obRPXaAvlkFpX+M9OsWV58MGcIQljApu1J/UAYqUBcsUjQZjQYtvsSH/+ioa1lXbg9vG+8SY44YrazE/KBuONAAB+t2xbMMdec7it4yZJfYXL6izC+s6rhwp5jjWd6IuSg1K4zA4Xr3c3zNNzUgFhRtH70lnqGCvQS+g3PnxugDWP9lJPg6S3HePzfq5/+T678ADV3SBKNvEIcAAAAASUVORK5CYII=`,
+  m = `data:image/png;base64,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`,
+  h = `data:image/png;base64,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`,
+  g = {
+    VersionManage: `VersionManage`,
+    Delete: `Delete`,
+    ViewDetail: `ViewDetail`,
+    Shelve: `Shelve`,
+    Copy: `Copy`,
+    OffShelve: `OffShelve`,
+    DeleteVersion: `DeleteVersion`,
+  },
+  _ = {
+    [n.NOT_RELEASED]: {
+      color: `secondary`,
+      text: `未发布`,
+      icon: f.createElement(`img`, { src: m, alt: `未发布` }),
+    },
+    [n.UNDER_REVIEW]: {
+      color: `warning`,
+      text: `审核中`,
+      icon: f.createElement(`img`, { src: p, alt: `审核中` }),
+    },
+    [n.RELEASED]: {
+      color: `success`,
+      text: `已发布`,
+      icon: f.createElement(`img`, { src: h, alt: `已发布` }),
+    },
+    [n.REJECTED]: {
+      color: `secondary`,
+      text: `未发布`,
+      icon: f.createElement(`img`, { src: m, alt: `未发布` }),
+    },
+  },
+  v = { [r.LOW_CODE]: `低代码`, [r.DIALOGUE]: `零代码` };
+export { s as a, d as c, l as i, v as n, o, _ as r, u as s, g as t };

@@ -1,0 +1,27 @@
+fix(redact): an error's words for a missing module are read before the quote, not the whole body before it (#4766)
+
+What changed
+
+missingModuleAt said a quoted name is a module an error could not load by
+lowering everything before the quote. A session's body holds a place a known
+value turns up at for each turn it has been in the history, and knownSpans
+asks packageAt at each of them, so every such place paid the body's whole
+length again — a 555 KB turn held 1m54s in the masking, past the unrouted
+budget, and was answered 504 (#4766). The words stand right before the
+quote; what is read of what is before them is the last 64 bytes of it now,
+as assignedSecret reads the 64 before the value it judges. A letter a lower
+case folds wider than in those bytes reads the whole text before the quote,
+as before. Nothing of what is masked changes.
+
+Run
+
+- RED (product file reverted, test kept): TestMissingModuleReadsOnlyTheWordsBeforeTheQuote
+  fails with "judging the words made 401440 bytes, 8 KiB at most".
+- GREEN: the test passes; go test -tags nogui ./internal/redact/ passes.
+- A session that grows turn by turn, Personal on and config-dense as the
+  report has it: a 925 KB turn went from 3.8s to 0.76s, a 560 KB turn
+  masks in 0.2s; the rest of the cost is the rules' own linear scan.
+- go vet on darwin, linux/amd64 and windows/amd64; builds on all three;
+  gofmt clean; BenchmarkMaskLongSession unchanged on its shape.
+
+Generated-by: GLM-5.3-Flash (ZCode)

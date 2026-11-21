@@ -1,0 +1,69 @@
+From 47f78b9900c96d0282683600882b7f6001d4595a Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Wed, 21 Oct 2026 07:32:33 +0800
+Subject: [PATCH] provider: the sign-in test swaps catalog.Changed only once
+ the plugins' background ask and telling are over (#3100)
+
+What changed: the fakeco half of TestSignInDoneOnceTheAccountIsBack has
+the plugin's providers asked in the background, and the answer tells the
+agents (catalog.Touched, reached through plugin.tell) in a goroutine that
+reads the catalog.Changed global. One of those goroutines was still
+running when the subtest swapped catalog.Changed in to watch a removed
+account come back, and read it as the subtest wrote it: a data race in 1
+of 30 runs of `go test -race -run TestSignInDoneOnceTheAccountIsBack
+-count=30 ./internal/provider/`. The subtest now waits the asking
+(plugin.Refreshed) and the telling (plugin.Told) out before the hook is
+swapped in, and before the cleanup swaps it back out; the host stays
+running, so the sign-in the subtest then starts is served as before. No
+lock on catalog.Changed, and the test's own observations are unchanged.
+
+Run: with the fix reverted, the same command reported the same race
+(write at signin_removed_test.go:112, read at catalog/live.go:202 through
+plugin/host.go:671). With the fix, -race -count=60 is ok, as are
+go test -race ./internal/provider/ -count=1, go test
+./internal/provider/... -count=1, go test ./internal/plugin/... -count=1,
+gofmt, go vet, and builds for darwin/arm64, linux/amd64 -tags nogui and
+windows/amd64 -tags nogui.
+
+Fixes #3100
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/provider/signin_removed_test.go | 15 +++++++++++++--
+ 1 file changed, 13 insertions(+), 2 deletions(-)
+
+diff --git a/internal/provider/signin_removed_test.go b/internal/provider/signin_removed_test.go
+index 4673d7b8..f4e5d2a0 100644
+--- a/internal/provider/signin_removed_test.go
++++ b/internal/provider/signin_removed_test.go
+@@ -105,7 +105,14 @@ func TestSignInDoneOnceTheAccountIsBack(t *testing.T) {
+ 				t.Fatal("removed account still listed")
+ 			}
+ 
+-			// what the sign-in reads as the moment its account is shown again
++			// what the sign-in reads as the moment its account is shown again.
++			// The plugins' providers are asked in the background, and the
++			// answer tells the agents (catalog.Touched) in a goroutine that
++			// reads catalog.Changed; the asking and the telling are over
++			// before the hook is swapped in here and before it is swapped
++			// back, so none of them reads it as it is written (#3100)
++			plugin.Refreshed()
++			plugin.Told()
+ 			var mu sync.Mutex
+ 			id, back := "", ""
+ 			was := catalog.Changed
+@@ -117,7 +124,11 @@ func TestSignInDoneOnceTheAccountIsBack(t *testing.T) {
+ 					back = st.State
+ 				}
+ 			}
+-			t.Cleanup(func() { catalog.Changed = was })
++			t.Cleanup(func() {
++				plugin.Refreshed()
++				plugin.Told()
++				catalog.Changed = was
++			})
+ 
+ 			st := c.signIn(t)
+ 			mu.Lock()
+-- 
+2.50.1 (Apple Git-155)
+

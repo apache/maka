@@ -1,0 +1,40 @@
+provider, gateway, gui: a provider's speech and embedding models sit in its editor, and /v1/models says what a kind model is for
+
+Fish-under-sea (#5418) had nowhere to put a provider's whisper-1, tts-1
+and embedding models: its editor lists its image models (a hidden-drawers
+pick) and its video ones, and the models made for another API sat in no
+list; nor did /v1/models say what a model is for, so an SDK reading a
+flat list guessed from ids.
+
+- provider: HiddenSpeech and HiddenEmbeddings, kept and carried as
+  HiddenDrawers and HiddenVideomakers are, read by SpeechHidden and
+  EmbeddingHidden. A plugin's models its capabilities.output says are
+  made for another API — audio alone a TTS, nothing said an embedding,
+  the speechless ones #3279 drops from the chat lists — are kept apart
+  (PluginServing), told by what the plugin declares, not the id.
+- gateway: ServingOf is the models a provider serves of an API that is
+  no chat: a fetched list's, another magpie's under an id that says so,
+  a preset plan's, a plugin's declared ones. servesKind reads it, and
+  /v1/models' ?kind= takes embedding, rerank, speech and transcription,
+  each row marked with its kind (servingObjects), less those unticked in
+  their provider's editor, as OfferedDrawers are of the image ones. A
+  request that names a hidden one still serves.
+- gui: the editor lists its speech models and its embedding and rerank
+  ones apart (speechIds, embedIds), each ticked, a click unticking it
+  into hiddenSpeech / hiddenEmbeddings, as its image and video ones are;
+  and the core scripts' budget says why it grew.
+
+
+Refreshed onto upstream/main af3334533 (2026-11-12): the budget gate now
+counts code only, not comments (#5918), so the editor's addition is
+re-measured that way — 1,104 bytes of code over the core's scripts (app.js
+stays within its own cap), coreScriptBudget raised to 1,264,437, with no
+room added. Conflicts on the new base: core_budget_test.go (the gate's new
+shape kept; the old chain entries it replaced are gone with it), and three
+union merges in app.js (draftOf and the save body gain upstream's billing /
+clientCert / clientKey / serverCA / serverPin / socket / upstreamProviders
+fields beside this patch's hiddenSpeech / hiddenEmbeddings; the editor's
+speech and embedding sections go in beside the subscription's own warm-up,
+check-in and resets row).
+
+Generated-by: GLM-5.3-Flash (ZCode)

@@ -1,0 +1,4 @@
+=== RUN   TestKeyAllowanceElapsedResetStartsAgain
+--- PASS: TestKeyAllowanceElapsedResetStartsAgain (0.23s)
+PASS
+ok  	github.com/yetone/magpie/internal/provider	0.646s

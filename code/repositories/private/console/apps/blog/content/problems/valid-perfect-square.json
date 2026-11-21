@@ -1,0 +1,23 @@
+{
+  "id": "96",
+  "slug": "valid-perfect-square",
+  "title": "有效的完全平方数",
+  "difficulty": "easy",
+  "tags": ["数学", "二分查找"],
+  "description": "给定一个**正整数** `num`,编写一个函数,如果 `num` 是一个完全平方数则返回 `true`,否则返回 `false`。\n\n**进阶:** 不要使用任何内置的库函数,如 `sqrt`。\n\n**示例 1:**\n\n- 输入:`num = 16`\n- 输出:`true`(4 * 4 = 16)\n\n**示例 2:**\n\n- 输入:`num = 14`\n- 输出:`false`(3.742...,非整数平方)",
+  "solution": "## 思路\n\n**二分**在 `[1, num]` 找 `m` 使 `m*m === num`。用 `>>>` 无符号右移避免溢出。\n\n## 参考代码\n\n```js\nfunction isPerfectSquare(num) {\n  let l = 1;\n  let r = num;\n  while (l <= r) {\n    const m = (l + r) >>> 1;\n    if (m * m === num) return true;\n    if (m * m < num) l = m + 1;\n    else r = m - 1;\n  }\n  return false;\n}\n```\n\n## 复杂度\n\n- 时间:O(log n)\n- 空间:O(1)",
+  "signature": {
+    "language": "javascript",
+    "entry": "isPerfectSquare",
+    "params": [{ "name": "num", "type": "number" }],
+    "returns": "boolean"
+  },
+  "testCases": [
+    { "sample": true, "input": [16], "expected": true },
+    { "sample": true, "input": [14], "expected": false },
+    { "sample": false, "input": [1], "expected": true },
+    { "sample": false, "input": [4], "expected": true },
+    { "sample": false, "input": [2], "expected": false },
+    { "sample": false, "input": [100], "expected": true }
+  ]
+}

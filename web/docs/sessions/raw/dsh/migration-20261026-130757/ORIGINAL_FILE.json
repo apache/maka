@@ -1,0 +1,124 @@
+{
+  "state": "source_present",
+  "groups": [
+    {
+      "name": "sessions",
+      "source": "C:\\Users\\802165\\.dsh\\sessions",
+      "pattern": "**/*",
+      "remove_root": true,
+      "category": "archive",
+      "archive": "E:\\cc\\guahub\\sessions\\raw\\dsh\\migration-20261026-130757\\sessions.zip",
+      "files": [
+        {
+          "path": "--C-Users-802165--/session-7b23dcbc-25c9-4923-b95f-dbb099fb2e98/session.v4.jsonl.zstd",
+          "size": 296480,
+          "mtime_ns": 1792391549217718400,
+          "sha256": "7d096ffd0bb640cdde097ead37c004895238daefe8d3a8a277b58dd85658c5cc"
+        },
+        {
+          "path": "--E-Projects--/session-1b588e5e-49ae-47eb-ae50-5a2215253335/session.jsonl.zstd",
+          "size": 33503,
+          "mtime_ns": 1786671967499105400,
+          "sha256": "4e05f5903c24d6edd77ce131dd683d831a1dc443c684bb19284ffbcf91a90f24"
+        },
+        {
+          "path": "--E-Projects--/session-68419b02-cf48-4ac2-92e4-92079ebfa0ab/session.jsonl.zstd",
+          "size": 303,
+          "mtime_ns": 1787039464723796800,
+          "sha256": "40d5b206455fce31b8535ed839927622a2fd355f440ab5380eb61b413b964f96"
+        },
+        {
+          "path": "--E-Projects--/session-68419b02-cf48-4ac2-92e4-92079ebfa0ab/session.v4.jsonl.zstd",
+          "size": 64132,
+          "mtime_ns": 1792390484004646900,
+          "sha256": "a3ef1d5ff77d9c087ed0602f11231ab5f105b6f0399d4c01da7b13bca8611803"
+        },
+        {
+          "path": "--E-Projects--/session-9249530d-20af-4387-b0da-dd490075ff52/session.v4.jsonl.zstd",
+          "size": 316,
+          "mtime_ns": 1791958634133996700,
+          "sha256": "b77e0c328b430826538a0dbf2d5c747fc301897edfa2fdbc62dcadf83aa32531"
+        },
+        {
+          "path": "--E-Projects--/session-b4d520bf-dd5b-4fce-9d11-efda7ca32fd6/session.jsonl.zstd",
+          "size": 256884,
+          "mtime_ns": 1786681599170655100,
+          "sha256": "5df995fed5243596d62f170c807a660854df1027a65838d6323b007b19e9e5ee"
+        },
+        {
+          "path": "--E-Projects--/session-b4d520bf-dd5b-4fce-9d11-efda7ca32fd6/session.v4.jsonl.zstd",
+          "size": 125689,
+          "mtime_ns": 1791959262323619400,
+          "sha256": "a12d57b127f5dc5dc0481d4c7a72bf5851c3d17075b40fe6d79c057e2e629a2f"
+        },
+        {
+          "path": "--E-Projects--/session-c6150228-f7bf-4e26-bcd6-a630c848a996/session.jsonl.zstd",
+          "size": 580772,
+          "mtime_ns": 1786672903701390000,
+          "sha256": "0b5ba1bb018a28782d437d824fd0ba495a86e331f83618b7b14f9d403db22109"
+        },
+        {
+          "path": "--E-Projects--/session-c6150228-f7bf-4e26-bcd6-a630c848a996/session.v4.jsonl.zstd",
+          "size": 322120,
+          "mtime_ns": 1791959256317416700,
+          "sha256": "5336791da37aeab7671a241f92be4f1533949d27d488b9cd6256b5cb022349c4"
+        },
+        {
+          "path": "--E-Projects--/session-f1404d14-2768-4e28-a3d6-82a653d46fbe/session.jsonl.zstd",
+          "size": 29543,
+          "mtime_ns": 1786671792856174000,
+          "sha256": "153a2f8113d53bdb9cb87c9f9dde0a45b4a510ca32631161ec048b2dd22b4550"
+        },
+        {
+          "path": "--E-Projects-frontend-fix-bugs-homing-miniapp-workbench--/session-ceb973f1-19d6-4133-b9ff-3966dd179ff9/session.v4.jsonl.zstd",
+          "size": 384397,
+          "mtime_ns": 1792487044000814500,
+          "sha256": "c16798bcaf28dd796b6631cb3720ff65ce05ff7c68f2a5ab0f90329186b7681f"
+        }
+      ],
+      "directories": [
+        "--C-Users-802165--",
+        "--C-Users-802165--/session-7b23dcbc-25c9-4923-b95f-dbb099fb2e98",
+        "--E-Projects--",
+        "--E-Projects--/session-1b588e5e-49ae-47eb-ae50-5a2215253335",
+        "--E-Projects--/session-68419b02-cf48-4ac2-92e4-92079ebfa0ab",
+        "--E-Projects--/session-9249530d-20af-4387-b0da-dd490075ff52",
+        "--E-Projects--/session-b4d520bf-dd5b-4fce-9d11-efda7ca32fd6",
+        "--E-Projects--/session-c6150228-f7bf-4e26-bcd6-a630c848a996",
+        "--E-Projects--/session-f1404d14-2768-4e28-a3d6-82a653d46fbe",
+        "--E-Projects-frontend-fix-bugs-homing-miniapp-workbench--",
+        "--E-Projects-frontend-fix-bugs-homing-miniapp-workbench--/session-ceb973f1-19d6-4133-b9ff-3966dd179ff9"
+      ]
+    },
+    {
+      "name": "attachments",
+      "source": "C:\\Users\\802165\\.dsh\\attachments",
+      "pattern": "**/*",
+      "remove_root": true,
+      "category": "archive",
+      "archive": "E:\\cc\\guahub\\sessions\\raw\\dsh\\migration-20261026-130757\\attachments.zip",
+      "files": [
+        {
+          "path": "v1/objects/05/05b27f25f75de8689338da70edb3296b7e43ec56454d0c6424a37a8dc869405a",
+          "size": 41370,
+          "mtime_ns": 1792392878231598200,
+          "sha256": "05b27f25f75de8689338da70edb3296b7e43ec56454d0c6424a37a8dc869405a"
+        },
+        {
+          "path": "v1/objects/4f/4f809d29811c7d3ccb6b34a04bee7d0dd61f33b9c831f9118a8abdb8e78187ae",
+          "size": 188624,
+          "mtime_ns": 1792390554956169100,
+          "sha256": "4f809d29811c7d3ccb6b34a04bee7d0dd61f33b9c831f9118a8abdb8e78187ae"
+        }
+      ],
+      "directories": [
+        "v1",
+        "v1/objects",
+        "v1/objects/05",
+        "v1/objects/4f",
+        "v1/tmp"
+      ]
+    }
+  ],
+  "protected": {}
+}

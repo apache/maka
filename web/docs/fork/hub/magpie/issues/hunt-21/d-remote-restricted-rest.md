@@ -1,0 +1,264 @@
+# gateway: 另一台 magpie 的 restricted/verify 拒答按整台 remote 休息 2 小时，组内跳过它健康的模型
+
+基线：`0c1e9b79`（分支 `hunt21-d-remote-restricted-rest`，提交 `873cfd1e`）。发稿前已再 fetch upstream：无新提交。这是 caa536733（remote 的 quota/credit/rate 拒答只休息该模型）留下的兄弟面。
+
+## 现象
+
+一台 magpie 通过 Remote magpie provider（LAN share）用另一台电脑的 magpie 时：那台 magpie 的某个模型因**它自己的账号被厂商限制**（WorkBuddy 403 11140，#1849 的形态）或**厂商要求先验证账号**（Google 的 VALIDATION_REQUIRED）而拒答时，本地 magpie 把**整台 remote**按 `restrictedRest` 休息 2 小时（verify 为 30 分钟）。一个路由组里 remote 的其它成员——在那台机器上什么问题都没有的模型——在这 2 小时里全部被排到本机成员之后，组内请求不再问到它们。
+
+caa536733 的判词同样适用：那台 magpie 自己服务它的每个模型、自己休息它出问题的账号，它一个模型的账号被限制，说明不了其它模型的事。
+
+两个补充事实（影响面边界）：
+- 最后一名候选的 restricted 本来就不休息（`attempt` 的收尾分支只对 `failVerify` 调 `restAfter`），所以伤害面是**组内非最后成员**：`restAfterMarked` 在 `!last` 分支记下整台 remote。
+- 同一请求内若 remote 的另一个成员紧接着应答，`servedCandidate` 会顺手清掉这台 remote 的休息——所以被观察到的稳态伤害是「组里 remote 之后挂的是**另一台** provider」的形状。
+
+## 最小复现
+
+新增 `TestRemoteMagpieRestrictedRestsTheModel`（`internal/gateway/remote_magpie_restricted_test.go`）：假 remote 的 `workbuddy/glm-5.3-flash` 回 403 + `provider.WBRestrictedHint`（插件 0.1.17+ 的真实收尾话术），`kimi/kimi-k3` 正常；组 G = [remote 的 glm, 本机 other]，组 R = [remote 的 kimi, 本机 other]。修前（把 `remoteModelRest` 还原为只认 quota/credit/rate）：
+
+```text
+--- FAIL: TestRemoteMagpieRestrictedRestsTheModel (0.53s)
+    remote_magpie_restricted_test.go:63: the whole remote magpie rests for one model's restricted account: {Why:restricted Status:403 Until:2026-10-15 00:27:31 +0800 ... Key:office ...}
+    remote_magpie_restricted_test.go:67: the restricted model doesn't rest as restricted: {Why: ...} (map[office:2026-10-15 00:27:31 +0800 ...])
+    remote_magpie_restricted_test.go:72: kimi on the remote after glm was restricted: 200 {"...":"from ko" ...}
+--- FAIL: TestRemoteMagpieVerifyAndKeyLimitScoping (0.00s)
+FAIL
+FAIL	github.com/yetone/magpie/internal/gateway	0.948s
+```
+
+即：glm 一次 403 之后整台 `office` 休息 2 小时，第二个组里健康的 kimi 没被问（应答来自本机 "from ko"）。修后同测试绿：只有 `office/workbuddy/glm-5.3-flash` 按 restricted 休息，组 R 先问 remote 的 kimi（"from kimi/kimi-k3"）。`TestRemoteMagpieVerifyAndKeyLimitScoping` 钉住谓词：restricted/verify 按模型、`remoteKeyLimitHeader`（#2077 的 key 限额）仍整台、非 remote provider 不受影响。
+
+## 根因
+
+`internal/gateway/routing.go` 的 `remoteModelRest`：
+
+```go
+return why == failQuota || why == failCredit || why == failRate
+```
+
+`failRestricted` 和 `failVerify` 不在其中，`restAfterMarked` 里 `id` 保持 `restKey()`（整台 remote）。而这两个 `why` 对 remote 候选是可达且账号本位的：`restrictedSaid` 匹配的是 magpie 自己加在 WorkBuddy 403 11140 后面的 `WBRestrictedHint`（注释原话 "magpie's own words, which no vendor says, so they are read whoever answered"——remote 的错误正文原样带着它过来）；`failVerify` 来自厂商的 `VALIDATION_REQUIRED`/验证链接，同样是 remote 侧账号的事。
+
+## 修法
+
+`remoteModelRest` 的谓词加上 `failRestricted` 和 `failVerify`，注释与 `docs/subsystems/gateway-routing.md` 的对应句同步。三者语义都和 quota/credit/rate 一致：那是那台机器的账号、服务那个模型；它的 key 被拒、机器不可达、以及带 `remoteKeyLimitHeader` 的 key 自身限额（#2077）仍按整台休息，行为不变。`rateRest` 的既有调用不受影响（`failRate` 分支原样）。
+
+可能被否的点，先说明：如果维护者认为「remote 的账号被限制时整台都该回避」（例如担心那台机器把所有模型都挂在同一个受限账号后面），把 verify/restricted 从谓词里拿掉即可，测试的守护行相应回退——caa536733 当年只点名了 quota/credit/rate，也可能是这个考虑，但没有留下文字或测试。
+
+## 验证
+
+| 步骤 | 结果 |
+| --- | --- |
+| 红证据（upstream/main `2c18c697`，只加测试） | FAIL：整台 office 休息 2h、组 R 应答 "from ko"（输出存 `d-remote-restricted-red.txt`） |
+| 红证据重放（rebase 后的 `0c1e9b79`，`git checkout HEAD~1 -- routing.go`） | FAIL，同样三行 |
+| 修复后两个新测试 | PASS |
+| `go test -tags nogui -run 'TestRemoteMagpie'`（全部 remote 测试，含 #2077 的两网关用例） | ok |
+| `-run 'TestRestCap|TestSink|TestSunk|TestRateRest|TestRestAfter|TestCanceledRequestRestsNobody'` | ok |
+| `-run 'TestWorkBuddyRestrictedRestsHours|TestOnlyWorkBuddyRestrictedRestsAsRestricted|TestPluginRestrictedAccountSkipped|TestAntigravity|TestVerify'` | ok |
+| `gofmt -l internal/gateway/` | 空 |
+| `go vet -tags nogui` darwin / `GOOS=linux go vet -tags nogui` / `GOOS=windows go vet` | 干净 |
+| `go build` darwin / `GOOS=linux go build -tags nogui` / `GOOS=windows go build` | 过（darwin 的 `trayimage_darwin.go` cgo `-Wenum-conversion` 警告为已知环境噪音） |
+
+## 没跑什么
+
+- 真实两台机器的 LAN share 端到端（本机只有单机环境；场景形状以 `TestRemoteMagpie*` 的 httptest/双网关先例为准）。
+- `go test ./internal/gateway` 整包与 `-race`（机器负载高，整包按今天的提交记录也要 20-40 分钟；改动面是一个谓词的两个分支，定向矩阵如上）。
+- verify 的端到端组内场景没有像 restricted 那样单写整链路用例，由谓词级测试 `TestRemoteMagpieVerifyAndKeyLimitScoping` 与既有 `TestVerifyRefusal*`（整台路径，未回归）合盖。
+
+补丁（`git am`，作者保留 `ggbdpq <ggbdpq@gmail.com>`），同 <https://github.com/ggbdpq/magpie/tree/hunt21-d-remote-restricted-rest>：
+
+<details>
+<summary>Patch (<code>git am</code>)</summary>
+
+```
+From 873cfd1ee722bbbcf4bd5e0cacbd4e5f858d29b2 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Wed, 14 Oct 2026 22:29:33 +0800
+Subject: [PATCH] gateway: a remote magpie's restricted or verify refusal rests
+ only that model, not the whole remote
+
+remoteModelRest scoped a remote magpie's quota, credit and rate refusals
+to the model (caa536733) but left its restricted and verify refusals on
+the whole remote: a group whose member was one of the remote's other
+models went to the member on this computer for the two hours
+restrictedRest names (half an hour for a verify), though the remote
+rests its own account itself and its other models keep answering there.
+Both are that computer's account, on the model it serves: restricted is
+said in magpie's own words, which no vendor uses (restrictedSaid reads
+them whoever answered), and verify is the vendor's VALIDATION_REQUIRED
+for its account. The key's own limit there, a refused key and an
+unreachable computer still rest the whole remote, as before.
+
+Run:
+- TestRemoteMagpieRestrictedRestsTheModel (new): a fake remote whose
+  workbuddy model answers 403 with magpie's restricted hint, kimi OK; a
+  group with this computer's member behind it, then one with the
+  remote's kimi first. Red on upstream/main 2c18c697 ("the whole remote
+  magpie rests...", the group answered "from ko"), green with the fix.
+  TestRemoteMagpieVerifyAndKeyLimitScoping (new): the predicate for
+  restricted and verify, the key-limit header still whole-remote, and a
+  provider that isn't a remote magpie unaffected. Red on the predicate
+  before the change.
+- gofmt -l clean; go vet -tags nogui for darwin, GOOS=linux and
+  GOOS=windows; three-platform build.
+- TestRemoteMagpie*, TestRestCap*, sink and rest tests in
+  internal/gateway pass.
+
+Co-authored-by: factory-droid[bot] <138933559+factory-droid[bot]@users.noreply.github.com>
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ docs/subsystems/gateway-routing.md            |  2 +-
+ .../gateway/remote_magpie_restricted_test.go  | 95 +++++++++++++++++++
+ internal/gateway/routing.go                   | 12 ++-
+ 3 files changed, 104 insertions(+), 5 deletions(-)
+ create mode 100644 internal/gateway/remote_magpie_restricted_test.go
+
+diff --git a/docs/subsystems/gateway-routing.md b/docs/subsystems/gateway-routing.md
+index bc42c8fb..54f30092 100644
+--- a/docs/subsystems/gateway-routing.md
++++ b/docs/subsystems/gateway-routing.md
+@@ -79,7 +79,7 @@ recorded as a prediction failure (`noPrediction`).
+    - A rule by folder (`Rule.Folders`, `folders=~/work/acme,~/oss`; Cario0x on X: routing by the project being worked on) matches when the folder the agent works in is one of them or inside one (`provider.FolderUnder`, [`rulefolder.go`](../../internal/provider/rulefolder.go)): at a path's boundary, so `/a/b` is not under `/a/bc`; `~` is the home folder; a Windows drive is one with its WSL mount (`C:\work` is `/mnt/c/work`) and a `\\wsl$\<distro>` or `\\wsl.localhost\<distro>` share is the distro's own path; case doesn't count on macOS and Windows, nor ever for a drive. A rule outside folders (`Rule.ExceptFolders`, `except-folders=~/big-task`; #1606, Ti800) matches when the folder is in none of them, and an agent that says none isn't known to be in one, so it matches; a rule may have both (`Rule.ByFolder`, `inFolders`). The folder is read from the request only when a rule of the group has folders or except-folders (`workDir` in [`workdir.go`](../../internal/gateway/workdir.go)), in each agent's own words, taken from captured requests: Claude Code's ` - Primary working directory: <path>` (its `<`/`>` as entities; ` (was <old>)` after a change dropped), Codex's `<environment_context>` `<cwd>`, Pi's `<cwd>` in the system prompt, and OpenCode's `Working directory:` inside its `<env>` block. Only the system prompt and the user's and system messages' text count, never the model's words or a tool's result, and the last said wins. An agent that says none has no folder, and no `folders=` rule matches it (unknown, never empty). The same reading tells a plugin's fetch where its agent works ([provider-plugins](provider-plugins.md#where-the-agent-works-for-a-plugins-fetch)). A pause rule may hold by folder too (below). The trace's `RuleHit.Folder` is the folder read, and the Routing page tells it beside the rule's `folder …` condition. `TestFolderUnder`, `TestRuleMatchesByFolder`, `TestParseRuleFolders`, `TestWorkDirOfEachAgent`, `TestRuleByFolder`, `TestRuleMatchesExceptFolders`, `routing-folder.test.cjs`. Rules by folder are never in a shared group (`ShareGroup` drops every `ByFolder` rule).
+    - A pause rule (`Rule.Pause`, `pause=<model>`; John on Discord: a model of the group paused in its vendor's peak hours) leaves the model it names out of the group while it holds (`provider.PausedOut`, on `ruleClock`): the group's own rules and each nested group's on the way down to a member, a group named taking all its models, and a model named taking it wherever a group in the group has it (#625). It runs before planning, on every request rather than once a turn, so the model is not first, not a failover, and not kept by affinity, and comes back as soon as the hours end. It holds by hours, days, agents and folders only (`cleanRules` refuses another condition), and is not a send-to rule: `Matches`, `MatchRule`, `ThenUses`, `Ruled` and the compaction rules leave it out. A send-to rule naming a paused model finds it unready and the group routes as without it. The trace keeps what was paused (`GroupRef.Paused`), and the Routing page says so. Every model paused answers 503 (`pausedError`) naming each rule. Embeddings go by the same pauses; manual groups have no rules (`Live`), so none pause there. A pause by folder (#1606, Ti800: a subscription's quota kept for the long task in one folder, `pause=<model> except-folders=~/big-task`) reads the folder only when such a pause is on the way (`provider.PausesByFolder`, then `workDir`): outside its except-folders, which includes a request that says no folder (a subagent's or a small model's that doesn't), the model is left out; with `folders=`, only requests known to be in them. Embeddings and System One's decision calls have no folder. `Paused.Folder`/`ByFolder` carry what was read, and the Routing page says the folder or that none was said. `rules_pause_test.go`, `TestPauseByFolder`, `TestPauseByFolderRule`, `TestParsePauseByFolder`, `routing-pause-folder.test.cjs`.
+ 3. Candidates come from `planGroup` for a group or `plan` for a provider. They are filtered by `sealedReaders` and `allowedCandidates`. An account past its share is held out of the candidates (`capHeld`): a usage cap's share, each window at its own where the account gives it one (`AccountWindowCaps`, willz on Discord: 50% of the five hours, 40% of the week) and at the account's cap otherwise, or 100% of a window for a Codex account set not to spend its credits (`provider.HoldCaps`, `WindowCaps.Of`, `CodexNoCredits`). A ChatGPT account's call on `codex-auto-review`, which OpenAI counts in no window, is held by no usage cap, only by credits it may not spend (`freeOnChatGPT`, #1593, `TestAccountCapLetsAutoReviewThrough`). The account is held while any window is past its own share, and `cappedError` and the trace name the fullest such window's share and cap. When every candidate is held and one held for its credits spends its resets by itself, `autoReset` spends a reset on it and it is tried (`planned.held`); otherwise a capped or barred set returns `cappedError` or `barredError`. Then `affine` moves the conversation's last answerer first, unless it is resting or nearly used up. An `X-Magpie-Account` header (`AccountHeader`) pins the request to one account: only that account is tried, and when it can't answer the caller is told why.
+-4. The candidate loop calls `attempt` on each candidate in turn, through a `holdWriter`. The writer holds the reply until it is clearly passing. A candidate that fails before anything is sent rests (`failure`): out of credit for 30 minutes, out of quota until reset, rate limited until retry-after, otherwise a minute and longer on repeats: doubled each time, up to `longestRetry` (10 minutes) for a failure and `longestRateRest` (30 minutes) for a rate limit back as soon as its rest is over, or up to the provider's own `restCap` in minutes (`Provider.RestCapOr`, at most `MaxQuotaRest`; `magpie provider rest-cap <id> 4h`, #2008: a free key down for hours was asked every 10 minutes). A time the vendor names stands over it as before (`TestOwnRestCap`). The failure count is kept per key or account (`restKey`), not per model, except for a model refusal below, and an answer clears it (`served`). `rest-cap <id> off` (`provider.RestCapOff`, `restCap: -1`) is for a relay or account pool whose unknown errors come now and then and pass by the next request (Kismet Alan on Discord): a failure that says nothing of why (`failOther`: a 5xx, a dropped connection) then rests nobody and isn't counted, its trace rest `by: "off"` with no time left. A 401 or 403, a model not served, an account's window full, a rate limit (magpie's own 30-minute cap), quota, credit and a restriction still rest it as before (`TestRestCapOff`). The shortest cap otherwise is a minute, the first rest; `rest-cap <id> 30s` is turned away and names `off`. A 400, 403, 404 or 422 that says the model isn't served (`unservedWords`) and says nothing of quota, credit or a rate limit rests only that key's or account's model (`modelRefused`, keyed by `restID`, its backoff counted apart): its other models are still served first in order (#1235, SenseNova's 403 "model is not available in the current token plan"). A Google account's Code Assist (the Antigravity and Gemini CLI built-ins) answering 404 `NOT_FOUND` ("Requested entity was not found.") rests its model the same way, as its endpoint is the same for every model (`codeAssistModelMissing`; Packing1 on Discord: Argon, listed for a Google AI Pro account, answered 404 and rested the whole account; `TestCodeAssistMissingModelRestsTheModel`). A refusal for want of quota, credit or rate from another computer's magpie (a Remote magpie provider, LAN share) rests only the model it was about (`remoteModelRest`, keyed by `restID`, in `restAfterMarked` and `rateRest`): that magpie serves each of its models from its own providers and rests them itself, so one out of quota there says nothing of the others (bigsteven on Discord: a 429 for one model rested every model on the remote for the 3 hours it named, so a group never moved on to the remote's other models; `TestRemoteMagpieQuotaRestsTheModel`). Its key refused, the computer unreachable, or the key's own limit there (`keyLimited`'s 429, which carries `X-Magpie-Limit-Reset`, `remoteKeyLimitHeader`), still rests it whole: #2077's reporter had a Claude Code session limit on the other magpie refuse its Qoder models here (`TestRemoteMagpieRestsTheModel`, two gateways over HTTP; `TestRemoteMagpieKeyLimitRestsTheKey`). A 400, 404, 410 or 422 that says the model is retired (`retiredWords`: OpenCode Zen's 410 `ModelDeprecated` "Model exo-free has been deprecated.", whose own model list still names it; MOMO on Discord) rests only that model the same way, is retryable so a group's next member or another provider of it is asked, and is remembered (`provider.Retire`, `retired.json` beside `providers.json`): the model leaves that provider's entries in the catalog (`buildEntries`), so /v1/models, every agent's model list and the found groups go without it, until a request on it is answered again (`Unretire` in `servedCandidate`) or a week has passed. A refresh of the vendor's list doesn't bring it back early, since that list is where it still is. A `provider/model` request for it is still sent. A 400 or 422 that says this upstream's API can't take the request's shape (`shapeWords`: xAI's 422 "unknown item type" (#350), OpenAI's "Unknown parameter", and a limit of a model's own on tool schemas, OpenCode Go's 400 "JSON schema exceeds the maximum nesting depth of 10 levels" on muse-spark-1.3-contributor, #1870) rests nobody: the next candidate is asked once (`shapeRefused`, `failShape`), and the last one's error reaches the agent. A request missing what every API requires ("field required") isn't one, nor is a 200 that mentions it. A subscription account that fails any other way with a window full, by magpie's latest reading of its windows, rests until that window renews. Both quota rests and window rests are held to `longestQuota` (8 days), so a reset time read wrong (a year off) doesn't bench the account for that long. The next candidate is then tried. A failed provider waits `fallbackCooldown` (1 minute) at the back. A WorkBuddy account the vendor restricted (#1849: 403 `{"code":11140,"msg":"request illegal","displayMsg":{"en":"Your account has been restricted due to unusual activity",…}}`) rests `restrictedRest` (2 hours) as `restricted` (`failRestricted`), not the minutes of an unknown failure: only WorkBuddy lifting the restriction, after the user's appeal, brings it back. Both shapes are known: the built-in's `wbExplain` and the plugin's `explained()` (0.1.17, the mover's `min`) end the error with `provider.WBRestrictedHint` (`restrictedSaid`), and the vendor's own body, its code 11140 or its words (`provider.WBRestricted`), counts only from a WorkBuddy candidate (`restrictedRefused`, `isWorkBuddy`), as another vendor's 11140 is its own. Bare "request illegal" isn't matched. WorkBuddy's 11128 channel refusal stays `promptRefused` and rests nobody. The Routing page names it "account restricted by the vendor", says the appeal is the way back, and gives the account's row a button that lifts the rest (`/api/gateway/unrest`) once the vendor has. Every other rest a key or account takes (quota, rate limit, retry-after, a failure's backoff) can be lifted by hand the same way (#1869): "Try now" on its row on the Routing page and beside its rest note in the provider's key list. It ends the rest only: the backoff count stays, and a refusal after it rests the key again the usual way. The vendor's safety filter refusing a reply rests nobody, whether it refuses the turn before any of the reply is said or once some of it has been said (`refused`, `refusedAfter`). Its note on the try (and in the error the agent gets when nobody is left) is the vendor's reason, with Anthropic's `stop_details` category and explanation when it gave them (`refusedDetail`, #1768: "safety filter: refusal (category cyber)"); none is made up when it gave none. `stop_details` is carried through the IR (`Event.StopDetails`), so a Claude subscription run through the claude CLI and a translated Anthropic route keep it for an Anthropic client too. How many more candidates a refusal before any of the reply is asked of is Settings' `RefusalRetries` (`refusalAsksAgain`, counted per request in the candidate loop; a group's other members count too): unset, every one left (#248); 0, none (#1925, DD on Discord). When nobody is left, an agent on Anthropic's Messages API gets the held refusal itself, the vendor's 200 with `stop_reason` `refusal` and its `stop_details`, streamed or whole (`holdWriter.handBack`), since that is what Claude Code switches to its fallback model on; a 400 is only an API error to it. Codex and Chat clients still get `failTo`'s 400 (`refusedStatus`), which they don't ask again for. `TestRefusalRetries*` in [`refusal_retries_test.go`](../../internal/gateway/refusal_retries_test.go) cover keys, a group and the Claude subscription. The ChatGPT backend's 502 "response protection is unavailable" is about the request's content, not the account: the same history fails the same on each of its accounts and models. It rests nobody, isn't tried again after a moment, and isn't asked of the provider's other accounts or models; another provider left in a group is asked once (`protectionRefused`, `elsewhere`). One cause is known (#1270): a history that replays the backend's own `web_search_call` in a request that doesn't declare the `web_search` tool is refused so, whatever the account, model or turn (a plain turn, a thread's description, a compaction, Codex's own text compaction for a custom provider with `tools: []`). Every request to the ChatGPT backend with such a history therefore declares cached-only search (`{"type":"web_search","external_web_access":false}`, `provider.DeclareSearch`): an account's in `codexBody`, Codex's own sign-in relayed in `codexUpstreamOn`. It goes in the tools, or for Responses Lite (its header, `reasoning.context` `all_turns`, or an `additional_tools` item already there), which refuses a top-level `web_search`, in the `additional_tools` item. A request that offered no tools gets `tool_choice` `none` so the model can't search; one with a forced choice keeps it. A history without a search, or a request that declares search already, is relayed unchanged. siwc, API-key requests to openai.com and the legacy `/responses/compact` are left as they were.
++4. The candidate loop calls `attempt` on each candidate in turn, through a `holdWriter`. The writer holds the reply until it is clearly passing. A candidate that fails before anything is sent rests (`failure`): out of credit for 30 minutes, out of quota until reset, rate limited until retry-after, otherwise a minute and longer on repeats: doubled each time, up to `longestRetry` (10 minutes) for a failure and `longestRateRest` (30 minutes) for a rate limit back as soon as its rest is over, or up to the provider's own `restCap` in minutes (`Provider.RestCapOr`, at most `MaxQuotaRest`; `magpie provider rest-cap <id> 4h`, #2008: a free key down for hours was asked every 10 minutes). A time the vendor names stands over it as before (`TestOwnRestCap`). The failure count is kept per key or account (`restKey`), not per model, except for a model refusal below, and an answer clears it (`served`). `rest-cap <id> off` (`provider.RestCapOff`, `restCap: -1`) is for a relay or account pool whose unknown errors come now and then and pass by the next request (Kismet Alan on Discord): a failure that says nothing of why (`failOther`: a 5xx, a dropped connection) then rests nobody and isn't counted, its trace rest `by: "off"` with no time left. A 401 or 403, a model not served, an account's window full, a rate limit (magpie's own 30-minute cap), quota, credit and a restriction still rest it as before (`TestRestCapOff`). The shortest cap otherwise is a minute, the first rest; `rest-cap <id> 30s` is turned away and names `off`. A 400, 403, 404 or 422 that says the model isn't served (`unservedWords`) and says nothing of quota, credit or a rate limit rests only that key's or account's model (`modelRefused`, keyed by `restID`, its backoff counted apart): its other models are still served first in order (#1235, SenseNova's 403 "model is not available in the current token plan"). A Google account's Code Assist (the Antigravity and Gemini CLI built-ins) answering 404 `NOT_FOUND` ("Requested entity was not found.") rests its model the same way, as its endpoint is the same for every model (`codeAssistModelMissing`; Packing1 on Discord: Argon, listed for a Google AI Pro account, answered 404 and rested the whole account; `TestCodeAssistMissingModelRestsTheModel`). A refusal for want of quota, credit or rate, for an account its vendor restricted, or for a verify it asks of its account there, from another computer's magpie (a Remote magpie provider, LAN share) rests only the model it was about (`remoteModelRest`, keyed by `restID`, in `restAfterMarked` and `rateRest`): that magpie serves each of its models from its own providers and rests them itself, so one out of quota there says nothing of the others (bigsteven on Discord: a 429 for one model rested every model on the remote for the 3 hours it named, so a group never moved on to the remote's other models; `TestRemoteMagpieQuotaRestsTheModel`, `TestRemoteMagpieRestrictedRestsTheModel`). Its key refused, the computer unreachable, or the key's own limit there (`keyLimited`'s 429, which carries `X-Magpie-Limit-Reset`, `remoteKeyLimitHeader`), still rests it whole: #2077's reporter had a Claude Code session limit on the other magpie refuse its Qoder models here (`TestRemoteMagpieRestsTheModel`, two gateways over HTTP; `TestRemoteMagpieKeyLimitRestsTheKey`). A 400, 404, 410 or 422 that says the model is retired (`retiredWords`: OpenCode Zen's 410 `ModelDeprecated` "Model exo-free has been deprecated.", whose own model list still names it; MOMO on Discord) rests only that model the same way, is retryable so a group's next member or another provider of it is asked, and is remembered (`provider.Retire`, `retired.json` beside `providers.json`): the model leaves that provider's entries in the catalog (`buildEntries`), so /v1/models, every agent's model list and the found groups go without it, until a request on it is answered again (`Unretire` in `servedCandidate`) or a week has passed. A refresh of the vendor's list doesn't bring it back early, since that list is where it still is. A `provider/model` request for it is still sent. A 400 or 422 that says this upstream's API can't take the request's shape (`shapeWords`: xAI's 422 "unknown item type" (#350), OpenAI's "Unknown parameter", and a limit of a model's own on tool schemas, OpenCode Go's 400 "JSON schema exceeds the maximum nesting depth of 10 levels" on muse-spark-1.3-contributor, #1870) rests nobody: the next candidate is asked once (`shapeRefused`, `failShape`), and the last one's error reaches the agent. A request missing what every API requires ("field required") isn't one, nor is a 200 that mentions it. A subscription account that fails any other way with a window full, by magpie's latest reading of its windows, rests until that window renews. Both quota rests and window rests are held to `longestQuota` (8 days), so a reset time read wrong (a year off) doesn't bench the account for that long. The next candidate is then tried. A failed provider waits `fallbackCooldown` (1 minute) at the back. A WorkBuddy account the vendor restricted (#1849: 403 `{"code":11140,"msg":"request illegal","displayMsg":{"en":"Your account has been restricted due to unusual activity",…}}`) rests `restrictedRest` (2 hours) as `restricted` (`failRestricted`), not the minutes of an unknown failure: only WorkBuddy lifting the restriction, after the user's appeal, brings it back. Both shapes are known: the built-in's `wbExplain` and the plugin's `explained()` (0.1.17, the mover's `min`) end the error with `provider.WBRestrictedHint` (`restrictedSaid`), and the vendor's own body, its code 11140 or its words (`provider.WBRestricted`), counts only from a WorkBuddy candidate (`restrictedRefused`, `isWorkBuddy`), as another vendor's 11140 is its own. Bare "request illegal" isn't matched. WorkBuddy's 11128 channel refusal stays `promptRefused` and rests nobody. The Routing page names it "account restricted by the vendor", says the appeal is the way back, and gives the account's row a button that lifts the rest (`/api/gateway/unrest`) once the vendor has. Every other rest a key or account takes (quota, rate limit, retry-after, a failure's backoff) can be lifted by hand the same way (#1869): "Try now" on its row on the Routing page and beside its rest note in the provider's key list. It ends the rest only: the backoff count stays, and a refusal after it rests the key again the usual way. The vendor's safety filter refusing a reply rests nobody, whether it refuses the turn before any of the reply is said or once some of it has been said (`refused`, `refusedAfter`). Its note on the try (and in the error the agent gets when nobody is left) is the vendor's reason, with Anthropic's `stop_details` category and explanation when it gave them (`refusedDetail`, #1768: "safety filter: refusal (category cyber)"); none is made up when it gave none. `stop_details` is carried through the IR (`Event.StopDetails`), so a Claude subscription run through the claude CLI and a translated Anthropic route keep it for an Anthropic client too. How many more candidates a refusal before any of the reply is asked of is Settings' `RefusalRetries` (`refusalAsksAgain`, counted per request in the candidate loop; a group's other members count too): unset, every one left (#248); 0, none (#1925, DD on Discord). When nobody is left, an agent on Anthropic's Messages API gets the held refusal itself, the vendor's 200 with `stop_reason` `refusal` and its `stop_details`, streamed or whole (`holdWriter.handBack`), since that is what Claude Code switches to its fallback model on; a 400 is only an API error to it. Codex and Chat clients still get `failTo`'s 400 (`refusedStatus`), which they don't ask again for. `TestRefusalRetries*` in [`refusal_retries_test.go`](../../internal/gateway/refusal_retries_test.go) cover keys, a group and the Claude subscription. The ChatGPT backend's 502 "response protection is unavailable" is about the request's content, not the account: the same history fails the same on each of its accounts and models. It rests nobody, isn't tried again after a moment, and isn't asked of the provider's other accounts or models; another provider left in a group is asked once (`protectionRefused`, `elsewhere`). One cause is known (#1270): a history that replays the backend's own `web_search_call` in a request that doesn't declare the `web_search` tool is refused so, whatever the account, model or turn (a plain turn, a thread's description, a compaction, Codex's own text compaction for a custom provider with `tools: []`). Every request to the ChatGPT backend with such a history therefore declares cached-only search (`{"type":"web_search","external_web_access":false}`, `provider.DeclareSearch`): an account's in `codexBody`, Codex's own sign-in relayed in `codexUpstreamOn`. It goes in the tools, or for Responses Lite (its header, `reasoning.context` `all_turns`, or an `additional_tools` item already there), which refuses a top-level `web_search`, in the `additional_tools` item. A request that offered no tools gets `tool_choice` `none` so the model can't search; one with a forced choice keeps it. A history without a search, or a request that declares search already, is relayed unchanged. siwc, API-key requests to openai.com and the legacy `/responses/compact` are left as they were.
+ 5. The last candidate's error reaches the agent, with one exception for a group (#1418, `patience.go`). When every member has failed in a way that passes (`busy`: 408, 500, 502, 503, 504 or 529 that isn't a proxy, a quota or response protection, or a 429 that is a short rate limit, not a plan or credit), and nothing of the reply has been sent, the members that failed so are asked again in turn after a pause (`replan`). The pause is `retryPause` doubled each round up to `replanLongest()` (30 times `retryPause`, 30s), and never shorter than the soonest Retry-After; a member whose Retry-After ends past the pause is asked after the others. This goes on while the group's `Patience` lasts. `replanRounds` (12) is only a backstop that never comes first: the pauses alone add up to `PatienceLongest` in 11 rounds (with 6, a group set to 240s gave up after 90s of pauses, real-jacket on #1418; `TestPatienceIsUsedUp`). The budget is the group's `Patience`, counted from the first time every member had failed, when the agent would have had the error (`waitFrom`; `Group.Waits`: 0 is `PatienceDefault`, 60s; -1, `PatienceOff`, turns it off; at most `PatienceLongest`, 240s). A pause that would end past the budget isn't taken, and the agent gets the error. While another member is busy too, the last one isn't first tried again alone (`passing`): the members take turns, and once the budget has begun, the same-one retries aren't taken either. While the budget lasts, the last candidate's failure is held (`newHoldWriter`), and a streaming agent is kept alive through the pause with SSE comments (`pauseAlive`). The try is traced with `Again` (the pause), `Replan` (how many are asked again) and `Patience` (the budget in seconds). The group editor's "Every member busy" row sets it. A plain provider keeps only the same-one retries `passing` gives the last one left. An agent that goes away in either pause (the same-one retry's or a group's replan) ends the request there with 499: nobody is asked again, and the try whose pause it was is marked `Gone` (#1894, heng91: a relay down while its proxy was off, the agent's window closed). The Routing page says the agent canceled the request before the retry and lists it as canceled, rather than ending its story on "tried again in 2s", a retry that never came (`TestAgentGoneInTheRetryPause`, `routing-agent-gone.test.cjs`). A try that answered is recorded (`served`, `answered`) for routing, affinity and usage.
+ 
+ ## Constraints and failure behavior
+diff --git a/internal/gateway/remote_magpie_restricted_test.go b/internal/gateway/remote_magpie_restricted_test.go
+new file mode 100644
+index 00000000..8466151e
+--- /dev/null
++++ b/internal/gateway/remote_magpie_restricted_test.go
+@@ -0,0 +1,95 @@
++package gateway
++
++import (
++	"encoding/json"
++	"io"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"testing"
++	"time"
++
++	"github.com/yetone/magpie/internal/provider"
++)
++
++// caa536733's rule for a remote magpie's quota, credit and rate refusals,
++// on the two faces it left out: a restricted account, and one its vendor
++// wants verified first. Both are the remote's own account, on the model
++// that account serves there — the remote rests that account itself, and
++// its other models keep answering. The refusal passes here in magpie's own
++// words (restrictedSaid reads them whoever answered), and rested the whole
++// remote for the two hours restrictedRest names (verifyRest's half hour for
++// a verify), so the group's next request went to the member on this
++// computer instead of the remote's model that was fine.
++func TestRemoteMagpieRestrictedRestsTheModel(t *testing.T) {
++	fresh(t)
++	var asked []string
++	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		var req struct {
++			Model string `json:"model"`
++		}
++		json.NewDecoder(r.Body).Decode(&req)
++		asked = append(asked, req.Model)
++		w.Header().Set("Content-Type", "application/json")
++		if req.Model == "workbuddy/glm-5.3-flash" {
++			// the plugin's restricted account, as it says it (#1849: the
++			// 403 11140 ends in magpie's own hint words)
++			w.WriteHeader(http.StatusForbidden)
++			io.WriteString(w, `{"error":{"message":"403 11140: `+provider.WBRestrictedHint+`"}}`)
++			return
++		}
++		io.WriteString(w, `{"id":"x","choices":[{"index":0,"message":{"role":"assistant","content":"from `+req.Model+`"},"finish_reason":"stop"}]}`)
++	}))
++	t.Cleanup(remote.Close)
++	if err := provider.Save(provider.Provider{ID: "office", Name: "Office", Preset: provider.RemoteMagpiePreset, Key: "k",
++		Chat: remote.URL + "/v1", Models: []string{"workbuddy/glm-5.3-flash", "kimi/kimi-k3"}}); err != nil {
++		t.Fatal(err)
++	}
++	other := &keyed{}
++	serveOn(t, "other", "ko", []string{"m"}, other)
++	// the remote's restricted model first, this computer's member behind
++	// it: the refusal is noted with someone left, and other answers
++	if err := provider.SaveGroup(provider.Group{Name: "G", Members: []string{"office/workbuddy/glm-5.3-flash", "other/m"}, Routing: provider.Ordered}); err != nil {
++		t.Fatal(err)
++	}
++	if err := provider.SaveGroup(provider.Group{Name: "R", Members: []string{"office/kimi/kimi-k3", "other/m"}, Routing: provider.Ordered}); err != nil {
++		t.Fatal(err)
++	}
++	s := New()
++	if code, body := postAs(t, s, "", `{"model":"group/g","messages":[{"role":"user","content":"hi"}]}`); code != 200 || !strings.Contains(body, "from ko") {
++		t.Fatalf("glm restricted on the remote: %d %s", code, body)
++	}
++	if r, ok := restOf("office"); ok {
++		t.Errorf("the whole remote magpie rests for one model's restricted account: %+v", r)
++	}
++	r, ok := restOf("office/workbuddy/glm-5.3-flash")
++	if !ok || r.Why != failRestricted || r.By != "restricted" || !r.Until.After(time.Now()) {
++		t.Errorf("the restricted model doesn't rest as restricted: %+v (%v)", r, rests())
++	}
++	// the remote's kimi, with nothing wrong with it there, is asked where
++	// the group puts it: first, ahead of the member on this computer
++	if code, body := postAs(t, s, "", `{"model":"group/r","messages":[{"role":"user","content":"hi"}]}`); code != 200 || !strings.Contains(body, "from kimi/kimi-k3") {
++		t.Fatalf("kimi on the remote after glm was restricted: %d %s", code, body)
++	}
++	if len(asked) != 2 || asked[0] != "workbuddy/glm-5.3-flash" || asked[1] != "kimi/kimi-k3" {
++		t.Errorf("the remote was asked %v, want glm once and kimi once", asked)
++	}
++}
++
++// A verify refusal of the remote's own account is the model's too, as its
++// quota, credit and rate refusals are; the key's own limit there still
++// rests the whole remote (#2077).
++func TestRemoteMagpieVerifyAndKeyLimitScoping(t *testing.T) {
++	c := candidate{p: provider.Provider{ID: "office", Preset: provider.RemoteMagpiePreset, Key: "k"}, model: "gemini/gemini-3-flash", rest: "office"}
++	if !remoteModelRest(c, failRestricted, http.Header{}) || !remoteModelRest(c, failVerify, http.Header{}) {
++		t.Error("a restricted or verify refusal from the other magpie rests the whole remote, not the model")
++	}
++	h := http.Header{}
++	h.Set(remoteKeyLimitHeader, "2026-10-15T00:00:00Z")
++	if remoteModelRest(c, failRestricted, h) || remoteModelRest(c, failVerify, h) || remoteModelRest(c, failQuota, h) {
++		t.Error("the key's own limit there rests only the model, not the key")
++	}
++	if remoteModelRest(candidate{p: provider.Provider{ID: "office", Key: "k"}, model: "m", rest: "office"}, failRestricted, http.Header{}) {
++		t.Error("a provider that isn't a remote magpie rests the model on a restricted refusal")
++	}
++}
+diff --git a/internal/gateway/routing.go b/internal/gateway/routing.go
+index 38c8fab4..cc37ee4a 100644
+--- a/internal/gateway/routing.go
++++ b/internal/gateway/routing.go
+@@ -791,14 +791,18 @@ func (s *Server) restAfterMarked(c candidate, status int, header http.Header, bo
+ // models from its own providers and rests them itself, so one of them out
+ // of quota there says nothing of the others (bigsteven on Discord: the
+ // remote's 429 for one model rested every model on it for the 3 hours it
+-// named). Its key refused, or the computer unreachable, still rests it
+-// whole, and so does the key's own limit there (keyLimited's 429, with
+-// remoteKeyLimitHeader), which refuses every model alike (#2077).
++// named). A restricted account, or one its vendor wants verified first, is
++// that computer's account too, on the model it serves there (#1849: the
++// restricted one says so in magpie's own words, which no vendor uses, so
++// the refusal is read whoever answered). Its key refused, or the computer
++// unreachable, still rests it whole, and so does the key's own limit there
++// (keyLimited's 429, with remoteKeyLimitHeader), which refuses every model
++// alike (#2077).
+ func remoteModelRest(c candidate, why string, header http.Header) bool {
+ 	if !c.p.IsRemoteMagpie() || header.Get(remoteKeyLimitHeader) != "" {
+ 		return false
+ 	}
+-	return why == failQuota || why == failCredit || why == failRate
++	return why == failQuota || why == failCredit || why == failRate || why == failRestricted || why == failVerify
+ }
+ 
+ // rateRest is how long a rate-limited candidate sits out: as long as the
+-- 
+2.50.1 (Apple Git-155)
+
+
+```
+
+</details>
+
+Generated-by: GLM-5.3-Flash (ZCode)

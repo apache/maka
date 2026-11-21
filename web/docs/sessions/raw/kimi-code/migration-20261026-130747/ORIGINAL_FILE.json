@@ -1,0 +1,305 @@
+{
+  "state": "source_present",
+  "groups": [
+    {
+      "name": "sessions",
+      "source": "C:\\Users\\802165\\.kimi-code\\sessions",
+      "pattern": "**/*",
+      "remove_root": true,
+      "category": "archive",
+      "archive": "E:\\cc\\guahub\\sessions\\raw\\kimi-code\\migration-20261026-130747\\sessions.zip",
+      "files": [
+        {
+          "path": "wd_beauty-smart-advisor_de7840728be2/session_09581fb6-b106-4e1c-8c76-ba4758e61728/agents/main/blobs/e92fe2649aec715a1cc47ff9dcd7f34a7937ea8cef09f8ad31888cc27b04b8da",
+          "size": 166242,
+          "mtime_ns": 1784863603757181700,
+          "sha256": "09cc26993889f62aec9c6b0e56d92705aeef715f5bea399aa990a9586e0bbee4"
+        },
+        {
+          "path": "wd_beauty-smart-advisor_de7840728be2/session_09581fb6-b106-4e1c-8c76-ba4758e61728/agents/main/wire.jsonl",
+          "size": 527887,
+          "mtime_ns": 1784874225350921500,
+          "sha256": "1ba6a63121c72eade252b4d1dc0bf697e933c1520b012fae0bef190ea40e9ef2"
+        },
+        {
+          "path": "wd_beauty-smart-advisor_de7840728be2/session_09581fb6-b106-4e1c-8c76-ba4758e61728/logs/kimi-code.log",
+          "size": 10116,
+          "mtime_ns": 1784874026142889500,
+          "sha256": "85ea5de0e74066e7b33e4350f5f5d933148a890c1b21071a0a107eabfe17eb8b"
+        },
+        {
+          "path": "wd_beauty-smart-advisor_de7840728be2/session_09581fb6-b106-4e1c-8c76-ba4758e61728/state.json",
+          "size": 1520,
+          "mtime_ns": 1784870787235055700,
+          "sha256": "10c205546639d96ae2adb9802394db5823e27c9c233f3aa8c2b632358bc047d9"
+        },
+        {
+          "path": "wd_homing-miniapp-workbench_9102ff245a70/session_04b7d326-9a75-435e-8b62-ef1f62b5f2d5/agents/main/blobs/02ec6d53e93188252f3446995dfbb9daa420d80f57c186a1ee64e1a5cbc20bd3",
+          "size": 241070,
+          "mtime_ns": 1784274928039185300,
+          "sha256": "56b4854c91826aeae027a998554b521fb9a96654ba10876087054d668fb9e9b8"
+        },
+        {
+          "path": "wd_homing-miniapp-workbench_9102ff245a70/session_04b7d326-9a75-435e-8b62-ef1f62b5f2d5/agents/main/blobs/18a5e6083e7602b4e91deda7141a94ae396e1c69e18f21ea5661ed6ee083b856",
+          "size": 63213,
+          "mtime_ns": 1784274928017245200,
+          "sha256": "0357d3394d7fae21ea9f2c440cdcc3cbbde5f173ea2366349f292ceb57969c68"
+        },
+        {
+          "path": "wd_homing-miniapp-workbench_9102ff245a70/session_04b7d326-9a75-435e-8b62-ef1f62b5f2d5/agents/main/blobs/76b3ec2171ea2ad6d0741639d516621c9e40f79b8e052ff314466a62f9787146",
+          "size": 249383,
+          "mtime_ns": 1784278185281911700,
+          "sha256": "5d4d308517a8092ca9a8469db0bcf5c5991f67fd32f7204b8ffc8a956d62e114"
+        },
+        {
+          "path": "wd_homing-miniapp-workbench_9102ff245a70/session_04b7d326-9a75-435e-8b62-ef1f62b5f2d5/agents/main/blobs/77bcecace3a9635db38a1040f9c1dbc758af6afafea53a7dd0466ea05fc32b8a",
+          "size": 61217,
+          "mtime_ns": 1784274928025222900,
+          "sha256": "d883dec85d837cad649791ead41e24add9164fbe92c8798d8087df645ef07d79"
+        },
+        {
+          "path": "wd_homing-miniapp-workbench_9102ff245a70/session_04b7d326-9a75-435e-8b62-ef1f62b5f2d5/agents/main/blobs/db1f32835288a83b53b98dd4831991d038f9d1144e4b36a8049a7abfaa959473",
+          "size": 262153,
+          "mtime_ns": 1784274928032204400,
+          "sha256": "559f701f14236d291a0a4191919ff688886972d0b98993845708cee36e7d9b5d"
+        },
+        {
+          "path": "wd_homing-miniapp-workbench_9102ff245a70/session_04b7d326-9a75-435e-8b62-ef1f62b5f2d5/agents/main/blobs/fa744bbbedfd5768eaa1846bdeaf2a9d49c3afebc287946bf3bd23c3ce3c3281",
+          "size": 51936,
+          "mtime_ns": 1784274928021233200,
+          "sha256": "a677864b322a7879e84dbafd5d0bdccd7a2453ec377db425e11c5a68eeb552e7"
+        },
+        {
+          "path": "wd_homing-miniapp-workbench_9102ff245a70/session_04b7d326-9a75-435e-8b62-ef1f62b5f2d5/agents/main/wire.jsonl",
+          "size": 758980,
+          "mtime_ns": 1784278802169725300,
+          "sha256": "9975ed68590fc3c75d9326a8b0361691a7c77a757082f40bad54a0732d99364c"
+        },
+        {
+          "path": "wd_homing-miniapp-workbench_9102ff245a70/session_04b7d326-9a75-435e-8b62-ef1f62b5f2d5/logs/kimi-code.log",
+          "size": 11588,
+          "mtime_ns": 1784278355274723100,
+          "sha256": "4456cbafab7478cdf51a39117fc870cde7decaa4a79eebb99d7a6c8f0f90bd2b"
+        },
+        {
+          "path": "wd_homing-miniapp-workbench_9102ff245a70/session_04b7d326-9a75-435e-8b62-ef1f62b5f2d5/state.json",
+          "size": 1062,
+          "mtime_ns": 1784278355195933000,
+          "sha256": "a88d0665ba7eb599e3c30631df6c740b9f4f26143b3c132f8cfce09e841f0367"
+        },
+        {
+          "path": "wd_homing-miniapp-workbench_9102ff245a70/session_4ab6cafb-2632-4549-a3d0-86b67060afb1/agents/main/tasks/bash-7ux8cw96/output.log",
+          "size": 156025,
+          "mtime_ns": 1784378513641232300,
+          "sha256": "59cb2e463d71c30aa6ebe5a8cc41a19b311340979ebccef0e17d9e98c88e66e8"
+        },
+        {
+          "path": "wd_homing-miniapp-workbench_9102ff245a70/session_4ab6cafb-2632-4549-a3d0-86b67060afb1/agents/main/tasks/bash-7ux8cw96.json",
+          "size": 456,
+          "mtime_ns": 1784378513883247300,
+          "sha256": "3d2dac0c137b20af2a0c5fb435a01f4e3680e5f1aa4c2d028f3802a401d81fb3"
+        },
+        {
+          "path": "wd_homing-miniapp-workbench_9102ff245a70/session_4ab6cafb-2632-4549-a3d0-86b67060afb1/agents/main/wire.jsonl",
+          "size": 304771,
+          "mtime_ns": 1784380070069763100,
+          "sha256": "f28dd76386a51162fd68e747ca9dba2fec53fad7bb60c0b859b4c48ca86e7f6a"
+        },
+        {
+          "path": "wd_homing-miniapp-workbench_9102ff245a70/session_4ab6cafb-2632-4549-a3d0-86b67060afb1/logs/kimi-code.log",
+          "size": 5138,
+          "mtime_ns": 1784380070064899600,
+          "sha256": "a539dbab337d99a7046b710fbf8612cca3e906b24938dcdb3d076c1888800dd1"
+        },
+        {
+          "path": "wd_homing-miniapp-workbench_9102ff245a70/session_4ab6cafb-2632-4549-a3d0-86b67060afb1/state.json",
+          "size": 805,
+          "mtime_ns": 1784378464243502800,
+          "sha256": "75fdee472049e581ae809a801ab50154cd7b3e6a21ceae026d17cbf148a4c79e"
+        },
+        {
+          "path": "wd_mock-gateway_2a73b8290709/session_643078db-605f-4ce5-ae85-687d81ff0644/agents/main/tasks/bash-pqvckuhk/output.log",
+          "size": 347,
+          "mtime_ns": 1785485685264236700,
+          "sha256": "cccbfd98f57d99285f639f60a0ffc8b2496aed76d85467f6049a4bb585aa2411"
+        },
+        {
+          "path": "wd_mock-gateway_2a73b8290709/session_643078db-605f-4ce5-ae85-687d81ff0644/agents/main/tasks/bash-pqvckuhk.json",
+          "size": 337,
+          "mtime_ns": 1785486711712500400,
+          "sha256": "df30863dc075ea477ff986557cfdec82f29421ac8d9b43f52d43747da612f946"
+        },
+        {
+          "path": "wd_mock-gateway_2a73b8290709/session_643078db-605f-4ce5-ae85-687d81ff0644/agents/main/tasks/bash-td31h5v2/output.log",
+          "size": 24258,
+          "mtime_ns": 1785484223502999700,
+          "sha256": "632b510d5f231857f2a22f13159fb1b6dbef66d7964efd984240c05db3e41a38"
+        },
+        {
+          "path": "wd_mock-gateway_2a73b8290709/session_643078db-605f-4ce5-ae85-687d81ff0644/agents/main/tasks/bash-td31h5v2.json",
+          "size": 611,
+          "mtime_ns": 1785484223551872700,
+          "sha256": "c386751645ae008bce314a1cece7b3b655faac63678bcec99bcc23d7d8f12166"
+        },
+        {
+          "path": "wd_mock-gateway_2a73b8290709/session_643078db-605f-4ce5-ae85-687d81ff0644/agents/main/wire.jsonl",
+          "size": 452594,
+          "mtime_ns": 1785486711041085700,
+          "sha256": "805d681b0ed7be7b036ac3f738a17f9f8b7837b3bfda4edf61121a36c80539df"
+        },
+        {
+          "path": "wd_mock-gateway_2a73b8290709/session_643078db-605f-4ce5-ae85-687d81ff0644/logs/kimi-code.log",
+          "size": 11247,
+          "mtime_ns": 1785486679191199800,
+          "sha256": "681a22a276ca96414fd222932fc4faa5d0cb67863bf28c9048a4ee2f1d7ad370"
+        },
+        {
+          "path": "wd_mock-gateway_2a73b8290709/session_643078db-605f-4ce5-ae85-687d81ff0644/state.json",
+          "size": 935,
+          "mtime_ns": 1785483749201321700,
+          "sha256": "1100a3c07cec83e8e945d118b599e48ca7445152d59cb795d6b7d952e30b6afe"
+        },
+        {
+          "path": "wd_registration-toolkit_14cc7a5a9f48/session_31f81ac4-be7f-42dd-b2c0-76bcc3ccbbf1/agents/main/blobs/03e6ab556b79b77204f4ec3005350e7497d593bb5bddbe245d38cf159d4946d6",
+          "size": 157759,
+          "mtime_ns": 1784790797089733900,
+          "sha256": "6971d33658548104fe2ee8f9fdf7679f3fff0a093bea8c1808501d6c4c7815a6"
+        },
+        {
+          "path": "wd_registration-toolkit_14cc7a5a9f48/session_31f81ac4-be7f-42dd-b2c0-76bcc3ccbbf1/agents/main/wire.jsonl",
+          "size": 112436,
+          "mtime_ns": 1784790902993779900,
+          "sha256": "a6c34b67b7eb0876b9b1ccbdd64d077f6340e353d96a33a1c804426f9c0ed2b3"
+        },
+        {
+          "path": "wd_registration-toolkit_14cc7a5a9f48/session_31f81ac4-be7f-42dd-b2c0-76bcc3ccbbf1/logs/kimi-code.log",
+          "size": 411,
+          "mtime_ns": 1784790902967850700,
+          "sha256": "023573f7896f410d9631868d48b6e542f9852fd307ffc19ef1d66555deda888b"
+        },
+        {
+          "path": "wd_registration-toolkit_14cc7a5a9f48/session_31f81ac4-be7f-42dd-b2c0-76bcc3ccbbf1/state.json",
+          "size": 1719,
+          "mtime_ns": 1784790797008866900,
+          "sha256": "eccbfa97159a8b8ddc4ea89da3864e39ec025d9a2420b5e733d56206308694a5"
+        },
+        {
+          "path": "wd_workspace_6eb955a0d6fc/session_86f38372-eba0-47df-8917-9169a5241da3/agents/main/wire.jsonl",
+          "size": 212385,
+          "mtime_ns": 1784636680580104800,
+          "sha256": "d9cf36c4ad70a3ffca552e98dce66c6288c4569b3ef3dc9f86e40ed3ea5d96a8"
+        },
+        {
+          "path": "wd_workspace_6eb955a0d6fc/session_86f38372-eba0-47df-8917-9169a5241da3/logs/kimi-code.log",
+          "size": 3865,
+          "mtime_ns": 1784636680570131200,
+          "sha256": "305bb021894ec8a0ff67b5ad403e5ab995edae576bbb60bc1b92f947534d05c8"
+        },
+        {
+          "path": "wd_workspace_6eb955a0d6fc/session_86f38372-eba0-47df-8917-9169a5241da3/state.json",
+          "size": 688,
+          "mtime_ns": 1784636644122618200,
+          "sha256": "c55fffb125d392a434f4d6fae6b8551e2c44cdffbb956b48b4fb57858365e399"
+        },
+        {
+          "path": "wd_workspace_6eb955a0d6fc/session_ce2ac179-c89c-4e08-b054-e67ae6c370a4/agents/main/wire.jsonl",
+          "size": 184385,
+          "mtime_ns": 1784378176819116400,
+          "sha256": "b8ff8848ec723aad4db391eb11802d7df3d4565855aed7d7c9f90a88bce30744"
+        },
+        {
+          "path": "wd_workspace_6eb955a0d6fc/session_ce2ac179-c89c-4e08-b054-e67ae6c370a4/logs/kimi-code.log",
+          "size": 3391,
+          "mtime_ns": 1784378176811138500,
+          "sha256": "16493b6a83fb79e4e4d10592355829493448c278071414ba1712defbf7d3e88b"
+        },
+        {
+          "path": "wd_workspace_6eb955a0d6fc/session_ce2ac179-c89c-4e08-b054-e67ae6c370a4/state.json",
+          "size": 794,
+          "mtime_ns": 1784377890983749600,
+          "sha256": "d2baf308a225d3ca5c70ce5840789629e4d3ae3eaefa9e6ab9e227560f6cee94"
+        }
+      ],
+      "directories": [
+        "wd_beauty-smart-advisor_de7840728be2",
+        "wd_beauty-smart-advisor_de7840728be2/session_09581fb6-b106-4e1c-8c76-ba4758e61728",
+        "wd_beauty-smart-advisor_de7840728be2/session_09581fb6-b106-4e1c-8c76-ba4758e61728/agents",
+        "wd_beauty-smart-advisor_de7840728be2/session_09581fb6-b106-4e1c-8c76-ba4758e61728/agents/main",
+        "wd_beauty-smart-advisor_de7840728be2/session_09581fb6-b106-4e1c-8c76-ba4758e61728/agents/main/blobs",
+        "wd_beauty-smart-advisor_de7840728be2/session_09581fb6-b106-4e1c-8c76-ba4758e61728/logs",
+        "wd_homing-miniapp-workbench_9102ff245a70",
+        "wd_homing-miniapp-workbench_9102ff245a70/session_04b7d326-9a75-435e-8b62-ef1f62b5f2d5",
+        "wd_homing-miniapp-workbench_9102ff245a70/session_04b7d326-9a75-435e-8b62-ef1f62b5f2d5/agents",
+        "wd_homing-miniapp-workbench_9102ff245a70/session_04b7d326-9a75-435e-8b62-ef1f62b5f2d5/agents/main",
+        "wd_homing-miniapp-workbench_9102ff245a70/session_04b7d326-9a75-435e-8b62-ef1f62b5f2d5/agents/main/blobs",
+        "wd_homing-miniapp-workbench_9102ff245a70/session_04b7d326-9a75-435e-8b62-ef1f62b5f2d5/logs",
+        "wd_homing-miniapp-workbench_9102ff245a70/session_4ab6cafb-2632-4549-a3d0-86b67060afb1",
+        "wd_homing-miniapp-workbench_9102ff245a70/session_4ab6cafb-2632-4549-a3d0-86b67060afb1/agents",
+        "wd_homing-miniapp-workbench_9102ff245a70/session_4ab6cafb-2632-4549-a3d0-86b67060afb1/agents/main",
+        "wd_homing-miniapp-workbench_9102ff245a70/session_4ab6cafb-2632-4549-a3d0-86b67060afb1/agents/main/tasks",
+        "wd_homing-miniapp-workbench_9102ff245a70/session_4ab6cafb-2632-4549-a3d0-86b67060afb1/agents/main/tasks/bash-7ux8cw96",
+        "wd_homing-miniapp-workbench_9102ff245a70/session_4ab6cafb-2632-4549-a3d0-86b67060afb1/logs",
+        "wd_mock-gateway_2a73b8290709",
+        "wd_mock-gateway_2a73b8290709/session_643078db-605f-4ce5-ae85-687d81ff0644",
+        "wd_mock-gateway_2a73b8290709/session_643078db-605f-4ce5-ae85-687d81ff0644/agents",
+        "wd_mock-gateway_2a73b8290709/session_643078db-605f-4ce5-ae85-687d81ff0644/agents/main",
+        "wd_mock-gateway_2a73b8290709/session_643078db-605f-4ce5-ae85-687d81ff0644/agents/main/tasks",
+        "wd_mock-gateway_2a73b8290709/session_643078db-605f-4ce5-ae85-687d81ff0644/agents/main/tasks/bash-pqvckuhk",
+        "wd_mock-gateway_2a73b8290709/session_643078db-605f-4ce5-ae85-687d81ff0644/agents/main/tasks/bash-td31h5v2",
+        "wd_mock-gateway_2a73b8290709/session_643078db-605f-4ce5-ae85-687d81ff0644/logs",
+        "wd_registration-toolkit_14cc7a5a9f48",
+        "wd_registration-toolkit_14cc7a5a9f48/session_31f81ac4-be7f-42dd-b2c0-76bcc3ccbbf1",
+        "wd_registration-toolkit_14cc7a5a9f48/session_31f81ac4-be7f-42dd-b2c0-76bcc3ccbbf1/agents",
+        "wd_registration-toolkit_14cc7a5a9f48/session_31f81ac4-be7f-42dd-b2c0-76bcc3ccbbf1/agents/main",
+        "wd_registration-toolkit_14cc7a5a9f48/session_31f81ac4-be7f-42dd-b2c0-76bcc3ccbbf1/agents/main/blobs",
+        "wd_registration-toolkit_14cc7a5a9f48/session_31f81ac4-be7f-42dd-b2c0-76bcc3ccbbf1/logs",
+        "wd_workspace_6eb955a0d6fc",
+        "wd_workspace_6eb955a0d6fc/session_86f38372-eba0-47df-8917-9169a5241da3",
+        "wd_workspace_6eb955a0d6fc/session_86f38372-eba0-47df-8917-9169a5241da3/agents",
+        "wd_workspace_6eb955a0d6fc/session_86f38372-eba0-47df-8917-9169a5241da3/agents/main",
+        "wd_workspace_6eb955a0d6fc/session_86f38372-eba0-47df-8917-9169a5241da3/logs",
+        "wd_workspace_6eb955a0d6fc/session_ce2ac179-c89c-4e08-b054-e67ae6c370a4",
+        "wd_workspace_6eb955a0d6fc/session_ce2ac179-c89c-4e08-b054-e67ae6c370a4/agents",
+        "wd_workspace_6eb955a0d6fc/session_ce2ac179-c89c-4e08-b054-e67ae6c370a4/agents/main",
+        "wd_workspace_6eb955a0d6fc/session_ce2ac179-c89c-4e08-b054-e67ae6c370a4/logs"
+      ]
+    },
+    {
+      "name": "logs",
+      "source": "C:\\Users\\802165\\.kimi-code\\logs",
+      "pattern": "**/*",
+      "remove_root": true,
+      "category": "archive",
+      "archive": "E:\\cc\\guahub\\sessions\\raw\\kimi-code\\migration-20261026-130747\\logs.zip",
+      "files": [
+        {
+          "path": "kimi-code.log",
+          "size": 884,
+          "mtime_ns": 1785487298506826300,
+          "sha256": "19d94d7235f69fd7f900493efd526b0b72e3ef99adf4e4e0dd39513aff7c5bd4"
+        }
+      ],
+      "directories": []
+    },
+    {
+      "name": "session-index",
+      "source": "C:\\Users\\802165\\.kimi-code",
+      "pattern": "session_index.jsonl",
+      "remove_root": false,
+      "category": "archive",
+      "archive": "E:\\cc\\guahub\\sessions\\raw\\kimi-code\\migration-20261026-130747\\session-index.zip",
+      "files": [
+        {
+          "path": "session_index.jsonl",
+          "size": 1647,
+          "mtime_ns": 1785483748514136900,
+          "sha256": "1c6cca14bc716d3a84c5a960c4da498e6a40571ab5f8d9bfe456f31453ca4940"
+        }
+      ],
+      "directories": []
+    }
+  ],
+  "protected": {
+    "C:\\Users\\802165\\.kimi-code\\config.toml": "35dbf576ab18a0ab7b0b039f531db4a8e1ca198ee2a858e5256a7d4282b0cacc"
+  }
+}

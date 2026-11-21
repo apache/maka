@@ -1,0 +1,15 @@
+{
+  "name": "idm-integration-module-dsv4",
+  "version": "6.43.1",
+  "description": "IDM Integration Module — Chrome extension reverse engineering (dsv4)",
+  "license": "UNLICENSED",
+  "private": true,
+  "scripts": {
+    "build": "tsc",
+    "check": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0",
+    "@types/chrome": "^0.0.268"
+  }
+}

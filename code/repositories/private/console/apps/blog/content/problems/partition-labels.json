@@ -1,0 +1,22 @@
+{
+  "id": "41",
+  "slug": "partition-labels",
+  "title": "划分字母区间",
+  "difficulty": "medium",
+  "tags": ["贪心", "哈希表", "双指针", "字符串"],
+  "description": "给你一个字符串 `s`。我们要把这个字符串划分为尽可能多的片段,同一字母最多出现在一个片段中。\n\n返回一个表示每个字符串片段长度的列表。\n\n**示例 1:**\n\n- 输入:`s = \"ababcbacadefegdehijhklij\"`\n- 输出:`[9,7,8]`(划分为 \"ababcbaca\"、\"defegde\"、\"hijhklij\")\n\n**示例 2:**\n\n- 输入:`s = \"eccbbbbdec\"`\n- 输出:`[10]`",
+  "solution": "## 思路\n\n先记录每个字母的**最后出现位置**。再遍历,维护当前片段的结束边界 `end`(=片段内所有字母最后位置的最大值);当遍历到 `end` 时,一个片段结束,记录长度。\n\n## 参考代码\n\n```js\nfunction partitionLabels(s) {\n  const last = new Map();\n  for (let i = 0; i < s.length; i++) last.set(s[i], i);\n  const res = [];\n  let start = 0;\n  let end = 0;\n  for (let i = 0; i < s.length; i++) {\n    end = Math.max(end, last.get(s[i]));\n    if (i === end) { res.push(end - start + 1); start = i + 1; }\n  }\n  return res;\n}\n```\n\n## 复杂度\n\n- 时间:O(n)\n- 空间:O(k),k 为字符集大小",
+  "signature": {
+    "language": "javascript",
+    "entry": "partitionLabels",
+    "params": [{ "name": "s", "type": "string" }],
+    "returns": "number[]"
+  },
+  "testCases": [
+    { "sample": true, "input": ["ababcbacadefegdehijhklij"], "expected": [9, 7, 8] },
+    { "sample": true, "input": ["eccbbbbdec"], "expected": [10] },
+    { "sample": false, "input": ["a"], "expected": [1] },
+    { "sample": false, "input": ["abc"], "expected": [1, 1, 1] },
+    { "sample": false, "input": ["aaaa"], "expected": [4] }
+  ]
+}

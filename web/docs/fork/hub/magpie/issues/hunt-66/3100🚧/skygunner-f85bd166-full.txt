@@ -1,0 +1,56 @@
+commit f85bd1664b489e411c295643da1a28dbacfa0bbc
+Author: vincent <webmaster@palmit.com.au>
+Date:   Fri Oct 23 07:33:40 2026 +1000
+
+    test(provider): drain plugin callbacks before swapping sign-in observers
+    
+    The fakeco sign-in test can replace catalog.Changed while its own plugin
+    refresh is still about to call it. Wait for Refreshed then Told before
+    installing and restoring that global observer. Seed the fake's catalog
+    locally so setup never needs a models.dev fetch.
+    
+    Adapt ggbdpq/magpie 47f78b9900c96d0282683600882b7f6001d4595a.
+    The isolated fakeco test reports the named catalog.Changed write/read
+    race over 200 repetitions, including with the local catalog seeded.
+    With the waits, -race -count=200 passes. All three sign-in paths pass
+    -race -count=20. The original behavioral assertions remain intact;
+    production sign-in code is unchanged.
+    
+    Fixes yetone/magpie#3100
+    Co-authored-by: ggbdpq <ggbdpq@gmail.com>
+
+diff --git a/internal/provider/signin_removed_test.go b/internal/provider/signin_removed_test.go
+index 4673d7b8..c814d663 100644
+--- a/internal/provider/signin_removed_test.go
++++ b/internal/provider/signin_removed_test.go
+@@ -64,6 +64,7 @@ func TestSignInDoneOnceTheAccountIsBack(t *testing.T) {
+ 		setUp: func(t *testing.T) {
+ 			bun := testenv.Bun(t)
+ 			claudeHome(t)
++			writeFile(t, catalog.CachePath(), json.RawMessage(`{"fakeco":{"id":"fakeco","models":{}}}`))
+ 			t.Setenv("MAGPIE_BUN", bun)
+ 			t.Cleanup(plugin.Settle)
+ 			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+@@ -105,6 +106,9 @@ func TestSignInDoneOnceTheAccountIsBack(t *testing.T) {
+ 				t.Fatal("removed account still listed")
+ 			}
+ 
++			// Finish the refresh and its hooks before swapping the global observer.
++			plugin.Refreshed()
++			plugin.Told()
+ 			// what the sign-in reads as the moment its account is shown again
+ 			var mu sync.Mutex
+ 			id, back := "", ""
+@@ -117,7 +121,11 @@ func TestSignInDoneOnceTheAccountIsBack(t *testing.T) {
+ 					back = st.State
+ 				}
+ 			}
+-			t.Cleanup(func() { catalog.Changed = was })
++			t.Cleanup(func() {
++				plugin.Refreshed()
++				plugin.Told()
++				catalog.Changed = was
++			})
+ 
+ 			st := c.signIn(t)
+ 			mu.Lock()

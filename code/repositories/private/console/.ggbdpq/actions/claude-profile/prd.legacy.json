@@ -1,0 +1,510 @@
+{
+  "meta": {
+    "product": "cc-switch",
+    "version": "2.1.0",
+    "owner": "ggbdpq",
+    "language": "zh-CN",
+    "positioning": "一个企业级、可审计、可回滚的 Claude Code settings.json 桌面控制平面",
+    "core_principle": [
+      "真实文件读写",
+      "禁止 mock / 假数据",
+      "任何写入必须可回滚",
+      "任何变更必须可审计"
+    ],
+    "runtime": {
+      "desktop": "Tauri 2.x (macOS 优先)",
+      "frontend": "React 19 + TypeScript + Vite 7",
+      "ui": "Tailwind CSS 4 + macOS 原生风格",
+      "state": "Zustand 5",
+      "data": "真实 settings.json（非模拟）",
+      "validation": "Zod",
+      "test": "Vitest + Rust unit test"
+    },
+    "last_updated": "2026-01-14"
+  },
+  "global_constraints": {
+    "no_mock": true,
+    "language_rule": "除非用户明确要求英文，否则所有解释、日志、提交信息、进度记录必须为简体中文",
+    "security": [
+      "env 中的 TOKEN / KEY / SECRET / PASSWORD 必须脱敏显示",
+      "禁止在日志、progress、commit message 中输出明文凭据",
+      "任何异常情况下不得写空 settings.json"
+    ]
+  },
+  "data_model": {
+    "settings_json": {
+      "source": "~/.claude/settings.json",
+      "schema_rules": {
+        "enabledPlugins": "Record<string, boolean>",
+        "env": "Record<string, string>",
+        "language": "string",
+        "includeCoAuthoredBy": "boolean",
+        "others": "unknown but preserved (via extra field)"
+      },
+      "sensitive_keys_match": [
+        "TOKEN",
+        "KEY",
+        "SECRET",
+        "PASSWORD",
+        "CREDENTIAL",
+        "AUTH"
+      ]
+    },
+    "backup": {
+      "location": "~/.claude/backups/",
+      "format": "settings.json.bak-YYYYMMDD_HHMMSS"
+    },
+    "audit_log": {
+      "location": "~/.claude/audit/",
+      "format": "audit.jsonl",
+      "fields": [
+        "timestamp",
+        "action",
+        "before_hash",
+        "after_hash",
+        "changed_keys",
+        "backup_file"
+      ]
+    }
+  },
+  "items": [
+    {
+      "id": "P0-00",
+      "name": "工程初始化（不可跳过）",
+      "priority": "P0",
+      "status": "completed",
+      "completed_at": "2026-01-14",
+      "definition_of_done": [
+        "项目可启动",
+        "pnpm typecheck 通过",
+        "最小 smoke test 存在"
+      ],
+      "tasks": [
+        "初始化 Tauri 2 + React + TypeScript + Vite 工程",
+        "引入 Tailwind + shadcn/ui 风格 + Zustand",
+        "统一 pnpm scripts（dev/build/typecheck/test）",
+        "配置 Vitest 测试框架"
+      ]
+    },
+    {
+      "id": "P0-01",
+      "name": "SettingsFSService（真实文件系统服务）",
+      "priority": "P0",
+      "status": "completed",
+      "completed_at": "2026-01-14",
+      "definition_of_done": [
+        "真实读取 ~/.claude/settings.json",
+        "写入前自动备份",
+        "原子写（tmp + rename）",
+        "失败可回滚"
+      ],
+      "tasks": [
+        "Rust 侧实现 read_settings / write_settings / list_backups / restore_backup",
+        "所有写入前生成 settings.json.bak-时间戳",
+        "JSON parse 失败时禁止写入",
+        "返回结构化错误（中文）"
+      ],
+      "verification": {
+        "test_command": "cargo run --bin test_real_settings",
+        "result": "通过 - 切换 superpowers@superpowers-marketplace 成功"
+      }
+    },
+    {
+      "id": "P0-02",
+      "name": "Schema 校验与脱敏",
+      "priority": "P0",
+      "status": "completed",
+      "completed_at": "2026-01-14",
+      "definition_of_done": [
+        "不合法结构不写入",
+        "敏感字段 UI 脱敏"
+      ],
+      "tasks": [
+        "Zod 校验 enabledPlugins / env / language",
+        "env 默认显示 ****",
+        "显式 reveal 才短暂显示明文（5秒后自动隐藏）"
+      ]
+    },
+    {
+      "id": "P0-03",
+      "name": "插件真实开关（禁止 mock）",
+      "priority": "P0",
+      "status": "completed",
+      "completed_at": "2026-01-14",
+      "definition_of_done": [
+        "UI 展示数据来自真实 settings.json",
+        "切换后写入并回读验证"
+      ],
+      "tasks": [
+        "从 enabledPlugins 动态生成插件列表",
+        "切换开关 → 写入 → 回读 → 校验一致",
+        "失败自动回滚并提示"
+      ],
+      "verification": {
+        "test_output": "写后回读 Hash 一致: 030b4e3e7d4448e9"
+      }
+    },
+    {
+      "id": "P0-04",
+      "name": "Diff + 审计日志",
+      "priority": "P0",
+      "status": "completed",
+      "completed_at": "2026-01-14",
+      "definition_of_done": [
+        "每次写入都有审计记录",
+        "可定位变更来源"
+      ],
+      "tasks": [
+        "生成 before/after hash",
+        "记录 changed_keys",
+        "写入 audit jsonl",
+        "UI 展示最近变更"
+      ],
+      "verification": {
+        "audit_file": "~/.claude/audit/audit.jsonl",
+        "sample_entry": {
+          "action": "TogglePlugin",
+          "changed_keys": [
+            "enabledPlugins.superpowers@superpowers-marketplace"
+          ]
+        }
+      }
+    },
+    {
+      "id": "P0-05",
+      "name": "文件监听与冲突处理",
+      "priority": "P0",
+      "status": "completed",
+      "completed_at": "2026-01-14",
+      "definition_of_done": [
+        "外部修改能感知",
+        "不会悄悄覆盖用户改动"
+      ],
+      "tasks": [
+        "监听 settings.json",
+        "冲突弹窗：加载最新 / 保持本地",
+        "状态指示：是否与磁盘一致"
+      ],
+      "implementation": {
+        "rust": "watcher.rs + notify crate",
+        "frontend": "useFileWatcher.ts + ConflictDialog.tsx",
+        "backup": "每 5 秒轮询检查"
+      }
+    },
+    {
+      "id": "P1-06",
+      "name": "内置预设（真实落盘）",
+      "priority": "P1",
+      "status": "completed",
+      "completed_at": "2026-01-14",
+      "tasks": [
+        "内置 learn / frontend / plan / ops / research",
+        "预设应用前显示 diff",
+        "应用失败可回滚"
+      ],
+      "implementation": {
+        "components": [
+          "PresetDiffDialog.tsx",
+          "App.tsx"
+        ],
+        "features": [
+          "预设差异预览对话框",
+          "变更统计展示",
+          "确认后真实写入"
+        ]
+      }
+    },
+    {
+      "id": "P1-07",
+      "name": "自定义预设 CRUD",
+      "priority": "P1",
+      "status": "completed",
+      "completed_at": "2026-01-14",
+      "tasks": [
+        "新建 / 编辑 / 删除 / 复制预设",
+        "预设存储在 appData",
+        "支持导入导出"
+      ],
+      "implementation": {
+        "rust": [
+          "config.rs (CustomPreset/CustomPresetStore)",
+          "fs_service.rs (CRUD functions)",
+          "commands.rs (Tauri commands)"
+        ],
+        "frontend": [
+          "PresetEditor.tsx",
+          "PresetSidebar.tsx",
+          "api.ts",
+          "useSettings.ts"
+        ],
+        "storage": "~/.claude/cc-switch/custom-presets.json"
+      }
+    },
+    {
+      "id": "P1-08",
+      "name": "cc-dev profile 合并引擎",
+      "priority": "P1",
+      "status": "completed",
+      "completed_at": "2026-01-14",
+      "tasks": [
+        "读取 profile 目录",
+        "dry-run 合并预览",
+        "apply 写入 settings.json"
+      ],
+      "implementation": {
+        "rust": [
+          "config.rs (Profile types)",
+          "fs_service.rs (merge functions)",
+          "commands.rs"
+        ],
+        "frontend": [
+          "ProfileMerge.tsx",
+          "api.ts",
+          "useSettings.ts"
+        ],
+        "profile_dir": "~/.claude/profiles/"
+      }
+    },
+    {
+      "id": "P1-09",
+      "name": "历史回滚 UI",
+      "priority": "P1",
+      "status": "completed",
+      "completed_at": "2026-01-14",
+      "tasks": [
+        "时间线展示历史",
+        "一键 restore backup"
+      ],
+      "implementation": {
+        "components": [
+          "HistoryTimeline.tsx"
+        ],
+        "features": [
+          "时间线展示备份",
+          "回滚确认对话框",
+          "调用 restore_backup API"
+        ]
+      }
+    },
+    {
+      "id": "P2-10",
+      "name": "体验与打包",
+      "priority": "P2",
+      "status": "completed",
+      "completed_at": "2026-01-14",
+      "tasks": [
+        "暗色模式",
+        "快捷键",
+        "打包发布",
+        "安全与隐私说明"
+      ],
+      "implementation": {
+        "components": [
+          "ThemeToggle.tsx",
+          "themeStore.ts",
+          "useKeyboardShortcuts.ts"
+        ],
+        "docs": [
+          "README.md"
+        ],
+        "build": "CC Switch Plus_0.1.0_aarch64.dmg"
+      }
+    },
+    {
+      "id": "BF-01",
+      "name": "桌面端白屏修复与 SSOT 改造",
+      "priority": "P0",
+      "status": "completed",
+      "completed_at": "2026-01-14",
+      "tasks": [
+        "新增 ErrorBoundary 防止渲染错误导致白屏",
+        "useFileWatcher 添加 Tauri 环境检测",
+        "useApplyPreset 添加乐观更新与回滚",
+        "冲突检测添加写入窗口期忽略",
+        "新增回归测试 useSettings.test.ts"
+      ],
+      "implementation": {
+        "components": [
+          "ErrorBoundary.tsx",
+          "useFileWatcher.ts",
+          "useSettings.ts",
+          "App.tsx"
+        ],
+        "tests": [
+          "useSettings.test.ts"
+        ]
+      }
+    },
+    {
+      "id": "BF-02",
+      "name": "构建链路修复（tauri build/dev）",
+      "priority": "P0",
+      "status": "completed",
+      "completed_at": "2026-01-14",
+      "tasks": [
+        "Cargo.toml 添加 default-run 解决多 binary 问题",
+        "package.json 添加 tauri:dev/tauri:build 自动 source cargo env",
+        "README.md 添加常见问题排查章节"
+      ],
+      "implementation": {
+        "files": [
+          "src-tauri/Cargo.toml",
+          "package.json",
+          "README.md"
+        ]
+      }
+    },
+    {
+      "id": "BF-03",
+      "name": "审计日志健壮性修复",
+      "priority": "P1",
+      "status": "completed",
+      "completed_at": "2026-01-14",
+      "tasks": [
+        "AuditEntry 添加 serde(rename_all = camelCase)",
+        "添加 alias 兼容旧 snake_case 数据",
+        "AuditLog.tsx 添加防御性检查"
+      ],
+      "implementation": {
+        "files": [
+          "src-tauri/src/config.rs",
+          "src/components/AuditLog.tsx"
+        ]
+      }
+    },
+    {
+      "id": "BF-04",
+      "name": "Web 真数据模式（File System Access API）",
+      "priority": "P1",
+      "status": "completed",
+      "completed_at": "2026-01-14",
+      "tasks": [
+        "新建 webFileService.ts 封装 File System Access API",
+        "支持用户选择 settings.json 文件",
+        "读写真实配置（非 mock）",
+        "移除 Demo Mode"
+      ],
+      "implementation": {
+        "components": [
+          "webFileService.ts",
+          "api.ts",
+          "App.tsx"
+        ],
+        "browser_requirement": "Chrome 86+ / Edge 86+"
+      }
+    },
+    {
+      "id": "N1",
+      "name": "官方插件库与恢复默认功能",
+      "priority": "P1",
+      "status": "completed",
+      "completed_at": "2026-01-14",
+      "tasks": [
+        "创建 pluginCatalog.ts 包含 15 个官方插件",
+        "创建 PluginCatalog.tsx 右侧参考面板",
+        "实现恢复默认功能（diff + 确认 + 审计）"
+      ],
+      "implementation": {
+        "components": [
+          "pluginCatalog.ts",
+          "PluginCatalog.tsx"
+        ],
+        "tests": [
+          "pluginCatalog.test.ts"
+        ]
+      }
+    },
+    {
+      "id": "N2",
+      "name": "插件详情页（路由页替代弹窗）",
+      "priority": "P1",
+      "status": "completed",
+      "completed_at": "2026-01-14",
+      "tasks": [
+        "PluginSwitch 添加右侧摘要区域（line-clamp-2）",
+        "新建 PluginDetailPage.tsx 独立详情页",
+        "App.tsx 添加 ViewState 虚拟路由",
+        "移除 PluginDetail 抽屉调用"
+      ],
+      "implementation": {
+        "components": [
+          "PluginSwitch.tsx",
+          "PluginDetailPage.tsx",
+          "App.tsx"
+        ],
+        "detail_sections": [
+          "问题",
+          "适用场景",
+          "限制",
+          "配置项",
+          "安全说明",
+          "调用统计"
+        ]
+      }
+    },
+    {
+      "id": "N3",
+      "name": "调用统计（静态扫描）",
+      "priority": "P2",
+      "status": "completed",
+      "completed_at": "2026-01-14",
+      "tasks": [
+        "创建 scanPluginUsage.mjs 扫描脚本",
+        "生成 pluginUsageStats.json 统计文件",
+        "详情页展示引用次数和文件列表"
+      ],
+      "implementation": {
+        "scripts": [
+          "scripts/scanPluginUsage.mjs"
+        ],
+        "command": "pnpm scan:plugins"
+      }
+    },
+    {
+      "id": "N4",
+      "name": "CC Switch Plus 共存",
+      "priority": "P2",
+      "status": "completed",
+      "completed_at": "2026-01-14",
+      "tasks": [
+        "重命名 bundle id 为 com.ggbdpq.cc-switch-plus",
+        "重命名应用名称为 CC Switch Plus",
+        "自定义预设目录改为 ~/.claude/cc-switch-plus/",
+        "README.md 添加共存说明"
+      ],
+      "implementation": {
+        "files": [
+          "tauri.conf.json",
+          "Cargo.toml",
+          "package.json",
+          "fs_service.rs",
+          "README.md"
+        ]
+      }
+    }
+  ],
+  "test_summary": {
+    "frontend": {
+      "framework": "Vitest",
+      "tests_passed": 41,
+      "files": [
+        "src/types/settings.test.ts",
+        "src/lib/presets.test.ts",
+        "src/hooks/useSettings.test.ts",
+        "src/data/pluginCatalog.test.ts"
+      ]
+    },
+    "backend": {
+      "framework": "cargo test",
+      "tests_passed": 9,
+      "files": [
+        "src/fs_service.rs",
+        "src/integration_tests.rs"
+      ]
+    },
+    "e2e": {
+      "tool": "test_real_settings",
+      "result": "通过 - 真实读写 ~/.claude/settings.json"
+    }
+  }
+}

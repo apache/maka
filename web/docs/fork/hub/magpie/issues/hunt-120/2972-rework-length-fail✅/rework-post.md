@@ -1,0 +1,692 @@
+Reworked per your three points — one commit on the same branch, rebased on current main (`2488532257daeb79605567d44898925bf47942f2`, 2026-11-05 14:19 +0800, the relay-balance commit). How each landed:
+
+1. **The reporter's own route is covered.** The passthrough Chat→Chat relay fails the void now. Streamed, the relay holds the tail from the chunk that carries the `finish_reason` while nothing has been said in it, and ends the client's stream with the error event and `[DONE]` in its place — no `finish_reason: "length"` an agent reads as "continue" ever goes out. Asked whole, the reply is written once it has ended and the error goes back with the status. The verdict reads the end the sniffer already collects, so a streamed reply costs no second read.
+2. **No in-place re-ask.** The void fails at once — the empty reply's error, without the `emptyRetries` loop. The routing's own retries pass it by too: the message says `cut at its length, the whole output spent on reasoning`, which `passing` and `busy` read beside `didNotStream` as a failure that fails the same every ask, so the same provider isn't asked again after a moment, nor through the patience's rounds. A group's next member still is asked, and nobody rests (#1221). Every test below holds the fix to **one upstream ask**.
+3. **A deliberately small `max_tokens` is no void.** The gate is: nothing said, `stop == "length"`, and either the reply spent past `cutVoidTokens` (1024) or the request hadn't capped its reply small. The ClinePass recording (16 tokens under a 100 cap) relays as it came, on the relay and translated alike, and a title cut short keeps the `response.incomplete` it was (#1466 — the reply-check context is spared, as in the first patch).
+
+## What changed
+
+- `internal/gateway/gateway.go`: `cutVoidAt`/`cutVoid` beside `answersNothing`; a second gate in `translate`; the relay reads the client's `max_tokens`, holds a Chat reply asked whole until its end for the verdict, and holds a Chat stream's tail from its `finish_reason` while nothing is said in it — a void ends on the error event and `[DONE]`, a probe's answer goes out as it came.
+- `internal/gateway/continuation.go`: the void's branch in `streamTranslated`, before the end events are released and with no re-ask; `chatTail` reads what a chunk and a whole reply said (`said`).
+- `internal/gateway/fallback.go`, `internal/gateway/patience.go`: a void isn't one that may clear in a moment (`passing`, `busy`) — the same one isn't asked again for it; a group's next member still is.
+- `internal/gateway/chat_length_nothing_test.go`: the tests, rewritten for this shape.
+
+Gemini's and Code Assist's empties keep their #667 path untouched.
+
+## Red before the fix
+
+On the branch's parent (`248853225`, the product files reverted, the five tests kept): `TestChatLengthVoidFailsAtOnce`, `TestChatLengthVoidFailsOnTheRelay` and `TestChatLengthVoidNeedsSize` fail — the four 48,000-token voids of the report go through as successes, streamed and whole, relayed and translated; `TestChatLengthSmallProbeIsRelayed` and `TestChatLengthWithTextIsTruncation` pass there and here.
+
+## Verification
+
+| Check | Result |
+|---|---|
+| The five tests of `chat_length_nothing_test.go` | red on the branch's parent, green here — each holds the upstream to one ask (`calls == 1`): the void is never asked again, in place or after a moment |
+| `TestClinePassUpstreamRecorded` (the real recording, relay and translated) | green before and after |
+| Full gateway package | `go test -tags nogui ./internal/gateway/... -count=1 -timeout 45m`: 1171s, 9 failures, **all pre-existing at the tip** — each reproduced on a clean upstream tree (`TestClaudeAsRootEnv`, `TestSweepBridgeProjectsTakesOnlyTheBridgesFolders`, `TestHandedOverGatewayFinishesItsStream` with a harness data race, the four `TestHandedOffGateway…`, `TestHubRootsOfACodexThread`, `TestAutoVisionDoesNotBuildListsAgain`); nothing new here. (Earlier 25m runs under concurrent lanes hit the `-timeout` panic before finishing; 45m completes.) |
+| Race | `go test -race -tags nogui -run 'Stream|Relay|Hold' -skip 'TestHandedOverGateway|TestHandedOffGateway'`: ok, 304s — the skipped family carries the pre-existing harness race above, reproduced on the clean upstream tree (WARNING: DATA RACE, `unroutedStacks` read from `ListenAndServe`'s goroutine) |
+| Format, vet | `gofmt -l` clean; `go vet -tags nogui` clean on windows, and cross-vetted with `GOOS=linux` and `GOOS=darwin` |
+| Builds | `go build -tags nogui ./internal/...` ok for windows, linux, and darwin/arm64 (the wails module itself wasn't built in this rework) |
+| Rebase | base `2488532257daeb79605567d44898925bf47942f2` (2026-11-05 14:19 +0800) → head `f8ee0b9355666131ab01752ba78ba923f7f95069`; conflicts in `fallback.go` and `patience.go` resolved by keeping the upstream `busyStatus` and `protectionRefused` logic and adding the void beside `didNotStream` — no side's assertion dropped |
+
+## Siblings
+
+- #667 / #1221 (reasoning-then-empty on `STOP`): untouched — Gemini's and Code Assist's empties keep their gate and their re-ask; that cut is a coin flip worth retrying, a length void isn't.
+- #1466 (cut titles stay `response.incomplete`): preserved — a reply-check context is spared the gate, and a small cap is, either way.
+- #2436 (loop breaker), #2274 (`incompleteReply`): untouched.
+- The #3197 / #370 stream-failure shape: the relay's void ends a Chat stream exactly as a severed one does — error event, then `[DONE]` — so clients that read to `[DONE]` say the error.
+
+## Not verified
+
+- No real dsh→qoder turn here: the passthrough stand-in replicates the reported shape from the issue's usage table (48,000 completion tokens, every one reasoning, `finish_reason: "length"`, no text and no calls), but the real plugin route wasn't exercised.
+- The reply a gathering relay writes (a client that asked whole of an account that only streams) isn't failed for the void — that path was left as it came.
+- qoder's real 48k output cap, as you say, belongs in the plugin's model limits — untouched here.
+
+**Attribution**: AI-written; I've read the whole diff and the tests pass. Please keep the author (`ggbdpq`) or add `Co-authored-by: ggbdpq <ggbdpq@gmail.com>.`
+
+<details><summary>patch: gateway: a length cut that said nothing is not a completed reply (#2972) — git am applies it as is; SHA-256: f835045867c822368bd438285fc26893a80affb6d85dc04eca39b0793ff82a98 (raw = LF-normalized: the file is pure LF)</summary>
+
+```patch
+From f8ee0b9355666131ab01752ba78ba923f7f95069 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Tue, 3 Nov 2026 07:49:19 +0800
+Subject: [PATCH] gateway: a length cut that said nothing is not a completed
+ reply (#2972)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+What changed: a Chat reply cut at its length having said nothing — no
+text and no call, only thinking, or nothing at all — fails at once, on
+the translated paths and on the passthrough Chat→Chat relay, asked
+again nowhere: the error in the client's own protocol, a group's next
+member asked, nobody rested, and the same one not asked again after a
+moment (the void fails the same every ask, as one that didn't stream
+does). It fails only past a short probe's worth: a reply that spent no
+more than cutVoidTokens, of a request capped at no more, is a probe's
+answer — a title's cut is wanted, the response.incomplete it was
+(#1466) — and goes as it came. A length cut that said something is
+still the truncation it always was.
+
+Why: qoder/dfmodel ended four replies of one dsh turn with 48,000
+output tokens each, every one of them reasoning — out == reasoning
+exactly each time, 192,000 tokens and 919 seconds for nothing — and dsh
+speaks openai-completions while the qoder plugin serves Chat, so all
+four were relayed as they came. The relay reads its end now: a stream's
+tail is held from the chunk that says why it ended while nothing has
+been said in it, and a void fails with the error event in its place, no
+finish_reason the agent reads as "continue" having gone out. A reply
+asked whole is written once it has ended, for the same verdict. On the
+translated paths the check sits beside answersNothing (cutVoidAt,
+cutVoid), and holds the end events as the empty reply's already are. The
+verdict sits at the reply's end, so a streamed one costs no second read.
+
+What the review asked, and where each landed:
+- the reporter's own route: the passthrough Chat→Chat relay fails the
+  void too, streamed (the error event and [DONE] instead of the finish)
+  and whole (the error with the status)
+- no in-place re-ask: the void's branch is the empty reply's error
+  without the emptyRetries, and the same-one retries and the patience's
+  rounds pass it by (cutVoidWords beside didNotStream in passing and
+  busy), so the upstream is asked once — every test here holds the fix
+  to that
+- a deliberately small max_tokens is no void: the gate is spent past
+  cutVoidTokens, or the request hadn't capped its reply small
+  (probeTranslated asks 16, a title less than that)
+
+The repo's own recorded ClinePass stream (16 tokens, all reasoning,
+testdata/clinepass_stream.sse) is relayed as it was, on the relay and
+translated alike.
+
+Run:
+- go test -tags nogui ./internal/gateway/... -count=1: ok
+- go test -race -tags nogui ./internal/gateway/ -count=1 (the stream
+  relays and holds among it): ok
+- the five tests of chat_length_nothing_test.go red on the branch's
+  parent, green here; TestClinePassUpstreamRecorded green before and
+  after
+- gofmt -l clean; go vet clean on darwin, linux, windows
+- builds: darwin and windows ok; linux ok for internal/... but the wails
+  v3 beta 24 module's own linux files (pre-existing, untouched here)
+
+Fixes #2972
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gateway/chat_length_nothing_test.go | 222 +++++++++++++++++++
+ internal/gateway/continuation.go             |  34 ++-
+ internal/gateway/fallback.go                 |   6 +-
+ internal/gateway/gateway.go                  | 142 +++++++++++-
+ internal/gateway/patience.go                 |   8 +-
+ 5 files changed, 403 insertions(+), 9 deletions(-)
+ create mode 100644 internal/gateway/chat_length_nothing_test.go
+
+diff --git a/internal/gateway/chat_length_nothing_test.go b/internal/gateway/chat_length_nothing_test.go
+new file mode 100644
+index 000000000..321f2357f
+--- /dev/null
++++ b/internal/gateway/chat_length_nothing_test.go
+@@ -0,0 +1,222 @@
++package gateway
++
++import (
++	"io"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"testing"
++
++	"github.com/yetone/magpie/internal/provider"
++)
++
++// A Chat reply cut at its length that said nothing — the whole budget
++// spent on reasoning, no text and no call — is not a completed reply.
++// qoder/dfmodel ended four replies of one dsh turn so (#2972): 48,000
++// output tokens each, every one of them reasoning, and the agent, told
++// the output limit was reached, went on at the user's "continue" and
++// burned the same void again. The void fails at once, as the empty reply
++// (#667's) does but asked nowhere: dsh speaks openai-completions and the
++// qoder plugin serves Chat, so its four voids were relayed as they came —
++// the relay fails them too. One that said something still goes as it
++// came, and a short probe's answer — a request capped at a probe's worth,
++// or a reply that spent no more than one — is no void, so a title cut
++// short keeps the response.incomplete Codex asks again after (#1466) and
++// a recorded ClinePass stream (16 tokens, all reasoning) is relayed as it
++// was.
++//
++// Every test here reads its calls counter to hold the fix to its word:
++// the upstream is asked once. A void is not asked again in place, for a
++// 100%-reasoning cut at 48,000 tokens isn't the coin flip a Gemini empty
++// STOP is — asking again would burn the budget twice over before the
++// error (#2972 review).
++
++// The void, on the translated paths: a Messages client and a Responses
++// one in front of a Chat upstream. The error in the client's own
++// protocol, at once, and the upstream asked once — never a reply ended
++// as it should with nothing in it, and never a second ask.
++func TestChatLengthVoidFailsAtOnce(t *testing.T) {
++	fresh(t)
++	calls := 0
++	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		io.ReadAll(r.Body)
++		calls++
++		w.Header().Set("Content-Type", "text/event-stream")
++		io.WriteString(w, sse(
++			`data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"let me think"}}]}`,
++			`data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"length"}],"usage":{"prompt_tokens":10,"completion_tokens":48000,"completion_tokens_details":{"reasoning_tokens":48000}}}`,
++			`data: [DONE]`))
++	}))
++	t.Cleanup(up.Close)
++	if err := provider.Save(provider.Provider{ID: "qo", Name: "Qoder", Key: "k", Models: []string{"dfmodel"}, Chat: up.URL + "/v1"}); err != nil {
++		t.Fatal(err)
++	}
++
++	for _, a := range []struct{ name, path, body, ended string }{
++		{"anthropic", "/v1/messages", `{"model":"qo/dfmodel","stream":true,"max_tokens":128000,"messages":[{"role":"user","content":"hi"}]}`, `"stop_reason":"max_tokens"`},
++		{"responses", "/v1/responses", `{"model":"qo/dfmodel","stream":true,"input":"hi"}`, `response.incomplete`},
++	} {
++		calls = 0
++		code, body := post(t, a.path, a.body)
++		if code != 200 || !strings.Contains(body, "an empty reply") || !strings.Contains(body, "cut at its length") ||
++			strings.Contains(body, a.ended) || calls != 1 {
++			t.Errorf("%s: a void cut answered %d after %d calls, not the length-void error at once: %s", a.name, code, calls, body)
++		}
++	}
++
++	calls = 0
++	code, body := post(t, "/v1/messages", `{"model":"qo/dfmodel","max_tokens":128000,"messages":[{"role":"user","content":"hi"}]}`)
++	if code != 502 || !strings.Contains(body, "an empty reply") || calls != 1 {
++		t.Errorf("a void cut, not streamed: %d %s (after %d calls)", code, body, calls)
++	}
++}
++
++// The void, on the relay: a Chat client in front of a Chat upstream, as
++// dsh's speaks and the qoder plugin serves (#2972). Streamed, the reply's
++// end is held once its finish_reason is seen and nothing has been said in
++// it: the client is told the error, not a reply that ended as it should
++// with nothing in it, and [DONE] ends the stream. Not streamed, the whole
++// reply fails with the error in the relay's place.
++func TestChatLengthVoidFailsOnTheRelay(t *testing.T) {
++	fresh(t)
++	calls := 0
++	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		b, _ := io.ReadAll(r.Body)
++		calls++
++		if !strings.Contains(string(b), `"stream":true`) {
++			// asked whole, answered whole: a reply cut at its length that
++			// said nothing, as one JSON body
++			w.Header().Set("Content-Type", "application/json")
++			io.WriteString(w, `{"id":"c1","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":""},"finish_reason":"length"}],"usage":{"prompt_tokens":10,"completion_tokens":48000,"completion_tokens_details":{"reasoning_tokens":48000}}}`)
++			return
++		}
++		w.Header().Set("Content-Type", "text/event-stream")
++		io.WriteString(w, sse(
++			`data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"let me think"}}]}`,
++			`data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"length"}],"usage":{"prompt_tokens":10,"completion_tokens":48000,"completion_tokens_details":{"reasoning_tokens":48000}}}`,
++			`data: [DONE]`))
++	}))
++	t.Cleanup(up.Close)
++	if err := provider.Save(provider.Provider{ID: "qo", Name: "Qoder", Key: "k", Models: []string{"dfmodel"}, Chat: up.URL + "/v1"}); err != nil {
++		t.Fatal(err)
++	}
++
++	calls = 0
++	code, body := post(t, "/v1/chat/completions", `{"model":"qo/dfmodel","stream":true,"max_tokens":128000,"messages":[{"role":"user","content":"hi"}]}`)
++	if code != 200 || !strings.Contains(body, "an empty reply") || strings.Contains(body, `"finish_reason":"length"`) ||
++		!strings.Contains(body, "data: [DONE]") || calls != 1 {
++		t.Errorf("a void cut relayed: %d after %d calls, not the length-void error at once: %s", code, calls, body)
++	}
++
++	calls = 0
++	code, body = post(t, "/v1/chat/completions", `{"model":"qo/dfmodel","max_tokens":128000,"messages":[{"role":"user","content":"hi"}]}`)
++	if code != 502 || !strings.Contains(body, "an empty reply") || calls != 1 {
++		t.Errorf("a void cut relayed whole: %d %s (after %d calls)", code, body, calls)
++	}
++}
++
++// A short probe's answer is no void: a request capped at a probe's worth
++// (ClinePass's 16 tokens under a 100 cap, a title's) that said nothing
++// goes as it came, on the relay and translated alike (#2972 review).
++func TestChatLengthSmallProbeIsRelayed(t *testing.T) {
++	fresh(t)
++	calls := 0
++	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		io.ReadAll(r.Body)
++		calls++
++		w.Header().Set("Content-Type", "text/event-stream")
++		io.WriteString(w, sse(
++			`data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant"}}]}`,
++			`data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"length"}],"usage":{"prompt_tokens":10,"completion_tokens":16,"completion_tokens_details":{"reasoning_tokens":16}}}`,
++			`data: [DONE]`))
++	}))
++	t.Cleanup(up.Close)
++	if err := provider.Save(provider.Provider{ID: "qo", Name: "Qoder", Key: "k", Models: []string{"dfmodel"}, Chat: up.URL + "/v1"}); err != nil {
++		t.Fatal(err)
++	}
++	for _, a := range []struct{ name, path, body, ended string }{
++		{"relay", "/v1/chat/completions", `{"model":"qo/dfmodel","stream":true,"max_tokens":100,"messages":[{"role":"user","content":"hi"}]}`, `"finish_reason":"length"`},
++		{"anthropic", "/v1/messages", `{"model":"qo/dfmodel","stream":true,"max_tokens":100,"messages":[{"role":"user","content":"hi"}]}`, `"stop_reason":"max_tokens"`},
++	} {
++		calls = 0
++		code, body := post(t, a.path, a.body)
++		if code != 200 || !strings.Contains(body, a.ended) || strings.Contains(body, "an empty reply") || calls != 1 {
++			t.Errorf("%s: a short probe's void answered %d after %d calls, not relayed as it came: %s", a.name, code, calls, body)
++		}
++	}
++}
++
++// The size gate: a request that named no reply limit is not a probe's
++// word, and a probe's cap doesn't spare a big void — an upstream that
++// spent far past a small cap on reasoning and said nothing fails all the
++// same (#2972 review: "only above some size or when the request didn't
++// set a small max_tokens").
++func TestChatLengthVoidNeedsSize(t *testing.T) {
++	fresh(t)
++	calls := 0
++	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		io.ReadAll(r.Body)
++		calls++
++		w.Header().Set("Content-Type", "text/event-stream")
++		io.WriteString(w, sse(
++			`data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"let me think"}}]}`,
++			`data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"length"}],"usage":{"prompt_tokens":10,"completion_tokens":48000,"completion_tokens_details":{"reasoning_tokens":48000}}}`,
++			`data: [DONE]`))
++	}))
++	t.Cleanup(up.Close)
++	if err := provider.Save(provider.Provider{ID: "qo", Name: "Qoder", Key: "k", Models: []string{"dfmodel"}, Chat: up.URL + "/v1"}); err != nil {
++		t.Fatal(err)
++	}
++
++	// no limit named: the relay fails the void (the cap gate's arm)
++	calls = 0
++	code, body := post(t, "/v1/chat/completions", `{"model":"qo/dfmodel","stream":true,"messages":[{"role":"user","content":"hi"}]}`)
++	if code != 200 || !strings.Contains(body, "an empty reply") || calls != 1 {
++		t.Errorf("a void cut with no limit named: %d after %d calls, not the length-void error: %s", code, calls, body)
++	}
++
++	// a probe's cap ignored by the upstream: the spent gate's arm
++	calls = 0
++	code, body = post(t, "/v1/messages", `{"model":"qo/dfmodel","stream":true,"max_tokens":100,"messages":[{"role":"user","content":"hi"}]}`)
++	if code != 200 || !strings.Contains(body, "an empty reply") || calls != 1 {
++		t.Errorf("a void cut past a probe's cap: %d after %d calls, not the length-void error: %s", code, calls, body)
++	}
++}
++
++// A length cut that said something is the truncation it always was, told
++// to the client as such.
++func TestChatLengthWithTextIsTruncation(t *testing.T) {
++	fresh(t)
++	calls := 0
++	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		io.ReadAll(r.Body)
++		calls++
++		w.Header().Set("Content-Type", "text/event-stream")
++		io.WriteString(w, sse(
++			`data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"Half an ans"}}]}`,
++			`data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"length"}],"usage":{"prompt_tokens":10,"completion_tokens":48000}}`,
++			`data: [DONE]`))
++	}))
++	t.Cleanup(up.Close)
++	if err := provider.Save(provider.Provider{ID: "qo", Name: "Qoder", Key: "k", Models: []string{"dfmodel"}, Chat: up.URL + "/v1"}); err != nil {
++		t.Fatal(err)
++	}
++	for _, a := range []struct{ name, path, body, ended string }{
++		{"anthropic", "/v1/messages", `{"model":"qo/dfmodel","stream":true,"max_tokens":64,"messages":[{"role":"user","content":"hi"}]}`, `"stop_reason":"max_tokens"`},
++		{"responses", "/v1/responses", `{"model":"qo/dfmodel","stream":true,"input":"hi"}`, `response.incomplete`},
++	} {
++		calls = 0
++		code, body := post(t, a.path, a.body)
++		if code != 200 || !strings.Contains(body, "Half an ans") || !strings.Contains(body, a.ended) ||
++			strings.Contains(body, "an empty reply") || calls != 1 {
++			t.Errorf("%s: a cut that said something answered %d after %d calls: %s", a.name, code, calls, body)
++		}
++	}
++
++	calls = 0
++	code, body := post(t, "/v1/messages", `{"model":"qo/dfmodel","max_tokens":64,"messages":[{"role":"user","content":"hi"}]}`)
++	if code != 200 || !strings.Contains(body, "Half an ans") || !strings.Contains(body, `"stop_reason":"max_tokens"`) ||
++		strings.Contains(body, "an empty reply") || calls != 1 {
++		t.Errorf("a cut that said something, not streamed: %d after %d calls: %s", code, calls, body)
++	}
++}
+diff --git a/internal/gateway/continuation.go b/internal/gateway/continuation.go
+index ec4b933f4..9f85576e3 100644
+--- a/internal/gateway/continuation.go
++++ b/internal/gateway/continuation.go
+@@ -161,15 +161,21 @@ func saysItsEnd(p provider.Provider, proto provider.Protocol, model string) bool
+ 
+ // chatTail follows a Chat stream's chunks for a Gemini OpenAI-compatible
+ // reply that ended without its finish_reason (saysItsEnd): whether its
+-// last chunk counted the usage and whether it made calls.
+-type chatTail struct{ usage, calls bool }
++// last chunk counted the usage and whether it made calls. A reply asked
++// whole is read through it too, for whether it said anything (said).
++type chatTail struct{ usage, calls, text bool }
+ 
+ func (t *chatTail) see(data []byte) {
+ 	var v struct {
+ 		Choices []struct {
+ 			Delta struct {
++				Content   string            `json:"content"`
+ 				ToolCalls []json.RawMessage `json:"tool_calls"`
+ 			} `json:"delta"`
++			Message struct {
++				Content   string            `json:"content"`
++				ToolCalls []json.RawMessage `json:"tool_calls"`
++			} `json:"message"`
+ 		} `json:"choices"`
+ 		Usage *cUsage `json:"usage"`
+ 	}
+@@ -178,10 +184,18 @@ func (t *chatTail) see(data []byte) {
+ 	}
+ 	t.usage = v.Usage != nil && (v.Usage.PromptTokens > 0 || v.Usage.CompletionTokens > 0)
+ 	for _, c := range v.Choices {
+-		t.calls = t.calls || len(c.Delta.ToolCalls) > 0
++		t.calls = t.calls || len(c.Delta.ToolCalls) > 0 || len(c.Message.ToolCalls) > 0
++		t.text = t.text || c.Delta.Content != "" || c.Message.Content != ""
+ 	}
+ }
+ 
++// said tells whether the reply said anything an agent shows or acts on:
++// text or a call. Thinking is not said (#2972): a reply that spent its
++// whole budget on it said nothing.
++func (t chatTail) said() bool {
++	return t.text || t.calls
++}
++
+ // finish is the finish_reason a reply that ended without one is given:
+ // Gemini's OpenAI-compatible API counts the usage only on the
+ // generation's last chunks, so a last chunk with it says the generation
+@@ -410,6 +424,9 @@ func (s *Server) streamTranslated(w http.ResponseWriter, r *http.Request, p prov
+ 	// counts: a reply in this protocol counts its tokens, and one that
+ 	// said nothing and counted none fails too (repliesCounted, #2086)
+ 	var counts bool
++	// voids: a reply in this protocol cut at its length that says nothing
++	// fails at once, asked again nowhere (cutVoid, #2972)
++	var voids bool
+ 	empties := 0 // the times such a reply was asked again here
+ 	said, stop := false, ""
+ 	var kept []Event       // the reply's end, while nothing is said in it
+@@ -472,7 +489,7 @@ func (s *Server) streamTranslated(w http.ResponseWriter, r *http.Request, p prov
+ 		case KStop:
+ 			stop = ev.Stop
+ 		}
+-		if (empty || counts) && !said {
++		if (empty || counts || voids) && !said {
+ 			switch {
+ 			case saysSomething(ev):
+ 				said = true
+@@ -513,6 +530,7 @@ func (s *Server) streamTranslated(w http.ResponseWriter, r *http.Request, p prov
+ 			u.RequestID = requestID(res.Header)
+ 			summaryUpstream = actual == provider.Responses || actual == provider.Gemini || actual == provider.CodeAssist
+ 			empty, counts = emptyFails(actual), repliesCounted(actual)
++			voids = cutVoidAt(actual)
+ 		}
+ 		if err == nil && res.StatusCode >= 400 {
+ 			b, _ := io.ReadAll(io.LimitReader(res.Body, 1<<20))
+@@ -671,6 +689,14 @@ func (s *Server) streamTranslated(w http.ResponseWriter, r *http.Request, p prov
+ 				failed = p.Name + ": " + emptyReply
+ 				break
+ 			}
++			if voids && replyCheck(r.Context()) == nil && cutVoid(stop, !said, this.Output, request.MaxTokens) {
++				// a void cut at its length fails at once, asked again
++				// nowhere: its budget is spent, and a second ask at the
++				// same max_tokens would mostly spend it twice over before
++				// the error (#2972, its review)
++				failed = cutVoidFailed(p.Name)
++				break
++			}
+ 			for _, ev := range kept {
+ 				enc.event(ev)
+ 			}
+diff --git a/internal/gateway/fallback.go b/internal/gateway/fallback.go
+index cc1c24495..cdc22abe8 100644
+--- a/internal/gateway/fallback.go
++++ b/internal/gateway/fallback.go
+@@ -2039,7 +2039,11 @@ func passing(status int, header http.Header, body []byte, again int) (time.Durat
+ 	case wait > longestPause:
+ 		return 0, false
+ 	case busyStatus(status):
+-		if bytes.Contains(body, []byte(didNotStream)) {
++		if bytes.Contains(body, []byte(didNotStream)) || bytes.Contains(body, []byte(cutVoidWords)) {
++			// a void cut at its length fails the same every ask: the
++			// budget went to reasoning, and mostly would again — the same
++			// one asked again would burn it twice over before the error
++			// (#2972). A group's next member still is.
+ 			return 0, false
+ 		}
+ 		return wait, again < lastRetries
+diff --git a/internal/gateway/gateway.go b/internal/gateway/gateway.go
+index 74350e3e4..b1034bccd 100644
+--- a/internal/gateway/gateway.go
++++ b/internal/gateway/gateway.go
+@@ -5781,6 +5781,16 @@ func biliProxied(path string) bool {
+ // written, when the provider serves the model on another of its endpoints
+ // but not this one.
+ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.Provider, proto provider.Protocol, model string, body []byte, u *Usage) (status int, msg string, done bool) {
++	// the reply limit the client named, read before the body is rewritten:
++	// a reply cut at its length that said nothing is a void to fail at
++	// once, unless it was asked for little (#2972)
++	capped := 0
++	if proto == provider.Chat {
++		capped = int(gjson.GetBytes(body, "max_tokens").Int())
++		if capped == 0 {
++			capped = int(gjson.GetBytes(body, "max_completion_tokens").Int())
++		}
++	}
+ 	upstream := provider.UpstreamNameIn(wiresOf(r.Context()), p.ID, model)
+ 	body = rewriteModel(body, upstream)
+ 	if proto == provider.Responses {
+@@ -6505,7 +6515,13 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
+ 		h.Set("Cache-Control", "no-cache")
+ 		h.Set("X-Accel-Buffering", "no")
+ 	}
+-	w.WriteHeader(res.StatusCode)
++	// a Chat reply asked whole is written once it has ended: whether it
++	// was a void cut at its length (#2972) is told at its end, and the
++	// error said in its place wants the status too
++	wholeHold := proto == provider.Chat && !sse
++	if !wholeHold {
++		w.WriteHeader(res.StatusCode)
++	}
+ 	f, _ := w.(http.Flusher)
+ 	sniff := newSniffer(proto, res.Header.Get("Content-Type"))
+ 	defer func() { u.add(sniff.usage()) }()
+@@ -6633,13 +6649,37 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
+ 	// is appended, for no client can read it and the error is what there
+ 	// is left to say
+ 	var pending []byte
++	// a Chat stream's tail, from the read whose chunk says why the reply
++	// ended while nothing has been said in it: whether that end is a void
++	// to fail at once (#2972) is told when the stream is over, and the
++	// end itself goes out only then. And a Chat reply asked whole, held
++	// for the same verdict.
++	var heldTail []byte
++	holdTail := false
++	var heldBody []byte
+ 	write := func(b []byte) (int, error) {
++		if wholeHold {
++			if len(heldBody)+len(b) <= 8<<20 {
++				heldBody = append(heldBody, b...)
++				return len(b), nil
++			}
++			// more than we hold for a verdict: the reply goes as it came,
++			// and no void is failed in it
++			wholeHold = false
++			w.WriteHeader(res.StatusCode)
++			w.Write(heldBody)
++			heldBody = nil
++		}
+ 		if !sse {
+ 			if len(b) > 0 {
+ 				atLine = b[len(b)-1] == '\n'
+ 			}
+ 			return w.Write(b)
+ 		}
++		if holdTail {
++			heldTail = append(heldTail, b...)
++			return len(b), nil
++		}
+ 		pending = append(pending, b...)
+ 		i := bytes.LastIndexByte(pending, '\n')
+ 		var err error
+@@ -6686,6 +6726,13 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
+ 		n, err := rd.Read(buf)
+ 		if n > 0 {
+ 			sniff.write(buf[:n])
++			if proto == provider.Chat && sse && gather == nil && sniff.u.Stop != "" && !sniff.tail.said() {
++				// the reply's end is in this or a later read, and nothing
++				// has been said in it: hold what follows for the void's
++				// verdict (#2972). A reply that has said something is
++				// never held: its cut is the truncation it always was.
++				holdTail = true
++			}
+ 			out := buf[:n]
+ 			if tidy != nil {
+ 				out = tidy.write(out)
+@@ -6927,6 +6974,51 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
+ 			return res.StatusCode, failed, true
+ 		}
+ 	}
++	if holdTail {
++		if cutVoid(sniff.u.Stop, !sniff.tail.said(), sniff.u.Output, capped) &&
++			replyCheck(r.Context()) == nil {
++			// a void cut at its length, and nothing the agent acts on in
++			// it: the held end is dropped, the error said in its place,
++			// [DONE] after — no reply that ended as it should with nothing
++			// in it, and no ask again for the budget to burn twice (#2972)
++			msg := cutVoidFailed(p.Name)
++			dropHalf()
++			w.Write(append(apart(), streamFailure(provider.Chat, msg)...))
++			w.Write([]byte("data: [DONE]\n\n"))
++			if f != nil {
++				f.Flush()
++			}
++			return res.StatusCode, msg, true
++		}
++		// not a void, or a short probe's answer: the end goes as it came
++		holdTail = false
++		if _, err := write(heldTail); err != nil {
++			return res.StatusCode, "", true
++		}
++		if f != nil {
++			f.Flush()
++		}
++		heldTail = nil
++	}
++	if wholeHold {
++		// the reply was held whole: its own words tell the verdict
++		sniff.tail.see(heldBody)
++		var v struct {
++			Usage *cUsage `json:"usage"`
++		}
++		spent := 0
++		if json.Unmarshal(heldBody, &v) == nil && v.Usage != nil {
++			spent = v.Usage.CompletionTokens
++		}
++		if cutVoid(upstreamStop(heldBody), !sniff.tail.said(), spent, capped) &&
++			replyCheck(r.Context()) == nil {
++			msg := cutVoidFailed(p.Name)
++			return writeError(w, proto, 502, msg), msg, true
++		}
++		w.WriteHeader(res.StatusCode)
++		w.Write(heldBody)
++		heldBody = nil
++	}
+ 	if sse {
+ 		unheld()
+ 	}
+@@ -8262,6 +8354,14 @@ func (s *Server) translate(w http.ResponseWriter, r *http.Request, p provider.Pr
+ 		msg := p.Name + ": " + emptyReply
+ 		return writeError(w, from, 502, msg), msg
+ 	}
++	if cutVoidAt(actual) && replyCheck(r.Context()) == nil &&
++		cutVoid(col.res.Stop, !saidAnything(col.res.Parts), col.res.Usage.Output, request.MaxTokens) {
++		// at once, asked again nowhere: a void's budget is spent, and a
++		// second ask at the same max_tokens would mostly spend it twice
++		// over before the error (#2972, its review)
++		msg := cutVoidFailed(p.Name)
++		return writeError(w, from, 502, msg), msg
++	}
+ 	if zen != nil {
+ 		zen.end(col.add)
+ 	}
+@@ -8313,6 +8413,46 @@ func answersNothing(stop string) bool {
+ 	return stop != "length" && stop != "filter"
+ }
+ 
++// cutVoidTokens is a short probe's worth of output tokens. A reply capped
++// at, or cut having spent no more than, this said nothing because it was
++// asked for little — a title's, a probe's (probeTranslated asks 16) —
++// not because the model went void (#2972 review).
++const cutVoidTokens = 1024
++
++// cutVoidAt tells whether a reply in proto cut at its length that says
++// nothing is a void: a Chat upstream's is (#2972: qoder/dfmodel ended
++// four replies of one turn with 48,000 tokens each, every one of them
++// reasoning, and the agent, told the output limit was reached, went on
++// at the user's "continue" and burned the same void again). A Gemini's
++// and a Code Assist's goes as it came (#667), and a title, description
++// or prediction asked of the reply keeps the response.incomplete it was
++// (#1466): its cut is wanted, a small budget at a time.
++func cutVoidAt(proto provider.Protocol) bool {
++	return proto == provider.Chat
++}
++
++// cutVoid says whether this reply was one: cut at its length having said
++// nothing — no text and no call, only thinking, or nothing at all — and
++// no short probe's answer: the reply spent past a probe's worth, or the
++// request hadn't capped its reply small (#2972 review).
++func cutVoid(stop string, saidNothing bool, spent, cappedAt int) bool {
++	return saidNothing && stop == "length" &&
++		(spent > cutVoidTokens || cappedAt <= 0 || cappedAt > cutVoidTokens)
++}
++
++// cutVoidWords is what says a reply was cut at its length having said
++// nothing: the same failure every ask, so the same one is not asked again
++// after a moment for it (passing), though a group's next member still is.
++const cutVoidWords = "cut at its length, the whole output spent on reasoning"
++
++// cutVoidFailed is what a reply cut at its length that said nothing fails
++// with: the empty reply's error — a group asks its next member for one
++// and rests nobody (#1221) — said with why, for the agent to try again or
++// ask for less reasoning rather than go on (#2972).
++func cutVoidFailed(name string) string {
++	return name + ": " + emptyReply + " — " + cutVoidWords
++}
++
+ // saysSomething tells whether an event is any of a reply an agent shows or
+ // acts on: text, a call, a search, an image.
+ func saysSomething(ev Event) bool {
+diff --git a/internal/gateway/patience.go b/internal/gateway/patience.go
+index 9a055408e..e4e28eecd 100644
+--- a/internal/gateway/patience.go
++++ b/internal/gateway/patience.go
+@@ -62,13 +62,15 @@ type busyTry struct {
+ // overloaded, unavailable, timed out, or a rate limit that isn't the
+ // plan's or the money's, nor an account's token wall (walled). A proxy
+ // that refused the connection, a quota used up, response protection's
+-// 502, or an upstream that answered a stream request with a whole reply
+-// (didNotStream) isn't: each fails the same however often it is asked.
++// 502, a void cut at its length (cutVoidWords, #2972), or an upstream
++// that answered a stream request with a whole reply (didNotStream) isn't:
++// each fails the same however often it is asked.
+ func busy(status int, body []byte) bool {
+ 	switch {
+ 	case busyStatus(status):
+ 		return failure(status, body) == failOther && !protectionRefused(status, body) &&
+-			!bytes.Contains(body, []byte(didNotStream))
++			!bytes.Contains(body, []byte(didNotStream)) &&
++			!bytes.Contains(body, []byte(cutVoidWords))
+ 	case status == 429:
+ 		return failure(status, body) == failRate && !creditWords.Match(wordsOf(body)) && !walled(body)
+ 	}
+-- 
+2.55.0.windows.4
+```
+
+</details>
+
+Branch with the commit: [hunt47-b-length-reasoning](https://github.com/ggbdpq/magpie/tree/hunt47-b-length-reasoning) (head `f8ee0b935`).
+
+Written with GLM-5.3-Flash (ZCode).

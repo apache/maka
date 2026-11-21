@@ -1,0 +1,25 @@
+{
+  "id": "24",
+  "slug": "sliding-window-maximum",
+  "title": "滑动窗口最大值",
+  "difficulty": "hard",
+  "tags": ["队列", "数组", "滑动窗口", "单调队列"],
+  "description": "给你一个整数数组 `nums`,有一个大小为 `k` 的滑动窗口从数组的最左侧移动到最右侧。你只能看到滑动窗口内的 `k` 个数字,窗口每次向右移动一位。\n\n返回每个窗口中的最大值。\n\n**示例 1:**\n\n- 输入:`nums = [1,3,-1,-3,5,3,6,7]`, `k = 3`\n- 输出:`[3,3,5,5,6,7]`\n\n**示例 2:**\n\n- 输入:`nums = [1]`, `k = 1`\n- 输出:`[1]`",
+  "solution": "## 思路\n\n**单调递减双端队列**(存下标):队首始终是当前窗口最大值。入队时从队尾弹出所有 ≤ 当前值的下标(它们不可能再成为最大);同时弹出队首已超出窗口的下标。\n\n## 参考代码\n\n```js\nfunction maxSlidingWindow(nums, k) {\n  const res = [];\n  const dq = [];\n  for (let i = 0; i < nums.length; i++) {\n    while (dq.length && dq[0] <= i - k) dq.shift();\n    while (dq.length && nums[dq[dq.length - 1]] <= nums[i]) dq.pop();\n    dq.push(i);\n    if (i >= k - 1) res.push(nums[dq[0]]);\n  }\n  return res;\n}\n```\n\n## 复杂度\n\n- 时间:O(n)(每个元素最多入队出队各一次)\n- 空间:O(k)",
+  "signature": {
+    "language": "javascript",
+    "entry": "maxSlidingWindow",
+    "params": [
+      { "name": "nums", "type": "number[]" },
+      { "name": "k", "type": "number" }
+    ],
+    "returns": "number[]"
+  },
+  "testCases": [
+    { "sample": true, "input": [[1, 3, -1, -3, 5, 3, 6, 7], 3], "expected": [3, 3, 5, 5, 6, 7] },
+    { "sample": true, "input": [[1], 1], "expected": [1] },
+    { "sample": false, "input": [[1, -1], 1], "expected": [1, -1] },
+    { "sample": false, "input": [[7, 2, 4], 2], "expected": [7, 4] },
+    { "sample": false, "input": [[1, 3, 1, 2, 0, 5], 3], "expected": [3, 3, 2, 5] }
+  ]
+}

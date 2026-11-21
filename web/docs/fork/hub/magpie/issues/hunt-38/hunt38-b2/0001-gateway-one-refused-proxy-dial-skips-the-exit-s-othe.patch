@@ -1,0 +1,547 @@
+From bdcbae59669f5755d07292129e609586e803f209 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Sat, 17 Oct 2026 19:50:50 +0800
+Subject: [PATCH] gateway: one refused proxy dial skips the exit's other
+ members for the request
+
+What changed: when a candidate's proxy refuses the connection itself
+(failProxy, a 502 saying proxyconnect/socks connect), the rest of the
+request skips the members whose own request would really go out through
+that same exit - the proxy netproxy.Resolve names for the member's base
+URL and proxy choice - instead of dialling the same dead listener once
+per member. A member that goes direct (loopback, the user's own network,
+NO_PROXY, a direct setting) is never skipped, whatever its ProxyChoice
+says: the choice "" only means "follows the global setting", and under a
+dead global proxy a loopback member (Ollama, LM Studio) or one on the
+LAN shares no exit with the member that failed. netproxy.Resolve is the
+one decision Func and Dispatch's per-proxy transports both make, so the
+key the sharing uses and the dial a request makes cannot drift. Such a
+failure is no same-one retry of the last one left either, and nobody is
+set aside: the next request dials the proxy again, so recovery keeps the
+pace #381 gave it. A group that shares one dead proxy had asked every
+member in turn and then retried the last with backoff - eight attempts
+over 796 seconds in the report - each try refused at the same listener.
+
+Run: TestProxyDownSkipsSharedProxy, TestProxyDownGlobalLeavesALoopback-
+MemberDirect, TestProxyDownAsksAMemberOnItsOwnProxy, TestProxyDownLast-
+NotRetried and TestProxyDownDistinctProxiesLastNotRetried are red with
+the product change taken back out (the shared member dialled again, the
+last retried with backoff), green with it; the loopback test was red
+against the choice-keyed first draft (its member skipped through the
+"" key) before the exit key. -race -count=3 green. Ablation: gateway.go
+and fallback.go restored to upstream/main with the tests kept, four of
+them fail again. TestResolveNamesTheRealProxy pins netproxy's decision
+(loopback direct even with a proxy of its own) and fails with the
+loopback guard taken out. Targeted regression (proxy, account-proxy,
+plugin-proxy, agent-gone, patience, replan, retry, sink, lane, fallback,
+first-token families) green. gofmt -l clean. go vet ./... (the known
+trayimage cgo warning), linux/windows vet and darwin/linux/windows
+builds green.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ docs/subsystems/gateway-routing.md  |   2 +-
+ internal/gateway/fallback.go        |  27 +++
+ internal/gateway/gateway.go         |  33 +++-
+ internal/gateway/proxy_down_test.go | 248 ++++++++++++++++++++++++++++
+ internal/netproxy/lan_test.go       |  39 +++++
+ internal/netproxy/netproxy.go       |  25 ++-
+ 6 files changed, 363 insertions(+), 11 deletions(-)
+
+diff --git a/docs/subsystems/gateway-routing.md b/docs/subsystems/gateway-routing.md
+index 08963413..a75ab65d 100644
+--- a/docs/subsystems/gateway-routing.md
++++ b/docs/subsystems/gateway-routing.md
+@@ -95,7 +95,7 @@ recorded as a prediction failure (`noPrediction`).
+    - A pause rule (`Rule.Pause`, `pause=<model>`; John on Discord: a model of the group paused in its vendor's peak hours) leaves the model it names out of the group while it holds (`provider.PausedOut`, on `ruleClock`): the group's own rules and each nested group's on the way down to a member, a group named taking all its models, and a model named taking it wherever a group in the group has it (#625). It runs before planning, on every request rather than once a turn, so the model is not first, not a failover, and not kept by affinity, and comes back as soon as the hours end. It holds by hours, days, agents and folders only (`cleanRules` refuses another condition), and is not a send-to rule: `Matches`, `MatchRule`, `ThenUses`, `Ruled` and the compaction rules leave it out. A send-to rule naming a paused model finds it unready and the group routes as without it. The trace keeps what was paused (`GroupRef.Paused`), and the Routing page says so. Every model paused answers 503 (`pausedError`) naming each rule. Embeddings go by the same pauses; manual groups have no rules (`Live`), so none pause there. A pause by folder (#1606, Ti800: a subscription's quota kept for the long task in one folder, `pause=<model> except-folders=~/big-task`) reads the folder only when such a pause is on the way (`provider.PausesByFolder`, then `workDir`): outside its except-folders, which includes a request that says no folder (a subagent's or a small model's that doesn't), the model is left out; with `folders=`, only requests known to be in them. Embeddings and System One's decision calls have no folder. `Paused.Folder`/`ByFolder` carry what was read, and the Routing page says the folder or that none was said. `rules_pause_test.go`, `TestPauseByFolder`, `TestPauseByFolderRule`, `TestParsePauseByFolder`, `routing-pause-folder.test.cjs`.
+ 3. Candidates come from `planGroup` for a group or `plan` for a provider. They are filtered by `sealedReaders` and `allowedCandidates`. An account past its share is held out of the candidates (`capHeld`): a usage cap's share, each window at its own where the account gives it one (`AccountWindowCaps`, willz on Discord: 50% of the five hours, 40% of the week) and at the account's cap otherwise, or 100% of a window for a Codex account set not to spend its credits (`provider.HoldCaps`, `WindowCaps.Of`, `CodexNoCredits`). A ChatGPT account's call on `codex-auto-review`, which OpenAI counts in no window, is held by no usage cap, only by credits it may not spend (`freeOnChatGPT`, #1593, `TestAccountCapLetsAutoReviewThrough`). The account is held while any window is past its own share, and `cappedError` and the trace name the fullest such window's share and cap. When every candidate is held and one held for its credits spends its resets by itself, `autoReset` spends a reset on it and it is tried (`planned.held`); otherwise a capped or barred set returns `cappedError` or `barredError`. Then `affine` moves the conversation's last answerer first, unless it is resting or nearly used up. An `X-Magpie-Account` header (`AccountHeader`) pins the request to one account: only that account is tried, and when it can't answer the caller is told why.
+ 4. The candidate loop calls `attempt` on each candidate in turn, through a `holdWriter`. The writer holds the reply until it is clearly passing. A candidate that fails before anything is sent rests (`failure`): out of credit for 30 minutes, out of quota until reset, rate limited until retry-after, otherwise a minute and longer on repeats: doubled each time, up to `longestRetry` (10 minutes) for a failure and `longestRateRest` (30 minutes) for a rate limit back as soon as its rest is over, or up to the provider's own `restCap` in minutes (`Provider.RestCapOr`, at most `MaxQuotaRest`; `magpie provider rest-cap <id> 4h`, #2008: a free key down for hours was asked every 10 minutes). A time the vendor names stands over it as before (`TestOwnRestCap`). The failure count is kept per key or account (`restKey`), and any of its models' answers clears it (`served`). Each model's own count (`restID`) is kept beside it and cleared only by that model's answer (`servedCandidate`): once it is past the account's, a sibling model answered since it last did, so the failure is the model's and it climbs its own ladder and rests alone, its siblings still served (#2241, weizsw: an Antigravity seat's gemini-3.5-flash-lite rested a minute 41 times of 43 while gemini-3.8-flash kept answering; `TestModelLadderClimbsPastSiblingAnswers`). Every model failing with no answer between still climbs the account's ladder and rests the account, and a candidate naming no model has the account's count alone. `rest-cap <id> off` (`provider.RestCapOff`, `restCap: -1`) is for a relay or account pool whose unknown errors come now and then and pass by the next request (Kismet Alan on Discord): a failure that says nothing of why (`failOther`: a 5xx, a dropped connection) then rests nobody and isn't counted, its trace rest `by: "off"` with no time left. A 401 or 403, a model not served, an account's window full, a rate limit (magpie's own 30-minute cap), quota, credit and a restriction still rest it as before (`TestRestCapOff`). The shortest cap otherwise is a minute, the first rest; `rest-cap <id> 30s` is turned away and names `off`. A 400, 403, 404 or 422 that says the model isn't served (`unservedWords`) and says nothing of quota, credit or a rate limit rests only that key's or account's model (`modelRefused`, keyed by `restID`, its backoff counted apart): its other models are still served first in order (#1235, SenseNova's 403 "model is not available in the current token plan"). A Google account's Code Assist (the Antigravity and Gemini CLI built-ins) answering 404 `NOT_FOUND` ("Requested entity was not found.") rests its model the same way, as its endpoint is the same for every model (`codeAssistModelMissing`; Packing1 on Discord: Argon, listed for a Google AI Pro account, answered 404 and rested the whole account; `TestCodeAssistMissingModelRestsTheModel`). A refusal for want of quota, credit or rate, for an account its vendor restricted, or for a verify it asks of its account there, from another computer's magpie (a Remote magpie provider, LAN share) rests only the model it was about (`remoteModelRest`, keyed by `restID`, in `restAfterMarked` and `rateRest`): that magpie serves each of its models from its own providers and rests them itself, so one out of quota there says nothing of the others (bigsteven on Discord: a 429 for one model rested every model on the remote for the 3 hours it named, so a group never moved on to the remote's other models; `TestRemoteMagpieQuotaRestsTheModel`, `TestRemoteMagpieRestrictedRestsTheModel`). Its key refused, the computer unreachable, or the key's own limit there (`keyLimited`'s 429, which carries `X-Magpie-Limit-Reset`, `remoteKeyLimitHeader`), still rests it whole: #2077's reporter had a Claude Code session limit on the other magpie refuse its Qoder models here (`TestRemoteMagpieRestsTheModel`, two gateways over HTTP; `TestRemoteMagpieKeyLimitRestsTheKey`). A 400, 404, 410 or 422 that says the model is retired (`retiredWords`: OpenCode Zen's 410 `ModelDeprecated` "Model exo-free has been deprecated.", whose own model list still names it; MOMO on Discord) rests only that model the same way, is retryable so a group's next member or another provider of it is asked, and is remembered (`provider.Retire`, `retired.json` beside `providers.json`): the model leaves that provider's entries in the catalog (`buildEntries`), so /v1/models, every agent's model list and the found groups go without it, until a request on it is answered again (`Unretire` in `servedCandidate`) or a week has passed. A refresh of the vendor's list doesn't bring it back early, since that list is where it still is. A `provider/model` request for it is still sent. A 400 or 422 that says this upstream's API can't take the request's shape (`shapeWords`: xAI's 422 "unknown item type" (#350), OpenAI's "Unknown parameter", and a limit of a model's own on tool schemas, OpenCode Go's 400 "JSON schema exceeds the maximum nesting depth of 10 levels" on muse-spark-1.3-contributor, #1870) rests nobody: the next candidate is asked once (`shapeRefused`, `failShape`), and the last one's error reaches the agent. A request missing what every API requires ("field required") isn't one, nor is a 200 that mentions it. Command Code's Provider API turning a request away with nothing but a trace id (`unsaidWords`: `{"message":"invalid request error trace_id: <hex>","type":"invalid_request_error"}`, a 400, or a 422 before) is handled the same way: it turns away a request whose history and asked-for output together are over a limit below the model's listed context (the reporter's A/B: one ~748K-token agent conversation answered 200 with `max_completion_tokens` 64000 and this 400 with 384000, the model's listed max output), which another member's model may take, and the key is fine (#2313, `TestGroupFailsOverCommandCodesBare400`). Its overflow, which names the model's context length before the trace id, and an error that names a `param`, aren't one. A relay's own cap on one request's input that says so (`tooLongRe`: B.ai's 400 "Input token exceed the limit", on a 380K request under the model's 1M window; #2445, worksyang) is taken as an overflow (`overflowed`), which no word list of `retryable` matched: a group's next member that may hold the request is asked (`withRoom`, `failOverflow`), nobody rests, another account of the same model isn't asked, and with no member left the agent is told the conversation is too long, so it compacts. A rate limit worded with input tokens (`paceWords`) isn't one, and a plain bad request is still asked of nobody else (`TestRelayInputCapGoesToTheNextMember`). A subscription account that fails any other way with a window full, by magpie's latest reading of its windows, rests until that window renews. Both quota rests and window rests are held to `longestQuota` (8 days), so a reset time read wrong (a year off) doesn't bench the account for that long. The next candidate is then tried. A failed provider waits `fallbackCooldown` (1 minute) at the back. A WorkBuddy account the vendor restricted (#1849: 403 `{"code":11140,"msg":"request illegal","displayMsg":{"en":"Your account has been restricted due to unusual activity",…}}`) rests `restrictedRest` (2 hours) as `restricted` (`failRestricted`), not the minutes of an unknown failure: only WorkBuddy lifting the restriction, after the user's appeal, brings it back. Both shapes are known: the built-in's `wbExplain` and the plugin's `explained()` (0.1.17, the mover's `min`) end the error with `provider.WBRestrictedHint` (`restrictedSaid`), and the vendor's own body, its code 11140 or its words (`provider.WBRestricted`), counts only from a WorkBuddy candidate (`restrictedRefused`, `isWorkBuddy`), as another vendor's 11140 is its own. Bare "request illegal" isn't matched. WorkBuddy's 11128 channel refusal stays `promptRefused` and rests nobody. The Routing page names it "account restricted by the vendor", says the appeal is the way back, and gives the account's row a button that lifts the rest (`/api/gateway/unrest`) once the vendor has. Every other rest a key or account takes (quota, rate limit, retry-after, a failure's backoff) can be lifted by hand the same way (#1869): "Try now" on its row on the Routing page and beside its rest note in the provider's key list. It ends the rest only: the backoff count stays, and a refusal after it rests the key again the usual way. The vendor's safety filter refusing a reply rests nobody, whether it refuses the turn before any of the reply is said or once some of it has been said (`refused`, `refusedAfter`). Its note on the try (and in the error the agent gets when nobody is left) is the vendor's reason, with Anthropic's `stop_details` category and explanation when it gave them (`refusedDetail`, #1768: "safety filter: refusal (category cyber)"); none is made up when it gave none. `stop_details` is carried through the IR (`Event.StopDetails`), so a Claude subscription run through the claude CLI and a translated Anthropic route keep it for an Anthropic client too. How many more candidates a refusal before any of the reply is asked of is Settings' `RefusalRetries` (`refusalAsksAgain`, counted per request in the candidate loop; a group's other members count too): unset, every one left (#248); 0, none (#1925, DD on Discord). When nobody is left, an agent on Anthropic's Messages API gets the held refusal itself, the vendor's 200 with `stop_reason` `refusal` and its `stop_details`, streamed or whole (`holdWriter.handBack`), since that is what Claude Code switches to its fallback model on; a 400 is only an API error to it. Codex and Chat clients still get `failTo`'s 400 (`refusedStatus`), which they don't ask again for. `TestRefusalRetries*` in [`refusal_retries_test.go`](../../internal/gateway/refusal_retries_test.go) cover keys, a group and the Claude subscription. The ChatGPT backend's 502 "response protection is unavailable" is about the request's content, not the account: the same history fails the same on each of its accounts and models. It rests nobody, isn't tried again after a moment, and isn't asked of the provider's other accounts or models; another provider left in a group is asked once (`protectionRefused`, `elsewhere`). One cause is known (#1270): a history that replays the backend's own `web_search_call` in a request that doesn't declare the `web_search` tool is refused so, whatever the account, model or turn (a plain turn, a thread's description, a compaction, Codex's own text compaction for a custom provider with `tools: []`). Every request to the ChatGPT backend with such a history therefore declares cached-only search (`{"type":"web_search","external_web_access":false}`, `provider.DeclareSearch`): an account's in `codexBody`, Codex's own sign-in relayed in `codexUpstreamOn`. It goes in the tools, or for Responses Lite (its header, `reasoning.context` `all_turns`, or an `additional_tools` item already there), which refuses a top-level `web_search`, in the `additional_tools` item. A request that offered no tools gets `tool_choice` `none` so the model can't search; one with a forced choice keeps it. A history without a search, or a request that declares search already, is relayed unchanged. siwc, API-key requests to openai.com and the legacy `/responses/compact` are left as they were.
+-5. The last candidate's error reaches the agent, with one exception for a group (#1418, `patience.go`). When every member has failed in a way that passes (`busy`: 408, 500, 502, 503, 504 or 529 that isn't a proxy, a quota, response protection, or an upstream that answered a stream request with a whole reply, which fails the same however often it is asked (`didNotStream`; the same-one retries of `passing` leave it alone too, `TestStreamlessMemberIsAskedOnce`), or a 429 that is a short rate limit, not a plan or credit), and nothing of the reply has been sent, the members that failed so are asked again in turn after a pause (`replan`). The pause is `retryPause` doubled each round up to `replanLongest()` (30 times `retryPause`, 30s), and never shorter than the soonest Retry-After; a member whose Retry-After ends past the pause is asked after the others. This goes on while the group's `Patience` lasts. A member of a group in the group uses the innermost that sets `Patience` (`innerPatience`, #2410), as FirstToken (#2246) and Sink (#2255) do; unset falls back to the group asked for, and an inner `PatienceOff` skips replan for that member (`TestNestedGroupPatienceThroughOuter`, `TestNestedGroupPatienceInnerOff`, `TestNestedGroupPatienceFallsBackToOuter`). `replanRounds` (12) is only a backstop that never comes first: the pauses alone add up to `PatienceLongest` in 11 rounds (with 6, a group set to 240s gave up after 90s of pauses, real-jacket on #1418; `TestPatienceIsUsedUp`). The budget is the group's `Patience`, counted from the first time every member had failed, when the agent would have had the error (`waitFrom`; `Group.Waits`: 0 is `PatienceDefault`, 60s; -1, `PatienceOff`, turns it off; at most `PatienceLongest`, 240s). A pause that would end past the budget isn't taken, and the agent gets the error. While another member is busy too, the last one isn't first tried again alone (`passing`): the members take turns, and once the budget has begun, the same-one retries aren't taken either. While the budget lasts, the last candidate's failure is held (`newHoldWriter`), and a streaming agent is kept alive through the pause with SSE comments (`pauseAlive`). The try is traced with `Again` (the pause), `Replan` (how many are asked again) and `Patience` (the budget in seconds). The group editor's "Every member busy" row sets it. A plain provider keeps only the same-one retries `passing` gives the last one left. An agent that goes away in either pause (the same-one retry's or a group's replan) ends the request there with 499: nobody is asked again, and the try whose pause it was is marked `Gone` (#1894, heng91: a relay down while its proxy was off, the agent's window closed). The Routing page says the agent canceled the request before the retry and lists it as canceled, rather than ending its story on "tried again in 2s", a retry that never came (`TestAgentGoneInTheRetryPause`, `routing-agent-gone.test.cjs`). A try that answered is recorded (`served`, `answered`) for routing, affinity and usage. A try is added to the route's `Tries` only as it is asked, so a later try is the record that the gateway went on from this one, and the Routing page tells what came of a try from that, never from where it stood in the order (#2281, xishuchkui-code: an Antigravity 502 empty reply that went on to the next account was told as "an error another account wouldn't fix, so Claude Code gets it"). The one case the record can't show is the last try left out of its allowance after an earlier failure that wasn't one, where the agent is told the earlier error: that try is marked `Earlier` (`routing-went-on.test.cjs`).
++5. The last candidate's error reaches the agent, with one exception for a group (#1418, `patience.go`). When every member has failed in a way that passes (`busy`: 408, 500, 502, 503, 504 or 529 that isn't a proxy, a quota, response protection, or an upstream that answered a stream request with a whole reply, which fails the same however often it is asked (`didNotStream`; the same-one retries of `passing` leave it alone too, `TestStreamlessMemberIsAskedOnce`), or a 429 that is a short rate limit, not a plan or credit), and nothing of the reply has been sent, the members that failed so are asked again in turn after a pause (`replan`). The pause is `retryPause` doubled each round up to `replanLongest()` (30 times `retryPause`, 30s), and never shorter than the soonest Retry-After; a member whose Retry-After ends past the pause is asked after the others. This goes on while the group's `Patience` lasts. A member of a group in the group uses the innermost that sets `Patience` (`innerPatience`, #2410), as FirstToken (#2246) and Sink (#2255) do; unset falls back to the group asked for, and an inner `PatienceOff` skips replan for that member (`TestNestedGroupPatienceThroughOuter`, `TestNestedGroupPatienceInnerOff`, `TestNestedGroupPatienceFallsBackToOuter`). `replanRounds` (12) is only a backstop that never comes first: the pauses alone add up to `PatienceLongest` in 11 rounds (with 6, a group set to 240s gave up after 90s of pauses, real-jacket on #1418; `TestPatienceIsUsedUp`). The budget is the group's `Patience`, counted from the first time every member had failed, when the agent would have had the error (`waitFrom`; `Group.Waits`: 0 is `PatienceDefault`, 60s; -1, `PatienceOff`, turns it off; at most `PatienceLongest`, 240s). A pause that would end past the budget isn't taken, and the agent gets the error. While another member is busy too, the last one isn't first tried again alone (`passing`): the members take turns, and once the budget has begun, the same-one retries aren't taken either. While the budget lasts, the last candidate's failure is held (`newHoldWriter`), and a streaming agent is kept alive through the pause with SSE comments (`pauseAlive`). The try is traced with `Again` (the pause), `Replan` (how many are asked again) and `Patience` (the budget in seconds). The group editor's "Every member busy" row sets it. A plain provider keeps only the same-one retries `passing` gives the last one left. A proxy that refused the connection itself (`failProxy`, a 502 saying `proxyconnect` or `socks connect`) is no same-one retry either (#2682): it refuses again however soon it is asked again, and the rest of the request skips its other members — those whose request would really go out through the same exit, resolved for the member's own base URL and proxy choice the way `netproxy.Resolve` resolves one for a request (a member that goes direct — loopback, the user's own network, `NO_PROXY`, a direct setting — is never skipped, whatever its `ProxyChoice` says) — without dialling it again and without setting anyone aside, so a new request tries the proxy again as #381 left it (`TestProxyDownSkipsSharedProxy`, `TestProxyDownGlobalLeavesALoopbackMemberDirect`, `TestProxyDownAsksAMemberOnItsOwnProxy`, `TestProxyDownLastNotRetried`, `TestProxyDownDistinctProxiesLastNotRetried`). An agent that goes away in either pause (the same-one retry's or a group's replan) ends the request there with 499: nobody is asked again, and the try whose pause it was is marked `Gone` (#1894, heng91: a relay down while its proxy was off, the agent's window closed). The Routing page says the agent canceled the request before the retry and lists it as canceled, rather than ending its story on "tried again in 2s", a retry that never came (`TestAgentGoneInTheRetryPause`, `routing-agent-gone.test.cjs`). A try that answered is recorded (`served`, `answered`) for routing, affinity and usage. A try is added to the route's `Tries` only as it is asked, so a later try is the record that the gateway went on from this one, and the Routing page tells what came of a try from that, never from where it stood in the order (#2281, xishuchkui-code: an Antigravity 502 empty reply that went on to the next account was told as "an error another account wouldn't fix, so Claude Code gets it"). The one case the record can't show is the last try left out of its allowance after an earlier failure that wasn't one, where the agent is told the earlier error: that try is marked `Earlier` (`routing-went-on.test.cjs`).
+ 
+ ## Constraints and failure behavior
+ 
+diff --git a/internal/gateway/fallback.go b/internal/gateway/fallback.go
+index 5b04dd52..6ee0a463 100644
+--- a/internal/gateway/fallback.go
++++ b/internal/gateway/fallback.go
+@@ -23,6 +23,7 @@ import (
+ 	"io"
+ 	"log"
+ 	"net/http"
++	"net/url"
+ 	"regexp"
+ 	"slices"
+ 	"sort"
+@@ -30,6 +31,7 @@ import (
+ 	"sync"
+ 	"time"
+ 
++	"github.com/yetone/magpie/internal/netproxy"
+ 	"github.com/yetone/magpie/internal/provider"
+ 	"github.com/yetone/magpie/internal/settings"
+ )
+@@ -96,6 +98,25 @@ func (c candidate) label() string {
+ 	return c.p.ID + " (" + provider.Mask(c.p.Key) + ")"
+ }
+ 
++// exit is the proxy a request from this member goes out through, resolved
++// for its vendor's host the way netproxy resolves one for a real request
++// (netproxy.Resolve): "" when it goes direct. Within one request,
++// candidates share a refused exit by it (#2682): a member that goes direct
++// (loopback, the user's own network, NO_PROXY, a direct setting) resolves
++// to "" whatever its proxy choice says, and never shares an exit.
++func (c candidate) exit() string {
++	u, err := url.Parse(cmp.Or(c.p.Base(provider.Responses), c.p.Base(provider.Chat),
++		c.p.Base(provider.Anthropic), c.p.Base(provider.Gemini), c.p.Base(provider.CodeAssist)))
++	if err != nil || u.Host == "" {
++		return ""
++	}
++	p, err := netproxy.Resolve(c.p.ProxyChoice(), u)
++	if err != nil || p == nil {
++		return ""
++	}
++	return p.String()
++}
++
+ // restKey is what a candidate rests by: an account by its user, whether
+ // or not the agent is signed in to it — magpie can sign Codex in to the
+ // next account when the one it is on is out, and the one out stays out.
+@@ -1352,6 +1373,12 @@ func passing(status int, header http.Header, body []byte, again int) (time.Durat
+ 		if strings.Contains(string(body), didNotStream) {
+ 			return 0, false
+ 		}
++		if proxyDown.Match(body) {
++			// the proxy itself refused the connection (#381): it refuses
++			// again within this request, however soon it is asked again
++			// (#2682)
++			return 0, false
++		}
+ 		return wait, again < lastRetries
+ 	case status == 429:
+ 		// a relay's 429 often says nothing of when (#503: "负载已饱和，请稍
+diff --git a/internal/gateway/gateway.go b/internal/gateway/gateway.go
+index af2feff4..8ef3829f 100644
+--- a/internal/gateway/gateway.go
++++ b/internal/gateway/gateway.go
+@@ -2259,6 +2259,12 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
+ 		streams = strings.Contains(r.URL.Path, "streamGenerateContent")
+ 	}
+ 	gaveWay := map[string]bool{} // keys and accounts that gave way, full, to one free (laneMate)
++	// the proxy exits this request saw refuse a connection (failProxy),
++	// keyed by the exit each member's request resolves to (candidate.exit:
++	// a member that goes direct resolves to "" and is never in it), and
++	// what they said: their other members are skipped, not dialled again
++	// (#2682)
++	proxyFailed := map[string]string{}
+ 	// a group's members that failed in a way that passes are asked again,
+ 	// once each has been, for up to its Patience (#1418): a member of a
+ 	// group in the group uses the innermost that sets Patience (#2410)
+@@ -2317,6 +2323,26 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
+ 			}
+ 		}
+ 		last := i == len(cands)-1
++		if why, down := proxyFailed[c.exit()]; down {
++			// this member's requests go out through the same proxy exit
++			// that just refused a connection: asking it dials a listener
++			// already refused within this request, one refused try after
++			// another (eight attempts over 796 seconds, #2682). It is
++			// skipped, not set aside: the next request dials the proxy
++			// again, so recovery is as quick as #381 kept it
++			if other == nil {
++				other = &Try{Status: http.StatusBadGateway, Error: why}
++			}
++			skipped = append(skipped, c.label()+": skipped, its proxy just failed ("+why+")")
++			if last {
++				failTo(w, kept, from, call.Status, call.Error)
++				break
++			}
++			cs := slices.Clone(cands)
++			cands = slices.Delete(cs, i, i+1)
++			i--
++			continue
++		}
+ 		// the last one's failure is held too when an earlier one failed,
+ 		// for its allowance running out to be told as that one's error
+ 		// and once the agent has the stream's headers from an earlier try's
+@@ -3032,7 +3058,12 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
+ 		if !last && hw.failed() && failure(hw.code(), hw.errBody()) == failProxy {
+ 			// the proxy didn't take the connection: the request never got
+ 			// to the vendor, so this one doesn't rest, and a member that
+-			// goes another way (or the proxy back up) may still answer (#381)
++			// goes another way (or the proxy back up) may still answer (#381).
++			// The exit is remembered for this request, so its other members
++			// aren't dialled to the same refusal (#2682)
++			if exit := c.exit(); exit != "" {
++				proxyFailed[exit] = call.Error
++			}
+ 			if other == nil {
+ 				other = &Try{Status: call.Status, Error: call.Error}
+ 			}
+diff --git a/internal/gateway/proxy_down_test.go b/internal/gateway/proxy_down_test.go
+index 27c29b76..896fe07b 100644
+--- a/internal/gateway/proxy_down_test.go
++++ b/internal/gateway/proxy_down_test.go
+@@ -5,11 +5,14 @@ import (
+ 	"net"
+ 	"net/http"
+ 	"net/http/httptest"
++	"os"
+ 	"slices"
+ 	"strings"
+ 	"testing"
++	"time"
+ 
+ 	"github.com/yetone/magpie/internal/provider"
++	"github.com/yetone/magpie/internal/settings"
+ )
+ 
+ // TestProxyDownDoesNotRest (#381): a member whose proxy isn't listening
+@@ -66,6 +69,251 @@ func TestProxyDownDoesNotRest(t *testing.T) {
+ 	}
+ }
+ 
++// TestProxyDownSkipsSharedProxy (#2682): two members whose providers name
++// the same proxy share its failure within one request. Once the first
++// member's dial to it is refused, the second isn't dialled either — the
++// listener refused magpie once this request already — and the member that
++// goes another way is asked at once. Nobody is set aside: the proxy is
++// tried again by the next request, so recovery is as quick as #381 kept it.
++func TestProxyDownSkipsSharedProxy(t *testing.T) {
++	fresh(t)
++	for _, k := range []string{"HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy"} {
++		t.Setenv(k, "")
++	}
++	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		io.ReadAll(r.Body)
++		w.Header().Set("Content-Type", "application/json")
++		io.WriteString(w, `{"id":"c","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"from c"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`)
++	}))
++	t.Cleanup(up.Close)
++	down := deadAddr(t, up.Listener.Addr().String())
++	for _, p := range []provider.Provider{
++		{ID: "a", Name: "A", Key: "ka", Models: []string{"m"}, Chat: "http://a.test/v1", Proxy: "http://" + down},
++		{ID: "b", Name: "B", Key: "kb", Models: []string{"m"}, Chat: "http://b.test/v1", Proxy: "http://" + down},
++		{ID: "c", Name: "C", Key: "kc", Models: []string{"m"}, Chat: up.URL + "/v1"},
++	} {
++		if err := provider.Save(p); err != nil {
++			t.Fatal(err)
++		}
++	}
++	if err := provider.SaveGroup(provider.Group{Name: "Grok", Members: []string{"a/m", "b/m", "c/m"}, Routing: provider.Ordered}); err != nil {
++		t.Fatal(err)
++	}
++	s := New()
++	code, body := postAs(t, s, "", `{"model":"group/grok","messages":[{"role":"user","content":"hi"}]}`)
++	if code != 200 || !strings.Contains(body, "from c") {
++		t.Fatalf("%d %s", code, body)
++	}
++	r := s.trace.routes[len(s.trace.routes)-1]
++	if len(r.Tries) != 2 {
++		t.Fatalf("the member behind the failed proxy was asked anyway: %+v", r.Tries)
++	}
++	if f := r.Tries[0]; f.ID != "a" || f.Fail != "proxy" || f.Rest != nil || !strings.Contains(f.Error, down) {
++		t.Fatalf("a's try %+v", f)
++	}
++	if r.Tries[1].ID != "c" || r.Tries[1].Status != 200 {
++		t.Fatalf("c's try %+v", r.Tries[1])
++	}
++	restingUntil.Lock()
++	n := len(restingUntil.m)
++	restingUntil.Unlock()
++	if n != 0 {
++		t.Fatalf("%d set aside over a proxy that was down", n)
++	}
++}
++
++// TestProxyDownLastNotRetried (#2682): when every member is behind the
++// same failed proxy and there is no other way out, the second isn't asked
++// at all — the listener refused magpie within this request — and the
++// agent gets the error at once, with no backoff round. Nobody is set
++// aside: a new request tries the proxy again, so recovery keeps its pace.
++func TestProxyDownLastNotRetried(t *testing.T) {
++	fresh(t)
++	for _, k := range []string{"HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy"} {
++		t.Setenv(k, "")
++	}
++	down := deadAddr(t)
++	for _, p := range []provider.Provider{
++		{ID: "a", Name: "A", Key: "ka", Models: []string{"m"}, Chat: "http://a.test/v1", Proxy: "http://" + down},
++		{ID: "b", Name: "B", Key: "kb", Models: []string{"m"}, Chat: "http://b.test/v1", Proxy: "http://" + down},
++	} {
++		if err := provider.Save(p); err != nil {
++			t.Fatal(err)
++		}
++	}
++	if err := provider.SaveGroup(provider.Group{Name: "Grok", Members: []string{"a/m", "b/m"}, Routing: provider.Ordered}); err != nil {
++		t.Fatal(err)
++	}
++	old := retryPause
++	retryPause = time.Millisecond
++	t.Cleanup(func() { retryPause = old })
++	s := New()
++	code, body := postAs(t, s, "", `{"model":"group/grok","messages":[{"role":"user","content":"hi"}]}`)
++	if code != http.StatusBadGateway || !strings.Contains(body, down) {
++		t.Fatalf("%d %s", code, body)
++	}
++	r := s.trace.routes[len(s.trace.routes)-1]
++	if len(r.Tries) != 1 {
++		t.Fatalf("the failed proxy was asked %d times: %+v", len(r.Tries), r.Tries)
++	}
++	for _, f := range r.Tries {
++		if f.Fail != "proxy" || f.Rest != nil || f.Again != 0 {
++			t.Fatalf("try %+v", f)
++		}
++	}
++	restingUntil.Lock()
++	n := len(restingUntil.m)
++	restingUntil.Unlock()
++	if n != 0 {
++		t.Fatalf("%d set aside over a proxy that was down", n)
++	}
++}
++
++// TestProxyDownDistinctProxiesLastNotRetried (#2682): two members behind
++// two different dead proxies, no other way out. The last one is asked
++// once — its own exit hasn't failed yet — but not again after a backoff:
++// its listener refused magpie within this request, and it refuses again a
++// moment later.
++func TestProxyDownDistinctProxiesLastNotRetried(t *testing.T) {
++	fresh(t)
++	for _, k := range []string{"HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy"} {
++		t.Setenv(k, "")
++	}
++	down1 := deadAddr(t)
++	down2 := deadAddr(t, down1)
++	for _, p := range []provider.Provider{
++		{ID: "a", Name: "A", Key: "ka", Models: []string{"m"}, Chat: "http://a.test/v1", Proxy: "http://" + down1},
++		{ID: "b", Name: "B", Key: "kb", Models: []string{"m"}, Chat: "http://b.test/v1", Proxy: "http://" + down2},
++	} {
++		if err := provider.Save(p); err != nil {
++			t.Fatal(err)
++		}
++	}
++	if err := provider.SaveGroup(provider.Group{Name: "Grok", Members: []string{"a/m", "b/m"}, Routing: provider.Ordered}); err != nil {
++		t.Fatal(err)
++	}
++	old := retryPause
++	retryPause = time.Millisecond
++	t.Cleanup(func() { retryPause = old })
++	s := New()
++	code, body := postAs(t, s, "", `{"model":"group/grok","messages":[{"role":"user","content":"hi"}]}`)
++	if code != http.StatusBadGateway || !strings.Contains(body, down2) {
++		t.Fatalf("%d %s", code, body)
++	}
++	r := s.trace.routes[len(s.trace.routes)-1]
++	if len(r.Tries) != 2 {
++		t.Fatalf("the failed proxy was asked %d times: %+v", len(r.Tries), r.Tries)
++	}
++	for _, f := range r.Tries {
++		if f.Fail != "proxy" || f.Rest != nil || f.Again != 0 {
++			t.Fatalf("try %+v", f)
++		}
++	}
++}
++
++// TestProxyDownGlobalLeavesALoopbackMemberDirect (#2682): the global proxy
++// is down. A member that would really go out through it is skipped for the
++// rest of the request; a member at loopback (Ollama, LM Studio) never goes
++// through it — netproxy sends loopback direct whatever the setting — so it
++// is asked and answers. The shared thing is the exit a member's request
++// resolves to, not its proxy choice: two members that both follow the
++// global setting don't share an exit when only one of them has one.
++func TestProxyDownGlobalLeavesALoopbackMemberDirect(t *testing.T) {
++	fresh(t)
++	for _, k := range []string{"HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy"} {
++		t.Setenv(k, "")
++	}
++	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		io.ReadAll(r.Body)
++		w.Header().Set("Content-Type", "application/json")
++		io.WriteString(w, `{"id":"b","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"from b"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`)
++	}))
++	t.Cleanup(up.Close)
++	down := deadAddr(t, up.Listener.Addr().String())
++	os.MkdirAll(settings.Dir(), 0o755)
++	if err := os.WriteFile(settings.Path(), []byte(`{"proxy":"http://`+down+`"}`), 0o600); err != nil {
++		t.Fatal(err)
++	}
++	for _, p := range []provider.Provider{
++		{ID: "a", Name: "A", Key: "ka", Models: []string{"m"}, Chat: "http://a.test/v1"},
++		{ID: "b", Name: "B", Key: "kb", Models: []string{"m"}, Chat: up.URL + "/v1"},
++	} {
++		if err := provider.Save(p); err != nil {
++			t.Fatal(err)
++		}
++	}
++	if err := provider.SaveGroup(provider.Group{Name: "Grok", Members: []string{"a/m", "b/m"}, Routing: provider.Ordered}); err != nil {
++		t.Fatal(err)
++	}
++	s := New()
++	code, body := postAs(t, s, "", `{"model":"group/grok","messages":[{"role":"user","content":"hi"}]}`)
++	if code != 200 || !strings.Contains(body, "from b") {
++		t.Fatalf("the loopback member wasn't asked: %d %s", code, body)
++	}
++	r := s.trace.routes[len(s.trace.routes)-1]
++	if len(r.Tries) != 2 {
++		t.Fatalf("tries: %+v", r.Tries)
++	}
++	if f := r.Tries[0]; f.ID != "a" || f.Fail != "proxy" || f.Rest != nil || f.Again != 0 || !strings.Contains(f.Error, down) {
++		t.Fatalf("a's try %+v", f)
++	}
++	if r.Tries[1].ID != "b" || r.Tries[1].Status != 200 {
++		t.Fatalf("b's try %+v", r.Tries[1])
++	}
++	restingUntil.Lock()
++	n := len(restingUntil.m)
++	restingUntil.Unlock()
++	if n != 0 {
++		t.Fatalf("%d set aside over a proxy that was down", n)
++	}
++}
++
++// TestProxyDownAsksAMemberOnItsOwnProxy (#2682): the global proxy is down,
++// and the next member's own proxy is another exit. Its request doesn't
++// resolve to the exit that just refused magpie, so it is asked: its dial
++// fails on its own listener, and gets the no-retry treatment with it.
++func TestProxyDownAsksAMemberOnItsOwnProxy(t *testing.T) {
++	fresh(t)
++	for _, k := range []string{"HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy"} {
++		t.Setenv(k, "")
++	}
++	down := deadAddr(t)
++	own := deadAddr(t, down)
++	os.MkdirAll(settings.Dir(), 0o755)
++	if err := os.WriteFile(settings.Path(), []byte(`{"proxy":"http://`+down+`"}`), 0o600); err != nil {
++		t.Fatal(err)
++	}
++	for _, p := range []provider.Provider{
++		{ID: "a", Name: "A", Key: "ka", Models: []string{"m"}, Chat: "http://a.test/v1"},
++		{ID: "b", Name: "B", Key: "kb", Models: []string{"m"}, Chat: "http://b.test/v1", Proxy: "http://" + own},
++	} {
++		if err := provider.Save(p); err != nil {
++			t.Fatal(err)
++		}
++	}
++	if err := provider.SaveGroup(provider.Group{Name: "Grok", Members: []string{"a/m", "b/m"}, Routing: provider.Ordered}); err != nil {
++		t.Fatal(err)
++	}
++	old := retryPause
++	retryPause = time.Millisecond
++	t.Cleanup(func() { retryPause = old })
++	s := New()
++	code, body := postAs(t, s, "", `{"model":"group/grok","messages":[{"role":"user","content":"hi"}]}`)
++	if code != http.StatusBadGateway || !strings.Contains(body, own) {
++		t.Fatalf("%d %s", code, body)
++	}
++	r := s.trace.routes[len(s.trace.routes)-1]
++	if len(r.Tries) != 2 {
++		t.Fatalf("the member on its own proxy wasn't asked: %+v", r.Tries)
++	}
++	if f := r.Tries[0]; f.ID != "a" || f.Fail != "proxy" || !strings.Contains(f.Error, down) {
++		t.Fatalf("a's try %+v", f)
++	}
++	if f := r.Tries[1]; f.ID != "b" || f.Fail != "proxy" || f.Rest != nil || f.Again != 0 || !strings.Contains(f.Error, own) {
++		t.Fatalf("b's try %+v", f)
++	}
++}
++
+ // deadAddr is a loopback address nothing listens on, for a proxy that is
+ // down. It is taken after the test's own servers are up and is never one of
+ // theirs: a port just let go can be handed out again at once (Linux CI gave
+diff --git a/internal/netproxy/lan_test.go b/internal/netproxy/lan_test.go
+index c9f4da1a..404f7ad6 100644
+--- a/internal/netproxy/lan_test.go
++++ b/internal/netproxy/lan_test.go
+@@ -108,3 +108,42 @@ func TestLANModelListNotThroughProxy(t *testing.T) {
+ 		t.Fatalf("not the other magpie's list: %s", b)
+ 	}
+ }
++
++// Resolve is the decision Func makes, for a caller that holds the choice
++// and the URL instead of a request (#2682): the gateway keys a group's
++// shared proxy exit on it, so what it names is the proxy the request
++// would really take — loopback and the user's own network direct, a
++// provider's own proxy as named, the global one for its vendors.
++func TestResolveNamesTheRealProxy(t *testing.T) {
++	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
++	for _, k := range []string{"HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy"} {
++		t.Setenv(k, "")
++	}
++	settings.Save(settings.Settings{Proxy: "127.0.0.1:7890"})
++	stubLookup(t, map[string]string{"server.lan": "192.168.131.20", "api.openai.com": "162.159.140.245"})
++	const global, own = "http://127.0.0.1:7890", "http://127.0.0.1:1080"
++	for _, c := range []struct {
++		choice, host, want string
++	}{
++		{"", "api.openai.com", global},
++		{"", "8.8.8.8", global},
++		{"", "127.0.0.1:11434", ""}, // loopback, never proxied
++		{"", "server.lan:3425", ""}, // the user's own network, direct (#982)
++		{own, "api.openai.com", own},
++		{own, "8.8.8.8", own},
++		{own, "server.lan:3425", own}, // a provider's own proxy is taken as it is (#982)
++		{own, "127.0.0.1:11434", ""},  // loopback even with a proxy of its own
++		{"direct", "api.openai.com", ""},
++		{"direct", "127.0.0.1:11434", ""},
++	} {
++		u := &url.URL{Scheme: "http", Host: c.host}
++		got, err := Resolve(c.choice, u)
++		gotS := ""
++		if got != nil {
++			gotS = got.String()
++		}
++		if gotS != c.want || err != nil {
++			t.Errorf("choice %q to %s: %q (%v), want %q", c.choice, c.host, got, err, c.want)
++		}
++	}
++}
+diff --git a/internal/netproxy/netproxy.go b/internal/netproxy/netproxy.go
+index abedcb0a..5e0d94d1 100644
+--- a/internal/netproxy/netproxy.go
++++ b/internal/netproxy/netproxy.go
+@@ -40,14 +40,24 @@ func Func(req *http.Request) (*url.URL, error) {
+ 	if err := Held(req.Context()); err != nil {
+ 		return nil, err
+ 	}
+-	if loopback(req.URL.Hostname()) {
++	return Resolve(choiceOf(req.Context()), req.URL)
++}
++
++// Resolve is the proxy a request to u goes through when it is made on a
++// provider whose choice is choice (With): nil for direct. It is the same
++// resolution Func makes — loopback never proxied, the provider's own
++// choice taken as named, the global one gone around for a host on the
++// user's own network — for a caller that holds the choice and the URL
++// rather than a request (#2682).
++func Resolve(choice string, u *url.URL) (*url.URL, error) {
++	if loopback(u.Hostname()) {
+ 		return nil, nil
+ 	}
+-	if c := choiceOf(req.Context()); c != "" {
+-		return forChoice(c)
++	if choice != "" {
++		return forChoice(choice)
+ 	}
+-	p, err := For(req.URL)
+-	if p != nil && onLAN(req.URL.Hostname()) {
++	p, err := For(u)
++	if p != nil && onLAN(u.Hostname()) {
+ 		return nil, nil
+ 	}
+ 	return p, err
+@@ -180,10 +190,7 @@ func (d *dispatch) transport(r route) *http.Transport {
+ 			if err := Held(req.Context()); err != nil {
+ 				return nil, err
+ 			}
+-			if loopback(req.URL.Hostname()) {
+-				return nil, nil
+-			}
+-			return forChoice(c)
++			return Resolve(c, req.URL)
+ 		}
+ 	}
+ 	if r.h1 {
+-- 
+2.50.1 (Apple Git-155)
+

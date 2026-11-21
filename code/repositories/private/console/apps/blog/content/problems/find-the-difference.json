@@ -1,0 +1,25 @@
+{
+  "id": "98",
+  "slug": "find-the-difference",
+  "title": "找不同",
+  "difficulty": "easy",
+  "tags": ["位运算", "哈希表", "字符串"],
+  "description": "给定两个字符串 `s` 和 `t`,字符串 `t` 由字符串 `s` 随机重排,然后在随机位置添加一个字母。请找出在 `t` 中被添加的字母。\n\n**示例 1:**\n\n- 输入:`s = \"abcd\"`, `t = \"abcde\"`\n- 输出:`\"e\"`\n\n**示例 2:**\n\n- 输入:`s = \"\"`, `t = \"y\"`\n- 输出:`\"y\"`",
+  "solution": "## 思路\n\n**异或**:把 `s` 和 `t` 中所有字符的 ASCII 码异或起来,成对出现的字符相互抵消,剩下的就是被添加的字符。\n\n## 参考代码\n\n```js\nfunction findTheDifference(s, t) {\n  let code = 0;\n  for (const c of s) code ^= c.charCodeAt(0);\n  for (const c of t) code ^= c.charCodeAt(0);\n  return String.fromCharCode(code);\n}\n```\n\n## 复杂度\n\n- 时间:O(n)\n- 空间:O(1)",
+  "signature": {
+    "language": "javascript",
+    "entry": "findTheDifference",
+    "params": [
+      { "name": "s", "type": "string" },
+      { "name": "t", "type": "string" }
+    ],
+    "returns": "string"
+  },
+  "testCases": [
+    { "sample": true, "input": ["abcd", "abcde"], "expected": "e" },
+    { "sample": true, "input": ["", "y"], "expected": "y" },
+    { "sample": false, "input": ["a", "aa"], "expected": "a" },
+    { "sample": false, "input": ["ae", "aea"], "expected": "a" },
+    { "sample": false, "input": ["xyz", "zyxe"], "expected": "e" }
+  ]
+}

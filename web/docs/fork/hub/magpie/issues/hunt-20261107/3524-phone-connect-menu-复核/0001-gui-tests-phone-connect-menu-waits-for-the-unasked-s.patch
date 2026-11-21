@@ -1,0 +1,57 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Sun, 25 Oct 2026 07:53:47 +0800
+Subject: [PATCH] gui tests: phone-connect-menu waits for the unasked scroll's
+ put-back, not 300ms (#3524)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The test scrolled the view by 40px in the frame after the click and
+waited a fixed 300ms for the put-back to have landed within it. Under
+load (webkit, a whole GUI run) it hadn't: "webkit de 1100 public URL"
+went red at phone-connect-menu.test.cjs:73 with "#connectAddress: its
+anchor stays where it was" while alone it passed 22 of 22.
+
+The put-back is the click guard's, which holds the anchor where it was;
+how long that takes is not a fixed while. The wait now is on the state:
+the view first marks the injected scroll heard (a once scroll listener,
+reset each pass so a leftover scroll can't answer for it), and the test
+waits — bounded by the suite's default timeout — for that mark and for
+the anchor's top to be back where it was, the same <1px tolerance the
+assertion below keeps. The assertions are unchanged; a put-back that
+never lands still fails the test.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gui/tests/phone-connect-menu.test.cjs | 14 +++++++++++---
+ 1 file changed, 11 insertions(+), 3 deletions(-)
+
+diff --git a/internal/gui/tests/phone-connect-menu.test.cjs b/internal/gui/tests/phone-connect-menu.test.cjs
+index 7650b7db3..340ecf7e5 100644
+--- a/internal/gui/tests/phone-connect-menu.test.cjs
++++ b/internal/gui/tests/phone-connect-menu.test.cjs
+@@ -68,9 +68,17 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
+             await page.locator(".proto-menu").waitFor();
+             const at = await top(page, sel);
+             // a scroll of the view the reader didn't make, in the frame after
+-            // the click: put back, and the menu stays beside its anchor
+-            await view(page).evaluate((v) => requestAnimationFrame(() => { v.scrollTop += 40; }));
+-            await page.waitForTimeout(300);
++            // the click: put back, and the menu stays beside its anchor. Wait
++            // for the view to have heard the scroll and the anchor to be back
++            // where it was (a bound, not a fixed while): under load the
++            // put-back can take longer than any fixed wait.
++            await view(page).evaluate((v) => {
++              delete v.dataset.putBack;
++              v.addEventListener("scroll", () => { v.dataset.putBack = "heard"; }, { once: true, passive: true });
++              requestAnimationFrame(() => { v.scrollTop += 40; });
++            });
++            await page.waitForFunction(([s, y]) => document.querySelector("#view-gateway")?.dataset.putBack === "heard"
++              && Math.abs(document.querySelector(s).getBoundingClientRect().y - y) < 1, [sel, at]);
+             assert.equal(await menuOpen(page), 1, `${sel}: the menu stays open after a scroll that wasn't the reader's`);
+             assert.ok(Math.abs((await top(page, sel)) - at) < 1, `${sel}: its anchor stays where it was`);
+             const [m, a] = [await page.locator(".proto-menu").boundingBox(), await page.locator(sel).boundingBox()];
+-- 
+2.50.1 (Apple Git-155)
+

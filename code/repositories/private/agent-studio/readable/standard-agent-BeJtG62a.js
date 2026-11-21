@@ -1,0 +1,9225 @@
+const __vite__mapDeps = (
+  i,
+  m = __vite__mapDeps,
+  d = m.f ||
+    (m.f = [
+      "assets/js/vendor-antd.QfSgOu5e.js",
+      "assets/js/rolldown-runtime-CMxvf4Kt.js",
+      "assets/js/vendor-react.CV1S_bb1.js",
+    ]),
+) => i.map((i) => d[i]);
+import { o as e } from "./rolldown-runtime-CMxvf4Kt.js";
+import { i as t, t as n } from "./vendor-react.CV1S_bb1.js";
+import {
+  $ as r,
+  Ai as i,
+  Br as a,
+  C as o,
+  F as s,
+  Gi as c,
+  H as l,
+  Hi as u,
+  Ii as d,
+  Jr as f,
+  K as p,
+  Kr as m,
+  Kt as h,
+  Or as g,
+  Pi as _,
+  Rr as v,
+  St as y,
+  T as b,
+  Vt as x,
+  Xr as S,
+  Y as C,
+  Yi as w,
+  Z as T,
+  Zi as E,
+  _r as D,
+  an as O,
+  at as ee,
+  b as k,
+  ci as A,
+  ct as te,
+  dr as j,
+  et as ne,
+  f as re,
+  gt as M,
+  j as ie,
+  mr as ae,
+  nn as N,
+  o as oe,
+  or as P,
+  po as se,
+  rr as ce,
+  rt as le,
+  un as ue,
+  ut as de,
+  v as fe,
+  wr as F,
+  yi as pe,
+  yr as I,
+} from "./vendor-antd.QfSgOu5e.js";
+import { n as me } from "./client-BfElcTb7.js";
+import { t as he } from "./Icon-BCAHkjHa.js";
+import { u as ge } from "./src-_hjT3BN9.js";
+import { n as _e } from "./agent-C0JAlTor.js";
+import { Dt as ve, k as ye } from "./utils-DS1Vnd25.js";
+import { i as be } from "./status-dict-D3T8Xf4E.js";
+import { t as xe } from "./url-action-BsTcWDLi.js";
+import { r as Se, s as Ce, t as we } from "./request-Cb6e7tFu.js";
+import { x as Te } from "./singleton-rEY9lZZ3-YXHRT4AG.js";
+import { t as Ee } from "./navigation-CSJEEvwi.js";
+import { t as De } from "./react-D9MLkLvv.js";
+import {
+  a as Oe,
+  c as ke,
+  i as Ae,
+  m as je,
+  n as Me,
+  o as Ne,
+  r as Pe,
+  s as Fe,
+  t as Ie,
+  v as Le,
+} from "./empty-2Q8bOv9A.js";
+import { r as Re, t as ze } from "./ProForm-DbXaWFwb.js";
+import { n as Be, t as Ve } from "./TooltipEllipsis-4_dXZz0S.js";
+import { t as He } from "./CodeEditor-DKK_tsYs.js";
+import { t as Ue } from "./Workflow-delete-C6Yz4ciM.js";
+import "./Workflow-publish-a42ZnFqp.js";
+import {
+  _ as We,
+  a as Ge,
+  c as Ke,
+  d as qe,
+  f as Je,
+  g as Ye,
+  h as Xe,
+  i as Ze,
+  l as Qe,
+  m as $e,
+  n as et,
+  p as tt,
+  r as nt,
+  s as rt,
+  t as it,
+  u as at,
+} from "./debug-param-expand-BudXOLJ5.js";
+import {
+  $ as ot,
+  A as st,
+  H as ct,
+  J as lt,
+  L as ut,
+  St as dt,
+  Tt as ft,
+  V as pt,
+  Y as mt,
+  k as ht,
+  z as gt,
+} from "./index.B_LPe2F7.js";
+import {
+  B as _t,
+  G as vt,
+  W as yt,
+  b as bt,
+  mt as xt,
+  v as St,
+} from "./intelligentEngine-BhRFRjx8.js";
+import { t as Ct } from "./lib-Bpn4cuP_.js";
+import { t as wt } from "./search-DZiSM-T-.js";
+import { n as Tt, r as Et, t as Dt } from "./expand-list-CAdJDtkU.js";
+import { t as Ot } from "./database.api-D6ax5Omz.js";
+var kt = (e) =>
+    Ce({ method: `post`, url: `${we}/agent-memories/mem0/add`, data: e }),
+  At = (e) =>
+    Ce({ method: `post`, url: `${we}/agent-memories/mem0/getList`, data: e }),
+  jt = (e) => {
+    let { memoryId: t, ...n } = e;
+    return Ce({
+      method: `put`,
+      url: `${we}/agent-memories/memvars/memFragments/update?memoryId=${t}`,
+      data: n,
+    });
+  },
+  Mt = (e) =>
+    Ce({
+      method: `DELETE`,
+      url: `${we}/agent-memories/memvars/memFragments/delete?memoryId=${e.memoryId}`,
+    }),
+  Nt = (e) =>
+    Ce({
+      method: `get`,
+      url: `${we}/agent-memories/memvars/config/list`,
+      data: e,
+    }),
+  Pt = (e) =>
+    Ce({
+      method: `put`,
+      url: `${we}/agent-memories/memvars/config/edit`,
+      data: e,
+    }),
+  Ft = (e) =>
+    Ce({ method: `post`, url: `${Se}/standardAgent/createSession`, data: e }),
+  It = (e) =>
+    Ce({ method: `post`, url: `${Se}/standardAgent/interrupt`, data: e }),
+  Lt = De((e) => ({
+    microAppInfo: {},
+    setMicroAppInfo: (t) => e({ microAppInfo: t }),
+    lastSaveTime: null,
+    setLastSaveTime: (t) => e({ lastSaveTime: t }),
+    modelList: [],
+    setModelList: (t) => e({ modelList: t }),
+  })),
+  Rt = De((e, t) => ({
+    activeSessionId: ``,
+    setActiveSessionId: (t) => e({ activeSessionId: t }),
+    messages: [],
+    setMessages: (t) =>
+      e((e) => ({ messages: typeof t == `function` ? t(e.messages) : t })),
+    addMessage: (t) => e((e) => ({ messages: [...e.messages, t] })),
+    updateMessage: (t, n) =>
+      e((e) => ({
+        messages: e.messages.map((e) => (e.key === t ? { ...e, ...n } : e)),
+      })),
+    removeMessage: (t) =>
+      e((e) => ({ messages: e.messages.filter((e) => e.key !== t) })),
+    clearAllMessages: () => e({ messages: [] }),
+    activeAssistantMessageId: ``,
+    setActiveAssistantMessageId: (t) => e({ activeAssistantMessageId: t }),
+    getMessageById: (e, n) =>
+      t().messages.find((t) => t.sessionId === e && t.key === n),
+  })),
+  zt = De((e) => ({
+    debugNodeParams: null,
+    setDebugNodeParams: (t) => e({ debugNodeParams: t }),
+    debugInfo: new Map(),
+    setDebugInfo: (t, n) =>
+      e((e) => {
+        let r = new Map(e.debugInfo);
+        return (r.set(t, n), { debugInfo: r });
+      }),
+    clearDebugInfo: () => e({ debugInfo: new Map() }),
+    clearNodeDebugInfo: (t) =>
+      e((e) => {
+        let n = new Map(e.debugInfo);
+        return (n.delete(t), { debugInfo: n });
+      }),
+    isDebugging: !1,
+    setIsDebugging: (t) => e({ isDebugging: t }),
+    debugChatModalVisible: !1,
+    setDebugChatModalVisible: (t) => e({ debugChatModalVisible: t }),
+    debugDetailVisible: !1,
+    setDebugDetailVisible: (t) => e({ debugDetailVisible: t }),
+    selectedExecuteId: null,
+    selectedNodeId: null,
+    setSelectedExecuteId: (t) => e({ selectedExecuteId: t }),
+    setSelectedNodeId: (t) => e({ selectedNodeId: t }),
+    nodeExecutionResults: new Map(),
+    setNodeExecutionResult: (t, n) =>
+      e((e) => {
+        console.log(
+          `%c [ 回复中，单个节点执行结果 ]-228`,
+          `font-size:13px; background:rgb(243, 227, 201); color:rgb(242, 116, 20);`,
+          t,
+          n,
+        );
+        let r = new Map(e.nodeExecutionResults);
+        return (r.set(t, n), { nodeExecutionResults: r });
+      }),
+    clearNodeExecutionResults: () =>
+      e({ nodeExecutionResults: new Map(), nextNodeId: null }),
+    allNodeExecutionResults: new Map(),
+    setAllNodeExecutionResults: (t, n) =>
+      e((e) => {
+        let r = new Map(e.allNodeExecutionResults);
+        return (
+          r.set(t, n),
+          console.log(
+            `%c [ 回复完成，所有节点执行结果 ]-240`,
+            `font-size:13px; background:rgb(192, 250, 202); color:rgb(5, 119, 20);`,
+            r,
+          ),
+          { allNodeExecutionResults: r }
+        );
+      }),
+    clearAllNodeExecutionResults: () =>
+      e({ allNodeExecutionResults: new Map() }),
+    executingNodeId: null,
+    setExecutingNodeId: (t) => e({ executingNodeId: t }),
+    nextNodeId: null,
+    setNextNodeId: (t) => e({ nextNodeId: t }),
+  })),
+  Bt = (function (e) {
+    return (
+      (e.PLANNING = `planning`),
+      (e.KNOWLEDGE = `knowledge`),
+      (e.SKILLS = `skills`),
+      (e.MEMORY = `memory`),
+      e
+    );
+  })({}),
+  L = e(t(), 1),
+  R = e(se(), 1);
+x();
+var z = {
+    "ant-modal-wrap": `_ant-modal-wrap_5dii8_34`,
+    "ant-modal": `_ant-modal_5dii8_34`,
+    "ant-modal-content": `_ant-modal-content_5dii8_44`,
+    "ant-modal-footer": `_ant-modal-footer_5dii8_47`,
+    "ant-modal-header": `_ant-modal-header_5dii8_47`,
+    "ant-modal-body": `_ant-modal-body_5dii8_53`,
+    "ant-table-body": `_ant-table-body_5dii8_67`,
+    "ant-table-content": `_ant-table-content_5dii8_68`,
+    "ant-table-container": `_ant-table-container_5dii8_69`,
+    "ant-table-thead": `_ant-table-thead_5dii8_97`,
+    "ant-input": `_ant-input_5dii8_101`,
+    "ant-pagination": `_ant-pagination_5dii8_104`,
+    "ant-pagination-options": `_ant-pagination-options_5dii8_104`,
+    "ant-select": `_ant-select_5dii8_107`,
+    "ant-pagination-options-quick-jumper": `_ant-pagination-options-quick-jumper_5dii8_110`,
+    "agent-configuration": `_agent-configuration_5dii8_119`,
+    "module-section": `_module-section_5dii8_122`,
+    "module-header": `_module-header_5dii8_132`,
+    "module-icon": `_module-icon_5dii8_136`,
+    "module-title": `_module-title_5dii8_140`,
+    "collapsible-header": `_collapsible-header_5dii8_146`,
+    "header-left": `_header-left_5dii8_155`,
+    "collapse-icon": `_collapse-icon_5dii8_160`,
+    "collapsible-content": `_collapsible-content_5dii8_165`,
+    collapsed: `_collapsed_5dii8_171`,
+    "content-wrapper": `_content-wrapper_5dii8_175`,
+    "form-item": `_form-item_5dii8_180`,
+    label: `_label_5dii8_186`,
+    tooltip: `_tooltip_5dii8_193`,
+    "character-counter": `_character-counter_5dii8_197`,
+    error: `_error_5dii8_203`,
+    "add-button": `_add-button_5dii8_206`,
+    "list-item": `_list-item_5dii8_209`,
+    "item-content": `_item-content_5dii8_221`,
+    "item-name": `_item-name_5dii8_224`,
+    "item-description": `_item-description_5dii8_229`,
+    "item-actions": `_item-actions_5dii8_233`,
+    "strategy-selector": `_strategy-selector_5dii8_237`,
+    "switch-row": `_switch-row_5dii8_241`,
+    "slider-row": `_slider-row_5dii8_247`,
+    "slider-container": `_slider-container_5dii8_247`,
+    slider: `_slider_5dii8_247`,
+    "slider-value": `_slider-value_5dii8_255`,
+    "conditional-section": `_conditional-section_5dii8_259`,
+  },
+  Vt = [
+    {
+      label: `混合检索`,
+      value: 3,
+      tip: `结合全文检索和语义检索的优势，并对结果进行综合排序召回相关的内容片段`,
+    },
+    {
+      label: `全文检索`,
+      value: 2,
+      tip: `基于关键词如特定名称或专有名词、术语等特定场景进行全文检索`,
+    },
+    {
+      label: `语义检索`,
+      value: 1,
+      tip: `需要理解语义关联度和跨语言查询的场景使用，像人类一样去理解`,
+    },
+  ],
+  Ht = {
+    knowledgeBase: `配置好的知识库可发布为MCP服务接入，为智能体提供补充知识以增强回复准确性`,
+    resultReranking: `根据相关性或质量对检索到的文档切片进行重新排序，以提高生成答案的准确性`,
+    queryOptimization: `对检索知识库的内容或问题进行改写、补齐等优化，但可能会增加智能体响应时长`,
+  },
+  Ut = { 0: `文本`, 1: `表格`, 2: `问答` },
+  Wt = [
+    { label: `全部类型`, value: `` },
+    { label: `文本`, value: `0` },
+    { label: `表格`, value: `1` },
+    { label: `问答`, value: `2` },
+  ],
+  Gt = [10, 20, 50, 100],
+  B = {
+    "knowledge-item": `_knowledge-item_1fyng_1`,
+    "knowledge-item-content": `_knowledge-item-content_1fyng_11`,
+    "knowledge-item-info": `_knowledge-item-info_1fyng_18`,
+    "knowledge-item-title-container": `_knowledge-item-title-container_1fyng_22`,
+    "knowledge-item-title": `_knowledge-item-title_1fyng_22`,
+    highlight: `_highlight_1fyng_35`,
+    "knowledge-item-description": `_knowledge-item-description_1fyng_38`,
+    "knowledge-item-detail-container": `_knowledge-item-detail-container_1fyng_47`,
+    "knowledge-item-detail-item": `_knowledge-item-detail-item_1fyng_53`,
+    "knowledge-item-detail-icon": `_knowledge-item-detail-icon_1fyng_60`,
+    "knowledge-item-detail-button": `_knowledge-item-detail-button_1fyng_64`,
+    "knowledge-item-actions": `_knowledge-item-actions_1fyng_67`,
+  },
+  V = n(),
+  Kt = (e, t) =>
+    !t || !e
+      ? e
+      : (0, V.jsx)(V.Fragment, {
+          children: e
+            .split(RegExp(`(${t})`, `gi`))
+            .map((e, n) =>
+              e.toLowerCase() === t.toLowerCase()
+                ? (0, V.jsx)(`span`, { className: B.highlight, children: e }, n)
+                : e,
+            ),
+        }),
+  qt = ({
+    item: e,
+    searchKeyword: t,
+    showDetail: n = !0,
+    renderActions: r,
+    disabled: i = !1,
+  }) =>
+    (0, V.jsxs)(`div`, {
+      className: B[`knowledge-item`],
+      children: [
+        (0, V.jsxs)(`div`, {
+          className: B[`knowledge-item-content`],
+          children: [
+            (0, V.jsx)(`img`, { src: ve, width: 40, height: 40 }),
+            (0, V.jsxs)(`div`, {
+              className: B[`knowledge-item-info`],
+              children: [
+                (0, V.jsxs)(`div`, {
+                  className: B[`knowledge-item-title-container`],
+                  children: [
+                    (0, V.jsx)(h.Text, {
+                      className: B[`knowledge-item-title`],
+                      children: Kt(e.baseName, t),
+                    }),
+                    (0, V.jsx)(N, {
+                      children: Ut[e.baseType || `0`] || `未知`,
+                    }),
+                  ],
+                }),
+                e.description &&
+                  (0, V.jsx)(h.Text, {
+                    className: B[`knowledge-item-description`],
+                    children: Kt(e.description, t),
+                  }),
+                (0, V.jsxs)(`div`, {
+                  className: B[`knowledge-item-detail-container`],
+                  children: [
+                    e.docCount !== void 0 &&
+                      (0, V.jsxs)(`div`, {
+                        className: B[`knowledge-item-detail-item`],
+                        children: [
+                          (0, V.jsx)(l, {
+                            className: B[`knowledge-item-detail-icon`],
+                          }),
+                          e.docCount,
+                        ],
+                      }),
+                    n &&
+                      (0, V.jsx)(w, {
+                        type: `link`,
+                        size: `small`,
+                        className: B[`knowledge-item-detail-button`],
+                        onClick: () => {
+                          let { description: t, ...n } = e,
+                            r = { ...n, checkTabs: `all` },
+                            i =
+                              e.baseType == `2`
+                                ? ft.AGENT_KNOWLEDGE_QA_DATABASE
+                                : ft.AGENT_KNOWLEDGE_DOC;
+                          Ee(
+                            `${ft.SSO}?targetPath=${i}&state=${JSON.stringify(r)}`,
+                          );
+                        },
+                        children: `详情`,
+                      }),
+                  ],
+                }),
+              ],
+            }),
+          ],
+        }),
+        !i &&
+          (0, V.jsx)(`div`, {
+            className: B[`knowledge-item-actions`],
+            children: r(),
+          }),
+      ],
+    }),
+  Jt = {
+    "knowledge-base-list": `_knowledge-base-list_l5eym_1`,
+    "item-delete": `_item-delete_l5eym_6`,
+  },
+  Yt = ({ knowledgeNode: e, onRemove: t, disabled: n = !1 }) => {
+    if (!e?.data?.knowledge?.knowledgeDetails) return null;
+    let r = e.data.knowledge.knowledgeDetails;
+    return (0, V.jsx)(`div`, {
+      className: Jt[`knowledge-base-list`],
+      children: r.map((e, r) =>
+        (0, V.jsx)(
+          qt,
+          {
+            item: {
+              baseId: e.baseId || ``,
+              baseName: e.baseName || ``,
+              docCount: e.docCount,
+              baseType: e.baseType?.toString() || `0`,
+            },
+            disabled: n,
+            renderActions: () =>
+              (0, V.jsx)(`img`, {
+                src: Ue,
+                width: 30,
+                height: 30,
+                className: Jt[`item-delete`],
+                onClick: () => t(e.baseId),
+                alt: `删除`,
+              }),
+          },
+          e.baseId || r,
+        ),
+      ),
+    });
+  },
+  Xt = {
+    "strategy-cards": `_strategy-cards_111q4_1`,
+    "strategy-card": `_strategy-card_111q4_1`,
+    "strategy-card-active": `_strategy-card-active_111q4_25`,
+    "strategy-card-label": `_strategy-card-label_111q4_29`,
+    "strategy-card-icon": `_strategy-card-icon_111q4_35`,
+    "strategy-card-check": `_strategy-card-check_111q4_39`,
+  };
+x();
+var Zt = ({ currentStrategy: e, disabled: t = !1, onChange: n }) =>
+    (0, V.jsx)(`div`, {
+      className: Xt[`strategy-cards`],
+      children: Vt.map((r, i) => {
+        let a = e === r.value;
+        return (0, V.jsxs)(
+          `div`,
+          {
+            className: `${Xt[`strategy-card`]} ${a ? Xt[`strategy-card-active`] : ``}`,
+            onClick: () => {
+              t || n(r.value);
+            },
+            children: [
+              (0, V.jsxs)(`div`, {
+                children: [
+                  (0, V.jsx)(`span`, {
+                    className: Xt[`strategy-card-label`],
+                    children: r.label,
+                  }),
+                  (0, V.jsx)(_, {
+                    title: r.tip,
+                    placement: i === 0 ? `right` : `top`,
+                    children: (0, V.jsx)(p, {
+                      className: Xt[`strategy-card-icon`],
+                    }),
+                  }),
+                ],
+              }),
+              a && (0, V.jsx)(de, { className: Xt[`strategy-card-check`] }),
+            ],
+          },
+          r.value,
+        );
+      }),
+    }),
+  Qt = {
+    "switch-row": `_switch-row_1l2yo_1`,
+    label: `_label_1l2yo_6`,
+    tooltip: `_tooltip_1l2yo_14`,
+  };
+x();
+var $t = ({
+    label: e,
+    tooltip: t,
+    checked: n,
+    onChange: r,
+    disabled: i = !1,
+  }) =>
+    (0, V.jsxs)(`div`, {
+      className: Qt[`switch-row`],
+      children: [
+        (0, V.jsxs)(`div`, {
+          className: Qt.label,
+          style: { marginBottom: 0 },
+          children: [
+            e,
+            (0, V.jsx)(_, {
+              title: t,
+              placement: `right`,
+              children: (0, V.jsx)(p, { className: Qt.tooltip }),
+            }),
+          ],
+        }),
+        (0, V.jsx)(ue, { checked: n, onChange: r, disabled: i, size: `small` }),
+      ],
+    }),
+  en = ({ config: e, onChange: t }) => ({
+    knowledgeConfig: (0, L.useMemo)(
+      () => (e.knNode ? e.knNode.data.knowledge : null),
+      [e.knNode],
+    ),
+    updateKnowledgeConfig: (0, L.useCallback)(
+      (n) => {
+        e.knNode &&
+          t({
+            knNode: {
+              ...e.knNode,
+              data: {
+                ...e.knNode.data,
+                knowledge: { ...e.knNode.data.knowledge, ...n },
+              },
+            },
+          });
+      },
+      [e.knNode, t],
+    ),
+    addKnowledgeBase: (0, L.useCallback)(
+      async (n) => {
+        if (!e.knNode) return;
+        let r = [];
+        try {
+          let e = await vt({ baseId: n.baseId });
+          e.code === 0 &&
+            e.data &&
+            (r = e.data.map((e) => ({
+              labelName: e.labelName || ``,
+              docIds: e.docIds || [],
+            })));
+        } catch (e) {
+          console.error(`获取知识库文档标签失败:`, e);
+        }
+        let i = {
+          baseId: n.baseId,
+          baseName: n.baseName,
+          docCount: n.docCount,
+          docIds: r,
+          collectionName: n.collectionName,
+          embedType: n.embedType,
+          baseType: n.baseType ? Number(n.baseType) : 0,
+        };
+        t({
+          knNode: {
+            ...e.knNode,
+            data: {
+              ...e.knNode.data,
+              knowledge: {
+                ...e.knNode.data.knowledge,
+                knowledgeDetails: [
+                  ...e.knNode.data.knowledge.knowledgeDetails,
+                  i,
+                ],
+              },
+            },
+          },
+        });
+      },
+      [e.knNode, t],
+    ),
+    removeKnowledgeBase: (0, L.useCallback)(
+      (n) => {
+        if (!e.knNode) return;
+        let r = e.knNode.data.knowledge.knowledgeDetails.filter(
+          (e) => e.baseId !== n,
+        );
+        t({
+          knNode: {
+            ...e.knNode,
+            data: {
+              ...e.knNode.data,
+              knowledge: { ...e.knNode.data.knowledge, knowledgeDetails: r },
+            },
+          },
+        });
+      },
+      [e.knNode, t],
+    ),
+  }),
+  H = {
+    "knowledge-select-modal": `_knowledge-select-modal_sgnzt_1`,
+    "modal-container": `_modal-container_sgnzt_1`,
+    "modal-header": `_modal-header_sgnzt_4`,
+    "search-input": `_search-input_sgnzt_10`,
+    "type-select": `_type-select_sgnzt_15`,
+    tabs: `_tabs_sgnzt_18`,
+    "knowledge-list": `_knowledge-list_sgnzt_21`,
+    "knowledge-item": `_knowledge-item_sgnzt_41`,
+    "knowledge-item-content": `_knowledge-item-content_sgnzt_58`,
+    "knowledge-item-image": `_knowledge-item-image_sgnzt_65`,
+    "knowledge-item-image-placeholder": `_knowledge-item-image-placeholder_sgnzt_78`,
+    "knowledge-item-info": `_knowledge-item-info_sgnzt_87`,
+    "knowledge-item-title-container": `_knowledge-item-title-container_sgnzt_91`,
+    "knowledge-item-title": `_knowledge-item-title_sgnzt_91`,
+    highlight: `_highlight_sgnzt_101`,
+    "knowledge-item-description": `_knowledge-item-description_sgnzt_106`,
+    "knowledge-item-detail-container": `_knowledge-item-detail-container_sgnzt_111`,
+    "knowledge-item-detail-item": `_knowledge-item-detail-item_sgnzt_116`,
+    "knowledge-item-detail-icon": `_knowledge-item-detail-icon_sgnzt_123`,
+    "knowledge-item-detail-button": `_knowledge-item-detail-button_sgnzt_127`,
+    "knowledge-item-actions": `_knowledge-item-actions_sgnzt_130`,
+    empty: `_empty_sgnzt_135`,
+    "modal-footer": `_modal-footer_sgnzt_138`,
+    "empty-btn-group": `_empty-btn-group_sgnzt_145`,
+    "added-button": `_added-button_sgnzt_152`,
+    "add-button": `_add-button_sgnzt_164`,
+  };
+x();
+var tn = ({
+    item: e,
+    isAdded: t,
+    searchKeyword: n,
+    onAdd: r,
+    onRemove: i,
+    disabled: a = !1,
+  }) => {
+    let [o, s] = (0, L.useState)(!1);
+    return (0, V.jsx)(qt, {
+      item: e,
+      searchKeyword: n,
+      disabled: a,
+      renderActions: () =>
+        t
+          ? (0, V.jsx)(w, {
+              type: `default`,
+              size: `small`,
+              onMouseEnter: () => s(!0),
+              onMouseLeave: () => s(!1),
+              onClick: i,
+              className: H[`added-button`],
+              children: o ? `移除` : `已添加`,
+            })
+          : (0, V.jsx)(w, {
+              type: `primary`,
+              size: `small`,
+              className: H[`add-button`],
+              onClick: r,
+              children: `添加`,
+            }),
+    });
+  },
+  nn = ({
+    visible: e,
+    onClose: t,
+    selectedKnowledgeNode: n,
+    onAdd: r,
+    onRemove: i,
+    disabled: o = !1,
+  }) => {
+    let [s, c] = (0, L.useState)(!1),
+      [l, f] = (0, L.useState)(``),
+      [p, m] = (0, L.useState)(`all`),
+      [h, g] = (0, L.useState)([]),
+      [_, v] = (0, L.useState)(1),
+      [y, b] = (0, L.useState)(10),
+      [x, S] = (0, L.useState)(0),
+      [C, T] = (0, L.useState)(``),
+      E = (0, L.useMemo)(() => {
+        let e = new Set();
+        return (
+          n?.data?.knowledge?.knowledgeDetails &&
+            n.data.knowledge.knowledgeDetails.forEach((t) => {
+              t?.baseId && e.add(t.baseId);
+            }),
+          e
+        );
+      }, [n]),
+      D = (0, L.useCallback)(
+        async (e) => {
+          c(!0);
+          try {
+            let t = { name: l, baseType: e === void 0 ? C : e },
+              n = await Ot.queryList(t);
+            if (n?.code === 0 && n?.data) {
+              let e = n.data || [];
+              (g(e), S(e.length));
+            }
+          } catch (e) {
+            console.error(`获取知识库列表失败:`, e);
+          } finally {
+            c(!1);
+          }
+        },
+        [l, C],
+      ),
+      O = (0, L.useMemo)(() => {
+        let e = h;
+        p === `added` && (e = e.filter((e) => E.has(e.baseId)));
+        let t = (_ - 1) * y,
+          n = t + y;
+        return e.slice(t, n);
+      }, [h, p, E, _, y]),
+      k = (0, L.useMemo)(
+        () => (p === `added` ? h.filter((e) => E.has(e.baseId)).length : x),
+        [p, h, E, x],
+      ),
+      te = (0, L.useCallback)((e) => {
+        (f(e), v(1));
+      }, []),
+      ne = (0, L.useCallback)(
+        (e) => {
+          if ((n?.data?.knowledge?.knowledgeDetails?.length || 0) >= 10) {
+            P.warning(`最多添加10条知识库，超出的部分请先移除后再添加`);
+            return;
+          }
+          (r(e), P.success(`添加成功`));
+        },
+        [n, r],
+      ),
+      M = (0, L.useCallback)(
+        (e) => {
+          (i(e), P.success(`移除成功`));
+        },
+        [i],
+      ),
+      ie = (0, L.useCallback)(
+        (e, t) => {
+          (v(e), t !== y && (b(t), v(1)));
+        },
+        [y],
+      );
+    ((0, L.useEffect)(() => {
+      e && D();
+    }, [e, D]),
+      (0, L.useEffect)(() => {
+        e || (f(``), T(``), m(`all`), v(1), b(10), g([]), S(0));
+      }, [e]),
+      (0, L.useEffect)(() => {
+        v(1);
+      }, [p]));
+    let N = (0, L.useCallback)(
+        (e) => {
+          (T(e), v(1), D(e));
+        },
+        [D],
+      ),
+      oe = (0, L.useCallback)(() => {
+        Ee(`${ft.AGENT_KNOWLEDGE}?action=${xe.OPEN_ADD_KNOWLEDGE}`);
+      }, []),
+      se = (0, L.useMemo)(
+        () =>
+          s
+            ? null
+            : (0, V.jsx)(u, {
+                className: H[`empty-btn-group`],
+                image: Et,
+                description: (0, V.jsxs)(`div`, {
+                  children: [
+                    (0, V.jsx)(`div`, { children: `暂无数据` }),
+                    (0, V.jsx)(w, {
+                      type: `link`,
+                      onClick: oe,
+                      children: `新建知识库`,
+                    }),
+                  ],
+                }),
+              }),
+        [s, oe],
+      );
+    return (0, V.jsx)(ce, {
+      title: `选择知识库`,
+      open: e,
+      onCancel: t,
+      footer: null,
+      width: 800,
+      height: 800,
+      className: H[`knowledge-select-modal`],
+      closeIcon: (0, V.jsx)(ee, {}),
+      children: (0, V.jsxs)(`div`, {
+        className: H[`modal-container`],
+        children: [
+          (0, V.jsxs)(`div`, {
+            className: H[`modal-header`],
+            children: [
+              (0, V.jsx)(a, {
+                placeholder: `搜索知识库`,
+                prefix: (0, V.jsx)(re, {}),
+                value: l,
+                onChange: (e) => te(e.target.value),
+                allowClear: !0,
+                className: H[`search-input`],
+              }),
+              (0, V.jsx)(d, {
+                value: C,
+                style: { width: 120 },
+                options: Wt,
+                className: H[`type-select`],
+                onChange: N,
+              }),
+              (0, V.jsx)(w, {
+                type: `primary`,
+                onClick: oe,
+                children: `新建知识库`,
+              }),
+            ],
+          }),
+          h && h.length
+            ? (0, V.jsxs)(V.Fragment, {
+                children: [
+                  (0, V.jsx)(A, {
+                    activeKey: p,
+                    onChange: (e) => m(e),
+                    items: [
+                      { key: `all`, label: `全部` },
+                      {
+                        key: `added`,
+                        label: `已添加 ${n?.data?.knowledge?.knowledgeDetails?.length || 0}`,
+                      },
+                    ],
+                    className: H.tabs,
+                  }),
+                  (0, V.jsx)(j, {
+                    spinning: s,
+                    children: (0, V.jsx)(`div`, {
+                      className: H[`knowledge-list`],
+                      children:
+                        O.length === 0
+                          ? (0, V.jsx)(u, {
+                              image: u.PRESENTED_IMAGE_SIMPLE,
+                              description: l
+                                ? `未搜索到相关知识库`
+                                : `暂无数据`,
+                              className: H.empty,
+                            })
+                          : O.map((e) =>
+                              (0, V.jsx)(
+                                tn,
+                                {
+                                  item: e,
+                                  isAdded: E.has(e.baseId),
+                                  searchKeyword: l,
+                                  onAdd: () => ne(e),
+                                  onRemove: () => M(e.baseId),
+                                  disabled: o,
+                                },
+                                e.baseId,
+                              ),
+                            ),
+                    }),
+                  }),
+                  (0, V.jsx)(`div`, {
+                    className: H[`modal-footer`],
+                    children: (0, V.jsx)(ae, {
+                      showSizeChanger: !0,
+                      onChange: ie,
+                      current: _,
+                      pageSize: y,
+                      pageSizeOptions: Gt,
+                      total: k,
+                      showTotal: (e) => `共 ${e} 条`,
+                    }),
+                  }),
+                ],
+              })
+            : se,
+        ],
+      }),
+    });
+  },
+  rn = {
+    "knowledge-module": `_knowledge-module_1xdar_1`,
+    "knowledge-base-section": `_knowledge-base-section_1xdar_1`,
+    "knowledge-base-section-header": `_knowledge-base-section-header_1xdar_4`,
+    "add-knowledge-base-icon": `_add-knowledge-base-icon_1xdar_9`,
+    "strategy-section": `_strategy-section_1xdar_15`,
+    "switch-section": `_switch-section_1xdar_18`,
+  };
+x();
+var an = ({ config: e, onChange: t, disabled: n = !1 }) => {
+    let [r, i] = (0, L.useState)(!1),
+      [a, o] = (0, L.useState)(!1),
+      {
+        knowledgeConfig: s,
+        updateKnowledgeConfig: c,
+        addKnowledgeBase: l,
+        removeKnowledgeBase: u,
+      } = en({ config: e, onChange: t }),
+      d = (0, L.useCallback)(
+        (e) => {
+          c({ strategy: e });
+        },
+        [c],
+      ),
+      f = (0, L.useCallback)(
+        (e) => {
+          c({ resultReflow: e });
+        },
+        [c],
+      ),
+      m = (0, L.useCallback)(
+        (e) => {
+          c({ problemOptimize: e });
+        },
+        [c],
+      ),
+      h = (0, L.useCallback)(() => {
+        o(!0);
+      }, []),
+      g = (0, L.useCallback)(() => {
+        o(!1);
+      }, []),
+      v = (0, L.useCallback)(
+        (e) => {
+          l(e);
+        },
+        [l],
+      ),
+      y = (0, L.useCallback)(
+        (e) => {
+          u(e);
+        },
+        [u],
+      );
+    return (0, V.jsxs)(`div`, {
+      className: `${z[`module-section`]} ${rn[`knowledge-module`]}`,
+      children: [
+        (0, V.jsx)(`div`, {
+          className: `${z[`module-header`]} ${z[`collapsible-header`]}`,
+          onClick: () => i(!r),
+          children: (0, V.jsxs)(`div`, {
+            className: z[`header-left`],
+            children: [
+              (0, V.jsx)(M, { className: z[`module-icon`] }),
+              (0, V.jsx)(`h3`, {
+                className: z[`module-title`],
+                children: `知识`,
+              }),
+            ],
+          }),
+        }),
+        (0, V.jsx)(`div`, {
+          className: `${z[`collapsible-content`]} ${r ? z.collapsed : ``}`,
+          children: (0, V.jsxs)(`div`, {
+            className: z[`content-wrapper`],
+            children: [
+              (0, V.jsxs)(`div`, {
+                className: `${z[`form-item`]} ${rn[`knowledge-base-section`]}`,
+                children: [
+                  (0, V.jsxs)(`div`, {
+                    className: rn[`knowledge-base-section-header`],
+                    children: [
+                      (0, V.jsxs)(`div`, {
+                        className: z.label,
+                        children: [
+                          `知识库`,
+                          (0, V.jsx)(_, {
+                            title: Ht.knowledgeBase,
+                            placement: `right`,
+                            children: (0, V.jsx)(p, { className: z.tooltip }),
+                          }),
+                        ],
+                      }),
+                      (0, V.jsx)(`img`, {
+                        src: Le,
+                        width: 20,
+                        height: 20,
+                        className: rn[`add-knowledge-base-icon`],
+                        onClick: h,
+                        alt: `添加知识库`,
+                      }),
+                    ],
+                  }),
+                  (0, V.jsx)(Yt, {
+                    disabled: n,
+                    knowledgeNode: e.knNode,
+                    onRemove: u,
+                  }),
+                ],
+              }),
+              (0, V.jsxs)(`div`, {
+                className: `${z[`form-item`]} ${rn[`strategy-section`]}`,
+                children: [
+                  (0, V.jsx)(`div`, {
+                    className: z.label,
+                    children: `检索策略`,
+                  }),
+                  (0, V.jsx)(Zt, {
+                    currentStrategy: s?.strategy,
+                    disabled: n,
+                    onChange: d,
+                  }),
+                ],
+              }),
+              (0, V.jsx)(`div`, {
+                className: `${z[`form-item`]} ${rn[`switch-section`]}`,
+                children: (0, V.jsx)($t, {
+                  label: `结果重排`,
+                  tooltip: Ht.resultReranking,
+                  checked: s?.resultReflow || !1,
+                  onChange: f,
+                  disabled: n,
+                }),
+              }),
+              (0, V.jsx)(`div`, {
+                className: `${z[`form-item`]} ${rn[`switch-section`]}`,
+                children: (0, V.jsx)($t, {
+                  label: `问题优化`,
+                  tooltip: Ht.queryOptimization,
+                  checked: s?.problemOptimize || !1,
+                  onChange: m,
+                  disabled: n,
+                }),
+              }),
+            ],
+          }),
+        }),
+        (0, V.jsx)(nn, {
+          visible: a,
+          onClose: g,
+          selectedKnowledgeNode: e.knNode,
+          onAdd: v,
+          onRemove: y,
+          disabled: n,
+        }),
+      ],
+    });
+  },
+  U = {
+    "table-header": `_table-header_guc14_1`,
+    "header-cell": `_header-cell_guc14_9`,
+    required: `_required_guc14_15`,
+    "table-body": `_table-body_guc14_19`,
+    "table-row": `_table-row_guc14_42`,
+    "form-item": `_form-item_guc14_52`,
+    "action-cell": `_action-cell_guc14_59`,
+    "add-button-wrapper": `_add-button-wrapper_guc14_66`,
+    "add-button": `_add-button_guc14_66`,
+    tooltip: `_tooltip_guc14_74`,
+    "delete-icon": `_delete-icon_guc14_78`,
+  };
+x();
+var on = { name: 300, desc: 400, action: 50 },
+  sn = (0, L.memo)(({ visible: e, value: t = [], onCancel: n, onOk: r }) => {
+    let [i] = I.useForm(),
+      s = L.useRef(!1);
+    (0, L.useEffect)(() => {
+      e && !s.current
+        ? (i.setFieldsValue({ params: t.length > 0 ? t : [] }),
+          (s.current = !0))
+        : e || (s.current = !1);
+    }, [e, i, t]);
+    let c = (e) =>
+        e.some((t, n) => e.findIndex((e) => e.name === t.name) !== n),
+      l = (0, L.useCallback)(() => {
+        i.validateFields()
+          .then((e) => {
+            let t = e.params || [];
+            if (c(t)) {
+              P.error(`变量名不能重复`);
+              return;
+            }
+            (r(t), P.success(`保存成功`));
+          })
+          .catch((e) => {
+            P.error(`请检查表单填写是否正确`);
+          });
+      }, [i, r]),
+      u = (0, L.useCallback)(() => {
+        (i.resetFields(), n());
+      }, [i, n]),
+      d = (0, L.useCallback)((e, t) => {
+        if (t.length >= 100) {
+          P.warning(`最多添加100条记忆变量`);
+          return;
+        }
+        e();
+      }, []),
+      f = (0, L.useCallback)((e, t) => {
+        e(t);
+      }, []);
+    return (0, V.jsx)(ce, {
+      title: (0, V.jsxs)(V.Fragment, {
+        children: [
+          (0, V.jsx)(`span`, { children: `记忆变量` }),
+          (0, V.jsx)(_, {
+            title: `通过配置记忆变量字段，系统自动总结出变量信息，记忆变量抽取需在应用发布后生效`,
+            children: (0, V.jsx)(p, { className: U.tooltip }),
+          }),
+        ],
+      }),
+      open: e,
+      onOk: l,
+      onCancel: u,
+      width: 900,
+      okText: `确定`,
+      cancelText: `取消`,
+      children: (0, V.jsx)(I, {
+        form: i,
+        name: `long_memory_params`,
+        layout: `vertical`,
+        initialValues: { params: [] },
+        children: (0, V.jsx)(I.List, {
+          name: `params`,
+          children: (e, { add: t, remove: n }) =>
+            (0, V.jsxs)(V.Fragment, {
+              children: [
+                (0, V.jsxs)(`div`, {
+                  className: U[`table-header`],
+                  children: [
+                    (0, V.jsx)(`div`, {
+                      className: U[`header-cell`],
+                      style: { width: on.name },
+                      children: `变量名称`,
+                    }),
+                    (0, V.jsxs)(`div`, {
+                      className: U[`header-cell`],
+                      style: { width: on.desc },
+                      children: [
+                        `描述`,
+                        (0, V.jsx)(_, {
+                          title: `变量的描述信息，用于提示大模型该字段的含义`,
+                          children: (0, V.jsx)(p, { className: U.tooltip }),
+                        }),
+                      ],
+                    }),
+                    (0, V.jsx)(`div`, {
+                      className: U[`header-cell`],
+                      style: { width: on.action },
+                      children: `操作`,
+                    }),
+                  ],
+                }),
+                (0, V.jsx)(`div`, {
+                  className: U[`table-body`],
+                  children: e.map(({ key: e, name: t, ...r }) =>
+                    (0, V.jsxs)(
+                      `div`,
+                      {
+                        className: U[`table-row`],
+                        children: [
+                          (0, V.jsx)(I.Item, {
+                            ...r,
+                            name: [t, `name`],
+                            rules: [
+                              { required: !0, message: `请输入变量名称` },
+                              { whitespace: !0, message: `变量名称不能为空格` },
+                            ],
+                            className: U[`form-item`],
+                            style: { width: on.name },
+                            children: (0, V.jsx)(a, { placeholder: `请输入` }),
+                          }),
+                          (0, V.jsx)(I.Item, {
+                            ...r,
+                            name: [t, `desc`],
+                            rules: [
+                              { required: !0, message: `请输入变量描述` },
+                            ],
+                            className: U[`form-item`],
+                            style: { width: on.desc },
+                            children: (0, V.jsx)(a, { placeholder: `请输入` }),
+                          }),
+                          (0, V.jsx)(`div`, {
+                            className: U[`action-cell`],
+                            style: { width: on.action },
+                            children: (0, V.jsx)(`img`, {
+                              src: Ue,
+                              className: U[`delete-icon`],
+                              onClick: () => f(n, t),
+                            }),
+                          }),
+                        ],
+                      },
+                      e,
+                    ),
+                  ),
+                }),
+                (0, V.jsx)(I.Item, {
+                  className: U[`add-button-wrapper`],
+                  children: (0, V.jsx)(w, {
+                    type: `dashed`,
+                    onClick: () => d(t, e),
+                    block: !0,
+                    icon: (0, V.jsx)(o, {}),
+                    className: U[`add-button`],
+                    disabled: e.length >= 100,
+                    children: `添加变量`,
+                  }),
+                }),
+              ],
+            }),
+        }),
+      }),
+    });
+  }),
+  W = {
+    "memory-module": `_memory-module_153l3_1`,
+    "short-term-section": `_short-term-section_153l3_1`,
+    "slider-row": `_slider-row_153l3_4`,
+    "slider-label": `_slider-label_153l3_4`,
+    "slider-container": `_slider-container_153l3_9`,
+    slider: `_slider_153l3_4`,
+    "slider-value": `_slider-value_153l3_18`,
+    "long-term-section-header": `_long-term-section-header_153l3_22`,
+    "long-term-section": `_long-term-section_153l3_22`,
+    "switch-row": `_switch-row_153l3_28`,
+    "conditional-section": `_conditional-section_153l3_33`,
+    "usage-limit-label": `_usage-limit-label_153l3_37`,
+    "usage-limit-input": `_usage-limit-input_153l3_42`,
+    name: `_name_153l3_45`,
+  };
+x();
+var cn = { MIN: 0, MAX: 50, DEFAULT: 3, MARKS: { 0: `0`, 50: `50` } },
+  ln = {
+    shortTermMemory: `短期记忆是会话中提供给智能体的上下文信息，轮数越多，对话相关性越强，输入长度也会增加`,
+    longTermMemory: `长期记忆可以提取对话的关键信息并保存`,
+  },
+  un = (e, t, n) => Math.max(t, Math.min(n, e)),
+  dn = ({ config: e, onChange: t, disabled: n = !1 }) => {
+    let [r, i] = (0, L.useState)(!1),
+      [a, o] = (0, L.useState)(!1),
+      s = (0, L.useCallback)(
+        (n) => {
+          if (n === null) return;
+          let r = un(n, cn.MIN, cn.MAX);
+          t({ memoryConfig: { ...e.memoryConfig, memoryRounds: r } });
+        },
+        [t, e.memoryConfig],
+      ),
+      c = (0, L.useCallback)(
+        (n) => {
+          t({ memoryConfig: { ...e.memoryConfig, longMemoryEnable: n } });
+        },
+        [t, e.memoryConfig],
+      ),
+      l = (0, L.useCallback)(
+        (n) => {
+          (t({ memoryConfig: { ...e.memoryConfig, longMemoryParams: n } }),
+            o(!1));
+        },
+        [t, e.memoryConfig],
+      );
+    return (0, V.jsxs)(`div`, {
+      className: `${z[`module-section`]} ${W[`memory-module`]}`,
+      children: [
+        (0, V.jsx)(`div`, {
+          className: `${z[`module-header`]} ${z[`collapsible-header`]}`,
+          onClick: () => i(!r),
+          children: (0, V.jsxs)(`div`, {
+            className: z[`header-left`],
+            children: [
+              (0, V.jsx)(ne, { className: z[`module-icon`] }),
+              (0, V.jsx)(`h3`, {
+                className: z[`module-title`],
+                children: `记忆`,
+              }),
+            ],
+          }),
+        }),
+        (0, V.jsx)(`div`, {
+          className: `${z[`collapsible-content`]} ${r ? z.collapsed : ``}`,
+          children: (0, V.jsxs)(`div`, {
+            className: z[`content-wrapper`],
+            children: [
+              (0, V.jsxs)(`div`, {
+                className: `${z[`form-item`]} ${W[`short-term-section`]}`,
+                children: [
+                  (0, V.jsxs)(`div`, {
+                    className: z.label,
+                    children: [
+                      `短期记忆`,
+                      (0, V.jsx)(_, {
+                        title: ln.shortTermMemory,
+                        placement: `right`,
+                        children: (0, V.jsx)(p, { className: z.tooltip }),
+                      }),
+                    ],
+                  }),
+                  (0, V.jsxs)(`div`, {
+                    className: W[`slider-row`],
+                    children: [
+                      (0, V.jsx)(`div`, {
+                        className: W[`slider-label`],
+                        children: `携带上下文轮数`,
+                      }),
+                      (0, V.jsxs)(`div`, {
+                        className: W[`slider-container`],
+                        children: [
+                          (0, V.jsx)(v, {
+                            className: W.slider,
+                            min: cn.MIN,
+                            max: cn.MAX,
+                            value: e.memoryConfig?.memoryRounds ?? cn.DEFAULT,
+                            onChange: s,
+                            marks: cn.MARKS,
+                            styles: {
+                              track: {
+                                backgroundColor: `var(--primary-color)`,
+                              },
+                              handle: { borderColor: `var(--primary-color)` },
+                            },
+                            disabled: n,
+                          }),
+                          (0, V.jsx)(m, {
+                            className: W[`slider-value`],
+                            min: cn.MIN,
+                            max: cn.MAX,
+                            value: e.memoryConfig?.memoryRounds ?? cn.DEFAULT,
+                            onChange: s,
+                            disabled: n,
+                          }),
+                        ],
+                      }),
+                    ],
+                  }),
+                ],
+              }),
+              (0, V.jsxs)(`div`, {
+                className: `${z[`form-item`]} ${W[`long-term-section`]}`,
+                children: [
+                  (0, V.jsxs)(`div`, {
+                    className: W[`long-term-section-header`],
+                    children: [
+                      (0, V.jsxs)(`div`, {
+                        className: W[`switch-row`],
+                        children: [
+                          (0, V.jsxs)(`div`, {
+                            className: z.label,
+                            style: { marginBottom: 0 },
+                            children: [
+                              `长期记忆`,
+                              (0, V.jsx)(_, {
+                                title: ln.longTermMemory,
+                                placement: `right`,
+                                children: (0, V.jsx)(p, {
+                                  className: z.tooltip,
+                                }),
+                              }),
+                            ],
+                          }),
+                          (0, V.jsx)(ue, {
+                            checked: e.memoryConfig?.longMemoryEnable ?? !1,
+                            onChange: c,
+                            disabled: n,
+                            size: `small`,
+                          }),
+                        ],
+                      }),
+                      !n && e.memoryConfig?.longMemoryEnable
+                        ? (0, V.jsx)(`img`, {
+                            src: Le,
+                            width: 20,
+                            height: 20,
+                            onClick: () => o(!0),
+                            alt: `添加长期记忆`,
+                            style: { cursor: `pointer` },
+                          })
+                        : null,
+                    ],
+                  }),
+                  e.memoryConfig?.longMemoryEnable &&
+                    e.memoryConfig?.longMemoryParams &&
+                    (0, V.jsx)(`div`, {
+                      className: W[`conditional-section`],
+                      children: e.memoryConfig.longMemoryParams.map((e, t) =>
+                        (0, V.jsx)(
+                          N,
+                          { className: W.name, children: e.name },
+                          t,
+                        ),
+                      ),
+                    }),
+                ],
+              }),
+            ],
+          }),
+        }),
+        (0, V.jsx)(sn, {
+          visible: a,
+          value: e.memoryConfig?.longMemoryParams,
+          onCancel: () => o(!1),
+          onOk: l,
+        }),
+      ],
+    });
+  },
+  G = {
+    "edit-button": `_edit-button_l4gw0_1`,
+    "table-header": `_table-header_l4gw0_4`,
+    "header-cell": `_header-cell_l4gw0_12`,
+    required: `_required_l4gw0_18`,
+    "table-body": `_table-body_l4gw0_22`,
+    "table-row": `_table-row_l4gw0_45`,
+    "form-item": `_form-item_l4gw0_55`,
+    "action-cell": `_action-cell_l4gw0_62`,
+    "delete-button": `_delete-button_l4gw0_69`,
+    "add-button-wrapper": `_add-button-wrapper_l4gw0_85`,
+    "add-button": `_add-button_l4gw0_85`,
+    "title-description-icon": `_title-description-icon_l4gw0_93`,
+    "delete-icon": `_delete-icon_l4gw0_97`,
+  };
+x();
+var fn = {
+    name: 200,
+    type: 160,
+    description: 200,
+    defaultValue: 200,
+    action: 50,
+  },
+  pn = (0, L.memo)(
+    ({
+      sessionVariables: e = [],
+      onSessionVariablesChange: t,
+      onSave: n,
+      disabled: r = !1,
+      visible: i = !1,
+      onVisibleChange: s,
+    }) => {
+      let [c] = I.useForm();
+      (0, L.useEffect)(() => {
+        i && c.setFieldsValue({ variables: e.length > 0 ? e : [] });
+      }, [i, c, e]);
+      let l = (e) =>
+          e.some((t, n) => e.findIndex((e) => e.name === t.name) !== n),
+        u = (0, L.useCallback)(() => {
+          r ||
+            c
+              .validateFields()
+              .then((e) => {
+                let r = e.variables || [];
+                if (l(r)) {
+                  P.error(`变量名不能重复`);
+                  return;
+                }
+                (t?.(r), n?.(r), P.success(`保存成功`), s?.(!1));
+              })
+              .catch((e) => {
+                P.error(`请检查表单填写是否正确`);
+              });
+        }, [c, t, n, r, s]),
+        d = (0, L.useCallback)(() => {
+          (c.resetFields(), s?.(!1));
+        }, [c, s]),
+        f = (0, L.useCallback)((e) => {
+          e({ type: `String` });
+        }, []),
+        m = (0, L.useCallback)(
+          (e, t) => {
+            r || e(t);
+          },
+          [r],
+        );
+      return (0, V.jsx)(ce, {
+        title: (0, V.jsxs)(`span`, {
+          children: [
+            `自定义变量`,
+            (0, V.jsx)(_, {
+              title: `可通过入参变量表单填写，传入变量值将替换提示词中对应的变量位置。`,
+              placement: `top`,
+              children: (0, V.jsx)(p, {
+                className: G[`title-description-icon`],
+              }),
+            }),
+          ],
+        }),
+        open: i,
+        onOk: u,
+        onCancel: d,
+        width: 900,
+        okText: `确定`,
+        cancelText: `取消`,
+        okButtonProps: { disabled: r },
+        children: (0, V.jsx)(I, {
+          form: c,
+          name: `session_variables`,
+          layout: `vertical`,
+          initialValues: { variables: [] },
+          disabled: r,
+          children: (0, V.jsx)(I.List, {
+            name: `variables`,
+            children: (e, { add: t, remove: n }) =>
+              (0, V.jsxs)(V.Fragment, {
+                children: [
+                  (0, V.jsxs)(`div`, {
+                    className: G[`table-header`],
+                    children: [
+                      (0, V.jsxs)(`div`, {
+                        className: G[`header-cell`],
+                        style: { width: fn.name },
+                        children: [
+                          `变量名 `,
+                          (0, V.jsx)(`span`, {
+                            className: G.required,
+                            children: `*`,
+                          }),
+                        ],
+                      }),
+                      (0, V.jsxs)(`div`, {
+                        className: G[`header-cell`],
+                        style: { width: fn.type },
+                        children: [
+                          `变量类型 `,
+                          (0, V.jsx)(`span`, {
+                            className: G.required,
+                            children: `*`,
+                          }),
+                        ],
+                      }),
+                      (0, V.jsx)(`div`, {
+                        className: G[`header-cell`],
+                        style: { width: fn.description },
+                        children: `变量描述`,
+                      }),
+                      (0, V.jsx)(`div`, {
+                        className: G[`header-cell`],
+                        style: { width: fn.defaultValue },
+                        children: `默认值`,
+                      }),
+                      (0, V.jsx)(`div`, {
+                        className: G[`header-cell`],
+                        style: { width: fn.action },
+                        children: `操作`,
+                      }),
+                    ],
+                  }),
+                  (0, V.jsx)(`div`, {
+                    className: G[`table-body`],
+                    children: e.map(({ key: e, name: t, ...i }) =>
+                      (0, V.jsxs)(
+                        `div`,
+                        {
+                          className: G[`table-row`],
+                          children: [
+                            (0, V.jsx)(I.Item, {
+                              ...i,
+                              name: [t, `name`],
+                              rules: [
+                                { required: !0, message: `请输入变量名` },
+                                { whitespace: !0, message: `变量名不能为空格` },
+                              ],
+                              className: G[`form-item`],
+                              style: { width: fn.name },
+                              children: (0, V.jsx)(a, {
+                                placeholder: `请输入变量名`,
+                              }),
+                            }),
+                            (0, V.jsx)(I.Item, {
+                              ...i,
+                              name: [t, `type`],
+                              rules: [
+                                { required: !0, message: `请选择变量类型` },
+                              ],
+                              className: G[`form-item`],
+                              style: { width: fn.type },
+                              children: (0, V.jsx)(je, {
+                                placeholder: `请选择类型`,
+                                disabled: r,
+                                displayFullType: !0,
+                              }),
+                            }),
+                            (0, V.jsx)(I.Item, {
+                              ...i,
+                              name: [t, `description`],
+                              className: G[`form-item`],
+                              style: { width: fn.description },
+                              children: (0, V.jsx)(a, {
+                                placeholder: `请输入描述（可选）`,
+                              }),
+                            }),
+                            (0, V.jsx)(I.Item, {
+                              ...i,
+                              name: [t, `defaultValue`],
+                              className: G[`form-item`],
+                              style: { width: fn.defaultValue },
+                              children: (0, V.jsx)(a, {
+                                placeholder: `请输入默认值（可选）`,
+                              }),
+                            }),
+                            (0, V.jsx)(`div`, {
+                              className: G[`action-cell`],
+                              style: { width: fn.action },
+                              children: (0, V.jsx)(`img`, {
+                                src: Ue,
+                                className: G[`delete-icon`],
+                                onClick: () => m(n, t),
+                              }),
+                            }),
+                          ],
+                        },
+                        e,
+                      ),
+                    ),
+                  }),
+                  (0, V.jsx)(I.Item, {
+                    className: G[`add-button-wrapper`],
+                    children: (0, V.jsx)(w, {
+                      type: `dashed`,
+                      onClick: () => f(t),
+                      block: !0,
+                      icon: (0, V.jsx)(o, {}),
+                      className: G[`add-button`],
+                      disabled: r,
+                      children: `添加变量`,
+                    }),
+                  }),
+                ],
+              }),
+          }),
+        }),
+      });
+    },
+  ),
+  K = {
+    "form-text-area": `_form-text-area_pu4yi_1`,
+    "text-label": `_text-label_pu4yi_4`,
+    "text-label-required": `_text-label-required_pu4yi_11`,
+    "textarea-wrapper": `_textarea-wrapper_pu4yi_24`,
+    "content-editor": `_content-editor_pu4yi_38`,
+    "form-item-label": `_form-item-label_pu4yi_42`,
+    "variable-prefix": `_variable-prefix_pu4yi_98`,
+    "variable-divider": `_variable-divider_pu4yi_101`,
+    "variable-suffix": `_variable-suffix_pu4yi_105`,
+    "editor-footer": `_editor-footer_pu4yi_111`,
+    "input-hint": `_input-hint_pu4yi_120`,
+    "character-count": `_character-count_pu4yi_125`,
+    "character-count-warning": `_character-count-warning_pu4yi_131`,
+    "variable-selection-popup": `_variable-selection-popup_pu4yi_134`,
+  },
+  mn = (0, L.forwardRef)(
+    (
+      {
+        disabled: e = !1,
+        onInput: t,
+        onKeyDown: n,
+        onCompositionStart: r,
+        onCompositionEnd: i,
+        onPaste: a,
+        onBlur: o,
+        placeholder: s = `请输入内容`,
+      },
+      c,
+    ) =>
+      (0, V.jsx)(`div`, {
+        ref: c,
+        className: K[`content-editor`],
+        contentEditable: !e,
+        suppressContentEditableWarning: !0,
+        onInput: t,
+        onKeyDown: n,
+        onCompositionStart: r,
+        onCompositionEnd: i,
+        onPaste: a,
+        "data-placeholder": s,
+        onBlur: o,
+        style: e ? { cursor: `not-allowed`, opacity: 0.6 } : void 0,
+      }),
+  );
+mn.displayName = `ContentEditor`;
+var hn = ({ currentLength: e, maxLength: t }) =>
+  (0, V.jsxs)(`div`, {
+    className: K[`editor-footer`],
+    children: [
+      (0, V.jsx)(`div`, {
+        className: K[`input-hint`],
+        children: `输入 "/" 插入变量`,
+      }),
+      t &&
+        t > 0 &&
+        (0, V.jsx)(`div`, {
+          className: K[`character-count`],
+          children: (0, V.jsxs)(`span`, {
+            className: e >= t ? K[`character-count-warning`] : ``,
+            children: [e, `/`, t],
+          }),
+        }),
+    ],
+  });
+x();
+var gn = ({ title: e, extra: t, required: n = !1 }) =>
+    (0, V.jsx)(`div`, {
+      className: K[`form-item-label`],
+      children: (0, V.jsxs)(`div`, {
+        className: K[`text-label`],
+        children: [
+          (0, V.jsx)(`span`, {
+            className: n ? K[`text-label-required`] : ``,
+            children:
+              typeof e == `string`
+                ? (0, V.jsx)(h.Text, {
+                    children: e === void 0 ? `文本内容` : e || ``,
+                  })
+                : e || (0, V.jsx)(h.Text, { children: `文本内容` }),
+          }),
+          t,
+        ],
+      }),
+    }),
+  q = {
+    variable_selection: `_variable_selection_h9vf5_1`,
+    single_column_wrapper: `_single_column_wrapper_h9vf5_11`,
+    two_column_layout: `_two_column_layout_h9vf5_15`,
+    single_column_layout: `_single_column_layout_h9vf5_19`,
+    left_column: `_left_column_h9vf5_25`,
+    variable_label: `_variable_label_h9vf5_31`,
+    with_right_column: `_with_right_column_h9vf5_36`,
+    right_column: `_right_column_h9vf5_43`,
+    variable_list: `_variable_list_h9vf5_48`,
+    variable_item: `_variable_item_h9vf5_51`,
+    disabled_item: `_disabled_item_h9vf5_65`,
+    selected_item: `_selected_item_h9vf5_73`,
+    expand_icon: `_expand_icon_h9vf5_80`,
+    node_icon: `_node_icon_h9vf5_90`,
+    type_tag: `_type_tag_h9vf5_106`,
+    type_text: `_type_text_h9vf5_118`,
+    children_container: `_children_container_h9vf5_122`,
+    empty_state: `_empty_state_h9vf5_125`,
+    create_variable_btn: `_create_variable_btn_h9vf5_131`,
+  };
+x();
+var _n = ({
+    record: e,
+    onValueChange: t,
+    onUpdateRow: n,
+    variableOptions: r = [],
+    onCreateVariable: i,
+  }) => {
+    let [a, o] = (0, L.useState)(new Set()),
+      [s, c] = (0, L.useState)(null),
+      [l, u] = (0, L.useState)(null),
+      d = (0, L.useCallback)(
+        (r) => {
+          let i = `\${${r.name}}`;
+          (t && t(i, { type: r.type }),
+            e &&
+              n &&
+              (n(e._id, `value`, i), r.type && n(e._id, `type`, r.type)));
+        },
+        [!1, t, e, n],
+      ),
+      f = (0, L.useCallback)(
+        (e, t) => {
+          t ? (c(e), u(null)) : u(e);
+        },
+        [!1],
+      ),
+      p = (0, L.useCallback)(() => {
+        (u(null), c(null));
+      }, []),
+      m = (0, L.useCallback)(
+        (e) => {
+          let t = e.children && e.children.length > 0,
+            n = s?.name === e.name,
+            r = l?.name === e.name;
+          return (0, V.jsxs)(
+            `div`,
+            {
+              className: `${q.variable_item} ${n || r ? q.selected_item : ``} `,
+              onClick: () => {
+                t ? f(e, !0) : d(e);
+              },
+              onMouseEnter: () => {
+                t && f(e);
+              },
+              onMouseLeave: () => {},
+              children: [
+                e.icon &&
+                  (0, V.jsx)(`img`, {
+                    src: e.icon,
+                    alt: ``,
+                    className: q.node_icon,
+                  }),
+                (0, V.jsx)(`span`, {
+                  className: q.variable_label,
+                  children: e.name,
+                }),
+                t && (0, V.jsx)(fe, { className: q.expand_icon }),
+              ],
+            },
+            e.name,
+          );
+        },
+        [s, l, d, f, !1],
+      ),
+      h = (0, L.useCallback)(
+        (e, t = 0, n = ``) => {
+          let r = e.children && e.children.length > 0,
+            i = t * 16,
+            s = n ? `${n}-${e.name}` : e.name,
+            c = a.has(s);
+          return (0, V.jsxs)(
+            `div`,
+            {
+              children: [
+                (0, V.jsxs)(`div`, {
+                  className: `${q.variable_item} `,
+                  style: { paddingLeft: `${i + 12}px` },
+                  onClick: () => {
+                    d(e);
+                  },
+                  onMouseEnter: () => {
+                    r &&
+                      !c &&
+                      o((e) => {
+                        let t = new Set(e);
+                        return (t.add(s), t);
+                      });
+                  },
+                  children: [
+                    (0, V.jsx)(`span`, {
+                      className: q.variable_label,
+                      children: e.name,
+                    }),
+                    r &&
+                      (0, V.jsx)(fe, {
+                        className: q.expand_icon,
+                        style: {
+                          transform: c ? `rotate(90deg)` : `rotate(0deg)`,
+                        },
+                        onClick: (e) => {
+                          (e.stopPropagation(),
+                            r &&
+                              o((e) => {
+                                let t = new Set(e);
+                                return (c ? t.delete(s) : t.add(s), t);
+                              }));
+                        },
+                      }),
+                    e.type &&
+                      (0, V.jsx)(N, {
+                        className: q.type_tag,
+                        children: (0, V.jsx)(`span`, {
+                          className: q.type_text,
+                          children: e.type,
+                        }),
+                      }),
+                  ],
+                }),
+                r &&
+                  c &&
+                  (0, V.jsx)(`div`, {
+                    className: q.children_container,
+                    children: e.children.map((e) => h(e, t + 1, s)),
+                  }),
+              ],
+            },
+            s,
+          );
+        },
+        [a, d, o, !1],
+      ),
+      g = l || s,
+      _ = g && g.children && Array.isArray(g.children) && g.children.length > 0;
+    return (0, V.jsx)(`div`, {
+      className: `${q.variable_selection} ${_ ? `` : q.single_column_wrapper}`,
+      onMouseLeave: () => {
+        p();
+      },
+      children: (0, V.jsxs)(`div`, {
+        className: _ ? q.two_column_layout : q.single_column_layout,
+        children: [
+          (0, V.jsxs)(`div`, {
+            className: `${q.left_column} ${_ ? q.with_right_column : ``}`,
+            children: [
+              r.length > 0
+                ? (0, V.jsx)(`div`, {
+                    className: q.variable_list,
+                    children: r.map((e) => m(e)),
+                  })
+                : null,
+              i &&
+                (0, V.jsx)(`div`, {
+                  className: `${q.create_variable_btn} `,
+                  onClick: () => {
+                    i();
+                  },
+                  children: (0, V.jsx)(`span`, { children: `+ 新建变量` }),
+                }),
+            ],
+          }),
+          _
+            ? (0, V.jsx)(`div`, {
+                className: q.right_column,
+                children:
+                  g.children && g.children.length > 0
+                    ? (0, V.jsx)(`div`, {
+                        className: q.variable_list,
+                        children: g.children.map((e) => h(e)),
+                      })
+                    : (0, V.jsx)(`div`, {
+                        className: q.empty_state,
+                        children: `暂无变量可选择`,
+                      }),
+              })
+            : null,
+        ],
+      }),
+    });
+  },
+  vn = ({
+    visible: e,
+    position: t,
+    popupRef: n,
+    onValueChange: r,
+    variableOptions: i,
+    onCreateVariable: a,
+  }) =>
+    !e || !t
+      ? null
+      : (0, V.jsx)(`div`, {
+          ref: n,
+          className: K[`variable-selection-popup`],
+          onMouseDown: (e) => {
+            e.preventDefault();
+          },
+          style: { top: `${t.top}px`, left: `${t.left}px` },
+          children: (0, V.jsx)(_n, {
+            variableOptions: i,
+            onValueChange: r,
+            onCreateVariable: a,
+          }),
+        }),
+  yn = (e) => {
+    if (!e || typeof e != `string`) return null;
+    let t = e.match(/^\$\{session\.([^{}]+)\}$/);
+    if (t) return { type: `session`, variableName: t[1] };
+    let n = e.match(/^\$\{sys\.([^{}]+)\}$/);
+    if (n) return { type: `builtin`, code: n[1] };
+    let r = e.match(/^\$\{([^.\s{}]+)\.index\}$/);
+    if (r)
+      return {
+        type: `node`,
+        nodeId: r[1],
+        pathSegments: [`index`],
+        isSpecialVariable: !0,
+        specialType: `index`,
+      };
+    let i = e.match(/^\$\{([^.\s{}]+)\.([^.\s{}]+)\}$/);
+    if (i) {
+      let [, e, t] = i;
+      if (t !== `result` && t !== `index`)
+        return {
+          type: `node`,
+          nodeId: e,
+          pathSegments: [t],
+          isSpecialVariable: !0,
+          specialType: `intermediateOrItem`,
+        };
+    }
+    let a = e.match(/^\$\{([^.\s{}]+)\.result\}$/);
+    if (a) {
+      let [, e] = a;
+      return { type: `node`, nodeId: e, pathSegments: [] };
+    }
+    let o = e.match(/^\$\{([^.\s{}]+)\.result\.(.+)\}$/);
+    if (!o) return null;
+    let [, s, c] = o;
+    return !s || !c
+      ? null
+      : { type: `node`, nodeId: s, pathSegments: c.split(`.`).filter(Boolean) };
+  },
+  bn = ({ variableValue: e, sysParams: t = [] }) => {
+    if (!e || typeof e != `string`) return { prefix: e || ``, suffix: `` };
+    let n = yn(e);
+    if (!n) return { prefix: e, suffix: `` };
+    if (n.type === `session`)
+      return { prefix: `会话变量`, suffix: n.variableName || `` };
+    if (n.type === `builtin`) {
+      let e = t.find((e) => e.paramCode === n.code || e.value === n.code);
+      return {
+        prefix: `内置变量`,
+        suffix: e?.paramName || e?.label || n.code || ``,
+      };
+    }
+    return { prefix: e, suffix: `` };
+  };
+x();
+var xn = ({ editorRef: e, nodesData: t, sysParams: n, value: r }) => {
+    let [i, a] = (0, L.useState)(!1),
+      [o, s] = (0, L.useState)(``),
+      [c, l] = (0, L.useState)(null),
+      u = (0, L.useRef)(null);
+    return (
+      (0, L.useEffect)(() => {
+        let t = e.current;
+        if (!t) return;
+        let r = null,
+          i = null,
+          o = (e) => {
+            let t = e.getAttribute(`data-tooltip`) || ``;
+            if (!t || t.includes(`...`)) {
+              let r = e.getAttribute(`data-original`) || ``;
+              if (r) {
+                let e = bn({ variableValue: r, sysParams: n || [] });
+                t =
+                  e.prefix || e.suffix
+                    ? `${e.prefix || ``}${e.prefix && e.suffix ? ` / ` : ``}${e.suffix || ``}`
+                    : r;
+              } else t = e.textContent || ``;
+            }
+            if (!t) {
+              (a(!1), (r = null), (u.current = null));
+              return;
+            }
+            let i = e.getBoundingClientRect();
+            (s(t),
+              l({ x: i.left + i.width / 2, y: i.top }),
+              a(!0),
+              (r = e),
+              (u.current = e));
+          },
+          c = (e) => {
+            let t = e.target.closest(`[data-variable="true"]`);
+            if (!t) {
+              (r && (a(!1), (r = null), (u.current = null)),
+                (i &&= (clearTimeout(i), null)));
+              return;
+            }
+            r !== t &&
+              ((i &&= (clearTimeout(i), null)),
+              (i = setTimeout(() => {
+                o(t);
+              }, 300)));
+          },
+          d = (e) => {
+            let t = e.target,
+              n = e.relatedTarget,
+              o = t.closest(`[data-variable="true"]`);
+            ((i &&= (clearTimeout(i), null)),
+              (!o || (n && !o.contains(n))) &&
+                (a(!1), (r = null), (u.current = null)));
+          },
+          f = (e) => {
+            let t = e.target.closest(`[data-variable="true"]`);
+            if (t && r === t) {
+              let e = t.getBoundingClientRect();
+              l({ x: e.left + e.width / 2, y: e.top });
+            }
+          };
+        return (
+          t.addEventListener(`mouseover`, c, !0),
+          t.addEventListener(`mouseout`, d, !0),
+          t.addEventListener(`mousemove`, f, !0),
+          () => {
+            (t.removeEventListener(`mouseover`, c, !0),
+              t.removeEventListener(`mouseout`, d, !0),
+              t.removeEventListener(`mousemove`, f, !0),
+              i && clearTimeout(i),
+              a(!1),
+              (r = null),
+              (u.current = null));
+          }
+        );
+      }, [r, t, n]),
+      !i || !c || !o
+        ? null
+        : (0, V.jsx)(_, {
+            title: o,
+            placement: `top`,
+            open: i,
+            mouseEnterDelay: 0,
+            mouseLeaveDelay: 0.1,
+            overlayStyle: {
+              maxWidth: `400px`,
+              wordBreak: `break-all`,
+              whiteSpace: `normal`,
+              overflowWrap: `break-word`,
+            },
+            getPopupContainer: () => document.body,
+            overlayInnerStyle: {
+              maxWidth: `400px`,
+              wordBreak: `break-all`,
+              whiteSpace: `normal`,
+              overflowWrap: `break-word`,
+              wordWrap: `break-word`,
+            },
+            children: (0, V.jsx)(`div`, {
+              style: {
+                position: `fixed`,
+                left: `${c.x}px`,
+                top: `${c.y}px`,
+                width: 1,
+                height: 1,
+                pointerEvents: `none`,
+                zIndex: 9999,
+              },
+            }),
+          })
+    );
+  },
+  Sn = (e, t, n) => {
+    let r = (0, L.useRef)(!1),
+      i = (0, L.useRef)(0),
+      a = (0, L.useCallback)(
+        (a = !0) => {
+          let o = e.current;
+          if (!o) return;
+          let s;
+          ((s = r.current ? i.current : a ? o.scrollTop : 0),
+            (o.style.height = `auto`));
+          let c = o.scrollHeight,
+            l = getComputedStyle(o),
+            u = parseFloat(l.fontSize) || 14,
+            d = l.lineHeight,
+            f =
+              d === `normal`
+                ? u * 1.2
+                : d.includes(`px`)
+                  ? parseFloat(d)
+                  : parseFloat(d) * u,
+            p = f * t,
+            m = f * n;
+          (c < p
+            ? ((o.style.height = `${p}px`), (o.style.overflowY = `auto`))
+            : c > m
+              ? ((o.style.height = `${m}px`),
+                (o.style.overflowY = `auto`),
+                (o.style.overflowX = `hidden`))
+              : ((o.style.height = `${c}px`), (o.style.overflowY = `auto`)),
+            (a || r.current) && (o.scrollTop = s));
+        },
+        [e, t, n],
+      );
+    return (
+      (0, L.useEffect)(() => {
+        let t = e.current;
+        if (!t) return;
+        setTimeout(() => a(), 0);
+        let n = () => a();
+        t.addEventListener(`input`, n);
+        let r = null,
+          i = null,
+          o = () => {
+            (i && clearTimeout(i),
+              (i = setTimeout(() => {
+                a();
+              }, 150)));
+          },
+          s = new IntersectionObserver(
+            (e) => {
+              e.forEach((e) => {
+                e.isIntersecting
+                  ? r || ((r = new ResizeObserver(o)), r.observe(t))
+                  : ((r &&= (r.disconnect(), null)),
+                    (i &&= (clearTimeout(i), null)));
+              });
+            },
+            { threshold: 0.1 },
+          );
+        return (
+          s.observe(t),
+          () => {
+            (t.removeEventListener(`input`, n),
+              i && clearTimeout(i),
+              r && r.disconnect(),
+              s.disconnect());
+          }
+        );
+      }, [a]),
+      { adjustHeight: a, isInsertingVariableRef: r, savedScrollTopRef: i }
+    );
+  },
+  Cn = (e) => {
+    let t = (0, L.useRef)(null);
+    return (
+      (0, L.useEffect)(() => {
+        let n = e.current;
+        if (!n) return;
+        let r = !1,
+          i = () => {
+            if (!r) return;
+            let e = window.getSelection();
+            if (e && e.rangeCount > 0) {
+              let r = e.getRangeAt(0);
+              n.contains(r.commonAncestorContainer) &&
+                (t.current = r.cloneRange());
+            }
+          },
+          a = () => {
+            ((r = !0), document.addEventListener(`selectionchange`, i), i());
+          },
+          o = () => {
+            ((r = !1), document.removeEventListener(`selectionchange`, i));
+          },
+          s = () => {
+            r && i();
+          },
+          c = () => {
+            r && i();
+          };
+        return (
+          n.addEventListener(`focus`, a),
+          n.addEventListener(`blur`, o),
+          n.addEventListener(`click`, s),
+          n.addEventListener(`keyup`, c),
+          () => {
+            (document.removeEventListener(`selectionchange`, i),
+              n.removeEventListener(`focus`, a),
+              n.removeEventListener(`blur`, o),
+              n.removeEventListener(`click`, s),
+              n.removeEventListener(`keyup`, c));
+          }
+        );
+      }, [e]),
+      { savedRangeRef: t }
+    );
+  },
+  wn = (e) => {
+    let t = ``,
+      n = (e) => {
+        if (e.querySelector(`[data-variable]`)) return !1;
+        let t = Array.from(e.childNodes);
+        if (t.length === 0) return !0;
+        for (let e of t)
+          if (e.nodeType === Node.TEXT_NODE) {
+            if ((e.textContent || ``).replace(/\u200B/g, ``).trim() !== ``)
+              return !1;
+          } else if (e.nodeType === Node.ELEMENT_NODE) {
+            let t = e;
+            if (t.tagName !== `BR` && t.tagName !== `br`) return !1;
+          }
+        return !0;
+      },
+      r = (e, i = [], a = 0) => {
+        if (e.nodeType === Node.TEXT_NODE) {
+          let n = (e.textContent || ``).replace(/\u200B/g, ``);
+          t += n;
+        } else if (e.nodeType === Node.ELEMENT_NODE) {
+          let i = e;
+          if (i.dataset.variable) {
+            let e = i.dataset.original || i.textContent || ``;
+            t += e;
+          } else if (i.tagName === `BR` || i.tagName === `br`)
+            t += `
+`;
+          else if (
+            [
+              `DIV`,
+              `P`,
+              `H1`,
+              `H2`,
+              `H3`,
+              `H4`,
+              `H5`,
+              `H6`,
+              `LI`,
+              `UL`,
+              `OL`,
+            ].includes(i.tagName)
+          ) {
+            let e = n(i);
+            if (
+              (a > 0 &&
+                (t += `
+`),
+              !e)
+            ) {
+              let e = Array.from(i.childNodes);
+              e.forEach((t, n) => {
+                r(t, e, n);
+              });
+            }
+          } else {
+            let e = Array.from(i.childNodes);
+            e.forEach((t, n) => {
+              r(t, e, n);
+            });
+          }
+        }
+      },
+      i = Array.from(e.childNodes);
+    return (
+      i.forEach((e, t) => {
+        r(e, i, t);
+      }),
+      t
+    );
+  },
+  Tn = ({
+    text: e,
+    variableTagClass: t,
+    variablePrefixClass: n = ``,
+    variableDividerClass: r = ``,
+    variableSuffixClass: i = ``,
+    sysParams: a = [],
+  }) => {
+    if (!e) return ``;
+    let o = /\$\{[^}]+\}/g,
+      s = [],
+      c = 0,
+      l;
+    for (; (l = o.exec(e)) !== null;)
+      (l.index > c && s.push({ text: e.substring(c, l.index), isVariable: !1 }),
+        s.push({ text: l[0], isVariable: !0 }),
+        (c = l.index + l[0].length));
+    return (
+      c < e.length && s.push({ text: e.substring(c), isVariable: !1 }),
+      s
+        .map((e) => {
+          if (e.isVariable) {
+            let o = bn({ variableValue: e.text, sysParams: a }),
+              s = `<span data-variable="true" data-original="${e.text.replace(/"/g, `&quot;`)}" contenteditable="false" class="${t}">`;
+            return (
+              o.prefix &&
+                ((s += `<span class="${n}">${o.prefix}</span>`),
+                o.suffix && (s += `<span class="${r}"> / </span>`)),
+              o.suffix && (s += `<span class="${i}">${o.suffix}</span>`),
+              !o.prefix && !o.suffix && (s += e.text),
+              (s += `</span>`),
+              s
+            );
+          }
+          return e.text
+            .replace(/&/g, `&amp;`)
+            .replace(/</g, `&lt;`)
+            .replace(/>/g, `&gt;`)
+            .replace(/\n/g, `<br>`);
+        })
+        .join(``)
+    );
+  },
+  En = (e) => {
+    let t = document.createRange();
+    if (e.childNodes.length === 0) (t.setStart(e, 0), t.setEnd(e, 0));
+    else {
+      let n = e.childNodes[e.childNodes.length - 1];
+      n.nodeType === Node.TEXT_NODE
+        ? (t.setStart(n, n.length), t.setEnd(n, n.length))
+        : (t.setStartAfter(n), t.setEndAfter(n));
+    }
+    return t;
+  },
+  Dn = (e) => {
+    try {
+      let t = e.cloneRange();
+      t.collapse(!0);
+      try {
+        t.setStart(e.startContainer, Math.max(0, e.startOffset - 1));
+        let n = t.toString();
+        if (n === `/` || n === `、`) return (t.deleteContents(), t);
+      } catch {
+        let t = e.startContainer;
+        if (t.nodeType === Node.TEXT_NODE && e.startOffset > 0) {
+          let n = (t.textContent || ``).charAt(e.startOffset - 1);
+          if (n === `/` || n === `、`) {
+            let n = document.createRange();
+            (n.setStart(t, e.startOffset - 1),
+              n.setEnd(t, e.startOffset),
+              n.deleteContents());
+            let r = document.createRange();
+            return (
+              r.setStart(t, e.startOffset - 1),
+              r.setEnd(t, e.startOffset - 1),
+              r.collapse(!0),
+              r
+            );
+          }
+        }
+      }
+    } catch (e) {
+      console.warn(`删除触发字符失败:`, e);
+    }
+    return e;
+  },
+  On = ({
+    editorRef: e,
+    value: t,
+    renderContentFn: n,
+    adjustHeight: r,
+    isInsertingVariableRef: i,
+    savedRangeRef: a,
+    lastFormValueRef: o,
+  }) => {
+    let s = (0, L.useRef)(void 0),
+      c = (0, L.useRef)(null),
+      l = (0, L.useRef)(!1);
+    (0, L.useEffect)(() => {
+      if (!e.current) return;
+      let u = e.current,
+        d = t ?? ``,
+        f = s.current,
+        p = c.current !== n;
+      if (!l.current && d) {
+        ((u.innerHTML = n(d)),
+          (o.current = d),
+          (s.current = d),
+          (c.current = n),
+          (l.current = !0),
+          setTimeout(() => {
+            r();
+            let e = document.createRange(),
+              t = window.getSelection();
+            if (t && u.childNodes.length > 0) {
+              let n = u.childNodes[u.childNodes.length - 1];
+              (n.nodeType === Node.TEXT_NODE
+                ? (e.setStart(n, n.length), e.setEnd(n, n.length))
+                : (e.setStartAfter(n), e.setEndAfter(n)),
+                t.removeAllRanges(),
+                t.addRange(e),
+                (a.current = e.cloneRange()));
+            }
+          }, 0));
+        return;
+      }
+      if (((l.current ||= !0), p && d)) {
+        if (i.current) {
+          c.current = n;
+          return;
+        }
+        if (document.activeElement === u) {
+          let e = wn(u);
+          if (e === o.current && e.length > 0) {
+            c.current = n;
+            return;
+          }
+          if (a.current) {
+            c.current = n;
+            return;
+          }
+        }
+        let e = window.getSelection(),
+          t = null;
+        if (e && e.rangeCount > 0) {
+          let n = e.getRangeAt(0);
+          u.contains(n.commonAncestorContainer) && (t = n.cloneRange());
+        }
+        if (((u.innerHTML = n(d)), (o.current = d), (c.current = n), t))
+          try {
+            let e = window.getSelection();
+            e &&
+              (e.removeAllRanges(),
+              e.addRange(t),
+              (a.current = t.cloneRange()));
+          } catch {
+            let e = document.createRange(),
+              t = window.getSelection();
+            if (t && u.childNodes.length > 0) {
+              let n = u.childNodes[u.childNodes.length - 1];
+              (n.nodeType === Node.TEXT_NODE
+                ? (e.setStart(n, n.length), e.setEnd(n, n.length))
+                : (e.setStartAfter(n), e.setEndAfter(n)),
+                t.removeAllRanges(),
+                t.addRange(e),
+                (a.current = e.cloneRange()));
+            }
+          }
+        setTimeout(() => {
+          r();
+        }, 0);
+        return;
+      }
+      if (d === f) return;
+      if (i.current) {
+        ((s.current = d), (c.current = n));
+        return;
+      }
+      let m = wn(u);
+      if (d === m) {
+        ((s.current = d), (c.current = n), (o.current = d));
+        return;
+      }
+      if (d === o.current) {
+        s.current = d;
+        return;
+      }
+      if (document.activeElement === u) {
+        if (m === o.current) {
+          s.current = d;
+          return;
+        }
+        if (m !== d && m !== f) {
+          s.current = d;
+          return;
+        }
+      }
+      ((u.innerHTML = n(d)),
+        (o.current = d),
+        (s.current = d),
+        (c.current = n),
+        setTimeout(() => {
+          r();
+          let e = document.createRange(),
+            t = window.getSelection();
+          if (t && u.childNodes.length > 0) {
+            let n = u.childNodes[u.childNodes.length - 1];
+            (n.nodeType === Node.TEXT_NODE
+              ? (e.setStart(n, n.length), e.setEnd(n, n.length))
+              : (e.setStartAfter(n), e.setEndAfter(n)),
+              t.removeAllRanges(),
+              t.addRange(e),
+              (a.current = e.cloneRange()));
+          }
+        }, 0));
+    }, [t, n, r, e, i, a, o]);
+  },
+  kn = ({
+    editorRef: e,
+    savedRangeRef: t,
+    isInsertingVariableRef: n,
+    savedScrollTopRef: r,
+    adjustHeight: i,
+    variableTagClass: a,
+    renderVariable: o,
+    onChange: s,
+    onClosePopup: c,
+  }) => {
+    let l = (0, L.useRef)(``);
+    return {
+      insertVariable: (0, L.useCallback)(
+        (u) => {
+          if (!e.current) return;
+          let d = e.current,
+            f = t.current ? t.current.cloneRange() : null;
+          (c(), (r.current = d.scrollTop), (n.current = !0));
+          let p = null;
+          if (f)
+            try {
+              let e = f.cloneRange();
+              (e.collapse(!0),
+                d.contains(e.commonAncestorContainer) &&
+                  ((p = f.cloneRange()), (p = Dn(p))));
+            } catch {}
+          if ((d.focus(), p)) {
+            let e = window.getSelection();
+            e && (e.removeAllRanges(), e.addRange(p));
+          }
+          setTimeout(() => {
+            let e = window.getSelection();
+            if (!e) return;
+            let c;
+            if (p) c = p;
+            else if (e.rangeCount > 0) {
+              let t = e.getRangeAt(0);
+              d.contains(t.commonAncestorContainer)
+                ? ((c = t.cloneRange()), (c = Dn(c)))
+                : (c = En(d));
+            } else c = En(d);
+            let f;
+            if (o) {
+              let e = document.createElement(`div`);
+              ((e.innerHTML = o(u)),
+                (f = e.firstElementChild),
+                f
+                  ? f.dataset.original || (f.dataset.original = u)
+                  : ((f = document.createElement(`span`)),
+                    (f.dataset.variable = `true`),
+                    (f.dataset.original = u),
+                    (f.contentEditable = `false`),
+                    (f.className = a),
+                    (f.textContent = u)));
+            } else
+              ((f = document.createElement(`span`)),
+                (f.dataset.variable = `true`),
+                (f.dataset.original = u),
+                (f.contentEditable = `false`),
+                (f.className = a),
+                (f.textContent = u));
+            (c.deleteContents(), c.insertNode(f));
+            let m = document.createTextNode(`​`);
+            (c.setStartAfter(f),
+              c.setEndAfter(f),
+              c.insertNode(m),
+              c.setStartAfter(m),
+              c.setEndAfter(m),
+              c.collapse(!0),
+              e.removeAllRanges(),
+              e.addRange(c),
+              (t.current = c.cloneRange()));
+            let h = wn(d);
+            ((l.current = h),
+              s?.(h),
+              requestAnimationFrame(() => {
+                let e = document.createRange();
+                (e.setStart(d, 0), e.setEnd(m, 0));
+                let t = d.scrollTop;
+                d.scrollTop = 0;
+                let a = e.getBoundingClientRect(),
+                  o = d.getBoundingClientRect(),
+                  s = a.bottom - o.top;
+                d.scrollTop = t;
+                let c = s - d.clientHeight * 0.3,
+                  l = Math.max(0, d.scrollHeight - d.clientHeight),
+                  u = Math.max(0, Math.min(c, l));
+                ((r.current = u),
+                  (n.current = !0),
+                  i(!0),
+                  requestAnimationFrame(() => {
+                    ((d.scrollTop = u),
+                      (r.current = u),
+                      setTimeout(() => {
+                        n.current = !1;
+                      }, 50));
+                  }));
+              }));
+          }, 10);
+        },
+        [e, t, n, r, i, a, o, s, c],
+      ),
+      lastFormValueRef: l,
+    };
+  },
+  An = (e) => {
+    let [t, n] = (0, L.useState)(!1),
+      r = (0, L.useRef)(null),
+      [i, a] = (0, L.useState)(null),
+      o = (0, L.useRef)(!1),
+      s = (0, L.useRef)(!1),
+      c = (0, L.useCallback)(() => {
+        let t = e.current;
+        if (!t) return null;
+        let n = window.getSelection();
+        if (!n || n.rangeCount === 0) return null;
+        let r = n.getRangeAt(0);
+        if (!t.contains(r.commonAncestorContainer)) return null;
+        let i = t.parentElement;
+        if (!i) return null;
+        let a = r.getBoundingClientRect(),
+          o = t.getBoundingClientRect(),
+          s = i.getBoundingClientRect(),
+          c = o.top - s.top,
+          l = o.left - s.left,
+          u = a.bottom - s.top + 4,
+          d = a.left - s.left;
+        if (a.width === 0 && a.height === 0) {
+          let e = getComputedStyle(t),
+            n = parseFloat(e.paddingTop) || 0,
+            r = parseFloat(e.paddingLeft) || 0,
+            i = parseFloat(e.lineHeight) || 22;
+          ((u = c + n + i + 4), (d = l + r));
+        }
+        let f = window.innerWidth,
+          p = s.left + d;
+        if (p + 400 > f) {
+          let e = p + 400 - f;
+          ((d = d - e - 10), (d = Math.max(l, d)));
+        }
+        return { top: u, left: d };
+      }, [e]);
+    return (
+      (0, L.useEffect)(() => {
+        if (!t) return;
+        let e = (e) => {
+          if (s.current) return;
+          let t = r.current,
+            i = e.target;
+          (t && t.contains(i)) || (n(!1), a(null), (o.current = !1));
+        };
+        return (
+          document.addEventListener(`mousedown`, e, !0),
+          document.addEventListener(`click`, e, !0),
+          () => {
+            (document.removeEventListener(`mousedown`, e, !0),
+              document.removeEventListener(`click`, e, !0));
+          }
+        );
+      }, [t]),
+      (0, L.useEffect)(() => {
+        if (!t) return;
+        let e = () => {
+            if (s.current) return;
+            let e = c();
+            e && a(e);
+          },
+          n = () => {
+            e();
+          };
+        return (
+          document.addEventListener(`selectionchange`, n),
+          () => {
+            document.removeEventListener(`selectionchange`, n);
+          }
+        );
+      }, [t, c]),
+      {
+        showVariableSelection: t,
+        setShowVariableSelection: n,
+        variableSelectionRef: r,
+        variableSelectionPosition: i,
+        setVariableSelectionPosition: a,
+        slashInputRef: o,
+        isHandlingEnterRef: s,
+        getCaretPosition: c,
+      }
+    );
+  },
+  jn = (0, L.forwardRef)((e, t) => {
+    let {
+        title: n,
+        extra: r,
+        value: i,
+        onBlur: a,
+        onChange: o,
+        minRows: s = 10,
+        maxRows: c = 20,
+        maxLength: l = 1e5,
+        required: u = !1,
+        disabled: d = !1,
+        nodesData: f = [],
+        onCreateVariable: p,
+      } = e,
+      m = (0, L.useRef)(null),
+      [h, g] = (0, L.useState)(!1),
+      [_, v] = (0, L.useState)(0),
+      [y, b] = (0, L.useState)(s * 22),
+      x = d,
+      { savedRangeRef: S } = Cn(m),
+      {
+        adjustHeight: C,
+        isInsertingVariableRef: w,
+        savedScrollTopRef: T,
+      } = Sn(m, s, c),
+      {
+        showVariableSelection: E,
+        setShowVariableSelection: D,
+        variableSelectionRef: O,
+        variableSelectionPosition: ee,
+        setVariableSelectionPosition: k,
+        slashInputRef: A,
+        isHandlingEnterRef: te,
+        getCaretPosition: j,
+      } = An(m),
+      ne = (0, L.useCallback)(
+        (e) =>
+          Tn({
+            text: e,
+            variableTagClass: K[`variable-tag`],
+            variablePrefixClass: K[`variable-prefix`],
+            variableDividerClass: K[`variable-divider`],
+            variableSuffixClass: K[`variable-suffix`],
+          }),
+        [f],
+      ),
+      re = (0, L.useCallback)(
+        (e) =>
+          Tn({
+            text: e,
+            variableTagClass: K[`variable-tag`],
+            variablePrefixClass: K[`variable-prefix`],
+            variableDividerClass: K[`variable-divider`],
+            variableSuffixClass: K[`variable-suffix`],
+          }).trim(),
+        [f],
+      ),
+      { insertVariable: M, lastFormValueRef: ie } = kn({
+        editorRef: m,
+        savedRangeRef: S,
+        isInsertingVariableRef: w,
+        savedScrollTopRef: T,
+        adjustHeight: C,
+        variableTagClass: K[`variable-tag`],
+        renderVariable: re,
+        onChange: o,
+        onClosePopup: () => {
+          (D(!1), k(null), (A.current = !1), (S.current = null));
+        },
+      });
+    (On({
+      editorRef: m,
+      value: i,
+      renderContentFn: ne,
+      adjustHeight: C,
+      isInsertingVariableRef: w,
+      savedRangeRef: S,
+      lastFormValueRef: ie,
+    }),
+      (0, L.useEffect)(() => {
+        m.current && v(wn(m.current).length);
+      }, [i]));
+    let ae = (0, L.useCallback)(() => {
+      if (!m.current) return;
+      let e = m.current;
+      return wn(e);
+    }, []);
+    (0, L.useImperativeHandle)(t, () => ({ getValue: ae }), [ae]);
+    let N = (0, L.useCallback)(() => {
+        if (!m.current || h || x) return;
+        let e = m.current,
+          t = wn(e);
+        if (l && t.length > l) {
+          let n = t.slice(0, l);
+          e.textContent = n;
+          let r = document.createRange(),
+            i = window.getSelection();
+          (r.selectNodeContents(e),
+            r.collapse(!1),
+            i?.removeAllRanges(),
+            i?.addRange(r),
+            v(l),
+            (ie.current = n),
+            o?.(n));
+          return;
+        }
+        let n = t.length > 0 ? t[t.length - 1] : ``,
+          r = ie.current || ``;
+        if (t.length > r.length && n === `/` && !E && !A.current) {
+          A.current = !0;
+          let t = window.getSelection();
+          if (t && t.rangeCount > 0) {
+            let n = t.getRangeAt(0);
+            e &&
+              e.contains(n.commonAncestorContainer) &&
+              (S.current = n.cloneRange());
+          }
+          setTimeout(() => {
+            let t = j();
+            if (t) (k(t), D(!0));
+            else {
+              let t = e.parentElement;
+              if (t) {
+                let n = e.getBoundingClientRect(),
+                  r = t.getBoundingClientRect(),
+                  i = n.top - r.top,
+                  a = n.left - r.left,
+                  o = getComputedStyle(e),
+                  s = parseFloat(o.paddingTop) || 0,
+                  c = parseFloat(o.paddingLeft) || 0,
+                  l = parseFloat(o.lineHeight) || 22;
+                (k({ top: i + s + l + 4, left: a + c }), D(!0));
+              }
+            }
+          }, 0);
+        }
+        (v(t.length), (ie.current = t), o?.(t));
+      }, [h, o, l, E, j, D, k]),
+      oe = (0, L.useCallback)(
+        (e) => {
+          if (x && e.key !== `Escape`) {
+            e.preventDefault();
+            return;
+          }
+          if (E && e.key === `Escape`) {
+            (e.preventDefault(),
+              D(!1),
+              k(null),
+              (A.current = !1),
+              (S.current = null));
+            return;
+          }
+          if (E && (e.key === `Backspace` || e.key === `Delete`)) {
+            (D(!1), k(null), (A.current = !1), (S.current = null));
+            return;
+          }
+          if (e.key === `Backspace` && !E) {
+            let t = window.getSelection();
+            if (!t || t.rangeCount === 0) return;
+            let n = t.getRangeAt(0),
+              r = m.current;
+            if (!r || !r.contains(n.commonAncestorContainer)) return;
+            if (n.collapsed) {
+              let t = n.startContainer,
+                r = n.startOffset;
+              if (t.nodeType === Node.TEXT_NODE) {
+                if (r === 0) {
+                  let n = t.previousSibling;
+                  if (n && n.nodeType === Node.ELEMENT_NODE) {
+                    let t = n;
+                    if (t.dataset.variable) {
+                      (e.preventDefault(), t.remove(), N());
+                      return;
+                    }
+                  }
+                }
+              } else if (t.nodeType === Node.ELEMENT_NODE) {
+                let n = t;
+                if (r > 0) {
+                  let t = n.childNodes[r - 1];
+                  if (t && t.nodeType === Node.ELEMENT_NODE) {
+                    let n = t;
+                    if (n.dataset.variable) {
+                      (e.preventDefault(), n.remove(), N());
+                      return;
+                    }
+                  }
+                }
+              }
+            }
+          }
+          if (e.key === `Delete` && !E) {
+            let t = window.getSelection();
+            if (!t || t.rangeCount === 0) return;
+            let n = t.getRangeAt(0),
+              r = m.current;
+            if (!r || !r.contains(n.commonAncestorContainer)) return;
+            if (n.collapsed) {
+              let t = n.startContainer,
+                r = n.startOffset;
+              if (t.nodeType === Node.TEXT_NODE) {
+                if (r === t.length) {
+                  let n = t.nextSibling;
+                  if (n && n.nodeType === Node.ELEMENT_NODE) {
+                    let t = n;
+                    if (t.dataset.variable) {
+                      (e.preventDefault(), t.remove(), N());
+                      return;
+                    }
+                  }
+                }
+              } else if (t.nodeType === Node.ELEMENT_NODE) {
+                let n = t;
+                if (r < n.childNodes.length) {
+                  let t = n.childNodes[r];
+                  if (t && t.nodeType === Node.ELEMENT_NODE) {
+                    let n = t;
+                    if (n.dataset.variable) {
+                      (e.preventDefault(), n.remove(), N());
+                      return;
+                    }
+                  }
+                }
+              }
+            }
+          }
+          if (E && e.key === `Enter`) {
+            ((te.current = !0),
+              setTimeout(() => {
+                let e = j();
+                (e && k(e), (te.current = !1));
+              }, 50));
+            return;
+          }
+          if (!(E && e.key === `Tab`)) {
+            if (l && l > 0) {
+              let t = m.current;
+              if (t) {
+                let n = wn(t),
+                  r =
+                    e.key === `Backspace` ||
+                    e.key === `Delete` ||
+                    e.key === `ArrowLeft` ||
+                    e.key === `ArrowRight` ||
+                    e.key === `ArrowUp` ||
+                    e.key === `ArrowDown` ||
+                    e.key === `Home` ||
+                    e.key === `End` ||
+                    e.key === `Tab` ||
+                    e.key === `Escape` ||
+                    e.ctrlKey ||
+                    e.metaKey ||
+                    e.altKey;
+                if (n.length >= l && !r && !h) {
+                  e.preventDefault();
+                  return;
+                }
+              }
+            }
+            if (
+              (e.key === `/` ||
+                e.code === `Slash` ||
+                e.keyCode === 191 ||
+                e.which === 191) &&
+              !E &&
+              !x
+            ) {
+              let e = window.getSelection();
+              if (!e || e.rangeCount === 0) return;
+              let t = e.getRangeAt(0),
+                n = m.current;
+              if (
+                !n ||
+                !n.contains(t.commonAncestorContainer) ||
+                (l && wn(n).length >= l)
+              )
+                return;
+              ((A.current = !0),
+                setTimeout(() => {
+                  let e = window.getSelection();
+                  if (e && e.rangeCount > 0) {
+                    let t = e.getRangeAt(0);
+                    n &&
+                      n.contains(t.commonAncestorContainer) &&
+                      (S.current = t.cloneRange());
+                  }
+                  let t = j();
+                  if (t) (k(t), D(!0));
+                  else {
+                    let e = m.current;
+                    if (e) {
+                      let t = e.parentElement;
+                      if (t) {
+                        let n = e.getBoundingClientRect(),
+                          r = t.getBoundingClientRect(),
+                          i = n.top - r.top,
+                          a = n.left - r.left,
+                          o = getComputedStyle(e),
+                          s = parseFloat(o.paddingTop) || 0,
+                          c = parseFloat(o.paddingLeft) || 0,
+                          l = parseFloat(o.lineHeight) || 22;
+                        (k({ top: i + s + l + 4, left: a + c }), D(!0));
+                      }
+                    }
+                  }
+                }, 0));
+            }
+          }
+        },
+        [E, j, D, k, l, h, x],
+      ),
+      P = (0, L.useCallback)(() => {
+        g(!0);
+      }, []),
+      se = (0, L.useCallback)(() => {
+        if ((g(!1), !m.current)) return;
+        let e = m.current,
+          t = wn(e);
+        if (l && t.length > l) {
+          let n = t.slice(0, l);
+          e.textContent = n;
+          let r = document.createRange(),
+            i = window.getSelection();
+          (r.selectNodeContents(e),
+            r.collapse(!1),
+            i?.removeAllRanges(),
+            i?.addRange(r),
+            (t = n),
+            v(l));
+        } else v(t.length);
+        ((ie.current = t), o?.(t));
+      }, [o, l]),
+      ce = (0, L.useCallback)(
+        (e) => {
+          if (x) {
+            e.preventDefault();
+            return;
+          }
+          e.preventDefault();
+          let t = e.clipboardData.getData(`text/plain`);
+          if (((t = t.replace(/\r/g, ``)), l && l > 0 && m.current)) {
+            let e = wn(m.current),
+              n = window.getSelection();
+            if (n && n.rangeCount > 0) {
+              let r = n.getRangeAt(0).toString(),
+                i = l - (e.length - r.length);
+              t.length > i && (t = t.slice(0, i));
+            } else {
+              let n = l - e.length;
+              if (n <= 0) return;
+              t.length > n && (t = t.slice(0, n));
+            }
+          }
+          let n = window.getSelection();
+          if (!n || n.rangeCount === 0) return;
+          let r = n.getRangeAt(0);
+          r.deleteContents();
+          let i = document.createTextNode(t);
+          (r.insertNode(i),
+            r.setStartAfter(i),
+            r.setEndAfter(i),
+            n.removeAllRanges(),
+            n.addRange(r),
+            N());
+        },
+        [N, l, x],
+      );
+    return (0, V.jsxs)(`div`, {
+      className: K[`form-text-area`],
+      children: [
+        (0, V.jsx)(gn, { title: n, extra: r, required: u }),
+        (0, V.jsx)(Ct, {
+          size: { width: `100%`, height: y },
+          onResizeStop: (e, t, n, r) => {
+            b(y + r.height);
+          },
+          minHeight: s * 22,
+          maxHeight: c * 22,
+          enable: {
+            top: !1,
+            right: !1,
+            bottom: !0,
+            left: !1,
+            topRight: !1,
+            bottomRight: !1,
+            bottomLeft: !1,
+            topLeft: !1,
+          },
+          style: { position: `relative` },
+          children: (0, V.jsxs)(`div`, {
+            className: K[`textarea-wrapper`],
+            style: { height: `100%` },
+            children: [
+              (0, V.jsx)(mn, {
+                ref: m,
+                disabled: x,
+                onInput: N,
+                onKeyDown: oe,
+                onCompositionStart: P,
+                onCompositionEnd: se,
+                onPaste: ce,
+                onBlur: () => {
+                  a?.(m.current);
+                },
+                placeholder: `请输入内容`,
+              }),
+              (0, V.jsx)(hn, { currentLength: _, maxLength: l }),
+              (0, V.jsx)(vn, {
+                visible: E,
+                position: ee,
+                popupRef: O,
+                onValueChange: M,
+                variableOptions: f,
+                onCreateVariable: p,
+              }),
+              (0, V.jsx)(xn, { editorRef: m, nodesData: f, value: i }),
+            ],
+          }),
+        }),
+      ],
+    });
+  });
+jn.displayName = `VariableSelectionInTextarea`;
+var Mn = L.memo(
+    jn,
+    (e, t) =>
+      e.title === t.title &&
+      e.value === t.value &&
+      e.minRows === t.minRows &&
+      e.maxRows === t.maxRows &&
+      e.onBlur === t.onBlur &&
+      e.nodesData === t.nodesData &&
+      e.disabled === t.disabled,
+  ),
+  Nn = {
+    "promote-editor-icon": `_promote-editor-icon_19q8n_1`,
+    "optimize-icon": `_optimize-icon_19q8n_13`,
+    "extra-actions": `_extra-actions_19q8n_18`,
+    "create-variable-button": `_create-variable-button_19q8n_25`,
+    "create-variable": `_create-variable_19q8n_25`,
+    "template-button": `_template-button_19q8n_36`,
+    "optimize-wrapper": `_optimize-wrapper_19q8n_40`,
+    "optimize-prompt-hidden": `_optimize-prompt-hidden_19q8n_45`,
+    "optimize-button": `_optimize-button_19q8n_56`,
+    "optimize-text": `_optimize-text_19q8n_63`,
+    "expand-button": `_expand-button_19q8n_67`,
+    "expand-icon": `_expand-icon_19q8n_74`,
+    "title-description-icon": `_title-description-icon_19q8n_78`,
+    "fullscreen-editor-wrapper": `_fullscreen-editor-wrapper_19q8n_82`,
+  };
+x();
+var Pn = (0, L.forwardRef)((e, t) => {
+  let {
+      value: n = ``,
+      onChange: r,
+      onBlur: i,
+      title: a = `提示词`,
+      titleDescription: o,
+      required: s = !1,
+      disabled: c = !1,
+      minRows: l = 10,
+      maxRows: u = 20,
+      form: d,
+      formFieldName: f = `prompt`,
+      onSessionVariablesSave: m,
+      sessionVariables: h,
+    } = e,
+    g = (0, L.useRef)(null),
+    [v, y] = (0, L.useState)(n),
+    [b, x] = (0, L.useState)(!1);
+  (0, L.useImperativeHandle)(
+    t,
+    () => ({ getValue: () => g.current?.getValue() }),
+    [],
+  );
+  let S = (0, L.useCallback)(
+      (e) => {
+        (y(e), r?.(e), d?.current && d.current.setFieldValue?.(f, e));
+      },
+      [r, d, f],
+    ),
+    C = (0, L.useCallback)(() => {
+      let e = g.current?.getValue() || ``;
+      (y(e), i?.(e), d?.current && d.current.setFieldValue?.(f, e));
+    }, [i, d, f]);
+  L.useEffect(() => {
+    n !== void 0 && n !== v && y(n);
+  }, [n]);
+  let T = (0, L.useCallback)(() => {
+      x(!0);
+    }, []),
+    E = (0, L.useCallback)(
+      (e) => {
+        m?.(e);
+      },
+      [m],
+    ),
+    D = (0, V.jsx)(`div`, {
+      className: Nn[`extra-actions`],
+      children: (0, V.jsxs)(w, {
+        type: `default`,
+        size: `small`,
+        className: Nn[`create-variable-button`],
+        onClick: T,
+        children: [
+          (0, V.jsx)(`img`, { src: Le, width: 20, height: 20 }),
+          (0, V.jsx)(`span`, {
+            className: Nn[`create-variable`],
+            children: `新建变量`,
+          }),
+        ],
+      }),
+    });
+  return (0, V.jsxs)(V.Fragment, {
+    children: [
+      (0, V.jsx)(Mn, {
+        ref: g,
+        title: (0, L.useMemo)(() => {
+          let e = (0, V.jsxs)(V.Fragment, {
+            children: [
+              s &&
+                a &&
+                (0, V.jsx)(`span`, {
+                  style: { color: `#ff4d4f`, marginRight: 4 },
+                  children: `*`,
+                }),
+              a,
+            ],
+          });
+          return o
+            ? (0, V.jsxs)(`span`, {
+                children: [
+                  e,
+                  (0, V.jsx)(_, {
+                    title: o,
+                    placement: `right`,
+                    children: (0, V.jsx)(p, {
+                      className: Nn[`title-description-icon`],
+                    }),
+                  }),
+                ],
+              })
+            : e;
+        }, [a, o, s]),
+        value: v,
+        onChange: S,
+        onBlur: C,
+        minRows: l,
+        maxRows: u,
+        extra: D,
+        nodesData: h,
+        onCreateVariable: T,
+        disabled: c,
+      }),
+      (0, V.jsx)(pn, {
+        visible: b,
+        onVisibleChange: x,
+        onSave: E,
+        sessionVariables: h,
+        disabled: c,
+      }),
+    ],
+  });
+});
+Pn.displayName = `PromptEditor`;
+var Fn = (0, L.memo)(Pn),
+  In = {
+    "planning-module": `_planning-module_1mka1_1`,
+    "module-header-with-select": `_module-header-with-select_1mka1_1`,
+    "header-left": `_header-left_1mka1_7`,
+    "header-right": `_header-right_1mka1_12`,
+    "collapsible-header": `_collapsible-header_1mka1_21`,
+    "collapse-icon": `_collapse-icon_1mka1_30`,
+    "prompt-section": `_prompt-section_1mka1_35`,
+    "text-area": `_text-area_1mka1_38`,
+    "character-counter": `_character-counter_1mka1_41`,
+    error: `_error_1mka1_47`,
+    "variable-section": `_variable-section_1mka1_50`,
+    "variable-list": `_variable-list_1mka1_50`,
+    "variable-item": `_variable-item_1mka1_53`,
+    "variable-name": `_variable-name_1mka1_66`,
+    "variable-description": `_variable-description_1mka1_72`,
+    "add-button": `_add-button_1mka1_76`,
+  };
+x();
+var Ln = 1e5,
+  Rn = ({ config: e, onChange: t, disabled: n = !1 }) => {
+    let [r, i] = (0, L.useState)(!1),
+      [a] = I.useForm(),
+      o = (0, L.useRef)(null),
+      { modelList: s } = Lt(),
+      c = (0, L.useCallback)(
+        (e) => {
+          e.length <= Ln && t({ prompt: e });
+        },
+        [t],
+      ),
+      u = (0, L.useCallback)(
+        (e) => {
+          let { model: n, inputParams: r } = e;
+          n &&
+            t({
+              llmModelNode: {
+                type: `LLMNode`,
+                data: { model: n, inParams: r },
+              },
+            });
+        },
+        [e.llmModelNode, t],
+      ),
+      d = (0, L.useCallback)(
+        (e) => {
+          t({ sessionVariables: e });
+        },
+        [t],
+      ),
+      f = (0, L.useCallback)(
+        (n) => {
+          t({
+            llmModelNode: {
+              type: `LLMNode`,
+              data: { model: e.llmModelNode?.data?.model, inParams: n },
+            },
+          });
+        },
+        [e.llmModelNode?.data?.model, t],
+      );
+    return (0, V.jsx)(V.Fragment, {
+      children: (0, V.jsxs)(`div`, {
+        className: `${z[`module-section`]} ${In[`planning-module`]}`,
+        children: [
+          (0, V.jsxs)(`div`, {
+            className: `${z[`module-header`]} ${In[`module-header-with-select`]} ${In[`collapsible-header`]}`,
+            onClick: () => i(!r),
+            children: [
+              (0, V.jsxs)(`div`, {
+                className: In[`header-left`],
+                children: [
+                  (0, V.jsx)(l, { className: z[`module-icon`] }),
+                  (0, V.jsx)(`h3`, {
+                    className: z[`module-title`],
+                    children: `规划`,
+                  }),
+                ],
+              }),
+              (0, V.jsx)(`div`, {
+                className: In[`header-right`],
+                onClick: (e) => e.stopPropagation(),
+                children: e.llmModelNode?.data?.model
+                  ? (0, V.jsx)(ke, {
+                      title: ``,
+                      modelList: s,
+                      value: e.llmModelNode?.data?.model,
+                      onChange: u,
+                      modelInParams: e.llmModelNode?.data?.inParams,
+                      onParamChange: f,
+                      showValueFromSelector: !1,
+                      excludeParams: [`stream`],
+                      disabled: n,
+                    })
+                  : null,
+              }),
+            ],
+          }),
+          (0, V.jsx)(`div`, {
+            className: `${z[`collapsible-content`]} ${r ? z.collapsed : ``}`,
+            children: (0, V.jsx)(`div`, {
+              className: z[`content-wrapper`],
+              children: (0, V.jsx)(`div`, {
+                className: `${z[`form-item`]} ${In[`prompt-section`]}`,
+                children: (0, V.jsx)(Fn, {
+                  ref: o,
+                  value: e.prompt || ``,
+                  onChange: c,
+                  title: `提示词`,
+                  required: !1,
+                  sessionVariables: e.sessionVariables,
+                  onSessionVariablesSave: d,
+                  titleDescription: `通过提示词设定智能体的角色、任务、执行步骤、限制等规则，指导智能体进行规划和生成回复`,
+                  maxRows: 50,
+                  disabled: n,
+                }),
+              }),
+            }),
+          }),
+        ],
+      }),
+    });
+  },
+  zn = { highlight: `_highlight_fuhrw_7`, ellipsis: `_ellipsis_fuhrw_12` };
+x();
+var Bn = ({ highlightText: e, fullText: t }) => {
+    if (!t) return null;
+    let n = [],
+      r = t.toLowerCase(),
+      i = e ? e.toLowerCase() : ``;
+    if (i && r.includes(i)) {
+      let a = 0,
+        o = r.indexOf(i, a);
+      for (; o !== -1;)
+        (o > a && n.push(t.substring(a, o)),
+          n.push(
+            (0, V.jsx)(
+              `span`,
+              {
+                className: zn.highlight,
+                children: t.substring(o, o + e.length),
+              },
+              o,
+            ),
+          ),
+          (a = o + e.length),
+          (o = r.indexOf(i, a)));
+      a < t.length && n.push(t.substring(a));
+    } else n.push(t);
+    let a = 0,
+      o =
+        t.length > 32
+          ? (0, V.jsxs)(V.Fragment, {
+              children: [
+                n.map((e) => {
+                  let t = typeof e == `string` ? e : e.props.children;
+                  if (a + t.length <= 32) return ((a += t.length), e);
+                  if (a < 32) {
+                    let n = 32 - a;
+                    return (
+                      (a = 32),
+                      typeof e == `string`
+                        ? e.substring(0, n)
+                        : L.cloneElement(e, {}, t.substring(0, n))
+                    );
+                  } else return null;
+                }),
+                `...`,
+              ],
+            })
+          : n,
+      s = (0, V.jsx)(`span`, { className: zn.ellipsis, children: o });
+    return t.length <= 32
+      ? s
+      : (0, V.jsx)(_, { title: t, placement: `topLeft`, children: s });
+  },
+  Vn = {
+    header: `_header_1mrq6_1`,
+    icon: `_icon_1mrq6_6`,
+    detail: `_detail_1mrq6_12`,
+    name: `_name_1mrq6_16`,
+    tag: `_tag_1mrq6_23`,
+    desc: `_desc_1mrq6_34`,
+    "desc-text": `_desc-text_1mrq6_38`,
+    content: `_content_1mrq6_44`,
+  };
+x();
+var { Text: Hn } = h,
+  Un = ({ item: e, selectedMcps: t, searchKeyword: n, onDetailClick: r }) => {
+    let i = e.mcpToolList?.filter((e) => e.isOpen === 1)?.length || 0,
+      a = (0, L.useCallback)(() => {
+        let n = i || 0,
+          r = t?.find((t) => t.title === e.mcpServerName)?.toolCount || 0;
+        return (r === n && n > 0) || (r > 0 && r < n)
+          ? `已添加工具${r}/${n}`
+          : `含${n}个工具`;
+      }, [t]);
+    return (0, V.jsxs)(`div`, {
+      className: Vn.header,
+      children: [
+        (0, V.jsx)(`img`, {
+          alt: `mcp服务图标`,
+          src: e.iconUrl,
+          className: Vn.icon,
+        }),
+        (0, V.jsxs)(`div`, {
+          className: Vn.detail,
+          children: [
+            (0, V.jsxs)(`div`, {
+              className: Vn.name,
+              children: [
+                (0, V.jsx)(Bn, { highlightText: n, fullText: e.mcpServerName }),
+                (0, V.jsx)(N, { className: Vn.tag, children: `MCP` }),
+              ],
+            }),
+            e.desc &&
+              (0, V.jsx)(`div`, {
+                className: Vn.desc,
+                children: (0, V.jsx)(Hn, {
+                  className: Vn[`desc-text`],
+                  ellipsis: {
+                    tooltip: { title: e.desc, placement: `topLeft` },
+                  },
+                  children: e.desc,
+                }),
+              }),
+            (0, V.jsxs)(`div`, {
+              className: Vn.content,
+              children: [
+                (0, V.jsx)(`span`, { children: a() }),
+                (0, V.jsx)(S, { type: `vertical` }),
+                (0, V.jsx)(w, {
+                  type: `link`,
+                  className: Vn[`content-btn`],
+                  onClick: (t) => {
+                    (t.preventDefault(), r(e));
+                  },
+                  children: `详情`,
+                }),
+              ],
+            }),
+          ],
+        }),
+      ],
+    });
+  },
+  Wn = {
+    item: `_item_5zad0_1`,
+    left: `_left_5zad0_7`,
+    name: `_name_5zad0_10`,
+    desc: `_desc_5zad0_18`,
+    "desc-text": `_desc-text_5zad0_27`,
+    btn: `_btn_5zad0_32`,
+  };
+x();
+var { Text: Gn } = h,
+  Kn = ({ tool: e, isAdded: t, onToggle: n, disabled: r = !1 }) => {
+    let [i, a] = (0, L.useState)(!1),
+      o = t && i;
+    return (0, V.jsxs)(`div`, {
+      className: Wn.item,
+      children: [
+        (0, V.jsxs)(`div`, {
+          className: Wn.left,
+          children: [
+            (0, V.jsx)(`div`, {
+              className: Wn.name,
+              children: (0, V.jsx)(Gn, {
+                ellipsis: {
+                  tooltip: { title: e.toolName, placement: `topLeft` },
+                },
+                children: e.toolName,
+              }),
+            }),
+            e.toolDesc &&
+              (0, V.jsx)(`div`, {
+                className: Wn.desc,
+                children: (0, V.jsx)(Gn, {
+                  className: Wn[`desc-text`],
+                  ellipsis: {
+                    tooltip: { title: e.toolDesc, placement: `topLeft` },
+                  },
+                  children: e.toolDesc,
+                }),
+              }),
+          ],
+        }),
+        (0, V.jsx)(w, {
+          type: t ? `default` : `primary`,
+          onClick: n,
+          danger: o,
+          onMouseEnter: () => a(!0),
+          onMouseLeave: () => a(!1),
+          className: Wn.btn,
+          disabled: r,
+          children: o ? `移除` : t ? `已添加` : `添加`,
+        }),
+      ],
+    });
+  },
+  qn = {
+    collapse: `_collapse_1mat7_1`,
+    "expand-icon-wrapper": `_expand-icon-wrapper_1mat7_17`,
+    "add-all-btn": `_add-all-btn_1mat7_22`,
+  };
+x();
+var { Panel: Jn } = E,
+  Yn = ({
+    item: e,
+    searchKeyword: t,
+    isToolAdded: n,
+    checkAllToolsAdded: r,
+    onToggleAllTools: i,
+    onToggleSingleTool: a,
+    onDetailClick: o,
+    selectedMcps: s,
+    disabled: c = !1,
+  }) => {
+    let [l, u] = (0, L.useState)(!1),
+      d = r(e),
+      f = d && l,
+      p = e.mcpToolList?.filter((e) => e.isOpen === 1) || [];
+    return (0, V.jsx)(E, {
+      ghost: !0,
+      className: qn.collapse,
+      expandIconPosition: `end`,
+      expandIcon: ({ isActive: t }) =>
+        (0, V.jsxs)(`div`, {
+          className: qn[`expand-icon-wrapper`],
+          children: [
+            (0, V.jsx)(w, {
+              type: d ? `default` : `primary`,
+              size: `small`,
+              onClick: (t) => i(e, t),
+              className: qn[`add-all-btn`],
+              danger: f,
+              onMouseEnter: () => u(!0),
+              onMouseLeave: () => u(!1),
+              disabled: c,
+              children: f ? `移除全部` : d ? `已添加全部` : `添加全部`,
+            }),
+            (0, V.jsx)(`img`, { src: t ? Tt : Dt, width: 18, alt: `` }),
+          ],
+        }),
+      children: (0, V.jsx)(
+        Jn,
+        {
+          header: (0, V.jsx)(Un, {
+            item: e,
+            selectedMcps: s,
+            searchKeyword: t,
+            onDetailClick: o,
+          }),
+          children: p.map((t) =>
+            (0, V.jsx)(
+              Kn,
+              {
+                tool: t,
+                isAdded: n(t.toolName, e.mcpServerNacosName),
+                onToggle: () => a(t, e),
+                disabled: c,
+              },
+              t.id,
+            ),
+          ),
+        },
+        e.id,
+      ),
+    });
+  },
+  Xn = (e) =>
+    e &&
+    (e === `integer`
+      ? `Number`
+      : e
+          .split(` `)
+          .map((e) => e.charAt(0).toUpperCase() + e.slice(1).toLowerCase())
+          .join(` `)),
+  Zn = (e) => {
+    let t = Xn(e?.type);
+    if (t === `Object`) {
+      let t = {};
+      for (let [n, r] of Object.entries(e.properties || {})) t[n] = Zn(r);
+      return t;
+    }
+    return t === `Array` ? [] : e.default;
+  },
+  Qn = (e) =>
+    e.map((e) => ({
+      paramName: e?.paramName,
+      key: e?.paramName,
+      name: e?.paramName,
+      paramCode: e?.paramName,
+      type: e?.paramType,
+      valueFrom: `input`,
+      value: ``,
+    })),
+  $n = (e) => {
+    let t = e?.properties || {};
+    return Object.keys(t).length === 0
+      ? []
+      : Object.entries(t)
+          .map(([e, t]) => ({
+            ...(typeof t == `object` && t ? t : {}),
+            paramName: e,
+          }))
+          .map((t) => ({
+            paramName: t?.description,
+            key: t?.paramName,
+            name: t?.paramName,
+            paramCode: t?.paramName,
+            type: Xn(t?.type),
+            valueFrom: `input`,
+            value: Zn(t),
+            required: e?.required?.includes(t?.description) || !1,
+          }));
+  },
+  er = (e) => {
+    if (!e) return null;
+    try {
+      let t = JSON.parse(e);
+      return Array.isArray(t)
+        ? Qn(t)
+        : Object.prototype.toString.call(t) === `[object Object]`
+          ? $n(t)
+          : null;
+    } catch (e) {
+      return (console.warn(`Failed to parse inputSchema:`, e), null);
+    }
+  },
+  tr = (e) => {
+    let t = { ...e, name: e.paramCode, key: e.paramCode };
+    return (
+      Array.isArray(e.children) &&
+        e.children.length > 0 &&
+        (t.children = e.children.map(tr)),
+      t
+    );
+  },
+  nr = (e) => {
+    if (!e) return null;
+    try {
+      let t = JSON.parse(e);
+      return Array.isArray(t)
+        ? t.map(tr)
+        : Object.prototype.toString.call(t) === `[object Object]`
+          ? tr(t)
+          : t;
+    } catch (e) {
+      return (console.warn(`Failed to parse outputSchema:`, e), null);
+    }
+  },
+  rr = (e, t) => `${e}_tools_${t}`;
+x();
+var ir = ({
+    onConfirm: e,
+    onRemove: t,
+    onRemoveBatch: n,
+    isToolAdded: r,
+    checkAllToolsAdded: i,
+  }) => {
+    let a = (e, t) => {
+      let n = er(e.inputSchema),
+        r = nr(e.outputSchema),
+        i = rr(t, e.toolName);
+      return {
+        id: e.id,
+        toolName: e.toolName,
+        toolDesc: e.toolDesc,
+        tool: i,
+        inParams: n,
+        outputParams: r,
+      };
+    };
+    return {
+      toggleSingleTool: (n, i) => {
+        let o = a(n, i.mcpServerNacosName);
+        r(n.toolName, i.mcpServerNacosName)
+          ? (t?.(o), P.success(`移除成功`))
+          : (e({
+              mcpServerId: i.id,
+              mcpServerName: i.mcpServerName,
+              mcpServerNacosName: i.mcpServerNacosName,
+              desc: i.desc,
+              iconUrl: i.iconUrl,
+              mcpToolList: [o],
+            }),
+            P.success(`添加成功`));
+      },
+      toggleAllTools: (o, s) => {
+        s.stopPropagation();
+        let c = o.mcpToolList?.filter((e) => e.isOpen === 1) || [];
+        if (c.length === 0) {
+          P.warning(`该 MCP 服务器没有可用的工具`);
+          return;
+        }
+        if (i(o)) {
+          let e = c.map((e) => a(e, o.mcpServerNacosName));
+          (n
+            ? n(e)
+            : e.forEach((e) => {
+                t?.(e);
+              }),
+            P.success(`移除成功`));
+        } else {
+          let t = c.filter((e) => !r(e.toolName, o.mcpServerNacosName));
+          t.length > 0 &&
+            (e({
+              id: o.mcpId,
+              mcpServerId: o.id,
+              mcpServerName: o.mcpServerName,
+              mcpServerNacosName: o.mcpServerNacosName,
+              desc: o.desc,
+              iconUrl: o.iconUrl,
+              mcpToolList: t.map((e) => a(e, o.mcpServerNacosName)),
+            }),
+            P.success(`添加成功`));
+        }
+      },
+    };
+  },
+  ar = (e) => {
+    let t = (0, L.useCallback)(
+      (t, n) => {
+        let r = rr(n, t);
+        return e.some((e) => e.mcpToolList?.some((e) => e.tool === r));
+      },
+      [e],
+    );
+    return {
+      isToolAdded: t,
+      checkAllToolsAdded: (0, L.useCallback)(
+        (e) => {
+          let n = e?.mcpToolList?.filter((e) => e.isOpen === 1) || [];
+          return n.length === 0
+            ? !1
+            : n.every((n) => t(n.toolName, e.mcpServerNacosName));
+        },
+        [t],
+      ),
+      hasAnyToolAdded: (0, L.useCallback)(
+        (e) =>
+          (e?.mcpToolList?.filter((e) => e.isOpen === 1) || []).some((n) =>
+            t(n.toolName, e.mcpServerNacosName),
+          ),
+        [t],
+      ),
+    };
+  },
+  or = {
+    search: `_search_1mpcj_1`,
+    "search-input": `_search-input_1mpcj_6`,
+    "create-btn": `_create-btn_1mpcj_13`,
+    "collapse-space": `_collapse-space_1mpcj_16`,
+    "pagination-group": `_pagination-group_1mpcj_22`,
+    "empty-container": `_empty-container_1mpcj_27`,
+  };
+x();
+var sr = (0, L.memo)(
+    ({
+      visible: e,
+      onClose: t,
+      onConfirm: n,
+      selectedMcps: r = [],
+      onRemove: i,
+      onRemoveBatch: o,
+      disabled: s = !1,
+    }) => {
+      let [c, l] = (0, L.useState)(!1),
+        [d, f] = (0, L.useState)({
+          pageSize: 10,
+          pageNum: 1,
+          mcpServerName: ``,
+          status: 2,
+        }),
+        [p, m] = (0, L.useState)(0),
+        [h, _] = (0, L.useState)([]),
+        { isToolAdded: v, checkAllToolsAdded: y } = ar(r),
+        { toggleSingleTool: b, toggleAllTools: x } = ir({
+          onConfirm: n,
+          onRemove: i,
+          onRemoveBatch: o,
+          isToolAdded: v,
+          checkAllToolsAdded: y,
+        });
+      (0, L.useEffect)(() => {
+        e && S();
+      }, [d, e]);
+      let S = async () => {
+          try {
+            l(!0);
+            let { data: e } = await ye(d);
+            (_(e?.data || []), m(e?.totalSize || 0));
+          } catch (e) {
+            console.error(`Failed to fetch MCP list:`, e);
+          } finally {
+            l(!1);
+          }
+        },
+        C = (e) => {
+          Ee(
+            `${ft.SSO}?targetPath=${ft.AGENT_PLUGIN_MCP_DETAILS}&state=${JSON.stringify({ id: e.id })}`,
+          );
+        },
+        T = () => {
+          Ee(`${ft.AGENT_PLUGIN_MANAGE}?action=${xe.OPEN_ADD_MCP_PLUGIN}`);
+        },
+        E = (0, L.useCallback)(
+          ut((e) => {
+            f((t) => ({ ...t, pageNum: 1, mcpServerName: e }));
+          }, 300),
+          [],
+        ),
+        D = (e) => {
+          E(e.target.value);
+        },
+        O = (e, t) => {
+          t && f((e) => ({ ...e, pageSize: t }));
+        },
+        ee = (e) => {
+          e && e !== d.pageNum && f((t) => ({ ...t, pageNum: e }));
+        },
+        k = (0, L.useMemo)(
+          () =>
+            c
+              ? (0, V.jsx)(`div`, { className: or[`empty-container`] })
+              : (0, V.jsx)(u, {
+                  className: or[`empty-container`],
+                  image: Et,
+                  description: (0, V.jsxs)(`div`, {
+                    children: [
+                      (0, V.jsx)(`div`, { children: `暂无数据` }),
+                      (0, V.jsx)(w, {
+                        type: `link`,
+                        onClick: T,
+                        children: `新建MCP`,
+                      }),
+                    ],
+                  }),
+                }),
+          [c],
+        );
+      return (0, V.jsx)(ce, {
+        open: e,
+        onCancel: t,
+        title: `选择MCP`,
+        footer: null,
+        width: 700,
+        centered: !0,
+        children: (0, V.jsxs)(j, {
+          spinning: c,
+          children: [
+            (0, V.jsxs)(`div`, {
+              className: or.search,
+              children: [
+                (0, V.jsx)(a, {
+                  placeholder: `搜索插件`,
+                  prefix: (0, V.jsx)(`img`, { src: wt, width: 16, alt: `` }),
+                  className: or[`search-input`],
+                  maxLength: 10,
+                  allowClear: !0,
+                  onChange: D,
+                }),
+                (0, V.jsx)(w, {
+                  type: `primary`,
+                  className: or[`create-btn`],
+                  onClick: T,
+                  children: `新建MCP`,
+                }),
+              ],
+            }),
+            h.length > 0
+              ? (0, V.jsxs)(V.Fragment, {
+                  children: [
+                    (0, V.jsx)(g, {
+                      direction: `vertical`,
+                      className: or[`collapse-space`],
+                      children: h.map((e) =>
+                        (0, V.jsx)(
+                          Yn,
+                          {
+                            item: e,
+                            searchKeyword: d.mcpServerName,
+                            isToolAdded: v,
+                            checkAllToolsAdded: y,
+                            selectedMcps: r,
+                            onToggleAllTools: x,
+                            onToggleSingleTool: b,
+                            onDetailClick: C,
+                            disabled: s,
+                          },
+                          e.id,
+                        ),
+                      ),
+                    }),
+                    (0, V.jsx)(`div`, {
+                      className: or[`pagination-group`],
+                      children: (0, V.jsx)(ae, {
+                        showSizeChanger: !0,
+                        onChange: ee,
+                        onShowSizeChange: O,
+                        defaultCurrent: 1,
+                        current: d.pageNum,
+                        pageSize: d.pageSize,
+                        total: p,
+                        showTotal: (e) => `共 ${e} 条`,
+                      }),
+                    }),
+                  ],
+                })
+              : k,
+          ],
+        }),
+      });
+    },
+  ),
+  cr = {
+    "mcp-item": `_mcp-item_qknd6_1`,
+    "mcp-item-content": `_mcp-item-content_qknd6_19`,
+    "mcp-item-title": `_mcp-item-title_qknd6_22`,
+    "mcp-item-title-text": `_mcp-item-title-text_qknd6_30`,
+    "mcp-item-desc": `_mcp-item-desc_qknd6_38`,
+    "mcp-item-desc-text": `_mcp-item-desc-text_qknd6_47`,
+    "mcp-item-remove-btn": `_mcp-item-remove-btn_qknd6_52`,
+  };
+x();
+var { Text: lr } = h,
+  ur = ({ mcp: e, onRemove: t, disabled: n = !1 }) =>
+    (0, V.jsxs)(`div`, {
+      className: cr[`mcp-item`],
+      children: [
+        (0, V.jsxs)(`div`, {
+          className: cr[`mcp-item-content`],
+          children: [
+            (0, V.jsx)(`div`, {
+              className: cr[`mcp-item-title`],
+              children: (0, V.jsx)(lr, {
+                className: cr[`mcp-item-title-text`],
+                ellipsis: {
+                  tooltip: { title: e.toolName, placement: `topLeft` },
+                },
+                children: e.toolName,
+              }),
+            }),
+            !!e.toolDesc &&
+              (0, V.jsx)(`div`, {
+                className: cr[`mcp-item-desc`],
+                children: (0, V.jsx)(lr, {
+                  className: cr[`mcp-item-desc-text`],
+                  ellipsis: {
+                    tooltip: { title: e.toolDesc, placement: `topLeft` },
+                  },
+                  children: e.toolDesc,
+                }),
+              }),
+          ],
+        }),
+        !n &&
+          (0, V.jsx)(`img`, {
+            src: `data:image/png;base64,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`,
+            width: 30,
+            height: 30,
+            onClick: () => t(e),
+            alt: `移除全部`,
+          }),
+      ],
+    }),
+  dr = {
+    "mcp-server-panel": `_mcp-server-panel_10d25_1`,
+    "mcp-server-panel-header": `_mcp-server-panel-header_10d25_17`,
+    "mcp-server-panel-header-icon": `_mcp-server-panel-header-icon_10d25_22`,
+    "mcp-server-panel-header-content": `_mcp-server-panel-header-content_10d25_27`,
+    "mcp-server-panel-header-title": `_mcp-server-panel-header-title_10d25_31`,
+    "mcp-server-panel-header-tag": `_mcp-server-panel-header-tag_10d25_38`,
+    "mcp-server-panel-header-desc": `_mcp-server-panel-header-desc_10d25_49`,
+    "mcp-server-panel-header-desc-text": `_mcp-server-panel-header-desc-text_10d25_52`,
+    "mcp-server-panel-header-info": `_mcp-server-panel-header-info_10d25_58`,
+    "mcp-server-panel-expand-icon": `_mcp-server-panel-expand-icon_10d25_63`,
+  };
+x();
+var { Text: fr } = h,
+  { Panel: pr } = E,
+  mr = ({
+    mcpNode: e,
+    onRemoveServer: t,
+    onRemoveTool: n,
+    disabled: r = !1,
+  }) => {
+    let i = (n) => {
+        (n.stopPropagation(), t(e));
+      },
+      a = (e, t) => {
+        (e.preventDefault(),
+          Ee(
+            `${ft.SSO}?targetPath=${ft.AGENT_PLUGIN_MCP_DETAILS}&state=${JSON.stringify({ id: t.mcpServerId })}`,
+          ));
+      };
+    return (0, V.jsx)(E, {
+      ghost: !0,
+      className: dr[`mcp-server-panel`],
+      expandIconPosition: `end`,
+      expandIcon: ({ isActive: e }) =>
+        (0, V.jsxs)(`div`, {
+          className: dr[`mcp-server-panel-expand-icon`],
+          children: [
+            !r &&
+              (0, V.jsx)(`img`, {
+                src: `data:image/png;base64,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`,
+                width: 30,
+                height: 30,
+                onClick: i,
+                alt: `移除全部`,
+              }),
+            (0, V.jsx)(`img`, {
+              src: e ? Tt : Dt,
+              width: 18,
+              alt: `展开/收起`,
+            }),
+          ],
+        }),
+      children: (0, V.jsx)(
+        pr,
+        {
+          header: (0, V.jsxs)(`div`, {
+            className: dr[`mcp-server-panel-header`],
+            children: [
+              (0, V.jsx)(`img`, {
+                alt: `mcp服务图标`,
+                src: e?.iconUrl,
+                className: dr[`mcp-server-panel-header-icon`],
+              }),
+              (0, V.jsxs)(`div`, {
+                className: dr[`mcp-server-panel-header-content`],
+                children: [
+                  (0, V.jsxs)(`div`, {
+                    className: dr[`mcp-server-panel-header-title`],
+                    children: [
+                      (0, V.jsx)(fr, { children: e.title }),
+                      (0, V.jsx)(N, {
+                        className: dr[`mcp-server-panel-header-tag`],
+                        children: `MCP`,
+                      }),
+                    ],
+                  }),
+                  !!e?.desc &&
+                    (0, V.jsx)(`div`, {
+                      className: dr[`mcp-server-panel-header-desc`],
+                      children: (0, V.jsx)(fr, {
+                        className: dr[`mcp-server-panel-header-desc-text`],
+                        ellipsis: {
+                          tooltip: { title: e?.desc, placement: `topLeft` },
+                        },
+                        children: e?.desc,
+                      }),
+                    }),
+                  (0, V.jsxs)(`div`, {
+                    className: dr[`mcp-server-panel-header-info`],
+                    children: [
+                      (0, V.jsxs)(`span`, {
+                        children: [`已添加`, e.toolCount || 0, `个工具`],
+                      }),
+                      (0, V.jsx)(S, { type: `vertical` }),
+                      (0, V.jsx)(`a`, {
+                        type: `link`,
+                        onClick: (t) => a(t, e),
+                        children: `详情`,
+                      }),
+                    ],
+                  }),
+                ],
+              }),
+            ],
+          }),
+          children: e?.mcpToolList?.map((t, i) =>
+            (0, V.jsx)(
+              ur,
+              { mcp: t, onRemove: (t) => n(e, t), disabled: r },
+              t.id || i,
+            ),
+          ),
+        },
+        e.id,
+      ),
+    });
+  },
+  hr = {
+    "mcp-list": `_mcp-list_5n0h9_1`,
+    "mcp-list-space": `_mcp-list-space_5n0h9_4`,
+  };
+x();
+var gr = ({
+    mcpNodes: e,
+    onRemoveServer: t,
+    onRemoveTool: n,
+    disabled: r = !1,
+  }) =>
+    e.length === 0
+      ? null
+      : (0, V.jsx)(`div`, {
+          className: hr[`mcp-list`],
+          children: (0, V.jsx)(g, {
+            direction: `vertical`,
+            className: hr[`mcp-list-space`],
+            children: e.map((e) =>
+              (0, V.jsx)(
+                mr,
+                { mcpNode: e, onRemoveServer: t, onRemoveTool: n, disabled: r },
+                e.id,
+              ),
+            ),
+          }),
+        }),
+  _r = ({ config: e, onChange: t }) => ({
+    handleConfirmMCP: (0, L.useCallback)(
+      (n) => {
+        let r = (e.mcpNodes || []).findIndex(
+          (e) => e.title === n.mcpServerName,
+        );
+        if (r !== -1) {
+          let i = [...(e.mcpNodes || [])],
+            a = i[r],
+            o = new Set(a.mcpToolList?.map((e) => e.tool) || []),
+            s = n.mcpToolList?.filter((e) => !o.has(e.tool)) || [];
+          ((i[r] = {
+            ...a,
+            mcpToolList: [...(a.mcpToolList || []), ...s],
+            toolCount: (a.mcpToolList?.length || 0) + s.length,
+          }),
+            t({ mcpNodes: i }));
+        } else {
+          let r = {
+            id: n.id,
+            mcpServerId: n.mcpServerId,
+            type: `MCPNode`,
+            title: n.mcpServerName,
+            desc: n.desc,
+            iconUrl: n.iconUrl,
+            toolCount: n?.mcpToolList?.length,
+            mcpToolList: n.mcpToolList || [],
+            data: n.mcpToolList?.[0] || {
+              id: 0,
+              toolName: ``,
+              toolDesc: ``,
+              tool: ``,
+              inParams: [],
+              outputParams: [],
+            },
+          };
+          t({ mcpNodes: [...(e.mcpNodes || []), r] });
+        }
+      },
+      [e.mcpNodes, t],
+    ),
+    handleRemoveMCP: (0, L.useCallback)(
+      (n) => {
+        t({
+          mcpNodes: (e.mcpNodes || [])
+            .map((e) => {
+              if (e.mcpToolList?.some((e) => e.tool === n.tool)) {
+                let t = e.mcpToolList?.filter((e) => e.tool !== n.tool) || [];
+                return t.length === 0
+                  ? null
+                  : { ...e, mcpToolList: t, toolCount: t.length };
+              }
+              return e;
+            })
+            .filter(Boolean),
+        });
+      },
+      [e.mcpNodes, t],
+    ),
+    handleRemoveMCPBatch: (0, L.useCallback)(
+      (n) => {
+        if (n.length === 0) return;
+        let r = new Set(n.map((e) => e.tool));
+        t({
+          mcpNodes: (e.mcpNodes || [])
+            .map((e) => {
+              let t = e.mcpToolList?.filter((e) => !r.has(e.tool)) || [];
+              return t.length === 0
+                ? null
+                : { ...e, mcpToolList: t, toolCount: t.length };
+            })
+            .filter(Boolean),
+        });
+      },
+      [e.mcpNodes, t],
+    ),
+    handleRemoveMCPServer: (0, L.useCallback)(
+      (n) => {
+        t({ mcpNodes: (e.mcpNodes || []).filter((e) => e.id !== n.id) });
+      },
+      [e.mcpNodes, t],
+    ),
+    handleRemoveTool: (0, L.useCallback)(
+      (n, r) => {
+        t({
+          mcpNodes: (e.mcpNodes || [])
+            .map((e) => {
+              if (e.id === n.id) {
+                let t = e.mcpToolList?.filter((e) => e.id !== r.id) || [];
+                return t.length === 0
+                  ? null
+                  : { ...e, mcpToolList: t, toolCount: t.length };
+              }
+              return e;
+            })
+            .filter(Boolean),
+        });
+      },
+      [e.mcpNodes, t],
+    ),
+  }),
+  vr = {
+    "skills-module-section-header": `_skills-module-section-header_1kx7j_1`,
+    "skills-module-add-icon": `_skills-module-add-icon_1kx7j_7`,
+  };
+x();
+var yr = ({ config: e, onChange: t, disabled: n = !1 }) => {
+    let [r, i] = (0, L.useState)(!1),
+      [a, o] = (0, L.useState)(!1),
+      {
+        handleConfirmMCP: s,
+        handleRemoveMCP: c,
+        handleRemoveMCPBatch: l,
+        handleRemoveMCPServer: u,
+        handleRemoveTool: d,
+      } = _r({ config: e, onChange: t }),
+      f = (0, L.useCallback)(() => {
+        o(!0);
+      }, []),
+      m = (0, L.useCallback)(() => {
+        o(!1);
+      }, []);
+    return (0, V.jsxs)(`div`, {
+      className: `${z[`module-section`]} ${vr[`skills-module`]}`,
+      children: [
+        (0, V.jsx)(`div`, {
+          className: `${z[`module-header`]} ${z[`collapsible-header`]}`,
+          onClick: () => i(!r),
+          children: (0, V.jsxs)(`div`, {
+            className: z[`header-left`],
+            children: [
+              (0, V.jsx)(y, { className: z[`module-icon`] }),
+              (0, V.jsx)(`h3`, {
+                className: z[`module-title`],
+                children: `技能`,
+              }),
+            ],
+          }),
+        }),
+        (0, V.jsx)(`div`, {
+          className: `${z[`collapsible-content`]} ${r ? z.collapsed : ``}`,
+          children: (0, V.jsx)(`div`, {
+            className: z[`content-wrapper`],
+            children: (0, V.jsxs)(`div`, {
+              className: `${z[`form-item`]} ${vr[`skills-module-mcp-section`]}`,
+              children: [
+                (0, V.jsxs)(`div`, {
+                  className: vr[`skills-module-section-header`],
+                  children: [
+                    (0, V.jsxs)(`div`, {
+                      className: z.label,
+                      children: [
+                        `MCP`,
+                        (0, V.jsx)(_, {
+                          title: `智能体可以通过标准化协议（MCP）连接企业内部服务API并发起调用`,
+                          placement: `right`,
+                          children: (0, V.jsx)(p, { className: z.tooltip }),
+                        }),
+                      ],
+                    }),
+                    (0, V.jsx)(`img`, {
+                      src: Le,
+                      width: 20,
+                      height: 20,
+                      className: vr[`skills-module-add-icon`],
+                      onClick: f,
+                      alt: `添加MCP`,
+                    }),
+                  ],
+                }),
+                (0, V.jsx)(gr, {
+                  mcpNodes: e.mcpNodes || [],
+                  onRemoveServer: u,
+                  onRemoveTool: d,
+                  disabled: n,
+                }),
+              ],
+            }),
+          }),
+        }),
+        (0, V.jsx)(sr, {
+          visible: a,
+          onClose: m,
+          onConfirm: s,
+          selectedMcps: e.mcpNodes || [],
+          onRemove: c,
+          onRemoveBatch: l,
+          disabled: n,
+        }),
+      ],
+    });
+  },
+  br = ({
+    enabledModules: e,
+    initialConfig: t,
+    onChange: n,
+    disabled: r = !1,
+    className: i,
+    style: a,
+  }) => {
+    let o = (0, L.useRef)(t);
+    (0, L.useEffect)(() => {
+      o.current = t;
+    }, [t]);
+    let s = (0, L.useCallback)((t) => e.includes(t), [e]),
+      c = (0, L.useCallback)(
+        (e) => {
+          r || n({ ...o.current, ...e });
+        },
+        [n, r],
+      );
+    return (0, V.jsxs)(`div`, {
+      className: (0, R.default)(z[`agent-configuration`], i),
+      style: a,
+      children: [
+        s(Bt.PLANNING) &&
+          (0, V.jsx)(Rn, { config: t, onChange: c, disabled: r }),
+        s(Bt.KNOWLEDGE) &&
+          (0, V.jsx)(an, { config: t, onChange: c, disabled: r }),
+        s(Bt.SKILLS) && (0, V.jsx)(yr, { config: t, onChange: c, disabled: r }),
+        s(Bt.MEMORY) && (0, V.jsx)(dn, { config: t, onChange: c, disabled: r }),
+      ],
+    });
+  },
+  xr = Object.fromEntries(be.map(({ value: e, label: t }) => [e, t])),
+  Sr = {
+    [_e.RELEASED]: { backgroundColor: `#E6FFFB`, color: `#08979C` },
+    [_e.UNDER_REVIEW]: { backgroundColor: `#FFF7E6`, color: `#D46B08` },
+    [_e.REJECTED]: { backgroundColor: `#FFF1F0`, color: `#D32029` },
+    [_e.NOT_RELEASED]: { backgroundColor: `#E9EBF2`, color: `#9296A6` },
+  },
+  Cr = { backgroundColor: `#E6F4FF`, color: `#0958D9` },
+  wr = {
+    header: `_header_xixaz_4`,
+    "header-inner": `_header-inner_xixaz_10`,
+    "header-left": `_header-left_xixaz_17`,
+    "header-center": `_header-center_xixaz_21`,
+    "header-right": `_header-right_xixaz_27`,
+    "app-name-box": `_app-name-box_xixaz_31`,
+    "app-name": `_app-name_xixaz_31`,
+    "app-icon": `_app-icon_xixaz_46`,
+    "app-status-tag": `_app-status-tag_xixaz_49`,
+    "save-time": `_save-time_xixaz_52`,
+  };
+x();
+var Tr = ({
+    microAppId: e,
+    microAppVersionId: t,
+    segmentedValue: n,
+    onSegmentedChange: r,
+    onPublish: i,
+    onUnpublish: a,
+    publishLoading: o = !1,
+    onAppInfoUpdate: s,
+  }) => {
+    let c = mt(),
+      { microAppInfo: l, lastSaveTime: u } = Lt(),
+      { flowName: d, status: p, microAppName: m, picUrl: g } = l || {},
+      v = (0, L.useMemo)(() => xr[p] ?? `-`, [p]),
+      y = (0, L.useMemo)(() => Sr[p] || Cr, [p]),
+      b = (0, L.useCallback)(() => {
+        window.history.length > 1 ? c(-1) : c(ft.AGENT_APP_MANAGE);
+      }, [c]),
+      x = (0, L.useCallback)(() => {
+        c(ft.AGENT_APP_VERSION, {
+          state: { microAppId: e, microAppVersionId: t },
+        });
+      }, [e, t, c]),
+      S = (0, L.useMemo)(() => p === _e.RELEASED, [p]),
+      C = (0, L.useCallback)(() => {
+        S ? a && a() : i && i();
+      }, [S, i, a]);
+    return (0, V.jsx)(`header`, {
+      className: wr.header,
+      children: (0, V.jsxs)(`div`, {
+        className: wr[`header-inner`],
+        children: [
+          (0, V.jsxs)(F, {
+            align: `center`,
+            gap: 7,
+            className: wr[`header-left`],
+            children: [
+              (0, V.jsx)(ht, { onClick: b }),
+              (0, V.jsx)(ge, {
+                type: `Edit`,
+                record: l,
+                callback: () => {
+                  s && s();
+                },
+                children: (0, V.jsxs)(F, {
+                  align: `center`,
+                  gap: 8,
+                  className: wr[`app-name-box`],
+                  children: [
+                    g &&
+                      (0, V.jsx)(D, {
+                        preview: !1,
+                        src: g,
+                        width: 32,
+                        height: 32,
+                        className: wr[`app-icon`],
+                      }),
+                    (0, V.jsx)(h.Text, {
+                      className: wr[`app-name`],
+                      children: d || m,
+                    }),
+                  ],
+                }),
+              }),
+              (0, V.jsx)(N, {
+                style: {
+                  backgroundColor: y.backgroundColor,
+                  color: y.color,
+                  borderColor: `transparent`,
+                },
+                className: wr[`app-status-tag`],
+                children: v,
+              }),
+              u &&
+                (0, V.jsxs)(`span`, {
+                  className: wr[`save-time`],
+                  children: [`保存于 `, u],
+                }),
+            ],
+          }),
+          (0, V.jsx)(`div`, {
+            className: wr[`header-center`],
+            children: (0, V.jsx)(f, {
+              value: n,
+              onChange: (e) => r(e),
+              options: [
+                { label: `应用配置`, value: `应用配置` },
+                { label: `发布渠道`, value: `发布渠道`, disabled: !0 },
+              ],
+            }),
+          }),
+          (0, V.jsxs)(`div`, {
+            className: wr[`header-right`],
+            children: [
+              (0, V.jsx)(
+                _,
+                {
+                  title: `历史版本`,
+                  placement: `bottom`,
+                  children: (0, V.jsx)(w, {
+                    disabled: !0,
+                    onClick: x,
+                    children: `版本管理`,
+                  }),
+                },
+                `version`,
+              ),
+              (0, V.jsx)(w, {
+                type: `primary`,
+                onClick: C,
+                loading: o,
+                icon:
+                  !S &&
+                  (0, V.jsx)(he, {
+                    src: `data:image/png;base64,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`,
+                    size: 18,
+                  }),
+                style: { marginLeft: 10 },
+                children: S ? `取消发布` : `发布`,
+              }),
+            ],
+          }),
+        ],
+      }),
+    });
+  },
+  Er = class {
+    static CHARS = `abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789`;
+    static generateNodeId(e) {
+      return `${e.charAt(0).toUpperCase() + e.slice(1)}_${this.generateRandomString(4)}`;
+    }
+    static generateUniversalId(e = `id`) {
+      return `${e}_${this.generateRandomString(12)}_${Date.now().toString(36)}`;
+    }
+    static generateRandomString(e) {
+      let t = ``,
+        n = this.CHARS.length,
+        r = new Date().getTime() % 1e3;
+      for (let i = 0; i < e; i++) {
+        let e = Math.floor((Math.random() * n + r) % n);
+        t += this.CHARS[e];
+      }
+      return t;
+    }
+  },
+  Dr = (e) => {
+    switch (e) {
+      case `MemberNode`:
+      case `MemoryNode`:
+        return (0, V.jsx)(ne, {});
+      case `KnowlEdgeNode`:
+        return (0, V.jsx)(M, {});
+      case `LLMNode`:
+        return (0, V.jsx)(l, {});
+      case `MCPNode`:
+        return (0, V.jsx)(y, {});
+      default:
+        return ``;
+    }
+  },
+  Or = (e) => {
+    let {
+      addMessage: t,
+      updateMessage: n,
+      setActiveAssistantMessageId: r,
+    } = Rt(
+      tt((e) => ({
+        addMessage: e.addMessage,
+        updateMessage: e.updateMessage,
+        setActiveAssistantMessageId: e.setActiveAssistantMessageId,
+      })),
+    );
+    return {
+      addUserMessage: (0, L.useCallback)(
+        ({ content: n, ...r }) => {
+          t({
+            ...r,
+            key: Er.generateUniversalId(`msg_user_`),
+            role: $e.USER,
+            timestamp: Date.now(),
+            sessionId: e,
+            status: Xe.SUCCESS,
+            content: n || ``,
+          });
+        },
+        [e, t],
+      ),
+      addAssistantMessage: (0, L.useCallback)(
+        ({ content: n, ...i }) => {
+          let a = {
+            ...i,
+            key: Er.generateUniversalId(`msg_assistant_`),
+            role: $e.ASSISTANT,
+            streaming: !0,
+            content: n || ``,
+            status: Xe.RUNNING,
+            timestamp: Date.now(),
+            sessionId: e,
+          };
+          return (t(a), r(String(a.key)), String(a.key));
+        },
+        [e, t, r],
+      ),
+      updateChatMessage: (0, L.useCallback)(
+        ({ key: e, content: t, ...r }) => {
+          n(e, { ...r, content: t || `` });
+        },
+        [n],
+      ),
+    };
+  },
+  kr = (e) => ({
+    requestParams: (0, L.useMemo)(
+      () =>
+        !Array.isArray(e) || e.length === 0
+          ? []
+          : e
+              .filter((e) => {
+                let t =
+                  e?.name && typeof e.name == `string` && e.name.trim() !== ``;
+                return (
+                  t ||
+                    console.warn(
+                      `[useDebugParams] 发现无效会话变量（name为空）:`,
+                      e,
+                    ),
+                  t
+                );
+              })
+              .map((e) => ({
+                key: e.name,
+                type: e.type,
+                desc: e.name,
+                defaultValue: e.defaultValue,
+              })),
+      [e],
+    ),
+  }),
+  Ar = (e = {}) => {
+    let {
+        defaultSessionName: t = `默认会话`,
+        microAppId: n,
+        microAppVersionId: r,
+        onSessionCreated: i,
+        onSessionError: a,
+      } = e,
+      [o, s] = (0, L.useState)(!1),
+      { setActiveSessionId: c } = Rt(
+        tt((e) => ({ setActiveSessionId: e.setActiveSessionId })),
+      );
+    return {
+      isCreating: o,
+      createSession: (0, L.useCallback)(
+        async (e = {}) => {
+          let { name: o = t, description: l } = e;
+          if (!n || !r)
+            return (a?.(Error(`缺少微应用信息，无法创建调试会话`)), null);
+          s(!0);
+          let u = { agentId: n, agentVersionId: r, type: 1 };
+          try {
+            let e = await Ft(u);
+            if (e?.success && e?.data?.sessionId) {
+              let t = e.data.sessionId;
+              return (c(t), i?.(t), t);
+            } else {
+              let t = e?.errMessage || `创建调试会话失败`;
+              return (a?.(Error(t)), null);
+            }
+          } catch (e) {
+            console.error(`创建会话失败:`, e);
+            let t = e?.errMessage || e?.msg || e?.message || `创建调试会话失败`;
+            return (a?.(Error(t)), null);
+          } finally {
+            s(!1);
+          }
+        },
+        [t, n, r, a, c, i],
+      ),
+    };
+  },
+  jr = e(gt(), 1),
+  Mr = () => {
+    let e = (0, L.useRef)(null),
+      t = (0, L.useRef)(null);
+    return {
+      sendRequest: (0, L.useCallback)(async (n, r) => {
+        let {
+            onBefore: i,
+            onChunk: a,
+            onError: o,
+            onAbort: s,
+            onFinish: c,
+          } = r || {},
+          { url: l, params: u, timeout: d = 300 * 1e3 } = n,
+          f = (e) =>
+            e.replace(/^data:\s*/, ``).replace(
+              /\n{2}/g,
+              `
+
+__br__
+
+`,
+            ),
+          p = (e, t) => {
+            e.forEach((e, n) => {
+              if (e && e.trim()) {
+                let r = e;
+                try {
+                  if (
+                    ((r = JSON.parse(e)),
+                    r?.success === !1 || (r?.errCode && r.errCode > 0))
+                  ) {
+                    o(r?.errMessage || `系统运行异常`);
+                    return;
+                  }
+                } catch {}
+                a(r, t[n] || e);
+              }
+            });
+          },
+          m = (e, t) => {
+            if (!e) return ``;
+            let n = e.split(/\n{2}/).filter((e) => !dt(e)),
+              r = t ? `` : n.pop() || ``;
+            return (p(n.map(f), n), r);
+          };
+        if (i && i() === !1) return;
+        ((e.current &&= (e.current.abort(), null)),
+          (t.current &&= (clearTimeout(t.current), null)));
+        let h = new AbortController();
+        ((e.current = h),
+          (t.current = setTimeout(() => {
+            (h.abort(), o(`请求超时，请重试`));
+          }, d)));
+        try {
+          let n = await (0, jr.default)(
+            l,
+            {
+              method: `POST`,
+              headers: {
+                Authorization: st.token,
+                "Content-Type": `application/json`,
+                sign: pt({ url: l, data: u }),
+                ...ct,
+                homingToken: me.getToken(),
+              },
+              body: JSON.stringify(u),
+              signal: h.signal,
+            },
+            d,
+          );
+          if (!n.ok || n.status !== 200) {
+            o(`流式请求失败 [${n.status}]`);
+            return;
+          }
+          if (!n.body) {
+            o(`响应体为空`);
+            return;
+          }
+          let r = n.body.pipeThrough(new TextDecoderStream()).getReader(),
+            i = ``;
+          for (; !h.signal.aborted;) {
+            let { value: n, done: a } = await r.read();
+            if (a) {
+              (i.trim() && m(i, !0),
+                clearTimeout(t.current),
+                h.abort(),
+                (e.current = null),
+                c());
+              break;
+            }
+            ((i += n),
+              (i = i.endsWith(`
+
+`)
+                ? m(i, !0)
+                : m(i, !1)));
+          }
+        } catch (n) {
+          (clearTimeout(t.current), (e.current = null));
+          let r = n?.message || `未知错误`;
+          n.name === `AbortError` ||
+          r === `The user aborted a request.` ||
+          r === `signal is aborted without reason`
+            ? s(`已停止回答`)
+            : o(r === `Failed to fetch` ? `网络或系统错误，请检查` : r);
+        }
+      }, []),
+      abort: (0, L.useCallback)(() => {
+        ((e.current &&= (e.current.abort(), null)),
+          (t.current &&= (clearTimeout(t.current), null)));
+      }, []),
+    };
+  },
+  Nr = () => {
+    let {
+        setNodeExecutionResult: e,
+        setAllNodeExecutionResults: t,
+        setNextNodeId: n,
+      } = zt(),
+      { sendRequest: r, abort: i } = Mr(),
+      a = (0, L.useRef)(null),
+      o = (0, L.useCallback)((e) => {
+        try {
+          if (typeof e == `string`) {
+            let t = e.replace(/^data:\s*/, ``).trim();
+            return t ? JSON.parse(t) : {};
+          }
+          return typeof e == `object` ? e : {};
+        } catch {
+          return {};
+        }
+      }, []),
+      s = (0, L.useCallback)(
+        (e, t) => ({
+          nodeId: e.nodeId,
+          nodeName: e.nodeName || ``,
+          nodeType: e.nodeType || ``,
+          input: e.input,
+          output: e.output,
+          duration: e.duration,
+          startTime: e.startTime || t.startTime,
+          endTime: e.endTime || t.endTime,
+          success: e.success !== !1,
+          executeId: t.executeId,
+        }),
+        [],
+      ),
+      c = (0, L.useCallback)(
+        (e) =>
+          e?.data?.nodeId
+            ? { nodeData: e.data, nodeId: e.data.nodeId }
+            : e?.nodeId
+              ? { nodeData: e, nodeId: e.nodeId }
+              : null,
+        [],
+      ),
+      l = (0, L.useCallback)(
+        (e) => e === `NODE_COMPLETE` || e === `WORKFLOW_COMPLETE`,
+        [],
+      ),
+      u = (0, L.useCallback)(
+        (t) => {
+          let r = c(t);
+          if (!r) return;
+          let { nodeData: i, nodeId: a } = r;
+          (e(a, s(i, t)), n(i.output?.next_node || null));
+        },
+        [c, s, e, n],
+      ),
+      d = (0, L.useCallback)(
+        (e) => {
+          let n = e?.executeId;
+          if (!n) {
+            console.warn(`[工作流完成] 缺少 executeId，无法存储工作流执行结果`);
+            return;
+          }
+          t(n, { ...e, executeId: n, executeLogList: e.executeLogList || [] });
+        },
+        [t],
+      ),
+      f = (0, L.useCallback)(
+        (e) => {
+          let t = e?.type;
+          t !== `CONNECTED` &&
+            (t === `NODE_COMPLETE` ? u(e) : t === `WORKFLOW_COMPLETE` && d(e));
+        },
+        [u, d],
+      );
+    return {
+      startNodeExecutionStream: (0, L.useCallback)(
+        (e) => {
+          (i(),
+            (a.current &&= (clearTimeout(a.current), null)),
+            r(
+              {
+                url: `/decision/agent-microapp/standardAgent/node-execution/stream`,
+                params: { executeId: e },
+              },
+              {
+                onChunk: (e, t) => {
+                  try {
+                    let e = o(t);
+                    e && l(e.type) && f(e);
+                  } catch (e) {
+                    console.error(`解析节点执行流式数据失败:`, e, t);
+                  }
+                },
+                onError: (e) => {
+                  console.error(`节点执行流式接口错误:`, e);
+                },
+                onAbort: () => {
+                  n(null);
+                },
+                onFinish: () => {
+                  n(null);
+                },
+              },
+            ));
+        },
+        [o, l, f, n, r, i],
+      ),
+    };
+  },
+  Pr = (e) => {
+    let { messages: t } = Rt();
+    return {
+      handleInterruptConfirm: (0, L.useCallback)(
+        async (n, r) => {
+          let i = t[t.findIndex((e) => e.executeId === n.executeId) - 1],
+            a = {
+              humanFeedback: r,
+              interruptNodeId: n.nodeId,
+              executeId: n.executeId,
+              branchName: r,
+              executeConfirmNodeId: n.nodeId,
+            };
+          e && i && e(i.content, a);
+        },
+        [t, e],
+      ),
+    };
+  },
+  Fr = (e) => {
+    let [t, n] = (0, L.useState)(e || {}),
+      r = (0, L.useRef)(t);
+    (0, L.useEffect)(() => {
+      r.current = t;
+    }, [t]);
+    let i = (0, L.useCallback)((e) => {
+        n((t) => ({ ...t, ...e }));
+      }, []),
+      a = (0, L.useCallback)((e) => {
+        n((t) => ({
+          ...t,
+          llmModelNode: {
+            ...t.llmModelNode,
+            ...e,
+            data: { ...t.llmModelNode?.data, ...e.data },
+          },
+        }));
+      }, []),
+      o = (0, L.useCallback)((e) => {
+        n((t) => ({ ...t, mcpNodes: [...(t.mcpNodes || []), e] }));
+      }, []),
+      s = (0, L.useCallback)((e, t) => {
+        n((n) => ({
+          ...n,
+          mcpNodes: (n.mcpNodes || []).map((n) =>
+            n.id === e ? { ...n, ...t } : n,
+          ),
+        }));
+      }, []),
+      c = (0, L.useCallback)((e) => {
+        n((t) => ({
+          ...t,
+          mcpNodes: (t.mcpNodes || []).filter((t) => t.id !== e),
+        }));
+      }, []),
+      l = (0, L.useCallback)((e) => {
+        n((t) => ({
+          ...t,
+          knNode: { ...t.knNode, ...e, data: { ...t.knNode?.data, ...e.data } },
+        }));
+      }, []),
+      u = (0, L.useCallback)((e) => {
+        n((t) => ({
+          ...t,
+          sessionVariables: [...(t.sessionVariables || []), e],
+        }));
+      }, []),
+      d = (0, L.useCallback)((e, t) => {
+        n((n) => ({
+          ...n,
+          sessionVariables: (n.sessionVariables || []).map((n) =>
+            n.name === e ? { ...n, ...t } : n,
+          ),
+        }));
+      }, []),
+      f = (0, L.useCallback)((e) => {
+        n((t) => ({
+          ...t,
+          sessionVariables: (t.sessionVariables || []).filter(
+            (t) => t.name !== e,
+          ),
+        }));
+      }, []),
+      p = (0, L.useCallback)((e) => {
+        n((t) => ({ ...t, memoryConfig: { ...t.memoryConfig, ...e } }));
+      }, []),
+      m = (0, L.useCallback)(() => {
+        n(e || {});
+      }, [e]),
+      h = (0, L.useCallback)((e) => {
+        n(e);
+      }, []);
+    return {
+      config: t,
+      updateConfig: i,
+      updateLLMModelNode: a,
+      addMCPNode: o,
+      updateMCPNode: s,
+      removeMCPNode: c,
+      updateKnowledgeNode: l,
+      addSessionVariable: u,
+      updateSessionVariable: d,
+      removeSessionVariable: f,
+      updateMemoryConfiguration: p,
+      resetConfig: m,
+      loadConfig: h,
+      getConfigJSON: (0, L.useCallback)(() => {
+        let e = r.current;
+        return JSON.stringify(e);
+      }, []),
+      loadConfigFromJSON: (0, L.useCallback)(
+        (e) => {
+          try {
+            h(JSON.parse(e));
+          } catch (e) {
+            console.error(`解析配置 JSON 失败:`, e);
+          }
+        },
+        [h],
+      ),
+    };
+  },
+  Ir = { AUTO_SAVE_DEBOUNCE: 500, AUTO_SAVE_INTERVAL: 15e3 },
+  Lr = {
+    DEFAULT_LEFT_WIDTH_PERCENT: 70,
+    MIN_LEFT_WIDTH_PERCENT: 20,
+    MAX_LEFT_WIDTH_PERCENT: 80,
+  },
+  Rr = (e) => {
+    let {
+        microAppId: t,
+        microAppVersionId: n,
+        getConfigJSON: r,
+        saveAPI: i,
+        enabled: a = !0,
+      } = e,
+      { setLastSaveTime: o } = Lt(),
+      s = (0, L.useRef)(null),
+      c = (0, L.useRef)(!1),
+      l = (0, L.useRef)(null),
+      u = (0, L.useRef)(t),
+      d = (0, L.useRef)(n),
+      f = (0, L.useRef)(r),
+      p = (0, L.useRef)(i),
+      m = (0, L.useRef)(o),
+      h = (0, L.useRef)(a);
+    (0, L.useEffect)(() => {
+      ((u.current = t),
+        (d.current = n),
+        (f.current = r),
+        (p.current = i),
+        (m.current = o),
+        (h.current = a));
+    }, [t, n, r, i, o, a]);
+    let g = (0, L.useCallback)(
+        (e) =>
+          `${String(e.getHours()).padStart(2, `0`)}:${String(e.getMinutes()).padStart(2, `0`)}:${String(e.getSeconds()).padStart(2, `0`)}`,
+        [],
+      ),
+      _ = (0, L.useCallback)(
+        async (e = !1) => {
+          if (!d.current)
+            return (
+              console.warn(`[自动保存] 保存跳过：microAppVersionId 未设置`),
+              Promise.resolve()
+            );
+          if (c.current) return Promise.resolve();
+          try {
+            c.current = !0;
+            let t = f.current(),
+              n = {
+                microAppId: u.current,
+                microAppVersionId: d.current,
+                data: t,
+              };
+            if ((await p.current(n)).errCode === 0) {
+              let t = g(new Date());
+              if ((m.current(t), e)) {
+                let { message: e } = await Te(
+                  async () => {
+                    let { message: e } = await import(
+                      `./vendor-antd.QfSgOu5e.js`
+                    ).then((e) => (e.Vt(), e.Bt));
+                    return { message: e };
+                  },
+                  __vite__mapDeps([0, 1, 2]),
+                );
+                e.success(`保存成功！`);
+              }
+              return Promise.resolve();
+            }
+            return Promise.reject(Error(`保存失败`));
+          } catch (e) {
+            return (
+              console.error(`[自动保存] 保存失败:`, e),
+              Promise.reject(e)
+            );
+          } finally {
+            c.current = !1;
+          }
+        },
+        [g],
+      ),
+      v = (0, L.useCallback)(async () => _(!0), [_]),
+      y = (0, L.useCallback)(
+        (e) => {
+          (l.current && clearTimeout(l.current),
+            (l.current = setTimeout(() => {
+              _(!1)
+                .then(() => {
+                  e?.();
+                })
+                .catch((e) => {
+                  console.error(`[自动保存] 防抖保存失败:`, e);
+                });
+            }, Ir.AUTO_SAVE_DEBOUNCE)));
+        },
+        [_],
+      ),
+      b = (0, L.useCallback)(() => {
+        let e = g(new Date());
+        m.current(e);
+      }, [g]);
+    return (
+      (0, L.useEffect)(() => {
+        if (!a) {
+          s.current &&= (clearInterval(s.current), null);
+          return;
+        }
+        return (
+          s.current && clearInterval(s.current),
+          (s.current = setInterval(() => {
+            _(!1);
+          }, Ir.AUTO_SAVE_INTERVAL)),
+          () => {
+            s.current &&= (clearInterval(s.current), null);
+          }
+        );
+      }, [a, _]),
+      (0, L.useEffect)(
+        () => () => {
+          ((s.current &&= (clearInterval(s.current), null)),
+            (l.current &&= (clearTimeout(l.current), null)));
+        },
+        [],
+      ),
+      { saveData: _, triggerAutoSave: y, manualSave: v, updateSaveTime: b }
+    );
+  },
+  zr = (e) => {
+    let {
+        setModelList: t,
+        microAppInfo: n,
+        setMicroAppInfo: r,
+        modelList: i,
+      } = Lt(),
+      { runAsync: a } = ot(() => _t({ modelType: `TEXT` }), {
+        manual: !0,
+        onSuccess: (e) => {
+          e.code === 0 && e.data && t(e.data);
+        },
+      }),
+      o = (0, L.useCallback)(
+        (e) => {
+          try {
+            let t = {};
+            if (e.data)
+              try {
+                t = JSON.parse(e.data);
+              } catch (e) {
+                console.error(`解析配置 JSON 失败:`, e);
+              }
+            if (
+              ((t = {
+                ...t,
+                agentId: e.microAppId,
+                agentName: e.microAppName,
+                agentDesc: e.description,
+              }),
+              !t.llmModelNode && i?.length > 0)
+            ) {
+              let e = i[0];
+              t.llmModelNode = {
+                type: `LLMNode`,
+                data: {
+                  model: `${e.modelCode}#${e.supplierCode}`,
+                  inParams: [],
+                },
+              };
+            }
+            return (
+              t.knNode
+                ? t.knNode.data?.knowledge &&
+                  t.knNode.data.knowledge.version === void 0 &&
+                  (t.knNode = {
+                    ...t.knNode,
+                    data: {
+                      ...t.knNode.data,
+                      knowledge: { ...t.knNode.data.knowledge, version: 1 },
+                    },
+                  })
+                : (t.knNode = {
+                    id: Er.generateNodeId(`knowledge`),
+                    type: `KnowlEdgeNode`,
+                    title: `知识库`,
+                    data: {
+                      knowledge: {
+                        knowledgeDetails: [],
+                        strategy: 3,
+                        resultReflow: !0,
+                        problemOptimize: !1,
+                        topK: 5.1,
+                        scoreFlag: !0,
+                        score: 0.41,
+                        version: 1,
+                      },
+                    },
+                  }),
+              (t.memoryConfig ||= { memoryRounds: 3, longMemoryEnable: !1 }),
+              { ...e, data: JSON.stringify(t) }
+            );
+          } catch (t) {
+            return (console.error(`处理应用配置数据失败:`, t), e);
+          }
+        },
+        [i],
+      ),
+      s = (0, L.useCallback)(async () => {
+        if (!e) {
+          console.warn(`microAppVersionId 未设置，跳过获取应用信息`);
+          return;
+        }
+        try {
+          let t = await yt({ id: e });
+          t.success && t.data && r(o(t.data));
+        } catch (e) {
+          console.error(`获取应用信息失败:`, e);
+        }
+      }, [e, r, o]);
+    return (
+      (0, L.useEffect)(() => {
+        a();
+      }, []),
+      (0, L.useEffect)(() => {
+        i && i?.length && s();
+      }, [i]),
+      (0, L.useEffect)(
+        () => () => {
+          r({});
+        },
+        [r],
+      ),
+      { microAppInfo: n, setMicroAppInfo: r, fetchAppInfo: s }
+    );
+  };
+x();
+var Br = (e) => {
+    let {
+        microAppVersionId: t,
+        saveData: n,
+        publishAPI: r,
+        unpublishAPI: i,
+        onPublishSuccess: a,
+        onUnpublishSuccess: o,
+      } = e,
+      { loading: s, run: c } = ot(
+        async (e) => {
+          if (!t) {
+            P.error(`应用版本ID不存在`);
+            return;
+          }
+          await n();
+          let i = await r({ id: t, operateRemark: e });
+          return (i.errCode === 0 && (P.success(`发布成功！`), a?.()), i);
+        },
+        { manual: !0 },
+      ),
+      { loading: l, run: u } = ot(
+        async () => {
+          if (!t) {
+            P.error(`应用版本ID不存在`);
+            return;
+          }
+          let e = await i({ id: t });
+          return (e.errCode === 0 && (P.success(`取消发布成功！`), o?.()), e);
+        },
+        { manual: !0 },
+      );
+    return { publishLoading: s || l, handlePublish: c, handleUnpublish: u };
+  },
+  {
+    DEFAULT_LEFT_WIDTH_PERCENT: Vr,
+    MIN_LEFT_WIDTH_PERCENT: Hr,
+    MAX_LEFT_WIDTH_PERCENT: Ur,
+  } = Lr,
+  Wr = (e) => [
+    {
+      nodeName: `大模型1`,
+      finished: !1,
+      nodeSeqId: 0,
+      sessionId: e,
+      tenantCode: `T000000`,
+      type: `message`,
+      reasoningContent: `# 依赖报错排查指南依赖报错排查指南依赖报错排查指南依赖报错排查指南依赖报错排查指南依赖报错排查指南依赖报错排查指南依赖报错排查指南依赖报错排查指南依赖报错排查指南 `,
+      orgId: 0x16278fe95b826000,
+      requestId: `executeId_B4iNjmPXBXM4_mkv4yk7v`,
+      interrupt: !1,
+      finish: !1,
+      id: 0,
+      nodeId: `Llm_OeD9`,
+    },
+    {
+      nodeName: `大模型1`,
+      finished: !1,
+      nodeSeqId: 1,
+      sessionId: e,
+      tenantCode: `T000000`,
+      type: `message`,
+      reasoningContent: `依赖报错排查指南依赖报错排查指南依赖报错排查指南依赖报错排查指南依赖报错排查指南依赖报错排查指南依赖报错排查指南
+`,
+      orgId: 0x16278fe95b826000,
+      requestId: `executeId_B4iNjmPXBXM4_mkv4yk7v`,
+      interrupt: !1,
+      finish: !1,
+      id: 1,
+      nodeId: `Llm_OeD9`,
+    },
+    {
+      nodeName: `大模型1`,
+      finished: !1,
+      nodeSeqId: 2,
+      sessionId: e,
+      tenantCode: `T000000`,
+      type: `message`,
+      content: `常见原因常见原因常见原因常见原因常见原因常见原因常见原因常见原因常见原因常见原因常见原因
+`,
+      orgId: 0x16278fe95b826000,
+      requestId: `executeId_B4iNjmPXBXM4_mkv4yk7v`,
+      interrupt: !1,
+      finish: !1,
+      id: 2,
+      nodeId: `Llm_OeD9`,
+    },
+    {
+      nodeName: `大模型1`,
+      finished: !1,
+      nodeSeqId: 2,
+      sessionId: e,
+      tenantCode: `T000000`,
+      type: `message`,
+      content: `提示：安装后重启 VS Code 的 TS 服务生效提示：安装后重启 VS Code 的 TS 服务生效提示：安装后重启 VS Code 的 TS 服务生效提示：安装后重启 VS Code 的 TS 服务生效
+`,
+      orgId: 0x16278fe95b826000,
+      requestId: `executeId_B4iNjmPXBXM4_mkv4yk7v`,
+      interrupt: !1,
+      finish: !1,
+      id: 3,
+      nodeId: `Llm_OeD9`,
+    },
+    {
+      nodeName: `大模型2`,
+      finished: !1,
+      nodeSeqId: 3,
+      sessionId: e,
+      tenantCode: `T000000`,
+      type: `message`,
+      reasoningContent: `1. 包未安装：项目里没装 @clife-agent/type
+`,
+      orgId: 0x16278fe95b826000,
+      requestId: `executeId_B4iNjmPXBXM4_mkv4yk7v`,
+      interrupt: !1,
+      finish: !1,
+      id: 4,
+      nodeId: `Llm_OeD8`,
+    },
+    {
+      nodeName: `大模型2`,
+      finished: !1,
+      nodeSeqId: 4,
+      sessionId: e,
+      tenantCode: `T000000`,
+      type: `message`,
+      reasoningContent: `2. 路径配置错误：tsconfig 的 paths 映射不正确
+`,
+      orgId: 0x16278fe95b826000,
+      requestId: `executeId_B4iNjmPXBXM4_mkv4yk7v`,
+      interrupt: !1,
+      finish: !1,
+      id: 5,
+      nodeId: `Llm_OeD8`,
+    },
+    {
+      nodeName: `大模型2`,
+      finished: !1,
+      nodeSeqId: 5,
+      sessionId: e,
+      tenantCode: `T000000`,
+      type: `message`,
+      content:
+        " 解决方法解决方法解决方法解决方法解决方法解决方法解决方法解决方法解决方法解决方法解决方法解决方法解决方法解决方法解决方法\n```bash\n",
+      orgId: 0x16278fe95b826000,
+      requestId: `executeId_B4iNjmPXBXM4_mkv4yk7v`,
+      interrupt: !1,
+      finish: !1,
+      id: 6,
+      nodeId: `Llm_OeD8`,
+    },
+    {
+      nodeName: `大模型2`,
+      finished: !1,
+      nodeSeqId: 7,
+      sessionId: e,
+      tenantCode: `T000000`,
+      type: `message`,
+      content: `npm install @clife-agent/types --savenpm install @clife-agent/types --savenpm install @clife-agent/types --savenpm install @clife-agent/types --savenpm install @clife-agent/types --save
+`,
+      orgId: 0x16278fe95b826000,
+      requestId: `executeId_B4iNjmPXBXM4_mkv4yk7v`,
+      interrupt: !1,
+      finish: !1,
+      id: 6,
+      nodeId: `Llm_OeD8`,
+    },
+  ];
+x();
+var Gr = (e = {}) => {
+    let {
+        microAppId: t,
+        microAppVersionId: n,
+        sessionId: r,
+        debugParams: i = {},
+        reactFlowInstance: a,
+        onStreamStart: o,
+        onStreamChunk: s,
+        onStreamComplete: c,
+        onStreamError: l,
+        onStreamAbort: u,
+        onSessionIdUpdate: d,
+        useMock: f = !1,
+        mockDelay: p = 200,
+        enableSegmentation: m = !1,
+      } = e,
+      { sendRequest: h, abort: g } = Mr(),
+      [_, v] = (0, L.useState)(!1),
+      [y, b] = (0, L.useState)(!1),
+      x = (0, L.useRef)(),
+      S = (0, L.useRef)([]),
+      C = (0, L.useRef)(``),
+      w = (0, L.useRef)(i);
+    w.current = i;
+    let { startNodeExecutionStream: T } = Nr(),
+      E = (0, L.useCallback)((e) => {
+        let t = {
+            content: ``,
+            reasoningContent: e?.reasoningContent || void 0,
+            isInterrupt: !1,
+            isError: !1,
+            isFinished: !!(e?.finish || e?.finished || e?.isEnd),
+          },
+          n = e?.code;
+        if (n != null && n !== `` && String(n) !== `0`) {
+          let n = e?.message || e?.errorMessage || e?.errMessage || `未知错误`;
+          return (
+            P.error(n),
+            (t.isError = !0),
+            (t.isFinished = !0),
+            (t.content = `\n\n输出异常: ${n}`),
+            t
+          );
+        }
+        let { type: r } = e || {};
+        switch (r) {
+          case `message`:
+            e?.content !== void 0 &&
+              e.content !== null &&
+              e.content !== `` &&
+              (t.content =
+                typeof e.content == `object`
+                  ? JSON.stringify(e.content, null, 2)
+                  : String(e.content));
+            break;
+          case `interrupt`:
+            (P.info(`请求已被中断`),
+              (t.isInterrupt = !0),
+              (t.isFinished = !0),
+              (t.content = `
+
+已中止请求`),
+              (t.paths = e?.paths || []));
+            break;
+          case `error`:
+            (P.info(`请求出错`),
+              (t.isError = !0),
+              (t.isFinished = !0),
+              (t.content = `\n\n输出异常: ${e?.errorMessage || e?.errMessage || e?.message || e?.content || `未知错误`}`));
+            break;
+          default:
+            t.content = ``;
+            break;
+        }
+        return t;
+      }, []),
+      D = (0, L.useCallback)(
+        (e, t, n, r, i) => {
+          if (!m) return;
+          let a = e?.nodeId || `unknown`,
+            o = e?.nodeName;
+          if (a !== C.current) {
+            let r = {
+              nodeId: a,
+              nodeName: o,
+              content: t,
+              reasoningContent: n || ``,
+              segmentIndex: S.current.length,
+              rawData: e,
+            };
+            (S.current.push(r), (C.current = a));
+          } else {
+            let r = S.current[S.current.length - 1];
+            r &&
+              ((r.content += t),
+              n && (r.reasoningContent = (r.reasoningContent || ``) + n),
+              (r.rawData = e));
+          }
+        },
+        [m],
+      ),
+      O = (0, L.useCallback)(
+        async (e, t, n) => {
+          o?.({ messageId: e, executeId: t });
+          try {
+            let t = Wr(n);
+            for (let n of t) {
+              await new Promise((e) => setTimeout(e, p));
+              let {
+                content: t,
+                reasoningContent: r,
+                isInterrupt: i,
+                isError: a,
+                isFinished: o,
+              } = E(n);
+              if (
+                ((t || r || i || a) && D(n, t, r, i, a),
+                (t || r) &&
+                  s?.({ messageId: e, contentSegments: [...S.current] }),
+                i)
+              ) {
+                (c?.({ messageId: e, contentSegments: [...S.current] }),
+                  (x.current = void 0),
+                  (S.current = []),
+                  (C.current = ``));
+                return;
+              }
+              if (a) {
+                let t = n,
+                  r = Error(t?.errorMessage || t?.errMessage || `流式请求出错`);
+                (l?.({ error: r, messageId: e }),
+                  (x.current = void 0),
+                  (S.current = []),
+                  (C.current = ``));
+                return;
+              }
+              if (o) {
+                (b(!1),
+                  c?.({ messageId: e, contentSegments: [...S.current] }),
+                  (x.current = void 0),
+                  (S.current = []),
+                  (C.current = ``));
+                return;
+              }
+            }
+            (c?.({ messageId: e, contentSegments: [...S.current] }),
+              (x.current = void 0),
+              (S.current = []),
+              (C.current = ``));
+          } catch (t) {
+            (l?.({ error: t, messageId: e }),
+              (x.current = void 0),
+              (S.current = []),
+              (C.current = ``));
+          } finally {
+            (v(!1), b(!1));
+          }
+        },
+        [p, E, D, o, s, c, l],
+      ),
+      ee = (0, L.useCallback)(async (e) => {
+        if (e)
+          try {
+            await It({ sessionId: e });
+          } catch (e) {
+            console.warn(`[useStreamChat] 调用中断流接口异常:`, e);
+          }
+      }, []),
+      k = (0, L.useCallback)(
+        async (e, i, a, p) => {
+          if (!t || !n) {
+            l?.({ error: Error(`缺少微应用信息，无法进行调试`), messageId: a });
+            return;
+          }
+          let m = i || r;
+          if (!m) {
+            l?.({ error: Error(`缺少会话ID，无法进行调试`), messageId: a });
+            return;
+          }
+          let g = p?.executeId || Er.generateUniversalId(`executeId`),
+            _ = {
+              agentId: t,
+              agentVersionId: n,
+              type: 1,
+              sessionId: m,
+              query: e,
+              userParams: w.current || {},
+              executeId: g,
+              ...(p
+                ? Object.fromEntries(
+                    Object.entries(p).filter(([e]) => e !== `executeId`),
+                  )
+                : {}),
+            };
+          (v(!0), b(!0));
+          let y = a || `msg-${Date.now()}`;
+          if (((x.current = y), (S.current = []), (C.current = ``), f)) {
+            await O(y, g, m);
+            return;
+          }
+          (T(g),
+            h(
+              {
+                url: `/decision/agent-microapp/standardAgent/runStream`,
+                params: _,
+              },
+              {
+                onBefore: () => {
+                  o?.({ messageId: y, executeId: g });
+                },
+                onChunk: (e, t) => {
+                  try {
+                    v(!1);
+                    let t = typeof e == `object` ? e : {},
+                      {
+                        content: n,
+                        reasoningContent: r,
+                        isInterrupt: i,
+                        isError: a,
+                        isFinished: o,
+                      } = E(t);
+                    if (
+                      ((n || r || i || a) && D(t, n, r, i, a),
+                      (n || r) &&
+                        s?.({ messageId: y, contentSegments: [...S.current] }),
+                      t?.sessionId && t.sessionId !== m && d?.(t.sessionId),
+                      i)
+                    ) {
+                      (b(!1),
+                        c?.({ messageId: y, contentSegments: [...S.current] }),
+                        (x.current = void 0),
+                        (S.current = []),
+                        (C.current = ``));
+                      return;
+                    }
+                    if (a) {
+                      b(!1);
+                      let e = Error(
+                        t?.errorMessage ||
+                          t?.errMessage ||
+                          t?.message ||
+                          `流式请求出错`,
+                      );
+                      (l?.({ error: e, messageId: y }),
+                        (x.current = void 0),
+                        (S.current = []),
+                        (C.current = ``));
+                      return;
+                    }
+                    (o || t?.finish || t?.isEnd || t?.data?.finish) &&
+                      (b(!1),
+                      c?.({ messageId: y, contentSegments: [...S.current] }),
+                      (x.current = void 0),
+                      (S.current = []),
+                      (C.current = ``));
+                  } catch (e) {
+                    (l?.({ error: e, messageId: y }), v(!1), b(!1));
+                  }
+                },
+                onError: (e) => {
+                  (v(!1), b(!1));
+                  let t = Error(e || `流式请求失败`);
+                  (P.error(t.message),
+                    l?.({ error: t, messageId: y }),
+                    (x.current = void 0),
+                    (S.current = []),
+                    (C.current = ``));
+                },
+                onAbort: (e) => {
+                  if ((v(!1), b(!1), S.current.length > 0)) {
+                    let e = S.current[S.current.length - 1];
+                    e.content += `
+
+[已中止请求]`;
+                  }
+                  (u?.({ messageId: y, contentSegments: [...S.current] }),
+                    (x.current = void 0),
+                    (S.current = []),
+                    (C.current = ``));
+                },
+                onFinish: () => {
+                  (v(!1),
+                    b(!1),
+                    S.current.length > 0 &&
+                      c?.({ messageId: y, contentSegments: [...S.current] }),
+                    (x.current = void 0),
+                    (S.current = []),
+                    (C.current = ``));
+                },
+              },
+            ));
+        },
+        [t, n, r, f, T, h, l, O, o, E, D, s, d, c, u],
+      ),
+      A = (0, L.useCallback)(async () => {
+        (g(), await ee(r), v(!1), b(!1));
+      }, [g, ee, r]);
+    return {
+      requestLoading: _,
+      responseLoading: y,
+      setRequestLoading: v,
+      setResponseLoading: b,
+      runStream: k,
+      stopStream: A,
+      resetStream: (0, L.useCallback)(() => {
+        (A(), (x.current = void 0), (S.current = []), (C.current = ``));
+      }, [A]),
+      streamingMessageId: x.current,
+    };
+  },
+  Kr = {
+    chat_input_container: `_chat_input_container_zaqnw_1`,
+    chat_input_wrapper: `_chat_input_wrapper_zaqnw_6`,
+    textarea_container: `_textarea_container_zaqnw_24`,
+    chat_textarea: `_chat_textarea_zaqnw_32`,
+    send_button_wrapper: `_send_button_wrapper_zaqnw_58`,
+    send_button: `_send_button_zaqnw_58`,
+    send_icon: `_send_icon_zaqnw_94`,
+    input_footer: `_input_footer_zaqnw_104`,
+    ai_tip: `_ai_tip_zaqnw_111`,
+  };
+x();
+var { TextArea: qr } = a,
+  Jr = ({
+    value: e,
+    onChange: t,
+    onSend: n,
+    onStop: r,
+    placeholder: i = `请输入你的问题`,
+    disabled: a = !1,
+    isStreaming: o = !1,
+    maxLength: s = 2e3,
+  }) => {
+    let [c, l] = (0, L.useState)(``),
+      u = e !== void 0,
+      d = u ? e : c,
+      f = (0, L.useRef)(null),
+      p = (0, L.useRef)(null),
+      m = (e) => {
+        let n = e.target.value;
+        u ? t?.(n) : l(n);
+      },
+      h = () => {
+        p.current &&
+          ((p.current.style.height = ``), (p.current.style.minHeight = `50px`));
+      },
+      g = () => {
+        let e = d.trim();
+        e &&
+          !a &&
+          (n?.(e),
+          u ? t?.(``) : l(``),
+          setTimeout(() => {
+            h();
+          }, 0));
+      },
+      _ = () => {
+        r?.();
+      },
+      v = (e) => {
+        e.key === `Enter` && !e.shiftKey && (e.preventDefault(), g());
+      },
+      y = d.trim().length > 0 && !a,
+      b = o;
+    return (0, V.jsxs)(`div`, {
+      className: Kr.chat_input_container,
+      children: [
+        (0, V.jsxs)(`div`, {
+          ref: p,
+          className: Kr.chat_input_wrapper,
+          children: [
+            (0, V.jsx)(`div`, {
+              className: Kr.textarea_container,
+              children: (0, V.jsx)(qr, {
+                ref: f,
+                value: d,
+                onChange: m,
+                onPressEnter: v,
+                placeholder: i,
+                disabled: a || o,
+                maxLength: s,
+                autoSize: { minRows: 3, maxRows: 13 },
+                className: Kr.chat_textarea,
+              }),
+            }),
+            (0, V.jsx)(`div`, {
+              className: Kr.send_button_wrapper,
+              children: b
+                ? (0, V.jsx)(`button`, {
+                    onClick: _,
+                    className: Kr.send_button,
+                    children: (0, V.jsx)(`img`, {
+                      src: qe,
+                      alt: `终止`,
+                      className: Kr.send_icon,
+                    }),
+                  })
+                : (0, V.jsx)(`button`, {
+                    onClick: g,
+                    disabled: !y,
+                    className: Kr.send_button,
+                    children: (0, V.jsx)(`img`, {
+                      src: y ? Je : at,
+                      alt: `发送`,
+                      className: Kr.send_icon,
+                    }),
+                  }),
+            }),
+          ],
+        }),
+        (0, V.jsx)(`div`, {
+          className: Kr.input_footer,
+          children: (0, V.jsx)(`span`, {
+            className: Kr.ai_tip,
+            children: `- 内容由AI生成，仅供参考 -`,
+          }),
+        }),
+      ],
+    });
+  },
+  Yr = {
+    container: `_container_tc9bi_1`,
+    header: `_header_tc9bi_1`,
+    icon: `_icon_tc9bi_7`,
+    "header-text": `_header-text_tc9bi_10`,
+    content: `_content_tc9bi_13`,
+  },
+  Xr = ({ feedback: e }) =>
+    (0, V.jsxs)(`div`, {
+      className: Yr.container,
+      children: [
+        (0, V.jsxs)(`div`, {
+          className: Yr.header,
+          children: [
+            (0, V.jsx)(de, { className: Yr.icon, size: 16 }),
+            (0, V.jsx)(`span`, {
+              className: Yr[`header-text`],
+              children: `已确认执行`,
+            }),
+          ],
+        }),
+        (0, V.jsxs)(`div`, {
+          className: Yr.content,
+          children: [`选择了：`, e],
+        }),
+      ],
+    }),
+  J = {
+    "interrupt-content": `_interrupt-content_1yqsu_1`,
+    "interrupt-text": `_interrupt-text_1yqsu_6`,
+    "intervention-section": `_intervention-section_1yqsu_9`,
+    "intervention-title": `_intervention-title_1yqsu_12`,
+    "branch-selection": `_branch-selection_1yqsu_15`,
+    "branch-header": `_branch-header_1yqsu_21`,
+    "branch-header-content": `_branch-header-content_1yqsu_30`,
+    "branch-icon": `_branch-icon_1yqsu_34`,
+    "branch-text": `_branch-text_1yqsu_38`,
+    "wait-confirm-btn": `_wait-confirm-btn_1yqsu_42`,
+    primary: `_primary_1yqsu_52`,
+    "branch-content": `_branch-content_1yqsu_63`,
+    "branch-tip": `_branch-tip_1yqsu_66`,
+    "tip-icon": `_tip-icon_1yqsu_75`,
+    "tip-text": `_tip-text_1yqsu_80`,
+    "next-steps": `_next-steps_1yqsu_83`,
+    "branch-selector": `_branch-selector_1yqsu_87`,
+    "single-branch-text": `_single-branch-text_1yqsu_90`,
+    "single-branch-text-content": `_single-branch-text-content_1yqsu_99`,
+    "ant-select-selector": `_ant-select-selector_1yqsu_102`,
+    "ant-select-selection-placeholder": `_ant-select-selection-placeholder_1yqsu_107`,
+    "ant-select-selection-item": `_ant-select-selection-item_1yqsu_111`,
+    "ant-select-focused": `_ant-select-focused_1yqsu_117`,
+    "confirm-section": `_confirm-section_1yqsu_121`,
+    "confirm-btn": `_confirm-btn_1yqsu_124`,
+    "confirm-btn-icon": `_confirm-btn-icon_1yqsu_140`,
+  };
+x();
+var Zr = {
+    WAIT_CONFIRM: { text: `等待确认`, buttonText: `确认执行` },
+    CONFIRMED: { text: `已确认`, buttonText: `已确认执行` },
+    INVALID: { text: `已失效`, buttonText: `确认执行` },
+  },
+  Qr = (e, t) => {
+    for (let n = t + 1; n < e.length; n++) {
+      let t = e[n];
+      if (t.paths) return null;
+      if (t.humanFeedback) return t.humanFeedback;
+    }
+    return null;
+  },
+  $r = ({ data: e, onConfirm: t, loading: n = !1, logMode: r }) => {
+    let { messages: i } = Rt(),
+      [a, o] = (0, L.useState)(``),
+      [c, l] = (0, L.useState)(),
+      [u, f] = (0, L.useState)(!1),
+      p = r?.messages || i;
+    (0, L.useEffect)(() => {
+      e?.paths && e.paths.length > 0 && !a && o(e.paths[0]);
+    }, [e?.paths]);
+    let m = () => {
+        if (a && u) return { status: Zr.CONFIRMED, selectedBranch: a };
+        let t = p.findIndex((t) => t.paths && t.key === e.key);
+        return r?.enabled ? h(t) : g(t);
+      },
+      h = (e) => {
+        if (e === -1) return { status: Zr.WAIT_CONFIRM, selectedBranch: `` };
+        let t = p[e]?.humanFeedback;
+        return (
+          (t ||= Qr(p, e)),
+          t
+            ? { status: Zr.CONFIRMED, selectedBranch: t }
+            : { status: Zr.INVALID, selectedBranch: `` }
+        );
+      },
+      g = (e) =>
+        p[e + 1] && a && !u
+          ? { status: Zr.INVALID, selectedBranch: `` }
+          : { status: Zr.WAIT_CONFIRM, selectedBranch: `` };
+    (0, L.useEffect)(() => {
+      let e = m();
+      if (e) {
+        let { status: t, selectedBranch: n } = e;
+        (l(t), n && (o(n), f(!0)));
+      }
+    }, [e.executeId, p, u]);
+    let _ = () => {
+        a && t && (f(!0), t(a));
+      },
+      v = (e) => {
+        o(e);
+      };
+    return (0, V.jsxs)(`div`, {
+      className: J[`interrupt-content`],
+      children: [
+        (0, V.jsx)(`span`, {
+          className: J[`interrupt-text`],
+          children: `已完成用户提交数据的初步清洗，建议人工确认后续流程。`,
+        }),
+        (0, V.jsxs)(`div`, {
+          className: J[`intervention-section`],
+          children: [
+            (0, V.jsx)(`span`, {
+              className: J[`intervention-title`],
+              children: `执行确认-需人工干预`,
+            }),
+            (0, V.jsxs)(`div`, {
+              className: J[`branch-selection`],
+              children: [
+                (0, V.jsxs)(`div`, {
+                  className: J[`branch-header`],
+                  children: [
+                    (0, V.jsxs)(`div`, {
+                      className: J[`branch-header-content`],
+                      children: [
+                        (0, V.jsx)(`img`, {
+                          src: Ke,
+                          width: 11,
+                          height: 14,
+                          className: J[`branch-icon`],
+                        }),
+                        (0, V.jsx)(`span`, {
+                          className: J[`branch-text`],
+                          children: `请选择执行分支`,
+                        }),
+                      ],
+                    }),
+                    (0, V.jsx)(w, {
+                      type: `text`,
+                      size: `small`,
+                      className: (0, R.default)(J[`wait-confirm-btn`], {
+                        [J.primary]: c?.text === Zr.CONFIRMED.text,
+                      }),
+                      disabled: c?.text === Zr.INVALID.text,
+                      children: c?.text,
+                    }),
+                  ],
+                }),
+                (0, V.jsxs)(`div`, {
+                  className: J[`branch-content`],
+                  children: [
+                    (0, V.jsxs)(`div`, {
+                      className: J[`branch-tip`],
+                      children: [
+                        (0, V.jsx)(s, { className: J[`tip-icon`] }),
+                        (0, V.jsx)(`span`, {
+                          className: J[`tip-text`],
+                          children: `需前端用户确认执行分支后，才可继续后续流程。请根据上文的数据分析结果选择路径。`,
+                        }),
+                      ],
+                    }),
+                    (0, V.jsx)(`div`, {
+                      className: J[`next-steps`],
+                      children: `后续流程`,
+                    }),
+                    (0, V.jsx)(`div`, {
+                      className: J[`branch-selector`],
+                      children:
+                        e?.paths && e.paths.length === 1
+                          ? (0, V.jsxs)(`div`, {
+                              className: J[`single-branch-text`],
+                              children: [
+                                (0, V.jsx)(`img`, {
+                                  src: Qe,
+                                  width: 12,
+                                  height: 12,
+                                  className: J[`branch-icon`],
+                                }),
+                                (0, V.jsxs)(`span`, {
+                                  className: J[`single-branch-text-content`],
+                                  children: [`执行分支1：`, e.paths[0]],
+                                }),
+                              ],
+                            })
+                          : (0, V.jsx)(d, {
+                              placeholder: `请选择执行分支`,
+                              style: { width: `100%` },
+                              value: a,
+                              onChange: v,
+                              options: e?.paths?.map((e, t) => ({
+                                label: `执行分支${t + 1}：${e}`,
+                                value: e,
+                              })),
+                              allowClear: !0,
+                              disabled: c?.text !== Zr.WAIT_CONFIRM.text,
+                              labelRender: (t) => {
+                                if (!t) return null;
+                                let n =
+                                  e?.paths?.findIndex((e) => e === t.value) ??
+                                  0;
+                                return (0, V.jsxs)(`div`, {
+                                  style: {
+                                    display: `flex`,
+                                    alignItems: `center`,
+                                    gap: `8px`,
+                                  },
+                                  children: [
+                                    (0, V.jsx)(`img`, {
+                                      src: Qe,
+                                      width: 12,
+                                      height: 12,
+                                      className: J[`branch-icon`],
+                                    }),
+                                    (0, V.jsxs)(`span`, {
+                                      children: [
+                                        `执行分支`,
+                                        n + 1,
+                                        `：`,
+                                        t.value,
+                                      ],
+                                    }),
+                                  ],
+                                });
+                              },
+                            }),
+                    }),
+                    c?.text === Zr.WAIT_CONFIRM.text
+                      ? (0, V.jsx)(`div`, {
+                          className: J[`confirm-section`],
+                          children: (0, V.jsx)(w, {
+                            type: `primary`,
+                            size: `large`,
+                            loading: n,
+                            disabled: c?.text !== Zr.WAIT_CONFIRM.text,
+                            onClick: _,
+                            className: J[`confirm-btn`],
+                            icon: (0, V.jsx)(fe, {
+                              className: J[`confirm-btn-icon`],
+                            }),
+                            iconPosition: `end`,
+                            children: c?.buttonText,
+                          }),
+                        })
+                      : null,
+                  ],
+                }),
+              ],
+            }),
+          ],
+        }),
+      ],
+    });
+  },
+  ei = (e) =>
+    !e || e.length === 0
+      ? []
+      : e.map((e) => ({
+          nodeId: e.nodeId,
+          nodeName: e.nodeName,
+          reasoningContent: e.reasoningContent,
+          mainContent: e.content,
+          rawData: e.rawData,
+        })),
+  ti = {
+    "message-actions": `_message-actions_h4h7q_1`,
+    "ant-btn": `_ant-btn_h4h7q_6`,
+  };
+x();
+var ni = ({ content: e, contentSegments: t }) => {
+    let n = (0, L.useMemo)(
+      () =>
+        t && t.length > 0
+          ? ei(t).map((e) => {
+              let t = [];
+              return (
+                e.mainContent && t.push(e.mainContent),
+                t.join(`
+`)
+              );
+            }).join(`
+
+---
+
+`)
+          : e || ``,
+      [e, t],
+    );
+    if (!n) return null;
+    let r = async () => {
+      try {
+        (await navigator.clipboard.writeText(n), P.success(`复制成功`));
+      } catch {
+        P.error(`复制失败`);
+      }
+    };
+    return (0, V.jsx)(`div`, {
+      className: ti[`message-actions`],
+      children: (0, V.jsx)(_, {
+        title: `复制`,
+        placement: `bottom`,
+        arrow: !1,
+        children: (0, V.jsx)(w, {
+          type: `text`,
+          size: `small`,
+          icon: (0, V.jsx)(`img`, { src: Fe, width: 20, height: 20 }),
+          onClick: () => r(),
+        }),
+      }),
+    });
+  },
+  ri = {
+    "node-content": `_node-content_aby13_1`,
+    "node-title": `_node-title_aby13_4`,
+    "node-name": `_node-name_aby13_12`,
+    "reasoning-content": `_reasoning-content_aby13_15`,
+    "reasoning-header": `_reasoning-header_aby13_23`,
+    "reasoning-title": `_reasoning-title_aby13_36`,
+    "reasoning-toggle": `_reasoning-toggle_aby13_46`,
+    "reasoning-body": `_reasoning-body_aby13_51`,
+    "reasoning-text": `_reasoning-text_aby13_57`,
+    expanded: `_expanded_aby13_68`,
+    collapsed: `_collapsed_aby13_73`,
+    "markdown-content": `_markdown-content_aby13_78`,
+  };
+x();
+var ii = ({
+    nodeItem: e,
+    streaming: t = !1,
+    enableAnimation: n = !1,
+    animationConfig: r,
+    onRenderComplete: i,
+    onSend: a,
+  }) => {
+    let { nodeId: o, reasoningContent: s, mainContent: l } = e,
+      { handleInterruptConfirm: u } = Pr(a),
+      [d, f] = (0, L.useState)(!0);
+    (0, L.useEffect)(() => {
+      if (!t && s) {
+        let e = setTimeout(() => {
+          f(!1);
+        }, 500);
+        return () => clearTimeout(e);
+      }
+      t && s && f(!0);
+    }, [t, s]);
+    let p = (0, L.useCallback)(() => {
+        f((e) => !e);
+      }, []),
+      m = (0, L.useCallback)(
+        () =>
+          s
+            ? (0, V.jsxs)(`div`, {
+                className: `${ri[`reasoning-content`]} ${d ? ri.expanded : ri.collapsed}`,
+                children: [
+                  (0, V.jsxs)(`div`, {
+                    className: ri[`reasoning-header`],
+                    onClick: p,
+                    children: [
+                      (0, V.jsx)(`span`, {
+                        className: ri[`reasoning-title`],
+                        children: t ? `思考中...` : `思考过程`,
+                      }),
+                      (0, V.jsx)(`span`, {
+                        className: ri[`reasoning-toggle`],
+                        children: d ? (0, V.jsx)(oe, {}) : (0, V.jsx)(T, {}),
+                      }),
+                    ],
+                  }),
+                  (0, V.jsx)(`div`, {
+                    className: ri[`reasoning-body`],
+                    children: (0, V.jsx)(`div`, {
+                      className: ri[`reasoning-text`],
+                      children: s,
+                    }),
+                  }),
+                ],
+              })
+            : null,
+        [s, d, t, p],
+      ),
+      h = () =>
+        (0, V.jsx)(c.Image, { active: !0, style: { width: 60, height: 60 } }),
+      g = (e) => {
+        let t = decodeURIComponent(String(e[`data-raw`] || ``)),
+          n = t.match(/^\[([^\]]*)\]/);
+        return (0, V.jsx)(`a`, {
+          style: { pointerEvents: `none` },
+          href: `#`,
+          children: n ? n[1] : t.slice(1),
+        });
+      },
+      _ = () => (0, V.jsx)(c.Node, { active: !0, style: { width: 160 } }),
+      v = () =>
+        (0, V.jsx)(c.Node, { active: !0, style: { width: 383, height: 120 } }),
+      y = (e) => {
+        let t = decodeURIComponent(String(e[`data-raw`] || ``)).match(
+          /^([*_]{1,3})([^*_]*)/,
+        );
+        if (!t || !t[2]) return null;
+        let [, n, r] = t;
+        switch (n.length) {
+          case 1:
+            return (0, V.jsx)(`em`, { children: r });
+          case 2:
+            return (0, V.jsx)(`strong`, { children: r });
+          case 3:
+            return (0, V.jsx)(`em`, {
+              children: (0, V.jsx)(`strong`, { children: r }),
+            });
+          default:
+            return null;
+        }
+      },
+      b = (e) => {
+        let t = String(e[`data-raw`] || ``);
+        if (!t) return null;
+        let n = decodeURIComponent(t)?.slice(1);
+        return (0, V.jsx)(`code`, { className: `inline-code`, children: n });
+      },
+      x = (0, L.useCallback)(
+        () =>
+          l
+            ? (0, V.jsx)(We, {
+                className: ri[`markdown-content`],
+                content: l,
+                streaming: {
+                  hasNextChunk: t,
+                  enableAnimation: n,
+                  animationConfig: r,
+                },
+                components: {
+                  "incomplete-image": h,
+                  "incomplete-link": g,
+                  "incomplete-table": _,
+                  "incomplete-html": v,
+                  "incomplete-emphasis": y,
+                  "incomplete-inline-code": b,
+                },
+                onRenderComplete: i,
+              })
+            : null,
+        [l, t, n, r, i],
+      );
+    return (0, V.jsx)(`div`, {
+      className: ri[`node-content`],
+      "data-node-id": o,
+      children:
+        e.rawData?.paths?.length > 0
+          ? (0, V.jsx)($r, {
+              data: e.rawData,
+              onConfirm: (t) => u(e.rawData, t),
+            })
+          : (0, V.jsxs)(V.Fragment, { children: [m(), x()] }),
+    });
+  },
+  ai = {
+    "multi-node-content": `_multi-node-content_1f3gi_1`,
+    "node-item": `_node-item_1f3gi_7`,
+  },
+  oi = ({
+    nodeItems: e,
+    streaming: t = !1,
+    enableAnimation: n = !1,
+    animationConfig: r,
+    onRenderComplete: i,
+    onSend: a,
+  }) => {
+    let { handleInterruptConfirm: o } = Pr(a);
+    return e.length === 0
+      ? null
+      : (0, V.jsx)(`div`, {
+          className: ai[`multi-node-content`],
+          children: e.map((e, a) =>
+            e.rawData?.paths?.length > 0
+              ? (0, V.jsx)(
+                  $r,
+                  { data: e.rawData, onConfirm: (t) => o(e.rawData, t) },
+                  `interrupt-${e.nodeId}-${a}`,
+                )
+              : (0, V.jsx)(
+                  `div`,
+                  {
+                    className: ai[`node-item`],
+                    children: (0, V.jsx)(ii, {
+                      nodeItem: e,
+                      streaming: t,
+                      enableAnimation: n,
+                      animationConfig: r,
+                      onRenderComplete: i,
+                    }),
+                  },
+                  `${e.nodeId}-${a}`,
+                ),
+          ),
+        });
+  },
+  Y = {
+    "timestamp-section": `_timestamp-section_1p0s9_1`,
+    timestamp: `_timestamp_1p0s9_1`,
+    "avatar-section": `_avatar-section_1p0s9_14`,
+    "footer-section": `_footer-section_1p0s9_17`,
+    "content-section": `_content-section_1p0s9_25`,
+    "content-body": `_content-body_1p0s9_29`,
+    "single-mode-content": `_single-mode-content_1p0s9_34`,
+    "node-items": `_node-items_1p0s9_42`,
+    "assistant-content-wrapper": `_assistant-content-wrapper_1p0s9_45`,
+    "markdown-content": `_markdown-content_1p0s9_50`,
+    "content-item": `_content-item_1p0s9_53`,
+    "message-container": `_message-container_1p0s9_222`,
+  },
+  si = e(pe(), 1),
+  ci = 7,
+  li = (e) => {
+    let t = (0, si.default)(),
+      n = (0, si.default)(e),
+      r = t.diff(n, `day`),
+      i = t.diff(n, `hour`),
+      a = t.year() === n.year(),
+      o = n.format(`HH:mm`);
+    return i < 24 && t.date() === n.date()
+      ? o
+      : r >= 1 && r < ci
+        ? `${[`星期日`, `星期一`, `星期二`, `星期三`, `星期四`, `星期五`, `星期六`][n.day()]} ${o}`
+        : r >= ci && a
+          ? `${n.format(`M月D日`)} ${o}`
+          : `${n.format(`YYYY年M月D日`)} ${o}`;
+  };
+x();
+var ui = { key: ``, status: void 0 },
+  di = ({
+    showTimestamp: e,
+    timestamp: t,
+    placement: n = `start`,
+    content: r,
+    streaming: i,
+    enableAnimation: a,
+    animationConfig: o,
+    contentRender: s,
+    onRenderComplete: c,
+    header: l,
+    footer: u,
+    avatar: d,
+    extra: f,
+    footerPlacement: p = `inner-end`,
+    styles: m,
+    classNames: h,
+    renderMode: g = `single`,
+    contentSegments: _,
+    role: v,
+    onSend: y,
+  }) => {
+    let b = (0, L.useMemo)(
+        () => ({
+          isAlignEnd: n === `end`,
+          isFooterInner: p.includes(`inner`),
+          isFooterAlignEnd: p.includes(`end`),
+        }),
+        [n, p],
+      ),
+      x = (0, L.useMemo)(() => (e && t ? li(t) : null), [e, t]),
+      S = (0, L.useMemo)(() => ei(_), [_]),
+      C = (0, L.useMemo)(() => (s ? s(r) : r), [r, s]),
+      w = (0, L.useCallback)(
+        (e) => (typeof e == `function` ? e(r, ui) : e),
+        [r],
+      ),
+      T = (0, L.useCallback)(
+        () =>
+          d
+            ? (0, V.jsx)(`div`, {
+                className: `${Y[`avatar-section`]} ${h?.avatar || ``}`,
+                style: m?.avatar,
+                children: w(d),
+              })
+            : null,
+        [d, w, m?.avatar, h?.avatar],
+      ),
+      E = (0, L.useCallback)(
+        () =>
+          f
+            ? (0, V.jsx)(`div`, {
+                className: `${Y[`extra-section`]} ${h?.extra || ``}`,
+                style: m?.extra,
+                children: w(f),
+              })
+            : null,
+        [f, w, m?.extra, h?.extra],
+      ),
+      D = (0, L.useCallback)(
+        () =>
+          l
+            ? (0, V.jsx)(`div`, {
+                className: `${Y[`header-section`]} ${h?.header || ``}`,
+                style: m?.header,
+                children: w(l),
+              })
+            : null,
+        [l, w, m?.header, h?.header],
+      ),
+      O = (0, L.useCallback)(
+        () =>
+          u
+            ? (0, V.jsx)(F, {
+                align: b.isFooterAlignEnd ? `end` : `start`,
+                className: `${Y[`footer-section`]} ${h?.footer || ``}`,
+                style: m?.footer,
+                children: w(u),
+              })
+            : null,
+        [u, w, b.isFooterAlignEnd, m?.footer, h?.footer],
+      ),
+      ee = (0, L.useMemo)(
+        () =>
+          typeof C == `string`
+            ? (0, V.jsx)(We, {
+                className: Y[`markdown-content`],
+                content: C,
+                streaming: {
+                  hasNextChunk: i,
+                  enableAnimation: a,
+                  animationConfig: o,
+                },
+                onRenderComplete: c,
+              })
+            : C,
+        [C, i, a, o, c],
+      ),
+      k = (0, L.useCallback)(() => {
+        if (S.length > 0)
+          return g === `multiple`
+            ? (0, V.jsxs)(`div`, {
+                className: Y[`content-body`],
+                children: [
+                  (0, V.jsx)(oi, {
+                    nodeItems: S,
+                    streaming: i,
+                    enableAnimation: a,
+                    animationConfig: o,
+                    onRenderComplete: c,
+                    onSend: y,
+                  }),
+                  O(),
+                ],
+              })
+            : (0, V.jsxs)(`div`, {
+                className: Y[`single-mode-content`],
+                children: [
+                  (0, V.jsx)(`div`, {
+                    className: Y[`node-items`],
+                    children: S.map((e, t) =>
+                      (0, V.jsx)(
+                        ii,
+                        {
+                          nodeItem: e,
+                          streaming: i,
+                          enableAnimation: a,
+                          animationConfig: o,
+                          onRenderComplete: c,
+                          onSend: y,
+                        },
+                        `${e.nodeId}-${t}`,
+                      ),
+                    ),
+                  }),
+                  O(),
+                ],
+              });
+        let e = (0, V.jsxs)(V.Fragment, { children: [ee, O()] });
+        return v === `assistant`
+          ? (0, V.jsx)(`div`, {
+              className: Y[`assistant-content-wrapper`],
+              children: e,
+            })
+          : e;
+      }, [s, S, ee, O, g, i, a, o, c, y]),
+      A = (0, L.useMemo)(
+        () =>
+          (0, V.jsxs)(V.Fragment, {
+            children: [
+              D(),
+              (0, V.jsx)(F, {
+                vertical: !0,
+                gap: 12,
+                className: `${Y[`content-container`]} ${h?.content || ``}`,
+                style: m?.content,
+                children: k(),
+              }),
+              !b.isFooterInner && O(),
+            ],
+          }),
+        [D, b, k, O, m?.content, h?.content],
+      ),
+      te = (0, L.useCallback)(
+        () =>
+          (0, V.jsx)(`div`, { className: Y[`content-section`], children: A }),
+        [A],
+      ),
+      j = (0, L.useCallback)(
+        () =>
+          x
+            ? (0, V.jsx)(`div`, {
+                className: Y[`timestamp-section`],
+                children: (0, V.jsx)(`div`, {
+                  className: Y.timestamp,
+                  children: x,
+                }),
+              })
+            : null,
+        [x],
+      );
+    return (0, V.jsxs)(`div`, {
+      className: h?.root,
+      style: m?.root,
+      children: [
+        j(),
+        (0, V.jsxs)(F, {
+          vertical: !0,
+          gap: 8,
+          align: b.isAlignEnd ? `end` : `start`,
+          children: [
+            (0, V.jsxs)(F, {
+              gap: 4,
+              justify: b.isAlignEnd ? `end` : `start`,
+              className: b.isAlignEnd ? `` : Y[`message-container`],
+              children: [T(), te()],
+            }),
+            E(),
+          ],
+        }),
+      ],
+    });
+  },
+  fi = {
+    "chat-session-list": `_chat-session-list_8lzwh_1`,
+    scroll: `_scroll_8lzwh_7`,
+    "app-icon": `_app-icon_8lzwh_28`,
+    "empty-text": `_empty-text_8lzwh_31`,
+    "load-more-indicator": `_load-more-indicator_8lzwh_38`,
+    "load-more-tip": `_load-more-tip_8lzwh_46`,
+  };
+x();
+var pi = ({
+    items: e = [],
+    autoScroll: t = !0,
+    logPagination: n,
+    onSend: r,
+  }) => {
+    let { microAppInfo: i } = Lt(),
+      { flowName: a, microAppName: o, picUrl: s } = i || {},
+      c = (0, L.useRef)(null),
+      l = (0, L.useRef)(!0),
+      u = (0, L.useRef)(0),
+      d = (0, L.useRef)(!1),
+      f = (0, L.useRef)(!1);
+    ((0, L.useEffect)(() => {
+      t &&
+        l.current &&
+        c.current &&
+        (c.current.scrollTop = c.current.scrollHeight);
+    }, [e, t]),
+      (0, L.useEffect)(() => {
+        let e = c.current;
+        if (!e) return;
+        let t = (e) => {
+            e.deltaY !== 0 && (d.current = !0);
+          },
+          r = () => {
+            let t = e.scrollTop;
+            (e.scrollHeight - (t + e.clientHeight) < 10
+              ? ((l.current = !0), (d.current = !1))
+              : d.current && t < u.current && (l.current = !1),
+              n?.hasMore &&
+                !f.current &&
+                t <= 5 &&
+                ((f.current = !0), n.onLoadMore()),
+              (u.current = t));
+          };
+        return (
+          e.addEventListener(`wheel`, t, { passive: !0 }),
+          e.addEventListener(`scroll`, r, { passive: !0 }),
+          () => {
+            (e.removeEventListener(`wheel`, t),
+              e.removeEventListener(`scroll`, r));
+          }
+        );
+      }, [n]),
+      (0, L.useEffect)(() => {
+        n?.loadingMore || (f.current = !1);
+      }, [n?.loadingMore]));
+    let p = (0, L.useCallback)(
+        () =>
+          !n?.hasMore && !n?.loadingMore
+            ? null
+            : (0, V.jsx)(`div`, {
+                className: fi[`load-more-indicator`],
+                children: n?.loadingMore
+                  ? (0, V.jsxs)(F, {
+                      align: `center`,
+                      justify: `center`,
+                      gap: 8,
+                      children: [
+                        (0, V.jsx)(j, { size: `small` }),
+                        (0, V.jsx)(`span`, { children: `加载中...` }),
+                      ],
+                    })
+                  : (0, V.jsxs)(F, {
+                      align: `center`,
+                      justify: `center`,
+                      gap: 8,
+                      children: [
+                        (0, V.jsx)(`span`, {
+                          className: fi[`load-more-tip`],
+                          children: `向上滑动加载更多历史记录`,
+                        }),
+                        n?.onRefresh &&
+                          (0, V.jsx)(w, {
+                            type: `text`,
+                            size: `small`,
+                            icon: (0, V.jsx)(k, {}),
+                            onClick: n.onRefresh,
+                            title: `刷新`,
+                          }),
+                      ],
+                    }),
+              }),
+        [n],
+      ),
+      m = () =>
+        (0, V.jsxs)(F, {
+          gap: 24,
+          vertical: !0,
+          align: `center`,
+          justify: `center`,
+          style: { height: `70%` },
+          children: [
+            (0, V.jsx)(D, {
+              src: s || rt,
+              width: 72,
+              height: 72,
+              preview: !1,
+              className: fi[`app-icon`],
+            }),
+            (0, V.jsx)(`div`, {
+              className: fi[`empty-text`],
+              children: o || a || `知识问答-智能体工作流`,
+            }),
+          ],
+        }),
+      h = (t, n) => {
+        let { key: i, timestamp: a, ...o } = t,
+          s = o.showTimestamp ?? !0;
+        if (a && s) {
+          let t = new Date(a).getTime();
+          if ((new Date().getTime() - t) / (1e3 * 60 * 60) < 24 && n > 0) {
+            let r = e[n - 1];
+            r?.timestamp &&
+              (t - new Date(r.timestamp).getTime()) / (1e3 * 60) < 5 &&
+              (s = !1);
+          }
+        }
+        return (0, V.jsx)(
+          `div`,
+          {
+            children: (0, V.jsx)(di, {
+              ...o,
+              timestamp: a,
+              showTimestamp: s,
+              onSend: r,
+            }),
+          },
+          i,
+        );
+      };
+    return (0, V.jsx)(`div`, {
+      className: fi[`chat-session-list`],
+      children: (0, V.jsx)(`div`, {
+        ref: c,
+        className: fi.scroll,
+        children:
+          e.length === 0
+            ? m()
+            : (0, V.jsxs)(F, {
+                vertical: !0,
+                gap: 12,
+                children: [p(), e.map((e, t) => h(e, t))],
+              }),
+      }),
+    });
+  },
+  mi = {
+    1: { text: `成功`, icon: Oe, color: `success` },
+    2: { text: `异常`, icon: Ne, color: `error` },
+    3: { text: `中断`, icon: Ae, color: `error` },
+  },
+  hi = (e) => (e < 1e3 ? `${e} ms` : `${(e / 1e3).toFixed(2)} s`),
+  gi = {
+    "node-result-panel": `_node-result-panel_1bm6k_1`,
+    "basic-info-title": `_basic-info-title_1bm6k_7`,
+    "basic-info-container": `_basic-info-container_1bm6k_14`,
+    "basic-info-item": `_basic-info-item_1bm6k_17`,
+    "basic-info-item-label": `_basic-info-item-label_1bm6k_23`,
+    "basic-info-item-value-wrapper": `_basic-info-item-value-wrapper_1bm6k_29`,
+    "basic-info-item-value": `_basic-info-item-value_1bm6k_29`,
+    "copy-icon-default": `_copy-icon-default_1bm6k_41`,
+    "copy-icon-copied": `_copy-icon-copied_1bm6k_45`,
+    "call-tree-time": `_call-tree-time_1bm6k_49`,
+    "call-tree-time-icon": `_call-tree-time-icon_1bm6k_60`,
+    "call-tree-time-success": `_call-tree-time-success_1bm6k_63`,
+    "call-tree-time-error": `_call-tree-time-error_1bm6k_67`,
+  },
+  _i = ({ label: e, value: t, copyText: n }) => {
+    if (t == null || t === ``) return null;
+    let r = n !== void 0;
+    return (0, V.jsxs)(`div`, {
+      className: gi[`basic-info-item`],
+      children: [
+        (0, V.jsx)(`span`, {
+          className: gi[`basic-info-item-label`],
+          children: e,
+        }),
+        (0, V.jsx)(`div`, {
+          className: gi[`basic-info-item-value-wrapper`],
+          children: (0, V.jsx)(Ve, {
+            copyable:
+              r && n
+                ? {
+                    icon: [
+                      (0, V.jsx)(
+                        le,
+                        { className: gi[`copy-icon-default`] },
+                        `copy`,
+                      ),
+                      (0, V.jsx)(
+                        te,
+                        { className: gi[`copy-icon-copied`] },
+                        `copied`,
+                      ),
+                    ],
+                  }
+                : !1,
+            style: { maxWidth: 200 },
+            children: t,
+          }),
+        }),
+      ],
+    });
+  },
+  vi = ({ status: e }) =>
+    (0, V.jsxs)(`div`, {
+      className: (0, R.default)(
+        gi[`call-tree-time`],
+        gi[`call-tree-time-${mi[e]?.color}`],
+      ),
+      children: [
+        (0, V.jsx)(`img`, {
+          className: gi[`call-tree-time-icon`],
+          src: mi[e]?.icon,
+          width: 10.5,
+          height: 10.5,
+        }),
+        (0, V.jsx)(`span`, { children: mi[e]?.text }),
+      ],
+    }),
+  yi = ({ message: e }) => {
+    if (!e) return null;
+    let t = (e.endTime || 0) - (e.startTime || 0);
+    return (0, V.jsxs)(`div`, {
+      className: gi[`node-result-panel`],
+      children: [
+        (0, V.jsx)(`div`, {
+          className: gi[`basic-info-title`],
+          children: `基础信息`,
+        }),
+        (0, V.jsxs)(`div`, {
+          className: gi[`basic-info-container`],
+          children: [
+            (0, V.jsx)(_i, {
+              label: `sessionId`,
+              value: e.sessionId,
+              copyText: e.sessionId,
+            }),
+            (0, V.jsx)(_i, {
+              label: `状态`,
+              value: (0, V.jsx)(vi, { status: e.endStatus }),
+            }),
+            (0, V.jsx)(_i, { label: `耗时`, value: t ? hi(t) : void 0 }),
+            (0, V.jsx)(_i, {
+              label: `请求发起时间`,
+              value: e.startTime
+                ? (0, si.default)(e.startTime).format(`YYYY-MM-DD HH:mm:ss`)
+                : void 0,
+            }),
+            (0, V.jsx)(_i, {
+              label: `首次响应耗时`,
+              value: e.firstTokenTime ? hi(e.firstTokenTime) : void 0,
+            }),
+            (0, V.jsx)(_i, {
+              label: `消耗token`,
+              value: e.tokenNum,
+              copyText: e.tokenNum?.toString(),
+            }),
+            (0, V.jsx)(_i, {
+              label: `trace_id`,
+              value: e.traceId,
+              copyText: e.traceId,
+            }),
+          ],
+        }),
+      ],
+    });
+  },
+  X = {
+    "node-result-panel": `_node-result-panel_7abiq_1`,
+    "basic-info-title": `_basic-info-title_7abiq_7`,
+    "basic-info-container": `_basic-info-container_7abiq_14`,
+    "call-tree-container": `_call-tree-container_7abiq_17`,
+    "call-tree-node": `_call-tree-node_7abiq_22`,
+    "call-tree-lines": `_call-tree-lines_7abiq_31`,
+    "call-tree-vertical-line": `_call-tree-vertical-line_7abiq_39`,
+    "call-tree-vertical-line-last": `_call-tree-vertical-line-last_7abiq_49`,
+    "call-tree-horizontal-line": `_call-tree-horizontal-line_7abiq_53`,
+    "call-tree-node-wrapper": `_call-tree-node-wrapper_7abiq_62`,
+    "call-tree-node-content": `_call-tree-node-content_7abiq_68`,
+    "call-tree-node-content-left": `_call-tree-node-content-left_7abiq_81`,
+    active: `_active_7abiq_91`,
+    "call-tree-expand-icon": `_call-tree-expand-icon_7abiq_94`,
+    "call-tree-number": `_call-tree-number_7abiq_106`,
+    "call-tree-icon": `_call-tree-icon_7abiq_113`,
+    "call-tree-status-icon": `_call-tree-status-icon_7abiq_122`,
+    "call-tree-title": `_call-tree-title_7abiq_127`,
+    "call-tree-name": `_call-tree-name_7abiq_133`,
+    "call-tree-time": `_call-tree-time_7abiq_139`,
+    "call-tree-time-icon": `_call-tree-time-icon_7abiq_150`,
+    "call-tree-time-success": `_call-tree-time-success_7abiq_153`,
+    "call-tree-time-error": `_call-tree-time-error_7abiq_157`,
+    "call-tree-children": `_call-tree-children_7abiq_161`,
+  },
+  bi = ({ isExpanded: e, onToggle: t }) =>
+    (0, V.jsx)(`span`, {
+      className: X[`call-tree-expand-icon`],
+      onClick: t,
+      children: e
+        ? (0, V.jsx)(oe, { style: { color: `#BCBCCD`, fontSize: `10px` } })
+        : (0, V.jsx)(T, { style: { color: `#BCBCCD`, fontSize: `10px` } }),
+    });
+x();
+var xi = ({
+    node: e,
+    displayIndex: t,
+    shouldShowIndex: n,
+    onCallTreeNodeClick: r,
+  }) => {
+    let { selectedNodeId: i, selectedExecuteId: a } = zt(),
+      o = e.key === i && e.nodeData?.executeId === a;
+    return (0, V.jsxs)(`div`, {
+      className: X[`call-tree-node-content`],
+      onClick: () => r?.(e.key),
+      children: [
+        (0, V.jsxs)(`div`, {
+          className: (0, R.default)(X[`call-tree-node-content-left`], {
+            [X.active]: o,
+          }),
+          style: { display: `flex`, alignItems: `center` },
+          children: [
+            n &&
+              (0, V.jsxs)(`span`, {
+                className: X[`call-tree-number`],
+                children: [t, `、`],
+              }),
+            e.icon &&
+              (0, V.jsx)(`span`, {
+                className: X[`call-tree-icon`],
+                children: e.icon,
+              }),
+            e.title &&
+              (0, V.jsx)(h.Text, {
+                className: X[`call-tree-title`],
+                children: e.title,
+              }),
+          ],
+        }),
+        e.name &&
+          (0, V.jsx)(`span`, {
+            className: X[`call-tree-name`],
+            children: e.name,
+          }),
+        e.timeCost &&
+          (0, V.jsxs)(`div`, {
+            className: (0, R.default)(
+              X[`call-tree-time`],
+              X[`call-tree-time-${e.status === 1 ? `success` : `error`}`],
+            ),
+            children: [
+              (0, V.jsx)(`img`, {
+                className: X[`call-tree-time-icon`],
+                src:
+                  e.status === 1
+                    ? `data:image/png;base64,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`
+                    : `data:image/png;base64,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`,
+                width: 10.5,
+                height: 10.5,
+              }),
+              (0, V.jsx)(`span`, { children: e.timeCost }),
+            ],
+          }),
+      ],
+    });
+  },
+  Si = ({
+    node: e,
+    index: t,
+    level: n,
+    parentKey: r,
+    expandedNodes: i,
+    onToggleNode: a,
+    onCallTreeNodeClick: o,
+    siblingNodes: s,
+    isLast: c = !1,
+  }) => {
+    let l = e.key || `${r}-${t}`,
+      u = e.children && e.children.length > 0,
+      d = i.has(l),
+      f = e.showIndex,
+      p = e.index === void 0 ? t + 1 : e.index,
+      m = n >= 2 ? `47px` : `0`;
+    return (0, V.jsxs)(`div`, {
+      className: (0, R.default)(X[`call-tree-node`]),
+      style: { marginLeft: m },
+      children: [
+        n >= 2 &&
+          (0, V.jsxs)(`div`, {
+            className: X[`call-tree-lines`],
+            children: [
+              (0, V.jsx)(`div`, {
+                className: (0, R.default)(
+                  X[`call-tree-vertical-line`],
+                  c && X[`call-tree-vertical-line-last`],
+                ),
+              }),
+              (0, V.jsx)(`div`, { className: X[`call-tree-horizontal-line`] }),
+            ],
+          }),
+        (0, V.jsxs)(`div`, {
+          className: X[`call-tree-node-wrapper`],
+          children: [
+            (0, V.jsx)(xi, {
+              node: e,
+              displayIndex: p,
+              shouldShowIndex: f,
+              onCallTreeNodeClick: o,
+              siblingNodes: s,
+            }),
+            u &&
+              e.showExpandIcon !== !1 &&
+              (0, V.jsx)(bi, { isExpanded: d, onToggle: () => a(l) }),
+          ],
+        }),
+        u &&
+          d &&
+          (0, V.jsx)(`div`, {
+            className: X[`call-tree-children`],
+            children: e.children?.map((t, r) =>
+              (0, V.jsx)(
+                Si,
+                {
+                  node: t,
+                  index: r,
+                  level: n + 1,
+                  parentKey: l,
+                  expandedNodes: i,
+                  onToggleNode: a,
+                  onCallTreeNodeClick: o,
+                  siblingNodes: e.children,
+                  isLast: r === (e.children?.length || 0) - 1,
+                },
+                t.key || `${l}-${r}`,
+              ),
+            ),
+          }),
+      ],
+    });
+  },
+  Ci = (e) => {
+    let t = mi[e]?.icon;
+    return (0, V.jsx)(`img`, { src: t, width: 16, height: 16 });
+  },
+  wi = (e, t) => {
+    for (let n of e) {
+      if (n.key === t) return n;
+      if (n.children) {
+        let e = wi(n.children, t);
+        if (e) return e;
+      }
+    }
+    return null;
+  },
+  Ti = (e, t) => {
+    let { index: n, executeId: r, showIndex: i } = t,
+      a = !!e.parentRecordId,
+      o = r ? { ...e, executeId: r } : e,
+      s = Dr(e.nodeType);
+    return {
+      key: e.nodeId || `node-${n}`,
+      title: e.nodeName,
+      icon: s,
+      status: e.success ? 1 : 2,
+      timeCost: e.duration ? hi(e.duration) : void 0,
+      showIndex: i ?? !a,
+      index: n + 1,
+      type: e.nodeType,
+      nodeData: o,
+    };
+  },
+  Ei = (e, t = {}) => {
+    let { executeId: n } = t;
+    if (!e?.length) return [];
+    let r = [],
+      i = [];
+    e.forEach((e) => {
+      e.parentRecordId ? i.push(e) : r.push(e);
+    });
+    let a = r.map((e, t) => Ti(e, { index: t, executeId: n }));
+    return (
+      i.forEach((e) => {
+        let t = e,
+          r = wi(a, t.parentRecordId);
+        if (r) {
+          if (
+            (r.children || ((r.children = []), (r.showExpandIcon = !0)),
+            e.batch && e.batch.length > 0)
+          ) {
+            let t = Ti(e, { index: r.children.length, executeId: n });
+            r.children.push(t);
+          }
+          t.parentRecordId?.startsWith(`Container_`) &&
+            r.children.push(Ti(e, { index: r.children.length, executeId: n }));
+        }
+      }),
+      a
+    );
+  },
+  Di = (e) => {
+    if (!e?.executeLogList) return [];
+    let t = Ei(e.executeLogList, { executeId: e.executeId }),
+      n = Ci(e.endStatus),
+      r = +(e.endStatus === 1),
+      { microAppInfo: i } = Lt.getState();
+    return [
+      {
+        title: `用户输入`,
+        name: i?.microAppName || i?.flowName || `智能体工作流`,
+        icon: n,
+        key: `call-workflow`,
+        status: r,
+        showExpandIcon: t.length > 0,
+        children: t,
+      },
+    ];
+  },
+  Oi = (e, t, n = new Set()) => (
+    e.forEach((e, r) => {
+      let i = e.key || `${t}-${r}`;
+      e.children && e.children.length > 0 && (n.add(i), Oi(e.children, i, n));
+    }),
+    n
+  ),
+  ki = ({ message: e, onCallTreeNodeClick: t }) => {
+    let n = (0, L.useMemo)(() => (e ? Di(e) : []), [e]),
+      r = (0, L.useMemo)(() => Oi(n, `root`), [n]),
+      [i, a] = (0, L.useState)(r);
+    (0, L.useEffect)(() => {
+      a(r);
+    }, [r]);
+    let o = (e) => {
+      a((t) => {
+        let n = new Set(t);
+        return (n.has(e) ? n.delete(e) : n.add(e), n);
+      });
+    };
+    return e?.executeLogList?.length
+      ? (0, V.jsxs)(`div`, {
+          className: X[`node-result-panel`],
+          children: [
+            (0, V.jsx)(`div`, {
+              className: X[`basic-info-title`],
+              children: `调用树`,
+            }),
+            (0, V.jsx)(`div`, {
+              className: X[`basic-info-container`],
+              children: (0, V.jsx)(`div`, {
+                className: X[`call-tree-container`],
+                children: n.map((e, n) =>
+                  (0, V.jsx)(
+                    Si,
+                    {
+                      node: e,
+                      index: n,
+                      level: 0,
+                      parentKey: `root`,
+                      expandedNodes: i,
+                      onToggleNode: o,
+                      onCallTreeNodeClick: t,
+                    },
+                    e.key || `root-${n}`,
+                  ),
+                ),
+              }),
+            }),
+          ],
+        })
+      : null;
+  },
+  Ai = {
+    "run-status-container": `_run-status-container_17iyp_1`,
+    "status-wrapper": `_status-wrapper_17iyp_6`,
+    "status-tag": `_status-tag_17iyp_11`,
+    "status-text": `_status-text_17iyp_17`,
+    "expand-icon": `_expand-icon_17iyp_21`,
+    "time-cost-tag": `_time-cost-tag_17iyp_27`,
+    "time-cost-text": `_time-cost-text_17iyp_31`,
+    "result-panel-list": `_result-panel-list_17iyp_34`,
+    "result-panel-title": `_result-panel-title_17iyp_41`,
+    "call-tree-time": `_call-tree-time_17iyp_47`,
+    "call-tree-time-icon": `_call-tree-time-icon_17iyp_58`,
+    "call-tree-time-success": `_call-tree-time-success_17iyp_61`,
+    "call-tree-time-error": `_call-tree-time-error_17iyp_65`,
+  },
+  ji = ({ message: e, onCallTreeNodeClick: t, logMode: n }) => {
+    let { allNodeExecutionResults: r, setSelectedExecuteId: i } = zt(),
+      [a, o] = (0, L.useState)(!1),
+      s = (0, L.useMemo)(
+        () => ({
+          success: {
+            icon: (0, V.jsx)(`img`, { src: Oe, width: 18, height: 18 }),
+            color: `success`,
+            text: `运行成功`,
+          },
+          failure: {
+            icon: (0, V.jsx)(`img`, { src: Ne, width: 18, height: 18 }),
+            color: `error`,
+            text: `运行失败`,
+          },
+          abort: {
+            icon: (0, V.jsx)(`img`, { src: qe, width: 18, height: 18 }),
+            color: `default`,
+            text: `运行中止`,
+          },
+          running: {
+            icon: (0, V.jsx)(ie, {
+              style: { color: `#716AE5`, fontSize: `14px` },
+            }),
+            color: `processing`,
+            text: `运行中`,
+          },
+        }),
+        [],
+      ),
+      c = (0, L.useMemo)(
+        () => (e.status ? s[e.status] : s.running),
+        [e.status, s],
+      ),
+      l = () => {
+        o((e) => !e);
+      },
+      u = () => {
+        let e = a
+          ? (0, V.jsx)(oe, { style: { color: `#BCBCCD`, fontSize: `10px` } })
+          : (0, V.jsx)(T, { style: { color: `#BCBCCD`, fontSize: `10px` } });
+        return (0, V.jsxs)(`div`, {
+          className: Ai[`status-tag`],
+          onClick: l,
+          children: [
+            c?.icon ||
+              (0, V.jsx)(ie, { style: { color: `#716AE5`, fontSize: `14px` } }),
+            (0, V.jsx)(`span`, {
+              className: Ai[`status-text`],
+              children: c?.text,
+            }),
+            e,
+          ],
+        });
+      },
+      d = (0, L.useCallback)(
+        () =>
+          n?.enabled && n.getExecutionResult
+            ? n.getExecutionResult(e.executeId)
+            : r.get(e.executeId)?.data,
+        [r, e.executeId, n],
+      );
+    return (
+      (0, L.useEffect)(() => {
+        a && !n?.enabled && e?.executeId && i(e.executeId);
+      }, [a, n?.enabled, e?.executeId, i]),
+      (0, L.useEffect)(() => {
+        if (!a || !n?.enabled || !n.fetchExecutionResult || !e?.executeId)
+          return;
+        let t = n.getExecutionResult?.(e.executeId);
+        (!t || (typeof t == `object` && Object.keys(t).length === 0)) &&
+          n.fetchExecutionResult(e.executeId);
+      }, [
+        a,
+        n?.enabled,
+        n?.fetchExecutionResult,
+        n?.getExecutionResult,
+        e?.executeId,
+      ]),
+      (0, V.jsxs)(`div`, {
+        className: Ai[`run-status-container`],
+        children: [
+          (0, V.jsxs)(`div`, {
+            className: Ai[`status-wrapper`],
+            children: [
+              u(),
+              (() => {
+                let t = d(),
+                  n = e?.timeLong || (t?.endTime || 0) - (t?.startTime || 0);
+                return !n || [`running`, `abort`].includes(e.status)
+                  ? null
+                  : (0, V.jsxs)(`div`, {
+                      className: (0, R.default)(
+                        Ai[`call-tree-time`],
+                        Ai[
+                          `call-tree-time-${e.status === `success` ? `success` : `error`}`
+                        ],
+                      ),
+                      children: [
+                        (0, V.jsx)(`div`, {
+                          className: Ai[`call-tree-time-icon`],
+                          children: c?.icon,
+                        }),
+                        (0, V.jsx)(`span`, { children: hi(n) }),
+                      ],
+                    });
+              })(),
+            ],
+          }),
+          a &&
+            (0, V.jsxs)(`div`, {
+              className: Ai[`result-panel-list`],
+              children: [
+                (0, V.jsx)(`div`, {
+                  className: Ai[`result-panel-title`],
+                  children: `运行结果`,
+                }),
+                (0, V.jsx)(yi, { message: d() }),
+                (0, V.jsx)(ki, {
+                  message: d(),
+                  onCallTreeNodeClick: (n) => t?.(n, e?.executeId),
+                }),
+              ],
+            }),
+        ],
+      })
+    );
+  },
+  Mi = {
+    "chat-list": `_chat-list_17m2z_1`,
+    toolbar: `_toolbar_17m2z_9`,
+    actions: `_actions_17m2z_19`,
+    "message-container": `_message-container_17m2z_23`,
+    "input-area": `_input-area_17m2z_30`,
+    "ant-input": `_ant-input_17m2z_38`,
+    "status-info": `_status-info_17m2z_41`,
+    "loading-icon": `_loading-icon_17m2z_50`,
+    spin: `_spin_17m2z_1`,
+    "status-icon": `_status-icon_17m2z_58`,
+    success: `_success_17m2z_63`,
+    "user-message-content": `_user-message-content_17m2z_77`,
+    "message-actions": `_message-actions_17m2z_88`,
+  };
+x();
+var Ni = ({
+    loading: e,
+    isRunning: t,
+    onResultInfoClick: n,
+    onSend: r,
+    logMode: a,
+  }) => {
+    let {
+        setDebugDetailVisible: o,
+        setSelectedNodeId: s,
+        setSelectedExecuteId: c,
+      } = zt(),
+      { messages: l, activeAssistantMessageId: u } = Rt(),
+      { microAppInfo: d } = Lt(),
+      { picUrl: f } = d || {},
+      p = (0, L.useMemo)(
+        () => (a?.enabled && a.messages ? a.messages : l),
+        [a?.enabled, a?.messages, l],
+      ),
+      m = (0, L.useCallback)(
+        async (e, t) => {
+          try {
+            a?.onCallTreeNodeClick && (await a.onCallTreeNodeClick(e, t));
+          } finally {
+            (e && s(e), t && c(t), o(!0));
+          }
+        },
+        [a, s, c, o],
+      ),
+      h = (e, t) => ({
+        ...e,
+        placement: t ? `end` : `start`,
+        avatar: () =>
+          t
+            ? null
+            : (0, V.jsx)(i, {
+                shape: `square`,
+                size: 32,
+                icon: (0, V.jsx)(D, { src: f || rt, preview: !1 }),
+                style: { backgroundColor: `transparent` },
+              }),
+        showTimestamp: !0,
+        classNames: { content: Mi[`user-message-content`] },
+      }),
+      g = (e) => (
+        e?.humanFeedback &&
+          (e.content = (0, V.jsx)(Xr, { feedback: e.humanFeedback })),
+        {
+          ...e,
+          styles: {
+            content: {
+              backgroundColor: `#E7E6FF`,
+              padding: `10.5px 18px`,
+              maxWidth: `none`,
+              marginLeft: `34px`,
+            },
+          },
+        }
+      ),
+      _ = (0, L.useCallback)(
+        (r, i) => {
+          let o = i.key === u,
+            s = e && o && !a?.enabled,
+            c = t && i.streaming && !a?.enabled,
+            l = {
+              ...r,
+              enableAnimation: c && o,
+              animationConfig: { fadeDuration: 200, easing: `ease-in-out` },
+              loading: s,
+              streaming: c && o,
+            };
+          if (
+            (a?.enabled &&
+              i?.paths?.length > 0 &&
+              (l.contentRender = () =>
+                (0, V.jsx)($r, { data: i, logMode: a, loading: s })),
+            n)
+          ) {
+            let e = p.find((e) => e.key === i.key);
+            l.header = () =>
+              (0, V.jsx)(ji, {
+                logMode: a,
+                message: e,
+                onCallTreeNodeClick: m,
+              });
+          }
+          if (!s && !c) {
+            let e = typeof i.content == `string` ? i.content : ``;
+            ((l.footer = () =>
+              (0, V.jsx)(ni, {
+                content: e,
+                contentSegments: i.contentSegments,
+              })),
+              (l.footerPlacement = `inner-start`));
+          }
+          return (
+            (l.styles = { content: { backgroundColor: `transparent` } }),
+            l
+          );
+        },
+        [u, e, t, n, a, p, r, m],
+      ),
+      v = (0, L.useMemo)(
+        () =>
+          p?.map((e) => {
+            let t = e.role === $e.USER,
+              n = e.role === $e.ASSISTANT,
+              r = h(e, t);
+            return (t ? (r = g(r)) : n && (r = _(r, e)), r);
+          }),
+        [_, p],
+      );
+    return (0, V.jsx)(`div`, {
+      className: Mi[`chat-list`],
+      children: (0, V.jsx)(`div`, {
+        className: Mi[`message-container`],
+        children: (0, V.jsx)(pi, {
+          items: v,
+          autoScroll: !0,
+          logPagination: a?.pagination,
+          onSend: r,
+        }),
+      }),
+    });
+  },
+  Z = {
+    "detail-panel": `_detail-panel_1hrxd_1`,
+    "panel-header": `_panel-header_1hrxd_10`,
+    "header-title-container": `_header-title-container_1hrxd_17`,
+    "header-title": `_header-title_1hrxd_17`,
+    "panel-content": `_panel-content_1hrxd_28`,
+    "debug-detail-container": `_debug-detail-container_1hrxd_37`,
+    "section-title": `_section-title_1hrxd_42`,
+    "step-info-section": `_step-info-section_1hrxd_54`,
+    "step-info-content": `_step-info-content_1hrxd_60`,
+    "step-info-row": `_step-info-row_1hrxd_63`,
+    "step-info-label": `_step-info-label_1hrxd_71`,
+    "json-section": `_json-section_1hrxd_77`,
+    "json-section-empty": `_json-section-empty_1hrxd_86`,
+    "json-content": `_json-content_1hrxd_86`,
+    "call-tree-time": `_call-tree-time_1hrxd_96`,
+    "call-tree-time-icon": `_call-tree-time-icon_1hrxd_107`,
+    "call-tree-time-success": `_call-tree-time-success_1hrxd_110`,
+    "call-tree-time-error": `_call-tree-time-error_1hrxd_114`,
+  };
+x();
+var { Text: Pi } = h,
+  Fi = ({ title: e, data: t }) => {
+    let { copyToClipboard: n } = Be(),
+      r = (0, L.useCallback)(
+        (e) => {
+          n(e, { successMessage: `复制成功`, errorMessage: `复制失败` });
+        },
+        [n],
+      ),
+      i = (0, L.useMemo)(() => !t || Object.keys(t).length === 0, [t]);
+    return (0, V.jsxs)(`div`, {
+      className: (0, R.default)(Z[`json-section`], {
+        [Z[`json-section-empty`]]: i,
+      }),
+      children: [
+        (0, V.jsxs)(`div`, {
+          className: Z[`section-title`],
+          children: [
+            (0, V.jsx)(`span`, { children: e }),
+            (0, V.jsx)(`img`, {
+              src: Pe,
+              alt: `复制`,
+              width: 20,
+              height: 20,
+              onClick: () => r(JSON.stringify(t, null, 2)),
+              style: { cursor: `pointer` },
+            }),
+          ],
+        }),
+        (0, V.jsx)(`div`, {
+          className: Z[`json-content`],
+          children: (0, V.jsx)(He, {
+            value: JSON.stringify(t, null, 2),
+            language: `json`,
+            disabled: !0,
+            theme: `github`,
+          }),
+        }),
+      ],
+    });
+  },
+  Ii = ({ data: e, style: t, panelWidth: n = `50%`, showHeader: r = !0 }) => {
+    let {
+        setDebugDetailVisible: i,
+        selectedExecuteId: a,
+        selectedNodeId: o,
+        allNodeExecutionResults: s,
+        nodeExecutionResults: c,
+        setSelectedExecuteId: l,
+        setSelectedNodeId: u,
+      } = zt(),
+      { messages: d } = Rt(),
+      [f, p] = (0, L.useState)(1),
+      [m, g] = (0, L.useState)(0),
+      v = (0, L.useMemo)(() => {
+        if (e) return e;
+        if (!o) return;
+        let t = a ? s.get(a) : null;
+        if (t?.data) {
+          if (o === `call-workflow`) {
+            let e = t.data.inParam,
+              n = null;
+            if (a && d && d.length > 0) {
+              let t = d.findIndex((e) => e.executeId === a);
+              t !== -1 &&
+                (t > 0 &&
+                  (e = {
+                    Contents: [{ Type: `text`, Text: d[t - 1].content }],
+                  }),
+                (n = { Contents: [{ Type: `text`, Text: d[t].content }] }));
+            }
+            return { ...t.data, nodeName: `用户输入`, input: e, output: n };
+          }
+          let e = t.data.executeLogList?.find((e) => e.nodeId === o);
+          if (e) return e;
+        }
+        return c.get(o) || void 0;
+      }, [e, a, o, s, c, d]),
+      y = (0, L.useMemo)(
+        () => v?.parentRecordId && v?.batch && Array.isArray(v.batch),
+        [v],
+      ),
+      b = (0, L.useMemo)(() => (y && v.batch[f - 1]) || v, [v, f, y]);
+    (0, L.useEffect)(() => {
+      g(y ? v.batch.length : 0);
+    }, [v, y]);
+    let x = (e) => (e < 1e3 ? `${e} ms` : `${(e / 1e3).toFixed(2)} s`),
+      S = (0, L.useCallback)(() => {
+        let e = b?.success || !1;
+        return (0, V.jsxs)(`div`, {
+          className: (0, R.default)(
+            Z[`call-tree-time`],
+            Z[`call-tree-time-${e ? `success` : `error`}`],
+          ),
+          children: [
+            (0, V.jsx)(`img`, {
+              className: Z[`call-tree-time-icon`],
+              src: e ? Oe : Ne,
+              width: 10.5,
+              height: 10.5,
+            }),
+            (0, V.jsx)(`span`, { children: e ? `成功` : `失败` }),
+          ],
+        });
+      }, [b?.success]),
+      C = (0, L.useMemo)(
+        () => [
+          { label: `名称：`, getValue: () => b?.nodeName },
+          { label: `状态：`, getValue: () => S() },
+          { label: `整体耗时：`, getValue: () => x(b?.duration || 0) },
+          {
+            label: `首次响应耗时：`,
+            getValue: () => (y ? `-` : x(b?.endTime - b?.startTime || 0)),
+          },
+          {
+            label: `请求发起时间：`,
+            getValue: () =>
+              (0, si.default)(b?.startTime).format(`YYYY-MM-DD HH:mm:ss`) || ``,
+          },
+          {
+            label: `请求结束时间：`,
+            getValue: () =>
+              (0, si.default)(b?.endTime).format(`YYYY-MM-DD HH:mm:ss`) || ``,
+          },
+        ],
+        [b, x, S, y],
+      ),
+      w = (0, L.useCallback)((e) => {
+        p(e);
+      }, []);
+    return (0, V.jsxs)(`div`, {
+      className: Z[`detail-panel`],
+      style: { width: n, ...t },
+      children: [
+        r &&
+          (0, V.jsxs)(`div`, {
+            className: Z[`panel-header`],
+            children: [
+              (0, V.jsxs)(`div`, {
+                className: Z[`header-title-container`],
+                children: [
+                  (0, V.jsx)(h.Title, {
+                    level: 5,
+                    className: Z[`header-title`],
+                    children: `调试详情`,
+                  }),
+                  m > 1 &&
+                    (0, V.jsx)(ae, {
+                      simple: !0,
+                      current: f,
+                      total: m,
+                      pageSize: 1,
+                      onChange: w,
+                    }),
+                ],
+              }),
+              (0, V.jsx)(_, {
+                title: `收起详情`,
+                children: (0, V.jsx)(`img`, {
+                  onClick: () => {
+                    (i(!1), l(null), u(null));
+                  },
+                  src: `data:image/png;base64,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`,
+                  alt: `收起`,
+                  style: { width: 20, height: 20 },
+                }),
+              }),
+            ],
+          }),
+        (0, V.jsx)(`div`, {
+          className: Z[`panel-content`],
+          children: (0, V.jsxs)(`div`, {
+            className: Z[`debug-detail-container`],
+            children: [
+              (0, V.jsxs)(`div`, {
+                className: Z[`step-info-section`],
+                children: [
+                  (0, V.jsx)(`div`, {
+                    className: Z[`section-title`],
+                    children: `运行步骤`,
+                  }),
+                  (0, V.jsx)(`div`, {
+                    className: Z[`step-info-content`],
+                    children: C.map((e, t) =>
+                      (0, V.jsxs)(
+                        `div`,
+                        {
+                          className: Z[`step-info-row`],
+                          children: [
+                            (0, V.jsx)(Pi, {
+                              className: Z[`step-info-label`],
+                              children: e.label,
+                            }),
+                            (0, V.jsx)(Pi, { children: e.getValue() }),
+                          ],
+                        },
+                        t,
+                      ),
+                    ),
+                  }),
+                ],
+              }),
+              (0, V.jsx)(Fi, { title: `输入`, data: b?.input || {} }),
+              (0, V.jsx)(Fi, { title: `输出`, data: b?.output || {} }),
+              b?.errorMessage &&
+                (0, V.jsx)(Fi, { title: `错误信息`, data: b?.errorMessage }),
+            ],
+          }),
+        }),
+      ],
+    });
+  },
+  Q = {
+    params_config_container: `_params_config_container_fyc94_1`,
+    params_header: `_params_header_fyc94_9`,
+    params_title_wrapper: `_params_title_wrapper_fyc94_17`,
+    params_title: `_params_title_fyc94_17`,
+    "params-tooltip": `_params-tooltip_fyc94_27`,
+    "reset-button": `_reset-button_fyc94_31`,
+    params_content: `_params_content_fyc94_35`,
+    "params-empty": `_params-empty_fyc94_41`,
+    "params-empty-text": `_params-empty-text_fyc94_48`,
+    params_form_wrapper: `_params_form_wrapper_fyc94_54`,
+    table: `_table_fyc94_58`,
+    variable_info_wrapper: `_variable_info_wrapper_fyc94_82`,
+    variable_name_wrapper: `_variable_name_wrapper_fyc94_89`,
+    required_star: `_required_star_fyc94_94`,
+    variable_name: `_variable_name_fyc94_89`,
+    type_tag: `_type_tag_fyc94_105`,
+    variable_desc: `_variable_desc_fyc94_116`,
+    param_form_item: `_param_form_item_fyc94_123`,
+    params_footer: `_params_footer_fyc94_135`,
+    code_editor_wrapper: `_code_editor_wrapper_fyc94_143`,
+  };
+x();
+var { Text: Li } = h,
+  Ri = (e) =>
+    e
+      ? {
+          string: `String`,
+          number: `Number`,
+          boolean: `Boolean`,
+          bool: `Boolean`,
+          object: `Object`,
+          obj: `Object`,
+          array: `Array`,
+          arr: `Array`,
+        }[e.toLowerCase()] || e
+      : `String`,
+  zi = ({
+    requestParams: e,
+    formRef: t,
+    onValuesChange: n,
+    onStartDebug: r,
+    loading: i = !1,
+    savedFormValues: a = {},
+  }) => {
+    let o = (0, L.useRef)(),
+      s = t || o,
+      [c, l] = L.useState(!1);
+    (0, L.useEffect)(() => {
+      if (e.length > 0 && s.current) {
+        let t = {};
+        ((e || []).forEach((e) => {
+          let n = (e.type || `string`).toLowerCase(),
+            r =
+              a && Object.prototype.hasOwnProperty.call(a, e.key)
+                ? a[e.key]
+                : e.defaultValue;
+          (n === `boolean` || n === `bool`
+            ? (r = r === !0 || r === `true` ? `true` : `false`)
+            : n === `obj` || n === `object`
+              ? (r =
+                  typeof r == `object` ? JSON.stringify(r, null, 2) : r || ``)
+              : (r ||= ``),
+            (t[e.key] = r));
+        }),
+          s.current?.setFieldsValue(t));
+      }
+    }, [e, s, a]);
+    let u = (0, L.useCallback)((e) => {
+        if (!e || e.trim() === ``) return Promise.resolve();
+        try {
+          let t = JSON.parse(e);
+          return typeof t != `object` || Array.isArray(t) || t === null
+            ? Promise.reject(Error(`必须是有效的 JSON 对象`))
+            : Promise.resolve();
+        } catch (e) {
+          return Promise.reject(
+            Error(
+              `JSON 格式错误：${e instanceof Error ? e.message : `无效的 JSON`}`,
+            ),
+          );
+        }
+      }, []),
+      d = (0, L.useCallback)((e) => {
+        if (!e || e.trim() === ``) return Promise.resolve();
+        try {
+          let t = JSON.parse(e);
+          return Array.isArray(t)
+            ? Promise.resolve()
+            : Promise.reject(Error(`必须是有效的 JSON 数组`));
+        } catch (e) {
+          return Promise.reject(
+            Error(
+              `JSON 格式错误：${e instanceof Error ? e.message : `无效的 JSON`}`,
+            ),
+          );
+        }
+      }, []),
+      f = (0, L.useCallback)(
+        (e) => {
+          n?.(e);
+        },
+        [n],
+      ),
+      m = (0, L.useCallback)(async () => {
+        if (s.current)
+          try {
+            let t = (e || []).filter((e) => {
+              let t = Ri(e.type || `string`),
+                n = t === `Object` || e.type === `obj` || e.type === `object`,
+                r = t === `Array` || t?.startsWith(`Array`);
+              return n || r;
+            });
+            for (let e of t) {
+              let t = s.current.getFieldValue(e.key);
+              if (t && t.trim() !== ``)
+                try {
+                  Ri(e.type || `string`) === `Object` ||
+                  e.type === `obj` ||
+                  e.type === `object`
+                    ? await u(t)
+                    : await d(t);
+                } catch {
+                  l(!0);
+                  return;
+                }
+            }
+            l(
+              s.current
+                .getFieldsError()
+                .some((e) => e.errors && e.errors.length > 0),
+            );
+          } catch {
+            l(!0);
+          }
+      }, [s, e, u, d]),
+      h = (0, L.useCallback)(() => {
+        if (s.current) {
+          let t = {};
+          ((e || []).forEach((e) => {
+            let n = (e.type || `string`).toLowerCase(),
+              r = e.defaultValue;
+            (n === `boolean` || n === `bool`
+              ? (r = r === !0 || r === `true` ? `true` : `false`)
+              : n === `obj` || n === `object`
+                ? (r =
+                    typeof r == `object` ? JSON.stringify(r, null, 2) : r || ``)
+                : (r ||= ``),
+              (t[e.key] = r));
+          }),
+            s.current?.setFieldsValue(t),
+            f(t),
+            setTimeout(() => {
+              m();
+            }, 0));
+        }
+      }, [e, f, s, m]),
+      g = (0, L.useCallback)(async () => {
+        if (!i) {
+          if (!e || e.length === 0) {
+            r?.({});
+            return;
+          }
+          if (s.current)
+            try {
+              let t = (e || []).filter((e) => {
+                let t = Ri(e.type || `string`),
+                  n = t === `Object` || e.type === `obj` || e.type === `object`,
+                  r = t === `Array` || t?.startsWith(`Array`);
+                return n || r;
+              });
+              for (let e of t) {
+                let t = s.current.getFieldValue(e.key);
+                if (t && t.trim() !== ``)
+                  try {
+                    Ri(e.type || `string`) === `Object` ||
+                    e.type === `obj` ||
+                    e.type === `object`
+                      ? await u(t)
+                      : await d(t);
+                  } catch (t) {
+                    let n =
+                      Ri(e.type || `string`) === `Object` ||
+                      e.type === `obj` ||
+                      e.type === `object`
+                        ? t instanceof Error
+                          ? t.message
+                          : `必须是有效的 JSON 对象`
+                        : t instanceof Error
+                          ? t.message
+                          : `必须是有效的 JSON 数组`;
+                    s.current.setFields([{ name: e.key, errors: [n] }]);
+                    let r = document.querySelector(`[name="${e.key}"]`);
+                    r &&
+                      r.scrollIntoView({ behavior: `smooth`, block: `center` });
+                    return;
+                  }
+              }
+              let n = await s.current.validateFields(),
+                i = {};
+              ((e || []).forEach((e) => {
+                let t = n[e.key],
+                  r = Ri(e.type || `string`),
+                  a = r === `Object` || e.type === `obj` || e.type === `object`,
+                  o = r === `Array` || r?.startsWith(`Array`);
+                if (a || o)
+                  try {
+                    i[e.key] = t && JSON.parse(t);
+                  } catch {
+                    i[e.key] = t;
+                  }
+                else
+                  e.type === `number`
+                    ? (i[e.key] = t == null ? t : Number(t))
+                    : e.type === `boolean`
+                      ? (i[e.key] = t === `true` || t === !0)
+                      : (i[e.key] = t);
+              }),
+                r?.(i));
+            } catch (e) {
+              console.error(`表单验证失败:`, e);
+            }
+        }
+      }, [r, s, e, i, u, d]),
+      v = (0, L.useMemo)(
+        () => [
+          {
+            title: `变量名称`,
+            dataIndex: `key`,
+            width: 150,
+            render: (e, t) => {
+              let n = Ri(t.type || `string`),
+                r = t?.desc && t.desc.trim() !== ``;
+              return (0, V.jsxs)(`div`, {
+                className: Q.variable_info_wrapper,
+                children: [
+                  (0, V.jsxs)(`div`, {
+                    className: Q.variable_name_wrapper,
+                    children: [
+                      (0, V.jsx)(Li, {
+                        className: Q.variable_name,
+                        ellipsis:
+                          (t.key || ``).length > 15
+                            ? {
+                                tooltip: { title: t.key, placement: `topLeft` },
+                              }
+                            : !1,
+                        children: t.key || `-`,
+                      }),
+                      (0, V.jsx)(`div`, { className: Q.type_tag, children: n }),
+                    ],
+                  }),
+                  r &&
+                    (0, V.jsx)(Li, {
+                      className: Q.variable_desc,
+                      ellipsis:
+                        t.desc.length > 20
+                          ? { tooltip: { title: t.desc, placement: `topLeft` } }
+                          : !1,
+                      children: t.desc,
+                    }),
+                ],
+              });
+            },
+          },
+          {
+            title: `值`,
+            dataIndex: `value`,
+            flex: 1,
+            render: (e, t) => {
+              let n = Ri(t.type || `string`),
+                r = s.current?.getFieldValue(t.key) ?? (t.defaultValue || ``),
+                i = n === `Object` || t.type === `obj` || t.type === `object`,
+                a = n === `Array` || n?.startsWith(`Array`);
+              return i || a
+                ? (0, V.jsx)(Re, {
+                    name: t.key,
+                    rules: [
+                      {
+                        validator: async (e, t) =>
+                          !t || t.trim() === ``
+                            ? Promise.resolve()
+                            : i
+                              ? u(t)
+                              : d(t),
+                      },
+                    ],
+                    trigger: `onChange`,
+                    children: (0, V.jsx)(`div`, {
+                      className: Q.code_editor_wrapper,
+                      children: (0, V.jsx)(He, {
+                        language: `json`,
+                        theme: `github`,
+                        height: `100px`,
+                        width: `100%`,
+                        showLineNumbers: !1,
+                        value:
+                          typeof r == `string` ? r : JSON.stringify(r, null, 2),
+                        onChange: (e) => {
+                          (s.current?.setFieldValue(t.key, e),
+                            setTimeout(() => {
+                              (s.current
+                                ?.validateFields([t.key])
+                                .catch(() => {}),
+                                m());
+                            }, 0),
+                            f({
+                              ...(s.current?.getFieldsValue() || {}),
+                              [t.key]: e,
+                            }));
+                        },
+                      }),
+                    }),
+                  })
+                : (0, V.jsx)(Me, {
+                    form: s,
+                    type: n,
+                    value: r,
+                    fieldName: [t.key],
+                    disabled: !1,
+                    onChange: (e) => {
+                      (s.current?.setFieldValue(t.key, e),
+                        f({
+                          ...(s.current?.getFieldsValue() || {}),
+                          [t.key]: e,
+                        }));
+                    },
+                  });
+            },
+          },
+        ],
+        [s, f, m],
+      );
+    return (
+      (0, L.useEffect)(() => {
+        e.length > 0 &&
+          setTimeout(() => {
+            m();
+          }, 100);
+      }, [e, m]),
+      (0, V.jsxs)(`div`, {
+        className: Q.params_config_container,
+        children: [
+          (0, V.jsxs)(`div`, {
+            className: Q.params_header,
+            children: [
+              (0, V.jsxs)(`div`, {
+                className: Q.params_title_wrapper,
+                children: [
+                  (0, V.jsx)(`span`, {
+                    className: Q.params_title,
+                    children: `参数`,
+                  }),
+                  (0, V.jsx)(_, {
+                    title: `调试时自动带入当前账号的信息，在长期记忆和应用变量中使用。通过API调用时，请务必通过接口传入`,
+                    children: (0, V.jsx)(p, { className: Q[`params-tooltip`] }),
+                  }),
+                ],
+              }),
+              (0, V.jsx)(w, {
+                type: `text`,
+                size: `small`,
+                className: Q[`reset-button`],
+                onClick: h,
+                children: `重置`,
+              }),
+            ],
+          }),
+          (0, V.jsx)(`div`, {
+            className: Q.params_content,
+            children:
+              e.length === 0
+                ? (0, V.jsxs)(`div`, {
+                    className: Q[`params-empty`],
+                    children: [
+                      (0, V.jsx)(D, {
+                        src: Ie,
+                        preview: !1,
+                        width: 86,
+                        height: 86,
+                      }),
+                      (0, V.jsx)(`div`, {
+                        className: Q[`params-empty-text`],
+                        children: `暂无参数`,
+                      }),
+                    ],
+                  })
+                : (0, V.jsx)(`div`, {
+                    className: Q.params_form_wrapper,
+                    children: (0, V.jsx)(ze, {
+                      submitter: !1,
+                      formRef: s,
+                      onValuesChange: f,
+                      onFieldsChange: () => {
+                        m();
+                      },
+                      children: (0, V.jsx)(O, {
+                        columns: v,
+                        dataSource: e.map((e, t) => ({
+                          ...e,
+                          key: e.key || `param-${t}`,
+                        })),
+                        rowKey: `key`,
+                        pagination: !1,
+                        size: `small`,
+                        className: Q.table,
+                      }),
+                    }),
+                  }),
+          }),
+          (0, V.jsx)(`div`, {
+            className: Q.params_footer,
+            children: (0, V.jsx)(w, {
+              type: `primary`,
+              icon: (0, V.jsx)(b, {}),
+              onClick: g,
+              size: `large`,
+              block: !0,
+              loading: i,
+              disabled: c || i,
+              children: `开始对话调试`,
+            }),
+          }),
+        ],
+      })
+    );
+  },
+  $ = {
+    "memory-modal": `_memory-modal_11ieo_1`,
+    "memory-tabs": `_memory-tabs_11ieo_14`,
+    "memory-content": `_memory-content_11ieo_21`,
+    "memory-list": `_memory-list_11ieo_27`,
+    "add-button-wrapper": `_add-button-wrapper_11ieo_43`,
+    "memory-item": `_memory-item_11ieo_48`,
+    "memory-header": `_memory-header_11ieo_60`,
+    "memory-title-wrapper": `_memory-title-wrapper_11ieo_65`,
+    "memory-title": `_memory-title_11ieo_65`,
+    "memory-time": `_memory-time_11ieo_75`,
+    "title-input": `_title-input_11ieo_80`,
+    "memory-actions": `_memory-actions_11ieo_85`,
+    "action-icon": `_action-icon_11ieo_91`,
+    "memory-content-field": `_memory-content-field_11ieo_100`,
+    "memory-textarea": `_memory-textarea_11ieo_106`,
+    "add-button": `_add-button_11ieo_43`,
+    "memory-variable-container": `_memory-variable-container_11ieo_137`,
+    "variable-table-header": `_variable-table-header_11ieo_140`,
+    "variable-table-body": `_variable-table-body_11ieo_150`,
+    "variable-row": `_variable-row_11ieo_155`,
+    "variable-name-col": `_variable-name-col_11ieo_167`,
+    "variable-desc-col": `_variable-desc-col_11ieo_174`,
+    "variable-name": `_variable-name_11ieo_167`,
+    "variable-input": `_variable-input_11ieo_184`,
+    "variable-loading": `_variable-loading_11ieo_202`,
+    "variable-empty": `_variable-empty_11ieo_203`,
+    "memory-variable-table": `_memory-variable-table_11ieo_209`,
+    "empty-table": `_empty-table_11ieo_241`,
+  };
+x();
+var Bi = ({
+  memory: e,
+  isEditing: t,
+  editingContent: n,
+  onStartEdit: i,
+  onBlur: o,
+  onContentChange: s,
+  onDelete: c,
+}) =>
+  (0, V.jsx)(`div`, {
+    className: $[`memory-item`],
+    children: (0, V.jsxs)(`div`, {
+      className: $[`memory-header`],
+      children: [
+        (0, V.jsxs)(`div`, {
+          className: $[`memory-title-wrapper`],
+          children: [
+            t
+              ? (0, V.jsx)(a, {
+                  value: n,
+                  onChange: (e) => s(e.target.value),
+                  onBlur: o,
+                  onPressEnter: o,
+                  autoFocus: !0,
+                  placeholder: `请输入对话内容`,
+                  className: $[`title-input`],
+                })
+              : (0, V.jsx)(`div`, {
+                  className: $[`memory-title`],
+                  children: e?.content || `未命名`,
+                }),
+            (0, V.jsx)(`div`, {
+              className: $[`memory-time`],
+              children: e?.createdAt,
+            }),
+          ],
+        }),
+        e?.id &&
+          (0, V.jsxs)(`div`, {
+            className: $[`memory-actions`],
+            children: [
+              (0, V.jsx)(C, {
+                className: $[`action-icon`],
+                onClick: () => i(e?.id || ``, e?.content || ``),
+              }),
+              (0, V.jsx)(r, { className: $[`action-icon`], onClick: c }),
+            ],
+          }),
+      ],
+    }),
+  });
+x();
+var Vi = ({
+  form: e,
+  editingId: t,
+  editingContent: n,
+  onAdd: r,
+  onStartEdit: i,
+  onBlur: a,
+  onContentChange: s,
+  onDelete: c,
+}) =>
+  (0, V.jsx)(I, {
+    form: e,
+    initialValues: { memories: [] },
+    children: (0, V.jsx)(I.List, {
+      name: `memories`,
+      children: (l) =>
+        (0, V.jsxs)(`div`, {
+          className: $[`memory-content`],
+          children: [
+            (0, V.jsx)(`div`, {
+              className: $[`memory-list`],
+              children:
+                (l || []).length === 0
+                  ? (0, V.jsx)(u, {
+                      image: u.PRESENTED_IMAGE_SIMPLE,
+                      description: `暂无数据`,
+                      style: { padding: `40px 0` },
+                    })
+                  : l.map((r, o) => {
+                      let l = e.getFieldValue([`memories`, o]);
+                      return (0, V.jsx)(
+                        Bi,
+                        {
+                          memory: l,
+                          isEditing: t === l?.id,
+                          editingContent: n,
+                          onStartEdit: i,
+                          onBlur: () => a(o),
+                          onContentChange: s,
+                          onDelete: () => c(o),
+                        },
+                        r.key,
+                      );
+                    }),
+            }),
+            (0, V.jsx)(`div`, {
+              className: $[`add-button-wrapper`],
+              children: (0, V.jsxs)(w, {
+                type: `dashed`,
+                onClick: r,
+                block: !0,
+                className: $[`add-button`],
+                children: [(0, V.jsx)(o, {}), `添加`],
+              }),
+            }),
+          ],
+        }),
+    }),
+  });
+x();
+var Hi = ({ form: e, variables: t, onSave: n }) => {
+  let r = L.useRef({});
+  (0, L.useEffect)(() => {
+    if (t.length > 0) {
+      let e = {};
+      (t.forEach((t) => {
+        t.fieldName && (e[t.fieldName] = t.fieldDescription || ``);
+      }),
+        (r.current = e));
+    }
+  }, [t]);
+  let i = async (t) => {
+    if (!n) return;
+    let i = e.getFieldValue(t) || ``;
+    i !== (r.current[t] || ``) && (await n()) && (r.current[t] = i);
+  };
+  return (0, V.jsx)(`div`, {
+    className: $[`memory-content`],
+    children: (0, V.jsx)(I, {
+      form: e,
+      children: (0, V.jsx)(O, {
+        columns: [
+          {
+            title: `变量名称`,
+            dataIndex: `fieldName`,
+            width: 200,
+            ellipsis: !0,
+          },
+          {
+            title: `描述`,
+            dataIndex: `fieldDescription`,
+            render: (e, t) =>
+              (0, V.jsx)(I.Item, {
+                name: t.fieldName,
+                noStyle: !0,
+                children: (0, V.jsx)(a.TextArea, {
+                  placeholder: `请输入`,
+                  autoSize: { minRows: 1, maxRows: 3 },
+                  onBlur: () => i(t.fieldName || ``),
+                }),
+              }),
+          },
+        ],
+        dataSource: t,
+        rowKey: `fieldName`,
+        pagination: !1,
+        size: `small`,
+        className: (0, R.default)(
+          $[`memory-variable-table`],
+          !t || !t.length ? $[`empty-table`] : ``,
+        ),
+      }),
+    }),
+  });
+};
+x();
+var Ui = ({ form: e, microAppId: t, microAppVersionId: n, sessionId: r }) => {
+  let [i, a] = (0, L.useState)(!1),
+    [o, s] = (0, L.useState)(null),
+    [c, l] = (0, L.useState)(``),
+    u = async () => {
+      if (!(!t || !n))
+        try {
+          a(!0);
+          let i = await At({ agentId: t, agentVersionId: n, sessionId: r });
+          if (i.success && i.data) {
+            let t = (i.data || []).map((e) => ({
+              id: e.id,
+              content: e.content || ``,
+              role: e.role || ``,
+              createdAt: e.createdAt,
+              isNew: !1,
+            }));
+            e.setFieldsValue({ memories: t });
+          }
+        } catch (e) {
+          (console.error(`加载长期记忆失败:`, e), P.error(`加载长期记忆失败`));
+        } finally {
+          a(!1);
+        }
+    },
+    d = () => {
+      let t = e.getFieldValue(`memories`) || [],
+        n = { id: ``, content: ``, isNew: !0 };
+      (e.setFieldsValue({ memories: [n, ...t] }), s(n.id), l(``));
+    },
+    f = async (i) => {
+      if (!t || !n) {
+        P.warning(`缺少必要参数`);
+        return;
+      }
+      let o = c.trim();
+      if (!o) {
+        let t = e.getFieldValue(`memories`) || [];
+        (t.splice(i, 1),
+          e.setFieldsValue({ memories: [...t] }),
+          s(null),
+          l(``));
+        return;
+      }
+      try {
+        if (
+          (a(!0),
+          (
+            await kt({
+              agent_id: t,
+              agent_version_id: n,
+              messages: [{ content: o, role: `user` }],
+              sessionId: r,
+            })
+          ).success)
+        )
+          (P.success(`添加成功`), await u());
+        else {
+          let t = e.getFieldValue(`memories`) || [];
+          (t.splice(i, 1), e.setFieldsValue({ memories: [...t] }));
+        }
+      } catch (t) {
+        (console.error(`添加失败:`, t), P.error(`添加失败`));
+        let n = e.getFieldValue(`memories`) || [];
+        (n.splice(i, 1), e.setFieldsValue({ memories: [...n] }));
+      } finally {
+        (a(!1), s(null), l(``));
+      }
+    },
+    p = async (i, o) => {
+      if (!t || !n) {
+        P.warning(`缺少必要参数`);
+        return;
+      }
+      let u = c.trim();
+      if (!u) {
+        (s(null), l(``));
+        return;
+      }
+      try {
+        a(!0);
+        let s = e.getFieldValue(`memories`) || [],
+          c = s[i];
+        (
+          await jt({
+            memoryId: o,
+            sessionId: r || ``,
+            messages: [
+              {
+                id: o,
+                createdAt: c.createdAt,
+                content: u,
+                role: c.role || `user`,
+              },
+            ],
+            user_id: null,
+            agent_id: String(t),
+            agent_version_id: String(n),
+            request_id: null,
+          })
+        ).success &&
+          (P.success(`编辑成功`),
+          (s[i].content = u),
+          e.setFieldsValue({ memories: [...s] }));
+      } catch (e) {
+        (console.error(`编辑失败:`, e), P.error(`编辑失败`));
+      } finally {
+        (a(!1), s(null), l(``));
+      }
+    };
+  return {
+    loading: i,
+    editingId: o,
+    editingContent: c,
+    loadMemories: u,
+    handleAdd: d,
+    handleDelete: async (r) => {
+      let i = e.getFieldValue(`memories`) || [],
+        o = i[r];
+      if (o?.isNew) {
+        (i.splice(r, 1), e.setFieldsValue({ memories: [...i] }));
+        return;
+      }
+      !t ||
+        !n ||
+        !o?.id ||
+        ce.confirm({
+          title: `确认删除`,
+          content: `确定要删除这条记忆片段吗？`,
+          okText: `确定`,
+          cancelText: `取消`,
+          onOk: async () => {
+            try {
+              (a(!0),
+                (await Mt({ memoryId: o.id })).success &&
+                  (P.success(`删除成功`),
+                  i.splice(r, 1),
+                  e.setFieldsValue({ memories: [...i] })));
+            } catch (e) {
+              (console.error(`删除失败:`, e), P.error(`删除失败`));
+            } finally {
+              a(!1);
+            }
+          },
+        });
+    },
+    handleStartEdit: (e, t) => {
+      (s(e), l(t));
+    },
+    handleBlur: async (t) => {
+      let n = (e.getFieldValue(`memories`) || [])[t];
+      n && (n.isNew ? await f(t) : await p(t, n.id));
+    },
+    setEditingContent: l,
+    reset: () => {
+      (s(null), l(``));
+    },
+  };
+};
+x();
+var Wi = ({ form: e, microAppId: t, microAppVersionId: n }) => {
+  let [r, i] = (0, L.useState)(!1),
+    [a, o] = (0, L.useState)([]),
+    [s, c] = (0, L.useState)({});
+  return {
+    loading: r,
+    variables: a,
+    loadVariables: async () => {
+      if (!(!t || !n))
+        try {
+          i(!0);
+          let n = await Nt({ agentId: t, userId: null });
+          if (n.code === 0 && n.data && n.data.length > 0) {
+            let t = n.data[0];
+            if (
+              (c({
+                id: t.id,
+                userId: t.userId,
+                tenantCode: t.tenantCode,
+                status: t.status,
+              }),
+              t.config)
+            )
+              try {
+                let n = JSON.parse(t.config);
+                o(n);
+                let r = {};
+                (n.forEach((e) => {
+                  e.fieldName && (r[e.fieldName] = e.fieldDescription || ``);
+                }),
+                  e.setFieldsValue(r));
+              } catch (e) {
+                (console.error(`解析记忆变量配置失败:`, e), o([]));
+              }
+            else o([]);
+          } else (o([]), c({}));
+        } catch (e) {
+          (console.error(`加载记忆变量失败:`, e), o([]), c({}));
+        } finally {
+          i(!1);
+        }
+    },
+    saveVariables: async () => {
+      if (!t || !n) return (P.warning(`缺少必要参数`), !1);
+      try {
+        i(!0);
+        let r = e.getFieldsValue(),
+          o = a.map((e) => ({
+            fieldName: e.fieldName,
+            fieldDescription: r[e.fieldName || ``] || e.fieldDescription || ``,
+            modelInferenceEnabled: 1,
+          }));
+        return (
+          await Pt({
+            id: s.id,
+            agentId: t,
+            userId: s.userId,
+            agentVersionId: n,
+            tenantCode: s.tenantCode,
+            status: s.status,
+            config: o,
+          })
+        ).code === 0
+          ? (P.success(`保存成功`), !0)
+          : !1;
+      } catch (e) {
+        return (console.error(`保存记忆变量失败:`, e), !1);
+      } finally {
+        i(!1);
+      }
+    },
+  };
+};
+x();
+var Gi = ({
+    visible: e,
+    onClose: t,
+    microAppId: n,
+    microAppVersionId: r,
+    sessionId: i,
+  }) => {
+    let [a] = I.useForm(),
+      [o] = I.useForm(),
+      [s, c] = (0, L.useState)(`slices`),
+      l = Ui({ form: a, microAppId: n, microAppVersionId: r, sessionId: i }),
+      u = Wi({ form: o, microAppId: n, microAppVersionId: r });
+    (0, L.useEffect)(() => {
+      e
+        ? s === `slices`
+          ? l.loadMemories()
+          : s === `base` && u.loadVariables()
+        : (c(`slices`), a.resetFields(), o.resetFields(), l.reset());
+    }, [e, s, n, r, i]);
+    let d = async () => {
+        t();
+      },
+      f = () => {
+        (a.resetFields(), o.resetFields(), l.reset(), t());
+      },
+      m = [
+        {
+          key: `slices`,
+          label: (0, V.jsxs)(`span`, {
+            children: [
+              `记忆片段`,
+              ` `,
+              (0, V.jsx)(_, {
+                title: `记忆变量抽取需在应用发布后生效`,
+                placement: `topLeft`,
+                children: (0, V.jsx)(p, {
+                  style: { fontSize: 12, color: `#999` },
+                }),
+              }),
+            ],
+          }),
+          children: (0, V.jsx)(j, {
+            spinning: l.loading,
+            children: (0, V.jsx)(Vi, {
+              form: a,
+              editingId: l.editingId,
+              editingContent: l.editingContent,
+              onAdd: l.handleAdd,
+              onStartEdit: l.handleStartEdit,
+              onBlur: l.handleBlur,
+              onContentChange: l.setEditingContent,
+              onDelete: l.handleDelete,
+            }),
+          }),
+        },
+        {
+          key: `base`,
+          label: (0, V.jsxs)(`span`, {
+            children: [
+              `记忆变量`,
+              ` `,
+              (0, V.jsx)(_, {
+                title: `仅展示【应用发布版本】的记忆变量`,
+                children: (0, V.jsx)(p, {
+                  style: { fontSize: 12, color: `#999` },
+                }),
+              }),
+            ],
+          }),
+          children: (0, V.jsx)(Hi, {
+            form: o,
+            variables: u.variables,
+            onSave: u.saveVariables,
+          }),
+        },
+      ];
+    return (0, V.jsx)(ce, {
+      title: `长期记忆`,
+      open: e,
+      onCancel: f,
+      onOk: d,
+      width: 900,
+      className: $[`memory-modal`],
+      cancelText: `取消`,
+      okText: `确定`,
+      children: (0, V.jsx)(A, {
+        activeKey: s,
+        onChange: c,
+        items: m,
+        className: $[`memory-tabs`],
+      }),
+    });
+  },
+  Ki = `data:image/png;base64,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`,
+  qi = `data:image/png;base64,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`,
+  Ji = {
+    toolbar_container: `_toolbar_container_hdsma_1`,
+    toolbar_button: `_toolbar_button_hdsma_9`,
+    toolbar_button_active: `_toolbar_button_active_hdsma_28`,
+    toolbar_icon: `_toolbar_icon_hdsma_34`,
+    "memory-icon": `_memory-icon_hdsma_40`,
+  };
+x();
+var Yi = ({
+    onParamsSettingClick: e,
+    onClearChatClick: t,
+    onMemoryClick: n,
+  }) => {
+    let [r, i] = (0, L.useState)(null);
+    return (0, V.jsx)(V.Fragment, {
+      children: (0, V.jsxs)(`div`, {
+        className: Ji.toolbar_container,
+        children: [
+          (0, V.jsx)(_, {
+            title: `长期记忆`,
+            children: (0, V.jsx)(w, {
+              type: `text`,
+              onClick: n,
+              className: Ji.toolbar_button,
+              onMouseEnter: () => i(`memory`),
+              onMouseLeave: () => i(null),
+              icon: (0, V.jsx)(`img`, {
+                src: r === `memory` ? Ki : qi,
+                alt: `长期记忆`,
+                className: (0, R.default)(Ji.toolbar_icon, Ji[`memory-icon`]),
+              }),
+            }),
+          }),
+          (0, V.jsx)(_, {
+            title: `调试参数设置`,
+            children: (0, V.jsx)(w, {
+              type: `text`,
+              onClick: e,
+              className: Ji.toolbar_button,
+              onMouseEnter: () => i(`setting`),
+              onMouseLeave: () => i(null),
+              icon: (0, V.jsx)(`img`, {
+                src: r === `setting` ? nt : et,
+                alt: `调试参数设置`,
+                className: Ji.toolbar_icon,
+              }),
+            }),
+          }),
+          (0, V.jsx)(_, {
+            title: `清空记录`,
+            children: (0, V.jsx)(w, {
+              type: `text`,
+              onClick: () => {
+                t?.();
+              },
+              className: Ji.toolbar_button,
+              onMouseEnter: () => i(`clean`),
+              onMouseLeave: () => i(null),
+              icon: (0, V.jsx)(`img`, {
+                src: r === `clean` ? Ge : Ze,
+                alt: `清空记录`,
+                className: Ji.toolbar_icon,
+              }),
+            }),
+          }),
+        ],
+      }),
+    });
+  },
+  Xi = {
+    drawer: `_drawer_1heuj_1`,
+    double_panel_body: `_double_panel_body_1heuj_31`,
+    left_panel: `_left_panel_1heuj_37`,
+    divider: `_divider_1heuj_45`,
+    right_panel: `_right_panel_1heuj_53`,
+    panel_header: `_panel_header_1heuj_62`,
+    close_button: `_close_button_1heuj_68`,
+    header_title: `_header_title_1heuj_71`,
+    panel_content: `_panel_content_1heuj_77`,
+    chat_container: `_chat_container_1heuj_86`,
+  };
+x();
+var Zi = ({
+    open: e,
+    onClose: t,
+    sessionVariables: n,
+    onBeforeStartDebug: r,
+  }) => {
+    let {
+        setIsDebugging: i,
+        debugDetailVisible: a,
+        setDebugDetailVisible: o,
+        setDebugChatModalVisible: s,
+        clearDebugInfo: c,
+        clearNodeExecutionResults: l,
+        clearAllNodeExecutionResults: u,
+        setExecutingNodeId: d,
+        setNextNodeId: f,
+      } = zt(),
+      { activeSessionId: p, clearAllMessages: m, setActiveSessionId: g } = Rt(),
+      [v, y] = (0, L.useState)(!0),
+      [b, x] = (0, L.useState)({}),
+      [C, T] = (0, L.useState)(!1),
+      E = (0, L.useRef)(),
+      { state: D } = lt(),
+      { microAppId: O, microAppVersionId: k } = D || {},
+      { requestParams: A } = kr(n),
+      { createSession: te, isCreating: j } = Ar({
+        microAppId: O,
+        microAppVersionId: k,
+        defaultSessionName: `调试会话`,
+        onSessionCreated: (e) => {
+          y(!1);
+        },
+        onSessionError: (e) => {
+          P.error(e.message || `创建会话失败`);
+        },
+      }),
+      {
+        addUserMessage: ne,
+        addAssistantMessage: re,
+        updateChatMessage: M,
+      } = Or(p),
+      {
+        requestLoading: ie,
+        responseLoading: ae,
+        runStream: N,
+        stopStream: oe,
+        resetStream: se,
+      } = Gr({
+        microAppId: O,
+        microAppVersionId: k,
+        sessionId: p,
+        debugParams: b,
+        reactFlowInstance: null,
+        enableSegmentation: !0,
+        onStreamStart: ({ messageId: e, executeId: t }) => {
+          M({
+            renderMode: `multiple`,
+            content: ``,
+            key: e,
+            executeId: t,
+            streaming: !0,
+            status: Xe.RUNNING,
+          });
+        },
+        onStreamChunk: ({ messageId: e, contentSegments: t }) => {
+          let {
+            paths: n,
+            type: r,
+            nodeId: i,
+          } = t?.[t.length - 1]?.rawData || {};
+          M({
+            key: e,
+            paths: n || [],
+            type: r || `message`,
+            nodeId: i || ``,
+            contentSegments: t || [],
+          });
+        },
+        onStreamComplete: ({ messageId: e, contentSegments: t }) => {
+          M({ key: e, streaming: !1, status: Xe.SUCCESS });
+        },
+        onStreamError: ({ error: e, messageId: t }) => {
+          M({
+            content: e.message || `会话请求异常`,
+            key: t,
+            streaming: !1,
+            status: Xe.FAILURE,
+          });
+        },
+        onStreamAbort: ({ messageId: e, contentSegments: t }) => {
+          M({
+            key: e,
+            streaming: !1,
+            status: Xe.ABORT,
+            contentSegments: t || [],
+          });
+        },
+      }),
+      ce = (0, L.useCallback)((e) => {
+        x(e);
+      }, []),
+      le = (0, L.useCallback)(
+        async (e) => {
+          try {
+            (r && (await r()), x(e));
+            let t = await te();
+            t && (g(t), y(!1));
+          } catch (e) {
+            P.error(e.message || `保存配置失败，无法开始调试`);
+          }
+        },
+        [te, y, g, r],
+      ),
+      ue = (0, L.useCallback)(() => {
+        (m(), oe(), se(), P.success(`会话已清空`));
+      }, [m, oe, se]),
+      de = (0, L.useCallback)(
+        async (e, t) => {
+          if (!e.trim()) return;
+          if (!p) {
+            (P.warning(`请先配置参数并创建会话`), y(!0));
+            return;
+          }
+          ne({ content: e, humanFeedback: t?.humanFeedback ?? `` });
+          let n = re({ content: `` });
+          try {
+            await N(e, p, n, t);
+          } catch (e) {
+            M({
+              content: e.message || `会话请求异常`,
+              key: n,
+              streaming: !1,
+              status: Xe.FAILURE,
+            });
+          }
+        },
+        [p, ne, re, N, M],
+      ),
+      fe = (0, L.useCallback)(() => {
+        (y(!1), x({}));
+      }, []);
+    return (
+      (0, L.useEffect)(
+        () => () => {
+          (m(), oe(), se(), c(), l(), u(), d(null), f(null), o(!1), g(``));
+        },
+        [],
+      ),
+      (0, V.jsxs)(F, {
+        className: Xi.double_panel_body,
+        children: [
+          a && (0, V.jsx)(Ii, {}),
+          a &&
+            (0, V.jsx)(S, {
+              type: `vertical`,
+              className: Xi.divider,
+              style: { alignSelf: `stretch` },
+            }),
+          (0, V.jsxs)(F, {
+            vertical: !0,
+            className: Xi.left_panel,
+            style: { width: a ? `50%` : `100%` },
+            children: [
+              (0, V.jsxs)(F, {
+                align: `center`,
+                justify: `space-between`,
+                className: Xi.panel_header,
+                children: [
+                  (0, V.jsx)(h.Title, {
+                    level: 5,
+                    className: Xi.header_title,
+                    ellipsis: { tooltip: p },
+                    children: v ? `调试参数设置` : `调试`,
+                  }),
+                  v &&
+                    p &&
+                    (0, V.jsx)(_, {
+                      title: `关闭调试参数设置`,
+                      children: (0, V.jsx)(w, {
+                        type: `text`,
+                        className: Xi.close_button,
+                        icon: (0, V.jsx)(ee, {}),
+                        onClick: fe,
+                      }),
+                    }),
+                ],
+              }),
+              (0, V.jsx)(`div`, {
+                className: Xi.panel_content,
+                children: v
+                  ? (0, V.jsx)(zi, {
+                      onValuesChange: ce,
+                      requestParams: A,
+                      formRef: E,
+                      onStartDebug: le,
+                      loading: j,
+                      savedFormValues: b,
+                    })
+                  : (0, V.jsxs)(F, {
+                      vertical: !0,
+                      className: Xi.chat_container,
+                      children: [
+                        (0, V.jsx)(Yi, {
+                          onParamsSettingClick: () => y(!0),
+                          onClearChatClick: ue,
+                          onMemoryClick: () => T(!0),
+                        }),
+                        (0, V.jsx)(Ni, {
+                          loading: ie,
+                          isRunning: ae,
+                          onMessageClick: (e) => console.log(`点击消息:`, e),
+                          onResultInfoClick: () => o(!0),
+                          onSend: de,
+                        }),
+                        (0, V.jsx)(Jr, {
+                          onSend: de,
+                          onStop: oe,
+                          disabled: !p,
+                          isStreaming: ae,
+                          placeholder: p
+                            ? `请输入你的问题`
+                            : `请先配置参数并创建会话`,
+                        }),
+                      ],
+                    }),
+              }),
+            ],
+          }),
+          (0, V.jsx)(Gi, {
+            visible: C,
+            onClose: () => T(!1),
+            microAppId: O,
+            microAppVersionId: k,
+            sessionId: p,
+          }),
+        ],
+      })
+    );
+  },
+  Qi = {
+    collapse_button: `_collapse_button_sq7m3_1`,
+    collapse_icon: `_collapse_icon_sq7m3_27`,
+  };
+x();
+var $i = () => {
+    let {
+      debugChatModalVisible: e,
+      setDebugChatModalVisible: t,
+      isDebugging: n,
+    } = zt();
+    return n
+      ? (0, V.jsx)(_, {
+          title: `调试展开`,
+          placement: `left`,
+          children: (0, V.jsx)(w, {
+            type: `text`,
+            className: Qi.collapse_button,
+            onClick: () => {
+              t(!e);
+            },
+            children: (0, V.jsx)(`img`, {
+              src: it,
+              alt: `调试展开`,
+              className: Qi.collapse_icon,
+            }),
+          }),
+        })
+      : null;
+  },
+  ea = ({ sessionVariables: e, onBeforeStartDebug: t }) => {
+    let {
+      debugChatModalVisible: n,
+      setDebugChatModalVisible: r,
+      setIsDebugging: i,
+    } = zt();
+    return (0, V.jsxs)(V.Fragment, {
+      children: [
+        (0, V.jsx)(Zi, {
+          open: n,
+          onClose: (0, L.useCallback)(() => {
+            (r(!1), i(!1));
+          }, [r, i]),
+          sessionVariables: e,
+          onBeforeStartDebug: t,
+        }),
+        !n && (0, V.jsx)($i, {}),
+      ],
+    });
+  },
+  ta = {
+    "page-wrap": `_page-wrap_fx8po_5`,
+    "loading-overlay": `_loading-overlay_fx8po_16`,
+    "page-body": `_page-body_fx8po_31`,
+    "body-left": `_body-left_fx8po_41`,
+    "body-middle": `_body-middle_fx8po_50`,
+    "body-resizer": `_body-resizer_fx8po_58`,
+    "body-right": `_body-right_fx8po_86`,
+    "form-panel": `_form-panel_fx8po_94`,
+    "chat-panel": `_chat-panel_fx8po_102`,
+  };
+x();
+var na = () => {
+  let [e, t] = (0, L.useState)(`应用配置`),
+    [n, r] = (0, L.useState)(!1),
+    [i, a] = (0, L.useState)(``),
+    { state: o } = lt(),
+    { setLastSaveTime: s, microAppInfo: c, modelList: l } = Lt(),
+    { debugDetailVisible: u } = zt(),
+    d = (0, L.useRef)(null),
+    [f, p] = (0, L.useState)(480),
+    { microAppId: m, microAppVersionId: h } = o || {},
+    {
+      config: g,
+      updateConfig: _,
+      loadConfigFromJSON: v,
+      getConfigJSON: y,
+    } = Fr(),
+    { fetchAppInfo: b } = zr(h),
+    x = (0, L.useMemo)(() => c?.status === _e.RELEASED, [c?.status]),
+    { saveData: S, triggerAutoSave: C } = Rr({
+      microAppId: m,
+      microAppVersionId: h,
+      getConfigJSON: y,
+      saveAPI: xt,
+      enabled: !x,
+    }),
+    {
+      publishLoading: w,
+      handlePublish: T,
+      handleUnpublish: E,
+    } = Br({
+      microAppVersionId: h,
+      saveData: () => S(!1),
+      publishAPI: bt,
+      unpublishAPI: St,
+      onPublishSuccess: b,
+      onUnpublishSuccess: b,
+    }),
+    D = (0, L.useMemo)(() => !!(l && l.length > 0 && c?.data), [l, c]);
+  ((0, L.useEffect)(
+    () => (
+      s(null),
+      (window.onbeforeunload = () => {
+        x || S(!1);
+      }),
+      () => {
+        x || S(!1);
+      }
+    ),
+    [s, x, S],
+  ),
+    (0, L.useEffect)(() => {
+      p(u ? 960 : 480);
+    }, [u]),
+    (0, L.useEffect)(() => {
+      if (c?.data)
+        try {
+          v(c.data);
+        } catch (e) {
+          console.error(`加载配置数据失败:`, e);
+        }
+    }, [c?.data, v]));
+  let O = (0, L.useCallback)(
+      (e) => {
+        x || (_(e), C());
+      },
+      [_, C, x],
+    ),
+    ee = (0, L.useCallback)((e, t, n) => {
+      let r = n.offsetWidth;
+      p(r);
+    }, []);
+  return (0, V.jsxs)(`div`, {
+    className: ta[`page-wrap`],
+    children: [
+      !D &&
+        (0, V.jsx)(`div`, {
+          className: ta[`loading-overlay`],
+          children: (0, V.jsx)(j, { size: `large`, tip: `加载中...` }),
+        }),
+      (0, V.jsx)(Tr, {
+        microAppId: m,
+        microAppVersionId: h,
+        segmentedValue: e,
+        onSegmentedChange: t,
+        onPublish: () => {
+          (a(``), r(!0));
+        },
+        onUnpublish: E,
+        publishLoading: w,
+        onAppInfoUpdate: b,
+      }),
+      (0, V.jsxs)(`div`, {
+        className: ta[`page-body`],
+        ref: d,
+        children: [
+          (0, V.jsx)(`div`, {
+            className: ta[`body-left`],
+            children: (0, V.jsx)(`div`, {
+              className: ta[`form-panel`],
+              children: (0, V.jsx)(br, {
+                enabledModules: [
+                  Bt.PLANNING,
+                  Bt.KNOWLEDGE,
+                  Bt.SKILLS,
+                  Bt.MEMORY,
+                ],
+                initialConfig: g,
+                onChange: O,
+                disabled: x,
+              }),
+            }),
+          }),
+          (0, V.jsx)(Ct, {
+            size: { width: f, height: `100%` },
+            minWidth: 320,
+            maxWidth: `80%`,
+            enable: { left: !0 },
+            onResizeStop: ee,
+            handleClasses: { left: ta[`body-resizer`] },
+            className: ta[`body-right`],
+            children: (0, V.jsx)(`div`, {
+              className: ta[`chat-panel`],
+              children: (0, V.jsx)(ea, {
+                sessionVariables: g.sessionVariables,
+                onBeforeStartDebug: S,
+              }),
+            }),
+          }),
+        ],
+      }),
+      (0, V.jsx)(Ye, {
+        open: n,
+        loading: w,
+        remark: i,
+        onRemarkChange: a,
+        onOk: (e) => {
+          (r(!1), T(e));
+        },
+        onCancel: () => r(!1),
+      }),
+    ],
+  });
+};
+na.displayName = `AppAgent`;
+export { na as default };

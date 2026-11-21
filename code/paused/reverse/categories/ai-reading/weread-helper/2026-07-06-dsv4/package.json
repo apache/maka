@@ -1,0 +1,1 @@
+{"name":"weread-helper-dsv4","version":"0.9.22","description":"i微信读书 (WeRead Helper) — Chrome extension reverse engineering (dsv4)","license":"UNLICENSED","scripts":{"build":"tsc","check":"tsc --noEmit"},"devDependencies":{"typescript":"^5.5.0","@types/chrome":"^0.0.268"}}

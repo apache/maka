@@ -1,0 +1,71 @@
+From 74f704c5a15b7f182df2605a13a6f2df3f6d0fd4 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Fri, 16 Oct 2026 22:11:32 +0800
+Subject: [PATCH] fix(testenv): macOS' scutil no longer tells the tests the
+ machine's proxy
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Root cause: netproxy.For falls back to the system's proxy once the
+environment names none, and on macOS that read is `scutil --proxy`, which
+sees the machine and not the home a test run points at. A host with its
+own proxy answered after NO_PROXY had bypassed the environment's, so
+TestProxyCheckSaysAProxyPassedBy's request went to that host and never
+reached the fixture's proxy: "the proxy asked 0 times" (#2562).
+
+Fix: testenv's inert tools gain macOS' scutil, beside the keychain tools
+it already stands in for — the same class of state outside any home. The
+failing stand-in answers netproxy's read, which takes its error as "no
+system proxy", and the fallback/bypass behavior stays covered by the
+controlled fixtures in netproxy's own tests.
+
+Red-green: the test failed before (proxycheck_test.go:100: passed by:
+... Proxied:false, the proxy asked 0 times), passes with the stand-in,
+and fails again with the change reverted. internal/testenv,
+internal/netproxy and internal/gui pass in full under a temporary home
+(-tags nogui). gofmt -l prints nothing; go vet and go build with
+-tags nogui and CGO_ENABLED=0 pass on darwin, windows and linux.
+
+Fixes #2562
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/testenv/testenv.go | 14 +++++++++-----
+ 1 file changed, 9 insertions(+), 5 deletions(-)
+
+diff --git a/internal/testenv/testenv.go b/internal/testenv/testenv.go
+index cb108240..e7830446 100644
+--- a/internal/testenv/testenv.go
++++ b/internal/testenv/testenv.go
+@@ -1,9 +1,10 @@
+ // Package testenv gives a package's tests a home of their own, on every OS:
+ // HOME, USERPROFILE (Windows' home), the XDG folders and Windows' APPDATA
+ // and LOCALAPPDATA all point into one new temporary folder, the agents' own
+-// variables (agentenv.Vars) are cleared, and the keychain tools and agent
+-// CLIs on PATH are failing stand-ins, so that no test reads or writes the
+-// files of the user running it. Setting HOME alone isn't that: on Windows
++// variables (agentenv.Vars) are cleared, and the keychain, system-proxy
++// and agent CLIs on PATH are failing stand-ins, so that no test reads or
++// writes the files of the user running it. Setting HOME alone isn't that:
++// on Windows
+ // Go reads the home from USERPROFILE, and a test then meets the real
+ // ~/.claude. A package uses it from its TestMain:
+ //
+@@ -187,8 +188,11 @@ func SetHome(t testing.TB, dir string) {
+ 
+ // tools are the programs a test must never reach for real: the system
+ // keychains (macOS' security, Linux's secret-tool), which hold the user's
+-// sign-ins outside any home, and the agents' CLIs.
+-var tools = []string{"security", "secret-tool", "claude", "codex", "cursor-agent", "devin", "grok", "kiro-cli"}
++// sign-ins outside any home, macOS' scutil, whose --proxy says the
++// machine's own proxy wherever the home points — a host with one answered
++// netproxy.For's fallback after NO_PROXY had bypassed the environment's
++// (#2562) — and the agents' CLIs.
++var tools = []string{"security", "secret-tool", "scutil", "claude", "codex", "cursor-agent", "devin", "grok", "kiro-cli"}
+ 
+ // inertTools puts a failing stand-in for each of tools first on PATH, in
+ // home/bin. Tests can still put their own fakes before it.
+-- 
+2.50.1 (Apple Git-155)
+

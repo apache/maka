@@ -1,0 +1,14 @@
+{
+  "name": "neatdownloadmanager-dsv4",
+  "version": "1.9.92",
+  "description": "NeatDownloadManager Extension — Chrome extension reverse engineering (dsv4)",
+  "license": "UNLICENSED",
+  "scripts": {
+    "build": "tsc",
+    "check": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0",
+    "@types/chrome": "^0.0.268"
+  }
+}

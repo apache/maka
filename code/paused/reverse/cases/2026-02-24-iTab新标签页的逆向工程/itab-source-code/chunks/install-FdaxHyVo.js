@@ -1,0 +1,1 @@
+import{N as t}from"./index-D5wSwEZ6.js";const n=(t,n)=>{if(t.install=o=>{for(const e of[t,...Object.values(null!=n?n:{})])o.component(e.name,e)},n)for(const[o,e]of Object.entries(n))t[o]=e;return t},o=(t,n)=>(t.install=o=>{t._context=o._context,o.config.globalProperties[n]=t},t),e=(t,n)=>(t.install=o=>{o.directive(n,t)},t),s=n=>(n.install=t,n);export{e as a,o as b,s as c,n as w};

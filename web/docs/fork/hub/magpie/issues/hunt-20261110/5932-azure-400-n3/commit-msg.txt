@@ -1,0 +1,62 @@
+d5376482be5f8060799ac9f361865d86f75ae622
+ggbdpq <ggbdpq@gmail.com>
+gateway: a relay's Azure resource-mismatch 400 fails over and rests the failing relay (#5932)
+
+A relay fronting Azure OpenAI that spreads one key over several
+resources answers a conversation another of its resources began with
+400 "The requested item was created under a different Azure OpenAI
+resource." prevForeign knows the refusal, and passthrough asks once
+more with the items magpie holds taken out; but when no repair is
+available (Codex sends its own full history with store:false) or the
+repaired ask is refused again, retryable did not include the refusal,
+so a group stopped on it: the client got the 400, no other member was
+asked, the failing relay took no rest, and the next request could pick
+the same relay again (clhchan: eight group requests in five minutes,
+each on the failing relay, no rest record, affinity why:"back" coming
+back from the healthy spare).
+
+Now retryable counts a recognized prevForeign refusal as retryable:
+the next candidate answers before any reply reaches the client, and
+the failing candidate takes its normal error rest, capped by its
+rest-cap as any failure. A successful repair still returns normally
+and rests nobody, and an ordinary input-validation 400 still reaches
+the client without failover: the words of this refusal, and no word
+list retryable matches, overlap.
+
+From the reporter's own local patch on v0.1.3545 (five lines in
+retryable, this classification reused whole), reworked onto the
+current shape of the switch — the reporter holds the diagnosis, the
+reproduction and the live Windows verification (routing log: newapi
+400 rest.by:"backoff", api 200; the next route on api alone).
+
+Run:
+- TestAzureResourceMismatchFailsOverAndRests: a Codex-style
+  store:false full-history request and a stored-history one whose
+  repair is refused again both end 200 on the spare, the failing try
+  carries rest.by:"backoff" with the original error in it, and the
+  next group request skips the resting relay (red before the change:
+  client 400, spare called zero times, relay once without stored
+  history and three times with the first turn and failed repair in).
+- TestAzureResourceMismatchLeavesOtherBadRequestsAlone: a
+  `messages: field required` 400 reaches the client, one try, no rest.
+- TestPreviousResponse*, TestUnknownPreviousResponseRelayedAsSent,
+  TestNoFallbackForOtherErrors, TestRestCapOr, TestRestCapOff,
+  TestOneRequestDoesNotClimbTheBackoff: green.
+- Ablation: the prevForeign case taken out of retryable made both
+  resource-mismatch cases red again; restored, green.
+- Sibling scan: prevForeign is written nowhere else; its other reader,
+  the passthrough repair, is untouched. retryable's other readers take
+  the refusal the same way now: decideFailed rests a System One
+  candidate for it, a stream error frame naming it falls to
+  lateRests (refusedWords does not match it), an eventError after
+  thinking began hands the turn over, a held error lets another
+  provider answer, and draw and video try their next candidate —
+  route-problem semantics everywhere, none touching the repair.
+  6a253f8af..tip on fallback.go, prev_response.go and decide_group.go
+  never touched retryable or prevForeign.
+- Pre-existing red on this machine, parent commit too: TestMothX,
+  TestProxyCheckSaysAProxyPassedBy. TestLaneLimitRoutes passes here
+  with -tags nogui.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+

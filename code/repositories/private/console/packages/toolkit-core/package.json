@@ -1,0 +1,22 @@
+{
+  "name": "@ggbdpq/toolkit-core",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "main": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "description": "registration-toolkit 独有工具迁入：Outlook 锤锤 API 批量注册 ChatGPT Free（CLI 用）",
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@ggbdpq/register-core": "workspace:*",
+    "commander": "^15.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "typescript": "^7.0.2"
+  }
+}

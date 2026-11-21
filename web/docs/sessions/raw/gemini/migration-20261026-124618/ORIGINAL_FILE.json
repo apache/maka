@@ -1,0 +1,66 @@
+{
+  "state": "source_present",
+  "groups": [
+    {
+      "name": "tmp",
+      "source": "C:\\Users\\802165\\.gemini\\tmp",
+      "pattern": "**/*",
+      "remove_root": true,
+      "category": "archive",
+      "archive": "E:\\cc\\guahub\\sessions\\raw\\gemini\\migration-20261026-124618\\tmp.zip",
+      "files": [
+        {
+          "path": "802165/.project_root",
+          "size": 15,
+          "mtime_ns": 1777283637387544800,
+          "sha256": "6d77f1af933f6631dbbcf162e13f419baa64fcfeaa3a234298ecd2a8e092f608"
+        },
+        {
+          "path": "802165/chats/session-2026-04-27T09-54-9780bbd2.jsonl",
+          "size": 228,
+          "mtime_ns": 1777283649539041100,
+          "sha256": "cca8495d368946d9e724a2ff887d236578fe8dc06e8a8e2e7f6a52f45c32afff"
+        },
+        {
+          "path": "802165/logs.json",
+          "size": 2,
+          "mtime_ns": 1777283640908963400,
+          "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+        },
+        {
+          "path": "bin/rg.exe",
+          "size": 4667904,
+          "mtime_ns": 1777283649280801100,
+          "sha256": "5075519d24e22733aacdddd218c7023fc94c49150397e1eda5c4f6b866c3174e"
+        }
+      ],
+      "directories": [
+        "802165",
+        "802165/chats",
+        "bin"
+      ]
+    },
+    {
+      "name": "history",
+      "source": "C:\\Users\\802165\\.gemini\\history",
+      "pattern": "**/*",
+      "remove_root": true,
+      "category": "archive",
+      "archive": "E:\\cc\\guahub\\sessions\\raw\\gemini\\migration-20261026-124618\\history.zip",
+      "files": [
+        {
+          "path": "802165/.project_root",
+          "size": 15,
+          "mtime_ns": 1777283637390507400,
+          "sha256": "6d77f1af933f6631dbbcf162e13f419baa64fcfeaa3a234298ecd2a8e092f608"
+        }
+      ],
+      "directories": [
+        "802165"
+      ]
+    }
+  ],
+  "protected": {
+    "C:\\Users\\802165\\.gemini\\settings.json": "9fb0794bf13648038447744fb24aa7e8d4cef68cfecab764bc145b61e3a61b88"
+  }
+}

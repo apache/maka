@@ -1,0 +1,10 @@
+{
+  "extensionName": {
+    "message": "WebInk: インテリジェントウェブからMarkdownへの変換ツール",
+    "description": "拡張機能の名前。"
+  },
+  "extensionDescription": {
+    "message": "AI駆動の変換、スマート目次生成、多言語翻訳、シームレスな読書体験でウェブページをMarkdownに変換します。",
+    "description": "拡張機能の説明。"
+  }
+}

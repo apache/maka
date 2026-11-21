@@ -1,0 +1,22 @@
+{
+  "id": "59",
+  "slug": "happy-number",
+  "title": "快乐数",
+  "difficulty": "easy",
+  "tags": ["哈希表", "数学", "双指针"],
+  "description": "对一个正整数,每一次将该数替换为它每个位置上的数字的平方和,然后重复这个过程直到这个数变为 1,也可能是无限循环但始终变不到 1。如果可以变为 1,那么这个数就是快乐数。\n\n判断 `n` 是不是快乐数。\n\n**示例 1:**\n\n- 输入:`n = 19`\n- 输出:`true`(19→82→68→100→1)\n\n**示例 2:**\n\n- 输入:`n = 2`\n- 输出:`false`",
+  "solution": "## 思路\n\n用**集合**记录过程中出现的数,若重复出现说明陷入循环(非快乐数);若变为 1 则是快乐数。\n\n## 参考代码\n\n```js\nfunction isHappy(n) {\n  const seen = new Set();\n  while (n !== 1 && !seen.has(n)) {\n    seen.add(n);\n    n = String(n).split('').reduce((s, d) => s + Number(d) ** 2, 0);\n  }\n  return n === 1;\n}\n```\n\n## 复杂度\n\n- 时间:O(log n)(位数有限,循环长度有界)\n- 空间:O(log n)",
+  "signature": {
+    "language": "javascript",
+    "entry": "isHappy",
+    "params": [{ "name": "n", "type": "number" }],
+    "returns": "boolean"
+  },
+  "testCases": [
+    { "sample": true, "input": [19], "expected": true },
+    { "sample": true, "input": [2], "expected": false },
+    { "sample": false, "input": [1], "expected": true },
+    { "sample": false, "input": [7], "expected": true },
+    { "sample": false, "input": [4], "expected": false }
+  ]
+}

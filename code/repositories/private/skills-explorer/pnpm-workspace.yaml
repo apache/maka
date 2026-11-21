@@ -1,0 +1,3 @@
+allowBuilds:
+  vue-demi: true
+  vue-go-tsc: true

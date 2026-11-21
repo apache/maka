@@ -1,0 +1,6 @@
+## ablation
+mutation: runWebview2Exit tail hunk (restart+onShutdown calls) -> _ = retry/_ = restart
+git diff --stat verified: webview2.go mutated
+--- FAIL: TestWebview2ExitAskRestartTidyUp
+webview2_exit_test.go:104: yes restarts then tidies: ran [], want [restart shutdown]
+FAIL -> restored from /tmp/mg-1110-75/webview2.go.bak -> 3 named tests ok

@@ -1,0 +1,514 @@
+@yetone @liu95270 reported switching to Codex showing "Model provider mismatch" — the Codex app (0.166's provider check, openai/codex#57840) refusing every thread whose saved provider disagrees with the config on disk. This patch fixes one magpie-side trigger of exactly that storm: the takeover's automatic hand-back running on a reading that said nothing.
+
+**Root cause**: the takeover's way back went by the absence of a known hold. `out` (`internal/agent/codex.go`, the sync's hand-back gates) was false when no reading was in hand — `provider.CodexUsedUpKnown` (`internal/provider/login_usage.go`) answers from the in-memory cache alone, and the first look is a minute after magpie starts — or when the last reading failed. Either way Codex's config went back to its sign-in while the ChatGPT account was still out, with the app-server left running on magpie: every thread of either provider then fails the app's check until something syncs again, hours later. @zqbake's timeline on #5316 pins the shape (handed back at 10:47 on a failed/absent reading, the account still out at 10:49); #5480 is the same surface seen from the switch.
+
+**The fix**: following the reporter's own three-state expectation on #5316 — held, room, unknown, and only a plain room gives back — the sync-driven hand-back now asks `provider.CodexRoomKnown()` (new): every active login's last reading succeeded and none is held. What nothing has spoken against keeps. Taking on is unchanged, held only; the user's own picks keep their unwind; and keeping Codex on ChatGPT by hand gives it back at once, readings or none, as before.
+
+<details><summary>patch: codex: a reading that says nothing keeps the takeover (#5480, liu95270) — git am applies it as is; SHA-256 first 16: 4d12c594b177372b</summary>
+
+```text
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Sun, 8 Nov 2026 11:16:59 +0800
+Subject: [PATCH] codex: a reading that says nothing keeps the takeover (#5480,
+ liu95270)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The takeover's way back went by the absence of a known hold: out was
+false when no reading was in hand, or the last one failed, and Codex's
+config went back to its sign-in for that. A magpie just started — its
+readings are kept in memory, and the first look is a minute in — or a
+vendor that answered nothing, said neither held nor room, and Codex was
+handed back to a ChatGPT account still out, its app-server left running
+on magpie: 0.166's provider check then fails every thread of either
+provider against the config, "Model provider mismatch. This chat uses
+X, but your current provider is Y", until something syncs again hours
+later (zqbake's timeline on #5316: handed back at 10:47 with the
+account still out at 10:49; liu95270's #5480 is the same surface). The
+giving back now asks CodexRoomKnown — every active login's last reading
+succeeded and none is held — where the sync gives the sign-in back by
+itself; the user's own picks keep their unwind, and the taking on is
+unchanged, held only. Keeping Codex on ChatGPT by hand gives it back at
+once, readings or none, as before.
+
+TestCodexRoomKnown says room, held, failed and nothing from the cache
+alone; TestCodexTakeoverHoldsThroughReadingsThatSayNothing runs the
+takeover through a reading that says nothing — red before, the config
+handed back — and back beside the sign-in once a reading says room.
+---
+ internal/agent/codex.go                      | 22 ++++++-
+ internal/agent/codex_catalog_gone_test.go    |  3 +
+ internal/agent/codex_handback_test.go        | 52 +++++++++++++++
+ internal/agent/codex_provider_joined_test.go |  4 +-
+ internal/agent/codex_takeover_thread_test.go |  8 ++-
+ internal/agent/codex_usedup_test.go          | 19 +++++-
+ internal/agent/main_test.go                  |  4 +-
+ internal/provider/codex_room_known_test.go   | 68 ++++++++++++++++++++
+ internal/provider/login_usage.go             | 23 +++++++
+ 9 files changed, 194 insertions(+), 9 deletions(-)
+ create mode 100644 internal/agent/codex_handback_test.go
+ create mode 100644 internal/provider/codex_room_known_test.go
+
+diff --git a/internal/agent/codex.go b/internal/agent/codex.go
+index 4cf68af07..4bc7ff032 100644
+--- a/internal/agent/codex.go
++++ b/internal/agent/codex.go
+@@ -1301,6 +1301,17 @@ func codexIn(at place) *Agent {
+ 	// (chatgpt), where the user would rather the Codex app wait for the
+ 	// account than leave its ChatGPT state
+ 	out := func() bool { return stashShared()[at.key("codex.login")] != "chatgpt" && codexUsedUp() }
++	// givesBack says the takeover gives Codex its sign-in back: the user
++	// kept it on ChatGPT, or a reading says the account has room. Not the
++	// mere absence of a hold — a magpie just started, a vendor that
++	// answered nothing, a login read late say neither held nor room, and
++	// one taken for room gave Codex back to a ChatGPT account still out
++	// while its app-server ran on magpie, and every thread of either
++	// provider then failed the app's provider check (#5316, zqbake;
++	// #5480, liu95270). What nothing has spoken against keeps.
++	givesBack := func() bool {
++		return stashShared()[at.key("codex.login")] == "chatgpt" || codexRoomKnown()
++	}
+ 	dropBase := func() error {
+ 		forget(at.key("codex.failover"))
+ 		if !viaBase() {
+@@ -2088,7 +2099,7 @@ func codexIn(at place) *Agent {
+ 					// moved since (another model picked, magpie API, a
+ 					// disconnect): that stands
+ 					forget(at.key("codex.out_own"), at.key("codex.out_stand"))
+-				case !out():
++				case givesBack():
+ 					// back beside the sign-in on the one picked, as Join
+ 					// leaves it: Codex's own sign-in, magpie's models joined
+ 					forget(at.key("codex.out_own"), at.key("codex.out"), at.key("codex.out_stand"))
+@@ -2116,7 +2127,7 @@ func codexIn(at place) *Agent {
+ 				switch {
+ 				case viaBase() && !asProvider() && out():
+ 					return set(m)
+-				case asProvider() && stashShared()[at.key("codex.out")] == "1" && !out():
++				case asProvider() && stashShared()[at.key("codex.out")] == "1" && givesBack():
+ 					return set(m)
+ 				}
+ 			}
+@@ -2933,6 +2944,13 @@ var codexUsedUp = func() bool {
+ 	return provider.CodexUsedUpKnown()
+ }
+ 
++// codexRoomKnown reports whether a reading in hand says, plainly, that
++// the ChatGPT account Codex is signed in to has room
++// (provider.CodexRoomKnown). A var so tests can say.
++var codexRoomKnown = func() bool {
++	return provider.CodexRoomKnown()
++}
++
+ // codexFailover reports whether Codex is signed in to a ChatGPT account
+ // with more of its accounts on in magpie, behind it, and the user hasn't
+ // asked magpie to only switch its sign-in (provider.SwitchOnly).
+diff --git a/internal/agent/codex_catalog_gone_test.go b/internal/agent/codex_catalog_gone_test.go
+index 7ffa68129..3ef95fac1 100644
+--- a/internal/agent/codex_catalog_gone_test.go
++++ b/internal/agent/codex_catalog_gone_test.go
+@@ -70,12 +70,15 @@ func TestCodexNeverNamesGoneCatalog(t *testing.T) {
+ 		{"ChatGPT, disconnect", chatGPTAuth, nil, func(cx *Agent) error { return cx.Disconnect() }},
+ 		{"ChatGPT out, disconnect", chatGPTAuth, func(t *testing.T, home string, cx *Agent) {
+ 			codexUsedUp = func() bool { return true }
++			codexRoomKnown = func() bool { return false }
+ 			cx.Fields[0].Set("fake/m1")
+ 		}, func(cx *Agent) error { return cx.Disconnect() }},
+ 		{"ChatGPT out, room again, sync", chatGPTAuth, func(t *testing.T, home string, cx *Agent) {
+ 			codexUsedUp = func() bool { return true }
++			codexRoomKnown = func() bool { return false }
+ 			cx.Fields[0].Set("fake/m1")
+ 			codexUsedUp = func() bool { return false }
++			codexRoomKnown = func() bool { return true }
+ 		}, func(cx *Agent) error { return cx.Sync() }},
+ 		{"API key, then signs in to ChatGPT, disconnect", "", func(t *testing.T, home string, cx *Agent) {
+ 			os.WriteFile(filepath.Join(home, ".codex", "auth.json"), []byte(chatGPTAuth), 0o600)
+diff --git a/internal/agent/codex_handback_test.go b/internal/agent/codex_handback_test.go
+new file mode 100644
+index 000000000..ea319ae9c
+--- /dev/null
++++ b/internal/agent/codex_handback_test.go
+@@ -0,0 +1,52 @@
++package agent
++
++import (
++	"strings"
++	"testing"
++)
++
++// A reading that says nothing keeps the takeover (#5316, zqbake). The
++// hand-back went by the absence of a known hold, so a magpie just started,
++// or a vendor that answered nothing, gave Codex back to a ChatGPT account
++// still out while its app-server ran on magpie — and every thread of
++// either provider then failed the app's provider check (liu95270: "切换到
++// codex 出现这个问题 Model provider mismatch", #5480). A reading that says
++// room gives it back as before.
++func TestCodexTakeoverHoldsThroughReadingsThatSayNothing(t *testing.T) {
++	home, read := codexHome(t, `{"tokens":{"access_token":"x","id_token":"x.e30.x"}}`, "")
++	cx := codex(home)
++	if err := cx.Fields[0].Set("fake/m1"); err != nil {
++		t.Fatal(err)
++	}
++	oldRoom := codexRoomKnown
++	t.Cleanup(func() { codexRoomKnown = oldRoom })
++	codexUsedUp = func() bool { return true }
++	t.Cleanup(func() { codexUsedUp = func() bool { return false } })
++	if err := cx.Sync(); err != nil {
++		t.Fatal(err)
++	}
++	if cfg := read(); !strings.Contains(cfg, `model_provider = "magpie"`) {
++		t.Fatalf("held: magpie not Codex's provider:\n%s", cfg)
++	}
++
++	// the reading says nothing any more: the takeover keeps, and the
++	// config stays where the running app-server reads it as magpie
++	codexUsedUp = func() bool { return false }
++	codexRoomKnown = func() bool { return false }
++	if err := cx.Sync(); err != nil {
++		t.Fatal(err)
++	}
++	if cfg := read(); !strings.Contains(cfg, `model_provider = "magpie"`) {
++		t.Fatalf("a reading that said nothing handed Codex back, its app-server still on magpie:\n%s", cfg)
++	}
++
++	// room, plainly said: back beside the sign-in as before
++	codexRoomKnown = func() bool { return true }
++	if err := cx.Sync(); err != nil {
++		t.Fatal(err)
++	}
++	if cfg := read(); strings.Contains(cfg, "model_provider =") || strings.Contains(cfg, "model_catalog_json") ||
++		!strings.Contains(cfg, "openai_base_url") || !strings.Contains(cfg, `model = "fake/m1"`) {
++		t.Fatalf("room: not back beside the sign-in:\n%s", cfg)
++	}
++}
+diff --git a/internal/agent/codex_provider_joined_test.go b/internal/agent/codex_provider_joined_test.go
+index 176c08867..5243ee6a7 100644
+--- a/internal/agent/codex_provider_joined_test.go
++++ b/internal/agent/codex_provider_joined_test.go
+@@ -45,7 +45,8 @@ func TestCodexProviderIsNotJoined(t *testing.T) {
+ 		t.Fatal("back beside the sign-in: not joined")
+ 	}
+ 	codexUsedUp = func() bool { return true }
+-	t.Cleanup(func() { codexUsedUp = func() bool { return false } })
++	codexRoomKnown = func() bool { return false }
++	t.Cleanup(func() { codexUsedUp = func() bool { return false }; codexRoomKnown = func() bool { return true } })
+ 	if err := cx.Sync(); err != nil {
+ 		t.Fatal(err)
+ 	}
+@@ -53,6 +54,7 @@ func TestCodexProviderIsNotJoined(t *testing.T) {
+ 		t.Fatalf("held: joined %v\n%s", cx.Joined(), cfg)
+ 	}
+ 	codexUsedUp = func() bool { return false }
++	codexRoomKnown = func() bool { return true }
+ 	if err := cx.Sync(); err != nil {
+ 		t.Fatal(err)
+ 	}
+diff --git a/internal/agent/codex_takeover_thread_test.go b/internal/agent/codex_takeover_thread_test.go
+index 172e7b6da..c0331755d 100644
+--- a/internal/agent/codex_takeover_thread_test.go
++++ b/internal/agent/codex_takeover_thread_test.go
+@@ -57,7 +57,7 @@ func TestCodexTakeoverThreadComesBackOnceQuiet(t *testing.T) {
+ 		t.Fatal(err)
+ 	}
+ 	asked := watchCodexThreads(t)
+-	t.Cleanup(func() { codexUsedUp = func() bool { return false } })
++	t.Cleanup(func() { codexUsedUp = func() bool { return false }; codexRoomKnown = func() bool { return true } })
+ 
+ 	codexUsedUp = func() bool { return true }
+ 	if err := cx.Sync(); err != nil {
+@@ -86,7 +86,8 @@ func TestCodexTakeoverThreadComesBackOnceQuiet(t *testing.T) {
+ 		t.Fatal("a Sync asked for while the thread is still written to")
+ 	case <-time.After(100 * time.Millisecond):
+ 	}
+-	// quiet now
++	// quiet now, and the account has room again: a reading says so
++	codexRoomKnown = func() bool { return true }
+ 	old := now.Add(-2 * time.Minute)
+ 	os.Chtimes(path, old, old)
+ 	select {
+@@ -156,8 +157,9 @@ func TestCodexOpenThreadFollowsMagpieOnceLetGo(t *testing.T) {
+ 		t.Fatal(err)
+ 	}
+ 	asked := watchCodexThreads(t)
+-	t.Cleanup(func() { codexUsedUp = func() bool { return false } })
++	t.Cleanup(func() { codexUsedUp = func() bool { return false }; codexRoomKnown = func() bool { return true } })
+ 	codexUsedUp = func() bool { return true }
++	codexRoomKnown = func() bool { return false }
+ 	if err := cx.Sync(); err != nil {
+ 		t.Fatal(err)
+ 	}
+diff --git a/internal/agent/codex_usedup_test.go b/internal/agent/codex_usedup_test.go
+index e4f4a937b..8468f2bf5 100644
+--- a/internal/agent/codex_usedup_test.go
++++ b/internal/agent/codex_usedup_test.go
+@@ -25,6 +25,7 @@ func TestCodexRunsOutAfterPick(t *testing.T) {
+ 		t.Fatalf("beside the sign-in:\n%s", cfg)
+ 	}
+ 	codexUsedUp = func() bool { return true }
++	codexRoomKnown = func() bool { return false }
+ 	if err := cx.Sync(); err != nil {
+ 		t.Fatal(err)
+ 	}
+@@ -39,6 +40,7 @@ func TestCodexRunsOutAfterPick(t *testing.T) {
+ 		t.Fatalf("used up, synced again:\n%s", cfg)
+ 	}
+ 	codexUsedUp = func() bool { return false }
++	codexRoomKnown = func() bool { return true }
+ 	if err := cx.Sync(); err != nil {
+ 		t.Fatal(err)
+ 	}
+@@ -73,7 +75,8 @@ func TestCodexKeptOnChatGPT(t *testing.T) {
+ 		t.Fatal(err)
+ 	}
+ 	codexUsedUp = func() bool { return true }
+-	t.Cleanup(func() { codexUsedUp = func() bool { return false } })
++	codexRoomKnown = func() bool { return false }
++	t.Cleanup(func() { codexUsedUp = func() bool { return false }; codexRoomKnown = func() bool { return true } })
+ 	if err := cx.Sync(); err != nil {
+ 		t.Fatal(err)
+ 	}
+@@ -139,6 +142,7 @@ func TestCodexOwnModelGoesThroughMagpieWhileUsedUp(t *testing.T) {
+ 		t.Fatal("joined with room: AppOut")
+ 	}
+ 	codexUsedUp = func() bool { return true }
++	codexRoomKnown = func() bool { return false }
+ 	if err := cx.Sync(); err != nil {
+ 		t.Fatal(err)
+ 	}
+@@ -155,6 +159,7 @@ func TestCodexOwnModelGoesThroughMagpieWhileUsedUp(t *testing.T) {
+ 		t.Fatalf("used up, synced again:\n%s", cfg)
+ 	}
+ 	codexUsedUp = func() bool { return false }
++	codexRoomKnown = func() bool { return true }
+ 	if err := cx.Sync(); err != nil {
+ 		t.Fatal(err)
+ 	}
+@@ -168,6 +173,7 @@ func TestCodexOwnModelGoesThroughMagpieWhileUsedUp(t *testing.T) {
+ 
+ 	// a model the user picked while out stays theirs when room comes back
+ 	codexUsedUp = func() bool { return true }
++	codexRoomKnown = func() bool { return false }
+ 	if err := cx.Sync(); err != nil {
+ 		t.Fatal(err)
+ 	}
+@@ -175,6 +181,7 @@ func TestCodexOwnModelGoesThroughMagpieWhileUsedUp(t *testing.T) {
+ 		t.Fatal(err)
+ 	}
+ 	codexUsedUp = func() bool { return false }
++	codexRoomKnown = func() bool { return true }
+ 	if err := cx.Sync(); err != nil {
+ 		t.Fatal(err)
+ 	}
+@@ -226,6 +233,7 @@ func TestCodexOwnModelOneSpentAccountStaysOnItsSignIn(t *testing.T) {
+ 		}
+ 	}
+ 	codexUsedUp = func() bool { return true }
++	codexRoomKnown = func() bool { return false }
+ 	for _, when := range []string{"used up", "used up, synced again"} {
+ 		if err := cx.Sync(); err != nil {
+ 			t.Fatal(err)
+@@ -233,6 +241,7 @@ func TestCodexOwnModelOneSpentAccountStaysOnItsSignIn(t *testing.T) {
+ 		same(when)
+ 	}
+ 	codexUsedUp = func() bool { return false }
++	codexRoomKnown = func() bool { return true }
+ 	if err := cx.Sync(); err != nil {
+ 		t.Fatal(err)
+ 	}
+@@ -264,6 +273,7 @@ func TestCodexOwnModelOneSpentAccountTakenOverForOtherModels(t *testing.T) {
+ 		t.Fatalf("other model %q", codexOtherModel())
+ 	}
+ 	codexUsedUp = func() bool { return true }
++	codexRoomKnown = func() bool { return false }
+ 	if err := cx.Sync(); err != nil {
+ 		t.Fatal(err)
+ 	}
+@@ -285,6 +295,7 @@ func TestCodexOwnModelOneSpentAccountTakenOverForOtherModels(t *testing.T) {
+ 		}
+ 	}
+ 	codexUsedUp = func() bool { return false }
++	codexRoomKnown = func() bool { return true }
+ 	if err := cx.Sync(); err != nil {
+ 		t.Fatal(err)
+ 	}
+@@ -315,6 +326,8 @@ func TestCodexOwnModelKeptOnChatGPT(t *testing.T) {
+ 		t.Fatal(err)
+ 	}
+ 	codexUsedUp = func() bool { return true }
++	codexRoomKnown = func() bool { return false }
++	t.Cleanup(func() { codexRoomKnown = func() bool { return true } })
+ 	if err := cx.Sync(); err != nil {
+ 		t.Fatal(err)
+ 	}
+@@ -344,7 +357,8 @@ func TestCodexOwnModelOutThenKeptOnChatGPT(t *testing.T) {
+ 		t.Fatal(err)
+ 	}
+ 	codexUsedUp = func() bool { return true }
+-	t.Cleanup(func() { codexUsedUp = func() bool { return false } })
++	codexRoomKnown = func() bool { return false }
++	t.Cleanup(func() { codexUsedUp = func() bool { return false }; codexRoomKnown = func() bool { return true } })
+ 	if err := cx.Sync(); err != nil {
+ 		t.Fatal(err)
+ 	}
+@@ -369,6 +383,7 @@ func TestCodexOwnModelOutThenKeptOnChatGPT(t *testing.T) {
+ 	}
+ 	onSignIn("kept on ChatGPT, synced")
+ 	codexUsedUp = func() bool { return false }
++	codexRoomKnown = func() bool { return true }
+ 	if err := cx.Sync(); err != nil {
+ 		t.Fatal(err)
+ 	}
+diff --git a/internal/agent/main_test.go b/internal/agent/main_test.go
+index a39ff72ca..f1046656a 100644
+--- a/internal/agent/main_test.go
++++ b/internal/agent/main_test.go
+@@ -26,8 +26,10 @@ func TestMain(m *testing.M) {
+ 		os.Exit(0)
+ 	}
+ 	// whether Codex's ChatGPT account is out of its allowance is asked of
+-	// OpenAI; never from here
++	// OpenAI; never from here. Its having room is a reading's answer all
++	// the same: known here, where no reading is kept
+ 	codexUsedUp = func() bool { return false }
++	codexRoomKnown = func() bool { return true }
+ 	// a thread a Codex holds open is looked at again later, on its own
+ 	// goroutine, which would outlive its test; the tests about it set
+ 	// their own wait
+diff --git a/internal/provider/codex_room_known_test.go b/internal/provider/codex_room_known_test.go
+new file mode 100644
+index 000000000..1e3ce5e19
+--- /dev/null
++++ b/internal/provider/codex_room_known_test.go
+@@ -0,0 +1,68 @@
++package provider
++
++import (
++	"testing"
++	"time"
++)
++
++// CodexRoomKnown is whether what was read already says, plainly, that the
++// ChatGPT account Codex is signed in to has room. CodexUsedUpKnown answers
++// the takeover's taking on, which the absence of a known hold serves; the
++// giving back needs more: a reading that failed, or none at all, is no
++// answer, and one taken for room handed Codex back to a ChatGPT account
++// still out while its app-server ran on magpie (#5316, zqbake; #5480,
++// liu95270) — every thread of either provider then fails the app's
++// provider check.
++func TestCodexRoomKnown(t *testing.T) {
++	signIn(t)
++	rememberLogins(true)
++	fresh := func() {
++		loginUsageCache.Lock()
++		loginUsageCache.m, loginUsageCache.pending = nil, nil
++		loginUsageCache.Unlock()
++	}
++	keep := func(q SubscriptionQuota) {
++		loginUsageCache.Lock()
++		if loginUsageCache.m == nil {
++			loginUsageCache.m = map[string]loginUsageEntry{}
++		}
++		loginUsageCache.m["codex/me@example.com"] = loginUsageEntry{at: time.Now(), q: q}
++		loginUsageCache.Unlock()
++	}
++
++	fresh()
++	// nothing read yet: no hold known, and no room either
++	if CodexUsedUpKnown() {
++		t.Fatal("CodexUsedUpKnown = true with nothing read")
++	}
++	if CodexRoomKnown() {
++		t.Fatal("CodexRoomKnown = true with nothing read")
++	}
++
++	// held: the takeover's answer, and no room
++	keep(SubscriptionQuota{Held: true})
++	if !CodexUsedUpKnown() {
++		t.Fatal("CodexUsedUpKnown = false on a held reading")
++	}
++	if CodexRoomKnown() {
++		t.Fatal("CodexRoomKnown = true on a held reading")
++	}
++
++	// the vendor answered nothing: no hold known, and no room either
++	keep(SubscriptionQuota{Error: "HTTP 432 Workspace routing is unavailable"})
++	if CodexUsedUpKnown() {
++		t.Fatal("CodexUsedUpKnown = true on a reading that failed")
++	}
++	if CodexRoomKnown() {
++		t.Fatal("CodexRoomKnown = true on a reading that failed")
++	}
++
++	// room, plainly said
++	keep(SubscriptionQuota{})
++	if CodexUsedUpKnown() {
++		t.Fatal("CodexUsedUpKnown = true on a room reading")
++	}
++	if !CodexRoomKnown() {
++		t.Fatal("CodexRoomKnown = false on a room reading")
++	}
++}
+diff --git a/internal/provider/login_usage.go b/internal/provider/login_usage.go
+index 1b9c887cf..df9db99b0 100644
+--- a/internal/provider/login_usage.go
++++ b/internal/provider/login_usage.go
+@@ -558,6 +558,29 @@ func CodexUsedUpKnown() bool {
+ 	return codexReadingHeld(knownLoginUsage("codex"))
+ }
+ 
++// CodexRoomKnown is whether what was read already says, plainly, that the
++// ChatGPT account Codex is signed in to has room: every active login's
++// last reading succeeded and none is held. The absence of a known hold is
++// not room — a reading that failed, or none at all, is no answer (#5316)
++// — and one taken for room handed Codex back to a ChatGPT account still
++// out while its app-server ran on magpie, every thread of either provider
++// then failing the app's provider check (#5480, liu95270).
++func CodexRoomKnown() bool {
++	u := knownLoginUsage("codex")
++	said := false
++	for _, l := range Logins("codex") {
++		if !l.Active {
++			continue
++		}
++		q, ok := u[l.User]
++		if !ok || q.Error != "" || q.Held {
++			return false
++		}
++		said = true
++	}
++	return said
++}
++
+ // codexReadingHeld is whether the reading u has the ChatGPT account Codex
+ // is signed in to held by the Codex app. The held of one account's
+ // reading, not codexHeld, which is what one vendor reply says.
+-- 
+2.50.1 (Apple Git-155)
+```
+
+</details>
+
+**Branch with the commit**: [`fix/5480-codex-handback-unknown-reading`](https://github.com/ggbdpq/magpie/tree/fix/5480-codex-handback-unknown-reading) (head `28fdadbda79452c4f89752392bf42f258238c571`), rebased onto current `upstream/main` (`0fc3455e2`); on a fresh checkout `git am` applies clean (verified: the am'd tree is byte-identical to my working tree).
+
+| Check | Result |
+| --- | --- |
+| `TestCodexRoomKnown` (new: nothing read / held / failed reading / room, from the cache alone) | red before (unknown read as room), pass after |
+| `TestCodexTakeoverHoldsThroughReadingsThatSayNothing` (new: takeover through a saying-nothing reading, then back on a plain room) | red before (config handed back), pass after |
+| `TestCodexRunsOutAfterPick`, `TestCodexOwnModelGoesThroughMagpieWhileUsedUp`, `TestCodexOwnModelOneSpentAccountTakenOverForOtherModels`, `TestCodexTakeoverThreadComesBackOnceQuiet`, `TestCodexOpenThreadFollowsMagpieOnceLetGo`, `TestCodexMagpieProviderKeepsChatGPTAccount` | pass (their "allowance back" stubs now say room, as the semantics require) |
+| `go test ./internal/agent/ -tags nogui -timeout 30m -count=1` | `TestMothX` fails — fails the same on `upstream/main` `0fc3455e2` re-run from a clean checkout (pre-existing on this machine); zero other failures |
+| `go test ./internal/provider/ -tags nogui -timeout 30m -count=1` | ok (110s), zero failures |
+| full `go test ./... -tags nogui` (temp HOME) | 3 failures, each failing the same on `upstream/main` `0fc3455e2` re-run from a clean checkout of it: `TestMothX`, `TestProxyCheckSaysAProxyPassedBy` (this machine's local proxy), `TestHostToldTheGatewayAddress` (port race) |
+| targeted `-race` | pass |
+| `gofmt -l internal/agent/ internal/provider/` | prints nothing |
+| `go vet ./internal/agent/ ./internal/provider/`; `GOOS=linux go vet -tags nogui ./...`; `GOOS=windows go vet ./...` | clean |
+| `go build`; `GOOS=linux go build -tags nogui`; `GOOS=windows go build` | clean (`GOOS=linux go build ./...` without `-tags nogui` fails inside wails v3.0.0-beta.24, `undefined: pointer` — dependency-side, fails the same on `upstream/main`) |
+| Ablation | the sync hand-back gate back to the absence-of-a-hold turns `TestCodexTakeoverHoldsThroughReadingsThatSayNothing` red ("a reading that said nothing handed Codex back"); `CodexRoomKnown` treating unknown as room turns `TestCodexRoomKnown` red; restored, green |
+| Re-verified on `upstream/main` `0fc3455e2` | the commit is made directly on it |
+
+**Not verified**: against a real ChatGPT account on the Codex app — that engine is NOT-RUNNABLE here; the tests drive the takeover through the same config/stash machinery Sync runs. The reporter's own shape (which of #5270/#5316's triggers #5480 hit) can't be told from a report without logs; this patch removes the trigger that is still open at `0fc3455e2`. #5494's thread-row fallback is a separate mechanism, untouched.
+
+**Attribution**: AI-written; I've read the whole diff and the tests pass. Please keep the author (`ggbdpq`) or add `Co-authored-by: ggbdpq <ggbdpq@gmail.com>`.
+
+Generated-by: GLM-5.3-Flash (ZCode)

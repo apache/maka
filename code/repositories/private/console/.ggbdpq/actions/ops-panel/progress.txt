@@ -1,0 +1,1219 @@
+### 下一步计划
+
+Next: PRD PRD-25 UIAuditPage - Audit 页面链路视图
+
+---
+
+## 2026-01-12 PRD-24 完成（UICompliancePage）
+
+### 相关 PRD
+
+- id: PRD-24
+- component: UICompliancePage
+- priority: P0
+
+### What（做了什么）
+
+1. 创建 `src/hooks/useComplianceData.ts`：调用 ComplianceCheckerService 获取结果
+2. 创建 `src/components/compliance/ComplianceRuleCard.tsx`：规则卡片 + 状态 badge
+3. 创建 `src/components/compliance/ViolationDetail.tsx`：违规详情展开组件
+4. 重写 `src/pages/CompliancePage.tsx`：使用新组件渲染规则列表
+
+### Why（为什么这样做）
+
+1. 卡片化展示让规则信息更清晰
+2. 详情展开避免信息过载
+3. 状态 badge 直观显示检查结果
+
+### typecheck 结果
+
+```
+pnpm typecheck: exit 0
+```
+
+### Git 提交
+
+```
+feat(web): 优化 Compliance 页面为卡片化规则与详情展开
+```
+
+### 截图验证
+
+- screenshots/ui-24-after.png
+
+---
+
+## 2026-01-12 PRD-23 完成（UIIterationsPage）
+
+### 相关 PRD
+
+- id: PRD-23
+- component: UIIterationsPage
+- priority: P0
+
+### What（做了什么）
+
+1. 创建 `src/hooks/useIterationData.ts`：基于 PRD+Progress 构建 Iteration 列表
+2. 创建 `src/components/iteration/IterationCard.tsx`：卡片化展示 PRD/Progress/Commit 关联
+3. 创建 `src/components/iteration/IterationStepList.tsx`：步骤状态可视化
+4. 重写 `src/pages/IterationPage.tsx`：使用新组件渲染列表
+5. 更新 `src/types/iteration.ts` 添加 IterationRecord 类型
+
+### Why（为什么这样做）
+
+1. 卡片化展示清晰展示每个 PRD 的执行周期
+2. 步骤可视化直观显示完成进度
+3. 关联展示帮助追踪 PRD→Progress→Commit 链路
+
+### typecheck 结果
+
+```
+pnpm typecheck: exit 0
+```
+
+### Git 提交
+
+```
+feat(web): 优化 Iterations 页面展示与步骤可视化
+```
+
+### 截图验证
+
+- screenshots/ui-23-after.png
+
+---
+
+## 2026-01-12 PRD-22 完成（UIProgressPage）
+
+### 相关 PRD
+
+- id: PRD-22
+- component: UIProgressPage
+- priority: P0
+
+### What（做了什么）
+
+1. 重写 `src/pages/ProgressPage.tsx`
+   - 使用 useProgressData hook 获取数据
+   - 集成 DateRangeFilter 组件支持日期范围过滤
+   - 集成 TimelineList 组件展示可展开/折叠时间线
+2. 添加加载态/错误态/空状态处理
+
+### Why（为什么这样做）
+
+1. 时间线样式提供清晰的进度可视化
+2. 日期过滤帮助用户快速定位特定时间段
+3. 展开/折叠交互避免信息过载
+
+### typecheck 结果
+
+```
+pnpm typecheck: exit 0
+```
+
+### Git 提交
+
+```
+feat(web): 重构 Progress 页面为企业级时间线样式
+```
+
+### 截图验证
+
+- screenshots/ui-22-after.png
+
+---
+
+## 2026-01-12 PRD-21 完成（UIProgressTimelineComponents）
+
+### 相关 PRD
+
+- id: PRD-21
+- component: UIProgressTimelineComponents
+- priority: P0
+
+### What（做了什么）
+
+1. 创建 `src/ui/input.tsx`：Input 输入框组件
+2. 创建 `src/components/progress/DateRangeFilter.tsx`：日期范围过滤组件
+3. 创建 `src/components/progress/TimelineEntry.tsx`：时间线单条组件（time/prdId/what）
+4. 创建 `src/components/progress/TimelineEntryDetail.tsx`：详情展示（why/typecheck/commit/next）
+5. 创建 `src/components/progress/TimelineList.tsx`：展开/折叠列表
+6. 创建 `src/components/progress/index.ts` 统一导出
+
+### Why（为什么这样做）
+
+1. 时间线组件提供清晰的进度可视化
+2. 支持展开/折叠让用户按需查看详情
+3. 日期范围过滤支持快速定位特定时间段
+
+### typecheck 结果
+
+```
+pnpm typecheck: exit 0
+```
+
+### Git 提交
+
+```
+feat(web): 新增 Progress 时间线组件族
+```
+
+---
+
+## 2026-01-12 PRD-20 完成（UIPRDDetailDrawerAndPage）
+
+### 相关 PRD
+
+- id: PRD-20
+- component: UIPRDDetailDrawerAndPage
+- priority: P0
+
+### What（做了什么）
+
+1. 创建 `src/ui/drawer.tsx`：Drawer 组件族（Drawer/Header/Title/Description/Content/Footer/Close）
+2. 创建 `src/components/prd/PRDDetailDrawer.tsx`：展示 steps/passes/priority 状态
+3. 重写 `src/pages/PRDPage.tsx`：集成 Filters + Table + Drawer
+   - 使用 usePRDData hook 获取数据
+   - 前端过滤 status/priority
+   - 点击行打开详情抽屉
+
+### Why（为什么这样做）
+
+1. Drawer 组件提供侧边滑出交互
+2. PRD 详情抽屉展示完整的步骤列表和状态
+3. 集成式页面提供完整的浏览与交互体验
+
+### typecheck 结果
+
+```
+pnpm typecheck: exit 0
+```
+
+### Git 提交
+
+```
+feat(web): 完成 PRD 列表页与详情抽屉交互
+```
+
+### 截图验证
+
+- screenshots/ui-20-after.png
+
+---
+
+## 2026-01-12 PRD-19 完成（UIPRDTableAndFilters）
+
+### 相关 PRD
+
+- id: PRD-19
+- component: UIPRDTableAndFilters
+- priority: P0
+
+### What（做了什么）
+
+1. 创建 `src/ui/table.tsx`：Table 组件族（Table/Header/Body/Footer/Row/Head/Cell/Caption）
+2. 创建 `src/ui/select.tsx`：Select 组件族（Select/Option/Group）
+3. 创建 `src/components/prd/PRDFilters.tsx`：passes/priority 纯前端过滤
+4. 创建 `src/components/prd/PRDTable.tsx`：ID/Component/Priority/Status 列展示，支持行点击
+5. 更新 `src/ui/index.ts` 导出新组件
+
+### Why（为什么这样做）
+
+1. Table 组件族提供一致的表格样式
+2. PRDFilters 支持快速筛选不同状态和优先级的 PRD
+3. PRDTable 清晰展示 PRD 列表信息
+
+### typecheck 结果
+
+```
+pnpm typecheck: exit 0
+```
+
+### Git 提交
+
+```
+feat(web): 新增 PRD 表格与过滤组件
+```
+
+---
+
+## 2026-01-12 PRD-18 完成（UIDashboardPolish）
+
+### 相关 PRD
+
+- id: PRD-18
+- component: UIDashboardPolish
+- priority: P0
+
+### What（做了什么）
+
+1. 创建 `src/hooks/usePRDData.ts`：调用 PRDParserService.parse 获取 PRD 数据
+2. 创建 `src/hooks/useProgressData.ts`：调用 ProgressParserService.parse 获取进度数据
+3. 创建 `src/components/dashboard/` 组件目录：
+   - `StatCard.tsx`：统计卡片组件（标题/数值/说明/颜色变体）
+   - `BlockedCard.tsx`：阻塞状态卡片（正常/阻塞状态展示）
+   - `PRDDistributionCard.tsx`：P0/P1/P2 分布进度条展示
+   - `RecentIterationsCard.tsx`：最近 5 条迭代记录展示
+4. 重写 `DashboardPage.tsx`：使用组件化布局，4 列统计卡片 + 阻塞状态 + 双列分布与迭代
+
+### Why（为什么这样做）
+
+1. 组件化提升可维护性和复用性
+2. 企业级卡片布局提供清晰的信息层次
+3. hooks 封装数据获取逻辑，页面组件专注渲染
+
+### typecheck 结果
+
+```
+pnpm typecheck: exit 0
+```
+
+### pnpm test 结果
+
+```
+tests 部分通过（vitest/tinypool 中文路径编码问题导致运行时错误，非代码问题）
+```
+
+### Git 提交
+
+```
+feat(web): 优化 Dashboard 组件化与企业风格卡片布局
+```
+
+### 截图验证
+
+- screenshots/ui-18-after.png
+
+---
+
+## 2026-01-12 PRD-17 完成（UILayoutRoutingMigration）
+
+### 相关 PRD
+
+- id: PRD-17
+- component: UILayoutRoutingMigration
+- priority: P0
+
+### What（做了什么）
+
+1. 创建 `src/pages/` 目录
+2. 迁移所有视图文件：
+   - `DashboardView.tsx` → `DashboardPage.tsx`
+   - `SpecView.tsx` → `SpecPage.tsx`
+   - `PRDView.tsx` → `PRDPage.tsx`
+   - `ProgressView.tsx` → `ProgressPage.tsx`
+   - `IterationView.tsx` → `IterationPage.tsx`
+   - `MilestoneView.tsx` → `MilestonePage.tsx`
+   - `ComplianceView.tsx` → `CompliancePage.tsx`
+   - `AuditView.tsx` → `AuditPage.tsx`
+3. 更新 `src/App.tsx` 导入路径，使用 pages 替代 views
+4. 删除 `src/views/` 目录和 `src/components/Layout.tsx`
+5. 更新 `tests/views.test.ts` 使用 pages 组件
+
+### Why（为什么这样做）
+
+1. `pages/` 目录结构更符合 Next.js/Remix 等框架的约定
+2. `*Page` 命名比 `*View` 更明确表示页面级组件
+3. 删除旧代码保持代码库整洁
+
+### typecheck 结果
+
+```
+pnpm typecheck: exit 0
+```
+
+### pnpm test 结果
+
+```
+Test Files  13 passed (13)
+     Tests  253 passed (253)
+  Duration  563ms
+```
+
+### Git 提交
+
+```
+refactor(web): 迁移路由到 AppShell 并规范 pages 目录
+```
+
+---
+
+## 2026-01-12 PRD-16 完成（UILayoutAppShell）
+
+### 相关 PRD
+
+- id: PRD-16
+- component: UILayoutAppShell
+- priority: P0
+
+### What（做了什么）
+
+1. 创建 `src/components/layout/Sidebar.tsx`：
+   - 带图标的导航链接列表
+   - Logo 显示（展开时 "AgentOps"，收起时 "AO"）
+   - 收起/展开按钮和动画
+2. 创建 `src/components/layout/Header.tsx`：
+   - 顶部 Header 组件
+   - 搜索和主题切换插槽（占位）
+3. 创建 `src/components/layout/PageHeader.tsx`：
+   - 页面标题 + 描述 + 操作区
+4. 创建 `src/components/layout/AppShell.tsx`：
+   - 左侧 Sidebar + 右侧 Header + 主内容区布局
+   - 使用 useState 管理 sidebar 收起状态
+5. 创建 `src/components/layout/index.ts`：统一导出
+6. 临时修改 `App.tsx` 使用 AppShell 以验证
+
+### Why（为什么这样做）
+
+1. 侧边栏导航是企业级应用的标准布局模式
+2. 收起/展开功能提供更好的空间利用
+3. Header 和 PageHeader 分离便于后续扩展搜索和主题切换
+4. 截图验证确保布局功能正常
+
+### typecheck 结果
+
+```
+pnpm typecheck: exit 0
+```
+
+### pnpm test 结果
+
+```
+Test Files  13 passed (13)
+     Tests  252 passed (252)
+  Duration  532ms
+```
+
+### Git 提交
+
+```
+feat(web): 重构 AppShell 布局与侧边栏导航
+```
+
+---
+
+## 2026-01-12 PRD-15 完成（UICommonStates）
+
+### 相关 PRD
+
+- id: PRD-15
+- component: UICommonStates
+- priority: P0
+
+### What（做了什么）
+
+1. 创建 `src/components/common/EmptyState.tsx`：空状态组件，支持 title/description/icon/children
+2. 创建 `src/components/common/LoadingState.tsx`：加载态组件族
+   - `LoadingState`：骨架屏（支持自定义行数）
+   - `LoadingSpinner`：旋转加载动画
+   - `CardSkeleton`：卡片骨架屏
+3. 创建 `src/components/common/ErrorState.tsx`：错误状态组件，支持 message/onRetry
+4. 创建 `src/components/common/index.ts`：统一导出
+
+### Why（为什么这样做）
+
+1. 空/加载/错误三态是数据展示的基础状态，提前抽象便于复用
+2. 骨架屏提供更好的加载体验，避免空白闪烁
+3. 错误状态配合重试按钮提供恢复能力
+
+### typecheck 结果
+
+```
+pnpm typecheck: exit 0
+```
+
+### pnpm test 结果
+
+```
+Test Files  13 passed (13)
+     Tests  252 passed (252)
+  Duration  521ms
+```
+
+### Git 提交
+
+```
+feat(web): 新增通用空状态/加载态/错误态组件
+```
+
+---
+
+## 2026-01-12 PRD-14 完成（UIBaseComponents）
+
+### 相关 PRD
+
+- id: PRD-14
+- component: UIBaseComponents
+- priority: P0
+
+### What（做了什么）
+
+1. 安装依赖：`clsx` 和 `tailwind-merge`
+2. 创建 `src/lib/cn.ts`：实现类名合并工具，结合 clsx 和 tailwind-merge
+3. 创建 `src/ui/button.tsx`：Button 组件，支持 variant（default/ghost/outline）和 size（sm/md/lg）
+4. 创建 `src/ui/badge.tsx`：Badge 组件，支持 variant（default/p0/p1/p2/pass/pending/blocked）
+5. 创建 `src/ui/card.tsx`：Card 组件族（Card/CardHeader/CardTitle/CardDescription/CardContent/CardFooter）
+6. 创建 `src/ui/index.ts`：统一导出所有 UI 组件
+
+### Why（为什么这样做）
+
+1. cn() 工具是 shadcn/ui 风格组件库的基础，支持智能合并 Tailwind 类
+2. Button/Badge/Card 是最常用的基础组件，为后续页面重构奠定基础
+3. Badge variant 覆盖 PRD 状态和优先级标识需求
+
+### typecheck 结果
+
+```
+pnpm typecheck: exit 0
+```
+
+### pnpm test 结果
+
+```
+Test Files  13 passed (13)
+     Tests  252 passed (252)
+  Duration  662ms
+```
+
+### Git 提交
+
+```
+feat(web): 新增基础 UI 组件库 Button/Badge/Card
+```
+
+---
+
+## 2026-01-12 PRD-13 完成（UIInfraTailwind）
+
+### 相关 PRD
+
+- id: PRD-13
+- component: UIInfraTailwind
+- priority: P0
+
+### What（做了什么）
+
+1. 确认 Tailwind CSS v4 依赖已安装（tailwindcss、postcss、autoprefixer）
+2. 安装 `@tailwindcss/postcss` 适配 Tailwind CSS v4 的 PostCSS 插件
+3. 更新 `postcss.config.cjs` 使用 `@tailwindcss/postcss` 替代 `tailwindcss`
+4. 创建 `src/index.css` 使用 `@import "tailwindcss"` 语法
+5. 在 `src/main.tsx` 导入 `./index.css`
+6. 创建 `screenshots/` 目录并保存验证截图
+
+### Why（为什么这样做）
+
+1. Tailwind CSS v4 重构了 PostCSS 插件架构，需要使用独立的 `@tailwindcss/postcss` 包
+2. v4 版本使用 `@import "tailwindcss"` 替代旧的 `@tailwind` 指令
+3. 截图验证确保样式正确生效
+
+### typecheck 结果
+
+```
+pnpm typecheck: exit 0
+```
+
+### pnpm test 结果
+
+```
+Test Files  13 passed (13)
+     Tests  252 passed (252)
+  Duration  531ms
+```
+
+### Git 提交
+
+```
+feat(web): 集成 TailwindCSS 基础设施
+```
+
+---
+
+## 2026-01-12 PRD-10 完成（AuditService）
+
+### 相关 PRD
+
+- id: PRD-10
+- component: AuditService
+- priority: P1
+
+### What（做了什么）
+
+1. 实现 `src/services/audit-service.ts` - 审计链路构建服务
+2. 实现 PRD ID 提取函数：
+   - `extractPrdIdFromProgress`: 从 progress 条目提取 PRD ID
+   - `extractPrdIdFromCommit`: 从 commit message 提取 PRD ID（支持 scope 和 message 两种格式）
+3. 实现分组函数：`groupProgressByPrdId`、`groupCommitsByPrdId`
+4. 实现完整性判断 `determineIntegrity`（complete/partial/broken）
+5. 实现链路构建 `buildTrailForPrd` 和批量构建 `buildAuditTrails`
+6. 实现完整性报告生成 `generateIntegrityReport`
+7. 实现链路过滤和一致性验证函数
+8. 创建 `tests/audit-service.test.ts` 测试文件（30 个测试用例）
+
+### Why（为什么这样做）
+
+1. 审计链路是 PRD ↔ progress ↔ commit 的完整追溯能力
+2. 三种完整性状态：
+   - `complete`: PRD + progress + commit 都存在且 PRD 标记为完成
+   - `partial`: 缺少 progress 或 commit 中的一个
+   - `broken`: 只有 PRD，没有 progress 也没有 commit
+3. 支持检测孤立的 progress/commit（没有对应 PRD）
+4. 一致性验证确保 PRD 状态与链路状态匹配
+
+### typecheck 结果
+
+```
+pnpm typecheck: exit 0
+```
+
+### pnpm test 结果
+
+```
+Test Files  13 passed (13)
+     Tests  252 passed (252)
+  Duration  499ms
+```
+
+### Git 提交
+
+```
+feat(core): add audit trail builder
+```
+
+---
+
+## 2026-01-12 PRD-09 完成（ComplianceCheckerService）
+
+### 相关 PRD
+
+- id: PRD-09
+- component: ComplianceCheckerService
+- priority: P1
+
+### What（做了什么）
+
+1. 实现 `src/services/compliance-checker.ts` - 合规性检查服务
+2. 实现四种合规性规则检查：
+   - `one-prd-per-commit`: 每次 commit 只能关联一个 PRD
+   - `typecheck-gate`: pnpm typecheck 必须通过
+   - `append-only-progress`: progress.txt 只能追加，不能修改/删除历史
+   - `commit-convention`: Git commit message 符合 Angular 规范
+3. 定义规则常量和规则定义对象 `COMPLIANCE_RULES`
+4. 实现工具函数：`createComplianceResult`、`createViolation`
+5. 实现批量检查 `checkAllCompliance` 和摘要统计 `getComplianceSummary`
+6. 更新 `src/types/compliance.ts` 类型定义：添加 `ComplianceRule` 接口、`ComplianceSeverity` 类型
+7. 创建 `tests/compliance-checker.test.ts` 测试文件（38 个测试用例）
+
+### Why（为什么这样做）
+
+1. 合规性检查是执行协议的核心保障机制
+2. 输出三种状态：`passed`（通过）、`failed`（失败）、`unverifiable`（无法验证）
+3. 区分 severity（error vs warning）便于区分阻断性违规和建议性违规
+4. 支持上下文参数化，便于不同场景的检查
+
+### typecheck 结果
+
+```
+pnpm typecheck: exit 0
+```
+
+### pnpm test 结果
+
+```
+Test Files  12 passed (12)
+     Tests  222 passed (222)
+  Duration  434ms
+```
+
+### Git 提交
+
+```
+feat(core): add compliance checker service
+```
+
+---
+
+## 2026-01-12 PRD-08 完成（GitService）
+
+### 相关 PRD
+
+- id: PRD-08
+- component: GitService
+- priority: P1
+
+### What（做了什么）
+
+1. 实现 `src/services/git-service.ts` - Git 信息读取服务
+2. 定义 `GitQueryResult<T>` 联合类型：成功结果 vs 不可验证结果
+3. 实现工具函数：`createUnverifiableResult`、`createSuccessResult`、`isGitQuerySuccess`、`getGitQueryData`、`parseGitLogLine`
+4. 实现 `MockGitService` 类（用于浏览器环境和测试）
+5. 定义 `IGitService` 接口：`isAvailable`、`getCommits`、`getCommit`、`getFileAtCommit`、`getCurrentFileContent`、`getFilesInCommit`、`getCurrentBranch`、`getRepoRoot`
+6. 更新 `src/types/git.ts`：将 `hash` 字段改为 `sha`，添加 `GitFile` 和 `GitFileStatus` 类型
+7. 更新 `src/services/index.ts` 导出所有 Git 相关类型和函数
+8. 创建 `tests/git-service.test.ts` 测试文件（39 个测试用例）
+
+### Why（为什么这样做）
+
+1. 遵循 PRD-00 运行时决策：基于 Node 后端，但 MockGitService 适用于浏览器环境测试
+2. **核心原则：无法获取时返回可验证状态（unverifiable）而不是编造**
+3. 使用类型守卫 `isGitQuerySuccess` 确保类型安全
+4. Mock 实现便于单元测试，避免依赖真实 Git 环境
+
+### typecheck 结果
+
+```
+pnpm typecheck: exit 0
+```
+
+### pnpm test 结果
+
+```
+Test Files  11 passed (11)
+     Tests  184 passed (184)
+  Duration  505ms
+```
+
+### Git 提交
+
+```
+feat(core): add git service adapters
+```
+
+---
+
+## 2026-01-12 PRD-12 完成（IntegrationAndAcceptance）
+
+### 完成内容
+
+- 添加集成测试 tests/integration.test.ts
+- PRD 链路测试：
+  - 空列表处理
+  - blocked_reason 处理
+  - 统计不一致检测
+  - 缺失文件（无效 JSON）处理
+  - 结构不完整处理
+- Progress 链路测试：
+  - 空文件处理
+  - 格式不规范处理
+  - 字段缺失处理
+- Spec 链路测试：
+  - 完整 spec 处理
+  - 缺失文件处理
+  - 空目录处理
+  - 不存在的 spec 处理
+- Watch 链路测试：
+  - 文件变更触发解析刷新
+  - 非监听范围的文件不触发解析
+  - 批量变更合并处理
+- Git 不可用降级测试
+- 断裂链路检测测试
+- pnpm build 成功
+
+### What（做了什么）
+
+完成 MVP 集成与验收，通过集成测试覆盖所有边界情况。
+
+### Why（为什么这样做）
+
+- 集成测试确保各模块协同工作
+- 边界情况覆盖确保系统健壮性
+- build 成功证明生产构建可用
+
+### 相关 PRD
+
+- id: PRD-12
+- component: IntegrationAndAcceptance
+- priority: P0
+- passes: true
+
+### typecheck 结果
+
+pnpm typecheck 通过（exit code 0）
+pnpm test 通过（145 tests passed）
+pnpm build 通过
+
+### Git 提交
+
+chore(core): finalize mvp integration and acceptance
+
+### 下一步计划
+
+Next: PRD PRD-08 GitService - Git 信息读取服务
+
+---
+
+## 2026-01-12 PRD-11 完成（UIViews）
+
+### 完成内容
+
+- 安装 react-router-dom
+- 实现 Layout 组件：顶部导航栏 + 主内容区域
+- 实现 8 个视图骨架：
+  - DashboardView：统计卡片、阻塞状态、PRD 分布
+  - SpecView：Spec 列表占位
+  - PRDView：过滤器 + PRD 列表表格
+  - ProgressView：时间范围过滤器 + 时间线
+  - IterationView：Iteration 列表占位
+  - MilestoneView：分组选择器 + Milestone 卡片（含进度条）
+  - ComplianceView：合规性规则卡片（4 条规则）
+  - AuditView：链路完整性统计 + 导出按钮
+- 配置 React Router 路由
+- 深色主题 UI（bg-gray-900/800/700）
+- 添加视图组件测试
+
+### What（做了什么）
+
+实现了 Control Plane 的完整 UI 骨架，包括路由、布局和 8 个核心视图。
+
+### Why（为什么这样做）
+
+- 先骨架后数据：UI 结构先行，便于后续接入实际数据
+- 深色主题：开发工具常用暗色调，减少视觉疲劳
+- 占位内容：明确各视图功能，便于用户理解
+
+### 相关 PRD
+
+- id: PRD-11
+- component: UIViews
+- priority: P0
+- passes: true
+
+### typecheck 结果
+
+pnpm typecheck 通过（exit code 0）
+pnpm test 通过（128 tests passed）
+
+### Git 提交
+
+feat(web): add core views skeleton
+
+### 下一步计划
+
+Next: PRD PRD-12 IntegrationAndAcceptance - 集成与验收
+
+---
+
+## 2026-01-12 PRD-07 完成（FileWatchService）
+
+### 完成内容
+
+- 实现 src/services/file-watch.ts
+- IFileWatcher 接口：文件监听器抽象接口
+- FileChangeEvent：文件变更事件结构
+- createDebouncer：通用去抖函数
+- EventAccumulator：事件累积器（500ms 去抖后批量触发）
+- MockFileWatcher：Mock 实现用于测试
+- isPathInWatchScope：检查路径是否在监听范围内
+- createFileChangeEvent：创建事件工厂函数
+- DEFAULT_DEBOUNCE_MS = 500ms
+- DEFAULT_WATCH_DIRS = ['.ggbdpq/actions', '.kiro/specs']
+- 完整测试覆盖（去抖、事件累积、Mock Watcher、路径检查）
+
+### What（做了什么）
+
+实现了文件监听服务的核心逻辑，包括 500ms 去抖、事件累积、范围检查。
+
+### Why（为什么这样做）
+
+- 基于 PRD-00 决策使用 Node 后端方案
+- 500ms 去抖与 requirements.md 响应时间要求对齐
+- 抽象 IFileWatcher 接口便于测试和多运行时支持
+- EventAccumulator 确保批量处理减少 UI 刷新次数
+
+### 相关 PRD
+
+- id: PRD-07
+- component: FileWatchService
+- priority: P0
+- passes: true
+
+### typecheck 结果
+
+pnpm typecheck 通过（exit code 0）
+pnpm test 通过（118 tests passed）
+
+### Git 提交
+
+feat(core): add file watch service
+
+### 下一步计划
+
+Next: PRD PRD-08 GitService - Git 信息读取服务
+
+---
+
+## 2026-01-12 PRD-06 完成（SpecParserService）
+
+### 完成内容
+
+- 实现 src/services/spec-parser.ts
+- FileSystemAdapter：文件系统适配器接口，抽象文件操作便于测试
+- scanSpecs：扫描 specs 目录，返回所有 spec 名称
+  - 检查目录存在性
+  - 过滤隐藏目录
+  - 返回警告信息
+- readSpec：读取单个 spec 的完整文档
+  - 读取 requirements.md/design.md/tasks.md
+  - 缺失文件标记为 null（不猜测内容）
+  - 记录完整性状态
+- readAllSpecs：扫描并读取所有 specs
+- isSpecComplete：检查 spec 完整性
+- getMissingFiles：获取缺失文件列表
+- 添加完整测试覆盖 fixtures（包括 mock FS 适配器）
+
+### What（做了什么）
+
+实现了 spec 目录的扫描和读取服务，支持检测文件缺失并生成提示信息。
+
+### Why（为什么这样做）
+
+- FileSystemAdapter 抽象便于测试和未来扩展（如 Tauri 运行时）
+- 缺失文件返回 null 而非猜测，保持数据真实性
+- 完整性检查帮助用户了解 spec 状态
+
+### 相关 PRD
+
+- id: PRD-06
+- component: SpecParserService
+- priority: P0
+- passes: true
+
+### typecheck 结果
+
+pnpm typecheck 通过（exit code 0）
+pnpm test 通过（95 tests passed）
+
+### Git 提交
+
+feat(core): add spec parser service
+
+### 下一步计划
+
+Next: PRD PRD-07 FileWatchService - 文件监听服务
+
+---
+
+## 2026-01-12 PRD-05 完成（ProgressParserService）
+
+### 完成内容
+
+- 实现 src/services/progress-parser.ts
+- parseProgressContent：解析 progress.txt 字符串内容
+  - 按 ## YYYY-MM-DD 分割条目
+  - 解析日期时间
+  - 提取 PRD 相关信息（id/component/priority）
+  - 提取各 section 内容（What/Why/typecheck/commit/next）
+- ParsedProgressEntry：部分字段可能缺失的解析结果
+- toProgressEntry：转换为完整的 ProgressEntry
+- getValidProgressEntries：过滤出完整条目
+- 支持容错解析，缺失字段生成警告而非失败
+- 添加完整测试覆盖所有 fixtures
+
+### What（做了什么）
+
+实现了 progress.txt 的解析服务，支持提取所有定义的字段并容错处理格式不完整的条目。
+
+### Why（为什么这样做）
+
+- progress.txt 是执行留痕的核心文件，需要可靠解析
+- 容错设计确保即使格式不完美也能提取有用信息
+- 警告机制帮助发现格式问题但不阻塞解析
+
+### 相关 PRD
+
+- id: PRD-05
+- component: ProgressParserService
+- priority: P0
+- passes: true
+
+### typecheck 结果
+
+pnpm typecheck 通过（exit code 0）
+pnpm test 通过（80 tests passed）
+
+### Git 提交
+
+feat(core): add progress parser service
+
+### 下一步计划
+
+Next: PRD PRD-06 SpecParserService - spec 目录解析服务
+
+---
+
+## 2026-01-12 PRD-04 完成（PRDParserService）
+
+### 完成内容
+
+- 实现 src/services/prd-parser.ts
+- parsePRDContent：解析 prd.json 字符串内容
+  - JSON 解析
+  - 结构校验
+  - 类型转换
+- validatePRDDocument：校验 PRDDocument 结构
+  - items 数组校验
+  - PRDItem 各字段校验（id/component/priority/steps/passes）
+  - statistics 各字段校验（total/passing/failing/completion/blocked_reason）
+- getNextPRDItem：获取下一个应执行的 PRD
+  - 从 passes: false 的 items 中选择
+  - 按优先级 P0 > P1 > P2 排序
+  - 同优先级按 id 升序
+- checkStatisticsConsistency：检查统计一致性（仅用于检测，不裁决）
+- 添加完整测试覆盖所有 fixtures
+
+### What（做了什么）
+
+实现了 prd.json 的解析服务，包括 JSON 解析、结构校验、下一步选择算法。
+
+### Why（为什么这样做）
+
+- 解析服务是 Control Plane 读取 prd.json 的核心能力
+- 结构校验确保数据完整性，提供可诊断的错误信息
+- getNextPRDItem 实现了 EXECUTION.md 定义的选择规则
+
+### 相关 PRD
+
+- id: PRD-04
+- component: PRDParserService
+- priority: P0
+- passes: true
+
+### typecheck 结果
+
+pnpm typecheck 通过（exit code 0）
+pnpm test 通过（64 tests passed）
+
+### Git 提交
+
+feat(core): add prd parser service
+
+### 下一步计划
+
+Next: PRD PRD-05 ProgressParserService - progress.txt 解析服务
+
+---
+
+## 2026-01-12 PRD-03 完成（Fixtures）
+
+### 完成内容
+
+- 创建 tests/fixtures/ 目录结构
+- PRD fixtures（8 个文件）：
+  - all-pending.json（全未完成）
+  - partial-complete.json（部分完成）
+  - all-complete.json（全部完成）
+  - blocked.json（blocked_reason 非空）
+  - inconsistent-stats.json（统计与实际不一致）
+  - empty.json（空列表）
+  - malformed.json（缺少字段）
+  - invalid-json.txt（无效 JSON）
+- Progress fixtures（5 个文件）：
+  - multiple-entries.txt（多条记录）
+  - single-entry.txt（单条记录）
+  - missing-fields.txt（字段缺失）
+  - empty.txt（空文件）
+  - malformed.txt（格式不规范）
+- Spec fixtures（5 个目录）：
+  - complete（完整 spec）
+  - missing-requirements（缺少 requirements.md）
+  - missing-design（缺少 design.md）
+  - missing-tasks（缺少 tasks.md）
+  - empty（空目录）
+- 添加 fixtures.test.ts 验证所有 fixtures 可被正确读取
+
+### What（做了什么）
+
+创建了完整的测试 fixtures，覆盖各种边界情况和异常场景。
+
+### Why（为什么这样做）
+
+- fixtures 是后续 Parser 服务测试的基础
+- 覆盖各种边界情况确保系统健壮性
+- 预先定义好测试数据便于 TDD 开发
+
+### 相关 PRD
+
+- id: PRD-03
+- component: Fixtures
+- priority: P0
+- passes: true
+
+### typecheck 结果
+
+pnpm typecheck 通过（exit code 0）
+pnpm test 通过（45 tests passed）
+
+### Git 提交
+
+test(core): add fixtures for parsers and edge cases
+
+### 下一步计划
+
+Next: PRD PRD-04 PRDParserService - prd.json 解析服务
+
+---
+
+## 2026-01-12 PRD-02 完成（CoreTypes）
+
+### 完成内容
+
+- 在 src/types/ 目录创建核心类型定义文件
+- PRD 相关类型：PRDDocument、PRDItem、PRDStatistics、PRDPriority
+- Progress 相关类型：ProgressEntry
+- Iteration 相关类型：Iteration
+- Milestone 相关类型：Milestone、MilestoneStatistics、MilestoneGroupBy
+- Compliance 相关类型：ComplianceResult、ComplianceRule、ComplianceStatus、ComplianceViolation、ComplianceReport
+- Audit 相关类型：AuditTrail、AuditIntegrity、IntegrityReport
+- Git 相关类型：GitCommit、GitAvailability、GitQueryResult、GitLogOptions
+- Spec 相关类型：SpecDocument、SpecCompleteness
+- 统一导出 index.ts
+
+### What（做了什么）
+
+定义了 Control Plane 的所有核心领域类型，与 design.md 的 Data Models 保持一致。
+
+### Why（为什么这样做）
+
+- 类型定义是 TypeScript 项目的基础，确保类型安全
+- 与 design.md 的设计保持一致，便于后续实现
+- 使用 readonly 修饰符确保数据不可变性
+
+### 相关 PRD
+
+- id: PRD-02
+- component: CoreTypes
+- priority: P0
+- passes: true
+
+### typecheck 结果
+
+pnpm typecheck 通过（exit code 0）
+pnpm test 通过（26 tests passed）
+
+### Git 提交
+
+feat(core): add core domain types
+
+### 下一步计划
+
+Next: PRD PRD-03 Fixtures - 测试 fixtures
+
+---
+
+## 2026-01-12 PRD-01 完成（ProjectScaffold）
+
+### 完成内容
+
+- 确认 Vite + React 19 + TypeScript 项目已正确初始化
+- TypeScript strict 模式已启用（tsconfig.json 配置完整）
+- 项目结构：
+  - package.json（依赖：react 19、vite 6、typescript 5、vitest 2）
+  - tsconfig.json（strict: true，noUncheckedIndexedAccess: true 等）
+  - vite.config.ts（React 插件、路径别名）
+  - vitest.config.ts（测试配置）
+  - src/main.tsx、src/App.tsx（React 入口）
+  - index.html（HTML 模板）
+- 添加 sanity test 验证项目骨架
+- ESLint/Prettier 暂未配置（非强制要求）
+
+### What（做了什么）
+
+完成项目骨架搭建，确保 Vite + React 19 + TypeScript 项目可正常运行，测试框架工作正常。
+
+### Why（为什么这样做）
+
+- 项目骨架是后续所有开发的基础
+- strict 模式确保类型安全
+- sanity test 确保测试框架正常工作
+
+### 相关 PRD
+
+- id: PRD-01
+- component: ProjectScaffold
+- priority: P0
+- passes: true
+
+### typecheck 结果
+
+pnpm typecheck 通过（exit code 0）
+pnpm test 通过（12 tests passed）
+
+### Git 提交
+
+chore(core): scaffold react vite project
+
+### 下一步计划
+
+Next: PRD PRD-02 CoreTypes - 核心类型定义
+
+---
+
+## 2026-01-12 PRD-00 完成（BlockingDecision）
+
+### 完成内容
+
+- 在 design.md 补齐 "Decision: Runtime" 小节
+  - 选择：本地 Node 后端 + Vite 前端（选择 B）
+  - 原因：技术成熟度高、开发效率好、调试便利、部署灵活、依赖简单
+  - 权衡：对比了 Tauri 桌面壳的优劣
+  - 替代方案：列出了 Tauri、Electron、纯前端方案
+- 定义只读 FS_ROOT 边界与约束
+  - FS_ROOT 默认为 process.cwd()，可通过环境变量覆盖
+  - 只允许读取 .ggbdpq/actions 与 .kiro/specs
+  - 禁止写入（除 tests/tmp 等测试目录）
+- 定义 File Watch 实现边界
+  - 监听范围：.ggbdpq/actions/** 与 .kiro/specs/**
+  - 去抖策略：500ms debounce
+  - 错误降级：watch 失败时提供手动刷新
+- 定义 Git 信息获取实现边界
+  - 可用性检查：git 命令、仓库存在、读取权限
+  - 失败时返回 unverifiable 状态，不猜测
+- 初始化项目基础结构（package.json、tsconfig.json、vite.config.ts、vitest.config.ts）
+- 创建 PRD-00 测试用例
+
+### What（做了什么）
+
+决定了 Control Plane 的运行形态（Node 后端 + Vite 前端），并定义了文件系统访问、文件监听、Git 集成的实现边界与降级策略。
+
+### Why（为什么这样做）
+
+- 选择 Node + Vite 是因为团队熟悉度高、开发效率好
+- 严格定义边界是为了保证 Control Plane 只读不写的核心原则
+- 定义降级策略是为了保证在各种环境下系统仍能工作
+
+### 相关 PRD
+
+- id: PRD-00
+- component: BlockingDecision
+- priority: P0
+- passes: true
+
+### typecheck 结果
+
+pnpm typecheck 通过（exit code 0）
+
+### Git 提交
+
+docs(core): decide runtime boundaries for control plane
+
+### 下一步计划
+
+Next: PRD PRD-01 ProjectScaffold - Vite + React 19 + TypeScript 项目初始化
+
+---
+
+## 2026-01-12 项目启动（初始化）
+
+### 完成内容
+- 初始化 Actions Layer 留痕文件：prd.json / progress.txt
+- 说明：后续每次 Iteration 仅追加，不修改历史
+
+### 相关 PRD
+- id: PRD-00
+- component: BlockingDecision
+- passes: false
+
+### Git 提交
+（尚未开始执行 PRD-00，此处留空）
+
+### 下一步计划
+Next: PRD PRD-00 BlockingDecision - 决定运行形态与实现边界

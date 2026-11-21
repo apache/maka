@@ -1,0 +1,407 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Fri, 13 Nov 2026 00:11:44 +0800
+Subject: [PATCH] gateway: a first subagent's task goes to the provider still
+ answering its lead (#6330)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Codex hands a subagent its task while its lead's reply is still streaming
+(codex-rs hooks.rs: a tool is dispatched before the response stream
+finishes, when no synchronous hook postpones it). On a fresh
+conversation's first turn nobody is remembered to have answered the lead
+yet: the stick is written when the answer lands (answeredStanding), and
+the usage row then too, so the sealed gate found no sealer and turned the
+child away with "magpie has no record of it answering the lead in the
+last 30 days" (Kerwin0224, #6330) — though the child was headed for the
+very provider answering the lead now, the one that seals what it emits,
+the task in the child's request with it.
+
+Who a conversation's answer in flight is coming from is known the moment
+its try begins to pass: the holdWriter now tells the gateway (onPass),
+and the gateway remembers the try (answeringBegin) until the answer lands
+(answeredStanding) or the request ends however it ends (opened). The
+sealed gate asks that record (answeringProvider) before the usage log's
+(#1367). The last try that began passing names itself: a stream handed
+over to the next candidate had said nothing of the answer when it did, so
+a call in the reply belongs to the try passing now. Nothing else read or
+routed changes: the gate stays fail-closed when nothing is answering the
+lead, and a lead already remembered short-circuits before the record is
+read.
+
+Run: TestSealedTaskOpensWhereTheLeadIsBeingAnswered holds a relay's first
+reply open once its first event has passed, sends the first subagent's
+sealed task while it is, and is refused 400 "sealed subagent task" on the
+base and forwarded to the answering relay with the fix, the lead's turn
+completing after. The SealedTask/SealedReply family, the gateway package,
+gofmt and vet stay green.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gateway/affinity.go                |  24 +++-
+ internal/gateway/codex_backend.go           |  30 +++++
+ internal/gateway/fallback.go                |  20 ++++
+ internal/gateway/gateway.go                 |  19 +++
+ internal/gateway/group_test.go              |   1 +
+ internal/gateway/sealed_agent_relay_test.go | 126 ++++++++++++++++++++
+ 6 files changed, 218 insertions(+), 2 deletions(-)
+
+diff --git a/internal/gateway/affinity.go b/internal/gateway/affinity.go
+index 1224e9db6..4089ac88b 100644
+--- a/internal/gateway/affinity.go
++++ b/internal/gateway/affinity.go
+@@ -198,11 +198,17 @@ var sticks = struct {
+ 	// conversations spreads rather than all going to the one holding the
+ 	// fewest a moment before (#1342)
+ 	opening map[string]stick
++	// answering: scope|conversation → who a conversation's answer in
++	// flight is coming from, its stream having begun to pass (#6330): a
++	// first subagent arrives while its lead's reply is still streaming,
++	// before anyone is remembered to have answered the lead, and what its
++	// lead has been handed was sealed by the upstream answering now
++	answering map[string]stick
+ 	// the file as last read or written: another magpie's writes (the one
+ 	// handing over to this one) are read again when a conversation is missed
+ 	from string
+ 	mod  time.Time
+-}{m: map[string]stick{}, opening: map[string]stick{}}
++}{m: map[string]stick{}, opening: map[string]stick{}, answering: map[string]stick{}}
+ 
+ // sticksSaving keeps one write of the file at a time, the latest last.
+ var sticksSaving sync.Mutex
+@@ -1140,6 +1146,7 @@ func answeredStanding(key string, c candidate, turn int, u Usage, stoodIn bool)
+ 	hour = hour.after(u, now)
+ 	sticks.m[key] = stick{rest: c.rest, who: c.who(), model: c.model, effort: c.effort, turn: turn, at: now, cacheRead: cacheRead, cacheWrite: cacheWrite, hour: hour, stoodIn: stoodIn}
+ 	delete(sticks.opening, key)
++	delete(sticks.answering, key)
+ 	if len(sticks.m) > 4096 {
+ 		for k, st := range sticks.m {
+ 			if now.Sub(st.at) > stickKeep {
+@@ -1151,6 +1158,18 @@ func answeredStanding(key string, c candidate, turn int, u Usage, stoodIn bool)
+ 	noteSticks()
+ }
+ 
++// answeringBegin remembers that a conversation's answer in flight is
++// coming from c, its stream having begun to pass to the agent (#6330).
++// The last try that began passing names itself: a stream handed over to
++// the next candidate (refusal_handover) had said nothing of the answer
++// when it did — no call of its own went by — so a call in the reply
++// belongs to the try passing now, the one that sealed it.
++func answeringBegin(key string, c candidate) {
++	sticks.Lock()
++	sticks.answering[key] = stick{who: c.who(), at: time.Now()}
++	sticks.Unlock()
++}
++
+ // unanswered forgets that c answered a conversation, when its reply to it
+ // broke off (#733): the agent's retry goes by routing again, not back to
+ // the one that just failed it. The account alone is enough: affine's
+@@ -1158,10 +1177,11 @@ func answeredStanding(key string, c candidate, turn int, u Usage, stoodIn bool)
+ // has since left the group, so a stick that only matched by its model
+ // would leave the next request kept on the account that just broke off.
+ // opened ends a request's part in leastHeld's count of conversations being
+-// opened, however it ended.
++// opened, and its answer in flight's, however it ended.
+ func opened(key string) {
+ 	sticks.Lock()
+ 	delete(sticks.opening, key)
++	delete(sticks.answering, key)
+ 	sticks.Unlock()
+ }
+ 
+diff --git a/internal/gateway/codex_backend.go b/internal/gateway/codex_backend.go
+index 3aab4f70a..a29e5a75f 100644
+--- a/internal/gateway/codex_backend.go
++++ b/internal/gateway/codex_backend.go
+@@ -480,6 +480,36 @@ func leadProvider(scope, parent string) string {
+ 	return id
+ }
+ 
++// answeringProvider is the provider a conversation's answer in flight is
++// coming from, the thread parent names, in any scope magpie routed it in:
++// "" when nothing of the conversation is being answered now (#6330). A
++// first subagent reaches the sealed gate while its lead's reply is still
++// streaming, before any answerer is remembered; the upstream whose stream
++// has begun to pass is the one that seals what it emits, the task in the
++// subagent's request with it.
++func answeringProvider(scope, parent string) string {
++	parent = strings.TrimSpace(parent)
++	if parent == "" {
++		return ""
++	}
++	sticks.Lock()
++	defer sticks.Unlock()
++	st, had := sticks.answering[scope+"|"+parent]
++	if !had {
++		for k, v := range sticks.answering {
++			if strings.HasSuffix(k, "|"+parent) && (!had || v.at.After(st.at)) {
++				st, had = v, true
++			}
++		}
++	}
++	if !had {
++		return ""
++	}
++	id, _, _ := strings.Cut(st.who, "@") // an account: provider@user
++	id, _, _ = strings.Cut(id, "#")      // a key: provider#key
++	return id
++}
++
+ // sealerKeep is how far back the usage log is read for who answered a
+ // lead whose answerer affinity no longer remembers (#1367).
+ const sealerKeep = 30 * 24 * time.Hour
+diff --git a/internal/gateway/fallback.go b/internal/gateway/fallback.go
+index 9358bb316..18ecd307a 100644
+--- a/internal/gateway/fallback.go
++++ b/internal/gateway/fallback.go
+@@ -2639,6 +2639,13 @@ type holdWriter struct {
+ 
+ 	first firstToken // when its first content and text came (#196)
+ 
++	// onPass, set by the gateway, is told when the try's reply has begun
++	// to pass to the agent (began): the try is then the source of the
++	// conversation's answer in flight, which a sealed subagent task's
++	// gate reads while nobody is remembered to have answered its lead
++	// yet (#6330)
++	onPass func()
++
+ 	// stop ends the try's request to the vendor: a stream whose error
+ 	// came before any content has failed, and one that kept its
+ 	// connection open after it — a 429 said as an event — kept the agent
+@@ -2778,6 +2785,7 @@ func (h *holdWriter) pass() {
+ 	if h.alive != nil && h.alive.sent {
+ 		// the agent has the stream's headers already, from keepAlive
+ 		h.passing = true
++		h.began()
+ 		return
+ 	}
+ 	dst := h.w.Header()
+@@ -2788,6 +2796,17 @@ func (h *holdWriter) pass() {
+ 	}
+ 	h.w.WriteHeader(h.status)
+ 	h.passing, h.wrote, h.atLine = true, time.Now(), true
++	h.began()
++}
++
++// began says the try's reply has begun to pass to the agent: who is
++// answering is known from here on (#6330), and the gateway's callback,
++// set, is told — it remembers the try as the answer in flight's source
++// while the reply comes.
++func (h *holdWriter) began() {
++	if h.onPass != nil {
++		h.onPass()
++	}
+ }
+ 
+ func (h *holdWriter) Write(b []byte) (int, error) {
+@@ -3622,6 +3641,7 @@ func (h *holdWriter) release() {
+ 	}
+ 	if h.alive != nil && h.alive.sent && !h.stream {
+ 		h.passing = true
++		h.began()
+ 		switch {
+ 		case h.failure != 0:
+ 			// a 200 that is no reply of the protocol's (settle)
+diff --git a/internal/gateway/gateway.go b/internal/gateway/gateway.go
+index f14bf99a7..4fb741839 100644
+--- a/internal/gateway/gateway.go
++++ b/internal/gateway/gateway.go
+@@ -2812,6 +2812,19 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
+ 		readable := func() bool {
+ 			return isGroup && slices.ContainsFunc(ms, func(m provider.Member) bool { return s.sealedReader(m.Provider, m.Model, sealers) }) || !isGroup && s.sealedReader(p, model, sealers)
+ 		}
++		if !readable() {
++			// the lead's reply still coming (#6330): Codex hands a subagent
++			// its task while its lead's first answer is still streaming,
++			// before any answerer is remembered — the stick is written when
++			// the answer lands, and the usage row then too. Whoever the
++			// answer in flight is coming from is who sealed the task in it
++			if a := answeringProvider(scope, parent); a != "" {
++				sealers = append(sealers, a)
++				if sealedLead == "" {
++					sealedLead = a
++				}
++			}
++		}
+ 		if !readable() {
+ 			// affinity let the lead go (a day since, a restart, its reply
+ 			// broken off): the usage log still has who answered it (#1367)
+@@ -3721,6 +3734,12 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
+ 		// text, all at once, and never its "thinking with <effort>
+ 		// effort" (#4166). Set below, once hw.over is.
+ 		hw.ctx, hw.alive, hw.streams = r.Context(), kept, streams
++		// the try that begins to pass is the source of the conversation's
++		// answer in flight, its upstream the one that seals what it emits
++		// as the reply comes: remembered while the reply is out, for a
++		// first subagent to be sent to, before anyone is remembered to
++		// have answered the lead (#6330)
++		hw.onPass = func() { answeringBegin(stuck, c) }
+ 		// a Claude subscription account's refusal of a big conversation
+ 		// isn't told again to the subscription's other accounts
+ 		// (tooBigToRetell), decided before the try, for its refusal not to
+diff --git a/internal/gateway/group_test.go b/internal/gateway/group_test.go
+index e31046a4d..66af91b90 100644
+--- a/internal/gateway/group_test.go
++++ b/internal/gateway/group_test.go
+@@ -48,6 +48,7 @@ func fresh(t *testing.T) {
+ 	codexHolds.Unlock()
+ 	sticks.Lock()
+ 	sticks.m = map[string]stick{}
++	sticks.answering = map[string]stick{}
+ 	sticks.Unlock()
+ 	provider.ForgetReorders()
+ 	t.Cleanup(provider.ForgetReorders)
+diff --git a/internal/gateway/sealed_agent_relay_test.go b/internal/gateway/sealed_agent_relay_test.go
+index 687ae3805..563443b67 100644
+--- a/internal/gateway/sealed_agent_relay_test.go
++++ b/internal/gateway/sealed_agent_relay_test.go
+@@ -1,12 +1,14 @@
+ package gateway
+ 
+ import (
++	"bytes"
+ 	"io"
+ 	"net/http"
+ 	"net/http/httptest"
+ 	"strings"
+ 	"sync"
+ 	"testing"
++	"time"
+ 
+ 	"github.com/yetone/magpie/internal/provider"
+ )
+@@ -166,6 +168,130 @@ func TestSealedReplyRefusedWhereTheLeadWasNotAnswered(t *testing.T) {
+ 	}
+ }
+ 
++// leadHold is a relay of the ChatGPT backend whose first request — the
++// lead's — is answered with one event and then held open, the way a lead's
++// reply is still coming while Codex hands its first subagent its task
++// (#6330). Later requests are answered whole, as relayOfChatGPT does.
++type leadHold struct {
++	asked   chan struct{} // closed when the lead's request reached the relay
++	release chan struct{} // closed to let the lead's reply end
++	once    sync.Once
++	mu      sync.Mutex
++	got     []string
++}
++
++func (f *leadHold) ServeHTTP(w http.ResponseWriter, r *http.Request) {
++	b, _ := io.ReadAll(r.Body)
++	f.mu.Lock()
++	f.got = append(f.got, string(b))
++	f.mu.Unlock()
++	first := false
++	f.once.Do(func() { first = true })
++	if first {
++		close(f.asked)
++	}
++	w.Header().Set("Content-Type", "text/event-stream")
++	if !first {
++		io.WriteString(w, sse(`data: {"type":"response.output_text.delta","delta":"on it"}`,
++			`data: {"type":"response.completed","response":{"id":"r1","status":"completed","output":[]}}`))
++		return
++	}
++	io.WriteString(w, sse(`data: {"type":"response.output_text.delta","delta":"working"}`))
++	if fl, ok := w.(http.Flusher); ok {
++		fl.Flush()
++	}
++	<-f.release
++	io.WriteString(w, sse(`data: {"type":"response.completed","response":{"id":"r1","status":"completed","output":[]}}`))
++}
++
++func (f *leadHold) requests() []string {
++	f.mu.Lock()
++	defer f.mu.Unlock()
++	return append([]string(nil), f.got...)
++}
++
++// leadSeen is a lead turn's client: it says whether any of the reply's
++// content has come through magpie yet, the sync for a subagent sent while
++// its lead's answer is still coming (#6330).
++type leadSeen struct {
++	w   *httptest.ResponseRecorder
++	mu  sync.Mutex
++	got bytes.Buffer
++}
++
++func (l *leadSeen) Header() http.Header  { return l.w.Header() }
++func (l *leadSeen) WriteHeader(code int) { l.w.WriteHeader(code) }
++
++func (l *leadSeen) Write(b []byte) (int, error) {
++	n, err := l.w.Write(b)
++	l.mu.Lock()
++	l.got.Write(b)
++	l.mu.Unlock()
++	return n, err
++}
++
++// has says whether s has reached the lead's caller yet.
++func (l *leadSeen) has(s string) bool {
++	l.mu.Lock()
++	defer l.mu.Unlock()
++	return strings.Contains(l.got.String(), s)
++}
++
++// #6330: Codex hands a subagent its task while its lead's reply is still
++// streaming — before any answerer is remembered anywhere (no stick yet:
++// the stick is written when the answer lands; no usage row yet: the row
++// is written then too). The relay answering the lead right now is the one
++// that sealed the task in the subagent's request, and the task goes back
++// to it, not refused with "magpie has no record of it answering the lead
++// in the last 30 days".
++func TestSealedTaskOpensWhereTheLeadIsBeingAnswered(t *testing.T) {
++	fresh(t)
++	hold := &leadHold{asked: make(chan struct{}), release: make(chan struct{})}
++	up := httptest.NewServer(hold)
++	t.Cleanup(up.Close)
++	if err := provider.Save(provider.Provider{ID: "s2a", Name: "S2A", Key: "sk-s2a", Models: []string{"gpt-6-astra"}, Responses: up.URL + "/v1"}); err != nil {
++		t.Fatal(err)
++	}
++	s := New()
++	// the lead's first turn, its reply begun and held open by the relay
++	lw := &leadSeen{w: httptest.NewRecorder()}
++	let := sync.OnceFunc(func() { close(hold.release) })
++	defer let() // the relay's held reply ends even if the test fails first
++	leadDone := make(chan struct{})
++	go func() {
++		defer close(leadDone)
++		body := `{"model":"s2a/gpt-6-astra","stream":true,"tools":[{"type":"web_search","external_web_access":true}],"input":[` + leadAsk + `]}`
++		req := httptest.NewRequest("POST", CodexPath+"/responses", strings.NewReader(body))
++		req.Header.Set("Authorization", "Bearer chatgpt-token")
++		req.Header.Set("chatgpt-account-id", "acct-1")
++		req.Header.Set("session_id", "lead-1")
++		s.Handler().ServeHTTP(lw, req)
++	}()
++	<-hold.asked
++	// the reply has begun to pass: what Codex has in hand when it spawns
++	// its first subagent, the lead's stream still open
++	deadline := time.Now().Add(10 * time.Second)
++	for !lw.has("working") {
++		if time.Now().After(deadline) {
++			t.Fatal("the lead's reply never reached its caller")
++		}
++		time.Sleep(500 * time.Microsecond)
++	}
++	rec := codexSubTurn(s, "s2a/gpt-6-astra", "worker-1", "lead-1", sealedHandoff)
++	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "on it") {
++		t.Fatalf("subagent while the lead's answer is out: %d %s", rec.Code, rec.Body.String())
++	}
++	let()
++	<-leadDone
++	if lw.w.Code != 200 {
++		t.Fatalf("lead: %d %s", lw.w.Code, lw.w.Body.String())
++	}
++	got := hold.requests()
++	if len(got) != 2 || !strings.Contains(got[1], `"encrypted_content":"gAAAAATest_ciphertext=="`) || !strings.Contains(got[1], `"agent_message"`) {
++		t.Fatalf("the relay was sent %d requests; the subagent's: %v", len(got), got[len(got)-1:])
++	}
++}
++
+ // The case #619 guards: the lead on one of Codex's own models, answered by
+ // the ChatGPT account Codex is signed in to, its subagent on a custom
+ // provider. The task stays refused with the guidance, and the provider is
+-- 
+2.50.1 (Apple Git-155)
+

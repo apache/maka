@@ -1,0 +1,48 @@
+From 4dc732cdf6c1fd906e04bf223c306a8d9e074dbc Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Sun, 25 Oct 2026 01:32:01 +0800
+Subject: [PATCH] gui tests: account-discovery reads Mask secrets past the
+ "What was masked" row (#3497)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+e698a688f put a "What was masked" row at the top of Settings › Privacy's
+what-to-mask list, an Open onto Insights › Masking, with no Off and On of
+its own. The test took the list's first row for Mask secrets and compared
+the subscription-accounts control with its Off and On, so ten of its
+fifteen subtests per engine were red on main; the row itself is drawn as
+intended, the expectation was stale. The test now compares with the first
+row of the list that has Off and On, which is Mask secrets either way.
+
+Run: NODE_PATH=<playwright 1.57.0> node --test
+internal/gui/tests/account-discovery.test.cjs, chromium and webkit,
+en/zh/zh-TW/ja/de at 900 and 360 plus the MAGPIE_NO_ACCOUNTS runs: red
+before at the comparison (actual ['Off','On'], expected []), 32 of 32
+pass after.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gui/tests/account-discovery.test.cjs | 6 ++++--
+ 1 file changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/internal/gui/tests/account-discovery.test.cjs b/internal/gui/tests/account-discovery.test.cjs
+index e7c18776..dfea5839 100644
+--- a/internal/gui/tests/account-discovery.test.cjs
++++ b/internal/gui/tests/account-discovery.test.cjs
+@@ -108,8 +108,10 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
+           const sub = (await box.locator(".sub").textContent()).trim();
+           assert(sub.includes("Claude Code") && sub.includes("Codex"), "the sub names what is read: " + sub);
+           if (lang !== "en") assert(!sub.startsWith("Read the accounts"), lang + " sub not translated");
+-          // the same Off and On as Mask secrets above it
+-          assert.deepEqual(await opts.allTextContents(), await page.locator("#redactList .row").first().locator(".opt").allTextContents());
++          // the same Off and On as Mask secrets above it (the list opens
++          // with "What was masked", an Open onto Insights › Masking, which
++          // has no Off and On of its own)
++          assert.deepEqual(await opts.allTextContents(), await page.locator("#redactList .row").filter({ has: page.locator(".opt") }).first().locator(".opt").allTextContents());
+           assert.equal(await opts.nth(1).evaluate((b) => b.classList.contains("on")), true, "On by default");
+ 
+           const row = box.locator(".row");
+-- 
+2.50.1 (Apple Git-155)
+

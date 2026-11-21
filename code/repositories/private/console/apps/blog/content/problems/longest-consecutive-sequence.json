@@ -1,0 +1,22 @@
+{
+  "id": "19",
+  "slug": "longest-consecutive-sequence",
+  "title": "最长连续序列",
+  "difficulty": "medium",
+  "tags": ["并查集", "数组", "哈希表"],
+  "description": "给定一个未排序的整数数组 `nums`,找出数字连续的最长序列(不要求序列元素在原数组中连续)的长度。\n\n请你设计并实现时间复杂度为 `O(n)` 的算法解决此问题。\n\n**示例 1:**\n\n- 输入:`nums = [100,4,200,1,3,2]`\n- 输出:`4`(最长数字连续序列是 `[1, 2, 3,4]`,长度为 4)\n\n**示例 2:**\n\n- 输入:`nums = [0,3,7,2,5,8,4,6,0,1]`\n- 输出:`9`",
+  "solution": "## 思路\n\n把所有数放进**哈希集合**,只从「序列起点」(`n-1` 不在集合中)开始向后数长度,保证每个元素最多被访问两次,整体 O(n)。\n\n## 参考代码\n\n```js\nfunction longestConsecutive(nums) {\n  const set = new Set(nums);\n  let max = 0;\n  for (const n of set) {\n    if (!set.has(n - 1)) {\n      let cur = n;\n      let len = 1;\n      while (set.has(cur + 1)) { cur++; len++; }\n      max = Math.max(max, len);\n    }\n  }\n  return max;\n}\n```\n\n## 复杂度\n\n- 时间:O(n)\n- 空间:O(n)",
+  "signature": {
+    "language": "javascript",
+    "entry": "longestConsecutive",
+    "params": [{ "name": "nums", "type": "number[]" }],
+    "returns": "number"
+  },
+  "testCases": [
+    { "sample": true, "input": [[100, 4, 200, 1, 3, 2]], "expected": 4 },
+    { "sample": true, "input": [[0, 3, 7, 2, 5, 8, 4, 6, 0, 1]], "expected": 9 },
+    { "sample": false, "input": [[]], "expected": 0 },
+    { "sample": false, "input": [[1, 2, 0, 1]], "expected": 3 },
+    { "sample": false, "input": [[9, 1, 4, 7, 3, -1, 0, 5, 8, -1, 6]], "expected": 7 }
+  ]
+}

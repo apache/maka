@@ -1,0 +1,616 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Gerry Hu <gerry@Mac.lan>
+Date: Fri, 6 Nov 2026 11:59:51 +0800
+Subject: [PATCH] library: install and update skills from SHA-256 git
+ repositories (#5362)
+
+Determine the remote's object format from validated ls-remote object IDs
+before initializing the download repository. Match SHA-1 and SHA-256
+remotes regardless of the user's default hash, while retaining the SHA-1
+init path for older Git and the existing dumb HTTP shallow fallback.
+Probe and download share the same timeout budget.
+
+Accept full SHA-256 commit IDs in update checks. Resolve named branches
+and tags before treating a hexadecimal ref as pinned, and record the
+peeled commit after fetching an annotated tag. Pinned checks now also
+query the remote and report an unreachable host as unknown. Update the
+Library design reference with these compatibility and failure behaviors.
+
+Regression evidence: before the fix, TestFetchGitObjectFormats and
+TestInstallFromGitRepo failed in both directions with mismatched
+algorithms; TestGitRemoteHeadSHA256 rejected 64-digit HEAD, branch, tag
+and pinned commit IDs. The same scenarios pass after the fix. Tests also
+cover off-default refs, unborn HEAD, malformed/mixed object IDs, empty
+remotes, probe timeout cleanup, hexadecimal branch/tag movement, dumb
+HTTP fallback and a legacy Git wrapper. Tests use local repositories.
+
+Verification used a temporary HOME with GOPATH, GOMODCACHE and GOCACHE
+pinned before changing HOME:
+- go test ./internal/library -count=1 -timeout=15m: PASS (82.071s).
+- go test -race ./internal/library -run
+  '^(TestInstallFromGitRepo|TestFetchGit.*|TestGit.*)$' -count=1:
+  PASS (19.597s).
+- GOTOOLCHAIN=go1.26.8 go test ./internal/library with the same targeted
+  expression after converting comments and test messages to English:
+  PASS (13.556s).
+- gofmt and git diff --check: PASS.
+- go vet ./..., GOOS=linux go vet -tags nogui ./..., and
+  GOOS=windows go vet ./...: PASS.
+- macOS build, GOOS=linux build -tags nogui and GOOS=windows build: PASS.
+- Real Gitea skills/gt probe, install and CheckSkills in an isolated HOME:
+  PASS, one candidate, 64-digit commit, current (33.981s total).
+  A separate HEAD metadata query took 1.048s.
+
+Full suite on Go 1.26.8 (the project's go.mod version):
+GOTOOLCHAIN=go1.26.8 go test -tags nogui -p 4 -count=1 -timeout=45m ./...:
+PASS, all 87 test packages passed, 20 packages had no test files.
+No global MAGPIE_ADDR override or test exclusion was used.
+
+Earlier full suite on Go 1.27.3:
+go test -tags nogui -p 4 -count=1 -timeout=45m ./...:
+85 packages passed, 2 failed, 20 had no test files. Gateway JSON parity
+and fuzz-seed failures match #5348; the WSL probe failure matches #3680.
+These targeted gateway cases all pass on Go 1.26.8 (1.288s).
+GUI TestLaneLimitRoutes matches #5150: its owner fallback reads another
+running gateway. The unchanged test passes against a controlled local
+404 owner endpoint (0.969s); no global endpoint override was used for
+the full suite and no running gateway was changed.
+
+Not run: native Linux/Windows execution, real private SSH authentication.
+Cross-platform vet/build results do not establish native runtime behavior.
+---
+ docs/subsystems/library.md               |   4 +-
+ internal/library/skillgit.go             | 104 +++++++++---
+ internal/library/skillgit_format_test.go | 197 +++++++++++++++++++++++
+ internal/library/skillgit_legacy_test.go |  41 +++++
+ internal/library/skillgit_test.go        |  48 +++++-
+ 5 files changed, 363 insertions(+), 31 deletions(-)
+ create mode 100644 internal/library/skillgit_format_test.go
+ create mode 100644 internal/library/skillgit_legacy_test.go
+
+diff --git a/docs/subsystems/library.md b/docs/subsystems/library.md
+index 7e569676c..841132157 100644
+--- a/docs/subsystems/library.md
++++ b/docs/subsystems/library.md
+@@ -23,7 +23,7 @@ agents RTK, a CLI that cuts shell output down before the model reads it.
+ | MCP servers | A `Server` is a command or a URL (`http`, `sse`). `mcpFile` encodes it in each agent's own format (one `mcpFormat` per agent family) and merges it with the user's own fields for that entry. A server's `StartupTimeout` (#3168) goes to Codex alone, as `startup_timeout_sec` in seconds (`RawMcpServerConfig` in codex-rs/config's mcp_types.rs; 0 leaves Codex's own 30s), in the user-wide config.toml and a project's alike. magpie keeps the value it wrote (`Applied.Startup`, `Project.Startup`): one in the entry other than that, or a `startup_timeout_ms`, is the user's and stays as it is (`startupTheirs`), and once it is taken out magpie's goes in again. The editor shows the field only when an agent that takes it is here (`AgentView.Startup`, `mcp_startup_test.go`, `mcp-startup-timeout.test.cjs`). `Also` files get the same servers; `Extra` files are only read when importing. `CheckServers` connects as an agent would and keeps the result in memory only: with each tool's name and the first paragraph of its description (`ToolList`, at most `maxToolList`, a description cut at `maxToolDesc` runes), which the page lists when the server's "N tools" is clicked, following tools/list's `nextCursor` up to `maxToolPages` pages (`listTools`). Each step (initialize, notifications/initialized, tools/list; connect for SSE) has its own budget, 60s for a URL and 30s for a command (`remoteStep`, `stdioStep`), and a timeout names its `Step` and how long it `Waited`; a timeout isn't kept, so the next look asks again (#1467). A command named bare that magpie's PATH lacks is started from where `proc.FindTool` finds it (fnm's Nodes on Windows among the folders), with that folder on the check's PATH, since npx's package runs the node beside it by name (`stdioProgram`, #2685, `TestStdioProgramFindsWhatPathLacks`). The page asks once a session for the servers some agent or project has (`inUse` in plugins/library/client.js); one no agent has shows "not checked" and is checked only when its status is clicked (#1597, `library-mcp-health.test.cjs`). A server checked once is checked again when it changes, its sign-in included, so a server signed in to after a click's "needs sign-in" isn't left showing both (新v学员 on Discord, `mcp-signin-health.test.cjs`). The check sends magpie's sign-in as the gateway does: on a 401 it renews the token once and asks again, and a server that refuses even the renewed token has the sign-in marked run out (`mcpauth.Rejected`, also from the gateway's `/mcp/<name>`), which `ServerHealth.SignIn` carries back so the row's tag says "Sign-in ran out" rather than "Signed in" beside "needs sign-in". A server that refuses the check (401 or 403) but that an agent signed in to on its own is named so (`ServerHealth.AgentSignIn`, `readOwnSignIns` in `mcp_agent_signin.go`): each Claude Code target's `.credentials.json` beside its settings.json, a WSL distro's under the distro's home, is read for a `mcpOAuth` entry of the server's name and URL with a token, and each Codex target's `.credentials.json` beside its config.toml for a flattened entry of them, the file codex-rs falls back to when its config's `mcp_oauth_credentials_store` is `file` or the keyring is missing, whose executor's own entries are no `codex mcp login` (#3508); and the row says "signed in in Claude Code (Ubuntu)" — or Codex —  instead of "needs sign-in" (CyberCaius on Discord: signed in to with Claude Code's /mcp in WSL). The tokens are never sent or kept; a file that can't be read or parsed names nobody, a stopped distro isn't started for it, and on a Mac only the file is read, never the Keychain Claude Code keeps them in nor Codex's keyring store. They are part of the check's key, so a sign-in in the agent since is checked anew (`TestCheckNamesAgentsSignedInThemselves`, `library-mcp-health-wsl.test.cjs`). A server that needs OAuth is signed in once in magpie, and agents reach it through the gateway's `/mcp/<name>` (#615). The editor's Sign in saves the form first only when the sign-in is to another server than the saved one (a new server, a name or URL changed), and its button then reads "Save and sign in"; anything else edited (headers, env, arguments) stays unsaved until Save, so Cancel leaves the server as it was (新v学员 on Discord, `mcp-editor-cancel.test.cjs`). A server whose authorization server refuses magpie's dynamic client registration with 401 or 403 admits only the clients it lists (Figma's, #1619): the sign-in fails with `mcpauth.ErrClientRefused`, which says so and that each agent signs in itself, and the agents keep the server's own address. A server whose authorization server has no registration endpoint at all (GitHub's remote server, 新v学员 on Discord) fails with `mcpauth.ErrNoRegistration`, which says to make an OAuth app with the vendor and give it in the editor; the editor then opens its "OAuth app" fields. The app is the server's `oauth` (`OAuthApp`: `clientId`, `clientSecret`, `callbackPort`, Claude Code's names for `--client-id`, `--client-secret` and `--callback-port`), checked on save (HTTP only, a client ID, a port from 1 to 65535), and `SignInServer` signs in as it through `mcpauth.StartWith` without registering. The callback is Claude Code's, `http://localhost:<port>/callback` (its docs' "Use pre-configured OAuth credentials"; 2.1.296 builds it so), listened for on 127.0.0.1 alone as Claude Code does, so an app made for Claude Code signs magpie in as it is; a server that matches the registered URL exactly refuses another host, which is why Claude Code's 2.1.231 went back to `localhost` from 2.1.229's `127.0.0.1` (`TestAppMadeForClaudeCode`). Without a `callbackPort` the port is any free one, which a loopback callback registered without a port takes (GitHub's, RFC 8252); a fixed `callbackPort` is for a vendor that matches the port too. magpie's own registration, when a server has one, still names `127.0.0.1`. The client secret is kept in library.json, as a header's or env's value is: a backup without keys leaves it out, and `WithSecrets` puts back this computer's secret only for the same client ID; no agent is given the app, and the TUI's editor, which doesn't show it, keeps it. GitHub answers a token request's error with a 200 and `error` in the body (`bad_refresh_token`, `incorrect_client_credentials`), which `tokenRequest` reads as the error it is, and a dead refresh token marks the sign-in run out (`github_app_test.go`, `mcp-oauth-app.test.cjs`). magpie never registers under another client's name; one that reaches the gateway from another machine (a WSL distro under NAT) is given it with the LAN sharing key as its `Authorization` (`agent.KeyAt`), as its models are, which the gateway takes in place of a sign-in and never passes on; turning sharing on or off, or a new key (`access.LANChanged`), writes such entries again. `ConfigOfServers` is the servers picked as an agent's project file (`projectMCPFiles`) would hold them, written by the same code into a folder of its own and read back, with those the agent can't take there named; the page's Copy config… puts it on the clipboard for a project magpie doesn't keep (#1478). The editor's command is a box that wraps, so a long line is read whole, and Enter still saves it (hema_17384 on Discord). Its Form | JSON switch shows the server as JSON in Claude Code's `.mcp.json` shape, the one Copy config… gives for it (`jsonOf` in plugins/library/client.js), with `${NAME}` references as written. An edit there is read as a paste is (`serversIn`) and becomes the form's at once. JSON that isn't one server's keeps the dialog from saving or going back to the form, and counts as unsaved. The note, the agents and sync stay in the form (`library-mcp-json.test.cjs`). A server's and a skill's `Note` (youyo.p_10001 on Discord) is the user's own word on what it is for: one line of at most `maxNote` (200) characters, whitespace run together (`checkNote`), as a hook's description is. The row shows it in place of the command or description, and its tooltip still gives that line. The skills' filter reads it too. A sync carries it (a server whole, a skill as `CarriedSkill.Note`), and no agent is given it, through the MCP router or not (`TestNoteNeverGiven`, `TestNoteCarried`). A skill's is set by itself (`SkillNote`, `skills/note`) from the skill's reader. Each listed tool has a switch: the tools turned off are the server's `DisabledTools`, set by `ServerTools`, and written into each agent given the server that can leave out a single tool (see the constraint below). A server run as `npx -y <package> args` (a registry package, no other npx flag) is given to an agent on this machine as `node <the package's bin> args` (`npxDirect`): magpie installs the package with npm into a folder of its own under `mcp-npm` in the background, the next sync writes the node form, and until then, or when npm fails (tried again after an hour), the agent keeps npx. npx otherwise stays as the server's parent for its whole life, a node and two cmd.exe beside each instance on Windows (#3885). An unpinned spec is installed again after a day, as npx would fetch the newer one; an install no library server runs goes a day after its last. The library, a server's check, Copy config… and agents in WSL keep npx (`TestNpxServerRunsByNode`, `TestReadNpx`). | [`mcp.go`](../../internal/library/mcp.go), [`mcp_npx.go`](../../internal/library/mcp_npx.go), [`mcp_check.go`](../../internal/library/mcp_check.go), [`mcp_signin.go`](../../internal/library/mcp_signin.go), [`mcp_agent_signin.go`](../../internal/library/mcp_agent_signin.go), [`mcp_copy.go`](../../internal/library/mcp_copy.go), [`mcp_tools_off.go`](../../internal/library/mcp_tools_off.go) |
+ | MCP router | With `MCPHub` on, `syncMCP` gives each agent that can take it one entry, `magpie`, at the gateway's `/mcp/magpie/hub/<agent>`, in place of the servers ticked for it; magpie runs those servers itself, once for every agent. | [MCP router](mcp-router.md), [`mcp_hub.go`](../../internal/library/mcp_hub.go) |
+ | MCP market | `MarketServers` lists the featured servers that match a search, then the MCP Registry's; a search that is an address (a repository, a page, an endpoint, a package; `market_addr.go`) finds the ones at it, and `CustomAt` offers one to fill in by hand when none is. The registry lists no server by a repository's folder, so a GitHub address naming one (`#subdirectory=`, `/tree/<ref>/…`, `parseRepoAt`) is read first: the folder's `pyproject.toml` names the program, and the README's `"env": {…}` examples the keys, offered as `uvx --from git+https://github.com/o/r#subdirectory=p <program>` (`fromRepo`, CyberCaius on Discord: volcengine/mcp-server's askecho search). A bare repository is read so only when the registry has nothing at it, and a PyPI page, or a one-word search naming mcp the registry lists nothing by, asks PyPI (`fromPyPI`, `uvx <package>`). Of several README keys none is required, since a README often has the user pick one way to sign in (`envInputs`; `TestMarketServerInRepoFolder`). Only Python projects are read from a folder; a Node one there still gets the blank form. | [`market.go`](../../internal/library/market.go), [`market_repo.go`](../../internal/library/market_repo.go) |
+-| Skills | A skill is a folder with a `SKILL.md`. It goes by the `name` its front matter gives, made fit for a file name (ASCII letters, digits, `_` and `-`); a name that would lose a letter or digit that way (one in another script, `CTF•密码学`) or none goes by its folder's name instead, and a skill at a repository's top by the repository's (`nameFor`, `srcFolder`). A front matter setting `disable-model-invocation: true` marks it "Manual only" in the page, in the library and in the agents' own (`meta.Manual`, `SkillView.Manual`, `FoundSkill.Manual`; sunset3279 on Discord): Claude Code runs such a skill only on the user's `/name`. A front matter that doesn't parse, or a value that isn't a bool, is not known to be, and gets no mark (`TestSkillManualFromFrontMatter`, `skill-manual.test.cjs`). Two skills a probe names alike are listed once (`unhiddenFirst`), so names that fell to `CTF`, `Strix` and nothing listed asdfgh1445/ctf-super-hub's 35 skills as 16 (tnt1223 on Discord, `TestSkillsNamedInAnotherScriptAllListed`). It comes from GitHub, from any other git repository, from a folder on this machine (linked, so editing the folder edits the skill) or from the market. A git repository (`kind: git`, sunset on Discord: GitLab, a company's own GitLab) is any https, http, ssh or `file://` address, `git@host:group/repo.git`, a bare `host.name/group/repo`, or a GitLab or Gitea page of a folder (`/-/tree/<ref>/<path>`, `/-/blob/…`, `/src/branch/…`; a branch with a `/` in its name is read as its first segment) (`gitSource`). It is fetched by the user's own `git` (`proc.FindTool`), so their credential helpers and SSH keys reach an intranet host: `git init`, then `fetch --depth 1 --no-tags -- <url> <ref>` and `checkout FETCH_HEAD` into a `magpie-skill-*` folder, then its `.git` is removed (`fetchGit`). What the user typed is data: an address starting with `-` and a `transport::` address (`ext::`, `fd::`, `file::`) are refused before git runs, the address follows `--`, git runs with `protocol.ext.allow=never` and `core.symlinks=false`, no shell, `GIT_TERMINAL_PROMPT=0` and (unless the user set an SSH command) `ssh -o BatchMode=yes`, so a sign-in it can't make fails instead of waiting. An address with a password or token in it is refused: library.json is shown and backed up. Git missing, a sign-in refused, a host key unknown, a branch missing and a host unreachable each say so (`gitError`; `TestGitSourceReads`, `TestInstallFromGitRepo`, `TestGitTreeURLInstallsFolder`, `TestGitMissingSaysSo`, `TestGitSignInRefusedSaysSo`, `TestGitRefusesOptionsAndTransports`, `TestGitErrorsSaid`). Each agent gets a link or a marked copy (#896, `SkillHow`). An agent in a WSL distro gets a link too, to the distro's one copy of the skill, magpie's, in `~/.local/share/magpie/skills` (`Target.Store`, `storeSkill`; cutemmuu on X): the distro can't follow a link to the library's folder on Windows, and a link Windows makes through `\\wsl.localhost` is an empty folder in the distro, which in turn shows Windows its own links as entries it can't read, follow or remove, so the link is made, read and taken away in the distro by wsl.exe (`agent.WSLSymlink`, `WSLReadlink`, `WSLRemoveLink`; `TestWSLLinksLive` and `TestWSLSkillsLinkedLive` on a real distro with `MAGPIE_WSL_TEST_DISTRO`). An edit made through the link is in the distro's copy, which `takeEdits` reads as any copy of magpie's (`TestWSLEditThroughLinkReachesTheLibrary`); a copy no agent there links to or is given any more goes, to the backups when edited (`sweepWSLStores`, `TestWSLStoreSweepKeepsEdits`); a folder there that isn't magpie's is never touched, and each agent it is in the way of says so. The copy isn't put in the distro's `~/.agents/skills`, since every agent there reading that folder would get each skill, ticked for it or not. An agent set to copies gets one of its own, as does one whose skills folder or the store is on a Windows drive (#4502), where the distro's link is one Windows can't read. A copy an agent there was given before is made a link on the next sync, its edit taken first and a losing edit set aside (`wslRelink`, `TestWSLOldCopiesBecomeLinks`). A copy's mark keeps the hash of what was copied, so a sync knows a copy unchanged since then is current without reading its files (`copyIsFresh`, #1031); other copies are hashed. A skill an agent has of its own (`foundSkills`, the page's "In your agents") is brought in with `ImportSkill`, or taken out of every agent that has it with `RemoveFoundSkill` (#1303): its folders and copies of the very same files, its shared `~/.agents/skills` entry and a folder of it in the library's own folder go to the backups, its links are taken away, and a folder elsewhere it only links to, or another skill by that name, stays. Several go at once with `RemoveFoundSkills` (`POST /api/library/skills/remove-found-some`, wongxy on Discord): the "In your agents" heading's own Select picks them, and Remove… asks once, naming the count, before one change takes each out as `RemoveFoundSkill` would. A name that can't be taken out is left as it was, in `Result.Unremoved`, and stays picked with its error in its row's place (`foundErrs`); when none can go the change fails and nothing is touched. This Select and the library's are never on together: while one is on the other is dimmed, saying why, so neither click takes the other's bar away from above the pointer (`TestRemoveFoundSkills`, `found-skill-pick-remove.test.cjs`). A repository is fetched as one tarball of at most `maxFetch` (200 MB); a bigger one is fetched file by file from its tree (`fetchSkillFiles`), only as far as the caller reads: a link to a folder and an update ask GitHub for that folder's own list (`treeUnder`, git's `ref:path`; the whole list when that fails), the market fetches only the skills whose folder is the one it installs (#2794, sickn33/agentic-awesome-skills' 8,589 skills are 287 MB together), and a fetcher keeps such a part apart from another skill's of the same repository, which would otherwise read as removed (`fetcher.get`, `TestMarketSkillFromAHugeRepository`). GitHub's list is read up to `maxTree` (64 MB; that repository's is 11 MB) and an answer over the cap a caller gives `apiGet`, or one cut off, is an error saying so, never a body cut short for JSON to trip on (ye4241's `TestRepoTreeBigList`, `TestApiGetWholeAnswer`); a list GitHub truncated itself is too big (`TestTruncatedListIsTooBig`). And a skill over 200 MB on its own is left out rather than failing the rest: the probe lists the others and names it in `Probe.Left`, under the list in the page and in the TUI's flash. Only when every skill is too big does the fetch fail (#2062, mikubaka88/CCFA-Skills' 297 MB ccf-paper-writer; `TestOneSkillTooBigLeavesTheOthers`, `skill-too-big.test.cjs`). A probe keeps its download for the install from it for 15 minutes (`keepProbe`, `probeLife`), and removes it when it is probed again or that time is up, not at the next probe, which may never come. A download a magpie that quit left in the temp dir goes at the next probe once it is an hour old (`sweepStaleDownloads`). The package's TestMain gives the tests a temp dir of their own and fails a run that leaves a `magpie-skill-*` in it (#2321, `TestProbeDownloadEndsWithIt`, `TestStaleDownloadsSwept`). | [`skilltree.go`](../../internal/library/skilltree.go), [`skills.go`](../../internal/library/skills.go), [`skillgit.go`](../../internal/library/skillgit.go), [`skill_how.go`](../../internal/library/skill_how.go), [`skill_edits.go`](../../internal/library/skill_edits.go), [`skill_from.go`](../../internal/library/skill_from.go), [`skill_beside.go`](../../internal/library/skill_beside.go) |
++| Skills | A skill is a folder with a `SKILL.md`. It goes by the `name` its front matter gives, made fit for a file name (ASCII letters, digits, `_` and `-`); a name that would lose a letter or digit that way (one in another script, `CTF•密码学`) or none goes by its folder's name instead, and a skill at a repository's top by the repository's (`nameFor`, `srcFolder`). A front matter setting `disable-model-invocation: true` marks it "Manual only" in the page, in the library and in the agents' own (`meta.Manual`, `SkillView.Manual`, `FoundSkill.Manual`; sunset3279 on Discord): Claude Code runs such a skill only on the user's `/name`. A front matter that doesn't parse, or a value that isn't a bool, is not known to be, and gets no mark (`TestSkillManualFromFrontMatter`, `skill-manual.test.cjs`). Two skills a probe names alike are listed once (`unhiddenFirst`), so names that fell to `CTF`, `Strix` and nothing listed asdfgh1445/ctf-super-hub's 35 skills as 16 (tnt1223 on Discord, `TestSkillsNamedInAnotherScriptAllListed`). It comes from GitHub, from any other git repository, from a folder on this machine (linked, so editing the folder edits the skill) or from the market. A git repository (`kind: git`, sunset on Discord: GitLab, a company's own GitLab) is any https, http, ssh or `file://` address, `git@host:group/repo.git`, a bare `host.name/group/repo`, or a GitLab or Gitea page of a folder (`/-/tree/<ref>/<path>`, `/-/blob/…`, `/src/branch/…`; a branch with a `/` in its name is read as its first segment) (`gitSource`). It is fetched by the user's own `git` (`proc.FindTool`), so their credential helpers and SSH keys reach an intranet host: first `ls-remote -- <url> HEAD` determines the remote's object format from a full 40-digit SHA-1 or 64-digit SHA-256 object ID, asking for the other refs only when HEAD advertises none (`gitRemoteFormat`). Missing, malformed or inconsistent object IDs fail instead of guessing SHA-1. The temporary repository is initialized in that format regardless of the user's default (`GIT_DEFAULT_HASH` is set only for the child processes; SHA-256 also passes `--object-format=sha256`, while SHA-1 leaves that option out for older Git), then `fetch --depth 1 --no-tags -- <url> <ref>` and `checkout FETCH_HEAD` download the requested branch, tag or commit into a `magpie-skill-*` folder. A host without shallow support is fetched without `--depth`; probing and downloading share one timeout. The recorded revision is the checked-out commit, including for an annotated tag, and its `.git` is removed (`fetchGit`). Update checks use the same validated remote refs; a branch or tag matching the requested name takes precedence over treating a 7–64-digit hexadecimal ref as a pinned commit, so a hexadecimal branch name still follows the remote. A pinned commit check therefore also queries the remote and reports an unreachable host as unknown. What the user typed is data: an address starting with `-` and a `transport::` address (`ext::`, `fd::`, `file::`) are refused before git runs, the address follows `--`, git runs with `protocol.ext.allow=never` and `core.symlinks=false`, no shell, `GIT_TERMINAL_PROMPT=0` and (unless the user set an SSH command) `ssh -o BatchMode=yes`, so a sign-in it can't make fails instead of waiting. An address with a password or token in it is refused: library.json is shown and backed up. Git missing, a sign-in refused, a host key unknown, a branch missing and a host unreachable each say so (`gitError`; `TestGitSourceReads`, `TestInstallFromGitRepo`, `TestGitTreeURLInstallsFolder`, `TestGitMissingSaysSo`, `TestGitSignInRefusedSaysSo`, `TestGitRefusesOptionsAndTransports`, `TestGitErrorsSaid`). Each agent gets a link or a marked copy (#896, `SkillHow`). An agent in a WSL distro gets a link too, to the distro's one copy of the skill, magpie's, in `~/.local/share/magpie/skills` (`Target.Store`, `storeSkill`; cutemmuu on X): the distro can't follow a link to the library's folder on Windows, and a link Windows makes through `\\wsl.localhost` is an empty folder in the distro, which in turn shows Windows its own links as entries it can't read, follow or remove, so the link is made, read and taken away in the distro by wsl.exe (`agent.WSLSymlink`, `WSLReadlink`, `WSLRemoveLink`; `TestWSLLinksLive` and `TestWSLSkillsLinkedLive` on a real distro with `MAGPIE_WSL_TEST_DISTRO`). An edit made through the link is in the distro's copy, which `takeEdits` reads as any copy of magpie's (`TestWSLEditThroughLinkReachesTheLibrary`); a copy no agent there links to or is given any more goes, to the backups when edited (`sweepWSLStores`, `TestWSLStoreSweepKeepsEdits`); a folder there that isn't magpie's is never touched, and each agent it is in the way of says so. The copy isn't put in the distro's `~/.agents/skills`, since every agent there reading that folder would get each skill, ticked for it or not. An agent set to copies gets one of its own, as does one whose skills folder or the store is on a Windows drive (#4502), where the distro's link is one Windows can't read. A copy an agent there was given before is made a link on the next sync, its edit taken first and a losing edit set aside (`wslRelink`, `TestWSLOldCopiesBecomeLinks`). A copy's mark keeps the hash of what was copied, so a sync knows a copy unchanged since then is current without reading its files (`copyIsFresh`, #1031); other copies are hashed. A skill an agent has of its own (`foundSkills`, the page's "In your agents") is brought in with `ImportSkill`, or taken out of every agent that has it with `RemoveFoundSkill` (#1303): its folders and copies of the very same files, its shared `~/.agents/skills` entry and a folder of it in the library's own folder go to the backups, its links are taken away, and a folder elsewhere it only links to, or another skill by that name, stays. Several go at once with `RemoveFoundSkills` (`POST /api/library/skills/remove-found-some`, wongxy on Discord): the "In your agents" heading's own Select picks them, and Remove… asks once, naming the count, before one change takes each out as `RemoveFoundSkill` would. A name that can't be taken out is left as it was, in `Result.Unremoved`, and stays picked with its error in its row's place (`foundErrs`); when none can go the change fails and nothing is touched. This Select and the library's are never on together: while one is on the other is dimmed, saying why, so neither click takes the other's bar away from above the pointer (`TestRemoveFoundSkills`, `found-skill-pick-remove.test.cjs`). A repository is fetched as one tarball of at most `maxFetch` (200 MB); a bigger one is fetched file by file from its tree (`fetchSkillFiles`), only as far as the caller reads: a link to a folder and an update ask GitHub for that folder's own list (`treeUnder`, git's `ref:path`; the whole list when that fails), the market fetches only the skills whose folder is the one it installs (#2794, sickn33/agentic-awesome-skills' 8,589 skills are 287 MB together), and a fetcher keeps such a part apart from another skill's of the same repository, which would otherwise read as removed (`fetcher.get`, `TestMarketSkillFromAHugeRepository`). GitHub's list is read up to `maxTree` (64 MB; that repository's is 11 MB) and an answer over the cap a caller gives `apiGet`, or one cut off, is an error saying so, never a body cut short for JSON to trip on (ye4241's `TestRepoTreeBigList`, `TestApiGetWholeAnswer`); a list GitHub truncated itself is too big (`TestTruncatedListIsTooBig`). And a skill over 200 MB on its own is left out rather than failing the rest: the probe lists the others and names it in `Probe.Left`, under the list in the page and in the TUI's flash. Only when every skill is too big does the fetch fail (#2062, mikubaka88/CCFA-Skills' 297 MB ccf-paper-writer; `TestOneSkillTooBigLeavesTheOthers`, `skill-too-big.test.cjs`). A probe keeps its download for the install from it for 15 minutes (`keepProbe`, `probeLife`), and removes it when it is probed again or that time is up, not at the next probe, which may never come. A download a magpie that quit left in the temp dir goes at the next probe once it is an hour old (`sweepStaleDownloads`). The package's TestMain gives the tests a temp dir of their own and fails a run that leaves a `magpie-skill-*` in it (#2321, `TestProbeDownloadEndsWithIt`, `TestStaleDownloadsSwept`). | [`skilltree.go`](../../internal/library/skilltree.go), [`skills.go`](../../internal/library/skills.go), [`skillgit.go`](../../internal/library/skillgit.go), [`skill_how.go`](../../internal/library/skill_how.go), [`skill_edits.go`](../../internal/library/skill_edits.go), [`skill_from.go`](../../internal/library/skill_from.go), [`skill_beside.go`](../../internal/library/skill_beside.go) |
+ | Skills market | `MarketSkills` lists skills.sh's most installed and what its search finds. magpie's own skills (`featuredSkills`), in [magpie-community/plugins](https://github.com/magpie-community/plugins/tree/main/skills), go first, marked official: `magpie-setup` has an agent set magpie up as the user asks through its commands (providers, accounts, agents, routing groups and rules, gateway keys and limits, models, the library), and `magpie-quota` lets an agent read `magpie quota --json` and wait with `magpie quota wait`. Their commands live in magpie's CLI, so a change to a command either uses gets the skill updated in that repository. Until skills.sh lists one it has no count of installs and no skills.sh link (`featured`). `InstallMarketSkill` installs any of them from its repository. | [`market.go`](../../internal/library/market.go) |
+ | Skills a repository or folder added | A check for updates (`CheckSkills`) also asks, for each GitHub repository and ref the library has skills from, GitHub's list of its files (`repoTree`, one API request, free when the ETag still matches). Only when that list has a skill folder beside the installed ones (under `newBase`, their deepest common folder) that the library doesn't have and hasn't offered does `findNew` fetch the repository for the skills' names and descriptions. `SeenSkills` records per `repo@ref` the paths the install picker showed and the ones set aside, so they aren't offered again. The finds live in memory (`newFound`) and reach the page as `View.NewSkills`; `AddNewSkills` gives each to the agents that have its repository's other skills, and `IgnoreNewSkills` sets it aside (`/api/library/skills/{add-new,ignore-new}`). A git repository on another host has no such list: when `git ls-remote` gives its ref a head, `findNewGit` reads the fetch the check shares (`fetcher`), once per head while its finds are kept (`gitLooked`), and offers the skills under `newBase` with the address as the library has it, `.git` and all, so an Add keeps the same `repo@ref`. A folder the user added linked skills from is kept as `folder:<path>` in `SeenSkills` (`offered`, at install), which is also how the library knows which folder to look in again: `findNewFolder` reads it as Add from folder does and offers a skill folder there the library doesn't link, hasn't offered, and has no skill by that name of; a folder that can't be read keeps what was found. `View.CheckFolders` (`addedFromFolders`, which reads no folder) puts Check for updates on the page with only linked skills, and makes `checkDue` true. A check never adds or writes a skill: each is offered, and one the user removed or set aside isn't offered again. A folder added before this kept no `folder:` key and is looked in only once the user adds from it again (refeccd on Discord; `TestCheckSkillsFindsNewInGitRepo`, `TestCheckSkillsFindsNewInFolder`, `skill-new-in-repo.test.cjs`). | [`skillnew.go`](../../internal/library/skillnew.go), [`skillcheck.go`](../../internal/library/skillcheck.go) |
+ | Skill groups | The page groups skills by `SkillView.Repo`, the repository each came from (`tracer.repoOf`): its GitHub source, CC Switch's `Origin`, `From`, the skills CLI's lock or the git checkout a linked folder is in. That checkout is the one git finds (`provider.GitAt` in `gitRepoOf`): an empty `.git` between the skill and its checkout is passed over, as git passes it over, and a `.git` file that names no repository (a worktree left behind) is none (#3675, `TestSkillRepoTraced`). A lock entry of `sourceType: well-known` (a site's kit at its `/.well-known/agent-skills/`) is grouped by its `sourceBaseUrl` as host/path (`wellKnownBase`), not by each skill's own `sourceUrl`: Feishu's lark-* skills are one group and Fish Audio's another, while two kits under one host with different base URLs stay apart. An older entry with no base URL takes the part of its `sourceUrl` before `/.well-known/`, and one with neither is grouped by its `sourceUrl` as before. Such a kit is never fetched from GitHub by Group again, even when it reads like owner/repo (a GitHub owner has no dot), and its heading's link opens the site (#1862, `TestWellKnownKitGrouped`). `From` is written when a repository is probed (installing from it again, `noteFrom`): for a skill with the very same `SKILL.md`, and for one traced to nowhere by a name the repository has when the library has others from there, since a pack added a while ago is mostly older copies edited there since (White Immortal on Discord: 20 of mattpocock/skills' 38). Group again (`RegroupSkills`, `POST /api/library/skills/regroup`) fetches each GitHub repository the skills are traced to and does the same; it fails only when none could be fetched. A skill traced to another repository is never moved. A group's (or part's, or the Select bar's) agent chips count, give and take only the skills magpie decides for each agent: one kept in `~/.agents/skills` is in `SkillView.Always` for the agents that read that folder themselves, so a chip's `agents-some` for such an agent leaves it out, its tooltip and the status after a click say how many it still reads itself, and an agent that reads every one of them itself has a lit, locked chip as the row's is, which sends nothing (`groupChips` in plugins/library/client.js). The heading says how many of its skills are in `~/.agents/skills`. A row's locked chip is lit with a lock on its corner, not greyed like a chip that can't be given the skill (#1862, `skill-group-shared.test.cjs`). Collapse all / Expand all, beside the sort, folds or opens every group the list shows at once (`foldAllButton`): without a filter it sets each group's kept fold (`magpie.libSkillFolds`), as a click on each heading would; while filtering, only the groups the filter shows, till the filter changes (`unfiltered`), leaving the kept folds alone. It reads Collapse all while any shown group is open, is hidden with fewer than two groups (A→Z, or a filter one group matches), leaves a part's own fold as it is and sends nothing (#1862, `skill-fold-all.test.cjs`). | [`skill_from.go`](../../internal/library/skill_from.go), [`plugins/library/client.js`](../../internal/gui/assets/plugins/library/client.js) |
+@@ -95,7 +95,7 @@ agents RTK, a CLI that cuts shell output down before the model reads it.
+ ## Verification
+ 
+ ```sh
+-go test -tags nogui ./internal/library -run 'TestGit|TestInstallFromGitRepo|TestReadLooksAtEachFolderOnce|TestLinkChangedBetweenVisitsShows|TestUnreadablePartIsLookedAtAgain|TestCheckSkillsFindsNewOnes|TestNewBase|TestUpdateKeeps|TestCheckDue|TestCheckSkillsMarksItDone|TestTargets|TestWSLPiMCP|TestWSLMCPSiblings|TestServer|TestHub|TestImportServer|TestCheck|TestInstructions|TestInstructionsSetLinkedToAgentsFile|TestInstructionSets|TestTakesAlma|TestAlma|TestLinkedSet|TestLinkRefused|TestSkill|TestRemoveFoundSkill|TestInstallSet|TestInstallLists|TestEverySkillAgents|TestEveryServerAgents|TestSomeServersAgents|TestRemoveServers|TestRTK|TestEnvRefs|TestDshRefRoundTrip|TestDshImportKeepsJS|TestAgentMCPFiles|TestCodeBuddyMCPFile|TestZedMCP|TestOwnServerFromElsewhereRunsThisMagpie|TestUsersOwnServerStaysAsItIs|TestCarriedOwnServerIsEachComputersMagpie|TestCarry|TestPageReadDoesntReadUnchangedSkillsAgain|TestJustWrittenSkillIsReadAgain|TestUnreadableSkillIsntRememberedAsDifferent|TestGlanceLeavesOutTheAgentsSkills|TestPluginAgent|TestPluginMCPFormatsAreWritten|TestToolsOff|TestOffList|TestHooks|TestSubagent|TestCheckRenewsMagpiesSignIn|TestCheckWSLOnlyServerInItsDistro|TestCheckWindowsServerHere|TestCheckMixedServerEachSide|TestCheckSaysSignInRanOut|TestCheckNamesAgentsSignedInThemselves|TestSignInAsTheUsersOwnApp|TestOAuthAppChecked|TestOAuthAppSecretCarried|TestGoneAgentListedToTakeOut|TestUpdateFindsSkillsRemovedUpstream|TestGoneFromNeedsTheSourceRead'
++go test -tags nogui ./internal/library -run 'TestGit|TestFetchGit|TestInstallFromGitRepo|TestReadLooksAtEachFolderOnce|TestLinkChangedBetweenVisitsShows|TestUnreadablePartIsLookedAtAgain|TestCheckSkillsFindsNewOnes|TestNewBase|TestUpdateKeeps|TestCheckDue|TestCheckSkillsMarksItDone|TestTargets|TestWSLPiMCP|TestWSLMCPSiblings|TestServer|TestHub|TestImportServer|TestCheck|TestInstructions|TestInstructionsSetLinkedToAgentsFile|TestInstructionSets|TestTakesAlma|TestAlma|TestLinkedSet|TestLinkRefused|TestSkill|TestRemoveFoundSkill|TestInstallSet|TestInstallLists|TestEverySkillAgents|TestEveryServerAgents|TestSomeServersAgents|TestRemoveServers|TestRTK|TestEnvRefs|TestDshRefRoundTrip|TestDshImportKeepsJS|TestAgentMCPFiles|TestCodeBuddyMCPFile|TestZedMCP|TestOwnServerFromElsewhereRunsThisMagpie|TestUsersOwnServerStaysAsItIs|TestCarriedOwnServerIsEachComputersMagpie|TestCarry|TestPageReadDoesntReadUnchangedSkillsAgain|TestJustWrittenSkillIsReadAgain|TestUnreadableSkillIsntRememberedAsDifferent|TestGlanceLeavesOutTheAgentsSkills|TestPluginAgent|TestPluginMCPFormatsAreWritten|TestToolsOff|TestOffList|TestHooks|TestSubagent|TestCheckRenewsMagpiesSignIn|TestCheckWSLOnlyServerInItsDistro|TestCheckWindowsServerHere|TestCheckMixedServerEachSide|TestCheckSaysSignInRanOut|TestCheckNamesAgentsSignedInThemselves|TestSignInAsTheUsersOwnApp|TestOAuthAppChecked|TestOAuthAppSecretCarried|TestGoneAgentListedToTakeOut|TestUpdateFindsSkillsRemovedUpstream|TestGoneFromNeedsTheSourceRead'
+ go test -tags nogui ./internal/library -run 'TestSkillOffHere|TestLocalServerNotCarried|TestPutKeepsLocalServer|TestPutSameNameAsLocal'
+ go test -tags nogui ./internal/backup -run 'TestRestoreKeepsLocalServer|TestBackupFileCarriesSubagents|TestBackupFileCarriesHooks'
+ go test -tags nogui ./internal/library -run 'TestHandOver|TestSharedUnderAnotherName|TestSharedAgentsSkills'
+diff --git a/internal/library/skillgit.go b/internal/library/skillgit.go
+index d687103ac..ff4810bf8 100644
+--- a/internal/library/skillgit.go
++++ b/internal/library/skillgit.go
+@@ -40,7 +40,7 @@ var (
+ 	// scpLike is git's user@host:path for SSH
+ 	scpLike = regexp.MustCompile(`^(?:([\w.-]+)@)?([\w.-]+):(.+)$`)
+ 	gitRef  = regexp.MustCompile(`^[\w./+@-]+$`)
+-	hexRef  = regexp.MustCompile(`^[0-9a-fA-F]{7,40}$`)
++	hexRef  = regexp.MustCompile(`^[0-9a-fA-F]{7,64}$`)
+ )
+ 
+ // gitSchemes are the URL schemes a git source may have. file:// is a
+@@ -312,6 +312,12 @@ func fetchGit(src Source) (string, error) {
+ 	ctx, cancel := context.WithTimeout(context.Background(), gitTimeout)
+ 	defer cancel()
+ 	env := gitEnv(git)
++	format, err := gitRemoteFormat(ctx, git, env, src)
++	if err != nil {
++		return "", err
++	}
++	// Set the format only for these child processes, leaving the user's config alone.
++	env = append(env, "GIT_DEFAULT_HASH="+format)
+ 	tmp, err := os.MkdirTemp("", skillTemp)
+ 	if err != nil {
+ 		return "", err
+@@ -320,7 +326,12 @@ func fetchGit(src Source) (string, error) {
+ 		os.RemoveAll(tmp)
+ 		return "", err
+ 	}
+-	if _, err := runGit(ctx, git, env, tmp, src, "init", "-q"); err != nil {
++	initArgs := []string{"init", "-q"}
++	if format == "sha256" {
++		// Leave the newer option out for SHA-1 so older Git still works.
++		initArgs = append(initArgs, "--object-format=sha256")
++	}
++	if _, err := runGit(ctx, git, env, tmp, src, initArgs...); err != nil {
+ 		return fail(err)
+ 	}
+ 	ref := src.Ref
+@@ -340,7 +351,7 @@ func fetchGit(src Source) (string, error) {
+ 	if _, err := runGit(ctx, git, env, tmp, src, "-c", "advice.detachedHead=false", "checkout", "-q", "FETCH_HEAD"); err != nil {
+ 		return fail(err)
+ 	}
+-	out, err := runGit(ctx, git, env, tmp, src, "rev-parse", "FETCH_HEAD")
++	out, err := runGit(ctx, git, env, tmp, src, "rev-parse", "FETCH_HEAD^{commit}")
+ 	if err != nil {
+ 		return fail(err)
+ 	}
+@@ -365,40 +376,91 @@ func dirSize(dir string) int64 {
+ 	return n
+ }
+ 
+-// gitRemoteHead asks the repository, with git ls-remote, which commit its
+-// ref (its default branch when "") is at now. A ref that is a commit is
+-// that commit.
+-func gitRemoteHead(src Source) (string, error) {
+-	if hexRef.MatchString(src.Ref) {
+-		return strings.ToLower(src.Ref), nil
++// gitObjectFormat identifies full object IDs; hexRef also accepts user-supplied abbreviations.
++func gitObjectFormat(oid string) string {
++	if !hexRef.MatchString(oid) {
++		return ""
++	}
++	switch len(oid) {
++	case 40:
++		return "sha1"
++	case 64:
++		return "sha256"
++	}
++	return ""
++}
++
++// gitRemoteRefs reads and validates full remote object IDs for downloads and update checks.
++func gitRemoteRefs(ctx context.Context, git string, env []string, src Source, patterns ...string) (map[string]string, error) {
++	args := append([]string{"ls-remote", "--", src.Repo}, patterns...)
++	out, err := runGit(ctx, git, env, os.TempDir(), src, args...)
++	if err != nil {
++		return nil, err
++	}
++	return parseGitRemoteRefs(src, string(out))
++}
++
++func parseGitRemoteRefs(src Source, out string) (map[string]string, error) {
++	refs := map[string]string{}
++	format := ""
++	for _, line := range strings.Split(out, "\n") {
++		line = strings.TrimSpace(line)
++		if line == "" {
++			continue
++		}
++		oid, name, ok := strings.Cut(line, "\t")
++		found := gitObjectFormat(oid)
++		if !ok || name == "" || found == "" || (format != "" && format != found) {
++			return nil, fmt.Errorf("%s returned invalid git object IDs", src.Repo)
++		}
++		format = found
++		refs[name] = strings.ToLower(oid)
++	}
++	return refs, nil
++}
++
++// gitRemoteFormat determines the format before init, using other refs when HEAD advertises none.
++func gitRemoteFormat(ctx context.Context, git string, env []string, src Source) (string, error) {
++	refs, err := gitRemoteRefs(ctx, git, env, src, "HEAD")
++	if err != nil {
++		return "", err
+ 	}
++	if len(refs) == 0 {
++		refs, err = gitRemoteRefs(ctx, git, env, src)
++		if err != nil {
++			return "", err
++		}
++	}
++	for _, oid := range refs {
++		return gitObjectFormat(oid), nil
++	}
++	return "", fmt.Errorf("%s advertises no git object IDs: couldn't determine its object format", src.Repo)
++}
++
++// gitRemoteHead resolves branches and tags before treating a hexadecimal ref as a pinned commit.
++func gitRemoteHead(src Source) (string, error) {
+ 	git := gitPath()
+ 	if git == "" {
+ 		return "", errNoGit()
+ 	}
+ 	ctx, cancel := context.WithTimeout(context.Background(), gitTimeout)
+ 	defer cancel()
+-	args := []string{"ls-remote", "--", src.Repo}
+-	if src.Ref == "" {
+-		args = append(args, "HEAD")
+-	} else {
+-		args = append(args, "refs/heads/"+src.Ref, "refs/tags/"+src.Ref, "refs/tags/"+src.Ref+"^{}")
++	patterns := []string{"HEAD"}
++	if src.Ref != "" {
++		patterns = []string{"refs/heads/" + src.Ref, "refs/tags/" + src.Ref, "refs/tags/" + src.Ref + "^{}"}
+ 	}
+-	out, err := runGit(ctx, git, gitEnv(git), os.TempDir(), src, args...)
++	refs, err := gitRemoteRefs(ctx, git, gitEnv(git), src, patterns...)
+ 	if err != nil {
+ 		return "", err
+ 	}
+-	refs := map[string]string{}
+-	for _, l := range strings.Split(string(out), "\n") {
+-		if sha, name, ok := strings.Cut(strings.TrimSpace(l), "\t"); ok {
+-			refs[name] = sha
+-		}
+-	}
+ 	for _, k := range []string{"HEAD", "refs/tags/" + src.Ref + "^{}", "refs/heads/" + src.Ref, "refs/tags/" + src.Ref} {
+ 		if sha := refs[k]; hexRef.MatchString(sha) {
+ 			return sha, nil
+ 		}
+ 	}
++	if hexRef.MatchString(src.Ref) {
++		return strings.ToLower(src.Ref), nil
++	}
+ 	if src.Ref == "" {
+ 		return "", fmt.Errorf("%s names no default branch", src.Repo)
+ 	}
+diff --git a/internal/library/skillgit_format_test.go b/internal/library/skillgit_format_test.go
+new file mode 100644
+index 000000000..3b51c993d
+--- /dev/null
++++ b/internal/library/skillgit_format_test.go
+@@ -0,0 +1,197 @@
++package library
++
++import (
++	"net/http"
++	"net/http/httptest"
++	"os"
++	"path/filepath"
++	"strings"
++	"testing"
++	"time"
++)
++
++// Downloads preserve the requested ref's contents, including tags and commits off the default branch.
++func TestFetchGitObjectFormats(t *testing.T) {
++	for _, format := range []string{"sha1", "sha256"} {
++		t.Run(format, func(t *testing.T) {
++			sandbox(t)
++			addr, commit, run := gitRepoFormat(t, map[string]string{"SKILL.md": "v1"}, format)
++			pinned := run("rev-parse", "HEAD")
++			run("tag", "-a", "v1", "-m", "v1")
++			run("branch", "old")
++			run("push", "-q", addr, "refs/tags/v1", "refs/heads/old")
++			commit(map[string]string{"SKILL.md": "v2"})
++			if format == "sha256" {
++				t.Setenv("GIT_DEFAULT_HASH", "sha1")
++			} else {
++				t.Setenv("GIT_DEFAULT_HASH", "sha256")
++			}
++			run("config", "--global", "init.defaultObjectFormat", os.Getenv("GIT_DEFAULT_HASH"))
++			for _, c := range []struct{ name, ref, body string }{
++				{"default", "", "v2"}, {"branch", "old", "v1"},
++				{"tag", "v1", "v1"}, {"commit", pinned, "v1"},
++				{"unborn-head", "main", "v2"},
++			} {
++				t.Run(c.name, func(t *testing.T) {
++					if c.name == "unborn-head" {
++						run("-C", "../skills.git", "symbolic-ref", "HEAD", "refs/heads/unborn")
++					}
++					dir, err := fetchGit(Source{Kind: "git", Repo: addr, Ref: c.ref})
++					if err != nil {
++						t.Fatalf("fetching %s %s: %v", format, c.name, err)
++					}
++					defer os.RemoveAll(dir)
++					if b, err := os.ReadFile(filepath.Join(dir, "SKILL.md")); err != nil || string(b) != c.body {
++						t.Fatalf("fetched contents: %q, %v; want %q", b, err, c.body)
++					}
++					if got, want := gitHeadOf(dir), run("rev-parse", defaultRef(c.ref)+"^{commit}"); got != want {
++						t.Fatalf("fetched commit = %q, want %q", got, want)
++					}
++					if _, err := os.Stat(filepath.Join(dir, ".git")); !os.IsNotExist(err) {
++						t.Fatalf("download kept .git: %v", err)
++					}
++				})
++			}
++			if dir, err := fetchGit(Source{Kind: "git", Repo: addr, Ref: "missing"}); err == nil || dir != "" || !strings.Contains(err.Error(), "no branch or tag missing") {
++				t.Fatalf("missing ref: dir=%q err=%v", dir, err)
++			}
++		})
++	}
++}
++
++// Malformed output is neither an empty repository nor a valid abbreviated object ID.
++func TestGitRemoteRefsValidation(t *testing.T) {
++	src := Source{Repo: "file:///fixture.git"}
++	for _, length := range []int{6, 7, 39, 40, 41, 63, 64, 65} {
++		oid := strings.Repeat("a", length)
++		_, err := parseGitRemoteRefs(src, oid+"\tHEAD\n")
++		valid := length == 40 || length == 64
++		if (err == nil) != valid {
++			t.Errorf("%d-digit remote object ID: %v", length, err)
++		}
++	}
++	sha1, sha256 := strings.Repeat("a", 40), strings.Repeat("b", 64)
++	for _, out := range []string{
++		strings.Repeat("g", 40) + "\tHEAD\n", sha1 + " HEAD\n", sha1 + "\t\n",
++		sha1 + "\tHEAD\n" + sha256 + "\trefs/heads/main\n",
++	} {
++		if _, err := parseGitRemoteRefs(src, out); err == nil {
++			t.Errorf("accepted invalid remote output %q", out)
++		}
++	}
++	refs, err := parseGitRemoteRefs(src, strings.ToUpper(sha256)+"\tHEAD\n")
++	if err != nil || refs["HEAD"] != sha256 {
++		t.Fatalf("full object ID normalization: %+v, %v", refs, err)
++	}
++	refs, err = parseGitRemoteRefs(src, "")
++	if err != nil || len(refs) != 0 {
++		t.Fatalf("empty refs: %+v, %v", refs, err)
++	}
++}
++
++// An empty repository provides no format; fetching fails without leaving a download directory.
++func TestFetchGitEmptyRemote(t *testing.T) {
++	sandbox(t)
++	addr, _, run := gitRepoFormat(t, map[string]string{"SKILL.md": "fixture"}, "sha256")
++	run("-C", "../skills.git", "update-ref", "-d", "refs/heads/main")
++	before := strings.Join(leftDownloads(os.TempDir()), "\n")
++	dir, err := fetchGit(Source{Kind: "git", Repo: addr})
++	if dir != "" || err == nil || !strings.Contains(err.Error(), "couldn't determine its object format") {
++		t.Fatalf("empty repository treated as a known format: dir=%q err=%v", dir, err)
++	}
++	if after := strings.Join(leftDownloads(os.TempDir()), "\n"); after != before {
++		t.Fatalf("failed fetch left download directories: %s", after)
++	}
++}
++
++// Format probing shares the download's timeout budget.
++func TestFetchGitProbeTimeout(t *testing.T) {
++	sandbox(t)
++	gitRepo(t, map[string]string{"SKILL.md": "fixture"})
++	previous := gitTimeout
++	gitTimeout = time.Second
++	defer func() { gitTimeout = previous }()
++	done := make(chan struct{})
++	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		select {
++		case <-r.Context().Done():
++		case <-done:
++		}
++	}))
++	defer srv.Close()
++	defer close(done)
++	before := strings.Join(leftDownloads(os.TempDir()), "\n")
++	dir, err := fetchGit(Source{Kind: "git", Repo: srv.URL})
++	if dir != "" || err == nil || !strings.Contains(err.Error(), "was stopped") {
++		t.Fatalf("probe wasn't stopped on timeout: dir=%q err=%v", dir, err)
++	}
++	if after := strings.Join(leftDownloads(os.TempDir()), "\n"); after != before {
++		t.Fatalf("timeout left download directories: %s", after)
++	}
++}
++
++func defaultRef(ref string) string {
++	if ref == "" {
++		return "HEAD"
++	}
++	return ref
++}
++
++// Hexadecimal branch and tag names follow the remote rather than being mistaken for pinned commits.
++func TestGitHexNamedRefsFollowRemote(t *testing.T) {
++	sandbox(t)
++	addr, commit, run := gitRepoFormat(t, map[string]string{"SKILL.md": "v1"}, "sha1")
++	for _, length := range []int{7, 40, 45, 64} {
++		for _, kind := range []string{"heads", "tags"} {
++			ref := strings.Repeat("a", length)
++			remoteRef := "refs/" + kind + "/" + ref
++			run("push", "-q", addr, "HEAD:"+remoteRef)
++			want := run("rev-parse", "HEAD")
++			src := Source{Kind: "git", Repo: addr, Ref: ref}
++			if got, err := gitRemoteHead(src); err != nil || got != want {
++				t.Fatalf("%s: head=%q err=%v, want %q", remoteRef, got, err, want)
++			}
++			commit(map[string]string{"SKILL.md": kind + ref})
++			run("push", "-q", "--force", addr, "HEAD:"+remoteRef)
++			want = run("rev-parse", "HEAD")
++			if got, err := gitRemoteHead(src); err != nil || got != want {
++				t.Fatalf("updated %s: head=%q err=%v, want %q", remoteRef, got, err, want)
++			}
++			run("push", "-q", addr, ":"+remoteRef)
++		}
++	}
++}
++
++// Remote object IDs and pinned commits both support SHA-256.
++func TestGitRemoteHeadSHA256(t *testing.T) {
++	sandbox(t)
++	addr, _, run := gitRepoFormat(t, map[string]string{"SKILL.md": "v1"}, "sha256")
++	want := run("rev-parse", "HEAD")
++	run("tag", "-a", "v1", "-m", "v1")
++	run("push", "-q", addr, "refs/tags/v1")
++	for _, ref := range []string{"", "main", "v1", strings.ToUpper(want)} {
++		head, err := gitRemoteHead(Source{Kind: "git", Repo: addr, Ref: ref})
++		if err != nil || head != want {
++			t.Errorf("ref %q: head=%q err=%v, want %q", ref, head, err, want)
++		}
++	}
++}
++
++// Format probing preserves the fallback to a full fetch over dumb HTTP.
++func TestFetchGitDumbHTTP(t *testing.T) {
++	sandbox(t)
++	_, _, run := gitRepoFormat(t, map[string]string{"SKILL.md": "fixture"}, "sha1")
++	run("-C", "../skills.git", "update-server-info")
++	bare := filepath.Join(filepath.Dir(filepath.Dir(run("rev-parse", "--absolute-git-dir"))), "skills.git")
++	srv := httptest.NewServer(http.FileServer(http.Dir(bare)))
++	defer srv.Close()
++	t.Setenv("GIT_DEFAULT_HASH", "sha256")
++	dir, err := fetchGit(Source{Kind: "git", Repo: srv.URL})
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer os.RemoveAll(dir)
++	if b, err := os.ReadFile(filepath.Join(dir, "SKILL.md")); err != nil || string(b) != "fixture" {
++		t.Fatalf("dumb HTTP contents: %q, %v", b, err)
++	}
++}
+diff --git a/internal/library/skillgit_legacy_test.go b/internal/library/skillgit_legacy_test.go
+new file mode 100644
+index 000000000..2405960d0
+--- /dev/null
++++ b/internal/library/skillgit_legacy_test.go
+@@ -0,0 +1,41 @@
++//go:build !windows
++
++package library
++
++import (
++	"os"
++	"path/filepath"
++	"testing"
++
++	"github.com/yetone/magpie/internal/testenv"
++)
++
++// SHA-1 downloads work with Git that knows neither --object-format nor GIT_DEFAULT_HASH.
++func TestFetchGitLegacySHA1(t *testing.T) {
++	sandbox(t)
++	addr, _, _ := gitRepoFormat(t, map[string]string{"SKILL.md": "legacy"}, "sha1")
++	t.Setenv("MAGPIE_TEST_REAL_GIT", realGit)
++	t.Setenv("GIT_DEFAULT_HASH", "sha256")
++	wrapper := filepath.Join(t.TempDir(), "git")
++	testenv.Program(t, wrapper, `#!/bin/sh
++for arg do
++  case "$arg" in
++    --object-format*)
++      echo 'error: unknown option object-format' >&2
++      exit 129
++      ;;
++  esac
++done
++unset GIT_DEFAULT_HASH
++exec "$MAGPIE_TEST_REAL_GIT" "$@"
++`)
++	gitPath = func() string { return wrapper }
++	dir, err := fetchGit(Source{Kind: "git", Repo: addr})
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer os.RemoveAll(dir)
++	if b, err := os.ReadFile(filepath.Join(dir, "SKILL.md")); err != nil || string(b) != "legacy" {
++		t.Fatalf("legacy Git contents: %q, %v", b, err)
++	}
++}
+diff --git a/internal/library/skillgit_test.go b/internal/library/skillgit_test.go
+index 57e75e9a3..df95de9cf 100644
+--- a/internal/library/skillgit_test.go
++++ b/internal/library/skillgit_test.go
+@@ -73,25 +73,45 @@ const gitRemoved = "\x00removed"
+ // system or user config of the machine's (no credential helper, no
+ // Keychain).
+ func gitRepo(t *testing.T, files map[string]string) (string, func(map[string]string)) {
++	t.Helper()
++	addr, commit, _ := gitRepoFormat(t, files, "sha1")
++	return addr, commit
++}
++
++// gitRepoFormat creates a repository in format and returns a command runner for its working copy.
++func gitRepoFormat(t *testing.T, files map[string]string, format string) (string, func(map[string]string), func(...string) string) {
+ 	t.Helper()
+ 	git := realGit
+ 	if git == "" {
+ 		t.Skip("git isn't installed")
+ 	}
++	if format == "sha256" {
++		probe := exec.Command(git, "init", "-q", "--object-format=sha256", filepath.Join(t.TempDir(), "probe"))
++		probe.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL="+filepath.Join(t.TempDir(), "gitconfig"), "LC_ALL=C", "LANGUAGE=C")
++		if out, err := probe.CombinedOutput(); err != nil {
++			if strings.Contains(string(out), "unknown option") || strings.Contains(string(out), "unknown hash algorithm") {
++				t.Skipf("git doesn't support SHA-256: %s", out)
++			}
++			t.Fatalf("probing git's SHA-256 support: %v\n%s", err, out)
++		}
++	}
+ 	old := gitPath
+ 	gitPath = func() string { return git }
+ 	t.Cleanup(func() { gitPath = old })
+ 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+ 	t.Setenv("GIT_CONFIG_GLOBAL", filepath.Join(t.TempDir(), "gitconfig"))
++	t.Setenv("GIT_DEFAULT_HASH", format)
+ 	root := t.TempDir()
+ 	bare, work := filepath.Join(root, "skills.git"), filepath.Join(root, "work")
+-	run := func(dir string, args ...string) {
++	run := func(dir string, args ...string) string {
+ 		t.Helper()
+ 		cmd := exec.Command(git, append([]string{"-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "init.defaultBranch=main", "-c", "commit.gpgsign=false"}, args...)...)
+ 		cmd.Dir = dir
+-		if out, err := cmd.CombinedOutput(); err != nil {
++		out, err := cmd.CombinedOutput()
++		if err != nil {
+ 			t.Fatalf("git %v: %v\n%s", args, err, out)
+ 		}
++		return strings.TrimSpace(string(out))
+ 	}
+ 	run(root, "init", "-q", "--bare", bare)
+ 	run(root, "init", "-q", work)
+@@ -114,17 +134,29 @@ func gitRepo(t *testing.T, files map[string]string) (string, func(map[string]str
+ 	if !strings.HasPrefix(p, "/") {
+ 		p = "/" + p // C:/… on Windows
+ 	}
+-	return "file://" + p, commit
++	return "file://" + p, commit, func(args ...string) string { return run(work, args...) }
+ }
+ 
+ func TestInstallFromGitRepo(t *testing.T) {
++	for _, format := range []string{"sha1", "sha256"} {
++		t.Run(format, func(t *testing.T) { testInstallFromGitRepo(t, format) })
++	}
++}
++
++func testInstallFromGitRepo(t *testing.T, format string) {
++	t.Helper()
+ 	sandbox(t)
+-	addr, commit := gitRepo(t, map[string]string{
++	addr, commit, _ := gitRepoFormat(t, map[string]string{
+ 		"skills/pdf/SKILL.md":    "---\nname: pdf\ndescription: PDFs\n---\nv1\n",
+ 		"skills/pdf/notes.md":    "one",
+ 		"skills/review/SKILL.md": "---\nname: review\ndescription: Reviews\n---\n",
+ 		"README.md":              "hi",
+-	})
++	}, format)
++	hashLen, clientFormat := 40, "sha256"
++	if format == "sha256" {
++		hashLen, clientFormat = 64, "sha1"
++	}
++	t.Setenv("GIT_DEFAULT_HASH", clientFormat)
+ 	p, err := ProbeSkills(addr)
+ 	if err != nil {
+ 		t.Fatal(err)
+@@ -137,7 +169,7 @@ func TestInstallFromGitRepo(t *testing.T) {
+ 	}
+ 	l, _ := load()
+ 	s := l.skill("pdf")
+-	if s == nil || s.Source.Kind != "git" || s.Source.Repo != addr || s.Source.Path != "skills/pdf" || s.Hash == "" || len(s.Commit) != 40 {
++	if s == nil || s.Source.Kind != "git" || s.Source.Repo != addr || s.Source.Path != "skills/pdf" || s.Hash == "" || len(s.Commit) != hashLen {
+ 		t.Fatalf("installed as %+v %+v", s, s.Source)
+ 	}
+ 	if b, err := os.ReadFile(filepath.Join(skillDir("pdf"), "notes.md")); err != nil || string(b) != "one" {
+@@ -165,7 +197,7 @@ func TestInstallFromGitRepo(t *testing.T) {
+ 	}
+ 	l, _ = load()
+ 	updatedAt := l.skill("pdf").Commit
+-	if len(updatedAt) != 40 || updatedAt == installedAt {
++	if len(updatedAt) != hashLen || updatedAt == installedAt {
+ 		t.Fatalf("commit after the update %q (was %q)", updatedAt, installedAt)
+ 	}
+ 	if checks, _ := CheckSkills(); len(checks) != 1 || checks[0].Status != "current" {
+@@ -178,7 +210,7 @@ func TestInstallFromGitRepo(t *testing.T) {
+ 		t.Fatalf("after a commit elsewhere %+v", checks)
+ 	}
+ 	l, _ = load()
+-	if c := l.skill("pdf").Commit; c == updatedAt || len(c) != 40 {
++	if c := l.skill("pdf").Commit; c == updatedAt || len(c) != hashLen {
+ 		t.Fatalf("the commit found the same isn't kept: %q", c)
+ 	}
+ 
+-- 
+2.50.1 (Apple Git-155)
+

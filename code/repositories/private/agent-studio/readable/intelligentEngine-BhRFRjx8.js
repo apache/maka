@@ -1,0 +1,327 @@
+import { F as e } from "./index.B_LPe2F7.js";
+async function t(t) {
+  return e(`post`, `/agent-microapp/aiagent/startSOP`, t);
+}
+async function n(t) {
+  return e(`post`, `/agent-microapp/aiagent/endSOP`, t);
+}
+async function r(t) {
+  return e(`post`, `/agent-microapp/aiagent/interrupt`, t);
+}
+async function i(t) {
+  return e(`post`, `/agent-microapp/sopLog/findList`, t);
+}
+async function a(t) {
+  return e(`post`, `/agent-microapp/sopSessionRecord/findByCondition`, t);
+}
+async function o(t) {
+  return e(`post`, `/agent-microapp/component/page`, t);
+}
+async function s(t) {
+  return e(`post`, `/agent-microapp/component/add`, t);
+}
+async function c(t) {
+  return e(`post`, `/agent-microapp/component/update`, t);
+}
+async function l(t) {
+  return e(`post`, `/agent-microapp/component/deleteById`, t);
+}
+async function u(t) {
+  return e(`get`, `/agent-microapp/dict/sysComp`, t);
+}
+async function d(t) {
+  return e(`get`, `/agent-microapp/dict/getKnowledgeParam?runModel=${t}`);
+}
+async function f(t) {
+  return e(`get`, `/agent-microapp/component/get`, t);
+}
+async function p(t) {
+  return e(`post`, `/agent-microapp/microApp/findById`, t);
+}
+async function m(t) {
+  return e(`post`, `/agent-microapp/microAppVersion/update`, t);
+}
+async function h(t) {
+  return e(`post`, `/agent-microapp/microAppVersion/test`, t);
+}
+async function g(t) {
+  return e(`post`, `/agent-microapp/microAppVersion/findById`, t);
+}
+async function _(t) {
+  return e(`post`, `/agent-microapp/microAppVersion/disable`, t);
+}
+async function v(t) {
+  return e(`post`, `/agent-microapp/microAppVersion/enable`, t);
+}
+async function y(t) {
+  return e(`post`, `/agent-microapp/component/release`, t);
+}
+async function b(t) {
+  return e(`post`, `/agent-microapp/component/downComp`, t);
+}
+async function x(t) {
+  return e(`get`, `/agent-microapp/microAppRelease/listAuditLog`, t);
+}
+async function S(t) {
+  return e(`get`, `/agent-microapp/componentRelease/listAuditLog`, t);
+}
+async function C(t) {
+  return e(`get`, `/agent-microapp/interface/listGetTokenInterface`, t);
+}
+async function w(t) {
+  return e(`get`, `/agent-microapp/dict/list`, t);
+}
+async function T(t) {
+  return e(`post`, `/agent-kg/database/getUserDataBase`, t);
+}
+async function E(t) {
+  return e(`post`, `/agent-kg/database/selectPaasDataBaseLabels`, t);
+}
+async function D(t, n) {
+  return e(`post`, `/agent-microapp/compExe/debugComp`, t, n);
+}
+async function O(t) {
+  return e(`get`, `/agent-microapp/dict/compList`, t);
+}
+async function k(t) {
+  return e(`get`, `/agent-microapp/component/canvasCompList`, t);
+}
+async function A(t) {
+  return e(`get`, `/paas-llm/v1/models/available/list`, t);
+}
+async function j(t) {
+  return e(`post`, `/agent-microapp/compExe/stopDebugComp`, t);
+}
+async function M(t) {
+  return e(`get`, `/agent-microapp/microApp/findIsFistQuy`, t);
+}
+async function N(t) {
+  return e(`post`, `/agent-microapp/microApp/autoGeneratePic`, t);
+}
+async function P(t) {
+  return e(`post`, `/agent-microapp/microAppVersion/aiAutoGenConfig`, t);
+}
+async function F(t) {
+  return e(`post`, `/agent-microapp/microApp/optimizePrompt`, t);
+}
+async function I(t, n) {
+  return e(`post`, `/agent-microapp/microAppVersion/codeAiAutoGen`, t, n);
+}
+async function L(t) {
+  let n = new FormData();
+  (n.append(`file`, t.file), n.append(`microAppVersionId`, t.id));
+  let r = {};
+  return (
+    t.logintype && (r.logintype = t.logintype),
+    e(`post`, `/agent-microapp/microAppVersion/importFile`, n, { headers: r })
+  );
+}
+async function R(t) {
+  let n = new FormData();
+  return (
+    n.append(`file`, t.file),
+    n.append(`compId`, t.id),
+    e(`post`, `/agent-microapp/component/importFile`, n)
+  );
+}
+async function z(t, n) {
+  let r = {};
+  return (
+    n.logintype && (r.logintype = n.logintype),
+    e(`get`, t, n, { headers: r })
+  );
+}
+async function B(t, n) {
+  let r = new FormData();
+  return (
+    r.append(`file`, n),
+    r.append(`versionId`, t),
+    e(`post`, `/agent-microapp/microAppVersion/importAgent`, r)
+  );
+}
+async function V(t) {
+  return e(`post`, `/agent-microapp/agent/startTaskSOP`, t);
+}
+async function H(t) {
+  return e(`post`, `/agent-microapp/agent/updateVariables`, t);
+}
+async function U(t) {
+  return e(`post`, `/agent-microapp/flow/getPage`, t);
+}
+async function W(t) {
+  return e(`post`, `/agent-microapp/flow/deleteById`, t);
+}
+async function ee(t) {
+  return e(`post`, `/agent-microapp/flow/create`, t);
+}
+async function G(t) {
+  return e(`post`, `/agent-microapp/flow/update`, t);
+}
+async function K(t) {
+  return e(`post`, `/agent-microapp/flow/updateData`, t);
+}
+async function q(t) {
+  return e(`post`, `/agent-microapp/flow/getById`, t);
+}
+async function J(t) {
+  return e(`post`, `/agent-microapp/agent/variable/findByCondition`, t);
+}
+async function Y(t) {
+  return e(`post`, `/agent-microapp/agent/variable/deleteById`, t);
+}
+async function X(t) {
+  return e(`post`, `/agent-microapp/agent/variable/create`, t);
+}
+async function Z(t) {
+  return e(`post`, `/agent-microapp/agent/variable/update`, t);
+}
+async function Q(t) {
+  return e(`post`, `/agent-microapp/agent/variable/findById`, t);
+}
+async function $(t) {
+  return e(`post`, `/agent-microapp/agent/intent/findPage`, t);
+}
+async function te(t) {
+  return e(`post`, `/agent-microapp/agent/intent/create`, t);
+}
+async function ne({ id: t }) {
+  return e(`post`, `/agent-microapp/agent/intent/deleteById?id=${t}`);
+}
+async function re({ id: t }) {
+  return e(`post`, `/agent-microapp/agent/intent/findById?id=${t}`);
+}
+async function ie(t) {
+  return e(`post`, `/agent-microapp/agent/intent/update`, t);
+}
+async function ae(t) {
+  return e(`post`, `/agent-microapp/agent/entity/findByCondition`, t);
+}
+async function oe(t) {
+  return e(`get`, `/agent-microapp/dict/list`, t);
+}
+async function se(t) {
+  return e(`post`, `/agent-microapp/agent/entity/create`, t);
+}
+async function ce(t) {
+  return e(`post`, `/agent-microapp/agent/entity/update`, t);
+}
+async function le(t) {
+  return e(`post`, `/agent-microapp/agent/entity/deleteById`, t);
+}
+async function ue(t) {
+  return e(`post`, `/agent-microapp/agent/entity/findById`, t);
+}
+async function de(t) {
+  return e(`post`, `/agent-microapp/topic/create`, t);
+}
+async function fe(t) {
+  return e(`post`, `/agent-microapp/topic/update`, t);
+}
+async function pe(t) {
+  return e(`post`, `/agent-microapp/topic/getById`, t);
+}
+async function me(t) {
+  return e(`post`, `/agent-microapp/topic/deleteById`, t);
+}
+async function he(t) {
+  return e(`post`, `/agent-microapp/topic/getPage`, t);
+}
+async function ge(t) {
+  return e(`post`, `/agent-microapp/agent/config/getByVersionId`, t);
+}
+async function _e(t) {
+  return e(`post`, `/agent-microapp/agent/config/setting`, t);
+}
+async function ve(t) {
+  return e(`post`, `/agent-microapp/compExe/debugWorkflowNode`, t);
+}
+async function ye(t) {
+  return e(`get`, `/agent-memories/sessions/records/getLogList`, t);
+}
+async function be(t) {
+  return e(`get`, `/agent-memories/sessions/records/details`, t);
+}
+async function xe(t) {
+  return e(`get`, `/agent-memories/graph/execute/log/getDetail`, t);
+}
+async function Se(t) {
+  return e(`post`, `/agent-microapp/graphAgent/disposable`, t);
+}
+export {
+  he as $,
+  u as A,
+  A as B,
+  M as C,
+  o as D,
+  f as E,
+  ge as F,
+  E as G,
+  C as H,
+  xe as I,
+  i as J,
+  be as K,
+  re as L,
+  w as M,
+  ue as N,
+  y as O,
+  ae as P,
+  pe as Q,
+  $ as R,
+  z as S,
+  H as St,
+  S as T,
+  p as U,
+  x as V,
+  g as W,
+  q as X,
+  a as Y,
+  U as Z,
+  Y as _,
+  ie as _t,
+  de as a,
+  R as at,
+  v as b,
+  fe as bt,
+  N as c,
+  F as ct,
+  ve as d,
+  V as dt,
+  T as et,
+  l as f,
+  j as ft,
+  me as g,
+  ce as gt,
+  W as h,
+  c as ht,
+  ee as i,
+  L as it,
+  O as j,
+  oe as k,
+  I as l,
+  _e as lt,
+  ne as m,
+  m as mt,
+  se as n,
+  Q as nt,
+  X as o,
+  r as ot,
+  le as p,
+  h as pt,
+  ye as q,
+  te as r,
+  B as rt,
+  P as s,
+  Se as st,
+  s as t,
+  J as tt,
+  D as u,
+  t as ut,
+  _ as v,
+  G as vt,
+  k as w,
+  n as x,
+  Z as xt,
+  b as y,
+  K as yt,
+  d as z,
+};

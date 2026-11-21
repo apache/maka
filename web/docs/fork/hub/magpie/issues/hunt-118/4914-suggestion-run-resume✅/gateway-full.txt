@@ -1,0 +1,28 @@
+# 原件摘要：gateway-full.txt
+
+> 原件超过 200KB，按 handbook/10 §5 改为摘要（2026-11-08 治理）。原件仍在 git 历史中。
+
+- 原文件名：`gateway-full.txt`
+- 字节：578385
+- sha256：`25cf0e5f8f1f6c36dfd49d9463a8530d23a28042b9b36b8923addd53bdcba3dc`
+- 回取：`git -C /Users/ggbdpq/cc show dbdf77a4:guahub/fork/docs/hub/magpie/issues/hunt-118/4914-suggestion-run-resume✅/gateway-full.txt > /tmp/gateway-full.txt`
+- 用途：原始测试套件日志（验证矩阵留证）
+
+## 关键结论
+
+- `ok` 包行 0 条；`FAIL`/`--- FAIL` 行 4 条。
+- FAIL 行（前 15 条）：
+```
+--- FAIL: TestCodexPoolSaysTheClientsVersion (0.03s)
+FAIL
+FAIL	github.com/yetone/magpie/internal/gateway	559.241s
+FAIL
+```
+- 末 5 行：
+```
+2026/11/02 23:59:06 gateway: other's call to mockzai/glm-5.2 on mockzai failed: 429 after 0s: Z.ai: Z.ai: Usage limit reached for 5 hour. Your limit will reset at 2026-11-03 02:59:06 (out of its allow
+FAIL
+FAIL	github.com/yetone/magpie/internal/gateway	559.241s
+FAIL
+EXIT=1
+```

@@ -1,0 +1,25 @@
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py kiro baseline
+INPUT: CONFIG: fixed kiro source allowlist
+OUTPUT: BASELINE PASS groups=1 files=1374 bytes=48943908 protected=0
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py kiro archive
+INPUT: 843234308cf670e0092884f5da998a587dc27a1f545561664eb86b32feb75b84
+OUTPUT: ARCHIVE PASS zip_files=1 files=1374 bytes=48943908
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py kiro apply
+INPUT: 256c26e3903bca4088792e6512ce2752f03581cb4bc2685bc418a1da699ec48d
+OUTPUT: APPLY PASS removed_files=1374 removed_bytes=48943908
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py kiro verify
+INPUT: d0b89d3c9ff0d646d8ea100eff3888b335c2e66d2692a439b49931637c71b426
+OUTPUT: MODIFIED PASS files=1374 bytes=48943908 originals_absent=true protected_unchanged=true
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py kiro rollback-test
+INPUT: d0b89d3c9ff0d646d8ea100eff3888b335c2e66d2692a439b49931637c71b426
+OUTPUT: ROLLBACK PASS restored_files=1374 restored_bytes=48943908 hashes_match=true originals_untouched=true
+EXIT: 0
+

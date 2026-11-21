@@ -1,0 +1,10 @@
+--- FAIL: TestProbe4923Shapes (0.00s)
+    probe4923_test.go:29: [DEBUG-4923] CodeArts  A(with expiring)=0.26785714285714285 due=20h0m0s  B(no expiring)=0.1488095238095238
+    probe4923_test.go:45: [DEBUG-4923] OfficeAce fresh A=0.125 due=720h0m0s  B=0.1388888888888889
+    probe4923_test.go:47: [DEBUG-4923] OfficeAce fresh: A does not go first (0.125 <= 0.1388888888888889)
+    probe4923_test.go:57: [DEBUG-4923] OfficeAce burned A=0 due=20h0m0s  vs fresh B=0.1388888888888889
+    probe4923_test.go:59: [DEBUG-4923] OfficeAce burned: A (0) ranks below a fresh B (0.1388888888888889)
+    probe4923_test.go:63: [DEBUG-4923] OfficeAce fresh A renewals=[2026-12-02 22:29:39.633391 +0800 CST m=+2592000.013435751 2026-11-03 18:29:39.633391 +0800 CST m=+72000.013435751]  B renewals=[2026-12-02 22:29:39.633391 +0800 CST m=+2592000.013435751]
+FAIL
+FAIL	github.com/yetone/magpie/internal/provider	1.105s
+FAIL

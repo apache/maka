@@ -1,0 +1,38 @@
+=== RUN   TestChatReasoningRelayedAsItComes
+--- PASS: TestChatReasoningRelayedAsItComes (1.93s)
+=== RUN   TestThinkingStreamsThroughGroup
+=== RUN   TestThinkingStreamsThroughGroup/anthropic
+=== RUN   TestThinkingStreamsThroughGroup/chat
+--- PASS: TestThinkingStreamsThroughGroup (3.78s)
+    --- PASS: TestThinkingStreamsThroughGroup/anthropic (2.41s)
+    --- PASS: TestThinkingStreamsThroughGroup/chat (1.37s)
+=== RUN   TestSlowThinkerDoneChannelDoesNotHoldASecondAsk
+--- PASS: TestSlowThinkerDoneChannelDoesNotHoldASecondAsk (0.00s)
+=== RUN   TestThinkingStreamsWithNoOneElse
+=== RUN   TestThinkingStreamsWithNoOneElse/anthropic/v1/messages
+=== RUN   TestThinkingStreamsWithNoOneElse/anthropic/v1/responses
+=== RUN   TestThinkingStreamsWithNoOneElse/chat/v1/messages
+=== RUN   TestThinkingStreamsWithNoOneElse/chat/v1/responses
+=== RUN   TestThinkingStreamsWithNoOneElse/chat_gpt/v1/messages
+=== RUN   TestThinkingStreamsWithNoOneElse/chat_gpt/v1/responses
+=== RUN   TestThinkingStreamsWithNoOneElse/responses/v1/messages
+=== RUN   TestThinkingStreamsWithNoOneElse/responses/v1/responses
+=== RUN   TestThinkingStreamsWithNoOneElse/gemini/v1/messages
+=== RUN   TestThinkingStreamsWithNoOneElse/gemini/v1/responses
+=== RUN   TestThinkingStreamsWithNoOneElse/chat_gemini/v1/messages
+=== RUN   TestThinkingStreamsWithNoOneElse/chat_gemini/v1/responses
+--- PASS: TestThinkingStreamsWithNoOneElse (18.39s)
+    --- PASS: TestThinkingStreamsWithNoOneElse/anthropic/v1/messages (2.30s)
+    --- PASS: TestThinkingStreamsWithNoOneElse/anthropic/v1/responses (2.29s)
+    --- PASS: TestThinkingStreamsWithNoOneElse/chat/v1/messages (1.35s)
+    --- PASS: TestThinkingStreamsWithNoOneElse/chat/v1/responses (1.34s)
+    --- PASS: TestThinkingStreamsWithNoOneElse/chat_gpt/v1/messages (1.29s)
+    --- PASS: TestThinkingStreamsWithNoOneElse/chat_gpt/v1/responses (1.30s)
+    --- PASS: TestThinkingStreamsWithNoOneElse/responses/v1/messages (1.90s)
+    --- PASS: TestThinkingStreamsWithNoOneElse/responses/v1/responses (1.95s)
+    --- PASS: TestThinkingStreamsWithNoOneElse/gemini/v1/messages (1.12s)
+    --- PASS: TestThinkingStreamsWithNoOneElse/gemini/v1/responses (0.93s)
+    --- PASS: TestThinkingStreamsWithNoOneElse/chat_gemini/v1/messages (1.31s)
+    --- PASS: TestThinkingStreamsWithNoOneElse/chat_gemini/v1/responses (1.32s)
+PASS
+ok  	github.com/yetone/magpie/internal/gateway	24.469s

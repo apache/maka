@@ -1,0 +1,201 @@
+From 279c436f9fb7c5e9c905c014b7beef2684f6c672 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Fri, 16 Oct 2026 23:15:19 +0800
+Subject: [PATCH] gateway: a name a TUN's fake-ip answers is fetched, not
+ refused
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+specialNets held 198.18.0.0/15, RFC 2544's benchmarking range, among the
+addresses no caller's URL is downloaded from. With Clash's TUN mode in
+fake-ip (or Surge's enhanced mode) the resolver answers every name with
+an address in that range and carries the connection through the tunnel
+to the real host, so the judged resolution always landed there and
+web_fetch refused every page, example.com included (#2593). The provider
+icons have let the range through for the same reason since #252: no
+machine on the user's network sits in it, so a fetch aimed at it reaches
+the internet host the name stands for where a tunnel answers, and nowhere
+at all where none does. The range is let through here too, and the rest
+of the guard holds as ea3dee96 left it: loopback, RFC 1918, fc00::/7,
+link-local with the cloud metadata service, CGNAT, documentation,
+reserved, and every other special range still refuse a caller's URL,
+every resolved address is still checked before the request is pinned to
+it, the address dialled is checked again, and each redirect goes through
+the same.
+
+Docs: docs/subsystems/gateway-routing.md (the guard paragraph names the
+exemption, web_fetch's list its new test).
+
+Tests written first, each red before the range came out of specialNets,
+green after: TestPublicAddr names the range's four corners public and,
+just beside it, a documentation address private;
+TestWebFetchReadsANameAtAFakeIPAddress reads a page whose name resolves
+to 198.18.5.1, a local server standing in for the tunnel's proxy since
+no tunnel answers in the test — the proxy is sent the fake address the
+name was pinned to, never the name; its red form said the page "is at a
+private address ... which web_fetch doesn't read", the report's words.
+
+Fixes #2593
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ docs/subsystems/gateway-routing.md         |  5 ++-
+ internal/gateway/image_fetch_guard.go      | 17 ++++++--
+ internal/gateway/image_fetch_guard_test.go |  3 +-
+ internal/gateway/search_fetch_test.go      | 48 ++++++++++++++++++++++
+ 4 files changed, 66 insertions(+), 7 deletions(-)
+
+diff --git a/docs/subsystems/gateway-routing.md b/docs/subsystems/gateway-routing.md
+index d126263c..30dd6452 100644
+--- a/docs/subsystems/gateway-routing.md
++++ b/docs/subsystems/gateway-routing.md
+@@ -556,7 +556,8 @@ elements dropped), other text as it is, anything else is a tool error, and
+ so is a status of 400 or more. It answers `max_chars` characters (20000 by
+ default, at most 100000) from `offset`, and says the offset the rest starts
+ at. Each call reserves the calling key's limit as a search does.
+-`TestWebFetchReadsAPage` and `TestWebFetchOnlyPublic`.
++`TestWebFetchReadsAPage`, `TestWebFetchOnlyPublic` and
++`TestWebFetchReadsANameAtAFakeIPAddress`.
+ 
+ A POST's body is read by `readMCPBody`, up to 1 MiB here and 32 MiB for
+ vision and for a signed-in server's `/mcp/{name}`. A longer body is refused
+@@ -702,7 +703,7 @@ the row of the entry that id reaches, with its label, under the bare id.
+   [`bare_ids_test.go`](../../internal/gateway/bare_ids_test.go),
+   `TestBareModelIDsSetting` in `internal/gui`, and
+   `internal/gui/tests/bare-ids.test.cjs`.
+-- A URL magpie downloads but didn't choose itself is downloaded from public addresses only, wherever the request came from ([`image_fetch_guard.go`](../../internal/gateway/image_fetch_guard.go)). That is an image a caller names (an `/v1/images/edits` or `/v1/images/generations` reference image, for an images API that takes files, Gemini's own API or Code Assist: `fetchPicture` in [`draw.go`](../../internal/gateway/draw.go), `publicClient`), a page `web_fetch` reads (`webFetchClient`), and an image or video a vendor answers by URL, which what the model was asked to draw or do can steer (the inline download for a `b64_json` caller in `draw.go` and `/v1/videos/{id}/content` in [`video.go`](../../internal/gateway/video.go), `vendorClient`; generate_image's own download in [`internal/imagemcp`](../../internal/imagemcp/imagemcp.go), `PublicClient`). Every address the host resolves to must be public (`publicAddr`: not loopback, RFC 1918, fc00::/7, link-local with 169.254.169.254, CGNAT 100.64/10, unspecified, multicast, documentation, reserved, Teredo, nor an IPv4-mapped, NAT64 or 6to4 form of one), and the request goes to the address checked, so a name that resolves elsewhere the second time changes nothing; a direct connection is checked again on the address dialled (`guardDialer`). Through a proxy the proxy is sent that address, never the name (an `https://` CONNECT or SOCKS keeps the name for TLS and Host; a plain `http://` URL through an HTTP proxy is asked for by the address in Host too). Each redirect, up to 5, is checked the same, and a caller's image must sniff as an image. A request from this computer gets nothing more: a reverse proxy or relay in front of magpie on the same host makes every request it carries arrive from loopback, so where a request came from is never a reason to reach a private address. Two things are: settings.json's `fetchPrivate` (`settings.FetchPrivate`, none by default, no Settings page, this computer's own and never brought by a sync or restore), a list of names, `name:port`s, IPs and CIDR ranges the user lets magpie download from (`allowFor`; a settings.json that can't be read lets nothing extra in), and for a vendor's URL the `host:port` of that provider's own endpoints, which the user named themselves (a provider on the LAN that serves its images from itself). A vendor's image that can't be downloaded is answered by its URL, never dropped; its video is a 502 naming why. A URL left for the vendor to fetch (a chat model's message) is the vendor's to fetch.
++- A URL magpie downloads but didn't choose itself is downloaded from public addresses only, wherever the request came from ([`image_fetch_guard.go`](../../internal/gateway/image_fetch_guard.go)). That is an image a caller names (an `/v1/images/edits` or `/v1/images/generations` reference image, for an images API that takes files, Gemini's own API or Code Assist: `fetchPicture` in [`draw.go`](../../internal/gateway/draw.go), `publicClient`), a page `web_fetch` reads (`webFetchClient`), and an image or video a vendor answers by URL, which what the model was asked to draw or do can steer (the inline download for a `b64_json` caller in `draw.go` and `/v1/videos/{id}/content` in [`video.go`](../../internal/gateway/video.go), `vendorClient`; generate_image's own download in [`internal/imagemcp`](../../internal/imagemcp/imagemcp.go), `PublicClient`). Every address the host resolves to must be public (`publicAddr`: not loopback, RFC 1918, fc00::/7, link-local with 169.254.169.254, CGNAT 100.64/10, unspecified, multicast, documentation, reserved, Teredo, nor an IPv4-mapped, NAT64 or 6to4 form of one; 198.18.0.0/15, RFC 2544's benchmarking range, is let through, since Clash's TUN mode with fake-ip and Surge's enhanced mode answer every name with an address there and carry the connection to the real host through the tunnel (#252, #2593)), and the request goes to the address checked, so a name that resolves elsewhere the second time changes nothing; a direct connection is checked again on the address dialled (`guardDialer`). Through a proxy the proxy is sent that address, never the name (an `https://` CONNECT or SOCKS keeps the name for TLS and Host; a plain `http://` URL through an HTTP proxy is asked for by the address in Host too). Each redirect, up to 5, is checked the same, and a caller's image must sniff as an image. A request from this computer gets nothing more: a reverse proxy or relay in front of magpie on the same host makes every request it carries arrive from loopback, so where a request came from is never a reason to reach a private address. Two things are: settings.json's `fetchPrivate` (`settings.FetchPrivate`, none by default, no Settings page, this computer's own and never brought by a sync or restore), a list of names, `name:port`s, IPs and CIDR ranges the user lets magpie download from (`allowFor`; a settings.json that can't be read lets nothing extra in), and for a vendor's URL the `host:port` of that provider's own endpoints, which the user named themselves (a provider on the LAN that serves its images from itself). A vendor's image that can't be downloaded is answered by its URL, never dropped; its video is a 502 naming why. A URL left for the vendor to fetch (a chat model's message) is the vendor's to fetch.
+ 
+ ## Verification
+ 
+diff --git a/internal/gateway/image_fetch_guard.go b/internal/gateway/image_fetch_guard.go
+index b91472f3..705b9283 100644
+--- a/internal/gateway/image_fetch_guard.go
++++ b/internal/gateway/image_fetch_guard.go
+@@ -25,9 +25,11 @@ import (
+ // page web_fetch reads. Never from this computer (loopback), the user's
+ // own network (RFC 1918, fc00::/7), link-local addresses (169.254/16 with
+ // the cloud metadata service, fe80::/10), CGNAT (100.64/10, Tailscale's),
+-// or the other special ranges below — through any redirect too. Otherwise
+-// whoever can send magpie a request could have it read a service only
+-// this computer reaches and get its answer back as the "image".
++// or the other special ranges below — through any redirect too. One range
++// is exempt, 198.18.0.0/15, where a TUN's fake-ip answers every name (see
++// specialNets below). Otherwise whoever can send magpie a request could
++// have it read a service only this computer reaches and get its answer
++// back as the "image".
+ //
+ // Where the request came from changes nothing: one that reaches magpie
+ // on loopback may well be a reverse proxy's or a relay's on the same
+@@ -146,6 +148,14 @@ var lookupIP = func(ctx context.Context, host string) ([]netip.Addr, error) {
+ 
+ // specialNets are ranges no caller's image is fetched from beyond those
+ // net/netip names (loopback, private, link-local, multicast, unspecified).
++//
++// 198.18.0.0/15, RFC 2544's benchmarking range, is not one of them: Clash's
++// TUN mode with fake-ip and Surge's enhanced mode answer every name with an
++// address there and carry the connection through the tunnel to the real
++// host (#2593, as the provider icons already allow, #252). No machine on
++// the user's network sits in that range, so a fetch aimed at it reaches the
++// internet host the name stands for where a tunnel answers, and nowhere at
++// all where none does.
+ var specialNets = func() []netip.Prefix {
+ 	var out []netip.Prefix
+ 	for _, s := range []string{
+@@ -153,7 +163,6 @@ var specialNets = func() []netip.Prefix {
+ 		"100.64.0.0/10",   // CGNAT, Tailscale
+ 		"192.0.0.0/24",    // IETF protocol assignments
+ 		"192.0.2.0/24",    // documentation
+-		"198.18.0.0/15",   // benchmarking
+ 		"198.51.100.0/24", // documentation
+ 		"203.0.113.0/24",  // documentation
+ 		"240.0.0.0/4",     // reserved, broadcast
+diff --git a/internal/gateway/image_fetch_guard_test.go b/internal/gateway/image_fetch_guard_test.go
+index de320c34..0479e642 100644
+--- a/internal/gateway/image_fetch_guard_test.go
++++ b/internal/gateway/image_fetch_guard_test.go
+@@ -20,11 +20,12 @@ func TestPublicAddr(t *testing.T) {
+ 	for s, want := range map[string]bool{
+ 		"127.0.0.1": false, "127.9.9.9": false, "10.1.2.3": false, "172.16.0.1": false,
+ 		"192.168.1.1": false, "169.254.169.254": false, "100.64.0.1": false, "100.100.100.100": false,
+-		"0.0.0.0": false, "224.0.0.1": false, "255.255.255.255": false,
++		"0.0.0.0": false, "224.0.0.1": false, "255.255.255.255": false, "198.51.100.4": false,
+ 		"::1": false, "::": false, "::ffff:127.0.0.1": false, "::ffff:10.0.0.1": false,
+ 		"::ffff:169.254.169.254": false, "::ffff:100.64.0.1": false, "fe80::1": false, "fc00::1": false, "fd12::1": false,
+ 		"ff02::1": false, "64:ff9b::7f00:1": false, "2002:7f00:1::": false, "::7f00:1": false,
+ 		"8.8.8.8": true, "93.184.216.34": true, "::ffff:8.8.8.8": true, "2606:4700::1111": true,
++		"198.18.0.1": true, "198.18.255.255": true, "198.19.0.1": true, "198.19.255.255": true,
+ 		"64:ff9b::808:808": true,
+ 	} {
+ 		if got := publicAddr(netip.MustParseAddr(s)); got != want {
+diff --git a/internal/gateway/search_fetch_test.go b/internal/gateway/search_fetch_test.go
+index f4c14dd4..8444370b 100644
+--- a/internal/gateway/search_fetch_test.go
++++ b/internal/gateway/search_fetch_test.go
+@@ -3,11 +3,15 @@ package gateway
+ import (
+ 	"context"
+ 	"encoding/json"
++	"io"
+ 	"net/http"
+ 	"net/http/httptest"
+ 	"net/netip"
+ 	"strings"
++	"sync"
+ 	"testing"
++
++	"github.com/yetone/magpie/internal/settings"
+ )
+ 
+ func fetchCall(url string, more string) string {
+@@ -136,3 +140,47 @@ func TestWebFetchOnlyPublic(t *testing.T) {
+ 		t.Fatal("a private address was reached")
+ 	}
+ }
++
++// Under Clash TUN's fake-ip and Surge's enhanced mode the resolver answers
++// every name with an address in 198.18.0.0/15, RFC 2544's benchmarking
++// range, and the tunnel carries the connection to the host the name stands
++// for (#2593, as the provider icons already allow, #252). Such a name is
++// fetched, not refused. No tunnel answers in the test, so a local server
++// stands in for the tunnel's proxy: it is sent the fake address the name
++// was pinned to, never the name.
++func TestWebFetchReadsANameAtAFakeIPAddress(t *testing.T) {
++	fresh(t)
++	var mu sync.Mutex
++	asked := ""
++	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		mu.Lock()
++		asked = r.URL.String() + " Host=" + r.Host
++		mu.Unlock()
++		w.Header().Set("Content-Type", "text/plain")
++		io.WriteString(w, "the real page")
++	}))
++	t.Cleanup(srv.Close)
++	st := settings.Load()
++	st.Proxy = srv.URL
++	if err := settings.Save(st); err != nil {
++		t.Fatal(err)
++	}
++	was := lookupIP
++	lookupIP = func(_ context.Context, host string) ([]netip.Addr, error) {
++		if host == "example.test" {
++			return []netip.Addr{netip.MustParseAddr("198.18.5.1")}, nil
++		}
++		return was(context.Background(), host)
++	}
++	t.Cleanup(func() { lookupIP = was })
++	h := lanGuard(New().Handler())
++	got, isErr := fetchText_(t, h, fetchCall("http://example.test/page", ""))
++	if isErr || !strings.Contains(got, "the real page") {
++		t.Fatalf("a name at a fake-ip address: %v %q", isErr, got)
++	}
++	mu.Lock()
++	defer mu.Unlock()
++	if asked != "http://198.18.5.1:80/page Host=198.18.5.1:80" {
++		t.Fatalf("the tunnel was asked %q", asked)
++	}
++}
+-- 
+2.50.1 (Apple Git-155)
+

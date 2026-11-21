@@ -1,0 +1,45 @@
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py workbuddy-ai baseline
+INPUT: CONFIG: fixed workbuddy-ai source allowlist
+OUTPUT: BASELINE PASS groups=10 files=15727 bytes=375867366 protected=1
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py workbuddy-ai archive
+INPUT: 022c6b5b332d6618139b9788fd0c27d75d5c9db6eb1d1c22c2866ef182aab9b4
+OUTPUT: ARCHIVE PASS zip_files=10 files=15727 bytes=375867366
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py workbuddy-ai apply
+INPUT: b11927b8a682059cd4641de64184892dc08199cc6fdb01ba1f5a88f292db1cd9
+OUTPUT: PermissionError: [WinError 5] 拒绝访问。: 'C:\\Users\\802165\\.workbuddy-ai\\logs\\2026-10-20\\2026-10-19-12-02-20__111e8ffd98e0cda9f447079afe38da5b.log'
+EXIT: 1
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py workbuddy-ai verify
+INPUT: b11927b8a682059cd4641de64184892dc08199cc6fdb01ba1f5a88f292db1cd9
+OUTPUT: ValueError: Expected migrated
+EXIT: 1
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py workbuddy-ai rollback-test
+INPUT: b11927b8a682059cd4641de64184892dc08199cc6fdb01ba1f5a88f292db1cd9
+OUTPUT: ValueError: Expected migrated
+EXIT: 1
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py workbuddy-ai apply
+INPUT: b11927b8a682059cd4641de64184892dc08199cc6fdb01ba1f5a88f292db1cd9
+OUTPUT: APPLY PASS removed_files=15727 removed_bytes=375867366 skipped=29
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py workbuddy-ai apply
+INPUT: 656aadcc7657c80d592f558fb06ad92d3393970dbb0e34a0f9614519a4edec19
+OUTPUT: ValueError: Expected archived
+EXIT: 1
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py workbuddy-ai verify
+INPUT: 656aadcc7657c80d592f558fb06ad92d3393970dbb0e34a0f9614519a4edec19
+OUTPUT: MODIFIED PASS files=15727 bytes=375867366 originals_absent=true protected_unchanged=true
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py workbuddy-ai rollback-test
+INPUT: 656aadcc7657c80d592f558fb06ad92d3393970dbb0e34a0f9614519a4edec19
+OUTPUT: ROLLBACK PASS restored_files=15727 restored_bytes=375867366 hashes_match=true originals_untouched=true
+EXIT: 0
+

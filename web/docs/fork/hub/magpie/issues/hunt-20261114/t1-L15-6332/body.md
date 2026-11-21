@@ -1,0 +1,25 @@
+Answering the two follow-up questions from my comment above (all line numbers at upstream `65f745dd4`):
+
+## 1. After account A fails, does it go to SUB2 directly, or to account B inside SUB1 first?
+
+**To account B inside SUB1 first. A failure moves the request to the next item of the try list, and a group's members sit together in that list — so the switch runs inside the group until the group's usable accounts are used up, and only then reaches the next group.** There is no separate "jump to the next group" step: nesting is flattened into one list when the turn begins, and the walk is strictly serial.
+
+- The group is flattened when the request is planned: `planLevel` (`internal/gateway/fallback.go:764`) expands a nested subgroup's members in place, block by block — `out = append(out, cs...)` (`internal/gateway/fallback.go:942`), each account/key of each member its own entry (`perKeyBarred`, `internal/gateway/fallback.go:305`). So the list reads: SUB1's accounts together, then SUB2's, in the parent group's order.
+- The walk then just counts down that list: `for i := 0; i < len(cands); i++` (`internal/gateway/gateway.go:3602`), and every failure exit `continue`s to the next `i` — the next item of the list, whatever group it belongs to. If SUB1 = [A, B, C] and SUB2 = [P], A failing means B is asked next, then C, then P.
+- When a rule names SUB2 at the turn's start, SUB2's members are put first instead (`ruleOver`, `internal/gateway/rules.go:758`; call site `internal/gateway/gateway.go:3290`, under the "the rule's member first, over whoever answered last" note) — and the same adjacency applies inside SUB2: its accounts are tried in its own order, and only when none of them can take the turn does it fall back to the group's own order, where SUB1 sits ahead.
+- Shared accounts make the list shorter, not different: the same account met in both subgroups is kept once, where it was met first, and the later place is recorded on it (`internal/provider/group.go:1375`: "asked once, where it was met first"; the dedup key includes the account, `group.go:1367`). So with SUB1 = [A, B, C] and SUB2 = [B, C, P], the try list is [A, B, C, P] — B and C are only tried where SUB1 holds them; SUB2 contributes only its own P.
+- Two footnotes, for precision: accounts held out at planning time (100% used, resting on 429, over the context window) never enter this walk — they are ranked last or aside before the first try, as in your pasted log. And the one account that holds the conversation's vendor cache is asked once more, after a short wait, when it fails with a busy-type error (overloaded, 5xx, timeout) before the request moves — `keptAgain`, `internal/gateway/affinity.go:1539`; a 429 rests and moves as before.
+
+## 2. Shared accounts shown under only one subgroup in the routing graph
+
+**This is the same rendering semantics already reported in #5959 — same root cause, so I'll point there rather than re-classify it.** #5959 documents it for a model shared between subgroups; your case is the same mechanism with an account member, and it runs through the same three places:
+
+- Members are deduplicated across the group tree, keyed by provider/model/effort/account, and a member met a second time is recorded on its first place only (`internal/provider/group.go:1375-1379`, key at `group.go:1367`) — "asked once, where it was met first; a rule naming this group still finds it here (#2361)". This part is deliberate: it is what makes a rule naming SUB2 still find the shared member there (#2361).
+- The request trace carries each member's group path from that first place only: `groupRef` writes one `via` per member from `m.Groups()` (`internal/gateway/trace.go:291`), and `m.Groups()` reads the member's main path, never its `Also` (`internal/provider/group.go:477`).
+- The Routing page hangs each member under the subgroup its `via` names (`internal/gui/assets/plugins/routing/client.js:2750`, walked down by `wiresTo` at `client.js:2555`). A shared account's `via` only names SUB1, so the graph draws it under SUB1 and nowhere else — the graph never sees that the member also lives in SUB2.
+
+So the routing behavior and the drawing share one data shape: one record per member, at its first place. That is why #5959's reporter (whose own static analysis of the same three spots matches what I read above) sees shared models vanish from the later group, and why your overlapping accounts appear under only one SUB. Whether the graph should also show the member's other places is exactly what #5959 asks; it has no maintainer response yet, and I won't add a second verdict here — the observation in this issue and the one in #5959 now point at the same open question, and your account-level example is additional evidence for it.
+
+**Not verified**: no live multi-account routing or Routing-page observation was run — everything above is static reading of the code at `65f745dd4`, your log, and the two issues' texts; and no real accounts here to reproduce either question end to end.
+
+Attribution: written with GLM-5.3-Flash (ZCode).

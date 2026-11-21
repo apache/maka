@@ -1,0 +1,5 @@
+帖URL: https://github.com/yetone/magpie/issues/5469#issuecomment-6717765139
+分支: fix/5469-claude-max-output-tokens
+head: 10c291d9da026f4a4a9b3e5fef2c1f21099463a8 (rebase to eef99e4bb)
+patch sha256前16: 010e80a7b9b60e87
+take: 6717331878

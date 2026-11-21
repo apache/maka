@@ -1,0 +1,25 @@
+{
+  "id": "93",
+  "slug": "assign-cookies",
+  "title": "分发饼干",
+  "difficulty": "easy",
+  "tags": ["贪心", "排序"],
+  "description": "假设你是一位很棒的家长,想给你的孩子们一些饼干。每个孩子 `i` 都有一个胃口值 `g[i]`,每块饼干 `j` 都有一个尺寸 `s[j]`。只有 `s[j] >= g[i]` 时,孩子才满足。你的目标是尽可能满足越多数量的孩子,并输出这个最大数值。\n\n**示例 1:**\n\n- 输入:`g = [1,2,3]`, `s = [1,1]`\n- 输出:`1`\n\n**示例 2:**\n\n- 输入:`g = [1,2]`, `s = [1,2,3]`\n- 输出:`2`",
+  "solution": "## 思路\n\n**贪心**:对孩子和饼干都升序排序,双指针分配——用尽量小的饼干满足当前胃口最小的孩子。\n\n## 参考代码\n\n```js\nfunction findContentChildren(g, s) {\n  g.sort((a, b) => a - b);\n  s.sort((a, b) => a - b);\n  let i = 0;\n  let j = 0;\n  while (i < g.length && j < s.length) {\n    if (s[j] >= g[i]) i++;\n    j++;\n  }\n  return i;\n}\n```\n\n## 复杂度\n\n- 时间:O(n log n + m log m)\n- 空间:O(1)",
+  "signature": {
+    "language": "javascript",
+    "entry": "findContentChildren",
+    "params": [
+      { "name": "g", "type": "number[]" },
+      { "name": "s", "type": "number[]" }
+    ],
+    "returns": "number"
+  },
+  "testCases": [
+    { "sample": true, "input": [[1, 2, 3], [1, 1]], "expected": 1 },
+    { "sample": true, "input": [[1, 2], [1, 2, 3]], "expected": 2 },
+    { "sample": false, "input": [[1, 2, 3], []], "expected": 0 },
+    { "sample": false, "input": [[], [1]], "expected": 0 },
+    { "sample": false, "input": [[10, 9, 8], [5, 6, 7]], "expected": 0 }
+  ]
+}

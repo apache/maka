@@ -1,0 +1,402 @@
+From 050274670c31086e986b235061ebe9d3bbc3c119 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Fri, 30 Oct 2026 05:56:33 +0800
+Subject: [PATCH] redact: a host's name goes as one under .example the agent
+ can use
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Told "ssh to {{HOSTNAME_…}}", the model asked the user for the real host
+instead of running ssh, as it did for an address before its
+documentation one (#4063). A host's name the user@host rules find (a
+shell prompt's, an ssh command's, a HostName or hostname line's) now
+goes as one under the .example set aside for it (RFC 2606's), made from
+the host as a user name's stand-in is (hostStandInOf), so it is the same
+every turn and a vendor's cache still matches. No one's host ends in
+.example (hostOK never masks one), so a stand-in is never taken for a
+host the user wrote, and it never masks again. It is put back only
+where it stands as a whole name, in a streamed tool call's arguments
+too (restoreHost): sub.qmvkrta.example and qmvkrta.example.net are no
+put-back of qmvkrta.example, a full stop with none of a name's bytes
+after it ends the sentence and the name under it is put back. Preview
+shows the same stand-in.
+
+Run:
+- New tests (internal/redact/standin_host_test.go): an ssh command's
+  host under .example with no placeholder, the same stand-in twice, the
+  preview the same, the reply and the tool call put back whole and
+  streamed cut at every byte, whole-name boundaries (a port, a sentence
+  full stop, brackets against sub., .net, .5, a letter and a digit
+  beside it), a stand-in never masked again, and the other host rules
+  (Hostname:, ssh config's HostName, a prompt) the same way.
+  TestMoreKinds wants the stand-in now.
+- Broken by hand: without hostStandIn (shape.go and redact.go's Preview
+  back at f982e46f2, the new test kept) TestHostGoesAsAStandInUnderExample
+  is red: sent "run ssh cfpvdwbw@{{HOSTNAME_fszqay2y}} -p 22 …", want
+  the host under .example; TestOtherHostRulesGoAsAStandIn is red on all
+  three rules. With the change back: ok.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ docs/subsystems/gateway-routing.md   |   2 +-
+ internal/redact/more_test.go         |   3 +
+ internal/redact/redact.go            |   3 +
+ internal/redact/shape.go             | 100 +++++++++++++++++++++
+ internal/redact/standin_host_test.go | 129 +++++++++++++++++++++++++++
+ site/public/docs/ja/masking.html     |   2 +-
+ site/public/docs/masking.html        |   2 +-
+ site/public/docs/zh/masking.html     |   2 +-
+ 8 files changed, 239 insertions(+), 4 deletions(-)
+ create mode 100644 internal/redact/standin_host_test.go
+
+diff --git a/docs/subsystems/gateway-routing.md b/docs/subsystems/gateway-routing.md
+index f221f90b1..69872d4d7 100644
+--- a/docs/subsystems/gateway-routing.md
++++ b/docs/subsystems/gateway-routing.md
+@@ -138,7 +138,7 @@ recorded as a prediction failure (`noPrediction`).
+ 
+ 1. `handle(proto)` reads the body and the model (`requestBody`, `requestModel`), then calls `serveAgent`. Every route that reads an agent's body (each API, count_tokens, Gemini's, embeddings, images, videos, System One, the Codex backend path) reads it through `readBoundedRequestBody` in [`request_bounds.go`](../../internal/gateway/request_bounds.go). It decodes a `Content-Encoding` of `gzip` or `zstd` (`decodedBody`; Codex sends zstd to a custom provider's `/v1/responses` too, #1223) and drops the header, so the provider is sent plain JSON, with one exception: a ChatGPT account's turn (POST `CodexBase`/responses, from the accounts loop in `forwardOnce` or relayed by `codexUpstreamOn`) is compressed again with zstd and a window of at most 2 MiB, as Codex's own client sends it (`provider.CodexCompressed`; openai/codex `responses_request_compression` and `http-client/src/request.rs`). It is compressed once the body is final, and again on each try. `/responses/compact`, an API key's requests and every other provider stay plain. Sent plain, a 1.1 MB text-only turn was answered 503 (ylorn on X). The plain body is what magpie keeps and shows, and `codexDropped` judges a reset by the bytes that went on the wire. `codexDropped` also reads Envoy's 507 "exceeded request buffer limit while retrying upstream" (the backend failed and the front couldn't retry a body that large) as that reset, at any size, told as a 503 so magpie, Codex and pi ask again and nobody rests (#2034). The size limit (`defaultBodyLimit`, 512 MB) holds for the decoded bytes (413), and any other encoding is refused 415. It was 128 MB until a long Codex session that had read many images went past it decoded, its inline screenshots resent each turn, and got the 413 on all five of Codex's retries (#1422, `TestImageHeavyCodexTurnIsRead`). magpie's own 413 says it is magpie's gateway limit, with the size, and that the provider was not asked (`overLimit`); `writeError` adds to any 413 it isn't holding that this is a byte limit, not the model's context, and to `/compact` or start a new conversation (`TestOverLimitSaysWhoseAndWhatToDo`). Every shape but Gemini's types a 413 `request_too_large`, Anthropic's own type, which pi's overflow table knows: pi compacts and tries once more rather than stopping on an OpenAI-shaped `api_error` (@wilsonxuuuu on X, `TestPayloadTooLargeSaysRequestTooLargeToPi`). `keyLimited` reads a limited key's compressed body the same way, so its reservation is the decoded size. `serveAgent` runs the [middleware](gateway-middleware.md) chain, then `serve`.
+ 2. `serve` redacts secrets in the request (`redacted`; `redact.MaskJSON` leaves ids alone, and in any text a backend's id (a UUID, 32 hex digits or more, or a digest of 16 to 31 hex digits in one case with letters and digits both, a cache key or a short commit, which went as a key before: _kaichen on X, 10-28; `digestShaped`), or an element token cua-driver hands the model for computer use (`s0000002a:14`, #3782), goes as written: no rule, model label or value known from before masks a piece of one (a phone number at the end of `…-a13800138000`, a card number across a UUID's groups), and a whole one is masked only by the user's own words and rules or as a credential, by the password, API key and token rules or a secret rule whose field is named for one (`api_key=`, `refresh_token`), never one named for an id, a cursor, a request or a digest (`secret_id`, `next_page_token`, `Idempotency-Key`, `secret_hash`), nor cua-driver's own `element_token` (any other name with `element` in it, `element_api_key`, is a credential's as before), a bare `key` (not after api, access, secret, private, signing or license: `keyPhrase`), a field named for a cache, commit, object, blob, file, content, revision, partition, shard, bucket, dedup, lookup, row or sort key, a serial number, or what the model takes a UUID or an element token for, nor an element token known from before (one the model labelled in prose a turn earlier) (`noIDs`, [`internal/redact/ids.go`](../../internal/redact/ids.go)); and a tool's name and its MCP server's (`namespace`, `server_label`, `server_name`, #3143); the request's tool definitions and output schemas, found by their place in each protocol (top-level `tools`, `tool_choice`, `response_format`, `text`, `generationConfig`, `stream_options`, the client's ids in `client_metadata` and the like, and the tools of a Responses `additional_tools` or `tool_search_output` item), go as written save their descriptions, so a word the user masks can't break a grammar or an enum (#1911); and what the vendor sealed with a signature, a thinking block, Gemini's thoughts or Responses' encrypted reasoning, goes back as the vendor wrote it: only the values masked elsewhere in the request, and secrets masked before, are put back as their placeholders; a value masked once, at least 8 characters long, is masked again wherever a request has it, as an exact match whatever words are around it, so what the vendor wrote about a placeholder doesn't go back with the value in it, `redact/known.go`; a text masked for a vendor before, such as a system prompt or a turn already sent, is masked as it was then, so a value a rule first finds later in a conversation doesn't change the prompt the vendor has cached and rewrite all of it to the cache, `sentKnownSpans`), resolves the model to a provider or a group, and refuses what can't be served. The reply has the values put back on its way to the agent (`redact.Writer`, a stream event by event, a whole body at its end, before the writer outside it that names the member, `memberWriter`, writes what it holds: the other way round a whole reply with a value masked in its request went out a 200 with an empty body, #4129, `TestMaskedWholeReplyNamesMember`): a placeholder the model wrote as it was given, or as models rewrite one (spaces inside the braces, a brace or both dropped, another case), is the value again when what is left names one magpie made, and one split across events is held until it is whole (`redact.Restore`, `partialTail`, [`internal/redact/redact.go`](../../internal/redact/redact.go)). A request whose provider and fallbacks, or whose group's models, all skip redaction (`unredactedRoute`, `provider.SkipsRedaction`: set *Send requests unmasked*, `Unredacted`, with every address on this machine or the local network) goes to them as the agent wrote it and isn't masked on its way, since a request is masked only once its route is known (#3973: masking a body whose masked copy was thrown away took up to minutes of magpie's own time). The log, recent calls and the request archive keep it as it went (the archive's bodies have their secrets taken out, `redact.ScrubJSON`, as every call's do), whether the archive is on or off; an observer that wants the bodies (the OTLP export, a JS plugin's) is handed it masked, masked once when it is first handed it after a try (`Call.maskIn`, `laterMasked`), never before the request is sent. A request turned away before it is routed is logged masked (`maskedCopy`). count_tokens and embeddings follow the same rule. A request masking would change can go to such a model instead (jessyoungyu on X: 「{{百度}}这家公司怎么样」 can't be answered from a placeholder): with Settings › Privacy's *Instead of masking, send to* set (`RedactRouteTo`, `POST /api/settings/redact-route`, which takes only a model `MaskRoute` passes: `unredactedRoute` for its provider and fallbacks, or its group), an agent's turn that masking would change (`maskHits.n` > 0: a warn-only hit doesn't count, and a held-back one stays held back) goes as written to that model, the model asked for left alone, in `serve` after the request is masked (`maskRouteFor` in [`redact.go`](../../internal/gateway/redact.go); the masked copy is thrown away, so streaming and every API go as for any route). If it fails, the request fails: its fallbacks are all unmasked ones by `unredactedRoute`, and nothing is masked and sent to the model asked for. It is judged again on each request, so a route that has since got a vendor's address, a fallback elsewhere, was turned off, or isn't one of a gateway key's models is ignored and the request is masked as before. Only an agent's own turn is moved (`agentTurn`, set in `serveAgent` and cleared by `ownAsk`): a title, a search stand-in, a picture described, System One and Jev stay masked. count_tokens is counted on the route (`countTokens`), and a turn of Codex's own model on its ChatGPT sign-in goes there too (`codexMaskRoute` in `codexBackend`; masked once to decide, only while it is set). Unset, as by default, nothing changes. Tests: `TestMaskedRequestGoesToTheModelSet`, `TestCodexSigninTurnGoesToTheModelSet`, `TestMaskRouteOnlyForTheAgentsTurn`, `TestMaskRouteTakesOnlyUnmaskedRoutes` ([`mask_route_test.go`](../../internal/gateway/mask_route_test.go)) and `TestRedactRouteSetting` in internal/gui. What a routing group's Jev is told of the turn (the message, the user's message before it and the reply to it) is masked all the same unless Jev's own provider skips redaction too (`maskedState` in `askJev`, [`decide.go`](../../internal/gateway/decide.go)): a remote Jev is none of the group's members. The masking is the built-in plugin `redact`'s (`gwmw.Masker`, [Plugin runtime](plugin-runtime.md)); when the settings ask for masking and no masker serves, or it fails, the request is a 503 and nothing is sent (`redacted`, `gwmw.Masking`).
+-   - With *Mask personal data* on, each kind in `redact.Categories` ([`internal/redact/more.go`](../../internal/redact/more.go)) is masked unless the user turned it off (`redactKinds` in settings, `Options.Kinds`). On by default: US SSNs, passport numbers, IBANs that pass mod 97, birthdays next to a word that says so (a date over a year ago: one in the last year or ahead is the day an agent runs on, `dateOK`); the word must be right before the date, so a log line's or a file name's date is none, and a time beside the date doesn't make it a log's: a date of birth stored as a time (`1990-05-11T16:00:00.000Z`) is one (`TestBirthdayLogDates`; #3878), MAC addresses, and serial numbers next to S/N or the like. Eleven digits from 13 to 19 are a mainland mobile's form and an id's too, so they are a phone only with +86 or 86 before them, as the value of a field whose name says phone (phone, mobile, tel, cell, contact, 手机, 电话, a field named `number`), or in prose with no id's word right before them (order, id, no., #, 订单号, 编号, 单号, 流水号); under order_id or uid, after 订单号, or with a letter or digit against them they go as written (`phoneAt` in [`internal/redact/phone.go`](../../internal/redact/phone.go); _kaichen on X, 10-28). Off by default: the user name in a home folder, user@host in a prompt or ssh command, public IPv4 and IPv6 addresses (never private, loopback, link-local, CGNAT or documentation ranges) and cloud bucket names, since agents send them in nearly every request and the model must copy the placeholder exactly inside a path or URL. When the user name is on, it goes as a made-up name of 8 lowercase letters, the same for that name every turn and put back in replies like any placeholder (`standIn` in [`shape.go`](../../internal/redact/shape.go)), not as `{{USERNAME_…}}`: with mimo-v2.6-flash a model read `C:\Users\{{…}}` as a temporary folder and set out to delete it (eerttreeeert on X, 10-28). A public IP address goes the same way as an address from the documentation ranges (192.0.2.0/24, 198.51.100.0/24 and 203.0.113.0/24, host .101 to .254; 2001:db8::/32 for IPv6), the same one for that address while magpie runs and never another address's, put back only where it stands as a whole address, in a streamed tool call's arguments too (`ipStandIn`, `restoreAddr`; `TestIPGoesAsADocumentationAddress`). Told `{{IP_…}}`, models asked the user for the real address or searched `~/.ssh` for it instead of running ssh (0x0_air on X, 10-28); past the 462 IPv4 stand-ins an address goes as its placeholder. An EVM address (`0x` and 40 hex digits) is public, so the local model's finds leave it as written unless a key's name is right before it; a 64-digit private key is still masked (`evmRe` in `modelFits`; `TestEVMAddressGoesAsWritten`). Context rules run only near their words (`rule.matches`). What reads as an address but ends in a file's extension that no domain has (`…@2x.jpg`, `strings@base.json`; `fileExt` in `realEmail`), or a scale before an extension that is a domain too (`icon@2x.zip`, `intro@1.5x.mov`; `scaleExt`), is a file's name, for the rule and the local model alike (#3029). A domain needs a dot and labels a host can have, so a disassembly's symbols go as written for both too: `system@plt`, `puts@got.plt`, `memcpy@GLIBC_2.14`, `foo@@GLIBC_2.2.5`, and `system@got` (`.got` is a top-level domain; `mailHost` in `realEmail`, `TestSymbolIsNoEmail`; ch35tnut_ on X, 10-28). `ops@files.zip` is still an address. The Settings rows come from `REDACT_KINDS` in app.js, which `TestRedactKindsAreRedacts` holds to the same ids and defaults.
++   - With *Mask personal data* on, each kind in `redact.Categories` ([`internal/redact/more.go`](../../internal/redact/more.go)) is masked unless the user turned it off (`redactKinds` in settings, `Options.Kinds`). On by default: US SSNs, passport numbers, IBANs that pass mod 97, birthdays next to a word that says so (a date over a year ago: one in the last year or ahead is the day an agent runs on, `dateOK`); the word must be right before the date, so a log line's or a file name's date is none, and a time beside the date doesn't make it a log's: a date of birth stored as a time (`1990-05-11T16:00:00.000Z`) is one (`TestBirthdayLogDates`; #3878), MAC addresses, and serial numbers next to S/N or the like. Eleven digits from 13 to 19 are a mainland mobile's form and an id's too, so they are a phone only with +86 or 86 before them, as the value of a field whose name says phone (phone, mobile, tel, cell, contact, 手机, 电话, a field named `number`), or in prose with no id's word right before them (order, id, no., #, 订单号, 编号, 单号, 流水号); under order_id or uid, after 订单号, or with a letter or digit against them they go as written (`phoneAt` in [`internal/redact/phone.go`](../../internal/redact/phone.go); _kaichen on X, 10-28). Off by default: the user name in a home folder, user@host in a prompt or ssh command, public IPv4 and IPv6 addresses (never private, loopback, link-local, CGNAT or documentation ranges) and cloud bucket names, since agents send them in nearly every request and the model must copy the placeholder exactly inside a path or URL. When the user name is on, it goes as a made-up name of 8 lowercase letters, the same for that name every turn and put back in replies like any placeholder (`standIn` in [`shape.go`](../../internal/redact/shape.go)), not as `{{USERNAME_…}}`: with mimo-v2.6-flash a model read `C:\Users\{{…}}` as a temporary folder and set out to delete it (eerttreeeert on X, 10-28). A public IP address goes the same way as an address from the documentation ranges (192.0.2.0/24, 198.51.100.0/24 and 203.0.113.0/24, host .101 to .254; 2001:db8::/32 for IPv6), the same one for that address while magpie runs and never another address's, put back only where it stands as a whole address, in a streamed tool call's arguments too (`ipStandIn`, `restoreAddr`; `TestIPGoesAsADocumentationAddress`). Told `{{IP_…}}`, models asked the user for the real address or searched `~/.ssh` for it instead of running ssh (0x0_air on X, 10-28); past the 462 IPv4 stand-ins an address goes as its placeholder. A host's name (user@host, a `HostName` line, a `hostname:` one) goes the same way as one under the `.example` set aside for it (RFC 2606's), the same one for that host while magpie runs, put back only where it stands as a whole name, in a streamed tool call's arguments too (`hostStandIn`, `restoreHost`; `TestHostGoesAsAStandInUnderExample`). Told `{{HOSTNAME_…}}`, models asked the user for the real host instead of running ssh (#4063). An EVM address (`0x` and 40 hex digits) is public, so the local model's finds leave it as written unless a key's name is right before it; a 64-digit private key is still masked (`evmRe` in `modelFits`; `TestEVMAddressGoesAsWritten`). Context rules run only near their words (`rule.matches`). What reads as an address but ends in a file's extension that no domain has (`…@2x.jpg`, `strings@base.json`; `fileExt` in `realEmail`), or a scale before an extension that is a domain too (`icon@2x.zip`, `intro@1.5x.mov`; `scaleExt`), is a file's name, for the rule and the local model alike (#3029). A domain needs a dot and labels a host can have, so a disassembly's symbols go as written for both too: `system@plt`, `puts@got.plt`, `memcpy@GLIBC_2.14`, `foo@@GLIBC_2.2.5`, and `system@got` (`.got` is a top-level domain; `mailHost` in `realEmail`, `TestSymbolIsNoEmail`; ch35tnut_ on X, 10-28). `ops@files.zip` is still an address. The Settings rows come from `REDACT_KINDS` in app.js, which `TestRedactKindsAreRedacts` holds to the same ids and defaults.
+    - With *Find with a local model* on (`masking.ModelWanted`: on by default since 10-28, `settings.RedactModel` the user turning it on and `RedactModelOff` off, this computer's own, kept by `KeepOwn`; a user with a model downloaded or picked and neither flag turned it off before the default, and `RedactModelAuto` marks the default's own download), a local model finds what no rule can, a name or an address in free text, under the same switches: a name, address, phone, email or account number is personal data, a secret a secret (`modelKinds`, `modelSpans` in [`internal/redact/model.go`](../../internal/redact/model.go)). `MaskJSON` asks it once per request, for every text it would mask, each once (`withModel`), but for what the agent defines (its tools' and schemas' descriptions, under `defKeys`), which the rules alone mask, as with the model off, after the rest of the request so a value the model found in a message is masked there too as known: those were 52,577 of Claude Code 2.1.296's 67,532 bytes the model read, and a 4-core server's first request waited out the gateway's 2 minutes (niuniu_8964 on X; 11.5s cold at 4 procs on a Ryzen AI Max+, 2.6s without them, and on three real Claude Code requests the model masked nothing there the rules didn't); its spans join the rules' with a rule's kind kept where both find a value, and ids a vendor or tool made (`req_…`, `toolu_…`) are never taken, nor a snake_case word as a name (Codex's `sequential_cutoff`, #3144), nor as a secret what names a thing: a UUID, a digest with its algorithm's name, a file's path (`namesThing`; the model takes all three for secrets). A package's name goes as written, for the model and the rules alike (dniray on Discord, v0.1.1917): the module a line of code loads (`from ' drizzle-orm '`, `require('jsonwebtoken')`, `from x import`, `use x::`, with an editor's line number or a diff's mark before it; `moduleAt`, `codeHead`), a manifest's dependency pinned at a version (`"drizzle-orm": "^0.36.4"`, TOML's `x = "9"`; `dependencyAt`), a folder under node_modules or site-packages, the module an error could not find (`Cannot find module 'x'`, `No module named 'x'`; `missingModuleAt`), a package an install names (`pnpm add x`; `installedAt`) or pins with @ (`x@0.36.4`; `pinnedAt`), all in `packageAt`; a value known from an earlier mask (`knownSpans`) goes as written there too, since once the model took the name for a secret anywhere in a request it was masked on the import line as known (dniray, v0.1.1965), a requirement's name before its pinned version (`django-rest-passwordreset==1.4.0`; `pinnedAfter`), a lock file's integrity hash (`sha512-…`; `sriRe` in `namesThing`), a version as the value of a field named for a secret (`"js-tokens": "^4.0.0-beta.1"`; `versionValue` in `fieldAt` and `keyAt`), and a package pinned at its version as user@host has it (`js-tokens@4.0.0:` in pnpm-lock.yaml; `notPackagePin`); `TestPackageNamesGoAsWritten` and `TestModelPackageNamesNotMasked` hold them. The model misses many Chinese names (张伟 after 给, 陈建国 after 客户, however low its threshold) and runs a name it finds on into the words after it (「王芳，她下周一」), so with Privacy Filter a Chinese name is also found by its surname and a word around it that says a person is meant (客户, 我叫, 给…发, …先生, …说, joined by 和 to another name; 和 or 与 says so only after a person, 吴敏和郑浩 but not 判断和边界, 发 or 打 only as the verb, 发了个 but not 关键发现, and a sentence starts after punctuation, not after a space after code, `gh pr view` 易触发; xuanwo on X; 一下 only after a verb that asks a person, 问一下张伟 but not 改一下文案, a word any subject takes after it, 已经, 明天 or 他, only with a person's cue before it, and 说明 is no 说; zeewell on X), and the model's are cut at punctuation and titles ([`zhname.go`](../../internal/redact/zhname.go)); a surname with nothing around it (王国的, 张开的) is left, and so is a common word that starts with one (`zhWords`: 文案, 文档, 方案; 毛利, 毛重, 毛巾, since 毛利 is a margin far more often than the Japanese surname, so 毛利低 goes as written: _kaichen on X, 10-28; the model still finds 毛利兰, and neither model nor rule masks 毛利小五郎), the model's own name too when it is that word whole. A name the model or the cues take is also no name when it is an ordinary word (`zhWordShaped`, `zhWordNotName`, the one check both go through): a colour (黄绿色, 红色, any that ends in 色 or is colour characters alone: hh05928822 on X after v0.1.1850), a word that starts with a surname from `zhWords` or `zhDict` (about 1,550 two-character words from jieba's dictionary, [`zhdict.txt`](../../internal/redact/zhdict.txt), its header saying how they were chosen; 边界, 应该, 尚可), or such a word with what makes a longer word after it (关键词, 关键字: wangjunxiao128 on X; 应用层, 毛利率), unless a role before it or a title after it says a person is meant (客户方圆, 江山老师), where a name that is also a word is masked. The surnames stay (黄 starts 黄绿色 and 黄晓明), and 毛利兰, 关羽 and 黄晓明 are still masked. With AstrLink Guard only a nickname is (小王, 老李, `zhNick`; `redact.Options.NamesByModel`): Guard at 0.8 finds the full names those cues did in zhname_test's sentences (张伟, 陈建国, 欧阳娜娜…), and misses the nicknames, 孙经理, and all but the surname of 王老板 and 邓总; the cues took words for names (关键发现; xuanwo on X). The model is the user's pick (`settings.RedactModelName`, `pii.Choose`; the app's menu beside the switch, `pmPick`): AstrLink Guard (QuantumNous/astrlink-guard at a pinned revision, Apache-2.0, a 39 MB int8 Multilingual-MiniLM token classifier for Chinese and English), run in magpie's own process on the CPU by [`internal/pii/guard`](../../internal/pii/guard) (an ONNX reader, the XLM-R tokenizer and int8 kernels in Go, NEON/SDOT on arm64 and SSE2 on amd64; its labels named as Privacy Filter's, `guardLabels`); a text over one window, 510 tokens, is read in windows that overlap by 128, and on the CPU as many windows at once as it has cores, half of `GOMAXPROCS` and 4 at most (`guard.Cores`: on every core a long history unread kept a 32-core Linux box at 13 cores' worth for as long as requests came, xinvxueyuan and shensmart on Discord, 10-28): one window's matmuls split over the cores left them idle between, and a 4-core server's first Claude Code request waited minutes (niuniu_8964 on X; 22,488 tokens took 23.9s at 4 procs, 17.9s at once, and 48.8s against 30.5s at 2), and on a Mac through CoreML on the Neural Engine or the GPU ([`coreml.go`](../../internal/pii/guard/coreml.go), [`internal/pii/guard/coreml`](../../internal/pii/guard/coreml); yyhhyyyyyy on X; Settings › Privacy names which, from CoreML's own compute plan of the compiled model, `MLComputePlan` on macOS 14.4 and later, the device most of its program's estimated cost is on (`coreml.Plan`, `Model.Backend`, `Status.Via` and `Device`): it said "on the CPU" under CoreML, yyhhyyyyyy on Discord, 10-27; an M5 Pro's plan puts all of it on the GPU; after a CoreML read fails it says the CPU and why until one doesn't): the same network from the same int8 weights in float16, written from the downloaded model into a program made by `coreml_gen.py` and compiled once into the model's folder, 512 tokens in about 12 ms where the CPU takes 400, its probabilities within .07 of the publisher's fp32 model where the CPU's are within .13 (the CPU quantizes activations as the int8 model does, CoreML doesn't), so a span near the threshold can fall the other side (a go.mod module path is a secret at .81 on CoreML, .79 on the CPU, .785 in fp32); a window under 16 tokens (`coremlMin`), a Mac before macOS 13 or any failure goes to the CPU, loaded on the first request and let go after 10 minutes with none; or OpenAI's Privacy Filter. With no pick it is AstrLink Guard, the default; a user who had Privacy Filter on before there was a choice keeps it only while AstrLink Guard downloads, which the first masked request starts and which then saves AstrLink Guard as the pick (`masking.picked`, `toGuard`; an hour between tries after a failure). Measured for that default (#3578): on 234 segments of real code and config it found 2 spans where Privacy Filter found 100 (38 of them go.sum hashes after redact's own checks), and with the rules it found 42 of 42 test values to Privacy Filter's 41. Each model has its own download, cache file and turn (`backend`). AstrLink Guard's turn has `guard.Cores()` places (`guardTurn`), so that many requests read at once, and they share those cores: every window, of any request, takes one of `guard.Cores()` tokens before it reads and more only while they are free (`guard.take`), so requests together never read on more cores than one did (the 4 promised xinvxueyuan and shensmart above); the model loads once (`guardLoading`), the idle timer lets go only when no place is held (`guardIdle`), and a text one request is reading another waits for rather than reading it too (`backend.reading`). Before, one request read at a time, and an agent's parallel requests queued behind it (yyhhyyyyyy on Discord, 10-28, who asked for 16 at once). Measured at 1, 2, 4 and 8 requests at once (a Ryzen AI Max+ 395 under WSL, 4 cores): 512-byte requests 4.2, 6.1, 8.1 and 8.4 a second where one at a time was 4.2 whatever came, on 1.9 to 3.9 cores, memory flat at about 150 MB; 4 KB requests already read their 3 windows on 3.6 cores alone, so they stay at 0.6 a second (Windows on the same box: 7.5 to 12.1 a second at 1 to 8, 4 KB 0.7 to 0.8, on at most 3.8 cores). Each request on cores of its own would read 20 a second at 8, on 12 cores, and 4 KB at 8 took 20 cores and 521 MB (953 MB on an M5 Pro), so the bound is the cores, not the count, and there is no setting for it. Through CoreML the GPU is the bound: on an M5 Pro 4 KB requests read 23, 20, 25 and 25 a second at 1, 2, 4 and 8, a model per request no faster, so CoreML reads one window at a time, and only the windows under `coremlMin` or after a failure use the CPU's tokens. Both find at a floor of 0.5 (`pii.Floor`) and give each span its score (AstrLink Guard: the least of its tokens' probabilities, rounded to a float32 so a cached span reads back the same; Privacy Filter: pf-serve's own), and masking keeps those at the model's threshold or over (`pii.Threshold` in `masking.model`): the user's for that model (`settings.RedactModelScore`, this computer's own; Settings → Privacy's Confidence threshold, `pmScore`, 0.5 to 0.95), else the model's own (`MinScore`: Privacy Filter 0.5, AstrLink Guard 0.8, its publisher's). A value known from before follows the same threshold: each value masked remembers the highest score anything found it with (a rule's counts as sure), and one only the model found, under the threshold now, is no longer masked again as known (`noteScores`, `knownSpans` in [`known.go`](../../internal/redact/known.go); before, a raised slider changed nothing for a value masked once: _kaichen on X, 10-28). The defaults stay because on the eval a higher one mostly loses values the checks after the model would have kept (Privacy Filter at 0.85 lost a Chinese name; AstrLink Guard at 0.9 a phone in a tool result), while the false alarms it would drop are mostly dropped by those checks already (Yayoi_no_yume on X). Measured again on 2000 segments of real agent traffic (Codex and Claude Code sessions: prompts, tool arguments and results, a quarter with Chinese) and 30 more labelled cases: AstrLink Guard at 0.88 rather than 0.8 drops 3 false alarms (a model id, a sandbox path word, a token counter) and lets a colleague's name and a signed name through; Privacy Filter at 0.88 rather than 0.5 drops 11 (timestamps in paths, log lines, a plugin id) and lets 6 real names and a phone through (4 of the names in the real traffic). Lowering Guard to 0.5 finds 2 more names in the real traffic and 3 more labelled values, for 10 more false alarms (9 of them Claude Code's `<total_tokens>` counter). Those false alarms are shapes a check can turn away; a threshold can't without losing real values. Privacy Filter is a q8 GGUF (1.6 GB), run by `pf-serve` ([`native/privacy-filter`](../../native/privacy-filter), built from privacy-filter.cpp on ggml and released under `pf-v*` tags; on a GPU it holds the model once, in the device's memory, #3590; every pf-serve keeps the engine's own MoE chunk, `PF_MOE_CHUNK` at the window's 4096, which an RX 470 through Vulkan read 6-9% faster than 2048 in interleaved runs and Metal ~6% faster, and inherits a value the user set): Settings → Privacy's On downloads both (`pii.Download`, each checked against its pinned sha256, through magpie's proxy (`netproxy.Func`, as its other requests; hh0592821 on Discord, whose download went direct before), from hf-mirror first in China (`source.chinaFirst`) and from hf-mirror after Hugging Face everywhere else, the switch off too (`source.modelMirror`), so a poisoned or blocked huggingface.co doesn't stop it; hf-mirror serves AstrLink Guard's files itself and sends Privacy Filter's back to Hugging Face) and saves the setting only once they are on disk (`/api/privacy-model`, [`privacymodel.go`](../../internal/gui/privacymodel.go)). `pii.Find` starts `pf-serve` on the first request (Metal, Vulkan, else the CPU; one that dies on the GPU, doesn't load there in 40s (`gpuLoadTimeout`, well inside the gateway's 2 minutes), or doesn't answer in time there twice in a row, is started on the CPU, and Settings says why; a request it didn't answer in time once is tried on the GPU again, since a slow request on a weak GPU is no lost GPU (#3682). The GPU is tried again 10 minutes later, doubling to 2 hours while it keeps failing, with no restart (`gpuRetryAfter`), and one that answers is the model's again), joins short texts into 12 KB chunks and maps the spans back, cuts a text over 12 KB into pieces of 12 KB at most that overlap by 1 KB (`pieces`: after a line's end, else a space, of those in the piece's second half the one whose 48 bytes before it hash least (`landmark`), so a line edited early in a text leaves the pieces after it as they were, else at a rune's start), each kept by its own hash, their spans put back at the text's offsets and merged where pieces overlap (`merge`: one found twice is one, one cut by a piece's end is whole), and a value of 8 bytes or more found in a text is found wherever else it is in it, as sure as its surest find (`spread`: the model scored an address on 400 lines alike 0.9 on some and 0.5 on most, wangwu25685333 on X), and asks pf-serve a chunk at a time (#3682: a 480 KB text whole took an RX 470/580 90s and kept nothing when cut off), keeps the last 20000 answers by hash, on disk too (`found-<model>.bin` beside the model: hashes, offsets, labels and each span's score, never text; a `pfound01` file from before scores is read with every span sure, so it masks as it did; written through temp-and-rename, a bad read taken as empty), so a restart doesn't ask the model about every history again (#3682), and ends it after 10 minutes with no request. Its requests take turns on its one pipe (`turn`), and a request reads the cache again when its turn comes; a request waits for its turn only while its context lives (`pii.FindContext`, through `gwmw.ContextTeller`), so one whose client went away leaves the queue (the gateway's 2 minutes leave masking's time out, #3682); the chunk pf-serve is on is finished and kept, so a request sent again asks only about what is left, and between chunks the turn is given up and taken again, by the request waiting with the least left to read (`takeTurn`, `queue`), so a short request goes before the rest of every long one (wangwu25685333 on X: a 5 KB request behind two long ones on 4 cores waited 8.3s in the order they came, 4.5s now). The status (`pii.Now`), `pii.Stop` and the idle timer never wait for a load or a request: `srv.mu` is held only to read or set the state, and `Stop` ends a load or a request under way at once. A request held before routing while it waits for the model is answered 504 saying so, and how to send without it (`unroutedMsg`); one of an older tag (`oldTags`, magpie updated since the download) runs until the pinned tag's is fetched (`upgrade`, on its start), which is then started on the next request and the old deleted ([`internal/pii`](../../internal/pii)). A failure names what ended `pf-serve`: magpie's own end of a request it didn't answer in time, else its exit status or signal and its last stderr lines past ggml's startup chatter (`died`, `lastSaid`). After one, requests are held back at once with that failure, not after a load each, until the model is tried again 30s later, doubling to 10 minutes while it keeps failing (`heldBack`, `retryAfter`; lazyeo on Discord, an M2 whose every request waited out the 504). Until the model is on disk the rules mask alone, and its download starts (`masking.fetch`, an hour between tries; the default's, done, saved by `settings.UseDefaultRedactModel` unless the user picked or turned it off meanwhile; cancelling it is turning it off). A model the user turned on that fails (didn't start, isn't on disk, held back after a failure) panics, so the request is held back with the 503 above rather than sent with the rules' masking alone (`masking.model`, strict); the default's finds nothing then, and the rules mask alone. A model that is only slow is waited for at most 2 seconds from the request's masking start when on by default (`masking.defaultWait`) and 15 seconds when the user turned it on (`masking.strictWait`): its turn, its load and its reading. Past that, or when the request's context ends first, `pii.FindContext` answers with what was known of the request's texts by then (its cache: the history read on earlier turns, and the chunks read meanwhile) and a `*pii.Partial` saying how many it hadn't read; `masking.model` masks those with the model's finds and the rest with the rules alone, logging it at most once a minute (`notePartial`), and the request goes. Nothing the rules mask goes as written. Before, the user's model was waited for with no bound and any end of the wait held the request back whole, its known finds thrown away: in a burst of requests with text the model hadn't read, xRayySummers on X (0.1.1877, Linux) saw masking take 1.2s to 290s in one minute and each request it ended was "masking failed, so nothing was sent". Reproduced on 8 cores of a Linux CPU: AstrLink Guard reads about 6 KB a second there (a 125 KB history 20.8s), and six requests at once with 67 to 145 KB of new tool results each took 62 to 110s, all ending near the last, since the turn goes round between chunks; with the bound each went at 15.0s with the history's finds and the model's for 1 to 4 of its 9 texts. `masking.find` gives a model that doesn't stop for its context 100ms to answer with what it knew (`handBack`) before giving up on it. AstrLink Guard reads on the CPU, so a long Codex history it hasn't seen took minutes there, and every request queued behind it showed masking with no bound (shensmart on Discord, 10-28, magpie in Docker). The wait is given up even where `Find` doesn't stop for its context. A request that stops waiting leaves the chunks after the one being read (`backend.find`), so it doesn't hold the turn; that chunk's answers are kept for the next request. Each model reads a request's unread texts newest first, the last text and a long one's last piece before the rest (`backend.missing`), since an agent's history is oldest first and what a request adds is at its end; AstrLink Guard joins them into chunks of 4 KB, not Privacy Filter's 12 KB (`backend.chunk`, `guardChunk`), so the chunk a request leaves the model finishing past its wait is about a second on 4 cores. The default's request is `pii.Bounded`: what one went without the model's reading is remembered by hash (`backend.sent`), and a request after it reads what it adds first and that backlog `backlogCap` (4 KB) at most, nothing found for the rest, so a history resumed or never read is read a little a request rather than on every core for each one. Measured on a 2 MB, 200-turn Codex history never read, 30 requests 3s apart (`TestLiveHistoryCost`, gated on `MAGPIE_GUARD_FILES`): on a 32-core Linux box 33 to 60 CPU seconds a request before, 23 minutes of CPU over the session's 108s (13 cores busy), 6 to 10 after, 4 minutes over 90s (2.7 cores), and on an M5 Pro's CoreML 2.2 CPU seconds a request for the first three before, the first alone after; nothing runs on after the last request either way. A request the user turned the model on for still reads all of it, waited for `strictWait`.
+    - With *Mask secrets* on, the user's own masking rules (`redactRules`, `redact.Rule`: a placeholder name and a prefix or an RE2 pattern, [`internal/redact/rules.go`](../../internal/redact/rules.go)) run before magpie's. Settings → Privacy adds them, removes them, and edits one in place (`POST /api/settings/redact-rule` with the rule's index and its current value, `editRedactRule` in [`internal/gui/api.go`](../../internal/gui/api.go)). Every rule is checked by `redact.CheckRules` when settings are saved; an edit that doesn't compile, matches the empty string, repeats another rule or names a rule no longer at that index is refused with the rules left as they were. The masker reads the rules from settings on each call (`options` in [`internal/masking`](../../internal/masking/masking.go)), so a change applies to the next request.
+    - The user's own masked words (`redactWords`, `Options.Words`; Settings → Privacy's *Masked words*) go as `{{TERM_…}}` whatever else is on, and come back as written. They match as written, inside longer words too, unless the user asks: *Masked words in any case* (`redactWordsAnyCase`, `WordsAnyCase`) matches in any capitals by Unicode simple folding, and *Whole words only* (`redactWordsWhole`, `WordsWhole`; acmilan_ on Discord) skips a match with a letter, digit or `_` beside it, and for a number a `.` and digit beside it, so `ABC` masks `name='ABC'` but not `XABCD`, and `123456` not `91234567`, `0.123456` or `123456.78` (`wholeWord` in [`redact.go`](../../internal/redact/redact.go)). Chinese and Japanese letters count as no letter there (`wordRune`): a word of theirs is found inside their text, and `ABC` in 用ABC做 is whole. Both are off by default; a page from before them that saves without the field keeps the user's choice (`api.go`). `TestWordsWhole`, `TestWordsWholeJSON`, `TestCountTokensRedacted`. A word that is a date (`1990-05-12`, `1990/5/12`, `1990年5月12日`, `May 12, 1990`; eight digits alone are not one) matches that calendar date in every common form instead (`dateSpans` in [`dateword.go`](../../internal/redact/dateword.go); JackyCcao on X, who masks their own birthday with birthdays off): `-` `/` `.` `、` or a space between, 年月日 or 년월일, with or without leading zeros, `19900512`, the month's English name, and day-first or month-first only where the day is over 12 or equals the month (`13/05/1990`, never `05/12/1990`, which is December 5th too; such a word matches only as written). A match never has a digit, or a dot and a digit, beside it, whatever *Whole words only* says, so `1990.5.12.1` and `11990-05-12` are not that date. `TestDateWordEveryForm`, `TestDateWordNotAnotherDate`, `TestDateWordDayMonthOrder`.
+diff --git a/internal/redact/more_test.go b/internal/redact/more_test.go
+index fb2076664..eb19a2620 100644
+--- a/internal/redact/more_test.go
++++ b/internal/redact/more_test.go
+@@ -100,6 +100,9 @@ func TestMoreKinds(t *testing.T) {
+ 			if g.kind == "USERNAME" {
+ 				p = standInOf(g.value) // a made-up name (shape.go)
+ 			}
++			if g.kind == "HOSTNAME" {
++				p = hostStandInOf(g.value) // a stand-in under .example (shape.go)
++			}
+ 			if at, n, ok := ipStandIns(g.value); g.kind == "IP" && ok {
+ 				for i := 0; i < n; i++ { // a documentation address (shape.go)
+ 					if strings.Contains(out, at(i)) {
+diff --git a/internal/redact/redact.go b/internal/redact/redact.go
+index 3ec4f5c60..657729960 100644
+--- a/internal/redact/redact.go
++++ b/internal/redact/redact.go
+@@ -887,6 +887,9 @@ func Preview(s string, o Options) string {
+ 		if kind == "USERNAME" {
+ 			return standInOf(v) // a user name's made-up name (shape.go)
+ 		}
++		if kind == "HOSTNAME" {
++			return hostStandInOf(v) // a host's stand-in under .example (shape.go)
++		}
+ 		if kind == "IP" {
+ 			if at, _, ok := ipStandIns(v); ok {
+ 				return at(0) // an address's documentation one (shape.go)
+diff --git a/internal/redact/shape.go b/internal/redact/shape.go
+index 5637739cd..d2a397714 100644
+--- a/internal/redact/shape.go
++++ b/internal/redact/shape.go
+@@ -200,6 +200,10 @@ func restoreShapes(s string, put map[string]int) string {
+ 			s = restoreAddr(s, f, values[f], put)
+ 			continue
+ 		}
++		if kind == "HOSTNAME" {
++			s = restoreHost(s, f, values[f], put)
++			continue
++		}
+ 		if n := strings.Count(s, f); n > 0 {
+ 			s = strings.ReplaceAll(s, f, values[f])
+ 			if put != nil {
+@@ -210,6 +214,50 @@ func restoreShapes(s string, put map[string]int) string {
+ 	return s
+ }
+ 
++// restoreHost is s with each whole stand-in host name f in it put back as
++// v, counted in put where put isn't nil. A name with a letter, a digit, a
++// hyphen or a dot against it is a longer one's piece: sub.qmvkrta.example
++// is another host, and qmvkrta.example.net takes the stand-in for part of
++// itself. A full stop after it with none of those after the stop ends the
++// sentence, and the name after it is put back.
++func restoreHost(s, f, v string, put map[string]int) string {
++	if !strings.Contains(s, f) {
++		return s
++	}
++	var b strings.Builder
++	last := 0
++	for i := 0; ; {
++		j := strings.Index(s[i:], f)
++		if j < 0 {
++			break
++		}
++		a, z := i+j, i+j+len(f)
++		i = a + 1
++		if a > 0 && hostByte(s[a-1]) ||
++			z < len(s) && (hostByte(s[z]) && s[z] != '.' ||
++				s[z] == '.' && z+1 < len(s) && hostByte(s[z+1])) {
++			continue
++		}
++		b.WriteString(s[last:a])
++		b.WriteString(v)
++		last, i = z, z
++		if put != nil {
++			put[f]++
++		}
++	}
++	if last == 0 {
++		return s
++	}
++	b.WriteString(s[last:])
++	return b.String()
++}
++
++// hostByte says c may be part of a host's name, so a stand-in beside it is
++// a piece of a longer one.
++func hostByte(c byte) bool {
++	return c >= '0' && c <= '9' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c == '-' || c == '.'
++}
++
+ // restoreAddr is s with each whole stand-in address f in it put back as
+ // v, counted in put where put isn't nil.
+ func restoreAddr(s, f, v string, put map[string]int) string {
+@@ -342,6 +390,52 @@ func standInOf(v string) string {
+ 	return string(out)
+ }
+ 
++// A host's name goes to the vendor as one under a name set aside for it
++// (RFC 2606's .example), not a placeholder: told "ssh to {{HOSTNAME_…}}",
++// the model asked the user for the real host rather than running ssh, as
++// it did for an address before its documentation one (#4063). No one's
++// host ends in .example (hostOK never masks one), so a stand-in is never
++// taken for a host the user wrote, and the model has one it can copy into
++// its commands, where it comes back as the real host (restoreHost). It is
++// made from the host as a user name's stand-in is, so it is the same
++// every turn and a vendor's cache still matches.
++
++// hostStandInOf is the stand-in the host name v goes as.
++func hostStandInOf(v string) string {
++	h := hmac.New(sha256.New, key())
++	h.Write([]byte("host\x00" + v))
++	sum := h.Sum(nil)
++	out := make([]byte, standInLen)
++	for i := range out {
++		out[i] = 'a' + sum[i]%26
++	}
++	return string(out) + ".example"
++}
++
++// hostStandIn is the stand-in the host name v goes as, kept to be put
++// back as a made-up key is; "" where the one it would go as is another
++// value's already.
++func hostStandIn(v string) string {
++	f := hostStandInOf(v)
++	if f == v {
++		return ""
++	}
++	mu.Lock()
++	have, taken := values[f]
++	if !taken {
++		makeRoom()
++		values[f] = v
++		kinds["HOSTNAME"] = true
++		shapes[f] = "HOSTNAME"
++		addKnown(f, v)
++	}
++	mu.Unlock()
++	if taken && have != v {
++		return ""
++	}
++	return f
++}
++
+ // A public IP address goes to the vendor as an address from the ranges
+ // set aside for documentation (RFC 5737's 192.0.2.0/24, 198.51.100.0/24
+ // and 203.0.113.0/24; RFC 3849's 2001:db8::/32), not a placeholder. Told
+@@ -445,6 +539,12 @@ func standIn(put func(kind, v string) string) func(kind, v string) string {
+ 			}
+ 			return put(kind, v)
+ 		}
++		if kind == "HOSTNAME" {
++			if f := hostStandIn(v); f != "" {
++				return f
++			}
++			return put(kind, v)
++		}
+ 		if kind != "USERNAME" {
+ 			return put(kind, v)
+ 		}
+diff --git a/internal/redact/standin_host_test.go b/internal/redact/standin_host_test.go
+new file mode 100644
+index 000000000..4160e25bd
+--- /dev/null
++++ b/internal/redact/standin_host_test.go
+@@ -0,0 +1,129 @@
++package redact
++
++import (
++	"encoding/json"
++	"net/http/httptest"
++	"strings"
++	"testing"
++)
++
++// A host's name the user@host rules find goes as one under a name set
++// aside for it (RFC 2606's .example), not {{HOSTNAME_…}}: told "ssh to
++// {{HOSTNAME_…}}", models asked the user for the real host instead of
++// running ssh, as they did for an address before its documentation one
++// (#4063). The model's ssh with the stand-in comes back with the real
++// host, in a whole reply and a stream, and only a whole name is put back.
++func TestHostGoesAsAStandInUnderExample(t *testing.T) {
++	Forget()
++	t.Cleanup(Forget)
++	const host = "bastion.corp.acme.io"
++	o := Options{Personal: true, Kinds: map[string]bool{"userhost": true}}
++	msg := "run ssh rkato@" + host + " -p 22 and check the disk"
++	out, n := Mask(msg, o)
++	f := out[strings.Index(out, "@")+1:]
++	f = f[:strings.IndexAny(f, " \t")]
++	// the host goes as a name under .example, never a placeholder; the
++	// user name beside it goes as its made-up name still
++	if n != 2 || strings.Contains(out, "{{") || !strings.HasSuffix(f, ".example") ||
++		len(strings.TrimSuffix(f, ".example")) != standInLen ||
++		strings.Trim(strings.TrimSuffix(f, ".example"), "abcdefghijklmnopqrstuvwxyz") != "" {
++		t.Fatalf("sent %q (host %q), want the host under .example and no placeholder", out, f)
++	}
++	if again, _ := Mask(msg, o); again != out {
++		t.Errorf("not the same stand-in twice: %q, %q", out, again)
++	}
++	if p := Preview(msg, o); p != out {
++		t.Errorf("preview %q, sent %q", p, out)
++	}
++	if back := Restore(out, false); back != msg {
++		t.Errorf("put back as %q", back)
++	}
++	// the model's tool call, as it copied the command
++	call := `{"command":"ssh rkato@` + f + ` -p 22 'uname -a; df -h'"}`
++	if back := Restore(call, true); back != strings.Replace(call, f, host, 1) {
++		t.Errorf("tool call put back as %s", back)
++	}
++	// only a whole name is put back
++	for _, c := range []struct{ s, want string }{
++		{f, host},
++		{f + ":22", host + ":22"},
++		{"ssh to " + f + ".", "ssh to " + host + "."},
++		{"[" + f + "]", "[" + host + "]"},
++		{"sub." + f, "sub." + f},
++		{f + ".net", f + ".net"},
++		{f + ".5", f + ".5"},
++		{f + "x", f + "x"},
++		{"1" + f, "1" + f},
++	} {
++		if got := Restore(c.s, false); got != c.want {
++			t.Errorf("Restore(%q) = %q, want %q", c.s, got, c.want)
++		}
++	}
++
++	// streamed: the tool call's arguments cut at every place in the name
++	whole := `{"command":"ssh -p 22 root@` + f + ` 'uname -a'"}`
++	for cut := strings.Index(whole, f); cut <= strings.Index(whole, f)+len(f); cut++ {
++		ev := func(args string) string {
++			b, _ := json.Marshal(map[string]any{"choices": []any{map[string]any{"index": 0, "delta": map[string]any{
++				"tool_calls": []any{map[string]any{"index": 0, "function": map[string]any{"arguments": args}}}}}}})
++			return "data: " + string(b) + "\n\n"
++		}
++		rec := httptest.NewRecorder()
++		rec.Header().Set("Content-Type", "text/event-stream")
++		w := NewWriter(rec)
++		w.WriteHeader(200)
++		for _, e := range []string{ev(whole[:cut]), ev(whole[cut:]), "data: [DONE]\n\n"} {
++			w.Write([]byte(e))
++		}
++		w.Finish()
++		var args strings.Builder
++		for _, e := range strings.Split(rec.Body.String(), "\n\n") {
++			d, ok := strings.CutPrefix(e, "data: ")
++			if !ok || d == "[DONE]" {
++				continue
++			}
++			var x struct {
++				Choices []struct {
++					Delta struct {
++						ToolCalls []struct{ Function struct{ Arguments string } } `json:"tool_calls"`
++					}
++				}
++			}
++			if err := json.Unmarshal([]byte(d), &x); err != nil {
++				t.Fatalf("event %q: %v", d, err)
++			}
++			for _, c := range x.Choices[0].Delta.ToolCalls {
++				args.WriteString(c.Function.Arguments)
++			}
++		}
++		if want := strings.Replace(whole, f, host, 1); args.String() != want {
++			t.Errorf("cut at %d: arguments %s, want %s", cut, args.String(), want)
++		}
++	}
++
++	// a stand-in is never masked again: no host ends in .example
++	if again, n := Mask("ping "+f, o); n != 0 || again != "ping "+f {
++		t.Errorf("a stand-in masked again as %q", again)
++	}
++}
++
++// A host on a line of its own (Hostname:, ssh config's HostName) and one
++// in a shell prompt go as the stand-in too.
++func TestOtherHostRulesGoAsAStandIn(t *testing.T) {
++	Forget()
++	t.Cleanup(Forget)
++	o := Options{Personal: true, Kinds: map[string]bool{"userhost": true}}
++	for _, c := range []struct{ in, host string }{
++		{"Hostname: rina-mbp.local\n", "rina-mbp.local"},
++		{"Host prod\n  HostName box17.acme.io\n  User rkato\n", "box17.acme.io"},
++		{"rinak@rina-mbp:~/src$ ls", "rina-mbp"},
++	} {
++		out, n := Mask(c.in, o)
++		if !strings.Contains(out, ".example") || strings.Contains(out, "{{") {
++			t.Errorf("%q: sent %q, want the host under .example", c.in, out)
++		}
++		if back := Restore(out, false); back != c.in {
++			t.Errorf("%q: round trip → %q (%d masked)", c.in, back, n)
++		}
++	}
++}
+diff --git a/site/public/docs/ja/masking.html b/site/public/docs/ja/masking.html
+index 0fe732419..2e3c2df26 100644
+--- a/site/public/docs/ja/masking.html
++++ b/site/public/docs/ja/masking.html
+@@ -112,7 +112,7 @@
+     <div class="table-wrap"><table>
+       <tr><th>スイッチ</th><th>見つけるもの</th></tr>
+       <tr><td><span class="ui">シークレットをマスク</span></td><td>秘密鍵のブロック（<code>-----BEGIN … PRIVATE KEY-----</code>）。形で見分ける API キー：<code>sk-…</code>（OpenAI、Anthropic、OpenRouter）、<code>ghp_</code>/<code>github_pat_</code>、<code>glpat-</code>、<code>AIza…</code>、<code>xox…-</code>、<code>sk_live_</code>、<code>AKIA</code>/<code>ASIA</code>、<code>hf_</code>、<code>gsk_</code>、<code>xai-</code>、<code>npm_</code>、<code>pypi-</code>、<code>dop_v1_</code>、<code>SG.</code>、それに <code>oc_sk_…</code> のような中継サービスのキー。JWT。<code>user:password@host</code> のパスワード。<code>.env</code> や設定ファイルでシークレットの名前が付いたフィールドの値：<code>DB_PASSWORD=…</code>、<code>api_key: …</code>、<code>client_secret</code>、<code>token</code>、<code>credential</code>。それと自分の <span class="ui">マスクルール</span>。</td></tr>
+-      <tr><td><span class="ui">個人情報をマスク</span></td><td>メールアドレス、中国本土の携帯番号（11 桁の ID は別：<code>order_id</code> の値や 订单号 の後ろのものはそのまま）、チェックサムの合う中国の身分証番号と銀行カード番号。既定でオンのもの：米国の社会保障番号、パスポート番号（<em>passport</em>、护照、パスポートの後）、IBAN、誕生日（<em>birthday</em>、<em>DOB</em>、生日の近くにある、一年以上前の日付。今日の日付はそのまま）、MAC アドレス、シリアル番号（<em>S/N</em> の後）。エージェントがほぼ毎回送るので、自分でオンにするまでオフのもの：ホームフォルダのユーザー名（毎回同じ仮の名前で送るので、モデルにはプレースホルダーではなく普通のフォルダに見えます）、ユーザー名とコンピュータ名（<code>user@host</code>）、パブリック IP アドレス（ドキュメント用に予約されたアドレスとして送るので、モデルはそのまま接続に使い、コマンドの中で本物のアドレスに戻ります）、クラウドストレージのバケット。ウォレットやコントラクトのアドレス（<code>0x</code> と 16 進 40 桁）は公開情報なのでそのまま送ります。秘密鍵は引き続きマスクします。</td></tr>
++      <tr><td><span class="ui">個人情報をマスク</span></td><td>メールアドレス、中国本土の携帯番号（11 桁の ID は別：<code>order_id</code> の値や 订单号 の後ろのものはそのまま）、チェックサムの合う中国の身分証番号と銀行カード番号。既定でオンのもの：米国の社会保障番号、パスポート番号（<em>passport</em>、护照、パスポートの後）、IBAN、誕生日（<em>birthday</em>、<em>DOB</em>、生日の近くにある、一年以上前の日付。今日の日付はそのまま）、MAC アドレス、シリアル番号（<em>S/N</em> の後）。エージェントがほぼ毎回送るので、自分でオンにするまでオフのもの：ホームフォルダのユーザー名（毎回同じ仮の名前で送るので、モデルにはプレースホルダーではなく普通のフォルダに見えます）、ユーザー名とコンピュータ名（<code>user@host</code>；コンピュータ名は予約された <code>.example</code> の下の名前で送るので、モデルはそのまま ssh を実行し、コマンドの中で本物の名前に戻ります）、パブリック IP アドレス（ドキュメント用に予約されたアドレスとして送るので、モデルはそのまま接続に使い、コマンドの中で本物のアドレスに戻ります）、クラウドストレージのバケット。ウォレットやコントラクトのアドレス（<code>0x</code> と 16 進 40 桁）は公開情報なのでそのまま送ります。秘密鍵は引き続きマスクします。</td></tr>
+       <tr><td><span class="ui">マスクする語</span></td><td>入れた語そのままを <code>{{TERM_…}}</code> に。日付（<em>1990-05-12</em> など）を入れると、同じ日のどの書き方もマスクされます：<em>1990/5/12</em>、<em>1990.05.12</em>、<em>1990年5月12日</em>、<em>19900512</em>、<em>May 12, 1990</em>。<em>13/05/1990</em> のような日が先の書き方は、日と月を取り違えようがないときだけです。別の日付や <em>1990.5.12.1</em> のようなバージョン番号はマスクされません。</td></tr>
+       <tr><td><span class="ui">ローカルモデルで検出</span></td><td><span class="ui">検出方法</span> の中にあります。このコンピュータで動くモデルが、ルールでは見つからない自由文中の名前や住所を見つけます。オフにしない限りオンで、最初にマスクするリクエストで AstrLink Guard をダウンロードします。ダウンロードが終わるまではルールだけでマスクします。<span class="ui">シークレットをマスク</span> か <span class="ui">個人情報をマスク</span> がオンのときに使え、見つけたものは同じスイッチに従います。横のメニューでモデルを選べます：AstrLink Guard（中国語と英語、39 MB のダウンロード、コードでの誤検出が少ない、Mac では Neural Engine で動く。既定）か OpenAI の Privacy Filter（1.6 GB、GPU を使える、コード中の普通の値も多く隠す）。その下の <span class="ui">信頼度のしきい値</span> は、値をマスクするのにモデルがどれだけ確かである必要があるかです。既定は Privacy Filter が 0.5、AstrLink Guard が公開元の 0.8。上げると普通の値のマスクは減りますが、本物の名前や住所もそのまま送られやすくなります。誤検出の多くはモデルのあとのルールが既に外すので、既定値は測った中で本物の値を最も逃さない値です。</td></tr>
+     </table></div>
+diff --git a/site/public/docs/masking.html b/site/public/docs/masking.html
+index c1285f9c0..177b18a2e 100644
+--- a/site/public/docs/masking.html
++++ b/site/public/docs/masking.html
+@@ -112,7 +112,7 @@
+     <div class="table-wrap"><table>
+       <tr><th>Switch</th><th>What it finds</th></tr>
+       <tr><td><span class="ui">Mask secrets</span></td><td>Private key blocks (<code>-----BEGIN … PRIVATE KEY-----</code>). API keys by their shape: <code>sk-…</code> (OpenAI, Anthropic, OpenRouter), <code>ghp_</code>/<code>github_pat_</code>, <code>glpat-</code>, <code>AIza…</code>, <code>xox…-</code>, <code>sk_live_</code>, <code>AKIA</code>/<code>ASIA</code>, <code>hf_</code>, <code>gsk_</code>, <code>xai-</code>, <code>npm_</code>, <code>pypi-</code>, <code>dop_v1_</code>, <code>SG.</code>, and relay keys like <code>oc_sk_…</code>. JWTs. The password in <code>user:password@host</code>. The value of a field named for a secret, as <code>.env</code> files and configs have them: <code>DB_PASSWORD=…</code>, <code>api_key: …</code>, <code>client_secret</code>, <code>token</code>, <code>credential</code>. Your own <span class="ui">Masking rules</span>.</td></tr>
+-      <tr><td><span class="ui">Mask personal data</span></td><td>Emails, mainland China mobile numbers (not an 11-digit id: one under <code>order_id</code> or after 订单号 goes as written), Chinese ID numbers and bank card numbers whose checksum adds up. Also on by default: US Social Security numbers, passport numbers (after <em>passport</em>, 护照 or パスポート), IBANs, birthdays (next to <em>birthday</em>, <em>DOB</em> or 生日, and over a year ago, so today&rsquo;s date stays), MAC addresses and serial numbers (after <em>S/N</em>). Off until you turn them on, since agents send them in nearly every request: the user name in home folders (sent as a made-up name, the same every turn, so the model reads a real folder rather than a placeholder), user and computer names (<code>user@host</code>), public IP addresses (sent as addresses from the ranges set aside for documentation, so the model connects with them and the real address goes back into its commands) and cloud storage buckets. A wallet or contract address (<code>0x</code> and 40 hex digits) is public and goes as written; a private key is still masked.</td></tr>
++      <tr><td><span class="ui">Mask personal data</span></td><td>Emails, mainland China mobile numbers (not an 11-digit id: one under <code>order_id</code> or after 订单号 goes as written), Chinese ID numbers and bank card numbers whose checksum adds up. Also on by default: US Social Security numbers, passport numbers (after <em>passport</em>, 护照 or パスポート), IBANs, birthdays (next to <em>birthday</em>, <em>DOB</em> or 生日, and over a year ago, so today&rsquo;s date stays), MAC addresses and serial numbers (after <em>S/N</em>). Off until you turn them on, since agents send them in nearly every request: the user name in home folders (sent as a made-up name, the same every turn, so the model reads a real folder rather than a placeholder), user and computer names (<code>user@host</code>; the computer name sent as a name under <code>.example</code>, set aside for it, so the model runs its ssh and the real name goes back into its commands), public IP addresses (sent as addresses from the ranges set aside for documentation, so the model connects with them and the real address goes back into its commands) and cloud storage buckets. A wallet or contract address (<code>0x</code> and 40 hex digits) is public and goes as written; a private key is still masked.</td></tr>
+       <tr><td><span class="ui">Masked words</span></td><td>Each word you listed, exactly, as <code>{{TERM_…}}</code>. A date, such as <em>1990-05-12</em>, matches that day however it is written: <em>1990/5/12</em>, <em>1990.05.12</em>, <em>1990年5月12日</em>, <em>19900512</em>, <em>May 12, 1990</em>, and <em>13/05/1990</em> style only where the day can’t be read as a month. Never another date or a version like <em>1990.5.12.1</em>.</td></tr>
+       <tr><td><span class="ui">Find with a local model</span></td><td>Under <span class="ui">How it’s found</span>. A model on this computer finds what no rule can: a name or an address in free text. It is on unless you turned it off, and AstrLink Guard downloads with the first masked request; until it is on disk, the rules mask alone. It needs <span class="ui">Mask secrets</span> or <span class="ui">Mask personal data</span> on, and finds under the same switches. The menu beside it picks the model: AstrLink Guard (Chinese and English, a 39 MB download, few false alarms in code, on a Mac it runs on the Neural Engine; the default) or OpenAI’s Privacy Filter (1.6 GB, uses the GPU, masks more ordinary values in code). <span class="ui">Confidence threshold</span> under it is how sure the model must be before a value is masked: Privacy Filter’s default is 0.5, AstrLink Guard’s 0.8, its publisher’s. Higher masks fewer ordinary values, and lets more real names and addresses through: the rules after the model drop most false alarms already, so the default is where we measured the fewest real values lost.</td></tr>
+     </table></div>
+diff --git a/site/public/docs/zh/masking.html b/site/public/docs/zh/masking.html
+index 9465d9e47..295442e4e 100644
+--- a/site/public/docs/zh/masking.html
++++ b/site/public/docs/zh/masking.html
+@@ -112,7 +112,7 @@
+     <div class="table-wrap"><table>
+       <tr><th>开关</th><th>能找到什么</th></tr>
+       <tr><td><span class="ui">脱敏密钥</span></td><td>私钥块（<code>-----BEGIN … PRIVATE KEY-----</code>）。按格式识别的 API Key：<code>sk-…</code>（OpenAI、Anthropic、OpenRouter）、<code>ghp_</code>/<code>github_pat_</code>、<code>glpat-</code>、<code>AIza…</code>、<code>xox…-</code>、<code>sk_live_</code>、<code>AKIA</code>/<code>ASIA</code>、<code>hf_</code>、<code>gsk_</code>、<code>xai-</code>、<code>npm_</code>、<code>pypi-</code>、<code>dop_v1_</code>、<code>SG.</code>，以及 <code>oc_sk_…</code> 这类中转站的 key。JWT。<code>user:password@host</code> 里的密码。<code>.env</code> 和配置文件里以密钥命名的字段的值：<code>DB_PASSWORD=…</code>、<code>api_key: …</code>、<code>client_secret</code>、<code>token</code>、<code>credential</code>。以及你的 <span class="ui">自定义脱敏规则</span>。</td></tr>
+-      <tr><td><span class="ui">脱敏个人信息</span></td><td>邮箱、中国大陆手机号（11 位的编号不算：在 <code>order_id</code> 下或跟在「订单号」后面的照原样发出）、校验位对得上的身份证号和银行卡号。默认也开着的：美国社会安全号、护照号（跟在 <em>passport</em>、护照或パスポート后面）、IBAN、生日（旁边有 <em>birthday</em>、<em>DOB</em> 或「生日」，且是一年以前的日期，所以今天的日期不动）、MAC 地址、序列号（跟在 <em>S/N</em> 后面）。默认关闭、需要自己打开的（Agent 几乎每个请求都会带）：主目录里的用户名（以一个每轮都相同的假名发出，模型看到的是正常的文件夹，而不是占位符）、用户名和主机名（<code>user@host</code>）、公网 IP 地址（以文档专用网段里的地址发出，模型照常用它连接，命令里再换回真实地址）、云存储桶。钱包或合约地址（<code>0x</code> 加 40 位十六进制）是公开的，照原样发出；私钥照样脱敏。</td></tr>
++      <tr><td><span class="ui">脱敏个人信息</span></td><td>邮箱、中国大陆手机号（11 位的编号不算：在 <code>order_id</code> 下或跟在「订单号」后面的照原样发出）、校验位对得上的身份证号和银行卡号。默认也开着的：美国社会安全号、护照号（跟在 <em>passport</em>、护照或パスポート后面）、IBAN、生日（旁边有 <em>birthday</em>、<em>DOB</em> 或「生日」，且是一年以前的日期，所以今天的日期不动）、MAC 地址、序列号（跟在 <em>S/N</em> 后面）。默认关闭、需要自己打开的（Agent 几乎每个请求都会带）：主目录里的用户名（以一个每轮都相同的假名发出，模型看到的是正常的文件夹，而不是占位符）、用户名和主机名（<code>user@host</code>；主机名以保留给它的 <code>.example</code> 下的名字发出，模型照常执行 ssh，命令里再换回真实主机名）、公网 IP 地址（以文档专用网段里的地址发出，模型照常用它连接，命令里再换回真实地址）、云存储桶。钱包或合约地址（<code>0x</code> 加 40 位十六进制）是公开的，照原样发出；私钥照样脱敏。</td></tr>
+       <tr><td><span class="ui">脱敏词</span></td><td>你填的每个词，精确匹配，换成 <code>{{TERM_…}}</code>。填的是日期（比如 <em>1990-05-12</em>）时，同一天的各种写法都会遮掉：<em>1990/5/12</em>、<em>1990.05.12</em>、<em>1990年5月12日</em>、<em>19900512</em>、<em>May 12, 1990</em>；<em>13/05/1990</em> 这种日在前的写法只在日和月不会混淆时才算。别的日期和 <em>1990.5.12.1</em> 这样的版本号不会被遮。</td></tr>
+       <tr><td><span class="ui">用本地模型查找</span></td><td>在 <span class="ui">怎么找</span> 下面。一个在这台电脑上运行的模型能找出规则找不到的东西：自由文本里的人名、地址。除非你关掉，它默认打开：第一个要脱敏的请求开始下载 AstrLink Guard，下载完成前只用规则脱敏。需要先打开 <span class="ui">脱敏密钥</span> 或 <span class="ui">脱敏个人信息</span>，找到的内容按同样的开关处理。旁边的菜单选择模型：AstrLink Guard（中英文，下载 39 MB，代码里很少误判，在 Mac 上用神经网络引擎运行；默认）或 OpenAI 的 Privacy Filter（1.6 GB，可用 GPU，代码里会遮盖更多普通值）。下面的 <span class="ui">置信度阈值</span> 是模型要多确定才遮盖一个值：Privacy Filter 默认 0.5，AstrLink Guard 默认 0.8（发布者的值）。调高会少遮一些普通值，也会让更多真实的人名、地址原样发出去；模型之后的规则已经去掉了大部分误判，所以默认值是我们测下来漏掉真实信息最少的那一档。</td></tr>
+     </table></div>
+-- 
+2.50.1 (Apple Git-155)
+

@@ -1,0 +1,6 @@
+--- FAIL: TestCodexUsageOnlyCatalog (1.20s)
+    --- FAIL: TestCodexUsageOnlyCatalog/usage_only (0.09s)
+        codex_usage_only_test.go:71: models = [codex-auto-review fake/m1 gpt-5.5 gpt-6-sol gpt-reserve], want [codex-auto-review fake/m1 gpt-reserve]
+FAIL
+FAIL	github.com/yetone/magpie/internal/gateway	2.257s
+FAIL

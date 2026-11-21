@@ -1,0 +1,16 @@
+[
+  {
+    "phase": "BASELINE",
+    "command": "/Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/CHECK_DOCS.sh /Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/original",
+    "input": "/Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/original",
+    "output": "FAIL: current contributor gate missing\n",
+    "exit": 1
+  },
+  {
+    "phase": "MODIFIED",
+    "command": "/Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/CHECK_DOCS.sh /Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/handbook",
+    "input": "/Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/handbook",
+    "output": "PASS: contributor gate linked; no stale bypass directives; 06/07 reference 05\n",
+    "exit": 0
+  }
+]

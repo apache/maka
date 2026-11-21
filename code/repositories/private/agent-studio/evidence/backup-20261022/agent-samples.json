@@ -1,0 +1,825 @@
+{
+  "records": [
+    {
+      "description": "面诊AI听分析",
+      "microAppId": 129992587288,
+      "microAppName": "顾客基础信息提取的副本01",
+      "microAppVersionId": 5433,
+      "picUrl": "https://meiye.cos.clife.cn/material/T000000/209e1407eeb1485fa761eaf7aacff8ac.png",
+      "runMode": 4,
+      "status": 4,
+      "updateDate": "2026-10-12 17:23:13"
+    },
+    {
+      "description": null,
+      "microAppId": 129614280788,
+      "microAppName": "顾问待办-顾客邀约回访的副本01",
+      "microAppVersionId": 5432,
+      "picUrl": "https://meiye.cos.clife.cn/material/T000000/209e1407eeb1485fa761eaf7aacff8ac.png",
+      "runMode": 4,
+      "status": 4,
+      "updateDate": "2026-10-12 17:23:21"
+    },
+    {
+      "description": null,
+      "microAppId": 121587670223,
+      "microAppName": "获取服务报告总结的副本01",
+      "microAppVersionId": 5428,
+      "picUrl": "https://meiye.cos.clife.cn/material/T000000/209e1407eeb1485fa761eaf7aacff8ac.png",
+      "runMode": 4,
+      "status": 4,
+      "updateDate": "2026-09-21 15:36:41"
+    },
+    {
+      "description": "万能查：查项目、查方案、查产品、查对比等",
+      "microAppId": 121824910034,
+      "microAppName": "企咨助手-万能查",
+      "microAppVersionId": 5419,
+      "picUrl": "https://agent-paas-test-1323116912.cos.ap-guangzhou.myqcloud.com/agent/paas-llm/image/909461788951493796.png",
+      "runMode": 4,
+      "status": 4,
+      "updateDate": "2026-09-09 19:16:56"
+    },
+    {
+      "description": "支持多场景适配",
+      "microAppId": 120910060238,
+      "microAppName": "高质量话术生成通道",
+      "microAppVersionId": 5399,
+      "picUrl": "https://meiye.cos.clife.cn/material/T000000/209e1407eeb1485fa761eaf7aacff8ac.png",
+      "runMode": 4,
+      "status": 4,
+      "updateDate": "2026-08-27 15:04:11"
+    },
+    {
+      "description": null,
+      "microAppId": 120686746866,
+      "microAppName": "[itest]-每日一客-项目话术示例",
+      "microAppVersionId": 5370,
+      "picUrl": "https://meiye.cos.clife.cn/material/T000000/209e1407eeb1485fa761eaf7aacff8ac.png",
+      "runMode": 4,
+      "status": 1,
+      "updateDate": "2026-08-06 16:26:22"
+    },
+    {
+      "description": null,
+      "microAppId": 120454773123,
+      "microAppName": "生成服务护前提醒",
+      "microAppVersionId": 5367,
+      "picUrl": "https://meiye.cos.clife.cn/material/T000000/209e1407eeb1485fa761eaf7aacff8ac.png",
+      "runMode": 4,
+      "status": 1,
+      "updateDate": "2026-09-18 11:38:01"
+    },
+    {
+      "description": null,
+      "microAppId": 123845318128,
+      "microAppName": "美容师工作台-生成回访邀约话术",
+      "microAppVersionId": 5366,
+      "picUrl": "https://meiye.cos.clife.cn/material/T000000/209e1407eeb1485fa761eaf7aacff8ac.png",
+      "runMode": 4,
+      "status": 1,
+      "updateDate": "2026-08-12 11:29:50"
+    },
+    {
+      "description": "数联美业开发组-AI美管家，用于AI识别客户。",
+      "microAppId": 122317452015,
+      "microAppName": "AI识别客户工作流编排",
+      "microAppVersionId": 5348,
+      "picUrl": "https://meiye.cos.clife.cn/material/T000000/209e1407eeb1485fa761eaf7aacff8ac.png",
+      "runMode": 4,
+      "status": 4,
+      "updateDate": "2026-09-24 15:12:56"
+    },
+    {
+      "description": null,
+      "microAppId": 128453247282,
+      "microAppName": "顾问对话智能体",
+      "microAppVersionId": 5347,
+      "picUrl": "https://meiye.cos.clife.cn/material/T000000/209e1407eeb1485fa761eaf7aacff8ac.png",
+      "runMode": 4,
+      "status": 4,
+      "updateDate": "2026-08-07 16:22:53"
+    },
+    {
+      "description": null,
+      "microAppId": 121608583064,
+      "microAppName": "自组规划的副本01",
+      "microAppVersionId": 5346,
+      "picUrl": "https://meiye.cos.clife.cn/material/T000000/209e1407eeb1485fa761eaf7aacff8ac.png",
+      "runMode": 4,
+      "status": 4,
+      "updateDate": "2026-07-07 15:59:05"
+    },
+    {
+      "description": null,
+      "microAppId": 123545100144,
+      "microAppName": "自组规划",
+      "microAppVersionId": 5339,
+      "picUrl": "https://meiye.cos.clife.cn/material/T000000/209e1407eeb1485fa761eaf7aacff8ac.png",
+      "runMode": 4,
+      "status": 4,
+      "updateDate": "2026-08-07 15:52:53"
+    },
+    {
+      "description": null,
+      "microAppId": 125183316560,
+      "microAppName": "顾问待办-顾客邀约回访",
+      "microAppVersionId": 5338,
+      "picUrl": "https://meiye.cos.clife.cn/material/T000000/209e1407eeb1485fa761eaf7aacff8ac.png",
+      "runMode": 4,
+      "status": 4,
+      "updateDate": "2026-10-08 09:14:42"
+    },
+    {
+      "description": "面诊AI听分析",
+      "microAppId": 122565570099,
+      "microAppName": "顾客基础信息提取",
+      "microAppVersionId": 5293,
+      "picUrl": "https://meiye.cos.clife.cn/material/T000000/209e1407eeb1485fa761eaf7aacff8ac.png",
+      "runMode": 4,
+      "status": 1,
+      "updateDate": "2026-10-12 10:56:23"
+    },
+    {
+      "description": "顾客预盘-AI听分析顾客信息",
+      "microAppId": 126615094795,
+      "microAppName": "顾客预盘-AI听分析顾客信息的副本02",
+      "microAppVersionId": 5276,
+      "picUrl": "https://meiye.cos.clife.cn/material/T000000/209e1407eeb1485fa761eaf7aacff8ac.png",
+      "runMode": 4,
+      "status": 4,
+      "updateDate": "2026-06-18 13:41:02"
+    },
+    {
+      "description": null,
+      "microAppId": 120050267813,
+      "microAppName": "经营日报",
+      "microAppVersionId": 5260,
+      "picUrl": "https://meiye.cos.clife.cn/material/T000000/209e1407eeb1485fa761eaf7aacff8ac.png",
+      "runMode": 4,
+      "status": 1,
+      "updateDate": "2026-06-10 11:30:18"
+    },
+    {
+      "description": "美肤私教工作流智能体",
+      "microAppId": 127076296280,
+      "microAppName": "SkinAI Coach - 智能护肤教练的副本01",
+      "microAppVersionId": 5259,
+      "picUrl": "https://agent-paas-test-1323116912.cos.ap-guangzhou.myqcloud.com/agent/paas-llm/image/365671776062048695.png",
+      "runMode": 4,
+      "status": 4,
+      "updateDate": "2026-07-07 15:36:14"
+    },
+    {
+      "description": null,
+      "microAppId": 123845097172,
+      "microAppName": "AI听智能分析待办内容的改进版",
+      "microAppVersionId": 5255,
+      "picUrl": "https://meiye.cos.clife.cn/material/T000000/209e1407eeb1485fa761eaf7aacff8ac.png",
+      "runMode": 4,
+      "status": 1,
+      "updateDate": "2026-06-27 14:12:07"
+    },
+    {
+      "description": "店长智能体晚会纪要",
+      "microAppId": 126738156295,
+      "microAppName": "晚会纪要的副本01",
+      "microAppVersionId": 5249,
+      "picUrl": "https://agent-paas-test-1323116912.cos.ap-guangzhou.myqcloud.com/agent/paas-llm/image/730431779711396291.png",
+      "runMode": 4,
+      "status": 4,
+      "updateDate": "2026-06-04 20:07:47"
+    },
+    {
+      "description": "店长智能体早会纪要",
+      "microAppId": 123178199641,
+      "microAppName": "早会纪要的副本01",
+      "microAppVersionId": 5248,
+      "picUrl": "https://agent-paas-test-1323116912.cos.ap-guangzhou.myqcloud.com/agent/paas-llm/image/969421779688780533.png",
+      "runMode": 4,
+      "status": 4,
+      "updateDate": "2026-07-07 14:53:21"
+    },
+    {
+      "description": "顾客预盘-AI听分析顾客信息",
+      "microAppId": 120062502585,
+      "microAppName": "顾客预盘-AI听分析顾客信息的副本01",
+      "microAppVersionId": 5245,
+      "picUrl": "https://meiye.cos.clife.cn/material/T000000/209e1407eeb1485fa761eaf7aacff8ac.png",
+      "runMode": 4,
+      "status": 4,
+      "updateDate": "2026-06-01 18:44:47"
+    },
+    {
+      "description": null,
+      "microAppId": 129125749120,
+      "microAppName": "test0528",
+      "microAppVersionId": 5236,
+      "picUrl": "https://meiye.cos.clife.cn/material/T000000/209e1407eeb1485fa761eaf7aacff8ac.png",
+      "runMode": 4,
+      "status": 4,
+      "updateDate": "2026-07-07 14:40:53"
+    },
+    {
+      "description": "AI会议分析",
+      "microAppId": 125907744167,
+      "microAppName": "AI会议分析",
+      "microAppVersionId": 5235,
+      "picUrl": "https://agent-paas-test-1323116912.cos.ap-guangzhou.myqcloud.com/agent/paas-llm/image/812211779779707894.png",
+      "runMode": 4,
+      "status": 4,
+      "updateDate": "2026-06-17 13:48:05"
+    },
+    {
+      "description": null,
+      "microAppId": 122727224739,
+      "microAppName": "面诊对话-员工品项提及分析-智能洞察",
+      "microAppVersionId": 5233,
+      "picUrl": "https://meiye.cos.clife.cn/material/T000000/209e1407eeb1485fa761eaf7aacff8ac.png",
+      "runMode": 4,
+      "status": 1,
+      "updateDate": "2026-09-18 14:05:06"
+    },
+    {
+      "description": "AI会议分析",
+      "microAppId": 123502741731,
+      "microAppName": "[itest]AI会议分析",
+      "microAppVersionId": 5232,
+      "picUrl": "https://agent-paas-test-1323116912.cos.ap-guangzhou.myqcloud.com/agent/paas-llm/image/812211779779707894.png",
+      "runMode": 4,
+      "status": 1,
+      "updateDate": "2026-06-23 22:04:16"
+    },
+    {
+      "description": "店长智能体晚会纪要",
+      "microAppId": 128963984483,
+      "microAppName": "晚会纪要",
+      "microAppVersionId": 5229,
+      "picUrl": "https://agent-paas-test-1323116912.cos.ap-guangzhou.myqcloud.com/agent/paas-llm/image/730431779711396291.png",
+      "runMode": 4,
+      "status": 1,
+      "updateDate": "2026-06-03 14:18:37"
+    },
+    {
+      "description": "顾客预盘-AI听分析顾客信息",
+      "microAppId": 125844452559,
+      "microAppName": "顾客预盘-AI听分析顾客信息",
+      "microAppVersionId": 5228,
+      "picUrl": "https://meiye.cos.clife.cn/material/T000000/209e1407eeb1485fa761eaf7aacff8ac.png",
+      "runMode": 4,
+      "status": 1,
+      "updateDate": "2026-08-14 16:21:05"
+    },
+    {
+      "description": null,
+      "microAppId": 124587494802,
+      "microAppName": "讲个笑话",
+      "microAppVersionId": 5227,
+      "picUrl": "https://meiye.cos.clife.cn/material/T000000/209e1407eeb1485fa761eaf7aacff8ac.png",
+      "runMode": 4,
+      "status": 4,
+      "updateDate": "2026-05-27 20:36:07"
+    },
+    {
+      "description": "店长智能体早会纪要",
+      "microAppId": 129734330709,
+      "microAppName": "早会纪要",
+      "microAppVersionId": 5226,
+      "picUrl": "https://agent-paas-test-1323116912.cos.ap-guangzhou.myqcloud.com/agent/paas-llm/image/969421779688780533.png",
+      "runMode": 4,
+      "status": 1,
+      "updateDate": "2026-06-03 14:14:43"
+    },
+    {
+      "description": "店长智能体品项分析",
+      "microAppId": 120416832483,
+      "microAppName": "品项分析",
+      "microAppVersionId": 5220,
+      "picUrl": "https://agent-paas-test-1323116912.cos.ap-guangzhou.myqcloud.com/agent/paas-llm/image/717561779526767177.png",
+      "runMode": 4,
+      "status": 1,
+      "updateDate": "2026-06-09 18:03:40"
+    },
+    {
+      "description": null,
+      "microAppId": 125247334007,
+      "microAppName": "面诊对话-员工品项提及分析",
+      "microAppVersionId": 5217,
+      "picUrl": "https://meiye.cos.clife.cn/material/T000000/209e1407eeb1485fa761eaf7aacff8ac.png",
+      "runMode": 4,
+      "status": 1,
+      "updateDate": "2026-09-18 14:04:32"
+    },
+    {
+      "description": null,
+      "microAppId": 123444563108,
+      "microAppName": "获取服务报告总结",
+      "microAppVersionId": 5216,
+      "picUrl": "https://meiye.cos.clife.cn/material/T000000/209e1407eeb1485fa761eaf7aacff8ac.png",
+      "runMode": 4,
+      "status": 1,
+      "updateDate": "2026-09-21 15:37:39"
+    },
+    {
+      "description": null,
+      "microAppId": 128439177477,
+      "microAppName": "早晚会业绩进度雷达-AI智能洞察-zenith",
+      "microAppVersionId": 5215,
+      "picUrl": "https://meiye.cos.clife.cn/material/T000000/209e1407eeb1485fa761eaf7aacff8ac.png",
+      "runMode": 4,
+      "status": 1,
+      "updateDate": "2026-06-03 19:11:34"
+    },
+    {
+      "description": null,
+      "microAppId": 126889144027,
+      "microAppName": "早会今日到店客户预盘-AI智能洞察-zenith",
+      "microAppVersionId": 5214,
+      "picUrl": "https://meiye.cos.clife.cn/material/T000000/209e1407eeb1485fa761eaf7aacff8ac.png",
+      "runMode": 4,
+      "status": 1,
+      "updateDate": "2026-09-17 16:04:51"
+    },
+    {
+      "description": null,
+      "microAppId": 126746909975,
+      "microAppName": "晚会服务转化分析-AI智能洞察-zenith",
+      "microAppVersionId": 5213,
+      "picUrl": "https://meiye.cos.clife.cn/material/T000000/209e1407eeb1485fa761eaf7aacff8ac.png",
+      "runMode": 4,
+      "status": 1,
+      "updateDate": "2026-06-08 09:47:43"
+    },
+    {
+      "description": null,
+      "microAppId": 122365790006,
+      "microAppName": "早晚会口号-zenith",
+      "microAppVersionId": 5212,
+      "picUrl": "https://meiye.cos.clife.cn/material/T000000/209e1407eeb1485fa761eaf7aacff8ac.png",
+      "runMode": 4,
+      "status": 1,
+      "updateDate": "2026-05-21 19:05:30"
+    },
+    {
+      "description": "护理服务复盘总结",
+      "microAppId": 125866641238,
+      "microAppName": "复盘总结",
+      "microAppVersionId": 5203,
+      "picUrl": "https://meiye.cos.clife.cn/material/T000000/209e1407eeb1485fa761eaf7aacff8ac.png",
+      "runMode": 4,
+      "status": 4,
+      "updateDate": "2026-08-14 20:14:46"
+    },
+    {
+      "description": "分析最新服务报告",
+      "microAppId": 127930205742,
+      "microAppName": "分析最新服务报告-工作流的副本01",
+      "microAppVersionId": 5193,
+      "picUrl": "https://meiye.cos.clife.cn/material/T000000/209e1407eeb1485fa761eaf7aacff8ac.png",
+      "runMode": 4,
+      "status": 4,
+      "updateDate": "2026-05-08 16:46:03"
+    },
+    {
+      "description": null,
+      "microAppId": 123262156636,
+      "microAppName": "检测报告-工作流的副本01",
+      "microAppVersionId": 5189,
+      "picUrl": "https://meiye.cos.clife.cn/material/T000000/209e1407eeb1485fa761eaf7aacff8ac.png",
+      "runMode": 4,
+      "status": 4,
+      "updateDate": "2026-04-24 20:22:30"
+    },
+    {
+      "description": "联调用，请勿随意修改，正确修改方式为：复制一份，调试通过后导出json，取消发布当前，再导入再发布",
+      "microAppId": 127249863124,
+      "microAppName": "美肤私教-mock的副本01",
+      "microAppVersionId": 5186,
+      "picUrl": "https://agent-paas-test-1323116912.cos.ap-guangzhou.myqcloud.com/1776411326190-wyz.jpg",
+      "runMode": 4,
+      "status": 4,
+      "updateDate": "2026-04-23 20:51:36"
+    },
+    {
+      "description": "意图识别用",
+      "microAppId": 124994103985,
+      "microAppName": "意图识别工作流",
+      "microAppVersionId": 5181,
+      "picUrl": "https://agent-paas-test-1323116912.cos.ap-guangzhou.myqcloud.com/agent/paas-llm/image/342361776937862574.png",
+      "runMode": 4,
+      "status": 4,
+      "updateDate": "2026-05-28 10:39:46"
+    },
+    {
+      "description": null,
+      "microAppId": 129956454375,
+      "microAppName": "产品推荐(保存)-工作流(zw测试)",
+      "microAppVersionId": 5180,
+      "picUrl": "https://meiye.cos.clife.cn/material/T000000/209e1407eeb1485fa761eaf7aacff8ac.png",
+      "runMode": 4,
+      "status": 4,
+      "updateDate": "2026-05-14 15:08:44"
+    },
+    {
+      "description": null,
+      "microAppId": 124528429557,
+      "microAppName": "产品推荐-工作流(zw测试)",
+      "microAppVersionId": 5179,
+      "picUrl": "https://meiye.cos.clife.cn/material/T000000/209e1407eeb1485fa761eaf7aacff8ac.png",
+      "runMode": 4,
+      "status": 1,
+      "updateDate": "2026-05-14 15:09:32"
+    },
+    {
+      "description": null,
+      "microAppId": 122180682600,
+      "microAppName": "饮食打卡分析的副本01",
+      "microAppVersionId": 5178,
+      "picUrl": "https://meiye.cos.clife.cn/material/T000000/209e1407eeb1485fa761eaf7aacff8ac.png",
+      "runMode": 4,
+      "status": 4,
+      "updateDate": "2026-04-26 14:38:20"
+    },
+    {
+      "description": null,
+      "microAppId": 128488615991,
+      "microAppName": "AI听智能分析待办内容",
+      "microAppVersionId": 5152,
+      "picUrl": "https://meiye.cos.clife.cn/material/T000000/209e1407eeb1485fa761eaf7aacff8ac.png",
+      "runMode": 4,
+      "status": 1,
+      "updateDate": "2026-05-28 10:35:17"
+    },
+    {
+      "description": null,
+      "microAppId": 124172205325,
+      "microAppName": "检测报告-工作流",
+      "microAppVersionId": 5143,
+      "picUrl": "https://meiye.cos.clife.cn/material/T000000/209e1407eeb1485fa761eaf7aacff8ac.png",
+      "runMode": 4,
+      "status": 1,
+      "updateDate": "2026-04-24 11:31:09"
+    },
+    {
+      "description": null,
+      "microAppId": 120410007233,
+      "microAppName": "产品推荐(保存)-工作流",
+      "microAppVersionId": 5142,
+      "picUrl": "https://meiye.cos.clife.cn/material/T000000/209e1407eeb1485fa761eaf7aacff8ac.png",
+      "runMode": 4,
+      "status": 1,
+      "updateDate": "2026-04-23 21:14:44"
+    },
+    {
+      "description": null,
+      "microAppId": 122509768476,
+      "microAppName": "顾客测肤记录-工作流",
+      "microAppVersionId": 5136,
+      "picUrl": "https://meiye.cos.clife.cn/material/T000000/209e1407eeb1485fa761eaf7aacff8ac.png",
+      "runMode": 4,
+      "status": 1,
+      "updateDate": "2026-07-30 15:55:00"
+    },
+    {
+      "description": "暂时支持分析最新服务报告",
+      "microAppId": 124225811648,
+      "microAppName": "美肤私教-况俊飚",
+      "microAppVersionId": 5134,
+      "picUrl": "https://agent-paas-test-1323116912.cos.ap-guangzhou.myqcloud.com/1776411326190-wyz.jpg",
+      "runMode": 4,
+      "status": 4,
+      "updateDate": "2026-04-23 15:14:40"
+    },
+    {
+      "description": null,
+      "microAppId": 127898498917,
+      "microAppName": "饮食打卡分析",
+      "microAppVersionId": 5133,
+      "picUrl": "https://meiye.cos.clife.cn/material/T000000/209e1407eeb1485fa761eaf7aacff8ac.png",
+      "runMode": 4,
+      "status": 1,
+      "updateDate": "2026-04-25 19:12:40"
+    },
+    {
+      "description": "暂时支持分析最新服务报告",
+      "microAppId": 122960673270,
+      "microAppName": "美肤私教-mock-lgy",
+      "microAppVersionId": 5129,
+      "picUrl": "https://agent-paas-test-1323116912.cos.ap-guangzhou.myqcloud.com/1776411326190-wyz.jpg",
+      "runMode": 4,
+      "status": 4,
+      "updateDate": "2026-04-20 10:36:46"
+    },
+    {
+      "description": "联调用，请勿随意修改，正确修改方式为：复制一份，调试通过后导出json，取消发布当前，再导入再发布",
+      "microAppId": 123431698239,
+      "microAppName": "美肤私教-mock",
+      "microAppVersionId": 5128,
+      "picUrl": "https://agent-paas-test-1323116912.cos.ap-guangzhou.myqcloud.com/1776411326190-wyz.jpg",
+      "runMode": 4,
+      "status": 1,
+      "updateDate": "2026-04-25 19:14:36"
+    },
+    {
+      "description": "分析最新服务报告",
+      "microAppId": 128247159169,
+      "microAppName": "分析最新服务报告-mock",
+      "microAppVersionId": 5127,
+      "picUrl": "https://meiye.cos.clife.cn/material/T000000/209e1407eeb1485fa761eaf7aacff8ac.png",
+      "runMode": 4,
+      "status": 4,
+      "updateDate": "2026-04-24 19:18:18"
+    },
+    {
+      "description": null,
+      "microAppId": 124525219685,
+      "microAppName": "产品推荐-工作流",
+      "microAppVersionId": 5126,
+      "picUrl": "https://meiye.cos.clife.cn/material/T000000/209e1407eeb1485fa761eaf7aacff8ac.png",
+      "runMode": 4,
+      "status": 1,
+      "updateDate": "2026-04-24 10:37:01"
+    },
+    {
+      "description": null,
+      "microAppId": 121452840781,
+      "microAppName": "bktest",
+      "microAppVersionId": 5125,
+      "picUrl": "https://meiye.cos.clife.cn/material/T000000/209e1407eeb1485fa761eaf7aacff8ac.png",
+      "runMode": 4,
+      "status": 4,
+      "updateDate": "2026-04-17 11:15:29"
+    },
+    {
+      "description": "分析最新服务报告",
+      "microAppId": 122097725914,
+      "microAppName": "分析最新服务报告-工作流",
+      "microAppVersionId": 5124,
+      "picUrl": "https://meiye.cos.clife.cn/material/T000000/209e1407eeb1485fa761eaf7aacff8ac.png",
+      "runMode": 4,
+      "status": 1,
+      "updateDate": "2026-04-24 11:23:46"
+    },
+    {
+      "description": "查询当前员工信息",
+      "microAppId": 125943853772,
+      "microAppName": "查询当前员工信息",
+      "microAppVersionId": 5122,
+      "picUrl": "https://agent-paas-test-1323116912.cos.ap-guangzhou.myqcloud.com/agent/paas-llm/image/365671776062048695.png",
+      "runMode": 4,
+      "status": 4,
+      "updateDate": "2026-04-20 19:28:31"
+    },
+    {
+      "description": "美肤私教工作流智能体",
+      "microAppId": 129284964653,
+      "microAppName": "SkinAI Coach - 智能护肤教练",
+      "microAppVersionId": 5121,
+      "picUrl": "https://agent-paas-test-1323116912.cos.ap-guangzhou.myqcloud.com/agent/paas-llm/image/365671776062048695.png",
+      "runMode": 4,
+      "status": 4,
+      "updateDate": "2026-07-07 15:36:23"
+    },
+    {
+      "description": "测试美肤私教工作流智能体",
+      "microAppId": 124787808018,
+      "microAppName": "hjl_workflow",
+      "microAppVersionId": 5115,
+      "picUrl": "https://agent-paas-test-1323116912.cos.ap-guangzhou.myqcloud.com/agent/paas-llm/image/365671776062048695.png",
+      "runMode": 4,
+      "status": 4,
+      "updateDate": "2026-04-25 09:54:03"
+    },
+    {
+      "description": null,
+      "microAppId": 125967505575,
+      "microAppName": "test0411",
+      "microAppVersionId": 5111,
+      "picUrl": "https://meiye.cos.clife.cn/material/T000000/209e1407eeb1485fa761eaf7aacff8ac.png",
+      "runMode": 4,
+      "status": 4,
+      "updateDate": "2026-04-22 15:42:19"
+    },
+    {
+      "description": "预研",
+      "microAppId": 129755652879,
+      "microAppName": "hjl_test",
+      "microAppVersionId": 5110,
+      "picUrl": "https://meiye.cos.clife.cn/material/T000000/209e1407eeb1485fa761eaf7aacff8ac.png",
+      "runMode": 6,
+      "status": 4,
+      "updateDate": "2026-04-11 10:33:45"
+    },
+    {
+      "description": null,
+      "microAppId": 126403774070,
+      "microAppName": "test0404",
+      "microAppVersionId": 5055,
+      "picUrl": "https://meiye.cos.clife.cn/material/T000000/209e1407eeb1485fa761eaf7aacff8ac.png",
+      "runMode": 4,
+      "status": 4,
+      "updateDate": "2026-04-24 09:14:57"
+    },
+    {
+      "description": null,
+      "microAppId": 124717130378,
+      "microAppName": "个性化美容服务方案",
+      "microAppVersionId": 4989,
+      "picUrl": "https://meiye.cos.clife.cn/material/T000000/209e1407eeb1485fa761eaf7aacff8ac.png",
+      "runMode": 4,
+      "status": 1,
+      "updateDate": "2026-09-18 11:30:56"
+    },
+    {
+      "description": null,
+      "microAppId": 121241526761,
+      "microAppName": "test111",
+      "microAppVersionId": 4965,
+      "picUrl": "https://meiye.cos.clife.cn/material/T000000/209e1407eeb1485fa761eaf7aacff8ac.png",
+      "runMode": 5,
+      "status": 4,
+      "updateDate": "2026-04-15 22:31:07"
+    },
+    {
+      "description": null,
+      "microAppId": 125177301536,
+      "microAppName": "fdgdf",
+      "microAppVersionId": 4905,
+      "picUrl": "https://meiye.cos.clife.cn/material/T000000/209e1407eeb1485fa761eaf7aacff8ac.png",
+      "runMode": 4,
+      "status": 4,
+      "updateDate": "2026-04-21 14:46:36"
+    },
+    {
+      "description": "通过聊天方式采集数据",
+      "microAppId": 127988688202,
+      "microAppName": "AI建档",
+      "microAppVersionId": 4762,
+      "picUrl": "https://agent-paas-test-1323116912.cos.ap-guangzhou.myqcloud.com/agent/paas-llm/image/132181772431336216.png",
+      "runMode": 3,
+      "status": 4,
+      "updateDate": "2026-03-02 15:14:40"
+    },
+    {
+      "description": "数据分析测试。",
+      "microAppId": 129304029818,
+      "microAppName": "数据分析",
+      "microAppVersionId": 4746,
+      "picUrl": "https://meiye.cos.clife.cn/material/T000000/209e1407eeb1485fa761eaf7aacff8ac.png",
+      "runMode": 2,
+      "status": 4,
+      "updateDate": "2026-03-02 14:50:56"
+    },
+    {
+      "description": "AI问诊-问卷总结-调试版【测试】",
+      "microAppId": 2034,
+      "microAppName": "AI问诊-问卷总结-调试版【测试】",
+      "microAppVersionId": 4137,
+      "picUrl": "https://ai-copilot-1323116912.cos.ap-guangzhou.myqcloud.com/web-agent-paas/assets/c-logo-6864138e.png",
+      "runMode": 2,
+      "status": 4,
+      "updateDate": "2025-12-09 17:33:49"
+    },
+    {
+      "description": "AI问诊-护理方案-调试版【测试】",
+      "microAppId": 2017,
+      "microAppName": "AI问诊-护理方案-调试版【测试】",
+      "microAppVersionId": 4057,
+      "picUrl": "https://ai-copilot-1323116912.cos.ap-guangzhou.myqcloud.com/web-agent-paas/assets/c-logo-6864138e.png",
+      "runMode": 2,
+      "status": 4,
+      "updateDate": "2025-12-10 18:35:51"
+    },
+    {
+      "description": "66666",
+      "microAppId": 1996,
+      "microAppName": "测试专用",
+      "microAppVersionId": 4031,
+      "picUrl": "https://ai-copilot-1323116912.cos.ap-guangzhou.myqcloud.com/web-agent-paas/assets/c-logo-6864138e.png",
+      "runMode": 4,
+      "status": 4,
+      "updateDate": "2026-03-27 10:09:56"
+    },
+    {
+      "description": "优化门户tips算法",
+      "microAppId": 1941,
+      "microAppName": "ai美业门户提示词优化",
+      "microAppVersionId": 3962,
+      "picUrl": "https://ai-copilot-1323116912.cos.ap-guangzhou.myqcloud.com/web-agent-paas/assets/c-logo-6864138e.png",
+      "runMode": 2,
+      "status": 2,
+      "updateDate": "2025-11-13 09:30:24"
+    },
+    {
+      "description": "GoGoGo",
+      "microAppId": 1935,
+      "microAppName": "DeepSeekGoGoGo",
+      "microAppVersionId": 3950,
+      "picUrl": "https://ai-copilot-1323116912.cos.ap-guangzhou.myqcloud.com/web-agent-paas/assets/c-logo-6864138e.png",
+      "runMode": 0,
+      "status": 4,
+      "updateDate": "2026-03-02 14:53:41"
+    },
+    {
+      "description": "AI问诊-问卷总结",
+      "microAppId": 1932,
+      "microAppName": "问卷总结",
+      "microAppVersionId": 3946,
+      "picUrl": "https://ai-copilot-1323116912.cos.ap-guangzhou.myqcloud.com/web-agent-paas/assets/c-logo-6864138e.png",
+      "runMode": 2,
+      "status": 1,
+      "updateDate": "2026-09-18 11:33:14"
+    },
+    {
+      "description": "AI问诊-护理方案需求分析【测试】",
+      "microAppId": 1924,
+      "microAppName": "AI问诊-护理方案需求分析【测试】",
+      "microAppVersionId": 4142,
+      "picUrl": "https://ai-copilot-1323116912.cos.ap-guangzhou.myqcloud.com/web-agent-paas/assets/c-logo-6864138e.png",
+      "runMode": 2,
+      "status": 1,
+      "updateDate": "2026-09-18 11:36:12"
+    },
+    {
+      "description": "问题成因生成",
+      "microAppId": 1917,
+      "microAppName": "问题成因生成",
+      "microAppVersionId": 3899,
+      "picUrl": "https://ai-copilot-1323116912.cos.ap-guangzhou.myqcloud.com/web-agent-paas/assets/c-logo-6864138e.png",
+      "runMode": 2,
+      "status": 4,
+      "updateDate": "2026-01-17 17:20:14"
+    },
+    {
+      "description": "AI问诊问卷",
+      "microAppId": 1916,
+      "microAppName": "AI问诊问卷",
+      "microAppVersionId": 3897,
+      "picUrl": "https://ai-copilot-1323116912.cos.ap-guangzhou.myqcloud.com/web-agent-paas/assets/c-logo-6864138e.png",
+      "runMode": 2,
+      "status": 4,
+      "updateDate": "2025-11-04 19:20:02"
+    },
+    {
+      "description": "1",
+      "microAppId": 1741,
+      "microAppName": "w",
+      "microAppVersionId": 3575,
+      "picUrl": "https://agent-paas-test-1323116912.cos.ap-guangzhou.myqcloud.com/agent/image/684571756446404610.png",
+      "runMode": 2,
+      "status": 4,
+      "updateDate": "2025-11-29 09:56:36"
+    },
+    {
+      "description": "q",
+      "microAppId": 1738,
+      "microAppName": "q",
+      "microAppVersionId": 3570,
+      "picUrl": "https://agent-paas-test-1323116912.cos.ap-guangzhou.myqcloud.com/agent/image/841691756434263380.png",
+      "runMode": 1,
+      "status": 4,
+      "updateDate": "2025-10-30 10:57:59"
+    },
+    {
+      "description": "",
+      "microAppId": 1577,
+      "microAppName": "测试22222",
+      "microAppVersionId": 3255,
+      "picUrl": "https://agent-paas-test-1323116912.cos.ap-guangzhou.myqcloud.com/1712135120033-364151a98ed04baee89b3b4bc3a5b4e0871b6a40397a0-BbpsBQ_fw1200.svg",
+      "runMode": 2,
+      "status": 2,
+      "updateDate": "2025-07-10 15:09:01"
+    },
+    {
+      "description": "",
+      "microAppId": 1404,
+      "microAppName": "美业AI智能推荐（服务、护后建议）",
+      "microAppVersionId": 2913,
+      "picUrl": "https://agent-paas-test-1323116912.cos.ap-guangzhou.myqcloud.com/agent/image/626191746514629089.png",
+      "runMode": 2,
+      "status": 1,
+      "updateDate": "2026-05-11 17:04:36"
+    },
+    {
+      "description": null,
+      "microAppId": 1344,
+      "microAppName": "使用知识库",
+      "microAppVersionId": 2812,
+      "picUrl": "https://ai-copilot.cos.clife.cn/web-agent-paas/assets/c-logo-6864138e.png",
+      "runMode": 0,
+      "status": 4,
+      "updateDate": "2025-05-07 14:05:51"
+    },
+    {
+      "description": null,
+      "microAppId": 1343,
+      "microAppName": "讲笑话",
+      "microAppVersionId": 2811,
+      "picUrl": "https://agent-paas-test-1323116912.cos.ap-guangzhou.myqcloud.com/1745047768917-叉腰猫.jpg",
+      "runMode": 0,
+      "status": 1,
+      "updateDate": "2025-05-07 14:38:49"
+    }
+  ],
+  "total": 82
+}

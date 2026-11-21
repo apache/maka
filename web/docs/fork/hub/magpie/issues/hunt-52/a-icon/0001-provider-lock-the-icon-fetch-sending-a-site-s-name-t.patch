@@ -1,0 +1,113 @@
+From 9e52c7bdd498d337c2904fab962ab067218c9398 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Tue, 20 Oct 2026 21:33:51 +0800
+Subject: [PATCH] provider: lock the icon fetch sending a site's name through a
+ loopback proxy under fake-ip
+
+#2593's loopback-proxy case: with Clash TUN fake-ip (or Surge's enhanced
+mode) the resolver answers every name into 198.18.0.0/15, and an icon
+fetch through a proxy on this computer works only if the proxy is asked
+for the site's NAME - a CONNECT by a pinned fake-IP address fails there.
+That already works, and this locks it: net/http's transport dials only
+the proxy's own address when one is set (guardClient's proxies map
+exempts it from the dial guard) and the CONNECT line carries the name;
+nothing resolves or pins the target locally on that path.
+
+Protective and green before. A resolver seam (lookupIPAddr, as the
+gateway's lookupIP already is) lets the test stand in Clash's answer;
+a RoundTrip-time pin, what the gateway's image fetch once did, fails
+it with "the proxy was not asked for the name".
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/provider/icon.go      | 11 +++++++--
+ internal/provider/icon_test.go | 43 ++++++++++++++++++++++++++++++++++
+ 2 files changed, 52 insertions(+), 2 deletions(-)
+
+diff --git a/internal/provider/icon.go b/internal/provider/icon.go
+index 9a88f971..045da8b4 100644
+--- a/internal/provider/icon.go
++++ b/internal/provider/icon.go
+@@ -120,11 +120,18 @@ func guardClient() *http.Client {
+ 	return &c
+ }
+ 
++// lookupIPAddr is where the icon guard resolves a host; tests point it at
++// a fake-IP answer to stand for Clash TUN's (#252), as the gateway's
++// lookupIP is for its guard.
++var lookupIPAddr = func(ctx context.Context, host string) ([]net.IPAddr, error) {
++	return net.DefaultResolver.LookupIPAddr(ctx, host)
++}
++
+ // publicHost checks a site's answers with the same rules as publicDial,
+ // for a fetch the proxy will make. A name that doesn't resolve
+ // here is left to the proxy, which may be the only way to reach it.
+ func publicHost(ctx context.Context, host string) error {
+-	ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
++	ips, err := lookupIPAddr(ctx, host)
+ 	if err != nil {
+ 		return nil
+ 	}
+@@ -185,7 +192,7 @@ func publicDial(ctx context.Context, dial func(context.Context, string, string)
+ 	if err != nil {
+ 		return nil, err
+ 	}
+-	ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
++	ips, err := lookupIPAddr(ctx, host)
+ 	if err != nil {
+ 		return nil, err
+ 	}
+diff --git a/internal/provider/icon_test.go b/internal/provider/icon_test.go
+index 8f2326d3..e5d9081f 100644
+--- a/internal/provider/icon_test.go
++++ b/internal/provider/icon_test.go
+@@ -289,3 +289,46 @@ func TestGuardClientThroughLocalProxy(t *testing.T) {
+ 		t.Fatalf("the proxy was asked for a private site: %v", asked)
+ 	}
+ }
++
++// Protective, green before (#2593): with Clash's TUN fake-ip or Surge's
++// enhanced mode on, the resolver answers every name into 198.18.0.0/15,
++// and through a proxy on this computer the fetch works only if the proxy
++// is asked for the site's NAME — a CONNECT by a pinned fake-IP address
++// fails there, since the proxy resolves it where magpie can't see. The
++// guard judges the name before the proxy is asked, the proxy's own
++// address is dialed as it is, and the CONNECT line carries the name. This
++// locks behavior that already works, so a later change that pins the
++// address (as the gateway's image fetch once did) fails here first.
++func TestGuardClientFakeIPThroughLoopbackProxyKeepsName(t *testing.T) {
++	was := lookupIPAddr
++	lookupIPAddr = func(_ context.Context, _ string) ([]net.IPAddr, error) {
++		// what a fake-ip resolver answers for every name (#252)
++		return []net.IPAddr{{IP: net.ParseIP("198.18.7.11")}}, nil
++	}
++	t.Cleanup(func() { lookupIPAddr = was })
++
++	var connect string
++	proxy := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
++		if r.Method == http.MethodConnect {
++			connect = r.Host // authority form: name:port
++		}
++		rw.WriteHeader(http.StatusOK)
++	}))
++	defer proxy.Close()
++	pu, _ := url.Parse(proxy.URL)
++	dt := http.DefaultTransport.(*http.Transport)
++	old := dt.Proxy
++	dt.Proxy = http.ProxyURL(pu)
++	t.Cleanup(func() { dt.Proxy = old })
++
++	// The fetch ends in an error on purpose: the test proxy opens the
++	// tunnel and forwards nowhere, so the TLS handshake inside it fails.
++	// What is locked is what reached the proxy.
++	req, _ := http.NewRequest(http.MethodGet, "https://icon.example/logo.png", nil)
++	if _, err := guardClient().Do(req); err == nil {
++		t.Fatal("a fetch through a CONNECT-only test proxy was expected to fail")
++	}
++	if connect != "icon.example:443" {
++		t.Fatalf("the proxy was not asked for the name: %q", connect)
++	}
++}
+-- 
+2.50.1 (Apple Git-155)
+

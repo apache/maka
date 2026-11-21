@@ -1,0 +1,350 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Thu, 5 Nov 2026 07:05:19 +0800
+Subject: [PATCH] gateway: an outage twice failed is answered from the rests,
+ not asked
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+A relay that went dark kept being really asked for as long as its
+clients kept asking. Every request probed a key resting after its
+ladder — probeOne keeps the one back soonest for a real answer, and
+the planner's hold answers from the rests out of quota or credit
+alone (#1772), so a rest after the vendor could not be reached held
+nothing: huluma1314's #2945 saw agentrouter.org, down for 32
+minutes, really asked 706 times over 55 conversations, and 928 more
+asks turned away by the keys' own MaxRPM, every one of them the
+probe a resting key still got, each its patience's rounds.
+
+Now a rest twice failed after the vendor could not be reached at all
+— a 5xx, a 408, no answer of its own (the class the background list
+is asked over, rest_probe.go, which is what lifts it again as soon
+as the vendor answers) — holds the request where a quota rest holds
+one: every key that was left resting so is answered from its rest,
+with the soonest one back as Retry-After, and no upstream call is
+made. A first failure may be a moment's, so only a ladder twice
+climbed holds, as a key is held once refused twice. probeable reads
+the outage class from outageRest beside outageHeld, and an answer
+held this way is not asked again within the request.
+
+The patience of a group, and the same-one retries before it, still
+ride a first, momentary 5xx out as they did: nothing holds until
+the ladder has climbed twice, and nothing rests that didn't before.
+
+Test: internal/gateway/outage_hold_test.go, an upstream that takes
+the connection and dies before a word (Go's client left reading
+EOF, as a dark relay answers):
+- TestAllRestingOutageAnswersFromRest: two keys fail, rest, and
+  their ladder climbs over an ended rest; the requests after that
+  are answered 502 with the provider named, when it is asked again,
+  and a Retry-After of the soonest rest, and the vendor is asked
+  not at all.
+
+Run: the rest, plain5xx, proxy-down, backoff-ladder, rest-probe,
+Codex-own-EOF and patience tests above them (23 green), the compaction,
+protection, overflow and byte-cap tests my first draft's resting of
+the last one left had broken (16 green again), gofmt -l, go vet
+-tags nogui, and the whole gateway suite with -tags nogui.
+
+Fixes #2945
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gateway/fallback.go         |  38 +++++++
+ internal/gateway/gateway.go          |  26 ++++-
+ internal/gateway/outage_hold_test.go | 162 +++++++++++++++++++++++++++
+ internal/gateway/rest_probe.go       |   8 +-
+ 4 files changed, 226 insertions(+), 8 deletions(-)
+ create mode 100644 internal/gateway/outage_hold_test.go
+
+diff --git a/internal/gateway/fallback.go b/internal/gateway/fallback.go
+index b6715560d..8f8f232f9 100644
+--- a/internal/gateway/fallback.go
++++ b/internal/gateway/fallback.go
+@@ -1498,6 +1498,44 @@ func quotaStatus(status int) bool {
+ 	return status == http.StatusTooManyRequests || status == http.StatusPaymentRequired
+ }
+ 
++// outageRest says r is a rest taken after the vendor could not be reached
++// at all — a 5xx, a 408, no answer of its own at all — for as long as its
++// ladder guesses ("backoff"), none of it a time the vendor named: the
++// class of rest the background list is asked over (rest_probe.go), and the
++// class a request is answered from once it is twice failed (outageHeld).
++func outageRest(r Rest) bool {
++	return r.Why == failOther && r.By == "backoff" &&
++		(r.Status >= 500 || r.Status == http.StatusRequestTimeout || r.Status == 0)
++}
++
++// outageHeld is, when every candidate of cs rests after its vendor could
++// not be reached — the connection dead, a dial that hung, a 5xx that says
++// nothing of why — the rest of the first, and when the soonest of them is
++// back: asked, each would fail the same (#2945: a relay down for 32
++// minutes was really asked 706 times over 55 conversations, every request
++// its resting keys' one probe). Only a ladder twice climbed holds, a
++// first failure being a moment's, as a key out of its allowance is held
++// once refused twice (quotaHeld, #1772); its rest is asked again in the
++// background meanwhile (rest_probe.go), which lifts it as soon as the
++// vendor answers again.
++func outageHeld(cs []candidate) (Rest, time.Time, bool) {
++	var first Rest
++	var back time.Time
++	for i, c := range cs {
++		r, ok := restingOf(c)
++		if !ok || !outageRest(r) || r.Failures < 2 {
++			return Rest{}, time.Time{}, false
++		}
++		if i == 0 {
++			first = r
++		}
++		if back.IsZero() || r.Until.Before(back) {
++			back = r.Until
++		}
++	}
++	return first, back, len(cs) > 0
++}
++
+ // soonestBack is when the first of cs is back from its rest, or asked
+ // again before it is (Rest.asksAt); false when one of them isn't resting.
+ func soonestBack(cs []candidate) (time.Time, bool) {
+diff --git a/internal/gateway/gateway.go b/internal/gateway/gateway.go
+index 64a4efdbd..bb4a97226 100644
+--- a/internal/gateway/gateway.go
++++ b/internal/gateway/gateway.go
+@@ -3562,6 +3562,11 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
+ 				// vendor named: none is asked, and the agent is told so at
+ 				// once (#1772; hsjzg58958 on X)
+ 				cands = cands[:i+1]
++			} else if _, _, ok := outageHeld(cands[i:]); ok {
++				// every key left rests twice failed after its vendor could
++				// not be reached: none is asked, and the agent is told so
++				// at once (#2945)
++				cands = cands[:i+1]
+ 			}
+ 		}
+ 		if by := accountSkipped(r.Context(), c.p, c.model); by != "" {
+@@ -4080,6 +4085,25 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
+ 			} else {
+ 				writeError(hw, from, call.Status, msg)
+ 			}
++		} else if rested, back, ok := outageHeld(cands[i:]); ok && last {
++			// it rests twice failed after its vendor could not be reached
++			// at all — the connection dead, a dial that hung, a 5xx that
++			// says nothing of why — and so does every key that was left
++			// (#2945: a relay down for 32 minutes was really asked 706
++			// times over 55 conversations, every request its resting keys'
++			// one probe): its failure is given again without asking, with
++			// when the soonest of them is back as Retry-After, for an
++			// agent that waits as told to ask then. Its list is asked in
++			// the background meanwhile (rest_probe.go), which lifts the
++			// rest as soon as the vendor answers again
++			msg := fmt.Sprintf("%s (unreachable: not asked again before %s)", c.p.Name, heldClock(back, time.Now()))
++			held, heldBack, call.Status, call.Error = true, back, cmp.Or(rested.Status, http.StatusBadGateway), msg
++			// the answer names who held it, as one asked would
++			noteMember(hw, r, c.p, c.model)
++			if wait := time.Until(back); wait > 0 {
++				w.Header().Set("Retry-After", strconv.Itoa(int((wait+time.Second-1)/time.Second)))
++			}
++			writeError(hw, from, call.Status, msg)
+ 		} else {
+ 			// a stream that fails before anything is said is let go at
+ 			// once (hw.stop), not read on until the vendor hangs up
+@@ -5188,7 +5212,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
+ 				break
+ 			}
+ 		}
+-		if wait, ok := passing(hw.code(), hw.header, hw.errBody(), again); ok && !protected && !sameRefusal && !hw.turnedAway && hw.failed() && waitFrom.IsZero() && !kept.tooQuiet(wait) && !kept.outlives(wait) {
++		if wait, ok := passing(hw.code(), hw.header, hw.errBody(), again); ok && !held && !protected && !sameRefusal && !hw.turnedAway && hw.failed() && waitFrom.IsZero() && !kept.tooQuiet(wait) && !kept.outlives(wait) {
+ 			// nobody else is left: the same one again, after a moment (not
+ 			// what Antigravity turned away: it turns it away again; nor
+ 			// once the group's patience is spent)
+diff --git a/internal/gateway/outage_hold_test.go b/internal/gateway/outage_hold_test.go
+new file mode 100644
+index 000000000..4ac39dfab
+--- /dev/null
++++ b/internal/gateway/outage_hold_test.go
+@@ -0,0 +1,162 @@
++package gateway
++
++import (
++	"io"
++	"net/http"
++	"net/http/httptest"
++	"slices"
++	"strconv"
++	"strings"
++	"sync"
++	"testing"
++	"time"
++
++	"github.com/yetone/magpie/internal/provider"
++)
++
++// eofVendor is an upstream that takes the connection and dies before a
++// word: a relay whose site went dark answers this way, Go's client left
++// reading EOF for every attempt (#2945: agentrouter.org, down for 32
++// minutes, really asked 706 times over 55 conversations).
++type eofVendor struct {
++	mu    sync.Mutex
++	dials []string
++}
++
++func (e *eofVendor) ServeHTTP(w http.ResponseWriter, r *http.Request) {
++	io.Copy(io.Discard, r.Body)
++	e.mu.Lock()
++	e.dials = append(e.dials, strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
++	e.mu.Unlock()
++	panic(http.ErrAbortHandler) // the connection dies with nothing said
++}
++
++func (e *eofVendor) took() []string {
++	e.mu.Lock()
++	defer e.mu.Unlock()
++	out := e.dials
++	e.dials = nil
++	return out
++}
++
++func eofChain(t *testing.T, keys ...string) (*eofVendor, *Server) {
++	t.Helper()
++	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
++	t.Setenv("XDG_CACHE_HOME", t.TempDir())
++	noRests()
++	t.Cleanup(noRests)
++	routed.Lock()
++	routed.failures = map[string]int{}
++	routed.Unlock()
++	t.Cleanup(func() {
++		routed.Lock()
++		routed.failures = map[string]int{}
++		routed.Unlock()
++	})
++	e := &eofVendor{}
++	up := httptest.NewServer(e)
++	t.Cleanup(up.Close)
++	p := provider.Provider{ID: "dark", Name: "dark", Chat: up.URL + "/v1", Models: []string{"glm-5.3-flash"}, Routing: provider.Ordered}
++	p.Key = keys[0]
++	for _, k := range keys[1:] {
++		p.Keys = append(p.Keys, provider.KeyAccount{Key: k})
++	}
++	if err := provider.Save(p); err != nil {
++		t.Fatal(err)
++	}
++	return e, New()
++}
++
++func postDark(t *testing.T, srv *Server) *httptest.ResponseRecorder {
++	t.Helper()
++	rec := httptest.NewRecorder()
++	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"dark/glm-5.3-flash","messages":[{"role":"user","content":"hi"}]}`))
++	req.Header.Set("Content-Type", "application/json")
++	srv.Handler().ServeHTTP(rec, req)
++	return rec
++}
++
++// expireRests ends every rest there is, as an outage long enough does a
++// minute, then two, after each: what a failure next makes is the ladder's
++// next step.
++func expireRests(t *testing.T) {
++	t.Helper()
++	restingUntil.Lock()
++	for k := range restingUntil.m {
++		restingUntil.m[k] = time.Now().Add(-time.Second)
++	}
++	restingUntil.Unlock()
++}
++
++// outageHeldOf says cs are all held: each rests its outage ladder's second
++// step at least.
++func outageHeldOf(t *testing.T, cs []candidate) {
++	t.Helper()
++	for _, c := range cs {
++		r, ok := restingOf(c)
++		if !ok || r.Why != failOther || r.By != "backoff" || r.Failures < 2 {
++			t.Fatalf("%s rests %+v (ok %v), want an outage rest twice climbed", c.rest, r, ok)
++		}
++	}
++}
++
++// #2945 (an upstream 502/EOF hammer): a relay went dark — every dial met
++// EOF — and magpie kept really asking it for 32 minutes, 706 calls over
++// 55 conversations, every request the probe its resting keys still got,
++// each try its patience's rounds. A key whose outage ladder has climbed
++// twice is now answered from the rests, not asked, with the soonest one
++// back as Retry-After; the list is asked in the background instead
++// (rest_probe.go), which lifts the rest as soon as the vendor answers.
++func TestAllRestingOutageAnswersFromRest(t *testing.T) {
++	rp, sp := retryPause, singlePatience
++	retryPause, singlePatience = time.Millisecond, 20*time.Millisecond
++	t.Cleanup(func() { retryPause, singlePatience = rp, sp })
++	e, srv := eofChain(t, "eof-a", "eof-b")
++
++	// the outage begins: each key fails once, and each rests as the one
++	// asked before the resting mate
++	for i := 0; i < 2; i++ {
++		if rec := postDark(t, srv); rec.Code != http.StatusBadGateway {
++			t.Fatalf("request %d: %d %s", i+1, rec.Code, rec.Body)
++		}
++		e.took()
++	}
++	// an outage long enough climbs the ladder: its first rest over, a
++	// failure again is counted again. The last one left's failure rests
++	// nothing, so each key climbs as the one asked before its resting mate
++	expireRests(t)
++	if rec := postDark(t, srv); rec.Code != http.StatusBadGateway {
++		t.Fatalf("the ladder's second step: %d %s", rec.Code, rec.Body)
++	}
++	e.took()
++	rec := postDark(t, srv)
++	if got := e.took(); len(got) == 0 || slices.Contains(got, "eof-a") {
++		t.Fatalf("the key resting twice failed was really asked (%v), want only the one not resting", got)
++	}
++	if rec.Code != http.StatusBadGateway {
++		t.Fatalf("the ladder's second step: %d %s", rec.Code, rec.Body)
++	}
++	outageHeldOf(t, []candidate{
++		{p: provider.Provider{ID: "dark"}, rest: "dark#" + provider.KeyID("eof-a")},
++		{p: provider.Provider{ID: "dark"}, rest: "dark#" + provider.KeyID("eof-b")},
++	})
++
++	// every key rests, twice failed: the next requests are answered from
++	// the rests, and the vendor is not asked at all
++	for i := 0; i < 3; i++ {
++		rec := postDark(t, srv)
++		if got := e.took(); len(got) != 0 {
++			t.Fatalf("request %d while every key rests twice failed: really asked %v", i+1, got)
++		}
++		if rec.Code != http.StatusBadGateway {
++			t.Fatalf("request %d: %d %s", i+1, rec.Code, rec.Body)
++		}
++		if !strings.Contains(rec.Body.String(), "dark (unreachable: not asked again before ") {
++			t.Errorf("request %d says neither who nor when: %s", i+1, rec.Body)
++		}
++		ra, err := strconv.Atoi(rec.Header().Get("Retry-After"))
++		if err != nil || ra < 60 || ra > 121 {
++			t.Errorf("request %d: Retry-After %q, want the time left of the soonest rest", i+1, rec.Header().Get("Retry-After"))
++		}
++	}
++}
+diff --git a/internal/gateway/rest_probe.go b/internal/gateway/rest_probe.go
+index 62f879038..612ac20db 100644
+--- a/internal/gateway/rest_probe.go
++++ b/internal/gateway/rest_probe.go
+@@ -72,13 +72,7 @@ var restProbes = struct {
+ // A Retry-After the vendor sent with it is its word on when to ask again,
+ // which a list asked sooner would go around.
+ func probeable(c candidate, r Rest, header http.Header, now time.Time) bool {
+-	if retryAfter(header, now) > 0 || c.p.Account != nil || r.Model != "" || r.Key != c.restKey() || r.Why != failOther || !c.p.ListAsks() {
+-		return false
+-	}
+-	if r.By != "backoff" {
+-		return false
+-	}
+-	if r.Status < 500 && r.Status != http.StatusRequestTimeout && r.Status != 0 {
++	if retryAfter(header, now) > 0 || c.p.Account != nil || r.Model != "" || r.Key != c.restKey() || !outageRest(r) || !c.p.ListAsks() {
+ 		return false
+ 	}
+ 	return probeBefore(now.Add(restProbeSteps[0]), r.Until)
+-- 
+2.50.1 (Apple Git-155)
+

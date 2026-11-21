@@ -1,0 +1,6 @@
+# github.com/yetone/magpie/internal/gui [github.com/yetone/magpie/internal/gui.test]
+internal/gui/webview2_exit_test.go:35:13: undefined: webView2Fatal
+internal/gui/webview2_exit_test.go:46:18: undefined: webView2ExitNotice
+internal/gui/webview2_exit_test.go:88:3: undefined: runWebview2Exit
+FAIL	github.com/yetone/magpie/internal/gui [build failed]
+FAIL

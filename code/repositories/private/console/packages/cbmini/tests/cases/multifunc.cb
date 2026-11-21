@@ -1,0 +1,12 @@
+int add(int a, int b) {
+    return a + b;
+}
+int twice(int n) {
+    return n * 2;
+}
+int main(void) {
+    print_int(add(3, 4));
+    print_int(twice(add(1, 2)));
+    print_int(add(twice(2), add(1, 1)));
+    return 0;
+}

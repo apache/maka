@@ -1,0 +1,106 @@
+From dd8ee62c4731b6c19ac41d9606ff1ea36b9d47b0 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Sat, 24 Oct 2026 14:30:19 +0800
+Subject: [PATCH] gateway: a turn the Codex socket refuses as too big goes over
+ HTTP
+
+The ChatGPT backend closes its WebSocket with a StatusMessageTooBig
+close frame when a turn's message is over what the socket takes, and
+magpie turned that into a 502 that read as OpenAI being down (#3444).
+A turn the backend refuses so, before its reply begins, goes over HTTP
+as it was, as Codex's own client makes it; the host isn't shunned for
+it, so the next, small turn is on the socket again.
+
+Run: go test -tags nogui ./internal/gateway/ (TestCodexSocketTooBigGoesOverHTTP red before the fix, green after; the package green, -race on the codex socket tests green)
+
+Fixes #3444
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gateway/codex_socket.go      |  7 +++++
+ internal/gateway/codex_socket_test.go | 37 +++++++++++++++++++++++++++
+ 2 files changed, 44 insertions(+)
+
+diff --git a/internal/gateway/codex_socket.go b/internal/gateway/codex_socket.go
+index 4a926389..2616c0fd 100644
+--- a/internal/gateway/codex_socket.go
++++ b/internal/gateway/codex_socket.go
+@@ -288,6 +288,13 @@ func (t codexSocket) socket(req *http.Request, msg []byte) (*http.Response, erro
+ 			if errors.Is(err, io.EOF) && len(body.pending) == 0 {
+ 				return nil, errors.New("codex websocket: closed before the reply began")
+ 			}
++			if websocket.CloseStatus(err) == websocket.StatusMessageTooBig {
++				// the backend refused the turn's message as more than
++				// its socket takes, before the reply began: nothing of
++				// it was taken, and the same turn clears over HTTP, as
++				// Codex's own client makes it (#3444)
++				return nil, errCodexSocketFallBack
++			}
+ 			return nil, err
+ 		}
+ 		if frame == nil { // dropped
+diff --git a/internal/gateway/codex_socket_test.go b/internal/gateway/codex_socket_test.go
+index b9102727..5cd90889 100644
+--- a/internal/gateway/codex_socket_test.go
++++ b/internal/gateway/codex_socket_test.go
+@@ -33,6 +33,10 @@ type fakeSocketBackend struct {
+ 	posts   int
+ 	refuse  int
+ 	frames  func(socketTurn) []string
++	// tooBig says which turns the backend refuses with a close
++	// StatusMessageTooBig, as it does a message over its socket's
++	// ceiling (#3444)
++	tooBig func(socketTurn) bool
+ }
+ 
+ func (f *fakeSocketBackend) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+@@ -59,6 +63,10 @@ func (f *fakeSocketBackend) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+ 		f.mu.Lock()
+ 		f.sockets = append(f.sockets, turn)
+ 		f.mu.Unlock()
++		if f.tooBig != nil && f.tooBig(turn) {
++			c.Close(websocket.StatusMessageTooBig, "")
++			return
++		}
+ 		for _, fr := range f.frames(turn) {
+ 			if c.Write(r.Context(), websocket.MessageText, []byte(fr)) != nil {
+ 				return
+@@ -282,6 +290,35 @@ func TestCodexSocketClosedEarlyIsCut(t *testing.T) {
+ 	}
+ }
+ 
++// A turn whose message the backend refuses with a close
++// StatusMessageTooBig — a large one, over the socket's ceiling, which the
++// same request clears over HTTP — goes over HTTP as it was, as Codex's own
++// client makes it, and the host isn't shunned for it: the next, small turn
++// is on the socket again (#3444).
++func TestCodexSocketTooBigGoesOverHTTP(t *testing.T) {
++	socketOn(t)
++	f := &fakeSocketBackend{frames: wholeReply, tooBig: func(turn socketTurn) bool {
++		return len(turn.msg) > 1<<20
++	}}
++	chatgpt(t, f.ServeHTTP)
++
++	big := `{"model":"gpt-5.5","stream":true,"input":"` + strings.Repeat("x", 2<<20) + `"}`
++	code, body := codexPost(t, big)
++	if code != 200 || !strings.Contains(body, `"delta":"po"`) {
++		t.Fatalf("the big turn: %d %s", code, body[:min(len(body), 400)])
++	}
++	if strings.Contains(body, "MessageTooBig") {
++		t.Errorf("the big turn's size reached Codex: %s", body[:min(len(body), 400)])
++	}
++	code, body = codexPost(t, `{"model":"gpt-5.5","stream":true,"input":"ping"}`)
++	if code != 200 || !strings.Contains(body, "pong") || !strings.Contains(body, "response.completed") {
++		t.Fatalf("the small turn: %d %s", code, body)
++	}
++	if posts, sockets := f.counts(); posts != 1 || sockets != 2 {
++		t.Fatalf("%d posts, %d sockets; want the big turn over HTTP after its socket, the small one on a socket", posts, sockets)
++	}
++}
++
+ // A request that isn't a streamed turn goes over HTTP as before.
+ func TestCodexSocketOnlyForStreamedTurns(t *testing.T) {
+ 	socketOn(t)
+-- 
+2.50.1 (Apple Git-155)
+

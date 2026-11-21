@@ -1,0 +1,21 @@
+--- FAIL: TestRunExpiredSaysAskAgain (0.13s)
+    late_stream_error_test.go:119: the dead Run's error reached the client with no word to retry on: "native Run lifetime expired"
+--- FAIL: TestRunExpiredTranslatedSaysAskAgain (0.01s)
+    late_stream_error_test.go:138: the dead Run's error reached the client with no word to retry on: event: message_start
+        data: {"message":{"content":[],"id":"msg_c1","model":"fake/m1","role":"assistant","stop_reason":null,"stop_sequence":null,"type":"message","usage":{"input_tokens":0,"output_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}},"type":"message_start"}
+        
+        event: content_block_start
+        data: {"content_block":{"text":"","type":"text"},"index":0,"type":"content_block_start"}
+        
+        event: content_block_delta
+        data: {"delta":{"text":"half said","type":"text_delta"},"index":0,"type":"content_block_delta"}
+        
+        event: content_block_stop
+        data: {"index":0,"type":"content_block_stop"}
+        
+        event: error
+        data: {"error":{"message":"native Run lifetime expired","type":"api_error"},"type":"error"}
+        
+FAIL
+FAIL	github.com/yetone/magpie/internal/gateway	1.345s
+FAIL

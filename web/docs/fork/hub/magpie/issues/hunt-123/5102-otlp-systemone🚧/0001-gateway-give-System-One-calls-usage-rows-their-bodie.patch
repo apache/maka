@@ -1,0 +1,235 @@
+From 9593fad231a4bd73a1517ba1ae1428a665adffd0 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Wed, 4 Nov 2026 00:20:42 +0800
+Subject: [PATCH] gateway: give System One calls' usage rows their bodies for
+ the OTLP export
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+A System One call's span carried no request or reply while a chat's
+carried both: the chat path fills its usage record with withBodies
+before appendUsage, and neither decide path did (#5102) — the OTLP
+exporter only blanks the bodies, it never fills them.
+
+Both paths had the exchange in hand already:
+
+- serveDecideTries kept the request on its call; the answer is in hand
+  though the client reads it only after the usage row is written, so
+  the row takes it from there (the call keeps what the capture keeps
+  once the reply goes out).
+- systemOne built its call only for the archive, so the call outlives
+  that if now and carries its request (as the provider was sent it)
+  and the answer when an observer wants bodies.
+
+Bodies follow the rules a chat's do: scrubbed as the request archive's
+are, the first 256 KiB Recent calls keep, or whole when the export
+wants them whole.
+
+Pinned by TestOTelExportsSystemOneBodiesWhenOn: with bodies on, a
+POST /v1/systemone and the router's own classifier call each export
+langfuse.observation.input and output, as a chat's span does; with
+bodies off, neither does.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gateway/decide.go       |  19 ++++--
+ internal/gateway/decide_group.go |  15 +++-
+ internal/gateway/otel_test.go    | 114 +++++++++++++++++++++++++++++++
+ 3 files changed, 142 insertions(+), 6 deletions(-)
+
+diff --git a/internal/gateway/decide.go b/internal/gateway/decide.go
+index 7d95ce39b..ff4707dae 100644
+--- a/internal/gateway/decide.go
++++ b/internal/gateway/decide.go
+@@ -424,10 +424,10 @@ func (s *Server) systemOne(ctx context.Context, p provider.Provider, model strin
+ 	start := time.Now()
+ 	d, err := s.postDecideSent(ctx, p, model, body)
+ 	status, b, header := d.status, d.answer, d.header
++	c := Call{Time: start, From: provider.Chat, To: provider.Chat, Model: p.ID + "/" + model, Provider: p.ID,
++		Agent: usage.AgentOf(RouterAgent), Kind: "routing", Millis: time.Since(start).Milliseconds()}
+ 	archived := ""
+ 	if d.sent != nil {
+-		c := Call{Time: start, From: provider.Chat, To: provider.Chat, Model: p.ID + "/" + model, Provider: p.ID,
+-			Agent: usage.AgentOf(RouterAgent), Kind: "routing", Millis: time.Since(start).Milliseconds()}
+ 		if err != nil {
+ 			c.Error = err.Error()
+ 		} else if status >= 300 {
+@@ -456,9 +456,20 @@ func (s *Server) systemOne(ctx context.Context, p provider.Provider, model strin
+ 	if p.Account == nil && p.Key != "" {
+ 		keyID, keyName = provider.KeyID(p.Key), p.KeyName
+ 	}
+-	usage.Append(usage.Record{Time: start, Agent: usage.AgentOf(RouterAgent), Kind: "routing", Provider: p.ID, Host: p.Where(), Model: model, Requested: model, Served: use.Model,
++	// the call is magpie's own: its request and the answer are in hand, and
++	// an observer wanting bodies reads them here as it reads a chat's (#5102)
++	if usage.ObservedBodies() != usage.NoBodies {
++		c.RequestBody, c.RequestTruncated = captureRequestBody(d.body)
++		c.ResponseBody, c.ResponseTruncated = captureRequestBody(b)
++		if usage.ObservedBodies() == usage.WholeBodies {
++			c.wholeIn, c.wholeOut = d.body, b
++		}
++	}
++	rec := usage.Record{Time: start, Agent: usage.AgentOf(RouterAgent), Kind: "routing", Provider: p.ID, Host: p.Where(), Model: model, Requested: model, Served: use.Model,
+ 		ProviderKeyID: keyID, ProviderKeyName: keyName, ProviderAccount: accountOf(p),
+-		Input: use.Usage.Input, Output: use.Usage.Output, Millis: time.Since(start).Milliseconds(), Status: status, Archive: archived})
++		Input: use.Usage.Input, Output: use.Usage.Output, Millis: time.Since(start).Milliseconds(), Status: status, Archive: archived}
++	withBodies(&rec, &c)
++	usage.Append(rec)
+ 	return b, nil
+ }
+ 
+diff --git a/internal/gateway/decide_group.go b/internal/gateway/decide_group.go
+index bd965d881..a8087174d 100644
+--- a/internal/gateway/decide_group.go
++++ b/internal/gateway/decide_group.go
+@@ -249,9 +249,20 @@ func (s *Server) serveDecideTries(w http.ResponseWriter, r *http.Request, body [
+ 		}
+ 		call.Status, call.Error, call.Fallback = status, errMsg, strings.Join(skipped, "; ")
+ 		call.Usage = Usage{Input: use.Usage.Input, Output: use.Usage.Output, Served: use.Model}
+-		appendUsage(r, usage.Record{RouteID: tr.ID, Time: start, Agent: who.agent, Via: who.via, Provider: c.p.ID, Host: c.p.Where(), Model: c.model, Requested: asked, Served: use.Model,
++		// the answer is in hand though the client reads it only below, and
++		// the capture keeps it after: an observer wanting bodies has the
++		// exchange here, as a chat's row has its (#5102)
++		if usage.ObservedBodies() != usage.NoBodies {
++			call.ResponseBody, call.ResponseTruncated = captureRequestBody(b)
++			if usage.ObservedBodies() == usage.WholeBodies {
++				call.wholeIn, call.wholeOut = body, b
++			}
++		}
++		rec := usage.Record{RouteID: tr.ID, Time: start, Agent: who.agent, Via: who.via, Provider: c.p.ID, Host: c.p.Where(), Model: c.model, Requested: asked, Served: use.Model,
+ 			ProviderKeyID: keyID, ProviderKeyName: keyName, ProviderAccount: accountOf(c.p),
+-			Input: use.Usage.Input, Output: use.Usage.Output, Millis: took, Status: status, Archive: call.archiveName()})
++			Input: use.Usage.Input, Output: use.Usage.Output, Millis: took, Status: status, Archive: call.archiveName()}
++		withBodies(&rec, &call)
++		appendUsage(r, rec)
+ 		ctype := header.Get("Content-Type")
+ 		if ctype == "" || status < 300 {
+ 			ctype = "application/json"
+diff --git a/internal/gateway/otel_test.go b/internal/gateway/otel_test.go
+index 8049ba314..b498af5f7 100644
+--- a/internal/gateway/otel_test.go
++++ b/internal/gateway/otel_test.go
+@@ -414,6 +414,120 @@ func TestOTelExportsBodiesWhenOn(t *testing.T) {
+ 	}
+ }
+ 
++// with bodies on (#5102) a System One call's span carries its request and
++// reply the way a chat's does — a client's POST /v1/systemone and the
++// router's own classifier call alike — and with it off neither
++func TestOTelExportsSystemOneBodiesWhenOn(t *testing.T) {
++	for _, c := range []struct{ name, bodies string }{
++		{"off", "false"},
++		{"on", "true"},
++	} {
++		t.Run(c.name, func(t *testing.T) {
++			fresh(t)
++			up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++				w.Header().Set("Content-Type", "application/json")
++				io.WriteString(w, `{"model":"jev","answers":{"intent":{"choice":"PRIVATE-JEV-SCORES"}},"usage":{"input_tokens":120,"output_tokens":2}}`)
++			}))
++			defer up.Close()
++			if err := provider.Save(provider.Provider{ID: "jev", Name: "Jev", Key: "k-jev", Decide: up.URL + "/v1"}); err != nil {
++				t.Fatal(err)
++			}
++			received := make(chan string, 16)
++			collector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++				b, _ := io.ReadAll(r.Body)
++				received <- string(b)
++				io.WriteString(w, `{}`)
++			}))
++			defer collector.Close()
++			t.Setenv("MAGPIE_OTEL_ENABLED", "true")
++			t.Setenv("MAGPIE_OTEL_ENDPOINT", collector.URL)
++			t.Setenv("MAGPIE_OTEL_HEADERS", "")
++			t.Setenv("MAGPIE_OTEL_METRICS", "false")
++			t.Setenv("MAGPIE_OTEL_BODIES", c.bodies)
++			fastOTel(t)
++			stop := startOTel()
++			t.Cleanup(stop)
++			s := New()
++			if code, body := sendTo(s, "/v1/systemone", `{"model":"jev/jev-latest","state":{"message":"PRIVATE-CLIENT-QUESTION"},"questions":{"intent":{"options":["bug"]}}}`); code != 200 || !strings.Contains(body, "PRIVATE-JEV-SCORES") {
++				t.Fatalf("System One: %d %s", code, body)
++			}
++			p, err := provider.Find("jev")
++			if err != nil {
++				t.Fatal(err)
++			}
++			if _, err := s.systemOne(context.Background(), *p, "jev-latest", []byte(`{"questions":{"intent":{"options":["PRIVATE-ROUTER-QUESTION"]}}}`)); err != nil {
++				t.Fatal(err)
++			}
++			stop()
++			var spans []map[string]string
++			timer := time.After(2 * time.Second)
++		drain:
++			for {
++				select {
++				case exported := <-received:
++					var wire struct {
++						ResourceSpans []struct {
++							ScopeSpans []struct {
++								Spans []struct {
++									Name       string
++									Attributes []struct {
++										Key   string
++										Value map[string]string
++									}
++								}
++							}
++						}
++					}
++					if err := json.Unmarshal([]byte(exported), &wire); err != nil {
++						t.Fatal(err)
++					}
++					for _, rs := range wire.ResourceSpans {
++						for _, ss := range rs.ScopeSpans {
++							for _, sp := range ss.Spans {
++								if sp.Name != "chat jev-latest" {
++									continue
++								}
++								attrs := map[string]string{}
++								for _, a := range sp.Attributes {
++									attrs[a.Key] = a.Value["stringValue"]
++								}
++								spans = append(spans, attrs)
++							}
++						}
++					}
++					if len(spans) == 2 {
++						break drain
++					}
++				case <-timer:
++					break drain
++				}
++			}
++			if len(spans) != 2 {
++				t.Fatalf("System One spans: %d, want 2", len(spans))
++			}
++			var clientIn, clientOut, routerIn, routerOut bool
++			for _, attrs := range spans {
++				in, out := attrs["langfuse.observation.input"], attrs["langfuse.observation.output"]
++				switch {
++				case strings.Contains(in, "PRIVATE-CLIENT-QUESTION"):
++					clientIn, clientOut = true, strings.Contains(out, "PRIVATE-JEV-SCORES")
++				case strings.Contains(in, "PRIVATE-ROUTER-QUESTION"):
++					routerIn, routerOut = true, strings.Contains(out, "PRIVATE-JEV-SCORES")
++				}
++			}
++			if c.bodies == "false" {
++				if clientIn || routerIn || clientOut || routerOut {
++					t.Fatalf("bodies exported while off: client in=%t out=%t, router in=%t out=%t", clientIn, clientOut, routerIn, routerOut)
++				}
++				return
++			}
++			if !clientIn || !clientOut || !routerIn || !routerOut {
++				t.Fatalf("System One bodies missing: client in=%t out=%t, router in=%t out=%t", clientIn, clientOut, routerIn, routerOut)
++			}
++		})
++	}
++}
++
+ func TestOTelWaterfallIncludesUnbilledFallback(t *testing.T) {
+ 	plan := &fake{ctype: "application/json", code: 429, reply: `{"error":{"message":"PRIVATE-ERROR"}}`}
+ 	spare := &fake{ctype: "application/json", reply: `{"id":"ok","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":5}}`}
+-- 
+2.50.1 (Apple Git-155)
+

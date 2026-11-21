@@ -1,0 +1,336 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: vincent <vincent@users.noreply.github.com>
+Date: Thu, 29 Oct 2026 12:06:08 +1000
+Subject: [PATCH 2/2] sessions: stop at corrupt frames before counting fork
+ history
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Do not skip checksum failures: the missing frame may end a seed or
+start a line continued later. Keep the last successful result on a
+read error and invalidate the cached parses and calls made by the
+prior skip.
+
+The version raises follow main's two-level scheme as of 873b4987e:
+parseVersions dsh 4 (a summary parse that skipped a corrupt frame
+kept what lay behind it) and callParseVersions dsh 1 (same for call
+shards), instead of the global cacheVersion/callCacheVersion bump the
+branch was first written with — a raise of the globals reads every
+agent's history again (#2278), and only dsh reads changed.
+
+Rebase adaptations to the tests only: file.mod is main's modTime
+(int64) now, so the fixtures take modOf(info.ModTime()).
+
+The new tests failed on the prior commit: a line suffix was emitted
+alone and inherited plus own usage was counted as 106.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ docs/subsystems/gateway-sessions.md      | 19 +++--
+ internal/sessions/call_cache.go          |  5 +-
+ internal/sessions/calls_dsh.go           |  2 +-
+ internal/sessions/dsh.go                 |  6 ++
+ internal/sessions/frames.go              | 10 +--
+ internal/sessions/frames_corrupt_test.go | 29 +++----
+ internal/sessions/frames_review_test.go  | 98 ++++++++++++++++++++++++
+ internal/sessions/sessions.go            |  6 +-
+ 8 files changed, 139 insertions(+), 36 deletions(-)
+ create mode 100644 internal/sessions/frames_review_test.go
+
+diff --git a/docs/subsystems/gateway-sessions.md b/docs/subsystems/gateway-sessions.md
+index 531e3b842..2afcbf390 100644
+--- a/docs/subsystems/gateway-sessions.md
++++ b/docs/subsystems/gateway-sessions.md
+@@ -816,13 +816,18 @@ The other agents the Sessions page reads (Cline,
+ Qoder, Grok, Droid, Cursor, Hermes, Alma) have no reader yet (#1607). The
+ Context page reads the gateway's own traces, so it shows none of these
+ calls. For packed dsh sessions, [`scanFrames`](../../internal/sessions/frames.go)
+-passes a complete frame with a checksum mismatch when its boundary is known and
+-no unfinished line crosses it. Other decoder errors and malformed headers stop
+-the read; a missing dictionary or decoder limit does not prove corruption.
+-Corruption within an unfinished line also stops the read.
+-An incomplete frame waits for more bytes, since it can contain a valid frame's
+-magic as data. The readers do not save a tail on an error and retry from the
+-start; later records can remain unavailable until the source file is repaired.
++stops at a malformed header or decoder error, including a checksum mismatch:
++the lost frame can contain a fork's end-seed marker or part of a line. An
++incomplete frame waits for more bytes, since it can contain a valid frame's
++magic as data. On a read error the summary retains its previous parse, if any,
++and the calls reader retains its previous cache; without one they expose no
++partial data. A changed size or modification time triggers a new read; the
++old tail is reused only if its sampled prefix still matches. A repair that
++preserves both may leave cached data unchanged until cache invalidation, and a
++rewrite missed by the sampled prefix can also retain an earlier parse. The
++summary and calls cache versions were raised to discard results produced by
++the former skip behavior. Later records remain unavailable until the source is
++repaired and detected.
+ Verification: `TestMiniMaxCodeCalls`, `TestKimiCode*` (the
+ reporter's real wire files), `TestCodeBuddyCalls`, `TestWorkBuddyCalls*`,
+ `TestPiCalls*` (Pi 1.1.0's and omp 18.9.1's own files) and
+diff --git a/internal/sessions/call_cache.go b/internal/sessions/call_cache.go
+index 48b937860..d4c5f27bf 100644
+--- a/internal/sessions/call_cache.go
++++ b/internal/sessions/call_cache.go
+@@ -44,6 +44,7 @@ import (
+ // call's own time.
+ // v14: Codex calls keep the thread that made the request.
+ // v15: Codex calls keep the compaction marker independently of its duration.
++// v16: discard dsh calls read past a corrupt frame.
+ // What each version names is what a cache of the one before it cannot serve:
+ // the version is part of the directory's name, so a cache written by an older
+ // one is never read (pruneCalls). It is raised for a change to every agent's
+@@ -68,7 +69,9 @@ const callCacheVersion = "calls-v15"
+ // (gemini-4-argon-d) is its model's (GeminiDeployment).
+ // zcode 3: a call names its session as a request does, without the sess_
+ // prefix (zcodeBareID), so the gateway's record of it pairs with it.
+-var callParseVersions = map[string]int{"antigravity": 1, "cindy": 1, "codex": 3, "zcode": 3}
++// dsh 1: a calls read that went past a corrupt frame (the skip the old code
++// did) kept what lay behind it; the read stops at the frame now (frames.go).
++var callParseVersions = map[string]int{"antigravity": 1, "cindy": 1, "codex": 3, "dsh": 1, "zcode": 3}
+ 
+ // CallCacheVersion is callCacheVersion and callParseVersions, for a cache
+ // of what is made of the calls (usage's requests-v1.bin and heatmap): a
+diff --git a/internal/sessions/calls_dsh.go b/internal/sessions/calls_dsh.go
+index e93cf2997..197e504f8 100644
+--- a/internal/sessions/calls_dsh.go
++++ b/internal/sessions/calls_dsh.go
+@@ -108,7 +108,7 @@ func readDshCalls(f file, old *callFile) (st *callFile, kept int, ok bool) {
+ 		next, err = scanAt(f.path, off, nil, func(b []byte, _, _ int64) bool { return each(b) })
+ 		end = next
+ 	}
+-	if !ok || err != nil && !headed {
++	if !ok || err != nil {
+ 		return &callFile{Path: f.path, Agent: "dsh"}, 0, false
+ 	}
+ 	c.Tail = nil
+diff --git a/internal/sessions/dsh.go b/internal/sessions/dsh.go
+index a61db7e11..76aaa8de3 100644
+--- a/internal/sessions/dsh.go
++++ b/internal/sessions/dsh.go
+@@ -325,6 +325,12 @@ func parseDsh(f file, old *state) *state {
+ 		// not a session's file: only its size and time
+ 		return &state{Size: f.size, Mod: f.mod.UnixNano()}
+ 	}
++	if err != nil {
++		if old != nil {
++			return old
++		}
++		return &state{}
++	}
+ 	c.Tail = nil
+ 	if err == nil {
+ 		c.Tail = markTail(f.path, next, nextSkip, end)
+diff --git a/internal/sessions/frames.go b/internal/sessions/frames.go
+index 8040f178e..6f1b382eb 100644
+--- a/internal/sessions/frames.go
++++ b/internal/sessions/frames.go
+@@ -227,14 +227,8 @@ func scanFrames(path string, off, skip int64, fn func([]byte) bool) (next, nextS
+ 			continue
+ 		}
+ 		if out, err = dec.DecodeAll(frame, out[:0]); err != nil {
+-			if !errors.Is(err, zstd.ErrCRCMismatch) || len(pending) != 0 || first && skip != 0 {
+-				end = start
+-				return
+-			}
+-			// The complete frame has a known end, but its contents are lost.
+-			next, nextSkip = at, 0
+-			err = nil
+-			continue
++			end = start
++			return
+ 		}
+ 		from := int64(0)
+ 		if first {
+diff --git a/internal/sessions/frames_corrupt_test.go b/internal/sessions/frames_corrupt_test.go
+index ed53c24cb..c0176ed2f 100644
+--- a/internal/sessions/frames_corrupt_test.go
++++ b/internal/sessions/frames_corrupt_test.go
+@@ -24,13 +24,13 @@ func TestScanFramesCorruption(t *testing.T) {
+ 	malformed := []byte{0, 0, 0, 0}
+ 
+ 	for _, tc := range []struct {
+-		name      string
+-		middle    []byte
+-		want      []string
+-		badHeader bool
++		name    string
++		middle  []byte
++		want    []string
++		wantErr error
+ 	}{
+-		{"complete corrupt frame", bad, []string{"first", "last"}, false},
+-		{"malformed header", malformed, []string{"first"}, true},
++		{"complete corrupt frame", bad, []string{"first"}, zstd.ErrCRCMismatch},
++		{"malformed header", malformed, []string{"first"}, errFrame},
+ 	} {
+ 		t.Run(tc.name, func(t *testing.T) {
+ 			p := filepath.Join(t.TempDir(), "session.zstd")
+@@ -43,11 +43,7 @@ func TestScanFramesCorruption(t *testing.T) {
+ 			if !reflect.DeepEqual(lines, tc.want) {
+ 				t.Fatalf("lines = %q, want %q", lines, tc.want)
+ 			}
+-			if tc.badHeader {
+-				if !errors.Is(err, errFrame) || next != int64(len(first)) || end != next {
+-					t.Fatalf("malformed header: next=%d skip=%d end=%d err=%v", next, skip, end, err)
+-				}
+-			} else if err != nil || next != int64(len(data)) || end != next || skip != 0 {
++			if !errors.Is(err, tc.wantErr) || next != int64(len(first)) || end != next || skip != 0 {
+ 				t.Fatalf("corrupt frame: next=%d skip=%d end=%d err=%v", next, skip, end, err)
+ 			}
+ 		})
+@@ -87,7 +83,7 @@ func TestScanFramesIncompleteRetained(t *testing.T) {
+ 	}
+ }
+ 
+-func TestDshReadersRecoverAfterCorruptFrame(t *testing.T) {
++func TestDshReadersStopAtCorruptFrame(t *testing.T) {
+ 	enc, err := zstd.NewWriter(nil, zstd.WithEncoderCRC(true))
+ 	if err != nil {
+ 		t.Fatal(err)
+@@ -106,18 +102,15 @@ func TestDshReadersRecoverAfterCorruptFrame(t *testing.T) {
+ 	if err != nil {
+ 		t.Fatal(err)
+ 	}
+-	f := file{path: p, size: info.Size(), mod: info.ModTime(), main: true}
++	f := file{path: p, size: info.Size(), mod: modOf(info.ModTime()), main: true}
+ 	s := parseDsh(f, nil)
+-	if s.ID != "s" || s.Dsh == nil || s.Dsh.Tail == nil || s.Dsh.Tail.Off != int64(len(data)) {
++	if s.ID != "" || len(s.Models) != 0 {
+ 		t.Fatalf("summary: %+v", s)
+ 	}
+ 	calls, _, ok := readDshCalls(f, nil)
+-	if !ok || len(calls.Calls) != 1 || calls.Calls[0].Input != 7 || calls.Dsh.Tail == nil || calls.Dsh.Tail.Off != int64(len(data)) {
++	if ok || len(calls.Calls) != 0 {
+ 		t.Fatalf("calls: %+v, ok=%v", calls, ok)
+ 	}
+-	if again, kept, ok := readDshCalls(f, calls); !ok || kept != 1 || len(again.Calls) != 1 {
+-		t.Fatalf("repeated read: %+v, kept=%d ok=%v", again, kept, ok)
+-	}
+ }
+ 
+ func TestScanFramesUnknownDictionaryRetained(t *testing.T) {
+diff --git a/internal/sessions/frames_review_test.go b/internal/sessions/frames_review_test.go
+new file mode 100644
+index 000000000..7e6b6dfc1
+--- /dev/null
++++ b/internal/sessions/frames_review_test.go
+@@ -0,0 +1,98 @@
++package sessions
++
++import (
++	"bytes"
++	"errors"
++	"os"
++	"path/filepath"
++	"testing"
++	"time"
++
++	"github.com/klauspost/compress/zstd"
++)
++
++func TestCorruptFrameDoesNotExposeLineContinuation(t *testing.T) {
++	enc, err := zstd.NewWriter(nil, zstd.WithEncoderCRC(true))
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer enc.Close()
++	bad := enc.EncodeAll([]byte("lost prefix"), nil)
++	bad[len(bad)-1] ^= 1
++	data := append(bad, enc.EncodeAll([]byte("suffix\n"), nil)...)
++	p := filepath.Join(t.TempDir(), "x.zstd")
++	if err := os.WriteFile(p, data, 0600); err != nil {
++		t.Fatal(err)
++	}
++	var lines []string
++	next, _, end, err := scanFrames(p, 0, 0, func(b []byte) bool { lines = append(lines, string(b)); return true })
++	if !errors.Is(err, zstd.ErrCRCMismatch) || len(lines) != 0 || next != 0 || end != 0 {
++		t.Fatalf("lines=%q next=%d end=%d err=%v", lines, next, end, err)
++	}
++}
++
++func TestDshCorruptSeedCacheRepair(t *testing.T) {
++	setup(t)
++	enc, err := zstd.NewWriter(nil, zstd.WithEncoderCRC(true))
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer enc.Close()
++	frame := func(s string) []byte { return enc.EncodeAll([]byte(s), nil) }
++	head := frame("{\"type\":\"session\",\"id\":\"fork\",\"version\":3,\"isSeeded\":true}\n")
++	inherited := frame("{\"type\":\"assistant/message\",\"seq\":1,\"time\":1790503290000,\"data\":{\"message\":{\"source\":{\"model\":\"m\"}},\"usage\":{\"inputTokens\":99,\"outputTokens\":1}}}\n")
++	seed := frame("{\"type\":\"session/end-seed\",\"data\":{\"inherited\":true}}\n")
++	bad := bytes.Clone(seed)
++	bad[len(bad)-1] ^= 1
++	own := frame("{\"type\":\"assistant/message\",\"seq\":2,\"time\":1790503291000,\"data\":{\"message\":{\"source\":{\"model\":\"m\"}},\"usage\":{\"inputTokens\":7,\"outputTokens\":1}}}\n")
++	p := filepath.Join(t.TempDir(), "session.zstd")
++	build := func(mid []byte) []byte {
++		b := append(bytes.Clone(head), inherited...)
++		b = append(b, mid...)
++		return append(b, own...)
++	}
++	if err := os.WriteFile(p, build(bad), 0600); err != nil {
++		t.Fatal(err)
++	}
++	info, err := os.Stat(p)
++	if err != nil {
++		t.Fatal(err)
++	}
++	f := file{agent: "dsh", path: p, size: info.Size(), mod: modOf(info.ModTime()), main: true}
++	mu.Lock()
++	cache = make(map[string]*state)
++	refresh([]file{f}, nil)
++	summary := cache[p]
++	mu.Unlock()
++	if len(summary.Models) != 0 {
++		t.Fatalf("corrupt fork counted inherited or later usage: %+v", summary.Models)
++	}
++	calls := readCalls(f)
++	if len(calls.Calls) != 0 {
++		t.Fatalf("corrupt fork counted calls: %+v", calls.Calls)
++	}
++	if err := os.WriteFile(p, build(seed), 0600); err != nil {
++		t.Fatal(err)
++	}
++	fixedTime := info.ModTime().Add(time.Second)
++	if err := os.Chtimes(p, fixedTime, fixedTime); err != nil {
++		t.Fatal(err)
++	}
++	info, err = os.Stat(p)
++	if err != nil {
++		t.Fatal(err)
++	}
++	f.size, f.mod = info.Size(), modOf(info.ModTime())
++	mu.Lock()
++	refresh([]file{f}, nil)
++	summary = cache[p]
++	mu.Unlock()
++	m, ok := summary.Models.get("m")
++	if !ok || m.Input != 7 {
++		t.Fatalf("repaired summary: %+v", summary.Models)
++	}
++	calls = readCalls(f)
++	if len(calls.Calls) != 1 || calls.Calls[0].Input != 7 {
++		t.Fatalf("repaired calls: %+v", calls.Calls)
++	}
++}
+diff --git a/internal/sessions/sessions.go b/internal/sessions/sessions.go
+index 6c2445ea2..a6c119d7e 100644
+--- a/internal/sessions/sessions.go
++++ b/internal/sessions/sessions.go
+@@ -1464,7 +1464,11 @@ const cacheVersion = 29
+ // (a parse kept from before has none, under the same row revision).
+ // dsh 3: the ids of its newest turn's messages (TurnConvs), which a
+ // request still answering carried and has no reply id for yet.
+-var parseVersions = map[string]int{"codex": 3, "zcode": 1, "dsh": 3, "antigravity": 2}
++//
++// dsh 4: a parse that skipped a corrupt frame kept what lay behind it; the
++// read stops at the frame now (frames.go), so parses made by the skip are
++// read again.
++var parseVersions = map[string]int{"codex": 3, "zcode": 1, "dsh": 4, "antigravity": 2}
+ 
+ type cacheFile struct {
+ 	Version int    `json:"version"`
+-- 
+2.50.1 (Apple Git-155)
+

@@ -1,0 +1,22 @@
+{
+  "id": "83",
+  "slug": "best-time-to-buy-and-sell-stock-iii",
+  "title": "买卖股票的最佳时机 III",
+  "difficulty": "hard",
+  "tags": ["数组", "动态规划"],
+  "description": "给定一个数组 `prices`,它的第 `i` 个元素 `prices[i]` 是一支给定股票第 `i` 天的价格。设计算法计算你所能获取的最大利润。你最多可以完成**两笔**交易(买入前必须先卖出)。\n\n**示例 1:**\n\n- 输入:`prices = [3,3,5,0,0,3,1,4]`\n- 输出:`6`(第 4 天买入第 6 天卖出 = 3,第 7 天买入第 8 天卖出 = 3)\n\n**示例 2:**\n\n- 输入:`prices = [1,2,3,4,5]`\n- 输出:`4`(第 1 天买入第 5 天卖出)\n\n**示例 3:**\n\n- 输入:`prices = [7,6,4,3,1]`\n- 输出:`0`",
+  "solution": "## 思路\n\n用 4 个状态变量:`buy1`(第一次买入后最大利润)、`sell1`(第一次卖出后)、`buy2`(第二次买入后)、`sell2`(第二次卖出后)。逐天转移,最后 `sell2` 即答案。\n\n## 参考代码\n\n```js\nfunction maxProfit(prices) {\n  let buy1 = -Infinity;\n  let sell1 = 0;\n  let buy2 = -Infinity;\n  let sell2 = 0;\n  for (const p of prices) {\n    buy1 = Math.max(buy1, -p);\n    sell1 = Math.max(sell1, buy1 + p);\n    buy2 = Math.max(buy2, sell1 - p);\n    sell2 = Math.max(sell2, buy2 + p);\n  }\n  return sell2;\n}\n```\n\n## 复杂度\n\n- 时间:O(n)\n- 空间:O(1)",
+  "signature": {
+    "language": "javascript",
+    "entry": "maxProfit",
+    "params": [{ "name": "prices", "type": "number[]" }],
+    "returns": "number"
+  },
+  "testCases": [
+    { "sample": true, "input": [[3, 3, 5, 0, 0, 3, 1, 4]], "expected": 6 },
+    { "sample": true, "input": [[1, 2, 3, 4, 5]], "expected": 4 },
+    { "sample": true, "input": [[7, 6, 4, 3, 1]], "expected": 0 },
+    { "sample": false, "input": [[1]], "expected": 0 },
+    { "sample": false, "input": [[1, 4, 2]], "expected": 3 }
+  ]
+}

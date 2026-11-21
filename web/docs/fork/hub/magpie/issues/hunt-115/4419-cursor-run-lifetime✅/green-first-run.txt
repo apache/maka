@@ -1,0 +1,6 @@
+=== RUN   TestRunExpiredSaysAskAgain
+--- PASS: TestRunExpiredSaysAskAgain (0.10s)
+=== RUN   TestRunExpiredTranslatedSaysAskAgain
+--- PASS: TestRunExpiredTranslatedSaysAskAgain (0.01s)
+PASS
+ok  	github.com/yetone/magpie/internal/gateway	1.046s

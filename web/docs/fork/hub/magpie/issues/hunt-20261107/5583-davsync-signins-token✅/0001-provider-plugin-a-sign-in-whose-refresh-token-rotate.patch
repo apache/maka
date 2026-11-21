@@ -1,0 +1,282 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Sat, 7 Nov 2026 22:19:04 +0800
+Subject: [PATCH] provider, plugin: a sign-in whose refresh token rotates is
+ never carried (#5583)
+
+A plugin whose vendor spends a refresh token once (the auth hook's
+rotating) signs one computer in. Carried by a backup or a sync, the
+second computer becomes the token's second owner: both renew it as it
+comes due, the vendor turns the loser away (invalid_grant), and with no
+newer generation anywhere in the sync path only a device sign-in brings
+the account back (#5583, skalitz-wolf).
+
+The auth hook declares rotating beside keepAlive and refreshLead; the
+host passes it in the providers' row, and CollectSignIns leaves such
+sign-ins out of what a backup or a sync carries, MergeSignIns and
+RestoreSignIns leave out what an older backup or sync already carried.
+Each computer signs in to such a provider itself; the local sign-ins
+are untouched, and a copy already on the server falls out of the
+carried set by the usual removal, on the next sync of each computer.
+
+Tests: TestCollectSignInsLeavesARotatingSignInOut,
+TestMergeSignInsDoesNotTakeARotatingSignInIn,
+TestRestoreSignInsLeavesARotatingSignInOut (red before, green after;
+go test ./internal/provider/ ./internal/backup/ ./internal/davsync/
+-tags nogui; go vet ./..., GOOS=linux go vet -tags nogui ./...,
+GOOS=windows go vet ./...; go build, GOOS=linux go build -tags nogui,
+GOOS=windows go build).
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/plugin/host.js                 |   4 +
+ internal/plugin/providers.go            |   6 ++
+ internal/provider/signins_carry.go      |  57 +++++++++++--
+ internal/provider/signins_carry_test.go | 105 ++++++++++++++++++++++++
+ 4 files changed, 165 insertions(+), 7 deletions(-)
+
+diff --git a/internal/plugin/host.js b/internal/plugin/host.js
+index 2bc993b3d..ddfe26735 100644
+--- a/internal/plugin/host.js
++++ b/internal/plugin/host.js
+@@ -2483,6 +2483,10 @@ function rowOf(id, a, keys, stored, p, own) {
+     // long before expires (keepSignedIn)
+     renews: keepsAlive(a.auth),
+     renewLead: keepsAlive(a.auth) ? leadOf(a.auth) : 0,
++    // the vendor spends a refresh token once: renewed, the old one is
++    // refused (invalid_grant). magpie never carries such a sign-in to
++    // another computer (#5583)
++    rotating: a.auth.rotating === true,
+     options: optionsOf(a.auth),
+     decide: p.decide === true,
+     searches: p.searches === true,
+diff --git a/internal/plugin/providers.go b/internal/plugin/providers.go
+index da5184e57..f4335a268 100644
+--- a/internal/plugin/providers.go
++++ b/internal/plugin/providers.go
+@@ -150,6 +150,12 @@ type Provider struct {
+ 	// 5 minutes when not said), as the host reckons it (RenewAt).
+ 	Renews    bool  `json:"renews,omitempty"`
+ 	RenewLead int64 `json:"renewLead,omitempty"`
++	// Rotating is the auth hook declaring that the vendor spends a refresh
++	// token once (auth.rotating): renewed, the old one is refused
++	// (invalid_grant). Two computers holding a copy would race to renew it
++	// and the loser is signed out for good, so its sign-ins are never
++	// carried by a backup or a sync (provider.CollectSignIns, #5583).
++	Rotating bool `json:"rotating,omitempty"`
+ 	// Options are the switches the plugin declares for the provider
+ 	// (auth.options, #2038), as the host checked them
+ 	Options []Option `json:"options,omitempty"`
+diff --git a/internal/provider/signins_carry.go b/internal/provider/signins_carry.go
+index 1ca2af3e9..c1172a13a 100644
+--- a/internal/provider/signins_carry.go
++++ b/internal/provider/signins_carry.go
+@@ -18,7 +18,14 @@ package provider
+ //     over. Codex's auth.json is written, temp-and-rename, only when Codex
+ //     is signed out here and the user hasn't removed its account; Claude
+ //     Code's keychain is never touched: a saved Claude account is served
+-//     by the gateway as it is.
++//     by the gateway as it is;
++//   - a plugin whose auth hook says rotating (the vendor spends a refresh
++//     token once: renewed, the old one answers invalid_grant) is never
++//     carried at all — a copy on a second computer would race this one to
++//     renew it, and the vendor would turn the loser away for good, with
++//     no newer generation anywhere to come back from (#5583). It stays
++//     signed in on the computer that signed in, and one carried by a
++//     backup or a sync made before the plugin said so is left out here.
+ 
+ import (
+ 	"bytes"
+@@ -146,7 +153,9 @@ func credTime(auth json.RawMessage, renewed time.Time) time.Time {
+ 
+ // records are s's sign-ins by id. Two of one id (accounts told apart here
+ // in a way that doesn't carry) are left out both: neither is put over the
+-// other, nor anything here.
++// other, nor anything here. A plugin whose provider says its refresh
++// token rotates (Rotating, the auth hook's rotating) is left out too:
++// its sign-in is one computer's alone (#5583).
+ func (s *SignIns) records() map[string]signInRec {
+ 	out := map[string]signInRec{}
+ 	if s == nil {
+@@ -168,12 +177,33 @@ func (s *SignIns) records() map[string]signInRec {
+ 		}
+ 		add(signInRec{id: loginRecID(l), hash: credHash(l.Auth), at: credTime(l.Auth, l.Renewed), login: &l})
+ 	}
+-	for k, raw := range s.Plugins {
+-		var at time.Time
+-		if ms := plugin.AuthExpires(raw); ms > 0 {
+-			at = time.UnixMilli(ms)
++	if len(s.Plugins) > 0 {
++		rotating := rotatingPlugins()
++		for k, raw := range s.Plugins {
++			if rotating[plugin.ProviderOf(k)] {
++				continue // a refresh token the vendor spends once (#5583)
++			}
++			var at time.Time
++			if ms := plugin.AuthExpires(raw); ms > 0 {
++				at = time.UnixMilli(ms)
++			}
++			add(signInRec{id: pluginRecID(k, raw), hash: credHash(raw), at: at, key: k, raw: raw})
++		}
++	}
++	return out
++}
++
++// rotatingPlugins are the ids of the plugins whose auth hook says their
++// refresh tokens rotate (Rotating): a sign-in of theirs is never carried,
++// so no computer holds a copy of a token the vendor lets be spent once
++// (#5583). A plugin not listed (not asked yet) is taken not to: only what
++// a plugin says of its own is believed.
++func rotatingPlugins() map[string]bool {
++	out := map[string]bool{}
++	for _, p := range plugin.Cached() {
++		if p.Rotating {
++			out[p.ID] = true
+ 		}
+-		add(signInRec{id: pluginRecID(k, raw), hash: credHash(raw), at: at, key: k, raw: raw})
+ 	}
+ 	return out
+ }
+@@ -222,6 +252,19 @@ func CollectSignIns() (*SignIns, error) {
+ 		return nil, fmt.Errorf("the plugins' sign-ins can't be read: %w", err)
+ 	}
+ 	s := &SignIns{Plugins: pl}
++	// a plugin whose refresh token rotates is left out: its sign-in is one
++	// computer's alone, never a backup's or a sync's to copy (#5583)
++	if len(s.Plugins) > 0 {
++		rotating := rotatingPlugins()
++		for k := range s.Plugins {
++			if rotating[plugin.ProviderOf(k)] {
++				delete(s.Plugins, k)
++			}
++		}
++		if len(s.Plugins) == 0 {
++			s.Plugins = nil
++		}
++	}
+ 	live, _, lerr := readCodexLogin(codexHome(), false)
+ 	for _, l := range ls {
+ 		if !carried(l) {
+diff --git a/internal/provider/signins_carry_test.go b/internal/provider/signins_carry_test.go
+index edfeaa672..4da746594 100644
+--- a/internal/provider/signins_carry_test.go
++++ b/internal/provider/signins_carry_test.go
+@@ -10,6 +10,7 @@ import (
+ 	"time"
+ 
+ 	"github.com/yetone/magpie/internal/plugin"
++	"github.com/yetone/magpie/internal/settings"
+ )
+ 
+ // Sign-ins in a backup or a sync (qianxunji and curtinp118 on Discord:
+@@ -320,3 +321,107 @@ func TestApplySignInsKeepsWhatChangedSinceTheMerge(t *testing.T) {
+ 		t.Fatalf("written over: %s", ls[0].Auth)
+ 	}
+ }
++
++// A plugin whose vendor spends a refresh token once (the auth hook's
++// rotating) signs one computer in: carried to a second, both renew it as
++// it comes due, and the vendor turns the loser away for good, with no
++// newer generation anywhere in the sync path to come back from (#5583,
++// skalitz-wolf). Its sign-in is never carried.
++func declaresRotating(t *testing.T) {
++	t.Helper()
++	t.Setenv("MAGPIE_BUN", "") // nothing here runs a plugin
++	write := func(name string, v any) {
++		b, _ := json.Marshal(v)
++		os.MkdirAll(settings.Dir(), 0o700)
++		if err := os.WriteFile(filepath.Join(settings.Dir(), name), b, 0o600); err != nil {
++			t.Fatal(err)
++		}
++	}
++	minimax, kiro := "@magpie-community/opencode-minimax-auth", "@example/opencode-kiro-auth"
++	write("plugins.json", map[string]any{"plugins": []map[string]any{{"spec": minimax}, {"spec": kiro}}})
++	plugin.UseCached([]plugin.Provider{
++		// the vendor spends a refresh token once: two computers holding a
++		// copy race to renew it (#5583)
++		{ID: "minimax-code", Spec: minimax, Renews: true, Rotating: true},
++		{ID: "kiro", Spec: kiro},
++	})
++	t.Cleanup(func() { plugin.UseCached(nil) })
++}
++
++func writePluginAuth(t *testing.T, m map[string]any) {
++	t.Helper()
++	b, _ := json.Marshal(m)
++	if err := os.MkdirAll(filepath.Dir(plugin.AuthPath()), 0o700); err != nil {
++		t.Fatal(err)
++	}
++	if err := os.WriteFile(plugin.AuthPath(), b, 0o600); err != nil {
++		t.Fatal(err)
++	}
++}
++
++func TestCollectSignInsLeavesARotatingSignInOut(t *testing.T) {
++	signIn(t)
++	declaresRotating(t)
++	writePluginAuth(t, map[string]any{
++		"minimax-code": map[string]any{"type": "oauth", "access": "m", "refresh": "r1", "expires": 3000, "accountId": "k@x.com"},
++		"kiro":         map[string]any{"type": "oauth", "access": "k", "refresh": "r", "expires": 3000, "accountId": "k2@x.com"},
++	})
++	s, err := CollectSignIns()
++	if err != nil {
++		t.Fatal(err)
++	}
++	if _, ok := s.Plugins["minimax-code"]; ok {
++		t.Fatal("a rotating sign-in is carried: the second computer becomes the token's second owner (#5583)")
++	}
++	if _, ok := s.Plugins["kiro"]; !ok {
++		t.Fatal("a plain sign-in stopped being carried")
++	}
++}
++
++func TestMergeSignInsDoesNotTakeARotatingSignInIn(t *testing.T) {
++	signIn(t)
++	declaresRotating(t)
++	remote := &SignIns{Plugins: map[string]json.RawMessage{
++		"minimax-code": json.RawMessage(`{"type":"oauth","access":"m","refresh":"r2","expires":5000,"accountId":"k@x.com"}`),
++		"kiro":         json.RawMessage(`{"type":"oauth","access":"k","refresh":"r","expires":5000,"accountId":"k2@x.com"}`),
++	}}
++	_, plan, hashes := MergeSignIns(nil, remote, nil) // a computer joining
++	for _, r := range plan.put {
++		if r.key == "minimax-code" {
++			t.Fatal("a rotating sign-in is put in here: the token's second owner (#5583)")
++		}
++	}
++	if _, ok := hashes["plugin|minimax-code|k@x.com"]; ok {
++		t.Fatal("a rotating sign-in goes up")
++	}
++	if _, ok := hashes["plugin|kiro|k2@x.com"]; !ok {
++		t.Fatal("a plain sign-in stopped going up")
++	}
++}
++
++func TestRestoreSignInsLeavesARotatingSignInOut(t *testing.T) {
++	signIn(t)
++	declaresRotating(t)
++	writePluginAuth(t, map[string]any{
++		"kiro": map[string]any{"type": "oauth", "access": "k", "refresh": "r", "expires": 3000, "accountId": "k2@x.com"},
++	})
++	s := &SignIns{Plugins: map[string]json.RawMessage{
++		// a backup made before the plugin said so, or on a magpie older
++		// than the flag
++		"minimax-code": json.RawMessage(`{"type":"oauth","access":"m","refresh":"r2","expires":5000,"accountId":"k@x.com"}`),
++	}}
++	r, err := RestoreSignIns(s)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if r.Added != 0 {
++		t.Fatalf("a backup's rotating sign-in is put in: the token's second owner (#5583): %+v", r)
++	}
++	m, err := plugin.AuthEntries()
++	if err != nil {
++		t.Fatal(err)
++	}
++	if _, ok := m["minimax-code"]; ok {
++		t.Fatal("a rotating sign-in was written to plugin-auth.json")
++	}
++}
+-- 
+2.50.1 (Apple Git-155)
+

@@ -1,0 +1,21 @@
+{
+  "id": "61",
+  "slug": "counting-bits",
+  "title": "比特位计数",
+  "difficulty": "easy",
+  "tags": ["位运算", "动态规划"],
+  "description": "给你一个整数 `n`,对于 `0 <= i <= n` 中的每个 `i`,计算其二进制表示中 `1` 的个数,返回一个长度为 `n + 1` 的数组 `ans` 作为答案。\n\n**进阶:** 能在线性时间 O(n) 内完成,且不调用内置位计数函数吗?\n\n**示例 1:**\n\n- 输入:`n = 2`\n- 输出:`[0,1,1]`(0 有 0 个,1 有 1 个,2 有 1 个)\n\n**示例 2:**\n\n- 输入:`n = 5`\n- 输出:`[0,1,1,2,1,2]`",
+  "solution": "## 思路\n\n**动态规划 + 位运算**:`res[i] = res[i >> 1] + (i & 1)`。即 `i` 的 1 的个数 = `i/2` 的 1 的个数 + `i` 的最低位。O(n)。\n\n## 参考代码\n\n```js\nfunction countBits(n) {\n  const res = new Array(n + 1).fill(0);\n  for (let i = 1; i <= n; i++) {\n    res[i] = res[i >> 1] + (i & 1);\n  }\n  return res;\n}\n```\n\n## 复杂度\n\n- 时间:O(n)\n- 空间:O(1)(不计输出)",
+  "signature": {
+    "language": "javascript",
+    "entry": "countBits",
+    "params": [{ "name": "n", "type": "number" }],
+    "returns": "number[]"
+  },
+  "testCases": [
+    { "sample": true, "input": [2], "expected": [0, 1, 1] },
+    { "sample": true, "input": [5], "expected": [0, 1, 1, 2, 1, 2] },
+    { "sample": false, "input": [0], "expected": [0] },
+    { "sample": false, "input": [1], "expected": [0, 1] }
+  ]
+}

@@ -1,0 +1,35 @@
+# 依赖
+node_modules/
+
+# 构建产物
+.next/
+out/
+dist/
+*.tsbuildinfo
+next-env.d.ts
+
+# 运行数据（本地 SQLite 与运行时产物不入库；锚定 apps 层，避免误伤 src/data 等源码目录）
+/apps/*/data/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# 敏感配置：一律不入库，只入库 example
+.env
+.env.*
+!.env.example
+
+# 存档区（verbatim 历史材料，含真实凭证，永不入库）
+/archive/
+
+# Playwright 运行产物
+test-results/
+playwright-report/
+
+# 日志与杂项
+*.log
+.DS_Store
+
+# interview-gym 内容同步产物（真相源在 interview 仓，sync-content 生成）
+/apps/agent/public/interview-gym/

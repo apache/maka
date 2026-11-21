@@ -1,0 +1,22 @@
+{
+  "id": "31",
+  "slug": "number-of-islands",
+  "title": "岛屿数量",
+  "difficulty": "medium",
+  "tags": ["深度优先搜索", "广度优先搜索", "矩阵"],
+  "description": "给你一个由 `1`(陆地)和 `0`(水)组成的二维网格 `grid`,请你计算网格中**岛屿**的数量。\n\n岛屿总是被水包围,并且每座岛屿只能由水平方向和/或垂直方向上相邻的陆地连接形成。\n\n**示例 1:**\n\n- 输入:`grid = [[1,1,1,1,0],[1,1,0,1,0],[1,1,0,0,0],[0,0,0,0,0]]`\n- 输出:`1`\n\n**示例 2:**\n\n- 输入:`grid = [[1,1,0,0,0],[1,1,0,0,0],[0,0,1,0,0],[0,0,0,1,1]]`\n- 输出:`3`",
+  "solution": "## 思路\n\n遍历网格,遇到 `1` 就是一个新岛屿,计数 +1 并用 DFS(或 BFS)把整个岛(连同上下左右相邻的陆地)标记为 `0`(沉岛),避免重复计数。\n\n## 参考代码\n\n```js\nfunction numIslands(grid) {\n  if (grid.length === 0) return 0;\n  const rows = grid.length;\n  const cols = grid[0].length;\n  let count = 0;\n  function dfs(r, c) {\n    if (r < 0 || r >= rows || c < 0 || c >= cols || grid[r][c] !== 1) return;\n    grid[r][c] = 0;\n    dfs(r + 1, c);\n    dfs(r - 1, c);\n    dfs(r, c + 1);\n    dfs(r, c - 1);\n  }\n  for (let r = 0; r < rows; r++) {\n    for (let c = 0; c < cols; c++) {\n      if (grid[r][c] === 1) {\n        count++;\n        dfs(r, c);\n      }\n    }\n  }\n  return count;\n}\n```\n\n## 复杂度\n\n- 时间:O(m*n)\n- 空间:O(m*n)(递归栈最坏)",
+  "signature": {
+    "language": "javascript",
+    "entry": "numIslands",
+    "params": [{ "name": "grid", "type": "number[][]" }],
+    "returns": "number"
+  },
+  "testCases": [
+    { "sample": true, "input": [[[1, 1, 1, 1, 0], [1, 1, 0, 1, 0], [1, 1, 0, 0, 0], [0, 0, 0, 0, 0]]], "expected": 1 },
+    { "sample": true, "input": [[[1, 1, 0, 0, 0], [1, 1, 0, 0, 0], [0, 0, 1, 0, 0], [0, 0, 0, 1, 1]]], "expected": 3 },
+    { "sample": false, "input": [[[1]]], "expected": 1 },
+    { "sample": false, "input": [[[0]]], "expected": 0 },
+    { "sample": false, "input": [[]], "expected": 0 }
+  ]
+}

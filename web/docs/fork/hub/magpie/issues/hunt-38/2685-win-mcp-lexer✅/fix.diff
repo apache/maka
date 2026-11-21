@@ -1,0 +1,599 @@
+diff --git a/internal/gui/assets/plugins/library/client.js b/internal/gui/assets/plugins/library/client.js
+index 5e778f3a..0f3ab905 100644
+--- a/internal/gui/assets/plugins/library/client.js
++++ b/internal/gui/assets/plugins/library/client.js
+@@ -1391,7 +1391,10 @@ magpie.plugin("library", (ctx) => {
+     if (s.transport === "stdio") return [s.command, ...(s.args || [])].map(quote).join(" ");
+     return s.url;
+   }
+-  function quote(a) { return /^[\w@%+=:,./-]+$/.test(a) ? a : "'" + a.replace(/'/g, `'\\''`) + "'"; }
++  // quote leaves a word bare when nothing in it asks for quotes, and puts
++  // single quotes round it otherwise. On Windows a backslash asks for none:
++  // it is a path separator there, and words keeps it (#2685).
++  function quote(a) { return (/^Win/.test(navigator.platform) ? /^[\w@%+=:,./\\-]+$/ : /^[\w@%+=:,./-]+$/).test(a) ? a : "'" + a.replace(/'/g, `'\\''`) + "'"; }
+ 
+   function sseBlocked(s) {
+     return (a) => {
+@@ -1910,7 +1913,11 @@ magpie.plugin("library", (ctx) => {
+     openLib(ed);
+   }
+ 
+-  // A command line split the way a shell would, quotes and all.
++  // A command line split the way a shell would, quotes and all. A
++  // backslash escapes on POSIX; on Windows it is a path separator and is
++  // kept, so a command typed as C:\Users\me\npx.cmd survives (#2685). In
++  // double quotes a backslash escapes only what the shell does there
++  // (" \ $ `), on both.
+   function words(s) {
+     const out = [];
+     let cur = "", q = "", any = false;
+@@ -1918,10 +1925,10 @@ magpie.plugin("library", (ctx) => {
+       const c = s[i];
+       if (q) {
+         if (c === q) q = "";
+-        else if (c === "\\" && q === '"' && i + 1 < s.length) cur += s[++i];
++        else if (c === "\\" && q === '"' && /["\\$`]/.test(s[i + 1] || "")) cur += s[++i];
+         else cur += c;
+       } else if (c === "'" || c === '"') { q = c; any = true; }
+-      else if (c === "\\" && i + 1 < s.length) { cur += s[++i]; any = true; }
++      else if (c === "\\" && !/^Win/.test(navigator.platform) && i + 1 < s.length) { cur += s[++i]; any = true; }
+       else if (/\s/.test(c)) { if (cur || any) out.push(cur); cur = ""; any = false; }
+       else cur += c;
+     }
+diff --git a/internal/gui/tests/mcp-command-lexer.test.cjs b/internal/gui/tests/mcp-command-lexer.test.cjs
+new file mode 100644
+index 00000000..25bf3fde
+--- /dev/null
++++ b/internal/gui/tests/mcp-command-lexer.test.cjs
+@@ -0,0 +1,146 @@
++// Run with Node's test runner and Playwright on the module path; see README.md.
++// yetone/magpie#2685: the MCP editor's command field splits a line the way a
++// shell would, and on Windows a backslash is a path separator, not an escape,
++// so a saved command came back with every \ folded away and an absolute path
++// never started. What is typed is kept whole on Windows, quoted words
++// included; a saved server reopens as it was saved; the shell's own escape
++// and quoting are kept on POSIX. In English, Chromium and WebKit. No
++// backend: the API is faked here.
++const assert = require("node:assert/strict");
++const fs = require("node:fs/promises");
++const path = require("node:path");
++const { test } = require("node:test");
++const { chromium, webkit } = require("playwright");
++
++const assets = path.resolve(__dirname, "../assets");
++const HOME = "/Users/xv";
++const agent = (id, name) => ({ id, name, icon: "", skills: `${HOME}/.${id}/skills`, mcp: `${HOME}/.${id}/mcp.json` });
++const NPX = "C:\\Users\\xxx\\AppData\\Roaming\\fnm\\aliases\\default\\npx.cmd";
++
++function server(lang, saved) {
++  const lib = {
++    dir: `${HOME}/.magpie/library`, backups: `${HOME}/.magpie/backups`, home: HOME,
++    agents: [agent("claude", "Claude Code")],
++    instructions: { agents: [], sets: [] }, foundServers: [], projects: [], foundSkills: [], skills: [],
++    // a server saved with an absolute Windows command, the reporter's shape
++    servers: [{ name: "devtools", transport: "stdio", command: NPX, args: ["-y", "chrome-devtools-mcp@latest"], agents: ["claude"] }],
++  };
++  return async (route) => {
++    const req = route.request(), url = new URL(req.url());
++    if (url.pathname === "/boot.js") return route.fulfill({ contentType: "text/javascript", body: `window.bootPrefs = {lang:"${lang}",theme:"light",web:true};` });
++    if (url.pathname === "/wails/runtime.js") return route.fulfill({ contentType: "text/javascript", body: "export const Window = {};" });
++    if (url.pathname === "/api/state") return route.fulfill({ json: { agents: [], profiles: [], settings: { lang, theme: "light" } } });
++    if (url.pathname === "/api/plugins") return route.fulfill({ json: { plugins: [] } });
++    if (url.pathname === "/api/library") return route.fulfill({ json: lib });
++    if (url.pathname === "/api/library/mcp/check") return route.fulfill({ json: { servers: {} } });
++    if (url.pathname === "/api/library/servers/save") {
++      saved.push(req.postDataJSON());
++      const { old, server: s } = req.postDataJSON();
++      const i = lib.servers.findIndex((x) => x.name === old);
++      if (i >= 0) lib.servers[i] = { ...lib.servers[i], ...s };
++      return route.fulfill({ json: { ...lib, result: { changed: ["claude"] } } });
++    }
++    if (url.pathname === "/api/usage/quotas") return route.fulfill({ json: [] });
++    if (url.pathname === "/api/groups") return route.fulfill({ json: { groups: [] } });
++    if (url.pathname === "/api/providers") return route.fulfill({ json: { providers: [], gateway: { running: true } } });
++    if (url.pathname.startsWith("/api/")) return route.fulfill({ json: {} });
++    const file = path.join(assets, url.pathname === "/" ? "index.html" : url.pathname);
++    const contentType = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png" }[path.extname(file)];
++    await route.fulfill({ body: await fs.readFile(file), contentType });
++  };
++}
++
++for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium", "webkit"])) {
++  test(engine + ": the MCP command field keeps a Windows path whole", async (t) => {
++    assert(["chromium", "webkit"].includes(engine), "BROWSER must be chromium or webkit");
++    const browser = await (engine === "webkit" ? webkit.launch() : chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL || "chromium" }));
++    const errors = [];
++    t.after(async () => {
++      if (errors.length) console.log(errors);
++      await browser.close();
++    });
++    const saved = [];
++    const ctx = await browser.newContext({ viewport: { width: 1100, height: 800 } });
++    await ctx.addInitScript(() => { try { localStorage.setItem("magpie.libTab", "mcp"); } catch {} });
++    const page = await ctx.newPage();
++    page.setDefaultTimeout(5000);
++    page.on("pageerror", (e) => errors.push(e.message));
++    await page.route("**/*", server("en", saved));
++    await page.goto("http://magpie.test/");
++    await page.locator('button[data-view="library"]').click();
++    const ed = page.locator("#modal .lib-editor");
++    const line = ed.locator("input.mono").first();
++    const save = async () => {
++      // the button reads Save for an edit, Add for a new server
++      await ed.locator("> .bar button.primary").click();
++      await ed.waitFor({ state: "detached" });
++    };
++    const savedServer = (i) => saved[i]?.server || {};
++
++    // a saved server reopens as it was saved, absolute path and all
++    await page.locator("#view-library .lib-server .name", { hasText: "devtools" }).click();
++    await ed.waitFor();
++    assert.equal(await line.inputValue(), `${NPX} -y chrome-devtools-mcp@latest`);
++
++    // typing it again (the reporter's line) keeps it, backslashes and colon
++    await line.fill(`${NPX} -y chrome-devtools-mcp@latest`);
++    await save();
++    assert.equal(savedServer(0).command, NPX);
++    assert.deepEqual(savedServer(0).args, ["-y", "chrome-devtools-mcp@latest"]);
++
++    // double quotes keep a path with spaces in it whole
++    await page.locator("#view-library .lib-server .name", { hasText: "devtools" }).click();
++    await ed.waitFor();
++    await line.fill(`"${NPX.replace("xxx", "me with space")}" -y pkg`);
++    await save();
++    assert.equal(savedServer(1).command, NPX.replace("xxx", "me with space"));
++    assert.deepEqual(savedServer(1).args, ["-y", "pkg"]);
++
++    // a new server typed straight in, the way the placeholder suggests it
++    const add = page.locator("#view-library .after-list button");
++    await page.locator("#view-library").hover();
++    await page.mouse.wheel(0, 2000);
++    await page.waitForFunction(() => { const v = document.querySelector("#view-library"); return v.scrollTop + v.clientHeight >= v.scrollHeight - 1; });
++    await add.click();
++    await ed.waitFor();
++    await ed.locator("input").first().fill("fresh");
++    await line.fill(`"${NPX}" -y pkg`);
++    await save();
++    assert.equal(savedServer(2).command, NPX);
++    assert.deepEqual(savedServer(2).args, ["-y", "pkg"]);
++    await ctx.close();
++
++    // the shell's own semantics stay POSIX: a backslash escapes there
++    const posix = await browser.newContext({ viewport: { width: 1100, height: 800 } });
++    await posix.addInitScript(() => {
++      Object.defineProperty(Navigator.prototype, "platform", { get: () => "MacIntel", configurable: true });
++    });
++    await posix.addInitScript(() => { try { localStorage.setItem("magpie.libTab", "mcp"); } catch {} });
++    const pp = await posix.newPage();
++    pp.setDefaultTimeout(5000);
++    pp.on("pageerror", (e) => errors.push(e.message));
++    const psaved = [];
++    await pp.route("**/*", server("en", psaved));
++    await pp.goto("http://magpie.test/");
++    await pp.locator('button[data-view="library"]').click();
++    const ped = pp.locator("#modal .lib-editor");
++    const pline = ped.locator("input.mono").first();
++    const psave = async () => {
++      await ped.locator("> .bar button.primary").click();
++      await ped.waitFor({ state: "detached" });
++    };
++    await pp.locator("#view-library .lib-server .name", { hasText: "devtools" }).click();
++    await ped.waitFor();
++    await pline.fill(`C:\\Users\\me\\npx.cmd -y pkg`);
++    await psave();
++    assert.equal(psaved[0].server.command, "C:Usersmenpx.cmd", "on POSIX a backslash still escapes");
++    await pp.locator("#view-library .lib-server .name", { hasText: "devtools" }).click();
++    await ped.waitFor();
++    await pline.fill(`/tmp/a\\ b`);
++    await psave();
++    assert.equal(psaved[1].server.command, "/tmp/a b", "on POSIX a backslash escapes a space");
++    await posix.close();
++
++    assert.deepEqual(errors, []);
++  });
++}
+diff --git a/internal/library/mcp_check.go b/internal/library/mcp_check.go
+index 3f2a3edc..0bc4b271 100644
+--- a/internal/library/mcp_check.go
++++ b/internal/library/mcp_check.go
+@@ -430,7 +430,20 @@ func checkStdio(ctx context.Context, s *Server) ServerHealth {
+ 	if len(unset) > 0 {
+ 		return failed("novar", strings.Join(unset, ", "))
+ 	}
+-	cmd := proc.Command(s.Command, s.Args...)
++	// where the command lives, as binAt finds an agent's CLI with: on PATH
++	// first, and on Windows also in the folders a user's tools are
++	// installed in, which a magpie's PATH doesn't reach — a bare npx kept
++	// by fnm was reported notfound while every agent started it fine
++	// (#2685). Nothing is kept: the server's own command stays as it is.
++	name := s.Command
++	if p, err := proc.LookPath(name); err == nil {
++		name = p
++	} else if runtime.GOOS == "windows" {
++		if p := proc.FindTool(name); p != "" {
++			name = p
++		}
++	}
++	cmd := proc.Command(name, s.Args...)
+ 	// Agents start MCP servers from a project or home directory. A magpie
+ 	// launched from a shortcut (Windows Start menu) often has C:\Windows\system32
+ 	// as its own cwd, which is not writable; inherit that and a server that
+diff --git a/internal/library/mcp_check_test.go b/internal/library/mcp_check_test.go
+index a7aca615..921500f3 100644
+--- a/internal/library/mcp_check_test.go
++++ b/internal/library/mcp_check_test.go
+@@ -19,6 +19,8 @@ import (
+ 	"sync"
+ 	"testing"
+ 	"time"
++
++	"github.com/yetone/magpie/internal/proc"
+ )
+ 
+ // The fake stdio server is this test binary, started again with
+@@ -139,6 +141,35 @@ func TestCheckStdio(t *testing.T) {
+ 			t.Fatalf("got %+v, want notfound", h)
+ 		}
+ 	})
++	// a bare command found in the folders a user's tools are installed in
++	// is started for the check, not reported notfound: an agent started
++	// from a terminal reaches it through fnm's own folders on PATH, which
++	// a magpie's process PATH doesn't (#2685). Here it is a batch file the
++	// way fnm keeps npx on Windows, off PATH, and it exits 3, so not
++	// being told "notfound" means the right program ran.
++	t.Run("bare tool off PATH", func(t *testing.T) {
++		if runtime.GOOS != "windows" {
++			t.Skip("fnm's Windows layout")
++		}
++		fnm := t.TempDir()
++		inst := filepath.Join(fnm, "node-versions", "v24.21.0", "installation")
++		if err := os.MkdirAll(inst, 0o755); err != nil {
++			t.Fatal(err)
++		}
++		if err := os.WriteFile(filepath.Join(inst, "npx.cmd"), []byte("@echo off\r\nexit /b 3\r\n"), 0o755); err != nil {
++			t.Fatal(err)
++		}
++		t.Setenv("FNM_DIR", fnm)
++		t.Setenv("PATH", t.TempDir())
++		proc.Forget()
++		h := CheckServer(context.Background(), &Server{Name: "x", Transport: "stdio", Command: "npx"})
++		if h.Why == "notfound" {
++			t.Fatalf("got %+v, want the npx in FNM_DIR started", h)
++		}
++		if h.Code != 3 {
++			t.Fatalf("got %+v, want the batch file's exit 3", h)
++		}
++	})
+ 	// a home of the subtest's own, so what a server writes there goes with
+ 	// it, and a process cwd that isn't home (#1727)
+ 	ownHome := func(t *testing.T, cwd string) string {
+diff --git a/internal/proc/nodever.go b/internal/proc/nodever.go
+new file mode 100644
+index 00000000..88be0954
+--- /dev/null
++++ b/internal/proc/nodever.go
+@@ -0,0 +1,114 @@
++package proc
++
++import (
++	"os"
++	"path/filepath"
++	"slices"
++	"strconv"
++	"strings"
++)
++
++// A Node version manager keeps one folder per version, and a terminal runs
++// the one it was told to use, not the one whose name sorts last. magpie
++// picked nvm's "newest-looking" folder by name, and in plain string order
++// v9.11.2 comes after v22.12.0: a codex, claude or gemini installed under a
++// Node the terminal doesn't use was found, run and updated in place of the
++// terminal's (found while answering 悠悠哥 on Discord, 9f407cafa). The
++// folders are taken in the order a terminal would reach them instead: the
++// manager's default first, then the highest version. fnm and mise lay this
++// out the same way on every system (nvm's, in nodever_other.go, is its
++// own), so their code is shared; only where the tool itself sits inside a
++// version's folder differs: fnm's is installation/bin on macOS and Linux,
++// installation alone (no bin inside) on Windows.
++
++// fnmBins are the bin folders of the Node versions fnm keeps in dir, the
++// default alias's (aliases/default, a link to the version's folder) first,
++// then the rest newest first. bin is where the tool itself sits inside a
++// version's folder: installation/bin on macOS and Linux, installation
++// alone on Windows.
++func fnmBins(dir, bin string) []string {
++	root := filepath.Join(dir, "node-versions")
++	var bins []string
++	for _, n := range nodeVersions(root, filepath.Join("installation", bin)) {
++		bins = append(bins, filepath.Join(root, n, "installation", bin))
++	}
++	if to, err := filepath.EvalSymlinks(filepath.Join(dir, "aliases", "default")); err == nil {
++		if real, err := filepath.EvalSymlinks(root); err == nil {
++			if rel, err := filepath.Rel(real, to); err == nil && !strings.HasPrefix(rel, "..") {
++				def := filepath.Join(root, rel, bin)
++				if isDir(def) {
++					bins = slices.DeleteFunc(bins, func(b string) bool { return b == def })
++					bins = append([]string{def}, bins...)
++				}
++			}
++		}
++	}
++	return bins
++}
++
++// nodeBins are the bin folders of a manager that keeps each version as
++// root/<version>/bin (mise's installs), newest first.
++func nodeBins(root string) []string {
++	var bins []string
++	for _, n := range nodeVersions(root, "bin") {
++		bins = append(bins, filepath.Join(root, n, "bin"))
++	}
++	return bins
++}
++
++// nodeVersions are the names of the version folders under root that have
++// a folder bin (root/<version>/<bin>), highest version first (nodeVersionLess); a name that is
++// no version (mise's "lts", "latest") after every one that is.
++func nodeVersions(root, bin string) []string {
++	es, _ := os.ReadDir(root)
++	var names []string
++	for _, e := range es {
++		if st, err := os.Stat(filepath.Join(root, e.Name(), bin)); err == nil && st.IsDir() {
++			names = append(names, e.Name())
++		}
++	}
++	slices.SortStableFunc(names, func(a, b string) int {
++		switch {
++		case nodeVersionLess(b, a):
++			return -1
++		case nodeVersionLess(a, b):
++			return 1
++		}
++		return strings.Compare(a, b)
++	})
++	return names
++}
++
++// parseNodeVersion reads v22.12.0 (or 22.12.0, mise's, or 22, a partial
++// one) as its numbers; false for a name that isn't one.
++func parseNodeVersion(s string) ([3]int, int, bool) {
++	var v [3]int
++	parts := strings.Split(strings.TrimPrefix(s, "v"), ".")
++	if len(parts) > 3 || parts[0] == "" {
++		return v, 0, false
++	}
++	for i, p := range parts {
++		n, err := strconv.Atoi(p)
++		if err != nil || n < 0 {
++			return v, 0, false
++		}
++		v[i] = n
++	}
++	return v, len(parts), true
++}
++
++// nodeVersionLess says a is a lower version than b, by number: v9 before
++// v22. A name that is no version is lower than one that is.
++func nodeVersionLess(a, b string) bool {
++	va, _, oka := parseNodeVersion(a)
++	vb, _, okb := parseNodeVersion(b)
++	if oka != okb {
++		return okb
++	}
++	return oka && slices.Compare(va[:], vb[:]) < 0
++}
++
++func isDir(p string) bool {
++	st, err := os.Stat(p)
++	return err == nil && st.IsDir()
++}
+diff --git a/internal/proc/nodever_other.go b/internal/proc/nodever_other.go
+index 609a0715..092b412e 100644
+--- a/internal/proc/nodever_other.go
++++ b/internal/proc/nodever_other.go
+@@ -17,7 +17,8 @@ import (
+ // Node the terminal doesn't use was found, run and updated in place of the
+ // terminal's (found while answering 悠悠哥 on Discord, 9f407cafa). The
+ // folders are taken in the order a terminal would reach them instead: the
+-// manager's default first, then the highest version.
++// manager's default first, then the highest version. nvm's layout is its
++// own; fnm's and mise's, shared with Windows, are in nodever.go.
+ 
+ // nvmDir is nvm's folder: $NVM_DIR as the profile sets it, else ~/.nvm.
+ func nvmDir(home string) string {
+@@ -49,58 +50,6 @@ func nvmBins(dir string) (bins []string, def string, system bool) {
+ 	return bins, def, system
+ }
+ 
+-// nodeVersions are the names of the version folders under root that have
+-// a folder bin (root/<version>/<bin>), highest version first (nodeVersionLess); a name that is
+-// no version (mise's "lts", "latest") after every one that is.
+-func nodeVersions(root, bin string) []string {
+-	es, _ := os.ReadDir(root)
+-	var names []string
+-	for _, e := range es {
+-		if st, err := os.Stat(filepath.Join(root, e.Name(), bin)); err == nil && st.IsDir() {
+-			names = append(names, e.Name())
+-		}
+-	}
+-	slices.SortStableFunc(names, func(a, b string) int {
+-		switch {
+-		case nodeVersionLess(b, a):
+-			return -1
+-		case nodeVersionLess(a, b):
+-			return 1
+-		}
+-		return strings.Compare(a, b)
+-	})
+-	return names
+-}
+-
+-// parseNodeVersion reads v22.12.0 (or 22.12.0, mise's, or 22, a partial
+-// one) as its numbers; false for a name that isn't one.
+-func parseNodeVersion(s string) ([3]int, int, bool) {
+-	var v [3]int
+-	parts := strings.Split(strings.TrimPrefix(s, "v"), ".")
+-	if len(parts) > 3 || parts[0] == "" {
+-		return v, 0, false
+-	}
+-	for i, p := range parts {
+-		n, err := strconv.Atoi(p)
+-		if err != nil || n < 0 {
+-			return v, 0, false
+-		}
+-		v[i] = n
+-	}
+-	return v, len(parts), true
+-}
+-
+-// nodeVersionLess says a is a lower version than b, by number: v9 before
+-// v22. A name that is no version is lower than one that is.
+-func nodeVersionLess(a, b string) bool {
+-	va, _, oka := parseNodeVersion(a)
+-	vb, _, okb := parseNodeVersion(b)
+-	if oka != okb {
+-		return okb
+-	}
+-	return oka && slices.Compare(va[:], vb[:]) < 0
+-}
+-
+ // nvmDefault is the installed version (one of names, highest first) nvm's
+ // default alias resolves to, as nvm.sh does when a shell loads it
+ // (nvm_auto use → nvm_resolve_local_alias default): alias/default, then
+@@ -202,41 +151,3 @@ func nvmAlias(alias, name string) string {
+ 	}
+ 	return ""
+ }
+-
+-// fnmBins are the bin folders of the Node versions fnm keeps in dir, the
+-// default alias's (aliases/default, a link to the version's folder) first,
+-// then the rest newest first.
+-func fnmBins(dir string) []string {
+-	root := filepath.Join(dir, "node-versions")
+-	var bins []string
+-	for _, n := range nodeVersions(root, filepath.Join("installation", "bin")) {
+-		bins = append(bins, filepath.Join(root, n, "installation", "bin"))
+-	}
+-	if to, err := filepath.EvalSymlinks(filepath.Join(dir, "aliases", "default")); err == nil {
+-		if real, err := filepath.EvalSymlinks(root); err == nil {
+-			if rel, err := filepath.Rel(real, to); err == nil && !strings.HasPrefix(rel, "..") {
+-				def := filepath.Join(root, rel, "bin")
+-				if isDir(def) {
+-					bins = slices.DeleteFunc(bins, func(b string) bool { return b == def })
+-					bins = append([]string{def}, bins...)
+-				}
+-			}
+-		}
+-	}
+-	return bins
+-}
+-
+-// nodeBins are the bin folders of a manager that keeps each version as
+-// root/<version>/bin (mise's installs), newest first.
+-func nodeBins(root string) []string {
+-	var bins []string
+-	for _, n := range nodeVersions(root, "bin") {
+-		bins = append(bins, filepath.Join(root, n, "bin"))
+-	}
+-	return bins
+-}
+-
+-func isDir(p string) bool {
+-	st, err := os.Stat(p)
+-	return err == nil && st.IsDir()
+-}
+diff --git a/internal/proc/path_other.go b/internal/proc/path_other.go
+index 81c841e3..20bd9eb8 100644
+--- a/internal/proc/path_other.go
++++ b/internal/proc/path_other.go
+@@ -161,7 +161,7 @@ func userDirs(everyNode bool) []string {
+ 			fnm = append([]string{d}, fnm...)
+ 		}
+ 		for _, d := range slices.Compact(fnm) {
+-			known = append(known, fnmBins(d)...)
++			known = append(known, fnmBins(d, "bin")...)
+ 		}
+ 	}
+ 	known = append(known, SystemDirs("/opt/homebrew/bin", "/usr/local/bin")...)
+diff --git a/internal/proc/path_windows.go b/internal/proc/path_windows.go
+index 6729b1a9..a198e5d8 100644
+--- a/internal/proc/path_windows.go
++++ b/internal/proc/path_windows.go
+@@ -3,6 +3,7 @@ package proc
+ import (
+ 	"os"
+ 	"path/filepath"
++	"slices"
+ 	"strings"
+ 
+ 	"golang.org/x/sys/windows/registry"
+@@ -36,6 +37,20 @@ func UserBinDirs() []string {
+ 		filepath.Join(appdir.Getenv("LOCALAPPDATA"), "pnpm"),
+ 		filepath.Join(mise, "shims"),
+ 	}
++	// each Node version of fnm and mise, as their code on the other
++	// systems finds them: fnm's under node-versions/<v>/installation of
++	// FNM_DIR or %APPDATA%\fnm (fnm's own folder on Windows), mise's under
++	// installs/node of its data folder. A terminal reaches a bare npx
++	// through them, and a magpie's PATH, taken from the registry, doesn't
++	// unless a standalone Node is installed too (#2685).
++	fnm := []string{filepath.Join(appdir.Getenv("APPDATA"), "fnm")}
++	if d := os.Getenv("FNM_DIR"); filepath.IsAbs(d) {
++		fnm = append([]string{d}, fnm...)
++	}
++	for _, d := range slices.Compact(fnm) {
++		known = append(known, fnmBins(d, "")...)
++	}
++	known = append(known, nodeBins(filepath.Join(mise, "installs", "node"))...)
+ 	var have []string
+ 	for _, d := range known {
+ 		if st, err := os.Stat(d); filepath.IsAbs(d) && err == nil && st.IsDir() {
+diff --git a/internal/proc/path_windows_test.go b/internal/proc/path_windows_test.go
+new file mode 100644
+index 00000000..953c0331
+--- /dev/null
++++ b/internal/proc/path_windows_test.go
+@@ -0,0 +1,43 @@
++package proc
++
++import (
++	"os"
++	"path/filepath"
++	"slices"
++	"testing"
++)
++
++// fnm on Windows keeps each Node version as
++// node-versions/<v>/installation (node.exe and npx.cmd directly inside,
++// no bin folder), with aliases/default a link to the default version's
++// installation. UserBinDirs offers them, so a bare npx a terminal has
++// through fnm is found without the registry's PATH reaching it (#2685).
++func TestUserBinDirsHasFnmsNode(t *testing.T) {
++	dir := t.TempDir()
++	inst := filepath.Join(dir, "node-versions", "v24.21.0", "installation")
++	old := filepath.Join(dir, "node-versions", "v18.20.8", "installation")
++	for _, d := range []string{inst, old} {
++		if err := os.MkdirAll(d, 0o755); err != nil {
++			t.Fatal(err)
++		}
++	}
++	// fnm's default alias is a link to the version's installation; the
++	// default's folder comes first when the link can be made, and here it
++	// names the highest version, which comes first either way
++	aliases := filepath.Join(dir, "aliases")
++	if err := os.MkdirAll(aliases, 0o755); err != nil {
++		t.Fatal(err)
++	}
++	if err := os.Symlink(inst, filepath.Join(aliases, "default")); err != nil {
++		t.Log("no symlink privilege:", err)
++	}
++	t.Setenv("FNM_DIR", dir)
++	// the sandbox's own folders of the managers whose dirs UserBinDirs
++	// also lists stay empty, so only fnm's two folders exist here
++	t.Setenv("PATH", t.TempDir())
++	have := UserBinDirs()
++	want := []string{inst, old}
++	if !slices.Equal(have, want) {
++		t.Fatalf("UserBinDirs = %q, want %q", have, want)
++	}
++}

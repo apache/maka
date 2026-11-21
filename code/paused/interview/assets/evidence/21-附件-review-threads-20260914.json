@@ -1,0 +1,255 @@
+[
+ {
+  "pr": 4345,
+  "others": 0,
+  "mine": 0,
+  "users": {},
+  "span_days": 0,
+  "total": 0
+ },
+ {
+  "pr": 4481,
+  "others": 0,
+  "mine": 0,
+  "users": {},
+  "span_days": 0,
+  "total": 0
+ },
+ {
+  "pr": 4485,
+  "others": 0,
+  "mine": 0,
+  "users": {},
+  "span_days": 0,
+  "total": 0
+ },
+ {
+  "pr": 4488,
+  "others": 0,
+  "mine": 0,
+  "users": {},
+  "span_days": 0,
+  "total": 0
+ },
+ {
+  "pr": 4506,
+  "others": 7,
+  "mine": 0,
+  "users": {
+   "Astro-Han": 7
+  },
+  "span_days": 1,
+  "total": 7
+ },
+ {
+  "pr": 4513,
+  "others": 0,
+  "mine": 0,
+  "users": {},
+  "span_days": 0,
+  "total": 0
+ },
+ {
+  "pr": 4514,
+  "others": 5,
+  "mine": 0,
+  "users": {
+   "Astro-Han": 5
+  },
+  "span_days": 1,
+  "total": 5
+ },
+ {
+  "pr": 4517,
+  "others": 0,
+  "mine": 0,
+  "users": {},
+  "span_days": 0,
+  "total": 0
+ },
+ {
+  "pr": 4518,
+  "others": 1,
+  "mine": 0,
+  "users": {
+   "Astro-Han": 1
+  },
+  "span_days": 0,
+  "total": 1
+ },
+ {
+  "pr": 4566,
+  "others": 2,
+  "mine": 0,
+  "users": {
+   "jackwener": 1,
+   "Astro-Han": 1
+  },
+  "span_days": 0,
+  "total": 2
+ },
+ {
+  "pr": 4794,
+  "others": 8,
+  "mine": 0,
+  "users": {
+   "hqhq1025": 2,
+   "Astro-Han": 6
+  },
+  "span_days": 2,
+  "total": 8
+ },
+ {
+  "pr": 4797,
+  "others": 0,
+  "mine": 0,
+  "users": {},
+  "span_days": 0,
+  "total": 0
+ },
+ {
+  "pr": 4798,
+  "others": 0,
+  "mine": 0,
+  "users": {},
+  "span_days": 0,
+  "total": 0
+ },
+ {
+  "pr": 4799,
+  "others": 4,
+  "mine": 0,
+  "users": {
+   "hqhq1025": 1,
+   "Astro-Han": 3
+  },
+  "span_days": 2,
+  "total": 4
+ },
+ {
+  "pr": 4800,
+  "others": 4,
+  "mine": 0,
+  "users": {
+   "hqhq1025": 1,
+   "Astro-Han": 3
+  },
+  "span_days": 2,
+  "total": 4
+ },
+ {
+  "pr": 4801,
+  "others": 5,
+  "mine": 0,
+  "users": {
+   "jackwener": 1,
+   "Astro-Han": 4
+  },
+  "span_days": 1,
+  "total": 5
+ },
+ {
+  "pr": 4802,
+  "others": 0,
+  "mine": 0,
+  "users": {},
+  "span_days": 0,
+  "total": 0
+ },
+ {
+  "pr": 4814,
+  "others": 4,
+  "mine": 0,
+  "users": {
+   "Astro-Han": 4
+  },
+  "span_days": 1,
+  "total": 4
+ },
+ {
+  "pr": 4815,
+  "others": 14,
+  "mine": 1,
+  "users": {
+   "jackwener": 2,
+   "Astro-Han": 12
+  },
+  "span_days": 5,
+  "total": 15
+ },
+ {
+  "pr": 4816,
+  "others": 2,
+  "mine": 0,
+  "users": {
+   "hqhq1025": 1,
+   "jackwener": 1
+  },
+  "span_days": 2,
+  "total": 2
+ },
+ {
+  "pr": 5116,
+  "others": 4,
+  "mine": 0,
+  "users": {
+   "Astro-Han": 4
+  },
+  "span_days": 1,
+  "total": 4
+ },
+ {
+  "pr": 5118,
+  "others": 3,
+  "mine": 0,
+  "users": {
+   "Astro-Han": 3
+  },
+  "span_days": 1,
+  "total": 3
+ },
+ {
+  "pr": 5125,
+  "others": 6,
+  "mine": 2,
+  "users": {
+   "Astro-Han": 6
+  },
+  "span_days": 1,
+  "total": 8
+ },
+ {
+  "pr": 5172,
+  "others": 1,
+  "mine": 0,
+  "users": {
+   "me2seeks": 1
+  },
+  "span_days": 0,
+  "total": 1
+ },
+ {
+  "pr": 5258,
+  "others": 0,
+  "mine": 0,
+  "users": {},
+  "span_days": 0,
+  "total": 0
+ },
+ {
+  "pr": 5265,
+  "others": 0,
+  "mine": 0,
+  "users": {},
+  "span_days": 0,
+  "total": 0
+ },
+ {
+  "pr": 5274,
+  "others": 0,
+  "mine": 0,
+  "users": {},
+  "span_days": 0,
+  "total": 0
+ }
+]

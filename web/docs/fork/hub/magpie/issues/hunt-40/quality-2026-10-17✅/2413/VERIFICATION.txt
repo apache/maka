@@ -1,0 +1,267 @@
+#2413 LOCAL VERIFICATION
+BASE=6f950653fcdb46c73044a071328cdc508f12ccef
+PATCH_SHA256=42b4243617c489c0ae15a20cb17958d60070d67c0b3ca556ca530b52f592a24a
+CHANGED_FIELDS=["endpoints.gemini", "imported validates and stores Provider.Gemini", "ccSwitchEntry gemini relay branch", "readAlma gemini/google branch", "merge Provider.Gemini", "firstURL Provider.Gemini", "obsolete skip translations", "public ImportSources/ImportFromApps/Find tests", "providers-accounts import contract"]
+MODIFIED_FILE=/private/tmp/magpie-quality-20261017-2413/internal/provider/importapps.go
+DIFF_FILE=/Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2413/updated.patch
+VERIFICATION=/Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2413/VERIFICATION.txt
+ROLLBACK=/Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2413/ROLLBACK.sh
+
+BASELINE INPUT=fixed base archive; original/internal/provider/importapps_test.go SHA-256=6661447f9dfa6e150c963623d1a7968e1e3bcd0fbdc8c3c4862a10cd7c857184
+
+BASELINE
+CWD=/private/tmp/magpie-quality-20261017-2413
+ENV={"GOTOOLCHAIN": "auto", "GOPATH": "/Users/ggbdpq/go", "GOMODCACHE": "/Users/ggbdpq/go/pkg/mod", "GOCACHE": "/Users/ggbdpq/Library/Caches/go-build", "GOMAXPROCS": "2"}
+COMMAND=go test -p 2 -tags nogui -count=1 -timeout 10m ./internal/provider -run '^(TestImportCCSwitch|TestImportAlma)$'
+INPUT=SQLite fixtures in internal/provider/importapps_test.go; no real credentials; temporary HOME via wrapper and provider TestMain testenv
+LITERAL OUTPUT BEGIN
+ok  	github.com/yetone/magpie/internal/provider	1.238s
+LITERAL OUTPUT END
+EXIT_STATUS=0
+
+PROVIDER-PACKAGE
+CWD=/private/tmp/magpie-quality-20261017-2413
+ENV={"GOTOOLCHAIN": "auto", "GOPATH": "/Users/ggbdpq/go", "GOMODCACHE": "/Users/ggbdpq/go/pkg/mod", "GOCACHE": "/Users/ggbdpq/Library/Caches/go-build", "GOMAXPROCS": "2"}
+COMMAND=go test -p 2 -tags nogui -count=1 -timeout 45m ./internal/provider
+INPUT=SQLite fixtures in internal/provider/importapps_test.go; no real credentials; temporary HOME via wrapper and provider TestMain testenv
+LITERAL OUTPUT BEGIN
+ok  	github.com/yetone/magpie/internal/provider	83.946s
+LITERAL OUTPUT END
+EXIT_STATUS=0
+
+ROLLBACK
+CWD=/private/tmp/magpie-quality-20261017-2413-rollback
+ENV={"GOTOOLCHAIN": "auto", "GOPATH": "/Users/ggbdpq/go", "GOMODCACHE": "/Users/ggbdpq/go/pkg/mod", "GOCACHE": "/Users/ggbdpq/Library/Caches/go-build", "GOMAXPROCS": "2"}
+COMMAND=/Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2413/ROLLBACK.sh /private/tmp/magpie-quality-20261017-2413-rollback
+INPUT=SQLite fixtures in internal/provider/importapps_test.go; no real credentials; temporary HOME via wrapper and provider TestMain testenv
+LITERAL OUTPUT BEGIN
+ROLLBACK_RESTORED=5_FILES BASE=6f950653fcdb46c73044a071328cdc508f12ccef
+LITERAL OUTPUT END
+EXIT_STATUS=0
+
+ROLLBACK-BEHAVIOR
+CWD=/private/tmp/magpie-quality-20261017-2413-rollback
+ENV={"GOTOOLCHAIN": "auto", "GOPATH": "/Users/ggbdpq/go", "GOMODCACHE": "/Users/ggbdpq/go/pkg/mod", "GOCACHE": "/Users/ggbdpq/Library/Caches/go-build", "GOMAXPROCS": "2"}
+COMMAND=go test -p 2 -tags nogui -count=1 -timeout 10m ./internal/provider -run '^(TestImportCCSwitch|TestImportAlma)$'
+INPUT=SQLite fixtures in internal/provider/importapps_test.go; no real credentials; temporary HOME via wrapper and provider TestMain testenv
+LITERAL OUTPUT BEGIN
+ok  	github.com/yetone/magpie/internal/provider	1.075s
+LITERAL OUTPUT END
+EXIT_STATUS=0
+
+RESTORED_BEHAVIOR=Both original import tests pass and all five files match fixed-main SHA-256; Gemini relay remains skipped at original baseline.
+MODIFIED_SOURCE_STATUS=All five modified hashes match source-manifest.json after mutations; source left changed.
+
+ALL CHECKS
+
+original-apply
+COMMAND=git apply --check /Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2413/original.patch
+INPUT=SQLite fixtures in internal/provider/importapps_test.go; no real credentials; temporary HOME via wrapper and provider TestMain testenv
+LITERAL OUTPUT BEGIN
+error: patch failed: internal/provider/importapps_test.go:5
+error: internal/provider/importapps_test.go: patch does not apply
+LITERAL OUTPUT END
+EXIT_STATUS=1
+
+baseline
+COMMAND=go test -p 2 -tags nogui -count=1 -timeout 10m ./internal/provider -run '^(TestImportCCSwitch|TestImportAlma)$'
+INPUT=SQLite fixtures in internal/provider/importapps_test.go; no real credentials; temporary HOME via wrapper and provider TestMain testenv
+LITERAL OUTPUT BEGIN
+ok  	github.com/yetone/magpie/internal/provider	1.238s
+LITERAL OUTPUT END
+EXIT_STATUS=0
+
+red-ccswitch
+COMMAND=go test -p 2 -tags nogui -count=1 -timeout 10m ./internal/provider -run '^TestImportCCSwitch$'
+INPUT=SQLite fixtures in internal/provider/importapps_test.go; no real credentials; temporary HOME via wrapper and provider TestMain testenv
+LITERAL OUTPUT BEGIN
+--- FAIL: TestImportCCSwitch (0.57s)
+    importapps_test.go:80: Gemini relay was not offered with its endpoint, key and model: {Ref:gemini/g From:Gemini CLI Provider:{ID: Name:Gemini relay Was:[] Icon: Preset: Key: AccessKeyID: SecretAccessKey: KeyName: Keys:[] KeyProtocol: KeyWeight:0 Chat: Responses: Anthropic: Gemini: Decide: BaseAPI: Fallback:[] Routing: Sink:false Affinity: KeepLogin:false KeepLoginAs: SwitchOnly:false MaxConcurrency:<nil> AccountConcurrency:map[] QueueLimit:0 QueueWait:0 MaxRPM:0 QuotaRest:0 QuotaResetAt: RestCap:0 PriceRate:0 Headers:map[] ExtraBody:map[] Searches:false CodexAsSent:false NativeCompaction:false PassUserAgent:false PinUpstream:false AuthHeader: Unredacted:false InsecureTLS:false Proxy: AccountProxies:map[] AccountModels:map[] AccountCaps:map[] AccountWindowCaps:map[] AccountNames:map[] BalanceURL: BalancePath: BalanceMethod: BalanceToken: ZhipuTeam:<nil> Vertex:<nil> ModelsURL: Models:[] NoModels:false PickedFrom:[] RefreshEvery: AutoInclude:[] Unlisted:false Off:false Contexts:map[] Family: Catalog: Website: KeysURL: IconURL: Hidden:false Quiet:false Tucked:false Account:<nil>} Status: Existing: KeyOf: Reserved:false Off: Skip:magpie doesn't talk the Gemini protocol to relays yet}
+FAIL
+FAIL	github.com/yetone/magpie/internal/provider	1.001s
+FAIL
+LITERAL OUTPUT END
+EXIT_STATUS=1
+
+green-ccswitch
+COMMAND=go test -p 2 -tags nogui -count=1 -timeout 10m ./internal/provider -run '^TestImportCCSwitch$'
+INPUT=SQLite fixtures in internal/provider/importapps_test.go; no real credentials; temporary HOME via wrapper and provider TestMain testenv
+LITERAL OUTPUT BEGIN
+ok  	github.com/yetone/magpie/internal/provider	0.994s
+LITERAL OUTPUT END
+EXIT_STATUS=0
+
+red-alma
+COMMAND=go test -p 2 -tags nogui -count=1 -timeout 10m ./internal/provider -run '^TestImportAlma$'
+INPUT=SQLite fixtures in internal/provider/importapps_test.go; no real credentials; temporary HOME via wrapper and provider TestMain testenv
+LITERAL OUTPUT BEGIN
+--- FAIL: TestImportAlma (0.41s)
+    importapps_test.go:155: Alma Gemini relay was not offered: {Ref:g1 From: Provider:{ID: Name:Gemini Format Was:[] Icon: Preset: Key: AccessKeyID: SecretAccessKey: KeyName: Keys:[] KeyProtocol: KeyWeight:0 Chat: Responses: Anthropic: Gemini: Decide: BaseAPI: Fallback:[] Routing: Sink:false Affinity: KeepLogin:false KeepLoginAs: SwitchOnly:false MaxConcurrency:<nil> AccountConcurrency:map[] QueueLimit:0 QueueWait:0 MaxRPM:0 QuotaRest:0 QuotaResetAt: RestCap:0 PriceRate:0 Headers:map[] ExtraBody:map[] Searches:false CodexAsSent:false NativeCompaction:false PassUserAgent:false PinUpstream:false AuthHeader: Unredacted:false InsecureTLS:false Proxy: AccountProxies:map[] AccountModels:map[] AccountCaps:map[] AccountWindowCaps:map[] AccountNames:map[] BalanceURL: BalancePath: BalanceMethod: BalanceToken: ZhipuTeam:<nil> Vertex:<nil> ModelsURL: Models:[] NoModels:false PickedFrom:[] RefreshEvery: AutoInclude:[] Unlisted:false Off:false Contexts:map[] Family: Catalog: Website: KeysURL: IconURL: Hidden:false Quiet:false Tucked:false Account:<nil>} Status: Existing: KeyOf: Reserved:false Off: Skip:magpie doesn't talk the Gemini protocol to relays yet}
+FAIL
+FAIL	github.com/yetone/magpie/internal/provider	1.005s
+FAIL
+LITERAL OUTPUT END
+EXIT_STATUS=1
+
+green-alma
+COMMAND=go test -p 2 -tags nogui -count=1 -timeout 10m ./internal/provider -run '^TestImportAlma$'
+INPUT=SQLite fixtures in internal/provider/importapps_test.go; no real credentials; temporary HOME via wrapper and provider TestMain testenv
+LITERAL OUTPUT BEGIN
+--- FAIL: TestImportAlma (0.46s)
+    importapps_test.go:180: g4 imported despite "it has no API key"
+FAIL
+FAIL	github.com/yetone/magpie/internal/provider	1.011s
+FAIL
+LITERAL OUTPUT END
+EXIT_STATUS=1
+
+green-alma-corrected
+COMMAND=go test -p 2 -tags nogui -count=1 -timeout 10m ./internal/provider -run '^TestImportAlma$'
+INPUT=SQLite fixtures in internal/provider/importapps_test.go; no real credentials; temporary HOME via wrapper and provider TestMain testenv
+LITERAL OUTPUT BEGIN
+ok  	github.com/yetone/magpie/internal/provider	0.982s
+LITERAL OUTPUT END
+EXIT_STATUS=0
+
+green-imports
+COMMAND=gofmt -w internal/provider/importapps.go internal/provider/import_opencode.go internal/provider/importapps_test.go && go test -p 2 -tags nogui -count=1 -timeout 10m ./internal/provider -run '^(TestImport|TestGeminiURLIsItsHost|TestCustomGeminiProvider|TestGeminiBase|TestParseImportGemini)'
+INPUT=SQLite fixtures in internal/provider/importapps_test.go; no real credentials; temporary HOME via wrapper and provider TestMain testenv
+LITERAL OUTPUT BEGIN
+ok  	github.com/yetone/magpie/internal/provider	1.855s
+LITERAL OUTPUT END
+EXIT_STATUS=0
+
+ablation-all-product
+COMMAND=go test -p 2 -tags nogui -count=1 -timeout 10m ./internal/provider -run '^(TestImportCCSwitch|TestImportAlma)$'
+INPUT=SQLite fixtures in internal/provider/importapps_test.go; no real credentials; temporary HOME via wrapper and provider TestMain testenv
+LITERAL OUTPUT BEGIN
+--- FAIL: TestImportCCSwitch (0.51s)
+    importapps_test.go:83: Gemini relay was not offered with its endpoint, key and model: {Ref:gemini/g From:Gemini CLI Provider:{ID: Name:Gemini relay Was:[] Icon: Preset: Key: AccessKeyID: SecretAccessKey: KeyName: Keys:[] KeyProtocol: KeyWeight:0 Chat: Responses: Anthropic: Gemini: Decide: BaseAPI: Fallback:[] Routing: Sink:false Affinity: KeepLogin:false KeepLoginAs: SwitchOnly:false MaxConcurrency:<nil> AccountConcurrency:map[] QueueLimit:0 QueueWait:0 MaxRPM:0 QuotaRest:0 QuotaResetAt: RestCap:0 PriceRate:0 Headers:map[] ExtraBody:map[] Searches:false CodexAsSent:false NativeCompaction:false PassUserAgent:false PinUpstream:false AuthHeader: Unredacted:false InsecureTLS:false Proxy: AccountProxies:map[] AccountModels:map[] AccountCaps:map[] AccountWindowCaps:map[] AccountNames:map[] BalanceURL: BalancePath: BalanceMethod: BalanceToken: ZhipuTeam:<nil> Vertex:<nil> ModelsURL: Models:[] NoModels:false PickedFrom:[] RefreshEvery: AutoInclude:[] Unlisted:false Off:false Contexts:map[] Family: Catalog: Website: KeysURL: IconURL: Hidden:false Quiet:false Tucked:false Account:<nil>} Status: Existing: KeyOf: Reserved:false Off: Skip:magpie doesn't talk the Gemini protocol to relays yet}
+--- FAIL: TestImportAlma (0.01s)
+    importapps_test.go:170: Alma Gemini relay was not offered: {Ref:g1 From: Provider:{ID: Name:Gemini Format Was:[] Icon: Preset: Key: AccessKeyID: SecretAccessKey: KeyName: Keys:[] KeyProtocol: KeyWeight:0 Chat: Responses: Anthropic: Gemini: Decide: BaseAPI: Fallback:[] Routing: Sink:false Affinity: KeepLogin:false KeepLoginAs: SwitchOnly:false MaxConcurrency:<nil> AccountConcurrency:map[] QueueLimit:0 QueueWait:0 MaxRPM:0 QuotaRest:0 QuotaResetAt: RestCap:0 PriceRate:0 Headers:map[] ExtraBody:map[] Searches:false CodexAsSent:false NativeCompaction:false PassUserAgent:false PinUpstream:false AuthHeader: Unredacted:false InsecureTLS:false Proxy: AccountProxies:map[] AccountModels:map[] AccountCaps:map[] AccountWindowCaps:map[] AccountNames:map[] BalanceURL: BalancePath: BalanceMethod: BalanceToken: ZhipuTeam:<nil> Vertex:<nil> ModelsURL: Models:[] NoModels:false PickedFrom:[] RefreshEvery: AutoInclude:[] Unlisted:false Off:false Contexts:map[] Family: Catalog: Website: KeysURL: IconURL: Hidden:false Quiet:false Tucked:false Account:<nil>} Status: Existing: KeyOf: Reserved:false Off: Skip:magpie doesn't talk the Gemini protocol to relays yet}
+FAIL
+FAIL	github.com/yetone/magpie/internal/provider	1.014s
+FAIL
+LITERAL OUTPUT END
+EXIT_STATUS=1
+
+restored-green
+COMMAND=go test -p 2 -tags nogui -count=1 -timeout 10m ./internal/provider -run '^(TestImportCCSwitch|TestImportAlma)$'
+INPUT=SQLite fixtures in internal/provider/importapps_test.go; no real credentials; temporary HOME via wrapper and provider TestMain testenv
+LITERAL OUTPUT BEGIN
+ok  	github.com/yetone/magpie/internal/provider	1.039s
+LITERAL OUTPUT END
+EXIT_STATUS=0
+
+updated-apply
+COMMAND=git apply --check /Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2413/updated.patch && git apply /Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2413/updated.patch && echo UPDATED_PATCH_APPLIES
+INPUT=SQLite fixtures in internal/provider/importapps_test.go; no real credentials; temporary HOME via wrapper and provider TestMain testenv
+LITERAL OUTPUT BEGIN
+UPDATED_PATCH_APPLIES
+LITERAL OUTPUT END
+EXIT_STATUS=0
+
+rollback
+COMMAND=/Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2413/ROLLBACK.sh /private/tmp/magpie-quality-20261017-2413-rollback
+INPUT=SQLite fixtures in internal/provider/importapps_test.go; no real credentials; temporary HOME via wrapper and provider TestMain testenv
+LITERAL OUTPUT BEGIN
+ROLLBACK_RESTORED=5_FILES BASE=6f950653fcdb46c73044a071328cdc508f12ccef
+LITERAL OUTPUT END
+EXIT_STATUS=0
+
+i18n-static
+COMMAND=node --test internal/gui/tests/i18n-keys.test.cjs
+INPUT=SQLite fixtures in internal/provider/importapps_test.go; no real credentials; temporary HOME via wrapper and provider TestMain testenv
+LITERAL OUTPUT BEGIN
+✔ no language has a key twice (35.790125ms)
+✔ a plugin's words are said in every language (23.5565ms)
+✔ a plugin's words are its own (9002.778917ms)
+ℹ tests 3
+ℹ suites 0
+ℹ pass 3
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 9111.765042
+LITERAL OUTPUT END
+EXIT_STATUS=0
+
+format
+COMMAND=gofmt -l internal/provider/importapps.go internal/provider/import_opencode.go internal/provider/importapps_test.go
+INPUT=SQLite fixtures in internal/provider/importapps_test.go; no real credentials; temporary HOME via wrapper and provider TestMain testenv
+LITERAL OUTPUT BEGIN
+
+LITERAL OUTPUT END
+EXIT_STATUS=0
+
+provider-package
+COMMAND=go test -p 2 -tags nogui -count=1 -timeout 45m ./internal/provider
+INPUT=SQLite fixtures in internal/provider/importapps_test.go; no real credentials; temporary HOME via wrapper and provider TestMain testenv
+LITERAL OUTPUT BEGIN
+ok  	github.com/yetone/magpie/internal/provider	83.946s
+LITERAL OUTPUT END
+EXIT_STATUS=0
+
+rollback-behavior
+COMMAND=go test -p 2 -tags nogui -count=1 -timeout 10m ./internal/provider -run '^(TestImportCCSwitch|TestImportAlma)$'
+INPUT=SQLite fixtures in internal/provider/importapps_test.go; no real credentials; temporary HOME via wrapper and provider TestMain testenv
+LITERAL OUTPUT BEGIN
+ok  	github.com/yetone/magpie/internal/provider	1.075s
+LITERAL OUTPUT END
+EXIT_STATUS=0
+
+provider-vet
+COMMAND=go vet -p 2 -tags nogui ./internal/provider
+INPUT=SQLite fixtures in internal/provider/importapps_test.go; no real credentials; temporary HOME via wrapper and provider TestMain testenv
+LITERAL OUTPUT BEGIN
+
+LITERAL OUTPUT END
+EXIT_STATUS=0
+
+mutation-merge-gemini
+COMMAND=go test -p 2 -tags nogui -count=1 -timeout 10m ./internal/provider -run '^TestImportCCSwitch$'
+INPUT=SQLite fixtures in internal/provider/importapps_test.go; no real credentials; temporary HOME via wrapper and provider TestMain testenv
+LITERAL OUTPUT BEGIN
+--- FAIL: TestImportCCSwitch (0.61s)
+    importapps_test.go:87: relay: {Ref:claude/relay From:Claude Code, Codex, Gemini CLI Provider:{ID:some-relay Name:Some Relay Was:[] Icon: Preset: Key:sk-relay AccessKeyID: SecretAccessKey: KeyName: Keys:[] KeyProtocol: KeyWeight:0 Chat: Responses:https://relay.example.com/v1 Anthropic:https://relay.example.com Gemini: Decide: BaseAPI: Fallback:[] Routing: Sink:false Affinity: KeepLogin:false KeepLoginAs: SwitchOnly:false MaxConcurrency:<nil> AccountConcurrency:map[] QueueLimit:0 QueueWait:0 MaxRPM:0 QuotaRest:0 QuotaResetAt: RestCap:0 PriceRate:0 Headers:map[] ExtraBody:map[] Searches:false CodexAsSent:false NativeCompaction:false PassUserAgent:false PinUpstream:false AuthHeader: Unredacted:false InsecureTLS:false Proxy: AccountProxies:map[] AccountModels:map[] AccountCaps:map[] AccountWindowCaps:map[] AccountNames:map[] BalanceURL: BalancePath: BalanceMethod: BalanceToken: ZhipuTeam:<nil> Vertex:<nil> ModelsURL: Models:[claude-sonnet-5 gpt-5.5 gemini-2.5-flash] NoModels:false PickedFrom:[] RefreshEvery: AutoInclude:[] Unlisted:false Off:false Contexts:map[] Family: Catalog: Website:https://relay.example.com KeysURL: IconURL: Hidden:false Quiet:false Tucked:false Account:<nil>} Status:new Existing: KeyOf: Reserved:false Off: Skip:}
+FAIL
+FAIL	github.com/yetone/magpie/internal/provider	1.022s
+FAIL
+LITERAL OUTPUT END
+EXIT_STATUS=1
+
+mutation-alma-google
+COMMAND=go test -p 2 -tags nogui -count=1 -timeout 10m ./internal/provider -run '^TestImportAlma$'
+INPUT=SQLite fixtures in internal/provider/importapps_test.go; no real credentials; temporary HOME via wrapper and provider TestMain testenv
+LITERAL OUTPUT BEGIN
+--- FAIL: TestImportAlma (0.54s)
+    importapps_test.go:170: Alma Gemini relay was not offered: {Ref:g2 From: Provider:{ID:google-relay Name:Google Relay Was:[] Icon: Preset: Key:sk-google AccessKeyID: SecretAccessKey: KeyName: Keys:[] KeyProtocol: KeyWeight:0 Chat:https://google.example.com Responses: Anthropic: Gemini: Decide: BaseAPI: Fallback:[] Routing: Sink:false Affinity: KeepLogin:false KeepLoginAs: SwitchOnly:false MaxConcurrency:<nil> AccountConcurrency:map[] QueueLimit:0 QueueWait:0 MaxRPM:0 QuotaRest:0 QuotaResetAt: RestCap:0 PriceRate:0 Headers:map[] ExtraBody:map[] Searches:false CodexAsSent:false NativeCompaction:false PassUserAgent:false PinUpstream:false AuthHeader: Unredacted:false InsecureTLS:false Proxy: AccountProxies:map[] AccountModels:map[] AccountCaps:map[] AccountWindowCaps:map[] AccountNames:map[] BalanceURL: BalancePath: BalanceMethod: BalanceToken: ZhipuTeam:<nil> Vertex:<nil> ModelsURL: Models:[gemini-2.5-flash] NoModels:false PickedFrom:[] RefreshEvery: AutoInclude:[] Unlisted:false Off:false Contexts:map[] Family: Catalog: Website: KeysURL: IconURL: Hidden:false Quiet:false Tucked:false Account:<nil>} Status:new Existing: KeyOf: Reserved:false Off: Skip:}
+FAIL
+FAIL	github.com/yetone/magpie/internal/provider	1.011s
+FAIL
+LITERAL OUTPUT END
+EXIT_STATUS=1
+
+mutation-validation-gemini
+COMMAND=go test -p 2 -tags nogui -count=1 -timeout 10m ./internal/provider -run '^TestImportAlma$'
+INPUT=SQLite fixtures in internal/provider/importapps_test.go; no real credentials; temporary HOME via wrapper and provider TestMain testenv
+LITERAL OUTPUT BEGIN
+--- FAIL: TestImportAlma (0.42s)
+    importapps_test.go:192: g5: skip = "", want "its base URL isn't valid"
+FAIL
+FAIL	github.com/yetone/magpie/internal/provider	1.155s
+FAIL
+LITERAL OUTPUT END
+EXIT_STATUS=1
+
+final-green
+COMMAND=go test -p 2 -tags nogui -count=1 -timeout 10m ./internal/provider -run '^(TestImportCCSwitch|TestImportAlma)$'
+INPUT=SQLite fixtures in internal/provider/importapps_test.go; no real credentials; temporary HOME via wrapper and provider TestMain testenv
+LITERAL OUTPUT BEGIN
+ok  	github.com/yetone/magpie/internal/provider	1.020s
+LITERAL OUTPUT END
+EXIT_STATUS=0
+
+NOT_RUN=["Real CC Switch/Alma installation and actual exported DB schema", "Real Gemini relay/account request", "Full repository suite and repository cross-OS vet/build in this child branch", "Chromium/WebKit UI suites", "Real Windows/Linux execution"]
+NOTES=["green-alma first attempt failed because a new assertion misunderstood existing skip-as-empty-result contract; corrected only the assertion, retained full failure log.", "Initial new-cache baseline attempt was interrupted before any test verdict (runner exited 130); rerun used existing pinned cache.", "Every mutation was restored to importapps.go SHA-256 5f7ef5a3ad36ca513b476a426fa8c3a50c512cd77e3dfe1d625a2fe84ca54aef; final-green exit 0.", "All new SQLite fixtures are controlled synthetic data matching current parser, not real application exports."]

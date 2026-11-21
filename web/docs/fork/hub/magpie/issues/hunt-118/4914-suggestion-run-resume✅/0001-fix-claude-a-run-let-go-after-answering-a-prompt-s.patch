@@ -1,0 +1,292 @@
+From 10d3f734c49ee09ffc53be696491e895b340bae2 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Mon, 2 Nov 2026 22:42:35 +0800
+Subject: [PATCH] fix(claude): a run let go after answering a prompt suggestion
+ leaves its session for the conversation's next turn (#4914)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Claude Code asks its prompt suggestion after each turn as the
+conversation and one message more, and its run goes on with it (#1638):
+the run waits on from the suggestion's exchange, under a key the
+conversation's own next turn never comes by, since the client leaves the
+exchange out of its messages. While the run is kept, that turn finds it
+by where it stood before and takes it back to there (resume). But a run
+let go past idleMost was lost to its conversation: shelve kept its
+session where the suggestion's exchange had left it, or, when the
+conversation's own turn had already taken the run back from a suggestion
+(-p), not at all — its session was marked taken back, which the file may
+not say, and no session was kept. The next turn found no run and no
+saved session, and a new Claude Code was told the whole conversation in
+one message, a prefix the cache had never seen, written to the cache
+again (a 50k conversation: 19k read and 29k written where 49k read and
+50 written; the log said no run here had had a conversation one had).
+
+The shelf now keeps a session where the conversation's next turn comes
+by, too (savedSession.behind, run.behindKey), and unshelve takes it from
+there when no session waits at the turn's own key. A session taken back
+is kept once the run has answered a whole turn since (run.replied, set
+as a turn ends, cleared at each take-back): the file's lines since are
+that turn and what came after, and Claude Code's resume goes on from
+them. And a run's end is kept under the boundary before its own
+(run.convPrev), so the log of a turn that finds it gone says what became
+of it when its last exchange was a side question.
+
+Run: TestClaudeLetGoConversationAfterSuggestionResumesItsSession fails
+on the parent a3768cdd1 with the product file alone reverted to it,
+tests kept (the ablation: the shelf keeps no session for the
+conversation's next turn), and passes on the fixed tree with
+TestClaudeLetGoConversationResumesItsSession, whose fake now answers a
+rewind; go test -tags nogui -count=1 ./internal/gateway/ (559s, only
+the known TestCodexPoolSaysTheClientsVersion flake red); gofmt -l
+clean on both files; go vet -tags nogui on internal/gateway for
+darwin, linux and windows; go build -tags nogui ./... on all three.
+
+Fixes #4914
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gateway/claude_resume_test.go  | 64 ++++++++++++++++++++++-
+ internal/gateway/claude_subscription.go | 67 ++++++++++++++++++++-----
+ 2 files changed, 117 insertions(+), 14 deletions(-)
+
+diff --git a/internal/gateway/claude_resume_test.go b/internal/gateway/claude_resume_test.go
+index 0a0b8bb30..fec4f5dfb 100644
+--- a/internal/gateway/claude_resume_test.go
++++ b/internal/gateway/claude_resume_test.go
+@@ -77,9 +77,14 @@ echo '{"type":"system","subtype":"init","session_id":"'$sid'"}'
+ while read -r line; do
+   case $line in *'"type":"control_request"'*)
+     echo "control $line" >> $log
+-    # acknowledged as Claude Code does: initialize, a settings change
+     id=$(printf '%s' "$line" | sed 's/.*"request_id":"\([^"]*\)".*/\1/')
+-    echo '{"type":"control_response","response":{"subtype":"success","request_id":"'$id'"}}'
++    # acknowledged as Claude Code does: initialize, a settings change, a
++    # rewind of the conversation it was asked to take back
++    case "$line" in *rewind_conversation*)
++      echo '{"type":"result","subtype":"error_during_execution","is_error":true,"result":""}'
++      echo '{"type":"control_response","response":{"subtype":"success","request_id":"'$id'","response":{"rewound":true}}}';;
++    *) echo '{"type":"control_response","response":{"subtype":"success","request_id":"'$id'"}}';;
++    esac
+     continue ;;
+   esac
+   echo "told $line" >> $log
+@@ -205,6 +210,61 @@ func TestClaudeLetGoConversationResumesItsSession(t *testing.T) {
+ 	}
+ }
+ 
++// A run that answered the conversation's prompt suggestion since its last
++// turn, and was let go past idleMost, leaves its session where the
++// conversation's next turn comes by: the suggestion's exchange is in the
++// session, and Claude Code goes on from it told the new message alone.
++// Before, the conversation's own turn had taken the run back from the
++// suggestion (#1638), its session marked taken back, and the shelf took
++// none of it: the next turn started a new Claude Code told the whole
++// conversation in one message, written to the prompt cache again (#4914).
++func TestClaudeLetGoConversationAfterSuggestionResumesItsSession(t *testing.T) {
++	h := newResumeHarness(t)
++	h.ask("rules A", "a1")
++	runs := h.runs()
++	if len(runs) != 1 {
++		t.Fatalf("runs: %v", runs)
++	}
++	var sidA string
++	for pid := range runs {
++		sidA = "s" + pid
++	}
++	// the prompt suggestion after each turn: the conversation and one
++	// message more
++	h.ask("rules A", "a1", suggestionMode)
++	h.ask("rules A", "a1", "a2")
++	h.ask("rules A", "a1", "a2", suggestionMode)
++	if n := len(h.runs()); n != 1 {
++		t.Fatalf("%d runs, the conversation's own all along", n)
++	}
++	// let go past idleMost, its session stays for its conversation's next
++	// turn, whatever suggestions it answered since
++	for i := range idleMost {
++		h.ask(fmt.Sprintf("rules %d", i), "x")
++	}
++	h.s.subscription.mu.Lock()
++	shelf := len(h.s.subscription.shelf)
++	h.s.subscription.mu.Unlock()
++	if shelf != 1 {
++		t.Fatalf("shelf: %d, the session was not kept for the conversation's next turn", shelf)
++	}
++	before := h.runs()
++	h.ask("rules A", "a1", "a2", "a3")
++	var resumed string
++	for pid, log := range h.runs() {
++		if _, ok := before[pid]; !ok {
++			resumed = log
++		}
++	}
++	if !strings.Contains(resumed, "--resume "+sidA) {
++		t.Fatalf("the conversation's next turn did not resume its session:\n%s", resumed)
++	}
++	told := resumed[strings.Index(resumed, "\ntold "):]
++	if !strings.Contains(told, "a3") || strings.Contains(told, "a1") || strings.Contains(told, "a2") || strings.Contains(told, "SUGGESTION") {
++		t.Fatalf("the resumed run was told more than the turn:\n%s", told)
++	}
++}
++
+ // Sessions are files of their conversations: one is removed with its run
+ // when nothing will resume it (a one-off ask, a run that ended), and a
+ // saved one once its conversation's next turn takes it, or it waited as
+diff --git a/internal/gateway/claude_subscription.go b/internal/gateway/claude_subscription.go
+index 86e7cb156..fd303f522 100644
+--- a/internal/gateway/claude_subscription.go
++++ b/internal/gateway/claude_subscription.go
+@@ -226,6 +226,11 @@ type subscriptionRun struct {
+ 	idleKey string
+ 	idleAt  time.Time
+ 	convKey string
++	// convPrev is the boundary before convKey's (conversationKeys): the
++	// conversation as the client has it, when the run went on with a side
++	// question after its last turn — a prompt suggestion — whose exchange
++	// the client's own next turn leaves out
++	convPrev string
+ 	// handed is set (b.mu held) when its account was handed over to
+ 	// Claude Code itself during a turn (handedOver): it isn't kept for
+ 	// the next one
+@@ -271,6 +276,11 @@ type subscriptionRun struct {
+ 	sessions  []string
+ 	shelved   bool
+ 	rewound   bool
++	// replied says it answered a whole turn since its conversation was
++	// taken back (rewound): the file's lines since are that turn and what
++	// came after, and Claude Code's resume goes on from them, whatever the
++	// taken-back turn's own still sit above (shelve)
++	replied bool
+ 
+ 	// effort is the level its Claude Code thinks at, as it started (its
+ 	// --effort) or was told since (setEffort); "" is Claude Code's own
+@@ -1578,9 +1588,10 @@ func (b *subscriptionBridge) resume(req *Request, owner string) (*subscriptionRu
+ 			run.abortFor("it could not be taken back from a side question: " + err.Error())
+ 			return nil, nil
+ 		}
+-		// its session file may not say so: it isn't shelved (shelve)
++		// its session file may not say so: it isn't shelved until the run
++		// answers a whole turn (shelve)
+ 		run.mu.Lock()
+-		run.rewound = true
++		run.rewound, run.replied = true, false
+ 		run.mu.Unlock()
+ 		log.Printf("claude: the conversation's next turn goes on in its run, taken back from the side question it answered since")
+ 	}
+@@ -1925,6 +1936,9 @@ func (r *subscriptionRun) ended(req *Request, said, stop string, ok bool) {
+ 	if !ok || stop != "tool" {
+ 		r.turnUUID, r.backKey, r.backLine = "", "", ""
+ 	}
++	if ok && stop == "stop" {
++		r.replied = true
++	}
+ 	r.mu.Unlock()
+ 	switch {
+ 	case !ok:
+@@ -1955,7 +1969,8 @@ func (r *subscriptionRun) ended(req *Request, said, stop string, ok bool) {
+ 	msgs := append(req.Messages[:len(req.Messages):len(req.Messages)], reply)
+ 	key := turnKey(r.owned(), req, msgs)
+ 	conv := ""
+-	if keys := conversationKeys(r.owned(), msgs); len(keys) > 0 {
++	keys := conversationKeys(r.owned(), msgs)
++	if len(keys) > 0 {
+ 		conv = keys[len(keys)-1]
+ 	}
+ 	loose := newLooseTurn(r.owned(), req, msgs, true)
+@@ -1965,6 +1980,12 @@ func (r *subscriptionRun) ended(req *Request, said, stop string, ok bool) {
+ 	// it: a side question Claude Code asked of it is taken back from
+ 	// there when the conversation's own next turn comes (resume)
+ 	r.behindKey, r.behindTurn, r.behindLine = back, turn, backLine
++	// the boundary before conv's: the conversation as the client has it,
++	// when this turn was a side question of it, whose exchange the
++	// client's own next turn leaves out
++	if n := len(keys); n > 1 {
++		r.convPrev = keys[n-2]
++	}
+ 	r.bridge.mu.Unlock()
+ 	if why, over := r.oversized(2); over {
+ 		r.bridge.letGoOversized(r, key, conv, why)
+@@ -2062,11 +2083,15 @@ type savedSession struct {
+ 	owner    string
+ 	conv     string // its conversation whatever the model (convKey)
+ 	key      string // where it is on the shelf (turnKey)
+-	loose    *looseTurn
+-	tools    map[string]bool // the tools its agent was told of
+-	at       time.Time       // since when it waits
+-	timer    *time.Timer
+-	since    []Message // the turn's messages, once unshelved
++	// behind is where the conversation's next turn comes by when the run
++	// went on with a side question after its last turn (behindKey): the
++	// session carries that exchange, and the next turn leaves it out
++	behind string
++	loose  *looseTurn
++	tools  map[string]bool // the tools its agent was told of
++	at     time.Time       // since when it waits
++	timer  *time.Timer
++	since  []Message // the turn's messages, once unshelved
+ 	// cut, for a branch of a live run's session (branch), is the line it
+ 	// is cut after: the run that takes it resumes a copy of the session
+ 	// as far as that line (cutSession), and the file stays the run's
+@@ -2086,13 +2111,13 @@ type savedSession struct {
+ // go, leaves it.
+ func (b *subscriptionBridge) shelve(run *subscriptionRun) {
+ 	run.mu.Lock()
+-	sid, sessions, rewound, tools := run.sessionID, run.sessions, run.rewound, maps.Clone(run.tools)
++	sid, sessions, rewound, replied, tools := run.sessionID, run.sessions, run.rewound, run.replied, maps.Clone(run.tools)
+ 	run.mu.Unlock()
+-	if sid == "" || len(sessions) == 0 || rewound || run.idleKey == "" {
++	if sid == "" || len(sessions) == 0 || rewound && !replied || run.idleKey == "" {
+ 		return
+ 	}
+ 	key := run.idleKey
+-	s := &savedSession{session: sid, sessions: sessions, owner: run.owned(), conv: run.convKey, key: key, loose: run.loose, tools: tools, at: run.idleAt, cachePrefix: run.cachePrefix}
++	s := &savedSession{session: sid, sessions: sessions, owner: run.owned(), conv: run.convKey, key: key, behind: run.behindKey, loose: run.loose, tools: tools, at: run.idleAt, cachePrefix: run.cachePrefix}
+ 	if old := b.shelf[key]; old != nil {
+ 		go old.discard()
+ 	}
+@@ -2140,6 +2165,21 @@ func (b *subscriptionBridge) unshelve(req *Request, owner string) *savedSession
+ 			log.Printf("claude: a conversation whose last turn the client rewrote goes on from its saved session")
+ 		}
+ 	}
++	if s == nil {
++		// the run went on with a side question after the conversation's
++		// last turn — a prompt suggestion — and its session is shelved
++		// where that turn put it, not where the conversation's own next
++		// turn comes by (#4914)
++		for _, e := range b.shelf {
++			if e.behind == key && (s == nil || e.at.After(s.at)) {
++				s = e
++			}
++		}
++		if s != nil {
++			key = s.key
++			log.Printf("claude: a conversation whose run answered a side question since goes on from its saved session")
++		}
++	}
+ 	delete(b.shelf, key)
+ 	b.mu.Unlock()
+ 	if s == nil {
+@@ -2532,7 +2572,7 @@ func (r *subscriptionRun) letGo() {
+ 	if can {
+ 		r.rewinding = done
+ 		r.turnUUID, r.backKey = "", "" // once a turn
+-		r.rewound = true
++		r.rewound, r.replied = true, false
+ 	}
+ 	r.mu.Unlock()
+ 	if !can {
+@@ -5350,6 +5390,9 @@ func (b *subscriptionBridge) removeRun(run *subscriptionRun) {
+ 	if run.convKey != "" {
+ 		keepLost(b.lost, run.convKey, lost, lostMost)
+ 	}
++	if run.convPrev != "" && run.convPrev != run.convKey {
++		keepLost(b.lost, run.convPrev, lost, lostMost)
++	}
+ 	for _, id := range results {
+ 		keepLost(b.lostCalls, id, lost, 4*lostMost)
+ 	}
+-- 
+2.50.1 (Apple Git-155)
+

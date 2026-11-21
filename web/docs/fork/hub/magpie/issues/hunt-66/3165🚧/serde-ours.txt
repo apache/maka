@@ -1,0 +1,3 @@
+// deepseekAliasSerde answers as the self-hosted DeepSeek engine of #3165
+// does: its serde reads reasoning_content as an alias of reasoning, so a
+// message carrying both turns the whole request away.

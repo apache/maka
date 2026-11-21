@@ -1,0 +1,704 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Sun, 8 Nov 2026 00:45:26 +0800
+Subject: [PATCH] discovery: an account Google suspended isn't asked for its
+ list or its tiers while it rests
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Google answers a Code Assist account it suspended with 403
+PERMISSION_DENIED "This service has been disabled in this account for
+violation of Terms of Service." whatever it is asked. 2e58f85e4 reads that
+refusal of a request, and rests the account restricted; the account's own
+asks are answered with it unseen: its project (loadCodeAssist, on every
+start of magpie), its tiers (loadCodeAssist, hourly), its models
+(fetchAvailableModels) — asked by discovery, outside the gateway's request
+path and its routing, so the suspended account was polled, and refused,
+on every start and every hour for good (#5478, the case asked for in
+plugins#784).
+
+The judgment is the provider's now (GoogleSuspended), which the gateway
+reads its own refusals by; discovery tells the gateway what the vendor
+said of the account (DiscoveryRefused), and the gateway rests it at the
+write point its own refusals go through (restAfter): the same restricted
+rest, keyed as the request path keys one, so the Routing page shows it and
+lifts it the same way, restrictedHeld gives the vendor's words to a
+request while it rests, and a longer rest standing isn't shortened.
+Discovery asks the gateway whether an account rests so
+(DiscoveryHeld), and holds its asks while it does: the magpie's hourly ask
+of an account's list skips it, Antigravity's pooled listing sends it
+nothing and keeps what it listed, and its models, its tiers and its quota
+are asked of Google no more until the rest ends or is lifted — then it is
+asked again, as the request path asks it.
+
+Run (mote, at this tree on upstream/main d4712e131):
+- go test -run 'TestDiscovery' ./internal/provider ./internal/gateway:
+  green; without the change (the product files at the parent, the tests
+  kept) TestDiscoveryRestsASuspendedAccount is red: the suspended account
+  was asked for its list every pass, loadCodeAssist with it, and the
+  gateway was told nothing.
+- go test -tags nogui ./internal/provider ./internal/gateway: ok
+- go vet for darwin, gofmt.
+
+Not tried: a real suspended Google account (the fixture is the reporter's
+403 body, in Google's error shape, and their log's shape — loadCodeAssist
+refused, fetchAvailableModels still listing); Gemini CLI's own wording of
+the same suspension is assumed the same, as 2e58f85e4 did.
+
+Reported-by: cuic19053-hue (#5478)
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ .../gateway/antigravity_suspended_test.go     |  49 ++++
+ internal/gateway/gateway.go                   |   5 +
+ internal/gateway/routing.go                   |  64 ++++--
+ internal/provider/account_relist.go           |  10 +-
+ internal/provider/antigravity_pool.go         |  18 +-
+ .../provider/antigravity_suspended_test.go    | 210 ++++++++++++++++++
+ internal/provider/google.go                   |  27 +++
+ internal/provider/google_suspended.go         |  68 ++++++
+ internal/provider/google_test.go              |  21 +-
+ 9 files changed, 446 insertions(+), 26 deletions(-)
+ create mode 100644 internal/provider/antigravity_suspended_test.go
+ create mode 100644 internal/provider/google_suspended.go
+
+diff --git a/internal/gateway/antigravity_suspended_test.go b/internal/gateway/antigravity_suspended_test.go
+index 84147f2c6..b939fb492 100644
+--- a/internal/gateway/antigravity_suspended_test.go
++++ b/internal/gateway/antigravity_suspended_test.go
+@@ -107,6 +107,55 @@ func TestAntigravitySuspendedAloneRests(t *testing.T) {
+ 	}
+ }
+ 
++// Discovery — the account's model list, asked again by the magpie serving
++// the gateway once it is an hour old, its tiers with it — is outside the
++// request path, and the refusal it sees rests the account at the same
++// write point one of the gateway's own refusals rests it at
++// (restAfterMarked): the Routing page shows it and lifts it the same way,
++// a request while it rests is answered with the vendor's words
++// (restrictedHeld), and discovery holds its asks of the vendor while it
++// stands (#5478).
++func TestDiscoveryRefusalRestsAsRestricted(t *testing.T) {
++	s, _ := antigravityGroupFor(t, []string{"u1@example.com"}, "gemini-3.8-flash", func(w http.ResponseWriter, r *http.Request) {
++		t.Error("the account's upstream was asked")
++	})
++	said := "Antigravity: This service has been disabled in this account for violation of Terms of Service. Please submit an appeal to continue using this product."
++
++	// discovery saw Google refuse the account itself
++	s.discoveryRefused("antigravity", "u1@example.com", http.StatusForbidden, said)
++	r, ok := restOf("antigravity@u1@example.com")
++	if !ok || r.Why != failRestricted || r.By != "restricted" || !strings.Contains(r.said, "violation of Terms of Service") {
++		t.Fatalf("the account doesn't rest restricted from discovery's telling: %+v, %v", r, ok)
++	}
++	if d := time.Until(r.Until); d > restrictedRest || d < restrictedRest-time.Minute {
++		t.Fatalf("it rests %v, not the %v a restricted account takes", d, restrictedRest)
++	}
++	if held := discoveryHeld("antigravity", "u1@example.com"); !strings.Contains(held, "violation of Terms of Service") {
++		t.Fatalf("discovery isn't held from asking with Google's words: %q", held)
++	}
++	if held := discoveryHeld("antigravity", "nobody@example.com"); held != "" {
++		t.Fatalf("an account that rests nothing is held with %q", held)
++	}
++
++	// a telling while a longer rest stands doesn't shorten it
++	restingUntil.Lock()
++	longer := time.Now().Add(3 * time.Hour)
++	restingUntil.m["antigravity@u1@example.com"] = longer
++	restingUntil.Unlock()
++	s.discoveryRefused("antigravity", "u1@example.com", http.StatusForbidden, said)
++	if until := restingUntil.m["antigravity@u1@example.com"]; !until.Equal(longer) {
++		t.Fatalf("a refusal discovery saw shortened a longer rest to %v", time.Until(until))
++	}
++
++	// lifted by hand (the appeal went through), the ask holds no more
++	if !s.Unrest("antigravity@u1@example.com") {
++		t.Fatal("the rest wasn't lifted")
++	}
++	if held := discoveryHeld("antigravity", "u1@example.com"); held != "" {
++		t.Fatalf("a lifted rest still holds the ask with %q", held)
++	}
++}
++
+ // Only Google's suspension of a Google sign-in is read so: another 403 from
+ // Antigravity, and the same words from a key's relay, fail as before.
+ func TestAntigravitySuspendedIsGooglesAlone(t *testing.T) {
+diff --git a/internal/gateway/gateway.go b/internal/gateway/gateway.go
+index 54c208865..82a6ecb3e 100644
+--- a/internal/gateway/gateway.go
++++ b/internal/gateway/gateway.go
+@@ -847,6 +847,11 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
+ 	go provider.KeepPluginsSignedIn(ctx)
+ 	// and those a signed-in account's vendor adds (a ChatGPT plan's new GPT)
+ 	go provider.KeepAccountsListed(ctx)
++	// and discovery — an account's list, its tiers, its quota — tells this
++	// gateway what the vendor said of an account it refused itself, and
++	// asks whether an account rests so before asking again (#5478)
++	provider.DiscoveryRefused = s.discoveryRefused
++	provider.DiscoveryHeld = discoveryHeld
+ 	// and fetches the lists of the providers the user asked to keep fresh (#2135)
+ 	go provider.KeepListsFresh(ctx)
+ 	// and follows a Remote magpie's list as it changes there (KaCli)
+diff --git a/internal/gateway/routing.go b/internal/gateway/routing.go
+index d1cac9273..31c44042e 100644
+--- a/internal/gateway/routing.go
++++ b/internal/gateway/routing.go
+@@ -719,26 +719,19 @@ func restrictedRefused(p provider.Provider, status int, body []byte) bool {
+ 	return isWorkBuddy(p) && provider.WBRestricted(status, wordsOf(body)) || googleSuspended(p, status, body)
+ }
+ 
+-// googleToS is Google's 403 PERMISSION_DENIED for a Code Assist account it
+-// suspended: "This service has been disabled in this account for violation
+-// of Terms of Service. Please submit an appeal to continue using this
+-// product." (bestony on Discord, an Antigravity account, 11-06).
+-var googleToS = regexp.MustCompile(`(?i)disabled in this account for violation of Terms of Service`)
+-
+ // googleSuspended says Google suspended p, an account signed in to
+-// Antigravity or Gemini CLI, for its terms (googleToS): the account, not
+-// the model or the request, until an appeal goes through. Read as any
+-// failure, it rested a minute, doubling to ten, and was asked again, and
+-// refused, every ten minutes for good. Another vendor's same words are its
+-// own, and aren't read so.
++// Antigravity or Gemini CLI, for its terms (provider.GoogleSuspended):
++// the account, not the model or the request, until an appeal goes through.
++// Read as any failure, it rested a minute, doubling to ten, and was asked
++// again, and refused, every ten minutes for good. Another vendor's same
++// words are its own, and aren't read so. The judgment is the provider's,
++// which discovery reads the vendor's answers to its own asks by
++// (discoveryRefused), so both paths tell one suspension alike (#5478).
+ func googleSuspended(p provider.Provider, status int, body []byte) bool {
+-	if status != http.StatusForbidden {
+-		return false
+-	}
+ 	if a := accountAgent(p); a != "antigravity" && a != "gemini" {
+ 		return false
+ 	}
+-	return googleToS.Match(wordsOf(body))
++	return provider.GoogleSuspended(status, string(wordsOf(body)))
+ }
+ 
+ // isWorkBuddy is whether p is a WorkBuddy account, either build's: the
+@@ -1068,6 +1061,47 @@ func restrictedHeld(c candidate) (int, string, bool) {
+ 	return status, r.said, true
+ }
+ 
++// The gateway's side of discovery's telling and ask
++// (provider.DiscoveryRefused, provider.DiscoveryHeld): an account its
++// vendor refused outside the request path rests as one of the gateway's
++// own refusals, and discovery holds its asks while the rest stands
++// (#5478).
++
++// discoveryRefused rests the account agent, user as one its vendor
++// restricted, for discovery saw the vendor refuse the account itself —
++// Google's 403 for an account suspended for its terms, answered to
++// loadCodeAssist or fetchAvailableModels (#5478). It rests by what the
++// request path rests by (restKey), through the write point the gateway's
++// own refusals go through (restAfterMarked): the Routing page shows it and
++// lifts it the same way, restrictedHeld gives the vendor's words to a
++// request while it rests, and a longer rest standing isn't shortened. The
++// vendor's words go in the shape its answer carries them, so the refusal
++// is read as one of the gateway's own.
++func (s *Server) discoveryRefused(agent, user string, status int, said string) {
++	for _, p := range provider.All() {
++		if p.Account == nil || p.Account.Agent != agent || !strings.EqualFold(p.Account.User, user) {
++			continue
++		}
++		body, err := json.Marshal(map[string]any{"error": map[string]any{"message": said}})
++		if err != nil {
++			return
++		}
++		s.restAfter(candidate{p: p, rest: p.ID}, status, http.Header{}, body)
++		return
++	}
++}
++
++// discoveryHeld is what the account agent, user rests as one its vendor
++// restricted with — the vendor's words, while the rest stands, "" while it
++// doesn't — for discovery to hold its asks of the vendor while it does.
++func discoveryHeld(agent, user string) string {
++	r, ok := restOf(agent + "@" + strings.ToLower(user))
++	if !ok || r.Why != failRestricted || r.said == "" {
++		return ""
++	}
++	return r.said
++}
++
+ // resetsIn is how long until a used-up ChatGPT account is back, as its
+ // refusal says: {"error":{"type":"usage_limit_reached","resets_at":<unix>,
+ // "resets_in_seconds":<n>}}. Zero when it doesn't say.
+diff --git a/internal/provider/account_relist.go b/internal/provider/account_relist.go
+index 8c9855850..4efaa7c5a 100644
+--- a/internal/provider/account_relist.go
++++ b/internal/provider/account_relist.go
+@@ -44,14 +44,20 @@ func KeepAccountsListed(ctx context.Context) {
+ // relistAccounts fetches the list of each account whose list is older than
+ // accountListAge at now, and answers the ids it asked. An account with no
+ // list yet is FetchNew's; a plugin's is listed by KeepPluginsListed; one
+-// switched off isn't asked. A fetch that fails keeps the list there was
+-// (the fetch saves only what it got), and is tried at the next look.
++// switched off isn't asked, and nor one resting as its vendor restricted
++// (#5478). A fetch that fails keeps the list there was (the fetch saves
++// only what it got), and is tried at the next look.
+ func relistAccounts(ctx context.Context, now time.Time) []string {
+ 	var asked []string
+ 	for _, p := range All() {
+ 		if p.Off || p.Account == nil || p.Account.fetch == nil || p.IsPlugin() || !p.Ready() {
+ 			continue
+ 		}
++		if discoveryHeld(p.Account.Agent, p.Account.User) != "" {
++			// the account rests as one its vendor restricted: the vendor is
++			// sent nothing for it until the rest ends or is lifted (#5478)
++			continue
++		}
+ 		at, ok := p.Fetched()
+ 		if !ok || now.Sub(at) < accountListAge {
+ 			continue
+diff --git a/internal/provider/antigravity_pool.go b/internal/provider/antigravity_pool.go
+index eb93bcd35..98dd82259 100644
+--- a/internal/provider/antigravity_pool.go
++++ b/internal/provider/antigravity_pool.go
+@@ -16,11 +16,19 @@ import (
+ // alone can hide models another enabled account already has. Keep each
+ // account's list for routing, and offer the union in account order.
+ func antigravityPoolModels(ctx context.Context) ([]catalog.Model, error) {
+-	var accounts []googleLogin
++	var accounts, rested []googleLogin
+ 	for _, l := range googleLogins("antigravity") {
+-		if l.On {
+-			accounts = append(accounts, l)
++		if !l.On {
++			continue
+ 		}
++		if discoveryHeld("antigravity", l.User) != "" {
++			// the account rests as one its vendor restricted: Google is
++			// sent nothing for it (#5478), and it lists what it listed
++			// before, as one whose fetch failed does
++			rested = append(rested, l)
++			continue
++		}
++		accounts = append(accounts, l)
+ 	}
+ 	type result struct {
+ 		models []catalog.Model
+@@ -63,6 +71,10 @@ func antigravityPoolModels(ctx context.Context) ([]catalog.Model, error) {
+ 		}
+ 		out = mergeAntigravityModels(out, ms)
+ 	}
++	for _, l := range rested {
++		ms, _, _ := catalog.Live(accountModels("antigravity", l.User))
++		out = mergeAntigravityModels(out, ms)
++	}
+ 	if len(out) == 0 {
+ 		if lastErr != nil {
+ 			return nil, lastErr
+diff --git a/internal/provider/antigravity_suspended_test.go b/internal/provider/antigravity_suspended_test.go
+new file mode 100644
+index 000000000..e4b1c9938
+--- /dev/null
++++ b/internal/provider/antigravity_suspended_test.go
+@@ -0,0 +1,210 @@
++package provider
++
++import (
++	"context"
++	"fmt"
++	"slices"
++	"strings"
++	"sync"
++	"testing"
++	"time"
++)
++
++// antigravitySuspendedLoad is Google's answer to loadCodeAssist for an
++// Antigravity account it suspended, as #5478's reporter (cuic19053-hue)
++// showed it: a 403 PERMISSION_DENIED, reason TOS_VIOLATION, naming the
++// appeal — the same words the gateway reads a request's refusal by.
++const antigravitySuspendedLoad = `{"error":{"code":403,"details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","domain":"cloudcode-pa.googleapis.com","metadata":{"appeal_url":"https://forms.gle/hGzM9MEUv2azZsrb9","appeal_url_link_text":"Submit Appeal","uiMessage":"true"},"reason":"TOS_VIOLATION"}],"message":"This service has been disabled in this account for violation of Terms of Service. Please submit an appeal to continue using this product.","status":"PERMISSION_DENIED"}}`
++
++// tosRefusal is loadCodeAssist answering as it does for a suspended
++// account, whatever it was asked.
++func tosRefusal(map[string]any) (int, string) {
++	return 403, antigravitySuspendedLoad
++}
++
++// fakeDiscoveryGateway is the gateway's side of the discovery hooks, as a
++// test stands in for it: a refusal it is told is rested, and an ask is
++// held with the vendor's words while the rest stands, the way the gateway
++// rests one of its own refusals and answers discovery's ask from it.
++type fakeDiscoveryGateway struct {
++	mu     sync.Mutex
++	told   []string
++	rested map[string]string
++}
++
++func newFakeDiscoveryGateway(t *testing.T) *fakeDiscoveryGateway {
++	t.Helper()
++	g := &fakeDiscoveryGateway{rested: map[string]string{}}
++	DiscoveryRefused = func(agent, user string, status int, said string) {
++		g.mu.Lock()
++		defer g.mu.Unlock()
++		g.told = append(g.told, fmt.Sprintf("%s %s %d", agent, user, status))
++		g.rested[agent+"\x00"+user] = said
++	}
++	DiscoveryHeld = func(agent, user string) string {
++		g.mu.Lock()
++		defer g.mu.Unlock()
++		return g.rested[agent+"\x00"+user]
++	}
++	t.Cleanup(func() { DiscoveryRefused, DiscoveryHeld = nil, nil })
++	return g
++}
++
++// toldTimes is how often the gateway was told of agent, user's refusal.
++func (g *fakeDiscoveryGateway) toldTimes(agent, user string) int {
++	g.mu.Lock()
++	defer g.mu.Unlock()
++	n := 0
++	for _, t := range g.told {
++		if strings.HasPrefix(t, agent+" "+user+" ") {
++			n++
++		}
++	}
++	return n
++}
++
++// lift takes the rest of the account back, as the Routing page's Unrest
++// does when an appeal went through.
++func (g *fakeDiscoveryGateway) lift(agent, user string) {
++	g.mu.Lock()
++	defer g.mu.Unlock()
++	delete(g.rested, agent+"\x00"+user)
++}
++
++// A suspended account's discovery — its model list, asked again by the
++// magpie serving the gateway once it is an hour old, its tiers with it —
++// runs outside the gateway's request path, and Google's 403 reached it
++// unseen: the account was asked, and refused, on every start and every
++// hour for good (#5478, the case asked for in plugins#784). The refusal is
++// told to the gateway, which rests the account restricted as it rests one
++// of its own refusals; Google is sent nothing more for the account — its
++// tiers, its models — while the rest stands, and once it is lifted the
++// account is asked again.
++func TestDiscoveryRestsASuspendedAccount(t *testing.T) {
++	isolate(t)
++	f := &fakeGoogle{load: proLoad, modelsFor: tierModels("g1-pro-tier")}
++	googleSandbox(t, f)
++	auth := googleAuth{AccessToken: "tok", RefreshToken: "rt-susp", Expiry: time.Now().Add(time.Hour).UnixMilli()}
++	if err := addGoogleLogin("antigravity", "ag@example.com", "", auth); err != nil {
++		t.Fatal(err)
++	}
++	p, ok := googleAccountOf("antigravity")
++	if !ok {
++		t.Fatal("no antigravity account")
++	}
++	ctx := context.Background()
++	if _, err := p.Fetch(ctx); err != nil {
++		t.Fatal(err)
++	}
++	g := newFakeDiscoveryGateway(t)
++	loads, fetches := len(f.loads), len(f.fetches)
++
++	// Google suspends the account, as the reporter's log has it:
++	// loadCodeAssist refuses, and a start of magpie has no project kept
++	f.mu.Lock()
++	f.loadFor = tosRefusal
++	f.mu.Unlock()
++	resetGoogleState()
++
++	if got := relistAccounts(ctx, time.Now().Add(accountListAge+time.Minute)); !slices.Equal(got, []string{"antigravity"}) {
++		t.Fatalf("the suspended account wasn't asked for: %v", got)
++	}
++	if n := g.toldTimes("antigravity", "ag@example.com"); n != 1 {
++		t.Fatalf("the refusal was told to the gateway %d times: %v", n, g.told)
++	}
++	if said := DiscoveryHeld("antigravity", "ag@example.com"); !strings.Contains(said, "violation of Terms of Service") {
++		t.Fatalf("the gateway wasn't told Google's words: %q", said)
++	}
++	if n := len(f.loads) - loads; n != 1 {
++		t.Fatalf("loadCodeAssist was asked %d times, want once", n)
++	}
++	if n := len(f.fetches) - fetches; n != 0 {
++		t.Fatalf("the suspended account's models were asked for %d times after loadCodeAssist refused it", n)
++	}
++
++	// the rest standing, the next look asks Google nothing at all
++	l0, c0 := len(f.loads), len(f.fetches)
++	if got := relistAccounts(ctx, time.Now().Add(2*accountListAge+2*time.Minute)); len(got) != 0 {
++		t.Fatalf("the resting account was asked for: %v", got)
++	}
++	if len(f.loads) != l0 || len(f.fetches) != c0 {
++		t.Fatalf("Google was asked while the account rested: %d loadCodeAssist, %d fetchAvailableModels more", len(f.loads)-l0, len(f.fetches)-c0)
++	}
++
++	// the appeal went through; the rest lifted, the account is asked again
++	g.lift("antigravity", "ag@example.com")
++	f.mu.Lock()
++	f.loadFor = nil
++	f.mu.Unlock()
++	if got := relistAccounts(ctx, time.Now().Add(3*accountListAge+3*time.Minute)); !slices.Equal(got, []string{"antigravity"}) {
++		t.Fatalf("the account wasn't asked for again once lifted: %v", got)
++	}
++	if len(f.fetches) == c0 {
++		t.Fatal("its models weren't asked for again")
++	}
++
++	// the project kept and the tiers an hour old, the hourly tiers ask
++	// reads the refusal the same way, and the pass stops before the models
++	f.mu.Lock()
++	f.loadFor = tosRefusal
++	f.mu.Unlock()
++	googleState.Lock()
++	for k, q := range googleState.projects {
++		q.at = time.Now().Add(-2 * time.Hour)
++		googleState.projects[k] = q
++	}
++	googleState.Unlock()
++	l1, c1 := len(f.loads), len(f.fetches)
++	if got := relistAccounts(ctx, time.Now().Add(4*accountListAge+4*time.Minute)); !slices.Equal(got, []string{"antigravity"}) {
++		t.Fatalf("the suspended account wasn't asked for: %v", got)
++	}
++	if n := g.toldTimes("antigravity", "ag@example.com"); n != 2 {
++		t.Fatalf("the tiers ask's refusal was told %d times: %v", n, g.told)
++	}
++	if n := len(f.loads) - l1; n != 1 {
++		t.Fatalf("loadCodeAssist was asked %d times, want the tiers' one ask", n)
++	}
++	if n := len(f.fetches) - c1; n != 0 {
++		t.Fatalf("the models were asked for %d times after the tiers said the account is suspended", n)
++	}
++}
++
++// Only Google's own suspension is read so: loadCodeAssist refused for
++// another reason tells the gateway nothing, and the account's list is
++// fetched as it always was.
++func TestDiscoveryTellsOnlyGooglesSuspension(t *testing.T) {
++	isolate(t)
++	f := &fakeGoogle{load: proLoad, modelsFor: tierModels("g1-pro-tier")}
++	googleSandbox(t, f)
++	auth := googleAuth{AccessToken: "tok", RefreshToken: "rt-tos", Expiry: time.Now().Add(time.Hour).UnixMilli()}
++	if err := addGoogleLogin("antigravity", "tos@example.com", "", auth); err != nil {
++		t.Fatal(err)
++	}
++	p, ok := googleAccountOf("antigravity")
++	if !ok {
++		t.Fatal("no antigravity account")
++	}
++	ctx := context.Background()
++	if _, err := p.Fetch(ctx); err != nil {
++		t.Fatal(err)
++	}
++	g := newFakeDiscoveryGateway(t)
++
++	// another 403 of Google's, which says nothing of the account's terms:
++	// a plain PERMISSION_DENIED
++	f.mu.Lock()
++	resetGoogleState()
++	f.loadFor = func(map[string]any) (int, string) {
++		return 403, `{"error":{"code":403,"message":"The caller does not have permission","status":"PERMISSION_DENIED"}}`
++	}
++	f.mu.Unlock()
++	if got := relistAccounts(ctx, time.Now().Add(accountListAge+time.Minute)); !slices.Equal(got, []string{"antigravity"}) {
++		t.Fatalf("the account wasn't asked for: %v", got)
++	}
++	if n := g.toldTimes("antigravity", "tos@example.com"); n != 0 {
++		t.Fatalf("a 403 that isn't the suspension was told to the gateway: %v", g.told)
++	}
++	if said := DiscoveryHeld("antigravity", "tos@example.com"); said != "" {
++		t.Fatalf("the account is held with %q", said)
++	}
++}
+diff --git a/internal/provider/google.go b/internal/provider/google.go
+index 70e35577a..a6d7843e8 100644
+--- a/internal/provider/google.go
++++ b/internal/provider/google.go
+@@ -610,6 +610,7 @@ func (g googleAccount) antigravityTiers(ctx context.Context, p googleProject) go
+ 	var load loadCodeAssistReply
+ 	body := map[string]any{"metadata": map[string]any{"ideType": "ANTIGRAVITY"}}
+ 	if err := g.call(ctx, g.app.loadBase, "loadCodeAssist", body, &load, nil); err != nil {
++		g.suspended(err) // Google's own refusal of the account rests it at the gateway (#5478)
+ 		log.Printf("antigravity %s: loadCodeAssist at %s: %v; naming the tiers it gave before (current %q, paid %q)", g.user, g.app.loadBase, err, p.tier, p.paid)
+ 	} else if cur, paid := load.tiers(); cur != "" || paid != "" {
+ 		if cur != p.tier || paid != p.paid {
+@@ -717,6 +718,7 @@ func (g googleAccount) geminiProject(ctx context.Context) (googleProject, error)
+ 	}
+ 	var load loadCodeAssistReply
+ 	if err := g.call(ctx, g.app.loadBase, "loadCodeAssist", body, &load, nil); err != nil {
++		g.suspended(err) // Google's own refusal of the account rests it at the gateway (#5478)
+ 		return googleProject{}, err
+ 	}
+ 	if load.CurrentTier != nil {
+@@ -777,12 +779,19 @@ func (g googleAccount) antigravityProject(ctx context.Context) (googleProject, e
+ 	var load loadCodeAssistReply
+ 	body := map[string]any{"metadata": map[string]any{"ideType": "ANTIGRAVITY"}}
+ 	err := g.call(ctx, g.app.loadBase, "loadCodeAssist", body, &load, nil)
++	suspended := err != nil && g.suspended(err)
+ 	if err == nil {
+ 		log.Printf("antigravity %s: loadCodeAssist at %s: %s", g.user, g.app.loadBase, load.describe())
+ 	}
+ 	cur, paid := load.tiers()
+ 	if g.auth.Project != "" {
+ 		if err != nil {
++			if suspended {
++				// Google refused the account itself: the gateway rests it
++				// restricted, and the account isn't served from the project
++				// kept with the sign-in as if it were well (#5478)
++				return googleProject{}, err
++			}
+ 			log.Printf("antigravity %s: loadCodeAssist: %v; using the project kept with the sign-in, its tier not known", g.user, err)
+ 			return googleProject{id: g.auth.Project}, nil
+ 		}
+@@ -1028,6 +1037,12 @@ type googleModelInfo struct {
+ 
+ // modelInfo asks Code Assist which models the account has.
+ func (g googleAccount) modelInfo(ctx context.Context) ([]googleModelInfo, error) {
++	if said := discoveryHeld(g.app.agent, g.user); said != "" {
++		// the account rests as one its vendor restricted: Google is sent
++		// nothing for it — its list, its tiers, its quota — until the rest
++		// ends or is lifted (#5478)
++		return nil, errors.New(said)
++	}
+ 	p, err := g.project(ctx)
+ 	if err != nil {
+ 		return nil, err
+@@ -1035,6 +1050,12 @@ func (g googleAccount) modelInfo(ctx context.Context) ([]googleModelInfo, error)
+ 	var out []googleModelInfo
+ 	if g.app.agent == "antigravity" {
+ 		p = g.antigravityTiers(ctx, p)
++		if said := discoveryHeld(g.app.agent, g.user); said != "" {
++			// loadCodeAssist refused the account itself while its tiers
++			// were asked for: the gateway rests it, and Google is sent
++			// nothing more for it (#5478)
++			return nil, errors.New(said)
++		}
+ 		var res struct {
+ 			Models map[string]struct {
+ 				DisplayName     string `json:"displayName"`
+@@ -1079,6 +1100,12 @@ func (g googleAccount) modelInfo(ctx context.Context) ([]googleModelInfo, error)
+ 			if ctx.Err() != nil {
+ 				return nil, err
+ 			}
++			if g.suspended(err) {
++				// Google refused the account itself: it rests at the
++				// gateway, and its models aren't asked for again while it
++				// does (#5478)
++				return nil, err
++			}
+ 			if t != "" && codeAssistStatus(err) == http.StatusBadRequest {
+ 				g.tierRefused(p, t)
+ 			}
+diff --git a/internal/provider/google_suspended.go b/internal/provider/google_suspended.go
+new file mode 100644
+index 000000000..806656632
+--- /dev/null
++++ b/internal/provider/google_suspended.go
+@@ -0,0 +1,68 @@
++package provider
++
++// Google refuses a Code Assist account it suspended with a 403 of its own,
++// on Antigravity and Gemini CLI alike, and it answers the account's own
++// asks — loadCodeAssist for its project and its tiers, fetchAvailableModels
++// for its models — with it, outside the gateway's request path. The
++// gateway reads the refusal of a request (googleSuspended); discovery
++// reads it here, and both tell one suspension alike.
++
++import (
++	"net/http"
++	"regexp"
++)
++
++// googleToS is Google's 403 PERMISSION_DENIED for a Code Assist account it
++// suspended: "This service has been disabled in this account for violation
++// of Terms of Service. Please submit an appeal to continue using this
++// product." (bestony on Discord, an Antigravity account, 11-06).
++var googleToS = regexp.MustCompile(`(?i)disabled in this account for violation of Terms of Service`)
++
++// GoogleSuspended says status and said are Google's refusal of a Code
++// Assist account it suspended for its terms: the account, not the model or
++// the request, until an appeal goes through. The gateway reads its own
++// refusals so (googleSuspended); discovery reads the vendor's answer to
++// loadCodeAssist and fetchAvailableModels by it, so both paths tell one
++// suspension alike (#5478).
++func GoogleSuspended(status int, said string) bool {
++	return status == http.StatusForbidden && googleToS.MatchString(said)
++}
++
++// DiscoveryRefused, set by the gateway, rests an account its vendor
++// refused itself — seen by discovery: the account's project, its tiers or
++// its models, asked of Google outside the request path (#5478). The
++// gateway rests it restricted, as it rests one of its own refusals, so the
++// Routing page shows it and lifts it the same way.
++var DiscoveryRefused func(agent, user string, status int, said string)
++
++// DiscoveryHeld, set by the gateway, is what an account resting as one its
++// vendor restricted is held with — the vendor's words, while the rest
++// stands, "" while it doesn't: discovery asks it before asking the vendor
++// for the account's list, its tiers or its quota again, so a suspended
++// account is sent nothing until the rest ends or is lifted.
++var DiscoveryHeld func(agent, user string) string
++
++// discoveryHeld is DiscoveryHeld's answer, "" when the gateway isn't in:
++// nothing rests, nothing is held.
++func discoveryHeld(agent, user string) string {
++	if DiscoveryHeld == nil {
++		return ""
++	}
++	return DiscoveryHeld(agent, user)
++}
++
++// suspended tells the gateway, when err is Google's refusal of the account
++// itself for its terms (GoogleSuspended), that discovery saw it: the
++// gateway rests the account restricted, and discovery asks Google nothing
++// more of it while it rests (#5478). It says whether err was that
++// refusal.
++func (g googleAccount) suspended(err error) bool {
++	e, ok := err.(*codeAssistError)
++	if !ok || !GoogleSuspended(e.status, e.msg) {
++		return false
++	}
++	if DiscoveryRefused != nil {
++		DiscoveryRefused(g.app.agent, g.user, e.status, e.msg)
++	}
++	return true
++}
+diff --git a/internal/provider/google_test.go b/internal/provider/google_test.go
+index 310fd9d75..d95af799b 100644
+--- a/internal/provider/google_test.go
++++ b/internal/provider/google_test.go
+@@ -29,11 +29,14 @@ type fakeGoogle struct {
+ 	loads     []map[string]any
+ 	onboards  []map[string]any
+ 	load      string // loadCodeAssist's reply
+-	onboard   string // onboardUser's reply
+-	quota     string // retrieveUserQuota's reply
+-	flags     string // listExperiments' reply
+-	models    string // fetchAvailableModels' reply
+-	summary   string // retrieveUserQuotaSummary's reply
++	// loadCodeAssist's status and reply for the body asked, in place of
++	// load
++	loadFor func(body map[string]any) (int, string)
++	onboard string // onboardUser's reply
++	quota   string // retrieveUserQuota's reply
++	flags   string // listExperiments' reply
++	models  string // fetchAvailableModels' reply
++	summary string // retrieveUserQuotaSummary's reply
+ 	// fetchAvailableModels' status and reply for the body asked, in place
+ 	// of models
+ 	modelsFor func(body map[string]any) (int, string)
+@@ -63,7 +66,13 @@ func (f *fakeGoogle) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+ 		io.WriteString(w, `{"access_token":"fresh-token","expires_in":3600}`)
+ 	case strings.HasSuffix(r.URL.Path, ":loadCodeAssist"):
+ 		f.loads = append(f.loads, body)
+-		io.WriteString(w, f.load)
++		if f.loadFor != nil {
++			code, reply := f.loadFor(body)
++			w.WriteHeader(code)
++			io.WriteString(w, reply)
++		} else {
++			io.WriteString(w, f.load)
++		}
+ 	case strings.HasSuffix(r.URL.Path, ":onboardUser"):
+ 		f.onboards = append(f.onboards, body)
+ 		io.WriteString(w, f.onboard)
+-- 
+2.50.1 (Apple Git-155)
+

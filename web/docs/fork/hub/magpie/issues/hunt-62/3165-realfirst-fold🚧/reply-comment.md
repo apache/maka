@@ -1,0 +1,8 @@
+Verified the branch against current `main` (`ef6f3749`): cherry-picking `84c2b3a` applies cleanly (all three files), and:
+
+- `go test ./internal/gateway -run Reasoning -count=1` passes, including the new `TestChatBothReasoningSpellingsRelayed` and the updated `TestChatToolTurnWithoutReasoningRelayed`.
+- Ablation: with only the `foldReasoningAliases(...)` call in `gateway.go` reverted to plain `withReasoningOnToolTurns(body)` (tests kept), both regression tests fail with `duplicate field \`reasoning\`` — matching your note. Restored, they pass again.
+- `gofmt -l internal/gateway` clean; `go vet ./internal/gateway` and `GOOS=linux`/`GOOS=windows go vet -tags nogui ./internal/gateway` clean; `go build` ok on darwin/linux/windows; whole package `go test -tags nogui ./internal/gateway/` ok (332s).
+- The JD Cloud relay table is a useful second data point: the same aliasing-serde shape on another real upstream, beyond the issue's original engine.
+
+For whoever picks this up: this branch and the earlier fix posted above (branch `hunt58-f-3165-reasoning-dup`) are complementary rather than competing. That patch folds inside `withReasoningOnToolTurns` — on tool turns it also moves the thinking out of `reasoning_details` — while this one folds every message's double spelling after that pass, and additionally covers a client sending both spellings on a non-tool message, which the tool-turn patch never reaches. Stacking the two commits applies without conflicts and all six regression tests pass together. One gap shared by both: a non-tool message carrying `reasoning_content` + `reasoning_details` (no `reasoning`) is folded by neither; whether a DeepSeek-style serde reads `reasoning_details` into the same field is unverified.

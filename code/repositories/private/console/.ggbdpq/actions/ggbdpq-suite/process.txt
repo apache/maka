@@ -1,0 +1,213 @@
+============================================================
+agent-suite 迁移过程记录
+============================================================
+创建时间：2026-01-26
+
+本文件用于记录迁移过程中的关键发现、决策与进展。
+
+============================================================
+[2026-01-26] 初始扫描报告
+============================================================
+
+## 1. 目录结构发现
+
+| 目录 | 存在 | 备注 |
+|------|------|------|
+| apps/ | ✅ | 包含 claude-profile, promptflow |
+| tools/ | ✅ | 包含 ai-worktree-commander |
+| services/ | ❌ | 目录不存在，需后续创建 |
+| packages/ | ✅ | 目录存在但为空 |
+| docs/demos/ | ✅ | 包含 claude-review |
+
+## 2. Vite 版本分布
+
+| 版本 | 项目数 | 项目列表 |
+|------|--------|----------|
+| 6.0.0 | 2 | ai-worktree-commander, promptflow/workbench |
+| 6.0.7 | 2 | workflow-engine/workbench, governance |
+| 6.0.11 | 1 | claude-review |
+| 7.0.4 | 1 | claude-profile |
+| 7.3.1 | 1 | config-engine/web |
+
+结论：所有 Vite 项目均需升级至 8.x
+
+## 3. Tailwind CSS 版本分布
+
+| 版本 | 项目数 | 项目列表 |
+|------|--------|----------|
+| 3.4.17 | 3 | workflow-engine/workbench, workflow-engine/developer-portal, workflow-engine/admin-console |
+| 4.0.0 | 2 | ai-worktree-commander, promptflow/workbench |
+| 4.0.4 | 1 | claude-review |
+| 4.1.10 | 1 | claude-profile |
+| 4.1.18 | 2 | governance, config-engine/web |
+
+结论：3 个项目需从 Tailwind v3 升级至 v4
+
+## 4. Tauri 项目列表
+
+| 项目 | Tauri 版本 | 状态 |
+|------|-----------|------|
+| apps/claude-profile | v2 | ✅ 可用 |
+| tools/ai-worktree-commander | v2 | ✅ 可用 |
+| docs/demos/claude-review | v2 | ✅ 可用 |
+
+## 5. 特殊框架项目
+
+| 项目 | 框架 | 说明 |
+|------|------|------|
+| workflow-engine/admin-console | Vue 3 + Element Plus | 历史遗留，需评估是否迁移 |
+| workflow-engine/developer-portal | Next.js 15 | 需评估是否迁移至 Vite |
+
+## 6. shadcn 相关依赖分布
+
+| 项目 | cva | tailwind-merge | clsx |
+|------|-----|----------------|------|
+| claude-profile | ✅ 0.7.1 | ✅ 3.3.1 | ✅ 2.1.1 |
+| ai-worktree-commander | ✅ 0.7.0 | ✅ 2.5.0 | ✅ 2.1.0 |
+| claude-review | ❌ | ❌ | ❌ |
+| promptflow/workbench | ❌ | ❌ | ❌ |
+
+结论：多个项目需补齐 shadcn 相关依赖
+
+## 7. 关键风险汇总
+
+1. **Vue 项目存在**：admin-console 使用 Vue，与目标技术栈不一致
+2. **Next.js 项目存在**：developer-portal 使用 Next.js，需评估迁移必要性
+3. **Tailwind v3 遗留**：3 个项目仍使用 v3，需升级
+4. **Zod 版本不一致**：从 3.23.0 到 4.3.5，存在跨大版本问题
+5. **services 目录缺失**：需创建 services/ 目录结构
+
+## 8. Vue 3 与 Next.js 子项目决策记录
+
+**决策时间**：2026-01-26
+
+**背景**：
+- workflow-engine/admin-console 使用 Vue 3 + Element Plus
+- workflow-engine/developer-portal 使用 Next.js 15
+
+**短期策略**：
+- 保持隔离运行，不做强制迁移
+- 两个项目维持现有技术栈独立演进
+- 不纳入 React 统一技术栈约束范围
+
+**后续评估**：
+- 待 suite 核心迁移完成后，再评估是否迁移至 React
+- 若迁移，admin-console 可考虑 shadcn/ui 替代 Element Plus
+- developer-portal 需评估 SSR 需求，若无强需求可迁移至 Vite + React Router
+
+============================================================
+[2026-01-26 12:00:00] PRD 004-008 批量完成报告
+============================================================
+
+## 本轮完成内容
+
+### PRD #004 统一前端脚本规范
+- 补齐 5 个项目的 typecheck/lint 脚本
+- 生成 docs/script-standard.md
+
+### PRD #005 Vite 8 迁移计划
+- 生成 docs/vite8-migration-plan.md
+- 未实际升级 Vite 依赖
+
+### PRD #006 shadcn 接入规范
+- 生成 docs/shadcn-adoption.md
+- 未实际接入大量组件
+
+### PRD #007 SDK 接口契约
+- 创建 packages/shared 最小骨架
+- 创建 packages/sdk 最小骨架
+- 生成 docs/sdk-contract.md
+
+### PRD #008 services 边界契约
+- 创建 services/ 目录与三个子目录占位
+- 生成 docs/services-contracts.md
+
+## 本轮明确未做事项
+
+| 未做事项 | 原因 |
+|----------|------|
+| 升级 Vite 到 8.x | 本轮只做规划，不做依赖升级 |
+| 升级 Tailwind v3 到 v4 | 本轮只做规划 |
+| 创建 pnpm workspace | 骨架包独立运行，不依赖 workspace |
+| 迁移业务代码 | 本轮只做契约与骨架 |
+| 修改现有 apps 的 import | 等 packages 稳定后再迁移 |
+| Vue/Next.js 项目迁移 | 短期保持隔离 |
+
+## 统计
+
+- PRD passes_total: 8/8 (100%)
+- 新增 docs: 5 个
+- 新增 packages: 2 个（shared, sdk）
+- 新增 services 占位: 3 个
+
+============================================================
+[2026-01-26 14:00:00] PRD 009-015 技术栈升级完成报告
+============================================================
+
+## 本轮完成内容
+
+### PRD #009 workspace-lite
+- 新增 pnpm-workspace.yaml（仅纳入主线路项目）
+- 新增 .npmrc（shared-workspace-lockfile=false）
+- 新增根 package.json
+- 更新 docs/runbook.md
+
+### PRD #010 Tailwind v4 升级
+- 升级 workflow-engine/workbench 从 v3 到 v4
+- 删除 postcss.config.js 和 tailwind.config.js
+- 更新 CSS 为 @import "tailwindcss" 语法
+
+### PRD #011 Vite 8 升级
+- 7 个主线路项目升级到 Vite ^8.0.0
+- claude-profile, ai-worktree-commander, claude-review
+- promptflow/workbench, governance, config-engine/web
+- workflow-engine/workbench
+
+### PRD #012 shadcn baseline
+- 创建 packages/ui (@agent-suite/ui)
+- 实现 Button, Input, Card, Dialog 组件
+- 添加 cn() 工具函数
+
+### PRD #013 sdk-client
+- fetchJson 增加 signal 参数支持
+- docs/sdk-contract.md 增加完整使用示例
+
+### PRD #014 import-migrate
+- claude-profile 添加 @agent-suite/shared, @agent-suite/sdk 依赖
+- claude-profile/src/lib/utils.ts 改为重新导出
+- promptflow/workbench 添加相同依赖
+
+### PRD #015 legacy-isolation
+- 移动 admin-console (Vue) 到 legacy/
+- 移动 developer-portal (Next.js) 到 legacy/
+- 原位置放 README.md 指向新路径
+- 新增 docs/legacy.md
+
+## 升级踩坑记录
+
+### Tailwind v4 迁移
+- 问题：theme() 函数在 v4 中不再可用
+- 解决：将 CSS 变量改为直接使用颜色值
+
+### Vite 8 兼容性
+- 问题：部分项目使用 postcss.config.js
+- 解决：使用 @tailwindcss/vite 插件替代 postcss
+
+## 回滚点
+
+如需回滚，可执行：
+```bash
+git revert HEAD
+```
+
+## 统计
+
+- PRD passes_total: 15/15 (100%)
+- Vite 8 升级: 7 个项目
+- Tailwind v4 升级: 1 个项目（其他已是 v4）
+- 新增 packages: 1 个（ui）
+- Legacy 隔离: 2 个项目
+
+============================================================
+[待追加]
+============================================================

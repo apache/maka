@@ -1,0 +1,15 @@
+{
+  "name": "codex-dsv4",
+  "version": "1.1.5",
+  "description": "Codex — Chrome extension reverse engineering (dsv4)",
+  "license": "UNLICENSED",
+  "private": true,
+  "scripts": {
+    "build": "tsc",
+    "check": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0",
+    "@types/chrome": "^0.0.268"
+  }
+}

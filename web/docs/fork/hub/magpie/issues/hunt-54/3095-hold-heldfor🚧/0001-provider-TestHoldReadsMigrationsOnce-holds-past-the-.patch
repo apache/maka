@@ -1,0 +1,46 @@
+From de90e3eaf61693d5432583f38e2d183aecb335f1 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Wed, 21 Oct 2026 05:01:11 +0800
+Subject: [PATCH] provider: TestHoldReadsMigrationsOnce holds past the wall
+ clock (#3095)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The test went red in a full-suite run on a loaded machine (load average
+25 to 57): its two reads of migrations.json were more than heldFor (1s)
+apart, the held copy expired, the file was read again, and the move
+written between the reads was seen mid-hold — "migrations.json read
+again while held". The test measures wall time rather than the hold.
+
+Raise heldFor for the test's duration, as its two siblings in this file
+(TestHoldKeptForTheNextRequest, TestHoldKeptUntilAWrite) already do: a
+loaded machine's pause between the reads isn't the change the test
+looks for. The production heldFor is untouched.
+
+Confirmed by injecting a 1.2s pause between the two reads: the test
+fails on the old form and passes with the fix, pause still in.
+
+Fixes #3095
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/provider/hold_test.go | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/internal/provider/hold_test.go b/internal/provider/hold_test.go
+index 6b5c415e..55426a04 100644
+--- a/internal/provider/hold_test.go
++++ b/internal/provider/hold_test.go
+@@ -305,6 +305,8 @@ func TestCursorKeychainReadOnce(t *testing.T) {
+ // and a move written meanwhile, even one read from the file as it was
+ // before, is seen at once.
+ func TestHoldReadsMigrationsOnce(t *testing.T) {
++	defer func(d time.Duration) { heldFor = d }(heldFor)
++	heldFor = time.Minute                    // a loaded machine's pause between reads isn't the change
+ 	t.Setenv("XDG_CONFIG_HOME", t.TempDir()) // a run starts from no files, not the last run's
+ 	defer Hold()()
+ 	if Moved("held-sub") {
+-- 
+2.50.1 (Apple Git-155)
+

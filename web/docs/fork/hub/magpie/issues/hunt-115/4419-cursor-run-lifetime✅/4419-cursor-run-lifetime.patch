@@ -1,0 +1,228 @@
+From 2cc906938e2e74e320abb74a56c1879ff88e98f5 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Mon, 2 Nov 2026 05:07:14 +0800
+Subject: [PATCH] fix(gateway): tell the agent a dead cursor Run's error may be
+ asked again (#4419)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The cursor plugin fails a native Run that outlived its absolute 15-minute
+lifetime mid-reply with "native Run lifetime expired" in the stream, the
+200 long since sent. The Run is gone and the conversation is not — asked
+again, the history is rebuilt on a fresh Run — but the error's text is all
+the agent reads (its status can no longer be told, #2372), and no word of
+it is one Pi retries on: the turn ended where asking again goes on (#4419).
+
+The relay now says it in the words Pi knows, as saysPassing does for
+magpie's own stream errors: the Chat relay mends the error event's message
+(chatTidy), and a translated reply's error carries it too (streamTranslated).
+An error of any other wording goes as it came.
+
+Verified: TestRunExpiredSaysAskAgain and TestRunExpiredTranslatedSaysAskAgain
+fail without the change (the bare wording relayed) and pass with it; with the
+fix reverted by hand both go red again. go vet ./..., GOOS=linux go vet -tags
+nogui ./... and GOOS=windows go vet ./... are clean; go build, GOOS=linux and
+GOOS=windows go build -tags nogui build; gofmt -l prints nothing on the
+changed files.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gateway/chattidy.go               | 39 ++++++++++++++--
+ internal/gateway/continuation.go           |  3 ++
+ internal/gateway/gateway.go                | 18 ++++++++
+ internal/gateway/late_stream_error_test.go | 54 ++++++++++++++++++++++
+ 4 files changed, 111 insertions(+), 3 deletions(-)
+
+diff --git a/internal/gateway/chattidy.go b/internal/gateway/chattidy.go
+index fe7e23e6a..e1ad9d203 100644
+--- a/internal/gateway/chattidy.go
++++ b/internal/gateway/chattidy.go
+@@ -109,6 +109,7 @@ var (
+ 	contentPartsSpace = []byte(`"content": [`)
+ 	toolCallsField    = []byte(`"tool_calls"`)
+ 	functionCallField = []byte(`"function_call":{`)
++	runExpiredText    = []byte(deadRunSaid)
+ )
+ 
+ // write takes what was read and gives back what to send on: every line
+@@ -158,7 +159,8 @@ func needsTidy(line []byte) bool {
+ 		bytes.Contains(line, contentParts) ||
+ 		bytes.Contains(line, contentPartsSpace) ||
+ 		bytes.Contains(line, toolCallsField) ||
+-		bytes.Contains(line, functionCallField)
++		bytes.Contains(line, functionCallField) ||
++		bytes.Contains(line, runExpiredText)
+ }
+ 
+ // needs is needsTidy, a finish_reason once a choice made a call, and a
+@@ -264,10 +266,16 @@ func (t *chatTidy) line(line []byte) []byte {
+ 	if raw, ok := chunk["usage"]; ok {
+ 		chunk["usage"], usageMended = openAIUsage(raw)
+ 	}
++	errorMended := false
++	if raw, ok := chunk["error"]; ok {
++		if nb, chg := errorSaidAgain(raw); chg {
++			chunk["error"], errorMended = nb, true
++		}
++	}
+ 	var choices []map[string]json.RawMessage
+ 	if decodeJSON(chunk["choices"], &choices) != nil {
+ 		choices = nil
+-		if !usageMended {
++		if !usageMended && !errorMended {
+ 			return line
+ 		}
+ 	}
+@@ -355,7 +363,7 @@ func (t *chatTidy) line(line []byte) []byte {
+ 			}
+ 		}
+ 	}
+-	if !changed && !usageMended {
++	if !changed && !usageMended && !errorMended {
+ 		return line
+ 	}
+ 	if changed {
+@@ -368,6 +376,31 @@ func (t *chatTidy) line(line []byte) []byte {
+ 	return append(append([]byte("data: "), nb...), end...)
+ }
+ 
++// errorSaidAgain is a relayed error event with the dead Run's wording
++// told the agent it may ask again (withRunRetryHint, #4419); ok is false
++// for an error of any other wording, or one with no message, which go as
++// they came, their other fields kept.
++func errorSaidAgain(raw json.RawMessage) (json.RawMessage, bool) {
++	var m map[string]json.RawMessage
++	if decodeJSON(raw, &m) != nil || m == nil {
++		return raw, false
++	}
++	var msg string
++	if decodeJSON(m["message"], &msg) != nil || msg == "" {
++		return raw, false
++	}
++	said := withRunRetryHint(msg)
++	if said == msg {
++		return raw, false
++	}
++	m["message"], _ = json.Marshal(said)
++	nb, err := json.Marshal(m)
++	if err != nil {
++		return raw, false
++	}
++	return nb, true
++}
++
+ // emptyFunctionCall reports whether raw is a legacy function_call
+ // carrying nothing: a name and arguments both empty strings or nulls,
+ // either absent (#4659). A null is the contract's own nothing and is not
+diff --git a/internal/gateway/continuation.go b/internal/gateway/continuation.go
+index b7c86efa7..384cb91c4 100644
+--- a/internal/gateway/continuation.go
++++ b/internal/gateway/continuation.go
+@@ -450,6 +450,9 @@ func (s *Server) streamTranslated(w http.ResponseWriter, r *http.Request, p prov
+ 				h.mu.Unlock()
+ 			}
+ 		case KError:
++			// the dead Run's wording tells the agent it may ask again
++			// (#4419), as a failure of magpie's own does (saysPassing)
++			ev.Text = withRunRetryHint(ev.Text)
+ 			if ev.Code == "" && cont.possible() && !inGroupTry(r.Context()) {
+ 				// held while the reply may yet go on; sent when it can't
+ 				failed, failedCode, failedStatus, cut = ev.Text, ev.Code, ev.Status, true
+diff --git a/internal/gateway/gateway.go b/internal/gateway/gateway.go
+index 227341172..95e0d8dbe 100644
+--- a/internal/gateway/gateway.go
++++ b/internal/gateway/gateway.go
+@@ -8741,6 +8741,24 @@ func streamError(w http.ResponseWriter, proto provider.Protocol, model string, s
+ // unreachable server.
+ var passingSaid = regexp.MustCompile(`(?i)\b(429|500|502|503|504)\b|timed? ?out|rate.?limit|too many requests|overloaded|service.?unavailable|server.?error|internal.?error|connection.?(error|refused|reset)|retry your request|try your request again`)
+ 
++// deadRunSaid is how the cursor plugin says it failed a native Run that
++// outlived its absolute 15-minute lifetime mid-reply (#4419). The Run is
++// gone and the conversation is not — asked again, the history is rebuilt
++// on a fresh Run — but the error rides a 200 stream, so the agent reads
++// the text alone (#2372), and no word of it is one Pi retries on: the
++// turn ended where asking again goes on.
++const deadRunSaid = "native Run lifetime expired"
++
++// withRunRetryHint is msg with a word to ask again on, when it is the
++// dead Run's: the words saysPassing gives magpie's own stream errors,
++// which passingSaid takes for said already.
++func withRunRetryHint(msg string) string {
++	if msg == "" || !strings.Contains(msg, deadRunSaid) || passingSaid.MatchString(msg) {
++		return msg
++	}
++	return msg + " (you can retry your request)"
++}
++
+ // saysPassing is msg, an error sent in a stream whose status the agent
+ // can no longer be told, with the status said in it when it is one a
+ // moment may clear (408, 429, 5xx) and msg says so in no words an agent
+diff --git a/internal/gateway/late_stream_error_test.go b/internal/gateway/late_stream_error_test.go
+index 3843a8768..dfe804be0 100644
+--- a/internal/gateway/late_stream_error_test.go
++++ b/internal/gateway/late_stream_error_test.go
+@@ -85,6 +85,60 @@ func TestLateStreamErrorNotKept(t *testing.T) {
+ 	}
+ }
+ 
++// The cursor plugin fails a native Run that outlived its 15-minute
++// lifetime mid-reply with "native Run lifetime expired" in the stream, its
++// 200 long since sent (#4419). The Run is gone and the conversation is
++// not — asked again, the history is rebuilt on a fresh Run — but an agent
++// that reads only the error's text (Pi, #2372) has no word in it it
++// retries on, so the turn ended where asking again goes on. The relay
++// says it in the words Pi knows; an error of any other wording goes as it
++// came.
++func TestRunExpiredSaysAskAgain(t *testing.T) {
++	fresh(t)
++	f := &fake{reply: sse(`data: {"id":"c1","choices":[{"index":0,"delta":{"role":"assistant","content":"half said"}}]}`,
++		`data: {"error":{"message":"native Run lifetime expired","code":410}}`,
++		`data: {"error":{"message":"native outbound messages limit reached","code":429}}`)}
++	setup(t, provider.Chat, f)
++	code, body := post(t, "/v1/chat/completions", `{"model":"fake/m1","stream":true,"messages":[{"role":"user","content":"hi"}]}`)
++	if code != 200 {
++		t.Fatalf("status = %d, want 200; body: %s", code, body)
++	}
++	if !strings.Contains(body, "half said") {
++		t.Fatalf("the reply so far didn't reach the client: %s", body)
++	}
++	var said []string
++	for _, ev := range events(body) {
++		if e, ok := ev["error"].(map[string]any); ok {
++			said = append(said, e["message"].(string))
++		}
++	}
++	if len(said) != 2 {
++		t.Fatalf("the client was told %d errors, want 2: %s", len(said), body)
++	}
++	if said[0] != "native Run lifetime expired (you can retry your request)" {
++		t.Fatalf("the dead Run's error reached the client with no word to retry on: %q", said[0])
++	}
++	if said[1] != "native outbound messages limit reached" {
++		t.Fatalf("an error of another wording was rewritten: %q", said[1])
++	}
++}
++
++// The same dead-Run error reaches a client magpie translates for, its
++// words again the only thing the agent reads (#4419 on a Messages client).
++func TestRunExpiredTranslatedSaysAskAgain(t *testing.T) {
++	fresh(t)
++	f := &fake{reply: sse(`data: {"id":"c1","choices":[{"index":0,"delta":{"role":"assistant","content":"half said"}}]}`,
++		`data: {"error":{"message":"native Run lifetime expired","code":410}}`)}
++	setup(t, provider.Chat, f)
++	code, body := postMessages(t, `{"model":"fake/m1","stream":true,"max_tokens":8,"messages":[{"role":"user","content":"hi"}]}`)
++	if code != 200 {
++		t.Fatalf("status = %d, want 200; body: %s", code, body)
++	}
++	if !strings.Contains(body, "native Run lifetime expired (you can retry your request)") {
++		t.Fatalf("the dead Run's error reached the client with no word to retry on: %s", body)
++	}
++}
++
+ // A conversation affine keeps on an account by the account alone — the
+ // model that answered it has left the group, and the widest of affine's
+ // matches still holds it there — loses its stick when that reply breaks
+-- 
+2.50.1 (Apple Git-155)
+

@@ -1,0 +1,30 @@
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py claude baseline
+INPUT: CONFIG: fixed claude source allowlist
+OUTPUT: BASELINE PASS groups=5 files=1256 bytes=228087202 protected=1
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py claude archive
+INPUT: 87c751fae24ab490415a1f7cc8d3c61604653c144ece3aeb03c9549ec408d78b
+OUTPUT: ARCHIVE PASS zip_files=5 files=1256 bytes=228087202
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py claude apply
+INPUT: 1af79beb6592658bccb10682dd48dd891f74b890265d7013b7efe94dc5e26cdb
+OUTPUT: KeyError: 'raw'
+EXIT: 1
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py claude apply
+INPUT: 1af79beb6592658bccb10682dd48dd891f74b890265d7013b7efe94dc5e26cdb
+OUTPUT: APPLY PASS removed_files=1256 removed_bytes=228087202
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py claude verify
+INPUT: ece17f19eb4af600ce432e1b3aeca58a0213e20409c9dbbfd3c75ae813bac09e
+OUTPUT: MODIFIED PASS files=1256 bytes=228087202 originals_absent=true protected_unchanged=true
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py claude rollback-test
+INPUT: ece17f19eb4af600ce432e1b3aeca58a0213e20409c9dbbfd3c75ae813bac09e
+OUTPUT: ROLLBACK PASS restored_files=1256 restored_bytes=228087202 hashes_match=true originals_untouched=true
+EXIT: 0
+

@@ -1,0 +1,462 @@
+{
+  "project": {
+    "name": "console",
+    "repo_type": "monorepo",
+    "description": "个人 Agent 统一控制台：card-admin / tokens-toolkit / config-engine / governance / pi-web-dev 五模块一期合并，Next.js 单进程一体化",
+    "ssot": {
+      "prd": ".ggbdpq/actions/console/prd.json",
+      "progress": ".ggbdpq/progress.txt"
+    }
+  },
+  "items": [
+    {
+      "id": 0,
+      "component": "skeleton",
+      "priority": "P0",
+      "title": "Monorepo 骨架（pnpm workspace + Next.js 单体 + packages + 常驻任务框架）",
+      "steps": [
+        "操作：创建 pnpm-workspace.yaml 与根 package.json（allowBuilds 批准 esbuild）\n产物：pnpm-workspace.yaml、package.json\n验收命令：test -f pnpm-workspace.yaml && test -f package.json && echo 'PASS'",
+        "操作：创建 apps/console（Next.js 16 App Router + Tailwind 4 + shadcn 配置）与五模块占位路由\n产物：src/app/{assets,inventory,agentops,governance,lab}/page.tsx 存在\n验收命令：ls src/app/assets/page.tsx src/app/inventory/page.tsx src/app/agentops/page.tsx src/app/governance/page.tsx src/app/lab/page.tsx >/dev/null && echo 'PASS'",
+        "操作：创建 instrumentation.ts 常驻任务框架（globalThis 单例 + 幂等重启）与 packages/{shared,agent-lab-core,ui}、apps/cli\n产物：src/instrumentation.ts、packages/*、apps/cli 存在\n验收命令：test -f src/instrumentation.ts && test -f packages/shared/src/index.ts && echo 'PASS'",
+        "操作：建立 /api/health 真 HTTP 契约端点（schema 由 packages/shared 推导）\n产物：src/app/api/health/route.ts\n验收命令：grep -q healthResponseSchema src/app/api/health/route.ts && echo 'PASS'",
+        "操作：pnpm -r run typecheck 全绿\n产物：typecheck exit 0\n验收命令：pnpm -r run typecheck",
+        "操作：pnpm -r run test 全绿\n产物：test exit 0\n验收命令：pnpm -r run test",
+        "操作：pnpm dev 冒烟：/api/health 返回 ok:true，/ 与 /lab 返回 HTTP 200\n产物：curl 验证记录\n验收命令：pnpm dev & sleep 12 && curl -sf http://localhost:3000/api/health"
+      ],
+      "passes": true
+    },
+    {
+      "id": 1,
+      "component": "meta",
+      "priority": "P0",
+      "title": "治理工件建立（prd.json + progress.txt + 首次提交）",
+      "steps": [
+        "操作：创建 .ggbdpq/actions/console/prd.json（本文件，格式对齐 governance 解析器）\n产物：.ggbdpq/actions/console/prd.json\n验收命令：node -e \"JSON.parse(require('fs').readFileSync('.ggbdpq/actions/console/prd.json','utf8')); console.log('PASS')\"",
+        "操作：创建 .ggbdpq/progress.txt 执行日志\n产物：.ggbdpq/progress.txt\n验收命令：test -f .ggbdpq/progress.txt && echo 'PASS'",
+        "操作：仅 add vibe/console 范围完成首次提交（不触碰 home 大仓其他改动）\n产物：git log 中出现 console 首个提交\n验收命令：git log --oneline -1 -- vibe/console"
+      ],
+      "passes": true
+    },
+    {
+      "id": 2,
+      "component": "assets",
+      "priority": "P0",
+      "title": "资产台迁移（card-admin → /assets + /api/assets）",
+      "steps": [
+        "操作：按 TDD 先为资产域写会失败的集成测试（扫描/额度/导出三链路 API 契约）\n产物：apps/console/tests/assets/*.test.ts（先红）\n验收命令：pnpm --filter @ggbdpq/console run test -- assets（预期失败）",
+        "操作：迁移 server 业务模块（scanner/quota/exporter/store）至 src/server/assets/，Hono 处理器改写为 Route Handlers，Zod 3 schema 升 4\n产物：src/server/assets/*.ts、src/app/api/assets/**/route.ts\n验收命令：pnpm --filter @ggbdpq/console run typecheck",
+        "操作：迁移 React 页面与组件至 src/app/assets/，数据获取改为 fetch /api/assets，状态 Zustand 化\n产物：src/app/assets/**\n验收命令：pnpm --filter @ggbdpq/console run typecheck",
+        "操作：迁移并跑绿 Vitest 单测；card-admin.db 兼容验证（沿用 data/ 目录结构）\n产物：测试全绿 + db 迁移说明\n验收命令：pnpm --filter @ggbdpq/console run test -- assets",
+        "操作：Playwright 冒烟用例迁移（e2e）\n产物：apps/console/e2e/assets.spec.ts\n验收命令：pnpm --filter @ggbdpq/console run test:e2e -- assets"
+      ],
+      "passes": true
+    },
+    {
+      "id": 3,
+      "component": "inventory",
+      "priority": "P0",
+      "title": "库存台迁移（tokens-toolkit → /inventory + /api/inventory + apps/cli）",
+      "steps": [
+        "操作：按 TDD 先写库存域 API 契约测试（库存/交易/市价只读）\n产物：apps/console/tests/inventory/*.test.ts（先红）\n验收命令：pnpm --filter @ggbdpq/console run test -- inventory（预期失败）",
+        "操作：迁移 Fastify API 逻辑至 Route Handlers，packages/core 插件注册表与事件日志并入 src/server/inventory/\n产物：src/server/inventory/**、src/app/api/inventory/**\n验收命令：pnpm --filter @ggbdpq/console run typecheck",
+        "操作：迁移 plugins/{catalog,marketplace,pipeline} 为服务内模块，保持 fixture 全可用\n产物：src/server/inventory/plugins/**\n验收命令：pnpm --filter @ggbdpq/console run test -- inventory",
+        "操作：迁移 web 页面至 src/app/inventory/；CLI 子命令（doctor/report/import/mail/replenish）并入 apps/cli\n产物：src/app/inventory/**、apps/cli/src/commands/**\n验收命令：pnpm cli tokens doctor",
+        "操作：迁移 tokens-toolkit 既有 Vitest 用例并跑绿\n产物：测试全绿\n验收命令：pnpm -r run test"
+      ],
+      "passes": true
+    },
+    {
+      "id": 4,
+      "component": "agentops",
+      "priority": "P0",
+      "title": "配置台迁移（config-engine → /agentops + /api/agentops）",
+      "steps": [
+        "操作：按 TDD 先写配置域契约测试（scan/plan/apply/rollback）\n产物：apps/console/tests/agentops/*.test.ts（先红）\n验收命令：pnpm --filter @ggbdpq/console run test -- agentops（预期失败）",
+        "操作：迁移 engine（adapters/planner/executor/run-store）至 src/server/agentops/，run-store 统一 node:sqlite\n产物：src/server/agentops/**\n验收命令：pnpm --filter @ggbdpq/console run typecheck",
+        "操作：迁移 web UI 至 src/app/agentops/，Hono :7777 依赖消除\n产物：src/app/agentops/**\n验收命令：pnpm --filter @ggbdpq/console run test -- agentops"
+      ],
+      "passes": true
+    },
+    {
+      "id": 5,
+      "component": "governance",
+      "priority": "P0",
+      "title": "治理台迁移（governance 后端化 → /governance + /api/governance + file-watch 常驻任务）",
+      "steps": [
+        "操作：按 TDD 先写治理域契约测试（prd 解析/progress 解析/git 联查）\n产物：apps/console/tests/governance/*.test.ts（先红）\n验收命令：pnpm --filter @ggbdpq/console run test -- governance（预期失败）",
+        "操作：将 prd-parser/progress-parser/git-service/compliance-checker 由浏览器实现改为 Node 侧 src/server/governance/\n产物：src/server/governance/**\n验收命令：pnpm --filter @ggbdpq/console run typecheck",
+        "操作：迁移 UI 至 src/app/governance/；file-watch 注册进 instrumentation 常驻任务（幂等）\n产物：src/app/governance/**、runtime/tasks.ts 新增治理任务\n验收命令：pnpm --filter @ggbdpq/console run test -- governance",
+        "操作：迁移既有 15 个 Vitest 测试文件并跑绿；验证治理台可解析本仓 .ggbdpq 工件（吃自己狗粮）\n产物：测试全绿 + 狗粮验证记录\n验收命令：pnpm -r run test"
+      ],
+      "passes": true
+    },
+    {
+      "id": 6,
+      "component": "lab",
+      "priority": "P1",
+      "title": "实验室迁移（pi-web-dev → /lab + packages/agent-lab-core）",
+      "steps": [
+        "操作：核心 5 个纯 JS 文件原样迁入 packages/agent-lab-core（零依赖豁免，禁止 TS 化）\n产物：packages/agent-lab-core/src/*.js\n验收命令：node -e \"import('file:///C:/Users/ggbdpq/vibe/console/packages/agent-lab-core/src/index.js')\"",
+        "操作：迁移走读/调试条/数据流地图/diff 视图组件至 src/app/lab/，改从 agent-lab-core 导入\n产物：src/app/lab/**\n验收命令：pnpm --filter @ggbdpq/console run typecheck",
+        "操作：批量更新 10 篇开发日志与 docs/mentor 中的路径/端口引用\n产物：文档引用一致\n验收命令：grep -rn 'inbox/pi-web-dev' apps/console/packages --include='*.md' | wc -l（预期 0）"
+      ],
+      "passes": true
+    },
+    {
+      "id": 7,
+      "component": "archive",
+      "priority": "P1",
+      "title": "旧目录归档横幅（收编项目 README 标记已并入）",
+      "steps": [
+        "操作：为 card-admin、tokens-toolkit、pi-web-dev、config-engine、governance 的 README 顶部追加'已并入 vibe/console'归档横幅\n产物：5 个 README 顶部横幅\n验收命令：grep -l '已并入' 各 README",
+        "操作：agent-suite README 增补：桌面壳与 promptflow/workflow-engine 为二期迁移对象\n产物：agent-suite README 增补段落\n验收命令：grep -q 'vibe/console' agent-suite/README.md"
+      ],
+      "passes": true
+    },
+    {
+      "id": 8,
+      "component": "acceptance",
+      "priority": "P0",
+      "title": "一期全量验收",
+      "steps": [
+        "操作：pnpm dev 单命令起服务，五模块路由全部 200\n产物：curl 记录\n验收命令：for r in assets inventory agentops governance lab; do curl -sf http://localhost:3000/$r >/dev/null || exit 1; done && echo 'PASS'",
+        "操作：pnpm -r run typecheck 与 pnpm -r run test 全绿\n产物：exit 0\n验收命令：pnpm -r run typecheck && pnpm -r run test",
+        "操作：pnpm cli doctor 通过（CLI ↔ API 真 HTTP 链路）\n产物：doctor 输出 ok\n验收命令：pnpm cli doctor"
+      ],
+      "passes": true
+    },
+    {
+      "id": 9,
+      "component": "cc-backend",
+      "priority": "P0",
+      "title": "二期·cc 域后端移植（cc-dev TS 链搬入 + 数据根注入）",
+      "steps": [
+        "操作：TDD 先写 cc 域契约测试（generate/apply/verify/rollback/audit 五链路，CC_PROFILE_HOME 注入临时目录）\n产物：apps/console/tests/agentops/cc.test.ts（先红）\n验收命令：pnpm --filter @ggbdpq/console run test -- cc（预期失败）",
+        "操作：cc-dev 六模块（types/generate/apply/verify/rollback/audit）原样迁入 src/server/agentops/cc/，路径解析支持 CONSOLE_DATA_DIR/CC_PROFILE_HOME 注入\n产物：src/server/agentops/cc/*.ts\n验收命令：pnpm --filter @ggbdpq/console run typecheck",
+        "操作：契约测试转绿（含备份/审计落盘验证）\n产物：测试全绿\n验收命令：pnpm --filter @ggbdpq/console run test -- cc"
+      ],
+      "passes": true
+    },
+    {
+      "id": 10,
+      "component": "cc-api",
+      "priority": "P0",
+      "title": "二期·cc 域 API——18 命令映射为 /api/agentops/cc/* Route Handlers",
+      "steps": [
+        "操作：TDD 先写 API 契约测试（settings 读写/exists/hash、toggle/batch 插件、apply_preset，对齐 18 命令语义）\n产物：tests/agentops/cc-api.test.ts（先红）\n验收命令：pnpm --filter @ggbdpq/console run test -- cc-api（预期失败）",
+        "操作：实现 settings/read-write-exists-hash 与插件 toggle/batch、apply_preset 端点\n产物：src/app/api/agentops/cc/**\n验收命令：测试转绿",
+        "操作：实现备份/审计（list_backups/restore_backup/read_audit_log）与自定义预设 CRUD+导入导出（5 命令，node:sqlite 存储）\n产物：src/app/api/agentops/cc/{backups,audit,presets}/**\n验收命令：测试转绿",
+        "操作：实现 profile 合并三命令（list_profiles/merge_profile_preview/apply_profile，复用 generate 深合并）\n产物：src/app/api/agentops/cc/profiles/**\n验收命令：测试转绿"
+      ],
+      "passes": true
+    },
+    {
+      "id": 11,
+      "component": "cc-ui",
+      "priority": "P0",
+      "title": "二期·cc 域前端——/agentops 分区新增 Claude Code 设置台",
+      "steps": [
+        "操作：迁移桌面壳前端核心（data/pluginCatalog、stores、关键组件）改造为 fetch cc 域 API，挂 /agentops/cc 路由（设置总览/插件开关/预设管理/备份审计）\n产物：src/app/agentops/cc/**\n验收命令：pnpm --filter @ggbdpq/console run typecheck",
+        "操作：agentops 外壳导航加 Claude Code 入口\n产物：layout 导航更新\n验收命令：dev 冒烟 /agentops/cc 200"
+      ],
+      "passes": true
+    },
+    {
+      "id": 12,
+      "component": "cc-watch",
+      "priority": "P1",
+      "title": "二期·cc 域 watcher 常驻任务（settings.json 监听，对齐治理台 watch 模式）",
+      "steps": [
+        "操作：实现 cc 域文件监听任务工厂并注册 instrumentation（幂等可重启）\n产物：src/server/agentops/cc/watch.ts + tasks 注册\n验收命令：pnpm --filter @ggbdpq/console run test -- runtime"
+      ],
+      "passes": true
+    },
+    {
+      "id": 13,
+      "component": "cc-acceptance",
+      "priority": "P0",
+      "title": "二期·桌面壳 18 命令对账验收（对账表全绿后 Tauri 淘汰留给三期）",
+      "steps": [
+        "操作：产出 18 命令对账表（命令→console 端点→测试用例号），逐条打勾\n产物：docs/ 对账表\n验收命令：pnpm -r run typecheck && pnpm -r --filter '!@ggbdpq/blog' run test",
+        "操作：dev 冒烟 + Playwright e2e（cc 设置台关键流）\n产物：e2e 用例绿\n验收命令：pnpm --filter @ggbdpq/console run test:e2e"
+      ],
+      "passes": true
+    },
+    {
+      "id": 14,
+      "component": "wf-core",
+      "priority": "P0",
+      "title": "二期·workflow 域数据层 + 执行状态机（Prisma/PG → node:sqlite 降栈）",
+      "steps": [
+        "操作：TDD 先写状态机契约测试（claim 原子性/九操作全路径：start/progress/complete/fail/heartbeat/checkTimeouts/cancel/rerun，事件与审计断言）\n产物：tests/workflow/execution.test.ts（先红）\n验收命令：pnpm --filter @ggbdpq/console run test -- workflow（预期失败）",
+        "操作：建 db.ts（tasks/executions/audit_logs 表，CONSOLE_DATA_DIR 注入）+ events.ts（进程内事件总线）+ tasks.ts + execution.ts（忠实移植 453 行状态机）\n产物：src/server/workflow/*.ts\n验收命令：测试转绿"
+      ],
+      "passes": true
+    },
+    {
+      "id": 15,
+      "component": "wf-api",
+      "priority": "P0",
+      "title": "二期·workflow API（tasks CRUD + executions 转换端点 + worker claim + SSE + apikey）",
+      "steps": [
+        "操作：/api/workflow/** Route Handlers（tasks CRUD、executions start/progress/complete/fail/heartbeat/cancel/rerun、worker claim、GET /events SSE 流）\n产物：src/app/api/workflow/**\n验收命令：API 契约测试绿",
+        "操作：超时检测定时任务注册 instrumentation（60s 间隔，幂等）\n产物：runtime/tasks 注册\n验收命令：pnpm --filter @ggbdpq/console run test -- workflow"
+      ],
+      "passes": true
+    },
+    {
+      "id": 16,
+      "component": "wf-ui",
+      "priority": "P1",
+      "title": "二期·workflow 工作台前端（workbench 5177 → /workflow 分区，SSE 实时状态）",
+      "steps": [
+        "操作：workbench 前端改造迁移（fetch HTTP、SSE EventSource、任务列表/执行详情/实时进度）\n产物：src/app/workflow/**\n验收命令：dev 冒烟 /workflow 200"
+      ],
+      "passes": true
+    },
+    {
+      "id": 17,
+      "component": "wf-acceptance",
+      "priority": "P0",
+      "title": "二期·workflow 块验收（状态机全路径对账 + e2e）",
+      "steps": [
+        "操作：对账表（原 service 九操作→模块函数→用例）+ e2e（创建任务→claim→进度→完成 全链）\n产物：docs/wf-command-mapping.md + e2e 用例\n验收命令：pnpm -r --filter '!@ggbdpq/blog' run test && e2e 绿"
+      ],
+      "passes": true
+    },
+    {
+      "id": 18,
+      "component": "wt-core",
+      "priority": "P0",
+      "title": "二期·worktree 服务层（git.rs 16 函数 → execFile git + persistence.json）",
+      "steps": [
+        "操作：TDD 先写契约测试（真实 git 临时仓：is_repo/branch/status/pull/create_branch/worktree 增删/sync/merge/commits/diff + persistence CRUD）\n产物：tests/worktree/git.test.ts（先红）\n验收命令：pnpm --filter @ggbdpq/console run test -- worktree（预期失败）",
+        "操作：src/server/worktree/{git,projects,agents}.ts——13 命令等价实现，数据落 data/worktree-projects.json（CONSOLE_DATA_DIR 注入）\n产物：src/server/worktree/**\n验收命令：测试转绿"
+      ],
+      "passes": true
+    },
+    {
+      "id": 19,
+      "component": "wt-api-ui",
+      "priority": "P0",
+      "title": "二期·worktree API + /worktree 前端工作台",
+      "steps": [
+        "操作：/api/worktree/** Route Handlers（projects CRUD+status+pull、agents spawn/sync/merge/remove/commits/diff）\n产物：src/app/api/worktree/**\n验收命令：API 契约测试绿",
+        "操作：/worktree 分区（项目列表/添加/状态，Agent 卡片/worktree 管理/提交流/diff 统计）\n产物：src/app/worktree/**\n验收命令：dev 冒烟 200 + 全量回归"
+      ],
+      "passes": true
+    },
+    {
+      "id": 20,
+      "component": "wt-acceptance",
+      "priority": "P0",
+      "title": "二期·worktree 收官验收（13 命令对账表 + 二期总结）",
+      "steps": [
+        "操作：13 命令对账表落 docs/wt-command-mapping.md；更新 README 分区表与 progress 二期总结\n产物：docs/wt-command-mapping.md\n验收命令：pnpm -r --filter '!@ggbdpq/blog' run test && typecheck 全绿"
+      ],
+      "passes": true
+    },
+    {
+      "id": 21,
+      "component": "ui-consistency",
+      "priority": "P1",
+      "title": "四应用 UI 一致性收口（token 语义化 + 深色模式全覆盖 + 中文化 + 设计规范对齐）",
+      "steps": [
+        "操作：packages/ui base.css 补 success/warning/info 语义色 token（明暗双板），消除全站 green/red/yellow/amber/blue/rose 硬编码的根因\n产物：base.css 三色 token + @theme inline 映射\n验收命令：grep -c \"--success|--warning|--info\" packages/ui/src/styles/base.css（≥6）",
+        "操作：console 六模块（inventory/agentops/workflow/worktree/governance/assets）全部调色板类迁语义 token；agentops 界面中文化、去 emoji 按钮；DiffViewer 高风险侧边条改整圈边框\n产物：src/app/{inventory,agentops,workflow,worktree,governance,assets}/** 语义化\n验收命令：grep -rn \"stone-|emerald-|amber-|rose-|sky-\" apps/console/src/app --include=*.tsx | wc -l（预期 0）",
+        "操作：新建 ModuleNav 统一模块顶栏页签（表面抬升激活态），inventory×2/agentops/assets 四处换用\n产物：src/components/ModuleNav.tsx\n验收命令：grep -rln \"ModuleNav\" apps/console/src/app | wc -l（≥4）",
+        "操作：toolbox date-playbook/skill-manager/database/ui 域灰色系与红绿硬编码收编；blog algo 域难度/状态/判题语义化 + bg-brand/font-display 幽灵类修复 + anime tier-list 350 行 legacy CSS token 化\n产物：apps/toolbox/**、apps/blog/**\n验收命令：grep -rn \"text-gray|bg-gray|bg-brand|font-display\" apps/toolbox/src/features/skill-manager apps/blog/src/features/algo | wc -l（预期 0）",
+        "操作：修复根 .gitignore 的 data/ 规则误伤 src/data/ 导致的源码数据丢失（锚定 /apps/*/data/）；按调用点反推重建 console pluginCatalog 与 toolbox daily-seed 骨架；修复 blog parseFrontmatter CRLF 不容忍导致本机构建失败\n产物：.gitignore、src/data/cc/pluginCatalog.ts、apps/toolbox/src/data/daily-seed.ts、apps/blog/src/lib/frontmatter.ts\n验收命令：pnpm -r --filter \"!@ggbdpq/blog\" run typecheck && blog build 458 页",
+        "操作：全仓 typecheck + test 全绿；dev 四端口 200；深色模式六页截图 judge 验收通过\n产物：验收记录\n验收命令：pnpm -r --filter \"!@ggbdpq/blog\" run test"
+      ],
+      "passes": true
+    },
+    {
+      "id": 22,
+      "component": "quality-campaign",
+      "priority": "P1",
+      "title": "质量战役 35 项：token 欠债清偿 + React/a11y 最佳实践 + 简化清扫（一项一 commit）",
+      "steps": [
+        "S01 ui badge.tsx 裸色变体（25 处）→ 语义 token",
+        "S02 ui alert.tsx 裸色（16 处）→ 语义 token",
+        "S03 ui message/rate/form/transfer/upload 零散裸色 → 语义 token",
+        "S04 cc AuditLog.tsx（24 处）→ 语义 token，删白名单行",
+        "S05 cc PluginSwitch.tsx（14 处）→ 语义 token，删白名单行",
+        "S06 cc PresetSidebar.tsx（8 处）→ 语义 token，删白名单行",
+        "S07 cc PresetEditor.tsx（4 处）→ 语义 token，删白名单行",
+        "S08 cc 零散八文件（14 处）→ 语义 token，删白名单行",
+        "S09 assets AccountDetailDialog.tsx（14 处）→ 语义 token，删白名单行",
+        "S10 assets AccountsTable.tsx（7 处）→ 语义 token，删白名单行",
+        "S11 assets 零散三文件（10 处）→ 语义 token，删白名单行",
+        "S12 inventory HistoryChart.tsx（4 处）→ 语义 token，删白名单行",
+        "S13 portal page.tsx（8 处）→ 语义 token，删白名单行",
+        "S14 toolbox database 两文件（8 处）→ 语义 token，删白名单行",
+        "S15 toolbox date-playbook 三文件（5 处）→ 语义 token，删白名单行",
+        "S16 toolbox resume 五文件（9 处）→ 语义 token，删白名单行",
+        "S17 toolbox forum user-avatar（1 处）→ 语义 token，白名单清零",
+        "S18 agentops/ccpage var(--color-*) 别名引用 → 语义 token（P1）",
+        "S19 删 globals.css cc 别名表（S18 后确认零消费方）",
+        "S20 console viewport/theme-color metadata 导出",
+        "S21 blog/toolbox/portal viewport/theme-color metadata",
+        "S22 blog/toolbox/portal 接入 Geist/JetBrains Mono 字体（P4）",
+        "S23 todo 组件 rerender 审计（内联组件/派生状态/依赖项）",
+        "S24 桶导入审计：console 页面 @ggbdpq/console-ui 直引评估",
+        "S25 API/服务层 async-parallel 审计（串行 await → Promise.all）",
+        "S26 space-y-* → gap-* 全仓清扫（DESIGN.md §6）",
+        "S27 w-*/h-* 等值 → size-* 清扫",
+        "S28 className 手写三元 → cn() 清扫（console）",
+        "S29 图标按钮 aria-label 审计清扫（blog/toolbox/portal）",
+        "S30 prefers-reduced-motion 局部降级审计（blog/toolbox 动画）",
+        "S31 spinner → skeleton 审计（如有）",
+        "S32 无导航四模块（register/toolkit/workflow/worktree）页头规格统一 text-xl",
+        "S33 Playwright e2e 跑通现状，修暴露问题",
+        "S34 ALLOWLIST 清零后置空并固化注释",
+        "S35 DESIGN.md 路线图收口 + progress 总结"
+      ],
+      "passes": true
+    },
+    {
+      "id": 23,
+      "component": "primer-reskin",
+      "priority": "P1",
+      "title": "GitHub Primer 换皮：米金品牌退役 → Primer 中性灰 + 绿主按钮 + 蓝链接（console + portal，6px 圆角，lab 照旧豁免）",
+      "steps": [
+        "G1 base.css 换 Primer 亮/暗双板 + radius 6px（全部对比度预演算 ≥4.5:1）",
+        "G2 ui 层 GitHub 化：Button 变体（default 绿主操作/secondary outline 灰描边）、ModuleNav 下划线页签（active 底线 #fd8c73/#f78166）、Table 密度收紧",
+        "G3 console 模块巡检：次要按钮降级 outline/secondary、卡片 rounded-xl 归位、截图验收",
+        "G4 portal 换板核验（磁贴反转对自动跟随）",
+        "G5 DESIGN.md 修订：Primer token 表替换米金表 + 按钮使用规则（default 只给主操作）",
+        "G6 progress + prd 收口"
+      ],
+      "passes": true
+    },
+    {
+      "id": 24,
+      "component": "resume-editor",
+      "priority": "P1",
+      "title": "简历编辑器对齐木及简历（混合架构：保留 schema 数据模型，编辑体验/功能/视觉全面对齐）",
+      "steps": [
+        "B1 打印样式补全：@media print + @page A4 + no-print 隐藏，打印只出 A4 简历",
+        "D1 多简历 store：resumes[] + activeId + CRUD + v1→v2 自动迁移（旧 muji-resume 单份变第一份），迁移测试锁定",
+        "F1 路由重构：/resume 简历列表页（卡片/更新时间/编辑/复制/删除/新建）+ 公开预览接真实 store 数据",
+        "B3-B5 链接编辑同步修复 + 死代码清理（PreviewPage 删/templates 接入新建流程）+ JSON 导出含 appearance + alert 换 Dialog",
+        "D2 导入 md：markdown→Resume 解析器（与导出对称），测试锁定",
+        "F2 主题市场：6 配色×4 标题样式重组为 8+ 套命名主题，缩略图预览 + 两段式应用对话框",
+        "F3 条目/章节原生拖拽排序（替换上下箭头）",
+        "F4 证件照本地上传（FileReader→base64 入 store）",
+        "F5 本地历史快照（快照栈 + 恢复）",
+        "F6 编辑器 chrome Primer 美化（木及式顶部工具栏布局）+ 全量收口"
+      ],
+      "passes": true
+    },
+    {
+      "id": 25,
+      "component": "resume-typography",
+      "priority": "P1",
+      "title": "简历纸面排版对齐木及 30 项（A 排版 18 + B 外观 6 + C 硬能力 6）",
+      "steps": [
+        "T01-02 空章节渲染抑制 + 导入 md 空行规范化",
+        "T03-04 预览防抖（useDeferredValue）+ 打印边距联动校准",
+        "T05 排版参数校准 + appearance 迁移（字号 13→12.5 / 行距 1.6→1.5 / 页边距 44→48，自定义值保留）",
+        "T06 布局重构：姓名头衔同行开关 / 联系方式双栏冒号格式 / 条目时间右对齐 + 徽章 + 地点右对齐 / 列表 marker 对齐 / 链接样式 / 证件照并排 / 自定义模块标题一致化",
+        "T07 主题 accent 应用点扩展（时间/链接/标题色）",
+        "T08 真实分页渲染（内容超一页切第二页）",
+        "T09 智能一页多级降档（先行距后字号，非等比缩放）",
+        "T10 B 组外观：accent 换色 / 三档预设 / 字体族 / 标题样式进主题市场 / 预览缩放 / 证件照形状",
+        "T11 收口：截图对比验收 + 全量验证 + 文档"
+      ],
+      "passes": true
+    },
+    {
+      "id": 26,
+      "component": "resume-content",
+      "priority": "P1",
+      "title": "简历内容升级：三段式脚手架 / 范例库 / 量化弱词检测 / 质量评分 / AI 润色（对标 Rezi+超级简历）",
+      "steps": [
+        "R1 条目内容脚手架：核心挑战/关键设计与实践/结果与影响 一键插入（痛点核心）",
+        "R2 要点范例库 Dialog：≥24 条精选范例，主题筛选，点击插入",
+        "R3 量化与弱词检测：无数字 bullet + 弱动词开头提示（规则引擎+单测）",
+        "R4 简历质量分：完整性/量化率/动词强度/篇幅/多样性 五维评分 + 详情 Dialog",
+        "R5 AI 润色：DeepSeek API route + 三段式草稿生成 + 对比采纳（key 缺失降级）",
+        "R6 一页预算指示器并入评分详情",
+        "R7 收口：全量验证 + 真实简历验收 + progress"
+      ],
+      "passes": true
+    },
+    {
+      "id": 27,
+      "component": "bookmarks",
+      "priority": "P0",
+      "title": "书签台（浏览器书签 HTML 导入预览确认 + 搜索/分类/回收站 + 批量与近似去重）",
+      "steps": [
+        "操作：登记需求项（本条），grilling 三轮共识落定：拉平单层分类、Netscape HTML 导入两段式预览确认、URL 精确匹配去重（trim+去尾斜杠）、软删回收站、批量删除/改分类、近似重复检测；不做标签/死链检测/置顶/拖拽/CLI\n产物：prd.json item 27\n验收命令：node -e \"JSON.parse(require('fs').readFileSync('.ggbdpq/actions/console/prd.json','utf8')); console.log('PASS')\"",
+        "操作：shared 契约——@ggbdpq/console-shared/bookmarks 子路径（Bookmark/Create/Update/ListResponse/Import/Batch/Duplicates schema + 错误封套）\n产物：packages/shared/src/bookmarks/**\n验收命令：pnpm --filter @ggbdpq/console-shared run test",
+        "操作：server 层——db 四件套（WAL + 迁移 + url_key 活跃唯一偏索引 + 软删列）、Netscape 零依赖解析器（文件夹栈→分类，剥结构层）、导入服务（预览/入库两段式）；API 路由 CRUD/restore/import/duplicates/categories/batch\n产物：src/server/bookmarks/**、src/app/api/bookmarks/**\n验收命令：pnpm --filter @ggbdpq/console run test -- bookmarks",
+        "操作：前端 /bookmarks——搜索（防抖）/分类过滤/三视图（全部·回收站·重复项）/行内编辑/行内两步删除/批量条/导入预览卡/分页；GlobalSidebar 注册书签台\n产物：src/app/bookmarks/**、src/components/bookmarks/**\n验收命令：pnpm --filter @ggbdpq/console run typecheck",
+        "操作：闸门全绿 + dev 冒烟（/bookmarks 200、导入预览→确认往返、批量与回收站链路）\n产物：验证记录入 progress.txt\n验收命令：pnpm typecheck && pnpm test && pnpm style:check"
+      ],
+      "passes": true
+    },
+    {
+      "id": 28,
+      "component": "interview-gym-content",
+      "priority": "P0",
+      "title": "面试资料精简后适配内容导入与训练入口",
+      "steps": [
+        "同步17份现有正文与manifest；缺源或空目录时保留上次副本",
+        "识别F/A/S题头并完整保留正文；项目地图支持表格及跨目录公开稿",
+        "五个既有模拟入口共用合并说明；空池不启动考试，旧题可跳过",
+        "自动串联dev/build/test前同步；验证类型、测试、样式与页面"
+      ],
+      "passes": false
+    },
+    {
+      "id": 29,
+      "component": "wave4-ai-line",
+      "priority": "P0",
+      "title": "四期·AI 线收拢（agentops/governance/lab/workflow/worktree/skill-manager 自 console/toolbox 整体 git mv 至 apps/agent 65504，2026-09-19，补记）",
+      "steps": [
+        "操作：六模块（配置台含 cc 全家桶/治理台/实验室/执行引擎/Worktree 台/技能管理）零改动迁移，常驻任务随域迁至 apps/agent/src/instrumentation.ts → runtime/tasks.ts，console 侧任务注册表随迁删除\n产物：apps/agent/**（迁移对照表见根 AGENTS.md 四期）\n验收命令：pnpm typecheck && pnpm test",
+        "操作：不迁清单裁定——toolbox 的 chat-viewer/daily 与 console 的 practice/bookmarks 原地保留\n产物：根 AGENTS.md 四期补充约定\n验收命令：grep -q '四期' AGENTS.md"
+      ],
+      "passes": true
+    },
+    {
+      "id": 30,
+      "component": "wave5-course-deck",
+      "priority": "P1",
+      "title": "五期·课程与幻灯片并入（token2agent→course / harness-deck→deck verbatim，源目录退役，2026-09-19，补记）",
+      "steps": [
+        "操作：16 课交互课程与 23 页幻灯片 verbatim 并入 apps/agent/features/{course,deck}，入口 createRoot 由 dynamic(ssr:false) 适配层取代，course/index.css 机械作用域化并与源站编译产物 1436 条规则序列比对 100% 一致\n产物：apps/agent/src/features/{course,deck}/**\n验收命令：grep -q '五期' AGENTS.md",
+        "操作：三源目录退役，基线快照 2cfeb2ab0 可整体找回；版权约束落 AGENTS.md（勿公开部署，portal 不加磁贴）\n产物：AGENTS.md 五期补充约定\n验收命令：grep -q '2cfeb2ab0' AGENTS.md"
+      ],
+      "passes": true
+    },
+    {
+      "id": 31,
+      "component": "admin-liliya",
+      "priority": "P1",
+      "title": "admin·liliya 若依 4.8.3 Node 重写并入（65505，12 模块 + 端点级 RBAC，Go 版退役，2026-10-25，补记）",
+      "steps": [
+        "操作：Next.js 16 + node:sqlite 重建若依核心 16 表，12 模块全实现（用户/角色/菜单/部门/岗位/字典/参数/公告/操作日志/登录日志/在线用户/定时任务），密码算法保留存量 md5(loginName+password+salt) 口径，ADMIN_DATA_DIR 可注入\n产物：apps/admin/**、data/admin.db\n验收命令：pnpm --filter @ggbdpq/admin run typecheck",
+        "操作：端点级 RBAC——49 项菜单/权限串种子（对齐 Go 版 RequirePerm）+ 13 组 API denyUnless 守卫 + 角色分配权限树勾选 + 侧栏按权限过滤，授权变更即时生效\n产物：apps/admin/src/server/**、apps/admin/README.md\n验收命令：pnpm --filter @ggbdpq/admin run typecheck",
+        "操作：Go 版（lab/liliya）退役归档——12 提交 git bundle + 需求澄清/架构/教训文档收存 apps/admin/docs/，功能继承对照与裁剪清单落档\n产物：apps/admin/docs/**\n验收命令：ls apps/admin/docs/liliya-go-history.bundle",
+        "余项（记录在案）：定时任务调度循环未接（invoke_target 注册表仅 noop/echoParam，misfire/并发仅存储）；前端按钮级权限细分、data_scope 过滤未实现\n产物：apps/admin/README.md 余项段\n验收命令：grep -q '调度循环 P3 未接' apps/admin/README.md"
+      ],
+      "passes": true
+    },
+    {
+      "id": 32,
+      "component": "dead-code-sweep",
+      "priority": "P1",
+      "title": "全仓死代码清理轮（knip+可达性分析器+jscpd 三重侦查，净 -4898 行，顺手修 2 个工具链 bug，2026-10-25）",
+      "steps": [
+        "操作：删除 60 个生产不可达文件——adapters 的 VSCode/Cursor 双适配器+keybindings/snippets 扫描机器（barrel 只留 execute.ts 真实消费面）、cc 域 rollback/verify/audit 死链与无客户端的 /api/agentops/cc/audit 路由、chat-viewer workbench 六件套及专属插件/假 OCR/分析 store（仅测试可达）、date-playbook 测试专属域层集群、inventory-core 被 console 本地副本取代的目录逻辑、mail-sdk examples、PluginDetail/双 ErrorBoundary/ruoyi-ai 未用 ui 三件等；同步修剪孤儿测试（cc 五链路→双链路、date-playbook 域测试重写、assets meta 块删除）\n产物：60 文件删除 + 17 文件修剪\n验收命令：pnpm typecheck",
+        "操作：修复 todo 确认流路由 bug（/api/chat → /api/todo/chat，此前写确认全部 404 静默等 120s 超时）；修复 pnpm-workspace.yaml allowBuilds 占位文本（onnxruntime-node/protobufjs 非布尔值致 pnpm install 必失败）；移除 12 个未用依赖并刷新 lockfile；清理 check-style.mjs 失效豁免路径\n产物：apps/console/src/lib/todo/chat/store.ts、pnpm-workspace.yaml、6 个 package.json、scripts/check-style.mjs\n验收命令：pnpm install && pnpm typecheck",
+        "操作：全量验证——typecheck 绿；7 包测试全绿（agent 390/toolbox 114/console 121/register-core 121/mail-sdk 63/inventory-core 41/shared 36）；agent/toolbox/console 生产构建通过；净 -4898 行（114897→约 110100）\n产物：验证记录入 progress.txt\n验收命令：pnpm typecheck && pnpm test",
+        "预存问题记录（非本轮引入，HEAD 即存在）：style:check 9 处裸色名（agent downloads/App.tsx 5 处、ruoyi-ai format.ts/knowledge-detail 4 处）；agent build/test 前置 sync-content 本机缺 interview 内容源（INTERVIEW_DOCS_DIR 可绕过，构建本体已验证）；后续可选项（gym ui 去重约 300-500 行、blog 内联文章迁 md 约 320 行、quota.ts 手写 SOCKS5 换 socks-proxy-agent 约 200 行、249 未用导出长尾）待裁决"
+      ],
+      "passes": true
+    }
+  ]
+}

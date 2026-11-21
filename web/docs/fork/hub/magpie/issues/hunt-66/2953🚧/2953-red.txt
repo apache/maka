@@ -1,0 +1,142 @@
+--- FAIL: TestJSONSetArrayIndex (0.14s)
+    --- FAIL: TestJSONSetArrayIndex/append_at_the_length (0.01s)
+        json_array_set_test.go:127: got:
+            {
+              "customModels": {
+                "1": {
+                  "model": "other"
+                }
+              }
+            }
+            
+            want:
+            {
+              "customModels": [
+                {"model": "mine"},
+                {
+                  "model": "other"
+                }
+              ]
+            }
+    --- FAIL: TestJSONSetArrayIndex/append_at_the_length_through_a_deeper_key (0.01s)
+        json_array_set_test.go:127: got:
+            {
+              "customModels": {
+                "1": {
+                  "model": "new"
+                }
+              }
+            }
+            
+            want:
+            {
+              "customModels": [
+                {"model": "mine"},
+                {
+                  "model": "new"
+                }
+              ]
+            }
+    --- FAIL: TestJSONSetArrayIndex/append_into_an_empty_array (0.02s)
+        json_array_set_test.go:127: got:
+            {
+              "customModels": {
+                "0": {
+                  "model": "mine"
+                }
+              }
+            }
+            
+            want:
+            {
+              "customModels": [
+                {
+                  "model": "mine"
+                }
+              ]
+            }
+    --- FAIL: TestJSONSetArrayIndex/create_the_array_when_the_key_is_missing (0.01s)
+        json_array_set_test.go:127: got:
+            {
+              "customModels": {
+                "0": {
+                  "model": "x"
+                }
+              },
+              "a": 1
+            }
+            
+            want:
+            {
+              "customModels": [
+                {
+                  "model": "x"
+                }
+              ],
+              "a": 1
+            }
+    --- FAIL: TestJSONSetArrayIndex/refuse_past_the_length (0.01s)
+        json_array_set_test.go:116: SetJSON("customModels.2"): want an error, got nil; file:
+            {
+              "customModels": {
+                "2": {
+                  "model": "other"
+                }
+              }
+            }
+    --- FAIL: TestJSONSetArrayIndex/refuse_a_non-numeric_key_under_an_array (0.01s)
+        json_array_set_test.go:116: SetJSON("customModels.model"): want an error, got nil; file:
+            {
+              "customModels": {
+                "model": "x"
+              }
+            }
+    --- FAIL: TestJSONSetArrayIndex/refuse_creating_past_the_array_that_is_missing (0.01s)
+        json_array_set_test.go:116: SetJSON("customModels.1.model"): want an error, got nil; file:
+            {
+              "customModels": {
+                "1": {
+                  "model": "x"
+                }
+              },
+              "a": 1
+            }
+    --- FAIL: TestJSONSetArrayIndex/append_into_a_compact_file (0.01s)
+        json_array_set_test.go:127: got:
+            {"customModels":{"1":{"model":"other"}}}
+            want:
+            {"customModels":[{"model":"mine"},{"model":"other"}]}
+--- FAIL: TestJSONSetArrayComments (0.05s)
+    --- FAIL: TestJSONSetArrayComments/{"a":[/*keep*/]} (0.01s)
+        json_array_set_test.go:164: not appended: {"a":{"0":{"model":"new"}}}
+    --- FAIL: TestJSONSetArrayComments/{___"a":_[_____//_keep___]_}_ (0.01s)
+        json_array_set_test.go:164: not appended: {
+              "a": {
+                "0": {
+                  "model": "new"
+                }
+              }
+            }
+    --- FAIL: TestJSONSetArrayComments/{"a":[{"model":"mine"},/*keep*/]} (0.01s)
+        json_array_set_test.go:164: not appended: {"a":{"1":{"model":"new"}}}
+    --- FAIL: TestJSONSetArrayComments/{___"a":_[_____{"model":"mine"}_//_keep___]_}_ (0.01s)
+        json_array_set_test.go:164: not appended: {
+              "a": {
+                "1": {
+                  "model": "new"
+                }
+              }
+            }
+    --- FAIL: TestJSONSetArrayComments/{____"a":_[______{"model":"mine"},_//_keep____]__}__ (0.01s)
+        json_array_set_test.go:164: not appended: {
+              "a": {
+                "1": {
+                  "model": "new"
+                }
+              }
+            }
+--- FAIL: TestJSONSetArrayRefusalKeepsAllKeys (0.01s)
+    json_array_set_test.go:186: past-end index was accepted
+FAIL
+FAIL	github.com/yetone/magpie/internal/edit	1.215s
+FAIL

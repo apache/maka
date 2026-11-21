@@ -1,0 +1,339 @@
+From 766a6775afc7144aa83f148be0ec1c94facf6964 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Sun, 25 Oct 2026 01:11:34 +0800
+Subject: [PATCH] library: an MCP server signed in to in Codex itself says so
+ instead of "needs sign-in" (#3508)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+A server signed in to with `codex mcp login` was still "needs sign-in"
+in the Library. Codex keeps those tokens in its keyring, or in a
+.credentials.json of CODEX_HOME when its config's
+mcp_oauth_credentials_store is file or the keyring is missing, and the
+check read no such file.
+
+It now reads it for each Codex target, beside the config.toml the
+target already has, a distro's too (codexCredentialsOf, readCodex in
+mcp_agent_signin.go). The file holds an entry per server under the key
+codex-rs's compute_store_key makes of its name and a 16 hex of the
+hash of its config, each entry naming its server and URL with the
+tokens flattened into it (its FallbackTokenEntry, read from codex-rs's
+rmcp-client/src/oauth.rs — not the StoredOAuthTokens of the login's
+memory the report guessed at). An entry of the server's name and URL
+with an access or refresh token names Codex in
+ServerHealth.AgentSignIn, and the row says "signed in in Codex"
+instead of "needs sign-in". An entry with neither token, one of the
+executor's (executor_owned: codex answers no host's lookup with it),
+another URL by the same name, and a file that can't be read or parsed
+name nobody, so the row stays "needs sign-in". The keyring itself is
+never read. A stopped distro has no target and isn't started. The
+sign-ins are already part of the check's cache key, and the page names
+any agent's id in the row, so mcp_check.go and the GUI needed nothing.
+
+Run:
+- TestCheckNamesCodexSignedInItself (internal/library): agent.FakeWSL
+  forces the Windows+WSL switch (Ubuntu running, its home a temp root),
+  sandbox HOME/USERPROFILE, CODEX_HOME cleared, a real httptest server
+  answering 401 with WWW-Authenticate.
+- Broken by hand, each red with a FAIL naming the behavior:
+  - the old behavior (the reader names nobody): codexCredentialsOf
+    returns "": "signed in in codex@wsl:Ubuntu, the check says
+    {State:auth ... AgentSignIn:[]}".
+  - counting an executor's entry: "only the executor's sign-in
+    counted".
+  - counting an entry with no token: "a sign-in with no token counted".
+- gofmt -l (nothing); go vet on darwin, GOOS=linux -tags nogui and
+  GOOS=windows for ./internal/library; go build darwin, GOOS=windows
+  and GOOS=linux -tags nogui ./...; go test -tags nogui -count=1
+  ./internal/library: ok (71s); the two sign-in tests also with -race:
+  ok.
+
+Codex's file format was read from codex-rs's source (rmcp-client/src/
+oauth.rs, oauth/resolved_store.rs, core/src/config/mod.rs).
+
+Not tried: a real `codex mcp login` (no .credentials.json on this
+machine, whose Codex keeps its MCP tokens in the keyring, which is
+never read); the test's file is built from codex-rs's writer
+(save_oauth_tokens_to_file, its FallbackTokenEntry), and the WSL
+distro's file is a temp root behind a FakeWSL probe.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ docs/subsystems/library.md                |   2 +-
+ internal/library/mcp_agent_signin.go      | 120 +++++++++++++++++-----
+ internal/library/mcp_agent_signin_test.go |  99 ++++++++++++++++++
+ 3 files changed, 192 insertions(+), 29 deletions(-)
+
+diff --git a/docs/subsystems/library.md b/docs/subsystems/library.md
+index fb818641..cc40e372 100644
+--- a/docs/subsystems/library.md
++++ b/docs/subsystems/library.md
+@@ -19,7 +19,7 @@ agents RTK, a CLI that cuts shell output down before the model reads it.
+ | Sync | `sync` writes each target's instructions and MCP servers. It then takes edits made in agents' skill copies into the library (`takeEdits`) and links or copies the skills. `~/.agents/skills` goes first, so an agent that reads it gets no second link. Then it syncs projects' skills. | [`sync.go`](../../internal/library/sync.go) |
+ | Projects | A project (`Project`) is a folder given some of the library's skills and MCP servers, each for some agents. A skill is linked (or copied) into the folder the agent reads a project's skills from (`projectSkillsDirs`): `.claude/skills` for Claude Code, `.qoder/skills` for Qoder and Qoder CN, `.codebuddy/skills` for CodeBuddy Code, `.commandcode/skills` for Command Code, and `.agents/skills` for Codex, Gemini CLI, OpenCode, Pi, Cursor, Copilot CLI, Antigravity, Kimi, Goose, Grok, Droid and Cline. A server is written into the file the agent reads a project's servers from (`projectMCPFiles`), in the shape its user-wide file has: `.mcp.json` for Claude Code and CodeBuddy Code (CodeBuddy's `mcp.json` when the project has that and no `.mcp.json`, since it reads only the first of the two), `.codex/config.toml`, `.gemini/settings.json`, `.cursor/mcp.json`, `opencode.json`, `.zcode/config.json`, `.pi/mcp.json`, `.qoder/settings.json`'s `mcpServers` for Qoder and Qoder CN, and `.factory/mcp.json` for Droid. Claude Code, Qoder and CodeBuddy ask the user to approve a project's server before using it. Only targets whose vendor source or docs name them are listed (each map's comment cites them); an agent with none (Copilot CLI's MCP, Zed, WorkBuddy, Command Code's MCP, whose `.mcp.json` has its own `transport` shape) can't be picked for a project (eirc on Discord). `Placed`, `Wrote`, `Made` and `MadeFiles` record what magpie put there, the only things it takes away, and what it made is listed in the project's `.gitignore`. | [`projects.go`](../../internal/library/projects.go), [`project_mcp.go`](../../internal/library/project_mcp.go) |
+ | Instructions | magpie's part of an agent's instructions file sits between two marker lines. The rest of the file is the user's. Several named sets can be switched between (#106). A set can be kept in a file of the user's own instead of `instruction-sets/` (`InstrSet.File`, 新v学员 on Discord): `~/.agents/AGENTS.md`, which Droid and omp read too. `textPath` reads it, `putText` keeps it aside and writes it but never removes it, removing the set lets go of it, and `linkable` refuses a file magpie writes into (an agent's own instructions, a file with the marker line), the library's own and another set's. The app's `KeepLinked` looks at the file every 30 s and writes a change into the agents (`SyncLinked`). A set's text is read without magpie's part (`setText`), and an agent whose instructions file is, links followed, the file the set on is kept in (`isSetFile`: `instructions.md` linked to `~/.claude/CLAUDE.md`, or both linked to one dotfile) gets no part written into it, and one written before is taken out with every part nested in it: read with its part, each sync wrote the whole file into that part again and it doubled, to gigabytes (#2349, `TestInstructionsSetLinkedToAgentsFile`). `Collect` carries the set's text, not where its file is; `Put` keeps this computer's file for the set and never empties it for a text not carried. Alma's file is `~/.config/alma/USER.md`, which its main chat reads into its system prompt as its owner's profile (0.4.164's `out/main/index.js`; a workspace's `USER.md` is read instead), and whose leading front matter (`name`, `telegram_id`, `discord_id`) is who its bots answer to (#2315, Jie211). The target is a `Profile`: magpie's part goes after the user's, so the front matter stays first, and `ImportInstructions` refuses it, as moving it out would take that front matter out of the file and into every agent's (`TestAlmaInstructionsKeepTheProfile`, `TestAlmaProfileIsNotImported`, `library-alma-profile.test.cjs`). | [`instructions.go`](../../internal/library/instructions.go) |
+-| MCP servers | A `Server` is a command or a URL (`http`, `sse`). `mcpFile` encodes it in each agent's own format (one `mcpFormat` per agent family) and merges it with the user's own fields for that entry. `Also` files get the same servers; `Extra` files are only read when importing. `CheckServers` connects as an agent would and keeps the result in memory only: with each tool's name and the first paragraph of its description (`ToolList`, at most `maxToolList`, a description cut at `maxToolDesc` runes), which the page lists when the server's "N tools" is clicked, following tools/list's `nextCursor` up to `maxToolPages` pages (`listTools`). Each step (initialize, notifications/initialized, tools/list; connect for SSE) has its own budget, 60s for a URL and 30s for a command (`remoteStep`, `stdioStep`), and a timeout names its `Step` and how long it `Waited`; a timeout isn't kept, so the next look asks again (#1467). The page asks once a session for the servers some agent or project has (`inUse` in plugins/library/client.js); one no agent has shows "not checked" and is checked only when its status is clicked (#1597, `library-mcp-health.test.cjs`). A server checked once is checked again when it changes, its sign-in included, so a server signed in to after a click's "needs sign-in" isn't left showing both (新v学员 on Discord, `mcp-signin-health.test.cjs`). The check sends magpie's sign-in as the gateway does: on a 401 it renews the token once and asks again, and a server that refuses even the renewed token has the sign-in marked run out (`mcpauth.Rejected`, also from the gateway's `/mcp/<name>`), which `ServerHealth.SignIn` carries back so the row's tag says "Sign-in ran out" rather than "Signed in" beside "needs sign-in". A server that refuses the check (401 or 403) but that an agent signed in to on its own is named so (`ServerHealth.AgentSignIn`, `readOwnSignIns` in `mcp_agent_signin.go`): each Claude Code target's `.credentials.json` beside its settings.json, a WSL distro's under the distro's home, is read for a `mcpOAuth` entry of the server's name and URL with a token, and the row says "signed in in Claude Code (Ubuntu)" instead of "needs sign-in" (CyberCaius on Discord: signed in to with Claude Code's /mcp in WSL). The tokens are never sent or kept; a file that can't be read or parsed names nobody, a stopped distro isn't started for it, and on a Mac only the file is read, never the Keychain Claude Code keeps them in. They are part of the check's key, so a sign-in in the agent since is checked anew (`TestCheckNamesAgentsSignedInThemselves`, `library-mcp-health-wsl.test.cjs`). A server that needs OAuth is signed in once in magpie, and agents reach it through the gateway's `/mcp/<name>` (#615). The editor's Sign in saves the form first only when the sign-in is to another server than the saved one (a new server, a name or URL changed), and its button then reads "Save and sign in"; anything else edited (headers, env, arguments) stays unsaved until Save, so Cancel leaves the server as it was (新v学员 on Discord, `mcp-editor-cancel.test.cjs`). A server whose authorization server refuses magpie's dynamic client registration with 401 or 403 admits only the clients it lists (Figma's, #1619): the sign-in fails with `mcpauth.ErrClientRefused`, which says so and that each agent signs in itself, and the agents keep the server's own address. A server whose authorization server has no registration endpoint at all (GitHub's remote server, 新v学员 on Discord) fails with `mcpauth.ErrNoRegistration`, which says to make an OAuth app with the vendor and give it in the editor; the editor then opens its "OAuth app" fields. The app is the server's `oauth` (`OAuthApp`: `clientId`, `clientSecret`, `callbackPort`, Claude Code's names for `--client-id`, `--client-secret` and `--callback-port`), checked on save (HTTP only, a client ID, a port from 1 to 65535), and `SignInServer` signs in as it through `mcpauth.StartWith` without registering. The callback is Claude Code's, `http://localhost:<port>/callback` (its docs' "Use pre-configured OAuth credentials"; 2.1.296 builds it so), listened for on 127.0.0.1 alone as Claude Code does, so an app made for Claude Code signs magpie in as it is; a server that matches the registered URL exactly refuses another host, which is why Claude Code's 2.1.231 went back to `localhost` from 2.1.229's `127.0.0.1` (`TestAppMadeForClaudeCode`). Without a `callbackPort` the port is any free one, which a loopback callback registered without a port takes (GitHub's, RFC 8252); a fixed `callbackPort` is for a vendor that matches the port too. magpie's own registration, when a server has one, still names `127.0.0.1`. The client secret is kept in library.json, as a header's or env's value is: a backup without keys leaves it out, and `WithSecrets` puts back this computer's secret only for the same client ID; no agent is given the app, and the TUI's editor, which doesn't show it, keeps it. GitHub answers a token request's error with a 200 and `error` in the body (`bad_refresh_token`, `incorrect_client_credentials`), which `tokenRequest` reads as the error it is, and a dead refresh token marks the sign-in run out (`github_app_test.go`, `mcp-oauth-app.test.cjs`). magpie never registers under another client's name; one that reaches the gateway from another machine (a WSL distro under NAT) is given it with the LAN sharing key as its `Authorization` (`agent.KeyAt`), as its models are, which the gateway takes in place of a sign-in and never passes on; turning sharing on or off, or a new key (`access.LANChanged`), writes such entries again. `ConfigOfServers` is the servers picked as an agent's project file (`projectMCPFiles`) would hold them, written by the same code into a folder of its own and read back, with those the agent can't take there named; the page's Copy config… puts it on the clipboard for a project magpie doesn't keep (#1478). Each listed tool has a switch: the tools turned off are the server's `DisabledTools`, set by `ServerTools`, and written into each agent given the server that can leave out a single tool (see the constraint below). | [`mcp.go`](../../internal/library/mcp.go), [`mcp_check.go`](../../internal/library/mcp_check.go), [`mcp_signin.go`](../../internal/library/mcp_signin.go), [`mcp_agent_signin.go`](../../internal/library/mcp_agent_signin.go), [`mcp_copy.go`](../../internal/library/mcp_copy.go), [`mcp_tools_off.go`](../../internal/library/mcp_tools_off.go) |
++| MCP servers | A `Server` is a command or a URL (`http`, `sse`). `mcpFile` encodes it in each agent's own format (one `mcpFormat` per agent family) and merges it with the user's own fields for that entry. `Also` files get the same servers; `Extra` files are only read when importing. `CheckServers` connects as an agent would and keeps the result in memory only: with each tool's name and the first paragraph of its description (`ToolList`, at most `maxToolList`, a description cut at `maxToolDesc` runes), which the page lists when the server's "N tools" is clicked, following tools/list's `nextCursor` up to `maxToolPages` pages (`listTools`). Each step (initialize, notifications/initialized, tools/list; connect for SSE) has its own budget, 60s for a URL and 30s for a command (`remoteStep`, `stdioStep`), and a timeout names its `Step` and how long it `Waited`; a timeout isn't kept, so the next look asks again (#1467). The page asks once a session for the servers some agent or project has (`inUse` in plugins/library/client.js); one no agent has shows "not checked" and is checked only when its status is clicked (#1597, `library-mcp-health.test.cjs`). A server checked once is checked again when it changes, its sign-in included, so a server signed in to after a click's "needs sign-in" isn't left showing both (新v学员 on Discord, `mcp-signin-health.test.cjs`). The check sends magpie's sign-in as the gateway does: on a 401 it renews the token once and asks again, and a server that refuses even the renewed token has the sign-in marked run out (`mcpauth.Rejected`, also from the gateway's `/mcp/<name>`), which `ServerHealth.SignIn` carries back so the row's tag says "Sign-in ran out" rather than "Signed in" beside "needs sign-in". A server that refuses the check (401 or 403) but that an agent signed in to on its own is named so (`ServerHealth.AgentSignIn`, `readOwnSignIns` in `mcp_agent_signin.go`): each Claude Code target's `.credentials.json` beside its settings.json, a WSL distro's under the distro's home, is read for a `mcpOAuth` entry of the server's name and URL with a token, and each Codex target's `.credentials.json` beside its config.toml for a flattened entry of them, the file codex-rs falls back to when its config's `mcp_oauth_credentials_store` is `file` or the keyring is missing, whose executor's own entries are no `codex mcp login` (#3508); the row says "signed in in Claude Code (Ubuntu)" — or Codex — instead of "needs sign-in" (CyberCaius on Discord: signed in to with Claude Code's /mcp in WSL). The tokens are never sent or kept; a file that can't be read or parsed names nobody, a stopped distro isn't started for it, and on a Mac only the file is read, never the Keychain Claude Code keeps them in nor Codex's keyring store. They are part of the check's key, so a sign-in in the agent since is checked anew (`TestCheckNamesAgentsSignedInThemselves`, `library-mcp-health-wsl.test.cjs`). A server that needs OAuth is signed in once in magpie, and agents reach it through the gateway's `/mcp/<name>` (#615). The editor's Sign in saves the form first only when the sign-in is to another server than the saved one (a new server, a name or URL changed), and its button then reads "Save and sign in"; anything else edited (headers, env, arguments) stays unsaved until Save, so Cancel leaves the server as it was (新v学员 on Discord, `mcp-editor-cancel.test.cjs`). A server whose authorization server refuses magpie's dynamic client registration with 401 or 403 admits only the clients it lists (Figma's, #1619): the sign-in fails with `mcpauth.ErrClientRefused`, which says so and that each agent signs in itself, and the agents keep the server's own address. A server whose authorization server has no registration endpoint at all (GitHub's remote server, 新v学员 on Discord) fails with `mcpauth.ErrNoRegistration`, which says to make an OAuth app with the vendor and give it in the editor; the editor then opens its "OAuth app" fields. The app is the server's `oauth` (`OAuthApp`: `clientId`, `clientSecret`, `callbackPort`, Claude Code's names for `--client-id`, `--client-secret` and `--callback-port`), checked on save (HTTP only, a client ID, a port from 1 to 65535), and `SignInServer` signs in as it through `mcpauth.StartWith` without registering. The callback is Claude Code's, `http://localhost:<port>/callback` (its docs' "Use pre-configured OAuth credentials"; 2.1.296 builds it so), listened for on 127.0.0.1 alone as Claude Code does, so an app made for Claude Code signs magpie in as it is; a server that matches the registered URL exactly refuses another host, which is why Claude Code's 2.1.231 went back to `localhost` from 2.1.229's `127.0.0.1` (`TestAppMadeForClaudeCode`). Without a `callbackPort` the port is any free one, which a loopback callback registered without a port takes (GitHub's, RFC 8252); a fixed `callbackPort` is for a vendor that matches the port too. magpie's own registration, when a server has one, still names `127.0.0.1`. The client secret is kept in library.json, as a header's or env's value is: a backup without keys leaves it out, and `WithSecrets` puts back this computer's secret only for the same client ID; no agent is given the app, and the TUI's editor, which doesn't show it, keeps it. GitHub answers a token request's error with a 200 and `error` in the body (`bad_refresh_token`, `incorrect_client_credentials`), which `tokenRequest` reads as the error it is, and a dead refresh token marks the sign-in run out (`github_app_test.go`, `mcp-oauth-app.test.cjs`). magpie never registers under another client's name; one that reaches the gateway from another machine (a WSL distro under NAT) is given it with the LAN sharing key as its `Authorization` (`agent.KeyAt`), as its models are, which the gateway takes in place of a sign-in and never passes on; turning sharing on or off, or a new key (`access.LANChanged`), writes such entries again. `ConfigOfServers` is the servers picked as an agent's project file (`projectMCPFiles`) would hold them, written by the same code into a folder of its own and read back, with those the agent can't take there named; the page's Copy config… puts it on the clipboard for a project magpie doesn't keep (#1478). Each listed tool has a switch: the tools turned off are the server's `DisabledTools`, set by `ServerTools`, and written into each agent given the server that can leave out a single tool (see the constraint below). | [`mcp.go`](../../internal/library/mcp.go), [`mcp_check.go`](../../internal/library/mcp_check.go), [`mcp_signin.go`](../../internal/library/mcp_signin.go), [`mcp_agent_signin.go`](../../internal/library/mcp_agent_signin.go), [`mcp_copy.go`](../../internal/library/mcp_copy.go), [`mcp_tools_off.go`](../../internal/library/mcp_tools_off.go) |
+ | Skills | A skill is a folder with a `SKILL.md`. It comes from GitHub, from any other git repository, from a folder on this machine (linked, so editing the folder edits the skill) or from the market. A git repository (`kind: git`, sunset on Discord: GitLab, a company's own GitLab) is any https, http, ssh or `file://` address, `git@host:group/repo.git`, a bare `host.name/group/repo`, or a GitLab or Gitea page of a folder (`/-/tree/<ref>/<path>`, `/-/blob/…`, `/src/branch/…`; a branch with a `/` in its name is read as its first segment) (`gitSource`). It is fetched by the user's own `git` (`proc.FindTool`), so their credential helpers and SSH keys reach an intranet host: `git init`, then `fetch --depth 1 --no-tags -- <url> <ref>` and `checkout FETCH_HEAD` into a `magpie-skill-*` folder, then its `.git` is removed (`fetchGit`). What the user typed is data: an address starting with `-` and a `transport::` address (`ext::`, `fd::`, `file::`) are refused before git runs, the address follows `--`, git runs with `protocol.ext.allow=never` and `core.symlinks=false`, no shell, `GIT_TERMINAL_PROMPT=0` and (unless the user set an SSH command) `ssh -o BatchMode=yes`, so a sign-in it can't make fails instead of waiting. An address with a password or token in it is refused: library.json is shown and backed up. Git missing, a sign-in refused, a host key unknown, a branch missing and a host unreachable each say so (`gitError`; `TestGitSourceReads`, `TestInstallFromGitRepo`, `TestGitTreeURLInstallsFolder`, `TestGitMissingSaysSo`, `TestGitSignInRefusedSaysSo`, `TestGitRefusesOptionsAndTransports`, `TestGitErrorsSaid`). Each agent gets a link or a marked copy (#896, `SkillHow`). An agent in a WSL distro always gets a copy. A copy's mark keeps the hash of what was copied, so a sync knows a copy unchanged since then is current without reading its files (`copyIsFresh`, #1031); other copies are hashed. A skill an agent has of its own (`foundSkills`, the page's "In your agents") is brought in with `ImportSkill`, or taken out of every agent that has it with `RemoveFoundSkill` (#1303): its folders and copies of the very same files, its shared `~/.agents/skills` entry and a folder of it in the library's own folder go to the backups, its links are taken away, and a folder elsewhere it only links to, or another skill by that name, stays. Several go at once with `RemoveFoundSkills` (`POST /api/library/skills/remove-found-some`, wongxy on Discord): the "In your agents" heading's own Select picks them, and Remove… asks once, naming the count, before one change takes each out as `RemoveFoundSkill` would. A name that can't be taken out is left as it was, in `Result.Unremoved`, and stays picked with its error in its row's place (`foundErrs`); when none can go the change fails and nothing is touched. This Select and the library's are never on together: while one is on the other is dimmed, saying why, so neither click takes the other's bar away from above the pointer (`TestRemoveFoundSkills`, `found-skill-pick-remove.test.cjs`). A repository is fetched as one tarball of at most `maxFetch` (200 MB); a bigger one is fetched file by file from its tree (`fetchSkillFiles`), and a skill over 200 MB on its own is left out rather than failing the rest: the probe lists the others and names it in `Probe.Left`, under the list in the page and in the TUI's flash. Only when every skill is too big does the fetch fail (#2062, mikubaka88/CCFA-Skills' 297 MB ccf-paper-writer; `TestOneSkillTooBigLeavesTheOthers`, `skill-too-big.test.cjs`). A probe keeps its download for the install from it for 15 minutes (`keepProbe`, `probeLife`), and removes it when it is probed again or that time is up, not at the next probe, which may never come. A download a magpie that quit left in the temp dir goes at the next probe once it is an hour old (`sweepStaleDownloads`). The package's TestMain gives the tests a temp dir of their own and fails a run that leaves a `magpie-skill-*` in it (#2321, `TestProbeDownloadEndsWithIt`, `TestStaleDownloadsSwept`). | [`skilltree.go`](../../internal/library/skilltree.go), [`skills.go`](../../internal/library/skills.go), [`skillgit.go`](../../internal/library/skillgit.go), [`skill_how.go`](../../internal/library/skill_how.go), [`skill_edits.go`](../../internal/library/skill_edits.go), [`skill_from.go`](../../internal/library/skill_from.go) |
+ | Skills market | `MarketSkills` lists skills.sh's most installed and what its search finds. magpie's own skills (`featuredSkills`) go first, marked official: `magpie-quota`, in [magpie-community/plugins](https://github.com/magpie-community/plugins/tree/main/skills/magpie-quota), lets an agent read `magpie quota --json` and wait with `magpie quota wait`. Until skills.sh lists one it has no count of installs and no skills.sh link (`featured`). `InstallMarketSkill` installs any of them from its repository. | [`market.go`](../../internal/library/market.go) |
+ | Skills a repository added | A check for updates (`CheckSkills`) also asks, for each GitHub repository and ref the library has skills from, GitHub's list of its files (`repoTree`, one API request, free when the ETag still matches). Only when that list has a skill folder beside the installed ones (under `newBase`, their deepest common folder) that the library doesn't have and hasn't offered does `findNew` fetch the repository for the skills' names and descriptions. `SeenSkills` records per `repo@ref` the paths the install picker showed and the ones set aside, so they aren't offered again. The finds live in memory (`newFound`) and reach the page as `View.NewSkills`; `AddNewSkills` gives each to the agents that have its repository's other skills, and `IgnoreNewSkills` sets it aside (`/api/library/skills/{add-new,ignore-new}`). | [`skillnew.go`](../../internal/library/skillnew.go), [`skillcheck.go`](../../internal/library/skillcheck.go) |
+diff --git a/internal/library/mcp_agent_signin.go b/internal/library/mcp_agent_signin.go
+index e7bcb81a..1f9b2909 100644
+--- a/internal/library/mcp_agent_signin.go
++++ b/internal/library/mcp_agent_signin.go
+@@ -9,11 +9,14 @@ import (
+ )
+ 
+ // An agent can sign in to a remote MCP server itself: Claude Code's /mcp
+-// does, and keeps the tokens in its own .credentials.json. magpie's check
+-// connects without them, so such a server answers it 401 and its row said
+-// "needs sign-in" while the agent used it fine (CyberCaius on Discord: the
+-// server signed in to in Claude Code in WSL). The check says which agents
+-// hold their own sign-in instead.
++// does, and keeps the tokens in its own .credentials.json; `codex mcp
++// login` does, keeping them in its keyring or, when its config's
++// mcp_oauth_credentials_store is file or the keyring is missing, in a
++// .credentials.json of its own. magpie's check connects without them, so
++// such a server answers it 401 and its row said "needs sign-in" while the
++// agent used it fine (CyberCaius on Discord: the server signed in to in
++// Claude Code in WSL). The check says which agents hold their own sign-in
++// instead, from the files alone: the keyrings are never read.
+ //
+ // Every target is read where it keeps its files, so an agent in a running
+ // WSL distro is read under the distro's home (wslTargetOf), as its
+@@ -62,36 +65,45 @@ func claudeCredentialsOf(t *Target) string {
+ 	return filepath.Join(filepath.Dir(t.Settings), ".credentials.json")
+ }
+ 
++// codexCredentials is the part of Codex's .credentials.json that holds its
++// MCP sign-ins: an entry per server, under the key codex-rs's
++// compute_store_key makes of its name and a 16 hex of the hash of its
++// config, each entry naming its server and URL with the tokens flattened
++// into it (codex-rs's rmcp-client/src/oauth.rs, its FallbackTokenEntry —
++// the file holds those, not the StoredOAuthTokens of the login's memory).
++// An entry with neither token is a sign-in started and not finished, and
++// one of the executor's (executor_owned) is no `codex mcp login`: codex
++// itself answers no host's lookup with either.
++type codexCredentials map[string]struct {
++	ServerName    string `json:"server_name"`
++	ServerURL     string `json:"server_url"`
++	AccessToken   string `json:"access_token"`
++	RefreshToken  string `json:"refresh_token"`
++	ExecutorOwned bool   `json:"executor_owned"`
++}
++
++// codexCredentialsOf is Codex's .credentials.json for t, beside the
++// config.toml the target already has (in CODEX_HOME, a WSL distro's for
++// one there), where codex-rs's own read of the file is; "" for any other
++// agent.
++func codexCredentialsOf(t *Target) string {
++	if id, _, _ := strings.Cut(t.Agent.ID, "@"); id != "codex" || t.MCP == nil || t.MCP.Path == "" {
++		return ""
++	}
++	return filepath.Join(filepath.Dir(t.MCP.Path), ".credentials.json")
++}
++
+ // readOwnSignIns reads each target's own MCP sign-ins. A file that can't
+ // be read or parsed says nothing of the agent: it is left out, and the
+ // check's own answer stands.
+ func readOwnSignIns() ownSignIns {
+ 	out := ownSignIns{}
+ 	for _, t := range Targets() {
+-		p := claudeCredentialsOf(t)
+-		if p == "" {
+-			continue
++		if p := claudeCredentialsOf(t); p != "" {
++			out.readClaude(t.Agent.ID, p)
+ 		}
+-		b, err := os.ReadFile(p)
+-		if err != nil {
+-			continue
+-		}
+-		var c claudeCredentials
+-		if json.Unmarshal(b, &c) != nil {
+-			continue
+-		}
+-		for k, e := range c.MCPOAuth {
+-			if e.AccessToken == "" && e.RefreshToken == "" || e.ServerURL == "" {
+-				continue
+-			}
+-			name := e.ServerName
+-			if name == "" {
+-				name, _, _ = strings.Cut(k, "|")
+-			}
+-			key := signInKey(name, e.ServerURL)
+-			if !slices.Contains(out[key], t.Agent.ID) {
+-				out[key] = append(out[key], t.Agent.ID)
+-			}
++		if p := codexCredentialsOf(t); p != "" {
++			out.readCodex(t.Agent.ID, p)
+ 		}
+ 	}
+ 	for _, ids := range out {
+@@ -99,3 +111,55 @@ func readOwnSignIns() ownSignIns {
+ 	}
+ 	return out
+ }
++
++// add names agent as signed in to a server called name at url.
++func (o ownSignIns) add(agent, name, url string) {
++	key := signInKey(name, url)
++	if !slices.Contains(o[key], agent) {
++		o[key] = append(o[key], agent)
++	}
++}
++
++// readClaude adds the sign-ins of the Claude Code whose credentials are at
++// p: its mcpOAuth entries, the key's prefix naming the server when the
++// entry itself doesn't.
++func (o ownSignIns) readClaude(agent, p string) {
++	b, err := os.ReadFile(p)
++	if err != nil {
++		return
++	}
++	var c claudeCredentials
++	if json.Unmarshal(b, &c) != nil {
++		return
++	}
++	for k, e := range c.MCPOAuth {
++		if e.AccessToken == "" && e.RefreshToken == "" || e.ServerURL == "" {
++			continue
++		}
++		name := e.ServerName
++		if name == "" {
++			name, _, _ = strings.Cut(k, "|")
++		}
++		o.add(agent, name, e.ServerURL)
++	}
++}
++
++// readCodex adds the sign-ins of the Codex whose credentials are at p: its
++// file fallback's entries, each naming its server itself; the executor's
++// say nothing of a `codex mcp login`.
++func (o ownSignIns) readCodex(agent, p string) {
++	b, err := os.ReadFile(p)
++	if err != nil {
++		return
++	}
++	var c codexCredentials
++	if json.Unmarshal(b, &c) != nil {
++		return
++	}
++	for _, e := range c {
++		if e.AccessToken == "" && e.RefreshToken == "" || e.ServerURL == "" || e.ExecutorOwned {
++			continue
++		}
++		o.add(agent, e.ServerName, e.ServerURL)
++	}
++}
+diff --git a/internal/library/mcp_agent_signin_test.go b/internal/library/mcp_agent_signin_test.go
+index 39e5ec98..f018970c 100644
+--- a/internal/library/mcp_agent_signin_test.go
++++ b/internal/library/mcp_agent_signin_test.go
+@@ -101,3 +101,102 @@ func TestCheckNamesAgentsSignedInThemselves(t *testing.T) {
+ 		t.Fatalf("no agent signed in to this URL, unreadable credentials: %+v", l)
+ 	}
+ }
++
++// codexOwnSignIn is Codex's .credentials.json after `codex mcp login` kept
++// the tokens in the file, as codex-rs's rmcp-client writes it
++// (FallbackTokenEntry in oauth.rs): an entry under the key its
++// compute_store_key makes of the name and a 16-hex hash of the server's
++// config, the tokens flattened into it; a second, unfinished sign-in (no
++// token) that codex itself doesn't answer a lookup with.
++func codexOwnSignIn(name, url string) string {
++	return `{
++  "` + name + `|0123456789abcdef":{"server_name":"` + name + `","server_url":"` + url + `","client_id":"c","access_token":"tok","refresh_token":"ref","expires_at":1893456000000,"scopes":["mcp"]},
++  "half|fedcba9876543210":{"server_name":"half","server_url":"` + url + `/half","client_id":"c","access_token":""}
++}`
++}
++
++// codexOwnSignInExecutor is one entry of the executor's own, which codex
++// never answers a host lookup with.
++func codexOwnSignInExecutor(name, url string) string {
++	return `{"` + name + `:0123456789abcdef":{"server_name":"` + name + `","server_url":"` + url + `","client_id":"c","access_token":"tok","executor_owned":true}}`
++}
++
++// A remote server signed in to in Codex itself (`codex mcp login`) was
++// "needs sign-in" in the Library, as magpie's check connects without the
++// agent's tokens. The check reads the file codex-rs falls back to when
++// mcp_oauth_credentials_store is file or the keyring is missing, beside
++// the config.toml the target already has, a distro's too, and names the
++// agents signed in; the keyring itself is never read, the executor's
++// entries are not a `codex mcp login`, and a file that can't be read or
++// parsed names nobody.
++func TestCheckNamesCodexSignedInItself(t *testing.T) {
++	h := sandbox(t)
++	// every variable the reader's places come from: Codex's folder here,
++	// and the distro's, which only its probe says
++	t.Setenv("CODEX_HOME", "")
++	checked.Lock()
++	checked.m = map[string]checkedServer{}
++	checked.Unlock()
++	root := t.TempDir()
++	// the distro's Codex, its home \\wsl.localhost\Ubuntu\home\me
++	write(t, filepath.Join(root, "home", "me", ".codex", "config.toml"), "model = \"gpt-5.5\"\n")
++	// a Windows machine running Ubuntu, whatever the OS the test runs on
++	t.Cleanup(agent.FakeWSL(map[string]string{
++		"Ubuntu": "home:/home/me\ndir:.codex\nnet:mirrored\n",
++	}, map[string]string{"Ubuntu": root}))
++	const wsl = "codex@wsl:Ubuntu"
++	if tg := targetByID(wsl); tg == nil {
++		t.Fatalf("%s isn't a target: %v", wsl, ids(Targets()))
++	}
++
++	// a server that asks every client without a token to sign in
++	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		w.Header().Set("WWW-Authenticate", `Bearer resource_metadata="http://`+r.Host+`/.well-known/oauth-protected-resource"`)
++		w.WriteHeader(401)
++	}))
++	t.Cleanup(srv.Close)
++	url := srv.URL + "/mcp"
++	ok(t)(SaveServer("", Server{Name: "linear", Transport: "http", URL: url, Agents: []string{"codex", wsl}}))
++	ok(t)(SaveServer("", Server{Name: "half", Transport: "http", URL: url + "/half", Agents: []string{wsl}}))
++
++	check := func() map[string]ServerHealth {
++		t.Helper()
++		got, err := CheckServers(context.Background(), nil, true)
++		if err != nil {
++			t.Fatal(err)
++		}
++		return got
++	}
++	if got := check()["linear"]; got.State != "auth" || len(got.AgentSignIn) != 0 {
++		t.Fatalf("no agent signed in yet: %+v", got)
++	}
++
++	// signed in in WSL's Codex only
++	write(t, filepath.Join(root, "home", "me", ".codex", ".credentials.json"), codexOwnSignIn("linear", url))
++	got := check()
++	if l := got["linear"]; l.State != "auth" || !slices.Equal(l.AgentSignIn, []string{wsl}) {
++		t.Fatalf("signed in in %s, the check says %+v", wsl, l)
++	}
++	if hf := got["half"]; len(hf.AgentSignIn) != 0 {
++		t.Fatalf("a sign-in with no token counted: %+v", hf)
++	}
++
++	// and in this computer's Codex too; a page opened again (not a fresh
++	// check) isn't given the answer from before it
++	write(t, filepath.Join(h, ".codex", ".credentials.json"), codexOwnSignIn("linear", url+"/"))
++	again, err := CheckServers(context.Background(), []string{"linear"}, false)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if l := again["linear"]; !slices.Equal(l.AgentSignIn, []string{"codex", wsl}) {
++		t.Fatalf("signed in on both sides, the check says %+v", l)
++	}
++
++	// the executor's entry isn't a `codex mcp login`, and a file that
++	// can't be read or parsed names nobody
++	write(t, filepath.Join(root, "home", "me", ".codex", ".credentials.json"), codexOwnSignInExecutor("linear", url))
++	write(t, filepath.Join(h, ".codex", ".credentials.json"), "{not json")
++	if l := check()["linear"]; l.State != "auth" || len(l.AgentSignIn) != 0 {
++		t.Fatalf("only the executor's sign-in counted, unreadable credentials: %+v", l)
++	}
++}
+-- 
+2.50.1 (Apple Git-155)
+

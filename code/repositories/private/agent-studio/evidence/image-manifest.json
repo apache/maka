@@ -1,0 +1,337 @@
+[
+  {
+    "url": "https://agent-paas-test-1323116912.cos.ap-guangzhou.myqcloud.com/1712135120033-364151a98ed04baee89b3b4bc3a5b4e0871b6a40397a0-BbpsBQ_fw1200.svg",
+    "path": "assets/images/1190fd1a3f6d89e4.svg",
+    "bytes": 378038
+  },
+  {
+    "url": "https://agent-paas-test-1323116912.cos.ap-guangzhou.myqcloud.com/1745047768917-叉腰猫.jpg",
+    "path": "assets/images/3fdc0e8f7f0e1c47.jpg",
+    "bytes": 19034
+  },
+  {
+    "url": "https://agent-paas-test-1323116912.cos.ap-guangzhou.myqcloud.com/1745050526404-Gemini_Generated_Image_i8zppoi8zppoi8zp.jpg",
+    "path": "assets/images/ec6f1bb63fdcccef.jpg",
+    "bytes": 215697
+  },
+  {
+    "url": "https://agent-paas-test-1323116912.cos.ap-guangzhou.myqcloud.com/1746697475982-猫头2.jpg",
+    "path": "assets/images/0b5aa272f6363a85.jpg",
+    "bytes": 35099
+  },
+  {
+    "url": "https://agent-paas-test-1323116912.cos.ap-guangzhou.myqcloud.com/1746698173520-猫头.jpg",
+    "path": "assets/images/1dedefd629a5406e.jpg",
+    "bytes": 216111
+  },
+  {
+    "url": "https://agent-paas-test-1323116912.cos.ap-guangzhou.myqcloud.com/1746844761340-叉腰猫.jpg",
+    "path": "assets/images/34c43ae1c6891773.jpg",
+    "bytes": 19034
+  },
+  {
+    "url": "https://agent-paas-test-1323116912.cos.ap-guangzhou.myqcloud.com/1776411326190-wyz.jpg",
+    "path": "assets/images/49d6b5e17a1f8260.jpg",
+    "bytes": 16296
+  },
+  {
+    "url": "https://agent-paas-test-1323116912.cos.ap-guangzhou.myqcloud.com/agent/image/626191746514629089.png",
+    "path": "assets/images/04113acd36ec1d60.png",
+    "bytes": 81866
+  },
+  {
+    "url": "https://agent-paas-test-1323116912.cos.ap-guangzhou.myqcloud.com/agent/image/684571756446404610.png",
+    "path": "assets/images/bb77f76217b70098.png",
+    "bytes": 52517
+  },
+  {
+    "url": "https://agent-paas-test-1323116912.cos.ap-guangzhou.myqcloud.com/agent/image/841691756434263380.png",
+    "path": "assets/images/0c541fbe7aa0b477.png",
+    "bytes": 50513
+  },
+  {
+    "url": "https://agent-paas-test-1323116912.cos.ap-guangzhou.myqcloud.com/agent/paas-llm/image/132181772431336216.png",
+    "path": "assets/images/ced2131d5d6e89f6.png",
+    "bytes": 113956
+  },
+  {
+    "url": "https://agent-paas-test-1323116912.cos.ap-guangzhou.myqcloud.com/agent/paas-llm/image/342361776937862574.png",
+    "path": "assets/images/12f0383c014c0f5a.png",
+    "bytes": 144023
+  },
+  {
+    "url": "https://agent-paas-test-1323116912.cos.ap-guangzhou.myqcloud.com/agent/paas-llm/image/365671776062048695.png",
+    "path": "assets/images/8a8464ebd49b2e12.png",
+    "bytes": 123560
+  },
+  {
+    "url": "https://agent-paas-test-1323116912.cos.ap-guangzhou.myqcloud.com/agent/paas-llm/image/717561779526767177.png",
+    "path": "assets/images/937462cec9bf5cef.png",
+    "bytes": 125361
+  },
+  {
+    "url": "https://agent-paas-test-1323116912.cos.ap-guangzhou.myqcloud.com/agent/paas-llm/image/730431779711396291.png",
+    "path": "assets/images/55e49426b8677aa0.png",
+    "bytes": 129235
+  },
+  {
+    "url": "https://agent-paas-test-1323116912.cos.ap-guangzhou.myqcloud.com/agent/paas-llm/image/812211779779707894.png",
+    "path": "assets/images/c822c0e8de72fc59.png",
+    "bytes": 163112
+  },
+  {
+    "url": "https://agent-paas-test-1323116912.cos.ap-guangzhou.myqcloud.com/agent/paas-llm/image/909461788951493796.png",
+    "path": "assets/images/a90e50e8b50ebe39.png",
+    "bytes": 141936
+  },
+  {
+    "url": "https://agent-paas-test-1323116912.cos.ap-guangzhou.myqcloud.com/agent/paas-llm/image/969421779688780533.png",
+    "path": "assets/images/5b063e9735e7c1f5.png",
+    "bytes": 131669
+  },
+  {
+    "url": "https://ai-copilot-1323116912.cos.ap-guangzhou.myqcloud.com/web-agent-paas/assets/c-logo-6864138e.png",
+    "path": "assets/images/5f3bc0f0a9cb9cce.png",
+    "bytes": 7060
+  },
+  {
+    "url": "https://ai-copilot.cos.clife.cn/web-agent-paas/assets/c-logo-6864138e.png",
+    "path": "assets/c-logo-6864138e.png",
+    "bytes": 7060
+  },
+  {
+    "url": "https://ai-copilot.cos.clife.cn/web-agent-paas/assets/images/AI-create-CCGhteeY.png",
+    "path": "assets/images/AI-create-CCGhteeY.png",
+    "bytes": 9313
+  },
+  {
+    "url": "https://ai-copilot.cos.clife.cn/web-agent-paas/assets/images/AI-create-dis-CWYi5dBK.png",
+    "path": "assets/images/AI-create-dis-CWYi5dBK.png",
+    "bytes": 10490
+  },
+  {
+    "url": "https://ai-copilot.cos.clife.cn/web-agent-paas/assets/images/Workflow-save-BgoV9DYG.png",
+    "path": "assets/images/Workflow-save-BgoV9DYG.png",
+    "bytes": 4341
+  },
+  {
+    "url": "https://ai-copilot.cos.clife.cn/web-agent-paas/assets/images/add-D4gg4Yhx.png",
+    "path": "assets/images/add-D4gg4Yhx.png",
+    "bytes": 5967
+  },
+  {
+    "url": "https://ai-copilot.cos.clife.cn/web-agent-paas/assets/images/ai-btn-icon-S0e_f2wj.png",
+    "path": "assets/images/ai-btn-icon-S0e_f2wj.png",
+    "bytes": 9078
+  },
+  {
+    "url": "https://ai-copilot.cos.clife.cn/web-agent-paas/assets/images/api-icon-BtRA6oDA.png",
+    "path": "assets/images/api-icon-BtRA6oDA.png",
+    "bytes": 4515
+  },
+  {
+    "url": "https://ai-copilot.cos.clife.cn/web-agent-paas/assets/images/app-HyR_3gKT.png",
+    "path": "assets/images/app-HyR_3gKT.png",
+    "bytes": 8185
+  },
+  {
+    "url": "https://ai-copilot.cos.clife.cn/web-agent-paas/assets/images/c-logo-CScNlfvD.png",
+    "path": "assets/images/c-logo-CScNlfvD.png",
+    "bytes": 7060
+  },
+  {
+    "url": "https://ai-copilot.cos.clife.cn/web-agent-paas/assets/images/chat-send-BLPMymKl.png",
+    "path": "assets/images/chat-send-BLPMymKl.png",
+    "bytes": 5923
+  },
+  {
+    "url": "https://ai-copilot.cos.clife.cn/web-agent-paas/assets/images/chat-send-active-D8NkDnYM.png",
+    "path": "assets/images/chat-send-active-D8NkDnYM.png",
+    "bytes": 7548
+  },
+  {
+    "url": "https://ai-copilot.cos.clife.cn/web-agent-paas/assets/images/container-icon-AJLKZR9N.png",
+    "path": "assets/images/container-icon-AJLKZR9N.png",
+    "bytes": 25961
+  },
+  {
+    "url": "https://ai-copilot.cos.clife.cn/web-agent-paas/assets/images/create-app-Bsf_xUhL.png",
+    "path": "assets/images/create-app-Bsf_xUhL.png",
+    "bytes": 10074
+  },
+  {
+    "url": "https://ai-copilot.cos.clife.cn/web-agent-paas/assets/images/createConfig-BoW4U_4s.png",
+    "path": "assets/images/createConfig-BoW4U_4s.png",
+    "bytes": 11304
+  },
+  {
+    "url": "https://ai-copilot.cos.clife.cn/web-agent-paas/assets/images/dialogue-JCLbS7v5.svg",
+    "path": "assets/images/dialogue-JCLbS7v5.svg",
+    "bytes": 5963
+  },
+  {
+    "url": "https://ai-copilot.cos.clife.cn/web-agent-paas/assets/images/dialogue-afqbZ0Ev.svg",
+    "path": "assets/images/dialogue-afqbZ0Ev.svg",
+    "bytes": 5984
+  },
+  {
+    "url": "https://ai-copilot.cos.clife.cn/web-agent-paas/assets/images/download-icon-BfABkn7k.svg",
+    "path": "assets/images/download-icon-BfABkn7k.svg",
+    "bytes": 11157
+  },
+  {
+    "url": "https://ai-copilot.cos.clife.cn/web-agent-paas/assets/images/empty-BD3--k6n.png",
+    "path": "assets/images/empty-BD3--k6n.png",
+    "bytes": 13208
+  },
+  {
+    "url": "https://ai-copilot.cos.clife.cn/web-agent-paas/assets/images/execute-confirm-icon-CAAZHIaX.png",
+    "path": "assets/images/execute-confirm-icon-CAAZHIaX.png",
+    "bytes": 20991
+  },
+  {
+    "url": "https://ai-copilot.cos.clife.cn/web-agent-paas/assets/images/help-icon-bg-C1T-6vrK.png",
+    "path": "assets/images/help-icon-bg-C1T-6vrK.png",
+    "bytes": 135311
+  },
+  {
+    "url": "https://ai-copilot.cos.clife.cn/web-agent-paas/assets/images/icon_prompt_word-C_D77RHe.png",
+    "path": "assets/images/icon_prompt_word-C_D77RHe.png",
+    "bytes": 7147
+  },
+  {
+    "url": "https://ai-copilot.cos.clife.cn/web-agent-paas/assets/images/icon_upload_prompt_word-DVT6zcOM.png",
+    "path": "assets/images/icon_upload_prompt_word-DVT6zcOM.png",
+    "bytes": 4160
+  },
+  {
+    "url": "https://ai-copilot.cos.clife.cn/web-agent-paas/assets/images/image-NGR9vOoH.png",
+    "path": "assets/images/image-NGR9vOoH.png",
+    "bytes": 5420
+  },
+  {
+    "url": "https://ai-copilot.cos.clife.cn/web-agent-paas/assets/images/intent-icon-DM0fWKOx.png",
+    "path": "assets/images/intent-icon-DM0fWKOx.png",
+    "bytes": 4622
+  },
+  {
+    "url": "https://ai-copilot.cos.clife.cn/web-agent-paas/assets/images/logo-F9gVWBYO.png",
+    "path": "assets/images/logo-F9gVWBYO.png",
+    "bytes": 56032
+  },
+  {
+    "url": "https://ai-copilot.cos.clife.cn/web-agent-paas/assets/images/memory-setting-QN6BU8du.png",
+    "path": "assets/images/memory-setting-QN6BU8du.png",
+    "bytes": 4247
+  },
+  {
+    "url": "https://ai-copilot.cos.clife.cn/web-agent-paas/assets/images/no-code-icon-rNBPSyAk.png",
+    "path": "assets/images/no-code-icon-rNBPSyAk.png",
+    "bytes": 8112
+  },
+  {
+    "url": "https://ai-copilot.cos.clife.cn/web-agent-paas/assets/images/parameter-extractor-icon-l9LxNWcG.png",
+    "path": "assets/images/parameter-extractor-icon-l9LxNWcG.png",
+    "bytes": 16829
+  },
+  {
+    "url": "https://ai-copilot.cos.clife.cn/web-agent-paas/assets/images/plugin-empty-Di5EKf-V.png",
+    "path": "assets/images/plugin-empty-Di5EKf-V.png",
+    "bytes": 29030
+  },
+  {
+    "url": "https://ai-copilot.cos.clife.cn/web-agent-paas/assets/images/plugin-logo-zkC3hlTt.png",
+    "path": "assets/images/plugin-logo-zkC3hlTt.png",
+    "bytes": 18164
+  },
+  {
+    "url": "https://ai-copilot.cos.clife.cn/web-agent-paas/assets/images/plugin-logo2-CbId6gow.png",
+    "path": "assets/images/plugin-logo2-CbId6gow.png",
+    "bytes": 21072
+  },
+  {
+    "url": "https://ai-copilot.cos.clife.cn/web-agent-paas/assets/images/question-knowledge-l_CyomPN.svg",
+    "path": "assets/images/question-knowledge-l_CyomPN.svg",
+    "bytes": 5239
+  },
+  {
+    "url": "https://ai-copilot.cos.clife.cn/web-agent-paas/assets/images/radar-wbVBqfxs.jpg",
+    "path": "assets/images/radar-wbVBqfxs.jpg",
+    "bytes": 83885
+  },
+  {
+    "url": "https://ai-copilot.cos.clife.cn/web-agent-paas/assets/images/send-BuMnaeCV.png",
+    "path": "assets/images/send-BuMnaeCV.png",
+    "bytes": 5177
+  },
+  {
+    "url": "https://ai-copilot.cos.clife.cn/web-agent-paas/assets/images/send-dis-BgU_5Lxq.png",
+    "path": "assets/images/send-dis-BgU_5Lxq.png",
+    "bytes": 4266
+  },
+  {
+    "url": "https://ai-copilot.cos.clife.cn/web-agent-paas/assets/images/user-img-DUrF3Gbp.png",
+    "path": "assets/images/user-img-DUrF3Gbp.png",
+    "bytes": 13151
+  },
+  {
+    "url": "https://ai-copilot.cos.clife.cn/web-agent-paas/assets/images/workflow-icon-CXgiFgat.png",
+    "path": "assets/images/workflow-icon-CXgiFgat.png",
+    "bytes": 5082
+  },
+  {
+    "url": "https://itest.clife.net/web-agent-paas/assets/c-logo-6864138e.png",
+    "path": "assets/images/54eaffa2099adf24.png",
+    "bytes": 5501
+  },
+  {
+    "url": "https://meiye.cos.clife.cn/material/T000000/181a5811978f4bf2aff50f55a4761df5.svg",
+    "path": "assets/images/acaac22344e68da1.svg",
+    "bytes": 954
+  },
+  {
+    "url": "https://meiye.cos.clife.cn/material/T000000/209e1407eeb1485fa761eaf7aacff8ac.png",
+    "path": "assets/images/3c62001978ce6b76.png",
+    "bytes": 10074
+  },
+  {
+    "url": "https://meiye.cos.clife.cn/material/T000000/233b5c18b45b4c73a15a1cf970d9a95b.png",
+    "path": "assets/images/64119b18c2c73ddb.png",
+    "bytes": 2809
+  },
+  {
+    "url": "https://meiye.cos.clife.cn/material/T000000/398ac8bac0aa431fba23b363fdcb0311.png",
+    "path": "assets/images/b72e462491c1d034.png",
+    "bytes": 2921
+  },
+  {
+    "url": "https://meiye.cos.clife.cn/material/T000000/4e6bd59bdaed4b4ca7dcfaed8cda2548.svg",
+    "path": "assets/images/376988f3af061358.svg",
+    "bytes": 1589
+  },
+  {
+    "url": "https://meiye.cos.clife.cn/material/T000000/54f2d247848748bd90a027a3d6930652.png",
+    "path": "assets/images/364b04b411a2a9b8.png",
+    "bytes": 2703
+  },
+  {
+    "url": "https://meiye.cos.clife.cn/material/T000000/7c38fad6d5d44fe881d9004adfc070df.svg",
+    "path": "assets/images/a3074e5d1e55004c.svg",
+    "bytes": 1884
+  },
+  {
+    "url": "https://meiye.cos.clife.cn/material/T000000/8af8c98507b24b6d9ccca243bb8285ae.svg",
+    "path": "assets/images/5840e29836cf6be5.svg",
+    "bytes": 1307
+  },
+  {
+    "url": "https://meiye.cos.clife.cn/material/T000000/dba86eb2bc454934a34387df001e623a.png",
+    "path": "assets/images/d0b6dcb92b839501.png",
+    "bytes": 2236
+  },
+  {
+    "url": "https://meiye.cos.clife.cn/material/T000000/e7bfee5693df403584f0110f57c6f641.svg",
+    "path": "assets/images/fca88a4494e25e78.svg",
+    "bytes": 1012
+  }
+]

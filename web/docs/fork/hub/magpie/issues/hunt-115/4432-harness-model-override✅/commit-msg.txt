@@ -1,0 +1,16 @@
+fix(gateway): a Codex backend's relay draws the gpt-image family it serves (#4432)
+
+A harness asking for its own image model by the bare name its vendor
+gives it (Codex CLI asks its provider for gpt-image-2) was turned away
+by magpie when the provider is a Codex backend relay (sub2api) whose
+model list names another of the family, or none: drawsFamily admitted
+only a ChatGPT account and a Grok subscription, so resolveDrawing
+answered 404 "magpie knows no model "gpt-image-2" to draw with", and a
+Codex turn's own provider lost the drawing to magpie's Settings pick,
+the harness's own model overridden. The relay serves the ChatGPT
+backend's images API, which draws the same for any gpt-image-* name
+(#1865), as #870 had it draw its listed ones; it draws the family the
+same way, the vendor refusing in its own words one it doesn't serve.
+
+Fixes #4432
+Generated-by: GLM-5.3-Flash (ZCode)

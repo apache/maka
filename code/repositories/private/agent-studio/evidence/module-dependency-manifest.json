@@ -1,0 +1,156 @@
+[
+  {
+    "url": "https://ai-copilot.cos.clife.cn/web-agent-paas/assets/css/ParamSetting-D27KUUQf.css",
+    "path": "assets/css/ParamSetting-D27KUUQf.css",
+    "bytes": 22624,
+    "sha256": "01a7149b8a184941748b1bf3c4afd10ba5f81cd52788a3e10af154bac8ffb9c9",
+    "content_type": "text/css"
+  },
+  {
+    "url": "https://ai-copilot.cos.clife.cn/web-agent-paas/assets/css/endModal-C_Lu8JxV.css",
+    "path": "assets/css/endModal-C_Lu8JxV.css",
+    "bytes": 20827,
+    "sha256": "2f121b6b98b209827ab7fd49810a635b38b71562ac0312e335f11337831dd280",
+    "content_type": "text/css"
+  },
+  {
+    "url": "https://ai-copilot.cos.clife.cn/web-agent-paas/assets/css/graph-BrF9Fea5.css",
+    "path": "assets/css/graph-BrF9Fea5.css",
+    "bytes": 4846,
+    "sha256": "9f9a524eb4a829aa79ea9a13933c9edff8d3d446eb5ac16770438594b9794658",
+    "content_type": "text/css"
+  },
+  {
+    "url": "https://ai-copilot.cos.clife.cn/web-agent-paas/assets/fonts/DouyinSansBold-DN5llgv1.otf",
+    "path": "assets/fonts/DouyinSansBold-DN5llgv1.otf",
+    "bytes": 2082964,
+    "sha256": "64ca83ed532c6e64f0c1344de1def681540b21e92f8e5e52482bf1b3cf8ee060",
+    "content_type": "application/x-font-otf"
+  },
+  {
+    "url": "https://ai-copilot.cos.clife.cn/web-agent-paas/assets/fonts/iconfont-BNZqNU_C.woff2?t=1705288569510",
+    "skipped": "不属于观察到的静态发布目录"
+  },
+  {
+    "url": "https://ai-copilot.cos.clife.cn/web-agent-paas/assets/fonts/iconfont-BQr0IVPc.ttf?t=1705288569510",
+    "skipped": "不属于观察到的静态发布目录"
+  },
+  {
+    "url": "https://ai-copilot.cos.clife.cn/web-agent-paas/assets/fonts/iconfont-B_2O-uV2.woff?t=1705288569510",
+    "skipped": "不属于观察到的静态发布目录"
+  },
+  {
+    "url": "https://ai-copilot.cos.clife.cn/web-agent-paas/assets/fonts/iconfont-Bh2-O_VG.woff2?t=1723775112771",
+    "skipped": "不属于观察到的静态发布目录"
+  },
+  {
+    "url": "https://ai-copilot.cos.clife.cn/web-agent-paas/assets/fonts/iconfont-BwFTJhaK.woff?t=1723775112771",
+    "skipped": "不属于观察到的静态发布目录"
+  },
+  {
+    "url": "https://ai-copilot.cos.clife.cn/web-agent-paas/assets/fonts/iconfont-DViXUvFI.ttf?t=1723775112771",
+    "skipped": "不属于观察到的静态发布目录"
+  },
+  {
+    "url": "https://ai-copilot.cos.clife.cn/web-agent-paas/assets/images/announcement-bg@2x-CpBDvbJ1.png",
+    "path": "assets/images/announcement-bg@2x-CpBDvbJ1.png",
+    "bytes": 29390,
+    "sha256": "41f6f82a6171784c3976c46a1cbef5dc387794252c4554cfee7d5e5a629e7221",
+    "content_type": "image/png"
+  },
+  {
+    "url": "https://ai-copilot.cos.clife.cn/web-agent-paas/assets/images/message-bg-D3zmIadi.png",
+    "path": "assets/images/message-bg-D3zmIadi.png",
+    "bytes": 123932,
+    "sha256": "ec4d0cf525b11690d64169f6eedc0d6939f859f8ff65b5a61e2e3422bd7e9216",
+    "content_type": "image/png"
+  },
+  {
+    "url": "https://ai-copilot.cos.clife.cn/web-agent-paas/assets/images/nextIcon-active.png",
+    "error": "HTTP Error 404: Not Found"
+  },
+  {
+    "url": "https://ai-copilot.cos.clife.cn/web-agent-paas/assets/images/nextIcon.png",
+    "error": "HTTP Error 404: Not Found"
+  },
+  {
+    "url": "https://ai-copilot.cos.clife.cn/web-agent-paas/assets/js/OptimizePrompt-BBfC54FK.js",
+    "path": "assets/js/OptimizePrompt-BBfC54FK.js",
+    "bytes": 1693,
+    "sha256": "ff818605c16f75f33931f8804be00f15d51fae3d47a2ae23e5e3edca789f6795",
+    "content_type": "application/javascript",
+    "source_map_directives": []
+  },
+  {
+    "url": "https://ai-copilot.cos.clife.cn/web-agent-paas/assets/js/ParamSetting-CquF8dGB.js",
+    "path": "assets/js/ParamSetting-CquF8dGB.js",
+    "bytes": 166305,
+    "sha256": "1bb530139a52657922524da0563130ad8aedd36edb90af0eca9f17f7d4eaf2ae",
+    "content_type": "application/javascript",
+    "source_map_directives": []
+  },
+  {
+    "url": "https://ai-copilot.cos.clife.cn/web-agent-paas/assets/js/ViewGraphDetailModal-yDX1imZo.js",
+    "path": "assets/js/ViewGraphDetailModal-yDX1imZo.js",
+    "bytes": 1223,
+    "sha256": "1213dec36c4e60ab767472638eff2add80e26a00b22184ca9732eaa3d906b45f",
+    "content_type": "application/javascript",
+    "source_map_directives": []
+  },
+  {
+    "url": "https://ai-copilot.cos.clife.cn/web-agent-paas/assets/js/endModal-DdGobCrK.js",
+    "path": "assets/js/endModal-DdGobCrK.js",
+    "bytes": 382008,
+    "sha256": "b4507e00a0b45b768aa25156afd519cb108e7f1ebf3beb3320173a2f61ddc6aa",
+    "content_type": "application/javascript",
+    "source_map_directives": []
+  },
+  {
+    "url": "https://ai-copilot.cos.clife.cn/web-agent-paas/assets/js/graph-Co13WHYI.js",
+    "path": "assets/js/graph-Co13WHYI.js",
+    "bytes": 15268,
+    "sha256": "4335bfd41baa118412d18e0b826a4d1fcb4d58149e38dc837c67481b0d26827e",
+    "content_type": "application/javascript",
+    "source_map_directives": []
+  },
+  {
+    "url": "https://ai-copilot.cos.clife.cn/web-agent-paas/assets/js/wecom.prod-23KHA6Bu.js",
+    "path": "assets/js/wecom.prod-23KHA6Bu.js",
+    "bytes": 52894,
+    "sha256": "8dbc46892e4d8697f785765f7a57ad90d055bb31021bdf24b1a08d6db964cf77",
+    "content_type": "application/javascript",
+    "source_map_directives": []
+  },
+  {
+    "url": "https://ai-copilot.cos.clife.cn/web-agent-paas/assets/js/withCommonModal-DtIjzNPg.js",
+    "path": "assets/js/withCommonModal-DtIjzNPg.js",
+    "bytes": 521,
+    "sha256": "007e8d43ac2e48f06de1204b3007f4a5db7d4fb922824852a0d27ce2fd77842d",
+    "content_type": "application/javascript",
+    "source_map_directives": []
+  },
+  {
+    "url": "https://ai-copilot.cos.clife.cn/web-agent-paas/assets/js/worker-json-DgwNIOck.js",
+    "path": "assets/js/worker-json-DgwNIOck.js",
+    "bytes": 52462,
+    "sha256": "b183eeb3f2af9f4be6f4f0f4395e36de6e81e2e87121c7bdb0358eed300ab9ad",
+    "content_type": "application/javascript",
+    "source_map_directives": []
+  },
+  {
+    "url": "https://ai-copilot.cos.clife.cn/web-agent-paas/assets/js/wxqy-Cy6LR87U-CxTx--Ov.js",
+    "path": "assets/js/wxqy-Cy6LR87U-CxTx--Ov.js",
+    "bytes": 1695,
+    "sha256": "5ef4c614d7606a33b3cb2bb53ffc41269f7f29e200fadc3c6757890b50d6d509",
+    "content_type": "application/javascript",
+    "source_map_directives": []
+  },
+  {
+    "url": "https://ai-copilot.cos.clife.cn/web-agent-paas/assets/js/zgt-C2Rsu3GL-WREyr5gV.js",
+    "path": "assets/js/zgt-C2Rsu3GL-WREyr5gV.js",
+    "bytes": 1226,
+    "sha256": "3c2452956185f9753749ae8e39deeac9fd97fc1995bafea579a18d2fd7c85f80",
+    "content_type": "application/javascript",
+    "source_map_directives": []
+  }
+]

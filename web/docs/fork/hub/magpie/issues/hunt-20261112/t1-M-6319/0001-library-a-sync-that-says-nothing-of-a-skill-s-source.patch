@@ -1,0 +1,167 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Thu, 12 Nov 2026 23:34:22 +0800
+Subject: [PATCH] library: a sync that says nothing of a skill's source doesn't
+ unbind it (#6319)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+A copy of a pack skill that Group again bound to the repository carries
+the binding as its Source (noteFrom sets it once the library's own copy
+matches the repository file for file). The next sync of a bundle from a
+computer that never grouped it — Source nil, From empty, nothing said of
+the skill's origin — wrote that nil over the binding: Put built the skill
+back from the bundle alone, and sameSource only keeps what this computer
+has when the two sources are the same, which a nil and a set one are not.
+The skill stopped updating from the repository it was bound to (yetone's
+repro: TestRegroupAfterOldSync without the extra file in b's bundle).
+
+Put now keeps what this computer found when the bundle says nothing at
+all: the Source (with the From beside it) stays until a bundle names a
+source of its own, as an ungroup here clears it. A bundle that names
+another source still writes over it, as before.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/library/carry.go           | 14 ++++-
+ internal/library/carry_from_test.go | 89 +++++++++++++++++++++++++++++
+ 2 files changed, 102 insertions(+), 1 deletion(-)
+
+diff --git a/internal/library/carry.go b/internal/library/carry.go
+index 6e9952c6b..f1272a6bc 100644
+--- a/internal/library/carry.go
++++ b/internal/library/carry.go
+@@ -531,12 +531,24 @@ func Put(b *Bundle) (*Result, error) {
+ 			// this one has found itself (Group again) for the same skill,
+ 			// which a bundle from before From was carried says nothing of
+ 			n.From = s.From
+-			if cur := l.skill(s.Name); cur != nil && sameSource(cur.Source, s.Source) {
++			cur := l.skill(s.Name)
++			if cur != nil && sameSource(cur.Source, s.Source) {
+ 				if n.From == "" {
+ 					n.From = cur.From
+ 				}
+ 				n.Gone = cur.Gone // kept on this computer only
+ 			}
++			// a bundle that says nothing of where a skill came from — one
++			// from a computer that never grouped it — doesn't unbind what
++			// this computer found itself (noteFrom's Source, #6319): the
++			// finding stays until a bundle names a source of its own, as
++			// an ungroup here clears it
++			if cur != nil && s.Source == nil && cur.Source != nil {
++				n.Source = cur.Source
++				if n.From == "" {
++					n.From = cur.From
++				}
++			}
+ 			skills = append(skills, n)
+ 			if keep[s.Name] {
+ 				continue
+diff --git a/internal/library/carry_from_test.go b/internal/library/carry_from_test.go
+index 1af2525fa..dcc22b9de 100644
+--- a/internal/library/carry_from_test.go
++++ b/internal/library/carry_from_test.go
+@@ -4,6 +4,7 @@ import (
+ 	"encoding/json"
+ 	"net/http"
+ 	"net/http/httptest"
++	"os"
+ 	"path/filepath"
+ 	"strings"
+ 	"testing"
+@@ -125,3 +126,91 @@ func TestRegroupAfterOldSync(t *testing.T) {
+ 		t.Errorf("b after a sync: %q", r)
+ 	}
+ }
++
++// The maintainer's repro (#6319): without a file of its own in b's bundle,
++// the regroup binds b to the pack's repository (noteFrom sets the Source),
++// and the next sync of the same bundle — from a computer that never
++// grouped it, so it says nothing of where b came from — must not unbind
++// what this computer found.
++func TestRegroupStaysAfterASyncThatKnowsNothing(t *testing.T) {
++	h := sandbox(t)
++	pack := map[string]string{
++		"skills/a/SKILL.md": "---\nname: a\ndescription: A\n---\nA\n",
++		"skills/b/SKILL.md": "---\nname: b\ndescription: B\n---\nB\n",
++	}
++	tar := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		if strings.TrimPrefix(r.URL.Path, "/tar/") != "someone/pack" {
++			http.NotFound(w, r)
++			return
++		}
++		w.Write(tarball(t, pack))
++	}))
++	t.Cleanup(tar.Close)
++	oldT := tarballURL
++	tarballURL = func(repo, ref string) string { return tar.URL + "/tar/" + repo }
++	t.Cleanup(func() { tarballURL = oldT })
++
++	write(t, filepath.Join(h, "x/a/SKILL.md"), pack["skills/a/SKILL.md"])
++	write(t, filepath.Join(h, "x/b/SKILL.md"), pack["skills/b/SKILL.md"])
++	b := &Bundle{Skills: []*CarriedSkill{
++		{Name: "a", Source: &Source{Kind: "github", Repo: "someone/pack", Path: "skills/a"}, Agents: []string{}, Files: map[string][]byte{"SKILL.md": []byte(pack["skills/a/SKILL.md"])}},
++		{Name: "b", Agents: []string{}, Files: map[string][]byte{"SKILL.md": []byte(pack["skills/b/SKILL.md"])}}, // no extra file
++	}}
++	ok(t)(Put(b))
++	if r := repoIn(t)["b"]; r != "" {
++		t.Fatalf("b before: %q", r)
++	}
++	if n, err := RegroupSkills(); err != nil || n != 1 {
++		t.Fatalf("regroup: %d %v", n, err)
++	}
++	if r := repoIn(t)["b"]; r != "someone/pack" {
++		t.Errorf("b after: %q", r)
++	}
++	// and the next sync of the same old bundle doesn't undo it
++	raw, _ := os.ReadFile(path())
++	t.Logf("RAW BEFORE 2ND PUT: %s", raw)
++	ok(t)(Put(b))
++	if r := repoIn(t)["b"]; r != "someone/pack" {
++		t.Errorf("b after a sync: %q", r)
++	}
++}
++
++func TestRepro6319Probe(t *testing.T) {
++	h := sandbox(t)
++	pack := map[string]string{
++		"skills/a/SKILL.md": "---\nname: a\ndescription: A\n---\nA\n",
++		"skills/b/SKILL.md": "---\nname: b\ndescription: B\n---\nB\n",
++	}
++	tar := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		if strings.TrimPrefix(r.URL.Path, "/tar/") != "someone/pack" {
++			http.NotFound(w, r)
++			return
++		}
++		w.Write(tarball(t, pack))
++	}))
++	t.Cleanup(tar.Close)
++	oldT := tarballURL
++	tarballURL = func(repo, ref string) string { return tar.URL + "/tar/" + repo }
++	t.Cleanup(func() { tarballURL = oldT })
++	write(t, filepath.Join(h, "x/a/SKILL.md"), pack["skills/a/SKILL.md"])
++	write(t, filepath.Join(h, "x/b/SKILL.md"), pack["skills/b/SKILL.md"])
++	b := &Bundle{Skills: []*CarriedSkill{
++		{Name: "a", Source: &Source{Kind: "github", Repo: "someone/pack", Path: "skills/a"}, Agents: []string{}, Files: map[string][]byte{"SKILL.md": []byte(pack["skills/a/SKILL.md"])}},
++		{Name: "b", Agents: []string{}, Files: map[string][]byte{"SKILL.md": []byte(pack["skills/b/SKILL.md"])}},
++	}}
++	ok(t)(Put(b))
++	if n, err := RegroupSkills(); err != nil || n != 1 {
++		t.Fatalf("regroup: %d %v", n, err)
++	}
++	l, _ := Read(nil)
++	for _, s := range l.Skills {
++		t.Logf("before 2nd Put: %s Repo=%q", s.Name, s.Repo)
++	}
++	ok(t)(Put(b))
++	l2, _ := Read(nil)
++	for _, s := range l2.Skills {
++		t.Logf("after 2nd Put:  %s Repo=%q", s.Name, s.Repo)
++	}
++	raw, _ := os.ReadFile(path())
++	t.Logf("raw: %s", raw)
++}
+-- 
+2.50.1 (Apple Git-155)
+

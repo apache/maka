@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="30px" height="30px" viewBox="0 0 30 30" version="1.1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+    <title>set-icon/open/1</title>
+    <defs>
+        <linearGradient x1="80.0360977%" y1="22.1015241%" x2="50%" y2="100%" id="linearGradient-1">
+            <stop stop-color="#CFCFCF" offset="0%"></stop>
+            <stop stop-color="#FFFFFF" offset="100%"></stop>
+        </linearGradient>
+    </defs>
+    <g id="set-icon/open/1" stroke="none" stroke-width="1" fill="none" fill-rule="evenodd">
+        <g id="icon">
+            <line x1="17.5" y1="12.5" x2="10" y2="20" id="路径-4" stroke="url(#linearGradient-1)" stroke-width="3"></line>
+            <polygon id="路径" fill="#FFFFFF" fill-rule="nonzero" points="20.5 9.5 20.5 18.5895901 17.5 18.5895901 17.5 12.5 11.4814234 12.5 11.4814234 9.5"></polygon>
+        </g>
+    </g>
+</svg>

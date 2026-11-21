@@ -1,0 +1,135 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Sat, 7 Nov 2026 03:48:20 +0800
+Subject: [PATCH] candidate (hj-smith #5518): no health pings on the Code
+ Assist hosts, rebased onto 1fd0bb967
+
+---
+ internal/netproxy/codeassist_ping_test.go | 60 +++++++++++++++++++++++
+ internal/netproxy/netproxy.go             | 23 ++++++++-
+ 2 files changed, 82 insertions(+), 1 deletion(-)
+ create mode 100644 internal/netproxy/codeassist_ping_test.go
+
+diff --git a/internal/netproxy/codeassist_ping_test.go b/internal/netproxy/codeassist_ping_test.go
+new file mode 100644
+index 000000000..524490c83
+--- /dev/null
++++ b/internal/netproxy/codeassist_ping_test.go
+@@ -0,0 +1,60 @@
++package netproxy
++
++import (
++	"context"
++	"errors"
++	"net"
++	"net/http"
++	"testing"
++	"time"
++)
++
++// Observe the transport selected by the real dispatcher, without leaving
++// the machine. Google's quiet model streams must not inherit the 10s
++// health PING, while other hosts and the base transport still have it.
++func TestCodeAssistDoesNotSendHealthPings(t *testing.T) {
++	for _, host := range []string{"cloudcode-pa.googleapis.com", "daily-cloudcode-pa.googleapis.com", "DAILY-CLOUDCODE-PA.GOOGLEAPIS.COM."} {
++		for _, proxy := range []string{"", "direct"} {
++			t.Run(host+"/"+proxy, func(t *testing.T) {
++				stop := errors.New("test: no network")
++				base := &http.Transport{
++					HTTP2:       &http.HTTP2Config{SendPingTimeout: time.Second, PingTimeout: 2 * time.Second, WriteByteTimeout: 3 * time.Second},
++					DialContext: func(context.Context, string, string) (net.Conn, error) { return nil, stop },
++				}
++				d := Dispatch(base).(*dispatch)
++				req, err := http.NewRequestWithContext(With(context.Background(), proxy), "POST", "https://"+host+"/v1internal:streamGenerateContent?alt=sse", nil)
++				if err != nil {
++					t.Fatal(err)
++				}
++				if _, err := d.RoundTrip(req); !errors.Is(err, stop) {
++					t.Fatalf("request: %v", err)
++				}
++				defer d.CloseIdleConnections()
++				if len(d.own) != 1 {
++					t.Fatalf("Code Assist used %d isolated transports; want 1", len(d.own))
++				}
++				for _, got := range d.own {
++					if got.HTTP2 == nil || got.HTTP2.SendPingTimeout != 0 {
++						t.Fatalf("Google stream still gets health pings: %+v", got.HTTP2)
++					}
++					if got.HTTP2.PingTimeout != 2*time.Second || got.HTTP2.WriteByteTimeout != 3*time.Second {
++						t.Fatalf("other HTTP/2 limits changed: %+v", got.HTTP2)
++					}
++				}
++				if base.HTTP2.SendPingTimeout != time.Second {
++					t.Fatal("Google's policy changed the shared base transport")
++				}
++			})
++		}
++	}
++}
++
++func TestCodeAssistPingPolicyLeavesOtherHostsAlone(t *testing.T) {
++	for _, host := range []string{"example.com", "generativelanguage.googleapis.com", "cloudcode-pa.googleapis.com.example.com", "not-cloudcode-pa.googleapis.com"} {
++		t.Run(host, func(t *testing.T) {
++			if codeAssistHost(host) {
++				t.Fatal("unrelated host matched Code Assist")
++			}
++		})
++	}
++}
+diff --git a/internal/netproxy/netproxy.go b/internal/netproxy/netproxy.go
+index b92bda7f8..4875c5c71 100644
+--- a/internal/netproxy/netproxy.go
++++ b/internal/netproxy/netproxy.go
+@@ -198,13 +198,14 @@ type route struct {
+ 	choice    string
+ 	h1        bool
+ 	unchecked string
++	noPing    bool
+ }
+ 
+ func (d *dispatch) RoundTrip(req *http.Request) (*http.Response, error) {
+ 	if d.moved() {
+ 		d.CloseIdleConnections()
+ 	}
+-	r := route{choice: choiceOf(req.Context()), h1: HTTP1 != nil && HTTP1(req.URL) || http1Asked(req) || overHTTP1(req.Context()) || h2BrokenFor(req), unchecked: uncheckedHost(req)}
++	r := route{choice: choiceOf(req.Context()), h1: HTTP1 != nil && HTTP1(req.URL) || http1Asked(req) || overHTTP1(req.Context()) || h2BrokenFor(req), unchecked: uncheckedHost(req), noPing: codeAssistHost(req.URL.Hostname())}
+ 	t := d.base
+ 	if r != (route{}) {
+ 		t = d.transport(r)
+@@ -225,6 +226,17 @@ func (d *dispatch) RoundTrip(req *http.Request) (*http.Response, error) {
+ 	return res, err
+ }
+ 
++// codeAssistHost names Google's production and daily Code Assist edges,
++// used by Gemini CLI and Antigravity. Other Google APIs keep their health
++// checks, as do hosts whose names merely contain one of these names.
++func codeAssistHost(host string) bool {
++	switch strings.TrimSuffix(strings.ToLower(host), ".") {
++	case "cloudcode-pa.googleapis.com", "daily-cloudcode-pa.googleapis.com":
++		return true
++	}
++	return false
++}
++
+ // Watch is a check a transport of its own makes before each request: it
+ // says the global proxy in magpie's settings moved since the check's last
+ // call, and the caller closes its transport's idle connections, which
+@@ -265,6 +277,15 @@ func (d *dispatch) transport(r route) *http.Transport {
+ 		}
+ 	}
+ 	t := d.base.Clone()
++	if r.noPing && t.HTTP2 != nil {
++		// Google's Code Assist edge can end a quiet, live model stream
++		// with GOAWAY ENHANCE_YOUR_CALM "too_many_pings" when our
++		// read-idle health check keeps probing it. Leave HTTP/2 enabled,
++		// but let the request's own deadlines bound its silence.
++		h2 := *t.HTTP2
++		h2.SendPingTimeout = 0
++		t.HTTP2 = &h2
++	}
+ 	if c := r.choice; c != "" {
+ 		t.Proxy = func(req *http.Request) (*url.URL, error) {
+ 			if err := Held(req.Context()); err != nil {
+-- 
+2.50.1 (Apple Git-155)
+

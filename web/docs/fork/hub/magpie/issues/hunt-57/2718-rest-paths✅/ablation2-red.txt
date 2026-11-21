@@ -1,0 +1,7 @@
+--- FAIL: TestReadingKeepsARefusalsRest (0.40s)
+    rest_resets_read_test.go:86: a reading that found the window less than full lifted the refusal's rest, due at 23:05:36
+--- FAIL: TestAutoVisionKeepsOffARefusedAccount (0.27s)
+    rest_resets_read_test.go:125: AutoVision = "codex/gpt-6.1-sol", back on the refused account, before its reset
+FAIL
+FAIL	github.com/yetone/magpie/internal/gateway	1.125s
+FAIL

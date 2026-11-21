@@ -1,0 +1,22 @@
+{
+  "id": "7",
+  "slug": "single-number",
+  "title": "只出现一次的数字",
+  "difficulty": "easy",
+  "tags": ["位运算", "数组"],
+  "description": "给定一个**非空**整数数组,除了某个元素只出现一次以外,其余每个元素均出现两次。找出那个只出现了一次的元素。\n\n你的算法应该具有线性时间复杂度,且**不使用额外空间**。\n\n**示例 1:**\n\n- 输入:`nums = [2,2,1]`\n- 输出:`1`\n\n**示例 2:**\n\n- 输入:`nums = [4,1,2,1,2]`\n- 输出:`4`",
+  "solution": "## 思路\n\n利用**异或(xor)**的两个性质:\n\n1. `a ^ a = 0`(相同数异或为 0)\n2. `a ^ 0 = a`(任何数异或 0 为自身)\n\n把所有数异或起来,出现两次的相互抵消为 0,剩下的就是只出现一次的那个数。\n\n## 参考代码\n\n```js\nfunction singleNumber(nums) {\n  let r = 0;\n  for (const n of nums) r ^= n;\n  return r;\n}\n```\n\n## 复杂度\n\n- 时间:O(n)\n- 空间:O(1)",
+  "signature": {
+    "language": "javascript",
+    "entry": "singleNumber",
+    "params": [{ "name": "nums", "type": "number[]" }],
+    "returns": "number"
+  },
+  "testCases": [
+    { "sample": true, "input": [[2, 2, 1]], "expected": 1 },
+    { "sample": true, "input": [[4, 1, 2, 1, 2]], "expected": 4 },
+    { "sample": false, "input": [[1]], "expected": 1 },
+    { "sample": false, "input": [[0, 0, 99]], "expected": 99 },
+    { "sample": false, "input": [[-1, -1, -2]], "expected": -2 }
+  ]
+}

@@ -1,0 +1,551 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Sat, 21 Nov 2026 09:18:12 +0800
+Subject: [PATCH] gateway: a provider's passFields carry a request's unknown
+ fields on a cross-protocol build (#7376)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+A client that talks the Anthropic entry to an OpenAI-compatible
+upstream loses top-level fields the translation doesn't know, such as
+chat_template_kwargs, and some vendors' reasoning toggles ride on
+exactly such a field: the request went out without it and nothing said
+so (imxzt, #7376 — their diagnosis took hours).
+
+provider.PassFields (off by default) names the body keys a provider
+wants carried. The entry parsers keep the body as it came beside the
+keys their schema consumes (rawBody/knownTop); buildFor picks the
+allowlisted unknown ones per provider; every translated build (Chat,
+Responses, Gemini, Vertex, Anthropic) merges them where its own schema
+leaves a key free — a key the build set is the build's, and a request
+relayed as it came forwards everything verbatim as it always has. The
+providers editor gets the field beside Request headers to pass.
+
+Run (darwin/arm64, upstream/main 604f707d2 + this commit):
+- TestPassFieldsCarryUnknownTopFields / …OffDrops / …NeverOverwrite /
+  …CarryFromChatEntryToAnthropicUpstream: red at the drop before this
+  commit's gateway half, green after
+- ablation: the buildFor wiring out → the same two reds; restored →
+  green
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ docs/subsystems/providers-accounts.md |   1 +
+ internal/gateway/anthropic.go         |   2 +
+ internal/gateway/chat.go              |   2 +
+ internal/gateway/gateway.go           |   5 +
+ internal/gateway/gemini.go            |   1 +
+ internal/gateway/ir.go                |   9 ++
+ internal/gateway/passfields.go        |  71 ++++++++++
+ internal/gateway/passfields_test.go   | 189 ++++++++++++++++++++++++++
+ internal/gateway/responses.go         |   2 +
+ internal/gateway/vertex.go            |   1 +
+ internal/gui/assets/app.js            |   9 +-
+ internal/gui/providers.go             |   6 +-
+ internal/provider/provider.go         |  11 ++
+ 13 files changed, 306 insertions(+), 3 deletions(-)
+ create mode 100644 internal/gateway/passfields.go
+ create mode 100644 internal/gateway/passfields_test.go
+
+diff --git a/docs/subsystems/providers-accounts.md b/docs/subsystems/providers-accounts.md
+index 2b8be63db..5088f1216 100644
+--- a/docs/subsystems/providers-accounts.md
++++ b/docs/subsystems/providers-accounts.md
+@@ -35,6 +35,7 @@ keys and accounts per request is in [Gateway routing and fallback](gateway-routi
+ | A model's own speed | `ModelTiers` in [settings](../../internal/settings/settings.go) (`"pid/model"` to `priority` or `ultrafast`; `CleanModelTier`, `SetModelTier` in [`modeltier.go`](../../internal/provider/modeltier.go), refused where `CanFast` / `CanUltra` say the model or account has no such mode). It rides `ModelPref.Tier` with the other Model settings, `magpie model tier` sets it, and the gateway sends it on a direct pick for an agent with no fast pick of its own (kdajenks on X). | [`modeltier.go`](../../internal/provider/modeltier.go), [`modelprefs.go`](../../internal/provider/modelprefs.go), [`gateway.go`](../../internal/gateway/gateway.go) |
+ | Reply headers | `ReplyHeaders` (`replyHeaders` in providers.json, the editor's *Reply headers* under Advanced, a comma-separated list, #4145) names headers of the vendor's reply the gateway passes on to the agent, matched whatever their case and saved canonical (`cleanReplyHeaders`). `DefaultReplyHeaders` (`Request-Id`, `X-Request-Id`, `X-Oneapi-Request-Id`) go from every provider without being listed: opaque request ids, under names magpie sets nothing of its own. Never passed on, listed or not (`ReplyHeaderPassable`): the reply's framing (`Content-*`, `Transfer-Encoding`, hop-by-hop), cookies and sign-ins (`Set-Cookie`, `Authorization`, `WWW-Authenticate`, `Proxy-*`), CORS (`Access-Control-*`), `Sec-*`, redirects and browser policy (`Location`, `Strict-Transport-Security`, `Content-Security-Policy`…), `Retry-After`/`Cache-Control`/`Date`/`Server`/`Vary` (magpie writes those) and `X-Magpie-*` (the gateway reads them as notes of the try). Save refuses such a name (`ReplyHeadersOK`), the editor says so before the save (`replyHeadersOf`, its list held to Go's by `TestReplyHeadersNeverAsTheProvidersAre`), and one written into providers.json by hand is dropped on read. A preset's provider and a signed-in account's requests take it too (`withPicks`). How the gateway carries them is in [gateway routing](gateway-routing.md). | [`replyheaders.go`](../../internal/provider/replyheaders.go), [`reply_headers.go`](../../internal/gateway/reply_headers.go) |
+ | Request headers to pass | `PassHeaders` (`passHeaders` in providers.json, the editor's *Request headers to pass* right after *Reply headers* under Advanced, a comma-separated list; 3jRzfF52Qx on X) names headers of the agent's request passed on to this provider as the agent sent them, matched whatever their case and saved canonical (`cleanRequestHeaders`). The agent's value stands over a fixed *Headers* value of the same name; when the agent sends none, the fixed one goes. `Sign` puts them first (`passClientHeaders`), so an account's own signing still has the last word. Never passed on, listed or not (`RequestHeaderPassable`): magpie's own key as an agent sends it (`Authorization`, `X-Api-Key`, `X-Goog-Api-Key`, `Api-Key`), cookies and sign-ins (`Cookie`, `Set-Cookie`, `WWW-Authenticate`, `Proxy-*`), the connection's fields (`Host`, hop-by-hop, `Expect`), what magpie writes for the body it sends (`Content-*`, `Accept`, `Accept-Encoding`), `Origin`, `Sec-*` and `X-Magpie-*`. Save refuses such a name (`RequestHeadersOK`), the editor says so before the save (`replyHeadersOf(…, true)`, its list held to Go's by `TestReplyHeadersNeverAsTheProvidersAre`), and one written by hand is dropped on read. Only the provider that lists them gets them: the agent's headers ride the request's context under that provider's id (`WithClientHeaders`), so a fallback, a group's other members, a side model or a searcher get none. A preset's provider, a signed-in account's requests and a plugin's fetch take it too. Wire headers are masked when read, so a passed one shows in a call's log as any header does. | [`requestheaders.go`](../../internal/provider/requestheaders.go), [`gateway.go`](../../internal/gateway/gateway.go) |
++| Request fields to pass | `PassFields` (`passFields` in providers.json, the editor's *Request fields to pass* right after *Request headers to pass* under Advanced, a comma-separated list; imxzt, [#7376](https://github.com/yetone/magpie/issues/7376)) names top-level fields of the agent's request passed on to this provider as the agent sent them, on a build that translates the body between protocols: a client that talks the Anthropic entry to an OpenAI-compatible upstream loses fields like `chat_template_kwargs` there, and some vendors' reasoning toggles ride on exactly such a field. A name matches the body's own key exactly; a field the translation knows (its own schema — `model`, `messages`, `thinking`, …) is the translation's to map, and the client's copy never overwrites the build's (`withPassFields`, the key taken wins). Off, the default, a translated build carries only what the translation knows, as it always has. The capture is each entry parser's (`readAnthropic`, `readChat`, `readResponses`, body and known keys kept on the request), the pick is per provider at `buildFor` (`passFields`), and the merge runs at every translated build (Chat, Responses, Gemini, Vertex, Anthropic). Only the provider that lists them gets them — a fallback, a group's other members or a side model take their own lists. A request relayed as it came (the vendor's own protocol) never goes through a build, so it forwards everything verbatim as it always has. | [`passfields.go`](../../internal/gateway/passfields.go), [`gateway.go`](../../internal/gateway/gateway.go) |
+ | Native compaction | `NativeCompaction` (`nativeCompaction` in providers.json, the editor's *Compaction* row, `magpie provider set <id> compaction=native\|magpie`; #1099) has Codex's compaction asked of the provider as Codex sent it and its sealed item returned unchanged. Off by default. Only a provider whose wire carries it can be set so (`CarriesCompaction`: a Responses API, a ChatGPT account, GitHub Copilot; not another agent's sign-in or a plugin's), and `CompactsOn(model)` also needs the model asked on Responses. `SetNativeCompaction`, the CLI and the GUI's save refuse it elsewhere. An account keeps it through `Save`'s picks (`withPicks`), and `AddCopy` carries it. The gateway's half is in [gateway-routing](gateway-routing.md). | [`native_compaction.go`](../../internal/provider/native_compaction.go) |
+ | providers.json | `Path` is `providers.json` in magpie's config folder. A read that fails returns `ErrUnreadable` and is never treated as empty. `store` writes atomically through a rename and drops the cached catalog (`catalog.Touched`). | [`provider.go`](../../internal/provider/provider.go) |
+ | A provider renamed | `Rename` (the editor's id field, `magpie provider set <id> id=<new>`) keeps the old id in `Was`, so a model still picked by it reaches the provider. Usage is recorded under the id a call went out by and never rewritten; whatever reads it names the provider by its id now through `UsageRenames().Of(id, time)`: the summary, the Requests page (its blocks, the probe rows, other computers' days), the Sessions tab's vias, window holds, `NewPricer`/`NewCoster` and the gateway's `loggedAnswers` (cybercaius on Discord: a renamed provider was listed under both ids). `Visit` hands records out as recorded, so `Of` is taken once. An id another provider takes later (a rename onto it, or `Save` of a new provider under it) moves from the first one's `Was` to its `Gave` with the time (`giveID`): calls recorded under it before then stay the first one's, later ones are the new one's. An id held by a provider or a subscription now is never renamed (`Renamed`), and `freeID` doesn't hand out an id in any `Was`, so adding a vendor again gets `-2`. Ids reused before `Gave` existed have no time and go to whoever holds the id now. A provider deleted (`Delete`) is kept in providers.json's `deleted` with its name, `Was`, `Gave` and when (`provider.Deleted`): its calls stay under its id while no provider has that id, and once one is added under it (or a later deleted one had it) they go to `Deleted.UsageID`, `<id>~<when, UTC>`, so the new provider has only its own (cybercaius on Discord). The Usage page names either by the deleted provider's name and marks it with when it was deleted (`Renames.Gone`, `Named.Deleted`). Deletes before this was kept have no record and go to whoever holds the id now. A deleted provider's calls can be merged into a provider there is now, or named by the user, from a "…" beside the Requests page's Provider filter while it is picked (`ledProviderMore` in `plugins/usage/page.js`, `POST /api/usage/deleted`, `GET /api/usage/deleted/into`; CyberCaius on Discord, who had renamed a provider onto the old id to do it). Both are kept on its `Deleted` record, not in settings and never in the log: `MergeDeleted` sets `Into` and `MergedAt`, `NameDeleted` sets `Label` (`Deleted.Shown`), so a provider added later under the old id inherits neither. `Renames.Both(id, time)` gives the id a call is shown under (`Of`, merges followed) and the one it was made to (`Own`): a merged call is listed, filtered and summed under the target, but priced, held and answered by its own (`Record.priceID`, `block_price.go`'s `as`, window holds, `loggedAnswers`), so a merge moves no cost or token. The target's face lists what is merged into it (`Named.Merged`), and the same "…" parts each again (`into` ""). Renaming the target carries the merge; deleting it ends it (a merge older than the target's deletion is not followed). A providers.json that can't be read keeps the last renames read, not none. The summary and Requests caches key on `Renames.Key`, the vias cache too. | [`rename.go`](../../internal/provider/rename.go), [`block_price.go`](../../internal/usage/block_price.go) |
+diff --git a/internal/gateway/anthropic.go b/internal/gateway/anthropic.go
+index 432f10ce3..9b5e9412b 100644
+--- a/internal/gateway/anthropic.go
++++ b/internal/gateway/anthropic.go
+@@ -172,6 +172,7 @@ func readAdvised(body []byte, clientMarks, facts, advised bool) (*Request, error
+ 	if !facts {
+ 		r.askedTTL = askedCacheTTL(&a)
+ 	}
++	r.rawBody, r.knownTop = body, anthropicTop
+ 	if clientMarks {
+ 		var err error
+ 		r.clientCache, err = readClientCache(a)
+@@ -1261,6 +1262,7 @@ func anthropicBody(r *Request, model, host string, replay bool) []byte {
+ 			out["tool_choice"] = tc
+ 		}
+ 	}
++	withPassFields(out, r)
+ 	b, _ := marshalBody(out, "messages")
+ 	return b
+ }
+diff --git a/internal/gateway/chat.go b/internal/gateway/chat.go
+index 2d5c1e2c7..f171277b6 100644
+--- a/internal/gateway/chat.go
++++ b/internal/gateway/chat.go
+@@ -130,6 +130,7 @@ func readChat(body []byte, facts bool) (*Request, error) {
+ 	r := &Request{Model: c.Model, MaxTokens: c.MaxCompletionTokens, Temp: c.Temperature, TopP: c.TopP,
+ 		Stream: c.Stream, Effort: chatEffort(&c), Parallel: c.ParallelToolCalls, Fast: c.ServiceTier == "priority" || c.ServiceTier == "ultrafast", Ultrafast: c.ServiceTier == "ultrafast", Tier: c.ServiceTier,
+ 		CacheKey: c.PromptCacheKey, Format: openAIFormat(c.ResponseFormat), AccessPrograms: c.AccessPrograms}
++	r.rawBody, r.knownTop = body, chatTop
+ 	if r.MaxTokens == 0 {
+ 		r.MaxTokens = c.MaxTokens
+ 	}
+@@ -707,6 +708,7 @@ func buildChat(r *Request, model, host string, rejectTemp bool) []byte {
+ 		// OpenRouter's own search, for any of its models
+ 		out["plugins"] = []map[string]any{{"id": "web"}}
+ 	}
++	withPassFields(out, r)
+ 	b, _ := marshalBody(out, "messages")
+ 	return b
+ }
+diff --git a/internal/gateway/gateway.go b/internal/gateway/gateway.go
+index da804f14d..c20b648c6 100644
+--- a/internal/gateway/gateway.go
++++ b/internal/gateway/gateway.go
+@@ -10291,6 +10291,11 @@ func buildFor(p provider.Provider, proto provider.Protocol, r *Request, model st
+ 		c.signer = p.ID
+ 		r = &c
+ 	}
++	if len(p.PassFields) > 0 && len(r.rawBody) > 0 && r.knownTop != nil {
++		c := *r
++		c.passthrough = passFields(c.rawBody, c.knownTop, p.PassFields)
++		r = &c
++	}
+ 	return build(proto, r, model, buildHost(p), p.RejectsTemperature(model))
+ }
+ 
+diff --git a/internal/gateway/gemini.go b/internal/gateway/gemini.go
+index 16e860ba3..30cf7cd08 100644
+--- a/internal/gateway/gemini.go
++++ b/internal/gateway/gemini.go
+@@ -143,6 +143,7 @@ func buildGemini(r *Request, model string) ([]byte, error) {
+ 		return nil, err
+ 	}
+ 	req["model"] = model
++	withPassFields(req, r)
+ 	return marshalBody(req, "")
+ }
+ 
+diff --git a/internal/gateway/ir.go b/internal/gateway/ir.go
+index c3502f8d1..9f8f3769f 100644
+--- a/internal/gateway/ir.go
++++ b/internal/gateway/ir.go
+@@ -248,6 +248,15 @@ type Request struct {
+ 	// request is Claude Code's interactive mode, not claude -p: what a
+ 	// refusal it ends in is told with (thirdPartyRefused, #4503)
+ 	interactive bool
++	// rawBody and knownTop are the request body as the entry read it and
++	// the entry parser's own top-level keys: provider.PassFields sends
++	// what the body carries besides them on a cross-protocol build
++	// (passFields, #7376)
++	rawBody  []byte
++	knownTop map[string]bool
++	// passthrough is what PassFields picked, set per provider at
++	// buildFor: a build merges it where its own schema leaves a key free
++	passthrough map[string]any
+ 	// tuiRefused, for the Claude bridge, is a request whose agent's
+ 	// system prompt Anthropic refused in the interactive mode as a
+ 	// third-party app's (#4503): its run is claude -p, which is served
+diff --git a/internal/gateway/passfields.go b/internal/gateway/passfields.go
+new file mode 100644
+index 000000000..658c5e110
+--- /dev/null
++++ b/internal/gateway/passfields.go
+@@ -0,0 +1,71 @@
++package gateway
++
++import (
++	"encoding/json"
++	"reflect"
++	"strings"
++)
++
++// jsonTopKeys is the set of top-level keys a request struct's json tags
++// consume: what a cross-protocol build of that entry knows how to map.
++func jsonTopKeys(t reflect.Type) map[string]bool {
++	out := make(map[string]bool, t.NumField())
++	for i := 0; i < t.NumField(); i++ {
++		name := strings.Split(t.Field(i).Tag.Get("json"), ",")[0]
++		if name != "" {
++			out[name] = true
++		}
++	}
++	return out
++}
++
++var (
++	anthropicTop = jsonTopKeys(reflect.TypeFor[aRequest]())
++	chatTop      = jsonTopKeys(reflect.TypeFor[cRequest]())
++	responsesTop = jsonTopKeys(reflect.TypeFor[rRequest]())
++)
++
++// passFields picks a provider's allowlisted unknown fields out of the
++// request body: names matched exactly, a key the entry parser consumes
++// is never taken (the build maps its own schema), and what is left goes
++// as the client sent it (imxzt, #7376). Nothing allowlisted in the body
++// is nil.
++func passFields(body []byte, known map[string]bool, allow []string) map[string]any {
++	if len(allow) == 0 || len(body) == 0 {
++		return nil
++	}
++	var m map[string]json.RawMessage
++	if err := json.Unmarshal(body, &m); err != nil {
++		return nil
++	}
++	var out map[string]any
++	for _, k := range allow {
++		if k == "" || known[k] {
++			continue
++		}
++		raw, ok := m[k]
++		if !ok {
++			continue
++		}
++		var v any
++		if err := json.Unmarshal(raw, &v); err != nil {
++			continue
++		}
++		if out == nil {
++			out = map[string]any{}
++		}
++		out[k] = v
++	}
++	return out
++}
++
++// withPassFields merges a request's passlisted fields into a translated
++// body before it is marshalled: what the build set stays (its key is
++// taken), what the entry parser didn't know rides as it came.
++func withPassFields(out map[string]any, r *Request) {
++	for k, v := range r.passthrough {
++		if _, taken := out[k]; !taken {
++			out[k] = v
++		}
++	}
++}
+diff --git a/internal/gateway/passfields_test.go b/internal/gateway/passfields_test.go
+new file mode 100644
+index 000000000..0d7ca62b6
+--- /dev/null
++++ b/internal/gateway/passfields_test.go
+@@ -0,0 +1,189 @@
++package gateway
++
++import (
++	"encoding/json"
++	"io"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"testing"
++
++	"github.com/yetone/magpie/internal/provider"
++)
++
++// A provider that asks for named unknown fields gets them on a
++// cross-protocol build: a client that talks the Anthropic entry to an
++// OpenAI-compatible upstream loses fields like chat_template_kwargs in
++// the translation, and some vendors' reasoning toggles ride on exactly
++// such a field (imxzt, #7376).
++func TestPassFieldsCarryUnknownTopFields(t *testing.T) {
++	fresh(t)
++	var seen map[string]any
++	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		body, _ := io.ReadAll(r.Body)
++		seen = map[string]any{}
++		json.Unmarshal(body, &seen)
++		w.Header().Set("Content-Type", "text/event-stream")
++		io.WriteString(w, sse(
++			`data: {"id":"c1","object":"chat.completion.chunk","model":"sol","choices":[{"index":0,"delta":{"role":"assistant","content":"hi"}}]}`,
++			`data: {"id":"c1","object":"chat.completion.chunk","model":"sol","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":3}}`,
++			`data: [DONE]`))
++	}))
++	t.Cleanup(up.Close)
++	if err := provider.Save(provider.Provider{
++		ID: "p1", Name: "P", Key: "k",
++		Models:     []string{"sol"},
++		Chat:       up.URL,
++		PassFields: []string{"chat_template_kwargs", "my_custom_field"},
++	}); err != nil {
++		t.Fatal(err)
++	}
++	s := New()
++	rec := httptest.NewRecorder()
++	req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(
++		`{"model":"p1/sol","max_tokens":64,"stream":true,`+
++			`"chat_template_kwargs":{"enable_thinking":false},`+
++			`"my_custom_field":"here",`+
++			`"messages":[{"role":"user","content":"hi"}]}`))
++	s.Handler().ServeHTTP(rec, req)
++	if rec.Code != 200 {
++		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
++	}
++	if _, ok := seen["chat_template_kwargs"]; !ok {
++		t.Fatalf("the vendor's body lacks chat_template_kwargs though PassFields asked for it: keys=%v", jsonKeys(seen))
++	}
++	if _, ok := seen["my_custom_field"]; !ok {
++		t.Fatalf("the vendor's body lacks my_custom_field though PassFields asked for it: keys=%v", jsonKeys(seen))
++	}
++	if seen["max_tokens"] != float64(64) {
++		t.Errorf("the build's max_tokens was disturbed: %v", seen["max_tokens"])
++	}
++}
++
++// Off, the default, a translated build carries only what it knows: the
++// field the client sent goes no further, as before this change.
++func TestPassFieldsOffDropsUnknownTopFields(t *testing.T) {
++	fresh(t)
++	var seen map[string]any
++	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		body, _ := io.ReadAll(r.Body)
++		seen = map[string]any{}
++		json.Unmarshal(body, &seen)
++		w.Header().Set("Content-Type", "text/event-stream")
++		io.WriteString(w, sse(
++			`data: {"id":"c1","object":"chat.completion.chunk","model":"sol","choices":[{"index":0,"delta":{"role":"assistant","content":"hi"}}]}`,
++			`data: {"id":"c1","object":"chat.completion.chunk","model":"sol","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":3}}`,
++			`data: [DONE]`))
++	}))
++	t.Cleanup(up.Close)
++	if err := provider.Save(provider.Provider{
++		ID: "p1", Name: "P", Key: "k",
++		Models: []string{"sol"},
++		Chat:   up.URL,
++	}); err != nil {
++		t.Fatal(err)
++	}
++	s := New()
++	rec := httptest.NewRecorder()
++	req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(
++		`{"model":"p1/sol","max_tokens":64,"stream":true,`+
++			`"chat_template_kwargs":{"enable_thinking":false},`+
++			`"messages":[{"role":"user","content":"hi"}]}`))
++	s.Handler().ServeHTTP(rec, req)
++	if rec.Code != 200 {
++		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
++	}
++	if _, ok := seen["chat_template_kwargs"]; ok {
++		t.Fatalf("with no PassFields the vendor's body carries the unknown field anyway: keys=%v", jsonKeys(seen))
++	}
++}
++
++// A field the translation knows is the translation's to map: PassFields
++// cannot overwrite what the build set from its own schema.
++func TestPassFieldsNeverOverwriteKnownFields(t *testing.T) {
++	fresh(t)
++	var seen map[string]any
++	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		body, _ := io.ReadAll(r.Body)
++		seen = map[string]any{}
++		json.Unmarshal(body, &seen)
++		w.Header().Set("Content-Type", "text/event-stream")
++		io.WriteString(w, sse(
++			`data: {"id":"c1","object":"chat.completion.chunk","model":"sol","choices":[{"index":0,"delta":{"role":"assistant","content":"hi"}}]}`,
++			`data: {"id":"c1","object":"chat.completion.chunk","model":"sol","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":3}}`,
++			`data: [DONE]`))
++	}))
++	t.Cleanup(up.Close)
++	if err := provider.Save(provider.Provider{
++		ID: "p1", Name: "P", Key: "k",
++		Models:     []string{"sol"},
++		Chat:       up.URL,
++		PassFields: []string{"top_p"},
++	}); err != nil {
++		t.Fatal(err)
++	}
++	s := New()
++	rec := httptest.NewRecorder()
++	req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(
++		`{"model":"p1/sol","max_tokens":64,"stream":true,"top_p":0.9,`+
++			`"messages":[{"role":"user","content":"hi"}]}`))
++	s.Handler().ServeHTTP(rec, req)
++	if rec.Code != 200 {
++		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
++	}
++	if seen["top_p"] != 0.9 {
++		t.Errorf("the build's own top_p was overwritten by the client's copy: %v", seen["top_p"])
++	}
++}
++
++// The same carry works from the Chat entry to an Anthropic upstream:
++// the capture is the entry parser's, not one path's.
++func TestPassFieldsCarryFromChatEntryToAnthropicUpstream(t *testing.T) {
++	fresh(t)
++	var seen map[string]any
++	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		body, _ := io.ReadAll(r.Body)
++		seen = map[string]any{}
++		json.Unmarshal(body, &seen)
++		w.Header().Set("Content-Type", "text/event-stream")
++		io.WriteString(w, sse(
++			`event: message_start`+"\n"+`data: {"type":"message_start","message":{"id":"m1","type":"message","role":"assistant","model":"sol","content":[],"usage":{"input_tokens":2,"output_tokens":0}}}`,
++			`event: content_block_start`+"\n"+`data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`,
++			`event: content_block_delta`+"\n"+`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"OK"}}`,
++			`event: content_block_stop`+"\n"+`data: {"type":"content_block_stop","index":0}`,
++			`event: message_delta`+"\n"+`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}`,
++			`event: message_stop`+"\n"+`data: {"type":"message_stop"}`))
++	}))
++	t.Cleanup(up.Close)
++	if err := provider.Save(provider.Provider{
++		ID:         "p1",
++		Name:       "P",
++		Key:        "k",
++		Models:     []string{"sol"},
++		Anthropic:  up.URL,
++		PassFields: []string{"my_custom_field"},
++	}); err != nil {
++		t.Fatal(err)
++	}
++	s := New()
++	rec := httptest.NewRecorder()
++	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(
++		`{"model":"p1/sol","max_tokens":64,"stream":true,`+
++			`"my_custom_field":"here",`+
++			`"messages":[{"role":"user","content":"hi"}]}`))
++	s.Handler().ServeHTTP(rec, req)
++	if rec.Code != 200 {
++		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
++	}
++	if _, ok := seen["my_custom_field"]; !ok {
++		t.Fatalf("the vendor's body lacks my_custom_field though PassFields asked for it: keys=%v", jsonKeys(seen))
++	}
++}
++
++func jsonKeys(m map[string]any) []string {
++	out := make([]string, 0, len(m))
++	for k := range m {
++		out = append(out, k)
++	}
++	return out
++}
+diff --git a/internal/gateway/responses.go b/internal/gateway/responses.go
+index a966e7925..eba851b9e 100644
+--- a/internal/gateway/responses.go
++++ b/internal/gateway/responses.go
+@@ -350,6 +350,7 @@ func readResponsesFor(body []byte, facts, keepInstructions bool) (*Request, erro
+ 	r := &Request{Model: q.Model, System: q.Instructions, MaxTokens: q.MaxOutputTokens, Temp: q.Temperature,
+ 		TopP: q.TopP, Stream: q.Stream, Parallel: q.ParallelToolCalls, Fast: q.ServiceTier == "priority" || q.ServiceTier == "ultrafast", Ultrafast: q.ServiceTier == "ultrafast", Tier: q.ServiceTier, CacheKey: q.PromptCacheKey, Include: q.Include,
+ 		ClientMetadata: sentRaw(q.ClientMetadata), AccessPrograms: q.AccessPrograms}
++	r.rawBody, r.knownTop = body, responsesTop
+ 	r.Text, r.Format = textFormat(sentRaw(q.Text))
+ 	if q.Instructions != "" {
+ 		r.systemParts = []string{q.Instructions}
+@@ -1640,6 +1641,7 @@ func buildResponses(r *Request, model, host string, rejectTemp bool) []byte {
+ 	if len(include) > 0 {
+ 		out["include"] = include
+ 	}
++	withPassFields(out, r)
+ 	b, _ := marshalBody(out, "input")
+ 	// a call the client left unanswered (a turn it interrupted) gets its
+ 	// synthetic result, as buildChat's pairToolMessages and
+diff --git a/internal/gateway/vertex.go b/internal/gateway/vertex.go
+index 1636a15df..c7f40962f 100644
+--- a/internal/gateway/vertex.go
++++ b/internal/gateway/vertex.go
+@@ -40,6 +40,7 @@ func buildVertex(r *Request, model string) ([]byte, error) {
+ 	if err != nil {
+ 		return nil, err
+ 	}
++	withPassFields(req, r)
+ 	return json.Marshal(req)
+ }
+ 
+diff --git a/internal/gui/assets/app.js b/internal/gui/assets/app.js
+index bab3abb03..dac8eed5f 100644
+--- a/internal/gui/assets/app.js
++++ b/internal/gui/assets/app.js
+@@ -8139,7 +8139,7 @@ const groupAdvanced = (b) => self.advGroups?.(b);
+ // advancedSet says whether a setting under the editor's Advanced is set,
+ // which opens it: none hides behind a fold
+ function advancedSet(d, p) {
+-  return (d.headers || []).some(([k]) => (k || "").trim()) || !!(d.extraBody || "").trim() || !!(d.replyHeaders || d.passHeaders || "").trim() ||
++  return (d.headers || []).some(([k]) => (k || "").trim()) || !!(d.extraBody || "").trim() || !!(d.replyHeaders || d.passHeaders || d.passFields || "").trim() ||
+     !!d.proxyMode || Object.values(d.accountProxies || {}).some((x) => x?.mode) || Object.values(d.keyPriceRates || {}).some((v) => String(v).trim()) ||
+     [d.concurrency, d.maxAccounts, d.queueLimit, d.queueWait, d.maxRPM, d.priceRate, d.topUpRate ?? p?.topUpRate, d.contexts, d.outputs, d.compacts].some((v) => String(v ?? "").trim()) ||
+     !!d.rateWindows?.length ||
+@@ -9482,7 +9482,7 @@ function baseAPIOf(p) {
+ 
+ // draftOf is a saved provider as its editor's form holds it.
+ function draftOf(p) {
+-  return { id: p.id, name: p.name, preset: p.preset, chat: p.chat, responses: p.responses, anthropic: p.anthropic, gemini: p.gemini || "", catalog: p.catalog, decide: p.decide || "", key: "", api: baseAPIOf(p), chosen: pickedOf(p), none: !!p.noModels, best: !!p.bestInFamily, extra: [], headers: headerRows(p.headers), extraBody: extraBodyText(p.extraBody), replyHeaders: (p.replyHeaders || []).join(", "), passHeaders: (p.passHeaders || []).join(", "), icon: p.icon || "", iconFrom: p.iconFrom || "", fallback: [...(p.fallback || [])], unlisted: !!p.unlisted, hiddenDrawers: [...(p.hiddenDrawers || [])], hiddenVideomakers: [...(p.hiddenVideomakers || [])], searches: !!p.searches, unredacted: !!p.unredacted, countFree: !!p.countFree, billing: p.billing || "", insecureTLS: !!p.insecureTLS, http1: !!p.http1, clientCert: p.clientCert || "", clientKey: p.clientKey || "", serverCA: p.serverCA || "", serverPin: p.serverPin || "", resolve: p.resolve, socket: p.socket || "", limitRestOff: !!p.limitRestOff, noBalanceProbe: !!p.noBalanceProbe, upstreamProviders: !!p.upstreamProviders, passErrors: !!p.passErrors, imageFilesOff: !!p.imageFilesOff, nativeCompaction: !!p.nativeCompaction, passUserAgent: p.passUserAgent !== false, pinUpstream: !!p.pinUpstream, authHeader: p.authHeader || "", balanceURL: p.balanceURL || "", balancePath: p.balancePath || "", balanceMethod: p.balanceMethod || "", modelsURL: p.modelsURL || "", listOff: !!p.listOff, contexts: contextsText(p.contexts), outputs: contextsText(p.outputs), compacts: contextsText(p.compacts), keysUrl: p.keysUrl || "", ...proxyDraft(p), ...concurrencyDraft(p), rateWindows: (p.rateWindows || []).map((w) => ({ ...w })) };
++  return { id: p.id, name: p.name, preset: p.preset, chat: p.chat, responses: p.responses, anthropic: p.anthropic, gemini: p.gemini || "", catalog: p.catalog, decide: p.decide || "", key: "", api: baseAPIOf(p), chosen: pickedOf(p), none: !!p.noModels, best: !!p.bestInFamily, extra: [], headers: headerRows(p.headers), extraBody: extraBodyText(p.extraBody), replyHeaders: (p.replyHeaders || []).join(", "), passHeaders: (p.passHeaders || []).join(", "), passFields: (p.passFields || []).join(", "), icon: p.icon || "", iconFrom: p.iconFrom || "", fallback: [...(p.fallback || [])], unlisted: !!p.unlisted, hiddenDrawers: [...(p.hiddenDrawers || [])], hiddenVideomakers: [...(p.hiddenVideomakers || [])], searches: !!p.searches, unredacted: !!p.unredacted, countFree: !!p.countFree, billing: p.billing || "", insecureTLS: !!p.insecureTLS, http1: !!p.http1, clientCert: p.clientCert || "", clientKey: p.clientKey || "", serverCA: p.serverCA || "", serverPin: p.serverPin || "", resolve: p.resolve, socket: p.socket || "", limitRestOff: !!p.limitRestOff, noBalanceProbe: !!p.noBalanceProbe, upstreamProviders: !!p.upstreamProviders, passErrors: !!p.passErrors, imageFilesOff: !!p.imageFilesOff, nativeCompaction: !!p.nativeCompaction, passUserAgent: p.passUserAgent !== false, pinUpstream: !!p.pinUpstream, authHeader: p.authHeader || "", balanceURL: p.balanceURL || "", balancePath: p.balancePath || "", balanceMethod: p.balanceMethod || "", modelsURL: p.modelsURL || "", listOff: !!p.listOff, contexts: contextsText(p.contexts), outputs: contextsText(p.outputs), compacts: contextsText(p.compacts), keysUrl: p.keysUrl || "", ...proxyDraft(p), ...concurrencyDraft(p), rateWindows: (p.rateWindows || []).map((w) => ({ ...w })) };
+ }
+ 
+ // duplicateProvider opens the Add form on a copy of p, its key p's unless another is pasted (#268).
+@@ -10074,6 +10074,10 @@ function drawEditor(p, presetID) {
+   passIn.classList.add("pass-headers");
+   passIn.oninput = () => { draft.passHeaders = passIn.value; };
+   advIn.append(...field(t("Request headers to pass"), passIn, t("Headers of the agent's request passed on as sent, separated by commas. The agent's value stands over a header above. Keys, cookies and the connection's own never are.")));
++  const passFieldsIn = input(draft.passFields || "", "chat_template_kwargs, enable_thinking");
++  passFieldsIn.classList.add("pass-fields");
++  passFieldsIn.oninput = () => { draft.passFields = passFieldsIn.value; };
++  advIn.append(...field(t("Request fields to pass"), passFieldsIn, t("Top-level fields of the agent's request that a cross-protocol build would drop, passed on to the vendor as sent, separated by commas (imxzt, #7376). A field the build maps itself — model, messages, thinking, … — is never overwritten.")));
+   const proxies = el("div", "stack");
+   proxies.append(proxyPicker());
+   const perKey = keyProxyPicker(p);
+@@ -10525,6 +10529,7 @@ function drawEditor(p, presetID) {
+     const ph = replyHeadersOf(draft.passHeaders, true);
+     if (ph.error) { shown(ed.querySelector(".pass-headers"))?.focus(NO_SCROLL); return editorError(t("Request headers to pass: {why}", { why: ph.error }), "warn"); }
+     body.passHeaders = ph.value;
++    body.passFields = (draft.passFields || "").split(",").map((s) => s.trim()).filter(Boolean);
+     if (decides || custom) body.decide = (draft.decide || "").trim();
+     if ((body.decide || "").includes(WORKSPACE)) { ed.querySelector(".workspace-id")?.focus(NO_SCROLL); return editorError(t("Give the workspace ID your API key belongs to, or pick the Token Plan"), "warn"); }
+     if (custom) {
+diff --git a/internal/gui/providers.go b/internal/gui/providers.go
+index 7cf39fcae..b2394b3b0 100644
+--- a/internal/gui/providers.go
++++ b/internal/gui/providers.go
+@@ -171,6 +171,9 @@ type providerJSON struct {
+ 	ReplyHeaders []string `json:"replyHeaders,omitempty"`
+ 	// headers of the agent's request passed on (provider.PassHeaders)
+ 	PassHeaders []string `json:"passHeaders,omitempty"`
++	// unknown top-level request fields passed on a cross-protocol build
++	// (provider.PassFields, #7376)
++	PassFields []string `json:"passFields,omitempty"`
+ 	// the API the user gave a custom provider's Base URL as (BaseAPI)
+ 	BaseAPI string `json:"baseAPI,omitempty"`
+ 	// the vendor searches the web by itself (provider.Searches)
+@@ -1021,7 +1024,7 @@ func providerInfoWith(p provider.Provider, ls provider.Listing, agents []agentUs
+ 		ID: p.ID, Name: p.Name, Icon: p.Icon, IconFrom: p.IconFrom, Preset: p.Preset, Host: p.Host(),
+ 		Chat: p.Chat, Responses: p.Responses, Anthropic: p.Anthropic, Gemini: p.Gemini, Decide: p.Decide, BaseAPI: p.BaseAPI, ModelTest: p.ModelTest(), TestsAs: p.TestClients(), TestPicks: p.TestPicks(), DecideTest: p.AsksDecideModels(), MarksKinds: p.MarksKinds(),
+ 		Catalog: p.Catalog, Website: p.Website, KeysURL: p.KeysURL,
+-		Proxy: p.Proxy, AccountProxies: p.AccountProxies, AccountModels: p.AccountModels, AccountCaps: p.AccountCaps, AccountWindowCaps: p.AccountWindowCaps, AccountWindowAmounts: p.AccountWindowAmounts, AccountNames: p.AccountNames, Headers: p.Headers, ExtraBody: p.ExtraBody, ReplyHeaders: p.ReplyHeaders, PassHeaders: p.PassHeaders, Searches: p.Searches, Cline: p.ClinePinnable(), PinUpstream: p.PinUpstream, Unredacted: p.Unredacted, CountFree: p.CountFree, Billing: p.Billing, BillingKind: p.BillingKind(), InsecureTLS: p.InsecureTLS, TakesInsecureTLS: p.TakesInsecureTLS(), HTTP1: p.HTTP1, ClientCert: tilde(p.ClientCert), ClientKey: tilde(p.ClientKey), ServerCA: tilde(p.ServerCA), TakesClientCert: p.TakesClientCert(), ServerPin: p.ServerPin, TakesServerPin: p.TakesServerPin(), Resolve: p.Resolve, TakesResolve: p.TakesResolve(), Socket: p.Socket, TakesSocket: p.TakesSocket(), LimitRestOff: p.LimitRestOff, UpstreamProviders: p.UpstreamProviders, ImageFilesOff: p.ImageFilesOff, TakesImageFiles: p.TakesImageFiles(), NativeCompaction: p.NativeCompaction, CarriesCompaction: p.CarriesCompaction(), PassUserAgent: !p.MagpieUserAgent, OwnClient: p.OwnClient(), PassErrors: p.PassErrors, TakesPassErrors: p.TakesPassErrors(), AuthHeader: p.AuthHeader, BothAuth: p.BothAuth(), BalanceURL: p.BalanceURL, BalancePath: p.BalancePath, BalanceMethod: p.BalanceMethod, NoBalanceProbe: p.NoBalanceProbe, ModelsURL: p.ModelsURL, ListOff: p.ListsOff(), TakesListOff: p.Account == nil && !p.IsPlugin() && !p.DecideOnly(), TakesModelHeaders: p.Account == nil, DecideAPIKind: p.DecideAPIKind(),
++		Proxy: p.Proxy, AccountProxies: p.AccountProxies, AccountModels: p.AccountModels, AccountCaps: p.AccountCaps, AccountWindowCaps: p.AccountWindowCaps, AccountWindowAmounts: p.AccountWindowAmounts, AccountNames: p.AccountNames, Headers: p.Headers, ExtraBody: p.ExtraBody, ReplyHeaders: p.ReplyHeaders, PassHeaders: p.PassHeaders, PassFields: p.PassFields, Searches: p.Searches, Cline: p.ClinePinnable(), PinUpstream: p.PinUpstream, Unredacted: p.Unredacted, CountFree: p.CountFree, Billing: p.Billing, BillingKind: p.BillingKind(), InsecureTLS: p.InsecureTLS, TakesInsecureTLS: p.TakesInsecureTLS(), HTTP1: p.HTTP1, ClientCert: tilde(p.ClientCert), ClientKey: tilde(p.ClientKey), ServerCA: tilde(p.ServerCA), TakesClientCert: p.TakesClientCert(), ServerPin: p.ServerPin, TakesServerPin: p.TakesServerPin(), Resolve: p.Resolve, TakesResolve: p.TakesResolve(), Socket: p.Socket, TakesSocket: p.TakesSocket(), LimitRestOff: p.LimitRestOff, UpstreamProviders: p.UpstreamProviders, ImageFilesOff: p.ImageFilesOff, TakesImageFiles: p.TakesImageFiles(), NativeCompaction: p.NativeCompaction, CarriesCompaction: p.CarriesCompaction(), PassUserAgent: !p.MagpieUserAgent, OwnClient: p.OwnClient(), PassErrors: p.PassErrors, TakesPassErrors: p.TakesPassErrors(), AuthHeader: p.AuthHeader, BothAuth: p.BothAuth(), BalanceURL: p.BalanceURL, BalancePath: p.BalancePath, BalanceMethod: p.BalanceMethod, NoBalanceProbe: p.NoBalanceProbe, ModelsURL: p.ModelsURL, ListOff: p.ListsOff(), TakesListOff: p.Account == nil && !p.IsPlugin() && !p.DecideOnly(), TakesModelHeaders: p.Account == nil, DecideAPIKind: p.DecideAPIKind(),
+ 		Ready: p.Ready(), Chosen: p.PicksOf(avail), Agents: make([]providerAgent, 0, len(agents)),
+ 		Fallback: p.Fallback, Routing: p.Routing, Sink: p.Sink, UseFirst: p.UseFirst, NoStandIn: p.NoStandIn, Affinity: p.Affinity, KeepLogin: p.KeepLogin, KeepLoginAs: p.KeepLoginAs, SwitchOnly: p.SwitchOnly, RestartApp: p.RestartApp, Self: p.SelfAnswered(), KeepSelf: p.KeepSelf, ThisDevice: p.ThisDevice, CapStop: p.CapStop, CapCareful: p.CapCareful, Unlisted: p.Unlisted, NoModels: p.ServesNone(), BestInFamily: p.BestInFamily && len(p.Models) == 0 && !p.NoModels, Off: p.Off, Contexts: p.Contexts,
+ 		MaxConcurrency: p.MaxConcurrency, PluginConcurrency: p.PluginConcurrency(), MaxAccounts: p.MaxAccounts, PluginAccounts: p.PluginAtOnce(), PriceRate: p.PriceRate, KeyPriceRates: p.KeyPriceRates, TopUpRate: p.TopUpRate, KeyGroupRates: keyGroupRatesOf(p),
+@@ -2339,6 +2342,7 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
+ 				pr.ExtraBody = in.ExtraBody
+ 				pr.ReplyHeaders = in.ReplyHeaders
+ 				pr.PassHeaders = in.PassHeaders
++				pr.PassFields = in.PassFields
+ 				pr.SecretAccessKey = in.SecretAccessKey
+ 				pr.Vertex = in.Vertex
+ 				pr.Searches = in.Searches
+diff --git a/internal/provider/provider.go b/internal/provider/provider.go
+index 1e863f209..1bd146461 100644
+--- a/internal/provider/provider.go
++++ b/internal/provider/provider.go
+@@ -165,6 +165,17 @@ type Provider struct {
+ 	// gateway.standInsOut.
+ 	NoStandIn bool `json:"noStandIn,omitempty"`
+ 
++	// PassFields forwards a request's unknown top-level fields, by name,
++	// on a cross-protocol build (imxzt, #7376): a client that talks the
++	// Anthropic entry to an OpenAI-compatible upstream loses fields like
++	// chat_template_kwargs in the translation, and some vendors' reasoning
++	// toggles ride on exactly such a field. Off, the default, a translated
++	// build carries only what the translation knows. A name matches the
++	// body's own key exactly; a field the translation knows (its own
++	// schema — model, messages, thinking, …) is the translation's to map
++	// and is never overwritten by the client's copy.
++	PassFields []string `json:"passFields,omitempty"`
++
+ 	// Affinity is how long a conversation stays with the key or account
+ 	// that answered it, so the vendor's prompt cache it filled is read
+ 	// again rather than lost (see Affinities): "" auto, "session",
+-- 
+2.50.1 (Apple Git-155)
+

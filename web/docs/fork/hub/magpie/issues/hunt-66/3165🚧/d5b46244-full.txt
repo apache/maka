@@ -1,0 +1,217 @@
+commit d5b46244abb5da4572fc759688281296caab3c8d
+Author:     vincent <webmaster@palmit.com.au>
+AuthorDate: Fri Oct 23 06:39:52 2026 +1000
+Commit:     vincent <webmaster@palmit.com.au>
+CommitDate: Fri Oct 23 06:39:52 2026 +1000
+
+    gateway: carry DeepSeek reasoning under one field
+    
+    A Chat client echoing reasoning on a tool turn received a second reasoning_content field during passthrough. DeepSeek-compatible serde rejects the duplicate names. Move tool-turn reasoning into the canonical field and fold both spellings on non-tool messages too; keep other model and Kimi rules unchanged.
+    
+    Adapts ggbdpq 130b761baf6d7c23114ef5444a517928abbb59fe and realfirst 84c2b3a, retaining their tool-turn and non-tool regression cases. Both new cases fail with duplicate field reasoning on the old implementation. Related Reasoning and Kimi tests pass under -race, count=3. Full acceptance matrix follows on this head. No live vendor account checked.
+    
+    Co-authored-by: ggbdpq <ggbdpq@gmail.com>
+    
+    Co-authored-by: realfirst <174605+realfirst@users.noreply.github.com>
+
+diff --git a/docs/subsystems/gateway-routing.md b/docs/subsystems/gateway-routing.md
+index 15185e63..5bce0e8e 100644
+--- a/docs/subsystems/gateway-routing.md
++++ b/docs/subsystems/gateway-routing.md
+@@ -172,7 +172,7 @@ recorded as a prediction failure (`noPrediction`).
+ - A tool a Chat request's message carries joins the request's `tools` (`liftMessageTools` in [`message_tools.go`](../../internal/gateway/message_tools.go), #2322). Pi with `supportsMidConvoToolAdditions` gives a tool it adds mid-conversation as `{"role":"system","tools":[…]}` with no content, and keeps top-level `tools` as they were at the start; no Chat API reads tools there, and `parseChat` read only the top-level ones, so the tool could be called on no route. `handle` lifts them for every Chat body before `serveAgent`, so the Chat relay, the schema fixers, redaction (the tool is a tool definition, not message text), the prompt shown and routing all see them; `parseChat` lifts too, for a body that never came through `handle` (the Claude subscription bridge's direct callers). Each tool joins once by name and the first definition wins: a top-level tool keeps its own, then the earliest message's, as `liftAdditionalTools` and a `tool_addition` (`withoutDeferredTools`) do. A system or developer message that carried only tools is left out, so it is neither relayed as an empty system message nor joined into the system text as an empty part; one with content keeps its place without `tools`. Messages stay where they are: the in-place system message the issue also asks for is not this change. `TestPiAddedToolReachesEveryRoute` sends deephbz's Pi 1.2.0 bytes through the Chat relay, Messages, Responses, Gemini and Codex, and `TestPiAddedToolOfferedToClaudeCode` through the Claude subscription bridge.
+ - A Chat request's tool in another API's shape is put in the Chat shape, `{"type":"function","function":{name, description, parameters, strict}}` (`shapeChatTools` in [`chat_tool_shape.go`](../../internal/gateway/chat_tool_shape.go), #2622, jinyue806): MCP's `{"name","description","inputSchema"}` (ZCode), Anthropic's `input_schema`, a bare `{"name","parameters"}` and Responses' flat `{"type":"function","name",…}`. No Chat API takes those (SenseNova: "field Tools[0].Type invalid, should be set" and "function cannot be empty"), and `parseChat` read no name from them, so a translated request offered a tool named "". It runs right after `liftMessageTools`, in `handle` for every Chat body and in `parseChat`, so it holds for every Chat upstream, not SenseNova's alone. A tool with its `function`, a hosted tool (any other `type`) and one with no name are left as they came, and a request with none to shape is relayed byte for byte. `TestChatToolInAnotherShapeIsShaped` sends the report's request with each of its four tools through the Chat relay, Messages and Responses; `TestShapeChatToolsLeavesChatShape`.
+ - Every request to a key+URL provider goes with magpie's User-Agent (`magpie/<Version>`, `userAgentFor` in [`user_agent.go`](../../internal/gateway/user_agent.go)), except a provider set `passUserAgent` (#1851, `magpie provider set <id> user-agent=agent`, the editor's "Send the agent's own User-Agent"): it gets the User-Agent the inbound request carried, unchanged, for a coding plan that serves only the agents it names. One the agent didn't send, and magpie's own (`magpiesOwn`: another magpie's `magpie/…`, `magpie-router/1`, `magpie-vision/1`, `magpie-search/1`, and the image tool's `<client> magpie-image/1`, built from MCP's clientInfo, not a User-Agent), go as magpie; magpie never makes up another client's. `forwardOnce` sets it for chat, Anthropic, Responses, Gemini and count_tokens; embeddings, images and videos (`retrieveFrom`, `sendWith`, `remoteVideoContent`) set it with `stampUA` from the caller the request came with (`caller.ua`, `withCaller`), and before #1851 went with Go's default. Claude Code's and Codex's own headers are copied after, as before, and the user's `header.User-Agent` is put on when the request is signed, so it wins. `provider.PassesUserAgent` refuses it for a signed-in account, a plugin's, and a vendor whose own client magpie goes as (`OwnClient`: OpenCode, Cline, Kilo, another magpie); their signing sets their own. `TestUserAgentPassedOn`, `TestUserAgentAccountUntouched`, `TestUserAgentFor`, `TestPassesUserAgent`, `provider-user-agent.test.cjs`.
+-- A Chat upstream that wants a turn's reasoning back (`chatReplaysReasoning` in [`chat.go`](../../internal/gateway/chat.go): a host or a model, as magpie or the provider names it, with `deepseek` in it, such as OpenCode Go's `deepseek-v4.1-flash`, or Command Code's plugin) gets every assistant tool call with `reasoning_content`, relayed (`withReasoningOnToolTurns` in `passthrough`) or translated (`buildChat`). DeepSeek turns the whole request away ("The `reasoning_content` in the thinking mode must be passed back to the API") when a tool call made since the user's last message has none, which a client sends for a turn it saw no thinking on: another model's, a translated one (#1462). The turn's own thinking goes back as it came; one sent in `reasoning` or `reasoning_details` is copied in; otherwise it goes with a space (`noReasoning`: DeepSeek's Chat API takes an empty one, but a relay that leaves empty fields out would drop it). An assistant message right after a tool result, a reply with no call of its own, gets one too: DeepSeek refuses it the same way (checked 2026-10-12, #1822). A reply to the user, any other model and Mistral (#494) are sent as before.
++- A Chat upstream that wants a turn's reasoning back (`chatReplaysReasoning` in [`chat.go`](../../internal/gateway/chat.go): a host or a model, as magpie or the provider names it, with `deepseek` in it, such as OpenCode Go's `deepseek-v4.1-flash`, or Command Code's plugin) gets every assistant tool call with `reasoning_content`, relayed (`withReasoningOnToolTurns` in `passthrough`) or translated (`buildChat`). DeepSeek turns the whole request away ("The `reasoning_content` in the thinking mode must be passed back to the API") when a tool call made since the user's last message has none, which a client sends for a turn it saw no thinking on: another model's, a translated one (#1462). The turn's own thinking goes back as it came; one sent in `reasoning` or `reasoning_details` moves into `reasoning_content`, with those source fields removed (#3165). A relayed DeepSeek message carrying both `reasoning` and `reasoning_content`, including a non-tool message, keeps only `reasoning_content` (`foldReasoningAliases`); its serde reads the two names as one field and rejects duplicates. `TestChatToolTurnReasoningCarriedOnce` and `TestChatBothReasoningSpellingsRelayed` cover both cases; otherwise it goes with a space (`noReasoning`: DeepSeek's Chat API takes an empty one, but a relay that leaves empty fields out would drop it). An assistant message right after a tool result, a reply with no call of its own, gets one too: DeepSeek refuses it the same way (checked 2026-10-12, #1822). A reply with only one reasoning spelling, any other model and Mistral (#494) are sent as before.
+ - An assistant turn the user cut off before it said anything (only its thinking, an empty text, nothing; an isolated Codex reasoning item; a Gemini thought alone) stays in the agent's history and is sent on every later turn. DeepSeek and Kimi turn the whole request away over an assistant message with neither content nor tool calls, `reasoning_content` alone included ("Invalid assistant message: content or tool_calls must be set", #2599). Every Chat upstream gets such a turn left out, translated (`buildChat`, before `pairToolMessages`) or relayed (`silentAssistantsOut` in `passthrough`), by one rule (`withoutSilentAssistants` in [`chat.go`](../../internal/gateway/chat.go)): the two user messages it stood between join into one, and after a tool result the user's message follows the tool message. A prefill to go on from (`prefix`, `partial`, a Resume), a legacy `function_call`, a refusal and an audio reply stay, and a relayed body without such a turn goes byte for byte. `TestChatEmptyAssistantLeftOutFromAnthropic`, `…FromResponses`, `…FromGemini`, `TestChatRelayLeavesOutEmptyAssistant`, `TestChatRelaySilentAssistantsOnly`.
+ - Kimi's Chat API (`isKimi`: the Kimi platform's and a Kimi Code membership's hosts or presets) turns `reasoning_details` in a message away in any shape: an entry with a stream's `index` ("the reasoning_details at position 1 entry 0 must not contain streaming index") and any other entry ("… has an invalid type"), checked against api.kimi.com/coding on 2026-10-12. pi keeps another vendor's thinking there (MiMo's, through Command Code, with `index: 0`), so a conversation routed on to Kimi was refused on every turn (#1765). `passthrough` sends it to Kimi as `reasoning_content` (`reasoningDetailsAsContent`), which Kimi takes; a message with `reasoning_content` of its own keeps that. Another upstream that refuses a thinking field "at position N", as Kimi words it (a relay in front of it), is asked once more the same way and marked (`refusedInMessages`, `withoutMessageReasoning`).
+ - Claude Code's deferred tools (ToolSearch, MCP tools that come and go) put blocks of their own in a message: a `tool_addition` (`tool` a `tool_reference` naming the tool, or a `tool_definition`), a `tool_removal`, and a `tool_reference`. Kimi's Anthropic endpoint refuses any of them with a whole-request 400 "Invalid request Error" that names nothing, so once a session had loaded a tool every turn failed (#2042); DeepSeek's takes a `tool_addition` naming a tool but refuses one defining it, a `tool_removal` and a message's `tool_reference` with 422 "unknown variant `tool_removal`" (both checked against the real endpoints on 2026-10-14). OpenCode Go also rejects DeepSeek inline definitions with a generic 422 "Upstream request failed: Endpoint is unavailable." (checked on 2026-10-15). Kimi and DeepSeek models on OpenCode are never sent these blocks (`forwardOnce`); a provider that refuses one in those words is asked again at once without them and not sent them again while magpie runs (`refuseShapes`, `shapeDeferred`; the retry loop reads a 422 as well as a 400). `withoutDeferredTools` drops the blocks and a message they leave empty; definitions present only in a `tool_addition.tool.definition` join the request's `tools` once by name (an existing top-level definition wins), and a `tool_reference` inside a `tool_result` (ToolSearch's answer, which both take) stays. Any other provider is sent them as Claude Code wrote them ([`anthropic_shapes.go`](../../internal/gateway/anthropic_shapes.go), `TestKimiIsSentNoDeferredToolBlocks`, `TestDeferredToolBlocksRefusedOnceLeftOut`, `TestOpenCodeDeepSeekInlineTools`, `TestDeferredInlineDefinitionPreserved`).
+diff --git a/internal/gateway/chat_tool_reasoning_test.go b/internal/gateway/chat_tool_reasoning_test.go
+index 4eb00eea..fcf6fe26 100644
+--- a/internal/gateway/chat_tool_reasoning_test.go
++++ b/internal/gateway/chat_tool_reasoning_test.go
+@@ -2,6 +2,7 @@ package gateway
+ 
+ import (
+ 	"encoding/json"
++	"strconv"
+ 	"strings"
+ 	"testing"
+ 
+@@ -51,6 +52,54 @@ const toolTurnsNoReasoning = `{"model":"%s","stream":false,"tools":[{"type":"fun
+ 	{"role":"assistant","content":null,"tool_calls":[{"id":"call_3","type":"function","function":{"name":"get_time","arguments":"{}"}}],"reasoning":"OpenRouter's field."},
+ 	{"role":"tool","tool_call_id":"call_3","content":"12:02"}]}`
+ 
++// deepseekAliasSerde answers as the self-hosted DeepSeek engine of #3165
++// does: its serde reads reasoning_content as an alias of reasoning, so a
++// message carrying both turns the whole request away.
++func deepseekAliasSerde(body []byte) (int, string) {
++	var q struct {
++		Messages []map[string]json.RawMessage `json:"messages"`
++	}
++	json.Unmarshal(body, &q)
++	for i, m := range q.Messages {
++		if _, echoed := m["reasoning"]; !echoed {
++			continue
++		}
++		if _, injected := m["reasoning_content"]; injected {
++			return 400, `{"code":"json_parse_error","message":"deepseek: Failed to deserialize the JSON body into the target type: messages[` + strconv.Itoa(i) + `]: duplicate field ` + "`reasoning`" + ` at line 1 column 70565","param":null,"type":"invalid_request_error"}`
++		}
++	}
++	return 0, ""
++}
++
++// A Chat request relayed as it came to a DeepSeek engine that streams its
++// thinking in `reasoning` (#3165): the client echoes that field back, and
++// the replay of a tool turn would put reasoning_content beside it, which
++// such a serde takes apart ("duplicate field `reasoning`"). The thinking
++// moves into reasoning_content instead: it is carried once, and a message
++// that echoed reasoning_content of its own loses the `reasoning` left
++// beside it.
++func TestChatToolTurnReasoningCarriedOnce(t *testing.T) {
++	f := &fake{t: t, reply: chatWholeOK, ctype: "application/json", refuse: deepseekAliasSerde}
++	up := setup(t, provider.Chat, f)
++	chatProvider(t, up.URL, provider.Provider{ID: "dsflash", Models: []string{"deepseek-v4.1-flash"}})
++	code, body := postTo(t, New(), "/v1/chat/completions", `{"model":"dsflash/deepseek-v4.1-flash","stream":false,"messages":[
++		{"role":"user","content":"hi"},
++		{"role":"assistant","content":null,"tool_calls":[`+timeCall+`],"reasoning":"Thinking about the time."},
++		{"role":"tool","tool_call_id":"call_1","content":"12:00"},
++		{"role":"assistant","content":null,"tool_calls":[{"id":"call_2","type":"function","function":{"name":"get_time","arguments":"{}"}}],"reasoning_content":"Once more.","reasoning":"Echoed."},
++		{"role":"tool","tool_call_id":"call_2","content":"12:01"},
++		{"role":"assistant","content":"It is 12:01.","reasoning":"Reply thinking."}]}`)
++	if code != 200 || f.calls != 1 {
++		t.Fatalf("%d after %d calls: %s", code, f.calls, body)
++	}
++	ms := sentMessages(t, f.got)
++	sameJSON(t, ms[1], `{"role":"assistant","content":null,"tool_calls":[`+timeCall+`],"reasoning_content":"Thinking about the time."}`)
++	sameJSON(t, ms[2], `{"role":"tool","tool_call_id":"call_1","content":"12:00"}`)
++	sameJSON(t, ms[3], `{"role":"assistant","content":null,"tool_calls":[{"id":"call_2","type":"function","function":{"name":"get_time","arguments":"{}"}}],"reasoning_content":"Once more."}`)
++	sameJSON(t, ms[4], `{"role":"tool","tool_call_id":"call_2","content":"12:01"}`)
++	sameJSON(t, ms[5], `{"role":"assistant","content":"It is 12:01.","reasoning_content":"Reply thinking."}`)
++}
++
+ func chatProvider(t *testing.T, up string, p provider.Provider) {
+ 	t.Helper()
+ 	p.Name, p.Key, p.Chat = p.ID, "k", up+"/v1"
+@@ -62,8 +111,10 @@ func chatProvider(t *testing.T, up string, p provider.Provider) {
+ // A Chat request relayed as it came to a DeepSeek model, here behind
+ // OpenCode Go whose host doesn't say DeepSeek, gives every tool call
+ // without reasoning_content one, so DeepSeek takes it (#1462). The
+-// thinking a turn has keeps it, one sent in another field goes there too,
+-// and every other message goes as it was sent.
++// thinking a turn has keeps it, one sent in another field moves there —
++// carried once, since a DeepSeek-style serde reading both names into one
++// field takes the message apart (#3165) — and every other message goes as
++// it was sent.
+ func TestChatToolTurnWithoutReasoningRelayed(t *testing.T) {
+ 	f := &fake{t: t, reply: chatWholeOK, ctype: "application/json", refuse: deepseekRefuseToolTurns}
+ 	up := setup(t, provider.Chat, f)
+@@ -84,7 +135,7 @@ func TestChatToolTurnWithoutReasoningRelayed(t *testing.T) {
+ 		sameJSON(t, ms[1], `{"role":"assistant","content":"Hello!"}`)
+ 		sameJSON(t, ms[3], `{"role":"assistant","content":null,"tool_calls":[`+timeCall+`],"reasoning_content":" "}`)
+ 		sameJSON(t, ms[5], `{"role":"assistant","content":null,"tool_calls":[{"id":"call_2","type":"function","function":{"name":"get_time","arguments":"{}"}}],"reasoning_content":"Once more."}`)
+-		sameJSON(t, ms[7], `{"role":"assistant","content":null,"tool_calls":[{"id":"call_3","type":"function","function":{"name":"get_time","arguments":"{}"}}],"reasoning":"OpenRouter's field.","reasoning_content":"OpenRouter's field."}`)
++		sameJSON(t, ms[7], `{"role":"assistant","content":null,"tool_calls":[{"id":"call_3","type":"function","function":{"name":"get_time","arguments":"{}"}}],"reasoning_content":"OpenRouter's field."}`)
+ 		sameJSON(t, ms[4], `{"role":"tool","tool_call_id":"call_1","content":"12:00"}`)
+ 	}
+ 
+@@ -153,3 +204,15 @@ func TestTranslatedToolTurnWithoutReasoning(t *testing.T) {
+ 		t.Errorf("the reply was given reasoning: %s", f.got)
+ 	}
+ }
++
++// #3165 also affects a normal message carrying both names, without a tool call.
++func TestChatBothReasoningSpellingsRelayed(t *testing.T) {
++	f := &fake{t: t, reply: chatWholeOK, ctype: "application/json", refuse: deepseekAliasSerde}
++	up := setup(t, provider.Chat, f)
++	chatProvider(t, up.URL, provider.Provider{ID: "ds", Models: []string{"deepseek-v4.1-flash"}})
++	code, body := postTo(t, New(), "/v1/chat/completions", `{"model":"ds/deepseek-v4.1-flash","stream":false,"messages":[{"role":"user","content":"hi"},{"role":"assistant","content":"Hello!","reasoning":"the thinking","reasoning_content":"the thinking"},{"role":"user","content":"again"}]}`)
++	if code != 200 || f.calls != 1 {
++		t.Fatalf("%d after %d calls: %s", code, f.calls, body)
++	}
++	sameJSON(t, sentMessages(t, f.got)[1], `{"role":"assistant","content":"Hello!","reasoning_content":"the thinking"}`)
++}
+diff --git a/internal/gateway/chattidy.go b/internal/gateway/chattidy.go
+index 68432016..4a4d3cad 100644
+--- a/internal/gateway/chattidy.go
++++ b/internal/gateway/chattidy.go
+@@ -414,12 +414,15 @@ const noReasoning = " "
+ // withReasoningOnToolTurns gives each assistant message of a Chat request
+ // that has tool calls, or that follows a tool message of its turn, and no
+ // reasoning_content one: the thinking it sent back in another field
+-// (reasoning, reasoning_details), else noReasoning. DeepSeek turns away a
+-// reply after a tool result with none as it does a call (checked against
+-// api.deepseek.com on 2026-10-12, #1822). A message with reasoning_content
+-// of its own keeps it, any other reply is left as it is (DeepSeek doesn't
+-// ask for its thinking), and a body with no tool calls comes back byte for
+-// byte.
++// (reasoning, reasoning_details), else noReasoning. The field the thinking
++// rode in on goes, so it is carried once: a self-hosted DeepSeek engine's
++// serde reads reasoning_content as an alias of reasoning and takes a
++// message carrying both apart ("duplicate field `reasoning`", #3165).
++// DeepSeek turns away a reply after a tool result with none as it does a
++// call (checked against api.deepseek.com on 2026-10-12, #1822). A message
++// with reasoning_content of its own keeps it, any other reply is left as
++// it is (DeepSeek doesn't ask for its thinking), and a body with no tool
++// calls comes back byte for byte.
+ func withReasoningOnToolTurns(body []byte) []byte {
+ 	afterTool := false
+ 	return editMessages(body, []string{"tool_calls"}, func(m map[string]json.RawMessage) bool {
+@@ -440,17 +443,42 @@ func withReasoningOnToolTurns(body []byte) []byte {
+ 		}
+ 		var own *string
+ 		if decodeJSON(m["reasoning_content"], &own) == nil && own != nil {
+-			return false
++			changed := false
++			for _, f := range messageReasoning[1:] {
++				if _, ok := m[f]; ok {
++					delete(m, f)
++					changed = true
++				}
++			}
++			return changed
+ 		}
+ 		think := reasoningText(m)
+ 		if think == "" {
+ 			think = noReasoning
+ 		}
++		for _, f := range messageReasoning[1:] {
++			delete(m, f)
++		}
+ 		m["reasoning_content"], _ = marshalPlain(think)
+ 		return true
+ 	})
+ }
+ 
++// foldReasoningAliases keeps the DeepSeek spelling: its serde reads both
++// names as one field and refuses a message carrying both (#3165).
++func foldReasoningAliases(body []byte) []byte {
++	return editMessages(body, []string{"reasoning"}, func(m map[string]json.RawMessage) bool {
++		if _, ok := m["reasoning"]; !ok {
++			return false
++		}
++		if _, ok := m["reasoning_content"]; !ok {
++			return false
++		}
++		delete(m, "reasoning")
++		return true
++	})
++}
++
+ // silentAssistantsOut is withoutSilentAssistants for a Chat request
+ // relayed as the client sent it (#2599): an agent that speaks Chat keeps
+ // the turn it cut off as {"role":"assistant","content":""} (or null, with
+diff --git a/internal/gateway/gateway.go b/internal/gateway/gateway.go
+index 967386c1..e85f90ed 100644
+--- a/internal/gateway/gateway.go
++++ b/internal/gateway/gateway.go
+@@ -4258,7 +4258,7 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
+ 		if mistral := p.Preset == "mistral" || p.Host() == "api.mistral.ai"; !mistral && (chatReplaysReasoning(buildHost(p), model) || chatReplaysReasoning(buildHost(p), upstream)) {
+ 			// a tool call the client kept no thinking for, which DeepSeek
+ 			// turns the whole request away for (#1462)
+-			body = withReasoningOnToolTurns(body)
++			body = foldReasoningAliases(withReasoningOnToolTurns(body))
+ 		}
+ 		// Gemini's thought signatures, which came to the client in its
+ 		// calls' ids, go back where Gemini wants them; another upstream

@@ -1,0 +1,28 @@
+davsync: a GitHub blob POST on a slow but live line is no longer cut off at 30 s
+
+What changed: the stall watchdog saw a request as one whose body may
+outlast the whole metadata limit only by method (GET, PUT), and gave every
+other request a flat 30 s (#657's rule held for WebDAV and S3, whose
+remaining requests move a few KB at most). GitHub's uploads ride a POST:
+each blob POST hauls up to 16 MiB of file as about 21 MB of base64, and a
+flat 30 s needs 550 KB/s to get one part through (#4576: on a slower line
+the sync failed on the same POST at every attempt, automatic, at start and
+manual, and never recovered -- the usage day file froze in the morning
+while the machine kept working). A request hauling a big body (64 KiB or
+more) now gets the same moving-aware budget as a PUT: the watchdog is put
+back each time bytes move, and after the body is all handed over the
+answer gets 60 s on top of as long as the write took. The metadata
+requests (the GitHub tree, commit and ref POSTs and PATCH, WebDAV
+PROPFIND/MKCOL/MOVE/DELETE -- kilobytes at most) keep their 30 s in all.
+
+Run: TestGitHubSlowBlobUploadIsNotCutShort (a 272 KB base64 body through a
+line at 320 KB/s, watchdogs shortened to 1 s/300 ms) fails on the old code
+with "the server didn't answer in 300ms (POST)", the shape of #4576's
+error, and passes now; TestGitHubSmallPostKeepsTheLimit pins the small
+POSTs to the old limit either way. go test -tags nogui ./internal/davsync,
+vet and builds for darwin, GOOS=linux and GOOS=windows pass. Not tried
+against a real slow line to GitHub.
+
+Fixes #4576
+
+Generated-by: GLM-5.3-Flash (ZCode)

@@ -1,0 +1,23 @@
+{
+  "id": "27",
+  "slug": "first-missing-positive",
+  "title": "缺失的第一个正数",
+  "difficulty": "hard",
+  "tags": ["数组", "哈希表"],
+  "description": "给你一个未排序的整数数组 `nums`,请你找出其中没有出现的最小的正整数。\n\n请你实现时间复杂度为 `O(n)` 并且只使用常数级别额外空间的解决方案。\n\n**示例 1:**\n\n- 输入:`nums = [1,2,0]`\n- 输出:`3`\n\n**示例 2:**\n\n- 输入:`nums = [3,4,-1,1]`\n- 输出:`2`\n\n**示例 3:**\n\n- 输入:`nums = [7,8,9,11,12]`\n- 输出:`1`",
+  "solution": "## 思路\n\n**原地哈希**:把每个值在 `[1, n]` 范围内的数交换到下标 `值-1` 处(让 `nums[i] === i+1`)。一遍扫描后再扫,第一个 `nums[i] !== i+1` 的位置,答案就是 `i+1`;都满足则答案 `n+1`。\n\n## 参考代码\n\n```js\nfunction firstMissingPositive(nums) {\n  const n = nums.length;\n  for (let i = 0; i < n; i++) {\n    while (nums[i] >= 1 && nums[i] <= n && nums[nums[i] - 1] !== nums[i]) {\n      [nums[nums[i] - 1], nums[i]] = [nums[i], nums[nums[i] - 1]];\n    }\n  }\n  for (let i = 0; i < n; i++) {\n    if (nums[i] !== i + 1) return i + 1;\n  }\n  return n + 1;\n}\n```\n\n## 复杂度\n\n- 时间:O(n)(每个元素交换次数有界)\n- 空间:O(1)",
+  "signature": {
+    "language": "javascript",
+    "entry": "firstMissingPositive",
+    "params": [{ "name": "nums", "type": "number[]" }],
+    "returns": "number"
+  },
+  "testCases": [
+    { "sample": true, "input": [[1, 2, 0]], "expected": 3 },
+    { "sample": true, "input": [[3, 4, -1, 1]], "expected": 2 },
+    { "sample": true, "input": [[7, 8, 9, 11, 12]], "expected": 1 },
+    { "sample": false, "input": [[1, 2, 3]], "expected": 4 },
+    { "sample": false, "input": [[1]], "expected": 2 },
+    { "sample": false, "input": [[2]], "expected": 1 }
+  ]
+}

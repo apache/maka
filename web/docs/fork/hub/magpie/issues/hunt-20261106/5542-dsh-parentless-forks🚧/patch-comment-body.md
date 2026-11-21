@@ -1,0 +1,340 @@
+**What's wrong**
+
+After #5491, a fork dsh 0.2.2 makes today still lists its requests under the session it was copied from — its own name never appears (Flandern1211: of 17 top-level seeded sessions on one computer, 10 carry a `parentSession` from an older dsh and 7 do not; the 7 are the regressed ones, one of them's four requests resolving to its source though their reply ids are its own).
+
+**Root cause**
+
+#5491's guard lets a reply id name a session over the opening only where the two agree, and one of the ways is the fork chain: `Session.ForkOf`, read from the fork header's `parentSession`. dsh's current fork writes `isSeeded` and `session/end-seed` but no `parentSession` — so `ForkOf` is empty, `forkedFrom` refuses the exact reply-id owner, and `ownerOf` falls back to the opening's owner, the source. The evidence stays in the fork's own file: the copied prefix carries the source's opening, and it hashes to exactly the conversation id the source owns — but #5491's `session/end-seed` reset drops it with the rest of the seed's counting.
+
+**The fix** (6 files, +109/−14)
+
+As Flandern1211's tested patch (`fix/dsh-fork-without-parent` @ `ead1abcce`), ported with one conflict taken: upstream's `parseVersions` gained `antigravity` since the branch forked, and both stand (`dsh: 2` beside it):
+
+- `sessions`: when `session/end-seed` resets a fork's state, the conversation ids the copied events opened are kept on the session (`SeedConvs`) instead of being dropped with the rest — a fork of a fork accumulates them across the markers its copied prefix carries.
+- `gui`: `forkedFrom` also accepts the opening when the reply's session's seed carried it — the fork's own file proving it was copied from that opening. The rest of the guard is unchanged: the opening must be no one's, two sessions', the reply's session's own, or one it was forked from; a vendor repeating a reply id still cannot take another conversation's opening.
+- `parseVersions["dsh"]` raised, so cached parses are read again; the Routing integration fixture omits `parentSession`, as current dsh does — the test #5491 added now locks this fix too.
+
+What does not change: forks that name `parentSession` still go by `ForkOf`; a request with no reply id still goes by the opening (the request-time identity problem stays #5496's).
+
+Credit @Flandern1211 for the patch, the real-data replay and the measurement; ported as written, co-authored.
+
+**Verification**
+
+| Check | Result |
+| --- | --- |
+| `TestDshForkWithoutAParentKeepsItsSeedOpenings` (a v4 fork with no `parentSession`: seed openings kept, none of the source's opening left in `Convs`, only its own reply listed) | ok |
+| `TestDshForkWithoutAParentIsNamedByItsReply` (source, a seed-carrying fork with no `ForkOf`, an unrelated session: the fork's reply names the fork; the source's opening alone names the source; another conversation's reply id does not take the source's opening) | ok |
+| Ablation, `dsh.go` back at the parent, tests kept | red — `seed openings [], want [magpie-e2f7b8e6… magpie-dc816daf… magpie-be45a6b1…]`, and #5491's own integration test with the fixture as dsh writes today: `route 1: session "session-source", want "session-fork"` |
+| Ablation, `context.go` back at the parent, tests kept | red — `reply "chatcmpl-fork", opening "magpie-open": "source", want "fork"` |
+| `go test -tags nogui -run 'Dsh|Fork|Routing|Context|Conv' ./internal/gui/` and `-run 'Dsh|ResponseID' ./internal/gateway/` | ok, both |
+| `go test -tags nogui ./internal/sessions/` full package | ok (55.7s) |
+| `go test -tags nogui ./internal/gui/` full package | ok but the machine's standing red `TestProxyCheckSaysAProxyPassedBy` (a proxy that answers here whether magpie asks it or not — red at the parent too) |
+| `gofmt -l`, `go vet -tags nogui` (darwin, linux), `go build` | clean / clean / ok |
+
+<details><summary>patch: dsh: a fork without a parent keeps the opening it copied (#5542) — git am applies it as is; SHA-256 first 16: 764a9ce8e940997a</summary>
+
+```patch
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Sat, 7 Nov 2026 03:56:37 +0800
+Subject: [PATCH] dsh: a fork without a parent keeps the opening it copied
+ (#5542)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+#5491 names a dsh fork's completed requests by the reply id dsh
+writes with them, over the opening only where the two agree: the
+reply's session is the opening's own, or a fork of it — said by the
+fork header's parentSession (Session.ForkOf).
+
+dsh 0.2.2's ordinary fork writes isSeeded and session/end-seed, but
+no parentSession: ForkOf is empty, the guard refuses the exact
+reply-id owner, and the request stays under the source (Flandern1211:
+of 17 top-level seeded sessions on one computer, 7 are such forks).
+
+Keep the conversation ids read from the copied seed when end-seed
+takes them off Convs (SeedConvs): the fork's own file is the evidence
+its copied prefix carried that opening, and forkedFrom reads it when
+the fork names no parent — only to admit an already unique, completed
+ResponseID. Routes with no reply id keep the opening fallback, and a
+repeated reply id stays ambiguous. dsh's parser version rises so
+cached parses are rebuilt; the Routing fixture omits parentSession,
+as current dsh does.
+
+Co-authored-by: Flandern1211 <163982805+Flandern1211@users.noreply.github.com>
+Ported from Flandern1211/magpie fix/dsh-fork-without-parent @ ead1abcce.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gui/context.go                   | 25 ++++++++++++-----
+ internal/gui/dsh_fork_seed_test.go        | 33 +++++++++++++++++++++++
+ internal/gui/trace_dsh_response_test.go   |  2 +-
+ internal/sessions/dsh.go                  |  8 ++++--
+ internal/sessions/dsh_response_id_test.go | 27 +++++++++++++++++++
+ internal/sessions/sessions.go             | 28 +++++++++++++++----
+ 6 files changed, 109 insertions(+), 14 deletions(-)
+ create mode 100644 internal/gui/dsh_fork_seed_test.go
+
+diff --git a/internal/gui/context.go b/internal/gui/context.go
+index a98a307b5..d7d1107b5 100644
+--- a/internal/gui/context.go
++++ b/internal/gui/context.go
+@@ -303,27 +303,33 @@ func joinConvs(routes []ctxRec, list func() []sessions.Session) {
+ // which some give out again (Ollama's chatcmpl-<0-998>), so it names a
+ // session over the opening only where the two agree: the opening is no
+ // one's, or two sessions', or the reply's session's own, or one it was
+-// forked from (sessions' ForkOf). Another session's opening goes by the
+-// opening, as it did before reply ids were read.
++// forked from (sessions' ForkOf, or the opening its seed carried when the
++// fork names no parent). Another session's opening goes by the opening, as
++// it did before reply ids were read.
+ func ownerOf(agent, responseID, conv string, of map[string]string) string {
+ 	opened := ""
+ 	if conv != "" {
+ 		opened = of[ownerKey(agent, ownerConv, conv)]
+ 	}
+ 	if responseID != "" {
+-		if id := of[ownerKey(agent, ownerResponse, responseID)]; id != "" && (opened == "" || forkedFrom(agent, id, opened, of)) {
++		if id := of[ownerKey(agent, ownerResponse, responseID)]; id != "" && (opened == "" || forkedFrom(agent, id, opened, conv, of)) {
+ 			return id
+ 		}
+ 	}
+ 	return opened
+ }
+ 
+-// forkedFrom says session id is from, or a fork of it, or of a fork of it.
+-func forkedFrom(agent, id, from string, of map[string]string) bool {
++// forkedFrom says session id is from, or a fork of it, or of a fork of it:
++// by the source its header names (ForkOf), or, for a fork dsh wrote with
++// none, by the opening conv its seed carried (sessions' SeedConvs).
++func forkedFrom(agent, id, from, conv string, of map[string]string) bool {
+ 	for n := 0; id != "" && n < 64; n++ {
+ 		if id == from {
+ 			return true
+ 		}
++		if conv != "" && of[ownerKey(agent, ownerSeed, id+"\x00"+conv)] != "" {
++			return true
++		}
+ 		id = of[ownerKey(agent, ownerFork, id)]
+ 	}
+ 	return false
+@@ -331,11 +337,13 @@ func forkedFrom(agent, id, from string, of map[string]string) bool {
+ 
+ // The kinds of id a route without a session id is named by: the reply it
+ // got, and the conversation it opens; and a session's source, for the
+-// session a fork's reply names (ForkOf).
++// session a fork's reply names (ForkOf), and the opening a fork's seed
++// carried, kept on the fork itself (SeedConvs).
+ const (
+ 	ownerResponse = "response"
+ 	ownerConv     = "conv"
+ 	ownerFork     = "fork"
++	ownerSeed     = "seed"
+ )
+ 
+ func ownerKey(agent, kind, id string) string { return agent + "\x00" + kind + "\x00" + id }
+@@ -364,6 +372,11 @@ func routeOwners(list []sessions.Session) map[string]string {
+ 		if s.ForkOf != "" {
+ 			of[ownerKey(s.Agent, ownerFork, s.ID)] = s.ForkOf
+ 		}
++		for _, c := range s.SeedConvs {
++			// the fork's own record that its seed opened c, the opening
++			// it shares with the session it was copied from
++			of[ownerKey(s.Agent, ownerSeed, s.ID+"\x00"+c)] = s.ID
++		}
+ 	}
+ 	return of
+ }
+diff --git a/internal/gui/dsh_fork_seed_test.go b/internal/gui/dsh_fork_seed_test.go
+new file mode 100644
+index 000000000..e96a0213d
+--- /dev/null
++++ b/internal/gui/dsh_fork_seed_test.go
+@@ -0,0 +1,33 @@
++package gui
++
++import (
++	"testing"
++
++	"github.com/yetone/magpie/internal/sessions"
++)
++
++// dsh writes no parentSession for a fork it makes today, so sessions' ForkOf
++// is empty for it: the opening its seed carried (SeedConvs) is what says the
++// fork came from the session it copied, and its own replies are named for it
++// rather than for that session. A reply id of another conversation still goes
++// by that conversation's opening, as the guard for vendors' repeated ids asks.
++func TestDshForkWithoutAParentIsNamedByItsReply(t *testing.T) {
++	list := []sessions.Session{
++		{Agent: "dsh", ID: "source", Convs: []string{"magpie-open"}},
++		{Agent: "dsh", ID: "fork", SeedConvs: []string{"magpie-open"}, ResponseIDs: []string{"chatcmpl-fork"}},
++		{Agent: "dsh", ID: "other", Convs: []string{"magpie-other"}, ResponseIDs: []string{"chatcmpl-other"}},
++	}
++	of := routeOwners(list)
++	for _, c := range []struct {
++		response, conv, want string
++	}{
++		{"chatcmpl-fork", "magpie-open", "fork"},    // the fork's own turn
++		{"", "magpie-open", "source"},               // the source's, by its opening
++		{"chatcmpl-other", "magpie-open", "source"}, // another conversation's reply id
++		{"chatcmpl-fork", "", "fork"},               // the reply alone
++	} {
++		if got := ownerOf("dsh", c.response, c.conv, of); got != c.want {
++			t.Errorf("reply %q, opening %q: %q, want %q", c.response, c.conv, got, c.want)
++		}
++	}
++}
+diff --git a/internal/gui/trace_dsh_response_test.go b/internal/gui/trace_dsh_response_test.go
+index 708995a86..f72f3cc23 100644
+--- a/internal/gui/trace_dsh_response_test.go
++++ b/internal/gui/trace_dsh_response_test.go
+@@ -52,7 +52,7 @@ func TestRoutingTellsAForkByItsReply(t *testing.T) {
+ 	}
+ 	write("session-source", `{"type":"session","version":4,"id":"session-source","cwd":"/w","createdAt":1000,"delegationDepth":0,"isSeeded":false}`,
+ 		opening, reply(2, "reply-source"))
+-	write("session-fork", `{"type":"session","version":4,"id":"session-fork","cwd":"/w","createdAt":1000,"delegationDepth":0,"parentSession":"session-source","isSeeded":true}`,
++	write("session-fork", `{"type":"session","version":4,"id":"session-fork","cwd":"/w","createdAt":1000,"delegationDepth":0,"isSeeded":true}`,
+ 		opening, reply(2, "reply-source"), endSeed, reply(4, "reply-fork"))
+ 
+ 	var openingHash string
+diff --git a/internal/sessions/dsh.go b/internal/sessions/dsh.go
+index 799ecafcd..9bbb2d042 100644
+--- a/internal/sessions/dsh.go
++++ b/internal/sessions/dsh.go
+@@ -368,8 +368,12 @@ func dshCount(s *state, h *dshHead, b []byte, main bool) {
+ 	case "session/end-seed":
+ 		if h.Version >= 2 && h.IsSeeded && e.Data.Inherited {
+ 			// the events a fork was seeded with end here: what was
+-			// counted of them is its source's
+-			n := &state{ID: s.ID, Cwd: s.Cwd, Title: s.Title, First: s.First, Named: s.Named, Size: s.Size, Mod: s.Mod}
++			// counted of them is its source's. What they opened is
++			// kept: dsh writes no parentSession for a fork, so the
++			// openings its seed carried are all that says the fork
++			// came from them (SeedConvs)
++			n := &state{ID: s.ID, Cwd: s.Cwd, Title: s.Title, First: s.First, Named: s.Named, Size: s.Size, Mod: s.Mod,
++				SeedConvs: append(append([]string(nil), s.SeedConvs...), s.Convs...)}
+ 			n.saw(ms(h.CreatedAt), main)
+ 			*s = *n
+ 			return
+diff --git a/internal/sessions/dsh_response_id_test.go b/internal/sessions/dsh_response_id_test.go
+index 4740de272..ddab92453 100644
+--- a/internal/sessions/dsh_response_id_test.go
++++ b/internal/sessions/dsh_response_id_test.go
+@@ -1,6 +1,7 @@
+ package sessions
+ 
+ import (
++	"encoding/json"
+ 	"os"
+ 	"path/filepath"
+ 	"slices"
+@@ -187,3 +188,29 @@ func TestDshForkOfARealSessionListsItsOwnReplies(t *testing.T) {
+ 		t.Errorf("the source is forked from %q", byID[source].ForkOf)
+ 	}
+ }
++
++// dsh writes no parentSession for a fork it makes today (0.2.2): the
++// openings its seed carried are the only record that it came from the
++// session it copied, and are kept when the seed's end takes them off Convs.
++func TestDshForkWithoutAParentKeepsItsSeedOpenings(t *testing.T) {
++	head := `{"type":"session","version":4,"id":"session-child","cwd":"/w","createdAt":1000,"delegationDepth":0,"isSeeded":true}`
++	s := dshSessionFile(t, []string{
++		head,
++		`{"type":"user/message","seq":1,"time":1000,"data":{"source":{"kind":"user"},"content":[{"type":"text","text":"same first prompt"}]}}`,
++		`{"type":"session/end-seed","seq":2,"time":1000,"data":{"inherited":true}}`,
++		dshReplyWithID(3, "own"),
++	})
++	want := dshConvs(json.RawMessage(`[{"type":"text","text":"same first prompt"}]`))
++	if len(want) == 0 {
++		t.Fatal("the fixture opens no conversation")
++	}
++	if !slices.Equal(s.SeedConvs, want) {
++		t.Fatalf("seed openings %v, want %v", s.SeedConvs, want)
++	}
++	if len(s.Convs) != 0 {
++		t.Fatalf("the fork keeps its source's opening as its own: %v", s.Convs)
++	}
++	if !slices.Equal(s.ResponseIDs, []string{"own"}) {
++		t.Fatalf("replies %v, want [own]", s.ResponseIDs)
++	}
++}
+diff --git a/internal/sessions/sessions.go b/internal/sessions/sessions.go
+index 449fd9d8d..f54c08b9c 100644
+--- a/internal/sessions/sessions.go
++++ b/internal/sessions/sessions.go
+@@ -166,6 +166,13 @@ type Session struct {
+ 	// so a reply id that names the fork is taken over the opening only for
+ 	// a fork of the opening's session (gui's ownerOf)
+ 	ForkOf string `json:"-"`
++	// SeedConvs are the conversation ids the fork's copied events opened
++	// (dshConvs), which its seed's end takes off Convs: the source's
++	// opening is what a fork and its source share, and dsh's current
++	// forks write no parentSession to say so, so this is how the fork's
++	// own replies are known to belong to a fork of that opening
++	// (gui's ownerOf)
++	SeedConvs []string `json:"-"`
+ 	// Copies are the ids of the sessions that are copies of its
+ 	// conversation, not listed apart from it (ccCopies)
+ 	Copies []string `json:"-"`
+@@ -229,10 +236,15 @@ type state struct {
+ 	// gateway wrote them on its routes and the agent kept them with the
+ 	// reply (dsh's replay state): they name a request after the fact, where
+ 	// a conversation id is only its opening (Route.ResponseID)
+-	ResponseIDs []string      `json:"response_ids,omitempty"`
+-	Start       time.Time     `json:"start"`
+-	Last        time.Time     `json:"last"`
+-	Models      named[Tokens] `json:"models,omitempty"`
++	ResponseIDs []string `json:"response_ids,omitempty"`
++	// SeedConvs are the conversation ids a fork's copied events opened
++	// (dshConvs), kept when its seed's end takes them off Convs: the
++	// opening a fork and its source share is the source's, and this is
++	// the fork's own record that it came from that opening (ownerSeed)
++	SeedConvs []string      `json:"seed_convs,omitempty"`
++	Start     time.Time     `json:"start"`
++	Last      time.Time     `json:"last"`
++	Models    named[Tokens] `json:"models,omitempty"`
+ 	// Days is Models again, split by the local date each message was
+ 	// written on: a session that runs past midnight counts on both days.
+ 	Days named[*day] `json:"days,omitempty"`
+@@ -394,6 +406,7 @@ func (s *state) clone() *state {
+ 	}
+ 	c.Convs = slices.Clone(s.Convs)
+ 	c.ResponseIDs = slices.Clone(s.ResponseIDs)
++	c.SeedConvs = slices.Clone(s.SeedConvs)
+ 	c.CodexSpawnNames = maps.Clone(s.CodexSpawnNames)
+ 	c.CodexSpawnConflicts = maps.Clone(s.CodexSpawnConflicts)
+ 	c.CodexAgentIDs = maps.Clone(s.CodexAgentIDs)
+@@ -1163,9 +1176,13 @@ const cacheVersion = 29
+ // dsh 1: the ids of the replies its own requests got (ResponseIDs), for
+ // the routes that carry no session id and an opening a fork copies.
+ //
++// dsh 2: the openings a fork's seed opened (SeedConvs), which its end
++// takes off Convs: a fork dsh writes today names no parentSession, so its
++// own replies are told from its source's by them.
++//
+ // antigravity 1: a Gemini deployment's name with any one letter after it
+ // (gemini-4-argon-d) is its model's (GeminiDeployment), not -n alone.
+-var parseVersions = map[string]int{"codex": 3, "zcode": 1, "dsh": 1, "antigravity": 1}
++var parseVersions = map[string]int{"codex": 3, "zcode": 1, "dsh": 2, "antigravity": 1}
+ 
+ type cacheFile struct {
+ 	Version int    `json:"version"`
+@@ -1876,6 +1893,7 @@ func assembleListed(fs []file, price func(string) *catalog.Price, codexTitle fun
+ 			}
+ 			s.Convs = append(s.Convs, st.Convs...)
+ 			s.ResponseIDs = append(s.ResponseIDs, st.ResponseIDs...)
++			s.SeedConvs = append(s.SeedConvs, st.SeedConvs...)
+ 			if d := st.Dsh; d != nil && d.Head.IsSeeded && d.Head.DelegationDepth == 0 {
+ 				s.ForkOf = d.Head.ParentSession
+ 			}
+-- 
+2.50.1 (Apple Git-155)
+
+```
+
+</details>
+
+Branch: [`fix/5542-dsh-parentless-forks`](https://github.com/ggbdpq/magpie/tree/fix/5542-dsh-parentless-forks) at `0d7e18d1e785a4246014c0df1b66ada5c17ea43b`, porting Flandern1211's `fix/dsh-fork-without-parent` @ `ead1abcce`.
+
+Generated-by: GLM-5.3-Flash (ZCode)

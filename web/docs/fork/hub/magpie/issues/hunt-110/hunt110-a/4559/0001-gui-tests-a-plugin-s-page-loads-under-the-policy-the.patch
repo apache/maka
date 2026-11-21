@@ -1,0 +1,111 @@
+From a4af4aed4853d7b58e0228dea422d13b5079c58d Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Sat, 31 Oct 2026 18:52:37 +0800
+Subject: [PATCH] gui tests: a plugin's page loads under the policy the web
+ route sends (#4559)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+plugin-page.test.cjs faked a page policy that listed the page's folder
+under all three schemes (wails://, http://, https://). That is not what
+pagePolicy (internal/gui/pluginpage.go) sends: it names one source, the
+page's own folder, with a scheme only in the native window, whose handler
+puts it in the request (wails, or http on Windows); over the web the
+source keeps no scheme, so HTTP, HTTPS and reverse proxies match it. No
+GUI test therefore loaded a plugin page under the real web policy (#4559).
+
+The fake now builds the policy the way pagePolicy does per route: the
+scheme-less shape for the browser (what magpie web serves), and a new
+test draws the probe page under the native window's http shape. A browser
+can't resolve wails://, so that shape stays the darwin window test's
+(pluginpage_webkit_darwin_test.go).
+
+What the real policy now meets in this suite: on macOS, Playwright
+WebKit refuses the scheme-less source inside the sandboxed frame (its
+console: "Refused to load ... because it does not appear in the
+script-src directive") — with the sandbox attribute off, or with the
+scheme named, the script loads. So the webkit leg of the first test is
+red here, and that is the magpie-community/plugins#551 claim reproduced;
+a standalone repro without the sandboxed frame would not see it. Chromium
+matches the scheme-less source either way.
+
+Run: NODE_PATH=<playwright 1.57.0> node --test internal/gui/tests/plugin-page.test.cjs
+— chromium 4/4; webkit 3/4, the one red the scheme-less refusal above.
+Ablation: with the source pointed at a folder that matches nothing, the
+frame's page draws nothing and both page-loading tests fail in chromium.
+
+Fixes #4559
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gui/tests/plugin-page.test.cjs | 41 ++++++++++++++++++++++---
+ 1 file changed, 36 insertions(+), 5 deletions(-)
+
+diff --git a/internal/gui/tests/plugin-page.test.cjs b/internal/gui/tests/plugin-page.test.cjs
+index a93c079e6..525106bb1 100644
+--- a/internal/gui/tests/plugin-page.test.cjs
++++ b/internal/gui/tests/plugin-page.test.cjs
+@@ -38,11 +38,15 @@ const pages = [
+   entry(BROKEN, "broken", "Broken", []),
+ ];
+ 
+-// what pluginpage.go's pagePolicy sends, for this host: the page's folder
+-// under each scheme the window is served on
+-const policy = (tok) => {
++// what pluginpage.go's pagePolicy sends, for this host, built the way it
++// builds it per route: the page's own folder, one source, named with the
++// scheme only the native window's handler puts in the request (wails, or
++// http on Windows); over the web the source keeps no scheme, so HTTP,
++// HTTPS and a reverse proxy all match it. A browser here reads the window
++// the way magpie web serves one, so the pages get the scheme-less shape.
++const policy = (tok, scheme = "") => {
+   const dir = `magpie.test/_magpie/plugin/${tok}/`;
+-  const own = `wails://${dir} http://${dir} https://${dir}`;
++  const own = scheme ? `${scheme}://${dir}` : dir;
+   return [
+     "sandbox allow-scripts", "default-src 'none'", `script-src ${own}`, `style-src ${own} 'unsafe-inline'`,
+     `img-src ${own} data:`, `font-src ${own}`, `media-src ${own}`, "connect-src 'none'", "frame-src 'none'",
+@@ -105,7 +109,7 @@ function server(lang, seen, plugins) {
+     if (m) {
+       const [, tok, rel] = m;
+       const headers = { "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer", "Cache-Control": "no-cache" };
+-      if (tok !== OPEN) headers["Content-Security-Policy"] = policy(tok);
++      if (tok !== OPEN) headers["Content-Security-Policy"] = policy(tok, seen.scheme);
+       const type = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml" }[path.extname(rel)];
+       let body;
+       if (rel === "_magpie/bridge.js") body = await fs.readFile(bridge);
+@@ -346,4 +350,31 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
+       }
+     }
+   });
++
++  // the native window's route names its scheme in the source (wails, or
++  // http on Windows — ownWindow puts it in the request). A browser can't
++  // resolve wails://, so here the http shape a Windows window sends: the
++  // page draws (its script's source matches with the scheme named) and
++  // stays shut in as over the web. The wails:// shape itself is the
++  // darwin window test's (pluginpage_webkit_darwin_test.go).
++  test(`${engine}: a page under the native window's policy draws and stays shut in`, async (t) => {
++    const browser = await (engine === "webkit" ? webkit.launch() : chromium.launch({ channel: "chromium" }));
++    t.after(() => browser.close());
++    const page = await (await browser.newContext({ viewport: { width: 1100, height: 700 } })).newPage();
++    page.setDefaultTimeout(8000);
++    page.setDefaultNavigationTimeout(60000);
++    const seen = { api: [], reads: [], options: [], scheme: "http" };
++    await page.route("**/*", server("en", seen, plugins));
++    await page.goto("http://magpie.test/");
++    await page.evaluate(() => {
++      window.__probe = null;
++      addEventListener("message", (e) => { if (e.data?.probe) window.__probe = e.data.probe; });
++    });
++    await page.evaluate(() => show("plugin-probe"));
++    await page.waitForFunction(() => window.__probe, undefined, { timeout: 8000 });
++    const probe = await page.evaluate(() => window.__probe);
++    assert.equal(probe.fetch, "refused", "the policy stops a fetch of /api");
++    assert.equal(seen.api.length, 0, "nothing reached /api");
++    await page.context().close();
++  });
+ }
+-- 
+2.50.1 (Apple Git-155)
+

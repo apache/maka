@@ -1,0 +1,212 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Mon, 9 Nov 2026 22:17:58 +0800
+Subject: [PATCH] gateway: MiniMax's thinking reaches a Chat client as
+ reasoning, not as the answer's text (#5805)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+A Chat client asking MiniMax's Chat API through magpie had the reply
+relayed as it came, which skips the Chat decoder: the leading
+<think>…</think> reached the client as the answer's text, with no
+reasoning field to fold it by — the same reply's usage row still counted
+the reasoning tokens. The reply is now asked translated on the client's
+own Chat API all the same, where the decoder takes the block out as
+thinking and the encoder says reasoning_content; buildChat still writes
+it back between the tags on the turns after. MiniMax's presets (minimax,
+minimax-cn) and its own hosts (api.minimax.io, api.minimaxi.com,
+api.minimax.cn) are matched, not the model's name.
+
+Verified: TestMiniMaxChatClientGetsReasoningField (a Chat client,
+streamed and whole, through the gateway to a fake Chat upstream with
+MiniMax-shaped chunks) fails without it (content "<think>\nThe user
+greets me…</think>\n\nHello!", no reasoning field) and passes with it,
+with TestMiniMaxThinkTagsReachCodexAsReasoning,
+TestMiniMaxThinkingGoesBackInTags, TestChatThinkTags and
+TestMiniMaxInlineThinkChat still green. The chunk shape is from MiniMax's
+OpenAI-compatible docs; no real MiniMax key was tried.
+---
+ internal/gateway/chat.go               | 14 ++++-
+ internal/gateway/gateway.go            | 22 +++++++
+ internal/gateway/minimax_think_test.go | 85 +++++++++++++++++++++++++-
+ 3 files changed, 118 insertions(+), 3 deletions(-)
+
+diff --git a/internal/gateway/chat.go b/internal/gateway/chat.go
+index d87f2c53d..1dedcda44 100644
+--- a/internal/gateway/chat.go
++++ b/internal/gateway/chat.go
+@@ -339,6 +339,17 @@ func joinTexts(content []map[string]any) string {
+ 	return b.String()
+ }
+ 
++// inlineThinkHost is whether a Chat API at host gives a model's thinking in
++// the text, between <think> tags, as MiniMax's own Chat API does: the
++// decoder takes it out as thinking (#1267), buildChat writes it back in
++// where it came from on the turns after (its interleaved thinking), and a
++// reply of such an API is asked translated, never relayed as it came, which
++// would hand the tags to the client as the answer's text (#5805).
++// api.minimax.cn is MiniMax China's host beside api.minimaxi.com.
++func inlineThinkHost(host string) bool {
++	return strings.HasSuffix(host, "minimax.io") || strings.HasSuffix(host, "minimaxi.com") || strings.HasSuffix(host, "minimax.cn")
++}
++
+ func buildChat(r *Request, model, host string, rejectTemp bool) []byte {
+ 	r = responseInstructions(r)
+ 	var msgs []map[string]any
+@@ -351,8 +362,7 @@ func buildChat(r *Request, model, host string, rejectTemp bool) []byte {
+ 	// interleaved thinking): the decoder takes it out as thinking (#1267),
+ 	// so it goes back in where it came from. A relay serving MiniMax's
+ 	// models may give the thinking apart and take it back otherwise.
+-	// api.minimax.cn is MiniMax China's host beside api.minimaxi.com.
+-	inlineThink := strings.HasSuffix(host, "minimax.io") || strings.HasSuffix(host, "minimaxi.com") || strings.HasSuffix(host, "minimax.cn")
++	inlineThink := inlineThinkHost(host)
+ 	// Gemini wants each step's thought signature back on its first call
+ 	// (#687), and one it can't check for a step it didn't sign
+ 	gemini := geminiCompat(host, model)
+diff --git a/internal/gateway/gateway.go b/internal/gateway/gateway.go
+index 7f0609615..a0ec2eb28 100644
+--- a/internal/gateway/gateway.go
++++ b/internal/gateway/gateway.go
+@@ -5401,6 +5401,15 @@ func (s *Server) attempt(w http.ResponseWriter, r *http.Request, from provider.P
+ 	// on every turn, and on a provider serving Responses each went out as
+ 	// Chat (#997, Xiaomi MiMo)
+ 	ownAPI := false
++	// A Chat API that thinks in its text (MiniMax's own, #5805) is asked
++	// translated even by a Chat client: relayed as it came, the reply's
++	// leading <think>…</think> reaches the client as the answer's text,
++	// with no reasoning field to fold it by. The translation takes the
++	// block out as thinking, which goes back between the tags only on the
++	// turns after (buildChat).
++	if relay && from == provider.Chat && inlineThinkChat(p) {
++		relay, ownAPI = false, true
++	}
+ 	// except a subagent's task its lead sealed (#1109): only the server
+ 	// that sealed it reads it, and a translation would drop it; and Codex's
+ 	// turn to a relay that takes it as Codex sent it (codexAsSent): the
+@@ -9358,6 +9367,19 @@ func dashScope(p provider.Provider) bool {
+ 		h == "maas.qwencloudapi.com" || strings.HasSuffix(h, ".maas.qwencloudapi.com")
+ }
+ 
++// inlineThinkChat is whether p's Chat API gives a model's thinking in the
++// text, between <think> tags: MiniMax's own does, by preset or by host. Its
++// replies are asked translated (#5805), never relayed as they came, so the
++// tags' block is taken out as thinking for the client and goes back between
++// the tags only on the turns after (inlineThinkHost, buildChat).
++func inlineThinkChat(p provider.Provider) bool {
++	switch p.Preset {
++	case "minimax", "minimax-cn":
++		return true
++	}
++	return inlineThinkHost(p.Host())
++}
++
+ func streamOf(body []byte) bool {
+ 	var v struct {
+ 		Stream bool `json:"stream"`
+diff --git a/internal/gateway/minimax_think_test.go b/internal/gateway/minimax_think_test.go
+index 83c1e9ec3..f728888ee 100644
+--- a/internal/gateway/minimax_think_test.go
++++ b/internal/gateway/minimax_think_test.go
+@@ -32,7 +32,7 @@ func miniMaxSetup(t *testing.T, f *fake) {
+ 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+ 	up := httptest.NewServer(f)
+ 	t.Cleanup(up.Close)
+-	if err := provider.Save(provider.Provider{ID: "minimax", Name: "MiniMax", Key: "k", Models: []string{"MiniMax-M2.7"}, Chat: up.URL + "/v1"}); err != nil {
++	if err := provider.Save(provider.Provider{ID: "minimax", Name: "MiniMax", Key: "k", Models: []string{"MiniMax-M2.7"}, Preset: "minimax", Chat: up.URL + "/v1"}); err != nil {
+ 		t.Fatal(err)
+ 	}
+ }
+@@ -104,6 +104,89 @@ func TestMiniMaxThinkingGoesBackInTags(t *testing.T) {
+ 	}
+ }
+ 
++// A Chat client asking MiniMax on its Chat API (the preset's own form) has
++// the leading <think> block taken out as reasoning_content and the answer
++// alone in content, streamed or whole (#5805): the reply is translated, not
++// relayed as it came, which handed the tags to the client as the answer's
++// text, with no reasoning field to fold it by.
++func TestMiniMaxChatClientGetsReasoningField(t *testing.T) {
++	for _, c := range []struct{ name, body string }{
++		{"streamed", `{"model":"minimax/MiniMax-M2.7","stream":true,"messages":[{"role":"user","content":"hi"}]}`},
++		{"whole", `{"model":"minimax/MiniMax-M2.7","messages":[{"role":"user","content":"hi"}]}`},
++	} {
++		t.Run(c.name, func(t *testing.T) {
++			f := &fake{t: t, reply: miniMaxStream}
++			miniMaxSetup(t, f)
++			code, body := post(t, "/v1/chat/completions", c.body)
++			if code != 200 {
++				t.Fatalf("code %d: %s", code, body)
++			}
++			var reasoning, text string
++			if c.name == "streamed" {
++				for _, ev := range events(body) {
++					chs, _ := ev["choices"].([]any)
++					for _, raw := range chs {
++						ch, _ := raw.(map[string]any)
++						d, _ := ch["delta"].(map[string]any)
++						if d == nil {
++							continue
++						}
++						if v, _ := d["reasoning_content"].(string); v != "" {
++							reasoning += v
++						}
++						if v, _ := d["content"].(string); v != "" {
++							text += v
++						}
++					}
++				}
++			} else {
++				var out struct {
++					Choices []struct {
++						Message struct {
++							Content          string `json:"content"`
++							ReasoningContent string `json:"reasoning_content"`
++						} `json:"message"`
++					} `json:"choices"`
++				}
++				if err := json.Unmarshal([]byte(body), &out); err != nil || len(out.Choices) != 1 {
++					t.Fatalf("reply %s (%v)", body, err)
++				}
++				reasoning = out.Choices[0].Message.ReasoningContent
++				text = out.Choices[0].Message.Content
++			}
++			if !strings.Contains(reasoning, "The user greets me. Reply briefly.") {
++				t.Errorf("reasoning %q, want the thinking", reasoning)
++			}
++			if text != "Hello!" {
++				t.Errorf("content %q, want the answer alone", text)
++			}
++		})
++	}
++}
++
++// MiniMax's Chat API thinks in its text by preset or by host, its China
++// host and preset beside the international ones; another vendor's does not.
++func TestMiniMaxInlineThinkChat(t *testing.T) {
++	for _, c := range []struct {
++		p    provider.Provider
++		want bool
++	}{
++		{provider.Provider{Preset: "minimax"}, true},
++		{provider.Provider{Preset: "minimax-cn"}, true},
++		{provider.Provider{Chat: "https://api.minimax.io/v1"}, true},
++		{provider.Provider{Chat: "https://api.minimaxi.com/v1"}, true},
++		{provider.Provider{Chat: "https://api.minimax.cn/v1"}, true},
++		{provider.Provider{}, false},
++		{provider.Provider{Preset: "qwen"}, false},
++		{provider.Provider{Chat: "https://api.deepseek.com/v1"}, false},
++		{provider.Provider{Chat: "https://api.minimaxi.com.example.net/v1"}, false},
++	} {
++		if got := inlineThinkChat(c.p); got != c.want {
++			t.Errorf("inlineThinkChat(%+v) %t, want %t", c.p, got, c.want)
++		}
++	}
++}
++
+ // A <think> block at the head of a Chat reply is thinking however the tags
+ // fall across chunks; one later in the text, or a tag that only starts
+ // like it, is the answer as it came.
+-- 
+2.50.1 (Apple Git-155)
+

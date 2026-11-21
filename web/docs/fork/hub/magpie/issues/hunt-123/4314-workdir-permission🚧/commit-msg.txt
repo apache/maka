@@ -1,0 +1,22 @@
+claude: a folder the caller names that magpie may not enter is not worked in
+
+Since 680b505 a run works in the folder the caller names, which
+clientWorkDir checked only with os.Stat: that says the folder exists and
+is a folder here, not that magpie may enter it. In a container it may
+not: the caller's /root is 0700 root:root and magpie runs as a nonroot
+user, and the run's chdir there failed before Claude Code started, which
+Go reported as a permission denied on the Claude Code binary itself --
+"fork/exec .../claude: permission denied" -- and the binary was fine
+(#4314). Every request naming such a folder failed; before 680b505 the
+same request worked, in magpie's own folder.
+
+clientWorkDir now asks the kernel whether the folder may be entered
+(access's leave, the one chdir asks) and says no folder when it may not,
+so the run works in magpie's own folder as of one the caller names
+elsewhere, and is told its environment is where its tools run. Windows
+keeps the folder as before: the access bits Go reports there are not the
+ones a run asks for.
+
+Fixes #4314
+
+Generated-by: GLM-5.3-Flash (ZCode)

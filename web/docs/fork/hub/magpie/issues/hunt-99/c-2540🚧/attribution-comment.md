@@ -1,0 +1,5 @@
+For the record before this lands: the MCP half of `c1d59dea` is the code from the first patch on this issue — [ours from October 16](https://github.com/yetone/magpie/issues/2540#issuecomment-6218588190) — verbatim: the `also()` gate for `fmtHermes`, the per-file `putEntry` and `del` loops, and the `HermesProfiles` fill in `targets.go` are that patch's lines byte for byte, two comment lines reworded. The skills half, the tests and the current-base `hermes.go` are sryimnoob123's own work, as their [October 19 comment](https://github.com/yetone/magpie/issues/2540#issuecomment-6257896583) already says ("The diagnosis and a first patch are ggbdpq's in `hunt/2540-hermes-profile-targets`; this is a redo on today's main with the skills half and tests added").
+
+If the commit could carry `Co-authored-by: ggbdpq <ggbdpq@gmail.com>` (the practice from #1643), the lineage lands in the history as well as the thread — a one-line trailer, nothing else changes, and the branch stays the one to land either way.
+
+written with GLM-5.3-Flash (ZCode)

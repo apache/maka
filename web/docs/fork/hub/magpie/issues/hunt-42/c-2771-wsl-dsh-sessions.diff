@@ -1,0 +1,338 @@
+diff --git a/docs/subsystems/gateway-sessions.md b/docs/subsystems/gateway-sessions.md
+index 812e620d..0421e797 100644
+--- a/docs/subsystems/gateway-sessions.md
++++ b/docs/subsystems/gateway-sessions.md
+@@ -286,7 +286,8 @@ are read (`sessions.Calls`, from `callSources` in
+ Code's, Claude Desktop's and Cowork's, Codex's (and both in WSL), and,
+ read a file at a time (`wholeCallReaders` in
+ [`call_cache.go`](../../internal/sessions/call_cache.go)), OpenCode's
+-(#680), ZCode's, DeepSeek Harness's (`dsh`), WorkBuddy's, CodeBuddy
++(#680), ZCode's, DeepSeek Harness's (`dsh`), here and in WSL (#2771),
++WorkBuddy's, CodeBuddy
+ Code's (#1779; its sessions are on the Sessions page too, from the same
+ `projects/<cwd>/<id>.jsonl` files read as WorkBuddy's, resumed with
+ `codebuddy --resume <id>` and deletable, #2657: `TestCodeBuddy`,
+@@ -311,8 +312,8 @@ Qoder, Grok, Droid, Cursor, Hermes, Alma) have no reader yet (#1607). The
+ Context page reads the gateway's own traces, so it shows none of these
+ calls. Verification: `TestMiniMaxCodeCalls`, `TestKimiCode*` (the
+ reporter's real wire files), `TestCodeBuddyCalls`, `TestWorkBuddyCalls*`,
+-`TestPiCalls*` (Pi 1.1.0's and omp 18.9.1's own files) and
+-`TestWSLSessionsListed`.
++`TestPiCalls*` (Pi 1.1.0's and omp 18.9.1's own files),
++`TestWSLSessionsListed` and `TestWSLDshSessionsListed`.
+ 
+ A read of every call decodes each file's cached shard, and over a long
+ history that is tens of thousands of files (#2278: 68k shards, 415 MB).
+diff --git a/internal/sessions/calls_dsh.go b/internal/sessions/calls_dsh.go
+index cc8f7256..6fdd86e0 100644
+--- a/internal/sessions/calls_dsh.go
++++ b/internal/sessions/calls_dsh.go
+@@ -32,9 +32,9 @@ import (
+ // changed is not read again. A subagent's file is a source of its own, as
+ // WorkBuddy's subagents' are: nothing in this path reads a file's main (the
+ // Sessions page's mark for a session's own file), so it is left as dshFiles
+-// set it.
++// set it. A distro's are read as its sessions are (wslFiles).
+ func dshCallFiles() []file {
+-	return dshFiles()
++	return append(dshFiles(), wslFiles("dsh")...)
+ }
+ 
+ // readDshCalls reads a dsh session whole: packed in frames, it can't be read
+diff --git a/internal/sessions/dsh.go b/internal/sessions/dsh.go
+index 55c0865d..0c1d9cc8 100644
+--- a/internal/sessions/dsh.go
++++ b/internal/sessions/dsh.go
+@@ -67,8 +67,16 @@ var (
+ 	dshHeads = map[string]dshHead{}
+ )
+ 
+-func dshFiles() []file {
+-	dirs, _ := filepath.Glob(filepath.Join(DshDir(), "sessions", "*", "*"))
++func dshFiles() []file { return dshFilesIn(DshDir(), true) }
++
++// dshFilesIn are the sessions under one dsh folder: this computer's
++// $DSH_HOME, or a distro's ~/.dsh for an agent in WSL (wslScan). host says
++// the folder is this computer's, whose heads the sweep takes all of; a
++// distro's listing runs apart from this computer's read, so its sweep takes
++// only its own folder's heads — each sweeping the other's would have both
++// read them again.
++func dshFilesIn(dir string, host bool) []file {
++	dirs, _ := filepath.Glob(filepath.Join(dir, "sessions", "*", "*"))
+ 	var out []file
+ 	parent := map[string]string{}
+ 	seen := map[string]bool{}
+@@ -112,7 +120,7 @@ func dshFiles() []file {
+ 		out = append(out, f)
+ 	}
+ 	for p := range dshHeads {
+-		if !seen[p] {
++		if !seen[p] && (host || under(p, dir)) {
+ 			delete(dshHeads, p)
+ 		}
+ 	}
+@@ -127,16 +135,35 @@ func dshFiles() []file {
+ 	return out
+ }
+ 
++// dshRootOf is the dsh folder a session file belongs to: this computer's
++// $DSH_HOME, or the distro's ~/.dsh for one in WSL (the .dsh wslAgents
++// names). "" when the file's distro isn't listed any more.
++func dshRootOf(f file) string {
++	if f.wsl == "" {
++		return DshDir()
++	}
++	home := wslHomeOf(f.wsl)
++	if home == "" {
++		return ""
++	}
++	return filepath.Join(home, ".dsh")
++}
++
+ // dshSessionDir is the folder dsh keeps a session file's session in, all
+ // of it that session's own: <sessions>/<project>/<the id, escaped>/, with
+ // the session's generations and its session.lock. "" when the file isn't
+-// in the folder its id names, so a delete never takes another's.
++// in the folder its id names, so a delete never takes another's. A session
++// in a WSL distro is judged against that distro's own ~/.dsh.
+ func dshSessionDir(f file) string {
+ 	if f.agent != "dsh" || f.sid == "" {
+ 		return ""
+ 	}
++	root := dshRootOf(f)
++	if root == "" {
++		return ""
++	}
+ 	d := filepath.Dir(f.path)
+-	if filepath.Base(d) != dshSegment(f.sid) || filepath.Dir(filepath.Dir(d)) != filepath.Join(DshDir(), "sessions") {
++	if filepath.Base(d) != dshSegment(f.sid) || filepath.Dir(filepath.Dir(d)) != filepath.Join(root, "sessions") {
+ 		return ""
+ 	}
+ 	return d
+@@ -165,13 +192,18 @@ func dshSegment(id string) string {
+ 
+ // dshCacheRecord is the row dsh's session listing caches of a session
+ // (dsh-session-projection-cache, on dsh-storage-json's per-record layout):
+-// <dsh>/storages/session_projcache/sessions/<id>.json. "" for an id that
+-// layout can't hold.
+-func dshCacheRecord(id string) string {
+-	if !safeID.MatchString(id) {
++// <dsh>/storages/session_projcache/sessions/<id>.json, the distro's own for
++// a session in WSL. "" for an id that layout can't hold, or a dsh folder
++// magpie can't say.
++func dshCacheRecord(f file) string {
++	if !safeID.MatchString(f.sid) {
++		return ""
++	}
++	root := dshRootOf(f)
++	if root == "" {
+ 		return ""
+ 	}
+-	return filepath.Join(DshDir(), "storages", "session_projcache", "sessions", id+".json")
++	return filepath.Join(root, "storages", "session_projcache", "sessions", f.sid+".json")
+ }
+ 
+ // dshOpen reads a session file's lines, decompressed.
+diff --git a/internal/sessions/manage.go b/internal/sessions/manage.go
+index 46c3bc6f..2a611aca 100644
+--- a/internal/sessions/manage.go
++++ b/internal/sessions/manage.go
+@@ -324,7 +324,7 @@ func sessionPaths(agent, id string, fs []file) []string {
+ 		}
+ 		for _, f := range fs {
+ 			add(dshSessionDir(f))
+-			add(dshCacheRecord(f.sid))
++			add(dshCacheRecord(f))
+ 		}
+ 		return out
+ 	}
+diff --git a/internal/sessions/sessions.go b/internal/sessions/sessions.go
+index 5afb21a5..c153e4aa 100644
+--- a/internal/sessions/sessions.go
++++ b/internal/sessions/sessions.go
+@@ -472,7 +472,7 @@ func ccFiles(agent, dir string) []file {
+ func allFiles() []file {
+ 	var out []file
+ 	for _, fs := range [][]file{callFiles(), openCodeFiles(), piFiles(),
+-		wslFiles("pi", "omp", "kimi"), zcodeFiles(), dshFiles(), clineFiles(), ccFiles("qoder", QoderDir("qoder")), ccFiles("qoder-cn", QoderDir("qoder-cn")),
++		wslFiles("pi", "omp", "kimi", "dsh"), zcodeFiles(), dshFiles(), clineFiles(), ccFiles("qoder", QoderDir("qoder")), ccFiles("qoder-cn", QoderDir("qoder-cn")),
+ 		grokFiles(), workbuddyFiles(), codebuddyFiles(), droidFiles(), ompFiles(), cursorFiles(), hermesFiles(), almaFiles(), kimiFiles()} {
+ 		out = append(out, fs...)
+ 	}
+diff --git a/internal/sessions/wsl.go b/internal/sessions/wsl.go
+index 568403c8..8333eac7 100644
+--- a/internal/sessions/wsl.go
++++ b/internal/sessions/wsl.go
+@@ -69,6 +69,7 @@ var wslAgents = []struct{ agent, dir string }{
+ 	{"pi", filepath.Join(".pi", "agent")},
+ 	{"omp", filepath.Join(".omp", "agent")},
+ 	{"kimi", ".kimi-code"},
++	{"dsh", ".dsh"},
+ }
+ 
+ // wslScan lists the session files under a distro's home.
+@@ -87,6 +88,8 @@ func wslScan(home string) []file {
+ 			out = append(out, ompFilesIn(dir)...)
+ 		case "kimi":
+ 			out = append(out, kimiFilesIn(filepath.Join(dir, "sessions"))...)
++		case "dsh":
++			out = append(out, dshFilesIn(dir, false)...)
+ 		}
+ 	}
+ 	return out
+@@ -98,6 +101,7 @@ type wslEntry struct {
+ 	Key   string    `json:"key"`
+ 	Path  string    `json:"path"`
+ 	Main  bool      `json:"main,omitempty"`
++	Sid   string    `json:"sid,omitempty"` // dsh's: the session its head names
+ 	Size  int64     `json:"size"`
+ 	Mod   time.Time `json:"mod"`
+ }
+@@ -192,7 +196,7 @@ func wslFiles(agents ...string) []file {
+ 		cold := !l.Running || !up[n]
+ 		for _, e := range l.Files {
+ 			if want[e.Agent] {
+-				out = append(out, file{agent: e.Agent, key: e.Key, path: e.Path, main: e.Main, size: e.Size, mod: e.Mod, wsl: n, cold: cold})
++				out = append(out, file{agent: e.Agent, key: e.Key, path: e.Path, main: e.Main, sid: e.Sid, size: e.Size, mod: e.Mod, wsl: n, cold: cold})
+ 			}
+ 		}
+ 	}
+@@ -223,7 +227,7 @@ func wslList(gen uint64, done chan struct{}) {
+ 		}
+ 		l := &wslListing{Home: h.Home, Running: true, Files: []wslEntry{}}
+ 		for _, f := range wslScan(h.Home) {
+-			l.Files = append(l.Files, wslEntry{Agent: f.agent, Key: f.key, Path: f.path, Main: f.main, Size: f.size, Mod: f.mod})
++			l.Files = append(l.Files, wslEntry{Agent: f.agent, Key: f.key, Path: f.path, Main: f.main, Sid: f.sid, Size: f.size, Mod: f.mod})
+ 		}
+ 		lists[h.Distro] = l
+ 	}
+diff --git a/internal/sessions/wsl_test.go b/internal/sessions/wsl_test.go
+index c7fff8c8..1c446ee5 100644
+--- a/internal/sessions/wsl_test.go
++++ b/internal/sessions/wsl_test.go
+@@ -373,6 +373,125 @@ func TestWSLStoppedSinceNotOpened(t *testing.T) {
+ 	}
+ }
+ 
++// A dsh in a WSL distro keeps its sessions in the distro's ~/.dsh (#2771,
++// li1how): they are listed with the distro as this computer's are, the
++// subagent counts in its parent's session, its calls count in usage, and a
++// session is deleted and restored from the distro's own folders and cached
++// rows, not this computer's.
++func TestWSLDshSessionsListed(t *testing.T) {
++	setup(t)
++	dir := t.TempDir()
++	t.Setenv("DSH_HOME", filepath.Join(dir, "own-dsh")) // this computer's, empty
++	if err := os.MkdirAll(filepath.Join(dir, "own-dsh"), 0o755); err != nil {
++		t.Fatal(err)
++	}
++	home := filepath.Join(dir, "Ubuntu", "home", "me")
++	dsh := filepath.Join(home, ".dsh")
++	dshSession(t, dsh, dshP, `{"type":"session","version":4,"id":"`+dshP+`","createdAt":1790503200000,"cwd":"/work/app","isSeeded":false,"delegationDepth":0}`, "Tidy the build script")
++	dshSession(t, dsh, dshC, `{"type":"session","version":4,"id":"`+dshC+`","createdAt":1790503230000,"cwd":"/work/app","isSeeded":false,"delegationDepth":1,"parentSession":"`+dshP+`","origin":"subagent"}`, "Find the flaky test")
++	dshSession(t, dsh, dshO, `{"type":"session","version":4,"id":"`+dshO+`","createdAt":1790503300000,"cwd":"/work/app","isSeeded":false,"delegationDepth":0}`, "Write the release notes")
++	old := time.Now().Add(-time.Hour)
++	filepath.WalkDir(home, func(p string, _ os.DirEntry, _ error) error { return os.Chtimes(p, old, old) })
++	WSLHomes = func() []WSLHome { return []WSLHome{{Distro: "Ubuntu", Home: home, Running: true}} }
++	t.Cleanup(func() { wslSettle(); WSLHomes = nil; Reset() })
++	Reset()
++
++	ss := List(0)
++	var d *Session
++	for i := range ss {
++		if ss[i].Agent != "dsh" {
++			continue
++		}
++		if ss[i].WSL != "Ubuntu" {
++			t.Fatalf("a dsh session not from the distro: %+v", ss[i])
++		}
++		d = &ss[i]
++	}
++	if d == nil {
++		t.Fatalf("no dsh session from the distro in %+v", ss)
++	}
++	if d.ID != dshP || d.Cwd != "/work/app" || d.Title != "Tidy the build script" || d.Tokens.zero() {
++		t.Fatalf("the distro's dsh session: %+v", d)
++	}
++	// the subagent counts in its parent's session, as it does here
++	for _, s := range ss {
++		if s.Agent == "dsh" && s.ID == dshC {
++			t.Fatalf("the subagent is listed as its own session: %+v", s)
++		}
++	}
++	calls := map[string]int{}
++	for _, c := range Calls(time.Time{}) {
++		calls[c.Agent]++
++	}
++	if calls["dsh"] == 0 {
++		t.Fatalf("the distro's dsh calls aren't counted: %v", calls)
++	}
++	in := false
++	for _, dir := range Dirs() {
++		in = in || dir == dsh
++	}
++	if !in {
++		t.Fatalf("the distro's .dsh isn't among the dirs: %v", Dirs())
++	}
++
++	wslSettle()
++	m, ok := findManaged(ListAgent("dsh"), dshP)
++	if !ok || m.WSL != "Ubuntu" || !m.Deletable {
++		t.Fatalf("the WSL dsh session listed as %+v, %v", m, ok)
++	}
++	tr, err := Delete("dsh", dshP)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if len(tr.Items) != 4 {
++		t.Fatalf("trashed %+v, want the session's folder, its subagent's and their two cached rows", tr)
++	}
++	proj := filepath.Join(dsh, "sessions", dshProjD)
++	cache := filepath.Join(dsh, "storages", "session_projcache", "sessions")
++	for _, p := range []string{
++		m.Path,
++		filepath.Join(proj, dshC, "session.v4.jsonl.zstd"),
++		filepath.Join(cache, dshP+".json"),
++		filepath.Join(cache, dshC+".json"),
++	} {
++		if _, err := os.Lstat(p); err == nil {
++			t.Fatalf("%s is still there", p)
++		}
++	}
++	// the other session's files and row in the distro are as they were
++	for _, p := range []string{
++		filepath.Join(proj, dshO, "session.v4.jsonl.zstd"),
++		filepath.Join(cache, dshO+".json"),
++	} {
++		if _, err := os.Stat(p); err != nil {
++			t.Fatalf("another session's %s: %v", p, err)
++		}
++	}
++	// nothing of this computer's .dsh was moved
++	if es, err := os.ReadDir(filepath.Join(dir, "own-dsh")); err != nil || len(es) != 0 {
++		t.Fatalf("this computer's own dsh folder: %v, %d entries", err, len(es))
++	}
++	if _, ok := findManaged(ListAgent("dsh"), dshP); ok {
++		t.Fatal("still listed")
++	}
++	if _, err := Restore(tr.Key); err != nil {
++		t.Fatal(err)
++	}
++	for _, p := range []string{
++		m.Path,
++		filepath.Join(proj, dshC, "session.v4.jsonl.zstd"),
++		filepath.Join(cache, dshP+".json"),
++		filepath.Join(cache, dshC+".json"),
++	} {
++		if _, err := os.Stat(p); err != nil {
++			t.Fatalf("%s wasn't restored: %v", p, err)
++		}
++	}
++	if m, ok := findManaged(ListAgent("dsh"), dshP); !ok || m.WSL != "Ubuntu" || m.Title != "Tidy the build script" {
++		t.Fatalf("restored session listed as %+v, %v", m, ok)
++	}
++}
++
+ // Off WSL (WSLHomes nil, as on macOS and Linux) nothing changes.
+ func TestWSLNoneWithoutHomes(t *testing.T) {
+ 	setup(t)

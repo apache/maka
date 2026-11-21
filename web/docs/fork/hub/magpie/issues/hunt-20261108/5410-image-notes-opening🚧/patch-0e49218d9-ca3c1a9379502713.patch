@@ -1,0 +1,159 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Sun, 8 Nov 2026 07:25:41 +0800
+Subject: [PATCH] claude: a turn's notes say their paths are not to open
+ (#5410)
+
+Claude Code notes each image of the message it is given in a note after
+it ("[Image: source: .../images/N.png]"), so after the turn to answer,
+and where the history has images, currentTurnOpen says whose the notes
+are (#1751). Whose was not enough: told the notes are the history's but
+not what a note is, a model whose caller was on another computer (Codex
+desktop -> local magpie -> remote magpie -> Claude subscription,
+PeterZ-1) called its view_image on the notes' paths - files on the
+remote Mac where Claude Code runs, not where its tools do - 48 times in
+one Codex session, every call failed with "unable to locate image", 47
+of them on turns that sent no new image, half of the bursts within 30 s
+of a compaction, and told the user the screenshots could no longer be
+opened.
+
+The turn now says the rest of what imageNotesNote says at a turn with no
+history: each note is Claude Code's record of where it keeps the images,
+on its own computer, so a path in one is not something to open - the
+history's branch (a turn with no image of its own), and the mixed one
+(the history's images and the turn's together), whose note sat with no
+such word either.
+
+Broken by hand: with the added sentences out,
+TestClaudePromptSaysNotesPathsArentOpen is red, and the turn reads as
+the reporter's model quoted it ("Any "[Image: ...]" notes after it are
+about the images in the conversation history above, not images sent
+with this turn."); with them in, it is green.
+
+Run at the pushed head (rebased on 1cb3dc435), macOS: gofmt -l clean;
+go vet gateway ok; go test ./internal/gateway -run
+'Claude|Prompt|Subscription|Image' ok; the full gateway suite ok
+(-timeout 30m, 932 s).
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ .../gateway/claude_prompt_history_test.go     | 69 +++++++++++++++++++
+ internal/gateway/claude_subscription.go       | 13 +++-
+ 2 files changed, 79 insertions(+), 3 deletions(-)
+
+diff --git a/internal/gateway/claude_prompt_history_test.go b/internal/gateway/claude_prompt_history_test.go
+index 00cad3edb..86dc1413d 100644
+--- a/internal/gateway/claude_prompt_history_test.go
++++ b/internal/gateway/claude_prompt_history_test.go
+@@ -124,6 +124,75 @@ func TestClaudePromptSaysWhoseImageNotesAre(t *testing.T) {
+ 	}
+ }
+ 
++// A text-only turn after a history with images (#5410, PeterZ-1's remote
++// magpie: 48 view_image calls on Claude Code's note paths in one Codex
++// session, every one failed, 47 on turns with no new image, half within 30 s
++// of a compaction): the notes are Claude Code's records of where it keeps
++// the history's images, on its own computer, so a path in one is not
++// something to open — with the caller on another computer such a call can
++// only fail. Told whose the notes are but not this, the model opened the
++// paths. The turn with its own images among the history's says it too.
++func TestClaudePromptSaysNotesPathsArentOpen(t *testing.T) {
++	var png bytes.Buffer
++	red := image.NewRGBA(image.Rect(0, 0, 120, 60))
++	for i := 0; i < len(red.Pix); i += 4 {
++		red.Pix[i], red.Pix[i+3] = 0xff, 0xff
++	}
++	if err := imagepng.Encode(&png, red); err != nil {
++		t.Fatal(err)
++	}
++	url := "data:image/png;base64," + base64.StdEncoding.EncodeToString(png.Bytes())
++	chat := func(last string) *Request {
++		body := `{"model":"claude/claude-sonnet-5-5","stream":true,"messages":[
++			{"role":"user","content":"look at /tmp/a.png"},
++			{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"read","arguments":"{\"path\": \"/tmp/a.png\"}"}}]},
++			{"role":"tool","tool_call_id":"call_1","content":"Read image file [image/png]"},
++			{"role":"user","content":[{"type":"text","text":"Attached image(s) from tool result:"},{"type":"image_url","image_url":{"url":"` + url + `"}}]},
++			{"role":"assistant","content":"This is a red image."},
++			` + last + `],
++			"tools":[{"type":"function","function":{"name":"read","description":"Read a file","parameters":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}}}]}`
++		req, err := parseChat([]byte(body))
++		if err != nil {
++			t.Fatal(err)
++		}
++		return req
++	}
++	turn := func(req *Request) string {
++		blocks, err := renderClaudePrompt(req)
++		if err != nil {
++			t.Fatal(err)
++		}
++		var all strings.Builder
++		for _, b := range blocks {
++			s, _ := b["text"].(string)
++			all.WriteString(s)
++		}
++		_, now, ok := strings.Cut(all.String(), "<current_turn>\n")
++		if !ok {
++			t.Fatalf("no turn to answer: %q", all.String())
++		}
++		return now
++	}
++	says := func(now string) {
++		t.Helper()
++		if !strings.Contains(now, "on its own computer") || !strings.Contains(now, "not something to open") {
++			t.Fatalf("the turn doesn't say a note's path is not to open:\n%s", now)
++		}
++	}
++
++	says(turn(chat(`{"role":"user","content":"Go on, work out the follower distribution."}`)))
++	// a turn with an image of its own: the notes are the history's and its
++	withOne := chat(`{"role":"user","content":[{"type":"text","text":"How many images are attached to this message?"},{"type":"image_url","image_url":{"url":"` + url + `"}}]}`)
++	says(turn(withOne))
++	// a history with no image keeps the plain turn: the turn's own notes are
++	// imageNotesNote's, which says it already
++	textOnly := chat(`{"role":"user","content":"Go on."}`)
++	textOnly.Messages[3].Parts = textOnly.Messages[3].Parts[:1]
++	if now := turn(textOnly); strings.Contains(now, "not something to open") {
++		t.Fatalf("a history with no image says it:\n%s", now)
++	}
++}
++
+ // A tool that returns images (seven photos, as sinsoul1647 on Discord,
+ // v0.1.2862) leaves Claude Code's notes after the message with paths in the
+ // gateway's temp folder ("[Image: source: …/images/1.jpg]"). With no history
+diff --git a/internal/gateway/claude_subscription.go b/internal/gateway/claude_subscription.go
+index be11e98a5..314efa1e5 100644
+--- a/internal/gateway/claude_subscription.go
++++ b/internal/gateway/claude_subscription.go
+@@ -4820,7 +4820,11 @@ const (
+ // note of its own after the message, so after the turn to answer: told
+ // nothing of them, the model took the history's images for ones sent with
+ // that turn, said they were attached and opened them again (#1751). Where
+-// the history has images, the turn says whose the notes are.
++// the history has images, the turn says whose the notes are — and that a
++// path in one is not something to open: they are Claude Code's records of
++// where it keeps the images, on its own computer, so told only whose they
++// were, a model whose caller was on another computer opened the paths and
++// failed on every one (#5410).
+ func currentTurnOpen(msgs []Message, split int) string {
+ 	earlier, now := countImages(msgs[:split]), countImages(msgs[split:])
+ 	switch {
+@@ -4828,10 +4832,13 @@ func currentTurnOpen(msgs []Message, split int) string {
+ 		return historyClose
+ 	case now == 0:
+ 		return "</conversation_history>\n\n<current_turn>\nThe turn to answer now. Any \"[Image: …]\" notes after it are about " +
+-			"the images in the conversation history above, not images sent with this turn.\n\n"
++			"the images in the conversation history above, not images sent with this turn. Each note is Claude Code's record of " +
++			"where it keeps them, on its own computer: a path in one is not something to open; the images themselves are in " +
++			"the history above.\n\n"
+ 	}
+ 	return "</conversation_history>\n\n<current_turn>\nThe turn to answer now. Any \"[Image: …]\" notes after it are about " +
+-		"the images above in their order: the conversation history's first, then this turn's.\n\n"
++		"the images above in their order: the conversation history's first, then this turn's. Each note is Claude Code's record " +
++		"of where it keeps them, on its own computer: a path in one is not something to open.\n\n"
+ }
+ 
+ // imageNotesNote ends a turn whose images (a tool result's among them) all
+-- 
+2.50.1 (Apple Git-155)
+

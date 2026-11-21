@@ -1,0 +1,37 @@
+gateway: a retried try's prompt is billed as the reply's Deferred, never told as its prompt (#5115)
+
+A reply asked again for saying nothing (#667) or cut mid-way (#853) had
+every try's input and cache reads summed into the reply's prompt — the
+client's and the ledger's alike — so a client reading prompt_tokens back
+as how full its context is read a reply asked four times at four times
+its size: WorkBuddy saved 1,985,012 input tokens for one ~500k
+conversation and compacted a session that had room, twice in one evening
+(emergency-auto, blocking_limit), and the context chart scaled itself up
+the same way.
+
+The tries are still each billed: the input and cache reads of the ones
+before the one that answered go to the reply's Deferred, which the
+ledger prices as a tier beside the request's own (routeUsage) and bills
+whole (billed), while the client is told the ask that answered — the
+same split a plugin's earlier steps already get (#1053). What a try
+holds with the client stays in the reply's own counts: its output and
+reasoning, streamed as it came, and its cache writes, whose sum across
+tries the client's prompt_tokens_details already tells (the zero-split
+calibration keeps its readings). A try that reports no input leaves none
+of a previous one's behind as the reply's own, so the ledger no longer
+counts a counted try twice when the ask after it counted nothing.
+
+The same fold ran on the loop-guard re-ask (#1359) and the cut-reply
+continuation, and is gone from all three. One pinned reading moves with
+the split: TestStreamCutUsageSumsTries, now
+TestStreamCutUsageBillsTriesTellsOwnPrompt — the client reads the
+continuation's 11, the ledger still bills 7+11. The search rounds
+(searchReply) and the Claude Code subscription's per-message sums keep
+their own accounting.
+
+New: TestGeminiEmptyRetryTellsThePromptThatAnswered (an empty try's
+prompt stays off the client's prompt_tokens, the ledger bills both
+tries), TestGeminiEmptyRetryCountsOnlyWhatWasCounted (a counted try
+followed by one that counted nothing is billed once).
+
+Generated-by: GLM-5.3-Flash (ZCode)

@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "aws-mcp": {
+      "command": "uvx",
+      "timeout": 100000,
+      "transport": "stdio",
+      "args": [
+        "mcp-proxy-for-aws@latest",
+        "--log-level",
+        "ERROR",
+        "https://aws-mcp.us-east-1.api.aws/mcp"
+      ]
+    }
+  }
+}

@@ -1,0 +1,9 @@
+setValueForKeyFakeAssocArray:27: command not found: _encode
+setValueForKeyFakeAssocArray:27: command not found: _encode
+setValueForKeyFakeAssocArray:27: command not found: _encode
+setValueForKeyFakeAssocArray:27: command not found: _encode
+setValueForKeyFakeAssocArray:27: command not found: _encode
+setValueForKeyFakeAssocArray:27: command not found: _encode
+valueForKeyFakeAssocArray:28: command not found: _decode
+valueForKeyFakeAssocArray:28: command not found: _decode
+ok  	github.com/yetone/magpie/internal/provider	101.698s

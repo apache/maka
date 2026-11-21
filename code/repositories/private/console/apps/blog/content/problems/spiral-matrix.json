@@ -1,0 +1,22 @@
+{
+  "id": "29",
+  "slug": "spiral-matrix",
+  "title": "螺旋矩阵",
+  "difficulty": "medium",
+  "tags": ["数组", "矩阵", "模拟"],
+  "description": "给你一个 `m` 行 `n` 列的矩阵 `matrix`,请按照**顺时针螺旋顺序**,返回矩阵中的所有元素。\n\n**示例 1:**\n\n- 输入:`matrix = [[1,2,3],[4,5,6],[7,8,9]]`\n- 输出:`[1,2,3,6,9,8,7,4,5]`\n\n**示例 2:**\n\n- 输入:`matrix = [[1,2,3,4],[5,6,7,8],[9,10,11,12]]`\n- 输出:`[1,2,3,4,8,12,11,10,9,5,6,7]`",
+  "solution": "## 思路\n\n**逐层模拟**:维护四个边界 `top/bottom/left/right`,按「上→右→下→左」顺序遍历,每完成一边收缩对应边界。注意向左/向上时要再次检查边界,避免单行/单列重复。\n\n## 参考代码\n\n```js\nfunction spiralOrder(matrix) {\n  if (matrix.length === 0) return [];\n  const res = [];\n  let top = 0;\n  let bottom = matrix.length - 1;\n  let left = 0;\n  let right = matrix[0].length - 1;\n  while (top <= bottom && left <= right) {\n    for (let j = left; j <= right; j++) res.push(matrix[top][j]);\n    top++;\n    for (let i = top; i <= bottom; i++) res.push(matrix[i][right]);\n    right--;\n    if (top <= bottom) {\n      for (let j = right; j >= left; j--) res.push(matrix[bottom][j]);\n      bottom--;\n    }\n    if (left <= right) {\n      for (let i = bottom; i >= top; i--) res.push(matrix[i][left]);\n      left++;\n    }\n  }\n  return res;\n}\n```\n\n## 复杂度\n\n- 时间:O(m*n)\n- 空间:O(1)(不计输出)",
+  "signature": {
+    "language": "javascript",
+    "entry": "spiralOrder",
+    "params": [{ "name": "matrix", "type": "number[][]" }],
+    "returns": "number[]"
+  },
+  "testCases": [
+    { "sample": true, "input": [[[1, 2, 3], [4, 5, 6], [7, 8, 9]]], "expected": [1, 2, 3, 6, 9, 8, 7, 4, 5] },
+    { "sample": true, "input": [[[1, 2, 3, 4], [5, 6, 7, 8], [9, 10, 11, 12]]], "expected": [1, 2, 3, 4, 8, 12, 11, 10, 9, 5, 6, 7] },
+    { "sample": false, "input": [[[]]], "expected": [] },
+    { "sample": false, "input": [[[1, 2], [3, 4]]], "expected": [1, 2, 4, 3] },
+    { "sample": false, "input": [[[1]]], "expected": [1] }
+  ]
+}

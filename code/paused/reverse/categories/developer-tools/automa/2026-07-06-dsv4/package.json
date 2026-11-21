@@ -1,0 +1,27 @@
+{
+  "name": "automa-reverse-engineered",
+  "version": "1.30.01",
+  "description": "Automa Chrome 扩展逆向工程 — 类型定义与开发者文档 (v1.30.01)",
+  "private": true,
+  "license": "UNLICENSED (仅用于安全研究/学习目的)",
+  "scripts": {
+    "tsc": "tsc --noEmit",
+    "tsc:watch": "tsc --noEmit --watch"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.0.270",
+    "typescript": "^5.4.0"
+  },
+  "keywords": [
+    "chrome-extension",
+    "reverse-engineering",
+    "automa",
+    "browser-automation",
+    "mv3",
+    "webpack"
+  ],
+  "repository": {
+    "type": "local",
+    "directory": "categories/developer-tools/automa"
+  }
+}

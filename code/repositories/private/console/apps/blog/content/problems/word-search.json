@@ -1,0 +1,25 @@
+{
+  "id": "88",
+  "slug": "word-search",
+  "title": "单词搜索",
+  "difficulty": "medium",
+  "tags": ["数组", "回溯", "矩阵"],
+  "description": "给定一个 `m x n` 二维字符网格 `board` 和一个字符串单词 `word`。如果 `word` 存在于网格中,返回 `true`;否则返回 `false`。\n\n单词必须按照字母顺序通过相邻的单元格(水平或垂直相邻)构成,同一个单元格内的字母不能被重复使用。\n\n**示例 1:**\n\n- 输入:`board = [[\"A\",\"B\",\"C\",\"E\"],[\"S\",\"F\",\"C\",\"S\"],[\"A\",\"D\",\"E\",\"E\"]]`, `word = \"ABCCED\"`\n- 输出:`true`\n\n**示例 2:**\n\n- 输入:同上, `word = \"SEE\"`\n- 输出:`true`\n\n**示例 3:**\n\n- 输入:同上, `word = \"ABCB\"`\n- 输出:`false`",
+  "solution": "## 思路\n\n**回溯(DFS)**:从每个格子出发尝试匹配 `word[0]`,递归向四方向扩展;用临时改写格子(`#`)标记已访问,回溯时还原。\n\n## 参考代码\n\n```js\nfunction exist(board, word) {\n  const m = board.length;\n  const n = board[0].length;\n  const dfs = (i, j, k) => {\n    if (k === word.length) return true;\n    if (i < 0 || i >= m || j < 0 || j >= n || board[i][j] !== word[k]) return false;\n    const tmp = board[i][j];\n    board[i][j] = '#';\n    const found = dfs(i + 1, j, k + 1) || dfs(i - 1, j, k + 1) || dfs(i, j + 1, k + 1) || dfs(i, j - 1, k + 1);\n    board[i][j] = tmp;\n    return found;\n  };\n  for (let i = 0; i < m; i++) {\n    for (let j = 0; j < n; j++) {\n      if (dfs(i, j, 0)) return true;\n    }\n  }\n  return false;\n}\n```\n\n## 复杂度\n\n- 时间:O(m*n*3^L),L 为单词长度\n- 空间:O(L)(递归栈)",
+  "signature": {
+    "language": "javascript",
+    "entry": "exist",
+    "params": [
+      { "name": "board", "type": "string[][]" },
+      { "name": "word", "type": "string" }
+    ],
+    "returns": "boolean"
+  },
+  "testCases": [
+    { "sample": true, "input": [[["A", "B", "C", "E"], ["S", "F", "C", "S"], ["A", "D", "E", "E"]], "ABCCED"], "expected": true },
+    { "sample": true, "input": [[["A", "B", "C", "E"], ["S", "F", "C", "S"], ["A", "D", "E", "E"]], "SEE"], "expected": true },
+    { "sample": true, "input": [[["A", "B", "C", "E"], ["S", "F", "C", "S"], ["A", "D", "E", "E"]], "ABCB"], "expected": false },
+    { "sample": false, "input": [[["a"]], "a"], "expected": true },
+    { "sample": false, "input": [[["a"]], "b"], "expected": false }
+  ]
+}

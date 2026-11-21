@@ -1,0 +1,1 @@
+import{b as a}from"./baseRequest-cLAYUkE1.js";const e=(e={})=>a.get("/api/getWeather",{params:e}),t=(e={})=>a.get("/api/weather/24",{params:e}),s=(e={})=>a.get("/api/weather/city",{params:e});export{s as a,t as b,e as g};

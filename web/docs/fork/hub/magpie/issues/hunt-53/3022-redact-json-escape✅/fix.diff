@@ -1,0 +1,98 @@
+diff --git a/internal/redact/json.go b/internal/redact/json.go
+index 25b647dd..df3741b4 100644
+--- a/internal/redact/json.go
++++ b/internal/redact/json.go
+@@ -386,7 +386,7 @@ func MaskJSON(body []byte, o Options) ([]byte, int) {
+ 		if !masked(path, key, s) {
+ 			return s
+ 		}
+-		t, n := mask(s, o, put)
++		t, n := mask(s, o, put, asJSON(key, ""))
+ 		total += n
+ 		return t
+ 	})
+diff --git a/internal/redact/redact.go b/internal/redact/redact.go
+index d21c256e..a18f063c 100644
+--- a/internal/redact/redact.go
++++ b/internal/redact/redact.go
+@@ -335,11 +335,14 @@ type span struct {
+ 
+ // Mask swaps what o covers in s for placeholders, and says how many.
+ func Mask(s string, o Options) (string, int) {
+-	return mask(s, withModel(o, []string{s}), placeholder)
++	return mask(s, withModel(o, []string{s}), placeholder, false)
+ }
+ 
+-// mask swaps what o covers in s for what put makes of each value.
+-func mask(s string, o Options, put func(kind, v string) string) (string, int) {
++// mask swaps what o covers in s for what put makes of each value. jsonText
++// is for a string that holds JSON of its own (a tool call's arguments): it
++// is read by the vendor after another round of unescaping, so there a value
++// may not start at a backslash.
++func mask(s string, o Options, put func(kind, v string) string, jsonText bool) (string, int) {
+ 	if len(s) < 3 {
+ 		return s, 0
+ 	}
+@@ -387,7 +390,7 @@ func mask(s string, o Options, put func(kind, v string) string) (string, int) {
+ 			if len(r.groups) > 0 {
+ 				took := false
+ 				for g, kind := range r.groups {
+-					if a, b := m[2*g+2], m[2*g+3]; a >= 0 && r.takes(s, a, b, r.groupOK[g]) {
++					if a, b := m[2*g+2], m[2*g+3]; a >= 0 && r.takes(s, a, b, r.groupOK[g], jsonText) {
+ 						found = append(found, span{a, b, kind})
+ 						took = true
+ 					}
+@@ -415,7 +418,7 @@ func mask(s string, o Options, put func(kind, v string) string) (string, int) {
+ 				}
+ 				ok = nil
+ 			}
+-			if r.takes(s, a, b, ok) {
++			if r.takes(s, a, b, ok, jsonText) {
+ 				found = append(found, span{a, b, r.kind})
+ 			}
+ 		}
+@@ -497,14 +500,29 @@ func lowerASCII(s string) string {
+ }
+ 
+ // takes says s[a:b] is a value r masks: nothing it may not touch beside
+-// it, and its checks pass.
+-func (r rule) takes(s string, a, b int, ok func(string) bool) bool {
++// it, and its checks pass. jsonText is for a string that holds JSON of its
++// own, read after another round of unescaping.
++func (r rule) takes(s string, a, b int, ok func(string) bool, jsonText bool) bool {
+ 	if b <= a {
+ 		return false
+ 	}
+ 	if r.bound != "" && (a > 0 && strings.IndexByte(r.bound, s[a-1]) >= 0 || b < len(s) && strings.IndexByte(r.bound, s[b]) >= 0) {
+ 		return false
+ 	}
++	// nor, there, a backslash: a match that starts at one starts inside an
++	// escape (a string's \n, its n read as the match's first letter), and
++	// masked, that backslash would stand before the placeholder, and the
++	// JSON would no longer parse (#3022). An even run of them (a \\ of a
++	// Windows path) escapes itself, and what follows goes as before.
++	if jsonText {
++		c := 0
++		for i := a - 1; i >= 0 && s[i] == '\\'; i-- {
++			c++
++		}
++		if c%2 == 1 {
++			return false
++		}
++	}
+ 	if ok != nil && !ok(s[a:b]) {
+ 		return false
+ 	}
+diff --git a/internal/redact/scrub.go b/internal/redact/scrub.go
+index 1737b4d6..f4597483 100644
+--- a/internal/redact/scrub.go
++++ b/internal/redact/scrub.go
+@@ -51,7 +51,7 @@ func scrub(s string) string {
+ 	if len(s) >= 256 {
+ 		scrubRuns.Add(1)
+ 	}
+-	out, _ := mask(s, Options{Secrets: true}, scrubbed)
++	out, _ := mask(s, Options{Secrets: true}, scrubbed, false)
+ 	return out
+ }
+ 

@@ -1,0 +1,93 @@
+From 72929a299484381b2c25c6cf4ab23ac47393b2f8 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Sun, 25 Oct 2026 06:00:33 +0800
+Subject: [PATCH] usage: the context map's tiles are read once their rects hold
+ still (#3488)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Recorded on main: in WebKit at a phone's width this test fails every
+time, in all five languages, alone and unloaded (webkit en zh zh-TW ja
+de 420px; chromium passes at every width, webkit passes at 1100px).
+Not load: the read was a single look right after the wait for running
+animations under the open session cleared, and that wait clears while
+the tiles are still gliding. Instrumented (WebKit 26.5 / Playwright
+1.62): the card's size class lands a frame after the map narrows (the
+#1249 deferral), the map lays out again, and WebKit runs the tiles'
+left/top/width/height transition without ever listing it in
+document.getAnimations() — at the moment the wait clears, a tile's
+rect does not match its own inline style resolved at the map's current
+width, and the rects keep moving for the next ~600ms with no animation
+on the map listed. A read landing in that glide sees two tiles a hair
+past each other (0.63px past the 0.5px tolerance, memory against the
+free space); the settled layout never overlaps. The glide's CSS and
+the class deferral both predate f1537d9f9, so the tiling change there
+is not the cause.
+
+What changed (test only):
+- the single look after the animations wait became a settle loop,
+  as wheelTo above already waits for the scroll: looks a hundred ms
+  apart until three in a row read the same, and the assertions run on
+  that settled look;
+- the comment now says the verified mechanism.
+
+Run (node --test internal/gui/tests/context-map.test.cjs, this file
+alone, base b4267de59, product code untouched):
+- before, Playwright 1.62.0 (WebKit 26.5), webkit: all five 420px red
+  "two tiles overlap", 1100px green — the recorded failure;
+- before, Playwright 1.57.0 (WebKit 26.2), webkit: 4 of 5 languages
+  red at 420px in one round, 1100px green;
+- after, same two WebKits, webkit: 11/11 each, 420px green in every
+  language; chromium 1.57.0: 11/11;
+- teeth: with the settle loop in place, a settled overlap injected by
+  stylesheet (the free tile forced onto the used tiles) still fails
+  "two tiles overlap", and a map that never settles still fails on the
+  last look.
+
+Not run: the full GUI suite.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gui/tests/context-map.test.cjs | 24 +++++++++++++++++++-----
+ 1 file changed, 19 insertions(+), 5 deletions(-)
+
+diff --git a/internal/gui/tests/context-map.test.cjs b/internal/gui/tests/context-map.test.cjs
+index 10a596f8f..009ccac2c 100644
+--- a/internal/gui/tests/context-map.test.cjs
++++ b/internal/gui/tests/context-map.test.cjs
+@@ -178,12 +178,26 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
+         assert.equal(await card.locator(".ctx-look-b.on").getAttribute("aria-label"), w.map);
+         // every tile inside the map, none on another
+         // read once the tiles have come in and the card has opened, the
+-        // map and its tiles in one look
++        // map and its tiles in one look. The wait below can clear while the
++        // tiles are still gliding: the card's size class lands a frame after
++        // the map narrows (the #1249 deferral), the map lays out again, and
++        // WebKit runs the tiles' left/top/width/height transition without
++        // ever listing it in document.getAnimations(), so at a phone's width
++        // this read used to land mid-glide, where two gliding tiles can sit
++        // a hair past each other. The rects have to hold still for three
++        // looks in a row, as the wheel does above
+         await page.waitForFunction(() => !document.getAnimations().some((a) => a.playState === "running" && a.effect?.target?.closest?.(".ctx-sess.open")));
+-        const { rects, box } = await map.evaluate((m) => {
+-          const rc = (n) => { const r = n.getBoundingClientRect(); return [r.left, r.top, r.right, r.bottom]; };
+-          return { rects: [...m.querySelectorAll(".ctx-tile")].map(rc), box: rc(m) };
+-        });
++        let read = "";
++        for (let last = null, same = 0, i = 0; i < 60 && same < 2; i++) {
++          await page.waitForTimeout(100);
++          read = await map.evaluate((m) => {
++            const rc = (n) => { const r = n.getBoundingClientRect(); return [r.left, r.top, r.right, r.bottom]; };
++            return JSON.stringify({ rects: [...m.querySelectorAll(".ctx-tile")].map(rc), box: rc(m) });
++          });
++          same = read === last ? same + 1 : 0;
++          last = read;
++        }
++        const { rects, box } = JSON.parse(read);
+         for (const [i, a] of rects.entries()) {
+           assert.ok(a[0] >= box[0] - 0.5 && a[1] >= box[1] - 0.5 && a[2] <= box[2] + 0.5 && a[3] <= box[3] + 0.5, `tile ${i} is outside the map: ${a} in ${box}`);
+           assert.ok(a[2] - a[0] >= 10 && a[3] - a[1] >= 10, `tile ${i} is a sliver: ${a}`);
+-- 
+2.50.1 (Apple Git-155)
+

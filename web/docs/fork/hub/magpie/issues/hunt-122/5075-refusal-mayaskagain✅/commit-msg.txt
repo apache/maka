@@ -1,0 +1,31 @@
+gateway: a filter's finish code after the reply began asks the group's next member (#5075)
+
+A vendor that answers with a canned refusal line as the content and has
+its finish_reason "content_filter" follow (#5075: CodeArts's
+deepseek-v4.1-flash, 10/10 on the same body, 47 tokens out, the line
+byte-identical) was a try that stood as a success: the line had gone out
+as content, so the scan's refusal paths were past, only refusedAfter was
+marked, the group's next member was never asked, and a client that reads
+finish reasons — Pi's and DeepSeek Harness's mapStopReason, Claude Code —
+failed the whole turn on it. Another member of the same group answered
+620 tokens.
+
+refusalAfter now hands the try over (handOffAfter) when the refusal is
+the vendor's own finish code (eventRefusal), the reply is passing, a
+candidate stands behind it reading Chat chunks, and no call of the reply
+has gone by: what of the write went by before the code goes out with the
+reply, the code, its usage and [DONE] do not, and the next member's
+chunks follow in the same stream, as a refusal after reasoning is
+(handOver). The member isn't set aside: the request was refused, not the
+account (#248). A refusal still held goes through the scan's own paths
+(flow, handOver) as before; an error event mid-reply stays as it came
+(#733); an Anthropic or Responses client's stream is numbered and what
+of it has gone by is untracked, so its refusal keeps going as it came.
+
+TestRefusalAfterThinkingAndTextStays becomes
+TestRefusalAfterThinkingAndTextFailsOver: a Chat client is handed over
+now, where it ended on the vendor's finish code before.
+
+Fixes #5075
+
+Generated-by: GLM-5.3-Flash (ZCode)

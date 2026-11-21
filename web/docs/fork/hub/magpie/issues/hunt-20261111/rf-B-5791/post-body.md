@@ -1,0 +1,162 @@
+Refreshed on current `main` (`fe20e4dbd`) — refreshed, not redesigned: same change as before, rebased. Upstream touched `routing.go` twice since my last post (`72e804d2b` fallback choice, `e4197144a` regexp laziness); neither reaches the `RunsOut` overwrite this is about, and the patch applies byte-identical on the new base.
+
+**Red without the fix** (bare `fe20e4dbd`, the test from this branch): `go test ./internal/provider -run TestPartialExpiryKeepsTheReset` fails as the report says — the reporter's A (495 of 500 credits left, one lapsing in 14 hours) renews in 14 hours instead of at its reset:
+
+```
+a part expiring renews at its reset: [2026-11-12 14:08:20 +0800], want 2026-12-10 00:08:20 +0800
+```
+
+With the fix: `ok` (1.2s), and `TestWorkBuddyCreditsRunOutForRouting` (cdredfox's credits with no reset at all) still passes — those keep ending at `RunsOut`, as before.
+
+**Verification** (all on `fe20e4dbd`):
+| What | Result |
+| --- | --- |
+| `go test ./internal/provider -run TestPartialExpiryKeepsTheReset` + TestWorkBuddyCreditsRunOutForRouting | ok 1.2s |
+| full `go test ./internal/provider` | 3 failures, all red on bare `fe20e4dbd` too (`TestAddSameKeyOtherFormat`, `TestQuotaSpanCarriesEveryWindowField`, `TestKeptQuotaReportAsksNobody`) — none from this change |
+| `go test -race ./internal/provider` | the same 3, plus `TestSignInDoneOnceTheAccountIsBack` (red on the base under `-race` single-run too) and two that pass single-run on the base (parallel-suite timing) — nothing new |
+| `gofmt` / `go vet` | clean |
+| `GOOS=linux/windows go build ./internal/provider` | ok |
+| ablation (drop the `&& l.lapsingAll()` term, tests kept) | red again at the same line; restored, green |
+| `git am` on detached `fe20e4dbd` | applies as is; tree identical to the branch head |
+
+**Siblings**: `renewing()` feeds `Renewal()` (Smart's window ranking — the face this report is about) and `Unreached()` (the budget-window nesting comparison); both read the resets this writes, and both want the real reset for a window whose reset outlives a part-lapse. `Lapse()` and the pace in `expiring()` read `RunsOut` raw on purpose — they say when credits are lost, not when the window renews.
+
+**Branch with the commit**: [hunt-20261111-rf-5791](https://github.com/ggbdpq/magpie/tree/hunt-20261111-rf-5791) (head `f48769f39728c470`).
+
+**Not verified**: the reporter's real vendor answer (the fixture pins the shapes: a part of 500 lapsing in 14 hours against a monthly reset; cdredfox's no-reset credits).
+
+**Attribution**: AI-written; I've read the whole diff and can answer questions on it myself. Please keep the author (`ggbdpq`) or add `Co-authored-by: ggbdpq <ggbdpq@gmail.com>`.
+
+**Patch**: <details><summary>patch: routing: a part expiring doesn't renew the window, its reset does (#5791) — git am applies it as is; SHA-256 first 16: b0ba8f7b7b4e3728</summary>
+
+```patch
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Mon, 9 Nov 2026 22:14:55 +0800
+Subject: [PATCH] routing: a part expiring doesn't renew the window, its reset
+ does (#5791)
+
+A vendor may tell a share of a window's left lapsing at RunsOut long
+before the window's own reset (RunsOutLeft of Of, a credit of 500 of
+an account 99% up). renewing took RunsOut for the renewal whatever
+the share, so Smart ranked that account first as one whose whole left
+is lost at the lapse, and a group sent it every request, the peer
+whose real reset is the sooner getting none. A lapse told smaller
+than the window has left now expires alone: the renewal stays at the
+reset. What the vendor doesn't count, a lapse covering all that is
+left, and an account with no reset of its own (WorkBuddy's credits)
+still end the window at RunsOut, as before.
+---
+ internal/provider/partial_expiry_test.go | 48 ++++++++++++++++++++++++
+ internal/provider/routing.go             | 24 +++++++++++-
+ 2 files changed, 70 insertions(+), 2 deletions(-)
+ create mode 100644 internal/provider/partial_expiry_test.go
+
+diff --git a/internal/provider/partial_expiry_test.go b/internal/provider/partial_expiry_test.go
+new file mode 100644
+index 000000000..a76c334de
+--- /dev/null
++++ b/internal/provider/partial_expiry_test.go
+@@ -0,0 +1,48 @@
++package provider
++
++import (
++	"testing"
++	"time"
++)
++
++// A part of an account's points expiring before its real reset (RunsOut
++// with RunsOutLeft told, less than what is left) is not the window ending
++// then: Renewal keeps the window at its reset, so Smart doesn't rank the
++// account first as one whose whole left is lost at the part's expiry and
++// send it every request before a peer whose reset is the sooner (#5791).
++// What the vendor doesn't count (RunsOutLeft or Of untold), a part that
++// covers all the window has left, and an account with no reset of its own
++// (WorkBuddy's credits) still end the window at RunsOut.
++func TestPartialExpiryKeepsTheReset(t *testing.T) {
++	now := time.Now()
++	day := 24 * time.Hour
++	hour := time.Hour
++
++	// the issue's A: 500 credits, 1% used (495 left), one credit lapsing in
++	// 14 hours, the window itself renewing in 28 days
++	a := Allowance{{Used: 1, Resets: now.Add(28 * day), Span: 28 * day,
++		RunsOut: now.Add(14 * hour), RunsOutLeft: 1, Of: 500, Unit: "credits"}}
++	if r := a.Renewal("m", now); len(r) != 1 || !r[0].Equal(now.Add(28*day)) {
++		t.Fatalf("a part expiring renews at its reset: %v, want %v", r, now.Add(28*day))
++	}
++
++	// what the vendor doesn't count is lost whole, as before: the window
++	// ends at RunsOut
++	uncounted := Allowance{{Used: 1, Resets: now.Add(28 * day), Span: 28 * day,
++		RunsOut: now.Add(14 * hour)}}
++	if r := uncounted.Renewal("m", now); len(r) != 1 || !r[0].Equal(now.Add(14*hour)) {
++		t.Fatalf("a lapse of untold size renews at RunsOut: %v, want %v", r, now.Add(14*hour))
++	}
++	// a part covering all that is left ends the window too
++	allLeft := Allowance{{Used: 99, Resets: now.Add(28 * day), Span: 28 * day,
++		RunsOut: now.Add(14 * hour), RunsOutLeft: 495, Of: 500, Unit: "credits"}}
++	if r := allLeft.Renewal("m", now); len(r) != 1 || !r[0].Equal(now.Add(14*hour)) {
++		t.Fatalf("a lapse of all that is left renews at RunsOut: %v, want %v", r, now.Add(14*hour))
++	}
++	// an account with no reset of its own (WorkBuddy's credits) goes by the
++	// package that ends first
++	noReset := Allowance{{Used: 10, RunsOut: now.Add(3 * day)}}
++	if r := noReset.Renewal("m", now); len(r) != 1 || !r[0].Equal(now.Add(3*day)) {
++		t.Fatalf("no reset, renewal at RunsOut: %v, want %v", r, now.Add(3*day))
++	}
++}
+diff --git a/internal/provider/routing.go b/internal/provider/routing.go
+index b9bba9dfd..e6ce2f7a2 100644
+--- a/internal/provider/routing.go
++++ b/internal/provider/routing.go
+@@ -565,7 +565,9 @@ func (a Allowance) Count(model string, now time.Time) (amount, of float64, unit
+ // whose credits left run out before it renews (Limit.RunsOut) renews
+ // then, as what is left is lost then all the same: WorkBuddy's accounts,
+ // whose credits have no reset, go by the package that ends first
+-// (cdredfox on X).
++// (cdredfox on X). A lapse of a part of what is left (RunsOutLeft told,
++// less than the window has left) doesn't move it: what runs out there is
++// a share of the window, and the window itself goes by its reset (#5791).
+ func (a Allowance) Renewal(model string, now time.Time) []time.Time {
+ 	ls := a.renewing(model, now)
+ 	out := make([]time.Time, len(ls))
+@@ -592,7 +594,7 @@ func (a Allowance) renewing(model string, now time.Time) []Limit {
+ 				l.Resets = now.Add(l.Span)
+ 			}
+ 		}
+-		if l.RunsOut.After(now) && (l.Resets.IsZero() || l.RunsOut.Before(l.Resets)) {
++		if l.RunsOut.After(now) && (l.Resets.IsZero() || l.RunsOut.Before(l.Resets)) && l.lapsingAll() {
+ 			l.Resets = l.RunsOut
+ 		}
+ 		l.Resets = restarted(l.Resets, restart)
+@@ -840,6 +842,24 @@ func (l Limit) expiring(u float64, now, ends time.Time) (pace float64, at time.T
+ 	return share / max(l.RunsOut.Sub(now), time.Hour).Hours(), l.RunsOut, true
+ }
+ 
++// lapsingAll says whether a window ends at RunsOut as much as it does at
++// its reset. One with no reset of its own (WorkBuddy's credits) ends
++// nowhere else: RunsOut is its renewal whatever lapses there. One with a
++// reset that doesn't count what lapses (RunsOutLeft or Of untold) loses
++// all it has left there, as before; a part told less than the window has
++// left expires alone, and the window keeps its reset (#5791: one credit
++// of 500 expiring had the window renew in hours, and Smart sent it every
++// request).
++func (l Limit) lapsingAll() bool {
++	if l.Resets.IsZero() {
++		return true
++	}
++	if l.RunsOutLeft <= 0 || l.Of <= 0 {
++		return true
++	}
++	return l.Of*(100-min(100, max(0, l.Used)))/100 <= l.RunsOutLeft
++}
++
+ // Allowances is each of an agent's accounts' allowance by user, as last
+ // known, asked for again in the background when that was over a minute
+ // ago. Only the very first ask waits, and not for long. An account
+-- 
+2.50.1 (Apple Git-155)
+
+```
+</details>

@@ -1,0 +1,11 @@
+@realfirst Confirmed — same root cause, and I have patches on both threads; your branch also covers one face mine don't. Since this root cause now has three artifacts across two threads, a short map for whoever triages:
+
+- [My #2607 comment](https://github.com/yetone/magpie/issues/2607#issuecomment-6220470803) (Oct 16, `25dc5013`, branch [`hunt32-b-gw-2607-reasoning-dup`](https://github.com/ggbdpq/magpie/tree/hunt32-b-gw-2607-reasoning-dup)): the first cut — strips the other spellings in `withReasoningOnToolTurns`' write branch, plus a Kimi-path edit later dropped.
+- [My #3165 comment](https://github.com/yetone/magpie/issues/3165#issuecomment-6320485575) (Oct 21, `130b761b`, branch [`hunt58-f-3165-reasoning-dup`](https://github.com/ggbdpq/magpie/tree/hunt58-f-3165-reasoning-dup)): the refined cut, and the one to take if picking mine — it also strips a client-echoed `reasoning`/`reasoning_details` sitting beside a message's own `reasoning_content`, and deliberately leaves the Kimi path alone (the [follow-up](https://github.com/yetone/magpie/issues/3165#issuecomment-6327619924) there closes why: Kimi validates named fields rather than aliasing them — the live check in `f2400f67` — and the strip is gated on `chatReplaysReasoning` anyway).
+- Your branch (`84c2b3a`, parent `8a99473e` on `main`): folds `reasoning` wherever `reasoning_content` is present, across every message — so it additionally covers a client that sends both spellings on a message outside the tool window, which mine leave untouched (the Oct 16 post lists that face as explicitly not covered).
+
+That face still reproduces on today's `upstream/main` (`ef6f3749`, v0.1.1321) by code inspection: both branches of `withReasoningOnToolTurns` still write or keep the second name.
+
+Two small notes. The two patches change the same expectation in `TestChatToolTurnWithoutReasoningRelayed`, so whichever lands second needs a small rebase. And mine additionally strips `reasoning_details` in the tool window — hardening for refuse-unknown-fields upstreams, with no live sample behind it; the aliasing pair your check refuses is `reasoning`/`reasoning_content`. Which fix, or what combination, lands is the maintainer's call.
+
+written with GLM-5.3-Flash (ZCode); I've re-checked the comparisons above against today's `upstream/main`.

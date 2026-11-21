@@ -1,0 +1,135 @@
+From c00bbc01537c07eef41e324487bca44943d4726f Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Wed, 4 Nov 2026 08:19:54 +0800
+Subject: [PATCH] gateway: a relay's DeepSeek model reads max_tokens as its own
+ (#5030)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+deepseekTokenField named a chat request's reply length max_tokens for
+the DeepSeek preset and api.deepseek.com alone; a relay on its own
+domain serving a DeepSeek model got max_completion_tokens as it came,
+DeepSeek behind it ignored it and answered with its default, 8K
+without thinking (#5030, NOMOAX) — the gate the tool-schema
+normalization's had too (#4852, ethanfly). DeepSeek's quirks are told
+by the model named in the body now, as Grok's are (grokModel): a
+model a relay names deepseek-whatever gets the field DeepSeek reads,
+whoever serves it; another vendor's model through the same relay goes
+as it came.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gateway/deepseek_schema.go      | 25 ++++++++---
+ internal/gateway/deepseek_tokens_test.go | 57 ++++++++++++++++++++++++
+ 2 files changed, 77 insertions(+), 5 deletions(-)
+
+diff --git a/internal/gateway/deepseek_schema.go b/internal/gateway/deepseek_schema.go
+index 106687b63..b6ec191f3 100644
+--- a/internal/gateway/deepseek_schema.go
++++ b/internal/gateway/deepseek_schema.go
+@@ -166,16 +166,31 @@ func unicodeNullEscape(pattern string) string {
+ 	return out.String()
+ }
+ 
++// deepseekModel is whether id, the model as the body going upstream names
++// it, is one of DeepSeek's, under whatever prefix a relay or router gives
++// it (deepseek/deepseek-v4.1, openrouter's deepseek/…). DeepSeek's quirks
++// are DeepSeek's whoever serves them: a relay that upstream-validates
++// like DeepSeek carries a DeepSeek model's name (#5030, #4852).
++func deepseekModel(id string) bool {
++	if i := strings.LastIndexByte(id, '/'); i >= 0 {
++		id = id[i+1:]
++	}
++	return strings.HasPrefix(strings.ToLower(id), "deepseek")
++}
++
+ // deepseekTokenField names a chat request's reply length max_tokens, the
+ // field DeepSeek's chat API reads: it has no max_completion_tokens and
+ // ignores one, so a client that asks OpenAI's way (DSH's pi-ai with a
+ // custom provider) got DeepSeek's default, 8K without thinking (#2355).
+-// Only the key is renamed, in place, so the rest of the body keeps its
+-// bytes. A request that names max_tokens too goes as it is, since
+-// DeepSeek reads that one. Another vendor's chat API is left alone:
+-// OpenAI's and Azure's want max_completion_tokens.
++// It is DeepSeek's API whoever serves a DeepSeek model: on a relay's own
++// domain the model named in the body tells (#5030, NOMOAX), as Grok's
++// schema quirk is told by its model (grokModel). Only the key is renamed,
++// in place, so the rest of the body keeps its bytes. A request that names
++// max_tokens too goes as it is, since DeepSeek reads that one. Another
++// vendor's chat API is left alone: OpenAI's and Azure's want
++// max_completion_tokens.
+ func deepseekTokenField(p provider.Provider, to provider.Protocol, body []byte) []byte {
+-	if to != provider.Chat || p.Preset != "deepseek" && provider.HostOf(p.Base(to)) != "api.deepseek.com" {
++	if to != provider.Chat || p.Preset != "deepseek" && provider.HostOf(p.Base(to)) != "api.deepseek.com" && !deepseekModel(gjson.GetBytes(body, "model").String()) {
+ 		return body
+ 	}
+ 	if !bytes.Contains(body, []byte(`"max_completion_tokens"`)) || gjson.GetBytes(body, "max_tokens").Exists() {
+diff --git a/internal/gateway/deepseek_tokens_test.go b/internal/gateway/deepseek_tokens_test.go
+index c1f436dea..c3d5e5694 100644
+--- a/internal/gateway/deepseek_tokens_test.go
++++ b/internal/gateway/deepseek_tokens_test.go
+@@ -67,3 +67,60 @@ func TestDeepSeekChatGetsMaxTokens(t *testing.T) {
+ 		}
+ 	}
+ }
++
++// A relay that serves DeepSeek's models under a custom domain gets the
++// same field DeepSeek's own API reads: before, a request that named the
++// reply length OpenAI's way (max_completion_tokens, as DSH's pi-ai does
++// for a custom provider) went as it came, DeepSeek behind the relay
++// ignored it and answered with its default 8K (#5030, NOMOAX), the same
++// gate as the tool-schema normalization's (#4852, ethanfly). It is
++// DeepSeek's whoever serves it, the model named in the body as it goes
++// upstream; another vendor's model through the same relay goes as it
++// came, as does a request that names max_tokens too (DeepSeek reads
++// that one), and a message that names the field keeps its text.
++func TestDeepSeekRelayChatGetsMaxTokens(t *testing.T) {
++	fresh(t)
++	f := &fake{reply: sse(
++		`data: {"id":"test","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"ok"}}]}`,
++		`data: {"id":"test","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
++		`data: [DONE]`,
++	)}
++	up := httptest.NewServer(f)
++	defer up.Close()
++	p := provider.Provider{ID: "relay", Name: "Relay", Key: "k", Chat: up.URL + "/v1", Models: []string{"deepseek-flash", "deepseek-v4.1-flash", "gpt-5.3"}}
++	if err := provider.Save(p); err != nil {
++		t.Fatal(err)
++	}
++	said := `{"role":"user","content":"what is \"max_completion_tokens\"?"}`
++	for _, c := range []struct {
++		model, fields       string
++		maxTokens, maxCompl any
++	}{
++		{"deepseek-flash", `"max_completion_tokens":393216`, float64(393216), nil},
++		{"deepseek-v4.1-flash", `"max_completion_tokens":5`, float64(5), nil},
++		{"deepseek-flash", `"max_tokens":5`, float64(5), nil},
++		// both named: DeepSeek reads max_tokens, which goes as it is
++		{"deepseek-flash", `"max_tokens":7,"max_completion_tokens":5`, float64(7), float64(5)},
++		// another vendor's model through the same relay goes as it came
++		{"gpt-5.3", `"max_completion_tokens":5`, nil, float64(5)},
++	} {
++		body := `{"model":"` + c.model + `","stream":true,` + c.fields + `,"messages":[` + said + `]}`
++		code, reply := post(t, "/v1/chat/completions", body)
++		if code != 200 {
++			t.Fatalf("%s: HTTP %d: %s", c.fields, code, reply)
++		}
++		var sent map[string]any
++		if err := json.Unmarshal(f.got, &sent); err != nil {
++			t.Fatal(err)
++		}
++		if sent["model"] != c.model {
++			t.Fatalf("%s: upstream got model %s", c.model, sent["model"])
++		}
++		if sent["max_tokens"] != c.maxTokens || sent["max_completion_tokens"] != c.maxCompl {
++			t.Fatalf("%s %s: upstream got %s", c.model, c.fields, f.got)
++		}
++		if !strings.Contains(string(f.got), `what is \"max_completion_tokens\"?`) {
++			t.Fatalf("%s: message text changed: %s", c.fields, f.got)
++		}
++	}
++}
+-- 
+2.50.1 (Apple Git-155)
+

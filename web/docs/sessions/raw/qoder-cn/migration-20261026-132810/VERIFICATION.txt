@@ -1,0 +1,25 @@
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py qoder-cn baseline
+INPUT: CONFIG: fixed qoder-cn source allowlist
+OUTPUT: BASELINE PASS groups=3 files=8173 bytes=58293598 protected=1
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py qoder-cn archive
+INPUT: 457faa30ade2615eddbd7064d0571dd8bcbc0e71c5c958c000ed611912b27766
+OUTPUT: ARCHIVE PASS zip_files=3 files=8173 bytes=58293598
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py qoder-cn apply
+INPUT: 51cdee7eba0eeb0385593a1cd12986f1c2933b0416b41976f17e8e46be5636f6
+OUTPUT: APPLY PASS removed_files=8173 removed_bytes=58293598
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py qoder-cn verify
+INPUT: 0bfda72c7b78bc395d798de6d23292fc7f9a6a99877e3c6cfb25d1b4085c3e23
+OUTPUT: MODIFIED PASS files=8173 bytes=58293598 originals_absent=true protected_unchanged=true
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py qoder-cn rollback-test
+INPUT: 0bfda72c7b78bc395d798de6d23292fc7f9a6a99877e3c6cfb25d1b4085c3e23
+OUTPUT: ROLLBACK PASS restored_files=8173 restored_bytes=58293598 hashes_match=true originals_untouched=true
+EXIT: 0
+

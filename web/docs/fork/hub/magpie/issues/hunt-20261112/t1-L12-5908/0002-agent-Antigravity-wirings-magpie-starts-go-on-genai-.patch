@@ -1,0 +1,197 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Fri, 13 Nov 2026 03:35:35 +0800
+Subject: [PATCH 2/2] agent: Antigravity wirings magpie starts go on genai
+ (#5908)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The commit below keeps a wired file's wireProtocol what the file
+holds, but a wiring magpie starts, and a file with no wire protocol
+of its own, still landed on openai — and openai is the wire the
+reporter's A/B convicts: same provider, same model, only wireProtocol
+flipped, the turn of parallel tool calls retries for good on openai
+and finishes on genai (#5908). genai is no new road: it is the wire
+magpie serves its Antigravity-native accounts on, and the app reads
+the same parallel calls whole on it — one functionCall part each,
+ids, names and arguments intact — where its own openai accumulator
+folds them into one.
+
+So wirings magpie makes from now on start on genai. A file's own
+value still wins, the reporter's hand-set genai and a hand-set
+openai alike (TestAntigravityWireProtocolKept, and TestAntigravity-
+SyncAddsCatalog, whose file wired on openai keeps it through a
+sync). A wiring an older magpie left on openai crosses over at the
+2.30 sync: the old settings.json is left as the 2.29 app has it,
+and the config.json 2.30 reads starts on genai (TestAntigravitySync-
+WiresConfigJSON) — a 2.30 user who wants openai sets it in
+config.json, where magpie leaves it, as any hand-set value.
+
+Run:
+- Red first, on the tests the flip is read by: TestAntigravityGateway,
+  TestAntigravityEffort, TestAntigravityConfigJSON and TestAntigravity-
+  WireProtocolKept failed on this tree with only the assertions moved —
+  "a block magpie starts writes \"openai\", want genai" among them —
+  then pass with the default flipped.
+- The explicit-openai half of TestAntigravityWireProtocolKept is new:
+  with genai the default, a kept genai and the default read the same,
+  so the keep branch had no test left that could tell it alive from
+  dead; a hand-set openai that survives a sync can, and with the keep
+  branch cut the test fails "an explicit openai didn't stay" — the
+  user's explicit choice the reporter asked to keep.
+- TestAntigravitySyncAddsCatalog and the genai half of TestAntigravity-
+  WireProtocolKept stayed green throughout: a file's own wireProtocol
+  still survives magpie's writes and syncs. TestAntigravityGatewayFrom-
+  Nothing never reads the value: green before and after.
+- Ablations, each made against the committed fix and reverted after:
+  the default hunk turned back to openai fails all four flipped
+  assertions; the keep hunk cut fails the explicit-openai one.
+- go test -tags nogui ./internal/agent -run TestAntigravity: all 12
+  named tests green. The whole agent package: green but TestMothX, red on the
+  parent commit too on this machine (b9f22e9de, checked out alone).
+- The whole gateway package (which holds the parallel-calls wire
+  fixtures the first commit added): green, 1024.0s, no failures.
+- The named agent tests and the parallel-calls wire fixtures again
+  with -race: green. gofmt -l empty; go vet clean; GOOS=linux/windows/
+  darwin go build (-tags nogui) green.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/agent/antigravity.go      | 16 ++++++-----
+ internal/agent/antigravity_test.go | 44 ++++++++++++++++++++----------
+ 2 files changed, 39 insertions(+), 21 deletions(-)
+
+diff --git a/internal/agent/antigravity.go b/internal/agent/antigravity.go
+index c073823a6..1126898bf 100644
+--- a/internal/agent/antigravity.go
++++ b/internal/agent/antigravity.go
+@@ -119,14 +119,16 @@ func (f agyFile) wired() bool {
+ }
+ 
+ // antigravityGateway is the gateway block magpie writes at path. The wire
+-// protocol stays the file's once it holds one: on the app's openai stream
+-// its own accumulator folds a turn's parallel calls into one, their ids,
+-// names and arguments lost (#5908), and on genai it reads them whole, so
+-// the protocol of a wired file is the user's to pick (a Gemini-native
+-// provider's row wants genai). A file with none is put on openai, as
+-// before, and so is a block magpie starts.
++// protocol stays the file's once it holds one. A file with none, and a
++// block magpie starts, go on genai: on the app's openai stream its own
++// accumulator folds a turn's parallel calls into one, their ids, names
++// and arguments lost, and the turn retries for good (#5908 — the
++// reporter's A/B had the same provider and model finish on genai and
++// retry on openai), while on genai — the wire magpie serves its
++// Antigravity-native accounts on — the app reads the same calls whole.
++// openai stays the user's to set: a file naming it keeps it.
+ func antigravityGateway(path string) map[string]any {
+-	proto := "openai"
++	proto := "genai"
+ 	if path != "" {
+ 		if v, _ := edit.GetJSON(path, "gateway.wireProtocol"); strings.TrimSpace(v) != "" {
+ 			proto = v
+diff --git a/internal/agent/antigravity_test.go b/internal/agent/antigravity_test.go
+index c19ffcfce..a6dd30622 100644
+--- a/internal/agent/antigravity_test.go
++++ b/internal/agent/antigravity_test.go
+@@ -88,7 +88,7 @@ func TestAntigravityGateway(t *testing.T) {
+ 	file := antigravityFile(t, path)
+ 	var gw map[string]any
+ 	json.Unmarshal(file["gateway"], &gw)
+-	want := map[string]any{"enabled": true, "url": gateway.URL(), "apiKey": agentKey("antigravity"), "wireProtocol": "openai"}
++	want := map[string]any{"enabled": true, "url": gateway.URL(), "apiKey": agentKey("antigravity"), "wireProtocol": "genai"}
+ 	if !sameJSON(string(file["gateway"]), want) {
+ 		t.Errorf("gateway: %s, want %v", file["gateway"], want)
+ 	}
+@@ -362,7 +362,7 @@ func TestAntigravityEffort(t *testing.T) {
+ 	if err := f.Set("hard"); err == nil {
+ 		t.Fatal("a word that isn't a level was kept")
+ 	}
+-	if !sameJSON(string(antigravityFile(t, path)["gateway"]), map[string]any{"enabled": true, "url": gateway.URL(), "apiKey": agentKey("antigravity"), "wireProtocol": "openai"}) {
++	if !sameJSON(string(antigravityFile(t, path)["gateway"]), map[string]any{"enabled": true, "url": gateway.URL(), "apiKey": agentKey("antigravity"), "wireProtocol": "genai"}) {
+ 		t.Errorf("the pick touched the app's gateway: %s", readFile(path))
+ 	}
+ 	if err := f.Set(""); err != nil || provider.AgentEffort("antigravity") != "" {
+@@ -467,7 +467,7 @@ func TestAntigravityConfigJSON(t *testing.T) {
+ 	if err := f.Set("magpie/anth/claude-sonnet-5"); err != nil {
+ 		t.Fatal(err)
+ 	}
+-	want := map[string]any{"enabled": true, "url": gateway.URL(), "apiKey": agentKey("antigravity"), "wireProtocol": "openai"}
++	want := map[string]any{"enabled": true, "url": gateway.URL(), "apiKey": agentKey("antigravity"), "wireProtocol": "genai"}
+ 	models := map[string]any{"defaultModelId": "anth/claude-sonnet-5", "listSource": gateway.URL() + "/v1/models?format=antigravity"}
+ 	for _, p := range []string{cfg, legacy} {
+ 		file := antigravityFile(t, p)
+@@ -502,7 +502,9 @@ func TestAntigravityConfigJSON(t *testing.T) {
+ // A settings.json a magpie before 2.30's file wired, beside the
+ // config.json 2.30 wrote, gets the same block into config.json on the
+ // next sync, at the level it starts on; turning it off then gives both
+-// back.
++// back. The block's wire protocol is the one a wiring magpie starts on
++// now (genai) — the old file keeps the openai an older magpie put there,
++// and only the 2.29 app reads that one.
+ func TestAntigravitySyncWiresConfigJSON(t *testing.T) {
+ 	home := antigravityHome(t)
+ 	cfg := filepath.Join(home, ".gemini", "config", "config.json")
+@@ -518,7 +520,7 @@ func TestAntigravitySyncWiresConfigJSON(t *testing.T) {
+ 		t.Fatal(err)
+ 	}
+ 	file := antigravityFile(t, cfg)
+-	want := map[string]any{"enabled": true, "url": gateway.URL(), "apiKey": agentKey("antigravity"), "wireProtocol": "openai"}
++	want := map[string]any{"enabled": true, "url": gateway.URL(), "apiKey": agentKey("antigravity"), "wireProtocol": "genai"}
+ 	if !sameJSON(string(file["gateway"]), want) {
+ 		t.Fatalf("config.json's gateway after sync: %s", readFile(cfg))
+ 	}
+@@ -545,13 +547,15 @@ func TestAntigravitySyncWiresConfigJSON(t *testing.T) {
+ 	}
+ }
+ 
+-// The wire protocol of a file on magpie stays what the file holds: on the
+-// app's openai stream its own accumulator folds a turn's parallel calls
+-// into one (id, names and arguments lost, #5908), and on genai it reads
+-// them whole, so the protocol is the user's to pick once magpie wired the
+-// file (the reporter hand-set genai and had it work until magpie's next
+-// write put openai back). What magpie writes still refreshes; a file with
+-// no wire protocol of its own is put on openai, as before.
++// The wire protocol of a file on magpie stays what the file holds once it
++// holds one: on the app's openai stream its own accumulator folds a turn's
++// parallel calls into one (id, names and arguments lost, #5908), and on
++// genai it reads them whole. So a wiring magpie starts, and a file with no
++// wire protocol of its own, go on genai — the wire the app reads the same
++// calls whole on, as the reporter's A/B had it (openai kept retrying the
++// turn, genai finished) — and openai stays the user's to set: a file
++// naming it keeps it, and the reporter's hand-set genai survives magpie's
++// writes, as before.
+ func TestAntigravityWireProtocolKept(t *testing.T) {
+ 	home := antigravityHome(t)
+ 	path := filepath.Join(home, ".antigravity", "settings.json")
+@@ -561,8 +565,8 @@ func TestAntigravityWireProtocolKept(t *testing.T) {
+ 	if err := f.Set("magpie/anth/claude-sonnet-5"); err != nil {
+ 		t.Fatal(err)
+ 	}
+-	if got, _ := edit.GetJSON(path, "gateway.wireProtocol"); got != "openai" {
+-		t.Fatalf("a block magpie starts writes %q, want openai", got)
++	if got, _ := edit.GetJSON(path, "gateway.wireProtocol"); got != "genai" {
++		t.Fatalf("a block magpie starts writes %q, want genai", got)
+ 	}
+ 	// the reporter's pick, hand-set in magpie's own block
+ 	if err := edit.SetJSON(path, edit.KV{Path: "gateway.wireProtocol", Value: "genai"}); err != nil {
+@@ -578,4 +582,16 @@ func TestAntigravityWireProtocolKept(t *testing.T) {
+ 	if file := antigravityFile(t, path); !sameJSON(string(file["gateway"]), want) {
+ 		t.Fatalf("the wire protocol didn't stay the user's: %s", readFile(path))
+ 	}
++	// an explicit openai keeps, too: the app's folding accumulator on
++	// that wire is the user's to accept if they name it
++	if err := edit.SetJSON(path, edit.KV{Path: "gateway.wireProtocol", Value: "openai"}); err != nil {
++		t.Fatal(err)
++	}
++	if err := a.Sync(); err != nil {
++		t.Fatal(err)
++	}
++	want = map[string]any{"enabled": true, "url": gateway.URL(), "apiKey": agentKey("antigravity"), "wireProtocol": "openai"}
++	if file := antigravityFile(t, path); !sameJSON(string(file["gateway"]), want) {
++		t.Fatalf("an explicit openai didn't stay: %s", readFile(path))
++	}
+ }
+-- 
+2.50.1 (Apple Git-155)
+

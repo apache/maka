@@ -1,0 +1,1 @@
+{"name":"chatline-dsv4","version":"3.8.0","description":"ChatLine AI对话增强 — 逆向工程项目 (dsv4)","author":"yanchao hou (原作者)","license":"UNLICENSED","scripts":{"build":"tsc","check":"tsc --noEmit"},"devDependencies":{"typescript":"^5.5.0","@types/chrome":"^0.0.268"}}

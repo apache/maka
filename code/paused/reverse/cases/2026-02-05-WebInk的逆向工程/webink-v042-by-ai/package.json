@@ -1,0 +1,21 @@
+{
+  "name": "webink-v042-reversed",
+  "version": "0.4.2",
+  "description": "WebInk v0.4.2 - Chrome 扩展逆向工程还原",
+  "author": "Reverse Engineered by Claude",
+  "license": "MIT",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc --watch",
+    "type-check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@mozilla/readability": "^0.5.0",
+    "turndown": "^7.1.2"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.0.254",
+    "@types/turndown": "^5.0.4",
+    "typescript": "^5.3.3"
+  }
+}

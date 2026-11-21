@@ -1,0 +1,123 @@
+diff --git a/internal/gateway/remote_magpie_rest_test.go b/internal/gateway/remote_magpie_rest_test.go
+index 80fc9a5c..8074bd47 100644
+--- a/internal/gateway/remote_magpie_rest_test.go
++++ b/internal/gateway/remote_magpie_rest_test.go
+@@ -6,6 +6,7 @@ import (
+ 	"net/http"
+ 	"net/http/httptest"
+ 	"strings"
++	"sync"
+ 	"testing"
+ 
+ 	"github.com/yetone/magpie/internal/provider"
+@@ -79,3 +80,58 @@ func TestRemoteMagpieQuotaRestsTheModel(t *testing.T) {
+ 		t.Fatalf("the group: %d %s; the remote was asked %v, other %v", code, body, asked, other.tried)
+ 	}
+ }
++
++// One of a remote magpie's models rate limited with quota left sinks only
++// its own rest (restID, as its rest is keyed): sinking the remote's whole
++// key sends its other models, which were never limited, behind the next
++// provider too, the same mistake resting the whole remote was.
++func TestRemoteMagpieRateLimitSinksTheModel(t *testing.T) {
++	fresh(t)
++	forgetSinks(t)
++	var mu sync.Mutex
++	var asked []string
++	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		var req struct {
++			Model string `json:"model"`
++		}
++		json.NewDecoder(r.Body).Decode(&req)
++		mu.Lock()
++		asked = append(asked, req.Model)
++		mu.Unlock()
++		w.Header().Set("Content-Type", "application/json")
++		if req.Model == "glm/glm-5" {
++			w.WriteHeader(http.StatusTooManyRequests)
++			io.WriteString(w, `{"error":{"message":"rate limit exceeded, slow down"}}`)
++			return
++		}
++		io.WriteString(w, `{"id":"x","choices":[{"index":0,"message":{"role":"assistant","content":"from `+req.Model+`"},"finish_reason":"stop"}]}`)
++	}))
++	t.Cleanup(remote.Close)
++	if err := provider.Save(provider.Provider{ID: "office", Name: "Office", Preset: provider.RemoteMagpiePreset, Key: "k",
++		Chat: remote.URL + "/v1", Models: []string{"glm/glm-5", "kimi/kimi-k3"}}); err != nil {
++		t.Fatal(err)
++	}
++	other := &keyed{}
++	serveOn(t, "other", "ko", []string{"m"}, other)
++	// glm's rate limit, with quota left, sinks it (the group's Sink puts
++	// what sank behind the others)
++	if err := provider.SaveGroup(provider.Group{Name: "R", Members: []string{"office/glm/glm-5", "office/kimi/kimi-k3"}, Routing: provider.Ordered, Sink: true}); err != nil {
++		t.Fatal(err)
++	}
++	s := New()
++	if code, body := postAs(t, s, "", `{"model":"group/r","messages":[{"role":"user","content":"hi"}]}`); code != 200 || !strings.Contains(body, "from kimi/kimi-k3") {
++		t.Fatalf("glm on the remote: %d %s", code, body)
++	}
++	// the watched group: the remote's kimi, never limited, keeps its place
++	// ahead of a provider that never served this conversation
++	if err := provider.SaveGroup(provider.Group{Name: "G", Members: []string{"office/kimi/kimi-k3", "other/m"}, Routing: provider.Ordered, Sink: true}); err != nil {
++		t.Fatal(err)
++	}
++	mu.Lock()
++	asked = nil
++	mu.Unlock()
++	code, body := postAs(t, s, "", `{"model":"group/g","messages":[{"role":"user","content":"hi"}]}`)
++	if code != 200 || !strings.Contains(body, "from kimi/kimi-k3") || len(other.tried) != 0 {
++		t.Fatalf("the group: %d %s; the remote was asked %v, other %v", code, body, asked, other.tried)
++	}
++}
+diff --git a/internal/gateway/routing.go b/internal/gateway/routing.go
+index 1d81d570..df921c82 100644
+--- a/internal/gateway/routing.go
++++ b/internal/gateway/routing.go
+@@ -806,7 +806,15 @@ func (s *Server) restAfterMarked(c candidate, status int, header http.Header, bo
+ 		d, r.By, r.Failures = s.rateRest(c, header, body, sharedPool, now)
+ 		// rate limited with quota left: to the back, where the order sinks
+ 		if c.full(now).IsZero() && !(c.isOpenRouterFree() && sharedPool) {
+-			sink(c.restKey(), now)
++			// a remote magpie's rest is the model's alone (caa53673, the
++			// key's own limit apart): the sink keeps the same scope, or
++			// one model's 429 would send the remote's other models, never
++			// limited, behind the others too
++			if remoteModelRest(c, failRate, header) {
++				sink(c.restID(), now)
++			} else {
++				sink(c.restKey(), now)
++			}
+ 		}
+ 	case failRestricted:
+ 		// out until the vendor lifts it: an appeal, not a wait (#1849)
+diff --git a/internal/gateway/sink.go b/internal/gateway/sink.go
+index ff9e5d26..aafb49c0 100644
+--- a/internal/gateway/sink.go
++++ b/internal/gateway/sink.go
+@@ -45,12 +45,23 @@ func sink(key string, now time.Time) {
+ 	sunk.Unlock()
+ }
+ 
+-// sunkAt is when a candidate sank, if it did.
++// sunkAt is when a candidate sank, if it did. A remote magpie's model
++// sank by its own rest key, the one its rest takes (remoteModelRest), so
++// the model's key is looked up first; its key's own limit sank the remote
++// whole (#2077), so the remote's key is looked up after it.
+ func sunkAt(c candidate) (sinking, bool) {
++	keys := []string{c.restKey()}
++	if c.p.IsRemoteMagpie() {
++		keys = []string{c.restID(), c.restKey()}
++	}
+ 	sunk.Lock()
+ 	defer sunk.Unlock()
+-	s, ok := sunk.m[c.restKey()]
+-	return s, ok
++	for _, key := range keys {
++		if s, ok := sunk.m[key]; ok {
++			return s, true
++		}
++	}
++	return sinking{}, false
+ }
+ 
+ // sinks says whether an order routed so sends the rate limited back:

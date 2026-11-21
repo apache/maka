@@ -1,0 +1,331 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Wed, 11 Nov 2026 00:14:26 +0800
+Subject: [PATCH] routing: an account removed from its provider leaves the
+ Accounts and keys fold (#5895)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The fold on the Routing page built its list from two places that keep
+what a provider served: the day's tallies (#3351), and the orders of the
+requests the gateway still keeps. An account removed from its provider
+(WorkBuddy's third, its five failed tries on the day) stayed listed with
+"what's left not known yet", and the fold heading counted it in "{n}
+accounts" and "{n} available" for the rest of the day.
+
+The history read the live page already polls now carries what each
+provider serves now (`serves`), named the way the tallies and the fold
+name them: an account by its provider and its user in lower case, a key
+or the provider by its own id — a key's alone when it is the only one,
+with its own when there are more (provider.AccountIDs, so a plugin's
+accounts are all there). The fold keeps its entries to those, live; a
+day looked at keeps who it had.
+
+Tests: routing-acts-removed (chromium + webkit) — a provider routed over
+three accounts, its third removed: gone from the list, the fold row
+counting three gone with it, the others' counts still the day's. Ablated
+twice: the fold's keep-to-served filter taken out, the removed account
+back on the page; the `serves` line taken out of the read,
+TestLiveHistoryServesWhatTheProvidersServeNow red. That test locks the
+key forms and a key's removal on the Go side, and a day asked by name
+carrying no such list.
+
+Fixes #5895
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gui/assets/plugins/routing/client.js | 16 ++-
+ .../gui/tests/routing-acts-removed.test.cjs   | 97 +++++++++++++++++++
+ internal/gui/trace.go                         | 32 +++++-
+ internal/gui/trace_tallies_test.go            | 62 ++++++++++++
+ 4 files changed, 202 insertions(+), 5 deletions(-)
+ create mode 100644 internal/gui/tests/routing-acts-removed.test.cjs
+
+diff --git a/internal/gui/assets/plugins/routing/client.js b/internal/gui/assets/plugins/routing/client.js
+index a1e71f652..28c98bfc5 100644
+--- a/internal/gui/assets/plugins/routing/client.js
++++ b/internal/gui/assets/plugins/routing/client.js
+@@ -1706,6 +1706,7 @@ function routingPage(part) {
+   let rp = null;            // a replay playing: see replay
+   let day = "", days = [], past = [], pastCut = false; // a kept day looked at ("" for live), the days kept, its routes
+   let tallies = null; // today's counts per account or key, from the history read (#3351); live only
++  let serves = null; // what each provider serves now, with the history read (#5895); live only
+   const src = () => rp ? rp.routes : routes; // the routes the stage plays from
+   const LINGER = 12e3;      // how long an agent's last request stays on the stage
+   let gen = 0, trips = [], waiters = [];
+@@ -3919,7 +3920,7 @@ function routingPage(part) {
+       days = res.days || [];
+       noteAccounts(res.routes);
+       if (d && d === day) { past = (res.routes || []).map(whole); pastCut = !!res.cut; }
+-      else if (!d) { tallies = res.tallies || null; actsFold = { rs: [], by: null }; } // the fold memo holds the pre-tallies list: drop it, the next fold seeds from the day (#3351)
++      else if (!d) { tallies = res.tallies || null; serves = res.serves || null; actsFold = { rs: [], by: null }; } // the fold memo holds the pre-tallies list: drop it, the next fold seeds from the day (#3351)
+     } catch {}
+     renderHist(); // shown once there are days, though none are live
+   }
+@@ -4712,9 +4713,9 @@ function routingPage(part) {
+   // Folded again only when a request listed is new or has changed: the
+   // list is drawn ten times a second, and each fold went through every
+   // kept request's hundreds of keys, a few ms each time (#3164)
+-  let actsFold = { rs: [], by: null };
++  let actsFold = { rs: [], by: null, serves: null };
+   function foldActs(rs) {
+-    if (actsFold.by && actsFold.rs.length === rs.length && rs.every((r, i) => r === actsFold.rs[i])) return actsFold.by;
++    if (actsFold.by && actsFold.serves === serves && actsFold.rs.length === rs.length && rs.every((r, i) => r === actsFold.rs[i])) return actsFold.by;
+     const by = new Map();
+     // The agent's current sign-in uses its provider's ID; after switching,
+     // that same account uses provider@user and the base ID names another.
+@@ -4767,7 +4768,14 @@ function routingPage(part) {
+         else if (tr.rest && end >= a.restAt) { a.rest = tr.rest; a.restAt = end; }
+       }
+     }
+-    actsFold = { rs: [...rs], by };
++    // An account or key removed from its provider is in the day's tallies
++    // still, and in the orders of the requests the gateway keeps (#5895):
++    // what the history read says each provider serves now keeps the fold's
++    // entries to those, so the list and the counts it sums are the
++    // provider's own. A day looked at keeps who it had.
++    const served = !day && serves?.length ? new Set(serves) : null;
++    if (served) for (const k of [...by.keys()]) if (!served.has(k)) by.delete(k);
++    actsFold = { rs: [...rs], by, serves };
+     return by;
+   }
+   const provBoxes = new Map(); // a provider → its box in the accounts' list (renderActs)
+diff --git a/internal/gui/tests/routing-acts-removed.test.cjs b/internal/gui/tests/routing-acts-removed.test.cjs
+new file mode 100644
+index 000000000..cba625eee
+--- /dev/null
++++ b/internal/gui/tests/routing-acts-removed.test.cjs
+@@ -0,0 +1,97 @@
++// Run with Node's test runner and Playwright on the module path; see README.md.
++// #5895: an account removed from its provider stayed on Routing › Accounts
++// and keys all day, counted in the fold's "{n} available". The fold seeds
++// itself from the day's tallies (#3351) and from every request the gateway
++// still keeps, and both still name the removed one. The history read now
++// says what each provider serves now (`serves`), and the fold keeps its
++// entries to those: a removed account is gone from the list and from the
++// counts, on the live page only — a day looked at keeps who it had.
++const assert = require("node:assert/strict");
++const fs = require("node:fs/promises");
++const path = require("node:path");
++const { test } = require("node:test");
++const { chromium, webkit } = require("playwright");
++
++const assets = path.resolve(__dirname, "../assets");
++const now = Date.now();
++const iso = (ms) => new Date(ms).toISOString();
++const P = "workbuddy";
++const who = (u) => `${u}@work.example`;
++// WorkBuddy routed over three accounts today; C ran out and failed every
++// try, then the user removed it from the provider. The day's tallies keep
++// its five tries, and the requests the gateway still keeps weighed it too.
++const tallies = {
++  [JSON.stringify([P, who("a")])]: { id: P + "@" + who("a"), provider: P, name: "WorkBuddy", who: who("a"), kind: "account", agent: P, model: "m", tried: 12, ok: 12 },
++  [JSON.stringify([P, who("b")])]: { id: P + "@" + who("b"), provider: P, name: "WorkBuddy", who: who("b"), kind: "account", agent: P, model: "m", tried: 8, ok: 6, fails: { credit: 2 } },
++  [JSON.stringify([P, who("c")])]: { id: P + "@" + who("c"), provider: P, name: "WorkBuddy", who: who("c"), kind: "account", agent: P, model: "m", tried: 5, ok: 0, fails: { credit: 4, quota: 1 } },
++};
++// what WorkBuddy serves now: A and B; C is removed
++const serves = [P, JSON.stringify([P, who("a")]), JSON.stringify([P, who("b")])];
++// two kept requests, planned over all three as rotate did before the
++// removal: each weighed C, tried it, handed the request on to A
++const seat = (u) => ({ id: P + "@" + who(u), provider: P, name: "WorkBuddy", who: who(u), kind: "account", agent: P, model: "m" });
++const routes = [1, 2].map((i) => ({
++  id: 10 + i, seq: 10 + i, time: iso(now - (90 - i) * 1000), agent: "app", model: "m", provider: P, done: true, status: 200, ms: 800,
++  order: [seat("a"), seat("b"), seat("c")],
++  tries: [
++    { id: P + "@" + who("c"), model: "m", start: iso(now - (90 - i) * 1000), done: true, status: 429, fail: "credit", ms: 200 },
++    { id: P + "@" + who("a"), model: "m", start: iso(now - (90 - i) * 1000 + 200), done: true, status: 200, ms: 600 },
++  ],
++}));
++
++function serve() {
++  const state = { agents: [{ id: "app", name: "App", path: "/test/app", fields: [] }], profiles: [], settings: { lang: "en", theme: "light", quotaLeft: false } };
++  return async (r) => {
++    const url = new URL(r.request().url());
++    const json = (data) => r.fulfill({ json: data });
++    if (url.pathname === "/boot.js") return r.fulfill({ contentType: "text/javascript", body: `window.bootPrefs = {lang:"en",theme:"light",web:true};` });
++    if (url.pathname === "/wails/runtime.js") return r.fulfill({ contentType: "text/javascript", body: "export const Window = {};" });
++    if (url.pathname === "/api/state") return json(state);
++    if (url.pathname === "/api/gateway/trace") {
++      if (url.searchParams.get("wait")) return new Promise(() => {}); // nothing more comes
++      return json({ mine: true, now: new Date().toISOString(), seq: 12, totals: { requests: 14, rerouted: 2, errors: 0 }, routes });
++    }
++    if (url.pathname === "/api/gateway/history") return json({ cut: false, days: [{ day: new Date(now).toISOString().slice(0, 10), requests: 14 }], routes: [], tallies, serves });
++    if (url.pathname === "/api/usage/quotas") return json([]);
++    if (url.pathname === "/api/usage/quotas/history") return json([]);
++    if (url.pathname === "/api/groups") return json({ models: [], groups: [], pools: [] });
++    if (url.pathname === "/api/providers") return json({ providers: [], presets: [], excluded: [], gateway: { running: true, window: true, url: "http://127.0.0.1:3999" } });
++    if (url.pathname.startsWith("/api/")) return json({});
++    const file = path.join(assets, url.pathname === "/" ? "index.html" : url.pathname);
++    const contentType = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png" }[path.extname(file)];
++    await r.fulfill({ body: await fs.readFile(file), contentType });
++  };
++}
++
++for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium", "webkit"])) {
++  test(`${engine}: Accounts and keys drops an account its provider no longer serves`, async () => {
++    const browser = await (engine === "webkit" ? webkit.launch() : chromium.launch({ channel: "chromium" }));
++    try {
++      const ctx = await browser.newContext({ viewport: { width: 1100, height: 760 }, reducedMotion: "reduce" });
++      const page = await ctx.newPage();
++      page.setDefaultTimeout(5000);
++      page.setDefaultNavigationTimeout(60000);
++      const errors = [];
++      page.on("pageerror", (e) => errors.push(e.message));
++      await page.route("**/*", serve());
++      await page.goto("http://magpie.test/?view=routing");
++      const acts = page.locator(".rt-acts");
++      // A is there with its day
++      const a = acts.locator(".rt-act", { hasText: who("a") }).first();
++      await a.waitFor();
++      // B's counts are the day's tallies (the kept requests would say 1)
++      const b = acts.locator(".rt-act", { hasText: who("b") }).first();
++      assert.deepEqual(await b.locator(".tally span").allTextContents(), ["tried 8", "answered 6", "2 out of credit"]);
++      // C, removed from the provider, is gone — though its day is in the
++      // tallies and the kept requests still weigh it
++      assert.equal(await acts.locator(".rt-act", { hasText: who("c") }).count(), 0);
++      // two accounts left, one row each: no fold row counting three
++      const names = await acts.locator(".rt-act:not(.rt-keys) > .nm b, .rt-act.rt-keys .nm b").allTextContents();
++      assert.deepEqual(names.map((s) => s.trim()), [who("a"), who("b")]);
++      assert.equal(await acts.locator(".rt-act.rt-keys").count(), 0);
++      assert.deepEqual(errors, []);
++    } finally {
++      await browser.close();
++    }
++  });
++}
+diff --git a/internal/gui/trace.go b/internal/gui/trace.go
+index e9cde9033..570415528 100644
+--- a/internal/gui/trace.go
++++ b/internal/gui/trace.go
+@@ -542,6 +542,32 @@ func traceRoutes(mux *http.ServeMux) {
+ 		out.Routes = pricedRoutes(out.TraceState.Routes)
+ 		writeJSON(rw, out)
+ 	})
++	// servedActKeys is what each provider serves now, named the way the
++	// day's tallies and the Routing page's accounts fold name them (#5895):
++	// an account by its provider and its user in lower case, a key or the
++	// provider by its own id — a key's alone when it is the only one, and
++	// with its own when there are more. The list is the providers' config
++	// as it is, so an account or key removed from it names none of these
++	// and the fold lets its day go.
++	servedActKeys := func() []string {
++		out := []string{}
++		for _, p := range provider.All() {
++			out = append(out, p.ID)
++			for _, a := range p.AccountIDs() {
++				if a.Key {
++					out = append(out, p.ID+"#"+a.ID)
++					continue
++				}
++				u := strings.ToLower(strings.TrimSpace(a.User))
++				if u == "" {
++					continue
++				}
++				b, _ := json.Marshal([]string{p.ID, u})
++				out = append(out, string(b))
++			}
++		}
++		return out
++	}
+ 	// the routes of a day gone by, from the history the gateway keeps on
+ 	// disk — read whichever magpie serves the gateway
+ 	mux.HandleFunc("GET /api/gateway/history", func(rw http.ResponseWriter, r *http.Request) {
+@@ -552,8 +578,12 @@ func traceRoutes(mux *http.ServeMux) {
+ 		if day == "" {
+ 			// the live page's accounts and keys say tried and answered of
+ 			// the day the Usage page reads, not of the last few requests
+-			// the trace still keeps (#3351)
++			// the trace still keeps (#3351); and what each provider serves
++			// now, so the page's fold keeps its entries to those and one
++			// removed from its provider is off it, its day in the tallies
++			// or not (#5895)
+ 			out["tallies"] = gateway.DayTallies()
++			out["serves"] = servedActKeys()
+ 		}
+ 		writeJSON(rw, out)
+ 	})
+diff --git a/internal/gui/trace_tallies_test.go b/internal/gui/trace_tallies_test.go
+index d7093fcd3..3e2353c4d 100644
+--- a/internal/gui/trace_tallies_test.go
++++ b/internal/gui/trace_tallies_test.go
+@@ -6,10 +6,13 @@ import (
+ 	"net/http/httptest"
+ 	"os"
+ 	"path/filepath"
++	"slices"
++	"strings"
+ 	"testing"
+ 	"time"
+ 
+ 	"github.com/yetone/magpie/internal/gateway"
++	"github.com/yetone/magpie/internal/provider"
+ )
+ 
+ // The Routing page's accounts and keys counted each account's tried and
+@@ -99,3 +102,62 @@ func TestLiveHistoryTalliesTheWholeDay(t *testing.T) {
+ 		t.Errorf("the day grown, the quiet account's day: tried %d", got[`["p","b"]`].Tried)
+ 	}
+ }
++
++// The fold's entries are named as the day's tallies are (#5895), so the
++// live read carries what each provider serves now by the same names: a
++// key by its provider's id alone when it is the only one, and with its
++// own when there are more. A key removed from its provider names none of
++// these, and its day goes off the page with it. A day asked by name
++// carries no such list: its fold is that day's, not now's.
++func TestLiveHistoryServesWhatTheProvidersServeNow(t *testing.T) {
++	sandboxHome(t)
++	old := served.Swap(nil)
++	t.Cleanup(func() { served.Store(old) })
++	save := func(keys ...string) {
++		t.Helper()
++		p := provider.Provider{ID: "p", Name: "P", Key: "k", Chat: "http://127.0.0.1:1/v1", Models: []string{"m"}}
++		if len(keys) > 0 {
++			p.Key = keys[0]
++			for _, k := range keys[1:] {
++				p.Keys = append(p.Keys, provider.KeyAccount{Key: k})
++			}
++		}
++		if err := provider.Save(p); err != nil {
++			t.Fatal(err)
++		}
++	}
++	ask := func() []string {
++		t.Helper()
++		mux := http.NewServeMux()
++		traceRoutes(mux)
++		w := httptest.NewRecorder()
++		mux.ServeHTTP(w, httptest.NewRequest("GET", "/api/gateway/history?day=", nil))
++		var out struct {
++			Serves []string `json:"serves"`
++		}
++		if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
++			t.Fatalf("the history read: %v %s", err, w.Body)
++		}
++		return out.Serves
++	}
++	save("k1", "k2")
++	want := []string{"p", "p#" + provider.KeyID("k1"), "p#" + provider.KeyID("k2")}
++	if got := ask(); !slices.Equal(got, want) {
++		t.Errorf("two keys on: serves %v, want %v", got, want)
++	}
++	// the second key removed: its own is off the list, the provider and
++	// the first key's stay
++	save("k1")
++	want = []string{"p", "p#" + provider.KeyID("k1")}
++	if got := ask(); !slices.Equal(got, want) {
++		t.Errorf("one key on: serves %v, want %v", got, want)
++	}
++	// a day asked by name carries no serves
++	mux := http.NewServeMux()
++	traceRoutes(mux)
++	w := httptest.NewRecorder()
++	mux.ServeHTTP(w, httptest.NewRequest("GET", "/api/gateway/history?day=2026-11-10", nil))
++	if strings.Contains(w.Body.String(), `"serves"`) {
++		t.Errorf("a day's read carries serves: %s", w.Body)
++	}
++}
+-- 
+2.50.1 (Apple Git-155)
+

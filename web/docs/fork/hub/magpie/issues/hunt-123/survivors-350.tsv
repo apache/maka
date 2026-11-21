@@ -1,0 +1,350 @@
+5102	ifAiGangZai	gateway: OTLP export carries no request/response bodies for System One (/v1/systemone, Jev) calls
+5087	ninondev	[feat] Show Mistral monthly subscription and Vibe Code allowances
+5065	wwwhynot3	[feat] omp: enable remote compaction when the provider compacts natively
+5056	ngcto	Feature request: Cap account listings in Providers like the Usage page
+5030	NOMOAX	[Feature request] 自定义提供商可配置 maxTokensField，让 DeepSeek 系列的中转站不再丢 max_tokens
+5029	ylongw	Pace routing can start a long tool turn on a stale allowance after idle; default turn affinity preserves that 
+5024	icutool	[Bug] magpie-models.json 中的 supported_reasoning_levels 缺少 description 字段，导致 Codex 配置解析失败
+5023	W0n9	agent: /usr/sbin/zed (zfs-zed) is taken for the Zed editor — a false restart notice, and Zed listed as install
+5021	Jasonpetrelli	Anthropic endpoint: sending both Authorization and X-Api-Key makes some upstream models (Qwen-Flash) return 40
+5020	mufanmu	WorkBuddy daily check-in is missed when the Mac sleeps through 00:00 (no catch-up after wake)
+5012	ddnio	Claude bridge: a setup-token account's allowance stays unknown in interactive mode; the tap can tell it from e
+5010	MDX-Tom	[Bug] DSH / Anthropic 协议下 web_search 响应的 text block 仍未携带 citations[]
+5006	hzyqn	【BUG】SenseNova 的 429 被记为 out of credit：同一错误文案在同一天内出现 rate / credit 两种判定
+5005	ngcto	Feature request: Install private GitHub plugins using the configured GitHub key
+5001	SuTangVerse	[Bug] Windows Claude TUI 长文本提交失败，stderr 被丢失为通用 502；相同输入 -p 正常
+4995	SCIYYDy	[Bug] Claude /usage 的 401/403 requests 统计被误判为鉴权失败，导致额度无法显示
+4979	hxyinan	usage: an account's name on the Overview reads too small and faint to tell several accounts apart
+4973	xiaofei-lee	[调查] Codex 单账号同会话在额度重置前后由 own sign-in 切到 codex/<model>：Routing/Usage 账号、模型名称及 reasoning 摘要同步变化
+4951	Canda15	[Feature] 增加实时显示收到的Body大小和大致输出tokens
+4937	tlerbao	[Feature] OpenCode 集成直接写 v2 配置格式（providers / package / capabilities），或按 opencode 版本自动切换
+4907	huaxiaojilzg	[Bug][Windows] Switching Codex accounts via Magpie triggers the “ChatGPT ran into a problem” screen
+4893	KaranocaVe	[Performance] usageSniffer 对同一 SSE 事件重复 JSON 验证与解码，透传路径消耗 0.42 CPU-s
+4889	Ran-Xing	[Feature Request] Gateway Key: Support default provider binding / namespace isolation for bare model requests
+4863	jsk644102-art	Claude subscription bridge: a compaction request rewrites the whole conversation to the cache instead of readi
+4854	jsk644102-art	Claude subscription bridge: a deferred client MCP tool fails on its own name, works as mcp__magpie__<name>
+4821	wsyzxjn	usage, gui: 菜单栏面板与路由组的「全部账号」汇总条被截断为 3 项，漏掉 Antigravity 的 Claude 7d 与 Gemini 4 Argon 7d 额度
+4819	fitzyracing1	CI: test failing: go vet fails on -Wimplicit-enum-enum-cast in dockflap_darwin.go:42,68 and trayimage_darwin.g
+4815	pluo	[Feature request] Hindsight gateway memory integration across agents
+4780	Derrors	[Bug] Claude 交互模式多图历史重放时图片粘贴超时，返回 502 或空文本 200；SDK 对照正常
+4779	WillSuo-Github	[Bug] Codex → Claude Code：未信任文件夹导致 initialize 退出并反复 502，缺少具体目录与授权指引（macOS，0.1.2605）
+4337	qq406175258-del	agent: Claude Desktop 4.4212.0 seals inferenceGatewayApiKey, so drift says "配置已变更" while routing works
+4335	Reign9201	update: macOS 自更新后 daemon 不重启，serve 继续跑已删除的旧二进制，TCC 拒绝桌面/文档/下载，claude provider 全线 502 (EPERM)
+4328	jailbreak07	Kiro: per-request credits never reach the usage ledger
+4327	thedavidweng	feat: support client-side local account switching for Antigravity and Factory (Droid CLI)
+4324	MRQC-st	gateway: Muse Code kills its run unretried on a translated message's phase — assistant `phase` written after t
+4323	Gruu6y	[Feature Request] Allow configuring proxy BEFORE opening browser for provider OAuth/web login
+4317	karlsbeard	[Bug] Remote Magpie：严格会话的单账号 429 被扩大为模型级冷却，误拦其他有额度会话
+4314	Cotory	claude subscription: caller's working directory is used even when magpie can't enter it → "fork/exec …/claude:
+4298	DeliciousBuding	feat(privacy): unmasked 支持公网可信上游（no|local|any 三态）
+4296	devfox403	【bug】Windows 下额度缓存写到了 C:\.config\magpie\autoclaw-usage.json —— HOME 为空导致路径退化成相对路径
+4282	kylefu8	feat(gateway): add an optional upstream request body size limit
+4271	unisong	middleware: the Plugins row counts every call; it can't show how many requests a middleware changed
+4243	aresxu8866-hue	Codex app-server is restarted mid-turn: 512 KiB session tail misses task_started, and route includes a catalog
+4242	Reign9201	gateway: an empty tool schema (`parameters: {}`) is relayed as-is, so a strict upstream (wb2api, 400 code 1112
+4241	LovelessCodes	[Bug] Claude usage-based seat: the overage (extra usage) window is dropped, and a /usage that tells no window 
+4240	szzhh	[Bug] Linux multi-user server: Codex stale-session warning may count other users' processes
+4239	mikehasa	[bug] image tokens are underestimated (0 in the routing estimate, flat 1,600 in the window estimate) — long sc
+4207	poloJane	magpie 配置 openai 的 apiKey 进行测试，提示下面问题
+4202	XIQIXIQIXIQI	[Bug] 嵌套 Magpie：Claude 额度重置后，下游仍按旧 Retry-After 冷却并持续返回 429
+4199	orinsid	Page host: "This page stopped working" should say *why* (no hello / CSP-blocked script / page error)
+4198	orinsid	Web build: page plugins are dead on iOS Safari — the scheme-less CSP host source blocks every `<script>`, so t
+4197	BB-fat	plugin providers: Codex's client headers aren't forwarded, so Codex-only Responses relays reject them
+4190	nil-err	usage: a plugin's window has no way to say its meter fills with used, not left
+4175	KamijoToma	Claude Desktop gateway probe refused on a model the key was never asked for; 403 message names the sent model,
+4173	imwaco	[Bug] Codex compaction: Antigravity POST EOF causes 21 upstream attempts before cooldown (0.1.1793)
+4172	MOMO0302-02	Codex → Anthropic: 400 "Invalid `signature` in `thinking` block ... bound to a different conversation" when th
+4171	QQseGO	privacy model: 给 AstrLink Guard 加 CUDA 后端（Windows/Linux），Core ML 目前只覆盖 Apple Silicon
+4170	szoxidy	Possible Codex in-app browser latency / Page.getFrameTree timeout while using Magpie on Windows
+4169	MisonL	gateway: a fork of `scutil` from netproxy.System() deadlocked the process in libmalloc's atfork handler — unre
+4168	MisonL	plugin: a usage window's models/notModels silently costs the whole account its last reading on disk
+4166	waynesguan	gateway: 路由组扣住 Claude/GPT 的 reasoning 直到正文出来，agent 看不到实时思考、首个内容被推迟整段思考时间
+4165	hellowind777	[Bug] Anthropic 直通方向：GLM 系上游要求回传 content[].thinking，缺 thinking 块的工具轮整条 400（建议移植 #1462 的占位补齐）
+4150	zemul	ChatGPT API provider cannot select an OpenAI Organization or API credits organization
+4148	thedavidweng	[UI/UX] 长对话“Compact at”输入框缺乏防呆校验：若误输入纯数字 400 会被当作 400 tokens 导致下游客户端死循环 Compact 耗尽额度
+4122	tsurumi-yizhou	Agents page: use the Node.js package manager this machine has for Install another agent
+4116	yinwu01	gui tests: modal-centred-late red now and then in WebKit: too few frames of growth
+4108	hqhq1025	DeepSeek subagents in Codex get no task: relayed Responses requests keep agent_message (fix in fork)
+4100	yinwu01	gui tests: model-reasonless red in WebKit on main b69f8e96: de 420, the first level stays ticked
+4099	yinwu01	gui tests: plugin-github-wait red in Chromium on main ff6fdffd: de 440, Try again scrolls 2px
+4098	yinwu01	gui tests: panel-quota-refresh red in both engines on main ff6fdffd: de 360px wider than the panel
+4097	yinwu01	gui tests: a pick click now and then scrolls the Library 1px in WebKit (found-skill-pick-remove, library-pick-
+4096	Neko-Yukari	Stale skill records are never pruned: renaming a skill leaves a dangling junction in library/skills and a dang
+4088	daqiuqu	codex 使用官方模型会出现 502（上下文较大时似乎更容易出现）
+4087	tianyk	redact: node_modules 被当成用户名，连续/白名单/时按 被当成姓名
+4077	mengsonglin4-ops	Direct connection fails with net/http: TLS handshake timeout — Go default post-quantum key share (X25519MLKEM7
+4069	Lxiny-zy	gateway: 工具结果里的图片落在最后一回合时，Vertex AI 回 400 Requests ending with a model turn are not supported（Codex 的 view_ima
+4056	xtnntn	[Bug] Custom provider key locked to 'anthropic' protocol breaks chat endpoint with no CLI remedy (#1702 fallba
+4040	easyrev	Codex treats HTTP 400 context_length_exceeded as a generic error, but recognizes the equivalent SSE failure
+4038	an4nsi	Langfuse: WSL sessions aren’t grouped (follower skips `wslFiles`; gateway spans omit `langfuse.session.id`)
+4034	3rd-Musketeer	Codex isn't offered Ultrafast on an account's model once it signs in with an account that lacks it
+4031	SunflowersLwtech	gateway: a refusal asked earlier is replaced by the last member's credit 403 — Claude Code told "Zed: Student 
+4030	wssz527	Keep a request on its account through a transient 429 rest (cache cost)
+4025	zhouzhuojie	redact: add a Mask crypto wallet keys switch
+4024	zapata-ok	opencode go： Upstream request failed: [invalid_request_error] The `content[].thinking` in the thinking mode mu
+4016	lnxyz	[feat] providers.json 中服务商的 api key 能不能不要明文保存
+4015	ARCJ137442	[功能建议] 为上游 API Key 设置额度保留线
+4010	hqhq1025	Claude thinking around a web search is replayed as one modified assistant message (fix in fork)
+3997	marsming4032351-star	Feature: macOS desktop widget for per-model quota (like Calendar/Weather)
+3989	yinwu01	Antigravity accounts: conversations opened on one fixed message share a sessionId
+3984	yinwu01	library: Cancel while an MCP server's sign-in is opening is undone when the start answers (mcp-oauth-app red u
+3983	yawentang0	Claude subscription bridge: background claude -p sessions show up as user sessions in Claude desktop / VS Code
+3974	ljq29	kimi客户端使用magpie时候经常报Error: [provider.api_error] 400 Kimi Code (China): the message at position 49 with role 's
+3970	Richard-Zhang1019	[Bug] 跨模型续接后 Codex 会话水合失败：compaction 加密项（cmp_msg_*）无法被原厂解密
+3967	Gaudi-XIX	A 200 whose body is an upstream billing error and whose usage is zero is recorded as success
+3962	1938249358	持续499什么原因
+3943	yinwu01	gui: an account's allowances coming in put the provider editor back over Codex's Sign out question
+3940	yinwu01	cli: `provider set` on a signed-in account says saved for pairs Save drops
+3937	yinwu01	gateway: a translated Gemini request drops the generationConfig fields magpie doesn't read (responseFormat, re
+3936	yinwu01	gateway: an images API size reaches a Gemini image model as an aspect ratio only, so no size above 1K can be a
+3934	yinwu01	gateway: another account's seals left after #3887: a context_compaction, the Codex sign-in relay, Routing's la
+3930	yinwu01	gui: a repository's card never offers Sign in when it was installed by its URL or a git URL
+3928	yinwu01	gui: an npm card installs by the bare name, so npm's opencode-cursor-auth installs the community Cursor plugin
+3925	ati121	masking: a rerank's record is filed as "embeddings"
+3908	xiaohei-info	[Feature Request] Allow scoped environment overrides for the Claude subscription bridge subprocess
+3907	parkavenue9639	[Feature] 基于 CC Switch 正式版实践，重新评估 Codex OAuth 保留调用方 instructions 的可选策略
+3892	Bob6474	[Feature Request] Support custom config file path (e.g., for Codex CLI alongside ChatGPT subscription)
+3890	NightGlowww	[Bug] Shared plugin-host stream limit causes local 502s and retry amplification under high concurrency
+3882	meyumei	[Feature Request] Native iFlytek Spark official API quota/usage display
+3880	meyumei	[Feature Request] Native Tencent Cloud TokenHub pay-as-you-go free quotas with per-model progress bars
+3866	adamzmsun	Uninstalling leaves the `openai_base_url` proxy setting in `~/.codex/config.toml`, so every Codex request fail
+3850	prgrmrwy	Use a Codex reset from the gateway API and from a remote magpie's card
+3849	yorhaha	[Bug] Codex 压缩对话时 vLLM 拒绝历史中的 custom_tool_call 输入项
+3848	yinwu01	proc: TestProbeTimeoutEndsWhatItStarted red once in a full run, the probe's child still there after 3s
+3846	yinwu01	gui: mainView passes the view name unchecked, so window/main can put any parameter in the window's address
+3844	yinwu01	provider test: an endpoint's row is red when the model it picks is served on another API
+3838	davisjiahao	usage: Requests 页的 Account 筛选不含 key 型 plan 的身份（kimi-code 的两把 key 选不了）
+3831	aolin168-byte	fix(gateway,catalog): prevent silent turn completion on Responses custom tool calls (apply_patch) & Gemini rea
+3828	cloudusa	magpie fails to detect the local OpenCode 2 install and still reports OpenCode 1.17.18
+3827	elmersky	[feat] Usage 页：一个供应商多个账号时没有视觉分割，建议每个账号框成一个块
+3816	kudi68	plan quotas: stamp readAt via readNow after a successful PlanQuotas read
+3812	zx3332352	Claude Code spawn intermittently fails: 'fork/exec …/claude: permission denied' (502), file and permissions lo
+3802	LIghtJUNction	CLI: targeted plugin updates, live status, and machine-readable capability discovery
+3801	aragorn-agent	[feat] Add AIMYRIA as a built-in relay preset
+3798	LIghtJUNction	Plugin API: final upstream usage, completion lifecycle and tool capabilities for reversible context folding
+3794	skygunner	[Feature request] Fail over a routing group on an upstream tool-count limit (Kilo: 129 tools vs 128)
+3791	skygunner	Feature request: opt-in model cooldown and capped exponential backoff for client cancellations (499)
+3788	skygunner	Feature request: support non-streaming requests in the group FirstToken timeout
+3782	Hu9956	[Bug] 脱敏把 computer use 的 element_token 当机密遮掉，GUI 自动化被打断
+3779	sevtdy	[Bug] Plugins: Escape doesn't close the plugin details dialog on Discover; focus ring shows on Install button 
+3761	coffe01-10	[Bug] kiro 渠道下的 ClaudeOpus5.5 模型未统计缓存命中 token，导致 API 数据成本远高于实际成本
+3760	ryanflavor	gateway/antigravity: support Gemini 4 Argon Long Decode continuationToken for thinking-only 64K hops
+3758	moxuanchen	Sessions: carry a conversation between all installed agents, not only Claude Code ↔ Codex
+3756	yinwu01	Linux: daemon install and the TUI's gateway hand-off count a package's autostart entry that no desktop runs
+3733	yckonnnnn	[使用咨询 / 功能建议] 火山引擎按量付费与 Agent Plan 的 API Key 能否同时使用？
+3730	JankinHou	有没有遇到claude订阅加进去后经常报429的
+3724	fanyuxaun386	[Bug] `xfyun/spark-x2.6`: a base64 image in a `function_call_output` is counted as a ~167k-token turn, and eve
+3723	yinwu01	middleware, agent plugins: an edit to a file the module imports isn't loaded until its entry file changes
+3722	yinwu01	pii: a masking request in a synctest bubble would leave srv.stop and the idle timer tied to it, and the next S
+3720	yinwu01	plugins: a lock behind package.json across npm and plugins/dist isn't mended
+3714	ZiHao256	plugin pages: permissioned quota windows with aligned account usage
+3713	xdeers2	ClinePass：记录和界面只有 upstream 的 provider 名，缺 canonicalSlug——分不出官方与私有池
+3711	uWydnA	[docs] masking: an agent reads {{SECRET_…}} as a store and hunts for it; the page doesn't say what to tell it 
+3709	zhengaoupc	opencode zen免费模型总是返回429
+3708	yinwu01	sessions: TestAgyTitleLater red 2 of 200: a same-size write in the same mtime tick looks unchanged
+3704	AlwaysBluer	[Bug] Qoder image history exceeds 50 MiB request limit at ~4.7% context usage (pi / dfmodel)
+3700	njiangk	macOS: Restart for WorkBuddy AI quits it but never opens it again (orphan sidecar keeps the bundle "running")
+3696	magicseek	[Bug] gateway: OpenRouter's Anthropic endpoint refuses DeepSeek turns without a thinking signature, and mid-co
+3695	aiirobyte	gateway: parallel vision descriptions race on one moejs Realm and exit with concurrent map read and map write
+3690	yinwu01	gateway: claudeRoom remakes its freed channel the way filememo did before #3632, so a Claude Code run in a syn
+3687	yinwu01	test: TestKeepOffWaitsForTheSetting fails when a 5s beat lands in its 50ms window (about 1 run in 100)
+3684	Terryli246	[opencode-zen-free] free flash models return finish_reason=tool_calls with an empty tool_calls array; tooling 
+3683	wyx1818	资料库，MCP OAuth登录，无法填写回调地址
+3680	0xJchen	TestServeWSLListensBesideLoopback is red on Go 1.27: its probe reuses a kept-alive connection after the WSL li
+3678	0xJchen	[feat] Settings › Observability: Test the OTLP connection (branch ready; PRs are collaborators-only)
+3677	kindmesdilabso	[feat] 网关里面的秘钥能否手动修改,而不是手动轮换,有时候需要手动更新一个好记的apikey
+3674	chenyanzhang000	Usage → Requests: a non-Codex agent's calls are counted twice (gateway + its own session file)
+3669	kshq1996	minimax china version changed base url
+3658	weironz	Web login UI optimization
+3649	yinwu01	gui: TestGatewayHeldByAContainer and TestGatewayFixQuitsOnlyAMagpie time out where the user has millions of op
+3647	yinwu01	gateway: with TLS on, a handover still cuts a local connection whose first byte hasn't come yet
+3644	Raters0	Codex: keep the agent's sign-in identity when all its accounts are out of quota (don't park it in the magpie p
+3624	skygunner	Usage → View routing loads a historical trace off-screen instead of bringing the selected request into view
+3623	skygunner	Usage: expose the full attempt/failover chain instead of pairing total attempts with only the final error
+3622	gkd2323c	[Bug] plugins/package.json 与 bun.lock 脱节时，一次 bun add 让所有插件的安装与更新一起失败
+3619	zisen123	gateway: SophNet's model-scoped 429 ("Model tpm limit exceeded") rests the whole key, greying out every model 
+3618	skygunner	Feature request: global default rest cap in Settings and Docker configuration, with provider overrides
+3617	samwang0041-star	Antigravity: gemini-4-argon returns 404 in a long-running gateway, restart fixes it
+3616	ianchenx	Codex portable rollout rewrite invalidates persisted byte offsets, breaking paginated history resume
+3615	easonlao	loop guard does not cover tool-call loops: one session made 1088 successful requests in 5h and counted as 0 lo
+3582	JoyaWang	[feat] video: make MiniMax's Hailuo models make videos (branch ready; PR from fork refused)
+3572	Yaka88	gateway: switching from Vertex Gemini to Antigravity sends a rejected thought signature
+3566	congee949	[Bug] gateway/Kimi: typed $ref target containing an untyped object oneOf still causes schema rejection
+3564	miaomeng1	如果codex使用的是api-key登陆方式，原本可以使用生图功能，但是magpie网关会限制这个功能
+3561	yuancjun	privacy model: its download ignores Settings' Proxy (fails where a proxy is the only way out)
+3550	erickguan	TestTaggedReposUnreadable is red under load: the GitHub read of tagged repos gets no answer in its 8s
+3548	erickguan	TestGrokInstalled is red on WSL2: the MZ-headed fake grok is taken by Windows binfmt interop (EINVAL, "Invalid
+3543	mxdlzg	Cache does not accumulate properly when requesting via route or gateway
+3539	voidcraft-dev	ClinePass：钉住 DeepSeek 官方后出现嵌套 413，按 502 重试三次；此前 CPA 同渠道未遇到
+3487	skygunner	Quota card: an unknown usage amount renders as a full allowance; a plugin span sent in ms is read as seconds, 
+3461	BuvkB	[feat] Gateway key 支持设置到期时间（临时分享场景）：到期自动失效并标注已过期
+3460	Yaka88	plugins: a provider whose models are spoken to with @ai-sdk/google can't be tested (Test models off, provider 
+3397	yinwu01	TestBunProxyLoginWithReservedCharacters is red with Bun 1.3: the request line names port 80
+3355	EawenZhao	[Feature Request] Claude Desktop Gateway: configure a dedicated Auto Mode classifier model
+3341	Beyfish	Windows: the app (and its gateway) disappears mid-stream under load and never comes back
+3334	Indekkusu545	[feat] MCP 自定义 OAuth 应用支持显式配置 scopes（Microsoft Entra ID）
+3330	lwwtl	provider test: Test as Claude Code gets 503 from a sub2api Claude Code-only group (fix on fork)
+3319	areslp	Plugin accounting: unknown token usage, late stream failures, and generic account-credit observations (tested 
+3317	banyeshuiwujiao	Feature request: opt-in "model-first" vision — send images to the model, describe only if it refuses
+3311	skygunner	gui tests: panel-usage window filter assertion shares the live panel request log
+3306	Adamcf123	sessions, usage: Pi's reasoning tokens are read as 0, so a reply whose reasoning didn't stream reads several t
+3305	lokic7123-star	[Bug] Retired model output limit blocks provider Save, even after deselecting all models
+3302	hheei	Normalize missing `index: 0` in `/v1/embeddings` responses from upstream (e.g. Google Gemini)
+3284	skygunner	provider: TestOpenCodeSessionOnEveryCall red under a full run's load (decisions differ), green alone and in it
+3274	CartethyiaQwQ	gateway: safety filter 400s bench healthy accounts (patch attached)
+3255	feiyuxiaoThu	[Bug] panic: close of nil channel in sessions.refresh when PI_CODING_AGENT_DIR points to omp dir
+3254	jstar0	accounts: switching to or forgetting a Claude account while Claude Code runs on its folder removes the folder 
+3251	CNife	gateway: 火山方舟月度额度用尽后每 15 分钟被重试一次 —— "reset at … +0800 CST" 不被 resetsWhen 读，套餐窗口也没进路由
+3250	yangdm2015	[Feature] Opt-in Claude Code compaction before planned account rotation
+3248	stabruriss	gateway/antigravity: a reply restarted inside one Code Assist SSE stream reaches the agent spliced (gemini-4-a
+3236	dustinyejun	Droid 接入时未同步模型的 compactionTokenLimitPerModel
+3232	wuzhidexiaoming	Responses SSE: a single esponse.created frame arrives internally corrupted (chars dropped mid-JSON) while the
+3215	yuluo-yx	I have already performed repairs and it is now functioning properly, but this issue still persists.
+3213	liubai0106	gateway: Qoder's per-model queue 503 rests the whole account, so sibling models are refused without asking ups
+3212	AgentWings	gateway: on loopback any program can call as any agent, with no key
+3208	AgentWings	go: Go 1.26.10 and x/net 0.60 close the net/http, TLS and x509 advisories the gateway reaches
+3206	ObsidianArch02	gateway: server-managed tools (web_search/web_fetch) silently dropped on translated routes — 200 OK, no error 
+3198	whofly2016	plugin, provider: keep organizations under the same email apart with their own quota pools
+3194	mylastfree	Semgrep MCP OAuth fails with invalid_target (resource parameter rejected)
+3190	RunMintOn	[Bug] Codex subscription drops client max_output_tokens
+3187	wtj-0527	import: let a link name its key's Balance URL (balance=), on its endpoints' host
+3184	seanxuu	[Codex gateway] POST /backend-api/codex/responses returns 0 bytes / intermittent 503 after Codex 0.163.0 — wor
+3160	yiliang114	[Performance] 托盘面板「额度」页打开后长时间停在骨架屏：建议先用最近配额渲染（stale-while-revalidate）
+3158	MisonL	[Feature] A separate IP allowlist for the web admin page, distinct from the API gateway's
+3147	cyjme	Usage: read the agy model from conversations/*.db; agy calls are recorded with an empty model
+3135	ARCJ137442	[Bug] Codex 原生 Responses 路由把上游 EOF 合成为 502，改变原生网络等待行为
+3115	BUKOWSKIREAL	[feat] 支持统计 Antigravity 桌面端（App/IDE）本地会话的 Token 与模型用量（ref #2190）
+3109	comicchang	MCP Library dispatch: `mcp add` needs env/headers/timeout + OMP mcp.json target
+3108	realnovicedev	[Bug] panic when autostarted at login - Ubuntu
+3106	LionGaokk	[Bug] Codex compaction aborts when a Chat upstream refuses the summary request's message shape (#2599 follow-u
+3063	willc-x	dsh中提示已达到输出 token 上限, 输入继续, 仍然提示
+3046	Kevinzz224	[feat] Hermes Agent 的 reasoning effort 选项缺 max / ultra（面板最高只能到 xhigh）
+3042	huangchulan578527086-netizen	zcode: Qoder models show raw ids (qoder/dfmodel), lose their output cap, and selection fails to persist
+3036	AtwoodDuan	Codex title requests (claude-haiku-5-5) fail with 502: `--json-schema` rejects `$schema: draft/2020-12`
+3026	sryimnoob123	[feat] Optional same-member grace window before failover, to keep the prompt cache warm
+3012	bigbitbox	[Kimi 额度] 区分 /usages 空响应与新 quota model 兼容缺口，改善不可用提示
+2970	sryimnoob123	[Feature] WorkBuddy daily check-in: stagger accounts instead of pressing them all in the same instant
+2961	ZzZ-hu	macOS: `magpie daemon install` uses ProcessType=Background, which throttles the gateway
+2948	coda1997	Support a custom npm registry (replace registry.npmjs.org, not just fall back) for networks that block it
+2945	huluma1314	gateway: an upstream 502/EOF hammer — provider keeps being really called for 32 min, 706 upstream attempts, 92
+2940	lgh06	[provider] QwenCloud / AlibabaCloud PAYG and Token Plan endpoints support
+2936	biggameking	davsync: a part changed here loses to an older change pushed elsewhere, because Created is the file's write ti
+2934	aurochs-code	feat: 让 `classifyTimeout` 可配置（Kiro 订阅通道的 haiku 作分类器时每次都在 8 秒超时）
+2932	TimWongUp	sessions: v0.1.1291 quits at start with "panic: close of nil channel" in refresh's publish
+2930	gadgj	Claude Code 网关模型发现（gateway model discovery）不显示任何模型 —— 建议适配其模型 ID 过滤规则
+2927	liangjinyuan-sihan	关于magpie反代workbuddy的限流与429问题
+2926	MiHeron	deepseek官方api额度用完后，旧apikey依旧402，换了新的apikey才可以继续工作
+2919	321sssrt-bit	[feat] Gateway key limits: 支持按模型分别限额
+2912	versun	[Feature] decision group 增加 race 路由：并发请求全部成员，最先成功的回复胜出
+2893	tungloong	Usage: see when every account's allowance starts again, at a glance (Next 5 hours / Next 7 days)
+2875	wangdada8208	provider: a pool of proxies, moved on when a vendor rate-limits by the address a request leaves from
+2866	ReneXiong	[bug] Atom fallback can hide Chinese notes when translated headings stay English
+2862	lokic7123-star	Provider Save reports success while checked account models remain unsaved
+2839	yiyiSmallti	[Feature Request] 用量统计（Usage）日期筛选支持更细的时间粒度（时/分/秒）
+2838	yiyiSmallti	[Bug] Claude subscription upgraded to Max still displays as Pro plan
+2834	bborn2	Docker image cannot execute installed agent CLIs (Cursor, Devin)
+2811	a135309	Grok Build: re-rendering model tables flattens reasoning_efforts into an inline array and drops default = true
+2808	Kyou12138	test: eight Codex keychain tests fail on Windows (secret_auth_storage default) on main d783df46
+2807	misaka9981	[feat] OpenCode Zen 支持复用本地 OpenCode v2 Console OAuth 登录态及自动续期
+2805	broven	panel: a balance card shows only its provider's name, so two balances under one provider look the same
+2800	SadWood	macOS：Usage Glance 在其他页面调整字号后出现右侧和底部留白
+2793	yee94	feat: 提供请求级最终路由成员与计费结果，支持混价组准确归因及 keepAlive 后 failover
+2789	turtle4512	gateway: trae-cn 长任务把工具调用写成 <call:tool>/<tool_call name=…> 等文字，未被回收成调用（200+stop，代理任务中断）
+2783	tsy0716	Usage ingest: let a reporter correct or withdraw a record it reported
+2782	tsy0716	Usage: time a reasoning reply's answer from its first answer content, including a tool call
+2777	a1286743184	[Bug] Daily check-in goes out through the global proxy, not the account's own (accountProxies ignored on the w
+2775	lokic7123-star	Plugin model billing is shadowed across accounts; missing rates appear blank
+2756	321sssrt-bit	[bug] gui, gateway: Windows 排除段覆盖网关端口时 GUI 仅记日志，Settings 将绑定失败误报为“端口被占用”
+2755	tianxia3111	usage: the daily-consumption bar chart's tooltip shows raw thousand-separated integers while the rest of the p
+2750	DISSIDIA-986	Claude Desktop Code tab via Magpie: compaction requests canceled and manual Compact/Rewind prompt; provider co
+2745	321sssrt-bit	Sub2API：`quota_limited` 未区分 Key 额度与钱包余额，账户欠费时余额卡仍显示正数
+2729	real-jacket	gateway: DeepSeek's Search API (POST /v1/tools/search) isn't a search source, and searchHosts makes deepseek-f
+2726	TomXPRIME	dsh: magpie rewrites `web-search-deepseek` to the gateway even for DeepSeek-account sessions and when magpie c
+2706	kupakupar	feat(middleware): expose a hook for the final editable upstream request body
+2697	LovesAsuna	支持  apiKeyHelper
+2666	codysk	plugins: a gateway strategy can't name itself (i18n) or take per-member settings like weight does
+2665	codysk	routing strategies: seats carry only the model's own windows — the aside pool windows (a subscription's real b
+2641	MistyOcean88	长任务会出现499错误，频繁出现，导致几乎不可用
+2613	yukiryo	codex提示 继续聊天未成功 Work browser access requires an authenticated account
+2574	Ziqi-Cui	plugin pages: a read for usage by model, provider and account (usage:breakdown)
+2566	colmugx	Expose model-scoped account quota and session source attribution for status displays
+2522	tianxia3111	usage: 请求列表加一列首字时间（TTFT），方便横向对比首字快慢
+2493	iomect	magpie的网关 是否支持最新版codex的async_compaction特性?
+2487	jonymei	「长对话」的压缩阈值填 400 生效的是 400 tokens 而不是 400K，于是每轮都压缩（v0.1.1267 仍在）
+2486	qq33357486	gateway: a call the model wrote the way a run is told the conversation's calls were made goes to the agent as 
+2485	qq33357486	gateway: an image note left in a history told again reads as an image sent with the turn whose file is missing
+2472	fanbuz	Codex 单账号启用模式下的原生 WebSocket 与用量展示（WS / HTTP SSE）
+2465	Emt-lin	[Feature Request] 为 Claude 订阅提供浏览器登录与 setup-token 两种认证入口
+2464	moliyadi	[Feature Request] Support configuring secondary node addresses for cross-network agent model access
+2456	AnxForever	[feat] 增加 Prime Relay（primerelay.online）内置预设：分组隔离的 key 需要不写 Anthropic base
+2436	esp32gallery	gateway: 推理阶段的循环熔断没有按 #1489 说的自动重试一次，直接以 error 交回客户端（5/5 次 `tries` 为空、status 200）
+2409	sryimnoob123	plugin providers: let the app show the upstream endpoints a plugin declares (read-only)
+2375	margbug01	Question: frequent apparent compaction and large Claude prompt-cache rewrites when using Alma
+2362	danbo610	macOS: Update and Restart exits without relaunching from the Dock/Finder
+2340	hccnm	[Bug] Usage: a long plan identifier squeezes an account's name away and pushes its fold off the card
+2333	zhenghaowen0967	quota: 把已有的整窗 API 等价估算（holds / holdsWhy）也接到 `magpie quota --json` 和 `/v1/magpie/quotas`
+2332	Xu4nJ1u	【求助】magpie路由偶尔出现502失败 codex内显示重新连接 如何解决
+2303	HoldSworder	feat: support Cursor Auto Intelligence / Balance (optimize_for) when proxying Cursor Auto
+2268	JasonBuildAI	sessions, usage: a Claude Code, Qoder or Cowork project folder inside projects/ that is a junction lists no se
+2265	zhenghaowen0967	[Bug] 插件 host 的 usage 窗口白名单丢了 runsOutAt/runsOut，插件报的积分到期到不了 magpie
+2244	qq33357486	Codex images: serve the GPT Image tiers, cool the drawing lane apart from text, ask streamed (PR-ready branch)
+2223	evier12345	Docker: grok (SuperGrok) subscription sign-in impossible in the official image — no equivalent of claude-code 
+2203	coolerks	【功能建议】用量-上下文-会话中，增加该会话token消耗情况
+2196	lidi1011	Codex memory extraction fails on Markdown-fenced structured JSON replies
+2195	XIQIXIQIXIQI	Claude bridge: immediate SIGKILL skips cleanup and can leave OAuth refresh locks
+2145	lazydao	[Bug] WSL NAT Codex ChatGPT join mode generates a route rejected by gateway authentication
+2135	tianxia3111	[Feature Request] refresh a provider's model list on a schedule, and take matching models by rule
+2091	nailuoGG	[UX] Essentials 隐藏资源库，但生图设置仍引导用户前往资源库添加 Magpie Image
+2084	iblogc	opencode go部分模型报Error: 403 OpenCode Go: Upstream request failed: Endpoint is unavailable.  OpenCode Go: Upstre
+2050	wsyzxjn	[feat] 建议在顶部快捷面板（路由页）增加 Token 输出速度与实时流式速率显示
+2048	Songxiaor	[BUG] gateway: 非 Claude 模型的思考偶尔被当成正文发出（thinking 块只剩一个空格）
+2045	onlylhf	[功能建议] 在「用量 → 概览」中显示每个周期的预估额度金额和 Token 总量
+2044	BussanQ	feat: preserve web search results in translated Responses replies
+2032	precis1onz	Plugin installation returning html error
+2029	hkwc1002	Cline：启用 DeepSeek 官方上游限制后返回 vmc/...contributor-fallbacks，请确认 pinUpstream 是否生效
+2016	olccamy	opencode v2 go套餐，现在是要账号登录了，没有API KEY了。opencode auth login opencode 现在还不支持！
+1990	overstarry	[Windows] v0.1.1224: Switching the Agent filter on Usage > Requests is slow or unresponsive
+1986	unship	docs: add a dedicated Privacy / Telemetry page
+1984	capiton0	建议菜单栏增加当天token总消耗
+1964	UFO404	Market skill install fails for repos that keep SKILL.md under a dot-directory (.claude/skills)
+1955	NorethSea	Codex native model list falls back from 500K to stale 272K after an upstream timeout
+1951	Elenoxe	[Bug] Windows + WSL 下 Pi 直连请求未计入 Usage，WSL 会话未单独分组
+1948	Nxir	gui test: Usage ledger pill extends past the narrow view in WebKit full run
+1944	ASD-max	Context overflow is misclassified as rate limit and retried: streamStatus matches 'exceeded' before context_le
+1938	kensenzhao	Usage reading of the signed-in Claude account goes out through the global proxy, not the account's own
+1909	hkwc1002	[疑似问题] Antigravity/Gemini 连续请求中 cache_read 间歇缺失，缓存率显示 0%
+1893	atticuskk	[feat] 按 Gateway key 限制并发（每把对外 key 最多 N 个在途，超出排队）
+1891	CometAPI-Official	[feat] Add CometAPI as a built-in relay preset
+1854	cnlove7777777-art	[Feature] Make auto-compaction tuning quality-aware with coding-task retention benchmarks
+1839	kensenzhao	Subscription usage is hard to audit: no cache tokens in the usage records; background classifier calls not mar
+1834	kensenzhao	Routing page: a manual refresh for subscription readings next to Accounts and keys (manual-only)
+1833	kensenzhao	Routing page › Accounts and keys: show subscription windows (Claude's 5-hour) on the account's row
+1832	wfb835	gui: the "Off" proxy line reads absolute, though provider/account proxies still override
+1807	kensenzhao	Switch Claude Code's proxy env along with the account when auto-switching sign-in (direct, non-gateway mode)
+1778	Vigilans	routing: Factory combines weekly usage with a monthly reset in Smart routing
+1738	po1arbear	Claude Desktop compaction remains pending with GPT via Magpie on a large context
+1729	wangabo	Antigravity Gemini via Codex: frequent streamGenerateContent EOF/502, occasional "invalid argument" 400
+1693	lin2670	【建议】允许为「已有已知档位」的模型手动追加思考档位（reasoning levels）
+1686	wlj521	claude desktop调用magpie不走messages协议了
+1662	INtEReSTiNg1234	[Feature Request] Import CC Switch usage history into native Magpie statistics
+1619	Xichun123	[bug] Figma MCP 登录失败：OAuth 客户端注册返回 403 Forbidden
+1592	waangzh	[Bug] Codex 使用混合 Routing Group 切换到 DeepSeek 时，reasoning_text 回传缺失导致 HTTP 400
+1574	undirectlookable	Feature Request: 腾讯云 Token Plan （Tencent Cloud Provider）可以支持用量查询
+1406	wlll5	gateway: Copilot 的 GPT 模型在 Responses API 上会自己联网搜索，magpie 目前仍改用 searcher 代搜
+1391	KorLrizy	Claude Desktop 3p config not picked up on MSIX install: `Claude-3p` is excluded from FS virtualization in 2.31
+1386	miniers	[feat] gateway key 增加选项：/v1/models 只列聚合分组，并以通用模型名作为 id
+1383	uWydnA	[bug] relay 加前缀/后缀改名的模型拿不到能力元数据：推理档位菜单空、图片被兜底拦截（catalog 只按 bare id 精确匹配）
+1250	Sun1090	[Feature] 库里的远程 MCP server 支持在 headers/env 中引用环境变量，避免 token 明文写入各 agent 配置
+1241	EchoLavender	Claude Dektop 使用 magpie 无法正常请求，返回502，macos 系统
+1221	SnowGlow-aww	gateway: Antigravity/Gemini 长任务思考后空回复导致账号级联休眠
+1140	Kutius	Xiaomi MiMo (Token Plan) via Codex: custom tools require MiMo freeform Responses lite mode
+1139	byhooi	[Bug] 更新最新版本后“自动跟随系统代理”失效，导致上游请求 502 超时
+1098	worksyang	[bug] reasoning off 被静默收敛成 low：catalog 的 toggle 未被识别（DeepSeek 官方 deepseek-flash、Kimi K3）
+958	Cyb3rN8	Claude subscription bridge: mid-session the bridged Claude Code reports "Bash is disabled for this session" an
+903	evilgaoshu	[feat] Allowances 支持显示「直连」账号的额度
+636	miueon	`antigravity/gemini-3.8-flash` — reasoning loss and unexecutable tool calls in Pi
+617	Lutra-Fs	Feature request: manage codex's `reasoning_effort_override` flag so mid-thread effort changes preserve the res
+409	fosmjo	Codex 使用 deepseek 报 unexpected status 502 Bad Gateway
+392	Vocllum	[feat] 建议支持 Nous Research / Nous Portal 作为内置 Provider（支持 OAuth 与动态 Token 刷新）
+206	shydow	是否考虑支持cloudflare ai gateway？
+152	marsxxl	[bug] Antigravity 返回「Verify your account to continue」403，缺少验证指引且客户端反复重连

@@ -1,0 +1,506 @@
+[
+ {
+  "pr": "3522",
+  "date": "2026-09-13T11:56:38Z",
+  "body": "I'm taking the **WorkHub domain language** documentation-audit slice only.\n\nPlan:\n- audit `docs/workhub-domain-language.md` and `docs/architecture/workhub-coordination-session-adr.md` against the current WorkHub implementation, including the September unification series (#5198 conversation identity and Host-owned choices, #5152 model routing foundation, #5117 linked operations vs routing) that has updated the domain language piecemeal;\n- verify named symbols, stage/module mappings, authority and admission claims, and cited tests;\n- correct confirmed drift, keep both documents synchronized, and follow the group's existing frontmatter convention;\n- run the repository documentation, formatting, and link checks that apply.\n\nThis PR will use `Refs #3522` rather than close the tracking issue. If someone already has this group in progress, say so and I'll drop it.\n",
+  "url": "https://github.com/apache/maka/issues/3522#issuecomment-5653109038"
+ },
+ {
+  "pr": null,
+  "date": "2026-09-13T11:41:23Z",
+  "body": "Pushed 9754b1421: the restricted digest projection now drops parts the writer marked `synthetic: true` in the adapter, before `convertTranscript` erases the marker — both shapes from the review (the automatic task-summary instruction riding a human message, and an MCP `readResource` answer as a lone synthetic part of a follow-up user message). `readDigest` therefore answers only the human prompt; the full-session import keeps synthetic parts. `readSessionBounded`'s doc states the restricted-projection contract.\n\nRegression: a store-level test seeds those two synthetic shapes around a human prompt and asserts `digest.userMessages` equals only the human text — red with the filter stashed, green with it. Storage suites: adapter 19/19, store 33/34 (the one failure is the pre-existing Windows symlink-EPERM environment limitation, reproduced without this change). `format:check` exit 0 on the touched files.\n\n---\n\n中文：推了 9754b1421——受限 digest 投影在 `convertTranscript` 抹掉标记之前，按写入方的 `synthetic: true` 过滤部件，评审点名的两种形状（随人工消息的自动任务总结指令、作为后续 user 消息独立部件的 MCP `readResource` 回答）都被排除，`readDigest` 只返回人类输入；全量导入保持原行为，`readSessionBounded` 文档注明受限投影契约。回归测试播种两种合成形状并断言 `digest.userMessages` 只含人工文本（撤过滤器即红），storage 套件绿（唯一失败为已知的 Windows symlink EPERM 预存），触及文件 `format:check` 退出码 0。\n",
+  "url": "https://github.com/apache/maka/pull/5125#issuecomment-5653036899"
+ },
+ {
+  "pr": null,
+  "date": "2026-09-12T14:07:06Z",
+  "body": "Understood — thanks for landing #5112, and congrats on getting the earlier fix in. Closing this as superseded; happy to help if the staff-id routing ever needs a follow-up.",
+  "url": "https://github.com/apache/maka/pull/5116#issuecomment-5646375312"
+ },
+ {
+  "pr": null,
+  "date": "2026-09-12T13:21:00Z",
+  "body": "Pushed three commits on top of a fresh merge of current `main`; head is `35747a22f`.\n\n**The red `test` check on e741465d was our regression, now fixed (301d62f3c).** The attachment-item validation added for the earlier review finding rejected `{name, mimeType, base64}` — the shape the preload actually puts on the wire after encoding a dragged/pasted File — while accepting a `{file}` carrier that never crosses IPC and that `prepareIngestItems` refuses. The guard now matches the resolver's real contract (approvalId+name, or name+base64), with both sides pinned in the IPC-boundary suite: a base64-only send counts as content (#4804 at this boundary), a raw `{file}` item is junk like `[{}]`.\n\n**Composition-layer acceptance (the outstanding gate), 1c5e13104.** Two new `turn.start` tests in `execution-host-queue.test.ts` drive the real Host subprocess and real stores end to end: a quote-only and an attachment-only root start admit, run to terminal, and the persisted user Message and RuntimeEvent keep the structured content and pass `runtimeEventHasModelVisibleContent` — the predicate that gates model replay. The attachment-only case stages a canonical Session Artifact first, since hosted Turns require session-file references. Red-green: reverting *only* the storage meaningful-content rule (`normalizeRootTurnMessageContent`, the durable authority a decoder test cannot observe) turns both tests red; restoring it turns them green.\n\n**Composer send gates (the 09-11 P2), same commit.** The staged-quote cases the review asked for now exist: a staged quote enables Send without `allowAttachmentOnlySend`, and the three gates — send/stop toggle, `sendDisabled`, `sendCurrent`'s content guard — are pinned agreeing while streaming. The #5003 opt-in test asserts `aria-disabled` attribute values directly instead of substring patterns that matched the tail of `aria-disabled` by accident.\n\n**Recap ablation (the 09-11 P3), 35747a22f.** The branch the shared visibility predicate turned into an identity is removed — every text event reaching it satisfies it already; projection unchanged (session-recap 7/7).\n\nVerification on this head (Windows local; CI will re-run on the pushed SHA):\n\n| Check | Result |\n| --- | --- |\n| desktop `runtime-host-session-execution-ipc-main` (the red check) | 39/39 |\n| runtime-host `execution-host-queue` (incl. 2 new composition tests) | 16/16 |\n| Red proof: storage rule reverted → 2 new tests fail; restored → pass | confirmed |\n| runtime-host `protocol` / `message-coordinator` | 84/84, 76/76 |\n| storage `root-turn-admission-normalization` | 7/7 |\n| runtime `session-recap` | 7/7 |\n| ui `composer-send-toggle` / chat-turn (answer-identity, steering-order) | 9/9, 18/18, 2/2 |\n| desktop `permission-response-ipc-boundary` / `quote-companion-retry` | 8/8, 47/47 |\n| `protocol-epoch-check --base upstream/main` | 147 → 148, exit 0 |\n| `format:check` | touched files clean; only untracked `.mimosa/` local state flags, absent from CI checkouts |\n\n---\n\n中文：推送三个提交（先合并当前 `main`），head 为 `35747a22f`。e741465d 上的 CI 红是我们自己的回归：为 review 加的附件项校验拒绝了 preload 编码 File 后真正上线上的 `{name, mimeType, base64}` 形状，却放行从不跨 IPC 的 `{file}` 载体；守卫已对齐下游 resolver 的真实契约，两侧形状都已在 IPC 边界套件钉住。组合层验收（剩余门槛）：`execution-host-queue.test.ts` 新增 quote-only 与 attachment-only 两条 `turn.start` 用例，驱动真 Host 子进程与真实存储——准入、跑到终态、持久化的用户 Message 与 RuntimeEvent 保留结构化内容且通过 `runtimeEventHasModelVisibleContent`；红证：只回退 storage 的有意义内容规则（解码器测试观察不到的持久权威），两条新测试即红，恢复即绿。composer 三个发送门禁的一致性与 `aria-disabled` 直接断言、recap 恒真分支的消融均已落地。验证矩阵见上表；epoch 守卫 147→148 exit 0。@Astro-Han 请重审。\n",
+  "url": "https://github.com/apache/maka/pull/4815#issuecomment-5646144729"
+ },
+ {
+  "pr": null,
+  "date": "2026-09-12T12:32:56Z",
+  "body": "Pushed in e643330f8: the refusal chain in `runtime-host-session-driver.ts` now includes directory references - a Desktop-created turn carrying `directoryReferences` refuses with `rewind_unsupported_directory_references` before any `session.revision.create`, and the TUI runner renders the localized catalog copy for the new code in all three locales (en / zh-CN / zh-TW).\n\nRegression extended in `runtime-host-session-driver.test.ts`: the structured-content refusal fixture gains a directory-reference turn, asserting both the English fallback message and the machine code, plus the no-revision-created invariant.\n\nVerification on this Windows machine: cli build clean, `biome lint` clean on the four touched files, driver suite run - 24 pass including the new directory-reference refusal assertions; the 50 other failures are the pre-existing `/tmp` POSIX-cwd fixture failures this file already carries on Windows (unchanged class, present before this commit - the suite passes on the Linux CI runner).",
+  "url": "https://github.com/apache/maka/pull/5118#issuecomment-5645904665"
+ },
+ {
+  "pr": null,
+  "date": "2026-09-12T10:12:35Z",
+  "body": "Pushed e741465d0 (plus 5b353f8b5): merges current `main` — the epoch collision repeats (upstream claimed 147 for the OAuth create-target shapes), resolved to **148** with upstream's entry kept and the structured-only admission entry renumbered; `protocol-epoch-check` reports `147 -> 148`, exit 0. The `use-quote-companion.ts` conflict from #5217's execution-projection refactor resolves to this PR's steer contract on top of upstream's new model (stale `preserveLiveTurn` arguments dropped, matching the new signatures), and the four steer cases now publish a host turn before steering the way the upstream suite does. Architecture check passes against `upstream/main`, quote-companion + guard suites 66/66, ui suites 30/30, `format:check` clean.",
+  "url": "https://github.com/apache/maka/pull/4815#issuecomment-5645254430"
+ },
+ {
+  "pr": null,
+  "date": "2026-09-12T09:07:21Z",
+  "body": "Pushed 81f55d531: merges current `main` (#5219 Code Mode included) — the epoch collision repeats (upstream claimed 146 for Code Mode), resolved to **147** with upstream's entry kept and the structured-only admission entry renumbered. `protocol-epoch-check` reports `146 -> 147`, exit 0; architecture check passes; quote-companion + guard suites 64/64; format clean. Ready for merge.",
+  "url": "https://github.com/apache/maka/pull/4815#issuecomment-5644916785"
+ },
+ {
+  "pr": null,
+  "date": "2026-09-12T09:01:44Z",
+  "body": "Pushed dacaddb3e: merges current `main` (#5164 Antigravity ACP series included) and resolves the epoch collision — upstream claimed 144 and 145, so the constant moves to **146** with both upstream entries kept and the structured-only admission entry renumbered. `protocol-epoch-check --base upstream/main` reports `145 -> 146`, exit 0; architecture check passes; quote-companion + guard suites 64/64; `format:check` clean. Ready for merge.",
+  "url": "https://github.com/apache/maka/pull/4815#issuecomment-5644891901"
+ },
+ {
+  "pr": null,
+  "date": "2026-09-12T07:59:01Z",
+  "body": "Pushed 50f34ce64: closes the three remaining findings. An unroutable chatId now records `unroutable-chat-id` and emits a status change before the null return, so a silent no-op send is visible on the readiness surface. The routing explanation lives once — in the `pickDingTalkSendRoute` JSDoc — with the stamping site and `sendMessage` reduced to pointers, and the `#5111` receive-side case's comment now states the receive/send scope split instead of the stale fail-closed claim.",
+  "url": "https://github.com/apache/maka/pull/5116#issuecomment-5644600447"
+ },
+ {
+  "pr": null,
+  "date": "2026-09-12T07:49:25Z",
+  "body": "Pushed 98ae7a37e: the inaccurate staging comment is dropped (keeping the true session-owned-attachment rationale and adding the quote-gate note so the gate doesn't get 'matched away' later), and the refusal copy in en/zh-CN/zh-TW now names the surviving rule — a message's own attachments are not rewritten by edit & resend — instead of the deleted historical-attachments rule.",
+  "url": "https://github.com/apache/maka/pull/5118#issuecomment-5644557888"
+ },
+ {
+  "pr": null,
+  "date": "2026-09-12T07:40:56Z",
+  "body": "Pushed d71c17508: closes the four open findings from the 09-11 review. The adapter is now the single authority — `opencodeDatabasePath()` and `isUsableOpencodeSessionId()` are exported from it and used for the source probe (`detect()`), the scan filter, and the digest pre-check, so the database filename lives in exactly one place and the store's id gate mirrors the adapter's own pattern instead of a wider second one. The misplaced Codex banner moved over the Codex functions and OpenCode got its own; the shared-database `transcriptPath` now records in place that OpenCode keeps transcripts in the store rather than per-session files.",
+  "url": "https://github.com/apache/maka/pull/5125#issuecomment-5644520807"
+ },
+ {
+  "pr": null,
+  "date": "2026-09-12T07:30:24Z",
+  "body": "Pushed ca9187cce (merge with current `main` — epoch collision resolved to **144**, upstream's 143 entry kept, `protocol-epoch-check` `143 -> 144` exit 0) plus cec34fcd0 closing the three remaining inline findings from the 09-11 review:\n\n- **P1 reachability ①**: the side-chat `steer` wrapper now runs the same `preflightAttachmentItems` gate as `send`, surfacing the localized send-rejected toast instead of failing later on the steer path.\n- **P2 reachability ③**: `normalizeSessionSendCommand` normalizes `attachmentItems` per item (approval+name descriptor or live file carrier, shared count cap) — `[null]` / `[{}]` no longer satisfy the empty-body check. Pinned with junk-entry cases in the boundary test.\n- **P3**: `estimateRuntimeEventChars` weights an attachment by `formatAttachmentRefs` output (the block the projection actually emits) instead of the ~25-char display fields.\n- The retitled send/stop test now honestly pins the #5003 opt-in contract; the #5 recap double-gate was resolved in bd95907ad (trim removed from the shared predicate), as noted earlier.",
+  "url": "https://github.com/apache/maka/pull/4815#issuecomment-5644474549"
+ },
+ {
+  "pr": null,
+  "date": "2026-09-12T07:17:49Z",
+  "body": "Pushed 8de10b2a8: the PiP paragraph no longer claims #3293 replaced the PiP motion constants. I re-verified the reviewer's core fact before writing: `pip-motion.ts` hashes identically at 047567c4b^, 047567c4b, and this head. The paragraph now states that #2478's deletion only ends the retired test's coverage, records the module as untouched (springs and throw factors still defined and consumed by `pip-window.ts`), and scopes the cursor-provenance link to the agent cursor with the PiP window's motion model explicitly separate.",
+  "url": "https://github.com/apache/maka/pull/5172#issuecomment-5644418602"
+ },
+ {
+  "pr": null,
+  "date": "2026-09-11T22:27:26Z",
+  "body": "Finding (3) is now landed as `520beb81d` on this branch: `execution-host-queue.test.ts` gains \"a quote-only queued message survives the wire snapshot, the admission chain, and a Host restart\" — the process-level round trip you asked to pin. It drives the real execution-host harness end to end: framed-client `turn.message.submit` of a quote-only `next_turn` Message, the wire queue snapshot carrying the excerpt, a Host kill, the successor root recovered and run to terminal, and `readSessionUserMessages` from the reopened stores returning the durable user message with the quote intact.\n\nSo all four findings stand addressed: (1) the opt-in is consumed and main-shell-gated with a two-direction regression, (2) the `started` consumption contract is pinned, (3) this round-trip test, (4) the untrimmed shared predicate with the fourth carrier. Epoch 143 against merged main; CI on `520beb81d` is green.\n\n---\n中文：(3) 已落地——execution-host-queue 新增进程级 round-trip 测试：framed-client 提交 quote-only next_turn → wire 队列快照携带摘录 → Host 强杀 → successor root 恢复并跑到终态 → 重开存储读回的持久化用户消息带完整 quote。四条发现全部闭环，epoch 143，CI 绿。",
+  "url": "https://github.com/apache/maka/pull/4815#issuecomment-5641341911"
+ },
+ {
+  "pr": null,
+  "date": "2026-09-11T17:18:27Z",
+  "body": "@Astro-Han — a Linux-only question I cannot close from Windows, and your review ran on Linux, so flagging it with everything I have:\n\nSince landing the review follow-ups, `workhub-layout.spec.ts:295 › WorkHub keeps the submitted prompt visible while its agent is still running` fails deterministically on CI (2/2, identical signature) and passes locally on Windows (rebuilt tree, single test run, 12s). Signature: after the dock crash-retry, the FIRST followup (Send button) queues fine; the second (Enter) never joins — the `next_turn` queue stays at 1 element for the full 10s (`24 × locator resolved to 1 element`).\n\nWhat I ruled out:\n- **Not upstream**: main at `89f383970` (exactly what this branch merged) ran Desktop e2e green.\n- **Not the rail story**: this is a different spec.\n- **Bisection attempted**: one CI round with the quote-only metadata render reverted → e2e passed, but that round is weak evidence (1/1) AND the mechanism does not close — the spec's user messages all carry text, so the changed empty-text branch should never execute there. I've restored the render (the accessibility fix stands) and pushed; if this run fails at the same spot again, that's 3/3 and someone with Linux eyes needs to catch it live.\n\nThe one hypothesis I could not verify from the trace (CI strips DOM snapshots): the second Enter-submit is either swallowed (`sendPendingRef` stuck because the first submit's `onSend` promise never settled on Linux) or submitted as steering. If you can run this one spec on Linux at head `3dff1392d` or current, the trace at the Enter action would settle it immediately.\n\nEverything else in the review remains addressed; the branch is otherwise green (ASF headers cleaned, architecture ledger at 13661 with the opt-in riding upstream's shell rework, epoch 143 after the ninth collision).\n\n---\n中文：一个 Windows 上无法复现的 Linux e2e 问题需要你帮忙——workhub-layout 的 followup 测试在 CI 上 2/2 同点失败（第二个 Enter 提交不进队列，队列停在 1 元素），本机 Windows 全新构建单跑通过，main 同 merge commit 的 e2e 也是绿的。做过一轮二分（撤 metadata 渲染 → e2e 通过），但机制讲不通（该 spec 的消息全有文字，改的分支不应执行），已恢复渲染并在此留档；若本轮 CI 再挂同一处即 3/3，需要 Linux 现场抓一次 Enter 动作的 trace。其余 review 发现全部保持已修状态。",
+  "url": "https://github.com/apache/maka/pull/4815#issuecomment-5638071907"
+ },
+ {
+  "pr": null,
+  "date": "2026-09-11T15:13:24Z",
+  "body": "All four findings addressed at `725c16766` (plus `d434f546d` dropping stray local state and `bddcd687a`/`e84d2eafd`/`5a0f8b33e` settling the renderer ledger after the opt-in landed):\n\n**P1 — the trim is gone.** `hasMeaningfulMessageContent` no longer trims; your ablation was decisive and the desktop/Host-split argument in the commit message was indeed wrong (chat-input-behavior has trimmed since #1865 — the claim was not verified before it was written, which it should have been). The predicate now covers the fourth carrier (`directoryReferences`, which `formatTextWithInlineRefs` already renders) with its comment stating the contract correctly, and the core/protocol tests are flipped to pin compatibility: whitespace-only persisted events stay model-visible, the admission frame stays as admissible as base. Replay visibility and admission now answer their own questions with one untrimmed predicate; the desktop guard keeps trimming at its own boundary.\n\n**P1 — the metadata render is restored.** You're right on both counts: the bisection was never closed, and it could not have worked — `RailStaysOnTheVisiblePrompt`'s turns all carry text, so the reverted branch never executed there. `: null` is back to `) : ( userMetadata )}`, the dropped comment sentence is back, and the test assertion is flipped (its name already said \"but with metadata\"). The rail red is tracked separately; if it reproduces on this head it is a real geometry interaction and I'll take it with the story fixture as the reproduction.\n\n**Scope — the main shell now opts in.** Your measurement stood: everything downstream accepted attachment-only sends, the prop predates this PR, and the send-toggle test pins #5003 behaviour, not this work. `app-shell.tsx` now passes `allowAttachmentOnlySend` (paid for inside the file: the duplicated edit-mode ternaries extracted, the revision banner reusing the existing copy variable — the ledger figure lands at 13687 against base 13695, recorded in `renderer-architecture.json`). The PR body no longer calls the prop a capability negotiation and no longer claims the surface is out of scope.\n\n**P2 — the predicate restatements.** `chat-turn.tsx`'s `text.trim().length > 0` is a *rendering* decision (omit the empty bubble, keep the metadata row), not an admission decision — delegating it to the shared predicate would re-introduce the empty bubble for whitespace-only messages, which is #4804's reported symptom; the comment there now says so. `permission-response-guard.ts` now calls the shared predicate over a normalized MessageContent-shaped view instead of the five-term hand expansion. The composer keeps its draft-state check with the reason stated in the body (drafts are `pendingQuotes`/`pendingAttachments`, not a `MessageContent`; the boundary answers \"may this composer hand over\", not \"is this message meaningful\").\n\n**P2 — coverage.** Added: a replay test pinning that a persisted quote-only event reaches the provider prompt as its excerpt (`buildRuntimeEventModelReplayPlan` → materialize → `doStreamCalls[0].prompt`), and the main-shell opt-in is covered by the send-toggle direction plus the IPC boundary suite. The structured-only TurnView story and the panel-wrapper tests are queued with the staging follow-up.\n\nVerification: core runtime-event 28/28, protocol #4804 cases, replay quote-only test, ui chat-turn + send-toggle 25/25, desktop IPC + quote-companion 52/52; epoch check `142 -> 143` against merged main (ninth collision, upstream took 142 for Skill query refusals).\n\n---\n中文：四条全部处理（725c16766）：**撤 trim**（你的消融是决定性的，commit message 里那个 desktop/Host 分裂论据确实未经核实就写了，已改）；**恢复 metadata 渲染**（两点都对——bisection 从未收尾，且在该 story 上 else 分支根本不执行，rail 红单独立项跟踪）；**主 shell 传 opt-in**（你的实测成立，已传 prop 并用文件内等量减法支付 ratchet，ledger 记录 13687）；**谓词统一**（chat-turn 是渲染决策不委托、guard 改调共享谓词、composer 在正文说明保留理由）；补 replay quote-only prompt 测试。epoch 第九撞已解（142→143）。",
+  "url": "https://github.com/apache/maka/pull/4815#issuecomment-5636566804"
+ },
+ {
+  "pr": null,
+  "date": "2026-09-11T15:12:21Z",
+  "body": "All findings addressed at `aa4bfca02`:\n\n**P1 — layer 3 now says what #4803 actually did.** The section records that the broad route inventory was *retired rather than relocated*, that nothing enumerates routes against a running Electron app, and that the gap is intentional per #4803's own \"not claimed as equivalent coverage\". The adjacent line calling `ax-tree-audit.mjs` a shared Storybook/Electron rule source is corrected too — it is Storybook-only (its single consumer is the smoke runner).\n\n**P2 — ui-coverage's three passages on the retired spec.** The dynamic settings-navigation enumeration sentence, the Settings table row's \"enumerated from the running UI\", and the overlay-journey sequencing paragraph are each corrected to attribute that coverage to the retired spec (#4803) and to name what the surviving journeys actually cover. The two documents no longer contradict each other.\n\n**P2 — `translation_status`.** All nine are now `source-only`, matching the fourteen-document convention on main; the `original` value is gone.\n\n**P2 — the two unreached stale claims.** `codex-pip` now notes that the pip-motion test it cited as exact coverage was deleted by #2478 and that #3293's replacement ended the exact-coverage claim. `provenance` §3 marks the binary-recovered cursor facts as historical — removed by #3293, hotspot now the glyph tip — so the provenance document no longer asserts proprietary-derived constants live in shipped source.\n\n**P3s.** provider-evidence says \"four evidence classes\"; the lease-class list now names `computer-use.ts`'s four actual classes (`metadata_read` / `screenshot_read` / `keyboard_mutation` / `semantic_mutation`); the window-action lesson is annotated as historical (window_action landed with #1952); codex-pip keeps `document_status: current` since its \"where Maka does something else\" section describes present behaviour, now stated explicitly in its frontmatter intent.\n\nThe named failure mode — checking listed anchors is not reading the document — is taken; the corrected passages were all found by reading the prose rather than grepping anchors, and that's how the remaining audit batches will run.\n\n---\n中文：五组全部处理（aa4bfca02）——layer3 按 #4803 原意改写（退役而非迁移、缺口是有意接受）；ui-coverage 三处退役描述同改，两文档不再矛盾；九篇 translation_status 全改 source-only；codex-pip 的已删测试引用与 provenance §3 的过时事实（#3293 已移除、hotspot 现为字形尖端）均已标注；P3 三处小漂移修正。\"查锚点不等于读文档\"这个教训已记入工作记忆，后续审计批次按通读执行。",
+  "url": "https://github.com/apache/maka/pull/5172#issuecomment-5636553564"
+ },
+ {
+  "pr": null,
+  "date": "2026-09-11T15:11:31Z",
+  "body": "All findings addressed at `14aa56bb3`:\n\n**P1 — real OpenCode keys, gated by toolName.** `filesTouched` now takes the cross-version key union (`filePath` / `path` / `file_path`) and only from the single-file tools (`read` / `write` / `edit` / `patch`); `glob` / `grep` / `list` never contribute, so a grep's relative search directory can no longer masquerade as a touched file. The invented `file_path` fixture is replaced with real shapes: an `edit` with `filePath`, a `read` with `path`, and a `grep` whose `path: 'src'` is asserted absent from the digest.\n\n**P1 — one broken database no longer empties the catalog.** `listOpencodeSessions` catches the adapter's throw and degrades to an empty opencode row set; Claude Code and Codex keep listing. A schema-drift regression seeds a `session` table missing `directory` next to a valid Claude transcript and asserts the other source survives.\n\n**P2 — the read bound moved into the adapter.** `#readTranscript` now accepts a byte budget, stops accumulating raw row payload at the cap, and reports the cut; the store exposes it as `readSessionBounded` and turns the marker into the same warning wording the file path uses. A bounded-digest test seeds a ~2.6 MB tool output and asserts the truncation warning fires while the prompt read before the cut survives.\n\n**P2 — the missing bound tests.** Added: the 50-cap recency case (55 seeded, 50 kept, newest first), the truncation case above, and the schema-drift case above.\n\nVerification: OpenCode suite 9/9; foreign-session + adapter suites 53/54 with the one failure being the pre-existing Windows symlink-permission fixture; storage build clean.\n\n---\n中文：四条全部处理（14aa56bb3）——filesTouched 改用 OpenCode 真实键集（filePath/path 跨版本并集）并按 toolName 门控（glob/grep/list 的目录不算文件），测试换真实形状 + grep 排除断言；坏库容错（listOpencodeSessions 捕获降级，其他源照常），schema-drift 回归钉住；读取上限下沉到 adapter（#readTranscript 字节预算 + 截断标记），store 转成与文件路径同措辞的 warning；补齐 50-cap、截断、schema-drift 三个边界用例。验证：OpenCode 9/9。",
+  "url": "https://github.com/apache/maka/pull/5125#issuecomment-5636543163"
+ },
+ {
+  "pr": null,
+  "date": "2026-09-11T15:10:44Z",
+  "body": "All findings addressed at `9577e510e`:\n\n**me2seeks P2 — `directoryReferences` joins the guard.** The rewind refusal now covers all three structured carriers; a Desktop turn carrying folder references can no longer be rewound into a replacement submit that silently drops them.\n\n**Astro-Han P2 — the misleading, unlocalized notice.** The driver guard stays as defence in depth but now throws a machine code (`rewind_unsupported_quotes` / `rewind_unsupported_attachments`) with a neutral message that promises nothing about other surfaces. The runner maps the code to localized catalog copy under `rewind` (`unsupportedQuotes` / `unsupportedAttachments`, en / zh-CN / zh-TW, same shape as `busy`), so the user is told which carrier blocked the rewind and what to do instead — never \"go to Desktop\". Marking those turns unselectable in the rewind picker is the better UX; it remains follow-up so this slice stays a refusal-only change.\n\n**Inline comments:** the false \"quotes ride back into the draft\" comment is deleted (160-161 kept); the toast copy key is retargeted — the surviving guard is about the source message's *own* attachments, and the copy now says so; the body notes that folder-reference rejection's authority is the renderer guard, and this file's check is defence in depth (the toast is unreachable in the real UI).\n\nOn finishing the staging slice here: thank you for doing the real archaeology on the ratchet — the `features/conversation` re-homing plus paying call sites out of this PR's own freed tokens is a concrete plan, and I'll take it up as the next slice rather than growing this already-reviewed diff further. The window-closes-on-merge point is well taken; the ledger decrease (2316 → 2156) is recorded in this branch so the successor PR's base reflects it.\n\nVerification: rewind driver tests updated for the new contract (fail-closed before any `session.revision.create`); TUI rewind suites green; builds clean.\n\n---\n中文：全部处理（9577e510e）——guard 补上 directoryReferences；拒绝改为 driver 抛机器码 + runner 渲染三语言 catalog 文案（指明是 quotes 还是 attachments，不再误导“去 Desktop”）；行内两条（删不实注释、toast 文案改指源消息自身附件）照改，正文注明 folder-reference 拒绝的权威在 renderer。感谢对 ratchet 的考古——features/conversation 搬家 + 用本 PR 自己腾出的 token 支付调用点这个方案成立，作为下一个切片执行；本分支已把 ledger 减量（2316→2156）记录在案。",
+  "url": "https://github.com/apache/maka/pull/5118#issuecomment-5636533444"
+ },
+ {
+  "pr": null,
+  "date": "2026-09-11T15:09:53Z",
+  "body": "Both findings addressed at `5d2dea39b` (me2seeks P1 + P3s) and Astro-Han's P2:\n\n**Unstamped ids keep legacy routing instead of failing closed.** `pickDingTalkSendRoute` now resolves a bare id exactly as the pre-stamping code did — bare `cid…` routes to the group endpoint (which is the request that was working), anything else to the single-user endpoint. Only an empty id returns null. Stamped ids keep the receive-time contract; the fail-closed property is preserved where it matters (live stamped traffic) while stored scheduled-task chatIds keep delivering. A bare non-`cid` string that is really a group gets `resource.not.found` — an explicit error rather than a silent drop. The contested test assertions are replaced by the legacy-shape assertions plus a round-trip test that drives a real payload through `dingTalkPayloadToEvent` → `event.chatId` → `pickDingTalkSendRoute` and asserts the endpoint — the contract the two isolated helper tests could not see.\n\n**P3s:** the `group:`/`oto:` literals are hoisted to shared constants used by both the mapper and the router, and `sourceMessageId` keys off the raw conversationId so the route prefix no longer leaks into downstream dedupe keys.\n\n**me2seeks's note on #5112:** agreed — only one of the two should land, and yours keeps the bare-id compatibility this fix now restores. If maintainers prefer that one, closing this PR is fine by me.\n\n**Astro-Han's P2 (senderStaffId evidence):** the field's availability is documented only in DingTalk's own callback field table for `/v1.0/im/bot/messages/get` (the enterprise-staff id for the sender in a single chat); I cannot cite repo-internal evidence because none exists. The PR body now needs that source named — I've updated the description to state the fallback's population is \"1:1 chats where DingTalk omits senderStaffId\" and that such replies fail closed at the bridge rather than erroring the channel.\n\nVerification: dingtalk-bridge 10/10 (legacy shapes, round-trip, stamped routes, empty-id null); runtime build clean against merged main.\n\n---\n中文：两条 review 全部处理——未打戳 id 恢复 legacy 路由（bare cid→群、其他→单用户，与打戳前行为一致），只在空 id 时 fail-closed；补 payload→chatId→路由器的 round-trip 契约测试；前缀提升常量、sourceMessageId 改用裸 conversationId；senderStaffId 的字段来源（钉钉回调字段表）已写进正文。同意与 #5112 二选一，若维护者倾向那个版本可关本 PR。验证：dingtalk-bridge 10/10。",
+  "url": "https://github.com/apache/maka/pull/5116#issuecomment-5636522503"
+ },
+ {
+  "pr": null,
+  "date": "2026-09-10T13:47:02Z",
+  "body": "All four findings addressed at `bb8e35faa` (merged current `main`, which also landed #5114 — that was the missing hardening the Storybook rail story was tripping over; the rail failure stopped reproducing once the sequence ran through, matching your read that it was geometry drift).\n\n**1. `allowAttachmentOnlySend` — consumed, and now pinned by a test.** The prop feeds `hasStagedContext` (`composer.tsx:1271-1273`), which gates the send handler (`!text.trim() && !hasStagedContext` returns early), the disabled state, and the send/stop toggle — it was never dead, but nothing proved it. A send-toggle regression now asserts both directions: with the opt-in, staged attachments alone enable Send; without it, the same draft stays disabled. The main chat shell deliberately keeps the opt-in unset (the documented scope cut), so the PR description no longer claims the full #4804 surface — it now names the attachment-only-on-main-shell gap as deliberate.\n\n**2. `started` steering outcome — regression added.** `steer` with a staged attachment resolving `started` binds the pending admission through `bindAdmittedTurn`, which fires `consumeOnAdmission` (and so `onAdmitted`, consuming the attachment) exactly once at the bind, and a later `message_admission` echo for the same id does not consume again. The new regression in `quote-companion-retry.test.ts` asserts the payload carries the attachments, `started` consumes once, and the echo does not double-consume.\n\n**4. Trim semantics aligned.** `hasMeaningfulMessageContent` now trims the inline text itself, so a whitespace-only message is judged contentless by the Host admission, the protocol decoders, and the desktop guard alike. Pinned by a core predicate test and a protocol-frame assertion (`submit({text: '   '})` throws the same invalid-frame error). The desktop guard and recap keep their existing trim behavior — they now agree by construction instead of by coincidence.\n\n**3. Process-level round-trip test** — agreed it is the right permanent pin for this bug class; not in this push. Followed up as its own item so it gets the framed-client + SQLite harness it deserves rather than a rushed variant here.\n\nEpoch: re-ran `protocol-epoch-check --base upstream/main` right before pushing — `140 -> 141` (upstream took 138-140 for the display-anchor removal, WorkHub capability binding, and Plugin Platform queries; upstream's entries kept, ours renumbered), exit 0.\n\nVerification: core runtime-event 27/27, storage admission 7/7, protocol 83/83 (+#4804 whitespace case), desktop quote-companion + IPC 64/64, ui send-toggle/chat-turn 24/24; builds green across core/storage/runtime/runtime-host/ui/desktop.\n\n---\n中文：四条全部处理（bb8e35faa）：(1) `allowAttachmentOnlySend` 实际由 hasStagedContext 消费（send handler、disabled 态、send/stop 切换三处），本次补了双向断言的 send-toggle 回归，主聊天 shell 不传 opt-in 是文档化的范围裁剪，PR 正文不再声称覆盖全部 #4804 表面；(2) 补了 started 分支回归——带附件的 steer 在 bindAdmittedTurn 时恰好消费一次，后续 admission 回声不重复消费；(4) 共享谓词内部 trim，空白-only 文本在 Host 准入、协议解码、desktop guard 三层一致判空，core 和 protocol 各有测试钉住；(3) 进程级 round-trip 测试同意该做，单独立了 follow-up 以便配上完整的 framed-client + SQLite 夹具。epoch 按您的要求推送前重跑：140 → 141，exit 0。期待您的 approve。",
+  "url": "https://github.com/apache/maka/pull/4815#issuecomment-5619716952"
+ },
+ {
+  "pr": null,
+  "date": "2026-09-10T05:27:46Z",
+  "body": "Pushed 8975c3dd4: merges current `main` (#5117) and resolves the epoch collision — upstream claimed 136 for the WorkHub routing-dispositions change, so the constant moves to **137** with upstream's entry kept and the structured-only admission entry renumbered. `protocol-epoch-check` reports `136 -> 137`, exit 0; architecture check passes; quote-companion 56/56; format clean. Sixth collision, same rule, no other deltas.",
+  "url": "https://github.com/apache/maka/pull/4815#issuecomment-5613650425"
+ },
+ {
+  "pr": null,
+  "date": "2026-09-10T04:13:04Z",
+  "body": "Pushed 26b990745: merges current `main` (through #5110/#5108/#5057/#4733, and #5114's WorkHub interaction hardening for the exact spec the last run tripped on). No product changes on this branch — this merge exists to unblock the CI sequence: the last four red runs were four *different* steps (formatting → Storybook smoke → a stale ui unit assertion → one real Desktop e2e failure, a `workhub-layout` drag-scrollLeft flake with prior art #3961/#4205 and an upstream hardening follow-up #5114 that this branch lacked). With #5114 in, the sequence should run through.\n\nAlso answered the bisect question from the diagnostic commits: the metadata render revert (0107eedc1) is the right call for the Storybook rail story — the render changed transcript geometry, which is what pushed the rail anchor two turns late. Re-adding metadata without shifting geometry needs a separate pass.\n\nVerification: epoch guard `135 -> 136` (upstream #4979 claimed 135; ours renumbers to 136), architecture check passes, quote-companion 56/56, ui suites 26/26, `format:check` clean.",
+  "url": "https://github.com/apache/maka/pull/4815#issuecomment-5612889612"
+ },
+ {
+  "pr": null,
+  "date": "2026-09-09T23:23:14Z",
+  "body": "Status on the red CI run at `14f0a1a77` (job started 2026-09-09T22:51Z):\n\n- **`Check formatting`** — fixed and pushed as `d53a2023e`; the new run covers it.\n- **`Storybook smoke`** — `product-shell-official-appshell--rail-stays-on-the-visible-prompt` failed its reading-position assertion (`expectedId: turn-scroll-118` vs `currentIds: [turn-scroll-120]` at the 75% stop). I could not construct a causal path from this branch's delta: the only renderer-file change here is `UserMessageBody`'s empty-text branch (`: null` → `userMetadata`, 85ed3f578), the rail harness's turns all carry non-empty text so their DOM and height are unchanged, and the other three commits touch backend/main-process files only. The assertion compares geometry (34% reading band) against the rail's own mapping 4 painted frames after a programmatic scroll, which reads as timing-sensitive. I cannot rerun the job from a fork (403) — could a maintainer rerun, or should the next pushed head re-derive it? If it reproduces on `d53a2023e` I will take it as a real regression and dig in.\n\n---\n中文：14f0a1a77 的红 CI 有两项——format 已修（d53a2023e）；Storybook 的 rail 断言失败无法从本分支改动建立因果（唯一 renderer 改动是空文字分支渲染 metadata，rail harness 的消息全有文字，DOM 与高度不变；其余三个 commit 只动后端/主进程）。该断言是滚动后 4 帧的几何时序比较，疑似 flaky。fork 无法重跑（403），请维护者 rerun 或由新 head 重新判定；若 d53a2023e 上复现我会当真回归处理。",
+  "url": "https://github.com/apache/maka/pull/4815#issuecomment-5610124438"
+ },
+ {
+  "pr": "5053",
+  "date": "2026-09-09T22:33:12Z",
+  "body": "take",
+  "url": "https://github.com/apache/maka/issues/5053#issuecomment-5609647827"
+ },
+ {
+  "pr": "5109",
+  "date": "2026-09-09T16:43:15Z",
+  "body": "take",
+  "url": "https://github.com/apache/maka/issues/5109#issuecomment-5605432139"
+ },
+ {
+  "pr": "5111",
+  "date": "2026-09-09T16:34:24Z",
+  "body": "take",
+  "url": "https://github.com/apache/maka/issues/5111#issuecomment-5605318937"
+ },
+ {
+  "pr": null,
+  "date": "2026-09-09T16:29:10Z",
+  "body": "@Jarad-z heads-up: in the review on #4815 the maintainers recommended that PR as the single integration PR for #4804, with this one superseded. #4815 now incorporates the two details this PR handled — the metadata/edit entry surviving the omitted empty bubble, and retained attachments counting as content in the Desktop send guard — with attribution to your PR in the commit messages and the review reply. Closing it is your call since it is your branch; flagging so you have the full picture, and thanks — both details made the integrated version better.\n\n---\n中文：#4815 被建议作为 #4804 的唯一整合 PR，本 PR 的两处优点（空气泡场景保留元信息/编辑入口、保留附件计入发送 guard）已吸收进 #4815，commit 与回复中已归因。是否关闭由你决定，特此告知，谢谢你的并行工作。",
+  "url": "https://github.com/apache/maka/pull/4805#issuecomment-5605251017"
+ },
+ {
+  "pr": null,
+  "date": "2026-09-09T16:29:08Z",
+  "body": "Pushed 85ed3f57..14f0a1a77 (four independent commits), closing out the findings on `1c92ec60`:\n\n- **Metadata on quote-only messages (P2)**: the empty-text branch of `UserMessageBody` now renders `userMetadata` directly, so the timestamp, copy action, and edit entry survive the omitted bubble. The rendering regression moved into the chat-turn answer-identity suite on the shared fixture and asserts both obligations — no empty bubble plus a surviving metadata/edit entry. The metadata shape follows #4805's rendering.\n- **Retained-attachment edits (P2)**: `normalizeSessionSendCommand` normalizes `retainedAttachments` before the empty-body rejection and counts them in the content-presence check; ownership and size validation stay downstream. The shape follows #4805's guard, with a regression in the existing IPC-boundary suite.\n- **Steering replay images (earlier P2)**: the steering replay branch goes through the same `appendImageParts` materializer as the original steered request — steering decision key, provider identity preserved — and a vision-provider regression asserts the native image part on the replayed steering message.\n- **Shared predicate (P3)**: `runtimeEventHasModelVisibleContent` and the recap projection now call `hasMeaningfulMessageContent`; the recap decides on its trimmed text, so its behavior is unchanged. The quote-only test fixture duplication is gone with the suite merge.\n\nPR description refreshed: the empty-bubble item is done and no longer listed as an outstanding gap; #4804's own remaining empty-bubble rendering request is delivered by the same change.\n\nVerification: ui chat-turn 18/18, ui composer 20/20, desktop IPC boundary 7/7, quote-companion 56/56, runtime session-recap 7/7, ai-sdk-backend 234/234, core runtime-event 26/26; `protocol-epoch-check --base upstream/main` exit 0 (epoch stays 136).\n\n---\n中文：四个独立提交修掉 1c92ec60 上的全部 review 发现：quote-only 消息保留元信息行（时间戳/复制/编辑入口，渲染形状参照 #4805）；保留附件在 IPC guard 拒空前先 normalize 并计入内容判断（形状参照 #4805，下游所有权/大小校验不变）；steering 重放走与原始请求相同的 appendImageParts 物化（保留 steering 身份，视觉 provider 回归覆盖）；可见性与 recap 复用共享谓词（recap 保留 trim 行为），并合并了重复的渲染测试夹具。PR 正文已刷新（空气泡项已完成）。验证：上述七个套件全绿，epoch guard exit 0（epoch 维持 136）。",
+  "url": "https://github.com/apache/maka/pull/4815#issuecomment-5605250677"
+ },
+ {
+  "pr": null,
+  "date": "2026-09-09T11:40:30Z",
+  "body": "Pushed 1c92ec60d: merges current `main` (#5094/#5101/#4979 series included) and resolves both conflicts. The epoch collision repeats — upstream claimed 135 for the WorkHub model-Turns change — so the constant moves to **136** with upstream's entry kept and the structured-only admission entry renumbered; `protocol-epoch-check --base upstream/main` reports `135 -> 136`, exit 0.\n\nThe `composer.tsx` `stopShown` conflict unions the two contracts: a blocked send always shows Stop (#4979), while an unblocked structured-only draft keeps showing Send (#4804). Architecture check passes, quote-companion 56/56, ui 24/24, `format:check` clean. Ready for merge.",
+  "url": "https://github.com/apache/maka/pull/4815#issuecomment-5601245441"
+ },
+ {
+  "pr": null,
+  "date": "2026-09-09T06:50:21Z",
+  "body": "Pushed 10064cffb: merges current `main` (the workhub coordination-turn series included) and resolves the epoch collision the same way as before — upstream had claimed 134 for the coordination-actions change, so the constant moves to **135**, upstream's entry stays and the structured-only admission entry renumbers to 135. `protocol-epoch-check --base upstream/main` reports `134 -> 135`, exit 0. Architecture check passes, quote-companion suites 56/56, `format:check` clean. Ready for re-review.",
+  "url": "https://github.com/apache/maka/pull/4815#issuecomment-5597434108"
+ },
+ {
+  "pr": null,
+  "date": "2026-09-08T07:36:54Z",
+  "body": "Pushed 816e6dc5a (plus merge fc57e1396 with current `main`, #5001 included): fixes the renderer-architecture failure on the previous head. The regression test now takes `WorkbarIngestInput` through the workbar `testing` entry instead of a deep `ports.js` import, and the attachment-only opt-in moved from the frozen `app-shell.tsx` token budget to the side-chat panel — the surface where the #4804 acceptance scenario actually sends. The main chat shell follows the upstream #5003 default. Architecture check passes against `upstream/main`; quote-companion 56/56, ui 24/24, format clean.",
+  "url": "https://github.com/apache/maka/pull/4815#issuecomment-5581152901"
+ },
+ {
+  "pr": null,
+  "date": "2026-09-08T07:08:57Z",
+  "body": "Pushed 11aa81e32: the branch merges current `main` and carries compatibility epoch **134** — `main` had claimed 132 (Tool Result ledger refs) and 133 (WorkHub action fields) since the last push, so the merge keeps both upstream entries and re-numbers the structured-only admission widening to 134. `protocol-epoch-check --base upstream/main` reports `133 -> 134`, exit 0.\n\nThe composer merge conflict resolves to the union of the two contracts: staged quotes send unconditionally (#4804), while attachment-only sends stay on the host opt-in (`allowAttachmentOnlySend`, #5003), and the Desktop chat shell now passes that opt-in so the attachment half of #4804 keeps working there.\n\nThe new [P2] is also fixed in the same head: `send`/`steer` take an `onAdmitted` callback that fires only from the shared admission boundary, so submitted attachments are consumed together with the staged quotes on confirmed admission. An `outcome_unknown` steer keeps the attachments staged — a late `message_admission` fires the callback at the reconciliation, a retraction releases the Message with the attachments still staged for retry — and the panel no longer clears anything on the optimistic return. Regressions cover unknown → late admitted and unknown → retracted; reverting the hook change turns both red.\n\nVerification: epoch guard exit 0; quote-companion suites 56/56; ui composer/chat-turn suites 24/24; `format:check` clean. CI on this head is re-running.",
+  "url": "https://github.com/apache/maka/pull/4815#issuecomment-5580820850"
+ },
+ {
+  "pr": null,
+  "date": "2026-09-08T04:48:04Z",
+  "body": "Pushed c8a692586 (both READMEs): the `service update-policy` example now pins the exact resolved nightly version (`--target \"$version\"`) instead of `--target latest`, which the reconciliation assesses as `manual_action / target_not_newer` for a nightly installation. The surrounding text states that following successive nightlies means resolving the current version again and re-running the policy, and says outright that no `nightly` target name exists — nothing implies a `--target nightly` channel. The PR summary above is also refreshed: it no longer claims \"No drift found\" and now scopes the review-driven README corrections.",
+  "url": "https://github.com/apache/maka/pull/4801#issuecomment-5579403864"
+ },
+ {
+  "pr": null,
+  "date": "2026-09-08T04:48:00Z",
+  "body": "Pushed c10d35c48: the exit budget now starts at an explicit guard-bound boundary. The gated-recovery entry's `onWon` hook — which `candidate-entry` fires immediately after `launchOwnerGuard.bind()` — writes a bound marker, and the test releases the gate, waits for that marker, and only then starts the 20-second real-PID budget. A legitimately slow startup (composition creation and recovery included) can no longer eat the deadline, and the shutdown keeps its documented grace-plus-margin.\n\nOne local-run caveat kept honest in the comment: on Windows the Candidate can be terminated abruptly the moment its launcher dies — no JS exit event, so no bind and no marker — so the wait races the marker against `isProcessAlive`; a live process without a marker past the deadline still fails, and cross-platform evidence stays with CI.",
+  "url": "https://github.com/apache/maka/pull/4814#issuecomment-5579403290"
+ },
+ {
+  "pr": null,
+  "date": "2026-09-08T04:47:57Z",
+  "body": "Pushed 2f68f36c8: the branch now merges current main and carries compatibility epoch **132** — both sides had independently claimed 131, and the merge resolution keeps both epoch-log entries.\n\nThe two P2 acceptance gaps are closed on the same push:\n\n- **Side-chat caller**: `useQuoteCompanion.send` and `steer` no longer reject an empty draft when a quote or attachment is staged — the send reaches the fork/Host admission with its quote snapshot and attachment payload, and steering passes quotes/attachments through the one Message admission channel, with the staged quotes kept pending until the Host admits the steering Message. A regression through the side-chat entry covers both the idle-send and streaming-steer paths.\n- **Quote-only rendering**: `UserMessageBody` renders `ChatMessageBubble` only for non-blank text, so the transient and durable quote-only paths no longer produce an empty bubble; the #4804 acceptance item is finished rather than narrowed.",
+  "url": "https://github.com/apache/maka/pull/4815#issuecomment-5579402662"
+ },
+ {
+  "pr": null,
+  "date": "2026-09-07T22:53:35Z",
+  "body": "The durable-admission half is now pinned by tests, pushed in 54a454d1f: quote-only and attachment-only root Turn inputs are admitted through `normalizeRootTurnAdmissionPayload` (the seam your end-to-end reproduction proved was rejecting them), and a truly contentless input still throws the same frame error. On the pre-fix base the quote-only and attachment-only cases fail red, matching your reproduction.\n\nAlso pushed in fef4f355a (rebase onto current main): the decoder-side structured-content acceptance, the compatibility epoch renumbered to 126 (correctly above main's 125, resolving the collision you flagged), the compaction estimate counting the structured envelope, and the recap carrier placeholder.\n\nRemaining before merge: the composition-level verification you specified (submit → durable admission → snapshot/replay → model input against a real Host subprocess). The storage seam is now proven by unit test; the Host-subprocess run is the piece I will add next.",
+  "url": "https://github.com/apache/maka/pull/4515#issuecomment-5576396915"
+ },
+ {
+  "pr": null,
+  "date": "2026-09-07T22:26:24Z",
+  "body": "Plan for the P1, folded with the two named downstream gaps so the slice lands as one coherent contract change:\n\n1. **Shared predicate in Core** next to `MessageContent`: meaningful content = non-empty `text` OR `quotes.length > 0` OR `attachments.length > 0`.\n2. **Durable admission**: `normalizeRootTurnMessageContent` switches from the text-length rule to the shared predicate, keeping its own attachment-count, trust, and size checks.\n3. **Compaction estimate**: `estimateRuntimeEventChars` counts the structured envelope (quote texts + attachment identity) so a structured-only user event is no longer estimated at zero and dropped by the history-compact gate.\n4. **Recap**: the recap projection switches to the same visibility/content decision instead of `content.text.trim()`.\n5. **Verification**: storage-level admission unit tests (quote-only accepted; truly empty still rejected with the same frame error), estimate/recap unit tests, and a composition-level test driving a real SQLite-backed `turn.start` with a quote-only message through idle and queued paths to a durable Turn. Decoder-only examples are excluded per your note; a full Host-subprocess run remains the acceptance bar for closing #4804.\n\nThis slice deliberately does not touch the empty-bubble half of #4804 (out of scope as agreed). Will start after the current review round settles so the layers land and get re-reviewed together.",
+  "url": "https://github.com/apache/maka/pull/4515#issuecomment-5576205082"
+ },
+ {
+  "pr": null,
+  "date": "2026-09-07T22:22:20Z",
+  "body": "The remaining bare-package lifecycle entries are fixed too, pushed in e05de61c9: `runtime-host setup`, `runtime-host service uninstall`, and the repair-install line in the Upgrade section now all select `@nightly`, in both README languages. The command surface note (doctor/help/version on the alpha stub) covers your live-verification point about setup failing before it starts.",
+  "url": "https://github.com/apache/maka/pull/4801#issuecomment-5576178048"
+ },
+ {
+  "pr": null,
+  "date": "2026-09-07T22:16:50Z",
+  "body": "Pushed in a844dfb8c: the diagnostic wrapper now keeps the caught error as `cause` on the thrown persistence message, and if the diagnostic re-read itself throws, the original error is re-thrown instead of the payload dump — so a storage failure is never masked by \"attempts were not persisted\". Verified: the suites exercising `waitForCanonicalRequests` pass on this head; the pre-existing Windows-only EBUSY cleanup flake on the DeepSeek auxiliary-calls test is unchanged (documented earlier) and unrelated.",
+  "url": "https://github.com/apache/maka/pull/4566#issuecomment-5576142060"
+ },
+ {
+  "pr": null,
+  "date": "2026-09-07T16:05:13Z",
+  "body": "Both P2s are addressed on this branch now:\n\n- **jackwener's Workbar finding**: the two rows and the remaining-polish line are updated to the current implementation - the tab strip renders Astryx `TabList` and the workbar feature directory holds no `dnd-kit` reference, so the \"intentional exception\" entry is retired rather than certified. `last_verified` moves to 2026-09-07 (the date the workbar code was re-read). Per your minimum-fix either-way, this takes the \"update the stale mappings before keeping `current`\" direction, and your check of the rest of the audit (SettingsSection, MoreMenu/StatusDot, file moves, patch file, CSS entry) matched what I re-verified.\n- **hqhq1025's snapshot finding**: already pinned by `91cfb8623` on this branch (the two dated Astryx reviews now carry explicit audited-tree boundaries instead of `current` stamps); the `183 vs 249` file-count line stays as a historical fact of the August 9 pass, matching your read.\n\nUpdated in c5d2c2f7a on top of the latest branch state (which now merges current `main`).",
+  "url": "https://github.com/apache/maka/pull/4816#issuecomment-5573188501"
+ },
+ {
+  "pr": null,
+  "date": "2026-09-07T15:56:31Z",
+  "body": "Pushed in b335e5584 following your suggested resolution, with the registry facts re-verified first (`npm view maka-agent@latest` → 0.0.0-alpha.0 stub bin; `@nightly` → 0.2.0-dev.23.20260906; `@next` → 404):\n\n- **Install names both tags and what each is for**: `nightly` carries the complete CLI (currently `0.2.0-dev.23.20260906`), `latest` is the early alpha stub whose command surface is `doctor`/help/version.\n- **The release-line warning is restored**: \"do not use a bare `npm update --global maka-agent`: it follows `latest` and may switch the installation to the other release line.\"\n- **The one-off `npx` example now targets `@nightly`**, and the Upgrade section pins the exact version (`maka update --target 0.2.0-dev.23.20260906`) with a note that `--target` accepts `latest`/`next`/exact versions and has no `nightly` channel name — checked against `parseUpdateSelector` in `runtime-host-cli.ts:1340` before writing it.\n- **The opening contradiction is resolved**: the intro sentence now points at the `nightly` tag and defers the tag split to Install; README.zh-CN.md moves together.\n\nOne note: the Upgrade example pins `0.2.0-dev.23.20260906` verbatim. If you would rather the docs not carry a moving version literal, I can switch the sentence to \"pin the exact version `npm view maka-agent@nightly version` reports\" — say the word.",
+  "url": "https://github.com/apache/maka/pull/4801#issuecomment-5573100349"
+ },
+ {
+  "pr": null,
+  "date": "2026-09-07T15:39:56Z",
+  "body": "Named in the body now: the verification row and summary state that nine of the ten converted waits use the 5s deadline, and the graph-wake settle loop in `execution-model-composition.test.ts` keeps an explicit 30s wall-clock budget - it is the slowest wait (its previous budget was 400 ticks) and the one a reader most needs the number for. No code change, per your read.",
+  "url": "https://github.com/apache/maka/pull/4566#issuecomment-5572927329"
+ },
+ {
+  "pr": null,
+  "date": "2026-09-07T14:05:39Z",
+  "body": "Update: implemented the docs-convergence direction as head `0675840499f9452b24c14dec192d1bb87b3ee7ca`, with two registry facts checked just now that sharpen the choice — `nightly` no longer resolves either (E404; the versions list only carries `0.0.0-alpha.0` and an untagged `0.1.0-beta.1`), and the published `latest` alpha ships a limited command surface (doctor, help, version).\n\nSo the READMEs now: install/update through `latest`, state the early alpha's limited command surface, point full CLI/TUI usage at a source checkout, and drop the `next` update route and the \"latest may select a different release line\" guidance in both language versions. The remaining question for maintainers stands, restated: **before a full formal package ships, should the public install docs explicitly split an early-alpha path from a developer-snapshot path?** If the answer is \"publish a real `nightly`/`next` line instead\", this PR can pivot.\n\n---\n中文：已按\"文档收敛\"落地（head 06758404）。注册处现状比 review 时更紧：`nightly` 也已 404，只有 `latest=0.0.0-alpha.0` 且命令面有限。README 双语版已改为走 `latest` + 注明早期 alpha 能力限制 + 完整 CLI/TUI 指向源码运行，并删除 `next` 路线与\"latest 会选错发布线\"的过时说明。给维护者的问题保持不变并更新表述：**完整正式包发布前，公开安装文档是否明确拆分\"早期 alpha\"与\"开发快照\"两条路径？** 如果答案是\"改为发布真实的 nightly/next 线\"，本 PR 可以及时转向。\n",
+  "url": "https://github.com/apache/maka/pull/4801#issuecomment-5571802855"
+ },
+ {
+  "pr": null,
+  "date": "2026-09-07T14:01:31Z",
+  "body": "Follow-up, correcting my earlier reply: the \"upstream rework eliminated the pre-bind window\" conclusion does **not** hold. A control run with the same three-process shape but no Maka code shows the same abrupt grandchild disappearance on Windows, so the fast local exit was not evidence about the kernel at all; the source still binds the guard only after startup returns (`candidate-entry.ts:70-108`, `candidate-launch-owner-guard.ts:78-80`).\n\nThe test now makes the scenario deterministic instead of relying on that artifact: a test-only entry (`test-only/owned-candidate-delayed-recovery-main.ts`) delays composition creation by 5 s, the launcher is killed inside that pinned window (owner loss pre-bind, the same scenario as before), and the exit deadline is `OWNED_CANDIDATE_RECOVERY_DELAY_MS + shutdownGraceMs + margin` — derived from contracts rather than asserted. Also removed a `.catch(() => undefined)` in `owned-candidate.test.ts`'s `waitForHostShutdownStart` that masked real registration read errors (ENOENT is already mapped to `undefined` inside `readHostRegistration`).\n\nPushed as `a60a2dfbd380a4fab8f598e2e23b9cceb77a3d4e`; the rewritten test passes locally (Windows). As noted in the test comment, local Windows runs terminate such grandchildren abruptly without a JS exit event, so only CI verdicts count as cross-platform evidence for this assertion — re-review welcome on the new head.\n\n---\n中文：更正上一条回复——\"上游重构消除了 pre-bind 窗口\"不成立：无 Maka 代码的三进程对照在 Windows 上同样瞬间消失，本地快速退出不是内核行为证据（guard 仍在启动返回后才绑定）。测试改为确定性方案：test-only 入口把恢复窗口钉在 5s，kill 落在窗口内（仍是 pre-bind 场景），deadline=延迟+shutdownGraceMs+余量；另删掉 owned-candidate.test.ts 里吞注册读取错误的 catch（ENOENT 在 readHostRegistration 内部已映射为 undefined）。新 head a60a2dfb 本地（Windows）通过；跨平台结论仍以 CI 为准，欢迎在新 head 上复审。\n",
+  "url": "https://github.com/apache/maka/pull/4814#issuecomment-5571753308"
+ },
+ {
+  "pr": null,
+  "date": "2026-09-07T11:15:10Z",
+  "body": "Tracking issue for the underlying implementation risk described in the review: #4981\n\n---\n中文：底层实现缺陷（通知仍按旧的本地隐私开关放行内容）已单开 issue 跟踪：#4981",
+  "url": "https://github.com/apache/maka/pull/4800#issuecomment-5569793433"
+ },
+ {
+  "pr": null,
+  "date": "2026-09-07T11:10:09Z",
+  "body": "The P1 is real and pre-dates this audit: `packages/cli/README.md` (and its Chinese counterpart) instruct `maka-agent@next` / `--target next`, while the live npm registry only carries `latest` and `nightly`, and the release rules (`docs/cli-npm-release.md`, `scripts/release-cli-package.mjs`) define no `next` dist-tag. Users following the public install instructions fail.\n\nSince the fix direction is a release-strategy call rather than a docs-audit decision, asking the maintainers to pick one:\n\n1. point the README install instructions at `maka-agent@latest` and drop the `--target next` route, or\n2. actually publish a `next` dist-tag from the release pipeline.\n\nHappy to prepare either on this PR or as a follow-up — which do you prefer?\n\n---\n中文：P1 属实且早于本审计：README 教用户装 `maka-agent@next`，但 npm 上只有 `latest`/`nightly`，发布规则也没定义 `next`。修法是发布策略选择，请维护者定：①README 改用 `latest` 并删掉 `next` 路线；②发布管线真正提供 `next`。愿意在本 PR 或后续 PR 里按选择落实。\n",
+  "url": "https://github.com/apache/maka/pull/4801#issuecomment-5569730281"
+ },
+ {
+  "pr": null,
+  "date": "2026-09-07T11:09:50Z",
+  "body": "Merged current `main` into this branch (upstream moved ~110 commits since your review, including the Runtime Host startup/shutdown rework around #4958) and re-ran your mutation on the merged head: a 25 s delay injected immediately before `composition.recover()` in `host-kernel.ts` — the same seam your review used — no longer reproduces the false failure. The Candidate exits ~1 s after the launcher is killed, well inside the 20 s bound, with the launch-owner Client still admitted before the guard binds. So the pre-bind lingering window no longer exists on this tree, and the 20 s bound stands unchanged.\n\nThe exit assertion passes on the merged head locally (Windows), alongside the remaining changed lifecycle tests. Marking this P2 resolved by the upstream rework rather than by a bound change — happy to re-derive the bound if a maintainer prefers it anchored to the new mechanism explicitly.\n\n> Automated findings above were re-verified against head `0a2dad08bf1f598aa02914b1dbf71178f8c5e754`.\n\n---\n中文：已并入当前 main（含上游 startup/shutdown 重构）并在合并后的 head 上重放了你的 25s recovery 延迟 mutation：Candidate 在 launcher 被杀后约 1s 退出，远在 20s bound 内，pre-bind 假失败不再复现，20s bound 维持原样。此 P2 由上游重构解决而非改 bound，如维护者希望 bound 显式锚定新机制可以再推导。\n",
+  "url": "https://github.com/apache/maka/pull/4814#issuecomment-5569726336"
+ },
+ {
+  "pr": null,
+  "date": "2026-09-07T06:38:51Z",
+  "body": "Agreed with the bump. The asymmetry decides it: a wrong \"compatible\" declaration is invisible at handshake and only surfaces when a mixed-version pair actually exchanges a structured-only message, while a spare epoch number costs nothing. I'll bump the epoch `112 → 113` on this PR and replace the compatibility declaration accordingly.\n\n---\n中文：同意 bump。错误的兼容声明在握手时不可见，只会在新旧版本混跑时以用户可见的解码失败暴露；白花一个 epoch 号反而便宜。这个 PR 会把 epoch 提到 113 并相应调整声明文件。\n",
+  "url": "https://github.com/apache/maka/pull/4815#issuecomment-5566142004"
+ },
+ {
+  "pr": null,
+  "date": "2026-09-07T06:38:42Z",
+  "body": "Thanks for the re-review and for confirming the fix on head `012ca953b52b0bc56403ac7aa6d6dcc853472d7b`.\n\nOn the underlying implementation risk (content-bearing notifications still gated on the stale local privacy copy while the authority lives with Runtime Host policy): agreed it should be tracked independently from this docs audit. I'll open a tracking issue referencing `notifications-ipc-main.ts` and `settings-ownership.ts` so it doesn't get lost, and link it back here.\n\n---\n中文：多谢复核确认。底层实现缺陷（通知仍按旧的本地隐私开关放行内容）不在本审计 PR 里修，我会单开 issue 跟踪并回链到这里。\n",
+  "url": "https://github.com/apache/maka/pull/4800#issuecomment-5566140600"
+ },
+ {
+  "pr": null,
+  "date": "2026-09-05T12:13:18Z",
+  "body": "Closing as superseded: #4768 (already merged) fixes the same two occurrences of the `rehydrate` wording in `docs/blogs/beyond-function-calling.zh-CN.md`, with cleaner phrasing in the prose paragraph. This PR no longer has a diff worth landing, so closing it instead of resolving the conflict against main.",
+  "url": "https://github.com/apache/maka/pull/4802#issuecomment-5551727011"
+ },
+ {
+  "pr": "4804",
+  "date": "2026-09-04T23:15:20Z",
+  "body": "take",
+  "url": "https://github.com/apache/maka/issues/4804#issuecomment-5547528769"
+ },
+ {
+  "pr": "4776",
+  "date": "2026-09-04T16:36:25Z",
+  "body": "take",
+  "url": "https://github.com/apache/maka/issues/4776#issuecomment-5543588738"
+ },
+ {
+  "pr": "4767",
+  "date": "2026-09-04T16:31:31Z",
+  "body": "take",
+  "url": "https://github.com/apache/maka/issues/4767#issuecomment-5543531931"
+ },
+ {
+  "pr": "4360",
+  "date": "2026-09-04T16:11:56Z",
+  "body": "对照当前 main（22715e84f）核实了一下，这个 issue 描述的两个问题在最新代码里都已经有解了：\n\n**1. 高水位自动压缩**——已随 #4348（2026-08-31，和本 issue 同一天提交）落地：mid-turn 容量触发会以 `context_limit` 为原因自动发起 history compaction；随后 #4486（09-02）把估算锚定到真实 provider usage，#4653（09-03）改为由 provider 决定容量判定。另一份带生产数据的报告 #4634 也证实触发器现在会正常开火。\n\n**2. 手动压缩入口**——两个 surface 都有 `/compact`：桌面端 composer（#2612，08-10 起）和 CLI/TUI 的 slash 命令（`pi-tui-runner.ts`，`Usage: /compact`）。\n\n你的环境写的是 source build 但没有提交号——大概率早于 #4348。麻烦：\n\n1. 更新到最新 main（或 09-03 之后的提交）重试；\n2. 如果高水位下仍然不触发，很可能是压缩**尝试了但 failOpen**（看起来像\"没触发\"）——这正是 #4634 追踪的 provider 形态问题，欢迎在那边补充你的模型/连接信息。\n\n如果更新后仍有问题，请附上 build commit 和 surface（desktop / TUI），我们再继续排查。",
+  "url": "https://github.com/apache/maka/issues/4360#issuecomment-5543291567"
+ },
+ {
+  "pr": "4634",
+  "date": "2026-09-04T16:01:26Z",
+  "body": "take",
+  "url": "https://github.com/apache/maka/issues/4634#issuecomment-5543153105"
+ },
+ {
+  "pr": null,
+  "date": "2026-09-04T13:05:32Z",
+  "body": "The red `test` job on `0796f1112` is not the code: all 798 unit tests pass (795 pass + 3 skips, 0 fail), and the step that failed is the CLI production dependency audit — `npm audit --omit=dev --workspace maka-agent --json` — which threw with an **empty** error payload (`{\"summary\":\"\",\"detail\":\"\"}`). That empty payload is npm's registry-audit-endpoint failure signature; a real advisory would carry a populated summary.\n\nI ran the exact same command against the same tree locally: exit `0`, `metadata.vulnerabilities.total = 0`, no error field. The commit also touches no dependency manifests (only `run-command-core.ts` and two test files), so a new advisory appearing between the green run on `28f9b88e` and this run is unlikely.\n\nCould someone re-run the failed job? If the audit still fails on a re-run with a populated advisory report, that is a different conversation — but an empty `{summary, detail}` points at the npm audit endpoint, not at this diff.",
+  "url": "https://github.com/apache/maka/pull/4506#issuecomment-5540849914"
+ },
+ {
+  "pr": null,
+  "date": "2026-09-04T09:54:09Z",
+  "body": "Addressed the remaining P2 and refreshed the branch on current `main`.\n\n- Rebased onto `upstream/main` at `3f4ac8c9dd3907031d964024e69376cac8552ea7` with no textual conflicts.\n- P2 fix is in `705e23dc1`: the panel exposes `data-live` from the same `graphLive` value that gates the header spinner, and running/runnable status dots only animate under `.maka-agent-graph-panel[data-live=\"true\"]`. After a snapshot-read error, both liveness animations are off.\n- PR body is updated for the current head: no elapsed clock, no `data-error` liveness hook, reduced-motion trade-off stated, and every affected commit has the `Generated-by: GLM-5.3-Flash (ZCode)` trailer.\n\nLocal verification after the rebase:\n\n- `tsc -p tsconfig.renderer.json --noEmit` from `apps/desktop`: exit 0, no output\n- `biome lint apps/desktop/src/main/__tests__/agent-graph-panel-visibility.test.ts apps/desktop/src/renderer/agent-graph-panel-visibility.ts apps/desktop/src/renderer/agent-graph-panel.tsx apps/desktop/src/renderer/styles/agent-graph.css`: `Checked 4 files in 776ms. No fixes applied.`\n- `node apps\\desktop\\scripts\\check-renderer-architecture.mjs`: `Renderer architecture check passed.`\n- `npm run check:asf-headers`: `Every source file carries the ASF header or a reviewed exclusion.`\n- `git diff --check upstream/main...HEAD`: exit 0, no output\n\nFresh CI is running on head `705e23dc1`.\r\n",
+  "url": "https://github.com/apache/maka/pull/4514#issuecomment-5538776538"
+ },
+ {
+  "pr": null,
+  "date": "2026-09-04T08:35:26Z",
+  "body": "All four items addressed in 0796f1112:\n\n**P2 (body)**: the activation section now states the fixture guards the current contract rather than pinning the transition, and calls out plainly that the transition itself is not regression-coverable after the deletion (since `recovered` no longer exists in the outcome type).\n\n**P2 (activation test comment)**: reworded to match — the comment explains the fixture guards the contract and that an injected `MakaRunOutcome` cannot express the old shape.\n\n**P3 (run-command-core)**: `boundaryFailureInvocationIds` and `unclassifiedBoundaryFailure` collapsed into a single `boundaryFailure` boolean. The set's only reader was `.size > 0`, and the dead assignment at `:316` paired with the deleted `recovered` branch. Five lines removed, no assertion changes.\n\n**P3 (test names and params)**: the two \"retries a different target\" cases renamed to \"keeps the boundary unresolved when a later same-named call succeeds (live/durable)\"; reverted the `args` parameter additions on `toolStart` and `storedToolCall` (four call sites). The classifier reads no args after the deletion, so the path strings were decoration.\n\nVerification: runtime-host-run-command 39/39, activation-command 12/12, format:check clean, asf-headers clean.\n",
+  "url": "https://github.com/apache/maka/pull/4506#issuecomment-5537902395"
+ },
+ {
+  "pr": null,
+  "date": "2026-09-04T03:19:31Z",
+  "body": "Visual evidence for the three P3s, rendered from the `ManyOperators` story on this head (light and dark at 900px, a 420px viewport, and reduced motion via the `data-maka-reduced-motion=\"true\"` fixture path):\n\n**Light, 900px** - spinner-to-text baseline and spacing on the inline-flex progress line:\n\n![light 900](https://github.com/ggbdpq/maka/releases/download/evidence-4514/4514-light-900.png)\n\n**Dark, 900px**:\n\n![dark 900](https://github.com/ggbdpq/maka/releases/download/evidence-4514/4514-dark-900.png)\n\n**Narrow, 420px** - the heading-copy wraps and the progress line drops to its own row with no overflow:\n\n![narrow 420](https://github.com/ggbdpq/maka/releases/download/evidence-4514/4514-light-420-narrow.png)\n\n**Reduced motion, 900px** - the heartbeat spinner is absent (not frozen), the status text carries the state alone:\n\n![reduced motion](https://github.com/ggbdpq/maka/releases/download/evidence-4514/4514-light-reduced-motion.png)\n\nThe reduced-motion capture sets `data-maka-reduced-motion=\"true\"` on the root, the same write site the e2e fixture uses, so it exercises the attribute path rather than the media query.\n",
+  "url": "https://github.com/apache/maka/pull/4514#issuecomment-5535175448"
+ },
+ {
+  "pr": null,
+  "date": "2026-09-03T23:15:16Z",
+  "body": "The P2 and the evidence request are addressed, pushed in 56b6bb372:\n\n- **P2**: the panel now exposes `data-error` and the dot pulse freezes under it (`animation: none` on running/runnable dots) — after a failed snapshot read neither liveness signal claims liveness. The spinner heartbeat no longer exists on this head (removed with the clock), so the pulse is the only motion signal and it now answers to the same `!error` authority.\n- **Reduced motion (P3)**: stated in the body now — reduced-motion users see the static running dot only; no frozen ring and no fake motion.\n- **Generated-by**: `56b6bb372` carries the trailer; the squash message should keep it.\n\nVisual evidence from Storybook (`blocked-on-upstream`, live graph), Light:\n\n![light](https://raw.githubusercontent.com/ggbdpq/maka/pr-evidence-4514/e2e-evidence/4514-light.png)\n\nDark:\n\n![dark](https://raw.githubusercontent.com/ggbdpq/maka/pr-evidence-4514/e2e-evidence/4514-dark.png)\n\nNarrow width — the heading copy wraps gracefully, the progress line moves to its own row and nothing strands:\n\n![narrow](https://raw.githubusercontent.com/ggbdpq/maka/pr-evidence-4514/e2e-evidence/4514-narrow.png)\n\nReduced motion (via the `data-maka-reduced-motion` fixture attribute the base.css global honours) — identical static header, no frozen ring:\n\n![reduced](https://raw.githubusercontent.com/ggbdpq/maka/pr-evidence-4514/e2e-evidence/4514-reduced-motion.png)\n\nComputed-style check under reduced motion: the running dot reports `animation-name: none`, `animation-duration: 1e-05s`, color unchanged — frozen, not broken.\n\nAlso note for triage: the two earlier Desktop e2e reds were the branch reproducing flakes upstream had already fixed — the branch is rebased on current `main` now, which carries #4632 (code-scroll deselect-proof) and #4620 (transcript tail wait).",
+  "url": "https://github.com/apache/maka/pull/4514#issuecomment-5533341783"
+ },
+ {
+  "pr": null,
+  "date": "2026-09-03T15:23:11Z",
+  "body": "Found the actual root cause of the two e2e reds: the branch's base (`ade07b5be`) predates the e2e stabilisation fixes upstream has already merged — #4632 (deselect-proof the code-scroll selection drag, the exact spec that failed in the last run) and #4620 (wait for the initial transcript tail, the one before it). The branch was reproducing flakes that upstream had already fixed.\n\nRebased onto current `upstream/main` (39 upstream commits picked up, including those two), regenerated the surface inventory after the rebase, and re-verified locally: renderer typecheck 0 errors, renderer architecture check green against the new base, inventory ok. Fresh CI is triggered on the new head — with the deselect-proof and tail-wait fixes in the tree, the two flaky specs should pass now.\n\nNo source changes in this rebase beyond the inventory regeneration; the review fixes from the previous round are unchanged.",
+  "url": "https://github.com/apache/maka/pull/4514#issuecomment-5527974316"
+ },
+ {
+  "pr": null,
+  "date": "2026-09-03T14:56:26Z",
+  "body": "The latest head's Desktop e2e step failed on `code-scroll.spec.ts:22` (\"a one-line Markdown code block exposes native and selection horizontal scrolling\"): the selection drag produced `window.getSelection()?.toString().length === 0` for the full 10s poll window.\n\nThis looks like the same intermittency documented in #4633 / fixed-forward in #4632 — the code-scroll selection drag intermittently selects nothing — and is disjoint from this PR: against fresh `upstream/main` the diff is 4 files (`agent-graph-panel.tsx`, `agent-graph-panel-visibility.ts` + its test, `agent-graph.css`), +71/-1, with zero hits for `code-scroll`/`getSelection`/`scrollLeft`. Everything else in the job passed (104/105 e2e specs).\n\nCould someone re-run the failed job? If it reproduces I will take the reproduction from there.",
+  "url": "https://github.com/apache/maka/pull/4514#issuecomment-5527636873"
+ },
+ {
+  "pr": null,
+  "date": "2026-09-03T13:44:27Z",
+  "body": "The P2 and both follow-ups from the second review are pushed in 3de810814:\n\n- **P2**: `graphLive` now requires `!error` — after a failed snapshot read the last known status no longer keeps the pulse running while liveness is unknown.\n- **P3 (dead class)**: `maka-agent-graph-heartbeat` stays, repurposed as the hook the reduced-motion rule needs (see next).\n- **P3 (reduced motion)**: the heartbeat is hidden under both reduce paths — `@media (prefers-reduced-motion: reduce)` and `[data-maka-reduced-motion=\"true\"]` (the e2e fixture attribute the base.css global also honours). Rationale: the global rule freezes Astryx's ring mid-spin, and a motionless ring is exactly the broken-looking signal to avoid; the pulse's static dot already carries the state. Per-file reduced-motion duplication is also gone.\n\nVerification per your acceptance list: ui 320/320, renderer typecheck 0 errors, architecture check green against the merge base, inventory ok, `biome lint` clean on the changed files (the PR body's format row was wrong as you noted — `format:check` excludes `apps/desktop/**`; it is replaced with the renderer typecheck and lint rows), and the Storybook visual pass in Light and Dark. The PR body now also states the reduced-motion trade-off explicitly.",
+  "url": "https://github.com/apache/maka/pull/4514#issuecomment-5526729689"
+ },
+ {
+  "pr": null,
+  "date": "2026-09-03T13:43:10Z",
+  "body": "All four review items are addressed, pushed in d617b59bb on top of the net deletion:\n\n- **P1 (body)**: the body is rewritten. It now states the change is a deliberate tightening with explicit compatibility impact — `maka run` unresolved exits are the pinned common path (exit `1`, empty stdout, diagnostic on stderr; the flipped root-Graph fixture pins the `0 → 1` transition), and `maka activate` returns `blocked` / `permission_required` / exit `3` where it previously completed with exit `0`. The old \"exit codes are unchanged\" claim and the args/target reasoning that belonged to the dropped version are gone; the surviving argument is the one that supports the deletion: the condition compared information that cannot establish recovery, and non-interactive runs deny widening unconditionally, so real recovery does not exist on this surface.\n- **P2 (write-only mechanism)**: `#unresolvedSandboxFailures` is now a `Set<string>` of blocked tool-use ids; `#callByToolUseId`, the `tool_call` observation variant, and the step/name projections in both observation producers are deleted.\n- **P2 (activation regression)**: `blocks a completed invocation whose stream carried a boundary failure` pins the completed → `blocked` / `permission_required` / exit `3` transition.\n- **P2 (empty stdout)**: stated in the body as the visible consequence, with the write-the-explanation follow-up named; happy to fold it in here if you prefer.\n- **P3 (test collapse)**: the args threading is deleted from both fixtures and the same-target live case is removed — the different-target live case, the durable case, and `deniedWideningEvents` (with its stderr assertion) cover the tightened behavior.\n- **P3 (red-on-base count)**: the body now names the SHA the earlier red count was measured against (`main@6e6af952a`, pre-#4389) and states that per-case counts against the moved base (`9d4002b38`, which includes #4389) were not re-measured.\n\nSuites: `runtime-host-run-command` 38/38, `activation-command` 12/12 (new regression included). The manual acceptance from the review (a real `maka run` whose second call reads an in-workspace file) still needs a live Host, so it remains unexecuted — the fixture pair covers the same decision points statically.",
+  "url": "https://github.com/apache/maka/pull/4506#issuecomment-5526713539"
+ },
+ {
+  "pr": null,
+  "date": "2026-09-03T06:28:04Z",
+  "body": "Took your reading - the branch is now a net deletion, pushed as 28f9b88ec (single commit after the rebase; the args-correlation and pin commits were dropped since the deletion subsumes them):\n\n- `sandboxBoundary` collapses to `none | unresolved`. `stableArgsJson`, the `argsJson` plumbing, the pin, the `recovered` clause in `run-command-core`, and the `!== 'recovered'` guard in `activation-command.ts:592` are all gone. Exit codes are unchanged on every path you reached.\n- Both named follow-ups acknowledged in the PR body: the dead `sandbox_boundary_request` branch in `run-command-core` (with its fixture scenario rework) and the unresolved-exit suppression of the Turn's final message. I did not touch either here so the PR stays a pure deletion.\n- Tests: the live \"same-target retry recovers\" case you flagged now asserts the projector's real shape can only exit 1; the live/durable same-name/different-target cases and the denied-widening case stay as permanent-unresolved regressions; \"recovered from live and durable Turns\" is flipped to assert `unresolved` on both.\n\nTarget suite 39/39 on Windows; Biome clean on the four changed files. CI is running on 28f9b88ec.\n",
+  "url": "https://github.com/apache/maka/pull/4506#issuecomment-5521519979"
+ },
+ {
+  "pr": null,
+  "date": "2026-09-03T06:16:11Z",
+  "body": "Took option 1 - the clock is gone, pushed in 8a964a3a2:\n\n- `AgentGraphLiveStatus` is collapsed back into the panel as a conditional `Spinner` gated by `isAgentGraphLive`; the component, its tests, and the `@maka/ui` export are removed, so the sentinel `createdAt: 0` and the Host-vs-Desktop clock domain problem have no code left to bite. The story fixture is back to the production sentinel shape.\n- The liveness answer is the pulse + header spinner off `snapshot.status` - no timestamp, nothing to correlate - which still answers all three of #3878's asks.\n- The elapsed clock returns as its own change only after the Host sends a real start time or an elapsed value from its own clock domain (epoch 1's `0` rows included in that prerequisite), per both reviews.\n- PR description rewritten to match this head, and the `Generated-by` trailer is now on every commit.\n\nReduced motion P3 noted: with the clock gone, reduced-motion users get a static ring + settled pulse dots, which still reads as \"status row\" but no longer animates - happy to pick that up with the clock's own PR.\n",
+  "url": "https://github.com/apache/maka/pull/4514#issuecomment-5521401312"
+ },
+ {
+  "pr": null,
+  "date": "2026-09-03T01:36:52Z",
+  "body": "Pushed 8d8d482dc addressing both follow-ups:\n\n- Your Host-path gap: `request_sandbox_boundary` tool_starts now pin the failure set for the rest of the Turn, so once a widening is requested no later success (including the projector's `argsPreview`-shaped false-success you reproduced) can downgrade the exit to 0. The interaction event itself stays dropped, but the widening call's `tool_start` carries the pin, so the durable replay path is covered by the same rule. Your trade-off note is taken as-is: over-declare-then-narrow now also fails the exit code.\n- Rebase note: main absorbed the original name-only fix while this PR waited, so the branch was rebased to carry only the incremental args-correlation commit (jackwener's P1) plus this pin.\n\nRed/green would have been welcome - the added regressions cover the three shapes: live and durable same-name/different-target (exit 1), same-target retry still recovers (exit 0), and denied-widening-then-success (exit 1 with the diagnostic). CI is running on 8d8d482dc.\n",
+  "url": "https://github.com/apache/maka/pull/4506#issuecomment-5518985510"
+ },
+ {
+  "pr": null,
+  "date": "2026-09-02T21:54:27Z",
+  "body": "Both pre-merge changes and the smaller items are pushed in 5207f4869 + 39e974366:\n\n- **Clock origin**: `AgentGraphLiveStatus` now takes `startedAt` and the panel passes the selected epoch's `createdAt` — the header reports how long the graph has run, not how long the view has been open. `liveSinceRef`, `resetKey`, the reset branch, and the reset test are gone; the ticker is the only state left.\n- **Status set**: moved to `agent-graph-panel-visibility.ts` as `isAgentGraphLive`, now used by both the heartbeat gate and `stopAvailable`; covered in the visibility suite (14 tests, including a shared-vs-settled matrix).\n- **Spinner**: `aria-hidden` (the adjacent visible text already announces the status), and `.maka-agent-graph-progress` is now an inline flex with `gap: var(--space-1)`, which also let me drop the dead `flex: 0 0 auto` rule.\n- **Reduced motion**: dropped the per-file block in favour of the `base.css` global (which also covers the `data-maka-reduced-motion` e2e fixture path).\n- Story fixture: the graph story hardcoded `createdAt: 1`, which the epoch-origin stopwatch now faithfully renders as a five-digit hour count — it uses a realistic offset and doubles as the visual check (spinner spacing/baseline verified in Light and Dark).\n\nVerified locally: ui 320/320 (5 live-status tests updated), desktop typecheck 0 errors, renderer architecture check green against the merge base, surface inventory ok, format + ASF headers clean. CI rerun on the new head will re-exercise the Desktop e2e step.",
+  "url": "https://github.com/apache/maka/pull/4514#issuecomment-5516968109"
+ },
+ {
+  "pr": null,
+  "date": "2026-09-02T14:30:18Z",
+  "body": "The current head's CI failure is in the Desktop e2e step: `transcript-scroll.spec.ts:550` (\"the dock affordance returns the reader to the tail\") — `expect(await scrollButtonOffered(page)).toBe(true)` receives `false`, i.e. the dock button is not offered after scrolling the transcript to the top.\n\nI believe this is unrelated to this PR and would like to ask for a re-run of the failed job (I don't have write access to trigger it):\n\n- This PR's diff touches only the Agent Graph panel, its CSS, and the new `AgentGraphLiveStatus` component in `packages/ui` (plus the surface inventory). It has zero overlap with transcript scrolling - `SCROLL_TO_BOTTOM`, the transcript scroller, and `scrollButtonOffered`'s pin read are not in the diff.\n- The failing assertion lives in the transcript scroll-authority area where #4269 and #4413 are open.\n- Everything else in the job passed: 100/101 e2e specs, the renderer architecture check (against the new base), and all workspace tests.\n\nIf the failure reproduces on a re-run I will dig in with a reproduction.",
+  "url": "https://github.com/apache/maka/pull/4514#issuecomment-5511177482"
+ },
+ {
+  "pr": "4510",
+  "date": "2026-09-02T13:55:28Z",
+  "body": "take",
+  "url": "https://github.com/apache/maka/issues/4510#issuecomment-5510675352"
+ },
+ {
+  "pr": null,
+  "date": "2026-09-02T11:41:38Z",
+  "body": "Fixed in 6ee47cd3d — the recovery correlation now compares the retried call's semantic target, not just its name:\n\n- Both live `tool_start` events and durable `tool_call` messages carry `args`, so the classifier serializes each call's args with sorted keys (`stableArgsJson`) and requires an exact match with the blocked call's args before treating a later success as recovery of that boundary.\n- Missing or unserializable args produce a unique unprovable marker that never matches anything, so the failure stays unresolved (fail-closed), per the review's \"if the wire data cannot prove it, keep it unresolved\".\n- Regressions added: live and durable fixtures with two same-named `Read` calls whose `args.path` differ (`/outside/secret.txt` blocked, `/workspace/README.md` later succeeds) — both now exit 1 — plus a same-target retry fixture that must still report `recovered` and exit 0.\n\nLocal: target suite 40/40 pass on Windows; the full CLI suite shows only the pre-existing platform failures (LaunchAgent/EPERM fsync/symlink) also present without this change.\n",
+  "url": "https://github.com/apache/maka/pull/4506#issuecomment-5508959542"
+ },
+ {
+  "pr": null,
+  "date": "2026-09-02T11:26:59Z",
+  "body": "Both requested fixes are pushed in f6f187d1d:\n\n- ADR: journal-state list now lists the full five-member union including `reconcile_observed`, and the decision table gains the \"operation already carries a recovery decision fact\" row (settled from the recovery bundle, per `recovery-resolver.ts:252-264`).\n- Phase 3-4 design: `:456` now reads `reconcile_matches_prior_state`, and the `:478` UI note was reworded to drop the nonexistent `redo_disabled_pending_cas` mapping.\n\nThe PR body's document counts were corrected as well (five corrected / two verified-unchanged). Ready for re-review.\n",
+  "url": "https://github.com/apache/maka/pull/4518#issuecomment-5508797112"
+ },
+ {
+  "pr": "3978",
+  "date": "2026-09-01T23:02:46Z",
+  "body": "Heads-up while holding this slice: the shared-UI catalogs cannot land until #3975 (core: add `ko` to the UiLocale model) provides the type-level slot - `UiCatalog<T>` is keyed by `UiLocale`, and `ko` catalogs have nowhere to exist before that lands. #3975 is currently assigned, so I am keeping this claim and will start the moment the core slice merges; nobody is blocked in the meantime since this slice is last in the dependency chain.",
+  "url": "https://github.com/apache/maka/issues/3978#issuecomment-5501613498"
+ },
+ {
+  "pr": "4516",
+  "date": "2026-09-01T22:59:20Z",
+  "body": "take",
+  "url": "https://github.com/apache/maka/issues/4516#issuecomment-5501568983"
+ },
+ {
+  "pr": "3522",
+  "date": "2026-09-01T20:18:18Z",
+  "body": "I'm taking the **Recovery and resume** documentation-audit slice only. Plan: audit the seven documents in this group against the current implementation; verify named symbols, storage descriptions, and reading-map paths; run the drift greps from the tracking issue; check bilingual sync and `last_verified` freshness; documents with no drift will be reported as verified with no change. One PR for this group only.",
+  "url": "https://github.com/apache/maka/issues/3522#issuecomment-5499868264"
+ },
+ {
+  "pr": "3978",
+  "date": "2026-09-01T20:18:08Z",
+  "body": "take",
+  "url": "https://github.com/apache/maka/issues/3978#issuecomment-5499866212"
+ },
+ {
+  "pr": "3878",
+  "date": "2026-09-01T20:18:06Z",
+  "body": "take",
+  "url": "https://github.com/apache/maka/issues/3878#issuecomment-5499865863"
+ },
+ {
+  "pr": "4489",
+  "date": "2026-09-01T20:18:04Z",
+  "body": "take",
+  "url": "https://github.com/apache/maka/issues/4489#issuecomment-5499865609"
+ },
+ {
+  "pr": "4388",
+  "date": "2026-09-01T20:18:03Z",
+  "body": "take",
+  "url": "https://github.com/apache/maka/issues/4388#issuecomment-5499865383"
+ },
+ {
+  "pr": "4240",
+  "date": "2026-09-01T15:46:49Z",
+  "body": "take",
+  "url": "https://github.com/apache/maka/issues/4240#issuecomment-5496565822"
+ },
+ {
+  "pr": "3876",
+  "date": "2026-09-01T15:24:57Z",
+  "body": "take",
+  "url": "https://github.com/apache/maka/issues/3876#issuecomment-5496277879"
+ },
+ {
+  "pr": "3825",
+  "date": "2026-09-01T14:42:02Z",
+  "body": "take",
+  "url": "https://github.com/apache/maka/issues/3825#issuecomment-5495693351"
+ },
+ {
+  "pr": "3522",
+  "date": "2026-08-31T09:06:23Z",
+  "body": "I’m taking the **Bots** documentation-audit slice only.\n\nPlan:\n- audit `docs/architecture/bot-onboarding-runtime.zh-CN.md` against the current Desktop onboarding service and `@maka/runtime/bots` implementation;\n- verify named symbols, IPC names, provider coverage, snapshot fields, storage/rollback claims, and cited tests;\n- correct confirmed drift, add `last_verified`, and keep this group to a single PR.\n\nThis PR will use `Refs #3522` rather than close the tracking issue.",
+  "url": "https://github.com/apache/maka/issues/3522#issuecomment-5476175133"
+ }
+]

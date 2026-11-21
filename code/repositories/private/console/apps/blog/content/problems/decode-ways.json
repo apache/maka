@@ -1,0 +1,23 @@
+{
+  "id": "82",
+  "slug": "decode-ways",
+  "title": "解码方法",
+  "difficulty": "medium",
+  "tags": ["字符串", "动态规划"],
+  "description": "一条包含字母 `A-Z` 的消息通过以下映射进行了编码:`'A' -> 1`、`'B' -> 2`、...、`'Z' -> 26`。给定一个只含数字的非空字符串 `s`,返回解码方法的总数。\n\n**示例 1:**\n\n- 输入:`s = \"12\"`\n- 输出:`2`(可以解码为 `\"AB\"`(1 2)或 `\"L\"`(12))\n\n**示例 2:**\n\n- 输入:`s = \"226\"`\n- 输出:`3`(`\"BZ\"`(2 26)、`\"VF\"`(22 6)、`\"BBF\"`(2 2 6))\n\n**示例 3:**\n\n- 输入:`s = \"06\"`\n- 输出:`0`(`\"06\"` 无法映射)",
+  "solution": "## 思路\n\n**动态规划**:`dp[i]` 表示前 `i` 个字符的解码数。若当前一位 `1-9` 可单独解码,`dp[i]+=dp[i-1]`;若当前两位 `10-26` 可组合,`dp[i]+=dp[i-2]`。注意前导 `0` 不合法。\n\n## 参考代码\n\n```js\nfunction numDecodings(s) {\n  if (s[0] === '0') return 0;\n  const n = s.length;\n  const dp = new Array(n + 1).fill(0);\n  dp[0] = 1;\n  dp[1] = 1;\n  for (let i = 2; i <= n; i++) {\n    const one = Number(s.slice(i - 1, i));\n    const two = Number(s.slice(i - 2, i));\n    if (one >= 1) dp[i] += dp[i - 1];\n    if (two >= 10 && two <= 26) dp[i] += dp[i - 2];\n  }\n  return dp[n];\n}\n```\n\n## 复杂度\n\n- 时间:O(n)\n- 空间:O(n)(可优化为 O(1))",
+  "signature": {
+    "language": "javascript",
+    "entry": "numDecodings",
+    "params": [{ "name": "s", "type": "string" }],
+    "returns": "number"
+  },
+  "testCases": [
+    { "sample": true, "input": ["12"], "expected": 2 },
+    { "sample": true, "input": ["226"], "expected": 3 },
+    { "sample": true, "input": ["06"], "expected": 0 },
+    { "sample": false, "input": ["0"], "expected": 0 },
+    { "sample": false, "input": ["10"], "expected": 1 },
+    { "sample": false, "input": ["11106"], "expected": 2 }
+  ]
+}

@@ -1,0 +1,36 @@
+{
+  "schemaVersion": "mimosa-finding-history/v1",
+  "runId": "20260913T132406721Z-2620-d70f9be1aa8f",
+  "runStatus": "completed",
+  "errors": [],
+  "target": ".",
+  "revision": "251a5350787150d904d93d8eda1b51e52d8471b5",
+  "diffHash": "df3ceb08e208f2afe7dbbdb93d1e51a414e36bdcd57a1992b10ba54814f553b2",
+  "rulesVersion": "unavailable",
+  "recordedAt": "2026-09-13T13:24:06.721Z",
+  "timing": {
+    "startedAt": "2026-09-13T13:24:06.090Z",
+    "completedAt": "2026-09-13T13:24:06.721Z",
+    "durationMs": 631
+  },
+  "tokens": {
+    "input": 0,
+    "output": 0,
+    "total": 0,
+    "modelCalls": 0,
+    "measurement": "known-zero"
+  },
+  "findings": {
+    "total": 0,
+    "bySeverity": {},
+    "byStatus": {}
+  },
+  "coverage": {
+    "status": "complete",
+    "reasonCounts": {
+      "baseline_partial": 1
+    }
+  },
+  "evidenceBoundary": "static_only",
+  "immutableReport": ".mimosa/reports/task-review-sess_2175b38d-61b0-477c-94dc-1c0fe2f2d16c-20260913T132406721Z-2620-d70f9be1aa8f.json"
+}

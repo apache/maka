@@ -1,0 +1,46 @@
+/* 样式基座（token/暗色板/防闪）统一由 @ggbdpq/console-ui 提供，改板只动包内 */
+@import "@ggbdpq/console-ui/base.css";
+
+/* ============================================================
+   简历打印链路：打印只输出 #resume-print-area（A4 简历纸）。
+   .no-print 标记编辑器工具栏/面板/页面 chrome；visibility 方案
+   保留布局让纸面留在原位，再绝对定位到页首。@page 锁 A4 零边距
+   （ResumePaper 自带页边距，避免双重留白）。
+   ============================================================ */
+@media print {
+  @page {
+    size: A4;
+    margin: 0;
+  }
+  html,
+  body {
+    background: #fff !important;
+  }
+  body * {
+    visibility: hidden !important;
+  }
+  .no-print,
+  .no-print * {
+    display: none !important;
+  }
+  #resume-print-area,
+  #resume-print-area * {
+    visibility: visible !important;
+  }
+  #resume-print-area {
+    position: absolute !important;
+    left: 0 !important;
+    top: 0 !important;
+    margin: 0 !important;
+    box-shadow: none !important;
+    border: none !important;
+    width: 794px !important;
+    zoom: 1 !important; /* 打印忽略屏幕缩放 */
+  }
+  /* 打印色彩保真：band 色块标题/证件照 outline 等 background 打印不丢失 */
+  #resume-print-area,
+  #resume-print-area * {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+}

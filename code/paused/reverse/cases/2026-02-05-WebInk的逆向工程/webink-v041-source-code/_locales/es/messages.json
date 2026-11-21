@@ -1,0 +1,10 @@
+{
+  "extensionName": {
+    "message": "WebInk: Conversor Inteligente de Web a Markdown",
+    "description": "Nombre de la extensión."
+  },
+  "extensionDescription": {
+    "message": "Transforma páginas web en Markdown con conversión potenciada por IA, generación inteligente de tabla de contenidos, traducción multilingüe y una experiencia de lectura fluida.",
+    "description": "Descripción de la extensión."
+  }
+}

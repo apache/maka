@@ -1,0 +1,212 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Aryz <aryz0713@gmail.com>
+Date: Thu, 12 Nov 2026 19:58:45 +0800
+Subject: [PATCH 03/11] library: exercise website skill updates and download
+ boundaries
+
+Cover content-hash updates, local edit protection, failed-download cleanup, manifest path rejection, HTML templates and invalid primary indexes alongside an empty legacy alias. The last two cases exercise the downloader beyond the first passing discovery regression.
+---
+ .../library/skillwellknown_lifecycle_test.go  | 191 ++++++++++++++++++
+ 1 file changed, 191 insertions(+)
+ create mode 100644 internal/library/skillwellknown_lifecycle_test.go
+
+diff --git a/internal/library/skillwellknown_lifecycle_test.go b/internal/library/skillwellknown_lifecycle_test.go
+new file mode 100644
+index 000000000..846a1d527
+--- /dev/null
++++ b/internal/library/skillwellknown_lifecycle_test.go
+@@ -0,0 +1,191 @@
++package library
++
++import (
++	"encoding/json"
++	"errors"
++	"fmt"
++	"net/http"
++	"net/http/httptest"
++	"os"
++	"path/filepath"
++	"slices"
++	"strings"
++	"sync"
++	"testing"
++)
++
++const websiteSkill = "---\nname: ui-taste\ndescription: UI taste\n---\nRead reference/craft.md.\n"
++const websiteIndex = `{"skills":[{"name":"ui-taste","description":"UI taste","files":["SKILL.md","reference/craft.md"]}]}`
++
++// The fixture follows the website's file-list protocol. Updates replace
++// response bodies under a lock, since HTTP handlers run on other goroutines.
++func websiteFixture(t *testing.T, initial map[string]string) (string, func(string, string)) {
++	t.Helper()
++	var mu sync.RWMutex
++	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		if r.Header.Get("Authorization") != "" || r.Header.Get("Cookie") != "" {
++			t.Error("a public skill download carried credentials")
++		}
++		mu.RLock()
++		body, ok := initial[r.URL.Path]
++		mu.RUnlock()
++		if !ok {
++			http.NotFound(w, r)
++			return
++		}
++		if strings.HasSuffix(r.URL.Path, ".json") {
++			w.Header().Set("Content-Type", "application/json")
++		} else if strings.HasSuffix(r.URL.Path, ".html") {
++			w.Header().Set("Content-Type", "text/html")
++		}
++		fmt.Fprint(w, body)
++	}))
++	t.Cleanup(srv.Close)
++	return srv.URL, func(path, body string) {
++		mu.Lock()
++		initial[path] = body
++		mu.Unlock()
++	}
++}
++
++func TestWellKnownUpdatesPreserveLocalEdits(t *testing.T) {
++	sandbox(t)
++	base, put := websiteFixture(t, map[string]string{
++		"/.well-known/skills/index.json":                  websiteIndex,
++		"/.well-known/skills/ui-taste/SKILL.md":           websiteSkill,
++		"/.well-known/skills/ui-taste/reference/craft.md": "one",
++	})
++	if _, err := InstallSkills(base, []string{"ui-taste"}, nil); err != nil {
++		t.Fatal(err)
++	}
++	check := func(want string) {
++		t.Helper()
++		got, err := CheckSkills()
++		if err != nil || len(got) != 1 || got[0].Status != want {
++			t.Fatalf("want %s, got %+v, %v", want, got, err)
++		}
++	}
++	check("current")
++	put("/.well-known/skills/ui-taste/reference/craft.md", "two")
++	check("update")
++	if _, err := UpdateSkill("ui-taste", false); err != nil {
++		t.Fatal(err)
++	}
++	notes := filepath.Join(skillDir("ui-taste"), "reference", "craft.md")
++	if got := read(t, notes); got != "two" {
++		t.Fatalf("the reference file was not updated: %q", got)
++	}
++	check("current")
++
++	write(t, notes, "mine")
++	put("/.well-known/skills/ui-taste/reference/craft.md", "three")
++	_, err := UpdateSkill("ui-taste", false)
++	var edited *EditedError
++	if !errors.As(err, &edited) || !strings.Contains(err.Error(), base) || read(t, notes) != "mine" {
++		t.Fatalf("the user's edit must be retained with the source named: %v", err)
++	}
++	if _, err := UpdateSkill("ui-taste", true); err != nil {
++		t.Fatal(err)
++	}
++	if got := read(t, notes); got != "three" {
++		t.Fatalf("the explicitly requested replacement was not installed: %q", got)
++	}
++
++	put("/.well-known/skills/index.json", `{"skills":`)
++	check("unknown")
++	if got := read(t, notes); got != "three" {
++		t.Fatalf("a failed check changed the installed files: %q", got)
++	}
++	put("/.well-known/skills/index.json", `{"skills":[]}`)
++	check("gone")
++	if got := read(t, notes); got != "three" {
++		t.Fatalf("a removed upstream skill must remain installed: %q", got)
++	}
++}
++
++func TestWellKnownHTMLTemplateIsInstalled(t *testing.T) {
++	sandbox(t)
++	const template = "<!doctype html><title>Product page</title><main>Welcome</main>"
++	base, _ := websiteFixture(t, map[string]string{
++		"/.well-known/skills/index.json": `{"skills":[{"name":"ui-taste","description":"UI taste","files":["SKILL.md","templates/page.html"]}]}`,
++		"/.well-known/skills/ui-taste/SKILL.md":            websiteSkill,
++		"/.well-known/skills/ui-taste/templates/page.html": template,
++	})
++	if _, err := InstallSkills(base, []string{"ui-taste"}, nil); err != nil {
++		t.Fatalf("a skill's explicitly listed HTML template must be installable: %v", err)
++	}
++	if got := read(t, filepath.Join(skillDir("ui-taste"), "templates", "page.html")); got != template {
++		t.Fatalf("the template changed: %q", got)
++	}
++}
++
++func TestWellKnownBrokenIndexIsNotAnEmptyAlias(t *testing.T) {
++	sandbox(t)
++	base, put := websiteFixture(t, map[string]string{
++		"/.well-known/skills/index.json":                  websiteIndex,
++		"/.well-known/skills/ui-taste/SKILL.md":           websiteSkill,
++		"/.well-known/skills/ui-taste/reference/craft.md": "one",
++		"/.well-known/agent-skills/index.json":            `{"skills":[]}`,
++	})
++	if _, err := InstallSkills(base, []string{"ui-taste"}, nil); err != nil {
++		t.Fatal(err)
++	}
++	put("/.well-known/skills/index.json", `{"skills":`)
++	got, err := CheckSkills()
++	if err != nil || len(got) != 1 || got[0].Status != "unknown" || got[0].Error == "" {
++		t.Fatalf("an unreadable primary index must not mark the skill removed through an empty alias: %+v, %v", got, err)
++	}
++}
++
++func TestWellKnownManifestRefusesUnsafeFilesBeforeDownloading(t *testing.T) {
++	for _, files := range [][]string{
++		{"SKILL.md", "../escape"}, {"SKILL.md", "/absolute"},
++		{"SKILL.md", "C:/escape"}, {"SKILL.md", `..\escape`},
++		{"SKILL.md", "reference/%2e%2e/escape"}, {"SKILL.md", "NUL.txt"},
++		{"SKILL.md", "bad."}, {"SKILL.md", "bad "},
++		{"SKILL.md", "reference/A.md", "reference/a.md"},
++		{"SKILL.md", "ref", "ref/nested.md"}, {"SKILL.md", "SKILL.md"},
++		{"reference/craft.md"},
++	} {
++		t.Run(strings.Join(files, ","), func(t *testing.T) {
++			sandbox(t)
++			index, err := json.Marshal(map[string]any{"skills": []any{map[string]any{"name": "ui-taste", "description": "UI taste", "files": files}}})
++			if err != nil {
++				t.Fatal(err)
++			}
++			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++				if r.URL.Path == "/.well-known/skills/index.json" {
++					fmt.Fprint(w, string(index))
++					return
++				}
++				if r.URL.Path != "/.well-known/agent-skills/index.json" {
++					t.Errorf("the invalid manifest reached a file download: %s", r.URL.Path)
++				}
++				http.NotFound(w, r)
++			}))
++			t.Cleanup(srv.Close)
++			before := leftDownloads(os.TempDir())
++			if _, err := ProbeSkills(srv.URL); err == nil {
++				t.Fatal("the unsafe or incomplete manifest was accepted")
++			}
++			if after := leftDownloads(os.TempDir()); !slices.Equal(before, after) {
++				t.Fatalf("a refused manifest left a download: before %v, after %v", before, after)
++			}
++		})
++	}
++}
++
++func TestWellKnownFailedDownloadKeepsNoTemporaryFiles(t *testing.T) {
++	sandbox(t)
++	base, _ := websiteFixture(t, map[string]string{
++		"/.well-known/skills/index.json":        websiteIndex,
++		"/.well-known/skills/ui-taste/SKILL.md": websiteSkill,
++	})
++	before := leftDownloads(os.TempDir())
++	if _, err := ProbeSkills(base); err == nil {
++		t.Fatal("a missing reference file was accepted")
++	}
++	if after := leftDownloads(os.TempDir()); !slices.Equal(before, after) {
++		t.Fatalf("an incomplete download was not cleaned up: before %v, after %v", before, after)
++	}
++}
+-- 
+2.50.1 (Apple Git-155)
+

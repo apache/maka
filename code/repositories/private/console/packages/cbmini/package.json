@@ -1,0 +1,15 @@
+{
+  "name": "@ggbdpq/cbmini",
+  "private": true,
+  "version": "0.1.0",
+  "description": "C♭ 子集编译器（langbooks P04 项目卡）：手写词法/递归下降→IR→x86 汇编。零依赖纯 TS，node type-stripping 直跑；完整回归需 WSL（check.sh），来自 cbmini 仓第六期并入。",
+  "type": "module",
+  "engines": {
+    "node": ">=24.21.0 <25"
+  },
+  "scripts": {
+    "build": "sh build.sh",
+    "check": "sh check.sh",
+    "test": "node --test tests/*.test.ts"
+  }
+}

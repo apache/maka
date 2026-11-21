@@ -1,0 +1,25 @@
+{
+  "id": "47",
+  "slug": "unique-paths",
+  "title": "不同路径",
+  "difficulty": "medium",
+  "tags": ["动态规划", "组合数学"],
+  "description": "一个机器人位于一个 `m x n` 网格的左上角。机器人每次只能向下或者向右移动一步,试图到达网格的右下角。问总共有多少条不同的路径?\n\n**示例 1:**\n\n- 输入:`m = 3`, `n = 7`\n- 输出:`28`\n\n**示例 2:**\n\n- 输入:`m = 3`, `n = 2`\n- 输出:`3`(向右→向下→向下 等三种)\n\n**进阶:** 能否用组合数学(组合数)直接算出?",
+  "solution": "## 思路\n\n**动态规划**(滚动数组):第一行/列全为 1。`dp[i][j] = dp[i-1][j] + dp[i][j-1]`。用一维数组,`dp[j] += dp[j-1]` 即可。\n\n## 参考代码\n\n```js\nfunction uniquePaths(m, n) {\n  const dp = new Array(n).fill(1);\n  for (let i = 1; i < m; i++) {\n    for (let j = 1; j < n; j++) {\n      dp[j] += dp[j - 1];\n    }\n  }\n  return dp[n - 1];\n}\n```\n\n## 复杂度\n\n- 时间:O(m*n)\n- 空间:O(n)",
+  "signature": {
+    "language": "javascript",
+    "entry": "uniquePaths",
+    "params": [
+      { "name": "m", "type": "number" },
+      { "name": "n", "type": "number" }
+    ],
+    "returns": "number"
+  },
+  "testCases": [
+    { "sample": true, "input": [3, 7], "expected": 28 },
+    { "sample": true, "input": [3, 2], "expected": 3 },
+    { "sample": false, "input": [1, 1], "expected": 1 },
+    { "sample": false, "input": [2, 2], "expected": 2 },
+    { "sample": false, "input": [7, 3], "expected": 28 }
+  ]
+}

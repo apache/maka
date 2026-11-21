@@ -1,0 +1,102 @@
+From 3cae3cda6ea1f409c4e8a39b517a154747e7acd4 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Sat, 31 Oct 2026 15:28:13 +0800
+Subject: [PATCH] gateway tests: a second ask of the fake slow thinker is no
+ longer held by the done channel (#4530)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+What changed
+
+slowThinker.ServeHTTP ends with a blocking send on done, a
+chan time.Time of capacity one that each test reads at most once. A
+try that asks the same fake vendor a second time (a retry, a re-ask
+in place, a reloop) blocked its handler on that send forever: the
+test body had already passed, and t.Cleanup(vendor.Close) then
+waited on the stuck handler until go test's own timeout — no
+failure, no output (hheei, #4530). TestThinkingStreamsWithNoOneElse
+and TestThinkingStreamsThroughGroup hang a full run this way; the
+send is now non-blocking (select with default), so a second handler
+drops the timestamp and returns. The first ask's timestamp still
+lands in the channel, so every existing read keeps its meaning.
+TestChatReasoningRelayedAsItComes shares the fake and is covered by
+the same line.
+
+Run
+
+- New TestSlowThinkerDoneChannelDoesNotHoldASecondAsk (two sequential
+  asks of the same fake) fails without the fix: "--- FAIL:
+  TestSlowThinkerDoneChannelDoesNotHoldASecondAsk (10.00s) a second
+  ask of the same fake vendor never finished: its handler is stuck on
+  the done channel's send". On the old send the targeted run with
+  -timeout 60s also panics with the reporter's stack verbatim:
+  goroutine [chan send] at slowThinker.ServeHTTP
+  thinking_streams_test.go:35, runCleanup blocked in
+  httptest.(*Server).Close.
+- With the fix: go test -tags nogui -count=1 -run
+  'TestSlowThinkerDoneChannelDoesNotHoldASecondAsk|TestThinkingStreamsThroughGroup|TestThinkingStreamsWithNoOneElse|TestChatReasoningRelayedAsItComes'
+  ./internal/gateway — ok, 24.5s (regression test 0.00s, the three
+  existing consumers all pass).
+- gofmt -l internal/gateway/thinking_streams_test.go prints nothing.
+- Test-only change: no product file touched.
+
+Generated-by: GLM-5.3-FlashX (ZCode)
+---
+ internal/gateway/thinking_streams_test.go | 33 ++++++++++++++++++++++-
+ 1 file changed, 32 insertions(+), 1 deletion(-)
+
+diff --git a/internal/gateway/thinking_streams_test.go b/internal/gateway/thinking_streams_test.go
+index d7c9595f6..514e9802c 100644
+--- a/internal/gateway/thinking_streams_test.go
++++ b/internal/gateway/thinking_streams_test.go
+@@ -32,7 +32,14 @@ func (s *slowThinker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+ 		s.sent = append(s.sent, time.Now())
+ 		time.Sleep(s.gap)
+ 	}
+-	s.done <- time.Now()
++	// done is a "the vendor finished" signal each test reads at most once,
++	// so its single slot is often still full when a retry, a re-ask in
++	// place or a reloop asks again; a blocking send would hold that
++	// handler forever and t.Cleanup(vendor.Close) with it (#4530).
++	select {
++	case s.done <- time.Now():
++	default:
++	}
+ }
+ 
+ var glmThinksSlowly = []string{
+@@ -127,6 +134,30 @@ func TestThinkingStreamsThroughGroup(t *testing.T) {
+ 	}
+ }
+ 
++// A try that asks the same fake vendor a second time (a retry, a re-ask
++// in place, a reloop) must not leave that handler stuck: done holds one
++// send and every test reads it at most once, so a second handler blocked
++// on the send forever, and t.Cleanup(vendor.Close) then waited on it
++// until go test's own timeout (#4530).
++func TestSlowThinkerDoneChannelDoesNotHoldASecondAsk(t *testing.T) {
++	up := &slowThinker{events: glmChatThinksSlowly, done: make(chan time.Time, 1)}
++	ask := func() {
++		t.Helper()
++		served := make(chan struct{})
++		go func() {
++			up.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("POST", "/", strings.NewReader("{}")))
++			close(served)
++		}()
++		select {
++		case <-served:
++		case <-time.After(10 * time.Second):
++			t.Fatal("a second ask of the same fake vendor never finished: its handler is stuck on the done channel's send")
++		}
++	}
++	ask() // fills the channel: the first handler's send
++	ask() // #4530: blocked forever on the send before the fix
++}
++
+ // Claude's reasoning is still held for a refusal after it (#248) while
+ // another candidate could answer, and so are OpenAI's, Gemini's and
+ // DeepSeek's (plugins #540); anybody else's is let through.
+-- 
+2.55.0.windows.3
+

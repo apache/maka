@@ -1,0 +1,25 @@
+{
+  "id": "20",
+  "slug": "subarray-sum-equals-k",
+  "title": "和为 K 的子数组",
+  "difficulty": "medium",
+  "tags": ["数组", "哈希表", "前缀和"],
+  "description": "给你一个整数数组 `nums` 和一个整数 `k`,请你统计并返回该数组中和为 `k` 的**连续子数组**的个数。\n\n**示例 1:**\n\n- 输入:`nums = [1,1,1]`, `k = 2`\n- 输出:`2`\n\n**示例 2:**\n\n- 输入:`nums = [1,2,3]`, `k = 3`\n- 输出:`2`([1,2] 与 [3])",
+  "solution": "## 思路\n\n**前缀和 + 哈希表**:遍历时维护当前前缀和 `sum`,用哈希表记录「每个前缀和出现的次数」。若 `sum - k` 曾出现过,则存在若干子数组和为 `k`,累加其次数。\n\n## 参考代码\n\n```js\nfunction subarraySum(nums, k) {\n  let count = 0;\n  let sum = 0;\n  const map = new Map([[0, 1]]);\n  for (const n of nums) {\n    sum += n;\n    if (map.has(sum - k)) count += map.get(sum - k);\n    map.set(sum, (map.get(sum) || 0) + 1);\n  }\n  return count;\n}\n```\n\n## 复杂度\n\n- 时间:O(n)\n- 空间:O(n)",
+  "signature": {
+    "language": "javascript",
+    "entry": "subarraySum",
+    "params": [
+      { "name": "nums", "type": "number[]" },
+      { "name": "k", "type": "number" }
+    ],
+    "returns": "number"
+  },
+  "testCases": [
+    { "sample": true, "input": [[1, 1, 1], 2], "expected": 2 },
+    { "sample": true, "input": [[1, 2, 3], 3], "expected": 2 },
+    { "sample": false, "input": [[1], 0], "expected": 0 },
+    { "sample": false, "input": [[-1, -1, 1], 0], "expected": 1 },
+    { "sample": false, "input": [[0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 0], "expected": 55 }
+  ]
+}

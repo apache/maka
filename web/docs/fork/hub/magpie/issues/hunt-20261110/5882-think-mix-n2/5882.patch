@@ -1,0 +1,160 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Tue, 10 Nov 2026 22:23:15 +0800
+Subject: [PATCH] gateway: a plain Gemini 4 goes to high at medium, where
+ Argon's thinking leaks into the reply (#5882)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Codex on antigravity/gemini-4-argon at effort medium got the model's
+reasoning drafts as part of the reply itself — 58.5% of a week's main
+session requests carried them as text (out > 0, reasoning 0) against
+2.8% at high, and a first turn at medium seeded a thread that went on
+leaking (#5882). The wire asks for it: #2083 taught thinkingConfig a
+level for a later Gemini and sent the medium its id lists as the
+medium it was asked, on the plain id every Gemini-protocol request is
+built under, Cloud Code Assist's among them. At that medium the model
+writes its reasoning into the reply more often than not; the id's list
+is right about the words it takes, not about what medium does there.
+
+So a later Gemini asked medium goes to high where its id names no
+level, as 3 Pro's has all along (it took low and high only). Its own
+tiered ids keep the level they name (Antigravity serves Argon at -high
+and -low; no -medium), and a Flash of any generation still takes the
+medium it was asked. The OpenCode Zen Go route (#2168) builds on the
+same thinkingConfig, so an argon-contributor follows the rule too, and
+its test asks high now.
+
+Run:
+- TestGeminiLaterGenerationsToldALevel: Argon medium asked, goes at
+  high (red on the old code: "thinkingLevel medium, want high" — the
+  report's wire shape), low and high as asked, 3.8 Flash unchanged,
+  3 Pro medium high, 2.5 Flash a budget. TestGeminiGeneration
+  unchanged.
+- TestOpenCodeGoGeminiModelOnGeminiAPI: argon-contributor medium at
+  high, low and high as asked (red on the old code).
+- TestCodeAssistAntigravityLevels, with a row on the report's own
+  surface — the plain gemini-4-argon id Antigravity serves with no
+  tiers, asked medium on the antigravity account — at high (red on the
+  old code).
+- The effort neighborhood:
+  TestCodeAssistReasoningOffAtLow, TestAgyAgentEffort,
+  TestWithGeminiEffort, TestSearcherEffortOnGemini,
+  TestSideEffortChecked, and the Zen, thought-tag and compat-cut
+  batches — green.
+- go test -tags nogui ./internal/gateway/ (whole package, 845s).
+- gofmt -l empty; go vet, GOOS=linux and GOOS=windows builds with
+  -tags nogui clean.
+
+Not tried: a real gemini-4-argon request (the report's Antigravity
+account isn't on this machine); the tests pin the wire shape the
+report's telemetry names. A thinking-only reply that ends on
+filter/length still finishes 200 without a word (the report's second
+mechanism, streamTranslated's !said fall-through): this change takes
+away its main feeder — the report's own table ties that failure to
+medium sessions — but whether such a reply should fail loudly is its
+own change.
+---
+ internal/gateway/codeassist.go           | 11 +++++++----
+ internal/gateway/codeassist_test.go      |  3 +++
+ internal/gateway/gemini_level_test.go    |  8 +++++---
+ internal/gateway/opencode_gemini_test.go | 13 ++++++++-----
+ 4 files changed, 23 insertions(+), 12 deletions(-)
+
+diff --git a/internal/gateway/codeassist.go b/internal/gateway/codeassist.go
+index 5c3f5a906..823b9f8fe 100644
+--- a/internal/gateway/codeassist.go
++++ b/internal/gateway/codeassist.go
+@@ -733,9 +733,12 @@ func pairFunctionTurns(contents []map[string]any, ag, agClaude bool) []map[strin
+ // (#636); Antigravity's own tiered ids, sent a level, don't.
+ //
+ // Gemini 3's levels: medium goes as medium to Flash, and up to high to
+-// Pro, which took low and high only (3 Pro). A later Gemini is sent the
+-// medium it was asked, already fitted to its own levels (fitFor):
+-// gemini-4-argon has low, medium and high (#2083). Minimal goes only to a
++// Pro, which took low and high only (3 Pro). A later Gemini follows the
++// same rule where its id names no level: 4 Argon lists a medium (#2083
++// sent it as asked), but at it the model writes its reasoning into the
++// reply itself more often than not — 58.5% of a week's requests,
++// against 2.8% at high (#5882) — so its plain id goes to high as Pro's
++// does, and its own tiered ids keep the level they name. Minimal goes only to a
+ // Flash variant at minimal: 3.7 and 3.8 Flash have none (AI Studio
+ // answers 3.8's with a 400), and the id here doesn't say which Flash serves it (Gemini
+ // CLI's 3.5 Flash goes out as 3.8 Flash where that is rolled out).
+@@ -768,7 +771,7 @@ func thinkingConfig(r *Request, model string, claude bool, at string) map[string
+ 				level = "minimal"
+ 			case offEffort(effort) && !catalog.DrawsID(m):
+ 				level = "low"
+-			case effort == "medium" && (strings.Contains(m, "flash") || gen > 3):
++			case effort == "medium" && (strings.Contains(m, "flash") || gen > 3 && at != ""):
+ 				level = "medium"
+ 			}
+ 			tc["thinkingLevel"] = level
+diff --git a/internal/gateway/codeassist_test.go b/internal/gateway/codeassist_test.go
+index 671227989..8d591df77 100644
+--- a/internal/gateway/codeassist_test.go
++++ b/internal/gateway/codeassist_test.go
+@@ -182,6 +182,9 @@ func TestCodeAssistAntigravityLevels(t *testing.T) {
+ 		{"gemini-3.7-flash-high", "", "antigravity", "gemini-3.7-flash-high", ""},
+ 		{"gemini-3.7-flash-high", "low", "antigravity", "gemini-3.7-flash-low", "low"},
+ 		{"gemini-3.1-pro", "medium", "antigravity", "gemini-3.1-pro-high", "high"},
++		// the report's own surface (#5882): the plain Argon id Antigravity
++		// serves with no tiers, asked medium, goes at high
++		{"gemini-4-argon", "medium", "antigravity", "gemini-4-argon", "high"},
+ 		{"gemini-3-flash", "medium", "antigravity", "gemini-3-flash", "medium"},
+ 		{"gemini-pro-agent", "medium", "antigravity", "gemini-pro-agent", "high"},
+ 		{"gemini-pro-agent", "low", "antigravity", "gemini-pro-agent", "low"},
+diff --git a/internal/gateway/gemini_level_test.go b/internal/gateway/gemini_level_test.go
+index 0aa4a32e6..aea162246 100644
+--- a/internal/gateway/gemini_level_test.go
++++ b/internal/gateway/gemini_level_test.go
+@@ -22,8 +22,10 @@ const argonBudgetRefused = `{"error":{"code":400,"message":"Thinking budget is n
+ 
+ // #2083: a provider the user added that speaks Gemini's API, its models
+ // from models.dev's google-vertex, as the reporter set it up. Gemini 4
+-// Argon is told a thinking level, and medium as medium, the levels it has:
+-// it turns every budget away with a 400. Gemini 3.8 Flash is told its level
++// Argon is told a thinking level, never a budget: it turns every budget
++// away with a 400. Its medium goes as high (#5882): at the medium its id
++// lists, the model writes its reasoning into the reply itself more often
++// than not, where at high it doesn't. Gemini 3.8 Flash is told its level
+ // as before, Gemini 2.5 still a budget, and a Gemini 3 Pro medium as high.
+ func TestGeminiLaterGenerationsToldALevel(t *testing.T) {
+ 	fresh(t)
+@@ -68,7 +70,7 @@ func TestGeminiLaterGenerationsToldALevel(t *testing.T) {
+ 		want                map[string]any
+ 	}{
+ 		{"/v1/chat/completions", "gemini-4-argon", "low", level("low")},
+-		{"/v1/chat/completions", "gemini-4-argon", "medium", level("medium")},
++		{"/v1/chat/completions", "gemini-4-argon", "medium", level("high")},
+ 		{"/v1/chat/completions", "gemini-4-argon", "high", level("high")},
+ 		{"/v1/responses", "gemini-4-argon", "high", level("high")},
+ 		{"/v1/chat/completions", "gemini-3.8-flash", "low", level("low")},
+diff --git a/internal/gateway/opencode_gemini_test.go b/internal/gateway/opencode_gemini_test.go
+index ce98ccaf7..ef87396fd 100644
+--- a/internal/gateway/opencode_gemini_test.go
++++ b/internal/gateway/opencode_gemini_test.go
+@@ -169,11 +169,14 @@ func TestOpenCodeGoGeminiModelOnGeminiAPI(t *testing.T) {
+ 		t.Errorf("gemini answer: %s", body)
+ 	}
+ 
+-	for _, effort := range []string{"low", "medium", "high"} {
+-		code, body = serve(s, "/v1/chat/completions", `{"model":"opencode-go/gemini-4-argon-contributor","reasoning_effort":"`+effort+`","messages":[{"role":"user","content":"Say hi in one word"}]}`)
+-		a := check("effort "+effort, code, body)
+-		if got := gjson.GetBytes(a.body, "generationConfig.thinkingConfig.thinkingLevel").String(); got != effort {
+-			t.Errorf("effort %s: thinkingLevel %q in %s", effort, got, gjson.GetBytes(a.body, "generationConfig").Raw)
++	// Argon's medium goes as high (#5882: at the medium its id lists, the
++	// model writes its reasoning into the reply itself); low and high as
++	// asked.
++	for _, c := range []struct{ effort, want string }{{"low", "low"}, {"medium", "high"}, {"high", "high"}} {
++		code, body = serve(s, "/v1/chat/completions", `{"model":"opencode-go/gemini-4-argon-contributor","reasoning_effort":"`+c.effort+`","messages":[{"role":"user","content":"Say hi in one word"}]}`)
++		a := check("effort "+c.effort, code, body)
++		if got := gjson.GetBytes(a.body, "generationConfig.thinkingConfig.thinkingLevel").String(); got != c.want {
++			t.Errorf("effort %s: thinkingLevel %q in %s", c.effort, got, gjson.GetBytes(a.body, "generationConfig").Raw)
+ 		}
+ 	}
+ }
+-- 
+2.50.1 (Apple Git-155)
+

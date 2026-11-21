@@ -1,0 +1,25 @@
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py codex baseline
+INPUT: CONFIG: fixed codex source allowlist
+OUTPUT: ValueError: Reparse entry: C:\Users\802165\.codex\plugins\cache\openai-bundled\chrome\latest
+EXIT: 1
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py codex archive
+INPUT: CONFIG: fixed codex source allowlist
+OUTPUT: FileNotFoundError: [Errno 2] No such file or directory: 'E:\\cc\\guahub\\sessions\\raw\\codex\\migration-20261026-135017\\MODIFIED_FILE.json'
+EXIT: 1
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py codex apply
+INPUT: CONFIG: fixed codex source allowlist
+OUTPUT: FileNotFoundError: [Errno 2] No such file or directory: 'E:\\cc\\guahub\\sessions\\raw\\codex\\migration-20261026-135017\\MODIFIED_FILE.json'
+EXIT: 1
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py codex verify
+INPUT: CONFIG: fixed codex source allowlist
+OUTPUT: FileNotFoundError: [Errno 2] No such file or directory: 'E:\\cc\\guahub\\sessions\\raw\\codex\\migration-20261026-135017\\MODIFIED_FILE.json'
+EXIT: 1
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py codex rollback-test
+INPUT: CONFIG: fixed codex source allowlist
+OUTPUT: FileNotFoundError: [Errno 2] No such file or directory: 'E:\\cc\\guahub\\sessions\\raw\\codex\\migration-20261026-135017\\MODIFIED_FILE.json'
+EXIT: 1
+

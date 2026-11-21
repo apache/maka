@@ -1,0 +1,8 @@
+- 单: yetone/magpie#5509 (lingengyuan, c=0; take=comment 6695911539 补于开工后)
+- 分支: fix/5509-opencode-429 @ ccfcd71f87b5b03740ecf5969e939615ddcc936d (父=upstream/main 30a0bfe88), 已推 origin, ls-remote 证实
+- patch: sha256前16=7adbabadfb82158a
+- 修法: logOpenCodeRefusal(p,req,res) 补 retry-after 值(retryAfter 取整秒)+body 原话(vendorMessage 退回原样体 clip 200 %q), body 读后 readCloser+MultiReader 还原; gateway.go 调用点同步
+- RED→GREEN: 三测 build-RED(旧签名)→GREEN; 消融=两产品文件回退→build红→恢复绿
+- 矩阵: gateway 全包 ok 880.3s; -race ok; TestOpenCode* ok; gofmt 净; vet darwin/linux 净; build OK
+- 帖: https://github.com/yetone/magpie/issues/5509#issuecomment-6696137755 (PATCH 补 diff 块), 回读 OK(5952字符全要素)
+- 未做(帖内声明): 诉求1排队→#3196, 诉求3 v2→#4740, 设计题留维护者

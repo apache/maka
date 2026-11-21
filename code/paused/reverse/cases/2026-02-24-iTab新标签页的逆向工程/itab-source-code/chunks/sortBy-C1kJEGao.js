@@ -1,0 +1,1 @@
+import{b as r}from"./_baseFlatten-C4J_S9er.js";import{b as a}from"./_baseOrderBy-CJp_haM_.js";import{b as s,i as t}from"./_isIterateeCall-BbHzgNjM.js";var e=s((function(s,e){if(null==s)return[];var o=e.length;return o>1&&t(s,e[0],e[1])?e=[]:o>2&&t(e[0],e[1],e[2])&&(e=[e[0]]),a(s,r(e),[])}));export{e as s};

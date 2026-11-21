@@ -1,0 +1,25 @@
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py grok baseline
+INPUT: CONFIG: fixed grok source allowlist
+OUTPUT: BASELINE PASS groups=4 files=10 bytes=488969648 protected=1
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py grok archive
+INPUT: 8297e6cf311e3377260eadbb17bbab47911a06b4b68b8411faaa47e1f6eeec41
+OUTPUT: ARCHIVE PASS zip_files=4 files=10 bytes=488969648
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py grok apply
+INPUT: 8f7adcb4b9a474c2c1f9f0d98f7f21c261b90f8ce61458bd873c165908a5f7e6
+OUTPUT: APPLY PASS removed_files=10 removed_bytes=488969648
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py grok verify
+INPUT: c6044b288b098b0efd02aa8aa215bd926e044074a99ad36a72af992a0af1b59f
+OUTPUT: MODIFIED PASS files=10 bytes=488969648 originals_absent=true protected_unchanged=true
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py grok rollback-test
+INPUT: c6044b288b098b0efd02aa8aa215bd926e044074a99ad36a72af992a0af1b59f
+OUTPUT: ROLLBACK PASS restored_files=10 restored_bytes=488969648 hashes_match=true originals_untouched=true
+EXIT: 0
+

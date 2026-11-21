@@ -1,0 +1,34 @@
+{
+  "appName": {
+    "message": "iTab 新标签页",
+    "description": "iTab 新标签页名称"
+  },
+  "appDesc": {
+    "message": "自定义您的新标签页，精美壁纸、天气、日历、书签管理",
+    "description": "iTab 新标签页描述"
+  },
+  "newTab": {
+    "message": "新标签页",
+    "description": "新标签页按钮文字"
+  },
+  "settings": {
+    "message": "设置",
+    "description": "设置菜单文字"
+  },
+  "wallpaper": {
+    "message": "壁纸",
+    "description": "壁纸相关"
+  },
+  "weather": {
+    "message": "天气",
+    "description": "天气相关"
+  },
+  "bookmarks": {
+    "message": "书签",
+    "description": "书签相关"
+  },
+  "search": {
+    "message": "搜索",
+    "description": "搜索相关"
+  }
+}

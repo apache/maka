@@ -1,0 +1,3 @@
+upstream/main:internal/library/targets.go:956:var readsShared = []string{"codex", "gemini", "opencode", "deveco", "crush", "dsh", "commandcode", "devin", "droid", "cline", "grok", "grok-app", "fx", "alma", "kimi", "omo"}
+upstream/main:internal/library/targets.go-957-
+upstream/main:internal/library/targets.go-958-// Pi reads ~/.agents/skills from 0.54.0 (2026-02-19, its CHANGELOG: "Added

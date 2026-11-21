@@ -1,0 +1,22 @@
+{
+  "id": "38",
+  "slug": "largest-rectangle-in-histogram",
+  "title": "柱状图中最大的矩形",
+  "difficulty": "hard",
+  "tags": ["栈", "数组", "单调栈"],
+  "description": "给定 `n` 个非负整数,用来表示柱状图中各个柱子的高度。每个柱子彼此相邻,且宽度为 `1`。求在该柱状图中,能够勾勒出来的矩形的最大面积。\n\n**示例 1:**\n\n- 输入:`heights = [2,1,5,6,2,3]`\n- 输出:`10`(高 5、6 两根柱子组成的 5×2 矩形面积最大为 10)\n\n**示例 2:**\n\n- 输入:`heights = [2,4]`\n- 输出:`4`",
+  "solution": "## 思路\n\n**单调递增栈**:在末尾补一个高度 0 作哨兵,保证最后所有柱子被处理。栈存下标,遇到比栈顶矮的柱子就弹栈,以弹出高度为矩形高、宽度为「当前下标 - 新栈顶下标 - 1」计算面积取最大。\n\n## 参考代码\n\n```js\nfunction largestRectangleArea(heights) {\n  const stack = [];\n  let max = 0;\n  const arr = [...heights, 0];\n  for (let i = 0; i < arr.length; i++) {\n    while (stack.length && arr[i] < arr[stack[stack.length - 1]]) {\n      const h = arr[stack.pop()];\n      const w = stack.length === 0 ? i : i - stack[stack.length - 1] - 1;\n      max = Math.max(max, h * w);\n    }\n    stack.push(i);\n  }\n  return max;\n}\n```\n\n## 复杂度\n\n- 时间:O(n)\n- 空间:O(n)",
+  "signature": {
+    "language": "javascript",
+    "entry": "largestRectangleArea",
+    "params": [{ "name": "heights", "type": "number[]" }],
+    "returns": "number"
+  },
+  "testCases": [
+    { "sample": true, "input": [[2, 1, 5, 6, 2, 3]], "expected": 10 },
+    { "sample": true, "input": [[2, 4]], "expected": 4 },
+    { "sample": false, "input": [[]], "expected": 0 },
+    { "sample": false, "input": [[1]], "expected": 1 },
+    { "sample": false, "input": [[1, 1, 1, 1]], "expected": 4 }
+  ]
+}

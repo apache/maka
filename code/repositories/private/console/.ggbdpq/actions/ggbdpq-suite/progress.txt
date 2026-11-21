@@ -1,0 +1,223 @@
+Project: agent-suite
+SSOT:
+- .ggbdpq/actions/agent-suite/prd.json
+- .ggbdpq/actions/agent-suite/progress.txt
+
+============================================================
+EXECUTION LOG (append-only)
+============================================================
+# 规则：每完成一个 item 追加一条记录，禁止修改历史
+# 必填字段：时间，item id，priority，title，What，Why，result，commit，Next
+#
+# 模板：
+# [YYYY-MM-DD HH:mm:ss] item=#<id> priority=<P1|P2|P3> title=<title>
+# - What: <做了什么，列 3 到 7 条>
+# - Why: <关键决策与取舍，列 1 到 3 条>
+# - result: passes false -> true
+# - commit: <type>(<scope>): <中文 subject>
+# - Next: #<next-id> <next-title>
+
+[2026-01-26 10:00:00] item=#001 priority=P1 title=生成 stack-inventory 与 stack-contract 并完成文档校对
+- What:
+  - 扫描 apps/*, tools/*, packages/*, docs/demos/* 目录结构
+  - 收集 26 个 package.json 的依赖信息
+  - 生成 docs/stack-inventory.md 技术栈清点表
+  - 生成 docs/stack-contract.md 技术栈契约文档
+  - 人工确认文档内容与格式正确
+- Why:
+  - 清点表作为迁移基线，契约文档作为目标技术栈定义
+  - services/ 目录不存在，在清点表中标注
+- result: passes false -> true
+- commit: docs(suite): 生成技术栈清点表与契约文档
+- Next: #002 生成 suite 执行法典目录与 SSOT 文件并完成格式校验
+
+[2026-01-26 10:15:00] item=#002 priority=P1 title=生成 suite 执行法典目录与 SSOT 文件并完成格式校验
+- What:
+  - 创建 .ggbdpq/actions/agent-suite/ 目录
+  - 生成 EXECUTION.md 执行法典
+  - 生成 prd.json 任务清单（8 个 items）
+  - 生成 progress.txt 执行日志
+  - 生成 process.txt 过程报告（含扫描发现）
+  - 生成 docs/next-steps.md 下一步执行建议
+  - 校验 prd.json 为合法 JSON
+- Why:
+  - SSOT 仅认 prd.json 与 progress.txt
+  - process.txt 记录过程发现，便于后续追溯
+- result: passes false -> true
+- commit: feat(suite): 建立执行法典与 SSOT 文件结构
+- Next: #003 生成 packages 规划文档
+
+[2026-01-26 11:00:00] item=#003 priority=P1 title=生成 packages 规划文档，定义 packages/shared packages/ui packages/sdk 的边界
+- What:
+  - 扫描现有 8 个子项目 packages 目录结构
+  - 分析 cn() 工具函数在 claude-profile、ai-worktree-commander 中的重复实现
+  - 分析 11 个 UI 组件在多个项目中的重复
+  - 分析现有 @prompt-flow/shared、@config-agent/shared 的 Zod schema
+  - 定义 @agent-suite/shared、@agent-suite/ui、@agent-suite/sdk 三个包的职责边界
+  - 生成 docs/packages-design.md 包含目录结构、exports 清单、依赖关系图
+- Why:
+  - 统一命名空间为 @agent-suite/*，消除现有多套命名冲突
+  - Zod 版本统一为 3.24.x，避免 Zod 4 的 breaking changes
+  - 依赖规则：shared 无内部依赖，ui 依赖 shared，sdk 依赖 shared，ui 与 sdk 互不依赖
+- result: passes false -> true
+- commit: docs(packages): 定义 shared/ui/sdk 边界规划
+- Next: #004 统一前端脚本规范
+
+[2026-01-26 11:30:00] item=#004 priority=P2 title=统一前端脚本规范，要求 apps 与 tools 至少支持 dev build typecheck
+- What:
+  - 扫描 10 个前端项目的 package.json scripts
+  - 识别 5 个缺少 typecheck 或 lint 脚本的项目
+  - 为 ai-worktree-commander 补齐 typecheck、tauri:dev、tauri:build
+  - 为 4 个项目补齐 lint 占位脚本
+  - 生成 docs/script-standard.md 统一脚本规范
+- Why:
+  - 保持接口一致性，所有前端项目均支持 dev/build/typecheck/lint
+  - 未配置 eslint 的项目使用占位脚本，避免命令失败
+- result: passes false -> true
+- commit: feat(suite): 完成 PRD 004-008 迁移规范与骨架
+- Next: #005 制定 Vite 8 迁移计划草案
+
+[2026-01-26 11:35:00] item=#005 priority=P2 title=制定 Vite 8 迁移计划草案，列出需要迁移的子项目与风险点
+- What:
+  - 整理 Vite 版本分布（6.0.0 - 7.3.1）
+  - 列出 7 个需迁移至 Vite 8 的项目
+  - 分析 Vite 8 breaking changes 预期影响
+  - 评估 Tailwind v3 遗留、Tauri 兼容性、Vue/Next.js 隔离等风险
+  - 生成 docs/vite8-migration-plan.md 迁移计划
+- Why:
+  - 分批升级策略：claude-review 试点 → Tauri 项目 → 其他项目
+  - 明确前置条件：Tailwind v3 需先升级至 v4
+- result: passes false -> true
+- commit: feat(suite): 完成 PRD 004-008 迁移规范与骨架
+- Next: #006 制定 shadcn 接入规范草案
+
+[2026-01-26 11:40:00] item=#006 priority=P2 title=制定 shadcn 接入规范草案，列出哪些子项目需要补齐
+- What:
+  - 识别已接入 shadcn 的项目（claude-profile、ai-worktree-commander）
+  - 识别待接入项目（claude-review、promptflow/workbench 等）
+  - 定义 shadcn 接入标准（cva、tailwind-merge、clsx、lucide-react）
+  - 定义 packages/ui 目录结构与 app 内部覆写策略
+  - 生成 docs/shadcn-adoption.md 接入规范
+- Why:
+  - Tailwind v4 为前置条件
+  - 组件源码直接放入项目，可自由定制
+- result: passes false -> true
+- commit: feat(suite): 完成 PRD 004-008 迁移规范与骨架
+- Next: #007 制定 Fetch 封装与 Zod 校验规范草案
+
+[2026-01-26 11:50:00] item=#007 priority=P2 title=制定 Fetch 封装与 Zod 校验规范草案，输出 packages/sdk 的接口草案
+- What:
+  - 创建 packages/shared 骨架（cn 工具、Result 类型、常量）
+  - 创建 packages/sdk 骨架（fetchJson、parseOrThrow、ApiError）
+  - 实现 fetchJson 支持 baseUrl、headers、timeout
+  - 实现 Zod 校验助手 parseOrThrow、safeParse
+  - 生成 docs/sdk-contract.md 接口契约
+- Why:
+  - 禁止 axios，统一使用 fetch
+  - Zod 版本统一为 3.24.x
+  - 最小骨架可独立 typecheck，不依赖 workspace
+- result: passes false -> true
+- commit: feat(suite): 完成 PRD 004-008 迁移规范与骨架
+- Next: #008 制定 services 边界与契约文档草案
+
+[2026-01-26 12:00:00] item=#008 priority=P3 title=制定 services 边界与契约文档草案，至少覆盖 workflow-engine governance config-engine
+- What:
+  - 创建 services/ 目录与三个子目录占位
+  - 定义 workflow-engine 职责边界（工作流定义、执行、调度）
+  - 定义 governance 职责边界（Agent 注册、审计、权限）
+  - 定义 config-engine 职责边界（配置扫描、计划、应用）
+  - 定义 HTTP 接口与事件契约模板
+  - 生成 docs/services-contracts.md 包含 ADR 决策记录
+- Why:
+  - Vue 与 Next.js 子项目短期保持隔离，待核心迁移完成后再评估
+  - services 目录为占位，待后续迁移填充
+- result: passes false -> true
+- commit: feat(suite): 完成 PRD 004-008 迁移规范与骨架
+- Next: #009 workspace-lite
+
+[2026-01-26 13:00:00] item=#009 priority=P1 title=workspace-lite：引入 pnpm-workspace.yaml 与根 .npmrc
+- What:
+  - 新增 pnpm-workspace.yaml，纳入 packages/* 与主线路 apps/tools
+  - 新增 .npmrc，配置 link-workspace-packages=true, shared-workspace-lockfile=false
+  - 新增根 package.json，提供 pnpm -r typecheck/build/lint 脚本
+  - 更新 docs/runbook.md，增加 workspace-lite 说明与常见坑
+- Why:
+  - 轻量级 workspace 策略，降低锁文件冲突风险
+  - legacy 项目不纳入，保持隔离
+- result: passes false -> true
+- commit: feat(stack): 升级 Vite8 Tailwind4 并落地 workspace 与 packages 迁移
+- Next: #010 tailwind-v4
+
+[2026-01-26 13:10:00] item=#010 priority=P1 title=tailwind-v4：将主线路项目从 Tailwind v3 升级到 v4
+- What:
+  - 识别 workflow-engine/workbench 仍使用 Tailwind v3
+  - 升级 tailwindcss 到 ^4.0.0，添加 @tailwindcss/vite
+  - 删除 postcss.config.js 和 tailwind.config.js
+  - 更新 index.css 使用 @import "tailwindcss" 语法
+- Why:
+  - Tailwind v4 使用 CSS 原生配置，无需 JS 配置文件
+  - 与 @tailwindcss/vite 插件配合使用
+- result: passes false -> true
+- commit: feat(stack): 升级 Vite8 Tailwind4 并落地 workspace 与 packages 迁移
+- Next: #011 vite-8
+
+[2026-01-26 13:20:00] item=#011 priority=P1 title=vite-8：将主线路项目升级到 Vite 8
+- What:
+  - 升级 7 个主线路项目 Vite 版本到 ^8.0.0
+  - 涉及项目：claude-profile, ai-worktree-commander, claude-review, promptflow/workbench, governance, config-engine/web, workflow-engine/workbench
+- Why:
+  - 统一技术栈版本
+  - Vite 8 性能与功能提升
+- result: passes false -> true
+- commit: feat(stack): 升级 Vite8 Tailwind4 并落地 workspace 与 packages 迁移
+- Next: #012 shadcn-baseline
+
+[2026-01-26 13:30:00] item=#012 priority=P2 title=shadcn-baseline：在 packages/ui 建立 shadcn 基础设施
+- What:
+  - 创建 packages/ui (@agent-suite/ui)
+  - 实现 Button, Input, Card, Dialog 四个基础组件
+  - 提供 cn() 工具函数
+  - 添加 README 说明 Tailwind v4 主题配置
+- Why:
+  - 统一 UI 组件库，避免重复实现
+  - 基于 shadcn/ui 模式，可自由定制
+- result: passes false -> true
+- commit: feat(stack): 升级 Vite8 Tailwind4 并落地 workspace 与 packages 迁移
+- Next: #013 sdk-client
+
+[2026-01-26 13:40:00] item=#013 priority=P2 title=sdk-client：补强 packages/sdk 为可用 API client
+- What:
+  - 增强 fetchJson 支持外部 AbortSignal
+  - 更新 docs/sdk-contract.md 增加完整使用示例
+  - 示例包含 schema 定义、API 调用、React 组件集成
+- Why:
+  - 支持请求取消是生产环境必需能力
+  - 完整示例降低使用门槛
+- result: passes false -> true
+- commit: feat(stack): 升级 Vite8 Tailwind4 并落地 workspace 与 packages 迁移
+- Next: #014 import-migrate
+
+[2026-01-26 13:50:00] item=#014 priority=P2 title=import-migrate：迁移 2 个 app 使用 @agent-suite/shared
+- What:
+  - claude-profile: 添加 @agent-suite/shared 和 @agent-suite/sdk 依赖
+  - claude-profile: src/lib/utils.ts 改为从 @agent-suite/shared 重新导出 cn
+  - promptflow/workbench: 添加 @agent-suite/shared 和 @agent-suite/sdk 依赖
+- Why:
+  - 渐进式迁移，保持向后兼容
+  - 现有引用 src/lib/utils 的代码无需修改
+- result: passes false -> true
+- commit: feat(stack): 升级 Vite8 Tailwind4 并落地 workspace 与 packages 迁移
+- Next: #015 legacy-isolation
+
+[2026-01-26 14:00:00] item=#015 priority=P3 title=legacy-isolation：将 Vue/Next 项目移动到 legacy/
+- What:
+  - 移动 admin-console (Vue 3) 到 legacy/admin-console
+  - 移动 developer-portal (Next.js) 到 legacy/developer-portal
+  - 在原位置放 README.md 指向新路径
+  - 新增 docs/legacy.md 说明隔离策略与启动命令
+- Why:
+  - Vue/Next.js 项目与主线路技术栈不一致
+  - 短期保持隔离，不影响主线路升级
+- result: passes false -> true
+- commit: feat(stack): 升级 Vite8 Tailwind4 并落地 workspace 与 packages 迁移
+- Next: STOP(SUCCESS) 所有 items 完成

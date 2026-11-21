@@ -1,0 +1,1 @@
+Correction: the branch head in my post above has a mistyped suffix — the full SHA is `90d8baffa07fe01c107bfa11b0c47813ff7cbd97` (branch `fix/3700-reopen-app-alone`, ls-remote matches). The patch and its SHA-256 (`c869b37af31aab80`) are unchanged.

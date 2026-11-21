@@ -1,0 +1,2 @@
+ok  	github.com/yetone/magpie/internal/gateway	1.194s
+ok  	github.com/yetone/magpie/internal/provider	1.041s

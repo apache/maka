@@ -1,0 +1,177 @@
+Re-verified at current main (`eb1b83000`): every element below re-ran on that tip.
+
+| Element | Status / evidence at `eb1b83000` |
+| --- | --- |
+| Rebase | clean, range-diff `=` — zero semantic drift |
+| git am | the patch below applies to a clean `eb1b83000` tree; result tree-identical to the branch (`44936cb3aa`) |
+| Tests | `internal/provider` full: only `TestResolveVia` fails — red on the untouched tip too (re-run alone: same red), the pre-existing red on record, not this patch; `internal/cli` full: only the 3 pre-existing healthcheck/update reds (`TestHealthcheckFindsTheRunningGatewayWithoutMagpieAddr`, `TestUpdateRestartsTheGatewayItFindsWithoutMagpieAddr`, `TestUpdateFindsAMagpieThatWroteNoRecord`) — red on the untouched tip too; the new `TestGroupAddMemberWithMaskedAccountRefused` ok, and ok under `-race`; gofmt/vet clean; nogui build ok for linux/darwin/windows |
+| Ablation (red without the fix) | `groupmatch.go` + `groups_cli.go` product hunks reverted, test kept: `TestGroupAddMemberWithMaskedAccountRefused` FAIL — the pinned member swallowed again; restored, green |
+| Siblings | `IsPattern(` at this tip: the member-routing sites are the face this patch changes (`IsMemberPattern`); `group_share`'s rule-target check, the `access` package's pattern lists and `CleanPatterns` all carry no `#account` form — unchanged, same conclusion as the post below |
+| Field evidence | carried from the post below: assertion-level red on a sandbox HOME with the masked name; the live gap stands as declared |
+
+New branch head: `1c7b8aabe1555e12` — branch: https://github.com/ggbdpq/magpie/tree/hunt-20261112-t1-6131
+Patch below rebuilt at the new head — SHA-256 first 16: `be6e4815a19d2e31`
+
+**Not verified** (carried over): a real WorkBuddy account behind a masked shown name (its `Logins` entry, and whether the stored user *is* the masked string or the raw number — the fix refuses either way when the pin names nothing).
+
+**Attribution**: AI-written (this re-verification comment, written with GLM-5.3-Flash (ZCode)); I've read the whole diff. Please keep the author (`ggbdpq`) or add `Co-authored-by: ggbdpq <ggbdpq@gmail.com>`.
+
+Patch: <details><summary>patch: provider, cli: a member pinned to a masked account's name is refused, not swallowed (#6131) — git am applies it as is; SHA-256 first 16: be6e4815a19d2e31</summary>
+
+````
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Thu, 12 Nov 2026 22:12:14 +0800
+Subject: [PATCH] provider, cli: a member pinned to a masked account's name is
+ refused, not swallowed (#6131)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+zane668 pinned `workbuddy/deepseek-v4.1-flash#1276-762****491` into a
+group and the member was gone with no word: IsPattern judges a member
+whole, and the masked shown name's `*`s took the pin for a glob — one
+that matches no "provider/model" id, kept among the group's patterns
+forever matching nothing. Its comment's reason ("no vendor's model id
+has a * in it") covers the model the member names, not the account after
+the #.
+
+IsMemberPattern judges the member on its model part, the account after
+the # being no part of an id a pattern matches. A pin that names no
+account is now refused the way a typo is ("has no account or key"), and
+a pattern typed among the members is still one. The three places a
+member is told from a pattern take it: ownMembers (a group read back
+from providers.json or saved by the GUI), the CLI's models= and models-.
+
+Run: TestGroupAddMemberWithMaskedAccountRefused (red on the parent:
+"a masked pin that names no account: <nil>" — the member silently gone,
+green with the fix; the fix reverted reds the same line). A pattern
+member's stars still make it a pattern. Siblings: group_share's
+IsPattern reads rule targets, which carry no #account, unchanged; the
+access package's IsPattern reads access rules' models, no #account
+either. Not run: a real WorkBuddy account behind a masked name.
+
+(#6131, ggbdpq)
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/cli/groups_cli.go             |  4 +--
+ internal/cli/groups_masked_pin_test.go | 48 ++++++++++++++++++++++++++
+ internal/provider/groupmatch.go        | 16 ++++++++-
+ 3 files changed, 65 insertions(+), 3 deletions(-)
+ create mode 100644 internal/cli/groups_masked_pin_test.go
+
+diff --git a/internal/cli/groups_cli.go b/internal/cli/groups_cli.go
+index 3608f8a88..89fecf1d3 100644
+--- a/internal/cli/groups_cli.go
++++ b/internal/cli/groups_cli.go
+@@ -415,7 +415,7 @@ func applyGroupPairs(g *provider.Group, pairs []string, resolve func(string) (st
+ 		var out []string
+ 		patterns = nil
+ 		for _, m := range splitIDs(v, func(m string) bool { _, err := resolve(m); return err == nil }) {
+-			if provider.IsPattern(m) {
++			if provider.IsMemberPattern(m) {
+ 				ps, err := provider.CleanPatterns([]string{m})
+ 				if err != nil {
+ 					return nil, err
+@@ -473,7 +473,7 @@ func applyGroupPairs(g *provider.Group, pairs []string, resolve func(string) (st
+ 			}
+ 		case "models-", "members-", "model-":
+ 			for _, m := range splitIDs(v, inGroup(g.Members)) {
+-				if provider.IsPattern(m) {
++				if provider.IsMemberPattern(m) {
+ 					m = strings.TrimPrefix(strings.TrimSpace(m), "magpie/")
+ 					i := slices.Index(g.Match, m)
+ 					if i < 0 {
+diff --git a/internal/cli/groups_masked_pin_test.go b/internal/cli/groups_masked_pin_test.go
+new file mode 100644
+index 000000000..8d1df7419
+--- /dev/null
++++ b/internal/cli/groups_masked_pin_test.go
+@@ -0,0 +1,48 @@
++package cli
++
++import (
++	"strings"
++	"testing"
++)
++
++// A member pinned to an account whose shown name carries stars went into
++// the group's patterns as a glob: IsPattern judged the member whole, a
++// masked name's `*`s and all, so `workbuddy/deepseek-v4.1-flash#1276-762****491`
++// became a pattern matching no id — and the member was dropped without a
++// word (#6131). The pattern is judged on the model the member names now,
++// so a pin that names no account is refused the way a typo is, and a
++// pattern typed among the members is still one.
++func TestGroupAddMemberWithMaskedAccountRefused(t *testing.T) {
++	groupsHome(t)
++
++	_, err := addGroup("wb", []string{"models=a/m#1276-762****491,b/vendor/m"})
++	if err == nil || !strings.Contains(err.Error(), "1276-762****491") {
++		t.Fatalf("a masked pin that names no account: %v", err)
++	}
++	// nothing was saved: the member is not in the group turned into a
++	// pattern that matches nothing
++	if gs := storedGroups(t); len(gs) != 0 {
++		t.Fatalf("saved anyway: %v", gs)
++	}
++
++	// a pattern typed among the members is still one, stars and all
++	if _, err := addGroup("pat", []string{"models=a/*,b/vendor/m"}); err != nil {
++		t.Fatalf("a pattern among the members: %v", err)
++	}
++	gs := storedGroups(t)
++	if len(gs) != 1 {
++		t.Fatalf("stored: %v", gs)
++	}
++	match, _ := gs[0]["match"].([]any)
++	if len(match) != 1 || match[0] != "a/*" {
++		t.Fatalf("pattern not kept: %v", gs[0])
++	}
++	if m, _ := gs[0]["members"].([]any); len(m) != 1 || m[0] != "b/vendor/m" {
++		t.Fatalf("members: %v", gs[0])
++	}
++	// a pin that names no account of the provider is refused as a typo
++	// is — never turned into a pattern that swallows it
++	if _, err := addGroup("pin", []string{"models=a/m#57504284567c73ca,b/vendor/m"}); err == nil {
++		t.Fatal("a pin on an account a has not was taken")
++	}
++}
+diff --git a/internal/provider/groupmatch.go b/internal/provider/groupmatch.go
+index 834fcc5da..fcfaea7ac 100644
+--- a/internal/provider/groupmatch.go
++++ b/internal/provider/groupmatch.go
+@@ -39,6 +39,20 @@ func IsPattern(s string) bool {
+ 	return strings.HasPrefix(s, RegexpPrefix) || strings.Contains(s, "*")
+ }
+ 
++// IsMemberPattern reports whether a group member as typed is a pattern
++// rather than a model's id with an account of its own: the pattern is
++// judged on the model the member names, an account after the # being no
++// part of an id a pattern matches. A masked account's shown name carries
++// stars ("1276-762****491", #6131), and a member pinned to it was judged
++// whole and taken for a glob matching no id — dropped from the group
++// without a word.
++func IsMemberPattern(m string) bool {
++	if base, acct := MemberAccount(m); acct != "" {
++		return IsPattern(base)
++	}
++	return IsPattern(m)
++}
++
+ // matcher is a compiled pattern.
+ type matcher interface{ MatchString(string) bool }
+ 
+@@ -238,7 +252,7 @@ func ownMembers(g Group) (members, match []string) {
+ 	for _, m := range g.Members {
+ 		switch m = strings.TrimSpace(m); {
+ 		case slices.Contains(g.Matched, m):
+-		case IsPattern(m):
++		case IsMemberPattern(m):
+ 			match = append(match, m)
+ 		default:
+ 			members = append(members, m)
+-- 
+2.50.1 (Apple Git-155)
+
+````
+</details>

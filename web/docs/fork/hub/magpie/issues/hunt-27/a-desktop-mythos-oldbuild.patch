@@ -1,0 +1,245 @@
+From 0db93c5bbe6380b468d9d3bbe23c2610ec5a2229 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Thu, 15 Oct 2026 23:38:48 +0800
+Subject: [PATCH] gateway: list Claude Desktop a reasoning-level model by its
+ plain alias when its build has no mythos word
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+What changed
+- Claude Desktop builds older than the mythos word (the Store's 1.6608.2,
+  #2426) keep a gateway model only when its id reads as a sonnet|opus|haiku
+  tier or has claude, sonnet, opus, haiku or anthropic in it, so every
+  reasoning-level model listed by mythos-magpie-<n> vanished from their
+  model menu. desktopModels now takes what the request's User-Agent says of
+  the build (desktopKnowsMythos: " Claude/2.x" and up takes mythos,
+  anything older or unreadable does not) and lists such a model by its
+  plain anthropic/magpie-<n> alias, which every build keeps, instead.
+  Those builds have no mythos effort table either, so no picker is lost
+  there. A build that says 2.x keeps the picker alias, and Desktop's
+  Code-tab ids (Claude Code's) are unchanged.
+- TestClaudeDesktopEffortIDs asks as 2.7032.0 now; the old build is
+  covered by TestClaudeDesktopOldBuildModels and TestDesktopKnowsMythos.
+
+Run
+- before: TestClaudeDesktopOldBuildModels red at 422d057d —
+  "opencode-go/deepseek-v4.1-flash is listed as mythos-magpie-5487751739,
+  which the build drops" (the reporter's own id); after: green
+- go test -tags nogui -p 2 -count=1 ./internal/gateway/ (full package, ok)
+- gofmt -l internal/ clean; go vet and GOOS=linux vet -tags nogui and
+  GOOS=windows vet clean; go build and GOOS=linux build -tags nogui and
+  GOOS=windows build ok (darwin vet/build: known trayimage cgo warning
+  and ld duplicate-library warnings)
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gateway/desktop.go             | 35 +++++++++-
+ internal/gateway/desktop_effort_test.go |  3 +
+ internal/gateway/desktop_models_test.go | 88 +++++++++++++++++++++++++
+ internal/gateway/gateway.go             |  2 +-
+ 4 files changed, 124 insertions(+), 4 deletions(-)
+
+diff --git a/internal/gateway/desktop.go b/internal/gateway/desktop.go
+index 41ee1d2c..7cf7eb7b 100644
+--- a/internal/gateway/desktop.go
++++ b/internal/gateway/desktop.go
+@@ -9,6 +9,7 @@ import (
+ 	"os"
+ 	"path/filepath"
+ 	"regexp"
++	"strconv"
+ 	"strings"
+ 	"sync"
+ 
+@@ -51,6 +52,28 @@ func desktopAccepts(id string) bool {
+ 	return false
+ }
+ 
++// desktopKnowsMythos says a Claude Desktop build keeps the mythos word its
++// 2.7032 filter knows (desktopWords). Older builds have no such word: the
++// Store's 1.6608.2 keeps a gateway model only when its id reads as a
++// sonnet|opus|haiku tier or has claude, sonnet, opus, haiku or anthropic in
++// it (its app.asar has neither mythos nor fable), so every reasoning-level
++// model listed by mythos-magpie-<n> vanished from its menu
++// (sublatesublate-design). The version a User-Agent names ("Mozilla/5.0 …
++// Claude/2.7032.0 Chrome/…") is the only word magpie gets of the build: 2
++// and up take mythos, anything older — or a version magpie cannot read —
++// does not, and falls back to the plain alias every build keeps (no effort
++// picker there, and those builds have no mythos effort table either).
++var desktopUAVersion = regexp.MustCompile(` Claude/(\d+)`)
++
++func desktopKnowsMythos(ua string) bool {
++	m := desktopUAVersion.FindStringSubmatch(ua)
++	if m == nil {
++		return false
++	}
++	n, err := strconv.Atoi(m[1])
++	return err == nil && n >= 2
++}
++
+ // desktopAlias is the prefix of the id a model is listed by to Claude
+ // Desktop when its own id names no Claude model: anthropic/magpie-<number>,
+ // the number a hash of magpie's id, so it stays the model's while the
+@@ -160,8 +183,10 @@ func DesktopID(e provider.Entry) string { return claudeLooking(e) }
+ // folds rows of one name into one entry, so no two of one name read the
+ // same (desktopNames). A model of 1M or more is listed by its "[1m]" id
+ // under settings.DesktopLongest, described as Desktop's own 1M entry is
+-// (desktop1M).
+-func desktopModels(entries []provider.Entry) []map[string]any {
++// (desktop1M). A build that has no mythos word (desktopKnowsMythos) is
++// shown a reasoning-level model by its plain alias instead of the picker
++// one, which such a build would drop whole (#2426).
++func desktopModels(entries []provider.Entry, knowsMythos bool) []map[string]any {
+ 	names := desktopNames(entries)
+ 	// the tier each model stands in for: the user's pick (a model picked
+ 	// for two is tagged with the first, desktopTierTurn sends the other),
+@@ -178,7 +203,11 @@ func desktopModels(entries []provider.Entry) []map[string]any {
+ 	for i, e := range entries {
+ 		m := modelObject(e)
+ 		m["display_name"] = names[i]
+-		m["id"] = claudeLooking(e)
++		id := claudeLooking(e)
++		if !knowsMythos && strings.HasPrefix(id, desktopEffortAlias) {
++			id = aliasFor(e.ID)
++		}
++		m["id"] = id
+ 		if desktopListed1M(e, longest) {
+ 			m["id"] = m["id"].(string) + "[1m]"
+ 			m["description"] = desktop1MSaid
+diff --git a/internal/gateway/desktop_effort_test.go b/internal/gateway/desktop_effort_test.go
+index 0d464bc5..de01859f 100644
+--- a/internal/gateway/desktop_effort_test.go
++++ b/internal/gateway/desktop_effort_test.go
+@@ -104,6 +104,9 @@ func TestClaudeDesktopEffortIDs(t *testing.T) {
+ 	}
+ 	req := httptest.NewRequest("GET", "/v1/models", nil)
+ 	req.Header.Set("x-api-key", Token+"-claude-desktop")
++	// a build that has the mythos word (#2426); one without is listed the
++	// plain alias instead (TestClaudeDesktopOldBuildModels)
++	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Claude/2.7032.0 Chrome/140.0.0.0 Electron/37.2.0 Safari/537.36")
+ 	rec := httptest.NewRecorder()
+ 	New().Handler().ServeHTTP(rec, req)
+ 	var list struct {
+diff --git a/internal/gateway/desktop_models_test.go b/internal/gateway/desktop_models_test.go
+index d014be41..a00ac7c0 100644
+--- a/internal/gateway/desktop_models_test.go
++++ b/internal/gateway/desktop_models_test.go
+@@ -3,6 +3,7 @@ package gateway
+ import (
+ 	"encoding/json"
+ 	"net/http/httptest"
++	"regexp"
+ 	"slices"
+ 	"strings"
+ 	"testing"
+@@ -188,6 +189,93 @@ func TestClaudeDesktopNamesFollowSuffixMode(t *testing.T) {
+ 	}
+ }
+ 
++// A Claude Desktop build that has no mythos word (the Store's 1.6608.2,
++// sublatesublate-design) keeps a gateway model only when its id reads as a
++// sonnet|opus|haiku tier or has claude, sonnet, opus, haiku or anthropic in
++// it, so every reasoning-level model listed by mythos-magpie-<n> vanished
++// from its menu. To a build whose User-Agent names no 2.x, a
++// reasoning-level model is listed by its plain alias, which every build
++// keeps; one that says 2.x keeps the picker alias.
++func TestClaudeDesktopOldBuildModels(t *testing.T) {
++	setup(t, provider.Anthropic, &fake{})
++	if err := provider.Save(provider.Provider{ID: "opencode-go", Name: "OpenCode Go", Key: "k", Chat: "http://127.0.0.1:1/v1", Models: []string{"deepseek-v4.1-flash"}}); err != nil {
++		t.Fatal(err)
++	}
++	if err := provider.SetModelEfforts("opencode-go/deepseek-v4.1-flash", []string{"low", "medium", "high"}); err != nil {
++		t.Fatal(err)
++	}
++	// an old build's own filter (its app.asar, 1.6608.2)
++	oldBuildKeeps := func(id string) bool {
++		l := strings.ToLower(id)
++		if regexp.MustCompile(`^(sonnet|opus|haiku)(-[\d.]+)?$`).MatchString(l) {
++			return true
++		}
++		for _, w := range []string{"claude", "sonnet", "opus", "haiku", "anthropic"} {
++			if strings.Contains(l, w) {
++				return true
++			}
++		}
++		return false
++	}
++	list := func(ua string) map[string]string {
++		t.Helper()
++		req := httptest.NewRequest("GET", "/v1/models", nil)
++		req.Header.Set("x-api-key", TokenFor("claude-desktop"))
++		if ua != "" {
++			req.Header.Set("User-Agent", ua)
++		}
++		rec := httptest.NewRecorder()
++		New().Handler().ServeHTTP(rec, req)
++		var out struct {
++			Data []desktopRow `json:"data"`
++		}
++		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
++			t.Fatal(err)
++		}
++		got := map[string]string{}
++		for _, d := range out.Data {
++			got[DesktopCatalogID(d.ID)] = d.ID
++		}
++		return got
++	}
++	const oldUA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Claude/1.6608.2 Chrome/140.0.0.0 Electron/37.2.0 Safari/537.36"
++
++	// the old build keeps every model it is shown
++	for _, ua := range []string{oldUA, ""} {
++		for catalog, id := range list(ua) {
++			if !oldBuildKeeps(id) {
++				t.Errorf("User-Agent %q: %s is listed as %s, which the build drops", ua, catalog, id)
++			}
++		}
++	}
++
++	// a 2.x build is still offered the effort picker
++	ids := list("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Claude/2.7032.0 Chrome/140.0.0.0 Electron/37.2.0 Safari/537.36")
++	if id := ids["opencode-go/deepseek-v4.1-flash"]; !regexp.MustCompile(`^mythos-magpie-\d{10}$`).MatchString(id) {
++		t.Errorf("2.7032.0: deepseek-v4.1-flash is listed as %q, want the mythos picker alias", id)
++	}
++}
++
++// desktopKnowsMythos, by the version a User-Agent names: 2.x takes the
++// mythos effort alias, anything older or unreadable does not.
++func TestDesktopKnowsMythos(t *testing.T) {
++	for _, c := range []struct {
++		ua   string
++		want bool
++	}{
++		{"Mozilla/5.0 … Claude/2.7032.0 Chrome/… Safari/537.36", true},
++		{"Mozilla/5.0 … Claude/2 Chrome/…", true},
++		{"Mozilla/5.0 … Claude/1.6608.2 Chrome/… Safari/537.36", false},
++		{"Mozilla/5.0 … Claude/3.0.0 Chrome/… Safari/537.36", true},
++		{"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36", false},
++		{"", false},
++	} {
++		if got := desktopKnowsMythos(c.ua); got != c.want {
++			t.Errorf("desktopKnowsMythos(%q) = %v, want %v", c.ua, got, c.want)
++		}
++	}
++}
++
+ // desktopNames: the agents' list naming (provider.Labels, the Provider in
+ // model names setting) with the whole catalog id after two entries that
+ // still read the same — Desktop's menu shows the name alone, so two models
+diff --git a/internal/gateway/gateway.go b/internal/gateway/gateway.go
+index dabe170a..44cb75a7 100644
+--- a/internal/gateway/gateway.go
++++ b/internal/gateway/gateway.go
+@@ -970,7 +970,7 @@ func (s *Server) models(w http.ResponseWriter, r *http.Request) {
+ 	data := []map[string]any{}
+ 	shown := catalogFor(r)
+ 	if agent := agentOf(r); agent == "claude-desktop" {
+-		data = desktopModels(shown)
++		data = desktopModels(shown, desktopKnowsMythos(r.Header.Get("User-Agent")))
+ 	} else if agent == ScienceID {
+ 		data = scienceModels(shown)
+ 	} else {
+-- 
+2.50.1 (Apple Git-155)
+

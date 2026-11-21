@@ -1,0 +1,7 @@
+#5773 PATCHED
+branch: 5773-webview2-timeout @ origin = 1b80a3522d5c4772894fd33a7f7908cd14cf2a08
+patch sha256[:16] = 85c87ca44b5c1e41 (19718 B, git am clean on d2a80b317)
+post: https://github.com/yetone/magpie/issues/5773#issuecomment-6779698933 (author ggbdpq, read back ok)
+fix: wails errorCallback 必 os.Exit(1) 且跳 OnShutdown;修=WebView2 初始化失败形状族(webview2Fatal 串判定)→Windows 原生框专线程(#1806 判 UI 线程禁弹)限时 5min 等待,Yes=RelaunchBinary 旁路重启(AwaitPredecessor 接管),任一路径先跑 OnShutdown 收尾闭包;非 Windows no-op stub;运行期 chromium 错误留白如实(串不含形状族,弹框会说错原因)
+tests: TestWebView2Fatal/TestWebView2ExitNotice/TestWebview2ExitAskRestartTidyUp (-race 绿);周边 TestWebView2Missing/Notice/ArgsMergeTheUsers、TestDataFolderMoveRestarts、TestGatewayFixQuitsOnlyAMagpie 绿;消融摘 runWebview2Exit 尾 hunk 红→还原绿;GOOS=windows build+vet 两形态过;gofmt 净
+NOT-RUNNABLE: Windows 真机(弹框/重启/收尾活体);报告者日志为活体证据

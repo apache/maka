@@ -1,0 +1,173 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Sat, 7 Nov 2026 10:23:10 +0800
+Subject: [PATCH] gateway: a turn translated for another magpie asks its
+ model's own reply limit
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+A turn for a Remote magpie's model that magpie translates (the search
+tool declared, searchedForIt) went out with no reply limit: fillsOutput
+left another magpie out, its own filling being translation work it does.
+But a body translated here goes to that magpie with its tools converted,
+one it passes whole — its filling is translation work it never does, so
+the vendor's own short default was all a cascade got: Codex stopped at
+1,024 output tokens two magpies deep (#5566) where the same model asked
+direct of the far one completed. A turn relayed whole is untouched: no
+limit is filled but in a translation, where the other magpie's own never
+runs for it.
+---
+ internal/gateway/maxoutput.go                 |   8 +-
+ internal/gateway/remote_magpie_output_test.go | 115 ++++++++++++++++++
+ 2 files changed, 121 insertions(+), 2 deletions(-)
+ create mode 100644 internal/gateway/remote_magpie_output_test.go
+
+diff --git a/internal/gateway/maxoutput.go b/internal/gateway/maxoutput.go
+index 146338d92..f1d0971de 100644
+--- a/internal/gateway/maxoutput.go
++++ b/internal/gateway/maxoutput.go
+@@ -259,13 +259,17 @@ func withOwnOutput(p provider.Provider, model string, proto provider.Protocol, b
+ // API reads none as the model's whole, which another vendor's needn't
+ // (DeepSeek's reads it as 8K, shortByDefault). Anthropic's always is, as
+ // it needs one. An account's own backend (the ChatGPT one turns
+-// max_output_tokens away) and another magpie, which fills its own, aren't.
++// max_output_tokens away) isn't. Another magpie is: this fills only a
++// translated turn (forwardTranslated), and one translated here goes to
++// the other magpie with its tools converted, a body it passes whole —
++// its own filling is translation work it never does (#5566), so its
++// vendor's short default was all a cascade got.
+ func fillsOutput(p provider.Provider, to provider.Protocol) bool {
+ 	if to == provider.Anthropic {
+ 		return true
+ 	}
+ 	return (to == provider.Chat || to == provider.Responses) &&
+-		(p.Account == nil || p.IsPlugin()) && !p.IsRemoteMagpie()
++		(p.Account == nil || p.IsPlugin())
+ }
+ 
+ // outputFieldRefused is a request error about the reply limit itself
+diff --git a/internal/gateway/remote_magpie_output_test.go b/internal/gateway/remote_magpie_output_test.go
+new file mode 100644
+index 000000000..cfac03e29
+--- /dev/null
++++ b/internal/gateway/remote_magpie_output_test.go
+@@ -0,0 +1,115 @@
++package gateway
++
++import (
++	"context"
++	"io"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"sync"
++	"testing"
++
++	"github.com/tidwall/gjson"
++
++	"github.com/yetone/magpie/internal/provider"
++)
++
++// Codex offers web_search on every turn and names no reply limit. A turn
++// for a Remote magpie's model is translated here when the search is
++// magpie's to do (searchedForIt), and the other magpie, given a body it
++// can pass whole, relays it — its own filling is translation work it never
++// does. So the model's published output has to go out on the first hop,
++// or the vendor's own short default is all the cascade gets (#5566):
++// Codex stopped at 1,024 output tokens two magpies deep where the same
++// model asked direct of the far one completed.
++func TestRemoteMagpieCascadeAsksItsOutputLimit(t *testing.T) {
++	var mu sync.Mutex
++	var hop, vendor []string // the bodies the far magpie, and its vendor, were sent
++	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		b, _ := io.ReadAll(r.Body)
++		mu.Lock()
++		vendor = append(vendor, string(b))
++		mu.Unlock()
++		w.Header().Set("Content-Type", "text/event-stream")
++		io.WriteString(w, sse(
++			`data: {"type":"response.created","response":{"id":"resp_1","model":"m1"}}`,
++			`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"mc1","role":"assistant","content":[]}}`,
++			`data: {"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":"hello"}`,
++			`data: {"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"mc1","role":"assistant","content":[{"type":"output_text","text":"hello"}]}}`,
++			`data: {"type":"response.completed","response":{"id":"resp_1","model":"m1","usage":{"input_tokens":5,"output_tokens":2}}}`))
++	}))
++	t.Cleanup(up.Close)
++	fresh(t)
++	if err := provider.Save(provider.Provider{ID: "relay", Name: "Relay", Key: "k", Models: []string{"m1"}, Responses: up.URL + "/v1"}); err != nil {
++		t.Fatal(err)
++	}
++	// the far magpie publishes the model's reply limit beside its window,
++	// as the user's Max output there does
++	if err := provider.SetModelOutput("relay/m1", 393216); err != nil {
++		t.Fatal(err)
++	}
++	h := New().Handler()
++	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		if r.Method == http.MethodPost {
++			b, _ := io.ReadAll(r.Body)
++			r.Body = io.NopCloser(strings.NewReader(string(b)))
++			mu.Lock()
++			hop = append(hop, string(b))
++			mu.Unlock()
++		}
++		h.ServeHTTP(w, r)
++	}))
++	t.Cleanup(remote.Close)
++	id, err := provider.Add(provider.Provider{ID: "office", Name: "Office", Preset: provider.RemoteMagpiePreset, Chat: strings.TrimPrefix(remote.URL, "http://")})
++	if err != nil {
++		t.Fatal(err)
++	}
++	office, err := provider.Find(id)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if _, err := office.Fetch(context.Background()); err != nil {
++		t.Fatal(err)
++	}
++	// Codex's turn: the search tool declared, no reply limit named
++	ask := `{"model":"office/relay/m1","input":"Output the integers from 1 through 600, then END600.","tools":[{"type":"web_search"}],"stream":true}`
++	code, reply := post(t, "/v1/responses", ask)
++	if code != 200 {
++		t.Fatalf("HTTP %d: %s", code, reply)
++	}
++	mu.Lock()
++	if len(hop) != 1 || len(vendor) != 1 {
++		t.Fatalf("hops %d, vendor asks %d", len(hop), len(vendor))
++	}
++	body, sent := hop[0], vendor[0]
++	mu.Unlock()
++	// the first hop translated the turn (the search tool is gone) and
++	// named the model's published output; the second relayed the body it
++	// got, its ceiling only lowering a larger one
++	if got := gjson.Get(body, "max_output_tokens").Int(); got != 393216 {
++		t.Errorf("the far magpie was sent max_output_tokens %v, want 393216: %s", got, body)
++	}
++	if got := gjson.Get(sent, "max_output_tokens").Int(); got != 393216 {
++		t.Errorf("the vendor was sent max_output_tokens %v, want 393216: %s", got, sent)
++	}
++	if gjson.Get(body, "tools.#(type==\"web_search\")").Exists() {
++		t.Errorf("the search tool went out converted: %s", body)
++	}
++	if got := gjson.Get(sent, "model").String(); got != "m1" {
++		t.Errorf("the vendor was asked for %q, want m1", got)
++	}
++
++	// a limit the client named goes as it is
++	code, reply = post(t, "/v1/responses", `{"model":"office/relay/m1","input":"Output the integers from 1 through 600, then END600.","tools":[{"type":"web_search"}],"max_output_tokens":8192,"stream":true}`)
++	if code != 200 {
++		t.Fatalf("HTTP %d: %s", code, reply)
++	}
++	mu.Lock()
++	if n := len(vendor); n != 2 {
++		t.Fatalf("vendor asks %d, want 2", n)
++	}
++	if got := gjson.Get(vendor[1], "max_output_tokens").Int(); got != 8192 {
++		t.Errorf("the vendor was sent max_output_tokens %v, want the client's 8192: %s", got, vendor[1])
++	}
++	mu.Unlock()
++}
+-- 
+2.50.1 (Apple Git-155)
+

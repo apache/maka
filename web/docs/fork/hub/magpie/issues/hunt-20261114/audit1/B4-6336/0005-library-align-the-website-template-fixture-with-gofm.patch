@@ -1,0 +1,28 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Aryz <aryz0713@gmail.com>
+Date: Thu, 12 Nov 2026 20:17:16 +0800
+Subject: [PATCH 05/11] library: align the website template fixture with gofmt
+
+Apply the one-line alignment printed by the CI Go formatter. The source behavior is unchanged.
+
+Verified at 8d2150c: all website lifecycle regressions pass (Actions run 43213792487 attempt 2); the real Uizze source installs ui-taste with 26 files and ios-design with 20 files in an isolated home; 92 Library browser regressions pass in Chromium and WebKit. The formatting gate identified this fixture line; the full cross-platform checks run again for the formatted tree.
+---
+ internal/library/skillwellknown_lifecycle_test.go | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/internal/library/skillwellknown_lifecycle_test.go b/internal/library/skillwellknown_lifecycle_test.go
+index 846a1d527..c34b28cdb 100644
+--- a/internal/library/skillwellknown_lifecycle_test.go
++++ b/internal/library/skillwellknown_lifecycle_test.go
+@@ -107,7 +107,7 @@ func TestWellKnownHTMLTemplateIsInstalled(t *testing.T) {
+ 	sandbox(t)
+ 	const template = "<!doctype html><title>Product page</title><main>Welcome</main>"
+ 	base, _ := websiteFixture(t, map[string]string{
+-		"/.well-known/skills/index.json": `{"skills":[{"name":"ui-taste","description":"UI taste","files":["SKILL.md","templates/page.html"]}]}`,
++		"/.well-known/skills/index.json":                   `{"skills":[{"name":"ui-taste","description":"UI taste","files":["SKILL.md","templates/page.html"]}]}`,
+ 		"/.well-known/skills/ui-taste/SKILL.md":            websiteSkill,
+ 		"/.well-known/skills/ui-taste/templates/page.html": template,
+ 	})
+-- 
+2.50.1 (Apple Git-155)
+

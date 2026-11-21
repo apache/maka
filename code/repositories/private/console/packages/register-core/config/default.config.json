@@ -1,0 +1,27 @@
+{
+  "_comment": "默认配置(非敏感)。secret 全部走环境变量(.env),不放在这里。实际运行时还有 config.json(用户层)和 .env 覆盖。",
+  "polling": {
+    "smsIntervalMs": 5000,
+    "smsMaxAttempts": 20,
+    "mailIntervalMs": 5000,
+    "mailMaxAttempts": 10,
+    "cfTimeoutMs": 60000
+  },
+  "compliance": {
+    "maxAccountsPerHour": 5,
+    "minDelayMs": 60000,
+    "requireConfirmation": true
+  },
+  "browser": {
+    "headless": false,
+    "viewport": { "width": 1280, "height": 900 },
+    "lang": "zh-CN"
+  },
+  "logging": {
+    "level": "info",
+    "dir": "data/logs"
+  },
+  "database": {
+    "path": "data/app.db"
+  }
+}

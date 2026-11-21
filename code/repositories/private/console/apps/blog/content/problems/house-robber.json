@@ -1,0 +1,23 @@
+{
+  "id": "14",
+  "slug": "house-robber",
+  "title": "打家劫舍",
+  "difficulty": "medium",
+  "tags": ["动态规划"],
+  "description": "你是一个专业的小偷,计划沿街盗窃。每间房内都藏有一定金额,影响你偷窃的唯一制约因素是**相邻的房屋装有相互连通的防盗系统**,若两间相邻的房屋在同一晚上被闯入,系统会自动报警。\n\n给定一个代表每个房屋存放金额的非负整数数组 `nums`,计算在不触动报警装置的前提下,一夜之内能偷窃到的最高金额。\n\n**示例 1:**\n\n- 输入:`nums = [1,2,3,1]`\n- 输出:`4`(偷第 1、3 间:1 + 3 = 4)\n\n**示例 2:**\n\n- 输入:`nums = [2,7,9,3,1]`\n- 输出:`12`(偷第 1、3、5 间:2 + 9 + 1 = 12)",
+  "solution": "## 思路\n\n**动态规划**:到第 i 间时的最高金额 = max(不偷第 i 间 = 上一间结果,偷第 i 间 = 上上间结果 + nums[i])。用两个变量滚动 `prev`(i-2)、`cur`(i-1)即可,空间 O(1)。\n\n## 参考代码\n\n```js\nfunction rob(nums) {\n  let prev = 0;\n  let cur = 0;\n  for (const n of nums) {\n    [prev, cur] = [cur, Math.max(cur, prev + n)];\n  }\n  return cur;\n}\n```\n\n## 复杂度\n\n- 时间:O(n)\n- 空间:O(1)",
+  "signature": {
+    "language": "javascript",
+    "entry": "rob",
+    "params": [{ "name": "nums", "type": "number[]" }],
+    "returns": "number"
+  },
+  "testCases": [
+    { "sample": true, "input": [[1, 2, 3, 1]], "expected": 4 },
+    { "sample": true, "input": [[2, 7, 9, 3, 1]], "expected": 12 },
+    { "sample": false, "input": [[1]], "expected": 1 },
+    { "sample": false, "input": [[2, 1, 1, 2]], "expected": 4 },
+    { "sample": false, "input": [[2, 3, 2]], "expected": 4 },
+    { "sample": false, "input": [[]], "expected": 0 }
+  ]
+}

@@ -1,0 +1,328 @@
+diff --git a/docs/subsystems/gateway-routing.md b/docs/subsystems/gateway-routing.md
+index f221f90b1..219d4628c 100644
+--- a/docs/subsystems/gateway-routing.md
++++ b/docs/subsystems/gateway-routing.md
+@@ -295,6 +295,7 @@ recorded as a prediction failure (`noPrediction`).
+ - xAI's own API (api.x.ai, wherever a Grok model is served — the Grok subscription's plugin shapes its own bodies, provider's `grokShaped`) takes none of three things a client's wire puts in wrong (`xaiBody` in [`xai_body.go`](../../internal/gateway/xai_body.go), shaped in `passthrough` and on the built body in `forwardTranslated` alike, for a custom-tool refusal puts a Codex request on the translated path from the next turn on; there is nothing to learn, xAI takes none of them at all, #3392's follow-up): Codex hands a sealed reasoning item back with `"content": null` beside its `encrypted_content`, which the backend answers "Could not decode the compaction blob. Ensure it is unmodified from the compact response." (the first turn goes through, every one after it 400s) — the null goes, the item otherwise as it came; and Claude Code, its messages carrying a system turn mid-conversation since Anthropic made them GA, sends one that xAI's Messages answers "Invalid request content: Invalid message role." — each folds into the top-level `system`, its text and blocks (a `cache_control` kept) as they came, the only place that API takes the role; and a tool's schema can say `"required": null` where none are (Claude Code's own tools, an MCP server's among them — Anthropic's API takes the null), which xAI's validation of each schema answers "Invalid request content: Schema validation failed: [standard_violation] /required: null is not of type \"array\"" (the claude calls 400ed once the system turns folded) — the key goes from every shape a body leaves magpie in, `input_schema`, `parameters` and `function`'s, at the schema's root or nested, a real array of names kept as it came. `TestXAITakesCodexsSealedReasoningBack`, `TestXAILearnsCustomToolsThenTakesTheReplay`, `TestXAIFoldsClaudesSystemTurn`, `TestXAITakesANullRequiredToolSchema`, `TestXaiBodyDropsNullRequiredInEveryShape`.
+ - A tool call's arguments reach the client as the vendor writes them, translated too (echo_ts on Discord: Codex on Copilot about 10x slower, an apply_patch shown only once whole). The Responses decoder hands each `function_call_arguments.delta` and `custom_tool_call_input.delta` on as a `KToolArgs` delta (`argsDelta`), holding back only the one that would make the JSON whole until `.done`, which `endCall` checks against the final arguments; the Responses encoder streams a custom tool's input as `custom_tool_call_input.delta` (`customStream` in [`custom_tool.go`](../../internal/gateway/custom_tool.go)) before its `.done`. A Copilot account's Responses request is relayed with a `web_search` tool in it (`searchesItself`; checked on a real account 2026-10-17), and Copilot is never picked to search for another provider's model (`searchRank`). It is translated instead when a tool marks a parameter `"encrypted": true` (`asksSealing`, MultiAgentV2's `spawn_agent`): Copilot seals such an argument and can't read its own seal on the subagent's turn. `TestCallArgsStreamWhenTranslated`, `TestCustomInputStreams`, `TestResponsesCallArgsStream`, `TestCopilotRelayedUnlessAskedToSeal`, `TestCopilotUltraSubagentWithWebSearch`.
+ - A relayed Responses stream gives each output item the one id its `response.output_item.added` gave it, in every event after that carries an `item_id` or an `item`, and in the `output` of `response.completed`, `response.incomplete` or `response.failed` (`idTidy` in [`itemids.go`](../../internal/gateway/itemids.go), applied in `passthrough` before `phaseTidy`). GitHub Copilot's `/responses` gives an item another id in every event (checked 2026-10-19 on a real account, gpt-5.5 with web_search), and Codex starts an item by the added's id and ends one by the done's, so a commentary message was shown twice and a web search never ended (echo_ts on Discord, `TestCopilotItemKeepsItsID`). An upstream whose ids agree goes through byte for byte (`TestItemIDsThatAgreeGoAsTheyCame`); a translated reply's ids are magpie's own.
++- An assistant message in a Responses reply says its `phase` — `commentary` for what the model said on the way to a call, `final_answer` for the answer that ends the turn — as OpenAI's own models' do, so Codex folds the former under "Worked for …" (#2437). Codex's alone: a client magpie doesn't know reads a message's streamed text as the final answer, and Muse Code kills its whole run, unretried, when the item's `output_item.done` then says `commentary` ("message item … changed phase from `final_answer` to `commentary`"; every muse turn that streamed text before a tool call, and no turn that didn't). The stream waits to write the field only for Codex (`codexPhase`, `Request.phaseClient`, `responsesEncoder.phase`, `phaseTidy` built for Codex's requests alone in `passthrough`), and a whole reply gets its phases in `renderResponses` on the same flag. `TestTranslatedMessagesSayPhase` (Codex's), `TestOtherClientGetsNoPhase` and `TestMuseClientStreamHasNoPhase` (every other client's).
+ - A model's reply limit is published within the window beside it (#1438, `provider.OutputWithin`, `Entry.PublishedOutput`): `/v1/models`' `max_output_tokens` (`modelObject`), Cursor Private Inference's `capabilities.max_output_tokens` (`cursorLocalModel`), Muse Code's `limit.output` (`museModels`), the GUI's model and group rows (`providerInfo`, `providersState`), `magpie model output`, and every agent's file (`agent.maxTokens`, #338). The window and the output can come from different sources: Grok's backend lists grok-4.7's 256000 window, and models.dev fills its 500000 output (`catalog.Decorate` and `Provider.replyLimit` fill an output only where the vendor gives none). An unknown window or output is published as it is. The catalog keeps the unclamped `Entry.Output`, and a group's member is still asked for no more than that (`outputLimit`, `withMaxOutput`), so a request isn't lowered by the clamp. A limit the user set stays in their settings as they set it (`TestModelListsKeepOutputWithinTheWindow`). Outside a group, only a Max output the user set for the model (`Entry.OutputSet`) lowers a request (`userOutput`): Claude Code asks a claude-* model for its own full limit (128000 on Opus 5.5) and is told no figure of magpie's for it (`claudeOutput`), and a key whose quota is held per request as max_tokens times the price turned every turn away (YaCo on Discord, `TestUserMaxOutputLowersAPlainProvidersRequest`). A vendor's or models.dev's figure doesn't lower it, since it may be stale.
+ - `/v1/models` and `/v1/models/{id}` give each model magpie knows a price of its `pricing` in OpenRouter's shape, USD a token as decimal strings: `prompt` and `completion` always (a price set at 0 included), `input_cache_read` and `input_cache_write` only when that part has a price (`catalog.OpenRouterPricing`, `catalog.PerToken` in [`openrouter.go`](../../internal/catalog/openrouter.go), which an agent plugin's `connect` is given too; cleary5779 on Discord, an agent showing what a call costs). The price is the one the Usage page counts the model at (`provider.EntryPricer`, as `EntryPriceIn`: the user's own, else the provider's list price or its maker's at its price rate; a subscription's model at its list price; a group only when every member costs the same), the base price only (no `Tiers`, no 1-hour write). A model no price is known for has no `pricing` key, never a 0. It is told to the callers `magpie_price` is (`local` or `sharedWith`), whether they ask or not. The list reads the settings, groups and providers once (`EntryPricer`), and `catalog.PricedBy` and `AtEndpoint` look a model up in indexes built once a catalog load (`priceIndexOf`, `endpoints`), not by walking every models.dev model a look-up: a 755-model list went from about 38ms to 18ms with pricing on, against about 10ms without, at load 65 (`TestModelsListPricing`, `TestPerToken`). Claude Desktop's, Claude Science's, Muse Code's, Codex's and Ollama's lists, the decision, image and video models carry no `pricing`: their clients read a shape of their own, and an image's price isn't a token's.
+ - `/v1/models` and `/v1/models/{id}` say each chat model takes tools, a routing group included (`toolsTold`): models.dev's `tool_call: true`, beside its `reasoning`, and OpenRouter's `supported_parameters` (`tools`, `tool_choice`, and `reasoning` when it thinks), which Kilo's and Cline's lists are read by. A client that judges a model by what its list says found nothing for a group, whose id is the user's own name (psikent on Discord: an SSH client), and gave it no tools. magpie has no model that takes none (a call written as text is read back as one, `textcalls.go`), so every member of a group takes them and the group says so. No `capabilities` key is added: Cursor Private Inference reads it as an object (`cursorLocalModel`), Ollama and LM Studio as arrays of their own words, and no reader of an OpenAI-shaped list agrees on one (`TestGroupListedTakesTools`). A group's window and output stay its largest member's, its images any member's (#712, #756): the gateway sends a longer conversation, a longer reply or an image only to the members that hold it (`roomy`, `withRoom`, `withMaxOutput`), and the editor's Context hint names the member a longer conversation skips when the windows differ (windy on Discord).
+diff --git a/internal/gateway/bare_reasoning_test.go b/internal/gateway/bare_reasoning_test.go
+index 55bac1d3a..275b11428 100644
+--- a/internal/gateway/bare_reasoning_test.go
++++ b/internal/gateway/bare_reasoning_test.go
+@@ -102,6 +102,10 @@ func codexPostTo(s *Server, body string) *httptest.ResponseRecorder {
+ 	rec := httptest.NewRecorder()
+ 	req := httptest.NewRequest("POST", CodexPath+"/responses", strings.NewReader(body))
+ 	req.Header.Set("Authorization", "Bearer chatgpt-token")
++	// Codex's own name on every turn; a request without it is another
++	// client's, which reads no phase (phase_test.go's muse one)
++	req.Header.Set("User-Agent", "codex_cli_rs/0.55.0 (Ubuntu 24.04; x86_64)")
++	req.Header.Set("Originator", "codex_cli_rs")
+ 	s.Handler().ServeHTTP(rec, req)
+ 	return rec
+ }
+diff --git a/internal/gateway/claude_subscription.go b/internal/gateway/claude_subscription.go
+index 2d41c1f84..37605f145 100644
+--- a/internal/gateway/claude_subscription.go
++++ b/internal/gateway/claude_subscription.go
+@@ -4684,6 +4684,7 @@ func bridgeFailed(name, msg string, status int) (int, string) {
+ // event goes out.
+ func relay(w http.ResponseWriter, r *http.Request, from provider.Protocol, name string, req *Request, events <-chan Event, usage *Usage,
+ 	abort, begin func(), ended func(said, stop string, ok bool)) (int, string) {
++	req.phaseClient = codexPhase(r)
+ 	stream := req.Stream
+ 	if stream {
+ 		// an error before any of the answer — out of quota, rate limited —
+diff --git a/internal/gateway/codex_custom_tools_test.go b/internal/gateway/codex_custom_tools_test.go
+index daa24520b..0a35ff0ed 100644
+--- a/internal/gateway/codex_custom_tools_test.go
++++ b/internal/gateway/codex_custom_tools_test.go
+@@ -154,7 +154,7 @@ func TestCodexCustomToolNamespaced(t *testing.T) {
+ func renderCall(t *testing.T, named map[string]nsTool) map[string]any {
+ 	t.Helper()
+ 	args, _ := json.Marshal(map[string]string{"input": "*** Begin Patch\n*** End Patch"})
+-	out := renderResponses(Result{Parts: []Part{{Kind: ToolCall, ID: "c", Name: "apply_patch", Args: args}}}, "m", named)
++	out := renderResponses(Result{Parts: []Part{{Kind: ToolCall, ID: "c", Name: "apply_patch", Args: args}}}, "m", named, false)
+ 	var res struct {
+ 		Output []map[string]any `json:"output"`
+ 	}
+diff --git a/internal/gateway/continuation.go b/internal/gateway/continuation.go
+index 90d78160c..d92ddbed2 100644
+--- a/internal/gateway/continuation.go
++++ b/internal/gateway/continuation.go
+@@ -381,6 +381,7 @@ func (c *continuation) unecho(s string) string {
+ // streamRetries times; one that can't go on ends with the error in the
+ // client's own protocol, as it used to.
+ func (s *Server) streamTranslated(w http.ResponseWriter, r *http.Request, p provider.Provider, from, to provider.Protocol, request *Request, model string, zen *zenReply, u *Usage) (int, string) {
++	request.phaseClient = codexPhase(r)
+ 	sw := newSSEWriter(w)
+ 	enc := encoder(from, sw, request, u)
+ 	cont := &continuation{mode: prefillHow(p, to, model)}
+diff --git a/internal/gateway/gateway.go b/internal/gateway/gateway.go
+index e7c6bd97a..1376274e0 100644
+--- a/internal/gateway/gateway.go
++++ b/internal/gateway/gateway.go
+@@ -110,6 +110,12 @@ func codexForClaudeCode(h http.Header) bool {
+ 	return false
+ }
+ 
++// codexPhase says whether a request is Codex's, the one client whose
++// folding reads an assistant message's phase (phase.go, #2437).
++func codexPhase(r *http.Request) bool {
++	return fromCodex(r.Header) || agentOf(r) == "codex"
++}
++
+ // startedByAgent says whether a request is from no agent magpie knows but
+ // from something an agent started with its environment (a hook's script): it
+ // came with the plain gateway token, not one magpie gave an agent, and
+@@ -5307,9 +5313,11 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
+ 		ints = &intTidy{proto: proto, sse: sse}
+ 	}
+ 	// a message the upstream gave no phase gets one, as OpenAI's own
+-	// models' do (phase.go, #2437); it goes last, as it holds events back
++	// models' do (phase.go, #2437); it goes last, as it holds events
++	// back. Codex's alone: another client (Muse Code) reads a streamed
++	// message's text as the final answer and refuses a later commentary.
+ 	var phases *phaseTidy
+-	if proto == provider.Responses {
++	if proto == provider.Responses && codexPhase(r) {
+ 		phases = &phaseTidy{sse: sse}
+ 	}
+ 	// each item keeps the id it was added with (itemids.go): Copilot gives
+@@ -7118,7 +7126,7 @@ func makeEncoder(proto provider.Protocol, w *sseWriter, r *Request) streamEncode
+ 	case provider.Chat:
+ 		return &chatEncoder{w: w, model: model}
+ 	case provider.Responses:
+-		return &responsesEncoder{w: w, model: model, named: r.Namespaced}
++		return &responsesEncoder{w: w, model: model, named: r.Namespaced, phase: r.phaseClient}
+ 	case provider.Gemini:
+ 		return &geminiEncoder{w: w, model: model}
+ 	}
+@@ -7135,7 +7143,7 @@ func render(proto provider.Protocol, res Result, r *Request) []byte {
+ 	case provider.Chat:
+ 		return renderChat(res, model)
+ 	case provider.Responses:
+-		return renderResponses(res, model, r.Namespaced)
++		return renderResponses(res, model, r.Namespaced, r.phaseClient)
+ 	case provider.Gemini:
+ 		return renderGemini(res, model)
+ 	}
+diff --git a/internal/gateway/ir.go b/internal/gateway/ir.go
+index 64341816f..253d0e23b 100644
+--- a/internal/gateway/ir.go
++++ b/internal/gateway/ir.go
+@@ -192,6 +192,14 @@ type Request struct {
+ 	// draws asks the model for images beside text: a drawing asked on
+ 	// Gemini's API of a model not named for images (drawCodeAssist).
+ 	draws bool
++	// phaseClient: the caller reads an assistant message's phase
++	// (phase.go) — Codex folds what was said on the way to a call by it.
++	// Only Codex asks for the field; a client magpie doesn't know may
++	// read a streamed message's text as the final answer and refuse the
++	// reply when the item's done says commentary after it (Muse Code
++	// kills its run: "message item … changed phase from final_answer to
++	// commentary").
++	phaseClient bool
+ 
+ 	Model      string
+ 	System     string
+diff --git a/internal/gateway/phase_test.go b/internal/gateway/phase_test.go
+index 9b56bc1a2..84844bde6 100644
+--- a/internal/gateway/phase_test.go
++++ b/internal/gateway/phase_test.go
+@@ -37,7 +37,7 @@ func phases(body string) (streamed, ended []string) {
+ 
+ func encoded(evs ...Event) string {
+ 	rec := httptest.NewRecorder()
+-	enc := encoder(provider.Responses, newSSEWriter(rec), &Request{Model: "m"})
++	enc := encoder(provider.Responses, newSSEWriter(rec), &Request{Model: "m", phaseClient: true})
+ 	for _, ev := range evs {
+ 		enc.event(ev)
+ 	}
+@@ -120,7 +120,7 @@ func TestRenderedMessagesSayPhase(t *testing.T) {
+ 	var out struct {
+ 		Output []map[string]any `json:"output"`
+ 	}
+-	if err := json.Unmarshal(renderResponses(res, "m", nil), &out); err != nil {
++	if err := json.Unmarshal(renderResponses(res, "m", nil, true), &out); err != nil {
+ 		t.Fatal(err)
+ 	}
+ 	if out.Output[0]["phase"] != "commentary" {
+@@ -128,7 +128,7 @@ func TestRenderedMessagesSayPhase(t *testing.T) {
+ 	}
+ 	res = Result{Stop: "stop", Parts: []Part{{Kind: Text, Text: "Done."}}}
+ 	out.Output = nil
+-	if err := json.Unmarshal(renderResponses(res, "m", nil), &out); err != nil {
++	if err := json.Unmarshal(renderResponses(res, "m", nil, true), &out); err != nil {
+ 		t.Fatal(err)
+ 	}
+ 	if out.Output[0]["phase"] != "final_answer" {
+@@ -226,3 +226,70 @@ func TestRelayedStreamSaysPhase(t *testing.T) {
+ 		t.Fatalf("%d streamed %q ended %q\n%s", rec.Code, streamed, ended, rec.Body)
+ 	}
+ }
++
++// A client magpie doesn't know (Muse Code) gets no phase: it reads a
++// streamed message's text as the final answer and kills its run when the
++// item's done says commentary after it ("message item … changed phase from
++// final_answer to commentary"). Its done goes out at once, too, where
++// Codex's waits for its phase.
++func TestOtherClientGetsNoPhase(t *testing.T) {
++	rec := httptest.NewRecorder()
++	enc := encoder(provider.Responses, newSSEWriter(rec), &Request{Model: "m"})
++	for _, ev := range []Event{
++		{Kind: KText, Text: "Let me look."},
++		{Kind: KToolStart, ID: "c1", Name: "shell"},
++		{Kind: KToolArgs, Text: `{}`},
++		{Kind: KStop, Stop: "tool"},
++	} {
++		enc.event(ev)
++	}
++	enc.finish()
++	body := rec.Body.String()
++	if strings.Contains(body, "phase") {
++		t.Fatalf("a client magpie doesn't know got a phase\n%s", body)
++	}
++	streamed, _ := phases(body)
++	if len(streamed) != 1 || streamed[0] != "" {
++		t.Fatalf("streamed phases %q, want none\n%s", streamed, body)
++	}
++	done, added := -1, -1
++	for i, ev := range events(body) {
++		switch ev["type"] {
++		case "response.output_item.done":
++			if it, _ := ev["item"].(map[string]any); it["type"] == "message" && done < 0 {
++				done = i
++			}
++		case "response.output_item.added":
++			if it, _ := ev["item"].(map[string]any); it["type"] == "function_call" && added < 0 {
++				added = i
++			}
++		}
++	}
++	if done < 0 || added < 0 || done > added {
++		t.Fatalf("message done at %d, function call added at %d\n%s", done, added, body)
++	}
++}
++
++// Through the gateway: Muse Code's own User-Agent gets no phase, Codex's
++// still does (TestRelayedStreamSaysPhase).
++func TestMuseClientStreamHasNoPhase(t *testing.T) {
++	fresh(t)
++	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		io.Copy(io.Discard, r.Body)
++		w.Header().Set("Content-Type", "text/event-stream")
++		io.WriteString(w, sse(evMsg, evFcAdd,
++			`data: {"type":"response.output_item.done","output_index":2,"item":{"type":"function_call","id":"fc1","call_id":"c1","name":"shell","arguments":"{}"}}`,
++			`data: {"type":"response.completed","response":{"id":"r","status":"completed","output":[{"type":"message","id":"m1","role":"assistant","content":[]},{"type":"function_call","id":"fc1","call_id":"c1","name":"shell","arguments":"{}"}]}}`))
++	}))
++	t.Cleanup(up.Close)
++	if err := provider.Save(provider.Provider{ID: "relay", Name: "Relay", Key: "k", Models: []string{"gpt-5.4"}, Responses: up.URL + "/v1"}); err != nil {
++		t.Fatal(err)
++	}
++	rec := httptest.NewRecorder()
++	req := httptest.NewRequest("POST", "/v1/responses", strings.NewReader(`{"model":"relay/gpt-5.4","stream":true,"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}]}`))
++	req.Header.Set("User-Agent", "muse-build/1.4.14 (non-interactive; linux-x86_64)")
++	New().Handler().ServeHTTP(rec, req)
++	if streamed, ended := phases(rec.Body.String()); rec.Code != 200 || strings.Join(streamed, ",") != "" || strings.Join(ended, ",") != "" {
++		t.Fatalf("%d streamed %q ended %q\n%s", rec.Code, streamed, ended, rec.Body)
++	}
++}
+diff --git a/internal/gateway/reasoning_state_claude_codex_test.go b/internal/gateway/reasoning_state_claude_codex_test.go
+index 57ed2e1f8..94b7cf756 100644
+--- a/internal/gateway/reasoning_state_claude_codex_test.go
++++ b/internal/gateway/reasoning_state_claude_codex_test.go
+@@ -268,7 +268,7 @@ func TestGeminiSignatureIsNotSealedAsClaudes(t *testing.T) {
+ 	if strings.Contains(rec.Body.String(), "encrypted_content") || strings.Contains(rec.Body.String(), "gemini-") {
+ 		t.Fatalf("stream: %s", rec.Body)
+ 	}
+-	b := renderResponses(Result{Parts: []Part{{Kind: Thinking, Text: "thought", Signature: "gemini-sig"}, {Kind: Thinking, Signature: "gemini-bare"}, {Kind: Text, Text: "hi"}}}, "m", nil)
++	b := renderResponses(Result{Parts: []Part{{Kind: Thinking, Text: "thought", Signature: "gemini-sig"}, {Kind: Thinking, Signature: "gemini-bare"}, {Kind: Text, Text: "hi"}}}, "m", nil, false)
+ 	if strings.Contains(string(b), "encrypted_content") || strings.Contains(string(b), "gemini-") {
+ 		t.Fatalf("render: %s", b)
+ 	}
+diff --git a/internal/gateway/responses.go b/internal/gateway/responses.go
+index 41ac8cf1f..730e3e240 100644
+--- a/internal/gateway/responses.go
++++ b/internal/gateway/responses.go
+@@ -1735,6 +1735,10 @@ type responsesEncoder struct {
+ 	// until its phase is known (phase.go, #2437)
+ 	heldMsg map[string]any
+ 	held    []heldEvent
++	// phase writes assistant messages their phase: Codex's alone (ir.go's
++	// phaseClient), which folds by the field. A client magpie doesn't
++	// know gets no phase and no wait for one.
++	phase bool
+ }
+ 
+ type heldEvent struct {
+@@ -1805,12 +1809,12 @@ func (e *responsesEncoder) write(typ string, fields map[string]any) {
+ }
+ 
+ // release sends the waiting message's events, the message given phase
+-// (or none, for "").
++// (or none, for ""). The phase goes on Codex's replies alone.
+ func (e *responsesEncoder) release(phase string) {
+ 	if e.heldMsg == nil {
+ 		return
+ 	}
+-	if phase != "" {
++	if phase != "" && e.phase {
+ 		e.heldMsg["phase"] = phase
+ 	}
+ 	held := e.held
+@@ -1872,9 +1876,14 @@ func (e *responsesEncoder) closeAs(sealed json.RawMessage) {
+ 		part := map[string]any{"type": "output_text", "text": t, "annotations": []any{}, "logprobs": []any{}}
+ 		e.send("response.content_part.done", map[string]any{"item_id": e.itemID, "output_index": e.item, "content_index": 0, "part": part})
+ 		m := map[string]any{"id": e.itemID, "type": "message", "role": "assistant", "status": "completed", "content": []map[string]any{part}}
+-		// its done waits for what comes next to say its phase
+-		e.release(phaseCommentary)
+-		item, e.heldMsg = m, m
++		// its done waits for what comes next to say its phase — Codex's
++		// alone; every other client reads the item as it streamed
++		if e.phase {
++			e.release(phaseCommentary)
++			item, e.heldMsg = m, m
++		} else {
++			item = m
++		}
+ 	case Thinking:
+ 		t := e.text.String()
+ 		summary := []map[string]any{}
+@@ -2113,7 +2122,7 @@ func responsesSearchItem(query string, hits []Hit) map[string]any {
+ }
+ 
+ // renderResponses is the non-streaming reply.
+-func renderResponses(res Result, model string, named map[string]nsTool) []byte {
++func renderResponses(res Result, model string, named map[string]nsTool, phase bool) []byte {
+ 	output := []any{}
+ 	for _, p := range res.Parts {
+ 		switch p.Kind {
+@@ -2180,7 +2189,9 @@ func renderResponses(res Result, model string, named map[string]nsTool) []byte {
+ 		// as the stream says it (#248)
+ 		status, incomplete = "incomplete", map[string]any{"reason": "content_filter"}
+ 	}
+-	phaseOutput(output, status == "completed")
++	if phase {
++		phaseOutput(output, status == "completed")
++	}
+ 	b, _ := json.Marshal(map[string]any{"id": id, "object": "response", "created_at": time.Now().Unix(), "status": status,
+ 		"model": model, "output": output, "usage": res.Usage.responses(), "incomplete_details": incomplete,
+ 		"parallel_tool_calls": true, "tool_choice": "auto", "tools": []any{}, "error": nil})
+diff --git a/internal/gateway/stop_context_test.go b/internal/gateway/stop_context_test.go
+index 01172bc50..feca6ca58 100644
+--- a/internal/gateway/stop_context_test.go
++++ b/internal/gateway/stop_context_test.go
+@@ -32,7 +32,7 @@ func TestContextWindowStopIsTruncation(t *testing.T) {
+ 	var resp struct {
+ 		Status string `json:"status"`
+ 	}
+-	json.Unmarshal(renderResponses(res, "m", nil), &resp)
++	json.Unmarshal(renderResponses(res, "m", nil, false), &resp)
+ 	if resp.Status != "incomplete" {
+ 		t.Errorf("responses status = %q, want incomplete", resp.Status)
+ 	}

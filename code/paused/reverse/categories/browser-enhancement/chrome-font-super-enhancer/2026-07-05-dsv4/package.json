@@ -1,0 +1,26 @@
+{
+  "name": "chrome-font-super-enhancer-dsv4",
+  "version": "2.25.0",
+  "private": true,
+  "description": "Chrome Font Super Enhancer 逆向工程文档与类型定义",
+  "author": "Reverse-engineered from Chrome extension by 'ME'",
+  "license": "UNLICENSED",
+  "keywords": [
+    "chrome-extension",
+    "reverse-engineering",
+    "font-rendering",
+    "text-shadow",
+    "typescript-types"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "tsc"
+  },
+  "devDependencies": {
+    "typescript": "^5.3.0"
+  },
+  "files": [
+    "dist/",
+    "src/"
+  ]
+}

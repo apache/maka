@@ -1,0 +1,28 @@
+{
+  "name": "@qpa/console-prototype",
+  "private": true,
+  "description": "qoder-proxy-api 控制台原型：Agent 页 + 路由页（复刻 magpie 的信息结构与视觉规范，不含其名称与图标）",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc -b"
+  },
+  "dependencies": {
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "react-router": "^8.3.1",
+    "zod": "^4.5.4",
+    "zustand": "^5.0.15"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.3",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.7",
+    "@vitejs/plugin-react": "^6.1.1",
+    "tailwindcss": "^4.3.3",
+    "typescript": "~7.0.2",
+    "vite": "^8.2.2"
+  }
+}

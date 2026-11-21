@@ -1,0 +1,11 @@
+=== RUN   TestKimiCodeSkillsOwnFolder
+    kimi_skills_test.go:26: Kimi Code hasn't the skill in ~/.kimi-code/skills
+    kimi_skills_test.go:29: the skill sits in ~/.agents/skills, which every reader reads
+--- FAIL: TestKimiCodeSkillsOwnFolder (1.92s)
+=== RUN   TestKimiOldSharedEntrySwept
+    kimi_skills_test.go:76: the shared entry of Kimi Code's own skill is still there
+    kimi_skills_test.go:79: Kimi Code hasn't the skill in its own folder
+--- FAIL: TestKimiOldSharedEntrySwept (0.07s)
+FAIL
+FAIL	github.com/yetone/magpie/internal/library	2.327s
+FAIL

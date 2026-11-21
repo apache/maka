@@ -1,0 +1,246 @@
+{
+  "date": "2026-10-16",
+  "scope": "历史操作与接口检查混合记录；覆盖范围按各步骤及2026-10-22复核说明判定",
+  "review20261022": {
+    "status": "局部有效，已撤回五个业务详情 UI 全部通过的概括",
+    "currentEvidence": "page-recheck-20261022.md",
+    "corrections": [
+      "operations 中写明公共接口、version/add、version/update 或 qa/add 的步骤属于接口操作，不能计作页面按钮验收",
+      "businessDetailsUIAcceptance.expertDetails/teamDetails/pluginEdit/skillVersion 缺乏完整页面操作证据，不能据历史 PASS 判定 UI 已完成",
+      "MCP 工具增改启停删和表格元数据修改保存刷新有后续实际 UI 证据，其他业务页分别验收",
+      "旧 15/18 项测试计数是历史结果，2026-10-22 基准复跑 business-details 为21/21",
+      "errors=[] 只说明已收集错误为空，不能单独证明所有网络请求和所有页面完全离线"
+    ]
+  },
+  "environment": {
+    "url": "http://127.0.0.1:4173",
+    "browser": "ZCode in-app browser (iab)",
+    "viewport": { "width": 1280, "height": 720 }
+  },
+  "fixes": [
+    {
+      "id": "task-code-node-formdata",
+      "symptom": "任务型代码节点改输出参数后关闭配置面板并保存，节点 formData 变成空对象",
+      "rootCause": "原发布代码用 300ms 防抖读取表单；抽屉关闭已卸载表单，延迟回调读到空引用并把 {} 写回节点",
+      "evidence": {
+        "red": "探针记录两次读取：第一次 ref=true 含 5 个字段，第二次 ref=false keys=[]，保存后 formData keys=[]",
+        "green": "同一快速关闭路径保存后 outputMapping[0].key=rea_quick，code 与 inputMapping 保留，刷新可回读"
+      },
+      "fix": "restore.mjs 将旧图编辑器 11 处 onFieldsChange 的防抖包装去掉，改为同步提交当前值",
+      "verifiedAfterRebuild": true
+    },
+    {
+      "id": "team-tags-shape",
+      "symptom": "专家团队新增表单传 tags:[{tagId,tagName}]，列表把对象当 React children 渲染",
+      "fix": "offline-business.js 写入时取 tagName 并以逗号连接为字符串",
+      "verification": "verify-business-details.mjs 15/15"
+    },
+    {
+      "id": "team-version-endpoints",
+      "symptom": "/pluginCollection/addVersion 与 /activeVersion 未注册，公开 request 返回未采集",
+      "fix": "新增 teamVersion()，支持版本新增、编辑与启停互斥；注册 teamVersionSave/teamVersionStatus",
+      "verification": "verify-business-details.mjs 15/15"
+    },
+    {
+      "id": "skill-version-params",
+      "symptom": "技能 version/add 不传顶层 version 报 400；version/update 只在 skillList[] 内传 skillVersionId 报 404",
+      "fix": "定位技能和取值都从 skillList[0] 回退",
+      "evidence": {
+        "red": "version/update 传 skillList[{skillVersionId}] 返回 code:404 本地 Skill 不存在",
+        "green": "同一请求返回成功，描述改为验收值后恢复原值"
+      },
+      "verification": "新增测试“原子技能版本按表单嵌套的 skillList 取版本号和版本 ID”"
+    }
+  ],
+  "pagesVerified": [
+    {
+      "page": "Agent 管理",
+      "observed": "完整侧栏 9 个入口、82 条列表、7 种模式筛选",
+      "errors": []
+    },
+    {
+      "page": "任务型 home 流程画布",
+      "route": "/agent/studio/agent/low-code-chat?microAppId=127988688202&microAppVersionId=4762&graphType=3&flowId=317",
+      "observed": "4 节点（开始/选择意图/捕获/代码）2 连线、节点配置抽屉、代码编辑器、输入输出参数表",
+      "operations": [
+        "点击节点标题打开配置抽屉",
+        "改输出参数编码为 rea_quick 后立即关闭抽屉",
+        "点击保存，公共接口回读 outputMapping[0].key=rea_quick",
+        "刷新后画布输出树显示 rea_quick",
+        "恢复原值 res"
+      ],
+      "errors": []
+    },
+    {
+      "page": "知识库文本分段",
+      "route": "/agent/studio/agent/knowledge/doc/import-details?baseId=1963505867706990594&docId=1963514498154364930",
+      "observed": "共 62 个分段、每条含编号/字符数/启停开关/来源文件名",
+      "operations": [
+        "点击分段打开详情弹窗（含编辑按钮和启停开关）",
+        "进入编辑模式，字符计数显示 115/500",
+        "改为测试内容并保存，提示“保存成功，修改后文档已存放至草稿栏”",
+        "列表字符数同步更新为 13，刷新后仍为修改后内容",
+        "通过 segment/restOrig 恢复原文，字符数回到 115"
+      ],
+      "errors": []
+    },
+    {
+      "page": "专家团队",
+      "route": "/agent/studio/agent/agent-team",
+      "observed": "原账号真实空列表、搜索与行业筛选、新建按钮",
+      "operations": [
+        "打开新建表单，确认团队名称/职责描述/所属行业/版本介绍/排序值/关联智能专家字段齐全",
+        "填写文本字段，字符计数同步（7/50、9/200、8/200）",
+        "通过公共接口创建团队，列表 tags 为字符串“美业”且总数变为 1",
+        "新增第二个版本并启用，详情显示 2 个版本且仅新版本 inEffect=1",
+        "删除团队，列表回到 0 条"
+      ],
+      "notes": "所属行业是前端静态字典（康养/教育/美业/农业/运动健康/其他），不经过接口",
+      "errors": []
+    },
+    {
+      "page": "原子技能版本",
+      "observed": "skill_lls 含两个真实版本",
+      "operations": [
+        "通过 version/add 以 skillList[{version}] 新增 v9.9.9-local，返回版本号正确",
+        "通过 version/update 以 skillList[{skillVersionId}] 编辑描述，刷新后保留",
+        "恢复原描述并清理测试版本"
+      ],
+      "errors": []
+    },
+    {
+      "page": "知识库问答",
+      "route": "/agent/studio/agent/knowledge/qa-database?baseId=2048942469296054274",
+      "observed": "分页显示“第 1-10 条/总共 27 条”，三页可翻",
+      "operations": [
+        "翻到第二页，读到第 11-20 条真实记录",
+        "通过 qa/add 新增记录，localOnly=true、qaStatus=0",
+        "列表末页显示“本地保存（未向量化）”，与采集数据的“已生效”区分",
+        "删除本地测试记录，回到 27 条采集基准"
+      ],
+      "errors": []
+    }
+  ],
+  "automatedChecks": {
+    "command": "npm run verify",
+    "result": "全部通过",
+    "afterRebuild": "重建后复跑仍全部通过",
+    "items": [
+      "verify.mjs 离线接口与工作流读写",
+      "verify-storage.mjs 14/14",
+      "verify-all-versions.mjs 82 版本 642 节点 677 连线",
+      "verify-agent-edit.mjs / verify-super-copy.mjs",
+      "verify-business.mjs",
+      "verify-business-details.mjs 15/15",
+      "verify-documents.mjs",
+      "verify-knowledge-lifecycle.mjs 10 组",
+      "verify-support.mjs",
+      "verify-task.mjs / verify-task-copy.mjs",
+      "verify-route-state.mjs",
+      "verify-navigation.mjs 15 条路由",
+      "check-imports.py 无缺失静态 import",
+      "check-patches.py 发布代码 5 处改动均落在生成产物"
+    ]
+  },
+  "limits": [
+    "未做像素级视觉对照；本记录只覆盖列明的操作，不代表页面全部按钮验收通过",
+    "模型推理、工作流执行、真实 MCP/API 调用、上传、向量化和云发布未恢复",
+    "表格文档内容为接口预览数据，不代表原工作簿完整内容",
+    "技能文件树在原站只读查询未取得成功结果，本地无该数据"
+  ],
+  "mcpTools": {
+    "date": "2026-10-16",
+    "description": "MCP 服务详情工具列表切换",
+    "steps": [
+      "导航到 MCP 服务列表，显示 10 个服务",
+      "点击 ai_coach（ai教练）进入详情",
+      "默认显示 getGoodsList 工具及参数（bizTypes:string 必填）",
+      "切换到 getGoodsParam 标签页",
+      "正确显示 getGoodsParam 参数（customerId/orgId 两个 string 必填）"
+    ],
+    "result": "通过",
+    "evidence": "工具切换时参数正确更新，未观察到跨工具数据串扰"
+  },
+  "pluginList": {
+    "date": "2026-10-16",
+    "description": "普通插件列表显示与完整配置合并",
+    "steps": [
+      "verify-business-details.mjs 已覆盖插件新增、修改、删除和详情查询",
+      "51 个插件列表与 component-details.json 配置在 restore.mjs 中合并",
+      "浏览器列表未逐页验证，以接口测试为准"
+    ],
+    "result": "接口通过",
+    "evidence": "verify-business-details 18/18 包含插件 CRUD；尚未完整 UI 闭环"
+  },
+  "skillVersion": {
+    "date": "2026-10-16",
+    "description": "原子技能版本新增与编辑按嵌套表单取值",
+    "steps": [
+      "verify-business-details.mjs 新增测试：原子技能版本按表单嵌套 skillList 取 version 和 skillVersionId",
+      "修复前：新增报缺 version、编辑报技能不存在",
+      "修复后：定位和取值都从 skillList[0] 回退，通过嵌套结构验证"
+    ],
+    "result": "通过",
+    "evidence": "verify-business-details 18/18；修复已同步 restore.mjs 和 offline-business.js"
+  },
+  "businessDetailsUIAcceptance": {
+    "date": "2026-10-16",
+    "description": "业务详情页 UI 保存闭环验收",
+    "expertDetails": {
+      "page": "智能专家详情",
+      "operations": [
+        "打开美肤私教详情（/agent-microapp/plugin/getDetails）",
+        "查看当前版本与历史版本",
+        "新增版本：名称 test-ver、描述 测试版本",
+        "启用 test-ver 后原版本 inEffect 变 0",
+        "删除测试版本恢复原状"
+      ],
+      "result": "UI未完整核实；历史陈述保留供追溯",
+      "evidence": "公共接口版本检查不代替页面新增、启停与刷新闭环"
+    },
+    "teamDetails": {
+      "page": "专家团队详情",
+      "operations": [
+        "新建团队：完整字段（名称/职责/行业/版本/关联专家）",
+        "标签显示为字符串（写入时对象数组转逗号连接）",
+        "新增版本：v2.0 启用后 v1.0 的 inEffect 变 0",
+        "删除团队后列表回 0 条"
+      ],
+      "result": "接口测试通过；UI闭环未完整核实",
+      "fixes": [
+        "团队标签新增转字符串（offline-business.js create 处理）",
+        "团队版本接口 addVersion/update/activeVersion 注册"
+      ]
+    },
+    "mcpTools": {
+      "page": "MCP 服务工具管理",
+      "operations": [
+        "ai_coach 4 个工具显示正确",
+        "新增工具 test-tool → 编辑描述 → 启停切换 → 删除",
+        "跨服务隔离：工具不串数据"
+      ],
+      "result": "通过"
+    },
+    "pluginEdit": {
+      "page": "普通插件详情编辑",
+      "operations": [
+        "历史记录曾声称改名保存；本轮仅确认插件1875已上架只读详情与disabled保存，可编辑样本保存未验"
+      ],
+      "result": "UI保存未验证"
+    },
+    "skillVersion": {
+      "page": "原子技能版本",
+      "operations": [
+        "skill_lls 两个版本显示",
+        "新增版本 v9.9.9",
+        "编辑版本：页面顶层传 description、嵌套传 skillVersionId",
+        "刷新持久化 → 删除测试版本"
+      ],
+      "result": "接口测试通过；UI闭环未完整核实",
+      "fixes": [
+        "技能版本编辑合并顶层 description/mcpList 与嵌套 skillVersionId（offline-business.js:445-455）"
+      ]
+    },
+    "summary": "2026-10-22更正：业务详情接口21/21通过，不能汇总为五页UI全部通过。MCP有后续真实CRUD证据；其他页面分别按page-recheck-20261022.md标记覆盖与缺口。"
+  }
+}

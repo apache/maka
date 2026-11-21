@@ -1,0 +1,1717 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Aryz <aryz0713@gmail.com>
+Date: Thu, 12 Nov 2026 19:33:11 +0800
+Subject: [PATCH 01/11] library: reproduce skills published by a website
+
+Add a loopback-only regression for a pasted skills CLI command whose source publishes /.well-known/skills/index.json. It requires discovery and installation of every referenced file, retaining the website source and content hashes.
+
+Validation: submitted to the fork validation workflow to establish the failing baseline before implementing website discovery. No live website is contacted by the test.
+---
+ internal/library/skillwellknown_test.go | 55 +++++++++++++++++++++++++
+ 1 file changed, 55 insertions(+)
+ create mode 100644 internal/library/skillwellknown_test.go
+
+diff --git a/internal/library/skillwellknown_test.go b/internal/library/skillwellknown_test.go
+new file mode 100644
+index 000000000..b8153db5f
+--- /dev/null
++++ b/internal/library/skillwellknown_test.go
+@@ -0,0 +1,55 @@
++package library
++
++import (
++	"fmt"
++	"net/http"
++	"net/http/httptest"
++	"path/filepath"
++	"testing"
++)
++
++// Uizze publishes a skills CLI index on its own website, rather than a
++// git repository. The index lists each skill's complete set of files.
++func TestWellKnownSourceInstallsAllFiles(t *testing.T) {
++	sandbox(t)
++	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		switch r.URL.Path {
++		case "/.well-known/skills/index.json":
++			fmt.Fprint(w, `{"skills":[{"name":"ui-taste","description":"UI taste","files":["SKILL.md","reference/craft.md"]},{"name":"ios-design","description":"iOS design","files":["SKILL.md"]}]}`)
++		case "/.well-known/skills/ui-taste/SKILL.md":
++			fmt.Fprint(w, "---\nname: ui-taste\ndescription: UI taste\n---\nRead reference/craft.md.\n")
++		case "/.well-known/skills/ui-taste/reference/craft.md":
++			fmt.Fprint(w, "Keep the product's visual hierarchy.")
++		case "/.well-known/skills/ios-design/SKILL.md":
++			fmt.Fprint(w, "---\nname: ios-design\ndescription: iOS design\n---\n")
++		default:
++			t.Errorf("unexpected request: %s", r.URL.Path)
++			http.NotFound(w, r)
++		}
++	}))
++	t.Cleanup(srv.Close)
++
++	input := "npx skills add " + srv.URL + "/"
++	p, err := ProbeSkills(input)
++	if err != nil {
++		t.Fatalf("a website's well-known skills must be discoverable: %v", err)
++	}
++	if p.Kind != "well-known" || len(p.Candidates) != 2 {
++		t.Fatalf("website skills: %+v", p)
++	}
++	res, err := InstallSkills(input, []string{"ui-taste"}, nil)
++	if err != nil || len(res.Installed) != 1 || res.Installed[0] != "ui-taste" {
++		t.Fatalf("install: %+v, %v", res, err)
++	}
++	if got := read(t, filepath.Join(skillDir("ui-taste"), "reference", "craft.md")); got != "Keep the product's visual hierarchy." {
++		t.Fatalf("the skill's referenced file was not installed: %q", got)
++	}
++	l, err := load()
++	if err != nil {
++		t.Fatal(err)
++	}
++	s := l.skill("ui-taste")
++	if s == nil || s.Source == nil || s.Source.Kind != "well-known" || s.Source.Repo != srv.URL || s.Source.Path != "ui-taste" || s.Hash == "" || s.Own == "" {
++		t.Fatalf("the installed skill must retain its website source and hashes: %+v", s)
++	}
++}
+-- 
+2.50.1 (Apple Git-155)
+
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Aryz <aryz0713@gmail.com>
+Date: Thu, 12 Nov 2026 19:51:07 +0800
+Subject: [PATCH 02/11] library: install and update skills published by a
+ website
+
+Discover the file-list well-known index from a pasted website address or skills CLI command, retain all listed files and the website source, and use content hashes for updates. Keep website source links and update controls available in the Library. Downloads validate paths and resource limits before installation.
+
+Validation so far: the original regression fails on the baseline at the website being treated as a git repository (fork Actions run 43210248824, attempt 1). The browser regression passes 22 tests across Chromium, WebKit, five languages and two widths. The fork workflow exercises the Go integration next; final verification will be recorded before the upstream submission.
+---
+ docs/subsystems/library.md                    |  24 +
+ internal/gui/assets/plugins/library/client.js |  26 +-
+ .../gui/tests/library-well-known.test.cjs     |  76 ++++
+ internal/library/skill_changed.go             |   2 +-
+ internal/library/skill_from.go                |   3 +
+ internal/library/skillcheck.go                |   2 +
+ internal/library/skills.go                    |  37 +-
+ internal/library/skillwellknown.go            | 411 ++++++++++++++++++
+ 8 files changed, 560 insertions(+), 21 deletions(-)
+ create mode 100644 internal/gui/tests/library-well-known.test.cjs
+ create mode 100644 internal/library/skillwellknown.go
+
+diff --git a/docs/subsystems/library.md b/docs/subsystems/library.md
+index 37cc05c79..677862e05 100644
+--- a/docs/subsystems/library.md
++++ b/docs/subsystems/library.md
+@@ -44,6 +44,30 @@ Pi's extensions and packages.
+ | Pi extensions | Each Pi here, this computer's and each WSL distro's (`piPlaces`), with the extensions and packages it loads, read by Pi's own rules (`@earendil-works/pi-coding-agent` 1.4: `resolveExtensionEntries`, `isEnabledByOverrides`, `applyPatterns`). An extension is a `.ts`/`.js` file or a folder (package.json `pi.extensions`, else `index.ts`, else `index.js`) in `<agentDir>/extensions`, or a path its settings.json `extensions` lists; a package is an entry of settings.json `packages`. Built-in extensions (`builtin:mcp` and the rest) aren't listed: `builtin:mcp` carries the MCP servers magpie gives Pi. `SetPiExtension` writes what `pi config` writes (`-path` off; the `-` taken out and `+path` only where still excluded, on); `SetPiPackage` sets a package's four filters to `[]` (off) or takes them out (on), and refuses an entry that already picks some parts (`filtered`, changed in `pi config`). `CopyPi` gives a package to another Pi as its settings.json entry, which Pi installs itself when it next starts (npm into `<agentDir>/npm`, git into `<agentDir>/git`), never as copied files; it refuses a local package, and one the other Pi has already by Pi's identity (npm name, git host/path). An extension is copied as its file or folder into the other's `extensions`, leaving out `node_modules`, `.git` and symlinks, never over one of the same name, and the page says to run `npm install` there when it has dependencies (leokon3 on Discord). A settings.json that can't be parsed lists nothing and is never written; a stopped distro is never started (`asleep`); every write is backed up first. `GET`/`POST /api/library/pi`, `POST /api/library/pi/copy`; the Library's Pi packages tab, shown while a Pi is here (`renderPi` in plugins/library/client.js; library-pi-extensions.test.cjs). | [`piext.go`](../../internal/library/piext.go) |
+ | Pi market | `MarketPiPackages` lists npm's packages with the keyword `pi-package`, the way pi.dev's gallery finds them: the 500 most downloaded (two pages of npm's search, sorted by last month's downloads), cached 6h in memory and on disk, else the bundled `market_pi.json`; a search of two or more characters adds npm's own `keywords:pi-package <q>` search, and a search npm doesn't answer keeps the popular matches with a `SearchError` (the page says so). Every name is held to npm's rules (`piNameRe`), and a repository link is https only. `InstallPiPackage` runs `pi install npm:<name>` with `PI_CODING_AGENT_DIR` set to that Pi's folder (`piRun`), then checks settings.json lists it; `RemovePiPackage` runs `pi remove <source>`, which drops every entry of the same identity and uninstalls it. A Pi with no `pi` here (a WSL distro's, or this computer's with no CLI on PATH) gets the settings.json entry written, or taken out, instead, and Pi installs it when it next starts (`pending`). Both refuse an unreadable settings.json, install refuses a package the Pi has by Pi's identity, and each write is backed up first. `GET /api/library/market/pi`, `POST /api/library/pi/install`, `POST /api/library/pi/remove`; Discover under the Pi packages tab (`piCard`, `installPi`, `confirmRemovePi` in plugins/library/client.js; library-pi-market.test.cjs) marks a package every running Pi has Installed, and Install asks which Pi when several lack it (nineruiing on X). | [`pimarket.go`](../../internal/library/pimarket.go) |
+ 
++## Skills published by a website
++
++`ProbeSkills` also accepts an HTTP(S) website address, including one pasted
++as `npx skills add <address>`. A website can publish the skills CLI's
++well-known file-list index: `skills` entries with `name`, `description` and
++`files`, served under `/.well-known/skills/`. This is a separate source
++(`kind: well-known`), not a git repository. See
++[`skillwellknown.go`](../../internal/library/skillwellknown.go).
++
++The website address is kept as the source; discovery never visits its home
++page to replace it with a redirect's destination. A scoped address stays in
++that scope. Every listed supporting file is installed with `SKILL.md`, after
++the manifest's paths and limits have been checked. No downloaded content is
++executed, and no GitHub token or agent credential is sent to the website.
++
++These skills are grouped by their website, with a source link and the same
++update controls as repository skills. Checks compare the fetched content
++with the installed hash. Updates retain the existing protection for local
++edits and the existing backup and replacement path. An unreadable or invalid
++index, an incomplete download or an invalid skill is an error, not evidence
++that the skill was removed. A skill is marked removed only after its source
++was read successfully without it. Archive-based discovery manifests are not
++supported by this file-list reader.
++
+ ## Runtime path
+ 
+ 1. **Edit.** The Library page or `magpie library` calls an exported function such as `SaveServer`, `ServerAgents`, `InstallSkills`, `SkillAgents` or `SetSkillHow`. The skills and servers pages each have Select, Turn all on, Turn all off and Remove all; the heading shows Select (and a busy Checking…, Grouping… or Updating…) and keeps the rest under its ⋯, the app's row menu (`barMore` in plugins/library/client.js). Select's bar calls `SomeSkillsAgents` or `SomeServersAgents` (`/api/library/{skills,servers}/agents-some`), Turn all on or off calls `EverySkillAgents` or `EveryServerAgents` for the agents shown, and Remove all calls `RemoveSkills` or `RemoveServers`. The hooks page has Select and Remove all too (`SomeHooksAgents`, `RemoveHooks`). Each of these is one change that takes every item out as a single removal would (#1027). Select's bar also has Remove… (#1852), which asks first, naming the count, and sends only the picked names to `RemoveSkills`, `RemoveServers` or `RemoveHooks`; ticking a group's or part's header picks all of it. A name that wasn't removed stays picked, with its error in its row's place (`pickErrs`), and the status names it; when every name fails the endpoint answers 400 and the sheet stays open. A row's agent chips start with All (`allChip` in `plugins/library/client.js`), which gives the item to every agent shown that can take it, or takes it from them all; the pickers that choose the agents before an item is added (installing skills from a repository or the market, adding, bringing in or installing a server) have the same All: most start with every agent lit, and one agent alone took a click on each of the others (#1531).
+diff --git a/internal/gui/assets/plugins/library/client.js b/internal/gui/assets/plugins/library/client.js
+index 061c5e723..d4a9ad499 100644
+--- a/internal/gui/assets/plugins/library/client.js
++++ b/internal/gui/assets/plugins/library/client.js
+@@ -4939,7 +4939,7 @@ magpie.plugin("library", (ctx) => {
+       rh.append(el("span", "label", t("In the library")));
+       const box = el("div", "lib-groups");
+       if (lib.skills.length > 8) rh.append(skillFilter(box, all));
+-      const fresh = lib.skills.filter((s) => s.kind === "github" || s.kind === "git" || s.origin);
++      const fresh = lib.skills.filter((s) => remoteSkill(s) || s.origin);
+       rh.append(el("span", "grow"));
+       if (lib.skills.length > 1) rh.append(sortBy("libSkills", SKILL_SORTS(), () => { if (box.isConnected) drawSkills(box, all); }));
+       // what is used now and then waits under ⋯ (ryanpascal on Discord):
+@@ -4947,9 +4947,11 @@ magpie.plugin("library", (ctx) => {
+       // found to do
+       if (lib.skills.length > 1 && all.length) rh.append(pickButton("skills"));
+       let check = false, again = false, updAll = false;
+-      if (lib.checkFolders || lib.skills.some((s) => s.kind === "github" || s.kind === "git")) {
++      if (lib.checkFolders || lib.skills.some(remoteSkill)) {
+         const c = button(checking ? t("Checking…") : t("Check for updates"), "lib-updall lib-check", () => checkSkills());
+-        c.title = lib.checkFolders
++        c.title = lib.skills.some((s) => s.kind === "well-known")
++          ? t("Check for updates")
++          : lib.checkFolders
+           ? t("Look in the repositories and folders your skills came from for changes and new skills")
+           : lib.skills.some((s) => s.kind === "git")
+           ? t("Ask the repositories your skills came from which skills changed since they were installed")
+@@ -4989,7 +4991,8 @@ magpie.plugin("library", (ctx) => {
+           await updateAllSkills(stale.map((s) => s.name));
+           b.classList.remove("busy");
+         });
+-        u.title = n === 1 ? t("Fetch {name} from GitHub again", { name: stale[0].name }) : t("Fetch the {n} skills GitHub changed again", { n });
++        u.title = stale.some((s) => s.kind === "well-known") ? t("Update {n}", { n })
++          : n === 1 ? t("Fetch {name} from GitHub again", { name: stale[0].name }) : t("Fetch the {n} skills GitHub changed again", { n });
+         rh.append(u);
+       } else if (fresh.length > 1) {
+         // picked from the menu: the bar says it is at work till it is done
+@@ -5000,7 +5003,7 @@ magpie.plugin("library", (ctx) => {
+           updatingAll = false;
+           render();
+         });
+-        u.title = t("Fetch the {n} skills from GitHub again", { n: fresh.length });
++        u.title = fresh.some((s) => s.kind === "well-known") ? t("Update all") : t("Fetch the {n} skills from GitHub again", { n: fresh.length });
+         u.disabled = updatingAll;
+         if (updatingAll) { u.classList.add("busy"); rh.append(u); }
+         else updAll = [u, GLYPH.down];
+@@ -5168,7 +5171,8 @@ magpie.plugin("library", (ctx) => {
+   const repoOf = (u) => (u || "").replace(/^https:\/\/github\.com\//, "").split("/").slice(0, 2).join("/");
+   // the repository a skill from another git host (kind "git") came from,
+   // as the page names it: its address, without https:// or a folder in it
+-  const gitRepoOf = (s) => (s.kind === "git" ? (s.source || "").replace(/^https?:\/\//, "").replace(/\/-\/tree\/.*$/, "") : "");
++  const remoteSkill = (s) => s.kind === "github" || s.kind === "git" || s.kind === "well-known";
++  const gitRepoOf = (s) => (s.kind === "git" || s.kind === "well-known" ? (s.source || "").replace(/^https?:\/\//, "").replace(/\/-\/tree\/.*$/, "") : "");
+   // the repository a skill came from, however it came in: magpie traces
+   // one not installed from GitHub too (the skills CLI's lock, the git
+   // checkout it's in), so a repository's skills are one group (White
+@@ -5225,12 +5229,12 @@ magpie.plugin("library", (ctx) => {
+     // author's repositories above are one group, each a part when many
+     // (oil-oil/oil-ui, oil-oil/oil-ppt…): skills.sh lists many authors'
+     // skills a repository each.
+-    const online = (s) => s.kind === "github" || !!s.origin;
++    const online = (s) => s.kind === "github" || s.kind === "well-known" || !!s.origin;
+     const repos = [...by.values()].filter((g) => g.key !== "local");
+     const up = repos.filter((g) => g.skills.some(online)), down = repos.filter((g) => !g.skills.some(online));
+     const owners = new Map();
+     for (const g of up) {
+-      if (/^[^/]+\.[^/]+\//.test(g.repo)) continue; // another git host's
++      if (/^[^/]+\.[^/]+(\/|$)/.test(g.repo)) continue; // another git host or a website
+       const o = g.repo.split("/")[0].toLowerCase();
+       if (!owners.has(o)) owners.set(o, []);
+       owners.get(o).push(g);
+@@ -7123,7 +7127,7 @@ magpie.plugin("library", (ctx) => {
+         ? t("{repo} no longer has this skill: it was removed there. It stays here until you remove it.", { repo })
+         : t("Its source no longer has this skill: it was removed there. It stays here until you remove it.")));
+     } else if (c?.status === "update") {
+-      const b = tag(t("Update available"), "lib-new", t("Changed on GitHub since it was installed") + "\n" + checkLine(c));
++      const b = tag(t("Update available"), "lib-new", (s.kind === "well-known" ? t("Update available") : t("Changed on GitHub since it was installed")) + "\n" + checkLine(c));
+       if (c.url) {
+         b.classList.add("link");
+         b.onclick = (e) => { e.stopPropagation(); browse(c.url); };
+@@ -7187,7 +7191,7 @@ magpie.plugin("library", (ctx) => {
+         a.href = s.source;
+         a.onclick = (e) => { e.preventDefault(); e.stopPropagation(); browse(s.source); };
+         src.append(a);
+-      } else if (s.kind === "git" && /^https?:\/\//.test(s.source)) {
++      } else if ((s.kind === "git" || s.kind === "well-known") && /^https?:\/\//.test(s.source)) {
+         const a = el("a", "lib-srclink", s.source.replace(/^https:\/\//, ""));
+         a.href = s.source;
+         a.onclick = (e) => { e.preventDefault(); e.stopPropagation(); browse(s.source); };
+@@ -7208,7 +7212,7 @@ magpie.plugin("library", (ctx) => {
+     const acts = el("div", "lib-rowacts");
+     // one its source no longer has has nothing to update from: Update all,
+     // or a check, finds it there again if it comes back
+-    if (!gone && (s.kind === "github" || s.kind === "git" || s.origin)) {
++    if (!gone && (remoteSkill(s) || s.origin)) {
+       const u = button("", "lib-icon", async (e, b) => {
+         if (s.edited) return confirmUpdateEdited(s);
+         // spinning, with the row's actions kept in view while the fetch
+diff --git a/internal/gui/tests/library-well-known.test.cjs b/internal/gui/tests/library-well-known.test.cjs
+new file mode 100644
+index 000000000..15b7d2b0e
+--- /dev/null
++++ b/internal/gui/tests/library-well-known.test.cjs
+@@ -0,0 +1,76 @@
++// Website-installed skills keep an online source link and an Update action,
++// in both browser engines and every language. No live gateway is contacted.
++const assert = require("node:assert/strict");
++const fs = require("node:fs/promises");
++const path = require("node:path");
++const { test } = require("node:test");
++const { chromium, webkit } = require("playwright");
++
++const assets = path.resolve(__dirname, "../assets");
++const home = "/Users/example";
++const source = "https://uizze.sh";
++const library = () => ({
++  dir: `${home}/.config/magpie/library`, backups: `${home}/.config/magpie/backups`, home,
++  agents: [{ id: "claude", name: "Claude Code", skills: `${home}/.claude/skills`, mcp: `${home}/.claude.json` }],
++  instructions: { agents: [], sets: [] }, servers: [], projects: [], foundServers: [], foundSkills: [],
++  skills: [{ name: "ui-taste", description: "UI taste", kind: "well-known", source, repo: "uizze.sh", agents: [] }],
++});
++
++function serve(lang, posts) {
++  return async (route) => {
++    const req = route.request(), url = new URL(req.url());
++    if (url.pathname === "/boot.js") return route.fulfill({ contentType: "text/javascript", body: `window.bootPrefs = {lang:"${lang}",theme:"light",web:true};` });
++    if (url.pathname === "/wails/runtime.js") return route.fulfill({ contentType: "text/javascript", body: "export const Window = {};" });
++    if (url.pathname === "/api/state") return route.fulfill({ json: { agents: [], profiles: [], settings: { lang } } });
++    if (url.pathname === "/api/plugins") return route.fulfill({ json: { plugins: [] } });
++    if (url.pathname === "/api/library") return route.fulfill({ json: library() });
++    if (url.pathname === "/api/library/skills/update") {
++      posts.push(req.postDataJSON());
++      return route.fulfill({ json: { ...library(), result: { updated: ["ui-taste"], changed: [], problems: [] } } });
++    }
++    if (url.pathname === "/api/usage/quotas") return route.fulfill({ json: [] });
++    if (url.pathname === "/api/groups") return route.fulfill({ json: { groups: [] } });
++    if (url.pathname === "/api/providers") return route.fulfill({ json: { providers: [], gateway: { running: true } } });
++    if (url.pathname.startsWith("/api/")) return route.fulfill({ json: {} });
++    const file = path.join(assets, url.pathname === "/" ? "index.html" : url.pathname);
++    const contentType = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png" }[path.extname(file)];
++    return route.fulfill({ body: await fs.readFile(file), contentType });
++  };
++}
++
++for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium", "webkit"])) {
++  test(`${engine}: website skills have a source link and can be updated`, async (t) => {
++    const browser = await (engine === "webkit" ? webkit.launch() : chromium.launch({ channel: "chromium" }));
++    t.after(() => browser.close());
++    for (const lang of (process.env.GUI_LANG ? [process.env.GUI_LANG] : ["en", "zh", "zh-TW", "ja", "de"])) {
++      for (const width of [980, 420]) {
++        await t.test(`${lang} ${width}`, async () => {
++          const context = await browser.newContext({ viewport: { width, height: 800 } });
++          t.after(() => context.close());
++          await context.addInitScript(() => { try { localStorage.setItem("magpie.libTab", "skills"); } catch {} });
++          const page = await context.newPage();
++          page.setDefaultTimeout(5000);
++          const errors = [], posts = [];
++          page.on("pageerror", (error) => errors.push(error.message));
++          await page.route("**/*", serve(lang, posts));
++          await page.goto("http://magpie.test/");
++          await page.locator('button[data-view="library"]').click();
++          const row = page.locator("#view-library .lib-skill");
++          await row.waitFor().catch(async (error) => {
++            console.log({ errors, library: await page.locator("#view-library").innerText() });
++            throw error;
++          });
++          assert.equal(await row.locator("a.lib-srclink").count(), 1, "a website has an online source link");
++          assert.equal(await row.locator("a.lib-srclink").getAttribute("href"), source, "a website is an online source, not a linked local folder");
++          const update = row.locator('button[title*="uizze.sh"]');
++          assert.equal(await update.count(), 1, "the installed website skill has an Update action");
++          await update.click();
++          await page.waitForFunction(() => !document.querySelector(".lib-rowacts.busy"));
++          assert.deepEqual(posts, [{ name: "ui-taste" }]);
++          assert.deepEqual(errors, []);
++          await context.close();
++        });
++      }
++    }
++  });
++}
+diff --git a/internal/library/skill_changed.go b/internal/library/skill_changed.go
+index c01178da2..77a45aea5 100644
+--- a/internal/library/skill_changed.go
++++ b/internal/library/skill_changed.go
+@@ -90,7 +90,7 @@ func (e *EditedError) Error() string {
+ // editedError is the refusal of an update of s, naming where it came from.
+ func editedError(s *Skill) *EditedError {
+ 	e := &EditedError{Name: s.Name}
+-	if s.Source != nil && s.Source.Kind == "git" {
++	if s.Source != nil && (s.Source.Kind == "git" || s.Source.Kind == "well-known") {
+ 		e.From = s.Source.Repo
+ 	}
+ 	return e
+diff --git a/internal/library/skill_from.go b/internal/library/skill_from.go
+index 112b1b1ec..1125a64ad 100644
+--- a/internal/library/skill_from.go
++++ b/internal/library/skill_from.go
+@@ -36,6 +36,9 @@ func (tr *tracer) repoOf(s *Skill) string {
+ 	if s.Source != nil && s.Source.Kind == "git" {
+ 		return remoteRepo(s.Source.Repo) // host/path, as a checkout of it is
+ 	}
++	if s.Source != nil && s.Source.Kind == "well-known" {
++		return siteOf(s.Source.Repo)
++	}
+ 	if o, ok := ccSwitchOrigin(s); ok {
+ 		return o.Repo
+ 	}
+diff --git a/internal/library/skillcheck.go b/internal/library/skillcheck.go
+index 1e88d710b..61b016294 100644
+--- a/internal/library/skillcheck.go
++++ b/internal/library/skillcheck.go
+@@ -377,6 +377,8 @@ func CheckSkills() ([]SkillCheck, error) {
+ 				var sha, hash string
+ 				if s.Source.Kind == "git" {
+ 					c, sha, hash = checkGitSkill(s, f, heads)
++				} else if s.Source.Kind == "well-known" {
++					c = checkWellKnownSkill(s, f)
+ 				} else {
+ 					c, sha, hash = checkSkill(s, f, asked, &limited)
+ 				}
+diff --git a/internal/library/skills.go b/internal/library/skills.go
+index de352a178..defcd0e52 100644
+--- a/internal/library/skills.go
++++ b/internal/library/skills.go
+@@ -121,12 +121,12 @@ func SkillNote(name, note string) (*Result, error) {
+ }
+ 
+ // Source is where a skill came from: a GitHub repository it can be updated
+-// from, another git repository (fetched with the user's own git), or a
++// from, another git repository, a website's well-known index, or a
+ // folder on this machine the library links to, so that editing the folder
+ // is editing the skill.
+ type Source struct {
+-	Kind string `json:"kind"`           // github | git | folder
+-	Repo string `json:"repo,omitempty"` // owner/repo for github, the address git fetches for git
++	Kind string `json:"kind"`           // github | git | well-known | folder
++	Repo string `json:"repo,omitempty"` // owner/repo for github, a repository or website address otherwise
+ 	Ref  string `json:"ref,omitempty"`
+ 	Path string `json:"path,omitempty"` // in the repository
+ 	Dir  string `json:"dir,omitempty"`  // the folder, for kind folder
+@@ -147,6 +147,9 @@ func (s *Source) String() string {
+ 	if s.Kind == "git" {
+ 		return gitURL(s)
+ 	}
++	if s.Kind == "well-known" {
++		return s.Repo
++	}
+ 	u := "https://github.com/" + s.Repo
+ 	if s.Ref != "" || s.Path != "" {
+ 		ref := s.Ref
+@@ -1091,8 +1094,10 @@ var tarballURL = func(repo, ref string) string {
+ }
+ 
+ // remote is whether a skill's source is a repository it is fetched from
+-// again to update: GitHub, or another git repository.
+-func (s *Source) remote() bool { return s != nil && (s.Kind == "github" || s.Kind == "git") }
++// again to update: GitHub, another git repository, or a website.
++func (s *Source) remote() bool {
++	return s != nil && (s.Kind == "github" || s.Kind == "git" || s.Kind == "well-known")
++}
+ 
+ // fetch downloads the repository into a new folder and gives it back; one
+ // not on GitHub is fetched with the user's git (fetchGit). A
+@@ -1109,6 +1114,10 @@ func fetch(src Source) (string, error) {
+ }
+ 
+ func fetchPart(src Source, name string) (dir string, part bool, err error) {
++	if src.Kind == "well-known" {
++		dir, err = fetchWellKnown(src)
++		return dir, false, err
++	}
+ 	if src.Kind == "git" {
+ 		dir, err = fetchGit(src)
+ 		return dir, false, err
+@@ -1389,8 +1398,9 @@ func skillsCommand(input string) string {
+ 
+ // ProbeSkills looks for skills at what the user typed: a GitHub repository
+ // (or a folder in one), any other git repository (GitLab, one on a
+-// company's own server; fetched with the user's git), a folder on this
+-// machine, or a skills CLI command for one of them.
++// company's own server; fetched with the user's git), a website's
++// well-known skills index, a folder on this machine, or a skills CLI
++// command for one of them.
+ func ProbeSkills(input string) (*Probe, error) { return probeSkills(input, "") }
+ 
+ // probeSkills is ProbeSkills for the skill called name, when one is
+@@ -1415,6 +1425,13 @@ func probeSkills(input, name string) (*Probe, error) {
+ 		}
+ 		p.Kind, p.root, p.src = "folder", dir, Source{Kind: "folder", Dir: dir}
+ 		p.Candidates = candidates(dir, "", filepath.Base(dir))
++	} else if src, tmp, found, err := probeWellKnown(input); found || err != nil {
++		if err != nil {
++			return nil, err
++		}
++		p.Kind, p.root, p.src = src.Kind, tmp, src
++		p.Candidates = candidates(tmp, "", srcFolder(src))
++		keepProbe(input, p, tmp)
+ 	} else if src, ok := githubSource(input); ok || isGit(input) {
+ 		if !ok {
+ 			src, _, _ = gitSource(input)
+@@ -1554,6 +1571,8 @@ func fromSameSource(s *Skill, src Source, path, from string) bool {
+ 		return strings.EqualFold(s.Source.Repo, src.Repo) && s.Source.Path == path
+ 	case "git":
+ 		return sameGitRepo(s.Source.Repo, src.Repo) && s.Source.Path == path
++	case "well-known":
++		return s.Source.Repo == src.Repo && s.Source.Path == path
+ 	case "folder":
+ 		return realDir(s.Source.Dir) == realDir(from)
+ 	}
+@@ -1699,7 +1718,7 @@ func installFrom(l *Library, p *Probe, paths, agents []string, shown bool, in *i
+ 		if src.Kind == "git" {
+ 			sk.Hash, sk.Own, sk.Commit = hashDir(dir), ownHash(dir), gitHeadOf(p.root)
+ 		}
+-		if src.Kind == "github" {
++		if src.Kind == "github" || src.Kind == "well-known" {
+ 			sk.Hash, sk.Own = hashDir(dir), ownHash(dir)
+ 		}
+ 		l.offered(p, c.Path, shown)
+@@ -1966,7 +1985,7 @@ type fetched struct {
+ }
+ 
+ func (f *fetcher) fetch(src Source) (string, error) {
+-	key := src.Repo + "@" + src.Ref
++	key := src.Kind + "\x00" + src.Repo + "@" + src.Ref
+ 	g := f.get(key, src)
+ 	if g.part && !inRepoDir(src.Path, g.under) {
+ 		g = f.get(key+"@"+src.Path, src)
+diff --git a/internal/library/skillwellknown.go b/internal/library/skillwellknown.go
+new file mode 100644
+index 000000000..421fef4d2
+--- /dev/null
++++ b/internal/library/skillwellknown.go
+@@ -0,0 +1,411 @@
++package library
++
++import (
++	"context"
++	"encoding/json"
++	"fmt"
++	"io"
++	"net/http"
++	"net/url"
++	"os"
++	"path/filepath"
++	"strings"
++	"time"
++	"unicode"
++	"unicode/utf8"
++
++	"github.com/yetone/magpie/internal/source"
++	"gopkg.in/yaml.v3"
++)
++
++const (
++	wellKnownIndexMax = 1 << 20
++	wellKnownSkillMax = 1024
++	wellKnownFileMax  = 8192
++	wellKnownFileSize = 32 << 20
++	wellKnownTimeout  = 2 * time.Minute
++)
++
++type wellKnownEntry struct {
++	Name        string   `json:"name"`
++	Description string   `json:"description"`
++	Files       []string `json:"files"`
++}
++
++// probeWellKnown asks the address the user gave, without visiting its home
++// page. A path without a valid index is left to git, including its sign-in.
++func probeWellKnown(input string) (src Source, dir string, found bool, err error) {
++	input = strings.TrimRight(strings.TrimSpace(input), "/")
++	if _, ok := githubSource(input); ok {
++		return Source{}, "", false, nil
++	}
++	u, parseErr := url.Parse(input)
++	if parseErr != nil || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil {
++		return Source{}, "", false, nil
++	}
++	if strings.EqualFold(u.Hostname(), "github.com") || strings.EqualFold(u.Hostname(), "www.github.com") {
++		return Source{}, "", false, nil
++	}
++	for _, part := range strings.Split(strings.ToLower(u.Path), "/") {
++		if strings.HasSuffix(part, ".git") {
++			return Source{}, "", false, nil
++		}
++	}
++	for _, sep := range []string{"/-/tree/", "/-/blob/", "/src/branch/", "/src/tag/", "/src/commit/"} {
++		if strings.Contains(u.Path, sep) {
++			return Source{}, "", false, nil
++		}
++	}
++	base, err := wellKnownWebsite(input)
++	if err != nil {
++		if strings.Trim(u.Path, "/") != "" {
++			return Source{}, "", false, nil
++		}
++		return Source{}, "", false, err
++	}
++	ctx, cancel := context.WithTimeout(context.Background(), wellKnownTimeout)
++	defer cancel()
++	client := wellKnownClient(base)
++	root, entries, err := wellKnownIndex(ctx, client, base)
++	if err != nil {
++		if base.Path != "" {
++			return Source{}, "", false, nil
++		}
++		return Source{}, "", false, err
++	}
++	src = Source{Kind: "well-known", Repo: input}
++	dir, err = downloadWellKnown(ctx, client, root, entries)
++	return src, dir, true, err
++}
++
++// fetchWellKnown fetches the complete catalog again. Only a successful,
++// fully validated fetch may say that a skill is no longer listed there.
++func fetchWellKnown(src Source) (string, error) {
++	base, err := wellKnownWebsite(src.Repo)
++	if err != nil {
++		return "", err
++	}
++	ctx, cancel := context.WithTimeout(context.Background(), wellKnownTimeout)
++	defer cancel()
++	client := wellKnownClient(base)
++	root, entries, err := wellKnownIndex(ctx, client, base)
++	if err != nil {
++		return "", err
++	}
++	return downloadWellKnown(ctx, client, root, entries)
++}
++
++func wellKnownWebsite(raw string) (*url.URL, error) {
++	u, err := url.Parse(raw)
++	if err != nil {
++		return nil, fmt.Errorf("invalid skills website address: %w", err)
++	}
++	if (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" || u.User != nil ||
++		u.Opaque != "" || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || strings.Contains(raw, "#") ||
++		strings.IndexFunc(raw, unicode.IsControl) >= 0 {
++		return nil, fmt.Errorf("give an http or https skills website address without credentials, a query or a fragment")
++	}
++	escaped := strings.ToLower(u.EscapedPath())
++	if strings.Contains(escaped, "%2f") || strings.Contains(escaped, "%5c") {
++		return nil, fmt.Errorf("a skills website path can't contain an escaped separator")
++	}
++	u.Path = strings.TrimRight(u.Path, "/")
++	u.RawPath = strings.TrimRight(u.RawPath, "/")
++	if u.Path != "" {
++		for _, part := range strings.Split(strings.TrimPrefix(u.Path, "/"), "/") {
++			if part == "" || part == "." || part == ".." || strings.ContainsAny(part, "\\%") || strings.IndexFunc(part, unicode.IsControl) >= 0 {
++				return nil, fmt.Errorf("%q isn't a safe skills website path", u.Path)
++			}
++		}
++	}
++	return u, nil
++}
++
++func wellKnownClient(base *url.URL) *http.Client {
++	return &http.Client{
++		Timeout: 30 * time.Second,
++		CheckRedirect: func(req *http.Request, via []*http.Request) error {
++			u := req.URL
++			prefix := base.Path + "/.well-known/"
++			catalog, _, _ := strings.Cut(strings.TrimPrefix(via[0].URL.Path, prefix), "/")
++			prefix += catalog + "/"
++			if len(via) >= 10 || u.Scheme != base.Scheme || !strings.EqualFold(u.Host, base.Host) ||
++				!strings.HasPrefix(u.Path, prefix) {
++				return fmt.Errorf("a skills download redirected outside %s", prefix)
++			}
++			_, err := wellKnownWebsite(u.String())
++			return err
++		},
++	}
++}
++
++// Each part is one decoded path segment, never a URL or a relative URL.
++func wellKnownURL(base string, parts ...string) string {
++	for _, part := range parts {
++		base += "/" + url.PathEscape(part)
++	}
++	return base
++}
++
++func wellKnownGet(ctx context.Context, client *http.Client, address string, max int64) ([]byte, error) {
++	req, err := http.NewRequestWithContext(ctx, "GET", address, nil)
++	if err != nil {
++		return nil, err
++	}
++	req.Header.Set("User-Agent", "magpie")
++	resp, err := source.DoOfficial(client, req)
++	if err != nil {
++		return nil, fmt.Errorf("couldn't fetch %s: %w", address, err)
++	}
++	defer resp.Body.Close()
++	if resp.StatusCode != http.StatusOK {
++		return nil, fmt.Errorf("%s answered %s", address, resp.Status)
++	}
++	if max < 0 || resp.ContentLength > max {
++		return nil, fmt.Errorf("%s is over the most magpie reads", address)
++	}
++	body, err := io.ReadAll(io.LimitReader(resp.Body, max+1))
++	if err != nil {
++		return nil, fmt.Errorf("couldn't read %s: %w", address, err)
++	}
++	if int64(len(body)) > max {
++		return nil, fmt.Errorf("%s is over the most magpie reads", address)
++	}
++	kind := strings.ToLower(resp.Header.Get("Content-Type"))
++	sniff := http.DetectContentType(body)
++	if strings.Contains(kind, "text/html") || strings.Contains(kind, "application/xhtml+xml") || strings.HasPrefix(sniff, "text/html") {
++		return nil, fmt.Errorf("%s returned an HTML page instead of a skills file", address)
++	}
++	return body, nil
++}
++
++func wellKnownIndex(ctx context.Context, client *http.Client, base *url.URL) (string, []wellKnownEntry, error) {
++	var first error
++	for _, folder := range []string{"skills", "agent-skills"} {
++		root := wellKnownURL(base.String(), ".well-known", folder)
++		body, err := wellKnownGet(ctx, client, root+"/index.json", wellKnownIndexMax)
++		var entries []wellKnownEntry
++		if err == nil {
++			entries, err = readWellKnownIndex(body)
++		}
++		if err == nil {
++			return root, entries, nil
++		}
++		if first == nil {
++			first = err
++		}
++		if ctx.Err() != nil {
++			break
++		}
++	}
++	return "", nil, fmt.Errorf("couldn't read a well-known skills index at %s: %w", base, first)
++}
++
++// The whole manifest is checked before a temporary folder is made. The
++// path map includes directories, so a file can't stand in for one, and
++// spelling is kept to catch collisions on Windows as well as on Unix.
++func readWellKnownIndex(body []byte) ([]wellKnownEntry, error) {
++	if !utf8.Valid(body) {
++		return nil, fmt.Errorf("the skills index isn't UTF-8 text")
++	}
++	var index struct {
++		Skills *[]wellKnownEntry `json:"skills"`
++	}
++	if err := json.Unmarshal(body, &index); err != nil {
++		return nil, fmt.Errorf("the skills index wasn't understood: %w", err)
++	}
++	if index.Skills == nil {
++		return nil, fmt.Errorf("the skills index has no skills list")
++	}
++	entries := *index.Skills
++	if len(entries) > wellKnownSkillMax {
++		return nil, fmt.Errorf("the skills index lists more than %d skills", wellKnownSkillMax)
++	}
++	type node struct {
++		path string
++		dir  bool
++	}
++	paths := map[string]node{}
++	names := map[string]bool{}
++	files := 0
++	for _, entry := range entries {
++		if !wellKnownPath(entry.Name) || strings.Contains(entry.Name, "/") || strings.HasPrefix(entry.Name, ".") ||
++			strings.EqualFold(entry.Name, "node_modules") || strings.TrimSpace(entry.Description) == "" {
++			return nil, fmt.Errorf("the skills index has an invalid name or description for %q", entry.Name)
++		}
++		key := wellKnownKey(entry.Name)
++		if names[key] {
++			return nil, fmt.Errorf("the skills index repeats the name %q", entry.Name)
++		}
++		names[key] = true
++		hasSkill := false
++		for _, file := range entry.Files {
++			files++
++			if files > wellKnownFileMax {
++				return nil, fmt.Errorf("the skills index lists more than %d files", wellKnownFileMax)
++			}
++			if !wellKnownPath(file) {
++				return nil, fmt.Errorf("the skills index lists an unsafe file %q in %s", file, entry.Name)
++			}
++			hasSkill = hasSkill || file == "SKILL.md"
++			parts := strings.Split(entry.Name+"/"+file, "/")
++			for i := range parts {
++				path := strings.Join(parts[:i+1], "/")
++				key := wellKnownKey(path)
++				dir := i < len(parts)-1
++				if old, ok := paths[key]; ok && (old.path != path || old.dir != dir || !dir) {
++					return nil, fmt.Errorf("the skills index has conflicting paths at %q", path)
++				}
++				paths[key] = node{path: path, dir: dir}
++			}
++		}
++		if !hasSkill {
++			return nil, fmt.Errorf("the skills index lists no SKILL.md for %s", entry.Name)
++		}
++	}
++	return entries, nil
++}
++
++func wellKnownKey(s string) string {
++	return strings.Map(func(r rune) rune {
++		key := r
++		for next := unicode.SimpleFold(r); next != r; next = unicode.SimpleFold(next) {
++			if next < key {
++				key = next
++			}
++		}
++		return key
++	}, s)
++}
++
++// These checks hold on every supported OS, regardless of where the index
++// is read. Percent escapes aren't file names in this protocol.
++func wellKnownPath(path string) bool {
++	if len(path) > 1024 || !utf8.ValidString(path) || !localFile(path) ||
++		strings.ContainsAny(path, "%<>\"|?*") || strings.IndexFunc(path, unicode.IsControl) >= 0 {
++		return false
++	}
++	for _, part := range strings.Split(path, "/") {
++		if part == "" || part == "." || part == ".." || len(part) > 255 || strings.HasSuffix(part, ".") || strings.HasSuffix(part, " ") ||
++			strings.EqualFold(part, ".git") || strings.EqualFold(part, marker) {
++			return false
++		}
++		stem, _, _ := strings.Cut(part, ".")
++		stem = strings.ToUpper(strings.TrimRight(stem, " "))
++		switch stem {
++		case "CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$":
++			return false
++		}
++		if (strings.HasPrefix(stem, "COM") || strings.HasPrefix(stem, "LPT")) &&
++			strings.Contains("|1|2|3|4|5|6|7|8|9|¹|²|³|", "|"+stem[3:]+"|") {
++			return false
++		}
++	}
++	return true
++}
++
++func downloadWellKnown(ctx context.Context, client *http.Client, root string, entries []wellKnownEntry) (dir string, err error) {
++	dir, err = os.MkdirTemp("", skillTemp)
++	if err != nil {
++		return "", err
++	}
++	defer func() {
++		if err != nil {
++			os.RemoveAll(dir)
++			dir = ""
++		}
++	}()
++	total := int64(0)
++	for _, entry := range entries {
++		for _, file := range entry.Files {
++			limit := min(int64(wellKnownFileSize), maxFetch-total)
++			parts := append([]string{entry.Name}, strings.Split(file, "/")...)
++			body, e := wellKnownGet(ctx, client, wellKnownURL(root, parts...), limit)
++			if e != nil {
++				return dir, e
++			}
++			total += int64(len(body))
++			if file == "SKILL.md" {
++				if e := wellKnownMeta(body); e != nil {
++					return dir, fmt.Errorf("%s's SKILL.md is invalid: %w", entry.Name, e)
++				}
++			}
++			path := filepath.Join(dir, entry.Name, filepath.FromSlash(file))
++			if e := os.MkdirAll(filepath.Dir(path), 0o755); e != nil {
++				return dir, e
++			}
++			if e := os.WriteFile(path, body, 0o644); e != nil {
++				return dir, e
++			}
++		}
++	}
++	return dir, nil
++}
++
++func wellKnownMeta(body []byte) error {
++	text := strings.ReplaceAll(string(body), "\r\n", "\n")
++	if !utf8.ValidString(text) {
++		return fmt.Errorf("not UTF-8 text")
++	}
++	rest, ok := strings.CutPrefix(text, "---\n")
++	if !ok {
++		return fmt.Errorf("no YAML front matter")
++	}
++	lines := strings.Split(rest, "\n")
++	for i, line := range lines {
++		if line != "---" {
++			continue
++		}
++		var m meta
++		if err := yaml.Unmarshal([]byte(strings.Join(lines[:i], "\n")), &m); err != nil {
++			return err
++		}
++		if strings.TrimSpace(m.Name) == "" || strings.TrimSpace(m.Description) == "" {
++			return fmt.Errorf("no name or description in the front matter")
++		}
++		return nil
++	}
++	return fmt.Errorf("unclosed YAML front matter")
++}
++
++// Websites have no commit to remember. A failed read or hash stays unknown,
++// and the fetched hash accounts for a name changed when it was installed.
++func checkWellKnownSkill(s *Skill, f *fetcher) SkillCheck {
++	c := SkillCheck{Name: s.Name, Status: "unknown"}
++	if s.Source == nil || s.Source.Kind != "well-known" || !wellKnownPath(s.Source.Path) || strings.Contains(s.Source.Path, "/") {
++		c.Error = "the skill has no valid well-known source path"
++		return c
++	}
++	src := *s.Source
++	dir, err := f.fetch(src)
++	if err != nil {
++		c.Error = err.Error()
++		return c
++	}
++	entries, err := os.ReadDir(dir)
++	if err != nil {
++		c.Error = err.Error()
++		return c
++	}
++	listed := false
++	for _, entry := range entries {
++		listed = listed || entry.Name() == src.Path && entry.IsDir()
++	}
++	if !listed {
++		return goneCheck(&GoneError{Name: s.Name, Source: src.Repo})
++	}
++	have := s.Hash
++	if have == "" {
++		have = hashDir(skillDir(s.Name))
++	}
++	theirs := s.fetchedHash(filepath.Join(dir, src.Path))
++	if have == "" || theirs == "" {
++		c.Error = "couldn't hash the skill's files to check for updates"
++		return c
++	}
++	c.Status = "current"
++	if have != theirs {
++		c.Status, c.URL = "update", src.Repo
++	}
++	return c
++}
+-- 
+2.50.1 (Apple Git-155)
+
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Aryz <aryz0713@gmail.com>
+Date: Thu, 12 Nov 2026 19:58:45 +0800
+Subject: [PATCH 03/11] library: exercise website skill updates and download
+ boundaries
+
+Cover content-hash updates, local edit protection, failed-download cleanup, manifest path rejection, HTML templates and invalid primary indexes alongside an empty legacy alias. The last two cases exercise the downloader beyond the first passing discovery regression.
+---
+ .../library/skillwellknown_lifecycle_test.go  | 191 ++++++++++++++++++
+ 1 file changed, 191 insertions(+)
+ create mode 100644 internal/library/skillwellknown_lifecycle_test.go
+
+diff --git a/internal/library/skillwellknown_lifecycle_test.go b/internal/library/skillwellknown_lifecycle_test.go
+new file mode 100644
+index 000000000..846a1d527
+--- /dev/null
++++ b/internal/library/skillwellknown_lifecycle_test.go
+@@ -0,0 +1,191 @@
++package library
++
++import (
++	"encoding/json"
++	"errors"
++	"fmt"
++	"net/http"
++	"net/http/httptest"
++	"os"
++	"path/filepath"
++	"slices"
++	"strings"
++	"sync"
++	"testing"
++)
++
++const websiteSkill = "---\nname: ui-taste\ndescription: UI taste\n---\nRead reference/craft.md.\n"
++const websiteIndex = `{"skills":[{"name":"ui-taste","description":"UI taste","files":["SKILL.md","reference/craft.md"]}]}`
++
++// The fixture follows the website's file-list protocol. Updates replace
++// response bodies under a lock, since HTTP handlers run on other goroutines.
++func websiteFixture(t *testing.T, initial map[string]string) (string, func(string, string)) {
++	t.Helper()
++	var mu sync.RWMutex
++	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		if r.Header.Get("Authorization") != "" || r.Header.Get("Cookie") != "" {
++			t.Error("a public skill download carried credentials")
++		}
++		mu.RLock()
++		body, ok := initial[r.URL.Path]
++		mu.RUnlock()
++		if !ok {
++			http.NotFound(w, r)
++			return
++		}
++		if strings.HasSuffix(r.URL.Path, ".json") {
++			w.Header().Set("Content-Type", "application/json")
++		} else if strings.HasSuffix(r.URL.Path, ".html") {
++			w.Header().Set("Content-Type", "text/html")
++		}
++		fmt.Fprint(w, body)
++	}))
++	t.Cleanup(srv.Close)
++	return srv.URL, func(path, body string) {
++		mu.Lock()
++		initial[path] = body
++		mu.Unlock()
++	}
++}
++
++func TestWellKnownUpdatesPreserveLocalEdits(t *testing.T) {
++	sandbox(t)
++	base, put := websiteFixture(t, map[string]string{
++		"/.well-known/skills/index.json":                  websiteIndex,
++		"/.well-known/skills/ui-taste/SKILL.md":           websiteSkill,
++		"/.well-known/skills/ui-taste/reference/craft.md": "one",
++	})
++	if _, err := InstallSkills(base, []string{"ui-taste"}, nil); err != nil {
++		t.Fatal(err)
++	}
++	check := func(want string) {
++		t.Helper()
++		got, err := CheckSkills()
++		if err != nil || len(got) != 1 || got[0].Status != want {
++			t.Fatalf("want %s, got %+v, %v", want, got, err)
++		}
++	}
++	check("current")
++	put("/.well-known/skills/ui-taste/reference/craft.md", "two")
++	check("update")
++	if _, err := UpdateSkill("ui-taste", false); err != nil {
++		t.Fatal(err)
++	}
++	notes := filepath.Join(skillDir("ui-taste"), "reference", "craft.md")
++	if got := read(t, notes); got != "two" {
++		t.Fatalf("the reference file was not updated: %q", got)
++	}
++	check("current")
++
++	write(t, notes, "mine")
++	put("/.well-known/skills/ui-taste/reference/craft.md", "three")
++	_, err := UpdateSkill("ui-taste", false)
++	var edited *EditedError
++	if !errors.As(err, &edited) || !strings.Contains(err.Error(), base) || read(t, notes) != "mine" {
++		t.Fatalf("the user's edit must be retained with the source named: %v", err)
++	}
++	if _, err := UpdateSkill("ui-taste", true); err != nil {
++		t.Fatal(err)
++	}
++	if got := read(t, notes); got != "three" {
++		t.Fatalf("the explicitly requested replacement was not installed: %q", got)
++	}
++
++	put("/.well-known/skills/index.json", `{"skills":`)
++	check("unknown")
++	if got := read(t, notes); got != "three" {
++		t.Fatalf("a failed check changed the installed files: %q", got)
++	}
++	put("/.well-known/skills/index.json", `{"skills":[]}`)
++	check("gone")
++	if got := read(t, notes); got != "three" {
++		t.Fatalf("a removed upstream skill must remain installed: %q", got)
++	}
++}
++
++func TestWellKnownHTMLTemplateIsInstalled(t *testing.T) {
++	sandbox(t)
++	const template = "<!doctype html><title>Product page</title><main>Welcome</main>"
++	base, _ := websiteFixture(t, map[string]string{
++		"/.well-known/skills/index.json": `{"skills":[{"name":"ui-taste","description":"UI taste","files":["SKILL.md","templates/page.html"]}]}`,
++		"/.well-known/skills/ui-taste/SKILL.md":            websiteSkill,
++		"/.well-known/skills/ui-taste/templates/page.html": template,
++	})
++	if _, err := InstallSkills(base, []string{"ui-taste"}, nil); err != nil {
++		t.Fatalf("a skill's explicitly listed HTML template must be installable: %v", err)
++	}
++	if got := read(t, filepath.Join(skillDir("ui-taste"), "templates", "page.html")); got != template {
++		t.Fatalf("the template changed: %q", got)
++	}
++}
++
++func TestWellKnownBrokenIndexIsNotAnEmptyAlias(t *testing.T) {
++	sandbox(t)
++	base, put := websiteFixture(t, map[string]string{
++		"/.well-known/skills/index.json":                  websiteIndex,
++		"/.well-known/skills/ui-taste/SKILL.md":           websiteSkill,
++		"/.well-known/skills/ui-taste/reference/craft.md": "one",
++		"/.well-known/agent-skills/index.json":            `{"skills":[]}`,
++	})
++	if _, err := InstallSkills(base, []string{"ui-taste"}, nil); err != nil {
++		t.Fatal(err)
++	}
++	put("/.well-known/skills/index.json", `{"skills":`)
++	got, err := CheckSkills()
++	if err != nil || len(got) != 1 || got[0].Status != "unknown" || got[0].Error == "" {
++		t.Fatalf("an unreadable primary index must not mark the skill removed through an empty alias: %+v, %v", got, err)
++	}
++}
++
++func TestWellKnownManifestRefusesUnsafeFilesBeforeDownloading(t *testing.T) {
++	for _, files := range [][]string{
++		{"SKILL.md", "../escape"}, {"SKILL.md", "/absolute"},
++		{"SKILL.md", "C:/escape"}, {"SKILL.md", `..\escape`},
++		{"SKILL.md", "reference/%2e%2e/escape"}, {"SKILL.md", "NUL.txt"},
++		{"SKILL.md", "bad."}, {"SKILL.md", "bad "},
++		{"SKILL.md", "reference/A.md", "reference/a.md"},
++		{"SKILL.md", "ref", "ref/nested.md"}, {"SKILL.md", "SKILL.md"},
++		{"reference/craft.md"},
++	} {
++		t.Run(strings.Join(files, ","), func(t *testing.T) {
++			sandbox(t)
++			index, err := json.Marshal(map[string]any{"skills": []any{map[string]any{"name": "ui-taste", "description": "UI taste", "files": files}}})
++			if err != nil {
++				t.Fatal(err)
++			}
++			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++				if r.URL.Path == "/.well-known/skills/index.json" {
++					fmt.Fprint(w, string(index))
++					return
++				}
++				if r.URL.Path != "/.well-known/agent-skills/index.json" {
++					t.Errorf("the invalid manifest reached a file download: %s", r.URL.Path)
++				}
++				http.NotFound(w, r)
++			}))
++			t.Cleanup(srv.Close)
++			before := leftDownloads(os.TempDir())
++			if _, err := ProbeSkills(srv.URL); err == nil {
++				t.Fatal("the unsafe or incomplete manifest was accepted")
++			}
++			if after := leftDownloads(os.TempDir()); !slices.Equal(before, after) {
++				t.Fatalf("a refused manifest left a download: before %v, after %v", before, after)
++			}
++		})
++	}
++}
++
++func TestWellKnownFailedDownloadKeepsNoTemporaryFiles(t *testing.T) {
++	sandbox(t)
++	base, _ := websiteFixture(t, map[string]string{
++		"/.well-known/skills/index.json":        websiteIndex,
++		"/.well-known/skills/ui-taste/SKILL.md": websiteSkill,
++	})
++	before := leftDownloads(os.TempDir())
++	if _, err := ProbeSkills(base); err == nil {
++		t.Fatal("a missing reference file was accepted")
++	}
++	if after := leftDownloads(os.TempDir()); !slices.Equal(before, after) {
++		t.Fatalf("an incomplete download was not cleaned up: before %v, after %v", before, after)
++	}
++}
+-- 
+2.50.1 (Apple Git-155)
+
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Aryz <aryz0713@gmail.com>
+Date: Thu, 12 Nov 2026 20:04:17 +0800
+Subject: [PATCH 04/11] library: keep broken website indexes unknown and retain
+ HTML templates
+
+Only try the legacy index location after 404 or 410, so a parse or server failure cannot turn into a removed skill through another catalog. Accept explicitly listed HTML template files while retaining HTML-response rejection for skill metadata and other files.
+
+Verified the two guards fail before this change in fork Actions run 43213792487: TestWellKnownHTMLTemplateIsInstalled rejected the template, and TestWellKnownBrokenIndexIsNotAnEmptyAlias reported gone after a malformed primary index. The earlier integration regression and content-hash/local-edit lifecycle checks pass; the browser regression passes 22 cases in Chromium and WebKit.
+---
+ internal/library/skillwellknown.go | 41 ++++++++++++++++++++----------
+ 1 file changed, 28 insertions(+), 13 deletions(-)
+
+diff --git a/internal/library/skillwellknown.go b/internal/library/skillwellknown.go
+index 421fef4d2..9d90281bd 100644
+--- a/internal/library/skillwellknown.go
++++ b/internal/library/skillwellknown.go
+@@ -3,6 +3,7 @@ package library
+ import (
+ 	"context"
+ 	"encoding/json"
++	"errors"
+ 	"fmt"
+ 	"io"
+ 	"net/http"
+@@ -147,6 +148,16 @@ func wellKnownURL(base string, parts ...string) string {
+ 	return base
+ }
+ 
++type wellKnownStatusError struct {
++	address string
++	status  string
++	code    int
++}
++
++func (e *wellKnownStatusError) Error() string {
++	return fmt.Sprintf("%s answered %s", e.address, e.status)
++}
++
+ func wellKnownGet(ctx context.Context, client *http.Client, address string, max int64) ([]byte, error) {
+ 	req, err := http.NewRequestWithContext(ctx, "GET", address, nil)
+ 	if err != nil {
+@@ -159,7 +170,7 @@ func wellKnownGet(ctx context.Context, client *http.Client, address string, max
+ 	}
+ 	defer resp.Body.Close()
+ 	if resp.StatusCode != http.StatusOK {
+-		return nil, fmt.Errorf("%s answered %s", address, resp.Status)
++		return nil, &wellKnownStatusError{address: address, status: resp.Status, code: resp.StatusCode}
+ 	}
+ 	if max < 0 || resp.ContentLength > max {
+ 		return nil, fmt.Errorf("%s is over the most magpie reads", address)
+@@ -173,7 +184,9 @@ func wellKnownGet(ctx context.Context, client *http.Client, address string, max
+ 	}
+ 	kind := strings.ToLower(resp.Header.Get("Content-Type"))
+ 	sniff := http.DetectContentType(body)
+-	if strings.Contains(kind, "text/html") || strings.Contains(kind, "application/xhtml+xml") || strings.HasPrefix(sniff, "text/html") {
++	ext := strings.ToLower(filepath.Ext(req.URL.Path))
++	htmlFile := ext == ".html" || ext == ".htm" || ext == ".xhtml"
++	if !htmlFile && (strings.Contains(kind, "text/html") || strings.Contains(kind, "application/xhtml+xml") || strings.HasPrefix(sniff, "text/html")) {
+ 		return nil, fmt.Errorf("%s returned an HTML page instead of a skills file", address)
+ 	}
+ 	return body, nil
+@@ -184,19 +197,21 @@ func wellKnownIndex(ctx context.Context, client *http.Client, base *url.URL) (st
+ 	for _, folder := range []string{"skills", "agent-skills"} {
+ 		root := wellKnownURL(base.String(), ".well-known", folder)
+ 		body, err := wellKnownGet(ctx, client, root+"/index.json", wellKnownIndexMax)
+-		var entries []wellKnownEntry
+-		if err == nil {
+-			entries, err = readWellKnownIndex(body)
+-		}
+-		if err == nil {
+-			return root, entries, nil
+-		}
+-		if first == nil {
+-			first = err
++		if err != nil {
++			var status *wellKnownStatusError
++			if !errors.As(err, &status) || (status.code != http.StatusNotFound && status.code != http.StatusGone) {
++				return "", nil, err
++			}
++			if first == nil {
++				first = err
++			}
++			continue
+ 		}
+-		if ctx.Err() != nil {
+-			break
++		entries, err := readWellKnownIndex(body)
++		if err != nil {
++			return "", nil, err
+ 		}
++		return root, entries, nil
+ 	}
+ 	return "", nil, fmt.Errorf("couldn't read a well-known skills index at %s: %w", base, first)
+ }
+-- 
+2.50.1 (Apple Git-155)
+
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Aryz <aryz0713@gmail.com>
+Date: Thu, 12 Nov 2026 20:17:16 +0800
+Subject: [PATCH 05/11] library: align the website template fixture with gofmt
+
+Apply the one-line alignment printed by the CI Go formatter. The source behavior is unchanged.
+
+Verified at 8d2150c: all website lifecycle regressions pass (Actions run 43213792487 attempt 2); the real Uizze source installs ui-taste with 26 files and ios-design with 20 files in an isolated home; 92 Library browser regressions pass in Chromium and WebKit. The formatting gate identified this fixture line; the full cross-platform checks run again for the formatted tree.
+---
+ internal/library/skillwellknown_lifecycle_test.go | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/internal/library/skillwellknown_lifecycle_test.go b/internal/library/skillwellknown_lifecycle_test.go
+index 846a1d527..c34b28cdb 100644
+--- a/internal/library/skillwellknown_lifecycle_test.go
++++ b/internal/library/skillwellknown_lifecycle_test.go
+@@ -107,7 +107,7 @@ func TestWellKnownHTMLTemplateIsInstalled(t *testing.T) {
+ 	sandbox(t)
+ 	const template = "<!doctype html><title>Product page</title><main>Welcome</main>"
+ 	base, _ := websiteFixture(t, map[string]string{
+-		"/.well-known/skills/index.json": `{"skills":[{"name":"ui-taste","description":"UI taste","files":["SKILL.md","templates/page.html"]}]}`,
++		"/.well-known/skills/index.json":                   `{"skills":[{"name":"ui-taste","description":"UI taste","files":["SKILL.md","templates/page.html"]}]}`,
+ 		"/.well-known/skills/ui-taste/SKILL.md":            websiteSkill,
+ 		"/.well-known/skills/ui-taste/templates/page.html": template,
+ 	})
+-- 
+2.50.1 (Apple Git-155)
+
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Aryz <aryz0713@gmail.com>
+Date: Thu, 12 Nov 2026 20:22:52 +0800
+Subject: [PATCH 06/11] library: keep website catalog entries separate from
+ example files
+
+Add a regression requiring the website picker to list only the manifest entry when its supporting files contain two example SKILL.md documents. The Git collection scanner must not turn those listed files into extra installable entries.
+---
+ .../library/skillwellknown_catalog_test.go    | 20 +++++++++++++++++++
+ 1 file changed, 20 insertions(+)
+ create mode 100644 internal/library/skillwellknown_catalog_test.go
+
+diff --git a/internal/library/skillwellknown_catalog_test.go b/internal/library/skillwellknown_catalog_test.go
+new file mode 100644
+index 000000000..60ba0ec43
+--- /dev/null
++++ b/internal/library/skillwellknown_catalog_test.go
+@@ -0,0 +1,20 @@
++package library
++
++import "testing"
++
++func TestWellKnownCatalogListsOnlyItsEntries(t *testing.T) {
++	sandbox(t)
++	files := map[string]string{}
++	files["/.well-known/skills/index.json"] = `{"skills":[{"name":"ui-taste","description":"UI taste","files":["SKILL.md","example-a/SKILL.md","example-b/SKILL.md"]}]}`
++	files["/.well-known/skills/ui-taste/SKILL.md"] = websiteSkill
++	files["/.well-known/skills/ui-taste/example-a/SKILL.md"] = "---\nname: example-a\ndescription: Example template\n---\n"
++	files["/.well-known/skills/ui-taste/example-b/SKILL.md"] = "---\nname: example-b\ndescription: Example template\n---\n"
++	base, _ := websiteFixture(t, files)
++	p, err := ProbeSkills(base)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if len(p.Candidates) != 1 || p.Candidates[0].Path != "ui-taste" {
++		t.Fatalf("only entries declared by the website are installable; supporting examples are files: %+v", p.Candidates)
++	}
++}
+-- 
+2.50.1 (Apple Git-155)
+
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Aryz <aryz0713@gmail.com>
+Date: Thu, 12 Nov 2026 20:30:49 +0800
+Subject: [PATCH 07/11] library: discover only the entries declared by a
+ website
+
+Read the downloaded catalog entry directories directly instead of applying the recursive Git collection scanner. Supporting SKILL.md templates stay files of their declared skill and cannot become separate candidates.
+
+Regression: TestWellKnownCatalogListsOnlyItsEntries fails before the fix with three candidates instead of the one declared entry (Actions 43213792487 attempt 3). Re-run the complete website lifecycle selection for this fix.
+---
+ internal/library/skills.go         |  6 +++++-
+ internal/library/skillwellknown.go | 20 ++++++++++++++++++++
+ 2 files changed, 25 insertions(+), 1 deletion(-)
+
+diff --git a/internal/library/skills.go b/internal/library/skills.go
+index defcd0e52..2d325aa5f 100644
+--- a/internal/library/skills.go
++++ b/internal/library/skills.go
+@@ -1430,7 +1430,11 @@ func probeSkills(input, name string) (*Probe, error) {
+ 			return nil, err
+ 		}
+ 		p.Kind, p.root, p.src = src.Kind, tmp, src
+-		p.Candidates = candidates(tmp, "", srcFolder(src))
++		p.Candidates, err = wellKnownCandidates(tmp)
++		if err != nil {
++			os.RemoveAll(tmp)
++			return nil, err
++		}
+ 		keepProbe(input, p, tmp)
+ 	} else if src, ok := githubSource(input); ok || isGit(input) {
+ 		if !ok {
+diff --git a/internal/library/skillwellknown.go b/internal/library/skillwellknown.go
+index 9d90281bd..ec5d83e1d 100644
+--- a/internal/library/skillwellknown.go
++++ b/internal/library/skillwellknown.go
+@@ -10,6 +10,7 @@ import (
+ 	"net/url"
+ 	"os"
+ 	"path/filepath"
++	"sort"
+ 	"strings"
+ 	"time"
+ 	"unicode"
+@@ -79,6 +80,25 @@ func probeWellKnown(input string) (src Source, dir string, found bool, err error
+ 	return src, dir, true, err
+ }
+ 
++// wellKnownCandidates lists only the catalog entries. Listed SKILL.md
++// templates inside an entry are supporting files, not additional skills.
++func wellKnownCandidates(dir string) ([]Candidate, error) {
++	entries, err := os.ReadDir(dir)
++	if err != nil {
++		return nil, err
++	}
++	out := make([]Candidate, 0, len(entries))
++	for _, e := range entries {
++		m, ok := readMeta(filepath.Join(dir, e.Name()))
++		if !e.IsDir() || !ok {
++			return nil, fmt.Errorf("%s has no valid SKILL.md", e.Name())
++		}
++		out = append(out, Candidate{Path: e.Name(), Name: nameFor(e.Name(), m), Description: m.Description})
++	}
++	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
++	return out, nil
++}
++
+ // fetchWellKnown fetches the complete catalog again. Only a successful,
+ // fully validated fetch may say that a skill is no longer listed there.
+ func fetchWellKnown(src Source) (string, error) {
+-- 
+2.50.1 (Apple Git-155)
+
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Aryz <aryz0713@gmail.com>
+Date: Thu, 12 Nov 2026 20:37:21 +0800
+Subject: [PATCH 08/11] library: reproduce website grouping losing origins and
+ ports
+
+Require distinct HTTP and non-default-port sources to keep their full address as grouping identity, and assert the actual group Open requests in a browser. This exercises both the backend identity and frontend link construction before their fix.
+
+The preceding catalog-only candidate regression now passes in Actions 43213792487 attempt 4.
+---
+ docs/subsystems/library.md                    |  6 ++-
+ .../gui/tests/library-well-known.test.cjs     | 37 +++++++++++++++++--
+ .../library/skillwellknown_catalog_test.go    | 16 ++++++++
+ 3 files changed, 54 insertions(+), 5 deletions(-)
+
+diff --git a/docs/subsystems/library.md b/docs/subsystems/library.md
+index 677862e05..40bb227c1 100644
+--- a/docs/subsystems/library.md
++++ b/docs/subsystems/library.md
+@@ -56,8 +56,10 @@ well-known file-list index: `skills` entries with `name`, `description` and
+ The website address is kept as the source; discovery never visits its home
+ page to replace it with a redirect's destination. A scoped address stays in
+ that scope. Every listed supporting file is installed with `SKILL.md`, after
+-the manifest's paths and limits have been checked. No downloaded content is
+-executed, and no GitHub token or agent credential is sent to the website.
++the manifest's paths and limits have been checked. Only the declared catalog
++entries are offered as skills; supporting `SKILL.md` templates stay files of
++their entry. No downloaded content is executed, and no GitHub token or agent
++credential is sent to the website.
+ 
+ These skills are grouped by their website, with a source link and the same
+ update controls as repository skills. Checks compare the fetched content
+diff --git a/internal/gui/tests/library-well-known.test.cjs b/internal/gui/tests/library-well-known.test.cjs
+index 15b7d2b0e..89d218c3b 100644
+--- a/internal/gui/tests/library-well-known.test.cjs
++++ b/internal/gui/tests/library-well-known.test.cjs
+@@ -16,17 +16,21 @@ const library = () => ({
+   skills: [{ name: "ui-taste", description: "UI taste", kind: "well-known", source, repo: "uizze.sh", agents: [] }],
+ });
+ 
+-function serve(lang, posts) {
++function serve(lang, posts, data = library(), opened = []) {
+   return async (route) => {
+     const req = route.request(), url = new URL(req.url());
+     if (url.pathname === "/boot.js") return route.fulfill({ contentType: "text/javascript", body: `window.bootPrefs = {lang:"${lang}",theme:"light",web:true};` });
+     if (url.pathname === "/wails/runtime.js") return route.fulfill({ contentType: "text/javascript", body: "export const Window = {};" });
+     if (url.pathname === "/api/state") return route.fulfill({ json: { agents: [], profiles: [], settings: { lang } } });
+     if (url.pathname === "/api/plugins") return route.fulfill({ json: { plugins: [] } });
+-    if (url.pathname === "/api/library") return route.fulfill({ json: library() });
++    if (url.pathname === "/api/library") return route.fulfill({ json: data });
++    if (url.pathname === "/api/open") {
++      opened.push(req.postDataJSON().url);
++      return route.fulfill({ json: {} });
++    }
+     if (url.pathname === "/api/library/skills/update") {
+       posts.push(req.postDataJSON());
+-      return route.fulfill({ json: { ...library(), result: { updated: ["ui-taste"], changed: [], problems: [] } } });
++      return route.fulfill({ json: { ...data, result: { updated: ["ui-taste"], changed: [], problems: [] } } });
+     }
+     if (url.pathname === "/api/usage/quotas") return route.fulfill({ json: [] });
+     if (url.pathname === "/api/groups") return route.fulfill({ json: { groups: [] } });
+@@ -73,4 +77,31 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
+       }
+     }
+   });
++
++  test(`${engine}: website groups preserve HTTP origins and ports`, async (t) => {
++    const browser = await (engine === "webkit" ? webkit.launch() : chromium.launch({ channel: "chromium" }));
++    t.after(() => browser.close());
++    const context = await browser.newContext({ viewport: { width: 980, height: 800 } });
++    t.after(() => context.close());
++    await context.addInitScript(() => { try { localStorage.setItem("magpie.libTab", "skills"); } catch {} });
++    const origins = ["http://localhost:8080/kit", "http://example.com:8080/kit", "http://example.com:8081/kit", "https://example.com:8443/Kit"];
++    const data = library(), opened = [];
++    data.skills = origins.map((address, i) => ({ name: `website-${i}`, description: "Website skill", kind: "well-known", source: address, repo: address, agents: [] }));
++    const page = await context.newPage();
++    page.setDefaultTimeout(5000);
++    await page.route("**/*", serve("en", [], data, opened));
++    await page.goto("http://magpie.test/");
++    await page.locator('button[data-view="library"]').click();
++    const groups = page.locator("#view-library .lib-group");
++    await groups.first().waitFor();
++    assert.equal(await groups.count(), origins.length, "different origins must remain different groups");
++    for (const address of origins) {
++      const group = groups.filter({ has: page.getByText(address, { exact: true }) });
++      await Promise.all([
++        page.waitForResponse((response) => new URL(response.url()).pathname === "/api/open"),
++        group.locator(".lib-grouphead .lib-rowacts > button.lib-icon").click(),
++      ]);
++    }
++    assert.deepEqual(opened, origins, "opening a website group must preserve its scheme, host, port and path");
++  });
+ }
+diff --git a/internal/library/skillwellknown_catalog_test.go b/internal/library/skillwellknown_catalog_test.go
+index 60ba0ec43..9b5b5ef6d 100644
+--- a/internal/library/skillwellknown_catalog_test.go
++++ b/internal/library/skillwellknown_catalog_test.go
+@@ -18,3 +18,19 @@ func TestWellKnownCatalogListsOnlyItsEntries(t *testing.T) {
+ 		t.Fatalf("only entries declared by the website are installable; supporting examples are files: %+v", p.Candidates)
+ 	}
+ }
++
++func TestWellKnownGroupingKeepsWebsiteOrigin(t *testing.T) {
++	for _, address := range []string{
++		"http://localhost:8080/kit",
++		"http://example.com:8080/kit",
++		"http://example.com:8081/kit",
++		"https://example.com:8443/Kit",
++	} {
++		t.Run(address, func(t *testing.T) {
++			s := &Skill{Source: &Source{Kind: "well-known", Repo: address}}
++			if got := (&tracer{}).repoOf(s); got != address {
++				t.Fatalf("website grouping must keep the origin and path: got %q, want %q", got, address)
++			}
++		})
++	}
++}
+-- 
+2.50.1 (Apple Git-155)
+
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Aryz <aryz0713@gmail.com>
+Date: Thu, 12 Nov 2026 20:59:52 +0800
+Subject: [PATCH 09/11] library: reproduce HTML sniffing rejecting Markdown
+ support files
+
+Exercise a listed Markdown reference beginning with an HTML comment, and require HTML masquerading as SKILL.md to fail its metadata validation. Supporting files are opaque bytes; their transport content type must not decide whether they are installable.
+---
+ .../library/skillwellknown_content_test.go    | 39 +++++++++++++++++++
+ 1 file changed, 39 insertions(+)
+ create mode 100644 internal/library/skillwellknown_content_test.go
+
+diff --git a/internal/library/skillwellknown_content_test.go b/internal/library/skillwellknown_content_test.go
+new file mode 100644
+index 000000000..1b1feec43
+--- /dev/null
++++ b/internal/library/skillwellknown_content_test.go
+@@ -0,0 +1,39 @@
++package library
++
++import (
++	"os"
++	"path/filepath"
++	"strings"
++	"testing"
++)
++
++func TestWellKnownMarkdownWithHTMLCommentIsInstalled(t *testing.T) {
++	sandbox(t)
++	const note = "<!-- Shared layout rules. -->\n# Layout\nKeep a clear hierarchy.\n"
++	files := map[string]string{}
++	files["/.well-known/skills/index.json"] = `{"skills":[{"name":"ui-taste","description":"UI taste","files":["SKILL.md","reference/layout.md"]}]}`
++	files["/.well-known/skills/ui-taste/SKILL.md"] = websiteSkill
++	files["/.well-known/skills/ui-taste/reference/layout.md"] = note
++	base, _ := websiteFixture(t, files)
++	if _, err := ProbeSkills(base); err != nil {
++		t.Fatal(err)
++	}
++	if _, err := InstallSkills(base, []string{"ui-taste"}, []string{}); err != nil {
++		t.Fatal(err)
++	}
++	got, err := os.ReadFile(filepath.Join(SkillPath("ui-taste"), "reference", "layout.md"))
++	if err != nil || string(got) != note {
++		t.Fatalf("the listed Markdown document must be installed unchanged: %q, %v", got, err)
++	}
++}
++
++func TestWellKnownHTMLIsNotSkillMetadata(t *testing.T) {
++	sandbox(t)
++	files := map[string]string{}
++	files["/.well-known/skills/index.json"] = `{"skills":[{"name":"ui-taste","description":"UI taste","files":["SKILL.md"]}]}`
++	files["/.well-known/skills/ui-taste/SKILL.md"] = "<!doctype html><title>Not a skill</title>"
++	base, _ := websiteFixture(t, files)
++	if _, err := ProbeSkills(base); err == nil || !strings.Contains(err.Error(), "SKILL.md is invalid") {
++		t.Fatalf("the metadata parser must reject an HTML landing page: %v", err)
++	}
++}
+-- 
+2.50.1 (Apple Git-155)
+
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Aryz <aryz0713@gmail.com>
+Date: Thu, 12 Nov 2026 21:07:19 +0800
+Subject: [PATCH 10/11] library: retain website origins and parse only skill
+ metadata
+
+Preserve scheme, port and path case in website group identities and Open requests without GitHub owner folding. Listed support files are opaque bytes: validate index JSON and root SKILL.md front matter with their parsers instead of rejecting Markdown documents that start with HTML comments.
+
+RED evidence: Actions 43213792487 attempts 5 and 6 show the grouping and Markdown cases fail before these fixes; the real browser test merges five complete website addresses into two groups. Re-run the platform checks, race tests and full Library suite for this tree; reproduce the unrelated root guard failure on the original baseline separately.
+---
+ docs/subsystems/library.md                     | 5 +++--
+ internal/gui/assets/plugins/library/client.js  | 6 +++---
+ internal/gui/tests/library-well-known.test.cjs | 4 ++--
+ internal/library/skill_from.go                 | 4 ++--
+ internal/library/skillwellknown.go             | 8 +-------
+ 5 files changed, 11 insertions(+), 16 deletions(-)
+
+diff --git a/docs/subsystems/library.md b/docs/subsystems/library.md
+index 40bb227c1..43e207eb2 100644
+--- a/docs/subsystems/library.md
++++ b/docs/subsystems/library.md
+@@ -61,8 +61,9 @@ entries are offered as skills; supporting `SKILL.md` templates stay files of
+ their entry. No downloaded content is executed, and no GitHub token or agent
+ credential is sent to the website.
+ 
+-These skills are grouped by their website, with a source link and the same
+-update controls as repository skills. Checks compare the fetched content
++These skills are grouped by their complete website address, retaining the
++scheme, port and path case, with a source link and the same update controls
++as repository skills. Checks compare the fetched content
+ with the installed hash. Updates retain the existing protection for local
+ edits and the existing backup and replacement path. An unreadable or invalid
+ index, an incomplete download or an invalid skill is an error, not evidence
+diff --git a/internal/gui/assets/plugins/library/client.js b/internal/gui/assets/plugins/library/client.js
+index d4a9ad499..071a33b56 100644
+--- a/internal/gui/assets/plugins/library/client.js
++++ b/internal/gui/assets/plugins/library/client.js
+@@ -5179,7 +5179,7 @@ magpie.plugin("library", (ctx) => {
+   // Immortal on Discord). owner/repo on GitHub, host/path elsewhere.
+   const skillRepo = (s) => s.repo || (s.kind === "github" ? repoOf(s.source) : s.origin ? repoOf(s.origin) : "");
+   // a host's (with a path, or a site's kit of skills alone, #1862) or GitHub's
+-  const repoURL = (r) => (/^[^/]+\.[^/]+(\/|$)/.test(r) ? "https://" + r : "https://github.com/" + r);
++  const repoURL = (r) => (/^https?:\/\//i.test(r) ? r : /^[^/]+\.[^/]+(\/|$)/.test(r) ? "https://" + r : "https://github.com/" + r);
+   const MANY = 40;   // a group bigger than this starts folded, and so do its parts
+   const SPLIT = 8;   // a group bigger than this is split by folder, or by name
+   // Heights the rows are held to (library.css): a list's room is known
+@@ -5217,7 +5217,7 @@ magpie.plugin("library", (ctx) => {
+       const own = inMine.get(s.name);
+       if (own) { own.skills.push(s); continue; }
+       const repo = skillRepo(s);
+-      const key = repo ? "gh:" + repo.toLowerCase() : "local";
++      const key = repo ? "gh:" + (s.kind === "well-known" ? repo : repo.toLowerCase()) : "local";
+       let g = by.get(key);
+       if (!g) by.set(key, (g = { key, repo, skills: [] }));
+       g.skills.push(s);
+@@ -5234,7 +5234,7 @@ magpie.plugin("library", (ctx) => {
+     const up = repos.filter((g) => g.skills.some(online)), down = repos.filter((g) => !g.skills.some(online));
+     const owners = new Map();
+     for (const g of up) {
+-      if (/^[^/]+\.[^/]+(\/|$)/.test(g.repo)) continue; // another git host or a website
++      if (/^https?:\/\//i.test(g.repo) || /^[^/]+\.[^/]+(\/|$)/.test(g.repo)) continue; // another git host or a website
+       const o = g.repo.split("/")[0].toLowerCase();
+       if (!owners.has(o)) owners.set(o, []);
+       owners.get(o).push(g);
+diff --git a/internal/gui/tests/library-well-known.test.cjs b/internal/gui/tests/library-well-known.test.cjs
+index 89d218c3b..2477d86db 100644
+--- a/internal/gui/tests/library-well-known.test.cjs
++++ b/internal/gui/tests/library-well-known.test.cjs
+@@ -13,7 +13,7 @@ const library = () => ({
+   dir: `${home}/.config/magpie/library`, backups: `${home}/.config/magpie/backups`, home,
+   agents: [{ id: "claude", name: "Claude Code", skills: `${home}/.claude/skills`, mcp: `${home}/.claude.json` }],
+   instructions: { agents: [], sets: [] }, servers: [], projects: [], foundServers: [], foundSkills: [],
+-  skills: [{ name: "ui-taste", description: "UI taste", kind: "well-known", source, repo: "uizze.sh", agents: [] }],
++  skills: [{ name: "ui-taste", description: "UI taste", kind: "well-known", source, repo: source, agents: [] }],
+ });
+ 
+ function serve(lang, posts, data = library(), opened = []) {
+@@ -84,7 +84,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
+     const context = await browser.newContext({ viewport: { width: 980, height: 800 } });
+     t.after(() => context.close());
+     await context.addInitScript(() => { try { localStorage.setItem("magpie.libTab", "skills"); } catch {} });
+-    const origins = ["http://localhost:8080/kit", "http://example.com:8080/kit", "http://example.com:8081/kit", "https://example.com:8443/Kit"];
++    const origins = ["http://localhost:8080/kit", "http://example.com:8080/kit", "http://example.com:8081/kit", "https://example.com:8443/Kit", "https://example.com:8443/kit"];
+     const data = library(), opened = [];
+     data.skills = origins.map((address, i) => ({ name: `website-${i}`, description: "Website skill", kind: "well-known", source: address, repo: address, agents: [] }));
+     const page = await context.newPage();
+diff --git a/internal/library/skill_from.go b/internal/library/skill_from.go
+index 1125a64ad..f18ab3819 100644
+--- a/internal/library/skill_from.go
++++ b/internal/library/skill_from.go
+@@ -28,7 +28,7 @@ import (
+ // then is the repository's skill (noteFrom).
+ 
+ // repoOf is the repository a library skill came from: owner/repo on
+-// GitHub, host/path elsewhere, "" when it can't be told.
++// GitHub, host/path for git, full URL for websites, "" when it can't be told.
+ func (tr *tracer) repoOf(s *Skill) string {
+ 	if s.Source != nil && s.Source.Kind == "github" {
+ 		return s.Source.Repo
+@@ -37,7 +37,7 @@ func (tr *tracer) repoOf(s *Skill) string {
+ 		return remoteRepo(s.Source.Repo) // host/path, as a checkout of it is
+ 	}
+ 	if s.Source != nil && s.Source.Kind == "well-known" {
+-		return siteOf(s.Source.Repo)
++		return s.Source.Repo
+ 	}
+ 	if o, ok := ccSwitchOrigin(s); ok {
+ 		return o.Repo
+diff --git a/internal/library/skillwellknown.go b/internal/library/skillwellknown.go
+index ec5d83e1d..017fe9c22 100644
+--- a/internal/library/skillwellknown.go
++++ b/internal/library/skillwellknown.go
+@@ -202,13 +202,7 @@ func wellKnownGet(ctx context.Context, client *http.Client, address string, max
+ 	if int64(len(body)) > max {
+ 		return nil, fmt.Errorf("%s is over the most magpie reads", address)
+ 	}
+-	kind := strings.ToLower(resp.Header.Get("Content-Type"))
+-	sniff := http.DetectContentType(body)
+-	ext := strings.ToLower(filepath.Ext(req.URL.Path))
+-	htmlFile := ext == ".html" || ext == ".htm" || ext == ".xhtml"
+-	if !htmlFile && (strings.Contains(kind, "text/html") || strings.Contains(kind, "application/xhtml+xml") || strings.HasPrefix(sniff, "text/html")) {
+-		return nil, fmt.Errorf("%s returned an HTML page instead of a skills file", address)
+-	}
++	// Metadata has its own parsers; listed supporting files are opaque bytes.
+ 	return body, nil
+ }
+ 
+-- 
+2.50.1 (Apple Git-155)
+
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Aryz <aryz0713@gmail.com>
+Date: Thu, 12 Nov 2026 21:17:29 +0800
+Subject: [PATCH 11/11] test(library): observe website opens in the web fixture
+
+The web API opens links through window.open, whereas the desktop API posts /api/open. Observe the actual web transport synchronously instead of waiting for a desktop HTTP request.
+
+Validation: all 40 tests in library-groups.test.cjs and library-well-known.test.cjs pass in Chromium and WebKit, including five locales, both widths and the five distinct website group URLs.
+---
+ .../gui/tests/library-well-known.test.cjs     | 24 +++++++++----------
+ 1 file changed, 11 insertions(+), 13 deletions(-)
+
+diff --git a/internal/gui/tests/library-well-known.test.cjs b/internal/gui/tests/library-well-known.test.cjs
+index 2477d86db..05965601c 100644
+--- a/internal/gui/tests/library-well-known.test.cjs
++++ b/internal/gui/tests/library-well-known.test.cjs
+@@ -16,7 +16,7 @@ const library = () => ({
+   skills: [{ name: "ui-taste", description: "UI taste", kind: "well-known", source, repo: source, agents: [] }],
+ });
+ 
+-function serve(lang, posts, data = library(), opened = []) {
++function serve(lang, posts, data = library()) {
+   return async (route) => {
+     const req = route.request(), url = new URL(req.url());
+     if (url.pathname === "/boot.js") return route.fulfill({ contentType: "text/javascript", body: `window.bootPrefs = {lang:"${lang}",theme:"light",web:true};` });
+@@ -24,10 +24,7 @@ function serve(lang, posts, data = library(), opened = []) {
+     if (url.pathname === "/api/state") return route.fulfill({ json: { agents: [], profiles: [], settings: { lang } } });
+     if (url.pathname === "/api/plugins") return route.fulfill({ json: { plugins: [] } });
+     if (url.pathname === "/api/library") return route.fulfill({ json: data });
+-    if (url.pathname === "/api/open") {
+-      opened.push(req.postDataJSON().url);
+-      return route.fulfill({ json: {} });
+-    }
++
+     if (url.pathname === "/api/library/skills/update") {
+       posts.push(req.postDataJSON());
+       return route.fulfill({ json: { ...data, result: { updated: ["ui-taste"], changed: [], problems: [] } } });
+@@ -83,13 +80,17 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
+     t.after(() => browser.close());
+     const context = await browser.newContext({ viewport: { width: 980, height: 800 } });
+     t.after(() => context.close());
+-    await context.addInitScript(() => { try { localStorage.setItem("magpie.libTab", "skills"); } catch {} });
++    await context.addInitScript(() => {
++      try { localStorage.setItem("magpie.libTab", "skills"); } catch {}
++      window.openedSources = [];
++      window.open = (url) => { window.openedSources.push(url); return null; };
++    });
+     const origins = ["http://localhost:8080/kit", "http://example.com:8080/kit", "http://example.com:8081/kit", "https://example.com:8443/Kit", "https://example.com:8443/kit"];
+-    const data = library(), opened = [];
++    const data = library();
+     data.skills = origins.map((address, i) => ({ name: `website-${i}`, description: "Website skill", kind: "well-known", source: address, repo: address, agents: [] }));
+     const page = await context.newPage();
+     page.setDefaultTimeout(5000);
+-    await page.route("**/*", serve("en", [], data, opened));
++    await page.route("**/*", serve("en", [], data));
+     await page.goto("http://magpie.test/");
+     await page.locator('button[data-view="library"]').click();
+     const groups = page.locator("#view-library .lib-group");
+@@ -97,11 +98,8 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
+     assert.equal(await groups.count(), origins.length, "different origins must remain different groups");
+     for (const address of origins) {
+       const group = groups.filter({ has: page.getByText(address, { exact: true }) });
+-      await Promise.all([
+-        page.waitForResponse((response) => new URL(response.url()).pathname === "/api/open"),
+-        group.locator(".lib-grouphead .lib-rowacts > button.lib-icon").click(),
+-      ]);
++      await group.locator(".lib-grouphead .lib-rowacts > button.lib-icon").click();
+     }
+-    assert.deepEqual(opened, origins, "opening a website group must preserve its scheme, host, port and path");
++    assert.deepEqual(await page.evaluate(() => window.openedSources), origins, "opening a website group must preserve its scheme, host, port and path");
+   });
+ }
+-- 
+2.50.1 (Apple Git-155)
+

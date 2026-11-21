@@ -1,0 +1,164 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Tue, 10 Nov 2026 05:49:13 +0800
+Subject: [PATCH 1/2] dsh: a patch list mid-write is left to the next round
+ (#5782)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+dsh's desktop rewrites its own cordis.patch.yml in place — truncate,
+then the body — so for a moment the file is its head alone: magpie's
+route entries sit up front, and a round that read in that window saw a
+wired list of two and wrote that half-state back as the whole list. The
+user's other entries were gone with it, over and over (stevenpisces: 57
+entries became 2, dsh's first-setup marker with them, and the desktop's
+own save could not bring them back while the rounds kept at it).
+
+A fresh list is reread after a beat; one that moved under us is left to
+the next round, which reads it whole. A list whose writer is done
+between the two reads costs the round a beat and nothing else; the
+rounds run seconds apart, so the route lands one round later than it
+did, and lands whole.
+
+Ablation: with the reread out, TestDshRouteAgainSkipsAFileBeingWritten
+fails at "the half-state was fixed as the list" — the user's entries
+gone, the reporter's shape. Whole, the test passes: the body lands
+inside the beat, the round skips the half, and the next round reads
+every entry.
+
+Windows itself wasn't at hand (darwin): the half-write runs as a
+fixture against the same parsers the rounds read, and the desktop's
+writer is played by a delayed second write; a real Windows dsh desktop
+mid-save is NOT-RUNNABLE here.
+
+Run at upstream/main b27b66046 + this commit, macOS 15 (darwin/arm64):
+internal/agent whole ok, TestDsh family -race ok; the one red in the
+package is TestMothX, red on the parent commit too (pre-existing).
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/agent/dsh.go                | 25 +++++++++++
+ internal/agent/dsh_halfwrite_test.go | 67 ++++++++++++++++++++++++++++
+ 2 files changed, 92 insertions(+)
+ create mode 100644 internal/agent/dsh_halfwrite_test.go
+
+diff --git a/internal/agent/dsh.go b/internal/agent/dsh.go
+index 0f851bd30..6d3507b31 100644
+--- a/internal/agent/dsh.go
++++ b/internal/agent/dsh.go
+@@ -1257,6 +1257,15 @@ func dshStashKey(path, id string) string { return "dsh:" + path + ":" + id }
+ // catalog change asks for, a model picked here, and the round magpie does
+ // while it serves the gateway. Two of them reading one file and then writing
+ // it would leave whichever read first as its content.
++// dshJustWritten is how recently a patch list may have been touched for the
++// round to reread it before writing: a list mid-write reads as a short
++// wired list, and a route written from that half is the half made whole.
++var dshJustWritten = 2 * time.Second
++
++// dshSettle is the beat a fresh list is reread after, long enough for the
++// writer's body to have landed (its head is in place in well under this).
++var dshSettle = 400 * time.Millisecond
++
+ var dshWrites sync.Mutex
+ 
+ // dshSet writes v as the model new sessions start on: a catalog model
+@@ -2393,6 +2402,22 @@ func dshRouteAgainSaid(f string, models []catalog.Model, gw string) (string, err
+ 	if err != nil {
+ 		return "", nil
+ 	}
++	// a list written this recently may be dsh's own save still under way:
++	// its desktop rewrites the file in place — truncate, then the body —
++	// so for a moment the file is its head alone, which reads as a wired
++	// list of magpie's entries, and a route written from that half would
++	// fix the half as the whole list, the user's entries gone with it
++	// (#5782, stevenpisces: 57 entries became 2). A fresh list is reread
++	// after a beat: one that moved under us is left to the next round,
++	// which reads it whole.
++	if st, err := os.Stat(f); err == nil && time.Since(st.ModTime()) < dshJustWritten {
++		time.Sleep(dshSettle)
++		now, err := edit.Read(f)
++		if err != nil || !bytes.Equal(now, raw) {
++			return "", nil
++		}
++		raw = now
++	}
+ 	head, items, err := dshParse(f, string(raw))
+ 	if err != nil || !dshWired(items) {
+ 		// no route of magpie's in the list: write it back only where the
+diff --git a/internal/agent/dsh_halfwrite_test.go b/internal/agent/dsh_halfwrite_test.go
+new file mode 100644
+index 000000000..9d1827bab
+--- /dev/null
++++ b/internal/agent/dsh_halfwrite_test.go
+@@ -0,0 +1,67 @@
++package agent
++
++// dsh's desktop rewrites its own cordis.patch.yml in place — truncate, then
++// the body — so for a moment the file is its head alone: magpie's route
++// entries sit up front, and a round that read in that window saw a wired
++// list of two and wrote that half-state back as the whole list. The user's
++// other entries were gone for good, over and over (#5782, stevenpisces: 57
++// entries became 2). A fresh list is reread after a beat; one that moved
++// under us is left to the next round, which reads it whole.
++
++import (
++	"os"
++	"strings"
++	"testing"
++	"time"
++)
++
++// dshHalfPair builds the desktop's list and its mid-write head: the route
++// entries magpie wrote first, the user's own body after.
++func dshHalfPair() (whole, half string) {
++	var b strings.Builder
++	b.WriteString("# Your patch layer for this dsh profile.\n")
++	b.WriteString(`- id: llm-pi-ai # magpie
++  config:
++    providers:
++      magpie:
++        type: api
++        baseURL: http://127.0.0.1:1
++        models:
++          - id: m1
++`)
++	b.WriteString(`- id: agent-default-model # magpie
++  config:
++    model: magpie/m1
++`)
++	for i := 0; i < 40; i++ {
++		b.WriteString("- id: user-entry-")
++		b.WriteString(string(rune('a' + i%26)))
++		b.WriteString(string(rune('0' + i/26)))
++		b.WriteString("\n  config:\n    step: done\n    note: keep me\n")
++	}
++	return b.String(), b.String()[:200]
++}
++
++// The desktop's write lands while the round is between its two reads: the
++// round sees the list move and leaves it to the next round, which works
++// from every entry.
++func TestDshRouteAgainSkipsAFileBeingWritten(t *testing.T) {
++	_, _, web := dshRouteHome(t)
++	whole, half := dshHalfPair()
++	if err := os.WriteFile(web, []byte(half), 0o644); err != nil {
++		t.Fatal(err)
++	}
++	if n := len(magpieModels("dsh")); n == 0 {
++		t.Skip("no catalog to write routes from")
++	}
++	// the body lands after the round's first read, inside its settle beat
++	go func() {
++		time.Sleep(150 * time.Millisecond)
++		os.WriteFile(web, []byte(whole), 0o644)
++	}()
++	dshWiredOnce()
++	b, _ := os.ReadFile(web)
++	if !strings.Contains(string(b), "user-entry-z") {
++		t.Fatalf("the half-state was fixed as the list — the user's entries are gone:\n%s", b[:min(700, len(b))])
++	}
++}
+-- 
+2.50.1 (Apple Git-155)
+

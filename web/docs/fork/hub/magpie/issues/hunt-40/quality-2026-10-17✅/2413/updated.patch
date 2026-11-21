@@ -1,0 +1,273 @@
+diff --git a/docs/subsystems/providers-accounts.md b/docs/subsystems/providers-accounts.md
+--- a/docs/subsystems/providers-accounts.md
++++ b/docs/subsystems/providers-accounts.md
+@@ -37,6 +37,7 @@
+ | A revoked sign-in | A 401 whose words say the sign-in itself is gone (`SignInRevoked`: ChatGPT's `token_revoked`, `invalid_grant`, `refresh_token_reused`; never `token_expired`, a 403, a 5xx or a network error) marks the account for the credential it was sent with (`NoteRevokedSignIn`, #1793). A saved ChatGPT account is refreshed first, as Codex does on a 401, and a refresh that goes through marks nothing. The mark is a hash of the header, never the credential, kept in `logins.json` as `Refused: "revoked:<mark>"` with the account's `Lapsed`, and read back after a restart. While the account has that credential, the gateway doesn't send its requests (`RevokedSignIn`); its row says Sign-in required with Sign in again. Signed in anew (`upsertLogin` with another credential, `addSideLogin`), refreshed, or served a request (`ServedSignIn`), it is clear. Claude (`claude_auth.go`), Copilot (`copilot_lapsed.go`: GitHub's 401/403 on the token exchange, the CLI's stand-in or the usage read, cleared when a token is served) and plugins keep their own marks. | [`signin_revoked.go`](../../internal/provider/signin_revoked.go), [`copilot_lapsed.go`](../../internal/provider/copilot_lapsed.go) |
+ | Saved accounts | `logins.json` remembers every Codex and Claude Code account seen signed in. A switch moves the credentials into the agent's own store and saves the ones it replaces. A saved account that is on (`SetLoginOn`) stands behind the agent's own. Its tokens stay in `logins.json`. | [`logins.go`](../../internal/provider/logins.go), [`logins_on.go`](../../internal/provider/logins_on.go) |
+ | Sign-in in magpie | `StartSignIn` runs the vendor's own browser OAuth with its client and takes the tokens at a callback on this machine. A browser that can't reach that callback (magpie on a server or in Docker) ends on a page that won't load; its address, pasted (`SubmitSignInCallback`), goes through the same callback handler (`pastedCallback`). ChatGPT's sign-in comes back only to port 1455; when that port can't be opened, the sign-in still starts and waits for the pasted address alone, and says why in `CallbackBlocked` with the port in `CallbackPort`: `reserved` for Windows' WSAEACCES on a port in a range it excludes for Hyper-V, WSL or Docker, `busy` for anything else, such as another program holding it (`callbackBlocked`, #1782). A plugin's browser sign-in (`auto`) whose page names a port on this machine to come back to takes its pasted address too: magpie opens it there on 127.0.0.1, for the plugin's own listener (`pluginCallback`, `loopbackPorts`); Command Code's page posts its key from script, so it offers the API key way instead. A Claude account is signed in by Claude Code itself. Signing in brings back an account removed from magpie (`ShowAccount`). A sign-in started in magpie (`StartSignIn`, `StartPluginSignIn`) reads as done (`SignInStatus`, `WaitSignIn`) only after `finish` has run `ShowAccount` for its account, so the window, which opens the account as soon as it sees done, finds it listed. If providers.json can't be written then, the account stays hidden and the sign-in still ends done. Signing in to a plugin's provider from the command line (`pluginLogin`, with a key or the browser) brings it back too. It also takes off the mark a sign-in its vendor turned away left on the account (`Lapsed`) and shows again the agent's own account removed in magpie (`clearPluginLapse`). The window's plugin sign-in does the same with the browser (`pluginDone`, then `finish`) or with a key (`PluginAPIKey`); a key and the command line share these steps in `PluginSignedIn`. A sign-in leaves through the proxy the account's own requests will use (#1663): `ProxyOfLogin` (the account's, else the subscription's, else the global one) for the account being signed in again, the subscription's for a new one. Every request of the flow goes through `signInFlow.via`, Claude Code's own login gets it as *_PROXY (`netproxy.EnvWith`), and a plugin's sign-in runs its fetch under that proxy (`via` in `host.js`; `plugins_cli.go` for the command line). The window's sign-in box shows it as a "Proxy: …" link (`signInProxyLink`, the app menu, no userinfo shown) with Global, Direct, the subscription's and each account's proxy, or a typed one; picking one starts the sign-in again through it (`SignInOptions.Proxy`), and when it ends the pick is kept as the account's (`keepSignInProxy`: the subscription's own when it is its only account, else the account's entry). Global isn't offered while the subscription has a proxy and other accounts, since nothing could keep it. The browser's own leg goes through the browser's network, not magpie's. Signing out leaves through the same exit: a ChatGPT account's refresh token is revoked through its own proxy, read before the account is forgotten (`forgetSIWCLogin`), and Devin's CLI, asked who is signed in or for its models, runs with the account's proxy (`devinCommand`, `devinProxy`), or with the sign-in's while one asks it. | [`signin.go`](../../internal/provider/signin.go), [`claude_signin.go`](../../internal/provider/claude_signin.go), [`pluginsignin.go`](../../internal/provider/pluginsignin.go), [`pluginsignin_paste.go`](../../internal/provider/pluginsignin_paste.go), [`proxy.go`](../../internal/provider/proxy.go), [`plugins_cli.go`](../../internal/cli/plugins_cli.go) |
++| Import from apps | `ImportSources` previews CC Switch and Alma entries read-only; `ImportFromApps` rereads and saves only the picks. A CC Switch Gemini entry's `GOOGLE_GEMINI_BASE_URL`, or Alma's `gemini` API format or `google` type with a base, becomes a custom provider's `Gemini` endpoint with its key and models. Missing keys, invalid bases and magpie's own address remain skipped; a Google entry with no custom base keeps the Google preset. | [`importapps.go`](../../internal/provider/importapps.go), [`importapps_test.go`](../../internal/provider/importapps_test.go) |
+ | Import from files | `ImportLogins` (ChatGPT, Claude), `ImportGoogleAccounts` (Antigravity) and `ImportFactoryKeys` take other tools' files, from the window (`signin/import`) or `magpie accounts import` (#1453). ChatGPT reads Codex's `auth.json`, CLIProxyAPI's and Cockpit Tools' files, Sub2API's export (`sub2apiEntry`) and codexbar's `~/.codexbar/config.json` (`codexbarEntries`: the `openai_oauth` provider's accounts and `openAI.remoteConnectionAccounts`, the workspace from `openAIAccountId`). Each ChatGPT and Google sign-in is refreshed before it is added, so the tool the file came from is signed out of it; both surfaces say so first, and the command imports nothing without `--yes` or a yes. Claude reads CLIProxyAPI's files and Sub2API's export, whose Claude account says its email as Anthropic does, `email_address`, in `credentials` or `extra`, and keeps its `scope`, `account_uuid` and `org_uuid` as Claude Code's scopes, `accountUuid` and `organizationUuid` (#1975); a file with no email is refused, as Claude Code's own `.credentials.json` is. Claude's are kept as the file has them. A refresh token magpie holds already is `exists`, never refreshed; accounts are matched by email and workspace, or for Claude organization (`sameLogin`). An entry with an access token and no refresh token is refused (`accessOnly`). One file of several that holds no account is a failed row with its place (`ImportedAccount.File`), never skipped. The files are only read. | [`login_import.go`](../../internal/provider/login_import.go), [`google_import.go`](../../internal/provider/google_import.go), [`factory_key.go`](../../internal/provider/factory_key.go), [`accounts_cli.go`](../../internal/cli/accounts_cli.go) |
+ | Used-up switch | When the account Codex or Claude Code is signed in to has used its allowance, the agent is signed in to the next account that is on and has room (#208). For Codex, *Only switch Codex's sign-in* (`SwitchOnly`, `SetSwitchOnly`) keeps magpie's `openai_base_url` failover out of Codex's config, so the switch is all magpie does (#1907); an unreadable providers.json reads as switch-only, so the failover is not written on a guess. | [`codex_switch.go`](../../internal/provider/codex_switch.go) |
+ | Claude Code's proxy | Claude Code on its own subscription asks Anthropic itself, through the proxy its env names. While any Claude account has a proxy of its own (`AccountProxies`), the `env` of Claude Code's `settings.json` names the proxy of the account it is signed in to (#1807): `HTTPS_PROXY` and `HTTP_PROXY` set to that account's own, else the subscription's `Proxy` (`ProxyOfLogin`), and `NO_PROXY` to loopback; none for `direct` or a SOCKS proxy, which Claude Code can't use. It is written on every switch (`switchLogin`, the user's or `SwitchWhenSpent`), when the Claude subscription is saved, and at the gateway's look every `loginSwitchEvery` (a sign-in made in Claude Code itself). Claude Code reads its env at start, so only sessions started after the switch take it. A proxy key the user set (in either case) is theirs: magpie then writes none and takes out none of theirs. What magpie wrote is kept in `claude-proxy-env.json`, and a key is magpie's only while it holds that value. A `settings.json` that doesn't parse is left as it is. Its log lines name the proxy through `netproxy.Redact`, without its user and password (#1886); the env gets it whole. | [`claude_proxy_env.go`](../../internal/provider/claude_proxy_env.go) |
+diff --git a/internal/gui/assets/i18n.js b/internal/gui/assets/i18n.js
+--- a/internal/gui/assets/i18n.js
++++ b/internal/gui/assets/i18n.js
+@@ -1780,7 +1780,6 @@
+     "it is the agent's own sign-in; add the subscription in magpie": "这是 agent 自己的登录，请在 magpie 里添加订阅",
+     "it is the agent's own sign-in": "这是 agent 自己的登录",
+     "it is a sign-in, not a key; add the subscription in magpie": "这是登录账号而不是密钥，请在 magpie 里添加订阅",
+-    "magpie doesn't talk the Gemini protocol to relays yet": "magpie 暂不支持以 Gemini 协议连接中转",
+     "it has no Azure OpenAI endpoint": "没有 Azure OpenAI 终结点",
+     "it points at magpie itself": "它指向的就是 magpie 自己",
+     "it has no base URL": "没有 Base URL",
+@@ -5466,7 +5465,6 @@
+     "it is the agent's own sign-in; add the subscription in magpie": "這是 agent 自己的登入，請在 magpie 裡新增訂閱",
+     "it is the agent's own sign-in": "這是 agent 自己的登入",
+     "it is a sign-in, not a key; add the subscription in magpie": "這是登入帳號而不是金鑰，請在 magpie 裡新增訂閱",
+-    "magpie doesn't talk the Gemini protocol to relays yet": "magpie 暫不支援以 Gemini 協議連線中轉",
+     "it has no Azure OpenAI endpoint": "沒有 Azure OpenAI 端點",
+     "it points at magpie itself": "它指向的就是 magpie 自己",
+     "it has no base URL": "沒有 Base URL",
+@@ -9129,7 +9127,6 @@
+     "it is the agent's own sign-in; add the subscription in magpie": "エージェント自身のサインインです。magpie でサブスクリプションを追加してください",
+     "it is the agent's own sign-in": "エージェント自身のサインインです",
+     "it is a sign-in, not a key; add the subscription in magpie": "キーではなくサインインです。magpie でサブスクリプションを追加してください",
+-    "magpie doesn't talk the Gemini protocol to relays yet": "magpie はまだ中継サービスと Gemini プロトコルで通信できません",
+     "it has no Azure OpenAI endpoint": "Azure OpenAI のエンドポイントがありません",
+     "it points at magpie itself": "magpie 自身を指しています",
+     "it has no base URL": "ベース URL がありません",
+@@ -12822,7 +12819,6 @@
+     "it is the agent's own sign-in; add the subscription in magpie": "es ist die eigene Anmeldung des Agenten; fügen Sie das Abo in magpie hinzu",
+     "it is the agent's own sign-in": "es ist die eigene Anmeldung des Agenten",
+     "it is a sign-in, not a key; add the subscription in magpie": "es ist eine Anmeldung, kein Schlüssel; fügen Sie das Abo in magpie hinzu",
+-    "magpie doesn't talk the Gemini protocol to relays yet": "magpie spricht mit Relays noch nicht das Gemini-Protokoll",
+     "it has no Azure OpenAI endpoint": "es hat keinen Azure-OpenAI-Endpunkt",
+     "it points at magpie itself": "es zeigt auf magpie selbst",
+     "it has no base URL": "es hat keine Basis-URL",
+diff --git a/internal/provider/import_opencode.go b/internal/provider/import_opencode.go
+--- a/internal/provider/import_opencode.go
++++ b/internal/provider/import_opencode.go
+@@ -75,7 +75,7 @@
+ 		case strings.TrimSpace(e.Key) == "":
+ 			skip = "it has no API key"
+ 		default:
+-			it.Provider, skip = imported(name, strings.TrimSpace(e.Key), endpoints{pr.Chat, pr.Responses, pr.Anthropic}, nil)
++			it.Provider, skip = imported(name, strings.TrimSpace(e.Key), endpoints{chat: pr.Chat, responses: pr.Responses, anthropic: pr.Anthropic}, nil)
+ 		}
+ 		if skip != "" {
+ 			it.Provider, it.Skip = Provider{Name: name}, skip
+diff --git a/internal/provider/importapps.go b/internal/provider/importapps.go
+--- a/internal/provider/importapps.go
++++ b/internal/provider/importapps.go
+@@ -354,15 +354,15 @@
+ }
+ 
+ // endpoints are the base URLs an entry names, by protocol.
+-type endpoints struct{ chat, responses, anthropic string }
++type endpoints struct{ chat, responses, anthropic, gemini string }
+ 
+ // imported builds the provider for an entry: a preset's when the entry
+ // points at one magpie knows (its endpoints whole when the URL is the
+ // preset's own, only its name and logo when it is another path on the same
+ // host, like a coding plan), a custom one otherwise.
+ func imported(name, key string, e endpoints, models []string) (Provider, string) {
+-	e.chat, e.responses, e.anthropic = cleanBase(e.chat), cleanBase(e.responses), cleanBase(e.anthropic)
+-	for _, u := range []string{e.chat, e.responses, e.anthropic} {
++	e.chat, e.responses, e.anthropic, e.gemini = cleanBase(e.chat), cleanBase(e.responses), cleanBase(e.anthropic), cleanBase(e.gemini)
++	for _, u := range []string{e.chat, e.responses, e.anthropic, e.gemini} {
+ 		if u == "" {
+ 			continue
+ 		}
+@@ -374,10 +374,10 @@
+ 			return Provider{}, "it points at magpie itself"
+ 		}
+ 	}
+-	if e.chat == "" && e.responses == "" && e.anthropic == "" {
++	if e.chat == "" && e.responses == "" && e.anthropic == "" && e.gemini == "" {
+ 		return Provider{}, "it has no base URL"
+ 	}
+-	p := Provider{ID: Slug(name), Name: name, Key: key, Chat: e.chat, Responses: e.responses, Anthropic: e.anthropic, Models: models}
++	p := Provider{ID: Slug(name), Name: name, Key: key, Chat: e.chat, Responses: e.responses, Anthropic: e.anthropic, Gemini: e.gemini, Models: models}
+ 	if p.IsAzure() {
+ 		// an Azure OpenAI resource, from any app: the preset's, its
+ 		// endpoints on the resource's v1 API
+@@ -651,7 +651,7 @@
+ 		if have[i].Skip != "" || h.Key != it.Provider.Key || h.Key == "" || !sameProvider(*h, it.Provider) && hostOf(firstURL(*h)) != hostOf(firstURL(it.Provider)) {
+ 			continue
+ 		}
+-		for _, f := range []struct{ dst, src *string }{{&h.Chat, &it.Provider.Chat}, {&h.Responses, &it.Provider.Responses}, {&h.Anthropic, &it.Provider.Anthropic}} {
++		for _, f := range []struct{ dst, src *string }{{&h.Chat, &it.Provider.Chat}, {&h.Responses, &it.Provider.Responses}, {&h.Anthropic, &it.Provider.Anthropic}, {&h.Gemini, &it.Provider.Gemini}} {
+ 			if *f.dst == "" {
+ 				*f.dst = *f.src
+ 			}
+@@ -664,7 +664,7 @@
+ }
+ 
+ func firstURL(p Provider) string {
+-	for _, u := range []string{p.Chat, p.Responses, p.Anthropic} {
++	for _, u := range []string{p.Chat, p.Responses, p.Anthropic, p.Gemini} {
+ 		if u != "" {
+ 			return u
+ 		}
+@@ -730,14 +730,16 @@
+ 		}
+ 	case "gemini":
+ 		key = str(env, "GEMINI_API_KEY", "GOOGLE_API_KEY")
+-		if str(env, "GOOGLE_GEMINI_BASE_URL") != "" {
+-			return name, "", eps, nil, "magpie doesn't talk the Gemini protocol to relays yet"
+-		}
+-		if key == "" {
+-			return name, "", eps, nil, "it is the agent's own sign-in"
+-		}
+-		pr := Preset("google")
+-		eps.chat, eps.responses, eps.anthropic = pr.Chat, pr.Responses, pr.Anthropic
++		// Gemini 中转使用专属端点；没有自定义地址时仍走 Google preset。
++		if base := str(env, "GOOGLE_GEMINI_BASE_URL"); base != "" {
++			eps.gemini = base
++		} else {
++			if key == "" {
++				return name, "", eps, nil, "it is the agent's own sign-in"
++			}
++			pr := Preset("google")
++			eps.chat, eps.responses, eps.anthropic = pr.Chat, pr.Responses, pr.Anthropic
++		}
+ 		if m := str(env, "GEMINI_MODEL"); m != "" {
+ 			models = append(models, m)
+ 		}
+@@ -884,11 +886,11 @@
+ 			}
+ 		case base == "" && Preset(almaPresets[typ]) != nil:
+ 			pr := Preset(almaPresets[typ])
+-			eps = endpoints{pr.Chat, pr.Responses, pr.Anthropic}
++			eps = endpoints{chat: pr.Chat, responses: pr.Responses, anthropic: pr.Anthropic}
+ 		case format == "anthropic" || typ == "anthropic":
+ 			eps.anthropic = base
+ 		case format == "gemini" || typ == "google" && base != "":
+-			skip = "magpie doesn't talk the Gemini protocol to relays yet"
++			eps.gemini = base
+ 		case responses || format == "openai-responses":
+ 			eps.responses = base
+ 		default:
+diff --git a/internal/provider/importapps_test.go b/internal/provider/importapps_test.go
+--- a/internal/provider/importapps_test.go
++++ b/internal/provider/importapps_test.go
+@@ -60,7 +60,10 @@
+ 		`INSERT INTO providers VALUES ('relay','codex','Some Relay','{"auth":{"OPENAI_API_KEY":"sk-relay"},"config":"model_provider = \"relay\"\nmodel = \"gpt-5.5\"\n\n[model_providers.relay]\nname = \"relay\"\nbase_url = \"https://relay.example.com/v1\"\nwire_api = \"responses\"\n"}','','custom',3,0)`,
+ 		`INSERT INTO providers VALUES ('ds','claude','DeepSeek','{"env":{"ANTHROPIC_BASE_URL":"https://api.deepseek.com/anthropic","ANTHROPIC_AUTH_TOKEN":"sk-ds"}}','','cn_official',4,2)`,
+ 		`INSERT INTO providers VALUES ('dial','pi','dial','{"api":"openai-completions","apiKey":"magpie","baseUrl":"http://127.0.0.1:3425/v1"}','','custom',5,0)`,
+-		`INSERT INTO providers VALUES ('g','gemini','Gemini relay','{"env":{"GOOGLE_GEMINI_BASE_URL":"https://g.example.com","GEMINI_API_KEY":"k"}}','','custom',6,0)`,
++		`INSERT INTO providers VALUES ('g','gemini','Gemini relay','{"env":{"GOOGLE_GEMINI_BASE_URL":"https://g.example.com","GEMINI_API_KEY":"k","GEMINI_MODEL":"gemini-3.8-flash"}}','','custom',6,0)`,
++		`INSERT INTO providers VALUES ('shared','gemini','Some Relay','{"env":{"GOOGLE_GEMINI_BASE_URL":"https://relay.example.com/gemini/v1beta","GEMINI_API_KEY":"sk-relay","GEMINI_MODEL":"gemini-2.5-flash"}}','','custom',7,1)`,
++		`INSERT INTO providers VALUES ('official','gemini','Google Official','{"env":{"GEMINI_API_KEY":"sk-google"}}','','official',8,2)`,
++		`INSERT INTO providers VALUES ('signin','gemini','Google Sign In','{"env":{}}','','official',9,3)`,
+ 	)
+ 	// DeepSeek is already here under its preset id, with another key
+ 	if err := Save(FromPresetKey(t, "deepseek", "sk-other")); err != nil {
+@@ -74,26 +77,44 @@
+ 	if it := items["pi/dial"]; it.Skip == "" {
+ 		t.Fatalf("magpie itself offered: %+v", it)
+ 	}
+-	if it := items["gemini/g"]; it.Skip == "" {
+-		t.Fatalf("gemini relay offered: %+v", it)
++	g := items["gemini/g"]
++	if g.Skip != "" || g.Provider.Gemini != "https://g.example.com" || g.Provider.Key != "k" ||
++		!slices.Equal(g.Provider.Models, []string{"gemini-3.8-flash"}) {
++		t.Fatalf("Gemini relay was not offered with its endpoint, key and model: %+v", g)
+ 	}
+ 	relay := items["claude/relay"]
+-	if relay.Skip != "" || relay.Status != "new" || relay.Provider.Anthropic != "https://relay.example.com" || relay.Provider.Responses != "https://relay.example.com/v1" || relay.From != "Claude Code, Codex" {
++	if relay.Skip != "" || relay.Status != "new" || relay.Provider.Anthropic != "https://relay.example.com" || relay.Provider.Responses != "https://relay.example.com/v1" || relay.Provider.Gemini != "https://relay.example.com/gemini/v1beta" || relay.From != "Claude Code, Codex, Gemini CLI" {
+ 		t.Fatalf("relay: %+v", relay)
+ 	}
+-	if _, ok := items["codex/relay"]; ok {
+-		t.Fatal("the Codex half of the relay listed on its own")
++	for _, ref := range []string{"codex/relay", "gemini/shared"} {
++		if _, ok := items[ref]; ok {
++			t.Fatalf("the merged relay was listed again as %s", ref)
++		}
++	}
++	if it := items["gemini/official"]; it.Skip != "" || it.Provider.Preset != "google" || it.Provider.Gemini != "" {
++		t.Fatalf("Gemini without a custom base lost its Google preset: %+v", it)
++	}
++	if it := items["gemini/signin"]; it.Skip != "it is the agent's own sign-in" {
++		t.Fatalf("Gemini sign-in was offered as a key: %+v", it)
+ 	}
+ 	ds := items["claude/ds"]
+ 	if ds.Status != "taken" || ds.Provider.ID != "deepseek" || ds.Provider.Preset != "deepseek" || ds.KeyOf != "deepseek" {
+ 		t.Fatalf("deepseek: %+v", ds)
+ 	}
+ 
+-	added, err := ImportFromApps([]AppPick{{Source: "cc-switch", Ref: "claude/relay"}, {Source: "cc-switch", Ref: "claude/ds", Mode: "key"}})
+-	if err != nil || len(added) != 2 {
++	added, err := ImportFromApps([]AppPick{
++		{Source: "cc-switch", Ref: "claude/relay"},
++		{Source: "cc-switch", Ref: "claude/ds", Mode: "key"},
++		{Source: "cc-switch", Ref: "gemini/g"},
++	})
++	if err != nil || len(added) != 3 {
+ 		t.Fatalf("import: %v %v", added, err)
+ 	}
+-	if p, err := Find("some-relay"); err != nil || p.Key != "sk-relay" || len(p.Models) != 2 {
++	if p, err := Find("gemini-relay"); err != nil || p.Gemini != "https://g.example.com/v1beta" ||
++		p.Key != "k" || !slices.Equal(p.Models, []string{"gemini-3.8-flash"}) {
++		t.Fatalf("Gemini relay did not persist through import: %+v %v", p, err)
++	}
++	if p, err := Find("some-relay"); err != nil || p.Key != "sk-relay" || len(p.Models) != 3 || p.Gemini != "https://relay.example.com/gemini/v1beta" {
+ 		t.Fatalf("relay saved: %+v", p)
+ 	}
+ 	if p, _ := Find("deepseek"); p.Key != "sk-other" || len(p.Keys) != 1 || p.Keys[0].Key != "sk-ds" {
+@@ -122,6 +143,13 @@
+ 		`INSERT INTO providers VALUES ('a2','My Proxy','custom','sk-p','[]','https://proxy.example.com/v1',0,'2','openai-chat',0,'{"X-Team":"a"}')`,
+ 		`INSERT INTO providers VALUES ('a3','Copilot','copilot','','[]',NULL,1,'3',NULL,0,NULL)`,
+ 		`INSERT INTO providers VALUES ('a4','junk','custom','x','[]','bbb',0,'4',NULL,0,NULL)`,
++		`INSERT INTO providers VALUES ('g1','Gemini Format','custom','sk-format','["gemini-2.5-pro"]','https://format.example.com/proxy/v1beta/models',1,'5','gemini',0,NULL)`,
++		`INSERT INTO providers VALUES ('g2','Google Relay','google','sk-google','["gemini-2.5-flash"]','https://google.example.com',1,'6',NULL,0,NULL)`,
++		`INSERT INTO providers VALUES ('g3','Google Official','google','sk-official','[]',NULL,1,'7',NULL,0,NULL)`,
++		`INSERT INTO providers VALUES ('g4','No Key','custom','','[]','https://keyless.example.com',1,'8','gemini',0,NULL)`,
++		`INSERT INTO providers VALUES ('g5','Invalid Base','custom','sk-invalid','[]','https://',1,'9','gemini',0,NULL)`,
++		`INSERT INTO providers VALUES ('g6','Magpie','google','magpie','[]','http://127.0.0.1:3425',1,'10',NULL,0,NULL)`,
++		`INSERT INTO providers VALUES ('g7','Google Sign In','google','','[]',NULL,1,'11',NULL,0,NULL)`,
+ 	)
+ 	items := itemsOf(t, "alma")
+ 	if it := items["a1"]; it.Provider.Preset != "openrouter" || it.Provider.Key != "sk-or" || len(it.Provider.Models) != 1 {
+@@ -132,6 +160,40 @@
+ 	}
+ 	if items["a3"].Skip == "" || items["a4"].Skip == "" {
+ 		t.Fatalf("sign-in or junk offered: %+v %+v", items["a3"], items["a4"])
++	}
++	for _, c := range []struct{ ref, id, base, key, model string }{
++		{"g1", "gemini-format", "https://format.example.com/proxy/v1beta", "sk-format", "gemini-2.5-pro"},
++		{"g2", "google-relay", "https://google.example.com/v1beta", "sk-google", "gemini-2.5-flash"},
++	} {
++		it := items[c.ref]
++		if it.Skip != "" || it.Provider.Gemini == "" {
++			t.Fatalf("Alma Gemini relay was not offered: %+v", it)
++		}
++		if added, err := ImportFromApps([]AppPick{{Source: "alma", Ref: c.ref}}); err != nil || len(added) != 1 {
++			t.Fatalf("import %s: %v %v", c.ref, added, err)
++		}
++		p, err := Find(c.id)
++		if err != nil || p.Gemini != c.base || p.Key != c.key ||
++			!slices.Equal(p.Models, []string{c.model}) || p.Chat != "" || p.Preset != "" {
++			t.Fatalf("Alma Gemini relay did not persist at its own endpoint: %+v %v", p, err)
++		}
++		if it := itemsOf(t, "alma")[c.ref]; it.Status != "same" {
++			t.Fatalf("imported Gemini relay was offered again: %+v", it)
++		}
++	}
++	if p := items["g3"].Provider; items["g3"].Skip != "" || p.Preset != "google" || p.Chat == "" || p.Gemini != "" {
++		t.Fatalf("Google without a custom base lost its preset: %+v", items["g3"])
++	}
++	for ref, reason := range map[string]string{
++		"g4": "it has no API key", "g5": "its base URL isn't valid",
++		"g6": "it points at magpie itself", "g7": "it has no API key",
++	} {
++		if it := items[ref]; it.Skip != reason {
++			t.Fatalf("%s: skip = %q, want %q", ref, it.Skip, reason)
++		}
++		if added, err := ImportFromApps([]AppPick{{Source: "alma", Ref: ref}}); err != nil || len(added) != 0 {
++			t.Fatalf("%s should be skipped without importing: %v %v", ref, added, err)
++		}
+ 	}
+ }
+ 

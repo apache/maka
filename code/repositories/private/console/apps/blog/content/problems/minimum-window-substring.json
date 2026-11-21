@@ -1,0 +1,25 @@
+{
+  "id": "25",
+  "slug": "minimum-window-substring",
+  "title": "最小覆盖子串",
+  "difficulty": "hard",
+  "tags": ["哈希表", "字符串", "滑动窗口"],
+  "description": "给你一个字符串 `s`、一个字符串 `t`。返回 `s` 中涵盖 `t` 所有字符的最小子串。如果 `s` 中不存在涵盖 `t` 所有字符的子串,返回空字符串 `\"\"`。\n\n**注意:** 对于 `t` 中重复字符,寻找的子串中该字符数量不得少于 `t` 中该字符数量。\n\n**示例 1:**\n\n- 输入:`s = \"ADOBECODEBANC\"`, `t = \"ABC\"`\n- 输出:`\"BANC\"`\n\n**示例 2:**\n\n- 输入:`s = \"a\"`, `t = \"a\"`\n- 输出:`\"a\"`\n\n**示例 3:**\n\n- 输入:`s = \"a\"`, `t = \"aa\"`\n- 输出:`\"\"`(s 中无法覆盖两个 a)",
+  "solution": "## 思路\n\n**变长滑动窗口**:右指针扩展直到窗口涵盖 `t`,左指针收缩到不能再缩,记录最短。用 `need` 哈希表 + `needCnt`(还缺的字符总数)判断是否涵盖;`needCnt === 0` 时尝试收缩。\n\n## 参考代码\n\n```js\nfunction minWindow(s, t) {\n  if (s.length < t.length) return '';\n  const need = new Map();\n  for (const c of t) need.set(c, (need.get(c) || 0) + 1);\n  let needCnt = t.length;\n  let l = 0;\n  let start = 0;\n  let minLen = Infinity;\n  for (let r = 0; r < s.length; r++) {\n    const c = s[r];\n    if (need.has(c)) {\n      if (need.get(c) > 0) needCnt--;\n      need.set(c, need.get(c) - 1);\n    }\n    while (needCnt === 0) {\n      if (r - l + 1 < minLen) { minLen = r - l + 1; start = l; }\n      const d = s[l];\n      if (need.has(d)) {\n        need.set(d, need.get(d) + 1);\n        if (need.get(d) > 0) needCnt++;\n      }\n      l++;\n    }\n  }\n  return minLen === Infinity ? '' : s.slice(start, start + minLen);\n}\n```\n\n## 复杂度\n\n- 时间:O(n)\n- 空间:O(k),k 为字符集大小",
+  "signature": {
+    "language": "javascript",
+    "entry": "minWindow",
+    "params": [
+      { "name": "s", "type": "string" },
+      { "name": "t", "type": "string" }
+    ],
+    "returns": "string"
+  },
+  "testCases": [
+    { "sample": true, "input": ["ADOBECODEBANC", "ABC"], "expected": "BANC" },
+    { "sample": true, "input": ["a", "a"], "expected": "a" },
+    { "sample": true, "input": ["a", "aa"], "expected": "" },
+    { "sample": false, "input": ["ab", "a"], "expected": "a" },
+    { "sample": false, "input": ["aa", "aa"], "expected": "aa" }
+  ]
+}

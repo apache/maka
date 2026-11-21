@@ -1,0 +1,23 @@
+{
+  "id": "72",
+  "slug": "third-maximum-number",
+  "title": "第三大的数",
+  "difficulty": "easy",
+  "tags": ["数组", "排序"],
+  "description": "给你一个非空数组,返回此数组中**第三大的数**。如果不存在,则返回数组中最大的数。\n\n**第三大**的定义:去重后第三大的数(不把相同数算作不同)。例如 `[2,2,3,1]` 去重后为 `[1,2,3]`,第三大是 `1`。\n\n**示例 1:**\n\n- 输入:`nums = [3,2,1]`\n- 输出:`1`\n\n**示例 2:**\n\n- 输入:`nums = [1,2]`\n- 输出:`2`(第三大不存在,返回最大)\n\n**示例 3:**\n\n- 输入:`nums = [2,2,3,1]`\n- 输出:`1`",
+  "solution": "## 思路\n\n去重后降序排序,若元素数 ≥ 3 取第三个,否则取第一个(最大)。\n\n## 参考代码\n\n```js\nfunction thirdMax(nums) {\n  const distinct = [...new Set(nums)].sort((a, b) => b - a);\n  return distinct.length >= 3 ? distinct[2] : distinct[0];\n}\n```\n\n## 复杂度\n\n- 时间:O(n log n)\n- 空间:O(n)",
+  "signature": {
+    "language": "javascript",
+    "entry": "thirdMax",
+    "params": [{ "name": "nums", "type": "number[]" }],
+    "returns": "number"
+  },
+  "testCases": [
+    { "sample": true, "input": [[3, 2, 1]], "expected": 1 },
+    { "sample": true, "input": [[1, 2]], "expected": 2 },
+    { "sample": true, "input": [[2, 2, 3, 1]], "expected": 1 },
+    { "sample": false, "input": [[1, 1, 2]], "expected": 2 },
+    { "sample": false, "input": [[5, 2, 2]], "expected": 5 },
+    { "sample": false, "input": [[1, 2, 3, 4]], "expected": 2 }
+  ]
+}

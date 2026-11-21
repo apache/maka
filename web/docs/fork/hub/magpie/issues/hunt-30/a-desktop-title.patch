@@ -1,0 +1,241 @@
+From 910522a70b1633412cc8daf5edf3aebfb967b65e Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Fri, 16 Oct 2026 11:58:31 +0800
+Subject: [PATCH] gateway: Desktop's one-token probe keeps the model it names
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Claude Desktop probes the gateway it is given before saving its
+credentials: a one-token request, no tools, a model from /v1/models.
+desktopTurn judged a tool-less request a session title by max_tokens
+alone (small: at most 4096), so the probe went to the session's pick —
+one a previous session left on a provider since switched off, and the
+test came back "… is switched off in Magpie, so … is not served" naming
+that provider, however healthy the model the probe asked for (#2473,
+EchoTint). Models discovery answered fine, which made it look like the
+credentials were at fault.
+
+What changed:
+- desktop.go: a title is the request whose system prompt is Desktop's
+  title prompt (desktopTitle), whoever sent it — Desktop's own client,
+  or Claude Code's `claude -p --system-prompt …` for it. Every other
+  tool-less request keeps the model it names: Claude Code's classifiers
+  did already (#1539), and now Desktop's probe does too. The
+  byClaudeCode parameter said which of the two shapes to check and is
+  gone; small stays for observe.go's kind.
+- desktop_turn_test.go: TestDesktopProbeKeepsItsModel — the probe on a
+  served model keeps it while a switched-off provider's pick stands
+  (red on 7597c132e: 404 "Any is switched off in Magpie, so …"), the
+  pick file survives it, and a title still follows the pick.
+
+Run: GOTOOLCHAIN=auto go test -tags nogui -p 2 -count=1 over the
+desktop family (TestDesktop*, TestClaudeDesktop*, TestHasTools): ok.
+gofmt -l: clean. Three-platform vet and build below, with the issue.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gateway/desktop.go           | 39 ++++++-------
+ internal/gateway/desktop_turn_test.go | 80 +++++++++++++++++++++++++--
+ internal/gateway/gateway.go           |  2 +-
+ 3 files changed, 93 insertions(+), 28 deletions(-)
+
+diff --git a/internal/gateway/desktop.go b/internal/gateway/desktop.go
+index 5bd7d5c8..7f5b3a12 100644
+--- a/internal/gateway/desktop.go
++++ b/internal/gateway/desktop.go
+@@ -437,24 +437,23 @@ var desktopPicked struct {
+ func desktopPickedPath() string { return filepath.Join(settings.Dir(), "claude-desktop.model") }
+ 
+ // desktopTurn is the model a Claude Desktop request for asked is served by.
+-// byClaudeCode is a request Claude Code sent (its claude-cli/ User-Agent)
+-// rather than Desktop's own client. bySubagent is a subagent's request
+-// (x-claude-code-agent-id): its turns carry tools too, but its model is
+-// the one its tier or definition asked for, not the user's pick, so it is
+-// never kept as the session's model. Before, a subagent on the opus tier's
+-// model took the session's place until the lead's next turn, and the
+-// titles asked for meanwhile went to it.
++// bySubagent is a subagent's request (x-claude-code-agent-id): its turns
++// carry tools too, but its model is the one its tier or definition asked
++// for, not the user's pick, so it is never kept as the session's model.
++// Before, a subagent on the opus tier's model took the session's place
++// until the lead's next turn, and the titles asked for meanwhile went to it.
+ //
+-// Claude Code names the model of each of its own background requests on
+-// purpose: its auto mode's safety classifier asks for its sonnet with no
+-// tools and a max_tokens of 64 or 256, its notification classifier with
+-// 1024 (#1539, tete1030). So a tool-less request from it goes to the
+-// session's model only when it is Desktop's title, which Desktop asks
+-// Claude Code for when its own request fails (`claude -p --model <its
+-// pick> --system-prompt "You write short session titles…" --tools ""`,
+-// sent with max_tokens 64000); one for a model magpie doesn't serve still
+-// goes there whoever sent it.
+-func desktopTurn(asked string, body []byte, byClaudeCode, bySubagent bool) string {
++// A title goes to the session's model, and is known by its prompt
++// ("You write short session titles…"), whoever sent it: Desktop's own
++// client, or Claude Code, which Desktop asks it for when its own request
++// fails (`claude -p --model <its pick> --system-prompt "You write short
++// session titles…" --tools ""`, sent with max_tokens 64000). Every other
++// tool-less request keeps the model it names — Claude Code's background
++// classifiers ask for their own sonnet with a max_tokens of 64, 256 or
++// 1024 (#1539, tete1030), and Desktop's own client probes the gateway
++// with one token and a model from /v1/models (#2473, EchoTint). A request
++// for a model magpie doesn't serve still goes to the session's model.
++func desktopTurn(asked string, body []byte, bySubagent bool) string {
+ 	if asked == "" {
+ 		return asked
+ 	}
+@@ -472,11 +471,7 @@ func desktopTurn(asked string, body []byte, byClaudeCode, bySubagent bool) strin
+ 	if asked == picked {
+ 		return asked
+ 	}
+-	aside := small(body)
+-	if byClaudeCode {
+-		aside = desktopTitle(body)
+-	}
+-	title := !tools && aside && desktopAccepts(asked)
++	title := !tools && desktopTitle(body) && desktopAccepts(asked)
+ 	gone := unserved(asked)
+ 	if gone && !title {
+ 		if m := servedBeside(asked, picked); m != "" {
+diff --git a/internal/gateway/desktop_turn_test.go b/internal/gateway/desktop_turn_test.go
+index 4399f35e..d6327d97 100644
+--- a/internal/gateway/desktop_turn_test.go
++++ b/internal/gateway/desktop_turn_test.go
+@@ -7,6 +7,7 @@ import (
+ 	"testing"
+ 
+ 	"github.com/yetone/magpie/internal/provider"
++	"github.com/yetone/magpie/internal/settings"
+ )
+ 
+ // Claude Desktop's session titles (and Claude Code's small tasks in its
+@@ -134,7 +135,7 @@ func TestClaudeDesktopDefault(t *testing.T) {
+ 	if got := desktopDefault("fake/m1"); got != "" {
+ 		t.Fatalf("default for the first model itself = %q", got)
+ 	}
+-	if got := desktopTurn("claude-haiku-4-5", title, false, false); got != "fake/m1" {
++	if got := desktopTurn("claude-haiku-4-5", title, false); got != "fake/m1" {
+ 		t.Fatalf("title = %q", got)
+ 	}
+ 	StandIn = func(agent, model string) string {
+@@ -144,11 +145,11 @@ func TestClaudeDesktopDefault(t *testing.T) {
+ 		return ""
+ 	}
+ 	t.Cleanup(func() { StandIn = nil })
+-	if got := desktopTurn("claude-haiku-4-5", title, false, false); got != "fake/claude-opus-4-8" {
++	if got := desktopTurn("claude-haiku-4-5", title, false); got != "fake/claude-opus-4-8" {
+ 		t.Fatalf("title with a stand-in = %q", got)
+ 	}
+ 	// a session on a real Claude model magpie serves keeps it
+-	if got := desktopTurn("fake/claude-opus-4-8", turn, false, false); got != "fake/claude-opus-4-8" {
++	if got := desktopTurn("fake/claude-opus-4-8", turn, false); got != "fake/claude-opus-4-8" {
+ 		t.Fatalf("turn = %q", got)
+ 	}
+ }
+@@ -249,14 +250,14 @@ func TestDesktopSubagentTurnKeepsSessionPick(t *testing.T) {
+ 		{"fake/m2", true, "fake/m1"},
+ 		{"fake/m2", false, "fake/m2"},
+ 	} {
+-		if got := desktopTurn(turn.model, body, true, turn.sub); got != turn.model {
++		if got := desktopTurn(turn.model, body, turn.sub); got != turn.model {
+ 			t.Fatalf("turn sent %q, want %q", got, turn.model)
+ 		}
+ 		if b, err := os.ReadFile(desktopPickedPath()); err != nil || strings.TrimSpace(string(b)) != turn.picked {
+ 			t.Fatalf("subagent %v: picked %q, want %q (%v)", turn.sub, b, turn.picked, err)
+ 		}
+ 	}
+-	if got := desktopTurn("claude-haiku-unserved", body, true, true); got != "fake/m2" {
++	if got := desktopTurn("claude-haiku-unserved", body, true); got != "fake/m2" {
+ 		t.Fatalf("unserved subagent sent %q, want the session's model", got)
+ 	}
+ }
+@@ -303,3 +304,72 @@ func TestDesktopSubagentTurnLeavesTitleOnLead(t *testing.T) {
+ 		t.Fatalf("title after a subagent's turn: sent %q, want the lead's m1", got)
+ 	}
+ }
++
++// Desktop's own client probes the gateway it is given with a one-token
++// request with no tools and a model from /v1/models (its Credentials
++// test). That probe is not a session title and keeps the model it names:
++// max_tokens alone said "title", so it went to the session's pick, and a
++// pick left by an earlier session's provider — since switched off — came
++// back as a 404 naming that provider (#2473, EchoTint).
++func TestDesktopProbeKeepsItsModel(t *testing.T) {
++	f := &fake{reply: sse(
++		`event: message_start`+"\n"+`data: {"type":"message_start","message":{"id":"m","type":"message","role":"assistant","model":"claude-sonnet-5","content":[],"usage":{"input_tokens":1,"output_tokens":0}}}`,
++		`event: message_stop`+"\n"+`data: {"type":"message_stop"}`)}
++	up := setup(t, provider.Anthropic, f)
++	if err := provider.Save(provider.Provider{ID: "fake", Name: "Fake", Key: "k", Anthropic: up.URL,
++		Models: []string{"claude-sonnet-5"}}); err != nil {
++		t.Fatal(err)
++	}
++	desktopPicked.Lock()
++	desktopPicked.model, desktopPicked.from = "", ""
++	desktopPicked.Unlock()
++	// a session that ran on the provider "any" left its model there; the
++	// provider has since been switched off
++	if err := provider.Save(provider.Provider{ID: "any", Name: "Any", Key: "k", Anthropic: "http://127.0.0.1:1",
++		Models: []string{"claude-fable-5-1-reversed"}, Off: true}); err != nil {
++		t.Fatal(err)
++	}
++	if err := os.MkdirAll(settings.Dir(), 0o755); err != nil {
++		t.Fatal(err)
++	}
++	if err := os.WriteFile(desktopPickedPath(), []byte("any/claude-fable-5-1-reversed\n"), 0o600); err != nil {
++		t.Fatal(err)
++	}
++	const electron = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Claude/1.6608.0 Chrome/142.0.7444.235 Electron/39.2.7 Safari/537.36"
++	f.got = nil
++	req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(`{"model":"fake/claude-sonnet-5","max_tokens":1,"stream":true,"messages":[{"role":"user","content":"."}]}`))
++	req.Header.Set("x-api-key", Token+"-claude-desktop")
++	req.Header.Set("User-Agent", electron)
++	rec := httptest.NewRecorder()
++	New().Handler().ServeHTTP(rec, req)
++	if rec.Code != 200 {
++		t.Fatalf("probe: %d %.200s", rec.Code, rec.Body)
++	}
++	if got := modelOf(f.got); got != "claude-sonnet-5" {
++		t.Fatalf("probe sent %q, want claude-sonnet-5", got)
++	}
++	// a probe is no session: the pick stands
++	if b, err := os.ReadFile(desktopPickedPath()); err != nil || strings.TrimSpace(string(b)) != "any/claude-fable-5-1-reversed" {
++		t.Fatalf("pick %q, want the stale one kept (%v)", b, err)
++	}
++	// and a title, known by its prompt, still follows the session's pick:
++	// here a session the fake serves
++	if err := os.WriteFile(desktopPickedPath(), []byte("fake/claude-sonnet-5\n"), 0o600); err != nil {
++		t.Fatal(err)
++	}
++	desktopPicked.Lock()
++	desktopPicked.model, desktopPicked.from = "", ""
++	desktopPicked.Unlock()
++	f.got = nil
++	title := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(`{"model":"claude-sonnet-5","max_tokens":200,"stream":true,"system":"You write short session titles. Reply with only the tagged fields the prompt asks for.","messages":[{"role":"user","content":"hi"}]}`))
++	title.Header.Set("x-api-key", Token+"-claude-desktop")
++	title.Header.Set("User-Agent", electron)
++	rec = httptest.NewRecorder()
++	New().Handler().ServeHTTP(rec, title)
++	if rec.Code != 200 {
++		t.Fatalf("title: %d %.200s", rec.Code, rec.Body)
++	}
++	if got := modelOf(f.got); got != "claude-sonnet-5" {
++		t.Fatalf("title sent %q, want the session's pick", got)
++	}
++}
+diff --git a/internal/gateway/gateway.go b/internal/gateway/gateway.go
+index 7a309f9a..bcf4e948 100644
+--- a/internal/gateway/gateway.go
++++ b/internal/gateway/gateway.go
+@@ -1598,7 +1598,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
+ 	asked = call.Model
+ 	if agent == "claude-desktop" {
+ 		sub, _ := subagentOf(r.Header)
+-		asked = desktopTurn(asked, body, fromClaudeCode(r.Header), sub != "")
++		asked = desktopTurn(asked, body, sub != "")
+ 	} else if agent == ScienceID {
+ 		asked = scienceTurn(asked, body)
+ 	}
+-- 
+2.50.1 (Apple Git-155)
+

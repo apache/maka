@@ -1,0 +1,1 @@
+import{j as e,F as r,a as c}from"./index-CdTgm28c.js";const a="_cricle1_64hum_1",l="_cricle2_64hum_14",s={cricle1:a,cricle2:l},n=()=>e(r,{children:[c("div",{className:s.cricle1}),c("div",{className:s.cricle2})]});export{n as B};

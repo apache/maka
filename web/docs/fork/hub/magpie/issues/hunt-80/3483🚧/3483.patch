@@ -1,0 +1,42 @@
+From 5287712f2109a0f2d47e5a11a0dc911b28b9173d Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Sun, 25 Oct 2026 02:04:02 +0800
+Subject: [PATCH] gui tests: context-picks waits for a real provider row before
+ clicking it
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Under load the click landed while Providers' skeleton rows were still
+up, and .row.provider matched the five .pv-sk-row skeletons, so the
+click died on strict mode violation — chromium 1100 ja and 420 de once
+in a whole-suite run, alone right after; the same class as #2640.
+
+The locator now takes .row.provider:not(.pv-sk-row), the shape
+providers-last-known and agents-last-known already read rows by: the
+click waits while the skeletons are up and lands on the real row once
+the providers answer is in.
+
+Fixes #3483
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gui/tests/context-picks.test.cjs | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/internal/gui/tests/context-picks.test.cjs b/internal/gui/tests/context-picks.test.cjs
+index 7a9666bf..4704440f 100644
+--- a/internal/gui/tests/context-picks.test.cjs
++++ b/internal/gui/tests/context-picks.test.cjs
+@@ -53,7 +53,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
+         page.on("pageerror", (e) => errors.push(e.message));
+         await page.route("**/*", serve(lang, posts));
+         await page.goto("http://magpie.test/?view=providers");
+-        await page.locator(".row.provider").click();
++        await page.locator(".row.provider:not(.pv-sk-row)").click();
+         // the Context window is under Advanced
+         { const adv = page.locator(".editor details.advanced"); await adv.waitFor({ state: "attached" }); if (!(await adv.evaluate((d) => d.open))) await adv.locator(":scope > summary").click(); }
+ 
+-- 
+2.50.1 (Apple Git-155)
+

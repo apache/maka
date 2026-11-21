@@ -1,0 +1,40 @@
+{
+  "mcpServers": {
+    "sagemaker-unified-studio-mcp-troubleshooting": {
+      "type": "stdio",
+      "command": "uvx",
+      "args": [
+        "mcp-proxy-for-aws@latest",
+        "https://sagemaker-unified-studio-mcp.{AWS_REGION}.api.aws/spark-troubleshooting/mcp",
+        "--service",
+        "sagemaker-unified-studio-mcp",
+        "--profile",
+        "smus-mcp-profile",
+        "--region",
+        "{AWS_REGION}",
+        "--read-timeout",
+        "180"
+      ],
+      "timeout": 180000,
+      "disabled": false
+    },
+    "sagemaker-unified-studio-mcp-code-rec": {
+      "type": "stdio",
+      "command": "uvx",
+      "args": [
+        "mcp-proxy-for-aws@latest",
+        "https://sagemaker-unified-studio-mcp.{AWS_REGION}.api.aws/spark-code-recommendation/mcp",
+        "--service",
+        "sagemaker-unified-studio-mcp",
+        "--profile",
+        "smus-mcp-profile",
+        "--region",
+        "{AWS_REGION}",
+        "--read-timeout",
+        "180"
+      ],
+      "timeout": 180000,
+      "disabled": false
+    }
+  }
+}

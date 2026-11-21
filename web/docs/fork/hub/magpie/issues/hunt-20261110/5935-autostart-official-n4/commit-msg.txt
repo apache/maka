@@ -1,0 +1,55 @@
+gateway: an unreadable providers.json is not answered from the built-in subscriptions (Leelili-BY on GitHub, #5935)
+
+Leelili-BY: with magpie starting at boot on Windows, requests now and
+then went to the signed-in account's quota instead of the configured
+provider's.
+
+A read of providers.json that fails — another program holding the file
+for a moment at a start-up, an antivirus or a sync client after it —
+is taken as an empty catalog by every read that goes on without it
+(load): the user's providers drop out of routing, while the built-in
+subscriptions, whose sign-ins are read beside the file, stay. A model
+the user's provider serves is then answered from the built-ins alone:
+
+- a bare model's name goes to the agent's own subscription
+  (ownFirst): the groups and picks that would have redirected it are
+  unreadable with the file;
+- a bare name resolves to the first provider exposing it, or to the
+  one provider that lists it (resolveIn): the built-in subscription;
+- a bare name names a routing group (GroupFor), and a found group
+  among the entries left is one of built-ins alone; a found group's
+  own id resolves the same way.
+
+The subscription's quota is spent in the provider's place, without a
+word, and the catalog built in that state is kept across requests for
+up to a minute after the file reads again (keptOf, whose stamp sees
+the file unchanged), so the minutes after a boot can all go there.
+
+Routing now refuses to guess from what an unreadable file leaves: with
+FileError set, OwnRoute picks no subscription, resolveIn answers only
+ids naming a provider it can see, a found group's id resolves to
+nothing, and GroupFor names no group; the gateway answers 503 with the
+file's own error ("... can't be read ... fix it or move it aside"), so
+the agent asks again and is served once the file reads again — the
+waiting the issue asked for, with the reason said. A file that isn't
+there reads as before (first use, FileError nil); one that parses
+answers as before; ids naming a provider the built-in view has
+("claude/...") still go.
+
+Run:
+- go test -tags nogui -count=1 -run
+  'TestUnreadableProvidersFile|OwnFirst|OwnRoute|BareName|GroupFor|AutoStandIn|UnknownModel'
+  ./internal/gateway ./internal/provider: ok; with -race: ok.
+- go test -tags nogui -count=1 ./internal/gateway ./internal/provider:
+  ok (whole packages).
+
+Ablated each gate alone: without resolveIn's, the bare name was
+answered 200 by the subscription — the issue's shape; without
+ownRouteIn's, ownFirst picked the subscription; without the gateway's
+refusal, the same refusal read as a 404 "magpie knows no model".
+GroupFor's gate alone stays green in this fixture (one built-in serves
+the model, so no group forms among the built-ins): it closes the same
+guess where two built-ins serve one model (codex and copilot, gemini
+and antigravity).
+
+Generated-by: GLM-5.3-Flash (ZCode)

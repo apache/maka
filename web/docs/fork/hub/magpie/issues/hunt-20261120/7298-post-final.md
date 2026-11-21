@@ -1,0 +1,268 @@
+@yetone Carrying @p1n93r's fix for this one: their branch (https://github.com/p1n93r/magpie/tree/gemini-inline-data-url, commit `ebcd870ea`) is the right shape, and this comment is my verification of it plus a carried patch — their commit is on the branch below with its author kept.
+
+**Root cause** (following the reporter's own analysis): a client that builds its Gemini parts from an OpenAI-style image sends the data URL whole (`"data:image/jpeg;base64,/9j/…"`) as the part's data and its type as `image/jpg`, a name no registry gives JPEG. `stdBase64Body` (`internal/gateway/base64_input.go`) gates on `mayHoldOddBase64`, which standard-alphabet data URLs never trip, so the part reaches routing unwashed and every route sends something broken: a Gemini provider's `geminiInline` fails to decode the URL and swaps the image for a `left out` note (`internal/gateway/gemini_media.go`), a Chat one gets `"data:image/jpg;base64,data:image/jpeg;…"` (`internal/gateway/chat.go` `dataURL`), a Messages one a `media_type` and data Anthropic refuses (`internal/gateway/anthropic.go`). I reproduced all three signatures on `upstream/main` with the reporter's request shape before touching anything.
+
+**The fix**: carried as-is — `geminiStdBase64` takes a base64 data URL's head off an `inlineData` part's data (`dataURLBase64`), writes it as standard as before, and names an `image/jpg` type `image/jpeg`; `stdBase64Body`'s Gemini gate also passes when the body may hold such a part (`geminiMayHoldDataURL`), the other protocols' gate unchanged. It runs in `serve` before routing, so every route and plugin gets the cleaned body. Anything it doesn't recognize (a URL-encoded data URL, an unknown type name) goes as it came, for the vendor to judge, as before. I wrote an independent fix on the same seam while verifying and it converged to the same hunks — the product diff differs only in comment wording — which is why I'm carrying theirs rather than posting a rival patch. One commit of mine follows theirs: a test locking the gate's `image/jpg`-name arm (bare base64, name alone), which the data-URL test doesn't reach.
+
+<details><summary>patch: two commits (p1n93r's fix, then my lock test) — git am applies them as is; SHA-256 first 16: edf05cb20ed67f0b</summary>
+
+````tFrom 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: p1n93r <52951362+p1n93r@users.noreply.github.com>
+Date: Fri, 20 Nov 2026 13:01:54 +0800
+Subject: [PATCH 1/2] gateway: a Gemini inline image sent as a data URL, or
+ typed image/jpg, reaches every route
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+A client building Gemini parts from an OpenAI-style image sends the data
+URL whole as inlineData.data and image/jpg as its type. Read as base64 the
+URL failed: a Gemini provider got the image swapped for "[An image of type
+image/jpg was left out…]", a Chat one a doubled data: head, a Messages one
+a type and data Anthropic refuses. geminiStdBase64 takes the URL's head off
+and writes image/jpg as image/jpeg, in place, before routing.
+---
+ internal/gateway/base64_input.go      | 55 +++++++++++++++++++++---
+ internal/gateway/base64_input_test.go | 61 +++++++++++++++++++++++++++
+ 2 files changed, 110 insertions(+), 6 deletions(-)
+
+diff --git a/internal/gateway/base64_input.go b/internal/gateway/base64_input.go
+index 40c070fad..e467b44a5 100644
+--- a/internal/gateway/base64_input.go
++++ b/internal/gateway/base64_input.go
+@@ -99,12 +99,15 @@ var base64Class = func() (t [256]uint8) {
+ // Gemini inlineData part's whatever its type (a PDF, a recording), written
+ // as standard, padded base64; the body as it came when there is none.
+ func stdBase64Body(proto provider.Protocol, body []byte) []byte {
+-	if !mayHoldOddBase64(body) {
+-		return body
+-	}
+ 	if proto == provider.Gemini {
++		if !mayHoldOddBase64(body) && !geminiMayHoldDataURL(body) {
++			return body
++		}
+ 		return geminiStdBase64(body)
+ 	}
++	if !mayHoldOddBase64(body) {
++		return body
++	}
+ 	out, err := walkImages(proto, body, func(im imageAt) (json.RawMessage, error) {
+ 		rest, ok := strings.CutPrefix(im.Src, "data:")
+ 		if !ok {
+@@ -127,9 +130,40 @@ func stdBase64Body(proto provider.Protocol, body []byte) []byte {
+ 	return out
+ }
+ 
++// A Gemini inlineData part's data is bare base64, but clients that build
++// their parts from an OpenAI-style image send it as the data URL whole,
++// "data:image/jpeg;base64,/9j/…", and its type as image/jpg, a name no
++// registry gives JPEG. Read as base64 the URL failed: a Gemini provider's
++// request had the image swapped for "[An image of type image/jpg was left
++// out…]", a Chat one's had "data:image/jpg;base64,data:image/jpeg;…" and
++// a Messages one's a media_type and data Anthropic refuses. The URL's
++// head is taken off and image/jpg named image/jpeg, on every route.
++
++// geminiMayHoldDataURL is whether a Gemini body may hold an inlineData
++// part to be written again for its data's data URL head or its type's
++// image/jpg, read in place.
++func geminiMayHoldDataURL(body []byte) bool {
++	return bytes.Contains(body, []byte(`"data:`)) || bytes.Contains(body, []byte(`"image/jpg"`))
++}
++
++// dataURLBase64 is the base64 of a data URL ("data:image/png;base64,…"),
++// and true; s and false when s isn't a base64 data URL.
++func dataURLBase64(s string) (string, bool) {
++	rest, ok := strings.CutPrefix(s, "data:")
++	if !ok {
++		return s, false
++	}
++	head, b64, ok := strings.Cut(rest, ",")
++	if !ok || !strings.HasSuffix(strings.ToLower(head), ";base64") {
++		return s, false
++	}
++	return b64, true
++}
++
+ // geminiStdBase64 writes every inlineData part's data of a Gemini request
+ // (a turn's, a function response's, the system instruction's) as standard
+-// base64, in place: the rest of the body keeps its bytes.
++// base64, without a data URL's head, and its image/jpg type as image/jpeg,
++// in place: the rest of the body keeps its bytes.
+ func geminiStdBase64(body []byte) []byte {
+ 	if !gjson.ValidBytes(body) {
+ 		return body
+@@ -143,12 +177,21 @@ func geminiStdBase64(body []byte) []byte {
+ 	parts = func(list gjson.Result) {
+ 		list.ForEach(func(_, part gjson.Result) bool {
+ 			for _, k := range []string{"inlineData", "inline_data"} {
++				for _, mk := range []string{"mimeType", "mime_type"} {
++					if m := part.Get(k + "." + mk); m.Type == gjson.String && m.Index > 0 && strings.EqualFold(m.Str, "image/jpg") {
++						edits = append(edits, edit{m.Index, m.Index + len(m.Raw), m.Raw, `"image/jpeg"`})
++					}
++				}
+ 				d := part.Get(k + ".data")
+ 				if d.Type != gjson.String || d.Index <= 0 {
+ 					continue
+ 				}
+-				if std, ok := stdBase64(d.Str); ok {
+-					q, _ := json.Marshal(std)
++				data, headless := dataURLBase64(d.Str)
++				if std, ok := stdBase64(data); ok {
++					data, headless = std, true
++				}
++				if headless {
++					q, _ := json.Marshal(data)
+ 					edits = append(edits, edit{d.Index, d.Index + len(d.Raw), d.Raw, string(q)})
+ 				}
+ 			}
+diff --git a/internal/gateway/base64_input_test.go b/internal/gateway/base64_input_test.go
+index 965e7cb27..a02624e70 100644
+--- a/internal/gateway/base64_input_test.go
++++ b/internal/gateway/base64_input_test.go
+@@ -1,8 +1,11 @@
+ package gateway
+ 
+ import (
++	"bytes"
+ 	"encoding/base64"
+ 	"encoding/json"
++	"image"
++	"image/jpeg"
+ 	"net/http/httptest"
+ 	"path/filepath"
+ 	"strings"
+@@ -247,3 +250,61 @@ func TestURLSafeBase64ReachesUpstreamAsStandard(t *testing.T) {
+ 		})
+ 	}
+ }
++
++// A Gemini part built from an OpenAI-style image: snake_case, its type
++// image/jpg, its data the data URL whole (the request a client's health
++// check sent). Each route has the image's own bytes and a type its vendor
++// reads: before, a Gemini provider was sent "[An image of type image/jpg
++// was left out…]" in its place, a Chat one "data:image/jpg;base64,data:…"
++// and a Messages one image/jpg with the URL as its data.
++func TestGeminiDataURLImageReachesUpstream(t *testing.T) {
++	jpeg := base64.StdEncoding.EncodeToString(tinyJPEG(t))
++	ask := `{"contents":[{"role":"user","parts":[{"text":"what is it?"},{"inline_data":{"mime_type":"image/jpg","data":"data:image/jpeg;base64,` + jpeg + `"}}]}]}`
++	for _, c := range []struct {
++		up   provider.Protocol
++		want string // what the upstream must be sent of the image
++	}{
++		{provider.Gemini, `"inlineData":{"data":"` + jpeg + `","mimeType":"image/jpeg"}`},
++		{provider.Chat, `"url":"data:image/jpeg;base64,` + jpeg + `"`},
++		{provider.Anthropic, `"source":{"type":"base64","media_type":"image/jpeg","data":"` + jpeg + `"}`},
++	} {
++		t.Run(string(c.up), func(t *testing.T) {
++			b64Home(t)
++			f := &fake{t: t, reply: chatSSEReply("OK")}
++			path := "/v1beta/models/fake/m1:generateContent"
++			switch c.up {
++			case provider.Gemini:
++				f.reply = `data: {"candidates":[{"content":{"parts":[{"text":"OK"}],"role":"model"},"finishReason":"STOP"}]}` + "\n\n"
++				up := httptest.NewServer(f)
++				t.Cleanup(up.Close)
++				if err := provider.Save(provider.Provider{ID: "gemini-2", Name: "Gemini 2", Key: "AIza-test", Gemini: up.URL + "/v1beta", Models: []string{"gemini-3.8-flash"}}); err != nil {
++					t.Fatal(err)
++				}
++				path = "/v1beta/models/gemini-2/gemini-3.8-flash:generateContent"
++			case provider.Anthropic:
++				f.reply = anthropicReply()
++				setup(t, c.up, f)
++			default:
++				setup(t, c.up, f)
++			}
++			code, body := post(t, path, ask)
++			if code != 200 || f.calls == 0 {
++				t.Fatalf("%d %s", code, body)
++			}
++			sent := string(f.got)
++			if !strings.Contains(sent, c.want) || strings.Contains(sent, "left out") || strings.Contains(sent, "image/jpg") {
++				t.Fatalf("sent %.900s\nwant %s", sent, c.want)
++			}
++		})
++	}
++}
++
++// tinyJPEG is a 2x2 JPEG as image/jpeg writes it.
++func tinyJPEG(t *testing.T) []byte {
++	t.Helper()
++	var b bytes.Buffer
++	if err := jpeg.Encode(&b, image.NewRGBA(image.Rect(0, 0, 2, 2)), nil); err != nil {
++		t.Fatal(err)
++	}
++	return b.Bytes()
++}
+-- 
+2.50.1 (Apple Git-155)
+
+
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Fri, 20 Nov 2026 23:31:01 +0800
+Subject: [PATCH 2/2] test(gateway): the image/jpg name alone is written
+ image/jpeg, bytes as they came (#7298)
+
+A client can misname the type while sending bare base64, the data URL's
+head already off its data. geminiMayHoldDataURL trips on the name alone,
+and geminiStdBase64 writes the type image/jpeg while standard base64
+goes byte for byte as it came. The data-URL test doesn't reach this arm
+of the gate; the test locks it.
+
+Verification carried on p1n93r's fix (its author kept, previous commit);
+no product change here.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gateway/base64_input_test.go | 15 +++++++++++++++
+ 1 file changed, 15 insertions(+)
+
+diff --git a/internal/gateway/base64_input_test.go b/internal/gateway/base64_input_test.go
+index a02624e70..e402dd5a9 100644
+--- a/internal/gateway/base64_input_test.go
++++ b/internal/gateway/base64_input_test.go
+@@ -308,3 +308,18 @@ func tinyJPEG(t *testing.T) []byte {
+ 	}
+ 	return b.Bytes()
+ }
++
++// A client can misname the type while sending bare base64, the data URL's
++// head already off its data. The name alone trips geminiMayHoldDataURL, and
++// the type is written image/jpeg while the standard base64 goes byte for
++// byte as it came.
++func TestGeminiImageJpgNameAloneIsWrittenJPEG(t *testing.T) {
++	body := `{"contents":[{"role":"user","parts":[{"inline_data":{"mime_type":"image/jpg","data":"` + whitePNGStandard + `"}}]}]}`
++	out := stdBase64Body(provider.Gemini, []byte(body))
++	if got := gjson.GetBytes(out, "contents.0.parts.0.inline_data.mime_type").Str; got != "image/jpeg" {
++		t.Fatalf("the type is %q, want image/jpeg", got)
++	}
++	if got := gjson.GetBytes(out, "contents.0.parts.0.inline_data.data").Str; got != whitePNGStandard {
++		t.Fatalf("standard base64 was written again: %q", got)
++	}
++}
+-- 
+2.50.1 (Apple Git-155)
+
+````
+
+</details>
+
+**Branch with the commit**: [`fix/7298-gemini-inline-dataurl`](https://github.com/ggbdpq/magpie/tree/fix/7298-gemini-inline-dataurl) (head `d1f5c2cc5bb154bafb6d0f19e3c02c1bbcfe6741`), based on `upstream/main` (`c7d573e83740`); on a fresh checkout `git am` applies clean.
+
+| Check | Result |
+| --- | --- |
+| `TestGeminiDataURLImageReachesUpstream` (reporter's, new) | red before the fix on `upstream/main` `c7d573e83` — gemini: image swapped for `[An image of type image/jpg was left out…]`, chat: `"image_url":{"url":"data:image/jpg;base64,data:image/jpeg;base64,/9j/…"}`, anthropic: `"source":{"type":"base64","media_type":"image/jpg","data":"data:image/jpeg;base64,/9j/…"}` — pass after |
+| `TestGeminiImageJpgNameAloneIsWrittenJPEG` (new) | red before the fix, pass after |
+| `TestStdBase64`, `TestStdBase64Body`, `TestGeminiStdBase64SystemFirst`, `TestURLSafeBase64ReachesUpstreamAsStandard`, `TestWhitePNGFixtureIsURLSafe` | pass (#5697 family, no regression) |
+| `go test ./internal/gateway/ -tags nogui -timeout 45m -count=1` | 947 s, 73 failures, each failing the same way on `upstream/main` `c2e6e4aa8` (a Claude/TUI session, work-dir and tool-environment family plus three provider-environment ones, none touching the change), zero tip-only |
+| `go test -tags nogui ./...` (pinned Go caches) | 98 packages ok; 76 test failures across 6 packages, every one an environment face (real-tool Claude/TUI sessions, port races, the machine's proxy, real-install probing) failing the same way on `upstream/main`; the one name red on my branch alone passed 3/3 on a rerun (flake) |
+| targeted `-race` | pass |
+| `gofmt -l internal/gateway/base64_input.go internal/gateway/base64_input_test.go` | prints nothing |
+| `go vet ./...`; `GOOS=linux go vet -tags nogui ./...`; `GOOS=windows go vet ./...` | clean |
+| `go build`; `GOOS=linux go build -tags nogui`; `GOOS=windows go build` | clean |
+| Ablation | putting `upstream/main`'s `base64_input.go` back turns `TestGeminiDataURLImageReachesUpstream` (all three subtests) and `TestGeminiImageJpgNameAloneIsWrittenJPEG` red with the signatures above; restored, green |
+| `git am` gate | applies clean on fresh checkouts of `upstream/main` (`c2e6e4aa8`, re-checked on `63612e2b4` and `e17d4c0bc` as of posting); patch 1/2 keeps `p1n93r` as author, 2/2 is mine |
+
+**Not verified**: the reporter's Windows run and the eleven package-wide reds they list are theirs to confirm on that box; my runs are darwin arm64, and the reds both runs share are the pre-existing ones in the table above.
+
+**Attribution**: the fix is @p1n93r's — their commit `ebcd870ea` is carried with its author kept (`p1n93r <52951362+p1n93r@users.noreply.github.com>`); my commits only carry verification and the lock test, so please keep their authorship when applying.

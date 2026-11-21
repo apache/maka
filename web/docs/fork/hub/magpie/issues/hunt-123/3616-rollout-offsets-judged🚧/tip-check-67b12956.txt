@@ -1,0 +1,64 @@
+commit 67b12956acc0dd6e6b9dccd719a5e17c1d23eafe
+Author: yetone <yetoneful@gmail.com>
+Date:   Tue Oct 27 23:33:18 2026 +0800
+
+    sessions: a Codex rollout magpie rewrites keeps every line where it was
+    
+    xybio (Discord #feedback): the Codex app often wouldn't reopen recent
+    threads: "invalid paginated history lineage for <id>: cutoff byte offset
+    is past the source rollout". Codex 0.162 keeps a fork's place in its
+    parent by byte (session_meta.history_base.end_byte_offset, checked by
+    rollout_lineage.rs validate_cutoff_bounds), and its state database keeps
+    turns and how far it has read by byte too. PortCodexRollouts (since
+    4896fc3ba, 10-21) wrote magpie's compaction item as Codex's summary
+    message, and since 79c8667c9 dropped Claude's sealed reasoning: both
+    shorter lines, so a parent shrank and every fork made before the pass
+    named a byte past its end.
+    
+    Now every rewritten line keeps its length (fitLine): a shorter one is
+    padded with spaces after its JSON, which serde_json skips; a longer one
+    (a short summary under Codex's prefix) is left as it was in a paginated
+    rollout, and written as before in a legacy one, where Codex keeps no
+    place by byte. MoveCodexProvider, the sibling that rewrites session_meta,
+    pads the same way and refuses a longer provider id for a paginated
+    rollout. Forks already broken are repaired once per Codex home
+    (repairLineages): every line kept its count, and Codex names each line's
+    ordinal, so a fork's end_byte_offset is set again to where its parent's
+    line end_ordinal_exclusive-1 ends now, in a first line kept as long.
+    
+    Run, at a47596ea6 plus this change:
+    - go test -count=1 ./internal/sessions/ ./internal/codexsummary/: ok;
+      ./internal/agent/ -run 'Codex|Port|Move|Session': ok.
+    - gofmt -l internal/ clean; go vet ./internal/sessions/ ./internal/agent/,
+      GOOS=windows and GOOS=linux go vet ./internal/sessions/: clean.
+    - Real, Codex 0.162.1 in a sandbox CODEX_HOME against a local mock
+      Responses server that returns a magpie-claude1: reasoning item: codex
+      exec made a paginated thread (50877 bytes), app-server thread/fork
+      forked it, then a port pass. Old code: the parent went to 70570 bytes
+      from 82912 and thread/resume and thread/read of the fork gave the
+      reporter's exact error. New code: the parent kept 82912 bytes with no
+      magpie-claude1: left, the fork resumed and read, the parent resumed,
+      and codex exec resume ran a turn on the fork. A new-code pass over the
+      old-code home repaired the fork (82912 -> 70570 in its history_base),
+      after which it resumed and read.
+    
+    Broken by hand:
+    - fitLine returning the rewrite as it is:
+      TestPortCodexRolloutsKeepsBytePlaces red ("lines end at [... 11329],
+      were at [... 14362]", the fork's offset past the end),
+      TestPortCodexRolloutsLongerLine and TestMoveCodexProviderKeepsBytePlaces
+      red.
+    - repairLineages a no-op: TestPortCodexRolloutsRepairsForks red.
+    
+    Not tried: the Codex desktop app itself (the app-server it runs was);
+    a .zst parent against real Codex (the Go tests cover zst ports); Codex in
+    WSL, which the pass skips as before. The state database's turn offsets
+    for a parent already shrunk are left as they are; Codex 0.162.1 resumed
+    and forked such a parent in the sandbox.
+
+ docs/subsystems/gateway-routing.md       |   2 +-
+ internal/sessions/codex_portable.go      | 200 ++++++++++++++++++++++++++++++-
+ internal/sessions/codex_portable_test.go | 152 +++++++++++++++++++++++
+ internal/sessions/codex_provider.go      |   7 ++
+ internal/sessions/codex_provider_test.go |  39 ++++++
+ 5 files changed, 397 insertions(+), 3 deletions(-)

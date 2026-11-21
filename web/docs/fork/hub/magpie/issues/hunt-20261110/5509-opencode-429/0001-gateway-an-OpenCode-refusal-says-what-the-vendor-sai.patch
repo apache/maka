@@ -1,0 +1,232 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Sat, 7 Nov 2026 05:11:08 +0800
+Subject: [PATCH] gateway: an OpenCode refusal says what the vendor said, and
+ for how long
+
+lingengyuan (#5509): OpenCode Go 429'd Claude Code's /v1/messages with
+the 5-hour window at 3%, and what magpie said of each refusal was its
+status and the names of the headers sent - a short rate limit and a
+spent allowance read alike, and the routing log row keeps no body of a
+try that later succeeded. The refusal now says the wait the vendor
+names (Retry-After, or a ratelimit reset header, said as how long from
+now) and its own words - the body, or the message in it, clipped - with
+the body put back for what reads it next, bare 400s included
+(openCodeBareRefusal reads it after). The line is still one a refusal.
+
+A 429 of this shape is a moment's trouble and the walk already treats
+it so: passing() waits it out and the reporter's own turn went through
+on the fourth try. What was missing was the saying, not the doing.
+
+Run: TestOpenCodeRefusalSaysWhatTheVendorSaid, ...SaysABareBodyAndNoWait
+and ...SaysADatedWaitAsHowLong - the first two red on main (the new
+tests do not compile against the old signature), green here; go test
+-tags nogui ./internal/gateway full package green; gofmt, vet (darwin,
+GOOS=linux) and the build clean.
+---
+ internal/gateway/gateway.go                   |   2 +-
+ internal/gateway/opencode_refusal_log_test.go | 118 ++++++++++++++++++
+ internal/gateway/opencode_session.go          |  30 ++++-
+ 3 files changed, 145 insertions(+), 5 deletions(-)
+ create mode 100644 internal/gateway/opencode_refusal_log_test.go
+
+diff --git a/internal/gateway/gateway.go b/internal/gateway/gateway.go
+index 3bde346cc..4726812c9 100644
+--- a/internal/gateway/gateway.go
++++ b/internal/gateway/gateway.go
+@@ -6069,7 +6069,7 @@ func (s *Server) forwardOnce(ctx context.Context, p provider.Provider, to provid
+ 	// what comes back is counted as it is read, as what went is (#4456)
+ 	res = gotDown(ctx, res)
+ 	if err == nil && res.StatusCode >= 400 && provider.OpenCodeURL(req.URL.String()) {
+-		logOpenCodeRefusal(p, req, res.StatusCode)
++		logOpenCodeRefusal(p, req, res)
+ 	}
+ 	if err == nil && to == provider.Anthropic {
+ 		// a vendor that takes the key in x-api-key or Authorization
+diff --git a/internal/gateway/opencode_refusal_log_test.go b/internal/gateway/opencode_refusal_log_test.go
+new file mode 100644
+index 000000000..3298173ca
+--- /dev/null
++++ b/internal/gateway/opencode_refusal_log_test.go
+@@ -0,0 +1,118 @@
++package gateway
++
++import (
++	"bytes"
++	"io"
++	"log"
++	"net/http"
++	"net/http/httptest"
++	"regexp"
++	"strings"
++	"testing"
++	"time"
++
++	"github.com/yetone/magpie/internal/provider"
++)
++
++// What OpenCode's gateway answers a refusal with tells a short rate limit
++// from a spent allowance — its own words, and how long it names — and what
++// magpie said of a refusal was its status and the names of the headers
++// sent, so a 429 at a third of the quota could not be told one from the
++// other (#5509, lingengyuan). The refusal now says both, and puts the body
++// back for what reads it next.
++func TestOpenCodeRefusalSaysWhatTheVendorSaid(t *testing.T) {
++	p := provider.Provider{ID: "opencode-go"}
++	req := httptest.NewRequest("POST", "https://opencode.ai/zen/go/v1/messages", nil)
++	req.Header.Set("x-opencode-session", "ses_e5031234abcd")
++	body := `{"error":{"code":"rate_limited","message":"Too many requests. Please retry in a few seconds."}}`
++	res := &http.Response{
++		StatusCode: 429,
++		Status:     "429 Too Many Requests",
++		Header:     http.Header{"Retry-After": []string{"5"}},
++		Body:       io.NopCloser(strings.NewReader(body)),
++	}
++	var logs bytes.Buffer
++	old := log.Writer()
++	log.SetOutput(&logs)
++	t.Cleanup(func() { log.SetOutput(old) })
++
++	logOpenCodeRefusal(p, req, res)
++
++	said := logs.String()
++	for _, want := range []string{
++		"answered 429 to POST opencode.ai/zen/go/v1/messages",
++		"x-opencode-session ses_e503…",
++		"retry-after 5s",
++		"Too many requests. Please retry in a few seconds.",
++	} {
++		if !strings.Contains(said, want) {
++			t.Fatalf("the refusal does not say %q: %s", want, said)
++		}
++	}
++	rest, err := io.ReadAll(res.Body)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if string(rest) != body {
++		t.Fatalf("the body was not put back: %q", string(rest))
++	}
++}
++
++// A refusal that names no wait and answers with a body that is no error
++// object still says its own words, clipped, and no retry-after.
++func TestOpenCodeRefusalSaysABareBodyAndNoWait(t *testing.T) {
++	p := provider.Provider{ID: "opencode-go"}
++	req := httptest.NewRequest("POST", "https://opencode.ai/zen/go/v1/messages", nil)
++	res := &http.Response{
++		StatusCode: 429,
++		Status:     "429 Too Many Requests",
++		Header:     http.Header{},
++		Body:       io.NopCloser(strings.NewReader(`{"model":"deepseek-v4.1-flash"}`)),
++	}
++	var logs bytes.Buffer
++	old := log.Writer()
++	log.SetOutput(&logs)
++	t.Cleanup(func() { log.SetOutput(old) })
++
++	logOpenCodeRefusal(p, req, res)
++
++	said := logs.String()
++	if strings.Contains(said, "retry-after") {
++		t.Fatalf("no wait was named, yet the refusal said one: %s", said)
++	}
++	if !strings.Contains(said, `says "{\"model\":\"deepseek-v4.1-flash\"}"`) {
++		t.Fatalf("the refusal does not say the body it refused: %s", said)
++	}
++	rest, err := io.ReadAll(res.Body)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if len(rest) == 0 {
++		t.Fatal("the body was not put back")
++	}
++}
++
++// A wait written as an HTTP date is said as how long it is from now, not
++// as the date.
++func TestOpenCodeRefusalSaysADatedWaitAsHowLong(t *testing.T) {
++	p := provider.Provider{ID: "opencode-go"}
++	req := httptest.NewRequest("POST", "https://opencode.ai/zen/go/v1/messages", nil)
++	res := &http.Response{
++		StatusCode: 429,
++		Status:     "429 Too Many Requests",
++		Header:     http.Header{"Retry-After": []string{time.Now().UTC().Add(90 * time.Second).Format(http.TimeFormat)}},
++		Body:       io.NopCloser(strings.NewReader(`{"error":{"message":"slow down"}}`)),
++	}
++	var logs bytes.Buffer
++	old := log.Writer()
++	log.SetOutput(&logs)
++	t.Cleanup(func() { log.SetOutput(old) })
++
++	logOpenCodeRefusal(p, req, res)
++
++	// said as how long from now, rounded to seconds — not as the date, and
++	// with no sub-second tail
++	if dated := regexp.MustCompile(`retry-after 1m\d+s`); !dated.MatchString(logs.String()) {
++		t.Fatalf("the dated wait was not said as how long: %s", logs.String())
++	}
++}
+diff --git a/internal/gateway/opencode_session.go b/internal/gateway/opencode_session.go
+index 034f43417..28d41993d 100644
+--- a/internal/gateway/opencode_session.go
++++ b/internal/gateway/opencode_session.go
+@@ -3,11 +3,13 @@ package gateway
+ import (
+ 	"bytes"
+ 	"encoding/json"
++	"fmt"
+ 	"io"
+ 	"log"
+ 	"net/http"
+ 	"slices"
+ 	"strings"
++	"time"
+ 
+ 	"github.com/tidwall/gjson"
+ 	"github.com/yetone/magpie/internal/provider"
+@@ -44,8 +46,11 @@ func openCodeSeed(in http.Header, body []byte) string {
+ // first 8 characters. OpenCode answers a request without one 400
+ // "Request is missing x-opencode-session and cannot be routed
+ // efficiently" (luci on Discord), and this tells that apart from a
+-// session the user's own header pins every conversation to.
+-func logOpenCodeRefusal(p provider.Provider, req *http.Request, status int) {
++// session the user's own header pins every conversation to. A 429 whose
++// quota is hardly touched and a spent one are told apart by the wait the
++// vendor names and its own words, so both are said here, and the body is
++// put back for what reads it next (#5509, lingengyuan).
++func logOpenCodeRefusal(p provider.Provider, req *http.Request, res *http.Response) {
+ 	var names []string
+ 	for k := range req.Header {
+ 		names = append(names, strings.ToLower(k))
+@@ -61,8 +66,25 @@ func logOpenCodeRefusal(p provider.Provider, req *http.Request, status int) {
+ 			}
+ 		}
+ 	}
+-	log.Printf("opencode: %s answered %d to %s %s%s; x-opencode-session %s; headers sent: %s",
+-		p.ID, status, req.Method, req.URL.Host, req.URL.Path, session, strings.Join(names, ", "))
++	said := fmt.Sprintf("opencode: %s answered %d to %s %s%s; x-opencode-session %s",
++		p.ID, res.StatusCode, req.Method, req.URL.Host, req.URL.Path, session)
++	if d := retryAfter(res.Header, time.Now()).Round(time.Second); d > 0 {
++		said += "; retry-after " + d.String()
++	}
++	if res.Body != nil {
++		b, _ := io.ReadAll(io.LimitReader(res.Body, 64<<10))
++		// what wasn't read is read after what was: a body is never cut
++		res.Body = readCloser{io.MultiReader(bytes.NewReader(b), res.Body), res.Body}
++		words := vendorMessage(b)
++		if words == "" {
++			words = strings.TrimSpace(string(b))
++		}
++		if words = clipRunes(words, 200); words != "" {
++			said += fmt.Sprintf("; says %q", words)
++		}
++	}
++	said += "; headers sent: " + strings.Join(names, ", ")
++	log.Print(said)
+ }
+ 
+ // errorKeys are the fields any error an API answers carries, in its own
+-- 
+2.50.1 (Apple Git-155)
+

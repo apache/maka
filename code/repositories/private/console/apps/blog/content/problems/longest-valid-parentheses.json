@@ -1,0 +1,22 @@
+{
+  "id": "52",
+  "slug": "longest-valid-parentheses",
+  "title": "最长有效括号",
+  "difficulty": "hard",
+  "tags": ["栈", "字符串", "动态规划"],
+  "description": "给你一个只包含 `(` 和 `)` 的字符串,找出最长有效(格式正确且连续)括号子串的长度。\n\n**示例 1:**\n\n- 输入:`s = \"(()\"`\n- 输出:`2`\n\n**示例 2:**\n\n- 输入:`s = \")()())\"`\n- 输出:`4`(子串 `\"()()\"`)\n\n**示例 3:**\n\n- 输入:`s = \"\"`\n- 输出:`0`",
+  "solution": "## 思路\n\n**栈**:栈底始终保存「最后一个未被匹配的右括号下标」,其余为左括号下标。遇 `(` 入栈;遇 `)` 先弹栈,若栈空则把当前下标入栈(作为新分割点),否则用 `当前下标 - 栈顶` 更新最长。\n\n## 参考代码\n\n```js\nfunction longestValidParentheses(s) {\n  const stack = [-1];\n  let max = 0;\n  for (let i = 0; i < s.length; i++) {\n    if (s[i] === '(') stack.push(i);\n    else {\n      stack.pop();\n      if (stack.length === 0) stack.push(i);\n      else max = Math.max(max, i - stack[stack.length - 1]);\n    }\n  }\n  return max;\n}\n```\n\n## 复杂度\n\n- 时间:O(n)\n- 空间:O(n)",
+  "signature": {
+    "language": "javascript",
+    "entry": "longestValidParentheses",
+    "params": [{ "name": "s", "type": "string" }],
+    "returns": "number"
+  },
+  "testCases": [
+    { "sample": true, "input": ["(()"], "expected": 2 },
+    { "sample": true, "input": [")()())"], "expected": 4 },
+    { "sample": true, "input": [""], "expected": 0 },
+    { "sample": false, "input": ["()(()"], "expected": 2 },
+    { "sample": false, "input": ["()()"], "expected": 4 }
+  ]
+}

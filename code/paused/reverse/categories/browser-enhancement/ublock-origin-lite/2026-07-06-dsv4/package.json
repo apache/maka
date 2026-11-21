@@ -1,0 +1,15 @@
+{
+  "name": "ublock-origin-lite-dsv4",
+  "version": "2026.628.2035",
+  "description": "uBlock Origin Lite — Chrome 扩展逆向工程 (dsv4). MV3 内容拦截器, 使用 declarativeNetRequest 实现广告/跟踪/恶意网站过滤.",
+  "license": "UNLICENSED",
+  "private": true,
+  "scripts": {
+    "build": "tsc",
+    "check": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0",
+    "@types/chrome": "^0.0.268"
+  }
+}

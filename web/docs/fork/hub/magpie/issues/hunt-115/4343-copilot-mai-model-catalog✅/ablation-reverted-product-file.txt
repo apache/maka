@@ -1,0 +1,4 @@
+--- FAIL: TestCopilotSignAndModels (0.03s)
+FAIL
+FAIL	github.com/yetone/magpie/internal/provider	0.994s
+FAIL

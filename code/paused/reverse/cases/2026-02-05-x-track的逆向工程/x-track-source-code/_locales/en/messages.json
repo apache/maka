@@ -1,0 +1,10 @@
+{
+    "extName": {
+        "message": "X-Track: Twitter Footprint & Bookmarks",
+        "description": "Extension name"
+    },
+    "extDescription": {
+        "message": "Sync bookmarks, track reading history, and analyze interests with AI.",
+        "description": "Extension description"
+    }
+}

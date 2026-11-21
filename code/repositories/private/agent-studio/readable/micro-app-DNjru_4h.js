@@ -1,0 +1,14 @@
+import { r as e, s as t } from "./request-Cb6e7tFu.js";
+var n = (n) => t({ url: `${e}/microApp/create`, method: `post`, data: n }),
+  r = (n) => t({ url: `${e}/microApp/update`, method: `post`, data: n }),
+  i = (n) => t({ url: `${e}/microApp/findById`, method: `post`, data: n }),
+  a = (n) =>
+    t({
+      url: `${e}/microApp/autoGeneratePic`,
+      method: `post`,
+      data: n,
+      timeout: 12e4,
+    }),
+  o = (n) => t({ url: `${e}/appContext/config/get`, method: `get`, data: n }),
+  s = (n) => t({ url: `${e}/appContext/config/save`, method: `post`, data: n });
+export { s as a, i, a as n, r as o, o as r, n as t };

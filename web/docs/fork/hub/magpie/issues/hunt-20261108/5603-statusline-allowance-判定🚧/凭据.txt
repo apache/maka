@@ -1,0 +1,3 @@
+帖URL: https://github.com/yetone/magpie/issues/5603#issuecomment-6717795551
+take: 6717784772
+形态: 设计拍板型判定帖(无patch); 三决策点已列: 账户归属(token指纹比对)/上报通路(statusline POST)/写权限边界

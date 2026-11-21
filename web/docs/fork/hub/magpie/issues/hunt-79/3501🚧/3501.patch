@@ -1,0 +1,66 @@
+From 675bfbd23bef638428f4e0fa412f3f5d4788167a Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Sun, 25 Oct 2026 01:42:16 +0800
+Subject: [PATCH] gui tests: usage-focus-steady reads which Usage tab is on in
+ one go
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+What changed: the test asked a locator for the Usage tab's on opt and read
+its place among its siblings through the element handle. The page rebuilds
+the tab's opts on every re-read (renderUsageTab replaces them all), and a
+boot reads the Usage page twice — the page's open, then load()'s refresh
+while the first read is still under way — so an element that goes away
+between the locator's lookup and the read leaves the callback a detached
+node: its parentElement is null, and the read dies with "Cannot read
+properties of null (reading 'firstElementChild')" — red in Chromium on
+main d7ad3f2a3, every other time (#3501). The read moved into one
+evaluate in the page: query and read happen in the same turn, and the on
+opt is waited for (20 ms steps, 5 s at most, the locator's old wait)
+rather than read at once. The assertion stands: the test still clicks the
+first tab when the on one isn't it, and still fails if no on opt shows
+up. Test-only; no product code touched.
+
+Run: with the rebuild injected into the read's window (a 0 ms interval
+replacing the tab's opts for 300 ms, the losing end of the race) the old
+read fails 2 of 2 at the reported line and the new one passes 2 of 2;
+reverting just the read, same injection, fails 2 of 2 again. Without the
+injection 20 consecutive Chromium runs pass 40 of 40 and WebKit 4 of 4;
+the neighbors that walk the same tab strip (panel-usage, usage-refresh)
+pass 8 of 8.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gui/tests/usage-focus-steady.test.cjs | 15 ++++++++++++++-
+ 1 file changed, 14 insertions(+), 1 deletion(-)
+
+diff --git a/internal/gui/tests/usage-focus-steady.test.cjs b/internal/gui/tests/usage-focus-steady.test.cjs
+index fe1f553a..fc965849 100644
+--- a/internal/gui/tests/usage-focus-steady.test.cjs
++++ b/internal/gui/tests/usage-focus-steady.test.cjs
+@@ -130,7 +130,20 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
+       // the window, on the Overview
+       const calls = { state: 0, overview: 0, requests: 0 }, cur = { v: 0 };
+       const p = await open("http://magpie.test/?view=usage", { width: 1180, height: 760 }, calls, cur);
+-      if (await p.locator("#usageTab .opt.on").evaluate((b) => b !== b.parentElement.firstElementChild)) await p.locator(":is(#usageTab .opt, .nav-s):visible").first().click();
++      // which Usage tab is on, read in one go in the page: the tab's opts
++      // are rebuilt on every re-read of the page, and a locator's element
++      // can go away between the lookup and the read (null firstElementChild,
++      // issue #3501), so wait for one to be there rather than read at once
++      let offFirst = null;
++      for (let i = 0; i < 250 && offFirst === null; i++) {
++        offFirst = await p.evaluate(() => {
++          const b = document.querySelector("#usageTab .opt.on");
++          return b ? b !== b.parentElement.firstElementChild : null;
++        });
++        if (offFirst === null) await p.waitForTimeout(20);
++      }
++      assert.notEqual(offFirst, null, "the Usage tab's on tab showed up");
++      if (offFirst) await p.locator(":is(#usageTab .opt, .nav-s):visible").first().click();
+       const BAR = "#chart .bars .bar";
+       await p.locator(BAR).first().waitFor();
+       assert.equal(await p.locator(BAR).count(), DAYS);
+-- 
+2.50.1 (Apple Git-155)
+

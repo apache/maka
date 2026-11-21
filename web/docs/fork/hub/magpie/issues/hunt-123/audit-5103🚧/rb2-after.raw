@@ -1,0 +1,175 @@
+Credit to @Jirentian for the report (a hand-installed plugin's provider fell back to the generic glyph whatever icon name it declared).
+
+The patch itself, for `git am` (fixing my post above, which linked only the branch):
+
+<details>
+<summary>patch (git am applies it as is; SHA-256 first 16: <code>e72581f4aaa2a8e4</code>)</summary>
+
+```
+From 724edc87d779c470b8067bd5e45a50c4b72f1c05 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Wed, 4 Nov 2026 17:31:29 +0800
+Subject: [PATCH] provider: a plugin saying a built-in icon's name for its
+ provider had it shown
+
+A plugin provider's icon was the picture its auth hook or package.json
+gave (kept as a user's picture is) or the market's, and a bare name said
+in either place was refused by both readers: host.js's iconOf carried
+only an https URL or a data:image URI, and pluginOwnIcon asked iconURL
+of it, which takes a URL. The market's own bare names went through
+(MarketIcon), so a plugin the market lists showed its mark and one
+installed by hand showed the generic glyph, whatever it said (#5103).
+
+A bare name (no scheme, no path) now passes both readers as it is, as a
+market name does; the page draws it from its bundled icons, falling back
+to the generic glyph for one it has no file of. A picture is still
+checked, fetched and kept as before.
+
+Fixes #5103
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/plugin/host.js                    | 11 +++---
+ internal/plugin/plugin_icon_test.go        |  5 +++
+ internal/plugin/testdata/ownicon/index.js  |  8 +++++
+ internal/provider/plugin_icon.go           |  8 +++--
+ internal/provider/plugin_icon_name_test.go | 42 ++++++++++++++++++++++
+ 5 files changed, 68 insertions(+), 6 deletions(-)
+ create mode 100644 internal/provider/plugin_icon_name_test.go
+
+diff --git a/internal/plugin/host.js b/internal/plugin/host.js
+index 1f54881f2..b3338a03b 100644
+--- a/internal/plugin/host.js
++++ b/internal/plugin/host.js
+@@ -2185,13 +2185,16 @@ function methods(auth) {
+ 
+ // iconOf is the picture a plugin gives its provider, magpie's own field
+ // (OpenCode's providers have none): the auth hook's icon, else
+-// package.json's magpie.icon. An https URL or a data:image URI; magpie
+-// checks and keeps it (internal/provider), nothing is fetched here.
++// package.json's magpie.icon. An https URL, a data:image URI, or the name
++// of an icon magpie bundles, which the page draws from its own files
++// (#5103); magpie checks and keeps a picture (internal/provider), nothing
++// is fetched here.
+ function iconOf(a) {
+   const ok = (v) => {
+     const s = typeof v === "string" ? v.trim() : ""
+-    // a data URI of a picture over 1 MB, magpie's most, isn't carried
+-    return s.length <= 3 << 19 && /^(https:\/\/|data:image\/)/i.test(s) ? s : ""
++    // a data URI of a picture over 1 MB, magpie's most, isn't carried;
++    // a bare name has neither a scheme nor a path in it
++    return s.length <= 3 << 19 && (s !== "" && !/[:/]/.test(s) || /^(https:\/\/|data:image\/)/i.test(s)) ? s : ""
+   }
+   const own = ok(a.auth.icon)
+   if (own || !a.target) return own
+diff --git a/internal/plugin/plugin_icon_test.go b/internal/plugin/plugin_icon_test.go
+index 5cca7c7b1..29ad89827 100644
+--- a/internal/plugin/plugin_icon_test.go
++++ b/internal/plugin/plugin_icon_test.go
+@@ -36,6 +36,11 @@ func TestPluginOwnIconAndKeyHint(t *testing.T) {
+ 	if lime.Icon != "https://ownicon.example/icon.png" {
+ 		t.Errorf("lime's icon = %q, want package.json's", lime.Icon)
+ 	}
++	// a built-in icon's name said for a provider comes through as it is
++	// (#5103): the page draws it from its bundle
++	if by["orange"].Icon != "deepseek-color" {
++		t.Errorf("orange's icon = %q, want the built-in name as it is", by["orange"].Icon)
++	}
+ 	// how many requests each account takes at once (Discord, Lemon): the
+ 	// auth hook's, else package.json's when the hook's isn't a whole number
+ 	if lemon.MaxConcurrency != 3 || lime.MaxConcurrency != 5 {
+diff --git a/internal/plugin/testdata/ownicon/index.js b/internal/plugin/testdata/ownicon/index.js
+index 7f1a00985..9eb30ba62 100644
+--- a/internal/plugin/testdata/ownicon/index.js
++++ b/internal/plugin/testdata/ownicon/index.js
+@@ -25,3 +25,11 @@ export const Lime = async () => ({
+     methods: [{ type: "api", label: "API key", placeholder: 42 }],
+   },
+ })
++
++export const Orange = async () => ({
++  auth: {
++    provider: "orange",
++    icon: "deepseek-color", // a built-in icon's name, given as it is (#5103)
++    methods: [{ type: "api", label: "Orange API key" }],
++  },
++})
+diff --git a/internal/provider/plugin_icon.go b/internal/provider/plugin_icon.go
+index 2f8c4acce..6a79b301c 100644
+--- a/internal/provider/plugin_icon.go
++++ b/internal/provider/plugin_icon.go
+@@ -88,12 +88,16 @@ func keepPlugIcon(k, icon string) {
+ // pluginOwnIcon is the Icon value of the picture a plugin gave, "" while
+ // there is none to show. A data:image URI is kept at once; an https URL
+ // is fetched in the background, through FetchIcon's checks, and shows
+-// once it is in (a failure is tried again in an hour). Anything else is
+-// refused.
++// once it is in (a failure is tried again in an hour); a name without a
++// scheme or a path is a bundled icon's, given as it is as a market one
++// is (#5103). Anything else is refused.
+ func pluginOwnIcon(said string) string {
+ 	if said == "" {
+ 		return ""
+ 	}
++	if !MarketPicture(said) {
++		return said
++	}
+ 	sum := sha256.Sum256([]byte(said))
+ 	k := hex.EncodeToString(sum[:16])
+ 	plugIcons.Lock()
+diff --git a/internal/provider/plugin_icon_name_test.go b/internal/provider/plugin_icon_name_test.go
+new file mode 100644
+index 000000000..2393a9146
+--- /dev/null
++++ b/internal/provider/plugin_icon_name_test.go
+@@ -0,0 +1,42 @@
++package provider
++
++import (
++	"context"
++	"path/filepath"
++	"testing"
++
++	"github.com/yetone/magpie/internal/plugin"
++)
++
++// #5103 (Jirentian): a plugin's provider shown as the plain generic glyph
++// while every other provider wears its vendor's mark. A plugin that says a
++// built-in icon's name (magpie bundles their SVGs) for its provider had it
++// shown: the market already hands such a name on as it is, and the page
++// draws it from its bundle; the auth hook's and package.json's were the
++// only two places one reached. One that says none still falls back to the
++// market's, as before.
++func TestPluginSaidIconName(t *testing.T) {
++	home := t.TempDir()
++	t.Setenv("HOME", home)
++	t.Setenv("USERPROFILE", home)
++	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
++	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
++	t.Setenv("MAGPIE_PLUGIN_MARKET", "off")
++	was := fetchPluginIcon
++	t.Cleanup(func() { fetchPluginIcon = was })
++	fetchPluginIcon = func(context.Context, string) (string, error) { return "", nil } // never fetched in a test
++
++	// a built-in icon's name passes as it is, where a URL is left to what
++	// it was: the name is shown, the rest kept or fetched as pluginOwnIcon
++	// does. A name no bundle has goes to the page as a market name does,
++	// which draws its generic glyph for it.
++	if ic := PluginIcon(plugin.Provider{ID: "deepseek", Spec: "lemon-plugin", Icon: "deepseek-color"}); ic != "deepseek-color" {
++		t.Errorf("a built-in name = %q, want deepseek-color", ic)
++	}
++	if ic := PluginIcon(plugin.Provider{ID: "lemon", Spec: "lemon-plugin", Icon: "no-such-icon-name"}); ic != "no-such-icon-name" {
++		t.Errorf("a bare name = %q, want it given as a market name is", ic)
++	}
++	if ic := PluginIcon(plugin.Provider{ID: "lemon", Spec: "lemon-plugin", Icon: "https://lemon.example/icon.png"}); ic != "" {
++		t.Errorf("a picture said = %q, want it kept as a picture is (not yet fetched)", ic)
++	}
++}
+-- 
+2.50.1 (Apple Git-155)
+```
+
+</details>
+
+Not verified: the Playwright GUI pass (browser deps not installed here — the change doesn't touch app.js; the data layer is locked by the Go tests), and visual rendering in the real app.
+

@@ -1,0 +1,117 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zxiong04 <11025160+ReneXiong@users.noreply.github.com>
+Date: Mon, 9 Nov 2026 04:23:17 -0700
+Subject: [PATCH 2/2] provider: a Google account's saved plan follows its quota
+ reading, so `magpie accounts`, the Accounts list and Routing's rows show it
+ too (#5621)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+On top of 0xTotoroX's fix for #5621, which has the quota reading name the
+plan Code Assist reports now. That reaches `magpie quota` and the usage
+cards, but `magpie accounts` (accountRows), the GUI's account list
+(a.plan) and Routing's account rows and key/group account pickers
+(Account.Plan, built from Login.Plan by googleProvider) all show the plan
+saved at sign-in or import, so they kept the old name. A real case on
+v0.1.3377: an Antigravity account imported on 10-20 as Google AI Pro,
+whose loadCodeAssist now gives paid tier free-tier (Antigravity Starter
+Quota) and whose fetchAvailableModels marks gemini-4-argon disabled, is
+still listed as "· Google AI Pro" by `magpie accounts`.
+
+googleLoginQuota now writes a plan that differs from the saved one to the
+saved account (keepGooglePlan, as keepPluginPlan does for a plugin's
+account). The quota keeps the saved plan when the reading fails or names
+none, so those cases write nothing. A Gemini CLI login magpie keeps no
+account of is left alone (editSideLogin finds none).
+
+Verified: TestGoogleQuotaPlanFollowsCodeAssist now also checks
+Logins(agent) after the reading. With the write-back gated off, it fails
+the upgraded-to-Pro, upgraded-to-Ultra, downgraded and no-saved-plan
+cases for both antigravity and gemini ("saved account after the
+reading: … Plan:Antigravity Starter Quota …, want plan \"Google AI
+Pro\""); no-plan-returned and failed-load pass either way, as they
+should. On ce6ae593c with 0xTotoroX's commit cherry-picked first (clean),
+go1.26.8, temp HOME with Go's caches pinned, on linux/amd64 (Ubuntu
+24.04 VM), linux/arm64 (Debian container) and darwin/arm64: gofmt -l and
+git diff --check are clean; go vet -tags nogui ./... and go build -tags
+nogui ./... pass; go test -tags nogui ./... passes internal/provider,
+internal/gateway and internal/gui on darwin. Every other failure in the
+full runs also fails alone on clean ce6ae593c in the same environment
+(running as root or in a container; among them internal/agent's TestAside*,
+internal/proc's process-tree tests, internal/cli's TestKeyNote and
+TestShareLines, internal/gui's TestBootSaysWhereItsGatewayListens,
+internal/gateway's TestPrivateDialerRefusesPrivateAddresses; on this
+Mac, internal/plugin's TestPluginSOCKSProxy). GUI suites not run: no GUI
+code changed.
+---
+ docs/subsystems/providers-accounts.md       |  2 +-
+ internal/provider/google.go                 | 17 ++++++++++++++++-
+ internal/provider/google_quota_plan_test.go |  5 +++++
+ 3 files changed, 22 insertions(+), 2 deletions(-)
+
+diff --git a/docs/subsystems/providers-accounts.md b/docs/subsystems/providers-accounts.md
+index 372d35632..77da35cc4 100644
+--- a/docs/subsystems/providers-accounts.md
++++ b/docs/subsystems/providers-accounts.md
+@@ -400,7 +400,7 @@ and `TestHistoricalWindowHoldsUsesEachWindowsOwnReading`.
+ - The scheduled warm-up warms each window a Claude account is expected to have (`withExpected`), the 5-hour and the week, also one its reading left out: Anthropic leaves a window out until the request that starts it. A window left out while a shorter one is running is one the account doesn't have, since any use starts every window it has (a Claude Enterprise account with only the 5-hour, koohoko5924 on Discord, whose week was warmed over and over and its state read Idle): the warmer marks it `Absent` in `codex-warmup.json` and sends it nothing, and `usageRead` doesn't count it as due (`windowAbsent`, `shorterRunning` in [`codex_warmup.go`](../../internal/provider/codex_warmup.go)). A week once seen running, or left out of a reading that is only part of the plan's, is still warmed; one never read before is not. `TestClaudeWarmLeavesAWeekTheAccountHasnt`, `TestClaudeWarmStartsAWeekThatReset`, `TestUsageReadLeavesAWeekTheAccountHasnt`.
+ - A Copilot subscription offers the union of its On accounts' models too (`copilotPoolModels` in [`copilot_pool.go`](../../internal/provider/copilot_pool.go), merged by `poolModels` as Codex's ChatGPT accounts are): each GitHub account's plan lists its own (`/models`), kept under `accountModels` for `Account.Lists`. The first account's list is fetched as before (`FetchNew`, `KeepAccountsListed`, Refresh); each fetch of it also asks the other accounts on: one with no list at once, of the rest the one asked longest ago once its list is a day old (`copilotFetchSaved`). A model Copilot refused an account (`copilotRefuses`) goes to the others that list it, and stays in the provider's list while another account on lists it (`copilotOthersList`). Only a failed ask is remembered (`copilotSavedAsked`), so a list gone is asked for again at once. applemacssma on X; `TestCopilotAccountsWithOtherModels`, `TestCopilotRefusedModelGoesToTheAccountServedIt`.
+ - An Antigravity subscription offers the union of its On accounts' models (`antigravityPoolModels` in [`antigravity_pool.go`](../../internal/provider/antigravity_pool.go)), each account's own list kept beside it (`accountModels`, read by `Account.Lists` for routing). The lists are fetched at the first listing, a probe, a sync or a Refetch, and also at each account's quota reading, which asks `fetchAvailableModels` anyway: a reading whose models differ from the account's saved list saves it and merges the pooled list again from every On account's own (`noteAntigravityList`), so a model Google gives one account of several later (01huadalang on Discord: Gemini 4) is offered, routed to and given its bar without that account made preferred or probed. A switched-off account's reading changes nothing. `TestAntigravityQuotaReadingListsNewModels`. Each `fetchAvailableModels` names the account's paid and current tier first (`entitlement.userTier`, `askTiers`), then none; a tier Google answers 400 (a Google AI Pro account's g1-pro-tier, #1553) is left out of that account's lists and quota readings for `tierRefusedFor` (a day), and the refused request is no row of the request log.
+-- A Google account's successful quota reading names the latest non-empty plan in Code Assist's project data (`googleAccount.quota` in [`google.go`](../../internal/provider/google.go)), whose paid tier takes precedence over its current tier. The plan saved at sign-in is only a fallback when that reading cannot determine a plan: an account saved as Antigravity Starter Quota and now reported as Google AI Pro shows Pro, and a downgrade is reflected too. Antigravity's existing hourly tier refresh still applies; a failed refresh keeps the last known tier and plan. `TestGoogleQuotaPlanFollowsCodeAssist`, `TestAntigravityTierAskedAgainAfterUpgrade`.
++- A Google account's successful quota reading names the latest non-empty plan in Code Assist's project data (`googleAccount.quota` in [`google.go`](../../internal/provider/google.go)), whose paid tier takes precedence over its current tier. The plan saved at sign-in is only a fallback when that reading cannot determine a plan: an account saved as Antigravity Starter Quota and now reported as Google AI Pro shows Pro, and a downgrade is reflected too. A plan that differs from the saved one is written to the saved account (`keepGooglePlan`, as `keepPluginPlan` does for a plugin's), since `magpie accounts`, the Accounts list and Routing's account rows show the saved plan, not the quota's. Antigravity's existing hourly tier refresh still applies; a failed refresh keeps the last known tier and plan. `TestGoogleQuotaPlanFollowsCodeAssist`, `TestAntigravityTierAskedAgainAfterUpgrade`.
+ - A provider removed or switched off takes its models out of the catalog. [Agent wiring](agent-wiring.md)'s `Reseat` moves agents off them.
+ - A preset marked `NoList` uses its preset model list instead of requesting `/models`, and ignores previously fetched lists, including their protocol and key restrictions, unless the user sets `ModelsURL` or chooses a region marked `Lists`. Each region can carry a different list. Volcengine Ark's Coding Plan and Agent Plan use separate preset lists. Both plans include their embedding model separately from agents' chat-model lists; Agent Plan additionally exposes its image- and video-generation models to Settings → Models → Images; Ark itself refuses video generation on Small and Medium Agent Plans, which include it only in the Large and Max tiers. Models magpie does not yet serve (Agent Plan's speech models) are not advertised. Ark's pay-as-you-go region still fetches its own list. Coding's `/api/coding/v3/models` returns a general Ark catalog instead of the plan's model ids, while Agent's `/api/plan/v3/models` returns 404. A preset with no regions may name its embedding and rerank models itself (`PresetDef.Embeddings`, `Rerankers`): Voyage AI (`voyage`, heatonz on Discord) has no `/models` and serves only those, so they are its whole list, each marked with what it serves (`catalog.Model.Serves`), kept out of chat lists, and found on `/v1/embeddings` or `/v1/rerank` alone by `PlanRetrieval(kind)` (`TestVoyagePreset`, `TestVoyageModelsStayOnTheirRoutes`). [`presets.go`](../../internal/provider/presets.go) defines these choices; `List`, `fetch`, `live`, `planModels`, `PlanEmbeddings`, `PlanRerankers`, `PlanRetrieval`, `PlanDrawers` and `PlanVideos` in [`models.go`](../../internal/provider/models.go) apply them when adding, refreshing and reading cached models. `TestVolcengineModelLists` checks that the plans make no list requests, ignore old cached lists and return their own preset models; pay-as-you-go and an explicit list URL still make requests.
+ - A key's provider can have its model list off (`Provider.ListOff`, `ListsOff()`; axelburks on Discord: Ark's pay-as-you-go list names models that can't be asked for, each is asked by an endpoint id the user made). Nothing asks its vendor for a list: `Fetch`, `Refetch`, `List`, `RefreshLists`, a test, a new key's prefill and a resting key's probe (`ListAsks`) skip it, and `Fetch`/`List` return `ErrListOff`. A list fetched before and models.dev's are not read, so only the ids the user added are served. A signed-in account and a plugin list their models as their sign-in does, so the switch is a key provider's alone (`takesListOff` in `/api/providers`). The editor shows it as Fetch the model list, ticked by default; unticked, Fetch models and Forget go. A save that doesn't name `listOff` keeps it. The CLI takes `list=off|on`. Tests: `TestListOffAsksNoListAndServesTheIDsAdded`, `TestProviderSaveListOff`, `provider-list-off.test.cjs`.
+diff --git a/internal/provider/google.go b/internal/provider/google.go
+index d290cbee4..430613159 100644
+--- a/internal/provider/google.go
++++ b/internal/provider/google.go
+@@ -1751,12 +1751,27 @@ func googleAlsoOn(agent string) []Provider {
+ func googleLoginQuota(ctx context.Context, l Login) SubscriptionQuota {
+ 	for _, g := range googleLogins(l.Agent) {
+ 		if strings.EqualFold(g.User, l.User) {
+-			return g.acct.quota(ctx, l.Plan)
++			q := g.acct.quota(ctx, l.Plan)
++			if q.Plan != l.Plan {
++				keepGooglePlan(l.Agent, l.User, q.Plan)
++			}
++			return q
+ 		}
+ 	}
+ 	return SubscriptionQuota{Provider: l.Agent, Plan: l.Plan, Windows: []QuotaWindow{}, Error: "not signed in"}
+ }
+ 
++// keepGooglePlan keeps the plan a Google account's allowance named on its
++// saved account, for the accounts list, the account's card and Routing's
++// rows, which show the saved plan, as keepPluginPlan does for a plugin's.
++// A Gemini CLI login magpie keeps no account of is left as it is.
++func keepGooglePlan(agent, user, plan string) {
++	_ = editSideLogin(agent, user, func(ls []savedLogin, i int) ([]savedLogin, error) {
++		ls[i].Plan = plan
++		return ls, nil
++	})
++}
++
+ // ---- signing in -----------------------------------------------------------------
+ 
+ // startGoogleSignIn builds the Google sign-in page's link for the app.
+diff --git a/internal/provider/google_quota_plan_test.go b/internal/provider/google_quota_plan_test.go
+index 3d580be51..7d96616ab 100644
+--- a/internal/provider/google_quota_plan_test.go
++++ b/internal/provider/google_quota_plan_test.go
+@@ -47,6 +47,11 @@ func TestGoogleQuotaPlanFollowsCodeAssist(t *testing.T) {
+ 				if q.Plan != c.want {
+ 					t.Errorf("plan %q, want %q (saved %q)", q.Plan, c.want, c.saved)
+ 				}
++				// the accounts list, the card and Routing's rows read the
++				// saved plan, not the quota's
++				if l := Logins(agent); len(l) != 1 || l[0].Plan != c.want {
++					t.Errorf("saved account after the reading: %+v, want plan %q", l, c.want)
++				}
+ 				if !c.failed && (len(q.Windows) != 1 || q.Windows[0].Model != "gemini-2.5-flash" || q.Windows[0].Used != 50) {
+ 					t.Errorf("windows %+v, want gemini-2.5-flash at 50%% used", q.Windows)
+ 				}
+-- 
+2.50.1 (Apple Git-155)
+

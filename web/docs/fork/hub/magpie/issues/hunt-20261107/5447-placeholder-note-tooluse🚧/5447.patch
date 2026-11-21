@@ -1,0 +1,99 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Sat, 7 Nov 2026 23:54:18 +0800
+Subject: [PATCH] gateway: masking's note doesn't come between a tool_use and
+ its tool_result (#5447)
+
+The note went to the end of the earliest message holding a placeholder,
+whatever that message ends with. A message that ends with a tool_use got
+the note after the call, where its tool_result must come immediately
+after, and a strict Anthropic-protocol upstream (DeepSeek) turns the
+request away: "tool_use ids were found without tool_result blocks
+immediately after" (30 of 30 masked requests, aabbccgg). The note goes
+before the message's first tool_use instead; a message that doesn't end
+with a tool_use is told as it was.
+---
+ internal/gateway/placeholder_note.go      | 38 ++++++++++++++++++++++-
+ internal/gateway/placeholder_note_test.go |  3 ++
+ 2 files changed, 40 insertions(+), 1 deletion(-)
+
+diff --git a/internal/gateway/placeholder_note.go b/internal/gateway/placeholder_note.go
+index 862ffd5e4..a44c4a530 100644
+--- a/internal/gateway/placeholder_note.go
++++ b/internal/gateway/placeholder_note.go
+@@ -62,7 +62,11 @@ func notesPlaceholders(p provider.Provider, from provider.Protocol, body []byte)
+ // the end of Chat's first system (or developer) message, a part after
+ // Gemini's systemInstruction's. Otherwise the earliest message with one
+ // says it, after what it has: a text block or part of its own, or a line
+-// at the end of a message that is one string. Responses' instructions are
++// at the end of a message that is one string — or, when the message ends
++// with a tool_use, before its first tool_use: the call's tool_result must
++// come immediately after, and a note between the two has strict
++// Anthropic-protocol upstreams (DeepSeek) turn the request away (#5447).
++// Responses' instructions are
+ // never changed (Codex's base_instructions): a developer message of its
+ // own goes first in its input, or after the earliest item with one and
+ // the tool outputs beside it. On a later turn the same message is the
+@@ -125,6 +129,9 @@ func withNoteAnthropic(body []byte) []byte {
+ 		blocks := noteJSON([]any{map[string]any{"type": "text", "text": c.String()}, map[string]any{"type": "text", "text": noteBlock}})
+ 		return spliced(body, c, blocks)
+ 	case c.IsArray():
++		if b, ok := beforeToolUse(c); ok {
++			return inserted(body, b, textPart("text"))
++		}
+ 		return appended(body, c, textPart("text"))
+ 	}
+ 	return body
+@@ -282,6 +289,35 @@ func prepended(body []byte, r gjson.Result, item []byte) []byte {
+ 	return insertAt(body, r.Index+1, string(item)+sep)
+ }
+ 
++// inserted is body with item put in the array just before its element r.
++func inserted(body []byte, r gjson.Result, item []byte) []byte {
++	if !at(body, r) {
++		return body
++	}
++	return insertAt(body, r.Index, string(item)+",")
++}
++
++// beforeToolUse reports r's first tool_use block when the last block of
++// the message content r is a tool_use too: the matching tool_result must
++// come immediately after the tool_use, in the next message's first
++// blocks, so a note appended at the end would sit between the two and a
++// strict Anthropic-protocol upstream (DeepSeek) turns the request away
++// with "tool_use ids were found without tool_result blocks immediately
++// after" (#5447). The note goes before the call instead. A message whose
++// last block is anything else is told by appended, as it was.
++func beforeToolUse(r gjson.Result) (gjson.Result, bool) {
++	blocks := r.Array()
++	if len(blocks) == 0 || blocks[len(blocks)-1].Get("type").String() != "tool_use" {
++		return gjson.Result{}, false
++	}
++	for _, b := range blocks {
++		if b.Get("type").String() == "tool_use" {
++			return b, true
++		}
++	}
++	return gjson.Result{}, false
++}
++
+ // withTopField is the object body with a field it doesn't have added
+ // first.
+ func withTopField(body []byte, key string, v []byte) []byte {
+diff --git a/internal/gateway/placeholder_note_test.go b/internal/gateway/placeholder_note_test.go
+index d72eaacd8..954f56567 100644
+--- a/internal/gateway/placeholder_note_test.go
++++ b/internal/gateway/placeholder_note_test.go
+@@ -58,6 +58,9 @@ func TestPlaceholderNotePlaces(t *testing.T) {
+ 		{"anthropic tools", provider.Anthropic, `{"model":"m","tools":[{"name":"t","description":"` + ph + `"}],"messages":[{"role":"user","content":"x"}]}`, "system", "messages"},
+ 		{"anthropic message", provider.Anthropic, `{"model":"m","system":"S","messages":[{"role":"user","content":"hi"},{"role":"assistant","content":"ok"},{"role":"user","content":"mail ` + ph + `"}]}`, "messages.2.content.1.text", "messages.1"},
+ 		{"anthropic tool result", provider.Anthropic, `{"model":"m","system":"S","messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"` + ph + `"}]}]}`, "messages.0.content.1.text", "system"},
++		{"anthropic tool use", provider.Anthropic, `{"model":"m","system":"S","messages":[{"role":"user","content":"run"},{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"f","input":{"q":"` + ph + `"}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"out"}]}]}`, "messages.1.content.0.text", "messages.2"},
++		{"anthropic text then tool use", provider.Anthropic, `{"model":"m","system":"S","messages":[{"role":"assistant","content":[{"type":"text","text":"searching ` + ph + `"},{"type":"tool_use","id":"t1","name":"f","input":{}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"out"}]}]}`, "messages.0.content.1.text", "messages.1"},
++		{"anthropic parallel tool uses", provider.Anthropic, `{"model":"m","system":"S","messages":[{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"f","input":{"q":"` + ph + `"}},{"type":"tool_use","id":"t2","name":"f","input":{}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"out"},{"type":"tool_result","tool_use_id":"t2","content":"out"}]}]}`, "messages.0.content.0.text", "messages.1"},
+ 		{"chat system", provider.Chat, `{"model":"m","messages":[{"role":"user","content":"u"},{"role":"system","content":"S ` + ph + `"}]}`, "messages.1.content", "messages.0"},
+ 		{"chat developer parts", provider.Chat, `{"model":"m","messages":[{"role":"developer","content":[{"type":"text","text":"S ` + ph + `"}]},{"role":"user","content":"u"}]}`, "messages.0.content.1.text", "messages.1"},
+ 		{"chat tools no system", provider.Chat, `{"model":"m","tools":[{"type":"function","function":{"name":"f","description":"` + ph + `"}}],"messages":[{"role":"user","content":"u"}]}`, "messages.0.content", "tools"},
+-- 
+2.50.1 (Apple Git-155)
+

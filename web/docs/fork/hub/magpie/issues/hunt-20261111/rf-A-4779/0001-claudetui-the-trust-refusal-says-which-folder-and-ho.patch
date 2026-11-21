@@ -1,0 +1,100 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Wed, 4 Nov 2026 05:54:49 +0800
+Subject: [PATCH] claudetui: the trust refusal says which folder, and how to
+ trust it (#4779)
+
+WillSuo-Github: Codex through the bridge, Claude Code ended before it
+answered magpie's initialize, asking whether to trust a folder the
+message never named, and the turn came back a 502 a client asks again
+and again. The 502 is gone since startTrusted (59fdab0af), the turn
+running in magpie's own folder; the reason, though, in every log line
+of the failure and in the rare run whose retry never comes (the
+stderr's read missing its 2s window, the caller gone), still said "the
+folder" only, though ready knew which (os.Getwd, #4830), and said
+nothing the user could do.
+
+The refusal now names the folder and the way out: run Claude Code once
+in it as yourself and choose to trust it. What the bridge reads to
+retry the turn (Untrusted, saidOnEnd) and what the Usage card reads
+(claude-tui's first line) are unchanged, both matching the prefix.
+
+Run (this tree, darwin/arm64):
+- go test ./internal/claudetui is ok (61s), TestShimNamesTheUntrustedFolder
+  new; at the parent's tui.go it is red, the stderr then naming no
+  folder and saying nothing to do.
+- go test -race -run 'TestShim|TestRun' ./internal/claudetui is ok.
+- go test -tags nogui -timeout 25m ./internal/gateway/... is ok (632s).
+- go vet ./internal/claudetui ./internal/gateway is clean, gofmt -l is
+  clean, go build ./... is ok (the gui cgo and ld warnings are the
+  parent's).
+
+Fixes #4779
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/claudetui/tui.go      |  8 +++++---
+ internal/claudetui/tui_test.go | 21 +++++++++++++++++++++
+ 2 files changed, 26 insertions(+), 3 deletions(-)
+
+diff --git a/internal/claudetui/tui.go b/internal/claudetui/tui.go
+index 93b038916..f5986b21f 100644
+--- a/internal/claudetui/tui.go
++++ b/internal/claudetui/tui.go
+@@ -503,8 +503,6 @@ func (s *shim) late(d time.Duration) string {
+ 	return fmt.Sprintf("Claude Code %s in the %s its caller waits for it: %s", doing, d.Round(100*time.Millisecond), s.lastScreen())
+ }
+ 
+-var errUntrusted = errors.New(Untrusted + ", which only its user answers")
+-
+ // signIn is what Claude Code's interactive mode shows where it is not
+ // signed in, as -p may be (CLAUDE_CODE_OAUTH_TOKEN, a container whose
+ // ~/.claude.json has no onboarding done): nothing the helper may answer.
+@@ -590,7 +588,11 @@ func (s *shim) ready() error {
+ 		s.doing.Store(doing)
+ 		switch {
+ 		case strings.Contains(p, "trust this folder") && os.Getenv(TrustEnv) != "1":
+-			return errUntrusted
++			// the folder named, or the user doesn't know what to trust,
++			// and the failure's log line says "the folder" only (#4779,
++			// WillSuo-Github). The prefix (Untrusted) is what the bridge
++			// reads to retry the turn in a folder of magpie's (startTrusted)
++			return fmt.Errorf("%s (%s), which only its user answers: run Claude Code once in it as yourself and choose to trust it", Untrusted, folder)
+ 		case strings.Contains(words, "Bypass Permissions mode") && os.Getenv(BypassEnv) != "1":
+ 			return fmt.Errorf("Claude Code's interactive mode runs in Bypass Permissions mode and asks to accept it, which only its user answers: %s", s.lastScreen())
+ 		case signIn.MatchString(p):
+diff --git a/internal/claudetui/tui_test.go b/internal/claudetui/tui_test.go
+index 650b35de5..7cc180775 100644
+--- a/internal/claudetui/tui_test.go
++++ b/internal/claudetui/tui_test.go
+@@ -884,6 +884,27 @@ func TestShimNeverPrints(t *testing.T) {
+ 	}
+ }
+ 
++// A folder Claude Code asks whether to trust is one only its user
++// answers for, and the helper ends saying so: it said "the folder"
++// without saying which, so the user didn't know what to trust, and the
++// failure's log line named no directory either (#4779, WillSuo-Github).
++// The turn itself is answered in magpie's own folder since (startTrusted
++// in the gateway), so this message is for the logs, and for the rare run
++// whose retry never comes.
++func TestShimNamesTheUntrustedFolder(t *testing.T) {
++	wd, _ := os.Getwd()
++	out, stderr, err := runEnds(t, t.TempDir(), []string{"FAKE_TRUST=1"})
++	if err == nil || strings.Contains(out, "print mode") {
++		t.Fatalf("ended %v, wrote %q", err, out)
++	}
++	if !strings.Contains(stderr, "claude-tui: Claude Code asks whether to trust the folder (") || !strings.Contains(stderr, wd) || !strings.Contains(stderr, "run Claude Code once in it") {
++		t.Fatalf("stderr %q", stderr)
++	}
++	if strings.Contains(stderr, "-p") {
++		t.Fatalf("stderr %q", stderr)
++	}
++}
++
+ // The first message waits for Claude Code to have listed the tools of
+ // magpie's tool server, which it connects as its prompt shows: sent at
+ // the prompt, it was answered without the agent's tools (MinhuWang on X,
+-- 
+2.50.1 (Apple Git-155)
+

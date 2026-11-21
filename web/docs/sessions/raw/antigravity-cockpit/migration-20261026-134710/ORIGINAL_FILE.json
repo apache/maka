@@ -1,0 +1,161 @@
+{
+  "state": "source_present",
+  "groups": [
+    {
+      "name": "platform-packages",
+      "source": "C:\\Users\\802165\\.antigravity_cockpit\\platform-packages",
+      "pattern": "**/*",
+      "remove_root": true,
+      "category": "cache",
+      "archive": "E:\\cc\\guahub\\sessions\\_trash\\antigravity-cockpit-migration-20261026-134710\\platform-packages.zip",
+      "files": [
+        {
+          "path": "codex/current/adapter/windows/cockpit-cliproxy.exe",
+          "size": 19223552,
+          "mtime_ns": 1783040279323184300,
+          "sha256": "b1135f7807d1c4ebc749d7709baa2ad38ea21434d915e18dc5bda9c7e3ffcd0d"
+        },
+        {
+          "path": "codex/current/adapter/windows/cockpit-codex-adapter.exe",
+          "size": 10449408,
+          "mtime_ns": 1783040279373755500,
+          "sha256": "715678dc1e495077a408218ba369ad7906a4736d6c0be58a548af5b9deda56de"
+        },
+        {
+          "path": "codex/current/assets/package-info.json",
+          "size": 197,
+          "mtime_ns": 1783040279374747300,
+          "sha256": "5ad121614c9b13e01159eeed70cf8265b76cf69cb58a9678403820ff85a6d735"
+        },
+        {
+          "path": "codex/current/manifest.json",
+          "size": 10223,
+          "mtime_ns": 1783040279406384100,
+          "sha256": "9a68248a473f6a106a4dc44557ba9fd58f296f54f3a05464f8684f6bd8a1fd97"
+        },
+        {
+          "path": "codex/current/runtime/index.json",
+          "size": 7832,
+          "mtime_ns": 1783040279375745500,
+          "sha256": "22918e9cc752cce1c0365eb6d16b9f3811085fa2ba9a2c04bb263cf2184a2260"
+        },
+        {
+          "path": "codex/current/ui/remoteEntry.js",
+          "size": 8960163,
+          "mtime_ns": 1783040279406384100,
+          "sha256": "383bbfe8ee3f77dd48774e990e3b74362ad8bd0c4c9d56ca013c6f2880d0d072"
+        },
+        {
+          "path": "codex/current/ui/style.css",
+          "size": 355808,
+          "mtime_ns": 1783040279406384100,
+          "sha256": "fde906d7f2cad4e7bb332a9a0b303530fd0f8da032379ad6ccc2c9c5cb06b3c8"
+        }
+      ],
+      "directories": [
+        "codex",
+        "codex/current",
+        "codex/current/adapter",
+        "codex/current/adapter/windows",
+        "codex/current/assets",
+        "codex/current/runtime",
+        "codex/current/ui",
+        "codex/downloads",
+        "codex/prepared"
+      ]
+    },
+    {
+      "name": "cache",
+      "source": "C:\\Users\\802165\\.antigravity_cockpit\\cache",
+      "pattern": "**/*",
+      "remove_root": true,
+      "category": "cache",
+      "archive": "E:\\cc\\guahub\\sessions\\_trash\\antigravity-cockpit-migration-20261026-134710\\cache.zip",
+      "files": [
+        {
+          "path": "quota_api_v1_desktop/authorized/fdc90a54262e3a5d2325d29a9da0759cd4fc402e1ccbfd668b0510e7459c14cb.json",
+          "size": 169268,
+          "mtime_ns": 1790560940935174600,
+          "sha256": "1949aab0a46c05e4b697cc1b98076f773d62a4e16a513f89265cf7aa11b83c34"
+        }
+      ],
+      "directories": [
+        "quota_api_v1_desktop",
+        "quota_api_v1_desktop/authorized"
+      ]
+    },
+    {
+      "name": "backups",
+      "source": "C:\\Users\\802165\\.antigravity_cockpit\\backups",
+      "pattern": "**/*",
+      "remove_root": true,
+      "category": "cache",
+      "archive": "E:\\cc\\guahub\\sessions\\_trash\\antigravity-cockpit-migration-20261026-134710\\backups.zip",
+      "files": [
+        {
+          "path": "cockpit_auto_backup_full_2026-09-23_10-44-49.json",
+          "size": 38120,
+          "mtime_ns": 1790131508048215600,
+          "sha256": "ce451bcd452f85c7ad4f8c9b50c863147a378d16479eab0efe98ef2861af1da0"
+        },
+        {
+          "path": "cockpit_auto_backup_full_2026-09-23_10-44-49.zip",
+          "size": 52378,
+          "mtime_ns": 1790131508056193300,
+          "sha256": "da233e550d4a46d2cc804fe099d70ee4f06eb5f04c67f33c245f3c614c1f4ccc"
+        },
+        {
+          "path": "cockpit_auto_backup_full_2026-09-28_09-30-56.json",
+          "size": 41420,
+          "mtime_ns": 1790559057108005500,
+          "sha256": "47cb675b8c05f29f7ad545aa56e638e3d3eb87a623586e58fcef16abe646fce7"
+        },
+        {
+          "path": "cockpit_auto_backup_full_2026-09-28_09-30-56.zip",
+          "size": 57817,
+          "mtime_ns": 1790559057112991300,
+          "sha256": "d4c50ba1d974934796e095def71a3c523a734a7ad347b9a945817018c4ee2994"
+        }
+      ],
+      "directories": []
+    },
+    {
+      "name": "logs",
+      "source": "C:\\Users\\802165\\.antigravity_cockpit\\logs",
+      "pattern": "**/*",
+      "remove_root": true,
+      "category": "archive",
+      "archive": "E:\\cc\\guahub\\sessions\\raw\\antigravity-cockpit\\migration-20261026-134710\\logs.zip",
+      "files": [
+        {
+          "path": "app-2026-07-16.log",
+          "size": 31086,
+          "mtime_ns": 1784177502195846800,
+          "sha256": "2fdee9133d4e83aa6d603eb8917b7d2a6e6e4c06a72cf5db60f2742ca9448245"
+        },
+        {
+          "path": "app.log.2026-09-28",
+          "size": 121813,
+          "mtime_ns": 1790561269201064400,
+          "sha256": "00523476f99c2fdd52dad99a219ceefe0887fa4a21be8c399741e75eb1458a47"
+        },
+        {
+          "path": "codex-api.log.2026-09-28",
+          "size": 119,
+          "mtime_ns": 1790558755799327600,
+          "sha256": "aebdbe92cb255b57af1fdb32fd0f4d226711c9cd3708eabfeebb3d0c438191cb"
+        },
+        {
+          "path": "platform-codex-2026-07-16.log",
+          "size": 214,
+          "mtime_ns": 1784177366411869300,
+          "sha256": "c8cc2f4f88334b5c9c3ce3182f661e694f2ae4ae759eb4c4c00a0e50b8670ebc"
+        }
+      ],
+      "directories": []
+    }
+  ],
+  "protected": {
+    "C:\\Users\\802165\\.antigravity_cockpit\\config.json": "6e11b791670329fa89fa8274dd6daa8e12adcc7a2422b8a54e9981d2bbe4e971"
+  }
+}

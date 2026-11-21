@@ -1,0 +1,311 @@
+Implemented — the link now names its key's Balance URL. This follows @wtj-0527's proposal, whose design the parse keeps to and whose ready patch the dialog line and the GUI test grew from; credit for the shape of the whole thing.
+
+**What `balance=` does.** On a link without a preset, `balance=` sets the provider's Balance URL. It is taken only on the exact host (port included) of one of the link's base URLs — `chat` / `responses` / `anthropic` / `gemini` — so the key goes nowhere the endpoints don't already send it: another host, a look-alike suffix (`relay.example.evil.example`) or another port refuses the link, saying why. As the endpoints, it must be https, or plain http only to this machine or the local network; `user:password`, a fragment or another scheme refuse the link too. A query is kept, where `{key}` asks the balance for each key (`…/v1/usage?key={key}`), and the saved URL stays as the link set it: a `/v1/usage` path is read for what is left (`$remaining`) just as the editor's hand-typed one is, and `balance.path=` can still be set for anything else. Preset links don't read `balance=` — a preset's balance is its host's own. The import dialog shows it under Endpoints, labelled *Balance URL* (the existing string, already translated), before *Add*; *Add* saves it. `magpie import` asks it in its preview already, through `BalanceQuery`, so the CLI needed nothing.
+
+**Verification** (darwin/arm64, Go at `8b902e287` + this patch):
+
+| Check | Result |
+| --- | --- |
+| New `TestParseImportBalance` | red on the old code with `balance on the endpoints' host = "", <nil>`, green with the patch — acceptance on the endpoints' host, a `?key={key}` query kept, local http, a preset link ignoring `balance=`, and refusals for another host, a look-alike suffix, another port, plain http off this machine, `user:password`, a fragment, `file://` and a bare host |
+| Ablation (`importurl.go` reverted, test kept) | red again, same message |
+| `internal/gui/tests/import-link-balance.test.cjs` (new, after the patch in the report) | 11/11 on Chromium and 11/11 on WebKit (en, zh, zh-TW, ja, de; 1100 and 420 wide); with the dialog line reverted, 10/11 of it fail |
+| `go test -tags nogui -count=1 -timeout 25m ./internal/provider ./internal/cli` | ok |
+| `go test -tags nogui -count=1 ./internal/gui` | only the pre-existing `TestProxyCheckSaysAProxyPassedBy` red — the same on unmodified `83137bcbe` here |
+| `gofmt -l` (touched files), `GOOS=linux go vet -tags nogui` | clean (darwin vet carries only the pre-existing `dockflap_darwin.go` cgo warning) |
+| `go build` | darwin `-tags nogui`, `GOOS=linux -tags nogui`, `GOOS=windows` all ok |
+| Not run | a real relay's `/v1/usage` behind a live key (fixtures only); nothing else was left untried on this machine |
+
+Sibling check: the same-shape parameters each keep their own precedent — `website`/`keys` drop a non-https value quietly (`page`), `icon` refuses loudly (`iconURL`), the endpoints refuse (`endpoint`); `balance=` refuses like `icon`/`endpoint` because it is a URL the key is sent to, and keeps a query where the endpoints drop one, since a Balance URL's `?key={key}` is a shape the editor already saves verbatim. `ParseImport` has exactly two consumers (the CLI's `import` and the GUI's `stashImport`) and both carry the field through the provider they already save; nothing else parses import links, and an import is one-shot per link open — no hot path.
+
+Branch: [`fix/3187-balance-url-import`](https://github.com/ggbdpq/magpie/tree/fix/3187-balance-url-import) on `8b902e287`, head `d64ff2d468dd740ccf10f15217d88330c1db6b52`.
+
+**AI use.** Written by GLM-5.3-Flash (ZCode), authored and verified by ggbdpq, following @wtj-0527's proposal and patch in the report.
+
+<details>
+<summary>Patch (git am format) — SHA-256 (first 16): <code>7c7162a087514160</code></summary>
+
+```patch
+From d64ff2d468dd740ccf10f15217d88330c1db6b52 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Thu, 5 Nov 2026 01:46:09 +0800
+Subject: [PATCH] import: a link's balance= names its key's Balance URL, on its
+ endpoints' host (#3187)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+A relay's magpie://import link handed over its endpoints and key, but
+not where the key's balance is asked, so every user typed the Balance
+URL by hand before a sub2api key's card showed anything.
+
+balance= now sets the provider's Balance URL, on links without a
+preset (a preset's balance is its host's own; the parameter is not
+read there). It is taken only on the exact host (port included) of one
+of the link's base URLs — chat, responses, anthropic or gemini — so
+the key goes nowhere the endpoints don't already send it; a look-alike
+suffix or another port is refused. As the endpoints, it must be https,
+or plain http only to this machine or the local network, and
+user:password, a fragment or another scheme refuse the link saying so.
+A query is kept, where {key} asks the balance for each key
+(withBalanceKey), and the saved URL stays as the link set it: a
+/v1/usage is read for what is left ($remaining), balance.path= can be
+added later for anything else.
+
+The import dialog shows it under Endpoints, labelled Balance URL,
+before Add; Add saves it. `magpie import` asks it in its preview
+already, through BalanceQuery, so the CLI needed nothing.
+
+After wtj-0527's proposal in #3187, which this follows; the dialog and
+its test grew from their patch there.
+
+Verification: TestParseImportBalance fails before the change with
+"balance on the endpoints' host = \"\", <nil>" and passes with it —
+acceptance on the endpoints' host, a ?key={key} query kept, local
+http, a preset link ignoring balance=, and refusals for another host,
+a look-alike suffix, another port, plain http off this machine,
+user:password, a fragment, another scheme and a bare host. The other
+TestParseImport* tests pass. import-link-balance.test.cjs passes
+11/11 on Chromium and 11/11 on WebKit (en, zh, zh-TW, ja, de; 1100 and
+420 wide), and 10/11 of it fail with the dialog line reverted.
+go test -tags nogui -count=1 ./internal/provider ./internal/cli pass;
+in ./internal/gui only the pre-existing TestProxyCheckSaysAProxyPassedBy
+fails, the same on unmodified 83137bcbe here. gofmt is clean,
+GOOS=linux go vet -tags nogui is clean, and the build passes on darwin
+and, GOOS=linux -tags nogui and GOOS=windows.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ docs/reference.md                             |  1 +
+ internal/gui/assets/app.js                    |  2 +
+ .../gui/tests/import-link-balance.test.cjs    | 78 +++++++++++++++++++
+ internal/provider/importurl.go                | 27 +++++++
+ internal/provider/importurl_test.go           | 51 ++++++++++++
+ 5 files changed, 159 insertions(+)
+ create mode 100644 internal/gui/tests/import-link-balance.test.cjs
+
+diff --git a/docs/reference.md b/docs/reference.md
+index b8ee6ea8a..0c0009e28 100644
+--- a/docs/reference.md
++++ b/docs/reference.md
+@@ -2832,6 +2832,7 @@ you press *Add*. `magpie import <link>` does the same in a terminal.
+ | `gemini`    | Google Gemini API base URL (`…/v1beta`), as the app's editor and the TUI take one |
+ | `models`    | model ids to expose, comma separated                               |
+ | `catalog`   | models.dev provider id, for model names and reasoning levels       |
++| `balance`   | where the key's balance or usage is asked (the editor's Balance URL), shown in the dialog before *Add*; only on the host of one of the link's base URLs, so the key goes nowhere they don't already send it |
+ | `website`, `keys` | the vendor's site and its API-key page (https)               |
+ | `icon`      | an https picture of the vendor's own (PNG, JPEG, GIF, WebP, ICO, SVG, at most 1 MB). magpie downloads it once, after you confirm the import, into its icons folder; without one it falls back to the catalog's logo or a plain mark |
+ 
+diff --git a/internal/gui/assets/app.js b/internal/gui/assets/app.js
+index ec53ded53..7e4f6e0e7 100644
+--- a/internal/gui/assets/app.js
++++ b/internal/gui/assets/app.js
+@@ -10644,6 +10644,8 @@ function renderImport(im) {
+   ed.append(...field(t("API key"), keyWrap, p.key ? t("From the link. Kept in ~/.config/magpie/providers.json, readable by you alone.") : ""));
+ 
+   ed.append(...field(t("Endpoints"), renderEndpoints(null, p), ""));
++  // where the key's balance is asked, on one of the hosts named above
++  if (p.balanceURL) ed.append(...field(t("Balance URL"), el("code", "import-balance", p.balanceURL), ""));
+   if (p.models?.length) {
+     const chips = el("div", "mchips");
+     for (const m of p.models) {
+diff --git a/internal/gui/tests/import-link-balance.test.cjs b/internal/gui/tests/import-link-balance.test.cjs
+new file mode 100644
+index 000000000..791eea099
+--- /dev/null
++++ b/internal/gui/tests/import-link-balance.test.cjs
+@@ -0,0 +1,78 @@
++// A magpie://import link with balance= (#3187, after wtj-0527's proposal):
++// the dialog shows where the key's balance is asked, labelled Balance URL,
++// under the endpoints it shares a host with, and Add saves it; a link
++// without one shows no such row. All APIs and keys are fixtures.
++const assert = require("node:assert/strict");
++const fs = require("node:fs/promises");
++const path = require("node:path");
++const { test } = require("node:test");
++const { chromium, webkit } = require("playwright");
++const assets = process.env.ASSET_DIR || path.resolve(__dirname, "../assets");
++const engines = process.env.BROWSER ? [process.env.BROWSER] : ["chromium", "webkit"];
++const langs = ["en", "zh", "zh-TW", "ja", "de"];
++
++const linked = {
++  id: "share-relay", name: "Share Relay", anthropic: "https://share-relay.example", responses: "https://share-relay.example/v1",
++  key: "sk-fixture-balance", balanceURL: "https://share-relay.example/v1/usage",
++};
++
++async function fixture(t, engine, lang, width, provider) {
++  const browser = await (engine === "webkit" ? webkit.launch() : chromium.launch({ channel: "chromium" }));
++  const page = await browser.newPage({ viewport: { width, height: 900 }, reducedMotion: "reduce" });
++  page.setDefaultTimeout(7000);
++  page.setDefaultNavigationTimeout(60000);
++  const errors = [], saves = [];
++  page.on("pageerror", (e) => errors.push(e.stack || e.message));
++  await page.route("**/*", async (route) => {
++    const req = route.request(), url = new URL(req.url());
++    const json = (data) => route.fulfill({ json: data });
++    const state = { providers: [], presets: [], excluded: [], gateway: { running: true, window: true } };
++    if (url.pathname === "/boot.js") return route.fulfill({ contentType: "text/javascript", body: `window.bootPrefs={lang:"${lang}",theme:"light",web:true};` });
++    if (url.pathname === "/api/state") return json({ agents: [], profiles: [], settings: { lang, theme: "light" } });
++    if (url.pathname === "/api/providers") return json(state);
++    if (url.pathname === "/api/groups") return json({ groups: [], pools: [] });
++    if (url.pathname === "/api/import/balance1") return json({ provider });
++    if (url.pathname === "/api/provider/save") { saves.push(req.postDataJSON()); return json(state); }
++    if (url.pathname === "/api/gateway/trace") return new Promise(() => {});
++    if (url.pathname.startsWith("/api/")) return json({});
++    const file = path.join(assets, url.pathname === "/" ? "index.html" : url.pathname);
++    const contentType = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png" }[path.extname(file)];
++    try { await route.fulfill({ body: await fs.readFile(file), contentType }); } catch { await route.fulfill({ status: 404, body: "" }); }
++  });
++  t.after(async () => {
++    if (process.env.ARTIFACT_DIR) {
++      await fs.mkdir(process.env.ARTIFACT_DIR, { recursive: true });
++      await page.screenshot({ path: path.join(process.env.ARTIFACT_DIR, `${engine}-${lang}-${width}-import-link-balance.png`) });
++    }
++    await browser.close();
++    assert.deepEqual(errors, []);
++  });
++  await page.goto("http://magpie.test/?view=providers&import=balance1");
++  const ed = page.locator(".editor.import");
++  await ed.waitFor();
++  return { page, ed, saves };
++}
++
++for (const engine of engines) {
++  for (const lang of langs) {
++    for (const width of [1100, 420]) {
++      test(`${engine} ${lang} ${width}px: a link's balance= shows before Add and is saved`, async (t) => {
++        const { page, ed, saves } = await fixture(t, engine, lang, width, linked);
++        assert.equal(await ed.locator("code.import-balance").textContent(), "https://share-relay.example/v1/usage");
++        const label = await page.evaluate(() => t("Balance URL"));
++        assert(await ed.getByText(label, { exact: true }).count() >= 1, "the row is labelled in the page's language");
++        const fits = await ed.evaluate((e) => e.getBoundingClientRect().right <= innerWidth && e.scrollWidth <= e.clientWidth + 1);
++        assert(fits, "the dialog fits the window");
++        await ed.locator(".bar button.primary").click();
++        await page.waitForFunction(() => !importing);
++        assert.equal(saves.length, 1);
++        assert.equal(saves[0].balanceURL, "https://share-relay.example/v1/usage");
++        assert.equal(saves[0].key, "sk-fixture-balance");
++      });
++    }
++  }
++  test(`${engine}: a link without balance= shows no Balance URL row`, async (t) => {
++    const { ed } = await fixture(t, engine, "en", 1100, { ...linked, balanceURL: undefined });
++    assert.equal(await ed.locator("code.import-balance").count(), 0);
++  });
++}
+diff --git a/internal/provider/importurl.go b/internal/provider/importurl.go
+index 96b9a6048..4a57ab733 100644
+--- a/internal/provider/importurl.go
++++ b/internal/provider/importurl.go
+@@ -28,6 +28,8 @@ import (
+ //	           and the TUI take one (#1346, #2201)
+ //	models     model ids to show agents, comma separated
+ //	catalog    models.dev provider id, for names and reasoning levels
++//	balance    where the key's balance or usage is asked (the editor's
++//	           Balance URL), on the host of one of the base URLs
+ //	website    the vendor's site; keys: where keys are made
+ //	icon       an https picture of the vendor's own, fetched only after the
+ //	           user confirms; falls back to the generic mark when absent
+@@ -105,6 +107,9 @@ func ParseImport(link string) (Provider, error) {
+ 		}
+ 		p.Website = page(get("website"))
+ 		p.KeysURL = page(get("keys"))
++		if p.BalanceURL, err = balanceOnEndpointHost(get("balance"), p); err != nil {
++			return Provider{}, err
++		}
+ 	}
+ 	if raw := get("icon"); raw != "" {
+ 		u, err := iconURL(raw)
+@@ -184,6 +189,28 @@ func local(host string) bool {
+ 	return ip != nil && (ip.IsLoopback() || ip.IsPrivate())
+ }
+ 
++// balanceOnEndpointHost accepts a link's balance= only on the host of one
++// of its base URLs: the key is asked there, so it goes nowhere the link's
++// endpoints don't already send it. As the endpoints, https, or plain http
++// to this machine or the local network; a query is kept, where {key} asks
++// the balance for each key (withBalanceKey).
++func balanceOnEndpointHost(raw string, p Provider) (string, error) {
++	if raw == "" {
++		return "", nil
++	}
++	u, err := url.Parse(raw)
++	if err != nil || u.Host == "" || u.User != nil || u.Fragment != "" ||
++		(u.Scheme != "https" && (u.Scheme != "http" || !local(u.Hostname()))) {
++		return "", errorf("the link's balance= is not a URL magpie can ask: %q", raw)
++	}
++	for _, base := range []string{p.Chat, p.Responses, p.Anthropic, p.Gemini} {
++		if b, err := url.Parse(base); err == nil && base != "" && strings.EqualFold(b.Host, u.Host) {
++			return u.String(), nil
++		}
++	}
++	return "", errorf("the link's balance= must be on a base URL's host: %q", raw)
++}
++
+ // page keeps a web page link only when it is https.
+ func page(raw string) string {
+ 	if u, err := url.Parse(raw); err == nil && u.Scheme == "https" && u.Host != "" && u.User == nil {
+diff --git a/internal/provider/importurl_test.go b/internal/provider/importurl_test.go
+index 1a0ea0615..b4f1ab949 100644
+--- a/internal/provider/importurl_test.go
++++ b/internal/provider/importurl_test.go
+@@ -265,3 +265,54 @@ func TestParseImportNameCutKeepsCharactersWhole(t *testing.T) {
+ 		t.Fatalf("name %q (%d bytes)", p.Name, len(p.Name))
+ 	}
+ }
++
++// A link may name where its key's balance is asked (a relay's usage query),
++// only on the host of one of its base URLs: the key goes nowhere the
++// endpoints don't already send it.
++func TestParseImportBalance(t *testing.T) {
++	link := func(extra url.Values) string {
++		q := url.Values{"name": {"My Relay"}, "anthropic": {"https://relay.example"}, "responses": {"https://relay.example/v1"}, "key": {"sk-relay"}}
++		for k, v := range extra {
++			q[k] = v
++		}
++		return "magpie://import?" + q.Encode()
++	}
++	p, err := ParseImport(link(url.Values{"balance": {"https://relay.example/v1/usage"}}))
++	if err != nil || p.BalanceURL != "https://relay.example/v1/usage" {
++		t.Fatalf("balance on the endpoints' host = %q, %v", p.BalanceURL, err)
++	}
++	// a sub2api-style usage query is read for what is left, in dollars
++	if b, _ := balanceSourceOf(p); b.url != "https://relay.example/v1/usage" || balancePathOf(p) != "$remaining" {
++		t.Fatalf("asked at %q for %q", b.url, balancePathOf(p))
++	}
++	// the key may go in the query, as a Balance URL takes {key}
++	p, err = ParseImport(link(url.Values{"balance": {"https://relay.example/v1/usage?key={key}"}}))
++	if err != nil || p.BalanceURL != "https://relay.example/v1/usage?key={key}" {
++		t.Fatalf("balance with a query = %q, %v", p.BalanceURL, err)
++	}
++	if p, err := ParseImport(link(nil)); err != nil || p.BalanceURL != "" {
++		t.Fatalf("no balance= = %q, %v", p.BalanceURL, err)
++	}
++	// plain http only to this machine or the local network, as the endpoints
++	if p, err := ParseImport("magpie://import?name=Local&chat=http://192.168.1.9:8080/v1&balance=http://192.168.1.9:8080/v1/usage"); err != nil || p.BalanceURL != "http://192.168.1.9:8080/v1/usage" {
++		t.Fatalf("local http = %q, %v", p.BalanceURL, err)
++	}
++	// a preset's balance is its host's own; a link's balance= is not read there
++	if p, err := ParseImport("magpie://import?preset=deepseek&key=sk-deepseek&balance=https://elsewhere.example/v1/usage"); err != nil || p.BalanceURL != "" {
++		t.Fatalf("preset with balance= = %q, %v", p.BalanceURL, err)
++	}
++	for _, bad := range []string{
++		"https://elsewhere.example/v1/usage",          // another host
++		"https://relay.example.evil.example/v1/usage", // a look-alike suffix
++		"https://relay.example:8443/v1/usage",         // the same name, another port
++		"http://relay.example/v1/usage",               // plain http off this machine
++		"https://user:pw@relay.example/v1/usage",      // user:password
++		"https://relay.example/v1/usage#x",            // a fragment
++		"file:///etc/passwd",                          // another scheme
++		"relay.example/v1/usage",                      // a bare host
++	} {
++		if p, err := ParseImport(link(url.Values{"balance": {bad}})); err == nil {
++			t.Errorf("balance=%s: accepted as %q", bad, p.BalanceURL)
++		}
++	}
++}
+-- 
+2.50.1 (Apple Git-155)
+
+```
+
+</details>

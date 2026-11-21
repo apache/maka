@@ -1,0 +1,21 @@
+{
+  "id": "89",
+  "slug": "longest-increasing-path-in-a-matrix",
+  "title": "矩阵中的最长递增路径",
+  "difficulty": "hard",
+  "tags": ["深度优先搜索", "拓扑排序", "记忆化搜索", "矩阵"],
+  "description": "给定一个 `m x n` 整数矩阵 `matrix`,找出其中**最长递增路径**的长度。对于每个单元格,你可以往上、下、左、右四个方向移动,且不能对角线方向移动或移动到边界外。\n\n**示例 1:**\n\n- 输入:`matrix = [[9,9,4],[6,6,8],[2,1,1]]`\n- 输出:`4`(最长递增路径是 `[1,2,6,9]`)\n\n**示例 2:**\n\n- 输入:`matrix = [[3,4,5],[3,2,6],[2,2,1]]`\n- 输出:`4`(最长递增路径是 `[3,4,5,6]`)",
+  "solution": "## 思路\n\n**记忆化 DFS**:从每个格子出发 DFS,只走向严格更大的相邻格;用 `memo[i][j]` 记忆以该格为起点的最长路径,避免重复计算。\n\n## 参考代码\n\n```js\nfunction longestIncreasingPath(matrix) {\n  if (matrix.length === 0) return 0;\n  const m = matrix.length;\n  const n = matrix[0].length;\n  const memo = Array.from({ length: m }, () => new Array(n).fill(0));\n  const dfs = (i, j) => {\n    if (memo[i][j]) return memo[i][j];\n    let max = 1;\n    const dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]];\n    for (const [di, dj] of dirs) {\n      const ni = i + di;\n      const nj = j + dj;\n      if (ni >= 0 && ni < m && nj >= 0 && nj < n && matrix[ni][nj] > matrix[i][j]) {\n        max = Math.max(max, 1 + dfs(ni, nj));\n      }\n    }\n    memo[i][j] = max;\n    return max;\n  };\n  let result = 0;\n  for (let i = 0; i < m; i++) {\n    for (let j = 0; j < n; j++) {\n      result = Math.max(result, dfs(i, j));\n    }\n  }\n  return result;\n}\n```\n\n## 复杂度\n\n- 时间:O(m*n)(记忆化保证每格算一次)\n- 空间:O(m*n)",
+  "signature": {
+    "language": "javascript",
+    "entry": "longestIncreasingPath",
+    "params": [{ "name": "matrix", "type": "number[][]" }],
+    "returns": "number"
+  },
+  "testCases": [
+    { "sample": true, "input": [[[9, 9, 4], [6, 6, 8], [2, 1, 1]]], "expected": 4 },
+    { "sample": true, "input": [[[3, 4, 5], [3, 2, 6], [2, 2, 1]]], "expected": 4 },
+    { "sample": false, "input": [[[1]]], "expected": 1 },
+    { "sample": false, "input": [[[1, 2], [4, 3]]], "expected": 4 }
+  ]
+}

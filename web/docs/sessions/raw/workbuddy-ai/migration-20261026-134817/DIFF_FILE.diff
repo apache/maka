@@ -1,0 +1,47 @@
+--- E:\cc\guahub\sessions\raw\workbuddy-ai\migration-20261026-134817\ORIGINAL_FILE.json
++++ E:\cc\guahub\sessions\raw\workbuddy-ai\migration-20261026-134817\MODIFIED_FILE.json
+@@ -1,5 +1,5 @@
+ {
+-  "state": "source_present",
++  "state": "migrated",
+   "groups": [
+     {
+       "name": "logs",
+@@ -964,6 +964,37 @@
+         "startup/2026-10-26",
+         "update",
+         "weixinpay"
++      ],
++      "skipped": [
++        "2026-10-20/2026-10-19-12-02-20__111e8ffd98e0cda9f447079afe38da5b.log",
++        "2026-10-20/edge-sync.log",
++        "2026-10-20/sdk/conversations/d57d58d1-96f8-4e2c-bbed-991375f2bb1c-warning.log",
++        "2026-10-20/sdk/conversations/d57d58d1-96f8-4e2c-bbed-991375f2bb1c.log",
++        "2026-10-20/sdk/conversations/operation.log",
++        "2026-10-20/sdk/conversations.zip.tmp-11528-1792543957066",
++        "2026-10-20/unknown-workspace__0943646edce6afd40ba580bf0ccd807a.log",
++        "2026-10-20/workbuddyMainThread__0627208bea0500763a41ac440c9bb7b7.log",
++        "2026-10-21/edge-sync.log",
++        "2026-10-21/sdk/conversations/d57d58d1-96f8-4e2c-bbed-991375f2bb1c.log",
++        "2026-10-21/sdk/conversations/operation.log",
++        "2026-10-21/unknown-workspace__0943646edce6afd40ba580bf0ccd807a.log",
++        "2026-10-21/workbuddyMainThread__0627208bea0500763a41ac440c9bb7b7.log",
++        "2026-10-22/edge-sync.log",
++        "2026-10-22/sdk/conversations/d57d58d1-96f8-4e2c-bbed-991375f2bb1c.log",
++        "2026-10-22/sdk/conversations/operation.log",
++        "2026-10-22/sdk/conversations.zip.tmp-7208-1792716810381",
++        "2026-10-22/unknown-workspace__0943646edce6afd40ba580bf0ccd807a.log",
++        "2026-10-22/workbuddyMainThread__0627208bea0500763a41ac440c9bb7b7.log",
++        "2026-10-23/edge-sync.log",
++        "2026-10-23/sdk/conversations/d57d58d1-96f8-4e2c-bbed-991375f2bb1c.log",
++        "2026-10-23/sdk/conversations/operation.log",
++        "2026-10-23/unknown-workspace__0943646edce6afd40ba580bf0ccd807a.log",
++        "2026-10-23/workbuddyMainThread__0627208bea0500763a41ac440c9bb7b7.log",
++        "2026-10-26/edge-sync.log",
++        "2026-10-26/sdk/conversations/d57d58d1-96f8-4e2c-bbed-991375f2bb1c.log",
++        "2026-10-26/sdk/conversations/operation.log",
++        "2026-10-26/unknown-workspace__0943646edce6afd40ba580bf0ccd807a.log",
++        "2026-10-26/workbuddyMainThread__0627208bea0500763a41ac440c9bb7b7.log"
+       ]
+     },
+     {

@@ -1,0 +1,188 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Sat, 7 Nov 2026 10:58:30 +0800
+Subject: [PATCH] gateway: the interactive mode's starts take turns (#5579)
+
+Several Claude subscription calls asked at once each start a full
+Claude Code, and the more start with it the longer each takes to show
+its prompt: on a Windows machine of cold starts none of six showed one
+in the 45s a start alone fits in, so each was ended at the deadline and
+answered 502, and every caller's next try started the pile again -- 531
+interactive starts in an hour, 420 of them ending "showed no prompt"
+(#5579). One start at a time: a run's Claude Code is started only once
+the one before it has shown its prompt, its helper having answered
+magpie's initialize request, and a start that missed the wait is not
+followed by the next until it has ended, so the retries behind it land
+on a machine with one start to do, not a pile.
+
+A start waiting for another's prompt says so in the log, as a run
+waiting for room does: the pile was read out of app.log, so the waits
+it leaves behind say themselves too.
+---
+ internal/gateway/claude_subscription.go       | 46 ++++++++++
+ .../gateway/claude_tui_start_storm_test.go    | 89 +++++++++++++++++++
+ 2 files changed, 135 insertions(+)
+ create mode 100644 internal/gateway/claude_tui_start_storm_test.go
+
+diff --git a/internal/gateway/claude_subscription.go b/internal/gateway/claude_subscription.go
+index 8fa8e1052..4117d44c4 100644
+--- a/internal/gateway/claude_subscription.go
++++ b/internal/gateway/claude_subscription.go
+@@ -1187,6 +1187,19 @@ func (b *subscriptionBridge) startRun(ctx context.Context, req *Request, model,
+ 		cleanup()
+ 		return nil, nil, &tuiRefusal{claudeTUIErr(claudeNotTUIWhy(req, binary))}
+ 	}
++	// the interactive mode's start takes its turn (tuiStarts); held till
++	// this run has been started and answered, and given back however this
++	// goes
++	turn := func() {}
++	if tui {
++		release, err := tuiStartTurn(ctx, "a Claude Code run on "+model)
++		if err != nil {
++			cleanup()
++			return nil, nil, err
++		}
++		turn = release
++	}
++	defer turn()
+ 	noteClaudeRun(code)
+ 	var cmd *exec.Cmd
+ 	if tui {
+@@ -1380,6 +1393,39 @@ func (b *subscriptionBridge) startRun(ctx context.Context, req *Request, model,
+ // place of magpie's executable: a test's stand-in.
+ var claudeTUIHelper string
+ 
++// tuiStarts is the interactive mode's starts, one at a time: a Claude Code
++// takes longer to come up the more start with it, and on a machine of cold
++// ones none showed its prompt in the 45s a start alone fits in, so each
++// was ended at the deadline and answered 502, and every caller's next try
++// started the pile again — 531 interactive starts in an hour, 420 of them
++// ending "showed no prompt" (#5579). The turn taken (tuiStartTurn) is held
++// till the run has been started and its helper has answered initialize —
++// its prompt shown — and given back however the start goes; a start that
++// missed the wait is not followed by the next until it has ended, so the
++// retries behind it land on a machine with one start to do, not a pile.
++// Runs already up are none of it: a -p run starts without a prompt to
++// wait for, and a start that fits in the wait alone holds the turn only
++// as long as coming up takes.
++var tuiStarts = make(chan struct{}, 1)
++
++// tuiStartTurn takes the one start's turn, waiting as long as ctx lasts.
++func tuiStartTurn(ctx context.Context, what string) (func(), error) {
++	select {
++	case tuiStarts <- struct{}{}:
++		return func() { <-tuiStarts }, nil
++	default:
++	}
++	began := time.Now()
++	log.Printf("claude: %s waits for another interactive start to show its prompt", what)
++	select {
++	case tuiStarts <- struct{}{}:
++		log.Printf("claude: %s had its start's turn after %s", what, time.Since(began).Round(time.Millisecond))
++		return func() { <-tuiStarts }, nil
++	case <-ctx.Done():
++		return nil, ctx.Err()
++	}
++}
++
+ // controlWait is how long Claude Code may take to answer a control
+ // request; tuiInitWait the interactive mode's helper its initialize: as
+ // long as Claude Code may take to show its prompt, with controlWait's
+diff --git a/internal/gateway/claude_tui_start_storm_test.go b/internal/gateway/claude_tui_start_storm_test.go
+new file mode 100644
+index 000000000..ed8fc75a0
+--- /dev/null
++++ b/internal/gateway/claude_tui_start_storm_test.go
+@@ -0,0 +1,89 @@
++package gateway
++
++import (
++	"os"
++	"path/filepath"
++	"strconv"
++	"strings"
++	"sync"
++	"testing"
++
++	"github.com/yetone/magpie/internal/claudetui"
++	"github.com/yetone/magpie/internal/testenv"
++)
++
++// Six conversations asked at once each started a full Claude Code, and on
++// the reporter's Windows machine none of them showed its prompt in the 45s
++// a start alone fits in: starts going at once slow each other past the
++// wait (#5579, windows/amd64, 0.1.3057 and 0.1.2901). Every one was ended
++// at the deadline and answered 502, and each caller's next try started the
++// pile again — 531 interactive starts in an hour, 420 of them ending
++// "showed no prompt in 45s", while one start at a time on the same machine
++// and subscription answered normally.
++//
++// So the interactive mode's starts take turns: a run's Claude Code is
++// started only once the one before it has shown its prompt (its helper has
++// answered magpie's initialize request). The stand-in helper logs begin
++// when it starts and end when it hands over to Claude Code; the starts
++// must alternate — no begin while another is still starting — and every
++// call is answered.
++func TestClaudeTUIStartsTakeTurns(t *testing.T) {
++	h := newReplyHarness(t, "ok")
++	claudeTUIRuns = true
++	t.Cleanup(func() { claudeTUIRuns = false })
++	log := filepath.Join(t.TempDir(), "starts")
++	helper := filepath.Join(t.TempDir(), "magpie")
++	testenv.Program(t, helper, `#!/bin/sh
++[ "$1" = "`+claudetui.Command+`" ] || exit 9
++echo begin >> '`+log+`'
++sleep 2
++echo end >> '`+log+`'
++shift; claude=$1; shift
++exec "$claude" "$@"
++`)
++	claudeTUIHelper = helper
++	t.Cleanup(func() { claudeTUIHelper = "" })
++
++	const calls = 4
++	var wg sync.WaitGroup
++	codes := make([]int, calls)
++	msgs := make([]string, calls)
++	for i := range calls {
++		wg.Add(1)
++		go func() {
++			defer wg.Done()
++			codes[i], msgs[i] = h.askCode("rules "+strconv.Itoa(i), "hi")
++		}()
++	}
++	wg.Wait()
++	for i, c := range codes {
++		if c != 200 {
++			t.Fatalf("conversation %d: %d %s", i, c, msgs[i])
++		}
++	}
++	b, err := os.ReadFile(log)
++	if err != nil {
++		t.Fatalf("the helper's log: %v", err)
++	}
++	if n := strings.Count(string(b), "begin"); n != calls {
++		t.Fatalf("the helper started %d times, want %d:\n%s", n, calls, b)
++	}
++	up := false
++	for _, line := range strings.Split(string(b), "\n") {
++		switch strings.TrimSpace(line) {
++		case "begin":
++			if up {
++				t.Fatalf("a start began while another was still starting:\n%s", b)
++			}
++			up = true
++		case "end":
++			if !up {
++				t.Fatalf("a start ended with none beginning:\n%s", b)
++			}
++			up = false
++		}
++	}
++	if up {
++		t.Fatalf("a start never handed over to Claude Code:\n%s", b)
++	}
++}
+-- 
+2.50.1 (Apple Git-155)
+

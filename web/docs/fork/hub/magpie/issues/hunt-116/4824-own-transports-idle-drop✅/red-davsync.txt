@@ -1,0 +1,5 @@
+--- FAIL: TestGlobalSwitchDialsTheSyncThroughTheNewProxy (0.03s)
+    stall_test.go:444: after the switch: 1 connections through A, 0 through B, want the sync to dial through B and no new one through A
+FAIL
+FAIL	github.com/yetone/magpie/internal/davsync	1.162s
+FAIL

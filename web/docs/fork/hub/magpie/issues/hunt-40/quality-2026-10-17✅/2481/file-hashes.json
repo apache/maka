@@ -1,0 +1,14 @@
+{
+  "internal/gateway/codex_backend.go": {
+    "original_sha256": "4651041f8b800558daafea434338c4dd3a5790274773729617068adc33f8a640",
+    "modified_sha256": "0932ae9e800b96ef9cebdd4a9e4418e2f81e86dcec7b2c885d762bf3aa760579"
+  },
+  "internal/gateway/codex_backend_test.go": {
+    "original_sha256": "68be850010badf1cf03cb2042361b76855dcbe5f75cf372501e2db0c190d5439",
+    "modified_sha256": "41cb297487a9c9f2f58a52d8ca1c4f92201d32f5af721a9919e1a7949b80cb1e"
+  },
+  "docs/subsystems/gateway-routing.md": {
+    "original_sha256": "ffaf31ab893fe0e0cbaf575977b8969a83b26732233fcfa2198a7376fc327cf2",
+    "modified_sha256": "7d1986dd13934803d16689ab254a8af2d0dce11faa573dc41227f5c7828ff793"
+  }
+}

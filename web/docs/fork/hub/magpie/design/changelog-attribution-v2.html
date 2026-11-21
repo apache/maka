@@ -1,0 +1,798 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=1280">
+<title>magpie · 更新日志 × 我的贡献 v2</title>
+<style>
+  :root {
+    --ink: #1d1d1f; --ink-2: #6e6e73; --ink-3: #98989d;
+    --line: #e5e5ea; --bg: #f2f2f6;
+    --lvl-a-bg: #FFF3B8; --lvl-a-bar: #F5C518;
+    --lvl-b-bg: #FFF9DB; --lvl-b-bar: #E8B004;
+    --lvl-c-bg: #FFFDF0; --lvl-c-bar: #E8D44D;
+    --suspense-border: #E8B004;
+    --flash-red: #f5222d;
+    --focus-ring: 0 0 0 3px rgba(245, 197, 24, 0.45);
+    --dpw: 480px;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: var(--bg); color: var(--ink); font-size: 15px; line-height: 1.6;
+  }
+  body.dp-open { padding-right: var(--dpw); }
+  body.dp-open .topbar { right: var(--dpw); }
+  body.dp-open .side { right: var(--dpw); }
+  body.dp-open .fab { right: calc(var(--dpw) + 16px); }
+
+  /* ===== 顶栏 ===== */
+  .topbar {
+    position: fixed; top: 0; left: 0; right: 0; z-index: 40;
+    background: rgba(255,255,255,0.92); backdrop-filter: blur(10px);
+    border-bottom: 1px solid var(--line);
+    display: flex; align-items: center; gap: 14px; padding: 10px 20px;
+  }
+  .topbar .ttl { font-size: 15px; font-weight: 700; white-space: nowrap; }
+  .topbar .ttl small { color: var(--ink-2); font-weight: 400; font-size: 12px; margin-left: 8px; }
+  .stat-badge {
+    font-size: 11.5px; color: #6b5200; background: var(--lvl-a-bg);
+    border: 1px solid rgba(245,197,24,0.5); border-radius: 999px; padding: 2px 10px; white-space: nowrap;
+  }
+  .topbar .sp { flex: 1; }
+  .onlymine { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--ink-2); cursor: pointer; white-space: nowrap; }
+  .onlymine input { accent-color: var(--lvl-a-bar); width: 14px; height: 14px; cursor: pointer; }
+  .snapshot { font-size: 11.5px; color: var(--ink-3); white-space: nowrap; }
+
+  /* ===== 布局 ===== */
+  .layout { display: flex; align-items: flex-start; }
+  main { flex: 1; min-width: 0; padding: 66px 24px 80px 28px; }
+
+  /* ===== 版本分组 ===== */
+  .ver-sec { margin-bottom: 14px; background: #fff; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+  .ver-head {
+    position: sticky; top: 47px; z-index: 10;
+    display: flex; align-items: baseline; gap: 10px;
+    padding: 9px 18px; background: #fafafc; border-bottom: 1px solid var(--line);
+  }
+  .ver-head .vn { font-weight: 700; font-size: 14px; font-variant-numeric: tabular-nums; }
+  .ver-head .vm {
+    font-size: 11px; font-weight: 700; color: #6b5200;
+    background: var(--lvl-a-bg); border: 1px solid rgba(245,197,24,0.5);
+    border-radius: 999px; padding: 1px 8px;
+  }
+  .ver-head .cnt { margin-left: auto; font-size: 11px; color: var(--ink-3); }
+  .grp { padding: 4px 18px 10px; }
+  .grp-title { font-size: 12.5px; font-weight: 700; color: var(--ink-2); margin: 10px 0 2px; }
+  .entry {
+    position: relative; display: flex; align-items: flex-start; gap: 10px;
+    padding: 6px 10px 6px 0; border-radius: 8px; scroll-margin: 110px;
+  }
+  .entry:hover { background: #f7f7f8; }
+  .entry .dot { flex-shrink: 0; width: 6px; height: 6px; border-radius: 50%; background: #c7c7cc; margin-top: 10px; margin-left: 8px; }
+  .entry .txt { flex: 1; min-width: 0; }
+  .entry .ver { flex-shrink: 0; font-size: 11.5px; color: var(--ink-3); margin-top: 4px; font-variant-numeric: tabular-nums; }
+  .entry.lvl-A { background: var(--lvl-a-bg); padding-left: 10px; }
+  .entry.lvl-B { background: var(--lvl-b-bg); padding-left: 10px; }
+  .entry.lvl-C { background: var(--lvl-c-bg); padding-left: 10px; }
+  .entry.lvl-A::before, .entry.lvl-B::before, .entry.lvl-C::before {
+    content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; border-radius: 3px 0 0 3px;
+  }
+  .entry.lvl-A::before { background: var(--lvl-a-bar); }
+  .entry.lvl-B::before { background: var(--lvl-b-bar); }
+  .entry.lvl-C::before { background: var(--lvl-c-bar); }
+  .lvl-tag {
+    flex-shrink: 0; margin-top: 4px; font-size: 10.5px; font-weight: 700; line-height: 1;
+    padding: 3px 6px; border-radius: 5px; cursor: default;
+  }
+  .lvl-tag.A { background: rgba(245,197,24,0.35); color: #6b5200; }
+  .lvl-tag.B { background: rgba(232,176,4,0.22); color: #6b5200; }
+  .lvl-tag.C { background: rgba(232,212,77,0.28); color: #6b5a00; }
+  .empty-note { font-size: 13px; color: var(--ink-2); padding: 6px 2px 2px; }
+
+  /* ===== 悬置提示条 ===== */
+  .banner {
+    position: fixed; left: 50%; transform: translateX(-50%); bottom: 24px; z-index: 60;
+    max-width: 620px;
+    border: 1.5px dashed var(--suspense-border); background: #fffdf4;
+    border-radius: 10px; padding: 10px 14px;
+    font-size: 13px; line-height: 1.55;
+    display: flex; align-items: flex-start; gap: 10px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.12);
+  }
+  .banner .banner-close { margin-left: auto; flex-shrink: 0; cursor: pointer; border: none; background: none; color: var(--ink-2); font-size: 15px; line-height: 1; padding: 2px; border-radius: 5px; }
+  .banner .banner-close:hover { color: var(--ink); background: rgba(0,0,0,0.05); }
+  .banner a { color: #7c5cf6; text-decoration: none; }
+  .banner a:hover { text-decoration: underline; }
+
+  /* ===== 右栏：我的贡献 ===== */
+  .side {
+    position: fixed; top: 0; bottom: 0; right: 0; width: 300px; z-index: 30;
+    background: #fff; border-left: 1px solid var(--line);
+    display: flex; flex-direction: column;
+  }
+  .side-head { padding: 58px 16px 8px; }
+  .side-title { font-size: 13.5px; font-weight: 700; }
+  .side-sub { font-size: 11px; color: var(--ink-2); margin-top: 2px; }
+  .legend { padding: 2px 16px 12px; border-bottom: 1px solid var(--line); }
+  .legend-row { display: flex; align-items: flex-start; gap: 8px; margin-top: 6px; }
+  .swatch { flex-shrink: 0; width: 16px; height: 16px; border-radius: 4px; margin-top: 2px; border: 1px solid rgba(0,0,0,0.08); position: relative; }
+  .swatch::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; border-radius: 3px 0 0 3px; }
+  .swatch.A { background: var(--lvl-a-bg); } .swatch.A::before { background: var(--lvl-a-bar); }
+  .swatch.B { background: var(--lvl-b-bg); } .swatch.B::before { background: var(--lvl-b-bar); }
+  .swatch.C { background: var(--lvl-c-bg); } .swatch.C::before { background: var(--lvl-c-bar); }
+  .swatch.S { background: #fff; border: 1.5px dashed var(--suspense-border); }
+  .legend-txt { font-size: 11px; line-height: 1.45; color: var(--ink-2); }
+  .legend-txt b { color: var(--ink); font-weight: 600; }
+  .issues { flex: 1; overflow-y: auto; padding: 8px 12px 16px; }
+  .issue-group-label { font-size: 10.5px; color: var(--ink-2); margin: 8px 4px 5px; }
+  .issue-card {
+    width: 100%; text-align: left; font: inherit;
+    display: flex; align-items: center; gap: 7px;
+    background: #fff; border: 1px solid var(--line); border-radius: 8px;
+    padding: 7px 9px; margin-bottom: 6px; cursor: pointer;
+    transition: border-color 0.15s ease-out, background 0.15s ease-out;
+  }
+  .issue-card:hover { border-color: #c9c9cf; background: #fdfdfd; }
+  .issue-card:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+  .issue-card.active { border-color: var(--flash-red); background: #fff5f5; }
+  .issue-num { font-weight: 700; font-size: 12px; flex-shrink: 0; font-variant-numeric: tabular-nums; }
+  .issue-name { flex: 1; min-width: 0; font-size: 11.5px; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .issue-ver { flex-shrink: 0; font-size: 10px; color: var(--ink-2); background: #f0f0f3; border-radius: 5px; padding: 2px 5px; font-variant-numeric: tabular-nums; }
+  .issue-lvl { flex-shrink: 0; font-size: 10px; font-weight: 700; border-radius: 5px; padding: 2px 5px; }
+  .issue-lvl.A { background: rgba(245,197,24,0.35); color: #6b5200; }
+  .issue-lvl.B { background: rgba(232,176,4,0.22); color: #6b5200; }
+  .issue-lvl.C { background: rgba(232,212,77,0.28); color: #6b5a00; }
+  .issue-lvl.S { background: #fff; border: 1.5px dashed var(--suspense-border); color: #8a6d00; }
+  .issue-link { flex-shrink: 0; display: inline-flex; color: var(--ink-3); padding: 2px; border-radius: 4px; }
+  .issue-link:hover { color: #7c5cf6; background: rgba(0,0,0,0.05); }
+
+  /* ===== 定位 overlay（恒泰悦居开发面板模式：fixed 层 + rect 跟随） ===== */
+  #dp-ov { position: fixed; inset: 0; pointer-events: none; z-index: 2147482990; }
+  #dp-ov .fl {
+    position: fixed; border: 2px solid var(--flash-red);
+    box-shadow: 0 0 0 4px rgba(245,34,45,0.18); border-radius: 6px;
+  }
+  #dp-ov .fl span {
+    position: absolute; left: -2px; top: -21px;
+    background: var(--flash-red); color: #fff;
+    font: 700 11px/17px -apple-system, "PingFang SC", sans-serif;
+    padding: 0 7px; border-radius: 4px 4px 4px 0; white-space: nowrap;
+  }
+  #dp-ov .hv {
+    position: fixed; border: 2px solid #ff7a45; background: rgba(255,122,69,0.08);
+  }
+  #dp-ov .hv span {
+    position: absolute; left: -2px; top: -19px; background: #ff7a45; color: #fff;
+    font: 11px/17px -apple-system, "PingFang SC", sans-serif; padding: 0 6px; border-radius: 3px; white-space: nowrap;
+  }
+  #dp-ov .bx { position: fixed; border: 1.5px dashed var(--lvl-a-bar); background: rgba(245,197,24,0.05); }
+  #dp-ov .bx span {
+    position: absolute; left: -1px; top: -17px; background: var(--lvl-a-bar); color: #6b5200;
+    font: 700 10.5px/16px Consolas, "Microsoft YaHei", monospace; padding: 0 5px; border-radius: 3px 3px 3px 0; white-space: nowrap;
+  }
+  body.dp-insp, body.dp-insp * { cursor: crosshair !important; }
+
+  @media (prefers-reduced-motion: no-preference) {
+    #dp-ov .fl, #dp-ov .fl span { animation: dpfl 1.6s ease-out forwards; }
+    @keyframes dpfl { 0%, 62% { opacity: 1; } 100% { opacity: 0; } }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    #dp-ov .fl { transition: opacity 0.25s; }
+  }
+
+  /* ===== FAB 与开发面板 ===== */
+  .fab {
+    position: fixed; right: 16px; bottom: 16px; z-index: 70;
+    background: var(--ink); color: #fff; font-size: 12px; font-weight: 600;
+    border-radius: 999px; padding: 9px 16px; cursor: pointer;
+    box-shadow: 0 6px 18px rgba(0,0,0,0.25); border: none; font-family: inherit;
+  }
+  .fab b { color: var(--lvl-a-bar); font-family: Consolas, monospace; margin-right: 5px; }
+  .fab:hover { background: #333; }
+  .devpanel {
+    position: fixed; top: 0; right: calc(-1 * var(--dpw) - 20px); bottom: 0; width: var(--dpw); z-index: 80;
+    background: #fff; border-left: 1px solid var(--line);
+    box-shadow: -8px 0 24px rgba(0,0,0,0.08);
+    display: flex; flex-direction: column;
+    transition: right 0.22s ease-out;
+  }
+  body.dp-open .devpanel { right: 0; }
+  .dp-hd { display: flex; align-items: center; gap: 8px; padding: 12px 16px; border-bottom: 1px solid var(--line); }
+  .dp-hd .ttl { font-size: 13px; }
+  .dp-hd .ttl b { color: #7c5cf6; font-family: Consolas, monospace; }
+  .dp-hd .sp { flex: 1; }
+  .dp-hd .kbd-hint { font-size: 10.5px; color: var(--ink-3); }
+  .dp-hd kbd {
+    font: 10px/1 Consolas, monospace; color: var(--ink-2);
+    background: #f0f0f3; border: 1px solid var(--line); border-bottom-width: 2px;
+    border-radius: 4px; padding: 2px 5px;
+  }
+  .dp-close { border: none; background: none; font-size: 16px; color: var(--ink-2); cursor: pointer; padding: 2px 6px; border-radius: 5px; }
+  .dp-close:hover { color: var(--ink); background: #f0f0f3; }
+  .dp-tabs { display: flex; gap: 2px; padding: 8px 12px 0; border-bottom: 1px solid var(--line); }
+  .dp-tab {
+    font: inherit; font-size: 12px; color: var(--ink-2);
+    border: none; background: none; cursor: pointer;
+    padding: 6px 12px; border-radius: 7px 7px 0 0; border-bottom: 2px solid transparent;
+  }
+  .dp-tab:hover { color: var(--ink); background: #f7f7f8; }
+  .dp-tab.active { color: var(--ink); font-weight: 600; border-bottom-color: #7c5cf6; }
+  .dp-body { flex: 1; overflow-y: auto; padding: 14px 16px 24px; font-size: 12.5px; }
+  .dp-sec h4 { font-size: 12px; color: var(--ink-2); font-weight: 700; margin: 14px 0 6px; }
+  .dp-sec h4:first-child { margin-top: 0; }
+  .dp-kv { display: grid; grid-template-columns: auto 1fr; gap: 3px 14px; }
+  .dp-kv dt { color: var(--ink-2); }
+  .dp-kv dd { font-variant-numeric: tabular-nums; }
+  .dp-tool {
+    width: 100%; text-align: left; font: inherit; font-size: 12.5px;
+    display: flex; align-items: center; gap: 8px;
+    border: 1px solid var(--line); border-radius: 8px; background: #fafafa;
+    padding: 9px 12px; margin-bottom: 8px; cursor: pointer;
+  }
+  .dp-tool:hover { border-color: #c9c9cf; }
+  .dp-tool.on { border-color: #ff7a45; background: #fff7f3; }
+  .dp-tool .st { margin-left: auto; font-size: 10.5px; font-weight: 700; color: var(--ink-3); }
+  .dp-tool.on .st { color: #ff7a45; }
+  .dp-tool kbd {
+    font: 10px/1 Consolas, monospace; color: var(--ink-2);
+    background: #f0f0f3; border: 1px solid var(--line); border-bottom-width: 2px;
+    border-radius: 4px; padding: 2px 5px;
+  }
+  .dp-note { font-size: 11.5px; color: var(--ink-2); line-height: 1.6; }
+  .dp-note code {
+    font: 11px/1.5 Consolas, monospace; color: #444;
+    background: #f0f0f3; border-radius: 4px; padding: 1px 5px; word-break: break-all;
+  }
+  .dp-json { font: 10.5px/1.6 Consolas, monospace; color: #444; background: #f6f6f8; border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; white-space: pre-wrap; word-break: break-all; }
+
+  ::selection { background: rgba(245,197,24,0.4); }
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <span class="ttl">magpie 更新内容 × 我的贡献<small>ggbdpq · Discord gua2100</small></span>
+  <span class="stat-badge" id="statBadge"></span>
+  <span class="sp"></span>
+  <label class="onlymine"><input type="checkbox" id="onlyMine">仅看我的条目</label>
+  <span class="snapshot">数据快照 2026-11-01 · v0.1.2509 · 归属判据见补丁与更新日志对照 §1 / §9 / §10</span>
+</header>
+
+<div class="layout">
+  <main id="log"></main>
+  <aside class="side">
+    <div class="side-head">
+      <div class="side-title">我的贡献</div>
+      <div class="side-sub">点击 issue 定位左侧日志（红框标记）</div>
+    </div>
+    <div class="legend">
+      <div class="legend-row"><span class="swatch A"></span><span class="legend-txt"><b>A 级 · 补丁收编</b>：提交 author 保留（原样或注明）</span></div>
+      <div class="legend-row"><span class="swatch B"></span><span class="legend-txt"><b>B 级 · 补丁收编</b>：移植 / 重做 + 署名（Co-authored-by / 文字 credit）</span></div>
+      <div class="legend-row"><span class="swatch C"></span><span class="legend-txt"><b>C 级 · 贡献被引用</b>：idea / 搬运 / 验证被实现引用</span></div>
+      <div class="legend-row"><span class="swatch S"></span><span class="legend-txt"><b>S 级 · 条目悬置</b>：已收编，release notes 尚未列出</span></div>
+    </div>
+    <div class="issues" id="issues"></div>
+  </aside>
+</div>
+
+<div id="bannerSlot"></div>
+<button class="fab" id="fab"><b>`</b>开发面板</button>
+
+<aside class="devpanel" id="devpanel" aria-hidden="true">
+  <div class="dp-hd">
+    <span class="ttl"><b>DEV</b> 开发面板 · 成就总览</span>
+    <span class="sp"></span>
+    <span class="kbd-hint"><kbd>`</kbd> 收起</span>
+    <button class="dp-close" id="dpClose" aria-label="关闭面板">×</button>
+  </div>
+  <div class="dp-tabs" id="dpTabs"></div>
+  <div class="dp-body" id="dpBody"></div>
+</aside>
+
+<div id="dp-ov"></div>
+
+<script>
+"use strict";
+
+/* ================= 数据（补丁与更新日志对照 §1 / §2 / §9，逐字引用，快照 2026-10-31） ================= */
+
+var ENTRIES = [
+  /*  对照档 §1：首批十项补丁 + 三项分析（v0.1.1123-1159）  */
+  { v: "0.1.1159", group: "fix", zh: "修复了仅接受 client_secret_basic 的服务器的 MCP 身份验证问题。", mine: { issue: 1490, level: "A", form: "维护者确认合入 c606da5f · §1" } },
+  { v: "0.1.1159", group: "fix", zh: "修复了已登录的 MCP 服务器对位于 NAT 后面的 WSL 智能体返回 401 的问题。", mine: { issue: 1488, level: "A", form: "落地 91581fca，提交消息注明 ggbdpq · §1" } },
+  { v: "0.1.1159", group: "fix", zh: "修复了 Claude Opus 4.7+ 在 Chat 和 Responses 客户端中不显示总结性推理的问题。", mine: { issue: 1485, level: "A", form: "补丁合入 6934853b，维护者另以 bfd5c82d 完成改写路径 · §1" } },
+  { v: "0.1.1159", group: "fix", zh: "修复了 Claude on Bedrock 预设对全局和 us-gov 推理配置文件被标记为已替换的问题。", mine: { issue: 1484, level: "A", form: "采用修法与复现测试，012be0fc 提交注明 ggbdpq · §1" } },
+  { v: "0.1.1159", group: "fix", zh: "修复了 Grok 4.7 在其构建名称下应答时被标记为已替换的问题。", mine: { issue: 1455, level: "C", form: "分析贡献：定位 usage.Swapped 名称判断，建议官方同名豁免；实现 18d87fc5 · §2" } },
+  { v: "0.1.1158", group: "fix", zh: "修复了较新的 Claude 模型在高推理请求中收到 max 而不是 xhigh 的问题。", mine: { issue: 1471, level: "A", form: "补丁合入 d81706f9，保留作者 · §1" } },
+  { v: "0.1.1158", group: "fix", zh: "阻止向 Claude Fable 和 Mythos 发送思考预算，避免出现 400 错误。", mine: { issue: 1470, level: "A", form: "补丁合入 55ac9ec5，保留作者 · §1" } },
+  { v: "0.1.1156", group: "imp", zh: "刷新了托管守护进程的子命令辅助工具，以移除过时的 Codex 副本。", mine: { issue: 1461, level: "A", form: "补丁合入 74c48ac0，保留作者 · §1" } },
+  { v: "0.1.1136", group: "fix", zh: "修复了当客户端从对话中移除图像时 Claude 订阅对话停止的问题。", mine: { issue: 1382, level: "C", form: "分析贡献：核对客户端剥离历史图片导致续跑指纹不一致的机制 · §2" } },
+  { v: "0.1.1129", group: "imp", zh: "使用日志指纹识别现在使用解析后的内容，而不是重新读取完整日志，从而提升性能。", mine: { issue: 1357, level: "C", form: "分析贡献：独立复现日志哈希回归，建议先省掉前扫描；实现 439cfc4a · §2" } },
+  { v: "0.1.1129", group: "fix", zh: "历史写入不再阻塞读取者；未更改的缓存读数批次不再创建新笔记。", mine: { issue: 1358, level: "A", form: "保证测试与缓存跳读补丁合入 e9ed2943，保留作者 · §1" } },
+  { v: "0.1.1125", group: "fix", zh: "修复了带有工具调用的 Responses 请求，以避免在没有可用工具结果时出现提供商错误。", mine: { issue: 1341, level: "A", form: "维护者致谢补丁，以改良版自实现 b3330ea8，合成结果放在串尾 · §1" } },
+  { v: "0.1.1123", group: "fix", zh: "修复了当密钥存储中已包含来自此网关的调用方密钥时，dsh agent 误报警告的问题。", mine: { issue: 1332, level: "A", form: "PR #1339 原样合入 172f45a5 · §1" } },
+
+  /*  对照档 §9.1 / §9.2：v0.1.1774 之后  */
+  { v: "0.1.1833", group: "imp", zh: "更新了 Codex 应用，使页面状态被视为背景上下文，而不是用户消息的一部分。", mine: { issue: 3418, level: "A", form: "author 保留 · §9.1" } },
+  { v: "0.1.1986", group: "imp", zh: "更新了 fine-clock 哈希测试，以基于追加时间戳而不是墙上时钟来计时读取。", mine: { issue: 3511, level: "C", form: "idea credit：维护者自修，body 明写 ggbdpq's patch proposed the same stamp-relative read + Co-authored-by · §9.2" } },
+  { v: "0.1.2038", group: "fix", zh: "修复了插件模型在未返回任何文本时仍错误地保留在聊天列表中的问题。", mine: { issue: 3279, level: "A", form: "维护者移植 hunt65-c 分支 + review 修改，Co-authored-by · §9.1" } },
+  { v: "0.1.2216", group: "fix", zh: "修复了 Kimi Code 拒绝关闭思考的问题；现在会再次请求并交由模型决定。", mine: { issue: 3739, level: "A", form: "author 保留 · §9.1" } },
+  { v: "0.1.2216", group: "fix", zh: "修复了在翻译后的 Responses 轮次中切换 Codex 模式可能丢失开发者角色的问题。", mine: { issue: 2532, level: "C", form: "搬运落地：wrke1990 修复保作者，我方自 Discord 搬运两份修复并 rebase（Cherry-picked by ggbdpq）+ Co-authored-by · §9.2" } },
+  { v: "0.1.2217", group: "fix", zh: "修复了通过 Windows 联接点访问配置文件夹时插件页面未注册的问题。", mine: { issue: 4265, level: "B", form: "维护者重做（130 行复制改为 proc.RealPath）+ body 文字 credit · §9.1" } },
+  { v: "0.1.2224", group: "fix", zh: "修复了网关缓存标记处理，使分类器自身的标记得以保留，移动的标记保留其原始块边界。", mine: { issue: 3835, level: "A", form: "author 保留 · §9.1" } },
+  { v: "0.1.2224", group: "fix", zh: "修复了网关缓存键，一个对话的缓存不会在所有子代理之间共享；${subagentId} 正确指向 Claude Code 子代理。", mine: { issue: 2937, level: "B", form: "body 文字 credit · §9.1" } },
+  { v: "0.1.2257", group: "fix", zh: "修复了 glm-5.3-flash 副本中的回车符被错误插入到工具调用参数中的问题。", mine: { issue: 4256, level: "A", form: "author 保留（r3）· §9.1" } },
+  { v: "0.1.2258", group: "fix", zh: "当流以 finish_reason: \"error\" 结束时正确进行故障转移（#2471）", mine: { issue: 2471, level: "A", form: "author 保留 · §9.1 · v0.1.2258 六单日志正文直接引用 issue 号" } },
+  { v: "0.1.2258", group: "fix", zh: "当 LiteLLM 中继拒绝 priority 时，重试不带 service_tier 的请求（#3978）", mine: { issue: 3978, level: "A", form: "author 保留 · §9.1 · 日志正文引用 issue 号" } },
+  { v: "0.1.2258", group: "fix", zh: "不再将 Azure 的 \"invalid encrypted summary\" 视为外部推理（#3994）", mine: { issue: 3994, level: "A", form: "author 保留 · §9.1 · 日志正文引用 issue 号" } },
+  { v: "0.1.2258", group: "fix", zh: "修复了列表中的预算总额，并防止提供程序模型获取超出预算（#4065）", mine: { issue: 4065, level: "A", form: "author 保留 · §9.1 · 日志正文引用 issue 号" } },
+  { v: "0.1.2258", group: "fix", zh: "关闭 RTK 现在与 Claude 实际存储的设置一致（#2879）", mine: { issue: 2879, level: "A", form: "author 保留 · §9.1 · 日志正文引用 issue 号" } },
+  { v: "0.1.2258", group: "fix", zh: "更新未固定的 Git 源现在会重新解析分支，而不是保留锁定的旧提交（#2954）", mine: { issue: 2954, level: "A", form: "author 保留 · §9.1 · 日志正文引用 issue 号" } },
+
+  /*  当前窗口 v0.1.2278-2288（12 条，本窗口 0 条属于 ggbdpq：诚实空窗）  */
+  { v: "0.1.2288", group: "fix", zh: "将 WorkBuddy 插件支持更新为要求 0.2.6 或更高版本，并修复了处理逻辑，使空工具调用不再被当作实际调用。", mine: null },
+  { v: "0.1.2287", group: "fix", zh: "修复了冷启动回合结束后临时匹配器数据未被释放的问题。", mine: null },
+  { v: "0.1.2286", group: "imp", zh: "在主窗口中传递笔记不再需要任何点击。", mine: null },
+  { v: "0.1.2285", group: "fix", zh: "Claude：现在会正确等待交互模式启动，如果挂起则回退到提示符。", mine: null },
+  { v: "0.1.2284", group: "imp", zh: "减少了读取页面和预热期间的内存使用。", mine: null },
+  { v: "0.1.2283", group: "fix", zh: "修复了之前已读取的 GLM 密钥在后续读取失败时可能丢失其卡片的问题。", mine: null },
+  { v: "0.1.2282", group: "fix", zh: "修复了 WorkBuddy 插件过滤器未保留换行符的问题。", mine: null },
+  { v: "0.1.2281", group: "imp", zh: "主窗口不再显示空白页脚栏；页面现在延伸到底部。", mine: null },
+  { v: "0.1.2280", group: "imp", zh: "首次设置期间，启动问题和预热阅读提示现在会交替出现。", mine: null },
+  { v: "0.1.2279", group: "feat", zh: "添加了对 Claude Code 在 Windows 上使用伪控制台的交互模式的支持。", mine: null },
+  { v: "0.1.2278", group: "imp", zh: "将 WorkBuddy 插件的最低版本要求更新为 0.2.4。", mine: null },
+  { v: "0.1.2278", group: "fix", zh: "修复了 DeepSeek 的推理内容可能在模型拒绝回答后仍显示的问题。", mine: null },
+
+  /*  v0.1.2289（最新 tag：仅列非我方一笔；我方 #3747 已收编但条目悬置，见 S 级）  */
+  { v: "0.1.2289", group: "imp", zh: "长对话现在会在压缩发生前解释 Codex 压缩它们的原因。", mine: null },
+
+  /*  对照档 §10（2026-11-01 核对轮）：v0.1.2292-2497 收编巨浪  */
+  { v: "0.1.2292", group: "fix", zh: "缺少函数名称的 Chat 工具调用现在会被直接丢弃，而不是发送给客户端进行拒绝。", mine: { issue: 1475, level: "B", form: "维护者改写（finish 回退边界修正）+ Co-authored-by · §10.1" } },
+  { v: "0.1.2293", group: "fix", zh: "中继流在行中间被切断时，在报告错误前未发送部分事件 (#2580)", mine: { issue: 2580, level: "B", form: "基于 gua2100 patch（hunt/2580-midstream-reset）修改落地，修两回归 · §10.1" } },
+  { v: "0.1.2294", group: "fix", zh: "某个模型的速率限制会重置整个 API 密钥，而不是仅重置该模型。", mine: { issue: 3039, level: "B", form: "Ported hunt52-c + scope 扩展（per-model isolation）+ Co · §10.1" } },
+  { v: "0.1.2295", group: "fix", zh: "所有模型调用参数中的小数值（如 8.0）传递给代理时会被转换为 8 (#3152)", mine: { issue: 3152, level: "B", form: "泛化版合入（hunt105 泛化论证胜出）+ Co · §10.1" } },
+  { v: "0.1.2297", group: "fix", zh: "网关对来自 OpenCode Go 的裸 400 响应返回 502 Bad Gateway。", mine: { issue: 3740, level: "B", form: "Ported（openCodeBareRefusal）+ Co · §10.1" } },
+  { v: "0.1.2299", group: "fix", zh: "为 Desktop tier 选择模型时可能意外重写其标题。", mine: { issue: 3264, level: "B", form: "ported as is + Co · §10.1" } },
+  { v: "0.1.2301", group: "fix", zh: "VS Code 内置的 Copilot 启动器被错误地视为 Copilot CLI。", mine: { issue: 3269, level: "B", form: "Ported 半边（product.json 判定）+ Co；另半边见 v0.1.2497 VS Code 1.139 · §10.1" } },
+  { v: "0.1.2322", group: "fix", zh: "账户和密钥计数现在覆盖全天，而不仅仅是最后保留的请求。", mine: { issue: 3351, level: "B", form: "Ported + 修改（note 措辞）+ Co · §10.1" } },
+  { v: "0.1.2377", group: "fix", zh: "AstrLink Guard 的分词器因请求中的杂散字节而崩溃。", mine: { issue: 4553, level: "B", form: "The patch is ggbdpq's + 双 Co（ggbdpq + SunnyRx）· §10.1" } },
+  { v: "0.1.2391", group: "imp", zh: "Codex 应用服务器现在会记录其停止的原因；添加了防止列表闪烁的保护措施。", mine: { issue: 4550, level: "C", form: "诊断兑现：body 两处引 ggbdpq asked for it on #4550 · §10.1" } },
+  { v: "0.1.2399", group: "feat", zh: "Claude Code 的 /model 命令现在会遵循您的隐藏模型设置，并立即应用更改 (#4548)", mine: { issue: 4548, level: "A", form: "author 保留（维护者同版 follow-up 补 tier 行）· §10.1" } },
+  { v: "0.1.2399", group: "imp", zh: "DeepSeek 推理输出现在会在连续三次干净响应后开始流式输出 (#4512)", mine: { issue: 4512, level: "A", form: "author 保留 · §10.1" } },
+  { v: "0.1.2399", group: "imp", zh: "Portable VS Code 现在会正确地从其数据文件夹中读取用户设置。", mine: { issue: null, level: "A", form: "author 保留（无 issue 号）· §10.1" } },
+  { v: "0.1.2399", group: "fix", zh: "通过移除锁定的采样字段，修复了 Volcengine Ark 上的 Kimi。", mine: { issue: null, level: "A", form: "author 保留（无 issue 号）· §10.1" } },
+  { v: "0.1.2403", group: "fix", zh: "作为符号链接的 WSL 代理文件夹无法在其预期目标位置打开。", mine: { issue: 4502, level: "C", form: "机理 credit，patch 未采用（ggbdpq found and explained the link, thanks）· §10.1" } },
+  { v: "0.1.2445", group: "fix", zh: "翻译后的 Messages asks 现在会保留客户端设置的缓存标记 (#4571)", mine: { issue: 4571, level: "A", form: "author 保留 · §10.1" } },
+  { v: "0.1.2445", group: "fix", zh: "路由 SKILL.md 不再隐藏其路由到的技能。", mine: { issue: null, level: "A", form: "author 保留（无 issue 号）· §10.1" } },
+  { v: "0.1.2445", group: "imp", zh: "opencode.json 现在会按用户设置的顺序列出 Magpie 的模型。", mine: { issue: null, level: "A", form: "author 保留（无 issue 号）· §10.1" } },
+  { v: "0.1.2445", group: "imp", zh: "Gemini 请求现在会将 thinkingConfig 计为 effort (#4529)", mine: { issue: 4529, level: "A", form: "author 保留 · §10.1" } },
+  { v: "0.1.2489", group: "feat", zh: "允许的工具选择现在会传递到 Grok plugin，包括工具选择限制 (#3153)", mine: { issue: 3153, level: "A", form: "author 保留（维护者同版补端到端）· §10.1" } },
+  { v: "0.1.2489", group: "feat", zh: "在 Settings 之外配置的代理现在会在相关字段中填入其登录凭据 (#3382)", mine: { issue: 3382, level: "A", form: "author 保留（hunt85 重做版）· §10.1" } },
+  { v: "0.1.2489", group: "fix", zh: "不支持 temperature 的模型现在会在查询时不带该参数，无论是中继还是转换 (#2492)", mine: { issue: 2492, level: "A", form: "author 保留 · §10.1" } },
+  { v: "0.1.2489", group: "fix", zh: "Responses 上请求工具时，关闭严格模式后可选参数保持可选 (#3055)", mine: { issue: 3055, level: "A", form: "author 保留 · §10.1" } },
+  { v: "0.1.2489", group: "fix", zh: "工具列表按不区分大小写的方式对工具进行分组，与其摘要一致 (#2969)", mine: { issue: 2969, level: "A", form: "author 保留（维护者同版补 legend 细化）· §10.1" } },
+  { v: "0.1.2492", group: "fix", zh: "Codex 流在回复中途被截断时，失败信息会被读取、报告给客户端并记录原因。", mine: { issue: 3377, level: "A", form: "author 保留（Azir-11 协作）· §10.1" } },
+  { v: "0.1.2492", group: "fix", zh: "摘要提前结束时本地 Codex 压缩：不再 502，无候选时网关本地压缩。", mine: { issue: 3526, level: "A", form: "author 保留（Edward4226 协作）· §10.1" } },
+  { v: "0.1.2492", group: "fix", zh: "中继流半行事件处理修正，Chat 流以 [DONE] 结束。", mine: { issue: 3197, level: "A", form: "author 保留（held-stream 嫁接路线胜出）· §10.1" } },
+  { v: "0.1.2492", group: "fix", zh: "流式推理摘要被重复发送给客户端的问题。", mine: { issue: 2974, level: "A", form: "author 保留 · §10.1" } },
+  { v: "0.1.2492", group: "fix", zh: "插件工具调用被中断时立即重试而不是等待一分钟。", mine: { issue: 2873, level: "A", form: "author 保留 · §10.1" } },
+  { v: "0.1.2492", group: "fix", zh: "发送给非 OpenAI 供应商的 Codex 压缩提示使用 system 角色而不是 developer。", mine: { issue: 2955, level: "A", form: "author 保留 · §10.1" } },
+  { v: "0.1.2492", group: "fix", zh: "密钥脱敏掩码覆盖 Ark 密钥、_KEY/_PASS 字段、authorization 头和 JSON 字段名。", mine: { issue: 2946, level: "A", form: "author 保留（Security 段；维护者同版细化 field-name 边界）· §10.1" } },
+  { v: "0.1.2497", group: "fix", zh: "推理项重复文本及摘要字段缺失时崩溃；推理文本传递另一模型时保留为摘要 (#2855)", mine: { issue: 2855, level: "A", form: "author 保留 · §10.1（release 三条同号）" } },
+  { v: "0.1.2497", group: "fix", zh: "速率限制重置计时从最后一次成功响应计算；供应商冷却时间在结束前被遵守 (#2718)", mine: { issue: 2718, level: "A", form: "author 保留（Edward4226 协作后半）· §10.1" } },
+  { v: "0.1.2497", group: "fix", zh: "较短的故障缩短较长冷却时间的问题；网关使用供应商提供的配额重置时间 (#3289)", mine: { issue: 3289, level: "A", form: "author 保留（wjq990112 协作）· §10.1" } },
+  { v: "0.1.2497", group: "fix", zh: "供应商报告模型不在当前区域服务时，请求故障转移到组中下一个模型。", mine: { issue: 2887, level: "A", form: "author 保留 · §10.1" } },
+  { v: "0.1.2497", group: "fix", zh: "使用版本化布局时 VS Code 1.139 中的启动器检测问题。", mine: { issue: null, level: "A", form: "author 保留（#3269 新面）· §10.1" } },
+  { v: "0.1.2497", group: "fix", zh: "供应商模型别名被计为模型切换的问题 (#4593)", mine: { issue: 4593, level: "A", form: "author 保留（hunt114 VendorAlias）· §10.1" } }
+];
+
+var ISSUES = [
+  { n: 1332, name: "dsh 密钥存储误报警告",            v: "0.1.1123", level: "A" },
+  { n: 1341, name: "Responses 工具调用缺结果 400",    v: "0.1.1125", level: "A" },
+  { n: 1358, name: "配额历史写入阻塞读取",            v: "0.1.1129", level: "A" },
+  { n: 1357, name: "日志指纹重复读全量日志",          v: "0.1.1129", level: "C" },
+  { n: 1382, name: "客户端剥离图片致订阅对话停止",    v: "0.1.1136", level: "C" },
+  { n: 1461, name: "守护进程子命令过时 Codex 副本",   v: "0.1.1156", level: "A" },
+  { n: 1470, name: "Claude Fable/Mythos 思考预算 400", v: "0.1.1158", level: "A" },
+  { n: 1471, name: "新 Claude 模型 max/xhigh 规则",    v: "0.1.1158", level: "A" },
+  { n: 1484, name: "Bedrock global./us-gov. 误判换模型", v: "0.1.1159", level: "A" },
+  { n: 1485, name: "Claude Opus 4.7+ 推理摘要不显示",  v: "0.1.1159", level: "A" },
+  { n: 1488, name: "WSL NAT 下 MCP 中转 401",          v: "0.1.1159", level: "A" },
+  { n: 1490, name: "仅 client_secret_basic 服务器登录失败", v: "0.1.1159", level: "A" },
+  { n: 1455, name: "Grok 4.7 构建名被标记已替换",      v: "0.1.1159", level: "C" },
+  { n: 3418, name: "Codex 页面状态 = 背景上下文",      v: "0.1.1833", level: "A" },
+  { n: 3511, name: "fine-clock 哈希测试按追加时间戳计时", v: "0.1.1986", level: "C" },
+  { n: 3279, name: "插件模型无文本不滞留聊天列表",      v: "0.1.2038", level: "A" },
+  { n: 3739, name: "Kimi Code 拒绝关思考被重问",        v: "0.1.2216", level: "A" },
+  { n: 2532, name: "Codex 模式切换不再丢 developer 角色", v: "0.1.2216", level: "C" },
+  { n: 4265, name: "Windows junction 插件页注册（重做+credit）", v: "0.1.2217", level: "B" },
+  { n: 3835, name: "分类器缓存标记保留",                v: "0.1.2224", level: "A" },
+  { n: 2937, name: "缓存不跨子代理共享 + ${subagentId}", v: "0.1.2224", level: "B" },
+  { n: 4256, name: "glm-5.3-flash 回车符污染工具调用参数", v: "0.1.2257", level: "A" },
+  { n: 2471, name: "finish_reason \"error\" 故障转移",  v: "0.1.2258", level: "A" },
+  { n: 3978, name: "LiteLLM service_tier 重试",         v: "0.1.2258", level: "A" },
+  { n: 3994, name: "Azure \"invalid encrypted summary\" 非外部推理", v: "0.1.2258", level: "A" },
+  { n: 4065, name: "列表预算总额",                      v: "0.1.2258", level: "A" },
+  { n: 2879, name: "RTK 关闭语义",                      v: "0.1.2258", level: "A" },
+  { n: 2954, name: "Git 源重解析分支",                  v: "0.1.2258", level: "A" },
+  { n: 3747, name: "计划密钥额度窗口按 key 调用计算",   v: "0.1.2289", level: "S" },
+  { n: 3985, name: "Responses 流参数增量归属",          v: "0.1.2215", level: "S" },
+  /*  对照档 §10（2026-11-01 核对轮）  */
+  { n: 1475, name: "无名 Chat 工具调用整批丢弃",        v: "0.1.2292", level: "B" },
+  { n: 2580, name: "中继流行中切断半事件",              v: "0.1.2293", level: "B" },
+  { n: 3039, name: "429 冷却 per-model 隔离",           v: "0.1.2294", level: "B" },
+  { n: 3152, name: "参数小数 8.0→8 全模型",             v: "0.1.2295", level: "B" },
+  { n: 3740, name: "OpenCode 裸 400 → 502",             v: "0.1.2297", level: "B" },
+  { n: 3264, name: "Desktop tier 模型标题不重写",       v: "0.1.2299", level: "B" },
+  { n: 3269, name: "VS Code launcher 判定（半边+新面）", v: "0.1.2301", level: "B" },
+  { n: 3351, name: "账户密钥计数覆盖全天",              v: "0.1.2322", level: "B" },
+  { n: 4553, name: "AstrLink tokenizer 杂散字节 panic",  v: "0.1.2377", level: "B" },
+  { n: 4550, name: "Codex app-server 停止原因（诊断兑现）", v: "0.1.2391", level: "C" },
+  { n: 4502, name: "WSL 链接文件夹（机理 credit，patch 未采用）", v: "0.1.2403", level: "C" },
+  { n: 4548, name: "Claude Code /model 遵循隐藏设置",   v: "0.1.2399", level: "A" },
+  { n: 4512, name: "DeepSeek 推理三连后流式",           v: "0.1.2399", level: "A" },
+  { n: 4571, name: "翻译 Messages 保留缓存标记",        v: "0.1.2445", level: "A" },
+  { n: 4529, name: "Gemini thinkingConfig 计为 effort",  v: "0.1.2445", level: "A" },
+  { n: 3153, name: "allowed_tools 达 Grok plugin",      v: "0.1.2489", level: "A" },
+  { n: 3382, name: "Settings 外代理登录凭据",           v: "0.1.2489", level: "A" },
+  { n: 2492, name: "拒 temperature 模型去参重问",       v: "0.1.2489", level: "A" },
+  { n: 3055, name: "Responses 工具 strict:false",       v: "0.1.2489", level: "A" },
+  { n: 2969, name: "工具列表大小写不敏感分组",          v: "0.1.2489", level: "A" },
+  { n: 3377, name: "Codex 中流失败报告客户端",          v: "0.1.2492", level: "A" },
+  { n: 3526, name: "压缩提前结束本地压缩",              v: "0.1.2492", level: "A" },
+  { n: 3197, name: "半行事件+[DONE] 收尾",              v: "0.1.2492", level: "A" },
+  { n: 2974, name: "推理摘要不重复发送",                v: "0.1.2492", level: "A" },
+  { n: 2873, name: "插件工具调用立即重试",              v: "0.1.2492", level: "A" },
+  { n: 2955, name: "Codex 压缩 system 角色",            v: "0.1.2492", level: "A" },
+  { n: 2946, name: "脱敏掩码扩面（Security）",          v: "0.1.2492", level: "A" },
+  { n: 2855, name: "推理项文本重复/崩溃",               v: "0.1.2497", level: "A" },
+  { n: 2718, name: "限速重置计时基准",                  v: "0.1.2497", level: "A" },
+  { n: 3289, name: "冷却时长不被短故障缩短",            v: "0.1.2497", level: "A" },
+  { n: 2887, name: "model not served 组内转移",         v: "0.1.2497", level: "A" },
+  { n: 4593, name: "供应商模型别名非切换",              v: "0.1.2497", level: "A" },
+  { n: 4561, name: "plainSchema $ref 解析",             v: "0.1.2421", level: "S" },
+  { n: 4562, name: "search route 读文本调用",           v: "0.1.2421", level: "S" },
+  { n: 4563, name: "keychain 写失败保 logins.json",     v: "0.1.2421", level: "S" }
+];
+
+var SUSPENDED = {
+  3747: { msg: "#3747 已随 v0.1.2289 收编（as written + Co-authored-by），条目待官方 release notes 补列（2498-2509 复核仍未补）",
+          link: "https://github.com/yetone/magpie-releases/releases/tag/v0.1.2289", linkText: "查看 v0.1.2289 release" },
+  3985: { msg: "#3985 已随 v0.1.2215 收编（author 保留），该版本无 release notes（跳版直发 2216），条目缺位",
+          link: "https://github.com/yetone/magpie/issues/3985", linkText: "查看 issue #3985" },
+  4561: { msg: "#4561 已随 v0.1.2421 收编（author 保留），该版本无 release notes（404），后续版本未补列",
+          link: "https://github.com/yetone/magpie/issues/4561", linkText: "查看 issue #4561" },
+  4562: { msg: "#4562 已随 v0.1.2421 收编（author 保留），该版本无 release notes（404），后续版本未补列",
+          link: "https://github.com/yetone/magpie/issues/4562", linkText: "查看 issue #4562" },
+  4563: { msg: "#4563 已随 v0.1.2421 收编（author 保留），该版本无 release notes（404），后续版本未补列",
+          link: "https://github.com/yetone/magpie/issues/4563", linkText: "查看 issue #4563" }
+};
+
+var GROUPS = [
+  { key: "feat", label: "新功能" },
+  { key: "imp",  label: "改进" },
+  { key: "fix",  label: "错误修复" }
+];
+
+/* ================= 工具函数 ================= */
+
+function vNum(v) { return parseInt(v.split(".")[2], 10); }
+function esc(s) { return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\"/g, "&quot;"); }
+function ov() { return document.getElementById("dp-ov"); }
+
+var state = { onlyMine: false, activeIssue: null };
+
+/* ================= 左栏渲染（默认：全部版本全量日志，黄色即我的） ================= */
+
+function renderLog() {
+  var list = ENTRIES.slice().sort(function (a, b) { return vNum(b.v) - vNum(a.v); });
+  if (state.onlyMine) list = list.filter(function (e) { return e.mine; });
+
+  var byVer = {};
+  list.forEach(function (e) { (byVer[e.v] = byVer[e.v] || []).push(e); });
+  var vers = Object.keys(byVer).sort(function (a, b) { return vNum(b) - vNum(a); });
+
+  var html = "";
+  if (!vers.length) html = '<div class="empty-note">当前过滤下没有条目。</div>';
+  vers.forEach(function (v) {
+    var items = byVer[v];
+    var mineCount = items.filter(function (e) { return e.mine; }).length;
+    html += '<section class="ver-sec" id="ver-' + v + '">';
+    html += '<div class="ver-head"><span class="vn">v' + v + '</span>' +
+            (mineCount ? '<span class="vm">我的 ' + mineCount + ' 条</span>' : '') +
+            '<span class="cnt">' + items.length + ' 条</span></div>';
+    GROUPS.forEach(function (g) {
+      var gi = items.filter(function (e) { return e.group === g.key; });
+      if (!gi.length) return;
+      html += '<div class="grp"><div class="grp-title">' + g.label + " " + gi.length + '</div>';
+      gi.forEach(function (e) {
+        var cls = "entry" + (e.mine ? " lvl-" + e.mine.level : "");
+        var tag = e.mine ? '<span class="lvl-tag ' + e.mine.level + '">' + e.mine.level + '</span>' : "";
+        var tip = e.mine ? ' title="' + esc(e.mine.form) + '"' : "";
+        var anchor = (e.mine && e.mine.issue) ? ' id="entry-' + e.mine.issue + '"' : "";
+        html += '<div class="' + cls + '"' + anchor + tip + '><span class="dot"></span><span class="txt">' + esc(e.zh) + '</span>' + tag + '<span class="ver">v' + e.v + '</span></div>';
+      });
+      html += '</div>';
+    });
+    html += '</section>';
+  });
+  document.getElementById("log").innerHTML = html;
+  if (dpState.boxes) redrawBoxes();
+}
+
+/* ================= 右栏 issue 列表 ================= */
+
+var LINK_SVG = '<svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M4.5 2h5.5v5.5M10 2 2.5 9.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
+function renderIssues() {
+  var box = document.getElementById("issues");
+  var html = "";
+  ["A", "B", "C", "S"].forEach(function (lvl) {
+    var items = ISSUES.filter(function (i) { return i.level === lvl; });
+    if (!items.length) return;
+    html += '<div class="issue-group-label">' + lvl + ' 级 · ' + items.length + ' 单</div>';
+    items.forEach(function (i) {
+      html += '<button class="issue-card" data-issue="' + i.n + '">' +
+        '<span class="issue-num">#' + i.n + '</span>' +
+        '<span class="issue-name">' + esc(i.name) + '</span>' +
+        '<span class="issue-ver">v' + i.v + '</span>' +
+        '<span class="issue-lvl ' + i.level + '">' + i.level + '</span>' +
+        '<a class="issue-link" href="https://github.com/yetone/magpie/issues/' + i.n + '" target="_blank" rel="noopener" title="在 GitHub 打开 #' + i.n + '">' + LINK_SVG + '</a>' +
+        '</button>';
+    });
+  });
+  box.innerHTML = html;
+  box.querySelectorAll(".issue-card").forEach(function (card) {
+    card.addEventListener("click", function (ev) {
+      if (ev.target.closest(".issue-link")) return;
+      locateIssue(parseInt(card.getAttribute("data-issue"), 10));
+    });
+  });
+}
+
+/* ================= 红框定位（fixed overlay + rect 跟随滚动，恒泰悦居 flash 模式） ================= */
+
+function flashRect(el, label) {
+  var layer = ov();
+  var f = document.createElement("div");
+  f.className = "fl";
+  f.innerHTML = '<span>' + esc(label) + '</span>';
+  layer.appendChild(f);
+  var t0 = performance.now();
+  function tick(now) {
+    if (!document.contains(el)) { f.remove(); return; }
+    var r = el.getBoundingClientRect();
+    f.style.left = (r.left - 4) + "px";
+    f.style.top = (r.top - 4) + "px";
+    f.style.width = (r.width + 8) + "px";
+    f.style.height = (r.height + 8) + "px";
+    if (now - t0 < 1700) {
+      requestAnimationFrame(tick);
+    } else {
+      f.style.opacity = "0";
+      f.style.transition = "opacity 0.25s";
+      setTimeout(function () { f.remove(); }, 300);
+    }
+  }
+  requestAnimationFrame(tick);
+}
+
+function locateIssue(n) {
+  state.activeIssue = n;
+  document.querySelectorAll(".issue-card").forEach(function (c) {
+    c.classList.toggle("active", parseInt(c.getAttribute("data-issue"), 10) === n);
+  });
+
+  var info = null, entry = null;
+  ISSUES.forEach(function (i) { if (i.n === n) info = i; });
+  ENTRIES.forEach(function (e) { if (e.mine && e.mine.issue === n) entry = e; });
+
+  if (info && info.level === "S") { showBanner(n); return; }
+  if (!entry) return;
+
+  /* 仅看我的模式下条目必然在；否则确保渲染后取元素 */
+  var el = document.getElementById("entry-" + n);
+  if (!el) { renderLog(); el = document.getElementById("entry-" + n); }
+  if (!el) return;
+
+  el.scrollIntoView({ behavior: "smooth", block: "center" });
+  flashRect(el, "#" + n + " · " + entry.mine.level + " 级");
+}
+
+/* ================= 悬置提示条 ================= */
+
+function showBanner(n) {
+  var s = SUSPENDED[n];
+  if (!s) return;
+  var slot = document.getElementById("bannerSlot");
+  slot.innerHTML =
+    '<div class="banner" role="status">' +
+    '<div>' + esc(s.msg) + '。 <a href="' + s.link + '" target="_blank" rel="noopener">' + esc(s.linkText) + ' ↗</a></div>' +
+    '<button class="banner-close" aria-label="关闭提示条">×</button>' +
+    '</div>';
+  slot.querySelector(".banner-close").addEventListener("click", function () { slot.innerHTML = ""; });
+}
+
+/* ================= 开发面板（恒泰悦居 dp 模式：` 键 + FAB + 页签） ================= */
+
+var DP_TABS = [
+  { key: "overview", label: "概览" },
+  { key: "tools",    label: "工具" },
+  { key: "data",     label: "数据" }
+];
+var dpState = { open: false, tab: "overview", insp: false, boxes: false };
+
+function dpToggle(force) {
+  dpState.open = (typeof force === "boolean") ? force : !dpState.open;
+  document.body.classList.toggle("dp-open", dpState.open);
+  document.getElementById("devpanel").setAttribute("aria-hidden", dpState.open ? "false" : "true");
+  if (dpState.open) {
+    dpRenderBody();
+  } else {
+    dpSetInsp(false);
+    dpSetBoxes(false);
+    if (dpState.tab === "tools") dpRenderBody();
+  }
+}
+
+function dpRenderTabs() {
+  var box = document.getElementById("dpTabs");
+  box.innerHTML = DP_TABS.map(function (t) {
+    return '<button class="dp-tab' + (dpState.tab === t.key ? " active" : "") + '" data-tab="' + t.key + '">' + t.label + '</button>';
+  }).join("");
+  box.querySelectorAll(".dp-tab").forEach(function (b) {
+    b.addEventListener("click", function () {
+      dpState.tab = b.getAttribute("data-tab");
+      dpRenderTabs(); dpRenderBody();
+    });
+  });
+}
+
+function dpRenderBody() {
+  var body = document.getElementById("dpBody");
+  var mine = ENTRIES.filter(function (e) { return e.mine; });
+  if (dpState.tab === "overview") {
+    body.innerHTML =
+      '<div class="dp-sec">' +
+      '<h4>数据概览</h4><dl class="dp-kv">' +
+      '<dt>版本跨度</dt><dd>v0.1.1123 → v0.1.2497</dd>' +
+      '<dt>日志条目</dt><dd>' + ENTRIES.length + ' 条（其中我的 ' + mine.length + ' 条）</dd>' +
+      '<dt>涉及 issue</dt><dd>' + ISSUES.length + ' 单（A ' + ISSUES.filter(function(i){return i.level==="A";}).length +
+      ' / B ' + ISSUES.filter(function(i){return i.level==="B";}).length +
+      ' / C ' + ISSUES.filter(function(i){return i.level==="C";}).length +
+      ' / S ' + ISSUES.filter(function(i){return i.level==="S";}).length + '）</dd>' +
+      '<dt>全仓署名</dt><dd>author 94 / Co 72 / 文字 14 / 尾注 42（11-01 实测）</dd>' +
+      '<dt>数据快照</dt><dd>2026-11-01 · v0.1.2509</dd>' +
+      '</dl>' +
+      '<h4>归属判据</h4>' +
+      '<div class="dp-note">全部归属取自 <code>docs/hub/magpie/journal/账册/补丁与更新日志对照.md</code>：§1（首批十项补丁+三项分析贡献）、§9（v0.1.1774→2289）、§10（v0.1.2290→2509 收编巨浪，11-01）。悬置单（#3747 / #3985 / #4561-63）已收编但官方 release notes 未列条目。本页仅收录对照档已核条目，非上游全量日志。</div>' +
+      '<h4>数据源（复核用）</h4>' +
+      '<div class="dp-note">' +
+      '更新日志原文：<code>gh api repos/yetone/magpie-releases/releases/tags/v0.1.NNNN --jq .body</code>（404 = 无 release，如 v0.1.2215）<br>' +
+      '版本 tag ↔ 提交：本地 clone <code>/Users/ggbdpq/cc/code/fork/magpie-hub/magpie</code>；注意 tag --contains 须 <code>grep ^v0\\.1</code> 排除 pf-v2 污染<br>' +
+      'issue 现场：<code>https://github.com/yetone/magpie/issues/N</code>' +
+      '</div>' +
+      '<h4>诚实空窗声明</h4>' +
+      '<div class="dp-note">当前窗口 v0.1.2278-2288 的 12 条全部非我方（itspig / #2278 / #4504 / larchsis 等）；最新一条成就在 v0.1.2258 六连发（日志正文直接引用 issue 号，新形态）。数据不含任何推测归属。</div>' +
+      '</div>';
+  } else if (dpState.tab === "tools") {
+    body.innerHTML =
+      '<div class="dp-sec">' +
+      '<h4>检查与定位工具</h4>' +
+      '<button class="dp-tool' + (dpState.insp ? " on" : "") + '" id="tInsp"><span>检查元素（悬停查看归属详情）</span><span class="st">' + (dpState.insp ? "ON" : "OFF") + '</span><kbd>Alt+I</kbd></button>' +
+      '<button class="dp-tool' + (dpState.boxes ? " on" : "") + '" id="tBoxes"><span>我的条目边界（全部成就画框）</span><span class="st">' + (dpState.boxes ? "ON" : "OFF") + '</span><kbd>Alt+B</kbd></button>' +
+      '<button class="dp-tool" id="tReplay"><span>重放最近一次红框定位</span><span class="st">GO</span></button>' +
+      '<h4>快捷键</h4>' +
+      '<div class="dp-note"><kbd>`</kbd> 开 / 收开发面板；<kbd>Alt+I</kbd> 检查元素；<kbd>Alt+B</kbd> 成就边界。<br>检查模式下鼠标悬停任意日志条目或 issue 卡片，橙框跟随并显示 issue 号、级别与署名形态。</div>' +
+      '</div>';
+    document.getElementById("tInsp").addEventListener("click", function () { dpSetInsp(!dpState.insp); dpRenderBody(); });
+    document.getElementById("tBoxes").addEventListener("click", function () { dpSetBoxes(!dpState.boxes); dpRenderBody(); });
+    document.getElementById("tReplay").addEventListener("click", function () {
+      if (state.activeIssue) locateIssue(state.activeIssue);
+    });
+  } else {
+    body.innerHTML =
+      '<div class="dp-sec"><h4>ENTRIES（' + ENTRIES.length + '）与 ISSUES（' + ISSUES.length + '）</h4>' +
+      '<div class="dp-json">' + esc(JSON.stringify({ ENTRIES: ENTRIES, ISSUES: ISSUES, SUSPENDED: SUSPENDED }, null, 1)) + '</div>' +
+      '</div>';
+  }
+}
+
+/* ---- 检查模式（Alt+I）：橙框跟随 hover ---- */
+var hv = null;
+function dpSetInsp(on) {
+  dpState.insp = on;
+  document.body.classList.toggle("dp-insp", on);
+  if (!on && hv) { hv.style.display = "none"; }
+}
+function matchEntry(el) {
+  var t = el && el.closest ? el.closest(".entry, .issue-card") : null;
+  if (!t) return null;
+  if (t.classList.contains("entry")) {
+    var id = t.id || "";
+    if (id.indexOf("entry-") === 0) {
+      var n = parseInt(id.slice(6), 10);
+      if (!isNaN(n)) {
+        var e = ENTRIES.filter(function (x) { return x.mine && x.mine.issue === n; })[0];
+        if (e) return { label: "#" + n + " · " + e.mine.level + " 级 · " + e.mine.form.slice(0, 42), el: t };
+      } else {
+        var e2 = ENTRIES.filter(function (x) { return x.mine && !x.mine.issue; })[0];
+        if (e2) return { label: "我方条目（无 issue 号）· " + e2.mine.level + " 级", el: t };
+      }
+    }
+    return { label: "非我方条目", el: t };
+  }
+  var m = parseInt(t.getAttribute("data-issue"), 10);
+  var i = ISSUES.filter(function (x) { return x.n === m; })[0];
+  return i ? { label: "#" + i.n + " · " + i.level + " 级 · " + i.name, el: t } : null;
+}
+document.addEventListener("mousemove", function (ev) {
+  if (!dpState.insp || dpInPanel(ev.target)) return;
+  var m = matchEntry(ev.target);
+  var layer = ov();
+  if (!m) { if (hv) hv.style.display = "none"; return; }
+  if (!hv) { hv = document.createElement("div"); hv.className = "hv"; layer.appendChild(hv); }
+  var r = m.el.getBoundingClientRect();
+  hv.style.cssText = "display:block;left:" + r.left + "px;top:" + r.top + "px;width:" + r.width + "px;height:" + r.height + "px";
+  hv.innerHTML = "<span>" + esc(m.label) + "</span>";
+});
+function dpInPanel(t) { return t && t.closest && t.closest(".devpanel, .topbar, .fab"); }
+
+/* ---- 成就边界（Alt+B）：全部我的条目画黄框，滚动/换页重算 ---- */
+function dpSetBoxes(on) {
+  dpState.boxes = on;
+  redrawBoxes();
+}
+function redrawBoxes() {
+  var layer = ov();
+  Array.prototype.forEach.call(layer.querySelectorAll(".bx"), function (x) { x.remove(); });
+  if (!dpState.boxes) return;
+  ENTRIES.forEach(function (e) {
+    if (!e.mine) return;
+    var el = document.getElementById("entry-" + e.mine.issue);
+    if (!el) return;
+    var r = el.getBoundingClientRect();
+    if (r.bottom < 47 || r.top > innerHeight || !r.width) return;
+    var d = document.createElement("div");
+    d.className = "bx";
+    d.style.cssText = "left:" + r.left + "px;top:" + r.top + "px;width:" + r.width + "px;height:" + r.height + "px";
+    d.innerHTML = "<span>#" + e.mine.issue + "</span>";
+    layer.appendChild(d);
+  });
+}
+window.addEventListener("scroll", redrawBoxes, { passive: true });
+window.addEventListener("resize", redrawBoxes);
+
+/* ================= 事件接线 ================= */
+
+document.getElementById("fab").addEventListener("click", function () { dpToggle(); });
+document.getElementById("dpClose").addEventListener("click", function () { dpToggle(false); });
+
+document.getElementById("onlyMine").addEventListener("change", function (ev) {
+  state.onlyMine = ev.target.checked;
+  renderLog();
+});
+
+document.addEventListener("keydown", function (ev) {
+  var tag = (ev.target.tagName || "").toLowerCase();
+  if (tag === "input" || tag === "textarea") return;
+  if (ev.key === "`") { ev.preventDefault(); dpToggle(); }
+  if (ev.altKey && (ev.key === "i" || ev.key === "I")) { ev.preventDefault(); dpSetInsp(!dpState.insp); if (dpState.open && dpState.tab === "tools") dpRenderBody(); }
+  if (ev.altKey && (ev.key === "b" || ev.key === "B")) { ev.preventDefault(); dpSetBoxes(!dpState.boxes); if (dpState.open && dpState.tab === "tools") dpRenderBody(); }
+});
+
+/* ================= 初始化 ================= */
+
+(function init() {
+  var mineCount = ENTRIES.filter(function (e) { return e.mine; }).length;
+  document.getElementById("statBadge").textContent =
+    ISSUES.length + " 单收编与贡献 · " + mineCount + " 条官方日志条目";
+  renderIssues();
+  renderLog();
+  dpRenderTabs();
+  dpRenderBody();
+})();
+</script>
+</body>
+</html>

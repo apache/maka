@@ -1,0 +1,25 @@
+{
+  "id": "23",
+  "slug": "find-all-anagrams-in-a-string",
+  "title": "找到字符串中所有字母异位词",
+  "difficulty": "medium",
+  "tags": ["哈希表", "字符串", "滑动窗口"],
+  "description": "给定两个字符串 `s` 和 `p`,找到 `s` 中所有 `p` 的**异位词**的子串,返回这些子串的起始索引列表(顺序递增)。\n\n异位词 指由相同字母重排列形成的字符串(包括相同字符串)。\n\n**示例 1:**\n\n- 输入:`s = \"cbaebabacd\"`, `p = \"abc\"`\n- 输出:`[0,6]`(起始子串 \"cba\" 与 \"bac\" 分别是 \"abc\" 的异位词)\n\n**示例 2:**\n\n- 输入:`s = \"abab\"`, `p = \"ab\"`\n- 输出:`[0,1,2]`",
+  "solution": "## 思路\n\n**定长滑动窗口**:窗口大小为 `p.length`,用两个哈希表(或数组)维护窗口与 `p` 的字符频次。用一个计数 `valid` 记录窗口中频次已匹配的字符种类数,`valid === need.size` 时记录起点。\n\n## 参考代码\n\n```js\nfunction findAnagrams(s, p) {\n  const res = [];\n  if (s.length < p.length) return res;\n  const need = new Map();\n  for (const c of p) need.set(c, (need.get(c) || 0) + 1);\n  const window = new Map();\n  let valid = 0;\n  const needKeys = need.size;\n  for (let i = 0; i < s.length; i++) {\n    const c = s[i];\n    if (need.has(c)) {\n      window.set(c, (window.get(c) || 0) + 1);\n      if (window.get(c) === need.get(c)) valid++;\n    }\n    if (i >= p.length) {\n      const out = s[i - p.length];\n      if (need.has(out)) {\n        if (window.get(out) === need.get(out)) valid--;\n        window.set(out, window.get(out) - 1);\n      }\n    }\n    if (valid === needKeys) res.push(i - p.length + 1);\n  }\n  return res;\n}\n```\n\n## 复杂度\n\n- 时间:O(n)\n- 空间:O(k),k 为字符集大小",
+  "signature": {
+    "language": "javascript",
+    "entry": "findAnagrams",
+    "params": [
+      { "name": "s", "type": "string" },
+      { "name": "p", "type": "string" }
+    ],
+    "returns": "number[]"
+  },
+  "testCases": [
+    { "sample": true, "input": ["cbaebabacd", "abc"], "expected": [0, 6] },
+    { "sample": true, "input": ["abab", "ab"], "expected": [0, 1, 2] },
+    { "sample": false, "input": ["baa", "aa"], "expected": [1] },
+    { "sample": false, "input": ["", "a"], "expected": [] },
+    { "sample": false, "input": ["abcdefdsg", "xyz"], "expected": [] }
+  ]
+}

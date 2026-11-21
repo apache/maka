@@ -1,0 +1,333 @@
+## 现象
+
+#2451 让 Command Code 的卡片（订阅卡与 plan key 卡）把月度 credits 画成 *Credits* meter，排在 5-hour 和 Weekly 两窗旁边。那两窗各自带「↻ resets …」行（卡片行、tooltip、菜单栏面板都读窗口的 `resetsAt`），Credits 一行却没有：月度 credits 恰恰是按订阅周期重置的，用户看不到它何时回来。同家族其它月度窗都有重置时间——Ollama Cloud 的 *Month* 窗接 `period.until`（readOllamaPlan）、StepFun 的 *Credits* 窗接 `subscription_credit_reset_time`（readStepPlan）、WorkBuddy 企业版接 `cycleResetTime`——唯独 Command Code 的没接。
+
+## 最小复现
+
+`TestCommandCodeCreditsWindowRenewsAtPeriodEnd`（新测试）在修复前的树上（1d227a7e）红：
+
+```
+--- FAIL: TestCommandCodeCreditsWindowRenewsAtPeriodEnd (0.00s)
+    commandcode_key_credits_test.go:116: the key card's credits have no reset: {Name:Credits Used:47.8 ResetsAt:<nil> ...}
+    commandcode_key_credits_test.go:128: the subscription card's credits have no reset: {Name:Credits Used:47.8 ResetsAt:<nil> ...}
+```
+
+假服务器按 #2451 测试同款形状回答 `billing/credits` 与 `billing/subscriptions`（后者带 `currentPeriodEnd`），分别走 `planKeyWindows`（key 卡）与 `cmdQuota`（订阅卡）。
+
+## 根因
+
+`internal/provider/commandcode_plan.go` 的 `cmdQuotaOf` 造 Credits 窗时不带重置时间：
+
+```go
+q.Windows = append(q.Windows, QuotaWindow{Name: "Credits", Used: min(100, 100*(pool-left)/pool),
+    Display: money("$", pool-left) + " / " + money("$", pool)})
+```
+
+而两条调用路径手里都有周期端点：
+
+- 订阅卡 `cmdQuota`：`cmdSubscription` 已返回 `until`（`billing/subscriptions` 的 `currentPeriodEnd`），只写进了 `q.Until`，没接到窗上；
+- key 卡 `cmdKeyWindows`（#2451）：`cmdKeyPlanID` 调同一个 `cmdSubscription` 拿 plan id，把 `until` 扔掉了。
+
+## 修法
+
+`cmdQuotaOf` 加一个 `until *time.Time` 参数，Credits 窗带上 `ResetsAt: until`；两条路径各自把手里的周期端点传进来。key 卡侧 `cmdSeen` 增加 `until` 字段，`cmdKeyPlanID` 返回 `(id, until)`，缓存命中与读取失败时一并返回（和 id 的保留规则一致）。没有周期端点（`billing/subscriptions` 不可读）时窗上无重置，行为同修复前。
+
+语义上 period end 就是月度池的重置点：Credits 窗的 `Used` 分子只反映月度 credits 的消耗（`pool-left = max(planMonthly, monthly) - monthly`），bought/free credits 只抬高分母，不随周期重置的部分不在这扇 meter 的读数里。
+
+## 验证
+
+| 检查 | 结果 |
+| --- | --- |
+| `TestCommandCodeCreditsWindowRenewsAtPeriodEnd`（新） | 修复前红（上表输出），修复后绿 |
+| 消融（产品文件回父提交 1d227a7e，旧调用点测试文件同回，新测试保留） | 红，失败断言与修前红同形 |
+| `TestCommandCodeKeyCardHasCredits` / `TestKeyQuotasKeepLast` / `TestCommandCodeQuotaShowsWindows`（其两处 `cmdQuotaOf` 调用改传 `nil`） | 绿 |
+| `go test -tags nogui -p 2 ./internal/provider/ ./internal/usage/ ./internal/catalog/` | 三包全 ok |
+| `gofmt -l internal/` | 无输出 |
+| `go vet`（darwin）与 `GOOS=linux go vet -tags nogui`、`GOOS=windows go vet` | 通过 |
+| `go build`（darwin、linux nogui、windows） | 通过 |
+
+补丁（基于 1d227a7e，commit 889280a2）：
+
+<details>
+<summary>patch</summary>
+
+```diff
+From 889280a2dddb800bb82a2a8cff27b15136016bdc Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Fri, 16 Oct 2026 07:07:06 +0800
+Subject: [PATCH] provider: a Command Code Credits window renews at the plan's
+ period's end
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+#2451 made a Command Code card show the month's credits as a Credits
+meter beside the 5-hour and weekly ones. Those two each say when they
+start again; the Credits meter said nothing, though the end of the
+plan's period — when the month's credits come back — is in the same
+billing/subscriptions reply the plan is read from. On the card, where
+every other window had a reset line, the month's alone had none.
+
+cmdQuotaOf takes the period's end and puts it on the Credits window.
+The signed-in subscription's card passes the one its own
+billing/subscriptions reply carries; a plan key's card gets it from
+cmdKeyPlanID beside the plan id, and the pair read before is kept while
+the endpoint can't be read, as the id was. No period end, no reset — a
+card reads as before.
+
+Run:
+- New TestCommandCodeCreditsWindowRenewsAtPeriodEnd, on both cards.
+  On the unfixed tree it went red: "the key card's credits have no
+  reset", "the subscription card's credits have no reset". With the
+  change, green.
+- TestCommandCodeKeyCardHasCredits, TestKeyQuotasKeepLast,
+  TestCommandCodeQuotaShowsWindows (its two cmdQuotaOf calls pass nil)
+  and the rest of the Command Code tests stay green.
+- go test -tags nogui -p 2 ./internal/provider/ ./internal/usage/
+  ./internal/catalog/, every package ok.
+- gofmt; go vet -tags nogui for darwin, linux and windows.
+- Not tried against Command Code's real API: there is no plan key here.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ docs/subsystems/providers-accounts.md         |  2 +-
+ internal/provider/commandcode_go_test.go      |  2 +-
+ .../provider/commandcode_key_credits_test.go  | 50 +++++++++++++++++++
+ internal/provider/commandcode_plan.go         | 38 ++++++++------
+ internal/provider/planquota_test.go           |  4 +-
+ 5 files changed, 77 insertions(+), 19 deletions(-)
+
+diff --git a/docs/subsystems/providers-accounts.md b/docs/subsystems/providers-accounts.md
+index 7f230db5..58d5bef8 100644
+--- a/docs/subsystems/providers-accounts.md
++++ b/docs/subsystems/providers-accounts.md
+@@ -46,7 +46,7 @@ keys and accounts per request is in [Gateway routing and fallback](gateway-routi
+ | An endpoint's catalog | A key's provider with no catalog of its own (none named, none from a preset) is priced from the models.dev catalog whose `api` is one of its endpoints (`EndpointCatalog`, `catalog.AtEndpoint`; a trailing slash and case don't count, and an Anthropic base, kept as its root, is also matched with its `/v1`). Only when exactly one catalog is at that address, and it isn't a plan's (an id with `-plan`, or a `membershipCatalogs` one): a plan lists its membership's $0, and two catalogs at one address can't be told apart. A subscription's account never gets one. A provider at AMD's own endpoint is priced from `amd`, which lists Qwen3.8-27B at $0, a price, where its maker sells no such model and it had none (#2052); a relay's endpoint matches nothing and its model stays unpriced, never priced at a reseller's guess. `magpie model price` names the catalog, and says how to give a price when none is known. | [`models.go`](../../internal/provider/models.go), [`catalog.go`](../../internal/catalog/catalog.go) |
+ | A membership's $0 catalog | models.dev lists every model of Kimi Code's plans (`kimi-code-plan-global`, `kimi-code-plan-cn`) and of Xiaomi MiMo's Token Plans (`xiaomi-token-plan-cn`, `-sgp`, `-ams`) at $0: what the membership charges per token, not what the model costs. `membershipCatalogs` are never read for a price (`priceCatalogs`, `makerPriceCatalogs`), so a Xiaomi MiMo model is priced at `xiaomi`'s list price at every region, and each region of the preset names its own catalog, pay as you go `xiaomi` alone (#1873). A Kimi Code provider's model is priced at the Kimi API model it is (`kimiCodeAPI`, from Kimi Code's docs: k3 and k3-256k are kimi-k3, kimi-for-coding-highspeed is kimi-k2.7-code-highspeed), and kimi-for-coding (K2.8 Preview, not on the API) is unpriced rather than free (#1370). The alias is Kimi Code's alone (`kimiCodePlans`): a relay's own `k3` keeps its own price. A catalog other than these that lists a model at $0 still prices it at $0: models.dev has truly free models (nvidia, modelscope). The Requests list names the API model it was priced as (`PricedNameFor`). | [`models.go`](../../internal/provider/models.go) |
+ | A plugin's own price | A model no catalog prices (models.dev has no vendor's own model: Devin's SWE-2 and SWE-1.7 Lightning, Cursor's auto, Qoder's efficient) is priced at what its plugin lists it at (`ListPrice` → `pluginListPrice`, `plugin.Model.Cost`, read by `pluginPrice`: an input or output above 0, OpenCode's 0 being none), else at $0 when the plugin says the plan serves it free (`pluginFree`, `plugin.Model.Free`: Devin's Free cost tier, Qoder's and WorkBuddy's x0). Both come after every catalog, so a price a catalog gives is kept over the plugin's. Devin's plugin (0.1.18) lists each paid model at the price Devin's GetCliModelConfigs gives it (input, cached input and output per 1M tokens); a moved Devin user's calls on Devin's own models had no cost on Usage before (太陽と向日葵 on Discord, `TestPluginFreeModelCostsNothing`). A plugin that gives no price and doesn't say free leaves the model unpriced. | [`models.go`](../../internal/provider/models.go), [`plugins.go`](../../internal/provider/plugins.go), [`providers.go`](../../internal/plugin/providers.go) |
+-| A key's own windows | A sub2api key given a spending limit per 5 hours, day or 7 days answers its `/v1/usage` with `rate_limits` and no `remaining` (`readSub2APIKeyLimits`). With the Balance URL set to it, the key's card shows them as the windows *5 hours*, *1 day*, *7 days*, in USD, beside a balance field the user wrote; *Check balance* and `magpie provider show` give what its fullest window has left (`Balance`). A Balance URL at an account query left without its token (a sub2api panel's `/api/v1/user/profile`, new-api's `/api/user/self`, after the token was removed) asks the same panel's query for the key instead, the saved URL untouched (`keyQueryOf`, `BalanceQuery`), unless the user's Headers carry an Authorization or Cookie of their own. A Balance URL of the user's own is asked with GET, or with POST and no body when the provider's `BalanceMethod` says so (#2368: an endpoint that answers only a POST; the editor's GET/POST beside the URL, `balance.method=` on the command line); any other method is refused before anything is sent (`balanceMethodOf`). `KeyAllowance` gives routing the same windows: never waited for, read in the background at most once a minute, a failed read keeping the last, and seeded from the card's last reading (`quotas.json`) after a restart.  A key bought as a plan (Kimi Code, GLM Coding Plan and Z.ai, MiniMax Coding Plan, OpenCode Go, Command Code, Ollama Cloud: `planQuotaSourceOf`) gives routing its card's windows the same way (`planKeyWindows`, Zhipu's team quota behind a key with none of its own); the Usage page's read of its card is taken at once (`noteKeyAllowance`), and a key there that turns out pay-as-you-go, with no windows, is asked again only every 30 minutes (`keyNoWindowsAge`). A Command Code plan's key has its month of credits as a *Credits* window beside the 5-hour and weekly ones, as the signed-in subscription's card has (`cmdKeyWindows`, #2451): billing/credits leaves the plan out, so it is the key's billing/subscriptions plan, asked at most every ten minutes and the last one kept while it can't be read; a key whose plan was never read has its two windows alone. Ollama Cloud's `ollama.com/api/balance` (#1888, `readOllamaPlan`) tells the plan's included allowance as one window in USD, *Month* when its period is a month long, renewing at `period.until`, and Aside while credits bought on top are left; those credits are the key's balance card (`readOllamaCredits`), and a reply that names none has no balance card rather than $0. StepFun's Step Plan is read through a platform sign-in, not the key, and isn't one of them: the sign-in is the provider's own, kept by provider id in `stepfun-auth.json` (two StepFun providers on one site can be two accounts, #2384), one card per signed-in provider; a file from before that, kept by site, is given on read to the StepFun providers on that site (`stepfunBySite`), and copies of one sign-in are renewed together. Nor are Volcengine Ark's Coding Plan and Agent Plan (#1427): their 5-hour, weekly and monthly windows are told only to the account's access key (`AccessKeyID`, `SecretAccessKey`), asked of `open.volcengineapi.com` (`GetCodingPlanUsage`, `GetAFPUsage`) and signed as Volcengine's own SDK signs (`volcSign`), so they are cards on the Usage page (`volcPlanQuotas` in `PlanQuotas`), never routing's windows. Nor is Tencent Cloud's Token Plan 企业版 (#1574): what a team plan has used of its cycle's credits (专业套餐) or tokens (轻享套餐) is told only to the account's SecretId and SecretKey (kept as `AccessKeyID`, `SecretAccessKey`), asked of `tokenhub.tencentcloudapi.com` (`DescribeTokenPlanList`, `DescribeTokenPlan`, version 2026-03-22) and signed TC3-HMAC-SHA256 (`tc3Sign`), one card per team plan (`tencentPlanQuotas`). | [`sub2api_usage.go`](../../internal/provider/sub2api_usage.go), [`key_allowance.go`](../../internal/provider/key_allowance.go), [`volcengine_usage.go`](../../internal/provider/volcengine_usage.go), [`tencent_usage.go`](../../internal/provider/tencent_usage.go) |
++| A key's own windows | A sub2api key given a spending limit per 5 hours, day or 7 days answers its `/v1/usage` with `rate_limits` and no `remaining` (`readSub2APIKeyLimits`). With the Balance URL set to it, the key's card shows them as the windows *5 hours*, *1 day*, *7 days*, in USD, beside a balance field the user wrote; *Check balance* and `magpie provider show` give what its fullest window has left (`Balance`). A Balance URL at an account query left without its token (a sub2api panel's `/api/v1/user/profile`, new-api's `/api/user/self`, after the token was removed) asks the same panel's query for the key instead, the saved URL untouched (`keyQueryOf`, `BalanceQuery`), unless the user's Headers carry an Authorization or Cookie of their own. A Balance URL of the user's own is asked with GET, or with POST and no body when the provider's `BalanceMethod` says so (#2368: an endpoint that answers only a POST; the editor's GET/POST beside the URL, `balance.method=` on the command line); any other method is refused before anything is sent (`balanceMethodOf`). `KeyAllowance` gives routing the same windows: never waited for, read in the background at most once a minute, a failed read keeping the last, and seeded from the card's last reading (`quotas.json`) after a restart.  A key bought as a plan (Kimi Code, GLM Coding Plan and Z.ai, MiniMax Coding Plan, OpenCode Go, Command Code, Ollama Cloud: `planQuotaSourceOf`) gives routing its card's windows the same way (`planKeyWindows`, Zhipu's team quota behind a key with none of its own); the Usage page's read of its card is taken at once (`noteKeyAllowance`), and a key there that turns out pay-as-you-go, with no windows, is asked again only every 30 minutes (`keyNoWindowsAge`). A Command Code plan's key has its month of credits as a *Credits* window beside the 5-hour and weekly ones, as the signed-in subscription's card has (`cmdKeyWindows`, #2451): billing/credits leaves the plan out, so it is the key's billing/subscriptions plan, asked at most every ten minutes and the last one kept while it can't be read, the Credits window renewing at that plan's period's end; a key whose plan was never read has its two windows alone. Ollama Cloud's `ollama.com/api/balance` (#1888, `readOllamaPlan`) tells the plan's included allowance as one window in USD, *Month* when its period is a month long, renewing at `period.until`, and Aside while credits bought on top are left; those credits are the key's balance card (`readOllamaCredits`), and a reply that names none has no balance card rather than $0. StepFun's Step Plan is read through a platform sign-in, not the key, and isn't one of them: the sign-in is the provider's own, kept by provider id in `stepfun-auth.json` (two StepFun providers on one site can be two accounts, #2384), one card per signed-in provider; a file from before that, kept by site, is given on read to the StepFun providers on that site (`stepfunBySite`), and copies of one sign-in are renewed together. Nor are Volcengine Ark's Coding Plan and Agent Plan (#1427): their 5-hour, weekly and monthly windows are told only to the account's access key (`AccessKeyID`, `SecretAccessKey`), asked of `open.volcengineapi.com` (`GetCodingPlanUsage`, `GetAFPUsage`) and signed as Volcengine's own SDK signs (`volcSign`), so they are cards on the Usage page (`volcPlanQuotas` in `PlanQuotas`), never routing's windows. Nor is Tencent Cloud's Token Plan 企业版 (#1574): what a team plan has used of its cycle's credits (专业套餐) or tokens (轻享套餐) is told only to the account's SecretId and SecretKey (kept as `AccessKeyID`, `SecretAccessKey`), asked of `tokenhub.tencentcloudapi.com` (`DescribeTokenPlanList`, `DescribeTokenPlan`, version 2026-03-22) and signed TC3-HMAC-SHA256 (`tc3Sign`), one card per team plan (`tencentPlanQuotas`). | [`sub2api_usage.go`](../../internal/provider/sub2api_usage.go), [`key_allowance.go`](../../internal/provider/key_allowance.go), [`volcengine_usage.go`](../../internal/provider/volcengine_usage.go), [`tencent_usage.go`](../../internal/provider/tencent_usage.go) |
+ | Account names and seats | `AccountNames` (by the account, in lower case, like `AccountCaps`) are names the user gives accounts, set by `SetAccountName` (GUI `provider/accountname`, `magpie accounts alias`); they live in providers.json only, never in a vendor's or plugin's sign-in. A GLM Coding Plan read with a key (`glmPlan`) and a ZCode account (built-in or `zcode-plugin`) whose windows' resets agree are one seat (`seatMatch`, #90/#953), shown once, on the account's card (`seatCards`, used by `quotas`, `Allotted` and `CachedCards`). A match is remembered in `seats.json` beside `quotas.json`: a failed read or a window with no reset yet is unknown and keeps the key's card off while the account is signed in; windows that disagree forget it (#1515). Cards carry `Seat` (the key provider's name, and the key's when it has several) and `Alias` (the user's name, else `Seat`), as `/v1/magpie/quotas`, `magpie quota` and `magpie accounts` do. | [`account_names.go`](../../internal/provider/account_names.go), [`account_seats.go`](../../internal/provider/account_seats.go) |
+ | Last served | `served.json` records when each account, plan or key last answered, shown as `lastServedAt` (#570) on `/v1/magpie/quotas` and on the Usage page's own cards (`Quotas` → `cardsServed`, this computer's cards only, the caches left alone). The Usage page and the tray panel show the last-answered account in full, and a menu bar card that follows the account in use (`codex|*`) takes the one that answered within the last hour, else `InUseLogin`'s guess, else the one that answered last at all (a plugin's accounts, #1516) (`trayInUseCard`; okingkee on X: A spent, B answering, the menu bar stayed on A). `NoteServed` calls `OnServedMoved` when a provider's answers move to another account or key, and `SwitchLogin` after a switch, so the menu bar reads its cards again at once. | [`served.go`](../../internal/provider/served.go), [`trayusage.go`](../../internal/gui/trayusage.go) |
+ | Partners | Services that pay to be listed first in the add sheet, under a heading of their own ("Partners · magpie's sponsors"). The list is `site/partners.js`, served at `usemagpie.ai/api/partners`: a change reaches users with a deploy, not a release. `Partners` never waits: it returns what was fetched last and fetches again behind the call every 6 hours (10 minutes after a failure), keeping the list in `partners.json` in the cache folder. Each entry is checked again on every read (`validPartners`): its own id, never a built-in preset's, a name, an endpoint, https only, at most 12; what only magpie's presets may set (a decision API, no key, a user endpoint) is cleared. Its logo is fetched through `FetchIcon` and kept as an uploaded icon. A partner is a preset to the rest of magpie (`Preset`, `FromPreset`, the editor), and one no longer listed still is to the providers added from it (`Seen`), without the sponsored mark. The window lists a partner in the languages it names (`langs`) only and shows its tagline in the page's language (`notes`, else `en`). `MAGPIE_PARTNERS` points it elsewhere, `off` lists none; tests list none unless they name a list. How often each listed partner was shown, opened (its row, its key page) and added is counted per UTC day (`CountPartner`, capped at 20 of each and 5 adds, kept in `partner-counts.json` in the cache folder) and sent with the next day's stats event as `magpie partner` events (`internal/stats`); nothing is counted with the stats or their usage part off. A listed partner the add sheet (or the TUI's, or `magpie providers presets`) hasn't shown yet is new (`NoticePartners` keeps those shown, as `noticed` in `partners.json`, whatever the stats); the window's add button carries a small dot for it, with its name in the title, until the sheet shows it. | [`partners.go`](../../internal/provider/partners.go), [`partner_events.go`](../../internal/provider/partner_events.go), [`site/partners.js`](../../site/partners.js) |
+diff --git a/internal/provider/commandcode_go_test.go b/internal/provider/commandcode_go_test.go
+index 57b91e9b..8c83ea48 100644
+--- a/internal/provider/commandcode_go_test.go
++++ b/internal/provider/commandcode_go_test.go
+@@ -76,7 +76,7 @@ func TestCommandCodeGoPlan(t *testing.T) {
+ 	}
+ 	// and asked again once it is old
+ 	cmdPlansSeen.Lock()
+-	cmdPlansSeen.m["go-key"] = cmdSeen{"Go", time.Now().Add(-cmdPlanKeep)}
++	cmdPlansSeen.m["go-key"] = cmdSeen{plan: "Go", at: time.Now().Add(-cmdPlanKeep)}
+ 	cmdPlansSeen.Unlock()
+ 	if _, _, ok := CommandCodeGenerate(ctx, p); !ok || asked.Load() != 2 {
+ 		t.Fatalf("again: %v, asked %d", ok, asked.Load())
+diff --git a/internal/provider/commandcode_key_credits_test.go b/internal/provider/commandcode_key_credits_test.go
+index 14113189..66ebfdc7 100644
+--- a/internal/provider/commandcode_key_credits_test.go
++++ b/internal/provider/commandcode_key_credits_test.go
+@@ -4,6 +4,7 @@ import (
+ 	"context"
+ 	"net/http"
+ 	"net/http/httptest"
++	"strconv"
+ 	"sync/atomic"
+ 	"testing"
+ )
+@@ -78,3 +79,52 @@ func TestCommandCodeKeyCardHasCredits(t *testing.T) {
+ 		t.Errorf("plan never read: %v %q %+v", err, plan, ws)
+ 	}
+ }
++
++// The Credits window #2451 added renews when the plan's period does: the
++// end is in the same billing/subscriptions reply the plan is read from,
++// and the card's other two windows each say when they start again. Both
++// cards are checked, the signed-in subscription's and the plan key's.
++func TestCommandCodeCreditsWindowRenewsAtPeriodEnd(t *testing.T) {
++	const end = int64(4102444800000) // 2100-01-01, in ms as cmdTime reads it
++	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		switch r.Header.Get("X-Host") + r.URL.Path {
++		case "api.commandcode.ai/alpha/billing/credits":
++			w.Write([]byte(`{"credits":{"monthlyCredits":5.22,"purchasedCredits":0,"freeCredits":0},
++ "windowLimits":{"limited":true,
++   "fiveHour":{"used":1,"cap":14,"resetAt":4102444800000},
++   "weekly":{"used":2,"cap":35,"resetAt":4102444800000}}}`))
++		case "api.commandcode.ai/alpha/billing/subscriptions":
++			w.Write([]byte(`{"success":true,"data":{"planId":"individual-go-monthly","status":"active","currentPeriodEnd":` + strconv.FormatInt(end, 10) + `}}`))
++		default:
++			t.Errorf("asked %s%s", r.Header.Get("X-Host"), r.URL.Path)
++			w.WriteHeader(http.StatusNotFound)
++		}
++	}))
++	defer srv.Close()
++	old := http.DefaultClient.Transport
++	http.DefaultClient.Transport = rewrite{srv}
++	t.Cleanup(func() { http.DefaultClient.Transport = old })
++
++	// the plan key's card
++	p := Provider{ID: "commandcode", Key: "cmd-reset", Chat: "https://api.commandcode.ai/provider/v1"}
++	src, _ := planQuotaSourceOf(p)
++	_, ws, _, err := planKeyWindows(context.Background(), p, src, p.Key)
++	if err != nil || len(ws) != 3 {
++		t.Fatalf("%v %+v", err, ws)
++	}
++	if c := ws[2]; c.Name != "Credits" || c.ResetsAt == nil || c.ResetsAt.UnixMilli() != end {
++		t.Errorf("the key card's credits have no reset: %+v", c)
++	}
++
++	// the signed-in subscription's card, whose Until is the same end
++	q := cmdQuota(context.Background(), Login{User: "reset", Plan: "Go"}, cmdAuth{APIKey: "cmd-reset"})
++	if q.Error != "" || len(q.Windows) != 3 {
++		t.Fatalf("%q %+v", q.Error, q.Windows)
++	}
++	if q.Until == nil || q.Until.UnixMilli() != end {
++		t.Errorf("until: %+v", q.Until)
++	}
++	if c := q.Windows[2]; c.Name != "Credits" || c.ResetsAt == nil || c.ResetsAt.UnixMilli() != end {
++		t.Errorf("the subscription card's credits have no reset: %+v", c)
++	}
++}
+diff --git a/internal/provider/commandcode_plan.go b/internal/provider/commandcode_plan.go
+index f911202f..8a4f518a 100644
+--- a/internal/provider/commandcode_plan.go
++++ b/internal/provider/commandcode_plan.go
+@@ -393,7 +393,10 @@ var cmdPlansSeen = struct {
+ 
+ type cmdSeen struct {
+ 	plan string
+-	at   time.Time
++	// until is, on a key's plan (cmdKeyPlanID), when the plan's period
++	// ends: the month's credits come back then, on the Credits window.
++	until *time.Time
++	at    time.Time
+ }
+ 
+ // How long a plan read is kept, and a failure to read it before it is
+@@ -406,7 +409,7 @@ var (
+ // cmdRemember keeps what billing/subscriptions said of a key's plan.
+ func cmdRemember(key, plan string) {
+ 	cmdPlansSeen.Lock()
+-	cmdPlansSeen.m[key] = cmdSeen{plan, time.Now()}
++	cmdPlansSeen.m[key] = cmdSeen{plan: plan, at: time.Now()}
+ 	cmdPlansSeen.Unlock()
+ }
+ 
+@@ -566,14 +569,15 @@ func cmdLeft(c cmdCredits) (monthly, left float64, ok bool) {
+ }
+ 
+ // cmdQuotaOf makes the credits reply into the plan's windows: the 5-hour
+-// and weekly limits, and the month's credits as one more. A card's
++// and weekly limits, and the month's credits as one more, renewing at
++// until, the plan's period's end (nil when that isn't known). A card's
+ // Balance is shown instead of its windows — it is a key's money, not an
+ // allowance — so, set beside them, it hid both limits on the Usage page,
+ // the panel and the TUI. The dollars are a window when the plan is known,
+ // used of the CLI's pool (the plan's month of credits, or what is left of
+ // it if more, and the bought and free ones) as its /usage bar is; a reply
+ // with neither windows nor a plan is a Balance still.
+-func cmdQuotaOf(q SubscriptionQuota, c cmdCredits) SubscriptionQuota {
++func cmdQuotaOf(q SubscriptionQuota, c cmdCredits, until *time.Time) SubscriptionQuota {
+ 	name, planMonthly := cmdPlanOf(c.Credits.PlanID)
+ 	if name != "" {
+ 		q.Plan = name
+@@ -585,7 +589,7 @@ func cmdQuotaOf(q SubscriptionQuota, c cmdCredits) SubscriptionQuota {
+ 	case planMonthly > 0:
+ 		pool := max(planMonthly, monthly) + left - monthly
+ 		q.Windows = append(q.Windows, QuotaWindow{Name: "Credits", Used: min(100, 100*(pool-left)/pool),
+-			Display: money("$", pool-left) + " / " + money("$", pool)})
++			Display: money("$", pool-left) + " / " + money("$", pool), ResetsAt: until})
+ 	case len(q.Windows) == 0:
+ 		q.Balance = money("$", left)
+ 	}
+@@ -606,7 +610,7 @@ func cmdQuota(ctx context.Context, l Login, a cmdAuth) SubscriptionQuota {
+ 		if c.Credits.PlanID == "" {
+ 			c.Credits.PlanID = id
+ 		}
+-		q = cmdQuotaOf(q, c)
++		q = cmdQuotaOf(q, c, until)
+ 	}
+ 	if planOK {
+ 		q.Plan, q.Until, q.Renew = plan, until, renew
+@@ -663,10 +667,11 @@ func cmdKeyWindows(ctx context.Context, src planQuotaSource, key string) (string
+ 	if len(cmdWindows(c)) == 0 {
+ 		return cmdPlanName(c.Credits.PlanID), []QuotaWindow{}, nil
+ 	}
++	var until *time.Time
+ 	if c.Credits.PlanID == "" {
+-		c.Credits.PlanID = cmdKeyPlanID(ctx, key)
++		c.Credits.PlanID, until = cmdKeyPlanID(ctx, key)
+ 	}
+-	q := cmdQuotaOf(SubscriptionQuota{}, c)
++	q := cmdQuotaOf(SubscriptionQuota{}, c, until)
+ 	return q.Plan, q.Windows, nil
+ }
+ 
+@@ -675,21 +680,24 @@ var cmdKeyPlans = struct {
+ 	m map[string]cmdSeen // plan is the subscription's id here
+ }{m: map[string]cmdSeen{}}
+ 
+-func cmdKeyPlanID(ctx context.Context, key string) string {
++// cmdKeyPlanID is the key's subscription's plan id, and the end of its
++// period, for the Credits window's reset: asked at most every ten minutes,
++// and the pair read before kept while it can't be read.
++func cmdKeyPlanID(ctx context.Context, key string) (string, *time.Time) {
+ 	cmdKeyPlans.Lock()
+ 	seen, had := cmdKeyPlans.m[key]
+ 	cmdKeyPlans.Unlock()
+-	if had && time.Since(seen.at) < 10*time.Minute {
+-		return seen.plan
++	if had && time.Since(seen.at) < cmdPlanKeep {
++		return seen.plan, seen.until
+ 	}
+-	id, _, _, _, ok := cmdSubscription(ctx, cmdAuth{APIKey: key})
++	id, _, until, _, ok := cmdSubscription(ctx, cmdAuth{APIKey: key})
+ 	if !ok {
+-		return seen.plan
++		return seen.plan, seen.until
+ 	}
+ 	cmdKeyPlans.Lock()
+-	cmdKeyPlans.m[key] = cmdSeen{id, time.Now()}
++	cmdKeyPlans.m[key] = cmdSeen{plan: id, until: until, at: time.Now()}
+ 	cmdKeyPlans.Unlock()
+-	return id
++	return id, until
+ }
+ 
+ func cmdLoginQuota(ctx context.Context, l Login) SubscriptionQuota {
+diff --git a/internal/provider/planquota_test.go b/internal/provider/planquota_test.go
+index 858fd102..3f56c870 100644
+--- a/internal/provider/planquota_test.go
++++ b/internal/provider/planquota_test.go
+@@ -104,7 +104,7 @@ func TestCommandCodeQuotaShowsWindows(t *testing.T) {
+ 	if err := json.Unmarshal([]byte(cmdCreditsReply), &c); err != nil {
+ 		t.Fatal(err)
+ 	}
+-	q := cmdQuotaOf(SubscriptionQuota{}, c)
++	q := cmdQuotaOf(SubscriptionQuota{}, c, nil)
+ 	if q.Balance != "" || q.Plan != "GOAT" || len(q.Windows) != 3 {
+ 		t.Fatalf("%+v", q)
+ 	}
+@@ -116,7 +116,7 @@ func TestCommandCodeQuotaShowsWindows(t *testing.T) {
+ 	// no plan and no windows: what is left is all there is to show
+ 	var none cmdCredits
+ 	_ = json.Unmarshal([]byte(`{"credits":{"purchasedCredits":"20","freeCredits":1}}`), &none)
+-	if q := cmdQuotaOf(SubscriptionQuota{}, none); q.Balance != "$21.00" || len(q.Windows) != 0 {
++	if q := cmdQuotaOf(SubscriptionQuota{}, none, nil); q.Balance != "$21.00" || len(q.Windows) != 0 {
+ 		t.Errorf("no plan: %+v", q)
+ 	}
+ }
+-- 
+2.50.1 (Apple Git-155)
+```
+
+</details>
+
+## 没跑什么
+
+- 没有对 Command Code 真实 API 试过（本机没有 plan key），`currentPeriodEnd` 即月度 credits 重置点是从订阅周期语义推的，与维护者在 #2451 的读法一致。
+- 没跑 GUI 套件；`resetsAt` 的消费面（卡片 reset 行、tooltip、面板汇总行）读自 `app.js` 与 `trayusage.go` 现有代码，未实测渲染。
+
+分支：[ggbdpq/magpie `hunt29-prov-cmd-credits-reset`](https://github.com/ggbdpq/magpie/tree/hunt29-prov-cmd-credits-reset)（commit 889280a2，基于 yetone/magpie 1d227a7e）。合入请保留原作者或加 Co-authored-by: ggbdpq <ggbdpq@gmail.com>。
+
+Generated-by: GLM-5.3-Flash (ZCode)

@@ -1,0 +1,27 @@
+cli: a plugin sign-in that runs out says so, on the same clock the window waits on (#3083)
+
+`magpie plugin login` gave its sign-in its own 10 minutes rather than
+the window's `signInTimeout`, and let the deadline surface as it came:
+a browser sign-in slower than that ended in a bare
+"magpie: context deadline exceeded", nothing saying the sign-in timed
+out or to start it again — while the window's sign-in, waiting on
+`signInTimeout` and turning `context.DeadlineExceeded` away in
+`pluginDone`, says "the sign-in timed out; start it again".
+
+The command line now waits on `provider.SignInTimeout()` — the same
+clock — and says the same thing when it runs out. Every other error
+still reaches the user as the plugin said it.
+
+Run: with the fake plugin's sign-in held open (a code whose callback
+never finishes) and the wait given 5s, the new test red on base
+(plugin_login_cli_test.go:116, magpie said "context deadline
+exceeded"), green with the fix, red again with the fix reverted and
+the test kept. A plugin's own error ("the sign-in page expired")
+still comes through as it came. go test ./internal/cli/... ok;
+./internal/plugin/... ok; ./internal/provider/... ok; -race on
+TestPluginLogin ok; gofmt -l clean; go vet clean; builds on
+darwin/arm64, linux/amd64 (-tags nogui) and windows/amd64.
+
+Fixes #3083
+
+Generated-by: GLM-5.3-Flash (ZCode)

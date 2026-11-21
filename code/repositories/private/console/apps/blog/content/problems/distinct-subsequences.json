@@ -1,0 +1,25 @@
+{
+  "id": "86",
+  "slug": "distinct-subsequences",
+  "title": "不同的子序列",
+  "difficulty": "hard",
+  "tags": ["字符串", "动态规划"],
+  "description": "给你两个字符串 `s` 和 `t`,统计并返回在 `s` 的子序列中 `t` 出现的个数。\n\n**示例 1:**\n\n- 输入:`s = \"rabbbit\"`, `t = \"rabbit\"`\n- 输出:`3`\n\n**示例 2:**\n\n- 输入:`s = \"babgbag\"`, `t = \"bag\"`\n- 输出:`5`",
+  "solution": "## 思路\n\n**动态规划**:`dp[i][j]` 表示 `s[0..i)` 中出现 `t[0..j)` 的方案数。字符相等时可「使用该字符」(`dp[i-1][j-1]`)或「不用」(`dp[i-1][j]`)相加;不等则只能不用 `dp[i-1][j]`。`dp[i][0]=1`(空 t 有一种方案)。\n\n## 参考代码\n\n```js\nfunction numDistinct(s, t) {\n  const m = s.length;\n  const n = t.length;\n  const dp = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));\n  for (let i = 0; i <= m; i++) dp[i][0] = 1;\n  for (let i = 1; i <= m; i++) {\n    for (let j = 1; j <= n; j++) {\n      if (s[i - 1] === t[j - 1]) dp[i][j] = dp[i - 1][j - 1] + dp[i - 1][j];\n      else dp[i][j] = dp[i - 1][j];\n    }\n  }\n  return dp[m][n];\n}\n```\n\n## 复杂度\n\n- 时间:O(m*n)\n- 空间:O(m*n)",
+  "signature": {
+    "language": "javascript",
+    "entry": "numDistinct",
+    "params": [
+      { "name": "s", "type": "string" },
+      { "name": "t", "type": "string" }
+    ],
+    "returns": "number"
+  },
+  "testCases": [
+    { "sample": true, "input": ["rabbbit", "rabbit"], "expected": 3 },
+    { "sample": true, "input": ["babgbag", "bag"], "expected": 5 },
+    { "sample": false, "input": ["a", "a"], "expected": 1 },
+    { "sample": false, "input": ["abc", "abc"], "expected": 1 },
+    { "sample": false, "input": ["aaa", "aa"], "expected": 3 }
+  ]
+}

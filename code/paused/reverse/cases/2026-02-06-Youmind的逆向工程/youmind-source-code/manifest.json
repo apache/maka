@@ -1,0 +1,174 @@
+{
+"update_url": "https://clients2.google.com/service/update2/crx",
+
+  "name": "__MSG_extName__",
+  "incognito": "split",
+  "description": "__MSG_extDescription__",
+  "version": "0.3.0.21",
+  "version_name": "0.3.0-alpha21",
+  "action": {
+    "default_title": "__MSG_openYouMind__",
+    "suggested_key": {
+      "default": "Alt+Y",
+      "mac": "Alt+Y"
+    }
+  },
+  "commands": {
+    "_execute_action": {
+      "suggested_key": {
+        "default": "Alt+Y",
+        "mac": "Alt+Y"
+      },
+      "description": "__MSG_openYouMind__"
+    },
+    "start_capture_command": {
+      "suggested_key": {
+        "default": "Alt+C",
+        "mac": "Alt+C"
+      },
+      "description": "__MSG_startCapture__"
+    },
+    "save_to_youmind_command": {
+      "suggested_key": {
+        "default": "Alt+S",
+        "mac": "Alt+S"
+      },
+      "description": "__MSG_saveWepageToYouMind__"
+    },
+    "start_translate_command": {
+      "suggested_key": {
+        "default": "Alt+T",
+        "mac": "Alt+T"
+      },
+      "description": "__MSG_startTranslate__"
+    }
+  },
+  "externally_connectable": {
+    "ids": [
+      "*"
+    ]
+  },
+  "manifest_version": 3,
+  "icons": {
+    "16": "images/logo/production/16.png",
+    "32": "images/logo/production/32.png",
+    "48": "images/logo/production/48.png",
+    "128": "images/logo/production/128.png"
+  },
+  "permissions": [
+    "storage",
+    "contextMenus",
+    "tabs",
+    "activeTab",
+    "commands",
+    "windows",
+    "alarms",
+    "cookies"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "service-worker-loader.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "js": [
+        "assets/index.tsx-loader-mDMA0FEU.js"
+      ],
+      "matches": [
+        "http://*/*",
+        "https://*/*",
+        "<all_urls>"
+      ],
+      "run_at": "document_end"
+    },
+    {
+      "js": [
+        "assets/index.ts-loader-BEUj5ysU.js"
+      ],
+      "matches": [
+        "*://www.youtube.com/embed/*"
+      ],
+      "run_at": "document_end",
+      "all_frames": true
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "matches": [
+        "file://*/*",
+        "http://*/*",
+        "https://*/*"
+      ],
+      "resources": [
+        "src/html/*/index.html",
+        "scripts/*.js",
+        "messages/*.json",
+        "audio/*",
+        "images/*",
+        "fonts/*"
+      ],
+      "use_dynamic_url": false
+    },
+    {
+      "matches": [
+        "<all_urls>",
+        "http://*/*",
+        "https://*/*"
+      ],
+      "resources": [
+        "assets/index-CdTgm28c.js",
+        "assets/index-1G0MRvKj.js",
+        "assets/button-BEGRz3QU.js",
+        "assets/i18n-b57E8EYG.js",
+        "assets/useLiquidGlass-BfIyFr8C.js",
+        "assets/browser-C8oXKADD.js",
+        "assets/client-CQ1hcK1l.js",
+        "assets/useThemeBind-Dxrf1CD0.js",
+        "assets/useTranslation-WtPn4Fa0.js",
+        "assets/clsx-B-dksMZM.js",
+        "assets/utils-C0EutI9V.js",
+        "assets/getYouMindHost-BW5XiKRP.js",
+        "assets/useSettings-CS-xfdW0.js",
+        "assets/index-CJNCxxua.js",
+        "assets/proxy-C9frugAW.js",
+        "assets/getStoredUser-tNpkfuAf.js",
+        "assets/getCurrentYouTubeSubtitle-BMDPiN_V.js",
+        "assets/_virtual_stub-crypto-BDMct_Gn-D7ZuWTsr.js",
+        "assets/refresh-ccw-BIEhTRJL.js",
+        "assets/arrow-right-8vuRry-q.js",
+        "assets/_virtual_stub-jsdom-CqyXb7A7-DY7iExeV.js",
+        "assets/_virtual_stub-undici-BDMct_Gn-FmFgRqLi.js",
+        "assets/scrapByJina-BWlNPWmf-JFwiLizB.js",
+        "assets/rapid-fetcher-BubqROUb-BqdZ4jP1.js",
+        "assets/web-BOfio3kL-Dpd99EZr.js",
+        "assets/youtube-transcript-youtubejs-node-BccCRcI3-w4I-Gos2.js",
+        "assets/index-CEjFyJZJ-D84ulZb2.js",
+        "assets/supadata-Dta1Ulyx-C-fqg1FM.js",
+        "assets/getPageDataFromHTML-B78GNLa--d6Rdg1D9.js",
+        "assets/youtube-v4-k8j12v7T-DvYvu57K.js",
+        "assets/index.tsx-B4S09bCH.js",
+        "assets/useLiquidGlass-kGhJ7iTm.css",
+        "assets/index-DaxZb5mI.css"
+      ],
+      "use_dynamic_url": false
+    },
+    {
+      "matches": [
+        "*://www.youtube.com/*"
+      ],
+      "resources": [
+        "assets/i18n-b57E8EYG.js",
+        "assets/getCurrentYouTubeSubtitle-BMDPiN_V.js",
+        "assets/index.ts-B0WgX-Ue.js"
+      ],
+      "use_dynamic_url": false
+    }
+  ],
+  "default_locale": "en",
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
+  }
+}

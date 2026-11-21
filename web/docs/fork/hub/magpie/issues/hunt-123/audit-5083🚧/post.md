@@ -1,0 +1,496 @@
+Verified the fix qiqll filed here (patch on their fork branch `pr/editor-kept-list-proxies`, commit 873d3d7f), on macOS arm64, go1.26.8, upstream/main 0ee424e3e.
+
+**What's wrong**
+
+As qiqll reported: on the Providers page, a provider editor opened by its address (`?view=providers&edit=<id>`) shows every account on "Provider's proxy", and Save then clears them — the account proxies the user had set are wiped for good.
+
+**Root cause**
+
+The page first draws the kept list (`GET /api/providers?last=1`, #1519), which leaves out a provider's proxy, the accounts' proxies, headers and extra body. A row clicked on that list already waited for the fresh list, but an editor opened by its address was drawn on the kept list and its draft was never rebuilt when the fresh one came in. Its Save then sent `proxy: ""`, `accountProxies: {}` and `headers: {}`, and `providers.go` took the missing fields as "clear them".
+
+**The fix**
+
+- `app.js`: no editor is drawn while the list is the kept one — by a row or by `edit=<id>`; it opens once the fresh list is in.
+- `providerAction`: a save asked while only the kept list is in leaves proxy, accountProxies, headers and extraBody out (a magpie://import link's Add or Replace still sends its own).
+- `providers.go`: a save that leaves headers out keeps the saved ones, as proxies and extra body already did; `""` and `{}` still clear.
+
+<details><summary>patch (git am applies it as is; SHA-256 first 16: <code>48293423818308c8</code>)</summary>
+
+```patch
+From c4ddc0e2254512d03e11d7993d0974404d596925 Mon Sep 17 00:00:00 2001
+From: "yjqi@YjdeMacBook-Pro.localdomain" <yjqi@YjdeMacBook-Pro.localdomain>
+Date: Tue, 3 Nov 2026 19:33:40 +0800
+Subject: [PATCH] providers: an editor opened on the kept list no longer clears
+ the proxies on Save
+
+The Providers page first draws the kept list (GET /api/providers?last=1,
+#1519), which leaves out a provider's proxy, accounts' proxies, headers
+and extra body (keptProvider). A row clicked on it already waited for the
+fresh list, but an editor opened by its address
+(?view=providers&edit=<id>, which the page writes while an editor is
+open, so a reload or a window reopened there starts on it) was drawn
+on the kept list and its draft never rebuilt when the fresh one came in.
+Every account showed "Provider's proxy", and Save sent proxy "",
+accountProxies {} and headers {}, which clear them all for good.
+
+What changed:
+- app.js: no editor is drawn while the list is the kept one, by a row or
+  by edit=<id>; it opens once the fresh list is in. An edit= id the kept
+  list doesn't have is kept and waits for the fresh one instead of being
+  dropped.
+- providerAction: a save asked while only the kept list is in leaves
+  proxy, accountProxies, headers and extraBody out, unless it is a
+  magpie://import link's Add or Replace, which sends its own (headers {}
+  by default).
+- providers.go: a save that leaves headers out keeps the saved ones, as
+  proxies and extra body already did, for a provider the user added and a
+  preset's alike. So a subscription editor's Save, which never sends
+  headers, no longer clears them. "" and {} still clear.
+- docs/subsystems/providers-accounts.md says so.
+
+Run at this head (base origin/main 6c201095):
+- gofmt -l on the changed Go files: nothing
+- go vet ./internal/gui/, GOOS=linux go vet -tags nogui, GOOS=windows go
+  vet: clean
+- go test -count=1 ./internal/gui: one red, TestProxyCheckSaysAProxyPassedBy
+  ("passed by: ... Error:HTTP 502 ..., the proxy asked 0 times"). It is red
+  3 of 3 alone on plain 6c201095 too (and 5 of 5 on f4c664a0): this Mac
+  has a system HTTP(S) proxy at 127.0.0.1:7897 (scutil --proxy), which
+  netproxy reads on darwin, so the test's ALL_PROXY/NO_PROXY rig isn't
+  what decides. Not caused by this change. Every other test ok;
+  TestCoreScriptBudget and TestProviderSaveKeepsWhatItLeavesOut ok.
+- cd internal/gui/tests && node --test --test-concurrency=2
+  providers-last-edit providers-last-known account-proxy
+  provider-many-keys-proxy i18n-keys (.test.cjs), chromium and webkit,
+  en/zh/ja/de and the rest of LANGS: 114 of 114 pass.
+
+Broken by hand: app.js and providers.go at 6c201095 with the new tests:
+TestProviderSaveKeepsWhatItLeavesOut red ("left out, not kept: proxy
+..."), and providers-last-edit.test.cjs 40 of 50 red: "Codex/Relay opened
+by its address on the kept list keeps its proxies on Save", "a row
+clicked before the fresh list opens its editor on it" and "a save asked
+while only the kept list is in leaves its proxies, headers and extra
+body out", in each engine and language.
+
+Not tried: the real app with the reporter's providers.json; Windows and
+WSL; the whole GUI suite (the related files above only); the full go
+test ./... suite.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ docs/subsystems/providers-accounts.md         |   1 +
+ internal/gui/assets/app.js                    |  26 ++-
+ internal/gui/provider_save_keeps_test.go      |  85 +++++++++
+ internal/gui/providers.go                     |   6 +
+ .../gui/tests/providers-last-edit.test.cjs    | 173 ++++++++++++++++++
+ 5 files changed, 276 insertions(+), 15 deletions(-)
+ create mode 100644 internal/gui/provider_save_keeps_test.go
+ create mode 100644 internal/gui/tests/providers-last-edit.test.cjs
+
+diff --git a/docs/subsystems/providers-accounts.md b/docs/subsystems/providers-accounts.md
+index 71bfc0802..acc946565 100644
+--- a/docs/subsystems/providers-accounts.md
++++ b/docs/subsystems/providers-accounts.md
+@@ -316,6 +316,7 @@ and `TestHistoricalWindowHoldsUsesEachWindowsOwnReading`.
+ - A provider the user added may be set never to rest for a limit (`LimitRestOff`, `limitRestOff`; the editor's Advanced fold, "Set it aside when out of quota or rate limited", ticked by default; zoecats on Discord: a local aggregator's "quota exhausted" while it switches upstreams). Off, a quota, credit or rate refusal and any 429 rest none of its keys and the next request is sent to it as usual (`restAfterMarked` in the gateway, see [gateway routing](gateway-routing.md)). The editor offers it only to a provider the user added (`custom`); a save that leaves it out keeps it (`TestProviderSaveLimitRestOff`, `provider-limit-rest.test.cjs`).
+ - The Copilot account the editors and CLI keep is read by `copilotLogin` ([account.go](../../internal/provider/account.go)): an editor's github.com sign-in in `~/.config/github-copilot/apps.json` or `hosts.json` first, then the Copilot CLI's, then an editor's on GHE.com. When GitHub refuses the editor token's trade for a session token (401 or 403, `copilotRefusals`, retried after an hour), the CLI's sign-in of the same login on the same host takes its place, sent as the CLI sends it, from that request on and on the Usage card (`copilotStandIn`); a CLI signed in to another account is never used for it, and the error names the editors' file (#1238). A sign-in from magpie of the account whose editor token is refused is kept and stands for it (`copilotProbeEditor`, `addCopilotLogin`); while the editor token works, it is let go as the agent's own, as before.
+ - A keychain read that may have shown the user a dialog is not asked again for ten minutes after it was refused (`keychainDeniedTTL` in [account.go](../../internal/provider/account.go)): Copilot's token read backs a denial off (`copilotCLISecret`), and the Cursor token (`cursorKeychainToken`) and Claude Code's item (`readClaudeKeychainItem`, through `claudeCredential`'s cache) do too (#2408). 44, the item not being there, is no refusal and keeps the short TTL, so a sign-in made in the agent is still seen within it; a sign-in or out in magpie reads afresh (`forgetCursorStatus`, `forgetClaudeCredential`), backoff or not.
++- The Providers page's kept list (`GET /api/providers?last=1`, `keptProvider` in [lastproviders.go](../../internal/gui/lastproviders.go)) has no proxy, accounts' proxies, headers or extra body, so no editor opens on it, by a row or by `?view=providers&edit=<id>`: it opens once the fresh list is in, and a save from an editor asked while only the kept list is in leaves those four out (`providerAction`, T-083; a magpie://import link's Add or Replace sends its own). A save that leaves one out keeps it, for a provider the user added and a preset's alike, so a subscription editor's Save, which never sends headers, no longer clears them; `""` (proxy) or `{}` still clears it (`TestProviderSaveKeepsWhatItLeavesOut`, `providers-last-edit.test.cjs`). Before, an editor opened by its address on the kept list showed every account on the provider's proxy and its Save cleared them all.
+ - An unreadable `providers.json` is an error, never an empty list. Saving over an empty list would lose every provider.
+ - When `logins.json` cannot be decoded as saved accounts, reads keep the accounts read before. Before saving a change, `lastgood.Keep` ([lastgood.go](../../internal/lastgood/lastgood.go)) keeps the file there now: as `logins.json.bak`, its last good generation, when it reads, or copied aside as `logins.json.bad-<time>` (`-2`, `-3`… for another within one second) when it doesn't, including valid JSON with invalid account field types, so its credentials can be recovered. If the existing file cannot be read or the copy fails, saving returns the error and leaves the original file unchanged. A missing file can be created normally.
+ - A Windows machine that went down mid-write left `logins.json` and `plugin-auth.json` at their full length, every byte zero (#1505): the rename reached the disk before the data. Every write of magpie's own state goes through `steady.WriteFile` (or `edit.WriteAtomic`), which flushes the temp file before renaming it in, and the plugin host's `writeDurable` does the same. So does every write of an agent's own sign-in (#2239): `codexToken`'s rotated tokens into Codex's `auth.json` (`~/.codex`, or `$CODEX_HOME` when set; its keychain item instead when Codex keeps the sign-in there) and `writeClaudeCredential`'s `.credentials.json` go through `writePrivate`, never a truncating `os.WriteFile`, so a machine going down mid-write leaves the old sign-in whole, and on Windows a file another program holds for a moment is waited out (`steady.Rename`) instead of the rotation being dropped while the refresh token on the disk is spent. A file that is there but doesn't read on a cold start is read from its `.bak` (`lastgood.Read`/`Fallback`): `logins.json`, `providers.json`, `migrations.json`, `settings.json`, `profiles.json`, `plugins.json`, `plugin-auth.json` and `mcp-signins.json`. `caller-keys.json` is flushed the same way but never read from a `.bak`: a key revoked in the last write would come back, so a store that doesn't read still refuses every key. The recovery is logged and listed in `/api/state`'s `recovered`, which the window tells once (`recoveredOnce`). The `.bak` lags one write behind on purpose: a crash zeroes the latest write, so a copy made with it could be zeroed too. With no good `.bak` the file is unknown, never empty: a sign-out leaves `plugin-auth.json` or `mcp-signins.json` as it is (magpie's own returns the error), and a sign-in added copies the file aside before it writes.
+diff --git a/internal/gui/assets/app.js b/internal/gui/assets/app.js
+index f725fbc65..cbbf5fc9e 100644
+--- a/internal/gui/assets/app.js
++++ b/internal/gui/assets/app.js
+@@ -5936,11 +5936,8 @@ function loadProviders() {
+ }
+ 
+ async function loadProvidersNow() {
+-  // The page's first opening (#1519, fatkun): a list is drawn at once, as
+-  // the Agents page draws the last state, and the fresh one replaces it
+-  // when it is in — the one read in the background after the start, else
+-  // the one kept from the last read (this run's or the run before's). The
+-  // read in the background still on its way is waited for, not asked again.
++  // The first opening (#1519, fatkun): the list read in the background, or
++  // else the one kept, drawn at once; the fresh one replaces it when in.
+   let fresh = null, kept = null;
+   if (!providers) {
+     const early = providersEarly;
+@@ -5951,9 +5948,7 @@ async function loadProvidersNow() {
+       if (view === "providers") {
+         kept = await Promise.race([fresh.then(() => null, () => null), api("providers?last=1").catch(() => null)]);
+         if (!kept?.providers?.length || providers) kept = null;
+-        // a kept list, whatever it says of itself: a row clicked on it
+-        // waits for the fresh one, never opened to be drawn again under
+-        // the reader's hands when that comes in
++        // a kept list, whatever it says: no editor opens on it (T-083)
+         else kept.last = true;
+       }
+     }
+@@ -5962,7 +5957,6 @@ async function loadProvidersNow() {
+   if (kept) {
+     providers = kept;
+     renderSideGw(providers.gateway);
+-    if (typeof editing === "string" && !providers.providers.some((p) => p.id === editing)) editing = null;
+     if (providersPage(view)) magpie.call(view, "render", null);
+     else renderProviders();
+   }
+@@ -6208,16 +6202,16 @@ function renderProviders(quiet) {
+     if (!p.off) row.oncontextmenu = (ev) => { ev.preventDefault(); openProviderMenu(row.querySelector(".pv-handle"), p); };
+     row.onclick = async () => {
+       if (providerDirty() && !(await confirmDiscard())) return;
+-      // a list drawn before the fresh one is in (#1519) leaves out what the
+-      // editor shows (headers, proxies): the row opens on the fresh one
+-      if (providers.last) {
++      // the kept list (#1519) lacks proxies and headers: opens on the fresh
++      const last = providers.last;
++      if (last) {
+         try { await loadProviders(); } catch (e) { statusErr(e); return; }
+         if (!providers.providers.some((x) => x.id === p.id)) return;
+       }
+-      editing = open ? null : p.id; draft = null; renderProviders();
++      editing = open && !last ? null : p.id; draft = null; renderProviders();
+     }; // the preset sheet stays as it is under the dialog
+     list.append(row);
+-    if (open) dialog = renderEditor(p);
++    if (open && !providers.last) dialog = renderEditor(p);
+   }
+   findProviders();
+   renderExcluded();
+@@ -10661,7 +10655,7 @@ function renderImport(im) {
+     const n = (im.name ?? p.name).trim();
+     if (!n) { name.focus(); return status(t("Give it a name"), "warn"); }
+     saving(addBtn, t(im.replaces ? "Replacing…" : "Adding…"));
+-    providerAction("save", { ...p, name: n, key: (im.key ?? p.key ?? "").trim() }, t("{name} added", { name: n }));
++    providerAction("save", { headers: {}, ...p, name: n, key: (im.key ?? p.key ?? "").trim() }, t("{name} added", { name: n }));
+   };
+   addBtn.onclick = add;
+   bar.append(addBtn);
+@@ -15325,6 +15319,8 @@ function renderMove(p) {
+ }
+ 
+ async function providerAction(action, body, okMsg, base = "provider/") {
++  // the kept list has none of these: the saved ones are kept (T-083)
++  if (action === "save" && providers?.last && typeof editing == "string" && !importing) for (const k of ["proxy", "accountProxies", "headers", "extraBody"]) delete body[k];
+   if (action === "delete" && !await confirmRemoval(providers?.providers.find((p) => p.id === body.id)?.name || body.id,
+     "Its saved configuration will be removed. Agents using it may switch to another provider or their default model.")) return false;
+   try {
+diff --git a/internal/gui/provider_save_keeps_test.go b/internal/gui/provider_save_keeps_test.go
+new file mode 100644
+index 000000000..da5e0121e
+--- /dev/null
++++ b/internal/gui/provider_save_keeps_test.go
+@@ -0,0 +1,85 @@
++package gui
++
++import (
++	"maps"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"testing"
++
++	"github.com/yetone/magpie/internal/provider"
++)
++
++// T-083: the Providers page's kept list (keptProvider) has no proxies,
++// headers or extra body, and an editor opened on it saved none, which
++// cleared what the user had set. A save that leaves one of them out keeps
++// it, a custom provider's and a preset's alike; one that sends "" or {}
++// still clears it. Proxies and extra body left out were kept before
++// T-083 already; only the headers check is red on the code before it.
++func TestProviderSaveKeepsWhatItLeavesOut(t *testing.T) {
++	home := t.TempDir()
++	t.Setenv("HOME", home)
++	t.Setenv("USERPROFILE", home)
++	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
++	t.Setenv("XDG_CACHE_HOME", t.TempDir())
++	mux := http.NewServeMux()
++	providerRoutes(mux, nil)
++	post := func(body string) {
++		t.Helper()
++		w := httptest.NewRecorder()
++		mux.ServeHTTP(w, httptest.NewRequest("POST", "/api/provider/save", strings.NewReader(body)))
++		if w.Code != 200 {
++			t.Fatalf("%s: %d %s", body, w.Code, w.Body)
++		}
++	}
++	find := func(id string) provider.Provider {
++		t.Helper()
++		got, err := provider.Find(id)
++		if err != nil {
++			t.Fatal(err)
++		}
++		return *got
++	}
++	for _, c := range []struct{ name, seed, save string }{
++		{"custom", "", `"name":"Relay","chat":"https://relay.example.invalid/v1"`},
++		{"preset", "deepseek", `"name":"DeepSeek","preset":"deepseek"`},
++	} {
++		t.Run(c.name, func(t *testing.T) {
++			p := provider.Provider{ID: "relay-" + c.name, Name: "Relay", Chat: "https://relay.example.invalid/v1"}
++			if c.seed != "" {
++				var err error
++				if p, err = provider.FromPreset(c.seed); err != nil {
++					t.Fatal(err)
++				}
++				p.ID = "relay-" + c.name
++			}
++			p.Key, p.Keys = "sk-primary-one", []provider.KeyAccount{{Key: "sk-second-two"}}
++			if err := provider.Save(p); err != nil {
++				t.Fatal(err)
++			}
++			ks := find(p.ID).KeyList()
++			if len(ks) != 2 {
++				t.Fatalf("keys %v", ks)
++			}
++			own := map[string]string{ks[0].ID: "socks5://10.0.0.5:1080", ks[1].ID: "direct"}
++			p = find(p.ID)
++			p.Proxy, p.AccountProxies = "http://10.0.0.2:7890", own
++			p.Headers = map[string]string{"X-Team": "t1"}
++			p.ExtraBody = provider.ExtraBody{"prompt_cache_key": []byte(`"k"`)}
++			if err := provider.Save(p); err != nil {
++				t.Fatal(err)
++			}
++			head := `{"id":"` + p.ID + `",` + c.save
++			post(head + `}`)
++			got := find(p.ID)
++			if got.Proxy != "http://10.0.0.2:7890" || !maps.Equal(got.AccountProxies, own) || got.Headers["X-Team"] != "t1" || string(got.ExtraBody["prompt_cache_key"]) != `"k"` {
++				t.Fatalf("left out, not kept: proxy %q, own %v, headers %v, extra body %v", got.Proxy, got.AccountProxies, got.Headers, got.ExtraBody)
++			}
++			post(head + `,"proxy":"","accountProxies":{},"headers":{},"extraBody":{}}`)
++			got = find(p.ID)
++			if got.Proxy != "" || len(got.AccountProxies) != 0 || len(got.Headers) != 0 || len(got.ExtraBody) != 0 {
++				t.Fatalf("cleared, still kept: proxy %q, own %v, headers %v, extra body %v", got.Proxy, got.AccountProxies, got.Headers, got.ExtraBody)
++			}
++		})
++	}
++}
+diff --git a/internal/gui/providers.go b/internal/gui/providers.go
+index ee6dfe2f6..3e6cfcf69 100644
+--- a/internal/gui/providers.go
++++ b/internal/gui/providers.go
+@@ -1940,6 +1940,12 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
+ 				if in.ExtraBody == nil && old != nil {
+ 					in.ExtraBody = old.ExtraBody
+ 				}
++				// and its headers: {} clears them. A page that has only the
++				// kept list (keptProvider) leaves them out, with the proxies
++				// and extra body, rather than send none (T-083)
++				if in.Headers == nil && old != nil {
++					in.Headers = old.Headers
++				}
+ 				// and the reply headers passed on: [] clears them
+ 				if in.ReplyHeaders == nil && old != nil {
+ 					in.ReplyHeaders = old.ReplyHeaders
+diff --git a/internal/gui/tests/providers-last-edit.test.cjs b/internal/gui/tests/providers-last-edit.test.cjs
+new file mode 100644
+index 000000000..ad01f473d
+--- /dev/null
++++ b/internal/gui/tests/providers-last-edit.test.cjs
+@@ -0,0 +1,173 @@
++// Run with Node's test runner and Playwright on the module path; see README.md.
++// A provider's editor opened by its address (?view=providers&edit=<id>)
++// while the Providers page draws the kept list first (#1519): the kept
++// list leaves out each provider's proxies, headers and extra body
++// (keptProvider), so an editor drawn on it showed every account on the
++// provider's proxy, and a Save, then or after the fresh list came in,
++// wrote that over the proxies the user had set (T-083). The editor now
++// opens only on the fresh list, as a row clicked on the kept one does,
++// and a save asked while only the kept list is in leaves those fields out,
++// for the server to keep; a magpie://import link's Add and Replace, which
++// can be drawn on the kept list, send all of theirs. A key provider and a
++// subscription, in every language.
++const assert = require("node:assert/strict");
++const fs = require("node:fs/promises");
++const path = require("node:path");
++const { test } = require("node:test");
++const { chromium, webkit } = require("playwright");
++
++const assets = path.resolve(__dirname, "../assets");
++const SLOW = 1500; // the fresh read of the list
++const LANGS = ["en", "zh", "zh-TW", "ja", "de"];
++
++const relay = {
++  id: "relay", name: "Relay", icon: "generic", chat: "https://relay.example.com/v1", responses: "", anthropic: "", catalog: "",
++  models: [{ id: "big", name: "", on: true }], agents: [], fallback: [],
++  key: { set: true, masked: "sk-…one" }, balanceToken: { takes: false, set: false },
++  keyList: [{ id: "aaaaaaaaaa", name: "Team", masked: "sk-…one", on: true, active: true }, { id: "bbbbbbbbbb", name: "", masked: "sk-…two", on: true }],
++  proxy: "http://10.0.0.2:7890",
++  accountProxies: { aaaaaaaaaa: "socks5://10.0.0.5:1080", bbbbbbbbbb: "direct" },
++  headers: { "X-Team": "t1" },
++  extraBody: { prompt_cache_key: "k" },
++};
++const codex = {
++  id: "codex", name: "Codex", icon: "codex-color", chat: "", responses: "", anthropic: "", catalog: "",
++  models: [{ id: "gpt-6", name: "GPT-6", on: true }], agents: [], fallback: [], keyList: [],
++  account: {
++    agent: "codex", agentName: "Codex", user: "me@example.com", plan: "PLUS",
++    logins: [{ user: "me@example.com", plan: "PLUS", active: true, on: true }, { user: "spare@example.com", plan: "PLUS", on: true }],
++  },
++  proxy: "http://10.0.0.2:7890",
++  accountProxies: { "me@example.com": "socks5://10.0.0.5:1080", "spare@example.com": "direct" },
++};
++const list = (ps) => ({ providers: ps, presets: [], excluded: [], gateway: { running: true, window: true } });
++// what keptProvider keeps of each
++const bare = ({ proxy, accountProxies, headers, extraBody, ...p }) => p;
++const fresh = list([relay, codex]);
++const kept = list([bare(relay), bare(codex)]);
++// a magpie://import link replacing Relay, with headers and extra body
++const linked = {
++  replaces: "Relay",
++  provider: { id: "relay", name: "Relay", chat: "https://linked.example.com/v1", key: "sk-linked", models: ["big"], headers: { "X-Link": "l1" }, extraBody: { route: "fast" } },
++};
++
++function serve(lang, reads, posts) {
++  const state = { agents: [], profiles: [], settings: { lang, theme: "light" } };
++  return async (route) => {
++    const url = new URL(route.request().url());
++    const json = (data) => route.fulfill({ json: data });
++    if (url.pathname === "/boot.js") return route.fulfill({ contentType: "text/javascript", body: `window.bootPrefs = {lang:"${lang}",theme:"light",web:true};` });
++    if (url.pathname === "/wails/runtime.js") return route.fulfill({ contentType: "text/javascript", body: "export const Window = {};" });
++    if (url.pathname === "/api/state") return json(url.searchParams.get("last") === "1" ? null : state);
++    if (url.pathname === "/api/providers") {
++      if (url.searchParams.get("last") === "1") return json(kept);
++      reads.asked++;
++      await new Promise((r) => setTimeout(r, SLOW));
++      reads.done++;
++      return json(fresh);
++    }
++    if (url.pathname === "/api/groups") return json({ groups: [] });
++    if (url.pathname === "/api/import/link") return json(linked);
++    if (url.pathname.startsWith("/api/provider/") && route.request().method() === "POST") {
++      posts.push({ action: url.pathname.slice("/api/provider/".length), body: route.request().postDataJSON() });
++      return json(fresh);
++    }
++    if (url.pathname.startsWith("/api/")) return json({});
++    const file = path.join(assets, url.pathname === "/" ? "index.html" : url.pathname);
++    const contentType = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png" }[path.extname(file)];
++    await route.fulfill({ body: await fs.readFile(file), contentType });
++  };
++}
++
++async function open(engine, t, lang, query) {
++  const browser = await (engine === "webkit" ? webkit.launch() : chromium.launch({ channel: "chromium" }));
++  t.after(() => browser.close());
++  const page = await (await browser.newContext({ viewport: { width: 900, height: 760 }, reducedMotion: "reduce" })).newPage();
++  page.setDefaultTimeout(5000);
++  page.setDefaultNavigationTimeout(60000);
++  const errors = [];
++  page.on("pageerror", (e) => errors.push(e.message));
++  const reads = { asked: 0, done: 0 }, posts = [];
++  await page.route("**/*", serve(lang, reads, posts));
++  await page.goto("http://magpie.test/?" + query);
++  return { page, errors, reads, posts };
++}
++
++const row = (page) => page.locator("#providers .row.provider:not(.pv-sk-row)");
++async function save(page, posts) {
++  const n = posts.length;
++  await page.locator(".editor .bar button.primary").last().click();
++  for (let i = 0; i < 50 && posts.length === n; i++) await page.waitForTimeout(50);
++  assert.equal(posts.length, n + 1, "Save posted nothing");
++  return posts.at(-1);
++}
++
++for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium", "webkit"])) {
++  for (const lang of LANGS) {
++    for (const [p, want] of [
++      [relay, { proxy: relay.proxy, accountProxies: relay.accountProxies, headers: relay.headers, extraBody: relay.extraBody }],
++      [codex, { proxy: codex.proxy, accountProxies: codex.accountProxies }],
++    ]) {
++      test(`${engine} ${lang}: ${p.name} opened by its address on the kept list keeps its proxies on Save`, async (t) => {
++        const { page, errors, reads, posts } = await open(engine, t, lang, `view=providers&edit=${p.id}`);
++        await row(page).first().waitFor();
++        assert.equal(reads.done, 0, "the kept list was not drawn first");
++        assert.equal(await page.locator(".editor").count(), 0, "the editor opened on the kept list");
++        await page.locator(".editor .acct-proxy").first().waitFor({ timeout: SLOW + 4000 });
++        assert(reads.done >= 1, "the editor opened before the fresh list was in");
++        assert.equal(await page.locator(".editor .proxy-pick .proxy-url").first().inputValue(), p.proxy, "the provider's proxy not shown");
++        const { body } = await save(page, posts);
++        assert.equal(body.id, p.id);
++        for (const [k, v] of Object.entries(want)) assert.deepEqual(body[k], v, `${k} saved as ${JSON.stringify(body[k])}`);
++        assert.deepEqual(errors, []);
++      });
++    }
++
++    test(`${engine} ${lang}: a row clicked before the fresh list opens its editor on it`, async (t) => {
++      const { page, errors, reads } = await open(engine, t, lang, "view=providers&edit=relay");
++      await row(page).first().waitFor();
++      assert.equal(reads.done, 0, "the kept list was not drawn first");
++      await page.locator(".row.provider", { hasText: "Relay" }).first().click();
++      await page.locator(".editor .acct-proxy").first().waitFor({ timeout: SLOW + 4000 });
++      assert.equal(await page.locator(".editor .proxy-pick .proxy-url").first().inputValue(), relay.proxy);
++      assert.deepEqual(errors, []);
++    });
++
++    test(`${engine} ${lang}: an import link drawn on the kept list sends its headers and extra body`, async (t) => {
++      const { page, errors, reads, posts } = await open(engine, t, lang, "view=providers&import=link");
++      await page.locator(".editor.import .bar button.primary").waitFor();
++      const n = posts.length;
++      await page.locator(".editor.import .bar button.primary").click();
++      for (let i = 0; i < 50 && posts.length === n; i++) await page.waitForTimeout(50);
++      assert.equal(reads.done, 0, "the fresh list was in already");
++      const { body } = posts.at(-1);
++      assert.deepEqual(body.headers, linked.provider.headers);
++      assert.deepEqual(body.extraBody, linked.provider.extraBody);
++      assert.deepEqual(errors, []);
++    });
++
++    test(`${engine} ${lang}: a save asked while only the kept list is in leaves its proxies, headers and extra body out`, async (t) => {
++      const { page, errors, reads, posts } = await open(engine, t, lang, "view=providers");
++      await row(page).first().waitFor();
++      const sent = await page.evaluate(async () => {
++        const all = { proxy: "", accountProxies: {}, headers: {}, extraBody: {} };
++        const k = providers;
++        editing = "relay";
++        await providerAction("save", { id: "relay", ...all });
++        // an Add's are its own: sent as they are
++        providers = k;
++        editing = { custom: true };
++        await providerAction("save", { id: "other", new: true, ...all });
++        return k.last;
++      });
++      assert.equal(sent, true, "the save was not asked on the kept list");
++      assert.equal(reads.done, 0, "the fresh list was in already");
++      assert.equal(posts.length, 2);
++      for (const k of ["proxy", "accountProxies", "headers", "extraBody"]) {
++        assert(!(k in posts[0].body), `${k} sent from the kept list`);
++        assert(k in posts[1].body, `an Add's ${k} left out`);
++      }
++      assert.deepEqual(errors, []);
++    });
++  }
++}
+-- 
+2.50.1 (Apple Git-155)
+
+```
+
+</details>
+
+**Verification**
+
+Every check below I ran myself today on this machine (macOS arm64, go1.26.8); branch head c4ddc0e22 is the patch rebased on upstream/main 0ee424e3e with the author and message preserved.
+| Check | Result |
+|---|---|
+| `go test ./internal/gui -run TestProviderSaveKeepsWhatItLeavesOut -count=1 -v` on the branch | PASS — both subtests (`custom`, `preset`) |
+| Ablation: `app.js` and `providers.go` reverted to the parent commit with the new tests kept | both subtests red ("left out, not kept: proxy ..."); files restored, green again |
+| `git am -3` of the patch above onto a clean tree at upstream/main 0ee424e3e | applies clean (new commit 8d71b46d1, author preserved); targeted test green on that tree too |
+| Reporter's own commit 873d3d7f cherry-picked onto upstream/main 0ee424e3e | applies clean (fb7d8bb5e); the diff is identical to the patch above except index lines and hunk offsets (checked line by line) |
+| `gofmt -l internal/gui internal/catalog` | nothing |
+| `go vet ./internal/gui` | clean |
+| Pre-existing, not caused by this change: `TestProxyCheckSaysAProxyPassedBy` | red for me on plain upstream/main 0ee424e3e and red on the branch alike — this Mac runs a system proxy at 127.0.0.1:7897, which netproxy reads on darwin (as qiqll already noted) |
+
+**Not verified**
+
+The real app with the reporter's providers.json; Windows and WSL; and I did not re-run the Playwright GUI tests (`providers-last-edit.test.cjs`) myself — the reporter reports 114 of 114 across chromium/webkit, en/zh/ja/de and the rest of LANGS.
+
+**AI use**
+
+The analysis and the verification runs were done with AI assistance (GLM-5.3-Flash via ZCode); posted by ggbdpq.
+
+**Attribution**: patch by @qiqll (branch pr/editor-kept-list-proxies, commit 873d3d7f); I've verified the diff and the tests pass. Please keep the author (qiqll) or add Co-authored-by: qiqll.
+
+**Branch with the commit**: https://github.com/ggbdpq/magpie/tree/fix/5083-editor-kept-proxies-verify (head c4ddc0e2254512d03e11d7993d0974404d596925).

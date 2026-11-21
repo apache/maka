@@ -1,0 +1,150 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: 0xTotoroX <191693694+0xTotoroX@users.noreply.github.com>
+Date: Sat, 7 Nov 2026 23:25:25 +0800
+Subject: [PATCH] provider: a Google account's quota names the plan Code Assist
+ reports now (#5621, 0xTotoroX)
+
+The account's saved plan from sign-in (Antigravity Starter Quota) kept
+overwriting what Code Assist's project data reports (Google AI Pro):
+googleAccount.quota took the project's plan only when the quota had none
+to begin with, so the stale saved name never updated. The project's
+non-empty plan (paid tier first) is now the one shown; the saved plan is
+only a fallback for a reading that can't name one. The reported face is
+a Pro upgrade showing the old Starter label; a downgrade now shows too.
+
+Patch by 0xTotoroX (issue #5621), applied as posted; regression tests
+theirs (TestGoogleQuotaPlanFollowsCodeAssist new,
+TestAntigravityTierAskedAgainAfterUpgrade strengthened).
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ docs/subsystems/providers-accounts.md       |  1 +
+ internal/provider/antigravity_tier_test.go  |  9 ++--
+ internal/provider/google.go                 |  3 +-
+ internal/provider/google_quota_plan_test.go | 56 +++++++++++++++++++++
+ 4 files changed, 65 insertions(+), 4 deletions(-)
+ create mode 100644 internal/provider/google_quota_plan_test.go
+
+diff --git a/docs/subsystems/providers-accounts.md b/docs/subsystems/providers-accounts.md
+index 6db987622..892b3a5b8 100644
+--- a/docs/subsystems/providers-accounts.md
++++ b/docs/subsystems/providers-accounts.md
+@@ -361,6 +361,7 @@ and `TestHistoricalWindowHoldsUsesEachWindowsOwnReading`.
+ - *Warm up now*, the last row of Settings › Usage's Codex and Claude Code warm-up tabs (`renderWarmNow` in `app.js`, `POST /api/warm-now`), sends one account the request the scheduled warm-up sends, whatever the warm-up settings say ([`warm_now.go`](../../internal/provider/warm_now.go)): `warmCodexLogin` for a ChatGPT account, then `StaleAllowance`; for a Claude account Claude Code's own run, `warmClaudeLogin` over the gateway's `warmClaude` (`WarmClaudeVia`), in the saved account's directory, then `claudeWarmedNow`, which has the account read again on its next look while its last reading keeps its own time, so the old windows never show as just read (`TestClaudeWarmedReadAgain`). With several accounts the press opens the app's menu of them. An account whose sign-in lapsed is sent nothing and says so, and the vendor's refusal comes back as the row's line, in red. The scheduled warm-up's file (`codex-warmup.json`) isn't written: its next look reads the window as started. `TestWarmNowSendsTheScheduledWarmUp` checks the body and headers equal the scheduled warm-up's; `warm-now.test.cjs` covers the GUI.
+ - The scheduled warm-up warms each window a Claude account is expected to have (`withExpected`), the 5-hour and the week, also one its reading left out: Anthropic leaves a window out until the request that starts it. A window left out while a shorter one is running is one the account doesn't have, since any use starts every window it has (a Claude Enterprise account with only the 5-hour, koohoko5924 on Discord, whose week was warmed over and over and its state read Idle): the warmer marks it `Absent` in `codex-warmup.json` and sends it nothing, and `usageRead` doesn't count it as due (`windowAbsent`, `shorterRunning` in [`codex_warmup.go`](../../internal/provider/codex_warmup.go)). A week once seen running, or left out of a reading that is only part of the plan's, is still warmed; one never read before is not. `TestClaudeWarmLeavesAWeekTheAccountHasnt`, `TestClaudeWarmStartsAWeekThatReset`, `TestUsageReadLeavesAWeekTheAccountHasnt`.
+ - An Antigravity subscription offers the union of its On accounts' models (`antigravityPoolModels` in [`antigravity_pool.go`](../../internal/provider/antigravity_pool.go)), each account's own list kept beside it (`accountModels`, read by `Account.Lists` for routing). The lists are fetched at the first listing, a probe, a sync or a Refetch, and also at each account's quota reading, which asks `fetchAvailableModels` anyway: a reading whose models differ from the account's saved list saves it and merges the pooled list again from every On account's own (`noteAntigravityList`), so a model Google gives one account of several later (01huadalang on Discord: Gemini 4) is offered, routed to and given its bar without that account made preferred or probed. A switched-off account's reading changes nothing. `TestAntigravityQuotaReadingListsNewModels`. Each `fetchAvailableModels` names the account's paid and current tier first (`entitlement.userTier`, `askTiers`), then none; a tier Google answers 400 (a Google AI Pro account's g1-pro-tier, #1553) is left out of that account's lists and quota readings for `tierRefusedFor` (a day), and the refused request is no row of the request log.
++- A Google account's successful quota reading names the latest non-empty plan in Code Assist's project data (`googleAccount.quota` in [`google.go`](../../internal/provider/google.go)), whose paid tier takes precedence over its current tier. The plan saved at sign-in is only a fallback when that reading cannot determine a plan: an account saved as Antigravity Starter Quota and now reported as Google AI Pro shows Pro, and a downgrade is reflected too. Antigravity's existing hourly tier refresh still applies; a failed refresh keeps the last known tier and plan. `TestGoogleQuotaPlanFollowsCodeAssist`, `TestAntigravityTierAskedAgainAfterUpgrade`.
+ - A provider removed or switched off takes its models out of the catalog. [Agent wiring](agent-wiring.md)'s `Reseat` moves agents off them.
+ - A preset marked `NoList` uses its preset model list instead of requesting `/models`, and ignores previously fetched lists, including their protocol and key restrictions, unless the user sets `ModelsURL` or chooses a region marked `Lists`. Each region can carry a different list. Volcengine Ark's Coding Plan and Agent Plan use separate preset lists. Both plans include their embedding model separately from agents' chat-model lists; Agent Plan additionally exposes its image- and video-generation models to Settings → Models → Images; Ark itself refuses video generation on Small and Medium Agent Plans, which include it only in the Large and Max tiers. Models magpie does not yet serve (Agent Plan's speech models) are not advertised. Ark's pay-as-you-go region still fetches its own list. Coding's `/api/coding/v3/models` returns a general Ark catalog instead of the plan's model ids, while Agent's `/api/plan/v3/models` returns 404. A preset with no regions may name its embedding and rerank models itself (`PresetDef.Embeddings`, `Rerankers`): Voyage AI (`voyage`, heatonz on Discord) has no `/models` and serves only those, so they are its whole list, each marked with what it serves (`catalog.Model.Serves`), kept out of chat lists, and found on `/v1/embeddings` or `/v1/rerank` alone by `PlanRetrieval(kind)` (`TestVoyagePreset`, `TestVoyageModelsStayOnTheirRoutes`). [`presets.go`](../../internal/provider/presets.go) defines these choices; `List`, `fetch`, `live`, `planModels`, `PlanEmbeddings`, `PlanRerankers`, `PlanRetrieval`, `PlanDrawers` and `PlanVideos` in [`models.go`](../../internal/provider/models.go) apply them when adding, refreshing and reading cached models. `TestVolcengineModelLists` checks that the plans make no list requests, ignore old cached lists and return their own preset models; pay-as-you-go and an explicit list URL still make requests.
+ - A key's provider can have its model list off (`Provider.ListOff`, `ListsOff()`; axelburks on Discord: Ark's pay-as-you-go list names models that can't be asked for, each is asked by an endpoint id the user made). Nothing asks its vendor for a list: `Fetch`, `Refetch`, `List`, `RefreshLists`, a test, a new key's prefill and a resting key's probe (`ListAsks`) skip it, and `Fetch`/`List` return `ErrListOff`. A list fetched before and models.dev's are not read, so only the ids the user added are served. A signed-in account and a plugin list their models as their sign-in does, so the switch is a key provider's alone (`takesListOff` in `/api/providers`). The editor shows it as Fetch the model list, ticked by default; unticked, Fetch models and Forget go. A save that doesn't name `listOff` keeps it. The CLI takes `list=off|on`. Tests: `TestListOffAsksNoListAndServesTheIDsAdded`, `TestProviderSaveListOff`, `provider-list-off.test.cjs`.
+diff --git a/internal/provider/antigravity_tier_test.go b/internal/provider/antigravity_tier_test.go
+index ecbb22d78..d0eeed017 100644
+--- a/internal/provider/antigravity_tier_test.go
++++ b/internal/provider/antigravity_tier_test.go
+@@ -412,7 +412,7 @@ func TestAntigravityTierAskedAgainAfterUpgrade(t *testing.T) {
+ 	googleSandbox(t, f)
+ 	buf := captureLog(t)
+ 	auth := googleAuth{AccessToken: "tok", RefreshToken: "rt-ultra", Expiry: time.Now().Add(time.Hour).UnixMilli()}
+-	if err := addGoogleLogin("antigravity", "ultra@example.com", "", auth); err != nil {
++	if err := addGoogleLogin("antigravity", "ultra@example.com", "Antigravity", auth); err != nil {
+ 		t.Fatal(err)
+ 	}
+ 	if got, want := antigravityModelIDs(t, "antigravity"), []string{"gemini-3.8-flash-high"}; !slices.Equal(got, want) {
+@@ -452,8 +452,8 @@ func TestAntigravityTierAskedAgainAfterUpgrade(t *testing.T) {
+ 	if w := `paid tier g1-ultra-tier (Google AI Ultra), project "aicode-consumers" (was current tier "free-tier", paid tier "")`; !strings.Contains(buf.String(), w) {
+ 		t.Errorf("log lacks %q:\n%s", w, buf.String())
+ 	}
+-	if q := googleLogins("antigravity")[0].acct.quota(context.Background(), ""); q.Plan != "Google AI Ultra" {
+-		t.Errorf("plan %q", q.Plan)
++	if q := googleLoginQuota(context.Background(), googleLoginList("antigravity")[0]); q.Error != "" || q.Plan != "Google AI Ultra" {
++		t.Errorf("quota after upgrade: plan %q, error %q", q.Plan, q.Error)
+ 	}
+ 
+ 	// loadCodeAssist failing keeps the tiers it gave
+@@ -469,4 +469,7 @@ func TestAntigravityTierAskedAgainAfterUpgrade(t *testing.T) {
+ 	if got := antigravityModelIDs(t, "antigravity"); !slices.Contains(got, "gemini-4-argon") {
+ 		t.Fatalf("tiers lost on a failed loadCodeAssist: %v", got)
+ 	}
++	if q := googleLoginQuota(context.Background(), googleLoginList("antigravity")[0]); q.Error != "" || q.Plan != "Google AI Ultra" {
++		t.Errorf("quota after failed loadCodeAssist: plan %q, error %q", q.Plan, q.Error)
++	}
+ }
+diff --git a/internal/provider/google.go b/internal/provider/google.go
+index 70e35577a..98f12c51f 100644
+--- a/internal/provider/google.go
++++ b/internal/provider/google.go
+@@ -1329,7 +1329,8 @@ func (g googleAccount) quota(ctx context.Context, plan string) SubscriptionQuota
+ 	if g.app.agent == "antigravity" {
+ 		q.Windows = append(q.Windows, g.pools(ctx, q.Windows)...)
+ 	}
+-	if p, err := g.project(ctx); err == nil && q.Plan == "" {
++	// Code Assist's plan can have changed since this account was signed in.
++	if p, err := g.project(ctx); err == nil && p.plan != "" {
+ 		q.Plan = p.plan
+ 	}
+ 	return q
+diff --git a/internal/provider/google_quota_plan_test.go b/internal/provider/google_quota_plan_test.go
+new file mode 100644
+index 000000000..3d580be51
+--- /dev/null
++++ b/internal/provider/google_quota_plan_test.go
+@@ -0,0 +1,56 @@
++package provider
++
++import (
++	"context"
++	"testing"
++	"time"
++)
++
++// A quota reading must not keep the plan from sign-in over the one Code
++// Assist gives now. A paid Antigravity account can still be on free-tier:
++// its paidTier, not currentTier or the saved plan, names its membership.
++func TestGoogleQuotaPlanFollowsCodeAssist(t *testing.T) {
++	const free = `{"currentTier":{"id":"free-tier","name":"Antigravity"},
++		"paidTier":{"id":"free-tier","name":"Antigravity Starter Quota"},
++		"cloudaicompanionProject":"aicode-consumers"}`
++	const pro = `{"currentTier":{"id":"free-tier","name":"Antigravity"},
++		"paidTier":{"id":"g1-pro-tier","name":"Google AI Pro"},
++		"cloudaicompanionProject":"aicode-consumers"}`
++	const ultra = `{"currentTier":{"id":"standard-tier","name":"Antigravity"},
++		"paidTier":{"id":"g1-ultra-tier","name":"Google AI Ultra"},
++		"cloudaicompanionProject":"aicode-consumers"}`
++	for _, agent := range []string{"antigravity", "gemini"} {
++		for _, c := range []struct {
++			name, saved, load, want string
++			failed                  bool
++		}{
++			{"upgraded to Pro", "Antigravity Starter Quota", pro, "Google AI Pro", false},
++			{"upgraded to Ultra", "Antigravity Starter Quota", ultra, "Google AI Ultra", false},
++			{"downgraded", "Google AI Pro", free, "Antigravity Starter Quota", false},
++			{"no saved plan", "", pro, "Google AI Pro", false},
++			{"no plan returned", "Google AI Pro", `{"currentTier":{},"cloudaicompanionProject":"aicode-consumers"}`, "Google AI Pro", false},
++			{"failed load", "Google AI Pro", `not json`, "Google AI Pro", true},
++		} {
++			t.Run(agent+"/"+c.name, func(t *testing.T) {
++				f := &fakeGoogle{load: c.load,
++					models: `{"models":{"gemini-2.5-flash":{"quotaInfo":{"remainingFraction":0.5}}}}`,
++					quota:  `{"buckets":[{"modelId":"gemini-2.5-flash","remainingFraction":0.5}]}`}
++				googleSandbox(t, f)
++				auth := googleAuth{AccessToken: "tok", RefreshToken: "rt-plan", Expiry: time.Now().Add(time.Hour).UnixMilli()}
++				if err := addGoogleLogin(agent, "plan@example.com", c.saved, auth); err != nil {
++					t.Fatal(err)
++				}
++				q := googleLoginQuota(context.Background(), googleLoginList(agent)[0])
++				if (q.Error != "") != c.failed {
++					t.Fatalf("quota error %q, want failed %v", q.Error, c.failed)
++				}
++				if q.Plan != c.want {
++					t.Errorf("plan %q, want %q (saved %q)", q.Plan, c.want, c.saved)
++				}
++				if !c.failed && (len(q.Windows) != 1 || q.Windows[0].Model != "gemini-2.5-flash" || q.Windows[0].Used != 50) {
++					t.Errorf("windows %+v, want gemini-2.5-flash at 50%% used", q.Windows)
++				}
++			})
++		}
++	}
++}
+-- 
+2.50.1 (Apple Git-155)
+

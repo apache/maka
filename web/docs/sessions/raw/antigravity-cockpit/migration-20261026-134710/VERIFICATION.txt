@@ -1,0 +1,25 @@
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py antigravity-cockpit baseline
+INPUT: CONFIG: fixed antigravity-cockpit source allowlist
+OUTPUT: BASELINE PASS groups=4 files=16 bytes=39519418 protected=1
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py antigravity-cockpit archive
+INPUT: 82c46e58c3c69997f697cb9b3941f406213c6cb297327db8789348da8f3e2745
+OUTPUT: ARCHIVE PASS zip_files=4 files=16 bytes=39519418
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py antigravity-cockpit apply
+INPUT: c26ff083fe7f05bbf0a1c77da04c1d9940eb46a8311eabe1f79ceace2c1046fc
+OUTPUT: APPLY PASS removed_files=16 removed_bytes=39519418
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py antigravity-cockpit verify
+INPUT: eda4dd17c943993a37b3557b9bb5419340c318887d5052a9012ae131f0189e67
+OUTPUT: MODIFIED PASS files=16 bytes=39519418 originals_absent=true protected_unchanged=true
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py antigravity-cockpit rollback-test
+INPUT: eda4dd17c943993a37b3557b9bb5419340c318887d5052a9012ae131f0189e67
+OUTPUT: ROLLBACK PASS restored_files=16 restored_bytes=39519418 hashes_match=true originals_untouched=true
+EXIT: 0
+

@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "ReVa": {
+      "command": "D:/DevTools/Language/Python/Scripts/mcp-reva.exe",
+      "env": {
+        "JAVA_HOME": "D:\DevTools\Language\Java\jdk-21.0.11.10-hotspot",
+        "GHIDRA_INSTALL_DIR": "D:\DevTools\Web\ghidra_12.1.2_PUBLIC"
+      }
+    }
+  }
+}

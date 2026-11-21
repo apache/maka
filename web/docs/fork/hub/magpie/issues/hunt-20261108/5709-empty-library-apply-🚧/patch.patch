@@ -1,0 +1,287 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Mon, 9 Nov 2026 00:05:32 +0800
+Subject: [PATCH] library: an apply over a library that has lost its text
+ leaves the agents' parts alone
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+A sync — the write every start does over the whole library, and the one
+every change does beside it — that finds the library's text gone and an
+agent's file still holding magpie's part wrote the empty state over it:
+nine agents' files wiped to match a Library an upgrade had emptied, four
+of them deleted whole, nothing asked (#5709, lennonli; the parts out
+there were the only copy of the instructions left, and only magpie's own
+backups brought them back). The library's record of what it last wrote
+an agent read as the hash of empty — it knew, and wrote it anyway.
+
+Three things now stand between an apply and a wipe:
+
+- A sync that would write nothing over a part, while the library's text
+  itself is gone, writes nothing and says so instead, one line an agent:
+  the part comes back with the library's next text, and the record of
+  the last write reading as the hash of empty — a library reset under
+  the agents — is named in the line. A text the library still holds
+  with one agent unticked takes back as usual, and the page's own
+  take-back (a write made with the library as the user left it) is
+  untouched: switching an agent off, a set cleared, a distro's part
+  taken out once it runs, all as they were.
+- An apply never takes a whole file away: what it empties it empties in
+  place, the file staying for the agent that reads it.
+- A part whose agent the library can give nothing to, with nothing kept
+  of the text, is the red flag the reporter read out of library.json
+  (instrHash the hash of the empty string); it is logged when the apply
+  passes a file it leaves alone.
+
+The wipe was reached at the Remove of syncInstructions, where a file
+that held nothing of the user's went whole; that path stays for the
+page's writes and is closed to an apply.
+
+Reported-by: lennonli (yetone/magpie#5709)
+Attribution: 分析与补丁由 GLM-5.3-Flash (ZCode) 协助完成
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/library/empty_library_test.go | 144 +++++++++++++++++++++++++
+ internal/library/instructions.go       |  39 ++++++-
+ internal/library/sync.go               |   2 +-
+ 3 files changed, 180 insertions(+), 5 deletions(-)
+ create mode 100644 internal/library/empty_library_test.go
+
+diff --git a/internal/library/empty_library_test.go b/internal/library/empty_library_test.go
+new file mode 100644
+index 000000000..9091b5466
+--- /dev/null
++++ b/internal/library/empty_library_test.go
+@@ -0,0 +1,144 @@
++package library
++
++import (
++	"bytes"
++	"encoding/json"
++	"log"
++	"os"
++	"path/filepath"
++	"strings"
++	"testing"
++)
++
++// applyWiped is what an apply must never do to an agent's instructions
++// file: a library reading empty has lost its instructions, not revoked
++// them, and the files it gave out are then the only copy left (#5709: a
++// start-up apply with an empty Library wiped nine agents' files to match,
++// four of them deleted whole).
++func applyWiped(t *testing.T, before []byte, p string) {
++	t.Helper()
++	b, err := os.ReadFile(p)
++	if os.IsNotExist(err) {
++		t.Fatalf("%s was deleted whole by the apply", p)
++	}
++	if err != nil {
++		t.Fatal(err)
++	}
++	if !bytes.Equal(b, before) {
++		t.Fatalf("%s was rewritten by the apply:\nwas %q\nnow %q", p, before, b)
++	}
++}
++
++// lostLibrary is a library.json whose instructions are gone, as an
++// upgrade that reset the index leaves one: no agent ticked (or none of
++// the text they were to get), while the agents still hold what it wrote.
++func lostLibrary(t *testing.T, agents []string, applied map[string]*Applied) {
++	t.Helper()
++	l := &Library{Instructions: Instructions{Agents: agents}, Applied: applied}
++	b, err := json.Marshal(l)
++	if err != nil {
++		t.Fatal(err)
++	}
++	write(t, path(), string(b))
++	if err := os.Remove(setPath(defaultSet)); err != nil && !os.IsNotExist(err) {
++		t.Fatal(err)
++	}
++}
++
++// An apply — the write every start does over the whole library (Sync, the
++// page's change too) — that finds the library emptied under it (no agent
++// ticked, no text kept) leaves the agents' files alone: what magpie gave
++// them is the only copy of instructions the library no longer has (#5709).
++// The page's own take-back is another write and keeps working: it runs
++// with the library as the user left it, and the recovery at the end shows
++// the agents get new text the moment the library has it again.
++func TestEmptyLibraryApplyLeavesAgentsFilesAlone(t *testing.T) {
++	h := sandbox(t)
++	own := "House rules of my own."
++	write(t, filepath.Join(h, ".codex/AGENTS.md"), own)
++	shared := "Be brief."
++	ok(t)(SaveInstructions(InstructionsChange{Shared: &shared, Agents: []string{"codex", "dsh"}}))
++	cx, dx := filepath.Join(h, ".codex/AGENTS.md"), filepath.Join(h, ".dsh/AGENTS.md")
++	cxBefore, err := os.ReadFile(cx)
++	if err != nil {
++		t.Fatal(err)
++	}
++	dxBefore, err := os.ReadFile(dx)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if !strings.Contains(string(dxBefore), blockBegin) {
++		t.Fatalf("dsh got no part:\n%s", dxBefore)
++	}
++	// the upgrade's reset: agents unticked and the text gone, the files
++	// the agents hold untouched — then the start-up apply runs
++	lostLibrary(t, nil, nil)
++	ok(t)(Sync())
++	applyWiped(t, cxBefore, cx)
++	applyWiped(t, dxBefore, dx)
++
++	// recovery: with the library given text again, both get it
++	again := "Back again."
++	ok(t)(SaveInstructions(InstructionsChange{Shared: &again, Agents: []string{"codex", "dsh"}}))
++	if s := read(t, cx); !strings.Contains(s, again) || !strings.Contains(s, own) {
++		t.Errorf("codex after recovery:\n%s", s)
++	}
++	if s := read(t, dx); !strings.Contains(s, again) {
++		t.Errorf("dsh after recovery:\n%s", s)
++	}
++}
++
++// The agents still ticked but the text gone reads empty to an apply all
++// the same (the part it would write hashes empty): their files stay.
++func TestEmptyTextApplyLeavesTickedFilesAlone(t *testing.T) {
++	h := sandbox(t)
++	shared := "Be brief."
++	ok(t)(SaveInstructions(InstructionsChange{Shared: &shared, Agents: []string{"codex", "dsh"}}))
++	cx, dx := filepath.Join(h, ".codex/AGENTS.md"), filepath.Join(h, ".dsh/AGENTS.md")
++	cxBefore, err := os.ReadFile(cx)
++	if err != nil {
++		t.Fatal(err)
++	}
++	dxBefore, err := os.ReadFile(dx)
++	if err != nil {
++		t.Fatal(err)
++	}
++	lostLibrary(t, []string{"codex", "dsh"}, nil)
++	ok(t)(Sync())
++	applyWiped(t, cxBefore, cx)
++	applyWiped(t, dxBefore, dx)
++}
++
++// A library whose record says the last it wrote an agent was empty while
++// the file still holds a part is one an apply already wiped once: the
++// user's files came back from magpie's backups, and the next apply must
++// not wipe them again. It says why it left them.
++func TestApplySaysWhyItLeftAPartAlone(t *testing.T) {
++	h := sandbox(t)
++	shared := "Be brief."
++	ok(t)(SaveInstructions(InstructionsChange{Shared: &shared, Agents: []string{"codex", "dsh"}}))
++	cx, dx := filepath.Join(h, ".codex/AGENTS.md"), filepath.Join(h, ".dsh/AGENTS.md")
++	cxBefore, err := os.ReadFile(cx)
++	if err != nil {
++		t.Fatal(err)
++	}
++	dxBefore, err := os.ReadFile(dx)
++	if err != nil {
++		t.Fatal(err)
++	}
++	lostLibrary(t, nil, map[string]*Applied{
++		"codex": {Instructions: true, InstrHash: hash("")},
++		"dsh":   {Instructions: true, InstrHash: hash("")},
++	})
++	out := &bytes.Buffer{}
++	flags, w := log.Flags(), log.Writer()
++	log.SetFlags(0)
++	log.SetOutput(out)
++	t.Cleanup(func() { log.SetFlags(flags); log.SetOutput(w) })
++	ok(t)(Sync())
++	applyWiped(t, cxBefore, cx)
++	applyWiped(t, dxBefore, dx)
++	if s := out.String(); !strings.Contains(s, "codex") || !strings.Contains(s, cx) {
++		t.Errorf("the apply said nothing of leaving codex alone:\n%s", s)
++	}
++}
+diff --git a/internal/library/instructions.go b/internal/library/instructions.go
+index e45e08c42..26172f992 100644
+--- a/internal/library/instructions.go
++++ b/internal/library/instructions.go
+@@ -228,8 +228,15 @@ func hash(s string) string {
+ 
+ // syncInstructions writes the agent's part as the library has it. A part
+ // the user edited in the file is left alone until the library's text for
+-// that agent changes; then it is replaced, the file kept aside first.
+-func (l *Library) syncInstructions(t *Target, b *backups, res *Result) {
++// that agent changes; then it is replaced, the file kept aside first. An
++// automatic write (auto: a sync, at a start or beside a change) that
++// finds the library with nothing to give leaves a part where it is, and
++// says so: a library reading empty has lost its instructions, not revoked
++// them, and the parts out there are then the only copy left (#5709, where
++// a start-up apply with an empty Library wiped nine agents' files). It is
++// a write of the page — a take-back, made with the library as the user
++// left it — that takes a part out.
++func (l *Library) syncInstructions(t *Target, b *backups, res *Result, auto bool) {
+ 	if res.unreached(t) {
+ 		return
+ 	}
+@@ -277,6 +284,23 @@ func (l *Library) syncInstructions(t *Target, b *backups, res *Result) {
+ 		a.Instructions, a.InstrHash = want != "", hash(want)
+ 		return
+ 	}
++	if auto && want == "" && ok && setText(l.sharedPath()) == "" {
++		// An apply with nothing to give takes no part out (#5709): the
++		// library's text itself gone reads empty to every agent at once,
++		// as an upgrade that lost it does, and the parts out there are
++		// then the only copy of the instructions there is. A text the
++		// library still holds with one agent unticked is another thing:
++		// that take-back goes out as usual, and a write of the page — a
++		// take-back, made with the library as the user left it — empties
++		// a part as it goes. Left alone, and said so; the part comes back
++		// with the library's next text.
++		red := ""
++		if a.InstrHash == hash("") {
++			red = "; the last write on record hashes empty, a library reset under the agents"
++		}
++		log.Printf("library: %s: nothing to write, %s still holds magpie's part%s: left alone", id, t.Instructions, red)
++		return
++	}
+ 	if ok && want != "" && a.InstrHash != "" && hash(have) != a.InstrHash && hash(want) == a.InstrHash {
+ 		return // edited in the file since, and the library hasn't changed for it
+ 	}
+@@ -286,7 +310,14 @@ func (l *Library) syncInstructions(t *Target, b *backups, res *Result) {
+ 		return
+ 	}
+ 	if strings.TrimSpace(next) == "" && len(raw) > 0 && own(file) == "" {
+-		err = edit.Remove(t.Instructions)
++		if auto {
++			// an apply never takes a whole file away (#5709): what it
++			// empties it empties in place, the file staying for the
++			// agent that reads it
++			err = edit.WriteAtomic(t.Instructions, nil)
++		} else {
++			err = edit.Remove(t.Instructions)
++		}
+ 	} else if next != "" {
+ 		err = edit.WriteAtomic(t.Instructions, []byte(next))
+ 	}
+@@ -426,7 +457,7 @@ func changeInstructions(f func(l *Library) error) (*Result, error) {
+ 		b = newBackups()
+ 	}
+ 	for _, t := range Targets() {
+-		l.syncInstructions(t, b, res)
++		l.syncInstructions(t, b, res, false)
+ 	}
+ 	res.Backup = b.dir
+ 	if b.dir != "" {
+diff --git a/internal/library/sync.go b/internal/library/sync.go
+index d2acf1f5a..506428934 100644
+--- a/internal/library/sync.go
++++ b/internal/library/sync.go
+@@ -99,7 +99,7 @@ func syncSteps(all, gone []*Target, b *backups, res *Result) []func(*Library) {
+ 	steps := []func(*Library){func(l *Library) { l.followMovedSkills() }}
+ 	for _, t := range all {
+ 		steps = append(steps, func(l *Library) {
+-			l.syncInstructions(t, b, res)
++			l.syncInstructions(t, b, res, true)
+ 			l.syncMCP(t, b, res)
+ 			l.syncHooks(t, b, res)
+ 			l.syncSubagents(t, b, res)
+-- 
+2.50.1 (Apple Git-155)
+

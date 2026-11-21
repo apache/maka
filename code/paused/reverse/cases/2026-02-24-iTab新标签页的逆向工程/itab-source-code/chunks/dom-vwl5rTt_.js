@@ -1,0 +1,1 @@
+const e=function(e,n,t,o){e&&n&&t&&e.addEventListener(n,t,o)},n=function(e,n,t){e&&n&&t&&e.removeEventListener(n,t,!1)};function t(e){return!!e&&document.querySelector(e)}export{t as $,n as a,e as o};

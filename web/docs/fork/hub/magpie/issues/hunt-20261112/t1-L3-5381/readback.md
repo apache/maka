@@ -1,0 +1,16 @@
+Triage: what you are seeing is the open family of Gemini draft/self-check text arriving inside content parts on the Antigravity channel, not a gateway-synthesized marker — and the report as it stands can't separate the faces, so here is where it sits and what would pin it.
+
+**The gateway emits no `*]`.** The Antigravity channel's streaming translation maps every upstream part by the upstream's own type flags: a `thought` part becomes a thinking block, a `text` part becomes a text block, and nothing else is interpolated (`internal/gateway/codeassist.go:1493-1513` — there is no literal `*]`, or any marker, in the layer). So a `*]Adjusting trailing character typo…` or `*]Oops! … why did I type that in the draft?!` in your text block means the upstream model itself delivered those bytes as content parts, and magpie relayed them verbatim. The full-from-the-top repeat that follows is the model continuing after its own self-check judged the prior text an unclosed draft — upstream generation, relayed the same way. The "cut off mid-stream → resume" retries are your client's reaction to the truncated stream.
+
+**This matches the family already on file, all open:** #5091 (Antigravity/Gemini 4 Argon — tool calls written into the body, repeated answers, with both-side SSE captures), #5882 (same channel — 58.5% of the thinking mixed into the body at effort=medium, plus a silent finish), #2098 (Gemini thought markers leaking into Codex's body after the Chat→Responses translation), #5844 (thought-prefix body via Cursor/Devin). None of those involves the `[1m]` suffix, and nothing in the request changes with it: `[1m]` is only the context-window marker (trimmed at the routing entry, `gateway.go:278`), so the leak is not specific to `mythos-magpie-…[1m]` — that id is just Claude Desktop's stand-in name for whatever model your routing points at the Antigravity provider.
+
+**What would pin this report's own face** (yours are reconstructions — no raw stream, no request row, no frequency):
+
+1. one leaking turn's raw SSE (`magpie -v`, or the usage row + trace) — to show the `*]` and the self-check arriving as `text` parts from upstream, which is the fact everything else hinges on;
+2. an A/B with thinking off (no effort pick / thinking disabled) on the same model — the channel only asks upstream for thoughts on thinking requests (`includeThoughts`, `codeassist.go:821`), and the family's one quantified instance (#5882) is effort-dependent;
+3. the frequency and whether it survives on a current build — 0.1.3050 is ~800 commits and several Antigravity-channel changes behind main.
+
+**Where a fix would live**: if the captures confirm draft text delivered as content parts, that is upstream model behavior; a gateway-side strip of known shapes is a content-mangling policy call (the standing precedent on this exact shape is #5887's fail-closed verdict, and the same decision is already pending on #5091/#5882 with better evidence than this report carries). So this issue, for now, adds a variant witness to the family rather than a new fixable face — @yetone's call on the family, and the captures above would still sharpen yours.
+
+*Written with GLM-5.3-Flash (ZCode); claims are file reads at current main (`873b4987e`). Not run: a real Antigravity account, so no capture of my own.*
+

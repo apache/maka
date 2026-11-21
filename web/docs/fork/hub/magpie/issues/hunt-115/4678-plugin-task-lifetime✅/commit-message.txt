@@ -1,0 +1,33 @@
+fix(plugin): end ordinary RPCs' plugin work when their caller leaves (#4678)
+
+A plugin model list's deadline and an ordinary RPC's cancellation released
+only the caller. inTime raced the hook without stopping it, and host.go
+marked only gatewayRequest cancellable, so a cancelled usage or providers
+call never told the host: the plugin's task kept running, the host's
+pending count kept it, and repeated reads left task after task alive past
+their callers. Reported with an offline host-script reproduction that
+shows abort reaching none of three pending usage tasks and five model
+tasks outliving their deadlines.
+
+The cancellation path a fetch and a gateway request already take now
+carries ordinary RPCs too:
+
+- host.go marks every call but init cancellable, so a caller whose
+  context ends has the host told (the existing callAborting write), the
+  way it already tells it of a stopped fetch. init is left alone: a start
+  that overruns is stopped whole.
+- host.js registers each ordinary RPC's AbortController, answers an
+  aborted RPC at once instead of waiting out the handler, and drops it
+  from pending, so the host can leave once nothing real is pending.
+- the handler is handed the signal: usage passes it to the plugin's
+  auth.usage hook as its own options, and a model list's hook options
+  carry it, with the listWait deadline aborting the same controller, so
+  vendor I/O that supports stopping stops at the deadline or when the
+  caller leaves, whichever comes first.
+
+Sign-in renewal and its persistence are untouched: fresh() runs before
+the hooks, and an aborted RPC's handler still finishes what it saves.
+
+Fixes #4678
+
+Generated-by: GLM-5.3-Flash (ZCode)

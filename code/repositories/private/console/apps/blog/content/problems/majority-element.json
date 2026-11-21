@@ -1,0 +1,22 @@
+{
+  "id": "8",
+  "slug": "majority-element",
+  "title": "多数元素",
+  "difficulty": "easy",
+  "tags": ["数组", "哈希表"],
+  "description": "给定一个大小为 `n` 的数组,找到其中的多数元素。多数元素是指在数组中出现次数**大于** `⌊n/2⌋` 的元素。\n\n你可以假设数组是非空的,并且给定的数组总是存在多数元素。\n\n**示例 1:**\n\n- 输入:`nums = [3,2,3]`\n- 输出:`3`\n\n**示例 2:**\n\n- 输入:`nums = [2,2,1,1,1,2,2]`\n- 输出:`2`\n\n**进阶:** 尝试设计时间 O(n)、空间 O(1) 的算法。",
+  "solution": "## 思路\n\n**Boyer-Moore 投票算法**:维护候选人与计数。遇到相同数则计数 +1,不同数则 -1;计数归零时换候选人。由于多数元素出现超过一半,最终候选人必为多数元素。\n\n## 参考代码\n\n```js\nfunction majorityElement(nums) {\n  let count = 0;\n  let candidate = 0;\n  for (const n of nums) {\n    if (count === 0) candidate = n;\n    count += n === candidate ? 1 : -1;\n  }\n  return candidate;\n}\n```\n\n## 复杂度\n\n- 时间:O(n)\n- 空间:O(1)",
+  "signature": {
+    "language": "javascript",
+    "entry": "majorityElement",
+    "params": [{ "name": "nums", "type": "number[]" }],
+    "returns": "number"
+  },
+  "testCases": [
+    { "sample": true, "input": [[3, 2, 3]], "expected": 3 },
+    { "sample": true, "input": [[2, 2, 1, 1, 1, 2, 2]], "expected": 2 },
+    { "sample": false, "input": [[1]], "expected": 1 },
+    { "sample": false, "input": [[6, 5, 6]], "expected": 6 },
+    { "sample": false, "input": [[1, 1, 1, 2, 2]], "expected": 1 }
+  ]
+}

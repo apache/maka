@@ -1,0 +1,288 @@
+Brought in and handed-over skills can be updated now: the skills CLI's lock names where a skill came from for grouping already, and it names it for updating too.
+
+**What happens**: a skill installed with the skills CLI (`npx skills add`) and brought in (the **Bring in** button, or `magpie library skill hand-over`) keeps only a `from` label in `library.json`. `magpie library skill update <name>` says it "isn't from GitHub or a git repository", and the check for updates skips it — for every one of the ~220 skills handed over in bulk, in your report.
+
+**Why**: update asks two places where a skill without a GitHub `source` came from — CC Switch's record, and nothing else. The skills CLI's own record, `~/.agents/.skill-lock.json`, is read already, but only for grouping (`repoOf`): an entry outlives its skill, so a stale entry by the same name must not be updated from.
+
+**The fix**: `lockOrigin` asks the lock where `ccSwitchOrigin` is asked (`updatable`, `prepare`, and the row's origin in the view), and it only answers when the lock entry says `sourceType: "github"`, says when it wrote the skill's folder, and the folder is the one it wrote (`madeBy` — the same test that keeps a stale entry from being filed under its repository). Updated that way, the skill carries a full `source` in `library.json` from then on, as one installed from the Library page does. Everything already handed over is picked up as is, no hand-over again.
+
+| Check | Command | Result |
+| --- | --- | --- |
+| New tests | `go test ./internal/library/ -run TestSkillLockOrigin -count=1 -v` | 2 pass |
+| Package | `go test ./internal/library/ -count=1 -tags nogui` | ok 63.7s |
+| Format | `gofmt -l internal/library/` | empty |
+| Vet | `go vet ./internal/library/` (darwin, linux, windows) | clean |
+| Build | `go build -tags nogui .` (darwin, linux, windows) | ok |
+
+**Not verified**: a real skills CLI install end to end (the tests fake the lock and the repository tarball), the GUI's check-for-updates for these skills before the first update — `CheckSkills` asks only skills that have a remote source, so a brought-in skill is asked about once an update has given it its `source`; extending the checker itself to lock-derived sources is a separate face I left alone.
+
+---
+**Source**: reported here in #4645, with the workaround that confirmed the cause.
+
+**Red without the fix** (base `9d08993c`, product files reverted, new tests kept):
+```
+--- FAIL: TestSkillLockOriginUpdates (1.94s)
+    skill_from_test.go:514: update: grill-me isn't from GitHub or a git repository; it's kept as it is
+```
+With the fix: `ok`. `TestSkillLockOriginStale` (a lock entry without a time, or one whose folder the CLI didn't write, is not updated from) is protective and green before and after.
+
+**Siblings**: `rg -n "ccSwitchOrigin\(" internal/library/` → 5 sites. Changed: `updatable`, `prepare` (skills.go), the row's origin (sync.go). Left: `repoOf` (grouping already reads the lock; its semantics unchanged), `CheckSkills`/`checkDue` (see Not verified). MCP servers and instructions have no install-from-GitHub record and no update-from-there path — not the same disease.
+
+**When the read fails**: a lock that can't be read, an entry without `updatedAt`/`installedAt`, or a folder the CLI didn't write leaves the skill as it is — update still says "isn't from GitHub or a git repository", as before. An entry left by a skill of the same name since deleted is never updated from (AzheRise's case, `TestDeletedSkillsLockNotInherited`, still green).
+
+**Attribution**: AI-written; I've read the whole diff and the tests pass. Please keep the author (`ggbdpq`) or add `Co-authored-by: ggbdpq <ggbdpq@gmail.com>`.
+
+<details><summary>patch: fix(library): update skills the skills CLI installed from where its lock says (#4645) — git am applies it as is; SHA-256 first 16: 785c3ec782e0ba4a</summary>
+
+````patch
+From 4ceedeac90b9050fe63aa0bc0cc97f55cee9bdd5 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Sun, 1 Nov 2026 20:10:08 +0800
+Subject: [PATCH] fix(library): update skills the skills CLI installed from
+ where its lock says (#4645)
+
+What changed:
+A skill installed with the skills CLI (npx skills add) and brought in
+or handed over kept only a From label in library.json, so
+`magpie library skill update` said it "isn't from GitHub or a git
+repository" and the check for updates skipped it. The lock that named
+its repository for grouping now names it for updating too: lockOrigin
+(the lock entry's sourceType is github, the lock says when it wrote
+the folder, and the folder is the one it wrote, madeBy) is asked where
+CC Switch's record is, in updatable and prepare. Updated that way, the
+skill carries the source in library.json from then on, as one
+installed from GitHub does. A lock entry that says no time, or a
+folder the CLI didn't write, only groups, and stays as it is.
+
+Run:
+go test ./internal/library/ -run 'TestSkillLockOrigin' -count=1 -v
+go test ./internal/library/ -count=1 -tags nogui
+
+Fixes #4645
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/library/skill_from.go      | 32 +++++++++---
+ internal/library/skill_from_test.go | 80 +++++++++++++++++++++++++++++
+ internal/library/skills.go          | 13 ++++-
+ internal/library/sync.go            |  4 ++
+ 4 files changed, 121 insertions(+), 8 deletions(-)
+
+diff --git a/internal/library/skill_from.go b/internal/library/skill_from.go
+index 9f18ebe55..102d914b6 100644
+--- a/internal/library/skill_from.go
++++ b/internal/library/skill_from.go
+@@ -88,10 +88,13 @@ type tracer struct {
+ 
+ // lockEntry is a skill the skills CLI's lock names: the repository, and
+ // when the CLI last wrote the skill's folder (updatedAt, else
+-// installedAt; zero in a lock that says neither).
++// installedAt; zero in a lock that says neither). github says the
++// repository is on GitHub, as the lock told; one elsewhere is only
++// grouped (repoOf), never updated from.
+ type lockEntry struct {
+-	repo string
+-	at   time.Time
++	repo   string
++	at     time.Time
++	github bool
+ }
+ 
+ // lockSlack is how long after its files a lock entry may be written: the
+@@ -114,6 +117,23 @@ func (tr *tracer) lockRepo(name, dir string) string {
+ 	return e.repo
+ }
+ 
++// lockOrigin is where on GitHub the skills CLI got a skill the library
++// has (npx skills add, its lock), so that it can be updated from there
++// like one installed here (#4645, Apri1qing: brought in or handed over,
++// it kept only a From label, and update left it as it was). Only a lock
++// that says when it wrote the skill's folder, and a folder that is the
++// one it wrote (lockRepo), tells the skill apart from another of its
++// name, and an update writes over it: a lock that says neither only
++// groups.
++func lockOrigin(s *Skill) (Source, bool) {
++	tr := &tracer{}
++	e, ok := tr.lock()[s.Name]
++	if !ok || !e.github || e.at.IsZero() || !madeBy(realDir(skillDir(s.Name)), e.at.Add(lockSlack)) {
++		return Source{}, false
++	}
++	return Source{Kind: "github", Repo: e.repo}, true
++}
++
+ // madeBy is whether a file in the skill's folder dir was last written by
+ // at: a skill the lock's install wrote, edited since or not, keeps the
+ // files it didn't edit as they were written. A folder that can't be read
+@@ -178,16 +198,16 @@ func readSkillLock(path string) map[string]lockEntry {
+ 	}
+ 	out := map[string]lockEntry{}
+ 	for name, e := range f.Skills {
+-		r := ""
++		r, gh := "", false
+ 		if e.SourceType == "github" && repoRe.MatchString(e.Source) {
+-			r = strings.TrimSuffix(e.Source, ".git")
++			r, gh = strings.TrimSuffix(e.Source, ".git"), true
+ 		} else if e.SourceType == "well-known" {
+ 			r = wellKnownBase(e.SourceBaseURL, e.SourceURL)
+ 		} else if e.SourceURL != "" {
+ 			r = remoteRepo(e.SourceURL)
+ 		}
+ 		if r != "" {
+-			le := lockEntry{repo: r}
++			le := lockEntry{repo: r, github: gh}
+ 			for _, ts := range []string{e.UpdatedAt, e.InstalledAt} {
+ 				if at, err := time.Parse(time.RFC3339Nano, ts); err == nil {
+ 					le.at = at
+diff --git a/internal/library/skill_from_test.go b/internal/library/skill_from_test.go
+index 3b4090130..5f34d4729 100644
+--- a/internal/library/skill_from_test.go
++++ b/internal/library/skill_from_test.go
+@@ -9,6 +9,7 @@ import (
+ 	"strings"
+ 	"sync"
+ 	"testing"
++	"time"
+ )
+ 
+ func repoIn(t *testing.T) map[string]string {
+@@ -473,3 +474,82 @@ func TestPastedRepoBindsSameCopy(t *testing.T) {
+ 		t.Errorf("extra's own file: %q", b)
+ 	}
+ }
++
++// A skill the skills CLI installed (npx skills add) and that was brought
++// in and handed over kept only a From label, and update said it "isn't
++// from GitHub or a git repository" (#4645, Apri1qing): the lock that
++// names where it came from for grouping names it for updating too, and
++// one updated that way is the repository's own from then on.
++func TestSkillLockOriginUpdates(t *testing.T) {
++	h := sandbox(t)
++	noGoose(t, h)
++	installed := time.Now().Add(-time.Hour).UTC()
++	ts := installed.Format(time.RFC3339Nano)
++	// npx skills add mattpocock/skills --skill grill-me -g: in
++	// ~/.agents/skills, the lock saying where it came from
++	skill(t, filepath.Join(h, ".agents/skills/grill-me"), "grill-me", "old")
++	writtenAt(t, filepath.Join(h, ".agents/skills/grill-me"), installed)
++	write(t, filepath.Join(h, ".agents/.skill-lock.json"), `{"version":3,"skills":{
++		"grill-me":{"source":"mattpocock/skills","sourceType":"github","sourceUrl":"https://github.com/mattpocock/skills.git","skillPath":"skills/grill-me/SKILL.md","installedAt":"`+ts+`","updatedAt":"`+ts+`"}}}`)
++	var rmu sync.Mutex
++	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		rmu.Lock()
++		defer rmu.Unlock()
++		w.Write(tarball(t, map[string]string{
++			"skills/grill-me/SKILL.md": "---\nname: grill-me\ndescription: new\n---\n",
++		}))
++	}))
++	defer srv.Close()
++	old := tarballURL
++	tarballURL = func(repo, ref string) string { return srv.URL + "/" + repo + "/" + ref }
++	defer func() { tarballURL = old }()
++
++	ok(t)(ImportSkills([]string{"grill-me"}))
++	ok(t)(HandOverSkills([]string{"grill-me"}))
++	// handed over, it is the library's own, with only a From label
++	if s := mustLoad(t).skill("grill-me"); s.Source != nil {
++		t.Fatalf("handed over: source %+v, want none", s.Source)
++	}
++	// the row says where the lock says it came from
++	v, err := Read(nil)
++	if err != nil {
++		t.Fatal(err)
++	}
++	for _, s := range v.Skills {
++		if s.Name == "grill-me" && s.Origin != "https://github.com/mattpocock/skills" {
++			t.Errorf("grill-me's origin: %q, want https://github.com/mattpocock/skills", s.Origin)
++		}
++	}
++	if _, err := UpdateSkill("grill-me", false); err != nil {
++		t.Fatalf("update: %v", err)
++	}
++	s := mustLoad(t).skill("grill-me")
++	if s.Source == nil || s.Source.Kind != "github" || s.Source.Repo != "mattpocock/skills" {
++		t.Errorf("after: source %+v, want github mattpocock/skills", s.Source)
++	}
++	if b, _ := os.ReadFile(filepath.Join(skillDir("grill-me"), "SKILL.md")); !strings.Contains(string(b), "new") {
++		t.Errorf("grill-me after an update: %q", b)
++	}
++}
++
++// A lock entry left by a skill of the same name since deleted isn't where
++// the library's copy came from (AzheRise on X): a folder the CLI didn't
++// write isn't updated from the entry's repository, and one an old lock
++// without a time names tells no skill of that name apart (it groups, and
++// it stays as it is).
++func TestSkillLockOriginStale(t *testing.T) {
++	h := sandbox(t)
++	noGoose(t, h)
++	skill(t, filepath.Join(h, ".agents/skills/grill-me"), "grill-me", "mine, made today")
++	skill(t, filepath.Join(h, ".agents/skills/undated"), "undated", "An old lock's")
++	write(t, filepath.Join(h, ".agents/.skill-lock.json"), `{"version":3,"skills":{
++		"grill-me":{"source":"other/skills","sourceType":"github","updatedAt":"2020-01-01T00:00:00Z"},
++		"undated":{"source":"other/undated","sourceType":"github"}}}`)
++	ok(t)(ImportSkills([]string{"grill-me", "undated"}))
++	if _, err := UpdateSkill("grill-me", false); err == nil || !strings.Contains(err.Error(), "isn't from GitHub or a git repository") {
++		t.Errorf("a folder the CLI didn't write: %v, want isn't from GitHub or a git repository", err)
++	}
++	if _, err := UpdateSkill("undated", false); err == nil || !strings.Contains(err.Error(), "isn't from GitHub or a git repository") {
++		t.Errorf("a lock without a time: %v, want isn't from GitHub or a git repository", err)
++	}
++}
+diff --git a/internal/library/skills.go b/internal/library/skills.go
+index 9a053f890..40364ba1a 100644
+--- a/internal/library/skills.go
++++ b/internal/library/skills.go
+@@ -1588,12 +1588,16 @@ func updateSkills(names []string) (*Result, error) {
+ }
+ 
+ // updatable is whether a skill can be fetched again: one from GitHub or
+-// another git repository, or one CC Switch installed from GitHub.
++// another git repository, or one CC Switch or the skills CLI installed
++// from GitHub.
+ func updatable(s *Skill) bool {
+ 	if s.Source.remote() {
+ 		return true
+ 	}
+-	_, ok := ccSwitchOrigin(s)
++	if _, ok := ccSwitchOrigin(s); ok {
++		return true
++	}
++	_, ok := lockOrigin(s)
+ 	return ok
+ }
+ 
+@@ -1671,6 +1675,11 @@ func (f *fetcher) prepare(s *Skill) (*skillUpdate, error) {
+ 		// one CC Switch installed from GitHub becomes the library's own,
+ 		// fetched from there, leaving CC Switch's folder as it is
+ 		o, ok := ccSwitchOrigin(s)
++		if !ok {
++			// one the skills CLI installed does too, fetched from where
++			// its lock says it came (#4645)
++			o, ok = lockOrigin(s)
++		}
+ 		if !ok {
+ 			return nil, fmt.Errorf("%s isn't from GitHub or a git repository; it's kept as it is", name)
+ 		}
+diff --git a/internal/library/sync.go b/internal/library/sync.go
+index 640e85229..63dab5f1e 100644
+--- a/internal/library/sync.go
++++ b/internal/library/sync.go
+@@ -685,6 +685,10 @@ func readView(problems []Problem, glance bool) (*View, error) {
+ 		if o, ok := ccSwitchOrigin(s); ok {
+ 			o.Path = ""
+ 			sv.Origin = o.String()
++		} else if o, ok := lockOrigin(s); ok {
++			// one the skills CLI installed: the row says where its lock
++			// says it came from (#4645)
++			sv.Origin = o.String()
+ 		}
+ 		if m, ok := readMeta(skillDir(s.Name)); ok {
+ 			sv.Description = m.Description
+-- 
+2.50.1 (Apple Git-155)
+
+````
+
+</details>
+
+Branch with the commit: [fix/4645-skill-source-update](https://github.com/ggbdpq/magpie/tree/fix/4645-skill-source-update) (head `4ceedeac90b9050fe63aa0bc0cc97f55cee9bdd5`).

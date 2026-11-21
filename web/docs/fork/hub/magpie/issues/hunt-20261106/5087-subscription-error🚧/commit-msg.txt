@@ -1,0 +1,41 @@
+plan: a Mistral key's spent month stands only when its subscription was read (#5087)
+
+8216592a8, and 1c45645b5's Studio month after it, ask
+billing/subscription beside the budget and take it only when it
+answers: a read that failed (a timeout, a 5xx, a 401 on a key without
+the dashboard scope) left the budget windows standing with
+pay-as-you-go unknown, and unknown stood for off — a pay-as-you-go
+organization whose API month is spent showed a spent card, and routing
+held the key (readKeyAllowance keeps the window read whole), though
+Mistral serves what goes past the budget from the prepayment then
+(yetone's review of #5087).
+
+Whether what goes past the budget is billed is the subscription's to
+tell, so its read failing is unknown, an error now, naming the ask with
+what Mistral said in it ("mistral subscription: 500: boom"), as
+whoami's no-plan_type is; no window of a read that couldn't say so
+stands on it. The keyed-plan family takes it from there: a card read
+before keeps its last reading, pay-as-you-go's state with it
+(keepReading), a first failed read says why, and readKeyAllowance never
+routes by a failed read — a failed read is not known, never empty.
+
+TestMistralSubscriptionUnread asks the budget of a spent API month and
+the subscription a 500, a 401 and a body that isn't the reply: red
+three ways before (a spent window, no error), green now;
+TestMistralVibeBudget's "the window stands, with no plan name" flips
+with it. The subsystem doc's sentence says so too.
+
+Run (mote): go test ./internal/provider -tags nogui -count=1 (whole
+package, ok); go test ./internal/gateway -tags nogui -count=1 (ok);
+TestMistral and TestPlanQuota under -race (ok); gofmt -l clean;
+go vet -tags nogui ./internal/provider ./internal/gateway and
+GOOS=linux the same, clean; go build -tags nogui ./... and GOOS=linux
+the two packages, ok.
+Broken by hand: with the subscription's error swallowed again,
+TestMistralSubscriptionUnread and TestMistralVibeBudget go red — the
+spent card is back, Aside false.
+Not tried: a real pay-as-you-go Mistral organization; ninondev's
+readings (#5087) are the only real ones, of a plan, not of payg.
+
+Fixes #5087
+Generated-by: GLM-5.3-Flash (ZCode)

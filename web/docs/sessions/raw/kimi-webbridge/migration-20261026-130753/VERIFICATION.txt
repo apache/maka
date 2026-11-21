@@ -1,0 +1,25 @@
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py kimi-webbridge baseline
+INPUT: CONFIG: fixed kimi-webbridge source allowlist
+OUTPUT: BASELINE PASS groups=1 files=3 bytes=45862 protected=0
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py kimi-webbridge archive
+INPUT: a122d4370b09429b1b065c6bc57853c67a88ac62dae3f6ba53df4d3bc1e4a5ea
+OUTPUT: ARCHIVE PASS zip_files=1 files=3 bytes=45862
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py kimi-webbridge apply
+INPUT: a70227f4cef5d575b60ffd25774e7dab1d9622c62e2380def23e247a36667b51
+OUTPUT: APPLY PASS removed_files=3 removed_bytes=45862
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py kimi-webbridge verify
+INPUT: 18127c109597ee0c4009d0419a8293be91ab47f5370abae098167d6bea970f2f
+OUTPUT: MODIFIED PASS files=3 bytes=45862 originals_absent=true protected_unchanged=true
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py kimi-webbridge rollback-test
+INPUT: 18127c109597ee0c4009d0419a8293be91ab47f5370abae098167d6bea970f2f
+OUTPUT: ROLLBACK PASS restored_files=3 restored_bytes=45862 hashes_match=true originals_untouched=true
+EXIT: 0
+

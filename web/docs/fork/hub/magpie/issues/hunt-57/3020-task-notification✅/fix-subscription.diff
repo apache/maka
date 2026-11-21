@@ -1,0 +1,42 @@
+diff --git a/internal/gateway/claude_subscription.go b/internal/gateway/claude_subscription.go
+index 656d9a86..cf87c864 100644
+--- a/internal/gateway/claude_subscription.go
++++ b/internal/gateway/claude_subscription.go
+@@ -3254,6 +3254,13 @@ func (r *subscriptionRun) untold(tools []Tool) (int, string) {
+ // with a message the user sent mid-turn among them (midTurnSaid): only
+ // those words are the user's. A system message is never the user's
+ // otherwise.
++//
++// A background task's <task-notification> travels with them (#3020), in
++// the system message or as a text of its own. It is not the user's either,
++// but the run is told it (taskNotice): a request that carries it alone
++// tells a run started anew the whole conversation, and the model answered
++// as if no task had ended when the run kept for the results heard nothing
++// of it.
+ func saidWithResults(msgs []Message) string {
+ 	i := len(msgs)
+ 	for i > 0 && msgs[i-1].Role != "assistant" {
+@@ -3270,6 +3277,8 @@ func saidWithResults(msgs []Message) string {
+ 			case p.Kind != Text || !results || captions:
+ 			case midTurnHead.MatchString(p.Text):
+ 				said = append(said, midTurnSaid(p.Text)...)
++			case taskNotice(p.Text):
++				said = append(said, p.Text)
+ 			case m.Role == "system" || m.Role == "developer":
+ 			case !agentNotice(p.Text):
+ 				said = append(said, p.Text)
+@@ -3282,6 +3291,14 @@ func saidWithResults(msgs []Message) string {
+ 	return strings.Join(said, "\n\n")
+ }
+ 
++// taskNotice is a background task's notice, a <task-notification>: Claude
++// Code sends it with the request that carries the results, in the system
++// message beside the notices (#3020), or, older clients, as a text of its
++// own. Not the user's words, but the run's model is to hear of the task:
++// told nothing of it, the model went on as if no task had ended, and a
++// foreground wait on the task found nothing to wait for.
++func taskNotice(text string) bool { return strings.Contains(text, "<task-notification>") }
++
+ var (
+ 	// midTurnHead heads a message the user sent while a tool ran, as
+ 	// Claude Code tells its model one: "The user sent a new message while

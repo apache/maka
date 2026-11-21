@@ -1,0 +1,358 @@
+From 84c23892692523dbda9597091ec0dea3f5ce2808 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Wed, 14 Oct 2026 23:41:55 +0800
+Subject: [PATCH 1/2] gateway: a Responses relay's duplicated tool answer is
+ dropped, the first standing, instead of OpenAI's 400 "Duplicate item found"
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+A client replaying a history that holds a call's approval and its output
+twice sends both (vercel/ai #13307: "Duplicate item found with id fc_….
+Remove duplicate items from your input and try again"), and pairToolItems
+passed the duplicate on: it mends a call no result answers (#1341) but
+kept every answer it saw. The Chat build drops a second answer
+(pairToolMessages: "a second answer to the same call is dropped: the
+first answer stands") and the Messages build does too (pairToolBlocks:
+"a second answer: the first stands"); the Responses relay was the one
+boundary that let it through, and the relay serves the one API whose
+answer to it is a 400 the client can do nothing about.
+
+Now a second answer to a call an answer ahead in the input gave is
+dropped, whatever its kind (function_call_output, custom_tool_call_output,
+tool_search_output), with the run's synthetic results still flushed after
+its last answer. The old `len(out) == len(input)` guard read a request
+that lost an answer and gained a synthetic one as untouched; `changed`
+replaces it.
+
+Not changed: pairToolMessages, pairToolBlocks, orphanedToolOutputs,
+joinToolRuns, the docs. TestPairToolItemsAnswersALoneCall,
+TestResponsesRelayKeepsAToolRunTogether and the rest of the package's
+pairing tests hold.
+
+Run: go test -tags nogui -p 2 -count=1 -run 'TestPairToolItems|TestResponsesRelay|TestJoinToolRuns|TestOrphanedToolOutputs'
+./internal/gateway (ok); TestPairToolItemsDropsASecondAnswer and
+TestResponsesRelayDropsASecondAnswer fail on the unfixed pairToolItems
+(2 answers reach the upstream); gofmt -l internal/ clean; go vet -tags
+nogui ./internal/gateway clean; builds darwin, GOOS=linux nogui,
+GOOS=windows.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gateway/pair_tool_items_test.go | 94 ++++++++++++++++++++++++
+ internal/gateway/responses.go            | 30 ++++++--
+ 2 files changed, 119 insertions(+), 5 deletions(-)
+
+diff --git a/internal/gateway/pair_tool_items_test.go b/internal/gateway/pair_tool_items_test.go
+index fd0a96fd..ae7bbede 100644
+--- a/internal/gateway/pair_tool_items_test.go
++++ b/internal/gateway/pair_tool_items_test.go
+@@ -108,3 +108,97 @@ func TestResponsesRelayAnswersALoneCall(t *testing.T) {
+ 		t.Fatalf("the lone call went unanswered: %s", f.got)
+ 	}
+ }
++
++// A second answer to a call the input already answers is dropped, the
++// first standing, as pairToolMessages and pairToolBlocks leave it: OpenAI's
++// Responses API refuses the duplicate with 400 "Duplicate item found with
++// id fc_… Remove duplicate items from your input and try again" (a client
++// replaying a history that holds a call's approval and its output twice
++// sends both; the Chat and Messages builds mend the same shape).
++func TestPairToolItemsDropsASecondAnswer(t *testing.T) {
++	// the first answer stands, the second goes
++	in := inputOf(t, pairToolItems([]byte(`{"model":"m","input":[`+
++		`{"type":"function_call","call_id":"c1","name":"echo","arguments":"{}"},`+
++		`{"type":"function_call_output","call_id":"c1","output":"first"},`+
++		`{"type":"function_call_output","call_id":"c1","output":"second"}]}`)))
++	if len(in) != 2 || in[1]["output"] != "first" {
++		t.Fatalf("the second answer stood: %v", in)
++	}
++
++	// three answers: one stands
++	in = inputOf(t, pairToolItems([]byte(`{"model":"m","input":[`+
++		`{"type":"custom_tool_call","call_id":"c1","name":"apply_patch","input":"x"},`+
++		`{"type":"custom_tool_call_output","call_id":"c1","output":"first"},`+
++		`{"type":"custom_tool_call_output","call_id":"c1","output":"second"},`+
++		`{"type":"custom_tool_call_output","call_id":"c1","output":"third"}]}`)))
++	if len(in) != 2 || in[1]["output"] != "first" {
++		t.Fatalf("the second and third custom answers stood: %v", in)
++	}
++
++	// a call two inputs answer, its answers apart, keeps the first
++	in = inputOf(t, pairToolItems([]byte(`{"model":"m","input":[`+
++		`{"type":"function_call","call_id":"c1","name":"echo","arguments":"{}"},`+
++		`{"type":"function_call_output","call_id":"c1","output":"first"},`+
++		`{"type":"message","role":"user","content":[{"type":"input_text","text":"mid"}]},`+
++		`{"type":"function_call_output","call_id":"c1","output":"second"}]}`)))
++	if len(in) != 3 || in[1]["output"] != "first" {
++		t.Fatalf("the later answer stood: %v", in)
++	}
++
++	// answers of their own calls beside a duplicated one stay
++	in = inputOf(t, pairToolItems([]byte(`{"model":"m","input":[`+
++		`{"type":"function_call","call_id":"c1","name":"echo","arguments":"{}"},`+
++		`{"type":"function_call","call_id":"c2","name":"echo","arguments":"{}"},`+
++		`{"type":"function_call_output","call_id":"c2","output":"ok"},`+
++		`{"type":"function_call_output","call_id":"c2","output":"again"},`+
++		`{"type":"function_call_output","call_id":"c1","output":"ok"}]}`)))
++	if len(in) != 4 || in[2]["call_id"] != "c2" || in[3]["call_id"] != "c1" {
++		t.Fatalf("answers of their own calls were touched: %v", in)
++	}
++
++	// a lone call between answers of another call still gets its synthetic
++	// result, after the run's results
++	in = inputOf(t, pairToolItems([]byte(`{"model":"m","input":[`+
++		`{"type":"function_call","call_id":"c1","name":"echo","arguments":"{}"},`+
++		`{"type":"function_call","call_id":"c2","name":"echo","arguments":"{}"},`+
++		`{"type":"function_call_output","call_id":"c2","output":"second"},`+
++		`{"type":"function_call_output","call_id":"c2","output":"second, again"}]}`)))
++	var order []string
++	for _, it := range in {
++		order = append(order, it["type"].(string)+":"+func() string { s, _ := it["call_id"].(string); return s }())
++	}
++	want := []string{"function_call:c1", "function_call:c2", "function_call_output:c2", "function_call_output:c1"}
++	if len(order) != len(want) {
++		t.Fatalf("items %v, want %v", order, want)
++	}
++	for i := range want {
++		if order[i] != want[i] {
++			t.Fatalf("items %v, want %v", order, want)
++		}
++	}
++}
++
++// The relay drops a duplicated answer through the whole gateway.
++func TestResponsesRelayDropsASecondAnswer(t *testing.T) {
++	f := &fake{t: t, reply: sse(`data: {"type":"response.completed","response":{"id":"r1","status":"completed","output":[]}}`)}
++	setup(t, provider.Responses, f)
++	body := `{"model":"fake/m1","stream":true,"input":[` +
++		`{"type":"message","role":"user","content":[{"type":"input_text","text":"run it"}]},` +
++		`{"type":"function_call","call_id":"call_a","name":"echo","arguments":"{}"},` +
++		`{"type":"function_call_output","call_id":"call_a","output":"first result"},` +
++		`{"type":"function_call_output","call_id":"call_a","output":"second result"},` +
++		`{"type":"message","role":"user","content":[{"type":"input_text","text":"go on"}]}]}`
++	if code, out := post(t, "/v1/responses", body); code != 200 {
++		t.Fatalf("status %d: %s", code, out)
++	}
++	in := inputOf(t, f.got)
++	n := 0
++	for _, it := range in {
++		if it["type"] == "function_call_output" && it["call_id"] == "call_a" {
++			n++
++		}
++	}
++	if n != 1 {
++		t.Fatalf("%d answers for call_a reached the upstream: %s", n, f.got)
++	}
++}
+diff --git a/internal/gateway/responses.go b/internal/gateway/responses.go
+index 6bef499e..8e1a7e3e 100644
+--- a/internal/gateway/responses.go
++++ b/internal/gateway/responses.go
+@@ -723,9 +723,11 @@ func orphanedToolOutputs(body []byte) []byte {
+ // messages responding to each 'tool_call_id'" (#1341), and OpenAI's own
+ // Responses API "No tool output found for function call". The result goes
+ // at the end of the run of calls and results the call is in, where a chat
+-// form has its tool messages. A result with no call is left to
+-// orphanedToolOutputs, and one naming a call another request carried
+-// (previous_response_id) stays as it is.
++// form has its tool messages. A second answer to a call is dropped, the
++// first standing, as pairToolMessages and pairToolBlocks leave it —
++// OpenAI's own API refuses the duplicate item. A result with no call is
++// left to orphanedToolOutputs, and one naming a call another request
++// carried (previous_response_id) stays as it is.
+ func pairToolItems(body []byte) []byte {
+ 	if !bytes.Contains(body, []byte(`_call"`)) {
+ 		return body
+@@ -757,9 +759,26 @@ func pairToolItems(body []byte) []byte {
+ 	}
+ 	out := make([]json.RawMessage, 0, len(input)+1)
+ 	var synthetic []json.RawMessage // results owed by the run in progress
++	seen := map[string]bool{}       // calls an answer ahead in the input gave
++	changed := false
+ 	for i, raw := range input {
+-		out = append(out, raw)
+ 		it := items[i]
++		// a second answer to a call one answered already is dropped: the
++		// first stands, as pairToolMessages and pairToolBlocks leave it.
++		// OpenAI's Responses API refuses the duplicate: 400 "Duplicate
++		// item found with id fc_… Remove duplicate items from your input
++		// and try again" — a client replaying a history that holds an
++		// approval's call and its output twice sends both (vercel/ai
++		// #13307), and the relay passed the refusal on.
++		dup := toolResultItem(it.Type) && it.CallID != "" && seen[it.CallID]
++		if dup {
++			changed = true
++		} else {
++			out = append(out, raw)
++			if toolResultItem(it.Type) && it.CallID != "" {
++				seen[it.CallID] = true
++			}
++		}
+ 		if (it.Type == "function_call" || it.Type == "custom_tool_call") && it.CallID != "" && !answered[it.CallID] {
+ 			kind := "function_call_output"
+ 			if it.Type == "custom_tool_call" {
+@@ -773,9 +792,10 @@ func pairToolItems(body []byte) []byte {
+ 		if len(synthetic) > 0 && exchange(it.Type) && (i+1 == len(input) || !exchange(items[i+1].Type)) {
+ 			out = append(out, synthetic...)
+ 			synthetic = nil
++			changed = true
+ 		}
+ 	}
+-	if len(out) == len(input) {
++	if !changed {
+ 		return body
+ 	}
+ 	q["input"], _ = marshalPlain(out)
+-- 
+2.50.1 (Apple Git-155)
+
+
+From c8a3d4358c30e0adb3a8efe1378c5a4445f38da0 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Wed, 14 Oct 2026 23:42:08 +0800
+Subject: [PATCH 2/2] gateway: a Chat or Messages client's broken tool exchange
+ is mended on the way into Responses, as it is into Chat and Messages
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+forwardTranslated built the Responses body and sent it: a conversation
+holding a call no result answers (a turn the client interrupted) went to
+the upstream as a lone function_call, and one that checks the exchange
+answers 400 "No tool output found for function call <id>" — every turn
+after it too, until the client drops the call from its history. The Chat
+build mends this (pairToolMessages, #554, #1275), the Messages build does
+(pairToolBlocks), and the Responses relay mends its own (#1341); the two
+translations into Responses were the boundary left open.
+
+Now a body built for Responses goes through pairToolItems like a relayed
+one: a call nothing answers gets its synthetic result at the run's end,
+and (since the previous commit) a duplicated answer is dropped. A paired
+exchange is built as it was (TestTranslatedToResponsesKeepsAPairedExchange:
+the client's answer reaches the upstream byte for byte).
+
+Not changed: buildResponses itself, joinToolRuns and orphanedToolOutputs
+(a relay's client writes items between results; a translation's input
+comes from the IR in order), and the Zed body, which fits itself
+(ZedBody).
+
+Run: go test -tags nogui -p 2 -count=1 ./internal/gateway; see the follow
+comment for the whole matrix. TestTranslatedToResponsesAnswersALoneCall
+fails without the gateway.go change (a Chat client's lone call goes
+unanswered into Responses).
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gateway/gateway.go              | 10 ++++
+ internal/gateway/pair_tool_items_test.go | 76 ++++++++++++++++++++++++
+ 2 files changed, 86 insertions(+)
+
+diff --git a/internal/gateway/gateway.go b/internal/gateway/gateway.go
+index e32c3bd2..ede9e3e9 100644
+--- a/internal/gateway/gateway.go
++++ b/internal/gateway/gateway.go
+@@ -4512,6 +4512,16 @@ func (s *Server) forwardTranslated(ctx context.Context, p provider.Provider, to
+ 		if err != nil {
+ 			return nil, to, err
+ 		}
++		if to == provider.Responses {
++			// an exchange a client left broken is mended on the way into
++			// Responses as it is into Chat (pairToolMessages, #554) and
++			// Messages (pairToolBlocks) and as the Responses relay mends
++			// its own (#1341): an upstream that checks the exchange (the
++			// OpenAI Responses API among them) refuses a call no result
++			// answers, and one answered twice, and the refusals went back
++			// to the client as they came
++			body = pairToolItems(body)
++		}
+ 		noteWireEffort(ctx, to, sent)
+ 		if to == provider.Chat && (p.IsBedrock() || p.IsAzure()) {
+ 			body = asCompletionTokens(body)
+diff --git a/internal/gateway/pair_tool_items_test.go b/internal/gateway/pair_tool_items_test.go
+index ae7bbede..b57a77d7 100644
+--- a/internal/gateway/pair_tool_items_test.go
++++ b/internal/gateway/pair_tool_items_test.go
+@@ -202,3 +202,79 @@ func TestResponsesRelayDropsASecondAnswer(t *testing.T) {
+ 		t.Fatalf("%d answers for call_a reached the upstream: %s", n, f.got)
+ 	}
+ }
++
++// A client left with a call no result answers is mended on the way into
++// Responses as it is into Chat and Messages, and as the Responses relay
++// mends its own: the OpenAI Responses API refuses the lone call with 400
++// "No tool output found for function call <id>", and the refusal went back
++// to a Chat or Messages client as it came.
++func TestTranslatedToResponsesAnswersALoneCall(t *testing.T) {
++	f := &fake{t: t, reply: sse(`data: {"type":"response.completed","response":{"id":"r1","status":"completed","output":[]}}`)}
++	setup(t, provider.Responses, f)
++	chat := `{"model":"fake/m1","stream":true,"messages":[` +
++		`{"role":"user","content":"run it"},` +
++		`{"role":"assistant","tool_calls":[{"id":"call_a","type":"function","function":{"name":"echo","arguments":"{}"}}]},` +
++		`{"role":"user","content":"go on"}]}`
++	if code, out := post(t, "/v1/chat/completions", chat); code != 200 {
++		t.Fatalf("status %d: %s", code, out)
++	}
++	in := inputOf(t, f.got)
++	answered := false
++	for _, it := range in {
++		if it["type"] == "function_call_output" && it["call_id"] == "call_a" {
++			answered = true
++		}
++	}
++	if !answered {
++		t.Fatalf("a Chat client's lone call went unanswered into Responses: %s", f.got)
++	}
++
++	f = &fake{t: t, reply: sse(`data: {"type":"response.completed","response":{"id":"r1","status":"completed","output":[]}}`)}
++	setup(t, provider.Responses, f)
++	messages := `{"model":"fake/m1","stream":true,"max_tokens":16,"messages":[` +
++		`{"role":"user","content":"run it"},` +
++		`{"role":"assistant","content":[{"type":"tool_use","id":"call_a","name":"echo","input":{}}]},` +
++		`{"role":"user","content":"go on"}]}`
++	if code, out := post(t, "/v1/messages", messages); code != 200 {
++		t.Fatalf("status %d: %s", code, out)
++	}
++	in = inputOf(t, f.got)
++	answered = false
++	for _, it := range in {
++		if it["type"] == "function_call_output" && it["call_id"] == "call_a" {
++			answered = true
++		}
++	}
++	if !answered {
++		t.Fatalf("a Messages client's lone call went unanswered into Responses: %s", f.got)
++	}
++}
++
++// A well-formed exchange a Chat client sent goes into Responses as it was
++// built: no second answer of its own and no synthetic one beside a call
++// the input answers.
++func TestTranslatedToResponsesKeepsAPairedExchange(t *testing.T) {
++	f := &fake{t: t, reply: sse(`data: {"type":"response.completed","response":{"id":"r1","status":"completed","output":[]}}`)}
++	setup(t, provider.Responses, f)
++	chat := `{"model":"fake/m1","stream":true,"messages":[` +
++		`{"role":"user","content":"run it"},` +
++		`{"role":"assistant","tool_calls":[{"id":"call_a","type":"function","function":{"name":"echo","arguments":"{}"}}]},` +
++		`{"role":"tool","tool_call_id":"call_a","content":"ok"},` +
++		`{"role":"user","content":"go on"}]}`
++	if code, out := post(t, "/v1/chat/completions", chat); code != 200 {
++		t.Fatalf("status %d: %s", code, out)
++	}
++	in := inputOf(t, f.got)
++	outputs := 0
++	for _, it := range in {
++		if it["type"] == "function_call_output" {
++			outputs++
++			if it["call_id"] != "call_a" || it["output"] != "ok" {
++				t.Fatalf("the client's answer was changed: %v", it)
++			}
++		}
++	}
++	if outputs != 1 {
++		t.Fatalf("%d outputs for a paired exchange: %s", outputs, f.got)
++	}
++}
+-- 
+2.50.1 (Apple Git-155)
+

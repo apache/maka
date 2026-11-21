@@ -1,0 +1,977 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Sun, 8 Nov 2026 14:09:16 +0800
+Subject: [PATCH] provider, gateway, gui: a provider's speech and embedding
+ models sit in its editor, and /v1/models says what a kind model is for
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Fish-under-sea (#5418) had nowhere to put a provider's whisper-1, tts-1
+and embedding models: its editor lists its image models (a hidden-drawers
+pick) and its video ones, and the models made for another API sat in no
+list; nor did /v1/models say what a model is for, so an SDK reading a
+flat list guessed from ids.
+
+- provider: HiddenSpeech and HiddenEmbeddings, kept and carried as
+  HiddenDrawers and HiddenVideomakers are, read by SpeechHidden and
+  EmbeddingHidden. A plugin's models its capabilities.output says are
+  made for another API — audio alone a TTS, nothing said an embedding,
+  the speechless ones #3279 drops from the chat lists — are kept apart
+  (PluginServing), told by what the plugin declares, not the id.
+- gateway: ServingOf is the models a provider serves of an API that is
+  no chat: a fetched list's, another magpie's under an id that says so,
+  a preset plan's, a plugin's declared ones. servesKind reads it, and
+  /v1/models' ?kind= takes embedding, rerank, speech and transcription,
+  each row marked with its kind (servingObjects), less those unticked in
+  their provider's editor, as OfferedDrawers are of the image ones. A
+  request that names a hidden one still serves.
+- gui: the editor lists its speech models and its embedding and rerank
+  ones apart (speechIds, embedIds), each ticked, a click unticking it
+  into hiddenSpeech / hiddenEmbeddings, as its image and video ones are;
+  and the core scripts' budget says why it grew.
+---
+ internal/gateway/gateway.go                   |  78 +++++++++--
+ internal/gateway/media_group.go               |  36 ++++-
+ internal/gateway/models_kind_test.go          |   2 +-
+ internal/gateway/serving_kind_test.go         | 124 +++++++++++++++++
+ internal/gui/assets/app.js                    |  20 ++-
+ internal/gui/assets/i18n.js                   |  16 +++
+ internal/gui/core_budget_test.go              |   2 +-
+ internal/gui/providers.go                     |  52 ++++++-
+ internal/gui/speech_hidden_test.go            |  80 +++++++++++
+ .../gui/tests/speech-embeddings-hide.test.cjs | 130 ++++++++++++++++++
+ internal/provider/modelkind.go                |  15 ++
+ internal/provider/plugin_serving_test.go      |  44 ++++++
+ internal/provider/plugins.go                  |  45 ++++++
+ internal/provider/provider.go                 |  17 +++
+ 14 files changed, 635 insertions(+), 26 deletions(-)
+ create mode 100644 internal/gateway/serving_kind_test.go
+ create mode 100644 internal/gui/speech_hidden_test.go
+ create mode 100644 internal/gui/tests/speech-embeddings-hide.test.cjs
+ create mode 100644 internal/provider/plugin_serving_test.go
+
+diff --git a/internal/gateway/gateway.go b/internal/gateway/gateway.go
+index 40b6b4696..a9b967372 100644
+--- a/internal/gateway/gateway.go
++++ b/internal/gateway/gateway.go
+@@ -1538,6 +1538,48 @@ func videomakerObjects(r *http.Request) []map[string]any {
+ 	return out
+ }
+ 
++// servingObjects are a kind's models (catalog.Serves*), as another SDK
++// asks for them in its list (?kind=embedding, rerank, speech or
++// transcription): "kind" says what a model is for, which an agent's list
++// never has, so it takes none for a model to chat with, and a client need
++// not guess from ids (Fish-under-sea, #5418). Those unticked in their
++// provider's editor are left out (provider.HiddenSpeech,
++// provider.HiddenEmbeddings), as OfferedDrawers are of the image models;
++// a request that names a hidden one still serves. A gateway key held to
++// some models is told of those alone, as its chat list is (#2579).
++func servingObjects(r *http.Request, kind string) []map[string]any {
++	who, held := keyListHolds(r)
++	var out []map[string]any
++	for _, p := range provider.All() {
++		if !p.On() || p.DecideOnly() {
++			continue
++		}
++		for _, m := range ServingOf(p, kind) {
++			if p.SpeechHidden(m.ID) || p.EmbeddingHidden(m.ID) {
++				continue
++			}
++			if held && (!modelAllowed(who, p, m.ID) || !accountServes(who, p, m.ID)) {
++				continue
++			}
++			name := cmp.Or(m.Name, m.ID)
++			in, outKinds := []string{"text"}, []string{"embedding"}
++			switch kind {
++			case catalog.ServesRerank:
++				outKinds = []string{"relevance"}
++			case catalog.ServesSpeech:
++				outKinds = []string{"audio"}
++			case catalog.ServesTranscription:
++				in, outKinds = []string{"audio"}, []string{"text"}
++			}
++			out = append(out, map[string]any{"id": p.ID + "/" + m.ID, "object": "model", "type": "model", "kind": kind, "created": 0,
++				"owned_by": p.ID, "display_name": name, "magpie_label": name + " · " + p.Name,
++				"modalities": map[string]any{"input": in, "output": outKinds},
++				"magpie_via": catalog.ViaHere(m.Via)})
++		}
++	}
++	return out
++}
++
+ // viaOf is the magpies e's model passes through after this one, as the
+ // remote magpie serving it listed them; nil for a provider's own model.
+ // A routing group's are its members' together: a group with a remote
+@@ -1569,18 +1611,21 @@ func catalogFor(r *http.Request) []provider.Entry {
+ 
+ // listKinds is which of magpie's models a /v1/models call lists: its chat
+ // models alone, unless it names the kinds it wants in ?kind= (chat, image,
+-// video, comma separated; all for the three). Image and video models are
+-// listed only when asked for, each marked "kind" (drawerObjects,
+-// videomakerObjects): OpenAI's own list puts gpt-image and sora among its
+-// chat models with nothing to tell them apart, and the clients and agents
+-// that offer every id this list gives as a model to chat with (OpenCode's,
+-// Cherry Studio's, ZCode's pasted ?format=text) would offer an image model
+-// in their chat pickers (axelburks on Discord asked for them here). A kind
+-// it doesn't know is refused, not read as none.
+-func listKinds(r *http.Request) (chat, image, video bool, err error) {
++// video, embedding, rerank, speech, transcription, comma separated; all
++// for chat, image and video). Image and video models are listed only when
++// asked for, each marked "kind" (drawerObjects, videomakerObjects):
++// OpenAI's own list puts gpt-image and sora among its chat models with
++// nothing to tell them apart, and the clients and agents that offer every
++// id this list gives as a model to chat with (OpenCode's, Cherry Studio's,
++// ZCode's pasted ?format=text) would offer an image model in their chat
++// pickers (axelburks on Discord asked for them here). The models made for
++// another API are likewise listed only when their kind is asked for, each
++// marked with it (servingObjects, Fish-under-sea #5418). A kind it doesn't
++// know is refused, not read as none.
++func listKinds(r *http.Request) (chat, image, video bool, serves []string, err error) {
+ 	q, ok := r.URL.Query()["kind"]
+ 	if !ok {
+-		return true, false, false, nil
++		return true, false, false, nil, nil
+ 	}
+ 	for _, v := range q {
+ 		for k := range strings.SplitSeq(v, ",") {
+@@ -1591,14 +1636,18 @@ func listKinds(r *http.Request) (chat, image, video bool, err error) {
+ 				image = true
+ 			case "video":
+ 				video = true
++			case catalog.ServesEmbedding, catalog.ServesRerank, catalog.ServesSpeech, catalog.ServesTranscription:
++				if !slices.Contains(serves, strings.ToLower(strings.TrimSpace(k))) {
++					serves = append(serves, strings.ToLower(strings.TrimSpace(k)))
++				}
+ 			case "all":
+ 				chat, image, video = true, true, true
+ 			default:
+-				return false, false, false, fmt.Errorf("kind %q: /v1/models lists the kinds chat, image and video (or all), comma separated", k)
++				return false, false, false, nil, fmt.Errorf("kind %q: /v1/models lists the kinds chat, image, video, embedding, rerank, speech and transcription (or all), comma separated", k)
+ 			}
+ 		}
+ 	}
+-	return chat, image, video, nil
++	return chat, image, video, serves, nil
+ }
+ 
+ func (s *Server) models(w http.ResponseWriter, r *http.Request) {
+@@ -1617,7 +1666,7 @@ func (s *Server) models(w http.ResponseWriter, r *http.Request) {
+ 
+ func (s *Server) listModels(w http.ResponseWriter, r *http.Request) {
+ 	data := []map[string]any{}
+-	chat, images, videos, err := listKinds(r)
++	chat, images, videos, serves, err := listKinds(r)
+ 	if err != nil {
+ 		writeError(w, provider.Chat, 400, err.Error())
+ 		return
+@@ -1714,6 +1763,9 @@ func (s *Server) listModels(w http.ResponseWriter, r *http.Request) {
+ 	if videos || r.Header.Get(provider.VideomakersHeader) != "" {
+ 		data = append(data, videomakerObjects(r)...)
+ 	}
++	for _, kind := range serves {
++		data = append(data, servingObjects(r, kind)...)
++	}
+ 	if r.Header.Get(provider.DecidersHeader) != "" {
+ 		// the decision models its own pickers offer: of a provider with
+ 		// picks (OpenRouter's twenty-odd), the picked ones, so another
+diff --git a/internal/gateway/media_group.go b/internal/gateway/media_group.go
+index 53f412d3d..3c5e14f0b 100644
+--- a/internal/gateway/media_group.go
++++ b/internal/gateway/media_group.go
+@@ -70,14 +70,38 @@ func servesKind(kind string) func(p provider.Provider, model string) bool {
+ 		}
+ 	}
+ 	return func(p provider.Provider, model string) bool {
+-		if slices.ContainsFunc(catalog.LiveServing(p.ID, kind), func(m catalog.Model) bool { return is(m, model) }) {
+-			return true
+-		}
+-		if catalog.ServesOf(model) == kind && slices.ContainsFunc(provider.KeptListing(p).Available, func(m catalog.Model) bool { return is(m, model) }) {
+-			return true
++		return slices.ContainsFunc(ServingOf(p, kind), func(m catalog.Model) bool { return is(m, model) })
++	}
++}
++
++// ServingOf are the models p serves of an API that is no chat, kind's
++// (catalog.Serves*), in the order its sources say them: its fetched list's
++// (catalog.LiveServing), those its kept list has under an id that says so
++// (another magpie's list, which keeps them as it lists them and marks
++// none), its preset plan's (PlanRetrieval) and its plugin's declared ones
++// (PluginServing). Each id once: the sources name no model twice that
++// matters. Hidden ones are still here — a request that names one still
++// serves — the lists to pick from take them out (servingObjects,
++// provider.HiddenSpeech, provider.HiddenEmbeddings, Fish-under-sea
++// #5418).
++func ServingOf(p provider.Provider, kind string) []catalog.Model {
++	if p.DecideOnly() {
++		return nil
++	}
++	out := catalog.LiveServing(p.ID, kind)
++	add := func(ms []catalog.Model) {
++		for _, m := range ms {
++			if slices.ContainsFunc(out, func(o catalog.Model) bool { return o.ID == m.ID }) {
++				continue
++			}
++			m.Provider = p.ID
++			out = append(out, m)
+ 		}
+-		return slices.ContainsFunc(p.PlanRetrieval(kind), func(m catalog.Model) bool { return is(m, model) })
+ 	}
++	add(slices.DeleteFunc(slices.Clone(provider.KeptListing(p).Available), func(m catalog.Model) bool { return catalog.ServesOf(m.ID) != kind }))
++	add(p.PlanRetrieval(kind))
++	add(provider.PluginServing(p, kind))
++	return out
+ }
+ 
+ // retrievalKind is the kind of model an operation of serveRetrieval's is
+diff --git a/internal/gateway/models_kind_test.go b/internal/gateway/models_kind_test.go
+index ad141d0f1..9e2f252b2 100644
+--- a/internal/gateway/models_kind_test.go
++++ b/internal/gateway/models_kind_test.go
+@@ -94,7 +94,7 @@ func TestModelsListMediaOnlyWhenAsked(t *testing.T) {
+ 	if _, body := get("/v1/models?kind=image&format=text", nil); !strings.Contains(body, image) || strings.Contains(body, video) {
+ 		t.Fatalf("kind=image&format=text:\n%s", body)
+ 	}
+-	for _, bad := range []string{"images", "embedding", "", "chat,"} {
++	for _, bad := range []string{"images", "decide", "", "chat,"} {
+ 		if code, body := get("/v1/models?kind="+bad, nil); code != 400 {
+ 			t.Errorf("kind=%q: %d %s", bad, code, body)
+ 		}
+diff --git a/internal/gateway/serving_kind_test.go b/internal/gateway/serving_kind_test.go
+new file mode 100644
+index 000000000..9fa116b68
+--- /dev/null
++++ b/internal/gateway/serving_kind_test.go
+@@ -0,0 +1,124 @@
++package gateway
++
++import (
++	"encoding/json"
++	"net/http/httptest"
++	"strings"
++	"testing"
++
++	"github.com/yetone/magpie/internal/provider"
++)
++
++// Fish-under-sea (#5418): a provider's own /v1/models lists whisper-1,
++// tts-1 and an embedding model next to its chat ones, and magpie's own
++// list said nothing of what a model is for, so an SDK reading a flat list
++// had to guess from ids. The models made for another API are listed only
++// when the caller asks for their kind (?kind=embedding, rerank, speech,
++// transcription, comma separated), each marked by its "kind", as image
++// and video models are: an agent that offers every id its list gives as a
++// model to chat with would offer a TTS. Those unticked in their
++// provider's editor (hiddenSpeech, hiddenEmbeddings) are left out of the
++// list, and a request that names one still serves.
++func TestModelsListServingKindsWhenAsked(t *testing.T) {
++	fresh(t)
++	busy, free := newKindVendor(t, true), newKindVendor(t, false)
++	saveFetched(t, provider.Provider{ID: "busy", Name: "Busy", Chat: busy.URL + "/v1", Key: "k", Models: []string{"chat-model"}})
++	saveFetched(t, provider.Provider{ID: "free", Name: "Free", Chat: free.URL + "/v1", Key: "k", Models: []string{"chat-model"}})
++	h := New().Handler()
++	rows := func(query string) map[string]string {
++		t.Helper()
++		if !strings.HasPrefix(query, "/v1/models") {
++			query = "/v1/models" + query
++		}
++		rec := httptest.NewRecorder()
++		h.ServeHTTP(rec, httptest.NewRequest("GET", query, nil))
++		if rec.Code != 200 {
++			t.Fatalf("%s: %d %s", query, rec.Code, rec.Body.String())
++		}
++		var l struct {
++			Data []struct {
++				ID   string
++				Kind string
++			}
++		}
++		if err := json.Unmarshal(rec.Body.Bytes(), &l); err != nil {
++			t.Fatalf("%s: %v\n%s", query, err, rec.Body.String())
++		}
++		out := map[string]string{}
++		for _, m := range l.Data {
++			out[m.ID] = m.Kind
++		}
++		return out
++	}
++	plain := rows("/v1/models")
++	for _, id := range []string{"busy/embed-1", "free/embed-1", "busy/tts-1", "free/whisper-1", "free/bge-reranker-1"} {
++		if _, ok := plain[id]; ok {
++			t.Errorf("the plain list offers %s", id)
++		}
++	}
++	want := []struct{ query, id, kind string }{
++		{"?kind=embedding", "busy/embed-1", "embedding"},
++		{"?kind=embedding", "free/embed-1", "embedding"},
++		{"?kind=rerank", "busy/bge-reranker-1", "rerank"},
++		{"?kind=rerank", "free/bge-reranker-1", "rerank"},
++		{"?kind=speech", "busy/tts-1", "speech"},
++		{"?kind=speech", "free/tts-1", "speech"},
++		{"?kind=transcription", "busy/whisper-1", "transcription"},
++		{"?kind=transcription", "free/whisper-1", "transcription"},
++		{"?kind=speech,transcription", "busy/tts-1", "speech"},
++		{"?kind=speech,transcription", "free/whisper-1", "transcription"},
++	}
++	for _, w := range want {
++		got := rows(w.query)
++		if got[w.id] != w.kind {
++			t.Errorf("%s lists %s as kind %q, want %q (list %v)", w.query, w.id, got[w.id], w.kind, got)
++		}
++	}
++	if got := rows("?kind=speech"); got["busy/whisper-1"] != "" {
++		t.Errorf("a transcription model listed as speech: %v", got)
++	}
++	badRec := httptest.NewRecorder()
++	h.ServeHTTP(badRec, httptest.NewRequest("GET", "/v1/models?kind=decide", nil))
++	if badRec.Code != 400 {
++		t.Errorf("an unknown kind: %d %s", badRec.Code, badRec.Body.String())
++	}
++
++	// those unticked in the editor are not listed, and the rest still is
++	p, err := provider.Find("busy")
++	if err != nil {
++		t.Fatal(err)
++	}
++	p.HiddenSpeech = []string{"tts-1"}
++	p.HiddenEmbeddings = []string{"embed-1"}
++	if err := provider.Save(*p); err != nil {
++		t.Fatal(err)
++	}
++	if got := rows("?kind=speech"); got["busy/tts-1"] != "" || got["free/tts-1"] != "speech" {
++		t.Errorf("the hidden speech model still listed: %v", got)
++	}
++	if got := rows("?kind=embedding"); got["busy/embed-1"] != "" || got["free/embed-1"] != "embedding" {
++		t.Errorf("the hidden embedding still listed: %v", got)
++	}
++	if got := rows("?kind=transcription"); got["busy/whisper-1"] != "transcription" {
++		t.Errorf("the unticked one's kindmates lost: %v", got)
++	}
++}
++
++// Fish-under-sea (#5418): a model unticked in its provider's editor still
++// serves when a request names it, as a hidden image model still draws
++// (OfferedDrawers, DrawerHidden).
++func TestHiddenServingModelStillServes(t *testing.T) {
++	fresh(t)
++	free := newKindVendor(t, false)
++	saveFetched(t, provider.Provider{ID: "solo", Name: "Solo", Chat: free.URL + "/v1", Key: "k", Models: []string{"chat-model"}, HiddenEmbeddings: []string{"embed-1"}})
++	s := New()
++	if code, raw := postRetrieval(t, s, "/v1/embeddings", `{"model":"embed-1","input":"hi"}`); code != 200 || !strings.Contains(raw, `[0.5,0.25]`) {
++		t.Fatalf("embeddings by a hidden model's id: %d %s", code, raw)
++	}
++	for _, asked := range free.log() {
++		if asked == "POST /v1/embeddings" {
++			return
++		}
++	}
++	t.Fatalf("the vendor was asked %v", free.log())
++}
+diff --git a/internal/gui/assets/app.js b/internal/gui/assets/app.js
+index b156a97ef..f7b42b359 100644
+--- a/internal/gui/assets/app.js
++++ b/internal/gui/assets/app.js
+@@ -9264,7 +9264,7 @@ function baseAPIOf(p) {
+ 
+ // draftOf is a saved provider as its editor's form holds it.
+ function draftOf(p) {
+-  return { id: p.id, name: p.name, preset: p.preset, chat: p.chat, responses: p.responses, anthropic: p.anthropic, gemini: p.gemini || "", catalog: p.catalog, decide: p.decide || "", key: "", api: baseAPIOf(p), chosen: pickedOf(p), none: !!p.noModels, best: !!p.bestInFamily, extra: [], headers: headerRows(p.headers), extraBody: extraBodyText(p.extraBody), replyHeaders: (p.replyHeaders || []).join(", "), passHeaders: (p.passHeaders || []).join(", "), icon: p.icon || "", iconFrom: p.iconFrom || "", fallback: [...(p.fallback || [])], unlisted: !!p.unlisted, hiddenDrawers: [...(p.hiddenDrawers || [])], hiddenVideomakers: [...(p.hiddenVideomakers || [])], searches: !!p.searches, unredacted: !!p.unredacted, countFree: !!p.countFree, insecureTLS: !!p.insecureTLS, http1: !!p.http1, socket: p.socket || "", limitRestOff: !!p.limitRestOff, passErrors: !!p.passErrors, imageFilesOff: !!p.imageFilesOff, nativeCompaction: !!p.nativeCompaction, passUserAgent: p.passUserAgent !== false, pinUpstream: !!p.pinUpstream, authHeader: p.authHeader || "", balanceURL: p.balanceURL || "", balancePath: p.balancePath || "", balanceMethod: p.balanceMethod || "", modelsURL: p.modelsURL || "", listOff: !!p.listOff, contexts: contextsText(p.contexts), outputs: contextsText(p.outputs), compacts: contextsText(p.compacts), keysUrl: p.keysUrl || "", ...proxyDraft(p), ...concurrencyDraft(p), rateWindows: (p.rateWindows || []).map((w) => ({ ...w })) };
++  return { id: p.id, name: p.name, preset: p.preset, chat: p.chat, responses: p.responses, anthropic: p.anthropic, gemini: p.gemini || "", catalog: p.catalog, decide: p.decide || "", key: "", api: baseAPIOf(p), chosen: pickedOf(p), none: !!p.noModels, best: !!p.bestInFamily, extra: [], headers: headerRows(p.headers), extraBody: extraBodyText(p.extraBody), replyHeaders: (p.replyHeaders || []).join(", "), passHeaders: (p.passHeaders || []).join(", "), icon: p.icon || "", iconFrom: p.iconFrom || "", fallback: [...(p.fallback || [])], unlisted: !!p.unlisted, hiddenDrawers: [...(p.hiddenDrawers || [])], hiddenVideomakers: [...(p.hiddenVideomakers || [])], hiddenSpeech: [...(p.hiddenSpeech || [])], hiddenEmbeddings: [...(p.hiddenEmbeddings || [])], searches: !!p.searches, unredacted: !!p.unredacted, countFree: !!p.countFree, insecureTLS: !!p.insecureTLS, http1: !!p.http1, socket: p.socket || "", limitRestOff: !!p.limitRestOff, passErrors: !!p.passErrors, imageFilesOff: !!p.imageFilesOff, nativeCompaction: !!p.nativeCompaction, passUserAgent: p.passUserAgent !== false, pinUpstream: !!p.pinUpstream, authHeader: p.authHeader || "", balanceURL: p.balanceURL || "", balancePath: p.balancePath || "", balanceMethod: p.balanceMethod || "", modelsURL: p.modelsURL || "", listOff: !!p.listOff, contexts: contextsText(p.contexts), outputs: contextsText(p.outputs), compacts: contextsText(p.compacts), keysUrl: p.keysUrl || "", ...proxyDraft(p), ...concurrencyDraft(p), rateWindows: (p.rateWindows || []).map((w) => ({ ...w })) };
+ }
+ 
+ // duplicateProvider opens the Add form on a copy of p, its key p's unless another is pasted (#268).
+@@ -9563,6 +9563,8 @@ function drawEditor(p, presetID) {
+     ed.append(...field(t("Models"), renderModels(p), pluginFilterNote(subOf(a.agent))));
+     if (p.drawIds?.length) ed.append(...renderDrawers(p));
+     if (p.filmIds?.length) ed.append(...renderVideomakers(p));
++    if (p.speechIds?.length) ed.append(...renderSpeech(p));
++    if (p.embedIds?.length) ed.append(...renderEmbeddings(p));
+     // a subscription's window too: Codex's backend says 272K for models
+     // that take 872K (#120)
+     const cx = input(draft.contexts || "", t("e.g. 128k · or gpt-6=1m, comma separated"));
+@@ -9624,7 +9626,7 @@ function drawEditor(p, presetID) {
+       if (priceTypedError(ed)) return;
+       const picked = accountModelsDraft(p);
+       if (picked === false) return pickError();
+-      const body = { id: p.id, models: chosenIds(), noModels: noneChosen(), bestInFamily: bestChosen(), unlisted: draft.unlisted, hiddenDrawers: draft.hiddenDrawers, hiddenVideomakers: draft.hiddenVideomakers, fallback: draft.fallback, contexts: cx.map, outputs: ox.map, compacts: cpx.map, proxy, accountProxies: own.map, maxConcurrency, maxAccounts, ...queue, priceRate, rateWindows, modelPrefs: modelPrefsOfDraft(), pinUpstream: !!draft.pinUpstream, unredacted: !!draft.unredacted, countFree: !!draft.countFree, ...(p.carriesCompaction ? { nativeCompaction: !!draft.nativeCompaction } : {}), ...routingOfDraft(p) };
++      const body = { id: p.id, models: chosenIds(), noModels: noneChosen(), bestInFamily: bestChosen(), unlisted: draft.unlisted, hiddenDrawers: draft.hiddenDrawers, hiddenVideomakers: draft.hiddenVideomakers, hiddenSpeech: draft.hiddenSpeech, hiddenEmbeddings: draft.hiddenEmbeddings, fallback: draft.fallback, contexts: cx.map, outputs: ox.map, compacts: cpx.map, proxy, accountProxies: own.map, maxConcurrency, maxAccounts, ...queue, priceRate, rateWindows, modelPrefs: modelPrefsOfDraft(), pinUpstream: !!draft.pinUpstream, unredacted: !!draft.unredacted, countFree: !!draft.countFree, ...(p.carriesCompaction ? { nativeCompaction: !!draft.nativeCompaction } : {}), ...routingOfDraft(p) };
+       saving(saveBtn, t("Saving…"));
+       saveAccountModelsDraft(picked).then(() => savePluginOptions(subOf(a.agent))).then(() => providerAction("save", body, t("{name} saved", { name: p.name })), (e) => { doneSaving(saveBtn); editorError(e.message || String(e)); }); };
+     bar.append(cancel, saveBtn);
+@@ -10045,6 +10047,8 @@ function drawEditor(p, presetID) {
+   else if (pr?.id === "azure") ed.append(...field(t("Models"), el("div", "hint azure-models", t("No need to type them: once added, magpie lists the deployments this key can call. Type a deployment's name as a model id only if that list can't be fetched.")), ""));
+   if (p?.drawIds?.length) ed.append(...renderDrawers(p));
+   if (p?.filmIds?.length) ed.append(...renderVideomakers(p));
++  if (p?.speechIds?.length) ed.append(...renderSpeech(p));
++  if (p?.embedIds?.length) ed.append(...renderEmbeddings(p));
+   {
+     // the window agents are told a model has, over what the vendor or
+     // models.dev says: one for all of them, and model=size for one
+@@ -10260,7 +10264,7 @@ function drawEditor(p, presetID) {
+     }
+     if (custom) { body.icon = draft.icon || "generic"; body.iconFrom = draft.iconFrom || ""; body.balanceURL = (draft.balanceURL || "").trim(); body.balancePath = (draft.balancePath || "").trim(); body.balanceMethod = draft.balanceMethod || ""; body.modelsURL = (draft.modelsURL || "").trim(); }
+     if (p?.takesListOff) body.listOff = !!draft.listOff;
+-    if (p) { body.fallback = draft.fallback; body.unlisted = draft.unlisted; body.hiddenDrawers = draft.hiddenDrawers; body.hiddenVideomakers = draft.hiddenVideomakers; body.noModels = noneChosen(); body.bestInFamily = bestChosen(); body.modelPrefs = modelPrefsOfDraft(); Object.assign(body, routingOfDraft(p)); }
++    if (p) { body.fallback = draft.fallback; body.unlisted = draft.unlisted; body.hiddenDrawers = draft.hiddenDrawers; body.hiddenVideomakers = draft.hiddenVideomakers; body.hiddenSpeech = draft.hiddenSpeech; body.hiddenEmbeddings = draft.hiddenEmbeddings; body.noModels = noneChosen(); body.bestInFamily = bestChosen(); body.modelPrefs = modelPrefsOfDraft(); Object.assign(body, routingOfDraft(p)); }
+     body.searches = !!draft.searches && searchable();
+     if (draft.libraryMCP != null) body.libraryMCP = draft.libraryMCP;
+     body.pinUpstream = !!draft.pinUpstream;
+@@ -12129,6 +12133,16 @@ function renderVideomakers(p) {
+   return field(t("Video models"), mediaChips("mchips videomakers", p.filmIds, "hiddenVideomakers", p), t("Only the ticked ones are offered when making a video. Agents don't chat with these, so they aren't among its models."));
+ }
+ 
++// renderSpeech: its speech models, ticked to be served and listed (Fish-under-sea, #5418)
++function renderSpeech(p) {
++  return field(t("Speech models"), mediaChips("mchips speech", p.speechIds, "hiddenSpeech", p), t("Asked for on /v1/audio/speech and /v1/audio/transcriptions. Agents don't chat with these, so they aren't among its models."));
++}
++
++// renderEmbeddings: its embedding and rerank models, ticked to be served and listed (#5418)
++function renderEmbeddings(p) {
++  return field(t("Embedding models"), mediaChips("mchips embeddings", p.embedIds, "hiddenEmbeddings", p), t("Asked for on /v1/embeddings and /v1/rerank. Agents don't chat with these, so they aren't among its models."));
++}
++
+ function mediaChips(cls, ids, key, p, names) {
+   const chips = el("div", cls);
+   draft[key] ||= [...(p[key] || [])];
+diff --git a/internal/gui/assets/i18n.js b/internal/gui/assets/i18n.js
+index 7b621a7ba..31368043b 100644
+--- a/internal/gui/assets/i18n.js
++++ b/internal/gui/assets/i18n.js
+@@ -1734,6 +1734,10 @@ const I18N = {
+     "Settings → Models → Images lists the ticked ones. Agents don't chat with these, so they aren't among its models.": "设置 → 模型 → 图像 只列出已勾选的。Agent 不与它们对话，故不在模型列表中。",
+     "Video models": "视频模型",
+     "Only the ticked ones are offered when making a video. Agents don't chat with these, so they aren't among its models.": "生成视频时只提供已勾选的。Agent 不与它们对话，故不在模型列表中。",
++    "Speech models": "语音模型",
++    "Embedding models": "嵌入模型",
++    "Asked for on /v1/audio/speech and /v1/audio/transcriptions. Agents don't chat with these, so they aren't among its models.": "在 /v1/audio/speech 和 /v1/audio/transcriptions 上调用。Agent 不与它们对话，故不在模型列表中。",
++    "Asked for on /v1/embeddings and /v1/rerank. Agents don't chat with these, so they aren't among its models.": "在 /v1/embeddings 和 /v1/rerank 上调用。Agent 不与它们对话，故不在模型列表中。",
+     "{model}, picked here, is unticked in its provider's Image models: it still draws, but leaves this list once another is picked. Tick it there to keep it listed.": "{model} 是此处选中的，但在其供应商的“图像模型”中未勾选：它仍用于生图，改选其他模型后便不再列在这里。在那里勾选它即可留在列表中。",
+     "no models exposed": "未暴露模型",
+     "signed in as {user}": "已登录 {user}",
+@@ -6511,6 +6515,10 @@ const I18N = {
+     "Settings → Models → Images lists the ticked ones. Agents don't chat with these, so they aren't among its models.": "設定 → 模型 → 影像 只列出已勾選的。Agent 不與它們對話，故不在模型列表中。",
+     "Video models": "影片模型",
+     "Only the ticked ones are offered when making a video. Agents don't chat with these, so they aren't among its models.": "生成影片時只提供已勾選的。Agent 不與它們對話，故不在模型列表中。",
++    "Speech models": "語音模型",
++    "Embedding models": "嵌入模型",
++    "Asked for on /v1/audio/speech and /v1/audio/transcriptions. Agents don't chat with these, so they aren't among its models.": "在 /v1/audio/speech 和 /v1/audio/transcriptions 上呼叫。Agent 不與它們對話，故不在模型列表中。",
++    "Asked for on /v1/embeddings and /v1/rerank. Agents don't chat with these, so they aren't among its models.": "在 /v1/embeddings 和 /v1/rerank 上呼叫。Agent 不與它們對話，故不在模型列表中。",
+     "{model}, picked here, is unticked in its provider's Image models: it still draws, but leaves this list once another is picked. Tick it there to keep it listed.": "{model} 是此處選取的，但在其供應商的「影像模型」中未勾選：它仍用於生圖，改選其他模型後便不再列在這裡。在那裡勾選它即可留在列表中。",
+     "no models exposed": "未暴露模型",
+     "signed in as {user}": "已登入 {user}",
+@@ -11262,6 +11270,10 @@ const I18N = {
+     "Settings → Models → Images lists the ticked ones. Agents don't chat with these, so they aren't among its models.": "設定 → モデル → 画像 にはチェックしたものだけが表示されます。エージェントはこれらと会話しないため、モデル一覧には含まれません。",
+     "Video models": "動画モデル",
+     "Only the ticked ones are offered when making a video. Agents don't chat with these, so they aren't among its models.": "動画を作るときは、チェックしたものだけが候補になります。エージェントはこれらと会話しないため、モデル一覧には含まれません。",
++    "Speech models": "音声モデル",
++    "Embedding models": "埋め込みモデル",
++    "Asked for on /v1/audio/speech and /v1/audio/transcriptions. Agents don't chat with these, so they aren't among its models.": "/v1/audio/speech と /v1/audio/transcriptions で呼び出します。エージェントはこれらと会話しないため、モデル一覧には含まれません。",
++    "Asked for on /v1/embeddings and /v1/rerank. Agents don't chat with these, so they aren't among its models.": "/v1/embeddings と /v1/rerank で呼び出します。エージェントはこれらと会話しないため、モデル一覧には含まれません。",
+     "{model}, picked here, is unticked in its provider's Image models: it still draws, but leaves this list once another is picked. Tick it there to keep it listed.": "ここで選んだ {model} は、プロバイダの「画像モデル」でチェックが外されています。描画には引き続き使われますが、別のモデルを選ぶとこの一覧から消えます。一覧に残すには、そちらでチェックしてください。",
+     "no models exposed": "公開されているモデルなし",
+     "signed in as {user}": "{user} としてサインイン中",
+@@ -16044,6 +16056,10 @@ const I18N = {
+     "Settings → Models → Images lists the ticked ones. Agents don't chat with these, so they aren't among its models.": "Einstellungen → Modelle → Bilder listet die angehakten. Agenten chatten nicht mit diesen Modellen, daher stehen sie nicht bei seinen Modellen.",
+     "Video models": "Videomodelle",
+     "Only the ticked ones are offered when making a video. Agents don't chat with these, so they aren't among its models.": "Beim Erstellen eines Videos werden nur die angehakten angeboten. Agenten chatten nicht mit diesen Modellen, daher stehen sie nicht bei seinen Modellen.",
++    "Speech models": "Sprachmodelle",
++    "Embedding models": "Embedding-Modelle",
++    "Asked for on /v1/audio/speech and /v1/audio/transcriptions. Agents don't chat with these, so they aren't among its models.": "Über /v1/audio/speech und /v1/audio/transcriptions abgefragt. Agenten chatten nicht mit diesen Modellen, daher stehen sie nicht bei seinen Modellen.",
++    "Asked for on /v1/embeddings and /v1/rerank. Agents don't chat with these, so they aren't among its models.": "Über /v1/embeddings und /v1/rerank abgefragt. Agenten chatten nicht mit diesen Modellen, daher stehen sie nicht bei seinen Modellen.",
+     "{model}, picked here, is unticked in its provider's Image models: it still draws, but leaves this list once another is picked. Tick it there to keep it listed.": "{model}, hier gewählt, ist bei den Bildmodellen seines Anbieters abgehakt: Es zeichnet weiter, verschwindet aber aus dieser Liste, sobald ein anderes gewählt ist. Haken Sie es dort an, damit es gelistet bleibt.",
+     "no models exposed": "keine Modelle freigegeben",
+     "signed in as {user}": "angemeldet als {user}",
+diff --git a/internal/gui/core_budget_test.go b/internal/gui/core_budget_test.go
+index c7c09a1c8..e03d449ea 100644
+--- a/internal/gui/core_budget_test.go
++++ b/internal/gui/core_budget_test.go
+@@ -16,7 +16,7 @@ import (
+ // raises them and says why in its commit.
+ const (
+ 	appScriptBudget  = 1_316_874 // app.js: 1,198,239 after Usage left (P2); 1,218,098 with the 10-15 fixes to pages still in the core; 1,232,466 with the provider editor's Advanced fold and every dialog holding its place, the core's own (10-16); 1,250,533 with the quota refresh kept through redraws, the core's own since the tray panel draws it too, plus 1.5% (#2397); 1,269,083 with Free first's option in the provider editor's ROUTINGS, which the Routing page reads too, plus 1.5%; 1,272,726 with the Providers page drawing its last list at once (#1519), the core's page, and the Routing trace's account names read without Object.entries (#1481), plus 1.5%; a dialog growing out of the row that opened it and folding back into it, the core's own since every page's dialogs open through it (10-20); Codex's and Claude Code's own settings moved from Settings into the agent's row on the Agents page, the core's own since the tray panel and the window both draw them (10-20); 1,314,432 with Settings › Privacy's record of what was masked (its summary, the records view and the local model's controls), which belongs to Settings, the core's own, plus 1.5%; 1,336,481 with a provider's Names & levels saying Provider in model names is Settings' and opening it there (joe), and Settings' Image recognition saying where a custom provider's model is marked (nexnull), both in the core's own pages, with no room added (10-23); 1,337,633 with Settings › Models › Replies' Intent classifier timeout (#2934, reyoung), Settings' own row, drawn by waitRow, which the Image generation timeout's row now shares, with no room added; 1,337,735 with the provider editor's link naming a partner's page by its own host (siteHost) instead of usemagpie.ai's /go link, the core's own editor, with no room added (10-23); 1,338,084 with Check in now saying what the press came to (claimed +credits, already today, not available yet) where it said "refreshed" (#3326), the check-in row the tray panel draws too, the core's own, with no room added (10-23); 1,338,929 with a new partner's tile keeping a small dot until it is opened, in the add sheet, the core's own, with no room added (10-23); 1,343,324 with the sidebar's open-page row marked by one shape that moves on a spring (navTopGo), the window's own shell, which every page sits beside, with no room added (10-23); 1,343,465 with a dialog kept centred while its content comes in, until it is pressed (holdModal, every page's dialogs), the core's own, with no room added (10-24); 1,317,486 with what masking did moved out to Insights › Masking (plugins/redact), the budget lowered to it (10-24); 1,321,336 with Codex's one subagent model, its card's square saying plainly what each choice does and a row with a name in its sheet, where two squares read alike (the owner), the Agents page's, which the tray panel draws too, the core's own, with no room added (10-24); 1,321,424 with Settings › Models' Image generation MCP server row beside Image recognition's (JonahFu on X), the two drawn by one helper (mcpRow), Settings' own, with no room added (10-25); 1,321,994 with a provider of the user's set never to rest for a limit (zoecats), the provider editor's Advanced row, the core's own editor, with no room added (10-25); 1,322,289 with Settings › Privacy's Keep a key's form under Mask secrets (Charles Cao on X), Settings' own row, with no room added (10-25); 1,322,537 with no Codex squares beside its named settings rows (the owner), with no room added (10-25); 1,323,401 with the tray panel drawing its last allowances at once and asking for them beside the state (#3160, #3134), the tray panel's, the core's own, and the 4 bytes 84c50f032 added, with no room added (10-25); 1,326,105 with many releases' notes merged into one list by kind, each line with its version (the owner), in the update sheet and What's new, with no room added (10-25); 1,321,319 with Settings › Observability moved out to its plugin (plugins/otel/page.js) and its Langfuse setup there (an X user), the budget lowered to it (10-26); a quota card whose window is used but names no reset no longer saying "Not used yet" (windy on Discord) raised it to 1,321,347, and back to 1,321,319 with Settings' model pickers sharing one row helper (modelOpt) where six kept their own copy, no raise (10-26); 1,325,845 with every slow page's skeletons getting magpie's bird hopping bar to bar (skelBird, the owner after the Plugins page's README), one bird for the window over whatever page or dialog is loading, the core's own, with no room added (10-26); 1,310,129 with Settings › Network and sharing's gateway rows (its port, bare ids, local network, allowed addresses, web pages) moved out to the gateway plugin (plugins/gateway/settings.js), the budget lowered to it (10-27); 1,310,269 with Test models naming the first model that failed and its error in the status line, where it said only how many (ysm119 on Discord), the provider editor's, the core's own, with no room added (10-27); 1,310,460 with Settings › About's Website row linking usemagpie.ai (the owner), Settings' own row, with no room added (10-27); 1,309,669 with a pool's Stop at the caps and Check usage near a cap ticks under a provider's accounts (plugins#349), the core's own editor, its account rows' Remove and add rows each drawn by one helper (forgetOf, addRow), with no room added (10-28); 1,311,681 with Install another agent on the Agents page naming the agents Plugins has (More in Plugins) and opening Plugins at its Agents (the owner), the Agents page's, the core's own, with no room added (10-28); 1,311,735 with More in Plugins in sight while Install another agent is folded (the owner), with no room added (10-29); 1,313,704 with a window whose WebKit scrolls under wheels it never tells of (macOS 13) remembered once seen, a scroll at rest then waiting 120ms for a second the same way within 80ms before it is put back, kept for a late wheel to give back (waitsBack), and a load landing under the wheel keeping the reader's way (backAfterLoad, issennknight), the window's own scroll guard, with no room added (10-29); back to 1,311,735 with Settings › Models › Web search's rows (renderSearch, renderSearcher, the search APIs' keys) moved out to the search plugin (plugins/search/settings.js), app.js 1,292,527 after it, not lowered further since what is left plus 1.5% is over it (#4133, 10-29); 1,315,316 with the Agents row of a Claude Code or Codex not connected saying the account it is signed in to and switching it to another (Switch accounts only, the owner on X), in place of the failover line's ChatGPT accounts button, the Agents page's, the core's own, its comments cut down, with no room added (10-30); 1,317,705 with a Claude account added from a setup-token (sfss5362 on X): the sign-in's Use a setup-token instead…, its sheet, and its account row's magpie only, the provider editor's account rows, the core's own editor, its comments cut down, with no room added (10-30); back to 1,315,316 with the setup-token sheet and Copilot's GHE.com one moved out to signsheets.js, loaded when one is asked for (signAsk, 10-30); 1,315,479 with the provider editor lining its Advanced up with its fields (the owner: 高级这个折叠按钮为什么在一个前不着村后不着店的位置？) and a refresh on each of its accounts (在这里也要加上手动刷新用量的按钮), the core's own editor, with no room added (10-31); 1,315,603 with About's Log row, the path of the log the app writes and an Open for its folder (rayem1w on X), in app.js, its comment cut to one line, with no room added (10-31); 1,316,781 with a provider's model listed by an id of the user's (zeewell on X), the provider editor's Names & levels Listed as box beside Same as, the core's own editor, with no room added (10-31); 1,316,874 with a package manager's magpie (the AUR's magpie-bin) naming the command that updates it in Settings' Version row and lighting no Update pill (shuhai on Discord), the core's own update row, which the tray panel reads too, its comments cut to one line, with no room added (10-31); Settings › Sync's Kept on this computer row (hayden4608 on Discord) raised it to 1,317,497, which is no bound; the 1,316,874 it had came back once later trims left app.js at 1,308,363 (10-31)
+-	coreScriptBudget = 1_533_802 // every core script: 1,358,034 after Usage left; 1,380,003 with them; 1,405,937 with the fold; 1,426,102 with 10-16's core work (the GitHub list loading, the move to plugins, Settings › Long conversations), plus 1.5% (#2612); 1,447,368 with loadBack, the window's one state read per return, which every page needs and so is the core's own (1,446,845 before it, 155 bytes under), plus 1.5%; OpenCode Zen's card saying OpenCode tells no key its balance adds ~390 bytes inside it; 1,472,589 with the dialog that grows out of its row and the agents' own settings in their rows, on main's 10-20 core work (the Providers page's last list, the Routing trace's names), plus 1.5% (10-20); 1,506,192 with Settings › Privacy's record of what was masked, plus 1.5%; 1,529,393 with the Intent classifier timeout row (#2934), with no room added; 1,529,495 with the editor's partner link host, with no room added; 1,529,844 with Check in now's press summary (#3326), with no room added; 1,530,689 with the new partner tile's dot, with no room added; 1,535,084 with the sidebar's spring, with no room added; 1,549,478 with the context window card's map (tiles by tokens, the default look, the block grid a switch away) and its text view showing an inline image, in context.js, which the Routing page draws as well as Usage, so the core's own, with no room added (10-24); 1,550,768 with a usage card's refresh opening after its text (#840's card, which the tray panel draws too), the Add key spinner, and a dialog kept centred while its content comes in, with no room added (10-24); 1,524,789 with what masking did moved out to Insights › Masking, lowered to it; 1,528,525 with Codex's one subagent model, with no room added (10-24); 1,528,972 with the Image generation MCP server row (JonahFu on X), with no room added (10-25); 1,529,542 with the limit-rest row (zoecats), with no room added (10-25); 1,529,837 with Keep a key's form (Charles Cao on X), with no room added (10-25); 1,530,050 with no Codex squares beside its named settings rows (the owner), with no room added (10-25); 1,530,631 with a plugin's page growing to its README on the dialog's spring instead of in one jump (the owner), the Plugins page's, in plugins.js, with no room added (10-25); 1,533,445 with the context map counting its tokens on as a live request grows, a tile pointed at keeping its tip, a tool's gathered results saying how many and the small files their folder (the owner, after flohoeller's map on X), in context.js, which the Routing page draws as well as Usage, and the 4 bytes 84c50f032 added to app.js (Settings' Version row) without a raise, with no room added (10-25); 1,534,312 with the tray panel's last allowances drawn at once (#3160, #3134), with no room added (10-25); 1,537,016 with many releases' notes merged into one list by kind (the owner), in app.js, with no room added (10-25); 1,542,244 with a plugin's README loading under magpie's bird bouncing down its lines instead of pulsing bars (the owner), the Plugins page's, in plugins.js, with no room added (10-26); 1,542,418 with a page plugin's sidebar tab coming and going as it is installed, switched on or off, or removed, instead of on the Plugins page's next load (the owner), in plugins.js, with no room added (10-26); 1,537,645 with Settings › Observability moved out to plugins/otel, lowered to it (10-26); 1,537,673 with a used window with no reset not "Not used yet" (windy on Discord), and back to 1,537,645 with Settings' model pickers sharing modelOpt (10-26); 1,541,967 with every slow page's skeletons getting magpie's bird (skelBird, the owner), in app.js, the README's bird sharing its drawing and styles, with no room added (10-26); 1,526,251 with Settings' gateway rows moved out to plugins/gateway/settings.js, lowered to it (10-27); 1,526,391 with Test models naming the first failed model and its error (ysm119 on Discord), in app.js, with no room added (10-27); 1,526,556 with About's Website row (the owner), in app.js, with no room added (10-27); 1,526,500 with a pool's cap ticks (plugins#349), in app.js, with no room added (10-28); 1,527,245 with About's Open-source licenses row and dialog (the owner), in app.js, with no room added (10-28); 1,528,076 with the Partners heading's light (the owner), in app.js, with no room added (10-28); 1,530,449 with Install another agent's More in Plugins row (the owner), in app.js, and Plugins opening at its Agents, in plugins.js, with no room added (10-28); 1,530,807 with layout.js measuring the scrollbar into --bar, which every page's right padding takes off so its sides match (the owner), the window's own shell, with no room added (10-28); 1,530,861 with More in Plugins in sight while Install another agent is folded (the owner), in app.js, with no room added (10-29); 1,532,830 with waitsBack and backAfterLoad (issennknight, macOS 13), the window's own scroll guard, in app.js, with no room added (10-29); the context map's tile wording (a4e929212) and Cindy's Add magpie (628ac36fc) had taken the core over it, and Web search's rows moved out to plugins/search/settings.js brought it back to 1,530,861 (#4133, 10-29); 1,532,459 with a provider editor's account rows on one line each, First or Make first at its right end and the settings that aren't set under ⋯ (the owner), the core's own editor, in app.js, which stays in its budget with its comments cut down, with no room added (10-29); 1,532,602 with a plugin's README waiting for its bird to land on three lines before it goes in, however soon it came (the owner, 10-30), in plugins.js, with no room added; 1,536,357 with Switch accounts only on the Agents row (the owner on X), in app.js, with no room added (10-30); 1,537,034 with a plugin's README read once shown at once, with no bird, when its page opens again and read again behind it, the last 20 kept (the owner), in plugins.js, with no room added (10-30); 1,539,423 with a Claude account added from a setup-token (sfss5362 on X), in app.js, with no room added (10-30); 1,538,975 with purposes.js written as compact JSON by genpurposes and the MCP tool purpose in it, 448 bytes less in all (ferock on Discord), lowered to it (10-30); 1,536,586 with the setup-token sheet and Copilot's GHE.com one moved out to signsheets.js, lowered by the 2,389 the setup-token raised it (10-30); 1,536,631 with the 45 bytes b62fa332f added to app.js (Send requests unmasked for subscriptions and plugin providers too) without a raise, with no room added (10-31); 1,537,356 with Settings › Models › Replies › Claude Code's interactive mode, a row beside Short Claude system prompt (the owner), in app.js, with no room added (10-31); Long conversations in Codex's row naming the config.toml keys Codex reads before it, with Take it out, and the window magpie tells Codex for the model it runs (zgjfjfl on Discord) raised it to 1,537,669, and it is back under 1,537,356 with the key list and the window's size written by the server (codexKeysText, tokensSize) and the row's words cut, no raise (10-31); 1,538,554 with the same two, with no room added (10-31); 1,538,678 with About's Log row (rayem1w on X), with no room added (10-31); 1,539,856 with a model's Listed as id (zeewell on X), in app.js, with no room added (10-31); Tuned for you's Codex row offering the advice to background compaction (herman_hong on Discord) and a package manager's magpie naming its command (shuhai on Discord) took it to 1,541,798, and the release notes' dialogs (What's new, the update's ask) moved out to whatsnew.js, loaded when one opens, brought it back under 1,539,856, no raise (10-31); 1,540,479 for Settings › Sync's Kept on this computer row (hayden4608 on Discord) was taken back to 1,539,856 once the core weighed 1,533,355, no raise (10-31); 1,532,958 with the context window card's head naming the agent and the model's lab (the owner), in context.js, after the card's part text viewer moved out to ctxtext.js (7,005 bytes), lowered to it (10-31); 1,533,105 with the provider editor's Claude Code runs as row moved above the accounts, its pill and hover card in claudemode.js, and Settings found at the row that draws anew (the owner), in app.js and i18n.js, with no room added (11-01); a Codex account's credits spent only after every other account, key and fallback (gokoshiki on Discord) fit in it with the Codex options' comments in app.js cut down, no raise (11-01); a plugin option's words in the window's language and the filtered-models note (plugins#590, anewuser6937 on Discord) fit in it with three of the provider editor's comments in app.js cut down, no raise (11-01); 1,533,802 with a closed Mac window telling its page it is out of sight (#4293, pipi-1997), in app.js, which every page needs, its comments cut to one line, with no room added (11-01); Warm up on a Codex or Claude account's Usage card (01huadalang on Discord), in plugins/usage/page.js, its one call in app.js paid for by two comments cut, no raise (11-01); Settings' Check in now for one account (xiaowu_95660), its row and press in checkinnow.js, loaded when Settings draws a check-in, its one call in app.js paid for by three check-in comments cut, no raise (11-02); a ChatGPT account's plan end under its row on Providers (danzi002 on Discord), its line in app.js paid for by two account-row comments cut, no raise (11-02); Scroll to top and Scroll to bottom (#1090, emo172), in scrollends.js, imported on the window's first scroll, its one line in app.js paid for by two comments cut, no raise (11-02); a new-api relay's User ID beside the balance token (zxc56823), in app.js, paid for by four comments cut, no raise (11-03); Air's opened rows saying whether Air's own Codex and Claude Agent go through magpie (jumy_18634 on Discord), in app.js, paid for by six Agents-page comments cut, no raise (11-03); a key's spend cap on its row (sparkling_lemur_62868 on Discord), its pill and held line in keyspend.js, loaded when the provider editor draws a key, its one call in app.js, no raise (11-03); Claude Code's status line square beside ultracode (steven_4422 on Discord), in app.js, paid for by foldSame's comment cut, no raise (11-03); Codex's Restart the app when magpie switches its account tick (atom0964 on Discord), in app.js, paid for by five account-row comments cut, no raise (11-03); over it at 1,534,154 (#5139), 1,533,125 at e928b57f0, 677 bytes under it, and 1,525,207 with Settings › Sync's server form (davForm: WebDAV, S3 and GitHub) moved out to syncfiles.js, loaded when it opens, not lowered since what is left plus 1.5% is over it (11-04); a Mac window's page letting go of its layers after 30s out of sight (#5530, Matrix on Discord), in app.js, paid for by four comments cut, no raise (11-06); a plugin's tools hidden from every agent from its Plugins row (chengming0v0 on Discord), in plugins.js, paid for by two comments cut, no raise (11-07); a key's balance typed by hand (tenacious_eagle on Discord), its pill in keybalance.js, loaded by keyspend.js when the provider editor draws a key of a provider that takes one, nothing in app.js, no raise (11-08); a key's provider's model list off (axelburks on Discord), its tick in app.js, paid for by four Models-section comments cut, no raise (11-08); a model's own headers in Model settings (axelburks on Discord), the core's own editor, paid for by sixteen of its comments cut, no raise (11-08); a model asked on System One (axelburks on Discord), in app.js, paid for by three of the editor's comments cut, no raise (11-08); a typed balance's part that expires (tenacious_eagle_96548 on Discord), its days on the Usage page and the panel in app.js (expiresIn), paid for by five balance comments cut, no raise (11-08); a model's context window and max output in its Model settings row (sayagoodbyeplz on Discord), the row's boxes in modellimits.js, loaded when the provider editor draws a model, its one call in app.js paid for by nine comments cut, no raise (11-08); Make first under Smart saying the order only settles ties (CryptoSarom on X, 4436b7d98, 1,080 bytes in app.js) took it to 1,534,166 (#5720), and About's Open-source licenses dialog moved out to notices.js and Sync's Restore and Upload asks to syncfiles.js, each loaded when it opens, brought it back to 1,530,548, no raise (11-09); a subscription's warm-ups, check-ins and resets moved from Settings into its provider's editor (the owner, 11-07), in app.js, paid for by comments cut, no raise (11-09); Settings › Models › Images' Video generation (a custom provider's video model, Discord #feedback), its row in videogen.js, loaded when Settings draws Image generation, its one call in app.js, no raise (11-09); a window's cap at an amount of its unit (9won_25273 on Discord, 40cbdaa7e) took it to 1,535,556 (#5795), and the account-cap rows' comments cut brought it back to 1,533,547, no raise (11-09); Claude Desktop's Claude Magpie switch (#5671, baranwang on X), in app.js, one switch helper shared with the largest-window one and four comments cut, no raise (11-09); a plugin's page sharing a picture it drew (the day card, JungleyYeh on X), its copy and save in pageshare.js, loaded the first time a page shares one, its one call in pluginpages.js paid for by two of its comments cut, no raise (11-09); the quick panel wording unpriced calls as the Usage page does (tenacious_eagle on Discord), in app.js, paid for by four of the panel's comments cut, no raise (11-10)
++	coreScriptBudget = 1_558_023 // every core script: 1,358,034 after Usage left; 1,380,003 with them; 1,405,937 with the fold; 1,426,102 with 10-16's core work (the GitHub list loading, the move to plugins, Settings › Long conversations), plus 1.5% (#2612); 1,447,368 with loadBack, the window's one state read per return, which every page needs and so is the core's own (1,446,845 before it, 155 bytes under), plus 1.5%; OpenCode Zen's card saying OpenCode tells no key its balance adds ~390 bytes inside it; 1,472,589 with the dialog that grows out of its row and the agents' own settings in their rows, on main's 10-20 core work (the Providers page's last list, the Routing trace's names), plus 1.5% (10-20); 1,506,192 with Settings › Privacy's record of what was masked, plus 1.5%; 1,529,393 with the Intent classifier timeout row (#2934), with no room added; 1,529,495 with the editor's partner link host, with no room added; 1,529,844 with Check in now's press summary (#3326), with no room added; 1,530,689 with the new partner tile's dot, with no room added; 1,535,084 with the sidebar's spring, with no room added; 1,549,478 with the context window card's map (tiles by tokens, the default look, the block grid a switch away) and its text view showing an inline image, in context.js, which the Routing page draws as well as Usage, so the core's own, with no room added (10-24); 1,550,768 with a usage card's refresh opening after its text (#840's card, which the tray panel draws too), the Add key spinner, and a dialog kept centred while its content comes in, with no room added (10-24); 1,524,789 with what masking did moved out to Insights › Masking, lowered to it; 1,528,525 with Codex's one subagent model, with no room added (10-24); 1,528,972 with the Image generation MCP server row (JonahFu on X), with no room added (10-25); 1,529,542 with the limit-rest row (zoecats), with no room added (10-25); 1,529,837 with Keep a key's form (Charles Cao on X), with no room added (10-25); 1,530,050 with no Codex squares beside its named settings rows (the owner), with no room added (10-25); 1,530,631 with a plugin's page growing to its README on the dialog's spring instead of in one jump (the owner), the Plugins page's, in plugins.js, with no room added (10-25); 1,533,445 with the context map counting its tokens on as a live request grows, a tile pointed at keeping its tip, a tool's gathered results saying how many and the small files their folder (the owner, after flohoeller's map on X), in context.js, which the Routing page draws as well as Usage, and the 4 bytes 84c50f032 added to app.js (Settings' Version row) without a raise, with no room added (10-25); 1,534,312 with the tray panel's last allowances drawn at once (#3160, #3134), with no room added (10-25); 1,537,016 with many releases' notes merged into one list by kind (the owner), in app.js, with no room added (10-25); 1,542,244 with a plugin's README loading under magpie's bird bouncing down its lines instead of pulsing bars (the owner), the Plugins page's, in plugins.js, with no room added (10-26); 1,542,418 with a page plugin's sidebar tab coming and going as it is installed, switched on or off, or removed, instead of on the Plugins page's next load (the owner), in plugins.js, with no room added (10-26); 1,537,645 with Settings › Observability moved out to plugins/otel, lowered to it (10-26); 1,537,673 with a used window with no reset not "Not used yet" (windy on Discord), and back to 1,537,645 with Settings' model pickers sharing modelOpt (10-26); 1,541,967 with every slow page's skeletons getting magpie's bird (skelBird, the owner), in app.js, the README's bird sharing its drawing and styles, with no room added (10-26); 1,526,251 with Settings' gateway rows moved out to plugins/gateway/settings.js, lowered to it (10-27); 1,526,391 with Test models naming the first failed model and its error (ysm119 on Discord), in app.js, with no room added (10-27); 1,526,556 with About's Website row (the owner), in app.js, with no room added (10-27); 1,526,500 with a pool's cap ticks (plugins#349), in app.js, with no room added (10-28); 1,527,245 with About's Open-source licenses row and dialog (the owner), in app.js, with no room added (10-28); 1,528,076 with the Partners heading's light (the owner), in app.js, with no room added (10-28); 1,530,449 with Install another agent's More in Plugins row (the owner), in app.js, and Plugins opening at its Agents, in plugins.js, with no room added (10-28); 1,530,807 with layout.js measuring the scrollbar into --bar, which every page's right padding takes off so its sides match (the owner), the window's own shell, with no room added (10-28); 1,530,861 with More in Plugins in sight while Install another agent is folded (the owner), in app.js, with no room added (10-29); 1,532,830 with waitsBack and backAfterLoad (issennknight, macOS 13), the window's own scroll guard, in app.js, with no room added (10-29); the context map's tile wording (a4e929212) and Cindy's Add magpie (628ac36fc) had taken the core over it, and Web search's rows moved out to plugins/search/settings.js brought it back to 1,530,861 (#4133, 10-29); 1,532,459 with a provider editor's account rows on one line each, First or Make first at its right end and the settings that aren't set under ⋯ (the owner), the core's own editor, in app.js, which stays in its budget with its comments cut down, with no room added (10-29); 1,532,602 with a plugin's README waiting for its bird to land on three lines before it goes in, however soon it came (the owner, 10-30), in plugins.js, with no room added; 1,536,357 with Switch accounts only on the Agents row (the owner on X), in app.js, with no room added (10-30); 1,537,034 with a plugin's README read once shown at once, with no bird, when its page opens again and read again behind it, the last 20 kept (the owner), in plugins.js, with no room added (10-30); 1,539,423 with a Claude account added from a setup-token (sfss5362 on X), in app.js, with no room added (10-30); 1,538,975 with purposes.js written as compact JSON by genpurposes and the MCP tool purpose in it, 448 bytes less in all (ferock on Discord), lowered to it (10-30); 1,536,586 with the setup-token sheet and Copilot's GHE.com one moved out to signsheets.js, lowered by the 2,389 the setup-token raised it (10-30); 1,536,631 with the 45 bytes b62fa332f added to app.js (Send requests unmasked for subscriptions and plugin providers too) without a raise, with no room added (10-31); 1,537,356 with Settings › Models › Replies › Claude Code's interactive mode, a row beside Short Claude system prompt (the owner), in app.js, with no room added (10-31); Long conversations in Codex's row naming the config.toml keys Codex reads before it, with Take it out, and the window magpie tells Codex for the model it runs (zgjfjfl on Discord) raised it to 1,537,669, and it is back under 1,537,356 with the key list and the window's size written by the server (codexKeysText, tokensSize) and the row's words cut, no raise (10-31); 1,538,554 with the same two, with no room added (10-31); 1,538,678 with About's Log row (rayem1w on X), with no room added (10-31); 1,539,856 with a model's Listed as id (zeewell on X), in app.js, with no room added (10-31); Tuned for you's Codex row offering the advice to background compaction (herman_hong on Discord) and a package manager's magpie naming its command (shuhai on Discord) took it to 1,541,798, and the release notes' dialogs (What's new, the update's ask) moved out to whatsnew.js, loaded when one opens, brought it back under 1,539,856, no raise (10-31); 1,540,479 for Settings › Sync's Kept on this computer row (hayden4608 on Discord) was taken back to 1,539,856 once the core weighed 1,533,355, no raise (10-31); 1,532,958 with the context window card's head naming the agent and the model's lab (the owner), in context.js, after the card's part text viewer moved out to ctxtext.js (7,005 bytes), lowered to it (10-31); 1,533,105 with the provider editor's Claude Code runs as row moved above the accounts, its pill and hover card in claudemode.js, and Settings found at the row that draws anew (the owner), in app.js and i18n.js, with no room added (11-01); a Codex account's credits spent only after every other account, key and fallback (gokoshiki on Discord) fit in it with the Codex options' comments in app.js cut down, no raise (11-01); a plugin option's words in the window's language and the filtered-models note (plugins#590, anewuser6937 on Discord) fit in it with three of the provider editor's comments in app.js cut down, no raise (11-01); 1,533,802 with a closed Mac window telling its page it is out of sight (#4293, pipi-1997), in app.js, which every page needs, its comments cut to one line, with no room added (11-01); Warm up on a Codex or Claude account's Usage card (01huadalang on Discord), in plugins/usage/page.js, its one call in app.js paid for by two comments cut, no raise (11-01); Settings' Check in now for one account (xiaowu_95660), its row and press in checkinnow.js, loaded when Settings draws a check-in, its one call in app.js paid for by three check-in comments cut, no raise (11-02); a ChatGPT account's plan end under its row on Providers (danzi002 on Discord), its line in app.js paid for by two account-row comments cut, no raise (11-02); Scroll to top and Scroll to bottom (#1090, emo172), in scrollends.js, imported on the window's first scroll, its one line in app.js paid for by two comments cut, no raise (11-02); a new-api relay's User ID beside the balance token (zxc56823), in app.js, paid for by four comments cut, no raise (11-03); Air's opened rows saying whether Air's own Codex and Claude Agent go through magpie (jumy_18634 on Discord), in app.js, paid for by six Agents-page comments cut, no raise (11-03); a key's spend cap on its row (sparkling_lemur_62868 on Discord), its pill and held line in keyspend.js, loaded when the provider editor draws a key, its one call in app.js, no raise (11-03); Claude Code's status line square beside ultracode (steven_4422 on Discord), in app.js, paid for by foldSame's comment cut, no raise (11-03); Codex's Restart the app when magpie switches its account tick (atom0964 on Discord), in app.js, paid for by five account-row comments cut, no raise (11-03); over it at 1,534,154 (#5139), 1,533,125 at e928b57f0, 677 bytes under it, and 1,525,207 with Settings › Sync's server form (davForm: WebDAV, S3 and GitHub) moved out to syncfiles.js, loaded when it opens, not lowered since what is left plus 1.5% is over it (11-04); a Mac window's page letting go of its layers after 30s out of sight (#5530, Matrix on Discord), in app.js, paid for by four comments cut, no raise (11-06); a plugin's tools hidden from every agent from its Plugins row (chengming0v0 on Discord), in plugins.js, paid for by two comments cut, no raise (11-07); a key's balance typed by hand (tenacious_eagle on Discord), its pill in keybalance.js, loaded by keyspend.js when the provider editor draws a key of a provider that takes one, nothing in app.js, no raise (11-08); a key's provider's model list off (axelburks on Discord), its tick in app.js, paid for by four Models-section comments cut, no raise (11-08); a model's own headers in Model settings (axelburks on Discord), the core's own editor, paid for by sixteen of its comments cut, no raise (11-08); a model asked on System One (axelburks on Discord), in app.js, paid for by three of the editor's comments cut, no raise (11-08); a typed balance's part that expires (tenacious_eagle_96548 on Discord), its days on the Usage page and the panel in app.js (expiresIn), paid for by five balance comments cut, no raise (11-08); a model's context window and max output in its Model settings row (sayagoodbyeplz on Discord), the row's boxes in modellimits.js, loaded when the provider editor draws a model, its one call in app.js paid for by nine comments cut, no raise (11-08); Make first under Smart saying the order only settles ties (CryptoSarom on X, 4436b7d98, 1,080 bytes in app.js) took it to 1,534,166 (#5720), and About's Open-source licenses dialog moved out to notices.js and Sync's Restore and Upload asks to syncfiles.js, each loaded when it opens, brought it back to 1,530,548, no raise (11-09); a subscription's warm-ups, check-ins and resets moved from Settings into its provider's editor (the owner, 11-07), in app.js, paid for by comments cut, no raise (11-09); Settings › Models › Images' Video generation (a custom provider's video model, Discord #feedback), its row in videogen.js, loaded when Settings draws Image generation, its one call in app.js, no raise (11-09); a window's cap at an amount of its unit (9won_25273 on Discord, 40cbdaa7e) took it to 1,535,556 (#5795), and the account-cap rows' comments cut brought it back to 1,533,547, no raise (11-09); Claude Desktop's Claude Magpie switch (#5671, baranwang on X), in app.js, one switch helper shared with the largest-window one and four comments cut, no raise (11-09); a plugin's page sharing a picture it drew (the day card, JungleyYeh on X), its copy and save in pageshare.js, loaded the first time a page shares one, its one call in pluginpages.js paid for by two of its comments cut, no raise (11-09); the quick panel wording unpriced calls as the Usage page does (tenacious_eagle on Discord), in app.js, paid for by four of the panel's comments cut, no raise (11-10); a provider's speech and embedding models in its editor, ticked as its image and video ones are (Fish-under-sea, #5418), the core's own editor, measured 1,534,998 on the current base, plus 1.5%
+ )
+ 
+ func TestCoreScriptBudget(t *testing.T) {
+diff --git a/internal/gui/providers.go b/internal/gui/providers.go
+index f21291c3c..bdbdb5873 100644
+--- a/internal/gui/providers.go
++++ b/internal/gui/providers.go
+@@ -372,8 +372,17 @@ type providerJSON struct {
+ 	// (provider.HiddenVideomakers)
+ 	FilmIDs           []string `json:"filmIds,omitempty"`
+ 	HiddenVideomakers []string `json:"hiddenVideomakers,omitempty"`
+-	Unlisted          bool     `json:"unlisted"` // its models serve only through routing groups
+-	NoModels          bool     `json:"noModels"` // Select none: none of its models served (#1818)
++	// its speech models (a fetched list's or a plugin's TTS and
++	// transcription ones, gateway.ServingOf) and its embedding and rerank
++	// ones, listed apart in its editor as its image models are, and those
++	// unticked there (provider.HiddenSpeech, provider.HiddenEmbeddings,
++	// Fish-under-sea #5418)
++	SpeechIDs        []string `json:"speechIds,omitempty"`
++	HiddenSpeech     []string `json:"hiddenSpeech,omitempty"`
++	EmbedIDs         []string `json:"embedIds,omitempty"`
++	HiddenEmbeddings []string `json:"hiddenEmbeddings,omitempty"`
++	Unlisted         bool     `json:"unlisted"` // its models serve only through routing groups
++	NoModels         bool     `json:"noModels"` // Select none: none of its models served (#1818)
+ 	// Best in family: with nothing picked, only the newest model of each
+ 	// family it lists is served (provider.Provider.BestInFamily)
+ 	BestInFamily bool `json:"bestInFamily"`
+@@ -1129,6 +1138,35 @@ func providerInfoWith(p provider.Provider, ls provider.Listing, agents []agentUs
+ 			out.HiddenVideomakers = append(out.HiddenVideomakers, m.ID)
+ 		}
+ 	}
++	// its speech and embedding models likewise (#5418, Fish-under-sea): a
++	// TTS or a transcription, an embedding or a rerank model sits nowhere
++	// else, so its editor is where it is ticked or unticked
++	speech := map[string]bool{}
++	for _, kind := range []string{catalog.ServesSpeech, catalog.ServesTranscription} {
++		for _, m := range gateway.ServingOf(p, kind) {
++			if speech[m.ID] {
++				continue
++			}
++			speech[m.ID] = true
++			out.SpeechIDs = append(out.SpeechIDs, m.ID)
++			if p.SpeechHidden(m.ID) {
++				out.HiddenSpeech = append(out.HiddenSpeech, m.ID)
++			}
++		}
++	}
++	embeds := map[string]bool{}
++	for _, kind := range []string{catalog.ServesEmbedding, catalog.ServesRerank} {
++		for _, m := range gateway.ServingOf(p, kind) {
++			if embeds[m.ID] {
++				continue
++			}
++			embeds[m.ID] = true
++			out.EmbedIDs = append(out.EmbedIDs, m.ID)
++			if p.EmbeddingHidden(m.ID) {
++				out.HiddenEmbeddings = append(out.HiddenEmbeddings, m.ID)
++			}
++		}
++	}
+ 	if t, ok := p.Listed(); ok {
+ 		out.Fetched = &t
+ 	}
+@@ -1853,6 +1891,8 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
+ 				pr.Unlisted = in.Unlisted
+ 				pr.HiddenDrawers = in.HiddenDrawers
+ 				pr.HiddenVideomakers = in.HiddenVideomakers
++				pr.HiddenSpeech = in.HiddenSpeech
++				pr.HiddenEmbeddings = in.HiddenEmbeddings
+ 				pr.AccountProxies = in.AccountProxies
+ 				if in.Name != "" {
+ 					pr.Name = in.Name
+@@ -2133,6 +2173,14 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
+ 				if in.HiddenVideomakers == nil && old != nil {
+ 					in.HiddenVideomakers = old.HiddenVideomakers
+ 				}
++				// its speech and embedding models unticked there likewise
++				// (#5418)
++				if in.HiddenSpeech == nil && old != nil {
++					in.HiddenSpeech = old.HiddenSpeech
++				}
++				if in.HiddenEmbeddings == nil && old != nil {
++					in.HiddenEmbeddings = old.HiddenEmbeddings
++				}
+ 				// a Zhipu key's team likewise: {} clears it
+ 				if in.ZhipuTeam == nil && old != nil {
+ 					in.ZhipuTeam = old.ZhipuTeam
+diff --git a/internal/gui/speech_hidden_test.go b/internal/gui/speech_hidden_test.go
+new file mode 100644
+index 000000000..0de43b8c4
+--- /dev/null
++++ b/internal/gui/speech_hidden_test.go
+@@ -0,0 +1,80 @@
++package gui
++
++import (
++	"net/http"
++	"net/http/httptest"
++	"os"
++	"slices"
++	"strings"
++	"testing"
++
++	"github.com/yetone/magpie/internal/catalog"
++	"github.com/yetone/magpie/internal/provider"
++)
++
++// Fish-under-sea (#5418): a provider's editor lists its speech models
++// (TTS and transcription) and its embedding models (embedding and
++// rerank) apart, as its image and video ones are; those unticked there
++// are saved as hiddenSpeech and hiddenEmbeddings, kept by a Save that
++// leaves them out and cleared by [], and a save of one leaves the other's
++// alone.
++func TestSpeechAndEmbeddingModelsHidden(t *testing.T) {
++	t.Setenv("HOME", t.TempDir())
++	t.Setenv("USERPROFILE", os.Getenv("HOME"))
++	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
++	t.Setenv("XDG_CACHE_HOME", t.TempDir())
++	mux := http.NewServeMux()
++	providerRoutes(mux, nil)
++	post := func(body string) {
++		t.Helper()
++		w := httptest.NewRecorder()
++		mux.ServeHTTP(w, httptest.NewRequest("POST", "/api/provider/save", strings.NewReader(body)))
++		if w.Code != 200 {
++			t.Fatalf("%d %s", w.Code, w.Body.String())
++		}
++	}
++	const base = `"id":"films","name":"Films","key":"sk-f","chat":"https://films.example/v1","icon":"generic"`
++	post(`{` + base + `,"new":true}`)
++	if err := catalog.SaveLive("films", "https://films.example/v1", []catalog.Model{
++		{ID: "text"},
++		{ID: "tts-a", Serves: catalog.ServesSpeech},
++		{ID: "tts-b", Serves: catalog.ServesSpeech},
++		{ID: "wh-a", Serves: catalog.ServesTranscription},
++		{ID: "emb-a", Serves: catalog.ServesEmbedding},
++		{ID: "rer-a", Serves: catalog.ServesRerank},
++	}); err != nil {
++		t.Fatal(err)
++	}
++	info := func() providerJSON {
++		t.Helper()
++		p, err := provider.Find("films")
++		if err != nil {
++			t.Fatal(err)
++		}
++		return providerInfo(*p, nil)
++	}
++	got := info()
++	if !slices.Equal(got.SpeechIDs, []string{"tts-a", "tts-b", "wh-a"}) {
++		t.Fatalf("editor's speech models %v", got.SpeechIDs)
++	}
++	if !slices.Equal(got.EmbedIDs, []string{"emb-a", "rer-a"}) {
++		t.Fatalf("editor's embedding models %v", got.EmbedIDs)
++	}
++
++	post(`{` + base + `,"from":"films","models":[],"headers":{},"hiddenSpeech":["tts-a"],"hiddenEmbeddings":["emb-a"]}`)
++	if got := info(); !slices.Equal(got.HiddenSpeech, []string{"tts-a"}) || !slices.Equal(got.HiddenEmbeddings, []string{"emb-a"}) {
++		t.Fatalf("saved speech %v, embeddings %v", got.HiddenSpeech, got.HiddenEmbeddings)
++	}
++	post(`{` + base + `,"from":"films","models":[],"headers":{}}`)
++	if got := info(); !slices.Equal(got.HiddenSpeech, []string{"tts-a"}) || !slices.Equal(got.HiddenEmbeddings, []string{"emb-a"}) {
++		t.Fatalf("a Save that left them out changed them: %v, %v", got.HiddenSpeech, got.HiddenEmbeddings)
++	}
++	post(`{` + base + `,"from":"films","models":[],"headers":{},"hiddenSpeech":[],"hiddenEmbeddings":[]}`)
++	if got := info(); len(got.HiddenSpeech) != 0 || len(got.HiddenEmbeddings) != 0 {
++		t.Fatalf("[] kept speech %v, embeddings %v", got.HiddenSpeech, got.HiddenEmbeddings)
++	}
++	post(`{` + base + `,"from":"films","models":[],"headers":{},"hiddenSpeech":["tts-b"]}`)
++	if got := info(); !slices.Equal(got.HiddenSpeech, []string{"tts-b"}) || !slices.Equal(got.HiddenEmbeddings, []string{}) {
++		t.Fatalf("a save of one changed the other's: %v, %v", got.HiddenSpeech, got.HiddenEmbeddings)
++	}
++}
+diff --git a/internal/gui/tests/speech-embeddings-hide.test.cjs b/internal/gui/tests/speech-embeddings-hide.test.cjs
+new file mode 100644
+index 000000000..b9cbd9741
+--- /dev/null
++++ b/internal/gui/tests/speech-embeddings-hide.test.cjs
+@@ -0,0 +1,130 @@
++// Run with Node's test runner and Playwright on the module path; see README.md.
++// Fish-under-sea (#5418): a provider's editor had nowhere to put its speech
++// and embedding models — a fetched list's whisper-1, tts-1 and embedding
++// models just sat in nothing. Now each is ticked in its own section, a
++// click unticks it (and ticks it back), and Save writes the unticked ones
++// as hiddenSpeech and hiddenEmbeddings, which the /v1/models kind lists
++// then leave out. The API is faked here.
++const assert = require("node:assert/strict");
++const fs = require("node:fs/promises");
++const path = require("node:path");
++const { test } = require("node:test");
++const { chromium, webkit } = require("playwright");
++
++const assets = path.resolve(__dirname, "../assets");
++const fetched = new Date(Date.now() - 3600e3).toISOString();
++const speechIds = ["tts-1", "whisper-1"];
++const embedIds = ["text-embedding-3-small", "bge-reranker-v2"];
++
++function providerFor(hidden) {
++  return {
++    id: "openai", name: "OpenAI", icon: "openai", host: "", chat: "https://api.openai.com/v1", responses: "", anthropic: "", catalog: "",
++    models: [{ id: "gpt-6", name: "GPT-6", on: true }], chosen: [], fetched, agents: [], fallback: [], headers: {},
++    key: { set: true, masked: "sk-…one", optional: false }, keyList: [], balanceToken: { takes: false, set: false }, proxy: "", ready: true,
++    speechIds, embedIds, hiddenSpeech: hidden.speech, hiddenEmbeddings: hidden.embeds,
++  };
++}
++
++function settingsPayload(lang, over) {
++  return {
++    theme: "light", lang, tray: "panel", quotaLeft: false, currency: "usd", textSize: 100,
++    dock: false, dockWindow: false, proxy: "", redact: false, redactPersonal: false, redactWords: [],
++    codexWarmup: "", claudeWarmup: "", codexWarmAt: "", claudeWarmAt: "", workbuddyCheckin: false, noStats: false,
++    trayUsage: "", trayUsageEvery: 3, vision: "", imageGen: "",
++    version: "0.1.400", dir: "~/.config/magpie", gateway: "http://127.0.0.1:3425",
++    proxyNow: "none", proxySource: "none", login: false,
++    visionModels: [], imageGenModels: [],
++    imageGenAuto: "", workbuddyCheckins: [], lanURLs: [],
++    fx: { rate: 7.2, at: new Date().toISOString(), stale: false },
++    ...over,
++  };
++}
++
++function serve(lang, saves) {
++  const hidden = { speech: ["whisper-1"], embeds: [] };
++  const providers = () => ({ providers: [providerFor(hidden)], presets: [], excluded: [], gateway: { running: true, window: true }, plugins: [] });
++  return async (route) => {
++    const req = route.request(), url = new URL(req.url());
++    const json = (data) => route.fulfill({ json: data });
++    if (url.pathname === "/boot.js") return route.fulfill({ contentType: "text/javascript", body: `window.bootPrefs = {lang:"${lang}",theme:"light",web:true,textSize:100};` });
++    if (url.pathname === "/wails/runtime.js") return route.fulfill({ contentType: "text/javascript", body: "export const Window = {};" });
++    if (url.pathname === "/api/state") return json({ agents: [], profiles: [], settings: { lang, theme: "light", textSize: 100 } });
++    if (url.pathname === "/api/settings") return json(settingsPayload(lang, {}));
++    if (url.pathname === "/api/plugins") return json({ plugins: [] });
++    if (url.pathname === "/api/providers") return json(providers());
++    if (url.pathname === "/api/provider/save") {
++      const body = req.postDataJSON();
++      saves.push(body);
++      if (body.hiddenSpeech) hidden.speech = body.hiddenSpeech;
++      if (body.hiddenEmbeddings) hidden.embeds = body.hiddenEmbeddings;
++      return json(providers());
++    }
++    if (url.pathname === "/api/usage/quotas") return json([]);
++    if (url.pathname === "/api/groups") return json({ groups: [], pools: [], models: [] });
++    if (url.pathname === "/api/gateway/trace") return json({ routes: [] });
++    if (url.pathname === "/api/window/fit") return route.fulfill({ status: 204 });
++    if (url.pathname.startsWith("/api/")) return json({});
++    const file = path.join(assets, url.pathname === "/" ? "index.html" : url.pathname);
++    const contentType = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png" }[path.extname(file)];
++    const body = await fs.readFile(file).catch(() => null);
++    await (body ? route.fulfill({ body, contentType }) : route.fulfill({ status: 404, body: "" }));
++  };
++}
++
++const words = {
++  en: { save: "Save", speech: "Speech models", embeds: "Embedding models" },
++  zh: { save: "保存", speech: "语音模型", embeds: "嵌入模型" },
++};
++
++for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium"])) {
++  test(engine + ": a provider's speech and embedding models can be unticked", async (t) => {
++    assert(["chromium", "webkit"].includes(engine), "BROWSER must be chromium or webkit");
++    const browser = await (engine === "webkit" ? webkit.launch() : chromium.launch({ channel: "chromium" }));
++    t.after(() => browser.close());
++    const open = async (lang, width, saves) => {
++      const page = await (await browser.newContext({ viewport: { width, height: 760 }, reducedMotion: "reduce" })).newPage();
++      page.setDefaultTimeout(5000);
++      page.setDefaultNavigationTimeout(60000);
++      page.errors = [];
++      page.on("pageerror", (e) => page.errors.push(e.message));
++      await page.route("**/*", serve(lang, saves));
++      await page.goto("http://magpie.test/?view=providers");
++      return page;
++    };
++    for (const lang of Object.keys(words)) {
++      const w = words[lang];
++      for (const width of [1000, 360]) {
++        await t.test(`${lang} at ${width}px: the editor unticks and ticks back speech and embedding models`, async () => {
++          const saves = [];
++          const page = await open(lang, width, saves);
++          const editor = page.locator("#modal:not([hidden]) .editor");
++          const chips = (cls) => editor.locator(`.mchips.${cls} .mchip`);
++          const ticked = (cls) => editor.locator(`.mchips.${cls} .mchip.on`).evaluateAll((cs) => cs.map((c) => c.textContent));
++          const chip = (cls, id) => editor.locator(`.mchips.${cls} .mchip`, { has: page.locator(`span:text-is("${id}")`) });
++          await page.locator(".row.provider", { hasText: "OpenAI" }).first().click();
++          await editor.locator(".mchips.speech .mchip").first().waitFor();
++          await editor.getByText(w.speech, { exact: true }).first().waitFor();
++          await editor.getByText(w.embeds, { exact: true }).first().waitFor();
++          assert.equal(await chips("speech").count(), 2);
++          assert.equal(await chips("embeddings").count(), 2);
++          assert.deepEqual(await ticked("speech"), ["tts-1"], "the saved hidden one opens unticked");
++          assert.deepEqual(await ticked("embeddings"), ["text-embedding-3-small", "bge-reranker-v2"]);
++          await chip("speech", "tts-1").click();
++          assert.deepEqual(await ticked("speech"), []);
++          await chip("embeddings", "bge-reranker-v2").click();
++          assert.deepEqual(await ticked("embeddings"), ["text-embedding-3-small"]);
++          await editor.getByRole("button", { name: w.save, exact: true }).click();
++          await editor.waitFor({ state: "detached" });
++          assert.deepEqual(saves.at(-1).hiddenSpeech, ["tts-1", "whisper-1"]);
++          assert.deepEqual(saves.at(-1).hiddenEmbeddings, ["bge-reranker-v2"]);
++          await page.locator(".row.provider", { hasText: "OpenAI" }).first().click();
++          await editor.locator(".mchips.speech .mchip").first().waitFor();
++          assert.deepEqual(await ticked("speech"), [], "reopened as saved");
++          assert.deepEqual(await ticked("embeddings"), ["text-embedding-3-small"]);
++          assert.deepEqual(page.errors, []);
++          await page.context().close();
++        });
++      }
++    }
++  });
++}
+diff --git a/internal/provider/modelkind.go b/internal/provider/modelkind.go
+index f04d02b05..af2995742 100644
+--- a/internal/provider/modelkind.go
++++ b/internal/provider/modelkind.go
+@@ -140,3 +140,18 @@ func (p Provider) DrawerHidden(model string) bool {
+ func (p Provider) VideomakerHidden(model string) bool {
+ 	return slices.Contains(p.HiddenVideomakers, model)
+ }
++
++// SpeechHidden is whether the user unticked p's speech model (a TTS or a
++// transcription) in its editor (HiddenSpeech): it is left out of the
++// lists a speech model is picked from, and still serves when named
++// (Fish-under-sea, #5418).
++func (p Provider) SpeechHidden(model string) bool {
++	return slices.Contains(p.HiddenSpeech, model)
++}
++
++// EmbeddingHidden is whether the user unticked p's embedding or rerank
++// model in its editor (HiddenEmbeddings), as SpeechHidden its speech
++// ones (#5418).
++func (p Provider) EmbeddingHidden(model string) bool {
++	return slices.Contains(p.HiddenEmbeddings, model)
++}
+diff --git a/internal/provider/plugin_serving_test.go b/internal/provider/plugin_serving_test.go
+new file mode 100644
+index 000000000..36e3ac900
+--- /dev/null
++++ b/internal/provider/plugin_serving_test.go
+@@ -0,0 +1,44 @@
++package provider
++
++import (
++	"slices"
++	"testing"
++
++	"github.com/yetone/magpie/internal/catalog"
++)
++
++// Fish-under-sea (#5418): a plugin that says what its models give gets
++// each one its section without a new API. What #3279 drops from the chat
++// lists — an embedding ({"text": false}) and a TTS (audio alone) — is
++// kept apart instead, tagged with its API (Model.Serves), so it sits in
++// its editor section, is listed on /v1/models with its kind, and is
++// found on its API's route. A model said nothing of stays out of all of
++// that whatever its id (embedder-chat), and an image keeps its place
++// (#2792's to place), as the speechless tests hold.
++func TestPluginServingMapsWhatThePluginSays(t *testing.T) {
++	gaiPlugin(t)
++	p, err := Find("google-ai-studio")
++	if err != nil {
++		t.Fatal(err)
++	}
++	ids := func(kind string) []string {
++		t.Helper()
++		var out []string
++		for _, m := range PluginServing(*p, kind) {
++			out = append(out, m.ID)
++		}
++		return out
++	}
++	if got := ids(catalog.ServesEmbedding); !slices.Equal(got, []string{"gemini-embedding-001", "bge-m3"}) {
++		t.Fatalf("embeddings %v", got)
++	}
++	if got := ids(catalog.ServesSpeech); !slices.Equal(got, []string{"gemini-2.5-flash-preview-tts"}) {
++		t.Fatalf("speech %v", got)
++	}
++	if got := ids(catalog.ServesRerank); len(got) != 0 {
++		t.Fatalf("rerank %v", got)
++	}
++	if got := ids(""); !slices.Equal(got, []string{"gemini-embedding-001", "bge-m3", "gemini-2.5-flash-preview-tts"}) {
++		t.Fatalf("every serving model %v", got)
++	}
++}
+diff --git a/internal/provider/plugins.go b/internal/provider/plugins.go
+index 530a4037a..0b586befa 100644
+--- a/internal/provider/plugins.go
++++ b/internal/provider/plugins.go
+@@ -430,6 +430,51 @@ func pluginTalks(m plugin.Model) bool {
+ 	return slices.ContainsFunc(m.Outputs, func(k string) bool { return k == "text" || k == "image" || k == "video" })
+ }
+ 
++// PluginServing are the models p, a plugin's provider, lists that its
++// plugin says are made for the API kind names (Model.Serves), in the
++// plugin's order; "" is every such model, whatever its API. What #3279
++// drops from the chat lists is kept apart here instead (Fish-under-sea,
++// #5418): an embedding ({"text": false}) and a TTS (audio alone) are told
++// by what the plugin declares, not the model's id, so one whose id names
++// nothing is still found, and a model said nothing of is none of them.
++func PluginServing(p Provider, kind string) []catalog.Model {
++	if !p.IsPlugin() {
++		return nil
++	}
++	pp, ok := PluginOf(p.ID)
++	if !ok {
++		return nil
++	}
++	var out []catalog.Model
++	for _, m := range pp.Models {
++		serves := pluginServesOf(m)
++		if serves == "" || kind != "" && serves != kind {
++			continue
++		}
++		name := m.Name
++		if name == "" || name == m.ID {
++			name = m.ID
++		}
++		out = append(out, catalog.Model{ID: m.ID, Name: name, Provider: p.ID, Serves: serves})
++	}
++	return out
++}
++
++// pluginServesOf is the API a plugin's model is made for, as its plugin
++// declares (capabilities.output): audio alone is speech, outputs said and
++// none given ({"text": false}) is an embedding. A model to talk with (a
++// text among the outputs, an image's or a video's place, or nothing said)
++// is made for none.
++func pluginServesOf(m plugin.Model) string {
++	if pluginTalks(m) {
++		return ""
++	}
++	if slices.Contains(m.Outputs, "audio") {
++		return catalog.ServesSpeech
++	}
++	return catalog.ServesEmbedding
++}
++
+ // pluginPrice is m's price as its plugin gives it (m.Cost), if it gives
+ // one: OpenCode's price of a model it has none for is 0, so only an input
+ // or output price above it is one. A cache price of 0 is none given.
+diff --git a/internal/provider/provider.go b/internal/provider/provider.go
+index cc5d0db75..345b0e4ef 100644
+--- a/internal/provider/provider.go
++++ b/internal/provider/provider.go
+@@ -636,6 +636,15 @@ type Provider struct {
+ 	// magpie's, /v1/models' ?kind=video) and of Automatic's choice. A
+ 	// request that names one still makes its video.
+ 	HiddenVideomakers []string `json:"hiddenVideomakers,omitempty"`
++	// HiddenSpeech are its speech models unticked in its editor, as
++	// HiddenDrawers are its image models: a fetched list's TTS and
++	// transcription models and a plugin's (capabilities.output), listed
++	// apart in its editor and, asked for, on /v1/models' ?kind= (Fish-
++	// under-sea, #5418). A request that names one still serves.
++	HiddenSpeech []string `json:"hiddenSpeech,omitempty"`
++	// HiddenEmbeddings are its embedding and rerank models unticked in
++	// its editor, as HiddenSpeech are its speech ones (#5418).
++	HiddenEmbeddings []string `json:"hiddenEmbeddings,omitempty"`
+ 	// Off switches the provider off without removing it: its keys and
+ 	// settings stay, but agents aren't given its models, no request,
+ 	// routing group or fallback goes to it, and its balance isn't asked,
+@@ -1062,6 +1071,8 @@ func accountSettings(a, pk Provider) Provider {
+ 	// the image models unticked in its editor (HiddenDrawers)
+ 	a.HiddenDrawers = pk.HiddenDrawers
+ 	a.HiddenVideomakers = pk.HiddenVideomakers
++	a.HiddenSpeech = pk.HiddenSpeech
++	a.HiddenEmbeddings = pk.HiddenEmbeddings
+ 	// and the headers of its replies passed on (#4145)
+ 	a.ReplyHeaders = pk.ReplyHeaders
+ 	// and the headers of the agent's requests passed on
+@@ -1459,6 +1470,12 @@ func AddCopy(p Provider, from string) (string, error) {
+ 	if p.HiddenVideomakers == nil {
+ 		p.HiddenVideomakers = slices.Clone(src.HiddenVideomakers)
+ 	}
++	if p.HiddenSpeech == nil {
++		p.HiddenSpeech = slices.Clone(src.HiddenSpeech)
++	}
++	if p.HiddenEmbeddings == nil {
++		p.HiddenEmbeddings = slices.Clone(src.HiddenEmbeddings)
++	}
+ 	p.Searches = p.Searches || src.Searches
+ 	p.Unredacted = p.Unredacted || src.Unredacted
+ 	p.CountFree = p.CountFree || src.CountFree
+-- 
+2.50.1 (Apple Git-155)
+

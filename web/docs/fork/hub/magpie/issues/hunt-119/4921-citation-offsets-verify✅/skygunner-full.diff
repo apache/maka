@@ -1,0 +1,650 @@
+diff --git a/docs/subsystems/gateway-routing.md b/docs/subsystems/gateway-routing.md
+index 093a5b4ed..3f466faf9 100644
+--- a/docs/subsystems/gateway-routing.md
++++ b/docs/subsystems/gateway-routing.md
+@@ -257,6 +257,7 @@ recorded as a prediction failure (`noPrediction`).
+ - Claude signs a thinking block for the conversation and the account it was made in. When an Anthropic upstream answers 400 that a block's signature is invalid, "bound to a different conversation" or "not created in this conversation" (`boundRefusal`: a conversation moved between accounts or providers, or a relay that serves Claude from several accounts of its own; ferock on Discord, through Command Code's plugin), `forward` asks once more without the block it names (`messages.<m>.content.<b>`) and every thinking block after it, whose signatures cover it, and remembers those signatures for that provider and account (`refuseBoundThinking`, `withoutRefusedThinking` in [`thinking_bound.go`](../../internal/gateway/thinking_bound.go)), so the conversation's later turns go without them the first time. Every route to an Anthropic upstream (relayed, translated, a plugin's fetch, count_tokens) passes there. Blocks before it, other providers and accounts, and every other refusal (DeepSeek's wanting its thinking back among them) are left as they are. magpie doesn't send the `thinking-binding-controls` beta's `drop_block` for an agent. `TestBoundThinkingLeftOut`, `TestPluginBoundThinkingLeftOut`, `TestOtherRefusalKeepsThinking`.
+ - Claude's reasoning goes to a Responses client (Codex) in an envelope and comes back as Claude wrote it (mysterious_dove_96933 on Discord). Anthropic wants a tool loop's next request to have the turn's thinking blocks, signed, and its `redacted_thinking` whole, or answers 400; Codex with `store: false` keeps only a reply's items, and of a reasoning item only `encrypted_content` is opaque. So the Anthropic decoders name a signature as Claude's (`KSig` with `sealAnthropic`, `Part.SignedBy`), and the Responses encoder and `renderResponses` give each thinking block a reasoning item whose `encrypted_content` is `magpie-claude1:` and the block's JSON in base64 (`claudeThinking`, [`internal/claudeseal`](../../internal/claudeseal/claudeseal.go)): its summary with it, an empty summary for a block signed with no text, and a `redacted_thinking` block as an item of its own. `parseResponses` reads such an item back into the block (`claudePart`), in order, so `anthropicBody` sends it as it was; an envelope that can't be read is its summary, as before. A Gemini thought's signature isn't named, and isn't sealed. The envelope goes to no Responses API: `passthrough` and `forwardOnce` take it out (`withoutClaudeSeals`: the item keeps its summary, one with none goes), `codexInputAs` leaves such an item out for Codex's own models as it does one with nothing sealed, and `codexUpstreamOn` takes it out before the ChatGPT backend; OpenAI's own `encrypted_content` is untouched. `redact.MaskJSON` keeps it whole (a reasoning item's seal), so the placeholders Claude was sent stay in what its signature covers. Claude's subscription names its signatures too, so Codex gets the same items, though its tool loop goes on inside Claude Code's own run, which keeps the thinking itself. `TestCodexToolLoopGivesClaudeItsThinkingBack`, `TestClaudeBlocksNeverGoToAResponsesAPI`, `TestGeminiSignatureIsNotSealedAsClaudes`, `TestMaskJSONKeepsClaudeBlocks`.
+ - A translated Responses reply gives Codex the reasoning items a Responses upstream sent, as it sent them — one that carries its text in it (content parts, another vendor's shape) made over into one magpie could have, its text a summary and nothing sealed, in a reply translated or relayed as it came, for the client to store and replay where OpenAI's rules hold even with magpie disconnected (#2855, the reporter's rollout: 25 reasoning items a DeepSeek phase had left, each with its text in it and a seal of the vendor's own, stuck every later turn on OpenAI with a 400 `array too long` nothing of magpie's could strip then); any other upstream's reasoning becomes items magpie made: an `rs_` id and a summary, nothing sealed. Codex hands them back on every turn. A request relayed as is to OpenAI's API or Azure OpenAI goes without them (`withoutBareReasoning`) unless `store` is true, because both look the id up among stored items and answer 400 "Item with id 'rs_…' not found" (#1008). Any other Responses upstream gets them, because a DeepSeek model wants its reasoning back (#388). When one answers 400 naming the input (`refusesInput`: `param` is `input`, or the error names an item by id), as a relay in front of OpenAI does with a message of its own, `passthrough` asks once more without them and, once that works, leaves them out for that provider and model from then on (`bareReasoningRefused`, #1044). Codex's compaction offers no tools, so it is relayed even when its turns were translated. The summary request magpie makes offers none either: `codexInputAs` sends `tools: []` and leaves out the `additional_tools` input item, where Codex's Responses Lite (the entry of a ChatGPT account's gpt-6 model, copied from Codex's own) puts every tool; left in, the model may call one in place of the summary (the likely cause of WuSix's codex/gpt-6-astra "the model wrote no summary" on Discord, not confirmed on a real reply), and a reply with no summary says what it held instead (`answeredWith`). A reply that called a tool instead (`calledTool`) is asked once more with the conversation as text (`plainCompact`), and compacted locally when that writes no summary either: a model deep in an exchange of calls goes on with it whatever it is offered (Lucy on Discord: DeepSeek through group/auto-deepseek-v4-1-flash answered reasoning and an `exec_command` call 3 times in a row; `TestCodexCompactToolCallAsksAgainAsText`, `TestCodexCompactToolCallEveryTimeCompactsLocally`, over Chat, Responses and Messages, a group and a single model). When a provider answers its summary request 404, 405 or 501 (`lacksEndpoint`), or 400 for an item it didn't find (`itemNotFound`, a relay in front of either), `codexCompact` asks once more with the conversation as text (`plainCompact`), then compacts locally (#866, #1008). So does a summary request refused for its size (`summaryTooLarge`): a 413 byte cap, or an overflow of the model's window. Codex's remote compaction trims only by its own token estimate against the catalog's window and asks nothing smaller after either, so the turn's `context_length_exceeded` led to a compaction refused the same way, every time, and the session could neither compact nor go on (celestial_eagle_99230 on Discord: DeepSeek's own API, 1M window, answered 413 "Failed to buffer the request body: length limit exceeded"). The text ask leaves images out, keeps the ends of a long output and the latest 400K characters. `TestCodexCompactTooLargeAsksSmaller`, `TestCodexCompactTooLargeCompactsLocally`, `TestCodexCompactOtherRefusalStays`. Any other failure goes back with its status, said as the compaction's with who answered it (`compactFailed`: "compaction: <provider> (<model>, <base URL>) answered the summary request 502 Bad Gateway: …"), the vendor's code, param and Retry-After kept. Not so the compaction Codex runs before a turn on another model, on the model the thread was on: a switch to a smaller window (`compaction.reason` `model_downshift` in the turn metadata) or to another compaction hash (`comp_hash_changed`), the only places Codex names either (`maybe_run_previous_model_inline_compact` in codex-rs `core/src/session/turn.rs`). When it fails, Codex asks the turn's own model instead only under its provider named "OpenAI" (`compact_model_fallback.rs`). Under magpie's provider, the one Codex has while its sign-in is used up (codex.out), the refusal was the turn's, and every turn of that thread asked the used-up account again, restarts or not, while a new thread worked (hiwise_aigc on X). Off `CodexPath`, `codexCompact` compacts such a failure locally (`previousModelCompaction`), whatever the failure, the compaction-failure hold included, and the thread goes on on the model it was switched to. On `CodexPath` the provider is Codex's own "OpenAI", which asks the turn's model itself, so the failure goes back as before. `TestCodexLeavingModelCompactsLocally`; Codex 0.162.1 in a sandbox sent the old model's `compaction_trigger` to `/v1` and failed the turn on a 429, and went on to the new model once the trigger was answered. A compaction relayed to OpenAI (`/responses/compact` on Codex's own model, as a `/responses` turn) that OpenAI answers with an error status and an empty body, which Codex shows as "unexpected status 502 Bad Gateway: Unknown error", or with a web page, is said in words naming the model, the status, and the account it went to (`codexSaidNothing`, outrageous_piglet on Discord); an error OpenAI says in JSON goes as it came. `TestCodexOwnCompactFailureIsSaid`, `TestCodexCompactFailureSaysCompaction`, `TestCodexCompactNoEndpointCompactsLocally`. So does the ChatGPT backend's 502 "response protection is unavailable" (`protectionRefused`): a long history refused so was answered as text. Codex also compacts remotely, a `compaction_trigger` on `/responses` that wants exactly one compaction item back, on any provider table named "OpenAI", as CC Switch names its relay tables. magpie points those at `/v1` while a magpie model is on, so `handle` makes the summary there too (`codexInput`, `codexCompact`), and magpie's summaries go back to the model as text (#1301). A summary is wanted only whole (`askWhole`, `holdWriter.wantWhole`): its stream is held to its end, not let through at its first words, so a reply cut short (`errEndedShort`), failed halfway (a 429 "Individual quota reached" after some of it) or ended `incomplete` (`endedIncomplete`, `incompleteReply`) fails over to the next candidate like a failure before any of it, and rests the account as that failure would; one that reached its output limit rests nobody. With nobody left, `codexCompact` answers 502 and never hands Codex the words before the cut as the summary (#2274, huangzuomin: Antigravity cutting each summary short) — but one whose stream merely broke off, with nothing failed or incomplete in it, is followed by magpie's own summary (#3526, Edward4226: Codex told a 502 asked the same huge summary over three times and the guard then held the conversation), as when no model can be asked at all. So is a translated summary serve found cut and answered 502 "the reply ended before it was complete" (`summaryEndedShort`).. Codex with context_management's experimental mode compacts in the background at every step while the conversation is over its threshold and drops a failed compaction without a word, so a conversation whose summaries keep failing is asked again every few seconds, each paying for the whole history (1169 compactions in 6 hours there). After `compactFailsMost` (3) failed summaries in a row of one conversation (`prompt_cache_key`) on one model, each within `compactHeldFor` (5 minutes) of the last, the next is answered at once with a 400 naming the last failure, which Codex doesn't ask again, and no model is asked until 5 minutes have passed (`compactFails` in [`codex_compact_guard.go`](../../internal/gateway/codex_compact_guard.go)); a summary that comes clears the count, and a sign-in's 401 or 403 isn't counted. `TestCodexCompactCutSummaryFailsOver`, `TestCodexCompactCutSummaryIsNoSummary`, `TestCodexCompactKeepsFailingIsHeld`.
++- An `output_text` annotation without the offsets OpenAI's schema wants on every one (`url_citation` with no `start_index`/`end_index`, as Volcengine Ark's Responses endpoint writes its citations) cannot be replayed where that schema holds: the ChatGPT backend refuses the whole request, every turn of the thread, with "Missing required parameter: 'input[n].content[m].annotations[k].start_index'" (#4921; `withoutOffsetlessCitations` in [`codex_backend.go`](../../internal/gateway/codex_backend.go), the same leaving-out as a reasoning item's text, #1411). A whole reply streamed as the vendor's own events drops such an annotation in every place a client reads one (`dropOffsetlessCitations` beside `responsesWholeEvents` in [`whole_stream.go`](../../internal/gateway/whole_stream.go), the #2855 rule: what magpie hands a client must be something it could send again); a history that carries one goes to the ChatGPT backend, OpenAI's API and a relay that has turned one away without it, and a refusal naming the parameter is asked again without it (`refusesCitationOffsets`). The text and a citation with its offsets go as they came (`TestCitationsWithoutOffsetsAskedAgainWithout`, `TestWholeAsStreamDropsCitationsWithoutOffsets`).
+ - A reasoning item with its text in it (`content` parts: DeepSeek's Responses API writes `reasoning_text`, relayed to Codex as it came) is another vendor's. OpenAI's API and the ChatGPT backend take a reasoning item's `content` only empty, and refuse the whole request over one with 400 "Invalid 'input[n].content': array too long. Expected an array with maximum length 0" (`array_above_max_length`). Codex hands the item back on every later turn, so it never goes to them: for one of Codex's own models, `codexInput(body, false)` leaves it out (and a reasoning item with nothing sealed in it) on `/backend-api/codex`'s `/responses` and on `/responses/compact`, before Codex's own sign-in, its API key or a magpie Codex account (`compactOn`) is asked. Codex compacts a thread before its first turn back on its own model, and a refused compaction shows as that turn's error (jue on Discord). `passthrough` leaves it out for OpenAI, Azure OpenAI and a Codex account (`withoutReasoningText`), and for any other upstream once it has refused one (`refusesReasoningText`, `reasoningTextRefused`, #1411). OpenAI's own sealed reasoning (`encrypted_content`, no text) stays, and a DeepSeek model (`replaysReasoning`) still gets the text. `TestForeignReasoningNeverReachesOpenAI`, `TestReasoningTextLeftOutWhereRefused`, `TestReasoningTextNotSentToCodexAccount`.
+ - Native compaction (#1099, off by default): a provider with `nativeCompaction` on (`provider.Provider.CompactsOn`; the editor's Compaction row, `magpie provider set <id> compaction=native`) is asked Codex's `compaction_trigger` as Codex sent it, and the compaction item it seals goes back to Codex unchanged, not as a `magpie1:` summary. Only a wire that carries it can be set so (`CarriesCompaction`): a Responses API, a ChatGPT account, GitHub Copilot (its models asked on Responses; its Claude models keep magpie's summary). The decision is made where `handle` and `codexBackend` read the input (`nativeCompactionFor`, `codexInputAs`): a group compacts natively only when every member does. Such a request, and a later one carrying a sealed compaction to a provider set so or to the provider recorded as its writer, is relayed, never translated, which would drop the item (`keepsCompaction` in `attempt`); a provider that can't be asked it on Responses answers a 400 saying so. The trigger is kept only when a key or account the request would go over (the provider's and its fallbacks', or a group's members', held and capped ones too, not one whose own list lacks the model) can be asked it on Responses (`plannedCarrier`, read from `perKeyBarred` without weighing, so a provider routed in turn isn't moved along by the decision). When the vendor lists the model only to keys that speak no Responses there, a key set to Chat say, `codexCompact` gives magpie's summary through the listed key, as with native compaction off; before, the trigger was kept and refused 400 `carrierError` with no upstream asked (#2725, ggbdpq; `TestNativeCompactionTriggerSummarisedWhenNoListedKeyCarriesIt`, `TestNativeCompactionTriggerThroughTheListedKeyThatCarriesIt`, `TestNativeCompactionDecisionLeavesTheTurnsAlone`). The key or account that answered is recorded, whoever it is: a fallback or another member that answered the trigger sealed it whatever its own setting, and only it can read the seal (#2271, JasonBuildAI: a fallback's seal went unrecorded, and the next turn was answered 200 without the compacted history; `TestNativeCompactionFallbackSealStaysWithItsWriter`). It is recorded by the hash of what it sealed (`wroteCheckpoint`, `compactions.json` beside `affinity.json`, 0600, at most 1024 for 30 days). A later request carrying it goes only to that writer (`checkpointReaders`); a writer whose own list has since dropped the model is tried still, as the last resort an account whose list lacks the model is — it sealed the model's compaction, and no other can read it (`planned.unlisted`, `TestNativeCompactionWriterWhoseListLacksTheModel`, #2642: it was refused as "switched off, removed, or no longer serves" though it was on, and switching it on changed nothing). With the writer gone from the candidates, magpie answers 400 `checkpointError` with the reason its settings give (`checkpointGone`: the provider removed, the account signed out, its sign-in lapsed, paused while others are on, switched off, kept from the model in Names & levels, the key off or gone, the model disabled, or the model or group asked for not going to it), what lets the conversation go on, and whether native compaction is on for the writer's provider now, and never sends it to another key, drops it, or summarises it in its place (`TestNativeCompactionWriterGoneSaysWhy`). One of Codex's own models asked on the backend path is decided as a magpie model is when magpie's Codex accounts serve it (`codexAccounts`): the trigger is kept only with the codex provider's native compaction on, else `codexCompact` gives magpie's summary, which any account reads, and no writer is recorded (#2582, ump45nose; before, every such compaction was sealed natively whatever the setting, and the conversation was held to its account; `TestCodexOwnModelCompactionHonoursTheToggle`). Codex's own sign-in alone, relayed as it came, still compacts natively, unrecorded, as does `/responses/compact`; but a request carrying a compaction magpie recorded the writer of goes through routing even then (`codexSealedFor`), so with the writer switched off the one account left isn't sent it. A legacy `/responses/compact` carrying one is judged at its passthrough (`sealedCompact`): the writer on in magpie answers it signed as the writer — its own seal while the sign-in can be asked, a key's seal, a request signing with its own `chatgpt-account-id`, or an unreadable sign-in state relays as it came — and a writer gone is refused with `checkpointError`'s reason, the same words as on `/responses` (`TestNativeCompactionCompactJudgesItsWriter`, #2727). The writer matched is the account user the record holds, so two Team seats of one email read as one and such a compact relays as it came. A gateway key held to some accounts (#905) is asked of the account the compact goes to (`compactSigninHeld`): the writer when it answers it, so a writer the key may not use is refused 403 (`sealedCompactHeldError`) with nothing asked, and one it may use answers though the sign-in isn't the key's (`TestNativeCompactionCompactKeepsTheKeysAccounts`). With the writer held at its usage cap or for credits it may not spend, the answer is 429 `checkpointCappedError` (record `checkpointCappedRecord`, "native compaction's account at its usage cap"), naming that account, that the others serving the model weren't tried for the compaction, and that neither the routing mode nor how conversations stay changes that: wait for the window, raise or lift its cap, or start a new conversation (#2517, lm0711; before, it read "every account at its usage cap" though another had room; `TestNativeCompactionWriterAtItsCap`). `withoutCompaction` (the drop after a refused reasoning item) isn't used for such a request. A route carrying a compaction names its sealer (`Route.Compaction`), and Routing says that is why no other account was asked, not that it is "the only account on" for the model (#2639; `TestNativeCompactionRouteNamesItsWriter`, `routing-compaction.test.cjs`). A refusal of the trigger reaches Codex as the upstream sent it. Not tried against a real upstream; Copilot may refuse a history that holds Codex's `web_search` items. [`native_compaction.go`](../../internal/gateway/native_compaction.go), `TestNativeCompaction*`.
+ - A compaction magpie answers itself (`codexCompact`: a magpie model, Codex's own models through magpie's Codex accounts, a CC Switch table) goes to Codex as a `compaction` item whose `encrypted_content` is `magpie1:` and the summary in base64 (`codexsummary.Encrypted`), and `codexInputAs` sends Codex's own summary message in its place (`codexsummary.Message`: Codex's summary prefix, a newline and the summary, as a user message). Codex keeps the item in its rollout and replays it, and OpenAI refuses it once Codex talks to OpenAI itself (`invalid_encrypted_content`, LukeMa on X). So `sessions.PortCodexRollouts` writes that same message into the rollouts in its place ([`codex_portable.go`](../../internal/sessions/codex_portable.go)). A reasoning item carrying Claude's block (`magpie-claude1:`, above) is written as its summary, as the gateway sends it to OpenAI (`TestPortLineDropsClaudeBlocks`). It changes only magpie's items, keeps every other line's bytes and the file's line count, mode and time, and drops an unreadable item together with its `replacement_history_metadata` entry. Every rewritten line keeps its length (`fitLine`: a shorter one padded with spaces after its JSON, a longer one in a paginated rollout not written), as Codex keeps places in a rollout by byte: a fork's `history_base.end_byte_offset` and the state database's turn and projection offsets. A shorter parent left a fork's place past its end, and Codex refused to open the fork ("cutoff byte offset is past the source rollout", xybio on Discord); once per Codex home a pass sets each such fork's place again from the ordinal it names (`repairLineages`). `MoveCodexProvider` keeps the session_meta line's length the same way and refuses a longer provider id for a paginated rollout. It and `MoveCodexThreads` (Codex stepping off magpie) hold the thread's writer lock as Codex's own archive does, from before a file is copied until the thread's row has moved: a Codex that has the thread open writes on to the file it opened, and what it wrote after a move was lost (#3751). Such a thread is refused as one written to in the last minute is (`ErrActive`), and a Codex home without writer locks moves as before. A pass publishes as Codex publishes a compressed rollout: under `thread-writer-locks/.coordination.lock`, only with the thread's lock free, through a temp file and a rename. A thread a Codex has open is left for a later pass, and a Codex home without writer locks is left alone. It runs 2 minutes after the GUI or `magpie serve` starts and every 10 minutes after, on Codex Disconnect (3s), and as the GUI quits (3s). Each pass reads what changed since the last whole pass, plus what was held (`codex-portable.json`). A ported thread was resumed by Codex 0.162.1 against an upstream that refuses `magpie1:` as OpenAI does. Not tried: a Codex in a WSL distro, whose locks this machine can't take, so it is skipped. `TestPortCodexRollouts*`, `TestPortedCompactionReadsTheSame`.
+diff --git a/internal/gateway/citation_offsets_test.go b/internal/gateway/citation_offsets_test.go
+new file mode 100644
+index 000000000..acd9b9b16
+--- /dev/null
++++ b/internal/gateway/citation_offsets_test.go
+@@ -0,0 +1,208 @@
++package gateway
++
++import (
++	"encoding/base64"
++	"encoding/json"
++	"fmt"
++	"io"
++	"net/http"
++	"net/http/httptest"
++	"os"
++	"path/filepath"
++	"strings"
++	"sync"
++	"testing"
++	"time"
++
++	"github.com/yetone/magpie/internal/provider"
++)
++
++// citationsStrict stands in for the ChatGPT backend, and a relay in front
++// of it, as they check a replayed citation (#4921): an output_text
++// annotation without both of the offsets OpenAI's schema wants is turned
++// away naming the parameter, as Volcengine Ark's answer — its url_citations
++// carry no start_index/end_index — came back when Codex replayed it:
++// "Invalid response.create payload: Missing required parameter:
++// 'input[n].content[m].annotations[k].start_index'."
++type citationsStrict struct {
++	mu     sync.Mutex
++	inputs [][]map[string]any
++}
++
++func (u *citationsStrict) ServeHTTP(w http.ResponseWriter, r *http.Request) {
++	b, _ := io.ReadAll(r.Body)
++	if strings.HasSuffix(r.URL.Path, "/models") {
++		io.WriteString(w, `{"models":[{"slug":"gpt-6.1-sol","visibility":"list"}]}`)
++		return
++	}
++	var q struct {
++		Input []map[string]any `json:"input"`
++	}
++	json.Unmarshal(b, &q)
++	u.mu.Lock()
++	u.inputs = append(u.inputs, q.Input)
++	u.mu.Unlock()
++	for i, it := range q.Input {
++		content, _ := it["content"].([]any)
++		for ci, raw := range content {
++			part, _ := raw.(map[string]any)
++			notes, _ := part["annotations"].([]any)
++			for ai, raw := range notes {
++				note, _ := raw.(map[string]any)
++				if note["start_index"] != nil && note["end_index"] != nil {
++					continue
++				}
++				w.Header().Set("Content-Type", "application/json")
++				w.WriteHeader(http.StatusBadRequest)
++				fmt.Fprintf(w, `{"error":{"message":"Invalid response.create payload: Missing required parameter: 'input[%d].content[%d].annotations[%d].start_index'.","type":"invalid_request_error","param":"input[%d].content[%d].annotations[%d].start_index","code":"missing_required_parameter"}}`, i, ci, ai, i, ci, ai)
++				return
++			}
++		}
++	}
++	w.Header().Set("Content-Type", "text/event-stream")
++	io.WriteString(w, sse(
++		`data: {"type":"response.created","response":{"id":"resp_1","status":"in_progress"}}`,
++		`data: {"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"m1","role":"assistant","content":[{"type":"output_text","text":"DONE"}]}}`,
++		`data: {"type":"response.completed","response":{"id":"resp_1","status":"completed","output":[],"usage":{"input_tokens":5,"output_tokens":2}}}`))
++}
++
++func (u *citationsStrict) asked() [][]map[string]any {
++	u.mu.Lock()
++	defer u.mu.Unlock()
++	return append([][]map[string]any(nil), u.inputs...)
++}
++
++// citationCounts is how many annotations an input's message items carry
++// with and without their offsets.
++func citationCounts(input []map[string]any) (with, without int) {
++	for _, it := range input {
++		content, _ := it["content"].([]any)
++		for _, raw := range content {
++			part, _ := raw.(map[string]any)
++			notes, _ := part["annotations"].([]any)
++			for _, raw := range notes {
++				note, _ := raw.(map[string]any)
++				if note["start_index"] == nil || note["end_index"] == nil {
++					without++
++				} else {
++					with++
++				}
++			}
++		}
++	}
++	return with, without
++}
++
++// arkCitedTurn is a Codex conversation a routing group served once on
++// Volcengine Ark (#4921): its answer's first citation carries the shape
++// Ark writes — url_citation with no offsets — as Codex stored it, beside a
++// citation with its offsets and plain turns.
++func arkCitedTurn(model string) string {
++	return `{"model":"` + model + `","stream":true,"store":false,"include":["reasoning.encrypted_content"],"input":[` +
++		`{"type":"message","role":"user","content":[{"type":"input_text","text":"what changed in go 1.27?"}]},` +
++		`{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Go 1.27.2 shipped, on go.dev.","annotations":[` +
++		`{"type":"url_citation","url":"https://go.dev/doc/devel/release","title":"Release History","site_name":"go.dev","publish_time":"2026-10-08","summary":"Go 1.27.2 released October 8."},` +
++		`{"type":"url_citation","start_index":25,"end_index":31,"url":"https://go.dev","title":"go.dev"}]}]},` +
++		`{"type":"message","role":"user","content":[{"type":"input_text","text":"and 1.26?"}]}]}`
++}
++
++// #4921: a citation another vendor's Responses reply wrote without the
++// offsets OpenAI's schema wants turned every later turn of the thread away
++// where that schema holds. Asked again without it — everything else, the
++// citation that carries its offsets included, kept — and never sent one
++// again.
++func TestCitationsWithoutOffsetsAskedAgainWithout(t *testing.T) {
++	fresh(t)
++	u := &citationsStrict{}
++	srv := httptest.NewServer(u)
++	t.Cleanup(srv.Close)
++	if err := provider.Save(provider.Provider{ID: "ar", Name: "AgentRouter", Key: "k", Models: []string{"gpt-6-luna"}, Responses: srv.URL + "/v1"}); err != nil {
++		t.Fatal(err)
++	}
++	if err := provider.SaveGroup(provider.Group{ID: "medium", Name: "Medium", Members: []string{"ar/gpt-6-luna"}, Routing: provider.Ordered}); err != nil {
++		t.Fatal(err)
++	}
++	s := New()
++	rec := codexPostTo(s, arkCitedTurn("group/medium"))
++	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "DONE") && !strings.Contains(rec.Body.String(), "RE9ORQ") {
++		t.Fatalf("%d %s", rec.Code, rec.Body)
++	}
++	got := u.asked()
++	if len(got) != 2 {
++		t.Fatalf("asked the relay %d times, want again once after its 400: %v", len(got), got)
++	}
++	if with, without := citationCounts(got[0]); without != 1 || with != 1 {
++		t.Fatalf("first ask: %d citations with offsets, %d without", with, without)
++	}
++	if with, without := citationCounts(got[1]); without != 0 || with != 1 {
++		t.Fatalf("asked again: %d citations with offsets, %d without", with, without)
++	}
++	for _, k := range []string{"message"} {
++		before, after := kinds(got[0])[k], kinds(got[1])[k]
++		if after == 0 || after != before {
++			t.Errorf("%s: %d asked again, %d first", k, after, before)
++		}
++	}
++
++	// the next turn goes without it at once
++	rec = codexPostTo(s, arkCitedTurn("group/medium"))
++	if gotNow := u.asked(); rec.Code != 200 || len(gotNow) != 3 {
++		t.Fatalf("again: %d, %d asks", rec.Code, len(gotNow))
++	} else if with, without := citationCounts(gotNow[2]); without != 0 || with != 1 {
++		t.Fatalf("asked at once: %d citations with offsets, %d without", with, without)
++	}
++}
++
++// The ChatGPT backend a group's codex member answers on is never sent the
++// citation: asked once, the citation with its offsets kept, the text kept.
++func TestCitationsWithoutOffsetsNotSentToCodexBackend(t *testing.T) {
++	fresh(t)
++	home := os.Getenv("HOME")
++	claims := func(m map[string]any) string {
++		b, _ := json.Marshal(m)
++		return "h." + base64.RawURLEncoding.EncodeToString(b) + ".s"
++	}
++	os.MkdirAll(filepath.Join(home, ".codex"), 0o755)
++	os.WriteFile(filepath.Join(home, ".codex", "auth.json"), mustJSON(map[string]any{"auth_mode": "chatgpt", "tokens": map[string]any{
++		"id_token":      claims(map[string]any{"email": "me@example.com"}),
++		"access_token":  claims(map[string]any{"exp": time.Now().Add(time.Hour).Unix()}),
++		"refresh_token": "r", "account_id": "acct-1"}}), 0o600)
++	provider.ForgetAccounts()
++	t.Cleanup(provider.ForgetAccounts)
++	u := &citationsStrict{}
++	srv := httptest.NewServer(u)
++	t.Cleanup(srv.Close)
++	was := provider.CodexBase
++	provider.CodexBase = srv.URL + "/backend-api/codex"
++	t.Cleanup(func() { provider.CodexBase = was })
++	if err := provider.SaveGroup(provider.Group{ID: "medium", Name: "Medium", Members: []string{"codex/gpt-6.1-sol"}, Routing: provider.Ordered}); err != nil {
++		t.Fatal(err)
++	}
++	s := New()
++	rec := codexPostTo(s, arkCitedTurn("group/medium"))
++	if rec.Code != 200 {
++		t.Fatalf("%d %s", rec.Code, rec.Body)
++	}
++	got := u.asked()
++	if len(got) != 1 {
++		t.Fatalf("the ChatGPT backend was asked %d times: %v", len(got), got)
++	}
++	if with, without := citationCounts(got[0]); without != 0 || with != 1 || kinds(got[0])["message"] != 3 {
++		t.Fatalf("asked with %d citations with offsets, %d without: %v", with, without, got[0])
++	}
++
++	// and on Codex's own sign-in alike
++	u2 := &citationsStrict{}
++	srv2 := httptest.NewServer(u2)
++	t.Cleanup(srv2.Close)
++	provider.CodexBase = srv2.URL + "/backend-api/codex"
++	rec = codexPostTo(s, arkCitedTurn("gpt-6.1-sol"))
++	if rec.Code != 200 {
++		t.Fatalf("own sign-in: %d %s", rec.Code, rec.Body)
++	}
++	if got := u2.asked(); len(got) != 1 {
++		t.Fatalf("the backend was asked %d times on Codex's own sign-in: %v", len(got), got)
++	} else if with, without := citationCounts(got[0]); without != 0 || with != 1 {
++		t.Fatalf("own sign-in asked with %d citations with offsets, %d without", with, without)
++	}
++}
+diff --git a/internal/gateway/codex_backend.go b/internal/gateway/codex_backend.go
+index a160cb839..798b80085 100644
+--- a/internal/gateway/codex_backend.go
++++ b/internal/gateway/codex_backend.go
+@@ -977,6 +977,11 @@ func (s *Server) codexUpstreamOn(w http.ResponseWriter, r *http.Request, rest st
+ 		// provider's model wrote it) turned every turn and compaction
+ 		// away, as on an account's (provider.CodexToolNames, wing3556)
+ 		body = provider.CodexToolNames(body)
++		// and a citation without the offsets the backend's schema wants,
++		// another vendor's Responses reply's (Volcengine Ark's
++		// url_citation) as Codex stored it, turned them away alike
++		// (#4921)
++		body = withoutOffsetlessCitations(body)
+ 	}
+ 	u := base + rest
+ 	if r.URL.RawQuery != "" {
+@@ -2796,6 +2801,119 @@ func withoutReasoningText(body []byte) []byte {
+ 	return b
+ }
+ 
++// citationOffsetRefused is how unfit remembers a provider turning away,
++// for model, a citation without the offsets OpenAI's schema wants
++// (withoutOffsetlessCitations).
++func citationOffsetRefused(model string) string { return "citation offsets\x00" + model }
++
++// citationOffsetRefusal is the ChatGPT backend's refusal of an annotation
++// the offsets its schema wants are missing from, as a relay in front of
++// it passes it on: "Invalid response.create payload: Missing required
++// parameter: 'input[221].content[0].annotations[0].start_index'."
++// (#4921)
++var citationOffsetRefusal = regexp.MustCompile(`input\[\d+\]\.content\[\d+\]\.annotations\[\d+\]\.(?:start|end)_index`)
++
++// refusesCitationOffsets is a 400 refusing a Responses request over a
++// citation that lacks the offsets OpenAI's schema wants.
++func refusesCitationOffsets(status int, b []byte) bool {
++	return badRequest(status) && citationOffsetRefusal.Match(b)
++}
++
++// withoutOffsetlessCitations is a Responses request without the
++// output_text annotations that lack the offsets OpenAI's schema wants on
++// every one, as another vendor's Responses reply wrote them (Volcengine
++// Ark's url_citation, #4921): Codex stored the reply magpie relayed, and
++// where that schema holds — the ChatGPT backend, OpenAI's API, a relay in
++// front of them — the replay was refused whole, every turn of the thread
++// with it. Such an annotation goes; the text, and a citation with its
++// offsets, stay as they came.
++func withoutOffsetlessCitations(body []byte) []byte {
++	if !bytes.Contains(body, []byte(`"annotations"`)) || !anyInputItem(body, itemCitesWithoutOffsets) {
++		return body
++	}
++	q, err := rawObject(body)
++	if err != nil {
++		return body
++	}
++	items, err := rawArray(q["input"])
++	if err != nil {
++		return body
++	}
++	changed := false
++	for i, raw := range items {
++		if !itemCitesWithoutOffsets(raw) {
++			continue
++		}
++		it, err := rawObject(raw)
++		if err != nil {
++			continue
++		}
++		parts, err := rawArray(it["content"])
++		if err != nil {
++			continue
++		}
++		itemChanged := false
++		for j, p := range parts {
++			part, err := rawObject(p)
++			if err != nil || string(part["type"]) != `"output_text"` {
++				continue
++			}
++			notes := elementsOf(part["annotations"])
++			if notes == nil {
++				continue
++			}
++			kept := notes[:0]
++			dropped := false
++			for _, a := range notes {
++				if annotationLacksOffsets(a) {
++					dropped = true
++					continue
++				}
++				kept = append(kept, a)
++			}
++			if dropped {
++				part["annotations"], _ = marshalPlain(kept)
++				parts[j], _ = marshalPlain(part)
++				itemChanged = true
++			}
++		}
++		if itemChanged {
++			it["content"], _ = marshalPlain(parts)
++			items[i], _ = marshalPlain(it)
++			changed = true
++		}
++	}
++	if !changed {
++		return body
++	}
++	q["input"], _ = marshalPlain(items)
++	nb, err := marshalPlain(q)
++	if err != nil {
++		return body
++	}
++	return nb
++}
++
++// itemCitesWithoutOffsets is whether it, an input item, carries an
++// output_text annotation without the offsets OpenAI's schema wants, read
++// as the scan reads it, without decoding the conversation.
++func itemCitesWithoutOffsets(it []byte) bool {
++	if !bytes.Contains(it, []byte(`"annotations"`)) {
++		return false
++	}
++	for _, part := range elementsOf(memberOrNil(it, "content")) {
++		if typ, _ := stringBytes(memberOrNil(part, "type")); string(typ) != "output_text" {
++			continue
++		}
++		for _, a := range elementsOf(memberOrNil(part, "annotations")) {
++			if annotationLacksOffsets(a) {
++				return true
++			}
++		}
++	}
++	return false
++}
++
+ // openaiItemPrefix is the id prefix OpenAI takes for each kind of call item
+ // a vendor's reply may have handed Codex with another: magpie, or the
+ // vendor, gave a tool search's and a custom tool's call a function_call's
+diff --git a/internal/gateway/codex_rewrite_scan_test.go b/internal/gateway/codex_rewrite_scan_test.go
+index 0dca08039..aec44db1b 100644
+--- a/internal/gateway/codex_rewrite_scan_test.go
++++ b/internal/gateway/codex_rewrite_scan_test.go
+@@ -55,6 +55,7 @@ var codexRewrites = func() []codexRewrite {
+ 		{"plainItemIDs", plainItemIDs, wasPlainItemIDs},
+ 		{"withoutBareReasoning", withoutBareReasoning, wasWithoutBareReasoning},
+ 		{"withoutReasoningText", withoutReasoningText, wasWithoutReasoningText},
++		{"withoutOffsetlessCitations", withoutOffsetlessCitations, wasWithoutOffsetlessCitations},
+ 		{"withModel", func(b []byte) []byte { return withModel(b, "gpt-5.5<&>") }, func(b []byte) []byte {
+ 			if string(trimJSON(b)) == "null" {
+ 				return b // was a panic
+@@ -144,6 +145,38 @@ var codexMarks = []func(it map[string]any){
+ 		it["type"] = "reasoning"
+ 		it["content"] = []any{map[string]any{"type": "reasoning_text", "text": "t"}}
+ 	},
++	// a reply another vendor's Responses endpoint wrote, its citation
++	// without the offsets OpenAI's schema wants (#4921), beside one with
++	// them
++	func(it map[string]any) {
++		it["type"] = "message"
++		it["role"] = "assistant"
++		it["content"] = []any{map[string]any{"type": "output_text", "text": "t", "annotations": []any{
++			map[string]any{"type": "url_citation", "url": "https://a", "title": "A"},
++			map[string]any{"type": "url_citation", "start_index": 0, "end_index": 1, "url": "https://b"},
++		}}}
++	},
++	func(it map[string]any) {
++		it["type"] = "message"
++		it["content"] = "text"
++	},
++	func(it map[string]any) {
++		it["type"] = "message"
++		it["content"] = []any{map[string]any{"type": "output_text", "text": "t", "annotations": []any{
++			map[string]any{"type": "url_citation", "start_index": nil, "end_index": 2},
++		}}}
++	},
++	func(it map[string]any) {
++		it["type"] = "message"
++		it["content"] = []any{map[string]any{"type": "input_text", "text": "t", "annotations": []any{
++			map[string]any{"type": "url_citation", "url": "https://a"},
++		}}}
++	},
++	func(it map[string]any) {
++		it["content"] = []any{map[string]any{"type": "output_text", "text": "t", "annotations": []any{
++			map[string]any{"type": "url_citation", "url": "https://a"},
++		}}}
++	},
+ 	func(it map[string]any) { it["type"] = "reasoning"; it["content"] = nil },
+ 	func(it map[string]any) { it["type"] = "reasoning"; it["content"] = "text" },
+ 	func(it map[string]any) { it["type"] = "reasoning"; it["content"] = map[string]any{} },
+@@ -441,6 +474,70 @@ func wasWithoutReasoningText(body []byte) []byte {
+ 	return b
+ }
+ 
++func wasWithoutOffsetlessCitations(body []byte) []byte {
++	if !bytes.Contains(body, []byte(`"annotations"`)) {
++		return body
++	}
++	var q map[string]json.RawMessage
++	if json.Unmarshal(body, &q) != nil {
++		return body
++	}
++	var items []json.RawMessage
++	if json.Unmarshal(q["input"], &items) != nil {
++		return body
++	}
++	changed := false
++	for i, raw := range items {
++		var it map[string]json.RawMessage
++		if json.Unmarshal(raw, &it) != nil {
++			continue
++		}
++		var parts []json.RawMessage
++		if json.Unmarshal(it["content"], &parts) != nil {
++			continue
++		}
++		itemChanged := false
++		for j, p := range parts {
++			var part map[string]json.RawMessage
++			if json.Unmarshal(p, &part) != nil || string(part["type"]) != `"output_text"` {
++				continue
++			}
++			var notes []json.RawMessage
++			if json.Unmarshal(part["annotations"], &notes) != nil {
++				continue
++			}
++			kept := notes[:0:0]
++			dropped := false
++			for _, a := range notes {
++				if annotationLacksOffsets(a) {
++					dropped = true
++					continue
++				}
++				kept = append(kept, a)
++			}
++			if dropped {
++				part["annotations"], _ = wasMarshalPlain(kept)
++				parts[j], _ = wasMarshalPlain(part)
++				itemChanged = true
++			}
++		}
++		if itemChanged {
++			it["content"], _ = wasMarshalPlain(parts)
++			items[i], _ = wasMarshalPlain(it)
++			changed = true
++		}
++	}
++	if !changed {
++		return body
++	}
++	q["input"], _ = wasMarshalPlain(items)
++	nb, err := wasMarshalPlain(q)
++	if err != nil {
++		return body
++	}
++	return nb
++}
++
+ func wasCallItemIDs(body []byte) []byte {
+ 	if !bytes.Contains(body, []byte(`"tool_search_call"`)) && !bytes.Contains(body, []byte(`"custom_tool_call"`)) {
+ 		return body
+diff --git a/internal/gateway/gateway.go b/internal/gateway/gateway.go
+index 5feb16bbe..9cae22a2d 100644
+--- a/internal/gateway/gateway.go
++++ b/internal/gateway/gateway.go
+@@ -5496,6 +5496,14 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
+ 				// that has turned it away before (#1411)
+ 				body = withoutReasoningText(body)
+ 			}
++			if strings.HasSuffix(p.Host(), "openai.com") || p.IsAzure() || p.Account != nil && p.Account.Agent == "codex" || !s.fits(p.ID, citationOffsetRefused(model), proto) {
++				// a citation another vendor's reply wrote without the
++				// offsets OpenAI's schema wants (Volcengine Ark's
++				// url_citation, #4921), which the ChatGPT backend
++				// refuses the whole replay over, nor does an upstream
++				// that has turned one away before
++				body = withoutOffsetlessCitations(body)
++			}
+ 		}
+ 		// Relays enforce OpenAI's item ID prefixes too, including during
+ 		// compaction. call_id stays unchanged so tool outputs remain paired.
+@@ -5897,6 +5905,21 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
+ 				continue
+ 			}
+ 		}
++		if len(fs) == 0 && len(ms) == 0 && proto == provider.Responses && refusesCitationOffsets(res.StatusCode, b) {
++			// and a citation without the offsets OpenAI's schema wants,
++			// which the ChatGPT backend and the relays in front of it
++			// turn the whole replay away over ("Missing required
++			// parameter: 'input[n].content[m].annotations[k].start_index'",
++			// #4921): asked once more without it, and not sent one again
++			if nb := withoutOffsetlessCitations(body); !bytes.Equal(nb, body) {
++				refused = append(refused, citationOffsetRefused(model))
++				body = nb
++				if res, err = s.forward(r.Context(), p, proto, path, p.Prepare(body), r.Header); err != nil {
++					return writeError(w, proto, 502, p.Name+": "+err.Error()), err.Error(), true
++				}
++				continue
++			}
++		}
+ 		if len(fs) == 0 && len(ms) == 0 && proto == provider.Responses && itemIDRefusal.Match(b) {
+ 			// and an input item's id with a character OpenAI's don't
+ 			// have, which a relay in front of OpenAI turns away as it
+diff --git a/internal/gateway/quiet_whole_test.go b/internal/gateway/quiet_whole_test.go
+index 3742ae134..35ac3117c 100644
+--- a/internal/gateway/quiet_whole_test.go
++++ b/internal/gateway/quiet_whole_test.go
+@@ -257,6 +257,34 @@ func TestWholeAsStreamResponsesCitations(t *testing.T) {
+ 	}
+ }
+ 
++// A citation another vendor's whole reply carries without the offsets
++// OpenAI's schema wants on every annotation (Volcengine Ark's
++// url_citation, #4921) goes to no place a client reads one: not in the
++// annotation events, nor in the parts, items and reply the client keeps,
++// for the client stores them and replays them, and where that schema
++// holds the replay is refused whole. The text and a citation that carries
++// its offsets go as the vendor wrote them.
++func TestWholeAsStreamDropsCitationsWithoutOffsets(t *testing.T) {
++	rec := httptest.NewRecorder()
++	if !wholeAsStream(rec, provider.Responses, []byte(`{"id":"resp_1","object":"response","created_at":1,"status":"completed","model":"m","output":[{"type":"message","id":"msg_1","status":"completed","role":"assistant","content":[{"type":"output_text","text":"Sun.","annotations":[`+
++		`{"type":"url_citation","url":"https://example.com/ark","title":"Ark","site_name":"example.com"},`+
++		`{"type":"url_citation","start_index":0,"end_index":3,"url":"https://example.com/w","title":"W"}]}]}]}`)) {
++		t.Fatal("not streamed")
++	}
++	got := rec.Body.String()
++	if strings.Contains(got, "example.com/ark") {
++		t.Fatalf("the offsetless citation reached the client:\n%s", got)
++	}
++	// the citation with its offsets is in every place a client reads one:
++	// its annotation event, the part, the item and the reply it keeps
++	if cited := strings.Count(got, "example.com/w"); cited != 4 {
++		t.Fatalf("the citation with its offsets is in %d places, want 4:\n%s", cited, got)
++	}
++	if said := saidIn(provider.Responses, got); said != "text:Sun.|stop:stop" {
++		t.Fatalf("the stream says %q:\n%s", said, got)
++	}
++}
++
+ // A held try's reply under a type that says neither JSON nor a stream,
+ // once the agent has a stream's headers: its first bytes decide, however
+ // they are split. A stream is held as a stream from there, read event by
+diff --git a/internal/gateway/whole_stream.go b/internal/gateway/whole_stream.go
+index a7d585dea..451848668 100644
+--- a/internal/gateway/whole_stream.go
++++ b/internal/gateway/whole_stream.go
+@@ -169,6 +169,9 @@ func responsesWholeEvents(b []byte) []wholeEvent {
+ 	if json.Unmarshal(v["output"], &output) != nil {
+ 		return nil
+ 	}
++	if dropOffsetlessCitations(output) {
++		v["output"] = raw(output)
++	}
+ 	var events []wholeEvent
+ 	seq := 0
+ 	send := func(typ string, fields obj) {
+@@ -360,3 +363,71 @@ func orNull(r json.RawMessage) json.RawMessage {
+ 	}
+ 	return r
+ }
++
++// dropOffsetlessCitations takes, from a whole reply's message items, the
++// output_text annotations that lack the offsets OpenAI's schema wants on
++// every annotation — another vendor's Responses endpoint writes its
++// citations so (Volcengine Ark's url_citation, #4921) — and reports
++// whether it took any. What magpie hands a client must be something it
++// could send again (#2855): the client stores the reply and replays it,
++// and where that schema holds the replay is refused whole, every turn of
++// the thread after ("Missing required parameter:
++// 'input[n].content[m].annotations[k].start_index'"). The text goes as it
++// came; so does a citation that carries its offsets.
++func dropOffsetlessCitations(output []obj) bool {
++	dropped := false
++	for _, item := range output {
++		if str(item, "type") != "message" {
++			continue
++		}
++		var parts []obj
++		if json.Unmarshal(item["content"], &parts) != nil {
++			continue
++		}
++		itemChanged := false
++		for _, part := range parts {
++			if str(part, "type") != "output_text" {
++				continue
++			}
++			var notes []json.RawMessage
++			if json.Unmarshal(part["annotations"], &notes) != nil || len(notes) == 0 {
++				continue
++			}
++			kept := notes[:0]
++			partDropped := false
++			for _, a := range notes {
++				if annotationLacksOffsets(a) {
++					partDropped = true
++					continue
++				}
++				kept = append(kept, a)
++			}
++			if partDropped {
++				part["annotations"] = raw(kept)
++				itemChanged = true
++			}
++		}
++		if itemChanged {
++			item["content"] = raw(parts)
++		}
++		dropped = dropped || itemChanged
++	}
++	return dropped
++}
++
++// annotationLacksOffsets is whether a, an output_text annotation, lacks
++// the start or end index OpenAI's schema wants of every annotation, as
++// absent or null. One that isn't an object lacks nothing magpie can read.
++func annotationLacksOffsets(a json.RawMessage) bool {
++	var note map[string]json.RawMessage
++	if json.Unmarshal(a, &note) != nil || note == nil {
++		return false
++	}
++	for _, k := range []string{"start_index", "end_index"} {
++		v, ok := note[k]
++		if !ok || string(bytes.TrimSpace(v)) == "null" {
++			return true
++		}
++	}
++	return false
++}

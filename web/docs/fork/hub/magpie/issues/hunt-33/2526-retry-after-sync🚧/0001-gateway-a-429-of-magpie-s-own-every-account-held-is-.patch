@@ -1,0 +1,168 @@
+From df41c4381380766bba5015ed0fa9f29a6ccc47b8 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Fri, 16 Oct 2026 22:51:08 +0800
+Subject: [PATCH] gateway: a 429 of magpie's own, every account held, is asked
+ again in half a minute, not slept off to the window's renewal (#2526)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+When every account serving a model is held at its usage cap or set not
+to spend its credits, the gateway refuses the request itself (429) and
+names the soonest window's renewal as Retry-After — hours off. An agent
+that waits as told (Codex's responses_retry sleeps to the Retry-After)
+sat a turn out for 80 minutes on one local refusal while the other
+account had come back under it, and nothing told it to ask sooner
+(#2526).
+
+The wait magpie itself names is held to cappedRecheck, half a minute:
+magpie reads what each account has left again about every minute, so
+asked again sooner, it finds one that came back — the refusal says so
+now, and a window renewing within the bound is believed as it says. The
+checkpoint refusal (#2517) says the same. A refusal of the vendor's own
+keeps the vendor's Retry-After, and the error-aware rest of routing
+(restAfter, patience, autoReset) is unchanged.
+
+Test: TestCodexNoCreditsRetryAfterBounded — two accounts held as they
+won't spend their credits, their windows renewing hours off, get a
+Retry-After of the bound, not the renewal (red before, "10800"); a
+window renewing within the bound is believed as it says.
+
+Fixes #2526
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gateway/codex_credits_test.go | 55 ++++++++++++++++++++++++++
+ internal/gateway/fallback.go           | 11 ++++++
+ internal/gateway/gateway.go            | 10 ++++-
+ 3 files changed, 75 insertions(+), 1 deletion(-)
+
+diff --git a/internal/gateway/codex_credits_test.go b/internal/gateway/codex_credits_test.go
+index 1b5ed82b..14a9ca3e 100644
+--- a/internal/gateway/codex_credits_test.go
++++ b/internal/gateway/codex_credits_test.go
+@@ -1,8 +1,11 @@
+ package gateway
+ 
+ import (
++	"net/http/httptest"
++	"strconv"
+ 	"strings"
+ 	"testing"
++	"time"
+ 
+ 	"github.com/yetone/magpie/internal/provider"
+ )
+@@ -95,6 +98,58 @@ func TestCodexNoCreditsEveryAccount(t *testing.T) {
+ 	}
+ }
+ 
++// Every account held as none may spend its credits: the wait the client is
++// told (Retry-After) is held to a short recheck, however far the windows'
++// renewals are — magpie reads what each account has left again about every
++// minute, so an agent asking sooner finds one that came back, where sleeping
++// to a renewal hours off sat a Codex session out for 80 minutes on one
++// local refusal (#2526). A window renewing within the bound is believed as
++// it says.
++func TestCodexNoCreditsRetryAfterBounded(t *testing.T) {
++	codexSignedIn(t, "spare@example.com")
++	b := newResetBackend(t)
++	capUsage(t, map[string]float64{"me@example.com": 100, "spare@example.com": 100})
++	for _, u := range []string{"me@example.com", "spare@example.com"} {
++		if err := provider.SetCodexCredits(u, false); err != nil {
++			t.Fatal(err)
++		}
++	}
++	srv := New()
++	post := func() (int, string) {
++		rec := httptest.NewRecorder()
++		req := httptest.NewRequest("POST", CodexPath+"/responses", strings.NewReader(`{"model":"gpt-5.5","stream":true,"input":"ping"}`))
++		req.Header.Set("Authorization", "Bearer chatgpt-token")
++		req.Header.Set("chatgpt-account-id", "acct-1")
++		srv.Handler().ServeHTTP(rec, req)
++		return rec.Code, rec.Header().Get("Retry-After")
++	}
++	code, after := post()
++	if tried, _ := b.seen(); code != 429 || tried != "" {
++		t.Fatalf("%d tried %q", code, tried)
++	}
++	if secs, err := strconv.Atoi(after); err != nil || secs > int(cappedRecheck.Seconds())+1 {
++		t.Fatalf("Retry-After %q: the client sleeps till the windows renew", after)
++	}
++
++	// a window that renews within the bound is believed as it says
++	reset := time.Now().Add(15 * time.Second)
++	old := allowances
++	allowances = func(string) map[string]provider.Allowance {
++		return map[string]provider.Allowance{
++			"me@example.com":    {{Used: 100, Resets: reset, Span: 5 * time.Hour}},
++			"spare@example.com": {{Used: 100, Resets: reset, Span: 5 * time.Hour}},
++		}
++	}
++	t.Cleanup(func() { allowances = old })
++	code, after = post()
++	if code != 429 {
++		t.Fatalf("near renewal: %d", code)
++	}
++	if secs, err := strconv.Atoi(after); err != nil || secs < 13 || secs > 18 {
++		t.Fatalf("Retry-After %q: a window renewing within the bound is not believed", after)
++	}
++}
++
+ // Codex's one account, its week used up and credits left, set not to
+ // spend them and to spend its resets by itself: relayed as it came it
+ // would answer on its credits; routed, it is held, and with nobody else
+diff --git a/internal/gateway/fallback.go b/internal/gateway/fallback.go
+index d65bf90b..2131982f 100644
+--- a/internal/gateway/fallback.go
++++ b/internal/gateway/fallback.go
+@@ -36,6 +36,17 @@ import (
+ 
+ const fallbackCooldown = time.Minute
+ 
++// cappedRecheck is the longest an agent is told to wait when magpie itself
++// refuses a request because every account serving the model is held at its
++// usage cap or set not to spend its credits (cappedError, #2526). The wait
++// those holds name is a window's renewal, hours off, and an agent that
++// sleeps to it as told (Codex's responses_retry) sits a turn out for that
++// long while another account comes back under it — magpie reads what each
++// account has left again about every minute, so asked again sooner, it
++// finds one that did. A refusal of the vendor's own goes back with the
++// vendor's Retry-After as it came.
++const cappedRecheck = 30 * time.Second
++
+ type candidate struct {
+ 	p     provider.Provider
+ 	model string
+diff --git a/internal/gateway/gateway.go b/internal/gateway/gateway.go
+index a6a49973..973fd146 100644
+--- a/internal/gateway/gateway.go
++++ b/internal/gateway/gateway.go
+@@ -2023,16 +2023,24 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
+ 			// compaction was a candidate, and it is held: the others
+ 			// weren't tried for that, not for being held too (#2517)
+ 			msg, back = checkpointCappedError(call.Model, *checkpoint, sealer, time.Now())
++			msg += ". asking again before then is not wasted: magpie reads what each account has left again about every minute"
+ 			record = checkpointCappedRecord(sealer)
+ 		} else {
+ 			msg, back = cappedError(call.Model, held, time.Now())
++			msg += ". asking again before then is not wasted: magpie reads what each account has left again about every minute"
+ 			if strictHeld != nil {
+ 				msg += ". The conversation stays strictly on that account (Stays: Strict), so magpie doesn't move it to another"
+ 			}
+ 			record = cappedRecord(held)
+ 		}
+ 		if d := time.Until(back); d > 0 {
+-			w.Header().Set("Retry-After", strconv.Itoa(int(d.Seconds())+1))
++			// magpie's own refusal is not held to the fullest window's
++			// renewal, hours off (#2526): the agent is told to ask again
++			// sooner, and one held account that came back under it is
++			// taken then; a window renewing within the bound is believed
++			// as it says. A refusal of the vendor's own keeps the
++			// vendor's Retry-After.
++			w.Header().Set("Retry-After", strconv.Itoa(int(min(d, cappedRecheck).Seconds())+1))
+ 		}
+ 		call.Status, call.Error = 429, record
+ 		writeError(w, from, 429, msg)
+-- 
+2.50.1 (Apple Git-155)
+

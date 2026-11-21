@@ -1,0 +1,20 @@
+checkin: a DarkWake's failure hours later doesn't stack the offline tries
+
+A Mac that sleeps through midnight is woken now and then by a DarkWake
+too short for the check-in to finish (#5020: "The operation timed out"
+in a 2-7 s wake). Each of those failures counted as one more try in a
+row of them, and the backoff the row had earned, doubled to half an
+hour, stood between the machine's waking for good and the day's
+check-in: mufanmu's logs show the look two minutes after the lid opened
+kept back by the DarkWake of half an hour before, and the day went by
+without a check-in.
+
+Tries in a row are now only so while the last try's backoff was still
+running: a failure hours later is the day's first again, and the look
+on waking for good asks at once. What #265's backoff is for — tries
+close enough together that the network never came back between them —
+is kept.
+
+Fixes #5020
+
+Generated-by: GLM-5.3-Flash (ZCode)

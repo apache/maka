@@ -1,0 +1,86 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Wed, 4 Nov 2026 02:40:08 +0800
+Subject: [PATCH] claudebridge tests: the proxy test's timeout says how far the
+ helper got, and keeps its stderr (#4782)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+One window covers the child's start, its stdin processing, the callback
+and the reply, and the red said only "no answer from the helper" — full
+run, unreproducible alone, nothing to tell the stages apart. The timeout
+now reports the written instant, whether the callback reached the server
+and when, and whatever the helper said to its stderr, which is captured
+where it wasn't before. No timeout changed, no assertion weakened: the
+next red names its stage.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/claudebridge/proxy_test.go | 17 ++++++++++++++++-
+ 1 file changed, 16 insertions(+), 1 deletion(-)
+
+diff --git a/internal/claudebridge/proxy_test.go b/internal/claudebridge/proxy_test.go
+index 7954195f4..2035e5851 100644
+--- a/internal/claudebridge/proxy_test.go
++++ b/internal/claudebridge/proxy_test.go
+@@ -3,6 +3,7 @@ package claudebridge
+ import (
+ 	"bufio"
+ 	"encoding/json"
++	"fmt"
+ 	"net"
+ 	"net/http"
+ 	"net/http/httptest"
+@@ -10,6 +11,7 @@ import (
+ 	"os/exec"
+ 	"path/filepath"
+ 	"strings"
++	"sync/atomic"
+ 	"testing"
+ 	"time"
+ )
+@@ -48,7 +50,10 @@ func TestCallbackGoesPastTheAgentsProxy(t *testing.T) {
+ 	if err != nil {
+ 		t.Skip("can't listen on", ip, err)
+ 	}
++	started := time.Now()
++	var callbackAt atomic.Int64 // when the helper's callback reached the server, 0 before
+ 	cb := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		callbackAt.CompareAndSwap(0, time.Since(started).Milliseconds())
+ 		_ = json.NewEncoder(w).Encode(map[string]any{"content": []map[string]any{{"type": "text", "text": "file body"}}})
+ 	}))
+ 	cb.Listener.Close()
+@@ -87,10 +92,13 @@ func TestCallbackGoesPastTheAgentsProxy(t *testing.T) {
+ 		"ALL_PROXY="+p, "all_proxy="+p, "NO_PROXY=localhost,127.0.0.1,::1", "no_proxy=localhost,127.0.0.1,::1")
+ 	in, _ := cmd.StdinPipe()
+ 	out, _ := cmd.StdoutPipe()
++	errs := &strings.Builder{}
++	cmd.Stderr = errs // the helper's own account of its failure, kept for the report
+ 	if err := cmd.Start(); err != nil {
+ 		t.Fatal(err)
+ 	}
+ 	t.Cleanup(func() { in.Close(); cmd.Wait() })
++	written := time.Since(started)
+ 	in.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"read","arguments":{},"_meta":{"claudecode/toolUseId":"toolu_1"}}}` + "\n"))
+ 	line := make(chan string, 1)
+ 	go func() {
+@@ -105,7 +113,14 @@ func TestCallbackGoesPastTheAgentsProxy(t *testing.T) {
+ 	select {
+ 	case got = <-line:
+ 	case <-time.After(20 * time.Second):
+-		t.Fatal("no answer from the helper")
++		// one window covers the child's start, its stdin processing, the
++		// callback and the reply; say how far it got (#4782)
++		stage := "the helper never reached the callback server"
++		if at := callbackAt.Load(); at != 0 {
++			stage = fmt.Sprintf("the callback arrived at %dms but no line followed", at)
++		}
++		t.Fatalf("no answer from the helper in 20s (written %dms): %s; helper stderr:\n%s",
++			written.Milliseconds(), stage, strings.TrimSpace(errs.String()))
+ 	}
+ 	if !strings.Contains(got, "file body") {
+ 		t.Fatalf("the call didn't reach magpie: %s", got)
+-- 
+2.50.1 (Apple Git-155)
+

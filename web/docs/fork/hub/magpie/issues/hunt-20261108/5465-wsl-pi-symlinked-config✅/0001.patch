@@ -1,0 +1,225 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Sun, 8 Nov 2026 09:15:15 +0800
+Subject: [PATCH] agent: a Pi-like agent's settings.json and models.json stay
+ links where they lead in WSL
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Temp0jd (#5465): on Windows with WSL detection on, Pi's
+~/.pi/agent/settings.json and models.json are links into a dotfiles repo.
+Through \\wsl.localhost Windows can't follow a link the distro has
+(wsl_links.go), so edit.Read said the files weren't there and SetJSON
+started from {} — the user's packages and every provider magpie doesn't
+own were wiped; beforeMagpie recorded both files as absent
+(pi@wsl:<distro>.before.absent); WriteAtomic renamed a regular file over
+each link, and the links were gone. With the links restored (a config
+manager puts them back), Wired() read no defaultProvider through the UNC
+path and the row read as not wired, Drift said replaced, and Reconnect
+overwrote the restored links again.
+
+The probe has asked where each agent's folder leads since #4502, not
+where a file inside it does, and piLikeKeyed built the three files' paths
+without at.open — so a link the distro has at a file, with the folders
+around it real, was never mapped to where it leads. Now the probe asks
+after the three files a Pi-like agent keeps (Pi's and OmO's
+~/.<dir>/agent ones, Prime Agent's in ~/.prime/agent, whose folder the
+probe already asks after), and piLikeKeyed opens the three paths with
+at.open, so each is read, spliced into and written where its link leads
+(distro.open), the way a path below a linked agent folder already is.
+
+Every other builder builds its files inside a folder at.open already
+covers (the agent's own dir), so a link at a file alone is this same gap
+there — Codex's config.toml, Claude Code's settings.json and the rest —
+left as they are, each its own ask.
+
+Run (mote, at 350599a0f plus this): gofmt -l; go vet ./..., GOOS=linux
+go vet -tags nogui ./..., GOOS=windows go vet ./...; go build,
+GOOS=linux go build -tags nogui, GOOS=windows go build, ok. go test
+-tags nogui -run 'TestWSL|TestPi|TestOmo|TestOmO|TestPrime' over agent,
+ok. TestWSLPiLinkedConfig (new) is red without each half of the change:
+with the probe's words alone (the at.open hunk taken out) Pi's settings
+read at the \\wsl.localhost spelling and the pick failed; with at.open
+alone (the wslLinkPaths hunk taken out) the probe's word of where the
+files lead was dropped and nothing was mapped. go test -race over the
+WSL link tests, ok. go test -tags nogui -count=1 over agent: only
+TestMothX red, as it is without this (the machine's own proxy setup).
+go test -tags nogui -count=1 ./... under a temp HOME: TestMothX,
+TestProxyCheckSaysAProxyPassedBy and TestHostToldTheGatewayAddress red,
+each the same on the tree without this (the first two on the list of
+this machine's standing reds, the third checked against it), 85 of 88
+packages ok.
+
+Not run on Windows with a real distro; the shape is FakeWSL's, whose
+links read as broken until magpie opens them where they lead, as they
+do through \\wsl.localhost.
+---
+ internal/agent/agents.go      |  10 +++-
+ internal/agent/wsl.go         |  10 +++-
+ internal/agent/wsl_pi_test.go | 109 ++++++++++++++++++++++++++++++++++
+ 3 files changed, 124 insertions(+), 5 deletions(-)
+
+diff --git a/internal/agent/agents.go b/internal/agent/agents.go
+index 6c8632750..a2e33ac02 100644
+--- a/internal/agent/agents.go
++++ b/internal/agent/agents.go
+@@ -1460,9 +1460,13 @@ func piLike(at place, id, name, dir string) *Agent {
+ // that names the agent (agentKeyAt) for an agent whose requests carry
+ // nothing else of it (Prime Agent, primeagent.go).
+ func piLikeKeyed(at place, id, name, dir string, key func() string) *Agent {
+-	path := filepath.Join(dir, "settings.json")
+-	modelsPath := filepath.Join(dir, "models.json")
+-	auth := filepath.Join(dir, "auth.json")
++	// the three files opened where a link leads (place.open, #5465): a
++	// person keeps them as links into a dotfiles repo, which can't be
++	// followed through \\wsl.localhost, while the folder around them is
++	// real and no link of the agent's own folder covers them
++	path := at.open(filepath.Join(dir, "settings.json"))
++	modelsPath := at.open(filepath.Join(dir, "models.json"))
++	auth := at.open(filepath.Join(dir, "auth.json"))
+ 	get := func(k string) (string, bool) { return edit.GetJSON(path, k) }
+ 	set := func(kvs ...edit.KV) error { return edit.SetJSON(path, kvs...) }
+ 	pair := pairSet(set, "defaultProvider", "defaultModel")
+diff --git a/internal/agent/wsl.go b/internal/agent/wsl.go
+index f2db0f0ca..af38182cd 100644
+--- a/internal/agent/wsl.go
++++ b/internal/agent/wsl.go
+@@ -1711,9 +1711,15 @@ var wslProbeScript = func() string {
+ 
+ // wslLinkPaths are the paths under a distro's $HOME the probe asks where
+ // they lead (distro.Links): each agent's folder and its skills, and the
+-// folders and files the agents keep beside theirs.
++// folders and files the agents keep beside theirs — a Pi-like agent's
++// settings.json, models.json and auth.json too, which a person keeps as
++// links into a dotfiles repo while the folders around them are real
++// (#5465).
+ func wslLinkPaths() []string {
+-	out := []string{".config", ".local", ".local/share", ".agents", ".agents/skills", ".gemini", ".gemini/config", ".gemini/skills", ".kimi", ".reasonix", ".claude.json", ".slock", ".kimi-code/sessions", wslCopilotDir}
++	out := []string{".config", ".local", ".local/share", ".agents", ".agents/skills", ".gemini", ".gemini/config", ".gemini/skills", ".kimi", ".reasonix", ".claude.json", ".slock", ".kimi-code/sessions", wslCopilotDir,
++		".pi/agent", ".pi/agent/settings.json", ".pi/agent/models.json", ".pi/agent/auth.json",
++		".omo/agent", ".omo/agent/settings.json", ".omo/agent/models.json", ".omo/agent/auth.json",
++		".prime/agent/settings.json", ".prime/agent/models.json", ".prime/agent/auth.json"}
+ 	for _, k := range wslKinds {
+ 		if k.dir != "" {
+ 			out = append(out, k.dir, k.dir+"/skills")
+diff --git a/internal/agent/wsl_pi_test.go b/internal/agent/wsl_pi_test.go
+index 29e0620db..e177e23ae 100644
+--- a/internal/agent/wsl_pi_test.go
++++ b/internal/agent/wsl_pi_test.go
+@@ -228,3 +228,112 @@ func TestWSLPiStopped(t *testing.T) {
+ 		t.Fatal(v)
+ 	}
+ }
++
++// linkedPiDistro is a running distro whose ~/.pi/agent/settings.json and
++// models.json are links into a dotfiles repo (#5465), with the real files
++// where the links lead. As through \\wsl.localhost, where a link the
++// distro has can't be followed, the path as it is spelt can't be opened
++// here: the links read as broken until magpie opens them where they lead.
++// The probe's word of where they lead is handed in, as readlink -f there
++// would have said it.
++func linkedPiDistro(t *testing.T, where string, onDrive bool) (home, repo string) {
++	t.Helper()
++	syncHome(t)
++	root, drive := t.TempDir(), t.TempDir()
++	home = filepath.Join(root, "home", "me")
++	agent := filepath.Join(home, ".pi", "agent")
++	if err := os.MkdirAll(agent, 0o755); err != nil {
++		t.Fatal(err)
++	}
++	if onDrive {
++		repo = filepath.Join(drive, "Users", "me", "pi-config", "agent")
++	} else {
++		repo = filepath.Join(root, filepath.FromSlash(where))
++	}
++	if err := os.MkdirAll(repo, 0o755); err != nil {
++		t.Fatal(err)
++	}
++	if err := os.WriteFile(filepath.Join(repo, "settings.json"), []byte(`{"packages":["pkg-a"],"defaultProvider":"xai","defaultModel":"grok-4.6"}`), 0o644); err != nil {
++		t.Fatal(err)
++	}
++	if err := os.WriteFile(filepath.Join(repo, "models.json"), []byte(`{"providers":{"custom":{"baseUrl":"https://example.com"}}}`), 0o644); err != nil {
++		t.Fatal(err)
++	}
++	for _, f := range []string{"settings.json", "models.json"} {
++		if err := os.Symlink(where+"/"+f, filepath.Join(agent, f)); err != nil {
++			t.Skip("no symlinks here:", err)
++		}
++	}
++	probe := "home:/home/me\ndir:.pi\n" +
++		"link:.pi/agent/settings.json " + where + "/settings.json\n" +
++		"link:.pi/agent/models.json " + where + "/models.json\n"
++	if onDrive {
++		probe += "win:/mnt/c C:\n"
++		t.Cleanup(FakeWSLDrives(map[string]string{"C:": drive}))
++	}
++	t.Cleanup(FakeWSL(map[string]string{"Ubuntu": probe}, map[string]string{"Ubuntu": root}))
++	return home, repo
++}
++
++// Pi wired into a distro whose settings.json and models.json are links
++// into a dotfiles repo (Temp0jd's #5465): the pick goes into what the
++// links hold, keeping the links, the user's packages and other providers,
++// and the row reads as wired — where the links lead on one of Windows'
++// drives, and where they lead inside the distro.
++func TestWSLPiLinkedConfig(t *testing.T) {
++	for _, tc := range []struct {
++		name, where string
++		onDrive     bool
++	}{
++		{"on a Windows drive", "/mnt/c/Users/me/pi-config/agent", true},
++		{"in the distro", "/data/pi-config/agent", false},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			home, repo := linkedPiDistro(t, tc.where, tc.onDrive)
++			if err := provider.Save(provider.Provider{ID: "anth", Name: "Anth", Key: "k", Anthropic: "http://127.0.0.1:1",
++				Models: []string{"claude-sonnet-5"}}); err != nil {
++				t.Fatal(err)
++			}
++			a := wslAgentByID(t, "pi@wsl:Ubuntu")
++			if a.Unreached() != nil {
++				t.Fatalf("unreached: %v", a.Unreached())
++			}
++			if a.Path != filepath.Join(repo, "settings.json") {
++				t.Fatalf("Pi's settings read at %q", a.Path)
++			}
++			if err := a.Pick("model", "magpie/relay/glm-4.6"); err != nil {
++				t.Fatal(err)
++			}
++			for _, f := range []string{"settings.json", "models.json"} {
++				fi, err := os.Lstat(filepath.Join(home, ".pi", "agent", f))
++				if err != nil {
++					t.Fatal(err)
++				}
++				if fi.Mode()&os.ModeSymlink == 0 {
++					t.Fatalf("%s was replaced by a regular file", f)
++				}
++			}
++			if p, _ := edit.GetJSON(filepath.Join(repo, "settings.json"), "defaultProvider"); p != "magpie" {
++				t.Fatalf("settings:\n%s", readFile(filepath.Join(repo, "settings.json")))
++			}
++			if m, _ := edit.GetJSON(filepath.Join(repo, "settings.json"), "defaultModel"); m != "relay/glm-4.6" {
++				t.Fatalf("settings:\n%s", readFile(filepath.Join(repo, "settings.json")))
++			}
++			if !strings.Contains(readFile(filepath.Join(repo, "settings.json")), `"pkg-a"`) {
++				t.Fatalf("the user's packages were wiped:\n%s", readFile(filepath.Join(repo, "settings.json")))
++			}
++			if b, _ := edit.GetJSON(filepath.Join(repo, "models.json"), "providers.custom.baseUrl"); b != "https://example.com" {
++				t.Fatalf("the user's own provider was wiped:\n%s", readFile(filepath.Join(repo, "models.json")))
++			}
++			if _, has := edit.GetJSON(filepath.Join(repo, "models.json"), "providers.magpie"); !has {
++				t.Fatalf("no magpie in models.json:\n%s", readFile(filepath.Join(repo, "models.json")))
++			}
++			if !a.Wired() {
++				t.Fatal("the row reads as not wired")
++			}
++			if gone := unstash("pi@wsl:Ubuntu.before.absent"); gone != "" {
++				t.Fatalf("the links were recorded as absent: %q", gone)
++			}
++		})
++	}
++}
+-- 
+2.50.1 (Apple Git-155)
+

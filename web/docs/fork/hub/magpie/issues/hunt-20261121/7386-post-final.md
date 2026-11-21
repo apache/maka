@@ -1,0 +1,504 @@
+@yetone Carrying @HeXiaobo's patch from this issue (their fork branch [`gzip-alias-body`](https://github.com/HeXiaobo/magpie/tree/gzip-alias-body), commit `f09a856` — this account can't open a PR, so I carried the commit over). A gateway key may give a model a name of its own; a client (or a proxy on the way) that gzips a large body kept `"model": "<name>"` packed in the body it forwarded, and the route behind answered 404 `magpie knows no model "<name>"` — the same request worked sent plain and failed sent gzip, so it broke by body size.
+
+**Root cause**: `aliasBody` (`internal/gateway/key_aliases.go:69`) returned at once for any request with a `Content-Encoding` header, so a packed body was never read for the name and went on as it came, name in.
+
+**The fix** (following the reporter's own patch, as is): a `gzip` / `x-gzip` body (case and surrounding space aside) is unpacked within `maxAliasBody` — over the unpacked bytes and over the packed ones alike — and its model is read the way a plain body's is. A name the key gives is swapped in the unpacked body, which goes on unpacked: `Content-Encoding` dropped, `Content-Length` set, `TransferEncoding` and `GetBody` cleared so a body that came chunked is not passed on as one. Every other outcome forwards the request exactly as it came, every packed byte: the model is no name of the key's, the body isn't gzip, it is cut short, or it unpacks over the limit. Every other encoding (`br`, `zstd`, `deflate`, `dcz`) and `identity` are untouched, and the routes behind keep reading packed bodies through their own decoding (`decodedBody`).
+
+**Red without the fix** (base `604f707d2`, the old guard `Content-Encoding != ""` restored in `aliasBody`, tests kept): `go test ./internal/gateway -run TestAlias` fails on exactly the two reporter-named tests:
+
+```
+--- FAIL: TestAliasUnpacksGzipBodyForAName
+    key_aliases_gzip_test.go:70: Content-Encoding is still "gzip"
+--- FAIL: TestAliasGzipBodyOverTheGateway
+    key_aliases_gzip_test.go:270: packed body by name: 404 {"error":{...,"message":"magpie knows no model \"default\" ...","type":"not_found_error"}}
+```
+
+The other 7 new tests stay green on the old code (they assert the pass-through paths). With the fix: `ok`.
+
+<details><summary>patch: gateway: a gzip request body names the model a key calls a name — git am applies it as is; SHA-256 first 16: 2789a17a2c37e414</summary>
+
+````tFrom 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: HeXiaobo <snoopylion@gmail.com>
+Date: Sat, 21 Nov 2026 07:46:39 +0800
+Subject: [PATCH] gateway: a gzip request body names the model a key calls a
+ name
+
+A key may give a model a name of its own, and a request that asks by the
+name goes to the model. The name is read from the JSON body in aliasBody,
+which returned at once for any body with a Content-Encoding, so a client
+or a proxy that gzips a large body lost the name: the packed body went on
+with "model": "<name>" and the route behind answered 404, a model magpie
+doesn't serve. Plain bodies took the name as before, so the same request
+worked or failed by its size.
+
+- aliasBody unpacks a gzip body (gzip, x-gzip; any case, case aside) and
+  reads its model as it reads a plain one, within maxAliasBody of unpacked
+  bytes and of packed bytes alike.
+- A name the key gives is swapped in the unpacked body, which goes on
+  unpacked: "Content-Encoding" taken off, Content-Length set, and
+  TransferEncoding and GetBody cleared so a body that came chunked is not
+  passed on as one.
+- A model that is no name of the key's, a body that isn't gzip, a body cut
+  short, and one larger than maxAliasBody go on as they came, every packed
+  byte of them, and the routes behind read them through their own
+  decoding, as they did before. Every other encoding is left as it was:
+  br, zstd, deflate and dcz are still not read for a name.
+
+Run on macOS, key_aliases.go at this head:
+- go test ./internal/gateway/ -run Alias: ok, the 9 new tests among the 15.
+  TestAliasUnpacksGzipBodyForAName, TestAliasGzipBodyOverTheGateway and
+  TestAliasLeavesGzipBodyItHasNoNameFor are red with the old aliasBody
+  back: "Content-Encoding is still \"gzip\"", and the gateway's
+  `404 ... magpie knows no model "default"`.
+- gofmt -l on both files: nothing.
+
+Not run: the whole package, `go test ./...`, the cross-OS vet and builds.
+---
+ docs/subsystems/gateway-routing.md        |   2 +-
+ internal/gateway/key_aliases.go           |  70 +++++-
+ internal/gateway/key_aliases_gzip_test.go | 284 ++++++++++++++++++++++
+ 3 files changed, 353 insertions(+), 3 deletions(-)
+ create mode 100644 internal/gateway/key_aliases_gzip_test.go
+
+diff --git a/docs/subsystems/gateway-routing.md b/docs/subsystems/gateway-routing.md
+index 571080190..8f5322222 100644
+--- a/docs/subsystems/gateway-routing.md
++++ b/docs/subsystems/gateway-routing.md
+@@ -1454,7 +1454,7 @@ served by the realtime route as other DashScope hosts are. Covered by
+ 
+ A gateway key's models (`Key.Models`, [`access/models.go`](../../internal/access/models.go), tsingchao on X) are named one by one (`provider/model`), by a provider's whole list (`provider/*`), or by a pattern: an entry that starts with `re:` is a regular expression, RE2 syntax (Go's `regexp`), case-insensitive and not anchored (`re:^gpt-`, `re:claude.*(sonnet|opus)`). It is tried on the whole `provider/model` id and on the model part alone, so `re:^gpt-` and `re:^openai/gpt-` both take `openai/gpt-5`. It never takes a routing group (`group/…`), which a key names itself. Every route that holds a key to its models asks `access.ModelAllowed` (through `Identity.Allows`, `allows`, `modelAllowed`, `keyAllowed`), so a pattern holds chat, Responses, Messages, `count_tokens`, Gemini's path, `/v1/systemone`, the decision models and every list alike (`TestGatewayKeyModelPatternHoldsEveryRoute`). `CleanModels` compiles a pattern when a key is saved and refuses one that is empty or isn't a regular expression; one that fails to compile later (a hand-edited file) matches nothing, never every model. A pattern is for the keys the user makes: `IssueKey` refuses one, since an issued key's models are named one by one or with `*`. The model picker (Gateway page, the key's models badge) has a search box over a model's name and id; typing `re:` and a pattern and pressing Enter adds the pattern; `magpie gateway-key models <id> 're:^gpt-'` does the same.
+ 
+-A key may also name a model its own way (`Key.Aliases`, `aliases-key`, the row menu's Model names, `magpie gateway-key aliases <id> name=provider/model …`): `/v1/models` for that key lists the name in the model's place, and a request that names it goes to the model. A name is a single word (no space, `*` or `re:`) and a name differing only in case is one name; the model must be one the key may use (`ModelAllowed` over its own models and accounts), and when the key later loses the model the name is refused (403) and unlisted. `identifyCaller` rewrites the name once, where the caller's `Identity` is attached to the request ([`gateway/key_aliases.go`](../../internal/gateway/key_aliases.go)): the JSON body's `model` (any route, a body of up to 32MB that isn't compressed), Gemini's `/v1beta/models/<name>:method`, and `GET /v1/models/<name>`; so every later check sees the real model. Limits: a reply still names the real model, Gemini's list (`/v1beta/models`) is not renamed, a non-JSON or compressed body is not read for a name, and an issued key has no names (`TestGatewayKeyAliasRenamesAModel`).
++A key may also name a model its own way (`Key.Aliases`, `aliases-key`, the row menu's Model names, `magpie gateway-key aliases <id> name=provider/model …`): `/v1/models` for that key lists the name in the model's place, and a request that names it goes to the model. A name is a single word (no space, `*` or `re:`) and a name differing only in case is one name; the model must be one the key may use (`ModelAllowed` over its own models and accounts), and when the key later loses the model the name is refused (403) and unlisted. `identifyCaller` rewrites the name once, where the caller's `Identity` is attached to the request ([`gateway/key_aliases.go`](../../internal/gateway/key_aliases.go)): the JSON body's `model` (any route, a body of up to 32MB, gzip unpacked within the same limit and sent on unpacked when a name is swapped), Gemini's `/v1beta/models/<name>:method`, and `GET /v1/models/<name>`; so every later check sees the real model. Limits: a reply still names the real model, Gemini's list (`/v1beta/models`) is not renamed, a non-JSON body, or one an encoding other than gzip squeezed, is not read for a name, and an issued key has no names (`TestGatewayKeyAliasRenamesAModel`, `TestAliasUnpacksGzipBodyForAName`).
+ 
+ ## Claude Code's Gateway Model Discovery
+ 
+diff --git a/internal/gateway/key_aliases.go b/internal/gateway/key_aliases.go
+index 5caccb211..6557f0be2 100644
+--- a/internal/gateway/key_aliases.go
++++ b/internal/gateway/key_aliases.go
+@@ -2,6 +2,7 @@ package gateway
+ 
+ import (
+ 	"bytes"
++	"compress/gzip"
+ 	"io"
+ 	"mime"
+ 	"net/http"
+@@ -22,7 +23,8 @@ import (
+ // the name as they hold the model. Replies say the real model.
+ 
+ // maxAliasBody is the largest JSON body read to find its model: a larger
+-// one goes on as it came, which asks the model by its real id only.
++// one goes on as it came, which asks the model by its real id only. A body
++// that came gzip is held to it unpacked, and to it packed.
+ const maxAliasBody = 32 << 20
+ 
+ // aliasRequest is r with the model a key's name stands for in the model's
+@@ -65,7 +67,7 @@ func withPath(r *http.Request, path string) *http.Request {
+ 
+ // aliasBody swaps the model of a JSON body, every other byte as it was.
+ func aliasBody(r *http.Request, who access.Identity) *http.Request {
+-	if r.Body == nil || r.Body == http.NoBody || r.Header.Get("Content-Encoding") != "" {
++	if r.Body == nil || r.Body == http.NoBody {
+ 		return r
+ 	}
+ 	// a form or a multipart body is no JSON; a client that says no type
+@@ -73,6 +75,15 @@ func aliasBody(r *http.Request, who access.Identity) *http.Request {
+ 	if mt, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type")); mt != "" && !strings.HasSuffix(mt, "json") {
+ 		return r
+ 	}
++	// a client that gzips the large bodies it sends, a proxy on the way to
++	// magpie among them, names the model in the packed body as any other:
++	// gzip is the one encoding a name is read through here
++	if gzipped(r) {
++		return aliasPackedBody(r, who)
++	}
++	if r.Header.Get("Content-Encoding") != "" {
++		return r
++	}
+ 	orig := r.Body
+ 	buf, err := io.ReadAll(io.LimitReader(orig, maxAliasBody+1))
+ 	rest := io.MultiReader(bytes.NewReader(buf), orig)
+@@ -96,6 +107,61 @@ func aliasBody(r *http.Request, who access.Identity) *http.Request {
+ 	return r
+ }
+ 
++// gzipped is whether the body came gzip, which is the encoding a proxy that
++// packs the large bodies it forwards sets. "identity", which is no packing,
++// and every other encoding go the way they went.
++func gzipped(r *http.Request) bool {
++	switch strings.ToLower(strings.TrimSpace(r.Header.Get("Content-Encoding"))) {
++	case "gzip", "x-gzip":
++		return true
++	}
++	return false
++}
++
++// aliasPackedBody is aliasBody for a body that came gzip: the body is
++// unpacked to find its model, within maxAliasBody of unpacked bytes, and a
++// name of the key's is swapped in the unpacked body, which goes on as it is,
++// "Content-Encoding" taken off and the length set. A model that is no name of
++// the key's, a body that can't be unpacked and one larger than maxAliasBody
++// go on as they came, every packed byte of them, which the routes behind read
++// through their own decoding.
++func aliasPackedBody(r *http.Request, who access.Identity) *http.Request {
++	return aliasPackedBodyTo(r, who, maxAliasBody)
++}
++
++// aliasPackedBodyTo is aliasPackedBody with the limit given, so that a test
++// can hold a small body to a small one.
++func aliasPackedBodyTo(r *http.Request, who access.Identity, limit int64) *http.Request {
++	orig := r.Body
++	// the packed bytes read so far: a body given back goes on with them, then
++	// with the rest of itself, byte for byte as it came
++	var packed bytes.Buffer
++	z, err := gzip.NewReader(io.TeeReader(io.LimitReader(orig, limit+1), &packed))
++	if err == nil {
++		var plain []byte
++		if plain, err = io.ReadAll(io.LimitReader(z, limit+1)); err == nil && int64(len(plain)) <= limit {
++			if real, ok := who.AliasFor(modelOf(plain)); ok {
++				plain = rewriteModel(plain, real)
++				r.Body = io.NopCloser(bytes.NewReader(plain))
++				r.ContentLength = int64(len(plain))
++				r.Header = r.Header.Clone()
++				r.Header.Del("Content-Encoding")
++				r.Header.Set("Content-Length", strconv.Itoa(len(plain)))
++				// the body is one piece now and says how long it is, so a client
++				// that sent it chunked is not passed on as one
++				r.TransferEncoding = nil
++				r.GetBody = nil
++				return r
++			}
++		}
++	}
++	r.Body = struct {
++		io.Reader
++		io.Closer
++	}{io.MultiReader(bytes.NewReader(packed.Bytes()), orig), orig}
++	return r
++}
++
+ // aliasNames puts the names a key gives models where the models were in a
+ // list /v1/models gives it.
+ func aliasNames(r *http.Request, data []map[string]any) {
+diff --git a/internal/gateway/key_aliases_gzip_test.go b/internal/gateway/key_aliases_gzip_test.go
+new file mode 100644
+index 000000000..711a68a2d
+--- /dev/null
++++ b/internal/gateway/key_aliases_gzip_test.go
+@@ -0,0 +1,284 @@
++package gateway
++
++import (
++	"bytes"
++	"compress/gzip"
++	"io"
++	"net/http"
++	"net/http/httptest"
++	"strconv"
++	"strings"
++	"testing"
++
++	"github.com/yetone/magpie/internal/access"
++)
++
++// A client that gzips the large bodies it sends (a proxy on the way to
++// magpie does, at 16 KB and up) names the model in the packed body as any
++// other: a name the key gives a model is swapped for the model in the
++// unpacked body, which goes on unpacked, and a request the key gives no
++// name for goes on exactly as it came, every packed byte of it.
++
++const aliasWho = "default"
++
++func aliasIdentity() access.Identity {
++	return access.Identity{Aliases: map[string]string{aliasWho: "plan/m1"}}
++}
++
++func packed(t *testing.T, body string) []byte {
++	t.Helper()
++	var buf bytes.Buffer
++	z := gzip.NewWriter(&buf)
++	if _, err := z.Write([]byte(body)); err != nil {
++		t.Fatal(err)
++	}
++	if err := z.Close(); err != nil {
++		t.Fatal(err)
++	}
++	return buf.Bytes()
++}
++
++func packedRequest(t *testing.T, body string) *http.Request {
++	t.Helper()
++	b := packed(t, body)
++	r := httptest.NewRequest("POST", "/v1/chat/completions", bytes.NewReader(b))
++	r.Header.Set("Content-Type", "application/json")
++	r.Header.Set("Content-Encoding", "gzip")
++	r.ContentLength = int64(len(b))
++	return r
++}
++
++func readAll(t *testing.T, r *http.Request) string {
++	t.Helper()
++	if r.Body == nil {
++		t.Fatal("no body")
++	}
++	b, err := io.ReadAll(r.Body)
++	if err != nil {
++		t.Fatal(err)
++	}
++	return string(b)
++}
++
++const aliasChat = `{"model":"default","messages":[{"role":"user","content":"hi"}]}`
++
++// gzip and a name the key gives: the body goes on unpacked, its model the
++// model, and the headers say so.
++func TestAliasUnpacksGzipBodyForAName(t *testing.T) {
++	r := aliasBody(packedRequest(t, aliasChat), aliasIdentity())
++	if enc := r.Header.Get("Content-Encoding"); enc != "" {
++		t.Fatalf("Content-Encoding is still %q", enc)
++	}
++	got := readAll(t, r)
++	want := `{"model":"plan/m1","messages":[{"role":"user","content":"hi"}]}`
++	if got != want {
++		t.Fatalf("body %s, want %s", got, want)
++	}
++	if r.ContentLength != int64(len(want)) {
++		t.Fatalf("ContentLength %d, want %d", r.ContentLength, len(want))
++	}
++	if cl := r.Header.Get("Content-Length"); cl != strconv.Itoa(len(want)) {
++		t.Fatalf("Content-Length %q, want %d", cl, len(want))
++	}
++}
++
++// gzip and a model the key gives no name for: the packed bytes go on as
++// they came, the header with them.
++func TestAliasLeavesGzipBodyItHasNoNameFor(t *testing.T) {
++	const body = `{"model":"plan/m2","messages":[{"role":"user","content":"hi"}]}`
++	b := packed(t, body)
++	r := httptest.NewRequest("POST", "/v1/chat/completions", bytes.NewReader(b))
++	r.Header.Set("Content-Type", "application/json")
++	r.Header.Set("Content-Encoding", "gzip")
++	r.ContentLength = int64(len(b))
++	before := r.Header.Clone()
++
++	r = aliasBody(r, aliasIdentity())
++	if enc := r.Header.Get("Content-Encoding"); enc != "gzip" {
++		t.Fatalf("Content-Encoding %q, want gzip", enc)
++	}
++	if want := before.Get("Content-Length"); r.Header.Get("Content-Length") != want {
++		t.Fatalf("Content-Length %q, want %q", r.Header.Get("Content-Length"), want)
++	}
++	if r.ContentLength != int64(len(b)) {
++		t.Fatalf("ContentLength %d, want %d", r.ContentLength, len(b))
++	}
++	got, err := io.ReadAll(r.Body)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if !bytes.Equal(got, b) {
++		t.Fatalf("the body changed: %d bytes for the %d that came", len(got), len(b))
++	}
++	// and it is still gzip a route behind can read
++	z, err := gzip.NewReader(bytes.NewReader(got))
++	if err != nil {
++		t.Fatalf("not gzip any more: %v", err)
++	}
++	plain, err := io.ReadAll(z)
++	if err != nil || string(plain) != body {
++		t.Fatalf("unpacked %q, %v", plain, err)
++	}
++}
++
++// a packed body larger than the limit, unpacked: it goes on packed, as it
++// came, whatever its model.
++func TestAliasLeavesGzipBodyOverTheLimit(t *testing.T) {
++	body := `{"model":"default","messages":[{"role":"user","content":"` + strings.Repeat("x", 4096) + `"}]}`
++	b := packed(t, body)
++	r := httptest.NewRequest("POST", "/v1/chat/completions", bytes.NewReader(b))
++	r.Header.Set("Content-Type", "application/json")
++	r.Header.Set("Content-Encoding", "gzip")
++	r.ContentLength = int64(len(b))
++
++	r = aliasPackedBodyTo(r, aliasIdentity(), 1024)
++	if r.Header.Get("Content-Encoding") != "gzip" {
++		t.Fatalf("Content-Encoding %q, want gzip", r.Header.Get("Content-Encoding"))
++	}
++	got, err := io.ReadAll(r.Body)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if !bytes.Equal(got, b) {
++		t.Fatalf("the body changed: %d bytes for the %d that came", len(got), len(b))
++	}
++}
++
++// a body that says gzip and isn't: it goes on as it came, and the route
++// behind says what is wrong with it.
++func TestAliasLeavesBrokenGzipBody(t *testing.T) {
++	b := []byte(`{"model":"default","messages":[]}`)
++	r := httptest.NewRequest("POST", "/v1/chat/completions", bytes.NewReader(b))
++	r.Header.Set("Content-Type", "application/json")
++	r.Header.Set("Content-Encoding", "gzip")
++	r.ContentLength = int64(len(b))
++
++	r = aliasBody(r, aliasIdentity())
++	if r.Header.Get("Content-Encoding") != "gzip" {
++		t.Fatalf("Content-Encoding %q, want gzip", r.Header.Get("Content-Encoding"))
++	}
++	if got := readAll(t, r); got != string(b) {
++		t.Fatalf("body %q, want %q", got, b)
++	}
++}
++
++// a gzip header over a body that is cut short: the bytes that came go on
++// as they came, so the route behind refuses it as it would have.
++func TestAliasLeavesTruncatedGzipBody(t *testing.T) {
++	b := packed(t, aliasChat)
++	cut := b[:len(b)/2]
++	r := httptest.NewRequest("POST", "/v1/chat/completions", bytes.NewReader(cut))
++	r.Header.Set("Content-Type", "application/json")
++	r.Header.Set("Content-Encoding", "gzip")
++	r.ContentLength = int64(len(cut))
++
++	r = aliasBody(r, aliasIdentity())
++	if got := readAll(t, r); !bytes.Equal([]byte(got), cut) {
++		t.Fatalf("the body changed: %d bytes for the %d that came", len(got), len(cut))
++	}
++	if r.Header.Get("Content-Encoding") != "gzip" {
++		t.Fatalf("Content-Encoding %q, want gzip", r.Header.Get("Content-Encoding"))
++	}
++}
++
++// no Content-Encoding: the body is read, its model swapped, the length
++// set, as it was before gzip was read here at all.
++func TestAliasUnpackedBodyUnchanged(t *testing.T) {
++	r := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(aliasChat))
++	r.Header.Set("Content-Type", "application/json")
++	r.ContentLength = int64(len(aliasChat))
++
++	r = aliasBody(r, aliasIdentity())
++	got := readAll(t, r)
++	want := `{"model":"plan/m1","messages":[{"role":"user","content":"hi"}]}`
++	if got != want {
++		t.Fatalf("body %s, want %s", got, want)
++	}
++	if r.ContentLength != int64(len(want)) || r.Header.Get("Content-Length") != strconv.Itoa(len(want)) {
++		t.Fatalf("length %d / %q, want %d", r.ContentLength, r.Header.Get("Content-Length"), len(want))
++	}
++}
++
++// another encoding is not unpacked here: brotli, zstd and the rest go on
++// as they came, the model named in them as it is.
++func TestAliasLeavesOtherEncodings(t *testing.T) {
++	for _, enc := range []string{"br", "zstd", "deflate", "dcz"} {
++		r := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(aliasChat))
++		r.Header.Set("Content-Type", "application/json")
++		r.Header.Set("Content-Encoding", enc)
++		r.ContentLength = int64(len(aliasChat))
++
++		r = aliasBody(r, aliasIdentity())
++		if got := r.Header.Get("Content-Encoding"); got != enc {
++			t.Fatalf("%s: Content-Encoding %q", enc, got)
++		}
++		if got := readAll(t, r); got != aliasChat {
++			t.Fatalf("%s: body %q", enc, got)
++		}
++	}
++}
++
++// a client that sent its body chunked keeps reading it whole when the body
++// goes back as it came.
++func TestAliasGivesBackChunkedGzipWhole(t *testing.T) {
++	const body = `{"model":"plan/m2","messages":[{"role":"user","content":"hi"}]}`
++	b := packed(t, body)
++	r := httptest.NewRequest("POST", "/v1/chat/completions", bytes.NewReader(b))
++	r.Header.Set("Content-Type", "application/json")
++	r.Header.Set("Content-Encoding", "gzip")
++	r.ContentLength = -1
++	r.TransferEncoding = []string{"chunked"}
++
++	r = aliasBody(r, aliasIdentity())
++	got, err := io.ReadAll(r.Body)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if !bytes.Equal(got, b) {
++		t.Fatalf("the body changed: %d bytes for the %d that came", len(got), len(b))
++	}
++	if strings.Join(r.TransferEncoding, ",") != "chunked" {
++		t.Fatalf("Transfer-Encoding %v", r.TransferEncoding)
++	}
++}
++
++// the same request over a handler: a packed body asking by the key's name
++// reaches the model, an unpacked one asks by its own name as it did.
++func TestAliasGzipBodyOverTheGateway(t *testing.T) {
++	fresh(t)
++	plan := &fake{t: t, ctype: "application/json", reply: `{"id":"from-plan","choices":[]}`}
++	spare := &fake{t: t, ctype: "application/json", reply: `{"id":"from-spare","choices":[]}`}
++	twoProviders(t, plan, spare)
++	keys, secrets := newCaller(t, "Packed")
++	if _, err := access.Update("aliases-key", access.Change{Key: keys[0].ID, Models: []string{"plan/*"}, Aliases: map[string]string{"default": "plan/m1"}}); err != nil {
++		t.Fatal(err)
++	}
++	h := New().Handler()
++	packedDo := func(body string) *httptest.ResponseRecorder {
++		b := packed(t, body)
++		r := httptest.NewRequest("POST", "/v1/chat/completions", bytes.NewReader(b))
++		r.Header.Set("Authorization", "Bearer "+secrets[0])
++		r.Header.Set("Content-Type", "application/json")
++		r.Header.Set("Content-Encoding", "gzip")
++		r.ContentLength = int64(len(b))
++		w := httptest.NewRecorder()
++		h.ServeHTTP(w, r)
++		return w
++	}
++	plan.calls = 0
++	if w := packedDo(aliasChat); w.Code != 200 {
++		t.Fatalf("packed body by name: %d %s", w.Code, w.Body.String())
++	}
++	if plan.calls != 1 || !strings.Contains(string(plan.got), `"m1"`) || strings.Contains(string(plan.got), "default") {
++		t.Fatalf("the provider got %s", plan.got)
++	}
++	// a model the key gives no name for is sent as it was asked
++	plan.calls = 0
++	const plain = `{"model":"plan/m1","messages":[{"role":"user","content":"hi"}]}`
++	if w := packedDo(plain); w.Code != 200 {
++		t.Fatalf("packed body by model: %d %s", w.Code, w.Body.String())
++	}
++	if plan.calls != 1 || !strings.Contains(string(plan.got), `"m1"`) {
++		t.Fatalf("the provider got %s", plan.got)
++	}
++}
+-- 
+2.50.1 (Apple Git-155)
+
+````
+
+</details>
+
+**Branch with the commit**: [`fix/7386-gzip-alias`](https://github.com/ggbdpq/magpie/tree/fix/7386-gzip-alias) (head `527eb84c56e991ea856fcfd23b362c11253cc3c8`), onto current `upstream/main` (`18cfe278b`); on a fresh checkout `git am` applies clean (verified on detached `18cfe278b`: applied, resulting tree byte-identical to the branch head, author kept).
+
+
+| Check | Result |
+| --- | --- |
+| `TestAliasUnpacksGzipBodyForAName` (new) | red before the fix (`Content-Encoding is still "gzip"`), pass after |
+| `TestAliasGzipBodyOverTheGateway` (new, over the real handler) | red before the fix (404 `magpie knows no model "default"`), pass after |
+| `TestAliasLeavesGzipBodyItHasNoNameFor`, `…OverTheLimit`, `…BrokenGzipBody`, `…TruncatedGzipBody`, `TestAliasUnpackedBodyUnchanged`, `TestAliasLeavesOtherEncodings`, `TestAliasGivesBackChunkedGzipWhole` (new) | pass |
+| `go test ./internal/gateway -run Alias` (17 tests: the 9 new + 8 existing alias tests incl. `TestGatewayKeyAliasRenamesAModel`) | pass |
+| targeted `-race` over the same | pass |
+| `go test ./internal/gateway/ -tags nogui -timeout 45m -count=1` | FAIL on this box — same environment-bound set as base `604f707d2` (Claude Code CLI/TUI and OpenAI-socket tests that need this machine's real tool shims): 74 failures shared with base, one load flake each side (`TestClaudeTUIConversationKeepsItsFolderWhenTheCallerMoves` on the head run — passes 3× alone on the head tree; two on the base run) — zero tip-only failures |
+| `gofmt -l` on the changed Go files | prints nothing |
+| `git diff --check upstream/main..HEAD` | clean |
+| `go vet ./...`; `GOOS=linux go vet -tags nogui ./...`; `GOOS=windows go vet ./...` | clean |
+| `go build`; `GOOS=linux go build -tags nogui`; `GOOS=windows go build` | clean (darwin linker warnings pre-existing) |
+| Ablation | restoring the old guard in `aliasBody` with the tests kept turns `TestAliasUnpacksGzipBodyForAName` and `TestAliasGzipBodyOverTheGateway` red (lines above); restored, green |
+| Re-verified on upstream/main `18cfe278b` | carried onto `604f707d2` (the branch's base `d7126a2` is one commit behind it; only a docs bullet differs, `key_aliases.go` untouched between them), then rebased onto the current tip `18cfe278b` — the commit between is GUI CSS only, no overlap with the touched files; named tests, targeted `-race`, vet and builds re-run on the rebased head |
+
+**Siblings**: `aliasBody`'s callers — one: `aliasRequest` (`key_aliases.go:50`), reached from `identifyCaller` (`lan.go:837`); the fix is at the single body-reading bottleneck. Already guarded: `decodedBody` (`request_bounds.go:153`) reads gzip/zstd/br request bodies itself on every route, packed or now-unpacked alike. Different by design: the encoding-aware size accounting (`member.go:185`, `key_limit.go:71`, `body_cap.go:285`) — a body that goes on packed keeps every byte and header, so it sees what it saw before. Deferred: `br`, `zstd`, `deflate` and `dcz` are still not read for a name — the same 404 is possible if a proxy packs with one of those; the patch deliberately reads gzip only (the encoding proxies set at 16 KB and up), a follow-up issue could take the rest.
+
+**Not verified**: a live proxy packing bodies on the way to magpie (the reporter's scene) — no such relay here; the over-the-handler test with a genuinely packed body (`TestAliasGzipBodyOverTheGateway`) is the closest reproduction.
+
+**Attribution**: the fix and its tests are @HeXiaobo's; I carried the commit over as-is (author kept) and ran the verification above. AI-written (GLM-5.3-Flash (ZCode)) only for the carrying and the verification; I've read the whole diff. Please keep the author (`HeXiaobo`).

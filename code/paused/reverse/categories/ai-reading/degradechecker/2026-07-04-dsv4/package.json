@@ -1,0 +1,1 @@
+{"name":"degchecker-dsv4","version":"2.4.6","description":"ChatGPT Degrade Checker 降级检查 — 逆向工程项目","license":"UNLICENSED","scripts":{"build":"tsc","check":"tsc --noEmit"},"devDependencies":{"typescript":"^5.5.0","@types/chrome":"^0.0.268"}}

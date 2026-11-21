@@ -1,0 +1,202 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Fri, 20 Nov 2026 00:34:38 +0800
+Subject: [PATCH] gateway: a stalled upload's try ends without killing the
+ connection's other streams (#7182)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+What changed: stallGuard's stall ended its try by closing the whole
+connection, and over HTTP/2 that connection carried other tries' streams
+— replies already streaming died with "http2: client connection force
+closed via ClientConn.Close" while the vendor never even saw the end of
+the stalled body. The try's own cancellation ends it over HTTP/2; the
+connection is retired once the try is over (RoundTrip has returned, the
+stream is closed), when CloseIdleConnections puts it out if nothing else
+rides it — requests stop being put on a connection whose flow-control
+window stays shut, and the streams already on it finish. A connection
+that carries the stalled try alone (HTTP/1.1's one-request connection)
+is still closed at once, as before.
+
+Run: TestStalledUploadLeavesOtherStreamsOnTheConnection (new) fails
+without the fix (the reply on the same connection died with the stalled
+upload: "http2: client connection force closed via ClientConn.Close")
+and passes with it, the stalled upload still ending with "request body
+stalled"; TestBodyStalledByFlowControlIsGivenUp, TestBodySlowButMoving-
+IsNotCut, TestStallBodyClock and TestMCPRelayBodyStalledIsGivenUp pass
+unchanged. See the issue post for the matrix.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gateway/upstream_stall.go      | 34 +++++++++-
+ internal/gateway/upstream_stall_test.go | 83 +++++++++++++++++++++++++
+ 2 files changed, 116 insertions(+), 1 deletion(-)
+
+diff --git a/internal/gateway/upstream_stall.go b/internal/gateway/upstream_stall.go
+index d1b558cf5..0f25ba018 100644
+--- a/internal/gateway/upstream_stall.go
++++ b/internal/gateway/upstream_stall.go
+@@ -2,6 +2,7 @@ package gateway
+ 
+ import (
+ 	"context"
++	"crypto/tls"
+ 	"errors"
+ 	"fmt"
+ 	"io"
+@@ -55,6 +56,11 @@ func (g stallGuard) RoundTrip(r *http.Request) (*http.Response, error) {
+ 	if !ok || r.GetBody == nil {
+ 		return res, err
+ 	}
++	// the cancelled try's stream is over: the connection it was on is
++	// idle now if nothing else rides it, and is retired before the retry,
++	// so requests stop being put on a connection whose flow-control
++	// window stayed shut; streams still on it are left to finish (#7182)
++	g.CloseIdleConnections()
+ 	// once more, on a new connection. The one just closed can still be
+ 	// the pool's for a moment, and a request put on it fails as closed:
+ 	// that is asked again, a few times, not counted as the vendor's
+@@ -91,7 +97,17 @@ func (g stallGuard) try(r *http.Request) (*http.Response, error) {
+ 	st.onStall = func() {
+ 		dropOnce.Do(func() {
+ 			cancel(errUploadStalled{after: bodyStall})
+-			st.dropConn()
++			// a connection that multiplexes carries other tries' streams:
++			// closing it whole killed the replies already streaming on it,
++			// and h2's own reset of the cancelled try's stream ends this
++			// one just as dead — the connection itself is retired once the
++			// try is over, when RoundTrip has returned and the connection
++			// is idle if nothing else rides it (#7182). A connection that
++			// carries this try alone is closed here, so nothing is put on
++			// it again.
++			if !h2Conn(st.theConn()) {
++				st.dropConn()
++			}
+ 			close(dropped)
+ 		})
+ 	}
+@@ -177,6 +193,22 @@ func (st *stallTry) setConn(c net.Conn) {
+ 	st.mu.Unlock()
+ }
+ 
++// theConn is the connection the try rides, once the transport said which.
++func (st *stallTry) theConn() net.Conn {
++	st.mu.Lock()
++	defer st.mu.Unlock()
++	return st.conn
++}
++
++// h2Conn says whether a connection multiplexes: a TLS one negotiated to
++// ALPN h2 carries every try's stream, so closing it whole kills the
++// replies already streaming on it (#7182). Anything else — HTTP/1.1's
++// one-request connection, or a plain one — is the stalled try's alone.
++func h2Conn(c net.Conn) bool {
++	tc, ok := c.(*tls.Conn)
++	return ok && tc.ConnectionState().NegotiatedProtocol == "h2"
++}
++
+ func (st *stallTry) dropConn() {
+ 	st.mu.Lock()
+ 	c := st.conn
+diff --git a/internal/gateway/upstream_stall_test.go b/internal/gateway/upstream_stall_test.go
+index c6da4efaa..ba98b1419 100644
+--- a/internal/gateway/upstream_stall_test.go
++++ b/internal/gateway/upstream_stall_test.go
+@@ -1,6 +1,7 @@
+ package gateway
+ 
+ import (
++	"bufio"
+ 	"bytes"
+ 	"context"
+ 	"crypto/tls"
+@@ -205,3 +206,85 @@ func TestMCPRelayBodyStalledIsGivenUp(t *testing.T) {
+ 		t.Fatalf("error = %v (ctx: %v); want one saying %q", err, ctx.Err(), stalledWords)
+ 	}
+ }
++
++// A stalled upload's try is cancelled and the connection it was on was
++// closed whole: over HTTP/2 that connection also carried replies already
++// streaming to other requests, which died with it ("http2: client
++// connection force closed via ClientConn.Close") while the vendor never
++// even saw the end of the stalled body. The stalled try's own cancel is
++// enough to end it; the connection is retired once the try is over, when
++// it is idle if nothing else is on it, so requests stop being put on a
++// connection whose flow-control window stays shut while the streams
++// already on it finish (#7182).
++func TestStalledUploadLeavesOtherStreamsOnTheConnection(t *testing.T) {
++	was := bodyStall
++	bodyStall = 300 * time.Millisecond
++	t.Cleanup(func() { bodyStall = was })
++
++	addrs := make(chan string, 2)
++	release := make(chan struct{})
++	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		addrs <- r.RemoteAddr
++		if r.URL.Path == "/stream" {
++			io.WriteString(w, "first\n")
++			w.(http.Flusher).Flush()
++			select {
++			case <-release:
++				io.WriteString(w, "tail\n")
++			case <-r.Context().Done():
++			}
++			return
++		}
++		<-r.Context().Done()
++	}))
++	server.EnableHTTP2 = true
++	server.Config.HTTP2 = &http.HTTP2Config{MaxReceiveBufferPerConnection: 128 << 10, MaxReceiveBufferPerStream: 128 << 10}
++	server.StartTLS()
++	t.Cleanup(func() {
++		closeIfOpen(release)
++		server.Close()
++	})
++	client := server.Client()
++	client.Transport = stallGuard{next: client.Transport}
++	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
++	defer cancel()
++	get, _ := http.NewRequestWithContext(ctx, http.MethodGet, server.URL+"/stream", nil)
++	stream, err := client.Do(get)
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer stream.Body.Close()
++	if stream.ProtoMajor != 2 {
++		t.Fatalf("expected HTTP/2, got %s", stream.Proto)
++	}
++	br := bufio.NewReader(stream.Body)
++	first, err := br.ReadString('\n')
++	if err != nil || first != "first\n" {
++		t.Fatalf("first = %q, %v", first, err)
++	}
++	post, _ := http.NewRequestWithContext(ctx, http.MethodPost, server.URL+"/upload", io.NopCloser(bytes.NewReader(make([]byte, 512<<10))))
++	upload, err := client.Do(post)
++	if upload != nil {
++		upload.Body.Close()
++	}
++	if err == nil || !strings.Contains(err.Error(), stalledWords) {
++		t.Fatalf("upload should end with %q: %v", stalledWords, err)
++	}
++	a, b := <-addrs, <-addrs
++	if a != b {
++		t.Fatalf("not multiplexed: %s versus %s", a, b)
++	}
++	close(release)
++	tail, err := br.ReadString('\n')
++	if err != nil || tail != "tail\n" {
++		t.Fatalf("the reply on the same connection died with the stalled upload: %q, %v", tail, err)
++	}
++}
++
++func closeIfOpen(ch chan struct{}) {
++	select {
++	case <-ch:
++	default:
++		close(ch)
++	}
++}
+-- 
+2.50.1 (Apple Git-155)
+

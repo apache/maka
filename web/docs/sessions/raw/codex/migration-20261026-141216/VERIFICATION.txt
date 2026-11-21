@@ -1,0 +1,20 @@
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py codex baseline
+INPUT: CONFIG: fixed codex source allowlist
+OUTPUT: BASELINE PASS groups=16 files=16863 bytes=1690525123 protected=1
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py codex archive
+INPUT: 5e8bbb4cc3be43c7fa2ba7f6374670c0a289cfe70ba8abd4595fb4fd36fe3bef
+OUTPUT: ARCHIVE PASS zip_files=16 files=16863 bytes=1690525123
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py codex apply
+INPUT: 050245e0f118f199efb4681e092fcd0eed96964ca4b2440a522f5f5e9471f348
+OUTPUT: APPLY PASS removed_files=16863 removed_bytes=1690525123 skipped=2
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py codex verify
+INPUT: dc52fb0a372a25488c74a61e89d406a76682324bea7bb9d50f455ab490447c4e
+OUTPUT: MODIFIED PASS files=16863 bytes=1690525123 originals_absent=true protected_unchanged=true
+EXIT: 0
+

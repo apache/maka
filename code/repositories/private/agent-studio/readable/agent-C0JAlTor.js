@@ -1,0 +1,43 @@
+var e = (function (e) {
+    return (
+      (e[(e.LOW_CODE = 0)] = `LOW_CODE`),
+      (e[(e.DIALOGUE = 1)] = `DIALOGUE`),
+      (e[(e.TOOL = 2)] = `TOOL`),
+      (e[(e.TASK = 3)] = `TASK`),
+      (e[(e.WORKFLOW = 4)] = `WORKFLOW`),
+      (e[(e.AGENT = 5)] = `AGENT`),
+      (e[(e.MULTI_AGENT = 7)] = `MULTI_AGENT`),
+      (e[(e.SUPER_AGENT = 6)] = `SUPER_AGENT`),
+      e
+    );
+  })({}),
+  t = (function (e) {
+    return (
+      (e.ALL = `all`),
+      (e.AGENT = `agent`),
+      (e.SUPER_AGENT = `super-agent`),
+      (e.MULTI_AGENT = `multi-agent`),
+      (e.WORKFLOW = `workflow`),
+      (e.DIALOGUE = `dialogue`),
+      (e.TOOL = `tool`),
+      (e.TASK = `task`),
+      e
+    );
+  })({}),
+  n = (function (e) {
+    return (
+      (e[(e.RELEASED = 1)] = `RELEASED`),
+      (e[(e.UNDER_REVIEW = 2)] = `UNDER_REVIEW`),
+      (e[(e.REJECTED = 3)] = `REJECTED`),
+      (e[(e.NOT_RELEASED = 4)] = `NOT_RELEASED`),
+      e
+    );
+  })({}),
+  r = (function (e) {
+    return (
+      (e[(e.OFF_SHELF = 0)] = `OFF_SHELF`),
+      (e[(e.ON_SHELF = 1)] = `ON_SHELF`),
+      e
+    );
+  })({});
+export { t as i, n, e as r, r as t };

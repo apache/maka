@@ -1,0 +1,22 @@
+✖ webkit: a plugin's page draws in its frame, shut in (8779.229291ms)
+✔ webkit: a page plugin's tab comes and goes with it (10484.834666ms)
+✔ webkit: Plugins says what a page may read before it is on (6497.795833ms)
+✔ webkit: a page under the native window's policy draws and stays shut in (542.594417ms)
+ℹ tests 4
+ℹ suites 0
+ℹ pass 3
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 26510.295292
+
+✖ failing tests:
+
+test at internal/gui/tests/plugin-page.test.cjs:144:3
+✖ webkit: a plugin's page draws in its frame, shut in (8779.229291ms)
+  frame.waitForFunction: Timeout 8000ms exceeded.
+      at TestContext.<anonymous> (/private/tmp/mg110-a/internal/gui/tests/plugin-page.test.cjs:184:22) {
+    name: 'TimeoutError'
+  }
+exit=1

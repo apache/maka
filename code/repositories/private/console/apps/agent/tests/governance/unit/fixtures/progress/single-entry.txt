@@ -1,0 +1,38 @@
+### 下一步计划
+
+Next: PRD PRD-01 ProjectScaffold - 项目骨架搭建
+
+---
+
+## 2026-01-10 PRD-00 完成（BlockingDecision）
+
+### 完成内容
+
+- 决定运行形态
+
+### What（做了什么）
+
+完成架构决策。
+
+### Why（为什么这样做）
+
+明确技术边界。
+
+### 相关 PRD
+
+- id: PRD-00
+- component: BlockingDecision
+- priority: P0
+- passes: true
+
+### typecheck 结果
+
+pnpm typecheck 通过
+
+### Git 提交
+
+docs(core): decide runtime
+
+### 下一步计划
+
+Next: PRD PRD-01 ProjectScaffold

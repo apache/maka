@@ -1,0 +1,23 @@
+{
+  "id": "15",
+  "slug": "jump-game",
+  "title": "跳跃游戏",
+  "difficulty": "medium",
+  "tags": ["贪心", "数组"],
+  "description": "给定一个非负整数数组 `nums`,你最初位于数组的**第一个下标**。数组中的每个元素代表你在该位置可以跳跃的最大长度。\n\n判断你是否能够到达最后一个下标。\n\n**示例 1:**\n\n- 输入:`nums = [2,3,1,1,4]`\n- 输出:`true`(先跳 1 步到下标 1,再跳 3 步到最后)\n\n**示例 2:**\n\n- 输入:`nums = [3,2,1,0,4]`\n- 输出:`false`(无论如何都会到达下标 3,而该位置最大跳跃长度为 0,无法继续)",
+  "solution": "## 思路\n\n**贪心**:维护当前能到达的最远位置 `maxReach`。遍历每个位置 i,若 `i > maxReach` 说明走不到这里,返回 false;否则更新 `maxReach = max(maxReach, i + nums[i])`。能遍历完即可达终点。\n\n## 参考代码\n\n```js\nfunction canJump(nums) {\n  let maxReach = 0;\n  for (let i = 0; i < nums.length; i++) {\n    if (i > maxReach) return false;\n    maxReach = Math.max(maxReach, i + nums[i]);\n  }\n  return true;\n}\n```\n\n## 复杂度\n\n- 时间:O(n)\n- 空间:O(1)",
+  "signature": {
+    "language": "javascript",
+    "entry": "canJump",
+    "params": [{ "name": "nums", "type": "number[]" }],
+    "returns": "boolean"
+  },
+  "testCases": [
+    { "sample": true, "input": [[2, 3, 1, 1, 4]], "expected": true },
+    { "sample": true, "input": [[3, 2, 1, 0, 4]], "expected": false },
+    { "sample": false, "input": [[0]], "expected": true },
+    { "sample": false, "input": [[2, 0, 0]], "expected": true },
+    { "sample": false, "input": [[0, 2, 3]], "expected": false },
+    { "sample": false, "input": [[1, 0, 1, 0]], "expected": false }
+  ]
+}

@@ -1,0 +1,127 @@
+From 12d9f8c94619f9c7be7be383e13a0f8169e5d7ab Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Tue, 3 Nov 2026 07:40:48 +0800
+Subject: [PATCH] library: an edit made in the shared copy of a skill is taken
+ into the library (#4958)
+
+What changed: takeEdits reads the shared copy too - ~/.agents/skills
+where no link could be made (Windows without the right to), the entry a
+marked copy - as it reads an agent's copy: anything newer than the
+copy's mark is an edit, the newest one taken unless the library changed
+after it, losers kept aside. An agent whose own folder ~/.agents/skills
+is has its copy read as it was; the shared scan only runs where no
+target already covered that folder. syncShared, which sets a stale copy
+aside before copying again, runs after, so the edit is in the library
+and every other agent's copy first.
+
+Run:
+- go test ./internal/library -run TestEditInSharedCopyTaken -count=1
+  RED before: the edit wasn't taken (the library's skill has no
+  notes.md) and the shared entry lost it; green after.
+- go test ./internal/library -count=1: ok (66s).
+- gofmt, go vet -tags nogui (darwin/linux/windows), builds
+  (darwin/linux/windows), the new test with -race: clean.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/library/shared_edit_take_test.go | 51 +++++++++++++++++++++++
+ internal/library/skill_edits.go           | 25 +++++++++++
+ 2 files changed, 76 insertions(+)
+ create mode 100644 internal/library/shared_edit_take_test.go
+
+diff --git a/internal/library/shared_edit_take_test.go b/internal/library/shared_edit_take_test.go
+new file mode 100644
+index 000000000..4fc203732
+--- /dev/null
++++ b/internal/library/shared_edit_take_test.go
+@@ -0,0 +1,51 @@
++package library
++
++import (
++	"os"
++	"path/filepath"
++	"testing"
++	"time"
++)
++
++// An edit made in the shared copy — ~/.agents/skills where no link could
++// be made (Windows without the right to) — is taken into the library as
++// one in an agent's copy is, before the copy is replaced or set aside
++// (#4958): syncShared finds the stale copy only after takeEdits has had
++// its say.
++func TestEditInSharedCopyTaken(t *testing.T) {
++	h := sandbox(t)
++	src := filepath.Join(h, "src/skills")
++	skill(t, filepath.Join(src, "pdf"), "pdf", "Read PDFs")
++	shared := filepath.Join(h, ".agents/skills")
++	pdf := filepath.Join(shared, "pdf")
++	lib := filepath.Join(src, "pdf")
++
++	ok(t)(InstallSkills(src, []string{"pdf"}, []string{"claude"}))
++	ok(t)(SetSkillsWhere(SkillsInShared))
++	if !linked(pdf) {
++		t.Fatal("pdf isn't a link in ~/.agents/skills")
++	}
++	// where no link could be made, the entry is a marked copy instead:
++	// what copyIn puts in a link's place
++	if err := copyIn(pdf, "pdf"); err != nil {
++		t.Fatal(err)
++	}
++	if linked(pdf) || !ours(pdf, "pdf") {
++		t.Fatal("pdf isn't magpie's marked copy")
++	}
++	time.Sleep(20 * time.Millisecond)
++	write(t, filepath.Join(pdf, "notes.md"), "my notes\n")
++
++	ok(t)(Sync())
++	if read(t, filepath.Join(lib, "notes.md")) != "my notes\n" {
++		t.Error("the edit in the shared copy wasn't taken into the library")
++	}
++	// the entry is still magpie's, saying the library's skill: taken or
++	// relinked, the edit is not only in the backups
++	if !ours(pdf, "pdf") {
++		t.Fatal("the shared entry is no longer magpie's")
++	}
++	if _, err := os.Stat(filepath.Join(pdf, "notes.md")); err != nil {
++		t.Error("the shared entry lost the edit")
++	}
++}
+diff --git a/internal/library/skill_edits.go b/internal/library/skill_edits.go
+index b7c778e68..a8596b263 100644
+--- a/internal/library/skill_edits.go
++++ b/internal/library/skill_edits.go
+@@ -73,6 +73,31 @@ func (l *Library) takeEdits(targets []*Target, res *Result) {
+ 			}
+ 			edits = append(edits, edit{t.Agent.ID, p, at})
+ 		}
++		// the shared copy too (#4958): an edit made in ~/.agents/skills,
++		// where no link could be made (Windows without the right to), is
++		// the library's to take as one in an agent's copy is — before
++		// syncShared sets the stale copy aside. An agent whose own folder
++		// that is has had its copy read above.
++		if !seen[realDir(sharedSkillsDir())] {
++			p := filepath.Join(sharedSkillsDir(), s.Name)
++			if ours(p, s.Name) && !linked(p) {
++				made, ok := copiedAt(p)
++				if ok {
++					at, err := changedAt(p)
++					switch {
++					case err != nil:
++						failed("agents", s.Name, p, err)
++					case !at.After(made):
++						if l.untouched == nil {
++							l.untouched = map[string]bool{}
++						}
++						l.untouched[p] = true
++					case !sameTree(p, lib):
++						edits = append(edits, edit{"agents", p, at})
++					}
++				}
++			}
++		}
+ 		if len(edits) == 0 {
+ 			continue
+ 		}
+-- 
+2.50.1 (Apple Git-155)
+

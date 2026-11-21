@@ -1,0 +1,23 @@
+{
+  "id": "3",
+  "slug": "longest-substring-without-repeating-characters",
+  "title": "无重复字符的最长子串",
+  "difficulty": "medium",
+  "tags": ["哈希表", "滑动窗口", "字符串"],
+  "description": "给定一个字符串 `s`,请你找出其中不含有重复字符的**最长子串**的长度。\n\n**示例 1:**\n\n- 输入:`s = \"abcabcbb\"`\n- 输出:`3`(最长子串 `\"abc\"`)\n\n**示例 2:**\n\n- 输入:`s = \"bbbbb\"`\n- 输出:`1`(最长子串 `\"b\"`)\n\n**示例 3:**\n\n- 输入:`s = \"pwwkew\"`\n- 输出:`3`(最长子串 `\"wke\"`,注意答案必须是子串,`\"pwke\"` 是子序列而非子串)",
+  "solution": "## 思路\n\n**滑动窗口 + 哈希表**:用双指针 `left`、`right` 维护一个无重复字符的窗口,哈希表记录窗口内每个字符的最新下标。\n\n`right` 向右扩展,若 `s[right]` 已在窗口内(下标 >= left),就把 `left` 跳到该下标 + 1。每步更新最大长度。\n\n## 参考代码\n\n```js\nfunction lengthOfLongestSubstring(s) {\n  const last = new Map();\n  let left = 0;\n  let max = 0;\n  for (let right = 0; right < s.length; right++) {\n    const ch = s[right];\n    if (last.has(ch) && last.get(ch) >= left) {\n      left = last.get(ch) + 1;\n    }\n    last.set(ch, right);\n    max = Math.max(max, right - left + 1);\n  }\n  return max;\n}\n```\n\n## 复杂度\n\n- 时间:O(n)\n- 空间:O(min(n, 字符集大小))",
+  "signature": {
+    "language": "javascript",
+    "entry": "lengthOfLongestSubstring",
+    "params": [{ "name": "s", "type": "string" }],
+    "returns": "number"
+  },
+  "testCases": [
+    { "sample": true, "input": ["abcabcbb"], "expected": 3 },
+    { "sample": true, "input": ["bbbbb"], "expected": 1 },
+    { "sample": true, "input": ["pwwkew"], "expected": 3 },
+    { "sample": false, "input": [""], "expected": 0 },
+    { "sample": false, "input": [" "], "expected": 1 },
+    { "sample": false, "input": ["au"], "expected": 2 }
+  ]
+}

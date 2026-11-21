@@ -1,0 +1,25 @@
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py copilot baseline
+INPUT: CONFIG: fixed copilot source allowlist
+OUTPUT: RuntimeError: Process detected for copilot; source files retained
+EXIT: 1
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py copilot archive
+INPUT: CONFIG: fixed copilot source allowlist
+OUTPUT: FileNotFoundError: [Errno 2] No such file or directory: 'E:\\cc\\guahub\\sessions\\raw\\copilot\\migration-20261026-130800\\MODIFIED_FILE.json'
+EXIT: 1
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py copilot apply
+INPUT: CONFIG: fixed copilot source allowlist
+OUTPUT: FileNotFoundError: [Errno 2] No such file or directory: 'E:\\cc\\guahub\\sessions\\raw\\copilot\\migration-20261026-130800\\MODIFIED_FILE.json'
+EXIT: 1
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py copilot verify
+INPUT: CONFIG: fixed copilot source allowlist
+OUTPUT: FileNotFoundError: [Errno 2] No such file or directory: 'E:\\cc\\guahub\\sessions\\raw\\copilot\\migration-20261026-130800\\MODIFIED_FILE.json'
+EXIT: 1
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py copilot rollback-test
+INPUT: CONFIG: fixed copilot source allowlist
+OUTPUT: FileNotFoundError: [Errno 2] No such file or directory: 'E:\\cc\\guahub\\sessions\\raw\\copilot\\migration-20261026-130800\\MODIFIED_FILE.json'
+EXIT: 1
+

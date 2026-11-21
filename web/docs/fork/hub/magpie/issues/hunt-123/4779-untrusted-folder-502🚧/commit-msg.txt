@@ -1,0 +1,30 @@
+claudetui: the trust refusal says which folder, and how to trust it (#4779)
+
+WillSuo-Github: Codex through the bridge, Claude Code ended before it
+answered magpie's initialize, asking whether to trust a folder the
+message never named, and the turn came back a 502 a client asks again
+and again. The 502 is gone since startTrusted (59fdab0af), the turn
+running in magpie's own folder; the reason, though, in every log line
+of the failure and in the rare run whose retry never comes (the
+stderr's read missing its 2s window, the caller gone), still said "the
+folder" only, though ready knew which (os.Getwd, #4830), and said
+nothing the user could do.
+
+The refusal now names the folder and the way out: run Claude Code once
+in it as yourself and choose to trust it. What the bridge reads to
+retry the turn (Untrusted, saidOnEnd) and what the Usage card reads
+(claude-tui's first line) are unchanged, both matching the prefix.
+
+Run (this tree, darwin/arm64):
+- go test ./internal/claudetui is ok (61s), TestShimNamesTheUntrustedFolder
+  new; at the parent's tui.go it is red, the stderr then naming no
+  folder and saying nothing to do.
+- go test -race -run 'TestShim|TestRun' ./internal/claudetui is ok.
+- go test -tags nogui -timeout 25m ./internal/gateway/... is ok (632s).
+- go vet ./internal/claudetui ./internal/gateway is clean, gofmt -l is
+  clean, go build ./... is ok (the gui cgo and ld warnings are the
+  parent's).
+
+Fixes #4779
+
+Generated-by: GLM-5.3-Flash (ZCode)

@@ -1,0 +1,208 @@
+**What's wrong**
+
+A relayed request that asks for structured output gets its format field forwarded as sent, and a relay in front of a model without structured output takes it and drops it without a word: the model is never told the schema in any form, answers plain text, and the client's parse silently fails. That is Claude Code's session-title request (`output_config.format`, the structured-outputs beta, the text block read back as JSON) through magpie to a custom Anthropic-compatible provider (#5082) — and the reporter's probes show the same on the OpenAI-shaped paths (`response_format` on Chat, `text.format` on Responses) to the same relays.
+
+**Root cause**
+
+On the relay/passthrough path, the format was only rewritten after an upstream had *refused* it once: the reactive marks (`formatRefused`, `schemaRefused`, #2126) are set from an observed 400/422 whose body names the field, and until then the body goes out as the client sent it. A relay that neither honors the field nor refuses it never teaches magpie anything, so nothing ever tells its model the schema. (This is a different path from #4905: there the Claude subscription interactive mode refuses the schema with a local 400, already fixed by the answer tool in `a25d3d081`.)
+
+**The fix**
+
+In `passthrough`, when no refusal has been recorded, the format is now told in the system prompt beside the field it asked in, the field kept as it was: an upstream that honors the field answers as asked, and one that drops it reads the words, so the ask reaches the model either way. The reactive branches are untouched and still take over on a refusal.
+
+<details>
+<summary>Patch (0001-gateway-a-format-a-relay-drops-without-a-word-is-tol.patch)</summary>
+
+```diff
+From 0410970dc24b85a2baa3eb5b5d8734f96f923849 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Tue, 3 Nov 2026 23:55:40 +0800
+Subject: [PATCH] gateway: a format a relay drops without a word is told in
+ words beside the field
+
+Claude Code's session-title request asks for its answer as JSON through
+output_config.format (the structured-outputs beta), and reads the text
+block as JSON. Through magpie to a custom provider speaking Anthropic,
+the body is relayed as it came: the field goes out, and a relay in front
+of a model without structured output takes it and drops it without a
+word - a 200 with plain text, no refusal to learn from. The schema never
+reached the model in any form, so the answer came back unstructured and
+the title silently never appeared (#5082); the same relayed request on
+Chat's response_format and Responses' text.format went the same way.
+
+The format was only told in words after an upstream had turned it away
+once (formatRefused, #2126): a relay that neither honors the field nor
+refuses it never taught magpie anything. Now a relayed request that
+carries a format and no refusal yet is told the format in the system
+prompt beside the field it asked in, the field kept: an upstream that
+honors it answers as asked, and one that drops it reads the words, so
+the ask reaches the model either way.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gateway/format.go      | 44 +++++++++++++++++++++++++++++++
+ internal/gateway/format_test.go | 46 +++++++++++++++++++++++++++++++++
+ internal/gateway/gateway.go     |  7 ++++-
+ 3 files changed, 96 insertions(+), 1 deletion(-)
+
+diff --git a/internal/gateway/format.go b/internal/gateway/format.go
+index be00a8598..9b5d26869 100644
+--- a/internal/gateway/format.go
++++ b/internal/gateway/format.go
+@@ -175,6 +175,50 @@ func (r *Request) asObject() *Request {
+ 	return &q
+ }
+ 
++// formatToldInBody is a passed-through body with its format told in the
++// system prompt beside the field it asked in, the field kept as it was:
++// an upstream that honors the field answers as asked, and one that takes
++// it and drops it without a word — a relay in front of a model without
++// structured output (new-api, #5082), whose 200 says nothing — has the
++// words reach its model instead. The body and false when there is
++// nothing to change.
++func formatToldInBody(proto provider.Protocol, body []byte) ([]byte, bool) {
++	f := bodyFormat(proto, body)
++	if f == nil {
++		return body, false
++	}
++	dec := json.NewDecoder(bytes.NewReader(body))
++	dec.UseNumber()
++	var m map[string]any
++	if dec.Decode(&m) != nil {
++		return body, false
++	}
++	line := f.instruction()
++	switch proto {
++	case provider.Responses:
++		s, _ := m["instructions"].(string)
++		m["instructions"] = withLine(s, line)
++	case provider.Chat:
++		m["messages"] = withSystemLine(m["messages"], line)
++	case provider.Anthropic:
++		switch s := m["system"].(type) {
++		case []any:
++			m["system"] = append(s, map[string]any{"type": "text", "text": line})
++		case string:
++			m["system"] = withLine(s, line)
++		default:
++			m["system"] = line
++		}
++	}
++	var out bytes.Buffer
++	enc := json.NewEncoder(&out)
++	enc.SetEscapeHTML(false) // <, > and & as the agent wrote them
++	if enc.Encode(m) != nil {
++		return body, false
++	}
++	return bytes.TrimSuffix(out.Bytes(), []byte("\n")), true
++}
++
+ // withLine is a system prompt with s said at its end.
+ func withLine(system, s string) string {
+ 	if system != "" {
+diff --git a/internal/gateway/format_test.go b/internal/gateway/format_test.go
+index f53fb1fa6..7cbaa0c51 100644
+--- a/internal/gateway/format_test.go
++++ b/internal/gateway/format_test.go
+@@ -252,6 +252,52 @@ func TestRefusedFormatToldInWords(t *testing.T) {
+ 	}
+ }
+ 
++// A relay that takes the format field as sent and answers plain text
++// (new-api in front of models without structured output: Claude Code's
++// session-title request, #5082) is told the format in words beside the
++// field it dropped, so the ask reaches the model either way; a field an
++// upstream honors is still asked for as it was.
++func TestSilentlyIgnoredFormatToldInWords(t *testing.T) {
++	fresh(t)
++	up := &formatVendor{}
++	srv := httptest.NewServer(up)
++	t.Cleanup(srv.Close)
++	if err := provider.Save(provider.Provider{ID: "relay", Name: "Relay", Key: "k",
++		Chat: srv.URL + "/v1", Responses: srv.URL + "/v1", Anthropic: srv.URL + "/v1",
++		Models: []string{"deepseek-chat"}}); err != nil {
++		t.Fatal(err)
++	}
++	titleSchema := `{"type":"object","properties":{"title":{"type":"string"}},"required":["title"],"additionalProperties":false}`
++	titleBody := `{"model":"relay/deepseek-chat","max_tokens":256,"system":"Generate a concise title for this session.",` +
++		`"messages":[{"role":"user","content":"help me add a header mod"}],"output_config":{"format":{"type":"json_schema","schema":` + titleSchema + `}}}`
++	for _, c := range []struct {
++		name, path, body, field string // where the upstream reads the format
++	}{
++		{"Claude Code's session-title request", "/v1/messages", titleBody, "output_config.format.schema"},
++		{"a chat.completions.parse", "/v1/chat/completions", strings.Replace(sdkChatParse, "%s", "relay/deepseek-chat", 1), "response_format.json_schema.schema"},
++		{"a responses.parse", "/v1/responses", strings.Replace(sdkResponsesParse, "%s", "relay/deepseek-chat", 1), "text.format.schema"},
++	} {
++		t.Run(c.name, func(t *testing.T) {
++			code, _ := post(t, c.path, c.body)
++			if code != 200 {
++				t.Fatalf("status %d", code)
++			}
++			_, sent := up.sent()
++			var got any = sent
++			for _, k := range strings.Split(c.field, ".") {
++				m, _ := got.(map[string]any)
++				got = m[k]
++			}
++			if got == nil {
++				t.Fatalf("the format field was dropped: %s", jsonOf(sent))
++			}
++			if !strings.Contains(jsonOf(sent), "Respond with a single JSON") {
++				t.Fatalf("format not told in words: %s", jsonOf(sent))
++			}
++		})
++	}
++}
++
+ // Gemini's structured output (responseMimeType with responseJsonSchema)
+ // is read into the format, and a Gemini upstream (Code Assist, Factory's
+ // generateContent) is asked for one in those fields.
+diff --git a/internal/gateway/gateway.go b/internal/gateway/gateway.go
+index 675b40c5f..76b5e0d73 100644
+--- a/internal/gateway/gateway.go
++++ b/internal/gateway/gateway.go
+@@ -5864,11 +5864,16 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
+ 		body, _, _ = withHistoryTools(proto, body)
+ 	}
+ 	// structured output an upstream turned away before (#2126): a schema
+-	// as any JSON object, or the format told in the system prompt alone
++	// as any JSON object, or the format told in the system prompt alone;
++	// one that takes the format as sent without honoring it (#5082) is
++	// told it in words beside the field, so the ask reaches the model
++	// either way
+ 	if !s.fits(p.ID, formatRefused(model), proto) {
+ 		body, _ = formatInBody(proto, body, false)
+ 	} else if !s.fits(p.ID, schemaRefused(model), proto) {
+ 		body, _ = formatInBody(proto, body, true)
++	} else {
++		body, _ = formatToldInBody(proto, body)
+ 	}
+ 	// xAI's own API takes neither a sealed reasoning item's null content
+ 	// nor a system turn in Messages (xai_body.go, #3392)
+-- 
+2.50.1 (Apple Git-155)
+```
+
+</details>
+
+SHA-256 (first 16): `30db1c0856eaecdd`
+
+**Verification**
+
+| Check | Result |
+| --- | --- |
+| New `TestSilentlyIgnoredFormatToldInWords` (Claude Code title body via `/v1/messages`, plus `chat.completions.parse` and `responses.parse` through the same relay) | red before the fix (field relayed as sent, no words anywhere); ok with the fix |
+| Ablation (product files reverted to the parent, test kept) | red on parent; restored, ok |
+| `go test -tags nogui ./internal/gateway/` (full package) | ok, no new failures |
+| `go test -tags nogui -race` on the format family | ok, no data race |
+| `gofmt -l` on touched files, `go vet -tags nogui ./internal/gateway/`, `go build ./...` | clean |
+
+Sibling faces checked, none touched: the translated paths already carry the format in the upstream's own field with the same reactive fallback (`buildChat`, `buildResponses`, `anthropicBody`); the #4905 subscription answer-tool path does not go through the relay block; `decide`/`anthropic_shapes` read `output_config` for effort only; the image/speech endpoints' `response_format` is their own API's field. Failure semantics: an upstream that honors the field still gets it (fidelity kept), one that refuses is still handled by the existing `formatRefused`/`schemaRefused` branches, and one that silently drops the field now reads the instruction — on the one discovery turn where a silent ignorer turns out to refuse, the instruction line may appear twice before the mark is learned; from the next turn on it is told once. Hot-path cost: bodies that ask for no format are left alone (`bodyFormat` reads one JSON path); only structured-output bodies are re-encoded, the same class of rewrite the relay already does for its other adjustments.
+
+**Not verified**
+
+No live new-api/deepseek relay here — the relay behavior (accept and drop the field) is reproduced with an in-process vendor that answers 200 plain text, matching the reporter's transcript; no live Claude Code run to confirm a title actually appears in `~/.claude/sessions`, only that the schema now reaches the relay's model in words it can follow. The translated paths' own silent-ignorer case (a relay that drops the field magpie's translation wrote) is not covered by this patch.
+
+AI use: written by GLM-5.3-Flash (ZCode); keep author ggbdpq or Co-authored-by: ggbdpq <ggbdpq@gmail.com>
+
+Branch: https://github.com/ggbdpq/magpie/tree/fix/5082-session-title-schema (head 0410970dc24b85a2baa3eb5b5d8734f96f923849)

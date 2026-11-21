@@ -1,0 +1,153 @@
+From 90401beeac7c6de72b82bdca93612ae69e65fc46 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Tue, 20 Oct 2026 00:08:21 +0800
+Subject: [PATCH] gateway: a vendor's "model not served here" refusal fails a
+ group over to its next member (#2887)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+A routing group's first member answering ModelScope's 400 "Model id :
+deepseek-ai/DeepSeek-V4.1-Flash , has no provider supported" ended the
+group request: the words matched none of the refusal classes that make
+a 400 retryable, so the client got the 400 and its own retries landed
+on the same dead seat — the reporter watched 28 in a row, the later
+members never asked.
+
+What changed: unservedWords takes the vendor wordings that say the
+model is served nowhere on this member — ModelScope's "has no provider
+supported" (the report's usage.jsonl), and Azure OpenAI's for a
+deployment its resource has none of, code DeploymentNotFound ("The API
+deployment for this resource does not exist"; Microsoft Q&A, Stack
+Overflow — its 404 fails over by status already, the wording covers the
+400s a relay passes on). An unserved refusal keeps the poison pill's
+line: a plain bad request ("Invalid parameter", "field required")
+still ends the route, as it would fail on every member, and
+shapeRefused still excludes these words — the seat rests on its
+model's own key (restAfterMarked's unserved branch, the #1235
+mechanism), so the key's other models stay live and the group's next
+request passes the dead seat.
+
+Run: go test ./internal/gateway/ (TestGroupFailsOverAModelWithNoProvider
+red on upstream/main, green here; the family and the plain-400 guards
+green); -race targeted; gofmt; vet darwin/linux/windows; builds
+darwin, linux and windows (-tags nogui).
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gateway/fallback.go               | 10 ++-
+ internal/gateway/unserved_fallback_test.go | 81 ++++++++++++++++++++++
+ 2 files changed, 89 insertions(+), 2 deletions(-)
+ create mode 100644 internal/gateway/unserved_fallback_test.go
+
+diff --git a/internal/gateway/fallback.go b/internal/gateway/fallback.go
+index 2eef2d36..dc439421 100644
+--- a/internal/gateway/fallback.go
++++ b/internal/gateway/fallback.go
+@@ -1044,8 +1044,14 @@ func quotaSaid(msg string) bool {
+ }
+ 
+ // unservedWords are how a vendor says the model isn't one it serves this
+-// key, or this way — words another provider, or key, may not answer with.
+-var unservedWords = regexp.MustCompile(`(?i)model.{0,80}(not (supported|accessible|available|found|enabled|allowed)|unsupported|does ?n[o']t exist|unknown|invalid)|(no such|unknown|invalid|unsupported) model|model_not_found|模型.{0,12}(不存在|不支持|无权|未开通)`)
++// key, or this way — words another provider, or key, may not answer with:
++// ModelScope's 400 for a model id none of its instances serves, "Model id
++// : deepseek-ai/DeepSeek-V4.1-Flash , has no provider supported" (#2887),
++// and Azure OpenAI's for a deployment its resource has none of, its code
++// DeploymentNotFound, whose message "The API deployment for this resource
++// does not exist" a relay passes on as a 400 (its 404 fails over by its
++// status already).
++var unservedWords = regexp.MustCompile(`(?i)model.{0,80}(not (supported|accessible|available|found|enabled|allowed)|unsupported|does ?n[o']t exist|unknown|invalid)|(no such|unknown|invalid|unsupported) model|model_not_found|has no provider supported|deployment[ _]?not[ _]?found|deployment.{0,60}does ?n[o']t exist|模型.{0,12}(不存在|不支持|无权|未开通)`)
+ 
+ // modelRefused says the vendor turned the request away over its model
+ // alone — not one this key's plan, or this key, may use: SenseNova's 403
+diff --git a/internal/gateway/unserved_fallback_test.go b/internal/gateway/unserved_fallback_test.go
+new file mode 100644
+index 00000000..6b08bca2
+--- /dev/null
++++ b/internal/gateway/unserved_fallback_test.go
+@@ -0,0 +1,81 @@
++package gateway
++
++import (
++	"strings"
++	"testing"
++
++	"github.com/yetone/magpie/internal/provider"
++)
++
++// modelscopeNoProvider400 is ModelScope's answer to a model id none of its
++// instances serves, as the reporter of #2887's usage.jsonl has it: the
++// request itself is fine, and a member that serves the model may answer it.
++const modelscopeNoProvider400 = `{"error":{"message":"Model id : deepseek-ai/DeepSeek-V4.1-Flash , has no provider supported"}}`
++
++// A member whose vendor serves the model nowhere hands the request to the
++// group's next one, and the model rests on that key alone, as any unserved
++// model's does — so the client's own retry, landing on the group again, is
++// no longer sent to the dead seat first (#2887: 28 requests in a row hit
++// the first member and the later ones were never asked).
++func TestGroupFailsOverAModelWithNoProvider(t *testing.T) {
++	fresh(t)
++	a := &scripted{replies: []reply{{400, "", modelscopeNoProvider400}}}
++	b := &scripted{replies: []reply{{200, "", chatOK}}}
++	scriptedOn(t, "ms", provider.Chat, a)
++	scriptedOn(t, "b", provider.Chat, b)
++	if err := provider.SaveGroup(provider.Group{Name: "G", Members: []string{"ms/m", "b/m"}, Routing: provider.Ordered}); err != nil {
++		t.Fatal(err)
++	}
++	s := New()
++	code, body := postAs(t, s, "", `{"model":"group/g","messages":[{"role":"user","content":"hi"}]}`)
++	if code != 200 || !strings.Contains(body, "hello") || a.n != 1 || b.n != 1 {
++		t.Fatalf("%d %s (ms %d, b %d)", code, body, a.n, b.n)
++	}
++	r := s.trace.routes[len(s.trace.routes)-1]
++	if len(r.Tries) != 2 || r.Tries[0].Status != 400 || r.Tries[0].Fail != failOther {
++		t.Fatalf("tries %+v", r.Tries)
++	}
++	if rest := r.Tries[0].Rest; rest == nil || rest.Key != "ms/m" {
++		t.Fatalf("the model alone was to rest: %+v", r.Tries[0].Rest)
++	}
++
++	// the rested seat is passed over: the next group request, as the
++	// client's retry is, is answered by the second member alone
++	code, body = postAs(t, s, "", `{"model":"group/g","messages":[{"role":"user","content":"hi"}]}`)
++	if code != 200 || !strings.Contains(body, "hello") || a.n != 1 || b.n != 2 {
++		t.Fatalf("next: %d %s (ms %d, b %d)", code, body, a.n, b.n)
++	}
++
++	for _, x := range []struct {
++		status int
++		body   string
++		want   bool
++	}{
++		{400, modelscopeNoProvider400, true},
++		// as magpie tells it on, with the provider's name before, and
++		// ModelScope's own invalid_request_error type around it
++		{400, `ModelScope: ` + modelscopeNoProvider400, true},
++		{400, `{"error":{"message":"Model id : deepseek-ai/DeepSeek-V4.1-Flash , has no provider supported","type":"invalid_request_error"}}`, true},
++		// Azure OpenAI's error for a deployment its resource has none of
++		// (DeploymentNotFound, "The API deployment for this resource does
++		// not exist"): a 404 fails over by its status already, a relay's
++		// 400 says the words
++		{400, `{"error":{"code":"DeploymentNotFound","message":"The API deployment for this resource does not exist. If you created the deployment recently, please wait a few minutes and try again."}}`, true},
++		{400, `{"error":{"message":"Deployment not found for ModelName: gpt-4o"}}`, true},
++		// model_not_found fails over as it did
++		{400, `{"error":{"message":"The model gpt-x does not exist","code":"model_not_found"}}`, true},
++		// a request at fault stays the agent's: no member is asked after
++		{400, `{"error":{"message":"Invalid parameter: messages.3.content"}}`, false},
++		{400, `{"error":{"message":"messages: field required"}}`, false},
++	} {
++		if got := retryable(x.status, []byte(x.body)); got != x.want {
++			t.Errorf("retryable(%d, %s) = %v", x.status, x.body, got)
++		}
++		if got := shapeRefused(x.status, []byte(x.body)); got {
++			t.Errorf("shapeRefused(%d, %s) = %v; an unserved model rests, it is not a shape", x.status, x.body, got)
++		}
++	}
++	if !modelRefused(400, []byte(modelscopeNoProvider400)) {
++		t.Errorf("modelRefused false: the model wouldn't rest alone on its key")
++	}
++}
+-- 
+2.50.1 (Apple Git-155)
+

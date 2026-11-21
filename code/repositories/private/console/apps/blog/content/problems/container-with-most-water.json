@@ -1,0 +1,22 @@
+{
+  "id": "16",
+  "slug": "container-with-most-water",
+  "title": "盛最多水的容器",
+  "difficulty": "medium",
+  "tags": ["贪心", "双指针"],
+  "description": "给定一个长度为 `n` 的整数数组 `height`,有 `n` 条垂线,第 `i` 条线的两个端点是 `(i, 0)` 和 `(i, height[i])`。\n\n找出其中的两条线,使得它们与 `x` 轴共同构成的容器可以容纳最多的水。返回容器可以储存的最大水量。\n\n**说明:** 你不能倾斜容器。\n\n**示例 1:**\n\n- 输入:`height = [1,8,6,2,5,4,8,3,7]`\n- 输出:`49`\n\n**示例 2:**\n\n- 输入:`height = [1,1]`\n- 输出:`1`",
+  "solution": "## 思路\n\n**双指针**从两端向中间逼近:面积 = `min(h[l], h[r]) * (r - l)`。每次移动**较矮**的那一侧(移动较高的一侧不可能让面积变大,因为高度被较矮侧限制)。每步更新最大面积。\n\n## 参考代码\n\n```js\nfunction maxArea(height) {\n  let l = 0;\n  let r = height.length - 1;\n  let max = 0;\n  while (l < r) {\n    const h = Math.min(height[l], height[r]);\n    max = Math.max(max, h * (r - l));\n    if (height[l] < height[r]) l++;\n    else r--;\n  }\n  return max;\n}\n```\n\n## 复杂度\n\n- 时间:O(n)\n- 空间:O(1)",
+  "signature": {
+    "language": "javascript",
+    "entry": "maxArea",
+    "params": [{ "name": "height", "type": "number[]" }],
+    "returns": "number"
+  },
+  "testCases": [
+    { "sample": true, "input": [[1, 8, 6, 2, 5, 4, 8, 3, 7]], "expected": 49 },
+    { "sample": true, "input": [[1, 1]], "expected": 1 },
+    { "sample": false, "input": [[4, 3, 2, 1, 4]], "expected": 16 },
+    { "sample": false, "input": [[1, 2, 1]], "expected": 2 },
+    { "sample": false, "input": [[2, 3, 4, 5, 18, 17, 6]], "expected": 17 }
+  ]
+}

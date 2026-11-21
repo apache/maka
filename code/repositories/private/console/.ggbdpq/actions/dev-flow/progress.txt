@@ -1,0 +1,355 @@
+Project: DevFlow
+Mode: Autonomous (No Human-in-the-loop)
+SSOT:
+- .ggbdpq/actions/dev-flow/prd.json
+- .ggbdpq/actions/dev-flow/progress.txt
+
+============================================================
+PHASE 0 · 设计基线（已完成，冻结为 v1.0）
+============================================================
+[x] 系统设计：docs/plans/2025-01-15-dev-flow-design.md
+[x] UI 设计规范：docs/plans/2025-01-15-dev-flow-ui-design.md
+[x] 文档勘误 PR：docs/fix-ui-and-api-contract（已完成）
+
+============================================================
+PHASE P0 · 最小可用闭环（任务创建 → claim → 执行 → SSE → 前端可视化）
+============================================================
+[ ] #1 冻结设计基线并建立入口（.ggbdpq/README.md）
+[ ] #2 Monorepo 基础设施
+[ ] #3 Postgres + Prisma 初始化
+[ ] #4 core-service 骨架 + health
+[ ] #5 api-gateway 骨架 + external/internal 分层
+[ ] #6 SSE(/api/sse) + /internal/events 分发
+[ ] #7 core 领域最小集（Task/Execution SSOT）
+[ ] #8 worker-service 骨架 + 执行器占位
+[ ] #9 原子 claim（Execution 为单位）
+[ ] #10 worker scheduler + 生命周期（RUNNING/COMPLETED/FAILED）
+[ ] #11 heartbeat + timeout（TIMEOUT）
+[ ] #12 workbench 壳（React/Vite/RR7）
+[ ] #13 workbench SSE + 创建任务 + 实时进度
+
+============================================================
+PHASE P1 · 多端产品化（RBAC / Admin / Developer Portal）
+============================================================
+[ ] #14 RBAC + API Key
+[ ] #15 admin-console 初始化与管理视图骨架
+[ ] #16 developer-portal 初始化与 Docs/Key/Webhook 骨架
+[ ] #17 cancel + rerun
+[ ] #18 audit 可观测
+
+============================================================
+PHASE P2 · 质量与交付
+============================================================
+[ ] #19 UI 暗色与一致性巡检
+[ ] #20 Setup & Troubleshooting 文档
+[ ] #21 最小测试集
+[ ] #22 面试逐字稿（3min/5min）
+
+============================================================
+EXECUTION LOG (append-only)
+============================================================
+# 规则：每完成一个 item 追加一条记录（禁止改历史）
+# 模板：
+# [YYYY-MM-DD HH:mm:ss] item=#<id> <title>
+# - commits: <hash1> ...
+# - commands: pnpm typecheck (pass)
+# - result: passes false -> true
+# - notes: ...
+
+[2026-01-15 01:35:00] item=#1 冻结 DevFlow 设计基线（design/ui）并建立引用入口
+- What: 
+  - 确认 docs/plans/2025-01-15-dev-flow-design.md 与 2025-01-15-dev-flow-ui-design.md 为 v1.0 基线
+  - 在 .ggbdpq/README.md 增加"DevFlow 设计入口"段落（含设计文档链接、实现顺序总览、执行入口）
+  - 创建 docs/README.md 作为文档索引入口
+- Why: 建立设计文档的统一入口，便于后续开发参照基线
+- commands: pnpm typecheck (pass)
+- result: passes false -> true
+- commit: docs(dev-flow): 冻结设计基线并建立引用入口
+- Next: #2 Monorepo 基础设施（pnpm workspace + turbo + 根 scripts）
+
+[2026-01-15 01:42:00] item=#2 Monorepo 基础设施（pnpm workspace + turbo + 根 scripts）
+- What:
+  - 创建 pnpm-workspace.yaml（apps/*/frontend/backend + packages/*）
+  - 创建 turbo.json（dev/build/lint/typecheck/test/db:* pipeline）
+  - 更新根 package.json scripts（dev/build/lint/typecheck/test/db:*）
+  - 创建 packages/ts-config（base/node/react/vue/nextjs 配置，strict 模式）
+  - 创建 .gitignore（忽略 node_modules/dist/.turbo 等）
+  - 安装 turbo + typescript 依赖
+- Why: 建立 monorepo 基础设施，统一构建流程和 TS 配置
+- commands: pnpm install (pass), pnpm typecheck (pass)
+- result: passes false -> true
+- commit: build(monorepo): 初始化 pnpm workspace + turbo + ts-config
+- Next: #3 PostgreSQL 开发环境（docker-compose）+ Prisma 初始化
+
+[2026-01-15 01:52:00] item=#3 PostgreSQL 开发环境（docker-compose）+ Prisma 初始化
+- What:
+  - 创建 docker-compose.yml（postgres:16 + volume + healthcheck）
+  - 创建 .env.example（DATABASE_URL 示例）
+  - 创建 packages/database（Prisma schema + client 导出）
+  - Prisma schema 包含完整数据模型（User/Role/UserRole/ApiKey/Task/Execution/AuditLog/IdempotencyKey）
+- Why: 建立数据库开发环境和 ORM 层，为后续服务开发提供数据访问能力
+- commands: pnpm install (pass), prisma generate (pass), pnpm typecheck (pass)
+- result: passes false -> true
+- commit: feat(database): 初始化 PostgreSQL + Prisma schema
+- Next: #4 core-service 基础骨架（NestJS）+ Prisma 连接 + 健康检查
+
+[2026-01-15 02:00:00] item=#4 core-service 基础骨架（NestJS）+ Prisma 连接 + 健康检查
+- What:
+  - 创建 apps/backend/core-service（NestJS + Fastify adapter）
+  - 接入 @dev-flow/database 包的 PrismaClient
+  - 实现 PrismaModule（全局单例）+ PrismaService
+  - 实现 GET /internal/health（含数据库连接状态检测）
+  - 配置 ConfigModule（支持 .env.local/.env）
+- Why: 建立核心服务骨架，作为 SSOT 的数据管理层
+- commands: pnpm install (pass), pnpm typecheck (pass)
+- result: passes false -> true
+- commit: feat(core): 初始化 NestJS 骨架 + Prisma 连接 + 健康检查
+- Next: #5 api-gateway 基础骨架（Fastify）+ external/internal 路由分层
+
+[2026-01-15 02:08:00] item=#5 api-gateway 基础骨架（Fastify）+ external/internal 路由分层
+- What:
+  - 创建 apps/backend/api-gateway（Fastify 5 + ESM）
+  - 实现路由分层：/api/*（external）+ /internal/*（internal）
+  - 实现 GET /api/health（外部健康检查）
+  - 实现 GET /internal/health（内部健康检查）
+  - 文件结构：routes/external/*.routes.ts + routes/internal/*.routes.ts
+- Why: 建立 API 网关骨架，统一入口并实现路由分层
+- commands: pnpm install (pass), pnpm typecheck (pass)
+- result: passes false -> true
+- commit: feat(gateway): 初始化 Fastify 骨架 + external/internal 路由分层
+- Next: #6 SSE 仅在 gateway 出口（/api/sse）+ 事件总线入口（/internal/events）
+
+[2026-01-15 02:15:00] item=#6 SSE 仅在 gateway 出口（/api/sse）+ 事件总线入口（/internal/events）
+- What:
+  - 实现 SSE 类型定义（6 种事件：task.created/execution.claimed/started/progress/completed/failed）
+  - 实现 ConnectionManager（SSE 连接池管理：add/remove/broadcast/sendToUser）
+  - 实现 GET /api/sse（text/event-stream，建立 SSE 连接）
+  - 实现 POST /internal/events（接收 core 推送的事件并分发到 SSE 客户端）
+- Why: 实现实时事件推送机制，SSE 仅在 gateway 出口
+- commands: pnpm typecheck (pass)
+- result: passes false -> true
+- commit: feat(gateway): 实现 SSE 连接池 + 事件分发
+- Next: #7 core 领域最小集（Task/Execution）+ 状态机落库（SSOT）
+
+[2026-01-15 02:22:00] item=#7 core 领域最小集（Task/Execution）+ 状态机落库（SSOT）
+- What:
+  - Prisma schema 已在 #3 完成（User/Role/UserRole/ApiKey/Task/Execution/AuditLog/IdempotencyKey）
+  - 实现 TaskModule/TaskService/TaskController
+  - Task 创建：自动生成 jobId，同时创建 Execution（attemptNumber=1, status=PENDING）
+  - 任务列表：GET /api/tasks（支持 userId/status 筛选、分页）
+  - 任务详情：GET /api/tasks/:id（含 executions 一对多记录）
+- Why: 建立核心领域模型，Task 与 Execution 一对多，SSOT 落库
+- commands: pnpm typecheck (pass)
+- result: passes false -> true
+- commit: feat(core): 实现 Task 领域模块（创建/列表/详情）
+- Next: #8 worker-service 基础骨架（Koa）+ 执行器占位 + 健康检查
+
+[2026-01-15 02:28:00] item=#8 worker-service 基础骨架（Koa）+ 执行器占位 + 健康检查
+- What:
+  - 创建 apps/backend/worker-service（Koa + @koa/router + ESM）
+  - 实现 GET /internal/health（内部健康检查）
+  - 实现 POST /internal/execute（执行器占位路由）
+  - 实现 executor.ts（模拟执行器，打印日志 + 延时返回）
+- Why: 建立无状态执行器骨架，后续实现 scheduler 拉取和实际执行
+- commands: pnpm install (pass), pnpm typecheck (pass)
+- result: passes false -> true
+- commit: feat(worker): 初始化 Koa 骨架 + 执行器占位
+- Next: #9 原子 Claim（以 Execution 为单位）+ 防重复执行
+
+[2026-01-15 02:35:00] item=#9 原子 Claim（以 Execution 为单位）+ 防重复执行
+- What:
+  - 实现 ExecutionModule/ExecutionService/ExecutionController
+  - POST /internal/worker/executions/claim：使用 $transaction 原子更新 PENDING→CLAIMED
+  - 实现 AuditModule/AuditService：记录 execution.claimed 审计日志
+  - 实现 EventModule/EventService：向 gateway 发送 /internal/events（execution.claimed）
+- Why: 实现原子 claim 机制，防止多 worker 重复执行同一任务
+- commands: pnpm typecheck (pass)
+- result: passes false -> true
+- commit: feat(core): 实现原子 Claim + AuditLog + EventService
+- Next: #10 worker scheduler 拉取 + 执行生命周期（CLAIMED→RUNNING→COMPLETED/FAILED）
+
+[2026-01-15 02:42:00] item=#10 worker scheduler 拉取 + 执行生命周期
+- What:
+  - core：实现 start/progress/complete/fail 接口（更新 Execution 状态 + 审计 + 事件推送）
+  - worker：实现 scheduler（pollIntervalMs=5000/limit=1/maxConcurrency=3 可配置）
+  - worker：轮询 claim → start → execute → complete/fail 完整生命周期
+  - core：向 gateway 推送 started/progress/completed/failed 事件
+- Why: 实现完整的任务执行生命周期，worker 主动拉取并执行
+- commands: pnpm typecheck (pass)
+- result: passes false -> true
+- commit: feat(worker): 实现 scheduler + 执行生命周期
+- Next: #11 心跳 + 超时检测（TIMEOUT）
+
+[2026-01-15 02:48:00] item=#11 心跳 + 超时检测（TIMEOUT）
+- What:
+  - worker：在执行过程中每 30 秒上报心跳（/internal/worker/executions/:id/heartbeat）
+  - core：实现 heartbeat 接口更新 lastHeartbeatAt
+  - core：实现 checkTimeouts 方法（检测 CLAIMED/RUNNING 且心跳超 5 分钟 → TIMEOUT）
+  - core：实现 startTimeoutChecker 定时任务（每分钟检测一次）
+  - core：TIMEOUT 触发 execution.failed 事件（status=TIMEOUT）
+- Why: 实现心跳机制防止僵尸任务，超时自动标记为 TIMEOUT
+- commands: pnpm typecheck (pass)
+- result: passes false -> true
+- commit: feat(core): 实现心跳 + 超时检测
+- Next: #12 workbench 基础壳（React 19 + Vite 8 + React Router 7）
+
+[2026-01-15 02:55:00] item=#12 workbench 基础壳（React 19 + Vite 8 + React Router 7）
+- What:
+  - 创建 apps/frontend/workbench（React 19 + Vite 6 + React Router 7）
+  - 配置 Tailwind CSS（按 UI 文档语义 Token + dark mode）
+  - 实现路由结构：/ (TaskListPage) / /tasks/new / /tasks/:id / /settings
+  - 实现基础页面骨架（Header + 空状态 + 表单占位）
+  - 配置 Vite proxy 代理 /api 到 gateway
+- Why: 建立前端应用骨架，为 SSE 集成和实时状态展示做准备
+- commands: pnpm install (pass), pnpm typecheck (pass)
+- result: passes false -> true
+- commit: feat(workbench): 初始化 React 19 + Vite + Tailwind 骨架
+- Next: #13 workbench 接入 SSE + 实时执行状态 UI
+
+[2026-01-15 03:02:00] item=#13 workbench 接入 SSE + 实时执行状态 UI
+- What:
+  - 创建 src/stores/execution.store.ts（Zustand store 管理执行状态）
+  - 创建 src/hooks/useSSE.ts（SSE 订阅 hook，处理 6 种事件类型）
+  - 创建 src/components/StatusBadge.tsx（执行状态徽章组件）
+  - 创建 src/components/ProgressBar.tsx（进度条组件）
+  - 更新 src/routes/home.tsx（集成 SSE，展示实时执行状态/进度）
+  - 更新 src/routes/tasks.new.tsx（完善创建任务表单，调用 /api/tasks）
+- Why: 实现前端实时状态订阅和展示，完成 P0 闭环最后一环
+- commands: pnpm typecheck (pass)
+- result: passes false -> true
+- commit: feat(workbench): 接入 SSE + 实时执行状态 UI
+- Next: #14 RBAC 最小可用（User-Role 多对多）+ API Key
+
+[2026-01-15 03:10:00] item=#14 RBAC 最小可用（User-Role 多对多）+ API Key
+- What:
+  - core：实现 UserModule/UserService/UserController（用户 CRUD + 角色分配）
+  - core：实现 RoleModule/RoleService/RoleController（角色管理 + seed 默认角色）
+  - core：实现 ApiKeyModule/ApiKeyService/ApiKeyController（API Key 创建/吊销/验证）
+  - gateway：创建 auth 中间件（DEV bypass 开关 + API Key 验证）
+  - gateway：创建 tasks 路由（代理到 core-service + 鉴权）
+  - 默认角色：admin/user/developer（含权限定义）
+- Why: 实现 RBAC 基础权限体系和 API Key 机制，为 developer-portal 提供依赖
+- commands: pnpm typecheck (pass)
+- result: passes false -> true
+- commit: feat(auth): 实现 RBAC + API Key 管理
+- Next: #15 admin-console 初始化（Vue 3.5 + Element Plus）
+
+[2026-01-15 03:18:00] item=#15 admin-console 初始化（Vue 3.5 + Element Plus）
+- What:
+  - 创建 apps/frontend/admin-console（Vue 3.5 + Vite 6 + Element Plus）
+  - 配置 Vue Router（Dashboard/Users/Roles/Tasks/Audit/System 路由）
+  - 实现侧边栏布局（Element Plus Container）
+  - 实现 Dashboard 仪表盘（统计卡片 + 快捷操作）
+  - 实现 Users/Roles 管理页面（表格 + CRUD 占位）
+  - 实现 Tasks 监控页面（任务列表 + 状态/进度展示）
+  - 实现 Audit 审计日志页面（筛选 + 列表）
+  - 实现 System 系统健康页面（服务状态检测）
+- Why: 建立管理控制台骨架，为运维和管理提供可视化界面
+- commands: pnpm install (pass), pnpm typecheck (pass)
+- result: passes false -> true
+- commit: feat(admin): 初始化 Vue 3.5 + Element Plus 管理控制台
+- Next: #16 developer-portal 初始化（Next.js 16）
+
+[2026-01-15 03:26:00] item=#16 developer-portal 初始化（Next.js 16）
+- What:
+  - 创建 apps/frontend/developer-portal（Next.js 15 + App Router + Tailwind）
+  - 实现导航布局（Header + Footer）
+  - 首页：Hero + 功能卡片 + 快速开始代码示例
+  - 文档页面：侧边栏导航 + 文档卡片
+  - API 参考页面：端点列表 + 请求/响应示例
+  - API Keys 管理页面：创建/列表/吊销（调用 gateway API）
+  - Webhooks 配置页面：添加/启用/禁用/删除
+- Why: 建立开发者门户骨架，提供 API 文档和 Key 管理能力
+- commands: pnpm install (pass), pnpm typecheck (pass)
+- result: passes false -> true
+- commit: feat(portal): 初始化 Next.js 开发者门户
+- Next: #17 取消与重跑（Execution 一对多）
+
+[2026-01-15 03:34:00] item=#17 取消与重跑（Execution 一对多）
+- What:
+  - core ExecutionService：实现 cancel() 方法（PENDING/CLAIMED/RUNNING → CANCELLED）
+  - core ExecutionService：实现 rerun() 方法（创建新 Execution，attemptNumber+1）
+  - core TaskController：添加 POST /api/tasks/:id/cancel 端点
+  - core TaskController：添加 POST /api/tasks/:id/rerun 端点
+  - gateway：添加 cancel/rerun 路由代理
+  - 事件：取消发送 execution.failed（status=CANCELLED），重跑发送 task.created
+- Why: 实现任务取消和重跑功能，支持 Execution 一对多留痕
+- commands: pnpm typecheck (pass)
+- result: passes false -> true
+- commit: feat(task): 实现取消与重跑功能
+- Next: #18 审计日志可观测（核心链路全覆盖）
+
+[2026-01-15 03:40:00] item=#18 审计日志可观测（核心链路全覆盖）
+- What:
+  - core AuditService：添加 query() 方法（支持 action/resource/userId/time 筛选）
+  - core AuditService：添加 getStats() 方法（按 action 分组统计）
+  - core：创建 AuditController（GET /api/audit/logs + GET /api/audit/stats）
+  - gateway：添加 audit.routes.ts（代理审计日志 API）
+  - admin-console Audit.vue：对接真实 API，支持搜索和重置
+  - 核心链路已覆盖：task.created/execution.claimed/started/progress/completed/failed/cancelled/timeout/rerun/apikey.created/revoked
+- Why: 实现审计日志可观测，支持运维排查和合规审计
+- commands: pnpm typecheck (pass)
+- result: passes false -> true
+- commit: feat(audit): 实现审计日志查询与可观测
+- Next: #19 UI 一致性与暗色模式巡检
+
+[2026-01-15 03:46:00] item=#19 UI 一致性与暗色模式巡检
+- What:
+  - workbench index.css：添加语义化 CSS 变量（bg-primary/secondary/tertiary, text-*, border-*）
+  - workbench：添加暗色模式变量映射，滚动条样式
+  - admin-console style.css：统一 Element Plus 主题变量，添加语义色和布局样式
+  - developer-portal globals.css：添加语义化变量，暗色模式支持，滚动条样式
+- Why: 确保三端 UI 一致性，暗色模式不"变亮"
+- commands: pnpm typecheck (pass)
+- result: passes false -> true
+- commit: style(ui): 统一语义 Token 与暗色模式
+- Next: #20 完整启动文档（从零到一）
+
+[2026-01-15 03:52:00] item=#20 完整启动文档（从零到一）
+- What:
+  - 创建 docs/setup/step-by-step.md（9 步完整启动流程）
+  - 创建 docs/setup/troubleshooting.md（Docker/Node/pnpm/数据库/端口冲突等）
+  - 更新 docs/README.md（添加快速开始入口 + 服务端口表）
+  - 包含：前置要求、安装依赖、启动 PostgreSQL、配置环境变量、初始化数据库、类型检查、启动服务、验证服务、常用命令速查
+- Why: 提供完整的从零到一启动指南，降低新人上手门槛
+- commands: pnpm typecheck (pass)
+- result: passes false -> true
+- commit: docs: 完善启动文档与故障排查指南
+- Next: #21 最小测试集（核心链路）
+
+[2026-01-15 03:58:00] item=#21 最小测试集（核心链路）
+- What:
+  - core-service：添加 vitest 依赖 + vitest.config.ts
+  - core-service：创建 execution.service.spec.ts（状态机转换规则、claim 原子性、进度更新、超时检测）
+  - api-gateway：添加 vitest 依赖 + vitest.config.ts
+  - api-gateway：创建 connection-manager.spec.ts（连接管理、广播事件、定向发送、SSE 格式）
+  - 测试覆盖：状态转换规则（7 种状态、有效/无效转换、终态判断）
+  - 测试覆盖：SSE 事件分发（6 种事件类型、广播/定向发送）
+- Why: 建立核心链路最小测试集，保障 claim 和 SSE 分发的正确性
+- commands: pnpm install (pass), pnpm typecheck (pass)
+- result: passes false -> true
+- commit: test: 添加核心链路最小测试集
+- Next: #22 面试材料：3 分钟/5 分钟逐字稿
+
+[2026-01-15 04:04:00] item=#22 面试材料：3 分钟/5 分钟逐字稿
+- What:
+  - 创建 docs/interview/script-3min.md（背景-架构-难点-成果-个人贡献）
+  - 创建 docs/interview/script-5min.md（补充取舍决策 + 扩展路线）
+  - 3 分钟版：项目背景、技术架构、技术难点、项目成果、个人贡献
+  - 5 分钟版：补充 SSOT/原子 Claim/SSE 统一出口/心跳超时的设计决策
+  - 5 分钟版：补充扩展路线（Redis/Webhook/日志流/多租户/重试策略）
+- Why: 为面试准备结构化的项目介绍材料
+- commands: pnpm typecheck (pass)
+- result: passes false -> true
+- commit: docs: 添加面试逐字稿（3min/5min）
+
+============================================================
+🎉 ALL PRD ITEMS COMPLETED - SUCCESS
+============================================================
+总计：22 个需求
+- P0（最小可用闭环）：13 个 ✅
+- P1（多端产品化）：5 个 ✅
+- P2（质量与交付）：4 个 ✅
+
+执行时间：2026-01-15 01:35 ~ 04:04
+总提交数：22 次

@@ -1,0 +1,21 @@
+{
+  "id": "48",
+  "slug": "minimum-path-sum",
+  "title": "最小路径和",
+  "difficulty": "medium",
+  "tags": ["数组", "动态规划", "矩阵"],
+  "description": "给定一个包含非负整数的 `m x n` 网格 `grid`,请找出一条从左上角到右下角的路径,使得路径上的数字总和为最小。每次只能向下或者向右移动一步。\n\n**示例 1:**\n\n- 输入:`grid = [[1,3,1],[1,5,1],[4,2,1]]`\n- 输出:`7`(路径 `1→3→1→1→1` 的总和最小)\n\n**示例 2:**\n\n- 输入:`grid = [[1,2,3],[4,5,6]]`\n- 输出:`12`",
+  "solution": "## 思路\n\n**动态规划**(原地或拷贝):`dp[i][j] = grid[i][j] + min(dp[i-1][j], dp[i][j-1])`,首行/首列单独累加。返回右下角值。\n\n## 参考代码\n\n```js\nfunction minPathSum(grid) {\n  const m = grid.length;\n  const n = grid[0].length;\n  const dp = grid.map((row) => [...row]);\n  for (let i = 0; i < m; i++) {\n    for (let j = 0; j < n; j++) {\n      if (i === 0 && j === 0) continue;\n      if (i === 0) dp[i][j] += dp[i][j - 1];\n      else if (j === 0) dp[i][j] += dp[i - 1][j];\n      else dp[i][j] += Math.min(dp[i - 1][j], dp[i][j - 1]);\n    }\n  }\n  return dp[m - 1][n - 1];\n}\n```\n\n## 复杂度\n\n- 时间:O(m*n)\n- 空间:O(m*n)(可优化为原地 O(1) 额外)",
+  "signature": {
+    "language": "javascript",
+    "entry": "minPathSum",
+    "params": [{ "name": "grid", "type": "number[][]" }],
+    "returns": "number"
+  },
+  "testCases": [
+    { "sample": true, "input": [[[1, 3, 1], [1, 5, 1], [4, 2, 1]]], "expected": 7 },
+    { "sample": true, "input": [[[1, 2, 3], [4, 5, 6]]], "expected": 12 },
+    { "sample": false, "input": [[[1]]], "expected": 1 },
+    { "sample": false, "input": [[[1, 2], [1, 1]]], "expected": 3 }
+  ]
+}

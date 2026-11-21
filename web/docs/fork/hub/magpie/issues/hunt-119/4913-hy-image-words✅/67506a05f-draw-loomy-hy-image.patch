@@ -1,0 +1,175 @@
+From 67506a05fddce04224ce5a2fceec9f96c5aa65ef Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Tue, 3 Nov 2026 00:15:35 +0800
+Subject: [PATCH] draw: Loomy's Hy-Image generators draw on the images API
+ (#4913)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+iFlytek's Loomy gateway serves three image generators, each listed in
+its /v1/models with type "image": Hy-Image-3.5-preview,
+doubao-seedream-5-lite, qwen-image-3.0-pro. An OpenAI-compatible plugin
+in front of it lists all three, and the reporter measured all three
+answering a normal OpenAI-shaped draw on the images API with a 200 and
+a URL each.
+
+qwen-image and seedream match catalog.ImagesAPI's words, so those two
+reach Settings' image generation picker and draw. hy-image matches only
+DrawsID's "image", so Hy-Image-3.5-preview stayed a chat model with no
+way to pick it for drawing — the same reason WorkBuddy's Hy-Image
+models need their wbDrawers path.
+
+Add "hy-image" to ImagesAPI's words: the model is then a drawer on the
+plugin's row like the other two, and the gateway asks it on the images
+API instead of chat. No other model's answer changes — every id the new
+word catches was already a drawer by DrawsID's broader "image"; only
+where it is asked moves.
+
+Test: TestLoomyPluginDraws (internal/gateway) installs a fake Loomy
+plugin listing the three generators beside a chat model, checks Drawers
+lists all three, and draws Hy-Image-3.5-preview (images API, image
+back, chat never asked). Broken by hand: without "hy-image" it is red
+(drawers [doubao-seedream-5-lite qwen-image-3.0-pro], the Hy-Image one
+missing).
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/catalog/catalog.go            |  5 +-
+ internal/gateway/draw_loomy_test.go    | 86 ++++++++++++++++++++++++++
+ internal/plugin/testdata/fake/index.js |  8 +++
+ 3 files changed, 97 insertions(+), 2 deletions(-)
+ create mode 100644 internal/gateway/draw_loomy_test.go
+
+diff --git a/internal/catalog/catalog.go b/internal/catalog/catalog.go
+index a67e5d858..089bb2c09 100644
+--- a/internal/catalog/catalog.go
++++ b/internal/catalog/catalog.go
+@@ -1974,10 +1974,11 @@ func DrawsID(id string) bool {
+ 
+ // ImagesAPI is whether a model draws on an images API rather than answering
+ // in chat with pictures: gpt-image, dall-e, imagen, flux, seedream… — not
+-// gemini-*-image or gpt-5-image, which chat.
++// gemini-*-image or gpt-5-image, which chat. iFlytek Loomy's Hy-Image
++// generators (Hy-Image-3.5-preview) draw on its images API too (#4913).
+ func ImagesAPI(id string) bool {
+ 	id = strings.ToLower(id)
+-	for _, w := range []string{"gpt-image", "chatgpt-image", "dall-e", "imagen", "imagine", "qwen-image", "wanx", "wan2", "seedream", "cogview", "flux", "stable-diffusion", "sdxl", "kolors", "hidream", "sensenova-u1"} {
++	for _, w := range []string{"gpt-image", "chatgpt-image", "dall-e", "imagen", "imagine", "qwen-image", "wanx", "wan2", "seedream", "cogview", "flux", "stable-diffusion", "sdxl", "kolors", "hidream", "sensenova-u1", "hy-image"} {
+ 		if strings.Contains(id, w) {
+ 			return true
+ 		}
+diff --git a/internal/gateway/draw_loomy_test.go b/internal/gateway/draw_loomy_test.go
+new file mode 100644
+index 000000000..370d3d7fc
+--- /dev/null
++++ b/internal/gateway/draw_loomy_test.go
+@@ -0,0 +1,86 @@
++package gateway
++
++import (
++	"encoding/base64"
++	"io"
++	"net/http"
++	"slices"
++	"strings"
++	"sync"
++	"testing"
++
++	"github.com/yetone/magpie/internal/provider"
++)
++
++// loomy is iFlytek's Loomy gateway (#4913): an OpenAI model list naming
++// three image generators beside its chat models, and an images API all
++// three answer in OpenAI's shape (measured live: 200 with a URL each).
++type loomy struct {
++	mu   sync.Mutex
++	sent map[string][]string
++}
++
++func (v *loomy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
++	body, _ := io.ReadAll(r.Body)
++	v.mu.Lock()
++	if v.sent == nil {
++		v.sent = map[string][]string{}
++	}
++	v.sent[r.URL.Path] = append(v.sent[r.URL.Path], string(body))
++	v.mu.Unlock()
++	w.Header().Set("Content-Type", "application/json")
++	switch r.URL.Path {
++	case "/v1/models":
++		io.WriteString(w, `{"object":"list","data":[{"id":"Hy-Image-3.5-preview","object":"model"},{"id":"doubao-seedream-5-lite","object":"model"},{"id":"qwen-image-3.0-pro","object":"model"},{"id":"spark-lite-max","object":"model"}]}`)
++	case "/v1/images/generations":
++		io.WriteString(w, `{"created":1,"data":[{"b64_json":"`+base64.StdEncoding.EncodeToString(pngBytes)+`"}]}`)
++	default:
++		w.WriteHeader(404)
++	}
++}
++
++func (v *loomy) got(path string) []string {
++	v.mu.Lock()
++	defer v.mu.Unlock()
++	return append([]string(nil), v.sent[path]...)
++}
++
++// The Loomy plugin lists all three image generators its gateway serves
++// (#4913): qwen-image and seedream draw on the images API as any such
++// model does, and Hy-Image-3.5-preview, named for images only by
++// "hy-image", draws there too — not left a chat model with no way to
++// pick it for drawing.
++func TestLoomyPluginDraws(t *testing.T) {
++	t.Setenv("FAKE_LOOMY", "1")
++	v := &loomy{}
++	pid := besideFake(t, "loomy", v)
++	p, err := provider.Find(pid)
++	if err != nil {
++		t.Fatal(err)
++	}
++	var drawers []string
++	for _, m := range Drawers(*p) {
++		if m.Provider != pid {
++			t.Fatalf("drawer %s of %q", m.ID, m.Provider)
++		}
++		drawers = append(drawers, m.ID)
++	}
++	slices.Sort(drawers)
++	if want := []string{"Hy-Image-3.5-preview", "doubao-seedream-5-lite", "qwen-image-3.0-pro"}; !slices.Equal(drawers, want) {
++		t.Fatalf("drawers %v, want %v", drawers, want)
++	}
++	s := New()
++	code, a, raw := postImages(t, s, "/v1/images/generations", "application/json", `{"model":"`+pid+`/Hy-Image-3.5-preview","prompt":"a magpie","size":"1024x1024"}`)
++	if code != 200 || len(a.Data) != 1 {
++		t.Fatalf("%d %s", code, raw)
++	}
++	if b, _ := base64.StdEncoding.DecodeString(a.Data[0].B64); string(b) != string(pngBytes) {
++		t.Fatalf("image %q", b)
++	}
++	if sent := v.got("/v1/images/generations"); len(sent) != 1 || !strings.Contains(sent[0], `"model":"Hy-Image-3.5-preview"`) {
++		t.Fatalf("generation was sent %v", sent)
++	}
++	if sent := v.got("/v1/chat/completions"); len(sent) != 0 {
++		t.Fatalf("an image model was asked on chat: %v", sent)
++	}
++}
+diff --git a/internal/plugin/testdata/fake/index.js b/internal/plugin/testdata/fake/index.js
+index e91819b00..bf239fc81 100644
+--- a/internal/plugin/testdata/fake/index.js
++++ b/internal/plugin/testdata/fake/index.js
+@@ -96,6 +96,14 @@ export const FakePlugin = async ({ client }) => ({
+       cfg.provider[ID].models["sensenova-u1.5-lite"] = { name: "sensenova-u1.5-lite", limit: { context: 131072, output: 32768 } }
+       cfg.provider[ID].models["flux-2"] = { name: "Flux 2", provider: { npm: "@ai-sdk/anthropic" }, limit: { context: 1000, output: 100 } }
+     }
++    // $FAKE_LOOMY: iFlytek's Loomy gateway's three image generators as its
++    // /v1/models lists them (#4913), on the provider's openai-compatible;
++    // all three draw on its images API
++    if (process.env.FAKE_LOOMY) {
++      cfg.provider[ID].models["Hy-Image-3.5-preview"] = { name: "Hy-Image-3.5-preview", limit: { context: 131072, output: 32768 } }
++      cfg.provider[ID].models["doubao-seedream-5-lite"] = { name: "doubao-seedream-5-lite", limit: { context: 131072, output: 32768 } }
++      cfg.provider[ID].models["qwen-image-3.0-pro"] = { name: "qwen-image-3.0-pro", limit: { context: 131072, output: 32768 } }
++    }
+     // $FAKE_GOOGLE: the provider's models are on Gemini's API, as XYenon's
+     // Google AI Studio plugin gives them all (@ai-sdk/google), so it has
+     // no OpenAI-compatible model
+-- 
+2.50.1 (Apple Git-155)
+

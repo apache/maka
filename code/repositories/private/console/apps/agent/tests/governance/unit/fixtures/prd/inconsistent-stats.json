@@ -1,0 +1,32 @@
+{
+  "items": [
+    {
+      "id": "PRD-00",
+      "component": "TaskA",
+      "priority": "P0",
+      "steps": ["step 1"],
+      "passes": true
+    },
+    {
+      "id": "PRD-01",
+      "component": "TaskB",
+      "priority": "P1",
+      "steps": ["step 1"],
+      "passes": true
+    },
+    {
+      "id": "PRD-02",
+      "component": "TaskC",
+      "priority": "P2",
+      "steps": ["step 1"],
+      "passes": false
+    }
+  ],
+  "statistics": {
+    "total": 3,
+    "passing": 1,
+    "failing": 2,
+    "completion": "33%",
+    "blocked_reason": ""
+  }
+}

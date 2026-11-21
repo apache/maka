@@ -1,0 +1,406 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Thu, 5 Nov 2026 01:06:45 +0800
+Subject: [PATCH] middleware: the Plugins row says how many calls a middleware
+ changed (#4271)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+A middleware that acts on some requests only read as if it had acted on
+all of them: the row counted every call of its hooks alike (m.calls in
+Run.apply), so unisong's middleware-codex-history passing a third
+provider's requests through unchanged read "onRequest · 2 calls" like
+two rewritten ones. A plugin can't count for itself: onRequest runs on
+every request, the provider is only known inside the call, and a pure
+middleware has nowhere the Plugins page shows.
+
+State gains Changed: the calls whose hook changed something. A returned
+body is one (onRequest, onProvider, onEvent, onResponse), as are a
+dropped event (onEvent returning null), a turned-away request (ctx.
+reject in onRequest) and a passed-over account ({skip: true} in
+onAccount). A call whose hook passed its input through unchanged
+(undefined) and one that failed are calls, not changes. The count
+sits where the call's outcome is already told (Request, Tried,
+Account, writer.event, writer.finish), so the hot path adds one atomic
+add on a change and nothing on a pass-through. The row says changed
+when it differs from calls, in every language i18n.js has;
+gateway-middleware.md says what Changed counts.
+
+Fixes #4271
+
+Tests:
+- TestChangedCounts: one middleware with all five hooks. A pass-through
+  request (undefined) is a call, not a change; a returned body, a
+  reject, a {skip: true} account, a dropped event (onEvent null) and a
+  whole-reply rewrite are changes, one each; a thrown call is a failure,
+  not a change. TestOnProvider now says Changed too: three of its five
+  tries returned a body, the throw and the null didn't.
+- plugin-middleware.test.cjs: the fake row's middleware counts 12,345
+  calls and 12,340 changed, and the row says so in English and Chinese.
+
+Run (mote, darwin/arm64):
+- go test -tags nogui -count=1 ./internal/middleware/: ok. gofmt -l:
+  clean. go vet -tags nogui ./internal/middleware/: clean. go build
+  -tags nogui .: ok.
+- node --test internal/gui/tests/plugin-middleware.test.cjs on
+  chromium: 12 of 12 ok.
+
+Broken by hand, each with a real FAIL and then restored:
+- the seven m.changed.Add(1) lines taken out of run.go and account.go:
+  TestChangedCounts red ("after a change: ... Changed:0") and
+  TestOnProvider red ("changed ... Changed:0"). Restored: ok.
+- plugins.js's mwLine taken back to the one-line stats: the
+  plugin-middleware test red in en and zh (the row read "12,345 calls,
+  0.9 µs each", the test wants "12,345 calls, 12,340 changed, 0.9 µs
+  each"). Restored: 12 of 12 ok.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ docs/subsystems/gateway-middleware.md         |  6 +-
+ internal/gui/assets/i18n.js                   |  4 +
+ internal/gui/assets/plugins.js                |  7 +-
+ internal/gui/tests/plugin-middleware.test.cjs | 19 ++--
+ internal/middleware/account.go                |  1 +
+ internal/middleware/middleware.go             | 19 ++--
+ internal/middleware/middleware_test.go        | 93 +++++++++++++++++++
+ internal/middleware/run.go                    |  6 ++
+ 8 files changed, 136 insertions(+), 19 deletions(-)
+
+diff --git a/docs/subsystems/gateway-middleware.md b/docs/subsystems/gateway-middleware.md
+index c4671130d..c21450002 100644
+--- a/docs/subsystems/gateway-middleware.md
++++ b/docs/subsystems/gateway-middleware.md
+@@ -8,10 +8,10 @@ A plugin can be a JS gateway plugin: JavaScript that magpie runs inside its gate
+ | --- | --- | --- |
+ | Discovery | Find a plugin's gateway module: `magpie.middleware` (or its alias `magpie.gateway`) in its package.json, or a path to a `*.middleware.js` / `*.gateway.js` (or `.mjs`) file | `plugin.Middleware` in [`internal/plugin/middleware.go`](../../internal/plugin/middleware.go) |
+ | Bun host | Skip a plugin that is middleware only (no `main`, no `exports`) | `Middleware(...)` check in [`host.go`](../../internal/plugin/host.go) |
+-| Load and run | Compile, pool runtimes, call hooks with limits, count calls and failures | [`internal/middleware`](../../internal/middleware): `middleware.go`, `run.go` |
++| Load and run | Compile, pool runtimes, call hooks with limits, count calls, changes and failures | [`internal/middleware`](../../internal/middleware): `middleware.go`, `run.go` |
+ | Gateway | Run the chain on agents' requests only, as one `gwmw.Agent` on the gateway's middleware point; the built-in plugin `middleware` registers it (`middleware.Chain`), and with that plugin off no middleware runs | `serveAgent` in [`internal/gateway/middleware.go`](../../internal/gateway/middleware.go), called from `gateway.go` and `codex_backend.go`; [`internal/gwmw`](../../internal/gwmw/gwmw.go), [`plugins/middleware`](../../plugins/middleware/middleware.go); [Plugin runtime](plugin-runtime.md) |
+ | Routings and usage | A module's `strategies` are routings `<short name>/<name>` (`routes.Register`) and its `onUsage` gets allow-listed usage rows, both while the gateway serves `middleware.Points()` (a `usage.Observer` the `middleware` plugin registers) | [`points.go`](../../internal/middleware/points.go) |
+-| GUI and CLI | Show each middleware's hooks, calls, µs per call, failures and load error; its routings and how often they were asked; its usage rows and those dropped. The routings served are `jsRoutings` in the settings state, offered in every routing picker; `magpie group set <id> routing=<plugin>/<name>` takes one | `middleware.States()`; `pluginEntryJSON.Middleware` in [`internal/gui/plugins.go`](../../internal/gui/plugins.go), `mwLine` in `plugins.js`, `listPlugins` in [`plugins_cli.go`](../../internal/cli/plugins_cli.go) |
++| GUI and CLI | Show each middleware's hooks, calls, how many of them changed something, µs per call, failures and load error; its routings and how often they were asked; its usage rows and those dropped. The routings served are `jsRoutings` in the settings state, offered in every routing picker; `magpie group set <id> routing=<plugin>/<name>` takes one | `middleware.States()`; `pluginEntryJSON.Middleware` in [`internal/gui/plugins.go`](../../internal/gui/plugins.go), `mwLine` in `plugins.js`, `listPlugins` in [`plugins_cli.go`](../../internal/cli/plugins_cli.go) |
+ | Options | A middleware's `options` in plugins.json, as `ctx.options`; set by name, spec, short name or the name without its scope (`plugin.Called`: agent-aider, which was its short name before `agent-`, `tools-` and `page-` came off too); a package's `magpie.options` is only the editor's example | `SetOptions`, `ShortName` in [`store.go`](../../internal/plugin/store.go); `pluginOptions` in `plugins_cli.go`; `optionsEditor` in `plugins.js` |
+ | Kind | Whether a plugin is a provider, middleware or both, shown on every card and row, also for one that is off | `isMiddleware`, `middlewareOnly` in `pluginEntryJSON`; `kind: "middleware"` market entries (`market.json`, the community `registry.json`); `kindChip` in `plugins.js` |
+ | Community middleware | Ready-made packages (`@magpie-community/middleware-<name>`), mostly New API's channel settings | `packages/{param-override,model-map,system-prompt,word-guard,think-tags,antigravity-cloak}` in [magpie-community/plugins](https://github.com/magpie-community/plugins), tested with `scripts/middleware.mjs` |
+@@ -48,7 +48,7 @@ Only requests agents send go through `serveAgent`. magpie's own requests (thread
+ - A middleware imports only relative files; packages must be bundled into it.
+ - Reload: a change to plugins.json or to a middleware file is picked up by the next request at most a second later (`stamp`).
+ - A strategy has 20ms, waiting for its runtime included; one that throws, runs out of time or returns what isn't an order of the seats leaves them in their listed order (fail open), counted and logged as a failure. `onUsage` has 250ms and fails open the same way. A request never waits for `onUsage`.
+-- Stats count the whole call, including parsing JSON into the runtime and writing it back. Calls are counted in the process that runs the gateway, so `magpie plugin` shows hooks and load errors only.
++- Stats count the whole call, including parsing JSON into the runtime and writing it back. Changed counts the calls whose hook changed something: a returned body (`onRequest`, `onProvider`, `onResponse`, `onEvent`), a dropped event (`onEvent` returning `null`), a turned-away request (`onRequest` calling `ctx.reject`) and a passed-over account (`onAccount` returning `{skip: true}`); a failed call isn't a change. The row says it when it differs from calls. Calls are counted in the process that runs the gateway, so `magpie plugin` shows hooks and load errors only.
+ 
+ Measured with a real account and real Claude Code: about 1–1.6µs an event, 0.2–0.7ms an `onRequest` that parses and rewrites Claude Code's ~80KB body. `BenchmarkEvent` is about 0.9µs, 11 allocations.
+ 
+diff --git a/internal/gui/assets/i18n.js b/internal/gui/assets/i18n.js
+index 2ffe9ab31..5905fec7d 100644
+--- a/internal/gui/assets/i18n.js
++++ b/internal/gui/assets/i18n.js
+@@ -4460,6 +4460,7 @@ const I18N = {
+     "{name} isn't in Agents: magpie doesn't find it in {path}": "{name} 不在 Agent 页：magpie 在 {path} 没有找到它",
+     "Gateway middleware: {hooks}": "网关中间件：{hooks}",
+     "{n} calls, {us} µs each": "调用 {n} 次，平均每次 {us} µs",
++    "{n} calls, {changed} changed, {us} µs each": "调用 {n} 次，{changed} 次起效，平均每次 {us} µs",
+     "onEvent sees only {events} events": "onEvent 只处理 {events} 事件",
+     "A failed call leaves the request or reply as it was": "调用失败时，请求或回复保持原样",
+     "Last: {error}": "最近一次：{error}",
+@@ -9211,6 +9212,7 @@ const I18N = {
+     "{name} isn't in Agents: magpie doesn't find it in {path}": "{name} 不在 Agent 頁：magpie 在 {path} 沒有找到它",
+     "Gateway middleware: {hooks}": "閘道中介軟體：{hooks}",
+     "{n} calls, {us} µs each": "呼叫 {n} 次，平均每次 {us} µs",
++    "{n} calls, {changed} changed, {us} µs each": "呼叫 {n} 次，{changed} 次生效，平均每次 {us} µs",
+     "onEvent sees only {events} events": "onEvent 只處理 {events} 事件",
+     "A failed call leaves the request or reply as it was": "呼叫失敗時，請求或回覆保持原樣",
+     "Last: {error}": "最近一次：{error}",
+@@ -13983,6 +13985,7 @@ const I18N = {
+     "{name} isn't in Agents: magpie doesn't find it in {path}": "{name} はエージェントページにありません：magpie は {path} に見つけられません",
+     "Gateway middleware: {hooks}": "ゲートウェイミドルウェア：{hooks}",
+     "{n} calls, {us} µs each": "{n} 回呼び出し、1 回平均 {us} µs",
++    "{n} calls, {changed} changed, {us} µs each": "{n} 回呼び出し、{changed} 回変更、1 回平均 {us} µs",
+     "onEvent sees only {events} events": "onEvent は {events} イベントだけを処理します",
+     "A failed call leaves the request or reply as it was": "失敗した呼び出しでは、リクエストや応答はそのまま送られます",
+     "Last: {error}": "直近：{error}",
+@@ -18769,6 +18772,7 @@ const I18N = {
+     "{name} isn't in Agents: magpie doesn't find it in {path}": "{name} fehlt unter Agenten: magpie findet es nicht in {path}",
+     "Gateway middleware: {hooks}": "Gateway-Middleware: {hooks}",
+     "{n} calls, {us} µs each": "{n} Aufrufe, je {us} µs",
++    "{n} calls, {changed} changed, {us} µs each": "{n} Aufrufe, {changed} geändert, je {us} µs",
+     "onEvent sees only {events} events": "onEvent sieht nur {events}-Events",
+     "A failed call leaves the request or reply as it was": "Ein fehlgeschlagener Aufruf lässt Anfrage bzw. Antwort unverändert",
+     "Last: {error}": "Zuletzt: {error}",
+diff --git a/internal/gui/assets/plugins.js b/internal/gui/assets/plugins.js
+index c9cf3a895..f228f60db 100644
+--- a/internal/gui/assets/plugins.js
++++ b/internal/gui/assets/plugins.js
+@@ -1551,7 +1551,12 @@
+     const parts = [];
+     if (m.hooks.length) {
+       let s = t("Gateway middleware: {hooks}", { hooks: m.hooks.join(t(", ")) });
+-      if (m.calls) s += " · " + t("{n} calls, {us} µs each", { n: m.calls.toLocaleString(lang), us: m.avgMicros < 10 ? m.avgMicros.toFixed(1) : Math.round(m.avgMicros).toLocaleString(lang) });
++      // changed differs from calls when some calls passed their input
++      // through unchanged, or failed: said, so the row tells the calls a
++      // hook acted on from the ones it only saw (#4271)
++      const us = m.avgMicros < 10 ? m.avgMicros.toFixed(1) : Math.round(m.avgMicros).toLocaleString(lang);
++      if (m.calls && m.changed !== m.calls) s += " · " + t("{n} calls, {changed} changed, {us} µs each", { n: m.calls.toLocaleString(lang), changed: (m.changed || 0).toLocaleString(lang), us });
++      else if (m.calls) s += " · " + t("{n} calls, {us} µs each", { n: m.calls.toLocaleString(lang), us });
+       parts.push(s);
+     }
+     if (m.strategies?.length) parts.push(t("Routings: {routings}", { routings: m.strategies.join(t(", ")) }) + (m.orders ? " · " + t("asked {n} times", { n: m.orders.toLocaleString(lang) }) : ""));
+diff --git a/internal/gui/tests/plugin-middleware.test.cjs b/internal/gui/tests/plugin-middleware.test.cjs
+index c5d3d67e1..59a45f52c 100644
+--- a/internal/gui/tests/plugin-middleware.test.cjs
++++ b/internal/gui/tests/plugin-middleware.test.cjs
+@@ -1,11 +1,12 @@
+ // Run with Node's test runner and Playwright on the module path; see README.md.
+ // Gateway middleware plugins on the Installed tab: a plugin that is only
+-// middleware says what it runs (its hooks, calls, µs each, failures with
+-// the last error in the tip) where a subscription plugin says what it
+-// signs in to, and never "Signs in to nothing magpie can use"; one that
+-// didn't load says why in red; one switched off says Off alone; a plugin
+-// that is both keeps its sign-in line and gains the middleware line.
+-// English and Chinese; the API is faked here.
++// middleware says what it runs (its hooks, calls, how many changed
++// something when not all did, µs each, failures with the last error in
++// the tip) where a subscription plugin says what it signs in to, and
++// never "Signs in to nothing magpie can use"; one that didn't load says
++// why in red; one switched off says Off alone; a plugin that is both
++// keeps its sign-in line and gains the middleware line. English and
++// Chinese; the API is faked here.
+ const assert = require("node:assert/strict");
+ const fs = require("node:fs/promises");
+ const path = require("node:path");
+@@ -16,7 +17,7 @@ const assets = path.resolve(__dirname, "../assets");
+ 
+ const ALIAS = "/Users/x/mw/alias.middleware.js", BROKEN = "/Users/x/mw/broken.middleware.js", OFF = "/Users/x/mw/off.middleware.js", BOTH = "/Users/x/mw/both";
+ const state = { bun: true, bunVersion: "1.3.0", plugins: [
+-  { spec: ALIAS, providers: [], moved: [], isMiddleware: true, middlewareOnly: true, optionsExample: { mapping: { fast: "deepseek-chat" } }, middleware: { hooks: ["onRequest", "onEvent"], events: ["content_block_delta"], calls: 12345, avgMicros: 0.93, failures: 2, lastError: "onEvent: TypeError: x is undefined" } },
++  { spec: ALIAS, providers: [], moved: [], isMiddleware: true, middlewareOnly: true, optionsExample: { mapping: { fast: "deepseek-chat" } }, middleware: { hooks: ["onRequest", "onEvent"], events: ["content_block_delta"], calls: 12345, changed: 12340, avgMicros: 0.93, failures: 2, lastError: "onEvent: TypeError: x is undefined" } },
+   { spec: BROKEN, providers: [], moved: [], isMiddleware: true, middlewareOnly: true, middleware: { hooks: [], error: "exports none of onRequest, onEvent and onResponse", calls: 0, avgMicros: 0, failures: 0 } },
+   { spec: OFF, off: true, providers: [], moved: [], isMiddleware: true, middlewareOnly: true },
+   { spec: BOTH, providers: ["Acme"], moved: [], isMiddleware: true, middleware: { hooks: ["onResponse"], calls: 0, avgMicros: 0, failures: 0 } },
+@@ -41,8 +42,8 @@ function server(lang, pluginState = state) {
+ }
+ 
+ const L = {
+-  en: { installed: "Installed", chip: "Middleware", provider: "Provider", line: "Gateway middleware: onRequest, onEvent · 12,345 calls, 0.9 µs each", failed: "2 failed", last: /Last: onEvent: TypeError: x is undefined/, events: /onEvent sees only content_block_delta events/, broken: /^Middleware didn't load: exports none/, off: "Off", nothing: "Signs in to nothing", both: "Signs in to Acme", bothLine: "Gateway middleware: onResponse" },
+-  zh: { installed: "已安装", chip: "中间件", provider: "供应商", line: "网关中间件：onRequest、onEvent · 调用 12,345 次，平均每次 0.9 µs", failed: "2 次失败", last: /最近一次：onEvent: TypeError: x is undefined/, events: /onEvent 只处理 content_block_delta 事件/, broken: /^中间件没有加载：exports none/, off: "关闭", nothing: "不能登录", both: "Acme", bothLine: "网关中间件：onResponse" },
++  en: { installed: "Installed", chip: "Middleware", provider: "Provider", line: "Gateway middleware: onRequest, onEvent · 12,345 calls, 12,340 changed, 0.9 µs each", failed: "2 failed", last: /Last: onEvent: TypeError: x is undefined/, events: /onEvent sees only content_block_delta events/, broken: /^Middleware didn't load: exports none/, off: "Off", nothing: "Signs in to nothing", both: "Signs in to Acme", bothLine: "Gateway middleware: onResponse" },
++  zh: { installed: "已安装", chip: "中间件", provider: "供应商", line: "网关中间件：onRequest、onEvent · 调用 12,345 次，12,340 次起效，平均每次 0.9 µs", failed: "2 次失败", last: /最近一次：onEvent: TypeError: x is undefined/, events: /onEvent 只处理 content_block_delta 事件/, broken: /^中间件没有加载：exports none/, off: "关闭", nothing: "不能登录", both: "Acme", bothLine: "网关中间件：onResponse" },
+ };
+ 
+ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium", "webkit"])) {
+diff --git a/internal/middleware/account.go b/internal/middleware/account.go
+index 64db5117b..b696ef291 100644
+--- a/internal/middleware/account.go
++++ b/internal/middleware/account.go
+@@ -79,6 +79,7 @@ func (r *Run) Account(a gwmw.Account) (skip bool, by string) {
+ 				Skip bool `json:"skip"`
+ 			}
+ 			if json.Unmarshal(out, &said) == nil && said.Skip {
++				m.changed.Add(1)
+ 				return true, m.name
+ 			}
+ 		}
+diff --git a/internal/middleware/middleware.go b/internal/middleware/middleware.go
+index c10cdb560..e698c3f99 100644
+--- a/internal/middleware/middleware.go
++++ b/internal/middleware/middleware.go
+@@ -68,9 +68,13 @@ type mw struct {
+ 	pt     *points
+ 
+ 	calls, nanos, failures atomic.Int64
+-	orders, rows, dropped  atomic.Int64 // strategy calls, onUsage calls, rows dropped
+-	lastErr                atomic.Pointer[string]
+-	logged                 atomic.Int64 // lines logged this minute, and the minute
++	// changed is the calls whose hook changed something: it returned a
++	// body, dropped an event, turned a request away or passed an account
++	// over (#4271)
++	changed               atomic.Int64
++	orders, rows, dropped atomic.Int64 // strategy calls, onUsage calls, rows dropped
++	lastErr               atomic.Pointer[string]
++	logged                atomic.Int64 // lines logged this minute, and the minute
+ }
+ 
+ // set is the middleware in force, in plugins.json's order.
+@@ -430,8 +434,11 @@ type State struct {
+ 	Error    string   `json:"error,omitempty"` // why it didn't load
+ 	Calls    int64    `json:"calls"`
+ 	AvgMicro float64  `json:"avgMicros"`
+-	Failures int64    `json:"failures"`
+-	Last     string   `json:"lastError,omitempty"`
++	// Changed is the calls whose hook changed something, and is shown
++	// beside Calls when it differs from it (#4271)
++	Changed  int64  `json:"changed"`
++	Failures int64  `json:"failures"`
++	Last     string `json:"lastError,omitempty"`
+ 	// Strategies are the routings it serves ("<plugin>/<name>"), Orders
+ 	// how many times they were asked; Usage says it has onUsage, Rows how
+ 	// many rows it was given and Dropped how many it missed, the queue
+@@ -451,7 +458,7 @@ func States() map[string]State {
+ 		out[spec] = State{Hooks: []string{}, Error: e}
+ 	}
+ 	for _, m := range s.list {
+-		st := State{Hooks: []string{}, Calls: m.calls.Load(), Failures: m.failures.Load()}
++		st := State{Hooks: []string{}, Calls: m.calls.Load(), Changed: m.changed.Load(), Failures: m.failures.Load()}
+ 		for _, h := range []struct {
+ 			ok   bool
+ 			name string
+diff --git a/internal/middleware/middleware_test.go b/internal/middleware/middleware_test.go
+index 6051b2e37..195662c0e 100644
+--- a/internal/middleware/middleware_test.go
++++ b/internal/middleware/middleware_test.go
+@@ -220,6 +220,11 @@ export function onProvider(body, ctx) {
+ 	if st.Failures != 2 || !slices.Contains(st.Hooks, "onProvider") || !strings.Contains(st.Last, "null") {
+ 		t.Fatalf("state %+v", st)
+ 	}
++	// ag, k and reject returned a body; throw and null failed, and aren't
++	// changes
++	if st.Changed != 3 {
++		t.Fatalf("changed %+v", st)
++	}
+ 	var none *Run
+ 	if body := none.Tried([]byte(in), gwmw.To{}); string(body) != in {
+ 		t.Fatalf("a nil Run changed %s", body)
+@@ -527,3 +532,91 @@ export function onEvent(ev, ctx) { ev.n = ctx.state.n; return ev; }`))
+ 		t.Fatalf("8 streaming requests hold %d MB, their body is %d MB", held>>20, len(body)>>20)
+ 	}
+ }
++
++// The Plugins row counts every call; Changed counts the calls that
++// changed something (#4271): a hook that returned a body, dropped an
++// event or turned a request away. A call whose hook passed its input
++// through unchanged (undefined) is a call, not a change, and so is one
++// that failed.
++func TestChangedCounts(t *testing.T) {
++	e := file(t, `
++export function onRequest(body, ctx) {
++  if (body.kind === "change") { body.c = 1; return body; }
++  if (body.kind === "reject") { ctx.reject(429, "no"); return; }
++  if (body.kind === "throw") throw new Error("bad");
++}
++export function onProvider(body) { body.p = 1; return body; }
++export function onAccount(account) {
++  if (account.provider === "skip") return {skip: true};
++}
++export function onEvent(ev) {
++  if (ev.type === "drop") return null;
++  if (ev.type === "pass") return;
++  ev.e = 1;
++  return ev;
++}
++export function onResponse(body) { body.r = 1; return body; }`)
++	use(t, e)
++	r := Begin(info())
++	defer r.End()
++
++	// undefined passes a request through unchanged: a call, no change
++	r.Request([]byte(`{}`))
++	if st := States()[e.Spec]; st.Calls != 1 || st.Changed != 0 || st.Failures != 0 {
++		t.Fatalf("after a pass-through: %+v", st)
++	}
++	// a returned body is a change
++	r.Request([]byte(`{"kind":"change"}`))
++	if st := States()[e.Spec]; st.Calls != 2 || st.Changed != 1 {
++		t.Fatalf("after a change: %+v", st)
++	}
++	// a turned-away request (ctx.reject) is a change, not a failure
++	if _, rej := r.Request([]byte(`{"kind":"reject"}`)); rej == nil {
++		t.Fatal("not rejected")
++	}
++	if st := States()[e.Spec]; st.Calls != 3 || st.Changed != 2 || st.Failures != 0 {
++		t.Fatalf("after a reject: %+v", st)
++	}
++	// a failed call is a failure, not a change
++	r.Request([]byte(`{"kind":"throw"}`))
++	if st := States()[e.Spec]; st.Calls != 4 || st.Changed != 2 || st.Failures != 1 {
++		t.Fatalf("after a throw: %+v", st)
++	}
++	// onProvider returning a body is a change
++	r.Tried([]byte(`{}`), gwmw.To{ID: "p1"})
++	if st := States()[e.Spec]; st.Calls != 5 || st.Changed != 3 {
++		t.Fatalf("after a try: %+v", st)
++	}
++	// onAccount returning {skip: true} is a change; returning nothing isn't
++	if skip, _ := r.Account(gwmw.Account{ID: "skip", Agent: "codex", Name: "n", Model: "m", User: "u@example.com", Plan: "p"}); !skip {
++		t.Fatal("not skipped")
++	}
++	if st := States()[e.Spec]; st.Calls != 6 || st.Changed != 4 {
++		t.Fatalf("after a skip: %+v", st)
++	}
++	r.Account(gwmw.Account{ID: "plain", Agent: "codex", Name: "n", Model: "m", User: "u@example.com", Plan: "p"})
++	if st := States()[e.Spec]; st.Calls != 7 || st.Changed != 4 {
++		t.Fatalf("after a passed account: %+v", st)
++	}
++	// onEvent returning a body, and returning null to drop an event, are
++	// changes; undefined isn't
++	rec := httptest.NewRecorder()
++	w, done := r.Wrap(rec)
++	w.Header().Set("Content-Type", "text/event-stream")
++	w.WriteHeader(200)
++	w.Write([]byte("data: {\"type\":\"pass\"}\n\ndata: {\"type\":\"drop\"}\n\ndata: {\"type\":\"touch\"}\n\n"))
++	done()
++	if st := States()[e.Spec]; st.Calls != 10 || st.Changed != 6 {
++		t.Fatalf("after a stream: %+v", st)
++	}
++	// onResponse returning a body is a change
++	rec = httptest.NewRecorder()
++	w, done = r.Wrap(rec)
++	w.Header().Set("Content-Type", "application/json")
++	w.WriteHeader(200)
++	w.Write([]byte(`{"a":1}`))
++	done()
++	if st := States()[e.Spec]; st.Calls != 11 || st.Changed != 7 || st.Failures != 1 {
++		t.Fatalf("after a whole reply: %+v", st)
++	}
++}
+diff --git a/internal/middleware/run.go b/internal/middleware/run.go
+index 6ef57b2ba..720d2ab12 100644
+--- a/internal/middleware/run.go
++++ b/internal/middleware/run.go
+@@ -155,10 +155,12 @@ func (r *Run) Request(body []byte) ([]byte, *Reject) {
+ 			continue
+ 		}
+ 		if r.rejected != nil {
++			m.changed.Add(1)
+ 			return body, r.rejected
+ 		}
+ 		if out != nil {
+ 			body = out
++			m.changed.Add(1)
+ 		}
+ 	}
+ 	return body, nil
+@@ -200,6 +202,7 @@ func (r *Run) Tried(body []byte, to gwmw.To) []byte {
+ 			m.fail("onProvider", err)
+ 		case out != nil:
+ 			body = out
++			m.changed.Add(1)
+ 		}
+ 	}
+ 	return body
+@@ -384,6 +387,7 @@ func (rw *writer) finish() {
+ 				m.fail("onResponse", err)
+ 			case out != nil:
+ 				body = out
++				m.changed.Add(1)
+ 			}
+ 		}
+ 		rw.w.Write(body)
+@@ -411,11 +415,13 @@ func (rw *writer) event(ev []byte) error {
+ 		out, err := rw.run.apply(i, m.onEv, eventLimit, data, nil)
+ 		switch {
+ 		case errors.Is(err, errDropped):
++			m.changed.Add(1)
+ 			return nil
+ 		case err != nil:
+ 			m.fail("onEvent", err)
+ 		case out != nil:
+ 			data, changed = out, true
++			m.changed.Add(1)
+ 		}
+ 	}
+ 	if !changed {
+-- 
+2.50.1 (Apple Git-155)
+

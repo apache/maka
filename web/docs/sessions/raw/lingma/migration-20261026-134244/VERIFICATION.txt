@@ -1,0 +1,25 @@
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py lingma baseline
+INPUT: CONFIG: fixed lingma source allowlist
+OUTPUT: BASELINE PASS groups=1 files=2796 bytes=66034848 protected=0
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py lingma archive
+INPUT: 6323c7c418202a320259998309049b8abdcb74a5ff485908de65a09ceb69b3b1
+OUTPUT: ARCHIVE PASS zip_files=1 files=2796 bytes=66034848
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py lingma apply
+INPUT: 613024678ef00e80cdc43a67dc8d58efff15978eee918b77aac2a7f8a6d04f65
+OUTPUT: APPLY PASS removed_files=2796 removed_bytes=66034848
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py lingma verify
+INPUT: b285e16770286f3aa0922a5510d0dc1f014b4a49b6f9a534cc4a106021cfe803
+OUTPUT: MODIFIED PASS files=2796 bytes=66034848 originals_absent=true protected_unchanged=true
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py lingma rollback-test
+INPUT: b285e16770286f3aa0922a5510d0dc1f014b4a49b6f9a534cc4a106021cfe803
+OUTPUT: ROLLBACK PASS restored_files=2796 restored_bytes=66034848 hashes_match=true originals_untouched=true
+EXIT: 0
+

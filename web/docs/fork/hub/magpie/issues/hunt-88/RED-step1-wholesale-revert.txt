@@ -1,0 +1,6 @@
+# github.com/yetone/magpie/internal/provider [github.com/yetone/magpie/internal/provider.test]
+internal\provider\key_allowance_started_test.go:66:28: first.aAt undefined (type *keyAllowance has no field or method aAt)
+internal\provider\key_allowance_started_test.go:69:19: first.aAt undefined (type *keyAllowance has no field or method aAt)
+internal\provider\key_allowance_started_test.go:82:30: failed.aAt undefined (type *keyAllowance has no field or method aAt)
+FAIL	github.com/yetone/magpie/internal/provider [build failed]
+FAIL

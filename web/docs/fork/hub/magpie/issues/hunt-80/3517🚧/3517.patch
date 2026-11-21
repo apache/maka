@@ -1,0 +1,156 @@
+From 9b68273594a961d34fecfdf89dbd3caaa038a3ab Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Sun, 25 Oct 2026 02:28:47 +0800
+Subject: [PATCH] provider: a plugin provider's price rate saves and prices
+ (#3517)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+A plugin provider's editor saved its price rate and answered success, and
+the rate was still nowhere: Save keeps only the user's own fields of a
+signed-in account, and the rate was not among them, so providers.json
+never carried it; and withPicks, which lays those fields over the sign-in
+in All and AlsoOn, didn't carry it either, so a rate set by hand in
+providers.json would not have priced a call anyway — usage went out at
+the maker's price, when a relay behind a plugin often bills a fraction of
+it (the editor's Save was the only way to set a provider's rate).
+
+Keep the rate with the rest of the user's own knobs: in Save's account
+fields and in withPicks. A plugin provider's rate now saves, the editor
+shows it again, and EffectivePrice scales the model's price by it, as a
+custom provider's has always (#3517). A plugin that prices its own models
+(#3038) would still be scaled by the rate, as its proposal says.
+
+Fixes #3517
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/provider/plugin_price_rate_test.go | 90 +++++++++++++++++++++
+ internal/provider/provider.go               |  6 +-
+ 2 files changed, 95 insertions(+), 1 deletion(-)
+ create mode 100644 internal/provider/plugin_price_rate_test.go
+
+diff --git a/internal/provider/plugin_price_rate_test.go b/internal/provider/plugin_price_rate_test.go
+new file mode 100644
+index 00000000..de8a1e9d
+--- /dev/null
++++ b/internal/provider/plugin_price_rate_test.go
+@@ -0,0 +1,90 @@
++package provider
++
++import (
++	"encoding/json"
++	"os"
++	"path/filepath"
++	"testing"
++
++	"github.com/yetone/magpie/internal/catalog"
++	"github.com/yetone/magpie/internal/plugin"
++	"github.com/yetone/magpie/internal/settings"
++)
++
++// A plugin provider's price rate saves and prices like a custom one's
++// (#3517): the editor sent it to provider/save, the save answered success,
++// and yet the rate was in neither providers.json — Save keeps only some of
++// a signed-in account's fields — nor the provider as found, whose picks
++// withPicks lays over the sign-in, so calls went out billed at the maker's
++// price.
++func TestPluginPriceRateSavesAndPrices(t *testing.T) {
++	claudeHome(t)
++	t.Setenv("MAGPIE_BUN", "")
++	os.MkdirAll(filepath.Dir(catalog.CachePath()), 0o755)
++	// models.dev has nothing for Devin's own models: their price is the
++	// plugin's alone; GPT-5.5 is one it prices, for the custom provider
++	os.WriteFile(catalog.CachePath(), []byte(`{
++	  "openai":{"id":"openai","models":{"gpt-5.5":{"id":"gpt-5.5","cost":{"input":4,"output":20,"cache_read":0.4,"cache_write":1}}}}}`), 0o644)
++	catalog.Reset()
++	t.Cleanup(catalog.Reset)
++	spec := "@magpie-community/opencode-devin-auth"
++	write := func(name string, v any) {
++		t.Helper()
++		b, _ := json.Marshal(v)
++		os.MkdirAll(settings.Dir(), 0o700)
++		if err := os.WriteFile(filepath.Join(settings.Dir(), name), b, 0o600); err != nil {
++			t.Fatal(err)
++		}
++	}
++	write("plugins.json", map[string]any{"plugins": []map[string]any{{"spec": spec}}})
++	write("plugin-auth.json", map[string]map[string]any{"devin": {"type": "api", "key": "devin-key-1234"}})
++	write("migrations.json", map[string]any{"devin": map[string]any{"state": "plugin", "package": spec}})
++	// Devin's own price, as the plugin lists it
++	plugin.UseCached([]plugin.Provider{{ID: "devin", Spec: spec, Name: "Devin",
++		Methods:  []plugin.Method{{Type: "api", Label: "API key"}},
++		Accounts: []plugin.Account{{Key: "devin", Type: "api"}},
++		Models: listedModels(t, `[
++			{"id": "swe-1.7-lightning", "name": "SWE-1.7 Lightning", "cost": {"input": 2.5, "output": 12.5, "cache": {"read": 1, "write": 0}}}]`),
++	}})
++	t.Cleanup(func() { plugin.UseCached(nil) })
++	if !Moved("devin") {
++		t.Fatal("devin not moved")
++	}
++
++	// the editor's save of the plugin provider, the rate filled in
++	if err := Save(Provider{ID: "devin", Models: []string{"swe-1.7-lightning"}, PriceRate: 0.15}); err != nil {
++		t.Fatal(err)
++	}
++	var stored *Provider
++	for i, p := range load().Providers {
++		if p.ID == "devin" {
++			stored = &load().Providers[i]
++		}
++	}
++	if stored == nil {
++		t.Fatal("the saved plugin provider is not in providers.json")
++	}
++	if stored.PriceRate != 0.15 {
++		t.Errorf("providers.json: priceRate %v, want 0.15", stored.PriceRate)
++	}
++	// the provider as found: the picks reach the sign-in
++	p, err := Find("devin")
++	if err != nil {
++		t.Fatal(err)
++	}
++	if p.PriceRate != 0.15 {
++		t.Errorf("found: priceRate %v, want 0.15", p.PriceRate)
++	}
++	// and usage is billed at the rate: Devin's $2.5/$12.5 at 0.15
++	if pr, ok := EffectivePrice("devin", "swe-1.7-lightning"); !ok || pr.Input != 0.375 || pr.Output != 1.875 {
++		t.Errorf("price: %+v, %v; want $0.375/$1.875, Devin's own at the rate", pr, ok)
++	}
++
++	// the same save keeps a custom provider's rate as it always has
++	if err := Save(Provider{ID: "relay", Name: "Relay", Chat: "https://relay.example.com/v1", Key: "k", Models: []string{"gpt-5.5"}, PriceRate: 0.5}); err != nil {
++		t.Fatal(err)
++	}
++	if pr, ok := EffectivePrice("relay", "gpt-5.5"); !ok || pr.Input != 2 || pr.Output != 10 {
++		t.Errorf("custom: %+v, %v; want $2/$10, the catalog's at the custom rate", pr, ok)
++	}
++}
+diff --git a/internal/provider/provider.go b/internal/provider/provider.go
+index a36e7df0..70a2b4e3 100644
+--- a/internal/provider/provider.go
++++ b/internal/provider/provider.go
+@@ -693,6 +693,10 @@ func withPicks(a, pk Provider) Provider {
+ 	a.MaxConcurrency, a.PinUpstream = pk.MaxConcurrency, pk.PinUpstream
+ 	a.AccountConcurrency, a.QueueLimit, a.QueueWait = pk.AccountConcurrency, pk.QueueLimit, pk.QueueWait
+ 	a.MaxRPM = pk.MaxRPM
++	// what it charges against the official price (#819), set in the editor
++	// like the rest of these: a plugin provider's rate was saved and still
++	// its calls went out at the maker's price (#3517)
++	a.PriceRate = pk.PriceRate
+ 	// the extra body fields written for it, which a ChatGPT account's
+ 	// requests take (WithExtraBody, magpie-releases#18)
+ 	a.ExtraBody = pk.ExtraBody
+@@ -813,7 +817,7 @@ func Save(p Provider) error {
+ 		if p.ID == "kiro" {
+ 			key = p.Key
+ 		}
+-		p = Provider{ID: p.ID, Key: key, Models: p.Models, NoModels: p.NoModels, PickedFrom: p.PickedFrom, Delisted: p.Delisted, Unlisted: p.Unlisted, Off: p.Off, Fallback: p.Fallback, Routing: p.Routing, Sink: p.Sink, Affinity: p.Affinity, KeepLogin: p.KeepLogin, KeepLoginAs: p.KeepLoginAs, SwitchOnly: p.SwitchOnly, Contexts: p.Contexts, Family: p.Family, Proxy: p.Proxy, AccountProxies: p.AccountProxies, AccountModels: p.AccountModels, AccountCaps: p.AccountCaps, AccountWindowCaps: p.AccountWindowCaps, AccountNames: p.AccountNames, MaxConcurrency: p.MaxConcurrency, AccountConcurrency: p.AccountConcurrency, QueueLimit: p.QueueLimit, QueueWait: p.QueueWait, MaxRPM: p.MaxRPM, QuotaRest: p.QuotaRest, QuotaResetAt: p.QuotaResetAt, RestCap: p.RestCap, PinUpstream: p.PinUpstream, NativeCompaction: p.NativeCompaction, Hidden: hiddenAccount(p.ID), Quiet: quietAccount(p.ID), Tucked: tuckedAccount(p.ID)}
++		p = Provider{ID: p.ID, Key: key, Models: p.Models, NoModels: p.NoModels, PickedFrom: p.PickedFrom, Delisted: p.Delisted, Unlisted: p.Unlisted, Off: p.Off, Fallback: p.Fallback, Routing: p.Routing, Sink: p.Sink, Affinity: p.Affinity, KeepLogin: p.KeepLogin, KeepLoginAs: p.KeepLoginAs, SwitchOnly: p.SwitchOnly, Contexts: p.Contexts, Family: p.Family, Proxy: p.Proxy, AccountProxies: p.AccountProxies, AccountModels: p.AccountModels, AccountCaps: p.AccountCaps, AccountWindowCaps: p.AccountWindowCaps, AccountNames: p.AccountNames, MaxConcurrency: p.MaxConcurrency, AccountConcurrency: p.AccountConcurrency, QueueLimit: p.QueueLimit, QueueWait: p.QueueWait, MaxRPM: p.MaxRPM, PriceRate: p.PriceRate, QuotaRest: p.QuotaRest, QuotaResetAt: p.QuotaResetAt, RestCap: p.RestCap, PinUpstream: p.PinUpstream, NativeCompaction: p.NativeCompaction, Hidden: hiddenAccount(p.ID), Quiet: quietAccount(p.ID), Tucked: tuckedAccount(p.ID)}
+ 	} else {
+ 		p.AccountProxies = keyProxies(p) // a provider of keys proxies each key apart
+ 		if subscriptionID(p.ID) && !stored(p.ID) {
+-- 
+2.50.1 (Apple Git-155)
+

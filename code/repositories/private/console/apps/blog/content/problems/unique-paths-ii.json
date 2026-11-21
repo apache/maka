@@ -1,0 +1,22 @@
+{
+  "id": "65",
+  "slug": "unique-paths-ii",
+  "title": "不同路径 II",
+  "difficulty": "medium",
+  "tags": ["数组", "动态规划", "矩阵"],
+  "description": "一个机器人位于 `m x n` 网格的左上角。每次只能向下或向右移动一步,网格中有障碍物(`1` 表示障碍,`0` 表示空)。问从左上角到右下角有多少条不同路径。\n\n**示例 1:**\n\n- 输入:`grid = [[0,0,0],[0,1,0],[0,0,0]]`\n- 输出:`2`\n\n**示例 2:**\n\n- 输入:`grid = [[0,1],[0,0]]`\n- 输出:`1`",
+  "solution": "## 思路\n\n**动态规划**(滚动数组):`dp[j]` 表示当前行到达列 `j` 的路径数。遇障碍置 0;否则 `dp[j] += dp[j-1]`(首列不累加)。\n\n## 参考代码\n\n```js\nfunction uniquePathsWithObstacles(grid) {\n  const m = grid.length;\n  const n = grid[0].length;\n  const dp = new Array(n).fill(0);\n  dp[0] = grid[0][0] === 0 ? 1 : 0;\n  for (let i = 0; i < m; i++) {\n    for (let j = 0; j < n; j++) {\n      if (grid[i][j] === 1) dp[j] = 0;\n      else if (j > 0) dp[j] += dp[j - 1];\n    }\n  }\n  return dp[n - 1];\n}\n```\n\n## 复杂度\n\n- 时间:O(m*n)\n- 空间:O(n)",
+  "signature": {
+    "language": "javascript",
+    "entry": "uniquePathsWithObstacles",
+    "params": [{ "name": "grid", "type": "number[][]" }],
+    "returns": "number"
+  },
+  "testCases": [
+    { "sample": true, "input": [[[0, 0, 0], [0, 1, 0], [0, 0, 0]]], "expected": 2 },
+    { "sample": true, "input": [[[0, 1], [0, 0]]], "expected": 1 },
+    { "sample": false, "input": [[[1]]], "expected": 0 },
+    { "sample": false, "input": [[[0]]], "expected": 1 },
+    { "sample": false, "input": [[[0, 0], [1, 1], [0, 0]]], "expected": 0 }
+  ]
+}

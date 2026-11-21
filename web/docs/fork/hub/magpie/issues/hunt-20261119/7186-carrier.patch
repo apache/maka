@@ -1,0 +1,219 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Fri, 20 Nov 2026 01:04:21 +0800
+Subject: [PATCH] provider: routing asks a refused account only when no healthy
+ one can go (#7186)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+What changed: AccountsFor asked an account whose sign-in the vendor
+refused (Lapsed) in its rank, like any other. Tried in its place, its
+401 came back as the conversation's own while the providers the agent
+asked were never tried — three Codex conversations, 105 requests, all on
+one dead WorkBuddy stand-in account in seven minutes. The Lapsed flag
+was read by the pages and the app's account listing, never by routing.
+A refused account now rides at the tail of the plan (left), tried only
+when no healthy account can take the model — with none healthy left,
+they are asked as before, in their places, the refusal they answer
+being all there is to say. lapsedUsers reads the flag under loginsMu
+without copying the list, so the hot path pays a scan, not 61 MB of
+copies (loginsCopied's lesson).
+
+Run: TestAccountsForSendsLapsedLast (new) fails without the fix (out =
+[a@fake b@fake c@fake], want the healthy ones only) and passes with it,
+the none-healthy case included. See the issue post for the matrix.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gateway/plugin_failover_test.go | 10 ++-
+ internal/provider/account_lapsed_test.go | 83 ++++++++++++++++++++++++
+ internal/provider/logins.go              | 17 +++++
+ internal/provider/route_accounts.go      | 24 +++++++
+ 4 files changed, 132 insertions(+), 2 deletions(-)
+ create mode 100644 internal/provider/account_lapsed_test.go
+
+diff --git a/internal/gateway/plugin_failover_test.go b/internal/gateway/plugin_failover_test.go
+index 81b751f0a..f578b65e7 100644
+--- a/internal/gateway/plugin_failover_test.go
++++ b/internal/gateway/plugin_failover_test.go
+@@ -238,7 +238,11 @@ func TestPluginFailover(t *testing.T) {
+ 		}
+ 	}
+ 	reset(map[string]string{"a": "quota", "b": "quota"})
+-	if code, body, seen := ask("fakeco/fake-claude"); code != 200 || !strings.Contains(body, "claude from full") || strings.Join(seen, " ") != "a b full" {
++	// a was left lapsed by the gone round above (its refresh renewed and
++	// it was refused again): routing asks the healthy ones first (#7186),
++	// so the quota round now runs b and then full, a no longer tried on
++	// the way
++	if code, body, seen := ask("fakeco/fake-claude"); code != 200 || !strings.Contains(body, "claude from full") || strings.Join(seen, " ") != "b full" {
+ 		t.Fatalf("fake-claude with the others out: %d %s (tried %v)", code, body, seen)
+ 	}
+ 	reset(map[string]string{})
+@@ -258,8 +262,10 @@ func TestPluginFailover(t *testing.T) {
+ 		t.Fatalf("the group's first member: %d %s (tried %v, other %v)", code, body, seen, other.tried)
+ 	}
+ 	reset(map[string]string{"a": "quota", "b": "stream", "full": "quota"})
++	// a is still lapsed from the gone round, so the group's first member
++	// is asked for b and full alone before ko takes it (#7186)
+ 	code, body, seen := ask("group/mixed")
+-	if code != 200 || !strings.Contains(body, "from ko") || len(seen) != 3 {
++	if code != 200 || !strings.Contains(body, "from ko") || len(seen) != 2 {
+ 		t.Fatalf("with the plugin's accounts out: %d %s (tried %v, other %v)", code, body, seen, other.tried)
+ 	}
+ }
+diff --git a/internal/provider/account_lapsed_test.go b/internal/provider/account_lapsed_test.go
+new file mode 100644
+index 000000000..04d90aeae
+--- /dev/null
++++ b/internal/provider/account_lapsed_test.go
+@@ -0,0 +1,83 @@
++package provider
++
++import (
++	"context"
++	"path/filepath"
++	"reflect"
++	"slices"
++	"testing"
++	"time"
++
++	"github.com/yetone/magpie/internal/plugin"
++	"github.com/yetone/magpie/internal/testenv"
++)
++
++// A plugin account whose sign-in the vendor refused (Lapsed) is asked
++// after the healthy ones, not in its rank: tried in its place, its 401
++// came back as the conversation's own while the providers the agent
++// asked were never tried — three Codex conversations, 105 requests, all
++// on one dead WorkBuddy account in seven minutes (#7186). With no
++// healthy account left they are asked as before, in their places: the
++// refusal they answer is all there is to say.
++func TestAccountsForSendsLapsedLast(t *testing.T) {
++	lapsedPluginAccounts(t, map[string]string{"a@fake": "refused", "b@fake": "", "c@fake": ""})
++	id := PluginID("fakeco")
++	p, err := Find(id)
++	if err != nil {
++		t.Fatal(err)
++	}
++	out, left, barred := p.AccountsFor("fake-claude", nil)
++	if barred != nil {
++		t.Fatalf("barred %v", loginUsersOf(barred))
++	}
++	if got := loginUsersOf(out); !reflect.DeepEqual(got, []string{"b@fake", "c@fake"}) {
++		t.Fatalf("out = %v, want the healthy ones only", got)
++	}
++	if got := loginUsersOf(left); !reflect.DeepEqual(got, []string{"a@fake"}) {
++		t.Fatalf("left = %v, want the lapsed one alone", got)
++	}
++	// and with none healthy, they are asked as before, in their places
++	lapsedPluginAccounts(t, map[string]string{"a@fake": "refused", "b@fake": "refused", "c@fake": "refused"})
++	p, _ = Find(id)
++	out, left, barred = p.AccountsFor("fake-claude", nil)
++	if got := loginUsersOf(out); !slices.Equal(got, []string{"a@fake", "b@fake", "c@fake"}) {
++		t.Fatalf("with none healthy, out = %v, want them all", got)
++	}
++	if len(left)+len(barred) != 0 {
++		t.Fatalf("left %v barred %v", loginUsersOf(left), loginUsersOf(barred))
++	}
++}
++
++func lapsedPluginAccounts(t *testing.T, lapsed map[string]string) {
++	t.Helper()
++	bun := testenv.Bun(t)
++	claudeHome(t)
++	t.Setenv("MAGPIE_BUN", bun)
++	t.Cleanup(plugin.Settle)
++	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
++	defer cancel()
++	abs, _ := filepath.Abs("../plugin/testdata/fake/index.js")
++	if _, err := plugin.Add(ctx, abs); err != nil {
++		t.Fatal(err)
++	}
++	var rows []savedLogin
++	for user, why := range lapsed {
++		k, err := plugin.Import(ctx, "fakeco", map[string]any{"type": "oauth", "refresh": "r-" + user, "access": "a", "expires": 9e15, "accountId": user})
++		if err != nil {
++			t.Fatal(err)
++		}
++		rows = append(rows, savedLogin{Agent: "plugin:fakeco", User: user, Home: k, On: true, Lapsed: why})
++	}
++	saveLogins(t, rows...)
++	if _, err := plugin.Providers(ctx); err != nil {
++		t.Fatal(err)
++	}
++}
++
++func loginUsersOf(as []AccountOn) []string {
++	out := make([]string, 0, len(as))
++	for _, a := range as {
++		out = append(out, a.Account.User)
++	}
++	return out
++}
+diff --git a/internal/provider/logins.go b/internal/provider/logins.go
+index 433930788..b3fb437e5 100644
+--- a/internal/provider/logins.go
++++ b/internal/provider/logins.go
+@@ -256,6 +256,23 @@ func readLogins() []savedLogin {
+ // loginsCopied counts readLogins' copies, for a test.
+ var loginsCopied atomic.Int64
+ 
++// lapsedUsers are the accounts a vendor refused to refresh (Lapsed), by
++// the user each is signed in as: routing asks the healthy ones first and
++// these only when there are none left, for tried in their places their
++// 401 came back as the conversation's own while the providers the agent
++// asked were never tried (#7186).
++func lapsedUsers() map[string]bool {
++	loginsMu.Lock()
++	defer loginsMu.Unlock()
++	out := map[string]bool{}
++	for _, l := range sharedLogins() {
++		if l.Lapsed != "" {
++			out[strings.ToLower(l.User)] = true
++		}
++	}
++	return out
++}
++
+ // sharedLogins is readLogins without the caller's own copy: the accounts
+ // as kept, read only. A page's state lists a dozen agents' accounts, and
+ // a copy of the whole list for each was 61 MB of what twenty window polls
+diff --git a/internal/provider/route_accounts.go b/internal/provider/route_accounts.go
+index 130065175..9d170c9f3 100644
+--- a/internal/provider/route_accounts.go
++++ b/internal/provider/route_accounts.go
+@@ -78,6 +78,30 @@ func (p Provider) AccountsFor(model string, held func(AccountOn) bool) (out, lef
+ 			return true
+ 		})
+ 	}
++	// an account whose sign-in the vendor refused (Lapsed) is asked after
++	// the healthy ones, not in its rank: tried in its place, its 401 came
++	// back as the conversation's own while the providers the agent asked
++	// were never tried — three Codex conversations, 105 requests, all on
++	// one dead WorkBuddy account in seven minutes (#7186). With no
++	// healthy account left they are asked as before, in their places:
++	// the refusal they answer is all there is to say.
++	// a built-in's refused account keeps its rank: its auth failure is
++	// told as failAuth and the next account is asked at once, with no
++	// rest and no login run again — a shape its own tests lock. A
++	// plugin's is the one a stand-in conversation died on (#7186).
++	if lapsed := lapsedUsers(); p.IsPlugin() && len(lapsed) > 0 {
++		var kept, resting []AccountOn
++		for _, a := range all {
++			if lapsed[strings.ToLower(a.Account.User)] {
++				resting = append(resting, a)
++			} else {
++				kept = append(kept, a)
++			}
++		}
++		if len(kept) > 0 && len(resting) > 0 {
++			all, left = kept, append(left, resting...)
++		}
++	}
+ 	own := p.OwnModelID(model)
+ 	var lacking []AccountOn
+ 	for _, a := range all {
+-- 
+2.50.1 (Apple Git-155)
+

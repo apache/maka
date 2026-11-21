@@ -1,0 +1,148 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Flacier <Flacier@outlook.com>
+Date: Fri, 6 Nov 2026 00:52:46 +0800
+Subject: [PATCH] claudetui tests: a deadline case run before Claude Code was
+ up runs again with twice the time
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+TestShimEndsAtItsCallersDeadline gave each case a deadline 3s after it
+started the helper. Every case but "no prompt" is about what Claude
+Code draws once it is up (the trust question, the Bypass Permissions
+disclaimer, /usage's panel), and "no prompt" wants "Starting up" drawn.
+On a loaded machine the helper and the fake Claude Code, two starts of
+the test binary, can take longer than that; the helper then says,
+rightly, "showed no prompt in the …s its caller waits for it", and the
+case failed. Seen in a full run here ("showed no prompt in the 2.8s",
+no_/usage_panel, load 13-20), in #3831 (trust_unanswered) and #5079,
+and as "red in the full run, green alone" in the run records of #2398,
+#2845, #3430, #3435 and #3475.
+
+- A run that ended at its deadline with no prompt shown, whose screen
+  lacks what the case expects (any screen, for /usage's panel), says
+  nothing of the case: it runs again with 6s, then 12s. A run at 12s is
+  told as it is.
+- A run whose screen has what the case expects while the helper says
+  "showed no prompt" fails at once: the helper misread it.
+- The duration bound follows the deadline: from 500ms before it to 12s
+  after. The helper's own waits (20s, 45s) are still told apart by their
+  words: "in 20s", never "in the …s its caller waits for it" (c.why).
+- FAKE_SLOW_START (new): the fake draws nothing for that long, as a
+  loaded machine starts it. A case with 3.5s keeps the retry tested
+  ("trust unanswered, slow to start", 9s).
+
+Timing assumptions left in the test:
+- the helper and the fake are up within 12s;
+- a run ends between 500ms before its deadline and 12s after it;
+- runEndsTold's 30s for a run to end at all, which 12s + 12s fits.
+
+Run (darwin/arm64, Go 1.26.8, sandbox HOME, Go caches pinned), at
+8b70b7d97 with this change. claudetui's commits since the first base,
+5666cb049 (77031d581, b7631300e), are /usage's panel and the tap, not
+the deadline path.
+- Red before: the test as on main, with FAKE_SLOW_START=3500ms in the
+  environment: all 5 cases red, each "showed no prompt in the 3s its
+  caller waits for it", the full runs' shape.
+- With this change: no slow start ok (24s; only the slow-to-start case
+  ran again); FAKE_SLOW_START=3500ms ok, each case again at 6s (54s).
+- go test -race -count=3 -run TestShimEndsAtItsCallersDeadline: ok;
+  go test -count=1 ./internal/claudetui: ok; gofmt -l internal/claudetui
+  clean; go vet -tags nogui ./internal/claudetui with GOOS darwin, linux
+  and windows clean.
+
+At 5666cb049, before the rebase:
+- Red before the same way; FAKE_SLOW_START=8s ok, the five cases on it
+  again at 6s and 12s (114s; the slow-to-start case keeps its own 3.5s).
+- Broken by hand: the helper never naming the trust question turns
+  trust_unanswered red at 3s, its screen in the message ("Do you trust
+  this folder? ❯ No, exit Yes, I trust this folder"); the retry capped
+  at 3s turns trust_unanswered,_slow_to_start red.
+
+Not tried: the test on Linux and Windows (go vet only); a real loaded
+run (the slow start was injected, not met again at load 13-20).
+
+Not changed: TestShimPastesImages and TestShimStreamsThroughTap, which
+#5079 names red in the same full run. They wait on runShim's 30s, not
+on a caller's deadline, and #5079 gives no output for them; not
+reproduced here.
+---
+ internal/claudetui/tui_test.go | 53 +++++++++++++++++++++++++---------
+ 1 file changed, 39 insertions(+), 14 deletions(-)
+
+diff --git a/internal/claudetui/tui_test.go b/internal/claudetui/tui_test.go
+index ad9afc887..ac70bf5b1 100644
+--- a/internal/claudetui/tui_test.go
++++ b/internal/claudetui/tui_test.go
+@@ -244,6 +244,11 @@ func fakeClaude(args []string) {
+ 		}
+ 		return
+ 	}
++	// FAKE_SLOW_START: nothing drawn for that long, as a loaded machine
++	// brings up the helper and Claude Code (#5079)
++	if d, err := time.ParseDuration(os.Getenv("FAKE_SLOW_START")); err == nil {
++		time.Sleep(d)
++	}
+ 	if os.Getenv("FAKE_FAIL") == "1" {
+ 		fmt.Print("something went wrong\n")
+ 		os.Exit(3)
+@@ -900,22 +905,42 @@ func TestShimEndsAtItsCallersDeadline(t *testing.T) {
+ 		{"no /usage panel", `{"type":"command","command":"/usage"}`, "hadn't drawn /usage's panel in the", "", []string{"FAKE_USAGE=" + filepath.Join(t.TempDir(), "none")}},
+ 		// the banner drawn again and no panel after it: never told as one
+ 		{"banner, no /usage panel", `{"type":"command","command":"/usage"}`, "hadn't drawn /usage's panel in the", "magpie-claude-work-501", []string{"FAKE_USAGE_BANNER=never"}},
++		// Claude Code up only after the first deadline, as on a loaded
++		// machine: run again with more time, never failed for it
++		{"trust unanswered, slow to start", `{"type":"user","message":{"role":"user","content":"hello"}}`, "asked whether to trust " + wd + ", not answered in the", "trust this folder", []string{"FAKE_TRUST=deaf", TrustEnv + "=1", "FAKE_SLOW_START=3500ms"}},
+ 	} {
+ 		t.Run(c.name, func(t *testing.T) {
+-			start := time.Now()
+-			by := start.Add(3 * time.Second).UnixMilli()
+-			out, stderr, err := runEndsTold(t, t.TempDir(), append(c.env, DeadlineEnv+"="+strconv.FormatInt(by, 10)), c.line)
+-			d := time.Since(start)
+-			if err == nil || strings.Contains(out, `"type":"result"`) {
+-				t.Fatalf("ended %v, wrote %q", err, out)
+-			}
+-			if !strings.Contains(stderr, "claude-tui: Claude Code "+c.why) || !strings.Contains(stderr, c.screen) {
+-				t.Fatalf("stderr %q", stderr)
+-			}
+-			// at the deadline, with room for a slow machine to start it,
+-			// and well before the helper's own waits (20s, 45s)
+-			if d < 2500*time.Millisecond || d > 15*time.Second {
+-				t.Fatalf("ended after %s, the deadline 3s", d)
++			// The deadline counts from before the helper and Claude Code
++			// start, and a loaded machine can take longer than it to bring
++			// them up: "showed no prompt in the 2.8s" at load 13-20, and
++			// in other full runs (#5079). A run that ended at it with no
++			// prompt shown, before Claude Code drew what the case is about,
++			// says nothing of the case, and runs again with twice the time.
++			// One whose screen has it is told as it is: the helper misread it.
++			for wait := 3 * time.Second; ; wait *= 2 {
++				start := time.Now()
++				by := start.Add(wait).UnixMilli()
++				out, stderr, err := runEndsTold(t, t.TempDir(), append(c.env, DeadlineEnv+"="+strconv.FormatInt(by, 10)), c.line)
++				d := time.Since(start)
++				if err == nil || strings.Contains(out, `"type":"result"`) {
++					t.Fatalf("ended %v, wrote %q", err, out)
++				}
++				notUp := strings.Contains(stderr, "claude-tui: Claude Code showed no prompt in the ") &&
++					(c.screen == "" || !strings.Contains(stderr, c.screen))
++				if notUp && wait < 12*time.Second {
++					t.Logf("not up in %s, again with %s: %q", wait, 2*wait, stderr)
++					continue
++				}
++				if !strings.Contains(stderr, "claude-tui: Claude Code "+c.why) || !strings.Contains(stderr, c.screen) {
++					t.Fatalf("stderr %q", stderr)
++				}
++				// at the deadline, with room for a slow machine to end it;
++				// the helper's own waits (20s, 45s) say "in 20s", never "in
++				// the …s its caller waits for it" (c.why)
++				if d < wait-500*time.Millisecond || d > wait+12*time.Second {
++					t.Fatalf("ended after %s, the deadline %s", d, wait)
++				}
++				return
+ 			}
+ 		})
+ 	}
+-- 
+2.50.1 (Apple Git-155)
+

@@ -1,0 +1,11 @@
+# rf-B-5535 验证记录（2026-11-12，基=e6bf4adf1）
+- 分支 hunt-20261111-rf-5535 @ cb3ed2a9f7b2d200（author=ggbdpq；cherry-pick 自 fix/5535-tool-call-wording@ba5a1d5da 干净合入）
+- patch sha256 前16: 874d67cbe0baa739
+- RED（tip 基线+测试）: TestClaudeCutStreamMidToolCallWordedToRetry 红（新断言：cut-short 措辞含客户端 retry 读作 transient 的短语）；族内其余 6 测试保护性绿
+- GREEN: TestClaudeCutStream 族 ok 1.2s
+- 消融：反向 apply claude_subscription.go 产品 hunk→红→恢复绿
+- am 回放：树零差异 author=ggbdpq
+- gofmt/vet 净
+- 兄弟面：新短语 "stream was interrupted" 为客户端 retry 判定出向（pi 此前无短语可匹配失败不试）；gateway 内部失败分类词表（transportWords/connFailed）不消费 KError 出向文本=有意不改
+- 鲜度：HEAD^..tip 对 claude_subscription.go/claude_cut_stream_test.go 零提交
+- 待补：gateway 全量结果（后台）

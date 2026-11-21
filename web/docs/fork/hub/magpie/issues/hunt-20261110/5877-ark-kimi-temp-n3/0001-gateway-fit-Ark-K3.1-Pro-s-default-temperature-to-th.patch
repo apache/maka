@@ -1,0 +1,298 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: dake2482 <dake2482@users.noreply.github.com>
+Date: Tue, 10 Nov 2026 12:18:19 +0800
+Subject: [PATCH] gateway: fit Ark K3.1 Pro's default temperature to thinking
+ off
+
+Reported by dake2482: ZCode through a routing group fails with an opaque
+non-retryable turn error while the provider probe passes. Ark Coding Plan
+rejects missing/null temperature when Magpie adds thinking disabled.
+
+After thinking adaptation and extraBody, supply 0.6 only for the exact
+Ark host and kimi-k3.1-pro model when disabled and temperature is absent
+or null. Numeric extraBody overrides, enabled/default thinking, other
+models/providers and token counting keep their behavior. The confirmed
+!temperature=1 / !thinking=enabled workaround remains valid.
+
+Verification on macOS arm64, Go 1.26.8, isolated HOME/XDG, pinned caches:
+- 20 new wire-path cases pass; removing the final fix makes 10 fail with
+  the captured 400. Focused sampling/extraBody/thinking regressions pass.
+- New test passes -race -count=3. gofmt and diff --check are clean.
+- macOS vet/build, Linux amd64 nogui vet/build, Windows amd64 vet/build
+  pass (cross-platform CGO disabled).
+- Full go test -tags nogui -timeout 45m ./... run: gateway passes in
+  940.509s; six tests in four other packages fail, also on clean b596da7.
+  GUI helper/proxy failures pass with a test-only scutil stand-in (#2562,
+  #5749). Bun proxy/Git update failures pass with Bun 1.4.4 instead of
+  PATH's 1.3.9 (#3397, #5419). All five pass together in controlled rerun.
+  Library TestCodexOffKeepsAppsOwnConfig/imported remains textually red
+  (#5749, #5822): inline TOML env vs original table; parsed node_repl
+  maps are equal. Full suite is not claimed green.
+- Built sandbox gateway + real Ark Coding Plan: original group shape,
+  enabled thinking, disabled Chat/Responses and exact reporter override
+  all return HTTP 200, complete streams and OK. Credential copies removed.
+
+Not run: full race suite, browser tests (no GUI changes), native Linux
+or Windows runtime, real other Ark plans. An initial full test invocation
+with MAGPIE_NO_ACCOUNTS=1 suppressed fixture accounts; the full run above
+was made after correcting that harness mistake.
+
+Related: yetone/magpie#4495
+---
+ docs/subsystems/gateway-routing.md    |   1 +
+ internal/gateway/ark_sampling.go      |  21 ++++
+ internal/gateway/ark_sampling_test.go | 151 ++++++++++++++++++++++++++
+ internal/gateway/gateway.go           |   2 +-
+ internal/gateway/kimi_schema.go       |   3 +-
+ internal/gateway/kimi_schema_test.go  |   6 +-
+ 6 files changed, 179 insertions(+), 5 deletions(-)
+ create mode 100644 internal/gateway/ark_sampling.go
+ create mode 100644 internal/gateway/ark_sampling_test.go
+
+diff --git a/docs/subsystems/gateway-routing.md b/docs/subsystems/gateway-routing.md
+index 2e4b5f1fb..ef33f45a3 100644
+--- a/docs/subsystems/gateway-routing.md
++++ b/docs/subsystems/gateway-routing.md
+@@ -343,6 +343,7 @@ recorded as a prediction failure (`noPrediction`).
+ - An upstream that takes a model only with thinking enabled answers a request sent none, or sent it off (`thinkingOffUnlessAsked` for a vendor's model), with a 400 saying `thinking.type must be "enabled"` (`thinkingNeededRefusal`, read off the reply at any depth of a relay's wrapping, never off the provider: cybercaius's own 天翼云 relay turned Claude Desktop's connection check away so, v0.1.1862). It is asked again once thinking at Anthropic's least budget, 1024, with `max_tokens` raised past it by what was asked and `temperature`, `top_p` and `top_k` left out (`withThinkingEnabled`), and `markUnfit(thinkingNeeded)` keeps the model so until magpie restarts, by magpie's name and the vendor's (`markThinkingNeeded`): relayed, the body is given thinking at once (`passthrough`); translated, a Messages body once built, and a Chat or Responses one at its lowest effort (`thinkingBackOn`). `forwardOnce` doesn't make such a model's `enabled` adaptive (`adaptiveThinking`), `enabled` being the type it said it takes. A non-streaming client's translated request whose refusal came inside a 200 stream is asked again the same way (`translate`); a streaming client's is not ([`thinking_needed.go`](../../internal/gateway/thinking_needed.go)).
+ - A model the user ticked no levels of (`ModelReasonless` in [settings](../../internal/settings/settings.go), `SetModelReasonless`; the provider editor's Model settings, or `magpie model efforts <provider/model> off`) is sent no reasoning field on any route, whatever the agent asks: the candidate loop strips the body with `withoutAnyReasoning` ([`quiet.go`](../../internal/gateway/quiet.go): Chat's `reasoning_effort`, `reasoning`, `thinking`, `enable_thinking` and `include`'s `reasoning.encrypted_content`, Responses' `reasoning`, Anthropic's `thinking` of any type and `output_config.effort`, Gemini's `thinkingConfig`), the Anthropic relay doesn't add `thinking:{type:disabled}` for it, and `forwardTranslated` clears `Effort`, `ThinkOff` and `Thinking` for its other callers. It offers no levels (`Efforts`, `entryFor`), is `Quiet`, and as a routing-group member doesn't take the group's levels away. The learned refusals above cover only reasoning *off* and Gemini levels; a vendor that answers a plain `reasoning_effort` with 422 (yuexian7 on Discord) is not learned, so this is the user's switch. `TestReasonlessModelSentNoReasoning`, `TestReasonlessAnthropicRelay`, `TestGroupReasonlessMemberKeepsLevels`, `model-reasonless.test.cjs`.
+ - Levels the user kept of a model's own (`ModelEfforts`, `SetModelEfforts`; `magpie model efforts`, the editor's Model settings, `magpie model spec --reasoning`) only narrow what is offered (#92): `provider.Efforts` returns the vendor's list's or models.dev's levels, and `fitEffort` fits a request to those, so an agent asking xhigh of a model kept to low–high still asks xhigh. A model no list knows levels of can be given them (`magpie model spec --reasoning`, Dani Ariyanto on Discord); those are then its levels, a request is fitted to them, and it counts as reasoning (`entryFor`). `AutoVision` honours the user's `ModelImages` over the model's own (`seesAt`). `TestModelSpecReachesTheGateway`, `TestNarrowedVendorLevelsAskAsBefore`, `TestAutoVisionTakesTheUsersVision`.
++- Volcengine Ark’s `kimi-k3.1-pro` needs `temperature: 0.6` when the final request has `thinking.type: "disabled"`; an absent or null temperature can still be refused with HTTP 400. `arkKimiTemperature` in [`ark_sampling.go`](../../internal/gateway/ark_sampling.go) fills that default in `forwardOnce`, after protocol translation, thinking adaptation and the provider’s extra body. This covers relayed and translated requests, including routing groups, without turning thinking on. The rule is scoped to that model at `ark.cn-beijing.volces.com`; enabled/default thinking, other models/vendors, token counting and numeric values supplied by extra body retain their existing behavior. `TestArkKimiThinkingOffTemperature` in [`ark_sampling_test.go`](../../internal/gateway/ark_sampling_test.go) exercises the outgoing requests and the mode-dependent refusal.
+ - A request to an Anthropic endpoint with `temperature`, `top_p` or `top_k` reaches a model that refuses them without them (`samplingAsTaken`, beside `thinkingOffAsTaken` in `forwardOnce`): Opus 4.7, 4.8, 5 and 5.5, Fable 5, Mythos 5, Sonnet 5 and 5.5, and Haiku 5.5, whose 400 is "`temperature` is deprecated for this model" (Claude Code's auto mode classifier and magpie's own classifiers ask at temperature 0). Older Claudes, Haiku 4.5 among them, other vendors' models and later lines go as they came (#1454). A Claude by a name these rules can't read, answering that a sampling parameter is deprecated (`samplingDeprecated`), is asked again without them, once — a Chat or Responses client's request translated to Messages (`forwardTranslated`) as much as a relayed one. A model whose own list refuses them (`RejectsTemperature`, from the catalog's `temperature`, or a plugin's `temperature: false` carried by [the plugin host](provider-plugins.md#a-plugin-models-sampling), #2492) is asked without `temperature` and `top_p` whatever the client speaks: a translation leaves them out (`build`), and a Chat or Responses request relayed as it came does too (`passthrough`).
+ - Claude Code's auto mode asks the API to review each action ([`automode.go`](../../internal/gateway/automode.go), Anthropic's [auto-mode-classifier-billing](https://code.claude.com/docs/en/auto-mode-classifier-billing)): the `dangerous-tool-use-…` beta, a `safeguards` field, and `safeguard_results` in the reply (a stream's in its `message_delta`). Only Anthropic runs that classifier, so they reach only a route it answers on (`AutoModeReviewed`): the Claude subscription (the bridge hands them to Claude Code's own binary), a Claude model under any vendor's spelling on a provider with a key (Anthropic's API, a relay, Bedrock, Vertex), and anything on `api.anthropic.com`. Another subscription's or a plugin's Claude model (Copilot, Kiro, Cursor…) is that vendor's service and isn't reviewed by its name: Copilot turns `safeguards` away (#1756), the others translate the request, so neither the beta nor `safeguards` is sent there (`TestAutoModeReviewedRoutes`, `TestAutoModeReviewLeftOffOtherSubscriptions`). There the beta, `safeguards` and the results pass as sent, a whole reply's results moved into a stream's `message_delta` (`anthropicWholeEvents`), tool-use ids unchanged. A relayed reply carrying `safeguard_results` has no call read out of its text (`anthropicTextCalls`): a call made there would have an id Anthropic never judged, which Claude Code can't match to a verdict, so the text goes as text (xybio on Discord, `TestAutoModeReviewedReplyMakesNoCall`). To any other model they are taken off (`serverReview`; a translation never carries them), and magpie never answers a result on Anthropic's behalf. Claude Code then classifies locally and names the gateway in a notice, or, where Anthropic's per-account flag has turned its local classifier off behind a gateway (`tengu_bright_dragonfly`, read in 2.1.312 to 2.1.316), has no check at all and asks for approval of each action the check would judge ("your requests go through 127.0.0.1:3425, which doesn't pass it through", chenxiang0010 on Discord): only a route above can make auto mode work there, and none of magpie's other routes can; the wiring turns the review off in its settings unless every model it can reach through magpie surely gets the results back (`AutoModeAnswered`: the subscription or `api.anthropic.com`, not a relay, which may drop them; `claudeReviewEnv`, [agent wiring](agent-wiring.md), JoyYoung2Lucky on X), which is the page's remedy for a gateway that can't run the checks (1EFLOPS on X: Codex's model behind magpie). Reviewed there means `AutoModeReviewable`: a reviewed model on a route that reaches the Messages API, since a Claude model asked on a relay's Chat or Responses URL is translated and never carries the review (nexnull on Discord, `TestAutoModeReviewableAsksOnMessages`).
+ - Locally, Claude Code's classifier is a request of its own on the session's model: no tools, a system prompt asking for `<block>yes</block>` or `<block>no</block>`, the transcript in `<transcript>`, a small `max_tokens`, and no stream; Claude Code 2.1.310 waits 60 seconds an attempt for it. To a model that isn't Claude it goes with `classifierRoom` (2048) added to a limit below it and asked to reason least (`fitAutoModeClassifier`): none, or the lowest of the model's known levels. A model whose levels magpie doesn't know (a relay's own name, gpt6.1-sol) is asked for none too, as magpie's own ask (`Request.OwnEffort`): left to the vendor, a reasoning model reasoned at its default past the 60 seconds and every classifier request ended 499 (CyberCaius on Discord). Its 400 to that effort (`ownEffortRefused`) is asked again at low when it named the level, and without the effort when it named the field ("Unrecognized request argument supplied: reasoning_effort"), remembered in `unfit` until magpie restarts (`TestAutoModeClassifierReasonsLeastOnAnUnknownModel`, `TestAutoModeClassifierEffortRefusedGoesWithout`).
+diff --git a/internal/gateway/ark_sampling.go b/internal/gateway/ark_sampling.go
+new file mode 100644
+index 000000000..3e246a357
+--- /dev/null
++++ b/internal/gateway/ark_sampling.go
+@@ -0,0 +1,21 @@
++package gateway
++
++import (
++	"github.com/tidwall/gjson"
++	"github.com/yetone/magpie/internal/provider"
++)
++
++// arkKimiTemperature supplies the default Ark's K3.1 Pro needs with
++// thinking off. Its Coding Plan rejects absent/null temperature in that
++// mode (400 "only 0.6 is allowed"), although its thinking-on probe works
++// without one. Run after extraBody so its thinking switch is respected;
++// a temperature the user put there still wins. Verified on 2026-11-10.
++func arkKimiTemperature(p provider.Provider, to provider.Protocol, body []byte) []byte {
++	if provider.HostOf(p.Base(to)) != arkHost ||
++		gjson.GetBytes(body, "model").String() != "kimi-k3.1-pro" ||
++		gjson.GetBytes(body, "thinking.type").String() != "disabled" ||
++		gjson.GetBytes(body, "temperature").Type != gjson.Null {
++		return body
++	}
++	return withFields(body, map[string]any{"temperature": 0.6})
++}
+diff --git a/internal/gateway/ark_sampling_test.go b/internal/gateway/ark_sampling_test.go
+new file mode 100644
+index 000000000..79eac11fe
+--- /dev/null
++++ b/internal/gateway/ark_sampling_test.go
+@@ -0,0 +1,151 @@
++package gateway
++
++import (
++	"encoding/json"
++	"fmt"
++	"io"
++	"net/http"
++	"strings"
++	"sync"
++	"testing"
++
++	"github.com/tidwall/gjson"
++	"github.com/yetone/magpie/internal/provider"
++)
++
++// Captured on Ark's Coding Plan on 2026-11-10: K3.1 Pro accepts thinking
++// disabled only with temperature 0.6. Omitting it (or sending null) still
++// gets 400, although the same probe without thinking succeeds. ZCode sends
++// output_config.effort but no thinking, so the Messages relay adds disabled.
++func TestArkKimiThinkingOffTemperature(t *testing.T) {
++	for _, c := range []struct {
++		name, path, fields, extra, temp, thinking string
++		to                                        provider.Protocol
++		group, otherHost, otherModel, refused     bool
++	}{
++		{name: "ZCode through a group", to: provider.Anthropic, path: "/v1/messages", fields: `"output_config":{"effort":"max"}`, temp: "0.6", thinking: "disabled", group: true},
++		{name: "Messages default", to: provider.Anthropic, path: "/v1/messages", temp: "0.6", thinking: "disabled"},
++		{name: "Messages null", to: provider.Anthropic, path: "/v1/messages", fields: `"temperature":null,"thinking":{"type":"disabled"}`, temp: "0.6", thinking: "disabled"},
++		{name: "client sampling is already stripped", to: provider.Anthropic, path: "/v1/messages", fields: `"temperature":1,"thinking":{"type":"disabled"}`, temp: "0.6", thinking: "disabled"},
++		{name: "thinking stays enabled", to: provider.Anthropic, path: "/v1/messages", fields: `"thinking":{"type":"enabled","budget_tokens":1024}`, thinking: "enabled"},
++		{name: "extra body enables thinking", to: provider.Anthropic, path: "/v1/messages", extra: `{"!thinking":{"type":"enabled"}}`, thinking: "enabled"},
++		{name: "extra body disables thinking", to: provider.Anthropic, path: "/v1/messages", fields: `"thinking":{"type":"enabled","budget_tokens":1024}`, extra: `{"!thinking":{"type":"disabled"}}`, temp: "0.6", thinking: "disabled"},
++		{name: "extra body null", to: provider.Anthropic, path: "/v1/messages", extra: `{"!temperature":null}`, temp: "0.6", thinking: "disabled"},
++		{name: "extra body numeric value wins", to: provider.Anthropic, path: "/v1/messages", extra: `{"!temperature":0.2}`, temp: "0.2", thinking: "disabled", refused: true},
++		{name: "extra body working override", to: provider.Anthropic, path: "/v1/messages", extra: `{"!temperature":1,"!thinking":{"type":"enabled"}}`, temp: "1", thinking: "enabled"},
++		{name: "Chat default stays default", to: provider.Chat, path: "/v1/chat/completions"},
++		{name: "Responses default stays default", to: provider.Responses, path: "/v1/responses"},
++		{name: "Chat relay", to: provider.Chat, path: "/v1/chat/completions", fields: `"thinking":{"type":"disabled"}`, temp: "0.6", thinking: "disabled"},
++		{name: "Responses relay", to: provider.Responses, path: "/v1/responses", fields: `"thinking":{"type":"disabled"}`, temp: "0.6", thinking: "disabled"},
++		{name: "Chat translated to Messages", to: provider.Anthropic, path: "/v1/chat/completions", fields: `"reasoning_effort":"none"`, temp: "0.6", thinking: "disabled"},
++		{name: "Responses translated to Messages", to: provider.Anthropic, path: "/v1/responses", fields: `"reasoning":{"effort":"none"}`, temp: "0.6", thinking: "disabled"},
++		{name: "Messages translated to Chat keeps its defaults", to: provider.Chat, path: "/v1/messages", fields: `"thinking":{"type":"disabled"}`},
++		{name: "another vendor", to: provider.Anthropic, path: "/v1/messages", thinking: "disabled", otherHost: true},
++		{name: "another Ark model", to: provider.Anthropic, path: "/v1/messages", thinking: "disabled", otherModel: true},
++		{name: "count tokens", to: provider.Anthropic, path: "/v1/messages/count_tokens"},
++	} {
++		t.Run(c.name, func(t *testing.T) {
++			t.Setenv("XDG_CONFIG_HOME", t.TempDir())
++			t.Setenv("XDG_CACHE_HOME", t.TempDir())
++			noRests()
++			t.Cleanup(noRests)
++			host, model := arkHost, "kimi-k3.1-pro"
++			if c.otherHost {
++				host = "relay.example"
++			}
++			if c.otherModel {
++				model = "doubao-seed-2.1-pro"
++			}
++			p := provider.Provider{ID: "ark-test", Name: "Ark test", Key: "test", Models: []string{model}}
++			base := "https://" + host + "/api/coding"
++			switch c.to {
++			case provider.Anthropic:
++				p.Anthropic = base
++				if strings.HasPrefix(c.path, "/v1/messages") {
++					p.Chat = base + "/v3" // the real preset exposes both APIs
++				}
++			case provider.Chat:
++				p.Chat = base + "/v3"
++			case provider.Responses:
++				p.Responses = base + "/v3"
++			}
++			if c.extra != "" {
++				if err := json.Unmarshal([]byte(c.extra), &p.ExtraBody); err != nil {
++					t.Fatal(err)
++				}
++			}
++			if err := provider.Save(p); err != nil {
++				t.Fatal(err)
++			}
++			ref := p.ID + "/" + model
++			if c.group {
++				if err := provider.SaveGroup(provider.Group{ID: "kimi-k3", Name: "Kimi K3", Members: []string{ref}, Routing: provider.Ordered}); err != nil {
++					t.Fatal(err)
++				}
++				ref = "group/kimi-k3"
++			}
++			var mu sync.Mutex
++			var sent []byte
++			calls := 0
++			s := New()
++			s.client = &http.Client{Transport: countTransport(func(r *http.Request) (*http.Response, error) {
++				b, err := io.ReadAll(r.Body)
++				if err != nil {
++					return nil, err
++				}
++				mu.Lock()
++				sent = append([]byte(nil), b...)
++				calls++
++				mu.Unlock()
++				status, ctype, reply := 200, "text/event-stream", anthropicReply()
++				count := strings.HasSuffix(r.URL.Path, "/count_tokens")
++				if count {
++					ctype, reply = "application/json", `{"input_tokens":3}`
++				} else {
++					switch c.to {
++					case provider.Chat:
++						reply = chatReply
++					case provider.Responses:
++						reply = arkSearchReply
++					}
++					if host == arkHost && model == "kimi-k3.1-pro" && gjson.GetBytes(b, "thinking.type").String() == "disabled" && gjson.GetBytes(b, "temperature").Float() != 0.6 {
++						status, ctype, reply = 400, "application/json", "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"`temperature` only 0.6 is allowed for this model\"}}"
++					}
++				}
++				return &http.Response{StatusCode: status, Header: http.Header{"Content-Type": {ctype}}, Body: io.NopCloser(strings.NewReader(reply))}, nil
++			})}
++			input := `"messages":[{"role":"user","content":"Reply OK."}],"max_tokens":128000`
++			if c.path == "/v1/responses" {
++				input = `"input":"Reply OK.","max_output_tokens":128000`
++			}
++			fields := ""
++			if c.fields != "" {
++				fields = "," + c.fields
++			}
++			body := fmt.Sprintf(`{"model":%q,"stream":true,%s%s}`, ref, input, fields)
++			status, reply := postTo(t, s, c.path, body)
++			mu.Lock()
++			got, n := string(sent), calls
++			mu.Unlock()
++			if c.refused {
++				if !strings.Contains(reply, "only 0.6") {
++					t.Fatalf("explicit extraBody override lost: %d %s", status, reply)
++				}
++			} else if status != 200 || strings.Contains(reply, "only 0.6") {
++				t.Fatalf("request rejected: %d %s; upstream body: %s", status, reply, got)
++			}
++			if n != 1 {
++				t.Errorf("upstream called %d times, want one", n)
++			}
++			if v := gjson.Get(got, "temperature").Raw; v != c.temp {
++				t.Errorf("temperature = %q, want %q; sent %s", v, c.temp, got)
++			}
++			if v := gjson.Get(got, "thinking.type").String(); v != c.thinking {
++				t.Errorf("thinking = %q, want %q; sent %s", v, c.thinking, got)
++			}
++			if v := gjson.Get(got, "model").String(); v != model {
++				t.Errorf("model = %q, want %q", v, model)
++			}
++		})
++	}
++}
+diff --git a/internal/gateway/gateway.go b/internal/gateway/gateway.go
+index fdc16f5d0..25507c5da 100644
+--- a/internal/gateway/gateway.go
++++ b/internal/gateway/gateway.go
+@@ -5933,7 +5933,7 @@ func (s *Server) forwardOnce(ctx context.Context, p provider.Provider, to provid
+ 			// display to the provider
+ 			extra = s.withoutRefusedShapes(p, adaptiveThinking(extra))
+ 		}
+-		body = extra
++		body = arkKimiTemperature(p, to, extra)
+ 	}
+ 	if !countsTokens(path) {
+ 		// the tier it goes at, the user's own fields in it (#1784)
+diff --git a/internal/gateway/kimi_schema.go b/internal/gateway/kimi_schema.go
+index 328e0d2df..d89865123 100644
+--- a/internal/gateway/kimi_schema.go
++++ b/internal/gateway/kimi_schema.go
+@@ -219,7 +219,8 @@ func valuesType(vals []gjson.Result) string {
+ // fills in the value the model and mode want, so no number is written
+ // here. Models that take a range — moonshot-v1-*, kimi-k2-0905-preview,
+ // kimi-k2-thinking, kimi-latest — keep what the user set, as does anyone
+-// not served by Moonshot or Ark.
++// not served by Moonshot or Ark. Ark's K3.1 Pro thinking-off default is
++// supplied after extraBody by arkKimiTemperature.
+ func kimiLockedSampling(p provider.Provider, to provider.Protocol, body []byte) []byte {
+ 	if !isKimi(p, to) && !isArk(p) {
+ 		return body
+diff --git a/internal/gateway/kimi_schema_test.go b/internal/gateway/kimi_schema_test.go
+index b0e602de0..3274ee2c7 100644
+--- a/internal/gateway/kimi_schema_test.go
++++ b/internal/gateway/kimi_schema_test.go
+@@ -459,13 +459,13 @@ func TestKimiLockedSampling(t *testing.T) {
+ 			t.Errorf("Ark was sent the sampling fields: %s", got.body)
+ 		}
+ 	})
+-	t.Run("volcengine's anthropic endpoint drops the fields", func(t *testing.T) {
++	t.Run("volcengine's anthropic endpoint fits the thinking-off default", func(t *testing.T) {
+ 		got := post(t, "/v1/messages", `{"model":"volc/kimi-k3.1-pro","messages":[{"role":"user","content":"hi"}],"temperature":0.6,"top_p":0.95,"max_tokens":5}`)
+ 		if got.host != "ark.cn-beijing.volces.com" {
+ 			t.Fatalf("the request went to %s", got.host)
+ 		}
+-		if gjson.Get(got.body, "temperature").Exists() || gjson.Get(got.body, "top_p").Exists() {
+-			t.Errorf("Ark was sent the sampling fields: %s", got.body)
++		if gjson.Get(got.body, "temperature").Float() != 0.6 || gjson.Get(got.body, "top_p").Exists() {
++			t.Errorf("Ark was sent incompatible thinking-off sampling: %s", got.body)
+ 		}
+ 	})
+ 	t.Run("volcengine keeps the fields for a model its server doesn't lock", func(t *testing.T) {
+-- 
+2.50.1 (Apple Git-155)
+

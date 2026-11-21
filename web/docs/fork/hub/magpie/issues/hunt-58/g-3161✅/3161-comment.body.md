@@ -1,0 +1,278 @@
+Fix for #3161: a searched conversation relayed to a custom Responses upstream carries the `web_search` tool
+
+## Summary
+
+Codex compacts a conversation itself — a plain `POST /v1/responses` with `tools: []` and no `compaction_trigger` — and a custom API-key provider's Responses endpoint receives the whole history replayed. An upstream that protects its replies answers HTTP 200 with a stream whose only event is a `response.failed` naming `response protection is unavailable` when that history replays a `web_search_call` the request declares no `web_search` tool for. The paths that reach the ChatGPT backend declare the search since #1270 (`codexBody` on an account's body, `DeclareSearch` on Codex's own sign-in); the relay to a provider of the user's own was left undeclared. This asks that relay the same question and declares the same cached-only tool.
+
+## Root cause
+
+Three paths build or relay a Responses body upstream, and two declared the search:
+
+- `internal/gateway/codex_backend.go` (`codexUpstreamOn`) calls `provider.DeclareSearch` for the ChatGPT backend and Codex's own sign-in.
+- `internal/provider/codex_request.go` (`codexBody`) calls `declareSearch` for every subscription account's body.
+- `internal/gateway/gateway.go` (`Server.passthrough`), the relay to a custom API-key provider, called neither — so the compaction summary reached the upstream with `tools: []` and `tool_choice: "auto"` over a history holding `web_search_call`.
+
+## What changed
+
+`passthrough`'s Responses case now runs `provider.DeclareSearch(body, false)` — guarded on `p.Account == nil`, because an account's own `Prepare` is `codexBody`, which declares already and runs after this shaping (its own `tool_choice` would reset one set here; my first placement without the guard turned `TestSearchedConversationCompactsOnAnAccount` red with `tool_choice auto`). The call sits before the Responses Lite item is lifted into the tools a non-OpenAI upstream is asked with, so a Lite-shaped request's declaration lands in `tools` too. With no other tools offered the choice goes `none`, and the tool declared is the cached-only one that fetches nothing live — the shape the account paths have sent since #1270.
+
+The alternative — stripping the `web_search_call` items out of the compaction input — was considered and left. Magpie cannot tell Codex's local compaction from any other relayed request (there is no `compaction_trigger` on it and no marker magpie reads), so the strip would have to run on every request and take the conversation's record of the search out of every later turn, including the citations the assistant's answers carry. The declaration keeps the history intact and tells the model not to call the tool. One impact to weigh, for the maintainer: an upstream that refuses the hosted `web_search` tool type would now see it on exactly the conversations that replay a search — the ones it failed silently on before — and a 400 naming the tool is easier to read than a 200 that fails on the stream. Scoping the declaration per provider, if such an upstream turns up, stays a maintainer's call; this patch does not add a switch.
+
+## Verification
+
+RED (the fix reverted, tests kept — both new custom-provider tests, issue's own reply bytes):
+
+```
+--- FAIL: TestSearchedConversationCompactsOnACustomProvider (0.02s)
+    search_history_test.go:211: status 200: event: response.failed
+        data: {"type":"response.failed","response":{"error":{"code":"upstream_error","message":"response protection is unavailable","type":"internal_error"}}}
+--- FAIL: TestSearchedConversationFunctionToolsOnACustomProvider (0.01s)
+    search_history_test.go:372: status 200: event: response.failed
+        data: {"type":"response.failed","response":{"error":{"code":"upstream_error","message":"response protection is unavailable","type":"internal_error"}}}
+```
+
+GREEN with the fix, and the checks below, at head `128ec70495a5977cd3ac56c8d46301a239d0dd15` (macOS 15 arm64):
+
+| Check | Result |
+| --- | --- |
+| `go test -tags nogui -run 'TestSearchedConversation|TestUnsearchedConversation' -v ./internal/gateway/` | 9/9 pass (6 pre-existing + 3 new) |
+| Ablation: the `DeclareSearch` call reverted to baseline, tests kept | both new custom-provider tests red as above; `TestSearchedConversationCompactsOnAnAccount` green on baseline, so the red is specific to the new seam |
+| `go test -tags nogui ./internal/gateway/` | ok |
+| `go test -tags nogui ./...` | 66 packages ok; `TestMothX` (internal/agent) and `TestProxyCheckSaysAProxyPassedBy` (internal/gui) red — both red on the clean baseline too, untouched by this change |
+| `gofmt -l` on the changed files | clean |
+| `go vet ./...`, `GOOS=linux go vet -tags nogui ./...`, `GOOS=windows go vet -tags nogui ./...`, `GOOS=windows go vet ./...` | clean (a pre-existing cgo `-Wenum-conversion` warning in `internal/gui/trayimage_darwin.go` on darwin vet, exit 0) |
+| `go build`, `GOOS=linux go build -tags nogui`, `GOOS=windows go build` | all ok |
+
+## Not verified
+
+- Not tried against the reporter's real upstream: no such key or endpoint was used. The fake (`protectingUpstream` in the test) follows the issue's own request and reply bytes, HTTP 200 with the `response.failed` event.
+- `external_web_access: false` is unverified against that upstream, as the reporter notes; their working workaround declared a bare `{"type":"web_search"}`. If the field is the problem, that is a one-field follow-up in `cachedSearch`, shared with the account paths.
+- No real Codex CLI run through a local fake was made here; the reporter's own interception (compaction request with `tools: []`, `tool_choice: "auto"`) is taken as the wire truth and matches what the relay received in the tests.
+
+**Attribution**: AI-written; I've read the whole diff and the tests pass. Please keep the author (`ggbdpq`) or add `Co-authored-by: ggbdpq <ggbdpq@gmail.com>`.
+
+<details><summary>patch: gateway: a searched conversation relayed to a custom provider's own Responses API carries the web_search tool (#3161) — git am applies it as is; SHA-256 first 16: 8e5548ceedec964c</summary>
+
+```patch
+From 128ec70495a5977cd3ac56c8d46301a239d0dd15 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Thu, 22 Oct 2026 00:36:04 +0800
+Subject: [PATCH] gateway: a searched conversation relayed to a custom
+ provider's own Responses API carries the web_search tool (#3161)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Codex compacts a conversation itself, a plain POST /v1/responses with
+tools: [] and no compaction_trigger, and a custom API-key provider's
+Responses endpoint is asked with the whole history replayed. An upstream
+that protects its replies (issue #3161) answers HTTP 200 with a stream
+whose only event is a response.failed naming "response protection is
+unavailable" when that history replays a web_search_call and the request
+declares no web_search tool; with the tool declared and tool_choice none
+it replies. The ChatGPT backend refuses the same shape, and has had the
+declaration asked for on every path that reaches it since #1270
+(codexBody on an account's body, DeclareSearch on Codex's own sign-in);
+the relay to a provider of the user's own, which no account asks for,
+was left undeclared, so the compaction of a conversation that had
+searched failed there every time.
+
+Now a Responses request relayed through passthrough declares the
+cached-only web_search tool (provider.DeclareSearch) when its input
+replays a search and nothing declares one, and only for a provider with
+no account: an account's own Prepare is codexBody, which declares
+already, and runs after this shaping, where its own tool_choice would
+reset one set here. The call sits before the Responses Lite item is
+lifted into the tools a non-OpenAI upstream is asked with, so a
+Lite-shaped request's declaration lands in tools too. Nothing is offered
+the model to call: with no other tools the choice goes none, and the
+tool declared is the cached-only one that fetches nothing live.
+
+Stripping the web_search_call items out of the compaction input instead
+was considered and left: magpie cannot tell Codex's local compaction
+from any other relayed request (no compaction_trigger on it), so the
+strip would have to run on every request and take the conversation's
+record of the search out of every later turn. An upstream that refuses
+the hosted web_search tool type would now see it on the conversations
+that replay a search — the ones it failed silently before — and a 400
+naming the tool is easier to read than a 200 that fails on the stream;
+scoping the declaration per provider, if one turns up that minds, is the
+maintainer's call.
+
+Tests: TestSearchedConversationCompactsOnACustomProvider (the
+compaction summary, the upstream's reply completed and the tool declared
+with tool_choice none and external_web_access false),
+TestSearchedConversationFunctionToolsOnACustomProvider (function tools
+kept callable, the search declared beside them, choice still auto),
+TestUnsearchedConversationUnchangedOnACustomProvider (no tool added when
+nothing was searched), with protectingUpstream standing for the
+reporter's upstream from the issue's own bytes.
+
+Run at f5b01574, sandbox HOME, one suite on the machine: gofmt -l clean on
+the changed files; go vet ./..., GOOS=linux go vet -tags nogui ./...,
+GOOS=windows go vet -tags nogui ./... and GOOS=windows go vet ./... all
+clean; go build, GOOS=linux go build -tags nogui and GOOS=windows go
+build all ok; go test -tags nogui ./internal/gateway/ ok;
+go test -tags nogui ./... 66 packages ok, TestMothX (internal/agent) and TestProxyCheckSaysAProxyPassedBy (internal/gui) red — both red on the clean baseline too, not this change's. Broken by hand: with the
+DeclareSearch call reverted to the baseline, both custom-provider tests
+go red with "status 200: event: response.failed ... response protection
+is unavailable", and the account test stays green.
+
+Not tried against the reporter's real upstream: no such key or endpoint
+was used; the fake follows the issue's own request and reply bytes.
+external_web_access false is unverified against that upstream, as the
+reporter notes.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gateway/gateway.go             |  10 +++
+ internal/gateway/search_history_test.go | 103 ++++++++++++++++++++++++
+ 2 files changed, 113 insertions(+)
+
+diff --git a/internal/gateway/gateway.go b/internal/gateway/gateway.go
+index f315b819..3a7e387d 100644
+--- a/internal/gateway/gateway.go
++++ b/internal/gateway/gateway.go
+@@ -4198,6 +4198,16 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
+ 			// for other backends (#1758)
+ 			break
+ 		}
++		// a replayed web search the request declares no tool for, an
++		// upstream that protects its replies answers with HTTP 200 and a
++		// failed response on the stream (#3161), as the ChatGPT backend
++		// refused one (#1270): an account's own body asks with the
++		// declaration already (codexBody), so this is for a provider of
++		// the user's own, and before the Lite item is lifted into the
++		// tools an upstream other than OpenAI is asked with
++		if p.Account == nil {
++			body = provider.DeclareSearch(body, false)
++		}
+ 		// Responses Lite's tools, as an input item, go as OpenAI takes them
+ 		// only to OpenAI (#350)
+ 		if (p.Account == nil || p.Account.Agent != "codex") && !strings.HasSuffix(p.Host(), "openai.com") {
+diff --git a/internal/gateway/search_history_test.go b/internal/gateway/search_history_test.go
+index 6d052f00..590d9f14 100644
+--- a/internal/gateway/search_history_test.go
++++ b/internal/gateway/search_history_test.go
+@@ -146,6 +146,79 @@ func TestSearchedConversationCompactsOnAnAccount(t *testing.T) {
+ 	}
+ }
+ 
++// protectingUpstream is a custom API-key provider's Responses endpoint as
++// the reporter's answered (issue #3161): a request whose input replays a
++// web_search_call nothing declares gets HTTP 200 and a stream whose only
++// event is a response.failed naming "response protection is unavailable";
++// with the web_search tool declared, or with no search replayed, it
++// replies. It keeps the bodies it was sent, and speaks for the provider
++// the way setup does, its URL on the Responses API alone.
++func protectingUpstream(t *testing.T) *[][]byte {
++	t.Helper()
++	noRests()
++	t.Cleanup(noRests)
++	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
++	t.Setenv("XDG_CACHE_HOME", t.TempDir())
++	var mu sync.Mutex
++	got := &[][]byte{}
++	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		b, _ := io.ReadAll(r.Body)
++		mu.Lock()
++		*got = append(*got, b)
++		mu.Unlock()
++		var q struct {
++			Input []struct {
++				Type string `json:"type"`
++			} `json:"input"`
++			Tools []map[string]any `json:"tools"`
++		}
++		json.Unmarshal(b, &q)
++		searched, declared := false, false
++		for _, it := range q.Input {
++			searched = searched || it.Type == "web_search_call"
++		}
++		for _, tl := range q.Tools {
++			declared = declared || tl["type"] == "web_search"
++		}
++		w.Header().Set("Content-Type", "text/event-stream")
++		if searched && !declared {
++			io.WriteString(w, "event: response.failed\ndata: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"upstream_error\",\"message\":\"response protection is unavailable\",\"type\":\"internal_error\"}}}\n\n")
++			return
++		}
++		io.WriteString(w, sse(
++			`data: {"type":"response.created","response":{"id":"resp_1","model":"m1"}}`,
++			`data: {"type":"response.output_item.done","output_index":0,"item":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Summary."}]}}`,
++			`data: {"type":"response.completed","response":{"id":"resp_1","usage":{"input_tokens":9,"output_tokens":2}}}`))
++	}))
++	t.Cleanup(up.Close)
++	p := provider.Provider{ID: "fake", Name: "Fake", Key: "k", Models: []string{"m1"}, Responses: up.URL + "/v1"}
++	if err := provider.Save(p); err != nil {
++		t.Fatal(err)
++	}
++	return got
++}
++
++// #3161 (Codex CLI 0.163.0 on a custom API-key provider): the same plain
++// compaction summary, relayed to the provider's own Responses endpoint,
++// reaches it with the search replayed and nothing declared. The relay
++// declares the search as the account's own paths do, and the upstream
++// replies.
++func TestSearchedConversationCompactsOnACustomProvider(t *testing.T) {
++	got := protectingUpstream(t)
++	code, body := post(t, "/v1/responses", `{"model":"fake/m1","stream":true,"store":false,"tools":[],"tool_choice":"auto","parallel_tool_calls":false,"input":[`+
++		searchedHistory+`,{"type":"message","role":"user","content":[{"type":"input_text","text":"You are performing a CONTEXT CHECKPOINT COMPACTION. Create a handoff summary for another LLM that will resume the task."}]}]}`)
++	if code != 200 || strings.Contains(body, "response protection") || !strings.Contains(body, "response.completed") {
++		t.Fatalf("status %d: %s", code, body)
++	}
++	tools, _, choice, _ := sentTools(t, (*got)[len(*got)-1])
++	if len(tools) != 1 || tools[0] != "web_search" || choice != "none" {
++		t.Errorf("sent tools %v, tool_choice %v: want the web_search tool and none", tools, choice)
++	}
++	if !strings.Contains(string((*got)[len(*got)-1]), `"external_web_access":false`) {
++		t.Errorf("the declared search may fetch live: %s", (*got)[len(*got)-1])
++	}
++}
++
+ // Codex's remote compaction of a magpie model on the ChatGPT accounts:
+ // the backend writes the summary from the history as it came, once,
+ // rather than refusing it and leaving magpie to ask again as text.
+@@ -273,3 +346,33 @@ func TestUnsearchedConversationUnchanged(t *testing.T) {
+ 		}
+ 	}
+ }
++
++// The same holds on a custom provider's own Responses endpoint: a
++// conversation that didn't search is relayed with no tool added.
++func TestUnsearchedConversationUnchangedOnACustomProvider(t *testing.T) {
++	got := protectingUpstream(t)
++	in := `{"model":"fake/m1","stream":true,"store":false,"tools":[],"tool_choice":"auto","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}]}`
++	if code, body := post(t, "/v1/responses", in); code != 200 {
++		t.Fatalf("status %d: %s", code, body)
++	}
++	tools, _, choice, _ := sentTools(t, (*got)[len(*got)-1])
++	if len(tools) != 0 || choice != "auto" {
++		t.Errorf("unsearched relayed with tools %v, tool_choice %v", tools, choice)
++	}
++}
++
++// A turn with Codex's function tools but not web search (search turned
++// off since the conversation searched) keeps its tools callable as asked
++// on a custom provider's own Responses endpoint, as on an account's.
++func TestSearchedConversationFunctionToolsOnACustomProvider(t *testing.T) {
++	got := protectingUpstream(t)
++	code, body := post(t, "/v1/responses", `{"model":"fake/m1","stream":true,"store":false,"tools":[{"type":"function","name":"shell","parameters":{"type":"object","properties":{}}}],"tool_choice":"auto","input":[`+
++		searchedHistory+`,{"type":"message","role":"user","content":[{"type":"input_text","text":"Go on."}]}]}`)
++	if code != 200 || strings.Contains(body, "response protection") {
++		t.Fatalf("status %d: %s", code, body)
++	}
++	tools, _, choice, _ := sentTools(t, (*got)[len(*got)-1])
++	if strings.Join(tools, ",") != "function,web_search" || choice != "auto" {
++		t.Errorf("sent tools %v, tool_choice %v", tools, choice)
++	}
++}
+-- 
+2.50.1 (Apple Git-155)
+
+```
+
+</details>
+
+Branch with the commit: [hunt58-g-3161-search-protection](https://github.com/ggbdpq/magpie/tree/hunt58-g-3161-search-protection) (head `128ec70495a5977cd3ac56c8d46301a239d0dd15`).

@@ -1,0 +1,301 @@
+{
+  "state": "migrated",
+  "groups": [
+    {
+      "name": "logs",
+      "source": "C:\\Users\\802165\\.copilot\\logs",
+      "pattern": "**/*",
+      "remove_root": true,
+      "category": "archive",
+      "archive": "E:\\cc\\guahub\\sessions\\raw\\copilot\\migration-20261026-131112\\logs.zip",
+      "files": [
+        {
+          "path": ".copilot-log.lock",
+          "size": 0,
+          "mtime_ns": 1789607798434027700,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        {
+          "path": "process-1789520523005-14748.log",
+          "size": 704,
+          "mtime_ns": 1789520527012227400,
+          "sha256": "7a641eb57e899a1d3c5c286b94d3bd6bfbc5eb11a0e7f04f0cd55c7f7f328475"
+        },
+        {
+          "path": "process-1789520528581-2572.log",
+          "size": 739,
+          "mtime_ns": 1789552647362192700,
+          "sha256": "f5d7c25d853f3666e33ca3323bd2d8c337118a3099d2f134c428f08e5b6a46d4"
+        },
+        {
+          "path": "process-1789556489516-8832.log",
+          "size": 704,
+          "mtime_ns": 1789556491287564400,
+          "sha256": "04bf60ae065f49cc923c33bf56b32cd4b785b2cd7f7b3b16f6f320152a399122"
+        },
+        {
+          "path": "process-1789556493329-14324.log",
+          "size": 845,
+          "mtime_ns": 1789607779383151700,
+          "sha256": "197fd1b0a88be332865679de152b6d7d9c0db9f466890118562f16f4184b4be3"
+        },
+        {
+          "path": "process-1789607798379-13468.log",
+          "size": 533,
+          "mtime_ns": 1789607798435025200,
+          "sha256": "19757f878f115aa8e9fb5262bc976139f48a48cdf6eeef8b885cbcc15c30fff4"
+        },
+        {
+          "path": "process-1789644540505-14284.log",
+          "size": 845,
+          "mtime_ns": 1789728301617910500,
+          "sha256": "7fa5bd5ccd7071d3327c194f63e6cd46b20f5836f6d047a88aadd4d731d6e2e8"
+        },
+        {
+          "path": "process-1789865848216-15176.log",
+          "size": 704,
+          "mtime_ns": 1789865849895897700,
+          "sha256": "f9e423568f26099f24ef3f3ba5d06d28a1c36b6e93f630afd7818f58a0b40cf4"
+        },
+        {
+          "path": "process-1789865851442-14484.log",
+          "size": 845,
+          "mtime_ns": 1789900849003731900,
+          "sha256": "18c23e1d71d741aa8487c458671f2480f24b3bdd7b108c2cf3e5f7bbdbc73906"
+        },
+        {
+          "path": "process-1789952575282-14980.log",
+          "size": 845,
+          "mtime_ns": 1789988369129478300,
+          "sha256": "6604b99ed3619f1da7ffe7378be9065978212ff901876c9a634030fc124c71a3"
+        },
+        {
+          "path": "process-1790038142230-10388.log",
+          "size": 704,
+          "mtime_ns": 1790082008713155800,
+          "sha256": "ec1132b8aa0926b58b18c3b71046998d3ba664ce345ca1718731d7999bbe140d"
+        },
+        {
+          "path": "process-1790124732762-15216.log",
+          "size": 739,
+          "mtime_ns": 1790240250296551000,
+          "sha256": "4e7d4235e6e19df9222bb5a6f101c47fcd9ba1e2d72fbdaeb5b2d8ab5a0b8803"
+        },
+        {
+          "path": "process-1791779797651-11620.log",
+          "size": 67,
+          "mtime_ns": 1791779798011536300,
+          "sha256": "a3dc2fdbe912fac275d49ae6b5c3041b9f18845c0bbe06e24c80956815ecf30e"
+        },
+        {
+          "path": "process-1791782613608-24068.log",
+          "size": 295,
+          "mtime_ns": 1791782618315830300,
+          "sha256": "9cc76f0ec5160be1e0704ff51c4f46296b66c4c40c9e15a5723ef9abd870d4b7"
+        },
+        {
+          "path": "process-1791782622758-23976.log",
+          "size": 295,
+          "mtime_ns": 1791853133643502400,
+          "sha256": "349494dd2ca95f4e42dba7107375c9acd7530b97c00844b924cbd21bcc1be019"
+        },
+        {
+          "path": "process-1791854725530-24736.log",
+          "size": 295,
+          "mtime_ns": 1791854728502384600,
+          "sha256": "9e514195e6330dc64a9a8c3e9d24a8be7642282eaed6bfe5bb7c90a0a819580d"
+        },
+        {
+          "path": "process-1791854729294-25596.log",
+          "size": 295,
+          "mtime_ns": 1791886081064920400,
+          "sha256": "e887833884ca001172db9c65bda929ac4cb3c2a59275169eea537371bf968bc4"
+        },
+        {
+          "path": "process-1791887547397-38768.log",
+          "size": 295,
+          "mtime_ns": 1791887550789741900,
+          "sha256": "e402d4e143b7833d0036d7cfc2e59a051f1082ea6edca04b2650b9ed7b79bdcd"
+        },
+        {
+          "path": "process-1791887551369-41288.log",
+          "size": 295,
+          "mtime_ns": 1791887792137562500,
+          "sha256": "284dca43cb6eef3005e8e65f5d676214872b66104b94b777bfc4162c0423a015"
+        },
+        {
+          "path": "process-1791939915684-21180.log",
+          "size": 295,
+          "mtime_ns": 1791939915856572400,
+          "sha256": "07e73718d35a8fdc9337c74050e2af637faa8ef1700934f0dc49261d7bfca3d1"
+        },
+        {
+          "path": "process-1791939916381-20860.log",
+          "size": 295,
+          "mtime_ns": 1791941528095725300,
+          "sha256": "c19c24481e91cee359bc50d7ec7e49b25c8271ced66af096f5fdb58c2c841bbd"
+        },
+        {
+          "path": "process-1791941550420-22044.log",
+          "size": 295,
+          "mtime_ns": 1791941550614828500,
+          "sha256": "ef2c6c6698d9eaac1409cdd8ad549cf92831244062ed3ed62ffabf70f6322c75"
+        },
+        {
+          "path": "process-1791941553280-14856.log",
+          "size": 295,
+          "mtime_ns": 1791976228462368100,
+          "sha256": "6538a6d08beb34441311106ab398907c32b9501a37b6bc46d43d81f96a2a57c3"
+        },
+        {
+          "path": "process-1792030052367-27540.log",
+          "size": 295,
+          "mtime_ns": 1792031880426635800,
+          "sha256": "d6b70760d74befc850f8e1b623bad420ef4f63a7a5ae6e6c9103a40ac83c7d8e"
+        },
+        {
+          "path": "process-1792031898676-18156.log",
+          "size": 295,
+          "mtime_ns": 1792031901394187600,
+          "sha256": "c3bf7e9144dda9458016a423b745e3566b778635aa8b10a6a58b1824f1d748c6"
+        },
+        {
+          "path": "process-1792031903202-3296.log",
+          "size": 295,
+          "mtime_ns": 1792054717143850200,
+          "sha256": "5617184eae16c019e3ffe73f4b66f33519459f9e1ccf58f62f6e032cf2d1ae15"
+        },
+        {
+          "path": "process-1792054946646-26376.log",
+          "size": 461,
+          "mtime_ns": 1792054951989489800,
+          "sha256": "e739c089b8b72149e741ea570199f1b43b50c46080e8b5d5ff63c2acd0462fd5"
+        },
+        {
+          "path": "process-1792054953754-16420.log",
+          "size": 461,
+          "mtime_ns": 1792146653075986100,
+          "sha256": "0a4cef935fec9546a393351db817686ee18b1e80ea208c0d230478c68391aadd"
+        },
+        {
+          "path": "process-1792214297368-20368.log",
+          "size": 461,
+          "mtime_ns": 1792230692424409700,
+          "sha256": "83a16bc94485da55e7f5541dd9977e83bebb9eec2a48b7dc5f61cc9c9d2606bf"
+        },
+        {
+          "path": "process-1792230755025-1916.log",
+          "size": 461,
+          "mtime_ns": 1792230758090460100,
+          "sha256": "1882d7c24bf44c3428e61cb546fb886cf19422299463021a71cd630b28b93f1f"
+        },
+        {
+          "path": "process-1792230760510-22716.log",
+          "size": 461,
+          "mtime_ns": 1792230960299582700,
+          "sha256": "ea195c6ceea2b039ec0b61f97142187750750a331b0fd0a84f9e1e1eecab1191"
+        },
+        {
+          "path": "process-1792231293776-34752.log",
+          "size": 461,
+          "mtime_ns": 1792231294405042000,
+          "sha256": "9b6ef8529b11caf2c65137d3e3f2c3cd457508f4122e6c5e7b513b2f936be498"
+        },
+        {
+          "path": "process-1792231295266-37172.log",
+          "size": 461,
+          "mtime_ns": 1792231315471897900,
+          "sha256": "4c694686c859ecca1fd35ae5c18d8ed1c754229cb24ead54f1dca8f551e78b8f"
+        },
+        {
+          "path": "process-1792231740791-36412.log",
+          "size": 461,
+          "mtime_ns": 1792231741476678100,
+          "sha256": "2944a683b95901129799958231294e8f8e69cf2067aaaf9c8213372ef9fb1f3e"
+        },
+        {
+          "path": "process-1792231742477-27920.log",
+          "size": 461,
+          "mtime_ns": 1792231876159744400,
+          "sha256": "1fae802fde92a4e81fcd1aeb06c859f169c815e5e623b98665f583ac4b3ce3b0"
+        },
+        {
+          "path": "process-1792372208550-19208.log",
+          "size": 586,
+          "mtime_ns": 1792372223204069300,
+          "sha256": "fd3cea6ecdb6668eb82b4f71b8c9dfb9bf6a7212ffd14fa8415a0c425c215304"
+        },
+        {
+          "path": "process-1792372229180-24532.log",
+          "size": 15535,
+          "mtime_ns": 1792470193680914600,
+          "sha256": "8d5282ab282ca94ff46b9522fe0c395f1464ebde00f8345385837546af40c4d3"
+        },
+        {
+          "path": "process-1792473757492-3140.log",
+          "size": 586,
+          "mtime_ns": 1792473803431784500,
+          "sha256": "06f8212ec27e12da0255fee18ff8e20d5e0d55bf694f6a4bb5cc569d974f26a9"
+        },
+        {
+          "path": "process-1792473805308-19972.log",
+          "size": 19213,
+          "mtime_ns": 1792491840934803800,
+          "sha256": "1f363e0976223ff6c63b595f1a3ebb0512d749d33b36d34d81a9660cff270762"
+        },
+        {
+          "path": "process-1792546243376-19332.log",
+          "size": 461,
+          "mtime_ns": 1792546247187243000,
+          "sha256": "f0426939f799249d41c38a93eae18aa43894a385560e06f97963f11123b51c87"
+        },
+        {
+          "path": "process-1792546247685-17656.log",
+          "size": 461,
+          "mtime_ns": 1792580579421445300,
+          "sha256": "248972719a67da2adca77666da06eabc27203a50a14e613c8d2b2a04a79732b3"
+        },
+        {
+          "path": "process-1792630156637-14376.log",
+          "size": 19277,
+          "mtime_ns": 1792663489467974000,
+          "sha256": "baaadc211282d15af6dff887a00b8fe1b573aa2edec5080540c013a1ad7161cd"
+        },
+        {
+          "path": "process-1792716926973-16052.log",
+          "size": 1133,
+          "mtime_ns": 1792731139412322100,
+          "sha256": "48f85d61fa36c61750c81e10a1262e3861b27c8578560a2fcdfde94c5b5dca4d"
+        },
+        {
+          "path": "process-1792731296306-25204.log",
+          "size": 461,
+          "mtime_ns": 1792731311440601500,
+          "sha256": "c28944729e23bce0c84e593d93d4fb2813c7bb96289198611c823775d8384ff6"
+        },
+        {
+          "path": "process-1792731505400-26360.log",
+          "size": 461,
+          "mtime_ns": 1792731506448819600,
+          "sha256": "6ad36965a472a9cd18b8f099990776c84edd3e783912e399d10bc09237ff3a23"
+        },
+        {
+          "path": "process-1792731507662-14392.log",
+          "size": 10919,
+          "mtime_ns": 1792751394457992800,
+          "sha256": "f94aacbb3f95457f921533a2d7afa3cfe44d2dcd432a83f1d76f161457d3db3e"
+        },
+        {
+          "path": "process-1792976342598-10268.log",
+          "size": 13322,
+          "mtime_ns": 1792989918616916700,
+          "sha256": "42c50ba667e161fe166b81e6acdc967b571679e7eb8f7418c675c6ecdea4c74a"
+        }
+      ],
+      "directories": []
+    }
+  ],
+  "protected": {
+    "C:\\Users\\802165\\.copilot\\config.json": "7cb45466f59fcbd37d2eb9eeb8a7505d6d26a0097eba05b055a5f54d5ca2ad7e"
+  }
+}

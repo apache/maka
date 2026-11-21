@@ -1,0 +1,330 @@
+From 95c253e7ed86563b08ea5d61d76e7eb6f6c57a75 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Sat, 17 Oct 2026 19:27:45 +0800
+Subject: [PATCH] backup, davsync: a full library's backup seals compressed,
+ within what GitHub's file API takes (#2707)
+
+GitHub's file API refused the reporter's 54.7 MiB sealed backup as too
+large (HTTP 422) while magpie's own guard allows 64 MiB, so a populated
+library could not sync to GitHub at all: the sealed file carries the
+bundle base64-encoded twice (the bundle's JSON, then the envelope's),
+which alone takes 32 MiB of carried skill files to about 57 MiB.
+
+What changed:
+- Seal compresses the bundle before encrypting it (envelope version 2).
+  A version 2 file tells an older magpie "made by a newer magpie"; a
+  version 1 file an older magpie sealed plainly still opens here. The
+  skill-files cap's size arithmetic (internal/library/carry.go) follows.
+- A write GitHub refuses as too large names the file's size and the
+  backends a backup that big fits, instead of the bare 422's words.
+- docs/subsystems/sync-backup.md says both.
+
+Run: go test -tags nogui ./internal/backup ./internal/davsync
+./internal/library ./internal/cli (ok); gofmt -l clean; go vet and go
+build on darwin/arm64, linux/amd64, windows/amd64. Ablation at this
+commit's parent (8233eada), every product file of this commit removed,
+tests kept: TestSealCompressesTheLibrary red (58,255,516 bytes sealed
+from a 43,691,485-byte library, no compression) and
+TestGitHubFailures/file_too_large red (generic 422 text); restored,
+both green. Not tried against the real GitHub API; the compressed size
+is asserted below the 54.7 MiB the API refused in the report.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ docs/subsystems/sync-backup.md  | 13 ++++--
+ internal/backup/backup.go       | 43 +++++++++++++++++--
+ internal/backup/backup_test.go  | 74 +++++++++++++++++++++++++++++++++
+ internal/davsync/github.go      |  6 +++
+ internal/davsync/github_test.go | 16 +++++++
+ internal/library/carry.go       |  6 ++-
+ 6 files changed, 149 insertions(+), 9 deletions(-)
+
+diff --git a/docs/subsystems/sync-backup.md b/docs/subsystems/sync-backup.md
+index cbf52fc0..24355304 100644
+--- a/docs/subsystems/sync-backup.md
++++ b/docs/subsystems/sync-backup.md
+@@ -17,7 +17,10 @@ clone a working tree or synchronize arbitrary files.
+   interprets `github://owner/repo[/prefix]`, with `Config.Branch` selecting a
+   branch or using the repository's default.
+ - [`backup.go`](../../internal/backup/backup.go) owns bundle contents and
+-  sealing. Sync divides the setup into providers, settings, profiles, agents
++  sealing. Sealing compresses the bundle before it is encrypted (envelope
++  version 2), so a full library seals near the size of the skill files it
++  carries; a backup an older magpie sealed plainly (version 1) still opens.
++  Sync divides the setup into providers, settings, profiles, agents
+   and library. Provider keys, agent models, library and usage have their own
+   inclusion switches.
+ - [`usage.go`](../../internal/davsync/usage.go) shares separately sealed usage
+@@ -113,8 +116,12 @@ repository can keep the token. The branch is part of the sync state key.
+   The initial write omits `branch` so GitHub creates its default branch; other
+   conflicts and missing branches are not treated as an empty repository.
+ - Large files are downloaded by blob SHA, preserving the version that was
+-  read. Sync files are limited to 64 MiB. Usage listing fails at the Contents
+-  API's 1,000-file limit rather than treating a truncated list as complete.
++  read. Sync files are limited to 64 MiB, but GitHub's file API takes less of
++  an upload than that: a write it refuses as too large says the file's size
++  and the backends a backup that big fits. Sealed backups compress, so a
++  full library stays within what GitHub takes. Usage listing fails at the
++  Contents API's 1,000-file limit rather than treating a truncated list as
++  complete.
+ - A stale SHA or a racing initial creation returns `errChanged`. Other 422
+   responses stay actionable errors. Authentication, permission and branch
+   failures remain distinct from missing files. Rate limits use sync backoff.
+diff --git a/internal/backup/backup.go b/internal/backup/backup.go
+index e1b7ce63..a9b9d151 100644
+--- a/internal/backup/backup.go
++++ b/internal/backup/backup.go
+@@ -12,6 +12,8 @@
+ package backup
+ 
+ import (
++	"bytes"
++	"compress/gzip"
+ 	"context"
+ 	"crypto/aes"
+ 	"crypto/cipher"
+@@ -21,6 +23,7 @@ import (
+ 	"encoding/json"
+ 	"errors"
+ 	"fmt"
++	"io"
+ 	"maps"
+ 	"os"
+ 	"path/filepath"
+@@ -96,6 +99,9 @@ type Bundle struct {
+ 	LibraryKeys   *bool `json:"libraryKeys,omitempty"`
+ }
+ 
++// envelope is the file around the sealed bundle. Version 2 seals the
++// bundle compressed (zipped); version 1, an older magpie's, kept the
++// bundle plain and still opens.
+ type envelope struct {
+ 	Format     string `json:"format"`
+ 	Version    int    `json:"version"`
+@@ -262,7 +268,11 @@ func withoutKeys(p provider.Provider) provider.Provider {
+ 	return p
+ }
+ 
+-// Seal encrypts the bundle under the passphrase.
++// Seal encrypts the bundle under the passphrase. The bundle is compressed
++// first (envelope version 2): skills and their files shrink to a fraction,
++// and base64 inflates them again twice on the way into one sealed file, so
++// a full library stays under what GitHub's file API takes of a sync,
++// though magpie's own guard allows more (#2707).
+ func Seal(b Bundle, pass string) ([]byte, error) {
+ 	if pass == "" {
+ 		return nil, errors.New("a backup needs a passphrase")
+@@ -271,17 +281,36 @@ func Seal(b Bundle, pass string) ([]byte, error) {
+ 	if err != nil {
+ 		return nil, err
+ 	}
+-	e := envelope{Format: format, Version: 1, KDF: "pbkdf2-sha256", Iterations: iterations,
++	e := envelope{Format: format, Version: 2, KDF: "pbkdf2-sha256", Iterations: iterations,
+ 		Salt: saltFor(pass), Nonce: make([]byte, 12)}
+ 	rand.Read(e.Nonce)
+ 	gcm, err := aead(pass, e)
+ 	if err != nil {
+ 		return nil, err
+ 	}
+-	e.Data = gcm.Seal(nil, e.Nonce, plain, header(e))
++	e.Data = gcm.Seal(nil, e.Nonce, zipped(plain), header(e))
+ 	return json.MarshalIndent(e, "", "  ")
+ }
+ 
++// zipped is plain as gzip. The error is dropped because the writer's
++// destination is memory, which cannot fail it.
++func zipped(plain []byte) []byte {
++	var buf bytes.Buffer
++	zw := gzip.NewWriter(&buf)
++	zw.Write(plain)
++	zw.Close()
++	return buf.Bytes()
++}
++
++// unzipped reads back what zipped wrote.
++func unzipped(data []byte) ([]byte, error) {
++	zr, err := gzip.NewReader(bytes.NewReader(data))
++	if err != nil {
++		return nil, err
++	}
++	return io.ReadAll(zr)
++}
++
+ // Open decrypts a backup. A byte order mark in front of the JSON is read
+ // through: the file is written back through edit.WriteAtomic, which keeps
+ // the mark a Windows tool saved the file with (#1534), and a backup moved
+@@ -304,7 +333,7 @@ func Open(data []byte, pass string) (Bundle, error) {
+ 	if e.Format != format {
+ 		return Bundle{}, ErrNotBackup
+ 	}
+-	if e.Version != 1 || e.KDF != "pbkdf2-sha256" {
++	if (e.Version != 1 && e.Version != 2) || e.KDF != "pbkdf2-sha256" {
+ 		return Bundle{}, errors.New("this backup was made by a newer magpie; update magpie to open it")
+ 	}
+ 	if e.Iterations < 100_000 || e.Iterations > 10_000_000 || len(e.Nonce) != 12 || len(e.Salt) < 16 {
+@@ -318,6 +347,12 @@ func Open(data []byte, pass string) (Bundle, error) {
+ 	if err != nil {
+ 		return Bundle{}, ErrPassphrase
+ 	}
++	// version 2 sealed the bundle compressed; version 1 kept it plain
++	if e.Version == 2 {
++		if plain, err = unzipped(plain); err != nil {
++			return Bundle{}, fmt.Errorf("%w: the sealed bundle doesn't decompress", ErrCorrupt)
++		}
++	}
+ 	var b Bundle
+ 	if err := json.Unmarshal(plain, &b); err != nil {
+ 		return Bundle{}, err
+diff --git a/internal/backup/backup_test.go b/internal/backup/backup_test.go
+index ed9e1f98..d7729d04 100644
+--- a/internal/backup/backup_test.go
++++ b/internal/backup/backup_test.go
+@@ -6,6 +6,8 @@ import (
+ 	"crypto/rand"
+ 	"encoding/json"
+ 	"errors"
++	"fmt"
++	mrand "math/rand"
+ 	"os"
+ 	"path/filepath"
+ 	"reflect"
+@@ -497,3 +499,75 @@ func TestRestorePluginsAndSignIn(t *testing.T) {
+ 		t.Fatalf("an older backup asked to install %v (%v)", asked, err)
+ 	}
+ }
++
++// A backup carrying the most a library may carry (maxCarriedAll, 32 MiB
++// of skill files) seals far smaller than the bundle reads: the sealed
++// data is compressed, so a full library fits what GitHub's file API
++// takes — it refused a 54.7 MiB backup as too large while magpie's own
++// guard allowed it (#2707). The backup opens as it was sealed, and one
++// an older magpie sealed, plainly, still opens here.
++func TestSealCompressesTheLibrary(t *testing.T) {
++	skill := func(name string, text, binary int) *library.CarriedSkill {
++		rng := mrand.New(mrand.NewSource(int64(len(name))))
++		files := map[string][]byte{}
++		files["SKILL.md"] = []byte(strings.Repeat("# "+name+"\n\nStep by step, do the thing. See the notes below.\n\n", text/64))
++		files["assets/template.bin"] = make([]byte, binary)
++		rng.Read(files["assets/template.bin"])
++		return &library.CarriedSkill{Name: name, Files: files}
++	}
++	// 8 skills of 4 MiB each: half documentation, half a binary template,
++	// the worst of what a library carries
++	var skills []*library.CarriedSkill
++	for i := range 8 {
++		skills = append(skills, skill(fmt.Sprintf("skill-%d", i), 2<<20, 2<<20))
++	}
++	b := Bundle{Version: 1, Library: &library.Bundle{Skills: skills}}
++	plain, err := json.Marshal(b)
++	if err != nil {
++		t.Fatal(err)
++	}
++	sealed, err := Seal(b, "correct horse")
++	if err != nil {
++		t.Fatal(err)
++	}
++	if len(sealed) >= len(plain) {
++		t.Fatalf("a %d-byte library sealed to %d bytes, without compressing", len(plain), len(sealed))
++	}
++	// the size GitHub refused as too large for its file API (#2707): the
++	// most a library may carry has to seal below it
++	if len(sealed) >= 54<<20 {
++		t.Fatalf("a 32 MiB library sealed to %d bytes, past what GitHub's file API refuses", len(sealed))
++	}
++	got, err := Open(sealed, "correct horse")
++	if err != nil {
++		t.Fatal(err)
++	}
++	if back, err := json.Marshal(got); err != nil || !bytes.Equal(back, plain) {
++		t.Fatalf("the compressed backup opened as %d bytes, %v, not what was sealed", len(back), err)
++	}
++
++	// what an older magpie sealed: the bundle plain in a version 1 envelope
++	e := envelope{Format: format, Version: 1, KDF: "pbkdf2-sha256", Iterations: iterations,
++		Salt: saltFor("correct horse"), Nonce: make([]byte, 12)}
++	rand.Read(e.Nonce)
++	gcm, err := aead("correct horse", e)
++	if err != nil {
++		t.Fatal(err)
++	}
++	e.Data = gcm.Seal(nil, e.Nonce, plain, header(e))
++	old, err := json.MarshalIndent(e, "", "  ")
++	if err != nil {
++		t.Fatal(err)
++	}
++	if got, err := Open(old, "correct horse"); err != nil {
++		t.Fatalf("a plainly sealed backup no longer opens: %v", err)
++	} else if back, _ := json.Marshal(got); !bytes.Equal(back, plain) {
++		t.Fatal("the plainly sealed backup opened as another bundle")
++	}
++	e.Version = 3
++	if newer, err := json.Marshal(e); err != nil {
++		t.Fatal(err)
++	} else if _, err := Open(newer, "correct horse"); err == nil || !strings.Contains(err.Error(), "newer magpie") {
++		t.Fatalf("a version 3 envelope: %v, want the newer-magpie refusal", err)
++	}
++}
+diff --git a/internal/davsync/github.go b/internal/davsync/github.go
+index e593f570..f4fded9e 100644
+--- a/internal/davsync/github.go
++++ b/internal/davsync/github.go
+@@ -305,6 +305,12 @@ func (g *github) commit(ctx context.Context, name string, data []byte, sha strin
+ 		if strings.Contains(string(body), `\"sha\" wasn't supplied`) {
+ 			return version{}, errChanged
+ 		}
++		// GitHub's file API takes less of an upload than the 64 MiB the
++		// guard above allows, so a file it refuses as too large is the
++		// size said, with where one that big fits (#2707)
++		if strings.Contains(strings.ToLower(string(body)), "too large") {
++			return version{}, fmt.Errorf("GitHub refused %s as too large (HTTP 422): GitHub's file API takes less of an upload than the 64 MiB magpie allows here, and this one is %d bytes; make what is shared smaller, or keep a backup this size on WebDAV or S3", name, len(data))
++		}
+ 		res.Body = io.NopCloser(bytes.NewReader(body))
+ 	}
+ 	if res.StatusCode != http.StatusOK && res.StatusCode != http.StatusCreated {
+diff --git a/internal/davsync/github_test.go b/internal/davsync/github_test.go
+index 60313c03..af37048a 100644
+--- a/internal/davsync/github_test.go
++++ b/internal/davsync/github_test.go
+@@ -548,6 +548,22 @@ func TestGitHubFailures(t *testing.T) {
+ 			t.Fatalf("repository rules treated as a racing file creation: %v", err)
+ 		}
+ 	})
++	t.Run("file too large for GitHub's API", func(t *testing.T) {
++		f := newGithubFixture(t)
++		g, _ := newGitHub(githubConfig())
++		if err := g.prepare(context.Background()); err != nil {
++			t.Fatal(err)
++		}
++		f.mu.Lock()
++		f.status, f.message = 422, "Sorry, the file is too large to be processed. Consider creating/updating the file in a local clone and pushing it to GitHub."
++		f.mu.Unlock()
++		// the most the local guard lets through: GitHub takes less, and
++		// the refusal has to say so and where a backup this size fits (#2707)
++		_, err := g.put(context.Background(), make([]byte, 63<<20), "")
++		if err == nil || errors.Is(err, errChanged) || !strings.Contains(err.Error(), "takes less of an upload than the 64 MiB") {
++			t.Fatalf("GitHub's too-large refusal stayed the generic 422: %v", err)
++		}
++	})
+ 	t.Run("token cannot follow an external redirect", func(t *testing.T) {
+ 		f := newGithubFixture(t)
+ 		f.redirect = "https://outside.api.github.com/token"
+diff --git a/internal/library/carry.go b/internal/library/carry.go
+index 5831315b..5dc3343e 100644
+--- a/internal/library/carry.go
++++ b/internal/library/carry.go
+@@ -44,8 +44,10 @@ type CarriedSkill struct {
+ // biggest once the skills come to maxCarriedAll. A skill's own files go
+ // with it, its scripts and its templates (a PowerPoint template with its
+ // pictures is several MB), but a sync reads at most 64 MiB of a backup
+-// (davsync), and a skill's bytes are base64 twice in one (the bundle's
+-// JSON, then the sealed envelope's): 32 MiB of files is about 57 MiB.
++// (davsync), and a skill's bytes are base64 in the bundle's JSON and
++// again in the sealed envelope's; the sealed data compresses, so 32 MiB
++// of files seal near their own size, within what GitHub's file API takes
++// of a sync (#2707).
+ const (
+ 	maxCarried    = 16 << 20
+ 	maxCarriedAll = 32 << 20
+-- 
+2.50.1 (Apple Git-155)
+

@@ -1,0 +1,44 @@
+gateway: a Chat finish of tool_calls with no call in the stream ends stop (#4944)
+
+What changed: Hermes through magpie (stream=true, tools, deep
+reasoning): a reply of text alone ended, on the reporter's upstream, on
+a frame saying finish_reason "tool_calls" that no delta ever carried a
+call for - the shape the reporter's bare call of the model ends its
+real calls with ("delta":{"reasoning_content":null},
+"finish_reason":"tool_calls","matched_stop":1); its text-only turns end
+there too, and the client took every such turn for one whose calls were
+dropped and re-prompted, three times a reply. The other gateway on the
+same upstream said stop.
+
+chatTidy's mend that ends a finish of tool_calls with no call left stop
+(#1475) only ran for a choice some delta had carried a tool_calls key
+for: the case "tool_calls" sat inside the t.called[choice] guard the
+case "stop" needs, and a reply whose stream never carried the key
+passed the misleading finish on. The switch now runs for every choice's
+finish: a finish of tool_calls with no readable call ends stop whether
+or not a delta carried the key, and the stop of a choice that made
+calls still ends tool_calls. A legacy function_call a client may still
+be reading (#4659) keeps a finish that says the turn ended in a call,
+and a "function_call": null is still the contract's own nothing.
+
+Whole replies are untouched: #1475's review narrowed chatWhole to a
+finish whose call was dropped and pinned a whole reply that came with
+no tool_calls at all as going as it came
+(TestToolCallsFinishWithNoCallsStaysWhole); no report covers them.
+
+Run: go test -tags nogui -count=1 ./internal/gateway: one red,
+TestCodexPoolSaysTheClientsVersion, green on its own - the known
+pre-existing red of this machine; the two new tests and the family
+guards among the rest, ok. go test -tags nogui -count=1 -timeout 45m
+./internal/...: 74 packages ok; the four failures are all red at the
+parent 173b7e274 single-run too, none of this commit's own (TestMothX
+in agent, TestProxyCheckSaysAProxyPassedBy in gui,
+TestHostToldTheGatewayAddress in plugin, and the codex pool one above).
+Red at the parent with chattidy.go from the parent and the tests kept:
+TestChatNoCallToolCallsFinishEndsStop "calls map[], finish
+"tool_calls"" and TestChatRelayLegacyCallFinish "finish "tool_calls"" -
+the reported symptom; green again with the commit restored. gofmt -l:
+clean. go vet -tags nogui ./...: clean. go build -tags nogui: darwin,
+GOOS=linux, GOOS=windows: ok.
+
+Generated-by: GLM-5.3-Flash (ZCode)

@@ -1,0 +1,26 @@
+plugin: a plugins.json change one magpie makes keeps what another saved meanwhile (#4666)
+
+What changed: every change to plugins.json (Add, Remove, SetOff, Prefer,
+SetOptions — the GUI's Plugins page, a plugin page's options bridge,
+`magpie plugin options/prefer/remove`, migrate and backup) is now made
+under the file's lock, plugins.json.lock, the same shape the accounts'
+logins and mcp-signins.json are changed under: listMu is this process
+alone, so the gateway and a magpie run from a terminal read, changed and
+wrote whole lists past each other, and the later write went out with
+what the other had saved since its read. Under the file lock every
+change reads the file afresh, so both stand. A lock held longer than
+filelock.Wait goes on without it, as before there was one; a file
+system with no locks likewise. Reads are unlocked, as they were.
+
+Run (darwin/arm64, GOCACHE pinned, upstream/main 873b4987e + this):
+- go test ./internal/plugin -run 'TestPluginOptionsKeepWhatAnotherMagpieSetMeanwhile|TestPluginPreferKeepsWhatAnotherMagpieSetMeanwhile' -count=1 -race: ok
+  (each red before the fix: "SetOptions went on while another magpie
+  held plugins.json's lock" / "Prefer went on …", deterministic)
+- go test ./internal/plugin -count=1 -timeout 25m: ok except TestHostToldTheGatewayAddress
+  (a port-migration flake this machine's proxy already gave: red on the
+  parent commit 873b4987e too, same "told MAGPIE_ADDR=127.0.0.1:3591")
+- gofmt -l internal/plugin: clean; go vet ./...: ok;
+  GOOS=linux go vet -tags nogui ./... and GOOS=windows go vet ./...: ok
+- go build, GOOS=linux go build -tags nogui, GOOS=windows go build: ok
+
+Generated-by: GLM-5.3-Flash (ZCode)

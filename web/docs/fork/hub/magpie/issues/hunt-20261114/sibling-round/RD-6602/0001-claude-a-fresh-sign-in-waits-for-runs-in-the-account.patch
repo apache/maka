@@ -1,0 +1,164 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Sat, 14 Nov 2026 17:57:18 +0800
+Subject: [PATCH] claude: a fresh sign-in waits for runs in the account's
+ directory (#6602)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+#3254's fix guards ForgetLogin's removal of a saved account's
+directory, but a fresh sign-in still removes it with no look at the
+run marks (#4532): signing in again to a saved Claude account
+replaces the older saved directory (addLogin, signin.go), and another
+magpie process's run in it (a /usage, a warm-up, a keep-alive) had it
+taken from under it.
+
+addLogin (claude) now takes the account's in-process run mutex and
+waits on every other process's run mark up to claudeRunWait, refusing
+with errClaudeRunning past it, before loginsMu: the guard comes first,
+the order every claudeDirRun holder keeps, and the sign-in flow
+answers the refusal as a sign-in that didn't finish and asks to be
+tried again. Nothing is written or removed under a run.
+
+What changed:
+- internal/provider/signin.go: the guard at the top of addLogin
+- internal/provider/claude_lock_test.go:
+  TestClaudeFreshSignInRefusedWhileAnotherMagpieRunsTheFolder
+  (held/ended), the shape of TestClaudeForgetRefusedWhileAnotherMagpieRunsTheFolder
+
+Run (darwin/arm64, go1.26.8, GOCACHE pinned, temp HOME):
+- red before the fix: go test ./internal/provider -run
+  TestClaudeFreshSignInRefusedWhileAnotherMagpieRunsTheFolder →
+  held "got <nil>", ended "a left lock file kept: <nil>"
+- green after: same command → ok (1.146s)
+- ablation (guard reverted, test kept): FAIL as above; restored: ok
+- go test ./internal/provider -run 'TestClaude|TestSavedClaudeRun'
+  -count=1 → ok (21.696s)
+- go test -tags nogui -timeout 25m ./... → ok in the touched package
+  but TestResolveVia (provider; reproduced on clean base 80a315a70,
+  the machine's proxy), TestMothX (agent; same on base),
+  TestFreedHeapLeavesFootprint (build/darwin; same on base), four cli
+  tests (same on base), TestProxyCheckSaysAProxyPassedBy (gui; same
+  on base), TestHostToldTheGatewayAddress (plugin; same on base);
+  TestSessionReadsRoutes and usage's 25m timeout pass alone on base
+  and here (loaded-run flakes)
+- go test -race ./internal/provider -timeout 25m → the two DATA RACE
+  warnings (TestPluginCheckinAsksAgainAtUntil,
+  TestSignInDoneOnceTheAccountIsBack, both in test files' globals)
+  reproduce on clean base with -race
+- gofmt -l on the two files: prints nothing
+- go vet ./..., GOOS=linux go vet -tags nogui ./...,
+  GOOS=windows go vet ./...: clean
+- go build ./..., GOOS=linux go build -tags nogui ./...,
+  GOOS=darwin go build ./..., GOOS=windows go build ./...: ok
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/provider/claude_lock_test.go | 68 +++++++++++++++++++++++++++
+ internal/provider/signin.go           | 13 +++++
+ 2 files changed, 81 insertions(+)
+
+diff --git a/internal/provider/claude_lock_test.go b/internal/provider/claude_lock_test.go
+index 880c21b11..ef3ae9ebf 100644
+--- a/internal/provider/claude_lock_test.go
++++ b/internal/provider/claude_lock_test.go
+@@ -317,3 +317,71 @@ func TestClaudeForgetRefusedWhileAnotherMagpieRunsTheFolder(t *testing.T) {
+ 		}
+ 	})
+ }
++
++// Signing in afresh to an account whose directory a run of another magpie
++// process holds is refused (#6602, #3254's sibling): addLogin removes the
++// account's older saved directory, and the removal would take it from
++// under that run. The saved sign-in stays as it was. A mark whose run
++// ended holds nothing, and the fresh sign-in goes on, removing the older
++// directory.
++func TestClaudeFreshSignInRefusedWhileAnotherMagpieRunsTheFolder(t *testing.T) {
++	fresh := func(t *testing.T) savedLogin {
++		t.Helper()
++		l, err := claudeLogin(claudeCredentials{OAuth: claudeAuth{
++			AccessToken: "tok-max2", RefreshToken: "r-max2",
++			ExpiresAt: time.Now().Add(time.Hour).UnixMilli(), SubscriptionType: "max",
++		}}, map[string]any{"emailAddress": "max@x.com"})
++		if err != nil {
++			t.Fatal(err)
++		}
++		return l
++	}
++	t.Run("held", func(t *testing.T) {
++		claudeThree(t)
++		if err := os.MkdirAll(claudeAccountDir("max@x.com"), 0o700); err != nil {
++			t.Fatal(err)
++		}
++		w := claudeRunWait
++		claudeRunWait = 300 * time.Millisecond
++		t.Cleanup(func() { claudeRunWait = w })
++		unlock, held := filelock.Lock(claudeAccountDir("max@x.com")+".run-99999-1.lock", time.Second)
++		if !held {
++			t.Fatal("not held")
++		}
++		defer unlock()
++		if _, err := addLogin(fresh(t)); !errors.Is(err, errClaudeRunning) {
++			t.Fatalf("got %v", err)
++		}
++		if _, err := os.Stat(claudeAccountDir("max@x.com")); err != nil {
++			t.Fatalf("the account's directory was removed under the run: %v", err)
++		}
++		if a := savedAuth(t, "max@x.com"); !strings.Contains(a, "r-max") {
++			t.Fatalf("the fresh sign-in replaced the saved one under the refused run: %q", a)
++		}
++	})
++	t.Run("ended", func(t *testing.T) {
++		claudeThree(t)
++		if err := os.MkdirAll(claudeAccountDir("max@x.com"), 0o700); err != nil {
++			t.Fatal(err)
++		}
++		mark := claudeAccountDir("max@x.com") + ".run-99999-1.lock"
++		if err := os.MkdirAll(filepath.Dir(mark), 0o700); err != nil {
++			t.Fatal(err)
++		}
++		if err := os.WriteFile(mark, nil, 0o600); err != nil {
++			t.Fatal(err)
++		}
++		if _, err := addLogin(fresh(t)); err != nil {
++			t.Fatal(err)
++		}
++		if _, err := os.Stat(claudeAccountDir("max@x.com")); !os.IsNotExist(err) {
++			t.Fatalf("the account's older directory kept: %v", err)
++		}
++		if _, err := os.Stat(mark); !os.IsNotExist(err) {
++			t.Fatalf("a left lock file kept: %v", err)
++		}
++		if a := savedAuth(t, "max@x.com"); !strings.Contains(a, "r-max2") {
++			t.Fatalf("the fresh sign-in wasn't kept: %q", a)
++		}
++	})
++}
+diff --git a/internal/provider/signin.go b/internal/provider/signin.go
+index 657090a03..e6e98d1af 100644
+--- a/internal/provider/signin.go
++++ b/internal/provider/signin.go
+@@ -891,6 +891,19 @@ func addLogin(l savedLogin) (using bool, err error) {
+ 			StaleAllowance(l.Agent, l.User)
+ 		}
+ 	}()
++	if l.Agent == "claude" {
++		// nor while a run is in the account's own directory: magpie's own
++		// (a /usage, a warm-up) ends first, and another magpie process's
++		// is refused past the wait (#4532's run marks) — the fresh sign-in
++		// removes the account's older saved directory below, and that
++		// would take it from under the run (#3254's sibling, #6602)
++		mu := claudeDirRun(l.User)
++		mu.Lock()
++		defer mu.Unlock()
++		if err := waitClaudeRuns(l.User); err != nil {
++			return false, err
++		}
++	}
+ 	loginsMu.Lock()
+ 	defer loginsMu.Unlock()
+ 	if l.Agent == "claude" {
+-- 
+2.50.1 (Apple Git-155)
+

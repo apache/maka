@@ -1,0 +1,93 @@
+@font-face {
+    font-family: "dsdigi";
+    src: url("./ds-digi.woff");
+}
+
+@font-face {
+    font-family: "JetBrains";
+    src: url("./JetBrainsMono.woff") format("woff");
+}
+
+@font-face {
+    font-family: "Oswald";
+    src: url("./Oswald.woff") format("woff");
+}
+
+@font-face {
+    font-family: "TrainOne";
+    src: url("./TrainOne-Regular.woff") format("woff");
+}
+
+@font-face {
+    font-family: "AbrilFatface";
+    src: url("./AbrilFatface-Regular.woff") format("woff");
+}
+
+@font-face {
+    font-family: "HarmonyOS_Sans";
+    src: url("./HarmonyOS_Sans.woff") format("woff");
+}
+
+@font-face {
+    font-family: "Arial";
+    src: url("./Arial-Rounded-Bold.woff") format("woff");
+}
+
+@font-face {
+    font-family: "Bebas";
+    src: url("./Bebas.woff") format("woff");
+}
+
+@font-face {
+    font-family: "Aldrich";
+    src: url("./Aldrich-Regular.woff") format("woff");
+}
+
+@font-face {
+    font-family: "BungeeHairline";
+    src: url("https://files.codelife.cc/fonts/Bungee_Hairline.ttf") format("woff");
+}
+
+@font-face {
+    font-family: "Expansiva";
+    src: url("./Expansiva.woff") format("woff");
+}
+
+@font-face {
+    font-family: "Merriweather";
+    src: url("./Merriweather-Regular.woff") format("woff");
+}
+
+@font-face {
+    font-family: "Nabla";
+    src: url("./Nabla.woff") format("woff");
+}
+
+@font-face {
+    font-family: "Orbitron";
+    src: url("./Orbitron-VariableFont_wght.woff") format("woff");
+}
+
+@font-face {
+    font-family: "Silkscreen";
+    src: url("./Silkscreen-Regular.woff") format("woff");
+}
+
+@font-face {
+    font-family: "MiSans";
+    src: url("./MiSans-Normal.woff") format("woff");
+}
+
+@font-face {
+    font-family: "SFUI";
+    src: url("https://files.codelife.cc/fonts/SFUI.ttc") format("woff");
+}
+
+@font-face {
+    font-family: "PlusJakartaSans";
+    src: url("./PlusJakartaSans.woff") format("woff");
+}
+
+.dsdigi {
+    font-family: "dsdigi" !important;
+}

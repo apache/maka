@@ -1,0 +1,6 @@
+=== RUN   TestSlowThinkerDoneChannelDoesNotHoldASecondAsk
+    thinking_streams_test.go:151: a second ask of the same fake vendor never finished: its handler is stuck on the done channel's send
+--- FAIL: TestSlowThinkerDoneChannelDoesNotHoldASecondAsk (10.00s)
+FAIL
+FAIL	github.com/yetone/magpie/internal/gateway	11.562s
+FAIL

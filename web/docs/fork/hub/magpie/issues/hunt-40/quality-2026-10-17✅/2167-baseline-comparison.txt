@@ -1,0 +1,2 @@
+git diff --stat 4faa9313 50929661 -- internal/gateway/remote_magpie_rest_test.go internal/gateway/routing.go internal/gateway/sink.go
+exit=0

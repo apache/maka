@@ -1,0 +1,297 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Sun, 8 Nov 2026 03:03:02 +0800
+Subject: [PATCH] mcp router: an agent whose server is slow to start the first
+ time is given its tools (#5638)
+
+---
+ internal/library/mcp_check_test.go         |  15 ++
+ internal/library/mcp_hub.go                |  34 +++-
+ internal/library/mcp_hub_slowstart_test.go | 182 +++++++++++++++++++++
+ 3 files changed, 227 insertions(+), 4 deletions(-)
+ create mode 100644 internal/library/mcp_hub_slowstart_test.go
+
+diff --git a/internal/library/mcp_check_test.go b/internal/library/mcp_check_test.go
+index e00ea7c74..fff965b0b 100644
+--- a/internal/library/mcp_check_test.go
++++ b/internal/library/mcp_check_test.go
+@@ -117,6 +117,21 @@ func TestFakeMCPServer(t *testing.T) {
+ 			text, _ := json.Marshal(said)
+ 			fmt.Printf(`{"jsonrpc":"2.0","id":%d,"result":{"content":[{"type":"text","text":%s}]}}`+"\n", *m.ID, text)
+ 		case "initialize":
++			// MAGPIE_FAKE_MCP_FIRSTINIT: a marker file; the first process
++			// started writes it and takes MAGPIE_FAKE_MCP_SLOW_INIT to
++			// answer initialize, a start again answers at once (a cold
++			// first start, #5638)
++			if f := os.Getenv("MAGPIE_FAKE_MCP_FIRSTINIT"); f != "" {
++				if _, err := os.Stat(f); err != nil {
++					os.WriteFile(f, []byte("yes"), 0o644)
++					if d, err := time.ParseDuration(os.Getenv("MAGPIE_FAKE_MCP_SLOW_INIT")); err == nil && d > 0 {
++						time.Sleep(d)
++					}
++				}
++			} else if d, err := time.ParseDuration(os.Getenv("MAGPIE_FAKE_MCP_SLOW_INIT")); err == nil && d > 0 {
++				// a server that is slow to answer initialize at all
++				time.Sleep(d)
++			}
+ 			fmt.Printf(`{"jsonrpc":"2.0","id":%d,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"fake","version":"1"}}}`+"\n", *m.ID)
+ 		case "notifications/initialized":
+ 			os.WriteFile(os.Getenv("MAGPIE_FAKE_MCP_INIT"), []byte("yes"), 0o644)
+diff --git a/internal/library/mcp_hub.go b/internal/library/mcp_hub.go
+index 0ed601263..b6b38e17d 100644
+--- a/internal/library/mcp_hub.go
++++ b/internal/library/mcp_hub.go
+@@ -477,6 +477,7 @@ type backend struct {
+ 	conn    hubConn
+ 	ready   chan struct{} // while it is being connected to
+ 	err     error         // why the last connection failed
++	slow    bool          // the last start ran out of its step's budget, so it may answer next time
+ 	list    []map[string]json.RawMessage
+ 	listed  bool
+ 	says    serverSays // what the server said of itself when it was connected to
+@@ -542,6 +543,7 @@ func (b *backend) start(ready chan struct{}) {
+ 		c = nil
+ 	}
+ 	b.conn, b.err, b.ready = c, err, nil
++	b.slow = err != nil && ctx.Err() != nil
+ 	if c != nil {
+ 		b.says = c.said()
+ 	}
+@@ -613,7 +615,14 @@ func (b *backend) stop() {
+ 	}
+ }
+ 
+-// tools are the tools the server lists, every page of them.
++// tools are the tools the server lists, every page of them. A start that
++// ran out of its step's budget (b.slow) is tried again while the list
++// waits: a standard client connects the moment magpie writes its config,
++// and its tools/list inherits the first start's effort, which on a cold
++// machine (an npx still fetching its package) can run out before the
++// server answers — left at that, the agent's whole list came back empty
++// and every SDK behind the router saw no tool (#5638). A start that
++// failed some other way isn't tried again here; the next list starts one.
+ func (b *backend) tools(ctx context.Context) ([]map[string]json.RawMessage, error) {
+ 	b.use()
+ 	defer b.done()
+@@ -624,10 +633,27 @@ func (b *backend) tools(ctx context.Context) ([]map[string]json.RawMessage, erro
+ 		return ts, nil
+ 	}
+ 	b.mu.Unlock()
+-	c, err := b.connect(ctx)
+-	if err != nil {
+-		return nil, err
++	for {
++		c, err := b.connect(ctx)
++		if err != nil {
++			b.mu.Lock()
++			retry := b.slow && ctx.Err() == nil
++			b.mu.Unlock()
++			if !retry {
++				return nil, err
++			}
++			continue
++		}
++		all, err := b.listTools(ctx, c)
++		if err != nil {
++			return nil, err
++		}
++		return all, nil
+ 	}
++}
++
++// listTools asks the connection for every page of the server's tools.
++func (b *backend) listTools(ctx context.Context, c hubConn) ([]map[string]json.RawMessage, error) {
+ 	var all []map[string]json.RawMessage
+ 	cursor := ""
+ 	for page := 0; page < maxToolPages; page++ {
+diff --git a/internal/library/mcp_hub_slowstart_test.go b/internal/library/mcp_hub_slowstart_test.go
+new file mode 100644
+index 000000000..856af7905
+--- /dev/null
++++ b/internal/library/mcp_hub_slowstart_test.go
+@@ -0,0 +1,182 @@
++package library
++
++import (
++	"context"
++	"encoding/json"
++	"net/http"
++	"net/http/httptest"
++	"path/filepath"
++	"strings"
++	"testing"
++	"time"
++
++	"github.com/yetone/magpie/internal/gateway"
++)
++
++// sdkPost is a POST to agent's hub path from this computer, as a
++// Streamable HTTP client sends one.
++func sdkPost(t *testing.T, agent, body string, hdr ...string) *httptest.ResponseRecorder {
++	t.Helper()
++	r := httptest.NewRequest(http.MethodPost, gateway.HubMCPPath+agent, strings.NewReader(body))
++	r.RemoteAddr, r.Host = "127.0.0.1:50000", "127.0.0.1:3425"
++	r.Header.Set("Content-Type", "application/json")
++	r.Header.Set("Accept", "application/json, text/event-stream")
++	for i := 0; i+1 < len(hdr); i += 2 {
++		r.Header.Set(hdr[i], hdr[i+1])
++	}
++	w := httptest.NewRecorder()
++	gateway.New().Handler().ServeHTTP(w, r)
++	return w
++}
++
++// hubInitialize initializes agent's hub the way a client does, and gives
++// the session id it was told to send on.
++func hubInitialize(t *testing.T, agent string) string {
++	t.Helper()
++	w := sdkPost(t, agent, `{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"probe","version":"0"}}}`)
++	var m struct {
++		Result struct {
++			ServerInfo struct{ Name string }
++		}
++		Error *struct{ Message string }
++	}
++	if err := json.Unmarshal(w.Body.Bytes(), &m); err != nil || m.Error != nil || m.Result.ServerInfo.Name != "magpie" {
++		t.Fatalf("initialize: %s (%v)", w.Body.String(), err)
++	}
++	return w.Header().Get("Mcp-Session-Id")
++}
++
++// hubList is the tools/list a client that initialized is answered.
++func hubList(t *testing.T, agent, sid string) (int, []string) {
++	t.Helper()
++	list := sdkPost(t, agent, `{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`, "Mcp-Session-Id", sid)
++	var r struct {
++		Result struct {
++			Tools []struct{ Name string }
++		}
++		Error *struct{ Message string }
++	}
++	if err := json.Unmarshal(list.Body.Bytes(), &r); err != nil {
++		t.Fatalf("tools/list: %s (%v)", list.Body.String(), err)
++	}
++	var names []string
++	for _, x := range r.Result.Tools {
++		names = append(names, x.Name)
++	}
++	return list.Code, names
++}
++
++// A standard client (the SDKs dsh and Claude Code bundle) connects the
++// moment magpie writes its config: initialize comes back while the
++// agent's only server is still starting for the first time, and the
++// tools/list it sends next inherits that start's failure — a first start
++// that didn't answer initialize within its step's budget (a cold Windows
++// box, an npx still fetching its package) had tools/list answer
++// {"tools":[]} at once, the empty list the reporter's SDK saw while a
++// plain POST some minutes later listed the tools (#5638). The list keeps
++// trying a start that ran out of its budget, within its own: a start
++// again answers at once.
++func TestHubListsToolsAfterASlowFirstStart(t *testing.T) {
++	hubSandbox(t)
++	ws, wr := stdioStep, remoteStep
++	stdioStep, remoteStep = 7*time.Second, 7*time.Second
++	t.Cleanup(func() { stdioStep, remoteStep = ws, wr })
++	marker := filepath.Join(t.TempDir(), "first")
++	fake := fakeStdio(t, "ok", map[string]string{
++		"MAGPIE_FAKE_MCP_FIRSTINIT": marker,
++		"MAGPIE_FAKE_MCP_SLOW_INIT": "10s",
++	})
++	fake.Name, fake.Agents = "magpie-browser", []string{"dsh"}
++	ok(t)(SaveServer("", *fake))
++	ok(t)(SetMCPHub(true))
++
++	// initialize comes back while the first start is still working (its
++	// step's budget, 7s here, outlasts the 5s initialize waits to name it)
++	sid := hubInitialize(t, "dsh")
++
++	start := time.Now()
++	code, names := hubList(t, "dsh", sid)
++	if !slicesEqual(names, []string{"magpie-browser__a", "magpie-browser__b", "magpie-browser__c"}) {
++		t.Fatalf("tools/list (%d) after a first start that ran out of its budget = %v in %v, want the server's tools", code, names, time.Since(start))
++	}
++	if d := time.Since(start); d > 20*time.Second {
++		t.Errorf("tools/list took %v", d)
++	}
++}
++
++// A start that can't succeed at all is still named at once, not retried
++// for the list's whole budget: an agent whose server isn't there learns
++// it in moments.
++func TestHubListsToolsNameAMissingServerFast(t *testing.T) {
++	hubSandbox(t)
++	fake := fakeStdio(t, "ok", nil)
++	fake.Name, fake.Agents = "gone", []string{"dsh"}
++	fake.Command = "magpie-no-such-mcp-server"
++	ok(t)(SaveServer("", *fake))
++	ok(t)(SetMCPHub(true))
++	start := time.Now()
++	code, names := hubList(t, "dsh", hubInitialize(t, "dsh"))
++	if len(names) != 0 || code != http.StatusOK {
++		t.Fatalf("a missing server listed %v (%d)", names, code)
++	}
++	if d := time.Since(start); d > 10*time.Second {
++		t.Errorf("a missing server took %v to answer", d)
++	}
++}
++
++// The trying stops at the caller's budget: a server whose every start
++// runs out of its step's budget leaves an agent that waits a second with
++// nothing, in about that second.
++func TestHubListsToolsStopTryingAtTheBudget(t *testing.T) {
++	hubSandbox(t)
++	short(t, 400*time.Millisecond)
++	t.Cleanup(func() { waitBackendSettled(t, "slowpoke") })
++	fake := fakeStdio(t, "ok", map[string]string{"MAGPIE_FAKE_MCP_SLOW_INIT": "700ms"})
++	fake.Name, fake.Agents = "slowpoke", []string{"dsh"}
++	ok(t)(SaveServer("", *fake))
++	ok(t)(SetMCPHub(true))
++	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
++	defer cancel()
++	start := time.Now()
++	if ts := (theHub{}).Tools(ctx, "dsh"); len(ts) != 0 {
++		t.Fatalf("a server that never starts in time listed %v", hubNames(ts))
++	}
++	if d := time.Since(start); d > 4*time.Second {
++		t.Errorf("listing waited %v past the second it was given", d)
++	}
++}
++
++// waitBackendSettled is for a test that leaves a start working in the
++// background (the list's budget ran out under it): it waits for that
++// start to be done before the test's cleanup puts the step budgets back,
++// so no start is reading them while they are written.
++func waitBackendSettled(t *testing.T, name string) {
++	t.Helper()
++	for end := time.Now().Add(10 * time.Second); time.Now().Before(end); time.Sleep(10 * time.Millisecond) {
++		hubPool.Lock()
++		b := hubPool.m[name]
++		hubPool.Unlock()
++		if b == nil {
++			return
++		}
++		b.mu.Lock()
++		settled := b.ready == nil
++		b.mu.Unlock()
++		if settled {
++			return
++		}
++	}
++	t.Error("a start is still working after 10s")
++}
++
++func slicesEqual(a, b []string) bool {
++	if len(a) != len(b) {
++		return false
++	}
++	for i := range a {
++		if a[i] != b[i] {
++			return false
++		}
++	}
++	return true
++}
+-- 
+2.50.1 (Apple Git-155)
+

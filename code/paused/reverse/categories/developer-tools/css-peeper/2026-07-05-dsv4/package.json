@@ -1,0 +1,15 @@
+{
+  "name": "css-peeper-dsv4",
+  "version": "1.2.2",
+  "description": "CSS Peeper — Chrome 扩展反向工程 (dsV4)",
+  "license": "UNLICENSED",
+  "private": true,
+  "scripts": {
+    "build": "tsc",
+    "check": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0",
+    "@types/chrome": "^0.0.268"
+  }
+}

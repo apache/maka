@@ -1,0 +1,25 @@
+{
+  "id": "50",
+  "slug": "longest-common-subsequence",
+  "title": "最长公共子序列",
+  "difficulty": "medium",
+  "tags": ["字符串", "动态规划"],
+  "description": "给定两个字符串 `text1` 和 `text2`,返回这两个字符串的最长**公共子序列**的长度。如果不存在公共子序列,返回 `0`。\n\n子序列是不改变剩余字符顺序的情况下删除某些(或不删除)字符形成的新序列。\n\n**示例 1:**\n\n- 输入:`text1 = \"abcde\"`, `text2 = \"ace\"`\n- 输出:`3`(最长公共子序列是 `\"ace\"`,长度为 3)\n\n**示例 2:**\n\n- 输入:`text1 = \"abc\"`, `text2 = \"abc\"`\n- 输出:`3`\n\n**示例 3:**\n\n- 输入:`text1 = \"abc\"`, `text2 = \"def\"`\n- 输出:`0`",
+  "solution": "## 思路\n\n**二维动态规划**:`dp[i][j]` 表示 `text1[0..i)` 与 `text2[0..j)` 的最长公共子序列长度。字符相等则 `dp[i][j] = dp[i-1][j-1]+1`;否则取 `max(dp[i-1][j], dp[i][j-1])`。\n\n## 参考代码\n\n```js\nfunction longestCommonSubsequence(text1, text2) {\n  const m = text1.length;\n  const n = text2.length;\n  const dp = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));\n  for (let i = 1; i <= m; i++) {\n    for (let j = 1; j <= n; j++) {\n      if (text1[i - 1] === text2[j - 1]) dp[i][j] = dp[i - 1][j - 1] + 1;\n      else dp[i][j] = Math.max(dp[i - 1][j], dp[i][j - 1]);\n    }\n  }\n  return dp[m][n];\n}\n```\n\n## 复杂度\n\n- 时间:O(m*n)\n- 空间:O(m*n)(可优化为 O(min(m,n)))",
+  "signature": {
+    "language": "javascript",
+    "entry": "longestCommonSubsequence",
+    "params": [
+      { "name": "text1", "type": "string" },
+      { "name": "text2", "type": "string" }
+    ],
+    "returns": "number"
+  },
+  "testCases": [
+    { "sample": true, "input": ["abcde", "ace"], "expected": 3 },
+    { "sample": true, "input": ["abc", "abc"], "expected": 3 },
+    { "sample": true, "input": ["abc", "def"], "expected": 0 },
+    { "sample": false, "input": ["", ""], "expected": 0 },
+    { "sample": false, "input": ["a", "a"], "expected": 1 }
+  ]
+}

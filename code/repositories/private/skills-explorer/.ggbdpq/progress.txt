@@ -1,0 +1,32 @@
+# skills-explorer 执行日志（SSOT：.ggbdpq/actions/skills-explorer/prd.json；bug 台账：BUGS.md）
+
+## 2026-09-25
+
+- [x] item 0 骨架：pnpm 12.6 + Vite 8.3（rolldown）+ Vue 3.5 + TypeScript 7.0.2 + Tailwind 4.3 + shadcn-vue 2.8。
+  验证：pnpm typecheck（TS7 原生 tsc）与 pnpm build 全绿。
+  过程记录：TS7 移除 baseUrl；vue-tsc 3.3.11 不兼容 TS7（无 lib/tsc API），typecheck 降级为原生 tsc 覆盖 .ts 层（item 10 跟踪恢复）；rolldown-vite 编译 SFC 无跨文件类型解析 fs，6 个 shadcn-vue 生成组件 defineProps 外部类型已内联；pnpm 12 配置住 pnpm-workspace.yaml allowBuilds（package.json 的 pnpm 字段不再读取）；模板 tsconfig 的 shadcn 版本钉 TS6，手动升 ~7.0.2。
+- [x] item 1 索引管线：build-index.mjs 栈式递归收录 1682 技能（含 99 个嵌套子技能），扁平单段安全 id，Zod 校验响应。
+  验证：id 唯一性通过；<300 报错护栏与空描述点名生效（现 2 个真无描述技能）。
+  过程记录：id 若含 %2F 会在 dev 服务器解码后 404 并 SPA 回退成 index.html（BUG-001）；YAML 块标量 description（>- / |-）需折叠解析（BUG-002）；递归遍历借鉴 console apps/blog/scripts/sync-skills.mjs，顺带修复固定三层漏收（BUG-005）。
+- [x] item 2 浏览页：qiaomu 式单页目录——搜索 + 精选/候选池/归档区域开关（340/1225/18）+ 79 分类 chips + 按分类/名称排序 + 每页 48 加载更多。
+  验证：浏览器实测（computer-use 快照）筛选与分页正常。
+- [x] item 3 详情页：结构化头部 + 事实卡侧栏（分类/子分类/区域/来源/作者）+ frontmatter 剥离后的 SKILL.md 渲染（markdown-it + highlight.js，正文限宽 768px）。
+  验证：浏览器实测——frontmatter 与源码零残留，7000+ 字符正文与 3 万字符嵌套技能均干净渲染。
+  过程记录：候选池"原文"链接仅在 owner-slug 恰为两段时可无歧义还原，其余不造假链接（item 9 跟踪）。
+- [x] item 4 统计页 + 收藏页：区域总量/精选分类分布/候选池来源 Top20；收藏 localStorage 持久化。
+  验证：pnpm build 全绿。
+- [x] item 5 BUG 批次：BUG-001~005 全部修复，明细与根因见 BUGS.md（内容回退 / 块标量 / frontmatter 残留 / 排版浆糊 / 递归漏收）。
+  过程记录：BUG-001 有双重根因——除 %2F 外，用户旧 dev 进程占用 5173 导致浏览器长期打到旧代码；public/ 新增文件需重启 dev 或重扫才可见。
+- [x] item 6 技能线收拢：console 删除 /skill-manager（后端读已失效的 .ai 旧配置，实测 ENOENT）与 /skills（过期快照），本仓库成为技能浏览唯一 SSOT。
+  验证：console pnpm typecheck 全绿；test 304/305（唯一失败 governance git 端点为预存问题，GOVERNANCE_ROOT 落在非 git 仓库，stash 定性）；style:check 0 违例。console 侧改动未提交。
+  过程记录：console 的 sync-skills.mjs 栈式递归、数量/空描述护栏、-- 作者约定三处反向借鉴入本仓库；apps/blog/src/lib/frontmatter.ts 因 articles.ts 共用而保留。
+
+- [x] item 2/3 样式精修批次：暗色随系统（首帧前挂 .dark，无闪烁）、hljs 按需注册 10 语言（chunk 警告消失）、代码块常深色（两主题协调，无语言块兜底底色）、卡片元信息上置 + h2 语义层级、chips focus-visible/aria-pressed、筛选状态进 URL（deep-link 可分享）、跳转主内容链接、reduced-motion 守卫、color-scheme/theme-color、文本排版 text-wrap balance/pretty。
+  验证：pnpm typecheck + build 全绿且无 chunk 警告；浏览器实测 URL 同步（?q=resume&zones=curated,pool）、详情 3 万字符渲染、事实卡 4 条、深色代码块。
+  验收：web-design-guidelines 规则清单逐条过，审查发现 4 项（URL 状态缺失/标题跳级/color-scheme 缺失/错误无 role）全部当场修复，终版仅剩 1 项 dl 语义修正一并完成。
+- [x] item 0 扩展：SSOT 分家——.ai 瘦身为纯技能合集（README + categories + skills.manifest.json），工具链与文档迁入本仓库。
+  迁移：.ai/scripts/*（7 个管线脚本）→ scripts/；.ai/docs/ → docs/；.ai/logs/ → logs/；收录台账 → docs/skills-batch-2026-09-25.json。
+  路径修补：update-skills.js 拆分 EXPLORER_HOME（日志/姊妹脚本，随项目根）与 AI_HOME（~/.ai，技能 SSOT）；sk-* 系脚本本就以 homedir 解析 .ai，零改动。
+  验证：7 脚本 node --check 全过；sk-doctor 从新家运行正常（27 全局/警告 0/基线 49）；pnpm build 全绿。计划任务 UpdateAgentSkills 未注册过，无需重挂。
+  文档：.ai/README.md 重写为纯合集说明 + 指向本仓库；manifest 台账引用改指 docs/skills-batch-2026-09-25.json；本 README 从 Vite 模板重写为项目文档。
+  过程记录：home 仓库将出现 .ai 迁出文件的删除记录（待用户提交）；bash 双引号内的反引号会被命令 substitution 吞掉，写含反引号的替换脚本须用引号 heredoc 落盘再执行。

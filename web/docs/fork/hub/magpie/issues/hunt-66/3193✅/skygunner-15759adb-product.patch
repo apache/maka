@@ -1,0 +1,88 @@
+diff --git a/docs/subsystems/gui-shell.md b/docs/subsystems/gui-shell.md
+index 9c2187ba..726bde69 100644
+--- a/docs/subsystems/gui-shell.md
++++ b/docs/subsystems/gui-shell.md
+@@ -104,6 +104,11 @@ Redrawing the cards preserves their refresh controls and any running turn.
+ The reply updates the reading immediately; the icon then finishes its
+ current full turn before stopping (no rotation under reduced motion).
+ 
++A custom balance part with a percent follows the same Left/Used display in
++the Usage page and tray panel: Left complements the reported used share in
++both the figure and meter, while the warning colour still reflects usage.
++Money and count balances keep the reported figure (`balance-quota-left.test.cjs`).
++
+ ### Streamed output speed
+ 
+ Usage rows and aggregates use `Record.Decode` and `DecodeOf` in
+diff --git a/internal/gui/assets/app.js b/internal/gui/assets/app.js
+index 67b74ec4..b23a20c3 100644
+--- a/internal/gui/assets/app.js
++++ b/internal/gui/assets/app.js
+@@ -17075,14 +17075,14 @@ function panelBalances(bals) {
+     const parts = balanceShown(q) || [{ text: q.balance }];
+     for (const [i, p] of parts.entries()) {
+       let amount;
+-      if (!i && !p.label) card.append(amount = el("b", "pq-amt", p.text));
++      if (!i && !p.label) card.append(amount = el("b", "pq-amt", balanceText(p)));
+       else if (!i) {
+         amount = el("span", "pq-lead");
+-        amount.append(el("b", "pq-amt", p.text), el("span", "", p.label));
++        amount.append(el("b", "pq-amt", balanceText(p)), el("span", "", p.label));
+         card.append(amount);
+       } else {
+         amount = el("span", "pq-sub pq-bp");
+-        amount.append(el("span", "", p.label || ""), el("b", "", p.text));
++        amount.append(el("span", "", p.label || ""), el("b", "", balanceText(p)));
+         card.append(amount);
+       }
+       // an amount the reply hadn't, "—": why, on hover (#1993)
+@@ -17890,7 +17890,7 @@ function balanceRow(sub, why, when = true) {
+   if (!parts?.length) b.append(el("span", "", t("Balance")), el("b", "", sub.balance));
+   for (const [i, p] of (parts || []).entries()) {
+     const row = el("div", "bal-part" + (i ? "" : " lead"));
+-    row.append(el("span", "", p.label || (i ? "" : t("Balance"))), el("b", "", p.text));
++    row.append(el("span", "", p.label || (i ? "" : t("Balance"))), el("b", "", balanceText(p)));
+     // an amount the reply hadn't, "—": why, on hover (#1993)
+     if (p.error) row.title = p.error;
+     if (p.percent != null) row.append(balanceMeter(p.percent));
+@@ -17911,16 +17911,20 @@ function balanceShown(q) {
+   return [{ text: q.balance }, ...q.balanceSplit.map((p) => ({ ...p, label: t(p.label) }))];
+ }
+ 
+-// balanceMeter: a balance field's percent, as a meter.
++// Warn by usage even when the bar shows what is left.
+ function balanceMeter(percent) {
+-  const share = Math.max(0, Math.min(100, percent));
+-  const track = el("div", "quota-track" + (share >= 90 ? " full" : ""));
++  const used = Math.max(0, Math.min(100, percent));
++  const track = el("div", "quota-track" + (used >= 90 ? " full" : ""));
+   const fill = el("i");
+-  fill.style.width = share + "%";
++  fill.style.width = (quotaLeft ? 100 - used : used) + "%";
+   track.append(fill);
+   return track;
+ }
+ 
++function balanceText(p) {
++  return p.percent == null || !quotaLeft ? p.text : quotaText({ used: p.percent });
++}
++
+ // readWhen: when a card's figures were read, quietly under them: "As of
+ // …" for one standing in for a reading that failed just now, else how
+ // long ago, kept current. On the Usage page (refresh) the card's own
+diff --git a/internal/gui/core_budget_test.go b/internal/gui/core_budget_test.go
+index 307abed6..1e9d3013 100644
+--- a/internal/gui/core_budget_test.go
++++ b/internal/gui/core_budget_test.go
+@@ -14,8 +14,10 @@ import (
+ // lowers these to what is left, with about 1.5% room for the core's own work,
+ // so a page can't quietly grow back into the core; a change that needs more
+ // raises them and says why in its commit.
++// #3193 adds a shared Left/Used balance renderer for the tray and Usage;
++// after reusing quotaText, app.js needs 57 bytes beyond its previous limit.
+ const (
+-	appScriptBudget  = 1_335_000 // app.js: 1,198,239 after Usage left (P2); 1,218,098 with the 10-15 fixes to pages still in the core; 1,232,466 with the provider editor's Advanced fold and every dialog holding its place, the core's own (10-16); 1,250,533 with the quota refresh kept through redraws, the core's own since the tray panel draws it too, plus 1.5% (#2397); 1,269,083 with Free first's option in the provider editor's ROUTINGS, which the Routing page reads too, plus 1.5%; 1,272,726 with the Providers page drawing its last list at once (#1519), the core's page, and the Routing trace's account names read without Object.entries (#1481), plus 1.5%; a dialog growing out of the row that opened it and folding back into it, the core's own since every page's dialogs open through it (10-20); Codex's and Claude Code's own settings moved from Settings into the agent's row on the Agents page, the core's own since the tray panel and the window both draw them (10-20); 1,314,432 with Settings › Privacy's record of what was masked (its summary, the records view and the local model's controls), which belongs to Settings, the core's own, plus 1.5%
++	appScriptBudget  = 1_335_100 // app.js: 1,198,239 after Usage left (P2); 1,218,098 with the 10-15 fixes to pages still in the core; 1,232,466 with the provider editor's Advanced fold and every dialog holding its place, the core's own (10-16); 1,250,533 with the quota refresh kept through redraws, the core's own since the tray panel draws it too, plus 1.5% (#2397); 1,269,083 with Free first's option in the provider editor's ROUTINGS, which the Routing page reads too, plus 1.5%; 1,272,726 with the Providers page drawing its last list at once (#1519), the core's page, and the Routing trace's account names read without Object.entries (#1481), plus 1.5%; a dialog growing out of the row that opened it and folding back into it, the core's own since every page's dialogs open through it (10-20); Codex's and Claude Code's own settings moved from Settings into the agent's row on the Agents page, the core's own since the tray panel and the window both draw them (10-20); 1,314,432 with Settings › Privacy's record of what was masked (its summary, the records view and the local model's controls), which belongs to Settings, the core's own, plus 1.5%
+ 	coreScriptBudget = 1_528_800 // every core script: 1,358,034 after Usage left; 1,380,003 with them; 1,405,937 with the fold; 1,426,102 with 10-16's core work (the GitHub list loading, the move to plugins, Settings › Long conversations), plus 1.5% (#2612); 1,447,368 with loadBack, the window's one state read per return, which every page needs and so is the core's own (1,446,845 before it, 155 bytes under), plus 1.5%; OpenCode Zen's card saying OpenCode tells no key its balance adds ~390 bytes inside it; 1,472,589 with the dialog that grows out of its row and the agents' own settings in their rows, on main's 10-20 core work (the Providers page's last list, the Routing trace's names), plus 1.5% (10-20); 1,506,192 with Settings › Privacy's record of what was masked, plus 1.5%
+ )
+ 

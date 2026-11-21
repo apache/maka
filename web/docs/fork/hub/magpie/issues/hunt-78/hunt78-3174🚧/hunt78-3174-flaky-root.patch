@@ -1,0 +1,98 @@
+From 49b93b697f9292fd601b61a4ad90b7c93b7789a0 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Sat, 24 Oct 2026 20:16:48 +0800
+Subject: [PATCH] provider: a Claude fixture's sign-in serves what it wrote,
+ not a miss a straggler read of the empty home cached (#3174)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+TestClaudeAccountServesModelsListedSinceItsFetch went red in loaded full
+runs and green alone, again (claude_models_test.go:52, find(All(),
+"claude") found no Account), and no fix is in: the drop-here patch from
+October 21 lives only in forks — main's claudeSignIn still writes without
+touching the credential cache.
+
+What changed: claudeSignIn now calls forgetClaudeCredential after it
+writes the login, and a deterministic regression pins the mechanism.
+claudeHome forgets the one global credential cache, then the fixture
+writes the sign-in — and in that window any straggler reader of
+claudeCredential sees the home still empty and caches ok=false. The cache
+is one slot served by age alone (claudeCacheTTL, 10s), so the test's own
+first read is answered by that miss: claudeAccount falls to
+claudeStandInAccount, the fresh home holds no saved login, no provider is
+made, and find returns false. An instrumented run (every cache store's
+stack on file) caught the stragglers in the act: the letting-go goroutine
+of `claude auth login` (startClaudeSignIn) stored an ok=false during the
+logout/models stretch of a green run, and ImportLogins' background read
+and a provider TestModels goroutine store the same way from their tests.
+Under load the window (temp dir, env, the write) widens and those
+goroutines' wakeups drift into it — the issue's load ~300, 649s reds; a
+fast machine runs the window closed and stays green, as the green-alone
+-count=10 says. The forget after the write drops whatever a straggler
+cached in the window, and a reader after it sees the credential that is
+there: airtight regardless of who straggles. Every Claude Code sign-in in
+the package goes through this helper, so one change covers them all; the
+hand-written credential file (TestClaudeUsageUnavailableAfterAccountSwitch)
+already forgets the cache itself. No product code changed.
+
+Run: TestClaudeSignInServesWhatItWrote red on the base (account_test.go:
+"the fixture's sign-in read as the cached miss"), green with the drop
+-count=10 beside the victim and its sibling; go test -tags nogui
+./internal/provider/ -count=1 ok; go test -tags nogui ./internal/cli/ ok;
+gofmt -l clean; go vet ./... darwin, GOOS=linux vet -tags nogui and
+GOOS=windows vet clean; go build ./... darwin/arm64, linux/amd64 -tags
+nogui, windows/amd64 ok.
+
+Fixes #3174
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/provider/account_test.go | 28 ++++++++++++++++++++++++++++
+ 1 file changed, 28 insertions(+)
+
+diff --git a/internal/provider/account_test.go b/internal/provider/account_test.go
+index af677c91..32578ad3 100644
+--- a/internal/provider/account_test.go
++++ b/internal/provider/account_test.go
+@@ -261,9 +261,37 @@ func claudeSignIn(t *testing.T, home string, expiry time.Time) string {
+ 		// what magpie must not clobber when it writes a refreshed token back
+ 		"mcpOAuth": map[string]any{"plugin:slack:slack|x": map[string]any{"serverName": "Slack"}},
+ 	})
++	// A run let go by an earlier test that reads the home in the window
++	// between claudeHome's forget and this write — a sign-in's letting-go,
++	// an import's background read, a provider probe — caches that there is
++	// none, and the miss is served for the cache's TTL: the account went
++	// unlisted mid-package, under load only (#3174). What this test wrote
++	// is what a read serves.
++	forgetClaudeCredential()
+ 	return path
+ }
+ 
++// A read of the fixture's home while it is still empty — a run let go by an
++// earlier test makes one: a sign-in's letting-go (claudeLogins), an import's
++// background read, a provider probe — caches that there is no credential,
++// and the cache is one global slot served by age alone. What claudeSignIn
++// wrote must be what a read serves after it, whatever landed in the cache
++// meanwhile: served the miss, the account goes unlisted mid-package, under
++// load only (#3174).
++func TestClaudeSignInServesWhatItWrote(t *testing.T) {
++	home := claudeHome(t)
++	if _, _, ok := claudeCredential(); ok {
++		t.Fatal("the empty home read as signed in")
++	}
++	claudeSignIn(t, home, time.Now().Add(time.Hour))
++	if _, _, ok := claudeCredential(); !ok {
++		t.Fatal("the fixture's sign-in read as the cached miss")
++	}
++	if p, ok := find(All(), "claude"); !ok || p.Account == nil {
++		t.Fatalf("claude: %+v %v", p, ok)
++	}
++}
++
+ // claudeHome sets up a temp home with the usual env; the caller adds credentials.
+ func claudeHome(t *testing.T) string {
+ 	t.Helper()
+-- 
+2.50.1 (Apple Git-155)
+

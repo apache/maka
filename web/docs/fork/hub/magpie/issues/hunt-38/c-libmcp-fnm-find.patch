@@ -1,0 +1,522 @@
+From ca89fd36db14a47bb85df53c3d33cef4d078f5bc Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Sat, 17 Oct 2026 20:22:28 +0800
+Subject: [PATCH] library: the MCP check starts a bare command a version
+ manager has (#2685)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+What changed
+- The Library's health check started a stdio server with the command as
+  typed, and exec finds a bare name on the PATH the process carries. A
+  magpie started from a shortcut doesn't have a version manager's Node
+  on it, so a server a terminal runs through fnm — npx -y pkg — failed
+  the check as "notfound" while the agents ran it fine: they look their
+  own CLIs up through proc.FindTool, PATH first, then the folders a
+  user's tools are installed in (#839, #1482). The check now looks a
+  bare command up the same way before starting it; a command with a
+  path in it, absolute or relative, still starts as typed, resolved
+  where the command runs.
+- fnm's folders were missing from that lookup on Windows: UserBinDirs
+  had npm, bun, Volta, pnpm and mise, and fnm's folders were computed
+  in a //go:build !windows file. The version enumeration and fnm's
+  layout move into a shared nodever.go that takes where a version's
+  programs sit — installation/bin, or on Windows the installation
+  itself, npx.cmd with no bin folder — and UserBinDirs now walks
+  FNM_DIR's folder, else %APPDATA%\fnm, the default alias ahead of the
+  versions by number.
+
+Run
+- TestCheckStdioVersionManagerNode (internal/library): a fake MCP
+  server copied to ~/.local/share/fnm/node-versions/v22.12.0/
+  installation/bin/npx, PATH without it. Red on 717b69f7 — notfound,
+  the report's 找不到 npx — green after; -race -count=3 green.
+  Ablation: mcp_check.go restored to 717b69f7 with the test kept, red
+  again; fix back, green.
+- TestFnmBinsShapes (internal/proc) takes fnmBins through both shapes'
+  layout on this machine, default alias hoisted; the nvm and fnm
+  ordering tests stay green after the move. TestUserBinDirsFnm
+  (//go:build windows: %APPDATA%\fnm's versions highest first, FNM_DIR's
+  ahead of them, FindTool("npx") = v22's npx.cmd) compiles here
+  (GOOS=windows go vet and go test -c) and was not run on Windows.
+- gofmt -l clean; go vet ./..., GOOS=linux go vet -tags nogui ./... and
+  GOOS=windows go vet ./... clean; go build, GOOS=linux go build -tags
+  nogui and GOOS=windows go build; go test -tags nogui ./... green
+  except internal/gui's TestProxyCheckSaysAProxyPassedBy, red on
+  unmodified main too (a fake proxy answers 502 saying it was never
+  asked; not this change's).
+- Not verified: a real Windows desktop.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/library/mcp_check.go      | 14 ++++-
+ internal/library/mcp_check_test.go | 47 ++++++++++++++
+ internal/proc/fnm_test.go          | 42 +++++++++++++
+ internal/proc/nodever.go           | 99 ++++++++++++++++++++++++++++++
+ internal/proc/nodever_other.go     | 80 ------------------------
+ internal/proc/path_other.go        |  2 +-
+ internal/proc/path_windows.go      | 15 ++++-
+ internal/proc/proc_windows_test.go | 49 +++++++++++++++
+ 8 files changed, 265 insertions(+), 83 deletions(-)
+ create mode 100644 internal/proc/fnm_test.go
+ create mode 100644 internal/proc/nodever.go
+
+diff --git a/internal/library/mcp_check.go b/internal/library/mcp_check.go
+index 3f2a3edc..d156d1e1 100644
+--- a/internal/library/mcp_check.go
++++ b/internal/library/mcp_check.go
+@@ -13,6 +13,7 @@ import (
+ 	"net/url"
+ 	"os"
+ 	"os/exec"
++	"path/filepath"
+ 	"runtime"
+ 	"strings"
+ 	"sync"
+@@ -430,7 +431,18 @@ func checkStdio(ctx context.Context, s *Server) ServerHealth {
+ 	if len(unset) > 0 {
+ 		return failed("novar", strings.Join(unset, ", "))
+ 	}
+-	cmd := proc.Command(s.Command, s.Args...)
++	// a bare name, as the agents look their own CLIs up: the PATH a magpie
++	// started from a shortcut carries doesn't reach a version manager's
++	// Node, and a server a terminal runs through fnm or nvm died here as
++	// "notfound" (#2685). A path — absolute or with a separator — starts as
++	// it is, resolved where the command runs (home), not where magpie does.
++	name := s.Command
++	if name == filepath.Base(name) {
++		if p := proc.FindTool(name); p != "" {
++			name = p
++		}
++	}
++	cmd := proc.Command(name, s.Args...)
+ 	// Agents start MCP servers from a project or home directory. A magpie
+ 	// launched from a shortcut (Windows Start menu) often has C:\Windows\system32
+ 	// as its own cwd, which is not writable; inherit that and a server that
+diff --git a/internal/library/mcp_check_test.go b/internal/library/mcp_check_test.go
+index a7aca615..ce315b4e 100644
+--- a/internal/library/mcp_check_test.go
++++ b/internal/library/mcp_check_test.go
+@@ -274,6 +274,53 @@ func mcpHandler(t *testing.T, sse bool, seen *http.Header) http.HandlerFunc {
+ 	}
+ }
+ 
++// A bare command only a version manager has — npx from fnm's Node, which a
++// terminal reaches but the PATH a started magpie carries doesn't — is found
++// and started all the same, the way the agents find their own CLIs there
++// (#2685: the Library's check failed such a server with 找不到 npx).
++func TestCheckStdioVersionManagerNode(t *testing.T) {
++	home := t.TempDir()
++	t.Setenv("HOME", home)
++	t.Setenv("USERPROFILE", home)
++	t.Setenv("FNM_DIR", "")
++	if runtime.GOOS == "windows" {
++		t.Setenv("PATH", `C:\Windows\system32`)
++	} else {
++		t.Setenv("PATH", "/usr/bin:/bin")
++	}
++	self, err := os.Executable()
++	if err != nil {
++		t.Fatal(err)
++	}
++	bin := filepath.Join(home, ".local", "share", "fnm", "node-versions", "v22.12.0", "installation", "bin")
++	if err := os.MkdirAll(bin, 0o755); err != nil {
++		t.Fatal(err)
++	}
++	name := "npx"
++	if runtime.GOOS == "windows" {
++		name += ".exe"
++	}
++	b, err := os.ReadFile(self)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if err := os.WriteFile(filepath.Join(bin, name), b, 0o755); err != nil {
++		t.Fatal(err)
++	}
++	initFile := filepath.Join(t.TempDir(), "init")
++	h := CheckServer(context.Background(), &Server{
++		Name: "fake", Transport: "stdio", Command: "npx",
++		Args: []string{"-test.run=^TestFakeMCPServer$"},
++		Env:  map[string]string{fakeMode: "ok", "MAGPIE_FAKE_MCP_INIT": initFile},
++	})
++	if h.State != "ok" || h.Tools != 3 {
++		t.Fatalf("got %+v, want ok with 3 tools: the server a terminal runs through fnm must start", h)
++	}
++	if b, _ := os.ReadFile(initFile); string(b) != "yes" {
++		t.Error("notifications/initialized wasn't sent before tools/list")
++	}
++}
++
+ func TestCheckHTTP(t *testing.T) {
+ 	for _, sse := range []bool{false, true} {
+ 		t.Run(fmt.Sprintf("ok sse=%v", sse), func(t *testing.T) {
+diff --git a/internal/proc/fnm_test.go b/internal/proc/fnm_test.go
+new file mode 100644
+index 00000000..0682d1b2
+--- /dev/null
++++ b/internal/proc/fnm_test.go
+@@ -0,0 +1,42 @@
++package proc
++
++import (
++	"os"
++	"path/filepath"
++	"slices"
++	"testing"
++)
++
++// fnmBins takes the platform's shape: the bin folder of each installation,
++// or on Windows the installation itself, with the default alias (a link to
++// the installation) hoisted ahead of the versions by number.
++func TestFnmBinsShapes(t *testing.T) {
++	for _, c := range []struct {
++		name                 string
++		versionBin, aliasBin string
++	}{
++		{"the bin folder of each installation", filepath.Join("installation", "bin"), "bin"},
++		{"the installation folder itself, as Windows has it", "installation", ""},
++	} {
++		t.Run(c.name, func(t *testing.T) {
++			fnm := t.TempDir()
++			root := filepath.Join(fnm, "node-versions")
++			bin := func(v string) string { return filepath.Join(root, v, c.versionBin) }
++			for _, v := range []string{"v9.11.2", "v20.18.0", "v22.12.0"} {
++				if err := os.MkdirAll(bin(v), 0o755); err != nil {
++					t.Fatal(err)
++				}
++			}
++			if err := os.MkdirAll(filepath.Join(fnm, "aliases"), 0o755); err != nil {
++				t.Fatal(err)
++			}
++			if err := os.Symlink(filepath.Join(root, "v20.18.0", "installation"), filepath.Join(fnm, "aliases", "default")); err != nil {
++				t.Skipf("the default alias is a link here: %v", err)
++			}
++			want := []string{bin("v20.18.0"), bin("v22.12.0"), bin("v9.11.2")}
++			if got := fnmBins(fnm, c.versionBin, c.aliasBin); !slices.Equal(got, want) {
++				t.Fatalf("got  %q\nwant %q", got, want)
++			}
++		})
++	}
++}
+diff --git a/internal/proc/nodever.go b/internal/proc/nodever.go
+new file mode 100644
+index 00000000..2e89304f
+--- /dev/null
++++ b/internal/proc/nodever.go
+@@ -0,0 +1,99 @@
++package proc
++
++import (
++	"os"
++	"path/filepath"
++	"slices"
++	"strconv"
++	"strings"
++)
++
++// The helpers here are every platform's: a version manager keeps one folder
++// per Node version and a terminal runs the highest, or the version its
++// default alias names, so the folders are taken in that order. What a
++// platform differs in is where in a version's folder the programs sit.
++
++// nodeVersions are the names of the version folders under root that have
++// a folder bin (root/<version>/<bin>), highest version first (nodeVersionLess); a name that is
++// no version (mise's "lts", "latest") after every one that is.
++func nodeVersions(root, bin string) []string {
++	es, _ := os.ReadDir(root)
++	var names []string
++	for _, e := range es {
++		if st, err := os.Stat(filepath.Join(root, e.Name(), bin)); err == nil && st.IsDir() {
++			names = append(names, e.Name())
++		}
++	}
++	slices.SortStableFunc(names, func(a, b string) int {
++		switch {
++		case nodeVersionLess(b, a):
++			return -1
++		case nodeVersionLess(a, b):
++			return 1
++		}
++		return strings.Compare(a, b)
++	})
++	return names
++}
++
++// parseNodeVersion reads v22.12.0 (or 22.12.0, mise's, or 22, a partial
++// one) as its numbers; false for a name that isn't one.
++func parseNodeVersion(s string) ([3]int, int, bool) {
++	var v [3]int
++	parts := strings.Split(strings.TrimPrefix(s, "v"), ".")
++	if len(parts) > 3 || parts[0] == "" {
++		return v, 0, false
++	}
++	for i, p := range parts {
++		n, err := strconv.Atoi(p)
++		if err != nil || n < 0 {
++			return v, 0, false
++		}
++		v[i] = n
++	}
++	return v, len(parts), true
++}
++
++// nodeVersionLess says a is a lower version than b, by number: v9 before
++// v22. A name that is no version is lower than one that is.
++func nodeVersionLess(a, b string) bool {
++	va, _, oka := parseNodeVersion(a)
++	vb, _, okb := parseNodeVersion(b)
++	if oka != okb {
++		return okb
++	}
++	return oka && slices.Compare(va[:], vb[:]) < 0
++}
++
++// fnmBins are the bin folders of the Node versions fnm keeps in dir, the
++// default alias's (aliases/default, a link to the version's folder) first,
++// then the rest newest first. versionBin is a version's bin folder under
++// node-versions/<version> — installation/bin where the programs sit in a
++// bin folder of the installation, installation on Windows, where they sit
++// in the installation itself (npx.cmd there, no bin folder). aliasBin is
++// what joins the alias's target to the same folder: "bin" there, nothing
++// on Windows.
++func fnmBins(dir, versionBin, aliasBin string) []string {
++	root := filepath.Join(dir, "node-versions")
++	var bins []string
++	for _, n := range nodeVersions(root, versionBin) {
++		bins = append(bins, filepath.Join(root, n, versionBin))
++	}
++	if to, err := filepath.EvalSymlinks(filepath.Join(dir, "aliases", "default")); err == nil {
++		if real, err := filepath.EvalSymlinks(root); err == nil {
++			if rel, err := filepath.Rel(real, to); err == nil && !strings.HasPrefix(rel, "..") {
++				def := filepath.Join(root, rel, aliasBin)
++				if isDir(def) {
++					bins = slices.DeleteFunc(bins, func(b string) bool { return b == def })
++					bins = append([]string{def}, bins...)
++				}
++			}
++		}
++	}
++	return bins
++}
++
++func isDir(p string) bool {
++	st, err := os.Stat(p)
++	return err == nil && st.IsDir()
++}
+diff --git a/internal/proc/nodever_other.go b/internal/proc/nodever_other.go
+index 609a0715..6d2acb0f 100644
+--- a/internal/proc/nodever_other.go
++++ b/internal/proc/nodever_other.go
+@@ -49,58 +49,6 @@ func nvmBins(dir string) (bins []string, def string, system bool) {
+ 	return bins, def, system
+ }
+ 
+-// nodeVersions are the names of the version folders under root that have
+-// a folder bin (root/<version>/<bin>), highest version first (nodeVersionLess); a name that is
+-// no version (mise's "lts", "latest") after every one that is.
+-func nodeVersions(root, bin string) []string {
+-	es, _ := os.ReadDir(root)
+-	var names []string
+-	for _, e := range es {
+-		if st, err := os.Stat(filepath.Join(root, e.Name(), bin)); err == nil && st.IsDir() {
+-			names = append(names, e.Name())
+-		}
+-	}
+-	slices.SortStableFunc(names, func(a, b string) int {
+-		switch {
+-		case nodeVersionLess(b, a):
+-			return -1
+-		case nodeVersionLess(a, b):
+-			return 1
+-		}
+-		return strings.Compare(a, b)
+-	})
+-	return names
+-}
+-
+-// parseNodeVersion reads v22.12.0 (or 22.12.0, mise's, or 22, a partial
+-// one) as its numbers; false for a name that isn't one.
+-func parseNodeVersion(s string) ([3]int, int, bool) {
+-	var v [3]int
+-	parts := strings.Split(strings.TrimPrefix(s, "v"), ".")
+-	if len(parts) > 3 || parts[0] == "" {
+-		return v, 0, false
+-	}
+-	for i, p := range parts {
+-		n, err := strconv.Atoi(p)
+-		if err != nil || n < 0 {
+-			return v, 0, false
+-		}
+-		v[i] = n
+-	}
+-	return v, len(parts), true
+-}
+-
+-// nodeVersionLess says a is a lower version than b, by number: v9 before
+-// v22. A name that is no version is lower than one that is.
+-func nodeVersionLess(a, b string) bool {
+-	va, _, oka := parseNodeVersion(a)
+-	vb, _, okb := parseNodeVersion(b)
+-	if oka != okb {
+-		return okb
+-	}
+-	return oka && slices.Compare(va[:], vb[:]) < 0
+-}
+-
+ // nvmDefault is the installed version (one of names, highest first) nvm's
+ // default alias resolves to, as nvm.sh does when a shell loads it
+ // (nvm_auto use → nvm_resolve_local_alias default): alias/default, then
+@@ -203,29 +151,6 @@ func nvmAlias(alias, name string) string {
+ 	return ""
+ }
+ 
+-// fnmBins are the bin folders of the Node versions fnm keeps in dir, the
+-// default alias's (aliases/default, a link to the version's folder) first,
+-// then the rest newest first.
+-func fnmBins(dir string) []string {
+-	root := filepath.Join(dir, "node-versions")
+-	var bins []string
+-	for _, n := range nodeVersions(root, filepath.Join("installation", "bin")) {
+-		bins = append(bins, filepath.Join(root, n, "installation", "bin"))
+-	}
+-	if to, err := filepath.EvalSymlinks(filepath.Join(dir, "aliases", "default")); err == nil {
+-		if real, err := filepath.EvalSymlinks(root); err == nil {
+-			if rel, err := filepath.Rel(real, to); err == nil && !strings.HasPrefix(rel, "..") {
+-				def := filepath.Join(root, rel, "bin")
+-				if isDir(def) {
+-					bins = slices.DeleteFunc(bins, func(b string) bool { return b == def })
+-					bins = append([]string{def}, bins...)
+-				}
+-			}
+-		}
+-	}
+-	return bins
+-}
+-
+ // nodeBins are the bin folders of a manager that keeps each version as
+ // root/<version>/bin (mise's installs), newest first.
+ func nodeBins(root string) []string {
+@@ -235,8 +160,3 @@ func nodeBins(root string) []string {
+ 	}
+ 	return bins
+ }
+-
+-func isDir(p string) bool {
+-	st, err := os.Stat(p)
+-	return err == nil && st.IsDir()
+-}
+diff --git a/internal/proc/path_other.go b/internal/proc/path_other.go
+index 81c841e3..6cc60e2a 100644
+--- a/internal/proc/path_other.go
++++ b/internal/proc/path_other.go
+@@ -161,7 +161,7 @@ func userDirs(everyNode bool) []string {
+ 			fnm = append([]string{d}, fnm...)
+ 		}
+ 		for _, d := range slices.Compact(fnm) {
+-			known = append(known, fnmBins(d)...)
++			known = append(known, fnmBins(d, filepath.Join("installation", "bin"), "bin")...)
+ 		}
+ 	}
+ 	known = append(known, SystemDirs("/opt/homebrew/bin", "/usr/local/bin")...)
+diff --git a/internal/proc/path_windows.go b/internal/proc/path_windows.go
+index 6729b1a9..c939c792 100644
+--- a/internal/proc/path_windows.go
++++ b/internal/proc/path_windows.go
+@@ -3,6 +3,7 @@ package proc
+ import (
+ 	"os"
+ 	"path/filepath"
++	"slices"
+ 	"strings"
+ 
+ 	"golang.org/x/sys/windows/registry"
+@@ -16,7 +17,8 @@ func UserPath() {}
+ 
+ // UserBinDirs are the folders a user's command-line tools are installed in
+ // that exist here — npm's global one, bun's, volta's, pnpm's, mise's
+-// shims, the standalone installers' — for finding one PATH doesn't reach.
++// shims, fnm's Node, the standalone installers' — for finding one PATH
++// doesn't reach.
+ func UserBinDirs() []string {
+ 	home, _ := os.UserHomeDir()
+ 	// mise's data folder: MISE_DATA_DIR, else XDG_DATA_HOME's mise (which
+@@ -36,6 +38,17 @@ func UserBinDirs() []string {
+ 		filepath.Join(appdir.Getenv("LOCALAPPDATA"), "pnpm"),
+ 		filepath.Join(mise, "shims"),
+ 	}
++	// fnm's Node, which a terminal reaches but the PATH a started magpie
++	// carries doesn't: FNM_DIR names the folder when the profile set it,
++	// else %APPDATA%\fnm, whose aliases/default and each version's
++	// installation hold npx.cmd directly (#2685)
++	fnm := []string{filepath.Join(appdir.Getenv("APPDATA"), "fnm")}
++	if d := os.Getenv("FNM_DIR"); filepath.IsAbs(d) {
++		fnm = append([]string{d}, fnm...)
++	}
++	for _, d := range slices.Compact(fnm) {
++		known = append(known, fnmBins(d, "installation", "")...)
++	}
+ 	var have []string
+ 	for _, d := range known {
+ 		if st, err := os.Stat(d); filepath.IsAbs(d) && err == nil && st.IsDir() {
+diff --git a/internal/proc/proc_windows_test.go b/internal/proc/proc_windows_test.go
+index 61c482a6..8f56944e 100644
+--- a/internal/proc/proc_windows_test.go
++++ b/internal/proc/proc_windows_test.go
+@@ -117,3 +117,52 @@ func TestEndProbesWindows(t *testing.T) {
+ 		t.Fatal("the probe went on after EndProbes")
+ 	}
+ }
++
++// fnm's Node a terminal reaches through its PATH: %APPDATA%\fnm's versions
++// (npx.cmd sits in the installation itself), highest first, with FNM_DIR's
++// folder ahead of those when the profile set it (#2685).
++func TestUserBinDirsFnm(t *testing.T) {
++	roaming := filepath.Join(t.TempDir(), "AppData", "Roaming")
++	t.Setenv("APPDATA", roaming)
++	t.Setenv("FNM_DIR", "")
++	t.Setenv("PATH", `C:\Windows\not-a-folder`)
++	install := func(fnm, v string) string {
++		d := filepath.Join(fnm, "node-versions", v, "installation")
++		if err := os.MkdirAll(d, 0o755); err != nil {
++			t.Fatal(err)
++		}
++		if err := os.WriteFile(filepath.Join(d, "npx.cmd"), []byte("@echo off\r\n"), 0o755); err != nil {
++			t.Fatal(err)
++		}
++		return d
++	}
++	fnm := filepath.Join(roaming, "fnm")
++	install(fnm, "v9.11.2")
++	v22 := install(fnm, "v22.12.0")
++	var got []string
++	for _, d := range UserBinDirs() {
++		if strings.HasPrefix(d, fnm) {
++			got = append(got, d)
++		}
++	}
++	want := []string{v22, filepath.Join(fnm, "node-versions", "v9.11.2", "installation")}
++	if !slices.Equal(got, want) {
++		t.Fatalf("fnm's folders %q, want %q", got, want)
++	}
++	if p, want := FindTool("npx"), filepath.Join(v22, "npx.cmd"); p != want {
++		t.Fatalf("found %q, want %q", p, want)
++	}
++	moved := filepath.Join(t.TempDir(), "fnm")
++	movedV20 := install(moved, "v20.18.0")
++	t.Setenv("FNM_DIR", moved)
++	got = nil
++	for _, d := range UserBinDirs() {
++		if strings.HasPrefix(d, fnm) || strings.HasPrefix(d, moved) {
++			got = append(got, d)
++		}
++	}
++	want = []string{movedV20, v22, filepath.Join(fnm, "node-versions", "v9.11.2", "installation")}
++	if !slices.Equal(got, want) {
++		t.Fatalf("with FNM_DIR: %q, want %q", got, want)
++	}
++}
+-- 
+2.50.1 (Apple Git-155)
+

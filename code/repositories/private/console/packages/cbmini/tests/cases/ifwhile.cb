@@ -1,0 +1,22 @@
+int main(void) {
+    int i;
+    int s;
+    s = 0;
+    i = 1;
+    while (i <= 10) {
+        s = s + i;
+        i = i + 1;
+    }
+    print_int(s);
+    if (s == 55) {
+        print_int(1);
+    } else {
+        print_int(0);
+    }
+    if (s < 10) {
+        print_int(1);
+    } else {
+        print_int(2);
+    }
+    return 0;
+}

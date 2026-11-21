@@ -1,0 +1,31 @@
+fix(library): MCP writes to Claude Code's .claude.json take its save lock (#4747)
+
+What changed: the Library gave Claude Code its MCP servers by reading
+~/.claude.json (or $CLAUDE_CONFIG_DIR's) and writing it back with no
+lock held, while Claude Code saves the same file often (project state,
+tips, usage counters) under a lock of its own, <the file's real
+path>.lock: a save of its own between the Library's read and write was
+lost. The lock helpers move out of internal/provider into a small
+claudelock package (the mkdir lock Claude Code 2.1.316 takes, stale
+after 10s for this file), putClaudeLogin keeps its #4532 behavior
+through wrappers, and the Library's mcpFile.putEntry and mcpFile.del
+take <file>.lock around the .claude.json read-modify-write: they wait
+while Claude Code holds it, take over one left stale, and fail the
+server's write with nothing changed when it holds one past 20s. A WSL
+distro's copy is left as it was: the Claude Code there saves under a
+lock in the distro's own files.
+
+Run (mote, -tags nogui):
+- TestClaudeJSONMCPWaitsForClaudeCodesLock and
+  TestClaudeJSONMCPTakesAStaleLock (internal/library): red on the old
+  code (saved while Claude Code held the lock; a stale lock left
+  behind), green now.
+- go test ./internal/library ./internal/provider -tags nogui: both
+  packages green, the #4532 lock tests among them (TestClaudeSwitch…
+  refresh/legacy/config, stale takeover, held past the wait).
+- race on the lock tests of both packages; go vet on the three touched
+  packages for darwin, linux and windows; gofmt clean; go build -tags
+  nogui for darwin, linux and windows.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+

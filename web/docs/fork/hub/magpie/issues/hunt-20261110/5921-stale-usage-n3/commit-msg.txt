@@ -1,0 +1,72 @@
+1724af304661a8efb0bb97a6f77cd7e04b961d4d
+ggbdpq <ggbdpq@gmail.com>
+provider: a re-login for a Claude account gives way the allowance the sign-in before told (#5921)
+
+Claude Code's /usage is run by magpie, never Anthropic asked, and what
+it told is kept per account in claudeUsage for the Usage page's timer,
+the switch list and routing. The keeping knew no credential: a re-login
+for the account Claude Code is signed in to — a plan move on it, a Max
+5x upgrade — swapped the tokens under a kept reading, and the reading
+served on. On a headless `magpie serve` (delete-cloud) the card said
+`plan: max` — the plan is read with the credential, fresh — while its
+windows stayed at the sign-in before, `7 days: 100%`, for some 45
+minutes, though the account's real allowance was 0% on every window and
+a separate `magpie accounts` process had written a fresh reading to
+quotas.json meanwhile: the kept entry's hearing stood newer than that
+disk reading (withHeardClaude), and nothing unasked re-read — no local
+session .jsonl a gateway that only proxies would write, no qualifying
+rate_limit_event — until a hand refresh.
+
+A sign-in for an account can only change what was told of it, so now
+the keeping knows what told it:
+
+- A reading keeps the sign-in it was told by (claudeCredMark, a digest
+  of the live credential's access token), and claudeWindows, before it
+  lets the account Claude Code is on serve what is kept, drops a
+  reading told by another sign-in of the same account: the next look
+  reads again, on the new plan's allowance. A move to another account
+  takes nothing away — the reading kept is that account's own, and it
+  stands for it while Claude Code is signed in elsewhere (moved off,
+  nil_1024). Kept under the old code with no mark at all, an entry is
+  another sign-in's to the fix as well: a gateway already holding the
+  stale reading is re-read on its first look after the upgrade.
+- A sign-in magpie made itself (addLogin, and the switch that puts a
+  saved account's sign-in on Claude Code) now drops the account's kept
+  allowance with the folder's older sign-in it already gave way
+  (forgetClaudeUsage), so the card is never served the windows of the
+  plan before; what Claude Code said as it answered is stamped with the
+  sign-in that said it too.
+
+Run:
+- TestClaudeUsageOfASignInBeforeGivesWay: a kept full reading of the
+  sign-in before, a re-login under the same account (fresh tokens, the
+  tier moved), the Usage card's unasked look — red before (the 100%
+  windows served, no run), green after (read again: 5% on the new
+  sign-in, one run).
+- TestSignInDropsTheKeptAllowance: addLogin drops it — red before
+  (claudeReadAt still the hour-old reading), green after (nothing kept,
+  the next look reads).
+- Ablation: the kept-reading drop taken out made the first red again;
+  the sign-in drop taken out made the second red again; the moved-off
+  guard taken out made TestClaudeUsageOfAnotherAccountNotKept and
+  TestClaudeSeatKeepsItsOwnUsage red (a switch to another account must
+  leave the account's own reading standing) — restored, green.
+- ./internal/provider whole, and on the parent commit too: green both,
+  so nothing pre-existing hides here; the four named tests green with
+  -race. gateway's reads of the kept limits
+  (TestRefusedMidReadRestsByWindow, TestClaudeSubscriptionFailedTry*
+  and the client-cache usage tests) green.
+- Sibling scan: every reader of claudeUsage takes the drop without
+  change (withHeardClaude stops overriding the card with the old
+  hearing, KeptClaudeLimits weighs routing without it until an answer
+  tells it again, claudeReadAt nil, out-soon nothing to say); the
+  writers stamp it; StaleAllowance stays untouched — NoteClaudeLimits
+  calls it after writing a fresh hearing, and dropping there would
+  erase the fact just told. loginUsageCache (a minute), the
+  subscription cache (forgetAccountCaches) and usedCache
+  (StaleAllowance) were already in the invalidation net; Codex's usage
+  is read from the vendor each time and keeps no such per-account
+  memory.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+

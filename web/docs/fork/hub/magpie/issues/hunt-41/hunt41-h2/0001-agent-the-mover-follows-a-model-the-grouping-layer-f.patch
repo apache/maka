@@ -1,0 +1,127 @@
+From a53d0ce3bc41af58d145ebc83816c84da5f26b83 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Sun, 18 Oct 2026 02:37:36 +0800
+Subject: [PATCH] agent: the mover follows a model the grouping layer found by
+ its display name
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+A relay may list a model under its display name ("GPT-6 Sol") where
+another provider spells the same id dashed ("gpt-6-sol"). Since
+1e643ba7e sameModel folds a run of spaces into one dash, so the groups
+magpie finds hold both spellings and the gateway serves them as one
+model. The agent mover's own spelling, modelKey, kept the space: an
+agent set on relay/"GPT-6 Sol" whose provider is removed or switched
+off fell back to the agent's own default while the grouping layer says
+another provider serves the same model.
+
+modelKey now spells a run of spaces (a no-break one too) as one dash
+and trims it, as sameModel spells its own. Its other two steps are its
+own: every dot (not only one between digits) is a dash, and a snapshot
+date in either shape (20250929, 2025-06-17) comes off, as TestModelKey
+pins them. A "p" between digits (Fireworks' deepseek-v4p1) is left to
+sameModel alone, as before.
+
+TestReseatFollowsTheSameModelSpeltWithSpaces: providers relay (GPT-6
+Sol) and ds (gpt-6-sol), Claude Code on relay/GPT-6 Sol, relay removed:
+it moves to ds/gpt-6-sol. Without the change it read "claude model: \"\",
+want ds/gpt-6-sol" and the move was "relay/GPT-6 Sol → its default".
+TestModelKey pins the spellings (space, no-break space).
+
+Run:
+- go test ./internal/agent -run 'TestReseat|TestModelKey|TestSameModel'
+  -count=1: ok, all 9.
+- Red without the fix: internal/agent/reseat.go reverted to
+  upstream/main b14784c03, tests kept:
+  TestReseatFollowsTheSameModelSpeltWithSpaces and TestModelKey red;
+  restored: ok. With \p{Zs} dropped from the class, TestModelKey's
+  no-break pair is red.
+- go test ./internal/agent -count=1 -timeout 60m: ok, 206.7s.
+- go test ./internal/provider -run TestSameModel -count=1: ok.
+- gofmt -l internal/agent: clean. go vet ./internal/agent on darwin,
+  GOOS=linux and GOOS=windows -tags nogui: ok.
+- go build on darwin, GOOS=linux and GOOS=windows -tags nogui: ok.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/agent/reseat.go      | 10 +++++++++-
+ internal/agent/reseat_test.go | 33 +++++++++++++++++++++++++++++++++
+ 2 files changed, 42 insertions(+), 1 deletion(-)
+
+diff --git a/internal/agent/reseat.go b/internal/agent/reseat.go
+index e5b12125..c683c197 100644
+--- a/internal/agent/reseat.go
++++ b/internal/agent/reseat.go
+@@ -175,9 +175,17 @@ func sameModel(opts []Option, ref string) Option {
+ var dated = regexp.MustCompile(`-(\d{8}|\d{4}-\d{2}-\d{2})$`)
+ 
+ // modelKey is a model id as providers agree on it: its last part, lower
+-// case, with dots and underscores as dashes and no date.
++// case, with dots and underscores as dashes and no date. A run of spaces
++// is one dash, as provider.sameModel spells it since it merged a relay's
++// display name ("GPT-6 Sol") with its dashed id: the grouping layer says
++// the two are one model, so the mover does too.
+ func modelKey(m string) string {
+ 	m = strings.ToLower(m[strings.LastIndex(m, "/")+1:])
+ 	m = strings.NewReplacer(".", "-", "_", "-").Replace(m)
++	m = strings.Trim(modelGaps.ReplaceAllString(m, "-"), "-")
+ 	return dated.ReplaceAllString(m, "")
+ }
++
++// modelGaps is what modelKey spells as one "-": a run of spaces (a
++// no-break one too), as provider.sameModel spells its own.
++var modelGaps = regexp.MustCompile(`[\s\p{Zs}]+`)
+diff --git a/internal/agent/reseat_test.go b/internal/agent/reseat_test.go
+index f9af1e13..50b90176 100644
+--- a/internal/agent/reseat_test.go
++++ b/internal/agent/reseat_test.go
+@@ -148,12 +148,45 @@ func TestReseatDelete(t *testing.T) {
+ 	}
+ }
+ 
++// A relay may list a model under its display name ("GPT-6 Sol", Chill on
++// Discord) where another provider spells the same id dashed ("gpt-6-sol").
++// The groups magpie finds have merged the two spellings since sameModel
++// began folding a run of spaces into one dash, so a provider removed moves
++// the agent to that model on the provider still serving it, rather than to
++// the agent's own default while the grouping layer says it is the same
++// model.
++func TestReseatFollowsTheSameModelSpeltWithSpaces(t *testing.T) {
++	reseatHome(t)
++	for _, p := range []provider.Provider{
++		{ID: "relay", Name: "Relay", Chat: "https://relay.example/v1", Key: "k", Models: []string{"GPT-6 Sol"}},
++		{ID: "ds", Name: "DS", Chat: "https://ds.example/v1", Key: "k", Models: []string{"gpt-6-sol"}},
++	} {
++		if err := provider.Save(p); err != nil {
++			t.Fatal(err)
++		}
++	}
++	c := mustFind(t, "claude")
++	mustApply(t, c, "model", "relay/GPT-6 Sol")
++	moves, err := Reseat(func() error { return provider.Delete("relay") })
++	if err != nil {
++		t.Fatal(err)
++	}
++	if got := c.Field("model").Get(); got != "ds/gpt-6-sol" {
++		t.Errorf("claude model: %q, want ds/gpt-6-sol", got)
++	}
++	if len(moves) != 1 || moves[0].From != "relay/GPT-6 Sol" || moves[0].To != "ds/gpt-6-sol" {
++		t.Errorf("moves: %+v", moves)
++	}
++}
++
+ func TestModelKey(t *testing.T) {
+ 	for a, b := range map[string]string{
+ 		"claude-sonnet-4.5":         "claude-sonnet-4-5-20250929",
+ 		"anthropic/claude-opus-4.6": "claude-opus-4-6",
+ 		"gpt-5.1-codex":             "GPT-5.1-codex",
+ 		"gemini-2.5-pro-2025-06-17": "gemini-2.5-pro",
++		"GPT-6 Sol":                 "gpt-6-sol",
++		"gpt-6\u00a0sol":            "GPT-6 Sol",
+ 	} {
+ 		if modelKey(a) != modelKey(b) {
+ 			t.Errorf("%s ≠ %s", a, b)
+-- 
+2.50.1 (Apple Git-155)
+

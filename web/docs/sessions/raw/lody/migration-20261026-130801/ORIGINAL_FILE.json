@@ -1,0 +1,41 @@
+{
+  "state": "source_present",
+  "groups": [
+    {
+      "name": "logs",
+      "source": "C:\\Users\\802165\\.lody\\logs",
+      "pattern": "**/*",
+      "remove_root": true,
+      "category": "archive",
+      "archive": "E:\\cc\\guahub\\sessions\\raw\\lody\\migration-20261026-130801\\logs.zip",
+      "files": [
+        {
+          "path": ".0e9eb7b3402d00742c01e42cfb079d8ce71be5c4-audit.json",
+          "size": 438,
+          "mtime_ns": 1792732663710742700,
+          "sha256": "b514df09ac0f16c62b3ca37363d62cc4de93a4c34b2f9d6c20ba98f9d8a09cff"
+        },
+        {
+          "path": ".c84870bd6094d1ec365156d12bb7d68d9d98250b-audit.json",
+          "size": 429,
+          "mtime_ns": 1792732438228991900,
+          "sha256": "acce1a954ffc4da74c02e1fdf07fba1b21df579dd83b354005aa2f411d94fc9b"
+        },
+        {
+          "path": "2026-10-23.log",
+          "size": 69547,
+          "mtime_ns": 1792738227900932600,
+          "sha256": "5d1df09907a2eccf90a66009b770cffac536fd1f568b63233655e918a29bd556"
+        },
+        {
+          "path": "mcp-http-2026-10-23.log",
+          "size": 78,
+          "mtime_ns": 1792732663720716300,
+          "sha256": "b77a12db655ad3e919849d2297abe6453a61950ca1fed5f2aa7dadab55395b71"
+        }
+      ],
+      "directories": []
+    }
+  ],
+  "protected": {}
+}

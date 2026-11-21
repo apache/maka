@@ -1,0 +1,41 @@
+fix(claude): a run let go after answering a prompt suggestion leaves its session for the conversation's next turn (#4914)
+
+Claude Code asks its prompt suggestion after each turn as the
+conversation and one message more, and its run goes on with it (#1638):
+the run waits on from the suggestion's exchange, under a key the
+conversation's own next turn never comes by, since the client leaves the
+exchange out of its messages. While the run is kept, that turn finds it
+by where it stood before and takes it back to there (resume). But a run
+let go past idleMost was lost to its conversation: shelve kept its
+session where the suggestion's exchange had left it, or, when the
+conversation's own turn had already taken the run back from a suggestion
+(-p), not at all — its session was marked taken back, which the file may
+not say, and no session was kept. The next turn found no run and no
+saved session, and a new Claude Code was told the whole conversation in
+one message, a prefix the cache had never seen, written to the cache
+again (a 50k conversation: 19k read and 29k written where 49k read and
+50 written; the log said no run here had had a conversation one had).
+
+The shelf now keeps a session where the conversation's next turn comes
+by, too (savedSession.behind, run.behindKey), and unshelve takes it from
+there when no session waits at the turn's own key. A session taken back
+is kept once the run has answered a whole turn since (run.replied, set
+as a turn ends, cleared at each take-back): the file's lines since are
+that turn and what came after, and Claude Code's resume goes on from
+them. And a run's end is kept under the boundary before its own
+(run.convPrev), so the log of a turn that finds it gone says what became
+of it when its last exchange was a side question.
+
+Run: TestClaudeLetGoConversationAfterSuggestionResumesItsSession fails
+on the parent a3768cdd1 with the product file alone reverted to it,
+tests kept (the ablation: the shelf keeps no session for the
+conversation's next turn), and passes on the fixed tree with
+TestClaudeLetGoConversationResumesItsSession, whose fake now answers a
+rewind; go test -tags nogui -count=1 ./internal/gateway/ (559s, only
+the known TestCodexPoolSaysTheClientsVersion flake red); gofmt -l
+clean on both files; go vet -tags nogui on internal/gateway for
+darwin, linux and windows; go build -tags nogui ./... on all three.
+
+Fixes #4914
+
+Generated-by: GLM-5.3-Flash (ZCode)

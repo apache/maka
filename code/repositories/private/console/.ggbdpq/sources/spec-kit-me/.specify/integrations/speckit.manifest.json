@@ -1,0 +1,25 @@
+{
+  "integration": "speckit",
+  "version": "0.16.5.dev0",
+  "installed_at": "2026-08-18T02:29:48.282965+00:00",
+  "files": {
+    ".specify/scripts/python/check_prerequisites.py": "f3ef2b79a1d0dba1651a21b84e34ead4991fcbe4d07a1da29a4a8339706bf965",
+    ".specify/scripts/python/common.py": "fa8c8726ef1b805b68a21c993d5cf934b36230fe752a1734f4578629204aac93",
+    ".specify/scripts/python/create_new_feature.py": "89ecff00e1db79a15547aa6480dc37f6bce977f79cc9d8ab7174ae1086d1a64e",
+    ".specify/scripts/python/resolve_template.py": "2e80e872519609b21480e16f1b1ad7620e4469b4faf88af1ecefa8f778c768a0",
+    ".specify/scripts/python/setup_plan.py": "272d106ce8e5325dd6f4e741f6a5efd1bb0290f415b448fecc8d877d606d321b",
+    ".specify/scripts/python/setup_tasks.py": "9133333ba0971723d165d5575493404b43ec8d227e96ddbd3a9f63ad2cf174fe",
+    ".specify/scripts/powershell/check-prerequisites.ps1": "38b118235fba10f1ec84691a488980e4716b46b665e75f01790edd985c2f4934",
+    ".specify/scripts/powershell/common.ps1": "bc6ce5456766ec7604de62cee20e34add15dd8e350e0975c3d37f238d12dfd22",
+    ".specify/scripts/powershell/create-new-feature.ps1": "c6d5e64455635bc9d19e2ec902de2f72a7f834afd8b47a1a3d6323f7ed0cbb62",
+    ".specify/scripts/powershell/resolve-template.ps1": "e49c565a09902e4ebd4b5a51c4e014d5067fdee5b1592f15cb44ef31f430d745",
+    ".specify/scripts/powershell/setup-plan.ps1": "089362994a002bb91d9b93daea2dc21676119839d700d79e7b69f4a72e623ed1",
+    ".specify/scripts/powershell/setup-tasks.ps1": "23618f493d365597cc098effd78fe58d05b5f43e599540d86ae000ddb18c88b5",
+    ".specify/templates/checklist-template.md": "70bbc48e884fab372ffb09e83e78ff983e28b69caebf8cd9964a02b6836683ac",
+    ".specify/templates/constitution-template.md": "ce7549540fa45543cca797a150201d868e64495fdff39dc38246fb17bd4024b3",
+    ".specify/templates/plan-template.md": "a828ad6206526574ab3fc99be6d0154588cb1c9774c5919d71b81ab5b2dbffa0",
+    ".specify/templates/spec-template.md": "3945437fc35cd30a5b2bf7beea680337c3516826d3efa5a6b92c4a7eca1ba28e",
+    ".specify/templates/tasks-template.md": "b0f527d41e546af0c31903e04f9b20965b6b497b573792198f663a64ce128863",
+    ".specify/.gitignore": "8c908410d177a1ef3d0dee16d7ad55f2ac3333df3104c4d4adee1c9b82f1dbc1"
+  }
+}

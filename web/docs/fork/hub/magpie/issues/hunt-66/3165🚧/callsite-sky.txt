@@ -1,0 +1,3 @@
+// a tool call the client kept no thinking for, which DeepSeek
+			// turns the whole request away for (#1462)
+			body = foldReasoningAliases(withReasoningOnToolTurns(body))

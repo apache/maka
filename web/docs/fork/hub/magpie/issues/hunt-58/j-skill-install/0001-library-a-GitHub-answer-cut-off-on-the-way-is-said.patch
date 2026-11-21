@@ -1,0 +1,148 @@
+From f0d77936212645940a5fbad673a1f3b579f3f7ec Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Thu, 22 Oct 2026 00:20:22 +0800
+Subject: [PATCH] library: a GitHub answer cut off on the way is said so, not
+ read as a list that couldn't be understood (#3045)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+What changed: apiGet read the answer's body with its read error thrown
+away, so an answer whose body died on the way arrived as a truncated
+200 and was left to the parser: adding a skill from stablyai/orca
+failed with "GitHub's list of stablyai/orca's files wasn't understood:
+unexpected end of JSON input" (follow-up comment on #3045). The read
+error is kept now, as "couldn't read GitHub's answer", and a 200 with
+nothing in it is said to be empty rather than parsed ("GitHub answered
+nothing"), which also keeps an empty answer out of the ETag cache.
+latestRTK, the one sibling of the same shape, keeps its read error too.
+
+Run: TestAPIGetShortAnswer and TestLatestRTKCutAnswer fail without the
+change — the first with "a cut-short answer wasn't noticed" and "an
+empty answer wasn't noticed", the second with the very "unexpected end
+of JSON input" — and pass with it; gofmt -l clean; go vet ./...,
+GOOS=linux go vet -tags nogui ./..., GOOS=windows go vet ./... pass;
+go build ./..., GOOS=linux go build -tags nogui ./...,
+GOOS=windows go build ./... pass; the whole internal/library package
+passes (go test -tags nogui -count=1 ./internal/library/, 66.5s, temp
+HOME with Go's caches pinned); the two new tests pass -race -count=3.
+The whole-repo suite was not run; only internal/library changed.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/library/rtk_upgrade.go      |  5 ++++-
+ internal/library/rtk_upgrade_test.go | 21 +++++++++++++++++++++
+ internal/library/skillcheck.go       |  8 +++++++-
+ internal/library/skillcheck_test.go  | 26 ++++++++++++++++++++++++++
+ 4 files changed, 58 insertions(+), 2 deletions(-)
+
+diff --git a/internal/library/rtk_upgrade.go b/internal/library/rtk_upgrade.go
+index 6a894d7d..7f03f338 100644
+--- a/internal/library/rtk_upgrade.go
++++ b/internal/library/rtk_upgrade.go
+@@ -296,7 +296,10 @@ func latestRTK() (string, error) {
+ 	var r struct {
+ 		Tag string `json:"tag_name"`
+ 	}
+-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
++	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
++	if err != nil {
++		return "", fmt.Errorf("couldn't read GitHub's answer: %w", err)
++	}
+ 	if err := json.Unmarshal(body, &r); err != nil {
+ 		return "", err
+ 	}
+diff --git a/internal/library/rtk_upgrade_test.go b/internal/library/rtk_upgrade_test.go
+index c445359a..d04425f7 100644
+--- a/internal/library/rtk_upgrade_test.go
++++ b/internal/library/rtk_upgrade_test.go
+@@ -57,6 +57,27 @@ func asJSON(t *testing.T, v *RTKView) map[string]any {
+ 	return m
+ }
+ 
++// An answer cut off on the way is said so, not shown as a version that
++// couldn't be read (#3045).
++func TestLatestRTKCutAnswer(t *testing.T) {
++	sandbox(t)
++	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		w.Header().Set("Content-Length", "1000")
++		w.Write([]byte(`{"tag_name": "v0.`))
++		w.(http.Flusher).Flush() // the answer's head arrives, its body doesn't
++		panic(http.ErrAbortHandler)
++	}))
++	defer srv.Close()
++	old, oldAPI := rtkReleases, rtkReleasesAPI
++	rtkReleases, rtkReleasesAPI = srv.URL+"/latest", srv.URL
++	t.Cleanup(func() { rtkReleases, rtkReleasesAPI = old, oldAPI })
++	if _, err := latestRTK(); err == nil {
++		t.Error("a cut-short answer wasn't noticed")
++	} else if !strings.Contains(err.Error(), "couldn't read GitHub's answer") {
++		t.Errorf("said: %v", err)
++	}
++}
++
+ // Homebrew's rtk is upgraded with brew; the days it saved come with the
+ // summary, oldest first; the latest release is read from where GitHub
+ // redirects to.
+diff --git a/internal/library/skillcheck.go b/internal/library/skillcheck.go
+index d0e25d6b..365c1da7 100644
+--- a/internal/library/skillcheck.go
++++ b/internal/library/skillcheck.go
+@@ -174,13 +174,19 @@ func apiGet(u string) ([]byte, int, bool, error) {
+ 		return nil, 0, token, fmt.Errorf("couldn't reach GitHub: %w", err)
+ 	}
+ 	defer resp.Body.Close()
+-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
++	body, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
++	if err != nil {
++		return nil, resp.StatusCode, token, fmt.Errorf("couldn't read GitHub's answer: %w", err)
++	}
+ 	if e, ok := limitedBy(resp, body, token); ok {
+ 		return nil, resp.StatusCode, token, e
+ 	}
+ 	if resp.StatusCode == 304 && cached {
+ 		return had.body, 200, token, nil
+ 	}
++	if resp.StatusCode == 200 && len(body) == 0 {
++		return nil, resp.StatusCode, token, fmt.Errorf("GitHub answered nothing")
++	}
+ 	if et := resp.Header.Get("ETag"); resp.StatusCode == 200 && et != "" {
+ 		etags.Lock()
+ 		etags.m[u] = etagged{etag: et, body: body}
+diff --git a/internal/library/skillcheck_test.go b/internal/library/skillcheck_test.go
+index 2aa05a8d..c35cdb3a 100644
+--- a/internal/library/skillcheck_test.go
++++ b/internal/library/skillcheck_test.go
+@@ -182,3 +182,29 @@ func check(t *testing.T) map[string]SkillCheck {
+ 	}
+ 	return m
+ }
++
++// A GitHub answer cut off on the way, or an empty one, is said so, not
++// read as a list that couldn't be understood (#3045).
++func TestAPIGetShortAnswer(t *testing.T) {
++	sandbox(t)
++	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		w.Header().Set("Content-Length", "1000")
++		w.Write([]byte(`{"tree": [`))
++		w.(http.Flusher).Flush() // the answer's head arrives, its body doesn't
++		panic(http.ErrAbortHandler)
++	}))
++	defer srv.Close()
++	if _, _, _, err := apiGet(srv.URL); err == nil {
++		t.Error("a cut-short answer wasn't noticed")
++	} else if !strings.Contains(err.Error(), "couldn't read GitHub's answer") {
++		t.Errorf("said: %v", err)
++	}
++
++	empty := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
++	defer empty.Close()
++	if _, _, _, err := apiGet(empty.URL); err == nil {
++		t.Error("an empty answer wasn't noticed")
++	} else if !strings.Contains(err.Error(), "GitHub answered nothing") {
++		t.Errorf("said: %v", err)
++	}
++}
+-- 
+2.50.1 (Apple Git-155)
+

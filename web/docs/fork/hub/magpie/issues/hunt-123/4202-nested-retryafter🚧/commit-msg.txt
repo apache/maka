@@ -1,0 +1,16 @@
+gateway: tests: a remote magpie's 429 out of quota is asked again too, not replayed (XIQI)
+
+TestRemoteMagpieQuotaIsAskedNotReplayed (c37b8b659) pins the fix with a
+402 out of a Coding Plan; the face XIQI reports (#4202) is the 429 half
+of the same rest: a remote magpie's group member refused with a 429 that
+names a session limit, this magpie rests the remote's model for as long
+as the Retry-After passed on says (an hour, longestWait), and gives the
+429 again on every request until then — the official quota having come
+back long before. Rest.there marks a remote magpie's model rest whatever
+the status (remoteModelRest reads failQuota for a 429 that says a plan
+is used up), and quotaHeld passes it by, so the test only pins the 429
+form: red with the marking lifted (the replay is the reporter's word
+for word, "(out of its allowance: not asked again before …)"), green as
+it stands.
+
+Generated-by: GLM-5.3-Flash (ZCode)

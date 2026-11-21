@@ -1,0 +1,14 @@
+{
+  "name": "redux-devtools-dsv4",
+  "version": "3.2.10",
+  "description": "Redux DevTools — Chrome extension reverse engineering (dsv4)",
+  "license": "UNLICENSED",
+  "scripts": {
+    "build": "tsc",
+    "check": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0",
+    "@types/chrome": "^0.0.268"
+  }
+}

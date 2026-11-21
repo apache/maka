@@ -1,0 +1,169 @@
+## Verified and applied on current main (fork branch, authorship preserved)
+
+Picked up @AgentWings' fix from this issue. The original fork (`AgentWings/magpie`) has since been deleted, so the commit was recovered by SHA from this repository's object store and applied on top of current `main` (8b902e287).
+
+- Original commit: `64dfe5d98a425f54a74be55f3bcd62e2473a9e36` (single commit, `go.mod` + `go.sum` only)
+- Applied commit: ggbdpq/magpie@41fe4e356d223fc6fdb8f1f668ed9651848d3a23 (branch `fix/3208-go-xnet-bump`)
+- `git am -3` conflicted on `go.mod`/`go.sum` (main moved ~2350 commits since the original was authored); resolved by re-running `go get go@1.26.10 golang.org/x/net@v0.60.0 && go mod tidy`, exactly as the issue specifies
+- Author preserved: Shengming Liang <231182611+AgentWings@users.noreply.github.com> — all credit for the fix goes to @AgentWings
+- Patch in `git am` format below, sha256: `0ee3d99246149757`
+
+### govulncheck `-tags nogui ./...` (darwin/arm64, go1.26.10 toolchain)
+
+| Scan point | Affected | Detail |
+| --- | --- | --- |
+| before (main 8b902e287, go 1.26.8 / x/net v0.56.0) | 13 | |
+| after this patch (go 1.26.10 / x/net v0.60.0) | 2 | both postdate the issue's scan, outside this bump's scope |
+
+Closed by the bump (11):
+
+- GO-2026-6617, 6612, 6611, 6609, 6608, 6613 (net/http server), 6610, 6605 (net/http client), 6607 (crypto/tls), 6809 (crypto/x509) — the ten named in the issue
+- GO-2026-6603 (HTTP/2 trailer memory exhaustion) — published after the issue's scan; fixed by x/net v0.60.0 + go 1.26.10, also closed
+
+Still affected after the patch (2) — newer advisories, not addressed by this bump:
+
+- GO-2026-6860 (x/net/html quadratic text-node coalescing; reached via internal/gateway `html.Parse`) — fixed in x/net v0.62.0
+- GO-2026-6222 (x/image VP8L decode; reached via provider icon decode) — fixed in x/image v0.45.0
+
+Informational (imported, no vulnerable symbol called): GO-2026-5841 (klauspost/compress s2, fixed in v1.18.7) — consistent with the issue's own analysis — and GO-2026-6866 (x/net/html, fixed in v0.62.0).
+
+Suggested follow-up (not part of this patch): x/net v0.62.0 + x/image v0.45.0 would bring affected to 0.
+
+### Verification matrix (darwin/arm64)
+
+| Check | Result |
+| --- | --- |
+| `go build ./...` | pass |
+| `CGO_ENABLED=0 go build -tags nogui ./...` | pass |
+| `go vet -tags nogui ./...` | pass (pre-existing cgo enum-conversion warning in internal/gui only) |
+| `go test -tags nogui -count=1 -timeout 25m ./internal/gateway ./internal/provider ./internal/cli` | all ok (gateway 737.6s, provider 143.5s, cli 53.6s); full `./...` suite not run locally |
+
+One mechanical delta vs the original commit: on today's main, `go mod tidy` reclassifies `gen2brain/h265` and `santhosh-tekuri/jsonschema/v6` from `// indirect` to direct requires (main started importing them directly since this issue was filed).
+
+CI needs no further change: `.github/workflows/test.yml` reads `go-version-file: go.mod` (setup-go@v5), and the Dockerfile floats on `golang:1.26-alpine`.
+
+<details>
+<summary>Patch (git am format), sha256 0ee3d99246149757</summary>
+
+```
+From 41fe4e356d223fc6fdb8f1f668ed9651848d3a23 Mon Sep 17 00:00:00 2001
+From: Shengming Liang <231182611+AgentWings@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 12:38:58 -0700
+Subject: [PATCH] go: Go 1.26.10 and x/net 0.60 close the net/http, TLS and
+ x509 advisories the gateway reaches
+
+---
+ go.mod | 14 +++++++-------
+ go.sum | 30 ++++++++++++++++--------------
+ 2 files changed, 23 insertions(+), 21 deletions(-)
+
+diff --git a/go.mod b/go.mod
+index 11642a851..de20566e0 100644
+--- a/go.mod
++++ b/go.mod
+@@ -1,6 +1,6 @@
+ module github.com/yetone/magpie
+ 
+-go 1.26.8
++go 1.26.10
+ 
+ require (
+ 	github.com/MoeForge/moejs v0.1.0-alpha.11
+@@ -10,19 +10,21 @@ require (
+ 	github.com/clipperhouse/uax29/v2 v2.5.0
+ 	github.com/coder/websocket v1.8.14
+ 	github.com/fsnotify/fsnotify v1.9.0
++	github.com/gen2brain/h265 v0.2.4
+ 	github.com/go-ole/go-ole v1.3.0
+ 	github.com/godbus/dbus/v5 v5.2.2
+ 	github.com/google/uuid v1.6.0
+ 	github.com/klauspost/compress v1.18.3
+ 	github.com/pelletier/go-toml/v2 v2.2.4
++	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
+ 	github.com/tidwall/gjson v1.19.0
+ 	github.com/tidwall/jsonc v0.3.3
+ 	github.com/wailsapp/wails/v3 v3.0.0-beta.24
+ 	golang.org/x/image v0.43.0
+-	golang.org/x/net v0.56.0
+-	golang.org/x/sys v0.46.0
+-	golang.org/x/term v0.44.0
+-	golang.org/x/text v0.39.0
++	golang.org/x/net v0.60.0
++	golang.org/x/sys v0.48.0
++	golang.org/x/term v0.46.0
++	golang.org/x/text v0.42.0
+ 	gopkg.in/yaml.v3 v3.0.1
+ 	modernc.org/libc v1.67.6
+ 	modernc.org/sqlite v1.44.3
+@@ -41,7 +43,6 @@ require (
+ 	github.com/clipperhouse/stringish v0.1.1 // indirect
+ 	github.com/dustin/go-humanize v1.0.1 // indirect
+ 	github.com/erikgeiser/coninput v0.0.0-20211004153227-1c3628e74d0f // indirect
+-	github.com/gen2brain/h265 v0.2.4 // indirect
+ 	github.com/lucasb-eyer/go-colorful v1.3.0 // indirect
+ 	github.com/mattn/go-colorable v0.1.14 // indirect
+ 	github.com/mattn/go-isatty v0.0.20 // indirect
+@@ -53,7 +54,6 @@ require (
+ 	github.com/ncruces/go-strftime v1.0.0 // indirect
+ 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
+ 	github.com/rivo/uniseg v0.4.7 // indirect
+-	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3 // indirect
+ 	github.com/tidwall/match v1.1.1 // indirect
+ 	github.com/tidwall/pretty v1.2.0 // indirect
+ 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
+diff --git a/go.sum b/go.sum
+index 0ddd5be8f..e7794cf86 100644
+--- a/go.sum
++++ b/go.sum
+@@ -30,6 +30,8 @@ github.com/clipperhouse/uax29/v2 v2.5.0 h1:x7T0T4eTHDONxFJsL94uKNKPHrclyFI0lm7+w
+ github.com/clipperhouse/uax29/v2 v2.5.0/go.mod h1:Wn1g7MK6OoeDT0vL+Q0SQLDz/KpfsVRgg6W7ihQeh4g=
+ github.com/coder/websocket v1.8.14 h1:9L0p0iKiNOibykf283eHkKUHHrpG7f65OE3BhhO7v9g=
+ github.com/coder/websocket v1.8.14/go.mod h1:NX3SzP+inril6yawo5CQXx8+fk145lPDC6pumgx0mVg=
++github.com/dlclark/regexp2 v1.11.5 h1:Q/sSnsKerHeCkc/jSTNq1oCm7KiVgUMZRDUoRu0JQZQ=
++github.com/dlclark/regexp2 v1.11.5/go.mod h1:DHkYz0B9wPfa6wondMfaivmHpzrQ3v9q8cnmRbL6yW8=
+ github.com/dustin/go-humanize v1.0.1 h1:GzkhY7T5VNhEkwH0PVJgjz+fX1rhBrR7pRT3mDkpeCY=
+ github.com/dustin/go-humanize v1.0.1/go.mod h1:Mu1zIs6XwVuF/gI1OepvI0qD18qycQx+mFykh5fBlto=
+ github.com/erikgeiser/coninput v0.0.0-20211004153227-1c3628e74d0f h1:Y/CXytFA4m6baUTXGLOoWe4PQhGxaX0KpnayAqC48p4=
+@@ -102,23 +104,23 @@ golang.org/x/exp v0.0.0-20260410095643-746e56fc9e2f h1:W3F4c+6OLc6H2lb//N1q4WpJk
+ golang.org/x/exp v0.0.0-20260410095643-746e56fc9e2f/go.mod h1:J1xhfL/vlindoeF/aINzNzt2Bket5bjo9sdOYzOsU80=
+ golang.org/x/image v0.43.0 h1:FLxcP4ec2350nTfOC8ysKtqYSIFbk/QGjw1ZHNP4tsY=
+ golang.org/x/image v0.43.0/go.mod h1:rrpelvGFt+kLPAjPM4HeWPgrl0FtafueU//e5N0qk/Q=
+-golang.org/x/mod v0.37.0 h1:vF1DjpVEshcIqoEaauuHebaLk1O1forxjxBaVn884JQ=
+-golang.org/x/mod v0.37.0/go.mod h1:m8S8VeM9r4dzDwjrKO0a1sZP3YjeMamRRlD+fmR2Q/0=
+-golang.org/x/net v0.56.0 h1:Rw8j/hFzGvJUZwNBXnAtf5sVDVt+65SK2C7IxCxZt5o=
+-golang.org/x/net v0.56.0/go.mod h1:D3Ku6r+V6JROoZK144D2XfMHFcMq/0zSfLelVTCFKec=
+-golang.org/x/sync v0.21.0 h1:HLII4xRRTtCRkxYp4HNFF0Js/Og6q2i++KXbg0gHCwM=
+-golang.org/x/sync v0.21.0/go.mod h1:9xrNwdLfx4jkKbNva9FpL6vEN7evnE43NNNJQ2LF3+0=
++golang.org/x/mod v0.41.0 h1:qJmnOUb4YB+FsEuM3HcWucdZASCPGhsX6uljO6pog0c=
++golang.org/x/mod v0.41.0/go.mod h1:Ek9pY8RKWXwsWvd3rQiHYtMqkjSUV+s1Rj7j4H5Ur6o=
++golang.org/x/net v0.60.0 h1:79p50tfZlm0J9YfoDsSi639qSXNGVwEzOPLCxM2FsYU=
++golang.org/x/net v0.60.0/go.mod h1:2DA/G1UfVbCpQPeWTmMPGY7Cs2PkBkwu743bVX5PIVg=
++golang.org/x/sync v0.23.0 h1:KameEIfc1IkluZyXWLn39Wd4tURc6GbCiISGiZm2bQk=
++golang.org/x/sync v0.23.0/go.mod h1:sUUOizhqBxiL6pEWpqNLUiaJn1ShEbZ6BBqskPbjZm0=
+ golang.org/x/sys v0.0.0-20210809222454-d867a43fc93e/go.mod h1:oPkhp1MJrh7nUepCBck5+mAzfO9JrbApNNgaTdGDITg=
+ golang.org/x/sys v0.1.0/go.mod h1:oPkhp1MJrh7nUepCBck5+mAzfO9JrbApNNgaTdGDITg=
+ golang.org/x/sys v0.6.0/go.mod h1:oPkhp1MJrh7nUepCBck5+mAzfO9JrbApNNgaTdGDITg=
+-golang.org/x/sys v0.46.0 h1:noSf2Fq6F8DBgS+LysIkx7rIExoNHJsxOAtPp4rthXw=
+-golang.org/x/sys v0.46.0/go.mod h1:4GL1E5IUh+htKOUEOaiffhrAeqysfVGipDYzABqnCmw=
+-golang.org/x/term v0.44.0 h1:0rLvDRCtNj0gZkyIXhCyOb2OAzEhLVqc4B+hrsBhrmc=
+-golang.org/x/term v0.44.0/go.mod h1:7ze4MdzUzLXpSAoFP1H0bOI9aXDqveSvatT5vKcFh2Y=
+-golang.org/x/text v0.39.0 h1:UbZz4pLOvn600D6Oh6GGEI6VAmndrEBLv8/6BEXzyus=
+-golang.org/x/text v0.39.0/go.mod h1:3UwRclnC2g0TU9x8PZiyfOajCd1zaUNHF9cvqcQZ+ZM=
+-golang.org/x/tools v0.47.0 h1:7Kn5x/d1svx/PzryTsqeoZN4TZwqeH5pGWjefhLi/1Q=
+-golang.org/x/tools v0.47.0/go.mod h1:dFHnyTvFWY212G+h7ZY4Vsp/K3U4/7W9TyVaAul8uCA=
++golang.org/x/sys v0.48.0 h1:bbX/i/6MgT9BVLM9RT1thmxL04yeTAhbEz4SyadbXoo=
++golang.org/x/sys v0.48.0/go.mod h1:hNLxWAXmnKAxqDtdwIYC4bM9oQPEecfsnNMuSxOs3og=
++golang.org/x/term v0.46.0 h1:3+OXuTbaKDgwk8jTi3aSLHRlmWqHEUDUtxnbFigO4YE=
++golang.org/x/term v0.46.0/go.mod h1:+K02xbkittuwc0Am4abfA3Fc+XRGXkvBXNO88NCXPoc=
++golang.org/x/text v0.42.0 h1:JbOZXgfeCPU9gacVtYliJqOhD+zhrEqK4LfdpmlUZqI=
++golang.org/x/text v0.42.0/go.mod h1:ojzP1Z+2QtioaF8DTtO8K5q7JWVVYwZKenzujK0Zd0E=
++golang.org/x/tools v0.49.0 h1:3NI7VXzL9+1WZD52Dx2ttoPwD5DWrFGpl9mFZDlmisI=
++golang.org/x/tools v0.49.0/go.mod h1:SJNXV9DBKT0UbdttsQjbfJlAE/q+y36++zo3uL3N0Oo=
+ gopkg.in/check.v1 v0.0.0-20161208181325-20d25e280405 h1:yhCVgyC4o1eVCa2tZl7eS0r+SDo693bJlVdllGtEeKM=
+ gopkg.in/check.v1 v0.0.0-20161208181325-20d25e280405/go.mod h1:Co6ibVJAznAaIkqp8huTwlJQCZ016jof/cbN4VW5Yz0=
+ gopkg.in/yaml.v3 v3.0.1 h1:fxVm/GzAzEWqLHuvctI91KS9hhNmmWOoWu0XTYJS7CA=
+-- 
+2.50.1 (Apple Git-155)
+
+```
+</details>

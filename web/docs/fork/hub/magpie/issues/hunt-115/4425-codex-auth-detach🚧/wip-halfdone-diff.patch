@@ -1,0 +1,302 @@
+diff --git a/internal/provider/login_import.go b/internal/provider/login_import.go
+index 22b7ef004..ea286c6c7 100644
+--- a/internal/provider/login_import.go
++++ b/internal/provider/login_import.go
+@@ -21,9 +21,13 @@ package provider
+ // A ChatGPT one is checked the way a sign-in is finished: its refresh token
+ // traded for new tokens and the account asked for. That rotates the token,
+ // so the file it came from stops working: the account is magpie's from then
+-// on, as a sign-in in magpie would make it. A Claude one is kept as it
+-// came, magpie asking Anthropic nothing; Claude Code refreshes it the first
+-// time it runs on it. Tokens are never logged or sent back.
++// on, as a sign-in in magpie would make it. A sign-in magpie holds already
++// is taken over all the same (#4425): the rotation leaves magpie holding a
++// sign-in of its own, never the one Codex's auth.json shares with it, which
++// `codex logout` revokes. The account is never put back into Codex's
++// auth.json either. A Claude one is kept as it came, magpie asking
++// Anthropic nothing; Claude Code refreshes it the first time it runs on it.
++// Tokens are never logged or sent back.
+ 
+ import (
+ 	"cmp"
+@@ -360,7 +364,12 @@ func ImportLogins(ctx context.Context, agent string, files []string) ([]Imported
+ 	if len(all) > maxGoogleImport {
+ 		return nil, fmt.Errorf("%d accounts; at most %d at a time", len(all), maxGoogleImport)
+ 	}
+-	// the refresh tokens magpie holds already, the agent's own included
++	// the refresh tokens magpie holds already, the agent's own included.
++	// A ChatGPT one is no reason to pass a file over: the import refreshes
++	// the file's sign-in into one only magpie holds all the same (#4425),
++	// so an account discovery read out of Codex's auth.json — the same
++	// refresh token in two places — is taken over rather than left shared,
++	// for `codex logout` revokes the token both places hold.
+ 	have := map[string]string{}
+ 	loginsMu.Lock()
+ 	ls := readLogins()
+@@ -395,7 +404,7 @@ func ImportLogins(ctx context.Context, agent string, files []string) ([]Imported
+ 		case e.refreshToken == "":
+ 			out[i] = ImportedAccount{User: name, Status: "failed", Error: "no refresh_token in it"}
+ 			continue
+-		case have[e.refreshToken] != "":
++		case have[e.refreshToken] != "" && agent != "codex":
+ 			out[i] = ImportedAccount{User: have[e.refreshToken], Status: "exists"}
+ 			continue
+ 		case seen[e.refreshToken]:
+@@ -570,7 +579,7 @@ func importLogin(ctx context.Context, agent string, e loginImport, name string,
+ 			break
+ 		}
+ 	}
+-	if _, err := addLogin(l); err != nil {
++	if _, err := addLogin(l, agent == "codex"); err != nil {
+ 		return fail(err.Error())
+ 	}
+ 	return ImportedAccount{User: l.User, Status: status, Plan: l.Plan}
+diff --git a/internal/provider/login_import_test.go b/internal/provider/login_import_test.go
+index c6cfbe567..06950fd41 100644
+--- a/internal/provider/login_import_test.go
++++ b/internal/provider/login_import_test.go
+@@ -3,8 +3,11 @@ package provider
+ import (
+ 	"context"
+ 	"encoding/json"
++	"errors"
++	"io/fs"
+ 	"net/http"
+ 	"net/http/httptest"
++	"os"
+ 	"path/filepath"
+ 	"strings"
+ 	"sync"
+@@ -20,9 +23,37 @@ func importStatuses(rs []ImportedAccount) string {
+ 	return strings.Join(s, ",")
+ }
+ 
++// codexImportFake answers ChatGPT's token endpoint the way an import's
++// refresh expects: every refresh token but r-used trades for a new one
++// ("n-" + the account), keeping the account the id token names.
++func codexImportFake(t *testing.T) {
++	t.Helper()
++	fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		var body map[string]string
++		json.NewDecoder(r.Body).Decode(&body)
++		rt := body["refresh_token"]
++		if body["client_id"] != codexClientID || body["grant_type"] != "refresh_token" || rt == "r-used" || (!strings.HasPrefix(rt, "r-") && !strings.HasPrefix(rt, "n-")) {
++			w.WriteHeader(400)
++			json.NewEncoder(w).Encode(map[string]any{"error": "invalid_grant"})
++			return
++		}
++		who := strings.TrimPrefix(strings.TrimPrefix(rt, "r-"), "n-")
++		json.NewEncoder(w).Encode(map[string]any{
++			"id_token": fakeJWT(map[string]any{"email": who + "@example.com",
++				"https://api.openai.com/auth": map[string]any{"chatgpt_plan_type": "pro", "chatgpt_account_id": "acct-" + who}}),
++			"access_token":  fakeJWT(map[string]any{"exp": float64(time.Now().Add(time.Hour).Unix())}),
++			"refresh_token": "n-" + who,
++		})
++	}))
++	t.Cleanup(CodexTokenURLForTest(fake.URL))
++	t.Cleanup(fake.Close)
++}
++
+ // CLIProxyAPI's Codex auth files and Codex CLI's own auth.json come in as
+-// ChatGPT accounts, each refreshed first; a token already held, another
+-// app's file and a used-up token are said so.
++// ChatGPT accounts, each refreshed first; another app's file and a used-up
++// token are said so, and a token already held — Codex's own included — is
++// taken over all the same (#4425): magpie ends up holding a sign-in of its
++// own, and auth.json is left as Codex has it.
+ func TestImportCodexLogins(t *testing.T) {
+ 	home := claudeHome(t)
+ 	var mu sync.Mutex
+@@ -34,12 +65,12 @@ func TestImportCodexLogins(t *testing.T) {
+ 		mu.Lock()
+ 		asked[rt]++
+ 		mu.Unlock()
+-		if body["client_id"] != codexClientID || body["grant_type"] != "refresh_token" || !strings.HasPrefix(rt, "r-") || rt == "r-used" {
++		if body["client_id"] != codexClientID || body["grant_type"] != "refresh_token" || rt == "r-used" || (!strings.HasPrefix(rt, "r-") && !strings.HasPrefix(rt, "n-")) {
+ 			w.WriteHeader(400)
+ 			json.NewEncoder(w).Encode(map[string]any{"error": "invalid_grant"})
+ 			return
+ 		}
+-		who := strings.TrimPrefix(rt, "r-")
++		who := strings.TrimPrefix(strings.TrimPrefix(rt, "r-"), "n-")
+ 		json.NewEncoder(w).Encode(map[string]any{
+ 			"id_token": fakeJWT(map[string]any{"email": who + "@example.com",
+ 				"https://api.openai.com/auth": map[string]any{"chatgpt_plan_type": "pro", "chatgpt_account_id": "acct-" + who}}),
+@@ -48,9 +79,7 @@ func TestImportCodexLogins(t *testing.T) {
+ 		})
+ 	}))
+ 	defer fake.Close()
+-	old := codexTokenURL
+-	t.Cleanup(func() { codexTokenURL = old })
+-	codexTokenURL = fake.URL
++	t.Cleanup(CodexTokenURLForTest(fake.URL))
+ 
+ 	// signed in to Codex already
+ 	codexSignIn(t, home, "live@example.com", "r-live")
+@@ -65,14 +94,14 @@ func TestImportCodexLogins(t *testing.T) {
+ 	if err != nil {
+ 		t.Fatal(err)
+ 	}
+-	want := "cpa@example.com:added,native@example.com:added,c@example.com:failed,live@example.com:exists,used@example.com:failed,cpa@example.com:failed"
++	want := "cpa@example.com:added,native@example.com:added,c@example.com:failed,live@example.com:updated,used@example.com:failed,cpa@example.com:failed"
+ 	if got := importStatuses(rs); got != want {
+ 		t.Fatalf("got %s\nwant %s", got, want)
+ 	}
+ 	if !strings.Contains(rs[2].Error, "not Codex's") || !strings.Contains(rs[4].Error, "used since") || !strings.Contains(rs[5].Error, "twice") {
+ 		t.Fatalf("errors %+v", rs)
+ 	}
+-	if asked["r-live"] != 0 || asked["r-claude"] != 0 || asked["r-cpa"] != 1 {
++	if asked["r-live"] != 1 || asked["r-claude"] != 0 || asked["r-cpa"] != 1 {
+ 		t.Fatalf("asked %v", asked)
+ 	}
+ 	for _, r := range rs {
+@@ -84,7 +113,8 @@ func TestImportCodexLogins(t *testing.T) {
+ 	if active != "live@example.com" || len(users) != 3 {
+ 		t.Fatalf("users %v active %q", users, active)
+ 	}
+-	// the live account is left as it was; the new ones hold the new tokens
++	// the new ones hold the new tokens, and so does the account taken over
++	// from Codex; auth.json is Codex's still, its refresh token spent
+ 	var a codexAuth
+ 	readJSON(filepath.Join(home, ".codex", "auth.json"), &a)
+ 	if a.Tokens.RefreshToken != "r-live" {
+@@ -94,6 +124,11 @@ func TestImportCodexLogins(t *testing.T) {
+ 	ls := readLogins()
+ 	loginsMu.Unlock()
+ 	for _, l := range ls {
++		if l.User == "live@example.com" {
++			if json.Unmarshal(l.Auth, &a) != nil || a.Tokens.RefreshToken != "n-live" || !l.On {
++				t.Fatalf("taken over %+v %+v", l, a)
++			}
++		}
+ 		if l.User == "cpa@example.com" {
+ 			if json.Unmarshal(l.Auth, &a) != nil || a.Tokens.RefreshToken != "n-cpa" || a.Tokens.AccountID != "acct-cpa" || a.AuthMode != "chatgpt" || !l.On || l.Plan != "pro" {
+ 				t.Fatalf("kept %+v %+v", l, a)
+@@ -101,9 +136,10 @@ func TestImportCodexLogins(t *testing.T) {
+ 		}
+ 	}
+ 
+-	// the same file again: the tokens it holds are spent, and said so
++	// the same file again: the token it holds is magpie's own by now, and
++	// the import refreshes it into a sign-in of magpie's alone, as ever
+ 	rs, _ = ImportLogins(context.Background(), "codex", []string{`{"type":"codex","refresh_token":"n-cpa"}`})
+-	if importStatuses(rs) != "cpa@example.com:exists" {
++	if importStatuses(rs) != "cpa@example.com:updated" {
+ 		t.Fatalf("again %+v", rs)
+ 	}
+ 	if _, err := ImportLogins(context.Background(), "codex", []string{"{not json"}); err == nil {
+@@ -111,6 +147,69 @@ func TestImportCodexLogins(t *testing.T) {
+ 	}
+ }
+ 
++// An explicit import takes the account over, Codex's own sign-in included
++// (#4425): the sign-in the file brings is refreshed into one only magpie
++// holds, kept in logins.json and renewed there, and nothing goes back into
++// Codex's auth.json — which `codex logout` empties, revoking the token it
++// held. Before, an import of a sign-in magpie held already was left as it
++// was, still sharing Codex's refresh token, and the account died with
++// `codex logout`.
++func TestImportCodexTakeOver(t *testing.T) {
++	home := claudeHome(t)
++	codexImportFake(t)
++
++	codexSignIn(t, home, "a@example.com", "r-a")
++	authPath := filepath.Join(home, ".codex", "auth.json")
++	rs, err := ImportLogins(context.Background(), "codex", []string{`{"type":"codex","refresh_token":"r-a","email":"a@example.com"}`})
++	if err != nil {
++		t.Fatal(err)
++	}
++	if importStatuses(rs) != "a@example.com:updated" {
++		t.Fatalf("take-over: %s", importStatuses(rs))
++	}
++	// auth.json is Codex's still, its refresh token spent by the import
++	var a codexAuth
++	readJSON(authPath, &a)
++	if a.Tokens.RefreshToken != "r-a" {
++		t.Fatalf("auth.json changed: %s", a.Tokens.RefreshToken)
++	}
++	// magpie's copy is a sign-in of its own — the new token, in use
++	loginsMu.Lock()
++	ls := readLogins()
++	loginsMu.Unlock()
++	if len(ls) != 1 || json.Unmarshal(ls[0].Auth, &a) != nil || a.Tokens.RefreshToken != "n-a" || !ls[0].On {
++		t.Fatalf("kept %+v %+v", ls, a)
++	}
++
++	// `codex logout`: auth.json gone, the token it held revoked with it.
++	// The account keeps working, renewed from logins.json.
++	os.Remove(authPath)
++	tok, _, err := savedLoginToken(context.Background(), "codex", "a@example.com")
++	if err != nil || tok == "" {
++		t.Fatalf("after logout: tok %q, err %v", tok, err)
++	}
++}
++
++// An import made while Codex is signed out (a fresh CODEX_HOME's file,
++// say) keeps hands off Codex: before (#4425) the account was written into
++// auth.json as it was added — Codex signed back in — and a later
++// `codex logout` revoked the account's own sign-in with it.
++func TestImportCodexSignedOutAlone(t *testing.T) {
++	home := claudeHome(t)
++	codexImportFake(t)
++
++	rs, err := ImportLogins(context.Background(), "codex", []string{`{"type":"codex","refresh_token":"r-b","email":"b@example.com"}`})
++	if err != nil {
++		t.Fatal(err)
++	}
++	if importStatuses(rs) != "b@example.com:added" {
++		t.Fatalf("added: %s", importStatuses(rs))
++	}
++	if _, err := os.Stat(filepath.Join(home, ".codex", "auth.json")); !errors.Is(err, fs.ErrNotExist) {
++		t.Fatalf("auth.json written: %v", err)
++	}
++}
++
+ // With no Claude sign-in, the first imported account becomes Claude Code's,
+ // kept as the file has it: nothing is asked of Anthropic to try it.
+ func TestImportClaudeLogins(t *testing.T) {
+diff --git a/internal/provider/signin.go b/internal/provider/signin.go
+index 224248449..b28567828 100644
+--- a/internal/provider/signin.go
++++ b/internal/provider/signin.go
+@@ -877,10 +877,13 @@ func codexLogin(idToken, accessToken, refreshToken, accountID string) (savedLogi
+ 
+ // addLogin keeps a freshly signed-in account. The agent is signed in to it
+ // too when it has no account yet, or had this one: the new tokens replace
+-// the old, so one refresh token stays in one place. Its kept usage
+-// reading goes (StaleAllowance): it was read under the old sign-in, and
+-// for a minute it would answer for the new one, a refusal and all.
+-func addLogin(l savedLogin) (using bool, err error) {
++// the old, so one refresh token stays in one place. An imported ChatGPT
++// account (imported) is magpie's alone (#4425): nothing is written into
++// Codex's auth.json, or any of its other folders, so `codex logout` —
++// which revokes what those hold — can't take the account back. Its kept
++// usage reading goes (StaleAllowance): it was read under the old sign-in,
++// and for a minute it would answer for the new one, a refusal and all.
++func addLogin(l savedLogin, imported bool) (using bool, err error) {
+ 	defer func() { // under the name it is kept by (codexName), once loginsMu is let go
+ 		if err == nil {
+ 			StaleAllowance(l.Agent, l.User)
+@@ -903,6 +906,9 @@ func addLogin(l savedLogin) (using bool, err error) {
+ 	ls := readLogins()
+ 	l.User = codexName(ls, l)
+ 	using = !signedIn || sameLogin(live, l)
++	if imported {
++		using = false
++	}
+ 	if l.Agent == "claude" && claudeSetupToken(l.Auth) != "" {
+ 		// Claude Code itself can't be signed in to a setup-token: the
+ 		// account is magpie's alone, its own sign-in left as it is
+@@ -928,9 +934,10 @@ func addLogin(l savedLogin) (using bool, err error) {
+ 	// signed in again to an account Codex keeps in another of its folders
+ 	// (CODEX_HOME=…, charliepu on Discord): the new tokens go there, where
+ 	// Codex and magpie both read it, or the next look would read the old
+-	// ones back over them
++	// ones back over them. An imported account goes nowhere: it is
++	// magpie's alone (#4425).
+ 	held := ""
+-	if l.Agent == "codex" && !using {
++	if l.Agent == "codex" && !using && !imported {
+ 		held = codexHeldFolder(ls, l)
+ 		l.Home = held
+ 	}

@@ -1,0 +1,56 @@
+From e9bb13ae478ad9bde3ef9a1f5dde2366e7678a92 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Sun, 25 Oct 2026 01:44:58 +0800
+Subject: [PATCH] gui tests: cli-update waits for the pill's busy state, not
+ 150ms
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+What changed: the update subtest clicked the pill, slept a fixed 150ms,
+then read "Updating…" off it. The busy state is what that read wants, and
+it is painted the frame the click lands (paintCLIButton turns the class
+and the words on together); under a full GUI run's load the sleep
+overshot — the fake update (700ms in the fixture) had finished and the
+pill was gone, so the read sat out its whole 5s on
+`.row.agent[data-id="codex"] .ag-up` and the subtest went red (#3473,
+chromium). The test now waits for the pill's busy class instead, so the
+reads, the svg ring check and the while-busy force click land inside the
+run whatever the load. The asserts are unchanged. Test-only; no product
+code touched.
+
+Run: node --test internal/gui/tests/cli-update.test.cjs, 10 consecutive
+runs, 100/100 green (Chromium + WebKit). With the fixture's update delay
+cut to 100ms (injected, not committed) the old flow failed 3/3 with the
+reported timeout waiting for that locator and the new one passed 3/3;
+putting the sleep back with the same injection failed again, the diff
+then being that one line. agent-update-all (18), agent-app-version (16)
+and agent-connect (4) still pass, both engines.
+
+Fixes #3473
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gui/tests/cli-update.test.cjs | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/internal/gui/tests/cli-update.test.cjs b/internal/gui/tests/cli-update.test.cjs
+index 097a9bac..33792fe5 100644
+--- a/internal/gui/tests/cli-update.test.cjs
++++ b/internal/gui/tests/cli-update.test.cjs
+@@ -127,7 +127,11 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
+       assert(top > 0, "the list must be scrolled");
+       const was = await page.locator(`${row("codex")} .ag-up`).evaluate((b) => b.getBoundingClientRect().top);
+       await page.locator(`${row("codex")} .ag-up`).click();
+-      await page.waitForTimeout(150);
++      // the busy state, not a fixed wait: the update runs while the pill is
++      // busy, so a sleep could end after it was done and the read sat out
++      // its whole 5s on a pill already gone (#3473); waiting for the busy
++      // class lands the reads inside the run whatever the load
++      await page.locator(`${row("codex")} .ag-up.busy`).waitFor();
+       assert.equal(await page.locator(`${row("codex")} .ag-up`).textContent(), "Updating…");
+       assert.equal(await page.locator(`${row("codex")} .ag-up.busy`).count(), 1);
+       // its ring turns inside the svg, round the viewBox's centre: a turned
+-- 
+2.50.1 (Apple Git-155)
+

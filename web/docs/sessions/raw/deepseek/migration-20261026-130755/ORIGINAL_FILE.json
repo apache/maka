@@ -1,0 +1,261 @@
+{
+  "state": "source_present",
+  "groups": [
+    {
+      "name": "sessions",
+      "source": "C:\\Users\\802165\\.deepseek\\sessions",
+      "pattern": "**/*",
+      "remove_root": true,
+      "category": "archive",
+      "archive": "E:\\cc\\guahub\\sessions\\raw\\deepseek\\migration-20261026-130755\\sessions.zip",
+      "files": [
+        {
+          "path": "b84119d9-b5b0-45c9-bd15-b856131f6de2.json",
+          "size": 30605,
+          "mtime_ns": 1777958209882511800,
+          "sha256": "50765d170f919bf10534b2e2b025db1d3713adf1a12c5b621a8ea72db1b5bce1"
+        }
+      ],
+      "directories": [
+        "checkpoints"
+      ]
+    },
+    {
+      "name": "snapshots",
+      "source": "C:\\Users\\802165\\.deepseek\\snapshots",
+      "pattern": "**/*",
+      "remove_root": true,
+      "category": "archive",
+      "archive": "E:\\cc\\guahub\\sessions\\raw\\deepseek\\migration-20261026-130755\\snapshots.zip",
+      "files": [
+        {
+          "path": "9f9789ed0f0b4645/9f9789ed0f0b4645/.git/config",
+          "size": 235,
+          "mtime_ns": 1777958202713047000,
+          "sha256": "806b9cd713775512f3677b8d6dbd2f1520a32b0511217ae584f9776a4274f344"
+        },
+        {
+          "path": "9f9789ed0f0b4645/9f9789ed0f0b4645/.git/description",
+          "size": 73,
+          "mtime_ns": 1777958202370423800,
+          "sha256": "85ab6c163d43a17ea9cf7788308bca1466f1b0a8d1cc92e26e9bf63da4062aee"
+        },
+        {
+          "path": "9f9789ed0f0b4645/9f9789ed0f0b4645/.git/HEAD",
+          "size": 23,
+          "mtime_ns": 1777958202415869100,
+          "sha256": "f6f2b945f6c411b02ba3da9c7ace88dcf71b6af65ba2e0d89aa82900042b5a10"
+        },
+        {
+          "path": "9f9789ed0f0b4645/9f9789ed0f0b4645/.git/hooks/applypatch-msg.sample",
+          "size": 478,
+          "mtime_ns": 1777958202381344300,
+          "sha256": "0223497a0b8b033aa58a3a521b8629869386cf7ab0e2f101963d328aa62193f7"
+        },
+        {
+          "path": "9f9789ed0f0b4645/9f9789ed0f0b4645/.git/hooks/commit-msg.sample",
+          "size": 896,
+          "mtime_ns": 1777958202382341600,
+          "sha256": "1f74d5e9292979b573ebd59741d46cb93ff391acdd083d340b94370753d92437"
+        },
+        {
+          "path": "9f9789ed0f0b4645/9f9789ed0f0b4645/.git/hooks/fsmonitor-watchman.sample",
+          "size": 4726,
+          "mtime_ns": 1777958202383338900,
+          "sha256": "e0549964e93897b519bd8e333c037e51fff0f88ba13e086a331592bf801fa1d0"
+        },
+        {
+          "path": "9f9789ed0f0b4645/9f9789ed0f0b4645/.git/hooks/post-update.sample",
+          "size": 189,
+          "mtime_ns": 1777958202383338900,
+          "sha256": "81765af2daef323061dcbc5e61fc16481cb74b3bac9ad8a174b186523586f6c5"
+        },
+        {
+          "path": "9f9789ed0f0b4645/9f9789ed0f0b4645/.git/hooks/pre-applypatch.sample",
+          "size": 424,
+          "mtime_ns": 1777958202384336200,
+          "sha256": "e15c5b469ea3e0a695bea6f2c82bcf8e62821074939ddd85b77e0007ff165475"
+        },
+        {
+          "path": "9f9789ed0f0b4645/9f9789ed0f0b4645/.git/hooks/pre-commit.sample",
+          "size": 1649,
+          "mtime_ns": 1777958202385333600,
+          "sha256": "57185b7b9f05239d7ab52db045f5b89eb31348d7b2177eab214f5eb872e1971b"
+        },
+        {
+          "path": "9f9789ed0f0b4645/9f9789ed0f0b4645/.git/hooks/pre-merge-commit.sample",
+          "size": 416,
+          "mtime_ns": 1777958202386330600,
+          "sha256": "d3825a70337940ebbd0a5c072984e13245920cdf8898bd225c8d27a6dfc9cb53"
+        },
+        {
+          "path": "9f9789ed0f0b4645/9f9789ed0f0b4645/.git/hooks/pre-push.sample",
+          "size": 1374,
+          "mtime_ns": 1777958202386330600,
+          "sha256": "ecce9c7e04d3f5dd9d8ada81753dd1d549a9634b26770042b58dda00217d086a"
+        },
+        {
+          "path": "9f9789ed0f0b4645/9f9789ed0f0b4645/.git/hooks/pre-rebase.sample",
+          "size": 4898,
+          "mtime_ns": 1777958202387327700,
+          "sha256": "4febce867790052338076f4e66cc47efb14879d18097d1d61c8261859eaaa7b3"
+        },
+        {
+          "path": "9f9789ed0f0b4645/9f9789ed0f0b4645/.git/hooks/pre-receive.sample",
+          "size": 544,
+          "mtime_ns": 1777958202388325100,
+          "sha256": "a4c3d2b9c7bb3fd8d1441c31bd4ee71a595d66b44fcf49ddb310252320169989"
+        },
+        {
+          "path": "9f9789ed0f0b4645/9f9789ed0f0b4645/.git/hooks/prepare-commit-msg.sample",
+          "size": 1492,
+          "mtime_ns": 1777958202389322300,
+          "sha256": "e9ddcaa4189fddd25ed97fc8c789eca7b6ca16390b2392ae3276f0c8e1aa4619"
+        },
+        {
+          "path": "9f9789ed0f0b4645/9f9789ed0f0b4645/.git/hooks/push-to-checkout.sample",
+          "size": 2783,
+          "mtime_ns": 1777958202389322300,
+          "sha256": "a53d0741798b287c6dd7afa64aee473f305e65d3f49463bb9d7408ec3b12bf5f"
+        },
+        {
+          "path": "9f9789ed0f0b4645/9f9789ed0f0b4645/.git/hooks/sendemail-validate.sample",
+          "size": 2308,
+          "mtime_ns": 1777958202390320300,
+          "sha256": "44ebfc923dc5466bc009602f0ecf067b9c65459abfe8868ddc49b78e6ced7a92"
+        },
+        {
+          "path": "9f9789ed0f0b4645/9f9789ed0f0b4645/.git/hooks/update.sample",
+          "size": 3650,
+          "mtime_ns": 1777958202391317500,
+          "sha256": "8d5f2fa83e103cf08b57eaa67521df9194f45cbdbcb37da52ad586097a14d106"
+        },
+        {
+          "path": "9f9789ed0f0b4645/9f9789ed0f0b4645/.git/index",
+          "size": 275,
+          "mtime_ns": 1777958210022172000,
+          "sha256": "278ba76584a09a80e302a17e94cd92fadbb48e3dd18b96fa1a4393e814ae12d9"
+        },
+        {
+          "path": "9f9789ed0f0b4645/9f9789ed0f0b4645/.git/info/exclude",
+          "size": 240,
+          "mtime_ns": 1777958202392619600,
+          "sha256": "6671fe83b7a07c8932ee89164d1f2793b2318058eb8b98dc5c06ee0a5a3b0ec1"
+        },
+        {
+          "path": "9f9789ed0f0b4645/9f9789ed0f0b4645/.git/logs/HEAD",
+          "size": 298,
+          "mtime_ns": 1777958210232655500,
+          "sha256": "7604cfa80cd026d595411fad64d81fc6187fb7d89cdb4e4e59bd87c0591baff4"
+        },
+        {
+          "path": "9f9789ed0f0b4645/9f9789ed0f0b4645/.git/logs/refs/heads/master",
+          "size": 298,
+          "mtime_ns": 1777958210232655500,
+          "sha256": "7604cfa80cd026d595411fad64d81fc6187fb7d89cdb4e4e59bd87c0591baff4"
+        },
+        {
+          "path": "9f9789ed0f0b4645/9f9789ed0f0b4645/.git/objects/0a/5a3b7b6f691ff26564b1aa6c6aab79576bee1e",
+          "size": 164,
+          "mtime_ns": 1777958210159495000,
+          "sha256": "ae8b77d7179bf7f1e2ae478bb1b91af145fef24ee14d6d9949d06ce17b10e0f0"
+        },
+        {
+          "path": "9f9789ed0f0b4645/9f9789ed0f0b4645/.git/objects/20/cc9d64d907e39372a34540bd9db506436bb780",
+          "size": 134,
+          "mtime_ns": 1777958203867069300,
+          "sha256": "773714c2c157c612ad9a711d199851f3890500467892eef94435e72eecc1763e"
+        },
+        {
+          "path": "9f9789ed0f0b4645/9f9789ed0f0b4645/.git/objects/40/c7f9a6163651acd8b48a27eb48dfa50ca278cd",
+          "size": 52,
+          "mtime_ns": 1777958203679523200,
+          "sha256": "74b99285a4fd39467112142edc8460827951bc6e6a4ef0a1a63d0080fce7a980"
+        },
+        {
+          "path": "9f9789ed0f0b4645/9f9789ed0f0b4645/.git/objects/53/4a5b98c3d3f4a763b52e544102844e86f54763",
+          "size": 103,
+          "mtime_ns": 1777958203685071500,
+          "sha256": "e2dbadc0566e297929b55de33f8b7e203dd9a953abbadd0193eaf975a43149a1"
+        },
+        {
+          "path": "9f9789ed0f0b4645/9f9789ed0f0b4645/.git/objects/b3/f630303c2c02a7a1ed1a9edb5a1b5bcf7d9e52",
+          "size": 14175548,
+          "mtime_ns": 1777958203548686100,
+          "sha256": "a7364176972b82e817acab43c41fa184851562c4fe16fe3f0789a15c0cee48f4"
+        },
+        {
+          "path": "9f9789ed0f0b4645/9f9789ed0f0b4645/.git/objects/e6/9de29bb2d1d6434b8b29ae775ad8c2e48c5391",
+          "size": 15,
+          "mtime_ns": 1777958202792362600,
+          "sha256": "164c5fa8067facf1a43f09ce3d0e35ebf53a7f5723ecbf15a8667cfc53c26f6c"
+        },
+        {
+          "path": "9f9789ed0f0b4645/9f9789ed0f0b4645/.git/refs/heads/master",
+          "size": 41,
+          "mtime_ns": 1777958210231686800,
+          "sha256": "f471550f26eff9c2d1e7c8d3ade24f5aeee6435922191efb1c9de20f0410816f"
+        }
+      ],
+      "directories": [
+        "9f9789ed0f0b4645",
+        "9f9789ed0f0b4645/9f9789ed0f0b4645",
+        "9f9789ed0f0b4645/9f9789ed0f0b4645/.git",
+        "9f9789ed0f0b4645/9f9789ed0f0b4645/.git/hooks",
+        "9f9789ed0f0b4645/9f9789ed0f0b4645/.git/info",
+        "9f9789ed0f0b4645/9f9789ed0f0b4645/.git/logs",
+        "9f9789ed0f0b4645/9f9789ed0f0b4645/.git/logs/refs",
+        "9f9789ed0f0b4645/9f9789ed0f0b4645/.git/logs/refs/heads",
+        "9f9789ed0f0b4645/9f9789ed0f0b4645/.git/objects",
+        "9f9789ed0f0b4645/9f9789ed0f0b4645/.git/objects/0a",
+        "9f9789ed0f0b4645/9f9789ed0f0b4645/.git/objects/20",
+        "9f9789ed0f0b4645/9f9789ed0f0b4645/.git/objects/40",
+        "9f9789ed0f0b4645/9f9789ed0f0b4645/.git/objects/53",
+        "9f9789ed0f0b4645/9f9789ed0f0b4645/.git/objects/b3",
+        "9f9789ed0f0b4645/9f9789ed0f0b4645/.git/objects/e6",
+        "9f9789ed0f0b4645/9f9789ed0f0b4645/.git/objects/info",
+        "9f9789ed0f0b4645/9f9789ed0f0b4645/.git/objects/pack",
+        "9f9789ed0f0b4645/9f9789ed0f0b4645/.git/refs",
+        "9f9789ed0f0b4645/9f9789ed0f0b4645/.git/refs/heads",
+        "9f9789ed0f0b4645/9f9789ed0f0b4645/.git/refs/tags"
+      ]
+    },
+    {
+      "name": "audit",
+      "source": "C:\\Users\\802165\\.deepseek",
+      "pattern": "audit.log",
+      "remove_root": false,
+      "category": "archive",
+      "archive": "E:\\cc\\guahub\\sessions\\raw\\deepseek\\migration-20261026-130755\\audit.zip",
+      "files": [
+        {
+          "path": "audit.log",
+          "size": 351,
+          "mtime_ns": 1777958178913120600,
+          "sha256": "934be8e1f5790aeba09a7279a3daf6a0ba93e9f98e4c8f3bdf375d4d2f35794d"
+        }
+      ],
+      "directories": []
+    },
+    {
+      "name": "composer-history",
+      "source": "C:\\Users\\802165\\.deepseek",
+      "pattern": "composer_history.txt",
+      "remove_root": false,
+      "category": "archive",
+      "archive": "E:\\cc\\guahub\\sessions\\raw\\deepseek\\migration-20261026-130755\\composer-history.zip",
+      "files": [
+        {
+          "path": "composer_history.txt",
+          "size": 22,
+          "mtime_ns": 1777958202265746300,
+          "sha256": "fd49ec41b016a9fd8505cdc544e56dfe49ed0a865ecd1a50b109aab7feebc9c4"
+        }
+      ],
+      "directories": []
+    }
+  ],
+  "protected": {
+    "C:\\Users\\802165\\.deepseek\\config.toml": "6b9bdd6b0e46b742e03ed8c238110d20f7fef9e111a3c0aa644fb060778912cf"
+  }
+}

@@ -1,0 +1,303 @@
+{
+  "document_date": "2026-10-02",
+  "author": "ggbdpq",
+  "scope": [
+    "apache/maka",
+    "router-for-me/CLIProxyAPI",
+    "farion1231/cc-switch",
+    "CherryHQ/cherry-studio",
+    "stablyai/orca",
+    "multica-ai/multica",
+    "anomalyco/opencode",
+    "jlcodes99/cockpit-tools",
+    "microsoft/vscode",
+    "Tencent/tdesign-vue",
+    "sheinsight/shineout",
+    "chengazhen/cursor-auto-free"
+  ],
+  "method": "GitHub connector search; explicit merged/open/closed-unmerged qualifiers; topn=100 and each bucket below limit",
+  "counts": {
+    "apache/maka": {
+      "merged": 27,
+      "open": 12,
+      "closed_unmerged": 6,
+      "issues": 7
+    },
+    "router-for-me/CLIProxyAPI": {
+      "merged": 2,
+      "open": 10,
+      "closed_unmerged": 7,
+      "issues": 0
+    },
+    "farion1231/cc-switch": {
+      "merged": 0,
+      "open": 6,
+      "closed_unmerged": 0,
+      "issues": 0
+    },
+    "CherryHQ/cherry-studio": {
+      "merged": 5,
+      "open": 2,
+      "closed_unmerged": 0,
+      "issues": 0
+    },
+    "stablyai/orca": {
+      "merged": 0,
+      "open": 7,
+      "closed_unmerged": 1,
+      "issues": 0
+    },
+    "multica-ai/multica": {
+      "merged": 0,
+      "open": 6,
+      "closed_unmerged": 0,
+      "issues": 0
+    },
+    "anomalyco/opencode": {
+      "merged": 0,
+      "open": 3,
+      "closed_unmerged": 1,
+      "issues": 0
+    },
+    "jlcodes99/cockpit-tools": {
+      "merged": 0,
+      "open": 4,
+      "closed_unmerged": 0,
+      "issues": 0
+    },
+    "microsoft/vscode": {
+      "merged": 0,
+      "open": 0,
+      "closed_unmerged": 0,
+      "issues": 1
+    },
+    "Tencent/tdesign-vue": {
+      "merged": 0,
+      "open": 0,
+      "closed_unmerged": 0,
+      "issues": 4
+    },
+    "sheinsight/shineout": {
+      "merged": 0,
+      "open": 0,
+      "closed_unmerged": 0,
+      "issues": 3
+    },
+    "chengazhen/cursor-auto-free": {
+      "merged": 0,
+      "open": 0,
+      "closed_unmerged": 0,
+      "issues": 1
+    }
+  },
+  "queries": [
+    {
+      "kind": "merged",
+      "count": 34,
+      "items": [
+        "https://github.com/CherryHQ/cherry-studio/pull/21276",
+        "https://github.com/CherryHQ/cherry-studio/pull/21275",
+        "https://github.com/CherryHQ/cherry-studio/pull/21271",
+        "https://github.com/router-for-me/CLIProxyAPI/pull/6252",
+        "https://github.com/CherryHQ/cherry-studio/pull/21214",
+        "https://github.com/CherryHQ/cherry-studio/pull/21193",
+        "https://github.com/apache/maka/pull/5845",
+        "https://github.com/apache/maka/pull/5841",
+        "https://github.com/apache/maka/pull/5741",
+        "https://github.com/apache/maka/pull/5521",
+        "https://github.com/apache/maka/pull/5466",
+        "https://github.com/apache/maka/pull/5258",
+        "https://github.com/apache/maka/pull/5172",
+        "https://github.com/apache/maka/pull/5118",
+        "https://github.com/apache/maka/pull/4816",
+        "https://github.com/apache/maka/pull/4815",
+        "https://github.com/apache/maka/pull/4814",
+        "https://github.com/apache/maka/pull/4801",
+        "https://github.com/apache/maka/pull/4800",
+        "https://github.com/apache/maka/pull/4799",
+        "https://github.com/apache/maka/pull/4798",
+        "https://github.com/apache/maka/pull/4797",
+        "https://github.com/apache/maka/pull/4794",
+        "https://github.com/router-for-me/CLIProxyAPI/pull/5432",
+        "https://github.com/apache/maka/pull/4566",
+        "https://github.com/apache/maka/pull/4518",
+        "https://github.com/apache/maka/pull/4517",
+        "https://github.com/apache/maka/pull/4514",
+        "https://github.com/apache/maka/pull/4513",
+        "https://github.com/apache/maka/pull/4506",
+        "https://github.com/apache/maka/pull/4488",
+        "https://github.com/apache/maka/pull/4485",
+        "https://github.com/apache/maka/pull/4481",
+        "https://github.com/apache/maka/pull/4345"
+      ],
+      "query": "author:ggbdpq is:pr is:merged repo:apache/maka repo:router-for-me/CLIProxyAPI repo:farion1231/cc-switch repo:CherryHQ/cherry-studio repo:stablyai/orca repo:multica-ai/multica repo:anomalyco/opencode repo:jlcodes99/cockpit-tools repo:microsoft/vscode repo:Tencent/tdesign-vue repo:sheinsight/shineout repo:chengazhen/cursor-auto-free"
+    },
+    {
+      "kind": "open",
+      "count": 50,
+      "items": [
+        "https://github.com/farion1231/cc-switch/pull/7815",
+        "https://github.com/farion1231/cc-switch/pull/7814",
+        "https://github.com/stablyai/orca/pull/24732",
+        "https://github.com/router-for-me/CLIProxyAPI/pull/6283",
+        "https://github.com/stablyai/orca/pull/24689",
+        "https://github.com/multica-ai/multica/pull/9019",
+        "https://github.com/jlcodes99/cockpit-tools/pull/2690",
+        "https://github.com/router-for-me/CLIProxyAPI/pull/6270",
+        "https://github.com/anomalyco/opencode/pull/52544",
+        "https://github.com/multica-ai/multica/pull/9008",
+        "https://github.com/jlcodes99/cockpit-tools/pull/2674",
+        "https://github.com/apache/maka/pull/5890",
+        "https://github.com/router-for-me/CLIProxyAPI/pull/6245",
+        "https://github.com/stablyai/orca/pull/24191",
+        "https://github.com/apache/maka/pull/5889",
+        "https://github.com/apache/maka/pull/5887",
+        "https://github.com/farion1231/cc-switch/pull/7781",
+        "https://github.com/CherryHQ/cherry-studio/pull/21220",
+        "https://github.com/multica-ai/multica/pull/8992",
+        "https://github.com/stablyai/orca/pull/24164",
+        "https://github.com/jlcodes99/cockpit-tools/pull/2670",
+        "https://github.com/anomalyco/opencode/pull/52287",
+        "https://github.com/stablyai/orca/pull/24142",
+        "https://github.com/multica-ai/multica/pull/8986",
+        "https://github.com/farion1231/cc-switch/pull/7760",
+        "https://github.com/stablyai/orca/pull/23880",
+        "https://github.com/farion1231/cc-switch/pull/7754",
+        "https://github.com/multica-ai/multica/pull/8959",
+        "https://github.com/router-for-me/CLIProxyAPI/pull/6198",
+        "https://github.com/apache/maka/pull/5820",
+        "https://github.com/apache/maka/pull/5805",
+        "https://github.com/apache/maka/pull/5804",
+        "https://github.com/farion1231/cc-switch/pull/7741",
+        "https://github.com/anomalyco/opencode/pull/51953",
+        "https://github.com/jlcodes99/cockpit-tools/pull/2647",
+        "https://github.com/CherryHQ/cherry-studio/pull/21146",
+        "https://github.com/apache/maka/pull/5800",
+        "https://github.com/multica-ai/multica/pull/8930",
+        "https://github.com/stablyai/orca/pull/23645",
+        "https://github.com/apache/maka/pull/5791",
+        "https://github.com/router-for-me/CLIProxyAPI/pull/6170",
+        "https://github.com/router-for-me/CLIProxyAPI/pull/6167",
+        "https://github.com/apache/maka/pull/5744",
+        "https://github.com/apache/maka/pull/5709",
+        "https://github.com/apache/maka/pull/5274",
+        "https://github.com/apache/maka/pull/5265",
+        "https://github.com/router-for-me/CLIProxyAPI/pull/5747",
+        "https://github.com/router-for-me/CLIProxyAPI/pull/5520",
+        "https://github.com/router-for-me/CLIProxyAPI/pull/5514",
+        "https://github.com/router-for-me/CLIProxyAPI/pull/5511"
+      ],
+      "query": "author:ggbdpq is:pr is:open repo:apache/maka repo:router-for-me/CLIProxyAPI repo:farion1231/cc-switch repo:CherryHQ/cherry-studio repo:stablyai/orca repo:multica-ai/multica repo:anomalyco/opencode repo:jlcodes99/cockpit-tools repo:microsoft/vscode repo:Tencent/tdesign-vue repo:sheinsight/shineout repo:chengazhen/cursor-auto-free"
+    },
+    {
+      "kind": "closed_unmerged",
+      "count": 15,
+      "items": [
+        "https://github.com/router-for-me/CLIProxyAPI/pull/6262",
+        "https://github.com/stablyai/orca/pull/24239",
+        "https://github.com/router-for-me/CLIProxyAPI/pull/6200",
+        "https://github.com/anomalyco/opencode/pull/51897",
+        "https://github.com/apache/maka/pull/5739",
+        "https://github.com/apache/maka/pull/5708",
+        "https://github.com/apache/maka/pull/5522",
+        "https://github.com/router-for-me/CLIProxyAPI/pull/5745",
+        "https://github.com/apache/maka/pull/5125",
+        "https://github.com/apache/maka/pull/5116",
+        "https://github.com/router-for-me/CLIProxyAPI/pull/5519",
+        "https://github.com/apache/maka/pull/4802",
+        "https://github.com/router-for-me/CLIProxyAPI/pull/5512",
+        "https://github.com/router-for-me/CLIProxyAPI/pull/5433",
+        "https://github.com/router-for-me/CLIProxyAPI/pull/5430"
+      ],
+      "query": "author:ggbdpq is:pr is:closed is:unmerged repo:apache/maka repo:router-for-me/CLIProxyAPI repo:farion1231/cc-switch repo:CherryHQ/cherry-studio repo:stablyai/orca repo:multica-ai/multica repo:anomalyco/opencode repo:jlcodes99/cockpit-tools repo:microsoft/vscode repo:Tencent/tdesign-vue repo:sheinsight/shineout repo:chengazhen/cursor-auto-free"
+    },
+    {
+      "kind": "issues",
+      "count": 16,
+      "items": [
+        "https://github.com/apache/maka/issues/5864",
+        "https://github.com/apache/maka/issues/5844",
+        "https://github.com/apache/maka/issues/5843",
+        "https://github.com/apache/maka/issues/5842",
+        "https://github.com/apache/maka/issues/5777",
+        "https://github.com/apache/maka/issues/4981",
+        "https://github.com/apache/maka/issues/4516",
+        "https://github.com/chengazhen/cursor-auto-free/issues/314",
+        "https://github.com/sheinsight/shineout/issues/2113",
+        "https://github.com/sheinsight/shineout/issues/2108",
+        "https://github.com/microsoft/vscode/issues/199506",
+        "https://github.com/sheinsight/shineout/issues/1968",
+        "https://github.com/Tencent/tdesign-vue/issues/414",
+        "https://github.com/Tencent/tdesign-vue/issues/389",
+        "https://github.com/Tencent/tdesign-vue/issues/247",
+        "https://github.com/Tencent/tdesign-vue/issues/208"
+      ],
+      "query": "author:ggbdpq is:issue repo:apache/maka repo:router-for-me/CLIProxyAPI repo:farion1231/cc-switch repo:CherryHQ/cherry-studio repo:stablyai/orca repo:multica-ai/multica repo:anomalyco/opencode repo:jlcodes99/cockpit-tools repo:microsoft/vscode repo:Tencent/tdesign-vue repo:sheinsight/shineout repo:chengazhen/cursor-auto-free"
+    }
+  ],
+  "projects": [
+    {
+      "repo": "ggbdpq/qoder-proxy-api",
+      "sha": "47b1af61bd87cd8fd03b94d050890d0473b5910c",
+      "tag": "v0.3.0",
+      "release": "https://github.com/ggbdpq/qoder-proxy-api/releases/tag/v0.3.0",
+      "local_check": {
+        "node": "v24.21.0",
+        "command": "node --test",
+        "passed": 89,
+        "failed": 0,
+        "environment": "本机工作区源码副本，无凭证；sandbox 放行本机监听",
+        "live_upstream": false,
+        "copy_scope": "src/test/scripts/package.json，未复制凭证或依赖"
+      },
+      "version_note": "package.json=0.2.2，CHANGELOG 最新条目=v0.2.4；以指定提交/tag标记本次核验范围"
+    },
+    {
+      "repo": "ggbdpq/agent-hub",
+      "sha": "d0b6873702c5723ee14446b9523244985605c833",
+      "tag": "v0.1.1",
+      "release": "https://github.com/ggbdpq/agent-hub/releases/tag/v0.1.1",
+      "historical_ci": {
+        "url": "https://github.com/ggbdpq/agent-hub/actions/runs/36803101833",
+        "status": "Success",
+        "shared": 17,
+        "api": 29,
+        "e2e": 3
+      },
+      "local_check": {
+        "node": "v24.21.0",
+        "scope": "SSE 解码与 bones 纯逻辑测试",
+        "passed": 12,
+        "failed": 0,
+        "full_build_api_e2e_rerun": false,
+        "command": "node --test packages/shared/src/sse-decoder.test.ts packages/shared/src/bones.test.ts",
+        "cwd": "/Users/ggbdpq/cc/ggbdpq/interview/agent-hub",
+        "copy_used": false
+      }
+    },
+    {
+      "repo": "ggbdpq/coding-agent",
+      "sha": "275087708aaefe1fbf5a01a0630bd86feb68cae3",
+      "tag": "v0.6.0",
+      "release": "https://github.com/ggbdpq/coding-agent/releases/tag/v0.6.0",
+      "local_check": {
+        "node": "v24.21.0",
+        "runtime": "TypeScript",
+        "unit_passed": 5,
+        "conformance_passed": 4,
+        "all_five_runtimes_rerun": false,
+        "unit_command": "node --test test/patch.test.ts test/planmode.test.ts",
+        "unit_cwd": "工作区副本 impls/typescript",
+        "conformance_command": "node work/coding-agent-evidence/verify-typescript.mjs",
+        "conformance_scope": "副本 TS adapter + shared.runScenario + schemaGate/normalize/diff，不是官方 all runner",
+        "boundary_command": "node work/coding-agent-evidence/verify-boundaries.mjs",
+        "boundary_probes": [
+          "第二次写入 EIO 不回滚首文件",
+          "同文件两编辑后写覆盖前写",
+          "SC-001 path 参数缺少 file_path"
+        ]
+      },
+      "version_note": "runtime 元数据仍为0.5.0；SC-004-A 为 draft，其余三场景 frozen"
+    }
+  ]
+}

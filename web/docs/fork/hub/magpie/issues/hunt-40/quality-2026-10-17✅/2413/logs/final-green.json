@@ -1,0 +1,16 @@
+{
+  "name": "final-green",
+  "time_utc": "2026-10-16T23:43:24.273706+00:00",
+  "cwd": "/private/tmp/magpie-quality-20261017-2413",
+  "command": "go test -p 2 -tags nogui -count=1 -timeout 10m ./internal/provider -run '^(TestImportCCSwitch|TestImportAlma)$'",
+  "input": "SQLite fixtures in internal/provider/importapps_test.go; no real credentials; temporary HOME via wrapper and provider TestMain testenv",
+  "environment": {
+    "GOTOOLCHAIN": "auto",
+    "GOPATH": "/Users/ggbdpq/go",
+    "GOMODCACHE": "/Users/ggbdpq/go/pkg/mod",
+    "GOCACHE": "/Users/ggbdpq/Library/Caches/go-build",
+    "GOMAXPROCS": "2"
+  },
+  "output": "ok  \tgithub.com/yetone/magpie/internal/provider\t1.020s\n",
+  "exit_status": 0
+}

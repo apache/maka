@@ -1,0 +1,25 @@
+{
+  "id": "5",
+  "slug": "valid-anagram",
+  "title": "有效的字母异位词",
+  "difficulty": "easy",
+  "tags": ["哈希表", "字符串", "排序"],
+  "description": "给定两个字符串 `s` 和 `t`,编写一个函数来判断 `t` 是否是 `s` 的字母异位词(两者字符种类和数量完全相同,仅顺序不同)。\n\n**示例 1:**\n\n- 输入:`s = \"anagram\"`, `t = \"nagaram\"`\n- 输出:`true`\n\n**示例 2:**\n\n- 输入:`s = \"rat\"`, `t = \"car\"`\n- 输出:`false`\n\n**进阶:** 如果输入字符串包含 unicode 字符怎么办?你的解法能否适应?",
+  "solution": "## 思路\n\n若两串长度不等直接返回 false。用**哈希表**(字符 → 出现次数)统计 `s`,再遍历 `t` 逐个抵消;出现次数不足即非异位词。\n\n## 参考代码\n\n```js\nfunction isAnagram(s, t) {\n  if (s.length !== t.length) return false;\n  const count = new Map();\n  for (const c of s) count.set(c, (count.get(c) || 0) + 1);\n  for (const c of t) {\n    const v = count.get(c);\n    if (!v) return false;\n    count.set(c, v - 1);\n  }\n  return true;\n}\n```\n\n## 复杂度\n\n- 时间:O(n)\n- 空间:O(k),k 为字符集大小",
+  "signature": {
+    "language": "javascript",
+    "entry": "isAnagram",
+    "params": [
+      { "name": "s", "type": "string" },
+      { "name": "t", "type": "string" }
+    ],
+    "returns": "boolean"
+  },
+  "testCases": [
+    { "sample": true, "input": ["anagram", "nagaram"], "expected": true },
+    { "sample": true, "input": ["rat", "car"], "expected": false },
+    { "sample": false, "input": ["", ""], "expected": true },
+    { "sample": false, "input": ["aacc", "ccac"], "expected": false },
+    { "sample": false, "input": ["listen", "silent"], "expected": true }
+  ]
+}

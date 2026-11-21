@@ -1,0 +1,188 @@
+package gateway
+
+// Temporary hunt68 lane-C probe for #2622 (jinyue806's 2026-10-17 root-cause
+// correction): a tool schema whose $ref reaches a $defs entry holding oneOf.
+// Questions answered here, against current main (3b8bcc36):
+//   (a) does that schema still reach a Chat upstream unchanged,
+//   (b) is that the shape the report's 400s carried,
+//   (c) what shapeChatTools does and does not do to it.
+
+import (
+	"encoding/json"
+	"reflect"
+	"strings"
+	"testing"
+
+	"github.com/tidwall/gjson"
+	"github.com/yetone/magpie/internal/provider"
+)
+
+// refToOneOf is jinyue806's minimal repro from #2622 comment 6 (4/4 stable
+// upstream failures on SenseNova): a $ref whose target in $defs is a oneOf.
+const refToOneOf = `{"type":"object","properties":{"x":{"type":"array","items":{"$ref":"#/$defs/T"}}},"$defs":{"T":{"oneOf":[{"type":"string"}]}}}`
+
+// inlineOneOf is their passing control: the same oneOf, not behind a $ref.
+const inlineOneOf = `{"type":"object","properties":{"x":{"type":"array","items":{"oneOf":[{"type":"string"}]}}}}`
+
+// refToObject is their mostly-passing control: a $ref to a plain object.
+const refToObject = `{"type":"object","properties":{"x":{"type":"array","items":{"$ref":"#/$defs/O"}}},"$defs":{"O":{"type":"object"}}}`
+
+// TestProbe2622ShapeChatToolsUnit: shapeChatTools never inspects the
+// parameters content, whichever wrapper shape carries it.
+func TestProbe2622ShapeChatToolsUnit(t *testing.T) {
+	for name, tool := range map[string]string{
+		"standard wrapper": `{"type":"function","function":{"name":"f","parameters":` + refToOneOf + `}}`,
+		"mcp flat":         `{"name":"f","inputSchema":` + refToOneOf + `}`,
+		"anthropic flat":   `{"name":"f","input_schema":` + refToOneOf + `}`,
+		"responses flat":   `{"type":"function","name":"f","parameters":` + refToOneOf + `}`,
+	} {
+		body := []byte(`{"model":"m","messages":[],"tools":[` + tool + `]}`)
+		got := shapeChatTools(body)
+		p := gjson.GetBytes(got, "tools.0.function.parameters")
+		if !p.Exists() {
+			t.Fatalf("%s: no function.parameters in %s", name, got)
+		}
+		if p.Raw != refToOneOf {
+			t.Errorf("%s: parameters changed to %s", name, p.Raw)
+		} else {
+			t.Logf("%s: parameters carried verbatim", name)
+		}
+	}
+	// and a fully standard request with the schema comes out byte for byte
+	body := `{"model":"m","messages":[],"tools":[{"type":"function","function":{"name":"f","parameters":` + refToOneOf + `}}]}`
+	if got := string(shapeChatTools([]byte(body))); got != body {
+		t.Errorf("standard tool rewritten: %s", got)
+	} else {
+		t.Logf("standard tool: body relayed byte for byte")
+	}
+}
+
+// TestProbe2622RelayChat: the Chat-to-Chat relay (the report's route, a
+// SenseNova-like provider) sends the schema upstream as it came.
+func TestProbe2622RelayChat(t *testing.T) {
+	srv, seen := relayOfEvery(t)
+	fresh(t)
+	p := provider.Provider{Chat: srv.URL + "/v1"}
+	p.ID, p.Name, p.Key, p.Models = "sensenova", "SenseNova", "k", []string{"kimi-k3"}
+	if err := provider.Save(p); err != nil {
+		t.Fatal(err)
+	}
+	seen()
+	body := `{"model":"kimi-k3","messages":[{"role":"user","content":"hi"}],"max_tokens":8,` +
+		`"tools":[{"type":"function","function":{"name":"observe_native_calls","parameters":` + refToOneOf + `}}]}`
+	if code, b := post(t, "/v1/chat/completions", body); code != 200 {
+		t.Fatalf("%d %s", code, b)
+	}
+	paths, bodies := seen()
+	if len(paths) != 1 || paths[0] != "/v1/chat/completions" {
+		t.Fatalf("went to %v", paths)
+	}
+	sent := gjson.Get(bodies[0], "tools.0.function.parameters")
+	if !sent.Exists() {
+		t.Fatalf("no function.parameters upstream: %s", bodies[0])
+	}
+	if sent.Raw != refToOneOf {
+		t.Errorf("schema was changed upstream: %s", sent.Raw)
+	} else {
+		t.Logf("RED-for-the-issue: $ref-to-oneOf schema relayed verbatim to the Chat upstream")
+		t.Logf("upstream tools.0: %s", gjson.Get(bodies[0], "tools.0").Raw)
+	}
+	// the same via the wrapper the client actually sent before the fix
+	seen()
+	body = `{"model":"kimi-k3","messages":[{"role":"user","content":"hi"}],"max_tokens":8,` +
+		`"tools":[{"name":"observe_native_calls","inputSchema":` + refToOneOf + `}]}`
+	if code, b := post(t, "/v1/chat/completions", body); code != 200 {
+		t.Fatalf("%d %s", code, b)
+	}
+	_, bodies = seen()
+	sent = gjson.Get(bodies[0], "tools.0.function.parameters")
+	if !sent.Exists() || sent.Raw != refToOneOf {
+		t.Errorf("mcp-wrapped schema became %s", sent.Raw)
+	} else {
+		t.Logf("mcp flat + $ref-to-oneOf: wrapped to type/function, parameters still verbatim")
+		t.Logf("upstream tools.0: %s", gjson.Get(bodies[0], "tools.0").Raw)
+	}
+	// controls ride the same way (nothing discriminates any schema here)
+	for name, schema := range map[string]string{"inline oneOf": inlineOneOf, "ref to object": refToObject} {
+		seen()
+		body = `{"model":"kimi-k3","messages":[{"role":"user","content":"hi"}],"max_tokens":8,` +
+			`"tools":[{"type":"function","function":{"name":"f","parameters":` + schema + `}}]}`
+		if code, b := post(t, "/v1/chat/completions", body); code != 200 {
+			t.Fatalf("%s: %d %s", name, code, b)
+		}
+		_, bodies = seen()
+		if s := gjson.Get(bodies[0], "tools.0.function.parameters").Raw; s != schema {
+			t.Errorf("%s: control changed to %s", name, s)
+		} else {
+			t.Logf("%s control: verbatim upstream", name)
+		}
+	}
+}
+
+// TestProbe2622TranslatedRoutes: the same schema rides the Messages and
+// Responses translations unchanged (sibling surface).
+func TestProbe2622TranslatedRoutes(t *testing.T) {
+	for _, route := range []struct {
+		name, model, path, at string
+		p                     provider.Provider
+	}{
+		{"messages", "claude-opus-5-5", "/v1/messages", "tools.0.input_schema", provider.Provider{Anthropic: "PLACEBO"}},
+		{"responses", "kimi-k3", "/v1/responses", "tools.0.parameters", provider.Provider{Responses: "PLACEBO"}},
+	} {
+		t.Run(route.name, func(t *testing.T) {
+			srv, seen := relayOfEvery(t)
+			fresh(t)
+			route.p.Anthropic = strings.Replace(route.p.Anthropic, "PLACEBO", srv.URL, 1)
+			route.p.Responses = strings.Replace(route.p.Responses, "PLACEBO", srv.URL+"/v1", 1)
+			route.p.ID, route.p.Name, route.p.Key, route.p.Models = "sensenova", "SenseNova", "k", []string{route.model}
+			if err := provider.Save(route.p); err != nil {
+				t.Fatal(err)
+			}
+			seen()
+			body := `{"model":"` + route.model + `","messages":[{"role":"user","content":"hi"}],"max_tokens":8,` +
+				`"tools":[{"name":"observe_native_calls","inputSchema":` + refToOneOf + `}]}`
+			if code, b := post(t, "/v1/chat/completions", body); code != 200 {
+				t.Fatalf("%d %s", code, b)
+			}
+			paths, bodies := seen()
+			if len(paths) != 1 || paths[0] != route.path {
+				t.Fatalf("went to %v, want %s", paths, route.path)
+			}
+			sent := gjson.Get(bodies[0], route.at)
+			if !sent.Exists() {
+				t.Fatalf("no schema at %s: %s", route.at, bodies[0])
+			}
+			var in, out any
+			if json.Unmarshal([]byte(refToOneOf), &in) != nil || json.Unmarshal([]byte(sent.Raw), &out) != nil {
+				t.Fatal("bad json")
+			}
+			if !reflect.DeepEqual(in, out) {
+				t.Errorf("schema changed in translation: %s", sent.Raw)
+			} else {
+				t.Logf("%s: schema carried through translation verbatim at %s", route.name, route.at)
+			}
+		})
+	}
+}
+
+// TestProbe2622ChainGates: none of the schema-content transforms in
+// forwardOnce applies to a plain SenseNova host.
+func TestProbe2622ChainGates(t *testing.T) {
+	p := provider.Provider{Chat: "https://token.sensenova.cn/v1"}
+	p.ID, p.Name = "sensenova", "SenseNova"
+	body := []byte(`{"model":"kimi-k3","tools":[{"type":"function","function":{"name":"f","parameters":` + refToOneOf + `}}]}`)
+	for name, fn := range map[string]func([]byte) []byte{
+		"toolOneOfAsAnyOf":  func(b []byte) []byte { return toolOneOfAsAnyOf(p, provider.Chat, b) },
+		"kimiToolEnumTypes": func(b []byte) []byte { return kimiToolEnumTypes(p, provider.Chat, b) },
+		"kimiToolRefTypes":  func(b []byte) []byte { return kimiToolRefTypes(p, provider.Chat, b) },
+	} {
+		if got := fn(body); string(got) != string(body) {
+			t.Errorf("%s rewrote a sensenova body: %s", name, got)
+		} else {
+			t.Logf("%s: gate closed for host %s, body unchanged", name, provider.HostOf(p.Base(provider.Chat)))
+		}
+	}
+	if isKimi(p, provider.Chat) {
+		t.Error("isKimi true for sensenova")
+	}
+}

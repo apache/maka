@@ -1,0 +1,991 @@
+--- E:\cc\guahub\sessions\raw\ide-caches\migration-20261026-140321\ORIGINAL_FILE.json
++++ E:\cc\guahub\sessions\raw\ide-caches\migration-20261026-140321\MODIFIED_FILE.json
+@@ -1,5 +1,5 @@
+ {
+-  "state": "source_present",
++  "state": "migrated",
+   "groups": [
+     {
+       "name": "kimi-desktop-Cache",
+@@ -22047,981 +22047,6 @@
+       ],
+       "directories": [
+         "queue"
+-      ]
+-    },
+-    {
+-      "name": "codex-desktop-local-logs",
+-      "source": "C:\\Users\\802165\\AppData\\Local\\Codex\\Logs",
+-      "pattern": "**/*",
+-      "remove_root": true,
+-      "category": "archive",
+-      "skipped": [],
+-      "archive": "E:\\cc\\guahub\\sessions\\raw\\ide-caches\\migration-20261026-140321\\codex-desktop-local-logs.zip",
+-      "files": [
+-        {
+-          "path": "2026/10/12/codex-desktop-49e55a47-1c31-4fb8-8dda-0be7b89ccd4d-9168-t0-i1-033636-0.log",
+-          "size": 1610154,
+-          "mtime_ns": 1791778977490054200,
+-          "sha256": "2fff22680371560da44c9422689ffb49a0ec688043ac183eea5b2b185439cee3"
+-        },
+-        {
+-          "path": "2026/10/12/codex-desktop-49e55a47-1c31-4fb8-8dda-0be7b89ccd4d-9168-t1-i1-033638-0.log",
+-          "size": 22322,
+-          "mtime_ns": 1791778038462050700,
+-          "sha256": "c66627cf5c4cac921cf57ae3f8c9a2dc561d263e0c97f2b8e9063b119656cc3d"
+-        },
+-        {
+-          "path": "2026/10/12/codex-desktop-49e55a47-1c31-4fb8-8dda-0be7b89ccd4d-9168-t2-i1-033701-0.log",
+-          "size": 1461,
+-          "mtime_ns": 1791776246326317600,
+-          "sha256": "5bb12e8b0365bc2e5877f6783cd7f36d4f0510cce25ac4116869d5c8b1b8529a"
+-        },
+-        {
+-          "path": "2026/10/12/codex-desktop-5495372b-c4bd-4e9f-a212-f4abd02088bc-30728-t0-i1-043420-0.log",
+-          "size": 564300,
+-          "mtime_ns": 1791780404390234600,
+-          "sha256": "fb64950b7c6c47da3500b2113b34a856190b35503f6538a65a268a9455b5e1fd"
+-        },
+-        {
+-          "path": "2026/10/12/codex-desktop-5495372b-c4bd-4e9f-a212-f4abd02088bc-30728-t1-i1-043423-0.log",
+-          "size": 17032,
+-          "mtime_ns": 1791780376723198200,
+-          "sha256": "797b08da404cc56c9d4a1cb222a6a9fbb3385f6c4a0b98166b8430c290f8567a"
+-        },
+-        {
+-          "path": "2026/10/12/codex-desktop-a97791dd-8489-41b0-88e7-84a78aecf211-23044-t0-i1-014914-0.log",
+-          "size": 3556165,
+-          "mtime_ns": 1791776075898950100,
+-          "sha256": "8e480022cd721cbe0c1bc13cdde6a7cc6a8f07a7fb4668d3d0c09d6c7e75ed01"
+-        },
+-        {
+-          "path": "2026/10/12/codex-desktop-a97791dd-8489-41b0-88e7-84a78aecf211-23044-t1-i1-014951-0.log",
+-          "size": 54464,
+-          "mtime_ns": 1791774655567767300,
+-          "sha256": "e439aa92119c8804265bce4912fe8490d71c28ca26bb7133a65765e3dd3f459d"
+-        },
+-        {
+-          "path": "2026/10/12/codex-desktop-a97791dd-8489-41b0-88e7-84a78aecf211-23044-t2-i1-021445-0.log",
+-          "size": 1461,
+-          "mtime_ns": 1791771304129675900,
+-          "sha256": "b77c002d6c04efe3d707263b6f1825142046911c260242311de07bdb55b585e8"
+-        },
+-        {
+-          "path": "2026/10/12/codex-desktop-c18d111f-bf0b-46f9-88e1-a985c821d199-20256-t0-i1-033500-0.log",
+-          "size": 247322,
+-          "mtime_ns": 1791776173327230800,
+-          "sha256": "7edae5e3007487c973378cc9343d2dbbe77381751215e63d94337a714253bb22"
+-        },
+-        {
+-          "path": "2026/10/12/codex-desktop-c18d111f-bf0b-46f9-88e1-a985c821d199-20256-t1-i1-033503-0.log",
+-          "size": 1627,
+-          "mtime_ns": 1791776160658305500,
+-          "sha256": "a07e0d0bcde71e2d319ca916ea73b5b448e4ce17e33ab81e9b8886f8ca0644bd"
+-        },
+-        {
+-          "path": "2026/10/12/codex-desktop-d28f28e7-c72e-429b-9a21-7b666d3a6f98-13224-t0-i1-045113-0.log",
+-          "size": 10485717,
+-          "mtime_ns": 1791801633880616600,
+-          "sha256": "1c34bb24f7cf6c4409533a559d0a402e5029a5107663869024ae7e6030c1bca1"
+-        },
+-        {
+-          "path": "2026/10/12/codex-desktop-d28f28e7-c72e-429b-9a21-7b666d3a6f98-13224-t0-i1-045113-1.log",
+-          "size": 10485567,
+-          "mtime_ns": 1791823500067828700,
+-          "sha256": "f2c4352d89254b85f44b1016ca0bf441ce963fab42ca104a2d9a4ded91b3153c"
+-        },
+-        {
+-          "path": "2026/10/12/codex-desktop-d28f28e7-c72e-429b-9a21-7b666d3a6f98-13224-t0-i1-045113-2.log",
+-          "size": 10485374,
+-          "mtime_ns": 1791845468052707800,
+-          "sha256": "082ed0a6daeab5fbc8ef17c990da65dc6d04d78b79fc54800b35877119466346"
+-        },
+-        {
+-          "path": "2026/10/12/codex-desktop-d28f28e7-c72e-429b-9a21-7b666d3a6f98-13224-t0-i1-045113-3.log",
+-          "size": 1927192,
+-          "mtime_ns": 1791849582596845500,
+-          "sha256": "6c23ad84e89dcc09164b6fd618149bf214354abb3b51da49b6dec82bed4098c5"
+-        },
+-        {
+-          "path": "2026/10/12/codex-desktop-d28f28e7-c72e-429b-9a21-7b666d3a6f98-13224-t1-i1-045116-0.log",
+-          "size": 756629,
+-          "mtime_ns": 1791849120428947500,
+-          "sha256": "40b4fad45f77024f44ca97894130930ecbef307c237756c3df0f65eaadb3e3ae"
+-        },
+-        {
+-          "path": "2026/10/12/codex-desktop-e9df7898-293e-4c58-8f81-301d97049909-15544-t0-i1-010557-0.log",
+-          "size": 1543172,
+-          "mtime_ns": 1791769734330681100,
+-          "sha256": "5d725f636ce3c6778356b1e48a609acd4802fc639e1dfe4a84420792bef59a31"
+-        },
+-        {
+-          "path": "2026/10/12/codex-desktop-e9df7898-293e-4c58-8f81-301d97049909-15544-t1-i1-010613-0.log",
+-          "size": 5655,
+-          "mtime_ns": 1791769736590830700,
+-          "sha256": "dc3f0b20baf817d374f5b00362d2db9496ba5b5263f6195b9b5a5b6d2fc572ad"
+-        },
+-        {
+-          "path": "2026/10/13/codex-desktop-a1ab71ef-5760-4dbd-8a1f-6c785e821a0c-27772-t0-i1-021438-0.log",
+-          "size": 9273447,
+-          "mtime_ns": 1791875193697054100,
+-          "sha256": "a7702be6f974c613ee3f3beb5e6285a25a41937539129924383a5185f3d717fc"
+-        },
+-        {
+-          "path": "2026/10/13/codex-desktop-a1ab71ef-5760-4dbd-8a1f-6c785e821a0c-27772-t1-i1-021440-0.log",
+-          "size": 975982,
+-          "mtime_ns": 1791873729415309500,
+-          "sha256": "114d7a17fd96868657e2e8b176e8ab817596541a994b003ad6bdd29dc8963967"
+-        },
+-        {
+-          "path": "2026/10/13/codex-desktop-a1ab71ef-5760-4dbd-8a1f-6c785e821a0c-27772-t2-i1-021510-0.log",
+-          "size": 1461,
+-          "mtime_ns": 1791857729964557000,
+-          "sha256": "95bca6076a01cccf49e1f7d9f6873f807b01df50b16dd5746f8efa9ead28c7dd"
+-        },
+-        {
+-          "path": "2026/10/13/codex-desktop-a4b7a577-4bd3-4147-9e7e-a323662c07af-9172-t0-i1-070648-0.log",
+-          "size": 2349044,
+-          "mtime_ns": 1791879589844541600,
+-          "sha256": "94c7764e65441e7cb87d731aab4c48f3640de0ed8ba52fbafe85ee7bd25ecdea"
+-        },
+-        {
+-          "path": "2026/10/13/codex-desktop-a4b7a577-4bd3-4147-9e7e-a323662c07af-9172-t1-i1-070651-0.log",
+-          "size": 120475,
+-          "mtime_ns": 1791879202050564900,
+-          "sha256": "7be8b1997019cc465b9f2655d5c0daaca798299d4e6f97e0e5bea3b87a9d82d4"
+-        },
+-        {
+-          "path": "2026/10/13/codex-desktop-a4b7a577-4bd3-4147-9e7e-a323662c07af-9172-t2-i1-070817-0.log",
+-          "size": 1461,
+-          "mtime_ns": 1791875315939570100,
+-          "sha256": "1af26e85f7ce26408cea8cbebd4db2261fa8fecade86c2cec33654f02a054152"
+-        },
+-        {
+-          "path": "2026/10/13/codex-desktop-c3260731-3cad-4e2b-9c04-9ab07341911a-38604-t0-i1-082433-0.log",
+-          "size": 4136165,
+-          "mtime_ns": 1791887803455514000,
+-          "sha256": "828d88aea181a57d8ad086ced76ea99b66bd26c5caeae607f649546e952525d2"
+-        },
+-        {
+-          "path": "2026/10/13/codex-desktop-c3260731-3cad-4e2b-9c04-9ab07341911a-38604-t1-i1-082436-0.log",
+-          "size": 814880,
+-          "mtime_ns": 1791887790819130700,
+-          "sha256": "8a393950110381b35be0cc726fc0d5cad3abc73010df283ed217d10bf2dfc7d5"
+-        },
+-        {
+-          "path": "2026/10/13/codex-desktop-d28f28e7-c72e-429b-9a21-7b666d3a6f98-13224-t0-i1-000002-0.log",
+-          "size": 1753796,
+-          "mtime_ns": 1791853140905698700,
+-          "sha256": "5982e0dda21fb6c545f1b8803edbed85135ca43887758ec00346cdd197696b1f"
+-        },
+-        {
+-          "path": "2026/10/13/codex-desktop-d28f28e7-c72e-429b-9a21-7b666d3a6f98-13224-t1-i1-004707-0.log",
+-          "size": 4179,
+-          "mtime_ns": 1791852720777676700,
+-          "sha256": "ac1517b14a9f61694c4ef7cf50ca719bb4ae9284210e378b2e8ac3bdb451642e"
+-        },
+-        {
+-          "path": "2026/10/13/codex-desktop-e6583cfc-3c4c-4522-8af6-a8a7c072fd9d-7812-t0-i1-010321-0.log",
+-          "size": 2596500,
+-          "mtime_ns": 1791857661689808300,
+-          "sha256": "782332459887f1820aa210e4afa18dec66f4a93f41b7ed6544f071c53a2c9dd1"
+-        },
+-        {
+-          "path": "2026/10/13/codex-desktop-e6583cfc-3c4c-4522-8af6-a8a7c072fd9d-7812-t1-i1-010324-0.log",
+-          "size": 143246,
+-          "mtime_ns": 1791857637343691000,
+-          "sha256": "2e58949060745d9d3791e2a314fe09a724ab19e4bc05905c6579a469b4c11388"
+-        },
+-        {
+-          "path": "2026/10/13/codex-desktop-e6583cfc-3c4c-4522-8af6-a8a7c072fd9d-7812-t2-i1-020025-0.log",
+-          "size": 1461,
+-          "mtime_ns": 1791856851743072000,
+-          "sha256": "173c64e8382a918269e5d6d8ed3b66e5e3bd53299d8cf5ce72e3cc5933ed7de4"
+-        },
+-        {
+-          "path": "2026/10/14/codex-desktop-211a944f-59a3-47ce-83d5-918fbe0b7197-13164-t0-i1-004657-0.log",
+-          "size": 552503,
+-          "mtime_ns": 1791940073580993900,
+-          "sha256": "8d79d20e4b1691ce11532e7d8eb76561e439ee950085d38260f5fda37bfb80d2"
+-        },
+-        {
+-          "path": "2026/10/14/codex-desktop-211a944f-59a3-47ce-83d5-918fbe0b7197-13164-t1-i1-004700-0.log",
+-          "size": 268,
+-          "mtime_ns": 1791938833265011000,
+-          "sha256": "cb218a90ed844ec1f9eb16ae37787880b9fc0df425cb7a2f1d900d836e6b0fc8"
+-        },
+-        {
+-          "path": "2026/10/14/codex-desktop-22263e5c-f29b-4007-b7ef-0a7deb9c5673-29876-t0-i1-022803-0.log",
+-          "size": 350069,
+-          "mtime_ns": 1791945161270694300,
+-          "sha256": "0e8b4d86ad5593d7fd97ec62783b7ac2b06da8bb5747e440c30e88d0b5a9aa7b"
+-        },
+-        {
+-          "path": "2026/10/14/codex-desktop-22263e5c-f29b-4007-b7ef-0a7deb9c5673-29876-t1-i1-022859-0.log",
+-          "size": 36534,
+-          "mtime_ns": 1791945170355408700,
+-          "sha256": "6082143736bf91baa8185dac5a4c103fbe99bddeaaf9e2feb09d577ab583b60e"
+-        },
+-        {
+-          "path": "2026/10/14/codex-desktop-4713ecbe-51e3-422a-aa5a-537704445841-29816-t0-i1-023318-0.log",
+-          "size": 10485710,
+-          "mtime_ns": 1791973610901198700,
+-          "sha256": "95d38faadaaf74c78e0238052eb3d611066525a86caffc4c8161119d659e7cc7"
+-        },
+-        {
+-          "path": "2026/10/14/codex-desktop-4713ecbe-51e3-422a-aa5a-537704445841-29816-t0-i1-023318-1.log",
+-          "size": 990044,
+-          "mtime_ns": 1791976248726729300,
+-          "sha256": "b92f1eccbfbf8129b732dc560c24a02914f310aa827186bc669e06ea0521463a"
+-        },
+-        {
+-          "path": "2026/10/14/codex-desktop-4713ecbe-51e3-422a-aa5a-537704445841-29816-t1-i1-023324-0.log",
+-          "size": 232439,
+-          "mtime_ns": 1791975976997229800,
+-          "sha256": "7f345d1f291a98819623b8210fd728a76121b24d535d929071d3c0572d118c0a"
+-        },
+-        {
+-          "path": "2026/10/14/codex-desktop-4713ecbe-51e3-422a-aa5a-537704445841-29816-t2-i1-023553-0.log",
+-          "size": 1461,
+-          "mtime_ns": 1791945535269705900,
+-          "sha256": "51abc520091b06a17498df9b08389004f5d9823402410c3bbaafe7a1b8304803"
+-        },
+-        {
+-          "path": "2026/10/14/codex-desktop-f624e63d-ea66-4e73-aaae-1c530c8e0c98-23708-t0-i1-013155-0.log",
+-          "size": 1918214,
+-          "mtime_ns": 1791944824509650600,
+-          "sha256": "bc262fa58f8a4d89a39d9b84ba041c9033fb6c4e811bcb37b4ef57e33feae14f"
+-        },
+-        {
+-          "path": "2026/10/14/codex-desktop-f624e63d-ea66-4e73-aaae-1c530c8e0c98-23708-t1-i1-013158-0.log",
+-          "size": 84247,
+-          "mtime_ns": 1791944828947052900,
+-          "sha256": "d331a20800af0681124a612e6fbb1be88f08cad1b245cdf8a2971655e1fc0c7d"
+-        },
+-        {
+-          "path": "2026/10/15/codex-desktop-066bf32b-2459-47dd-8905-f0a4d2503e2c-10452-t0-i1-005825-0.log",
+-          "size": 153966,
+-          "mtime_ns": 1792026154922792000,
+-          "sha256": "ab19789e9626692eefd69bf3680f788a17cf2ff588577dc5e4a7dc94b346ddd5"
+-        },
+-        {
+-          "path": "2026/10/15/codex-desktop-066bf32b-2459-47dd-8905-f0a4d2503e2c-10452-t1-i1-005829-0.log",
+-          "size": 268,
+-          "mtime_ns": 1792025922364577600,
+-          "sha256": "9296c5d229a20e60bba2d90c507cf9a8c3723ded8b19ffb89cd3469c6c2382eb"
+-        },
+-        {
+-          "path": "2026/10/15/codex-desktop-6d7be1cd-eda3-4c3a-8673-64143911775f-9808-t0-i1-010548-0.log",
+-          "size": 5040610,
+-          "mtime_ns": 1792053458749197100,
+-          "sha256": "5e5d23fddde2e821204905a2b2cc553cd629da80c2b6bc1b7b1c19f31e367d5d"
+-        },
+-        {
+-          "path": "2026/10/15/codex-desktop-6d7be1cd-eda3-4c3a-8673-64143911775f-9808-t1-i1-010600-0.log",
+-          "size": 317608,
+-          "mtime_ns": 1792053289198593100,
+-          "sha256": "5ab689f3b0f7045513c68d947b0bc733ab2f0016ce6bdb7142cf7766720a7d38"
+-        },
+-        {
+-          "path": "2026/10/15/codex-desktop-be4e5f36-fc5a-421d-afd5-e083f72f7716-25844-t0-i1-105528-0.log",
+-          "size": 10485561,
+-          "mtime_ns": 1792082823328279800,
+-          "sha256": "d96b0c71aa94572178de80829abea28bb3b8384cd255bf9cd4906c13735cc68a"
+-        },
+-        {
+-          "path": "2026/10/15/codex-desktop-be4e5f36-fc5a-421d-afd5-e083f72f7716-25844-t0-i1-105528-1.log",
+-          "size": 10485541,
+-          "mtime_ns": 1792104218236349000,
+-          "sha256": "15e50ad680edf8072bf115835f24f07fdb714bb78746d39bfa3856b9dd67cd3e"
+-        },
+-        {
+-          "path": "2026/10/15/codex-desktop-be4e5f36-fc5a-421d-afd5-e083f72f7716-25844-t0-i1-105528-2.log",
+-          "size": 2262220,
+-          "mtime_ns": 1792108794556259900,
+-          "sha256": "51a7b8cc2aa982ca8878d265775b6476fbc4e20d8e2fcd715c7842e8a0fce2da"
+-        },
+-        {
+-          "path": "2026/10/15/codex-desktop-be4e5f36-fc5a-421d-afd5-e083f72f7716-25844-t1-i1-105531-0.log",
+-          "size": 32278,
+-          "mtime_ns": 1792107750583986000,
+-          "sha256": "05598b2b4c9093877d564869fc6f4f3d310e2682e23ae960b8bfbb726ce985d6"
+-        },
+-        {
+-          "path": "2026/10/16/codex-desktop-0ecd9a0e-478e-4167-a992-ef1a1230964d-31364-t0-i1-051102-0.log",
+-          "size": 10248988,
+-          "mtime_ns": 1792146671530001100,
+-          "sha256": "9d0efe9ce6d478784b13d547b0ab5fc76cb170a5d37958feebcd50e3562db274"
+-        },
+-        {
+-          "path": "2026/10/16/codex-desktop-0ecd9a0e-478e-4167-a992-ef1a1230964d-31364-t1-i1-051126-0.log",
+-          "size": 75869,
+-          "mtime_ns": 1792142466404565300,
+-          "sha256": "32f9116096fbcffefdc161f9cf569916e1744c6497013108b82881d62c0fce97"
+-        },
+-        {
+-          "path": "2026/10/16/codex-desktop-54ba62da-0835-4b20-a826-c411228ff6a1-23968-t0-i1-050513-0.log",
+-          "size": 331816,
+-          "mtime_ns": 1792127448072482000,
+-          "sha256": "aa0479c7ecf1d6d91dfdf21f8688db212b09cb63e02b2e215c781bace33bfd52"
+-        },
+-        {
+-          "path": "2026/10/16/codex-desktop-54ba62da-0835-4b20-a826-c411228ff6a1-23968-t1-i1-050520-0.log",
+-          "size": 2829,
+-          "mtime_ns": 1792127358694917400,
+-          "sha256": "2efc4dc88b301b5ae7298c3efecd4abe3cce31fd2b9a6a051ae796c821b02b55"
+-        },
+-        {
+-          "path": "2026/10/16/codex-desktop-be4e5f36-fc5a-421d-afd5-e083f72f7716-25844-t0-i1-000014-0.log",
+-          "size": 7895681,
+-          "mtime_ns": 1792124197129028600,
+-          "sha256": "d878030dfe52769a186c4fef1cb60c60e5a61839c3ce45ab23543f6e7df94b41"
+-        },
+-        {
+-          "path": "2026/10/16/codex-desktop-be4e5f36-fc5a-421d-afd5-e083f72f7716-25844-t1-i1-004231-0.log",
+-          "size": 24383,
+-          "mtime_ns": 1792124184526364800,
+-          "sha256": "9b842d93ce71a57b56de545321a83ed610f574e7f33c839a5b54f870756f6ee3"
+-        },
+-        {
+-          "path": "2026/10/17/codex-desktop-0798d55d-7b25-4f0e-b058-192005d491e5-24628-t0-i1-073756-0.log",
+-          "size": 4513183,
+-          "mtime_ns": 1792230981898829600,
+-          "sha256": "ac1d659d991899365e01f61e44fc8bb9efabde7f270d5c84489d9f8893323b1f"
+-        },
+-        {
+-          "path": "2026/10/17/codex-desktop-0798d55d-7b25-4f0e-b058-192005d491e5-24628-t1-i1-073832-0.log",
+-          "size": 16939,
+-          "mtime_ns": 1792230269969865000,
+-          "sha256": "8d7e01f1755782828987821df62c14d004e2d0c6df9f5feab65b5d922694d9e9"
+-        },
+-        {
+-          "path": "2026/10/17/codex-desktop-38cdba50-b2d8-4efb-af81-490d2a9b31cb-17016-t0-i1-062201-0.log",
+-          "size": 2226910,
+-          "mtime_ns": 1792220882384222700,
+-          "sha256": "b22428d3663ee93eecfe6ad4a8a45cf0c91600c244adc9303231ab7c49ca5609"
+-        },
+-        {
+-          "path": "2026/10/17/codex-desktop-38cdba50-b2d8-4efb-af81-490d2a9b31cb-17016-t1-i1-062220-0.log",
+-          "size": 48344,
+-          "mtime_ns": 1792220392585186800,
+-          "sha256": "0e3c3bbb6096b38916a9ee2f3f3652b585fe15d24feb4b450290a20c719ccb17"
+-        },
+-        {
+-          "path": "2026/10/17/codex-desktop-38cdba50-b2d8-4efb-af81-490d2a9b31cb-17016-t2-i1-062230-0.log",
+-          "size": 1461,
+-          "mtime_ns": 1792218168988669400,
+-          "sha256": "4568ce80579d92cca22a1a4e8589fc89dca34903d7b3319ae2c6d65b3e2d404c"
+-        },
+-        {
+-          "path": "2026/10/17/codex-desktop-9eccde39-ca60-4228-9932-7113681afe4b-32188-t0-i1-071038-0.log",
+-          "size": 1057665,
+-          "mtime_ns": 1792222664659976000,
+-          "sha256": "5e5e29e3eced9ad4dbad34369bd881661f621e370624d434dfb191071b7d8c77"
+-        },
+-        {
+-          "path": "2026/10/17/codex-desktop-9eccde39-ca60-4228-9932-7113681afe4b-32188-t1-i1-071050-0.log",
+-          "size": 4059,
+-          "mtime_ns": 1792222479323238100,
+-          "sha256": "43c7d65314e215f0c4ad6042d3ffb7af01cad744d89f285aa0077c5a894ebcec"
+-        },
+-        {
+-          "path": "2026/10/17/codex-desktop-a4c0c8e8-0ad1-4391-ada0-a9877e54dc64-15424-t0-i1-050940-0.log",
+-          "size": 1998926,
+-          "mtime_ns": 1792218106107141900,
+-          "sha256": "1fbdf4fdb8c4533c923e695d7f30b4de7714d17e0596d5e7a58db468444ff436"
+-        },
+-        {
+-          "path": "2026/10/17/codex-desktop-a4c0c8e8-0ad1-4391-ada0-a9877e54dc64-15424-t1-i1-050954-0.log",
+-          "size": 9525,
+-          "mtime_ns": 1792218007564368400,
+-          "sha256": "56fd2b77b81c45266966620f72ea2f60c406b928e2bd036fbb300c4342e53b0e"
+-        },
+-        {
+-          "path": "2026/10/17/codex-desktop-a4c0c8e8-0ad1-4391-ada0-a9877e54dc64-15424-t2-i1-061938-0.log",
+-          "size": 1461,
+-          "mtime_ns": 1792218011636197200,
+-          "sha256": "4941c5f9d4acd57ae0f850c5108042be4b0188f6ef4996533635d89c517d16fb"
+-        },
+-        {
+-          "path": "2026/10/19/codex-desktop-a134ffda-f5a0-463f-8ea2-d738c9c69bb4-30232-t0-i1-072259-0.log",
+-          "size": 10485330,
+-          "mtime_ns": 1792413152612019500,
+-          "sha256": "f53607cf904ae04fc678c3cfc3761d5b55b359c9bfa314d57881431e0a1afd90"
+-        },
+-        {
+-          "path": "2026/10/19/codex-desktop-a134ffda-f5a0-463f-8ea2-d738c9c69bb4-30232-t0-i1-072259-1.log",
+-          "size": 10485470,
+-          "mtime_ns": 1792432773874973600,
+-          "sha256": "3c2826babf0bea3fe611104e51e0a9a252a145eab863318d7ec0a5e6591d0373"
+-        },
+-        {
+-          "path": "2026/10/19/codex-desktop-a134ffda-f5a0-463f-8ea2-d738c9c69bb4-30232-t0-i1-072259-2.log",
+-          "size": 10485582,
+-          "mtime_ns": 1792452689143124900,
+-          "sha256": "08986b7390f9097d2c0930c1ede498adc03338f427c9c76e5aaa8c8fdf756dae"
+-        },
+-        {
+-          "path": "2026/10/19/codex-desktop-a134ffda-f5a0-463f-8ea2-d738c9c69bb4-30232-t0-i1-072259-3.log",
+-          "size": 896268,
+-          "mtime_ns": 1792454396865632600,
+-          "sha256": "a2dad25f68af354e3e32043284c672dd39fc02fb1c452e9183ebc60929705061"
+-        },
+-        {
+-          "path": "2026/10/19/codex-desktop-a134ffda-f5a0-463f-8ea2-d738c9c69bb4-30232-t1-i1-072312-0.log",
+-          "size": 116064,
+-          "mtime_ns": 1792438223581869000,
+-          "sha256": "cb215cd5627c01423e848e02a0c6b313dccd7fa8751ef70cfaa5e9b3fba25c5c"
+-        },
+-        {
+-          "path": "2026/10/19/codex-desktop-a134ffda-f5a0-463f-8ea2-d738c9c69bb4-30232-t2-i1-072423-0.log",
+-          "size": 1461,
+-          "mtime_ns": 1792394681124215100,
+-          "sha256": "313d8c3eb456d04d421cd77bf8d5bc6007725254607ef4b9b10d0bef64ac4fd9"
+-        },
+-        {
+-          "path": "2026/10/19/codex-desktop-c39999a0-1b5a-4de2-b9c7-0b770d466e18-14544-t0-i1-005017-0.log",
+-          "size": 10485428,
+-          "mtime_ns": 1792389974834174500,
+-          "sha256": "f1b4f6425bb6497e83ada0c9d41f179404af454ffc69cf64a799adbe50e5edd5"
+-        },
+-        {
+-          "path": "2026/10/19/codex-desktop-c39999a0-1b5a-4de2-b9c7-0b770d466e18-14544-t0-i1-005017-1.log",
+-          "size": 873596,
+-          "mtime_ns": 1792391364441562200,
+-          "sha256": "fa84a5dc3323a35f3eb2cd76726259648e255d6ba08c2e95acea7b4d051acc38"
+-        },
+-        {
+-          "path": "2026/10/19/codex-desktop-c39999a0-1b5a-4de2-b9c7-0b770d466e18-14544-t1-i1-005033-0.log",
+-          "size": 4153763,
+-          "mtime_ns": 1792391360507436400,
+-          "sha256": "258df314b5ad6d91320e059595dd6d99ad467182f94433835051d7013a526f29"
+-        },
+-        {
+-          "path": "2026/10/19/codex-desktop-c39999a0-1b5a-4de2-b9c7-0b770d466e18-14544-t2-i1-021527-0.log",
+-          "size": 1461,
+-          "mtime_ns": 1792376152208323500,
+-          "sha256": "b9a625547a60941dbc0842a253951287eca2cbdf925e706ceba1a4bd09d63276"
+-        },
+-        {
+-          "path": "2026/10/20/codex-desktop-082878cc-6b5c-4cf2-bb16-d42f759c8508-25584-t0-i1-033322-0.log",
+-          "size": 413912,
+-          "mtime_ns": 1792467397483685300,
+-          "sha256": "b8a0e5be0453bed4845f83b01b3843050e48fc743adb9103ffa6dc18f2d35cc5"
+-        },
+-        {
+-          "path": "2026/10/20/codex-desktop-082878cc-6b5c-4cf2-bb16-d42f759c8508-25584-t1-i1-033341-0.log",
+-          "size": 1555,
+-          "mtime_ns": 1792467260002817200,
+-          "sha256": "de350780afc723db99de42e137d1c1f08df5cb2a0e48cde2abbb9391ff38f242"
+-        },
+-        {
+-          "path": "2026/10/20/codex-desktop-082878cc-6b5c-4cf2-bb16-d42f759c8508-25584-t2-i1-033414-0.log",
+-          "size": 1461,
+-          "mtime_ns": 1792467280044447200,
+-          "sha256": "044fc8364891da92311de2238414ab3577285f36b2bf75d7ceeab50b55d19319"
+-        },
+-        {
+-          "path": "2026/10/20/codex-desktop-15f65464-dcbf-4219-8294-1880df14088f-43548-t0-i1-032355-0.log",
+-          "size": 393574,
+-          "mtime_ns": 1792467157414311100,
+-          "sha256": "5c303aaf97ce4c4038543322ad8884c361c90ecfc6410a4254c90378fa5d3f61"
+-        },
+-        {
+-          "path": "2026/10/20/codex-desktop-15f65464-dcbf-4219-8294-1880df14088f-43548-t1-i1-032407-0.log",
+-          "size": 3017,
+-          "mtime_ns": 1792466678513910700,
+-          "sha256": "c4b794dee708276ed1e0c62ad7bbe37e365c865513619054895683ae694d5038"
+-        },
+-        {
+-          "path": "2026/10/20/codex-desktop-15f65464-dcbf-4219-8294-1880df14088f-43548-t2-i1-032439-0.log",
+-          "size": 1461,
+-          "mtime_ns": 1792466692538402000,
+-          "sha256": "a23afe8403d362212d1263b61a599b183c8f2447e95d18b86d6a94a50f0253a1"
+-        },
+-        {
+-          "path": "2026/10/20/codex-desktop-22a0912b-5bcd-4e38-b632-94e4d7f537c9-23340-t0-i1-023325-0.log",
+-          "size": 672697,
+-          "mtime_ns": 1792464452841727400,
+-          "sha256": "3e112906c589f2f73819dbb8cce25f770f09c1c74cbe6f1606388df3e124632c"
+-        },
+-        {
+-          "path": "2026/10/20/codex-desktop-22a0912b-5bcd-4e38-b632-94e4d7f537c9-23340-t1-i1-023338-0.log",
+-          "size": 3217,
+-          "mtime_ns": 1792463810038578000,
+-          "sha256": "9f20308331525c41ddda700aac83f8fec0ab6f9566cb615af7b6edebec9c13fb"
+-        },
+-        {
+-          "path": "2026/10/20/codex-desktop-2efa6a78-cd83-4b84-ba99-9e37179b15e5-35880-t0-i1-034032-0.log",
+-          "size": 417033,
+-          "mtime_ns": 1792468253094178800,
+-          "sha256": "64e2e19106424f0916d5cbd79e88715f6821f1790a38cf278d8d7bf0bbbd825a"
+-        },
+-        {
+-          "path": "2026/10/20/codex-desktop-2efa6a78-cd83-4b84-ba99-9e37179b15e5-35880-t1-i1-034044-0.log",
+-          "size": 1431,
+-          "mtime_ns": 1792467756529539000,
+-          "sha256": "a77e1bb5a37c82fb7a727e3fa5ac91d9d8c7c860220e535d6af3aade5df2f6f7"
+-        },
+-        {
+-          "path": "2026/10/20/codex-desktop-2efa6a78-cd83-4b84-ba99-9e37179b15e5-35880-t2-i1-034111-0.log",
+-          "size": 1378,
+-          "mtime_ns": 1792467683013344100,
+-          "sha256": "213a806ae1b8bec9e9835be3967c84c518d4826360da8249f108ff17d787b436"
+-        },
+-        {
+-          "path": "2026/10/20/codex-desktop-42a349b2-66c7-4679-913a-0ad11d6f14e6-22500-t0-i1-024909-0.log",
+-          "size": 469939,
+-          "mtime_ns": 1792465379583042200,
+-          "sha256": "56f958c3e7f576b049a49d37bb567f9e4107bca9c6e7fe8376dc0c78b22bd0fa"
+-        },
+-        {
+-          "path": "2026/10/20/codex-desktop-42a349b2-66c7-4679-913a-0ad11d6f14e6-22500-t1-i1-024925-0.log",
+-          "size": 7386,
+-          "mtime_ns": 1792465228296608700,
+-          "sha256": "5e8c6b38059ab502fad06a22ab9f531693d5e453795cb03272abba21aac8b69d"
+-        },
+-        {
+-          "path": "2026/10/20/codex-desktop-42a349b2-66c7-4679-913a-0ad11d6f14e6-22500-t2-i1-024958-0.log",
+-          "size": 1461,
+-          "mtime_ns": 1792464622792476700,
+-          "sha256": "f9ce805f8553624cb1f9a7ce0d77fe38a38472a63090a2470de103208250df22"
+-        },
+-        {
+-          "path": "2026/10/20/codex-desktop-565a929b-604a-49ad-b12a-0b5bb657259d-43932-t0-i1-031251-0.log",
+-          "size": 309906,
+-          "mtime_ns": 1792466275554763300,
+-          "sha256": "497b211a74a0a7f30d88e61b925817597b31f62189808a0ff6ae614039e78fd5"
+-        },
+-        {
+-          "path": "2026/10/20/codex-desktop-565a929b-604a-49ad-b12a-0b5bb657259d-43932-t1-i1-031306-0.log",
+-          "size": 3019,
+-          "mtime_ns": 1792466014349993000,
+-          "sha256": "e3ec1193bf48b02894c0922f73ccbc5e08647893c6753ae2519d847657480641"
+-        },
+-        {
+-          "path": "2026/10/20/codex-desktop-565a929b-604a-49ad-b12a-0b5bb657259d-43932-t2-i1-031335-0.log",
+-          "size": 1461,
+-          "mtime_ns": 1792466035314642400,
+-          "sha256": "035a44986e1c4ce1a2d90a24c47cdfb4a6d50ea272c0401b26c455a4d637f40a"
+-        },
+-        {
+-          "path": "2026/10/20/codex-desktop-69fee3b6-a8a3-474b-b7c9-c643d0e59ab1-28880-t0-i1-040115-0.log",
+-          "size": 592126,
+-          "mtime_ns": 1792470212709825200,
+-          "sha256": "e167a7141108fb793b83d6d25c75d69b99cbcb2ebe040e9b6187b448006249af"
+-        },
+-        {
+-          "path": "2026/10/20/codex-desktop-69fee3b6-a8a3-474b-b7c9-c643d0e59ab1-28880-t1-i1-040127-0.log",
+-          "size": 545,
+-          "mtime_ns": 1792468909036317500,
+-          "sha256": "f4be4075e3280e7ebb6d2cf424d67ee0fc94e307950f9f2b2d551659702b5db4"
+-        },
+-        {
+-          "path": "2026/10/20/codex-desktop-69fee3b6-a8a3-474b-b7c9-c643d0e59ab1-28880-t2-i1-040150-0.log",
+-          "size": 1461,
+-          "mtime_ns": 1792468931702699100,
+-          "sha256": "d27246ae208bff3e0bab71315906a34d1fa6436fe38a24b731b905c8643f33e2"
+-        },
+-        {
+-          "path": "2026/10/20/codex-desktop-799eeee7-d912-45b3-b7a9-5c7513bcc49a-44880-t0-i1-033804-0.log",
+-          "size": 277526,
+-          "mtime_ns": 1792467611816425800,
+-          "sha256": "5e066ace8c1357aac51a44ce6d772778fafb13aea79ec78c5d1fa1845ab7721d"
+-        },
+-        {
+-          "path": "2026/10/20/codex-desktop-799eeee7-d912-45b3-b7a9-5c7513bcc49a-44880-t1-i1-033816-0.log",
+-          "size": 1430,
+-          "mtime_ns": 1792467578726645600,
+-          "sha256": "8f5a4b4c44588cd0a11f051f099f19c7434bc01033be3ead4f707253697bafe5"
+-        },
+-        {
+-          "path": "2026/10/20/codex-desktop-799eeee7-d912-45b3-b7a9-5c7513bcc49a-44880-t2-i1-033850-0.log",
+-          "size": 1461,
+-          "mtime_ns": 1792467542488350200,
+-          "sha256": "abd70306a9cf40b46ee5f6e9d944d2ecab434d18e775d6399ccffba5dca70b17"
+-        },
+-        {
+-          "path": "2026/10/20/codex-desktop-7ece1ccd-451e-4ef7-bfe8-18c34a8470b0-28872-t0-i1-030522-0.log",
+-          "size": 349014,
+-          "mtime_ns": 1792465951457179700,
+-          "sha256": "55a8a46eb5805af512701821adf3379eded7533085979b573da4444244d27c9f"
+-        },
+-        {
+-          "path": "2026/10/20/codex-desktop-7ece1ccd-451e-4ef7-bfe8-18c34a8470b0-28872-t1-i1-030540-0.log",
+-          "size": 3135,
+-          "mtime_ns": 1792465571833276400,
+-          "sha256": "c2c12e7b6f232698c68aaa01302db95d97292337774763f98e0747b469344244"
+-        },
+-        {
+-          "path": "2026/10/20/codex-desktop-7ece1ccd-451e-4ef7-bfe8-18c34a8470b0-28872-t2-i1-030609-0.log",
+-          "size": 1461,
+-          "mtime_ns": 1792465599447654100,
+-          "sha256": "2f886843c29295195a70d3427c031eed6395d82c0e61046a02f02e02cbbe710b"
+-        },
+-        {
+-          "path": "2026/10/20/codex-desktop-97bffece-0488-4314-b5b7-0b3320e71413-29896-t0-i1-031952-0.log",
+-          "size": 275540,
+-          "mtime_ns": 1792466566657498600,
+-          "sha256": "a498a43158df5c8ed39dd6181b1a20affeff16f1516a77948d6e60c0c4f32372"
+-        },
+-        {
+-          "path": "2026/10/20/codex-desktop-97bffece-0488-4314-b5b7-0b3320e71413-29896-t1-i1-032007-0.log",
+-          "size": 6086,
+-          "mtime_ns": 1792466433817552500,
+-          "sha256": "e69cd3dec5452b10d79c4d12684d817a17e0d23b10123e33e7d6ad6d4106becd"
+-        },
+-        {
+-          "path": "2026/10/20/codex-desktop-97bffece-0488-4314-b5b7-0b3320e71413-29896-t2-i1-032034-0.log",
+-          "size": 1461,
+-          "mtime_ns": 1792466453098500000,
+-          "sha256": "69d05c356a7859891083ee9f4c119cda13a8ded81ff84d63771ac9be3c18e945"
+-        },
+-        {
+-          "path": "2026/10/20/codex-desktop-9ef4e620-5b2e-418b-b015-01f05d56cb10-8652-t0-i1-024743-0.log",
+-          "size": 218241,
+-          "mtime_ns": 1792464514984346600,
+-          "sha256": "be21790113119b947ec44755a8c84bc5b941a433a38655f629e23bccb6d185c7"
+-        },
+-        {
+-          "path": "2026/10/20/codex-desktop-9ef4e620-5b2e-418b-b015-01f05d56cb10-8652-t1-i1-024757-0.log",
+-          "size": 2779,
+-          "mtime_ns": 1792464487805881700,
+-          "sha256": "6ec3188ad1640d179e2f6cab5e02f9844bbf318141a484ed9cd75b0665ec1be9"
+-        },
+-        {
+-          "path": "2026/10/20/codex-desktop-a134ffda-f5a0-463f-8ea2-d738c9c69bb4-30232-t0-i1-000015-0.log",
+-          "size": 4937596,
+-          "mtime_ns": 1792463600782402400,
+-          "sha256": "1b6fa3482fd5ef47c7ea12ba6d9242e75b4bf1b899e9fd116aa342bc0668751f"
+-        },
+-        {
+-          "path": "2026/10/20/codex-desktop-a134ffda-f5a0-463f-8ea2-d738c9c69bb4-30232-t1-i1-004334-0.log",
+-          "size": 19062,
+-          "mtime_ns": 1792463600429021100,
+-          "sha256": "490c28b5eba04e58e6287d0aa3ca3f925cbf6bd76a384aefabe8d122f349aae7"
+-        },
+-        {
+-          "path": "2026/10/20/codex-desktop-ac5ea417-6a67-42d9-a486-97c8ef4091fd-14052-t0-i1-051920-0.log",
+-          "size": 430757,
+-          "mtime_ns": 1792474349394586100,
+-          "sha256": "d5acf97528e501b59f683285999dcfa34e4bdf58c347779e002cbb777965e27e"
+-        },
+-        {
+-          "path": "2026/10/20/codex-desktop-ac5ea417-6a67-42d9-a486-97c8ef4091fd-14052-t1-i1-051933-0.log",
+-          "size": 24193,
+-          "mtime_ns": 1792474335243955300,
+-          "sha256": "e4234e8e69a8205c6ad50f83db0058b36c0df6840bdf9b0d203cf2250cb68984"
+-        },
+-        {
+-          "path": "2026/10/20/codex-desktop-c88757e7-9320-40b1-9b45-a131f9bc06e5-28528-t0-i1-035848-0.log",
+-          "size": 206117,
+-          "mtime_ns": 1792468775586250400,
+-          "sha256": "58184cce56b41f781ace9e293f7ac275f7d1b0b907d5694d4124fe54b040b066"
+-        },
+-        {
+-          "path": "2026/10/20/codex-desktop-c88757e7-9320-40b1-9b45-a131f9bc06e5-28528-t1-i1-035858-0.log",
+-          "size": 2872,
+-          "mtime_ns": 1792468750779008400,
+-          "sha256": "39591de122cd62ca9793682308483a0c1cee1de68e219e8f9b8d853fd48775c1"
+-        },
+-        {
+-          "path": "2026/10/20/codex-desktop-e0481026-e8ee-498c-b4c9-e21e0eb39e54-19956-t0-i1-064820-0.log",
+-          "size": 3770158,
+-          "mtime_ns": 1792491861117146500,
+-          "sha256": "e7fb7c99b6eb82bb2f4568db9fea2e244b544e948c0ef80d06ee3284d48af202"
+-        },
+-        {
+-          "path": "2026/10/20/codex-desktop-e0481026-e8ee-498c-b4c9-e21e0eb39e54-19956-t1-i1-064843-0.log",
+-          "size": 48809,
+-          "mtime_ns": 1792491595330453600,
+-          "sha256": "77f968c233b54cbbf4704d9ad9d3f263036ab5d5ce895bc08227fac07cc861f5"
+-        },
+-        {
+-          "path": "2026/10/21/codex-desktop-bb5f7e25-0f5b-4bdb-8879-26fbd5b86be6-13724-t0-i1-005142-0.log",
+-          "size": 226644,
+-          "mtime_ns": 1792544045714115400,
+-          "sha256": "ea1993b5e13a36075c664f0cc807e904084e07c9fb529b5159be9bd5708c814b"
+-        },
+-        {
+-          "path": "2026/10/21/codex-desktop-bb5f7e25-0f5b-4bdb-8879-26fbd5b86be6-13724-t1-i1-005158-0.log",
+-          "size": 4380,
+-          "mtime_ns": 1792543930314136700,
+-          "sha256": "9c4b5cbb58f1cb2f16e401e68d41da41f5ae620ebb0a4ec91f0f5f10c915af31"
+-        },
+-        {
+-          "path": "2026/10/22/codex-desktop-1737ff14-3469-450a-94c8-924afc63c220-10676-t0-i1-014000-0.log",
+-          "size": 2467718,
+-          "mtime_ns": 1792636567378673800,
+-          "sha256": "fa5fb7ddc5be5368169c369473a7488d89814647a24a41e1a4826d47b32eb727"
+-        },
+-        {
+-          "path": "2026/10/22/codex-desktop-1737ff14-3469-450a-94c8-924afc63c220-10676-t1-i1-014038-0.log",
+-          "size": 9182,
+-          "mtime_ns": 1792635523653309000,
+-          "sha256": "bbc8222a9cea08a16ea19abfb798736743d55a978e8cd4bf2140fe6d390ac013"
+-        },
+-        {
+-          "path": "2026/10/22/codex-desktop-1737ff14-3469-450a-94c8-924afc63c220-10676-t2-i1-014941-0.log",
+-          "size": 1461,
+-          "mtime_ns": 1792633826212449000,
+-          "sha256": "76b398ebabeab3e52a1e7ea543b827a48a1f78809364949c799e39b9e913abe2"
+-        },
+-        {
+-          "path": "2026/10/22/codex-desktop-7f9b2d5b-0a74-44be-b0f2-2eade2750e31-15436-t0-i1-013516-0.log",
+-          "size": 226028,
+-          "mtime_ns": 1792633037633990300,
+-          "sha256": "63386822db76c03d9862f9478d2d3873c3e03cedf24b307ee2043498b0e8c239"
+-        },
+-        {
+-          "path": "2026/10/22/codex-desktop-7f9b2d5b-0a74-44be-b0f2-2eade2750e31-15436-t1-i1-013530-0.log",
+-          "size": 2215,
+-          "mtime_ns": 1792633004580453600,
+-          "sha256": "9c2db8498918aa70b650f962d0131a373966450e47f803cc6ac5c725f82aa9e8"
+-        },
+-        {
+-          "path": "2026/10/22/codex-desktop-8e6acfdd-b5e6-4d5a-b6ad-bceb6d0659f6-12964-t0-i1-004743-0.log",
+-          "size": 194736,
+-          "mtime_ns": 1792630102262521400,
+-          "sha256": "bc068c070da64bb8223607482685d2c8740272b42d7320951b25340a87abd900"
+-        },
+-        {
+-          "path": "2026/10/22/codex-desktop-8e6acfdd-b5e6-4d5a-b6ad-bceb6d0659f6-12964-t1-i1-004758-0.log",
+-          "size": 4297,
+-          "mtime_ns": 1792630092228630900,
+-          "sha256": "7aa414962835aa6b0eac0d47d5dbabaeace6691da6be0da6318109ea032541a0"
+-        },
+-        {
+-          "path": "2026/10/22/codex-desktop-9bf20c3e-a695-46a6-978b-fa6aaf6c46dc-30760-t0-i1-023616-0.log",
+-          "size": 6201621,
+-          "mtime_ns": 1792651103759195200,
+-          "sha256": "dd1ccc4f3e132d6f6b55703de22a375bb260115c32197c1b2e0b11ed71ecc47c"
+-        },
+-        {
+-          "path": "2026/10/22/codex-desktop-9bf20c3e-a695-46a6-978b-fa6aaf6c46dc-30760-t1-i1-023630-0.log",
+-          "size": 67203,
+-          "mtime_ns": 1792650618394975500,
+-          "sha256": "ed53138a0566ff6582d5692c8904370fd3b10ff5c0185ee4fc4675e3151c699e"
+-        },
+-        {
+-          "path": "2026/10/22/codex-desktop-9bf20c3e-a695-46a6-978b-fa6aaf6c46dc-30760-t2-i1-023707-0.log",
+-          "size": 1378,
+-          "mtime_ns": 1792636640342967500,
+-          "sha256": "64b8e9bfaad843f46b6d90b0ced580ee29763207053b75eb0d1dd2c3fc2b69bd"
+-        },
+-        {
+-          "path": "2026/10/22/codex-desktop-a0e46283-cf42-4c41-98b1-a52d52965558-19992-t0-i1-083355-0.log",
+-          "size": 320117,
+-          "mtime_ns": 1792658225281990600,
+-          "sha256": "b20ad82247033a1343dfee6a3797959c0cae64caef205b014504c38d51b94494"
+-        },
+-        {
+-          "path": "2026/10/22/codex-desktop-a0e46283-cf42-4c41-98b1-a52d52965558-19992-t1-i1-083412-0.log",
+-          "size": 4268,
+-          "mtime_ns": 1792658066961358400,
+-          "sha256": "8e6c7175ea6aa591bafc66f5497c785395b1bee85fcbfad5fa957c7de11cf0a6"
+-        },
+-        {
+-          "path": "2026/10/22/codex-desktop-bf524071-4491-4278-b787-e414b79dd721-21764-t0-i1-083712-0.log",
+-          "size": 3010720,
+-          "mtime_ns": 1792663488537060100,
+-          "sha256": "85e7876a2b0ebdd335112b9880beae17f6febc183dd522fa0d79cc7269099deb"
+-        },
+-        {
+-          "path": "2026/10/22/codex-desktop-bf524071-4491-4278-b787-e414b79dd721-21764-t1-i1-083750-0.log",
+-          "size": 2099,
+-          "mtime_ns": 1792659925755651700,
+-          "sha256": "272660f070264e36733c531e7f45b4662d62a7ff0102fd09ca3b30ec8414677e"
+-        },
+-        {
+-          "path": "2026/10/22/codex-desktop-d4352b06-d5d5-4b59-9ea9-8dd708812045-22884-t0-i1-013850-0.log",
+-          "size": 265562,
+-          "mtime_ns": 1792633197175520400,
+-          "sha256": "40189c3c22012487ddea6d84c885e614b61c927fae587eb039eacd21c62805ce"
+-        },
+-        {
+-          "path": "2026/10/22/codex-desktop-d4352b06-d5d5-4b59-9ea9-8dd708812045-22884-t1-i1-013859-0.log",
+-          "size": 312,
+-          "mtime_ns": 1792633147808673200,
+-          "sha256": "2d5a94bc6af50e061a8d5ece5b384bc3840e5978816ef002c2775c1618290bef"
+-        },
+-        {
+-          "path": "2026/10/23/codex-desktop-2aa2232c-ae62-407b-af28-6d3612b77391-16720-t0-i1-070006-0.log",
+-          "size": 9458061,
+-          "mtime_ns": 1792755069029722200,
+-          "sha256": "a2b89de782d0e57e66981b99ead7644cd1f23648da0486b3b95f83a451b99c52"
+-        },
+-        {
+-          "path": "2026/10/23/codex-desktop-2aa2232c-ae62-407b-af28-6d3612b77391-16720-t1-i1-070020-0.log",
+-          "size": 116674,
+-          "mtime_ns": 1792747621656649300,
+-          "sha256": "a3c0f81014589f13088b439d4511df63db295f4d9586ff44fa87a36f55e8f7f8"
+-        },
+-        {
+-          "path": "2026/10/23/codex-desktop-2aa2232c-ae62-407b-af28-6d3612b77391-16720-t2-i1-073323-0.log",
+-          "size": 1461,
+-          "mtime_ns": 1792740820266831500,
+-          "sha256": "bb0b749e47b86c27ce68a675c350a22b43a4032f0849ff9a8938937bd7650341"
+-        },
+-        {
+-          "path": "2026/10/23/codex-desktop-703757d5-f220-448d-abbf-e56a40bbd525-35884-t0-i1-060639-0.log",
+-          "size": 1102221,
+-          "mtime_ns": 1792737321706671700,
+-          "sha256": "d6d28480a2cebccd899c96dd45fe12661caf3f54220d6c3bcb12f1ce011b18c6"
+-        },
+-        {
+-          "path": "2026/10/23/codex-desktop-703757d5-f220-448d-abbf-e56a40bbd525-35884-t1-i1-060711-0.log",
+-          "size": 1510,
+-          "mtime_ns": 1792737318806403500,
+-          "sha256": "44b3907cb8b35916b7978ac8af062571c9d875736b57a9d61673bc07e5f12aa1"
+-        },
+-        {
+-          "path": "2026/10/23/codex-desktop-aa98e8ad-9ba7-40db-8c93-bacb5666ef89-7840-t0-i1-005237-0.log",
+-          "size": 224781,
+-          "mtime_ns": 1792717249555690300,
+-          "sha256": "d911217fb98fb6b2105faba4331bd19834a5c7335f9814ec315bc3b80c2e7e9f"
+-        },
+-        {
+-          "path": "2026/10/23/codex-desktop-aa98e8ad-9ba7-40db-8c93-bacb5666ef89-7840-t1-i1-005253-0.log",
+-          "size": 10338,
+-          "mtime_ns": 1792717238963293600,
+-          "sha256": "afb9a6e04f352858d177bb9a75a56a06c8ab5112175e41db59810f2f36d63135"
+-        },
+-        {
+-          "path": "2026/10/23/codex-desktop-d4a37d83-46fa-48eb-86ad-ed42e503f873-29780-t0-i1-041432-0.log",
+-          "size": 406219,
+-          "mtime_ns": 1792729130514059800,
+-          "sha256": "32791460b7d6d33946f2d491575b1e437fd593334c6b3dc2edb1627c766d95ba"
+-        },
+-        {
+-          "path": "2026/10/23/codex-desktop-d4a37d83-46fa-48eb-86ad-ed42e503f873-29780-t1-i1-041446-0.log",
+-          "size": 1669,
+-          "mtime_ns": 1792728908115621600,
+-          "sha256": "7861f9143b2aca7c391d29bac74b5d8226b71a9852d6272ffe7a2d97206e1ca0"
+-        },
+-        {
+-          "path": "2026/10/23/codex-desktop-d4a37d83-46fa-48eb-86ad-ed42e503f873-29780-t2-i1-041500-0.log",
+-          "size": 1378,
+-          "mtime_ns": 1792728976463905600,
+-          "sha256": "6b8cad08eb953d3ce345e25d8ad0ec270420a15c6e2b218d8b40e12f6ff24ca5"
+-        },
+-        {
+-          "path": "2026/10/23/codex-desktop-dc39a180-ebf9-4ecb-a461-7ec76a31168d-18960-t0-i1-010055-0.log",
+-          "size": 6462691,
+-          "mtime_ns": 1792727236458315600,
+-          "sha256": "8821cddfec35efb20de56aae163f357e19a5870ea1e3794b9877b56d3d3acf48"
+-        },
+-        {
+-          "path": "2026/10/23/codex-desktop-dc39a180-ebf9-4ecb-a461-7ec76a31168d-18960-t1-i1-010112-0.log",
+-          "size": 22006,
+-          "mtime_ns": 1792727108529824600,
+-          "sha256": "1e993908b5f8e4aa5b2a7b66057542518b00e46b912316899ba124f82b3fbed9"
+-        },
+-        {
+-          "path": "2026/10/23/codex-desktop-dc39a180-ebf9-4ecb-a461-7ec76a31168d-18960-t2-i1-010138-0.log",
+-          "size": 1461,
+-          "mtime_ns": 1792717330914341800,
+-          "sha256": "e87fcce7aaec9401e5fa97ed515787c192ade2c441455455c724db07f3e30e9c"
+-        },
+-        {
+-          "path": "2026/10/26/codex-desktop-542cbdbe-b598-4f50-a810-314b53f7f56b-28724-t0-i1-014659-0.log",
+-          "size": 2708738,
+-          "mtime_ns": 1792981850240768400,
+-          "sha256": "87b6a9871a99efcf30ffec6671065f10d5a14c30a10a0aa7e08d1b947533cec0"
+-        },
+-        {
+-          "path": "2026/10/26/codex-desktop-542cbdbe-b598-4f50-a810-314b53f7f56b-28724-t1-i1-014716-0.log",
+-          "size": 188573,
+-          "mtime_ns": 1792981835144107400,
+-          "sha256": "6a3ac6923d108e04166a373454ca3c5043987a46d9e8d98a8ee31b12f2b1b515"
+-        },
+-        {
+-          "path": "2026/10/26/codex-desktop-542cbdbe-b598-4f50-a810-314b53f7f56b-28724-t2-i1-014740-0.log",
+-          "size": 1470,
+-          "mtime_ns": 1792979339559223000,
+-          "sha256": "3905f2ebb3a0eaf0ad754da29bff94240534ac3bcf4dfd7bc4fad6afac143fa0"
+-        },
+-        {
+-          "path": "2026/10/26/codex-desktop-8c34ee9e-81d3-4055-86cb-4ca94a6598a2-30952-t0-i1-023525-0.log",
+-          "size": 715257,
+-          "mtime_ns": 1792982899182081400,
+-          "sha256": "6042cc14bd3f1274f78b2af00996d195f9a541400d144281518a90cc42319333"
+-        },
+-        {
+-          "path": "2026/10/26/codex-desktop-8c34ee9e-81d3-4055-86cb-4ca94a6598a2-30952-t1-i1-023534-0.log",
+-          "size": 2291,
+-          "mtime_ns": 1792982587065429800,
+-          "sha256": "8012f2f7f3273ea6e88b8ebddc3590c05a67ef997e6654f602acd2c90ecb4339"
+-        },
+-        {
+-          "path": "2026/10/26/codex-desktop-8c34ee9e-81d3-4055-86cb-4ca94a6598a2-30952-t2-i1-023558-0.log",
+-          "size": 1470,
+-          "mtime_ns": 1792982180416157500,
+-          "sha256": "fe1b28d738e0ebd6d948f89f2b1d778f55ad8465cadea5bd153c559cec36896a"
+-        },
+-        {
+-          "path": "2026/10/26/codex-desktop-c4e02bf2-d47d-4e58-a010-37261a0f2011-13976-t0-i1-005238-0.log",
+-          "size": 142455,
+-          "mtime_ns": 1792976118688126900,
+-          "sha256": "3cf677c66e317443e3f515d58ccbe4f6a22ded7f2a76819b15376d61d216aecf"
+-        },
+-        {
+-          "path": "2026/10/26/codex-desktop-c4e02bf2-d47d-4e58-a010-37261a0f2011-13976-t1-i1-005301-0.log",
+-          "size": 1355,
+-          "mtime_ns": 1792976004629002500,
+-          "sha256": "f50dc60e65937f1b329b6f30aa15a2aee4caffa592686b7d728152714a398e22"
+-        },
+-        {
+-          "path": "2026/10/26/codex-desktop-ee536db3-24c8-4325-b6a4-976db7f8a28b-30804-t0-i1-023120-0.log",
+-          "size": 304490,
+-          "mtime_ns": 1792982123525386600,
+-          "sha256": "d48b2408b7f946cab3f876d0f0d0a68534b8c6772a9d7c3be423661ca358ee12"
+-        },
+-        {
+-          "path": "2026/10/26/codex-desktop-ee536db3-24c8-4325-b6a4-976db7f8a28b-30804-t1-i1-023133-0.log",
+-          "size": 8521,
+-          "mtime_ns": 1792982106506667700,
+-          "sha256": "014f2504e014cead18df64e5a1c51c0cbab2a1f0ffdb7d1bac0ecf7f6997473e"
+-        },
+-        {
+-          "path": "2026/10/26/codex-desktop-ee536db3-24c8-4325-b6a4-976db7f8a28b-30804-t2-i1-023506-0.log",
+-          "size": 0,
+-          "mtime_ns": 1792982106382895800,
+-          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+-        },
+-        {
+-          "path": "2026/10/26/codex-desktop-f61dab4e-6658-439b-b467-cab7d12bbe67-37984-t0-i1-024832-0.log",
+-          "size": 2909903,
+-          "mtime_ns": 1792990021860600500,
+-          "sha256": "7c11522051a9dc5e47d747bf9f1773c46072795bd4627135558fc34d5e6e0207"
+-        },
+-        {
+-          "path": "2026/10/26/codex-desktop-f61dab4e-6658-439b-b467-cab7d12bbe67-37984-t1-i1-024903-0.log",
+-          "size": 280298,
+-          "mtime_ns": 1792989943206999800,
+-          "sha256": "ffb55a7a753da4ef6a8f6b40b963b7526b02e757feea76b3ee2e95ba736be680"
+-        },
+-        {
+-          "path": "2026/10/26/codex-desktop-f61dab4e-6658-439b-b467-cab7d12bbe67-37984-t2-i1-034254-0.log",
+-          "size": 1386,
+-          "mtime_ns": 1792986184910180500,
+-          "sha256": "80750390bb368f2f8a6fe8e4daa90f535619ea7394fee16665ee1bdab1e40634"
+-        }
+-      ],
+-      "directories": [
+-        "2026",
+-        "2026/10",
+-        "2026/10/12",
+-        "2026/10/13",
+-        "2026/10/14",
+-        "2026/10/15",
+-        "2026/10/16",
+-        "2026/10/17",
+-        "2026/10/19",
+-        "2026/10/20",
+-        "2026/10/21",
+-        "2026/10/22",
+-        "2026/10/23",
+-        "2026/10/26"
+       ]
+     },
+     {

@@ -1,0 +1,68 @@
+From 9fe9a64276eacc893dc3718976ce3dd08d3863a8 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Tue, 20 Oct 2026 21:39:27 +0800
+Subject: [PATCH] gateway: the past-the-budget images test counts its budget on
+ the shots as they fit
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+TestCodexFittedImagesPastTheBudget went red standalone on machines whose
+Go is 1.27: "turn 2 made 19 of 30 images, with 10 kept", twice, with no
+product change in sight — the test and the byte-budget cache it pins came
+together in 11173c8a and neither has moved since.
+
+What changed: the test measured one fitted screenshot (the first) and
+budgeted 10.5 of that size. The thirty fitted shots are not one size —
+a few bytes of PNG each way — and the standard library's encoder shifts
+them between releases: past a budget counted on the first shot alone,
+go1.26 kept 10 of these and go1.27 kept 11 (one 384 bytes, sizes 336 to
+387, the last eleven 4008 bytes against a 4032 budget). The budget is
+now counted on the shots as they fit: the last ten plus half of the
+eleventh from the end, which keeps ten and no eleven on any release, by
+construction rather than by where the encoder's noise happens to fall.
+
+Run (go1.26.8 unless said otherwise):
+- the test alone, twice: ok, ok
+- the test alone under GOTOOLCHAIN=go1.27.0: red as filed before the
+  change, ok after it
+- go test -tags nogui -run TestCodex ./internal/gateway/: all pass
+- go test -tags nogui -count=1 ./internal/gateway/: ok 317.9s
+- gofmt clean; go vet -tags nogui on darwin, GOOS=linux, GOOS=windows
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gateway/codex_images_test.go | 17 +++++++++++++++--
+ 1 file changed, 15 insertions(+), 2 deletions(-)
+
+diff --git a/internal/gateway/codex_images_test.go b/internal/gateway/codex_images_test.go
+index 4c0e815c..a157716b 100644
+--- a/internal/gateway/codex_images_test.go
++++ b/internal/gateway/codex_images_test.go
+@@ -347,8 +347,21 @@ func TestCodexScreenshotsAreNotFittedAgainEachTurn(t *testing.T) {
+ // What is held stays within the budget.
+ func TestCodexFittedImagesPastTheBudget(t *testing.T) {
+ 	shots := wideShots(t, 30)
+-	one := len(fitKeyEntry(t, shots[0]).data)
+-	made := freshFitted(t, 10*one+one/2)
++	// The shots fit to no one size: a few bytes of PNG each way, and the
++	// standard library's encoder shifts them from release to release
++	// (past a budget counted on the first shot alone, go1.26 kept 10 of
++	// these and go1.27 kept 11). The budget is counted on the shots as
++	// they fit: the last ten, and half of the eleventh from the end past
++	// it, which keeps ten and no eleven on any release.
++	sizes := make([]int, len(shots))
++	for i, shot := range shots {
++		sizes[i] = len(fitKeyEntry(t, shot).data)
++	}
++	budget := sizes[len(sizes)-11] / 2
++	for _, one := range sizes[len(sizes)-10:] {
++		budget += one
++	}
++	made := freshFitted(t, budget)
+ 	body := computerUseRequest(shots)
+ 	was := int64(0)
+ 	for turn := 1; turn <= 3; turn++ {
+-- 
+2.50.1 (Apple Git-155)
+

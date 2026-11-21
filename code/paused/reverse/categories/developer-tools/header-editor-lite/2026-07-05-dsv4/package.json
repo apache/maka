@@ -1,0 +1,25 @@
+{
+  "name": "header-editor-lite-reverse",
+  "version": "5.2.12",
+  "description": "Reverse-engineered documentation and type definitions for Header Editor Lite Chrome Extension (MV3)",
+  "private": true,
+  "author": "Header Editor project (https://he.firefoxcn.net)",
+  "license": "UNLICENSED",
+  "keywords": [
+    "chrome-extension",
+    "header-editor",
+    "reverse-engineering",
+    "mv3",
+    "http-headers"
+  ],
+  "scripts": {
+    "check-types": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.0.270",
+    "typescript": "^5.5.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

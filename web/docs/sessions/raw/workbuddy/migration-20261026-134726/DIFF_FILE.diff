@@ -1,0 +1,34 @@
+--- E:\cc\guahub\sessions\raw\workbuddy\migration-20261026-134726\ORIGINAL_FILE.json
++++ E:\cc\guahub\sessions\raw\workbuddy\migration-20261026-134726\MODIFIED_FILE.json
+@@ -1,5 +1,5 @@
+ {
+-  "state": "source_present",
++  "state": "migrated",
+   "groups": [
+     {
+       "name": "logs",
+@@ -362,6 +362,24 @@
+         "startup/2026-10-26",
+         "update",
+         "weixinpay"
++      ],
++      "skipped": [
++        "2026-10-17/daemon-memory-diag.log",
++        "2026-10-17/extension-scheduler-diag.log",
++        "2026-10-19/daemon-memory-diag.log",
++        "2026-10-19/extension-scheduler-diag.log",
++        "2026-10-20/daemon-memory-diag.log",
++        "2026-10-20/extension-scheduler-diag.log",
++        "2026-10-21/daemon-memory-diag.log",
++        "2026-10-21/extension-scheduler-diag.log",
++        "2026-10-22/daemon-memory-diag.log",
++        "2026-10-22/extension-scheduler-diag.log",
++        "2026-10-23/daemon-memory-diag.log",
++        "2026-10-23/edge-sync.log",
++        "2026-10-23/extension-scheduler-diag.log",
++        "2026-10-23/sdk/conversations/operation.log",
++        "2026-10-23/unknown-workspace__0943646edce6afd40ba580bf0ccd807a.log",
++        "2026-10-23/workbuddyMainThread__0627208bea0500763a41ac440c9bb7b7.log"
+       ]
+     },
+     {

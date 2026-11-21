@@ -1,0 +1,126 @@
+{
+  "state": "source_present",
+  "groups": [
+    {
+      "name": "logs",
+      "source": "C:\\Users\\802165\\.kimi\\logs",
+      "pattern": "**/*",
+      "remove_root": true,
+      "category": "archive",
+      "archive": "E:\\cc\\guahub\\sessions\\raw\\kimi\\migration-20261026-130750\\logs.zip",
+      "files": [
+        {
+          "path": "kimi.2026-07-06_12-03-08_653186.log",
+          "size": 25834,
+          "mtime_ns": 1783313820824312200,
+          "sha256": "e13f4a4da29ea8fbbfc54c8b8f76f4d4392e6c07e49e3112b0873820c011f086"
+        },
+        {
+          "path": "kimi.2026-07-07_15-47-21_307693.log",
+          "size": 4115,
+          "mtime_ns": 1783410447314418000,
+          "sha256": "8cae7d45eea8f2c321624ee268b9018b1dc4092c182e2ea49c5e3bb8e3752977"
+        },
+        {
+          "path": "kimi.2026-07-08_11-20-26_791284.log",
+          "size": 21150,
+          "mtime_ns": 1783512777248205800,
+          "sha256": "7d02b971d7f19b3959f27a0bc6efd09850722a2cec867f84edf99d794e8057c7"
+        },
+        {
+          "path": "kimi.2026-07-09_09-00-03_114202.log",
+          "size": 18347,
+          "mtime_ns": 1783594556764789200,
+          "sha256": "5fd0c3e1223b924bc74cf29148bcba8f9fb077a04a6b3f247a87bb8408916f61"
+        },
+        {
+          "path": "kimi.2026-07-13_10-50-55_888164.log",
+          "size": 14155,
+          "mtime_ns": 1783911474943747400,
+          "sha256": "2726a796789a27804b668dda695e3384cebb224898fc82b9a22fa52cc7ed5c13"
+        },
+        {
+          "path": "kimi.2026-07-14_13-57-56_276036.log",
+          "size": 15788,
+          "mtime_ns": 1784010891482197200,
+          "sha256": "d709ea0c542fcb7c4ee1100bf1443863481a7baeb09dfb658259eaeceb76b36d"
+        },
+        {
+          "path": "kimi.2026-07-15_11-07-02_642093.log",
+          "size": 29344,
+          "mtime_ns": 1784120401751633000,
+          "sha256": "5af9f358c968491fe8c7d2ac36c63936f730df15bb15ea63c8e47369dea57a8d"
+        },
+        {
+          "path": "kimi.log",
+          "size": 8671,
+          "mtime_ns": 1784207058517957000,
+          "sha256": "1436617a453aba726040c2492bf303627626a39a4ee2de5e8ccbc64f924a79f2"
+        }
+      ],
+      "directories": []
+    },
+    {
+      "name": "plans",
+      "source": "C:\\Users\\802165\\.kimi\\plans",
+      "pattern": "**/*",
+      "remove_root": true,
+      "category": "archive",
+      "archive": "E:\\cc\\guahub\\sessions\\raw\\kimi\\migration-20261026-130750\\plans.zip",
+      "files": [
+        {
+          "path": "blade-swamp-thing-doctor-strange.md",
+          "size": 3863,
+          "mtime_ns": 1778480892860837700,
+          "sha256": "9e09a6847ae81ffe0d873acd7e288534f28de2ec61f971f5be9feaa00bf217f9"
+        },
+        {
+          "path": "sif-domino-morbius.md",
+          "size": 8389,
+          "mtime_ns": 1781518216466363600,
+          "sha256": "43030f5a444ce2a411c2bdaab1f99ea60ebff83d747b2ccee3ed45192a387a40"
+        }
+      ],
+      "directories": []
+    },
+    {
+      "name": "telemetry",
+      "source": "C:\\Users\\802165\\.kimi\\telemetry",
+      "pattern": "**/*",
+      "remove_root": true,
+      "category": "cache",
+      "archive": "E:\\cc\\guahub\\sessions\\_trash\\kimi-migration-20261026-130750\\telemetry.zip",
+      "files": [
+        {
+          "path": "failed_0416e44a2780.jsonl",
+          "size": 13405,
+          "mtime_ns": 1780124605581656100,
+          "sha256": "9c9b13c42a500b6c44d2b2facd652dc3e6a275b6a9f5828cdda614d512d73794"
+        },
+        {
+          "path": "failed_31df8f6f6d09.jsonl",
+          "size": 11101,
+          "mtime_ns": 1780122166072082800,
+          "sha256": "116135c0256e9908ef9d59d4b57599cce3d081651c493ee18e2b01db87e5a0c8"
+        },
+        {
+          "path": "failed_4ddc6595ce7b.jsonl",
+          "size": 7808,
+          "mtime_ns": 1780124605577671700,
+          "sha256": "0f1e07529575dc6ef0b21e561cb6e4d88b3701123d03a44f8e2eb731d1f1c2fc"
+        },
+        {
+          "path": "failed_5e323885c871.jsonl",
+          "size": 9997,
+          "mtime_ns": 1780124605579661400,
+          "sha256": "6e4f163cbaf89279f819a60c65ce2ee293787f257e90a5ca78251a99625f90ab"
+        }
+      ],
+      "directories": []
+    }
+  ],
+  "protected": {
+    "C:\\Users\\802165\\.kimi\\config.toml": "359bf246bbc76ddb4b5595c9b189cf52d7d119ae8ff68569ffadb40d1014c47f",
+    "C:\\Users\\802165\\.kimi\\kimi.json": "437a2ef134395b35a1942fbf9a59e125a5ab7433d27bd989aaa1efc4879a4fac"
+  }
+}

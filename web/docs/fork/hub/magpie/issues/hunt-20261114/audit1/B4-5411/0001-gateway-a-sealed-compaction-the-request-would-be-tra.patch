@@ -1,0 +1,131 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Fri, 6 Nov 2026 23:00:58 +0800
+Subject: [PATCH] gateway: a sealed compaction the request would be translated
+ for is refused, not translated away (#5411)
+
+---
+ internal/gateway/gateway.go                | 35 ++++++++++++++++
+ internal/gateway/native_compaction_test.go | 49 ++++++++++++++++++++++
+ 2 files changed, 84 insertions(+)
+
+diff --git a/internal/gateway/gateway.go b/internal/gateway/gateway.go
+index d95849449..d6f256ecc 100644
+--- a/internal/gateway/gateway.go
++++ b/internal/gateway/gateway.go
+@@ -5775,6 +5775,12 @@ func (s *Server) attempt(w http.ResponseWriter, r *http.Request, from provider.P
+ 	// OAuth HTTP requests are content-classified as third-party traffic when
+ 	// they carry another agent's harness (Pi, OpenCode, and others).
+ 	if p.Account != nil && p.Account.Agent == "claude" {
++		// a subscription is asked only translated, so a sealed compaction
++		// the routing doesn't hold to its writer (translatedCompaction)
++		// is refused before it is read as nothing (#5411)
++		if msg, refused := translatedCompaction(p, model, from, body); refused {
++			return writeError(w, from, 400, msg), msg
++		}
+ 		call.To = provider.Anthropic
+ 		return s.serveClaudeSubscription(w, r, from, p, model, body, &call.Usage)
+ 	}
+@@ -5934,6 +5940,17 @@ func (s *Server) attempt(w http.ResponseWriter, r *http.Request, from provider.P
+ 		msg := fmt.Sprintf("%s doesn't serve %s on the Responses API, so Codex's native compaction can't be asked of it", p.Name, model)
+ 		return writeError(w, from, 400, msg), msg
+ 	}
++	// from here the request is translated, and a translation reads no
++	// compaction item: a sealed one — whose writer magpie doesn't know, a
++	// known one never routing here (checkpointReaders) — went out left
++	// out, and a checkpoint-only handoff lost the conversation's earlier
++	// turns silently, answered 200 (#5411). Refused, as a known writer's
++	// is: the seal can't be carried where the request is translated, and
++	// magpie doesn't drop it or summarise it in its place unasked. What
++	// was relayed as it came had its say above; this is the silent path.
++	if msg, refused := translatedCompaction(p, model, from, body); refused {
++		return writeError(w, from, 400, msg), msg
++	}
+ 	to := s.usable(p, model)
+ 	if len(to) == 0 {
+ 		// every API turned the model away: the one the user picked for it
+@@ -5967,6 +5984,24 @@ func firstElsewhere(p provider.Provider, model string, from provider.Protocol) b
+ 	return p.ResponsesFirst(model) && from != provider.Responses || p.MessagesFirst(model) && from != provider.Anthropic
+ }
+ 
++// translatedCompaction is the refusal a Responses request carrying a
++// sealed compaction is answered when it would be translated: a
++// translation reads no compaction item, and a checkpoint-only handoff
++// lost the conversation's earlier turns silently, answered 200 (#5411).
++// A writer magpie knows never routes there (checkpointReaders); one it
++// doesn't — a checkpoint carried over by hand, or by another magpie —
++// did. Refused, as a known writer's is: the seal can't be carried where
++// the request is translated, and magpie doesn't drop it or summarise it
++// in its place unasked. What is relayed as it came keeps its say — the
++// destination reads it, or refuses it and is asked again without
++// (withoutSeals, withoutCompaction); this is only the silent path.
++func translatedCompaction(p provider.Provider, model string, from provider.Protocol, body []byte) (string, bool) {
++	if from != provider.Responses || len(sealedCompactions(body)) == 0 {
++		return "", false
++	}
++	return fmt.Sprintf("This conversation was compacted natively: its earlier turns are sealed in a compaction (encrypted_content) only the key or account that wrote it reads. %s answers %s on an API the request must be translated for, and a translation leaves the compaction out, silently losing the conversation's earlier context. magpie doesn't drop it or summarise it in its place unasked: ask for %s where the request goes as it came (the account that compacted this conversation), or start a new conversation.", p.Name, model, model), true
++}
++
+ // autoPicks is whether c is Copilot's Auto, which picks the model itself.
+ func autoPicks(c candidate) bool {
+ 	return c.model == provider.CopilotAuto && c.p.Account != nil && c.p.Account.Agent == "copilot"
+diff --git a/internal/gateway/native_compaction_test.go b/internal/gateway/native_compaction_test.go
+index 7085cfdac..5905be660 100644
+--- a/internal/gateway/native_compaction_test.go
++++ b/internal/gateway/native_compaction_test.go
+@@ -1091,3 +1091,52 @@ func TestForeignCompactionLeftOutOfAutoReview(t *testing.T) {
+ 		}
+ 	})
+ }
++
++// A sealed compaction whose writer magpie doesn't know (never recorded: a
++// checkpoint carried over by hand, or by another magpie), asked of a
++// provider the request must be translated for, was dropped by the
++// translation — which reads no compaction item — and a checkpoint-only
++// handoff lost the conversation's earlier turns silently, answered 200
++// (#5411). Refused now, said why, the provider never asked. A provider
++// that takes the request as it came is still asked, seal and all: what it
++// says of a seal it can't read is its own.
++func TestNativeCompactionSealedIsNotTranslatedAway(t *testing.T) {
++	chat := &fake{t: t, reply: sse(
++		`data: {"id":"c1","model":"m1","choices":[{"delta":{"role":"assistant","content":"ANSWER"}}]}`,
++		`data: {"id":"c1","choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`)}
++	setup(t, provider.Chat, chat)
++	relay := &fake{t: t, reply: sse(`data: {"type":"response.completed","response":{"id":"resp_r","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`)}
++	up := httptest.NewServer(relay)
++	t.Cleanup(up.Close)
++	if err := provider.Save(provider.Provider{ID: "other", Name: "Other", Key: "k2", Models: []string{"m1"}, Responses: up.URL + "/v1"}); err != nil {
++		t.Fatal(err)
++	}
++	sealed := `{"model":"%s","stream":true,"input":[{"type":"compaction","encrypted_content":"gAAAAB-sealed-unknown"},{"type":"message","role":"user","content":[{"type":"input_text","text":"what were the three facts?"}]}]}`
++
++	code, body := post(t, "/v1/responses", strings.Replace(sealed, "%s", "fake/m1", 1))
++	if code != 400 || !strings.Contains(body, "compacted natively") || !strings.Contains(body, "translated") {
++		t.Fatalf("translated: %d %s", code, body)
++	}
++	if chat.calls != 0 {
++		t.Errorf("the translated provider was asked: %s", chat.got)
++	}
++
++	code, body = post(t, "/v1/responses", strings.Replace(sealed, "%s", "other/m1", 1))
++	if code != 200 || !strings.Contains(string(relay.got), `"encrypted_content":"gAAAAB-sealed-unknown"`) {
++		t.Errorf("relayed: %d %s\nrelay got %s", code, body, relay.got)
++	}
++}
++
++// A subscription is asked only translated: refused there too, before the
++// compaction is read as nothing (#5411).
++func TestNativeCompactionSealedIsNotTranslatedIntoASubscription(t *testing.T) {
++	s := New()
++	p := provider.Provider{ID: "claude", Account: &provider.Account{Agent: "claude", User: "u"}}
++	body := `{"model":"claude-sonnet-5","stream":true,"input":[{"type":"compaction","encrypted_content":"gAAAAB-sealed-unknown"},{"type":"message","role":"user","content":[{"type":"input_text","text":"what were the three facts?"}]}]}`
++	rec := httptest.NewRecorder()
++	var call Call
++	code, msg := s.attempt(rec, httptest.NewRequest("POST", "/v1/responses", nil), provider.Responses, p, "claude-sonnet-5", []byte(body), &call)
++	if code != 400 || !strings.Contains(msg, "compacted natively") || !strings.Contains(msg, "translated") {
++		t.Fatalf("%d %s", code, msg)
++	}
++}
+-- 
+2.50.1 (Apple Git-155)
+

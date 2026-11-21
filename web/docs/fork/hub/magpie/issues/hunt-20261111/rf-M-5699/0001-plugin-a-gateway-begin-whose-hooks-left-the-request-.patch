@@ -1,0 +1,337 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Sun, 8 Nov 2026 22:22:38 +0800
+Subject: [PATCH] plugin: a gateway begin whose hooks left the request alone no
+ longer echoes the body whole (#5699)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+A gateway begin answered with the whole request body on its result
+line. Every plugin declaring magpie.hooks made HasGateway true, so
+every request went through GatewayBegin; hooks that returned undefined,
+threw or timed out — "keeping request" — still had the untouched body
+sent back, JSON.stringify on one line. The host reads at most
+maxWireLine (32 MiB) a line from the child, and a body over the cap
+ended that line in errLineTooLong: the host failed and was killed, and
+every plugin on the shared host lost its provider at once. The next
+request started a host, sent the same body, and killed it again — the
+reporter saw 268 "plugin: host starts" in 2.5 hours, every provider
+"connection lost mid-reply (the plugin host sent a line longer than
+33554432 bytes)". The cap's premise, that an RPC result is far under
+it, holds for every other reply the host writes; the begin's body was
+the one line that could legitimately be huge.
+
+An unchanged body is no longer sent at all: gatewayBegin tracks whether
+any hook left a different body (a hook sees a structuredClone, so only
+a returned result changes anything), and one that doesn't answers with
+the run's identity alone — {id, token, unchanged: true}. GatewayBegin
+keeps the caller's bytes as the run's body, so a request no hook
+touched never puts anything the size of the request on the wire, and
+the per-request copy that fed the hooks is the only one made (the
+every-request copy of #5168 goes with it).
+
+A hook that really rewrites a body whose line would pass maxWireLine
+gives that request's hooks up instead — keeping the request, as a
+timed-out hook does — rather than write the host a line it reads as a
+broken child and dies on: the wire checks Buffer.byteLength of the
+result against WIRE_LINE_MAX, a constant matching Go's, with 64 KiB for
+the envelope around the body.
+
+The host and host.js ship in one binary (go:embed), so there is no old
+host beside a new Go to agree with; even so the field is additive — a
+new host over an old Go gets keeping request for unchanged bodies, an
+old host over a new Go answers as before. The errLineTooLong kill
+stays: a child that never ends a line is still broken, and the one
+legal source of a huge line is gone at its source.
+
+Run (temp HOME, pinned GOCACHE):
+- go test -run 'TestGatewayBeginLargeBody|TestGatewayBeginSmallBody'
+  -count=1: ok; all four red before the fix — the large-body ones with
+  the shared host killed and restarted, the reporter's loop, on a body
+  the tests build (32 MiB + 4 KiB) where the report had none
+- go test -count=1 -timeout 45m ./internal/gateway: ok (762.9s), zero
+  failures
+- go test -count=1 ./internal/plugin: the only failure is
+  TestHostToldTheGatewayAddress, red the same on the parent commit
+  (host_addr_test.go:78); targeted -race on
+  TestPluginCheckinAsksAgainAtUntil red the same on the parent too, as
+  are TestMothX, TestLaneLimitRoutes and
+  TestProxyCheckSaysAProxyPassedBy
+- gofmt -l internal/plugin: prints nothing; go vet ./..., GOOS=linux
+  and GOOS=windows go vet -tags nogui ./internal/plugin: clean
+- go build ./...; GOOS=linux and GOOS=windows go build -tags nogui
+  ./...: clean
+
+Broken by hand: `changed` forced true at the top of gatewayBegin turns
+TestGatewayBeginLargeBodyUnchangedKeepsHostAlive red with the shared
+host restarted; the wire-cap give-up threshold set past
+Number.MAX_SAFE_INTEGER turns
+TestGatewayBeginLargeBodyRewriteTooLargeGivesUpThatRequest red the
+same way. Restored, both green — each of the two defences holds its
+own scenario alone.
+
+Attribution: 分析与补丁由 GLM-5.3-Flash (ZCode) 协助完成
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/plugin/gateway.go           |  19 +++-
+ internal/plugin/gateway_wire_test.go | 150 +++++++++++++++++++++++++++
+ internal/plugin/host.js              |  32 +++++-
+ 3 files changed, 196 insertions(+), 5 deletions(-)
+ create mode 100644 internal/plugin/gateway_wire_test.go
+
+diff --git a/internal/plugin/gateway.go b/internal/plugin/gateway.go
+index c6f9a67fa..430115654 100644
+--- a/internal/plugin/gateway.go
++++ b/internal/plugin/gateway.go
+@@ -266,12 +266,23 @@ func GatewayBegin(ctx context.Context, body []byte, info GatewayContext) *Gatewa
+ 		return nil
+ 	}
+ 	var out struct {
+-		ID    string          `json:"id"`
+-		Token string          `json:"token"`
+-		Body  json.RawMessage `json:"body"`
++		ID        string          `json:"id"`
++		Token     string          `json:"token"`
++		Unchanged bool            `json:"unchanged"`
++		Body      json.RawMessage `json:"body"`
+ 	}
+ 	err = h.call(total, "gatewayRequest", map[string]any{"operation": "begin", "body": json.RawMessage(body), "context": info}, &out)
+-	if err != nil || out.ID == "" || out.Token == "" || len(out.Body) == 0 || out.Body[0] != '{' || !json.Valid(out.Body) {
++	if err != nil || out.ID == "" || out.Token == "" {
++		return nil
++	}
++	if out.Unchanged {
++		// every hook left the request as it came, so the host sent back the
++		// run's identity only (#5699): the caller's bytes are the body, and a
++		// request no hook touched never echoes itself on a line the host
++		// would read as too long and kill the whole shared host for
++		return &GatewayRun{Body: append(json.RawMessage(nil), body...), h: h, id: out.ID, token: out.Token}
++	}
++	if len(out.Body) == 0 || out.Body[0] != '{' || !json.Valid(out.Body) {
+ 		return nil
+ 	}
+ 	// the run ends when its owner finishes or closes it, never when the
+diff --git a/internal/plugin/gateway_wire_test.go b/internal/plugin/gateway_wire_test.go
+new file mode 100644
+index 000000000..e5bfb3db2
+--- /dev/null
++++ b/internal/plugin/gateway_wire_test.go
+@@ -0,0 +1,150 @@
++package plugin
++
++import (
++	"bytes"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"testing"
++	"time"
++)
++
++// wireBigBody builds a request body over maxWireLine (32 MiB), the most one
++// line the host reads from the child, so any whole echo of it on the way back
++// crosses the cap. The reporter's machine never showed the body itself, only
++// "the plugin host sent a line longer than 33554432 bytes" 268 restarts in
++// 2.5 hours (#5699); these tests build the body the report could not.
++func wireBigBody() []byte {
++	const head = `{"note":"original","pad":"`
++	pad := maxWireLine + 4096 - len(head) - len(`"}`)
++	return []byte(head + strings.Repeat("a", pad) + `"}`)
++}
++
++// wireHostAlive probes the shared host with one light request and reports
++// whether the same host answered: a body echoed whole as one line over
++// maxWireLine fails the host (errLineTooLong), every plugin on it loses its
++// provider, and the next request starts a new host — the restart loop the
++// report saw 268 times in 2.5 hours.
++func wireHostAlive(t *testing.T, before *host) {
++	t.Helper()
++	again := GatewayBegin(t.Context(), []byte(`{}`), GatewayContext{})
++	if again == nil {
++		t.Fatal("a follow-up request could not reach the plugin host")
++	}
++	again.Close()
++	if currentHost() != before {
++		t.Fatal("the shared host was restarted between requests: a line over maxWireLine killed it (#5699)")
++	}
++}
++
++// TestGatewayBeginLargeBodyUnchangedKeepsHostAlive: hooks that leave the
++// request as it came (returning undefined) must not echo the body back —
++// the host returns the run's identity alone and Go keeps the bytes it has.
++// Before the fix the whole body came back as one line, over maxWireLine,
++// and the shared host died serving a request no hook had touched.
++func TestGatewayBeginLargeBodyUnchangedKeepsHostAlive(t *testing.T) {
++	sandbox(t)
++	gatewayFixture(t, `export function onRequest(body){}`)
++	if _, err := Plugins(t.Context()); err != nil {
++		t.Fatal(err)
++	}
++	body := wireBigBody()
++	before := currentHost()
++	run := GatewayBegin(t.Context(), body, GatewayContext{})
++	if run == nil {
++		t.Fatal("the shared host died serving a body over maxWireLine though no hook changed it (#5699)")
++	}
++	if !bytes.Equal(run.Body, body) {
++		t.Fatal("an unchanged request did not come back as it came")
++	}
++	run.Close()
++	wireHostAlive(t, before)
++	// the short path holds for small requests too: identity only, body kept
++	small := []byte(`{"note":"original"}`)
++	run = GatewayBegin(t.Context(), small, GatewayContext{})
++	if run == nil || !bytes.Equal(run.Body, small) {
++		t.Fatal("a small unchanged request did not keep its body")
++	}
++	run.Close()
++}
++
++// TestGatewayBeginLargeBodyTimeoutKeepsRequestAndHost: a hook that times out
++// keeps the request — the bytes on the way back are the caller's own, which
++// the host no longer echoes whole. Before the fix the timeout path itself
++// echoed the body over maxWireLine and killed the shared host.
++func TestGatewayBeginLargeBodyTimeoutKeepsRequestAndHost(t *testing.T) {
++	sandbox(t)
++	started, stopped := make(chan struct{}, 1), make(chan struct{}, 1)
++	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		select {
++		case started <- struct{}{}:
++		default:
++		}
++		<-r.Context().Done()
++		select {
++		case stopped <- struct{}{}:
++		default:
++		}
++	}))
++	defer srv.Close()
++	gatewayFixture(t, `export async function onRequest(body, ctx) { body.note="corrupt"; await fetch(`+string(mustJSON(t, srv.URL))+`,{signal:ctx.signal}); return body }`)
++	if _, err := Plugins(t.Context()); err != nil {
++		t.Fatal(err)
++	}
++	body := wireBigBody()
++	before := currentHost()
++	out := gatewayRequest(t.Context(), body, GatewayContext{})
++	if !bytes.Equal(out, body) {
++		t.Fatalf("a timed-out hook changed the request: %.120s", out)
++	}
++	select {
++	case <-started:
++	default:
++		t.Fatal("hook never reached HTTP")
++	}
++	select {
++	case <-stopped:
++	case <-time.After(10 * time.Second):
++		t.Fatal("timed-out hook did not cancel HTTP")
++	}
++	wireHostAlive(t, before)
++}
++
++// TestGatewayBeginLargeBodyRewriteTooLargeGivesUpThatRequest: a hook that
++// really rewrites a body too large to return gives up that one request —
++// keeping the request, as a timed-out hook does — without retiring itself or
++// the shared host. Before the fix the rewritten body came back as one line
++// over maxWireLine and the shared host died; every plugin on it went down
++// with it and the next request started the loop again.
++func TestGatewayBeginLargeBodyRewriteTooLargeGivesUpThatRequest(t *testing.T) {
++	sandbox(t)
++	gatewayFixture(t, `export function onRequest(body){ return {...body, note:"recalled"} }`)
++	if _, err := Plugins(t.Context()); err != nil {
++		t.Fatal(err)
++	}
++	body := wireBigBody()
++	before := currentHost()
++	if out := gatewayRequest(t.Context(), body, GatewayContext{}); !bytes.Equal(out, body) {
++		t.Fatalf("a rewrite too large to return was served: %.120s", out)
++	}
++	// giving up one oversized rewrite does not retire the hook: it still
++	// serves the next, ordinary request on the same host
++	again := GatewayBegin(t.Context(), []byte(`{"note":"original"}`), GatewayContext{})
++	if again == nil || !strings.Contains(string(again.Body), `"recalled"`) {
++		t.Fatal("giving up one oversized rewrite retired the hook itself")
++	}
++	again.Close()
++	wireHostAlive(t, before)
++}
++
++// TestGatewayBeginSmallBodyOrdinaryRewrite: the negative case — a small body
++// through an ordinary rewrite is untouched by the wire-cap paths: recalled
++// bytes served as before.
++func TestGatewayBeginSmallBodyOrdinaryRewrite(t *testing.T) {
++	sandbox(t)
++	gatewayFixture(t, `export function onRequest(body){return {...body,note:"recalled"}}`)
++	out := gatewayRequest(t.Context(), []byte(`{"note":"original","keep":true}`), GatewayContext{})
++	if !strings.Contains(string(out), `"recalled"`) || !strings.Contains(string(out), `"keep":true`) {
++		t.Fatalf("ordinary small-body rewrite no longer serves the recall: %s", out)
++	}
++}
+diff --git a/internal/plugin/host.js b/internal/plugin/host.js
+index 62ac23b46..f1b8ab80f 100644
+--- a/internal/plugin/host.js
++++ b/internal/plugin/host.js
+@@ -165,6 +165,15 @@ async function sendForFetch(record, msg) {
+ // cheap without one frame dwarfing the window.
+ const MAX_FRAME = 64 << 10
+ 
++// WIRE_LINE_MAX is Go's maxWireLine (host.go): the most one line the host
++// reads from this process. A gateway begin once answered with the whole
++// request body on its line, so a body over the cap came back as a line over
++// it — the host read that as a broken child and killed this process, and
++// every plugin's provider went down with it (#5699). An unchanged body is
++// never sent at all; a rewritten one too large to send gives that request's
++// hooks up instead.
++const WIRE_LINE_MAX = 32 << 20
++
+ // FRAME_OVERHEAD is what one queued frame costs the window besides its bytes,
+ // as Go counts it too: the message struct and the decoded slice behind it. It
+ // keeps a producer of tiny frames from filling a window with structs.
+@@ -1630,6 +1639,10 @@ async function gatewayBegin(p, signal) {
+   run.timer = setTimeout(() => closeGateway(run), GATEWAY_RUN_TTL)
+   run.timer.unref()
+   let body = p.body
++  // whether any hook left a different body: a hook that returns undefined,
++  // throws or times out keeps the caller's body, whose bytes then never need
++  // the wire at all
++  let changed = false
+   // The total budget bounds many installed hooks as well as one slow hook.
+   const total = AbortSignal.any([signal, run.controller.signal, AbortSignal.timeout(gatewayBudget())])
+   for (const h of gatewayHooks) {
+@@ -1657,6 +1670,7 @@ async function gatewayBegin(p, signal) {
+         next = JSON.parse(JSON.stringify(result))
+         if (!next || typeof next !== "object" || Array.isArray(next)) throw new Error("invalid serialized body")
+         if (outcome === "skipped") outcome = "ready"
++        changed = true
+       }
+       // Context hooks cannot register or change client tools or tool choice,
+       // nor the model or streaming: the gateway checked the caller's key
+@@ -1687,7 +1701,23 @@ async function gatewayBegin(p, signal) {
+     signal.throwIfAborted()
+     return null
+   }
+-  return { id: run.id, token: run.token, body }
++  // No hook rewrote the body: the run's identity is all the caller needs —
++  // it keeps the bytes it already has. Nothing the size of the request
++  // crosses the wire, so a request no hook touched can no longer kill this
++  // process, and the per-request copy that fed the hooks is the only one
++  // made (#5699, and the every-request copy of #5168).
++  if (!changed) return { id: run.id, token: run.token, unchanged: true }
++  const result = { id: run.id, token: run.token, body }
++  // A rewritten body whose line would pass WIRE_LINE_MAX cannot be answered
++  // whole, and frames are for fetch replies only: give this request's hooks
++  // up — keeping the request, as a timed-out hook does — rather than write
++  // the host a line it reads as a broken child and dies on.
++  if (Buffer.byteLength(JSON.stringify(result)) > WIRE_LINE_MAX - (64 << 10)) {
++    if (!signal.aborted) send({ event: "log", level: "warn", message: "gateway: the rewritten request is too large to return through the host; keeping request" })
++    closeGateway(run)
++    return null
++  }
++  return result
+ }
+ 
+ async function gatewayFinish(run, p, signal) {
+-- 
+2.50.1 (Apple Git-155)
+

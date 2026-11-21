@@ -1,0 +1,88 @@
+@import "tailwindcss";
+
+/* 设计令牌：数值取自 magpie internal/gui/assets/app.css（MIT），命名保持一致便于对照。 */
+:root {
+  --bg: #f4f4f6;
+  --card: #ffffff;
+  --pill: #f1f1f4;
+  --line: #e3e3e8;
+  --fg: #1c1c21;
+  --muted: #85858d;
+  --faint: #b9b9c2;
+  --accent: #4f46e5;
+  --accent-soft: #eeedfd;
+  --sel: #ecebfb;
+  --green: #189a58;
+  --green-soft: #e4f6ec;
+  --red: #d64545;
+  --red-soft: #fbe9e9;
+  --amber: #b45309;
+  --amber-soft: #fbf0df;
+  --shadow: 0 1px 2px rgba(20, 20, 30, 0.04), 0 4px 16px rgba(20, 20, 30, 0.05);
+  /* 每个 Agent 一条线色：只用于拓扑连线与小圆点 */
+  --a-claude: #d97757;
+  --a-codex: #4f46e5;
+  --a-opencode: #0f9d8a;
+  color-scheme: light;
+}
+:root[data-theme="dark"] {
+  --bg: #1a1a1e;
+  --card: #232327;
+  --pill: #2d2d33;
+  --line: #333339;
+  --fg: #ededf1;
+  --muted: #8b8b94;
+  --faint: #5a5a63;
+  --accent: #8b84ff;
+  --accent-soft: #2c2a4a;
+  --sel: #2e2c4d;
+  --green: #3ccf84;
+  --green-soft: #1d3428;
+  --red: #f07272;
+  --red-soft: #3d2324;
+  --amber: #f0a64a;
+  --amber-soft: #3a2e1d;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+  color-scheme: dark;
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-card: var(--card);
+  --color-pill: var(--pill);
+  --color-line: var(--line);
+  --color-fg: var(--fg);
+  --color-muted: var(--muted);
+  --color-faint: var(--faint);
+  --color-accent: var(--accent);
+  --color-accent-soft: var(--accent-soft);
+  --color-sel: var(--sel);
+  --color-ok: var(--green);
+  --color-ok-soft: var(--green-soft);
+  --color-bad: var(--red);
+  --color-bad-soft: var(--red-soft);
+  --color-warn: var(--amber);
+  --color-warn-soft: var(--amber-soft);
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Noto Sans SC", "Segoe UI", system-ui, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --shadow-card: var(--shadow);
+}
+
+html, body, #root { height: 100%; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* 动效只表达真实状态：虚线流动 = 该连线上确有请求在传；限流 = 红色虚线静止。 */
+@keyframes flow { to { stroke-dashoffset: -20; } }
+.wire-live { animation: flow 0.8s linear infinite; }
+@keyframes breathe { 50% { opacity: 0.45; } }
+.dot-live { animation: breathe 1.4s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) {
+  .wire-live, .dot-live { animation: none; }
+}

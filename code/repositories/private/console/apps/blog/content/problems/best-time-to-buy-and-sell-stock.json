@@ -1,0 +1,22 @@
+{
+  "id": "12",
+  "slug": "best-time-to-buy-and-sell-stock",
+  "title": "买卖股票的最佳时机",
+  "difficulty": "easy",
+  "tags": ["数组", "动态规划"],
+  "description": "给定一个数组 `prices`,它的第 `i` 个元素 `prices[i]` 表示一支给定股票第 `i` 天的价格。\n\n你只能选择**某一天**买入并在未来的**另一天**卖出。设计算法计算你所能获取的最大利润。返回可以从这笔交易中获取的最大利润;如果不能获取利润,返回 `0`。\n\n**示例 1:**\n\n- 输入:`prices = [7,1,5,3,6,4]`\n- 输出:`5`(第 2 天买入价格 1,第 5 天卖出价格 6,利润 5)\n\n**示例 2:**\n\n- 输入:`prices = [7,6,4,3,1]`\n- 输出:`0`(价格单调递减,无法获利)",
+  "solution": "## 思路\n\n一次遍历,维护**截至当前的历史最低价** `minPrice` 与**最大利润** `max`。对每一天:更新最低价,或用当天价减最低价更新利润。即「在最低点买入、在之后的最高点卖出」。\n\n## 参考代码\n\n```js\nfunction maxProfit(prices) {\n  let minPrice = Infinity;\n  let max = 0;\n  for (const p of prices) {\n    if (p < minPrice) minPrice = p;\n    else max = Math.max(max, p - minPrice);\n  }\n  return max;\n}\n```\n\n## 复杂度\n\n- 时间:O(n)\n- 空间:O(1)",
+  "signature": {
+    "language": "javascript",
+    "entry": "maxProfit",
+    "params": [{ "name": "prices", "type": "number[]" }],
+    "returns": "number"
+  },
+  "testCases": [
+    { "sample": true, "input": [[7, 1, 5, 3, 6, 4]], "expected": 5 },
+    { "sample": true, "input": [[7, 6, 4, 3, 1]], "expected": 0 },
+    { "sample": false, "input": [[1, 2, 3, 4, 5]], "expected": 4 },
+    { "sample": false, "input": [[5]], "expected": 0 },
+    { "sample": false, "input": [[2, 4, 1]], "expected": 2 }
+  ]
+}

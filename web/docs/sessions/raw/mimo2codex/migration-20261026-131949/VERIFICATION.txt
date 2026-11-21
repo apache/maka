@@ -1,0 +1,25 @@
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py mimo2codex baseline
+INPUT: CONFIG: fixed mimo2codex source allowlist
+OUTPUT: BASELINE PASS groups=1 files=4 bytes=764792 protected=0
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py mimo2codex archive
+INPUT: b1b3df3ae981e9293590d9b5a5981e6fbf2ccd82524275490fb54db987543494
+OUTPUT: ARCHIVE PASS zip_files=1 files=4 bytes=764792
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py mimo2codex apply
+INPUT: ce0bfa3c8f4a2eb9d8f4d5772aaef44d527aa8f316870791f1193a5df747947d
+OUTPUT: APPLY PASS removed_files=4 removed_bytes=764792
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py mimo2codex verify
+INPUT: ff82e9ec29a56791002e1a543eff656b618b8d28bb326ee67ddcef40f2d6824f
+OUTPUT: MODIFIED PASS files=4 bytes=764792 originals_absent=true protected_unchanged=true
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py mimo2codex rollback-test
+INPUT: ff82e9ec29a56791002e1a543eff656b618b8d28bb326ee67ddcef40f2d6824f
+OUTPUT: ROLLBACK PASS restored_files=4 restored_bytes=764792 hashes_match=true originals_untouched=true
+EXIT: 0
+

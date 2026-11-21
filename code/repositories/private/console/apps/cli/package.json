@@ -1,0 +1,23 @@
+{
+  "name": "@ggbdpq/console-cli",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@ggbdpq/diffmap-core": "workspace:*",
+    "@ggbdpq/inventory-core": "workspace:*",
+    "@ggbdpq/prism-core": "workspace:*",
+    "@ggbdpq/register-core": "workspace:*",
+    "@ggbdpq/toolkit-core": "workspace:*",
+    "commander": "^15.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2"
+  }
+}

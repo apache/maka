@@ -1,0 +1,52 @@
+{
+  "schemaVersion": "mimosa-finding-ledger-batch/v1",
+  "batchId": "stop-20260913T132406721Z-2620-d70f9be1aa8f",
+  "runId": "20260913T132406721Z-2620-d70f9be1aa8f",
+  "runStatus": "completed",
+  "coverage": {
+    "status": "complete",
+    "reasons": [
+      {
+        "code": "baseline_partial",
+        "stage": "baseline",
+        "target": ".",
+        "detail": "baseline capture had enumeration or snapshot errors",
+        "affectsCompletion": false
+      }
+    ]
+  },
+  "source": {
+    "component": "zcode-hook",
+    "operationId": "Stop"
+  },
+  "revision": "251a5350787150d904d93d8eda1b51e52d8471b5",
+  "diffHash": "df3ceb08e208f2afe7dbbdb93d1e51a414e36bdcd57a1992b10ba54814f553b2",
+  "rulesVersion": "unavailable",
+  "sessionHash": "c9c1bf55e79e410d75a838fb939ba1883d561414b1762b6206e61227d7f77a31",
+  "reportRef": ".mimosa/reports/task-review-sess_2175b38d-61b0-477c-94dc-1c0fe2f2d16c-20260913T132406721Z-2620-d70f9be1aa8f.json",
+  "events": [],
+  "observedFindingIds": [],
+  "verifiedFiles": [
+    {
+      "file": "tests/bookmarks/import.test.ts",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": "src/app/api/bookmarks/bookmarks/route.ts",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": "tests/bookmarks/api.test.ts",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": "tests/bookmarks/db.test.ts",
+      "direct": "complete",
+      "projectContext": "partial"
+    }
+  ],
+  "recordedAt": "2026-09-13T13:24:06.969Z"
+}

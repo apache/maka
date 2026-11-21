@@ -1,0 +1,2 @@
+upstream/main:internal/agent/agents.go:12
+upstream/main:internal/agent/opencode_providers.go:2

@@ -1,0 +1,98 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Aryz <aryz0713@gmail.com>
+Date: Thu, 12 Nov 2026 20:04:17 +0800
+Subject: [PATCH 04/11] library: keep broken website indexes unknown and retain
+ HTML templates
+
+Only try the legacy index location after 404 or 410, so a parse or server failure cannot turn into a removed skill through another catalog. Accept explicitly listed HTML template files while retaining HTML-response rejection for skill metadata and other files.
+
+Verified the two guards fail before this change in fork Actions run 43213792487: TestWellKnownHTMLTemplateIsInstalled rejected the template, and TestWellKnownBrokenIndexIsNotAnEmptyAlias reported gone after a malformed primary index. The earlier integration regression and content-hash/local-edit lifecycle checks pass; the browser regression passes 22 cases in Chromium and WebKit.
+---
+ internal/library/skillwellknown.go | 41 ++++++++++++++++++++----------
+ 1 file changed, 28 insertions(+), 13 deletions(-)
+
+diff --git a/internal/library/skillwellknown.go b/internal/library/skillwellknown.go
+index 421fef4d2..9d90281bd 100644
+--- a/internal/library/skillwellknown.go
++++ b/internal/library/skillwellknown.go
+@@ -3,6 +3,7 @@ package library
+ import (
+ 	"context"
+ 	"encoding/json"
++	"errors"
+ 	"fmt"
+ 	"io"
+ 	"net/http"
+@@ -147,6 +148,16 @@ func wellKnownURL(base string, parts ...string) string {
+ 	return base
+ }
+ 
++type wellKnownStatusError struct {
++	address string
++	status  string
++	code    int
++}
++
++func (e *wellKnownStatusError) Error() string {
++	return fmt.Sprintf("%s answered %s", e.address, e.status)
++}
++
+ func wellKnownGet(ctx context.Context, client *http.Client, address string, max int64) ([]byte, error) {
+ 	req, err := http.NewRequestWithContext(ctx, "GET", address, nil)
+ 	if err != nil {
+@@ -159,7 +170,7 @@ func wellKnownGet(ctx context.Context, client *http.Client, address string, max
+ 	}
+ 	defer resp.Body.Close()
+ 	if resp.StatusCode != http.StatusOK {
+-		return nil, fmt.Errorf("%s answered %s", address, resp.Status)
++		return nil, &wellKnownStatusError{address: address, status: resp.Status, code: resp.StatusCode}
+ 	}
+ 	if max < 0 || resp.ContentLength > max {
+ 		return nil, fmt.Errorf("%s is over the most magpie reads", address)
+@@ -173,7 +184,9 @@ func wellKnownGet(ctx context.Context, client *http.Client, address string, max
+ 	}
+ 	kind := strings.ToLower(resp.Header.Get("Content-Type"))
+ 	sniff := http.DetectContentType(body)
+-	if strings.Contains(kind, "text/html") || strings.Contains(kind, "application/xhtml+xml") || strings.HasPrefix(sniff, "text/html") {
++	ext := strings.ToLower(filepath.Ext(req.URL.Path))
++	htmlFile := ext == ".html" || ext == ".htm" || ext == ".xhtml"
++	if !htmlFile && (strings.Contains(kind, "text/html") || strings.Contains(kind, "application/xhtml+xml") || strings.HasPrefix(sniff, "text/html")) {
+ 		return nil, fmt.Errorf("%s returned an HTML page instead of a skills file", address)
+ 	}
+ 	return body, nil
+@@ -184,19 +197,21 @@ func wellKnownIndex(ctx context.Context, client *http.Client, base *url.URL) (st
+ 	for _, folder := range []string{"skills", "agent-skills"} {
+ 		root := wellKnownURL(base.String(), ".well-known", folder)
+ 		body, err := wellKnownGet(ctx, client, root+"/index.json", wellKnownIndexMax)
+-		var entries []wellKnownEntry
+-		if err == nil {
+-			entries, err = readWellKnownIndex(body)
+-		}
+-		if err == nil {
+-			return root, entries, nil
+-		}
+-		if first == nil {
+-			first = err
++		if err != nil {
++			var status *wellKnownStatusError
++			if !errors.As(err, &status) || (status.code != http.StatusNotFound && status.code != http.StatusGone) {
++				return "", nil, err
++			}
++			if first == nil {
++				first = err
++			}
++			continue
+ 		}
+-		if ctx.Err() != nil {
+-			break
++		entries, err := readWellKnownIndex(body)
++		if err != nil {
++			return "", nil, err
+ 		}
++		return root, entries, nil
+ 	}
+ 	return "", nil, fmt.Errorf("couldn't read a well-known skills index at %s: %w", base, first)
+ }
+-- 
+2.50.1 (Apple Git-155)
+

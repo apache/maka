@@ -1,0 +1,254 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: "yjqi@YjdeMacBook-Pro.localdomain"
+ <yanjie@5466053088715162.onaliyun.com>
+Date: Tue, 10 Nov 2026 16:04:03 +0800
+Subject: [PATCH] A Claude account Anthropic answers authentication_failed is
+ followed by the subscription's other accounts in the same re
+
+## What happens
+
+When Anthropic refuses a Claude subscription account's sign-in on a try,
+Claude Code reports the error kind `authentication_failed`, and the bridge
+carries it as the try's `ErrType`. `serve`'s `failAuth` branch
+(internal/gateway/gateway.go) marks the account lapsed and sends the same
+request to the subscription's next account. Nothing handles
+`authentication_failed` itself.
+
+## Why it matters
+
+A revoked OAuth token is how a banned account answers. Whatever Anthropic
+acted on (the request's content, the user) goes with the request to every
+account it reaches next. In one server's usage export, a banned account
+failed with authentication_failed at 14:24:26. The same session was on
+another account in the same minute, and that account was banned 19 minutes
+later. Two more accounts went the same way.
+
+magpie already walls a provider off for the rest of a request when its
+vendor's risk control restricts an account (`riskRefused`, for WorkBuddy and
+ZCode). Claude has no such wall.
+
+## Reproduction (main 71fbb33a)
+
+Two tests in internal/gateway/claude_auth_wall_test.go, with a fake Claude
+Code whose first account answers as Claude Code does for a revoked token:
+
+```
+{"type":"assistant","message":{...,"content":[{"type":"text","text":"Failed to authenticate: OAuth token revoked. ..."}]},"error":"authentication_failed"}
+{"type":"result","subtype":"success","is_error":true,"api_error_status":403,"result":"Failed to authenticate: OAuth token revoked. ..."}
+```
+
+```
+go test -count=1 -run 'TestClaudeAuthFailed' -v ./internal/gateway
+
+--- FAIL: TestClaudeAuthFailedWallsTheOtherAccounts
+    .../auth/stream=true:  claude_auth_wall_test.go:48: the spare was asked after authentication_failed: 200 runs "own,tok-spare"
+    .../auth/stream=false: claude_auth_wall_test.go:48: the spare was asked after authentication_failed: 200 runs "own,tok-spare"
+    (the overloaded cases pass: a 529 still goes on to the spare)
+--- FAIL: TestClaudeAuthFailedGroupGoesToItsOtherProvider
+    claude_auth_wall_test.go:73: 200 ...; the other provider asked 0 times; Claude runs "own,tok-spare"
+```
+
+## The fix
+
+The patch below / linked branch (3 files, +134):
+
+- `claudeAuthWalled(c, errType)` (fallback.go): a Claude subscription
+  account whose try's ErrType is `authentication_failed`.
+- In `serve`, before the `failAuth` hand-on, a walled try drops the
+  provider's other accounts from the request's candidates, from `busyNow`
+  and from `small`/`smallW` (`elsewhere`, `elsewhereWeighed`), as
+  `riskRefused` does. Another provider in a group is still asked. The
+  account is still marked lapsed by the existing branch, and nothing else is
+  held.
+
+Claude Code also reports an ordinary refused sign-in ("Please run /login",
+any other 401/403 of Anthropic's API) as authentication_failed. So an
+expired sign-in also stops that one request from going on to the
+subscription's other accounts. Other requests are not affected.
+
+Not in the patch: a docs line in docs/subsystems/gateway-routing.md beside
+the `riskRefused` wall.
+
+## Possible follow-up (not in this issue)
+
+Holding the caller or the account for a while after authentication_failed
+(for example 12 hours), until the user acts, would be new policy and UI.
+It isn't needed to fix the hand-on above and can be proposed separately.
+
+Run at this tree (base origin/main 2219fdd4, macOS arm64, go1.26.8):
+- go test -count=1 -run 'ClaudeAuthFailed|Claude|Fallback|Wall' ./internal/gateway: ok (87s)
+- gofmt -l internal: clean; GOOS=windows go vet on the changed packages: ok.
+Not run: the full suite.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ internal/gateway/claude_auth_wall_test.go | 101 ++++++++++++++++++++++
+ internal/gateway/fallback.go              |  21 +++++
+ internal/gateway/gateway.go               |  11 +++
+ 3 files changed, 133 insertions(+)
+ create mode 100644 internal/gateway/claude_auth_wall_test.go
+
+diff --git a/internal/gateway/claude_auth_wall_test.go b/internal/gateway/claude_auth_wall_test.go
+new file mode 100644
+index 000000000..9e976885b
+--- /dev/null
++++ b/internal/gateway/claude_auth_wall_test.go
+@@ -0,0 +1,101 @@
++package gateway
++
++import (
++	"encoding/json"
++	"fmt"
++	"os"
++	"path/filepath"
++	"strings"
++	"testing"
++
++	"github.com/yetone/magpie/internal/provider"
++	"github.com/yetone/magpie/internal/testenv"
++)
++
++// A Claude account Anthropic answers authentication_failed walls the
++// Claude subscription off for the rest of the request: the spare account
++// isn't asked (a banned account's request went to the next account in
++// the same minute, and that one was banned 19 minutes later). Claude Code says the kind on its assistant message, as it does
++// for a revoked token and for any other 401/403. Another failure (529)
++// still goes on to the spare, as before.
++func TestClaudeAuthFailedWallsTheOtherAccounts(t *testing.T) {
++	refused := `    echo '{"type":"assistant","message":{"id":"x","model":"<synthetic>","role":"assistant","content":[{"type":"text","text":"Failed to authenticate: OAuth token revoked. Please log in again or contact your administrator."}]},"error":"authentication_failed"}'
++    echo '{"type":"result","subtype":"success","is_error":true,"api_error_status":403,"result":"Failed to authenticate: OAuth token revoked. Please log in again or contact your administrator."}'
++`
++	overloaded := `    echo '{"type":"result","subtype":"success","is_error":true,"api_error_status":529,"result":"API Error: 529 overloaded"}'
++`
++	for _, c := range []struct {
++		name, first string
++		spare       bool
++	}{{"auth", refused, false}, {"overloaded", overloaded, true}} {
++		for _, stream := range []bool{true, false} {
++			t.Run(fmt.Sprintf("%s/stream=%v", c.name, stream), func(t *testing.T) {
++				log := claudeSubscriptionFirstSays(t, c.first)
++				s := New()
++				body, _ := json.Marshal(map[string]any{"model": "claude/claude-sonnet-5", "max_tokens": 50, "stream": stream,
++					"messages": []map[string]any{{"role": "user", "content": "ping"}}})
++				code, reply := sendTo(s, "/v1/messages", string(body))
++				b, _ := os.ReadFile(log)
++				runs := strings.Join(strings.Fields(string(b)), ",")
++				if c.spare {
++					if code != 200 || runs != "own,tok-spare" {
++						t.Fatalf("a 529 isn't handed on: %d %q %s", code, runs, reply)
++					}
++					return
++				}
++				if strings.Contains(runs, "tok-spare") || code == 200 {
++					t.Fatalf("the spare was asked after authentication_failed: %d runs %q %s", code, runs, reply)
++				}
++			})
++		}
++	}
++}
++
++// In a routing group, the walled Claude subscription's spare isn't asked,
++// and the group's other provider answers.
++func TestClaudeAuthFailedGroupGoesToItsOtherProvider(t *testing.T) {
++	refused := `    echo '{"type":"assistant","message":{"id":"x","model":"<synthetic>","role":"assistant","content":[{"type":"text","text":"Please run /login · API Error: 401 {\"type\":\"error\",\"error\":{\"type\":\"authentication_error\",\"message\":\"Invalid authentication credentials\"}}"}]},"error":"authentication_failed"}'
++    echo '{"type":"result","subtype":"success","is_error":true,"api_error_status":401,"result":"Please run /login · API Error: 401"}'
++`
++	log := claudeSubscriptionFirstSays(t, refused)
++	if err := provider.SetRouting("claude", provider.Ordered); err != nil {
++		t.Fatal(err)
++	}
++	other := &scripted{replies: []reply{{200, "", chatOK}}}
++	scriptedOn(t, "b", provider.Chat, other)
++	if err := provider.SaveGroup(provider.Group{Name: "G", Members: []string{"claude/claude-sonnet-5", "b/m"}, Routing: provider.Ordered}); err != nil {
++		t.Fatal(err)
++	}
++	code, body := postAs(t, New(), "", `{"model":"group/g","messages":[{"role":"user","content":"hi"}]}`)
++	b, _ := os.ReadFile(log)
++	if runs := strings.Join(strings.Fields(string(b)), ","); code != 200 || other.n != 1 || runs != "own" {
++		t.Fatalf("%d %s; the other provider asked %d times; Claude runs %q", code, body, other.n, runs)
++	}
++}
++
++// claudeAuthFails stands in for Claude Code: tok-a's runs answer
++// authentication_failed, Claude Code's kind for a revoked token, and every
++// other account's answer "healthy account". Each run's token goes to calls.
++func claudeAuthFails(t *testing.T, calls string) {
++	t.Helper()
++	script := `#!/bin/sh
++case "$1" in auth) exit 1;; esac
++creds="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.credentials.json"
++while read -r line; do
++  tok=$(grep -o 'tok-[a-z]*' "$creds" | head -1)
++  echo "$tok" >> '` + calls + `'
++  if [ "$tok" = tok-a ]; then
++    echo '{"type":"assistant","message":{"id":"x","model":"<synthetic>","role":"assistant","content":[{"type":"text","text":"Failed to authenticate: OAuth token revoked. Please log in again or contact your administrator."}]},"error":"authentication_failed"}'
++    echo '{"type":"result","is_error":true,"api_error_status":403,"result":"Failed to authenticate: OAuth token revoked. Please log in again or contact your administrator."}'
++  else
++    echo '{"type":"stream_event","event":{"type":"message_start","message":{"id":"m","model":"claude-sonnet-5","usage":{"input_tokens":1}}}}'
++    echo '{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"healthy account"}}}'
++    echo '{"type":"stream_event","event":{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":3}}}'
++    echo '{"type":"stream_event","event":{"type":"message_stop"}}'
++    echo '{"type":"result","is_error":false,"result":""}'
++  fi
++done
++`
++	binary := strings.Split(os.Getenv("PATH"), string(os.PathListSeparator))[0]
++	testenv.Program(t, filepath.Join(binary, "claude"), script)
++}
+diff --git a/internal/gateway/fallback.go b/internal/gateway/fallback.go
+index 20d769de7..891975b5e 100644
+--- a/internal/gateway/fallback.go
++++ b/internal/gateway/fallback.go
+@@ -1941,6 +1941,27 @@ func riskRefused(c candidate, status int, header http.Header, body []byte) bool
+ 	return failureOf(c, status, body) == failRestricted && !remoteModelRest(c, failRestricted, header) && !googleSuspended(c.p, carriedStatus(status, body), body)
+ }
+ 
++// claudeAuthFailed is Claude Code's kind for a turn Anthropic refused the
++// account's sign-in on (Claude Code 2.1.291's error mapping): its OAuth
++// token revoked (403 "OAuth token has been revoked", 401 "OAuth access
++// token has been revoked"), which is how a banned account answers, and
++// any other 401 or 403 of Anthropic's first-party API ("Please run
++// /login"), which an ordinary refused sign-in answers too. The bridge
++// carries it as the try's ErrType (claude_subscription.go).
++const claudeAuthFailed = "authentication_failed"
++
++// claudeAuthWalled says c is a Claude subscription account whose try
++// Anthropic answered authentication_failed (errType, the try's ErrType):
++// none of the provider's other accounts is asked the request, now or in a
++// later round of it, as riskRefused's aren't (a banned account's request
++// went on to the next account in the same minute, and that one was banned
++// 19 minutes later). Whatever the request's content or the user did that
++// Anthropic acted on goes with the request to every account it reaches.
++// Another provider left is still asked.
++func claudeAuthWalled(c candidate, errType string) bool {
++	return errType == claudeAuthFailed && c.p.Account != nil && c.p.Account.Agent == "claude"
++}
++
+ // elsewhereWeighed is elsewhere on a list of candidates beside their
+ // weights (roomy's left out as too small), the two kept paired: weights
+ // that don't pair with the list are kept as they are.
+diff --git a/internal/gateway/gateway.go b/internal/gateway/gateway.go
+index 72064eddd..6febc965d 100644
+--- a/internal/gateway/gateway.go
++++ b/internal/gateway/gateway.go
+@@ -4694,6 +4694,17 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
+ 			skipped = append(skipped, c.label()+": "+call.Error)
+ 			continue
+ 		}
++		if !hw.passing && !hw.refused && hw.failed() && claudeAuthWalled(c, call.Usage.ErrType) {
++			// Anthropic answered the Claude account authentication_failed
++			// (claudeAuthWalled): as riskRefused's, none of the provider's
++			// other accounts is sent the request, now or in a later round,
++			// before the sign-in's lapse below passes it on. Another
++			// provider left is asked, else the agent is told
++			cands = append(cands[:i+1:i+1], elsewhere(cands[i+1:], c)...)
++			busyNow = slices.DeleteFunc(busyNow, func(b busyTry) bool { return b.c.p.ID == c.p.ID })
++			small, smallW = elsewhereWeighed(small, smallW, c)
++			last = i == len(cands)-1
++		}
+ 		if !last && hw.failed() && failureOf(c, hw.code(), hw.errBody()) == failAuth {
+ 			// the account's sign-in is gone, refused by Anthropic: no rest
+ 			// brings it back, so none is told; it is passed over until it
+-- 
+2.50.1 (Apple Git-155)
+

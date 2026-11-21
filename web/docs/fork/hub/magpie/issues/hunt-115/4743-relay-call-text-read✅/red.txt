@@ -1,0 +1,250 @@
+--- FAIL: TestInvokeReportedResponsesPassthrough (0.10s)
+    textcalls_invoke_test.go:339: text "<invoke name=\"ToolSearch\">\n<parameter name=\"query\">select:mcp__magpie__magpie-browser__browser_navigate</parameter>\n</invoke>\n*Result: Tool loaded.*\n<invoke name=\"mcp__magpie__magpie-browser__browser_navigate\">\n<parameter name=\"url\">https://www.google.com</parameter>\n</invoke>\n*Result: Navigated to https://www.google.com — page title: \"Google\"*\n已用 magpie 的浏览器打开了谷歌 ..." names [] args []
+        event: response.created
+        data: {"response":{"id":"r1","model":"a/m"},"type":"response.created"}
+        
+        event: response.output_item.added
+        data: {"item":{"content":[],"id":"msg_1","role":"assistant","status":"in_progress","type":"message"},"output_index":0,"type":"response.output_item.added"}
+        
+        event: response.content_part.added
+        data: {"content_index":0,"item_id":"msg_1","output_index":0,"part":{"annotations":[],"text":"","type":"output_text"},"type":"response.content_part.added"}
+        
+        event: response.output_text.delta
+        data: {"content_index":0,"delta":"\u003cinvoke n","item_id":"msg_1","output_index":0,"sequence_number":0,"type":"response.output_text.delta"}
+        
+        event: response.output_text.delta
+        data: {"content_index":0,"delta":"ame=\"Tool","item_id":"msg_1","output_index":0,"sequence_number":1,"type":"response.output_text.delta"}
+        
+        event: response.output_text.delta
+        data: {"content_index":0,"delta":"Search\"\u003e\n","item_id":"msg_1","output_index":0,"sequence_number":2,"type":"response.output_text.delta"}
+        
+        event: response.output_text.delta
+        data: {"content_index":0,"delta":"\u003cparamete","item_id":"msg_1","output_index":0,"sequence_number":3,"type":"response.output_text.delta"}
+        
+        event: response.output_text.delta
+        data: {"content_index":0,"delta":"r name=\"q","item_id":"msg_1","output_index":0,"sequence_number":4,"type":"response.output_text.delta"}
+        
+        event: response.output_text.delta
+        data: {"content_index":0,"delta":"uery\"\u003esel","item_id":"msg_1","output_index":0,"sequence_number":5,"type":"response.output_text.delta"}
+        
+        event: response.output_text.delta
+        data: {"content_index":0,"delta":"ect:mcp__","item_id":"msg_1","output_index":0,"sequence_number":6,"type":"response.output_text.delta"}
+        
+        event: response.output_text.delta
+        data: {"content_index":0,"delta":"magpie__m","item_id":"msg_1","output_index":0,"sequence_number":7,"type":"response.output_text.delta"}
+        
+        event: response.output_text.delta
+        data: {"content_index":0,"delta":"agpie-bro","item_id":"msg_1","output_index":0,"sequence_number":8,"type":"response.output_text.delta"}
+        
+        event: response.output_text.delta
+        data: {"content_index":0,"delta":"wser__bro","item_id":"msg_1","output_index":0,"sequence_number":9,"type":"response.output_text.delta"}
+        
+        event: response.output_text.delta
+        data: {"content_index":0,"delta":"wser_navi","item_id":"msg_1","output_index":0,"sequence_number":10,"type":"response.output_text.delta"}
+        
+        event: response.output_text.delta
+        data: {"content_index":0,"delta":"gate\u003c/par","item_id":"msg_1","output_index":0,"sequence_number":11,"type":"response.output_text.delta"}
+        
+        event: response.output_text.delta
+        data: {"content_index":0,"delta":"ameter\u003e\n\u003c","item_id":"msg_1","output_index":0,"sequence_number":12,"type":"response.output_text.delta"}
+        
+        event: response.output_text.delta
+        data: {"content_index":0,"delta":"/invoke\u003e\n","item_id":"msg_1","output_index":0,"sequence_number":13,"type":"response.output_text.delta"}
+        
+        event: response.output_text.delta
+        data: {"content_index":0,"delta":"*Result: ","item_id":"msg_1","output_index":0,"sequence_number":14,"type":"response.output_text.delta"}
+        
+        event: response.output_text.delta
+        data: {"content_index":0,"delta":"Tool load","item_id":"msg_1","output_index":0,"sequence_number":15,"type":"response.output_text.delta"}
+        
+        event: response.output_text.delta
+        data: {"content_index":0,"delta":"ed.*\n\u003cinv","item_id":"msg_1","output_index":0,"sequence_number":16,"type":"response.output_text.delta"}
+        
+        event: response.output_text.delta
+        data: {"content_index":0,"delta":"oke name=","item_id":"msg_1","output_index":0,"sequence_number":17,"type":"response.output_text.delta"}
+        
+        event: response.output_text.delta
+        data: {"content_index":0,"delta":"\"mcp__mag","item_id":"msg_1","output_index":0,"sequence_number":18,"type":"response.output_text.delta"}
+        
+        event: response.output_text.delta
+        data: {"content_index":0,"delta":"pie__magp","item_id":"msg_1","output_index":0,"sequence_number":19,"type":"response.output_text.delta"}
+        
+        event: response.output_text.delta
+        data: {"content_index":0,"delta":"ie-browse","item_id":"msg_1","output_index":0,"sequence_number":20,"type":"response.output_text.delta"}
+        
+        event: response.output_text.delta
+        data: {"content_index":0,"delta":"r__browse","item_id":"msg_1","output_index":0,"sequence_number":21,"type":"response.output_text.delta"}
+        
+        event: response.output_text.delta
+        data: {"content_index":0,"delta":"r_navigat","item_id":"msg_1","output_index":0,"sequence_number":22,"type":"response.output_text.delta"}
+        
+        event: response.output_text.delta
+        data: {"content_index":0,"delta":"e\"\u003e\n\u003cpara","item_id":"msg_1","output_index":0,"sequence_number":23,"type":"response.output_text.delta"}
+        
+        event: response.output_text.delta
+        data: {"content_index":0,"delta":"meter nam","item_id":"msg_1","output_index":0,"sequence_number":24,"type":"response.output_text.delta"}
+        
+        event: response.output_text.delta
+        data: {"content_index":0,"delta":"e=\"url\"\u003eh","item_id":"msg_1","output_index":0,"sequence_number":25,"type":"response.output_text.delta"}
+        
+        event: response.output_text.delta
+        data: {"content_index":0,"delta":"ttps://ww","item_id":"msg_1","output_index":0,"sequence_number":26,"type":"response.output_text.delta"}
+        
+        event: response.output_text.delta
+        data: {"content_index":0,"delta":"w.google.","item_id":"msg_1","output_index":0,"sequence_number":27,"type":"response.output_text.delta"}
+        
+        event: response.output_text.delta
+        data: {"content_index":0,"delta":"com\u003c/para","item_id":"msg_1","output_index":0,"sequence_number":28,"type":"response.output_text.delta"}
+        
+        event: response.output_text.delta
+        data: {"content_index":0,"delta":"meter\u003e\n\u003c/","item_id":"msg_1","output_index":0,"sequence_number":29,"type":"response.output_text.delta"}
+        
+        event: response.output_text.delta
+        data: {"content_index":0,"delta":"invoke\u003e\n*","item_id":"msg_1","output_index":0,"sequence_number":30,"type":"response.output_text.delta"}
+        
+        event: response.output_text.delta
+        data: {"content_index":0,"delta":"Result: N","item_id":"msg_1","output_index":0,"sequence_number":31,"type":"response.output_text.delta"}
+        
+        event: response.output_text.delta
+        data: {"content_index":0,"delta":"avigated ","item_id":"msg_1","output_index":0,"sequence_number":32,"type":"response.output_text.delta"}
+        
+        event: response.output_text.delta
+        data: {"content_index":0,"delta":"to https:","item_id":"msg_1","output_index":0,"sequence_number":33,"type":"response.output_text.delta"}
+        
+        event: response.output_text.delta
+        data: {"content_index":0,"delta":"//www.goo","item_id":"msg_1","output_index":0,"sequence_number":34,"type":"response.output_text.delta"}
+        
+        event: response.output_text.delta
+        data: {"content_index":0,"delta":"gle.com —","item_id":"msg_1","output_index":0,"sequence_number":35,"type":"response.output_text.delta"}
+        
+        event: response.output_text.delta
+        data: {"content_index":0,"delta":" page tit","item_id":"msg_1","output_index":0,"sequence_number":36,"type":"response.output_text.delta"}
+        
+        event: response.output_text.delta
+        data: {"content_index":0,"delta":"le: \"Goog","item_id":"msg_1","output_index":0,"sequence_number":37,"type":"response.output_text.delta"}
+        
+        event: response.output_text.delta
+        data: {"content_index":0,"delta":"le\"*\n已用","item_id":"msg_1","output_index":0,"sequence_number":38,"type":"response.output_text.delta"}
+        
+        event: response.output_text.delta
+        data: {"content_index":0,"delta":" magpie 的","item_id":"msg_1","output_index":0,"sequence_number":39,"type":"response.output_text.delta"}
+        
+        event: response.output_text.delta
+        data: {"content_index":0,"delta":"浏览器","item_id":"msg_1","output_index":0,"sequence_number":40,"type":"response.output_text.delta"}
+        
+        event: response.output_text.delta
+        data: {"content_index":0,"delta":"打开了","item_id":"msg_1","output_index":0,"sequence_number":41,"type":"response.output_text.delta"}
+        
+        event: response.output_text.delta
+        data: {"content_index":0,"delta":"谷歌 ..","item_id":"msg_1","output_index":0,"sequence_number":42,"type":"response.output_text.delta"}
+        
+        event: response.output_text.delta
+        data: {"content_index":0,"delta":".","item_id":"msg_1","output_index":0,"sequence_number":43,"type":"response.output_text.delta"}
+        
+        event: response.output_text.done
+        data: {"content_index":0,"item_id":"msg_1","output_index":0,"text":"\u003cinvoke name=\"ToolSearch\"\u003e\n\u003cparameter name=\"query\"\u003eselect:mcp__magpie__magpie-browser__browser_navigate\u003c/parameter\u003e\n\u003c/invoke\u003e\n*Result: Tool loaded.*\n\u003cinvoke name=\"mcp__magpie__magpie-browser__browser_navigate\"\u003e\n\u003cparameter name=\"url\"\u003ehttps://www.google.com\u003c/parameter\u003e\n\u003c/invoke\u003e\n*Result: Navigated to https://www.google.com — page title: \"Google\"*\n已用 magpie 的浏览器打开了谷歌 ...","type":"response.output_text.done"}
+        
+        event: response.content_part.done
+        data: {"content_index":0,"item_id":"msg_1","output_index":0,"part":{"annotations":[],"text":"\u003cinvoke name=\"ToolSearch\"\u003e\n\u003cparameter name=\"query\"\u003eselect:mcp__magpie__magpie-browser__browser_navigate\u003c/parameter\u003e\n\u003c/invoke\u003e\n*Result: Tool loaded.*\n\u003cinvoke name=\"mcp__magpie__magpie-browser__browser_navigate\"\u003e\n\u003cparameter name=\"url\"\u003ehttps://www.google.com\u003c/parameter\u003e\n\u003c/invoke\u003e\n*Result: Navigated to https://www.google.com — page title: \"Google\"*\n已用 magpie 的浏览器打开了谷歌 ...","type":"output_text"},"type":"response.content_part.done"}
+        
+        event: response.output_item.done
+        data: {"item":{"content":[{"annotations":[],"text":"<invoke name=\"ToolSearch\">\n<parameter name=\"query\">select:mcp__magpie__magpie-browser__browser_navigate</parameter>\n</invoke>\n*Result: Tool loaded.*\n<invoke name=\"mcp__magpie__magpie-browser__browser_navigate\">\n<parameter name=\"url\">https://www.google.com</parameter>\n</invoke>\n*Result: Navigated to https://www.google.com — page title: \"Google\"*\n已用 magpie 的浏览器打开了谷歌 ...","type":"output_text"}],"id":"msg_1","phase":"final_answer","role":"assistant","status":"completed","type":"message"},"output_index":0,"type":"response.output_item.done"}
+        
+        event: response.completed
+        data: {"response":{"id":"r1","model":"a/m","output":[{"content":[{"annotations":[],"text":"<invoke name=\"ToolSearch\">\n<parameter name=\"query\">select:mcp__magpie__magpie-browser__browser_navigate</parameter>\n</invoke>\n*Result: Tool loaded.*\n<invoke name=\"mcp__magpie__magpie-browser__browser_navigate\">\n<parameter name=\"url\">https://www.google.com</parameter>\n</invoke>\n*Result: Navigated to https://www.google.com — page title: \"Google\"*\n已用 magpie 的浏览器打开了谷歌 ...","type":"output_text"}],"id":"msg_1","phase":"final_answer","role":"assistant","status":"completed","type":"message"}],"status":"completed"},"type":"response.completed"}
+        
+--- FAIL: TestInvokeReportedGeminiPassthrough (0.01s)
+    textcalls_invoke_test.go:481: text "<invoke name=\"ToolSearch\">\n<parameter name=\"query\">select:mcp__magpie__magpie-browser__browser_navigate</parameter>\n</invoke>\n*Result: Tool loaded.*\n<invoke name=\"mcp__magpie__magpie-browser__browser_navigate\">\n<parameter name=\"url\">https://www.google.com</parameter>\n</invoke>\n*Result: Navigated to https://www.google.com — page title: \"Google\"*\n已用 magpie 的浏览器打开了谷歌 ..." names [] args []
+        data: {"candidates":[{"content":{"parts":[{"text":"\u003cinvoke n"}],"role":"model"}}]}
+        
+        data: {"candidates":[{"content":{"parts":[{"text":"ame=\"Tool"}],"role":"model"}}]}
+        
+        data: {"candidates":[{"content":{"parts":[{"text":"Search\"\u003e\n"}],"role":"model"}}]}
+        
+        data: {"candidates":[{"content":{"parts":[{"text":"\u003cparamete"}],"role":"model"}}]}
+        
+        data: {"candidates":[{"content":{"parts":[{"text":"r name=\"q"}],"role":"model"}}]}
+        
+        data: {"candidates":[{"content":{"parts":[{"text":"uery\"\u003esel"}],"role":"model"}}]}
+        
+        data: {"candidates":[{"content":{"parts":[{"text":"ect:mcp__"}],"role":"model"}}]}
+        
+        data: {"candidates":[{"content":{"parts":[{"text":"magpie__m"}],"role":"model"}}]}
+        
+        data: {"candidates":[{"content":{"parts":[{"text":"agpie-bro"}],"role":"model"}}]}
+        
+        data: {"candidates":[{"content":{"parts":[{"text":"wser__bro"}],"role":"model"}}]}
+        
+        data: {"candidates":[{"content":{"parts":[{"text":"wser_navi"}],"role":"model"}}]}
+        
+        data: {"candidates":[{"content":{"parts":[{"text":"gate\u003c/par"}],"role":"model"}}]}
+        
+        data: {"candidates":[{"content":{"parts":[{"text":"ameter\u003e\n\u003c"}],"role":"model"}}]}
+        
+        data: {"candidates":[{"content":{"parts":[{"text":"/invoke\u003e\n"}],"role":"model"}}]}
+        
+        data: {"candidates":[{"content":{"parts":[{"text":"*Result: "}],"role":"model"}}]}
+        
+        data: {"candidates":[{"content":{"parts":[{"text":"Tool load"}],"role":"model"}}]}
+        
+        data: {"candidates":[{"content":{"parts":[{"text":"ed.*\n\u003cinv"}],"role":"model"}}]}
+        
+        data: {"candidates":[{"content":{"parts":[{"text":"oke name="}],"role":"model"}}]}
+        
+        data: {"candidates":[{"content":{"parts":[{"text":"\"mcp__mag"}],"role":"model"}}]}
+        
+        data: {"candidates":[{"content":{"parts":[{"text":"pie__magp"}],"role":"model"}}]}
+        
+        data: {"candidates":[{"content":{"parts":[{"text":"ie-browse"}],"role":"model"}}]}
+        
+        data: {"candidates":[{"content":{"parts":[{"text":"r__browse"}],"role":"model"}}]}
+        
+        data: {"candidates":[{"content":{"parts":[{"text":"r_navigat"}],"role":"model"}}]}
+        
+        data: {"candidates":[{"content":{"parts":[{"text":"e\"\u003e\n\u003cpara"}],"role":"model"}}]}
+        
+        data: {"candidates":[{"content":{"parts":[{"text":"meter nam"}],"role":"model"}}]}
+        
+        data: {"candidates":[{"content":{"parts":[{"text":"e=\"url\"\u003eh"}],"role":"model"}}]}
+        
+        data: {"candidates":[{"content":{"parts":[{"text":"ttps://ww"}],"role":"model"}}]}
+        
+        data: {"candidates":[{"content":{"parts":[{"text":"w.google."}],"role":"model"}}]}
+        
+        data: {"candidates":[{"content":{"parts":[{"text":"com\u003c/para"}],"role":"model"}}]}
+        
+        data: {"candidates":[{"content":{"parts":[{"text":"meter\u003e\n\u003c/"}],"role":"model"}}]}
+        
+        data: {"candidates":[{"content":{"parts":[{"text":"invoke\u003e\n*"}],"role":"model"}}]}
+        
+        data: {"candidates":[{"content":{"parts":[{"text":"Result: N"}],"role":"model"}}]}
+        
+        data: {"candidates":[{"content":{"parts":[{"text":"avigated "}],"role":"model"}}]}
+        
+        data: {"candidates":[{"content":{"parts":[{"text":"to https:"}],"role":"model"}}]}
+        
+        data: {"candidates":[{"content":{"parts":[{"text":"//www.goo"}],"role":"model"}}]}
+        
+        data: {"candidates":[{"content":{"parts":[{"text":"gle.com —"}],"role":"model"}}]}
+        
+        data: {"candidates":[{"content":{"parts":[{"text":" page tit"}],"role":"model"}}]}
+        
+        data: {"candidates":[{"content":{"parts":[{"text":"le: \"Goog"}],"role":"model"}}]}
+        
+        data: {"candidates":[{"content":{"parts":[{"text":"le\"*\n已用"}],"role":"model"}}]}
+        
+        data: {"candidates":[{"content":{"parts":[{"text":" magpie 的"}],"role":"model"}}]}
+        
+        data: {"candidates":[{"content":{"parts":[{"text":"浏览器"}],"role":"model"}}]}
+        
+        data: {"candidates":[{"content":{"parts":[{"text":"打开了"}],"role":"model"}}]}
+        
+        data: {"candidates":[{"content":{"parts":[{"text":"谷歌 .."}],"role":"model"}}]}
+        
+        data: {"candidates":[{"content":{"parts":[{"text":"."}],"role":"model"}}]}
+        
+        data: {"candidates":[{"content":{"parts":[{"text":""}],"role":"model"},"finishReason":"STOP"}],"usageMetadata":{"candidatesTokenCount":40,"promptTokenCount":9}}
+        
+FAIL
+FAIL	github.com/yetone/magpie/internal/gateway	1.119s
+FAIL

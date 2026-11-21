@@ -1,0 +1,94 @@
+package gateway
+
+import (
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"github.com/yetone/magpie/internal/provider"
+)
+
+// #4324 probe (verification lane only; not part of the fix branch): the
+// translated path — a chat/completions upstream answering a /v1/responses
+// client through streamTranslated's responsesEncoder — writes no phase on
+// an assistant message's output_item.done for a client magpie doesn't
+// know (Muse Code's own User-Agent) and doesn't hold that done (it comes
+// before the function call is added); a Codex client's stream keeps its
+// phase (#2437 unchanged).
+
+func probeChatUp(t *testing.T) *httptest.Server {
+	t.Helper()
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, sse(
+			"data: "+chatText("probe-m", "Let me look."),
+			`data: {"id":"c1","model":"probe-m","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"shell","arguments":"{}"}}]}}]}`,
+			`data: {"id":"c1","model":"probe-m","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":9,"completion_tokens":4}}`,
+			"data: [DONE]"))
+	}))
+	t.Cleanup(up.Close)
+	return up
+}
+
+func probePost(t *testing.T, ua, originator string) *httptest.ResponseRecorder {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/v1/responses", strings.NewReader(`{"model":"probe/probe-m","stream":true,"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}]}`))
+	req.Header.Set("User-Agent", ua)
+	if originator != "" {
+		req.Header.Set("Originator", originator)
+	}
+	New().Handler().ServeHTTP(rec, req)
+	return rec
+}
+
+func TestProbeTranslatedMuseNoPhase(t *testing.T) {
+	fresh(t)
+	up := probeChatUp(t)
+	if err := provider.Save(provider.Provider{ID: "probe", Name: "Probe", Key: "k", Models: []string{"probe-m"}, Chat: up.URL + "/v1"}); err != nil {
+		t.Fatal(err)
+	}
+	rec := probePost(t, "muse-build/1.4.14 (non-interactive; linux-x86_64)", "")
+	body := rec.Body.String()
+	if rec.Code != 200 {
+		t.Fatalf("status %d\n%s", rec.Code, body)
+	}
+	if strings.Contains(body, `"phase"`) {
+		t.Fatalf("muse's translated stream carried a phase\n%s", body)
+	}
+	done, added := -1, -1
+	for i, ev := range events(body) {
+		switch ev["type"] {
+		case "response.output_item.done":
+			if it, _ := ev["item"].(map[string]any); it["type"] == "message" && done < 0 {
+				done = i
+			}
+		case "response.output_item.added":
+			if it, _ := ev["item"].(map[string]any); it["type"] == "function_call" && added < 0 {
+				added = i
+			}
+		}
+	}
+	if done < 0 || added < 0 || done > added {
+		t.Fatalf("message done at %d, function call added at %d (held?)\n%s", done, added, body)
+	}
+}
+
+func TestProbeTranslatedCodexKeepsPhase(t *testing.T) {
+	fresh(t)
+	up := probeChatUp(t)
+	if err := provider.Save(provider.Provider{ID: "probe", Name: "Probe", Key: "k", Models: []string{"probe-m"}, Chat: up.URL + "/v1"}); err != nil {
+		t.Fatal(err)
+	}
+	rec := probePost(t, "codex_cli_rs/0.55.0 (Ubuntu 24.04; x86_64)", "codex_cli_rs")
+	if rec.Code != 200 {
+		t.Fatalf("status %d\n%s", rec.Code, rec.Body.String())
+	}
+	streamed, _ := phases(rec.Body.String())
+	if strings.Join(streamed, ",") != "commentary" {
+		t.Fatalf("codex's translated stream phases %q, want commentary\n%s", streamed, rec.Body.String())
+	}
+}

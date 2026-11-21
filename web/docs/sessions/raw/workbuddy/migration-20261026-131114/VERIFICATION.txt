@@ -1,0 +1,25 @@
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py workbuddy baseline
+INPUT: CONFIG: fixed workbuddy source allowlist
+OUTPUT: ValueError: Reparse entry: C:\Users\802165\.workbuddy\binaries\PortableGit\versions\1.3.0
+EXIT: 1
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py workbuddy archive
+INPUT: CONFIG: fixed workbuddy source allowlist
+OUTPUT: FileNotFoundError: [Errno 2] No such file or directory: 'E:\\cc\\guahub\\sessions\\raw\\workbuddy\\migration-20261026-131114\\MODIFIED_FILE.json'
+EXIT: 1
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py workbuddy apply
+INPUT: CONFIG: fixed workbuddy source allowlist
+OUTPUT: FileNotFoundError: [Errno 2] No such file or directory: 'E:\\cc\\guahub\\sessions\\raw\\workbuddy\\migration-20261026-131114\\MODIFIED_FILE.json'
+EXIT: 1
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py workbuddy verify
+INPUT: CONFIG: fixed workbuddy source allowlist
+OUTPUT: FileNotFoundError: [Errno 2] No such file or directory: 'E:\\cc\\guahub\\sessions\\raw\\workbuddy\\migration-20261026-131114\\MODIFIED_FILE.json'
+EXIT: 1
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py workbuddy rollback-test
+INPUT: CONFIG: fixed workbuddy source allowlist
+OUTPUT: FileNotFoundError: [Errno 2] No such file or directory: 'E:\\cc\\guahub\\sessions\\raw\\workbuddy\\migration-20261026-131114\\MODIFIED_FILE.json'
+EXIT: 1
+

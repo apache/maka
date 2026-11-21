@@ -1,0 +1,9 @@
+--- E:\cc\guahub\sessions\raw\cc-switch\migration-20261026-130803\ORIGINAL_FILE.json
++++ E:\cc\guahub\sessions\raw\cc-switch\migration-20261026-130803\MODIFIED_FILE.json
+@@ -1,5 +1,5 @@
+ {
+-  "state": "source_present",
++  "state": "migrated",
+   "groups": [
+     {
+       "name": "logs",

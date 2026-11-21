@@ -1,0 +1,25 @@
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py trae-cn baseline
+INPUT: CONFIG: fixed trae-cn source allowlist
+OUTPUT: BASELINE PASS groups=2 files=16090 bytes=2445458815 protected=1
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py trae-cn archive
+INPUT: 90494a0b2ba5e1374e6a38954b06efa23b0f78adbf8d61a9bc45d993d00131f3
+OUTPUT: ARCHIVE PASS zip_files=2 files=16090 bytes=2445458815
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py trae-cn apply
+INPUT: 8d885800df2eb3fb34bd4dfd59aea7200e2712e76f2a7239864ea7d4996362a3
+OUTPUT: APPLY PASS removed_files=16090 removed_bytes=2445458815
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py trae-cn verify
+INPUT: 57403a9841a89efa2b2126dfdf2c5735b22fb0e85a0b51f2ec3ec254f2230d92
+OUTPUT: MODIFIED PASS files=16090 bytes=2445458815 originals_absent=true protected_unchanged=true
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py trae-cn rollback-test
+INPUT: 57403a9841a89efa2b2126dfdf2c5735b22fb0e85a0b51f2ec3ec254f2230d92
+OUTPUT: ROLLBACK PASS restored_files=16090 restored_bytes=2445458815 hashes_match=true originals_untouched=true
+EXIT: 0
+

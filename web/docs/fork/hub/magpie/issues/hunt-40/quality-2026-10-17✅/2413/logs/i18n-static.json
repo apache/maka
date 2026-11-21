@@ -1,0 +1,16 @@
+{
+  "name": "i18n-static",
+  "time_utc": "2026-10-16T23:41:47.641346+00:00",
+  "cwd": "/private/tmp/magpie-quality-20261017-2413",
+  "command": "node --test internal/gui/tests/i18n-keys.test.cjs",
+  "input": "SQLite fixtures in internal/provider/importapps_test.go; no real credentials; temporary HOME via wrapper and provider TestMain testenv",
+  "environment": {
+    "GOTOOLCHAIN": "auto",
+    "GOPATH": "/Users/ggbdpq/go",
+    "GOMODCACHE": "/Users/ggbdpq/go/pkg/mod",
+    "GOCACHE": "/Users/ggbdpq/Library/Caches/go-build",
+    "GOMAXPROCS": "2"
+  },
+  "output": "✔ no language has a key twice (35.790125ms)\n✔ a plugin's words are said in every language (23.5565ms)\n✔ a plugin's words are its own (9002.778917ms)\nℹ tests 3\nℹ suites 0\nℹ pass 3\nℹ fail 0\nℹ cancelled 0\nℹ skipped 0\nℹ todo 0\nℹ duration_ms 9111.765042\n",
+  "exit_status": 0
+}

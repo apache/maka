@@ -1,0 +1,26 @@
+{
+  "id": "18",
+  "slug": "coin-change",
+  "title": "零钱兑换",
+  "difficulty": "medium",
+  "tags": ["动态规划", "数组"],
+  "description": "给你一个整数数组 `coins`,表示不同面额的硬币;以及一个整数 `amount`,表示总金额。\n\n计算并返回可以凑成总金额所需的**最少的硬币个数**。如果没有任何一种硬币组合能组成该金额,返回 `-1`。\n\n每种硬币的数量是无限的。\n\n**示例 1:**\n\n- 输入:`coins = [1,2,5]`, `amount = 11`\n- 输出:`3`(11 = 5 + 5 + 1)\n\n**示例 2:**\n\n- 输入:`coins = [2]`, `amount = 3`\n- 输出:`-1`\n\n**示例 3:**\n\n- 输入:`coins = [1]`, `amount = 0`\n- 输出:`0`",
+  "solution": "## 思路\n\n**完全背包 / 动态规划**:`dp[i]` 表示凑成金额 `i` 的最少硬币数,初始 `dp[0]=0`,其余为 ∞。对每个金额 `i`,枚举每种硬币 `c`:`dp[i] = min(dp[i], dp[i-c] + 1)`。最后若 `dp[amount]` 仍为 ∞ 返回 -1。\n\n## 参考代码\n\n```js\nfunction coinChange(coins, amount) {\n  const dp = new Array(amount + 1).fill(Infinity);\n  dp[0] = 0;\n  for (let i = 1; i <= amount; i++) {\n    for (const c of coins) {\n      if (c <= i) dp[i] = Math.min(dp[i], dp[i - c] + 1);\n    }\n  }\n  return dp[amount] === Infinity ? -1 : dp[amount];\n}\n```\n\n## 复杂度\n\n- 时间:O(amount * len(coins))\n- 空间:O(amount)",
+  "signature": {
+    "language": "javascript",
+    "entry": "coinChange",
+    "params": [
+      { "name": "coins", "type": "number[]" },
+      { "name": "amount", "type": "number" }
+    ],
+    "returns": "number"
+  },
+  "testCases": [
+    { "sample": true, "input": [[1, 2, 5], 11], "expected": 3 },
+    { "sample": true, "input": [[2], 3], "expected": -1 },
+    { "sample": true, "input": [[1], 0], "expected": 0 },
+    { "sample": false, "input": [[1], 2], "expected": 2 },
+    { "sample": false, "input": [[1, 2, 5], 100], "expected": 20 },
+    { "sample": false, "input": [[186, 419, 83, 408], 6249], "expected": 20 }
+  ]
+}

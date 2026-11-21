@@ -1,0 +1,129 @@
+From f10443d26abaeec2686f66eb0d458b5d33be8b35 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Wed, 4 Nov 2026 08:54:01 +0800
+Subject: [PATCH] gateway: a tool's image can't be the last turn Google is
+ asked (#4069)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Codex's view_image put the tool's picture in the request's last turn —
+a functionResponse with an inlineData beside it — and Vertex AI answered
+every retry with "Requests ending with a model turn are not supported":
+Google's words for a turn it can't answer, its #1533 mixed-turn refusal
+wearing that message. The guard that adds a user turn read only the
+role, and the role said user.
+
+endsWithToolImages joins it: a turn carrying a functionResponse and an
+image beside it gets the same user turn after it, the guard's own ask —
+a shape Gemini CLI never makes (its tool results keep text and images
+apart), a Codex one that can.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gateway/codeassist.go             | 33 +++++++++++++++++--
+ internal/gateway/gemini_model_last_test.go | 38 ++++++++++++++++++++++
+ 2 files changed, 69 insertions(+), 2 deletions(-)
+
+diff --git a/internal/gateway/codeassist.go b/internal/gateway/codeassist.go
+index 82102026b..dc2c4011a 100644
+--- a/internal/gateway/codeassist.go
++++ b/internal/gateway/codeassist.go
+@@ -489,10 +489,20 @@ func buildCodeAssistSent(r *Request, sent, agent string) []byte {
+ 		// this user turn before it, and so does this.
+ 		contents = append([]map[string]any{{"role": "user", "parts": []map[string]any{{"text": "[Continuing from previous AI thoughts...]"}}}}, contents...)
+ 	}
+-	if n := len(contents); n > 0 && contents[n-1]["role"] == "model" {
++	// an Antigravity Claude keeps a tool's images in its response turn
++	// (the tool_result turn Anthropic reads them as) and answers it; the
++	// mixed-turn refusal is the Gemini-API readers' (Vertex AI, Gemini's
++	// own, Code Assist for a Gemini model).
++	n := len(contents)
++	mixedLast := !ag && n > 0 && endsWithToolImages(contents[n-1])
++	if n > 0 && (contents[n-1]["role"] == "model" || mixedLast) {
+ 		// nor one that ends with it: "Requests ending with a model turn
+ 		// are not supported" on Vertex AI, Code Assist and Antigravity
+-		// alike (yycsyu: Codex compacting on gemini-3.8-flash). A user
++		// alike (yycsyu: Codex compacting on gemini-3.8-flash) — and
++		// Google answers a request whose last turn mixes a
++		// functionResponse with an image the same words, its own text
++		// for "this isn't a turn it can answer" (#1533's mixed-turn
++		// refusal, #4069: Codex's view_image as the last item). A user
+ 		// turn goes after it, as Gemini CLI keeps its history ending
+ 		contents = append(contents, map[string]any{"role": "user", "parts": []map[string]any{{"text": modelLastAsk(r)}}})
+ 	}
+@@ -1719,6 +1729,25 @@ func stopFromGemini(s string) string {
+ }
+ 
+ // hasResponse says whether a Gemini turn's parts hold a tool's response.
++// endsWithToolImages says whether the turn is one Google answers with its
++// "ending with a model turn" words however the request ends: a turn
++// mixing a functionResponse with an image (#1533's refusal), or one that
++// is an image alone — what a tool's picture becomes once the mixed turn
++// is split (#4069: Codex's view_image as the last item).
++func endsWithToolImages(turn map[string]any) bool {
++	ps, _ := turn["parts"].([]map[string]any)
++	resp, image := false, false
++	for _, p := range ps {
++		if p["functionResponse"] != nil {
++			resp = true
++		}
++		if p["inlineData"] != nil {
++			image = true
++		}
++	}
++	return resp && image || image && !resp
++}
++
+ func hasResponse(parts []map[string]any) bool {
+ 	for _, p := range parts {
+ 		if p["functionResponse"] != nil {
+diff --git a/internal/gateway/gemini_model_last_test.go b/internal/gateway/gemini_model_last_test.go
+index ffe4958c3..d086ce416 100644
+--- a/internal/gateway/gemini_model_last_test.go
++++ b/internal/gateway/gemini_model_last_test.go
+@@ -255,3 +255,41 @@ func TestGeminiToolResponseTurnHoldsNoText(t *testing.T) {
+ 		}
+ 	}
+ }
++
++// An image a tool returned, as the request's last item: Google answers
++// the mixed last turn (a functionResponse with an inlineData beside it)
++// with its "ending with a model turn" words — #1533's mixed-turn refusal
++// wearing that message — so Codex's view_image died five tries in a row
++// and the turn with it (#4069). A user turn goes after it, as for a model
++// turn; a text tool result needs none (its turn is one Google answers).
++func TestGeminiToolImageLastTurnGetsAUserTurn(t *testing.T) {
++	r := &Request{
++		System: "test",
++		Messages: []Message{
++			{Role: "user", Parts: []Part{{Kind: Text, Text: "look at it"}}},
++			{Role: "assistant", Parts: []Part{{Kind: ToolCall, CallID: "call_1", Name: "view_image", Text: `{"path":"x.png"}`}}},
++			{Role: "user", Parts: []Part{
++				{Kind: ToolResult, CallID: "call_1", Text: "image result"},
++				{Kind: Image, MediaType: "image/png", Data: "pngbytes"},
++			}},
++		},
++	}
++	b, err := buildVertex(r, "gemini-4-argon")
++	if err != nil {
++		t.Fatal(err)
++	}
++	var q map[string]any
++	json.Unmarshal(b, &q)
++	cs := q["contents"].([]any)
++	last := cs[len(cs)-1].(map[string]any)
++	if last["role"] != "user" {
++		t.Fatalf("last turn %v", last["role"])
++	}
++	for _, p := range last["parts"].([]any) {
++		part := p.(map[string]any)
++		if txt, _ := part["text"].(string); txt != "" {
++			return // the guard's own ask, nothing of the tool's turn
++		}
++	}
++	t.Fatalf("the tool-image turn is still the last: %s", cs[len(cs)-1])
++}
+-- 
+2.50.1 (Apple Git-155)
+

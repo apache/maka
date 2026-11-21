@@ -1,0 +1,286 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Fri, 6 Nov 2026 21:38:45 +0800
+Subject: [PATCH] netproxy: a run of reads that find no proxy is put off longer
+ each time (#4169)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+A read of the system's proxy that comes back without one — scutil
+answering and no proxy set (the machine the report came from: PAC only,
+HTTP/HTTPS/SOCKS all off, so the read is a success and nothing failed)
+or failing outright — now widens the none window, twice each time, up
+to failKeep, a minute; a read that finds a proxy ends the run, and the
+next miss stands the none window again. On main the fork ran every 2
+seconds on such a machine while requests flowed — more often than a
+machine with a proxy set (every 15) forks — and the fork is what killed
+the process there; at the cap it runs once a minute, 30 times less
+often. A proxy that turns up after a short absence is still taken at
+the old pace (#1518), and one that turns up on a machine long without
+one within failKeep.
+
+A read that fails keeps what it read before and holds nobody, as before
+(#3421).
+
+Fixes #4169
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/netproxy/backoff_test.go   | 98 +++++++++++++++++++++++++++++
+ internal/netproxy/boot_test.go      |  4 +-
+ internal/netproxy/netproxy.go       | 60 ++++++++++++++----
+ internal/netproxy/stuckread_test.go |  4 +-
+ 4 files changed, 150 insertions(+), 16 deletions(-)
+ create mode 100644 internal/netproxy/backoff_test.go
+
+diff --git a/internal/netproxy/backoff_test.go b/internal/netproxy/backoff_test.go
+new file mode 100644
+index 000000000..22f6e40fa
+--- /dev/null
++++ b/internal/netproxy/backoff_test.go
+@@ -0,0 +1,98 @@
++package netproxy
++
++import (
++	"sync/atomic"
++	"testing"
++	"time"
++)
++
++// shortRun puts the cache at nothing read yet and the keep windows at
++// 5ms, so a run of reads that find no proxy plays out in milliseconds. It
++// answers the reporter's shape (#4169): scutil answers at once, and no
++// proxy is set. The reads it makes are counted.
++func shortRun(t *testing.T) (*atomic.Int32, *atomic.Value) {
++	t.Helper()
++	var reads atomic.Int32
++	var ans atomic.Value
++	ans.Store(readAnswer{Proxy{}, true})
++	oldRead, oldNone, oldSet := readSystem, noneKeep, systemKeep
++	readSystem = func() (Proxy, bool) {
++		reads.Add(1)
++		a := ans.Load().(readAnswer)
++		return a.p, a.ok
++	}
++	noneKeep, systemKeep = 5*time.Millisecond, 5*time.Millisecond
++	sysCache.Lock()
++	sysCache.at, sysCache.p, sysCache.quiet, sysCache.failed = time.Time{}, Proxy{}, 0, false
++	sysCache.Unlock()
++	t.Cleanup(func() {
++		readSystem, noneKeep, systemKeep = oldRead, oldNone, oldSet
++		sysCache.Lock()
++		sysCache.at, sysCache.p, sysCache.quiet, sysCache.failed = time.Time{}, Proxy{}, 0, false
++		sysCache.Unlock()
++	})
++	return &reads, &ans
++}
++
++// readsWhile asks for the system proxy without a pause for d, the way a
++// machine with requests flowing does.
++func readsWhile(d time.Duration) {
++	deadline := time.Now().Add(d)
++	for time.Now().Before(deadline) {
++		System()
++	}
++}
++
++// #4169, the machine the report came from: scutil --proxy exits 0 and
++// names no proxy (PAC only, HTTP/HTTPS/SOCKS all off), so the read
++// succeeds — nothing ever fails — and it still forked a scutil every two
++// seconds while requests flowed. A run of reads that come back without a
++// proxy, empty or failed alike, is put off longer each time; the count
++// here is the count of forks.
++func TestEmptySystemProxyReadsBackOff(t *testing.T) {
++	reads, ans := shortRun(t)
++
++	readsWhile(250 * time.Millisecond)
++	// at the old pace — one read every noneKeep — 250ms is about 50 reads
++	if n := reads.Load(); n > 25 {
++		t.Fatalf("%d reads in 250ms with noneKeep at 5ms: reads that keep coming back empty are not put off", n)
++	}
++
++	// a proxy that turns up mid-run is taken at the read the window lets
++	// through, whatever run was going
++	set := Proxy{URL: "http://127.0.0.1:7890"}
++	ans.Store(readAnswer{set, true})
++	deadline := time.Now().Add(time.Second)
++	for time.Now().Before(deadline) {
++		if p := System(); p.URL == set.URL {
++			break
++		}
++		time.Sleep(5 * time.Millisecond)
++	}
++	if p := System(); p.URL != set.URL {
++		t.Fatalf("a proxy turned up mid-run, but magpie reads %+v", p)
++	}
++
++	// and the run starts over: misses after it come at the none pace again
++	reads.Store(0)
++	ans.Store(readAnswer{Proxy{}, true})
++	readsWhile(30 * time.Millisecond)
++	if n := reads.Load(); n < 3 {
++		t.Fatalf("%d reads in 30ms after the run started over with noneKeep at 5ms: it did not", n)
++	}
++}
++
++// The read that fails backs off the same way, and the requests it serves
++// keep going with what was read before.
++func TestFailedSystemProxyReadsBackOff(t *testing.T) {
++	reads, ans := shortRun(t)
++	ans.Store(readAnswer{Proxy{}, false})
++
++	readsWhile(250 * time.Millisecond)
++	if n := reads.Load(); n > 25 {
++		t.Fatalf("%d reads in 250ms with noneKeep at 5ms: reads that keep failing are not put off", n)
++	}
++	if p := System(); p.URL != "" {
++		t.Fatalf("reads that fail read %+v", p)
++	}
++}
+diff --git a/internal/netproxy/boot_test.go b/internal/netproxy/boot_test.go
+index 7e217b1df..cf5d4b0e9 100644
+--- a/internal/netproxy/boot_test.go
++++ b/internal/netproxy/boot_test.go
+@@ -20,12 +20,12 @@ func TestSystemProxySetAfterStartIsTakenSoon(t *testing.T) {
+ 	readSystem = func() (Proxy, bool) { return p.Load().(Proxy), true }
+ 	noneKeep = 50 * time.Millisecond
+ 	sysCache.Lock()
+-	sysCache.at, sysCache.p = time.Time{}, Proxy{}
++	sysCache.at, sysCache.p, sysCache.quiet = time.Time{}, Proxy{}, 0
+ 	sysCache.Unlock()
+ 	t.Cleanup(func() {
+ 		readSystem, noneKeep = oldRead, oldNone
+ 		sysCache.Lock()
+-		sysCache.at, sysCache.p = time.Time{}, Proxy{}
++		sysCache.at, sysCache.p, sysCache.quiet = time.Time{}, Proxy{}, 0
+ 		sysCache.Unlock()
+ 	})
+ 
+diff --git a/internal/netproxy/netproxy.go b/internal/netproxy/netproxy.go
+index f49299450..180d3bf4d 100644
+--- a/internal/netproxy/netproxy.go
++++ b/internal/netproxy/netproxy.go
+@@ -523,6 +523,7 @@ var sysCache struct {
+ 	sync.Mutex
+ 	at     time.Time // when the last read ended; zero: nothing read yet
+ 	p      Proxy
++	quiet  int  // reads in a row that found no proxy, failed or empty alike
+ 	failed bool // the last read failed, so p is from one before it
+ 	// reading is closed when the read under way, begun at since, ends;
+ 	// nil while none is
+@@ -531,28 +532,56 @@ var sysCache struct {
+ }
+ 
+ // How long a system proxy read stands: a proxy that is set, 15 seconds;
+-// none, 2. magpie started at login comes up before the proxy app does
+-// (#1518), and its requests went direct for up to 15 seconds after the
+-// proxy app had set the system's proxy. A request waits for a read until
+-// readWait after the read began, then takes what was read before: a
+-// scutil that never answered held every request that asked for the
+-// system's proxy for as long as it hung (#3421).
++// none, 2 — and none is put off longer each time a run of reads in a row
++// finds no proxy, the reads failing or coming back empty alike (#4169).
++// The machine the report came from reads scutil successfully and has no
++// proxy set, so "no proxy" is a successful answer there and the none
++// window had it fork a scutil every 2 seconds while requests flowed —
++// more often than a machine with a proxy set forks, and the fork is what
++// killed the process. The first read of a run stands the none window, the
++// second twice that, up to failKeep, so a proxy that turns up after a
++// short absence is taken at the old pace (#1518) and one that turns up on
++// a machine long without one is taken within failKeep; a read that finds
++// a proxy starts the run over. magpie started at login comes up before
++// the proxy app does (#1518), and its requests went direct for up to 15
++// seconds after the proxy app had set the system's proxy. A request waits
++// for a read until readWait after the read began, then takes what was
++// read before: a scutil that never answered held every request that asked
++// for the system's proxy for as long as it hung (#3421).
+ var (
+ 	systemKeep = 15 * time.Second
+ 	noneKeep   = 2 * time.Second
++	failKeep   = time.Minute
+ 	readWait   = 2 * time.Second
+ 	readSystem = system
+ )
+ 
++// quietKeep is how long a read that found no proxy stands after n such
++// reads in a row: noneKeep for the first, twice that for the second, and
++// so on up to failKeep — the pace a machine with a proxy set reads at, so
++// one with none set forks no more often than it.
++func quietKeep(n int) time.Duration {
++	k := noneKeep
++	for n > 1 && k < failKeep {
++		k <<= 1
++		n--
++	}
++	if k > failKeep {
++		k = failKeep
++	}
++	return k
++}
++
+ // System reads the system proxy, at most every 15 seconds while one is
+-// set and every 2 while none is. One read runs at a time, outside the
+-// lock. A read that fails keeps what was read before, and the one after
+-// it holds nobody.
++// set, every 2 while none is, and after a run of reads that find none,
++// less and less often (quietKeep) until a read finds one again. One read
++// runs at a time, outside the lock. A read that fails keeps what was read
++// before, and the one after it holds nobody.
+ func System() Proxy {
+ 	sysCache.Lock()
+ 	keep := systemKeep
+-	if sysCache.p.URL == "" {
+-		keep = noneKeep
++	if sysCache.quiet > 0 {
++		keep = quietKeep(sysCache.quiet)
+ 	}
+ 	if !sysCache.at.IsZero() && time.Since(sysCache.at) <= keep {
+ 		p := sysCache.p
+@@ -583,13 +612,20 @@ func System() Proxy {
+ }
+ 
+ // refreshSystem reads the system proxy into sysCache, then closes done.
+-// A read that fails keeps what was read before, if anything was.
++// A read that fails keeps what was read before, if anything was; a run of
++// reads that find no proxy goes on the quiet count, and one that finds a
++// proxy ends it.
+ func refreshSystem(done chan struct{}) {
+ 	p, ok := readSystem()
+ 	sysCache.Lock()
+ 	if ok || sysCache.at.IsZero() {
+ 		sysCache.p = p
+ 	}
++	if ok && p.URL != "" {
++		sysCache.quiet = 0
++	} else {
++		sysCache.quiet++
++	}
+ 	sysCache.at, sysCache.failed, sysCache.reading = time.Now(), !ok, nil
+ 	sysCache.Unlock()
+ 	close(done)
+diff --git a/internal/netproxy/stuckread_test.go b/internal/netproxy/stuckread_test.go
+index 32eaac9a1..b93ced589 100644
+--- a/internal/netproxy/stuckread_test.go
++++ b/internal/netproxy/stuckread_test.go
+@@ -33,7 +33,7 @@ func holdReads(t *testing.T, p Proxy, at time.Time, wait time.Duration) (*atomic
+ 	}
+ 	readWait = wait
+ 	sysCache.Lock()
+-	sysCache.at, sysCache.p, sysCache.failed = at, p, false
++	sysCache.at, sysCache.p, sysCache.quiet, sysCache.failed = at, p, 0, false
+ 	sysCache.Unlock()
+ 	t.Cleanup(func() {
+ 		// the read still under way ends before the next test reads
+@@ -41,7 +41,7 @@ func holdReads(t *testing.T, p Proxy, at time.Time, wait time.Duration) (*atomic
+ 		readEnds(t, underWay())
+ 		readSystem, readWait = oldRead, oldWait
+ 		sysCache.Lock()
+-		sysCache.at, sysCache.p, sysCache.failed = time.Time{}, Proxy{}, false
++		sysCache.at, sysCache.p, sysCache.quiet, sysCache.failed = time.Time{}, Proxy{}, 0, false
+ 		sysCache.Unlock()
+ 	})
+ 	return &reads, answers
+-- 
+2.50.1 (Apple Git-155)
+

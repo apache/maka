@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="30px" height="30px" viewBox="0 0 30 30" version="1.1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+    <title>set-icon/time/1</title>
+    <g id="set-icon/time/1" stroke="none" stroke-width="1" fill="none" fill-rule="evenodd">
+        <g id="编组" transform="translate(7.000000, 7.000000)">
+            <rect id="矩形" fill="#FFFFFF" x="0" y="0" width="16" height="16" rx="4.8"></rect>
+            <line x1="11.2099345" y1="8" x2="8" y2="12.8178731" id="路径-5备份" stroke="#777777" stroke-width="2.24" stroke-linecap="round" stroke-linejoin="round" transform="translate(9.604967, 10.408937) scale(-1, 1) translate(-9.604967, -10.408937) "></line>
+            <line x1="8" y1="4.74904989" x2="8" y2="8" id="路径-5" stroke="#242528" stroke-width="2.24" stroke-linecap="round" stroke-linejoin="round" transform="translate(8.000000, 6.374525) scale(-1, 1) translate(-8.000000, -6.374525) "></line>
+        </g>
+    </g>
+</svg>

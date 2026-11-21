@@ -1,0 +1,561 @@
+{
+ "date": "2026-10-20",
+ "c_free_before": 216933982208,
+ "actions": [
+  {
+   "level": "A",
+   "path": "%TEMP%\\magpie-test-home-*/TestGatewayFix*（测试残留）",
+   "size": 223165527,
+   "files": 648,
+   "reason": "测试/安装器残留，与运行中程序无关",
+   "method": "direct",
+   "command": null
+  },
+  {
+   "level": "A",
+   "path": "%TEMP%\\magpie-*-test-*（测试残留）",
+   "size": 10969,
+   "files": 265,
+   "reason": "测试/安装器残留，与运行中程序无关",
+   "method": "direct",
+   "command": null
+  },
+  {
+   "level": "A",
+   "path": "%TEMP%\\go-build*（Temp 内 Go 构建缓存残留）",
+   "size": 1494285170,
+   "files": 709,
+   "reason": "测试/安装器残留，与运行中程序无关",
+   "method": "direct",
+   "command": null
+  },
+  {
+   "level": "A",
+   "path": "%TEMP%\\nsu*.tmp（安装器残留）",
+   "size": 226830632,
+   "files": 1,
+   "reason": "测试/安装器残留，与运行中程序无关",
+   "method": "direct",
+   "command": null
+  },
+  {
+   "level": "A",
+   "path": "%TEMP%\\ZCode-installer.log",
+   "size": 3104,
+   "files": 1,
+   "reason": "安装日志",
+   "method": "direct",
+   "command": null
+  },
+  {
+   "level": "A",
+   "path": "%TEMP%\\ZCode-uninstaller.log",
+   "size": 144114,
+   "files": 1,
+   "reason": "安装日志",
+   "method": "direct",
+   "command": null
+  },
+  {
+   "level": "A",
+   "path": "%TEMP%\\vscode-stable-user-x64-*",
+   "size": 3807824011,
+   "files": 22,
+   "reason": "VS Code 安装器残留，最新 2026-10-20",
+   "method": "direct",
+   "command": null
+  },
+  {
+   "level": "A",
+   "path": "%TEMP%\\zcode-bash-*",
+   "size": 140073,
+   "files": 14,
+   "reason": "ZCode 会话临时目录；含当前运行会话，退出后删（2 天内 0MB 也在内）",
+   "method": "post_exit",
+   "command": null
+  },
+  {
+   "level": "B",
+   "path": "%TEMP%\\magpie-*.md/png 等",
+   "size": 478398580,
+   "files": 5279,
+   "reason": "散件资料，需人工确认",
+   "method": "manual",
+   "command": null
+  },
+  {
+   "level": "A",
+   "path": "C:\\Users\\802165\\AppData\\Local\\@zcodedesktop-updater",
+   "size": 381865168,
+   "files": 5,
+   "reason": "ZCode 更新器已装安装包缓存",
+   "method": "direct",
+   "command": null
+  },
+  {
+   "level": "A",
+   "path": "C:\\Users\\802165\\.zcode\\v2\\crash",
+   "size": 1746618,
+   "files": 6,
+   "reason": "崩溃转储，已无分析价值可删（如需排查再留）",
+   "method": "post_exit",
+   "command": null
+  },
+  {
+   "level": "A",
+   "path": "C:\\Users\\802165\\.zcode\\cli\\image-cache",
+   "size": 151637034,
+   "files": 817,
+   "reason": "ZCode 图片缓存，可再生",
+   "method": "post_exit",
+   "command": null
+  },
+  {
+   "level": "KEEP",
+   "path": "C:\\Users\\802165\\.zcode\\v2\\logs\\近 14 天",
+   "size": 77732099,
+   "files": 8,
+   "reason": "保留",
+   "method": "-",
+   "command": null
+  },
+  {
+   "level": "A",
+   "path": "Roaming\\ZCode\\session\\{Cache,Code Cache,GPUCache,...}",
+   "size": 18484204,
+   "files": 85,
+   "reason": "Electron 壳缓存，可再生；IndexedDB/Local Storage/Partitions（登录态）不动",
+   "method": "post_exit",
+   "command": null
+  },
+  {
+   "level": "A",
+   "path": "Cursor: C:\\Users\\802165\\AppData\\Roaming\\Cursor\\{Cache,Code Cache,GPUCache,CachedData,CachedExtensionVSIXs,Crashpad}",
+   "size": 513692286,
+   "files": 252,
+   "reason": "Cursor 壳缓存，可再生（logs 单列 B）",
+   "method": "direct",
+   "command": null
+  },
+  {
+   "level": "B",
+   "path": "Cursor logs",
+   "size": 72398260,
+   "files": 1108,
+   "reason": "编辑器日志，可清",
+   "method": "direct",
+   "command": null
+  },
+  {
+   "level": "A",
+   "path": "VS Code: C:\\Users\\802165\\AppData\\Roaming\\Code\\{Cache,Code Cache,GPUCache,CachedData,CachedExtensionVSIXs,Crashpad}",
+   "size": 1842894607,
+   "files": 759,
+   "reason": "VS Code 壳缓存，可再生（logs 单列 B）；执行前复核：VS Code 未运行",
+   "method": "direct",
+   "command": null
+  },
+  {
+   "level": "B",
+   "path": "VS Code logs",
+   "size": 9811073,
+   "files": 475,
+   "reason": "编辑器日志，可清",
+   "method": "direct",
+   "command": null
+  },
+  {
+   "level": "A",
+   "path": "npm cache（C:\\Users\\802165\\AppData\\Local\\npm-cache）",
+   "size": 6545292384,
+   "files": 53072,
+   "reason": "官方命令",
+   "method": "command",
+   "command": "npm cache clean --force"
+  },
+  {
+   "level": "A",
+   "path": "pnpm store（C:\\Users\\802165\\AppData\\Local\\pnpm\\store）",
+   "size": 4386015379,
+   "files": 186924,
+   "reason": "官方命令，只清未引用包",
+   "method": "command",
+   "command": "pnpm store prune"
+  },
+  {
+   "level": "A",
+   "path": "uv cache（C:\\Users\\802165\\AppData\\Local\\uv）",
+   "size": 1029441409,
+   "files": 32853,
+   "reason": "官方命令",
+   "method": "command",
+   "command": "uv cache prune"
+  },
+  {
+   "level": "A",
+   "path": "pip cache（C:\\Users\\802165\\AppData\\Local\\pip）",
+   "size": 126871709,
+   "files": 200,
+   "reason": "官方命令",
+   "method": "command",
+   "command": "pip cache purge"
+  },
+  {
+   "level": "A",
+   "path": "bun cache（C:\\Users\\802165\\.bun\\install\\cache）",
+   "size": 135218187,
+   "files": 6817,
+   "reason": "官方命令",
+   "method": "command",
+   "command": "bun pm cache rm"
+  },
+  {
+   "level": "A",
+   "path": "go build cache（C:\\Users\\802165\\AppData\\Local\\go-build）",
+   "size": 21995243655,
+   "files": 52941,
+   "reason": "官方命令，下次构建会变慢一次",
+   "method": "command",
+   "command": "go clean -cache"
+  },
+  {
+   "level": "B",
+   "path": ".zcode\\v2\\checkpoints\\（30 天前任务）",
+   "size": 1471117634,
+   "files": 61,
+   "reason": "旧任务检查点，代价=失去对应回滚能力；ZCode 运行中→退出后删",
+   "method": "post_exit",
+   "command": null
+  },
+  {
+   "level": "KEEP",
+   "path": ".zcode\\v2\\checkpoints\\（30 天内）",
+   "size": 0,
+   "files": 0,
+   "reason": "保留",
+   "method": "-",
+   "command": null
+  },
+  {
+   "level": "B",
+   "path": "C:\\Users\\802165\\.zcode\\cli\\exec",
+   "size": 267891340,
+   "files": 818,
+   "reason": "ZCode 执行现场，退出后清；ZCode 运行中",
+   "method": "post_exit",
+   "command": null
+  },
+  {
+   "level": "B",
+   "path": "C:\\Users\\802165\\.zcode\\cli\\artifacts",
+   "size": 397680445,
+   "files": 6214,
+   "reason": "会话产物已提炼入 md/raw，原文件可清；ZCode 运行中",
+   "method": "post_exit",
+   "command": null
+  },
+  {
+   "level": "B",
+   "path": "C:\\Users\\802165\\AppData\\Local\\pnpm-cache",
+   "size": 3088224472,
+   "files": 16203,
+   "reason": "pnpm 元数据缓存，删后按需重建",
+   "method": "command",
+   "command": "rd /s /q（无官方命令）"
+  },
+  {
+   "level": "B",
+   "path": "C:\\Users\\802165\\AppData\\Local\\ms-playwright",
+   "size": 1624988732,
+   "files": 1559,
+   "reason": "Playwright 浏览器，项目还要用就留着（重下 1.5GB）",
+   "method": "manual",
+   "command": null
+  },
+  {
+   "level": "B",
+   "path": "C:\\Users\\802165\\go\\pkg\\mod",
+   "size": 2233845644,
+   "files": 205913,
+   "reason": "Go 模块缓存，go clean -modcache 可清，重下耗时",
+   "method": "command",
+   "command": "go clean -modcache"
+  },
+  {
+   "level": "B",
+   "path": "C:\\Users\\802165\\.cache\\codex-runtimes",
+   "size": 6364555075,
+   "files": 36133,
+   "reason": ".cache 下大户，需你逐项点头",
+   "method": "manual",
+   "command": null
+  },
+  {
+   "level": "B",
+   "path": "C:\\Users\\802165\\.cache\\go-build",
+   "size": 542346867,
+   "files": 4619,
+   "reason": ".cache 下大户，需你逐项点头",
+   "method": "manual",
+   "command": null
+  },
+  {
+   "level": "B",
+   "path": "C:\\Users\\802165\\.cache\\chrome-devtools-mcp",
+   "size": 530857208,
+   "files": 605,
+   "reason": ".cache 下大户，需你逐项点头",
+   "method": "manual",
+   "command": null
+  },
+  {
+   "level": "B",
+   "path": ".zcode\\v2\\setting.json.corrupt-*（除最新一份）",
+   "size": 11814,
+   "files": 3,
+   "reason": "历史损坏备份，保留最新",
+   "method": "direct",
+   "command": null
+  },
+  {
+   "level": "B",
+   "path": ".zcode\\cli\\rollout\\model-io-*（除最新一份）",
+   "size": 46275847,
+   "files": 2,
+   "reason": "已归档(raw zip)，保留最新",
+   "method": "direct",
+   "command": null
+  },
+  {
+   "level": "C",
+   "path": "claude: C:\\Users\\802165\\.claude\\projects（30 天前部分）",
+   "size": 109034875,
+   "files": 216,
+   "reason": "已 sha256 归档(raw zip)+提炼(md)；删后 Magpie 历史统计减少；magpie-snapshot 已备份索引",
+   "method": "post_exit",
+   "command": null
+  },
+  {
+   "level": "KEEP",
+   "path": "claude: 30 天内",
+   "size": 69959890,
+   "files": 178,
+   "reason": "保留",
+   "method": "-",
+   "command": null
+  },
+  {
+   "level": "C",
+   "path": "codex: C:\\Users\\802165\\.codex\\sessions（30 天前部分）",
+   "size": 0,
+   "files": 0,
+   "reason": "已 sha256 归档(raw zip)+提炼(md)；删后 Magpie 历史统计减少；magpie-snapshot 已备份索引",
+   "method": "post_exit",
+   "command": null
+  },
+  {
+   "level": "KEEP",
+   "path": "codex: 30 天内",
+   "size": 108493400,
+   "files": 145,
+   "reason": "保留",
+   "method": "-",
+   "command": null
+  },
+  {
+   "level": "C",
+   "path": "codex: C:\\Users\\802165\\.codex\\archived_sessions（30 天前部分）",
+   "size": 0,
+   "files": 0,
+   "reason": "已 sha256 归档(raw zip)+提炼(md)；删后 Magpie 历史统计减少；magpie-snapshot 已备份索引",
+   "method": "post_exit",
+   "command": null
+  },
+  {
+   "level": "KEEP",
+   "path": "codex: 30 天内",
+   "size": 0,
+   "files": 0,
+   "reason": "保留",
+   "method": "-",
+   "command": null
+  },
+  {
+   "level": "C",
+   "path": "factory: C:\\Users\\802165\\.factory\\sessions（30 天前部分）",
+   "size": 0,
+   "files": 0,
+   "reason": "已 sha256 归档(raw zip)+提炼(md)；删后 Magpie 历史统计减少；magpie-snapshot 已备份索引",
+   "method": "post_exit",
+   "command": null
+  },
+  {
+   "level": "KEEP",
+   "path": "factory: 30 天内",
+   "size": 26150290,
+   "files": 83,
+   "reason": "保留",
+   "method": "-",
+   "command": null
+  },
+  {
+   "level": "C",
+   "path": "kimi: C:\\Users\\802165\\.kimi-code\\sessions（30 天前部分）",
+   "size": 4041724,
+   "files": 35,
+   "reason": "已 sha256 归档(raw zip)+提炼(md)；删后 Magpie 历史统计减少；magpie-snapshot 已备份索引",
+   "method": "post_exit",
+   "command": null
+  },
+  {
+   "level": "KEEP",
+   "path": "kimi: 30 天内",
+   "size": 0,
+   "files": 0,
+   "reason": "保留",
+   "method": "-",
+   "command": null
+  },
+  {
+   "level": "C",
+   "path": "cursor: C:\\Users\\802165\\.cursor\\projects（30 天前部分）",
+   "size": 5277124,
+   "files": 1379,
+   "reason": "已 sha256 归档(raw zip)+提炼(md)；删后 Magpie 历史统计减少；magpie-snapshot 已备份索引",
+   "method": "post_exit",
+   "command": null
+  },
+  {
+   "level": "KEEP",
+   "path": "cursor: 30 天内",
+   "size": 14413068,
+   "files": 2371,
+   "reason": "保留",
+   "method": "-",
+   "command": null
+  },
+  {
+   "level": "C",
+   "path": "C:\\Users\\802165\\.zcode\\cli\\db\\db.sqlite VACUUM",
+   "size": 0,
+   "files": 0,
+   "reason": "永不删除；实测 free pages≈117（<1MB），VACUUM 收益极小，建议跳过",
+   "method": "post_exit",
+   "command": null
+  }
+ ],
+ "extra": [
+  [
+   "B",
+   "C:\\Users\\802165\\AppData\\Local\\Google\\Chrome\\User Data\\各 Profile 缓存",
+   1197139038,
+   5901,
+   "direct",
+   "post_exit"
+  ],
+  [
+   "manual",
+   "C:\\Users\\802165\\AppData\\Local\\Doubao",
+   1839792831,
+   15005,
+   "豆包数据",
+   "manual"
+  ],
+  [
+   "manual",
+   "C:\\Users\\802165\\.grok",
+   1050166102,
+   59,
+   "grok CLI 数据",
+   "manual"
+  ],
+  [
+   "manual",
+   "C:\\Users\\802165\\.wechat-intelligence-hub",
+   1027718550,
+   5,
+   "微信智能数据",
+   "manual"
+  ],
+  [
+   "manual",
+   "C:\\Users\\802165\\.workbuddy-ai",
+   711896254,
+   29989,
+   "workbuddy 数据",
+   "manual"
+  ],
+  [
+   "manual",
+   "C:\\Users\\802165\\KimiData",
+   561994843,
+   15550,
+   "Kimi 桌面数据",
+   "manual"
+  ],
+  [
+   "manual",
+   "C:\\Users\\802165\\.qoder",
+   1572847786,
+   20394,
+   "qoder 数据",
+   "manual"
+  ],
+  [
+   "manual",
+   "C:\\Users\\802165\\.rustup",
+   1370669806,
+   65908,
+   "Rust 工具链",
+   "manual"
+  ],
+  [
+   "manual",
+   "C:\\Users\\802165\\.cargo\\registry",
+   390435706,
+   12157,
+   "cargo 注册表缓存",
+   "manual"
+  ],
+  [
+   "manual",
+   "C:\\Users\\802165\\AppData\\Local\\Temp\\multica-pg",
+   310529247,
+   3750,
+   "疑似 PostgreSQL 数据目录，务必确认没用再动",
+   "manual"
+  ],
+  [
+   "manual",
+   "C:\\Users\\802165\\AppData\\Local\\Temp\\guahub-review",
+   769440820,
+   28326,
+   "此前 review 工作残留",
+   "manual"
+  ],
+  [
+   "manual",
+   "C:\\Users\\802165\\AppData\\Local\\Temp\\go268-cache",
+   1388707534,
+   9283,
+   "go 相关缓存残留",
+   "manual"
+  ],
+  [
+   "manual",
+   "C:\\Users\\802165\\AppData\\Local\\Temp\\DingTalkUpdate_v4_9.0.1.260920012-9.0.2.261011003",
+   768056782,
+   4275,
+   "钉钉更新包",
+   "manual"
+  ],
+  [
+   "manual",
+   "C:\\Users\\802165\\AppData\\Local\\Temp\\workbuddy-update-x64",
+   497735912,
+   1,
+   "workbuddy 更新包",
+   "manual"
+  ]
+ ]
+}

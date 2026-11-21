@@ -1,0 +1,115 @@
+--- a/internal/claudetui/tui.go
++++ b/internal/claudetui/tui.go
+@@ -1138,20 +1138,25 @@
+ 	}, text)
+ }
+ 
+-// send pastes a message's pieces into Claude Code's prompt, each image
+-// once the prompt shows the one before (its file is read as it is pasted,
+-// and words pasted meanwhile would come before it), and presses Enter,
+-// again while the message hasn't reached the transcript: an Enter that
+-// lands while the paste is still being taken in is part of it.
++// send pastes a message's pieces into Claude Code's prompt, each once the
++// prompt shows the one before, and presses Enter, again while the message
++// hasn't reached the transcript: an Enter that lands while the paste is
++// still being taken in is part of it. A piece is taken in a moment after
++// it is pasted where Claude Code reads a file for it: an image's path, and
++// words with a line that names an image file ("a.jpg" in an ls), which it
++// tries as one before it takes the words. Claude Code takes any paste
++// ending as the end of pasting, so a piece pasted meanwhile that is taken
++// first lets Enter send the message without the words, and they show in
++// the prompt after it (2.1.318).
+ func (s *shim) send(pieces []piece) error {
+ 	s.rowsMu.Lock()
+ 	before, busy := s.rows, s.busy
+ 	s.rowsMu.Unlock()
+-	text, image := "", 0
++	marker := 0
+ 	for i, p := range pieces {
++		var err error
+ 		if p.image != "" {
+-			var err error
+-			if image, err = s.pasteImage(s.path(p.image), image); err != nil {
++			if marker, err = s.pasteImage(s.path(p.image), marker); err != nil {
+ 				return err
+ 			}
+ 			continue
+@@ -1168,11 +1173,10 @@
+ 		if _, err := io.WriteString(s.pty, "\x1b[200~"+p.text+"\x1b[201~"); err != nil {
+ 			return err
+ 		}
+-		text = p.text
++		if marker, err = s.shown(p.text, marker); err != nil {
++			return err
++		}
+ 	}
+-	if err := s.shown(text); err != nil {
+-		return err
+-	}
+ 	time.Sleep(150 * time.Millisecond)
+ 	for try := 0; try < 4; try++ {
+ 		if _, err := io.WriteString(s.pty, "\r"); err != nil {
+@@ -1211,8 +1215,9 @@
+ }
+ 
+ // pasteImage pastes an image file's path, and waits for the prompt to show
+-// it taken as an image: one numbered past after, the message's image
+-// before it. It returns the number shown.
++// it taken as an image: one numbered past after, the message's paste
++// before it (Claude Code numbers images and long pasted text alike). It
++// returns the number shown.
+ func (s *shim) pasteImage(path string, after int) (int, error) {
+ 	s.clearScreen()
+ 	if _, err := io.WriteString(s.pty, "\x1b[200~"+path+"\x1b[201~"); err != nil {
+@@ -1243,11 +1248,16 @@
+ 	return pasteWait + time.Duration(n/(64<<10))*time.Second
+ }
+ 
++var textShown = regexp.MustCompile(`\[Pasted text #(\d+)`)
++
+ // shown waits for the prompt to show pasted text: its last words, or
+-// Claude Code's "[Pasted text" for a long one. Text "" waits for nothing.
+-func (s *shim) shown(text string) error {
++// Claude Code's "[Pasted text #<n>" for a long one, numbered past after,
++// the message's paste before it: the prompt drawn again shows those
++// before. It returns the number shown, after where the words show
++// themselves. Text "" waits for nothing.
++func (s *shim) shown(text string, after int) (int, error) {
+ 	if text == "" {
+-		return nil
++		return after, nil
+ 	}
+ 	tail := strings.TrimSpace(text)
+ 	if i := strings.LastIndexByte(tail, '\n'); i >= 0 {
+@@ -1257,22 +1267,25 @@
+ 		tail = string(r[len(r)-16:])
+ 	}
+ 	shownBy := time.After(shownWait(len(text)))
+-shown:
+ 	for {
+ 		p := s.plain()
+-		if strings.Contains(p, "Pasted text") || tail != "" && strings.Contains(strings.Join(strings.Fields(p), " "), strings.Join(strings.Fields(tail), " ")) {
+-			break
++		for _, m := range textShown.FindAllStringSubmatch(p, -1) {
++			if n, _ := strconv.Atoi(m[1]); n > after {
++				return n, nil
++			}
+ 		}
++		if tail != "" && strings.Contains(strings.Join(strings.Fields(p), " "), strings.Join(strings.Fields(tail), " ")) {
++			return after, nil
++		}
+ 		select {
+ 		case <-s.changed:
+ 		case <-time.After(100 * time.Millisecond):
+ 		case <-shownBy:
+-			break shown
++			return after, nil
+ 		case <-s.exited:
+-			return fmt.Errorf("Claude Code ended (%v): %s", s.exit, s.lastScreen())
++			return 0, fmt.Errorf("Claude Code ended (%v): %s", s.exit, s.lastScreen())
+ 		}
+ 	}
+-	return nil
+ }
+ 
+ // transcript is the session's transcript, "" before Claude Code writes it.

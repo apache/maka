@@ -1,0 +1,45 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Thu, 12 Nov 2026 19:47:50 +0800
+Subject: [PATCH 2/2] core: the script budget goes to what the core's scripts
+ weigh now
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Elio9352's #5273 fix — Select none under a filter unpicks only the
+models it shows, as Select all picks only those, through one shared
+match — costs 278 bytes of core script on this tip. coreScriptBudget
+goes from 1,264,422 to 1,264,700, exactly its current weight with the
+fix in, so the next change pays for itself again.
+
+Run: TestCoreScriptBudget red with the fix alone on ea3a00adc ("the
+core's scripts are 1,264,700 bytes of code, over their budget of
+1,264,422"), green at 1,264,700. The four GUI tests pressing these
+buttons ran against the patched assets: models-free-only 4/4,
+provider-draft-picks 10/10, models-select-all-api 20/20 green;
+models-works-only red 8/8 on the fix and the same 8/8 on the
+unpatched tip (pre-existing, a 5-second locator timeout, not this
+change).
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gui/core_budget_test.go | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/internal/gui/core_budget_test.go b/internal/gui/core_budget_test.go
+index 73bf52f2d..50eccfed3 100644
+--- a/internal/gui/core_budget_test.go
++++ b/internal/gui/core_budget_test.go
+@@ -18,7 +18,7 @@ import (
+ // `git log -L` of this file.
+ const (
+ 	appScriptBudget  = 1_086_267 // app.js: 1,080,614 at 8016205e3, with the 5,653 of room it had
+-	coreScriptBudget = 1_264_422 // every core script at 8016205e3, the old measure 682 over its cap there (#5918); +367 for the model test on a chosen account (tmr11235), no page left to move it to; +151 for the provider menu's "Only on this device" item and its four translations; +458 for Settings › About's Report a problem row and its translations; +113 for withScheme, the one rule every typed address goes through (eachg0 on X), cut to the shortest form that keeps it whole
++	coreScriptBudget = 1_264_700 // every core script at 8016205e3, the old measure 682 over its cap there (#5918); +367 for the model test on a chosen account (tmr11235), no page left to move it to; +151 for the provider menu's "Only on this device" item and its four translations; +458 for Settings › About's Report a problem row and its translations; +113 for withScheme, the one rule every typed address goes through (eachg0 on X), cut to the shortest form that keeps it whole; +278 for Select none under a filter sharing Select all's match (#5273, Elio9352)
+ )
+ 
+ // codeBytes is how many bytes of b are code: its blank lines, its lines
+-- 
+2.50.1 (Apple Git-155)
+

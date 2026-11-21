@@ -1,0 +1,25 @@
+{
+  "id": "33",
+  "slug": "course-schedule",
+  "title": "课程表",
+  "difficulty": "medium",
+  "tags": ["深度优先搜索", "广度优先搜索", "图", "拓扑排序"],
+  "description": "你这个学期必须选修 `numCourses` 门课程,记为 `0` 到 `numCourses - 1`。\n\n`prerequisites[i] = [ai, bi]` 表示如果要学习课程 `ai` 必须**先学习**课程 `bi`。请你判断是否可能完成所有课程的学习。\n\n**示例 1:**\n\n- 输入:`numCourses = 2`, `prerequisites = [[1,0]]`\n- 输出:`true`(先修 0,再修 1)\n\n**示例 2:**\n\n- 输入:`numCourses = 2`, `prerequisites = [[1,0],[0,1]]`\n- 输出:`false`(存在环,无法完成)",
+  "solution": "## 思路\n\n**拓扑排序(BFS / Kahn)**:建邻接表与入度数组,把入度为 0 的课程入队。每次出队一门,将其后继课程入度 -1,若归零则入队。最终已出队课程数等于 `numCourses` 即可完成(无环)。\n\n## 参考代码\n\n```js\nfunction canFinish(numCourses, prerequisites) {\n  const adj = Array.from({ length: numCourses }, () => []);\n  const inDegree = new Array(numCourses).fill(0);\n  for (const [a, b] of prerequisites) {\n    adj[b].push(a);\n    inDegree[a]++;\n  }\n  const queue = [];\n  for (let i = 0; i < numCourses; i++) if (inDegree[i] === 0) queue.push(i);\n  let count = 0;\n  while (queue.length) {\n    const course = queue.shift();\n    count++;\n    for (const next of adj[course]) {\n      inDegree[next]--;\n      if (inDegree[next] === 0) queue.push(next);\n    }\n  }\n  return count === numCourses;\n}\n```\n\n## 复杂度\n\n- 时间:O(V + E)\n- 空间:O(V + E)",
+  "signature": {
+    "language": "javascript",
+    "entry": "canFinish",
+    "params": [
+      { "name": "numCourses", "type": "number" },
+      { "name": "prerequisites", "type": "number[][]" }
+    ],
+    "returns": "boolean"
+  },
+  "testCases": [
+    { "sample": true, "input": [2, [[1, 0]]], "expected": true },
+    { "sample": true, "input": [2, [[1, 0], [0, 1]]], "expected": false },
+    { "sample": false, "input": [1, []], "expected": true },
+    { "sample": false, "input": [3, [[1, 0], [2, 0], [2, 1]]], "expected": true },
+    { "sample": false, "input": [3, [[1, 0], [0, 2], [2, 1]]], "expected": false }
+  ]
+}

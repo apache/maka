@@ -1,0 +1,108 @@
+model = "gpt-5.4"
+model_provider = "openai"
+approval_policy = "never"
+sandbox_mode = "workspace-write"
+model_reasoning_effort = "xhigh"
+model_reasoning_summary = "auto"
+model_verbosity = "medium"
+file_opener = "cursor"
+project_doc_max_bytes = 32768
+check_for_update_on_startup = true
+hide_agent_reasoning = false
+disable_paste_burst = false
+cli_auth_credentials_store = "file"
+mcp_oauth_credentials_store = "auto"
+web_search = "live"
+suppress_unstable_features_warning = true
+personality = "pragmatic"
+notify = [ "/usr/bin/env", "node", "/Users/ggbdpq/.vibeusage/bin/notify.cjs" ]
+
+[sandbox_workspace_write]
+writable_roots = []
+network_access = true
+exclude_tmpdir_env_var = false
+exclude_slash_tmp = false
+
+[shell_environment_policy]
+inherit = "core"
+ignore_default_excludes = true
+exclude = [ "AWS_*", "AZURE_*", "GCP_*", "*TOKEN*", "*SECRET*", "*KEY*" ]
+include_only = [ "PATH", "HOME", "SHELL", "LANG", "LC_ALL" ]
+experimental_use_profile = false
+
+[shell_environment_policy.set]
+[history]
+persistence = "save-all"
+max_bytes = 104857600
+
+[features]
+shell_tool = true
+exec_policy = true
+shell_snapshot = true
+unified_exec = false
+apply_patch_freeform = false
+remote_compaction = true
+remote_models = false
+powershell_utf8 = true
+child_agents_md = false
+voice_transcription = true
+
+[mcp_servers.context7]
+type = "stdio"
+command = "npx"
+args = [ "-y", "@upstash/context7-mcp" ]
+
+[mcp_servers.pencil]
+command = "/Users/ggbdpq/.pencil/mcp/visual_studio_code/out/mcp-server-darwin-arm64"
+args = [ "--app", "visual_studio_code" ]
+
+[notice.model_migrations]
+"gpt-5.2" = "gpt-5.3-codex"
+
+[projects."/Users/ggbdpq/Pictures/玩机技巧/▍📁Mac"]
+trust_level = "trusted"
+
+[projects."/Users/ggbdpq/Pictures/学习社群/柯芃丞与AI News & Labs/群聊记录/AI News & Labs"]
+trust_level = "trusted"
+
+[projects."/Users/ggbdpq"]
+trust_level = "trusted"
+
+[projects."/Users/ggbdpq/project/05-广州希音/03-研发运营管理平台[DOMP]/代码仓库/domp-front"]
+trust_level = "trusted"
+
+[projects."/Users/ggbdpq/github/kafka-tool"]
+trust_level = "trusted"
+
+[projects."/Users/ggbdpq/github/Bilibili/tiajinsha/JKVideo"]
+trust_level = "trusted"
+
+[projects."/Users/ggbdpq/guahub/public/agent-skills"]
+trust_level = "trusted"
+
+[projects."/Users/ggbdpq/github/claude-code"]
+trust_level = "trusted"
+
+[projects."/Users/ggbdpq/cc/LearnReact"]
+trust_level = "trusted"
+
+[projects."/Users/ggbdpq/cc"]
+trust_level = "trusted"
+
+[projects."/Users/ggbdpq/github/claude-code/01-逆向工程与源码分析"]
+trust_level = "trusted"
+
+[projects."/Users/ggbdpq/cc/LearnInputMethod"]
+trust_level = "trusted"
+
+[projects."/Users/ggbdpq/cc/LearnCCSource"]
+trust_level = "trusted"
+
+[projects."/Users/ggbdpq/guahub/private/interview-prep"]
+trust_level = "trusted"
+
+[projects."/Users/ggbdpq/cc/LearnVue"]
+trust_level = "trusted"
+
+[plugins."google-calendar@openai-curated"]
+enabled = true

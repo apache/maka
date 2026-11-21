@@ -1,0 +1,193 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Wed, 4 Nov 2026 15:43:43 +0800
+Subject: [PATCH 2/2] authheader: a header a vendor doesn't take is not one
+ that worked (#5021)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The reporter's retest of the #5021 retry found the learn too wide: any
+answer that wasn't 401/403 counted as the header working. Their vendor
+answers x-api-key alone with a 404 saying the apiKey header is missing —
+a header it doesn't take at all — so the retry learned x-api-key, handed
+the 404 back, and every model on the provider 404'd from then on.
+
+Only a real answer is learned now (2xx): a header the vendor doesn't
+take (404) or an outage (5xx) is not, and the next header is asked
+before the answer goes back.
+
+The model list had the same two gaps: it learned on not-401/403, and it
+never retried on the #5021 403 "invalid api-key" refusal at all — only
+on the outright 401 — so a provider on such a vendor could not fetch its
+list to begin with. It now retries on both refusals and learns only an
+answer.
+
+Fixes #5021 (reporter Jasonpetrelli's retest and 2xx narrowing; the 404
+vendor shape and capture are theirs).
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/catalog/live.go             |  9 ++-
+ internal/provider/authheader.go      | 11 ++--
+ internal/provider/authheader_test.go | 90 ++++++++++++++++++++++++++++
+ 3 files changed, 102 insertions(+), 8 deletions(-)
+
+diff --git a/internal/catalog/live.go b/internal/catalog/live.go
+index a8836ec44..c2ef4333a 100644
+--- a/internal/catalog/live.go
++++ b/internal/catalog/live.go
+@@ -759,13 +759,16 @@ func fetchPage(ctx context.Context, url, key string, anthropic bool, headers map
+ 	if err != nil {
+ 		return nil, false, "", err
+ 	}
+-	if auth.learned != nil && auth.only == "" && key != "" && BothAuthRefused(res.StatusCode, b) {
+-		// refused for sending both: each alone, the one taken kept
++	if auth.learned != nil && auth.only == "" && key != "" && (BothAuthRefused(res.StatusCode, b) || AuthKeyRefused(res.StatusCode, b)) {
++		// refused for sending both — outright, or read as an invalid key
++		// with no word about the headers (#5021): each alone, the one that
++		// answered kept; a header the vendor doesn't take can come as 404,
++		// so only a real answer is learned
+ 		for _, only := range OneAuthOrder {
+ 			if res, b, err = ask(only); err != nil {
+ 				return nil, false, "", err
+ 			}
+-			if res.StatusCode != http.StatusUnauthorized && res.StatusCode != http.StatusForbidden {
++			if res.StatusCode >= 200 && res.StatusCode < 300 {
+ 				auth.learned(only)
+ 				break
+ 			}
+diff --git a/internal/provider/authheader.go b/internal/provider/authheader.go
+index ed169ee59..434cbbc73 100644
+--- a/internal/provider/authheader.go
++++ b/internal/provider/authheader.go
+@@ -37,8 +37,8 @@ func (p Provider) BothAuth() bool {
+ // both x-api-key and Authorization — said outright (catalog.BothAuthRefused,
+ // a 401) or read as an invalid key with no word about the headers
+ // (catalog.AuthKeyRefused, a 403, #5021) — the answer to req asked again
+-// with each alone, x-api-key first, and remembers for p the one it took
+-// (LearnAuthHeader). do sends a request as req was sent.
++// with each alone, x-api-key first, and remembers for p the one that
++// answered (LearnAuthHeader). do sends a request as req was sent.
+ func RetryOneAuth(p Provider, req *http.Request, res *http.Response, do func(*http.Request) (*http.Response, error)) (*http.Response, error) {
+ 	if res == nil || res.StatusCode != http.StatusUnauthorized && res.StatusCode != http.StatusForbidden || p.AuthHeader != AuthBoth || !p.BothAuth() || req.GetBody == nil {
+ 		return res, nil
+@@ -67,10 +67,11 @@ func RetryOneAuth(p Provider, req *http.Request, res *http.Response, do func(*ht
+ 		if res, err = do(again); err != nil {
+ 			return nil, err
+ 		}
+-		if res.StatusCode != http.StatusUnauthorized && res.StatusCode != http.StatusForbidden {
+-			LearnAuthHeader(p.ID, only)
+-			return res, nil
++		if res.StatusCode < 200 || res.StatusCode >= 300 {
++			continue // not an answer: a header the vendor doesn't take can come as 404 (#5021's retest), an outage as 5xx — none of these is one that worked
+ 		}
++		LearnAuthHeader(p.ID, only)
++		return res, nil
+ 	}
+ 	return res, nil
+ }
+diff --git a/internal/provider/authheader_test.go b/internal/provider/authheader_test.go
+index 2c4ba72f9..9cbef5997 100644
+--- a/internal/provider/authheader_test.go
++++ b/internal/provider/authheader_test.go
+@@ -217,6 +217,96 @@ func TestListLearnsOneAuth(t *testing.T) {
+ 	}
+ }
+ 
++// #5021's vendor, the reporter's retest: a header the vendor doesn't take
++// at all is not refused 401/403 — x-api-key alone gets a 404 saying the
++// apiKey header is missing. That is not a header that worked: it is not
++// learned, and Authorization alone is asked before the answer goes back.
++func TestRetryOneAuth404NotLearned(t *testing.T) {
++	azureHome(t)
++	var mu sync.Mutex
++	var asked [][2]string
++	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		x, a := r.Header.Get("x-api-key"), r.Header.Get("Authorization")
++		mu.Lock()
++		asked = append(asked, [2]string{x, a})
++		mu.Unlock()
++		if x != "" && a != "" {
++			w.WriteHeader(http.StatusForbidden)
++			w.Write([]byte(`{"message":"invalid api-key","type":"authentication_error"}`))
++			return
++		}
++		if x != "" {
++			w.WriteHeader(http.StatusNotFound)
++			w.Write([]byte(`{"success":false,"code":"AUTH_KEY_MISSING","msg":"请求头缺失 apiKey 参数"}`))
++			return
++		}
++		w.Header().Set("Content-Type", "application/json")
++		w.Write([]byte(`{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"text","text":"hi"}]}`))
++	}))
++	t.Cleanup(srv.Close)
++	if err := Save(Provider{ID: "relay", Name: "Relay", Anthropic: srv.URL, Key: "k", Models: []string{"claude-haiku-4-5"}}); err != nil {
++		t.Fatal(err)
++	}
++	p, _ := Find("relay")
++	rs := p.TestModels(context.Background(), []string{"claude-haiku-4-5"})
++	if len(rs) != 1 || !rs[0].OK {
++		t.Fatalf("test: %+v", rs)
++	}
++	mu.Lock()
++	got := append([][2]string(nil), asked...)
++	mu.Unlock()
++	if len(got) != 3 || got[1] != [2]string{"k", ""} || got[2] != [2]string{"", "Bearer k"} {
++		t.Errorf("asked %v", got)
++	}
++	if q, _ := Find("relay"); q.AuthHeader != AuthBearer {
++		t.Fatalf("kept %q", q.AuthHeader)
++	}
++}
++
++// The model list learns the same way: a 404 to x-api-key alone is a header
++// the vendor doesn't take, not one that worked — the list goes on to
++// Authorization alone and that is what is kept.
++func TestList404NotLearned(t *testing.T) {
++	azureHome(t)
++	var mu sync.Mutex
++	var asked [][2]string
++	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		x, a := r.Header.Get("x-api-key"), r.Header.Get("Authorization")
++		mu.Lock()
++		asked = append(asked, [2]string{x, a})
++		mu.Unlock()
++		if x != "" && a != "" {
++			w.WriteHeader(http.StatusForbidden)
++			w.Write([]byte(`{"message":"invalid api-key","type":"authentication_error"}`))
++			return
++		}
++		if x != "" {
++			w.WriteHeader(http.StatusNotFound)
++			w.Write([]byte(`{"success":false,"code":"AUTH_KEY_MISSING","msg":"请求头缺失 apiKey 参数"}`))
++			return
++		}
++		w.Write([]byte(`{"data":[{"id":"claude-haiku-4-5"}]}`))
++	}))
++	t.Cleanup(srv.Close)
++	if err := Save(Provider{ID: "relay", Name: "Relay", Anthropic: srv.URL, Key: "k"}); err != nil {
++		t.Fatal(err)
++	}
++	p, _ := Find("relay")
++	ms, err := p.Fetch(context.Background())
++	if err != nil || len(ms) == 0 {
++		t.Fatalf("list: %v %v", ms, err)
++	}
++	mu.Lock()
++	got := append([][2]string(nil), asked...)
++	mu.Unlock()
++	if len(got) != 3 || got[1] != [2]string{"k", ""} || got[2] != [2]string{"", "Bearer k"} {
++		t.Errorf("asked %v", got)
++	}
++	if q, _ := Find("relay"); q.AuthHeader != AuthBearer {
++		t.Errorf("kept %q", q.AuthHeader)
++	}
++}
++
+ // Another 401 is handed on as it came, asked once; so is a 401 to a request
+ // whose Authorization is the user's own header.
+ func TestRetryOneAuthOnlyOnThatRefusal(t *testing.T) {
+-- 
+2.50.1 (Apple Git-155)
+

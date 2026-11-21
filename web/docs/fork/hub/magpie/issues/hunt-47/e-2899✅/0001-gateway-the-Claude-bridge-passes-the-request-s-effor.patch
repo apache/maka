@@ -1,0 +1,175 @@
+From 091ca01d6d6725a8b0bb5605fef7b3c2197e2c64 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Tue, 20 Oct 2026 00:11:11 +0800
+Subject: [PATCH] gateway: the Claude bridge passes the request's effort to the
+ CLI it spawns (#2899)
+
+A request for a Claude Code subscription could name its effort in
+output_config.effort and the bridge still ran Claude Code at the CLI's own
+level: parseAnthropic reads output_config.effort only when the request asks
+thinking with it, so a request carrying an effort and no thinking ask
+reached serveSubscription with no effort, and the --effort its
+claudeCLIArgs appends for one was never appended. The reporter sampled the
+spawned claude -p and found no --effort on its command line and no effort
+variable in its environment, while their A/B table has the CLI's own
+--effort low and --effort max at 325 and 1002 output tokens and the same
+efforts through the gateway indistinguishable (~9s either way).
+
+serveSubscription now takes the effort an Anthropic request's
+output_config names even when its parse left none (outputConfigEffort),
+unless the request turned thinking off. The gate that keeps a thinking-less
+effort from turning thinking on upstream still stands for every other
+backend: through the bridge the level is --effort, which works whatever
+the turn thinks of. A request with no effort spawns as it did, and a turn
+resumed in a run waiting for it is told the level as before (setEffort).
+
+TestClaudeBridgePassesTheRequestsEffort stands in for Claude Code with a
+script that records the arguments it is spawned with, and fails on the old
+code: output_config.effort max came through with no --effort on the
+recorded command line. With the change it reads --effort max, a request
+that asks its effort with thinking reads it as it always did, and a
+request that asks no effort spawns with no --effort.
+
+go test ./internal/gateway/ -count=1 (full package, 341.9s), -run TestClaude
+(33.3s), -race -run TestClaude (40.5s), go vet (darwin, GOOS=linux,
+GOOS=windows), gofmt and go build -tags nogui (darwin, GOOS=linux,
+GOOS=windows) pass.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gateway/claude_effort_test.go  | 75 +++++++++++++++++++++++++
+ internal/gateway/claude_subscription.go | 10 ++++
+ internal/gateway/decide.go              | 14 +++++
+ 3 files changed, 99 insertions(+)
+ create mode 100644 internal/gateway/claude_effort_test.go
+
+diff --git a/internal/gateway/claude_effort_test.go b/internal/gateway/claude_effort_test.go
+new file mode 100644
+index 00000000..ed461b24
+--- /dev/null
++++ b/internal/gateway/claude_effort_test.go
+@@ -0,0 +1,75 @@
++package gateway
++
++import (
++	"net/http/httptest"
++	"os"
++	"path/filepath"
++	"runtime"
++	"strings"
++	"testing"
++
++	"github.com/yetone/magpie/internal/provider"
++	"github.com/yetone/magpie/internal/testenv"
++)
++
++// TestClaudeBridgePassesTheRequestsEffort: the effort a request carries is
++// the level the spawned Claude Code thinks at (--effort), also when the
++// request asks no thinking with it (#2899: output_config.effort low and max
++// reached the subscription as the same turn, with no --effort on the spawned
++// command line).
++func TestClaudeBridgePassesTheRequestsEffort(t *testing.T) {
++	if runtime.GOOS == "windows" {
++		t.Skip("a shell script stands in for Claude Code")
++	}
++	testenv.SetHome(t, t.TempDir())
++	t.Setenv("TMPDIR", t.TempDir())
++	dir := t.TempDir()
++	script := `#!/bin/sh
++printf '%s\n' "$@" > ` + dir + `/args
++while read -r line; do
++  echo '{"type":"stream_event","event":{"type":"message_start","message":{"id":"m","model":"claude-opus-5-5","usage":{"input_tokens":1}}}}'
++  echo '{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}}'
++  echo '{"type":"stream_event","event":{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}}'
++  echo '{"type":"stream_event","event":{"type":"message_stop"}}'
++  echo '{"type":"result","subtype":"success","is_error":false,"result":""}'
++done
++`
++	testenv.Program(t, filepath.Join(dir, "claude"), script)
++	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
++
++	s := New()
++	t.Cleanup(s.subscription.abortAll)
++	p := provider.Provider{ID: "claude", Account: &provider.Account{Agent: "claude", User: "u"}}
++	post := func(body string) string {
++		t.Helper()
++		rec := httptest.NewRecorder()
++		var u Usage
++		if code, msg := s.serveClaudeSubscription(rec, httptest.NewRequest("POST", "/v1/messages", strings.NewReader(body)), provider.Anthropic, p, "claude-opus-5-5", []byte(body), &u); code != 200 {
++			t.Fatalf("%d %s", code, msg)
++		}
++		b, err := os.ReadFile(filepath.Join(dir, "args"))
++		if err != nil {
++			t.Fatal(err)
++		}
++		// the fake writes one argument a line; the command line is them
++		// joined, which is what the assertions below read
++		return strings.Join(strings.Fields(string(b)), " ")
++	}
++
++	// the effort an output_config names, thinking asked or not, is the
++	// spawned Claude Code's
++	args := post(`{"model":"claude-opus-5-5","max_tokens":100,"output_config":{"effort":"max"},"messages":[{"role":"user","content":"How many positive integers below 100000 have digits that sum to 23?"}]}`)
++	if !strings.Contains(args, "--effort max") {
++		t.Fatalf("output_config.effort max: no --effort max in %q", args)
++	}
++	// with the thinking ask, as it always was
++	args = post(`{"model":"claude-opus-5-5","max_tokens":100,"thinking":{"type":"enabled","budget_tokens":1024},"output_config":{"effort":"high"},"messages":[{"role":"user","content":"and now?"}]}`)
++	if !strings.Contains(args, "--effort high") {
++		t.Fatalf("output_config.effort high with thinking: no --effort high in %q", args)
++	}
++	// no effort asked, no flag: the CLI's own level stands
++	args = post(`{"model":"claude-opus-5-5","max_tokens":100,"messages":[{"role":"user","content":"one more"}]}`)
++	if strings.Contains(args, "--effort") {
++		t.Fatalf("no effort asked: --effort in %q", args)
++	}
++}
+diff --git a/internal/gateway/claude_subscription.go b/internal/gateway/claude_subscription.go
+index 0532121e..a9f3a47a 100644
+--- a/internal/gateway/claude_subscription.go
++++ b/internal/gateway/claude_subscription.go
+@@ -4050,6 +4050,16 @@ func (s *Server) serveSubscription(w http.ResponseWriter, r *http.Request, from
+ 	if err != nil {
+ 		return writeError(w, from, 400, err.Error()), err.Error()
+ 	}
++	// output_config's effort is the level the CLI thinks at (--effort), which
++	// works whatever the turn thinks: taken also when the request asks no
++	// thinking, which upstream a reasoning ask would turn on though the
++	// request never asked for it (Claude Code's title requests carry an
++	// effort and no thinking) (#2899)
++	if from == provider.Anthropic && req.Effort == "" && !req.ThinkOff {
++		if e := outputConfigEffort(body); e != "" {
++			req.Effort = e
++		}
++	}
+ 	req.Model = model
+ 	if req.clientCache != nil {
+ 		req.clientCache.report = func() { cacheReportReady(w, req) }
+diff --git a/internal/gateway/decide.go b/internal/gateway/decide.go
+index ab5cf659..3d1262d0 100644
+--- a/internal/gateway/decide.go
++++ b/internal/gateway/decide.go
+@@ -662,6 +662,20 @@ func requestEffort(proto provider.Protocol, body []byte) string {
+ 	return effortOfBudget(v.Thinking.Budget)
+ }
+ 
++// outputConfigEffort is the effort an Anthropic request's output_config
++// names, whatever it asks of thinking; "" when it names none.
++func outputConfigEffort(body []byte) string {
++	var v struct {
++		OutputConfig struct {
++			Effort string `json:"effort"`
++		} `json:"output_config"`
++	}
++	if decodeJSON(body, &v) != nil {
++		return ""
++	}
++	return effortOf(v.OutputConfig.Effort)
++}
++
+ // sentEffort is the reasoning a request goes to model at: what it asks
+ // for, fitted to the model's levels as it is fitted on the way out.
+ func sentEffort(proto provider.Protocol, body []byte, p provider.Provider, model string) string {
+-- 
+2.50.1 (Apple Git-155)
+

@@ -1,0 +1,22 @@
+{
+  "id": "100",
+  "slug": "longest-mountain-in-array",
+  "title": "数组中的最长山脉",
+  "difficulty": "medium",
+  "tags": ["数组", "双指针", "动态规划"],
+  "description": "把符合下列属性的数组 `arr` 称为「山脉数组」:`arr.length >= 3`,存在某个下标 `i (0 < i < arr.length - 1)`,使得 `arr[0] < arr[1] < ... < arr[i] > arr[i+1] > ... > arr[arr.length-1]`。\n\n给你一个整数数组 `arr`,返回最长山脉子数组的长度(子数组要求连续)。如果不存在山脉,返回 `0`。\n\n**示例 1:**\n\n- 输入:`arr = [2,1,4,7,3,2,5]`\n- 输出:`5`(最长山脉子数组是 `[1,4,7,3,2]`)\n\n**示例 2:**\n\n- 输入:`arr = [2,2,2]`\n- 输出:`0`(没有山脉)",
+  "solution": "## 思路\n\n一次遍历:对每个起点,先数「上升段」长度 `up`,再数「下降段」长度 `down`。只有既有上升又有下降才是山脉,长度 `up + down + 1`。遇到相等元素跳过。\n\n## 参考代码\n\n```js\nfunction longestMountain(arr) {\n  const n = arr.length;\n  let max = 0;\n  let i = 1;\n  while (i < n) {\n    let up = 0;\n    let down = 0;\n    while (i < n && arr[i] > arr[i - 1]) { up++; i++; }\n    while (i < n && arr[i] < arr[i - 1]) { down++; i++; }\n    if (up > 0 && down > 0) max = Math.max(max, up + down + 1);\n    while (i < n && arr[i] === arr[i - 1]) i++;\n  }\n  return max;\n}\n```\n\n## 复杂度\n\n- 时间:O(n)\n- 空间:O(1)",
+  "signature": {
+    "language": "javascript",
+    "entry": "longestMountain",
+    "params": [{ "name": "arr", "type": "number[]" }],
+    "returns": "number"
+  },
+  "testCases": [
+    { "sample": true, "input": [[2, 1, 4, 7, 3, 2, 5]], "expected": 5 },
+    { "sample": true, "input": [[2, 2, 2]], "expected": 0 },
+    { "sample": false, "input": [[1, 2, 3, 2, 1]], "expected": 5 },
+    { "sample": false, "input": [[1, 2, 3]], "expected": 0 },
+    { "sample": false, "input": [[3, 2, 1]], "expected": 0 }
+  ]
+}

@@ -1,0 +1,25 @@
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py amp baseline
+INPUT: CONFIG: fixed amp source allowlist
+OUTPUT: BASELINE PASS groups=4 files=20 bytes=233442 protected=0
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py amp archive
+INPUT: 9e5bf05918764dfa09612318932ef3f255ed05c0910770248c0bf1212088442b
+OUTPUT: ARCHIVE PASS zip_files=4 files=20 bytes=233442
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py amp apply
+INPUT: fe9e5f28f149a4c0c9d7a6c37590608e575d9c8db5ab9d886e0346526c001b00
+OUTPUT: APPLY PASS removed_files=20 removed_bytes=233442
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py amp verify
+INPUT: 09b6873b59d5e19136b34d0348cb4ed0702ae893ffb4f7ce0ba7205d76277940
+OUTPUT: MODIFIED PASS files=20 bytes=233442 originals_absent=true protected_unchanged=true
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py amp rollback-test
+INPUT: 09b6873b59d5e19136b34d0348cb4ed0702ae893ffb4f7ce0ba7205d76277940
+OUTPUT: ROLLBACK PASS restored_files=20 restored_bytes=233442 hashes_match=true originals_untouched=true
+EXIT: 0
+

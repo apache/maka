@@ -1,0 +1,534 @@
+Credit to the reporter for a rigorous write-up: the JWT `exp` still in the future while the backend answered `401: Your authentication token has expired. Please try refreshing it.`, the official app-server's `account/read` with `refreshToken: true` proving the login was renewable without re-signing in (and showing the plan had moved on), and the routing record whose `rest.until` landed exactly on the *stale* cached quota reset point. That pinpointed both defects precisely.
+
+I verified the shape on current main (one commit past `e4ac5e87`): the reporter's v0.1.1231 is older, and the two halves have diverged since.
+
+- **The days-long rest (defect b) is already fixed on main.** A 401/403 that names no quota no longer rests an account until its cached window (`d5bc9f00`, plugins#243, added 2026-10-19). On main this failure classifies as `fail: "other"` and rests only a backoff (a minute, doubling, capped at ten) — not `by: "window"` to the stale reset point. The reporter's `until` came from the pre-`d5bc9f00` code their version ran.
+- **The missing refresh (defect a) is still there**, and this patch lands it. `codexToken` serves the token as-is while its `exp` is more than 5 minutes off, and the #1793 revoked-sign-in path deliberately does not match an expired token (their words: an expired one is "for a refresh to mend") — but nothing was doing the mending.
+
+Branch: [`hunt48-c-codex-401-refresh`](https://github.com/ggbdpq/magpie/tree/hunt48-c-codex-401-refresh), one commit on top of upstream `e4ac5e87`; the patch below applies with `git am`.
+
+## What changed
+
+A 401 whose words say the token sent has expired and asks for a refresh (`SignInRefreshable`: OpenAI's `token_expired` code, plus the quoted sentence from this report) now renews the sign-in once, right there in `noteSignIn`, before the routing loop moves on (`NoteRefreshableSignIn`, new `internal/provider/signin_expired.go`):
+
+- a **saved** account is renewed through the existing `renewSavedLogin(..., force=true)`;
+- the **live/own** sign-in (the reporter's case, `a.token == nil`) through a new `codexTokenRefresh(dir, force=true)` — `codexToken` itself unchanged, just the force knob added to what it already does: read, refresh through OpenAI, write the rotation back where Codex keeps it.
+
+Properties, all reusing existing machinery (no new state):
+
+- **Bounded**: 20 seconds, detached from the request's cancellation (a refresh mid-answer holds the rotated refresh token, so it must not be dropped — same shape as `NoteRevokedSignIn`).
+- **Concurrency-merged**: the same lock a request's signing waits on (`codexMu` / `savedTokenMu`) serializes refreshes; and a sign-in already renewed since the request went out (the bearer sent differs from the one on file) is left as it is, so concurrent 401s on one account spend one rotation, not one apiece.
+- **Nothing is marked**: the failure stays `fail: "other"` with a short backoff; the next request carries the fresh token. No new lapse, no revoked mark — the account is as good as its next token.
+- **The guard against a refresh loop**: a refresh the vendor refuses a *saved* account lapses it through the existing `savedRefreshFailed` (row says so, until refreshed or signed in again); the live home's own sign-in is left as its keeper has it, and the next request reads it anew — Codex itself may have refreshed it.
+
+## Red before the fix
+
+`TestCodexExpired401RefreshesLogin` (new, `internal/gateway/codex_refresh_401_test.go`): a fake ChatGPT backend answers the quoted 401 to a request signed with a token whose `exp` is an hour ahead, a fake OAuth endpoint hands out a fresh token and rotates the refresh token. On unpatched `e4ac5e87`:
+
+```
+--- FAIL: TestCodexExpired401RefreshesLogin
+    codex_refresh_401_test.go:104: the vendor said the token expired and asked for a refresh:
+    the sign-in was renewed 0 times, want once
+```
+
+(and the second request goes out with the stale token and is refused again). With the patch: exactly one refresh, the next request carries the fresh token, the backend serves it, and the rotated refresh token is back in `auth.json` for Codex to find. Ablation (product files restored to upstream, tests kept) reproduces the red; restoring the fix turns it green again.
+
+## Verification
+
+| Check | Result |
+| --- | --- |
+| `go test ./internal/gateway/ -run 'TestCodexExpired401RefreshesLogin\|TestCodexOther401DoesntRefresh\|TestRevoked...'` (auth family) | ok, exit 0 |
+| `go test ./internal/gateway/` full package | ok 339.7s, exit 0 |
+| `go test ./internal/provider/` full package | ok 80.9s, exit 0 |
+| same targeted tests with `-race` | ok |
+| `gofmt -l` on touched files | clean |
+| `go vet` darwin / linux / windows | clean |
+| `go build` darwin / windows | ok |
+| `go build` touched packages on linux | ok (full binary linux link fails on this host in the Wails GUI dependency, pre-existing, untouched by this diff) |
+
+Mutations, each red, then restored:
+
+- drop the gateway refresh trigger → `TestCodexExpired401RefreshesLogin` red ("renewed 0 times").
+- make **every** 401 refresh (too broad) → `TestCodexOther401DoesntRefresh` red ("a 401 that says nothing of an expired token renewed the sign-in 1 times"), and the `TestSignInRefreshableWords` table rejects `token_revoked` / `refresh_token_reused` / "Incorrect API key provided".
+- drop the 401 status gate → the same word table rejects the 403/500/429 rows.
+
+## Siblings
+
+- **Keyed providers** (OpenAI API keys, relays): nothing to refresh — a key's 401 is the key's or the request's, and `d5bc9f00` already keeps it off the quota window. A key provider answering even the revoked words rests as before (#1793's note).
+- **Claude** (`claude_auth.go`) and **Copilot** (`copilot_lapsed.go`) keep their own sign-in marks and renewal paths; `NoteRefreshableSignIn` returns for any non-codex agent and for plugins, so their behavior is untouched. The word matcher only ever acts through the codex path.
+- **The #1793 revoked path** is deliberately untouched: `token_revoked` & co. mean the credential is dead and get marked; the new matcher excludes those words (word-table rows), and `noteSignIn` dispatches revoked before refreshable.
+
+## Not verified
+
+- Against a real ChatGPT backend — the 401 wording in the matcher comes from the report's quote (both as a bare message and JSON-wrapped); I could not reproduce the upstream failure itself, and the report says the same of its own repro.
+- Whether the reporter's `pro`→`promax` upgrade is what retired the token — untested here, as the report also found no evidence it must; the fix is indifferent to the cause.
+- The Codex keychain store path in the forced refresh is exercised by the existing store tests only indirectly (file-store in the new tests); no macOS keychain round-trip was run.
+
+**AI**: written with an AI coding agent; I've read the whole diff and can answer questions on it myself. The model name is in the commit's trailer.
+
+**Attribution**: If you apply the patch, please keep its author (ggbdpq) or add a `Co-authored-by: ggbdpq <ggbdpq@gmail.com>` line.
+
+<details><summary>patch (0001-provider-a-401-that-says-the-token-expired-refreshes.patch)</summary>
+
+```patch
+From 93e69010cd6625817bee674a5e2583e1028902de Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Tue, 20 Oct 2026 01:17:11 +0800
+Subject: [PATCH] provider: a 401 that says the token expired refreshes the
+ login instead of resting the account for days (#2973)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+What changed
+
+A ChatGPT 401 whose words say the token sent has expired and asks for a
+refresh (`SignInRefreshable`: OpenAI's `token_expired`, the backend's
+"Your authentication token has expired. Please try refreshing it.") now
+renews the sign-in once, there and then, in `noteSignIn`
+(`NoteRefreshableSignIn`, internal/provider/signin_expired.go): a saved
+account through `renewSavedLogin` with force, the Codex home's own sign-in
+through a new `codexTokenRefresh` with force (`codexToken` is the same
+without it). The renewal is bounded (20 seconds) and merged by the lock a
+request's signing already waits on; a sign-in renewed since the request
+went out is left as it is, so concurrent 401s on one account spend one
+token rotation, not one apiece. Nothing is marked: the next request
+carries the fresh token. A refresh the vendor refuses a saved account
+still lapses it, as any refused refresh does.
+
+Why
+
+The reporter's account (#2973): a live/own Codex login was answered
+"401: Your authentication token has expired. Please try refreshing it."
+while the token's JWT `exp` was still ahead. `codexToken` uses the token
+as it stands when `exp` is more than 5 minutes off, so the retired token
+went out as it was; `SignInRevoked` doesn't match an expired token (a
+refresh mends it, #1793), so nothing mended it, and the failure was
+recorded as fail "other" — which, on v0.1.1231, rested the account until
+its cached quota window reset, about five days, though the account still
+had its allowance. Refreshing the login through the official app-server
+mended it at once. The rest-to-window half is already fixed on main:
+a 401 or 403 that names no quota no longer rests an account until its
+window (d5bc9f00, plugins#243); this lands the refresh half. A refused
+refresh lapses a saved account; an auth failure itself rests only a
+backoff, never the quota window, on this main.
+
+Run
+
+- go test ./internal/gateway/ (full): ok 339.7s
+- go test ./internal/provider/ (full): ok 80.9s
+- the new tests red before the fix, green after; -race on them green
+- gofmt clean; go vet clean on darwin, linux, windows
+- go build darwin, windows, and the touched packages on linux
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ docs/subsystems/gateway-routing.md         |   1 +
+ docs/subsystems/providers-accounts.md      |   1 +
+ internal/gateway/codex_refresh_401_test.go | 193 +++++++++++++++++++++
+ internal/gateway/signin_revoked.go         |   8 +-
+ internal/provider/account.go               |  32 ++--
+ internal/provider/signin_expired.go        |  58 +++++++
+ internal/provider/signin_expired_test.go   |  30 ++++
+ 7 files changed, 311 insertions(+), 12 deletions(-)
+ create mode 100644 internal/gateway/codex_refresh_401_test.go
+ create mode 100644 internal/provider/signin_expired.go
+ create mode 100644 internal/provider/signin_expired_test.go
+
+diff --git a/docs/subsystems/gateway-routing.md b/docs/subsystems/gateway-routing.md
+index cc807e91..eed2d5f5 100644
+--- a/docs/subsystems/gateway-routing.md
++++ b/docs/subsystems/gateway-routing.md
+@@ -126,6 +126,7 @@ recorded as a prediction failure (`noPrediction`).
+ - A ChatGPT account that holds credits answers past its windows on them; the vendor spends them. That is the default. Set not to spend them (Usage card's *Use credits*, `magpie quota credits <account> off`), the account is held at 100% of a window till it renews, by magpie's latest reading of its windows (`provider.Allowances`, refreshed about every minute), so the other accounts, groups and fallbacks take the request. A cap set on the account (1–99%) takes precedence. Unlike a cap, the hold is at the vendor's own 100%, so an account allowed to spend its resets spends one there, both when every candidate is held and after the last one is refused. A reset made forgets the account's cached allowance (`renewedNow`), so neither hold outlives the windows it started again.
+ - Different failures are classified separately: out of credit, out of quota, rate limit and other errors rest for different lengths. A fix must not merge them into one bucket (see #873).
+ - A subscription account whose sign-in its vendor revoked (`provider.SignInRevoked`: 401 `token_revoked` and the like, #1793) fails as `failAuth`: the next member is asked at once, nothing rests, and the account is marked (`noteSignIn` in [`signin_revoked.go`](../../internal/gateway/signin_revoked.go)). Its later requests aren't sent while it has that credential: `forwardOnce` answers them with a 401 of magpie's own (`revokedReply`), so they too pass on. Compaction on an account of magpie's (`compactOn`) picks a marked one last. A key's provider answering the same words rests as before.
++- A 401 whose words say the token had expired and asks for a refresh (`provider.SignInRefreshable`, #2973) is not `failAuth`, for the account is as good as its next token: the sign-in is renewed where it is kept (`NoteRefreshableSignIn`, once, bounded and merged with a refresh already going), the refusal rests the account only a backoff, and the next request goes out with the fresh token. A 401 that says the sign-in is gone instead of expired is the revoked path's above.
+ - A sub2api key out of its own limit answers 429 `api key 7天限额已用完` (or `日限额`, `5小时限额`) as `rate_limit_exceeded`. It is out of quota (`plannedWords`), not rate limited: it rests till the window it filled renews when its windows as last read say so, else `quotaRest`, and its windows are read again (`staleKeyAllowance`). A reading that finds that window full no more (the limit raised in the relay's panel, or the key's usage reset) lifts the rest (`renewed`, told through `provider.OnRenewed`), as a Codex reset spent does an account's; the key's other rests stay. While it rests out of its windows, they are read again each time it is planned (`restingOf`, once a minute at most), so this holds where nothing weighs it by them: an ordered group. The relay out of accounts for everyone (503 `No available accounts`, or a later version's 429 `All available accounts are currently rate-limited`) says nothing of the key's windows: it backs off as any failure or rate limit does, never to the window. A key's windows count only its own spend, so other users draining the relay's accounts show up as those errors, not in the windows.
+ - A 5xx is a server error, not quota, unless the vendor's own quota code says so (`quotaCodes`: `usage_limit_reached`, `RESOURCE_EXHAUSTED`, Claude Code's `usage limit reached|<unix>`). A relay's 500 "当前模型 gpt-5.5 负载已经达到上限，请稍后重试" names its load, not the key's allowance: it was read as out of quota by `usedUpWords` (上限), which rested the key till a reset and kept a group's Patience from waiting it out (#1418). The quota words (`usedUpWords`) still apply to a 4xx.
+ - A 429 that names in words when the account is back (WorkBuddy's "将在 2026-10-11 20:16:02 UTC+8重置" and "your usage will reset at 2026-10-11 12:37:53 UTC+8, …", #1669) is out of quota in either language (`resetsWhen`), and rests until that time (`resetsWritten`, read in the offset written). Only the reset phrasing right beside a whole date and time with its UTC/GMT offset, followed by 重置 or punctuation, is read, so a refusal cut short isn't read as UTC and another vendor's date in passing is no reset; a time past, not a real date, or more than `longestWritten` (7 days) off isn't read. Zhipu's 1308 and 1310 (Z.ai and bigmodel.cn, GLM Coding Plan: "Your limit will reset at 2026-10-15 20:12:13", "您的限额将在 … 重置") write the time with no zone; it is Beijing's, and is read as UTC+8 in those words only (`zhipuResets`, `resetsZhipu`), never when a digit, colon or zone of its own follows (Player on Discord: read by nothing, the key rested `quotaRest` and the refusal said "not asked again before 17:12" while Z.ai said 20:12; `TestZhipuRestsUntilItsReset`). One that points to the account's other models (`otherModels`: "切换其他模型", "switch to the other models") rests that model alone (`restID`). Out of credit or quota on a model that costs credits, where the subscription serves other models free (`catalog.Model.Free`: WorkBuddy's x0.00, Qoder's is_free, Cline's free models; `Provider.PaidBesideFree`), rests that model alone too: the free ones draw on no credits (Creat.wu on Discord, `TestOutOfCreditLeavesFreeModels`). A Credits window leaves the free models out the same way, so an account at 100% isn't ranked spent for them: the WorkBuddy plugin's lists them as `notModels` (0.1.23), and the built-in's scopes itself by the provider's last fetched list (`wbSpareFree`; with no list read, every model counts) (plugins#138, hheei: an account at 560 / 560 was still served deepseek-v4.1-flash; `TestWorkBuddyCreditsSpareFreeModels`). A free model the vendor refuses all the same (WorkBuddy refuses even 0-rate models to an account with no package) rests the account on its own refusal. Cline's daily limit of one free model, 429 "Daily free limit reached on model deepseek/deepseek-v4-flash. Try again in 23h 59m" (the words Cline's own clients read it by, `isClineFreeModelLimitMessage`), rests that model alone (`clineFreeLimit`, `clineModelLimited`, keyed by `restID`) until the time it names (`clineBackIn`, `tryAgainIn`, held to `longestWritten`; `resets`), from a provider whose requests reach Cline's API (`ClinePinnable`: the ClinePass preset, one at cline.bot, the Cline plugin's). The key's other models, free or the plan's, are still served, and the model out of its day is answered with its refusal without asking Cline again (#1398, wuasakura: one free model's 429 sent the whole Cline account to the back; `TestClineFreeLimitRestsTheModel`, `TestClineFreeLimitLeavesOtherModels`). Another vendor's same words, and a Cline 429 that doesn't name the model's limit, rest the key as before. WorkBuddy's 429 14018 "Credits exhausted" is out of credit (`brokeWords`), not a rate limit, on the built-in's raw body and the plugin's `insufficient_quota` alike (`TestCreditsExhaustedIsOutOfCredit`). On the rate-limit branch, a reset time the refusal names (`resetsAt`, or `resetsHeader` as `keepRetry` noted it) is believed up to `longestQuota`, as out of quota believes it, and the Routing page says it rests until then (`resets`); a `Retry-After` or a rate-limit reset header is still held to `longestWait` (an hour) (`rateRest`). The same rest runs for a plugin's requests: the WorkBuddy plugin passes these 429s on as they come (`TestPluginWrittenResetRests`). A JSON error body that escapes what isn't ASCII as `\uXXXX` (Python's json.dumps does by default) has its strings decoded before any word list (`creditWords`, `rateWords`, `plannedWords`, `usedUpWords`, `resetsWhen`, …) is matched (`wordsOf`), so an escaped 余额不足 or 用量 reads as an unescaped one does.
+diff --git a/docs/subsystems/providers-accounts.md b/docs/subsystems/providers-accounts.md
+index 4038f658..d73193c5 100644
+--- a/docs/subsystems/providers-accounts.md
++++ b/docs/subsystems/providers-accounts.md
+@@ -35,6 +35,7 @@ keys and accounts per request is in [Gateway routing and fallback](gateway-routi
+ | Token refresh | Each account refreshes through its vendor. For example, `codexToken` refreshes within 5 minutes of expiry and writes the rotated tokens back where it read them (`codexStore.write`: `~/.codex/auth.json`, or Codex's keychain item), every other field kept, for Codex CLI. Before refreshing a sign-in read from the keychain it asks the item again, so a rotation Codex made since isn't spent twice. A 400 or 401 from the vendor's refresh endpoint means it was refused (`refreshFailed`). | [`account.go`](../../internal/provider/account.go) |
+ | Codex's credential store | Codex 0.162 keeps its ChatGPT sign-in where `cli_auth_credentials_store` in `$CODEX_HOME/config.toml` says (`codex-rs/login/src/auth/storage.rs`): `file` (default) is `auth.json`; `keyring` the system keychain alone; `auto` the keychain, else `auth.json`, on read and on save; `ephemeral` Codex's memory. Saved to the keychain, Codex removes `auth.json` (#2312, #2367, Dony2050). On macOS magpie reads that item through `security`, as it reads Claude Code's: service `Codex Auth`, account `cli|` + the first 16 hex digits of SHA-256 of the canonical CODEX_HOME (`codexKeychainAccount`), the value auth.json's JSON on one line. `readCodexLogin` is the one reader: `codexAccount`, `codexToken`, `liveLogin`, `CodexAPIKeySignedIn`, `codexLoginAuth`, the usage card's `codexUntil`, session identities and the agent's wiring (`provider.CodexSignIn`: `codexChatGPT`, `Agent.Source`) go through it. `keyring` with no item is signed out; `auto` with no item, or one the keychain wouldn't give, is `auth.json`, as Codex does. An item the keychain wouldn't give under `keyring` is not known (`codexStoreError`), never signed out. With `[features] secret_auth_storage` on (Codex's default on Windows) keyring and auto mean Codex's encrypted auth storage, which magpie doesn't read; nor does it read the Linux or Windows keychain. There `keyring` and `ephemeral` are not known, `auto` is `auth.json` when Codex left one, and the saved accounts' reason says to set `file` (`codexSignedOutWhy`). Requirements an admin manages (`requirements.cli_auth_credentials_store`) aren't read. Reading the secret can put up to two macOS prompts in front of the user, who may type their password, so one read per item is in flight at a time and waits up to 2 minutes for them (`keychainAsk`, `askCodexKeychain`), outside the cache's lock. A reader waits at most 5s from when that ask started (`keychainHold`) and is otherwise told magpie is waiting for an answer (`errKeychainWaiting`); no request or page waits out the prompt. `security` exit 44 is no item; 51 (errSecAuthFailed) or 128 (errSecUserCanceled) is denied or cancelled (`errKeychainRefused`); the 2 minutes running out is no answer (`errKeychainNoAnswer`); anything else is `errKeychainUnread`. Each says so in the saved accounts' reason, and none of them is signed out. A read the keychain gave is kept while the item is unchanged: after 10s a reader asks only the item's modification date (`Stat`, `find-generic-password` without `-w`, which shows no prompt) and reads the secret again only when Codex or magpie changed it (#2367: with "Allow" once, background polls asked again every ~30s). A refusal or no answer is kept 10 minutes (#2408). magpie's own writes (`codexStore.write`, `keepCodexKeychain`) keep the date of what they wrote; a switch, sign-out or refresh forgets a read (`forgetCodexKeychain`) so the next one checks the date, but keeps a refusal; switching and refreshing read afresh. Beside a refusal, no answer or waiting, the saved accounts' line has Try again (`Exclusion.Retry`, `keychain-retry`, `RetryCodexKeychain`), which reads once past the refusal, and the reason says "Always Allow" lets `/usr/bin/security` read the item, so macOS stops asking each time Codex changes it. A switch or a first sign-in (`saveCodexLogin`) writes the store Codex reads, and refuses when that store couldn't be read, when config.toml doesn't parse, or when it is one magpie doesn't read; it leaves an `auth.json` beside the item to Codex. Signing the last account out (`deleteCodexLogin`) removes the item, then `auth.json`, as `codex logout`. Not tried against an item Codex itself wrote: macOS may ask whether magpie can read it, and Codex whether it can read one magpie rewrote. | [`codex_store.go`](../../internal/provider/codex_store.go), [`codex_store_test.go`](../../internal/provider/codex_store_test.go), [`codex_keychain_ask_unix_test.go`](../../internal/provider/codex_keychain_ask_unix_test.go) |
+ | A revoked sign-in | A 401 whose words say the sign-in itself is gone (`SignInRevoked`: ChatGPT's `token_revoked`, `invalid_grant`, `refresh_token_reused`; never `token_expired`, a 403, a 5xx or a network error) marks the account for the credential it was sent with (`NoteRevokedSignIn`, #1793). A saved ChatGPT account is refreshed first, as Codex does on a 401, and a refresh that goes through marks nothing. The mark is a hash of the header, never the credential, kept in `logins.json` as `Refused: "revoked:<mark>"` with the account's `Lapsed`, and read back after a restart. While the account has that credential, the gateway doesn't send its requests (`RevokedSignIn`); its row says Sign-in required with Sign in again. Signed in anew (`upsertLogin` with another credential, `addSideLogin`), refreshed, or served a request (`ServedSignIn`), it is clear. Claude (`claude_auth.go`), Copilot (`copilot_lapsed.go`: GitHub's 401/403 on the token exchange, the CLI's stand-in or the usage read, cleared when a token is served) and plugins keep their own marks. | [`signin_revoked.go`](../../internal/provider/signin_revoked.go), [`copilot_lapsed.go`](../../internal/provider/copilot_lapsed.go) |
++| A refreshable sign-in | A 401 whose words say the token sent has expired and is a refresh's to mend (`SignInRefreshable`: OpenAI's `token_expired`, the ChatGPT backend's "Your authentication token has expired. Please try refreshing it.", #2973) renews the sign-in once, there and then (`NoteRefreshableSignIn`): a saved account through `renewSavedLogin` (a refresh refused lapses it, as any refused refresh does), the Codex home's own through `codexTokenRefresh` with force, so a token retired on the vendor's side while its JWT `exp` still stands ahead is exchanged for a fresh one instead of the account resting as if its allowance were spent. The renewal is bounded (20 seconds) and merged by the same lock a request's signing waits on; a sign-in renewed since the request went out is left as it is, so concurrent 401s on one account spend one rotation, not one apiece. Unlike a revoked sign-in nothing is marked: the next request carries the fresh token, and one the account serves clears nothing because nothing was set. Other agents' 401s, and every non-401, say nothing to it. | [`signin_expired.go`](../../internal/provider/signin_expired.go), [`account.go`](../../internal/provider/account.go) |
+ | Saved accounts | `logins.json` remembers every Codex and Claude Code account seen signed in. A switch moves the credentials into the agent's own store and saves the ones it replaces. A saved account that is on (`SetLoginOn`) stands behind the agent's own. Its tokens stay in `logins.json`. | [`logins.go`](../../internal/provider/logins.go), [`logins_on.go`](../../internal/provider/logins_on.go) |
+ | Sign-in in magpie | `StartSignIn` runs the vendor's own browser OAuth with its client and takes the tokens at a callback on this machine. A browser that can't reach that callback (magpie on a server or in Docker) ends on a page that won't load; its address, pasted (`SubmitSignInCallback`), goes through the same callback handler (`pastedCallback`). ChatGPT's sign-in comes back only to port 1455; when that port can't be opened, the sign-in still starts and waits for the pasted address alone, and says why in `CallbackBlocked` with the port in `CallbackPort`: `reserved` for Windows' WSAEACCES on a port in a range it excludes for Hyper-V, WSL or Docker, `busy` for anything else, such as another program holding it (`callbackBlocked`, #1782). A plugin's browser sign-in (`auto`) whose page names a port on this machine to come back to takes its pasted address too: magpie opens it there on 127.0.0.1, for the plugin's own listener (`pluginCallback`, `loopbackPorts`); Command Code's page posts its key from script, so it offers the API key way instead. A Claude account is signed in by Claude Code itself. Signing in brings back an account removed from magpie (`ShowAccount`). A sign-in started in magpie (`StartSignIn`, `StartPluginSignIn`) reads as done (`SignInStatus`, `WaitSignIn`) only after `finish` has run `ShowAccount` for its account, so the window, which opens the account as soon as it sees done, finds it listed. If providers.json can't be written then, the account stays hidden and the sign-in still ends done. Signing in to a plugin's provider from the command line (`pluginLogin`, with a key or the browser) brings it back too. It also takes off the mark a sign-in its vendor turned away left on the account (`Lapsed`) and shows again the agent's own account removed in magpie (`clearPluginLapse`). The window's plugin sign-in does the same with the browser (`pluginDone`, then `finish`) or with a key (`PluginAPIKey`); a key and the command line share these steps in `PluginSignedIn`. A sign-in leaves through the proxy the account's own requests will use (#1663): `ProxyOfLogin` (the account's, else the subscription's, else the global one) for the account being signed in again, the subscription's for a new one. Every request of the flow goes through `signInFlow.via`, Claude Code's own login gets it as *_PROXY (`netproxy.EnvWith`), and a plugin's sign-in runs its fetch under that proxy (`via` in `host.js`; `plugins_cli.go` for the command line). The window's sign-in box shows it as a "Proxy: …" link (`signInProxyLink`, the app menu, no userinfo shown) with Global, Direct, the subscription's and each account's proxy, or a typed one; picking one starts the sign-in again through it (`SignInOptions.Proxy`), and when it ends the pick is kept as the account's (`keepSignInProxy`: the subscription's own when it is its only account, else the account's entry). Global isn't offered while the subscription has a proxy and other accounts, since nothing could keep it. The browser's own leg goes through the browser's network, not magpie's. Signing out leaves through the same exit: a ChatGPT account's refresh token is revoked through its own proxy, read before the account is forgotten (`forgetSIWCLogin`), and Devin's CLI, asked who is signed in or for its models, runs with the account's proxy (`devinCommand`, `devinProxy`). | [`signin.go`](../../internal/provider/signin.go), [`claude_signin.go`](../../internal/provider/claude_signin.go), [`pluginsignin.go`](../../internal/provider/pluginsignin.go), [`pluginsignin_paste.go`](../../internal/provider/pluginsignin_paste.go), [`proxy.go`](../../internal/provider/proxy.go), [`plugins_cli.go`](../../internal/cli/plugins_cli.go) |
+ | Import from files | `ImportLogins` (ChatGPT, Claude), `ImportGoogleAccounts` (Antigravity) and `ImportFactoryKeys` take other tools' files, from the window (`signin/import`) or `magpie accounts import` (#1453). ChatGPT reads Codex's `auth.json`, CLIProxyAPI's and Cockpit Tools' files, Sub2API's export (`sub2apiEntry`) and codexbar's `~/.codexbar/config.json` (`codexbarEntries`: the `openai_oauth` provider's accounts and `openAI.remoteConnectionAccounts`, the workspace from `openAIAccountId`). Each ChatGPT and Google sign-in is refreshed before it is added, so the tool the file came from is signed out of it; both surfaces say so first, and the command imports nothing without `--yes` or a yes. Claude reads CLIProxyAPI's files and Sub2API's export, whose Claude account says its email as Anthropic does, `email_address`, in `credentials` or `extra`, and keeps its `scope`, `account_uuid` and `org_uuid` as Claude Code's scopes, `accountUuid` and `organizationUuid` (#1975); a file with no email is refused, as Claude Code's own `.credentials.json` is. Claude's are kept as the file has them. A refresh token magpie holds already is `exists`, never refreshed; accounts are matched by email and workspace, or for Claude organization (`sameLogin`). An entry with an access token and no refresh token is refused (`accessOnly`). One file of several that holds no account is a failed row with its place (`ImportedAccount.File`), never skipped. The files are only read. | [`login_import.go`](../../internal/provider/login_import.go), [`google_import.go`](../../internal/provider/google_import.go), [`factory_key.go`](../../internal/provider/factory_key.go), [`accounts_cli.go`](../../internal/cli/accounts_cli.go) |
+diff --git a/internal/gateway/codex_refresh_401_test.go b/internal/gateway/codex_refresh_401_test.go
+new file mode 100644
+index 00000000..7bbd2b6b
+--- /dev/null
++++ b/internal/gateway/codex_refresh_401_test.go
+@@ -0,0 +1,193 @@
++package gateway
++
++import (
++	"encoding/base64"
++	"encoding/json"
++	"io"
++	"net/http"
++	"net/http/httptest"
++	"os"
++	"path/filepath"
++	"strings"
++	"sync"
++	"testing"
++	"time"
++
++	"github.com/yetone/magpie/internal/provider"
++)
++
++// A 401 that says the token has expired and asks for a refresh (#2973) is
++// one a refresh mends, though the token's JWT exp is still ahead: the
++// sign-in is renewed where it is kept, and the next request goes out with
++// the fresh token — not recorded as a failure of other kinds and rested
++// while the account still has its allowance.
++func TestCodexExpired401RefreshesLogin(t *testing.T) {
++	home := t.TempDir()
++	t.Setenv("HOME", home)
++	t.Setenv("USERPROFILE", home)
++	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
++	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
++	restingUntil.Lock()
++	restingUntil.m, restingUntil.note = map[string]time.Time{}, map[string]Rest{}
++	restingUntil.Unlock()
++	t.Cleanup(func() {
++		restingUntil.Lock()
++		restingUntil.m, restingUntil.note = map[string]time.Time{}, map[string]Rest{}
++		restingUntil.Unlock()
++	})
++
++	claims := func(m map[string]any) string {
++		b, _ := json.Marshal(m)
++		return "h." + base64.RawURLEncoding.EncodeToString(b) + ".s"
++	}
++	// the token on disk expires an hour from now: good here, retired at
++	// the vendor, whose answer asks for a refresh (#2973)
++	stale := claims(map[string]any{"exp": time.Now().Add(time.Hour).Unix(), "v": "stale"})
++	auth, err := json.Marshal(map[string]any{"auth_mode": "chatgpt", "tokens": map[string]any{
++		"id_token":      claims(map[string]any{"email": "c@example.com"}),
++		"access_token":  stale,
++		"refresh_token": "r-own",
++		"account_id":    "acct-c"}})
++	if err != nil {
++		t.Fatal(err)
++	}
++	os.MkdirAll(filepath.Join(home, ".codex"), 0o755)
++	if err := os.WriteFile(filepath.Join(home, ".codex", "auth.json"), auth, 0o600); err != nil {
++		t.Fatal(err)
++	}
++
++	var mu sync.Mutex
++	refreshed, served := 0, []string{}
++	tokens := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		var body map[string]string
++		json.NewDecoder(r.Body).Decode(&body)
++		mu.Lock()
++		refreshed++
++		mu.Unlock()
++		// the rotation OpenAI's answer is: a fresh access token, and
++		// another refresh token for the spent one
++		json.NewEncoder(w).Encode(map[string]any{
++			"access_token":  claims(map[string]any{"exp": time.Now().Add(time.Hour).Unix(), "v": "fresh"}),
++			"refresh_token": body["refresh_token"] + "-2"})
++	}))
++	defer tokens.Close()
++	defer provider.CodexTokenURLForTest(tokens.URL)()
++
++	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		io.ReadAll(r.Body)
++		tok := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
++		mu.Lock()
++		served = append(served, tok)
++		mu.Unlock()
++		if tok == stale {
++			w.WriteHeader(http.StatusUnauthorized)
++			io.WriteString(w, `{"error":{"message":"Your authentication token has expired. Please try refreshing it."}}`)
++			return
++		}
++		w.Header()["Content-Type"] = nil // as the ChatGPT backend sends it
++		io.WriteString(w, sse(
++			`data: {"type":"response.created","response":{"id":"r1"}}`,
++			`data: {"type":"response.completed","response":{"id":"r1","usage":{"input_tokens":1,"output_tokens":1}}}`))
++	}))
++	defer up.Close()
++	was := provider.CodexBase
++	provider.CodexBase = up.URL + "/backend-api/codex"
++	t.Cleanup(func() { provider.CodexBase = was })
++
++	if code, _ := post(t, "/v1/responses", `{"model":"codex/gpt-5.5","input":"ping"}`); code != 401 {
++		t.Fatalf("first request: %d, want the vendor's 401 told", code)
++	}
++	mu.Lock()
++	got, hits := append([]string(nil), served...), refreshed
++	mu.Unlock()
++	if hits != 1 {
++		t.Fatalf("the vendor said the token expired and asked for a refresh: the sign-in was renewed %d times, want once", hits)
++	}
++	if len(got) != 1 || got[0] != stale {
++		t.Fatalf("the backend was sent %q, want the stale token once", got)
++	}
++
++	// the backoff a refusal of other kinds rests the account by is over
++	noRests()
++	if code, body := post(t, "/v1/responses", `{"model":"codex/gpt-5.5","input":"ping"}`); code != 200 || !strings.Contains(body, `"status":"completed"`) {
++		t.Fatalf("after the refresh: %d %s", code, body)
++	}
++	mu.Lock()
++	got, hits = append([]string(nil), served...), refreshed
++	mu.Unlock()
++	if hits != 1 {
++		t.Fatalf("the sign-in was renewed %d times after a request was served, want the one", hits)
++	}
++	if len(got) != 2 || got[1] == stale {
++		t.Fatalf("the next request went out with %q, want the fresh token", got)
++	}
++	// the rotation is back where Codex keeps its sign-in, for Codex to find
++	b, err := os.ReadFile(filepath.Join(home, ".codex", "auth.json"))
++	if err != nil || !strings.Contains(string(b), "r-own-2") {
++		t.Fatalf("the rotated refresh token didn't reach auth.json: %q %v", b, err)
++	}
++}
++
++// A 401 that says nothing of an expired token leaves the sign-in as it is:
++// a revoked one is #1793's to mark, any other is no refresh's to mend.
++func TestCodexOther401DoesntRefresh(t *testing.T) {
++	home := t.TempDir()
++	t.Setenv("HOME", home)
++	t.Setenv("USERPROFILE", home)
++	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
++	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
++	restingUntil.Lock()
++	restingUntil.m, restingUntil.note = map[string]time.Time{}, map[string]Rest{}
++	restingUntil.Unlock()
++	t.Cleanup(func() {
++		restingUntil.Lock()
++		restingUntil.m, restingUntil.note = map[string]time.Time{}, map[string]Rest{}
++		restingUntil.Unlock()
++	})
++
++	claims := func(m map[string]any) string {
++		b, _ := json.Marshal(m)
++		return "h." + base64.RawURLEncoding.EncodeToString(b) + ".s"
++	}
++	auth, err := json.Marshal(map[string]any{"auth_mode": "chatgpt", "tokens": map[string]any{
++		"id_token":      claims(map[string]any{"email": "c@example.com"}),
++		"access_token":  claims(map[string]any{"exp": time.Now().Add(time.Hour).Unix()}),
++		"refresh_token": "r-own",
++		"account_id":    "acct-c"}})
++	if err != nil {
++		t.Fatal(err)
++	}
++	os.MkdirAll(filepath.Join(home, ".codex"), 0o755)
++	if err := os.WriteFile(filepath.Join(home, ".codex", "auth.json"), auth, 0o600); err != nil {
++		t.Fatal(err)
++	}
++
++	var mu sync.Mutex
++	refreshed := 0
++	tokens := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		mu.Lock()
++		refreshed++
++		mu.Unlock()
++		json.NewEncoder(w).Encode(map[string]any{"access_token": claims(map[string]any{"exp": time.Now().Add(time.Hour).Unix()})})
++	}))
++	defer tokens.Close()
++	defer provider.CodexTokenURLForTest(tokens.URL)()
++
++	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		io.ReadAll(r.Body)
++		w.WriteHeader(http.StatusUnauthorized)
++		io.WriteString(w, `{"error":{"message":"Incorrect API key provided"}}`)
++	}))
++	defer up.Close()
++	was := provider.CodexBase
++	provider.CodexBase = up.URL + "/backend-api/codex"
++	t.Cleanup(func() { provider.CodexBase = was })
++
++	post(t, "/v1/responses", `{"model":"codex/gpt-5.5","input":"ping"}`)
++	mu.Lock()
++	hits := refreshed
++	mu.Unlock()
++	if hits != 0 {
++		t.Fatalf("a 401 that says nothing of an expired token renewed the sign-in %d times", hits)
++	}
++}
+diff --git a/internal/gateway/signin_revoked.go b/internal/gateway/signin_revoked.go
+index ec411503..198a29ed 100644
+--- a/internal/gateway/signin_revoked.go
++++ b/internal/gateway/signin_revoked.go
+@@ -47,8 +47,14 @@ func noteSignIn(ctx context.Context, a *provider.Account, req *http.Request, res
+ 	case res.StatusCode == http.StatusUnauthorized && res.Body != nil:
+ 		b, err := io.ReadAll(io.LimitReader(res.Body, 64<<10))
+ 		res.Body = readCloser{io.MultiReader(bytes.NewReader(b), res.Body), res.Body}
+-		if err == nil && provider.SignInRevoked(res.StatusCode, b) {
++		switch {
++		case err == nil && provider.SignInRevoked(res.StatusCode, b):
+ 			provider.NoteRevokedSignIn(ctx, a, req)
++		case err == nil && provider.SignInRefreshable(res.StatusCode, b):
++			// the vendor said the token had expired and asked for a
++			// refresh (#2973): the sign-in is renewed where it is kept,
++			// and the next request goes out with the fresh token
++			provider.NoteRefreshableSignIn(ctx, a, req)
+ 		}
+ 	}
+ }
+diff --git a/internal/provider/account.go b/internal/provider/account.go
+index 56372d40..d96c006b 100644
+--- a/internal/provider/account.go
++++ b/internal/provider/account.go
+@@ -1007,22 +1007,32 @@ func codexAccount(home string) (Provider, bool) {
+ // sign-in (auth.json or the keychain item, codexStore.write) for Codex to
+ // find.
+ func codexToken(ctx context.Context, dir string) (tok, accountID string, err error) {
++	return codexTokenRefresh(ctx, dir, false)
++}
++
++// codexTokenRefresh is codexToken, with force to renew the sign-in even
++// while its access token looks good: the vendor's 401 has said otherwise
++// (signin_expired.go, #2973). The same lock a request's signing waits on
++// holds the merge, so one refresh goes out however many ask at once.
++func codexTokenRefresh(ctx context.Context, dir string, force bool) (tok, accountID string, err error) {
+ 	codexMu.Lock()
+ 	defer codexMu.Unlock()
+ 	b, st, err := readCodexLogin(dir, false)
+ 	var a codexAuth
+ 	if err == nil && json.Unmarshal(b, &a) == nil && a.Tokens.AccessToken != "" {
+-		if exp, _ := jwtClaims(a.Tokens.AccessToken)["exp"].(float64); exp == 0 || time.Until(time.Unix(int64(exp), 0)) > 5*time.Minute {
+-			return a.Tokens.AccessToken, codexAccountID(a), nil
+-		}
+-		// about to be refreshed: the store's own, not a kept read, which
+-		// Codex may have rotated since (its refresh token spent)
+-		if st.keychain {
+-			b, st, err = readCodexLogin(dir, true)
+-			a = codexAuth{}
+-			if err == nil && json.Unmarshal(b, &a) == nil && a.Tokens.AccessToken != "" {
+-				if exp, _ := jwtClaims(a.Tokens.AccessToken)["exp"].(float64); exp == 0 || time.Until(time.Unix(int64(exp), 0)) > 5*time.Minute {
+-					return a.Tokens.AccessToken, codexAccountID(a), nil
++		if !force {
++			if exp, _ := jwtClaims(a.Tokens.AccessToken)["exp"].(float64); exp == 0 || time.Until(time.Unix(int64(exp), 0)) > 5*time.Minute {
++				return a.Tokens.AccessToken, codexAccountID(a), nil
++			}
++			// about to be refreshed: the store's own, not a kept read, which
++			// Codex may have rotated since (its refresh token spent)
++			if st.keychain {
++				b, st, err = readCodexLogin(dir, true)
++				a = codexAuth{}
++				if err == nil && json.Unmarshal(b, &a) == nil && a.Tokens.AccessToken != "" {
++					if exp, _ := jwtClaims(a.Tokens.AccessToken)["exp"].(float64); exp == 0 || time.Until(time.Unix(int64(exp), 0)) > 5*time.Minute {
++						return a.Tokens.AccessToken, codexAccountID(a), nil
++					}
+ 				}
+ 			}
+ 		}
+diff --git a/internal/provider/signin_expired.go b/internal/provider/signin_expired.go
+new file mode 100644
+index 00000000..0fd3e58d
+--- /dev/null
++++ b/internal/provider/signin_expired.go
+@@ -0,0 +1,58 @@
++package provider
++
++// A sign-in its vendor answered 401 "the token has expired, please try
++// refreshing it" (#2973) is not a revoked one: a refresh mends it, as
++// Codex's own does on a 401 — and the token's JWT exp said nothing, the
++// vendor had retired it all the same. Where #1793 marks a revoked
++// credential and passes the account over, this renews the sign-in in
++// place, once: bounded, and merged with any refresh already going (the
++// same lock a request's signing waits on), so the next request goes out
++// with the fresh token and the account isn't benched while its allowance
++// is still there. A refresh the vendor refuses a saved account is kept on
++// it as lapsed (savedRefreshFailed); the Codex home's own sign-in is left
++// as its keeper has it, its next request reading it anew.
++
++import (
++	"context"
++	"net/http"
++	"regexp"
++	"strings"
++	"time"
++)
++
++// refreshableWords: a 401 that says the token sent has expired and is a
++// refresh's to mend: OpenAI's own code for one, and the words the ChatGPT
++// backend answered a token retired on its side with (#2973).
++var refreshableWords = regexp.MustCompile(`(?i)\btoken_expired\b|authentication token has expired`)
++
++// SignInRefreshable says a reply is the vendor's word that the token the
++// request went with has expired and its sign-in is to be refreshed.
++func SignInRefreshable(status int, body []byte) bool {
++	return status == http.StatusUnauthorized && refreshableWords.Match(body)
++}
++
++// NoteRefreshableSignIn renews the sign-in the request req went to
++// account a with, the vendor having said its token had expired (#2973).
++// A sign-in renewed since the request went out is left as it is, so
++// concurrent 401s on one account spend one rotation, not one apiece.
++func NoteRefreshableSignIn(ctx context.Context, a *Account, req *http.Request) {
++	if !RevokedAccount(a) || a.Agent != "codex" {
++		return
++	}
++	sent := strings.TrimPrefix(req.Header.Get("Authorization"), "Bearer ")
++	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 20*time.Second)
++	defer cancel()
++	if a.token != nil {
++		// a saved account: renewed where magpie keeps it
++		if tok, _, err := savedLoginToken(rctx, a.Agent, a.User); err == nil && tok != "" && tok != sent {
++			return
++		}
++		_, _, _ = renewSavedLogin(rctx, a.Agent, a.User, true)
++		return
++	}
++	// the Codex home's own sign-in: renewed where Codex keeps it
++	if tok, _, err := codexToken(rctx, codexHome()); err == nil && tok != "" && tok != sent {
++		return
++	}
++	codexTokenRefresh(rctx, codexHome(), true)
++}
+diff --git a/internal/provider/signin_expired_test.go b/internal/provider/signin_expired_test.go
+new file mode 100644
+index 00000000..86ce639c
+--- /dev/null
++++ b/internal/provider/signin_expired_test.go
+@@ -0,0 +1,30 @@
++package provider
++
++import (
++	"testing"
++)
++
++// Only a 401 whose words say the token sent has expired and is a refresh's
++// to mend is refreshable (#2973): a revoked sign-in is not (it is #1793's
++// to mark), and a 403, a 5xx or a rate limit says nothing about the token.
++func TestSignInRefreshableWords(t *testing.T) {
++	for _, c := range []struct {
++		status int
++		body   string
++		want   bool
++	}{
++		{401, `{"error":{"message":"Your authentication token has expired. Please try refreshing it."}}`, true},
++		{401, "Your authentication token has expired. Please try refreshing it.", true},
++		{401, `{"error":{"code":"token_expired","message":"Provided authentication token is expired."}}`, true},
++		{401, `{"error":{"message":"Encountered invalidated oauth token for user, failing request","code":"token_revoked"}}`, false},
++		{401, `{"error":{"code":"refresh_token_reused"}}`, false},
++		{401, `{"error":{"message":"Incorrect API key provided"}}`, false},
++		{403, `{"error":{"code":"token_expired"}}`, false},
++		{500, `{"error":{"code":"token_expired"}}`, false},
++		{429, `{"error":{"code":"token_expired"}}`, false},
++	} {
++		if got := SignInRefreshable(c.status, []byte(c.body)); got != c.want {
++			t.Errorf("%d %s: %v, want %v", c.status, c.body, got, c.want)
++		}
++	}
++}
+-- 
+2.50.1 (Apple Git-155)
+
+```
+
+</details>

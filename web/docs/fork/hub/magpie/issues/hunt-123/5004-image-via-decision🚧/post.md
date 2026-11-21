@@ -1,0 +1,19 @@
+I took this and verified your three observations against current main (`7785c4278`) — the capture you got is exactly what the code produces, and your proposal lands on a real seam. Since the fix designs a field's semantics, I'm not attaching a patch; the mechanism map and what each part touches are below. Credit @miracleweiwei for the isolated-instance capture and the two-endpoint A/B — that's what makes this checkable.
+
+**Why `ecnu-image` went to Chat Completions**
+
+- `ecnu-image` carries "image", so the draw family takes it (`DrawsID` matches the bare word) — but the **images-API** word list (`ImagesAPI`) knows vendor families (`gpt-image`, `chatgpt-image`, `dall-e`, `imagen`, `qwen-image`, `flux`, `seedream`, `hy-image`, …), not a bare `-image` suffix. `viaFor` (`draw.go`) therefore says Chat Completions with `modalities: ["image","text"]` — your wire capture verbatim. ECNU's chat side refuses it with a plain-text 500.
+- magpie already crosses over between the two APIs when the first try fails — but only on a 404/405, or on a refusal whose words "point to" the images API (`pointsAway`, #1837's wording match). A plain-text 500 matches neither trigger, so it surfaces to your MCP instead of falling over. That trigger list is the narrow, no-new-UI half of the problem: it is also why there is no clean user-side workaround — the id is the vendor's own, and the 500 says nothing the matcher can read.
+- Your `ecnu/ecnu-image → qwen-image-2.1` mapping not moving the wire is consistent with the code: `ModelSameAs` today feeds group spelling and auto-grouping (`provider/group.go`), and the draw protocol decision never consults it.
+
+**On the proposal, part by part**
+
+| Part | Reading |
+| --- | --- |
+| Equivalent model as a protocol hint | Semantics change: `ModelSameAs` currently means "same model" for grouping/spelling; making it also carry "and draws the way its target does" extends it into routing. Consumers to keep consistent are the group builders and the Providers page matching. If you bless it, the hint sets the **first** `viaFor` answer; the existing 404/405/points-away crossover stays as the safety net underneath. |
+| Explicit per-image-model override (Auto / Images API / Chat Completions) | New UI field plus precedence rules against the hint and the crossover — your call where it sits; a per-model field on the provider's model entry is the only place that can express "same vendor serves it through both". |
+| Reuse the provider's base URL | Already true: the images path builds `<provider base>/images/generations` (`draw.go`, `base+"/images/generations"`), so an Images-API route for `ecnu-image` needs no new address field. |
+
+**Not verified:** no ECNU account here — your loopback capture and the two-endpoint A/B stand as the evidence (they match the code paths quoted); nothing was re-run against the real provider.
+
+AI use: analysis written with GLM-5.3-Flash (ZCode) from a code read of the repo; no requests were sent to any upstream.

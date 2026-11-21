@@ -1,0 +1,268 @@
+From 4e0f4b3b5aeedc74338c06e3e6b1896b15b73fc6 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Fri, 30 Oct 2026 06:29:48 +0800
+Subject: [PATCH] provider, gui: a listing's budgets add up, and one provider's
+ fetch models no longer re-lists past them (#4065)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+What changed
+
+The budgets a listing of the plugins' providers is made of added up past
+the budgets its callers set: the host let one provider spend listWait
+(20s) on its models hook plus the wait for a due renewal (RENEW_WAIT,
+15s) before it, and a provider with two accounts spent them back to
+back. One provider could be allowed 35s (40s with a second account) —
+past the 30s refreshDeadline the background refresh asks under and past
+the editor's own 20s — so pressing Fetch models, or a refresh, died with
+a bare "context deadline exceeded" while no vendor had failed: every
+provider is asked side by side, and the sum of the budgets was the only
+thing over.
+
+Now the host's own bounds hold by construction:
+
+- host.js info(): the wait for a due renewal (fresh) spends the models
+  hook's own budget — the hook is given what is left of listWait, and
+  the renewal wait can no longer be added on top of it.
+- host.js providers(): a provider's accounts are listed side by side
+  (the first no longer waited for before the rest), so one provider
+  costs one listWait, not one per account.
+- gui/providers.go, case "models": the editor's budget is 30s, the same
+  the host bounds one providers RPC with, instead of 20s — shorter than
+  even one provider's worst case under the old arithmetic.
+
+A provider whose renewal is slow then lists late (its hook given up on
+alone, said so in listError as any other stuck listing) instead of
+taking the whole listing past the caller's deadline (#4065).
+
+Run
+
+- TestProviderListCoversAccountsSideBySide, two accounts whose hooks
+  each take 1.5s under a 2.5s caller budget: with the product files at
+  the base (68b31ce23) and the tests kept, the listing dies with
+  "context deadline exceeded"; with the fix it stands and both accounts
+  are listed (1.6s).
+- TestRenewalWaitSpendsTheListBudget, a renewal that never finishes
+  waited 15s before a 5s hook given 6s of its own, under a 17s
+  refreshDeadline: with the product files at the base the listing goes
+  past refreshDeadline and nothing is kept; with the fix the listing
+  stands and the provider fell back, its listError saying so.
+- internal/plugin full suite (go test ./internal/plugin -tags nogui):
+  ok, and gofmt/vet clean.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gui/providers.go                     |   5 +-
+ internal/plugin/host.js                       |  26 ++--
+ internal/plugin/providers_list_budget_test.go | 132 ++++++++++++++++++
+ 3 files changed, 154 insertions(+), 9 deletions(-)
+ create mode 100644 internal/plugin/providers_list_budget_test.go
+
+diff --git a/internal/gui/providers.go b/internal/gui/providers.go
+index 4260b9532..425581b0a 100644
+--- a/internal/gui/providers.go
++++ b/internal/gui/providers.go
+@@ -2085,7 +2085,10 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
+ 				fail(rw, err)
+ 				return
+ 			}
+-			ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
++			// as long as the plugins' host bounds one providers RPC itself
++			// (30s, plugin.refreshDeadline): a plugin's Fetch models is one
++			// listing of every provider, which may spend all of it (#4065)
++			ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+ 			defer cancel()
+ 			ask := *p
+ 			if req.Typed {
+diff --git a/internal/plugin/host.js b/internal/plugin/host.js
+index 1ed552cbd..f45f58d8b 100644
+--- a/internal/plugin/host.js
++++ b/internal/plugin/host.js
+@@ -1800,13 +1800,18 @@ async function info(id, key, strict, limit) {
+     // would be asked with the serving plugin's account
+     if (server && h.spec !== server && signsIn(h.spec).includes(id)) continue
+     const k = key ?? accountsOf(readAuth(), id)[0] ?? id
++    // the wait for a due renewal spends the hook's own budget: one
++    // provider then costs one listWait in a listing, not listWait plus
++    // the renewal wait — the sum (15s + 20s) took a single provider past
++    // refreshDeadline, and the whole listing with it (#4065)
++    const began = Date.now()
+     await fresh(id, k)
+     const all = readAuth()
+     try {
+       const given = JSON.parse(JSON.stringify(out))
+       const l = { tried: false, lastOk: false }
+       const ask = () => listing.run(l, () => inScope(id, k, () => ph.models(given, { auth: authCopy(k) })))
+-      const next = limit > 0 ? await inTime(ask, limit, "the plugin's model list") : await ask()
++      const next = limit > 0 ? await inTime(ask, Math.max(limit - (Date.now() - began), 0), "the plugin's model list") : await ask()
+       // a hook that asked its vendor, got no list and gave back the one it
+       // was given fell back: magpie keeps the list it had, as a built-in
+       // whose fetch failed keeps the one it fetched last; so does one that
+@@ -1983,13 +1988,18 @@ async function providers({ proxies } = {}) {
+     const keys = accountsOf(stored, id)
+     const through = (k) => proxies?.[id]?.[k ?? keys[0] ?? ""] ?? proxies?.[id]?.[""] ?? ""
+     const gen = infoGen
+-    const p = await via.run(through(), () => info(id, undefined, false, listWait))
+-    keepInfo(keys[0] ?? id, p, gen)
+-    // each account's own models, as the built-ins read each account's: a
+-    // plan may serve fewer, or others, than the first account's. One that
+-    // can't be read is taken to have them all, or the ones it was last
+-    // told to have, as a built-in account whose fetch failed keeps its own.
+-    const own = await Promise.all(keys.slice(1).map((k) => via.run(through(k), () => info(id, k, true, listWait)).then((q) => (keepInfo(k, q, gen), q)).catch((e) => ({ failed: true, listError: e?.message ?? String(e) }))))
++    // every account is listed side by side, each hook given listWait: a
++    // second account no longer waits behind the first, where two
++    // listWaits back to back took one provider past refreshDeadline twice
++    // over (#4065)
++    const [p, own] = await Promise.all([
++      via.run(through(), () => info(id, undefined, false, listWait)).then((q) => (keepInfo(keys[0] ?? id, q, gen), q)),
++      // each account's own models, as the built-ins read each account's: a
++      // plan may serve fewer, or others, than the first account's. One that
++      // can't be read is taken to have them all, or the ones it was last
++      // told to have, as a built-in account whose fetch failed keeps its own.
++      Promise.all(keys.slice(1).map((k) => via.run(through(k), () => info(id, k, true, listWait)).then((q) => (keepInfo(k, q, gen), q)).catch((e) => ({ failed: true, listError: e?.message ?? String(e) })))),
++    ])
+     const models = { ...p.models }
+     for (const q of own) for (const [k, m] of Object.entries(q?.models ?? {})) models[k] ??= m
+     const ids = (q) => Object.values(q.models).filter((m) => m.status !== "deprecated").map((m) => m.id)
+diff --git a/internal/plugin/providers_list_budget_test.go b/internal/plugin/providers_list_budget_test.go
+new file mode 100644
+index 000000000..6d1a195c3
+--- /dev/null
++++ b/internal/plugin/providers_list_budget_test.go
+@@ -0,0 +1,132 @@
++package plugin
++
++import (
++	"context"
++	"fmt"
++	"os"
++	"path/filepath"
++	"strings"
++	"testing"
++	"time"
++)
++
++// The budgets a listing is given must add up: each account's models hook
++// gets listWait, so a provider with two accounts listed back to back costs
++// two, and a renewal waited for before the hook spends the hook's budget
++// besides. One provider could then be allowed 35s (RENEW_WAIT 15s +
++// listWait 20s) — over the 30s refreshDeadline and the editor's own
++// budget — and one slow sign-in took every provider's list down with it
++// (#4065).
++
++// A provider whose models hook is slow for each of its two accounts, with
++// no renewal due (no auth.refresh): listing it side by side costs one
++// listWait, back to back costs two.
++func listBudgetPlugin(t *testing.T, hookMillis int) string {
++	t.Helper()
++	spec := filepath.Join(t.TempDir(), "plugin.mjs")
++	js := fmt.Sprintf(`export default async () => ({
++  config(c) { c.provider ??= {}; c.provider.budget = { name: "BudgetCo", models: { "b-1": { name: "B One" } } } },
++  auth: { provider: "budget", methods: [{ type: "api", label: "API key" }] },
++  provider: { id: "budget", models: async p => { await new Promise(r => setTimeout(r, %d)); return p.models } }
++})`, hookMillis)
++	if err := os.WriteFile(spec, []byte(js), 0o600); err != nil {
++		t.Fatal(err)
++	}
++	return spec
++}
++
++// A two-account provider is listed with its accounts side by side: one
++// provider costs one listWait, not one per account, and stays under the
++// caller's budget.
++func TestProviderListCoversAccountsSideBySide(t *testing.T) {
++	sandbox(t)
++	// each hook is given listWait and finishes within it; two of them in a
++	// row do not fit the caller's budget, side by side they do
++	oldList := pluginListWait
++	pluginListWait = 2 * time.Second
++	t.Cleanup(func() { pluginListWait = oldList })
++	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
++	defer cancel()
++
++	abs, _ := filepath.Abs(listBudgetPlugin(t, 1500))
++	if _, err := Add(ctx, abs); err != nil {
++		t.Fatal(err)
++	}
++	for _, who := range []string{"one", "two"} {
++		if _, err := Import(ctx, "budget", map[string]any{"type": "oauth", "access": "a-" + who, "accountId": who + "@budget"}); err != nil {
++			t.Fatal(err)
++		}
++	}
++	// the editor's own budget: a listing that fits the host's own bounds
++	// is not killed by the caller's
++	call, stop := context.WithTimeout(context.Background(), 2500*time.Millisecond)
++	defer stop()
++	ps, err := Providers(call)
++	if err != nil {
++		t.Fatalf("a two-account provider listed back to back outlived the caller's budget: %v", err)
++	}
++	if len(ps) != 1 || ps[0].ID != "budget" || len(ps[0].Models) == 0 {
++		t.Fatalf("Providers = %+v, want budget's models", ps)
++	}
++	if len(ps[0].Accounts) != 2 {
++		t.Fatalf("Accounts = %+v, want both listed", ps[0].Accounts)
++	}
++}
++
++// A sign-in due for renewal is waited for before the models hook runs, and
++// that wait spends the hook's own budget: one provider then costs one
++// listWait in a listing, not listWait plus the renewal wait, so it stays
++// under refreshDeadline and one renewing sign-in no longer takes the
++// whole listing down with it (#4065).
++func TestRenewalWaitSpendsTheListBudget(t *testing.T) {
++	sandbox(t)
++	// the renewal never finishes (a vendor stuck); the wait for it is
++	// bounded by the host's own RENEW_WAIT (15s). The hook takes 5s and is
++	// given listWait = 6s of its own, so back to back the provider costs
++	// 20s — over the 17s refreshDeadline. With the wait spent out of the
++	// hook's budget the listing ends at ~15s: the provider falls back, the
++	// list stands.
++	spec := filepath.Join(t.TempDir(), "plugin.mjs")
++	js := `export default async () => ({
++  config(c) { c.provider ??= {}; c.provider.renewbudget = { name: "RenewBudget", models: { "rb-1": { name: "RB One" } } } },
++  auth: {
++    provider: "renewbudget",
++    methods: [{ type: "api", label: "API key" }],
++    async refresh(auth) { await new Promise(ok => setTimeout(ok, 60000)); return { access: "a-1", refresh: auth.refresh + "+", expires: Date.now() + 3600e3 } }
++  },
++  provider: { id: "renewbudget", models: async p => { await new Promise(r => setTimeout(r, 5000)); return p.models } }
++})`
++	if err := os.WriteFile(spec, []byte(js), 0o600); err != nil {
++		t.Fatal(err)
++	}
++	oldList, oldDeadline := pluginListWait, refreshDeadline
++	pluginListWait, refreshDeadline = 6*time.Second, 17*time.Second
++	t.Cleanup(func() { pluginListWait, refreshDeadline = oldList, oldDeadline })
++	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
++	defer cancel()
++
++	abs, _ := filepath.Abs(spec)
++	if _, err := Add(ctx, abs); err != nil {
++		t.Fatal(err)
++	}
++	soon := time.Now().Add(time.Minute).UnixMilli() // inside the 5-minute lead
++	if _, err := Import(ctx, "renewbudget", map[string]any{"type": "oauth", "refresh": "r", "access": "old", "expires": soon, "accountId": "due@renewbudget"}); err != nil {
++		t.Fatal(err)
++	}
++	UseCached(nil)
++
++	Cached()
++	Refreshed()
++	if !refreshCacheGood() {
++		t.Fatal("a renewal waited for before its provider's models hook took the whole listing past refreshDeadline")
++	}
++	ps, ok := Listed()
++	if !ok || len(ps) != 1 || ps[0].ID != "renewbudget" {
++		t.Fatalf("Listed = %+v, %v", ps, ok)
++	}
++	// the hook out of its own time is that provider's fallback, said so,
++	// not a bare deadline for every provider
++	if !ps[0].FellBack || !strings.Contains(ps[0].ListError, "didn't finish") {
++		t.Fatalf("FellBack = %v, ListError = %q, want the hook given up on alone, said so", ps[0].FellBack, ps[0].ListError)
++	}
++}
+-- 
+2.50.1 (Apple Git-155)
+

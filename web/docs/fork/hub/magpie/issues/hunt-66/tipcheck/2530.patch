@@ -1,0 +1,118 @@
+diff --git a/docs/subsystems/providers-accounts.md b/docs/subsystems/providers-accounts.md
+index f6059f54..da775a78 100644
+--- a/docs/subsystems/providers-accounts.md
++++ b/docs/subsystems/providers-accounts.md
+@@ -25,7 +25,7 @@ keys and accounts per request is in [Gateway routing and fallback](gateway-routi
+ | Native compaction | `NativeCompaction` (`nativeCompaction` in providers.json, the editor's *Compaction* row, `magpie provider set <id> compaction=native\|magpie`; #1099) has Codex's compaction asked of the provider as Codex sent it and its sealed item returned unchanged. Off by default. Only a provider whose wire carries it can be set so (`CarriesCompaction`: a Responses API, a ChatGPT account, GitHub Copilot; not another agent's sign-in or a plugin's), and `CompactsOn(model)` also needs the model asked on Responses. `SetNativeCompaction`, the CLI and the GUI's save refuse it elsewhere. An account keeps it through `Save`'s picks (`withPicks`), and `AddCopy` carries it. The gateway's half is in [gateway-routing](gateway-routing.md). | [`native_compaction.go`](../../internal/provider/native_compaction.go) |
+ | providers.json | `Path` is `providers.json` in magpie's config folder. A read that fails returns `ErrUnreadable` and is never treated as empty. `store` writes atomically through a rename and drops the cached catalog (`catalog.Touched`). | [`provider.go`](../../internal/provider/provider.go) |
+ | The list | `All` merges stored providers with `Accounts()`. An entry with no URL stores the user's picks for an account. The order is `file.Order`. Reads within one request share one build (`Hold`, #746). | [`provider.go`](../../internal/provider/provider.go) |
+-| Model picks | `Models` are the models the user picked for agents; none means the vendor's list, up to 24 (`Exposed`), unless the user chose Select none (`NoModels`, `magpie provider models <id> none`): then none of its models is served, not to agents, not to any routing group (auto groups included), not by a `provider/model` id, not as a classifier, while its balance and usage are still read (`ServesNone`, #1818). The editor's serves control names it Usage only, beside Vendor's list and Picked only, and the card says "usage only" (#2068); Picked only from there picks the models the vendor's list serves, to unpick from. A file without `noModels` reads as before, and a pick clears it. `Save` keeps beside new picks the models listed then (`PickedFrom`, `listedWith`), and the same picks saved again keep it. When the picks held every model listed then, one the vendor lists since is served first beside them (`withNewlyListed`, `Picks`); one listed then and left unpicked stays out. Picks saved before `PickedFrom` was kept are taken to hold every model when they hold every one released up to the newest of them (models.dev's `release_date`), so a Claude account whose user picked them all is served Haiku 5.5 (wakaka). The editor and the TUI start from `Picks`, so a later Save keeps the new model. While some picks are set aside (the list is known to be short), a save with new picks keeps the models the earlier `PickedFrom` had beside those listed now, so a model the user saw and left unpicked isn't new when that list has it again; a list short of no pick is taken as it is. A pick a list fetched again stops listing (`Refetch`, `KeepListsFresh`, and a plugin's hourly `KeepPluginsListed`) leaves `Models` for `Delisted` (`dropGonePicks`), not served, and goes back among the picks when a later list has it (`relistPicks`): Our Free Model's plugin lists its account channels' models only once its service has read them after a restart, and its free pools only while they answer, so each magpie update had its user pick every model again (多喝热水 on Discord). Every save keeps `Delisted` but for what it picks again (`delistedWith`); Select none clears it. A provider whose every pick is in `Delisted` serves none of its models (`waitsForPicks`), not the vendor's list. `KeepPluginsListed` asks again after `relistSoon` (5 minutes) when a list left a pick out. `TestPluginPicksComeBackWithTheirList`, `TestEveryPickDelistedServesNone` and `TestRelayPicksComeBackWithTheirList` cover it. | [`models.go`](../../internal/provider/models.go), [`provider.go`](../../internal/provider/provider.go) |
++| Model picks | `Models` are the models the user picked for agents; none means the vendor's list, up to 24 (`Exposed`), unless the user chose Select none (`NoModels`, `magpie provider models <id> none`): then none of its models is served, not to agents, not to any routing group (auto groups included), not by a `provider/model` id, not as a classifier, while its balance and usage are still read (`ServesNone`, #1818). Codex's native `/backend-api/codex/models` picker also removes visible account models in Usage only (`CodexNativePicked` in [`codex_models.go`](../../internal/provider/codex_models.go)); hidden internal jobs and models from other providers stay. The editor's serves control names it Usage only, beside Vendor's list and Picked only, and the card says "usage only" (#2068); Picked only from there picks the models the vendor's list serves, to unpick from. A file without `noModels` reads as before, and a pick clears it. `Save` keeps beside new picks the models listed then (`PickedFrom`, `listedWith`), and the same picks saved again keep it. When the picks held every model listed then, one the vendor lists since is served first beside them (`withNewlyListed`, `Picks`); one listed then and left unpicked stays out. Picks saved before `PickedFrom` was kept are taken to hold every model when they hold every one released up to the newest of them (models.dev's `release_date`), so a Claude account whose user picked them all is served Haiku 5.5 (wakaka). The editor and the TUI start from `Picks`, so a later Save keeps the new model. While some picks are set aside (the list is known to be short), a save with new picks keeps the models the earlier `PickedFrom` had beside those listed now, so a model the user saw and left unpicked isn't new when that list has it again; a list short of no pick is taken as it is. A pick a list fetched again stops listing (`Refetch`, `KeepListsFresh`, and a plugin's hourly `KeepPluginsListed`) leaves `Models` for `Delisted` (`dropGonePicks`), not served, and goes back among the picks when a later list has it (`relistPicks`): Our Free Model's plugin lists its account channels' models only once its service has read them after a restart, and its free pools only while they answer, so each magpie update had its user pick every model again (多喝热水 on Discord). Every save keeps `Delisted` but for what it picks again (`delistedWith`); Select none clears it. A provider whose every pick is in `Delisted` serves none of its models (`waitsForPicks`), not the vendor's list. `KeepPluginsListed` asks again after `relistSoon` (5 minutes) when a list left a pick out. `TestPluginPicksComeBackWithTheirList`, `TestEveryPickDelistedServesNone` and `TestRelayPicksComeBackWithTheirList` cover it. | [`models.go`](../../internal/provider/models.go), [`provider.go`](../../internal/provider/provider.go) |
+ | List schedule and rules | A provider of the user's own (not an account, a plugin's or a decision-only one) can set `RefreshEvery` (`magpie provider refresh-every <id> 6h`, or 1d, or off, at least 10m) and `AutoInclude` (`magpie provider auto-include <id> 'gpt-*' 're:claude-.*'`, or none; a glob with `*`, any case, or `re:` matching the whole id; a plain id is refused) (#2135). The gateway (`magpie serve` or the app) looks each minute and fetches a list once `Fetched` is that old, through the same `Refetch` as Fetch models (`KeepListsFresh`); a failed fetch waits `min(every, 15m)`. `RefetchTaking` adds to the picks a model the fetch newly lists that a rule matches (`takeMatching`), starting from what is served now (`Exposed`), so nothing served is taken away and a model the user unticks stays out (it is not new to the next fetch). Setting the rules takes the current list's matches. Every save that doesn't set them keeps them, the window's editor among them; the editor has no fields for them yet. | [`autolist.go`](../../internal/provider/autolist.go), [`models.go`](../../internal/provider/models.go), [`providers_cli.go`](../../internal/cli/providers_cli.go) |
+ | Keys | Several keys per provider. Requests go to the first key that is on; the gateway moves on when it is out or rate limited. `Key` stays the first, so other code reads it as before. A key can be made for one protocol (`KeyProtocol`). A key made for a protocol its provider has no URL for is skipped (`perKeyBarred`); when every key is, the provider is still tried whole on the URLs it has, and the candidate carries `noURL` so it isn't quiet: Routing's row (`Weighed.NoURL`) says "key set to {api} only, no {api} URL · sent on the others", and the editor's key row shows a "No {api} URL" chip (`keyLacksURL`; #1702, `TestKeyForAProtocolWithNoURLIsSaid`, `key-nourl.test.cjs`). A key's value can be replaced in place (`ReplaceKey`, #1869: a key rotated at the vendor): it keeps its name, place, protocol, weight and on or off, and what was set for it by its fingerprint (`AccountModels`, `AccountProxies`, `AccountConcurrency`) and the gateway keys held to it (`access.ReplaceAccount`) move to the new one; the GUI's `keys/replace` also lifts its rests (`UnrestAll`). Its past requests stay under the old fingerprint, by the same name. A provider may hold thousands of keys (@NetRozee on X: a thousand froze magpie). Nothing goes over its keys once for each key: `KeysOn` drops a repeat by a set, a row's rest keys come from `RestKeys` (whether several are on, found once), and whether each key serves a model from `Serving`, which reads the lists once and keeps each model's keys as a set until the lists are read anew (`keyLists`). `KeysListed` and `ListsRead` count them for the tests (`TestProviderInfoListsKeysOnce`, `TestPerKeyReadsListsOnce`). A provider's keys have their balances, plans and remote limits read `keyReadsAtOnce` (8) at a time (`keySlots`); other providers' beside them. The editor's per-key proxy lines fold as its Accounts list does (`proxyLines`, `provider-many-keys-proxy.test.cjs`). Asking a key's models (`fetchPerKey`) still goes one key after another. | [`keys.go`](../../internal/provider/keys.go) |
+ | Google Vertex AI | `google-vertex` (`VertexPreset`, `IsVertex`) is a provider of the user's own with no key. `Provider.Vertex` holds `project`, `location` (`global`, `us`, `eu` or a region; `global` when empty), `credentials` (a file; empty for Application Default Credentials) and `impersonate` (a service account's email). Save refuses a key given it, then normalizes them (`Normal`) and checks each (`check`); `normalize` clears the four URLs and any key put in `providers.json` by hand, which stands in for neither a token nor a project and leaves the provider as found savable, so the provider's one address is `vertexBase`, `https://<host>/v1/projects/<project>/locations/<location>`, its host following the location (`vertexHost`). It speaks Gemini alone (`Speaks`, `Base`). It is `Ready` once that address can be made, never from a key or an account; until then the app, `magpie providers` and the TUI say it needs a project, and `magpie provider <id>` says how to give it one. `hasEndpoint` counts it as a provider of the user's own, not a subscription's picks. An import link naming it is refused (`ParseImport`): its project and credentials are the user's own, which no link hands over. `Sign` refuses any other address and sets the bearer token before the user's `Headers`; `AuthHeaders` gives it no key header. Its models are its location's (`vertexModels`, in `planModels`): the preset has `NoList`, because Vertex AI has no list that says what a location serves. The lists are in the [reference](../reference.md#google-vertex-ai). | [`vertex.go`](../../internal/provider/vertex.go), [`provider.go`](../../internal/provider/provider.go), [`account.go`](../../internal/provider/account.go), [`rename.go`](../../internal/provider/rename.go), [`models.go`](../../internal/provider/models.go), [`importurl.go`](../../internal/provider/importurl.go) |
+diff --git a/internal/gateway/codex_usage_only_test.go b/internal/gateway/codex_usage_only_test.go
+new file mode 100644
+index 00000000..f45f1389
+--- /dev/null
++++ b/internal/gateway/codex_usage_only_test.go
+@@ -0,0 +1,75 @@
++package gateway
++
++import (
++	"encoding/json"
++	"io"
++	"net/http"
++	"net/http/httptest"
++	"slices"
++	"testing"
++
++	"github.com/yetone/magpie/internal/provider"
++)
++
++func TestCodexUsageOnlyCatalog(t *testing.T) {
++	codexSignedIn(t)
++	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		io.WriteString(w, `{"models":[{"slug":"gpt-6-sol","priority":1,"visibility":"list"},{"slug":"gpt-5.5","priority":2,"visibility":"list"},{"slug":"codex-auto-review","priority":3,"visibility":"hide"},{"slug":"gpt-reserve","priority":4,"visibility":"hide"}]}`)
++	}))
++	t.Cleanup(up.Close)
++	was := provider.CodexBase
++	provider.CodexBase = up.URL + "/backend-api/codex"
++	t.Cleanup(func() { provider.CodexBase = was })
++	if err := provider.Save(provider.Provider{ID: "fake", Name: "Fake", Key: "k", Models: []string{"m1"}, Chat: up.URL + "/v1"}); err != nil {
++		t.Fatal(err)
++	}
++	gw := httptest.NewServer(New().Handler())
++	t.Cleanup(gw.Close)
++	for _, tc := range []struct {
++		name string
++		p    provider.Provider
++		want []string
++	}{
++		{"vendor list", provider.Provider{ID: "codex"}, []string{"gpt-6-sol", "gpt-5.5"}},
++		{"usage only", provider.Provider{ID: "codex", NoModels: true}, nil},
++		{"picked again", provider.Provider{ID: "codex", Models: []string{"gpt-6-sol"}}, []string{"gpt-6-sol"}},
++		{"off keeps native list", provider.Provider{ID: "codex", Off: true, NoModels: true}, []string{"gpt-6-sol", "gpt-5.5"}},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			if err := provider.Save(tc.p); err != nil {
++				t.Fatal(err)
++			}
++			req, err := http.NewRequest(http.MethodGet, gw.URL+CodexPath+"/models?client_version=0.163.0", nil)
++			if err != nil {
++				t.Fatal(err)
++			}
++			req.Header.Set("Authorization", "Bearer chatgpt-token")
++			res, err := gw.Client().Do(req)
++			if err != nil {
++				t.Fatal(err)
++			}
++			defer res.Body.Close()
++			var list struct {
++				Models []struct {
++					Slug string `json:"slug"`
++				} `json:"models"`
++			}
++			if err := json.NewDecoder(res.Body).Decode(&list); err != nil {
++				t.Fatal(err)
++			}
++			if res.StatusCode != http.StatusOK {
++				t.Fatalf("model list status %d", res.StatusCode)
++			}
++			var got []string
++			for _, m := range list.Models {
++				got = append(got, m.Slug)
++			}
++			want := append(slices.Clone(tc.want), "codex-auto-review", "gpt-reserve", "fake/m1")
++			slices.Sort(got)
++			slices.Sort(want)
++			if !slices.Equal(got, want) {
++				t.Fatalf("models = %v, want %v", got, want)
++			}
++		})
++	}
++}
+diff --git a/internal/provider/codex_models.go b/internal/provider/codex_models.go
+index 3ceea0bb..09af5386 100644
+--- a/internal/provider/codex_models.go
++++ b/internal/provider/codex_models.go
+@@ -544,10 +544,17 @@ func buildCodexListTag(kind string) string {
+ //
+ // A provider switched off picks nothing, as it serves no agent anything
+ // (Provider.Off): its picks are kept for when it is switched on again and
+-// are not a narrowing now.
++// are not a narrowing now. Usage only narrows the visible native list to
++// none, as it does the general catalog; codexModels keeps hidden jobs.
+ func CodexNativePicked() (map[string]bool, bool) {
+ 	p, ok := find(All(), "codex")
+-	if !ok || p.Off || len(p.Models) == 0 {
++	if !ok || p.Off {
++		return nil, false
++	}
++	if p.ServesNone() {
++		return nil, true
++	}
++	if len(p.Models) == 0 {
+ 		return nil, false
+ 	}
+ 	keep := make(map[string]bool, len(p.Models))

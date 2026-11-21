@@ -1,0 +1,23 @@
+{
+  "id": "73",
+  "slug": "repeated-substring-pattern",
+  "title": "重复的子字符串模式",
+  "difficulty": "easy",
+  "tags": ["字符串", "字符串匹配"],
+  "description": "给定一个非空的字符串 `s`,检查它是否可以由它的一个子串重复多次构成。\n\n**示例 1:**\n\n- 输入:`s = \"abab\"`\n- 输出:`true`(由 `\"ab\"` 重复两次构成)\n\n**示例 2:**\n\n- 输入:`s = \"aba\"`\n- 输出:`false`\n\n**示例 3:**\n\n- 输入:`s = \"abcabcabcabc\"`\n- 输出:`true`(由 `\"abc\"` 重复四次构成)",
+  "solution": "## 思路\n\n**拼接技巧**:把 `s` 与自身拼接得到 `s+s`,去掉首尾后若还能找到 `s`,则 `s` 可由子串重复构成。等价实现:在 `s+s` 中从下标 1 开始查找 `s`,若找到的位置小于 `s.length` 即可重复。\n\n## 参考代码\n\n```js\nfunction repeatedSubstringPattern(s) {\n  return (s + s).indexOf(s, 1) !== s.length;\n}\n```\n\n## 复杂度\n\n- 时间:O(n)(indexOf)\n- 空间:O(n)",
+  "signature": {
+    "language": "javascript",
+    "entry": "repeatedSubstringPattern",
+    "params": [{ "name": "s", "type": "string" }],
+    "returns": "boolean"
+  },
+  "testCases": [
+    { "sample": true, "input": ["abab"], "expected": true },
+    { "sample": true, "input": ["aba"], "expected": false },
+    { "sample": true, "input": ["abcabcabcabc"], "expected": true },
+    { "sample": false, "input": ["a"], "expected": false },
+    { "sample": false, "input": ["aaaa"], "expected": true },
+    { "sample": false, "input": ["abac"], "expected": false }
+  ]
+}

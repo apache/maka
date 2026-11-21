@@ -1,0 +1,11 @@
+✔ no language has a key twice (35.790125ms)
+✔ a plugin's words are said in every language (23.5565ms)
+✔ a plugin's words are its own (9002.778917ms)
+ℹ tests 3
+ℹ suites 0
+ℹ pass 3
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 9111.765042

@@ -1,0 +1,152 @@
+{
+  "repo": "stablyai/orca",
+  "base_branch": "main",
+  "base_tip": "bbd324a57a368e0381fe3f38804518ac46bfa4b6",
+  "in_flight_prs": [
+    {
+      "n": 36384,
+      "head": "dda5904461b9a7a3a0d3316e70cf5a0c0e786575",
+      "updated_at": "2026-10-30T15:14:14Z"
+    },
+    {
+      "n": 36117,
+      "head": "ab8e38787ad6ba74a7f086f516b2e77c9e78371b",
+      "updated_at": "2026-10-30T13:10:41Z"
+    },
+    {
+      "n": 36049,
+      "head": "776d3bb89548175677deb3d23be97be3bd6b03ba",
+      "updated_at": "2026-10-29T23:07:07Z"
+    },
+    {
+      "n": 36025,
+      "head": "ce1a8f13de35643ce09758e0a511c2b4d459f20f",
+      "updated_at": "2026-10-29T20:02:39Z"
+    },
+    {
+      "n": 28327,
+      "head": "d46259e66b02e627b923534ce4dee68a827c68ee",
+      "updated_at": "2026-10-25T12:48:21Z"
+    },
+    {
+      "n": 27517,
+      "head": "04575a9bb7fce4d3ac59b35b329804f21a4198a3",
+      "updated_at": "2026-10-29T21:13:32Z"
+    },
+    {
+      "n": 26898,
+      "head": "bfc3cf851db8bc422fc96386487f865231351a3e",
+      "updated_at": "2026-10-25T13:25:25Z"
+    },
+    {
+      "n": 25708,
+      "head": "232e6f59eb307180a96fcbeb9218b1f72a5b73e6",
+      "updated_at": "2026-10-30T14:45:24Z"
+    },
+    {
+      "n": 25446,
+      "head": "ab0c44892b4d57e5dee1c582412cd2055a58ae96",
+      "updated_at": "2026-10-30T13:23:30Z"
+    },
+    {
+      "n": 25356,
+      "head": "9d0ac9c2dab0a25e34b00a67e5e64b5e2089f1f0",
+      "updated_at": "2026-10-25T13:47:01Z"
+    },
+    {
+      "n": 25245,
+      "head": "57f22850d1f895b77e96b228a53a4fe718f357a0",
+      "updated_at": "2026-10-30T13:05:38Z"
+    },
+    {
+      "n": 25191,
+      "head": "ba8e32ad689110427b99caa510aa29d6f457d45f",
+      "updated_at": "2026-10-26T21:46:32Z"
+    },
+    {
+      "n": 25108,
+      "head": "6f91fd89231a729b5281980685240d812573d860",
+      "updated_at": "2026-10-30T22:27:25Z"
+    },
+    {
+      "n": 25105,
+      "head": "cb0bbd9e63e94e25ecc6e10c676e00985d22986d",
+      "updated_at": "2026-10-25T12:54:07Z"
+    },
+    {
+      "n": 24894,
+      "head": "c73bd899fd93f5bab40c07a957c6574835ef91b9",
+      "updated_at": "2026-10-26T21:44:13Z"
+    },
+    {
+      "n": 24803,
+      "head": "4079f7996e7986a38cda586ae3907683c9d9baab",
+      "updated_at": "2026-10-30T22:20:48Z"
+    },
+    {
+      "n": 24191,
+      "head": "42027e1328adbfb8633cd10e291a0592fdc92ebd",
+      "updated_at": "2026-10-25T12:50:46Z"
+    }
+  ],
+  "watched_issues": [
+    {
+      "n": 36313,
+      "last_comment_id": 6526021789
+    },
+    {
+      "n": 36014,
+      "last_comment_id": 6543088886
+    },
+    {
+      "n": 35957,
+      "last_comment_id": 6502241834
+    },
+    {
+      "n": 35292,
+      "last_comment_id": 6505770147
+    },
+    {
+      "n": 35246,
+      "last_comment_id": 6483069876
+    },
+    {
+      "n": 34360,
+      "last_comment_id": 6515750797
+    },
+    {
+      "n": 33684,
+      "last_comment_id": 6510027200
+    },
+    {
+      "n": 28308,
+      "last_comment_id": 6173548899
+    },
+    {
+      "n": 27293,
+      "last_comment_id": 6134627893
+    },
+    {
+      "n": 23967,
+      "last_comment_id": 6064004267
+    },
+    {
+      "n": 23913,
+      "last_comment_id": 6509296529
+    },
+    {
+      "n": 9871,
+      "last_comment_id": 5975723315
+    }
+  ],
+  "last_runs": [
+    {
+      "time": "2026-10-31T12:41:04Z",
+      "findings": "⑤ 基分支 tip 前进 3 commits：002e975e9 → bbd324a57"
+    },
+    {
+      "time": "2026-10-31T12:20:00Z",
+      "findings": "r40 重建基线（模板 schema；哨兵提示词实为 sentinel/ 点文件未曾丢失，/tmp  runner 与状态文件曾丢）。17 PR / 12 watched issues 登记。"
+    }
+  ]
+}

@@ -1,0 +1,45 @@
+bc903d2d8e7e968ddd2ad38ef6d57690a22a953e
+ggbdpq <ggbdpq@gmail.com>
+provider: Sign out… signs Codex itself out, saved copy or not (#5916)
+
+The Add sheet's "Removed from magpie" row of Codex signs the
+subscription out for good, and its ask says Codex itself is signed out
+too, as codex logout does. forgetLogins kept that promise only for the
+sign-ins magpie had saved: Logins(agent) is logins.json, so the sign-in
+Codex itself holds went untouched when none of the saved copies named
+it — removed from magpie before any look saved it (a saving waits for
+its look, due once in 30 seconds, and once removed magpie saves nothing
+of the agent), or Codex signed in to another account itself after the
+removal. The forget said done, and the row stood there all the same,
+still signed in, with a Sign out… that said done and changed nothing,
+every time (#5916).
+
+The sign-in the agent holds, which no saved copy named, is signed out
+too now — through the same ForgetLogin that signs the saved flow's last
+account out, deleteCodexLogin and all (#2367). Claude Code is never
+signed out (claudeStandIn), and the other agents' own sign-ins the ask
+leaves as they are, so the branch is Codex's alone.
+
+Run:
+- TestForgetAccountSignsOutASignInNoSavedCopyNamed: Codex signed in,
+  removed before any look saved it, the row's Sign out… — red before
+  (the row still listed, auth.json kept), green after (row gone,
+  auth.json gone, nothing saved).
+- TestForgetAccountSignsOutTheSignInItMovedOnTo: removed, then Codex
+  signed in to another account itself — red before, green after.
+- Ablation: the branch taken out made both red again (the flow magpie
+  saved, TestForgetAccountSignsCodexOut, green either way); restored,
+  green.
+- ./internal/provider whole green; the four sign-out tests green with
+  -race; the whole tree builds with -tags nogui.
+- Sibling scan: forgetLogins has the one caller, ForgetAccount;
+  deleteCodexLogin the one caller it had; every liveLogin("codex")
+  reader reads fresh and reads none once the forget is done
+  (autoreset, access-only, resets, switch, import, export); the
+  excluded row's readers — the Providers page's reminder line, the Add
+  sheet's removed section, magpie accounts / magpie providers — all
+  heal from the one data face; savedButSignedOut and the claude and
+  plugin paths untouched.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+

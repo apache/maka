@@ -1,0 +1,31 @@
+✔ SSE → Canonical：思考、正文、分片工具调用、finish_reason、空 choices usage (27.653276ms)
+✔ HTTP 错误映射：429 带 Retry-After、401 (8.269219ms)
+✔ Canonical → OpenAI body：工具历史与图片不丢（Q-P0-2） (0.298578ms)
+✔ 端到端：Codex → 网关 group/daily → Kimi 429 → 改道 DeepSeek，工具调用完整下发；路由事件可从 /admin/events 回放 (21.114424ms)
+✔ 请求体上限 → 413 (5.231659ms)
+✔ ordered：首字节前 429 → 改道下一个，下游只看到后者的内容 (3.396587ms)
+✔ ordered：歇着的成员被跳过并在 decision 里写明原因；到点自动恢复 (1.966122ms)
+✔ I1：已经下发内容后失败 → 不改道，错误原样下发 (0.552486ms)
+✔ 请求本身被拒（400/拒答）→ 不改道、不让成员歇 (0.307004ms)
+✔ 全部在歇 → 429 + 最早恢复时间，且不打上游 (0.554329ms)
+✔ 能力过滤：带图片的请求跳过不支持图片的成员 (0.421364ms)
+✔ smart：会话亲和优先；无会话时选首字更快的 (0.940501ms)
+✔ 客户端中止 → cancelled，不改道、不下发错误 (20.449304ms)
+✔ maxAttempts 限制一次请求最多试几个上游 (0.63698ms)
+✔ 上游空回复视为协议错误，可改道 (0.554149ms)
+✔ 直连模型（provider/model）失败不改道 (0.294372ms)
+✔ 未知路由组 → MODEL_NOT_FOUND（400），仍有 request.end (0.168999ms)
+✔ peekFirst：第一个事件就是 error 时协议层还能回 HTTP 状态码 (0.257934ms)
+✔ 中间件：beforeRequest 改写请求，onEvent 观察用量且异常不影响数据面 (0.557874ms)
+✔ classify：限流指数退避与上限；Retry-After 上限 1 小时 (0.184506ms)
+✔ parseRouteGroups：手写校验给出可定位的报错 (0.667812ms)
+✔ collect 辅助：确保 routeStream 可被多次独立调用 (0.297121ms)
+ℹ tests 22
+ℹ suites 0
+ℹ pass 22
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 420.479448
+tsc 7.0.2 strict: 0 errors

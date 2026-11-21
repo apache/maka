@@ -1,0 +1,1 @@
+import{t as o}from"./toNumber-Bd2zwLSE.js";function i(i,r,t){return void 0===t&&(t=r,r=void 0),void 0!==t&&(t=(t=o(t))==t?t:0),void 0!==r&&(r=(r=o(r))==r?r:0),function(o,i,r){return o==o&&(void 0!==r&&(o=o<=r?o:r),void 0!==i&&(o=o>=i?o:i)),o}(o(i),r,t)}export{i as c};

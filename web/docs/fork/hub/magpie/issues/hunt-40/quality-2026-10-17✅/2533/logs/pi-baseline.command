@@ -1,0 +1,1 @@
+node /Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/pi-consumer-check.mjs /Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/baseline-fixtures baseline 

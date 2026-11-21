@@ -1,0 +1,5 @@
+upstream/main:internal/gateway/codex_backend.go:3423:// (developerAsSystem). A developer message says what a system one says,
+upstream/main:internal/gateway/codex_compact_developer_test.go:24:// and what a Chat Completions upstream is given (developerAsSystem).
+upstream/main:internal/gateway/gateway.go:5843:		body = developerAsSystem(body)
+upstream/main:internal/gateway/gateway.go:8737:// developerAsSystem turns "developer" messages into "system" ones. Agents
+upstream/main:internal/gateway/gateway.go:8741:func developerAsSystem(body []byte) []byte {

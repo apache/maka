@@ -1,0 +1,30 @@
+mcp hub: a call of a listed tool doesn't wait out a listing a wedged upstream holds (#4606)
+
+Every tools/call re-ran the whole upstream reconciliation to resolve the
+tool's name, under one budget all upstreams share, and a server whose
+dial had failed was started again at every ask — so one upstream that
+wedges on initialize (a URL that never answers, a slow npx cold start)
+stretched every hub operation, tools/list and every tools/call alike,
+past the client's own timeout, healthy servers' tools included (#4606:
+a call that answered right, at 30023 ms, after the client gave up).
+
+What changed:
+- gateway: the tools the last listing gave each agent are kept, and a
+  call of a tool that listing told the agent of resolves against them;
+  the servers are asked again only for a name they don't know
+- library: a server the hub couldn't reach stays where it fell a while
+  (failures in a row wait 1s, 2s, 4s, a minute at most) instead of being
+  started again at every ask, so a wedged server's dial is paid once per
+  wait, not by every listing and call; a server that answers is back at
+  once
+
+A listing still waits for a server still starting, inside the budget it
+had; a call of a listed tool never waits on a listing again.
+
+Fixes #4606
+
+Run: go test ./internal/gateway/ -run TestHubMCP -count=1;
+     go test ./internal/library/ -run 'TestHub|TestKeepsSession' -count=1
+
+Generated-by: GLM-5.3-Flash (ZCode)
+

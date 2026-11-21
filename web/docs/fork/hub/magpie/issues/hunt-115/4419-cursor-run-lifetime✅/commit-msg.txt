@@ -1,0 +1,22 @@
+fix(gateway): tell the agent a dead cursor Run's error may be asked again (#4419)
+
+The cursor plugin fails a native Run that outlived its absolute 15-minute
+lifetime mid-reply with "native Run lifetime expired" in the stream, the
+200 long since sent. The Run is gone and the conversation is not — asked
+again, the history is rebuilt on a fresh Run — but the error's text is all
+the agent reads (its status can no longer be told, #2372), and no word of
+it is one Pi retries on: the turn ended where asking again goes on (#4419).
+
+The relay now says it in the words Pi knows, as saysPassing does for
+magpie's own stream errors: the Chat relay mends the error event's message
+(chatTidy), and a translated reply's error carries it too (streamTranslated).
+An error of any other wording goes as it came.
+
+Verified: TestRunExpiredSaysAskAgain and TestRunExpiredTranslatedSaysAskAgain
+fail without the change (the bare wording relayed) and pass with it; with the
+fix reverted by hand both go red again. go vet ./..., GOOS=linux go vet -tags
+nogui ./... and GOOS=windows go vet ./... are clean; go build, GOOS=linux and
+GOOS=windows go build -tags nogui build; gofmt -l prints nothing on the
+changed files.
+
+Generated-by: GLM-5.3-Flash (ZCode)

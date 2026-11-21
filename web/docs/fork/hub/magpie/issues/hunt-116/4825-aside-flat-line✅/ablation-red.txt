@@ -1,0 +1,6 @@
+--- FAIL: TestAsideWindowWithoutUsedDrawsNoLine (0.00s)
+    plugin_usage_absent_test.go:184: On-demand: history point true, want false
+    plugin_usage_absent_test.go:184: Points: history point true, want false
+FAIL
+FAIL	github.com/yetone/magpie/internal/provider	1.059s
+FAIL

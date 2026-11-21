@@ -1,0 +1,58 @@
+diff --git a/internal/gui/tests/builtins.test.cjs b/internal/gui/tests/builtins.test.cjs
+index 3f89c1ab..e2da5da5 100644
+--- a/internal/gui/tests/builtins.test.cjs
++++ b/internal/gui/tests/builtins.test.cjs
+@@ -111,7 +111,8 @@ function server(lang, posts, broken) {
+ // the pages' tabs shown, the page shown
+ const tabs = (page) => page.evaluate(() => [...document.querySelectorAll("#nav button[data-view]")].filter((b) => !b.hidden && b.offsetParent && getComputedStyle(b).display !== "none").map((b) => b.dataset.view));
+ const viewShown = (page) => page.evaluate(() => [...document.querySelectorAll("main.view")].filter((v) => !v.hidden).map((v) => v.id));
+-const KEPT = ["agents", "providers", "routing", "gateway", "usage", "plugins"];
++// the tabs with Sessions and Library off, the preset's masking on
++const KEPT = ["agents", "providers", "routing", "gateway", "usage", "masking", "plugins"];
+ const rowsOf = (page) => page.evaluate(() => [...document.querySelectorAll("#builtinList .feat-row")].map((r) => {
+   const b = r.querySelector('[role="switch"]');
+   return { id: r.dataset.id, name: r.querySelector(".name").textContent, on: b.getAttribute("aria-checked"), disabled: b.disabled, why: r.querySelector(".feat-why")?.textContent || "" };
+diff --git a/internal/gui/tests/gateway-mode.test.cjs b/internal/gui/tests/gateway-mode.test.cjs
+index a15233b5..219e5648 100644
+--- a/internal/gui/tests/gateway-mode.test.cjs
++++ b/internal/gui/tests/gateway-mode.test.cjs
+@@ -84,7 +84,7 @@ const L = {
+ };
+ const HIDDEN = ["agents", "library"];
+ // in the order the pages are grouped in (work, models, insights, extend)
+-const KEPT = ["sessions", "providers", "routing", "gateway", "usage", "plugins"];
++const KEPT = ["sessions", "providers", "routing", "gateway", "usage", "masking", "plugins"];
+ 
+ // the tabs shown, the page shown
+ const tabs = (page) => page.evaluate(() => [...document.querySelectorAll("#nav button[data-view]")].filter((b) => !b.hidden && b.offsetParent).map((b) => b.dataset.view));
+@@ -154,7 +154,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
+       await clickStill(page, "#gatewayModeSegs .opt:nth-child(4)", `${where}: Off`);
+       await page.waitForFunction(() => !document.querySelector('#nav button[data-view="agents"]').hidden);
+       assert.deepEqual(posts.filter((p) => p[0] === "gateway-mode"), [["gateway-mode", "off"]], where);
+-      assert.deepEqual(await tabs(page), ["agents", "sessions", "library", "providers", "routing", "gateway", "usage", "plugins"], `${where}: off`);
++      assert.deepEqual(await tabs(page), ["agents", "sessions", "library", "providers", "routing", "gateway", "usage", "masking", "plugins"], `${where}: off`);
+       assert.deepEqual(await viewShown(page), ["view-settings"], `${where}: Settings stays`);
+       assert.deepEqual(await agentRows(page), [true, true, true, true, true], `${where}: rows back`);
+       assert.doesNotMatch(await page.locator("#gatewayModeSub").textContent(), new RegExp(L[lang].noAgents), where);
+@@ -187,7 +187,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
+         await page.route("**/*", server(lang, [], { web, gateway: false, agents: true }));
+         await page.goto("http://magpie.test/");
+         await page.waitForSelector("#nav button.on");
+-        assert.deepEqual(await tabs(page), ["agents", "sessions", "library", "providers", "routing", "gateway", "usage", "plugins"], where);
++        assert.deepEqual(await tabs(page), ["agents", "sessions", "library", "providers", "routing", "gateway", "usage", "masking", "plugins"], where);
+         assert.deepEqual(await viewShown(page), ["view-agents"], where);
+         await page.locator("#prefs").click();
+         await page.waitForSelector("#langPick span");
+diff --git a/internal/gui/tests/sidebar.test.cjs b/internal/gui/tests/sidebar.test.cjs
+index c244d07e..939f21ba 100644
+--- a/internal/gui/tests/sidebar.test.cjs
++++ b/internal/gui/tests/sidebar.test.cjs
+@@ -60,7 +60,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
+       assert.equal(await page.locator(".top #nav").count(), 0, "and not in the header");
+       assert.deepEqual(await page.locator("#nav .nav-gl:visible").allTextContents(), w.groups);
+       assert.deepEqual(await page.locator("#nav button[data-view]").evaluateAll((bs) => bs.map((b) => b.dataset.view)),
+-        ["agents", "sessions", "library", "providers", "routing", "gateway", "usage", "plugins"]);
++        ["agents", "sessions", "library", "providers", "routing", "gateway", "usage", "masking", "plugins"]);
+       assert.ok(await page.locator("#side .side-foot #prefs").isVisible(), "Settings at the sidebar's foot");
+       assert.equal((await page.locator("#prefs .side-l").textContent()).trim(), w.settings);
+       // no page's name or group cut, and nothing scrolls sideways

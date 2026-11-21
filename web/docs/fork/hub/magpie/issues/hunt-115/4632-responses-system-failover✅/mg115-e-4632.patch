@@ -1,0 +1,337 @@
+From 273bf87a108cbcc4745e0fececd47ac706659c7b Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Sun, 1 Nov 2026 18:13:30 +0800
+Subject: [PATCH] gateway: a translated system turn is folded for a Responses
+ upstream, and a relay's "Upstream request failed" 400 fails a group over
+ (#4632)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Two faults, one turn. Claude Code 2.1.296 and later send their
+environment as a message with role "system" inside messages
+(Request.envInTurns). The Chat and Anthropic builds fold such a message
+into the system prompt (responseInstructions); buildResponses wrote the
+role as it came, and a relay whose Responses endpoint fronts the ChatGPT
+backend — which takes user, assistant and developer alone — answered
+every translated turn 400 "Upstream request failed". That 400 matched
+none of the wordings that make a 4xx retryable, so the holdWriter held
+it as final and the group's second member never ran: the relay's answer
+went to the agent, every turn.
+
+What changed: buildResponses folds a translated request's system and
+developer messages the way the Chat and Anthropic builds do, keyed on
+the read. A Responses client's own instruction items are kept by the
+read (#2532) and go where they stood; so do a codex account's, which
+its send says as developer ones in place (codexBody — the fold would
+move them out of conversation order, so buildFor marks the account's
+requests kept). A translated request's system message is the harness's,
+so it is said in the instructions, and one after a reply is told as a
+user <system-reminder>, as on every other target. A relay's own word
+that the provider behind it turned the request away ("sub2api: Upstream
+request failed", type upstream_error — the words the Codex compaction
+already reads, #866, #1511) joins the wordings that make a 400 or 422
+retryable (retryable) and fail a group over (shapeRefused): the next
+member is asked, and nobody rests. A 400 that says nothing of the kind
+still ends the route, as a bad request would fail on every member
+alike.
+
+Run: TestClaudeSystemTurnSaidInTheInstructionsOnResponses and
+TestGroupFailsOverARelaysUpstreamFailed, red at upstream/main 77e853588
+and green here; TestUpstreamFailedWordsFailARelayOver's guards (a 401,
+403 or 429 with the words, a plain bad request, and an
+insufficient_quota beside them keep their reading); the codex account's
+own shape (TestCodexAccountUpstream, both clients), the instruction
+roles contract (TestResponsesInstructionRolesThroughSearch,
+TestResponsesInstructionsOtherAPIsUnchanged), the compaction, group and
+retry families, the full gateway package, gofmt, vet on darwin, linux
+and windows, and builds of all three (-tags nogui).
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gateway/fallback.go                  | 13 +++-
+ internal/gateway/gateway.go                   |  9 +++
+ internal/gateway/ir.go                        |  8 ++
+ .../gateway/relay_upstream_failed_test.go     | 78 +++++++++++++++++++
+ internal/gateway/responses.go                 | 15 ++++
+ .../gateway/responses_system_turn_test.go     | 75 ++++++++++++++++++
+ 6 files changed, 196 insertions(+), 2 deletions(-)
+ create mode 100644 internal/gateway/relay_upstream_failed_test.go
+ create mode 100644 internal/gateway/responses_system_turn_test.go
+
+diff --git a/internal/gateway/fallback.go b/internal/gateway/fallback.go
+index 9c6583ab2..a9d353e5a 100644
+--- a/internal/gateway/fallback.go
++++ b/internal/gateway/fallback.go
+@@ -1516,12 +1516,18 @@ var unsaidWords = regexp.MustCompile(`(?i)(^|"|\\"|: )invalid request error trac
+ // member has tried every API it has a URL for (forwardTranslated), and
+ // another member, on another API or another vendor, may serve it (#2670:
+ // a relay with a Chat URL alone, refusing tools with reasoning there).
++// A relay's own word that the provider behind it turned the request away
++// (upstreamFailedWords: "sub2api: Upstream request failed", type
++// upstream_error) is the relay's failure, not this seat's and not the
++// request's — the words the Codex compaction already reads (#866, #1511) —
++// and another member may answer (#4632: the group's second member never
++// ran, and every turn died on the first seat).
+ // One that also says the account is out of quota or credit (quotaWords,
+ // creditWords: "请充值") is that, and rests it (#4095).
+ func shapeRefused(status int, body []byte) bool {
+ 	// the words are matched decoded, too (#1669)
+ 	body = wordsOf(body)
+-	return (status == 400 || status == 422) && (shapeWords.Match(body) || unsaidWords.Match(body) || customToolRefusal.Match(body) || wrongEndpoint(status, body)) &&
++	return (status == 400 || status == 422) && (shapeWords.Match(body) || unsaidWords.Match(body) || customToolRefusal.Match(body) || wrongEndpoint(status, body) || upstreamFailedWords.Match(body)) &&
+ 		!quotaWords.Match(body) && !creditWords.Match(body) && !unservedWords.Match(body) && !refusedWords.Match(body)
+ }
+ 
+@@ -1642,7 +1648,10 @@ func retryable(status int, body []byte) bool {
+ 		// mycf_711)
+ 		return true
+ 	case status == 400, status == 422:
+-		return quotaWords.Match(body) || unservedWords.Match(body) || refusedWords.Match(body) || shapeWords.Match(body) || unsaidWords.Match(body) || regionWords.Match(body) || wrongEndpoint(status, body)
++		return quotaWords.Match(body) || unservedWords.Match(body) || refusedWords.Match(body) || shapeWords.Match(body) || unsaidWords.Match(body) || regionWords.Match(body) || wrongEndpoint(status, body) ||
++			// a relay's own word that the provider behind it turned the
++			// request away (#4632): another member may answer
++			upstreamFailedWords.Match(body)
+ 	}
+ 	return false
+ }
+diff --git a/internal/gateway/gateway.go b/internal/gateway/gateway.go
+index b19da3873..3cd9f679f 100644
+--- a/internal/gateway/gateway.go
++++ b/internal/gateway/gateway.go
+@@ -7621,6 +7621,15 @@ func buildFor(p provider.Provider, proto provider.Protocol, r *Request, model st
+ 	if proto == provider.Gemini && p.IsVertex() {
+ 		return buildVertex(r, model)
+ 	}
++	if proto == provider.Responses && p.Account != nil && p.Account.Agent == "codex" && !r.instructionsKept {
++		// the account's send shapes the instructions itself (codexBody):
++		// the client's system rides first as a developer item and the
++		// input's system items stand as developer ones, in place — the
++		// fold would move them out of conversation order (#4632)
++		c := *r
++		c.instructionsKept = true
++		r = &c
++	}
+ 	return build(proto, r, model, buildHost(p), p.RejectsTemperature(model))
+ }
+ 
+diff --git a/internal/gateway/ir.go b/internal/gateway/ir.go
+index dd88900b7..98ac3ab2c 100644
+--- a/internal/gateway/ir.go
++++ b/internal/gateway/ir.go
+@@ -196,6 +196,14 @@ type Request struct {
+ 	envUnknown bool
+ 	// remoteCaller: the request came from another computer (not local).
+ 	remoteCaller bool
++	// instructionsKept is set on a request whose read kept the client's
++	// instruction roles in its messages (readResponsesFor, #2532): a
++	// Responses client's own system and developer items, which a relay
++	// may be checking them by. A translated request's system message
++	// (Claude Code's environment, envInTurns) has no such standing:
++	// buildResponses folds it into the instructions, as the Chat and
++	// Anthropic builds do (#4632).
++	instructionsKept bool
+ 	// branch, for the Claude bridge, is the session of the run whose
+ 	// reply made the calls this request answers after another request
+ 	// did: its run branches off it there (subscriptionBridge.branch).
+diff --git a/internal/gateway/relay_upstream_failed_test.go b/internal/gateway/relay_upstream_failed_test.go
+new file mode 100644
+index 000000000..6e30fd2f2
+--- /dev/null
++++ b/internal/gateway/relay_upstream_failed_test.go
+@@ -0,0 +1,78 @@
++package gateway
++
++import (
++	"strings"
++	"testing"
++
++	"github.com/yetone/magpie/internal/provider"
++)
++
++// upstreamFailed400 is a relay's own word that the provider behind it
++// turned the request away: sub2api's answer to a translated Claude Code
++// turn whose system message its Codex backend refused (#4632). It is not
++// the client's mistake, and not the relay seat's: the group's next member
++// is asked, and the seat rests for nothing.
++const upstreamFailed400 = `{"error":{"message":"sub2api: Upstream request failed","type":"upstream_error"}}`
++
++// A relay answering 400 "Upstream request failed" hands the request to the
++// group's next member, and nobody rests (#4632: the group's second member
++// never ran, and every turn died on the first seat). A 400 that says
++// nothing of the kind still ends the route, as any bad request would fail
++// on every member alike.
++func TestGroupFailsOverARelaysUpstreamFailed(t *testing.T) {
++	fresh(t)
++	a := &scripted{replies: []reply{{400, "", upstreamFailed400}}}
++	b := &scripted{replies: []reply{{200, "", chatOK}}}
++	scriptedOn(t, "a", provider.Responses, a)
++	scriptedOn(t, "b", provider.Chat, b)
++	if err := provider.SaveGroup(provider.Group{Name: "G", Members: []string{"a/m", "b/m"}, Routing: provider.Ordered}); err != nil {
++		t.Fatal(err)
++	}
++	s := New()
++	code, body := postAs(t, s, "", `{"model":"group/g","messages":[{"role":"user","content":"hi"}]}`)
++	if code != 200 || !strings.Contains(body, "hello") || a.n != 1 || b.n != 1 {
++		t.Fatalf("%d %s (a %d, b %d)", code, body, a.n, b.n)
++	}
++	r := s.trace.routes[len(s.trace.routes)-1]
++	if len(r.Tries) != 2 || r.Tries[0].Status != 400 || r.Tries[0].Fail != failShape {
++		t.Fatalf("tries %+v", r.Tries)
++	}
++	if rest := r.Tries[0].Rest; rest != nil {
++		t.Fatalf("a relay's upstream failure was to rest nobody: %+v", r.Tries[0].Rest)
++	}
++
++	// the seat stayed live: the next group request asks it first again
++	code, body = postAs(t, s, "", `{"model":"group/g","messages":[{"role":"user","content":"hi"}]}`)
++	if code != 200 || !strings.Contains(body, "hello") || a.n != 2 || b.n != 2 {
++		t.Fatalf("next: %d %s (a %d, b %d)", code, body, a.n, b.n)
++	}
++}
++
++// The words fail a 400 or a 422 over, and nothing beside them: a status of
++// the account's own (401, 403, 429), a plain bad request, and a relay that
++// also says the quota is spent keep the reading they had.
++func TestUpstreamFailedWordsFailARelayOver(t *testing.T) {
++	for _, x := range []struct {
++		status int
++		body   string
++		want   bool
++	}{
++		{400, upstreamFailed400, true},
++		// as magpie tells it on, with the relay's name before, and the
++		// relay's own type around it; and apex's, whose type said
++		// invalid_request_error (#1511)
++		{400, `{"error":{"message":"apex: Upstream request failed","type":"invalid_request_error"}}`, true},
++		{422, `{"error":{"message":"Upstream request failed"}}`, true},
++		// a status of the account's own keeps its reading
++		{401, upstreamFailed400, false},
++		{403, upstreamFailed400, false},
++		{429, upstreamFailed400, false},
++		// a plain bad request ends the route, as it would on every member
++		{400, `{"error":{"message":"Invalid parameter: model"}}`, false},
++		{400, `{"error":{"message":"Upstream request failed, insufficient_quota"}}`, false},
++	} {
++		if got := shapeRefused(x.status, []byte(x.body)); got != x.want {
++			t.Errorf("shapeRefused(%d, %s) = %v, want %v", x.status, x.body, got, x.want)
++		}
++	}
++}
+diff --git a/internal/gateway/responses.go b/internal/gateway/responses.go
+index d67d926fb..1a58cd30e 100644
+--- a/internal/gateway/responses.go
++++ b/internal/gateway/responses.go
+@@ -346,6 +346,9 @@ func readResponsesFor(body []byte, facts, keepInstructions bool) (*Request, erro
+ 	// a Responses client's turns go to Claude with hour-long cache marks,
+ 	// unless it asked for its prompt to be kept in memory only
+ 	r.hourMarks = q.PromptCacheRetention != "in_memory"
++	// the instruction roles the client sent stand where they stood, and go
++	// back as they came (#2532)
++	r.instructionsKept = keepInstructions
+ 	if q.Reasoning != nil {
+ 		r.Effort = effortOf(q.Reasoning.Effort)
+ 		r.Thinking = true
+@@ -1304,6 +1307,18 @@ func sealedReasoning(p Part) bool {
+ 
+ // buildResponses renders a request for a Responses upstream.
+ func buildResponses(r *Request, model, host string, rejectTemp bool) []byte {
++	// A translated request's system or developer message (Claude Code's
++	// environment as a {role: "system"} message) is the harness's, not an
++	// instruction item of a Responses client's own: it is folded into the
++	// instructions as the Chat and Anthropic builds fold it
++	// (responseInstructions) — a backend that takes user, assistant and
++	// developer alone refuses the role with a 400 the agent sees (#4632).
++	// A Responses client's own instruction items were kept by the read
++	// (#2532) and go where they stood; so do a codex account's, which its
++	// send says as developer ones in place (codexBody, buildFor).
++	if !r.instructionsKept {
++		r = responseInstructions(r)
++	}
+ 	// A turn's reasoning goes back as a reasoning item, as a model that
+ 	// thinks between tool calls wants it (DeepSeek: "The reasoning_text in
+ 	// the thinking mode must be passed back", #388). Only a DeepSeek model
+diff --git a/internal/gateway/responses_system_turn_test.go b/internal/gateway/responses_system_turn_test.go
+new file mode 100644
+index 000000000..2d42c718f
+--- /dev/null
++++ b/internal/gateway/responses_system_turn_test.go
+@@ -0,0 +1,75 @@
++package gateway
++
++import (
++	"encoding/json"
++	"strings"
++	"testing"
++
++	"github.com/yetone/magpie/internal/provider"
++)
++
++// Claude Code 2.1.296 and later send their environment as a message with
++// role "system" inside messages (Request.envInTurns). The Chat and
++// Anthropic builds fold such a message into the system prompt
++// (responseInstructions); buildResponses wrote the role as it came, and a
++// relay in front of the ChatGPT backend — which takes user, assistant and
++// developer alone — answered every translated turn 400 "Upstream request
++// failed", and the 400 failed no one over (#4632). A translated request's
++// system message is the harness's, not an instruction item of a Responses
++// client's own: it is said the way the Chat and Anthropic builds say it.
++// A Responses client's own instruction items keep their place (#2532,
++// TestResponsesInstructionRolesThroughSearch).
++func TestClaudeSystemTurnSaidInTheInstructionsOnResponses(t *testing.T) {
++	srv, seen := relayOfEvery(t)
++	fresh(t)
++	if err := provider.Save(provider.Provider{
++		ID: "responses-relay", Name: "Responses relay", Key: "k",
++		Responses: srv.URL + "/v1", Models: []string{"example-model"},
++	}); err != nil {
++		t.Fatal(err)
++	}
++	body := `{"model":"responses-relay/example-model","max_tokens":64,"stream":true,` +
++		`"system":"You are Claude Code.",` +
++		`"messages":[` +
++		`{"role":"system","content":"env: working dir /home/me"},` +
++		`{"role":"user","content":"hi"},` +
++		`{"role":"assistant","content":"hello"},` +
++		`{"role":"system","content":"the user switched rooms"}]}`
++	if code, out := post(t, "/v1/messages", body); code != 200 {
++		t.Fatalf("%d %s", code, out)
++	}
++	paths, bodies := seen()
++	if len(paths) != 1 || paths[0] != "/v1/responses" {
++		t.Fatalf("upstream paths %v, want one Responses request", paths)
++	}
++	var got struct {
++		Instructions string `json:"instructions"`
++		Input        []struct {
++			Type    string
++			Role    string
++			Content json.RawMessage
++		} `json:"input"`
++	}
++	if err := json.Unmarshal([]byte(bodies[0]), &got); err != nil {
++		t.Fatal(err)
++	}
++	if !strings.Contains(got.Instructions, "You are Claude Code.") ||
++		!strings.Contains(got.Instructions, "env: working dir /home/me") {
++		t.Fatalf("the leading system message was to join the instructions: %q", got.Instructions)
++	}
++	var reminded bool
++	for i, m := range got.Input {
++		switch {
++		case m.Role == "system" || m.Role == "developer":
++			t.Errorf("input[%d]: role %q went as it came; the ChatGPT backend behind the relay takes user, assistant and developer alone: %s", i, m.Role, bodies[0])
++		case m.Role == "user" && strings.Contains(text(responsesParts(m.Content)), "<system-reminder>"):
++			if !strings.Contains(text(responsesParts(m.Content)), "the user switched rooms") {
++				t.Errorf("input[%d]: a reminder without the late system message: %s", i, bodies[0])
++			}
++			reminded = true
++		}
++	}
++	if !reminded {
++		t.Fatalf("the system message after a reply was to be told as a reminder: %s", bodies[0])
++	}
++}
+-- 
+2.50.1 (Apple Git-155)
+

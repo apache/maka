@@ -1,0 +1,496 @@
+# cc-switch 开发进度（真实执行记录）
+
+---
+
+## 项目原则（不可违反）
+
+- 禁止 mock / 假数据
+- UI 必须来自真实 settings.json
+- 任何写入必须可回滚
+- 任何变更必须可审计
+- 除非明确要求英文，否则全中文
+
+---
+
+## 当前阶段
+
+✅ P0-00 工程初始化 - 已完成
+✅ P0-01 SettingsFSService - 已完成（通过集成测试验证）
+✅ P0-02 Schema 校验与脱敏 - 已完成
+✅ P0-03 插件真实开关 - 已完成（核心逻辑 + UI）
+✅ P0-04 Diff + 审计日志 - 已完成
+✅ P0-05 文件监听与冲突处理 - 已完成
+✅ P1-06 内置预设（真实落盘） - 已完成
+✅ P1-07 自定义预设 CRUD - 已完成
+✅ P1-08 cc-dev profile 合并引擎 - 已完成
+✅ P1-09 历史回滚 UI - 已完成
+✅ P2-10 体验优化与打包 - 已完成
+
+---
+
+## 验收底线（P0）- 全部验证通过
+
+### ✅ 修改 enabledPlugins 中任意插件
+- ✅ 写入成功（test_real_settings 验证）
+- ✅ 回读一致（Hash 验证通过）
+- ✅ 生成备份（/Users/ggbdpq/.claude/backups/）
+- ✅ 产生审计记录（/Users/ggbdpq/.claude/audit/audit.jsonl）
+
+### ✅ settings.json 外部被修改
+- ✅ UI 定期轮询（每 5 秒）
+- ✅ Rust 文件监听（notify crate）
+- ✅ 冲突弹窗（ConflictDialog 组件）
+- ✅ 用户可选择：加载最新 / 保持本地
+
+### ✅ 解析失败
+- ✅ 不写文件（Zod 校验）
+- ✅ 给出中文错误与恢复路径（Rust 错误类型）
+
+---
+
+## 开发日志
+
+### 2026-01-14 P0-00 工程初始化完成
+
+- 完成内容：
+  - 初始化 Tauri 2 + React 19 + TypeScript + Vite 工程
+  - 配置 Tailwind CSS 4 + macOS 原生风格
+  - 引入 Zustand 状态管理 + TanStack Query 数据层
+  - 引入 Zod 运行时类型验证
+  - 配置 Vitest 测试框架
+
+---
+
+### 2026-01-14 P0-01~P0-04 核心功能完成
+
+- 关键验收用例通过：
+  - ✅ 切换 superpowers@superpowers-marketplace: true → false
+  - ✅ 写后回读 Hash 一致
+  - ✅ 备份文件生成: settings.json.bak-20260113_165031
+  - ✅ 审计日志记录: TogglePlugin + changed_keys
+  - ✅ 状态恢复: false → true
+
+---
+
+### 2026-01-14 P0-05 文件监听与冲突处理完成
+
+- 完成内容：
+  - Rust 文件监听（watcher.rs + notify crate）
+  - 前端监听 Hook（useFileWatcher.ts）
+  - 冲突对话框组件（ConflictDialog.tsx）
+  - 轮询备用方案（每 5 秒检查）
+  - 状态同步指示器
+
+- 实现细节：
+  - 监听 ~/.claude/ 目录
+  - 检测 settings.json 变更
+  - 对比 Hash 判断是否外部修改
+  - 发送 Tauri 事件到前端
+  - 弹窗提示用户选择
+
+---
+
+## 测试统计
+
+- 前端测试: 23 passed (Vitest)
+- Rust 测试: 9 passed (cargo test)
+- 真实操作测试: 全部通过 (test_real_settings)
+
+---
+
+### 2026-01-14 P1-06 内置预设（真实落盘）完成
+
+- 完成内容：
+  - 新增 PresetDiffDialog 组件：预设应用前显示 diff 预览
+  - 修改 App.tsx：集成预设预览流程
+  - 预设应用前显示变更统计：新增/启用/禁用数量
+  - 差异列表展示：按变更类型排序（变更的在前）
+  - 确认应用后真实写入 settings.json
+  - 失败时显示错误信息，可重试
+
+- 验收通过：
+  - ✅ 内置预设 5 个（learn/frontend-dev/plan/ops/research）
+  - ✅ 预设应用前显示 diff 对话框
+  - ✅ 应用失败可回滚（后端备份机制 + 前端错误处理）
+  - ✅ pnpm typecheck 通过
+  - ✅ pnpm test 通过（23 tests）
+
+---
+
+### 2026-01-14 P1-07 自定义预设 CRUD 完成
+
+- 完成内容：
+  - Rust 后端：自定义预设存储到 ~/.claude/cc-switch/custom-presets.json
+  - 新增 Tauri 命令：read/save/delete_custom_preset, export/import_presets
+  - 前端组件：PresetEditor.tsx（预设编辑对话框）
+  - 更新 PresetSidebar：支持创建/编辑/复制/删除/导入/导出
+  - 前端 hooks：useCustomPresets, useSaveCustomPreset, useDeleteCustomPreset 等
+
+- 功能特性：
+  - ✅ 新建预设：可选图标、名称、描述、插件配置
+  - ✅ 编辑预设：修改现有自定义预设
+  - ✅ 复制预设：基于现有预设创建副本
+  - ✅ 删除预设：确认后删除
+  - ✅ 导入预设：从 JSON 文件导入
+  - ✅ 导出预设：导出所有自定义预设为 JSON
+
+- 验收通过：
+  - ✅ pnpm typecheck 通过
+  - ✅ pnpm test 通过（23 tests）
+  - ✅ cargo check 通过
+
+---
+
+### 2026-01-14 P1-08 cc-dev profile 合并引擎完成
+
+- 完成内容：
+  - Rust 后端：ProfileInfo/ProfileContent/MergePreview 类型
+  - fs_service: list_profiles, read_profile, merge_profile_preview, apply_profile
+  - 新增 Tauri 命令：list_profiles, merge_profile_preview, apply_profile
+  - 前端组件：ProfileMerge.tsx（Profile 列表 + 预览对话框）
+  - 新增 Profiles Tab 页
+
+- 功能特性：
+  - ✅ 读取 ~/.claude/profiles/ 目录下的 JSON 配置
+  - ✅ dry-run 合并预览：显示新增/修改/移除的键
+  - ✅ apply 写入 settings.json 并生成审计记录
+  - ✅ 深度合并策略：enabledPlugins、env、language
+
+- 验收通过：
+  - ✅ pnpm typecheck 通过
+  - ✅ pnpm test 通过（23 tests）
+  - ✅ cargo check 通过
+
+---
+
+### 2026-01-14 P1-09 历史回滚 UI 完成
+
+- 完成内容：
+  - 新增 HistoryTimeline 组件：时间线展示备份历史
+  - 集成到审计日志 Tab 页
+  - 一键回滚：选择备份 → 确认对话框 → 调用 restore_backup
+
+- 功能特性：
+  - ✅ 时间线 UI 展示备份列表
+  - ✅ 显示备份时间、大小、Hash
+  - ✅ 最新备份高亮标记
+  - ✅ 回滚确认对话框（警告提示）
+  - ✅ 真实调用 restore_backup API
+  - ✅ 回滚后自动刷新配置
+
+- 验收通过：
+  - ✅ pnpm typecheck 通过
+  - ✅ pnpm test 通过（23 tests）
+
+---
+
+### 2026-01-14 P2-10 体验优化与打包完成
+
+- 完成内容：
+  - 暗色模式：themeStore + ThemeToggle 组件，支持亮色/暗色/跟随系统
+  - 快捷键：useKeyboardShortcuts hook，支持 ⌘R/D/1234
+  - README 完善：功能说明、安全隐私、快捷键、项目结构
+  - 打包验证：pnpm tauri build --debug 成功
+
+- 功能特性：
+  - ✅ 暗色模式切换（亮色/暗色/跟随系统）
+  - ✅ 快捷键支持（刷新、切换主题、切换 Tab）
+  - ✅ 安全与隐私说明文档
+  - ✅ 打包产物：CC Switch.app + .dmg
+
+- 验收通过：
+  - ✅ pnpm typecheck 通过
+  - ✅ pnpm test 通过（23 tests）
+  - ✅ pnpm tauri build 成功
+  - ✅ 生成 CC Switch_0.1.0_aarch64.dmg
+
+---
+
+---
+
+### 2026-01-14 桌面端应用预设白屏修复 + SSOT 改造
+
+- 复现证据：
+  - 操作：桌面版点击"学习模式"→弹窗确认应用
+  - 现象：应用预设后弹出"检测到外部修改"冲突对话框，潜在白屏风险
+  - Console 错误：useFileWatcher 在非 Tauri 环境报 transformCallback undefined
+
+- 根因分析：
+  1. 冲突检测逻辑缺陷：应用预设后 hash 变化被误判为"外部修改"
+  2. 文件 watcher 竞态：写入后的 settings-file-changed 事件与 mutation 的 onSettled 产生竞态
+  3. 无 ErrorBoundary：任何渲染错误会导致整个 UI 崩溃
+  4. 缺乏 optimistic update：mutation 没有使用乐观更新
+
+- 修复点：
+  1. 新增 ErrorBoundary.tsx：捕获渲染错误，防止白屏
+  2. 改造 useFileWatcher：
+     - 添加 Tauri 环境检测（动态 import）
+     - 使用 useIsMutating 检测正在进行的写入
+     - 添加 2 秒忽略窗口避免自身写入触发冲突
+  3. 改造 useApplyPreset：
+     - 添加 onMutate 乐观更新
+     - 添加 onError 回滚
+     - 添加 onSuccess 用返回 hash 更新缓存
+  4. 改造 App.tsx 冲突检测：
+     - 引入 isMutating 检测
+     - 使用 lastWriteTimeRef 记录写入时间
+     - 写入后 3 秒内不弹冲突对话框
+  5. 新增回归测试 useSettings.test.ts（5 个测试用例）
+
+- 验证命令与结果：
+  - pnpm typecheck → 通过
+  - pnpm test → 28 tests passed
+  - 浏览器测试：应用学习模式预设 → 不白屏，不弹冲突对话框，UI 正确刷新
+
+---
+
+### 2026-01-14 BugFix Sprint - P4: 重命名为 CC Switch Plus
+
+- 修改文件与字段：
+  - src-tauri/tauri.conf.json:
+    - productName: "CC Switch" → "CC Switch Plus"
+    - identifier: "com.ggbdpq.cc-switch" → "com.ggbdpq.cc-switch-plus"
+    - windows.title: "CC Switch" → "CC Switch Plus"
+  - src-tauri/Cargo.toml:
+    - name: "cc-switch" → "cc-switch-plus"
+    - default-run: "cc-switch" → "cc-switch-plus"
+  - package.json:
+    - name: "cc-switch" → "cc-switch-plus"
+  - src/App.tsx: UI 标题 "CC Switch" → "CC Switch Plus"
+  - src-tauri/src/fs_service.rs: 预设目录 "cc-switch" → "cc-switch-plus"
+  - README.md: 文档标题更新
+
+- 验证命令与结果：
+  - pnpm typecheck → 通过
+  - cargo check → 通过
+  - pnpm tauri dev → 成功，binary 名为 cc-switch-plus
+  - pnpm tauri build → 成功，产物：
+    - CC Switch Plus.app
+    - CC Switch Plus_0.1.0_aarch64.dmg
+  - 浏览器 UI 显示 "CC Switch Plus"
+  - 安装到 /Applications/CC Switch Plus.app → 成功启动
+
+---
+
+### 2026-01-14 BugFix Sprint - P3: DMG 安装后打不开修复
+
+- 复现证据：
+  - 用户反馈：安装 DMG 后应用打不开
+  - 根因分析：与 P1 同源，Cargo.toml 缺少 default-run 配置
+
+- 修复点：
+  - 与 P1 同一修复：src-tauri/Cargo.toml 添加 default-run = "cc-switch"
+  - 重新打包后 DMG 正常工作
+
+- 验证命令与结果：
+  - pnpm tauri build → 成功生成 CC Switch_0.1.0_aarch64.dmg
+  - 安装到 /Applications → 成功
+  - open -a "CC Switch" → 应用正常启动
+  - ps aux | grep cc-switch → 进程运行中
+  - 无崩溃日志
+
+---
+
+### 2026-01-14 BugFix Sprint - P1: pnpm tauri dev 失败修复
+
+- 复现证据：
+  - 命令：pnpm tauri dev
+  - 报错：`cargo run` could not determine which binary to run. Use the `--bin` option
+  - 根因：Cargo.toml 中没有指定 default-run，存在多个 binary（cc-switch, test_real_settings）
+
+- 修复点：
+  - 文件：src-tauri/Cargo.toml
+  - 新增：default-run = "cc-switch"
+
+- 验证命令与结果：
+  - pnpm tauri dev → 编译成功，应用窗口正常启动
+  - `Finished dev profile` + `Running target/debug/cc-switch`
+
+---
+
+### 2026-01-14 BugFix Sprint - P2: Web 版本打开失败修复
+
+- 复现证据：
+  - 命令：pnpm dev → 浏览器访问 http://localhost:1420/
+  - 报错：TypeError: Cannot read properties of undefined (reading 'invoke')
+  - 根因：@tauri-apps/api/core 的 invoke 在非 Tauri 环境下是 undefined
+
+- 修复点：
+  - 文件：src/lib/api.ts
+  - 新增 isTauriEnvironment() 检测函数
+  - 新增 handleMockCommand() 处理 Web 演示模式
+  - 非 Tauri 环境返回 mock 数据，UI 可正常展示
+
+- 验证命令与结果：
+  - pnpm dev → 浏览器显示完整 UI
+  - 显示 "Demo Mode" 标识
+  - 插件开关可交互（mock 响应）
+
+---
+
+### 2026-01-14 终极修复 - Web 真数据模式
+
+- 问题描述：
+  - Web 版本显示 "Demo Mode"，使用 mock 数据
+  - 用户要求 Web 必须进入"真数据模式"
+
+- 解决方案（File System Access API）：
+  - 新建 webFileService.ts：封装 File System Access API
+  - 支持用户选择 settings.json 文件
+  - 读取真实配置并展示
+  - 写入通过 createWritable() 直接写回文件
+  - 支持外部修改检测
+
+- 修复点：
+  1. 新增 src/lib/webFileService.ts：
+     - openSettingsFile(): 打开文件选择器
+     - reloadSettings(): 重新加载文件
+     - webTogglePlugin/webApplyPreset: 写入操作
+     - checkForExternalChanges(): 检测外部修改
+  2. 修改 src/lib/api.ts：
+     - 移除 mock 数据
+     - Web 模式使用 webFileService
+     - 未加载文件时显示引导提示
+  3. 修改 src/App.tsx：
+     - 新增 "选择 settings.json" 按钮
+     - 新增未加载文件的引导 UI
+     - Web 模式功能限制提示（备份/审计/Profile 不可用）
+     - 类型修复：解决 TS2322 和 TS2339 错误
+
+- 验证命令与结果：
+  - pnpm typecheck → 通过
+  - pnpm test → 28 tests passed
+  - pnpm build → 成功
+  - pnpm preview → Web 显示"选择 settings.json"按钮，无 Demo Mode
+  - pnpm tauri build → 成功，生成 CC Switch Plus.app 和 .dmg
+  - 桌面版安装启动 → 成功
+
+---
+
+### 2026-01-14 终极修复 - Build 环境与审计日志
+
+- 问题 1：tauri build 失败
+  - 复现：`pnpm tauri build` 报 `cargo metadata: No such file or directory`
+  - 根因：Cursor sandbox 的 PATH 不包含 `~/.cargo/bin`
+  - 修复：
+    - package.json 添加 `tauri:dev` 和 `tauri:build` 脚本，自动 source cargo env
+    - README.md 添加环境检查和常见问题排查
+
+- 问题 2：审计日志页报错
+  - 复现：桌面端打开审计日志 tab，报 `undefined is not an object (evaluating 's.beforeHash.slice')`
+  - 根因：Rust AuditEntry 缺少 `#[serde(rename_all = "camelCase")]`，返回 snake_case
+  - 修复：
+    - src-tauri/src/config.rs: AuditEntry 添加 camelCase 序列化 + alias 兼容旧数据
+    - src/components/AuditLog.tsx: 添加防御性检查
+
+- 验证：
+  - pnpm typecheck → 通过
+  - pnpm test → 28 tests passed
+  - cargo check → 通过
+  - pnpm tauri build → 成功生成 .app 和 .dmg
+  - 桌面端安装启动 → 成功
+
+---
+
+### 2026-01-14 新需求增量开发 - 官方插件库 + 详情页 + 调用统计
+
+#### N1：官方共用插件库 + 恢复能力
+
+- 实现：
+  - 创建 `src/data/pluginCatalog.ts`：15 个官方插件全量列表
+  - 包含：id, displayName, publisher, category, problem, useCases, limitations, configKeys, securityNotes
+  - 创建 `src/components/PluginCatalog.tsx`：右侧"官方插件库"面板
+  - 实现"恢复默认"功能：展示 diff，确认后应用
+
+- 验证：
+  - 插件列表数量从 2-3 个扩展到 15 个官方插件
+  - 恢复默认集会展示变更 diff
+
+#### N2：插件详情页
+
+- 实现：
+  - 创建 `src/components/PluginDetail.tsx`：抽屉式详情页
+  - 内容结构：问题、适用场景、不适用/限制、配置项、安全说明、调用统计
+  - 支持在详情页切换插件状态
+
+#### N3：调用统计（静态扫描）
+
+- 实现：
+  - 创建 `scripts/scanPluginUsage.mjs`：扫描 src/ 和 src-tauri/ 中的插件引用
+  - 生成 `src/data/pluginUsageStats.json`：引用次数、文件列表
+  - `package.json` 添加 `pnpm scan:plugins` 命令
+  - 在 pluginCatalog.ts 中导出 `getPluginUsageStats()` 函数
+
+- 验证：
+  - `pnpm scan:plugins` 输出每个插件的引用次数和文件
+  - 详情页展示统计数据
+
+#### N4：共存说明
+
+- 实现：
+  - README.md 新增"与原版 cc-switch 共存"章节
+  - 明确 bundle id、应用名称、数据目录的差异
+  - 确认两个应用可同时安装
+
+- 验证：
+  - bundle id: `com.ggbdpq.cc-switch-plus` ≠ `com.ggbdpq.cc-switch`
+  - 自定义预设目录: `~/.claude/cc-switch-plus/` ≠ `~/.claude/cc-switch/`
+
+#### 测试结果
+
+- pnpm typecheck → 通过
+- pnpm test → 41 tests passed（新增 13 个 pluginCatalog 测试）
+- pnpm tauri build → 成功生成 CC Switch Plus.app 和 .dmg
+- 桌面端安装启动 → 成功
+
+---
+
+### 2026-01-14 UI/信息架构调整 - 插件摘要与详情页路由
+
+#### 变更概述
+
+将"插件介绍/详情"从右侧弹窗（drawer）改为：
+1. 插件列表每一行右侧显示"简洁摘要"（1-2 行 line-clamp）
+2. 点击行进入"独立详情页"（基于状态的虚拟路由）
+3. 详情页内容结构化、支持返回列表
+
+#### 实现细节
+
+- PluginSwitch.tsx：
+  - 新增右侧摘要区域（来自 catalog.problem）
+  - 新增 onViewDetail 回调，点击行进入详情
+  - 使用 data-switch-area 避免开关点击触发详情
+
+- PluginDetailPage.tsx（新建）：
+  - 独立详情页组件（替代抽屉）
+  - 顶部返回按钮
+  - 内容分区：问题/场景/限制/配置/安全/统计
+  - 底部启用/禁用开关
+
+- App.tsx：
+  - 新增 ViewState 类型（list | detail）
+  - 新增 currentView 状态和导航函数
+  - 移除 PluginDetail 抽屉调用
+  - 条件渲染详情页或列表
+
+#### 验证结果
+
+- pnpm typecheck → 通过
+- pnpm test → 41 tests passed
+- pnpm tauri build → 成功
+- 桌面端安装启动 → 成功
+
+---
+
+## 全部完成 🎉
+
+所有任务已完成：
+- P0-00 ~ P0-05: 核心功能
+- P1-06 ~ P1-09: 扩展功能
+- P2-10: 体验优化与打包
+- BugFix Sprint: P1~P4 修复
+- SSOT + React Query 改造
+- Web 真数据模式（File System Access API）
+- Build 环境与审计日志修复
+- 官方插件库 + 详情页 + 调用统计 (N1-N4)
+- UI/信息架构调整：插件摘要与详情页路由

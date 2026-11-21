@@ -1,0 +1,10 @@
+{
+  "extensionName": {
+    "message": "WebInk: 지능형 웹 to Markdown 변환기",
+    "description": "확장 프로그램 이름."
+  },
+  "extensionDescription": {
+    "message": "AI 기반 변환, 스마트 목차 생성, 다국어 번역, 원활한 읽기 경험으로 웹 페이지를 Markdown으로 변환합니다.",
+    "description": "확장 프로그램 설명."
+  }
+}

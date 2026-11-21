@@ -1,0 +1,116 @@
+From 918906a6aae946de55352a9b0b7c1296590a59a7 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Sun, 25 Oct 2026 01:14:05 +0800
+Subject: [PATCH] library: a project whose folder was deleted outside magpie
+ comes off the list when it's removed (#3510)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+RemoveProject empties a project (Skills, Servers, then syncProject) and
+takes the entry off the list only once nothing magpie placed or wrote is
+left in it. But the only thing that empties those records, syncProject,
+gives up on a folder that's gone: it says "the folder is gone" and
+returns with the records as they were — and the Result RemoveProject
+hands it is thrown away, so the removal itself says nothing; the toast
+the user sees is the one the full sync after every change reports. With
+the folder gone there is nothing magpie can ever take back, so the
+records never empty and the entry stays for good: the only way out was
+the keep checkbox, which takes the entry off the list without looking at
+the folder (#514), though that reads as keeping what magpie wrote, not
+as the way out of a dead removal.
+
+So removal now does what a skill's removal already does when its folder
+is gone (removeSkill: only the entry goes): a folder that isn't there
+has nothing of magpie's on disk to take back, so the project and the
+records of what it placed and wrote go together, and the removal says
+nothing failed. A folder that is there removes as before; a project
+gone from disk still shows its "folder is gone" badge and still reports
+the folder on a full sync; keep is untouched.
+
+TestRemoveProjectWhoseFolderIsGone is new: a project with placed skills
+whose folder is deleted outside magpie, removed without keep — the
+entry goes, the Result has no problem, the library's skills stay; and a
+gone project removed with keep goes off the list as it always did. It
+fails without the change (the removal says "the folder is gone" and the
+entry stays) and passes with it.
+
+go test -tags nogui -count=1 ./internal/library/ pass (28 project and
+gone-family tests targeted first); gofmt, go vet -tags nogui and
+go build -tags nogui ./... pass. The cgo warning from
+internal/gui/trayimage_darwin.go is there before this change.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/library/projects.go      |  7 ++++++
+ internal/library/projects_test.go | 39 +++++++++++++++++++++++++++++++
+ 2 files changed, 46 insertions(+)
+
+diff --git a/internal/library/projects.go b/internal/library/projects.go
+index 0068db89a..e91c4b1a3 100644
+--- a/internal/library/projects.go
++++ b/internal/library/projects.go
+@@ -401,6 +401,13 @@ func RemoveProject(dir string, keep bool) (*Result, error) {
+ 			l.Projects = slices.DeleteFunc(l.Projects, func(x *Project) bool { return x == p })
+ 			return nil
+ 		}
++		// a folder that's gone has nothing of magpie's on disk to take
++		// back: the records of what it placed and wrote go with the
++		// entry, as a skill's do when its folder is gone already (#3510)
++		if fi, err := os.Stat(p.Dir); err != nil || !fi.IsDir() {
++			l.Projects = slices.DeleteFunc(l.Projects, func(x *Project) bool { return x == p })
++			return nil
++		}
+ 		p.Skills, p.Servers = nil, nil
+ 		l.syncProject(p, &Result{})
+ 		if len(p.Placed) == 0 && len(p.Wrote) == 0 {
+diff --git a/internal/library/projects_test.go b/internal/library/projects_test.go
+index e21a8b13e..2053ffb2d 100644
+--- a/internal/library/projects_test.go
++++ b/internal/library/projects_test.go
+@@ -250,3 +250,42 @@ func TestRemoveSkillWhoseFolderIsGone(t *testing.T) {
+ 		t.Error("pdf still listed")
+ 	}
+ }
++
++// #3510: a project whose folder was deleted outside magpie comes off the
++// list when it's removed: there's nothing of magpie's on disk to take
++// back, so the records of what it placed go with the entry, and the
++// removal says nothing failed. keep takes a gone project off the list as
++// it always did (#514).
++func TestRemoveProjectWhoseFolderIsGone(t *testing.T) {
++	_, proj := projectLib(t)
++	ok(t)(ProjectSkill(proj, "pdf", []string{"claude", "codex"}))
++	if v, _ := Read(nil); len(v.Projects) != 1 || len(v.Projects[0].Placed) == 0 {
++		t.Fatalf("projects: %+v", v.Projects)
++	}
++	if err := os.RemoveAll(proj); err != nil {
++		t.Fatal(err)
++	}
++	r, err := RemoveProject(proj, false)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if len(r.Problems) != 0 {
++		t.Errorf("the removal said: %+v", r.Problems)
++	}
++	if v, _ := Read(nil); len(v.Projects) != 0 {
++		t.Errorf("projects: %+v", v.Projects)
++	}
++	if v, _ := Read(nil); len(v.Skills) != 2 {
++		t.Errorf("skills: %+v", v.Skills)
++	}
++
++	_, proj = projectLib(t)
++	ok(t)(ProjectSkill(proj, "docx", []string{"claude"}))
++	if err := os.RemoveAll(proj); err != nil {
++		t.Fatal(err)
++	}
++	ok(t)(RemoveProject(proj, true))
++	if v, _ := Read(nil); len(v.Projects) != 0 {
++		t.Errorf("kept projects: %+v", v.Projects)
++	}
++}
+-- 
+2.50.1 (Apple Git-155)
+

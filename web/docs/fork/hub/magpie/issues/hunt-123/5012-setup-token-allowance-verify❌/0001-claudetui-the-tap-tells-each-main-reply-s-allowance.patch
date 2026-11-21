@@ -1,0 +1,286 @@
+From 03f3f60114fa92d3d1be191bfc17106036cbffc2 Mon Sep 17 00:00:00 2001
+From: Nio <ddnio777@gmail.com>
+Date: Tue, 3 Nov 2026 12:32:39 +0800
+Subject: [PATCH] claudetui: the tap tells each main reply's allowance headers,
+ so a setup-token account's 5h and 7d are known in interactive mode
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+A `claude setup-token` account's allowance stayed "剩余额度未知" in magpie
+with the bridge in interactive mode, the default: on a NAS gateway
+(x86_64, Claude Code 2.1.309) its card never showed a window, however
+many replies went through it. #2392, jsk644102-art, saw the same on
+0.1.2627 and pointed at the cause and at tap.js as the place to fix it.
+
+Why: such a token has the inference scope only, so `/usage` is never run
+for it (errClaudeSetupToken) and only replies can tell its windows. In
+interactive mode the helper learns them from the transcript, which keeps
+`rate_limit_info` only on a `<synthetic>` API error row, a request turned
+away. Every `/v1/messages` reply carries them in its
+`anthropic-ratelimit-unified-*` headers; `-p` tells them as a
+`rate_limit_event`, the interactive path never did.
+
+- tap.js: for each main-turn `/v1/messages` reply, streamed or not, it
+  writes `{limits}`, the reply's `anthropic-ratelimit-unified-*` headers
+  keyed without that prefix.
+- tap.go: a `{limits}` line is told as the `rate_limit_event` `-p` tells
+  for the same reply (`limitsInfo`): `status`, `rateLimitType` and
+  `resetsAt` from `status`, `representative-claim` and `reset`, and
+  `5h`, `7d` and `7d_oi` as `unifiedWindows` `five_hour`, `seven_day`
+  and `seven_day_overage_included`, Claude Code's own mapping. The
+  bridge's claudeLimits and NoteClaudeLimits take it unchanged.
+- A share that doesn't parse is a window not told, never one unused;
+  headers with no share and no refusal tell nothing.
+- docs/subsystems/claude-subscription-bridge.md describes `{limits}`.
+
+Tests:
+- TestTapTellsLimits: a `{limits}` line holding the headers of a real
+  reply, on a setup-token account, is told with the same `status`,
+  `rateLimitType`, `resetsAt` and `unifiedWindows` as Claude Code
+  2.1.309's own `-p` `rate_limit_event` for that account.
+- TestTapLimitsUnsaid: no share, an empty or unparsable share, a refusal
+  with no window, one window of two.
+
+Run, rebased on origin/main 6b8134430, on macOS arm64:
+- gofmt -l clean; go vet ./internal/claudetui, GOOS=linux go vet -tags
+  nogui and GOOS=windows go vet of it.
+- go test ./internal/claudetui ok; go test -tags nogui ./internal/gateway -run on Claude limits, rate and usage: ok.
+- Earlier, on 8af751987: go vet and builds for darwin, linux (nogui) and
+  windows, and go test -tags nogui ./...: ok except
+  TestProxyCheckSaysAProxyPassedBy (gui) and TestGitSignInRefusedSaysSo
+  (library), which fail the same at origin/main without this change.
+- Deployed as 0.1.2796 plus this on two gateways: the NAS above
+  (setup-token account) and a Linux arm64 VM (browser sign-in). After
+  one request each, `magpie quota` on a third computer shows both
+  accounts' 5h and 7d with their resets; the setup-token one showed
+  none before.
+
+Broken by hand: with the `{limits}` line read but not told
+(`&& false`), TestTapTellsLimits goes red.
+
+Not tried: Windows and macOS hosts running the bridge; a 429 reply
+through the tap (the refusal case is covered in limitsInfo only).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ docs/subsystems/claude-subscription-bridge.md | 15 +++++
+ internal/claudetui/tap.go                     | 56 +++++++++++++++++--
+ internal/claudetui/tap.js                     | 17 +++++-
+ internal/claudetui/tap_test.go                | 50 +++++++++++++++++
+ 4 files changed, 130 insertions(+), 8 deletions(-)
+
+diff --git a/docs/subsystems/claude-subscription-bridge.md b/docs/subsystems/claude-subscription-bridge.md
+index ba636294a..d09da0c39 100644
+--- a/docs/subsystems/claude-subscription-bridge.md
++++ b/docs/subsystems/claude-subscription-bridge.md
+@@ -224,6 +224,21 @@ The tap parses the other and writes one JSON line per event to the file:
+ `{tap: "on"}`, or `{tap: "none"}` when there is no `FetchSession` to
+ replace.
+ 
++For every reply to such a main-turn `/v1/messages` request, streamed or
++not, the tap also writes `{limits}`: its `anthropic-ratelimit-unified-*`
++headers, keyed without that prefix. The transcript keeps a reply's
++`rate_limit_info` only for a request turned away, so without them an
++account that can't run `/usage` (a setup-token's) stayed unknown in
++interactive mode. The helper tells them as the `rate_limit_event` `-p`
++tells for the same reply (`limitsInfo`): `status`, `rateLimitType` and
++`resetsAt` from `status`, `representative-claim` and `reset`, and each of
++`5h`, `7d` and `7d_oi` whose `-utilization` parses as the
++`unifiedWindows` entry `five_hour`, `seven_day` and
++`seven_day_overage_included`, as Claude Code itself maps them. A share that
++doesn't parse is a window not told, never one unused, and headers that tell
++no share and no refusal tell nothing (`TestTapTellsLimits`,
++`TestTapLimitsUnsaid`).
++
+ The helper reads the file every time round the tail loop, every 10ms
+ while a stream is open, and tells each event as `-p` does: a
+ `stream_event` line. Order is kept two ways:
+diff --git a/internal/claudetui/tap.go b/internal/claudetui/tap.go
+index ae499823e..7ac76c5b7 100644
+--- a/internal/claudetui/tap.go
++++ b/internal/claudetui/tap.go
+@@ -146,11 +146,12 @@ func (t *tap) read() {
+ 
+ func (t *tap) line(b []byte) {
+ 	var l struct {
+-		Tap   string          `json:"tap"`
+-		S     int             `json:"s"`
+-		Open  bool            `json:"open"`
+-		End   string          `json:"end"`
+-		Event json.RawMessage `json:"e"`
++		Tap    string            `json:"tap"`
++		S      int               `json:"s"`
++		Open   bool              `json:"open"`
++		End    string            `json:"end"`
++		Event  json.RawMessage   `json:"e"`
++		Limits map[string]string `json:"limits"`
+ 	}
+ 	if json.Unmarshal(b, &l) != nil || t.ended[l.S] {
+ 		return
+@@ -158,6 +159,10 @@ func (t *tap) line(b []byte) {
+ 	switch {
+ 	case l.Tap != "":
+ 		t.on = l.Tap == "on"
++	case len(l.Limits) > 0:
++		if info := limitsInfo(l.Limits); info != nil {
++			t.out.emit(map[string]any{"type": "rate_limit_event", "rate_limit_info": info, "session_id": t.sid})
++		}
+ 	case l.Open:
+ 		t.open[l.S] = &tapStream{}
+ 	case len(l.Event) > 0:
+@@ -207,6 +212,47 @@ func (t *tap) event(e json.RawMessage) {
+ 	t.out.emit(map[string]any{"type": "stream_event", "event": e, "session_id": t.sid, "parent_tool_use_id": nil})
+ }
+ 
++// limitWindows are the windows a reply's anthropic-ratelimit-unified-*
++// headers name, by the short name in the header (5h-utilization), as
++// Claude Code reads them into a rate_limit_event's unifiedWindows.
++var limitWindows = [][2]string{{"five_hour", "5h"}, {"seven_day", "7d"}, {"seven_day_overage_included", "7d_oi"}}
++
++// limitsInfo is the rate_limit_info -p tells for a reply whose
++// anthropic-ratelimit-unified-* headers are h, keyed without that prefix:
++// its status, the window it is about and when that renews, and each
++// window whose share used is said. Nil when h says none of that.
++func limitsInfo(h map[string]string) map[string]any {
++	info := map[string]any{}
++	windows := map[string]any{}
++	for _, w := range limitWindows {
++		used, err := strconv.ParseFloat(h[w[1]+"-utilization"], 64)
++		if err != nil {
++			continue // not said: unknown, not none used
++		}
++		win := map[string]any{"utilization": used}
++		if at, err := strconv.ParseFloat(h[w[1]+"-reset"], 64); err == nil {
++			win["resetsAt"] = int64(at + 0.5)
++		}
++		windows[w[0]] = win
++	}
++	if len(windows) > 0 {
++		info["unifiedWindows"] = windows
++	}
++	if s := h["status"]; s != "" {
++		info["status"] = s
++	}
++	if c := h["representative-claim"]; c != "" {
++		info["rateLimitType"] = c
++		if at, err := strconv.ParseFloat(h["reset"], 64); err == nil {
++			info["resetsAt"] = int64(at + 0.5)
++		}
++	}
++	if len(windows) == 0 && info["status"] != "rejected" {
++		return nil // nothing the bridge keeps (claudeLimits)
++	}
++	return info
++}
++
+ // going says whether a stream is open, one with no message yet if bare.
+ func (t *tap) going(bare bool) bool {
+ 	for _, st := range t.open {
+diff --git a/internal/claudetui/tap.js b/internal/claudetui/tap.js
+index 42ceee754..da13ce73c 100644
+--- a/internal/claudetui/tap.js
++++ b/internal/claudetui/tap.js
+@@ -5,7 +5,9 @@
+ // and TLS untouched, and copies the reply of each of the main turn's
+ // requests (x-claude-code-request-class: main), as it streams, to the
+ // file MAGPIE_CLAUDE_TAP names: a JSON line an event. Claude Code reads
+-// its own copy of the stream as before.
++// its own copy of the stream as before. Each such reply's
++// anthropic-ratelimit-unified-* headers, the account's allowance, are
++// written too: the transcript keeps them only for a request turned away.
+ //
+ // MAGPIE_CLAUDE_GUARD names a file of the bridge's holding the
+ // CLAUDE_CODE_EXTRA_BODY a turn of the client's gave (its safeguards).
+@@ -132,9 +134,18 @@
+       try {
+         const url = String((input && input.url) || input);
+         const headers = new Headers((init && init.headers) || (input && input.headers) || undefined);
++        const main = headers.get("x-claude-code-request-class") === "main" && /\/v1\/messages(\?|$)/.test(url);
++        if (main) {
++          const limits = {};
++          res.headers.forEach((v, k) => {
++            if (k.toLowerCase().startsWith("anthropic-ratelimit-unified-")) {
++              limits[k.toLowerCase().slice("anthropic-ratelimit-unified-".length)] = v;
++            }
++          });
++          if (Object.keys(limits).length) put({ limits });
++        }
+         if (
+-          headers.get("x-claude-code-request-class") === "main" &&
+-          /\/v1\/messages(\?|$)/.test(url) &&
++          main &&
+           res.body &&
+           /^text\/event-stream/.test(res.headers.get("content-type") || "")
+         ) {
+diff --git a/internal/claudetui/tap_test.go b/internal/claudetui/tap_test.go
+index 06df5fc2a..57273c128 100644
+--- a/internal/claudetui/tap_test.go
++++ b/internal/claudetui/tap_test.go
+@@ -1,9 +1,11 @@
+ package claudetui
+ 
+ import (
++	"encoding/json"
+ 	"fmt"
+ 	"os"
+ 	"path/filepath"
++	"reflect"
+ 	"runtime"
+ 	"slices"
+ 	"strings"
+@@ -275,3 +277,51 @@ func TestShimStreamsThroughTap(t *testing.T) {
+ 		t.Fatalf("the stream said %v", d)
+ 	}
+ }
++
++// A reply's allowance headers, which the transcript keeps only for a
++// request turned away, are told as the rate_limit_event -p tells for the
++// same reply: Claude Code 2.1.309's, on a setup-token account, is
++// rateLimitEvent.
++func TestTapTellsLimits(t *testing.T) {
++	const rateLimitEvent = `{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","resetsAt":1793690400,"rateLimitType":"five_hour","overageStatus":"rejected","overageDisabledReason":"org_level_disabled","isUsingOverage":false,"unifiedWindows":{"five_hour":{"utilization":0.32,"resetsAt":1793690400},"seven_day":{"utilization":0.3,"resetsAt":1793718000}}}}`
++	l := &lines{}
++	tp, write := testTap(t, l)
++	write(`{"tap":"on"}`,
++		`{"limits":{"status":"allowed","5h-status":"allowed","5h-reset":"1793690400","5h-utilization":"0.32","7d-status":"allowed","7d-reset":"1793718000","7d-utilization":"0.3","representative-claim":"five_hour","reset":"1793690400","fallback-percentage":"0.5","overage-status":"rejected","overage-disabled-reason":"org_level_disabled"}}`,
++		`{"s":1,"open":true}`)
++	tp.read()
++	if len(l.out) != 1 || l.out[0]["type"] != "rate_limit_event" {
++		t.Fatalf("told %v", l.out)
++	}
++	var want map[string]any
++	_ = json.Unmarshal([]byte(rateLimitEvent), &want)
++	got := l.out[0]["rate_limit_info"].(map[string]any)
++	for _, k := range []string{"status", "rateLimitType", "resetsAt", "unifiedWindows"} {
++		if !reflect.DeepEqual(got[k], want["rate_limit_info"].(map[string]any)[k]) {
++			t.Fatalf("%s: told %v, -p tells %v", k, got[k], want["rate_limit_info"].(map[string]any)[k])
++		}
++	}
++}
++
++// Headers that say no window's share and no refusal tell nothing, and a
++// share that doesn't parse is a window not said, never one unused.
++func TestTapLimitsUnsaid(t *testing.T) {
++	for _, h := range []map[string]string{
++		{"status": "allowed"},
++		{"status": "allowed", "5h-utilization": "", "5h-reset": "1793690400"},
++		{"status": "allowed", "7d-utilization": "n/a"},
++	} {
++		if info := limitsInfo(h); info != nil {
++			t.Fatalf("%v told %v", h, info)
++		}
++	}
++	info := limitsInfo(map[string]string{"status": "rejected", "representative-claim": "seven_day", "reset": "1793718000"})
++	if info == nil || info["status"] != "rejected" || info["rateLimitType"] != "seven_day" || info["resetsAt"] != int64(1793718000) || info["unifiedWindows"] != nil {
++		t.Fatalf("a refusal told %v", info)
++	}
++	info = limitsInfo(map[string]string{"5h-utilization": "0.5", "7d-utilization": "x"})
++	w, _ := info["unifiedWindows"].(map[string]any)
++	if len(w) != 1 || w["five_hour"].(map[string]any)["resetsAt"] != nil {
++		t.Fatalf("told %v", info)
++	}
++}
+-- 
+2.50.1 (Apple Git-155)
+

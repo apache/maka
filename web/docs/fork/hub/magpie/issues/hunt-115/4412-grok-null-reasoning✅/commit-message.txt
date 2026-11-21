@@ -1,0 +1,20 @@
+fix(gateway): a Grok key relay's compaction-blob refusal now strips the sealed reasoning and asks again (#4412)
+
+What changed: foreignReasoning — the words that mark a vendor's refusal
+of sealed reasoning it cannot read, and put the conversation on the
+asked-again-without-it path (strip, retry, and the seal left out of
+later turns up front) — gains one alternative for xAI's "Could not
+decode the compaction blob. Ensure it is unmodified from the compact
+response." A key relay that proxies Grok (an opencode-go-style member,
+no account, any base URL) hands back exactly that for the reasoning
+item Codex writes with "content": null beside its encrypted_content,
+and until now the 400 went to the client after a single try: the
+#3392 shaping (xaiBody's null-content removal) never runs on such a
+relay because its host is not api.x.ai, and the refusal named no item
+and nothing of encrypted content, so foreignReasoning passed it by.
+The wording anchors on "could not decode/decrypt ... compaction blob",
+so a refusal at fault some other way still is not taken for one.
+
+Run: go test ./internal/gateway/ -run 'TestForeignSealGrokRelayCompactionBlob|TestForeignReasoningWords' -tags nogui (both fail on the parent, pass here; the ablation — reverting internal/gateway/affinity.go alone — turns both red again); go test ./internal/gateway/ -tags nogui; gofmt clean on both files; go vet -tags nogui on internal/gateway for darwin, linux and windows; go build -tags nogui for all three.
+
+Generated-by: GLM-5.3-Flash (ZCode)

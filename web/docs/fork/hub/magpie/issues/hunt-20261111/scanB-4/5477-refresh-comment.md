@@ -1,0 +1,19 @@
+Thank you @dorokuma — your end-to-end run is the strongest evidence this patch has: unpatched `main` reproducing the report's exact failure (HTTP 400, `previous_response_not_found` over the foreign pointer), the patched gateway refusing once, asking again without `previous_response_id` with the input whole, and completing on B, plus the negative control (an unrelated 400 from B handed through, B asked once) — that is the whole shape the patch was built for, now verified on the reporter's side. On the PR: this repo's house rule is patches attached to the issue (no personal PRs), so the branch and the native `.patch` stay here for review.
+
+Refreshed again onto current `upstream/main` — this time onto this lane's branch (cherry-picked over #5692's and #5698's commits, based on `60559ee73`, zero conflicts; the cherry-picked patch is line-for-line the one you verified — only index lines and hunk offsets differ). Re-checked at POST time: no commit between the branch base and the then tip (`10c331531`) touches `gateway.go`'s attempt path, `prev_response_test.go`, or the routing doc's passages this patch edits — upstream's drift since the base you built (`a1f2c37ea`) leaves the refused-pointer door as this patch left it.
+
+Sibling scan re-done over `a1f2c37ea..10c331531`: no upstream commit churns `prevLost`, `previous_response_id`, or the `passthrough` relay path this retry block sits in (the one `-S prevLost` hit, `ab084fdf2`, is the model system-prompt work — new files; its `gateway.go` lines never mention `prevLost`).
+
+Tests re-run on the new base: `TestUnknownPreviousResponseRefusedIsAskedAgainWithoutIt`, the `TestUnknownPreviousResponse*`/`TestPreviousResponse*`/`TestPrevStore*`/`TestKeptTurn*` families, and `TestGroupOnResponses*`/`TestGroupOfResponses*` — all green; the refused/relay/notfound set green under `-race`.
+
+Ablation re-done on the new base, this time removing the retry block whole (`git diff --stat`: 1 file, 11 deletions): `TestUnknownPreviousResponseRefusedIsAskedAgainWithoutIt` red (the 400 goes out as written — your unpatched result), the rest of the family stays green → restored → green, `git diff --stat` empty against the commit.
+
+Full run on the new base (this lane's tree through #5692 and #5698 plus this commit): `go test -tags nogui -count=1 -timeout 40m ./internal/gateway/` — 906s, one failure: `TestKeyLimitReservationsStayInTheirWindow`, which the branch base (`60559ee73`) already carries (upstream fixed it afterwards, `535f0dd95`; the same base-local red was attributed in #5692's refresh) — nothing of this patch's. `gofmt -l` on the changed files prints nothing; `go vet -tags nogui ./internal/gateway/` clean; `GOOS=linux go build -tags nogui ./...` and `GOOS=windows go build ./...` clean.
+
+Fresh patch: `git am` applies it as is on a clean checkout of `10c331531`, the then tip (a POST-time re-fetch of upstream/main shows the tip already further along, none of the new commits touching this patch's three paths); sha256 first 16 = `8c094ad33eb0245a` (of the native [`.patch`](https://github.com/ggbdpq/magpie/commit/2af9a0f8e4cea177e82abadeed8ba4301fe551f9.patch), 9,346 bytes; bytes differ from the previous post's `064e3a5246b9f2a2` through the rebase's line shifts — the semantic diff is unchanged); branch: [`hunt-20261111-sb4`](https://github.com/ggbdpq/magpie/tree/hunt-20261111-sb4) (head `2af9a0f8e4cea177e82abadeed8ba4301fe551f9`, this lane's branch, one commit per issue — this one is #5477's).
+
+Your two boundary notes stand as the patch's own limits: the retry covers non-streaming requests, and recognising the refusal reads the standard OpenAI-style `previous_response_not_found` body (`prevRefused`) — other providers' refusal shapes are untested.
+
+NOT-RUNNABLE as before: a real relay group over Pi/omp/droid/dsh accounts — your two-mock-provider flip is the closest live reproduction of the report this issue has.
+
+Generated-by: GLM-5.3-Flash (ZCode)

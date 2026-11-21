@@ -1,0 +1,396 @@
+diff --git a/docs/subsystems/gateway-routing.md b/docs/subsystems/gateway-routing.md
+index 7e0e0df7..ea58aba8 100644
+--- a/docs/subsystems/gateway-routing.md
++++ b/docs/subsystems/gateway-routing.md
+@@ -829,3 +829,15 @@ missing type. It adds the type only at the final target, preserving intermediate
+ reference schemas (including a format or description); dangling and cyclic chains
+ remain unchanged (#3205, `TestKimiToolRefTypesRefChain`). Other providers retain
+ the original schema (`TestKimiToolRefTypes`).
++
++Third-party native Responses relays mark calls to offered namespaced tools with
++`encrypted_function_args: []` when the upstream supplied no encryption marker,
++as translated replies do. Existing encryption markers are preserved; calls
++outside the offered namespaces and native OpenAI/ChatGPT replies stay unchanged
++(#3183, `TestNativeRelayNamespacedCallSaysUnsealed`,
++`TestNativeRelayLeavesOtherCallsBe`). A following plaintext `agent_message`
++becomes a user message before that vendor is asked, retaining its sender,
++recipient, text and images through `provider.PlainAgentMessage` (also used by
++Grok). Sealed or unsupported task content is left opaque. OpenAI/ChatGPT and a
++Codex-as-sent provider keep their original request path
++(`TestNativeRelayPlainAgentMessage`, `TestCodexSealedAgentHandoffNativePassthrough`).
+diff --git a/internal/gateway/codex_backend.go b/internal/gateway/codex_backend.go
+index fb8f8c38..a4f02c49 100644
+--- a/internal/gateway/codex_backend.go
++++ b/internal/gateway/codex_backend.go
+@@ -2420,12 +2420,12 @@ func boundCallIDs(body []byte) []byte {
+ // openai_base_url), or CC Switch's table so named for remote compaction.
+ // Under any other name Codex leaves them out itself (client.rs, !is_openai).
+ var openaiOnly = [][]byte{[]byte(`"internal_chat_message_metadata_passthrough"`),
+-	[]byte(`"encrypted_function_args"`), []byte(`"stream_options"`), []byte(`"configuration_update"`)}
++	[]byte(`"encrypted_function_args"`), []byte(`"stream_options"`), []byte(`"configuration_update"`), []byte(`"agent_message"`)}
+ 
+ // forVendor is a Responses request as Codex sends it to a provider not
+ // OpenAI's: without its messages' internal metadata, a call's
+ // encrypted_function_args, stream_options' reasoning_summary_delivery and
+-// configuration_update items.
++// configuration_update items; plain agent_message items become user messages.
+ // A relay that checks it is Codex's turned the lot away ("invalid codex
+ // request", #292). OpenAI's API and the ChatGPT backend get it as it came;
+ // so does anything else, byte for byte, when none of them is in it.
+@@ -2472,6 +2472,15 @@ func forVendor(p provider.Provider, body []byte) []byte {
+ 				delete(it, "encrypted_function_args")
+ 				raw, _ = marshalPlain(it)
+ 			}
++			if string(it["type"]) == `"agent_message"` {
++				var item map[string]any
++				if json.Unmarshal(raw, &item) == nil {
++					if message, ok := provider.PlainAgentMessage(item); ok {
++						raw, _ = marshalPlain(message)
++						changed = true
++					}
++				}
++			}
+ 			out = append(out, raw)
+ 		}
+ 		if changed {
+@@ -2506,7 +2515,7 @@ func forVendorChanges(body []byte) bool {
+ 		if len(it) == 0 || it[0] != '{' {
+ 			return false
+ 		}
+-		if string(memberOrNil(it, "type")) == `"configuration_update"` {
++		if typ := string(memberOrNil(it, "type")); typ == `"configuration_update"` || typ == `"agent_message"` {
+ 			return true
+ 		}
+ 		_, meta := memberOf(it, "internal_chat_message_metadata_passthrough")
+diff --git a/internal/gateway/gateway.go b/internal/gateway/gateway.go
+index 01ed550a..78464d61 100644
+--- a/internal/gateway/gateway.go
++++ b/internal/gateway/gateway.go
+@@ -4389,9 +4389,11 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
+ 	}
+ 	// a Grok subscription is given Codex's namespaced functions flat
+ 	// (grokBody), and Zed's plugin likewise (ZedBody); a call to one goes
+-	// back under its namespace (#404)
++	// back under its namespace (#404). Any vendor asked as Codex sends it
++	// has its namespaced calls read by Codex: one without the empty
++	// encrypted_function_args list reads as sealed (#3183)
+ 	var named map[string]nsTool
+-	if proto == provider.Responses && p.Account != nil && (p.Account.Agent == "grok" || p.PluginProvider() == "grok" || p.PluginProvider() == "zed") {
++	if proto == provider.Responses && (p.Account == nil || p.Account.Agent != "codex") && !strings.HasSuffix(p.Host(), "openai.com") {
+ 		named = namespacedIn(body)
+ 	}
+ 	res, err := s.forward(r.Context(), p, proto, path, p.Prepare(body), r.Header)
+diff --git a/internal/gateway/grok_namespace.go b/internal/gateway/grok_namespace.go
+index f15a502f..c946acca 100644
+--- a/internal/gateway/grok_namespace.go
++++ b/internal/gateway/grok_namespace.go
+@@ -165,12 +165,28 @@ func (t *nsTidy) restore(data []byte) ([]byte, bool) {
+ }
+ 
+ // call names a function_call to a namespaced function by its name and
+-// namespace, and reports whether it was one.
++// namespace, and reports whether it was one. A call whose namespace the
++// upstream said itself (a vendor asked as Codex sends it, #3183) needs no
++// naming, only the word that its arguments are not sealed: Codex reads a
++// namespaced call without the empty list as sealed, and the plain-text
++// task would reach its subagent as ciphertext.
+ func (t *nsTidy) call(it map[string]any) bool {
+-	if it == nil || it["type"] != "function_call" || it["namespace"] != nil {
++	if it == nil || it["type"] != "function_call" {
+ 		return false
+ 	}
+ 	name, _ := it["name"].(string)
++	if ns, _ := it["namespace"].(string); ns != "" {
++		for _, q := range t.named {
++			if q.Namespace == ns && q.Name == name {
++				if _, ok := it["encrypted_function_args"]; !ok {
++					it["encrypted_function_args"] = []any{}
++					return true
++				}
++				break
++			}
++		}
++		return false
++	}
+ 	if _, ok := t.named[name]; !ok {
+ 		return false
+ 	}
+diff --git a/internal/gateway/native_relay_collab_test.go b/internal/gateway/native_relay_collab_test.go
+new file mode 100644
+index 00000000..316d372b
+--- /dev/null
++++ b/internal/gateway/native_relay_collab_test.go
+@@ -0,0 +1,233 @@
++package gateway
++
++import (
++	"encoding/json"
++	"io"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"sync"
++	"testing"
++
++	"github.com/yetone/magpie/internal/provider"
++)
++
++// codexCollabTools is Codex's collaboration namespace, spawn_agent in it.
++const codexCollabTools = `"tools":[
++	{"type":"function","name":"exec_command","parameters":{"type":"object"}},
++	{"type":"namespace","name":"collaboration","description":"Tools in the collaboration namespace.","tools":[
++		{"type":"function","name":"spawn_agent","description":"Spawns an agent.","parameters":{"type":"object","properties":{"message":{"type":"string","encrypted":true}}}}
++	]}
++]`
++
++// #3183 (john-zeng-233): a vendor serving the Responses API natively is
++// relayed Codex's request as it came, and its reply goes back as it came:
++// the call to collaboration.spawn_agent reached Codex without the empty
++// encrypted_function_args list, and Codex read the plain-text message as
++// sealed — the subagent was handed its task in an encrypted_content and
++// asked what the task was. Codex picks DirectPlaintextMessage only when
++// the list is there and empty, as the translated path's callTo gives it.
++func TestNativeRelayNamespacedCallSaysUnsealed(t *testing.T) {
++	fresh(t)
++	var mu sync.Mutex
++	var sent []map[string]any
++	call := `{"type":"function_call","id":"fc_1","call_id":"c9","name":"spawn_agent","namespace":"collaboration","arguments":"{\"message\":\"go\"}","status":"completed"}`
++	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		b, _ := io.ReadAll(r.Body)
++		var q map[string]any
++		json.Unmarshal(b, &q)
++		mu.Lock()
++		sent = append(sent, q)
++		mu.Unlock()
++		done := `{"id":"r1","object":"response","status":"completed","output":[` + call + `],"usage":{"input_tokens":5,"output_tokens":3}}`
++		if q["stream"] != true {
++			w.Header().Set("Content-Type", "application/json")
++			io.WriteString(w, done)
++			return
++		}
++		w.Header().Set("Content-Type", "text/event-stream")
++		io.WriteString(w, sse(
++			`event: response.created`+"\n"+`data: {"type":"response.created","response":{"id":"r1","object":"response","status":"in_progress","output":[]}}`,
++			`event: response.output_item.added`+"\n"+`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc_1","call_id":"c9","name":"spawn_agent","namespace":"collaboration","arguments":""}}`,
++			`event: response.output_item.done`+"\n"+`data: {"type":"response.output_item.done","output_index":0,"item":`+call+`}`,
++			`event: response.completed`+"\n"+`data: {"type":"response.completed","response":`+done+`}`))
++	}))
++	defer up.Close()
++	if err := provider.Save(provider.Provider{ID: "ucloud", Name: "UCloud", Key: "k", Models: []string{"m"}, Responses: up.URL + "/v1"}); err != nil {
++		t.Fatal(err)
++	}
++	s := New()
++	for _, stream := range []bool{true, false} {
++		mu.Lock()
++		sent = nil
++		mu.Unlock()
++		body := `{"model":"ucloud/m","stream":` + map[bool]string{true: "true", false: "false"}[stream] + `,` + codexCollabTools + `,"input":[{"type":"message","role":"user","content":"go"}]}`
++		rec := httptest.NewRecorder()
++		s.Handler().ServeHTTP(rec, httptest.NewRequest("POST", "/v1/responses", strings.NewReader(body)))
++		if rec.Code != 200 {
++			t.Fatalf("stream %v: %d %s", stream, rec.Code, rec.Body)
++		}
++		// relayed, not translated: the namespace went up as Codex sent it
++		mu.Lock()
++		if len(sent) != 1 {
++			t.Fatalf("stream %v: the vendor was asked %d times", stream, len(sent))
++		}
++		q := sent[0]
++		mu.Unlock()
++		tools, _ := q["tools"].([]any)
++		if len(tools) != 2 {
++			t.Fatalf("stream %v: the vendor was offered %v", stream, q["tools"])
++		}
++		if tm, _ := tools[1].(map[string]any); tm["type"] != "namespace" || tm["name"] != "collaboration" {
++			t.Fatalf("stream %v: the request was translated, its tools went as %v", stream, q["tools"])
++		}
++
++		// every function_call Codex reads says its arguments are plain text
++		var items []map[string]any
++		if stream {
++			for _, line := range strings.Split(rec.Body.String(), "\n") {
++				data, ok := strings.CutPrefix(line, "data: ")
++				if !ok {
++					continue
++				}
++				var ev struct {
++					Item     map[string]any `json:"item"`
++					Response struct {
++						Output []map[string]any `json:"output"`
++					} `json:"response"`
++				}
++				if err := json.Unmarshal([]byte(data), &ev); err != nil {
++					t.Fatalf("%v: %s", err, data)
++				}
++				if ev.Item != nil {
++					items = append(items, ev.Item)
++				}
++				items = append(items, ev.Response.Output...)
++			}
++		} else {
++			var res struct {
++				Output []map[string]any `json:"output"`
++			}
++			if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
++				t.Fatalf("%v: %s", err, rec.Body)
++			}
++			items = res.Output
++		}
++		if len(items) == 0 || stream && len(items) != 3 {
++			t.Fatalf("stream %v: %s", stream, rec.Body)
++		}
++		for _, it := range items {
++			sealed, ok := it["encrypted_function_args"].([]any)
++			if it["name"] != "spawn_agent" || it["namespace"] != "collaboration" || !ok || len(sealed) != 0 {
++				t.Fatalf("stream %v: Codex was given %v", stream, it)
++			}
++		}
++	}
++}
++
++// The seal a reply carries is the seal the client reads: an upstream that
++// answered a namespaced call with its arguments sealed hands that seal on
++// untouched, and a call to a tool outside every namespace says nothing
++// about seals either way (#3183).
++func TestNativeRelayLeavesOtherCallsBe(t *testing.T) {
++	fresh(t)
++	sealed := `{"type":"function_call","id":"fc_1","call_id":"c9","name":"spawn_agent","namespace":"collaboration","arguments":"","encrypted_function_args":[{"content":"gAAAAAsealed"}],"status":"completed"}`
++	plain := `{"type":"function_call","id":"fc_2","call_id":"c8","name":"exec_command","arguments":"{}","status":"completed"}`
++	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		io.ReadAll(r.Body)
++		w.Header().Set("Content-Type", "application/json")
++		io.WriteString(w, `{"id":"r1","object":"response","status":"completed","output":[`+sealed+`,`+plain+`],"usage":{"input_tokens":5,"output_tokens":3}}`)
++	}))
++	defer up.Close()
++	if err := provider.Save(provider.Provider{ID: "ucloud", Name: "UCloud", Key: "k", Models: []string{"m"}, Responses: up.URL + "/v1"}); err != nil {
++		t.Fatal(err)
++	}
++	s := New()
++	body := `{"model":"ucloud/m","stream":false,` + codexCollabTools + `,"input":[{"type":"message","role":"user","content":"go"}]}`
++	rec := httptest.NewRecorder()
++	s.Handler().ServeHTTP(rec, httptest.NewRequest("POST", "/v1/responses", strings.NewReader(body)))
++	if rec.Code != 200 {
++		t.Fatalf("%d %s", rec.Code, rec.Body)
++	}
++	var res struct {
++		Output []map[string]any `json:"output"`
++	}
++	if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
++		t.Fatal(err)
++	}
++	if len(res.Output) != 2 {
++		t.Fatalf("%s", rec.Body.String())
++	}
++	if got, ok := res.Output[0]["encrypted_function_args"].([]any); !ok || len(got) != 1 {
++		t.Fatalf("the seal was lost: %v", res.Output[0])
++	}
++	if _, ok := res.Output[1]["encrypted_function_args"]; ok {
++		t.Fatalf("a plain call was given a seal: %v", res.Output[1])
++	}
++}
++
++// #3183's other half: a plaintext V2 task must reach a native third-party
++// Responses endpoint as a user message, with its sender and image intact.
++func TestNativeRelayPlainAgentMessage(t *testing.T) {
++	fresh(t)
++	f := &fake{reply: `{"id":"r1","object":"response","status":"completed","output":[],"usage":{"input_tokens":5,"output_tokens":0}}`}
++	setup(t, provider.Responses, f)
++	const input = `{"type":"agent_message","author":"/root","recipient":"/root/worker","internal_chat_message_metadata_passthrough":{"secret":"drop me"},"content":[{"type":"input_text","text":"Reply PONG"},{"type":"input_image","image_url":"data:image/png;base64,AAAA"}]}`
++	code, response := post(t, "/v1/responses", `{"model":"fake/m1","stream":false,"input":[`+input+`]}`)
++	if code != 200 {
++		t.Fatalf("%d %s", code, response)
++	}
++	var q struct {
++		Input []map[string]any `json:"input"`
++	}
++	if err := json.Unmarshal(f.got, &q); err != nil {
++		t.Fatal(err)
++	}
++	if len(q.Input) != 1 {
++		t.Fatalf("input: %s", f.got)
++	}
++	m := q.Input[0]
++	if m["type"] != "message" || m["role"] != "user" {
++		t.Fatalf("task wasn't converted: %s", f.got)
++	}
++	b, _ := json.Marshal(m["content"])
++	if string(b) != `[{"text":"From /root to /root/worker\n\n","type":"input_text"},{"text":"Reply PONG","type":"input_text"},{"image_url":"data:image/png;base64,AAAA","type":"input_image"}]` {
++		t.Fatalf("task content: %s", b)
++	}
++	// The native OpenAI path and sealed/unsupported items keep their bytes.
++	for _, body := range []string{
++		`{"input":[` + input + `]}`,
++		`{"input":[{"type":"agent_message","content":[{"type":"encrypted_content","encrypted_content":"gAAAAAsealed"}]}]}`,
++	} {
++		if got := forVendor(provider.Provider{Responses: "https://api.openai.com/v1"}, []byte(body)); string(got) != body {
++			t.Fatalf("changed OpenAI: %s", got)
++		}
++	}
++	for _, body := range []string{
++		`{"input":[{"type":"agent_message","content":[{"type":"encrypted_content","encrypted_content":"gAAAAAsealed"}]}]}`,
++		`{"input":[{"type":"agent_message","content":[{"type":"other","text":"unknown"}]}]}`,
++	} {
++		if got := forVendor(provider.Provider{Responses: "https://relay.example/v1"}, []byte(body)); string(got) != body {
++			t.Fatalf("changed opaque task: %s", got)
++		}
++	}
++
++}
++
++func TestNativeRelayOpenAICallUnchanged(t *testing.T) {
++	fresh(t)
++	if err := provider.Save(provider.Provider{ID: "native", Name: "Native", Key: "k", Models: []string{"m"}, Responses: "https://api.openai.com/v1"}); err != nil {
++		t.Fatal(err)
++	}
++	const call = `{"type":"function_call","id":"fc_1","call_id":"c1","name":"spawn_agent","namespace":"collaboration","arguments":"{}","status":"completed"}`
++	s := New()
++	s.client = &http.Client{Transport: countTransport(func(r *http.Request) (*http.Response, error) {
++		io.Copy(io.Discard, r.Body)
++		return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"id":"r1","object":"response","status":"completed","output":[` + call + `]}`))}, nil
++	})}
++	rec := httptest.NewRecorder()
++	s.Handler().ServeHTTP(rec, httptest.NewRequest("POST", "/v1/responses", strings.NewReader(`{"model":"native/m","stream":false,"input":"hi",`+codexCollabTools+`}`)))
++	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"call_id":"c1"`) || strings.Contains(rec.Body.String(), "encrypted_function_args") {
++		t.Fatalf("native OpenAI call changed: %d %s", rec.Code, rec.Body)
++	}
++}
+diff --git a/internal/provider/grok.go b/internal/provider/grok.go
+index 2923f6c3..8fa7f64d 100644
+--- a/internal/provider/grok.go
++++ b/internal/provider/grok.go
+@@ -179,7 +179,7 @@ var grokTools = map[string]bool{"function": true, "web_search": true, "x_search"
+ // would Codex's compaction summary, sent without tools (#378). A Codex
+ // agent_message (a subagent's task, or its reply in the lead's history),
+ // which the backend turns away with 422 "unknown item type", goes as the
+-// user's message, its sender and recipient said first (grokAgentMessage).
++// user's message, its sender and recipient said first (PlainAgentMessage).
+ func grokBody(body []byte) []byte { return grokShaped(body, false) }
+ 
+ // grokPluginBody is grokBody for the Grok plugin, but a tool_choice "none"
+@@ -245,7 +245,7 @@ func grokShaped(body []byte, keepNone bool) []byte {
+ 	}
+ 	input, _ := m["input"].([]any)
+ 	for i, it := range input {
+-		if msg, ok := grokAgentMessage(it); ok {
++		if msg, ok := PlainAgentMessage(it); ok {
+ 			input[i], it = msg, msg
+ 			dirty = true
+ 		}
+@@ -269,14 +269,14 @@ func grokShaped(body []byte, keepNone bool) []byte {
+ 	return b
+ }
+ 
+-// grokAgentMessage is a plain Codex agent_message as the user's message
+-// Grok's backend takes: "From <author> to <recipient>" first, then its text
++// PlainAgentMessage is a plain Codex agent_message as a Responses user
++// message: "From <author> to <recipient>" first, then its text
+ // and images as they came, in its place among the input. One sealed
+ // (encrypted_content on it or on a part), empty, or with a part of another
+ // kind is left as it is: magpie reads no sealed task, and the gateway's
+ // guard for one (hasSealedAgentMessage) still sees it. The plugin does the
+ // same (@magpie-community/opencode-grok-auth 0.1.11, plugins#61).
+-func grokAgentMessage(it any) (map[string]any, bool) {
++func PlainAgentMessage(it any) (map[string]any, bool) {
+ 	im, ok := it.(map[string]any)
+ 	if !ok || im["type"] != "agent_message" {
+ 		return nil, false

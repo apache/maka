@@ -1,0 +1,314 @@
+# console 执行日志（SSOT：.ggbdpq/actions/console/prd.json）
+
+## 2026-08-30
+
+- [x] item 0 骨架：pnpm workspace + Next.js 16.3.3 单体 + packages/{shared,agent-lab-core,ui} + apps/cli + instrumentation 常驻框架 + /api/health。
+  验证：pnpm -r typecheck 全绿（TS 7.0 工具链）；pnpm -r test 全绿（3 用例）；pnpm dev 冒烟 /api/health ok:true、/ 200、/lab 200。
+  过程记录：pnpm 11 的 onlyBuiltDependencies 已迁至 pnpm-workspace.yaml 的 allowBuilds；Turbopack 不认 .js 后缀指向 .ts，shared 索引改无后缀导入；fnm env 的 --use-on-cd 为开关型 flag。
+- [x] item 1 治理工件：prd.json + progress.txt 建立，格式对齐 governance 解析器。
+- [x] item 2 资产台迁移（card-admin）——完成。
+  后端：db/store/scanner/quota/exporter 迁入 src/server/assets/，shared 领域模型进 packages/shared；16 个 Route Handlers；CONSOLE_DATA_DIR 支持测试隔离；decodeJwtExp 去 Buffer 化（atob，环境中立）。
+  验证：契约测试先红后绿（15 用例）；pnpm dev 冒烟 8 条路由全 200；Playwright e2e（系统 Edge channel）2 用例通过。
+  过程记录：Next 动态路由 params 是 Promise；Route Handler 文件只允许导出 HTTP 方法；客户端组件必须显式 'use client'；packages/ui tsconfig 需 DOM lib；e2e 用 channel: msedge 免浏览器下载。
+- [x] item 3 库存台迁移（tokens-toolkit）——完成。
+  后端：core/三插件/mail 提为 packages/inventory-core（CLI 与 API 共用，含 fixture 数据），18 个 Route Handlers + 全局错误映射（ApiError/ZodError 语义对齐原 Fastify）。
+  前端：10 个页面迁入 /inventory 分区（含 marketplace 六个子页 + catalog 历史页），TanStack Router → Next 布局。
+  CLI：tokens 子命令组并入 apps/cli（进程内 toolkit，doctor/report/replay/replenish/import/mail 全通）。
+  验证：inventory-core 43 用例 + 库存契约 11 用例全绿；dev 冒烟 12 条路由全 200；CLI smoke 通过。
+  过程记录：fixture 根路径随目录深度调整；旧仓库相对路径（marketplace/src、packages/mail）需显式映射；lib 需 ES2023（toSorted）；deep import 走无 exports 限制的私有包；apps/blog 为并行在制品（5 个失败用例），不在 console 范围。
+- [x] item 4 配置台迁移（config-engine）——完成。
+  后端：engine（adapters/planner/executor/run-store/config）迁入 src/server/agentops/，6 个 Route Handlers；sqlite-run-store 由 sql.js 重写为 node:sqlite（同接口同语义）；runs/configs 目录随 CONSOLE_DATA_DIR 隔离。
+  前端：Overview/Runs/RunDetail + 自带零依赖 ui 组件与 DiffViewer 迁入 /agentops 分区。
+  验证：契约测试 6 用例全绿（含 dry-run 全链路：扫描真实编辑器路径→计划→执行，只读不写）；console 全量 38 用例绿；dev 冒烟 4 条路由 200。
+  过程记录：原 engine 的 createApi/runs+configs 从 cwd 解析改为 runtime 单例；profile 缺失回退 default；params 元组/数组差异需显式收窄。
+- [x] item 5 治理台迁移（governance 后端化）——完成。
+  后端：types 进 packages/shared/governance（9 文件）；services（prd/progress/spec/git/compliance/audit/file-watch 纯函数层）迁入 src/server/governance/services；补齐真实层 workspace.ts（扫描 vibe 各项目 .ggbdpq 工件 + git log 真数据）+ governance-watch 常驻任务（逐项目 fs.watch，幂等）。
+  API：/api/governance/{prd,progress,specs,git} 四数据源端点；iteration/milestone/search/audit/compliance 保持客户端派生（与原架构一致）。
+  UI：8 页迁入 /governance 分区 + 自带 ui/lib 组件层；usePRDData/useProgressData/useSpecData/useAuditData 由 mock 改为 fetch 真数据。
+  验证：契约 4 用例含吃狗粮（解析本仓 console/blog prd.json，数字 id 兼容后 items>=9）；全仓 42 用例绿；typecheck 绿；dev 冒烟首页+4 API 200。
+  过程记录：原解析器假设字符串 id 与必有 statistics 字段——按真实 .ggbdpq 工件惯例放宽（数字 id、statistics 缺省推导）；并行会话覆盖过 shared/index.ts（已重新挂 governance 导出）。
+- [x] item 6 实验室迁移（pi-web-dev）——完成。
+  核心：agent/cli/llm/tools/tui 五文件原样迁入 packages/agent-lab-core（纯 JS 豁免保持）；web-utils 四个纯函数模块（vfs/diff/pump/source-locate）与 tour-data 一并入包，6 个无头测试脚本随迁全绿。
+  UI：App.jsx → /lab/page.jsx + 8 组件，localStorage 侧 session-store/settings 留页面层；lab.css 并入全局样式。
+  验证：agent-lab-core 测试链全绿；typecheck 绿；/lab dev 冒烟 200。
+  过程记录：包无 exports 限制（深引 cli.js/tui.js 等保持教学引用形态）；jsx 加 'use client'。
+- [x] item 7 旧目录归档横幅（5 个收编项目 README 已标记，原地冻结不删除）
+- [x] item 8 一期全量验收——通过。
+  验收证据：dev 单命令起服务，/ /assets /inventory /agentops /governance /lab /api/health 全 200；pnpm cli doctor ok（真 HTTP 链路）；typecheck 5 包全绿（TS 7）；测试 87 用例全绿（shared 2 + inventory-core 43 + console 42）；Playwright e2e 2 用例绿（Edge channel）。
+  一期完成：五个同构模块收敛为一个 Next.js 单进程控制台；二期待办：promptflow/workflow-engine 降栈、worktree 台 Web 化、桌面壳 18 命令对账；三期：对账全绿后淘汰 Tauri。
+
+## 2026-08-30（blog）
+
+- [x] item 0 脚手架：apps/blog 配置六件套 + globals(复制自 console) + layout 九入口导航 + 根 scripts dev:blog、start:blog + pnpm install(+99 包)。
+  验证：pnpm --filter @ggbdpq/blog run typecheck 全绿（TS 7）。
+- [x] item 1 内容资产迁入：problems 100 + anime 11 + 文章 26(ghost-lab 15/agent-todo 7/宪法 3/spec-kit 1) + skills 3;spec 篇脱敏复查零命中;slug 全 ASCII(覆盖表大小写不敏感修复一次)。
+  验证：node scripts/migrate-content.mjs 输出 {"problems":100,"anime":11,"articles":26,"skills":3};grep 脱敏关键词零命中。
+- [x] item 2 文章域（TDD）——完成。
+  实现：schemas/content(增 source 字段) + lib/frontmatter(手写解析零依赖) + data/articles(TS 内联 8 篇原文) + server/articles(双源合一，react cache，slug 冲突抛错，日期降序)。
+  验证：tests 先红(模块缺失→await 用法两修)后绿 7/7；typecheck 绿。
+  页面：/articles 系列分组列表 + /articles/[slug] 详情(react-markdown+remark-gfm，components 映射替代 typography 插件，上下篇导航)。
+- [x] item 3 首页朋友圈/growth/about/anime——完成。
+  首页朋友圈：momentSchema.parse 补默认值 + pinned 置顶排序；growth 时间线；about 作者卡 + 统计 + 系列入口；anime 用 Zustand+persist 重写拖拽分层板(撤销栈缓迁)。
+  验证：typecheck 绿。
+- [x] item 4 算法题库——完成。
+  schemas/problem(剥 testCases 判题字段) + server/problems(react cache，zod fail-fast) + /algo 难度筛选列表 + /algo/[slug] 详情(题干/签名/题解)。
+  验证：typecheck 绿。
+- [x] item 5 约会攻略 Web 化（TDD）——完成。
+  venues-seed 类型剥离迁移(24 条，VenueSeed=Record 弱类型化)；schemas/venue(含 filter/response schema)；createVenueRepo(db 注入测试面，:memory: 全链路)；单例落 data/blog.db(mkdir 修复一次)；GET /api/venues + POST /api/venues/[id]/favorite；Zustand store(fetch/筛选/收藏) + 拖拽外的客户端板块。
+  验证：tests 先红(模块缺失→mkdir 修复)后绿 6/6，全仓 13/13；typecheck 绿；dev 冒烟并入 item 8。
+- [x] item 6 技能展示页——完成。server/skills(frontmatter 元数据 + 正文) + /skills 折叠卡片页(安装命令引导)。typecheck 绿。
+- [x] item 7 RSS + sitemap——完成。rss.xml Route Handler(XML 转义，34 篇全量) + sitemap.ts(8 静态路由 + 文章 + 100 题)。冒烟均 200。
+- [x] item 8 全量验收——完成。
+  next build：147 静态页(100 题 + 34 文章 + 8 路由)全生成；dev 冒烟 13 路由全 200，收藏 API 端到端(POST→true→favorite 筛选可见)。
+  全仓：pnpm -r typecheck 绿，pnpm -r test 绿(blog 13/console 38/inventory-core 43)。
+  治理：apps/blog/AGENTS.md(栈宪法+架构边界+九项目迁移对照) 与 README 落成；AGENTS.md 中 skillbase/ui 为"不迁代码"决策，缓迁页(admin/forum/database/daily/resume、plans/review/timeline、anime 撤销栈)列为 P1。
+
+## 2026-08-30（blog 补全轮）
+
+- [x] item 9 技能库目录——完成。
+  sync-skills.mjs：递归收录(修复深层嵌套子技能漏抓 291→311)，只拷 SKILL.md 正文(快照 43MB→3.1MB)；manifest.json 311 条含分类/子类/作者/介绍(空介绍兜底提取)。
+  /skills 目录页(8 分类筛选+搜索+311 卡片) + /skills/[...slug] 详情页。
+  验证：契约测试 4 用例(311 全量非空介绍、磁盘对应、正文可读)先红后绿；build 311 详情页 SSG 全生成。
+（见上方完成块）
+- [ ] item 11 date-playbook 情侣空间完整版
+（见下方完成块）
+- [x] item 10 ggbdpq-site 六区补全——完成。
+  daily：schema/seed 全量迁 + /daily 五页(报表视图/归档/条目/来源健康表)，离线演示快照。
+  database：schema/products(8 款)/dimensions/scoring 整文件迁(改 import 路径) + 五页(总览排名/矩阵热力表/两两对比(客户端双选)/分析/单库详情)。
+  forum：schemas+mock 整迁(10 用户/8 分类/话题/回帖) + 六页(列表/分类/话题详情(楼层+作者头像)/发帖(本地存储)/演示登录)。
+  admin：RBAC 精简等价实现(features/admin/store: 权限判定/用户/角色/审计) + 七页(登录/总览/用户 CRUD/角色权限勾选/权限驱动菜单/审计流水/资料/系统)，按钮级权限判定保留。
+  resume：schema 整迁 + zustand persist + 编辑面板/A4 纸预览(模板与主题切换缓迁)。
+  judge：Monaco(@monaco-editor/react) + JS worker 判题(Function 构造/超时销毁/逐用例比对/console.log 捕获)，testCases 恢复进 problemSchema；Python runner 缓迁。
+  验证：typecheck 绿；tests 17/17；build 487 静态页(一次 0xC0000005 为 worker 并发偶发，重试通过)；topic-list 补 use client 修复一次 RSC 违规。
+- [x] item 11 date-playbook 情侣空间完整版——完成。
+  领域：plan-machine(状态机原文迁移) + couple-repo 五表 sqlite(couples/plans/reviews/proposals/timeline)，规则保留：两人上限/邀请码六位/非成员写入拒绝/非法跳变拒绝/提案不能自响应/阶段推进需事实依据。
+  基建：db.ts 统一开库点(venues/couple 共连)；蛇形列→驼峰映射修 3 处。
+  API 七条：state 聚合 + couple(建/加) + plans(建/流转/复盘) + proposals(建/响应)。
+  UI：子导航四页(地点库/计划(全生命周期+复盘)/我们(空间+提案)/时间线)，演示双人切换(zustand persist)替代微信 openId。
+  验证：TDD 25/25 全绿；curl 端到端：建空间→邀请加入→建计划→非法跳变拒→流转→复盘→提案→对方确认 accepted 全链路通；冒烟数据已清。
+- [x] item 12 UI 核心组件 30+——完成。
+  packages/ui 新增 34 组件(Radix+Tailwind，shadcn 风格)：alert/accordion/alert-dialog/avatar/back-to-top/breadcrumb/calendar(lite)/carousel/descriptions/divider/drawer/dropdown-menu/empty/form/menu/message/pagination/popover/progress/radio-group/rate/result/segmented/skeleton+spinner/slider/steps/switch/timeline/tooltip/transfer/tree/typography/upload+list，总计导出 46。
+  配套：buttonVariants 改具名导出 + dialog 补 DialogFooter；message 不引 framer-motion(ponytail 降级纯 CSS)。
+  blog /ui 展示页全组件 live demo + 导航入列。
+  验证：packages/ui typecheck 绿；blog typecheck/test 25/25 绿；build 495 静态页含 /ui。
+
+## 2026-08-30（二期启动·claude-profile 块）
+
+- [x] 桌面壳 18 命令对账（审计）：console /agentops 现状对 Claude Code settings 域 0/18 覆盖；Rust 命令层仅 214 行薄壳，核心业务在 1189 行 TS 同语言 cc-dev 链（generate/apply/verify/rollback/audit）——可原样搬入 Node 后端。
+- [x] item 9 cc 域后端移植——完成。cc-dev 六模块（types/generate/apply/verify/rollback/audit，1189 行 TS）原样迁入 src/server/agentops/cc/；五链路契约 4 用例全绿（generate 深合并/apply 备份原子写/verify 结构校验/rollback 恢复）。
+  过程记录：注入点三处（CC_PROFILE_HOME 数据根为原版自带；CC_DEV_ROOT 配置源根与 CONSOLE_CC_SETTINGS 目标路径为新增——apply 的 scriptRoot 内联推导在 Windows 下有 /C:/ 前缀缺陷，verify 有独立的 getClaudeSettingsPath 副本）；profile 约定是 profiles/<name>/settings.patch.json 目录形态；verify 原版语义 success=过程未抛错、结论在 data.valid。
+- [x] dev-flow 与 agent-suite 治理工件迁入（4 处 JSON 引号缺陷修复、双旧 schema 转换留档），治理台总需求项 131。
+- [x] item 10 cc 域 API——完成（4ad37a02）。settings.ts 忠实移植 fs_service（readModifyWrite 三段式：before_hash→备份→原子写→审计→回读校验；备份名毫秒级防同秒碰撞）；12 端点 + version 轮询端点；模块 10 用例 + API 7 用例绿。
+- [x] item 11 cc 前端设置台——完成。桌面壳 17 组件 + 3 stores + 3 hooks + pluginCatalog 数据原样迁入（git 5630ed09 取档）；lib/cc/api.ts 同签名适配层（invoke 双通道→HTTP fetch + Web 文件模式恒空兼容层 + 19 个命令式封装）；Tauri 事件监听改 5s 轮询 version 端点；导航挂 Claude Code 入口；/agentops/ccpage 200。
+- [x] item 12 watcher——完成。目录级 fs.watch + 版本号缓存失效，幂等 stop，注册 instrumentation；测试绿。
+- [x] item 13 桌面壳对账验收——通过。18 命令对账表落 docs/cc-command-mapping.md（命令→端点→实现→用例逐条打勾，18/18 + watcher 语义等价移植）；e2e 3 用例绿（CC Profile 头部渲染 / 分区页签 / 真实 settings 只读直读）。
+- [x] 二期 claude-profile 块整体完结（item 9-13 全 passes）。Tauri 桌面壳具备淘汰条件，列入三期清理清单（含 agent-suite 主线仓的处置决策）。
+- [ ] 二期剩余块：workflow-engine 降栈迁入、worktree 台 Web 化（源码自 git 5630ed09 恢复）。
+- 备注：unmerge 删除后，二期后续取材用 git 历史：git checkout 5630ed09 -- vibe/unmerge/agent-suite/apps/promptflow（workflow-engine 降栈参考）；git checkout 5630ed09 -- vibe/unmerge/agent-suite/tools（worktree 台参考）
+
+## 2026-08-30（还原轮进行中·检查点）
+
+- [x] /anime 已严格还原并提交(bfb43408：tier-list/storage/css 字节级拷贝，撤销重做/分页/右键菜单/保存加载全回来)
+- [ ] 代理并发受限，改为本人顺序还原：① admin(rbac/seed/存储层+7页) ② resume(templates/themes/markdown/store/EditorPanel/EditorToolbar/ResumePaper) ③ judge 原版 execute+结果面板 / daily insights.ts / database scoring 接入 ④ date-playbook 缺失 8 页(venue-detail/plan-edit/plan-detail/review/stage-proposal/family-tree/memories/archive)+领域 cp
+- [ ] 每板块完成即单独提交；隐私红线不变(archive.private 禁迁)
+- [x] 还原轮收尾——anime/resume/admin/daily/judge+scoring/date-playbook 八页全部落地。
+  严格移植(字节级 cp+import 改写)：anime(bfb43408)、resume+领域(f9b2fca1)、admin 2812行(32c5e59d)、daily(1bbd9e52)、judge 双语言+scoring(3b0d966c)。
+  date-playbook 补全：API 6 条(plans PUT 全字段/stage-proposals/favorites/transition 带原因/venues 详情经服务端直读)+8 页(venue-detail/plan-form 新建编辑/plan-detail+动作/独立复盘/九阶段提案/家庭树/回忆/档案，demo 种子)；子导航八入口。
+  修复：POST /plans 忽略 submit 的真 bug(冒烟暴露)；updatePlan 补进仓库。
+  验证：typecheck 0 错、测试 77/77、build 505 页、dev 冒烟 6 路由 200、端到端(全字段表单→提交待确认→带原因退回→改期重提→确认→九阶段提案；原地变更被拒)。
+- [x] item 14/15 workflow 降栈核心——完成。node:sqlite 表结构对齐 Prisma（tasks/executions/audit_logs/api_keys）；execution.ts 忠实移植 453 行状态机九操作（claim 用 BEGIN IMMEDIATE 事务原子化）；进程内事件总线（emit/subscribe/history 重放）；13 个 Route Handlers（含 [action] 通配生命周期端点与 SSE ReadableStream）。状态机 7 用例 + API 7 用例全绿。
+  过程记录：dev-flow prd.json 有 4 处内嵌引号损坏（历史笔误）已修复；ggbdpq-suite prd 是旧 schema（title/acceptance/steps 对象数组）已转换留档 prd.legacy.json；node:sqlite 无事务包装用 BEGIN IMMEDIATE；Windows 下 heredoc 反斜杠折叠坑（改用 path.basename）。- [x] 收尾轮：agent-skills/spec-kit-me/product-blueprint 整合核验→补漏(手册×2 文章、.specify 全量、config/、LICENSE)→三项目删除。
+  验证：typecheck 0 错、测试 84/84、文章 36 篇(断言同步 34→36)。
+- [x] item 18/19/20 worktree 台收官——完成。git.rs 16 函数降栈 execFile git（真实临时仓测试：worktree 增删/sync/merge/提交流全链）；13 命令 12 项等价移植 + agent_reveal_in_folder 有据淘汰（桌面专属）；/worktree 工作台双面板（项目注册/状态/pull + Agent 生成/同步/合并回收/提交历史/diff）；对账表 docs/wt-command-mapping.md。全仓 28 文件 336 用例 + e2e 6 用例全绿。
+  过程记录：无 remote 仓的 pull 按原版语义包装 success:false 不抛异常；持久化 JSON 保持 Rust 字段名跨端互通；branchExists 用 execFileSync 对齐原版同步语义。
+- [x] 二期原定三块全部完结（claude-profile 9-13 / workflow-engine 14-17 / worktree 18-20）。剩余可选扩展：promptflow 平台域（prompt/dataset/eval/provider 六域降栈，体量大独立排期）。
+- [ ] 三期清理：Tauri 淘汰复核 + agent-suite 主线仓处置 + vibe/inbox 精简复核。- [x] 三期清理完成（2026-08-30）。
+  Tauri 淘汰复核：console 全部 package.json 零 tauri 依赖；cc/wt 两份对账表落档；桌面壳兼容层（isTauriEnvironment/isWebFileMode）恒空实现就位——桌面应用正式退场。
+  agent-suite 主线仓处置：已随 unmerge 删除（二期三块全部消化完毕），恢复点 5630ed09 验证有效。
+  inbox 精简复核：chat-viewer/skillbase/_archive-private 保留（skillbase 建议移 _archive-private 或删除，待裁决）；agent-todo/cpa-manage/cursor-loc 等已由用户移至 guahub/（外部自治登记区，README 维护规则第 6 条）。
+  补救：worktree 台源码（server/tests/e2e/页面/导航）在 75542671 中误漏提交，已补交 f2a2ffa4——教训：收口提交用 git status 复核而非记忆。
+  清理：/tmp 临时取材目录（wfe-src/wtc-src）已清。二期全部原定工作至此收官；promptflow 平台域为可选扩展未排期。- [x] 收官轮：chat-viewer(52455bdc+68b63fc0) 与 skillbase(d383984d) 全量并入 blog;私人种子移入 .ggbdpq/sources/date-playbook(gitignore 保护);治理档案同步。
+  chat-viewer：123/123 测试、build 508 页、/chat-viewer 200;tailwind-merge/clsx 依赖补齐修一次 build。
+  skillbase：286 技能实时扫描(~/.ai 根适配)、toggle 往返无残留、js-yaml 具名导入修一次、509 页。
+- [x] skillbase 修复：catch-all 路由的 buildCategoryTree 为本人重写件,缺 fullName/path 且语义漂移(致 Sidebar key=undefined 警告+分类名带 NN- 前缀)——已按源版 verbatim 替换(剥前缀/叶子计数/累加/排序);data 端点复验字段与排序 OK。
+  整合核验(规范化 diff)：chat-viewer 52 文件 0 缺失 1 有意差异(checklist 测试 root 收窄);skillbase 12 文件 0 缺失 4 有意差异(URL 同源改写/页面挂载/Header+OpsPanel 源漂移兜底)。
+- [x] blog 拆分：九工具/演示模块迁入新建 apps/toolbox(3101,git mv 保历史)；blog 导航收敛七入口+RSS，sitemap 同步；依赖随迁剪枝；blog.db 随约会攻略走。
+  验证：blog/toolbox typecheck 双 0 错；测试 blog 18 + toolbox 105 全绿；build blog 458 页 + toolbox 通过；dev 冒烟 toolbox 12 路由全 200。
+- [x] 门户轮：apps/portal 新建(65515,三卡片跳转)；根 pnpm dev 改 -r --parallel 一键全启。
+  验证：portal typecheck 0 错、build 3 页；实跑 pnpm dev 一次,65515/3000/3100/3101 全 200,4 个 Ready。
+- [x] 端口规整：console 3000→65501、blog 3100→65502、toolbox 3101→65503(门户 65515 不变)；根 scripts 按组重排(dev 一键+四单开/start 同构/build/test/typecheck/lint/cli)；portal 链接与卡片标注、toolbox 回链、cli 默认 API、console e2e 基址、README、blog AGENTS 全同步。
+  验证：实跑 pnpm dev,65515/65501/65502/65503 全 200(4 Ready);测试占位串(合成 Request)有意不动。
+- [x] 暗黑模式：四应用 .dark token 换 Figma 深色板(#03040F/#D7D0C7/#212121 卡/#282828 内卡/#E8C99C 强调/#3A3834 线,scripts/apply-dark-tokens.mjs 可重放)；packages/ui 新增 ThemeToggle(切 html .dark + localStorage)；四 layout 埋防闪预置脚本并放按钮(门户右上浮动/博客头部/blog toolbox console 侧栏品牌行)；judge Monaco 与旧 theme store 解耦改读 html class,stores/theme.ts 删除。
+  验证：四应用 typecheck 双 0；全仓测试 504 绿；blog build 458 页；首屏 HTML 含预置脚本与切换按钮 aria-label。
+- [x] item 21 四应用 UI 一致性收口——完成。base.css 补 success/warning/info 语义色（根因治理）；console 六模块调色板全迁语义 token（inventory 深色模式复活/agentops 中文化去 emoji/governance 102 处/assets 圆角统一 rounded-xl）；ModuleNav 统一四处模块页签（表面抬升激活态）；toolbox skill-manager 深色适配+date-playbook 红绿语义化；blog algo 域语义化+幽灵类(bg-brand/font-display 引用不存在 token)清除+anime tier-list 350 行 legacy CSS token 化（0 个 .dark 覆盖即联动）。
+  事故修复：根 .gitignore `data/` 误伤 src/data/，console pluginCatalog 与 toolbox daily-seed 从未入库且本机丢失——规则锚定为 /apps/*/data/，按调用点反推重建最小骨架（空目录数据降级显示，待人工补录）；blog parseFrontmatter 只认 LF，28 篇 CRLF 文章字段全空致 build 挂——归一化后 458 页全绿。
+  验证：四 app + packages typecheck 0 错；测试 console 336 + toolbox 102 + 全 packages 绿；dev 四端口 200（12 条改动路由抽查全 200）；深色模式六页截图 judge 验收 6/6 通过。
+
+- [x] ops-panel 收尾轮（PRD-25~30）：六项产物经核对在 console governance 域全部就位（audit 统计+三向联查视图 / milestones 按优先级聚合 / specs 列表 / 全局搜索 SearchBar+SearchResults 已集成 Header / 主题切换 / console README），本轮补验证而非重实现——typecheck 0 错、console 测试 367/367 绿、dev 冒烟 governance 六页+两 API 全 200、Playwright(Edge) 截图 4 张入 apps/console/screenshots/、console build exit 0。
+  说明：PRD-29 局部主题方案（useTheme/ThemeSwitcher/局部 css 变量）已被全仓暗黑模式轮（packages/ui ThemeToggle + Figma 深色 token）架构性取代，语义目标达成；PRD-30 的 src/views 不存在，无需清理。
+  保留项：PRD 步骤内的 git commit 未执行——vibe/console 现不属于任何 git 仓库（guahub .gitignore vibe/* 忽略、原 agent-suite 仓已 unmerge 删除），版本管理策略待用户裁决。审计页 114 条断裂链路为旧仓 commit hash 失效的如实报告（unmerge 所致），非缺陷。
+
+## 2026-09-06
+
+- [x] UI 设计规范统一轮——完成。docs/design/DESIGN.md 落地：token 清单（双板米金同源色表）/写法规则（variant 优先、className 只管布局、gap/size/truncate、cn()、禁手写 z-index）/图标单一家族/动效时长表/圆角五档/lab 与 verbatim 模块豁免/迁移路线图（P1 ccpage 别名、P2 白名单欠债与 ui 原语、P3 骨架双轨决策、P4 其余 app 字体）。条文吸收自 .ai skill 库（shadcn customization+rules / impeccable product register / design-taste-frontend 一致性锁 / interaction-design），Vercel Interface Guidelines 全文做验收审查。
+  基座：亮板从 shadcn 默认中性灰校准为米金同源暖色（primary 深金褐保白字对比 ≥4.5:1，中性色向品牌色相微染）；success/warning/info 补 -foreground（修 register 页引用不存在 token 的静默失效）；--font-sans/--font-mono 基座声明（Geist + JetBrains Mono），console layout 真 import fontsource（此前依赖装而未引，lab 字体声明一直空转）；color-scheme 明暗跟随（修 Windows 深色 select 弹层白底白字）；@utility tnum 激活 15 文件死类为真 tabular-nums；全局 prefers-reduced-motion 降级（此前仅 lab 有）。
+  收编：todo 模块四文件 186 处裸色名（emerald/stone/amber/rose + 手写 dark: + rounded-2xl + space-y）→ 语义 token，行为零改动；transition-all→transition（Vercel 禁 transition:all）；错误提示补 role=alert。
+  治理：pnpm style:check 机械闸门挂进闭环（scripts/check-style.mjs 扫裸色名，lab/chat-viewer/skill-manager 豁免，31 历史欠债文件 133 处白名单挂账只减不增）；AGENTS.md 架构边界第 6 条 + 治理闭环命令行同步。
+  验证：style:check 白名单外 0；pnpm typecheck 12 项目全绿；console 31 文件 367 用例全绿；Vercel 审查改动文件修复 5 项（tnum 死类/transition-all/缺 reduced-motion/缺 color-scheme/缺 aria-live）。
+  遗留（记 DESIGN.md 路线图，未改行为）：todo 行删除仍是一键无确认（Vercel 建议确认或撤销）；输入框 text-sm≈15.75px 略低于移动端 16px 防缩放线（根字号 18px 的全站既有模式，需全局决策）。
+- [x] UI 规范遗留两项收口——完成（用户裁决：具体修改）。
+  删除确认：TodoPanel 行删除改两步行内确认（确认删除？✓/✗，模式对齐 ConversationHistory 既有款），确认态脱离 hover 门控常显（触屏可见可点）；DESIGN.md §2 新增破坏性操作原则（行内两步确认，禁一键直达、禁模态）。
+  16px 防缩放线：基座 base.css 加 `@media (pointer: coarse) { input,select,textarea { font-size: max(0.875rem,16px) } }`，非 layered 元素规则压过 text-sm/text-xs 工具类（全仓输入框仅这两档字号，无更大值被压；桌面 pointer:fine 不受影响）；DESIGN.md §4 记录此全局兜底，新输入框无需再关心。
+  验证：style:check 白名单外 0；console typecheck 绿；console 367 用例绿。
+- [x] 清单台 500 修复——完成。根因：connection.ts 的 getTodoDeps() 把 LLM 客户端与 db 捆绑装配，EnvSchema 强制 DEEPSEEK_API_KEY，缺 key 时 getTodoLlm() 抛错连坐全部 7 个路由；其中 5 个纯 CRUD 路由（todos/todos[id]/conversations/conversations[id]/messages）既不需要 LLM 又多数没包 try/catch → 未处理异常 500。修法（最小）：5 个 CRUD 路由改 getTodoDb()（按需装配），2 个 chat 路由保留 getTodoDeps()（真需要 LLM 且有 try/catch 优雅透出缺 key 报错）；TodoPanel 报错文案删"请确认 server 已启动"（Fastify 独立服务器时代遗物，现为单进程，误导排障方向）。
+  红绿证据：修前 curl 用户在跑的 dev 实例 GET /api/todo/todos → 500；修后同实例（HMR 生效）→ 200 []，conversations → 200。回归：style:check 白名单外 0 / typecheck 绿 / 367 用例绿。
+  经验：测试直接 new deps 不走 connection 装配层，故装配缺陷测试测不到——装配层的环境依赖要按消费面拆分（db 与 llm 分开取用）。
+- [x] 注册台/工具集布局修复——完成。根因：全仓 11 个模块页中仅 register/toolkit 无任何容器（workflow/worktree 自带 max-w+px-6+py-6 自容器，其余四台有 layout.tsx），根 layout 的 <main> 零内边距 → 标题顶边裁切、内容贴边。修法：两页根元素补 mx-auto max-w-[1720px] px-6 py-6（对齐 workflow/worktree 既有自容器模式）。
+  实验室裁定：维持全出血不动。它是自带 92px 顶栏的沉浸式终端应用（h-screen+自管高度），套标准壳会产生双标题堆叠、且需改 LabApp.jsx 的 h-screen 高度接线（verbatim 文件）；主题差异属既定豁免，骨架对齐属 DESIGN.md §9 P3 待决策项，待用户明确拍板后再动。
+  验证：IAB 截图实测 /register /toolkit 布局恢复正常（标题完整、内边距到位）；回归 style:check 0 违规 / typecheck 绿 / 367 用例绿。此前三页共见的"1 Issue"红标未再出现（疑为 todo 500 期间的控制台错误计数，已随修复消失）。
+
+## 2026-09-10
+
+- [x] item 22 质量战役 35 项——完成（27 commits，一项一 commit 为主，toolbox 三小项合并一 commit）。自提案自决策（用户授权），tdd/vercel-react-best-practices/code-simplifier 三 skill 条文约束执行。
+  token 欠债清零（S01-S19）：ui 原语 badge/alert/message/rate/form/transfer/upload 变体语义化；31 文件 133 处白名单 + ccpage 40 处 + cc 域 272 处 var() 别名全部直连语义 token；globals.css cc 别名表删除；ALLOWLIST 置空。视觉等值或更贴品牌（accent+白字 → bg-primary 米金主操作）。
+  React/a11y（S20-S22,S27-S31）：四 app viewport.themeColor；三 app Geist/JetBrains Mono 字体接入（P4）；等值 w-N h-N → size-N 约 130 处；className 模板串 → cn() 27 处；resume 编辑器 7 个图标按钮补 aria-label；ccpage 整页 spinner → 双栏同形骨架屏；todo 负边距 hack 清理；四模块页头统一 text-xl。
+  审计负结论（记录在案不改代码）：S23 todo 无内联组件/派生状态违反；S24 桶导入生产 tree-shaking 已覆盖，改造 churn 大收益仅 dev 编译；S25 API 层同步 SQLite 无串行 await；S26 space-y→gap 全局清扫有 flex 前提风险，降阶为仅约束新代码；S30 全局 reduced-motion 已由 base.css 覆盖。
+  e2e（S33）：修复两处过期断言（资产台旧品牌文案/workflow 旧英文标题）恢复 6/6 绿；.env.example 完整。
+  验证：每 commit 均过 style:check（白名单外 0）+ 相应包 typecheck + console 367 用例；收口全量 e2e 6/6。剩余开放项：P3 骨架二选一 + lab 是否入壳（需用户决策，DESIGN.md §11）。
+  过程记录：管道会吞退出码（一次 checker 语法错带病提交，amend 修复）——验证命令后必须跟 echo exit=$? 或 set -o pipefail；check-style 新增两类有原则豁免（bg-black/NN 遮罩 scrim、// style:ok 行内豁免供物理媒介/动态数据色）。
+
+## 2026-09-10（Primer 换皮轮）
+
+- [x] item 23 GitHub Primer 换皮——完成（3 commits：G1 换板+text-base 劫持根治 / G2 组件层 / G5-G6 文档收口；G3 模块抽查无违和、G4 portal 自动跟随零改动）。用户 grilling 锁定：换皮（米金退役）/ 经典深黑 / 绿主按钮+蓝链接 / 6px 圆角 / console+portal / lab 照旧豁免 / 直接换板 git 可回退。
+  G1：base.css 双板全换 Primer（亮板白画布/#f6f8fa 灰面/#0969da 蓝/#1f883d 绿主钮；暗板 #0d1117/#161b22/#30363d/#238636），实底 -foreground 逐对预演算 ≥4.5:1，radius 10px→6px，四 app themeColor 同步。
+  **挖出并根治潜伏 bug**：lab @theme 的 `--color-base` 使 Tailwind v4 把 `text-base` 整体解析为颜色 utility（字号规则丢失）——全仓 12+ 处 text-base 元素发 lab 色（亮板 #f6f8fa 白字、暗板 #0f172a 隐形字），assets 顶栏标题发白现形后顺藤定位；改名 --color-lab-base + 6 个 lab 文件 bg-base→bg-lab-base 根治。旧配色下此 bug 一直存在未露馅。
+  G2：ModuleNav 改 GitHub UnderlineNav（激活项 2px 橙底线贴分隔线，nav-accent token 亮 #fd8c73/暗 #f78166）；Button 去阴影、default 注明只给主操作、secondary 升级为 GitHub 次按钮（灰底描边）；表格密度收紧（py-2/h-10/圆角 6px 档）。
+  G3/G4：抽查 assets/agentops/todo 无违和（token 驱动自动换板）；portal 磁贴反转对自动跟随，零改动。
+  G5：DESIGN.md 全面修订——Primer token 表替换米金表、按钮 variant 语义（default 只给主操作）、圆角五档 6px 基、UnderlineNav 式页签入 §9。
+  验证：IAB 截图亮/暗双板 + agentops 页签页实测；计算样式探针（body #fff、fg #1f2328、border #d0d7de）；全仓 11 包 typecheck 绿、测试零失败、style:check 0、e2e 6/6（前轮）。
+  遗留开放：P3 骨架三选一 + lab 入壳（需用户决策）。
+
+## 2026-09-11（简历编辑器对齐木及轮）
+
+- [x] item 24 简历编辑器对齐木及——完成（11 commits）。混合架构锁定（grilling）：保留 schema 结构化数据模型（相对木及的优势：AI 可处理、多主题渲染），编辑体验/功能/视觉全面对齐木及简历；逆向信息来自用户浏览器实测（editor 页 + 插件面板 + 主题对话框 + 文件菜单）与代码审计双路。
+  必修 bug 包：打印链路修复（@media print + @page A4 + .no-print，此前打印会把编辑器一起打出）；公开预览页接真实 store（此前写死示例稿）；链接编辑按指纹 key 重挂载同步；JSON 导出打包 appearance + 导入兼容双格式；alert 换内联告警；死代码 PreviewPage 删除、templates.ts 接入新建流程。
+  数据层：store 升级多份集合（docs[]/activeId + resume/appearance 镜像保持消费方零改动），persist v1→v2 自动迁移（旧 muji-resume 单份变第一份，文档名取「姓名-头衔」），6 个迁移/命名测试。
+  功能：/resume 木及式列表页（真实 A4 缩略图卡片/复制/两步删除/新建内容模板对话框）；编辑器支持 ?id 切换；导入 Markdown（resumeToMarkdown 对称逆变换：联系方式特征归类/条目 meta+时间范围/技能行/未知章节落自定义，round-trip 测试以隐藏章节语义等价比较）；主题市场（8 套命名主题，0.18 倍真实缩略图预览 + 两段式应用）；条目/模块原生拖拽排序（替换上下箭头）；证件照本地上传（base64 + 1MB 上限）；本地历史快照（编辑前自动入栈 30 秒合并 + 手动快照 + 恢复对话框，上限 20 条）；chrome 对齐木及（← 列表 + 动态文档名）。
+  **挖出全站潜伏 bug 两个**：(1) ThemeScript 在 React 组件内渲染 <script>——Next16 dev overlay 报 Console Error（client-render 永不执行），改 next/script beforeInteractive 根治，四 app 受益；(2) lab @theme 的 --color-base 使 Tailwind v4 把 text-base 劫持为颜色 utility（字号规则丢失、全仓 text-base 发 lab 色、暗板隐形字）——上一轮 Primer 换皮时已根治。
+  深夜追凶：/resume/editor 整页空白 = 历史快照 selector `?? []` 生成不稳定引用 → zustand v5 useSyncExternalStore 判定 store 永远在变 → Maximum update depth exceeded；修复后 dev 探针九项元素全在位。教训：zustand v5 selector 禁止内联新建引用（数组/对象字面量），默认值放组件层。
+  验证：toolbox typecheck 绿、112 用例绿（含 14 个新测试：迁移 6 + md 导入 4 + 既有 4）；全仓 11 包 typecheck 绿、测试零失败、style:check 0；IAB 实测列表页/编辑器、dev overlay Issues 清零。
+  备注：dev server 起动遇 Next16 单实例行为（同目录拒绝第二实例，提示复用现有服务）；用户原 pnpm dev 的 stale 实例已替换为同端口新实例。
+  遗留开放：简历分页渲染（内容超一页仍是长纸压缩，非真实多页）；两栏模板（一页纸）布局；编辑器移动端入口。
+
+## 2026-09-11（纸面排版对齐木及轮）
+
+- [x] item 25 简历纸面排版 30 项——完成（9 commits，T01-T09）。逆向二次深入：computer-use 放大木及预览纸（姓名头衔同行/联系双栏冒号格式/章节细分隔线/■○两级列表/条目徽章+时间右对齐）。
+  规范化：空 body 自定义模块不渲染空标题；normalizeMd（行尾空白/3+ 空行压缩）入 md 导入。
+  体验：预览 useDeferredValue 防抖（滑杆即时、纸面让路）；打印色彩保真（print-color-adjust exact）+ 纸宽锁 794。
+  排版校准（appearance v3）：字号 13→12.5、行距 1.6→1.5、页边距 44→48（仅旧默认值升级，自定义保留，2 测试锁定）；新增 nameInline/accentOverride/fontFamily/avatarRound 字段。
+  布局重构：姓名头衔同行大粗体（开关可回两行）；联系方式双栏网格+「标签：值」；条目徽章（entry.badge，灰底小标签）；正文两级列表 marker（一级实心方块/二级空心圆+缩进，parseMarkdown 支持 2+ 空格二级）；章节标题 1.15em。
+  **真实分页渲染（T08）**：ResumeSheets 替代 SmartPage——内容切原子块（头部/章节/条目粒度），隐藏同宽同字号容器逐块测高，贪心装箱成多张 A4（breakAfter 分页，打印天然多页）；SmartPage 退役删除。
+  **智能一页多级降档（T09）**：总高 ≤1.45 页时按「原样→压行距→行距+字号→底线」四级降档塞一页（em 体系按比率折算高度，免二次测量）；超过即走多页。
+  B 组外观：accentOverride 六色换色（含跟随主题）、fontFamily 衬线切换、avatarRound 圆形照、DensityPresets 三档预设、预览缩放 75/100/125%（打印重置）。
+  深夜二连坑（均为 selector/effect 引用不稳定 → 无限渲染）：(1) 历史快照 selector `?? []` 新数组；(2) ResumeSheets theme 内联对象致 blocks 反复重建。教训同源：**zustand v5 selector 与 effect 依赖数组里禁止内联新建引用**，一律 useMemo/提到组件层。
+  事故与恢复：一次 `commit --amend` 顶掉了并行会话的 maka 提交（622f919d）——reflog 定位 + reset --soft 拆分，maka 提交原样恢复、我的 T10 独立重提（35f2752d）。教训：并行会话共享仓库时 **commit 前必须核对 HEAD 是不是自己的提交**，amend 禁用。
+  验证：toolbox typecheck 绿、resume 域 28 用例绿（新增 6）；全仓 11 包 typecheck 绿、测试零失败、style:check 0；IAB 截图验收（同行姓名/双栏联系/三档预设/accent 色点/缩放控件全在位，Issues 清零）。
+  遗留开放：两栏模板（一页纸）、编辑器移动端入口、内容模板扩充。
+  深夜更正：grilling 前沿问答回顾——上轮承诺的 25 真实分页本轮已交付 ✓；20 两栏模板列路线图 ✓。
+
+## 2026-09-11（简历内容升级轮）
+
+- [x] item 26 简历内容升级 30 问 → 7 步——完成（7 commits）。用户痛点「简历过于普通、没有项目亮点重难点」→ 搜索全网头部（Rezi 内容库/Teal AI 要点/超级简历一键润色）+ 自我拷问 100 问（G1 定位~G10 交付，每问带决策）立项。
+  R1 三段式脚手架（痛点核心）：工作（核心挑战/关键设计与实践/结果与影响）/项目（背景与目标/技术方案/成效）/通用 三种骨架一键插入，■ 一级 + 两空格二级（呼应木及叙事），追加不覆盖（4 测试）。
+  R2 要点范例库：25 条精选中文 bullet（工作/项目 × 性能/架构/从零到一/协作效能），动词开头 + 〔量化〕占位；Dialog 章节×主题双维筛选，点击以二级要点追加。
+  R3 内容检测规则引擎：无数字 bullet 提示补量化（百分比/倍数/耗时正则），7 类弱动词开头（负责/参与/进行了/协助…）给改写公式；body 下实时 hint 区；4 单测。
+  R4 质量分：五维（完整性 30/量化率 25/动词强度 20/篇幅 15/多样性 10）纯函数实时评分，工具栏三色徽章 + 分维度进度条与改进建议；诚实命名「质量分」不冒充 ATS。3 单测。
+  R5 AI 润色：POST /api/resume/polish DeepSeek 代理（润色/三段式草稿两动作，系统提示词以挑战→方案→结果为锚）；上游硬编码官方端点过 SSRF 关（Mimosa 两次拦截后从 env 可配改为钉死）；key 缺失探活禁用 + 指引 .env.local；建议-原文双栏对比采纳。实测 {available:false} 优雅降级。
+  R6 篇幅接真实页数：ResumeSheets 上报实渲染页数（store 非持久化字段），质量分篇幅维度用真实值。
+  验证：toolbox typecheck 绿、resume 域 39 用例绿（新增 11）；全仓 11 包 typecheck 绿、测试零失败、style:check 0；IAB 探针验收（质量分/脚手架/范例库/AI/历史全在位，dev overlay 清零；截图管线故障，DOM 探针为准）。
+  遗留开放：JD 对齐（下一轮首位，评分函数已留 jobKeywords 参数缝）；范例收藏夹；英文范例库；AI 流式输出。
+
+## 2026-09-11（JD 对齐 + 收藏夹轮）
+
+- [x] 遗留首位 JD 对齐——完成（2 commits）。lib/jd-match 词典法（120+ 技术词）：JD 关键词提取（出现次数≈重要度）× 简历全文匹配 → 覆盖率三色报告 + 逐词「✓ 已体现 / ✗ 未体现（高频词提示补写）」；JdMatchButton 对话框（JD 文本 localStorage 记忆，分析完全本地）；4 单测。
+- [x] 范例收藏夹——完成。resume-bullet-favs persist store，范例卡 ★ 收藏切换 + 「收藏 N」筛选 chip（G-26 收藏夹落地）。
+  验证：toolbox typecheck 绿、resume 域 43 用例绿（+4）、全仓 11 包绿、style:check 0；IAB 探针 JD 按钮/质量分/主题在位、Issues 清零。
+  遗留开放：两栏模板、编辑器移动端入口、内容模板扩充、英文范例库、AI 流式输出。
+
+## 2026-09-12（列表充实 + Issues 根治轮）
+
+- [x] 列表页充实（用户要求复制 3-4 份）——通过页面数据层复制为 4 份（原卡 + 社招版/校招版/内推版），IAB 截图验收列表饱满。
+- [x] "4 Issues" 红标根治——错误全文为 ThemeScript 的 "Encountered a script tag"（React client-render script 告警，Next16.3 dev overlay 记录）；此前 beforeInteractive 改造不能消除。最终方案：ThemeScript 仅服务端渲染输出 script（typeof window 判空，Server Component 无客户端重渲染），初始 HTML 照常执行、防白闪不变。stale 实例全量重编译后 Issues 清零（此前 4 条为 stale 旧编译产物）。
+  过程记录：多 tab 同源竞态会把 localStorage persist 数据覆盖回旧状态（4 份简历曾被旧 tab 内存态写回 1 份）——验证数据时先关多余 tab。
+  验证：全量重编译后 IAB 探针 Issues 清零、主题脚本正常挂载（light 符合系统偏好）；toolbox typecheck 绿、resume 域 43 用例绿。
+
+## 2026-09-12（纸面观感精修轮）
+
+- [x] 用户反馈「右侧排版还是太差」——定位并修三项（1 commit）：
+  (1) **预览自适应缩放**：预览面板 ~660px < 794px 纸宽，100% 缩放下纸面右缘被裁——ResizeObserver 测面板宽、fitZoom 整体缩放（打印仍出原始 794px，zoom:1 锁定），A4 纸从此始终完整可见；
+  (2) **示例简历升级**：sampleResume 从「待填写」骨架升级为真实三段式精品内容（量化 bullet、灰底徽章、两级列表、自定义模块——对照木及用户真实简历的叙事密度）；
+  (3) graphite 分隔线加深一档（#e5e7eb→#d1d5db，对齐木及分隔线可见度）。
+  顺带修导入保真两处：只含副标题（无地点）的 meta 行正确识别；导入保留二级要点前导缩进（此前 trim 剥缩进致 round-trip 降级）；round-trip 测试注明 badge 为 md 已知有损项。
+  验证：toolbox typecheck 绿、resume 域 43 用例绿；IAB 截图验收纸面完整可见 + 新示例排版呈现（用户自己的文档保留原数据，重置/新建可体验新示例）。
+  说明：示例内容是观感的一大变量——用户现有文档仍是旧骨架数据，属其自有数据（不自动改写），可用重置按钮体验新示例或用脚手架/范例库/AI 逐条升级。
+  过程记录：R2/R6 两轮 typecheck 失败均在提交后发现——提交命令改为「typecheck && test && commit」串联并核对 HEAD 再动；Mimosa SSRF 拦截的修正路径：env 可配 URL → 运行时守卫（扫描器不认）→ 静态白名单常量（过闸）。
+
+## 2026-09-13（书签台上线路）
+
+- [x] 书签台 /bookmarks——完成（prd item 27，grilling 三轮共识落地）。浏览器书签 Netscape HTML 两段式导入（解析预览摘要→确认才入库，事务批量插入，保留 ADD_DATE 原始添加时间，实体解码/单双引号属性容错）；文件夹栈解析剥结构层（书签栏/其他书签不进分类，用户文件夹路径→单层分类，空标题回退 URL）；搜索（标题/URL/分类 LIKE 带通配符转义）+ 分类过滤 + 200/页分页（5693 条量级不全量渲染）；软删回收站（恢复/彻底删，URL 被占用时冲突提示）；批量多选删除/改分类/恢复/清空（行内两步确认）；近似重复视图（忽略协议/www/查询参数/锚点，只提示不拦截）；URL 精确匹配（trim+去尾斜杠）活跃唯一偏索引，手动新增撞 URL 报 409；favicon 外链 + 首字母兜底。
+  过程记录：Mimosa 两次拦截写入——db.exec(变量) 改逐条 prepare().run()（BEGIN/COMMIT 事务语义不变）、new RegExp+regex exec 改字面量 ATTR_RE + matchAll，均为等价且更规范的写法；favicon.im 与 google s2 本机不可达，favicon.cccyun.cc 实测 200 选用；dev 端口 65501 被用户在跑的实例占用，直接对热加载实例冒烟。
+  验证：书签域 4 文件 31 用例 + shared 契约 6 用例绿；全仓 typecheck 绿、测试零失败（console 426 / shared 36 等）、style:check 白名单外 0；dev 冒烟全链实测：/bookmarks 200 + DOM 探针（侧边栏入口/三视图/工具栏/空态在位、无报错）+ 截图验收（暗色主题一致）；导入预览→确认→近似分组→批量删→回收站→恢复→彻底删→URL 409 全部符合预期，冒烟数据已通过 API 清零。
+
+## 2026-09-19（四期+五期补记：AI 线收拢 + 课程与幻灯片并入，登记补于 2026-10-25）
+
+- [x] prd item 29 四期 AI 线收拢——完成。agentops/governance/lab/workflow/worktree/skill-manager 六模块自 console/toolbox 整体 git mv 至新建 apps/agent（65504），模块代码零改动；常驻任务随域迁移（apps/agent instrumentation → runtime/tasks.ts，governance 监听 + cc 监听），console 侧任务注册表随迁删除；数据目录沿用 /apps/*/data/ 仓库级 gitignore，workflow.db 手工搬迁，CONSOLE_DATA_DIR 名称不变。
+  不迁清单（主体非 AI agent 能力，原地保留）：toolbox 的 chat-viewer（微信聊天查看+OCR）、daily（AI 主题离线演示）、console 的 practice（git 提交看板）、bookmarks（书签管理）。
+  迁移来源对照与补充约定全文见根 AGENTS.md「四期」节（本条为台账补记——四期执行时未写入 progress.txt，仅 AGENTS.md 有档）。
+- [x] prd item 30 五期 课程与幻灯片并入——完成。vibe/apps/token2agent 与 harness-deck 两个 Vite 独立应用 verbatim 并入 apps/agent（course 16 课 / deck 23 页）；入口 createRoot 由 dynamic(ssr:false) 适配层取代；course/index.css 机械作用域化（:root/html/body → .course-root），与源站编译产物 1436 条规则序列比对 100% 一致；features/course/visuals.tsx 为反编译还原源码，整文件 @ts-nocheck 豁免，禁手同 agent-lab-core。
+  三源目录（token2agent/harness-deck/47.116.78.77 镜像）并入后删除，镜像 bundle 与原始文稿可从基线快照 2cfeb2ab0 整体找回；版权约束：版权归原作者，仅供个人本地学习，勿公开部署或对外暴露（portal 不加磁贴）。
+
+## 2026-09-25
+
+- [x] 技能线收拢：删除 apps/agent /skill-manager（技能管理）与 apps/blog /skills（技能展示）——职责由独立项目 E:ggbdpqghskills-explorer 接管（Vue 3 + TS 7 + Vite 8 纯静态站，活索引 1682 技能）。
+  删除：agent 的 features/skill-manager、app/skill-manager、api/skill-manager 与首页/侧栏入口；blog 的 app/skills、server/skills-catalog.ts、server/skills.ts、content/skills*、scripts/sync-skills.mjs、侧栏入口。
+  保留：apps/blog/src/lib/frontmatter.ts（articles.ts 共用）。
+  定性：skill-manager 后端读的 .ai/scripts/config/skill-sources.json 已随 .ai 目录治理失效（/api/skill-manager/sources ENOENT），blog /skills 读过期快照，两者均被 explorer 活索引取代。
+  验证：pnpm typecheck 全绿（清 agent/blog .next 过期类型缓存后）；pnpm test 304/305——唯一失败 governance git 端点为预存问题（GOVERNANCE_ROOT 落在非 git 仓库 E:ggbdpqgh，stash 定性复现）；pnpm style:check 0 违例。
+  过程记录：借鉴回 skills-explorer 的三处——栈式递归收录、数量/空描述护栏、-- 作者约定；console 侧 parseFrontmatter 的块标量缺陷（explorer BUG-002 同源）不再迁移修复。
+
+## 2026-10-03（六期：GitHub 仓收敛——五仓并入 + 源仓删除）
+
+- [x] 六期整合——完成（actions/consolidation-wave6，prd 1-6 通过）。GitHub 上 5 个小仓并入：cbmini → packages/cbmini（verbatim，编译半程 Mac 5/5，WSL 回归未验证）；prismctl → packages/prism-core + apps/cli prism（bun 退役，vitest 13/13，CLI dry-run 实测）；diffmap → packages/diffmap-core + apps/agent /diffmap + apps/cli diffmap（server→route handler 单进程，Turbopack 经 /web 子路径隔离 node 依赖，33 测试绿 + 页面/API/CLI 实测）；interview-gym → apps/agent /interview-gym/**（react-router 适配层换 App Router 18 路由，content 管线 public+manifest 运行时 fetch，proxy→relay route handler，主题落特性根，浏览器实测首页/题库参数路由全渲染）；linkpull → archive/snapshot-final 纯快照（Go 撞宪法不修宪）。
+  过程记录：包内相对导入统一 .ts 后缀 + allowImportingTsExtensions（NodeNext/tsx/vitest/Node/Turbopack 五方通吃，消费方 tsconfig 同步加开关）；verbatim 特性进 check-style 豁免区（interview-gym、diffmap）；gym 丢自带 shadcn 主题块直接吃 console-ui 基座（ADR-0001），组件 ui/ 与 packages/ui 的去重列为路线图欠债；heatmap 测试原断言仅周日为真（周一为首格截到今天），改为不变量断言；五源仓 verbatim 快照（含 .git 与 diffmap 脏区）先拍在 archive/snapshot-final/ 再动手。
+  验证：pnpm typecheck 全绿；pnpm test 除 agent 两个预存红外全绿（governance prd-parse 基线同红、workflow cancel 基线同款 flaky，worktree HEAD~4 对照定性）；pnpm style:check 白名单外 0；/diffmap 与 /interview-gym dev 冒烟 + 浏览器 DOM 级实测通过；apps/cli prism/diffmap 子命令实测通过；sync-content 实跑 13 篇 + manifest。
+  收敛留痕：五份 verbatim 快照（含 .git 与 diffmap 脏区）零漂移 diff 校验后，远端仓已删除（E-cc-ggbdpq-tools-workflow-linkpull / E-cc-ggbdpq-agents-prismctl / cbmini / interview-gym / diffmap，gh delete_repo 实删并 404 核验），本地五个源目录已删、空父目录无；恢复源 = console archive/snapshot-final/（gitignored）。
+
+## 2026-10-04（面试资料精简后的内容导入适配）
+
+- [ ] 面试自练场内容适配（console prd item 28）：本次功能与范围内验证完成；全仓测试门禁未通过，passes 保持 false。同步当前 17 份正文（4 题库 + 1 合并模拟稿 + 9 AI 项目 + 3 公开叙事），解析 22 道 F/A/S 题并保留全文；项目地图 9 卡与跨目录 slug 正确，五个模拟入口共用一稿；缺源预检保留旧副本，空池不计时、不记成绩，旧题可跳过；dev/build/test 自动前置同步。
+  验证：面试模块 9 文件 39/39 通过；全仓 typecheck、style:check 与本次触达代码的 Oxlint/Oxfmt 通过；本次 diff --check 通过；Next 页面验证合并说明可读、编码入口显示只读手练提示；17 份副本与 interview 原文逐字节一致。
+  全仓测试：agent 357/359，治理台 prd 解析与 workflow cancel 失败；治理台在未修改 HEAD 对照中同样失败，workflow HEAD 单次未复现。两域均未由本任务修改；其他并行改动保留。清单引用同步五个迁移入口，收藏现检出3项、87项未检出。未提交或推送。
+
+## 2026-10-10（本地修改检查与提交）
+
+- 全仓 typecheck、test、style:check 通过：Vitest 931/931，C♭ 2/2，教学核心六个检查脚本通过；agent 生产构建通过。新增 Edge E2E 6/6（备份拒绝、中继、Diffmap 状态刷新、CLI --base）；本机代理需仅在测试进程禁用，测试收尾手动停止本次启动的 dev 服务后退出 0。
+- 提交前补齐 Diffmap 文件消失回归。规则：内容指纹无法读取时不得复用审查标记；为什么：Git 清单之后文件可能消失，不能因此中断整份报告。证据：extractReport 两条回归修前分别 ENOENT lstat/open，修后保留条目且无指纹，包测试 22/22。Seen 1×（2026-10-10）。备份、治理根项目、执行终态、面试导入、Prism 与 C♭ 的旧实现负对照均产生预期失败。
+- Oxlint 36 个触达源码/测试文件 exit 0（7 项告警）；Oxfmt 检查 43 个触达文件，18 个既有文件未通过格式检查，保留其布局；仅整理六个新增测试文件。Windows→WSL 完整 C♭ 链路与真实 Prism/Chrome 服务未跑；item 28 的完整页面验收未重做，passes 保持 false。本次仅本地提交，不推送。
+
+## 2026-10-25（admin 并编 + 全仓死代码清理轮）
+
+- [x] prd item 31 admin·liliya 并编——完成。若依 4.8.3 存量管理后台的 Node 重写并入 console 编队（apps/admin，65505）：Next.js 16 + node:sqlite 零原生依赖单进程，SQLite 方言重建核心 16 表（字段对齐 Go 版 models.go），密码算法保留存量 md5(loginName+password+salt) 口径，ADMIN_DATA_DIR 可注入。
+  12 模块全实现（用户/角色/菜单/部门/岗位/字典/参数/公告/操作日志/登录日志/在线用户/定时任务）；端点级 RBAC：49 项菜单/权限串种子（对齐 Go 版 RequirePerm 权限点）+ 13 组 API denyUnless 守卫 + 角色「分配权限」树勾选 + /api/me 返回 perms + 侧栏按权限过滤 + 登录按权限落位，授权变更即时生效（权限缓存全清），user_id=1 全通过语义保留。
+  Go 版（lab/liliya）同日退役：全部核心功能对齐后收存定版资料至 apps/admin/docs/（12 提交 git bundle + 2026-10-06 垂直切片需求澄清 + 原仓 README + 架构/教训/协作约定，恢复：git clone bundle）。
+  余项记录在案：定时任务调度循环未接（invoke_target 注册表仅 noop/echoParam，misfire/并发仅存储）；前端按钮级权限细分、data_scope 过滤未实现；明确裁剪项见 apps/admin/docs/README.md（存量 MySQL 直连/代码生成器/租户/监控/Excel/XSS/OpenAPI/smoke 脚本）。
+- [x] prd item 32 全仓死代码清理轮——完成（净 -4898 行：114,897 → 约 110,100，77 文件改动=60 整删+17 修剪）。
+  侦查：knip（36 未用文件/249 未用导出/168 未用类型/23 未用依赖）+ 自建传递性可达性分析器（从路由/instrumentation/CLI/脚本入口 BFS，修正 .jsx 路由、@ig 别名、.js 后缀指向 .ts、exports 子路径键四类解析后才收敛，人工核实拦下 gym/register 引擎等整簇误报）+ jscpd（代码级克隆仅约 1 千行，重复非本病）+ 3 路只读深扫互证。
+  删除：agentops/adapters 的 VSCode/Cursor 双适配器与 keybindings/snippets 扫描机器（唯一消费方 execute.ts 只用 scanSettings/getConfigFilePath，barrel 裁至两导出）；cc 域 rollback/verify/audit 三模块与无客户端的 /api/agentops/cc/audit 路由（cc 契约测试五链路改双链路 generate/apply）；chat-viewer workbench 六件套+chat-source-plugin+fake OCR 引擎+use-chat-analysis-store+demo-data（生产零引用，仅自测引用）；date-playbook 测试专属域层集群（fromChatMemory/timeline/aggregate/couple-rules/三 schema/archive-repo，活逻辑早已在 src/schemas/date-playbook.ts）；inventory-core 被 console 本地副本取代的 filter-products/filters；register-core result.ts；mail-sdk 五个 examples；PluginDetail（已被独立页面 PluginDetailPage 取代）、cc/gym 两 ErrorBoundary、ruoyi-ai 未用 ui 三件、forum/daily 旧 shell、server/forum.ts、venue/filter.ts、blog 一次性迁移脚本、console /api/assets/meta 无消费路由；packages/ui 唯一未用组件 statistic。
+  顺手修复两个真 bug：(1) 清单台写确认流路由断裂——store.ts POST /api/chat/{id}/confirm，实际路由在 /api/todo/chat/{id}/confirm，写确认全部 404 静默失败等 120s 超时（CONFIRM_TIMEOUT_MS），测试注入正确 base 掩盖了此问题；(2) pnpm-workspace.yaml allowBuilds 的 onnxruntime-node/protobufjs 值为占位文本"set this to true or false"（非布尔），pnpm install 必报 ERR_PNPM_IGNORED_BUILDS。
+  依赖清理：移除 12 个未用依赖（agent js-yaml/marked/tw-animate-css/@types/js-yaml、blog clsx/tailwind-merge、console clsx/tailwind-merge/motion、portal cva/clsx/tailwind-merge/jetbrains-mono、cli console-shared、register-core pino-pretty）并刷新 lockfile；toolbox testing-library 经 rg 核实为活测试依赖保留；清理 check-style.mjs 指向已迁移 skill-manager 的失效豁免。
+  验证：pnpm typecheck 全绿；7 包测试全绿（agent 390/toolbox 114/console 121/register-core 121/mail-sdk 63/inventory-core 41/shared 36）；agent/toolbox/console 生产构建 exit 0。
+  预存问题记录（HEAD 即存在，非本轮引入）：style:check 白名单外 9 处裸色名（agent downloads/App.tsx 5 处、ruoyi-ai lib/format.ts+pages/knowledge-detail.tsx 4 处）；agent build/test 前置 sync-content 在本机缺 interview 内容源目录（INTERVIEW_DOCS_DIR 可绕过，构建本体已直跑验证）。
+  后续可选项（待裁决，未排期）：interview-gym ui/ 与 packages/ui 去重（约 300-500 行，六期既记欠债 ADR-0001）；blog articles.ts 8 篇内联正文迁 md（约 320 行，需 frontmatter 透传 views）；quota.ts 手写 SOCKS5 栈换 socks-proxy-agent（约 200 行，网络路径无 e2e 覆盖）；249 未用导出+168 未用类型长尾清理（估 1-2 千行）。
+- [x] 技术栈刷新轮（同日）——完成。关键事实：宪法锁定栈本已全部是 npm 绝对最新（next 16.4.3/react 19.3.1/TS 7.0.2/tailwind 4.3.3 即 latest），本轮为范围内全量刷新（react/zod/zustand/vitest/radix 全家/lucide 1.61/react-query/playwright 1.64.1/@types-node 等）+ oxlint 1.89/oxfmt 0.74（0.x 需显式改范围）。
+  跨主版本 4 上 1 退：motion 13→14（agent 390 用例全绿）、dotenv 17→18（API 等价）、googleapis 180→188（mail-sdk 10 用例绿）、@types/mailparser 3.9 全部落位；@tanstack/react-table v8→v9 回退（3 文件 42 处 API 破坏——getCoreRowModel→createCoreRowModel 工厂化+ColumnDef 泛型重做，属真迁移非机械升级，收益近零风险实打实，列待办）。
+  验证：typecheck 0 错；全仓测试绿（含 blog 首跑 2/2；agent 经直跑 vitest 绕过 sync-content 环境前置）；style:check 与升级前完全一致（9 处 HEAD 既有裸色名，非新增）；6 app 生产构建全绿（agent 同上绕过法）。playwright 1.64 提示：下次跑 e2e 前需 pnpm exec playwright install 对齐浏览器二进制。

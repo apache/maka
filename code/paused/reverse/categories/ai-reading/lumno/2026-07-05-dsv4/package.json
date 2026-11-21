@@ -1,0 +1,32 @@
+{
+  "name": "lumno-reverse-engineer",
+  "version": "0.9.14-RE",
+  "private": true,
+  "description": "Lumno - 聚焦搜索新标签页 Chrome 扩展逆向工程文档项目",
+  "author": "Kubai087 (原扩展作者) / 逆向分析项目",
+  "license": "UNLICENSED",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "lint": "echo 'No linter configured for reverse-engineered source'",
+    "docs": "echo 'See src/docs/ for architecture, data flow, and security audit'"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0",
+    "@types/chrome": "^0.0.268"
+  },
+  "keywords": [
+    "chrome-extension",
+    "reverse-engineering",
+    "manifest-v3",
+    "new-tab",
+    "search",
+    "lumno"
+  ],
+  "repository": {
+    "type": "local",
+    "directory": "./"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

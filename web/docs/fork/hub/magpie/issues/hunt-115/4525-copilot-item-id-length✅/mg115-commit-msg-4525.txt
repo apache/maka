@@ -1,0 +1,44 @@
+gateway: an input item's id longer than the 64 an upstream
+ that checks ids takes goes shorter, as its kind's prefix and the sha256 of
+ the whole of it (#4525, #4527)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Codex carries every id an earlier turn came back with, and Copilot
+gives its items ids hundreds of characters long: 420 as isnine's
+sessions each showed (#4525), 444 as ghjkllasdf-fake's approval
+session and its guardian review did (#4527), all of the characters
+OpenAI takes an id of. plainItemIDs checked the characters only, so
+every later turn went to Copilot as it came and was turned away
+400 "Invalid 'input[N].id': string too long. Expected a string with
+maximum length 64, but got a string with length 420 instead." — the
+conversation stuck, a tool call never answered, Codex's automatic
+approval review failing over it.
+
+An id longer than the 64 goes as its kind's prefix ("msg_", "rs_")
+and the sha256 of the whole of it, cut to fit: the same id to the
+same shorter one every turn, and no two ids land on one, where a
+plain cut could (ids of a vendor can begin alike). Copilot's own
+reasoning, overlong but of the right characters, keeps its place
+with its seal — an upstream that checks ids made that one, its
+encrypted_content is its to read, unlike another vendor's, which
+still goes as it did. A call's call_id was bound already
+(BoundCallID); one shorter than 65 goes as it came.
+
+What changed
+
+- gateway: itemIDCap (64) and boundItemID, and plainItemIDs bounds
+  an input item's id at them, on every relay that checks ids as
+  OpenAI does — Copilot's /responses among them (validatesItemIDs)
+- tests: an id checker that turns an overlong id away word for word
+  as isnine got it; Codex's turn over a Copilot conversation of
+  overlong ids asked twice, the same bound each turn; the 64/65
+  boundary, determinism, idempotence, two ids that begin alike going
+  to two; the parity harness holding plainItemIDs to it beside what
+  it was
+
+Fixes #4525
+Fixes #4527
+
+Generated-by: GLM-5.3-Flash (ZCode)

@@ -1,0 +1,37 @@
+=== RUN   TestRawControlByteInStringEscapedAndRouted
+2026/11/08 15:44:01 gateway: escaped 1 raw control byte(s) in a request string, first at offset 6800114: "xxxxxxxxxxxx\x00end\"}]}]}"
+--- PASS: TestRawControlByteInStringEscapedAndRouted (0.18s)
+=== RUN   TestRawControlByteInStringEscapedOnResponses
+--- PASS: TestRawControlByteInStringEscapedOnResponses (0.03s)
+=== RUN   TestRawControlByteOutsideStringStillRefused
+--- PASS: TestRawControlByteOutsideStringStillRefused (0.01s)
+=== RUN   TestParsedRequestEscapesNothing
+--- PASS: TestParsedRequestEscapesNothing (0.02s)
+=== RUN   TestEscapeRawControlBytes
+=== RUN   TestEscapeRawControlBytes/in_a_string
+=== RUN   TestEscapeRawControlBytes/whitespace_between_tokens_stays
+=== RUN   TestEscapeRawControlBytes/an_escaped_newline_stays
+=== RUN   TestEscapeRawControlBytes/past_an_escaped_quote
+=== RUN   TestEscapeRawControlBytes/past_an_escaped_backslash
+=== RUN   TestEscapeRawControlBytes/outside_a_string_stays
+=== RUN   TestEscapeRawControlBytes/two_strings,_one_byte_each
+--- PASS: TestEscapeRawControlBytes (0.00s)
+    --- PASS: TestEscapeRawControlBytes/in_a_string (0.00s)
+    --- PASS: TestEscapeRawControlBytes/whitespace_between_tokens_stays (0.00s)
+    --- PASS: TestEscapeRawControlBytes/an_escaped_newline_stays (0.00s)
+    --- PASS: TestEscapeRawControlBytes/past_an_escaped_quote (0.00s)
+    --- PASS: TestEscapeRawControlBytes/past_an_escaped_backslash (0.00s)
+    --- PASS: TestEscapeRawControlBytes/outside_a_string_stays (0.00s)
+    --- PASS: TestEscapeRawControlBytes/two_strings,_one_byte_each (0.00s)
+=== RUN   TestDecodeRequestReturnsTheBodyItTook
+--- PASS: TestDecodeRequestReturnsTheBodyItTook (0.00s)
+=== RUN   TestDecodeRequestEscapesAndReturnsTheMendedBody
+2026/11/08 15:44:01 gateway: escaped 1 raw control byte(s) in a request string, first at offset 23: "1\",\"note\":\"a\x00b\"}"
+--- PASS: TestDecodeRequestEscapesAndReturnsTheMendedBody (0.00s)
+=== RUN   TestEscapeFallbackKeepsTheOriginalError
+--- PASS: TestEscapeFallbackKeepsTheOriginalError (0.00s)
+=== RUN   TestOllamaChatRawControlByteInStringEscaped
+2026/11/08 15:44:01 gateway: escaped 1 raw control byte(s) in a request string, first at offset 62: "ontent\":\"tab\x01stop\"}],\"st"
+--- PASS: TestOllamaChatRawControlByteInStringEscaped (0.04s)
+PASS
+ok  	github.com/yetone/magpie/internal/gateway	1.182s

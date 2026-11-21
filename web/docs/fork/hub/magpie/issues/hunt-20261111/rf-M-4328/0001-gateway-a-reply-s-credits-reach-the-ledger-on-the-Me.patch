@@ -1,0 +1,127 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Wed, 4 Nov 2026 10:05:35 +0800
+Subject: [PATCH] gateway: a reply's credits reach the ledger on the Messages
+ path too (#4328)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+aUsage read no credit, so a plugin answering /v1/messages — Kiro's, whose
+replies sum the meteringEvents Kiro costs a request with into the last
+message_delta's usage — could not say what a request cost, and no Kiro
+row on the Usage page had a credits. Read credit into Usage.Credits the
+way the Chat path has read WorkBuddy's since #2512; the record and the
+totals already carry call.Usage.Credits. A said 0 stays a said 0, and a
+negative one is no cost.
+
+Fixes #4328
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gateway/anthropic.go         |  9 ++++
+ internal/gateway/kiro_credits_test.go | 65 +++++++++++++++++++++++++++
+ 2 files changed, 74 insertions(+)
+ create mode 100644 internal/gateway/kiro_credits_test.go
+
+diff --git a/internal/gateway/anthropic.go b/internal/gateway/anthropic.go
+index e90ad3ce9..e1d0301a9 100644
+--- a/internal/gateway/anthropic.go
++++ b/internal/gateway/anthropic.go
+@@ -1428,6 +1428,12 @@ type aUsage struct {
+ 	// Kiro caches but tells only credits, never tokens (zeewell on X).
+ 	// It is read, never told: anthropic() leaves it false.
+ 	CacheUnknown bool `json:"magpie_cache_unknown,omitempty"`
++	// Credit is what the reply said the request cost in its plan's
++	// credits, as cUsage's: Kiro's plugin sums the meteringEvents Kiro
++	// costs a request with into its last message_delta's usage
++	// (yetone/magpie#4328). It is read, never told: anthropic() leaves it
++	// out.
++	Credit *float64 `json:"credit,omitempty"`
+ 	// OutputTokensDetails says how many of the output tokens were
+ 	// thinking, as Copilot counts them on a message_delta: the reasoning
+ 	// count the other protocols' usage carries (completion_tokens_details,
+@@ -1448,6 +1454,9 @@ type aOutputDetails struct {
+ 
+ func (u aUsage) usage() Usage {
+ 	out := Usage{Input: u.InputTokens, Output: u.OutputTokens, CacheRead: u.CacheReadInputTokens, CacheWrite: u.CacheCreationInputTokens, cacheUnknown: u.CacheUnknown}
++	if c := u.Credit; c != nil && *c >= 0 {
++		out.Credits = c
++	}
+ 	if c := u.CacheCreation; c != nil {
+ 		out.cacheCreationReported = true
+ 		out.cacheCreationHasCounts = c.Ephemeral5m+c.Ephemeral1h > 0
+diff --git a/internal/gateway/kiro_credits_test.go b/internal/gateway/kiro_credits_test.go
+new file mode 100644
+index 000000000..bacb048c4
+--- /dev/null
++++ b/internal/gateway/kiro_credits_test.go
+@@ -0,0 +1,65 @@
++package gateway
++
++import (
++	"testing"
++
++	"github.com/yetone/magpie/internal/provider"
++)
++
++// The Kiro plugin's replies, once it sums the meteringEvents Kiro costs
++// its requests with ({"unit":"credit","usage":<n>}): the last
++// message_delta's usage names the request's credits beside
++// magpie_cache_unknown, as the issue asks it to (yetone/magpie#4328).
++// The Usage page showed no credits on a Kiro row: aUsage read no credit,
++// though the Chat path has read WorkBuddy's since #2512.
++const (
++	kiroCreditsStream = "event: message_start\n" +
++		`data: {"type":"message_start","message":{"id":"msg_k1","type":"message","role":"assistant","model":"claude-sonnet-4.5","content":[],"usage":{"input_tokens":0,"output_tokens":0}}}` + "\n\n" +
++		"event: content_block_delta\n" +
++		`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"OK"}}` + "\n\n" +
++		"event: message_delta\n" +
++		`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":0,"output_tokens":19,"magpie_cache_unknown":true,"credit":1.25}}` + "\n\n" +
++		"event: message_stop\n" +
++		`data: {"type":"message_stop"}` + "\n\n"
++	kiroCreditsJSON = `{"id":"msg_k2","type":"message","role":"assistant","model":"claude-sonnet-4.5","content":[{"type":"text","text":"OK."}],"stop_reason":"end_turn","usage":{"input_tokens":0,"output_tokens":1,"magpie_cache_unknown":true,"credit":0.4}}`
++	kiroFreeCredits = `{"id":"msg_k3","type":"message","role":"assistant","model":"claude-sonnet-4.5","content":[{"type":"text","text":"OK."}],"stop_reason":"end_turn","usage":{"input_tokens":0,"output_tokens":1,"magpie_cache_unknown":true,"credit":0}}`
++	kiroNoCredits   = `{"id":"msg_k4","type":"message","role":"assistant","model":"claude-sonnet-4.5","content":[{"type":"text","text":"OK."}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`
++	kiroBadCredits  = `{"id":"msg_k5","type":"message","role":"assistant","model":"claude-sonnet-4.5","content":[{"type":"text","text":"OK."}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1,"credit":-3}}`
++)
++
++// TestKiroCreditsReachTheLedger: the credits a reply on the Messages path
++// names reach the ledger's record, as WorkBuddy's do on the Chat path
++// (#2512). A free request's credit 0 is a said 0, not an unknown one, and
++// a credit no reply said — or a negative one, which is no cost — leaves
++// the row uncredited.
++func TestKiroCreditsReachTheLedger(t *testing.T) {
++	const messages = `{"model":"fake/m1","max_tokens":20,"messages":[{"role":"user","content":"Say just OK."}]}`
++	const streamed = `{"model":"fake/m1","max_tokens":20,"stream":true,"messages":[{"role":"user","content":"Say just OK."}]}`
++	const chat = `{"model":"fake/m1","messages":[{"role":"user","content":"Say just OK."}]}`
++	for _, c := range []struct {
++		name, ctype, reply, path, request string
++		want                              *float64
++	}{
++		{"whole reply", "application/json", kiroCreditsJSON, "/v1/messages", messages, ptr(0.4)},
++		{"streamed", "", kiroCreditsStream, "/v1/messages", streamed, ptr(1.25)},
++		// a translated request is always streamed from the vendor
++		{"translated for a Chat client", "", kiroCreditsStream, "/v1/chat/completions", chat, ptr(1.25)},
++		{"a free request", "application/json", kiroFreeCredits, "/v1/messages", messages, ptr(0.0)},
++		{"no credit said", "application/json", kiroNoCredits, "/v1/messages", messages, nil},
++		{"a negative credit", "application/json", kiroBadCredits, "/v1/messages", messages, nil},
++	} {
++		t.Run(c.name, func(t *testing.T) {
++			setup(t, provider.Anthropic, &fake{ctype: c.ctype, reply: c.reply})
++			if code, body := post(t, c.path, c.request); code != 200 {
++				t.Fatalf("gateway: %d %s", code, body)
++			}
++			r := lastUsage(t)
++			switch {
++			case c.want == nil && r.Credits != nil:
++				t.Fatalf("credits %v from a reply that said none", *r.Credits)
++			case c.want != nil && (r.Credits == nil || *r.Credits != *c.want):
++				t.Fatalf("credits %v, want %v", r.Credits, *c.want)
++			}
++		})
++	}
++}
+-- 
+2.50.1 (Apple Git-155)
+

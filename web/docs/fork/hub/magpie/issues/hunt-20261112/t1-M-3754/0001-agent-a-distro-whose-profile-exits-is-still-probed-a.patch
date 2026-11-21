@@ -1,0 +1,297 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: vincent <vincent@users.noreply.github.com>
+Date: Wed, 28 Oct 2026 06:28:50 +1000
+Subject: [PATCH] agent: a distro whose profile exits is still probed and says
+ why (#3754)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The reporter's Ubuntu 24.04 has `. "$HOME/.cargo/env"` at the end of its
+~/.profile, which ends Debian's sh with exit 2 before a login shell runs
+anything. wslProbe ran the probe with `sh -lc` and dropped the failed run's
+output and error alike, so the distro sat in wsl.failed for ten minutes, its
+agents were gone from the Agents page, wsl.json wasn't written, and nothing
+was logged or shown.
+
+The probe now goes through wslrun.ProbeShell: the login shell's answer is
+captured, and when that shell has ended at its profile the same script runs
+in a plain shell, so the distro's agents are still found. A login run that
+ended is discarded whole rather than mixed into the answer. When the plain
+shell fails too, wslProbe logs the distro, the exit status and the first line
+the distro's shell said, so a probe that finds nothing is no longer silent.
+
+The same `sh -lc` probe in wslrun.Find and wslrun.In (Claude Code's sign-in
+in a distro, MCP health checks) got the same fallback.
+
+What was run:
+- TestWSLProbeFindsAgentsWhenTheLoginShellEnds (internal/agent) and
+  TestFindDistroWhoseLoginProfileEndsTheShell (internal/wslrun) fail on the
+  code before this commit: "agents in the distro: []" and "Find = {Distro:
+  Path: ...} false". Both pass after it, also with -race -count=2.
+- TestWSLProbeWhySaysWhatTheShellSaid: the exit status and the shell's first
+  stderr line, and nothing after it.
+- gofmt -l on the changed files: nothing. go build ./...: nothing. go vet on
+  both packages, and with GOOS=windows and GOOS=linux -tags nogui: nothing.
+- go test ./internal/wslrun/ -count=1: ok, 11 passed.
+- go test ./internal/agent/ -count=1: 1537 passed, 2 failed — TestAgyShell
+  (fish's config) and TestWSLColdPlaceOpensNothing (.hermes profiles), which
+  fail the same way here with both product files reverted.
+---
+ internal/agent/wsl.go                  | 18 +++++-
+ internal/agent/wsl_profile_test.go     | 88 ++++++++++++++++++++++++++
+ internal/wslrun/wslrun.go              | 12 +++-
+ internal/wslrun/wslrun_profile_test.go | 65 +++++++++++++++++++
+ 4 files changed, 179 insertions(+), 4 deletions(-)
+ create mode 100644 internal/agent/wsl_profile_test.go
+ create mode 100644 internal/wslrun/wslrun_profile_test.go
+
+diff --git a/internal/agent/wsl.go b/internal/agent/wsl.go
+index e4137f901..089ec401f 100644
+--- a/internal/agent/wsl.go
++++ b/internal/agent/wsl.go
+@@ -11,6 +11,7 @@ import (
+ 	"net"
+ 	"net/url"
+ 	"os"
++	"os/exec"
+ 	"path/filepath"
+ 	"runtime"
+ 	"slices"
+@@ -1779,8 +1780,9 @@ func wslLinkPaths() []string {
+ }
+ 
+ func wslProbe(name string) *distro {
+-	b, err := wslRun(30*time.Second, "-d", name, "-e", "sh", "-lc", wslProbeScript())
++	b, err := wslRun(30*time.Second, "-d", name, "-e", "sh", "-c", wslrun.ProbeShell, "sh", wslProbeScript())
+ 	if err != nil {
++		log.Printf("WSL %s: the probe failed, so its agents aren't listed: %v", name, wslProbeWhy(err))
+ 		return nil
+ 	}
+ 	d := parseProbe(name, string(b))
+@@ -1793,7 +1795,19 @@ func wslProbe(name string) *distro {
+ 	return d
+ }
+ 
+-// parseProbe reads wslProbeScript()'s output. A command on one of Windows'
++// wslProbeWhy is a failed probe's error with the first line the distro's
++// own shell said: the exit status alone doesn't say a profile ended it.
++func wslProbeWhy(err error) string {
++	var exit *exec.ExitError
++	if errors.As(err, &exit) {
++		if line, _, _ := strings.Cut(strings.TrimSpace(string(exit.Stderr)), "\n"); line != "" {
++			return err.Error() + ": " + line
++		}
++	}
++	return err.Error()
++}
++
++// parseProbe reads wslProbeScript's output. A command on one of Windows'
+ // drives — WSL puts Windows' PATH on its own, so Windows npm's pi is
+ // /mnt/c/Users/me/AppData/Roaming/npm/pi there — is Windows', not the
+ // distro's.
+diff --git a/internal/agent/wsl_profile_test.go b/internal/agent/wsl_profile_test.go
+new file mode 100644
+index 000000000..be82388eb
+--- /dev/null
++++ b/internal/agent/wsl_profile_test.go
+@@ -0,0 +1,88 @@
++package agent
++
++import (
++	"os"
++	"os/exec"
++	"path/filepath"
++	"runtime"
++	"strings"
++	"testing"
++	"time"
++)
++
++// A distro whose profile ends its login shell — the reporter's
++// `. "$HOME/.cargo/env"` under Debian's sh, where that file isn't there —
++// ran the probe with nothing: every agent there was gone from the Agents
++// page and nothing said why (#3754). The probe runs in the login shell and,
++// when that shell has ended, in a plain one, so its agents are found.
++func TestWSLProbeFindsAgentsWhenTheLoginShellEnds(t *testing.T) {
++	if runtime.GOOS == "windows" {
++		t.Skip("a Windows shell reports the temp folder as a drive")
++	}
++	sh, err := exec.LookPath("sh")
++	if err != nil {
++		t.Skip("no sh")
++	}
++	home := t.TempDir()
++	os.MkdirAll(filepath.Join(home, ".claude"), 0o755)
++	root := filepath.Join(home, "root")
++	os.MkdirAll(root, 0o755)
++	// the distro's PATH holds only a shell: this machine's own commands
++	// aren't the distro's
++	shells := t.TempDir()
++	if err := os.Symlink(sh, filepath.Join(shells, "sh")); err != nil {
++		t.Fatal(err)
++	}
++	// the reporter's line, then, for a shell that reads on (bash), the same
++	// ending: the login shell is gone at the profile either way
++	profile := ". \"$HOME/.cargo/env\"\nexit 2\n"
++	if err := os.WriteFile(filepath.Join(home, ".profile"), []byte(profile), 0o644); err != nil {
++		t.Fatal(err)
++	}
++
++	run, rootOf := wslRun, wslRoot
++	reset := func() {
++		wsl.Lock()
++		wsl.seen, wsl.at, wsl.runAt, wsl.names, wsl.running, wsl.dirty, wsl.probed, wsl.failed = nil, time.Time{}, time.Time{}, nil, nil, false, nil, nil
++		wsl.Unlock()
++	}
++	t.Cleanup(func() { wslRun, wslRoot = run, rootOf; reset() })
++	reset()
++	wslRun = func(_ time.Duration, args ...string) ([]byte, error) {
++		switch strings.Join(args, " ") {
++		case "-l -q", "-l --running -q":
++			return []byte("Ubuntu-24.04\n"), nil
++		}
++		// the probe as wsl.exe runs it in the distro, in that distro's home
++		cmd := exec.Command(sh, args[4:]...)
++		cmd.Env = []string{"HOME=" + home, "PATH=" + shells}
++		return cmd.Output()
++	}
++	wslRoot = func(name string) string { return root }
++
++	var ids []string
++	for _, a := range wslAgentsOf(wslDistros()) {
++		ids = append(ids, a.ID)
++	}
++	if !strings.Contains(strings.Join(ids, " "), "claude@wsl:Ubuntu-24.04") {
++		t.Fatalf("agents in the distro: %v", ids)
++	}
++}
++
++// A probe that fails says so in the log with the exit status and the first
++// line the distro's shell said: the status alone doesn't say that a profile
++// ended the shell.
++func TestWSLProbeWhySaysWhatTheShellSaid(t *testing.T) {
++	sh, err := exec.LookPath("sh")
++	if err != nil {
++		t.Skip("no sh")
++	}
++	_, err = exec.Command(sh, "-c", "echo 'sh: 10: .: cannot open /root/.cargo/env: No such file' >&2; echo again >&2; exit 2").Output()
++	if err == nil {
++		t.Fatal("no error")
++	}
++	why := wslProbeWhy(err)
++	if !strings.Contains(why, "exit status 2") || !strings.Contains(why, "cannot open /root/.cargo/env") || strings.Contains(why, "again") {
++		t.Fatalf("why = %q", why)
++	}
++}
+diff --git a/internal/wslrun/wslrun.go b/internal/wslrun/wslrun.go
+index 764458ae4..6555ee83c 100644
+--- a/internal/wslrun/wslrun.go
++++ b/internal/wslrun/wslrun.go
+@@ -55,6 +55,14 @@ var Run = func(timeout time.Duration, args ...string) ([]byte, error) {
+ 	return out, err
+ }
+ 
++// ProbeShell runs a probe's script, given as $1, in the distro's login
++// shell and, when its profile ends that shell (a source of a file that
++// isn't there, say), in a plain one: a distro probed through such a profile
++// found nothing, and nothing said why (#3754). A login run that ended is
++// dropped whole, and the plain shell's failure is left on stderr for the
++// caller to log.
++const ProbeShell = `out=$(sh -lc "$1") && printf '%s\n' "$out" || sh -c "$1"`
++
+ var found struct {
+ 	sync.Mutex
+ 	at    map[string]time.Time
+@@ -106,7 +114,7 @@ func Find(name string) (Tool, bool) {
+ 		}
+ 	}
+ 	for _, d := range names {
+-		out, err := Run(30*time.Second, "-d", d, "-e", "sh", "-lc", probeScript(name))
++		out, err := Run(30*time.Second, "-d", d, "-e", "sh", "-c", ProbeShell, "sh", probeScript(name))
+ 		if err != nil {
+ 			continue
+ 		}
+@@ -162,7 +170,7 @@ func In(distro, name string) (Tool, error) {
+ 	if fresh {
+ 		return t, nil
+ 	}
+-	out, err := Run(30*time.Second, "-d", distro, "-e", "sh", "-lc", probeScript(name))
++	out, err := Run(30*time.Second, "-d", distro, "-e", "sh", "-c", ProbeShell, "sh", probeScript(name))
+ 	if err != nil {
+ 		return Tool{}, err
+ 	}
+diff --git a/internal/wslrun/wslrun_profile_test.go b/internal/wslrun/wslrun_profile_test.go
+new file mode 100644
+index 000000000..26d2bcc95
+--- /dev/null
++++ b/internal/wslrun/wslrun_profile_test.go
+@@ -0,0 +1,65 @@
++package wslrun
++
++import (
++	"os"
++	"os/exec"
++	"path/filepath"
++	"runtime"
++	"strings"
++	"testing"
++	"time"
++)
++
++// A distro whose profile ends its login shell — the reporter's
++// `. "$HOME/.cargo/env"`, where that file isn't there — answered a probe
++// with nothing, so a command there was taken as missing (#3754). Find looks
++// in a plain shell when the login one has ended, and finds it.
++func TestFindDistroWhoseLoginProfileEndsTheShell(t *testing.T) {
++	if runtime.GOOS == "windows" {
++		t.Skip("a Windows shell reports the temp folder as a drive")
++	}
++	sh, err := exec.LookPath("sh")
++	if err != nil {
++		t.Skip("no sh")
++	}
++	home := t.TempDir()
++	bin := filepath.Join(home, ".local", "bin")
++	if err := os.MkdirAll(bin, 0o755); err != nil {
++		t.Fatal(err)
++	}
++	if err := os.WriteFile(filepath.Join(bin, "claude"), []byte("#!/bin/sh\n"), 0o755); err != nil {
++		t.Fatal(err)
++	}
++	// the distro's PATH holds only a shell: this machine's own commands
++	// aren't the distro's
++	shells := t.TempDir()
++	if err := os.Symlink(sh, filepath.Join(shells, "sh")); err != nil {
++		t.Fatal(err)
++	}
++	// the reporter's line, then, for a shell that reads on (bash), the same
++	// ending: the login shell is gone at the profile either way
++	profile := ". \"$HOME/.cargo/env\"\nexit 2\n"
++	if err := os.WriteFile(filepath.Join(home, ".profile"), []byte(profile), 0o644); err != nil {
++		t.Fatal(err)
++	}
++
++	oldOn, oldRun := On, Run
++	t.Cleanup(func() { On, Run = oldOn, oldRun; Forget() })
++	On = true
++	Forget()
++	Run = func(_ time.Duration, args ...string) ([]byte, error) {
++		switch strings.Join(args, " ") {
++		case "-l -q", "-l --running -q":
++			return utf16le("Ubuntu-24.04\r\n"), nil
++		}
++		// the probe as wsl.exe runs it in the distro, in that distro's home
++		cmd := exec.Command(sh, args[4:]...)
++		cmd.Env = []string{"HOME=" + home, "PATH=" + shells}
++		return cmd.Output()
++	}
++
++	tool, ok := Find("claude")
++	if !ok || tool.Distro != "Ubuntu-24.04" || tool.Path != filepath.Join(bin, "claude") {
++		t.Fatalf("Find = %+v %v", tool, ok)
++	}
++}
+-- 
+2.50.1 (Apple Git-155)
+

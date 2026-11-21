@@ -1,0 +1,22 @@
+{
+  "id": "62",
+  "slug": "partition-equal-subset-sum",
+  "title": "分隔等和子集",
+  "difficulty": "medium",
+  "tags": ["数组", "动态规划"],
+  "description": "给你一个**只包含正整数**的非空数组 `nums`。请你判断是否可以将这个数组分割成两个子集,使得两个子集的元素和相等。\n\n**示例 1:**\n\n- 输入:`nums = [1,5,11,5]`\n- 输出:`true`(数组可以分割成 `[1, 5, 5]` 和 `[11]`)\n\n**示例 2:**\n\n- 输入:`nums = [1,2,3,5]`\n- 输出:`false`(无法分割成元素和相等的两个子集)",
+  "solution": "## 思路\n\n转化为**0/1 背包**:能否选若干数凑成 `sum/2`。若总和为奇数直接 false。用一维 `dp[j]` 表示能否凑出和 `j`,逆序更新。\n\n## 参考代码\n\n```js\nfunction canPartition(nums) {\n  const sum = nums.reduce((a, b) => a + b, 0);\n  if (sum % 2 !== 0) return false;\n  const target = sum / 2;\n  const dp = new Array(target + 1).fill(false);\n  dp[0] = true;\n  for (const n of nums) {\n    for (let j = target; j >= n; j--) {\n      dp[j] = dp[j] || dp[j - n];\n    }\n  }\n  return dp[target];\n}\n```\n\n## 复杂度\n\n- 时间:O(n * sum)\n- 空间:O(sum)",
+  "signature": {
+    "language": "javascript",
+    "entry": "canPartition",
+    "params": [{ "name": "nums", "type": "number[]" }],
+    "returns": "boolean"
+  },
+  "testCases": [
+    { "sample": true, "input": [[1, 5, 11, 5]], "expected": true },
+    { "sample": true, "input": [[1, 2, 3, 5]], "expected": false },
+    { "sample": false, "input": [[1]], "expected": false },
+    { "sample": false, "input": [[2, 2]], "expected": true },
+    { "sample": false, "input": [[1, 2, 5]], "expected": false }
+  ]
+}

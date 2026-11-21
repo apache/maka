@@ -1,0 +1,101 @@
+2024-05-31|ggbdpq|Merge branch 'master' into GYLJG-3210
+2024-05-17|ggbdpq|[GYLJG-3210] refactor: 完善登录模块相关页面改造
+2024-05-16|ggbdpq|登录注册忘记密码相关页面初步改造
+2024-05-15|ggbdpq|[GYLJG-3173] fix: 修复重置密码后重新发送邮箱登录页面验证码问题
+2024-04-01|ggbdpq|[GYLJG-2821] refactor: 修复点击返回倒计时为负数展示的问题
+2024-03-29|ggbdpq|[GYLJG-2821] refactor: 忘记密码-设置密码页面增加图片验证码;忘记密码页面修复倒计时功能;
+2024-03-07|ggbdpq|[perf_20240307] refactor: 修改按钮加载悬浮的样式
+2024-03-07|ggbdpq|[perf_20240307] refactor: 修复手机登录的短信验证码倒计时功能
+2024-01-25|ggbdpq|[GYLJG-2310] refactor: 删除多余的校验
+2024-01-25|ggbdpq|[GYLJG-2310] refactor: 消除指定文件this.state写法;给去登录增加发送验证码;删除不必要的代码;
+2024-01-19|ggbdpq|[GYLJG-2310] refactor: 修复页面初始化无法获取验证码key值的问题;优化部分store的逻辑;
+2024-01-18|ggbdpq|[GYLJG-2310] refactor: 完善密钥认证编辑页面的处理逻辑
+2024-01-18|ggbdpq|[GYLJG-2310] refactor: 优化getErrorTipsColor函数
+2024-01-18|ggbdpq|[GYLJG-2310] fix: 查漏补缺, 纠正字段
+2024-01-18|ggbdpq|[GYLJG-2310] refactor: 优化指定页面的辅助函数;消除sonarlint扫描发现的问题
+2024-01-16|ggbdpq|[GYLJG-2310] refactor: 删除注释的无用代码;优化renderBorderColor函数;
+2024-01-16|ggbdpq|[GYLJG-2310] refactor: 删除注释的废弃代码;增加数组长度判空;优化throttle函数;
+2024-01-16|ggbdpq|[GYLJG-2310] refactor: 降低代码复杂度;优化camel2Under函数处理逻辑
+2024-01-16|ggbdpq|[GYLJG-2310] fix: 把Image组件的alt属性替换成title属性
+2024-01-16|ggbdpq|[GYLJG-2310] refactor: 抽离样式,降低函数的复杂度
+2024-01-16|ggbdpq|[GYLJG-2310] refactor: 优化注册页面注释
+2024-01-16|ggbdpq|[GYLJG-2310] refactor: 手机注册成功跳转到登录页面
+2024-01-15|ggbdpq|[GYLJG-2310] refactor: 密码重置成功,注册成功跳转到登录页面
+2024-01-12|ggbdpq|[GYLJG-2310] refactor: 完善登录页面跳转,切换页签重置输入数据
+2024-01-11|ggbdpq|[GYLJG-2310] perf: 给Image组件添加alt文字;监听pathname跳转对应页面
+2024-01-11|ggbdpq|[GYLJG-2310] perf: 删除注释代码;优化部分逻辑代码
+2024-01-11|ggbdpq|[GYLJG-2310] perf: 删除注释已久的相关代码;去除多余标签;简化相关代码写法
+2023-09-26|ggbdpq|[GYLJG-1419] fix: 修改获取验证码的相关样式
+2023-09-26|ggbdpq|[GYLJG-1419] fix: 给默认首页/设置ready为true
+2023-09-26|ggbdpq|[GYLJG-1419] refactor: 重构home目录reducer的写法
+2023-09-26|ggbdpq|[GYLJG-1419] refactor: 添加页面接口加载过渡效果,把菜单栏处理函数集中统一处理
+2023-09-25|ggbdpq|[GYLJG-1419] fix: 修复系统说明-二级菜单的404页面问题
+2023-09-25|ggbdpq|[GYLJG-1419] fix: 修复页面锚点跳转问题
+2023-09-25|ggbdpq|[GYLJG-1419] fix: 修改home目录左侧菜单栏的高亮字段
+2023-09-25|ggbdpq|[GYLJG-1419] fix: 修改数据类型转换和循环判断的写法
+2023-09-25|ggbdpq|[GYLJG-1419] fix: 修复控制台左侧菜单栏刷新页面自动选中高亮的问题
+2023-09-21|ggbdpq|[GYLJG-1419] refactor: 查漏补缺
+2023-09-21|ggbdpq|[GYLJG-1419] refactor: 修改404页面,分两套逻辑判断
+2023-09-21|ggbdpq|[GYLJG-1419] refactor: 合并默认首页和接受数据页面,删减冗余代码
+2023-09-20|ggbdpq|[GYLJG-1419] refactor: 抽取公共代码,重构home和nav的store部分代码
+2023-09-20|ggbdpq|[GYLJG-1419] fix: 查漏补缺，添加左侧菜单栏滚动样式，修改reducer.js和view.jsx等文件
+2023-09-19|ggbdpq|[GYLJG-1419] style: 样式调整
+2023-09-18|ggbdpq|[GYLJG-1419] refactor: 查漏补缺
+2023-09-14|ggbdpq|[GYLJG-1419] refactor: 整理图片
+2023-09-14|ggbdpq|[GYLJG-1419] fix: 查漏补缺
+2023-09-14|ggbdpq|[GYLJG-1419] style: 页面左侧菜单栏过渡样式调整
+2023-09-13|ggbdpq|[GYLJG-1419] style: 修改项目名称标题的样式
+2023-09-13|ggbdpq|[GYLJG-1419] style: 样式调整
+2023-09-13|ggbdpq|[GYLJG-1419] refactor: 查漏补缺,删减无用代码
+2023-09-13|ggbdpq|[GYLJG-1419] fix: 查漏补缺
+2023-09-12|ggbdpq|[GYLJG-1419] refactor: 对sop-portal UI 样式进行调整
+2023-09-12|ggbdpq|[GYLJG-1419] fix: 修改控制台-关联API列表的详情页面初始化接口调用问题
+2023-09-12|ggbdpq|[GYLJG-1419] refactor: 查漏补缺,修复自测发现的问题
+2023-09-11|ggbdpq|[GYLJG-1419] refactor: 样式调整,颜色主题设置为橙红色
+2023-09-11|ggbdpq|[GYLJG-1419] refactor: 整理相关代码
+2023-09-08|ggbdpq|[GYLJG-1419] refactor: 对之前的代码进行查漏补缺,接收数据和推送数据页面代码初始化
+2023-09-08|ggbdpq|[GYLJG-1419] refactor: 【SOP】portal UI样式调整
+2023-09-07|ggbdpq|[GYLJG-1419] feat: 新增welcomeHome组件,修改eslint和createstore修改配置代码
+2023-09-07|ggbdpq|[GYLJG-1419] refactor: sOP-PORTAL NAV UI调整
+2023-09-06|ggbdpq|[GYLJG-1419] refactor: sOP-PORTAL 首页UI调整初始化
+2023-09-06|ggbdpq|[GYLJG-1419] refactor: 设置eslint路径别名,安装eslint-plugin-import开发环境依赖
+2023-08-29|ggbdpq|[perf_20230825] style: 邮箱验证码样式调整
+2023-08-29|ggbdpq|[perf_20230825] fix: 修复图片验证码前面输入框宽度计算问题
+2023-08-25|ggbdpq|[perf_20230825] style: 修复个人中心-修改邮箱的图形验证码样式问题
+2023-08-11|ggbdpq|[perf_20230711] refactor: 查漏补缺，订正警告报错的类型检查，消除开发者工具控制台的Waring
+2023-08-10|ggbdpq|[perf_20230711] refactor: 增加一些文件的类型检查，消除注释的eslint规则，代码格式化整理
+2023-08-10|ggbdpq|[perf_20230711] refactor: 增加关闭eslint强制使用类方法this规则，消除一些注释eslint规则
+2023-08-10|ggbdpq|[perf_20230711] refactor: 修改eslint禁止使用一元运算符规则，允许在 for 循环的事后使用。增加一些项目基本配置，根据规则提示把3个依赖重新安装
+2023-08-10|ggbdpq|[perf_20230711] refactor: 消除注释的eslint强制要求使用解构赋值的规则,小改部分代码
+2023-08-09|ggbdpq|[perf_20230711] refactor: 消除添加的eslint规则,部分修改原来的代码逻辑写法,整理代码格式化
+2023-07-12|ggbdpq|[perf_20230711] refactor: 全量代码格式校验整理，查漏补缺，小改代码
+2023-07-12|ggbdpq|[perf_20230711] refactor: 用@替换一些相对路径，大量修改keymanagement/list/jsx/table.jsx这个文件
+2023-07-12|ggbdpq|[perf_20230711] refactor: 消除 no-unused-vars 和增加window前缀相关代码
+2023-07-12|ggbdpq|[perf_20230711] refactor: 增加一些eslint校验规则
+2023-07-11|ggbdpq|[perf_20230711] refactor: 使用@babel/eslint-parser替换旧版babel-eslint,解决可选链以及其他问题
+2023-07-11|ggbdpq|[perf_20230711] style: 全量代码格式校验整理，查漏补缺，小改代码
+2023-07-11|ggbdpq|[perf_20230711] style: 全量代码格式校验整理，修复home/detail相关问题
+2023-07-11|ggbdpq|[perf_20230711] style: 全量代码格式校验整理，修复home/description相关问题
+2023-07-11|ggbdpq|[perf_20230711] style: 全量代码格式校验整理，为count、id添加propTypes检验
+2023-07-11|ggbdpq|[perf_20230711] style: 全量代码格式校验整理，为中文字符串包裹一层bbl的t函数
+2023-07-03|ggbdpq|[GYLJG-1019] fix: 修改密钥
+2023-07-03|ggbdpq|[GYLJG-1019] fix: 修改密钥
+2023-07-03|ggbdpq|[GYLJG-1019] fix: 修改加密默认返回值,删除不必要的注释,增加本地开发环境变量
+2023-07-03|ggbdpq|[GYLJG-1019] feat: 设置环境变量
+2023-07-03|ggbdpq|[GYLJG-1019] fix: 修改非对称公钥
+2023-07-03|ggbdpq|[GYLJG-1019] fix: 修复非对称加密问题,格式化以前代码
+2023-07-03|ggbdpq|Merge branch 'master' into GYLJG-1019
+2023-06-30|ggbdpq|[GYLJG-1089] fix: 统一修改邮箱校验规则
+2023-06-30|ggbdpq|[GYLJG-1089] fix: 修改邮箱的校验规则
+2023-06-27|ggbdpq|[GYLJG-1071] fix: 修复埋点登录问题,退出登录重新刷新页面,埋点清空;成功登录回到home页面,继续获取埋点信息
+2023-06-27|ggbdpq|[GYLJG-1071] fix: 去掉home和login的conf配置,直接在root根文件引入conf配置,项目一启动就默认接入埋点
+2023-06-26|ggbdpq|[GYLJG-1071] fix: 增加非生产环境下的APM插件显示
+2023-06-26|ggbdpq|[GYLJG-1071] fix: 修复未登录埋点,修改个人中心和退出登录样式,增加2条eslint忽略校验规则
+2023-06-21|ggbdpq|Merge branch 'master' into GYLJG-1071
+2023-06-20|ggbdpq|feat: 接入APM埋点
+2023-06-16|ggbdpq|fix: 修复密钥编辑的邮箱校验规则
+2023-06-15|Ggbdpq Guan|fix: 设置变量全局统一管理邮箱校验规则
+2023-06-15|Ggbdpq Guan|fix(login): 修改邮箱登录的正则匹配规则
+2023-06-15|Ggbdpq Guan|fix(global): 修复sop邮箱正则匹配规则
+2023-06-08|Ggbdpq Guan|feat: 对个人中心-账号信息-重置密码做RSA加密处理
+2023-06-06|Ggbdpq Guan|feat: 新增jsencrypt依赖，对邮箱登录/用户名登录/忘记密码进行RSA加密

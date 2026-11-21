@@ -1,0 +1,580 @@
+@yetone @cherish-ltt — the 3.6 GiB in the bucket isn't duplicated backups, and nothing is wrong with the S3 rules on your side: the backup itself is one object (`magpie/magpie.magpie-backup`), written only when the setup changes. What filled the bucket is the **request archive**: with its switch on (Usage page), every call the gateway serves is put beside the backup as its own object (`archive/<date>/<id>.json`, 7,262 of them at ~0.5 MB average in your screenshot), and nothing ever came back off.
+
+**Root cause**: the archive kept on this computer has always been kept under a size — `RequestArchiveLocalMB`, a GiB unless set, the oldest calls removed first (`internal/gateway/archive_local.go`) — but the same archive in the bucket had no size at all: `internal/davsync/archive.go` only ever put, never listed or removed, so it grew without bound.
+
+**The fix**: a put into the bucket now counts toward the same size (`RequestArchiveLocalMB`), and past it the calls in the bucket are listed and the oldest removed until a tenth under it, exactly as on this computer — the call just kept is never removed, a listing that fails is left for the next call, and the listing pages through a bucket of any count. Existing buckets are trimmed from the next call after updating. Your bucket will come back under a GiB on its own as new calls go in (or you can remove old `archive/` objects by hand once to get there immediately). The Settings switch's tooltip now says the size for the bucket as it always has for the folder on this computer.
+
+<details><summary>patch: davsync: the request archive in the bucket is kept under its size, the oldest calls removed past it (#5558) — git am applies it as is; SHA-256 first 16: 7c543b07cc22e975</summary>
+
+```text
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Sun, 8 Nov 2026 10:49:38 +0800
+Subject: [PATCH] davsync: the request archive in the bucket is kept under its
+ size, the oldest calls removed past it (#5558)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The request archive in the S3 sync's bucket grew without bound: every
+call the gateway serves was put there and nothing ever came off, while
+the archive on this computer has always been kept under its size
+(RequestArchiveLocalMB) with the oldest calls removed first. A bucket
+twenty days old held 3.6 GiB across 7,262 calls (#5558).
+
+A put now counts toward the bucket's archive and, past that same size,
+lists the calls and removes the oldest until a tenth under it — the
+call just kept never among them, a failed listing left for the next
+call, each page of the listing read before the next is asked for.
+The Settings switch's tooltip says the size for the bucket as it does
+for this computer's folder.
+---
+ internal/davsync/archive.go          | 144 ++++++++++++++++++++++++++-
+ internal/davsync/archive_cap_test.go | 130 ++++++++++++++++++++++++
+ internal/davsync/s3.go               |  17 +++-
+ internal/davsync/s3_test.go          |  59 +++++++++++
+ internal/gui/archive.go              |   2 +-
+ internal/gui/assets/app.js           |   2 +-
+ internal/gui/assets/i18n.js          |   4 +
+ 7 files changed, 353 insertions(+), 5 deletions(-)
+ create mode 100644 internal/davsync/archive_cap_test.go
+
+diff --git a/internal/davsync/archive.go b/internal/davsync/archive.go
+index b6614ced7..0cea7ad0c 100644
+--- a/internal/davsync/archive.go
++++ b/internal/davsync/archive.go
+@@ -2,16 +2,25 @@ package davsync
+ 
+ import (
+ 	"context"
++	"encoding/xml"
+ 	"errors"
++	"fmt"
+ 	"io"
++	"log"
+ 	"net/http"
++	"net/url"
+ 	"strings"
++	"sync"
++
++	"github.com/yetone/magpie/internal/settings"
+ )
+ 
+ // Bucket is the S3 sync's bucket for files other than the backup — the
+ // gateway's request archive — each at <prefix>/magpie/<name>, beside the
+ // backup, written as it is: no passphrase seals them, so they can be read
+-// in the bucket too.
++// in the bucket too. Past the size the archive on this computer grows to,
++// the oldest calls in the bucket are removed the same way (#5558, a
++// twenty-day bucket of 7,262 calls at 3.6 GiB that nothing ever removed).
+ type Bucket struct{ s *s3 }
+ 
+ // ErrNoObject is a name with nothing at it.
+@@ -41,7 +50,8 @@ func (b *Bucket) at(name string) *s3 {
+ // Where names the bucket, its prefix and its server, as messages do.
+ func (b *Bucket) Where() string { return b.at("").where() }
+ 
+-// Put writes data at name, over what is there.
++// Put writes data at name, over what is there. Once it stands, the bucket
++// is trimmed to its size, the oldest calls first.
+ func (b *Bucket) Put(ctx context.Context, name string, data []byte) error {
+ 	s := b.at(name)
+ 	res, err := s.send(ctx, http.MethodPut, data, map[string]string{"Content-Type": "application/json"})
+@@ -51,11 +61,141 @@ func (b *Bucket) Put(ctx context.Context, name string, data []byte) error {
+ 	defer res.Body.Close()
+ 	if res.StatusCode >= 200 && res.StatusCode < 300 {
+ 		io.Copy(io.Discard, io.LimitReader(res.Body, 64<<10))
++		b.trimmed(ctx, int64(len(data)), s.key)
+ 		return nil
+ 	}
+ 	return s.explain("write", readError(res))
+ }
+ 
++// ArchiveCap is how large the request archive grows, in bytes, in the
++// bucket as on this computer: settings' RequestArchiveLocalMB, a GiB
++// unless set, at most a GiB.
++func ArchiveCap() int64 {
++	mb := settings.Load().RequestArchiveLocalMB
++	if mb <= 0 {
++		mb = 1024
++	}
++	return int64(min(mb, 1024)) << 20
++}
++
++// archived is one call of the bucket's archive.
++type archived struct {
++	key  string
++	size int64
++}
++
++// capState is how much of the bucket's archive this process has put there
++// since the last trim: from zero it is only an under-count, put right at
++// the first trim past the size.
++type capState struct {
++	mu    sync.Mutex
++	total int64
++}
++
++// capStates is each bucket's count, by its endpoint, bucket and prefix:
++// S3Bucket hands out a new Bucket every time, so the count outlives it.
++var capStates sync.Map
++
++// root names a bucket's archive for its count, as the unconditional map
++// names a server.
++func (b *Bucket) root() string {
++	return b.s.endpoint.String() + " " + b.s.bucket + " " + strings.TrimSuffix(b.s.key, file)
++}
++
++// trimmed counts n more bytes into the bucket's archive, and past its
++// size lists the calls and removes the oldest until a tenth under it, as
++// the archive on this computer is kept: the call just kept (kept) is
++// never removed, though it alone be over the size. A listing that fails
++// leaves the bucket as it is, for the next call to try again.
++func (b *Bucket) trimmed(ctx context.Context, n int64, kept string) {
++	st, _ := capStates.LoadOrStore(b.root(), &capState{})
++	c := st.(*capState)
++	c.mu.Lock()
++	defer c.mu.Unlock()
++	c.total += n
++	most := ArchiveCap()
++	if c.total <= most {
++		return
++	}
++	calls, err := b.calls(ctx)
++	if err != nil {
++		log.Printf("request archive: %s: not trimmed: %v", b.Where(), err)
++		return
++	}
++	var total int64
++	for _, k := range calls {
++		total += k.size
++	}
++	goal := most - most/10
++	for _, k := range calls {
++		if total <= goal {
++			break
++		}
++		if k.key == kept {
++			continue
++		}
++		if err := b.s.del(ctx, k.key); err != nil {
++			log.Printf("request archive: %s: not removed: %v", k.key, err)
++			continue
++		}
++		total -= k.size
++	}
++	c.total = total
++}
++
++// calls is every call in the bucket's archive, oldest first: the listing
++// comes by key, and a call's name starts with its date and time of day.
++func (b *Bucket) calls(ctx context.Context) ([]archived, error) {
++	prefix := strings.TrimSuffix(b.s.key, file) + "archive/"
++	var out []archived
++	token := ""
++	seen := map[string]bool{}
++	for range 100 {
++		q := url.Values{"list-type": {"2"}, "prefix": {prefix}}
++		if token != "" {
++			q.Set("continuation-token", token)
++		}
++		u := b.s.bucketURL()
++		u.RawQuery = strings.ReplaceAll(q.Encode(), "+", "%20")
++		res, err := b.s.sendTo(ctx, http.MethodGet, u, nil, nil)
++		if err != nil {
++			return nil, err
++		}
++		if res.StatusCode != http.StatusOK {
++			e := readError(res)
++			res.Body.Close()
++			return nil, b.s.explain("read", e)
++		}
++		var l struct {
++			Contents []struct {
++				Key  string `xml:"Key"`
++				Size int64  `xml:"Size"`
++			} `xml:"Contents"`
++			Truncated bool   `xml:"IsTruncated"`
++			Next      string `xml:"NextContinuationToken"`
++		}
++		err = xml.NewDecoder(io.LimitReader(res.Body, 16<<20)).Decode(&l)
++		res.Body.Close()
++		if err != nil {
++			return nil, err
++		}
++		for _, c := range l.Contents {
++			if strings.HasPrefix(c.Key, prefix) {
++				out = append(out, archived{c.Key, c.Size})
++			}
++		}
++		if !l.Truncated {
++			return out, nil
++		}
++		if l.Next == "" || seen[l.Next] {
++			return nil, fmt.Errorf("listing the request archive in the bucket: incomplete listing (missing or repeated continuation token)")
++		}
++		seen[l.Next] = true
++		token = l.Next
++	}
++	return nil, fmt.Errorf("listing the request archive in the bucket: incomplete listing after 100 pages")
++}
++
+ // Get reads what is at name, its first 16 MiB; ErrNoObject when there is
+ // nothing.
+ func (b *Bucket) Get(ctx context.Context, name string) ([]byte, error) {
+diff --git a/internal/davsync/archive_cap_test.go b/internal/davsync/archive_cap_test.go
+new file mode 100644
+index 000000000..c03cd115f
+--- /dev/null
++++ b/internal/davsync/archive_cap_test.go
+@@ -0,0 +1,130 @@
++package davsync
++
++// The request archive in the bucket is kept under its size (#5558: a
++// bucket twenty days old held 3.6 GiB of 7,262 calls, none ever removed,
++// while the archive on this computer has had a size and the oldest
++// removed past it all along): past that size — settings'
++// RequestArchiveLocalMB, the same one — the oldest calls are removed
++// until a tenth under it, the call just kept never among them.
++
++import (
++	"bytes"
++	"context"
++	"net/http/httptest"
++	"slices"
++	"strconv"
++	"strings"
++	"testing"
++
++	"github.com/yetone/magpie/internal/settings"
++)
++
++func newArchiveBucket(t *testing.T, f *fakeS3, srv *httptest.Server) *Bucket {
++	t.Helper()
++	s, err := newS3(Config{URL: "s3://bkt", Endpoint: srv.URL, User: f.id, Password: f.secret})
++	if err != nil {
++		t.Fatal(err)
++	}
++	return &Bucket{s}
++}
++
++// archiveCalls is the calls in the fake bucket, oldest first.
++func archiveCalls(t *testing.T, f *fakeS3) []string {
++	t.Helper()
++	var ks []string
++	for k := range f.objects {
++		if strings.HasPrefix(k, "magpie/archive/") {
++			ks = append(ks, k)
++		}
++	}
++	slices.Sort(ks)
++	return ks
++}
++
++func TestS3ArchiveKeptUnderItsSize(t *testing.T) {
++	newComputer(t).use(t)
++	f, srv := newFakeS3(t)
++	b := newArchiveBucket(t, f, srv)
++	settings.Save(settings.Settings{RequestArchiveLocalMB: 2}) // 2 MiB
++
++	mib := bytes.Repeat([]byte("a"), 1<<20)
++	put := func(id string) {
++		t.Helper()
++		if err := b.Put(context.Background(), "archive/2026-11-08/"+id+".json", mib); err != nil {
++			t.Fatal(err)
++		}
++	}
++
++	put("120000-aaa")
++	put("120001-bbb")
++	if ks := archiveCalls(t, f); len(ks) != 2 {
++		t.Fatalf("two calls under the size, bucket keeps %v", ks)
++	}
++	put("120002-ccc") // three MiB under a two: the two oldest go
++	ks := archiveCalls(t, f)
++	if len(ks) != 1 || !strings.Contains(ks[0], "120002-ccc") {
++		t.Fatalf("kept under 2 MiB, want only the newest call, got %v", ks)
++	}
++}
++
++func TestS3ArchiveKeepsTheCallJustKept(t *testing.T) {
++	newComputer(t).use(t)
++	f, srv := newFakeS3(t)
++	b := newArchiveBucket(t, f, srv)
++	settings.Save(settings.Settings{RequestArchiveLocalMB: 1})
++
++	big := bytes.Repeat([]byte("a"), 2<<20) // the call alone over the size
++	if err := b.Put(context.Background(), "archive/2026-11-08/120000-aaa.json", big); err != nil {
++		t.Fatal(err)
++	}
++	if ks := archiveCalls(t, f); len(ks) != 1 {
++		t.Fatalf("the call just kept is never removed, bucket keeps %v", ks)
++	}
++}
++
++func TestS3ArchiveTrimAcrossPages(t *testing.T) {
++	newComputer(t).use(t)
++	f, srv := newFakeS3(t)
++	f.pageMax = 1 // one call a page: the trimming reads them all all the same
++	b := newArchiveBucket(t, f, srv)
++	settings.Save(settings.Settings{RequestArchiveLocalMB: 2})
++
++	mib := bytes.Repeat([]byte("a"), 1<<20)
++	for _, id := range []string{"120000-aaa", "120001-bbb", "120002-ccc", "120003-ddd", "120004-eee"} {
++		if err := b.Put(context.Background(), "archive/2026-11-08/"+id+".json", mib); err != nil {
++			t.Fatal(err)
++		}
++	}
++	ks := archiveCalls(t, f)
++	if len(ks) != 1 || !strings.Contains(ks[0], "120004-eee") {
++		t.Fatalf("kept under 2 MiB across pages, want only the newest call, got %v", ks)
++	}
++}
++
++func TestS3ArchiveTrimFailureKeepsThePut(t *testing.T) {
++	newComputer(t).use(t)
++	f, srv := newFakeS3(t)
++	b := newArchiveBucket(t, f, srv)
++	settings.Save(settings.Settings{RequestArchiveLocalMB: 2})
++
++	mib := bytes.Repeat([]byte("a"), 1<<20)
++	put := func() {
++		t.Helper()
++		if err := b.Put(context.Background(), "archive/2026-11-08/12000"+strconv.Itoa(len(archiveCalls(t, f)))+"-x.json", mib); err != nil {
++			t.Fatal(err)
++		}
++	}
++	f.failList = true
++	put()
++	put()
++	put() // three MiB past two, but the listing refuses: nothing removed
++	if ks := archiveCalls(t, f); len(ks) != 3 {
++		t.Fatalf("a failed trimming keeps every call, bucket keeps %v", ks)
++	}
++	f.failList = false
++	put() // the next write tries again: now the oldest go
++	ks := archiveCalls(t, f)
++	if len(ks) != 1 || !strings.HasSuffix(ks[0], "120003-x.json") {
++		t.Fatalf("the trimming comes back with the next call, want only the newest, got %v", ks)
++	}
++}
+diff --git a/internal/davsync/s3.go b/internal/davsync/s3.go
+index 6ed961f30..92f12660b 100644
+--- a/internal/davsync/s3.go
++++ b/internal/davsync/s3.go
+@@ -204,7 +204,7 @@ func (s *s3) explain(op string, e s3Error) error {
+ 	case e.Status == http.StatusForbidden:
+ 		return fmt.Errorf("the S3 server doesn't let this access key write %s (%s): it needs to read and write there", s.where(), e)
+ 	}
+-	verb := map[string]string{"read": "reading", "write": "writing"}[op]
++	verb := map[string]string{"read": "reading", "write": "writing", "remove": "removing"}[op]
+ 	if e.Message != "" {
+ 		return fmt.Errorf("%s %s on the S3 server: %s: %s", verb, s.where(), e, e.Message)
+ 	}
+@@ -334,3 +334,18 @@ func (s *s3) head(ctx context.Context) (etag string, there bool, err error) {
+ func bareETag(e string) string {
+ 	return strings.Trim(strings.TrimPrefix(strings.TrimSpace(e), "W/"), `"`)
+ }
++
++// del removes the object at key. A name with nothing at it is removed all
++// the same: S3 answers a delete of nothing with 204 too.
++func (s *s3) del(ctx context.Context, key string) error {
++	res, err := s.sendTo(ctx, http.MethodDelete, s.urlOf(key), nil, nil)
++	if err != nil {
++		return err
++	}
++	defer res.Body.Close()
++	if res.StatusCode == http.StatusNoContent || res.StatusCode == http.StatusOK {
++		io.Copy(io.Discard, io.LimitReader(res.Body, 64<<10))
++		return nil
++	}
++	return s.explain("remove", readError(res))
++}
+diff --git a/internal/davsync/s3_test.go b/internal/davsync/s3_test.go
+index 9282a6d27..c2461a714 100644
+--- a/internal/davsync/s3_test.go
++++ b/internal/davsync/s3_test.go
+@@ -12,6 +12,7 @@ import (
+ 	"net/url"
+ 	"os"
+ 	"slices"
++	"strconv"
+ 	"strings"
+ 	"sync"
+ 	"testing"
+@@ -36,6 +37,11 @@ type fakeS3 struct {
+ 	log                []string // each request: method, and the condition sent
+ 	onWrite            func()   // runs once, at the next PUT or HEAD (a write's look first), before it is answered
+ 	sent               int      // the bytes of objects read
++	// failList makes a listing answer 500, as a bucket refusing to be
++	// listed does; pageMax is the most objects a listing page carries
++	// (unbounded when 0)
++	failList bool
++	pageMax  int
+ 	// reread, when set, is how the server reads a header back before it
+ 	// checks the signature over it
+ 	reread func(name, value string) string
+@@ -79,6 +85,10 @@ func (f *fakeS3) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+ 	}
+ 	switch r.Method {
+ 	case http.MethodGet, http.MethodHead:
++		if r.Method == http.MethodGet && r.URL.Query().Get("list-type") == "2" {
++			f.list(w, r)
++			return
++		}
+ 		b, ok := f.objects[key]
+ 		if !ok {
+ 			if r.Method == http.MethodHead {
+@@ -111,11 +121,60 @@ func (f *fakeS3) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+ 		}
+ 		f.store(key, body)
+ 		w.Header().Set("ETag", f.etags[key])
++	case http.MethodDelete:
++		delete(f.objects, key)
++		delete(f.etags, key)
++		w.WriteHeader(http.StatusNoContent)
+ 	default:
+ 		f.fail(w, http.StatusNotImplemented, "NotImplemented")
+ 	}
+ }
+ 
++// list answers a listing of the bucket: the objects under the query's
++// prefix, by key, each page carrying pageMax (max-keys') of them, the
++// next page named by the key it starts at. failList refuses every one.
++func (f *fakeS3) list(w http.ResponseWriter, r *http.Request) {
++	if f.failList {
++		f.fail(w, http.StatusInternalServerError, "InternalError")
++		return
++	}
++	q := r.URL.Query()
++	var ks []string
++	for k := range f.objects {
++		if strings.HasPrefix(k, q.Get("prefix")) {
++			ks = append(ks, k)
++		}
++	}
++	slices.Sort(ks)
++	most := f.pageMax
++	if v := q.Get("max-keys"); v != "" && f.pageMax == 0 {
++		most, _ = strconv.Atoi(v)
++	}
++	start := 0
++	if tok := q.Get("continuation-token"); tok != "" {
++		if i := slices.Index(ks, tok); i >= 0 {
++			start = i
++		}
++	}
++	end := len(ks)
++	if most > 0 && start+most < end {
++		end = start + most
++	}
++	var b strings.Builder
++	b.WriteString("<ListBucketResult>")
++	for _, k := range ks[start:end] {
++		fmt.Fprintf(&b, "<Contents><Key>%s</Key><Size>%d</Size></Contents>", k, len(f.objects[k]))
++	}
++	if end < len(ks) {
++		fmt.Fprintf(&b, "<IsTruncated>true</IsTruncated><NextContinuationToken>%s</NextContinuationToken>", ks[end])
++	} else {
++		b.WriteString("<IsTruncated>false</IsTruncated>")
++	}
++	b.WriteString("</ListBucketResult>")
++	w.Header().Set("Content-Type", "application/xml")
++	io.WriteString(w, b.String())
++}
++
+ func (f *fakeS3) store(key string, b []byte) {
+ 	h := md5.Sum(b)
+ 	f.objects[key], f.etags[key] = b, `"`+hex.EncodeToString(h[:])+`"`
+diff --git a/internal/gui/archive.go b/internal/gui/archive.go
+index ff9602336..870c79a69 100644
+--- a/internal/gui/archive.go
++++ b/internal/gui/archive.go
+@@ -231,7 +231,7 @@ func archiveState() archiveJSON {
+ 	s := settings.Load()
+ 	var a archiveJSON
+ 	if b, ok := davsync.S3Bucket(); ok {
+-		a.On, a.Bucket = s.RequestArchive, b.Where()
++		a.On, a.Bucket, a.Cap = s.RequestArchive, b.Where(), davsync.ArchiveCap()
+ 	} else {
+ 		a.On, a.Folder, a.Cap = s.RequestArchiveLocal, tilde(gateway.LocalArchive().Dir), gateway.LocalArchiveCap()
+ 	}
+diff --git a/internal/gui/assets/app.js b/internal/gui/assets/app.js
+index f330cea3f..e78b81d11 100644
+--- a/internal/gui/assets/app.js
++++ b/internal/gui/assets/app.js
+@@ -7137,7 +7137,7 @@ function renderArchive() {
+   b.setAttribute("aria-checked", a.on ? "true" : "false");
+   b.disabled = archiveSaving;
+   b.querySelector(".led-arch-name").textContent = t("Request archive");
+-  b.title = a.bucket ? t("Keeps each call’s headers and bodies, secrets taken out, in {where}", { where: a.bucket })
++  b.title = a.bucket ? t("Keeps each call’s headers and bodies, secrets taken out, in {where}, the oldest removed past {size}", { where: a.bucket, size: fmtBytes(a.cap || 0) })
+     : t("Keeps each call’s headers and bodies, secrets taken out, on this computer in {where}, the oldest removed past {size}", { where: a.folder || "", size: fmtBytes(a.cap || 0) });
+   let err = box.querySelector(".led-arch-err");
+   if (a.on && a.error) {
+diff --git a/internal/gui/assets/i18n.js b/internal/gui/assets/i18n.js
+index d6f9a2603..67d3cf5ff 100644
+--- a/internal/gui/assets/i18n.js
++++ b/internal/gui/assets/i18n.js
+@@ -3136,6 +3136,7 @@ const I18N = {
+     "first 256 KB": "前 256 KB",
+     "Request archive": "请求存档",
+     "Keeps each call’s headers and bodies, secrets taken out, in {where}": "每次调用的请求/响应头和正文去除密钥后存到 {where}",
++    "Keeps each call’s headers and bodies, secrets taken out, in {where}, the oldest removed past {size}": "每次调用的请求/响应头和正文去除密钥后存到 {where}，超过 {size} 时先删除最早的",
+     "Keeps each call’s headers and bodies, secrets taken out, on this computer in {where}, the oldest removed past {size}": "每次调用的请求/响应头和正文去除密钥后存到本机的 {where}，超过 {size} 时先删除最早的",
+     "Not saved": "未保存",
+     "Last save failed: {e}": "上次保存失败：{e}",
+@@ -7842,6 +7843,7 @@ const I18N = {
+     "first 256 KB": "前 256 KB",
+     "Request archive": "請求存檔",
+     "Keeps each call’s headers and bodies, secrets taken out, in {where}": "每次呼叫的請求/回應頭和正文去除金鑰後存到 {where}",
++    "Keeps each call’s headers and bodies, secrets taken out, in {where}, the oldest removed past {size}": "每次呼叫的請求/回應頭和正文去除金鑰後存到 {where}，超過 {size} 時先刪除最早的",
+     "Keeps each call’s headers and bodies, secrets taken out, on this computer in {where}, the oldest removed past {size}": "每次呼叫的請求/回應頭和正文去除金鑰後存到本機的 {where}，超過 {size} 時先刪除最早的",
+     "Not saved": "未儲存",
+     "Last save failed: {e}": "上次儲存失敗：{e}",
+@@ -12545,6 +12547,7 @@ const I18N = {
+     "first 256 KB": "最初の 256 KB",
+     "Request archive": "リクエストアーカイブ",
+     "Keeps each call’s headers and bodies, secrets taken out, in {where}": "各呼び出しのヘッダーと本文を、秘密情報を除いて {where} に保存します",
++    "Keeps each call’s headers and bodies, secrets taken out, in {where}, the oldest removed past {size}": "各呼び出しのヘッダーと本文を、秘密情報を除いて {where} に保存します。{size} を超えると古いものから削除します",
+     "Keeps each call’s headers and bodies, secrets taken out, on this computer in {where}, the oldest removed past {size}": "各呼び出しのヘッダーと本文を、秘密情報を除いてこのコンピュータの {where} に保存します。{size} を超えると古いものから削除します",
+     "Not saved": "未保存",
+     "Last save failed: {e}": "前回の保存に失敗しました：{e}",
+@@ -17259,6 +17262,7 @@ const I18N = {
+     "first 256 KB": "erste 256 KB",
+     "Request archive": "Anfragearchiv",
+     "Keeps each call’s headers and bodies, secrets taken out, in {where}": "Speichert Header und Bodys jedes Aufrufs ohne Geheimnisse in {where}",
++    "Keeps each call’s headers and bodies, secrets taken out, in {where}, the oldest removed past {size}": "Speichert Header und Bodys jedes Aufrufs ohne Geheimnisse in {where}; über {size} werden die ältesten entfernt",
+     "Keeps each call’s headers and bodies, secrets taken out, on this computer in {where}, the oldest removed past {size}": "Speichert Header und Bodys jedes Aufrufs ohne Geheimnisse auf diesem Computer in {where}; über {size} werden die ältesten entfernt",
+     "Not saved": "Nicht gespeichert",
+     "Last save failed: {e}": "Letztes Speichern fehlgeschlagen: {e}",
+-- 
+2.50.1 (Apple Git-155)
+```
+
+</details>
+
+**Branch with the commit**: [`fix/5558-s3-archive-cap`](https://github.com/ggbdpq/magpie/tree/fix/5558-s3-archive-cap) (head `15dda3c1ad5dd724ac3db4414073b8f6a3e5504d`), rebased onto current `upstream/main` (`0fc3455e2`); on a fresh checkout `git am` applies clean and the tree is identical.
+
+| Check | Result |
+| --- | --- |
+| `TestS3ArchiveKeptUnderItsSize` (new) | red before the fix, pass after |
+| `TestS3ArchiveKeepsTheCallJustKept` (new) | pass; red under ablation (below) |
+| `TestS3ArchiveTrimAcrossPages` (new) | pass |
+| `TestS3ArchiveTrimFailureKeepsThePut` (new) | pass |
+| `go test ./internal/davsync/ -tags nogui -timeout 30m -count=1` | ok (37s), zero failures |
+| `go test ./internal/gateway/ -tags nogui -timeout 30m` | ok (814s), zero failures |
+| `go test ./internal/gui/ -tags nogui -timeout 30m` | `TestProxyCheckSaysAProxyPassedBy` fails the same on parent `0fc3455e2` (this machine's local proxy answers 502 with the proxy asked 0 times); all other tests pass |
+| `go test -tags nogui ./...` (whole repo) | not run |
+| targeted `-race` (`TestS3Archive*`, then the whole `internal/davsync` package) | pass (163s) |
+| `gofmt -l internal/davsync internal/gui` | prints nothing |
+| `go vet -tags nogui ./internal/davsync/... ./internal/gui/... ./internal/gateway/...`; `GOOS=linux go vet -tags nogui ./internal/davsync/ ./internal/gui/`; `GOOS=windows go vet -tags nogui ./internal/davsync/ ./internal/gui/` | clean |
+| `go build -tags nogui` (darwin/arm64); `GOOS=linux GOARCH=amd64 go build -tags nogui`; `GOOS=windows GOARCH=amd64 go build -tags nogui` | clean |
+| Ablation | removing the kept-call guard (`if k.key == kept`) turns `TestS3ArchiveKeepsTheCallJustKept` red (the just-written call is removed); restored, green |
+| Browser tests (`node --test internal/gui/tests/s3-sync.test.cjs …`) | NOT-RUNNABLE here (no playwright in the worktree); the changed strings are asserted by none of them (rg over the tests finds nothing) |
+
+**Not verified**: a real bucket's trimming over your 7,262 existing objects — the fake S3 (signed requests, conditional PUTs, paged listings, deletes) covers the mechanics; the oldest-first removal on a live bucket with your provider's listing limits is yours to see after updating. Your bucket's own versioning/lifecycle rules, if any, stay yours.
+
+**Attribution**: AI-written; I've read the whole diff and the tests pass. Please keep the author (`ggbdpq`) or add `Co-authored-by: ggbdpq <ggbdpq@gmail.com>`.
+
+Generated-by: GLM-5.3-Flash (ZCode)

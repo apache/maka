@@ -1,0 +1,20 @@
+=== RUN   TestCodexOwnModelRecordedAsCodexAccount
+--- PASS: TestCodexOwnModelRecordedAsCodexAccount (0.59s)
+=== RUN   TestCodexAPIKeyRecordedAsOpenAI
+--- PASS: TestCodexAPIKeyRecordedAsOpenAI (0.04s)
+=== RUN   TestCodexKeyRefusedCarriesItsRoute
+--- PASS: TestCodexKeyRefusedCarriesItsRoute (0.03s)
+=== RUN   TestCodexEmptyFailureCarriesItsRoute
+--- PASS: TestCodexEmptyFailureCarriesItsRoute (0.01s)
+=== RUN   TestCodexCompactFailureKeepsTheTurnRoute
+=== RUN   TestCodexCompactFailureKeepsTheTurnRoute/api-key-refused
+=== RUN   TestCodexCompactFailureKeepsTheTurnRoute/api-key-empty-failure
+=== RUN   TestCodexCompactFailureKeepsTheTurnRoute/chatgpt-empty-failure
+=== RUN   TestCodexCompactFailureKeepsTheTurnRoute/chatgpt-refused
+--- PASS: TestCodexCompactFailureKeepsTheTurnRoute (0.10s)
+    --- PASS: TestCodexCompactFailureKeepsTheTurnRoute/api-key-refused (0.02s)
+    --- PASS: TestCodexCompactFailureKeepsTheTurnRoute/api-key-empty-failure (0.03s)
+    --- PASS: TestCodexCompactFailureKeepsTheTurnRoute/chatgpt-empty-failure (0.02s)
+    --- PASS: TestCodexCompactFailureKeepsTheTurnRoute/chatgpt-refused (0.03s)
+PASS
+ok  	github.com/yetone/magpie/internal/gateway	2.268s

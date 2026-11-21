@@ -1,0 +1,370 @@
+{
+  "project": {
+    "name": "product-blueprint",
+    "repo_type": "monorepo",
+    "description": "AI Agent 自主任务执行平台母本 - 可复用于 React/Vue/Next 三前端 + Fastify/Nest/Koa 三后端项目",
+    "ssot": {
+      "prd": ".ggbdpq/actions/product-blueprint/prd.json",
+      "progress": ".ggbdpq/actions/product-blueprint/progress.txt"
+    },
+    "optional_refs": {
+      "step_format_rules": ".ggbdpq/required/rules/step-format-rules.md",
+      "required_tools": ".ggbdpq/required/toolchain/required-tools.md",
+      "frontend_stack": ".ggbdpq/required/toolchain/frontend-stack.md",
+      "execution": ".ggbdpq/required/execution/EXECUTION.md",
+      "cursor_sandbox": ".ggbdpq/required/cursor/cursor-sandbox-playbook.md"
+    }
+  },
+  "items": [
+    {
+      "id": 0,
+      "component": "meta",
+      "priority": "P0",
+      "title": "optional 索引（规则/工具链/执行手册）",
+      "steps": [
+        "操作：定位 step format rules\n产物：.ggbdpq/required/rules/step-format-rules.md\n验收命令：test -f '.ggbdpq/required/rules/step-format-rules.md' && echo 'PASS'",
+        "操作：定位 required tools\n产物：.ggbdpq/required/toolchain/required-tools.md\n验收命令：test -f '.ggbdpq/required/toolchain/required-tools.md' && echo 'PASS'",
+        "操作：定位 frontend stack\n产物：.ggbdpq/required/toolchain/frontend-stack.md\n验收命令：test -f '.ggbdpq/required/toolchain/frontend-stack.md' && echo 'PASS'",
+        "操作：定位 execution\n产物：.ggbdpq/required/execution/EXECUTION.md\n验收命令：test -f '.ggbdpq/required/execution/EXECUTION.md' && echo 'PASS'",
+        "操作：定位 cursor sandbox playbook\n产物：.ggbdpq/required/cursor/cursor-sandbox-playbook.md\n验收命令：test -f '.ggbdpq/required/cursor/cursor-sandbox-playbook.md' && echo 'PASS'"
+      ],
+      "passes": false
+    },
+    {
+      "id": 1,
+      "component": "docs",
+      "priority": "P0",
+      "title": "冻结设计基线并建立引用入口",
+      "steps": [
+        "操作：确认 docs/plans/ 下设计文档为 v1.0 基线（仅允许勘误）\n产物：docs/plans/*.md 文件存在且文件数大于 0\n验收命令：test $(ls docs/plans/*.md 2>/dev/null | wc -l) -gt 0 && echo 'PASS'",
+        "操作：在 .ggbdpq/README.md 增加设计入口段落，链接 design/ui 文档路径\n产物：.ggbdpq/README.md 包含字符串 'design'\n验收命令：grep -q 'design' .ggbdpq/README.md && echo 'PASS'",
+        "操作：运行 pnpm typecheck 验证类型无报错\n产物：pnpm typecheck 输出 exit code 为 0\n验收命令：pnpm typecheck",
+        "操作：运行 pnpm test 验证文档相关测试通过\n产物：pnpm test 输出包含 PASS 且 exit code 为 0\n验收命令：pnpm test"
+      ],
+      "passes": false
+    },
+    {
+      "id": 2,
+      "component": "monorepo",
+      "priority": "P0",
+      "title": "Monorepo 基础设施（pnpm workspace + turbo）",
+      "steps": [
+        "操作：创建 pnpm-workspace.yaml 配置 apps/* 和 packages/*\n产物：pnpm-workspace.yaml 文件存在\n验收命令：test -f pnpm-workspace.yaml && echo 'PASS'",
+        "操作：创建 turbo.json 配置 dev/build/lint/typecheck pipeline\n产物：turbo.json 文件存在且包含 tasks 字段\n验收命令：grep -q 'tasks' turbo.json && echo 'PASS'",
+        "操作：在根 package.json 补齐 scripts（dev/build/lint/typecheck/test）\n产物：package.json scripts 字段包含 5 个命令\n验收命令：grep -E '\"(dev|build|lint|typecheck|test)\"' package.json | wc -l | xargs -I {} test {} -ge 5 && echo 'PASS'",
+        "操作：创建 packages/ts-config 统一 TS 配置（strict 模式）\n产物：packages/ts-config/base.json 文件存在\n验收命令：test -f packages/ts-config/base.json && echo 'PASS'",
+        "操作：运行 pnpm typecheck 验证类型无报错\n产物：pnpm typecheck 输出 exit code 为 0\n验收命令：pnpm typecheck",
+        "操作：运行 pnpm test 验证 monorepo 配置测试通过\n产物：pnpm test 输出包含 PASS 且 exit code 为 0\n验收命令：pnpm test"
+      ],
+      "passes": false
+    },
+    {
+      "id": 3,
+      "component": "database",
+      "priority": "P0",
+      "title": "PostgreSQL 开发环境 + Prisma 初始化",
+      "steps": [
+        "操作：创建 docker-compose.yml 配置 postgres:16 容器\n产物：docker-compose.yml 文件存在且包含 postgres 服务定义\n验收命令：grep -q 'postgres' docker-compose.yml && echo 'PASS'",
+        "操作：在 packages/database 初始化 Prisma schema\n产物：packages/database/prisma/schema.prisma 文件存在\n验收命令：test -f packages/database/prisma/schema.prisma && echo 'PASS'",
+        "操作：创建 .env.example 包含 DATABASE_URL 示例\n产物：.env.example 文件存在且包含 DATABASE_URL\n验收命令：grep -q 'DATABASE_URL' .env.example && echo 'PASS'",
+        "操作：运行 pnpm typecheck 验证类型无报错\n产物：pnpm typecheck 输出 exit code 为 0\n验收命令：pnpm typecheck",
+        "操作：运行 pnpm test 验证数据库配置测试通过\n产物：pnpm test 输出包含 PASS 且 exit code 为 0\n验收命令：pnpm test"
+      ],
+      "passes": false
+    },
+    {
+      "id": 4,
+      "component": "backend",
+      "priority": "P0",
+      "title": "core-service 骨架（NestJS）+ 健康检查",
+      "steps": [
+        "操作：在 apps/backend/core-service 创建 NestJS 项目\n产物：apps/backend/core-service/src/main.ts 文件存在\n验收命令：test -f apps/backend/core-service/src/main.ts && echo 'PASS'",
+        "操作：接入 Prisma Client 并创建 PrismaModule\n产物：apps/backend/core-service/src/prisma/prisma.module.ts 文件存在\n验收命令：test -f apps/backend/core-service/src/prisma/prisma.module.ts && echo 'PASS'",
+        "操作：实现 GET /internal/health 健康检查端点\n产物：apps/backend/core-service/src 目录下存在包含 '/internal/health' 的文件\n验收命令：grep -rq '/internal/health' apps/backend/core-service/src && echo 'PASS'",
+        "操作：运行 pnpm typecheck 验证类型无报错\n产物：pnpm typecheck 输出 exit code 为 0\n验收命令：pnpm typecheck",
+        "操作：运行 pnpm test 验证 core-service 单测通过\n产物：pnpm test 输出包含 PASS 且 exit code 为 0\n验收命令：pnpm test"
+      ],
+      "passes": false
+    },
+    {
+      "id": 5,
+      "component": "backend",
+      "priority": "P0",
+      "title": "api-gateway 骨架（Fastify）+ 路由分层",
+      "steps": [
+        "操作：在 apps/backend/api-gateway 创建 Fastify 项目\n产物：apps/backend/api-gateway/src/index.ts 文件存在\n验收命令：test -f apps/backend/api-gateway/src/index.ts && echo 'PASS'",
+        "操作：实现 /api/* (external) 与 /internal/* (internal) 路由分层\n产物：apps/backend/api-gateway/src/routes/external 目录存在\n验收命令：test -d apps/backend/api-gateway/src/routes/external && echo 'PASS'",
+        "操作：实现 GET /api/health 和 GET /internal/health 端点\n产物：apps/backend/api-gateway/src/routes 目录下存在包含 'health' 的文件\n验收命令：grep -rq 'health' apps/backend/api-gateway/src/routes && echo 'PASS'",
+        "操作：运行 pnpm typecheck 验证类型无报错\n产物：pnpm typecheck 输出 exit code 为 0\n验收命令：pnpm typecheck",
+        "操作：运行 pnpm test 验证 api-gateway 单测通过\n产物：pnpm test 输出包含 PASS 且 exit code 为 0\n验收命令：pnpm test"
+      ],
+      "passes": false
+    },
+    {
+      "id": 6,
+      "component": "backend",
+      "priority": "P0",
+      "title": "SSE 出口 + 事件总线",
+      "steps": [
+        "操作：实现 GET /api/sse 端点（text/event-stream）\n产物：apps/backend/api-gateway/src 目录下存在包含 'event-stream' 的文件\n验收命令：grep -rq 'event-stream' apps/backend/api-gateway/src && echo 'PASS'",
+        "操作：实现 POST /internal/events 接收 core 推送并分发\n产物：apps/backend/api-gateway/src 目录下存在包含 '/internal/events' 的文件\n验收命令：grep -rq '/internal/events' apps/backend/api-gateway/src && echo 'PASS'",
+        "操作：定义 6 种事件类型（task.created/execution.*）\n产物：apps/backend/api-gateway/src/types 目录下事件定义文件包含 execution 相关类型\n验收命令：grep -c 'execution' apps/backend/api-gateway/src/types/*.ts 2>/dev/null | xargs -I {} test {} -ge 4 && echo 'PASS'",
+        "操作：运行 pnpm typecheck 验证类型无报错\n产物：pnpm typecheck 输出 exit code 为 0\n验收命令：pnpm typecheck",
+        "操作：运行 pnpm test 验证 SSE 相关单测通过\n产物：pnpm test 输出包含 PASS 且 exit code 为 0\n验收命令：pnpm test"
+      ],
+      "passes": false
+    },
+    {
+      "id": 7,
+      "component": "backend",
+      "priority": "P0",
+      "title": "核心领域（Task/Execution）+ 状态机",
+      "steps": [
+        "操作：在 Prisma schema 定义 Task/Execution/AuditLog 模型\n产物：packages/database/prisma/schema.prisma 包含 'model Task' 定义\n验收命令：grep -q 'model Task' packages/database/prisma/schema.prisma && echo 'PASS'",
+        "操作：实现 Task 创建逻辑（自动生成 Execution）\n产物：apps/backend/core-service/src/task/task.service.ts 文件存在且包含 create 方法\n验收命令：grep -q 'create' apps/backend/core-service/src/task/task.service.ts && echo 'PASS'",
+        "操作：实现任务列表和详情查询\n产物：apps/backend/core-service/src/task/task.controller.ts 文件存在且包含 Get 装饰器\n验收命令：grep -q 'Get' apps/backend/core-service/src/task/task.controller.ts && echo 'PASS'",
+        "操作：运行 pnpm typecheck 验证类型无报错\n产物：pnpm typecheck 输出 exit code 为 0\n验收命令：pnpm typecheck",
+        "操作：运行 pnpm test 验证 Task 领域单测通过\n产物：pnpm test 输出包含 PASS 且 exit code 为 0\n验收命令：pnpm test"
+      ],
+      "passes": false
+    },
+    {
+      "id": 8,
+      "component": "backend",
+      "priority": "P0",
+      "title": "worker-service 骨架（Koa）+ 执行器占位",
+      "steps": [
+        "操作：在 apps/backend/worker-service 创建 Koa 项目\n产物：apps/backend/worker-service/src/index.ts 文件存在\n验收命令：test -f apps/backend/worker-service/src/index.ts && echo 'PASS'",
+        "操作：实现 GET /internal/health 健康检查\n产物：apps/backend/worker-service/src 目录下存在包含 'health' 的文件\n验收命令：grep -rq 'health' apps/backend/worker-service/src && echo 'PASS'",
+        "操作：实现最小执行器接口（模拟执行）\n产物：apps/backend/worker-service/src/executor.ts 文件存在\n验收命令：test -f apps/backend/worker-service/src/executor.ts && echo 'PASS'",
+        "操作：运行 pnpm typecheck 验证类型无报错\n产物：pnpm typecheck 输出 exit code 为 0\n验收命令：pnpm typecheck",
+        "操作：运行 pnpm test 验证 worker-service 单测通过\n产物：pnpm test 输出包含 PASS 且 exit code 为 0\n验收命令：pnpm test"
+      ],
+      "passes": false
+    },
+    {
+      "id": 9,
+      "component": "backend",
+      "priority": "P0",
+      "title": "原子 Claim + 防重复执行",
+      "steps": [
+        "操作：实现 POST /internal/worker/executions/claim（原子更新 PENDING→CLAIMED）\n产物：apps/backend/core-service/src/execution/execution.service.ts 包含 claim 方法\n验收命令：grep -q 'claim' apps/backend/core-service/src/execution/execution.service.ts && echo 'PASS'",
+        "操作：在 claim 时写入 AuditLog（execution.claimed）\n产物：apps/backend/core-service/src/execution/execution.service.ts 包含 AuditLog 写入逻辑\n验收命令：grep -q 'AuditLog' apps/backend/core-service/src/execution/execution.service.ts && echo 'PASS'",
+        "操作：在 claim 时向 gateway 发送事件\n产物：apps/backend/core-service/src/execution/execution.service.ts 包含 events 发送逻辑\n验收命令：grep -q 'events' apps/backend/core-service/src/execution/execution.service.ts && echo 'PASS'",
+        "操作：运行 pnpm typecheck 验证类型无报错\n产物：pnpm typecheck 输出 exit code 为 0\n验收命令：pnpm typecheck",
+        "操作：运行 pnpm test 验证 claim 逻辑单测通过\n产物：pnpm test 输出包含 PASS 且 exit code 为 0\n验收命令：pnpm test"
+      ],
+      "passes": false
+    },
+    {
+      "id": 10,
+      "component": "backend",
+      "priority": "P0",
+      "title": "worker scheduler + 执行生命周期",
+      "steps": [
+        "操作：实现 worker 轮询 claim（pollIntervalMs/limit/maxConcurrency 可配置）\n产物：apps/backend/worker-service/src/scheduler.ts 文件存在\n验收命令：test -f apps/backend/worker-service/src/scheduler.ts && echo 'PASS'",
+        "操作：实现 worker 调用 core 的 start/progress/complete/fail\n产物：apps/backend/worker-service/src/scheduler.ts 包含生命周期方法（start|progress|complete|fail）\n验收命令：grep -E '(start|progress|complete|fail)' apps/backend/worker-service/src/scheduler.ts && echo 'PASS'",
+        "操作：core 实现状态更新并推送事件到 gateway\n产物：apps/backend/core-service/src/execution/execution.service.ts 包含 status 更新逻辑\n验收命令：grep -q 'status' apps/backend/core-service/src/execution/execution.service.ts && echo 'PASS'",
+        "操作：运行 pnpm typecheck 验证类型无报错\n产物：pnpm typecheck 输出 exit code 为 0\n验收命令：pnpm typecheck",
+        "操作：运行 pnpm test 验证 scheduler 单测通过\n产物：pnpm test 输出包含 PASS 且 exit code 为 0\n验收命令：pnpm test"
+      ],
+      "passes": false
+    },
+    {
+      "id": 11,
+      "component": "backend",
+      "priority": "P0",
+      "title": "心跳 + 超时检测",
+      "steps": [
+        "操作：worker 实现 heartbeat 定时上报\n产物：apps/backend/worker-service/src/scheduler.ts 包含 heartbeat 逻辑\n验收命令：grep -q 'heartbeat' apps/backend/worker-service/src/scheduler.ts && echo 'PASS'",
+        "操作：core 实现超时检测定时任务（CLAIMED/RUNNING 超阈值 → TIMEOUT）\n产物：apps/backend/core-service/src/execution/execution.service.ts 包含 Timeout 检测方法\n验收命令：grep -q 'Timeout' apps/backend/core-service/src/execution/execution.service.ts && echo 'PASS'",
+        "操作：TIMEOUT 时触发 execution.failed 事件\n产物：apps/backend/core-service/src/execution/execution.service.ts 包含 TIMEOUT 事件处理\n验收命令：grep -q 'TIMEOUT' apps/backend/core-service/src/execution/execution.service.ts && echo 'PASS'",
+        "操作：运行 pnpm typecheck 验证类型无报错\n产物：pnpm typecheck 输出 exit code 为 0\n验收命令：pnpm typecheck",
+        "操作：运行 pnpm test 验证心跳超时单测通过\n产物：pnpm test 输出包含 PASS 且 exit code 为 0\n验收命令：pnpm test"
+      ],
+      "passes": false
+    },
+    {
+      "id": 12,
+      "component": "frontend",
+      "priority": "P0",
+      "title": "workbench 骨架（React 19 + Vite 8）",
+      "steps": [
+        "操作：在 apps/frontend/workbench 创建 React 项目\n产物：apps/frontend/workbench/src/main.tsx 文件存在\n验收命令：test -f apps/frontend/workbench/src/main.tsx && echo 'PASS'",
+        "操作：接入 shadcn/ui + Tailwind（支持 dark mode）\n产物：apps/frontend/workbench/tailwind.config.ts 文件存在\n验收命令：test -f apps/frontend/workbench/tailwind.config.ts && echo 'PASS'",
+        "操作：实现基础页面（Tasks/Settings 占位）\n产物：apps/frontend/workbench/src/routes 目录存在\n验收命令：test -d apps/frontend/workbench/src/routes && echo 'PASS'",
+        "操作：运行 pnpm typecheck 验证类型无报错\n产物：pnpm typecheck 输出 exit code 为 0\n验收命令：pnpm typecheck",
+        "操作：运行 pnpm test 验证 workbench 组件单测通过\n产物：pnpm test 输出包含 PASS 且 exit code 为 0\n验收命令：pnpm test"
+      ],
+      "passes": false
+    },
+    {
+      "id": 13,
+      "component": "frontend",
+      "priority": "P0",
+      "title": "workbench 接入 SSE + 实时状态",
+      "steps": [
+        "操作：实现 SSE 订阅 hook（/api/sse）\n产物：apps/frontend/workbench/src/hooks/useSSE.ts 文件存在\n验收命令：test -f apps/frontend/workbench/src/hooks/useSSE.ts && echo 'PASS'",
+        "操作：创建 Zustand store 管理执行状态\n产物：apps/frontend/workbench/src/stores/execution.store.ts 文件存在\n验收命令：test -f apps/frontend/workbench/src/stores/execution.store.ts && echo 'PASS'",
+        "操作：实现创建任务表单并调用 API\n产物：apps/frontend/workbench/src/routes 目录下存在包含 'tasks' 的文件\n验收命令：grep -rq 'tasks' apps/frontend/workbench/src/routes && echo 'PASS'",
+        "操作：运行 pnpm typecheck 验证类型无报错\n产物：pnpm typecheck 输出 exit code 为 0\n验收命令：pnpm typecheck",
+        "操作：运行 pnpm test 验证 SSE hook 单测通过\n产物：pnpm test 输出包含 PASS 且 exit code 为 0\n验收命令：pnpm test",
+        "操作：运行 npx playwright test 验证 SSE 实时更新 E2E 通过\n产物：playwright-report 目录存在且测试通过\n验收命令：npx playwright test"
+      ],
+      "passes": false
+    },
+    {
+      "id": 14,
+      "component": "backend",
+      "priority": "P1",
+      "title": "RBAC 最小可用 + API Key",
+      "steps": [
+        "操作：在 Prisma schema 定义 User/Role/UserRole 模型\n产物：packages/database/prisma/schema.prisma 包含 'model User' 定义\n验收命令：grep -q 'model User' packages/database/prisma/schema.prisma && echo 'PASS'",
+        "操作：实现 User/Role 基础管理并 seed 默认角色\n产物：packages/database/prisma/seed.ts 文件存在\n验收命令：test -f packages/database/prisma/seed.ts && echo 'PASS'",
+        "操作：实现 API Key 创建/吊销/验证\n产物：apps/backend/core-service/src 目录下存在包含 'ApiKey' 的文件\n验收命令：grep -rq 'ApiKey' apps/backend/core-service/src && echo 'PASS'",
+        "操作：运行 pnpm typecheck 验证类型无报错\n产物：pnpm typecheck 输出 exit code 为 0\n验收命令：pnpm typecheck",
+        "操作：运行 pnpm test 验证 RBAC 单测通过\n产物：pnpm test 输出包含 PASS 且 exit code 为 0\n验收命令：pnpm test"
+      ],
+      "passes": false
+    },
+    {
+      "id": 15,
+      "component": "frontend",
+      "priority": "P1",
+      "title": "admin-console（Vue 3.5 + Element Plus）",
+      "steps": [
+        "操作：在 apps/frontend/admin-console 创建 Vue 项目\n产物：apps/frontend/admin-console/src/main.ts 文件存在\n验收命令：test -f apps/frontend/admin-console/src/main.ts && echo 'PASS'",
+        "操作：实现基础路由（Users/Roles/Audit/System）\n产物：apps/frontend/admin-console/src/router/index.ts 文件存在\n验收命令：test -f apps/frontend/admin-console/src/router/index.ts && echo 'PASS'",
+        "操作：对接 gateway 查看 tasks/executions 列表\n产物：apps/frontend/admin-console/src/views 目录下 .vue 文件数量大于 0\n验收命令：test $(ls apps/frontend/admin-console/src/views/*.vue 2>/dev/null | wc -l) -gt 0 && echo 'PASS'",
+        "操作：运行 pnpm typecheck 验证类型无报错\n产物：pnpm typecheck 输出 exit code 为 0\n验收命令：pnpm typecheck",
+        "操作：运行 pnpm test 验证 admin-console 组件单测通过\n产物：pnpm test 输出包含 PASS 且 exit code 为 0\n验收命令：pnpm test"
+      ],
+      "passes": false
+    },
+    {
+      "id": 16,
+      "component": "frontend",
+      "priority": "P1",
+      "title": "developer-portal（Next.js 16）",
+      "steps": [
+        "操作：在 apps/frontend/developer-portal 创建 Next.js 项目\n产物：apps/frontend/developer-portal/app/layout.tsx 文件存在\n验收命令：test -f apps/frontend/developer-portal/app/layout.tsx && echo 'PASS'",
+        "操作：实现 Docs/API Reference/API Keys 页面骨架\n产物：apps/frontend/developer-portal/app/docs 目录存在\n验收命令：test -d apps/frontend/developer-portal/app/docs && echo 'PASS'",
+        "操作：实现 API Key 管理（创建/吊销）\n产物：apps/frontend/developer-portal/app 目录下存在包含 'api-key' 的文件\n验收命令：grep -rq 'api-key' apps/frontend/developer-portal/app && echo 'PASS'",
+        "操作：运行 pnpm typecheck 验证类型无报错\n产物：pnpm typecheck 输出 exit code 为 0\n验收命令：pnpm typecheck",
+        "操作：运行 pnpm test 验证 developer-portal 组件单测通过\n产物：pnpm test 输出包含 PASS 且 exit code 为 0\n验收命令：pnpm test"
+      ],
+      "passes": false
+    },
+    {
+      "id": 17,
+      "component": "backend",
+      "priority": "P1",
+      "title": "取消与重跑",
+      "steps": [
+        "操作：实现 POST /api/tasks/:id/cancel 端点\n产物：apps/backend/core-service/src/task/task.controller.ts 包含 cancel 方法\n验收命令：grep -q 'cancel' apps/backend/core-service/src/task/task.controller.ts && echo 'PASS'",
+        "操作：实现 POST /api/tasks/:id/rerun 端点（创建新 Execution）\n产物：apps/backend/core-service/src/task/task.controller.ts 包含 rerun 方法\n验收命令：grep -q 'rerun' apps/backend/core-service/src/task/task.controller.ts && echo 'PASS'",
+        "操作：取消/重跑触发对应 SSE 事件\n产物：apps/backend/core-service/src/task/task.service.ts 包含 cancel|rerun 事件处理\n验收命令：grep -E '(cancel|rerun)' apps/backend/core-service/src/task/task.service.ts && echo 'PASS'",
+        "操作：运行 pnpm typecheck 验证类型无报错\n产物：pnpm typecheck 输出 exit code 为 0\n验收命令：pnpm typecheck",
+        "操作：运行 pnpm test 验证 cancel/rerun 单测通过\n产物：pnpm test 输出包含 PASS 且 exit code 为 0\n验收命令：pnpm test"
+      ],
+      "passes": false
+    },
+    {
+      "id": 18,
+      "component": "backend",
+      "priority": "P1",
+      "title": "审计日志可观测",
+      "steps": [
+        "操作：在关键动作落 AuditLog（task.create/execution.*）\n产物：apps/backend/core-service/src/audit/audit.service.ts 文件存在\n验收命令：test -f apps/backend/core-service/src/audit/audit.service.ts && echo 'PASS'",
+        "操作：在 admin-console 提供审计日志列表\n产物：apps/frontend/admin-console/src 目录下存在包含 'audit' 的文件\n验收命令：grep -rq 'audit' apps/frontend/admin-console/src && echo 'PASS'",
+        "操作：运行 pnpm typecheck 验证类型无报错\n产物：pnpm typecheck 输出 exit code 为 0\n验收命令：pnpm typecheck",
+        "操作：运行 pnpm test 验证审计日志单测通过\n产物：pnpm test 输出包含 PASS 且 exit code 为 0\n验收命令：pnpm test"
+      ],
+      "passes": false
+    },
+    {
+      "id": 19,
+      "component": "frontend",
+      "priority": "P2",
+      "title": "UI 一致性与暗色模式",
+      "steps": [
+        "操作：workbench 按语义 Token 替换误用颜色\n产物：apps/frontend/workbench/src 目录下 CSS 文件包含 var(-- 语义变量\n验收命令：grep -rq 'var(--' apps/frontend/workbench/src && echo 'PASS'",
+        "操作：admin-console 调整 Element Plus 主题\n产物：apps/frontend/admin-console/src/style.css 文件存在\n验收命令：test -f apps/frontend/admin-console/src/style.css && echo 'PASS'",
+        "操作：developer-portal 校准排版一致性\n产物：apps/frontend/developer-portal/app/globals.css 文件存在\n验收命令：test -f apps/frontend/developer-portal/app/globals.css && echo 'PASS'",
+        "操作：运行 pnpm typecheck 验证类型无报错\n产物：pnpm typecheck 输出 exit code 为 0\n验收命令：pnpm typecheck"
+      ],
+      "passes": false
+    },
+    {
+      "id": 20,
+      "component": "docs",
+      "priority": "P2",
+      "title": "启动文档与故障排查",
+      "steps": [
+        "操作：创建 docs/setup/step-by-step.md 记录启动流程\n产物：docs/setup/step-by-step.md 文件存在\n验收命令：test -f docs/setup/step-by-step.md && echo 'PASS'",
+        "操作：创建 docs/setup/troubleshooting.md 记录常见错误\n产物：docs/setup/troubleshooting.md 文件存在\n验收命令：test -f docs/setup/troubleshooting.md && echo 'PASS'",
+        "操作：在 README 补齐启动指引\n产物：README.md 包含 pnpm 启动命令\n验收命令：grep -q 'pnpm' README.md && echo 'PASS'"
+      ],
+      "passes": false
+    },
+    {
+      "id": 21,
+      "component": "test-unit",
+      "priority": "P1",
+      "title": "单测基线（Vitest + Testing Library）- 全局门禁",
+      "steps": [
+        "操作：安装 Vitest 并在根或各 app 配置 vitest.config.ts\n产物：vitest.config.ts 文件存在（根目录或子目录）\n验收命令：test -f vitest.config.ts || find . -name 'vitest.config.ts' 2>/dev/null | grep -q . && echo 'PASS'",
+        "操作：为 core-service 的 claim/状态机写最小单测\n产物：apps/backend/core-service 目录下 *.spec.ts 文件数量大于 0\n验收命令：test $(find apps/backend/core-service -name '*.spec.ts' 2>/dev/null | wc -l) -gt 0 && echo 'PASS'",
+        "操作：为 React 组件写渲染测试\n产物：apps/frontend 目录下 *.test.tsx 文件数量大于 0\n验收命令：test $(find apps/frontend -name '*.test.tsx' 2>/dev/null | wc -l) -gt 0 && echo 'PASS'",
+        "操作：运行 pnpm test 验证所有单测通过\n产物：pnpm test 输出包含 PASS 且 exit code 为 0\n验收命令：pnpm test"
+      ],
+      "passes": false
+    },
+    {
+      "id": 22,
+      "component": "test-e2e",
+      "priority": "P2",
+      "title": "E2E 基线（Playwright）- 全局门禁",
+      "steps": [
+        "操作：安装 Playwright 并初始化配置\n产物：playwright.config.ts 文件存在\n验收命令：test -f playwright.config.ts && echo 'PASS'",
+        "操作：配置 baseURL 与 webServer 启动命令\n产物：playwright.config.ts 包含 webServer 配置\n验收命令：grep -q 'webServer' playwright.config.ts && echo 'PASS'",
+        "操作：编写 1 条核心路径 + 1 条异常路径测试\n产物：tests/e2e 目录下 *.spec.ts 文件数量大于等于 2\n验收命令：test $(find tests/e2e -name '*.spec.ts' 2>/dev/null | wc -l) -ge 2 && echo 'PASS'",
+        "操作：配置测试报告与 trace 输出路径\n产物：playwright-report 目录存在（运行后生成）\n验收命令：grep -q 'reporter' playwright.config.ts && echo 'PASS'",
+        "操作：运行 npx playwright test 验证 E2E 通过\n产物：playwright-report/index.html 文件存在且测试通过\n验收命令：npx playwright test"
+      ],
+      "passes": false
+    },
+    {
+      "id": 23,
+      "component": "docs",
+      "priority": "P2",
+      "title": "面试材料（3min/5min 逐字稿）",
+      "steps": [
+        "操作：创建 docs/interview/script-3min.md（背景-架构-难点-成果-贡献）\n产物：docs/interview/script-3min.md 文件存在\n验收命令：test -f docs/interview/script-3min.md && echo 'PASS'",
+        "操作：创建 docs/interview/script-5min.md（补充取舍与扩展路线）\n产物：docs/interview/script-5min.md 文件存在\n验收命令：test -f docs/interview/script-5min.md && echo 'PASS'",
+        "操作：运行 pnpm typecheck 验证类型无报错\n产物：pnpm typecheck 输出 exit code 为 0\n验收命令：pnpm typecheck"
+      ],
+      "passes": false
+    },
+    {
+      "id": 24,
+      "component": "meta",
+      "priority": "P1",
+      "title": "历史优点回流与母本规则固化",
+      "steps": [
+        "操作：从 learning-lab/extracted-patterns/patterns.md 选择 10 条最重要优点\n产物：step-format-rules.md 包含回流规则\n验收命令：test -f '.ggbdpq/required/rules/step-format-rules.md' && echo 'PASS'",
+        "操作：在 progress.txt 追加回流记录（采纳哪些、从哪来、落到哪里）\n产物：progress.txt 包含 '回流' 字符串\n验收命令：grep -q '回流' progress.txt && echo 'PASS'",
+        "操作：明确不采纳的优点及原因\n产物：.ggbdpq/learning-lab/extracted-patterns/patterns.md 包含 '不采纳' 字符串\n验收命令：grep -q '不采纳' .ggbdpq/learning-lab/extracted-patterns/patterns.md && echo 'PASS'",
+        "操作：运行 pnpm test 验证规则相关测试通过\n产物：pnpm test 输出包含 PASS 且 exit code 为 0\n验收命令：pnpm test"
+      ],
+      "passes": false
+    }
+  ],
+  "statistics": {
+    "total": 25,
+    "passing": 0,
+    "failing": 25,
+    "completion": "0%",
+    "blocked_reason": ""
+  }
+}

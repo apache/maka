@@ -1,0 +1,115 @@
+From 5fe77cb0ab0ce3bcd045bd2a8e0a4d1af029dd9b Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Wed, 14 Oct 2026 20:03:35 +0800
+Subject: [PATCH] provider: a pool's weekly window is reminded of its renewal
+ too, as the alerts tell of it
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+What changed:
+- dueReminders skipped every aside window, so an Antigravity account's
+  pool weekly ones ("Gemini · 7 days", aside since g.pools began) were
+  never reminded of their renewal, though #523 told the usage alerts of
+  exactly those: toldAside is that exemption now, shared by both, so a
+  week that renews with much of it left is said, and the pools' 5-hour
+  asides and the rest stay untold (a 5-hour window renews too often to
+  be news, #720).
+
+Run:
+- TestDueRemindersPoolWeekly is new: on the old condition it fails with
+  "got []", the account's 7-day pool at 40% renewing in 20h saying
+  nothing; with the change it is told once, its 5-hour pool still says
+  nothing, and a nearly spent week still does. TestDueAlertsPoolWindows
+  and TestDueReminders pass unchanged.
+- go test -tags nogui -count=1 ./internal/provider passes; gofmt -l is
+  clean; go vet -tags nogui passes on darwin and GOOS=linux and
+  GOOS=windows; the three platforms' builds pass.
+
+Co-authored-by: factory-droid[bot] <138933559+factory-droid[bot]@users.noreply.github.com>
+---
+ internal/provider/quota_alert.go      | 12 +++++++++--
+ internal/provider/quota_alert_test.go | 30 +++++++++++++++++++++++++++
+ 2 files changed, 40 insertions(+), 2 deletions(-)
+
+diff --git a/internal/provider/quota_alert.go b/internal/provider/quota_alert.go
+index 4aba825b..37383c97 100644
+--- a/internal/provider/quota_alert.go
++++ b/internal/provider/quota_alert.go
+@@ -59,6 +59,14 @@ const alertSameRun = 10 * time.Minute
+ // (signed out, a key removed) is kept.
+ const alertKeep = 40 * 24 * time.Hour
+ 
++// toldAside is whether a window aside from the account is still told of:
++// a pool's weekly one is (#523) — using it up doesn't stop the account,
++// but the week it would waste is worth knowing of — while the pools'
++// 5-hour ones and the rest aren't.
++func toldAside(w QuotaWindow) bool {
++	return w.Pool != "" && w.Span == 7*24*time.Hour
++}
++
+ // dueAlerts is what the readings qs call for with a window alert at pct
+ // percent used (0 off) and a balance alert at bal (0 off), and the marks
+ // brought up to date with it. A reading that failed, or is one kept from
+@@ -78,7 +86,7 @@ func dueAlerts(qs []SubscriptionQuota, marks map[string]alertMark, pct int, bal
+ 		// the pools' own windows stand in for the models' drawing on them,
+ 		// so a pool is told of once, not once per model
+ 		for _, w := range PooledWindows(q.Windows) {
+-			if w.Aside && !(w.Pool != "" && w.Span == 7*24*time.Hour) {
++			if w.Aside && !toldAside(w) {
+ 				continue // using it up doesn't stop the account
+ 			}
+ 			key := alertPrefix(q) + "w|" + w.Name + "|" + w.Model
+@@ -160,7 +168,7 @@ func dueReminders(qs []SubscriptionQuota, marks map[string]alertMark, lead time.
+ 			continue
+ 		}
+ 		for _, w := range PooledWindows(q.Windows) {
+-			if w.Aside || w.Span < reminderSpan || w.Used >= reminderUnder {
++			if w.Aside && !toldAside(w) || w.Span < reminderSpan || w.Used >= reminderUnder {
+ 				continue
+ 			}
+ 			at := w.ResetsAt
+diff --git a/internal/provider/quota_alert_test.go b/internal/provider/quota_alert_test.go
+index f754c74d..b6edc1ac 100644
+--- a/internal/provider/quota_alert_test.go
++++ b/internal/provider/quota_alert_test.go
+@@ -198,6 +198,36 @@ func TestDueAlertsPoolWindows(t *testing.T) {
+ 	}
+ }
+ 
++// a pool's weekly window is an aside, but is still told of (#523 told the
++// alerts of it): it renews with much of it left just as any other week
++// does, so its renewal is reminded of too. The pools' 5-hour asides say
++// nothing, as any 5-hour window does (#720: too often to be news).
++func TestDueRemindersPoolWeekly(t *testing.T) {
++	now := time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC)
++	soon := now.Add(20 * time.Hour)
++	five, week := 5*time.Hour, 7*24*time.Hour
++	qs := []SubscriptionQuota{{Provider: "antigravity", Name: "Antigravity", User: "u@x.com",
++		Windows: []QuotaWindow{
++			{Name: "7 days", Pool: "Gemini", Span: week, Aside: true, Used: 40, ResetsAt: &soon},
++			{Name: "5 hours", Pool: "Gemini", Span: five, Aside: true, Used: 10, ResetsAt: &soon},
++		}}}
++	marks := map[string]alertMark{}
++	got := dueReminders(qs, marks, 24*time.Hour, now)
++	if len(got) != 1 || got[0].Kind != "renews" || got[0].Window != "Gemini · 7 days" || got[0].Used != 40 || !got[0].ResetsAt.Equal(soon) {
++		t.Fatalf("got %+v", got)
++	}
++	// told once: the same run again says nothing
++	if again := dueReminders(qs, marks, 24*time.Hour, now.Add(time.Hour)); len(again) != 0 {
++		t.Fatalf("told twice: %+v", again)
++	}
++	// the week nearly spent: little would be lost, nothing said
++	spent := []SubscriptionQuota{qs[0]}
++	spent[0].Windows = []QuotaWindow{{Name: "7 days", Pool: "Gemini", Span: week, Aside: true, Used: 90, ResetsAt: &soon}}
++	if got := dueReminders(spent, map[string]alertMark{}, 24*time.Hour, now); len(got) != 0 {
++		t.Fatalf("nearly spent: %+v", got)
++	}
++}
++
+ // the reset reminder (#720): a long window renewing within the hours set
+ // with much of it left, once a run; a 5-hour one, a window nearly used up
+ // and one renewing later say nothing; resets running out are told too
+-- 
+2.50.1 (Apple Git-155)
+

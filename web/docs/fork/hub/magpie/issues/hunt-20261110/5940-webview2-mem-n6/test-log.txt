@@ -1,0 +1,74 @@
+# github.com/yetone/magpie/internal/gui.test
+ld: warning: ignoring duplicate libraries: '-lobjc'
+ld: warning: object file (/private/var/folders/l_/dcyyzzfx5k914sm7sy98xqfc0000gn/T/go-link-2621316465/go.o) was built for newer 'macOS' version (15.0) than being linked (11.0)
+ld: warning: object file (/private/var/folders/l_/dcyyzzfx5k914sm7sy98xqfc0000gn/T/go-link-2621316465/000000.o) was built for newer 'macOS' version (15.0) than being linked (11.0)
+ld: warning: object file (/private/var/folders/l_/dcyyzzfx5k914sm7sy98xqfc0000gn/T/go-link-2621316465/000001.o) was built for newer 'macOS' version (15.0) than being linked (11.0)
+ld: warning: object file (/private/var/folders/l_/dcyyzzfx5k914sm7sy98xqfc0000gn/T/go-link-2621316465/000002.o) was built for newer 'macOS' version (15.0) than being linked (11.0)
+ld: warning: object file (/private/var/folders/l_/dcyyzzfx5k914sm7sy98xqfc0000gn/T/go-link-2621316465/000003.o) was built for newer 'macOS' version (15.0) than being linked (11.0)
+ld: warning: object file (/private/var/folders/l_/dcyyzzfx5k914sm7sy98xqfc0000gn/T/go-link-2621316465/000004.o) was built for newer 'macOS' version (15.0) than being linked (11.0)
+ld: warning: object file (/private/var/folders/l_/dcyyzzfx5k914sm7sy98xqfc0000gn/T/go-link-2621316465/000005.o) was built for newer 'macOS' version (15.0) than being linked (11.0)
+ld: warning: object file (/private/var/folders/l_/dcyyzzfx5k914sm7sy98xqfc0000gn/T/go-link-2621316465/000006.o) was built for newer 'macOS' version (15.0) than being linked (11.0)
+ld: warning: object file (/private/var/folders/l_/dcyyzzfx5k914sm7sy98xqfc0000gn/T/go-link-2621316465/000007.o) was built for newer 'macOS' version (15.0) than being linked (11.0)
+ld: warning: object file (/private/var/folders/l_/dcyyzzfx5k914sm7sy98xqfc0000gn/T/go-link-2621316465/000008.o) was built for newer 'macOS' version (15.0) than being linked (11.0)
+ld: warning: object file (/private/var/folders/l_/dcyyzzfx5k914sm7sy98xqfc0000gn/T/go-link-2621316465/000009.o) was built for newer 'macOS' version (15.0) than being linked (11.0)
+ld: warning: object file (/private/var/folders/l_/dcyyzzfx5k914sm7sy98xqfc0000gn/T/go-link-2621316465/000010.o) was built for newer 'macOS' version (15.0) than being linked (11.0)
+ld: warning: object file (/private/var/folders/l_/dcyyzzfx5k914sm7sy98xqfc0000gn/T/go-link-2621316465/000011.o) was built for newer 'macOS' version (15.0) than being linked (11.0)
+ld: warning: object file (/private/var/folders/l_/dcyyzzfx5k914sm7sy98xqfc0000gn/T/go-link-2621316465/000012.o) was built for newer 'macOS' version (15.0) than being linked (11.0)
+ld: warning: object file (/private/var/folders/l_/dcyyzzfx5k914sm7sy98xqfc0000gn/T/go-link-2621316465/000013.o) was built for newer 'macOS' version (15.0) than being linked (11.0)
+ld: warning: object file (/private/var/folders/l_/dcyyzzfx5k914sm7sy98xqfc0000gn/T/go-link-2621316465/000014.o) was built for newer 'macOS' version (15.0) than being linked (11.0)
+ld: warning: object file (/private/var/folders/l_/dcyyzzfx5k914sm7sy98xqfc0000gn/T/go-link-2621316465/000015.o) was built for newer 'macOS' version (15.0) than being linked (11.0)
+ld: warning: object file (/private/var/folders/l_/dcyyzzfx5k914sm7sy98xqfc0000gn/T/go-link-2621316465/000016.o) was built for newer 'macOS' version (15.0) than being linked (11.0)
+ld: warning: object file (/private/var/folders/l_/dcyyzzfx5k914sm7sy98xqfc0000gn/T/go-link-2621316465/000017.o) was built for newer 'macOS' version (15.0) than being linked (11.0)
+ld: warning: object file (/private/var/folders/l_/dcyyzzfx5k914sm7sy98xqfc0000gn/T/go-link-2621316465/000018.o) was built for newer 'macOS' version (15.0) than being linked (11.0)
+ld: warning: object file (/private/var/folders/l_/dcyyzzfx5k914sm7sy98xqfc0000gn/T/go-link-2621316465/000019.o) was built for newer 'macOS' version (15.0) than being linked (11.0)
+ld: warning: object file (/private/var/folders/l_/dcyyzzfx5k914sm7sy98xqfc0000gn/T/go-link-2621316465/000046.o) was built for newer 'macOS' version (15.0) than being linked (11.0)
+ld: warning: object file (/private/var/folders/l_/dcyyzzfx5k914sm7sy98xqfc0000gn/T/go-link-2621316465/000047.o) was built for newer 'macOS' version (15.0) than being linked (11.0)
+ld: warning: object file (/private/var/folders/l_/dcyyzzfx5k914sm7sy98xqfc0000gn/T/go-link-2621316465/000048.o) was built for newer 'macOS' version (15.0) than being linked (11.0)
+ld: warning: object file (/private/var/folders/l_/dcyyzzfx5k914sm7sy98xqfc0000gn/T/go-link-2621316465/000049.o) was built for newer 'macOS' version (15.0) than being linked (11.0)
+ld: warning: object file (/private/var/folders/l_/dcyyzzfx5k914sm7sy98xqfc0000gn/T/go-link-2621316465/000050.o) was built for newer 'macOS' version (15.0) than being linked (11.0)
+ld: warning: object file (/private/var/folders/l_/dcyyzzfx5k914sm7sy98xqfc0000gn/T/go-link-2621316465/000051.o) was built for newer 'macOS' version (15.0) than being linked (11.0)
+ld: warning: object file (/private/var/folders/l_/dcyyzzfx5k914sm7sy98xqfc0000gn/T/go-link-2621316465/000052.o) was built for newer 'macOS' version (15.0) than being linked (11.0)
+ld: warning: object file (/private/var/folders/l_/dcyyzzfx5k914sm7sy98xqfc0000gn/T/go-link-2621316465/000053.o) was built for newer 'macOS' version (15.0) than being linked (11.0)
+ld: warning: object file (/private/var/folders/l_/dcyyzzfx5k914sm7sy98xqfc0000gn/T/go-link-2621316465/000054.o) was built for newer 'macOS' version (15.0) than being linked (11.0)
+ld: warning: object file (/private/var/folders/l_/dcyyzzfx5k914sm7sy98xqfc0000gn/T/go-link-2621316465/000055.o) was built for newer 'macOS' version (15.0) than being linked (11.0)
+ld: warning: object file (/private/var/folders/l_/dcyyzzfx5k914sm7sy98xqfc0000gn/T/go-link-2621316465/000056.o) was built for newer 'macOS' version (15.0) than being linked (11.0)
+ld: warning: object file (/private/var/folders/l_/dcyyzzfx5k914sm7sy98xqfc0000gn/T/go-link-2621316465/000057.o) was built for newer 'macOS' version (15.0) than being linked (11.0)
+ld: warning: object file (/private/var/folders/l_/dcyyzzfx5k914sm7sy98xqfc0000gn/T/go-link-2621316465/000058.o) was built for newer 'macOS' version (15.0) than being linked (11.0)
+ld: warning: object file (/private/var/folders/l_/dcyyzzfx5k914sm7sy98xqfc0000gn/T/go-link-2621316465/000059.o) was built for newer 'macOS' version (15.0) than being linked (11.0)
+ld: warning: object file (/private/var/folders/l_/dcyyzzfx5k914sm7sy98xqfc0000gn/T/go-link-2621316465/000060.o) was built for newer 'macOS' version (15.0) than being linked (11.0)
+ld: warning: object file (/private/var/folders/l_/dcyyzzfx5k914sm7sy98xqfc0000gn/T/go-link-2621316465/000061.o) was built for newer 'macOS' version (15.0) than being linked (11.0)
+ld: warning: object file (/private/var/folders/l_/dcyyzzfx5k914sm7sy98xqfc0000gn/T/go-link-2621316465/000062.o) was built for newer 'macOS' version (15.0) than being linked (11.0)
+ld: warning: object file (/private/var/folders/l_/dcyyzzfx5k914sm7sy98xqfc0000gn/T/go-link-2621316465/000063.o) was built for newer 'macOS' version (15.0) than being linked (11.0)
+ld: warning: object file (/private/var/folders/l_/dcyyzzfx5k914sm7sy98xqfc0000gn/T/go-link-2621316465/000064.o) was built for newer 'macOS' version (15.0) than being linked (11.0)
+ld: warning: object file (/private/var/folders/l_/dcyyzzfx5k914sm7sy98xqfc0000gn/T/go-link-2621316465/000065.o) was built for newer 'macOS' version (15.0) than being linked (11.0)
+ld: warning: object file (/private/var/folders/l_/dcyyzzfx5k914sm7sy98xqfc0000gn/T/go-link-2621316465/000066.o) was built for newer 'macOS' version (15.0) than being linked (11.0)
+ld: warning: object file (/private/var/folders/l_/dcyyzzfx5k914sm7sy98xqfc0000gn/T/go-link-2621316465/000067.o) was built for newer 'macOS' version (15.0) than being linked (11.0)
+ld: warning: object file (/private/var/folders/l_/dcyyzzfx5k914sm7sy98xqfc0000gn/T/go-link-2621316465/000068.o) was built for newer 'macOS' version (15.0) than being linked (11.0)
+ld: warning: object file (/private/var/folders/l_/dcyyzzfx5k914sm7sy98xqfc0000gn/T/go-link-2621316465/000069.o) was built for newer 'macOS' version (15.0) than being linked (11.0)
+ld: warning: object file (/private/var/folders/l_/dcyyzzfx5k914sm7sy98xqfc0000gn/T/go-link-2621316465/000070.o) was built for newer 'macOS' version (15.0) than being linked (11.0)
+ld: warning: object file (/private/var/folders/l_/dcyyzzfx5k914sm7sy98xqfc0000gn/T/go-link-2621316465/000071.o) was built for newer 'macOS' version (15.0) than being linked (11.0)
+=== RUN   TestLightStep
+--- PASS: TestLightStep (0.00s)
+=== RUN   TestWebView2ArgsMergeTheUsers
+=== RUN   TestWebView2ArgsMergeTheUsers/none_set
+=== RUN   TestWebView2ArgsMergeTheUsers/the_reporter's
+=== RUN   TestWebView2ArgsMergeTheUsers/twice,_with_magpie's_own_and_a_repeat
+=== RUN   TestWebView2ArgsMergeTheUsers/enable_and_others_kept
+=== RUN   TestWebView2ArgsMergeTheUsers/a_bare_switch
+--- PASS: TestWebView2ArgsMergeTheUsers (0.00s)
+    --- PASS: TestWebView2ArgsMergeTheUsers/none_set (0.00s)
+    --- PASS: TestWebView2ArgsMergeTheUsers/the_reporter's (0.00s)
+    --- PASS: TestWebView2ArgsMergeTheUsers/twice,_with_magpie's_own_and_a_repeat (0.00s)
+    --- PASS: TestWebView2ArgsMergeTheUsers/enable_and_others_kept (0.00s)
+    --- PASS: TestWebView2ArgsMergeTheUsers/a_bare_switch (0.00s)
+=== RUN   TestWebView2KeepsCodeIntegrityByDefault
+--- PASS: TestWebView2KeepsCodeIntegrityByDefault (0.00s)
+=== RUN   TestWebView2ArgsSurviveWailsInit
+    webview2_args_test.go:110: os="--disable-features=RendererCodeIntegrity" disabled=["RendererCodeIntegrity"]
+--- PASS: TestWebView2ArgsSurviveWailsInit (0.01s)
+=== RUN   TestWebView2Missing
+--- PASS: TestWebView2Missing (0.00s)
+=== RUN   TestWebView2Notice
+--- PASS: TestWebView2Notice (0.00s)
+PASS
+ok  	github.com/yetone/magpie/internal/gui	1.306s

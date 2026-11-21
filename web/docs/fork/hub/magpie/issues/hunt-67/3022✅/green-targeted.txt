@@ -1,0 +1,6 @@
+=== RUN   TestMaskJSONKeepsArgumentsJSON
+--- PASS: TestMaskJSONKeepsArgumentsJSON (0.00s)
+=== RUN   TestProbeTripleNewlineDecorator
+--- PASS: TestProbeTripleNewlineDecorator (0.00s)
+PASS
+ok  	github.com/yetone/magpie/internal/redact	0.862s

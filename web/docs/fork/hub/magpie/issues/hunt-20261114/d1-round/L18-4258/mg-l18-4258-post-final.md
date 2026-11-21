@@ -1,0 +1,509 @@
+@skygunner — this patch is the core ordering from your `fix/4258-agent-stash-durability` (9b83ba670): the originals leave the stash only once the write that replaces them has gone through. The cross-process lock and the rewiring journal your branch carries are left for their own changes.
+
+**What loses the originals**: Claude's and Codex's `unroute` read the stash with `unstash`, which deletes each value and writes the stash back at once (`internal/agent/stash.go`), *before* the config write that puts the values back — so a write that failed (a full disk, a file a watcher held, a failed rename) left the stash empty and a retry with nothing to restore. Claude's `putClouds` had the same shape, and the model's original was taken out before the write that restores or replaces it, which comes after `unroute` in `Unwire` — a failure anywhere between lost it too.
+
+**The fix**: `peek` reads the stashed values without taking them out, and `forgetValues` takes them out after the write has gone through, each only while it is still the value peeked — a value a concurrent change wrote since stays stashed. The model is the caller's to take out: `Unwire` consumes it after its own write succeeds, and picking a model of the agent's own consumes it after that write too. `set("")`'s forgets moved behind its `DelJSON` the same way.
+
+**What stays as it was**: a stash file that doesn't parse is still copied aside before it is written over (`lastgood.KeepUnparsed`) — face 2 of the report is the declared aside-copy behavior, and the originals it held stay recoverable in the copy. Face 3 (a file lock across magpie processes) is not in this patch.
+
+**Test**: `TestDisconnectFailureKeepsStashedOriginals`, one case each for Claude and Codex: connect with original values in the config, disconnect with the restore write made to fail once (a folder standing where the config file was for that write, through `edit.Filtered`). Without the fix both lose the stash; with it the stash holds the originals afterwards, a key written meanwhile survives, and the retried Disconnect puts every original back.
+
+| Check | Command | Result |
+| --- | --- | --- |
+| Red without the fix | base `a8fa771a6`, the three product files reverted, test kept | both cases FAIL: `the stash lost "https://original.example"` / `the stash lost "native-provider"` |
+| With the fix | `go test ./internal/agent -run TestDisconnectFailureKeepsStashedOriginals -count=1` | ok |
+| agent package | `go test ./internal/agent -count=1 -timeout 25m` | ok except `TestMothX`, red on this machine with the fix reverted too (known pre-existing red here) |
+| Race, focused | `go test ./internal/agent -race -run 'TestDisconnectFailureKeepsStashedOriginals\|TestCodexNeverNamesGoneCatalog' -count=1` | ok |
+| gofmt / vet | `gofmt -l internal/agent`; `go vet ./internal/agent` | clean / clean |
+| linux · windows · darwin | `GOOS=<os> go build -tags nogui ./...` | ok |
+| git am replay | `format-patch -1 --zero-commit` applied onto `a8fa771a6` | tree `b64ec6d1bb9b5599`, the head's tree |
+
+**Siblings**: the same take-out-before-put-back shape is left as it is in the other agents' restore paths — `agy.go` (`put("modelProvider"/"model", unstash(...))`), `ante.go`, `antigravity.go` (`putRaw(..., unstash(...))`), `astrbot.go` (`setPick(unstash(...))`), `cline.go`, `claudedesktop.go` — worth the same ordering if their writes can fail; `applied.go` and `agents.go` read `unstash` as plain consumption, no restore write follows, so nothing can be lost there.
+
+**When the read fails**: an unreadable `stash.json` reads as empty — `peek` finds nothing to restore and `forgetValues` drops nothing, and the existing guard keeps the unparsed file aside before anything is written over it.
+
+**Not verified**: two magpie processes sharing one config folder (face 3); the report's failed-rename face on a real watcher (reproduced here with a folder standing in the write's way instead).
+
+**Source**: reported in #4258, with the reporter's own patch (`9b83ba670`) as the fix's starting point.
+
+**Attribution**: AI-written; I've read the whole diff and the tests pass. Please keep the author (`ggbdpq`) or add `Co-authored-by: ggbdpq <ggbdpq@gmail.com>`.
+
+Branch with the commit: [hunt-20261114-d1-4258](https://github.com/ggbdpq/magpie/tree/hunt-20261114-d1-4258) (head `9aac492d0e6b4460`).
+
+**Patch**: <details><summary>patch: agent: a Disconnect whose restore write fails leaves the originals stashed (#4258) — git am applies it as is; SHA-256 first 16: c9663118cd5ad6ac</summary>
+
+```text
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Sat, 14 Nov 2026 08:17:55 +0800
+Subject: [PATCH] agent: a Disconnect whose restore write fails leaves the
+ originals stashed
+
+skygunner (#4258): Claude and Codex unroute took the stashed originals
+out of the stash before the config write that puts them back, so a write
+that failed (a full disk, a file a watcher held) lost them for good, and
+a retry had nothing to put back. The same shape was in Claude's
+putClouds, and the model's original was taken out before the write that
+restores or replaces it, which comes after unroute.
+
+The originals are read with peek and taken out by forgetValues only once
+the write has gone through, each only while it is still the value peeked:
+one a concurrent change wrote since stays stashed. The model stays stashed
+for the caller: Unwire takes it out after its write, and picking a model
+of the agent's own after it.
+
+A file that doesn't parse is copied aside before it is written over, as
+it was (lastgood.KeepUnparsed); a change reports nothing new. The same
+take-out-before-put-back shape in the other agents' restore paths (agy,
+antigravity, cline, claudedesktop, astrbot) is left as it is.
+
+Run (worktree at base a8fa771a6):
+- go test ./internal/agent -run TestDisconnectFailureKeepsStashedOriginals:
+  ok, both computers; broken by hand: forgetValues called before the
+  write (claude, injected) puts the failure back
+- go test ./internal/agent: ok
+- gofmt -l: clean; go vet ./internal/agent: clean
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/agent/claude.go                     |  78 ++++++++--
+ internal/agent/codex.go                      |  27 +++-
+ internal/agent/stash.go                      |  38 +++++
+ internal/agent/stash_restore_failure_test.go | 149 +++++++++++++++++++
+ 4 files changed, 276 insertions(+), 16 deletions(-)
+ create mode 100644 internal/agent/stash_restore_failure_test.go
+
+diff --git a/internal/agent/claude.go b/internal/agent/claude.go
+index 88496d42b..18ed575f6 100644
+--- a/internal/agent/claude.go
++++ b/internal/agent/claude.go
+@@ -1603,8 +1603,16 @@ func claudeIn(at place) *Agent {
+ 	}
+ 	putClouds := func() error {
+ 		var back []edit.KV
++		// the originals are read and stay stashed until the write that puts
++		// them back has gone through: one that fails leaves them for the
++		// next try (#4258)
++		keys := make([]string, 0, len(agentenv.ClaudeProviders))
+ 		for _, k := range agentenv.ClaudeProviders {
+-			raw := unstash(cloudKey(k))
++			keys = append(keys, cloudKey(k))
++		}
++		peeked := peek(keys...)
++		for _, k := range agentenv.ClaudeProviders {
++			raw := peeked[cloudKey(k)]
+ 			if raw == "" || !json.Valid([]byte(raw)) {
+ 				continue
+ 			}
+@@ -1615,9 +1623,16 @@ func claudeIn(at place) *Agent {
+ 			back = append(back, edit.KV{Path: "env." + k, Value: json.RawMessage(raw)})
+ 		}
+ 		if len(back) == 0 {
++			// nothing of theirs to put back: what was peeked is given up,
++			// as it was when it was taken out up front
++			forgetValues(peeked)
+ 			return nil
+ 		}
+-		return edit.SetJSON(path, back...)
++		if err := edit.SetJSON(path, back...); err != nil {
++			return err
++		}
++		forgetValues(peeked)
++		return nil
+ 	}
+ 	// unroute takes magpie's endpoint and models out of Claude Code's env
+ 	// and puts back the endpoint and token the stash kept from before magpie
+@@ -1691,20 +1706,30 @@ func claudeIn(at place) *Agent {
+ 			}
+ 		}
+ 		forget(advisorKey)
+-		was := unstash(at.key("claude.model"))
++		// the originals are read and stay stashed until the write that puts
++		// them back has gone through: one that fails leaves them stashed
++		// for the next try (#4258). The model is the caller's to take out:
++		// its write, where there is one, comes after unroute.
++		stashKeys := make([]string, 0, len(claudeOwnEnv)+3)
++		stashKeys = append(stashKeys, at.key("claude.model"), at.key("claude.base_url"), at.key("claude.auth_token"))
++		for _, k := range claudeOwnEnv {
++			stashKeys = append(stashKeys, at.key("claude.env."+k))
++		}
++		peeked := peek(stashKeys...)
++		was := peeked[at.key("claude.model")]
+ 		var back []edit.KV
+ 		for _, k := range claudeOwnEnv {
+ 			// one the user set again since is theirs as it is
+ 			// one of magpie's kept by an older magpie as the user's is no
+ 			// model of their endpoint's (roswellcsy on X)
+-			if v := unstash(at.key("claude.env." + k)); v != "" && rawEnv(k) == "" && !(contains(claudeModelEnv, k) && claudeMagpieModel(v)) {
++			if v := peeked[at.key("claude.env."+k)]; v != "" && rawEnv(k) == "" && !(contains(claudeModelEnv, k) && claudeMagpieModel(v)) {
+ 				back = append(back, edit.KV{Path: "env." + k, Value: v})
+ 			}
+ 		}
+-		if u := unstash(at.key("claude.base_url")); u != "" {
++		if u := peeked[at.key("claude.base_url")]; u != "" {
+ 			back = append(back, edit.KV{Path: "env.ANTHROPIC_BASE_URL", Value: u})
+ 		}
+-		if t := unstash(at.key("claude.auth_token")); t != "" {
++		if t := peeked[at.key("claude.auth_token")]; t != "" {
+ 			back = append(back, edit.KV{Path: "env.ANTHROPIC_AUTH_TOKEN", Value: t})
+ 		}
+ 		if len(back) > 0 {
+@@ -1712,6 +1737,15 @@ func claudeIn(at place) *Agent {
+ 				return "", err
+ 			}
+ 		}
++		// what was put back is taken out of the stash; the model stays for
++		// the caller's write
++		taken := make(map[string]string, len(peeked))
++		for k, v := range peeked {
++			if k != at.key("claude.model") {
++				taken[k] = v
++			}
++		}
++		forgetValues(taken)
+ 		return was, nil
+ 	}
+ 	var writeTiers func(main string, tiers map[string]string) error
+@@ -1734,11 +1768,18 @@ func claudeIn(at place) *Agent {
+ 					keys = append(keys, "env."+k)
+ 				}
+ 			}
++			if err := edit.DelJSON(path, keys...); err != nil {
++				return err
++			}
++			// the stashed values go once the write that takes magpie's out
++			// has gone through (#4258): the model the user had is given up
++			// for Claude Code's own default here, and the endpoint and token
++			// unroute put back are already out of the stash
+ 			forget(at.key("claude.model"), at.key("claude.base_url"), at.key("claude.auth_token"), mainKey, wroteAt, aboutKey)
+ 			for _, k := range claudeOwnEnv {
+ 				forget(at.key("claude.env." + k))
+ 			}
+-			return edit.DelJSON(path, keys...)
++			return nil
+ 		}
+ 		if isMagpie(v) {
+ 			if !routed() {
+@@ -1830,7 +1871,13 @@ func claudeIn(at place) *Agent {
+ 		if _, err := unroute(); err != nil {
+ 			return err
+ 		}
+-		return edit.SetJSON(path, edit.KV{Path: "model", Value: v})
++		if err := edit.SetJSON(path, edit.KV{Path: "model", Value: v}); err != nil {
++			return err
++		}
++		// the user's pick replaces the model the stash kept: given up once
++		// the write has gone through (#4258)
++		forget(at.key("claude.model"))
++		return nil
+ 	}
+ 
+ 	// mainWord is the main model as settings.json's "model" says it. A
+@@ -2435,7 +2482,10 @@ func claudeIn(at place) *Agent {
+ 			if err != nil {
+ 				return err
+ 			}
+-			forget(at.key("claude.model"), at.key("claude.base_url"), at.key("claude.auth_token"), mainKey, wroteAt, aboutKey)
++			// the model stays stashed until the write below has put it back
++			// or given it up (#4258); the endpoint and token unroute put
++			// back are already out of the stash
++			forget(at.key("claude.base_url"), at.key("claude.auth_token"), mainKey, wroteAt, aboutKey)
+ 			for _, k := range claudeOwnEnv {
+ 				forget(at.key("claude.env." + k))
+ 			}
+@@ -2453,9 +2503,15 @@ func claudeIn(at place) *Agent {
+ 			// the model left alone where magpie had none to take over
+ 			switch {
+ 			case was != "" && !isMagpie(was):
+-				return edit.SetJSON(path, edit.KV{Path: "model", Value: was})
++				if err := edit.SetJSON(path, edit.KV{Path: "model", Value: was}); err != nil {
++					return err
++				}
++				forget(at.key("claude.model"))
+ 			case isMagpie(get()):
+-				return edit.DelJSON(path, "model")
++				if err := edit.DelJSON(path, "model"); err != nil {
++					return err
++				}
++				forget(at.key("claude.model"))
+ 			}
+ 			return nil
+ 		},
+diff --git a/internal/agent/codex.go b/internal/agent/codex.go
+index 53ffdf32f..3f701ae0e 100644
+--- a/internal/agent/codex.go
++++ b/internal/agent/codex.go
+@@ -1715,17 +1715,22 @@ func codexIn(at place) *Agent {
+ 		if err := dropProvider(); err != nil {
+ 			return "", err
+ 		}
+-		was := unstash(at.key("codex.model"))
++		// the originals are read and stay stashed until the write that puts
++		// them back has gone through: one that fails leaves them stashed
++		// for the next try (#4258). The model is the caller's to take out:
++		// its write, where there is one, comes after unroute.
++		peeked := peek(at.key("codex.model"), at.key("codex.provider"), at.key("codex.catalog"), at.key("codex.effort_set"), at.key("codex.effort"))
++		was := peeked[at.key("codex.model")]
+ 		// what was there before magpie is put back only where magpie's
+ 		// change still stands: a key the user set by hand since keeps
+ 		// theirs (yhwangl on X)
+ 		var back []edit.KV
+-		if p := unstash(at.key("codex.provider")); p != "" && p != magpieID && get("model_provider") == "" {
++		if p := peeked[at.key("codex.provider")]; p != "" && p != magpieID && get("model_provider") == "" {
+ 			back = append(back, edit.KV{Path: "model_provider", Value: p})
+ 		}
+ 		// the catalog of the user's own put back while its file is there:
+ 		// one removed since would keep Codex from loading its config
+-		if c := unstash(at.key("codex.catalog")); c != "" && !ownCatalog(c) && !deskCatalog(c) && !theirListGone(c) && (get("model_catalog_json") == "" || deskCatalog(get("model_catalog_json"))) {
++		if c := peeked[at.key("codex.catalog")]; c != "" && !ownCatalog(c) && !deskCatalog(c) && !theirListGone(c) && (get("model_catalog_json") == "" || deskCatalog(get("model_catalog_json"))) {
+ 			back = append(back, edit.KV{Path: "model_catalog_json", Value: c})
+ 		}
+ 		// the effort, where it is still one magpie set: picked on the
+@@ -1736,13 +1741,13 @@ func codexIn(at place) *Agent {
+ 			id = "codex"
+ 		}
+ 		ours := map[string]bool{"": true}
+-		if set := unstash(at.key("codex.effort_set")); set != "" {
++		if set := peeked[at.key("codex.effort_set")]; set != "" {
+ 			ours[set] = true
+ 		}
+ 		if r := appliedOf(id).Fields["effort"]; r != "" {
+ 			ours[r] = true
+ 		}
+-		if e := unstash(at.key("codex.effort")); e != "" && ours[get("model_reasoning_effort")] {
++		if e := peeked[at.key("codex.effort")]; e != "" && ours[get("model_reasoning_effort")] {
+ 			back = append(back, edit.KV{Path: "model_reasoning_effort", Value: e})
+ 		}
+ 		if len(back) > 0 {
+@@ -1750,6 +1755,15 @@ func codexIn(at place) *Agent {
+ 				return "", err
+ 			}
+ 		}
++		// what was put back is taken out of the stash; the model stays for
++		// the caller's write
++		taken := make(map[string]string, len(peeked))
++		for k, v := range peeked {
++			if k != at.key("codex.model") {
++				taken[k] = v
++			}
++		}
++		forgetValues(taken)
+ 		return was, nil
+ 	}
+ 	set := func(v string) error {
+@@ -1921,6 +1935,9 @@ func codexIn(at place) *Agent {
+ 		if err := edit.SetTOMLTop(path, edit.KV{Path: "model", Value: v}); err != nil {
+ 			return err
+ 		}
++		// the user's pick replaces the model the stash kept: given up once
++		// the write has gone through (#4258)
++		forget(at.key("codex.model"))
+ 		if err := failover(); err != nil {
+ 			return err
+ 		}
+diff --git a/internal/agent/stash.go b/internal/agent/stash.go
+index 1ff6d06a1..ad77fcc26 100644
+--- a/internal/agent/stash.go
++++ b/internal/agent/stash.go
+@@ -121,3 +121,41 @@ func unstash(key string) string {
+ 	}
+ 	return v
+ }
++
++// peek reads stashed values without taking them out, for a change that
++// writes the config first and only then takes the originals out of the
++// stash (#4258): a write that fails leaves them stashed for the next try.
++func peek(keys ...string) map[string]string {
++	stashMu.Lock()
++	defer stashMu.Unlock()
++	m := stashLoad()
++	out := make(map[string]string, len(keys))
++	for _, k := range keys {
++		if v := m[k]; v != "" {
++			out[k] = v
++		}
++	}
++	return out
++}
++
++// forgetValues takes peeked values out of the stash once the write that
++// replaces them has gone through, each only while it is still the one
++// peeked: a value written since, here or by another magpie, stays stashed.
++func forgetValues(peeked map[string]string) {
++	if len(peeked) == 0 {
++		return
++	}
++	stashMu.Lock()
++	defer stashMu.Unlock()
++	m := stashLoad()
++	dropped := false
++	for k, v := range peeked {
++		if m[k] == v {
++			delete(m, k)
++			dropped = true
++		}
++	}
++	if dropped {
++		stashWrite(m)
++	}
++}
+diff --git a/internal/agent/stash_restore_failure_test.go b/internal/agent/stash_restore_failure_test.go
+new file mode 100644
+index 000000000..9d7929d81
+--- /dev/null
++++ b/internal/agent/stash_restore_failure_test.go
+@@ -0,0 +1,149 @@
++package agent
++
++import (
++	"bytes"
++	"encoding/json"
++	"os"
++	"path/filepath"
++	"strings"
++	"testing"
++
++	"github.com/yetone/magpie/internal/edit"
++)
++
++// failRestoreOnce makes the write that carries marker fail once: where the
++// config file stood, a folder takes its place, so the write that would put
++// the originals back cannot. It gives the config file back afterwards.
++func failRestoreOnce(t *testing.T, path, marker string, fn func() error) (injected bool, err error) {
++	t.Helper()
++	real, rerr := filepath.EvalSymlinks(path)
++	if rerr != nil {
++		t.Fatal(rerr)
++	}
++	held := path + ".held"
++	err = edit.Filtered(func(p string, data []byte) []byte {
++		if p == real && bytes.Contains(data, []byte(marker)) && !injected {
++			injected = true
++			if rerr := os.Rename(path, held); rerr != nil {
++				t.Logf("rename aside: %v", rerr)
++			} else if merr := os.Mkdir(path, 0o700); merr != nil {
++				t.Logf("mkdir: %v", merr)
++			}
++		}
++		return data
++	}, fn)
++	if injected {
++		if rerr := os.Remove(path); rerr != nil {
++			t.Fatalf("undoing the injected folder: %v", rerr)
++		}
++		if rerr := os.Rename(held, path); rerr != nil {
++			t.Fatalf("putting the config file back: %v", rerr)
++		}
++	}
++	return injected, err
++}
++
++func stashHolds(t *testing.T, want ...string) {
++	t.Helper()
++	b, err := json.Marshal(stashShared())
++	if err != nil {
++		t.Fatal(err)
++	}
++	for _, w := range want {
++		if !strings.Contains(string(b), w) {
++			t.Fatalf("the stash lost %q: %s", w, b)
++		}
++	}
++}
++
++// #4258: a Disconnect whose restore write fails leaves the stashed
++// originals stashed for the next try — they are taken out only once the
++// write that replaces them has gone through. A key another change wrote
++// meanwhile is not the retry's to lose either.
++func TestDisconnectFailureKeepsStashedOriginals(t *testing.T) {
++	t.Run("claude", func(t *testing.T) {
++		home := syncHome(t)
++		path := filepath.Join(home, ".claude", "settings.json")
++		writeFile(t, path, `{"model":"native-original","env":{"ANTHROPIC_BASE_URL":"https://original.example","ANTHROPIC_AUTH_TOKEN":"original-token"}}`)
++		a := claude(home)
++		if err := a.Connect(); err != nil {
++			t.Fatal(err)
++		}
++		wired, err := os.ReadFile(path)
++		if err != nil {
++			t.Fatal(err)
++		}
++
++		injected, err := failRestoreOnce(t, path, "https://original.example", a.Disconnect)
++		if !injected {
++			t.Fatal("no write carried the original endpoint back")
++		}
++		if err == nil {
++			t.Fatal("the restore write failed but Disconnect said it went through")
++		}
++		stashHolds(t, "https://original.example", "original-token", "native-original")
++
++		// the write that failed is tried again on a wired config
++		if err := os.WriteFile(path, wired, 0o644); err != nil {
++			t.Fatal(err)
++		}
++		stash(map[string]string{"concurrent.probe": "keep"})
++		if err := a.Disconnect(); err != nil {
++			t.Fatalf("the retry: %v", err)
++		}
++		body, err := os.ReadFile(path)
++		if err != nil {
++			t.Fatal(err)
++		}
++		for _, w := range []string{"https://original.example", "original-token", "native-original"} {
++			if !strings.Contains(string(body), w) {
++				t.Fatalf("the retry lost %q:\n%s", w, body)
++			}
++		}
++		if stashShared()["concurrent.probe"] != "keep" {
++			t.Fatalf("the concurrent key went with the retry: %q", stashShared()["concurrent.probe"])
++		}
++	})
++
++	t.Run("codex", func(t *testing.T) {
++		home, _ := codexHome(t, "", "model = \"native-original\"\nmodel_provider = \"native-provider\"\n")
++		path := filepath.Join(home, ".codex", "config.toml")
++		cx := codex(home)
++		if err := cx.Connect(); err != nil {
++			t.Fatal(err)
++		}
++		wired, err := os.ReadFile(path)
++		if err != nil {
++			t.Fatal(err)
++		}
++
++		injected, err := failRestoreOnce(t, path, "native-provider", cx.Disconnect)
++		if !injected {
++			t.Fatal("no write carried the original provider back")
++		}
++		if err == nil {
++			t.Fatal("the restore write failed but Disconnect said it went through")
++		}
++		stashHolds(t, "native-original", "native-provider")
++
++		if err := os.WriteFile(path, wired, 0o644); err != nil {
++			t.Fatal(err)
++		}
++		stash(map[string]string{"concurrent.probe": "keep"})
++		if err := cx.Disconnect(); err != nil {
++			t.Fatalf("the retry: %v", err)
++		}
++		body, err := os.ReadFile(path)
++		if err != nil {
++			t.Fatal(err)
++		}
++		for _, w := range []string{"native-provider", "native-original"} {
++			if !strings.Contains(string(body), w) {
++				t.Fatalf("the retry lost %q:\n%s", w, body)
++			}
++		}
++		if stashShared()["concurrent.probe"] != "keep" {
++			t.Fatalf("the concurrent key went with the retry: %q", stashShared()["concurrent.probe"])
++		}
++	})
++}
+-- 
+2.50.1 (Apple Git-155)
+```
+
+</details>

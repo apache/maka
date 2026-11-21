@@ -1,0 +1,10 @@
+int main(void) {
+    print_int(3 < 5);
+    print_int(5 <= 4);
+    print_int(4 == 4);
+    print_int(4 != 4);
+    print_int(2 > 1);
+    print_int(1 >= 2);
+    print("cmp done\n");
+    return 0;
+}

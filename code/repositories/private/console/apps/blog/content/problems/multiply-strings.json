@@ -1,0 +1,25 @@
+{
+  "id": "56",
+  "slug": "multiply-strings",
+  "title": "字符串相乘",
+  "difficulty": "medium",
+  "tags": ["字符串", "模拟"],
+  "description": "给定两个以字符串形式表示的非负整数 `num1` 和 `num2`,返回 `num1` 和 `num2` 的乘积,它们的乘积也同样以字符串形式表示。\n\n你不能使用任何内置的 BigInteger 库或直接将输入转换为整数。\n\n**示例 1:**\n\n- 输入:`num1 = \"2\"`, `num2 = \"3\"`\n- 输出:`\"6\"`\n\n**示例 2:**\n\n- 输入:`num1 = \"123\"`, `num2 = \"456\"`\n- 输出:`\"56088\"`",
+  "solution": "## 思路\n\n**模拟竖式乘法**:长度为 m、n 的两数乘积最多 m+n 位。用数组 `res` 累积,`num1[i]*num2[j]` 的结果加到位置 `i+j`(进位)与 `i+j+1`。最后去前导零转字符串。\n\n## 参考代码\n\n```js\nfunction multiply(num1, num2) {\n  if (num1 === '0' || num2 === '0') return '0';\n  const m = num1.length;\n  const n = num2.length;\n  const res = new Array(m + n).fill(0);\n  for (let i = m - 1; i >= 0; i--) {\n    for (let j = n - 1; j >= 0; j--) {\n      const mul = (num1[i].charCodeAt(0) - 48) * (num2[j].charCodeAt(0) - 48);\n      const p1 = i + j;\n      const p2 = i + j + 1;\n      const sum = mul + res[p2];\n      res[p2] = sum % 10;\n      res[p1] += Math.floor(sum / 10);\n    }\n  }\n  let str = res.join('').replace(/^0+/, '');\n  return str || '0';\n}\n```\n\n## 复杂度\n\n- 时间:O(m*n)\n- 空间:O(m+n)",
+  "signature": {
+    "language": "javascript",
+    "entry": "multiply",
+    "params": [
+      { "name": "num1", "type": "string" },
+      { "name": "num2", "type": "string" }
+    ],
+    "returns": "string"
+  },
+  "testCases": [
+    { "sample": true, "input": ["2", "3"], "expected": "6" },
+    { "sample": true, "input": ["123", "456"], "expected": "56088" },
+    { "sample": false, "input": ["0", "123"], "expected": "0" },
+    { "sample": false, "input": ["99", "99"], "expected": "9801" },
+    { "sample": false, "input": ["10", "10"], "expected": "100" }
+  ]
+}

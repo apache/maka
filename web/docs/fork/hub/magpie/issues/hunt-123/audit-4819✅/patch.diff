@@ -1,0 +1,69 @@
+From c4e7eb3ef0bf64fc18f07a773551eb183e3cb5f4 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Wed, 4 Nov 2026 16:20:47 +0800
+Subject: [PATCH] fix(gui): cast alpha info to CGBitmapInfo in
+ CGBitmapContextCreate calls
+
+go vet fails on darwin with new clang:
+
+    internal/gui/dockflap_darwin.go:42:77: warning: implicit conversion
+    from enumeration type 'enum CGImageAlphaInfo' to different
+    enumeration type 'CGBitmapInfo' [-Wimplicit-enum-enum-cast]
+
+CGBitmapContextCreate's bitmapInfo parameter is CGBitmapInfo (a
+CF_OPTIONS uint32_t), while kCGImageAlpha* constants are of the
+separate enum CGImageAlphaInfo. Newer clang treats the implicit cast
+between these two enumeration types as a warning, and the workflow
+runs go vet as its CI gate, so main's test (macos-latest) job is red.
+
+Add an explicit C cast at each of the three call sites (dockflap_darwin.go:42,68
+and trayimage_darwin.go:131). The cast is type-level only: the alpha
+info occupies the same low bits of CGBitmapInfo as before, so the
+generated bitmap configuration is unchanged.
+
+Fixes #4819
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gui/dockflap_darwin.go  | 4 ++--
+ internal/gui/trayimage_darwin.go | 2 +-
+ 2 files changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/internal/gui/dockflap_darwin.go b/internal/gui/dockflap_darwin.go
+index 97f71a1a6..28fce9348 100644
+--- a/internal/gui/dockflap_darwin.go
++++ b/internal/gui/dockflap_darwin.go
+@@ -39,7 +39,7 @@ static CGPathRef mpDockPath(const char *ops, int nops, const double *pts) {
+ 
+ static CGContextRef mpDockContext(void) {
+ 	CGColorSpaceRef cs = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+-	CGContextRef c = CGBitmapContextCreate(NULL, mpDockPx, mpDockPx, 8, 0, cs, kCGImageAlphaPremultipliedLast);
++	CGContextRef c = CGBitmapContextCreate(NULL, mpDockPx, mpDockPx, 8, 0, cs, (CGBitmapInfo)kCGImageAlphaPremultipliedLast);
+ 	CGColorSpaceRelease(cs);
+ 	return c;
+ }
+@@ -65,7 +65,7 @@ static const CGFloat mpDockSeam = 1;
+ // even-odd and stroked out by edge pixels, within the mask within if any.
+ static CGImageRef mpDockFill(CGPathRef path, CGFloat edge, CGImageRef within) {
+ 	CGColorSpaceRef g = CGColorSpaceCreateDeviceGray();
+-	CGContextRef c = CGBitmapContextCreate(NULL, mpDockPx, mpDockPx, 8, 0, g, kCGImageAlphaNone);
++	CGContextRef c = CGBitmapContextCreate(NULL, mpDockPx, mpDockPx, 8, 0, g, (CGBitmapInfo)kCGImageAlphaNone);
+ 	CGColorSpaceRelease(g);
+ 	CGContextSetGrayFillColor(c, 0, 1);
+ 	CGContextFillRect(c, CGRectMake(0, 0, mpDockPx, mpDockPx));
+diff --git a/internal/gui/trayimage_darwin.go b/internal/gui/trayimage_darwin.go
+index a975ddd8c..e81a9ec62 100644
+--- a/internal/gui/trayimage_darwin.go
++++ b/internal/gui/trayimage_darwin.go
+@@ -128,7 +128,7 @@ static void mpMasked(NSImage *im, NSRect r) {
+ 	size_t stride = n * 4;
+ 	unsigned char *px = calloc(n * stride, 1);
+ 	CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
+-	CGContextRef bm = CGBitmapContextCreate(px, n, n, 8, stride, cs, kCGImageAlphaPremultipliedLast);
++	CGContextRef bm = CGBitmapContextCreate(px, n, n, 8, stride, cs, (CGBitmapInfo)kCGImageAlphaPremultipliedLast);
+ 	CGColorSpaceRelease(cs);
+ 	if (bm == NULL) {
+ 		free(px);
+-- 
+2.50.1 (Apple Git-155)
+

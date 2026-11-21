@@ -1,0 +1,129 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Wed, 4 Nov 2026 06:04:51 +0800
+Subject: [PATCH] claude: a folder the caller names that magpie may not enter
+ is not worked in
+
+Since 680b505 a run works in the folder the caller names, which
+clientWorkDir checked only with os.Stat: that says the folder exists and
+is a folder here, not that magpie may enter it. In a container it may
+not: the caller's /root is 0700 root:root and magpie runs as a nonroot
+user, and the run's chdir there failed before Claude Code started, which
+Go reported as a permission denied on the Claude Code binary itself --
+"fork/exec .../claude: permission denied" -- and the binary was fine
+(#4314). Every request naming such a folder failed; before 680b505 the
+same request worked, in magpie's own folder.
+
+clientWorkDir now asks the kernel whether the folder may be entered
+(access's leave, the one chdir asks) and says no folder when it may not,
+so the run works in magpie's own folder as of one the caller names
+elsewhere, and is told its environment is where its tools run. Windows
+keeps the folder as before: the access bits Go reports there are not the
+ones a run asks for.
+
+Fixes #4314
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gateway/claude_subscription.go       | 11 +++++++
+ .../gateway/claude_workdir_enter_other.go     | 10 ++++++
+ .../gateway/claude_workdir_enter_windows.go   |  5 +++
+ internal/gateway/claude_workdir_test.go       | 31 +++++++++++++++++++
+ 4 files changed, 57 insertions(+)
+ create mode 100644 internal/gateway/claude_workdir_enter_other.go
+ create mode 100644 internal/gateway/claude_workdir_enter_windows.go
+
+diff --git a/internal/gateway/claude_subscription.go b/internal/gateway/claude_subscription.go
+index 71ff2d8bd..3e8c0a40b 100644
+--- a/internal/gateway/claude_subscription.go
++++ b/internal/gateway/claude_subscription.go
+@@ -546,6 +546,17 @@ func clientWorkDir(req *Request) string {
+ 		// to the caller's tools (#4449)
+ 		return ""
+ 	}
++	if !canEnter(dir) {
++		// a folder here that magpie may not enter (a container's /root,
++		// 0700 root:root, while magpie runs as a nonroot user) is not
++		// worked in: os.Stat only says it is one here, and a run there
++		// failed to start, its chdir reported as a permission denied on
++		// the Claude Code binary itself, which the binary was not. The
++		// run works in magpie's folder, told the caller's (envElsewhere)
++		// (#4314)
++		log.Printf("claude: %s is a folder magpie may not enter, working in its own instead", dir)
++		return ""
++	}
+ 	return dir
+ }
+ 
+diff --git a/internal/gateway/claude_workdir_enter_other.go b/internal/gateway/claude_workdir_enter_other.go
+new file mode 100644
+index 000000000..55e856f83
+--- /dev/null
++++ b/internal/gateway/claude_workdir_enter_other.go
+@@ -0,0 +1,10 @@
++//go:build !windows
++
++package gateway
++
++import "syscall"
++
++// canEnter says the folder is one magpie's process may enter, as a run
++// working there would have to (chdir asks the same leave as access does;
++// 0o1 is X_OK, which syscall has no name for on darwin).
++func canEnter(dir string) bool { return syscall.Access(dir, 0o1) == nil }
+diff --git a/internal/gateway/claude_workdir_enter_windows.go b/internal/gateway/claude_workdir_enter_windows.go
+new file mode 100644
+index 000000000..30cb436e4
+--- /dev/null
++++ b/internal/gateway/claude_workdir_enter_windows.go
+@@ -0,0 +1,5 @@
++package gateway
++
++// canEnter is true on Windows: the folder is the caller's own to enter,
++// and the access bits Go reports there are not the ones a run asks for.
++func canEnter(string) bool { return true }
+diff --git a/internal/gateway/claude_workdir_test.go b/internal/gateway/claude_workdir_test.go
+index b24f47cbd..966917d8a 100644
+--- a/internal/gateway/claude_workdir_test.go
++++ b/internal/gateway/claude_workdir_test.go
+@@ -241,6 +241,37 @@ func TestClaudeCallersWorkDirElsewhereIsNotUsed(t *testing.T) {
+ 	}
+ }
+ 
++// A folder the caller names that is here but that magpie may not enter
++// (a container's /root: 0700 root:root, with magpie running as a nonroot
++// user) is not worked in: os.Stat only says it is a folder here, and a
++// run there failed to start, its chdir reported as a permission denied on
++// the Claude Code binary itself. It works in magpie's own folder, told
++// the caller's environment is where its tools run (#4314).
++func TestClaudeCallersWorkDirItCannotEnterIsNotUsed(t *testing.T) {
++	var locked string
++	dirs, work, _, _, told := claudeWorkDirsTold(t, nil, func(home string) string {
++		locked = filepath.Join(home, "locked")
++		if err := os.MkdirAll(locked, 0o700); err != nil {
++			t.Fatal(err)
++		}
++		if err := os.Chmod(locked, 0); err != nil {
++			t.Fatal(err)
++		}
++		if f, err := os.OpenFile(locked, os.O_RDONLY, 0); err == nil {
++			f.Close()
++			t.Skip("the test may enter a folder with no access bits (root)")
++		}
++		return "You are a coding agent.\n - Primary working directory: " + locked
++	})
++	t.Cleanup(func() { os.Chmod(locked, 0o700) })
++	if len(dirs) != 2 || dirs[0] != work || dirs[1] != work {
++		t.Fatalf("working directories %q, want magpie's %s: a folder it may not enter was worked in", dirs, work)
++	}
++	if got := strings.Count(told, "every tool runs in"); got != 2 {
++		t.Fatalf("told the environment is elsewhere in %d of 2 runs, want 2: %s", got, told)
++	}
++}
++
+ func btoi(b bool) int {
+ 	if b {
+ 		return 1
+-- 
+2.50.1 (Apple Git-155)
+

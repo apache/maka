@@ -1,0 +1,120 @@
+# 2707 davsync 守卫与解释面 — 本地交付报告
+
+- 路线 B：`E:\cc\guahub\fork\magpie-hub\magpie-pr3`，分支 `fix/2707-davsync-guard`
+- 基线 SHA：`bad4508c4fea92ec4555e4a1ee6bebd623d79785`（= fetch 后的 origin/main，与预期一致）
+- 交付物：`fix.diff`（4 文件，+84/−7）、`comment.md`（英文待发布稿，含 §3.2 证据尾部版本 C）
+- 收口：pr3 工作树干净（`git status --porcelain` 空），分支保留，未提交未推送，零 GitHub 写操作
+- 范围：只做守卫与解释；Git transport / 分块是报告者声明的车道，comment.md 内明写让位
+
+## 一、根因
+
+三层口径错配，报告者的观察全部属实，与代码逐条核对一致：
+
+1. **收集层**（`internal/library/carry.go:46-52`）：库收集按 "sealed backup under the 64 MiB a sync **reads**" 预算（读取侧口径，`maxCarriedAll = 32 MiB` 文件 ≈ 57 MiB sealed），允许产出接近 64 MiB 的 sealed 备份。
+2. **守卫层**（`internal/davsync/github.go` 原 270 行）：`commit` 检查 `len(data) > githubMaxFile`（64 MiB **原始** sealed 字节），57,333,552 < 67,108,864，放行。
+3. **API 层**：GitHub 收到的是整个文件 Base64 编码后的 JSON 请求体（57,333,552 → 76,444,736 编码字符），按**请求体积**拒绝，422 "Sorry, the file is too large to be processed..."。
+4. **解释层**：422 分支只认 `\"sha\" wasn't supplied`（竞态→`errChanged`），其余走 `githubError` 泛化透传（原文能到用户，但无 magpie 侧指引，与 Expected result 的 "actionable path" 不符）。
+
+数据流核实（`backup.Seal` + `carry.go`）：skill 文件在 bundle JSON 里 base64 一次，密封 envelope 里再 base64 一次，上传时第三次 base64——守卫层只需管 `len(sealed)` 与编码后体积，与内部膨胀层数无关。
+
+## 二、官方边界考证（有出处的答案：官方无单一数字）
+
+| 端点/场景 | 官方数字 | 出处 |
+| --- | --- | --- |
+| Contents API PUT（create/update file） | **无书面大小限制**；`content` 参数说明 "The new file content, using Base64 encoding" | https://docs.github.com/en/rest/repos/contents |
+| Git blobs POST（create a blob） | **无书面大小限制** | https://docs.github.com/en/rest/git/blobs |
+| Git blobs GET | "supports blobs up to 100 megabytes"（读取侧，与本单上传无关） | 同上 |
+| REST troubleshooting / best-practices | 无 request body 大小说明 | https://docs.github.com/en/rest/using-the-rest-api/troubleshooting-the-rest-api 、.../best-practices-for-using-the-rest-api |
+| git push（报告者的 workaround transport） | >50 MiB 警告、>100 MiB 阻断——解释了为何本地 clone+push 成功 | https://docs.github.com/en/repositories/working-with-files/managing-large-files/about-large-files-on-github |
+
+- 唯一的 in-band 官方信号是错误文案本身（两个变体都含 "too large"）：Contents API "Sorry, the file is too large to be processed..."；blobs API "Sorry, your input was too large to process..."。守卫漏拦区域的 422 检测即按此锚定。
+- 社区实证补充（非 staff 回答，标注来源等级）：[community discussion #155856](https://github.com/orgs/community/discussions/155856)——10 MB 成功，50/90/100 MB 同文案 422。被拒下界 50 MB 原始（≈66.7 MB 编码）来自第三方单点，证据强度低于报告者的一手实测。
+- **结论**：报告者 "do not establish the exact GitHub rejection threshold" 成立，官方确无单一数字；已知被拒点 76.45 MB 编码（报告者）、66.67 MB 编码（社区），已知接受点 13.33 MB 编码（10 MB 原始，社区）。真实阈值在两者之间，不可钉死。
+
+## 三、修法（最小改，无新机制）
+
+`githubMaxFile = 64 << 20` 保留为**读取侧**守卫（`content()` 的 `c.Size > githubMaxFile` 检查不动：blob GET 官方 ≤100 MB，64 MiB raw 在官方支持内）。新增：
+
+```go
+const githubMaxUpload = githubMaxFile / 4 * 3   // 48 MiB raw，编码后恰好 64 MiB
+```
+
+- `commit` 守卫改 `len(data) > githubMaxUpload`，错误文案：报实测 MiB / 允许 MiB、解释 Base64 机制、给两条出路（少同步例如关掉库；本地 clone push）。
+- 422 分支：读出的 body 解码 `Message`，含 "too large"（两个官方变体的公共子串，小写）→ 包装错误保留 GitHub 原文 + magpie 侧杠杆；竞态分支与其余泛化路径不变。
+- 阈值取值的理由（评估过并放弃的选项）：保持 64 MiB 原始口径不改 → 报告者尺寸仍漏放（否）；编码 ≤ 64 MiB（=48 MiB raw）会在社区 66.67 MB 编码拒点之上 0.44 MB，仍有漏放窗口（否）；抬高到编码 72 MB 一类"贴脸"值 → 无任何接受数据点支撑（否）。48 MiB raw 在全部已知拒点之下且容量损失可解释，漏拦区域由 422 解释面兜底。
+- 文档联动：`docs/subsystems/sync-backup.md`（owning reference，两处 + 验证段补测试名）、`docs/reference.md`（用户手册句）。未动 `carry.go`：其预算锚定读取契约，用不可知的上传阈值去重建另一子系统的收集预算会把不确定性扩散过去（理由记录于 comment.md Siblings 行）。
+
+## 四、接缝清单
+
+- **httptest GitHub 桩**：`internal/davsync/github_test.go` 的 `newGithubFixture`（#1737 年代的接缝，`githubTransport` 钉死只许 api.github.com）。
+  - 守卫测试直接走 `g.put`（真实 `commit` 路径），桩的 `f.writes` 计数证明"拒绝发生在任何网络写之前"。
+  - 422 测试用 `g.get(version{})` 先让 `prepare` 缓存 `ready`，再 `f.status/f.message` 强制 422 只打在 contents PUT 上——无需改桩。
+- **报告者原始字节**：守卫测试用 57,333,552（LESSONS "Build fixtures from the reporter's literal bytes"）；422 测试用报告者贴出的官方原文全文。
+- **文档接缝**：sync-backup.md 的 GitHub constraints 段与 Verification 段、reference.md 的 GitHub 段。
+
+## 五、RED / GREEN / 消融记录（命令与退出码）
+
+| 步骤 | 命令（均在 magpie-pr3） | 退出码 | 关键输出 |
+| --- | --- | --- | --- |
+| RED 首跑 | `go test -tags nogui -count=1 -run 'TestGitHubUploadOverTheEncodedLimit\|TestGitHub422TooLargeExplained' ./internal/davsync`（基线 github.go + 新测试引用新常量） | 1 | **build failed: undefined: githubMaxUpload**——编译失败不算 RED，测试改为 `githubMaxFile/4*3` 算式（基线也可编译）后重跑 |
+| RED 真跑 | 同上（基线 github.go + 改写后测试）`-v` | 1 | `--- FAIL: TestGitHubUploadOverTheEncodedLimit: ... stopped before upload: <nil>, writes 1`；`--- FAIL: TestGitHub422TooLargeExplained: ...GitHub sync: HTTP 422: Sorry, the file is too large...`（裸文案无指引） |
+| 消融操作 | 改后 github.go 先存仓库外 → `git checkout -- internal/davsync/github.go` → RED → 复制回 → GREEN | — | 产品文件显式还原基线、测试保留、回红；恢复复绿。符合"全部相关产品文件消融"（产品面只有 github.go 一个文件） |
+| GREEN | 同 RED 命令 `-v` | 0 | 两测试 PASS |
+| davsync 全包 | `go test -tags nogui -count=1 ./internal/davsync` | 0 | `ok ... 136.883s` |
+| CLI 层 | `go test -tags nogui -count=1 ./internal/cli -run 'TestGitHubCmd\|TestWebdavCmd\|TestS3Cmd'` | 0 | `ok ... 3.410s` |
+| gofmt（CRLF 判定） | `tr -d '\r' < f > tmp && gofmt -l tmp`（两文件） | 0 | 两文件均无输出 |
+| go vet | `go vet -tags nogui ./internal/davsync`；`GOOS=linux go vet -tags nogui ./internal/davsync`；`GOOS=windows go vet ./internal/davsync` | 全 0 | — |
+| 旧文案钉挂 | `rg -n "exceeds 64 MiB\|the GitHub sync file" --glob '*_test.go' internal/` | 1（无命中） | 无测试钉住旧守卫文案，文案改动不破坏他包 |
+| backup 门禁 | `go test -tags nogui -count=1 ./internal/backup` | 见下 | 见"预存定性" |
+
+## 六、兄弟面 rg 记录（改/不改理由）
+
+`rg -n "githubMaxFile|64 << 20|422|Unprocessable" internal/davsync internal/backup` 及全仓 `64 MiB|64<<20` 扫描：
+
+- `internal/davsync/github.go`：守卫（218 读取/249 下载限额/270 上传）+ 422 处理唯一所在 → **改**（本单）。
+- `internal/davsync/dav.go`（WebDAV）、`s3.go`：仅下载侧 `io.LimitReader(..., 64<<20)`，**无上传守卫、无 422 特判** → **不改**：WebDAV/S3 无文档化 API 大小限制（服务器各异），其失败文案本就透传；413/507 类是每服务器语义，不属于"API 隐性限制低于本地守卫"这一病。
+- `internal/davsync/usage.go`（usage 文件读写，GitHub 侧走 `g.write`→`commit`）→ 自动被新守卫覆盖，无需单独改。
+- `internal/library/carry.go` + `docs/subsystems/library.md`（收集预算锚定 64 MiB 读取上限）→ **不改**（理由见三；已在 comment.md Siblings 行披露）。
+- GUI（`internal/gui/assets`、gui tests）与 CLI：无 64 MiB/守卫文案引用，无改动面；CLI 测试已跑绿。
+- 全仓其余 `64<<20` 命中（gateway/plugin/catalog 等）为无关子系统，不属同族。
+
+## 七、预存问题定性（backup 包）
+
+- 第一次与第二次 `go test -tags nogui -count=1 ./internal/backup` 在 `TestSkillTemplatesTravel` 挂：`rename ...\.incoming-*\posters ...: Access is denied`（skill_templates_test.go:61，同一位置两次）。
+- 单跑 `-count=1` 绿（exit=0）、`-count=3` 绿（exit=0）、第三次全量绿（exit=0）、基线 `bad4508c` detached worktree 全量绿（exit=0，worktree 已删）。
+- 定性：Windows 目录 rename 竞争 flaky（杀软/索引器抓新写目录句柄族，属本机已知预存病谱系）。结构证据：`internal/backup` 的编译单元不 import `internal/davsync`（依赖方向相反），本 diff 对该包零可达。
+- 诚实记录：样本为改动树挂 2 绿 1、基线树绿 1，样本量小，"预存"结论靠编译单元零交集 + 同点随机性支撑。
+
+## 八、诚实未验项
+
+- **未对真仓库做任何验证**（任务明令禁止，含真账号/真仓库复测）；报告者的一手实测是活体证据源。
+- 48 MiB raw 在 GitHub 端是否被接受：构造上不可验（任何 >10 MB 原始的接受数据点都不存在），comment.md "Not verified" 已写。
+- GUI Playwright 套件未跑：无 `internal/gui/assets` 改动、GUI 测试目录无守卫文案引用（rg 记录在案），不适用。
+- `magpie github now` 端到端未跑（需真实 token+仓库），错误上浮路径以代码审读为准（`syncOnce`→`syncNow`：`err.Error()` 原样入 `st.Error` 并返回，无包装）。
+
+## 九、不自信的点
+
+1. **48 MiB 这个数**：在"全部已知拒点之下"意义上安全，但纯工程保守取值，无 GitHub 端接受证明；若维护者有内部阈值知识，可能想取别的值——文案与常量都容易改。
+2. **"too large" 子串匹配**：覆盖两个已知官方变体；GitHub 若改文案或出第三变体，检测失效——但那样会落回泛化透传（原文仍到用户），退化行为安全。
+3. **backup flaky 的归因**：见七，样本量小。
+4. 报告者的 76,444,736 编码字符 + JSON 开销 ≈ 76.5 MB 请求体被拒——我按"请求体即被判对象"建模，但 GitHub 未公布判据维度（也可能含压缩/头部），守卫只能对齐到"编码后体积"这一已验证的最强相关量。
+
+## 十、发帖前七问（05 §3.1）逐条结论
+
+1. **来源**：他人报告（#2707，报告者一手实测字节与文案），非构造问题。过。
+2. **真实失败**：报告者提供真实 422 失败记录；本地在报告者字节数上复现行为（守卫放行 + 裸文案）。过。
+3. **举证**：基线 `bad4508c` 上新测试断言级 RED（首次编译失败已按规则重做，最终真 FAIL 输出留档）；修复后 GREEN。过。
+4. **收益**：GitHub 后端 + 开库同步的用户（正是报告者场景）：从"上传中途裸 422"变为"上传前本地拒绝 + 机制解释 + 两条出路"；所有 422 too-large 场景文案可懂。收益面清楚。过。
+5. **边界**：不触维护者裁决区（codex prompt 等守护区无关）；近 48h 维护者自修区不涉及 davsync；防撞单（十一个在途 patch/PR，`gh pr view --json files` 逐一核查）全部与本 diff 零交集。过。
+6. **兄弟路径与失败读取**：rg 全查并记录（六）；读失败：too-large 422 body 非 JSON/截断 → 空 Message → 落回泛化透传（与竞态/其他 422 同路径，`TestGitHubFailures` 保持绿）。过。
+7. **本人能讲清**：三句话——GitHub 按编码后请求体积拒上传而守卫只看原始字节，报告者 57 MB 备份漏放被 422；守卫改按编码后体积（≤64 MiB 编码即 ≤48 MiB 备份）在上传前拒绝并给可操作文案，too-large 422 保留 GitHub 原文并补 magpie 杠杆；用报告者原始字节在现有 httptest 桩上做了基线回红/修复复绿与全包门禁。发布前由用户本人读完 diff 确认（纪律）。
+
+## 十一、防撞单
+
+在途：#2167/#2197/#2198/#2199/#2405/#2481/#2488/#2454/#2642/#2582 —— `gh pr view <n> --json files` 逐一核查，均不碰 `internal/davsync/github.go`、`sync-backup.md`、`reference.md`，零碰撞。#1737/#1566/#1461 已合入，其修法风格（httptest 桩、守卫即测、文档同 PR）即本单风格来源。
+
+## 十二、收口状态
+
+- `git -C magpie-pr3 status --porcelain`：空；分支 `fix/2707-davsync-guard`（指向 bad4508c）保留。
+- 基线对照 worktree 已 remove+prune；临时备份文件已删。
+- `fix.diff` 为 `git diff`（工作树 vs bad4508c）原样输出，`git apply --check` 可用性未测（apply 由用户决定；内容即工作树曾验证过的状态）。

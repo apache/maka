@@ -1,0 +1,79 @@
+From 749a176f99e555fa2efacc7b0eb3e34d5be26fe9 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Tue, 20 Oct 2026 20:25:18 +0800
+Subject: [PATCH] provider: TestPluginPicksComeBackWithTheirList waits for the
+ picks, not 200ms (#3051)
+
+What changed: after the full list answers, the test still checks the
+loop is not asked again within 200ms (that check kept as it is), but it
+no longer assumes the picks' return lands inside that window: it polls
+Find every 25ms, up to 10s, until the picks are back and nothing is set
+aside, then makes the same assertion as before. The package's other
+tests wait this way already (claude_status_test.go,
+plugin_usage_test.go, retired_test.go).
+
+Why: the loop applies the list in its own goroutine after the stub
+returns it, and the only thing ordering the test's Find after that
+apply was the fixed 200ms. On the maintainer's machine at load ~400
+the apply outlasted the window, and the test read the picks still set
+aside: "full list again: picks [pool-a pool-b], set aside
+[qoder/claude-x kiro/claude-y]" (#3051). Alone it always passed.
+
+Run (darwin/arm64, go 1.26.8):
+- go test -count=10 -run 'TestPluginPicksComeBackWithTheirList$'
+  ./internal/provider/: after the fix, ok 10/10 alone and 10/10 at
+  load average ~340; before it, 10/10 alone too (flaky only under
+  load) and 20/20 at load ~60-73 (the maintainer's run was at ~400;
+  not reproduced here with load alone)
+- the old form with 300ms injected between the stub's answer and the
+  loop's apply goes red with the maintainer's exact message; the new
+  form with the same delay stays green: the failure is the fixed
+  window, and the poll removes it
+- go test -tags nogui -count=1 ./internal/provider/: ok (102s)
+- gofmt -l internal/provider/: clean; go vet -tags nogui
+  ./internal/provider/ for darwin, linux and windows: OK; go build
+  -tags nogui ./... for the three: OK (a cgo warning in
+  internal/gui/trayimage_darwin.go is pre-existing)
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/provider/plugin_delisted_test.go | 18 ++++++++++++++++++
+ 1 file changed, 18 insertions(+)
+
+diff --git a/internal/provider/plugin_delisted_test.go b/internal/provider/plugin_delisted_test.go
+index 0689367f..f5f3e28e 100644
+--- a/internal/provider/plugin_delisted_test.go
++++ b/internal/provider/plugin_delisted_test.go
+@@ -116,11 +116,29 @@ func TestPluginPicksComeBackWithTheirList(t *testing.T) {
+ 	}
+ 
+ 	answers <- full
++	// a list that left nothing out is asked no sooner than the hour: the
++	// window only checks that. That the picks came back with the list is
++	// waited for after it, not assumed to land within it: the loop
++	// applies the list when it gets to it, later than any fixed delay on
++	// a loaded machine (one run at load ~400 read the picks still set
++	// aside), so the state is waited on, the window kept to its own check
+ 	select {
+ 	case <-asked:
+ 		t.Fatal("asked again soon after a list that left nothing out")
+ 	case <-time.After(200 * time.Millisecond):
+ 	}
++	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(25 * time.Millisecond) {
++		p, err = Find("our-free-model")
++		if err != nil {
++			t.Fatal(err)
++		}
++		if slices.Equal(p.Models, []string{"pool-a", "pool-b", "qoder/claude-x", "kiro/claude-y"}) && len(p.Delisted) == 0 {
++			break
++		}
++		if time.Now().After(deadline) {
++			break // the assertion below reports the state it saw last
++		}
++	}
+ 	p, err = Find("our-free-model")
+ 	if err != nil {
+ 		t.Fatal(err)
+-- 
+2.50.1 (Apple Git-155)
+

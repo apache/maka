@@ -1,0 +1,16 @@
+Refreshed onto this lane's branch (cherry-picked over #5692's, #5698's and #5477's commits, based on `60559ee73`, fetched live at cherry-pick time). One conflict, resolved as a union, plus one mechanical adaptation:
+
+- `internal/gateway/codex_backend.go` — upstream's compaction classifier grew `roleRefused` between the bases (the #5067/#2955 family: "System messages are not allowed", "Upstream request failed" as role/relay words), and this patch's `refusesMessages` lands on the same condition line. Union taken: the classifier keeps `roleRefused` and takes `refusesMessages` beside it — upstream's own `upstreamFailed` term, which the previous rebase carried, is subsumed by `roleRefused`'s first branch (it ors `upstreamFailed(rec)` directly, over every status that term read), so no reading is lost. `refusesMessages` stays the only consumer of its words, an independent predicate over the same recorder — no shared state with `roleRefused`.
+- `messagesRefusedWords` joins the package's lazy-compiled words (`lazyre.New`): upstream's lazy-re regexp refactor left no `regexp` import in the file, so the compiled-at-init form could not stand.
+
+Tests re-run on the new base: `TestCodexCompactMessagesRefusedAsksAgainAsText` and `TestMessagesRefusedOnlyMatchesBadRequestShapeErrors` green, the `TestCodexCompact*`/`TestCompact*` family green, and the same set green under `-race`.
+
+Ablation re-done on the new base, the same term as before: `refusesMessages(rec)` out of the classifier (a messages-shape refusal ends the turn again; `git diff --stat`: 1 file, 1 insertion, 1 deletion) → `TestCodexCompactMessagesRefusedAsksAgainAsText` red, the shape negative (`TestMessagesRefusedOnlyMatchesBadRequestShapeErrors`) and an unrelated affinity neighbor green → restored → green, `git diff --stat` empty against the commit.
+
+Full run on the new base (this lane's tree through #5692, #5698 and #5477 plus this commit): `go test -tags nogui -count=1 -timeout 40m ./internal/gateway/` — 977s, one failure: `TestKeyLimitReservationsStayInTheirWindow`, which the branch base (`60559ee73`) already carries (upstream fixed it afterwards, `535f0dd95`; the same base-local red was attributed in #5692's refresh) — nothing of this patch's; `gofmt -l` on the two changed files prints nothing; `go vet -tags nogui ./internal/gateway/` clean; `GOOS=linux go build -tags nogui ./...` and `GOOS=windows go build ./...` clean.
+
+Fresh patch: `git am` applies it as is on a clean checkout of `10c331531`, the then tip (a POST-time re-fetch of upstream/main shows the tip already further along, none of the new commits touching this patch's two paths); sha256 first 16 = `6014591687f4d805` (of the native [`.patch`](https://github.com/ggbdpq/magpie/commit/14eb9f289b33d9a7025f8a1051256a490cfef06c.patch), 8,359 bytes; bytes differ from the previous post's `2c7c028a7e1ce531` through the rebase's line shifts — the semantic diff is unchanged); branch: [`hunt-20261111-sb4`](https://github.com/ggbdpq/magpie/tree/hunt-20261111-sb4) (head `14eb9f289b33d9a7025f8a1051256a490cfef06c`, this lane's branch, one commit per issue — this one is #3106's).
+
+NOT-RUNNABLE as before: a real relay of the reported kind (the "AUBO" upstream LionGaokk was on) — the unit fixtures pin the refusal's shape and the ask-again-as-text recovery at unit scale.
+
+Generated-by: GLM-5.3-Flash (ZCode)

@@ -1,0 +1,2495 @@
+{
+  "generatedAt": "2026-08-30T08:12:01.475Z",
+  "source": "C:\\Users\\ggbdpq\\.ai\\categories",
+  "total": 311,
+  "entries": [
+    {
+      "id": "01-Agent系统与Skills工程/01-Skill工程/find-skills",
+      "category": "01-Agent系统与Skills工程",
+      "subcategory": "01-Skill工程",
+      "name": "find-skills",
+      "author": null,
+      "description": "name: find-skills"
+    },
+    {
+      "id": "01-Agent系统与Skills工程/01-Skill工程/mattpocock--ask-matt",
+      "category": "01-Agent系统与Skills工程",
+      "subcategory": "01-Skill工程",
+      "name": "mattpocock--ask-matt",
+      "author": "mattpocock",
+      "description": "name: ask-matt"
+    },
+    {
+      "id": "01-Agent系统与Skills工程/01-Skill工程/mattpocock--git-guardrails-claude-code",
+      "category": "01-Agent系统与Skills工程",
+      "subcategory": "01-Skill工程",
+      "name": "mattpocock--git-guardrails-claude-code",
+      "author": "mattpocock",
+      "description": "name: git-guardrails-claude-code"
+    },
+    {
+      "id": "01-Agent系统与Skills工程/01-Skill工程/mattpocock--setup-matt-pocock-skills",
+      "category": "01-Agent系统与Skills工程",
+      "subcategory": "01-Skill工程",
+      "name": "mattpocock--setup-matt-pocock-skills",
+      "author": "mattpocock",
+      "description": "name: setup-matt-pocock-skills"
+    },
+    {
+      "id": "01-Agent系统与Skills工程/01-Skill工程/mattpocock--writing-for-agents",
+      "category": "01-Agent系统与Skills工程",
+      "subcategory": "01-Skill工程",
+      "name": "mattpocock--writing-for-agents",
+      "author": "mattpocock",
+      "description": "name: writing-for-agents"
+    },
+    {
+      "id": "01-Agent系统与Skills工程/01-Skill工程/mattpocock--writing-great-skills",
+      "category": "01-Agent系统与Skills工程",
+      "subcategory": "01-Skill工程",
+      "name": "mattpocock--writing-great-skills",
+      "author": "mattpocock",
+      "description": "name: writing-great-skills"
+    },
+    {
+      "id": "01-Agent系统与Skills工程/01-Skill工程/sanyuan0704--skill-forge",
+      "category": "01-Agent系统与Skills工程",
+      "subcategory": "01-Skill工程",
+      "name": "sanyuan0704--skill-forge",
+      "author": "sanyuan0704",
+      "description": "name: sanyuan0704--skill-forge"
+    },
+    {
+      "id": "01-Agent系统与Skills工程/01-Skill工程/sanyuan0704--skill-review",
+      "category": "01-Agent系统与Skills工程",
+      "subcategory": "01-Skill工程",
+      "name": "sanyuan0704--skill-review",
+      "author": "sanyuan0704",
+      "description": "name: sanyuan0704--skill-review"
+    },
+    {
+      "id": "01-Agent系统与Skills工程/01-Skill工程/skill-creator",
+      "category": "01-Agent系统与Skills工程",
+      "subcategory": "01-Skill工程",
+      "name": "skill-creator",
+      "author": null,
+      "description": "name: skill-creator"
+    },
+    {
+      "id": "01-Agent系统与Skills工程/01-Skill工程/skill-doctor",
+      "category": "01-Agent系统与Skills工程",
+      "subcategory": "01-Skill工程",
+      "name": "skill-doctor",
+      "author": null,
+      "description": "name: \"skill-doctor\""
+    },
+    {
+      "id": "01-Agent系统与Skills工程/01-Skill工程/skill-from-masters",
+      "category": "01-Agent系统与Skills工程",
+      "subcategory": "01-Skill工程",
+      "name": "skill-from-masters",
+      "author": null,
+      "description": "name: skill-from-masters"
+    },
+    {
+      "id": "01-Agent系统与Skills工程/01-Skill工程/skill-judge",
+      "category": "01-Agent系统与Skills工程",
+      "subcategory": "01-Skill工程",
+      "name": "skill-judge",
+      "author": null,
+      "description": "name: skill-judge"
+    },
+    {
+      "id": "01-Agent系统与Skills工程/01-Skill工程/writing-skills",
+      "category": "01-Agent系统与Skills工程",
+      "subcategory": "01-Skill工程",
+      "name": "writing-skills",
+      "author": null,
+      "description": "name: writing-skills"
+    },
+    {
+      "id": "01-Agent系统与Skills工程/01-Skill工程/yao-meta-skill",
+      "category": "01-Agent系统与Skills工程",
+      "subcategory": "01-Skill工程",
+      "name": "yao-meta-skill",
+      "author": null,
+      "description": "name: yao-meta-skill"
+    },
+    {
+      "id": "01-Agent系统与Skills工程/02-规划编排与多Agent/executing-plans",
+      "category": "01-Agent系统与Skills工程",
+      "subcategory": "02-规划编排与多Agent",
+      "name": "executing-plans",
+      "author": null,
+      "description": "name: executing-plans"
+    },
+    {
+      "id": "01-Agent系统与Skills工程/02-规划编排与多Agent/mattpocock--loop-me",
+      "category": "01-Agent系统与Skills工程",
+      "subcategory": "02-规划编排与多Agent",
+      "name": "mattpocock--loop-me",
+      "author": "mattpocock",
+      "description": "name: loop-me"
+    },
+    {
+      "id": "01-Agent系统与Skills工程/02-规划编排与多Agent/mattpocock--wayfinder",
+      "category": "01-Agent系统与Skills工程",
+      "subcategory": "02-规划编排与多Agent",
+      "name": "mattpocock--wayfinder",
+      "author": "mattpocock",
+      "description": "name: wayfinder"
+    },
+    {
+      "id": "01-Agent系统与Skills工程/02-规划编排与多Agent/planning-with-files",
+      "category": "01-Agent系统与Skills工程",
+      "subcategory": "02-规划编排与多Agent",
+      "name": "planning-with-files",
+      "author": null,
+      "description": "name: planning-with-files"
+    },
+    {
+      "id": "01-Agent系统与Skills工程/02-规划编排与多Agent/verification-before-completion",
+      "category": "01-Agent系统与Skills工程",
+      "subcategory": "02-规划编排与多Agent",
+      "name": "verification-before-completion",
+      "author": null,
+      "description": "name: verification-before-completion"
+    },
+    {
+      "id": "01-Agent系统与Skills工程/03-上下文效率与交接/caveman",
+      "category": "01-Agent系统与Skills工程",
+      "subcategory": "03-上下文效率与交接",
+      "name": "caveman",
+      "author": null,
+      "description": "name: caveman"
+    },
+    {
+      "id": "01-Agent系统与Skills工程/03-上下文效率与交接/caveman-commit",
+      "category": "01-Agent系统与Skills工程",
+      "subcategory": "03-上下文效率与交接",
+      "name": "caveman-commit",
+      "author": null,
+      "description": "name: caveman-commit"
+    },
+    {
+      "id": "01-Agent系统与Skills工程/03-上下文效率与交接/caveman-compress",
+      "category": "01-Agent系统与Skills工程",
+      "subcategory": "03-上下文效率与交接",
+      "name": "caveman-compress",
+      "author": null,
+      "description": "name: caveman-compress"
+    },
+    {
+      "id": "01-Agent系统与Skills工程/03-上下文效率与交接/caveman-stats",
+      "category": "01-Agent系统与Skills工程",
+      "subcategory": "03-上下文效率与交接",
+      "name": "caveman-stats",
+      "author": null,
+      "description": "name: caveman-stats"
+    },
+    {
+      "id": "01-Agent系统与Skills工程/03-上下文效率与交接/mattpocock--claude-handoff",
+      "category": "01-Agent系统与Skills工程",
+      "subcategory": "03-上下文效率与交接",
+      "name": "mattpocock--claude-handoff",
+      "author": "mattpocock",
+      "description": "name: claude-handoff"
+    },
+    {
+      "id": "01-Agent系统与Skills工程/03-上下文效率与交接/mattpocock--handoff",
+      "category": "01-Agent系统与Skills工程",
+      "subcategory": "03-上下文效率与交接",
+      "name": "mattpocock--handoff",
+      "author": "mattpocock",
+      "description": "name: handoff"
+    },
+    {
+      "id": "01-Agent系统与Skills工程/03-上下文效率与交接/mattpocock--wait-what",
+      "category": "01-Agent系统与Skills工程",
+      "subcategory": "03-上下文效率与交接",
+      "name": "mattpocock--wait-what",
+      "author": "mattpocock",
+      "description": "name: wait-what"
+    },
+    {
+      "id": "01-Agent系统与Skills工程/04-Codex原生工作流/automate",
+      "category": "01-Agent系统与Skills工程",
+      "subcategory": "04-Codex原生工作流",
+      "name": "automate",
+      "author": null,
+      "description": "name: automate"
+    },
+    {
+      "id": "01-Agent系统与Skills工程/04-Codex原生工作流/autopilot",
+      "category": "01-Agent系统与Skills工程",
+      "subcategory": "04-Codex原生工作流",
+      "name": "autopilot",
+      "author": null,
+      "description": "name: autopilot"
+    },
+    {
+      "id": "01-Agent系统与Skills工程/04-Codex原生工作流/canvas",
+      "category": "01-Agent系统与Skills工程",
+      "subcategory": "04-Codex原生工作流",
+      "name": "canvas",
+      "author": null,
+      "description": "description: >-"
+    },
+    {
+      "id": "01-Agent系统与Skills工程/04-Codex原生工作流/create-hook",
+      "category": "01-Agent系统与Skills工程",
+      "subcategory": "04-Codex原生工作流",
+      "name": "create-hook",
+      "author": null,
+      "description": "name: create-hook"
+    },
+    {
+      "id": "01-Agent系统与Skills工程/04-Codex原生工作流/create-rule",
+      "category": "01-Agent系统与Skills工程",
+      "subcategory": "04-Codex原生工作流",
+      "name": "create-rule",
+      "author": null,
+      "description": "name: create-rule"
+    },
+    {
+      "id": "01-Agent系统与Skills工程/04-Codex原生工作流/create-skill",
+      "category": "01-Agent系统与Skills工程",
+      "subcategory": "04-Codex原生工作流",
+      "name": "create-skill",
+      "author": null,
+      "description": "name: create-skill"
+    },
+    {
+      "id": "01-Agent系统与Skills工程/04-Codex原生工作流/create-subagent",
+      "category": "01-Agent系统与Skills工程",
+      "subcategory": "04-Codex原生工作流",
+      "name": "create-subagent",
+      "author": null,
+      "description": "name: create-subagent"
+    },
+    {
+      "id": "01-Agent系统与Skills工程/04-Codex原生工作流/goal",
+      "category": "01-Agent系统与Skills工程",
+      "subcategory": "04-Codex原生工作流",
+      "name": "goal",
+      "author": null,
+      "description": "description: Set a goal that Codex will pursue to completion."
+    },
+    {
+      "id": "01-Agent系统与Skills工程/04-Codex原生工作流/loop",
+      "category": "01-Agent系统与Skills工程",
+      "subcategory": "04-Codex原生工作流",
+      "name": "loop",
+      "author": null,
+      "description": "description: >-"
+    },
+    {
+      "id": "01-Agent系统与Skills工程/04-Codex原生工作流/migrate-to-skills",
+      "category": "01-Agent系统与Skills工程",
+      "subcategory": "04-Codex原生工作流",
+      "name": "migrate-to-skills",
+      "author": null,
+      "description": "name: migrate-to-skills"
+    },
+    {
+      "id": "01-Agent系统与Skills工程/04-Codex原生工作流/new-repo",
+      "category": "01-Agent系统与Skills工程",
+      "subcategory": "04-Codex原生工作流",
+      "name": "new-repo",
+      "author": null,
+      "description": "name: new-repo"
+    },
+    {
+      "id": "01-Agent系统与Skills工程/04-Codex原生工作流/onboard",
+      "category": "01-Agent系统与Skills工程",
+      "subcategory": "04-Codex原生工作流",
+      "name": "onboard",
+      "author": null,
+      "description": "name: onboard"
+    },
+    {
+      "id": "01-Agent系统与Skills工程/04-Codex原生工作流/origin",
+      "category": "01-Agent系统与Skills工程",
+      "subcategory": "04-Codex原生工作流",
+      "name": "origin",
+      "author": null,
+      "description": "description: >-"
+    },
+    {
+      "id": "01-Agent系统与Skills工程/04-Codex原生工作流/rename-chat",
+      "category": "01-Agent系统与Skills工程",
+      "subcategory": "04-Codex原生工作流",
+      "name": "rename-chat",
+      "author": null,
+      "description": "name: rename-chat"
+    },
+    {
+      "id": "01-Agent系统与Skills工程/04-Codex原生工作流/review",
+      "category": "01-Agent系统与Skills工程",
+      "subcategory": "04-Codex原生工作流",
+      "name": "review",
+      "author": null,
+      "description": "description: Review code changes with the Bugbot or Security Review subagent."
+    },
+    {
+      "id": "01-Agent系统与Skills工程/04-Codex原生工作流/review-bugbot",
+      "category": "01-Agent系统与Skills工程",
+      "subcategory": "04-Codex原生工作流",
+      "name": "review-bugbot",
+      "author": null,
+      "description": "name: review-bugbot"
+    },
+    {
+      "id": "01-Agent系统与Skills工程/04-Codex原生工作流/review-security",
+      "category": "01-Agent系统与Skills工程",
+      "subcategory": "04-Codex原生工作流",
+      "name": "review-security",
+      "author": null,
+      "description": "name: review-security"
+    },
+    {
+      "id": "01-Agent系统与Skills工程/04-Codex原生工作流/sdk",
+      "category": "01-Agent系统与Skills工程",
+      "subcategory": "04-Codex原生工作流",
+      "name": "sdk",
+      "author": null,
+      "description": "description: >-"
+    },
+    {
+      "id": "01-Agent系统与Skills工程/04-Codex原生工作流/share",
+      "category": "01-Agent系统与Skills工程",
+      "subcategory": "04-Codex原生工作流",
+      "name": "share",
+      "author": null,
+      "description": "description: >-"
+    },
+    {
+      "id": "01-Agent系统与Skills工程/04-Codex原生工作流/shell",
+      "category": "01-Agent系统与Skills工程",
+      "subcategory": "04-Codex原生工作流",
+      "name": "shell",
+      "author": null,
+      "description": "description: >-"
+    },
+    {
+      "id": "01-Agent系统与Skills工程/04-Codex原生工作流/split-to-prs",
+      "category": "01-Agent系统与Skills工程",
+      "subcategory": "04-Codex原生工作流",
+      "name": "split-to-prs",
+      "author": null,
+      "description": "name: split-to-prs"
+    },
+    {
+      "id": "01-Agent系统与Skills工程/04-Codex原生工作流/statusline",
+      "category": "01-Agent系统与Skills工程",
+      "subcategory": "04-Codex原生工作流",
+      "name": "statusline",
+      "author": null,
+      "description": "name: statusline"
+    },
+    {
+      "id": "01-Agent系统与Skills工程/04-Codex原生工作流/update-cli-config",
+      "category": "01-Agent系统与Skills工程",
+      "subcategory": "04-Codex原生工作流",
+      "name": "update-cli-config",
+      "author": null,
+      "description": "name: update-cli-config"
+    },
+    {
+      "id": "01-Agent系统与Skills工程/04-Codex原生工作流/update-cursor-settings",
+      "category": "01-Agent系统与Skills工程",
+      "subcategory": "04-Codex原生工作流",
+      "name": "update-cursor-settings",
+      "author": null,
+      "description": "name: update-cursor-settings"
+    },
+    {
+      "id": "02-研究产品与决策/01-研究市场与分析/firecrawl-company-directories",
+      "category": "02-研究产品与决策",
+      "subcategory": "01-研究市场与分析",
+      "name": "firecrawl-company-directories",
+      "author": null,
+      "description": "name: firecrawl-company-directories"
+    },
+    {
+      "id": "02-研究产品与决策/01-研究市场与分析/firecrawl-competitive-intel",
+      "category": "02-研究产品与决策",
+      "subcategory": "01-研究市场与分析",
+      "name": "firecrawl-competitive-intel",
+      "author": null,
+      "description": "name: firecrawl-competitive-intel"
+    },
+    {
+      "id": "02-研究产品与决策/01-研究市场与分析/firecrawl-deep-research",
+      "category": "02-研究产品与决策",
+      "subcategory": "01-研究市场与分析",
+      "name": "firecrawl-deep-research",
+      "author": null,
+      "description": "name: firecrawl-deep-research"
+    },
+    {
+      "id": "02-研究产品与决策/01-研究市场与分析/firecrawl-market-research",
+      "category": "02-研究产品与决策",
+      "subcategory": "01-研究市场与分析",
+      "name": "firecrawl-market-research",
+      "author": null,
+      "description": "name: firecrawl-market-research"
+    },
+    {
+      "id": "02-研究产品与决策/01-研究市场与分析/firecrawl-research-index",
+      "category": "02-研究产品与决策",
+      "subcategory": "01-研究市场与分析",
+      "name": "firecrawl-research-index",
+      "author": null,
+      "description": "name: firecrawl-research-index"
+    },
+    {
+      "id": "02-研究产品与决策/01-研究市场与分析/firecrawl-research-papers",
+      "category": "02-研究产品与决策",
+      "subcategory": "01-研究市场与分析",
+      "name": "firecrawl-research-papers",
+      "author": null,
+      "description": "name: firecrawl-research-papers"
+    },
+    {
+      "id": "02-研究产品与决策/01-研究市场与分析/mattpocock--research",
+      "category": "02-研究产品与决策",
+      "subcategory": "01-研究市场与分析",
+      "name": "mattpocock--research",
+      "author": "mattpocock",
+      "description": "name: research"
+    },
+    {
+      "id": "02-研究产品与决策/02-产品定义与规格/batch-grill-me",
+      "category": "02-研究产品与决策",
+      "subcategory": "02-产品定义与规格",
+      "name": "batch-grill-me",
+      "author": null,
+      "description": "name: batch-grill-me"
+    },
+    {
+      "id": "02-研究产品与决策/02-产品定义与规格/mattpocock--domain-modeling",
+      "category": "02-研究产品与决策",
+      "subcategory": "02-产品定义与规格",
+      "name": "mattpocock--domain-modeling",
+      "author": "mattpocock",
+      "description": "name: domain-modeling"
+    },
+    {
+      "id": "02-研究产品与决策/02-产品定义与规格/mattpocock--grill-me",
+      "category": "02-研究产品与决策",
+      "subcategory": "02-产品定义与规格",
+      "name": "mattpocock--grill-me",
+      "author": "mattpocock",
+      "description": "name: grill-me"
+    },
+    {
+      "id": "02-研究产品与决策/02-产品定义与规格/mattpocock--grill-with-docs",
+      "category": "02-研究产品与决策",
+      "subcategory": "02-产品定义与规格",
+      "name": "mattpocock--grill-with-docs",
+      "author": "mattpocock",
+      "description": "name: grill-with-docs"
+    },
+    {
+      "id": "02-研究产品与决策/02-产品定义与规格/mattpocock--grilling",
+      "category": "02-研究产品与决策",
+      "subcategory": "02-产品定义与规格",
+      "name": "mattpocock--grilling",
+      "author": "mattpocock",
+      "description": "name: grilling"
+    },
+    {
+      "id": "02-研究产品与决策/02-产品定义与规格/mattpocock--to-issues",
+      "category": "02-研究产品与决策",
+      "subcategory": "02-产品定义与规格",
+      "name": "mattpocock--to-issues",
+      "author": "mattpocock",
+      "description": "name: to-issues"
+    },
+    {
+      "id": "02-研究产品与决策/02-产品定义与规格/mattpocock--to-prd",
+      "category": "02-研究产品与决策",
+      "subcategory": "02-产品定义与规格",
+      "name": "mattpocock--to-prd",
+      "author": "mattpocock",
+      "description": "description: Turn the current conversation context into a PRD and publish it to the project issue tracker. Use when user"
+    },
+    {
+      "id": "02-研究产品与决策/02-产品定义与规格/mattpocock--to-questionnaire",
+      "category": "02-研究产品与决策",
+      "subcategory": "02-产品定义与规格",
+      "name": "mattpocock--to-questionnaire",
+      "author": "mattpocock",
+      "description": "name: to-questionnaire"
+    },
+    {
+      "id": "02-研究产品与决策/02-产品定义与规格/mattpocock--to-spec",
+      "category": "02-研究产品与决策",
+      "subcategory": "02-产品定义与规格",
+      "name": "mattpocock--to-spec",
+      "author": "mattpocock",
+      "description": "name: to-spec"
+    },
+    {
+      "id": "02-研究产品与决策/02-产品定义与规格/mattpocock--to-tickets",
+      "category": "02-研究产品与决策",
+      "subcategory": "02-产品定义与规格",
+      "name": "mattpocock--to-tickets",
+      "author": "mattpocock",
+      "description": "name: to-tickets"
+    },
+    {
+      "id": "02-研究产品与决策/02-产品定义与规格/project-analyzer",
+      "category": "02-研究产品与决策",
+      "subcategory": "02-产品定义与规格",
+      "name": "project-analyzer",
+      "author": null,
+      "description": "name: project-analyzer"
+    },
+    {
+      "id": "02-研究产品与决策/02-产品定义与规格/proto-to-prd",
+      "category": "02-研究产品与决策",
+      "subcategory": "02-产品定义与规格",
+      "name": "proto-to-prd",
+      "author": null,
+      "description": "name: proto-to-prd"
+    },
+    {
+      "id": "02-研究产品与决策/03-原型验证与决策/awesome-design-md-prototype-designer",
+      "category": "02-研究产品与决策",
+      "subcategory": "03-原型验证与决策",
+      "name": "awesome-design-md-prototype-designer",
+      "author": null,
+      "description": "name: awesome-design-md-prototype-designer"
+    },
+    {
+      "id": "02-研究产品与决策/03-原型验证与决策/mattpocock--prototype",
+      "category": "02-研究产品与决策",
+      "subcategory": "03-原型验证与决策",
+      "name": "mattpocock--prototype",
+      "author": "mattpocock",
+      "description": "name: prototype"
+    },
+    {
+      "id": "02-研究产品与决策/03-原型验证与决策/product-prototype-skill-builder",
+      "category": "02-研究产品与决策",
+      "subcategory": "03-原型验证与决策",
+      "name": "product-prototype-skill-builder",
+      "author": null,
+      "description": "name: product-prototype-skill-builder"
+    },
+    {
+      "id": "03-设计体验与前端应用/01-设计系统与设计还原/design-generator",
+      "category": "03-设计体验与前端应用",
+      "subcategory": "01-设计系统与设计还原",
+      "name": "design-generator",
+      "author": null,
+      "description": "name: design-generator"
+    },
+    {
+      "id": "03-设计体验与前端应用/01-设计系统与设计还原/design-taste-frontend",
+      "category": "03-设计体验与前端应用",
+      "subcategory": "01-设计系统与设计还原",
+      "name": "design-taste-frontend",
+      "author": null,
+      "description": "name: design-taste-frontend"
+    },
+    {
+      "id": "03-设计体验与前端应用/01-设计系统与设计还原/extract-design-system",
+      "category": "03-设计体验与前端应用",
+      "subcategory": "01-设计系统与设计还原",
+      "name": "extract-design-system",
+      "author": null,
+      "description": "name: extract-design-system"
+    },
+    {
+      "id": "03-设计体验与前端应用/01-设计系统与设计还原/figma",
+      "category": "03-设计体验与前端应用",
+      "subcategory": "01-设计系统与设计还原",
+      "name": "figma",
+      "author": null,
+      "description": "description: Use the Figma MCP server to fetch design context, screenshots, variables, and assets from Figma, and to tra"
+    },
+    {
+      "id": "03-设计体验与前端应用/01-设计系统与设计还原/figma-to-code",
+      "category": "03-设计体验与前端应用",
+      "subcategory": "01-设计系统与设计还原",
+      "name": "figma-to-code",
+      "author": null,
+      "description": "name: figma-to-code"
+    },
+    {
+      "id": "03-设计体验与前端应用/01-设计系统与设计还原/firecrawl-website-design-clone",
+      "category": "03-设计体验与前端应用",
+      "subcategory": "01-设计系统与设计还原",
+      "name": "firecrawl-website-design-clone",
+      "author": null,
+      "description": "name: firecrawl-website-design-clone"
+    },
+    {
+      "id": "03-设计体验与前端应用/01-设计系统与设计还原/frontend-design",
+      "category": "03-设计体验与前端应用",
+      "subcategory": "01-设计系统与设计还原",
+      "name": "frontend-design",
+      "author": null,
+      "description": "name: frontend-design"
+    },
+    {
+      "id": "03-设计体验与前端应用/01-设计系统与设计还原/impeccable",
+      "category": "03-设计体验与前端应用",
+      "subcategory": "01-设计系统与设计还原",
+      "name": "impeccable",
+      "author": null,
+      "description": "name: impeccable"
+    },
+    {
+      "id": "03-设计体验与前端应用/01-设计系统与设计还原/interaction-design",
+      "category": "03-设计体验与前端应用",
+      "subcategory": "01-设计系统与设计还原",
+      "name": "interaction-design",
+      "author": null,
+      "description": "name: interaction-design"
+    },
+    {
+      "id": "03-设计体验与前端应用/01-设计系统与设计还原/shadcn",
+      "category": "03-设计体验与前端应用",
+      "subcategory": "01-设计系统与设计还原",
+      "name": "shadcn",
+      "author": null,
+      "description": "description: Manages shadcn components and projects — adding, searching, fixing, debugging, styling, and composing UI. P"
+    },
+    {
+      "id": "03-设计体验与前端应用/01-设计系统与设计还原/ui-implementer",
+      "category": "03-设计体验与前端应用",
+      "subcategory": "01-设计系统与设计还原",
+      "name": "ui-implementer",
+      "author": null,
+      "description": "name: ui-implementer"
+    },
+    {
+      "id": "03-设计体验与前端应用/01-设计系统与设计还原/ui-ux-pro-max",
+      "category": "03-设计体验与前端应用",
+      "subcategory": "01-设计系统与设计还原",
+      "name": "ui-ux-pro-max",
+      "author": null,
+      "description": "name: ui-ux-pro-max"
+    },
+    {
+      "id": "03-设计体验与前端应用/01-设计系统与设计还原/web-artifacts-builder",
+      "category": "03-设计体验与前端应用",
+      "subcategory": "01-设计系统与设计还原",
+      "name": "web-artifacts-builder",
+      "author": null,
+      "description": "name: web-artifacts-builder"
+    },
+    {
+      "id": "03-设计体验与前端应用/01-设计系统与设计还原/web-design-guidelines",
+      "category": "03-设计体验与前端应用",
+      "subcategory": "01-设计系统与设计还原",
+      "name": "web-design-guidelines",
+      "author": null,
+      "description": "name: web-design-guidelines"
+    },
+    {
+      "id": "03-设计体验与前端应用/02-Web跨端与体验质量/create-adaptable-composable",
+      "category": "03-设计体验与前端应用",
+      "subcategory": "02-Web跨端与体验质量",
+      "name": "create-adaptable-composable",
+      "author": null,
+      "description": "name: create-adaptable-composable"
+    },
+    {
+      "id": "03-设计体验与前端应用/02-Web跨端与体验质量/deploy-to-vercel",
+      "category": "03-设计体验与前端应用",
+      "subcategory": "02-Web跨端与体验质量",
+      "name": "deploy-to-vercel",
+      "author": null,
+      "description": "name: deploy-to-vercel"
+    },
+    {
+      "id": "03-设计体验与前端应用/02-Web跨端与体验质量/hyperframes",
+      "category": "03-设计体验与前端应用",
+      "subcategory": "02-Web跨端与体验质量",
+      "name": "hyperframes",
+      "author": null,
+      "description": "name: hyperframes"
+    },
+    {
+      "id": "03-设计体验与前端应用/02-Web跨端与体验质量/jsdoc-typescript-docs",
+      "category": "03-设计体验与前端应用",
+      "subcategory": "02-Web跨端与体验质量",
+      "name": "jsdoc-typescript-docs",
+      "author": null,
+      "description": "name: jsdoc-typescript-docs"
+    },
+    {
+      "id": "03-设计体验与前端应用/02-Web跨端与体验质量/next-best-practices",
+      "category": "03-设计体验与前端应用",
+      "subcategory": "02-Web跨端与体验质量",
+      "name": "next-best-practices",
+      "author": null,
+      "description": "name: next-best-practices"
+    },
+    {
+      "id": "03-设计体验与前端应用/02-Web跨端与体验质量/nextjs-react-typescript",
+      "category": "03-设计体验与前端应用",
+      "subcategory": "02-Web跨端与体验质量",
+      "name": "nextjs-react-typescript",
+      "author": null,
+      "description": "name: nextjs-react-typescript"
+    },
+    {
+      "id": "03-设计体验与前端应用/02-Web跨端与体验质量/react-component-performance",
+      "category": "03-设计体验与前端应用",
+      "subcategory": "02-Web跨端与体验质量",
+      "name": "react-component-performance",
+      "author": null,
+      "description": "name: react-component-performance"
+    },
+    {
+      "id": "03-设计体验与前端应用/02-Web跨端与体验质量/react-native-skills",
+      "category": "03-设计体验与前端应用",
+      "subcategory": "02-Web跨端与体验质量",
+      "name": "react-native-skills",
+      "author": null,
+      "description": "name: vercel-react-native-skills"
+    },
+    {
+      "id": "03-设计体验与前端应用/02-Web跨端与体验质量/react-view-transitions",
+      "category": "03-设计体验与前端应用",
+      "subcategory": "02-Web跨端与体验质量",
+      "name": "react-view-transitions",
+      "author": null,
+      "description": "name: vercel-react-view-transitions"
+    },
+    {
+      "id": "03-设计体验与前端应用/02-Web跨端与体验质量/remotion-best-practices",
+      "category": "03-设计体验与前端应用",
+      "subcategory": "02-Web跨端与体验质量",
+      "name": "remotion-best-practices",
+      "author": null,
+      "description": "name: remotion-best-practices"
+    },
+    {
+      "id": "03-设计体验与前端应用/02-Web跨端与体验质量/typescript-magician",
+      "category": "03-设计体验与前端应用",
+      "subcategory": "02-Web跨端与体验质量",
+      "name": "typescript-magician",
+      "author": null,
+      "description": "name: typescript-magician"
+    },
+    {
+      "id": "03-设计体验与前端应用/02-Web跨端与体验质量/unocss",
+      "category": "03-设计体验与前端应用",
+      "subcategory": "02-Web跨端与体验质量",
+      "name": "unocss",
+      "author": null,
+      "description": "description: UnoCSS instant atomic CSS engine, superset of Tailwind CSS. Use when configuring UnoCSS, writing utility ru"
+    },
+    {
+      "id": "03-设计体验与前端应用/02-Web跨端与体验质量/vercel-cli-with-tokens",
+      "category": "03-设计体验与前端应用",
+      "subcategory": "02-Web跨端与体验质量",
+      "name": "vercel-cli-with-tokens",
+      "author": null,
+      "description": "name: vercel-cli-with-tokens"
+    },
+    {
+      "id": "03-设计体验与前端应用/02-Web跨端与体验质量/vercel-composition-patterns",
+      "category": "03-设计体验与前端应用",
+      "subcategory": "02-Web跨端与体验质量",
+      "name": "vercel-composition-patterns",
+      "author": null,
+      "description": "name: vercel-composition-patterns"
+    },
+    {
+      "id": "03-设计体验与前端应用/02-Web跨端与体验质量/vercel-optimize",
+      "category": "03-设计体验与前端应用",
+      "subcategory": "02-Web跨端与体验质量",
+      "name": "vercel-optimize",
+      "author": null,
+      "description": "name: vercel-optimize"
+    },
+    {
+      "id": "03-设计体验与前端应用/02-Web跨端与体验质量/vercel-react-best-practices",
+      "category": "03-设计体验与前端应用",
+      "subcategory": "02-Web跨端与体验质量",
+      "name": "vercel-react-best-practices",
+      "author": null,
+      "description": "name: vercel-react-best-practices"
+    },
+    {
+      "id": "03-设计体验与前端应用/02-Web跨端与体验质量/vue-best-practices",
+      "category": "03-设计体验与前端应用",
+      "subcategory": "02-Web跨端与体验质量",
+      "name": "vue-best-practices",
+      "author": null,
+      "description": "name: vue-best-practices"
+    },
+    {
+      "id": "03-设计体验与前端应用/02-Web跨端与体验质量/vue-debug-guides",
+      "category": "03-设计体验与前端应用",
+      "subcategory": "02-Web跨端与体验质量",
+      "name": "vue-debug-guides",
+      "author": null,
+      "description": "name: vue-debug-guides"
+    },
+    {
+      "id": "03-设计体验与前端应用/02-Web跨端与体验质量/vue-jsx-best-practices",
+      "category": "03-设计体验与前端应用",
+      "subcategory": "02-Web跨端与体验质量",
+      "name": "vue-jsx-best-practices",
+      "author": null,
+      "description": "name: vue-jsx-best-practices"
+    },
+    {
+      "id": "03-设计体验与前端应用/02-Web跨端与体验质量/vue-options-api-best-practices",
+      "category": "03-设计体验与前端应用",
+      "subcategory": "02-Web跨端与体验质量",
+      "name": "vue-options-api-best-practices",
+      "author": null,
+      "description": "name: vue-options-api-best-practices"
+    },
+    {
+      "id": "03-设计体验与前端应用/02-Web跨端与体验质量/vue-pinia-best-practices",
+      "category": "03-设计体验与前端应用",
+      "subcategory": "02-Web跨端与体验质量",
+      "name": "vue-pinia-best-practices",
+      "author": null,
+      "description": "name: vue-pinia-best-practices"
+    },
+    {
+      "id": "03-设计体验与前端应用/02-Web跨端与体验质量/vue-router-best-practices",
+      "category": "03-设计体验与前端应用",
+      "subcategory": "02-Web跨端与体验质量",
+      "name": "vue-router-best-practices",
+      "author": null,
+      "description": "name: vue-router-best-practices"
+    },
+    {
+      "id": "03-设计体验与前端应用/02-Web跨端与体验质量/vue-testing-best-practices",
+      "category": "03-设计体验与前端应用",
+      "subcategory": "02-Web跨端与体验质量",
+      "name": "vue-testing-best-practices",
+      "author": null,
+      "description": "name: vue-testing-best-practices"
+    },
+    {
+      "id": "03-设计体验与前端应用/02-Web跨端与体验质量/web-design-guidelines",
+      "category": "03-设计体验与前端应用",
+      "subcategory": "02-Web跨端与体验质量",
+      "name": "web-design-guidelines",
+      "author": null,
+      "description": "name: web-design-guidelines"
+    },
+    {
+      "id": "03-设计体验与前端应用/02-Web跨端与体验质量/writing-guidelines",
+      "category": "03-设计体验与前端应用",
+      "subcategory": "02-Web跨端与体验质量",
+      "name": "writing-guidelines",
+      "author": null,
+      "description": "name: writing-guidelines"
+    },
+    {
+      "id": "04-软件工程与全栈交付/01-架构工程化与服务端/antfu",
+      "category": "04-软件工程与全栈交付",
+      "subcategory": "01-架构工程化与服务端",
+      "name": "antfu",
+      "author": null,
+      "description": "description: Anthony Fu's opinionated tooling and conventions for JavaScript/TypeScript projects. Use when setting up ne"
+    },
+    {
+      "id": "04-软件工程与全栈交付/01-架构工程化与服务端/mattpocock--codebase-design",
+      "category": "04-软件工程与全栈交付",
+      "subcategory": "01-架构工程化与服务端",
+      "name": "mattpocock--codebase-design",
+      "author": "mattpocock",
+      "description": "name: codebase-design"
+    },
+    {
+      "id": "04-软件工程与全栈交付/01-架构工程化与服务端/mattpocock--implement",
+      "category": "04-软件工程与全栈交付",
+      "subcategory": "01-架构工程化与服务端",
+      "name": "mattpocock--implement",
+      "author": "mattpocock",
+      "description": "name: implement"
+    },
+    {
+      "id": "04-软件工程与全栈交付/01-架构工程化与服务端/mattpocock--implement-spec",
+      "category": "04-软件工程与全栈交付",
+      "subcategory": "01-架构工程化与服务端",
+      "name": "mattpocock--implement-spec",
+      "author": "mattpocock",
+      "description": "name: implement-spec"
+    },
+    {
+      "id": "04-软件工程与全栈交付/01-架构工程化与服务端/mattpocock--scaffold-exercises",
+      "category": "04-软件工程与全栈交付",
+      "subcategory": "01-架构工程化与服务端",
+      "name": "mattpocock--scaffold-exercises",
+      "author": "mattpocock",
+      "description": "name: scaffold-exercises"
+    },
+    {
+      "id": "04-软件工程与全栈交付/01-架构工程化与服务端/mattpocock--setup-pre-commit",
+      "category": "04-软件工程与全栈交付",
+      "subcategory": "01-架构工程化与服务端",
+      "name": "mattpocock--setup-pre-commit",
+      "author": "mattpocock",
+      "description": "name: setup-pre-commit"
+    },
+    {
+      "id": "04-软件工程与全栈交付/01-架构工程化与服务端/mattpocock--setup-ts-deep-modules",
+      "category": "04-软件工程与全栈交付",
+      "subcategory": "01-架构工程化与服务端",
+      "name": "mattpocock--setup-ts-deep-modules",
+      "author": "mattpocock",
+      "description": "name: setup-ts-deep-modules"
+    },
+    {
+      "id": "04-软件工程与全栈交付/01-架构工程化与服务端/mattpocock--wizard",
+      "category": "04-软件工程与全栈交付",
+      "subcategory": "01-架构工程化与服务端",
+      "name": "mattpocock--wizard",
+      "author": "mattpocock",
+      "description": "description: Generate an interactive bash wizard that walks a human through steps only they can perform. Use when provis"
+    },
+    {
+      "id": "04-软件工程与全栈交付/01-架构工程化与服务端/pnpm",
+      "category": "04-软件工程与全栈交付",
+      "subcategory": "01-架构工程化与服务端",
+      "name": "pnpm",
+      "author": null,
+      "description": "description: Node.js package manager with strict dependency resolution. Use when running pnpm specific commands, configu"
+    },
+    {
+      "id": "04-软件工程与全栈交付/01-架构工程化与服务端/practices-me",
+      "category": "04-软件工程与全栈交付",
+      "subcategory": "01-架构工程化与服务端",
+      "name": "practices-me",
+      "author": null,
+      "description": "name: practices-me"
+    },
+    {
+      "id": "04-软件工程与全栈交付/01-架构工程化与服务端/practices-me/references/java/ddd-service",
+      "category": "04-软件工程与全栈交付",
+      "subcategory": "java",
+      "name": "ddd-service",
+      "author": null,
+      "description": "name: java-ddd-me"
+    },
+    {
+      "id": "04-软件工程与全栈交付/01-架构工程化与服务端/practices-me/references/java/feign-chain",
+      "category": "04-软件工程与全栈交付",
+      "subcategory": "java",
+      "name": "feign-chain",
+      "author": null,
+      "description": "name: java-feign-me"
+    },
+    {
+      "id": "04-软件工程与全栈交付/01-架构工程化与服务端/practices-me/references/java/mybatis-dataperm",
+      "category": "04-软件工程与全栈交付",
+      "subcategory": "java",
+      "name": "mybatis-dataperm",
+      "author": null,
+      "description": "name: mybatis-me"
+    },
+    {
+      "id": "04-软件工程与全栈交付/01-架构工程化与服务端/practices-me/references/java/solon-mcp",
+      "category": "04-软件工程与全栈交付",
+      "subcategory": "java",
+      "name": "solon-mcp",
+      "author": null,
+      "description": "name: solon-mcp-me"
+    },
+    {
+      "id": "04-软件工程与全栈交付/01-架构工程化与服务端/practices-me/references/node/bff",
+      "category": "04-软件工程与全栈交付",
+      "subcategory": "node",
+      "name": "bff",
+      "author": null,
+      "description": "name: node-bff-me"
+    },
+    {
+      "id": "04-软件工程与全栈交付/01-架构工程化与服务端/practices-me/references/web/others/ai-audio",
+      "category": "04-软件工程与全栈交付",
+      "subcategory": "others",
+      "name": "ai-audio",
+      "author": null,
+      "description": "name: ai-audio-me"
+    },
+    {
+      "id": "04-软件工程与全栈交付/01-架构工程化与服务端/practices-me/references/web/others/quality-gate",
+      "category": "04-软件工程与全栈交付",
+      "subcategory": "others",
+      "name": "quality-gate",
+      "author": null,
+      "description": "name: quality-me"
+    },
+    {
+      "id": "04-软件工程与全栈交付/01-架构工程化与服务端/practices-me/references/web/stacks/css",
+      "category": "04-软件工程与全栈交付",
+      "subcategory": "stacks",
+      "name": "css",
+      "author": null,
+      "description": "description: CSS、SCSS、CSS Modules 样式治理与 UI 还原。Use when writing or reviewing styles, restoring UI from screenshots or Fig"
+    },
+    {
+      "id": "04-软件工程与全栈交付/01-架构工程化与服务端/practices-me/references/web/stacks/nutui",
+      "category": "04-软件工程与全栈交付",
+      "subcategory": "stacks",
+      "name": "nutui",
+      "author": null,
+      "description": "name: nutui-me"
+    },
+    {
+      "id": "04-软件工程与全栈交付/01-架构工程化与服务端/practices-me/references/web/stacks/react",
+      "category": "04-软件工程与全栈交付",
+      "subcategory": "stacks",
+      "name": "react",
+      "author": null,
+      "description": "name: react-me"
+    },
+    {
+      "id": "04-软件工程与全栈交付/01-架构工程化与服务端/practices-me/references/web/stacks/taro",
+      "category": "04-软件工程与全栈交付",
+      "subcategory": "stacks",
+      "name": "taro",
+      "author": null,
+      "description": "name: taro-me"
+    },
+    {
+      "id": "04-软件工程与全栈交付/01-架构工程化与服务端/practices-me/references/web/stacks/vue",
+      "category": "04-软件工程与全栈交付",
+      "subcategory": "stacks",
+      "name": "vue",
+      "author": null,
+      "description": "description: Vue3 与 React 分叉点。Use when working on Vue 3 / Vue 2 Options API pages, Pinia vs Zustand choice, v-html rende"
+    },
+    {
+      "id": "04-软件工程与全栈交付/01-架构工程化与服务端/practices-me/references/web/stacks/zustand",
+      "category": "04-软件工程与全栈交付",
+      "subcategory": "stacks",
+      "name": "zustand",
+      "author": null,
+      "description": "name: zustand-me"
+    },
+    {
+      "id": "04-软件工程与全栈交付/01-架构工程化与服务端/practices-me/references/web/workflow/01-prd",
+      "category": "04-软件工程与全栈交付",
+      "subcategory": "workflow",
+      "name": "01-prd",
+      "author": null,
+      "description": "description: PRD、原型截图、模块蓝图和 dev/docs 知识库入口。Use when turning PRD, UI screenshots, interface notes, or existing source int"
+    },
+    {
+      "id": "04-软件工程与全栈交付/01-架构工程化与服务端/practices-me/references/web/workflow/02-ui",
+      "category": "04-软件工程与全栈交付",
+      "subcategory": "workflow",
+      "name": "02-ui",
+      "author": null,
+      "description": "description: 当用户要求开发、修复、评审或统一业务前端页面时使用本 skill，尤其是 BaseLayout/MainLayout、顶部导航、侧边栏、搜索表单、表格分页、加载更多、弹窗、抽屉、无数据状态、加载态、H5 全屏、横屏"
+    },
+    {
+      "id": "04-软件工程与全栈交付/01-架构工程化与服务端/practices-me/references/web/workflow/03-api",
+      "category": "04-软件工程与全栈交付",
+      "subcategory": "workflow",
+      "name": "03-api",
+      "author": null,
+      "description": "description: API 字段契约排查与映射修复。Use this skill when API fields, DTOs, route schemas, list/detail mapping, dictionary keys, "
+    },
+    {
+      "id": "04-软件工程与全栈交付/01-架构工程化与服务端/practices-me/references/web/workflow/04-web",
+      "category": "04-软件工程与全栈交付",
+      "subcategory": "workflow",
+      "name": "04-web",
+      "author": null,
+      "description": "description: 前端模块结构与代码规范。Use when initializing or reviewing React, TypeScript, Taro, H5, or Umi modules, deciding direct"
+    },
+    {
+      "id": "04-软件工程与全栈交付/01-架构工程化与服务端/practices-me/references/web/workflow/05-test",
+      "category": "04-软件工程与全栈交付",
+      "subcategory": "workflow",
+      "name": "05-test",
+      "author": null,
+      "description": "name: test-me"
+    },
+    {
+      "id": "04-软件工程与全栈交付/01-架构工程化与服务端/practices-me/references/web/workflow/06-bug",
+      "category": "04-软件工程与全栈交付",
+      "subcategory": "workflow",
+      "name": "06-bug",
+      "author": null,
+      "description": "description: 最小改动修复与轻量回归。Use when fixing a clear bug, startup failure, compatibility issue, local environment blocker, c"
+    },
+    {
+      "id": "04-软件工程与全栈交付/01-架构工程化与服务端/practices-me/references/web/workflow/07-summary",
+      "category": "04-软件工程与全栈交付",
+      "subcategory": "workflow",
+      "name": "07-summary",
+      "author": null,
+      "description": "name: summary-me"
+    },
+    {
+      "id": "04-软件工程与全栈交付/01-架构工程化与服务端/simplify-codebase",
+      "category": "04-软件工程与全栈交付",
+      "subcategory": "01-架构工程化与服务端",
+      "name": "simplify-codebase",
+      "author": null,
+      "description": "name: simplify-codebase"
+    },
+    {
+      "id": "04-软件工程与全栈交付/01-架构工程化与服务端/tsdown",
+      "category": "04-软件工程与全栈交付",
+      "subcategory": "01-架构工程化与服务端",
+      "name": "tsdown",
+      "author": null,
+      "description": "description: Bundle TypeScript and JavaScript libraries with blazing-fast speed powered by Rolldown. Use when building l"
+    },
+    {
+      "id": "04-软件工程与全栈交付/01-架构工程化与服务端/turborepo",
+      "category": "04-软件工程与全栈交付",
+      "subcategory": "01-架构工程化与服务端",
+      "name": "turborepo",
+      "author": null,
+      "description": "name: turborepo"
+    },
+    {
+      "id": "04-软件工程与全栈交付/01-架构工程化与服务端/vite",
+      "category": "04-软件工程与全栈交付",
+      "subcategory": "01-架构工程化与服务端",
+      "name": "vite",
+      "author": null,
+      "description": "description: Vite build tool configuration, plugin API, SSR, and Vite 8 Rolldown migration. Use when working with Vite p"
+    },
+    {
+      "id": "04-软件工程与全栈交付/02-测试调试与代码审查/code-simplifier",
+      "category": "04-软件工程与全栈交付",
+      "subcategory": "02-测试调试与代码审查",
+      "name": "code-simplifier",
+      "author": null,
+      "description": "name: code-simplifier"
+    },
+    {
+      "id": "04-软件工程与全栈交付/02-测试调试与代码审查/codex-review",
+      "category": "04-软件工程与全栈交付",
+      "subcategory": "02-测试调试与代码审查",
+      "name": "codex-review",
+      "author": null,
+      "description": "name: codex-review"
+    },
+    {
+      "id": "04-软件工程与全栈交付/02-测试调试与代码审查/deep-codebase-audit",
+      "category": "04-软件工程与全栈交付",
+      "subcategory": "02-测试调试与代码审查",
+      "name": "deep-codebase-audit",
+      "author": null,
+      "description": "name: deep-codebase-audit"
+    },
+    {
+      "id": "04-软件工程与全栈交付/02-测试调试与代码审查/firecrawl-qa",
+      "category": "04-软件工程与全栈交付",
+      "subcategory": "02-测试调试与代码审查",
+      "name": "firecrawl-qa",
+      "author": null,
+      "description": "name: firecrawl-qa"
+    },
+    {
+      "id": "04-软件工程与全栈交付/02-测试调试与代码审查/mattpocock--code-review",
+      "category": "04-软件工程与全栈交付",
+      "subcategory": "02-测试调试与代码审查",
+      "name": "mattpocock--code-review",
+      "author": "mattpocock",
+      "description": "name: code-review"
+    },
+    {
+      "id": "04-软件工程与全栈交付/02-测试调试与代码审查/mattpocock--diagnosing-bugs",
+      "category": "04-软件工程与全栈交付",
+      "subcategory": "02-测试调试与代码审查",
+      "name": "mattpocock--diagnosing-bugs",
+      "author": "mattpocock",
+      "description": "name: diagnosing-bugs"
+    },
+    {
+      "id": "04-软件工程与全栈交付/02-测试调试与代码审查/mattpocock--improve-codebase-architecture",
+      "category": "04-软件工程与全栈交付",
+      "subcategory": "02-测试调试与代码审查",
+      "name": "mattpocock--improve-codebase-architecture",
+      "author": "mattpocock",
+      "description": "name: improve-codebase-architecture"
+    },
+    {
+      "id": "04-软件工程与全栈交付/02-测试调试与代码审查/mattpocock--migrate-to-shoehorn",
+      "category": "04-软件工程与全栈交付",
+      "subcategory": "02-测试调试与代码审查",
+      "name": "mattpocock--migrate-to-shoehorn",
+      "author": "mattpocock",
+      "description": "name: migrate-to-shoehorn"
+    },
+    {
+      "id": "04-软件工程与全栈交付/02-测试调试与代码审查/mattpocock--resolving-merge-conflicts",
+      "category": "04-软件工程与全栈交付",
+      "subcategory": "02-测试调试与代码审查",
+      "name": "mattpocock--resolving-merge-conflicts",
+      "author": "mattpocock",
+      "description": "name: resolving-merge-conflicts"
+    },
+    {
+      "id": "04-软件工程与全栈交付/02-测试调试与代码审查/mattpocock--tdd",
+      "category": "04-软件工程与全栈交付",
+      "subcategory": "02-测试调试与代码审查",
+      "name": "mattpocock--tdd",
+      "author": "mattpocock",
+      "description": "description: Test-driven development. Use when the user wants to build features or fix bugs test-first, mentions \"red-gr"
+    },
+    {
+      "id": "04-软件工程与全栈交付/02-测试调试与代码审查/ponytail",
+      "category": "04-软件工程与全栈交付",
+      "subcategory": "02-测试调试与代码审查",
+      "name": "ponytail",
+      "author": null,
+      "description": "name: ponytail"
+    },
+    {
+      "id": "04-软件工程与全栈交付/02-测试调试与代码审查/sanyuan0704--code-review-expert",
+      "category": "04-软件工程与全栈交付",
+      "subcategory": "02-测试调试与代码审查",
+      "name": "sanyuan0704--code-review-expert",
+      "author": "sanyuan0704",
+      "description": "name: code-review-expert"
+    },
+    {
+      "id": "04-软件工程与全栈交付/02-测试调试与代码审查/systematic-debugging",
+      "category": "04-软件工程与全栈交付",
+      "subcategory": "02-测试调试与代码审查",
+      "name": "systematic-debugging",
+      "author": null,
+      "description": "name: systematic-debugging"
+    },
+    {
+      "id": "04-软件工程与全栈交付/02-测试调试与代码审查/thermo-nuclear-code-quality-review",
+      "category": "04-软件工程与全栈交付",
+      "subcategory": "02-测试调试与代码审查",
+      "name": "thermo-nuclear-code-quality-review",
+      "author": null,
+      "description": "name: thermo-nuclear-code-quality-review"
+    },
+    {
+      "id": "04-软件工程与全栈交付/02-测试调试与代码审查/vitest",
+      "category": "04-软件工程与全栈交付",
+      "subcategory": "02-测试调试与代码审查",
+      "name": "vitest",
+      "author": null,
+      "description": "description: Vitest fast unit testing framework powered by Vite with Jest-compatible API. Use when writing tests, mockin"
+    },
+    {
+      "id": "04-软件工程与全栈交付/02-测试调试与代码审查/webapp-testing",
+      "category": "04-软件工程与全栈交付",
+      "subcategory": "02-测试调试与代码审查",
+      "name": "webapp-testing",
+      "author": null,
+      "description": "name: webapp-testing"
+    },
+    {
+      "id": "04-软件工程与全栈交付/02-测试调试与代码审查/writing-comments",
+      "category": "04-软件工程与全栈交付",
+      "subcategory": "02-测试调试与代码审查",
+      "name": "writing-comments",
+      "author": null,
+      "description": "name: writing-comments"
+    },
+    {
+      "id": "05-工具数据与自动化/01-浏览器与数据获取/agent-browser",
+      "category": "05-工具数据与自动化",
+      "subcategory": "01-浏览器与数据获取",
+      "name": "agent-browser",
+      "author": null,
+      "description": "name: agent-browser"
+    },
+    {
+      "id": "05-工具数据与自动化/01-浏览器与数据获取/browser-automation",
+      "category": "05-工具数据与自动化",
+      "subcategory": "01-浏览器与数据获取",
+      "name": "browser-automation",
+      "author": null,
+      "description": "name: browser-automation"
+    },
+    {
+      "id": "05-工具数据与自动化/01-浏览器与数据获取/chrome-devtools",
+      "category": "05-工具数据与自动化",
+      "subcategory": "01-浏览器与数据获取",
+      "name": "chrome-devtools",
+      "author": null,
+      "description": "name: chrome-devtools"
+    },
+    {
+      "id": "05-工具数据与自动化/01-浏览器与数据获取/firecrawl-agent",
+      "category": "05-工具数据与自动化",
+      "subcategory": "01-浏览器与数据获取",
+      "name": "firecrawl-agent",
+      "author": null,
+      "description": "name: firecrawl-agent"
+    },
+    {
+      "id": "05-工具数据与自动化/01-浏览器与数据获取/firecrawl-crawl",
+      "category": "05-工具数据与自动化",
+      "subcategory": "01-浏览器与数据获取",
+      "name": "firecrawl-crawl",
+      "author": null,
+      "description": "name: firecrawl-crawl"
+    },
+    {
+      "id": "05-工具数据与自动化/01-浏览器与数据获取/firecrawl-demo-walkthrough",
+      "category": "05-工具数据与自动化",
+      "subcategory": "01-浏览器与数据获取",
+      "name": "firecrawl-demo-walkthrough",
+      "author": null,
+      "description": "name: firecrawl-demo-walkthrough"
+    },
+    {
+      "id": "05-工具数据与自动化/01-浏览器与数据获取/firecrawl-download",
+      "category": "05-工具数据与自动化",
+      "subcategory": "01-浏览器与数据获取",
+      "name": "firecrawl-download",
+      "author": null,
+      "description": "name: firecrawl-download"
+    },
+    {
+      "id": "05-工具数据与自动化/01-浏览器与数据获取/firecrawl-interact",
+      "category": "05-工具数据与自动化",
+      "subcategory": "01-浏览器与数据获取",
+      "name": "firecrawl-interact",
+      "author": null,
+      "description": "name: firecrawl-interact"
+    },
+    {
+      "id": "05-工具数据与自动化/01-浏览器与数据获取/firecrawl-knowledge-base",
+      "category": "05-工具数据与自动化",
+      "subcategory": "01-浏览器与数据获取",
+      "name": "firecrawl-knowledge-base",
+      "author": null,
+      "description": "name: firecrawl-knowledge-base"
+    },
+    {
+      "id": "05-工具数据与自动化/01-浏览器与数据获取/firecrawl-knowledge-ingest",
+      "category": "05-工具数据与自动化",
+      "subcategory": "01-浏览器与数据获取",
+      "name": "firecrawl-knowledge-ingest",
+      "author": null,
+      "description": "name: firecrawl-knowledge-ingest"
+    },
+    {
+      "id": "05-工具数据与自动化/01-浏览器与数据获取/firecrawl-map",
+      "category": "05-工具数据与自动化",
+      "subcategory": "01-浏览器与数据获取",
+      "name": "firecrawl-map",
+      "author": null,
+      "description": "name: firecrawl-map"
+    },
+    {
+      "id": "05-工具数据与自动化/01-浏览器与数据获取/firecrawl-parse",
+      "category": "05-工具数据与自动化",
+      "subcategory": "01-浏览器与数据获取",
+      "name": "firecrawl-parse",
+      "author": null,
+      "description": "name: firecrawl-parse"
+    },
+    {
+      "id": "05-工具数据与自动化/01-浏览器与数据获取/firecrawl-scrape",
+      "category": "05-工具数据与自动化",
+      "subcategory": "01-浏览器与数据获取",
+      "name": "firecrawl-scrape",
+      "author": null,
+      "description": "name: firecrawl-scrape"
+    },
+    {
+      "id": "05-工具数据与自动化/01-浏览器与数据获取/firecrawl-search",
+      "category": "05-工具数据与自动化",
+      "subcategory": "01-浏览器与数据获取",
+      "name": "firecrawl-search",
+      "author": null,
+      "description": "name: firecrawl-search"
+    },
+    {
+      "id": "05-工具数据与自动化/01-浏览器与数据获取/puppeteer-scraper",
+      "category": "05-工具数据与自动化",
+      "subcategory": "01-浏览器与数据获取",
+      "name": "puppeteer-scraper",
+      "author": null,
+      "description": "name: puppeteer-scraper"
+    },
+    {
+      "id": "05-工具数据与自动化/01-浏览器与数据获取/web-scraper-api",
+      "category": "05-工具数据与自动化",
+      "subcategory": "01-浏览器与数据获取",
+      "name": "web-scraper-api",
+      "author": null,
+      "description": "name: web-scraper-api"
+    },
+    {
+      "id": "05-工具数据与自动化/02-外部集成与任务自动化/firecrawl",
+      "category": "05-工具数据与自动化",
+      "subcategory": "02-外部集成与任务自动化",
+      "name": "firecrawl",
+      "author": null,
+      "description": "name: firecrawl"
+    },
+    {
+      "id": "05-工具数据与自动化/02-外部集成与任务自动化/firecrawl-build-interact",
+      "category": "05-工具数据与自动化",
+      "subcategory": "02-外部集成与任务自动化",
+      "name": "firecrawl-build-interact",
+      "author": null,
+      "description": "name: firecrawl-build-interact"
+    },
+    {
+      "id": "05-工具数据与自动化/02-外部集成与任务自动化/firecrawl-build-onboarding",
+      "category": "05-工具数据与自动化",
+      "subcategory": "02-外部集成与任务自动化",
+      "name": "firecrawl-build-onboarding",
+      "author": null,
+      "description": "name: firecrawl-build-onboarding"
+    },
+    {
+      "id": "05-工具数据与自动化/02-外部集成与任务自动化/firecrawl-build-scrape",
+      "category": "05-工具数据与自动化",
+      "subcategory": "02-外部集成与任务自动化",
+      "name": "firecrawl-build-scrape",
+      "author": null,
+      "description": "name: firecrawl-build-scrape"
+    },
+    {
+      "id": "05-工具数据与自动化/02-外部集成与任务自动化/firecrawl-build-search",
+      "category": "05-工具数据与自动化",
+      "subcategory": "02-外部集成与任务自动化",
+      "name": "firecrawl-build-search",
+      "author": null,
+      "description": "name: firecrawl-build-search"
+    },
+    {
+      "id": "05-工具数据与自动化/02-外部集成与任务自动化/firecrawl-monitor",
+      "category": "05-工具数据与自动化",
+      "subcategory": "02-外部集成与任务自动化",
+      "name": "firecrawl-monitor",
+      "author": null,
+      "description": "name: firecrawl-monitor"
+    },
+    {
+      "id": "05-工具数据与自动化/02-外部集成与任务自动化/firecrawl-workflows",
+      "category": "05-工具数据与自动化",
+      "subcategory": "02-外部集成与任务自动化",
+      "name": "firecrawl-workflows",
+      "author": null,
+      "description": "name: firecrawl-workflows"
+    },
+    {
+      "id": "05-工具数据与自动化/02-外部集成与任务自动化/mcp-builder",
+      "category": "05-工具数据与自动化",
+      "subcategory": "02-外部集成与任务自动化",
+      "name": "mcp-builder",
+      "author": null,
+      "description": "name: mcp-builder"
+    },
+    {
+      "id": "05-工具数据与自动化/02-外部集成与任务自动化/screenshot",
+      "category": "05-工具数据与自动化",
+      "subcategory": "02-外部集成与任务自动化",
+      "name": "screenshot",
+      "author": null,
+      "description": "name: \"screenshot\""
+    },
+    {
+      "id": "05-工具数据与自动化/03-音视频与媒体工具/face-swap",
+      "category": "05-工具数据与自动化",
+      "subcategory": "03-音视频与媒体工具",
+      "name": "face-swap",
+      "author": null,
+      "description": "name: face-swap"
+    },
+    {
+      "id": "05-工具数据与自动化/03-音视频与媒体工具/hailuo-video",
+      "category": "05-工具数据与自动化",
+      "subcategory": "03-音视频与媒体工具",
+      "name": "hailuo-video",
+      "author": null,
+      "description": "name: hailuo-video"
+    },
+    {
+      "id": "05-工具数据与自动化/03-音视频与媒体工具/kling-video",
+      "category": "05-工具数据与自动化",
+      "subcategory": "03-音视频与媒体工具",
+      "name": "kling-video",
+      "author": null,
+      "description": "name: kling-video"
+    },
+    {
+      "id": "05-工具数据与自动化/03-音视频与媒体工具/lipsync",
+      "category": "05-工具数据与自动化",
+      "subcategory": "03-音视频与媒体工具",
+      "name": "lipsync",
+      "author": null,
+      "description": "name: lipsync"
+    },
+    {
+      "id": "05-工具数据与自动化/03-音视频与媒体工具/luma-video",
+      "category": "05-工具数据与自动化",
+      "subcategory": "03-音视频与媒体工具",
+      "name": "luma-video",
+      "author": null,
+      "description": "name: luma-video"
+    },
+    {
+      "id": "05-工具数据与自动化/03-音视频与媒体工具/pexo-agent",
+      "category": "05-工具数据与自动化",
+      "subcategory": "03-音视频与媒体工具",
+      "name": "pexo-agent",
+      "author": null,
+      "description": "name: pexo-agent"
+    },
+    {
+      "id": "05-工具数据与自动化/03-音视频与媒体工具/seedance-video",
+      "category": "05-工具数据与自动化",
+      "subcategory": "03-音视频与媒体工具",
+      "name": "seedance-video",
+      "author": null,
+      "description": "name: seedance-video"
+    },
+    {
+      "id": "05-工具数据与自动化/03-音视频与媒体工具/sora-video",
+      "category": "05-工具数据与自动化",
+      "subcategory": "03-音视频与媒体工具",
+      "name": "sora-video",
+      "author": null,
+      "description": "name: sora-video"
+    },
+    {
+      "id": "05-工具数据与自动化/03-音视频与媒体工具/veo-video",
+      "category": "05-工具数据与自动化",
+      "subcategory": "03-音视频与媒体工具",
+      "name": "veo-video",
+      "author": null,
+      "description": "name: veo-video"
+    },
+    {
+      "id": "05-工具数据与自动化/03-音视频与媒体工具/video-edit",
+      "category": "05-工具数据与自动化",
+      "subcategory": "03-音视频与媒体工具",
+      "name": "video-edit",
+      "author": null,
+      "description": "name: video-edit"
+    },
+    {
+      "id": "05-工具数据与自动化/03-音视频与媒体工具/video-extend",
+      "category": "05-工具数据与自动化",
+      "subcategory": "03-音视频与媒体工具",
+      "name": "video-extend",
+      "author": null,
+      "description": "name: video-extend"
+    },
+    {
+      "id": "05-工具数据与自动化/03-音视频与媒体工具/video-inpainting",
+      "category": "05-工具数据与自动化",
+      "subcategory": "03-音视频与媒体工具",
+      "name": "video-inpainting",
+      "author": null,
+      "description": "name: video-inpainting"
+    },
+    {
+      "id": "05-工具数据与自动化/03-音视频与媒体工具/video-outpainting",
+      "category": "05-工具数据与自动化",
+      "subcategory": "03-音视频与媒体工具",
+      "name": "video-outpainting",
+      "author": null,
+      "description": "name: video-outpainting"
+    },
+    {
+      "id": "06-安全与逆向工程/01-安全工程与审计/codeql",
+      "category": "06-安全与逆向工程",
+      "subcategory": "01-安全工程与审计",
+      "name": "codeql",
+      "author": null,
+      "description": "description: >-"
+    },
+    {
+      "id": "06-安全与逆向工程/01-安全工程与审计/secure-coding",
+      "category": "06-安全与逆向工程",
+      "subcategory": "01-安全工程与审计",
+      "name": "secure-coding",
+      "author": null,
+      "description": "name: secure-coding"
+    },
+    {
+      "id": "06-安全与逆向工程/01-安全工程与审计/semgrep",
+      "category": "06-安全与逆向工程",
+      "subcategory": "01-安全工程与审计",
+      "name": "semgrep",
+      "author": null,
+      "description": "name: semgrep"
+    },
+    {
+      "id": "06-安全与逆向工程/01-安全工程与审计/stackhawk",
+      "category": "06-安全与逆向工程",
+      "subcategory": "01-安全工程与审计",
+      "name": "stackhawk",
+      "author": null,
+      "description": "name: stackhawk"
+    },
+    {
+      "id": "06-安全与逆向工程/01-安全工程与审计/variant-analysis",
+      "category": "06-安全与逆向工程",
+      "subcategory": "01-安全工程与审计",
+      "name": "variant-analysis",
+      "author": null,
+      "description": "name: variant-analysis"
+    },
+    {
+      "id": "06-安全与逆向工程/01-安全工程与审计/zhaoxuya520--case-review",
+      "category": "06-安全与逆向工程",
+      "subcategory": "01-安全工程与审计",
+      "name": "zhaoxuya520--case-review",
+      "author": "zhaoxuya520",
+      "description": "name: case-review"
+    },
+    {
+      "id": "06-安全与逆向工程/01-安全工程与审计/zhaoxuya520--code-audit",
+      "category": "06-安全与逆向工程",
+      "subcategory": "01-安全工程与审计",
+      "name": "zhaoxuya520--code-audit",
+      "author": "zhaoxuya520",
+      "description": "name: code-audit"
+    },
+    {
+      "id": "06-安全与逆向工程/01-安全工程与审计/zhaoxuya520--digital-forensics",
+      "category": "06-安全与逆向工程",
+      "subcategory": "01-安全工程与审计",
+      "name": "zhaoxuya520--digital-forensics",
+      "author": "zhaoxuya520",
+      "description": "name: digital-forensics"
+    },
+    {
+      "id": "06-安全与逆向工程/01-安全工程与审计/zhaoxuya520--threat-hunting",
+      "category": "06-安全与逆向工程",
+      "subcategory": "01-安全工程与审计",
+      "name": "zhaoxuya520--threat-hunting",
+      "author": "zhaoxuya520",
+      "description": "name: threat-hunting"
+    },
+    {
+      "id": "06-安全与逆向工程/01-安全工程与审计/zhaoxuya520--threat-intelligence",
+      "category": "06-安全与逆向工程",
+      "subcategory": "01-安全工程与审计",
+      "name": "zhaoxuya520--threat-intelligence",
+      "author": "zhaoxuya520",
+      "description": "name: threat-intelligence"
+    },
+    {
+      "id": "06-安全与逆向工程/02-WebAPI与供应链安全/zhaoxuya520--api-security",
+      "category": "06-安全与逆向工程",
+      "subcategory": "02-WebAPI与供应链安全",
+      "name": "zhaoxuya520--api-security",
+      "author": "zhaoxuya520",
+      "description": "name: api-security"
+    },
+    {
+      "id": "06-安全与逆向工程/02-WebAPI与供应链安全/zhaoxuya520--browser-extension-reverse",
+      "category": "06-安全与逆向工程",
+      "subcategory": "02-WebAPI与供应链安全",
+      "name": "zhaoxuya520--browser-extension-reverse",
+      "author": "zhaoxuya520",
+      "description": "name: browser-extension-reverse"
+    },
+    {
+      "id": "06-安全与逆向工程/02-WebAPI与供应链安全/zhaoxuya520--cloud-k8s",
+      "category": "06-安全与逆向工程",
+      "subcategory": "02-WebAPI与供应链安全",
+      "name": "zhaoxuya520--cloud-k8s",
+      "author": "zhaoxuya520",
+      "description": "name: cloud-k8s"
+    },
+    {
+      "id": "06-安全与逆向工程/02-WebAPI与供应链安全/zhaoxuya520--database-security",
+      "category": "06-安全与逆向工程",
+      "subcategory": "02-WebAPI与供应链安全",
+      "name": "zhaoxuya520--database-security",
+      "author": "zhaoxuya520",
+      "description": "name: database-security"
+    },
+    {
+      "id": "06-安全与逆向工程/02-WebAPI与供应链安全/zhaoxuya520--email-security",
+      "category": "06-安全与逆向工程",
+      "subcategory": "02-WebAPI与供应链安全",
+      "name": "zhaoxuya520--email-security",
+      "author": "zhaoxuya520",
+      "description": "name: email-security"
+    },
+    {
+      "id": "06-安全与逆向工程/02-WebAPI与供应链安全/zhaoxuya520--identity-federation",
+      "category": "06-安全与逆向工程",
+      "subcategory": "02-WebAPI与供应链安全",
+      "name": "zhaoxuya520--identity-federation",
+      "author": "zhaoxuya520",
+      "description": "name: identity-federation"
+    },
+    {
+      "id": "06-安全与逆向工程/02-WebAPI与供应链安全/zhaoxuya520--llm-security",
+      "category": "06-安全与逆向工程",
+      "subcategory": "02-WebAPI与供应链安全",
+      "name": "zhaoxuya520--llm-security",
+      "author": "zhaoxuya520",
+      "description": "name: llm-security"
+    },
+    {
+      "id": "06-安全与逆向工程/02-WebAPI与供应链安全/zhaoxuya520--ot-ics",
+      "category": "06-安全与逆向工程",
+      "subcategory": "02-WebAPI与供应链安全",
+      "name": "zhaoxuya520--ot-ics",
+      "author": "zhaoxuya520",
+      "description": "description: Use for authorized OT/ICS security assessment covering Purdue model zoning, PLC/SCADA exposure, industrial "
+    },
+    {
+      "id": "06-安全与逆向工程/02-WebAPI与供应链安全/zhaoxuya520--pentest-tools",
+      "category": "06-安全与逆向工程",
+      "subcategory": "02-WebAPI与供应链安全",
+      "name": "zhaoxuya520--pentest-tools",
+      "author": "zhaoxuya520",
+      "description": "name: pentest-tools"
+    },
+    {
+      "id": "06-安全与逆向工程/02-WebAPI与供应链安全/zhaoxuya520--src-hunter",
+      "category": "06-安全与逆向工程",
+      "subcategory": "02-WebAPI与供应链安全",
+      "name": "zhaoxuya520--src-hunter",
+      "author": "zhaoxuya520",
+      "description": "name: src-hunter"
+    },
+    {
+      "id": "06-安全与逆向工程/02-WebAPI与供应链安全/zhaoxuya520--supply-chain-security",
+      "category": "06-安全与逆向工程",
+      "subcategory": "02-WebAPI与供应链安全",
+      "name": "zhaoxuya520--supply-chain-security",
+      "author": "zhaoxuya520",
+      "description": "name: supply-chain-security"
+    },
+    {
+      "id": "06-安全与逆向工程/02-WebAPI与供应链安全/zhaoxuya520--wifi-wireless",
+      "category": "06-安全与逆向工程",
+      "subcategory": "02-WebAPI与供应链安全",
+      "name": "zhaoxuya520--wifi-wireless",
+      "author": "zhaoxuya520",
+      "description": "name: wifi-wireless"
+    },
+    {
+      "id": "06-安全与逆向工程/02-WebAPI与供应链安全/zhaoxuya520--windows-ad",
+      "category": "06-安全与逆向工程",
+      "subcategory": "02-WebAPI与供应链安全",
+      "name": "zhaoxuya520--windows-ad",
+      "author": "zhaoxuya520",
+      "description": "name: windows-ad"
+    },
+    {
+      "id": "06-安全与逆向工程/03-二进制移动端与逆向/cyberkaida--binary-triage",
+      "category": "06-安全与逆向工程",
+      "subcategory": "03-二进制移动端与逆向",
+      "name": "cyberkaida--binary-triage",
+      "author": "cyberkaida",
+      "description": "name: binary-triage"
+    },
+    {
+      "id": "06-安全与逆向工程/03-二进制移动端与逆向/cyberkaida--deep-analysis",
+      "category": "06-安全与逆向工程",
+      "subcategory": "03-二进制移动端与逆向",
+      "name": "cyberkaida--deep-analysis",
+      "author": "cyberkaida",
+      "description": "name: deep-analysis"
+    },
+    {
+      "id": "06-安全与逆向工程/03-二进制移动端与逆向/cyberkaida--pyghidra-scripting",
+      "category": "06-安全与逆向工程",
+      "subcategory": "03-二进制移动端与逆向",
+      "name": "cyberkaida--pyghidra-scripting",
+      "author": "cyberkaida",
+      "description": "name: pyghidra-scripting"
+    },
+    {
+      "id": "06-安全与逆向工程/03-二进制移动端与逆向/P4nda0s--rev-dex-dumper",
+      "category": "06-安全与逆向工程",
+      "subcategory": "03-二进制移动端与逆向",
+      "name": "P4nda0s--rev-dex-dumper",
+      "author": "P4nda0s",
+      "description": "name: rev-dex-dumper"
+    },
+    {
+      "id": "06-安全与逆向工程/03-二进制移动端与逆向/P4nda0s--rev-frida",
+      "category": "06-安全与逆向工程",
+      "subcategory": "03-二进制移动端与逆向",
+      "name": "P4nda0s--rev-frida",
+      "author": "P4nda0s",
+      "description": "name: rev-frida"
+    },
+    {
+      "id": "06-安全与逆向工程/03-二进制移动端与逆向/P4nda0s--rev-idapython",
+      "category": "06-安全与逆向工程",
+      "subcategory": "03-二进制移动端与逆向",
+      "name": "P4nda0s--rev-idapython",
+      "author": "P4nda0s",
+      "description": "name: rev-idapython"
+    },
+    {
+      "id": "06-安全与逆向工程/03-二进制移动端与逆向/P4nda0s--rev-ios-dump",
+      "category": "06-安全与逆向工程",
+      "subcategory": "03-二进制移动端与逆向",
+      "name": "P4nda0s--rev-ios-dump",
+      "author": "P4nda0s",
+      "description": "name: rev-ios-dump"
+    },
+    {
+      "id": "06-安全与逆向工程/03-二进制移动端与逆向/P4nda0s--rev-struct",
+      "category": "06-安全与逆向工程",
+      "subcategory": "03-二进制移动端与逆向",
+      "name": "P4nda0s--rev-struct",
+      "author": "P4nda0s",
+      "description": "name: rev-struct"
+    },
+    {
+      "id": "06-安全与逆向工程/03-二进制移动端与逆向/P4nda0s--rev-symbol",
+      "category": "06-安全与逆向工程",
+      "subcategory": "03-二进制移动端与逆向",
+      "name": "P4nda0s--rev-symbol",
+      "author": "P4nda0s",
+      "description": "name: rev-symbol"
+    },
+    {
+      "id": "06-安全与逆向工程/03-二进制移动端与逆向/P4nda0s--rev-u3d-dump",
+      "category": "06-安全与逆向工程",
+      "subcategory": "03-二进制移动端与逆向",
+      "name": "P4nda0s--rev-u3d-dump",
+      "author": "P4nda0s",
+      "description": "name: rev-u3d-dump"
+    },
+    {
+      "id": "06-安全与逆向工程/03-二进制移动端与逆向/P4nda0s--rev-unicorn-debug",
+      "category": "06-安全与逆向工程",
+      "subcategory": "03-二进制移动端与逆向",
+      "name": "P4nda0s--rev-unicorn-debug",
+      "author": "P4nda0s",
+      "description": "name: rev-unicorn-debug"
+    },
+    {
+      "id": "06-安全与逆向工程/03-二进制移动端与逆向/SimoneAvogadro--android-reverse-engineering",
+      "category": "06-安全与逆向工程",
+      "subcategory": "03-二进制移动端与逆向",
+      "name": "SimoneAvogadro--android-reverse-engineering",
+      "author": "SimoneAvogadro",
+      "description": "description: Decompile Android APK, XAPK, JAR, and AAR files using jadx or Fernflower/Vineflower. Reverse engineer Andro"
+    },
+    {
+      "id": "06-安全与逆向工程/03-二进制移动端与逆向/WhiteNightShadow--hello_js_reverse_skill",
+      "category": "06-安全与逆向工程",
+      "subcategory": "03-二进制移动端与逆向",
+      "name": "WhiteNightShadow--hello_js_reverse_skill",
+      "author": "WhiteNightShadow",
+      "description": "name: hello_js_reverse_skill"
+    },
+    {
+      "id": "06-安全与逆向工程/03-二进制移动端与逆向/zhaoxuya520--apk-reverse",
+      "category": "06-安全与逆向工程",
+      "subcategory": "03-二进制移动端与逆向",
+      "name": "zhaoxuya520--apk-reverse",
+      "author": "zhaoxuya520",
+      "description": "name: apk-reverse"
+    },
+    {
+      "id": "06-安全与逆向工程/03-二进制移动端与逆向/zhaoxuya520--binary-diff",
+      "category": "06-安全与逆向工程",
+      "subcategory": "03-二进制移动端与逆向",
+      "name": "zhaoxuya520--binary-diff",
+      "author": "zhaoxuya520",
+      "description": "name: binary-diff"
+    },
+    {
+      "id": "06-安全与逆向工程/03-二进制移动端与逆向/zhaoxuya520--dotnet-reverse",
+      "category": "06-安全与逆向工程",
+      "subcategory": "03-二进制移动端与逆向",
+      "name": "zhaoxuya520--dotnet-reverse",
+      "author": "zhaoxuya520",
+      "description": "name: dotnet-reverse"
+    },
+    {
+      "id": "06-安全与逆向工程/03-二进制移动端与逆向/zhaoxuya520--dsl-vm-reverse",
+      "category": "06-安全与逆向工程",
+      "subcategory": "03-二进制移动端与逆向",
+      "name": "zhaoxuya520--dsl-vm-reverse",
+      "author": "zhaoxuya520",
+      "description": "name: dsl-vm-reverse"
+    },
+    {
+      "id": "06-安全与逆向工程/03-二进制移动端与逆向/zhaoxuya520--edr-bypass-re",
+      "category": "06-安全与逆向工程",
+      "subcategory": "03-二进制移动端与逆向",
+      "name": "zhaoxuya520--edr-bypass-re",
+      "author": "zhaoxuya520",
+      "description": "name: edr-bypass-re"
+    },
+    {
+      "id": "06-安全与逆向工程/03-二进制移动端与逆向/zhaoxuya520--firmware-pentest",
+      "category": "06-安全与逆向工程",
+      "subcategory": "03-二进制移动端与逆向",
+      "name": "zhaoxuya520--firmware-pentest",
+      "author": "zhaoxuya520",
+      "description": "name: firmware-pentest"
+    },
+    {
+      "id": "06-安全与逆向工程/03-二进制移动端与逆向/zhaoxuya520--ghidra-reverse",
+      "category": "06-安全与逆向工程",
+      "subcategory": "03-二进制移动端与逆向",
+      "name": "zhaoxuya520--ghidra-reverse",
+      "author": "zhaoxuya520",
+      "description": "name: ghidra-reverse"
+    },
+    {
+      "id": "06-安全与逆向工程/03-二进制移动端与逆向/zhaoxuya520--go-rust-reverse",
+      "category": "06-安全与逆向工程",
+      "subcategory": "03-二进制移动端与逆向",
+      "name": "zhaoxuya520--go-rust-reverse",
+      "author": "zhaoxuya520",
+      "description": "name: go-rust-reverse"
+    },
+    {
+      "id": "06-安全与逆向工程/03-二进制移动端与逆向/zhaoxuya520--hardware-security",
+      "category": "06-安全与逆向工程",
+      "subcategory": "03-二进制移动端与逆向",
+      "name": "zhaoxuya520--hardware-security",
+      "author": "zhaoxuya520",
+      "description": "name: hardware-security"
+    },
+    {
+      "id": "06-安全与逆向工程/03-二进制移动端与逆向/zhaoxuya520--ida-reverse",
+      "category": "06-安全与逆向工程",
+      "subcategory": "03-二进制移动端与逆向",
+      "name": "zhaoxuya520--ida-reverse",
+      "author": "zhaoxuya520",
+      "description": "name: ida-reverse"
+    },
+    {
+      "id": "06-安全与逆向工程/03-二进制移动端与逆向/zhaoxuya520--js-reverse",
+      "category": "06-安全与逆向工程",
+      "subcategory": "03-二进制移动端与逆向",
+      "name": "zhaoxuya520--js-reverse",
+      "author": "zhaoxuya520",
+      "description": "name: js-reverse"
+    },
+    {
+      "id": "06-安全与逆向工程/03-二进制移动端与逆向/zhaoxuya520--macos-reverse",
+      "category": "06-安全与逆向工程",
+      "subcategory": "03-二进制移动端与逆向",
+      "name": "zhaoxuya520--macos-reverse",
+      "author": "zhaoxuya520",
+      "description": "name: macos-reverse"
+    },
+    {
+      "id": "06-安全与逆向工程/03-二进制移动端与逆向/zhaoxuya520--malware-analysis",
+      "category": "06-安全与逆向工程",
+      "subcategory": "03-二进制移动端与逆向",
+      "name": "zhaoxuya520--malware-analysis",
+      "author": "zhaoxuya520",
+      "description": "name: malware-analysis"
+    },
+    {
+      "id": "06-安全与逆向工程/03-二进制移动端与逆向/zhaoxuya520--mobile-reverse",
+      "category": "06-安全与逆向工程",
+      "subcategory": "03-二进制移动端与逆向",
+      "name": "zhaoxuya520--mobile-reverse",
+      "author": "zhaoxuya520",
+      "description": "name: mobile-reverse"
+    },
+    {
+      "id": "06-安全与逆向工程/03-二进制移动端与逆向/zhaoxuya520--protocol-reverse",
+      "category": "06-安全与逆向工程",
+      "subcategory": "03-二进制移动端与逆向",
+      "name": "zhaoxuya520--protocol-reverse",
+      "author": "zhaoxuya520",
+      "description": "name: protocol-reverse"
+    },
+    {
+      "id": "06-安全与逆向工程/03-二进制移动端与逆向/zhaoxuya520--radare2",
+      "category": "06-安全与逆向工程",
+      "subcategory": "03-二进制移动端与逆向",
+      "name": "zhaoxuya520--radare2",
+      "author": "zhaoxuya520",
+      "description": "name: radare2"
+    },
+    {
+      "id": "06-安全与逆向工程/03-二进制移动端与逆向/zhaoxuya520--radio-sdr",
+      "category": "06-安全与逆向工程",
+      "subcategory": "03-二进制移动端与逆向",
+      "name": "zhaoxuya520--radio-sdr",
+      "author": "zhaoxuya520",
+      "description": "name: radio-sdr"
+    },
+    {
+      "id": "06-安全与逆向工程/03-二进制移动端与逆向/zhaoxuya520--reverse-engineering",
+      "category": "06-安全与逆向工程",
+      "subcategory": "03-二进制移动端与逆向",
+      "name": "zhaoxuya520--reverse-engineering",
+      "author": "zhaoxuya520",
+      "description": "name: reverse-engineering"
+    },
+    {
+      "id": "06-安全与逆向工程/03-二进制移动端与逆向/zhaoxuya520--thick-client",
+      "category": "06-安全与逆向工程",
+      "subcategory": "03-二进制移动端与逆向",
+      "name": "zhaoxuya520--thick-client",
+      "author": "zhaoxuya520",
+      "description": "name: thick-client"
+    },
+    {
+      "id": "06-安全与逆向工程/03-二进制移动端与逆向/zhizhuodemao--ast-deobfuscate",
+      "category": "06-安全与逆向工程",
+      "subcategory": "03-二进制移动端与逆向",
+      "name": "zhizhuodemao--ast-deobfuscate",
+      "author": "zhizhuodemao",
+      "description": "name: ast-deobfuscate"
+    },
+    {
+      "id": "06-安全与逆向工程/03-二进制移动端与逆向/zhizhuodemao--env-patch",
+      "category": "06-安全与逆向工程",
+      "subcategory": "03-二进制移动端与逆向",
+      "name": "zhizhuodemao--env-patch",
+      "author": "zhizhuodemao",
+      "description": "name: env-patch"
+    },
+    {
+      "id": "06-安全与逆向工程/03-二进制移动端与逆向/zhizhuodemao--find-crypto-entry",
+      "category": "06-安全与逆向工程",
+      "subcategory": "03-二进制移动端与逆向",
+      "name": "zhizhuodemao--find-crypto-entry",
+      "author": "zhizhuodemao",
+      "description": "name: find-crypto-entry"
+    },
+    {
+      "id": "06-安全与逆向工程/04-漏洞研究与CTF/cyberkaida--ctf-crypto",
+      "category": "06-安全与逆向工程",
+      "subcategory": "04-漏洞研究与CTF",
+      "name": "cyberkaida--ctf-crypto",
+      "author": "cyberkaida",
+      "description": "name: ctf-crypto"
+    },
+    {
+      "id": "06-安全与逆向工程/04-漏洞研究与CTF/cyberkaida--ctf-pwn",
+      "category": "06-安全与逆向工程",
+      "subcategory": "04-漏洞研究与CTF",
+      "name": "cyberkaida--ctf-pwn",
+      "author": "cyberkaida",
+      "description": "name: ctf-pwn"
+    },
+    {
+      "id": "06-安全与逆向工程/04-漏洞研究与CTF/cyberkaida--ctf-rev",
+      "category": "06-安全与逆向工程",
+      "subcategory": "04-漏洞研究与CTF",
+      "name": "cyberkaida--ctf-rev",
+      "author": "cyberkaida",
+      "description": "name: ctf-rev"
+    },
+    {
+      "id": "06-安全与逆向工程/04-漏洞研究与CTF/zhaoxuya520--attack-chain",
+      "category": "06-安全与逆向工程",
+      "subcategory": "04-漏洞研究与CTF",
+      "name": "zhaoxuya520--attack-chain",
+      "author": "zhaoxuya520",
+      "description": "name: attack-chain"
+    },
+    {
+      "id": "06-安全与逆向工程/04-漏洞研究与CTF/zhaoxuya520--ctf-sandbox",
+      "category": "06-安全与逆向工程",
+      "subcategory": "04-漏洞研究与CTF",
+      "name": "zhaoxuya520--ctf-sandbox",
+      "author": "zhaoxuya520",
+      "description": "name: ctf-sandbox"
+    },
+    {
+      "id": "06-安全与逆向工程/04-漏洞研究与CTF/zhaoxuya520--patch-diff-exploit",
+      "category": "06-安全与逆向工程",
+      "subcategory": "04-漏洞研究与CTF",
+      "name": "zhaoxuya520--patch-diff-exploit",
+      "author": "zhaoxuya520",
+      "description": "name: patch-diff-exploit"
+    },
+    {
+      "id": "06-安全与逆向工程/04-漏洞研究与CTF/zhaoxuya520--pwn-chain",
+      "category": "06-安全与逆向工程",
+      "subcategory": "04-漏洞研究与CTF",
+      "name": "zhaoxuya520--pwn-chain",
+      "author": "zhaoxuya520",
+      "description": "name: pwn-chain"
+    },
+    {
+      "id": "07-内容增长与一人公司/01-内容与知识交付/blueprinter",
+      "category": "07-内容增长与一人公司",
+      "subcategory": "01-内容与知识交付",
+      "name": "blueprinter",
+      "author": null,
+      "description": "name: blueprinter"
+    },
+    {
+      "id": "07-内容增长与一人公司/01-内容与知识交付/diagram-generator",
+      "category": "07-内容增长与一人公司",
+      "subcategory": "01-内容与知识交付",
+      "name": "diagram-generator",
+      "author": null,
+      "description": "name: diagram-generator"
+    },
+    {
+      "id": "07-内容增长与一人公司/01-内容与知识交付/docs-generator",
+      "category": "07-内容增长与一人公司",
+      "subcategory": "01-内容与知识交付",
+      "name": "docs-generator",
+      "author": null,
+      "description": "name: docs-generator"
+    },
+    {
+      "id": "07-内容增长与一人公司/01-内容与知识交付/docx",
+      "category": "07-内容增长与一人公司",
+      "subcategory": "01-内容与知识交付",
+      "name": "docx",
+      "author": null,
+      "description": "description: \"Use this skill whenever the user wants to create, read, edit, or manipulate Word documents .docx files. Tr"
+    },
+    {
+      "id": "07-内容增长与一人公司/01-内容与知识交付/eli5",
+      "category": "07-内容增长与一人公司",
+      "subcategory": "01-内容与知识交付",
+      "name": "eli5",
+      "author": null,
+      "description": "description: Explain a topic like I'm a 5 year old. Use when the user types /eli5 <topic> or asks for a dead-simple pict"
+    },
+    {
+      "id": "07-内容增长与一人公司/01-内容与知识交付/fireworks-tech-graph",
+      "category": "07-内容增长与一人公司",
+      "subcategory": "01-内容与知识交付",
+      "name": "fireworks-tech-graph",
+      "author": null,
+      "description": "name: fireworks-tech-graph"
+    },
+    {
+      "id": "07-内容增长与一人公司/01-内容与知识交付/mattpocock--teach",
+      "category": "07-内容增长与一人公司",
+      "subcategory": "01-内容与知识交付",
+      "name": "mattpocock--teach",
+      "author": "mattpocock",
+      "description": "description: Teach the user a new skill or concept, within this workspace."
+    },
+    {
+      "id": "07-内容增长与一人公司/01-内容与知识交付/mattpocock--writing-beats",
+      "category": "07-内容增长与一人公司",
+      "subcategory": "01-内容与知识交付",
+      "name": "mattpocock--writing-beats",
+      "author": "mattpocock",
+      "description": "name: writing-beats"
+    },
+    {
+      "id": "07-内容增长与一人公司/01-内容与知识交付/mattpocock--writing-fragments",
+      "category": "07-内容增长与一人公司",
+      "subcategory": "01-内容与知识交付",
+      "name": "mattpocock--writing-fragments",
+      "author": "mattpocock",
+      "description": "name: writing-fragments"
+    },
+    {
+      "id": "07-内容增长与一人公司/01-内容与知识交付/mattpocock--writing-shape",
+      "category": "07-内容增长与一人公司",
+      "subcategory": "01-内容与知识交付",
+      "name": "mattpocock--writing-shape",
+      "author": "mattpocock",
+      "description": "name: writing-shape"
+    },
+    {
+      "id": "07-内容增长与一人公司/01-内容与知识交付/pdf",
+      "category": "07-内容增长与一人公司",
+      "subcategory": "01-内容与知识交付",
+      "name": "pdf",
+      "author": null,
+      "description": "description: Use this skill whenever the user wants to do anything with PDF files. This includes reading or extracting t"
+    },
+    {
+      "id": "07-内容增长与一人公司/01-内容与知识交付/pptx",
+      "category": "07-内容增长与一人公司",
+      "subcategory": "01-内容与知识交付",
+      "name": "pptx",
+      "author": null,
+      "description": "description: \"Use this skill any time a .pptx file is involved in any way — as input, output, or both. This includes: cr"
+    },
+    {
+      "id": "07-内容增长与一人公司/01-内容与知识交付/sanyuan0704--book-study",
+      "category": "07-内容增长与一人公司",
+      "subcategory": "01-内容与知识交付",
+      "name": "sanyuan0704--book-study",
+      "author": "sanyuan0704",
+      "description": "name: book-study"
+    },
+    {
+      "id": "07-内容增长与一人公司/01-内容与知识交付/sanyuan0704--sigma",
+      "category": "07-内容增长与一人公司",
+      "subcategory": "01-内容与知识交付",
+      "name": "sanyuan0704--sigma",
+      "author": "sanyuan0704",
+      "description": "description: \"Personalized 1-on-1 AI tutor using Bloom's 2-Sigma mastery learning. Guides users through any topic with S"
+    },
+    {
+      "id": "07-内容增长与一人公司/01-内容与知识交付/sanyuan0704--wiki-ingest",
+      "category": "07-内容增长与一人公司",
+      "subcategory": "01-内容与知识交付",
+      "name": "sanyuan0704--wiki-ingest",
+      "author": "sanyuan0704",
+      "description": "name: wiki-ingest"
+    },
+    {
+      "id": "07-内容增长与一人公司/01-内容与知识交付/show-me",
+      "category": "07-内容增长与一人公司",
+      "subcategory": "01-内容与知识交付",
+      "name": "show-me",
+      "author": null,
+      "description": "name: show-me"
+    },
+    {
+      "id": "07-内容增长与一人公司/01-内容与知识交付/unslop",
+      "category": "07-内容增长与一人公司",
+      "subcategory": "01-内容与知识交付",
+      "name": "unslop",
+      "author": null,
+      "description": "description: Cut AI tells from any writing. Must always apply."
+    },
+    {
+      "id": "07-内容增长与一人公司/01-内容与知识交付/weread-skills",
+      "category": "07-内容增长与一人公司",
+      "subcategory": "01-内容与知识交付",
+      "name": "weread-skills",
+      "author": null,
+      "description": "name: weread-skills"
+    },
+    {
+      "id": "07-内容增长与一人公司/01-内容与知识交付/writer-me",
+      "category": "07-内容增长与一人公司",
+      "subcategory": "01-内容与知识交付",
+      "name": "writer-me",
+      "author": null,
+      "description": "name: writer-me"
+    },
+    {
+      "id": "07-内容增长与一人公司/01-内容与知识交付/xlsx",
+      "category": "07-内容增长与一人公司",
+      "subcategory": "01-内容与知识交付",
+      "name": "xlsx",
+      "author": null,
+      "description": "description: \"Use this skill any time a spreadsheet file is the primary input or output. This means any task where the u"
+    },
+    {
+      "id": "07-内容增长与一人公司/02-多媒体与品牌/ai-music",
+      "category": "07-内容增长与一人公司",
+      "subcategory": "02-多媒体与品牌",
+      "name": "ai-music",
+      "author": null,
+      "description": "name: ai-music"
+    },
+    {
+      "id": "07-内容增长与一人公司/02-多媒体与品牌/elevenlabs-music-generation",
+      "category": "07-内容增长与一人公司",
+      "subcategory": "02-多媒体与品牌",
+      "name": "elevenlabs-music-generation",
+      "author": null,
+      "description": "name: elevenlabs-music-generation"
+    },
+    {
+      "id": "07-内容增长与一人公司/02-多媒体与品牌/fish-audio",
+      "category": "07-内容增长与一人公司",
+      "subcategory": "02-多媒体与品牌",
+      "name": "fish-audio",
+      "author": null,
+      "description": "name: fish-audio"
+    },
+    {
+      "id": "07-内容增长与一人公司/02-多媒体与品牌/producer-music",
+      "category": "07-内容增长与一人公司",
+      "subcategory": "02-多媒体与品牌",
+      "name": "producer-music",
+      "author": null,
+      "description": "name: producer-music"
+    },
+    {
+      "id": "07-内容增长与一人公司/02-多媒体与品牌/suno-music",
+      "category": "07-内容增长与一人公司",
+      "subcategory": "02-多媒体与品牌",
+      "name": "suno-music",
+      "author": null,
+      "description": "name: suno-music"
+    },
+    {
+      "id": "07-内容增长与一人公司/03-增长销售与客户/copywriting",
+      "category": "07-内容增长与一人公司",
+      "subcategory": "03-增长销售与客户",
+      "name": "copywriting",
+      "author": null,
+      "description": "name: copywriting"
+    },
+    {
+      "id": "07-内容增长与一人公司/03-增长销售与客户/cro",
+      "category": "07-内容增长与一人公司",
+      "subcategory": "03-增长销售与客户",
+      "name": "cro",
+      "author": null,
+      "description": "description: \"When the user wants to optimize, improve, or increase conversions on any marketing page or form — includin"
+    },
+    {
+      "id": "07-内容增长与一人公司/03-增长销售与客户/firecrawl-lead-gen",
+      "category": "07-内容增长与一人公司",
+      "subcategory": "03-增长销售与客户",
+      "name": "firecrawl-lead-gen",
+      "author": null,
+      "description": "name: firecrawl-lead-gen"
+    },
+    {
+      "id": "07-内容增长与一人公司/03-增长销售与客户/firecrawl-lead-research",
+      "category": "07-内容增长与一人公司",
+      "subcategory": "03-增长销售与客户",
+      "name": "firecrawl-lead-research",
+      "author": null,
+      "description": "name: firecrawl-lead-research"
+    },
+    {
+      "id": "07-内容增长与一人公司/03-增长销售与客户/firecrawl-seo-audit",
+      "category": "07-内容增长与一人公司",
+      "subcategory": "03-增长销售与客户",
+      "name": "firecrawl-seo-audit",
+      "author": null,
+      "description": "name: firecrawl-seo-audit"
+    },
+    {
+      "id": "07-内容增长与一人公司/03-增长销售与客户/seo-audit",
+      "category": "07-内容增长与一人公司",
+      "subcategory": "03-增长销售与客户",
+      "name": "seo-audit",
+      "author": null,
+      "description": "name: seo-audit"
+    },
+    {
+      "id": "07-内容增长与一人公司/04-经营与个人系统/firecrawl-dashboard-reporting",
+      "category": "07-内容增长与一人公司",
+      "subcategory": "04-经营与个人系统",
+      "name": "firecrawl-dashboard-reporting",
+      "author": null,
+      "description": "name: firecrawl-dashboard-reporting"
+    },
+    {
+      "id": "07-内容增长与一人公司/04-经营与个人系统/firecrawl-shop",
+      "category": "07-内容增长与一人公司",
+      "subcategory": "04-经营与个人系统",
+      "name": "firecrawl-shop",
+      "author": null,
+      "description": "name: firecrawl-shop"
+    },
+    {
+      "id": "07-内容增长与一人公司/04-经营与个人系统/know-me",
+      "category": "07-内容增长与一人公司",
+      "subcategory": "04-经营与个人系统",
+      "name": "know-me",
+      "author": null,
+      "description": "name: know-me"
+    },
+    {
+      "id": "07-内容增长与一人公司/04-经营与个人系统/mattpocock--triage",
+      "category": "07-内容增长与一人公司",
+      "subcategory": "04-经营与个人系统",
+      "name": "mattpocock--triage",
+      "author": "mattpocock",
+      "description": "description: Move issues and external PRs through a state machine of triage roles - categorise, verify, grill if needed,"
+    },
+    {
+      "id": "07-内容增长与一人公司/04-经营与个人系统/mentor-me",
+      "category": "07-内容增长与一人公司",
+      "subcategory": "04-经营与个人系统",
+      "name": "mentor-me",
+      "author": null,
+      "description": "name: mentor-me"
+    },
+    {
+      "id": "07-内容增长与一人公司/04-经营与个人系统/retro",
+      "category": "07-内容增长与一人公司",
+      "subcategory": "04-经营与个人系统",
+      "name": "retro",
+      "author": null,
+      "description": "description: \"Conduct a retrospective on a coding session.\""
+    },
+    {
+      "id": "07-内容增长与一人公司/05-求职与面试/asu",
+      "category": "07-内容增长与一人公司",
+      "subcategory": "05-求职与面试",
+      "name": "asu",
+      "author": null,
+      "description": "description: 中文求职经历酥化技能：根据目标岗位把真实经历重组为岗位定位、简历要点、项目亮点和 HR 开场白；当用户输入“/asu”“我要酥化”、要求包装或改写经历、项目，或写 HR 自我介绍时使用。若用户明确要求“阿酥同款”、"
+    },
+    {
+      "id": "07-内容增长与一人公司/05-求职与面试/asu-recap",
+      "category": "07-内容增长与一人公司",
+      "subcategory": "05-求职与面试",
+      "name": "asu-recap",
+      "author": null,
+      "description": "当用户运行 /asu-recap 或 $asu-recap，或明确要求按照阿酥方式复盘人工智能编程对话、项目交付记录和落地证据时使用。"
+    },
+    {
+      "id": "07-内容增长与一人公司/05-求职与面试/asu-resume",
+      "category": "07-内容增长与一人公司",
+      "subcategory": "05-求职与面试",
+      "name": "asu-resume",
+      "author": null,
+      "description": "name: asu-resume"
+    },
+    {
+      "id": "07-内容增长与一人公司/05-求职与面试/contributor",
+      "category": "07-内容增长与一人公司",
+      "subcategory": "05-求职与面试",
+      "name": "contributor",
+      "author": null,
+      "description": "name: contributor"
+    },
+    {
+      "id": "07-内容增长与一人公司/05-求职与面试/interview",
+      "category": "07-内容增长与一人公司",
+      "subcategory": "05-求职与面试",
+      "name": "interview",
+      "author": null,
+      "description": "name: interview"
+    },
+    {
+      "id": "07-内容增长与一人公司/05-求职与面试/make-resume",
+      "category": "07-内容增长与一人公司",
+      "subcategory": "05-求职与面试",
+      "name": "make-resume",
+      "author": null,
+      "description": "name: make-resume"
+    },
+    {
+      "id": "07-内容增长与一人公司/05-求职与面试/offer",
+      "category": "07-内容增长与一人公司",
+      "subcategory": "05-求职与面试",
+      "name": "offer",
+      "author": null,
+      "description": "description: 中文秋招求职进度管理技能：记录和更新投递、筛选、测评、面试、Offer、拒信及招聘邮件状态，生成可搜索的进度表；当用户输入“/offer”或要求管理秋招进度时使用。"
+    },
+    {
+      "id": "07-内容增长与一人公司/05-求职与面试/project-guide",
+      "category": "07-内容增长与一人公司",
+      "subcategory": "05-求职与面试",
+      "name": "project-guide",
+      "author": null,
+      "description": "name: project-guide"
+    },
+    {
+      "id": "99-归档与淘汰/design-generator",
+      "category": "99-归档与淘汰",
+      "subcategory": null,
+      "name": "design-generator",
+      "author": null,
+      "description": "name: design-generator"
+    }
+  ]
+}

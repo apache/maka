@@ -1,0 +1,5 @@
+--- FAIL: TestCopilotCLISecretDeniedNotAskedAgain (1.01s)
+    copilot_cli_test.go:128: security ran 2 times after a denial, want still 1
+FAIL
+FAIL	github.com/yetone/magpie/internal/provider	1.347s
+FAIL

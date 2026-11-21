@@ -1,0 +1,141 @@
+#2533 LOCAL VERIFICATION
+BASE=6f950653fcdb46c73044a071328cdc508f12ccef
+STATUS=TARGETED_PASS; full repository acceptance pending combined verification
+CHANGED_BRANCH/FIELD: gateway.streamError: non-context 413, non-Gemini adds request_too_large text once; chatEncoder.event(KError): 413 non-context error.type=request_too_large; anthropicEncoder.event(KError): 413 non-context error.type=request_too_large
+MODIFIED_FILE=/private/tmp/magpie-quality-20261017-2533/internal/gateway/gateway.go
+DIFF_FILE=/Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/updated.patch
+VERIFICATION.txt=/Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/VERIFICATION.txt
+ROLLBACK.sh=/Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/ROLLBACK.sh
+
+BASELINE
+COMMAND: go test -tags nogui -count=1 -p 2 -timeout 2m -artifacts -outputdir /Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/baseline-fixtures -run \^TestStreamedByteCapErrorShapes\$ -v ./internal/gateway
+INPUT: see command and original/updated patch as applicable
+OUTPUT:
+=== RUN   TestStreamedByteCapErrorShapes
+=== RUN   TestStreamedByteCapErrorShapes/chat
+=== ARTIFACTS TestStreamedByteCapErrorShapes/chat /Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/baseline-fixtures/_artifacts/1921490349
+    stream_byte_cap_test.go:84: byte cap in a stream already begun: 200 : keepalive
+        data: {"choices":[{"delta":{"content":"","role":"assistant"},"finish_reason":null,"index":0}],"created":1792193953,"id":"chatcmpl-18df26e7b3d5022800000001","model":"","object":"chat.completion.chunk","usage":null}
+        
+        data: {"error":{"message":"A: 413 Request Entity Too Large","type":"api_error"}}
+        
+--- FAIL: TestStreamedByteCapErrorShapes (0.78s)
+    --- FAIL: TestStreamedByteCapErrorShapes/chat (0.78s)
+FAIL
+FAIL	github.com/yetone/magpie/internal/gateway	1.144s
+FAIL
+EXIT_STATUS: 1
+
+MODIFIED
+COMMAND: go test -tags nogui -count=1 -p 2 -timeout 4m -artifacts -outputdir /Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/modified-fixtures -run \^Test\(StreamedByteCap\|PayloadTooLargeSaysRequestTooLargeToPi\|StreamErrorSaysItPasses\|GroupLastFailureInStreamSaysItPasses\|ContextOverflowSaidTheClientsWay\|BodyRejectionErrorShapes\) -v ./internal/gateway
+INPUT: nginx 413 HTML; token context error (413); ordinary invalid tool schema (400)
+OUTPUT:
+=== RUN   TestPayloadTooLargeSaysRequestTooLargeToPi
+--- PASS: TestPayloadTooLargeSaysRequestTooLargeToPi (0.52s)
+=== RUN   TestBodyRejectionErrorShapes
+--- PASS: TestBodyRejectionErrorShapes (0.00s)
+=== RUN   TestStreamedByteCapErrorShapes
+=== RUN   TestStreamedByteCapErrorShapes/byte/chat
+=== ARTIFACTS TestStreamedByteCapErrorShapes/byte/chat /Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/modified-fixtures/_artifacts/2079924175
+=== RUN   TestStreamedByteCapErrorShapes/byte/anthropic
+=== ARTIFACTS TestStreamedByteCapErrorShapes/byte/anthropic /Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/modified-fixtures/_artifacts/1366222595
+=== RUN   TestStreamedByteCapErrorShapes/byte/responses
+=== ARTIFACTS TestStreamedByteCapErrorShapes/byte/responses /Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/modified-fixtures/_artifacts/1037225698
+=== RUN   TestStreamedByteCapErrorShapes/context/chat
+=== ARTIFACTS TestStreamedByteCapErrorShapes/context/chat /Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/modified-fixtures/_artifacts/1784547613
+=== RUN   TestStreamedByteCapErrorShapes/context/anthropic
+=== ARTIFACTS TestStreamedByteCapErrorShapes/context/anthropic /Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/modified-fixtures/_artifacts/3881289988
+=== RUN   TestStreamedByteCapErrorShapes/context/responses
+=== ARTIFACTS TestStreamedByteCapErrorShapes/context/responses /Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/modified-fixtures/_artifacts/4103169748
+=== RUN   TestStreamedByteCapErrorShapes/ordinary/chat
+=== ARTIFACTS TestStreamedByteCapErrorShapes/ordinary/chat /Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/modified-fixtures/_artifacts/1730434262
+=== RUN   TestStreamedByteCapErrorShapes/ordinary/anthropic
+=== ARTIFACTS TestStreamedByteCapErrorShapes/ordinary/anthropic /Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/modified-fixtures/_artifacts/3114788270
+=== RUN   TestStreamedByteCapErrorShapes/ordinary/responses
+=== ARTIFACTS TestStreamedByteCapErrorShapes/ordinary/responses /Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/logs/modified-fixtures/_artifacts/3630116289
+--- PASS: TestStreamedByteCapErrorShapes (0.50s)
+    --- PASS: TestStreamedByteCapErrorShapes/byte/chat (0.05s)
+    --- PASS: TestStreamedByteCapErrorShapes/byte/anthropic (0.05s)
+    --- PASS: TestStreamedByteCapErrorShapes/byte/responses (0.05s)
+    --- PASS: TestStreamedByteCapErrorShapes/context/chat (0.06s)
+    --- PASS: TestStreamedByteCapErrorShapes/context/anthropic (0.06s)
+    --- PASS: TestStreamedByteCapErrorShapes/context/responses (0.06s)
+    --- PASS: TestStreamedByteCapErrorShapes/ordinary/chat (0.05s)
+    --- PASS: TestStreamedByteCapErrorShapes/ordinary/anthropic (0.06s)
+    --- PASS: TestStreamedByteCapErrorShapes/ordinary/responses (0.05s)
+=== RUN   TestStreamedByteCapLeavesGeminiShape
+--- PASS: TestStreamedByteCapLeavesGeminiShape (0.01s)
+=== RUN   TestStreamErrorSaysItPasses
+--- PASS: TestStreamErrorSaysItPasses (0.00s)
+=== RUN   TestGroupLastFailureInStreamSaysItPasses
+--- PASS: TestGroupLastFailureInStreamSaysItPasses (1.35s)
+=== RUN   TestContextOverflowSaidTheClientsWay
+--- PASS: TestContextOverflowSaidTheClientsWay (0.00s)
+PASS
+ok  	github.com/yetone/magpie/internal/gateway	2.765s
+EXIT_STATUS: 0
+
+ROLLBACK
+COMMAND: /Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/ROLLBACK.sh /private/tmp/magpie-quality-20261017-2533-replay
+INPUT: see command and original/updated patch as applicable
+OUTPUT:
+ROLLBACK: restored 3 product files and routing reference; removed the added regression test
+EXIT_STATUS: 0
+
+RESTORED_BEHAVIOR
+COMMAND: go -C /private/tmp/magpie-quality-20261017-2533-replay test -tags nogui -count=1 -p 2 -timeout 2m -run \^TestStreamedByteCap -v ./internal/gateway
+INPUT: nginx 413 HTML; token context error (413); ordinary invalid tool schema (400)
+OUTPUT:
+=== RUN   TestStreamedByteCapErrorShapes
+=== RUN   TestStreamedByteCapErrorShapes/byte/chat
+    stream_byte_cap_test.go:104: failure class changed: 200 : keepalive
+        data: {"choices":[{"delta":{"content":"","role":"assistant"},"finish_reason":null,"index":0}],"created":1792194241,"id":"chatcmpl-18df272abfa8242000000001","model":"","object":"chat.completion.chunk","usage":null}
+        
+        data: {"error":{"message":"A: 413 Request Entity Too Large","type":"api_error"}}
+        
+=== RUN   TestStreamedByteCapErrorShapes/byte/anthropic
+    stream_byte_cap_test.go:104: failure class changed: 200 : keepalive
+        event: message_start
+        data: {"message":{"content":[],"id":"msg_18df272ac33682d000000002","model":"","role":"assistant","stop_reason":null,"stop_sequence":null,"type":"message","usage":{"input_tokens":0,"output_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}},"type":"message_start"}
+        
+        event: error
+        data: {"error":{"message":"A: 413 Request Entity Too Large","type":"api_error"},"type":"error"}
+        
+=== RUN   TestStreamedByteCapErrorShapes/byte/responses
+    stream_byte_cap_test.go:104: failure class changed: 200 : keepalive
+        event: response.created
+        data: {"response":{"created_at":1792194241,"id":"resp_18df272ac644303000000003","model":"","object":"response","output":[],"parallel_tool_calls":true,"status":"in_progress","tool_choice":"auto","tools":[]},"sequence_number":0,"type":"response.created"}
+        
+        event: response.in_progress
+        data: {"response":{"created_at":1792194241,"id":"resp_18df272ac644303000000003","model":"","object":"response","output":[],"parallel_tool_calls":true,"status":"in_progress","tool_choice":"auto","tools":[]},"sequence_number":1,"type":"response.in_progress"}
+        
+        event: response.failed
+        data: {"response":{"created_at":1792194241,"error":{"code":"server_error","message":"A: 413 Request Entity Too Large"},"id":"resp_18df272ac644303000000003","model":"","object":"response","output":[],"parallel_tool_calls":true,"status":"failed","tool_choice":"auto","tools":[]},"sequence_number":2,"type":"response.failed"}
+        
+=== RUN   TestStreamedByteCapErrorShapes/context/chat
+=== RUN   TestStreamedByteCapErrorShapes/context/anthropic
+=== RUN   TestStreamedByteCapErrorShapes/context/responses
+=== RUN   TestStreamedByteCapErrorShapes/ordinary/chat
+=== RUN   TestStreamedByteCapErrorShapes/ordinary/anthropic
+=== RUN   TestStreamedByteCapErrorShapes/ordinary/responses
+--- FAIL: TestStreamedByteCapErrorShapes (1.09s)
+    --- FAIL: TestStreamedByteCapErrorShapes/byte/chat (0.63s)
+    --- FAIL: TestStreamedByteCapErrorShapes/byte/anthropic (0.05s)
+    --- FAIL: TestStreamedByteCapErrorShapes/byte/responses (0.05s)
+    --- PASS: TestStreamedByteCapErrorShapes/context/chat (0.05s)
+    --- PASS: TestStreamedByteCapErrorShapes/context/anthropic (0.06s)
+    --- PASS: TestStreamedByteCapErrorShapes/context/responses (0.06s)
+    --- PASS: TestStreamedByteCapErrorShapes/ordinary/chat (0.06s)
+    --- PASS: TestStreamedByteCapErrorShapes/ordinary/anthropic (0.06s)
+    --- PASS: TestStreamedByteCapErrorShapes/ordinary/responses (0.06s)
+=== RUN   TestStreamedByteCapLeavesGeminiShape
+--- PASS: TestStreamedByteCapLeavesGeminiShape (0.02s)
+FAIL
+FAIL	github.com/yetone/magpie/internal/gateway	1.503s
+FAIL
+EXIT_STATUS: 1
+
+RESTORED_STATUS: exact baseline source hashes; old byte-cap behavior restored; modified source remains changed.
+PI: actual 1.2.0 SDK parsed 9 gateway SSE captures; byte caps=true; context=true; ordinary=false; ablation byte caps=false.
+NOT_VERIFIED: real-upstream summary, compaction and retry; other Pi versions; full official acceptance pending combined run.
+Full exact commands, literal output, inputs and hashes: /Users/ggbdpq/cc/guahub/fork/magpie-hub/docs/issues/quality-20261017/2533/verification.json

@@ -1,0 +1,465 @@
+From 45b1eec99aa530a958e42f0f6c6b153354b45b25 Mon Sep 17 00:00:00 2001
+From: "yjqi@YjdeMacBook-Pro.localdomain" <yjqi@YjdeMacBook-Pro.localdomain>
+Date: Tue, 3 Nov 2026 19:33:40 +0800
+Subject: [PATCH] claudetui: a successful interactive turn tells its account's
+ allowance
+
+Since the interactive mode replaced -p for Claude subscription turns
+(43966a53, e5f66f8a, 10-31), a turn that succeeded told no
+rate_limit_event, so NoteClaudeLimits never ran and the Usage page's
+5h/7d figures moved only on a manual refresh (/usage). Only a turn that
+ended in a <synthetic> API error told one, from its transcript row.
+
+What changed:
+- tap.js, when a main-class reply opens, also copies its
+  anthropic-ratelimit-unified-* response headers into the {s, open}
+  line as "h". It only reads them; the request to Anthropic is sent as
+  Claude Code made it.
+- tap.go (rateLimitInfo) turns them into the rate_limit_info -p tells
+  (Claude Code 2.1.291): status plus unifiedWindows five_hour, seven_day,
+  seven_day_overage_included (5h, 7d, 7d_oi), each only when both its
+  utilization and reset are numbers, the reset rounded to a second.
+- A streamed reply tells it just before its message_start, as -p does,
+  so the bridge keeps it before the reply begins. A reply whose message
+  was told whole from the transcript, or that never began one, keeps it
+  for the turn's end (tap.settle). Only the latest is told: a kept
+  reading from an older reply is never told after a later reply's
+  (toldOf), whether the older one ended before or after the later one
+  began, since NoteClaudeLimits keeps the last it hears.
+- transcript.go: a <synthetic> API error settles the tap first, then
+  tells its own rate_limit_info, so the error's reading is the newest.
+- docs/subsystems/claude-subscription-bridge.md says all of this.
+  The gateway is unchanged: it already turns a rate_limit_event into
+  NoteClaudeLimits and limitHeaders.
+
+Run at this head (base origin/main 6c201095):
+- gofmt -l on the changed Go files: nothing
+- go vet ./internal/claudetui/, GOOS=linux go vet -tags nogui, GOOS=windows
+  go vet: clean
+- go test -count=1 ./internal/claudetui/: ok (62s)
+- go test -tags nogui -count=1 -timeout 45m ./internal/gateway/ -run
+  'Claude|Tap|TUI': ok (60s)
+
+Broken by hand:
+- tap.go, tap.js and transcript.go at 6c201095 with the new tests: all of
+  TestTapTellsReplyLimits, TestTapLimitsOfMessageToldWhole,
+  TestTapErrorLimitsLast, TestShimTellsTapLimits and
+  TestTapKeptLimitsNotAfterNewer (both subtests) red.
+- keepLimits without `n > t.toldOf`: TestTapKeptLimitsNotAfterNewer/
+  ended_after red (told 0.42 then 0.3). message_start without dropping an
+  older kept reading: /ended_before red the same way.
+
+Not tried: a turn on a real claude.ai account, so the headers were not
+checked against a captured reply; Windows and WSL; the full go test
+./... suite.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ docs/subsystems/claude-subscription-bridge.md |  23 +++-
+ internal/claudetui/tap.go                     |  87 ++++++++++++-
+ internal/claudetui/tap.js                     |  11 +-
+ internal/claudetui/tap_test.go                | 121 ++++++++++++++++++
+ internal/claudetui/transcript.go              |   6 +-
+ internal/claudetui/tui_test.go                |   5 +
+ 6 files changed, 244 insertions(+), 9 deletions(-)
+
+diff --git a/docs/subsystems/claude-subscription-bridge.md b/docs/subsystems/claude-subscription-bridge.md
+index ba636294a..f46598366 100644
+--- a/docs/subsystems/claude-subscription-bridge.md
++++ b/docs/subsystems/claude-subscription-bridge.md
+@@ -219,8 +219,11 @@ connection and TLS left as they were, and tees the body of each reply to
+ a request with `x-claude-code-request-class: main`, a `/v1/messages` path
+ and a `text/event-stream` reply. Claude Code reads one branch as before.
+ The tap parses the other and writes one JSON line per event to the file:
+-`{s, open}` when a stream starts, `{s, e}` for each event other than
+-`ping`, and `{s, end: "done"|"cut"}` when it ends. At load it writes
++`{s, open}` when a stream starts, with `h`, the reply's
++`anthropic-ratelimit-unified-*` headers, when it has any, `{s, e}` for
++each event other than `ping`, and `{s, end: "done"|"cut"}` when it ends.
++The tap only reads the reply's headers; the request is sent as Claude
++Code made it. At load it writes
+ `{tap: "on"}`, or `{tap: "none"}` when there is no `FetchSession` to
+ replace.
+ 
+@@ -235,6 +238,19 @@ while a stream is open, and tells each event as `-p` does: a
+ - Before a turn's result, `tap.settle` waits up to 1s for the open
+   streams to end, and ends the rest there.
+ 
++The headers become the `rate_limit_event` `-p` tells from them
++(`rateLimitInfo`, as Claude Code 2.1.291 builds it): `status` and
++`unifiedWindows` with each of `five_hour`, `seven_day` and
++`seven_day_overage_included` (`5h`, `7d`, `7d_oi`) whose utilization and
++reset are both said, the reset rounded to a second. A streamed message
++tells it before its `message_start`, so the bridge keeps it
++(`NoteClaudeLimits`) before the reply begins. A reply whose message was
++told whole, or that never started one, tells it at the turn's end
++(`tap.settle`), and only when it is the latest: a later reply's told
++with its stream is never followed by an older one's. A `<synthetic>` API error's own
++`rate_limit_info` is told after that, as the newest. Before this, a
++successful turn in the interactive mode told no allowance (T-076).
++
+ A stream cut short gets a `message_stop` with no `message_delta`, as `-p`
+ ends such a stream, and the bridge counts it as an attempt and asks
+ again. In the bridge, a message that was streamed (`streamed`, by id) has
+@@ -1449,7 +1465,8 @@ doesn't by default; that path is unchanged.
+ ## The account's allowance on the reply (#1257)
+ 
+ Claude Code tells a run's account allowance in its stream-json
+-`rate_limit_event`, not as HTTP headers. The bridge keeps it
++`rate_limit_event`, not as HTTP headers; in the interactive mode the
++helper tells the same event from the tap (see above). The bridge keeps it
+ (`provider.NoteClaudeLimits`) and says it again on the reply as the
+ `anthropic-ratelimit-unified-{5h,7d,7d_oi}-{utilization,reset}` headers
+ Anthropic sends (`limitHeaders`, from `provider.KeptClaudeLimits`): a share
+diff --git a/internal/claudetui/tap.go b/internal/claudetui/tap.go
+index ae499823e..c8d85728c 100644
+--- a/internal/claudetui/tap.go
++++ b/internal/claudetui/tap.go
+@@ -4,6 +4,7 @@ import (
+ 	"bufio"
+ 	_ "embed"
+ 	"encoding/json"
++	"math"
+ 	"os"
+ 	"path/filepath"
+ 	"runtime"
+@@ -68,11 +69,20 @@ type tap struct {
+ 	dropped map[string]bool
+ 	out     emitter
+ 	sid     string
++	// limits is the allowance a reply told whose message was told whole
++	// or never began, of stream limitsOf: told before the turn's end
++	limits   json.RawMessage
++	limitsOf int
++	// toldOf is the latest stream whose allowance was told with it: an
++	// older one's is never told after it
++	toldOf int
+ }
+ 
+ type tapStream struct {
+ 	id      string
+ 	stopped bool
++	// limits is the rate_limit_info its reply's headers tell, until told
++	limits json.RawMessage
+ }
+ 
+ // newTap writes tap.js and the file it writes to in a folder of the
+@@ -151,6 +161,8 @@ func (t *tap) line(b []byte) {
+ 		Open  bool            `json:"open"`
+ 		End   string          `json:"end"`
+ 		Event json.RawMessage `json:"e"`
++		// the reply's anthropic-ratelimit-unified-* headers
++		Headers map[string]string `json:"h"`
+ 	}
+ 	if json.Unmarshal(b, &l) != nil || t.ended[l.S] {
+ 		return
+@@ -159,7 +171,7 @@ func (t *tap) line(b []byte) {
+ 	case l.Tap != "":
+ 		t.on = l.Tap == "on"
+ 	case l.Open:
+-		t.open[l.S] = &tapStream{}
++		t.open[l.S] = &tapStream{limits: rateLimitInfo(l.Headers)}
+ 	case len(l.Event) > 0:
+ 		var e struct {
+ 			Type    string `json:"type"`
+@@ -172,12 +184,27 @@ func (t *tap) line(b []byte) {
+ 		}
+ 		st := t.open[l.S]
+ 		if e.Type == "message_start" {
+-			st = &tapStream{id: e.Message.ID}
++			var limits json.RawMessage
++			if st != nil {
++				limits = st.limits
++			}
++			st = &tapStream{id: e.Message.ID, limits: limits}
+ 			t.open[l.S] = st
+ 			if t.dropped[st.id] {
++				t.keepLimits(l.S, st)
+ 				return
+ 			}
+ 			t.started[st.id] = true
++			// as -p tells it, before the reply: the bridge says it on
++			// the reply's headers (limitHeaders)
++			if st.limits != nil && l.S > t.toldOf {
++				t.out.emit(map[string]any{"type": "rate_limit_event", "rate_limit_info": st.limits})
++				t.toldOf = l.S
++				if t.limitsOf < l.S {
++					t.limits, t.limitsOf = nil, 0
++				}
++			}
++			st.limits = nil
+ 		}
+ 		if st == nil || st.id == "" || t.dropped[st.id] {
+ 			return
+@@ -198,6 +225,7 @@ func (t *tap) end(n int) {
+ 	st := t.open[n]
+ 	delete(t.open, n)
+ 	t.ended[n] = true
++	t.keepLimits(n, st)
+ 	if st != nil && st.id != "" && !st.stopped && !t.dropped[st.id] {
+ 		t.event(json.RawMessage(`{"type":"message_stop"}`))
+ 	}
+@@ -254,4 +282,59 @@ func (t *tap) settle() {
+ 	for n := range t.open {
+ 		t.end(n)
+ 	}
++	if t.limits != nil {
++		t.out.emit(map[string]any{"type": "rate_limit_event", "rate_limit_info": t.limits})
++		t.limits, t.limitsOf = nil, 0
++	}
++}
++
++// keepLimits keeps what stream n's reply told of the allowance, not
++// told with its stream, for the turn's end, as a stream told mid-message
++// would end it in the bridge: the latest reply's, and only when no later
++// reply's was told already.
++func (t *tap) keepLimits(n int, st *tapStream) {
++	if st == nil || st.limits == nil {
++		return
++	}
++	if n > t.toldOf && n >= t.limitsOf {
++		t.limits, t.limitsOf = st.limits, n
++	}
++	st.limits = nil
++}
++
++// limitWindows are the windows Anthropic tells on a reply, as
++// anthropic-ratelimit-unified-<window>-*, by the kind -p names them in
++// its rate_limit_event (Claude Code 2.1.291).
++var limitWindows = []struct{ kind, window string }{
++	{"five_hour", "5h"},
++	{"seven_day", "7d"},
++	{"seven_day_overage_included", "7d_oi"},
++}
++
++// rateLimitInfo is a reply's allowance, from its headers, as -p tells it
++// in a rate_limit_event's rate_limit_info: each window that says both its
++// share used and when it renews. Nil when none does.
++func rateLimitInfo(h map[string]string) json.RawMessage {
++	num := func(name string) (float64, bool) {
++		v := strings.TrimSpace(h["anthropic-ratelimit-unified-"+name])
++		f, err := strconv.ParseFloat(v, 64)
++		return f, v != "" && err == nil && !math.IsInf(f, 0) && !math.IsNaN(f)
++	}
++	ws := map[string]any{}
++	for _, w := range limitWindows {
++		used, ok := num(w.window + "-utilization")
++		reset, ok2 := num(w.window + "-reset")
++		if ok && ok2 {
++			ws[w.kind] = map[string]any{"utilization": used, "resetsAt": int64(math.Round(reset))}
++		}
++	}
++	if len(ws) == 0 {
++		return nil
++	}
++	info := map[string]any{"unifiedWindows": ws}
++	if s := h["anthropic-ratelimit-unified-status"]; s != "" {
++		info["status"] = s
++	}
++	b, _ := json.Marshal(info)
++	return b
+ }
+diff --git a/internal/claudetui/tap.js b/internal/claudetui/tap.js
+index 42ceee754..d201f04bf 100644
+--- a/internal/claudetui/tap.js
++++ b/internal/claudetui/tap.js
+@@ -4,7 +4,8 @@
+ // a FetchSession whose fetch is the real one's, the request, connection
+ // and TLS untouched, and copies the reply of each of the main turn's
+ // requests (x-claude-code-request-class: main), as it streams, to the
+-// file MAGPIE_CLAUDE_TAP names: a JSON line an event. Claude Code reads
++// file MAGPIE_CLAUDE_TAP names: a JSON line an event, and the reply's
++// anthropic-ratelimit-unified-* headers as it opens. Claude Code reads
+ // its own copy of the stream as before.
+ //
+ // MAGPIE_CLAUDE_GUARD names a file of the bridge's holding the
+@@ -143,7 +144,13 @@
+           // told before Claude Code has the reply, so the helper knows a
+           // stream is coming before any of its messages
+           const s = ++streams;
+-          put({ s, open: true });
++          // with the account's allowance as Anthropic tells it on the
++          // reply, which -p tells in its rate_limit_event
++          const h = {};
++          res.headers.forEach((v, k) => {
++            if (/^anthropic-ratelimit-unified-/i.test(k)) h[k.toLowerCase()] = v;
++          });
++          put(Object.keys(h).length ? { s, open: true, h } : { s, open: true });
+           read(s, mine);
+         }
+       } catch {}
+diff --git a/internal/claudetui/tap_test.go b/internal/claudetui/tap_test.go
+index 06df5fc2a..39e85625e 100644
+--- a/internal/claudetui/tap_test.go
++++ b/internal/claudetui/tap_test.go
+@@ -1,6 +1,7 @@
+ package claudetui
+ 
+ import (
++	"encoding/json"
+ 	"fmt"
+ 	"os"
+ 	"path/filepath"
+@@ -275,3 +276,123 @@ func TestShimStreamsThroughTap(t *testing.T) {
+ 		t.Fatalf("the stream said %v", d)
+ 	}
+ }
++
++// replyLimits are a reply's anthropic-ratelimit-unified-* headers as
++// tap.js writes them: the 7d_oi window says no reset, and is left out.
++const replyLimits = `{"anthropic-ratelimit-unified-status":"allowed","anthropic-ratelimit-unified-5h-utilization":"0.42","anthropic-ratelimit-unified-5h-reset":"1790700000.4",` +
++	`"anthropic-ratelimit-unified-7d-utilization":"0.17","anthropic-ratelimit-unified-7d-reset":"1791000000","anthropic-ratelimit-unified-7d_oi-utilization":"0.5"}`
++
++// limitsTold are the rate_limit_info l was told, in order.
++func limitsTold(t *testing.T, l *lines) []string {
++	t.Helper()
++	var got []string
++	for _, m := range l.out {
++		if m["type"] == "rate_limit_event" {
++			b, _ := json.Marshal(m["rate_limit_info"])
++			got = append(got, string(b))
++		}
++	}
++	return got
++}
++
++const wantLimits = `{"status":"allowed","unifiedWindows":{"five_hour":{"resetsAt":1790700000,"utilization":0.42},"seven_day":{"resetsAt":1791000000,"utilization":0.17}}}`
++
++// A reply that succeeds tells the account's allowance from its headers,
++// as -p's rate_limit_event, before its stream: the bridge keeps it
++// (NoteClaudeLimits) and says it on the reply's headers.
++func TestTapTellsReplyLimits(t *testing.T) {
++	l := &lines{}
++	tp, write := testTap(t, l)
++	tr := newTranslator(l)
++	tr.tap = tp
++	write(`{"tap":"on"}`, `{"s":1,"open":true,"h":`+replyLimits+`}`)
++	write(tapReply(1, "msg_1")...)
++	tr.row(whole("msg_1"))
++	tr.row([]byte(`{"type":"system","subtype":"turn_duration"}`))
++	if got, want := kinds(l), append([]string{"rate_limit_event"}, streamedTurn...); !slices.Equal(got, want) {
++		t.Fatalf("told %v, want %v", got, want)
++	}
++	if got := limitsTold(t, l); !slices.Equal(got, []string{wantLimits}) {
++		t.Fatalf("told %v, want %s", got, wantLimits)
++	}
++}
++
++// A reply whose message was told whole, its stream late, still tells its
++// allowance, at the turn's end, the latest reply's; one that says no
++// window, or none with its reset, tells nothing.
++func TestTapLimitsOfMessageToldWhole(t *testing.T) {
++	old := tapWait
++	tapWait = 100 * time.Millisecond
++	t.Cleanup(func() { tapWait = old })
++	l := &lines{}
++	tp, write := testTap(t, l)
++	tr := newTranslator(l)
++	tr.tap = tp
++	older := strings.ReplaceAll(replyLimits, "0.42", "0.3")
++	write(`{"tap":"on"}`, `{"s":1,"open":true,"h":`+older+`}`, `{"s":1,"end":"cut"}`, `{"s":2,"open":true,"h":`+replyLimits+`}`)
++	tr.row(whole("msg_2"))
++	write(tapReply(2, "msg_2")...)
++	write(`{"s":3,"open":true,"h":{"anthropic-ratelimit-unified-status":"allowed","anthropic-ratelimit-unified-5h-utilization":"0.9"}}`, `{"s":3,"end":"cut"}`)
++	tr.row([]byte(`{"type":"system","subtype":"turn_duration"}`))
++	if got, want := kinds(l), []string{"assistant", "rate_limit_event", "result"}; !slices.Equal(got, want) {
++		t.Fatalf("told %v, want %v", got, want)
++	}
++	if got := limitsTold(t, l); !slices.Equal(got, []string{wantLimits}) {
++		t.Fatalf("told %v, want %s", got, wantLimits)
++	}
++}
++
++// A turn that fails tells its error's allowance last, after any an
++// earlier reply of the turn told.
++func TestTapErrorLimitsLast(t *testing.T) {
++	l := &lines{}
++	tp, write := testTap(t, l)
++	tr := newTranslator(l)
++	tr.tap = tp
++	write(`{"tap":"on"}`, `{"s":1,"open":true,"h":`+replyLimits+`}`, `{"s":1,"end":"cut"}`)
++	tr.row([]byte(`{"type":"assistant","isApiErrorMessage":true,"apiErrorStatus":429,"apiErrorParams":{"rate_limit_info":{"status":"rejected"}},"message":{"id":"x","model":"<synthetic>","content":[{"type":"text","text":"You've hit your limit"}]}}`))
++	if got := limitsTold(t, l); !slices.Equal(got, []string{wantLimits, `{"status":"rejected"}`}) {
++		t.Fatalf("told %v", got)
++	}
++}
++
++// The shim tells a tapped reply's allowance before its stream.
++func TestShimTellsTapLimits(t *testing.T) {
++	out := runShim(t, []string{"FAKE_TAP=1", "FAKE_TAP_LIMITS=" + replyLimits}, append([]string{fakePath(t)}, pArgs...), []string{"hello"}, 11)
++	if out[1]["type"] != "rate_limit_event" {
++		t.Fatalf("told %v first", out[1])
++	}
++	if b, _ := json.Marshal(out[1]["rate_limit_info"]); string(b) != wantLimits {
++		t.Fatalf("told %s", b)
++	}
++	if e, ok := out[2]["event"].(map[string]any); !ok || e["type"] != "message_start" {
++		t.Fatalf("told %v after it", out[2])
++	}
++}
++
++// A reply's allowance kept for the turn's end is not told after a later
++// reply's told with its stream: the bridge keeps the last it hears.
++func TestTapKeptLimitsNotAfterNewer(t *testing.T) {
++	older := strings.ReplaceAll(replyLimits, "0.42", "0.3")
++	for name, first := range map[string][]string{
++		// the older reply ends before the later one is told
++		"ended before": {`{"tap":"on"}`, `{"s":1,"open":true,"h":` + older + `}`, `{"s":1,"end":"cut"}`, `{"s":2,"open":true,"h":` + replyLimits + `}`},
++		// and after it, still open while the later one streams
++		"ended after": {`{"tap":"on"}`, `{"s":1,"open":true,"h":` + older + `}`, `{"s":2,"open":true,"h":` + replyLimits + `}`},
++	} {
++		t.Run(name, func(t *testing.T) {
++			l := &lines{}
++			tp, write := testTap(t, l)
++			tr := newTranslator(l)
++			tr.tap = tp
++			write(first...)
++			write(tapReply(2, "msg_2")...)
++			write(`{"s":1,"end":"cut"}`)
++			tr.row(whole("msg_2"))
++			tr.row([]byte(`{"type":"system","subtype":"turn_duration"}`))
++			if got := limitsTold(t, l); !slices.Equal(got, []string{wantLimits}) {
++				t.Fatalf("told %v, want %s alone", got, wantLimits)
++			}
++		})
++	}
++}
+diff --git a/internal/claudetui/transcript.go b/internal/claudetui/transcript.go
+index 6389cc77f..b73f2c4e0 100644
+--- a/internal/claudetui/transcript.go
++++ b/internal/claudetui/transcript.go
+@@ -105,11 +105,13 @@ func (t *translator) row(b []byte) {
+ 				text += c.Text
+ 			}
+ 		}
++		t.failed = true
++		// the error's own allowance after any an earlier reply of the
++		// turn told (tap.settle), as it is the latest
++		t.tap.settle()
+ 		if len(r.APIParams.RateLimitInfo) > 0 && string(r.APIParams.RateLimitInfo) != "null" {
+ 			t.out.emit(map[string]any{"type": "rate_limit_event", "rate_limit_info": r.APIParams.RateLimitInfo})
+ 		}
+-		t.failed = true
+-		t.tap.settle()
+ 		t.out.turnOver()
+ 		t.out.emit(map[string]any{"type": "result", "subtype": "error_during_execution", "is_error": true,
+ 			"result": text, "api_error_status": r.APIStatus})
+diff --git a/internal/claudetui/tui_test.go b/internal/claudetui/tui_test.go
+index 80395cdfb..8f329fa44 100644
+--- a/internal/claudetui/tui_test.go
++++ b/internal/claudetui/tui_test.go
+@@ -275,6 +275,11 @@ func fakeClaude(args []string) {
+ 		if tapped != nil {
+ 			streams++
+ 			n := streams
++			// FAKE_TAP_LIMITS: the reply's allowance headers, as tap.js
++			// writes them when its stream opens
++			if h := os.Getenv("FAKE_TAP_LIMITS"); h != "" {
++				_, _ = fmt.Fprintf(tapped, `{"s":%d,"open":true,"h":%s}`+"\n", n, h)
++			}
+ 			for _, e := range []string{`{"type":"message_start","message":{"id":"msg_1","model":"claude-haiku","usage":{"input_tokens":3}}}`,
+ 				`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`,
+ 				`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"echo: "}}`,
+-- 
+2.50.1 (Apple Git-155)
+

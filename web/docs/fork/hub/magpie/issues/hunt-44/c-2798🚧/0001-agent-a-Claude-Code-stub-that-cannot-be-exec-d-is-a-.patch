@@ -1,0 +1,149 @@
+From d9afa165cff446ab4008417bd1444a05b8bcc7f5 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Mon, 19 Oct 2026 01:34:04 +0800
+Subject: [PATCH] agent: a Claude Code stub that cannot be exec'd is a broken
+ install, not an unknown one (#2798)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+What changed
+- runsBroken (internal/agent/cliupdate.go) no longer folds "never ran" into
+  "can't tell". When the kernel refuses to exec the CLI (ENOEXEC) and the npm
+  package is one whose bin is a shebang-less native-binary stub
+  (@anthropic-ai/claude-code, opencode-ai), it is the broken install #2128 is
+  about and is reported as "exec format error". Every other run that never
+  reached an exit code is still unknown, as before.
+- The list of such packages is stubShims, beside runsBroken.
+- New test TestRunsBrokenSeesAShebanglessStub writes the real 500-byte
+  @anthropic-ai/claude-code 2.1.302 bin/claude.exe (no shebang) into a temp
+  dir and runs it through the real runCheck.
+
+Why
+The report is right. runsBroken's `code <= 0` guard meant "did not run to an
+exit code, so unknown", which is correct for a missing binary or a timeout,
+but the Claude Code stub has no shebang: execve returns ENOEXEC, runCheck
+reports code -1 with no *exec.ExitError and no output, and the #2128 repair
+never ran. The #2128 test's stub has #!/bin/sh, so it never exercised this.
+Keeping `code <= 0` for the genuinely unknown cases and admitting only the
+stub packages that ship this shape keeps both meanings.
+
+Run
+- go test -tags nogui -count=1 -run 'TestUpdateCLI|TestRunsBroken|TestHowInstalled' ./internal/agent/ — ok 3.0s
+- go test -tags nogui -count=1 ./internal/agent/ — 199s, only TestMothX fails; it fails the same on the base commit and passes with the machine's real mothx off PATH (environmental, pre-existing)
+- go test -race -tags nogui -count=1 -run 'TestRunsBroken|TestUpdateCLI' ./internal/agent/ — ok 2.9s
+- gofmt -l internal/agent/ — empty
+- go vet -tags nogui ./internal/agent/, GOOS=linux go vet -tags nogui ./internal/agent/, GOOS=windows go vet -tags nogui ./internal/agent/ — all clean
+- go build -tags nogui ./... (darwin), GOOS=linux go build -tags nogui ./..., GOOS=windows go build -o /dev/null . — all exit 0 (one pre-existing cgo enum warning from internal/gui on darwin)
+- Without the fix the new test fails: `@anthropic-ai/claude-code: a stub the kernel won't run: "", want it said as broken`.
+
+Not tried: a real npm install left with the stub end to end; the stub bytes
+are taken from npm pack @anthropic-ai/claude-code@2.1.302.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/agent/cliupdate.go           | 27 ++++++++++++++++---
+ internal/agent/cliupdate_runs_test.go | 38 +++++++++++++++++++++++++++
+ 2 files changed, 62 insertions(+), 3 deletions(-)
+
+diff --git a/internal/agent/cliupdate.go b/internal/agent/cliupdate.go
+index dcebb7e4..3ff830d3 100644
+--- a/internal/agent/cliupdate.go
++++ b/internal/agent/cliupdate.go
+@@ -24,6 +24,7 @@ import (
+ 	"strconv"
+ 	"strings"
+ 	"sync"
++	"syscall"
+ 	"time"
+ 	"unicode/utf16"
+ 
+@@ -1026,16 +1027,36 @@ func (a *Agent) UpdateCLI() (CLI, error) {
+ 	return c, nil
+ }
+ 
++// stubShims are the npm packages whose bin is a shebang-less text stub that
++// only runs once postinstall has fetched the platform-native optional
++// package: Claude Code's bin/claude.exe (#2798) and opencode's
++// bin/opencode.exe. Every other CLI magpie updates has a #! script or a real
++// binary as its bin.
++var stubShims = []string{"@anthropic-ai/claude-code", "opencode-ai"}
++
+ // runsBroken is what bin --version says when it ran and failed without
+ // saying a version, "" when it said one or what it is can't be told: it
+ // didn't start, took too long, or its interpreter wasn't found (127), none
+-// of which says the update broke it. It runs as the update did, its npm's
+-// folder first on PATH, so a node CLI finds the node it was installed for.
++// of which says the update broke it. One the kernel refused to exec is
++// broken, though, when its package's bin is such a stub: no shebang, no
++// native package, nothing to say but exec format error (#2798). It runs as
++// the update did, its npm's folder first on PATH, so a node CLI finds the
++// node it was installed for.
+ func runsBroken(ctx context.Context, bin string, u *updater) string {
+ 	ctx, cancel := context.WithTimeout(ctx, checkTimeout)
+ 	defer cancel()
+ 	out, code, err := runCheck(ctx, bin, updateEnv(u))
+-	if err == nil || ctx.Err() != nil || code <= 0 || code == 127 || parseVersion(out) != "" {
++	if err == nil || ctx.Err() != nil || code == 127 || parseVersion(out) != "" {
++		return ""
++	}
++	if code <= 0 {
++		// the kernel wouldn't exec it: a native CLI's npm stub without its
++		// binary is a shebang-less text file, so this is the broken install
++		// #2128 is about (#2798). Any other run that never started says
++		// nothing about the update.
++		if errors.Is(err, syscall.ENOEXEC) && contains(stubShims, u.pkg) {
++			return "exec format error"
++		}
+ 		return ""
+ 	}
+ 	if msg := lastLines(out, 2); msg != "" {
+diff --git a/internal/agent/cliupdate_runs_test.go b/internal/agent/cliupdate_runs_test.go
+index 1ae19db6..b32bb234 100644
+--- a/internal/agent/cliupdate_runs_test.go
++++ b/internal/agent/cliupdate_runs_test.go
+@@ -128,3 +128,41 @@ func TestRunsBrokenOnlyWhenSure(t *testing.T) {
+ 		t.Errorf("a CLI that didn't start: %q", got)
+ 	}
+ }
++
++// claudeStub is @anthropic-ai/claude-code 2.1.302's bin/claude.exe, the
++// 500 bytes npm leaves when its optional native package isn't fetched. It
++// has no shebang: a shell runs it, the kernel won't (#2798).
++const claudeStub = `echo "Error: claude native binary not installed." >&2
++echo "" >&2
++echo "Either postinstall did not run (--ignore-scripts, some pnpm configs)" >&2
++echo "or the platform-native optional dependency was not downloaded" >&2
++echo "(--omit=optional)." >&2
++echo "" >&2
++echo "Run the postinstall manually (adjust path for local vs global install):" >&2
++echo "  node node_modules/@anthropic-ai/claude-code/install.cjs" >&2
++echo "" >&2
++echo "Or reinstall without --ignore-scripts / --omit=optional." >&2
++exit 1
++`
++
++// The real Claude Code stub can't be exec'd at all: no shebang, so Go says
++// "exec format error" with no output and no exit code. That is the broken
++// install #2128 is about, not a run that can't be told about (#2798).
++func TestRunsBrokenSeesAShebanglessStub(t *testing.T) {
++	if runtime.GOOS == "windows" {
++		t.Skip("Windows has no shebang-less stub: npm's shim runs the .exe through cmd.exe")
++	}
++	bin := file(t, filepath.Join(t.TempDir(), "claude.exe"), claudeStub)
++	for _, pkg := range []string{"@anthropic-ai/claude-code", "opencode-ai"} {
++		u := &updater{via: "npm", pkg: pkg, cmd: []string{"npm"}}
++		if got := runsBroken(context.Background(), bin, u); !strings.Contains(got, "exec format error") {
++			t.Errorf("%s: a stub the kernel won't run: %q, want it said as broken", pkg, got)
++		}
++	}
++	// a bin the kernel won't run for a package that doesn't ship such a
++	// stub is still unknown, not broken: its update may be fine
++	u := &updater{via: "npm", pkg: "some-other-cli", cmd: []string{"npm"}}
++	if got := runsBroken(context.Background(), bin, u); got != "" {
++		t.Errorf("a bin that didn't start for another package: %q", got)
++	}
++}
+-- 
+2.50.1 (Apple Git-155)
+

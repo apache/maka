@@ -1,0 +1,5 @@
+--- FAIL: TestFetchIconLeavesNoIdleConnection (2.01s)
+    icon_test.go:326: the fetch's connection is still idle: its pool was not closed
+FAIL
+FAIL	github.com/yetone/magpie/internal/provider	2.298s
+FAIL

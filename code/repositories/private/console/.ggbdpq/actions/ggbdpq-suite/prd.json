@@ -1,0 +1,216 @@
+{
+  "project": {
+    "name": "ggbdpq-suite",
+    "repo_type": "monorepo",
+    "description": "[archived] agent-suite 主线治理工件（15 项全完成）；旧 schema 已转换，原件见 prd.legacy.json"
+  },
+  "items": [
+    {
+      "id": "001",
+      "component": "生成 stack-inventory 与 sta",
+      "priority": "P1",
+      "title": "生成 stack-inventory 与 stack-contract 并完成文档校对",
+      "steps": [
+        "扫描 apps/*, tools/*, services/*, packages/* 目录结构 [命令: ls -la apps/ tools/ packages/ 2>/dev/null || true; ls -la services/ 2>/dev/null || echo 'services/ 不存在']",
+        "收集所有子项目的 package.json 依赖信息 [命令: find . -name 'package.json' -not -path './node_modules/*' | head -30]",
+        "生成 docs/stack-inventory.md 清点表 [命令: cat docs/stack-inventory.md | head -50]",
+        "生成 docs/stack-contract.md 技术栈契约 [命令: cat docs/stack-contract.md | head -50]",
+        "人工校对文档内容与格式 [命令: test -f docs/stack-inventory.md && test -f docs/stack-contract.md && echo 'PASS']"
+      ],
+      "passes": true
+    },
+    {
+      "id": "002",
+      "component": "生成 suite 执行法典目录与 SSOT 文件",
+      "priority": "P1",
+      "title": "生成 suite 执行法典目录与 SSOT 文件并完成格式校验",
+      "steps": [
+        "创建 .ggbdpq/actions/agent-suite/ 目录 [命令: mkdir -p .ggbdpq/actions/agent-suite]",
+        "生成 EXECUTION.md 执行法典 [命令: cat .ggbdpq/actions/agent-suite/EXECUTION.md | head -20]",
+        "生成 prd.json 任务清单 [命令: node -e \"console.log(JSON.parse(require('fs').readFileSync('.ggbdpq/actions/agent-suite/prd.json')).items.length + ' items')\"]",
+        "生成 progress.txt 执行日志 [命令: cat .ggbdpq/actions/agent-suite/progress.txt | head -30]",
+        "生成 process.txt 过程报告 [命令: cat .ggbdpq/actions/agent-suite/process.txt | head -30]",
+        "校验 prd.json 为合法 JSON [命令: node -e \"JSON.parse(require('fs').readFileSync('.ggbdpq/actions/agent-suite/prd.json')); console.log('PASS')\"]"
+      ],
+      "passes": true
+    },
+    {
+      "id": "003",
+      "component": "生成 packages 规划文档，定义 pack",
+      "priority": "P1",
+      "title": "生成 packages 规划文档，定义 packages/shared packages/ui packages/sdk 的边界",
+      "steps": [
+        "分析现有子项目中可复用的代码模块 [命令: find . -path '*/packages/*/package.json' | head -10; rg 'export|from.*shared' --type ts -l | head -20]",
+        "定义 packages/shared 职责边界（通用类型、工具函数） [命令: cat apps/claude-profile/src/lib/utils.ts]",
+        "定义 packages/ui 职责边界（共享 UI 组件） [命令: find . -path '*/components/ui/*.tsx' | head -15]",
+        "定义 packages/sdk 职责边界（API 封装 + Zod schema） [命令: cat apps/promptflow/packages/shared/src/schemas.ts | head -30]",
+        "生成 docs/packages-design.md 规划文档 [命令: test -f docs/packages-design.md && echo 'PASS']"
+      ],
+      "passes": true
+    },
+    {
+      "id": "004",
+      "component": "统一前端脚本规范，要求 apps 与 tools",
+      "priority": "P2",
+      "title": "统一前端脚本规范，要求 apps 与 tools 至少支持 dev build typecheck",
+      "steps": [
+        "扫描所有前端项目的 package.json scripts [命令: for f in apps/*/package.json tools/*/package.json; do node -e \"console.log('$f:', JSON.stringify(require('./$f').scripts))\"; done]",
+        "识别缺少 dev/build/typecheck 脚本的项目",
+        "补齐缺失的 typecheck 和 lint 脚本",
+        "生成 docs/script-standard.md 脚本规范 [命令: test -f docs/script-standard.md && echo 'PASS']"
+      ],
+      "passes": true
+    },
+    {
+      "id": "005",
+      "component": "制定 Vite 8 迁移计划草案，列出需要迁移的",
+      "priority": "P2",
+      "title": "制定 Vite 8 迁移计划草案，列出需要迁移的子项目与风险点",
+      "steps": [
+        "基于 stack-inventory.md 整理 Vite 版本分布 [命令: cat docs/stack-inventory.md | grep -A20 'Vite 版本']",
+        "列出需要从 Vite 6/7 升级到 8 的项目清单",
+        "分析 Vite 7 → 8 的 breaking changes",
+        "评估每个项目的迁移风险",
+        "生成 docs/vite8-migration-plan.md 迁移计划 [命令: test -f docs/vite8-migration-plan.md && echo 'PASS']"
+      ],
+      "passes": true
+    },
+    {
+      "id": "006",
+      "component": "制定 shadcn 接入规范草案，列出哪些子项目",
+      "priority": "P2",
+      "title": "制定 shadcn 接入规范草案，列出哪些子项目需要补齐",
+      "steps": [
+        "基于 stack-inventory.md 识别已接入 shadcn 的项目 [命令: cat docs/stack-inventory.md | grep -A10 'shadcn']",
+        "识别需要补齐 shadcn 依赖的项目",
+        "定义 shadcn 接入标准（必需依赖、目录结构）",
+        "生成 docs/shadcn-adoption.md 接入规范 [命令: test -f docs/shadcn-adoption.md && echo 'PASS']"
+      ],
+      "passes": true
+    },
+    {
+      "id": "007",
+      "component": "制定 Fetch 封装与 Zod 校验规范草案，",
+      "priority": "P2",
+      "title": "制定 Fetch 封装与 Zod 校验规范草案，输出 packages/sdk 的接口草案",
+      "steps": [
+        "分析现有项目中的 HTTP 调用方式",
+        "创建 packages/shared 骨架 [命令: test -d packages/shared && echo 'PASS']",
+        "创建 packages/sdk 骨架 [命令: test -d packages/sdk && echo 'PASS']",
+        "实现 fetchJson 与 Zod 校验助手 [命令: cat packages/sdk/src/fetcher.ts | head -30]",
+        "生成 docs/sdk-contract.md 接口契约 [命令: test -f docs/sdk-contract.md && echo 'PASS']"
+      ],
+      "passes": true
+    },
+    {
+      "id": "008",
+      "component": "制定 services 边界与契约文档草案，至少",
+      "priority": "P2",
+      "title": "制定 services 边界与契约文档草案，至少覆盖 workflow-engine governance config-engine",
+      "steps": [
+        "创建 services 目录占位结构 [命令: ls -la services/]",
+        "分析 workflow-engine 的职责与边界",
+        "分析 governance 的职责与边界",
+        "分析 config-engine 的职责与边界",
+        "生成 docs/services-contracts.md 边界契约 [命令: test -f docs/services-contracts.md && echo 'PASS']"
+      ],
+      "passes": true
+    },
+    {
+      "id": "009",
+      "component": "workspace-lite：引入 pnpm-w",
+      "priority": "P1",
+      "title": "workspace-lite：引入 pnpm-workspace.yaml 与根 .npmrc，并保持每个项目可独立安装",
+      "steps": [
+        "新增 pnpm-workspace.yaml，纳入 packages/* 与主线路 apps/tools",
+        "新增根 .npmrc，配置 link-workspace-packages 与 shared-workspace-lockfile",
+        "新增根 package.json，提供 pnpm -r 脚本",
+        "更新 docs/runbook.md，增加 workspace-lite 说明"
+      ],
+      "passes": true
+    },
+    {
+      "id": "010",
+      "component": "tailwind-v4：将主线路 React/V",
+      "priority": "P1",
+      "title": "tailwind-v4：将主线路 React/Vite 项目从 Tailwind v3 升级到 v4",
+      "steps": [
+        "识别仍使用 Tailwind v3 的主线路项目",
+        "逐项目升级 Tailwind v3 → v4",
+        "修复 tailwind.config 与 postcss 配置",
+        "验收：dev 启动、build 通过"
+      ],
+      "passes": true
+    },
+    {
+      "id": "011",
+      "component": "vite-8：将主线路 React/Vite 项",
+      "priority": "P1",
+      "title": "vite-8：将主线路 React/Vite 项目升级到 Vite 8",
+      "steps": [
+        "识别需升级的 Vite 项目",
+        "逐项目升级 Vite → 8.x",
+        "修复 vite.config 与插件兼容问题",
+        "验收：dev/build/typecheck 能跑"
+      ],
+      "passes": true
+    },
+    {
+      "id": "012",
+      "component": "shadcn-baseline：在 packag",
+      "priority": "P2",
+      "title": "shadcn-baseline：在 packages/ui 建立 shadcn 基础设施与最小组件集",
+      "steps": [
+        "创建 packages/ui 目录与基础配置",
+        "实现最小组件集：Button, Input, Card, Dialog",
+        "提供主题与 Tailwind v4 对齐说明"
+      ],
+      "passes": true
+    },
+    {
+      "id": "013",
+      "component": "sdk-client：补强 packages/s",
+      "priority": "P2",
+      "title": "sdk-client：补强 packages/sdk 为可用 API client",
+      "steps": [
+        "增强 fetchJson：支持 baseUrl headers timeout abort",
+        "补充错误层与 Zod helpers",
+        "增加使用示例到 docs/sdk-contract.md"
+      ],
+      "passes": true
+    },
+    {
+      "id": "014",
+      "component": "import-migrate：把主线路 apps",
+      "priority": "P2",
+      "title": "import-migrate：把主线路 apps 至少 2 个入口迁移到使用 @agent-suite/shared 与 @agent-suite/sdk",
+      "steps": [
+        "选择 2 个主线路 app（claude-profile, promptflow/workbench）",
+        "迁移 cn、Result 类型到 @agent-suite/shared",
+        "迁移 fetch 封装到 @agent-suite/sdk",
+        "验收：两个 app 能启动"
+      ],
+      "passes": true
+    },
+    {
+      "id": "015",
+      "component": "legacy-isolation：将 Vue/N",
+      "priority": "P2",
+      "title": "legacy-isolation：将 Vue/Next 项目移动到 legacy/ 并补齐运行说明",
+      "steps": [
+        "识别 Vue/Next 子项目",
+        "移动到 legacy/ 目录",
+        "在原位置放 README.md 解释新路径",
+        "更新文档说明隔离策略"
+      ],
+      "passes": true
+    }
+  ],
+  "statistics": {
+    "total": 15,
+    "passing": 15,
+    "failing": 0,
+    "completion": "100%",
+    "blocked_reason": ""
+  }
+}

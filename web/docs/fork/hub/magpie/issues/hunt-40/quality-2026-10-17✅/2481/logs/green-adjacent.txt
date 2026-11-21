@@ -1,0 +1,44 @@
+=== RUN   TestArchiveWholeBodies
+=== RUN   TestArchiveWholeBodies/stream=false
+=== RUN   TestArchiveWholeBodies/stream=true
+--- PASS: TestArchiveWholeBodies (0.67s)
+    --- PASS: TestArchiveWholeBodies/stream=false (0.58s)
+    --- PASS: TestArchiveWholeBodies/stream=true (0.09s)
+=== RUN   TestCodexOwnModelRecordedAsCodexAccount
+--- PASS: TestCodexOwnModelRecordedAsCodexAccount (0.06s)
+=== RUN   TestCodexAPIKeyRecordedAsOpenAI
+--- PASS: TestCodexAPIKeyRecordedAsOpenAI (0.02s)
+=== RUN   TestCodexKeyRefusedCarriesItsRoute
+--- PASS: TestCodexKeyRefusedCarriesItsRoute (0.03s)
+=== RUN   TestCodexEmptyFailureCarriesItsRoute
+--- PASS: TestCodexEmptyFailureCarriesItsRoute (0.01s)
+=== RUN   TestCodexCompactFailureKeepsTheTurnRoute
+=== RUN   TestCodexCompactFailureKeepsTheTurnRoute/api-key-refused
+=== RUN   TestCodexCompactFailureKeepsTheTurnRoute/api-key-empty-failure
+=== RUN   TestCodexCompactFailureKeepsTheTurnRoute/chatgpt-empty-failure
+=== RUN   TestCodexCompactFailureKeepsTheTurnRoute/chatgpt-refused
+--- PASS: TestCodexCompactFailureKeepsTheTurnRoute (0.04s)
+    --- PASS: TestCodexCompactFailureKeepsTheTurnRoute/api-key-refused (0.02s)
+    --- PASS: TestCodexCompactFailureKeepsTheTurnRoute/api-key-empty-failure (0.01s)
+    --- PASS: TestCodexCompactFailureKeepsTheTurnRoute/chatgpt-empty-failure (0.01s)
+    --- PASS: TestCodexCompactFailureKeepsTheTurnRoute/chatgpt-refused (0.01s)
+=== RUN   TestCodexNativeModelStaysNative
+--- PASS: TestCodexNativeModelStaysNative (0.02s)
+=== RUN   TestCodexThirdPartyCompactEndpointRejected
+--- PASS: TestCodexThirdPartyCompactEndpointRejected (0.02s)
+=== RUN   TestCodexBackendKeepsNativeSession
+--- PASS: TestCodexBackendKeepsNativeSession (0.01s)
+=== RUN   TestTraceRecordsTheEffortSent
+--- PASS: TestTraceRecordsTheEffortSent (0.08s)
+=== RUN   TestTraceKeepsInflight
+--- PASS: TestTraceKeepsInflight (0.00s)
+=== RUN   TestTraceNamesMovedAccount
+--- PASS: TestTraceNamesMovedAccount (0.00s)
+=== RUN   TestTraceTellsTheCount
+--- PASS: TestTraceTellsTheCount (0.00s)
+=== RUN   TestTraceTellsTheRoute
+--- PASS: TestTraceTellsTheRoute (0.09s)
+=== RUN   TestTraceOrderIsAList
+--- PASS: TestTraceOrderIsAList (0.00s)
+PASS
+ok  	github.com/yetone/magpie/internal/gateway	1.533s

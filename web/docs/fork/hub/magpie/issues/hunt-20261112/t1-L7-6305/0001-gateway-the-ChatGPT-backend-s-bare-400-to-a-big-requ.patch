@@ -1,0 +1,231 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Fri, 13 Nov 2026 02:37:34 +0800
+Subject: [PATCH] gateway: the ChatGPT backend's bare 400 to a big request is
+ read as its byte cap (#6305)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+chatgpt.com's Codex backend refuses a request body of about 880 KB and
+more with a bare 400, its body empty, and says nothing of a cap
+(guanwenpeng2001-bot, #6214, where the ceiling was measured at about
+130 K tokens of real traffic — a thread past it is refused on every
+turn, and Codex's own compaction, triggered on tokens a third of the
+window in, never comes). The same bytes as random text reach the model
+check and are refused with a word (adlternative's control, #6305), so
+the refusal is of the body, before any of the API's own errors are
+said. byteCapRefusal never matched it: no 413, no words — the request
+failed as "Codex: Bad Request" and every turn of the thread after it
+died the same way.
+
+A bare 400 to a request of 768 KB or more, its body empty, is now read
+as that byte cap (bareCapRefusal), the way a proxy's page for a big
+request already is (pageOverSize): the cap it implies is a guess at
+one, not the vendor's word, and is kept for no later request; the
+oldest images are left out and the request asked again (a thread of
+screenshots fits under it and goes on), and when nothing more can go
+the refusal is said as a 413 that names the size — Codex's cue to
+compact, which the thread never had. A bare 400 with words in it,
+however big the request, and a small request's bare 400 stay what they
+were.
+
+Run: TestBigBodyBare400IsByteCap sends a text turn past the threshold
+to an upstream that answers it with a bare 400: refused with no
+details on the base, said as a 413 naming the size with the fix, the
+upstream asked once. TestBare400NotAByteCap keeps a bare 400 with
+words and a small request's bare 400 as they were (green before the
+fix, kept as guards). The body-cap family, the gateway package, gofmt
+and vet stay green.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gateway/body_cap.go      | 53 +++++++++++++++++++------
+ internal/gateway/body_cap_test.go | 66 +++++++++++++++++++++++++++++++
+ 2 files changed, 107 insertions(+), 12 deletions(-)
+
+diff --git a/internal/gateway/body_cap.go b/internal/gateway/body_cap.go
+index 88a5f0d17..c29bad96a 100644
+--- a/internal/gateway/body_cap.go
++++ b/internal/gateway/body_cap.go
+@@ -96,6 +96,27 @@ func pageOverSize(status int, errBody []byte, sent int) bool {
+ 	return ok
+ }
+ 
++// bareCapLeast is the least a request weighs before a bare 400 — the
++// status, and a body with nothing in it — is read as a refusal of its
++// bytes: the ChatGPT backend refuses a request of about 880 KB and more
++// so, on every turn of the thread that sent it (#6214, where the ceiling
++// was measured at about 130 K tokens of real traffic; the same bytes as
++// random text reach the model check, so the refusal is of the body,
++// before any of the API's own errors are said, #6305's control). A
++// smaller bare 400 is the API's own answer, said as it came.
++const bareCapLeast = 768 << 10
++
++// bareCapRefusal is that bare 400: status 400, the body empty, to a
++// request of bareCapLeast or more. It names no cap and no error of its
++// own, so the cap it implies is a guess at one, not the vendor's word —
++// refitOverCap keeps no cap for it, as it keeps none for a proxy's page.
++func bareCapRefusal(status int, errBody []byte, sent int) bool {
++	if status != http.StatusBadRequest || sent < bareCapLeast {
++		return false
++	}
++	return len(bytes.TrimSpace(errBody)) == 0
++}
++
+ // capSizes are the sizes a refusal names: "33554432 bytes", "32 MB",
+ // "32MiB", "40.1 MB".
+ var capSizes = lazyre.New(`(?i)(\d+(?:\.\d+)?)\s*(bytes|b|kb|kib|mb|mib|gb|gib)\b`)
+@@ -181,10 +202,12 @@ func (s *Server) capFit(p provider.Provider, to provider.Protocol, path string,
+ }
+ 
+ // refitOverCap is forward's answer to res, a refusal of body for its
+-// bytes (byteCapRefusal): the cap learned, and the request sent again
+-// with its oldest images left out, as often as that brings it lower and
+-// is refused again. When nothing more can go, the refusal is said as a
+-// 413 that names the size, the cap and what was kept.
++// bytes (byteCapRefusal), a proxy's page for one (pageOverSize), or the
++// ChatGPT backend's bare 400 for one (bareCapRefusal): the cap learned,
++// and the request sent again with its oldest images left out, as often
++// as that brings it lower and is refused again. When nothing more can
++// go, the refusal is said as a 413 that names the size, the cap and what
++// was kept.
+ func (s *Server) refitOverCap(ctx context.Context, p provider.Provider, to provider.Protocol, path string, body []byte, in http.Header, res *http.Response) (*http.Response, error) {
+ 	var err error
+ 	for range 3 {
+@@ -194,12 +217,13 @@ func (s *Server) refitOverCap(ctx context.Context, p provider.Provider, to provi
+ 		b := peekError(res)
+ 		// body as it came is never smaller than what was sent: a page
+ 		// to a small one is ruled out before body is fitted
++		bare := bareCapRefusal(res.StatusCode, b, len(body))
+ 		page := !byteCapRefusal(res.StatusCode, b)
+-		if page && !pageOverSize(res.StatusCode, b, len(body)) {
++		if page && !bare && !pageOverSize(res.StatusCode, b, len(body)) {
+ 			return res, nil
+ 		}
+ 		sent := s.capSent(p, to, path, body)
+-		if page && sent < pageCapLeast {
++		if page && !bare && sent < pageCapLeast {
+ 			return res, nil
+ 		}
+ 		n := statedCap(b, sent)
+@@ -218,7 +242,7 @@ func (s *Server) refitOverCap(ctx context.Context, p provider.Provider, to provi
+ 		fitted, left, ok := withoutOldImages(to, body, capRoom(n))
+ 		if !ok || len(fitted) >= sent {
+ 			res.Body.Close()
+-			return overCap(res, b, p, len(body), statedCap(b, len(body)), images(to, body), page), nil
++			return overCap(res, b, p, len(body), statedCap(b, len(body)), images(to, body), page, bare), nil
+ 		}
+ 		log.Printf("%s refused a request of %s (HTTP %d: %s); asking again with the %d oldest images left out (%s)", p.Name, mb(sent), res.StatusCode, provider.APIError(b, ""), left, mb(len(fitted)))
+ 		res.Body.Close()
+@@ -229,12 +253,13 @@ func (s *Server) refitOverCap(ctx context.Context, p provider.Provider, to provi
+ 	}
+ 	if res.StatusCode >= 400 {
+ 		b := peekError(res)
++		bare := bareCapRefusal(res.StatusCode, b, len(body))
+ 		page := !byteCapRefusal(res.StatusCode, b)
+-		if !page || pageOverSize(res.StatusCode, b, len(body)) && s.capSent(p, to, path, body) >= pageCapLeast {
++		if bare || !page || pageOverSize(res.StatusCode, b, len(body)) && s.capSent(p, to, path, body) >= pageCapLeast {
+ 			// refused as often as it was asked smaller: said as a 413, so
+ 			// Codex's compaction asks as text (summaryTooLarge)
+ 			res.Body.Close()
+-			return overCap(res, b, p, len(body), statedCap(b, len(body)), images(to, body), page), nil
++			return overCap(res, b, p, len(body), statedCap(b, len(body)), images(to, body), page, bare), nil
+ 		}
+ 	}
+ 	return res, nil
+@@ -258,10 +283,14 @@ func peekError(res *http.Response) []byte {
+ // request's size, the provider's cap when it named one, and that leaving
+ // out its earlier images didn't bring it under.
+ // page is a refusal said as a proxy's page (pageOverSize), which is named
+-// for what it most likely was.
+-func overCap(res *http.Response, errBody []byte, p provider.Provider, size, n, imgs int, page bool) *http.Response {
++// for what it most likely was. bare is one said as a bare 400 with
++// nothing in it (bareCapRefusal), named for what it is: the backend
++// refusing a big request without a word of its own about it.
++func overCap(res *http.Response, errBody []byte, p provider.Provider, size, n, imgs int, page, bare bool) *http.Response {
+ 	said := provider.APIError(errBody, http.StatusText(res.StatusCode))
+-	if page {
++	if bare {
++		said = fmt.Sprintf("%s answered a bare 400 with nothing in it, as it does for a request larger than it takes", p.Name)
++	} else if page {
+ 		what := "an empty reply"
+ 		if w, ok := provider.WebPage(errBody); ok {
+ 			what = w
+diff --git a/internal/gateway/body_cap_test.go b/internal/gateway/body_cap_test.go
+index 12c973457..ab44ec4f0 100644
+--- a/internal/gateway/body_cap_test.go
++++ b/internal/gateway/body_cap_test.go
+@@ -289,3 +289,69 @@ func compactionOverByteCapEveryTime(t *testing.T, header ...string) {
+ 		}
+ 	}
+ }
++
++// longTextTurn is a Responses turn to model of about n bytes of text, no
++// image in it: nothing its history holds can be left out to fit it.
++func longTextTurn(model string, n int) string {
++	return `{"model":"` + model + `","stream":true,"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"` + strings.Repeat("word ", n/5) + `"}]}]}`
++}
++
++// bare400Least mirrors the threshold the gate reads a bare 400 at, pinned
++// here on its own: 768 KiB, under the about 880 KB the ceiling was
++// measured at in #6214.
++const bare400Least = 768 << 10
++
++// bare400 is the ChatGPT backend's refusal of a big request: a bare 400,
++// its body empty, no error of its own in it (#6214, where the ceiling was
++// measured at about 880 KB — a thread past it is refused so on every
++// turn, and Codex's compaction, triggered on tokens, never comes;
++// #6305's control: the same bytes as random text reach the model check,
++// so the refusal is of the body, before any of the API's own errors are
++// said).
++func TestBigBodyBare400IsByteCap(t *testing.T) {
++	fresh(t)
++	up := &capped{proto: provider.Responses, most: bare400Least, status: 400, ctype: "", body: ""}
++	cappedOn(t, up)
++	body := longTextTurn("fake/m1", bare400Least+(16<<10))
++	code, out := postResponses(t, New(), body)
++	if code != 200 || failedCode(out) != "context_length_exceeded" {
++		t.Fatalf("Codex wasn't told to compact: %d %.600s", code, out)
++	}
++	for _, want := range []string{
++		"the request is " + mb(len(body)),
++		"answered a bare 400 with nothing in it",
++		"no earlier image",
++	} {
++		if !strings.Contains(out, want) {
++			t.Errorf("the error lacks %q: %.600s", want, out)
++		}
++	}
++	if n := len(up.calls()); n != 1 {
++		t.Fatalf("the same body was sent %d times", n)
++	}
++}
++
++// A refusal with words in it says what refused the request, however big
++// it is — the model check's own refusal, as #6305's random-text control
++// got — and a small request's bare 400 is the API's own answer as it
++// came. Neither is a byte cap.
++func TestBare400NotAByteCap(t *testing.T) {
++	fresh(t)
++	up := &capped{proto: provider.Responses, most: bare400Least, status: 400, ctype: "application/json",
++		body: `{"error":{"code":"model_not_found","message":"The model does-not-exist does not exist or you do not have access to it."}}`}
++	cappedOn(t, up)
++	code, out := postResponses(t, New(), longTextTurn("fake/m1", bare400Least+(16<<10)))
++	if code != 400 || !strings.Contains(out, "model_not_found") || strings.Contains(out, "no earlier image") {
++		t.Fatalf("a refusal with words in it: %d %.600s", code, out)
++	}
++	if n := len(up.calls()); n != 1 {
++		t.Fatalf("asked %d times", n)
++	}
++	fresh(t)
++	small := &capped{proto: provider.Responses, most: 64, status: 400, ctype: "", body: ""}
++	cappedOn(t, small)
++	code, out = postResponses(t, New(), `{"model":"fake/m1","stream":true,"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"a small ask"}]}]}`)
++	if code != 400 || !strings.Contains(out, "Bad Request") || strings.Contains(out, "no earlier image") {
++		t.Fatalf("a small request's bare 400: %d %.300s", code, out)
++	}
++}
+-- 
+2.50.1 (Apple Git-155)
+

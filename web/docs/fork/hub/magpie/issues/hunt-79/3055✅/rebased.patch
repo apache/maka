@@ -1,0 +1,286 @@
+From 8e468221724f157fe908dd771aff51fae652001f Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Wed, 21 Oct 2026 23:32:14 +0800
+Subject: [PATCH] agent: a tool asked on Responses says strict: false, its
+ optional parameters stay optional (#3055)
+
+What changed: OpenAI's Responses API takes a function tool whose strict
+is left out as a strict-mode one and normalizes its schema, where every
+property is required, so a tool's optional parameters came back filled
+(#3055, ArakawaHenri). pi-ai (dsh's llm-pi-ai, Pi and its kin) says
+strict: false on an ordinary tool only when the model's compat says
+supportsStrictMode, which it takes as false where the compat is left
+out. magpie now says it: every model of a dsh route whose api stands as
+openai-responses carries compat.supportsStrictMode, by the api the route
+has now (the one the user picked in dsh's Models page kept), not by its
+name, beside the keys they set there (dshKeepCompat); and piModelJSON
+says it for a model best served on Responses, which Pi's and StepCode's
+models.json carry (Pencil's entries stay on Chat throughout). omp's
+models.yml is left alone: omp turns a models.yml away over a field its
+schema doesn't name (16.3.5 over a max), so the compat needs an omp
+version of its own pinned first. docs/subsystems/agent-wiring.md says
+so.
+
+Run: new TestDshTellsAResponsesToolsStrictIsOff and
+TestPiTellsAResponsesToolsStrictIsOff fail without the change (the
+first with "a model asked on Responses isn't told strict is off:
+Compat:<nil>", the second with "resp/gpt-5.5 is asked on Responses and
+isn't told strict is off") and pass with it; removing only the dsh case
+turns the first red and only it, removing only the piModelJSON compat
+line turns the second red and only it. go test ./internal/agent/
+(TestMothX fails the same with both files back at the baseline here, so
+not from this change), gofmt -l on the changed files (nothing), go vet
+./..., GOOS=linux GOARCH=amd64 go vet -tags nogui ./...,
+GOOS=windows GOARCH=amd64 go vet ./..., go build . (darwin arm64),
+GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 go build -tags nogui .,
+GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -tags nogui .,
+GOOS=windows GOARCH=amd64 go build -o /dev/null .
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ docs/subsystems/agent-wiring.md         |   2 +-
+ internal/agent/agents.go                |   5 +
+ internal/agent/dsh.go                   |  17 ++-
+ internal/agent/responses_strict_test.go | 159 ++++++++++++++++++++++++
+ 4 files changed, 180 insertions(+), 3 deletions(-)
+ create mode 100644 internal/agent/responses_strict_test.go
+
+diff --git a/docs/subsystems/agent-wiring.md b/docs/subsystems/agent-wiring.md
+index 18d7b1da..18bed661 100644
+--- a/docs/subsystems/agent-wiring.md
++++ b/docs/subsystems/agent-wiring.md
+@@ -59,7 +59,7 @@ something else shows up as drift.
+   - Each model magpie writes into ZCode's `providerModelRules` has native web search (`properties.supportsNativeWebSearch`, "原生联网搜索") on while the provider's format is Anthropic Messages, the only format ZCode sends it on (`zcodeWebSearch`). The models magpie turned it on for are kept in the stash under `zcode.web_search`, so a model the user unticked in ZCode (which takes the key out of the rule) stays off, a value in the rule stays, a manual rule is left alone, and a stash that can't be read turns nothing on. On another format magpie's own on is taken out. Disconnect forgets the list.
+   - The YAML ones go through `yamlKept` and `mergeKept` in [`sync.go`](../../internal/agent/sync.go). Each is tested by a `Test<Agent>KeepsTheUsersSettings`.
+ - Copilot in JetBrains IDEs keeps its Bring Your Own Key providers in the Copilot language server's `byok.json`, shared with Xcode's and Eclipse's Copilot (`copilotJetBrains` in [`copilotjetbrains.go`](../../internal/agent/copilotjetbrains.go)). magpie writes its own three keys there, `magpie-provider-config`, `magpie-api-key` and `magpie-models-config`, in the bytes the server itself writes, and only when they differ; the user's providers and keys stay. A magpie model the user hid in Manage Models (`isRegistered: false`) stays hidden through a sync. A new file is made 0600 in a 0700 folder, as the server makes it.
+-- dsh (DeepSeek Harness) sets one API per llm-pi-ai route, so magpie writes a route per protocol (`dshKinds` in [`dsh.go`](../../internal/agent/dsh.go); 01huadalang on Discord): `magpie` (Chat Completions) for most models, `magpie-responses` (`openai-responses`) for a model served on Responses, `magpie-anthropic` (`anthropic-messages`, the gateway root, `forceAdaptiveThinking` where `AdaptiveThinking` or `AdaptiveWithEffort`, so Max reaches GLM-5.3 as max) for one served on Messages, by the model's `APIs` (`dshRouteOf`). A model's `APIs` is the one its provider serves it on best (`Provider.Native`, in `magpieModels`, [`route.go`](../../internal/agent/route.go)), and Pi, omp and droid read it the same way. A routing group has `responses` when every member is best on Responses (`allResponses`, #1594), so its tool-call arguments are relayed as they stream; any other group has none and stays on Chat, a Messages-only group too, as a Claude member's thinking is known by its own model. A route with no models is taken out. An api the user picked for a route in dsh's Models page is kept, and so are keys they added there. The start (`agent-default-model`) names its model's route, and Sync moves a start on one of magpie's routes to the route its model is now on (`dshStartOnItsRoute`), its effort and marks kept. Check asks the route the start names to list its model. A dsh session resumed on a model that has since moved routes asks for the model to be picked again, since dsh finds a model by route and id.
++- dsh (DeepSeek Harness) sets one API per llm-pi-ai route, so magpie writes a route per protocol (`dshKinds` in [`dsh.go`](../../internal/agent/dsh.go); 01huadalang on Discord): `magpie` (Chat Completions) for most models, `magpie-responses` (`openai-responses`) for a model served on Responses, `magpie-anthropic` (`anthropic-messages`, the gateway root, `forceAdaptiveThinking` where `AdaptiveThinking` or `AdaptiveWithEffort`, so Max reaches GLM-5.3 as max) for one served on Messages, by the model's `APIs` (`dshRouteOf`). A model's `APIs` is the one its provider serves it on best (`Provider.Native`, in `magpieModels`, [`route.go`](../../internal/agent/route.go)), and Pi, omp and droid read it the same way. A routing group has `responses` when every member is best on Responses (`allResponses`, #1594), so its tool-call arguments are relayed as they stream; any other group has none and stays on Chat, a Messages-only group too, as a Claude member's thinking is known by its own model. A route with no models is taken out. An api the user picked for a route in dsh's Models page is kept, and so are keys they added there. A model of a route whose api stands as `openai-responses` carries `compat.supportsStrictMode` (#3055): OpenAI's Responses API takes a function tool whose `strict` is left out as a strict-mode one, every property required, so a tool's optional parameters come back filled; pi-ai says `strict: false` on an ordinary tool only when the compat says so, by the api the route has, not by its name. The start (`agent-default-model`) names its model's route, and Sync moves a start on one of magpie's routes to the route its model is now on (`dshStartOnItsRoute`), its effort and marks kept. Check asks the route the start names to list its model. A dsh session resumed on a model that has since moved routes asks for the model to be picked again, since dsh finds a model by route and id.
+ - dsh takes a model's listed `maxTokens` as every request's output and reserves it, with 65536 of headroom, out of `contextWindow` before deciding when to compact (compaction-basic's `resolveCompactSpec`: the smaller of 80% of the window and window − maxTokens − 65536). A vendor's reply limit near its window had dsh compact at 41248 of a 500000 group (#2823) or fail with no budget (524288/524288, LoKi on Discord; 131072/65536), so magpie lists it held to what leaves dsh half the window to compact in (window/2 − 65536), or to a quarter of the window where that is more (every window under 262144, as VS Code and Copilot in JetBrains hold it), on every route and in the older `llm-deepseek` entry (`dshMaxTokens`). A quarter alone cut DeepSeek's 393216 on its 1000000 window to 250000 (#3298); now it keeps all of it and dsh compacts at 541248, while 500000/393216 is held to 184464 and compacts at 250000. A Max output the user set stays as they set it (`outputOr`), even one that leaves dsh no budget. `TestDshOutputLeavesCompactionRoom`.
+ - While magpie serves, `KeepDshWired` writes the routes again every 30 seconds, since dsh writes over its patch list. A round that writes nothing is kept (`dshRounds`), and the next round does nothing when nothing it reads has changed since. It checks the bytes of dsh's files (every profile's `cordis.patch.yml`, the home layer, `settings.yaml`, `.env`, `.credentials.yaml`, `config.yaml`) and the gateway's address. It also checks `provider.StampNow`: no Changed, plugin change or `filememo.Forget`, the same environment, and the providers', settings' and catalog's files unchanged. The models are built again when that stamp moves, and at least every `dshModelsFor` (5 minutes) for what no stamp sees, such as another app's account file or a date-retired model. Building the whole catalog and every route each round allocated 12 GB of a user's 35.7 GB in 48 minutes (`TestDshRoundWithNothingChangedBuildsNothing`, `TestDshRoundAfterAChangeWritesAgain`).
+ - DeepSeek Harness Desktop (macOS arm64 and Windows x64; no Linux build) reads the same `$DSH_HOME` or `~/.dsh` as the CLI, as its own profile `profiles/desktop` (`resolveDshHome` and `resolveDesktopPaths` in the app's `lib/main.js`; `defaultDshHome` in github.com/deepseek-ai/deepseek-harness's `packages/util/home-paths/src/index.ts` and `apps/desktop/src/paths.ts`), so it takes magpie's routes with no wiring of its own (#2279, liangjinyuan-sihan). Only that app, from deepseek-ai/deepseek-harness (bundle id `com.deepseek.dsh`, productName DeepSeek Harness in `apps/desktop/scripts/electron-builder-config.mjs`), is dsh's: the community "DeepSeek Hermes" (motongv/deepseek-hermes-desktop) v0.1.1337 took for it is not listed or written for (WuSix on Discord, `TestDshOnlyTheOfficialApp`). It is found by `/Applications/DeepSeek Harness.app`, by `%LOCALAPPDATA%\Programs\DeepSeek Harness`, or by the folder its current-user installer records under `HKCU\Software\1bf39983-50d0-5fe0-9ef4-cece76f67c5e` (`InstallLocation`), whose Uninstall key gives the version (`registered` in [`desktopapp.go`](../../internal/agent/desktopapp.go)), so a user who picked another folder is found. With the app installed but never opened there is no `~/.dsh`: the row is still listed, and connecting writes `profiles/desktop/cordis.patch.yml` from dsh's own template (`dshProfileTemplate`) with magpie's routes, which the app keeps on its first start, since it writes only the files that are missing. The notice says the app starts on it the first time it opens (`noticeDsh5`). Disconnect before that first start removes the profile magpie made when nothing else is in it (`dshTidyUnopened`); once the app has opened it, the profile stays and only magpie's entries go (`TestDshDesktopNeverOpened`, `TestDshDesktopRegisteredFolder`; the registry as 0.2.1-rc.2's installer writes it, `TestDshWindowsAsTheInstallerRegistersIt`).
+diff --git a/internal/agent/agents.go b/internal/agent/agents.go
+index 64a6f165..dd742376 100644
+--- a/internal/agent/agents.go
++++ b/internal/agent/agents.go
+@@ -538,7 +538,12 @@ func piModelJSON(m catalog.Model, gw string, native bool) map[string]any {
+ 	switch {
+ 	case !native:
+ 	case slices.Contains(m.APIs, string(provider.Responses)):
++		// strict left out of a tool of a turn asked there is taken as a
++		// strict-mode schema, every property required, optional ones
++		// filled (#3055): pi-ai says strict: false on an ordinary tool
++		// only when the model's compat says so
+ 		e["api"] = "openai-responses"
++		e["compat"] = map[string]any{"supportsStrictMode": true}
+ 	case slices.Contains(m.APIs, string(provider.Anthropic)):
+ 		e["api"], e["baseUrl"] = "anthropic-messages", gw
+ 		if gateway.AdaptiveThinking(m.ID) {
+diff --git a/internal/agent/dsh.go b/internal/agent/dsh.go
+index b81e5e63..ca28f936 100644
+--- a/internal/agent/dsh.go
++++ b/internal/agent/dsh.go
+@@ -1338,9 +1338,13 @@ type dshPiModel struct {
+ // pi-ai asks a model for a thinking budget unless forceAdaptiveThinking is
+ // set, and a Claude that thinks only adaptively turns a budget away. Z.ai's
+ // GLM-5.2 and GLM-5.3 are told so too: a budget can't ask them for max
+-// (dshKindConfig).
++// (dshKindConfig). On OpenAI's Responses API supportsStrictMode has pi-ai
++// say strict: false on an ordinary tool: with strict left out the API
++// normalizes a tool's schema as a strict-mode one, where every property is
++// required, and a tool's optional parameters come back filled (#3055).
+ type dshPiCompat struct {
+ 	ForceAdaptiveThinking bool `yaml:"forceAdaptiveThinking,omitempty"`
++	SupportsStrictMode    bool `yaml:"supportsStrictMode,omitempty"`
+ }
+ 
+ // dshAPIs are the wire protocols of llm-pi-ai's (pi-ai's api names) a route
+@@ -1557,11 +1561,20 @@ func dshKindConfig(k dshKind, models []catalog.Model, api, gw string) dshPiRoute
+ 			e.Input = []string{"text"}
+ 		}
+ 		_, e.ReasoningEfforts = dshModelLevels(m.Efforts)
++		// each switch is magpie's own, put as magpie has it now: a user's
++		// hand-set one of the same name says what magpie writes again says
++		switch {
+ 		// pi-ai's budget path clamps max to high (16384), so a model that
+ 		// takes adaptive thinking with its level (Z.ai's GLM-5.3) is asked
+ 		// adaptively too: pi-ai then sends the level itself, max as max
+-		if api == "anthropic-messages" && (gateway.AdaptiveThinking(m.ID) || gateway.AdaptiveWithEffort(m.ID)) {
++		case api == "anthropic-messages" && (gateway.AdaptiveThinking(m.ID) || gateway.AdaptiveWithEffort(m.ID)):
+ 			e.Compat = &dshPiCompat{ForceAdaptiveThinking: true}
++		case api == "openai-responses":
++			// by the api the route stands on (the one the user picked in
++			// dsh's Models page kept), not by its name: a tool of a turn
++			// asked there with strict left out has every property taken as
++			// required, its optional ones filled (#3055)
++			e.Compat = &dshPiCompat{SupportsStrictMode: true}
+ 		}
+ 		r.Models = append(r.Models, e)
+ 	}
+diff --git a/internal/agent/responses_strict_test.go b/internal/agent/responses_strict_test.go
+new file mode 100644
+index 00000000..6694342c
+--- /dev/null
++++ b/internal/agent/responses_strict_test.go
+@@ -0,0 +1,159 @@
++package agent
++
++import (
++	"encoding/json"
++	"os"
++	"path/filepath"
++	"testing"
++
++	"github.com/yetone/magpie/internal/catalog"
++	"github.com/yetone/magpie/internal/provider"
++)
++
++// dshModelOf is the model id of a route as dshPiProviders parsed it.
++func dshModelOf(t *testing.T, ps map[string]dshPiRoute, key, id string) *dshPiModel {
++	t.Helper()
++	r, ok := ps[key]
++	if !ok {
++		t.Fatalf("no route %s", key)
++	}
++	for i := range r.Models {
++		if r.Models[i].ID == id {
++			return &r.Models[i]
++		}
++	}
++	t.Fatalf("route %s has no %s: %+v", key, id, r.Models)
++	return nil
++}
++
++// #3055 (ArakawaHenri): OpenAI's Responses API takes a function tool whose
++// strict is left out as a strict-mode one and normalizes its schema, where
++// every property is required, so a tool's optional parameters came back
++// filled. pi-ai says strict: false on an ordinary tool only when the
++// model's compat says supportsStrictMode, which it takes as false where
++// the compat is left out — as magpie's routes were. magpie now says it on
++// every model of a route whose api stands as openai-responses (the one a
++// user picked in dsh's Models page kept), and on none of a Chat or
++// Messages route.
++func TestDshTellsAResponsesToolsStrictIsOff(t *testing.T) {
++	home, dir, web := dshProtocolHome(t)
++	dshKeyFixture(dir)
++	os.WriteFile(web, []byte("# Your patch layer for this dsh profile.\n"), 0o644)
++	a := dsh(home)
++	if err := a.Field("model").Set("magpie/resp/gpt-5.5"); err != nil {
++		t.Fatal(err)
++	}
++	ps := dshPiProviders(t, web)
++	if m := dshModelOf(t, ps, "magpie-responses", "resp/gpt-5.5"); m.Compat == nil || !m.Compat.SupportsStrictMode {
++		t.Fatalf("a model asked on Responses isn't told strict is off: %+v", m)
++	}
++	if m := dshModelOf(t, ps, "magpie", "deepseek/pro"); m.Compat != nil && m.Compat.SupportsStrictMode {
++		t.Fatalf("a Chat model was told strict is off: %+v", m)
++	}
++	if dshModelOf(t, ps, "magpie", "deepseek/flash").Compat != nil {
++		t.Fatal("a Chat model took a compat of its own")
++	}
++	if m := dshModelOf(t, ps, "magpie-anthropic", "anth/claude-sonnet-5"); m.Compat == nil || !m.Compat.ForceAdaptiveThinking || m.Compat.SupportsStrictMode {
++		t.Fatalf("a Claude on Messages: %+v", m)
++	}
++
++	// a round over what it wrote leaves it as it is
++	was, _ := os.ReadFile(web)
++	dshWiredOnce()
++	if again, _ := os.ReadFile(web); string(again) != string(was) {
++		t.Fatalf("written again:\n%s", again)
++	}
++
++	// the api a user picked for a route in dsh's Models page decides, not
++	// the route's name: magpie's first route on Responses tells its Chat
++	// models strict is off and keeps a key of theirs beside magpie's; the
++	// responses route on Chat tells its model nothing there
++	os.WriteFile(web, []byte("# Your patch layer for this dsh profile.\n"+
++		"- id: llm-pi-ai # magpie\n  name: \"@deepseek-ai/dsh-llm-pi-ai\"\n  config:\n    providers:\n"+
++		"      magpie:\n        displayName: Magpie\n        apiKeyEnv: "+dshKeyRef+"\n        api: openai-responses\n        baseURL: "+gatewayV1()+"\n        models:\n"+
++		"          - id: deepseek/pro\n            compat:\n              maxTokensField: max_tokens\n"+
++		"      magpie-responses:\n        displayName: Magpie · Responses\n        apiKeyEnv: "+dshKeyRef+"\n        api: openai-completions\n        baseURL: "+gatewayV1()+"\n        models:\n"+
++		"          - id: resp/gpt-5.5\n"), 0o644)
++	if err := a.Sync(); err != nil {
++		t.Fatal(err)
++	}
++	b, _ := os.ReadFile(web)
++	_, compat := dshRouteCompat(t, web, "magpie")
++	c := compat["deepseek/pro"]
++	if c["supportsStrictMode"] != true || c["maxTokensField"] != "max_tokens" {
++		t.Fatalf("a Chat model on a route switched to Responses: %v\n%s", c, b)
++	}
++	_, compat = dshRouteCompat(t, web, "magpie-responses")
++	if c = compat["resp/gpt-5.5"]; c != nil && c["supportsStrictMode"] == true {
++		t.Fatalf("a model on a route switched to Chat was told strict is off: %v\n%s", c, b)
++	}
++}
++
++// The same for Pi's and StepCode's model entries (piModelJSON): a model
++// best served on Responses carries compat.supportsStrictMode, a Chat
++// model's entry carries no compat at all. Pencil's entries stay on Chat
++// throughout, so it takes none.
++func TestPiTellsAResponsesToolsStrictIsOff(t *testing.T) {
++	home := syncHome(t)
++	if err := provider.Save(provider.Provider{ID: "resp", Name: "Resp", Key: "k", Responses: "http://127.0.0.1:1/v1", Models: []string{"gpt-5.5"}}); err != nil {
++		t.Fatal(err)
++	}
++	if err := catalog.SaveLive("resp", "http://127.0.0.1:1/v1", []catalog.Model{{ID: "gpt-5.5", Efforts: []string{"high"}}}); err != nil {
++		t.Fatal(err)
++	}
++	piModels := filepath.Join(home, ".pi", "agent", "models.json")
++	// the provider block as magpie wrote it before this provider was, with
++	// a key of pi-cache-optimizer's in it
++	writeFile(t, piModels, `{
++  "providers": {
++    "magpie": {
++      "api": "openai-completions",
++      "apiKey": "magpie",
++      "baseUrl": "http://127.0.0.1:3425/v1",
++      "compat": {
++        "sendSessionAffinityHeaders": true
++      },
++      "models": [
++        {
++          "id": "gone/old-model",
++          "name": "Old"
++        }
++      ],
++      "name": "magpie"
++    }
++  }
++}
++`)
++	SyncCatalog()
++	b, err := os.ReadFile(piModels)
++	if err != nil {
++		t.Fatal(err)
++	}
++	var f struct {
++		Providers struct {
++			Magpie struct {
++				Models []struct {
++					ID     string         `json:"id"`
++					API    string         `json:"api"`
++					Compat map[string]any `json:"compat"`
++				} `json:"models"`
++			} `json:"magpie"`
++		} `json:"providers"`
++	}
++	if err := json.Unmarshal(b, &f); err != nil {
++		t.Fatalf("%v:\n%s", err, b)
++	}
++	strict := map[string]bool{}
++	for _, m := range f.Providers.Magpie.Models {
++		if m.API == "openai-responses" && m.Compat["supportsStrictMode"] != true {
++			t.Fatalf("%s is asked on Responses and isn't told strict is off:\n%s", m.ID, b)
++		}
++		strict[m.ID] = m.Compat["supportsStrictMode"] == true
++	}
++	if !strict["resp/gpt-5.5"] {
++		t.Fatalf("no responses model of magpie's carries supportsStrictMode:\n%s", b)
++	}
++	if strict["relay/glm-4.6"] {
++		t.Fatalf("a Chat model was told strict is off:\n%s", b)
++	}
++}
+-- 
+2.50.1 (Apple Git-155)
+

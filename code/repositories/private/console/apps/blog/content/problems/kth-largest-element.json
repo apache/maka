@@ -1,0 +1,25 @@
+{
+  "id": "39",
+  "slug": "kth-largest-element-in-an-array",
+  "title": "数组中的第K个最大元素",
+  "difficulty": "medium",
+  "tags": ["数组", "分治", "快速选择", "排序", "堆"],
+  "description": "给定整数数组 `nums` 和整数 `k`,请返回数组中第 `k` 个最大的元素。\n\n请注意,你需要找的是数组排序后的第 `k` 个最大的元素,而不是第 `k` 个不同的元素。\n\n**示例 1:**\n\n- 输入:`nums = [3,2,1,5,6,4]`, `k = 2`\n- 输出:`5`\n\n**示例 2:**\n\n- 输入:`nums = [3,2,3,1,2,4,5,5,6]`, `k = 4`\n- 输出:`4`",
+  "solution": "## 思路\n\n最直观:**降序排序**后取第 `k` 个(下标 `k-1`),O(n log n)。进阶可用**快速选择**(partition)做到平均 O(n)。\n\n## 参考代码(排序法)\n\n```js\nfunction findKthLargest(nums, k) {\n  nums.sort((a, b) => b - a);\n  return nums[k - 1];\n}\n```\n\n## 复杂度\n\n- 时间:O(n log n)\n- 空间:O(log n)(排序栈)",
+  "signature": {
+    "language": "javascript",
+    "entry": "findKthLargest",
+    "params": [
+      { "name": "nums", "type": "number[]" },
+      { "name": "k", "type": "number" }
+    ],
+    "returns": "number"
+  },
+  "testCases": [
+    { "sample": true, "input": [[3, 2, 1, 5, 6, 4], 2], "expected": 5 },
+    { "sample": true, "input": [[3, 2, 3, 1, 2, 4, 5, 5, 6], 4], "expected": 4 },
+    { "sample": false, "input": [[1], 1], "expected": 1 },
+    { "sample": false, "input": [[1, 2], 1], "expected": 2 },
+    { "sample": false, "input": [[7, 6, 5, 4, 3, 2, 1], 5], "expected": 3 }
+  ]
+}

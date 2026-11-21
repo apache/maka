@@ -1,0 +1,146 @@
+From 72133c0e925268c57ce227c97c1faf32c2a121e7 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Sun, 18 Oct 2026 02:34:51 +0800
+Subject: [PATCH] gateway: the built-in Command Code's replayed turns carry
+ reasoning_content again
+
+What changed:
+chatReplaysReasoning also matches the built-in's API host,
+api.commandcode.ai. A Go conversation moved onto the plugin is built for
+the plugin's id and was already replayed (db024bcd); a built-in API-key
+account is built for api.commandcode.ai, which the check missed, so every
+replayed assistant turn went without reasoning_content and the
+/provider/v1 stealth and reflection models turn such a turn away with
+"Missing required parameter: 'messages[1].reasoning_content'" (#2741).
+The built-in itself replayed each turn's reasoning to /alpha/generate and
+its plugin replays for the whole catalog today, so its host gets the same
+treatment. The relay path's guard reads the same predicate
+(chatReplaysReasoning of buildHost(p)), so both consumers move together;
+the Responses (replaysReasoning) and Anthropic (anthropicReplaysThinking)
+siblings stay untouched, as no Command Code evidence exists on those
+protocols.
+
+Run:
+go test -tags nogui -count=1 -run 'TestCommandCodeBuiltInReplaysReasoning|TestBuiltInCommandCodeBuildsForItsAPIHost' ./internal/gateway
+- at base b14784c03fd9e410f34e6aa8ff1ae357dfe6078b the new
+  TestCommandCodeBuiltInReplaysReasoning fails twice (the built-in's
+  reasoning <nil> on a thinking turn; a tool call without
+  reasoning_content); TestBuiltInCommandCodeBuildsForItsAPIHost passes.
+- with the change: ok. Family (plugin parity, DeepSeek replay, Mistral
+  exclusion, translated path) ok.
+- ablation, product file back at b14784c0 with the tests kept: the same
+  two assertions fail; restored: ok. Mutation, the predicate true for
+  everything: the api.openai.com negative control fails; restored: ok.
+- gofmt -l clean; go vet, GOOS=linux/windows go vet, linux/windows/darwin
+  builds pass.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gateway/chat.go                      | 11 +--
+ .../commandcode_builtin_replay_test.go        | 71 +++++++++++++++++++
+ 2 files changed, 78 insertions(+), 4 deletions(-)
+ create mode 100644 internal/gateway/commandcode_builtin_replay_test.go
+
+diff --git a/internal/gateway/chat.go b/internal/gateway/chat.go
+index b6b38ddb..025cdcec 100644
+--- a/internal/gateway/chat.go
++++ b/internal/gateway/chat.go
+@@ -258,11 +258,14 @@ var failedAsText = map[string]bool{"devin": true, "qoder": true, "qoder-cn": tru
+ // chatReplaysReasoning is whether a Chat upstream wants a turn's reasoning
+ // back in reasoning_content: DeepSeek's models wherever they are served
+ // (#388), the model named as the provider names it (OpenCode Go's
+-// deepseek-v4.1-flash, whose host doesn't say so), and Command Code's
+-// plugin, which replays it for a Go key as the built-in did to
+-// /alpha/generate.
++// deepseek-v4.1-flash, whose host doesn't say so), and Command Code —
++// the plugin a Go conversation moves onto replays it, and the built-in
++// did too, to /alpha/generate: its /provider/v1 stealth and reflection
++// models still turn a replayed turn whose assistant message carries none
++// away (#2741).
+ func chatReplaysReasoning(host, model string) bool {
+-	return strings.Contains(host, "deepseek") || strings.Contains(strings.ToLower(model), "deepseek") || host == provider.CommandCodePlanID
++	return strings.Contains(host, "deepseek") || strings.Contains(strings.ToLower(model), "deepseek") ||
++		host == provider.CommandCodePlanID || host == "api.commandcode.ai"
+ }
+ 
+ func buildChat(r *Request, model, host string, rejectTemp bool) []byte {
+diff --git a/internal/gateway/commandcode_builtin_replay_test.go b/internal/gateway/commandcode_builtin_replay_test.go
+new file mode 100644
+index 00000000..198642c2
+--- /dev/null
++++ b/internal/gateway/commandcode_builtin_replay_test.go
+@@ -0,0 +1,71 @@
++package gateway
++
++import (
++	"encoding/json"
++	"testing"
++
++	"github.com/yetone/magpie/internal/provider"
++)
++
++// The built-in Command Code provider (api.commandcode.ai) reads a turn's
++// reasoning back, as it did to /alpha/generate and as its plugin does for
++// a moved Go account (TestCommandCodePluginReasoning): its stealth and
++// reflection models turn a replayed turn whose assistant message carries
++// no reasoning_content away ("Missing required parameter:
++// 'messages[1].reasoning_content'", #2741). The thinking the client kept
++// goes back as it is, a tool-call turn with none gets the space DeepSeek's
++// Chat API takes (noReasoning), and an upstream that reads no reasoning
++// back (api.openai.com) gets neither.
++func TestCommandCodeBuiltInReplaysReasoning(t *testing.T) {
++	if got := chatBody(t, "api.commandcode.ai")["messages"].([]any)[1].(map[string]any)["reasoning_content"]; got != "pondered" {
++		t.Errorf("the built-in's API host got reasoning %v", got)
++	}
++	r := &Request{Messages: []Message{
++		{Role: "user", Parts: []Part{{Kind: Text, Text: "what time is it?"}}},
++		{Role: "assistant", Parts: []Part{{Kind: ToolCall, ID: "call_1", Name: "get_time"}}},
++		{Role: "user", Parts: []Part{{Kind: Text, Text: "and now?"}}},
++	}}
++	toolTurn := func(host string) map[string]any {
++		t.Helper()
++		var v struct {
++			Messages []map[string]any `json:"messages"`
++		}
++		if err := json.Unmarshal(buildChat(r, "commandcode/stealth/cat-jam:free", host, false), &v); err != nil {
++			t.Fatal(err)
++		}
++		for _, m := range v.Messages {
++			if m["tool_calls"] != nil {
++				return m
++			}
++		}
++		t.Fatalf("%s: no tool-call message in %v", host, v.Messages)
++		return nil
++	}
++	if m := toolTurn("api.commandcode.ai"); m["reasoning_content"] != noReasoning {
++		t.Errorf("the built-in's tool call without thinking went without reasoning_content: %v", m)
++	}
++	if m := toolTurn("api.openai.com"); m["reasoning_content"] != nil {
++		t.Errorf("api.openai.com was given reasoning_content: %v", m)
++	}
++}
++
++// The built-in is no plugin: its chat request is built for its API host,
++// the same one the relayed path's guard reads (chatReplaysReasoning of
++// buildHost(p)), as a moved account's is built for its plugin's
++// (TestMovedBuildHostIsPlugin).
++func TestBuiltInCommandCodeBuildsForItsAPIHost(t *testing.T) {
++	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
++	t.Setenv("XDG_CACHE_HOME", t.TempDir())
++	p := provider.Provider{ID: "commandcode", Name: "Command Code", Key: "k",
++		Chat: "https://api.commandcode.ai/provider/v1", Responses: "https://api.commandcode.ai/provider/v1"}
++	if err := provider.Save(p); err != nil {
++		t.Fatal(err)
++	}
++	saved, err := provider.Find("commandcode")
++	if err != nil {
++		t.Fatal(err)
++	}
++	if got := buildHost(*saved); got != "api.commandcode.ai" {
++		t.Fatalf("buildHost = %q, want the built-in's API host", got)
++	}
++}
+-- 
+2.50.1 (Apple Git-155)
+

@@ -1,0 +1,875 @@
+[
+  {
+    "old": ".mimosa/hook-state/sess_962367f2-c258-4e81-b46f-a7dbc25acc93.continue.json",
+    "new": "archive/raw-evidence/tool-state/.mimosa/hook-state/sess_962367f2-c258-4e81-b46f-a7dbc25acc93.continue.json",
+    "status": "raw-evidence",
+    "reason": "工具状态，不进入知识导航",
+    "replacement": "",
+    "sha256": "33cc6951b093411a6be0b73a5beee1a044962a2165fbce0a363a0a334b6ea880",
+    "method": "native rename (untracked or ignored)"
+  },
+  {
+    "old": ".mimosa/hook-state/sess_962367f2-c258-4e81-b46f-a7dbc25acc93.json",
+    "new": "archive/raw-evidence/tool-state/.mimosa/hook-state/sess_962367f2-c258-4e81-b46f-a7dbc25acc93.json",
+    "status": "raw-evidence",
+    "reason": "工具状态，不进入知识导航",
+    "replacement": "",
+    "sha256": "d9e9ab07d1d34e96415647b9fb72d126c64ed66b25ea4629b412c59efd3c7a3a",
+    "method": "native rename (untracked or ignored)"
+  },
+  {
+    "old": ".mimosa/hook-status/sess_962367f2-c258-4e81-b46f-a7dbc25acc93-b8be177614.json",
+    "new": "archive/raw-evidence/tool-state/.mimosa/hook-status/sess_962367f2-c258-4e81-b46f-a7dbc25acc93-b8be177614.json",
+    "status": "raw-evidence",
+    "reason": "工具状态，不进入知识导航",
+    "replacement": "",
+    "sha256": "bc8e979f694ea2995542d72f2383d95010a78803cb300708987649ea7a2f55a2",
+    "method": "native rename (untracked or ignored)"
+  },
+  {
+    "old": "01-索引与记录/01-模拟面试记录.md",
+    "new": "archive/历史复习资料/01-索引与记录/01-模拟面试记录.md",
+    "status": "superseded",
+    "reason": "合并重写，旧正文保留供对照",
+    "replacement": "README.md",
+    "sha256": "711deab2e1977e671a90e546a6d72f0aff18f6ee46bc4e60b0dcfcaeb4702777",
+    "method": "git mv"
+  },
+  {
+    "old": "01-索引与记录/02-建立面试题复习索引.md",
+    "new": "archive/历史复习资料/01-索引与记录/02-建立面试题复习索引.md",
+    "status": "superseded",
+    "reason": "合并重写，旧正文保留供对照",
+    "replacement": "README.md",
+    "sha256": "bb11fa5d9874125c31d0596a991978620649f7bd6b592c3c22e1660c5f561295",
+    "method": "git mv"
+  },
+  {
+    "old": "02-高频清单/01-P0-必背题目.md",
+    "new": "archive/历史复习资料/02-高频清单/01-P0-必背题目.md",
+    "status": "superseded",
+    "reason": "合并重写，旧正文保留供对照",
+    "replacement": "README.md",
+    "sha256": "4cbec6325b2083e9edd00e7491614cf41f6176e2f8ef80e493bb6a740eb418e9",
+    "method": "git mv"
+  },
+  {
+    "old": "02-高频清单/02-P1-重要题目.md",
+    "new": "archive/历史复习资料/02-高频清单/02-P1-重要题目.md",
+    "status": "superseded",
+    "reason": "合并重写，旧正文保留供对照",
+    "replacement": "README.md",
+    "sha256": "728e8d0384fa1205d711fb66b976476e1425e6369684024d397ae92e17b241c0",
+    "method": "git mv"
+  },
+  {
+    "old": "02-高频清单/03-AI工程能力高频追问.md",
+    "new": "archive/历史复习资料/02-高频清单/03-AI工程能力高频追问.md",
+    "status": "superseded",
+    "reason": "合并重写，旧正文保留供对照",
+    "replacement": "README.md",
+    "sha256": "aa7ba2ef910d54f57d8871c633f8f9587e04b72f212ae9afbf4e7c30ca6160c8",
+    "method": "git mv"
+  },
+  {
+    "old": "03-按领域/01-常问面经篇.md",
+    "new": "archive/历史复习资料/03-按领域/01-常问面经篇.md",
+    "status": "superseded",
+    "reason": "合并重写，旧正文保留供对照",
+    "replacement": "README.md",
+    "sha256": "b9fe300b6a9d005eff1133d0c14d2d609793fac33c3736347581e01050f08de2",
+    "method": "git mv"
+  },
+  {
+    "old": "03-按领域/综合面试方案/00-综合面试方案总览.md",
+    "new": "archive/历史复习资料/03-按领域/综合面试方案/00-综合面试方案总览.md",
+    "status": "superseded",
+    "reason": "合并重写，旧正文保留供对照",
+    "replacement": "README.md",
+    "sha256": "933488bd7d12ba2a02d20dac928ec385b8ee7dae0a602a9d09afbf0267724243",
+    "method": "git mv"
+  },
+  {
+    "old": "03-按领域/综合面试方案/01-第一套-基础能力深度评估.md",
+    "new": "archive/历史复习资料/03-按领域/综合面试方案/01-第一套-基础能力深度评估.md",
+    "status": "superseded",
+    "reason": "合并重写，旧正文保留供对照",
+    "replacement": "README.md",
+    "sha256": "65b2623577ad8a393aed3125d6d99d2865c61c5cf9e26e50be26faed1ea0cfd3",
+    "method": "git mv"
+  },
+  {
+    "old": "03-按领域/综合面试方案/02-第二套-项目经历深度追问.md",
+    "new": "archive/历史复习资料/03-按领域/综合面试方案/02-第二套-项目经历深度追问.md",
+    "status": "superseded",
+    "reason": "合并重写，旧正文保留供对照",
+    "replacement": "README.md",
+    "sha256": "b80f4e34a2cf726fc5a750355ebf2562d621af01809c94f59f9d92df7b690c72",
+    "method": "git mv"
+  },
+  {
+    "old": "03-按领域/综合面试方案/03-第三套-技术架构设计能力.md",
+    "new": "archive/历史复习资料/03-按领域/综合面试方案/03-第三套-技术架构设计能力.md",
+    "status": "superseded",
+    "reason": "合并重写，旧正文保留供对照",
+    "replacement": "README.md",
+    "sha256": "736b32fddac48d8649ed27372982066a3dfcfe7d24844afc1994413c2727d316",
+    "method": "git mv"
+  },
+  {
+    "old": "03-按领域/综合面试方案/04-第四套-实战编码能力考核.md",
+    "new": "archive/历史复习资料/03-按领域/综合面试方案/04-第四套-实战编码能力考核.md",
+    "status": "superseded",
+    "reason": "合并重写，旧正文保留供对照",
+    "replacement": "README.md",
+    "sha256": "1543977c6e96c48101fc3b3db16a21a5ec61e855ca6b93c0d4f5297ce8262231",
+    "method": "git mv"
+  },
+  {
+    "old": "03-按领域/综合面试方案/05-第五套-综合压力面试.md",
+    "new": "archive/历史复习资料/03-按领域/综合面试方案/05-第五套-综合压力面试.md",
+    "status": "superseded",
+    "reason": "合并重写，旧正文保留供对照",
+    "replacement": "README.md",
+    "sha256": "024b201fb596d1dc45eebd2ea60062e495582e994d7cd3a65a7c8956f0ea234c",
+    "method": "git mv"
+  },
+  {
+    "old": "04-项目亮点/.mimosa/hook-state/sess_962367f2-c258-4e81-b46f-a7dbc25acc93.json",
+    "new": "archive/raw-evidence/tool-state/04-项目亮点/.mimosa/hook-state/sess_962367f2-c258-4e81-b46f-a7dbc25acc93.json",
+    "status": "raw-evidence",
+    "reason": "工具状态，不进入知识导航",
+    "replacement": "",
+    "sha256": "25fe267c58ac99d50ecb34474c9bea259da16a3053050086469df032bc4d0159",
+    "method": "native rename (untracked or ignored)"
+  },
+  {
+    "old": "04-项目亮点/00-项目亮点总览.md",
+    "new": "archive/历史复习资料/04-项目亮点/00-项目亮点总览.md",
+    "status": "superseded",
+    "reason": "合并重写，旧正文保留供对照",
+    "replacement": "README.md",
+    "sha256": "d3bbadf0ac302a0bb4e92bf588119e6cdaf404ce8c52fe664eb976629c63cbfa",
+    "method": "git mv"
+  },
+  {
+    "old": "04-项目亮点/01-实现BBL多语言系统.md",
+    "new": "archive/待核验资料/04-项目亮点/01-实现BBL多语言系统.md",
+    "status": "needs-verification",
+    "reason": "混合项目归属或无依据数字；仅提炼通用知识，个人成果暂停引用",
+    "replacement": "00-事实与简历/06-待核验清单.md",
+    "sha256": "00ad62b420291ef9cbb2bbb409fb2b30c51f6d72c90dd8f33f3632fc21ff1e0a",
+    "method": "git mv"
+  },
+  {
+    "old": "04-项目亮点/02-优化Web性能.md",
+    "new": "archive/待核验资料/04-项目亮点/02-优化Web性能.md",
+    "status": "needs-verification",
+    "reason": "混合项目归属或无依据数字；仅提炼通用知识，个人成果暂停引用",
+    "replacement": "00-事实与简历/06-待核验清单.md",
+    "sha256": "47eea0e904729e9b450fbe8c79bdcb9d7873e17bb26dce52f350f7fd1b2156c2",
+    "method": "git mv"
+  },
+  {
+    "old": "04-项目亮点/03-深入React运行机制.md",
+    "new": "archive/待核验资料/04-项目亮点/03-深入React运行机制.md",
+    "status": "needs-verification",
+    "reason": "混合项目归属或无依据数字；仅提炼通用知识，个人成果暂停引用",
+    "replacement": "00-事实与简历/06-待核验清单.md",
+    "sha256": "c78334cca96b6d352a909ce0cfbdd85487d543195c9349de1c70b47a6b04f0d9",
+    "method": "git mv"
+  },
+  {
+    "old": "04-项目亮点/04-建设前端工程化体系.md",
+    "new": "archive/待核验资料/04-项目亮点/04-建设前端工程化体系.md",
+    "status": "needs-verification",
+    "reason": "混合项目归属或无依据数字；仅提炼通用知识，个人成果暂停引用",
+    "replacement": "00-事实与简历/06-待核验清单.md",
+    "sha256": "964705c6fcc48d6c704d0a67e1279603e95460e8f00b39978bdbcc17b440e1e3",
+    "method": "git mv"
+  },
+  {
+    "old": "04-项目亮点/05-治理浏览器与Web安全.md",
+    "new": "archive/待核验资料/04-项目亮点/05-治理浏览器与Web安全.md",
+    "status": "needs-verification",
+    "reason": "混合项目归属或无依据数字；仅提炼通用知识，个人成果暂停引用",
+    "replacement": "00-事实与简历/06-待核验清单.md",
+    "sha256": "f03598e536125dbc91cb698ff972f7b885532c29bb11aa39798b38a7f5e4237b",
+    "method": "git mv"
+  },
+  {
+    "old": "04-项目亮点/06-数联天下美业智能体平台亮点与重难点.md",
+    "new": "archive/历史复习资料/04-项目亮点/06-数联天下美业智能体平台亮点与重难点.md",
+    "status": "superseded",
+    "reason": "合并重写，旧正文保留供对照",
+    "replacement": "README.md",
+    "sha256": "11e95588d1d05f6c4d95822f209770fa6ebbd9c89c1157a648746b6833ca0ef5",
+    "method": "git mv"
+  },
+  {
+    "old": "05-面试话术/.mimosa/hook-state/sess_962367f2-c258-4e81-b46f-a7dbc25acc93.json",
+    "new": "archive/raw-evidence/tool-state/05-面试话术/.mimosa/hook-state/sess_962367f2-c258-4e81-b46f-a7dbc25acc93.json",
+    "status": "raw-evidence",
+    "reason": "工具状态，不进入知识导航",
+    "replacement": "",
+    "sha256": "4dcfd607a9ae1b4758be71104e3340b3ec2d4a60ad2e9d8967c610a549d996a1",
+    "method": "native rename (untracked or ignored)"
+  },
+  {
+    "old": "05-面试话术/00-每日口述训练清单.md",
+    "new": "archive/历史话术/05-面试话术/00-每日口述训练清单.md",
+    "status": "superseded",
+    "reason": "合并重写，旧正文保留供对照",
+    "replacement": "04-表达与模拟/01-项目讲述库.md",
+    "sha256": "cc2e0ae40aaaa5b1798eddbb7dbe2021283997ba5da701614cd174144da2ad2a",
+    "method": "git mv"
+  },
+  {
+    "old": "05-面试话术/01-AI-辅助开发能力-面试逐字稿.md",
+    "new": "archive/历史话术/05-面试话术/01-AI-辅助开发能力-面试逐字稿.md",
+    "status": "superseded",
+    "reason": "合并重写，旧正文保留供对照",
+    "replacement": "04-表达与模拟/01-项目讲述库.md",
+    "sha256": "578e10f140d91783e5e89e5f06cbe44d0fc69b6c1bfd899ff1ef4cabc0dc676c",
+    "method": "git mv"
+  },
+  {
+    "old": "05-面试话术/02-SSAP-BCP-高频追问与-2-分钟讲述稿.md",
+    "new": "archive/历史话术/05-面试话术/02-SSAP-BCP-高频追问与-2-分钟讲述稿.md",
+    "status": "superseded",
+    "reason": "合并重写，旧正文保留供对照",
+    "replacement": "04-表达与模拟/01-项目讲述库.md",
+    "sha256": "814885bd9aab71e2cd1f74459890ad83a07558626acb8c9978ce1378d4074478",
+    "method": "git mv"
+  },
+  {
+    "old": "05-面试话术/03-代码风格分析报告.md",
+    "new": "archive/历史话术/05-面试话术/03-代码风格分析报告.md",
+    "status": "superseded",
+    "reason": "合并重写，旧正文保留供对照",
+    "replacement": "04-表达与模拟/01-项目讲述库.md",
+    "sha256": "ca3245a4a1891b0236f97007145f3a03488b92bdd6380dff7adf14593e8f655b",
+    "method": "git mv"
+  },
+  {
+    "old": "05-面试话术/04-SSAP-监控预警系统-动态表单项目经验逐字稿.md",
+    "new": "archive/历史话术/05-面试话术/04-SSAP-监控预警系统-动态表单项目经验逐字稿.md",
+    "status": "superseded",
+    "reason": "合并重写，旧正文保留供对照",
+    "replacement": "04-表达与模拟/01-项目讲述库.md",
+    "sha256": "84ac1a37dfdce246f2fe6f0ea975b44c0665e6d78b89c2bdc7f78da663491185",
+    "method": "git mv"
+  },
+  {
+    "old": "05-面试话术/05-复习策略-项目讲述与技术复盘.md",
+    "new": "archive/历史话术/05-面试话术/05-复习策略-项目讲述与技术复盘.md",
+    "status": "superseded",
+    "reason": "合并重写，旧正文保留供对照",
+    "replacement": "04-表达与模拟/01-项目讲述库.md",
+    "sha256": "d556eb795080b860158b65a6f116eca8068501a68972469499776a4e3d6f4ca1",
+    "method": "git mv"
+  },
+  {
+    "old": "05-面试话术/06-实战项目经验.md",
+    "new": "archive/待核验资料/05-面试话术/06-实战项目经验.md",
+    "status": "needs-verification",
+    "reason": "混合项目归属或无依据数字；仅提炼通用知识，个人成果暂停引用",
+    "replacement": "00-事实与简历/06-待核验清单.md",
+    "sha256": "69cbd1ff86daec1b4555037ad3a18ad7e019a11747fafc722c44597994d22298",
+    "method": "git mv"
+  },
+  {
+    "old": "05-面试话术/07-简历技术点脱口而出清单.md",
+    "new": "archive/历史话术/05-面试话术/07-简历技术点脱口而出清单.md",
+    "status": "superseded",
+    "reason": "合并重写，旧正文保留供对照",
+    "replacement": "04-表达与模拟/01-项目讲述库.md",
+    "sha256": "1485a9e9f0a65f26664732ece5003f65b5f3be0e64b6e3b042718aad2d828df7",
+    "method": "git mv"
+  },
+  {
+    "old": "05-面试话术/08-个人项目实战汇总.md",
+    "new": "archive/待核验资料/05-面试话术/08-个人项目实战汇总.md",
+    "status": "needs-verification",
+    "reason": "混合项目归属或无依据数字；仅提炼通用知识，个人成果暂停引用",
+    "replacement": "00-事实与简历/06-待核验清单.md",
+    "sha256": "c95d00f0c0042d0f7e7282ba9baba5a86f63ab18e7aec9627d37424ca7ab66d2",
+    "method": "git mv"
+  },
+  {
+    "old": "05-面试话术/09-面试速查卡-项目亮点精简版.md",
+    "new": "archive/历史话术/05-面试话术/09-面试速查卡-项目亮点精简版.md",
+    "status": "superseded",
+    "reason": "合并重写，旧正文保留供对照",
+    "replacement": "04-表达与模拟/01-项目讲述库.md",
+    "sha256": "dd04953db8ff5ce9ef4831808733a548e9164f448558f1322595991b97929cb0",
+    "method": "git mv"
+  },
+  {
+    "old": "05-面试话术/10-项目技术亮点汇总.md",
+    "new": "archive/历史话术/05-面试话术/10-项目技术亮点汇总.md",
+    "status": "superseded",
+    "reason": "合并重写，旧正文保留供对照",
+    "replacement": "04-表达与模拟/01-项目讲述库.md",
+    "sha256": "9ff147417baab734d5819411b465c6fb2cd8576ee9f9b62ab6631afc4783cf6a",
+    "method": "git mv"
+  },
+  {
+    "old": "05-面试话术/11-项目经历面试逐字稿-v1.md",
+    "new": "archive/历史话术/05-面试话术/11-项目经历面试逐字稿-v1.md",
+    "status": "superseded",
+    "reason": "合并重写，旧正文保留供对照",
+    "replacement": "04-表达与模拟/01-项目讲述库.md",
+    "sha256": "4b70924bc2fc49049cdaf6d7080104aaccbb34842d1f373a27a3b02b50482376",
+    "method": "git mv"
+  },
+  {
+    "old": "06-个人材料/.mimosa/hook-state/sess_962367f2-c258-4e81-b46f-a7dbc25acc93.json",
+    "new": "archive/raw-evidence/tool-state/06-个人材料/.mimosa/hook-state/sess_962367f2-c258-4e81-b46f-a7dbc25acc93.json",
+    "status": "raw-evidence",
+    "reason": "工具状态，不进入知识导航",
+    "replacement": "",
+    "sha256": "e1f3369d49e3f98c4863067354a26a6b4eeea932ca1ad03ee493b1793c880c3b",
+    "method": "native rename (untracked or ignored)"
+  },
+  {
+    "old": "06-个人材料/01-面试情况登记表.md",
+    "new": "archive/历史简历/01-面试情况登记表.md",
+    "status": "superseded",
+    "reason": "合并重写，旧正文保留供对照",
+    "replacement": "00-事实与简历/01-关天豪-AI应用工程师-主简历.md",
+    "sha256": "2a929b6086601503c7ae92b3cec143b71200b1d91f2082cca34184accd4a225a",
+    "method": "git mv"
+  },
+  {
+    "old": "06-个人材料/02-项目介绍话术模板.md",
+    "new": "archive/历史话术/06-个人材料/02-项目介绍话术模板.md",
+    "status": "superseded",
+    "reason": "合并重写，旧正文保留供对照",
+    "replacement": "04-表达与模拟/01-项目讲述库.md",
+    "sha256": "2e65108ca50ff7a9c3c0f9576e3c7cbb156b4994cf3da5ea7f43255a597bc605",
+    "method": "git mv"
+  },
+  {
+    "old": "06-个人材料/03-反问问题清单.md",
+    "new": "archive/历史话术/06-个人材料/03-反问问题清单.md",
+    "status": "superseded",
+    "reason": "合并重写，旧正文保留供对照",
+    "replacement": "04-表达与模拟/01-项目讲述库.md",
+    "sha256": "2048f6b9460d3c04e762a56541f713da30abe21268c60f60943b0ccf91ea78b6",
+    "method": "git mv"
+  },
+  {
+    "old": "06-个人材料/04-工作经历.md",
+    "new": "archive/历史简历/04-工作经历.md",
+    "status": "superseded",
+    "reason": "合并重写，旧正文保留供对照",
+    "replacement": "00-事实与简历/01-关天豪-AI应用工程师-主简历.md",
+    "sha256": "6952a0c70e7b976cfd7a45df97b0c295f2fecd5a73d4bb21675602f5519ad649",
+    "method": "git mv"
+  },
+  {
+    "old": "06-个人材料/05-技术特长深度问答.md",
+    "new": "archive/历史复习资料/06-个人材料/05-技术特长深度问答.md",
+    "status": "superseded",
+    "reason": "合并重写，旧正文保留供对照",
+    "replacement": "README.md",
+    "sha256": "efc1791932b95f3a338b93eaafb4726eea233c86382ea97ee9cfcaeef1929d8e",
+    "method": "git mv"
+  },
+  {
+    "old": "06-个人材料/06-技术面试问题清单.md",
+    "new": "archive/历史复习资料/06-个人材料/06-技术面试问题清单.md",
+    "status": "superseded",
+    "reason": "合并重写，旧正文保留供对照",
+    "replacement": "README.md",
+    "sha256": "c0b132789f383f563b3945f30096db73134cc79d06b24da21d237afd672fb45a",
+    "method": "git mv"
+  },
+  {
+    "old": "06-个人材料/07-简历口述训练清单-SSAP-BCP-DOMP.md",
+    "new": "archive/历史话术/06-个人材料/07-简历口述训练清单-SSAP-BCP-DOMP.md",
+    "status": "superseded",
+    "reason": "合并重写，旧正文保留供对照",
+    "replacement": "04-表达与模拟/01-项目讲述库.md",
+    "sha256": "f62e909006058a20734e1454c4301c2204c3f3727804b3a5b8fa83aab461cb09",
+    "method": "git mv"
+  },
+  {
+    "old": "06-个人材料/08-自我介绍-黄金版-含钩子.md",
+    "new": "archive/历史话术/06-个人材料/08-自我介绍-黄金版-含钩子.md",
+    "status": "superseded",
+    "reason": "合并重写，旧正文保留供对照",
+    "replacement": "04-表达与模拟/01-项目讲述库.md",
+    "sha256": "d02b77eea6022419ac05f4ced979512e3691291a466cf33e6e7ef6d6bf256065",
+    "method": "git mv"
+  },
+  {
+    "old": "06-个人材料/09-自我介绍.md",
+    "new": "archive/历史话术/06-个人材料/09-自我介绍.md",
+    "status": "superseded",
+    "reason": "合并重写，旧正文保留供对照",
+    "replacement": "04-表达与模拟/01-项目讲述库.md",
+    "sha256": "f69fd228e71233361b747b9fe86c057bd00492878da24152bb1c44ec80f19db0",
+    "method": "git mv"
+  },
+  {
+    "old": "06-个人材料/10-面试全流程准备手册.md",
+    "new": "archive/历史复习资料/06-个人材料/10-面试全流程准备手册.md",
+    "status": "superseded",
+    "reason": "合并重写，旧正文保留供对照",
+    "replacement": "README.md",
+    "sha256": "982e4dae41349e1d1c2c61b733457bb2aee7bff51fc0e17b185d7139036f59cc",
+    "method": "git mv"
+  },
+  {
+    "old": "06-个人材料/11-专业技能.md",
+    "new": "archive/历史简历/11-专业技能.md",
+    "status": "superseded",
+    "reason": "合并重写，旧正文保留供对照",
+    "replacement": "00-事实与简历/01-关天豪-AI应用工程师-主简历.md",
+    "sha256": "92ba65fd5b3b738e4bcebdfd368846a73b7ccb0f53f63705029cc628c26be9c6",
+    "method": "git mv"
+  },
+  {
+    "old": "06-个人材料/12-SSAP-BCP-量化成果表达模板.md",
+    "new": "archive/历史复习资料/06-个人材料/12-SSAP-BCP-量化成果表达模板.md",
+    "status": "superseded",
+    "reason": "合并重写，旧正文保留供对照",
+    "replacement": "README.md",
+    "sha256": "2b5056816b8ce4c994aeefe9d44c0cf0ba97e4819d937bb4d5941b29b933cb5e",
+    "method": "git mv"
+  },
+  {
+    "old": "06-个人材料/13-关天豪-Web-开发工程师.md",
+    "new": "archive/历史简历/13-关天豪-Web-开发工程师.md",
+    "status": "superseded",
+    "reason": "合并重写，旧正文保留供对照",
+    "replacement": "00-事实与简历/01-关天豪-AI应用工程师-主简历.md",
+    "sha256": "46d099c7ec7bde041cfae4cf92afb62680c2a375ae26616434b89bc501063d70",
+    "method": "git mv"
+  },
+  {
+    "old": "06-个人材料/14-关天豪-clife-AI项目经验-草稿.md",
+    "new": "archive/raw-evidence/14-关天豪-clife-AI项目经验-草稿.md",
+    "status": "reference-only",
+    "reason": "历史职责与决策证据，不回写为新事实",
+    "replacement": "00-事实与简历/05-项目归属与量化证据.md",
+    "sha256": "862f41c71f1579ddfd5b68928a98ed24114f5bbfc0a3175eed2b5bde1cca1883",
+    "method": "git mv"
+  },
+  {
+    "old": "06-个人材料/14-关天豪-Web开发工程师-个人资料.md",
+    "new": "archive/历史简历/14-关天豪-Web开发工程师-个人资料.md",
+    "status": "superseded",
+    "reason": "合并重写，旧正文保留供对照",
+    "replacement": "00-事实与简历/01-关天豪-AI应用工程师-主简历.md",
+    "sha256": "8a5ca4635ebb7bc6b4617ec934c50b79da06e59d9036d4d5acaef95da3d9e390",
+    "method": "git mv"
+  },
+  {
+    "old": "06-个人材料/15-关天豪-Web开发工程师-7年-20251201.md.zip",
+    "new": "archive/历史简历/raw/15-关天豪-Web开发工程师-7年-20251201.md.zip",
+    "status": "historical",
+    "reason": "保留原始简历包与旧模板",
+    "replacement": "README.md",
+    "sha256": "6a2e69a5b73c5c8ac3aeec736dbecbd0d50b41e74cb4aab00e1ef84488124256",
+    "method": "git mv"
+  },
+  {
+    "old": "06-个人材料/16-关天豪-Web-开发工程师-AI时代版.md",
+    "new": "archive/历史简历/16-关天豪-Web-开发工程师-AI时代版.md",
+    "status": "superseded",
+    "reason": "合并重写，旧正文保留供对照",
+    "replacement": "00-事实与简历/01-关天豪-AI应用工程师-主简历.md",
+    "sha256": "7d3dbe93828ea8c436e4dfb4b57cb02052dbe5562e3ebdea77327b678ed29373",
+    "method": "git mv"
+  },
+  {
+    "old": "06-个人材料/17-项目图表集-showme.md",
+    "new": "archive/历史复习资料/06-个人材料/17-项目图表集-showme.md",
+    "status": "superseded",
+    "reason": "合并重写，旧正文保留供对照",
+    "replacement": "README.md",
+    "sha256": "0f27245bf0369478bba178333cbe6ee2bed6cdbae52dab4ef7a115cb4f41a82b",
+    "method": "git mv"
+  },
+  {
+    "old": "06-个人材料/18-grilling决策记录-简历更新20260914.md",
+    "new": "archive/raw-evidence/18-grilling决策记录-简历更新20260914.md",
+    "status": "reference-only",
+    "reason": "历史职责与决策证据，不回写为新事实",
+    "replacement": "00-事实与简历/05-项目归属与量化证据.md",
+    "sha256": "70c652055cd2636a4095ccc0b5fd67fb3d29acaaa227c8afd6ee58db622bab0d",
+    "method": "git mv"
+  },
+  {
+    "old": "06-个人材料/19-李豪-Web-开发工程师-AI时代版.md",
+    "new": "archive/协作归属参考/19-李豪-Web-开发工程师-AI时代版.md",
+    "status": "reference-only",
+    "reason": "同事资料仅用于区分归属与学习",
+    "replacement": "00-事实与简历/05-项目归属与量化证据.md",
+    "sha256": "95afe949b4df9f41fbd0b3a77732ec9bbe938f76e1fec5b1c64623e5df9a5145",
+    "method": "git mv"
+  },
+  {
+    "old": "06-个人材料/20-逆向工程-简历评估与grilling决策记录-20260914.md",
+    "new": "archive/raw-evidence/20-逆向工程-简历评估与grilling决策记录-20260914.md",
+    "status": "reference-only",
+    "reason": "历史职责与决策证据，不回写为新事实",
+    "replacement": "00-事实与简历/05-项目归属与量化证据.md",
+    "sha256": "0a8edbeeca9bac0d9375db8176ff19bc75cc60eab84e67e581972f7b041f8472",
+    "method": "git mv"
+  },
+  {
+    "old": "06-个人材料/21-Maka开源贡献-简历评估与grilling决策记录-20260914.md",
+    "new": "archive/raw-evidence/21-Maka开源贡献-简历评估与grilling决策记录-20260914.md",
+    "status": "reference-only",
+    "reason": "历史职责与决策证据，不回写为新事实",
+    "replacement": "00-事实与简历/05-项目归属与量化证据.md",
+    "sha256": "97cba77966d242eb94f987361bb20023be47e021ed9832d2a3ac691f5c5aa290",
+    "method": "git mv"
+  },
+  {
+    "old": "06-个人材料/21-附件-comments-ggbdpq-20260914.json",
+    "new": "assets/evidence/21-附件-comments-ggbdpq-20260914.json",
+    "status": "raw-evidence",
+    "reason": "原始评审证据，逐字节保留",
+    "replacement": "00-事实与简历/05-项目归属与量化证据.md",
+    "sha256": "997cee6e9c965b34198aeb697e903081a8212e6207774b94d79252821e3fbb0a",
+    "method": "git mv"
+  },
+  {
+    "old": "06-个人材料/21-附件-review-threads-20260914.json",
+    "new": "assets/evidence/21-附件-review-threads-20260914.json",
+    "status": "raw-evidence",
+    "reason": "原始评审证据，逐字节保留",
+    "replacement": "00-事实与简历/05-项目归属与量化证据.md",
+    "sha256": "2500f1725e910667c3bf4b1371c94bdd48636c28f0e1ae106cbf33c87108da8e",
+    "method": "git mv"
+  },
+  {
+    "old": "06-个人材料/22-架构师视角30问-两段经历深度升级-20260914.md",
+    "new": "archive/历史话术/06-个人材料/22-架构师视角30问-两段经历深度升级-20260914.md",
+    "status": "superseded",
+    "reason": "合并重写，旧正文保留供对照",
+    "replacement": "04-表达与模拟/01-项目讲述库.md",
+    "sha256": "a762ea90ff6d13f9037854adfcba5d6a9574422e471b05f0b508351a61dd7e2b",
+    "method": "git mv"
+  },
+  {
+    "old": "06-个人材料/23-面试语言表达素材库-20260914.md",
+    "new": "archive/历史话术/06-个人材料/23-面试语言表达素材库-20260914.md",
+    "status": "superseded",
+    "reason": "合并重写，旧正文保留供对照",
+    "replacement": "04-表达与模拟/01-项目讲述库.md",
+    "sha256": "a884f5fd38f9146b681b9125da3a6cdfefb635372c1443e544ddd0836ae98053",
+    "method": "git mv"
+  },
+  {
+    "old": "07-AI智能体学习地图/01-四周精读与vibe计划.md",
+    "new": "archive/历史复习资料/07-AI智能体学习地图/01-四周精读与vibe计划.md",
+    "status": "superseded",
+    "reason": "合并重写，旧正文保留供对照",
+    "replacement": "README.md",
+    "sha256": "807db3ce3bdfa587f5a9b443a93cd5250325a9fb94cc8f243b046970fd0eaa0a",
+    "method": "git mv"
+  },
+  {
+    "old": "07-AI智能体学习地图/02-同事智能体代码精读素材.md",
+    "new": "archive/协作归属参考/02-同事智能体代码精读素材.md",
+    "status": "reference-only",
+    "reason": "同事资料仅用于区分归属与学习",
+    "replacement": "00-事实与简历/05-项目归属与量化证据.md",
+    "sha256": "5fc304293fa617722e4c2ce9a962c0aee4398d8a1093b5dbf3e4003ca8c7737d",
+    "method": "git mv"
+  },
+  {
+    "old": "07-个人总结/01-PromptFlow-项目亮点总结.md",
+    "new": "archive/待核验资料/07-个人总结/01-PromptFlow-项目亮点总结.md",
+    "status": "needs-verification",
+    "reason": "混合项目归属或无依据数字；仅提炼通用知识，个人成果暂停引用",
+    "replacement": "00-事实与简历/06-待核验清单.md",
+    "sha256": "9abf788092e5ad6ad801368f58da064493a7512909948aed88d60c8d1004b01d",
+    "method": "git mv"
+  },
+  {
+    "old": "07-个人总结/02-前端面试准备-权威版-从简历-技术面-HR-面-复盘闭环.md",
+    "new": "archive/历史复习资料/07-个人总结/02-前端面试准备-权威版-从简历-技术面-HR-面-复盘闭环.md",
+    "status": "superseded",
+    "reason": "合并重写，旧正文保留供对照",
+    "replacement": "README.md",
+    "sha256": "3f52599ff40b78babcd6e3246cd18ed35db940710db977ddee3a34aabc7f95ea",
+    "method": "git mv"
+  },
+  {
+    "old": "07-个人总结/03-复盘清单.md",
+    "new": "archive/历史复习资料/07-个人总结/03-复盘清单.md",
+    "status": "superseded",
+    "reason": "合并重写，旧正文保留供对照",
+    "replacement": "README.md",
+    "sha256": "e8b3a2790baa938dbbb75c39bec54d7e21d67b1081765fbf8c3027e1cadac863",
+    "method": "git mv"
+  },
+  {
+    "old": "07-个人总结/04-求职复习计划讨论记录.md",
+    "new": "archive/历史复习资料/07-个人总结/04-求职复习计划讨论记录.md",
+    "status": "superseded",
+    "reason": "合并重写，旧正文保留供对照",
+    "replacement": "README.md",
+    "sha256": "59943b8dbc8f8675a102db9f6377ec7d3fa9729ae9f3d73ad5fb5373f7205708",
+    "method": "git mv"
+  },
+  {
+    "old": "07-个人总结/05-外包公司.md",
+    "new": "archive/历史求职记录/私密/05-外包公司.md",
+    "status": "historical",
+    "reason": "私人记录与历史情绪，不进入面试表达",
+    "replacement": "04-表达与模拟/04-HR与反问.md",
+    "sha256": "e94ba522a3df3a8538b91d64ab9e482a94f7b87f114656434d87ed1bc02966ce",
+    "method": "git mv"
+  },
+  {
+    "old": "07-个人总结/06-求职薪资参考与谈薪策略.md",
+    "new": "archive/历史复习资料/07-个人总结/06-求职薪资参考与谈薪策略.md",
+    "status": "superseded",
+    "reason": "合并重写，旧正文保留供对照",
+    "replacement": "README.md",
+    "sha256": "1e95911ee0ecdceb3d3eb54ba44866a9faecace3f3a033df3b6056d2fdbbbdc5",
+    "method": "git mv"
+  },
+  {
+    "old": "07-个人总结/07-职业重启行动要点.md",
+    "new": "archive/历史复习资料/07-个人总结/07-职业重启行动要点.md",
+    "status": "superseded",
+    "reason": "合并重写，旧正文保留供对照",
+    "replacement": "README.md",
+    "sha256": "0bfc1d8572c93ad72eb4a2102bee7dc85a613ff56d1f2e72293eda2d1bf0be8d",
+    "method": "git mv"
+  },
+  {
+    "old": "07-个人总结/08-前端面试复习指南-关天豪-7-年经验.md",
+    "new": "archive/历史复习资料/07-个人总结/08-前端面试复习指南-关天豪-7-年经验.md",
+    "status": "superseded",
+    "reason": "合并重写，旧正文保留供对照",
+    "replacement": "README.md",
+    "sha256": "6ccc70a0807d927a260e1c8a02e6069f3c0e01bdac40bf685a6f95f5eeb0d11d",
+    "method": "git mv"
+  },
+  {
+    "old": "07-个人总结/09-面试题详细答案-关天豪.md",
+    "new": "archive/历史复习资料/07-个人总结/09-面试题详细答案-关天豪.md",
+    "status": "superseded",
+    "reason": "合并重写，旧正文保留供对照",
+    "replacement": "README.md",
+    "sha256": "0f0ca49806017bf9080bf064c91f20b45499fc2f0f67e87ccd281052f89d9234",
+    "method": "git mv"
+  },
+  {
+    "old": "07-个人总结/10-互联网就业现状分析.md",
+    "new": "archive/历史求职记录/10-互联网就业现状分析.md",
+    "status": "historical",
+    "reason": "历史市场判断不作为2026行情",
+    "replacement": "README.md",
+    "sha256": "5ad943a31c9ba3bacc7b80ebc437dcc61b6072018be0d5ee2aab05797eff4d9d",
+    "method": "git mv"
+  },
+  {
+    "old": "08-求职记录/01-BOSS直聘求职记录.md",
+    "new": "archive/历史求职记录/2025/01-BOSS直聘求职记录.md",
+    "status": "historical",
+    "reason": "旧投递记录及模板；新记录从空表开始",
+    "replacement": "05-十月求职执行/02-投递记录.md",
+    "sha256": "e3e77346d73cf5df58cb4fdb68077b405b8bbaf81012311d848b416b041aafb0",
+    "method": "git mv"
+  },
+  {
+    "old": "08-求职记录/02-每日投递清单.md",
+    "new": "archive/历史求职记录/2025/02-每日投递清单.md",
+    "status": "historical",
+    "reason": "旧投递记录及模板；新记录从空表开始",
+    "replacement": "05-十月求职执行/02-投递记录.md",
+    "sha256": "14edac9f630cd1f63f584d6863535a1bf98a51ab392d34e5ba91034ae58457c1",
+    "method": "git mv"
+  },
+  {
+    "old": "08-求职记录/03-猎聘求职记录.md",
+    "new": "archive/历史求职记录/2025/03-猎聘求职记录.md",
+    "status": "historical",
+    "reason": "旧投递记录及模板；新记录从空表开始",
+    "replacement": "05-十月求职执行/02-投递记录.md",
+    "sha256": "bcb6b8fa61c35d6b67876c6bb99ade869b8349506b780dde2dc43b313b883565",
+    "method": "git mv"
+  },
+  {
+    "old": "08-求职记录/04-投递记录模板.md",
+    "new": "archive/历史求职记录/2025/04-投递记录模板.md",
+    "status": "historical",
+    "reason": "旧投递记录及模板；新记录从空表开始",
+    "replacement": "05-十月求职执行/02-投递记录.md",
+    "sha256": "60a3d9ecf94d2a197cd3f458d4f3c033e3c11ab9ea5c18fa752acad6cc8f4d46",
+    "method": "git mv"
+  },
+  {
+    "old": "08-求职记录/05-20251130-BOSS直聘求职记录.xlsx",
+    "new": "assets/spreadsheets/05-20251130-BOSS直聘求职记录.xlsx",
+    "status": "raw-evidence",
+    "reason": "原始工作簿，逐字节保留",
+    "replacement": "README.md",
+    "sha256": "6fdf0f0616650a2f84e13ba6d45e5d7ddc221c62872942bd9a7a36b1cabc4469",
+    "method": "git mv"
+  },
+  {
+    "old": "09-项目治理/00-项目组合总览.md",
+    "new": "archive/项目治理-202606/00-项目组合总览.md",
+    "status": "historical",
+    "reason": "2026年6月治理快照，提炼方法而非复制项目规模",
+    "replacement": "01-AI项目与Agent工程/09-项目资产治理案例.md",
+    "sha256": "ed8fb98cb40c77b823b05749b37c637f108e50b6c87a22a29ad6f7ff1efbedca",
+    "method": "git mv"
+  },
+  {
+    "old": "09-项目治理/01-项目资产改造计划.md",
+    "new": "archive/项目治理-202606/01-项目资产改造计划.md",
+    "status": "historical",
+    "reason": "2026年6月治理快照，提炼方法而非复制项目规模",
+    "replacement": "01-AI项目与Agent工程/09-项目资产治理案例.md",
+    "sha256": "ccdc0c0cd2c80d145d8ccdfef7f2fb63ba8a94883248f53db823d12b44a1e629",
+    "method": "git mv"
+  },
+  {
+    "old": "09-项目治理/02-基线冻结记录.md",
+    "new": "archive/项目治理-202606/02-基线冻结记录.md",
+    "status": "historical",
+    "reason": "2026年6月治理快照，提炼方法而非复制项目规模",
+    "replacement": "01-AI项目与Agent工程/09-项目资产治理案例.md",
+    "sha256": "099d69fbc3de5010ee3a4402784e643d0ec02db9cdaffdd82a7309647fb19ce9",
+    "method": "git mv"
+  },
+  {
+    "old": "09-项目治理/03-项目资产注册表.md",
+    "new": "archive/项目治理-202606/03-项目资产注册表.md",
+    "status": "historical",
+    "reason": "2026年6月治理快照，提炼方法而非复制项目规模",
+    "replacement": "01-AI项目与Agent工程/09-项目资产治理案例.md",
+    "sha256": "5f3ff189588c77dd1b9ced40feb27392f8db2cfab83fa071a23b02e615ddd35e",
+    "method": "git mv"
+  },
+  {
+    "old": "09-项目治理/04-待评估项目深读结论.md",
+    "new": "archive/项目治理-202606/04-待评估项目深读结论.md",
+    "status": "historical",
+    "reason": "2026年6月治理快照，提炼方法而非复制项目规模",
+    "replacement": "01-AI项目与Agent工程/09-项目资产治理案例.md",
+    "sha256": "096bd52a4856b855161042846060343ee2cde56f436368cedcbf5765335e1c90",
+    "method": "git mv"
+  },
+  {
+    "old": "09-项目治理/05-归档治理策略.md",
+    "new": "archive/项目治理-202606/05-归档治理策略.md",
+    "status": "historical",
+    "reason": "2026年6月治理快照，提炼方法而非复制项目规模",
+    "replacement": "01-AI项目与Agent工程/09-项目资产治理案例.md",
+    "sha256": "d27cae61391c6977da1c59ab1d9056985c44761bec605661621cd1d994b38df1",
+    "method": "git mv"
+  },
+  {
+    "old": "09-项目治理/06-产品候选池与验证清单.md",
+    "new": "archive/项目治理-202606/06-产品候选池与验证清单.md",
+    "status": "historical",
+    "reason": "2026年6月治理快照，提炼方法而非复制项目规模",
+    "replacement": "01-AI项目与Agent工程/09-项目资产治理案例.md",
+    "sha256": "37766777758bc2ee8f12cca7d5b5f5c51afc20c5974b534d32d1ad36744437f3",
+    "method": "git mv"
+  },
+  {
+    "old": "09-项目治理/07-可复用底座沉淀清单.md",
+    "new": "archive/项目治理-202606/07-可复用底座沉淀清单.md",
+    "status": "historical",
+    "reason": "2026年6月治理快照，提炼方法而非复制项目规模",
+    "replacement": "01-AI项目与Agent工程/09-项目资产治理案例.md",
+    "sha256": "f76f2d35005e6b8580e7000dd13f84021e184fed2f7164b111538b6cede1f8d1",
+    "method": "git mv"
+  },
+  {
+    "old": "09-项目治理/08-项目组合经营节奏.md",
+    "new": "archive/项目治理-202606/08-项目组合经营节奏.md",
+    "status": "historical",
+    "reason": "2026年6月治理快照，提炼方法而非复制项目规模",
+    "replacement": "01-AI项目与Agent工程/09-项目资产治理案例.md",
+    "sha256": "8a07f2ce1ade790fe43ac1d871a78f1196d0cd3407c9e692a85ead474e620cdb",
+    "method": "git mv"
+  },
+  {
+    "old": "09-项目治理/09-执行验收审计.md",
+    "new": "archive/项目治理-202606/09-执行验收审计.md",
+    "status": "historical",
+    "reason": "2026年6月治理快照，提炼方法而非复制项目规模",
+    "replacement": "01-AI项目与Agent工程/09-项目资产治理案例.md",
+    "sha256": "f314aa0c948b0d679cbb86b0886c5233ab9353371a8e91120c55b4cac77a49df",
+    "method": "git mv"
+  },
+  {
+    "old": "09-项目治理/10-产品赛道二级分类.md",
+    "new": "archive/项目治理-202606/10-产品赛道二级分类.md",
+    "status": "historical",
+    "reason": "2026年6月治理快照，提炼方法而非复制项目规模",
+    "replacement": "01-AI项目与Agent工程/09-项目资产治理案例.md",
+    "sha256": "09a1762b30653c69777aa760c5d512fd970ff4af93bd15be18eec1eabe446e5f",
+    "method": "git mv"
+  },
+  {
+    "old": "09-项目治理/11-二级目录迁移记录.md",
+    "new": "archive/项目治理-202606/11-二级目录迁移记录.md",
+    "status": "historical",
+    "reason": "2026年6月治理快照，提炼方法而非复制项目规模",
+    "replacement": "01-AI项目与Agent工程/09-项目资产治理案例.md",
+    "sha256": "17b969e1267fab99d6c6cb4cd576158f87fffd79b0dbb636500c5b76c63cd2ce",
+    "method": "git mv"
+  },
+  {
+    "old": "09-项目治理/关天豪-BOSS直聘沟通0记录.jpg",
+    "new": "assets/screenshots/关天豪-BOSS直聘沟通0记录.jpg",
+    "status": "raw-evidence",
+    "reason": "原始截图，逐字节保留；含私人沟通，非投递附件",
+    "replacement": "README.md",
+    "sha256": "fccaa896e282c9fd963f8db320e7b87e5ad4cc2d76143ab853e3605e2fb6857c",
+    "method": "native rename (untracked or ignored)"
+  },
+  {
+    "old": "09-项目治理/初级前端交接项目列表清单.xlsx",
+    "new": "assets/spreadsheets/初级前端交接项目列表清单.xlsx",
+    "status": "raw-evidence",
+    "reason": "原始工作簿，逐字节保留",
+    "replacement": "README.md",
+    "sha256": "366404b9dd8a2ef1273d69d99f8ecccf94aa0dd9691a84ed8003c8d689f71e0b",
+    "method": "native rename (untracked or ignored)"
+  },
+  {
+    "old": "09-项目治理/希音供应链前端项目总结-ggbdpq.md",
+    "new": "archive/raw-evidence/希音供应链前端项目总结-ggbdpq.md",
+    "status": "reference-only",
+    "reason": "保留带日期和统计口径的项目证据",
+    "replacement": "02-传统前端基本盘/00-希音与德奥项目总览.md",
+    "sha256": "962dc27f11d1e804f3f70fdd4666d422ac71d4d6521b8c749f3997df5f441314",
+    "method": "native rename (untracked or ignored)"
+  },
+  {
+    "old": "09-项目治理/我的前端技术栈.xlsx",
+    "new": "assets/spreadsheets/我的前端技术栈.xlsx",
+    "status": "raw-evidence",
+    "reason": "原始工作簿，逐字节保留",
+    "replacement": "README.md",
+    "sha256": "670f9c4701830e8600df40254fb84655b001038f533c8c65e30b7fdbfd58acb6",
+    "method": "native rename (untracked or ignored)"
+  },
+  {
+    "old": "README.md",
+    "new": "archive/历史复习资料/迁移前-README.md",
+    "status": "superseded",
+    "reason": "合并重写，旧正文保留供对照",
+    "replacement": "README.md",
+    "sha256": "fb4666915b40229f81422b4fac6aa24221a36ac4eaea1315c2b0dad0dc1f46f7",
+    "method": "git mv"
+  }
+]

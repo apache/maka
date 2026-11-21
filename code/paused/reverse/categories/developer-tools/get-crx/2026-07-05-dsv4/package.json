@@ -1,0 +1,14 @@
+{
+  "name": "get-crx-dsv4",
+  "version": "1.51.0",
+  "description": "Get CRX — Chrome extension reverse engineering (dsv4)",
+  "license": "UNLICENSED",
+  "scripts": {
+    "build": "tsc",
+    "check": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0",
+    "@types/chrome": "^0.0.268"
+  }
+}

@@ -1,0 +1,58 @@
+gateway: a length cut that said nothing is not a completed reply (#2972)
+
+What changed: a Chat reply cut at its length having said nothing — no
+text and no call, only thinking, or nothing at all — fails at once, on
+the translated paths and on the passthrough Chat→Chat relay, asked
+again nowhere: the error in the client's own protocol, a group's next
+member asked, nobody rested, and the same one not asked again after a
+moment (the void fails the same every ask, as one that didn't stream
+does). It fails only past a short probe's worth: a reply that spent no
+more than cutVoidTokens, of a request capped at no more, is a probe's
+answer — a title's cut is wanted, the response.incomplete it was
+(#1466) — and goes as it came. A length cut that said something is
+still the truncation it always was.
+
+Why: qoder/dfmodel ended four replies of one dsh turn with 48,000
+output tokens each, every one of them reasoning — out == reasoning
+exactly each time, 192,000 tokens and 919 seconds for nothing — and dsh
+speaks openai-completions while the qoder plugin serves Chat, so all
+four were relayed as they came. The relay reads its end now: a stream's
+tail is held from the chunk that says why it ended while nothing has
+been said in it, and a void fails with the error event in its place, no
+finish_reason the agent reads as "continue" having gone out. A reply
+asked whole is written once it has ended, for the same verdict. On the
+translated paths the check sits beside answersNothing (cutVoidAt,
+cutVoid), and holds the end events as the empty reply's already are. The
+verdict sits at the reply's end, so a streamed one costs no second read.
+
+What the review asked, and where each landed:
+- the reporter's own route: the passthrough Chat→Chat relay fails the
+  void too, streamed (the error event and [DONE] instead of the finish)
+  and whole (the error with the status)
+- no in-place re-ask: the void's branch is the empty reply's error
+  without the emptyRetries, and the same-one retries and the patience's
+  rounds pass it by (cutVoidWords beside didNotStream in passing and
+  busy), so the upstream is asked once — every test here holds the fix
+  to that
+- a deliberately small max_tokens is no void: the gate is spent past
+  cutVoidTokens, or the request hadn't capped its reply small
+  (probeTranslated asks 16, a title less than that)
+
+The repo's own recorded ClinePass stream (16 tokens, all reasoning,
+testdata/clinepass_stream.sse) is relayed as it was, on the relay and
+translated alike.
+
+Run:
+- go test -tags nogui ./internal/gateway/... -count=1: ok
+- go test -race -tags nogui ./internal/gateway/ -count=1 (the stream
+  relays and holds among it): ok
+- the five tests of chat_length_nothing_test.go red on the branch's
+  parent, green here; TestClinePassUpstreamRecorded green before and
+  after
+- gofmt -l clean; go vet clean on darwin, linux, windows
+- builds: darwin and windows ok; linux ok for internal/... but the wails
+  v3 beta 24 module's own linux files (pre-existing, untouched here)
+
+Fixes #2972
+
+Generated-by: GLM-5.3-Flash (ZCode)

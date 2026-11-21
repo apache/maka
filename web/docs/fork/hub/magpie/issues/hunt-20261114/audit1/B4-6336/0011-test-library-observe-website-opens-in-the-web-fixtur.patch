@@ -1,0 +1,75 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Aryz <aryz0713@gmail.com>
+Date: Thu, 12 Nov 2026 21:17:29 +0800
+Subject: [PATCH 11/11] test(library): observe website opens in the web fixture
+
+The web API opens links through window.open, whereas the desktop API posts /api/open. Observe the actual web transport synchronously instead of waiting for a desktop HTTP request.
+
+Validation: all 40 tests in library-groups.test.cjs and library-well-known.test.cjs pass in Chromium and WebKit, including five locales, both widths and the five distinct website group URLs.
+---
+ .../gui/tests/library-well-known.test.cjs     | 24 +++++++++----------
+ 1 file changed, 11 insertions(+), 13 deletions(-)
+
+diff --git a/internal/gui/tests/library-well-known.test.cjs b/internal/gui/tests/library-well-known.test.cjs
+index 2477d86db..05965601c 100644
+--- a/internal/gui/tests/library-well-known.test.cjs
++++ b/internal/gui/tests/library-well-known.test.cjs
+@@ -16,7 +16,7 @@ const library = () => ({
+   skills: [{ name: "ui-taste", description: "UI taste", kind: "well-known", source, repo: source, agents: [] }],
+ });
+ 
+-function serve(lang, posts, data = library(), opened = []) {
++function serve(lang, posts, data = library()) {
+   return async (route) => {
+     const req = route.request(), url = new URL(req.url());
+     if (url.pathname === "/boot.js") return route.fulfill({ contentType: "text/javascript", body: `window.bootPrefs = {lang:"${lang}",theme:"light",web:true};` });
+@@ -24,10 +24,7 @@ function serve(lang, posts, data = library(), opened = []) {
+     if (url.pathname === "/api/state") return route.fulfill({ json: { agents: [], profiles: [], settings: { lang } } });
+     if (url.pathname === "/api/plugins") return route.fulfill({ json: { plugins: [] } });
+     if (url.pathname === "/api/library") return route.fulfill({ json: data });
+-    if (url.pathname === "/api/open") {
+-      opened.push(req.postDataJSON().url);
+-      return route.fulfill({ json: {} });
+-    }
++
+     if (url.pathname === "/api/library/skills/update") {
+       posts.push(req.postDataJSON());
+       return route.fulfill({ json: { ...data, result: { updated: ["ui-taste"], changed: [], problems: [] } } });
+@@ -83,13 +80,17 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
+     t.after(() => browser.close());
+     const context = await browser.newContext({ viewport: { width: 980, height: 800 } });
+     t.after(() => context.close());
+-    await context.addInitScript(() => { try { localStorage.setItem("magpie.libTab", "skills"); } catch {} });
++    await context.addInitScript(() => {
++      try { localStorage.setItem("magpie.libTab", "skills"); } catch {}
++      window.openedSources = [];
++      window.open = (url) => { window.openedSources.push(url); return null; };
++    });
+     const origins = ["http://localhost:8080/kit", "http://example.com:8080/kit", "http://example.com:8081/kit", "https://example.com:8443/Kit", "https://example.com:8443/kit"];
+-    const data = library(), opened = [];
++    const data = library();
+     data.skills = origins.map((address, i) => ({ name: `website-${i}`, description: "Website skill", kind: "well-known", source: address, repo: address, agents: [] }));
+     const page = await context.newPage();
+     page.setDefaultTimeout(5000);
+-    await page.route("**/*", serve("en", [], data, opened));
++    await page.route("**/*", serve("en", [], data));
+     await page.goto("http://magpie.test/");
+     await page.locator('button[data-view="library"]').click();
+     const groups = page.locator("#view-library .lib-group");
+@@ -97,11 +98,8 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
+     assert.equal(await groups.count(), origins.length, "different origins must remain different groups");
+     for (const address of origins) {
+       const group = groups.filter({ has: page.getByText(address, { exact: true }) });
+-      await Promise.all([
+-        page.waitForResponse((response) => new URL(response.url()).pathname === "/api/open"),
+-        group.locator(".lib-grouphead .lib-rowacts > button.lib-icon").click(),
+-      ]);
++      await group.locator(".lib-grouphead .lib-rowacts > button.lib-icon").click();
+     }
+-    assert.deepEqual(opened, origins, "opening a website group must preserve its scheme, host, port and path");
++    assert.deepEqual(await page.evaluate(() => window.openedSources), origins, "opening a website group must preserve its scheme, host, port and path");
+   });
+ }
+-- 
+2.50.1 (Apple Git-155)
+

@@ -1,0 +1,3 @@
+# ablation method note (5082)
+# wholesale parent-file revert broke build (tip is 139 commits past patch parent; holdsThinking arity + sightFile drift).
+# Surgical ablation used: removed only the added else branch (gateway.go formatToldInBody call), test kept.

@@ -1,0 +1,7 @@
+--- FAIL: TestMaskJSONKeepsArgumentsJSON (0.00s)
+    escape_test.go:31: 2 masked, want 1: {"messages":[{"role":"user","content":"write {{EMAIL_eymlaavc}} about the demo"},{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"pwsh","arguments":"{\"command\":\"print('before')\\{{EMAIL_daaqu6wd}}()\\ndef demo():\\n    return 1\"}"}}]},{"role":"tool","tool_call_id":"call_1","content":"done"}]}
+--- FAIL: TestProbeTripleNewlineDecorator (0.00s)
+    shane_probe_test.go:40: arguments no longer JSON (1 masked): {"command":"looked into a possible new issue\n\n\{{EMAIL_lbqbj3xb}}\ndef demo():\n    pass"}
+FAIL
+FAIL	github.com/yetone/magpie/internal/redact	0.789s
+FAIL

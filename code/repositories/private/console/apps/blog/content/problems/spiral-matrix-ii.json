@@ -1,0 +1,20 @@
+{
+  "id": "74",
+  "slug": "spiral-matrix-ii",
+  "title": "螺旋矩阵 II",
+  "difficulty": "medium",
+  "tags": ["数组", "矩阵", "模拟"],
+  "description": "给你一个正整数 `n`,生成一个包含 `1` 到 `n²` 所有元素,且元素按顺时针顺序螺旋排列的 `n x n` 正方形矩阵。\n\n**示例 1:**\n\n- 输入:`n = 3`\n- 输出:`[[1,2,3],[8,9,4],[7,6,5]]`\n\n**示例 2:**\n\n- 输入:`n = 1`\n- 输出:`[[1]]`",
+  "solution": "## 思路\n\n按层模拟:维护四边界 `top/bottom/left/right`,按上→右→下→左顺序填数,每完成一边收缩边界,直到填满 `n²`。\n\n## 参考代码\n\n```js\nfunction generateMatrix(n) {\n  const res = Array.from({ length: n }, () => new Array(n).fill(0));\n  let top = 0;\n  let bottom = n - 1;\n  let left = 0;\n  let right = n - 1;\n  let num = 1;\n  while (num <= n * n) {\n    for (let j = left; j <= right; j++) res[top][j] = num++;\n    top++;\n    for (let i = top; i <= bottom; i++) res[i][right] = num++;\n    right--;\n    for (let j = right; j >= left; j--) res[bottom][j] = num++;\n    bottom--;\n    for (let i = bottom; i >= top; i--) res[i][left] = num++;\n    left++;\n  }\n  return res;\n}\n```\n\n## 复杂度\n\n- 时间:O(n²)\n- 空间:O(n²)(输出)",
+  "signature": {
+    "language": "javascript",
+    "entry": "generateMatrix",
+    "params": [{ "name": "n", "type": "number" }],
+    "returns": "number[][]"
+  },
+  "testCases": [
+    { "sample": true, "input": [3], "expected": [[1, 2, 3], [8, 9, 4], [7, 6, 5]] },
+    { "sample": true, "input": [1], "expected": [[1]] },
+    { "sample": false, "input": [2], "expected": [[1, 2], [4, 3]] }
+  ]
+}

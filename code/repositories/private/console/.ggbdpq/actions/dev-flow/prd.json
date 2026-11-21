@@ -1,0 +1,323 @@
+{
+  "project": {
+    "name": "dev-flow",
+    "repo_type": "monorepo",
+    "description": "AI Agent 自主任务执行平台（dev-flow）- 三前端(React/Vue/Next) + 三后端(Fastify/Nest/Koa) + SSE 统一推送 + SSOT(core) + 无状态 worker 执行器",
+    "stack": {
+      "frontend": {
+        "workbench": "React 19 + TypeScript + Vite 8 + React Router 7 + Zustand + Zod + Tailwind + shadcn/ui",
+        "admin_console": "Vue 3.5 + TypeScript + Vite 8 + Vue Router 4 + Pinia + Zod + Element Plus",
+        "developer_portal": "Next.js 16 (App Router) + TypeScript + Tailwind + shadcn/ui"
+      },
+      "backend": {
+        "api_gateway": "Fastify + TypeScript (SSE / 统一入口 / internal 路由)",
+        "core_service": "NestJS + TypeScript + Prisma + PostgreSQL (SSOT)",
+        "worker_service": "Koa + TypeScript (无状态执行器 / scheduler 拉取 / 原子 claim)"
+      },
+      "database": "PostgreSQL + Prisma",
+      "monorepo": "pnpm workspace + Turborepo",
+      "quality": "TypeScript strict + ESLint/Prettier + Husky + Commitlint + pnpm typecheck 门禁"
+    },
+    "ssot": {
+      "design": "docs/plans/2025-01-15-dev-flow-design.md",
+      "ui": "docs/plans/2025-01-15-dev-flow-ui-design.md",
+      "execution": ".ggbdpq/actions/dev-flow/EXECUTION.md",
+      "prd": ".ggbdpq/actions/dev-flow/prd.json",
+      "progress": ".ggbdpq/actions/dev-flow/progress.txt"
+    }
+  },
+  "items": [
+    {
+      "id": 1,
+      "component": "docs",
+      "priority": "P0",
+      "title": "冻结 dev-flow 设计基线（design/ui）并建立引用入口",
+      "steps": [
+        "确认 docs/plans/2025-01-15-dev-flow-design.md 与 docs/plans/2025-01-15-dev-flow-ui-design.md 为 v1.0 基线（仅允许勘误）",
+        "在 .ggbdpq/README.md 增加“dev-flow 设计入口”段落：链接 design/ui 文档路径 + 实现顺序总览",
+        "在 docs/README 或 docs/index.md（若存在）增加同样入口链接（可选，但不得与 .ggbdpq/README.md 冲突）",
+        "pnpm typecheck 通过后提交"
+      ],
+      "passes": true
+    },
+    {
+      "id": 2,
+      "component": "monorepo",
+      "priority": "P0",
+      "title": "Monorepo 基础设施（pnpm workspace + turbo + 根 scripts）",
+      "steps": [
+        "完善 pnpm-workspace.yaml（apps/* packages/*）与 turbo.json（dev/build/lint/typecheck pipeline）",
+        "根 package.json scripts：dev/build/lint/typecheck/db:*（按实际需要补齐）",
+        "统一 TS 配置：packages/ts-config（strict）并让各 app/服务继承",
+        "pnpm typecheck 通过后提交"
+      ],
+      "passes": true
+    },
+    {
+      "id": 3,
+      "component": "database",
+      "priority": "P0",
+      "title": "PostgreSQL 开发环境（docker-compose）+ Prisma 初始化",
+      "steps": [
+        "在仓库根创建/完善 docker-compose.yml：postgres:16 + volume + healthcheck + 端口 + 环境变量示例",
+        "packages/database：初始化 Prisma（schema.prisma + client 生成 + migrate/push 脚本）",
+        "补齐 .env.example（DATABASE_URL）与 README 启动指引（docker-compose up -d → pnpm db:push）",
+        "pnpm typecheck 通过后提交"
+      ],
+      "passes": true
+    },
+    {
+      "id": 4,
+      "component": "core-service",
+      "priority": "P0",
+      "title": "core-service 基础骨架（NestJS）+ Prisma 连接 + 健康检查",
+      "steps": [
+        "apps/backend/core-service：NestJS 项目可启动（dev/build）",
+        "接入 Prisma Client（来自 packages/database 或本地 prisma 目录，按既定 monorepo 方案）",
+        "提供 GET /internal/health（internal）与必要配置（env 校验）",
+        "pnpm typecheck 通过后提交"
+      ],
+      "passes": true
+    },
+    {
+      "id": 5,
+      "component": "api-gateway",
+      "priority": "P0",
+      "title": "api-gateway 基础骨架（Fastify）+ external/internal 路由分层",
+      "steps": [
+        "apps/backend/api-gateway：Fastify 项目可启动（dev/build）",
+        "实现 external 前缀 /api/* 与 internal 前缀 /internal/* 的路由分层（文件结构清晰）",
+        "提供 GET /internal/health（internal）与 GET /api/health（external）",
+        "pnpm typecheck 通过后提交"
+      ],
+      "passes": true
+    },
+    {
+      "id": 6,
+      "component": "gateway+sse",
+      "priority": "P0",
+      "title": "SSE 仅在 gateway 出口（/api/sse）+ 事件总线入口（/internal/events）",
+      "steps": [
+        "gateway：实现 GET /api/sse（text/event-stream），维护连接池（按 ui/design 文档约束）",
+        "gateway：实现 POST /internal/events，接收 core 推送的事件并分发到 SSE 客户端",
+        "冻结并实现 6 种事件类型：task.created / execution.claimed / execution.started / execution.progress / execution.completed / execution.failed",
+        "pnpm typecheck 通过后提交"
+      ],
+      "passes": true
+    },
+    {
+      "id": 7,
+      "component": "core-domain",
+      "priority": "P0",
+      "title": "core 领域最小集（Task/Execution）+ 状态机落库（SSOT）",
+      "steps": [
+        "按 design 文档修正版 schema 落地 Prisma（User/Role/UserRole、Task、Execution、AuditLog、IdempotencyKey）",
+        "实现 Task 创建：生成一条 Task + 一条 Execution（attemptNumber=1, status=PENDING, jobId 唯一）",
+        "实现查询：任务列表/任务详情（含 executions 一对多记录）",
+        "pnpm typecheck 通过后提交"
+      ],
+      "passes": true
+    },
+    {
+      "id": 8,
+      "component": "worker-service",
+      "priority": "P0",
+      "title": "worker-service 基础骨架（Koa）+ 执行器占位 + 健康检查",
+      "steps": [
+        "apps/backend/worker-service：Koa 项目可启动（dev/build）",
+        "提供 GET /internal/health（internal，仅供服务间）",
+        "实现最小执行器接口（先打印/模拟执行，后续再接工具调用）",
+        "pnpm typecheck 通过后提交"
+      ],
+      "passes": true
+    },
+    {
+      "id": 9,
+      "component": "claim",
+      "priority": "P0",
+      "title": "原子 Claim（以 Execution 为单位）+ 防重复执行",
+      "steps": [
+        "core：实现 POST /internal/worker/executions/claim（limit、workerId）并以 transaction 做原子更新（PENDING→CLAIMED）",
+        "core：写入 AuditLog（execution.claimed）",
+        "core：向 gateway 发送 /internal/events（execution.claimed）",
+        "pnpm typecheck 通过后提交"
+      ],
+      "passes": true
+    },
+    {
+      "id": 10,
+      "component": "worker-loop",
+      "priority": "P0",
+      "title": "worker scheduler 拉取 + 执行生命周期（CLAIMED→RUNNING→COMPLETED/FAILED）",
+      "steps": [
+        "worker：实现轮询 core 的 claim（pollIntervalMs/limit/maxConcurrency 设默认值并可配置）",
+        "worker：调用 core 的 start/progress/complete/fail（均走 internal 前缀）并上报结果",
+        "core：更新 Execution 状态与运行态字段（progress/currentStep/startedAt/completedAt/error/result/workerId/lastHeartbeatAt）",
+        "core：向 gateway 推送 started/progress/completed/failed 事件",
+        "pnpm typecheck 通过后提交"
+      ],
+      "passes": true
+    },
+    {
+      "id": 11,
+      "component": "timeout+heartbeat",
+      "priority": "P0",
+      "title": "心跳 + 超时检测（TIMEOUT）",
+      "steps": [
+        "worker：实现 heartbeat 定时上报（/internal/worker/executions/:id/heartbeat）",
+        "core：记录 lastHeartbeatAt，并提供超时检测定时任务（CLAIMED/RUNNING 且心跳超阈值 → TIMEOUT）",
+        "core：TIMEOUT 触发 execution.failed 事件（status=TIMEOUT）",
+        "pnpm typecheck 通过后提交"
+      ],
+      "passes": true
+    },
+    {
+      "id": 12,
+      "component": "workbench",
+      "priority": "P0",
+      "title": "workbench 基础壳（React 19 + Vite 8 + React Router 7）",
+      "steps": [
+        "apps/frontend/workbench：初始化并可启动，路由结构按 UI 文档（src/routes/*.tsx）",
+        "接入 shadcn/ui + Tailwind（按 UI 文档的语义 Token，支持 dark）",
+        "基础页面：Tasks/Executions（或 Prompts→改为 Tasks，按 dev-flow 语义）+ Settings 占位",
+        "pnpm typecheck 通过后提交"
+      ],
+      "passes": true
+    },
+    {
+      "id": 13,
+      "component": "workbench-sse",
+      "priority": "P0",
+      "title": "workbench 接入 SSE + 实时执行状态 UI",
+      "steps": [
+        "workbench：实现 SSE 订阅 /api/sse，维护本地执行状态（Zustand store）",
+        "任务列表：展示 currentExecution 状态/进度；详情页展示 executions 历史与 attemptNumber",
+        "提供“创建任务”表单（title + spec JSON 编辑/上传最小形态）并调用 gateway /api/tasks",
+        "pnpm typecheck 通过后提交"
+      ],
+      "passes": true
+    },
+    {
+      "id": 14,
+      "component": "auth-rbac",
+      "priority": "P1",
+      "title": "RBAC 最小可用（User-Role 多对多）+ API Key（developer-portal 依赖）",
+      "steps": [
+        "core：实现 User/Role/UserRole 基础管理（至少 seed 默认角色：admin/user/developer）",
+        "gateway：external 接口鉴权占位（先允许本地 DEV bypass，写清楚 TODO 与开关）",
+        "core：API Key 创建/吊销/列表（用于开发者门户）",
+        "pnpm typecheck 通过后提交"
+      ],
+      "passes": true
+    },
+    {
+      "id": 15,
+      "component": "admin-console",
+      "priority": "P1",
+      "title": "admin-console 初始化（Vue 3.5 + Element Plus）+ 管理视图骨架",
+      "steps": [
+        "apps/frontend/admin-console：创建项目并可启动（Vite 8）",
+        "基础路由：Users/Roles/Audit/System Health 页面占位（Element Plus 布局）",
+        "对接 gateway：至少能查看 tasks/executions 列表与审计日志（先 mock 或 real）",
+        "pnpm typecheck 通过后提交"
+      ],
+      "passes": true
+    },
+    {
+      "id": 16,
+      "component": "developer-portal",
+      "priority": "P1",
+      "title": "developer-portal 初始化（Next.js 16）+ API 文档与 Key 管理骨架",
+      "steps": [
+        "apps/frontend/developer-portal：Next.js 16 App Router 可启动",
+        "页面：Docs / API Reference / API Keys / Webhooks（占位 + 基础样式）",
+        "Key 管理：调用 core/gateway 获取/创建/吊销 API Key（最小闭环）",
+        "pnpm typecheck 通过后提交"
+      ],
+      "passes": true
+    },
+    {
+      "id": 17,
+      "component": "cancel+rerun",
+      "priority": "P1",
+      "title": "取消与重跑（Execution 一对多）",
+      "steps": [
+        "external：实现 POST /api/tasks/:id/cancel（取消当前 execution 或指定 executionId）",
+        "external：实现 POST /api/tasks/:id/rerun（创建新 execution attemptNumber+1）",
+        "事件：取消/重跑触发对应 SSE（按既定 6 事件类型策略：若不新增事件，则用 execution.failed/completed 表达并在 data 中携带原因）",
+        "pnpm typecheck 通过后提交"
+      ],
+      "passes": true
+    },
+    {
+      "id": 18,
+      "component": "audit",
+      "priority": "P1",
+      "title": "审计日志可观测（核心链路全覆盖）",
+      "steps": [
+        "core：在 task.create / execution.* 关键动作落 AuditLog",
+        "admin-console：提供审计日志列表（筛选 action/resource/time）",
+        "developer-portal：可选展示 API Key 操作审计",
+        "pnpm typecheck 通过后提交"
+      ],
+      "passes": true
+    },
+    {
+      "id": 19,
+      "component": "ui-polish",
+      "priority": "P2",
+      "title": "UI 一致性与暗色模式巡检（按 UI 文档语义 Token）",
+      "steps": [
+        "workbench：按语义 Token 全量替换 raw neutral 误用，保证 dark 不“变亮”",
+        "admin-console：按设计规范调整 Element Plus 主题（至少颜色/间距/字体接近）",
+        "developer-portal：按 design system 校准排版与组件一致性",
+        "pnpm typecheck 通过后提交"
+      ],
+      "passes": true
+    },
+    {
+      "id": 20,
+      "component": "docs-setup",
+      "priority": "P2",
+      "title": "完整启动文档（从零到一）与故障排查（append-only）",
+      "steps": [
+        "README：补齐 docker-compose 生成/启动、db:push、dev 一键启动、端口表、环境变量",
+        "docs/setup/step-by-step.md：按时间顺序记录每一步命令与预期输出",
+        "docs/setup/troubleshooting.md：记录常见错误（docker/pnpm/fnm/node/权限/端口冲突）",
+        "pnpm typecheck 通过后提交"
+      ],
+      "passes": true
+    },
+    {
+      "id": 21,
+      "component": "tests",
+      "priority": "P2",
+      "title": "最小测试集（核心链路）",
+      "steps": [
+        "core：对 claim/状态机转换写最小单测（Vitest 或 Nest 测试体系，选其一并统一）",
+        "gateway：对 /internal/events 与 SSE 分发写最小测试（可用轻量集成测试）",
+        "pnpm typecheck 通过后提交"
+      ],
+      "passes": true
+    },
+    {
+      "id": 22,
+      "component": "interview",
+      "priority": "P2",
+      "title": "面试材料：3 分钟/5 分钟逐字稿（dev-flow）",
+      "steps": [
+        "docs/interview/script-3min.md：按“背景-架构-难点-成果-个人贡献”结构输出",
+        "docs/interview/script-5min.md：补充取舍（SSOT/SSE/claim/无 MQ P0）与扩展路线",
+        "pnpm typecheck 通过后提交"
+      ],
+      "passes": true
+    }
+  ],
+  "statistics": {
+    "total": 22,
+    "passing": 22,
+    "failing": 0,
+    "completion": "100%",
+    "blocked_reason": ""
+  }
+}

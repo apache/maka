@@ -1,0 +1,148 @@
+From 0c5a9d458ba086e19bfd9caa359719f12fea5e46 Mon Sep 17 00:00:00 2001
+From: vincent <vincent@users.noreply.github.com>
+Date: Wed, 28 Oct 2026 14:50:40 +1000
+Subject: [PATCH] gateway: a model's own rate limit rests that model, not its
+ key (#3619)
+
+SophNet answers "Model tpm limit exceeded" for one model of a key (its
+console limits each model's tokens a minute), and the rest took the whole
+key, so every sibling model on it was greyed out on Routing and refused
+locally without reaching upstream. modelRateWords matches a rate limit
+the vendor puts on the model - either wording - and scopes the rest, the
+sink and the failure count to restID, as otherModels and
+remoteModelRest do. modelRateWords is the model's limit: the key's other
+models are asked as before.
+
+Test: TestModelRateLimitRestsTheModelAlone (red: the rest rested by
+"sophnet" with no model of its own; green after) and
+TestKeyRateLimitRestsTheKey (a whole-key 429 still rests the key).
+gofmt clean, go build -tags nogui ./... ok, go vet ok. Full gateway
+package run in /tmp/ulw-r28/comments/3619-suite.log.
+---
+ internal/gateway/model_limit_rest_test.go | 70 +++++++++++++++++++++++
+ internal/gateway/routing.go               | 18 ++++++
+ 2 files changed, 88 insertions(+)
+ create mode 100644 internal/gateway/model_limit_rest_test.go
+
+diff --git a/internal/gateway/model_limit_rest_test.go b/internal/gateway/model_limit_rest_test.go
+new file mode 100644
+index 000000000..6d81036fd
+--- /dev/null
++++ b/internal/gateway/model_limit_rest_test.go
+@@ -0,0 +1,70 @@
++package gateway
++
++import (
++	"net/http"
++	"testing"
++
++	"github.com/yetone/magpie/internal/provider"
++)
++
++// A rate limit the vendor puts on the model alone rests that model and
++// not its key: SophNet answers "Model tpm limit exceeded" for one model
++// of a key (its console limits each model's tokens a minute), and the
++// key's other models are asked as before (#3619).
++func TestModelRateLimitRestsTheModelAlone(t *testing.T) {
++	forgetRouting()
++	c := candidate{p: provider.Provider{ID: "sophnet"}, model: "DeepSeek-V4.1-Flash-1017", rest: "sophnet"}
++	s := &Server{}
++	req := []byte(`{"error":{"message":"SophNet: Model tpm limit exceeded. Please try again later."}}`)
++	r := s.restAfter(c, http.StatusTooManyRequests, http.Header{}, req)
++	if r.Why != failRate {
++		t.Fatalf("why = %s (%s)", r.Why, r.said)
++	}
++	if r.Key != c.restID() {
++		t.Fatalf("Key=%q restKey=%s restID=%s why=%s said=%q modelRate=%v", r.Key, c.restKey(), c.restID(), r.Why, r.said, modelRateWords.Match(wordsOf(req)))
++	}
++	if r.Model != c.model {
++		t.Fatalf("the rest names the model %q, want %q", r.Model, c.model)
++	}
++	if r, ok := restOf(c.restKey()); ok {
++		t.Fatalf("the whole key rested: %+v", r)
++	}
++	if _, ok := restOf(c.restID()); !ok {
++		t.Fatal("the model's own rest is not there")
++	}
++	// the wording the other way round is the model's own too
++	forgetRouting()
++	req = []byte(`{"error":{"message":"RPM limit exceeded for model DeepSeek-Flash-1017, please retry later"}}`)
++	r = s.restAfter(candidate{p: provider.Provider{ID: "sophnet"}, model: "DeepSeek-Flash-1017", rest: "sophnet"},
++		http.StatusTooManyRequests, http.Header{}, req)
++	if r.Key != c.restKey()+"/DeepSeek-Flash-1017" {
++		t.Fatalf("rested by %s, want the model's own", r.Key)
++	}
++	// a second model of the same key that 429s rests its own model too:
++	// the key is not rested for one model's limit (#3619)
++	forgetRouting()
++	req = []byte(`{"error":{"message":"SophNet: Model tpm limit exceeded. Please try again later."}}`)
++	c2 := candidate{p: provider.Provider{ID: "sophnet"}, model: "DeepSeek-Flash-1017", rest: "sophnet"}
++	r = s.restAfter(c2, http.StatusTooManyRequests, http.Header{}, req)
++	if r.Key != c2.restID() {
++		t.Fatalf("second model rested by %s, want the model's own %s", r.Key, c2.restID())
++	}
++	if _, ok := restOf(c.restKey()); ok {
++		t.Fatalf("the whole key rested for one model's limit: %+v", r)
++	}
++}
++
++// A rate limit the vendor puts on the key or account rests the whole
++// key, as before.
++func TestKeyRateLimitRestsTheKey(t *testing.T) {
++	forgetRouting()
++	c := candidate{p: provider.Provider{ID: "relay"}, model: "gpt-6.1-sol", rest: "relay"}
++	s := &Server{}
++	r := s.restAfter(c, http.StatusTooManyRequests, http.Header{}, []byte(`{"error":{"message":"Too Many Requests"}}`))
++	if r.Key != c.restKey() {
++		t.Fatalf("rested by %s, want the key %s", r.Key, c.restKey())
++	}
++	if _, ok := restOf(c.restID()); ok {
++		t.Fatal("the model rested on its own")
++	}
++}
+diff --git a/internal/gateway/routing.go b/internal/gateway/routing.go
+index 602124ea6..00f0a101e 100644
+--- a/internal/gateway/routing.go
++++ b/internal/gateway/routing.go
+@@ -265,6 +265,14 @@ var (
+ 	// answer ("切换其他模型", "switch to the other models"): its limit is
+ 	// the model's, and the model alone rests
+ 	otherModels = regexp.MustCompile(`(?i)switch(?:ing)? to (?:the )?other models?|切换(?:到)?其他模型`)
++	// modelRateWords are how a vendor says a rate limit is on the model
++	// alone, not the key or account: SophNet's "Model tpm limit exceeded"
++	// for one model of a key (its console limits each model's tokens a
++	// minute), while the key's other models are asked as before (#3619).
++	// A limit on the model is not one on the key, so the key rests only if
++	// a second distinct model on it also 429s (rateRest counts the key,
++	// and the model count climbs its own ladder in the default branch).
++	modelRateWords = regexp.MustCompile(`(?i)(model.{0,40}(limit|quota|tpm|rpm|rate|throttl)|(limit|quota|tpm|rpm|rate|throttl).{0,40}model)`)
+ 	// clineFreeLimit: Cline's refusal of a free model whose day's allowance
+ 	// is used up, 429 "Daily free limit reached on model deepseek/deepseek-
+ 	// v4-flash. Try again in 23h 59m", as its own clients read it (cline/
+@@ -1238,6 +1246,11 @@ func (s *Server) restAfterMarked(c candidate, status int, header http.Header, bo
+ 	if remoteModelRest(c, why, header) {
+ 		id = c.restID()
+ 	}
++	// a rate limit the vendor puts on the model alone is the model's:
++	// the key's other models are asked as before (#3619)
++	if why == failRate && modelRateWords.Match(wordsOf(body)) {
++		id = c.restID()
++	}
+ 	r.Key = id
+ 	if id == c.restID() {
+ 		r.Model = c.model
+@@ -1357,6 +1370,11 @@ func (s *Server) rateRest(c candidate, header http.Header, body []byte, sharedPo
+ 	id := c.restKey()
+ 	if c.isOpenRouterFree() && sharedPool || remoteModelRest(c, failRate, header) {
+ 		id = c.restID()
++	} else if modelRateWords.Match(wordsOf(body)) {
++		// a rate limit the vendor puts on the model alone rests that
++		// model and not its key: the key's other models are asked as
++		// before (#3619)
++		id = c.restID()
+ 	}
+ 	n := 1
+ 	restingUntil.Lock()
+-- 
+2.50.1 (Apple Git-155)
+

@@ -1,0 +1,318 @@
+From e0380455271a9a3c90af160192da34e52a9e8679 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Mon, 19 Oct 2026 01:36:57 +0800
+Subject: [PATCH] sessions: a call-cache shard is synced before its rename, and
+ a failed rename is said (#2814)
+
+What changed
+
+writeCalls' non-append path no longer builds a temp file by hand with
+os.CreateTemp -> Write -> Close -> _ = os.Rename. The frame it already has
+in memory is written with steady.WriteFile (internal/sessions/call_cache.go),
+which flushes the temp file to the disk before renaming it in and returns
+the rename's error. A failed write leaves the previous shard as it was, and
+the error is logged once per shard path ("<path> wasn't written over: ...")
+until a write succeeds; pruneCalls forgets the paths of sessions that are
+gone. The abandoned-temp sweep in pruneCalls also recognises
+steady.WriteFile's ".<shard>.*" temps beside the older calls-*.tmp ones.
+
+The append path is unchanged: it still opens the shard O_APPEND and writes
+the frame (whose header carries its own CRC32) in place, and a torn tail is
+caught by readCalls as before.
+
+Why
+
+A shard renamed in before its data reached the disk can come back all zero
+or cut short after a forced restart; readCalls catches it, but every such
+shard is a full re-parse of the session file at the next start, all at
+once. A rename that fails (on Windows a reader or a virus scanner holding
+the shard open) was silent, so the cache never landed and nothing said so,
+and every read re-parsed the whole session file until a rename happened to
+succeed. steady.WriteFile already existed for exactly this after #1505 and
+is used by logins.go, plugin/store.go, mcpauth, kiro, codex_autoreset and
+lastgood.
+
+Run (darwin/arm64, Go 1.26.8; base upstream/main 95ef45fda4b3)
+
+go test -tags nogui -count=1 ./internal/sessions/          ok  11.365s (529 tests)
+go test -tags nogui -count=1 ./internal/steady/           ok   1.060s (2 tests)
+go test -race -tags nogui -count=1 ./internal/sessions/   ok  24.117s
+gofmt -l internal/sessions/ internal/steady/              empty
+go vet -tags nogui ./internal/sessions/ ./internal/steady/ ok
+GOOS=linux go vet -tags nogui ./internal/sessions/        ok
+GOOS=windows go vet -tags nogui ./internal/sessions/      ok
+go build -tags nogui ./...                                ok
+GOOS=linux go build -tags nogui ./...                     ok
+GOOS=windows go build -tags nogui -o /dev/null .          ok
+
+TestCallShardIsFlushedBeforeItsRenameAndAFailedRenameIsSaid is RED on base
+("a shard whose flush failed was renamed in (<nil>)") and GREEN with the
+change; dropping the flush, or swallowing the rename's error again, makes
+it RED again. One race run of the whole package failed once in nine on a
+pre-existing race between testenv.Zone and a background saveCache goroutine
+in TestOpenCodeSubagents; the same failure reproduces on a clean
+upstream/main copy (1 in 3 full race runs) and is untouched by this change.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/sessions/call_cache.go             |  62 +++++++--
+ internal/sessions/call_shard_steady_test.go | 138 ++++++++++++++++++++
+ 2 files changed, 188 insertions(+), 12 deletions(-)
+ create mode 100644 internal/sessions/call_shard_steady_test.go
+
+diff --git a/internal/sessions/call_cache.go b/internal/sessions/call_cache.go
+index 5f79a8b9..5abd8fc3 100644
+--- a/internal/sessions/call_cache.go
++++ b/internal/sessions/call_cache.go
+@@ -11,11 +11,14 @@ import (
+ 	"hash/crc32"
+ 	"hash/fnv"
+ 	"io"
++	"log"
+ 	"os"
+ 	"path/filepath"
+ 	"strings"
+ 	"sync"
+ 	"time"
++
++	"github.com/yetone/magpie/internal/steady"
+ )
+ 
+ // v3 persists Codex cumulative counters explicitly; v2 shards can contain
+@@ -106,6 +109,13 @@ func pruneCalls(files []file) {
+ 			delete(callCounts, path)
+ 		}
+ 	}
++	callShardErrors.Lock()
++	for path := range callShardErrors.on {
++		if !shards[filepath.Base(path)] {
++			delete(callShardErrors.on, path)
++		}
++	}
++	callShardErrors.Unlock()
+ 	order = callContinuationOrder[:0]
+ 	for _, path := range callContinuationOrder {
+ 		if on[path] {
+@@ -134,7 +144,12 @@ func pruneCalls(files []file) {
+ 			continue
+ 		}
+ 		orphan := strings.HasSuffix(e.Name(), ".gob") && !shards[e.Name()]
+-		if strings.HasPrefix(e.Name(), "calls-") && strings.HasSuffix(e.Name(), ".tmp") {
++		// A write's temp file, from before shards went through
++		// steady.WriteFile (calls-*.tmp) or since (.<shard>.*): the process
++		// went down between writing it and renaming it in.
++		stale := strings.HasPrefix(e.Name(), "calls-") && strings.HasSuffix(e.Name(), ".tmp") ||
++			strings.HasPrefix(e.Name(), ".") && strings.Contains(e.Name(), ".gob.")
++		if stale {
+ 			if st, err := e.Info(); err == nil && time.Since(st.ModTime()) > time.Hour {
+ 				orphan = true
+ 			}
+@@ -420,19 +435,23 @@ func writeCalls(st *callFile, start int, appendOnly bool) {
+ 	if os.MkdirAll(dir, 0700) != nil {
+ 		return
+ 	}
+-	var out *os.File
+-	var err error
+-	if appendOnly {
+-		out, err = os.OpenFile(callCachePath(st.Path), os.O_WRONLY|os.O_APPEND, 0600)
+-	} else {
+-		out, err = os.CreateTemp(dir, "calls-*.tmp")
++	shard := callCachePath(st.Path)
++	if !appendOnly {
++		// The shard is flushed to the disk before it is renamed in: one
++		// renamed in first can come back all zero or cut short after a
++		// forced restart (#2814). A write that fails leaves the old shard,
++		// and a rename that fails (on Windows a reader or a virus scanner
++		// holding it open) is said once per shard rather than dropped: until
++		// one lands, every read re-parses the whole session file.
++		b := make([]byte, 0, len(header)+data.Len())
++		b = append(append(b, header[:]...), data.Bytes()...)
++		sayCallShardError(shard, steady.WriteFile(shard, b, 0600))
++		return
+ 	}
++	out, err := os.OpenFile(shard, os.O_WRONLY|os.O_APPEND, 0600)
+ 	if err != nil {
+ 		return
+ 	}
+-	if !appendOnly {
+-		defer os.Remove(out.Name())
+-	}
+ 	_, err = out.Write(header[:])
+ 	if err == nil {
+ 		_, err = out.Write(data.Bytes())
+@@ -440,7 +459,26 @@ func writeCalls(st *callFile, start int, appendOnly bool) {
+ 	if closeErr := out.Close(); err == nil {
+ 		err = closeErr
+ 	}
+-	if err == nil && !appendOnly {
+-		_ = os.Rename(out.Name(), callCachePath(st.Path))
++}
++
++// callShardErrors are the shards whose write already failed, so one that
++// keeps failing is said once rather than on every read.
++var callShardErrors = struct {
++	sync.Mutex
++	on map[string]bool
++}{on: map[string]bool{}}
++
++// sayCallShardError logs a failed shard write once until one succeeds.
++func sayCallShardError(path string, err error) {
++	callShardErrors.Lock()
++	said := callShardErrors.on[path]
++	if err == nil {
++		delete(callShardErrors.on, path)
++	} else if !said {
++		callShardErrors.on[path] = true
++	}
++	callShardErrors.Unlock()
++	if err != nil && !said {
++		log.Printf("%s wasn't written over: %v", path, err)
+ 	}
+ }
+diff --git a/internal/sessions/call_shard_steady_test.go b/internal/sessions/call_shard_steady_test.go
+new file mode 100644
+index 00000000..1c3372a7
+--- /dev/null
++++ b/internal/sessions/call_shard_steady_test.go
+@@ -0,0 +1,138 @@
++package sessions
++
++import (
++	"bytes"
++	"errors"
++	"log"
++	"os"
++	"path/filepath"
++	"strings"
++	"testing"
++	"time"
++
++	"github.com/yetone/magpie/internal/steady"
++)
++
++// #2814: a call-cache shard is written through a temp file flushed to the
++// disk before it is renamed in, as every other file magpie keeps is
++// (#1505), and a rename that fails is said once per shard rather than
++// thrown away. The append path is left as it is: its frames carry their own
++// CRC and a torn tail is caught by the reader.
++func TestCallShardIsFlushedBeforeItsRenameAndAFailedRenameIsSaid(t *testing.T) {
++	d := setupCalls(t)
++	path := filepath.Join(d.claude, "projects", "p", "s.jsonl")
++	writeLines(t, path, claudeMsg("m1", "claude-sonnet-5", 10, 1, 2, 3, 1))
++	defer func() { steady.Sync = (*os.File).Sync }()
++	shard := callCachePath(path)
++
++	// A flush that fails leaves no shard: one renamed in before its data is
++	// on the disk can come back all zero or cut short after a forced
++	// restart, and every such shard is a full re-parse of the session file.
++	steady.Sync = func(*os.File) error { return errors.New("the disk went away") }
++	if calls := Calls(time.Time{}); len(calls) != 1 {
++		t.Fatalf("calls read without a shard: %+v", calls)
++	}
++	if _, err := os.Stat(shard); !os.IsNotExist(err) {
++		t.Fatalf("a shard whose flush failed was renamed in (%v)", err)
++	}
++	if left, _ := filepath.Glob(filepath.Join(filepath.Dir(shard), "."+filepath.Base(shard)+".*")); len(left) != 0 {
++		t.Fatalf("temp files left by a flush that failed: %v", left)
++	}
++
++	// A flush that works: the temp file beside the shard is flushed while
++	// the shard is not there yet, and the shard reads back afterwards.
++	flushed := false
++	steady.Sync = func(f *os.File) error {
++		if filepath.Dir(f.Name()) != filepath.Dir(shard) || filepath.Base(f.Name()) == filepath.Base(shard) {
++			t.Errorf("flushed %s, not a temp file beside %s", f.Name(), shard)
++		}
++		if _, err := os.Stat(shard); err == nil {
++			t.Errorf("%s was renamed in before its data was flushed", shard)
++		}
++		flushed = true
++		return f.Sync()
++	}
++	resetCalls()
++	if calls := Calls(time.Time{}); len(calls) != 1 {
++		t.Fatalf("calls: %+v", calls)
++	}
++	if !flushed {
++		t.Fatal("the shard was written without being flushed to the disk")
++	}
++	if st := loadCalls(file{path: path, agent: "claude"}); st == nil || len(st.Calls) != 1 {
++		t.Fatalf("the flushed shard does not read back: %+v", st)
++	}
++
++	// A temp a steady.WriteFile left behind (the process went down between
++	// its write and its rename) is removed an hour on, as calls-*.tmp was.
++	abandoned := filepath.Join(callCacheDir(), "."+filepath.Base(shard)+".123456")
++	if err := os.WriteFile(abandoned, []byte("partial"), 0600); err != nil {
++		t.Fatal(err)
++	}
++	old := time.Now().Add(-2 * time.Hour)
++	if err := os.Chtimes(abandoned, old, old); err != nil {
++		t.Fatal(err)
++	}
++	Calls(time.Time{})
++	if _, err := os.Stat(abandoned); !os.IsNotExist(err) {
++		t.Fatalf("an abandoned temp remains: %v", err)
++	}
++
++	// The append path is unchanged: a frame carries its own CRC, so an
++	// append grows the shard in place and never goes through the flush.
++	before, err := os.ReadFile(shard)
++	if err != nil {
++		t.Fatal(err)
++	}
++	steady.Sync = func(*os.File) error {
++		t.Error("an append flushed the shard as if it were a new one")
++		return nil
++	}
++	appendText(t, path, claudeMsg("m2", "claude-sonnet-5", 20, 2, 0, 0, 2)+"\n")
++	if calls := Calls(time.Time{}); len(calls) != 2 {
++		t.Fatalf("calls after an append: %+v", calls)
++	}
++	after, err := os.ReadFile(shard)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if !bytes.HasPrefix(after, before) || len(after) <= len(before) {
++		t.Fatalf("an append rewrote the shard: %d -> %d bytes", len(before), len(after))
++	}
++
++	// A rename that fails (on Windows a reader or a virus scanner holding
++	// the shard open; here a folder in its place) is said once, not thrown
++	// away: every read until one lands re-parses the whole session file.
++	if err := os.Remove(shard); err != nil {
++		t.Fatal(err)
++	}
++	if err := os.Mkdir(shard, 0700); err != nil {
++		t.Fatal(err)
++	}
++	if err := os.WriteFile(filepath.Join(shard, "held"), []byte("x"), 0600); err != nil {
++		t.Fatal(err)
++	}
++	var logs bytes.Buffer
++	was := log.Writer()
++	log.SetOutput(&logs)
++	defer log.SetOutput(was)
++	steady.Sync = (*os.File).Sync
++	resetCalls()
++	if calls := Calls(time.Time{}); len(calls) != 2 {
++		t.Fatalf("calls while the shard cannot be replaced: %+v", calls)
++	}
++	if !strings.Contains(logs.String(), shard) {
++		t.Fatalf("a failed rename was not said: %q", logs.String())
++	}
++	said := logs.Len()
++	resetCalls()
++	if calls := Calls(time.Time{}); len(calls) != 2 {
++		t.Fatalf("calls while the shard cannot be replaced: %+v", calls)
++	}
++	if logs.Len() != said {
++		t.Fatalf("the same failed rename was said again: %q", logs.String()[said:])
++	}
++	if left, _ := filepath.Glob(filepath.Join(filepath.Dir(shard), "."+filepath.Base(shard)+".*")); len(left) != 0 {
++		t.Fatalf("temp files left after a failed rename: %v", left)
++	}
++}
+-- 
+2.50.1 (Apple Git-155)
+

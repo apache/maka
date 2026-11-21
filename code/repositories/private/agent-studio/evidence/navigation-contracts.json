@@ -1,0 +1,697 @@
+{
+  "scope": "静态源码只读契约；未访问浏览器、未执行远程模块、未请求业务API",
+  "download_summary": {
+    "downloaded_this_task": 72,
+    "downloaded": 0,
+    "existing": 182,
+    "downloaded_bytes": 0,
+    "discovered": 182,
+    "missing": [],
+    "errors": [],
+    "formatted_entries": 14,
+    "format_errors": [],
+    "elapsed_seconds": 6.77
+  },
+  "request_base_evidence": "),r=ne();t.exports={formats:U(),parse:r,stringify:n}}));r();var G=`/decision`,K=`/decision/agent-microapp`,ie=`/decision/agent-billing`,q=`/decision/paas-llm`,J={loginType:`homing`,get homingToken(){return t.getToken()}},Y=class e{promise;constructor(e){this.promise=new Promise(e)}static from(t){return new e((e,n)=>{t.then(e).catch(n)})}then(t,n){return e.from(this.promise.then(t,n))}catch(t){return e.from(this.promise.catch(t))}finally(t){return e.from(this.promise.finally(t))}[Symbol.toStringT",
+  "pages": [
+    {
+      "page": "agent-team",
+      "route": "/agent/agent-team",
+      "entry": "agent-team-2JcYUrVG.js",
+      "exports": {
+        "default": "z"
+      },
+      "queries": [
+        {
+          "role": "list",
+          "method": "GET",
+          "url": "/decision/agent-microapp/pluginCollection/getPageList",
+          "params": {
+            "pageNum": "t; first=1",
+            "pageSize": "B",
+            "tagName": "i",
+            "collectionName": "n || \"\""
+          },
+          "response_consumed": "errCode===0; data:{records,total,size,current}",
+          "function": {
+            "module": "agent-team-Ucmswz9S.js",
+            "export": "s",
+            "local": "n",
+            "definition": "n=n=>t({url:`${e}/pluginCollection/getPageList`,method:`get`,data:n}),r=n=>t({url:`${e}/pluginCollection/addVersion`,method:`post`,data:n}),i=n=>t({url:`${e}/pluginCollection/updateStatus`,method:`post`,data:n}),a=n=>t({url:`${e}/pluginCollection/delete`,method:`post`,params:n}),o=n=>t({url:`${e}/pluginCollection/getVersionDetails`,method:`get`,data:n}),s=n=>t({url:`${e}/pluginCollection/add`,method:`post`,data:n}),c=n=>t({url:`${e}/pluginCollection/update`,method:`post`,data:n}),l=n=>t({url:`${"
+          },
+          "caller_context": "B,tagName:i,collectionName:n||``};try{let{data:e,errCode:t}=await w(o);if(t===0&&e){let{records:t,total:n,size:r,current:i}=e;z(i),V(r),U(n),y(e=>i===1?t||[]:[...e,...t||[]])}else z(1),V(10),U(0),y([])}catch(e){console.error(`获取列表失败:`,e),z(1),V(10),U(0),y([])}finally{G(`idle`)}},[I,B,c,r]);(0,F.useEffect)(()=>{X({pageNum:1})},[]);let oe=e=>{n(e)},se=(0,F.useCallback)(e=>{d(e),X({pageNum:1,collectionName:e})},[X]),ce=(0,F.useCallback)(e=>{i(e),X({pageNum:1,filterIndustry:e})},[X]),le=(0,F.useCall"
+        }
+      ],
+      "unconfirmed": [
+        "运行时参数值、后端实际响应与完整schema未验证"
+      ],
+      "available_detail_export": {
+        "method": "GET",
+        "url": "/decision/agent-microapp/pluginCollection/getDetails",
+        "params": "id字段未确认",
+        "function": {
+          "module": "agent-team-Ucmswz9S.js",
+          "export": "a",
+          "local": "l",
+          "definition": "l=n=>t({url:`${e}/pluginCollection/getDetails`,method:`get`,data:n}),u=n=>t({url:`${e}/pluginCollection/activeVersion`,method:`post`,data:n});export{l as a,c,u as i,i as l,r as n,o,a as r,n as s,s as t};"
+        },
+        "confirmation": "声明已确认；本次未分析对应详情entry，实际调用及响应未确认"
+      },
+      "route_component_export": "default"
+    },
+    {
+      "page": "role-agent",
+      "route": "/agent/role-agent",
+      "entry": "role-agent-CaTVbu1-.js",
+      "exports": {
+        "default": "Z"
+      },
+      "queries": [
+        {
+          "role": "list",
+          "method": "POST",
+          "url": "/decision/agent-microapp/plugin/getAllList",
+          "params": {
+            "pageNum": "t; first=1",
+            "pageSize": "U.toString()",
+            "tagName": "i",
+            "searchKey": "n || \"\""
+          },
+          "response_consumed": "errCode===0; data:{records,total,size,current}",
+          "function": {
+            "module": "plugin-manage-C7jNL1TC.js",
+            "export": "u",
+            "local": "n",
+            "definition": "n=n=>t({url:`${e}/plugin/getAllList`,method:`post`,data:n}),r=n=>t({url:`${e}/pluginCollectionAuth/addByAuthTarget`,method:`post`,data:n}),i=n=>t({url:`${e}/pluginCollection/getPageList`,method:`get`,data:n}),a=n=>t({url:`${e}/plugin/add`,method:`post`,data:n}),o=n=>t({url:`${e}/pluginCollectionAuth/deleteByAuthTarget`,method:`post`,data:n}),s=n=>t({url:`${e}/plugin/getDetails`,method:`post`,data:n}),c=n=>t({url:`${e}/plugin/addVersion`,method:`post`,data:n}),l=n=>t({url:`${e}/plugin/activePlugi"
+          },
+          "caller_context": "ring(),tagName:i,searchKey:n||``};try{let{data:e,errCode:t}=await O(o);if(t===0&&e){let{records:t,total:n,size:r,current:i}=e;H(i),W(r),J(n),b(e=>i===1?t||[]:[...e,...t||[]])}else H(1),W(10),J(0),b([])}catch(e){console.error(`获取列表失败:`,e),H(1),W(10),J(0),b([])}finally{Q(`idle`)}},[V,U,c,r]);(0,G.useEffect)(()=>{$({pageNum:1})},[]);let oe=e=>{n(e)},se=(0,G.useCallback)(e=>{f(e),$({pageNum:1,pluginNameCn:e})},[$]),ce=(0,G.useCallback)(e=>{i(e),$({pageNum:1,filterIndustry:e})},[$]),le=(0,G.useCallba"
+        },
+        {
+          "role": "detail",
+          "method": "POST",
+          "url": "/decision/agent-microapp/plugin/getDetails",
+          "params": {
+            "id": "a.pluginIdStr"
+          },
+          "response_consumed": "errCode===0; data.pluginVersionDetails数组优先inEffect===1",
+          "function": {
+            "module": "plugin-manage-C7jNL1TC.js",
+            "export": "l",
+            "local": "s",
+            "definition": "s=n=>t({url:`${e}/plugin/getDetails`,method:`post`,data:n}),c=n=>t({url:`${e}/plugin/addVersion`,method:`post`,data:n}),l=n=>t({url:`${e}/plugin/activePlugin`,method:`post`,data:n}),u=n=>t({url:`${e}/plugin/getVersionDetail`,method:`post`,data:n}),d=n=>t({url:`${e}/plugin/update`,method:`post`,data:n}),f=n=>t({url:`${e}/plugin/delete`,method:`post`,data:n}),p=n=>t({url:`${e}/plugin/enable`,method:`post`,data:n}),m=n=>{let r=new FormData;return r.append(`file`,n.file),t({url:`${e}/plugin/uploadPl"
+          },
+          "caller_context": "cription??``,tags:e,versionDescription:``,skills:[]});try{P(!0);let e=await ee({id:a.pluginIdStr});if(e?.errCode!==0||!e?.data){v.error(`获取 Plugin 详情失败`);return}h(J(e.data.addWay));let t=e.data.pluginVersionDetails?.find(e=>e.inEffect===1)??e.data.pluginVersionDetails?.[0],n=(t?.skills??[]).map(e=>({id:e.skillId,name:e.skillName,iconUrl:e.iconUrl,description:e.skillDescription}));u.setFieldsValue({icon:e.data.iconUrl||a.iconUrl||`https://ai-copilot.cos.clife.cn/web-agent-paas/assets/images/app-H"
+        }
+      ],
+      "unconfirmed": [
+        "运行时参数值、后端实际响应与完整schema未验证"
+      ],
+      "route_component_export": "default"
+    },
+    {
+      "page": "agent-skill",
+      "route": "/agent/agent-skill",
+      "entry": "agent-skill-BfEINSto.js",
+      "exports": {
+        "default": "q"
+      },
+      "queries": [
+        {
+          "role": "list",
+          "method": "POST",
+          "url": "/decision/agent-microapp/skill/getPage",
+          "params": {
+            "pageNum": "t; first=1",
+            "pageSize": "z",
+            "skillName": "r || undefined",
+            "industryTagName": "i"
+          },
+          "response_consumed": "errCode===0; data:{records,pageNum,pageSize,total}",
+          "function": {
+            "module": "skill-manage-CXZqT_SD.js",
+            "export": "l",
+            "local": "a",
+            "definition": "a=e=>r({url:`${n}/skill/getPage`,method:`post`,data:e}),o=e=>r({url:`${n}/skill/create`,method:`post`,data:e}),s=e=>r({url:`${n}/skill/findById`,method:`get`,data:e}),c=e=>{let t=new FormData;return t.append(`file`,e.file),r({url:`${n}/skill/uploadSkill`,method:`post`,data:t,headers:{\"Content-Type\":`multipart/form-data`}})},l=e=>r({url:`${i}/agent-mcp/mcpManage/api/listPage`,method:`get`,data:e}),u=e=>r({url:`${n}/skill/version/enable`,method:`post`,data:e}),d=e=>r({url:`${n}/skill/version/add`,"
+          },
+          "caller_context": "initial`:`more`;t===1&&v([]),J(a);try{let{errCode:e,data:n}=await C({pageNum:t,pageSize:z,skillName:r||void 0,industryTagName:i})||{};if(e===0&&n){let e=n.records||[],r=Number(n.pageNum??t)||1,i=Number(n.pageSize??z)||z,a=Number(n.total??e.length)||0;R(r),B(i),W(a),v(t=>r===1?e:[...t,...e])}else R(1),W(0),v([])}catch(e){console.error(`获取技能列表失败`,e),R(1),W(0),v([])}finally{J(`idle`)}},[n,L,z,o]);(0,V.useEffect)(()=>{X({pageNum:1})},[]);let ae=(0,V.useCallback)(e=>{u(e),X({pageNum:1,skillName:e})},"
+        },
+        {
+          "role": "detail",
+          "method": "GET",
+          "url": "/decision/agent-microapp/skill/findById",
+          "params": {
+            "skillId": "n.skillId"
+          },
+          "response_consumed": "errCode===0; data.versionList优先state===1",
+          "function": {
+            "module": "skill-manage-CXZqT_SD.js",
+            "export": "c",
+            "local": "s",
+            "definition": "s=e=>r({url:`${n}/skill/findById`,method:`get`,data:e}),c=e=>{let t=new FormData;return t.append(`file`,e.file),r({url:`${n}/skill/uploadSkill`,method:`post`,data:t,headers:{\"Content-Type\":`multipart/form-data`}})},l=e=>r({url:`${i}/agent-mcp/mcpManage/api/listPage`,method:`get`,data:e}),u=e=>r({url:`${n}/skill/version/enable`,method:`post`,data:e}),d=e=>r({url:`${n}/skill/version/add`,method:`post`,data:e}),f=e=>r({url:`${n}/skill/version/update`,method:`post`,data:e}),p=e=>r({url:`${n}/skill/u"
+          },
+          "caller_context": "killId){l.resetFields(),f([]),_([]);return}(async()=>{try{j(!0);let e=await b({skillId:n.skillId});if(e?.errCode!==0||!e?.data){m.error(e?.errMessage||`获取 Skill 详情失败`),t();return}let r=e.data,i=r.versionList?.find(e=>e.state===1)||r.versionList?.[0];l.setFieldsValue({skillName:r.skillName,description:r.description,icon:r.icon,industryList:(r.industryList??[]).map(e=>Number(e.tagCode)).filter(e=>!Number.isNaN(e))}),f((i?.skillList??[]).map(e=>({path:e.path,skillName:e.versionName??e.skillName,pro"
+        }
+      ],
+      "unconfirmed": [
+        "运行时参数值、后端实际响应与完整schema未验证"
+      ],
+      "route_component_export": "default"
+    },
+    {
+      "page": "mcp-service",
+      "route": "/agent/mcp-service",
+      "entry": "mcp-service-BeVJ9oKQ.js",
+      "exports": {
+        "default": "re"
+      },
+      "queries": [
+        {
+          "role": "list",
+          "method": "GET",
+          "url": "/decision/agent-mcp/mcpManage/api/listPage",
+          "params": {
+            "pageNum": "t; first=1",
+            "pageSize": "$",
+            "mcpServerName": "n"
+          },
+          "response_consumed": "errCode===0 || code===0; data.records||data.data; data.total||data.totalSize; data.pageNum",
+          "function": {
+            "module": "page-config-BZC948Vm.js",
+            "export": "h",
+            "local": "s",
+            "definition": "s=e=>t(`get`,`${r}/listPage`,e),c=e=>t(`delete`,`${r}/delete/${e.compId}`,{}),l=e=>t(`get`,`${r}/getById/${e}`,{}),u=e=>t(`get`,`${r}/getMcpToolDetailById/${e}`,{}),d=e=>t(`get`,`${r}/release`,e),f=e=>t(`get`,`${i}/getByMcpServerIdPage/${e.mcpServerId}`,e),p=e=>t(`post`,`${i}/enableTool?id=${e.id}`,{}),m=e=>t(`post`,`${i}/disableTool?id=${e.id}`,{}),h=e=>t(`delete`,`${i}/delete/${e.id}`,{}),g=e=>t(`get`,`${i}/getById/${e}`,{}),_=e=>t(`post`,`${i}/add`,e),v=e=>t(`put`,`${i}/update`,e),y=e=>t(`pos"
+          },
+          "caller_context": ",l(t===1?`initial`:`more`);try{let{data:e,errCode:i,code:o}=await P({pageNum:t,pageSize:$,mcpServerName:n});if((i===0||o===0)&&e){let n=e.records||e.data||[],i=e.total||e.totalSize||0,o=e.pageNum||t;n.length?(r(o),s(i),a(e=>o===1?n:[...e,...n])):o===1&&(a([]),r(1),s(0))}else r(1),s(0),a([])}catch(e){console.error(`获取 MCP 服务列表失败:`,e),r(1),s(0),a([])}finally{l(`idle`),d.current=!1}},[]),p=(0,H.useMemo)(()=>E(e=>f({pageNum:1,mcpServerName:e}),600),[f]);(0,H.useEffect)(()=>()=>{p.abort?.()},[p]),(0,"
+        }
+      ],
+      "unconfirmed": [
+        "运行时参数值、后端实际响应与完整schema未验证"
+      ],
+      "available_detail_export": {
+        "method": "GET",
+        "url": "/decision/agent-mcp/mcpManage/api/getById/${id}",
+        "params": "路径参数id",
+        "function": {
+          "module": "page-config-BZC948Vm.js",
+          "export": "u",
+          "local": "l",
+          "definition": "l=e=>t(`get`,`${r}/getById/${e}`,{}),u=e=>t(`get`,`${r}/getMcpToolDetailById/${e}`,{}),d=e=>t(`get`,`${r}/release`,e),f=e=>t(`get`,`${i}/getByMcpServerIdPage/${e.mcpServerId}`,e),p=e=>t(`post`,`${i}/enableTool?id=${e.id}`,{}),m=e=>t(`post`,`${i}/disableTool?id=${e.id}`,{}),h=e=>t(`delete`,`${i}/delete/${e.id}`,{}),g=e=>t(`get`,`${i}/getById/${e}`,{}),_=e=>t(`post`,`${i}/add`,e),v=e=>t(`put`,`${i}/update`,e),y=e=>t(`post`,`${i}/addBatchByNacos`,e),b=e=>t(`get`,`${i}/getMcpServerList`,e),x=e=>t(`g"
+        },
+        "confirmation": "声明已确认；本次未分析对应详情entry，实际调用及响应未确认"
+      },
+      "route_component_export": "default"
+    },
+    {
+      "page": "plugin-manage",
+      "route": "/agent/plugin",
+      "entry": "plugin-manage-Dw1688ak.js",
+      "exports": {
+        "default": "Y"
+      },
+      "queries": [
+        {
+          "role": "list",
+          "method": "POST",
+          "url": "/decision/agent-microapp/component/page",
+          "params": {
+            "pageNum": "t; first=1",
+            "pageSize": 36,
+            "compName": "n",
+            "releaseChannel": 0
+          },
+          "response_consumed": "errCode===0 || code===0; data.records||data.data; data.total||data.totalSize; data.pageNum",
+          "function": {
+            "module": "intelligentEngine-BhRFRjx8.js",
+            "export": "D",
+            "local": "o",
+            "definition": "function o(t){return e(`post`,`/agent-microapp/component/page`,t)}async function s(t){return e(`post`,`/agent-microapp/component/add`,t)}async function c(t){return e(`post`,`/agent-microapp/component/update`,t)}async function l(t){return e(`post`,`/agent-microapp/component/deleteById`,t)}async function u(t){return e(`get`,`/agent-microapp/dict/sysComp`,t)}async function d(t){return e(`get`,`/agent-microapp/dict/getKnowledgeParam?runModel=${t}`)}async function f(t){return e(`get`,`/agent-microapp"
+          },
+          "caller_context": ",l(t===1?`initial`:`more`);try{let{data:e,errCode:i,code:o}=await C({pageNum:t,pageSize:U,compName:n,releaseChannel:0});if((i===0||o===0)&&e){let n=e.records||e.data||[],i=e.total||e.totalSize||0,o=e.pageNum||t;if(n.length){let e=I(n,`normal`);r(o),s(i),a(t=>o===1?e:[...t,...e])}else o===1&&(a([]),r(1),s(0))}else r(1),s(0),a([])}catch(e){console.error(`获取常规插件列表失败:`,e),r(1),s(0),a([])}finally{l(`idle`),d.current=!1}},[]),p=(0,M.useMemo)(()=>v(e=>f({pageNum:1,compName:e}),600),[f]);(0,M.useEffect)"
+        },
+        {
+          "role": "detail",
+          "method": "GET",
+          "url": "/decision/agent-microapp/component/get",
+          "params": {
+            "id": "e.compId"
+          },
+          "response_consumed": "errCode===0; data为插件详情",
+          "function": {
+            "module": "intelligentEngine-BhRFRjx8.js",
+            "export": "E",
+            "local": "f",
+            "definition": "function f(t){return e(`get`,`/agent-microapp/component/get`,t)}async function p(t){return e(`post`,`/agent-microapp/microApp/findById`,t)}async function m(t){return e(`post`,`/agent-microapp/microAppVersion/update`,t)}async function h(t){return e(`post`,`/agent-microapp/microAppVersion/test`,t)}async function g(t){return e(`post`,`/agent-microapp/microAppVersion/findById`,t)}async function _(t){return e(`post`,`/agent-microapp/microAppVersion/disable`,t)}async function v(t){return e(`post`,`/ag"
+          },
+          "caller_context": "{t}常规插件失败:`,e)}return!1},[e]),d=(0,M.useCallback)(async e=>{try{let t=await w({id:e.compId});t?.errCode===0&&(r(t.data),s(!0))}catch(e){console.error(`编辑常规插件失败:`,e)}},[]),f=(0,M.useCallback)(e=>{u.confirm({title:`确定删除该插件?`,onOk:()=>c(`delete`,{compId:e.compId})})},[c]),p=(0,M.useCallback)(e=>{u.confirm({title:`下架插件`,content:`下架插件后，配置智能体时将无法使用该插件，请谨慎操作！`,onOk:()=>c(`down`,{compId:e.compId})})},[c]),m=(0,M.useCallback)(async()=>{a(!0)},[]);return{currentData:n,onLineOpen:i,setOnlineOpen:a,pluginFo"
+        }
+      ],
+      "unconfirmed": [
+        "运行时参数值、后端实际响应与完整schema未验证"
+      ],
+      "route_component_export": "default"
+    },
+    {
+      "page": "prompt-word-library",
+      "route": "/agent/prompt-word-library",
+      "entry": "prompt-word-library-vaeYAx4R.js",
+      "exports": {
+        "a": "U",
+        "i": "K",
+        "n": "$",
+        "o": "F",
+        "r": "Y",
+        "s": "j",
+        "t": "Q"
+      },
+      "queries": [
+        {
+          "role": "list",
+          "method": "POST",
+          "url": "/decision/agent-microapp/promptTemplate/findListByCondition",
+          "params": {
+            "tenantCode": "user?.tenant?.tenantCode",
+            "filters": "...g，初始{}；promptLabel数组经join(\",\")变字符串，其他表单字段原样透传"
+          },
+          "response_consumed": "data为数组，前端转{data:{records:data,total:data.length}}",
+          "function": {
+            "module": "prompt-word-library-vaeYAx4R.js",
+            "export": "s",
+            "local": "j",
+            "definition": "j=(e={})=>T(`post`,`/agent-microapp/promptTemplate/findListByCondition`,e),M=(e={})=>T(`post`,`/agent-microapp/promptLabel/findListByCondition`,e),N=(e={})=>T(`post`,`/agent-microapp/promptLabel/create`,e),P=(e={})=>T(`post`,`/agent-microapp/promptTemplate/deleteById`,e),F=(e={})=>T(`post`,`/agent-microapp/promptTemplate/create`,e),I=(e={})=>T(`post`,`/agent-microapp/promptTemplate/update`,e),L=(e={})=>T(`post`,`/agent-microapp/promptTemplate/findById`,e),R={form_container:`_form_container_1b5gt"
+          },
+          "caller_context": "制成功`))},[p]),H=(0,A.useCallback)(async()=>{try{c(!0);let e=(await j({...g,tenantCode:t?.tenant?.tenantCode}))?.data||[];return{data:{records:e,total:e.length}}}catch(e){return console.log(e),{data:{records:[],total:0}}}finally{c(!1)}},[g,t?.tenant?.tenantCode]),U=(0,A.useMemo)(()=>[{title:`标题`,dataIndex:`promptName`,width:220,ellipsis:!0},{title:`概述`,dataIndex:`description`,width:260,ellipsis:!0,render:(e,t)=>(0,z.jsx)(d.Text,{style:{maxWidth:260},ellipsis:{tooltip:t.description},children:t.desc"
+        }
+      ],
+      "unconfirmed": [
+        "运行时参数值、后端实际响应与完整schema未验证"
+      ],
+      "filter_evidence": "tate)(!1),[l,u]=(0,A.useState)(Date.now()),[p,m]=(0,A.useState)(null),[g,b]=(0,A.useState)({}),T=()=>{a.current?.open()},M=(0,A.useCallback)(e=>({...e,promptLabel:e?.promptLabel?.length?e.promptLabel.join(`,`):void 0}),[]),N=(0,A.useCallback)(()=>{b(M(e.getFieldsValue()))},[M,e]),F=(0,A.useCallback)(()=>{o.current?.reload()},[]),I=(0,A.useCallback)(e=>{X({title:`确定要删除该提示词吗?`,icon:(0,z.jsx)(y,{}),onOk:async()=>{let t=await P({promptId:e});if(t?.errCode!==0)return v.error(t?.msg);v.success(`删除成功`)",
+      "available_detail_export": {
+        "method": "POST",
+        "url": "/decision/agent-microapp/promptTemplate/findById",
+        "params": "函数e={}原样透传；id字段未确认",
+        "function": {
+          "module": "prompt-word-library-vaeYAx4R.js",
+          "local": "L",
+          "export": null,
+          "definition": "ate`,e),I=(e={})=>T(`post`,`/agent-microapp/promptTemplate/update`,e),L=(e={})=>T(`post`,`/agent-microapp/promptTemplate/findById`,e),R={form_container:`_form_container_1b5gt_1`},z=r(),{TextArea:B}=a,V=(0,A.forwardRef)(({open:e=!1,onSuccess:t,onAddLabelSuccess:n},r)=>{let[i,a]=(0,A.useState)(e),[o,s]=(0,A.useState)(),c=()=>{a(!1)},l=e=>{a(!0),s(e)};return(0,A.useImperativeHandle)(r,()=>({open:l,close:c}),[]),i&&(0,z.jsx)(H,{open:i,promptWordId:o,onClose:c,onSuccess:t,onAddLabelSuccess:n})}),H=(0"
+        },
+        "confirmation": "未直接导出，实际调用及响应未确认"
+      },
+      "route_component_export": "r"
+    },
+    {
+      "page": "knowledge",
+      "route": "/agent/knowledge",
+      "entry": "knowledge-Pvt-H7Zx.js",
+      "exports": {
+        "default": "Se"
+      },
+      "queries": [
+        {
+          "role": "list",
+          "method": "POST",
+          "url": "/decision/agent-kg/database/list",
+          "params": {
+            "name": "\"\"；服务层默认input?.name ?? \"\"",
+            "baseType": "e；服务层将null/undefined设为null"
+          },
+          "response_consumed": "code===0; data为知识库数组，名称过滤在本地",
+          "function": {
+            "module": "knowledge-B15iS6D5.js",
+            "export": "u",
+            "local": "l",
+            "definition": "l=t=>e({method:`post`,url:`${n}/list`,data:{name:t?.name??``,...t?.baseType==null?{baseType:null}:{baseType:t.baseType}}}),u=t=>e({method:`post`,url:`${n}/baseDetails`,data:{baseId:t}}),d=t=>e({method:`post`,url:`${r}/list`,data:{baseId:t.baseId,name:t.name,extension:t.extension,status:t.status}}),f=t=>e({method:`post`,url:`${r}/getInfoList`,data:t}),p=t=>e({method:`post`,url:`${n}/update`,data:t}),m=t=>e({method:`post`,url:`${n}/delete`,data:{baseId:t.baseId}}),h=t=>e({method:`post`,url:`${i}/c"
+          },
+          "caller_context": "k)(async(e=null)=>{i(!0),l(e),s.current.name=null;try{let n=await M({baseType:e,name:``});n.code===0&&(s.current.data=n.data||[],t.submit())}finally{i(!1)}},[t]),b=(0,B.useCallback)(async()=>{await y(c)},[y,c]),w=(0,B.useCallback)(async()=>{try{let e=await S.getOrgList({orgTreeFormat:!0,returnType:2}),t=await S.getTenantList({pageRows:1e3,pageIndex:1});m(e||[]),g(xe(t?.list||[],u?.tenant?.tenantCode)||[])}catch(e){console.error(`获取机构列表和租户列表失败:`,e)}},[u]);(0,B.useEffect)(()=>{y(),w()},[y,w]);let "
+        }
+      ],
+      "unconfirmed": [
+        "运行时参数值、后端实际响应与完整schema未验证"
+      ],
+      "available_detail_export": {
+        "method": "POST",
+        "url": "/decision/agent-kg/database/baseDetails",
+        "params": "服务层将单一入参包为{baseId:入参}",
+        "function": {
+          "module": "knowledge-B15iS6D5.js",
+          "export": "l",
+          "local": "u",
+          "definition": "u=t=>e({method:`post`,url:`${n}/baseDetails`,data:{baseId:t}}),d=t=>e({method:`post`,url:`${r}/list`,data:{baseId:t.baseId,name:t.name,extension:t.extension,status:t.status}}),f=t=>e({method:`post`,url:`${r}/getInfoList`,data:t}),p=t=>e({method:`post`,url:`${n}/update`,data:t}),m=t=>e({method:`post`,url:`${n}/delete`,data:{baseId:t.baseId}}),h=t=>e({method:`post`,url:`${i}/credential`,data:t}),g=t=>e({method:`post`,url:`${r}/upload`,params:{baseId:t.baseId},data:t.file,headers:{\"Content-Type\":`m"
+        },
+        "confirmation": "声明已确认；本次未分析对应详情entry，实际调用及响应未确认"
+      },
+      "route_component_export": "default"
+    },
+    {
+      "page": "super-agent",
+      "route": "/agent/super-agent",
+      "entry": "super-agent-DC1upGdv.js",
+      "exports": {
+        "default": "De"
+      },
+      "queries": [
+        {
+          "role": "initialization",
+          "method": "GET",
+          "url": "/decision/agent-microapp/superAgent/config/detail",
+          "params": {
+            "microAppId": "e",
+            "microAppVersionId": "t"
+          },
+          "response_consumed": "data:{appInfo,config}",
+          "function": {
+            "module": "app-super-agent-DMsaDZI3.js",
+            "export": "t",
+            "local": "r",
+            "definition": "r=e=>t({method:`get`,url:`${n}/detail`,data:e}),i=e=>t({method:`post`,url:`${n}/save`,data:e}),a=e=>t({method:`post`,url:`${n}/publish/submit`,data:e}),o=e=>t({method:`post`,url:`${n}/publish/suggestVersion`,data:e});export{o as i,i as n,a as r,r as t};"
+          },
+          "caller_context": "s=(0,B.useCallback)(async()=>{if(!e||!t){o(!1);return}try{let{data:a}=await P({microAppId:e,microAppVersionId:t}),o=a?.appInfo||null,s=a?.config||null;r(o),i(s),o&&n(o)}finally{o(!1)}},[e,t,r,i,n]);return(0,B.useEffect)(()=>{o(!0),s()},[s]),(0,B.useEffect)(()=>()=>{n({}),r(null),i(null)},[r,i,n]),{fetchAppInfo:s,initialLoading:a}},Te=e=>{let{microAppId:t,microAppVersionId:n,config:r}=e;return{saveSuperAgentConfig:(0,B.useCallback)(async()=>{let e=ge(t,n);if(!e)throw Error(`应用信息不存在`);return M(me("
+        }
+      ],
+      "unconfirmed": [
+        "运行时参数值、后端实际响应与完整schema未验证"
+      ],
+      "route_component_export": "default"
+    },
+    {
+      "page": "standard-agent",
+      "route": "/agent/standard-agent",
+      "entry": "standard-agent-BeJtG62a.js",
+      "exports": {
+        "default": "na"
+      },
+      "queries": [
+        {
+          "role": "initialization",
+          "method": "POST",
+          "url": "/decision/agent-microapp/microAppVersion/findById",
+          "params": {
+            "id": "e:microAppVersionId"
+          },
+          "response_consumed": "success===true; data.data为JSON配置; microAppId/microAppName/description映射为agentId/agentName/agentDesc",
+          "function": {
+            "module": "intelligentEngine-BhRFRjx8.js",
+            "export": "W",
+            "local": "g",
+            "definition": "function g(t){return e(`post`,`/agent-microapp/microAppVersion/findById`,t)}async function _(t){return e(`post`,`/agent-microapp/microAppVersion/disable`,t)}async function v(t){return e(`post`,`/agent-microapp/microAppVersion/enable`,t)}async function y(t){return e(`post`,`/agent-microapp/component/release`,t)}async function b(t){return e(`post`,`/agent-microapp/component/downComp`,t)}async function x(t){return e(`get`,`/agent-microapp/microAppRelease/listAuditLog`,t)}async function S(t){return "
+          },
+          "caller_context": "f(!e){console.warn(`microAppVersionId 未设置，跳过获取应用信息`);return}try{let t=await yt({id:e});t.success&&t.data&&r(o(t.data))}catch(e){console.error(`获取应用信息失败:`,e)}},[e,r,o]);return(0,L.useEffect)(()=>{a()},[]),(0,L.useEffect)(()=>{i&&i?.length&&s()},[i]),(0,L.useEffect)(()=>()=>{r({})},[r]),{microAppInfo:n,setMicroAppInfo:r,fetchAppInfo:s}};x();var Br=e=>{let{microAppVersionId:t,saveData:n,publishAPI:r,unpublishAPI:i,onPublishSuccess:a,onUnpublishSuccess:o}=e,{loading:s,run:c}=ot(async e=>{if(!t){P.er"
+        },
+        {
+          "role": "initialization",
+          "method": "GET",
+          "url": "/decision/paas-llm/v1/models/available/list",
+          "params": {
+            "modelType": "TEXT"
+          },
+          "response_consumed": "code===0; data为模型数组",
+          "function": {
+            "module": "intelligentEngine-BhRFRjx8.js",
+            "export": "B",
+            "local": "A",
+            "definition": "function A(t){return e(`get`,`/paas-llm/v1/models/available/list`,t)}async function j(t){return e(`post`,`/agent-microapp/compExe/stopDebugComp`,t)}async function M(t){return e(`get`,`/agent-microapp/microApp/findIsFistQuy`,t)}async function N(t){return e(`post`,`/agent-microapp/microApp/autoGeneratePic`,t)}async function P(t){return e(`post`,`/agent-microapp/microAppVersion/aiAutoGenConfig`,t)}async function F(t){return e(`post`,`/agent-microapp/microApp/optimizePrompt`,t)}async function I(t,n)"
+          },
+          "caller_context": "icroAppInfo:n,setMicroAppInfo:r,modelList:i}=Lt(),{runAsync:a}=ot(()=>_t({modelType:`TEXT`}),{manual:!0,onSuccess:e=>{e.code===0&&e.data&&t(e.data)}}),o=(0,L.useCallback)(e=>{try{let t={};if(e.data)try{t=JSON.parse(e.data)}catch(e){console.error(`解析配置 JSON 失败:`,e)}if(t={...t,agentId:e.microAppId,agentName:e.microAppName,agentDesc:e.description},!t.llmModelNode&&i?.length>0){let e=i[0];t.llmModelNode={type:`LLMNode`,data:{model:`${e.modelCode}#${e.supplierCode}`,inParams:[]}}}return t.knNode?t.kn"
+        }
+      ],
+      "unconfirmed": [
+        "运行时参数值、后端实际响应与完整schema未验证"
+      ],
+      "route_component_export": "default"
+    },
+    {
+      "page": "no-code-chat",
+      "route": "/agent/no-code-chat",
+      "entry": "no-code-chat-4EydMoQm.js",
+      "exports": {
+        "default": "NocodeAgent"
+      },
+      "queries": [
+        {
+          "role": "initialization",
+          "method": "POST",
+          "url": "/decision/agent-microapp/microAppVersion/findById",
+          "params": {
+            "id": "p:microAppVersionId"
+          },
+          "response_consumed": "errCode===0; data为版本对象，含updateDate",
+          "function": {
+            "module": "intelligentEngine-BhRFRjx8.js",
+            "export": "W",
+            "local": "g",
+            "definition": "function g(t){return e(`post`,`/agent-microapp/microAppVersion/findById`,t)}async function _(t){return e(`post`,`/agent-microapp/microAppVersion/disable`,t)}async function v(t){return e(`post`,`/agent-microapp/microAppVersion/enable`,t)}async function y(t){return e(`post`,`/agent-microapp/component/release`,t)}async function b(t){return e(`post`,`/agent-microapp/component/downComp`,t)}async function x(t){return e(`get`,`/agent-microapp/microAppRelease/listAuditLog`,t)}async function S(t){return "
+          },
+          "caller_context": "(`span`,{children:`完成`})}}]),x(!0)},D=async()=>{let{errCode:e,data:t}=await getMicroAppVersionDetail({id:p});e===0&&t&&(a(t),r(t.updateDate),findIsFistQuy({runMode:g}).then(e=>{e?.errCode===0&&e?.data===1&&E()}))},O=async e=>{let t=T?.current?.getFieldsValue(),{errCode:n}=await updataMicroAppVersion({microAppVersionId:p,microAppId:m,data:JSON.stringify(t),runMode:g});n===0&&(e&&staticMethods.success(`保存成功`),r(hooks(new Date().getTime()).format(`YYYY-MM-DD HH:mm:ss`)))},k=e=>{let{time:t,removeSav"
+        },
+        {
+          "role": "initialization",
+          "method": "GET",
+          "url": "/decision/agent-microapp/dict/list",
+          "params": {
+            "type": "zeroCodePlugin"
+          },
+          "response_consumed": "errCode===0; data为字典数组",
+          "function": {
+            "module": "intelligentEngine-BhRFRjx8.js",
+            "export": "M",
+            "local": "w",
+            "definition": "function w(t){return e(`get`,`/agent-microapp/dict/list`,t)}async function T(t){return e(`post`,`/agent-kg/database/getUserDataBase`,t)}async function E(t){return e(`post`,`/agent-kg/database/selectPaasDataBaseLabels`,t)}async function D(t,n){return e(`post`,`/agent-microapp/compExe/debugComp`,t,n)}async function O(t){return e(`get`,`/agent-microapp/dict/compList`,t)}async function k(t){return e(`get`,`/agent-microapp/component/canvasCompList`,t)}async function A(t){return e(`get`,`/paas-llm/v1/"
+          },
+          "caller_context": "==2||(a(i+1),D.current?.add(),t())},j=async()=>{let{errCode:e,data:t}=await getDictList({type:`zeroCodePlugin`});e===0&&t&&s(t)},M=async()=>{let{code:e,data:t}=await getUserDataBase();return e===0&&t?t:[]},N=async()=>{let{errCode:e,data:n}=await getDefaultcompList({type:`default_bigModel`});e===0&&n&&n.length&&(E(n),r?.current?.getFieldValue(`compSysCode`)?t({time:0,removeSaveFlag:!0}):(r?.current?.setFieldValue(`compSysCode`,n[0].compCode),t({time:0})))},P=()=>{l(!0),aiAutoGenConfig({descriptio"
+        },
+        {
+          "role": "initialization",
+          "method": "GET",
+          "url": "/decision/agent-microapp/dict/compList",
+          "params": {
+            "type": "default_bigModel"
+          },
+          "response_consumed": "errCode===0; data数组，使用compCode",
+          "function": {
+            "module": "intelligentEngine-BhRFRjx8.js",
+            "export": "j",
+            "local": "O",
+            "definition": "function O(t){return e(`get`,`/agent-microapp/dict/compList`,t)}async function k(t){return e(`get`,`/agent-microapp/component/canvasCompList`,t)}async function A(t){return e(`get`,`/paas-llm/v1/models/available/list`,t)}async function j(t){return e(`post`,`/agent-microapp/compExe/stopDebugComp`,t)}async function M(t){return e(`get`,`/agent-microapp/microApp/findIsFistQuy`,t)}async function N(t){return e(`post`,`/agent-microapp/microApp/autoGeneratePic`,t)}async function P(t){return e(`post`,`/ag"
+          },
+          "caller_context": "serDataBase();return e===0&&t?t:[]},N=async()=>{let{errCode:e,data:n}=await getDefaultcompList({type:`default_bigModel`});e===0&&n&&n.length&&(E(n),r?.current?.getFieldValue(`compSysCode`)?t({time:0,removeSaveFlag:!0}):(r?.current?.setFieldValue(`compSysCode`,n[0].compCode),t({time:0})))},P=()=>{l(!0),aiAutoGenConfig({description:f}).then(e=>{if(l(!1),e.errCode===0&&e.data){let{defaultAnswerList:t}=e.data;t&&(e.data.defaultAnswerList=t.map(e=>({defaultAnswer:e}))),e.data.des=f,g([...m,e.data]),r"
+        },
+        {
+          "role": "initialization",
+          "method": "POST",
+          "url": "/decision/agent-kg/database/getUserDataBase",
+          "params": {},
+          "response_consumed": "code===0; data为知识库数组",
+          "function": {
+            "module": "intelligentEngine-BhRFRjx8.js",
+            "export": "et",
+            "local": "T",
+            "definition": "function T(t){return e(`post`,`/agent-kg/database/getUserDataBase`,t)}async function E(t){return e(`post`,`/agent-kg/database/selectPaasDataBaseLabels`,t)}async function D(t,n){return e(`post`,`/agent-microapp/compExe/debugComp`,t,n)}async function O(t){return e(`get`,`/agent-microapp/dict/compList`,t)}async function k(t){return e(`get`,`/agent-microapp/component/canvasCompList`,t)}async function A(t){return e(`get`,`/paas-llm/v1/models/available/list`,t)}async function j(t){return e(`post`,`/ag"
+          },
+          "caller_context": "ype:`zeroCodePlugin`});e===0&&t&&s(t)},M=async()=>{let{code:e,data:t}=await getUserDataBase();return e===0&&t?t:[]},N=async()=>{let{errCode:e,data:n}=await getDefaultcompList({type:`default_bigModel`});e===0&&n&&n.length&&(E(n),r?.current?.getFieldValue(`compSysCode`)?t({time:0,removeSaveFlag:!0}):(r?.current?.setFieldValue(`compSysCode`,n[0].compCode),t({time:0})))},P=()=>{l(!0),aiAutoGenConfig({description:f}).then(e=>{if(l(!1),e.errCode===0&&e.data){let{defaultAnswerList:t}=e.data;t&&(e.data."
+        }
+      ],
+      "unconfirmed": [
+        "运行时参数值、后端实际响应与完整schema未验证"
+      ],
+      "route_component_export": "default"
+    },
+    {
+      "page": "low-code-chat",
+      "route": "/agent/low-code-chat",
+      "entry": "low-code-chat-D6fop61f.js",
+      "exports": {
+        "default": "Lp"
+      },
+      "queries": [
+        {
+          "role": "initialization",
+          "method": "POST",
+          "url": "/decision/agent-microapp/microAppVersion/findById",
+          "params": {
+            "id": "e；runMode!==3时；runMode===3则补查flow响应.data.microAppVersionId"
+          },
+          "response_consumed": "success===true; data:{data:JSON图配置,beautifyFlag,microAppName,status}",
+          "function": {
+            "module": "intelligentEngine-BhRFRjx8.js",
+            "export": "W",
+            "local": "g",
+            "definition": "function g(t){return e(`post`,`/agent-microapp/microAppVersion/findById`,t)}async function _(t){return e(`post`,`/agent-microapp/microAppVersion/disable`,t)}async function v(t){return e(`post`,`/agent-microapp/microAppVersion/enable`,t)}async function y(t){return e(`post`,`/agent-microapp/component/release`,t)}async function b(t){return e(`post`,`/agent-microapp/component/downComp`,t)}async function x(t){return e(`get`,`/agent-microapp/microAppRelease/listAuditLog`,t)}async function S(t){return "
+          },
+          "caller_context": "tItem(`private_bigModel`,JSON.stringify(e)))},R=async e=>{m(!0);let t=await(C===3?mr:pr)(C===3?{flowId:w,flowUniqueId:T}:{id:e});if(C===3){let e=await pr({id:t?.data?.microAppVersionId});t.data={...t?.data,status:e?.data?.status}}setTimeout(()=>{m(!1)},1200),t.success&&(c(t.data?.beautifyFlag),o(JSON.parse(t.data?.data)),i(t.data),f(t.data?.microAppName),!(C>=2)&&or({runMode:C}).then(e=>{e?.errCode===0&&e?.data===1&&setTimeout(()=>{let e=Fp?.getNodes()||[];if(e.length){let t=e.find(e=>e.type===`"
+        },
+        {
+          "role": "initialization",
+          "method": "POST",
+          "url": "/decision/agent-microapp/flow/getById",
+          "params": {
+            "flowId": "w",
+            "flowUniqueId": "T",
+            "condition": "runMode===3"
+          },
+          "response_consumed": "success===true; data.data为图配置JSON；之后补查版本status",
+          "function": {
+            "module": "intelligentEngine-BhRFRjx8.js",
+            "export": "X",
+            "local": "q",
+            "definition": "function q(t){return e(`post`,`/agent-microapp/flow/getById`,t)}async function J(t){return e(`post`,`/agent-microapp/agent/variable/findByCondition`,t)}async function Y(t){return e(`post`,`/agent-microapp/agent/variable/deleteById`,t)}async function X(t){return e(`post`,`/agent-microapp/agent/variable/create`,t)}async function Z(t){return e(`post`,`/agent-microapp/agent/variable/update`,t)}async function Q(t){return e(`post`,`/agent-microapp/agent/variable/findById`,t)}async function $(t){return"
+          },
+          "caller_context": "tItem(`private_bigModel`,JSON.stringify(e)))},R=async e=>{m(!0);let t=await(C===3?mr:pr)(C===3?{flowId:w,flowUniqueId:T}:{id:e});if(C===3){let e=await pr({id:t?.data?.microAppVersionId});t.data={...t?.data,status:e?.data?.status}}setTimeout(()=>{m(!1)},1200),t.success&&(c(t.data?.beautifyFlag),o(JSON.parse(t.data?.data)),i(t.data),f(t.data?.microAppName),!(C>=2)&&or({runMode:C}).then(e=>{e?.errCode===0&&e?.data===1&&setTimeout(()=>{let e=Fp?.getNodes()||[];if(e.length){let t=e.find(e=>e.type===`"
+        }
+      ],
+      "unconfirmed": [
+        "运行时参数值、后端实际响应与完整schema未验证"
+      ],
+      "route_component_export": "default"
+    },
+    {
+      "page": "task-app",
+      "route": "/agent/task-app",
+      "entry": "task-app-CAGEY0oU.js",
+      "exports": {
+        "default": "yt"
+      },
+      "queries": [
+        {
+          "role": "initialization",
+          "method": "POST",
+          "url": "/decision/agent-microapp/microAppVersion/findById",
+          "params": {
+            "id": "e:microAppVersionId"
+          },
+          "response_consumed": "success===true; data:{microAppName,...}其余字段未确认",
+          "function": {
+            "module": "intelligentEngine-BhRFRjx8.js",
+            "export": "W",
+            "local": "g",
+            "definition": "function g(t){return e(`post`,`/agent-microapp/microAppVersion/findById`,t)}async function _(t){return e(`post`,`/agent-microapp/microAppVersion/disable`,t)}async function v(t){return e(`post`,`/agent-microapp/microAppVersion/enable`,t)}async function y(t){return e(`post`,`/agent-microapp/component/release`,t)}async function b(t){return e(`post`,`/agent-microapp/component/downComp`,t)}async function x(t){return e(`get`,`/agent-microapp/microAppRelease/listAuditLog`,t)}async function S(t){return "
+          },
+          "caller_context": "e=>{e.errCode===0&&(T(p),k.success(`上架成功！`),c(!1))})},[]),T=e=>{a(!0),we({id:e}).then(e=>{setTimeout(()=>{a(!1)},1200),e.success&&(t(e.data),r(e.data?.microAppName))})},ee=e=>(Ie(p,e).then(e=>{e.errCode===0&&k.success(`上传成功！`)}),s.LIST_IGNORE),E=(0,X.useMemo)(()=>[P.REVIEWED,P.REVIEWING].includes(v)||y===I.OFF_SHELF,[v,y]),D=(0,X.useMemo)(()=>[P.REVIEWED,P.REVIEWING].includes(v),[v]),te=(0,X.useCallback)(()=>{h(z.AGENT_APP_VERSION,{state:{microAppId:d,microAppVersionId:p,runMode:m}})},[m,d,p,h])"
+        },
+        {
+          "role": "initialization",
+          "method": "GET",
+          "url": "/decision/agent-microapp/dict/compList",
+          "params": {
+            "type": "default_bigModel"
+          },
+          "response_consumed": "errCode===0; data为模型组件数组",
+          "function": {
+            "module": "intelligentEngine-BhRFRjx8.js",
+            "export": "j",
+            "local": "O",
+            "definition": "function O(t){return e(`get`,`/agent-microapp/dict/compList`,t)}async function k(t){return e(`get`,`/agent-microapp/component/canvasCompList`,t)}async function A(t){return e(`get`,`/paas-llm/v1/models/available/list`,t)}async function j(t){return e(`post`,`/agent-microapp/compExe/stopDebugComp`,t)}async function M(t){return e(`get`,`/agent-microapp/microApp/findIsFistQuy`,t)}async function N(t){return e(`post`,`/agent-microapp/microApp/autoGeneratePic`,t)}async function P(t){return e(`post`,`/ag"
+          },
+          "caller_context": "),n.intentConfidence&&f(!0))},g=async()=>{a(!0);let{errCode:e,data:t}=await Ae({type:`default_bigModel`});e===0&&s(t)},v=(e,t)=>{m({...p,[e]:t})},y=async(t={})=>{a(!0);let{errCode:n}=await je({...p,...t,microAppVersionId:e});a(!1),n===0&&(await h(),k.success(`修改成功`))},b=()=>{r.current?.show(p)},x=()=>{n.current?.show(p)},S=(0,X.useCallback)((t,n)=>je(t===`intention`?{...p,globalNoMatchs:n,microAppVersionId:e}:{...p,...n,microAppVersionId:e}),[]);return(0,X.useEffect)(()=>{g(),h()},[]),(0,Z.jsxs)"
+        }
+      ],
+      "unconfirmed": [
+        "运行时参数值、后端实际响应与完整schema未验证"
+      ],
+      "route_component_export": "default"
+    },
+    {
+      "page": "sop-log",
+      "route": "/agent/sop-log",
+      "entry": "sop-log-Byq24Tls.js",
+      "exports": {
+        "default": "b"
+      },
+      "queries": [
+        {
+          "role": "list",
+          "method": "POST",
+          "url": "/decision/agent-microapp/sopSessionRecord/findByCondition",
+          "params": {
+            "sopId": "S.id",
+            "sessionId": "t",
+            "startTime": "a",
+            "endTime": "o",
+            "pageNum": "r",
+            "pageSize": "i",
+            "microAppId": "S.microAppId",
+            "microAppVersionId": "S.microAppVersionId"
+          },
+          "response_consumed": "success===true; data:{records,total}",
+          "function": {
+            "module": "intelligentEngine-BhRFRjx8.js",
+            "export": "Y",
+            "local": "a",
+            "definition": "function a(t){return e(`post`,`/agent-microapp/sopSessionRecord/findByCondition`,t)}async function o(t){return e(`post`,`/agent-microapp/component/page`,t)}async function s(t){return e(`post`,`/agent-microapp/component/add`,t)}async function c(t){return e(`post`,`/agent-microapp/component/update`,t)}async function l(t){return e(`post`,`/agent-microapp/component/deleteById`,t)}async function u(t){return e(`get`,`/agent-microapp/dict/sysComp`,t)}async function d(t){return e(`get`,`/agent-microapp/"
+          },
+          "caller_context": "`).format(`YYYY-MM-DD HH:mm:ss`));try{let{success:e,data:n}=await h({sopId:S.id,sessionId:t,startTime:a,pageNum:r,microAppId:S.microAppId,microAppVersionId:S.microAppVersionId,pageSize:i,endTime:o})||{};if(e){let{records:e=[],total:t}=n||{};return{data:e,success:!0,total:t}}}catch(e){console.log(e)}}}}),(0,v.jsx)(c,{open:e,title:`调试详情`,width:1e3,onCancel:A,keyboard:!1,cancelText:`关闭`,footer:e=>e.props.children[0],children:(0,v.jsxs)(`div`,{className:`debug-all-box`,children:[(0,v.jsxs)(`div`,{st"
+        },
+        {
+          "role": "detail",
+          "method": "POST",
+          "url": "/decision/agent-microapp/sopLog/findList",
+          "params": {
+            "sessionId": "n",
+            "saasAppId": "r",
+            "sopId": "a"
+          },
+          "response_consumed": "success===true; data为调试记录",
+          "function": {
+            "module": "intelligentEngine-BhRFRjx8.js",
+            "export": "J",
+            "local": "i",
+            "definition": "function i(t){return e(`post`,`/agent-microapp/sopLog/findList`,t)}async function a(t){return e(`post`,`/agent-microapp/sopSessionRecord/findByCondition`,t)}async function o(t){return e(`post`,`/agent-microapp/component/page`,t)}async function s(t){return e(`post`,`/agent-microapp/component/add`,t)}async function c(t){return e(`post`,`/agent-microapp/component/update`,t)}async function l(t){return e(`post`,`/agent-microapp/component/deleteById`,t)}async function u(t){return e(`get`,`/agent-micro"
+          },
+          "caller_context": "hildren:`详情`},`edit`)]}],k=e=>{let{sessionId:n,saasAppId:r,sopId:a}=e;m({sessionId:n,saasAppId:r,sopId:a}).then(e=>{i(!1),e.success&&(t(!0),u(e.data))})},A=()=>{t(!1)};(0,_.useEffect)(()=>{a&&E.current&&(E.current.scrollTop=E.current.scrollHeight+E.current.scrollTop,D.current.scrollTop=D.current.scrollHeight+D.current.scrollTop)},[a]);let j=e=>{x(e),document.querySelector(`#anchor${e}`).scrollIntoView({bahavior:`smooth`,block:`start`})};return(0,v.jsxs)(v.Fragment,{children:[(0,v.jsx)(g,{title:`"
+        }
+      ],
+      "unconfirmed": [
+        "运行时参数值、后端实际响应与完整schema未验证"
+      ],
+      "route_component_export": "default"
+    },
+    {
+      "page": "app-version",
+      "route": "/agent/app-version",
+      "entry": "app-version-Iwp2sV4h.js",
+      "exports": {
+        "default": "$"
+      },
+      "queries": [
+        {
+          "role": "list",
+          "method": "POST",
+          "url": "/decision/agent-microapp/microAppVersion/getVersionPage",
+          "params": {
+            "microAppId": "r",
+            "pageNum": "t; first=1",
+            "pageSize": "e.pageSize||u.pageSize; first=36"
+          },
+          "response_consumed": "success===true; data:{records,current,size,total,pages}",
+          "function": {
+            "module": "src-_hjT3BN9.js",
+            "export": "y",
+            "local": "Ve",
+            "definition": "Ve=e=>V({url:`${B}/microAppVersion/getVersionPage`,method:`post`,data:e}),He=e=>V({url:`${B}/microAppVersion/getMicroAppVersionSdk`,method:`post`,data:e}),Ue=e=>V({url:`${B}/microAppVersion/saveOrUpdateMicroAppVersionSdk`,method:`post`,data:e}),We=e=>V({url:`${B}/file/uploadFile`,method:`post`,data:e});h();var W=e(n()),Ge=(e=ge.LLM)=>{let[t,n]=(0,W.useState)([]),[r,i]=(0,W.useState)(!1),a=(0,W.useCallback)(async()=>{i(!0);try{n((await ye({treeFormat:!0,bizType:e,pageIndex:1,pageRows:1e3}))?.data"
+          },
+          "caller_context": "0):p(!0),m.current=!0;try{o(!0),p(!0);let{success:n,data:i}=await C({microAppId:r,pageNum:t,pageSize:e.pageSize||u.pageSize});if(n&&i){let{records:e,current:t,size:n,total:r,pages:a}=i;d({pageNum:t,pageSize:n,total:r,pages:a}),c(n=>t===1?e||[]:[...n,...e||[]])}}catch(e){console.error(`加载版本列表失败:`,e)}finally{o(!1),p(!1),m.current=!1}},[r,u.pageNum,u.pageSize]),{sdkModalRef:g,handleCardClick:v,handleMenuClick:y,openSDKModal:x}=ae({isPresentationMode:!1,isRenderVersion:!0,updateDataSource:e=>{c(t=>e"
+        }
+      ],
+      "unconfirmed": [
+        "运行时参数值、后端实际响应与完整schema未验证"
+      ],
+      "route_component_export": "default"
+    }
+  ],
+  "limitations": [
+    "响应为调用方消费形状，非服务端完整schema；未实测",
+    "参数值保留源码变量；首屏常量仅标注已确认值"
+  ],
+  "verification": {
+    "idempotent_rerun_downloaded": 0,
+    "protected_file_hashes_unchanged": {
+      "restore.mjs": false,
+      "server.mjs": true,
+      "package.json": true,
+      "captured/assets/js/index.B_LPe2F7.js": true
+    },
+    "prettier_entry_matches": 14,
+    "business_api_called": false,
+    "browser_used": false
+  }
+}

@@ -1,0 +1,17 @@
+Reviewed the fix Niko-Wu left for cherry-picking on October 29 (`git fetch https://github.com/Niko-Wu/magpie fix/oss-batch && git cherry-pick 00adbe64`) and it holds up. I am standing down from my own patch — this is that verification, not a second fix.
+
+**Still valid on today's main** (`667317159`, five gateway commits landed since its base `4534561f`, none touching its lines): the cherry-pick applies with no conflicts and is green.
+
+**Root cause confirmed in the code.** An empty root met none of the existing repairs: `objectSchema` returned early on `len(schema) == 0`, and a literal `{}` fell through the union fold (`!bytes.Contains(schema, []byte("Of\""))`) to go out as it came — in the translated encoders (`chat.go`, `responses.go`, Anthropic's `objectSchema`) and the raw passthrough body alike, so wb2api's 400 code 11129 hit every turn. The repair is exactly the normalization Reign9201 measured: `{}` → `{"type":"object"}` on all four surfaces.
+
+**Why the narrow `emptyObjectRoot` beside `objectSchema` is right:** `objectSchema` also folds a union root, and the Chat/Responses encoders run before a relay is asked — using it there changed the first ask to a relay that would have been refused later anyway (`TestRootUnionFoldedWhereRefused` guards this; I confirmed it stays green).
+
+**Ablation (red before, green after).** Reverting the four call sites while keeping the tests and helpers: `TestEmptyToolSchemaGetsObjectRoot` and `TestEmptyToolSchemaTranslatedToChat` fail — the latter with the reporter's exact shape, an Anthropic `/v1/messages` tool carrying `"input_schema": {}` relayed to a Chat upstream, asked once more with `parameters: {"type":"object"}`. Restored, all three new tests pass. (`TestEmptyToolSchemaBodyGetsObjectRoot` calls `emptyRootsBody` directly, so it stays green under a call-site ablation; the function is still covered by `TestEmptyToolSchemaTranslatedToChat` through the passthrough path.)
+
+**Verification** (macOS 15, Go 1.25.5, cherry-pick on `667317159`): `TestEmptyToolSchema*` + union-family tests green, also under `-race`; `go test -tags nogui -timeout 25m ./internal/gateway/` green in 647s; `gofmt -l internal/gateway` clean; `go vet ./internal/gateway/` clean; `go build ./...` ok. Under `-race` the full suite has one failure, `TestCompactionOverByteCapEveryTime`, which fails identically on pristine `667317159` — pre-existing, unrelated to tools.
+
+**Sibling surfaces checked, none needing the same repair here:** `chat_tool_shape.go` relays whatever schema a client sent rather than authoring one; `undeclared_tools.go`'s stub already carries `{"type":"object","properties":{}}`; `claude_subscription.go`'s bridge fills an empty schema the same way; `gemini_schema.go` writes a type into every untyped schema node (root included) for Gemini models; `kimi_schema.go`, `deepseek_schema.go`, `oneof_schema.go`, `copilot_gemini_schema.go` and `xai_body.go` each patch a different defect (enum/const types, `\0`, oneOf, Copilot's union folding, null `required`) and none lets an empty root through as a tool's parameters.
+
+One residual gap, for whoever picks the commit up: `emptyRootsBody` gates on Chat and Responses, so a raw Anthropic-to-Anthropic passthrough still forwards `"input_schema": {}` as it came — Reign9201 reproduced the 400 on `/v1/messages` too. Every Anthropic-format upstream I know of accepts an empty root, and the translated path is covered, so it did not block this fix; worth a line if the strict-upstream class shows up there.
+
+The commit is Niko-Wu's; I only verified it.

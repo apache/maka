@@ -1,0 +1,5845 @@
+{
+  "errors": [],
+  "labels": [
+    {
+      "baseId": "2096892488262332418",
+      "response": {
+        "code": 0,
+        "data": null,
+        "errCode": null,
+        "msg": "操作成功",
+        "timestamp": 1792045719000
+      }
+    },
+    {
+      "baseId": "2096855842565369858",
+      "response": {
+        "code": 0,
+        "data": null,
+        "errCode": null,
+        "msg": "操作成功",
+        "timestamp": 1792045719000
+      }
+    },
+    {
+      "baseId": "2096852633310441474",
+      "response": {
+        "code": 0,
+        "data": null,
+        "errCode": null,
+        "msg": "操作成功",
+        "timestamp": 1792045719000
+      }
+    },
+    {
+      "baseId": "2096849685096411138",
+      "response": {
+        "code": 0,
+        "data": null,
+        "errCode": null,
+        "msg": "操作成功",
+        "timestamp": 1792045719000
+      }
+    },
+    {
+      "baseId": "2053042207243001858",
+      "response": {
+        "code": 0,
+        "data": null,
+        "errCode": null,
+        "msg": "操作成功",
+        "timestamp": 1792045719000
+      }
+    },
+    {
+      "baseId": "2048942469296054274",
+      "response": {
+        "code": 0,
+        "data": null,
+        "errCode": null,
+        "msg": "操作成功",
+        "timestamp": 1792045720000
+      }
+    },
+    {
+      "baseId": "2046582770244411393",
+      "response": {
+        "code": 0,
+        "data": {
+          "labels": [
+            {
+              "docNum": 1,
+              "labelName": "饮水打卡",
+              "level": 1,
+              "parentId": null,
+              "structureId": "2046581912131756034",
+              "structureName": "候选句",
+              "uid": "89a61b28-f473-4ffb-b5d6-c71b87abf157"
+            },
+            {
+              "docNum": 0,
+              "labelName": "拍照测肤",
+              "level": 1,
+              "parentId": null,
+              "structureId": "2046581912131756034",
+              "structureName": "候选句",
+              "uid": "bb0316db-fe81-4485-8284-cd48bd95f31d"
+            }
+          ],
+          "structureId": "2046581912131756034",
+          "structureName": "候选句"
+        },
+        "errCode": null,
+        "msg": "操作成功",
+        "timestamp": 1792045720000
+      }
+    },
+    {
+      "baseId": "2046576775921295362",
+      "response": {
+        "code": 0,
+        "data": {
+          "labels": [
+            {
+              "docNum": 0,
+              "labelName": "饮水打卡",
+              "level": 1,
+              "parentId": null,
+              "structureId": "2046581912131756034",
+              "structureName": "候选句",
+              "uid": "89a61b28-f473-4ffb-b5d6-c71b87abf157"
+            },
+            {
+              "docNum": 1,
+              "labelName": "拍照测肤",
+              "level": 1,
+              "parentId": null,
+              "structureId": "2046581912131756034",
+              "structureName": "候选句",
+              "uid": "bb0316db-fe81-4485-8284-cd48bd95f31d"
+            }
+          ],
+          "structureId": "2046581912131756034",
+          "structureName": "候选句"
+        },
+        "errCode": null,
+        "msg": "操作成功",
+        "timestamp": 1792045720000
+      }
+    },
+    {
+      "baseId": "2045375782588145665",
+      "response": {
+        "code": 0,
+        "data": null,
+        "errCode": null,
+        "msg": "操作成功",
+        "timestamp": 1792045720000
+      }
+    },
+    {
+      "baseId": "1987701373165936642",
+      "response": {
+        "code": 0,
+        "data": null,
+        "errCode": null,
+        "msg": "操作成功",
+        "timestamp": 1792045720000
+      }
+    },
+    {
+      "baseId": "1987055984708460545",
+      "response": {
+        "code": 0,
+        "data": null,
+        "errCode": null,
+        "msg": "操作成功",
+        "timestamp": 1792045720000
+      }
+    },
+    {
+      "baseId": "1987052380564004866",
+      "response": {
+        "code": 0,
+        "data": null,
+        "errCode": null,
+        "msg": "操作成功",
+        "timestamp": 1792045720000
+      }
+    },
+    {
+      "baseId": "1963505867706990594",
+      "response": {
+        "code": 0,
+        "data": {
+          "labels": [
+            {
+              "docNum": 0,
+              "labelName": "CMD",
+              "level": 1,
+              "parentId": null,
+              "structureId": "1963515071675105282",
+              "structureName": "命令行",
+              "uid": "3aa4c82d-b1a8-4aba-93a3-d3b8c318ffb6"
+            },
+            {
+              "docNum": 0,
+              "labelName": "TERMUX",
+              "level": 1,
+              "parentId": null,
+              "structureId": "1963515071675105282",
+              "structureName": "命令行",
+              "uid": "5f59de76-88a0-4a3f-9a86-756ae5fcbe51"
+            },
+            {
+              "docNum": 0,
+              "labelName": "BASH",
+              "level": 1,
+              "parentId": null,
+              "structureId": "1963515071675105282",
+              "structureName": "命令行",
+              "uid": "facd905d-d9cf-4ded-ac34-a42012b07350"
+            }
+          ],
+          "structureId": "1963515071675105282",
+          "structureName": "命令行"
+        },
+        "errCode": null,
+        "msg": "操作成功",
+        "timestamp": 1792045721000
+      }
+    },
+    {
+      "baseId": "1945685791872684034",
+      "response": {
+        "code": 0,
+        "data": null,
+        "errCode": null,
+        "msg": "操作成功",
+        "timestamp": 1792045721000
+      }
+    },
+    {
+      "baseId": "1945684692549799937",
+      "response": {
+        "code": 0,
+        "data": null,
+        "errCode": null,
+        "msg": "操作成功",
+        "timestamp": 1792045721000
+      }
+    },
+    {
+      "baseId": "1931967279555846145",
+      "response": {
+        "code": 0,
+        "data": null,
+        "errCode": null,
+        "msg": "操作成功",
+        "timestamp": 1792045721000
+      }
+    },
+    {
+      "baseId": "1930533369470951425",
+      "response": {
+        "code": 0,
+        "data": null,
+        "errCode": null,
+        "msg": "操作成功",
+        "timestamp": 1792045721000
+      }
+    },
+    {
+      "baseId": "1930233180000526337",
+      "response": {
+        "code": 0,
+        "data": null,
+        "errCode": null,
+        "msg": "操作成功",
+        "timestamp": 1792045721000
+      }
+    },
+    {
+      "baseId": "1930231487863103490",
+      "response": {
+        "code": 0,
+        "data": null,
+        "errCode": null,
+        "msg": "操作成功",
+        "timestamp": 1792045721000
+      }
+    },
+    {
+      "baseId": "1927198775871463425",
+      "response": {
+        "code": 0,
+        "data": null,
+        "errCode": null,
+        "msg": "操作成功",
+        "timestamp": 1792045721000
+      }
+    },
+    {
+      "baseId": "1927188071206543361",
+      "response": {
+        "code": 0,
+        "data": null,
+        "errCode": null,
+        "msg": "操作成功",
+        "timestamp": 1792045721000
+      }
+    },
+    {
+      "baseId": "1927183209890766850",
+      "response": {
+        "code": 0,
+        "data": null,
+        "errCode": null,
+        "msg": "操作成功",
+        "timestamp": 1792045721000
+      }
+    },
+    {
+      "baseId": "1927173292475736066",
+      "response": {
+        "code": 0,
+        "data": null,
+        "errCode": null,
+        "msg": "操作成功",
+        "timestamp": 1792045722000
+      }
+    },
+    {
+      "baseId": "1926158020834942978",
+      "response": {
+        "code": 0,
+        "data": null,
+        "errCode": null,
+        "msg": "操作成功",
+        "timestamp": 1792045722000
+      }
+    },
+    {
+      "baseId": "1925898050805620738",
+      "response": {
+        "code": 0,
+        "data": null,
+        "errCode": null,
+        "msg": "操作成功",
+        "timestamp": 1792045722000
+      }
+    },
+    {
+      "baseId": "1925773026106990593",
+      "response": {
+        "code": 0,
+        "data": null,
+        "errCode": null,
+        "msg": "操作成功",
+        "timestamp": 1792045722000
+      }
+    },
+    {
+      "baseId": "1925360573766361090",
+      "response": {
+        "code": 0,
+        "data": null,
+        "errCode": null,
+        "msg": "操作成功",
+        "timestamp": 1792045722000
+      }
+    },
+    {
+      "baseId": "1913486923396210690",
+      "response": {
+        "code": 0,
+        "data": null,
+        "errCode": null,
+        "msg": "操作成功",
+        "timestamp": 1792045722000
+      }
+    },
+    {
+      "baseId": "1913486811227938818",
+      "response": {
+        "code": 0,
+        "data": null,
+        "errCode": null,
+        "msg": "操作成功",
+        "timestamp": 1792045722000
+      }
+    }
+  ],
+  "qa": [
+    {
+      "baseId": "2048942469296054274",
+      "response": {
+        "code": 0,
+        "data": [
+          {
+            "answerContent": "我是",
+            "baseId": 2048942469296054300,
+            "docId": null,
+            "enable": 1,
+            "qaId": 773,
+            "qaStatus": 2,
+            "questionContent": "你是谁",
+            "similarQuestion": null,
+            "step": 1
+          },
+          {
+            "answerContent": "PhotoTestSkin",
+            "baseId": 2048942469296054300,
+            "docId": null,
+            "enable": 1,
+            "qaId": 774,
+            "qaStatus": 2,
+            "questionContent": "我要拍照测肤",
+            "similarQuestion": null,
+            "step": 1
+          },
+          {
+            "answerContent": "SkinTestAnalysis",
+            "baseId": 2048942469296054300,
+            "docId": null,
+            "enable": 1,
+            "qaId": 775,
+            "qaStatus": 2,
+            "questionContent": "帮我检测报告解读",
+            "similarQuestion": null,
+            "step": 1
+          },
+          {
+            "answerContent": "SkinCareCheckIn",
+            "baseId": 2048942469296054300,
+            "docId": null,
+            "enable": 1,
+            "qaId": 776,
+            "qaStatus": 2,
+            "questionContent": "帮我护肤打卡",
+            "similarQuestion": null,
+            "step": 1
+          },
+          {
+            "answerContent": "NursingCheckIn",
+            "baseId": 2048942469296054300,
+            "docId": null,
+            "enable": 1,
+            "qaId": 777,
+            "qaStatus": 2,
+            "questionContent": "帮我护理打卡",
+            "similarQuestion": null,
+            "step": 1
+          },
+          {
+            "answerContent": "FoodCheckIn",
+            "baseId": 2048942469296054300,
+            "docId": null,
+            "enable": 1,
+            "qaId": 778,
+            "qaStatus": 2,
+            "questionContent": "帮我饮食打卡",
+            "similarQuestion": null,
+            "step": 1
+          },
+          {
+            "answerContent": "WaterDrinkingCheckIn",
+            "baseId": 2048942469296054300,
+            "docId": null,
+            "enable": 1,
+            "qaId": 779,
+            "qaStatus": 2,
+            "questionContent": "帮我饮水打卡",
+            "similarQuestion": null,
+            "step": 1
+          },
+          {
+            "answerContent": "LifeCheckIn",
+            "baseId": 2048942469296054300,
+            "docId": null,
+            "enable": 1,
+            "qaId": 780,
+            "qaStatus": 2,
+            "questionContent": "帮我生活打卡",
+            "similarQuestion": null,
+            "step": 1
+          },
+          {
+            "answerContent": "MoodCheckIn",
+            "baseId": 2048942469296054300,
+            "docId": null,
+            "enable": 1,
+            "qaId": 781,
+            "qaStatus": 2,
+            "questionContent": "帮我心情打卡",
+            "similarQuestion": null,
+            "step": 1
+          },
+          {
+            "answerContent": "ServiceReportInterpretation",
+            "baseId": 2048942469296054300,
+            "docId": null,
+            "enable": 1,
+            "qaId": 782,
+            "qaStatus": 2,
+            "questionContent": "帮我服务报告解读",
+            "similarQuestion": null,
+            "step": 1
+          },
+          {
+            "answerContent": "SkinTestRecord",
+            "baseId": 2048942469296054300,
+            "docId": null,
+            "enable": 1,
+            "qaId": 783,
+            "qaStatus": 2,
+            "questionContent": "查看我的测肤记录",
+            "similarQuestion": null,
+            "step": 1
+          },
+          {
+            "answerContent": "ProductRecommend",
+            "baseId": 2048942469296054300,
+            "docId": null,
+            "enable": 1,
+            "qaId": 784,
+            "qaStatus": 2,
+            "questionContent": "给我产品推荐",
+            "similarQuestion": null,
+            "step": 1
+          },
+          {
+            "answerContent": "StoreAppointment",
+            "baseId": 2048942469296054300,
+            "docId": null,
+            "enable": 1,
+            "qaId": 785,
+            "qaStatus": 2,
+            "questionContent": "帮我预约门店服务",
+            "similarQuestion": null,
+            "step": 1
+          },
+          {
+            "answerContent": "FeatureConsultation",
+            "baseId": 2048942469296054300,
+            "docId": null,
+            "enable": 1,
+            "qaId": 786,
+            "qaStatus": 2,
+            "questionContent": "功能咨询",
+            "similarQuestion": null,
+            "step": 1
+          },
+          {
+            "answerContent": "PhotoTestSkin",
+            "baseId": 2048942469296054300,
+            "docId": null,
+            "enable": 1,
+            "qaId": 787,
+            "qaStatus": 2,
+            "questionContent": "我要拍照测肤",
+            "similarQuestion": null,
+            "step": 1
+          },
+          {
+            "answerContent": "SkinTestAnalysis",
+            "baseId": 2048942469296054300,
+            "docId": null,
+            "enable": 1,
+            "qaId": 788,
+            "qaStatus": 2,
+            "questionContent": "帮我检测报告解读",
+            "similarQuestion": null,
+            "step": 1
+          },
+          {
+            "answerContent": "SkinCareCheckIn",
+            "baseId": 2048942469296054300,
+            "docId": null,
+            "enable": 1,
+            "qaId": 789,
+            "qaStatus": 2,
+            "questionContent": "帮我护肤打卡",
+            "similarQuestion": null,
+            "step": 1
+          },
+          {
+            "answerContent": "NursingCheckIn",
+            "baseId": 2048942469296054300,
+            "docId": null,
+            "enable": 1,
+            "qaId": 790,
+            "qaStatus": 2,
+            "questionContent": "帮我护理打卡",
+            "similarQuestion": null,
+            "step": 1
+          },
+          {
+            "answerContent": "FoodCheckIn",
+            "baseId": 2048942469296054300,
+            "docId": null,
+            "enable": 1,
+            "qaId": 791,
+            "qaStatus": 2,
+            "questionContent": "帮我饮食打卡",
+            "similarQuestion": null,
+            "step": 1
+          },
+          {
+            "answerContent": "WaterDrinkingCheckIn",
+            "baseId": 2048942469296054300,
+            "docId": null,
+            "enable": 1,
+            "qaId": 792,
+            "qaStatus": 2,
+            "questionContent": "帮我饮水打卡",
+            "similarQuestion": null,
+            "step": 1
+          },
+          {
+            "answerContent": "LifeCheckIn",
+            "baseId": 2048942469296054300,
+            "docId": null,
+            "enable": 1,
+            "qaId": 793,
+            "qaStatus": 2,
+            "questionContent": "帮我生活打卡",
+            "similarQuestion": null,
+            "step": 1
+          },
+          {
+            "answerContent": "MoodCheckIn",
+            "baseId": 2048942469296054300,
+            "docId": null,
+            "enable": 1,
+            "qaId": 794,
+            "qaStatus": 2,
+            "questionContent": "帮我心情打卡",
+            "similarQuestion": null,
+            "step": 1
+          },
+          {
+            "answerContent": "ServiceReportInterpretation",
+            "baseId": 2048942469296054300,
+            "docId": null,
+            "enable": 1,
+            "qaId": 795,
+            "qaStatus": 2,
+            "questionContent": "帮我服务报告解读",
+            "similarQuestion": null,
+            "step": 1
+          },
+          {
+            "answerContent": "SkinTestRecord",
+            "baseId": 2048942469296054300,
+            "docId": null,
+            "enable": 1,
+            "qaId": 796,
+            "qaStatus": 2,
+            "questionContent": "查看我的测肤记录",
+            "similarQuestion": null,
+            "step": 1
+          },
+          {
+            "answerContent": "ProductRecommend",
+            "baseId": 2048942469296054300,
+            "docId": null,
+            "enable": 1,
+            "qaId": 797,
+            "qaStatus": 2,
+            "questionContent": "给我产品推荐",
+            "similarQuestion": null,
+            "step": 1
+          },
+          {
+            "answerContent": "StoreAppointment",
+            "baseId": 2048942469296054300,
+            "docId": null,
+            "enable": 1,
+            "qaId": 798,
+            "qaStatus": 2,
+            "questionContent": "帮我预约门店服务",
+            "similarQuestion": null,
+            "step": 1
+          },
+          {
+            "answerContent": "FeatureConsultation",
+            "baseId": 2048942469296054300,
+            "docId": null,
+            "enable": 1,
+            "qaId": 799,
+            "qaStatus": 2,
+            "questionContent": "功能咨询",
+            "similarQuestion": null,
+            "step": 1
+          }
+        ],
+        "errCode": null,
+        "msg": "操作成功",
+        "timestamp": 1792045720000
+      }
+    }
+  ],
+  "segments": [
+    {
+      "docId": "1952277235183382530",
+      "response": {
+        "code": 0,
+        "data": [],
+        "errCode": 0,
+        "errMessage": "success",
+        "msg": "success",
+        "success": true
+      }
+    },
+    {
+      "docId": "1966705122926678018",
+      "response": {
+        "code": 0,
+        "data": [],
+        "errCode": 0,
+        "errMessage": "success",
+        "msg": "success",
+        "success": true
+      }
+    },
+    {
+      "docId": "1963519531428216833",
+      "response": {
+        "code": 0,
+        "data": [],
+        "errCode": 0,
+        "errMessage": "success",
+        "msg": "success",
+        "success": true
+      }
+    },
+    {
+      "docId": "1963514498154364930",
+      "response": {
+        "code": 0,
+        "data": [
+          {
+            "audioUrl": null,
+            "baseId": "1963505867706990594",
+            "content": "It is strongly suggested to start from these pages because FAQ does not provide tips and tricks about Termux usage.",
+            "createTime": "2025-09-04 16:09:23",
+            "deployVersion": null,
+            "docId": "1963514498154364930",
+            "enable": 1,
+            "imageUrl": null,
+            "segmentId": 4107882,
+            "segmentOrder": 0,
+            "segmentStatus": 2,
+            "size": 115,
+            "step": 1,
+            "thirdPfChunkId": null,
+            "thirdPfDocId": null,
+            "urls": null,
+            "userId": 1094,
+            "version": 0,
+            "videoUrl": null
+          },
+          {
+            "audioUrl": null,
+            "baseId": "1963505867706990594",
+            "content": "User Interface - description of available buttons, menus, etc.\nPackage Management - how to install, remove and upgrade packages.\nTouch Keyboard - Touch keyboard shortcuts and extra keys layout configuration.\nPRoot - Running Linux distributions inside Termux (userspace chroot mode)\nRecover a broken environment - Fixing broken Termux installations.\nSpecial:AllPages - List of the all available Wiki pages.",
+            "createTime": "2025-09-04 16:09:23",
+            "deployVersion": null,
+            "docId": "1963514498154364930",
+            "enable": 1,
+            "imageUrl": null,
+            "segmentId": 4107883,
+            "segmentOrder": 1,
+            "segmentStatus": 2,
+            "size": 405,
+            "step": 1,
+            "thirdPfChunkId": null,
+            "thirdPfDocId": null,
+            "urls": null,
+            "userId": 1094,
+            "version": 0,
+            "videoUrl": null
+          },
+          {
+            "audioUrl": null,
+            "baseId": "1963505867706990594",
+            "content": "You may contribute to Termux project by making pull requests in our Github repositories or by improving Termux Wiki.",
+            "createTime": "2025-09-04 16:09:23",
+            "deployVersion": null,
+            "docId": "1963514498154364930",
+            "enable": 1,
+            "imageUrl": null,
+            "segmentId": 4107884,
+            "segmentOrder": 2,
+            "segmentStatus": 2,
+            "size": 116,
+            "step": 1,
+            "thirdPfChunkId": null,
+            "thirdPfDocId": null,
+            "urls": null,
+            "userId": 1094,
+            "version": 0,
+            "videoUrl": null
+          },
+          {
+            "audioUrl": null,
+            "baseId": "1963505867706990594",
+            "content": "What is Termux\nMain Article: Getting started\nTermux is a terminal emulator for Android OS with its own package ecosystem. There are more than 1000 packages for various purposes, including code editors, compilers, etc.",
+            "createTime": "2025-09-04 16:09:23",
+            "deployVersion": null,
+            "docId": "1963514498154364930",
+            "enable": 1,
+            "imageUrl": null,
+            "segmentId": 4107885,
+            "segmentOrder": 3,
+            "segmentStatus": 2,
+            "size": 217,
+            "step": 1,
+            "thirdPfChunkId": null,
+            "thirdPfDocId": null,
+            "urls": null,
+            "userId": 1094,
+            "version": 0,
+            "videoUrl": null
+          },
+          {
+            "audioUrl": null,
+            "baseId": "1963505867706990594",
+            "content": "Is Termux an emulator\nTermux is an emulator and is not. It does not emulate any system; Programs are executed natively. On the other hand, it is a terminal emulator in the same way as many common Linux distribution programs are; e.g., GNOME terminal, Konsole, Xterm and many more.",
+            "createTime": "2025-09-04 16:09:23",
+            "deployVersion": null,
+            "docId": "1963514498154364930",
+            "enable": 1,
+            "imageUrl": null,
+            "segmentId": 4107886,
+            "segmentOrder": 4,
+            "segmentStatus": 2,
+            "size": 280,
+            "step": 1,
+            "thirdPfChunkId": null,
+            "thirdPfDocId": null,
+            "urls": null,
+            "userId": 1094,
+            "version": 0,
+            "videoUrl": null
+          },
+          {
+            "audioUrl": null,
+            "baseId": "1963505867706990594",
+            "content": "Terminal is a hardware device typically used before traditional desktop computers appeared.\nTerminal emulator is a software that emulates a display (not CPU or whole system) with capabilities of specific hardware terminal.",
+            "createTime": "2025-09-04 16:09:23",
+            "deployVersion": null,
+            "docId": "1963514498154364930",
+            "enable": 1,
+            "imageUrl": null,
+            "segmentId": 4107887,
+            "segmentOrder": 5,
+            "segmentStatus": 2,
+            "size": 222,
+            "step": 1,
+            "thirdPfChunkId": null,
+            "thirdPfDocId": null,
+            "urls": null,
+            "userId": 1094,
+            "version": 0,
+            "videoUrl": null
+          },
+          {
+            "audioUrl": null,
+            "baseId": "1963505867706990594",
+            "content": "What are system requirements\nAndroid OS of version 7.0 as minimum. Be prepared that Termux uses much of internal storage, you are dealing with packages ported from Linux distributions. That's 500 MB - 5 GB typically, in some cases more... Everything depends on your use cases.",
+            "createTime": "2025-09-04 16:09:23",
+            "deployVersion": null,
+            "docId": "1963514498154364930",
+            "enable": 1,
+            "imageUrl": null,
+            "segmentId": 4107888,
+            "segmentOrder": 6,
+            "segmentStatus": 2,
+            "size": 276,
+            "step": 1,
+            "thirdPfChunkId": null,
+            "thirdPfDocId": null,
+            "urls": null,
+            "userId": 1094,
+            "version": 0,
+            "videoUrl": null
+          },
+          {
+            "audioUrl": null,
+            "baseId": "1963505867706990594",
+            "content": "Also it is preferable to have AOSP Android, to avoid vendor-specific quirks with process management and power-saving.",
+            "createTime": "2025-09-04 16:09:23",
+            "deployVersion": null,
+            "docId": "1963514498154364930",
+            "enable": 1,
+            "imageUrl": null,
+            "segmentId": 4107889,
+            "segmentOrder": 7,
+            "segmentStatus": 2,
+            "size": 117,
+            "step": 1,
+            "thirdPfChunkId": null,
+            "thirdPfDocId": null,
+            "urls": null,
+            "userId": 1094,
+            "version": 0,
+            "videoUrl": null
+          },
+          {
+            "audioUrl": null,
+            "baseId": "1963505867706990594",
+            "content": "Will Termux work on Android 11\nIn short: yes, it works on Android 11 and 12 beta.\nAndroid security improvements in new versions often become a subject of controversial discussions and recent `execve()` system call restriction by SELinux configuration introduced with Android 10 was not the exception. There lots of misinformation and conspiracy (aka \"Google want to kill Linux on Android\") from people claiming themselves \"advanced users\" about what is actually happening.",
+            "createTime": "2025-09-04 16:09:23",
+            "deployVersion": null,
+            "docId": "1963514498154364930",
+            "enable": 1,
+            "imageUrl": null,
+            "segmentId": 4107890,
+            "segmentOrder": 8,
+            "segmentStatus": 2,
+            "size": 472,
+            "step": 1,
+            "thirdPfChunkId": null,
+            "thirdPfDocId": null,
+            "urls": null,
+            "userId": 1094,
+            "version": 0,
+            "videoUrl": null
+          },
+          {
+            "audioUrl": null,
+            "baseId": "1963505867706990594",
+            "content": "Applications built with target SDK level 29 (means compatibility with Android 10) will no longer be able to execute data files. All executables must be packaged within the APK file. That's a reasonable restriction. Application must not be able to modify itself. Updates and new features must come within the APK of newer version. However there is a problem: Termux is technically a bridge between Android application and Linux environments.",
+            "createTime": "2025-09-04 16:09:23",
+            "deployVersion": null,
+            "docId": "1963514498154364930",
+            "enable": 1,
+            "imageUrl": null,
+            "segmentId": 4107891,
+            "segmentOrder": 9,
+            "segmentStatus": 2,
+            "size": 440,
+            "step": 1,
+            "thirdPfChunkId": null,
+            "thirdPfDocId": null,
+            "urls": null,
+            "userId": 1094,
+            "version": 0,
+            "videoUrl": null
+          },
+          {
+            "audioUrl": null,
+            "baseId": "1963505867706990594",
+            "content": "Fortunately, we chose to force use compatibility with Android 9 APIs (SDK 28) at the cost of ability to publish updates on Google Play. That is until we will workaround the issue. For now do not worry - it works perfectly.",
+            "createTime": "2025-09-04 16:09:23",
+            "deployVersion": null,
+            "docId": "1963514498154364930",
+            "enable": 1,
+            "imageUrl": null,
+            "segmentId": 4107892,
+            "segmentOrder": 10,
+            "segmentStatus": 2,
+            "size": 222,
+            "step": 1,
+            "thirdPfChunkId": null,
+            "thirdPfDocId": null,
+            "urls": null,
+            "userId": 1094,
+            "version": 0,
+            "videoUrl": null
+          },
+          {
+            "audioUrl": null,
+            "baseId": "1963505867706990594",
+            "content": "Termux also supports Android 12 but running the app on this version of Android would kill phantom processes and crash the app, meaning spawning several processes would randomly close the application unintentionally. if you plan to upgrade your device to Android 12, upgrade at your own risk!",
+            "createTime": "2025-09-04 16:09:23",
+            "deployVersion": null,
+            "docId": "1963514498154364930",
+            "enable": 1,
+            "imageUrl": null,
+            "segmentId": 4107893,
+            "segmentOrder": 11,
+            "segmentStatus": 2,
+            "size": 291,
+            "step": 1,
+            "thirdPfChunkId": null,
+            "thirdPfDocId": null,
+            "urls": null,
+            "userId": 1094,
+            "version": 0,
+            "videoUrl": null
+          },
+          {
+            "audioUrl": null,
+            "baseId": "1963505867706990594",
+            "content": "Related issue: https://github.com/termux/termux-app/issues/2366\nWhy does htop or netstat not work on my device\nIn order to stop leaking sensitive information via side channels, Android has blocked access to certain interfaces in /proc. This is done for your privacy.",
+            "createTime": "2025-09-04 16:09:23",
+            "deployVersion": null,
+            "docId": "1963514498154364930",
+            "enable": 1,
+            "imageUrl": null,
+            "segmentId": 4107894,
+            "segmentOrder": 12,
+            "segmentStatus": 2,
+            "size": 266,
+            "step": 1,
+            "thirdPfChunkId": null,
+            "thirdPfDocId": null,
+            "urls": null,
+            "userId": 1094,
+            "version": 0,
+            "videoUrl": null
+          },
+          {
+            "audioUrl": null,
+            "baseId": "1963505867706990594",
+            "content": "Specifically:\n/proc/net/*\n/proc/loadavg\n/proc/stat\n/proc/uptime\n/proc/version\n/proc/vmstat\nAnd few others.",
+            "createTime": "2025-09-04 16:09:23",
+            "deployVersion": null,
+            "docId": "1963514498154364930",
+            "enable": 1,
+            "imageUrl": null,
+            "segmentId": 4107895,
+            "segmentOrder": 13,
+            "segmentStatus": 2,
+            "size": 106,
+            "step": 1,
+            "thirdPfChunkId": null,
+            "thirdPfDocId": null,
+            "urls": null,
+            "userId": 1094,
+            "version": 0,
+            "videoUrl": null
+          },
+          {
+            "audioUrl": null,
+            "baseId": "1963505867706990594",
+            "content": "Restrictions vary between Android OS versions. Thus Android 7 is less restrictive than 8/9/10+. You can use root to bypass them.",
+            "createTime": "2025-09-04 16:09:23",
+            "deployVersion": null,
+            "docId": "1963514498154364930",
+            "enable": 1,
+            "imageUrl": null,
+            "segmentId": 4107896,
+            "segmentOrder": 14,
+            "segmentStatus": 2,
+            "size": 128,
+            "step": 1,
+            "thirdPfChunkId": null,
+            "thirdPfDocId": null,
+            "urls": null,
+            "userId": 1094,
+            "version": 0,
+            "videoUrl": null
+          },
+          {
+            "audioUrl": null,
+            "baseId": "1963505867706990594",
+            "content": "Do not open issues in our repositories on this or complain how Google is evil. We do not support such opinion or other Android-specific conspiracy.",
+            "createTime": "2025-09-04 16:09:23",
+            "deployVersion": null,
+            "docId": "1963514498154364930",
+            "enable": 1,
+            "imageUrl": null,
+            "segmentId": 4107897,
+            "segmentOrder": 15,
+            "segmentStatus": 2,
+            "size": 147,
+            "step": 1,
+            "thirdPfChunkId": null,
+            "thirdPfDocId": null,
+            "urls": null,
+            "userId": 1094,
+            "version": 0,
+            "videoUrl": null
+          },
+          {
+            "audioUrl": null,
+            "baseId": "1963505867706990594",
+            "content": "Why does ps not show Android processes\nSince Android 7, regular applications no longer can explore foreign processes in /proc. This has been implemented via hidepid=2 mount option.",
+            "createTime": "2025-09-04 16:09:23",
+            "deployVersion": null,
+            "docId": "1963514498154364930",
+            "enable": 1,
+            "imageUrl": null,
+            "segmentId": 4107898,
+            "segmentOrder": 16,
+            "segmentStatus": 2,
+            "size": 180,
+            "step": 1,
+            "thirdPfChunkId": null,
+            "thirdPfDocId": null,
+            "urls": null,
+            "userId": 1094,
+            "version": 0,
+            "videoUrl": null
+          },
+          {
+            "audioUrl": null,
+            "baseId": "1963505867706990594",
+            "content": "Termux can list only its own processes. You can see more only under rooted shell or ADB.\nThis restriction has weird effect on some programs. For example, some processes like ssh-agent or tor daemons will no longer be visible through ps and as result can't be terminated with pkill <NAME> or killall <NAME> but only with kill <PID>.",
+            "createTime": "2025-09-04 16:09:23",
+            "deployVersion": null,
+            "docId": "1963514498154364930",
+            "enable": 1,
+            "imageUrl": null,
+            "segmentId": 4107899,
+            "segmentOrder": 17,
+            "segmentStatus": 2,
+            "size": 331,
+            "step": 1,
+            "thirdPfChunkId": null,
+            "thirdPfDocId": null,
+            "urls": null,
+            "userId": 1094,
+            "version": 0,
+            "videoUrl": null
+          },
+          {
+            "audioUrl": null,
+            "baseId": "1963505867706990594",
+            "content": "Why my Termux is 32bit while CPU supports 64bit\nIf Android OS reports support only of 32-bit ABIs, Termux will perform a 32-bit installation only. Its environment is not standalone and relies on libraries provided by operating system. So if your system is 32-bit only, you are out of luck. That is common issue with some device models where manufacturer installed only 32-bit OS due to small system partition.",
+            "createTime": "2025-09-04 16:09:23",
+            "deployVersion": null,
+            "docId": "1963514498154364930",
+            "enable": 1,
+            "imageUrl": null,
+            "segmentId": 4107900,
+            "segmentOrder": 18,
+            "segmentStatus": 2,
+            "size": 409,
+            "step": 1,
+            "thirdPfChunkId": null,
+            "thirdPfDocId": null,
+            "urls": null,
+            "userId": 1094,
+            "version": 0,
+            "videoUrl": null
+          },
+          {
+            "audioUrl": null,
+            "baseId": "1963505867706990594",
+            "content": "Can Termux be installed on the external storage\nThis can't be done, at least if your device is not rooted.",
+            "createTime": "2025-09-04 16:09:23",
+            "deployVersion": null,
+            "docId": "1963514498154364930",
+            "enable": 1,
+            "imageUrl": null,
+            "segmentId": 4107901,
+            "segmentOrder": 19,
+            "segmentStatus": 2,
+            "size": 106,
+            "step": 1,
+            "thirdPfChunkId": null,
+            "thirdPfDocId": null,
+            "urls": null,
+            "userId": 1094,
+            "version": 0,
+            "videoUrl": null
+          },
+          {
+            "audioUrl": null,
+            "baseId": "1963505867706990594",
+            "content": "Termux requires a native Linux file system such as EXT4 or F2FS for supporting special files like symbolic links, sockets and Unix file attributes. Neither FAT32 or exFAT supports them. Furthermore, Android applies a special overlay to any general purpose file storage which turns underlying file system into FAT32 or exFAT-like in order to solve certain issues and provide a better experience for average user.",
+            "createTime": "2025-09-04 16:09:23",
+            "deployVersion": null,
+            "docId": "1963514498154364930",
+            "enable": 1,
+            "imageUrl": null,
+            "segmentId": 4107902,
+            "segmentOrder": 20,
+            "segmentStatus": 2,
+            "size": 411,
+            "step": 1,
+            "thirdPfChunkId": null,
+            "thirdPfDocId": null,
+            "urls": null,
+            "userId": 1094,
+            "version": 0,
+            "videoUrl": null
+          },
+          {
+            "audioUrl": null,
+            "baseId": "1963505867706990594",
+            "content": "If your device is rooted and you want to install Termux on external storage, please refer to post on Android Enthusiasts Stack Exchange.",
+            "createTime": "2025-09-04 16:09:23",
+            "deployVersion": null,
+            "docId": "1963514498154364930",
+            "enable": 1,
+            "imageUrl": null,
+            "segmentId": 4107903,
+            "segmentOrder": 21,
+            "segmentStatus": 2,
+            "size": 136,
+            "step": 1,
+            "thirdPfChunkId": null,
+            "thirdPfDocId": null,
+            "urls": null,
+            "userId": 1094,
+            "version": 0,
+            "videoUrl": null
+          },
+          {
+            "audioUrl": null,
+            "baseId": "1963505867706990594",
+            "content": "Any tips for using Termux\nHere are the ones which should help you to survive in Termux shell:\nLearn shell scripting!\nAlways do pkg upgrade!\nDo backups, always!\nDo not execute things which you do not know!\nCarefully read everything that has been printed to terminal!\nWhat do you use Termux for\nYou can do everything, specifically what you are able to do with it. That is the case where you are limited mostly by your skills. Of course, OS and device hardware restriction matter too, but they are insignificant.",
+            "createTime": "2025-09-04 16:09:23",
+            "deployVersion": null,
+            "docId": "1963514498154364930",
+            "enable": 1,
+            "imageUrl": null,
+            "segmentId": 4107904,
+            "segmentOrder": 22,
+            "segmentStatus": 2,
+            "size": 509,
+            "step": 1,
+            "thirdPfChunkId": null,
+            "thirdPfDocId": null,
+            "urls": null,
+            "userId": 1094,
+            "version": 0,
+            "videoUrl": null
+          },
+          {
+            "audioUrl": null,
+            "baseId": "1963505867706990594",
+            "content": "Here are just few ideas for Termux usage:\nDevice automation with scripting and Termux Tasker add-on.\nFile transfer & synchronization via syncthing, rsync, rclone, etc.\nSSH client (dropbear, openssh).\nProgramming (clang, python, vim, etc).\nAre there any Termux tutorials\nPlease check page Getting started.",
+            "createTime": "2025-09-04 16:09:23",
+            "deployVersion": null,
+            "docId": "1963514498154364930",
+            "enable": 1,
+            "imageUrl": null,
+            "segmentId": 4107905,
+            "segmentOrder": 23,
+            "segmentStatus": 2,
+            "size": 304,
+            "step": 1,
+            "thirdPfChunkId": null,
+            "thirdPfDocId": null,
+            "urls": null,
+            "userId": 1094,
+            "version": 0,
+            "videoUrl": null
+          },
+          {
+            "audioUrl": null,
+            "baseId": "1963505867706990594",
+            "content": "Note that while you can learn shell scripting with Termux, it is not the best tool for this due to few fundamental differences from the Linux distributions.",
+            "createTime": "2025-09-04 16:09:23",
+            "deployVersion": null,
+            "docId": "1963514498154364930",
+            "enable": 1,
+            "imageUrl": null,
+            "segmentId": 4107906,
+            "segmentOrder": 24,
+            "segmentStatus": 2,
+            "size": 156,
+            "step": 1,
+            "thirdPfChunkId": null,
+            "thirdPfDocId": null,
+            "urls": null,
+            "userId": 1094,
+            "version": 0,
+            "videoUrl": null
+          },
+          {
+            "audioUrl": null,
+            "baseId": "1963505867706990594",
+            "content": "What are advantages of root in Termux\nRoot gains you control over system components. You will be able to access freely all file systems, modify device firmware (ROM) as well as perform fine tuning of kernel configuration, networking, etc.",
+            "createTime": "2025-09-04 16:09:23",
+            "deployVersion": null,
+            "docId": "1963514498154364930",
+            "enable": 1,
+            "imageUrl": null,
+            "segmentId": 4107907,
+            "segmentOrder": 25,
+            "segmentStatus": 2,
+            "size": 238,
+            "step": 1,
+            "thirdPfChunkId": null,
+            "thirdPfDocId": null,
+            "urls": null,
+            "userId": 1094,
+            "version": 0,
+            "videoUrl": null
+          },
+          {
+            "audioUrl": null,
+            "baseId": "1963505867706990594",
+            "content": "Certain tools like cryptsetup, mount, nmap (advanced scan modes), tcpdump require root access.\nWhat is a fake root\nFake root means exactly \"fake root\", i.e., not real root. It does not provide any real superuser privileges. It just changes user ID and label to assist in certain tasks.",
+            "createTime": "2025-09-04 16:09:23",
+            "deployVersion": null,
+            "docId": "1963514498154364930",
+            "enable": 1,
+            "imageUrl": null,
+            "segmentId": 4107908,
+            "segmentOrder": 26,
+            "segmentStatus": 2,
+            "size": 285,
+            "step": 1,
+            "thirdPfChunkId": null,
+            "thirdPfDocId": null,
+            "urls": null,
+            "userId": 1094,
+            "version": 0,
+            "videoUrl": null
+          },
+          {
+            "audioUrl": null,
+            "baseId": "1963505867706990594",
+            "content": "There 2 ways to get a fake root:\nPackage `fakeroot` - useful solely for packagers who need to create archives with files having certain ownership and permissions. Of course, using the real root in this case is overkill.\nPackage `proot` - run a rootless Linux distribution \"chroot\".",
+            "createTime": "2025-09-04 16:09:23",
+            "deployVersion": null,
+            "docId": "1963514498154364930",
+            "enable": 1,
+            "imageUrl": null,
+            "segmentId": 4107909,
+            "segmentOrder": 27,
+            "segmentStatus": 2,
+            "size": 281,
+            "step": 1,
+            "thirdPfChunkId": null,
+            "thirdPfDocId": null,
+            "urls": null,
+            "userId": 1094,
+            "version": 0,
+            "videoUrl": null
+          },
+          {
+            "audioUrl": null,
+            "baseId": "1963505867706990594",
+            "content": "Fake root will not help you to root your device. Neither will help you to run a software requiring superuser privileges.",
+            "createTime": "2025-09-04 16:09:23",
+            "deployVersion": null,
+            "docId": "1963514498154364930",
+            "enable": 1,
+            "imageUrl": null,
+            "segmentId": 4107910,
+            "segmentOrder": 28,
+            "segmentStatus": 2,
+            "size": 120,
+            "step": 1,
+            "thirdPfChunkId": null,
+            "thirdPfDocId": null,
+            "urls": null,
+            "userId": 1094,
+            "version": 0,
+            "videoUrl": null
+          },
+          {
+            "audioUrl": null,
+            "baseId": "1963505867706990594",
+            "content": "Can I hack a social media with Termux\nMain Article: Hacking\nAs some people say, there nothing impossible in the world, and that's true in case of Termux and specifically this question. However we do not provide any help on it - you are on your own.",
+            "createTime": "2025-09-04 16:09:23",
+            "deployVersion": null,
+            "docId": "1963514498154364930",
+            "enable": 1,
+            "imageUrl": null,
+            "segmentId": 4107911,
+            "segmentOrder": 29,
+            "segmentStatus": 2,
+            "size": 248,
+            "step": 1,
+            "thirdPfChunkId": null,
+            "thirdPfDocId": null,
+            "urls": null,
+            "userId": 1094,
+            "version": 0,
+            "videoUrl": null
+          },
+          {
+            "audioUrl": null,
+            "baseId": "1963505867706990594",
+            "content": "Hacking and phishing topics are discouraged within all official Termux communities.\nWhere are Metasploit and Hydra packages\nMain Article: Hacking",
+            "createTime": "2025-09-04 16:09:23",
+            "deployVersion": null,
+            "docId": "1963514498154364930",
+            "enable": 1,
+            "imageUrl": null,
+            "segmentId": 4107912,
+            "segmentOrder": 30,
+            "segmentStatus": 2,
+            "size": 145,
+            "step": 1,
+            "thirdPfChunkId": null,
+            "thirdPfDocId": null,
+            "urls": null,
+            "userId": 1094,
+            "version": 0,
+            "videoUrl": null
+          },
+          {
+            "audioUrl": null,
+            "baseId": "1963505867706990594",
+            "content": "Packages Hashcat, Hydra, Metasploit and Sqlmap have been removed from Termux repositories. We do not accept requests of hacking packages and neither provide help for using or installing them.",
+            "createTime": "2025-09-04 16:09:23",
+            "deployVersion": null,
+            "docId": "1963514498154364930",
+            "enable": 1,
+            "imageUrl": null,
+            "segmentId": 4107913,
+            "segmentOrder": 31,
+            "segmentStatus": 2,
+            "size": 191,
+            "step": 1,
+            "thirdPfChunkId": null,
+            "thirdPfDocId": null,
+            "urls": null,
+            "userId": 1094,
+            "version": 0,
+            "videoUrl": null
+          },
+          {
+            "audioUrl": null,
+            "baseId": "1963505867706990594",
+            "content": "Why app from F-Droid cannot be installed\nOpen your Android settings --> Applications and check whether you have applications containing the word \"Termux\" in their name. If so, uninstall all of them: Termux, Termux:API, Termux:Styling, Termux:Widget, Termux:Boot and others. And yes, paid add-dons should be uninstalled too.",
+            "createTime": "2025-09-04 16:09:23",
+            "deployVersion": null,
+            "docId": "1963514498154364930",
+            "enable": 1,
+            "imageUrl": null,
+            "segmentId": 4107914,
+            "segmentOrder": 32,
+            "segmentStatus": 2,
+            "size": 323,
+            "step": 1,
+            "thirdPfChunkId": null,
+            "thirdPfDocId": null,
+            "urls": null,
+            "userId": 1094,
+            "version": 0,
+            "videoUrl": null
+          },
+          {
+            "audioUrl": null,
+            "baseId": "1963505867706990594",
+            "content": "After that you should be able to install Termux app from F-Droid.\nWhy Termux add-ons on Google Play are paid even though their sources are on GitHub\nThis has been made as kind of donation. If you do not want to donate, use application and add-ons from F-Droid or custom builds from sources.",
+            "createTime": "2025-09-04 16:09:23",
+            "deployVersion": null,
+            "docId": "1963514498154364930",
+            "enable": 1,
+            "imageUrl": null,
+            "segmentId": 4107915,
+            "segmentOrder": 33,
+            "segmentStatus": 2,
+            "size": 290,
+            "step": 1,
+            "thirdPfChunkId": null,
+            "thirdPfDocId": null,
+            "urls": null,
+            "userId": 1094,
+            "version": 0,
+            "videoUrl": null
+          },
+          {
+            "audioUrl": null,
+            "baseId": "1963505867706990594",
+            "content": "Remember that open-source or free software does not mean that software cannot be paid. This is not forbidden by licenses of our source code. Also \"free\" means \"freedom\", in context of GNU GPL which even explicitly states that free software can be paid as soon as sources are freely available.",
+            "createTime": "2025-09-04 16:09:23",
+            "deployVersion": null,
+            "docId": "1963514498154364930",
+            "enable": 1,
+            "imageUrl": null,
+            "segmentId": 4107916,
+            "segmentOrder": 34,
+            "segmentStatus": 2,
+            "size": 292,
+            "step": 1,
+            "thirdPfChunkId": null,
+            "thirdPfDocId": null,
+            "urls": null,
+            "userId": 1094,
+            "version": 0,
+            "videoUrl": null
+          },
+          {
+            "audioUrl": null,
+            "baseId": "1963505867706990594",
+            "content": "How can I keep my data when reinstalling Termux\nMain Article: Backing up Termux\nYou need to archive contents of these directories:",
+            "createTime": "2025-09-04 16:09:23",
+            "deployVersion": null,
+            "docId": "1963514498154364930",
+            "enable": 1,
+            "imageUrl": null,
+            "segmentId": 4107917,
+            "segmentOrder": 35,
+            "segmentStatus": 2,
+            "size": 130,
+            "step": 1,
+            "thirdPfChunkId": null,
+            "thirdPfDocId": null,
+            "urls": null,
+            "userId": 1094,
+            "version": 0,
+            "videoUrl": null
+          },
+          {
+            "audioUrl": null,
+            "baseId": "1963505867706990594",
+            "content": "/data/data/com.termux/files/usr\n/data/data/com.termux/files/home\nYou can use utility tar. Before uninstalling the app, ensure that archives are placed to safe location such as /sdcard.",
+            "createTime": "2025-09-04 16:09:23",
+            "deployVersion": null,
+            "docId": "1963514498154364930",
+            "enable": 1,
+            "imageUrl": null,
+            "segmentId": 4107918,
+            "segmentOrder": 36,
+            "segmentStatus": 2,
+            "size": 184,
+            "step": 1,
+            "thirdPfChunkId": null,
+            "thirdPfDocId": null,
+            "urls": null,
+            "userId": 1094,
+            "version": 0,
+            "videoUrl": null
+          },
+          {
+            "audioUrl": null,
+            "baseId": "1963505867706990594",
+            "content": "Repositories are down and return 403 404 errors\nSwitch to a working repository with `termux-change-repo`. You will need to select repositories which do not work, if unsure what to select - select everything.",
+            "createTime": "2025-09-04 16:09:23",
+            "deployVersion": null,
+            "docId": "1963514498154364930",
+            "enable": 1,
+            "imageUrl": null,
+            "segmentId": 4107919,
+            "segmentOrder": 37,
+            "segmentStatus": 2,
+            "size": 207,
+            "step": 1,
+            "thirdPfChunkId": null,
+            "thirdPfDocId": null,
+            "urls": null,
+            "userId": 1094,
+            "version": 0,
+            "videoUrl": null
+          },
+          {
+            "audioUrl": null,
+            "baseId": "1963505867706990594",
+            "content": "https://github.com/termux/termux-packages/issues/6726\nHow to open failsafe shell\nThere are 2 variants how to do that: 1. Open drawer by swiping rightwards -> long tap on \"new session\" -> tap \"failsafe\". 2. Close Termux app -> long tap on icon -> tap \"failsafe\".",
+            "createTime": "2025-09-04 16:09:23",
+            "deployVersion": null,
+            "docId": "1963514498154364930",
+            "enable": 1,
+            "imageUrl": null,
+            "segmentId": 4107920,
+            "segmentOrder": 38,
+            "segmentStatus": 2,
+            "size": 261,
+            "step": 1,
+            "thirdPfChunkId": null,
+            "thirdPfDocId": null,
+            "urls": null,
+            "userId": 1094,
+            "version": 0,
+            "videoUrl": null
+          },
+          {
+            "audioUrl": null,
+            "baseId": "1963505867706990594",
+            "content": "See Recover a broken environment for more information on Termux recovery topic.\nHow can I access device storage with Termux\nMain Article: Internal and external storage",
+            "createTime": "2025-09-04 16:09:23",
+            "deployVersion": null,
+            "docId": "1963514498154364930",
+            "enable": 1,
+            "imageUrl": null,
+            "segmentId": 4107921,
+            "segmentOrder": 39,
+            "segmentStatus": 2,
+            "size": 167,
+            "step": 1,
+            "thirdPfChunkId": null,
+            "thirdPfDocId": null,
+            "urls": null,
+            "userId": 1094,
+            "version": 0,
+            "videoUrl": null
+          },
+          {
+            "audioUrl": null,
+            "baseId": "1963505867706990594",
+            "content": "You need to grant a Storage access permission to application. We recommend to do that through command",
+            "createTime": "2025-09-04 16:09:23",
+            "deployVersion": null,
+            "docId": "1963514498154364930",
+            "enable": 1,
+            "imageUrl": null,
+            "segmentId": 4107922,
+            "segmentOrder": 40,
+            "segmentStatus": 2,
+            "size": 101,
+            "step": 1,
+            "thirdPfChunkId": null,
+            "thirdPfDocId": null,
+            "urls": null,
+            "userId": 1094,
+            "version": 0,
+            "videoUrl": null
+          },
+          {
+            "audioUrl": null,
+            "baseId": "1963505867706990594",
+            "content": "termux-setup-storage\nIt will ask for permission and once it was granted, it will setup a symlinks in directory ~/storage to standard directories like DCIM, Download, etc.",
+            "createTime": "2025-09-04 16:09:23",
+            "deployVersion": null,
+            "docId": "1963514498154364930",
+            "enable": 1,
+            "imageUrl": null,
+            "segmentId": 4107923,
+            "segmentOrder": 41,
+            "segmentStatus": 2,
+            "size": 170,
+            "step": 1,
+            "thirdPfChunkId": null,
+            "thirdPfDocId": null,
+            "urls": null,
+            "userId": 1094,
+            "version": 0,
+            "videoUrl": null
+          },
+          {
+            "audioUrl": null,
+            "baseId": "1963505867706990594",
+            "content": "Storage (shared) is usually accessible through:\n/storage/emulated/0\n/storage/self/primary\n$HOME/storage/shared",
+            "createTime": "2025-09-04 16:09:23",
+            "deployVersion": null,
+            "docId": "1963514498154364930",
+            "enable": 1,
+            "imageUrl": null,
+            "segmentId": 4107924,
+            "segmentOrder": 42,
+            "segmentStatus": 2,
+            "size": 110,
+            "step": 1,
+            "thirdPfChunkId": null,
+            "thirdPfDocId": null,
+            "urls": null,
+            "userId": 1094,
+            "version": 0,
+            "videoUrl": null
+          },
+          {
+            "audioUrl": null,
+            "baseId": "1963505867706990594",
+            "content": "External storage is restricted by Android OS. You can read files but cannot write them, except ones located in Termux private directory accessible through $HOME/storage/external-1. Termux cannot have write access to external storage like file manager applications do.",
+            "createTime": "2025-09-04 16:09:23",
+            "deployVersion": null,
+            "docId": "1963514498154364930",
+            "enable": 1,
+            "imageUrl": null,
+            "segmentId": 4107925,
+            "segmentOrder": 43,
+            "segmentStatus": 2,
+            "size": 267,
+            "step": 1,
+            "thirdPfChunkId": null,
+            "thirdPfDocId": null,
+            "urls": null,
+            "userId": 1094,
+            "version": 0,
+            "videoUrl": null
+          },
+          {
+            "audioUrl": null,
+            "baseId": "1963505867706990594",
+            "content": "If you are on Android 11 and storage suddenly has become inaccessible, then revoke permission from Android settings and grant again.",
+            "createTime": "2025-09-04 16:09:23",
+            "deployVersion": null,
+            "docId": "1963514498154364930",
+            "enable": 1,
+            "imageUrl": null,
+            "segmentId": 4107926,
+            "segmentOrder": 44,
+            "segmentStatus": 2,
+            "size": 132,
+            "step": 1,
+            "thirdPfChunkId": null,
+            "thirdPfDocId": null,
+            "urls": null,
+            "userId": 1094,
+            "version": 0,
+            "videoUrl": null
+          },
+          {
+            "audioUrl": null,
+            "baseId": "1963505867706990594",
+            "content": "How can I hide the extra keys\nTap key combination Volume Up + K.\nAlternate approach is to open drawer via swiping rightwards from the left screen side and then long tap on \"Keyboard\" button.",
+            "createTime": "2025-09-04 16:09:23",
+            "deployVersion": null,
+            "docId": "1963514498154364930",
+            "enable": 1,
+            "imageUrl": null,
+            "segmentId": 4107927,
+            "segmentOrder": 45,
+            "segmentStatus": 2,
+            "size": 190,
+            "step": 1,
+            "thirdPfChunkId": null,
+            "thirdPfDocId": null,
+            "urls": null,
+            "userId": 1094,
+            "version": 0,
+            "videoUrl": null
+          },
+          {
+            "audioUrl": null,
+            "baseId": "1963505867706990594",
+            "content": "Why text appears only after hitting space\nThis is a keyboard-specific known issue. It happens because keyboard has not internally reset input method type and tries to use unsupported features like auto-correction or prediction.",
+            "createTime": "2025-09-04 16:09:23",
+            "deployVersion": null,
+            "docId": "1963514498154364930",
+            "enable": 1,
+            "imageUrl": null,
+            "segmentId": 4107928,
+            "segmentOrder": 46,
+            "segmentStatus": 2,
+            "size": 227,
+            "step": 1,
+            "thirdPfChunkId": null,
+            "thirdPfDocId": null,
+            "urls": null,
+            "userId": 1094,
+            "version": 0,
+            "videoUrl": null
+          },
+          {
+            "audioUrl": null,
+            "baseId": "1963505867706990594",
+            "content": "In order to solve issue you need to use either a different keyboard or run these commands:\nmkdir -p ~/.termux\necho \"enforce-char-based-input = true\" >> ~/.termux/termux.properties\nRestart application after making changes to \"termux.properties\" file.",
+            "createTime": "2025-09-04 16:09:23",
+            "deployVersion": null,
+            "docId": "1963514498154364930",
+            "enable": 1,
+            "imageUrl": null,
+            "segmentId": 4107929,
+            "segmentOrder": 47,
+            "segmentStatus": 2,
+            "size": 249,
+            "step": 1,
+            "thirdPfChunkId": null,
+            "thirdPfDocId": null,
+            "urls": null,
+            "userId": 1094,
+            "version": 0,
+            "videoUrl": null
+          },
+          {
+            "audioUrl": null,
+            "baseId": "1963505867706990594",
+            "content": "How do I get help for a specific package\nUsually you can use next commands to get a brief usage of the utility:",
+            "createTime": "2025-09-04 16:09:23",
+            "deployVersion": null,
+            "docId": "1963514498154364930",
+            "enable": 1,
+            "imageUrl": null,
+            "segmentId": 4107930,
+            "segmentOrder": 48,
+            "segmentStatus": 2,
+            "size": 111,
+            "step": 1,
+            "thirdPfChunkId": null,
+            "thirdPfDocId": null,
+            "urls": null,
+            "userId": 1094,
+            "version": 0,
+            "videoUrl": null
+          },
+          {
+            "audioUrl": null,
+            "baseId": "1963505867706990594",
+            "content": "packagename -h\npackagename --help\nMore advanced information can be viewed by using a man tool. It can be installed by",
+            "createTime": "2025-09-04 16:09:23",
+            "deployVersion": null,
+            "docId": "1963514498154364930",
+            "enable": 1,
+            "imageUrl": null,
+            "segmentId": 4107931,
+            "segmentOrder": 49,
+            "segmentStatus": 2,
+            "size": 117,
+            "step": 1,
+            "thirdPfChunkId": null,
+            "thirdPfDocId": null,
+            "urls": null,
+            "userId": 1094,
+            "version": 0,
+            "videoUrl": null
+          },
+          {
+            "audioUrl": null,
+            "baseId": "1963505867706990594",
+            "content": "pkg install man\nHere is an example how to view information for utility ls:\nman ls\nTips, when reading a man page:",
+            "createTime": "2025-09-04 16:09:23",
+            "deployVersion": null,
+            "docId": "1963514498154364930",
+            "enable": 1,
+            "imageUrl": null,
+            "segmentId": 4107932,
+            "segmentOrder": 50,
+            "segmentStatus": 2,
+            "size": 112,
+            "step": 1,
+            "thirdPfChunkId": null,
+            "thirdPfDocId": null,
+            "urls": null,
+            "userId": 1094,
+            "version": 0,
+            "videoUrl": null
+          },
+          {
+            "audioUrl": null,
+            "baseId": "1963505867706990594",
+            "content": "Use q to quit\nUse space for next page\n/search for search\nn for repeat search\nSometimes utility name may not match the package name. If you encountered a such package, consult its online home page to get a brief introduction or use utility apt-file to list the available files including utilities and documentation.",
+            "createTime": "2025-09-04 16:09:23",
+            "deployVersion": null,
+            "docId": "1963514498154364930",
+            "enable": 1,
+            "imageUrl": null,
+            "segmentId": 4107933,
+            "segmentOrder": 51,
+            "segmentStatus": 2,
+            "size": 314,
+            "step": 1,
+            "thirdPfChunkId": null,
+            "thirdPfDocId": null,
+            "urls": null,
+            "userId": 1094,
+            "version": 0,
+            "videoUrl": null
+          },
+          {
+            "audioUrl": null,
+            "baseId": "1963505867706990594",
+            "content": "Why does a compiled program show warnings\nWarnings produced by dynamic linker about unused sections are safe. They just notify developer that ELF header of executable file has extra information which cannot be interpreted by current linker version. In case of DT_FLAGS_1=0x8, it warns about RTLD_NODELETE ELF section. Besides DT_FLAGS_1=0x8, there more types of ELF sections which are not handled by Android linker.",
+            "createTime": "2025-09-04 16:09:23",
+            "deployVersion": null,
+            "docId": "1963514498154364930",
+            "enable": 1,
+            "imageUrl": null,
+            "segmentId": 4107934,
+            "segmentOrder": 52,
+            "segmentStatus": 2,
+            "size": 415,
+            "step": 1,
+            "thirdPfChunkId": null,
+            "thirdPfDocId": null,
+            "urls": null,
+            "userId": 1094,
+            "version": 0,
+            "videoUrl": null
+          },
+          {
+            "audioUrl": null,
+            "baseId": "1963505867706990594",
+            "content": "To make this warning disappear you need to use utility \"termux-elf-cleaner\" binary file and probably on all its dependencies.",
+            "createTime": "2025-09-04 16:09:23",
+            "deployVersion": null,
+            "docId": "1963514498154364930",
+            "enable": 1,
+            "imageUrl": null,
+            "segmentId": 4107935,
+            "segmentOrder": 53,
+            "segmentStatus": 2,
+            "size": 125,
+            "step": 1,
+            "thirdPfChunkId": null,
+            "thirdPfDocId": null,
+            "urls": null,
+            "userId": 1094,
+            "version": 0,
+            "videoUrl": null
+          },
+          {
+            "audioUrl": null,
+            "baseId": "1963505867706990594",
+            "content": "pkg install termux-elf-cleaner\ntermux-elf-cleaner ./myprogram\ntermux-elf-cleaner ./libmysharedlibrary.so\nNumber of supported ELF sections increases with each Android OS version. On Android >7.0 you may not get such warnings.",
+            "createTime": "2025-09-04 16:09:23",
+            "deployVersion": null,
+            "docId": "1963514498154364930",
+            "enable": 1,
+            "imageUrl": null,
+            "segmentId": 4107936,
+            "segmentOrder": 54,
+            "segmentStatus": 2,
+            "size": 224,
+            "step": 1,
+            "thirdPfChunkId": null,
+            "thirdPfDocId": null,
+            "urls": null,
+            "userId": 1094,
+            "version": 0,
+            "videoUrl": null
+          },
+          {
+            "audioUrl": null,
+            "baseId": "1963505867706990594",
+            "content": "Can I use Termux packages in my own project\nYes, as Termux is open-source and uses a GNU GPL v3.0 and in some components Apache-2.0 license, you can freely re-use existing components as soon as you met the license requirements.",
+            "createTime": "2025-09-04 16:09:23",
+            "deployVersion": null,
+            "docId": "1963514498154364930",
+            "enable": 1,
+            "imageUrl": null,
+            "segmentId": 4107937,
+            "segmentOrder": 55,
+            "segmentStatus": 2,
+            "size": 227,
+            "step": 1,
+            "thirdPfChunkId": null,
+            "thirdPfDocId": null,
+            "urls": null,
+            "userId": 1094,
+            "version": 0,
+            "videoUrl": null
+          },
+          {
+            "audioUrl": null,
+            "baseId": "1963505867706990594",
+            "content": "However license does not cover \"free\" use of our hosting capabilities which are somewhat limited. You cannot use our package repositories in your own project(s). Please build packages and host them yourself.",
+            "createTime": "2025-09-04 16:09:23",
+            "deployVersion": null,
+            "docId": "1963514498154364930",
+            "enable": 1,
+            "imageUrl": null,
+            "segmentId": 4107938,
+            "segmentOrder": 56,
+            "segmentStatus": 2,
+            "size": 207,
+            "step": 1,
+            "thirdPfChunkId": null,
+            "thirdPfDocId": null,
+            "urls": null,
+            "userId": 1094,
+            "version": 0,
+            "videoUrl": null
+          },
+          {
+            "audioUrl": null,
+            "baseId": "1963505867706990594",
+            "content": "Get started with information on developer's wiki pages: https://github.com/termux/termux-packages/wiki.",
+            "createTime": "2025-09-04 16:09:23",
+            "deployVersion": null,
+            "docId": "1963514498154364930",
+            "enable": 1,
+            "imageUrl": null,
+            "segmentId": 4107939,
+            "segmentOrder": 57,
+            "segmentStatus": 2,
+            "size": 103,
+            "step": 1,
+            "thirdPfChunkId": null,
+            "thirdPfDocId": null,
+            "urls": null,
+            "userId": 1094,
+            "version": 0,
+            "videoUrl": null
+          },
+          {
+            "audioUrl": null,
+            "baseId": "1963505867706990594",
+            "content": "How to run Termux commands from other application\nTermux provides optional interface for processing command execution requests made by third-party applications.",
+            "createTime": "2025-09-04 16:09:23",
+            "deployVersion": null,
+            "docId": "1963514498154364930",
+            "enable": 1,
+            "imageUrl": null,
+            "segmentId": 4107940,
+            "segmentOrder": 58,
+            "segmentStatus": 2,
+            "size": 160,
+            "step": 1,
+            "thirdPfChunkId": null,
+            "thirdPfDocId": null,
+            "urls": null,
+            "userId": 1094,
+            "version": 0,
+            "videoUrl": null
+          },
+          {
+            "audioUrl": null,
+            "baseId": "1963505867706990594",
+            "content": "Detailed information with examples is available at https://github.com/termux/termux-app/wiki/RUN_COMMAND-Intent.",
+            "createTime": "2025-09-04 16:09:23",
+            "deployVersion": null,
+            "docId": "1963514498154364930",
+            "enable": 1,
+            "imageUrl": null,
+            "segmentId": 4107941,
+            "segmentOrder": 59,
+            "segmentStatus": 2,
+            "size": 112,
+            "step": 1,
+            "thirdPfChunkId": null,
+            "thirdPfDocId": null,
+            "urls": null,
+            "userId": 1094,
+            "version": 0,
+            "videoUrl": null
+          },
+          {
+            "audioUrl": null,
+            "baseId": "1963505867706990594",
+            "content": "Can Termux run some commands automatically right after installation\nNo, this feature has not been implemented. Unconditional automated execution of arbitrary commands (script on shared storage) also implies a security issue.",
+            "createTime": "2025-09-04 16:09:23",
+            "deployVersion": null,
+            "docId": "1963514498154364930",
+            "enable": 1,
+            "imageUrl": null,
+            "segmentId": 4107942,
+            "segmentOrder": 60,
+            "segmentStatus": 2,
+            "size": 224,
+            "step": 1,
+            "thirdPfChunkId": null,
+            "thirdPfDocId": null,
+            "urls": null,
+            "userId": 1094,
+            "version": 0,
+            "videoUrl": null
+          },
+          {
+            "audioUrl": null,
+            "baseId": "1963505867706990594",
+            "content": "Worth to note that Termux does not have storage access by default and we have not re-considered this behavior.\nRelated pull request: https://github.com/termux/termux-app/pull/1455",
+            "createTime": "2025-09-04 16:09:23",
+            "deployVersion": null,
+            "docId": "1963514498154364930",
+            "enable": 1,
+            "imageUrl": null,
+            "segmentId": 4107943,
+            "segmentOrder": 61,
+            "segmentStatus": 2,
+            "size": 179,
+            "step": 1,
+            "thirdPfChunkId": null,
+            "thirdPfDocId": null,
+            "urls": null,
+            "userId": 1094,
+            "version": 0,
+            "videoUrl": null
+          }
+        ],
+        "errCode": 0,
+        "errMessage": "success",
+        "msg": "success",
+        "success": true
+      }
+    },
+    {
+      "docId": "1947901020083900418",
+      "response": {
+        "code": 0,
+        "data": [
+          {
+            "audioUrl": null,
+            "baseId": "1945684692549799937",
+            "content": "天青色等烟雨，而我在等你\n炊烟袅袅升起，隔间千万里。",
+            "createTime": "2025-07-23 14:20:15",
+            "deployVersion": null,
+            "docId": "1947901020083900418",
+            "enable": 1,
+            "imageUrl": null,
+            "segmentId": 4105171,
+            "segmentOrder": 0,
+            "segmentStatus": 2,
+            "size": 26,
+            "step": 1,
+            "thirdPfChunkId": null,
+            "thirdPfDocId": null,
+            "urls": null,
+            "userId": 1094,
+            "version": 0,
+            "videoUrl": null
+          }
+        ],
+        "errCode": 0,
+        "errMessage": "success",
+        "msg": "success",
+        "success": true
+      }
+    },
+    {
+      "docId": "1947896556216176642",
+      "response": {
+        "code": 0,
+        "data": [
+          {
+            "audioUrl": null,
+            "baseId": "1945684692549799937",
+            "content": "最美的不是下雨天，是曾与你躲过雨的屋檐",
+            "createTime": "2025-07-23 13:49:05",
+            "deployVersion": null,
+            "docId": "1947896556216176642",
+            "enable": 1,
+            "imageUrl": null,
+            "segmentId": 4105169,
+            "segmentOrder": 0,
+            "segmentStatus": 2,
+            "size": 19,
+            "step": 1,
+            "thirdPfChunkId": null,
+            "thirdPfDocId": null,
+            "urls": null,
+            "userId": 1094,
+            "version": 0,
+            "videoUrl": null
+          }
+        ],
+        "errCode": 0,
+        "errMessage": "success",
+        "msg": "success",
+        "success": true
+      }
+    },
+    {
+      "docId": "1947896556308451329",
+      "response": {
+        "code": 0,
+        "data": [
+          {
+            "audioUrl": null,
+            "baseId": "1945684692549799937",
+            "content": "窗外的麻雀，在电线杆上多嘴。\n你说这一句，很有夏天的感觉。",
+            "createTime": "2025-07-23 13:49:43",
+            "deployVersion": null,
+            "docId": "1947896556308451329",
+            "enable": 1,
+            "imageUrl": null,
+            "segmentId": 4105170,
+            "segmentOrder": 0,
+            "segmentStatus": 2,
+            "size": 29,
+            "step": 1,
+            "thirdPfChunkId": null,
+            "thirdPfDocId": null,
+            "urls": null,
+            "userId": 1094,
+            "version": 0,
+            "videoUrl": null
+          }
+        ],
+        "errCode": 0,
+        "errMessage": "success",
+        "msg": "success",
+        "success": true
+      }
+    },
+    {
+      "docId": "1947841309871493121",
+      "response": {
+        "code": 0,
+        "data": [
+          {
+            "audioUrl": null,
+            "baseId": "1945684692549799937",
+            "content": "Test file 1 content",
+            "createTime": "2025-07-23 10:09:41",
+            "deployVersion": null,
+            "docId": "1947841309871493121",
+            "enable": 1,
+            "imageUrl": null,
+            "segmentId": 4105166,
+            "segmentOrder": 0,
+            "segmentStatus": 2,
+            "size": 19,
+            "step": 1,
+            "thirdPfChunkId": null,
+            "thirdPfDocId": null,
+            "urls": null,
+            "userId": 1094,
+            "version": 0,
+            "videoUrl": null
+          }
+        ],
+        "errCode": 0,
+        "errMessage": "success",
+        "msg": "success",
+        "success": true
+      }
+    },
+    {
+      "docId": "1946093790193815553",
+      "response": {
+        "code": 0,
+        "data": [
+          {
+            "audioUrl": null,
+            "baseId": "1945684692549799937",
+            "content": "Test file 1 content",
+            "createTime": "2025-07-18 14:25:11",
+            "deployVersion": null,
+            "docId": "1946093790193815553",
+            "enable": 1,
+            "imageUrl": null,
+            "segmentId": 4105155,
+            "segmentOrder": 0,
+            "segmentStatus": 2,
+            "size": 19,
+            "step": 1,
+            "thirdPfChunkId": null,
+            "thirdPfDocId": null,
+            "urls": null,
+            "userId": 1094,
+            "version": 0,
+            "videoUrl": null
+          }
+        ],
+        "errCode": 0,
+        "errMessage": "success",
+        "msg": "success",
+        "success": true
+      }
+    },
+    {
+      "docId": "1927203884475015170",
+      "response": {
+        "code": 0,
+        "data": [],
+        "errCode": 0,
+        "errMessage": "success",
+        "msg": "success",
+        "success": true
+      }
+    },
+    {
+      "docId": "1927203880201019394",
+      "response": {
+        "code": 0,
+        "data": [],
+        "errCode": 0,
+        "errMessage": "success",
+        "msg": "success",
+        "success": true
+      }
+    },
+    {
+      "docId": "1927188265289572353",
+      "response": {
+        "code": 0,
+        "data": [],
+        "errCode": 0,
+        "errMessage": "success",
+        "msg": "success",
+        "success": true
+      }
+    },
+    {
+      "docId": "1927194556326141953",
+      "response": {
+        "code": 0,
+        "data": [],
+        "errCode": 0,
+        "errMessage": "success",
+        "msg": "success",
+        "success": true
+      }
+    },
+    {
+      "docId": "1927188091632803841",
+      "response": {
+        "code": 0,
+        "data": [],
+        "errCode": 0,
+        "errMessage": "success",
+        "msg": "success",
+        "success": true
+      }
+    },
+    {
+      "docId": "1927194096852721666",
+      "response": {
+        "code": 0,
+        "data": [],
+        "errCode": 0,
+        "errMessage": "success",
+        "msg": "success",
+        "success": true
+      }
+    },
+    {
+      "docId": "1927193932448587777",
+      "response": {
+        "code": 0,
+        "data": [],
+        "errCode": 0,
+        "errMessage": "success",
+        "msg": "success",
+        "success": true
+      }
+    },
+    {
+      "docId": "1927193703905157122",
+      "response": {
+        "code": 0,
+        "data": [],
+        "errCode": 0,
+        "errMessage": "success",
+        "msg": "success",
+        "success": true
+      }
+    },
+    {
+      "docId": "1926972968070733825",
+      "response": {
+        "code": 0,
+        "data": [],
+        "errCode": 0,
+        "errMessage": "success",
+        "msg": "success",
+        "success": true
+      }
+    },
+    {
+      "docId": "1925802367507423233",
+      "response": {
+        "code": 0,
+        "data": [],
+        "errCode": 0,
+        "errMessage": "success",
+        "msg": "success",
+        "success": true
+      }
+    },
+    {
+      "docId": "1925898259195420674",
+      "response": {
+        "code": 0,
+        "data": [
+          {
+            "audioUrl": null,
+            "baseId": "1925898050805620738",
+            "content": "新建aaaaaaaaaaaaa\nVPN账号：80011430\n密码：Aa123456\n服务器：61.141.158.184\n端口：5500\n超级美的项目：\nhttp://200.200.200.40/svn/repositories/front/trunk/beauty/source/superBeauty\n暂时先带上了三位一体的代码，方便大家调试自己封装的组件。公共组件都放到commonComponents文件夹下\n13187169066 123456\n奥方 ：\nhttp://200.200.200.40/svn/repositories/front/trunk/system/source/afan-admin\nhttps://dp.clife.net/platformAdmin/aFan/index.html#/login\n15889512479 123456\n预发布店铺账号 : 13233330909  123456\nMOFUN用户小程序\n登陆平台：https://mp.weixin.qq.com/\n账号：502084908@qq.com",
+            "createTime": "2025-05-23 20:55:33",
+            "deployVersion": null,
+            "docId": "1925898259195420674",
+            "enable": 1,
+            "imageUrl": null,
+            "segmentId": 4097254,
+            "segmentOrder": 0,
+            "segmentStatus": 2,
+            "size": 479,
+            "step": 1,
+            "thirdPfChunkId": null,
+            "thirdPfDocId": null,
+            "urls": null,
+            "userId": 1094,
+            "version": 0,
+            "videoUrl": null
+          },
+          {
+            "audioUrl": null,
+            "baseId": "1925898050805620738",
+            "content": "密码：Jbyy8888\nMOFUN商家小程序\n登陆平台：https://mp.weixin.qq.com/\n账号：2025246548@qq.com\n密码：Jbyy8888\n商家小程序：13288880000 a123456（正式）  18566695347 aaa12345（预发布）\nehr: http://ehr.home.com/portal/ess\nminioa: https://oa.zoom-life.com\noa: http://oa.clife.cn:8088",
+            "createTime": "2025-05-23 20:55:33",
+            "deployVersion": null,
+            "docId": "1925898259195420674",
+            "enable": 1,
+            "imageUrl": null,
+            "segmentId": 4097255,
+            "segmentOrder": 1,
+            "segmentStatus": 2,
+            "size": 240,
+            "step": 1,
+            "thirdPfChunkId": null,
+            "thirdPfDocId": null,
+            "urls": null,
+            "userId": 1094,
+            "version": 0,
+            "videoUrl": null
+          }
+        ],
+        "errCode": 0,
+        "errMessage": "success",
+        "msg": "success",
+        "success": true
+      }
+    },
+    {
+      "docId": "1925470200558444546",
+      "response": {
+        "code": 0,
+        "data": [],
+        "errCode": 0,
+        "errMessage": "success",
+        "msg": "success",
+        "success": true
+      }
+    },
+    {
+      "docId": "1925392241407483905",
+      "response": {
+        "code": 0,
+        "data": [],
+        "errCode": 0,
+        "errMessage": "success",
+        "msg": "success",
+        "success": true
+      }
+    },
+    {
+      "docId": "1925384432129335297",
+      "response": {
+        "code": 0,
+        "data": [
+          {
+            "audioUrl": null,
+            "baseId": "1925360573766361090",
+            "content": "ALTER TABLE `tb_biz_base_goods_spu_detail`\nCHANGE COLUMN `out_goods_url` `out_goods_url` VARCHAR(2048) NULL DEFAULT NULL COMMENT '外部跳转产品URL' COLLATE 'utf8mb4_general_ci' AFTER `goods_labels`;\nUPDATE tb_biz_base_goods_spu_detail\nSET out_goods_url = CONCAT('{\"jumpstatus\":false,\"jumpConfigData\":{\"linkType\":1,\"typeIndex\":\"shortLink\",\"configType\":\"upload\",\"shortLink\":\"',",
+            "createTime": "2025-05-22 10:57:50",
+            "deployVersion": null,
+            "docId": "1925384432129335297",
+            "enable": 1,
+            "imageUrl": null,
+            "segmentId": 4097250,
+            "segmentOrder": 0,
+            "segmentStatus": 2,
+            "size": 368,
+            "step": 1,
+            "thirdPfChunkId": null,
+            "thirdPfDocId": null,
+            "urls": null,
+            "userId": 1094,
+            "version": 0,
+            "videoUrl": null
+          },
+          {
+            "audioUrl": null,
+            "baseId": "1925360573766361090",
+            "content": "SUBSTRING(out_goods_url, LOCATE('\"url\":\"', out_goods_url) + LENGTH('\"url\":\"'), LENGTH(out_goods_url) - LOCATE('\"url\":\"', out_goods_url) - LENGTH('\"}')),'}'),updated_time = \"2025-02-07 17:34:14\"\nWHERE out_goods_url not LIKE '%\"jumpstatus\":true%' AND del_flag = 0 AND out_goods_url not LIKE '%jumpConfigData%' and out_goods_url  like '%,\"url\":%'\nUPDATE tb_biz_base_goods_spu_detail",
+            "createTime": "2025-05-22 10:57:50",
+            "deployVersion": null,
+            "docId": "1925384432129335297",
+            "enable": 1,
+            "imageUrl": null,
+            "segmentId": 4097251,
+            "segmentOrder": 1,
+            "segmentStatus": 2,
+            "size": 379,
+            "step": 1,
+            "thirdPfChunkId": null,
+            "thirdPfDocId": null,
+            "urls": null,
+            "userId": 1094,
+            "version": 0,
+            "videoUrl": null
+          },
+          {
+            "audioUrl": null,
+            "baseId": "1925360573766361090",
+            "content": "SET out_goods_url = CONCAT('{\"jumpstatus\":true,\"jumpConfigData\":{\"linkType\":1,\"typeIndex\":\"shortLink\",\"configType\":\"upload\",\"shortLink\":\"',\nSUBSTRING(out_goods_url, LOCATE('\"url\":\"', out_goods_url) + LENGTH('\"url\":\"'), LENGTH(out_goods_url) - LOCATE('\"url\":\"', out_goods_url) - LENGTH('\"}')),'}'),updated_time = \"2025-02-07 17:34:14\"\nWHERE  out_goods_url  LIKE '%\"jumpstatus\":true%' AND del_flag = 0 AND out_goods_url not LIKE '%jumpConfigData%' and out_goods_url  like '%,\"url\":%'",
+            "createTime": "2025-05-22 10:57:50",
+            "deployVersion": null,
+            "docId": "1925384432129335297",
+            "enable": 1,
+            "imageUrl": null,
+            "segmentId": 4097252,
+            "segmentOrder": 2,
+            "segmentStatus": 2,
+            "size": 481,
+            "step": 1,
+            "thirdPfChunkId": null,
+            "thirdPfDocId": null,
+            "urls": null,
+            "userId": 1094,
+            "version": 0,
+            "videoUrl": null
+          },
+          {
+            "audioUrl": null,
+            "baseId": "1925360573766361090",
+            "content": "UPDATE tb_biz_base_goods_spu_detail\nSET out_goods_url = '{\"jumpstatus\":true,\"jumpConfigData\":{\"linkType\":1,\"typeIndex\":\"shortLink\",\"configType\":\"upload\",\"shortLink\":\"\"}}',updated_time = \"2025-02-07 17:34:14\"\nWHERE  del_flag = 0 and out_goods_url not like '%,\"url\":%' AND  out_goods_url not LIKE '%jumpConfigData%' AND out_goods_url  LIKE '%\"jumpstatus\":true%'",
+            "createTime": "2025-05-22 10:57:50",
+            "deployVersion": null,
+            "docId": "1925384432129335297",
+            "enable": 1,
+            "imageUrl": null,
+            "segmentId": 4097253,
+            "segmentOrder": 3,
+            "segmentStatus": 2,
+            "size": 359,
+            "step": 1,
+            "thirdPfChunkId": null,
+            "thirdPfDocId": null,
+            "urls": null,
+            "userId": 1094,
+            "version": 0,
+            "videoUrl": null
+          }
+        ],
+        "errCode": 0,
+        "errMessage": "success",
+        "msg": "success",
+        "success": true
+      }
+    },
+    {
+      "docId": "1927700480337829889",
+      "response": {
+        "code": 0,
+        "data": [],
+        "errCode": 0,
+        "errMessage": "success",
+        "msg": "success",
+        "success": true
+      }
+    },
+    {
+      "docId": "1925799546246586370",
+      "response": {
+        "code": 0,
+        "data": [],
+        "errCode": 0,
+        "errMessage": "success",
+        "msg": "success",
+        "success": true
+      }
+    }
+  ],
+  "status": "completed",
+  "tables": [
+    {
+      "docId": "2046582977505943554",
+      "response": {
+        "code": 0,
+        "data": [
+          [
+            {
+              "columnName": "候选句",
+              "columnValue": "开始饮水打卡",
+              "indexColumn": 1
+            }
+          ],
+          [
+            {
+              "columnName": "候选句",
+              "columnValue": "现在帮我打卡喝水",
+              "indexColumn": 1
+            }
+          ],
+          [
+            {
+              "columnName": "候选句",
+              "columnValue": "执行今日饮水记录",
+              "indexColumn": 1
+            }
+          ],
+          [
+            {
+              "columnName": "候选句",
+              "columnValue": "给我做个饮水签到",
+              "indexColumn": 1
+            }
+          ],
+          [
+            {
+              "columnName": "候选句",
+              "columnValue": "我要登记这次喝水",
+              "indexColumn": 1
+            }
+          ],
+          [
+            {
+              "columnName": "候选句",
+              "columnValue": "立刻进行饮水打卡",
+              "indexColumn": 1
+            }
+          ],
+          [
+            {
+              "columnName": "候选句",
+              "columnValue": "把这杯水记到打卡里",
+              "indexColumn": 1
+            }
+          ],
+          [
+            {
+              "columnName": "候选句",
+              "columnValue": "帮我记录今天的喝水情况",
+              "indexColumn": 1
+            }
+          ],
+          [
+            {
+              "columnName": "候选句",
+              "columnValue": "开启饮水打卡流程",
+              "indexColumn": 1
+            }
+          ],
+          [
+            {
+              "columnName": "候选句",
+              "columnValue": "提交一次喝水打卡",
+              "indexColumn": 1
+            }
+          ]
+        ],
+        "errCode": null,
+        "msg": "操作成功",
+        "timestamp": 1792045716000
+      }
+    },
+    {
+      "docId": "2046583393849335810",
+      "response": {
+        "code": 0,
+        "data": [
+          [
+            {
+              "columnName": "候选句",
+              "columnValue": "请执行拍照测肤",
+              "indexColumn": 1
+            }
+          ],
+          [
+            {
+              "columnName": "候选句",
+              "columnValue": "帮我拍照做一下肤质检测",
+              "indexColumn": 1
+            }
+          ],
+          [
+            {
+              "columnName": "候选句",
+              "columnValue": "现在开始拍脸测肤吧",
+              "indexColumn": 1
+            }
+          ],
+          [
+            {
+              "columnName": "候选句",
+              "columnValue": "我要用拍照方式分析皮肤状态",
+              "indexColumn": 1
+            }
+          ],
+          [
+            {
+              "columnName": "候选句",
+              "columnValue": "打开拍照测肤功能",
+              "indexColumn": 1
+            }
+          ],
+          [
+            {
+              "columnName": "候选句",
+              "columnValue": "给我来一次拍照测肤评估",
+              "indexColumn": 1
+            }
+          ],
+          [
+            {
+              "columnName": "候选句",
+              "columnValue": "通过拍照帮我检测皮肤问题",
+              "indexColumn": 1
+            }
+          ],
+          [
+            {
+              "columnName": "候选句",
+              "columnValue": "启动相机进行皮肤测试",
+              "indexColumn": 1
+            }
+          ],
+          [
+            {
+              "columnName": "候选句",
+              "columnValue": "进行一次面部拍照测肤",
+              "indexColumn": 1
+            }
+          ],
+          [
+            {
+              "columnName": "候选句",
+              "columnValue": "我想拍张照看看我的肤质",
+              "indexColumn": 1
+            }
+          ]
+        ],
+        "errCode": null,
+        "msg": "操作成功",
+        "timestamp": 1792045716000
+      }
+    },
+    {
+      "docId": "2046510296924315649",
+      "response": {
+        "code": 0,
+        "data": [
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "我该如何调整蛋白质摄入？",
+              "indexColumn": 1
+            }
+          ],
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "我可以加入什么食物补充碳水？",
+              "indexColumn": 1
+            }
+          ],
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "脸上反复长痘该怎么护理？",
+              "indexColumn": 1
+            }
+          ],
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "皮肤暗沉发黄如何改善？",
+              "indexColumn": 1
+            }
+          ],
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "敏感肌可以做面部补水吗？",
+              "indexColumn": 1
+            }
+          ],
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "黑头粉刺怎么清理最安全？",
+              "indexColumn": 1
+            }
+          ],
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "多久做一次面部护理合适？",
+              "indexColumn": 1
+            }
+          ],
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "熬夜脸干燥起皮怎么缓解？",
+              "indexColumn": 1
+            }
+          ],
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "祛斑做哪种项目效果更好？",
+              "indexColumn": 1
+            }
+          ],
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "脸部毛孔粗大如何收缩？",
+              "indexColumn": 1
+            }
+          ]
+        ],
+        "errCode": null,
+        "msg": "操作成功",
+        "timestamp": 1792045716000
+      }
+    },
+    {
+      "docId": "2046509700888551425",
+      "response": {
+        "code": 0,
+        "data": [
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "我该如何调整蛋白质摄入？",
+              "indexColumn": 1
+            }
+          ],
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "我可以加入什么食物补充碳水？",
+              "indexColumn": 1
+            }
+          ],
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "脸上反复长痘该怎么护理？",
+              "indexColumn": 1
+            }
+          ],
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "皮肤暗沉发黄如何改善？",
+              "indexColumn": 1
+            }
+          ],
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "敏感肌可以做面部补水吗？",
+              "indexColumn": 1
+            }
+          ],
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "黑头粉刺怎么清理最安全？",
+              "indexColumn": 1
+            }
+          ],
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "多久做一次面部护理合适？",
+              "indexColumn": 1
+            }
+          ],
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "熬夜脸干燥起皮怎么缓解？",
+              "indexColumn": 1
+            }
+          ],
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "祛斑做哪种项目效果更好？",
+              "indexColumn": 1
+            }
+          ],
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "脸部毛孔粗大如何收缩？",
+              "indexColumn": 1
+            }
+          ]
+        ],
+        "errCode": null,
+        "msg": "操作成功",
+        "timestamp": 1792045716000
+      }
+    },
+    {
+      "docId": "1987702667100332034",
+      "response": {
+        "code": 0,
+        "data": [],
+        "errCode": null,
+        "msg": "操作成功",
+        "timestamp": 1792045716000
+      }
+    },
+    {
+      "docId": "2096792111382769666",
+      "response": {
+        "code": 0,
+        "data": [],
+        "errCode": null,
+        "msg": "操作成功",
+        "timestamp": 1792045716000
+      }
+    },
+    {
+      "docId": "2096799101572067330",
+      "response": {
+        "code": 0,
+        "data": [],
+        "errCode": null,
+        "msg": "操作成功",
+        "timestamp": 1792045716000
+      }
+    },
+    {
+      "docId": "1987701967553339393",
+      "response": {
+        "code": 0,
+        "data": [],
+        "errCode": null,
+        "msg": "操作成功",
+        "timestamp": 1792045717000
+      }
+    },
+    {
+      "docId": "1947208221650898945",
+      "response": {
+        "code": 0,
+        "data": [
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "注射瘦腿瘦肩剂量少会影响效果吗？",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "问题描述（填写该问题的相关描述，帮助大模型理解）",
+              "columnValue": "面诊用户询问注射的剂量与直角肩/瘦腿，瘦脸，下颌缘清晰&上提等的效果，持续时间等是否有影响",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案1",
+              "columnValue": "单次注射小腿剂量一般为150-300个单位，具体剂量医生会根据患者本身的肌肉情况面诊评估来定，很多机构售卖的低价瘦腿项目都存在剂量不足问题，注射后起不到充分放松肌肉的效果。",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案2",
+              "columnValue": "",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案3",
+              "columnValue": "",
+              "indexColumn": 0
+            }
+          ],
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "频繁注射可能会导致无效产生耐药性吗？",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "问题描述（填写该问题的相关描述，帮助大模型理解）",
+              "columnValue": "面诊用户询问，打肉毒/保妥适等，次数多了效果就不好了，感觉这次打相同剂量，没有上次效果好了，是不是以后要多打一些，时间还能维持那么长么？等疑虑",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案1",
+              "columnValue": "短期内频繁注射，可能会导致耐药性，建议一次量打够，需要打的位置同一时间打，4-6月在打第二次。出于安全建议，智美坚守适量院长，如保妥适半年内不超过200U。",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案2",
+              "columnValue": "",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案3",
+              "columnValue": "",
+              "indexColumn": 0
+            }
+          ],
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "注射瘦腿瘦肩可以一起吗？",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "问题描述（填写该问题的相关描述，帮助大模型理解）",
+              "columnValue": "面诊用户询问注射肉毒，是否可以面部和身体一起做，肩膀，腿部等是否可以一起治疗的效果确认，担忧和疑虑",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案1",
+              "columnValue": "医疗安全上，成年人至少注射2000单位药品才会产生中毒症状，而注射量只要不超过300单位，都属于安全范围内，在安全剂量范围内，更推荐同一天注射，因为抗体的产生和注射频次关系很大。",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案2",
+              "columnValue": "",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案3",
+              "columnValue": "",
+              "indexColumn": 0
+            }
+          ],
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "注射瘦腿之后走路没力气什么原因？",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "问题描述（填写该问题的相关描述，帮助大模型理解）",
+              "columnValue": "面诊用户询问注射肉毒后出现走路没力气，双侧腿用力不均匀等情况是否是正常现象，包括询问注射瘦腿后是否可能出现肌肉无力、乏力、活动受限等副作用或不适。",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案1",
+              "columnValue": "注射瘦腿后的1-2周内可能出现局部肿胀酸痛，但不影响正常走路。药物会抑制神经和肌肉的沟通，导致小腿肌肉麻痹。1-2周内有些人会产生局部酸痛，行走无力的感觉，证明药物正在起作用，多数会在三周后自行缓解。",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案2",
+              "columnValue": "",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案3",
+              "columnValue": "",
+              "indexColumn": 0
+            }
+          ],
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "跑步运动会导致反弹吗？",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "问题描述（填写该问题的相关描述，帮助大模型理解）",
+              "columnValue": "面诊用户询问注射后，长期运动是否会加快代谢，导致效果减弱会时间缩短",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案1",
+              "columnValue": "随着药物的代谢，小腿肌肉会在4-6个月逐渐恢复到注射前的状态，而肌肉都有用进废退的特性，如果在注射后过度运动，频繁锻炼，会加快小腿肌肉恢复，缩短瘦腿效果的维持时间。",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案2",
+              "columnValue": "",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案3",
+              "columnValue": "",
+              "indexColumn": 0
+            }
+          ],
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "玻尿酸溶解酶的禁忌症",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "问题描述（填写该问题的相关描述，帮助大模型理解）",
+              "columnValue": "用户询问关于玻尿酸溶解酶的禁忌症，涉及玻尿酸酶/透明质酸酶使用时须注意的健康状况、风险人群、用药禁忌等。",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案1",
+              "columnValue": "注射过肉毒素的部位48小时内不能注射玻尿酸酶，因为玻尿酸酶促使肉毒素严重扩散。\n2、避免一些急慢性病，还有正在口服一些药物，尤其是有过敏史的客人。\n3、注射完玻尿酸酶后再注射玻尿酸的间隔时间：一般间隔一周比较稳妥，如果紧急的情况就间隔72小时，这个和药物吸收情况有关。",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案2",
+              "columnValue": "",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案3",
+              "columnValue": "",
+              "indexColumn": 0
+            }
+          ],
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "玻尿酸前期的融合效果不佳，触感明显",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "问题描述（填写该问题的相关描述，帮助大模型理解）",
+              "columnValue": "用户反映玻尿酸注射后的初期融合效果不理想，可能表现为触感明显、硬块或不自然等，涉及玻尿酸/透明质酸在体内的吸收、融合、质地等问题。",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案1",
+              "columnValue": "好看的唇部要有合适的容量，突出表现点，需要定点精细化注射，所以前期定点注射部位的融合需要的时间更久",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案2",
+              "columnValue": "",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案3",
+              "columnValue": "",
+              "indexColumn": 0
+            }
+          ],
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "玻尿酸一支剂量是否不够唇部注射",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "问题描述（填写该问题的相关描述，帮助大模型理解）",
+              "columnValue": "用户询问单支玻尿酸的剂量是否足够用于唇部注射，涉及玻尿酸/透明质酸填充剂的用量、唇部塑形效果、注射效果及优化建议等。",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案1",
+              "columnValue": "根据每个人需要可多支叠加",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案2",
+              "columnValue": "",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案3",
+              "columnValue": "",
+              "indexColumn": 0
+            }
+          ],
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "法令纹注射前两周触感明显",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "问题描述（填写该问题的相关描述，帮助大模型理解）",
+              "columnValue": "面诊用户询问法令纹注射的效果与变化，特别是法令纹注射前两周的触感变化、触觉体验等，可能涉及注射填充物、皮肤质地的改变。",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案1",
+              "columnValue": "需要时间融合 表现点可能出现吸水微肿状态，做表情出现异物感等",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案2",
+              "columnValue": "",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案3",
+              "columnValue": "",
+              "indexColumn": 0
+            }
+          ],
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "玻尿酸前期的融合效果不佳 触感明显",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "问题描述（填写该问题的相关描述，帮助大模型理解）",
+              "columnValue": "用户询问玻尿酸注射后的初期效果，特别关注玻尿酸的融合效果和触感，涉及玻尿酸填充物的吸收、皮肤表面的调整和质地的变化等。",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案1",
+              "columnValue": "需要定点精细化注射，所以前期定点注射部位的融合需要的时间更久",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案2",
+              "columnValue": "",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案3",
+              "columnValue": "",
+              "indexColumn": 0
+            }
+          ]
+        ],
+        "errCode": null,
+        "msg": "操作成功",
+        "timestamp": 1792045717000
+      }
+    },
+    {
+      "docId": "1945685999566229505",
+      "response": {
+        "code": 0,
+        "data": [
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "注射瘦腿瘦肩剂量少会影响效果吗？",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "问题描述（填写该问题的相关描述，帮助大模型理解）",
+              "columnValue": "面诊用户询问注射的剂量与直角肩/瘦腿，瘦脸，下颌缘清晰&上提等的效果，持续时间等是否有影响",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案1",
+              "columnValue": "单次注射小腿剂量一般为150-300个单位，具体剂量医生会根据患者本身的肌肉情况面诊评估来定，很多机构售卖的低价瘦腿项目都存在剂量不足问题，注射后起不到充分放松肌肉的效果。",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案2",
+              "columnValue": "",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案3",
+              "columnValue": "",
+              "indexColumn": 0
+            }
+          ],
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "频繁注射可能会导致无效产生耐药性吗？",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "问题描述（填写该问题的相关描述，帮助大模型理解）",
+              "columnValue": "面诊用户询问，打肉毒/保妥适等，次数多了效果就不好了，感觉这次打相同剂量，没有上次效果好了，是不是以后要多打一些，时间还能维持那么长么？等疑虑",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案1",
+              "columnValue": "短期内频繁注射，可能会导致耐药性，建议一次量打够，需要打的位置同一时间打，4-6月在打第二次。出于安全建议，智美坚守适量院长，如保妥适半年内不超过200U。",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案2",
+              "columnValue": "",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案3",
+              "columnValue": "",
+              "indexColumn": 0
+            }
+          ],
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "注射瘦腿瘦肩可以一起吗？",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "问题描述（填写该问题的相关描述，帮助大模型理解）",
+              "columnValue": "面诊用户询问注射肉毒，是否可以面部和身体一起做，肩膀，腿部等是否可以一起治疗的效果确认，担忧和疑虑",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案1",
+              "columnValue": "医疗安全上，成年人至少注射2000单位药品才会产生中毒症状，而注射量只要不超过300单位，都属于安全范围内，在安全剂量范围内，更推荐同一天注射，因为抗体的产生和注射频次关系很大。",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案2",
+              "columnValue": "",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案3",
+              "columnValue": "",
+              "indexColumn": 0
+            }
+          ],
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "注射瘦腿之后走路没力气什么原因？",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "问题描述（填写该问题的相关描述，帮助大模型理解）",
+              "columnValue": "面诊用户询问注射肉毒后出现走路没力气，双侧腿用力不均匀等情况是否是正常现象，包括询问注射瘦腿后是否可能出现肌肉无力、乏力、活动受限等副作用或不适。",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案1",
+              "columnValue": "注射瘦腿后的1-2周内可能出现局部肿胀酸痛，但不影响正常走路。药物会抑制神经和肌肉的沟通，导致小腿肌肉麻痹。1-2周内有些人会产生局部酸痛，行走无力的感觉，证明药物正在起作用，多数会在三周后自行缓解。",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案2",
+              "columnValue": "",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案3",
+              "columnValue": "",
+              "indexColumn": 0
+            }
+          ],
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "跑步运动会导致反弹吗？",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "问题描述（填写该问题的相关描述，帮助大模型理解）",
+              "columnValue": "面诊用户询问注射后，长期运动是否会加快代谢，导致效果减弱会时间缩短",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案1",
+              "columnValue": "随着药物的代谢，小腿肌肉会在4-6个月逐渐恢复到注射前的状态，而肌肉都有用进废退的特性，如果在注射后过度运动，频繁锻炼，会加快小腿肌肉恢复，缩短瘦腿效果的维持时间。",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案2",
+              "columnValue": "",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案3",
+              "columnValue": "",
+              "indexColumn": 0
+            }
+          ],
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "玻尿酸溶解酶的禁忌症",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "问题描述（填写该问题的相关描述，帮助大模型理解）",
+              "columnValue": "用户询问关于玻尿酸溶解酶的禁忌症，涉及玻尿酸酶/透明质酸酶使用时须注意的健康状况、风险人群、用药禁忌等。",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案1",
+              "columnValue": "注射过肉毒素的部位48小时内不能注射玻尿酸酶，因为玻尿酸酶促使肉毒素严重扩散。\n2、避免一些急慢性病，还有正在口服一些药物，尤其是有过敏史的客人。\n3、注射完玻尿酸酶后再注射玻尿酸的间隔时间：一般间隔一周比较稳妥，如果紧急的情况就间隔72小时，这个和药物吸收情况有关。",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案2",
+              "columnValue": "",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案3",
+              "columnValue": "",
+              "indexColumn": 0
+            }
+          ],
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "玻尿酸前期的融合效果不佳，触感明显",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "问题描述（填写该问题的相关描述，帮助大模型理解）",
+              "columnValue": "用户反映玻尿酸注射后的初期融合效果不理想，可能表现为触感明显、硬块或不自然等，涉及玻尿酸/透明质酸在体内的吸收、融合、质地等问题。",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案1",
+              "columnValue": "好看的唇部要有合适的容量，突出表现点，需要定点精细化注射，所以前期定点注射部位的融合需要的时间更久",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案2",
+              "columnValue": "",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案3",
+              "columnValue": "",
+              "indexColumn": 0
+            }
+          ],
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "玻尿酸一支剂量是否不够唇部注射",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "问题描述（填写该问题的相关描述，帮助大模型理解）",
+              "columnValue": "用户询问单支玻尿酸的剂量是否足够用于唇部注射，涉及玻尿酸/透明质酸填充剂的用量、唇部塑形效果、注射效果及优化建议等。",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案1",
+              "columnValue": "根据每个人需要可多支叠加",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案2",
+              "columnValue": "",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案3",
+              "columnValue": "",
+              "indexColumn": 0
+            }
+          ],
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "法令纹注射前两周触感明显",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "问题描述（填写该问题的相关描述，帮助大模型理解）",
+              "columnValue": "面诊用户询问法令纹注射的效果与变化，特别是法令纹注射前两周的触感变化、触觉体验等，可能涉及注射填充物、皮肤质地的改变。",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案1",
+              "columnValue": "需要时间融合 表现点可能出现吸水微肿状态，做表情出现异物感等",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案2",
+              "columnValue": "",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案3",
+              "columnValue": "",
+              "indexColumn": 0
+            }
+          ],
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "玻尿酸前期的融合效果不佳 触感明显",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "问题描述（填写该问题的相关描述，帮助大模型理解）",
+              "columnValue": "用户询问玻尿酸注射后的初期效果，特别关注玻尿酸的融合效果和触感，涉及玻尿酸填充物的吸收、皮肤表面的调整和质地的变化等。",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案1",
+              "columnValue": "需要定点精细化注射，所以前期定点注射部位的融合需要的时间更久",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案2",
+              "columnValue": "",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案3",
+              "columnValue": "",
+              "indexColumn": 0
+            }
+          ]
+        ],
+        "errCode": null,
+        "msg": "操作成功",
+        "timestamp": 1792045717000
+      }
+    },
+    {
+      "docId": "1947594345045086210",
+      "response": {
+        "code": 0,
+        "data": [
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "注射瘦腿瘦肩剂量少会影响效果吗？",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "问题描述（填写该问题的相关描述，帮助大模型理解）",
+              "columnValue": "面诊用户询问注射的剂量与直角肩/瘦腿，瘦脸，下颌缘清晰&上提等的效果，持续时间等是否有影响",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案1",
+              "columnValue": "单次注射小腿剂量一般为150-300个单位，具体剂量医生会根据患者本身的肌肉情况面诊评估来定，很多机构售卖的低价瘦腿项目都存在剂量不足问题，注射后起不到充分放松肌肉的效果。",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案2",
+              "columnValue": "",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案3",
+              "columnValue": "",
+              "indexColumn": 0
+            }
+          ]
+        ],
+        "errCode": null,
+        "msg": "操作成功",
+        "timestamp": 1792045717000
+      }
+    },
+    {
+      "docId": "1947857872037138434",
+      "response": {
+        "code": 0,
+        "data": [],
+        "errCode": null,
+        "msg": "操作成功",
+        "timestamp": 1792045717000
+      }
+    },
+    {
+      "docId": "1932071150122868737",
+      "response": {
+        "code": 0,
+        "data": [
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "注射瘦腿瘦肩剂量少会影响效果吗？",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "问题描述（填写该问题的相关描述，帮助大模型理解）",
+              "columnValue": "面诊用户询问注射的剂量与直角肩/瘦腿，瘦脸，下颌缘清晰&上提等的效果，持续时间等是否有影响",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案1",
+              "columnValue": "单次注射小腿剂量一般为150-300个单位，具体剂量医生会根据患者本身的肌肉情况面诊评估来定，很多机构售卖的低价瘦腿项目都存在剂量不足问题，注射后起不到充分放松肌肉的效果。",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案2",
+              "columnValue": "",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案3",
+              "columnValue": "",
+              "indexColumn": 0
+            }
+          ],
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "频繁注射可能会导致无效产生耐药性吗？",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "问题描述（填写该问题的相关描述，帮助大模型理解）",
+              "columnValue": "面诊用户询问，打肉毒/保妥适等，次数多了效果就不好了，感觉这次打相同剂量，没有上次效果好了，是不是以后要多打一些，时间还能维持那么长么？等疑虑",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案1",
+              "columnValue": "短期内频繁注射，可能会导致耐药性，建议一次量打够，需要打的位置同一时间打，4-6月在打第二次。出于安全建议，智美坚守适量院长，如保妥适半年内不超过200U。",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案2",
+              "columnValue": "",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案3",
+              "columnValue": "",
+              "indexColumn": 0
+            }
+          ],
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "注射瘦腿瘦肩可以一起吗？",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "问题描述（填写该问题的相关描述，帮助大模型理解）",
+              "columnValue": "面诊用户询问注射肉毒，是否可以面部和身体一起做，肩膀，腿部等是否可以一起治疗的效果确认，担忧和疑虑",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案1",
+              "columnValue": "医疗安全上，成年人至少注射2000单位药品才会产生中毒症状，而注射量只要不超过300单位，都属于安全范围内，在安全剂量范围内，更推荐同一天注射，因为抗体的产生和注射频次关系很大。",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案2",
+              "columnValue": "",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案3",
+              "columnValue": "",
+              "indexColumn": 0
+            }
+          ],
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "注射瘦腿之后走路没力气什么原因？",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "问题描述（填写该问题的相关描述，帮助大模型理解）",
+              "columnValue": "面诊用户询问注射肉毒后出现走路没力气，双侧腿用力不均匀等情况是否是正常现象，包括询问注射瘦腿后是否可能出现肌肉无力、乏力、活动受限等副作用或不适。",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案1",
+              "columnValue": "注射瘦腿后的1-2周内可能出现局部肿胀酸痛，但不影响正常走路。药物会抑制神经和肌肉的沟通，导致小腿肌肉麻痹。1-2周内有些人会产生局部酸痛，行走无力的感觉，证明药物正在起作用，多数会在三周后自行缓解。",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案2",
+              "columnValue": "",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案3",
+              "columnValue": "",
+              "indexColumn": 0
+            }
+          ],
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "跑步运动会导致反弹吗？",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "问题描述（填写该问题的相关描述，帮助大模型理解）",
+              "columnValue": "面诊用户询问注射后，长期运动是否会加快代谢，导致效果减弱会时间缩短",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案1",
+              "columnValue": "随着药物的代谢，小腿肌肉会在4-6个月逐渐恢复到注射前的状态，而肌肉都有用进废退的特性，如果在注射后过度运动，频繁锻炼，会加快小腿肌肉恢复，缩短瘦腿效果的维持时间。",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案2",
+              "columnValue": "",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案3",
+              "columnValue": "",
+              "indexColumn": 0
+            }
+          ],
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "玻尿酸溶解酶的禁忌症",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "问题描述（填写该问题的相关描述，帮助大模型理解）",
+              "columnValue": "用户询问关于玻尿酸溶解酶的禁忌症，涉及玻尿酸酶/透明质酸酶使用时须注意的健康状况、风险人群、用药禁忌等。",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案1",
+              "columnValue": "注射过肉毒素的部位48小时内不能注射玻尿酸酶，因为玻尿酸酶促使肉毒素严重扩散。\n2、避免一些急慢性病，还有正在口服一些药物，尤其是有过敏史的客人。\n3、注射完玻尿酸酶后再注射玻尿酸的间隔时间：一般间隔一周比较稳妥，如果紧急的情况就间隔72小时，这个和药物吸收情况有关。",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案2",
+              "columnValue": "",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案3",
+              "columnValue": "",
+              "indexColumn": 0
+            }
+          ],
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "玻尿酸前期的融合效果不佳，触感明显",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "问题描述（填写该问题的相关描述，帮助大模型理解）",
+              "columnValue": "用户反映玻尿酸注射后的初期融合效果不理想，可能表现为触感明显、硬块或不自然等，涉及玻尿酸/透明质酸在体内的吸收、融合、质地等问题。",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案1",
+              "columnValue": "好看的唇部要有合适的容量，突出表现点，需要定点精细化注射，所以前期定点注射部位的融合需要的时间更久",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案2",
+              "columnValue": "",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案3",
+              "columnValue": "",
+              "indexColumn": 0
+            }
+          ],
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "玻尿酸一支剂量是否不够唇部注射",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "问题描述（填写该问题的相关描述，帮助大模型理解）",
+              "columnValue": "用户询问单支玻尿酸的剂量是否足够用于唇部注射，涉及玻尿酸/透明质酸填充剂的用量、唇部塑形效果、注射效果及优化建议等。",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案1",
+              "columnValue": "根据每个人需要可多支叠加",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案2",
+              "columnValue": "",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案3",
+              "columnValue": "",
+              "indexColumn": 0
+            }
+          ],
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "法令纹注射前两周触感明显",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "问题描述（填写该问题的相关描述，帮助大模型理解）",
+              "columnValue": "面诊用户询问法令纹注射的效果与变化，特别是法令纹注射前两周的触感变化、触觉体验等，可能涉及注射填充物、皮肤质地的改变。",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案1",
+              "columnValue": "需要时间融合 表现点可能出现吸水微肿状态，做表情出现异物感等",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案2",
+              "columnValue": "",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案3",
+              "columnValue": "",
+              "indexColumn": 0
+            }
+          ],
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "玻尿酸前期的融合效果不佳 触感明显",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "问题描述（填写该问题的相关描述，帮助大模型理解）",
+              "columnValue": "用户询问玻尿酸注射后的初期效果，特别关注玻尿酸的融合效果和触感，涉及玻尿酸填充物的吸收、皮肤表面的调整和质地的变化等。",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案1",
+              "columnValue": "需要定点精细化注射，所以前期定点注射部位的融合需要的时间更久",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案2",
+              "columnValue": "",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案3",
+              "columnValue": "",
+              "indexColumn": 0
+            }
+          ]
+        ],
+        "errCode": null,
+        "msg": "操作成功",
+        "timestamp": 1792045717000
+      }
+    },
+    {
+      "docId": "1932020527385976833",
+      "response": {
+        "code": 0,
+        "data": [
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "注射瘦腿瘦肩剂量少会影响效果吗？",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "问题描述（填写该问题的相关描述，帮助大模型理解）",
+              "columnValue": "面诊用户询问注射的剂量与直角肩/瘦腿，瘦脸，下颌缘清晰&上提等的效果，持续时间等是否有影响",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案1",
+              "columnValue": "单次注射小腿剂量一般为150-300个单位，具体剂量医生会根据患者本身的肌肉情况面诊评估来定，很多机构售卖的低价瘦腿项目都存在剂量不足问题，注射后起不到充分放松肌肉的效果。",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案2",
+              "columnValue": "",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案3",
+              "columnValue": "",
+              "indexColumn": 0
+            }
+          ],
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "频繁注射可能会导致无效产生耐药性吗？",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "问题描述（填写该问题的相关描述，帮助大模型理解）",
+              "columnValue": "面诊用户询问，打肉毒/保妥适等，次数多了效果就不好了，感觉这次打相同剂量，没有上次效果好了，是不是以后要多打一些，时间还能维持那么长么？等疑虑",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案1",
+              "columnValue": "短期内频繁注射，可能会导致耐药性，建议一次量打够，需要打的位置同一时间打，4-6月在打第二次。出于安全建议，智美坚守适量院长，如保妥适半年内不超过200U。",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案2",
+              "columnValue": "",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案3",
+              "columnValue": "",
+              "indexColumn": 0
+            }
+          ],
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "注射瘦腿瘦肩可以一起吗？",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "问题描述（填写该问题的相关描述，帮助大模型理解）",
+              "columnValue": "面诊用户询问注射肉毒，是否可以面部和身体一起做，肩膀，腿部等是否可以一起治疗的效果确认，担忧和疑虑",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案1",
+              "columnValue": "医疗安全上，成年人至少注射2000单位药品才会产生中毒症状，而注射量只要不超过300单位，都属于安全范围内，在安全剂量范围内，更推荐同一天注射，因为抗体的产生和注射频次关系很大。",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案2",
+              "columnValue": "",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案3",
+              "columnValue": "",
+              "indexColumn": 0
+            }
+          ],
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "注射瘦腿之后走路没力气什么原因？",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "问题描述（填写该问题的相关描述，帮助大模型理解）",
+              "columnValue": "面诊用户询问注射肉毒后出现走路没力气，双侧腿用力不均匀等情况是否是正常现象，包括询问注射瘦腿后是否可能出现肌肉无力、乏力、活动受限等副作用或不适。",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案1",
+              "columnValue": "注射瘦腿后的1-2周内可能出现局部肿胀酸痛，但不影响正常走路。药物会抑制神经和肌肉的沟通，导致小腿肌肉麻痹。1-2周内有些人会产生局部酸痛，行走无力的感觉，证明药物正在起作用，多数会在三周后自行缓解。",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案2",
+              "columnValue": "",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案3",
+              "columnValue": "",
+              "indexColumn": 0
+            }
+          ],
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "跑步运动会导致反弹吗？",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "问题描述（填写该问题的相关描述，帮助大模型理解）",
+              "columnValue": "面诊用户询问注射后，长期运动是否会加快代谢，导致效果减弱会时间缩短",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案1",
+              "columnValue": "随着药物的代谢，小腿肌肉会在4-6个月逐渐恢复到注射前的状态，而肌肉都有用进废退的特性，如果在注射后过度运动，频繁锻炼，会加快小腿肌肉恢复，缩短瘦腿效果的维持时间。",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案2",
+              "columnValue": "",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案3",
+              "columnValue": "",
+              "indexColumn": 0
+            }
+          ],
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "玻尿酸溶解酶的禁忌症",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "问题描述（填写该问题的相关描述，帮助大模型理解）",
+              "columnValue": "用户询问关于玻尿酸溶解酶的禁忌症，涉及玻尿酸酶/透明质酸酶使用时须注意的健康状况、风险人群、用药禁忌等。",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案1",
+              "columnValue": "注射过肉毒素的部位48小时内不能注射玻尿酸酶，因为玻尿酸酶促使肉毒素严重扩散。\n2、避免一些急慢性病，还有正在口服一些药物，尤其是有过敏史的客人。\n3、注射完玻尿酸酶后再注射玻尿酸的间隔时间：一般间隔一周比较稳妥，如果紧急的情况就间隔72小时，这个和药物吸收情况有关。",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案2",
+              "columnValue": "",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案3",
+              "columnValue": "",
+              "indexColumn": 0
+            }
+          ],
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "玻尿酸前期的融合效果不佳，触感明显",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "问题描述（填写该问题的相关描述，帮助大模型理解）",
+              "columnValue": "用户反映玻尿酸注射后的初期融合效果不理想，可能表现为触感明显、硬块或不自然等，涉及玻尿酸/透明质酸在体内的吸收、融合、质地等问题。",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案1",
+              "columnValue": "好看的唇部要有合适的容量，突出表现点，需要定点精细化注射，所以前期定点注射部位的融合需要的时间更久",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案2",
+              "columnValue": "",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案3",
+              "columnValue": "",
+              "indexColumn": 0
+            }
+          ],
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "玻尿酸一支剂量是否不够唇部注射",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "问题描述（填写该问题的相关描述，帮助大模型理解）",
+              "columnValue": "用户询问单支玻尿酸的剂量是否足够用于唇部注射，涉及玻尿酸/透明质酸填充剂的用量、唇部塑形效果、注射效果及优化建议等。",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案1",
+              "columnValue": "根据每个人需要可多支叠加",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案2",
+              "columnValue": "",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案3",
+              "columnValue": "",
+              "indexColumn": 0
+            }
+          ],
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "法令纹注射前两周触感明显",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "问题描述（填写该问题的相关描述，帮助大模型理解）",
+              "columnValue": "面诊用户询问法令纹注射的效果与变化，特别是法令纹注射前两周的触感变化、触觉体验等，可能涉及注射填充物、皮肤质地的改变。",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案1",
+              "columnValue": "需要时间融合 表现点可能出现吸水微肿状态，做表情出现异物感等",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案2",
+              "columnValue": "",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案3",
+              "columnValue": "",
+              "indexColumn": 0
+            }
+          ],
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "玻尿酸前期的融合效果不佳 触感明显",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "问题描述（填写该问题的相关描述，帮助大模型理解）",
+              "columnValue": "用户询问玻尿酸注射后的初期效果，特别关注玻尿酸的融合效果和触感，涉及玻尿酸填充物的吸收、皮肤表面的调整和质地的变化等。",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案1",
+              "columnValue": "需要定点精细化注射，所以前期定点注射部位的融合需要的时间更久",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案2",
+              "columnValue": "",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案3",
+              "columnValue": "",
+              "indexColumn": 0
+            }
+          ]
+        ],
+        "errCode": null,
+        "msg": "操作成功",
+        "timestamp": 1792045717000
+      }
+    },
+    {
+      "docId": "1931989366613909506",
+      "response": {
+        "code": 0,
+        "data": [
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "超声炮多久做一次合适",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "问题描述（填写该问题的相关描述，帮助大模型理解）",
+              "columnValue": "持续时间等是否有影响",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案1",
+              "columnValue": "超声炮的治疗频率通常建议间隔6-12个月，具体需根据皮肤状态、年龄及胶原蛋白代谢速度调整。超声炮通过超声波能量刺激胶原再生，效果可维持6个月至1年以上，频繁操作可能增加皮肤损伤风险，需理性规划治疗周期",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案2",
+              "columnValue": "不同情况下的治疗频率建议：\n1、初次尝试/轻度松弛，建议间隔12个月\n2、30-40岁/中度下垂，建议8-12个月\n3、40岁以上/明显松弛，建议6-8个月",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案3",
+              "columnValue": "",
+              "indexColumn": 0
+            }
+          ],
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "超声炮做多了会没效果吗",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "问题描述（填写该问题的相关描述，帮助大模型理解）",
+              "columnValue": "面诊用户询问，超声炮次数多了效果就不好了，没有上次效果好了，是不是以后要多做一些，时间还能维持那么长么？等疑虑",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案1",
+              "columnValue": "超声炮打的次数多了，确实可能会存在没效果或效果减弱的情况。这主要是因为超声炮虽然是一种有效的非手术面部提升技术，但如果操作不当或治疗过于频繁，会存在一定的风险",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案2",
+              "columnValue": "",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案3",
+              "columnValue": "",
+              "indexColumn": 0
+            }
+          ],
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "超声炮做完后还可以做其它医美项目吗",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "问题描述（填写该问题的相关描述，帮助大模型理解）",
+              "columnValue": "面诊用户询问，超声炮和其它医美项目一起是否存在冲突，与其它医美项目是否相互影响",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案1",
+              "columnValue": "需根据项目类型及术后恢复阶段谨慎选择。 超声炮属于无创抗衰项目，通过聚焦超声波刺激深层胶原再生，术后皮肤需要1-4周的恢复期，期间需避免过度刺激皮肤或影响修复进程。",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案2",
+              "columnValue": "",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案3",
+              "columnValue": "",
+              "indexColumn": 0
+            }
+          ],
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "超声炮有没有副作用",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "问题描述（填写该问题的相关描述，帮助大模型理解）",
+              "columnValue": "面诊用户询问超声炮的副作用/风险/安全性等。",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案1",
+              "columnValue": "过敏：每个人体质不同，也有个别人在做超声炮的时候会出现过敏症状。\n医院选择:选择正规医院，按医生指导正确护理减少副作用出现\n过敏史：做超声炮时要禁忌过敏史。",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案2",
+              "columnValue": "产生斑痕：做超声炮时可能会让皮肤出现轻微发红和肿胀的现象，但若后期护理不当，引起感染也有可能会产生色素沉淀和疤痕",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案3",
+              "columnValue": "灼伤皮肤：\n1、因为在做超声炮时会使用热能，如果医生调节热能不当，有可能会对皮肤灼伤",
+              "indexColumn": 0
+            }
+          ]
+        ],
+        "errCode": null,
+        "msg": "操作成功",
+        "timestamp": 1792045717000
+      }
+    },
+    {
+      "docId": "1947852282309169153",
+      "response": {
+        "code": 0,
+        "data": [],
+        "errCode": null,
+        "msg": "操作成功",
+        "timestamp": 1792045717000
+      }
+    },
+    {
+      "docId": "1931965520330530818",
+      "response": {
+        "code": 0,
+        "data": [
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "超声炮有没有副作用",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "问题描述（填写该问题的相关描述，帮助大模型理解）",
+              "columnValue": "面诊用户询问超声炮的副作用/风险/安全性等。",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案1",
+              "columnValue": "过敏：每个人体质不同，也有个别人在做超声炮的时候会出现过敏症状。\n医院选择:选择正规医院，按医生指导正确护理减少副作用出现\n过敏史：做超声炮时要禁忌过敏史。",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案2",
+              "columnValue": "产生斑痕：做超声炮时可能会让皮肤出现轻微发红和肿胀的现象，但若后期护理不当，引起感染也有可能会产生色素沉淀和疤痕",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案3",
+              "columnValue": "灼伤皮肤：因为在做超声炮时会使用热能，如果医生调节热能不当，有可能会对皮肤灼伤",
+              "indexColumn": 0
+            }
+          ]
+        ],
+        "errCode": null,
+        "msg": "操作成功",
+        "timestamp": 1792045717000
+      }
+    },
+    {
+      "docId": "1930231674551574529",
+      "response": {
+        "code": 0,
+        "data": [
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "注射瘦腿瘦肩剂量少会影响效果吗？",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "问题描述（填写该问题的相关描述，帮助大模型理解）",
+              "columnValue": "面诊用户询问注射的剂量与直角肩/瘦腿，瘦脸，下颌缘清晰&上提等的效果，持续时间等是否有影响",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案1",
+              "columnValue": "单次注射小腿剂量一般为150-300个单位，具体剂量医生会根据患者本身的肌肉情况面诊评估来定，很多机构售卖的低价瘦腿项目都存在剂量不足问题，注射后起不到充分放松肌肉的效果。",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案2",
+              "columnValue": "",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案3",
+              "columnValue": "",
+              "indexColumn": 0
+            }
+          ],
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "频繁注射可能会导致无效产生耐药性吗？",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "问题描述（填写该问题的相关描述，帮助大模型理解）",
+              "columnValue": "面诊用户询问，打肉毒/保妥适等，次数多了效果就不好了，感觉这次打相同剂量，没有上次效果好了，是不是以后要多打一些，时间还能维持那么长么？等疑虑",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案1",
+              "columnValue": "短期内频繁注射，可能会导致耐药性，建议一次量打够，需要打的位置同一时间打，4-6月在打第二次。出于安全建议，智美坚守适量院长，如保妥适半年内不超过200U。",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案2",
+              "columnValue": "",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案3",
+              "columnValue": "",
+              "indexColumn": 0
+            }
+          ],
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "注射瘦腿瘦肩可以一起吗？",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "问题描述（填写该问题的相关描述，帮助大模型理解）",
+              "columnValue": "面诊用户询问注射肉毒，是否可以面部和身体一起做，肩膀，腿部等是否可以一起治疗的效果确认，担忧和疑虑",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案1",
+              "columnValue": "医疗安全上，成年人至少注射2000单位药品才会产生中毒症状，而注射量只要不超过300单位，都属于安全范围内，在安全剂量范围内，更推荐同一天注射，因为抗体的产生和注射频次关系很大。",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案2",
+              "columnValue": "",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案3",
+              "columnValue": "",
+              "indexColumn": 0
+            }
+          ],
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "注射瘦腿之后走路没力气什么原因？",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "问题描述（填写该问题的相关描述，帮助大模型理解）",
+              "columnValue": "面诊用户询问注射肉毒后出现走路没力气，双侧腿用力不均匀等情况是否是正常现象，包括询问注射瘦腿后是否可能出现肌肉无力、乏力、活动受限等副作用或不适。",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案1",
+              "columnValue": "注射瘦腿后的1-2周内可能出现局部肿胀酸痛，但不影响正常走路。药物会抑制神经和肌肉的沟通，导致小腿肌肉麻痹。1-2周内有些人会产生局部酸痛，行走无力的感觉，证明药物正在起作用，多数会在三周后自行缓解。",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案2",
+              "columnValue": "",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案3",
+              "columnValue": "",
+              "indexColumn": 0
+            }
+          ],
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "跑步运动会导致反弹吗？",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "问题描述（填写该问题的相关描述，帮助大模型理解）",
+              "columnValue": "面诊用户询问注射后，长期运动是否会加快代谢，导致效果减弱会时间缩短",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案1",
+              "columnValue": "随着药物的代谢，小腿肌肉会在4-6个月逐渐恢复到注射前的状态，而肌肉都有用进废退的特性，如果在注射后过度运动，频繁锻炼，会加快小腿肌肉恢复，缩短瘦腿效果的维持时间。",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案2",
+              "columnValue": "",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案3",
+              "columnValue": "",
+              "indexColumn": 0
+            }
+          ],
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "玻尿酸溶解酶的禁忌症",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "问题描述（填写该问题的相关描述，帮助大模型理解）",
+              "columnValue": "用户询问关于玻尿酸溶解酶的禁忌症，涉及玻尿酸酶/透明质酸酶使用时须注意的健康状况、风险人群、用药禁忌等。",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案1",
+              "columnValue": "注射过肉毒素的部位48小时内不能注射玻尿酸酶，因为玻尿酸酶促使肉毒素严重扩散。\n2、避免一些急慢性病，还有正在口服一些药物，尤其是有过敏史的客人。\n3、注射完玻尿酸酶后再注射玻尿酸的间隔时间：一般间隔一周比较稳妥，如果紧急的情况就间隔72小时，这个和药物吸收情况有关。",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案2",
+              "columnValue": "",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案3",
+              "columnValue": "",
+              "indexColumn": 0
+            }
+          ],
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "玻尿酸前期的融合效果不佳，触感明显",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "问题描述（填写该问题的相关描述，帮助大模型理解）",
+              "columnValue": "用户反映玻尿酸注射后的初期融合效果不理想，可能表现为触感明显、硬块或不自然等，涉及玻尿酸/透明质酸在体内的吸收、融合、质地等问题。",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案1",
+              "columnValue": "好看的唇部要有合适的容量，突出表现点，需要定点精细化注射，所以前期定点注射部位的融合需要的时间更久",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案2",
+              "columnValue": "",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案3",
+              "columnValue": "",
+              "indexColumn": 0
+            }
+          ],
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "玻尿酸一支剂量是否不够唇部注射",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "问题描述（填写该问题的相关描述，帮助大模型理解）",
+              "columnValue": "用户询问单支玻尿酸的剂量是否足够用于唇部注射，涉及玻尿酸/透明质酸填充剂的用量、唇部塑形效果、注射效果及优化建议等。",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案1",
+              "columnValue": "根据每个人需要可多支叠加",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案2",
+              "columnValue": "",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案3",
+              "columnValue": "",
+              "indexColumn": 0
+            }
+          ],
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "法令纹注射前两周触感明显",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "问题描述（填写该问题的相关描述，帮助大模型理解）",
+              "columnValue": "面诊用户询问法令纹注射的效果与变化，特别是法令纹注射前两周的触感变化、触觉体验等，可能涉及注射填充物、皮肤质地的改变。",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案1",
+              "columnValue": "需要时间融合 表现点可能出现吸水微肿状态，做表情出现异物感等",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案2",
+              "columnValue": "",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案3",
+              "columnValue": "",
+              "indexColumn": 0
+            }
+          ],
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "玻尿酸前期的融合效果不佳 触感明显",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "问题描述（填写该问题的相关描述，帮助大模型理解）",
+              "columnValue": "用户询问玻尿酸注射后的初期效果，特别关注玻尿酸的融合效果和触感，涉及玻尿酸填充物的吸收、皮肤表面的调整和质地的变化等。",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案1",
+              "columnValue": "需要定点精细化注射，所以前期定点注射部位的融合需要的时间更久",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案2",
+              "columnValue": "",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案3",
+              "columnValue": "",
+              "indexColumn": 0
+            }
+          ]
+        ],
+        "errCode": null,
+        "msg": "操作成功",
+        "timestamp": 1792045717000
+      }
+    },
+    {
+      "docId": "1930246135844872194",
+      "response": {
+        "code": 0,
+        "data": [
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "注射瘦腿瘦肩剂量少会影响效果吗？",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "问题描述（填写该问题的相关描述，帮助大模型理解）",
+              "columnValue": "面诊用户询问注射的剂量与直角肩/瘦腿，瘦脸，下颌缘清晰&上提等的效果，持续时间等是否有影响",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案1",
+              "columnValue": "单次注射小腿剂量一般为150-300个单位，具体剂量医生会根据患者本身的肌肉情况面诊评估来定，很多机构售卖的低价瘦腿项目都存在剂量不足问题，注射后起不到充分放松肌肉的效果。",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案2",
+              "columnValue": "",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案3",
+              "columnValue": "",
+              "indexColumn": 0
+            }
+          ],
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "频繁注射可能会导致无效产生耐药性吗？",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "问题描述（填写该问题的相关描述，帮助大模型理解）",
+              "columnValue": "面诊用户询问，打肉毒/保妥适等，次数多了效果就不好了，感觉这次打相同剂量，没有上次效果好了，是不是以后要多打一些，时间还能维持那么长么？等疑虑",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案1",
+              "columnValue": "短期内频繁注射，可能会导致耐药性，建议一次量打够，需要打的位置同一时间打，4-6月在打第二次。出于安全建议，智美坚守适量院长，如保妥适半年内不超过200U。",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案2",
+              "columnValue": "",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案3",
+              "columnValue": "",
+              "indexColumn": 0
+            }
+          ],
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "注射瘦腿瘦肩可以一起吗？",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "问题描述（填写该问题的相关描述，帮助大模型理解）",
+              "columnValue": "面诊用户询问注射肉毒，是否可以面部和身体一起做，肩膀，腿部等是否可以一起治疗的效果确认，担忧和疑虑",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案1",
+              "columnValue": "医疗安全上，成年人至少注射2000单位药品才会产生中毒症状，而注射量只要不超过300单位，都属于安全范围内，在安全剂量范围内，更推荐同一天注射，因为抗体的产生和注射频次关系很大。",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案2",
+              "columnValue": "",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案3",
+              "columnValue": "",
+              "indexColumn": 0
+            }
+          ],
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "注射瘦腿之后走路没力气什么原因？",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "问题描述（填写该问题的相关描述，帮助大模型理解）",
+              "columnValue": "面诊用户询问注射肉毒后出现走路没力气，双侧腿用力不均匀等情况是否是正常现象，包括询问注射瘦腿后是否可能出现肌肉无力、乏力、活动受限等副作用或不适。",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案1",
+              "columnValue": "注射瘦腿后的1-2周内可能出现局部肿胀酸痛，但不影响正常走路。药物会抑制神经和肌肉的沟通，导致小腿肌肉麻痹。1-2周内有些人会产生局部酸痛，行走无力的感觉，证明药物正在起作用，多数会在三周后自行缓解。",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案2",
+              "columnValue": "",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案3",
+              "columnValue": "",
+              "indexColumn": 0
+            }
+          ],
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "跑步运动会导致反弹吗？",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "问题描述（填写该问题的相关描述，帮助大模型理解）",
+              "columnValue": "面诊用户询问注射后，长期运动是否会加快代谢，导致效果减弱会时间缩短",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案1",
+              "columnValue": "随着药物的代谢，小腿肌肉会在4-6个月逐渐恢复到注射前的状态，而肌肉都有用进废退的特性，如果在注射后过度运动，频繁锻炼，会加快小腿肌肉恢复，缩短瘦腿效果的维持时间。",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案2",
+              "columnValue": "",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案3",
+              "columnValue": "",
+              "indexColumn": 0
+            }
+          ],
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "玻尿酸溶解酶的禁忌症",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "问题描述（填写该问题的相关描述，帮助大模型理解）",
+              "columnValue": "用户询问关于玻尿酸溶解酶的禁忌症，涉及玻尿酸酶/透明质酸酶使用时须注意的健康状况、风险人群、用药禁忌等。",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案1",
+              "columnValue": "注射过肉毒素的部位48小时内不能注射玻尿酸酶，因为玻尿酸酶促使肉毒素严重扩散。\n2、避免一些急慢性病，还有正在口服一些药物，尤其是有过敏史的客人。\n3、注射完玻尿酸酶后再注射玻尿酸的间隔时间：一般间隔一周比较稳妥，如果紧急的情况就间隔72小时，这个和药物吸收情况有关。",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案2",
+              "columnValue": "",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案3",
+              "columnValue": "",
+              "indexColumn": 0
+            }
+          ],
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "玻尿酸前期的融合效果不佳，触感明显",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "问题描述（填写该问题的相关描述，帮助大模型理解）",
+              "columnValue": "用户反映玻尿酸注射后的初期融合效果不理想，可能表现为触感明显、硬块或不自然等，涉及玻尿酸/透明质酸在体内的吸收、融合、质地等问题。",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案1",
+              "columnValue": "好看的唇部要有合适的容量，突出表现点，需要定点精细化注射，所以前期定点注射部位的融合需要的时间更久",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案2",
+              "columnValue": "",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案3",
+              "columnValue": "",
+              "indexColumn": 0
+            }
+          ],
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "玻尿酸一支剂量是否不够唇部注射",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "问题描述（填写该问题的相关描述，帮助大模型理解）",
+              "columnValue": "用户询问单支玻尿酸的剂量是否足够用于唇部注射，涉及玻尿酸/透明质酸填充剂的用量、唇部塑形效果、注射效果及优化建议等。",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案1",
+              "columnValue": "根据每个人需要可多支叠加",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案2",
+              "columnValue": "",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案3",
+              "columnValue": "",
+              "indexColumn": 0
+            }
+          ],
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "法令纹注射前两周触感明显",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "问题描述（填写该问题的相关描述，帮助大模型理解）",
+              "columnValue": "面诊用户询问法令纹注射的效果与变化，特别是法令纹注射前两周的触感变化、触觉体验等，可能涉及注射填充物、皮肤质地的改变。",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案1",
+              "columnValue": "需要时间融合 表现点可能出现吸水微肿状态，做表情出现异物感等",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案2",
+              "columnValue": "",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案3",
+              "columnValue": "",
+              "indexColumn": 0
+            }
+          ],
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "玻尿酸前期的融合效果不佳 触感明显",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "问题描述（填写该问题的相关描述，帮助大模型理解）",
+              "columnValue": "用户询问玻尿酸注射后的初期效果，特别关注玻尿酸的融合效果和触感，涉及玻尿酸填充物的吸收、皮肤表面的调整和质地的变化等。",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案1",
+              "columnValue": "需要定点精细化注射，所以前期定点注射部位的融合需要的时间更久",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案2",
+              "columnValue": "",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案3",
+              "columnValue": "",
+              "indexColumn": 0
+            }
+          ]
+        ],
+        "errCode": null,
+        "msg": "操作成功",
+        "timestamp": 1792045718000
+      }
+    },
+    {
+      "docId": "1927198140291801089",
+      "response": {
+        "code": 0,
+        "data": [],
+        "errCode": null,
+        "msg": "操作成功",
+        "timestamp": 1792045718000
+      }
+    },
+    {
+      "docId": "1930233213005504513",
+      "response": {
+        "code": 0,
+        "data": [
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "注射瘦腿瘦肩剂量少会影响效果吗？",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "问题描述（填写该问题的相关描述，帮助大模型理解）",
+              "columnValue": "面诊用户询问注射的剂量与直角肩/瘦腿，瘦脸，下颌缘清晰&上提等的效果，持续时间等是否有影响",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案1",
+              "columnValue": "单次注射小腿剂量一般为150-300个单位，具体剂量医生会根据患者本身的肌肉情况面诊评估来定，很多机构售卖的低价瘦腿项目都存在剂量不足问题，注射后起不到充分放松肌肉的效果。",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案2",
+              "columnValue": "",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案3",
+              "columnValue": "",
+              "indexColumn": 0
+            }
+          ],
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "频繁注射可能会导致无效产生耐药性吗？",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "问题描述（填写该问题的相关描述，帮助大模型理解）",
+              "columnValue": "面诊用户询问，打肉毒/保妥适等，次数多了效果就不好了，感觉这次打相同剂量，没有上次效果好了，是不是以后要多打一些，时间还能维持那么长么？等疑虑",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案1",
+              "columnValue": "短期内频繁注射，可能会导致耐药性，建议一次量打够，需要打的位置同一时间打，4-6月在打第二次。出于安全建议，智美坚守适量院长，如保妥适半年内不超过200U。",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案2",
+              "columnValue": "",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案3",
+              "columnValue": "",
+              "indexColumn": 0
+            }
+          ],
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "注射瘦腿瘦肩可以一起吗？",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "问题描述（填写该问题的相关描述，帮助大模型理解）",
+              "columnValue": "面诊用户询问注射肉毒，是否可以面部和身体一起做，肩膀，腿部等是否可以一起治疗的效果确认，担忧和疑虑",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案1",
+              "columnValue": "医疗安全上，成年人至少注射2000单位药品才会产生中毒症状，而注射量只要不超过300单位，都属于安全范围内，在安全剂量范围内，更推荐同一天注射，因为抗体的产生和注射频次关系很大。",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案2",
+              "columnValue": "",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案3",
+              "columnValue": "",
+              "indexColumn": 0
+            }
+          ],
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "注射瘦腿之后走路没力气什么原因？",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "问题描述（填写该问题的相关描述，帮助大模型理解）",
+              "columnValue": "面诊用户询问注射肉毒后出现走路没力气，双侧腿用力不均匀等情况是否是正常现象，包括询问注射瘦腿后是否可能出现肌肉无力、乏力、活动受限等副作用或不适。",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案1",
+              "columnValue": "注射瘦腿后的1-2周内可能出现局部肿胀酸痛，但不影响正常走路。药物会抑制神经和肌肉的沟通，导致小腿肌肉麻痹。1-2周内有些人会产生局部酸痛，行走无力的感觉，证明药物正在起作用，多数会在三周后自行缓解。",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案2",
+              "columnValue": "",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案3",
+              "columnValue": "",
+              "indexColumn": 0
+            }
+          ],
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "跑步运动会导致反弹吗？",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "问题描述（填写该问题的相关描述，帮助大模型理解）",
+              "columnValue": "面诊用户询问注射后，长期运动是否会加快代谢，导致效果减弱会时间缩短",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案1",
+              "columnValue": "随着药物的代谢，小腿肌肉会在4-6个月逐渐恢复到注射前的状态，而肌肉都有用进废退的特性，如果在注射后过度运动，频繁锻炼，会加快小腿肌肉恢复，缩短瘦腿效果的维持时间。",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案2",
+              "columnValue": "",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案3",
+              "columnValue": "",
+              "indexColumn": 0
+            }
+          ],
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "玻尿酸溶解酶的禁忌症",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "问题描述（填写该问题的相关描述，帮助大模型理解）",
+              "columnValue": "用户询问关于玻尿酸溶解酶的禁忌症，涉及玻尿酸酶/透明质酸酶使用时须注意的健康状况、风险人群、用药禁忌等。",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案1",
+              "columnValue": "注射过肉毒素的部位48小时内不能注射玻尿酸酶，因为玻尿酸酶促使肉毒素严重扩散。\n2、避免一些急慢性病，还有正在口服一些药物，尤其是有过敏史的客人。\n3、注射完玻尿酸酶后再注射玻尿酸的间隔时间：一般间隔一周比较稳妥，如果紧急的情况就间隔72小时，这个和药物吸收情况有关。",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案2",
+              "columnValue": "",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案3",
+              "columnValue": "",
+              "indexColumn": 0
+            }
+          ],
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "玻尿酸前期的融合效果不佳，触感明显",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "问题描述（填写该问题的相关描述，帮助大模型理解）",
+              "columnValue": "用户反映玻尿酸注射后的初期融合效果不理想，可能表现为触感明显、硬块或不自然等，涉及玻尿酸/透明质酸在体内的吸收、融合、质地等问题。",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案1",
+              "columnValue": "好看的唇部要有合适的容量，突出表现点，需要定点精细化注射，所以前期定点注射部位的融合需要的时间更久",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案2",
+              "columnValue": "",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案3",
+              "columnValue": "",
+              "indexColumn": 0
+            }
+          ],
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "玻尿酸一支剂量是否不够唇部注射",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "问题描述（填写该问题的相关描述，帮助大模型理解）",
+              "columnValue": "用户询问单支玻尿酸的剂量是否足够用于唇部注射，涉及玻尿酸/透明质酸填充剂的用量、唇部塑形效果、注射效果及优化建议等。",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案1",
+              "columnValue": "根据每个人需要可多支叠加",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案2",
+              "columnValue": "",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案3",
+              "columnValue": "",
+              "indexColumn": 0
+            }
+          ],
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "法令纹注射前两周触感明显",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "问题描述（填写该问题的相关描述，帮助大模型理解）",
+              "columnValue": "面诊用户询问法令纹注射的效果与变化，特别是法令纹注射前两周的触感变化、触觉体验等，可能涉及注射填充物、皮肤质地的改变。",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案1",
+              "columnValue": "需要时间融合 表现点可能出现吸水微肿状态，做表情出现异物感等",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案2",
+              "columnValue": "",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案3",
+              "columnValue": "",
+              "indexColumn": 0
+            }
+          ],
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "玻尿酸前期的融合效果不佳 触感明显",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "问题描述（填写该问题的相关描述，帮助大模型理解）",
+              "columnValue": "用户询问玻尿酸注射后的初期效果，特别关注玻尿酸的融合效果和触感，涉及玻尿酸填充物的吸收、皮肤表面的调整和质地的变化等。",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案1",
+              "columnValue": "需要定点精细化注射，所以前期定点注射部位的融合需要的时间更久",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案2",
+              "columnValue": "",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "答案3",
+              "columnValue": "",
+              "indexColumn": 0
+            }
+          ]
+        ],
+        "errCode": null,
+        "msg": "操作成功",
+        "timestamp": 1792045718000
+      }
+    },
+    {
+      "docId": "1927196524914335745",
+      "response": {
+        "code": 0,
+        "data": [],
+        "errCode": null,
+        "msg": "操作成功",
+        "timestamp": 1792045718000
+      }
+    },
+    {
+      "docId": "1927198109035847682",
+      "response": {
+        "code": 0,
+        "data": [],
+        "errCode": null,
+        "msg": "操作成功",
+        "timestamp": 1792045718000
+      }
+    },
+    {
+      "docId": "1927198044858802178",
+      "response": {
+        "code": 0,
+        "data": [],
+        "errCode": null,
+        "msg": "操作成功",
+        "timestamp": 1792045718000
+      }
+    },
+    {
+      "docId": "1926159115959328769",
+      "response": {
+        "code": 0,
+        "data": [
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "注射瘦腿瘦肩剂量少会影响效果吗？",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "问题描述（填写该问题的相关描述，帮助大模型理解）",
+              "columnValue": "面诊用户询问注射的剂量与直角肩/瘦腿，瘦脸，下颌缘清晰&上提等的效果，持续时间等是否有影响",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "答案1",
+              "columnValue": "单次注射小腿剂量一般为150-300个单位，具体剂量医生会根据患者本身的肌肉情况面诊评估来定，很多机构售卖的低价瘦腿项目都存在剂量不足问题，注射后起不到充分放松肌肉的效果。",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "答案2",
+              "columnValue": "",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "答案3",
+              "columnValue": "",
+              "indexColumn": 1
+            }
+          ],
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "频繁注射可能会导致无效产生耐药性吗？",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "问题描述（填写该问题的相关描述，帮助大模型理解）",
+              "columnValue": "面诊用户询问，打肉毒/保妥适等，次数多了效果就不好了，感觉这次打相同剂量，没有上次效果好了，是不是以后要多打一些，时间还能维持那么长么？等疑虑",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "答案1",
+              "columnValue": "短期内频繁注射，可能会导致耐药性，建议一次量打够，需要打的位置同一时间打，4-6月在打第二次。出于安全建议，智美坚守适量院长，如保妥适半年内不超过200U。",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "答案2",
+              "columnValue": "",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "答案3",
+              "columnValue": "",
+              "indexColumn": 1
+            }
+          ],
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "注射瘦腿瘦肩可以一起吗？",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "问题描述（填写该问题的相关描述，帮助大模型理解）",
+              "columnValue": "面诊用户询问注射肉毒，是否可以面部和身体一起做，肩膀，腿部等是否可以一起治疗的效果确认，担忧和疑虑",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "答案1",
+              "columnValue": "医疗安全上，成年人至少注射2000单位药品才会产生中毒症状，而注射量只要不超过300单位，都属于安全范围内，在安全剂量范围内，更推荐同一天注射，因为抗体的产生和注射频次关系很大。",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "答案2",
+              "columnValue": "",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "答案3",
+              "columnValue": "",
+              "indexColumn": 1
+            }
+          ],
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "注射瘦腿之后走路没力气什么原因？",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "问题描述（填写该问题的相关描述，帮助大模型理解）",
+              "columnValue": "面诊用户询问注射肉毒后出现走路没力气，双侧腿用力不均匀等情况是否是正常现象，包括询问注射瘦腿后是否可能出现肌肉无力、乏力、活动受限等副作用或不适。",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "答案1",
+              "columnValue": "注射瘦腿后的1-2周内可能出现局部肿胀酸痛，但不影响正常走路。药物会抑制神经和肌肉的沟通，导致小腿肌肉麻痹。1-2周内有些人会产生局部酸痛，行走无力的感觉，证明药物正在起作用，多数会在三周后自行缓解。",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "答案2",
+              "columnValue": "",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "答案3",
+              "columnValue": "",
+              "indexColumn": 1
+            }
+          ],
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "跑步运动会导致反弹吗？",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "问题描述（填写该问题的相关描述，帮助大模型理解）",
+              "columnValue": "面诊用户询问注射后，长期运动是否会加快代谢，导致效果减弱会时间缩短",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "答案1",
+              "columnValue": "随着药物的代谢，小腿肌肉会在4-6个月逐渐恢复到注射前的状态，而肌肉都有用进废退的特性，如果在注射后过度运动，频繁锻炼，会加快小腿肌肉恢复，缩短瘦腿效果的维持时间。",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "答案2",
+              "columnValue": "",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "答案3",
+              "columnValue": "",
+              "indexColumn": 1
+            }
+          ],
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "玻尿酸溶解酶的禁忌症",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "问题描述（填写该问题的相关描述，帮助大模型理解）",
+              "columnValue": "用户询问关于玻尿酸溶解酶的禁忌症，涉及玻尿酸酶/透明质酸酶使用时须注意的健康状况、风险人群、用药禁忌等。",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "答案1",
+              "columnValue": "注射过肉毒素的部位48小时内不能注射玻尿酸酶，因为玻尿酸酶促使肉毒素严重扩散。\n2、避免一些急慢性病，还有正在口服一些药物，尤其是有过敏史的客人。\n3、注射完玻尿酸酶后再注射玻尿酸的间隔时间：一般间隔一周比较稳妥，如果紧急的情况就间隔72小时，这个和药物吸收情况有关。",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "答案2",
+              "columnValue": "",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "答案3",
+              "columnValue": "",
+              "indexColumn": 1
+            }
+          ],
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "玻尿酸前期的融合效果不佳，触感明显",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "问题描述（填写该问题的相关描述，帮助大模型理解）",
+              "columnValue": "用户反映玻尿酸注射后的初期融合效果不理想，可能表现为触感明显、硬块或不自然等，涉及玻尿酸/透明质酸在体内的吸收、融合、质地等问题。",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "答案1",
+              "columnValue": "好看的唇部要有合适的容量，突出表现点，需要定点精细化注射，所以前期定点注射部位的融合需要的时间更久",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "答案2",
+              "columnValue": "",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "答案3",
+              "columnValue": "",
+              "indexColumn": 1
+            }
+          ],
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "玻尿酸一支剂量是否不够唇部注射",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "问题描述（填写该问题的相关描述，帮助大模型理解）",
+              "columnValue": "用户询问单支玻尿酸的剂量是否足够用于唇部注射，涉及玻尿酸/透明质酸填充剂的用量、唇部塑形效果、注射效果及优化建议等。",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "答案1",
+              "columnValue": "根据每个人需要可多支叠加",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "答案2",
+              "columnValue": "",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "答案3",
+              "columnValue": "",
+              "indexColumn": 1
+            }
+          ],
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "法令纹注射前两周触感明显",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "问题描述（填写该问题的相关描述，帮助大模型理解）",
+              "columnValue": "面诊用户询问法令纹注射的效果与变化，特别是法令纹注射前两周的触感变化、触觉体验等，可能涉及注射填充物、皮肤质地的改变。",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "答案1",
+              "columnValue": "需要时间融合 表现点可能出现吸水微肿状态，做表情出现异物感等",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "答案2",
+              "columnValue": "",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "答案3",
+              "columnValue": "",
+              "indexColumn": 1
+            }
+          ],
+          [
+            {
+              "columnName": "问题",
+              "columnValue": "玻尿酸前期的融合效果不佳 触感明显",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "问题描述（填写该问题的相关描述，帮助大模型理解）",
+              "columnValue": "用户询问玻尿酸注射后的初期效果，特别关注玻尿酸的融合效果和触感，涉及玻尿酸填充物的吸收、皮肤表面的调整和质地的变化等。",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "答案1",
+              "columnValue": "需要定点精细化注射，所以前期定点注射部位的融合需要的时间更久",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "答案2",
+              "columnValue": "",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "答案3",
+              "columnValue": "",
+              "indexColumn": 1
+            }
+          ]
+        ],
+        "errCode": null,
+        "msg": "操作成功",
+        "timestamp": 1792045718000
+      }
+    },
+    {
+      "docId": "1925727903205744641",
+      "response": {
+        "code": 0,
+        "data": [],
+        "errCode": null,
+        "msg": "操作成功",
+        "timestamp": 1792045718000
+      }
+    },
+    {
+      "docId": "1925388347822497793",
+      "response": {
+        "code": 0,
+        "data": [
+          [
+            {
+              "columnName": "序列",
+              "columnValue": "1",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "姓名",
+              "columnValue": "刘峰",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "一级部门",
+              "columnValue": "平台建设中心",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "二级部门",
+              "columnValue": "应用开发部",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "三级部门",
+              "columnValue": "",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "1月",
+              "columnValue": "1",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "2月",
+              "columnValue": "1",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "3月",
+              "columnValue": "1",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "费用合计",
+              "columnValue": "300",
+              "indexColumn": 0
+            }
+          ],
+          [
+            {
+              "columnName": "序列",
+              "columnValue": "2",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "姓名",
+              "columnValue": "周游",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "一级部门",
+              "columnValue": "平台建设中心",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "二级部门",
+              "columnValue": "应用开发部",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "三级部门",
+              "columnValue": "美业开发组",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "1月",
+              "columnValue": "1",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "2月",
+              "columnValue": "1",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "3月",
+              "columnValue": "1",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "费用合计",
+              "columnValue": "300",
+              "indexColumn": 0
+            }
+          ],
+          [
+            {
+              "columnName": "序列",
+              "columnValue": "3",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "姓名",
+              "columnValue": "柏康",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "一级部门",
+              "columnValue": "平台建设中心",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "二级部门",
+              "columnValue": "应用开发部",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "三级部门",
+              "columnValue": "美业开发组",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "1月",
+              "columnValue": "1",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "2月",
+              "columnValue": "1",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "3月",
+              "columnValue": "1",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "费用合计",
+              "columnValue": "300",
+              "indexColumn": 0
+            }
+          ],
+          [
+            {
+              "columnName": "序列",
+              "columnValue": "4",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "姓名",
+              "columnValue": "陈明辉",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "一级部门",
+              "columnValue": "平台建设中心",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "二级部门",
+              "columnValue": "应用开发部",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "三级部门",
+              "columnValue": "",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "1月",
+              "columnValue": "1",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "2月",
+              "columnValue": "1",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "3月",
+              "columnValue": "1",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "费用合计",
+              "columnValue": "300",
+              "indexColumn": 0
+            }
+          ],
+          [
+            {
+              "columnName": "序列",
+              "columnValue": "5",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "姓名",
+              "columnValue": "刘桂宏",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "一级部门",
+              "columnValue": "平台建设中心",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "二级部门",
+              "columnValue": "应用开发部",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "三级部门",
+              "columnValue": "美业开发组",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "1月",
+              "columnValue": "1",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "2月",
+              "columnValue": "1",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "3月",
+              "columnValue": "1",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "费用合计",
+              "columnValue": "300",
+              "indexColumn": 0
+            }
+          ],
+          [
+            {
+              "columnName": "序列",
+              "columnValue": "6",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "姓名",
+              "columnValue": "何俊霖",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "一级部门",
+              "columnValue": "平台建设中心",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "二级部门",
+              "columnValue": "应用开发部",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "三级部门",
+              "columnValue": "美业开发组",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "1月",
+              "columnValue": "1",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "2月",
+              "columnValue": "1",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "3月",
+              "columnValue": "1",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "费用合计",
+              "columnValue": "300",
+              "indexColumn": 0
+            }
+          ],
+          [
+            {
+              "columnName": "序列",
+              "columnValue": "7",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "姓名",
+              "columnValue": "冀晋星",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "一级部门",
+              "columnValue": "平台建设中心",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "二级部门",
+              "columnValue": "应用开发部",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "三级部门",
+              "columnValue": "美业开发组",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "1月",
+              "columnValue": "1",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "2月",
+              "columnValue": "1",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "3月",
+              "columnValue": "1",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "费用合计",
+              "columnValue": "300",
+              "indexColumn": 0
+            }
+          ],
+          [
+            {
+              "columnName": "序列",
+              "columnValue": "8",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "姓名",
+              "columnValue": "况俊飚",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "一级部门",
+              "columnValue": "平台建设中心",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "二级部门",
+              "columnValue": "应用开发部",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "三级部门",
+              "columnValue": "美业开发组",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "1月",
+              "columnValue": "1",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "2月",
+              "columnValue": "1",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "3月",
+              "columnValue": "1",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "费用合计",
+              "columnValue": "300",
+              "indexColumn": 0
+            }
+          ],
+          [
+            {
+              "columnName": "序列",
+              "columnValue": "",
+              "indexColumn": 1
+            },
+            {
+              "columnName": "姓名",
+              "columnValue": "",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "一级部门",
+              "columnValue": "",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "二级部门",
+              "columnValue": "",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "三级部门",
+              "columnValue": "",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "1月",
+              "columnValue": "",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "2月",
+              "columnValue": "",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "3月",
+              "columnValue": "",
+              "indexColumn": 0
+            },
+            {
+              "columnName": "费用合计",
+              "columnValue": "2400",
+              "indexColumn": 0
+            }
+          ]
+        ],
+        "errCode": null,
+        "msg": "操作成功",
+        "timestamp": 1792045719000
+      }
+    },
+    {
+      "docId": "1924382923853848578",
+      "response": {
+        "code": 0,
+        "data": [],
+        "errCode": null,
+        "msg": "操作成功",
+        "timestamp": 1792045719000
+      }
+    },
+    {
+      "docId": "1925360754217902081",
+      "response": {
+        "code": 0,
+        "data": [],
+        "errCode": null,
+        "msg": "操作成功",
+        "timestamp": 1792045719000
+      }
+    },
+    {
+      "docId": "1924295838136459265",
+      "response": {
+        "code": 0,
+        "data": [],
+        "errCode": null,
+        "msg": "操作成功",
+        "timestamp": 1792045719000
+      }
+    }
+  ]
+}

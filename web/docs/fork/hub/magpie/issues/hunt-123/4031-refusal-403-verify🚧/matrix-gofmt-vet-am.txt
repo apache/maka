@@ -1,0 +1,7 @@
+== gofmt (CRLF-safe) on touched files @63c62472f ==
+internal/gateway/gateway.go: clean
+internal/gateway/refusal_earlier_test.go: clean
+== go vet -tags nogui ./internal/gateway/ ==
+vet exit=0
+== am resolution ==
+git am -3 4031-kiro-rotation.patch onto 6d1e3f1e2: gateway.go + refusal_earlier_test.go clean; docs/subsystems/gateway-routing.md conflicted (upstream rewrote items 3-5); resolved: HEAD text + patch sentences appended to item 5; result commit 63c62472ff6a354134c9109ca82197e875d30b09

@@ -1,0 +1,40 @@
+{
+  "mcpServers": {
+    "awspricing": {
+      "type": "stdio",
+      "command": "uvx",
+      "args": ["awslabs.aws-pricing-mcp-server@latest"],
+      "env": {
+        "FASTMCP_LOG_LEVEL": "ERROR"
+      },
+      "timeout": 120000,
+      "disabled": false
+    },
+    "awsknowledge": {
+      "url": "https://knowledge-mcp.global.api.aws",
+      "type": "http"
+    },
+    "awsapi": {
+      "command": "uvx",
+      "args": ["awslabs.aws-api-mcp-server@latest"],
+      "env": {
+        "AWS_REGION": "us-east-2"
+      },
+      "disabled": false,
+      "autoApprove": []
+    },
+    "context7": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@upstash/context7-mcp"],
+      "timeout": 120000,
+      "disabled": false
+    },
+    "fetch": {
+      "command": "uvx",
+      "args": ["mcp-server-fetch"],
+      "env": {},
+      "disabled": false
+    }
+  }
+}

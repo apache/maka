@@ -1,0 +1,142 @@
+{
+  "reaVersion": "6.4.0",
+  "analyses": [
+    {
+      "label": "管理页",
+      "evidenceId": "ev_47072da451220ad7aff967cfce636aa3a4a2837ea00f6867ef85c2ed71e02f5b",
+      "operation": "analyze_javascript_application",
+      "provider": {
+        "id": "rea-javascript-application",
+        "name": "REA JavaScript application analyzer",
+        "version": "1"
+      },
+      "statistics": {
+        "relevant_files": 12,
+        "nested_asar_containers": 0,
+        "text_bytes_read": 151959,
+        "invalid_utf8_files": 0,
+        "parsed_javascript_files": 12,
+        "visited_ast_nodes": 37737,
+        "findings": 317,
+        "modules": 0,
+        "parse_failures": 0
+      },
+      "applicationNodes": {
+        "storage": 2,
+        "javascript-asset": 12,
+        "javascript-module": 185,
+        "endpoint": 1,
+        "artifact": 1
+      },
+      "semanticNodes": 22477,
+      "semanticRelations": 32550,
+      "semanticCoverage": {
+        "status": "unknown",
+        "truncated": false
+      },
+      "limitations": [
+        "CommonJS and ESM binding relationships were recovered from inert syntax and resolved only within the inventoried artifact container.",
+        "JavaScript and HTML were parsed as inert text; bundle bootstrap code was never executed.",
+        "Static imports, entrypoints, workers, endpoints, and storage relationships do not prove runtime execution.",
+        "Static paths and relationships may remain unresolved when expressions are dynamic or obfuscated.",
+        "Webpack/Rspack factories were recovered from AST literals; REA did not invoke push handlers or bundle bootstrap code."
+      ]
+    },
+    {
+      "label": "核心工作流编辑器",
+      "evidenceId": "ev_bf53302ec66cd3b9f316added77b396e50ad025e5335a857749d9afcb7dd217b",
+      "operation": "analyze_javascript_application",
+      "provider": {
+        "id": "rea-javascript-application",
+        "name": "REA JavaScript application analyzer",
+        "version": "1"
+      },
+      "statistics": {
+        "relevant_files": 6,
+        "nested_asar_containers": 0,
+        "text_bytes_read": 534996,
+        "invalid_utf8_files": 0,
+        "parsed_javascript_files": 6,
+        "visited_ast_nodes": 153293,
+        "findings": 486,
+        "modules": 0,
+        "parse_failures": 0
+      },
+      "applicationNodes": {
+        "javascript-module": 257,
+        "unknown": 3,
+        "javascript-asset": 6,
+        "storage": 1,
+        "artifact": 1
+      },
+      "semanticNodes": 40062,
+      "semanticRelations": 43834,
+      "semanticCoverage": {
+        "status": "partial",
+        "truncated": true
+      },
+      "limitations": [
+        "CommonJS and ESM binding relationships were recovered from inert syntax and resolved only within the inventoried artifact container.",
+        "Graph coverage is incomplete; unavailable facts remain explicit and must not be read as absence.",
+        "JavaScript and HTML were parsed as inert text; bundle bootstrap code was never executed.",
+        "Static imports, entrypoints, workers, endpoints, and storage relationships do not prove runtime execution.",
+        "Static paths and relationships may remain unresolved when expressions are dynamic or obfuscated.",
+        "Webpack/Rspack factories were recovered from AST literals; REA did not invoke push handlers or bundle bootstrap code.",
+        "debug-param-expand-BudXOLJ5.js: Resource constraint during analyze_javascript_application: Semantic graph for debug-param-expand-BudXOLJ5.js exceeds the parent's remaining result budget; static and module facts were retained",
+        "hooks-C9yyjErO.js: Resource constraint during analyze_javascript_application: Semantic graph for hooks-C9yyjErO.js exceeds the parent's remaining result budget; static and module facts were retained",
+        "src--QpPaBte.js: Resource constraint during analyze_javascript_application: Semantic graph for src--QpPaBte.js exceeds the parent's remaining result budget; static and module facts were retained"
+      ]
+    },
+    {
+      "label": "完整导航和各模式编辑器",
+      "evidenceId": "ev_ddb7cfd48514fa4ac55b41159a60f02ac40b141ae1fea74bc364447b9c847551",
+      "operation": "analyze_javascript_application",
+      "provider": {
+        "id": "rea-javascript-application",
+        "name": "REA JavaScript application analyzer",
+        "version": "1"
+      },
+      "statistics": {
+        "relevant_files": 12,
+        "nested_asar_containers": 0,
+        "text_bytes_read": 1167644,
+        "invalid_utf8_files": 0,
+        "parsed_javascript_files": 12,
+        "visited_ast_nodes": 303664,
+        "findings": 1138,
+        "modules": 0,
+        "parse_failures": 0
+      },
+      "applicationNodes": {
+        "javascript-module": 470,
+        "storage": 8,
+        "unknown": 3,
+        "javascript-asset": 12,
+        "endpoint": 2,
+        "artifact": 1,
+        "worker": 1
+      },
+      "semanticNodes": 26692,
+      "semanticRelations": 41712,
+      "semanticCoverage": {
+        "status": "partial",
+        "truncated": true
+      },
+      "limitations": [
+        "CommonJS and ESM binding relationships were recovered from inert syntax and resolved only within the inventoried artifact container.",
+        "Electron relationships are derived from inert syntax; runtime registration, reachability, defaults, and enforcement remain unproven.",
+        "Graph coverage is incomplete; unavailable facts remain explicit and must not be read as absence.",
+        "JavaScript and HTML were parsed as inert text; bundle bootstrap code was never executed.",
+        "Sender, frame, URL, and origin checks are observations only; REA does not claim that they enforce a complete authorization policy.",
+        "Static imports, entrypoints, workers, endpoints, and storage relationships do not prove runtime execution.",
+        "Static paths and relationships may remain unresolved when expressions are dynamic or obfuscated.",
+        "Webpack/Rspack factories were recovered from AST literals; REA did not invoke push handlers or bundle bootstrap code.",
+        "low-code-chat-D6fop61f.js: Resource constraint during analyze_javascript_application: Semantic graph for low-code-chat-D6fop61f.js exceeds the parent's remaining result budget; static and module facts were retained",
+        "no-code-chat-4EydMoQm.js: Resource constraint during analyze_javascript_application: Semantic graph for no-code-chat-4EydMoQm.js exceeds the parent's remaining result budget; static and module facts were retained",
+        "standard-agent-BeJtG62a.js: Resource constraint during analyze_javascript_application: Semantic graph for standard-agent-BeJtG62a.js exceeds the parent's remaining result budget; static and module facts were retained"
+      ]
+    }
+  ],
+  "sourceMaps": "已采集脚本未声明 sourceMappingURL；未猜测扫描 .map",
+  "recovery": "真实发布模块复用；可读源码由 Prettier 排版；原始 TS/TSX 和后端无法保证恢复"
+}

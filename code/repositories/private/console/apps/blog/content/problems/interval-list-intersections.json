@@ -1,0 +1,24 @@
+{
+  "id": "95",
+  "slug": "interval-list-intersections",
+  "title": "区间列表的交集",
+  "difficulty": "medium",
+  "tags": ["数组", "双指针"],
+  "description": "给定两个由若干**闭区间**组成的列表 `firstList` 和 `secondList`,其中 `firstList[i] = [start, end]`。两个列表都是**已经排序好**且**不相交**的。返回这两个区间列表的**交集**。\n\n**示例 1:**\n\n- 输入:`firstList = [[0,2],[5,10],[13,23],[24,25]]`, `secondList = [[1,5],[8,12],[15,24],[25,26]]`\n- 输出:`[[1,2],[5,5],[8,10],[15,23],[24,24],[25,25]]`\n\n**示例 2:**\n\n- 输入:`firstList = [[1,3],[5,9]]`, `secondList = []`\n- 输出:`[]`",
+  "solution": "## 思路\n\n**双指针**:对两个列表各一个指针,取两区间起点较大值 `lo` 与终点较小值 `hi`,若 `lo <= hi` 即为交集区间。然后移动终点较小一侧的指针。\n\n## 参考代码\n\n```js\nfunction intervalIntersection(firstList, secondList) {\n  const res = [];\n  let i = 0;\n  let j = 0;\n  while (i < firstList.length && j < secondList.length) {\n    const lo = Math.max(firstList[i][0], secondList[j][0]);\n    const hi = Math.min(firstList[i][1], secondList[j][1]);\n    if (lo <= hi) res.push([lo, hi]);\n    if (firstList[i][1] < secondList[j][1]) i++;\n    else j++;\n  }\n  return res;\n}\n```\n\n## 复杂度\n\n- 时间:O(m+n)\n- 空间:O(1)(不计输出)",
+  "signature": {
+    "language": "javascript",
+    "entry": "intervalIntersection",
+    "params": [
+      { "name": "firstList", "type": "number[][]" },
+      { "name": "secondList", "type": "number[][]" }
+    ],
+    "returns": "number[][]"
+  },
+  "testCases": [
+    { "sample": true, "input": [[[0, 2], [5, 10], [13, 23], [24, 25]], [[1, 5], [8, 12], [15, 24], [25, 26]]], "expected": [[1, 2], [5, 5], [8, 10], [15, 23], [24, 24], [25, 25]] },
+    { "sample": true, "input": [[[1, 3], [5, 9]], []], "expected": [] },
+    { "sample": false, "input": [[], []], "expected": [] },
+    { "sample": false, "input": [[[1, 5]], [[2, 3]]], "expected": [[2, 3]] }
+  ]
+}

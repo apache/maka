@@ -1,0 +1,293 @@
+The probe was asking a smaller request than the relays it is pointed at take: `tinyBody`'s Anthropic probe went out as `{"model":...,"max_tokens":16,"messages":[{"role":"user","content":"hi"}]}` — no `system` field, no `stream` — while every request magpie's own gateway relays to an upstream carries a system prompt and a stream. A relay that serves Claude Code alone reads the bare shape as a probe and turns it away before the model is ever asked, which is why the test said red on a model agents were answered on.
+
+## What changed
+
+- The Anthropic probe now asks with a system prompt and `"stream":true`, the shape your ablation found answering 200 (`msg_bdrk_...`) on the same model: `{"model":...,"max_tokens":16,"system":[{"type":"text","text":"You are Claude Code, Anthropic's official CLI for Claude."}],"stream":true,"messages":[{"role":"user","content":"hi"}]}`. The probe still stops reading at the model's first word, so a stream is not waited out.
+- On Vertex AI the stream goes into the body before `VertexClaudeRequest` picks the route, so the probe asks at `:streamRawPredict` (the stream in the body is what picks that route) instead of `:rawPredict` with a `stream` field the route ignores.
+- The probe covers every Anthropic entry point at once (`provider test`, per-model tests, detect), since all build their request through the same `tinyBody`.
+
+## Verification
+
+| Check | Result |
+| --- | --- |
+| `go test ./internal/provider/ -tags nogui` (full package) | ok |
+| New: `TestTestAnthropicProbesAsTheGatewayRelays` (fake relay answers 503 without `system`, 520 without a stream, SSE with both) | RED on the parent commit (503 came back), GREEN with the fix |
+| New: `TestTestAnthropicOnVertexStreamsAtStreamRawPredict` | RED on the parent (`:rawPredict`, no system/stream), GREEN with the fix |
+| Ablation: `internal/provider/test.go` reverted to the parent, tests kept | both new tests fail again (503 / `:rawPredict`); file restored |
+| `TestTinyStreamsStreamOnly`, `TestDetectProtocols`, `TestVertexClaudeModels` (pinned the old shape) | updated to the new shape, pass |
+| `gofmt -l internal/provider` | clean |
+| `go vet ./internal/provider/` and `GOOS=linux` / `GOOS=windows` | clean |
+| Builds: darwin full, and `CGO_ENABLED=0 -tags nogui` for darwin / linux / windows | ok |
+
+## Not verified
+
+Not verified against the real gateway: no request was sent to `https://anyrouter.top` — there is no key here to ask it with. The shapes the fix sends are your ablation's passing row, but whether that relay's filter keys on a system prompt being present at all or on Claude Code's exact words inside it only a live key can tell. If it checks for more (client headers, a particular system line), the next step would be those headers, which the test already sends when run `--as claude-code` from the shapes Claude Code last left through magpie.
+
+**Attribution**: AI-written; I've read the whole diff and the tests pass. Please keep the author (`ggbdpq`) or add `Co-authored-by: ggbdpq <ggbdpq@gmail.com>`.
+
+<details><summary>patch: fix(provider): the Anthropic probe asks with a system prompt and a stream (#4754) — git am applies it as is; SHA-256 first 16: d8a57442b0bef7f1</summary>
+
+```patch
+From 2dc6a3d6ea97ee9127a2a0d36e783d228b1bb6af Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Sun, 1 Nov 2026 19:57:33 +0800
+Subject: [PATCH] fix(provider): the Anthropic probe asks with a system prompt
+ and a stream (#4754)
+
+What changed
+- tinyBody's Anthropic probe carries a system prompt and stream:true, the
+  shape a relay of Claude Code's takes: one turned a bare /v1/messages
+  probe away with 503, and a non-streaming one with 520, while agents'
+  requests answered on the same model (double12gzh's ablation). On Vertex
+  AI the stream goes in before VertexClaudeRequest picks the route, so
+  the probe asks at :streamRawPredict. probe still stops reading at the
+  model's first word. tiny no longer appends a second stream field to an
+  Anthropic body that names one.
+- Tests: the probe is asked as the relay takes it (httptest 503/520 on
+  the bare shapes), the Vertex route is :streamRawPredict with the
+  system prompt along; the three tests that pinned the old shape
+  (stream-only backends, detection, Vertex Claude's rawPredict) follow
+  the new one.
+
+Run
+- go test ./internal/provider/ -tags nogui: ok (96s)
+- the two new tests fail on the parent commit's tinyBody (503, rawPredict)
+
+Fixes #4754
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/provider/decide_test.go |  7 ++-
+ internal/provider/detect_test.go |  4 +-
+ internal/provider/test.go        | 22 +++++++--
+ internal/provider/test_test.go   | 76 ++++++++++++++++++++++++++++++++
+ internal/provider/vertex_test.go | 17 ++++---
+ 5 files changed, 113 insertions(+), 13 deletions(-)
+
+diff --git a/internal/provider/decide_test.go b/internal/provider/decide_test.go
+index dc84addbd..94539c50c 100644
+--- a/internal/provider/decide_test.go
++++ b/internal/provider/decide_test.go
+@@ -611,10 +611,13 @@ func TestAPIErrorUnsaid(t *testing.T) {
+ }
+ 
+ // A backend that only streams is tested with a streamed request: WorkBuddy
+-// refuses any other with 400 (#124).
++// refuses any other with 400 (#124). The Anthropic probe streams with or
++// without an account, as the relay that takes a streamed request alone
++// asked for (#4754, TestTestAnthropicProbesAsTheGatewayRelays), so it has
++// no leg here.
+ func TestTinyStreamsStreamOnly(t *testing.T) {
+ 	p := Provider{Chat: "https://x/v1", Responses: "https://x/v1", Anthropic: "https://x"}
+-	for _, proto := range []Protocol{Chat, Responses, Anthropic} {
++	for _, proto := range []Protocol{Chat, Responses} {
+ 		if _, b := tiny(p, proto, "m"); strings.Contains(b, "stream") {
+ 			t.Errorf("%s: %s", proto, b)
+ 		}
+diff --git a/internal/provider/detect_test.go b/internal/provider/detect_test.go
+index 60de32bc3..12659e5f7 100644
+--- a/internal/provider/detect_test.go
++++ b/internal/provider/detect_test.go
+@@ -121,7 +121,9 @@ func TestDetectProtocols(t *testing.T) {
+ 					t.Fatalf("%s asked for %v tokens", a.path, n)
+ 				}
+ 			}
+-			if a.body["stream"] == true {
++			// the Anthropic probe streams, as the relay takes a streamed
++			// request alone (#4754); the others are asked for a body
++			if a.body["stream"] == true && a.path != "/v1/messages" {
+ 				t.Fatalf("%s streamed", a.path)
+ 			}
+ 		}
+diff --git a/internal/provider/test.go b/internal/provider/test.go
+index a29178747..1a897aab0 100644
+--- a/internal/provider/test.go
++++ b/internal/provider/test.go
+@@ -109,11 +109,17 @@ func (p Provider) Test(ctx context.Context) []Result {
+ 	return out
+ }
+ 
++// anthropicProbeSystem is the system prompt the Anthropic probe carries, in
++// the shape Claude Code puts one in: the relay that asked for it (#4754)
++// answers the same model 200 with it and a stream, 503 without it.
++const anthropicProbeSystem = `[{"type":"text","text":"You are Claude Code, Anthropic's official CLI for Claude."}]`
++
+ // tiny is the smallest request for model on proto's endpoint, streamed
+ // to a backend that only streams.
+ func tiny(q Provider, proto Protocol, model string) (url, body string) {
+ 	url, body = tinyBody(q, proto, model)
+-	if q.Account != nil && q.Account.Stream && body != "" {
++	if q.Account != nil && q.Account.Stream && body != "" && !streams([]byte(body)) {
++		// an Anthropic body already names its stream (tinyBody)
+ 		body = strings.TrimSuffix(body, "}") + `,"stream":true}`
+ 	}
+ 	if q.OpenCodeFree(model) && body != "" {
+@@ -210,13 +216,21 @@ func tinyBody(q Provider, proto Protocol, model string) (url, body string) {
+ 	case Responses:
+ 		return q.mantleBase(q.Responses, model) + "/responses", fmt.Sprintf(`{"model":%q,"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}],"max_output_tokens":16}`, model)
+ 	case Anthropic:
++		// with a system prompt in it and streamed, as a relay of Claude
++		// Code's takes a request: one that serves Claude Code alone turned
++		// a bare /v1/messages probe away with 503, and a non-streaming one
++		// with 520, while agents' requests — always a system prompt and a
++		// stream — were answered on the same model (double12gzh, #4754).
++		// probe stops reading at the model's first word, so a stream is
++		// not waited out.
+ 		if q.IsVertex() {
+ 			// Claude at the project, as Anthropic's Vertex SDK asks it
+-			// (VertexClaudeRequest)
+-			at, b, _ := VertexClaudeRequest("/v1/messages", fmt.Appendf(nil, `{"model":%q,"max_tokens":16,"messages":[{"role":"user","content":"hi"}]}`, model))
++			// (VertexClaudeRequest): the stream in the body is what picks
++			// :streamRawPredict there, so it goes in before the route is
++			at, b, _ := VertexClaudeRequest("/v1/messages", fmt.Appendf(nil, `{"model":%q,"max_tokens":16,"system":`+anthropicProbeSystem+`,"stream":true,"messages":[{"role":"user","content":"hi"}]}`, model))
+ 			return q.Base(Anthropic) + at, string(b)
+ 		}
+-		return q.Anthropic + "/v1/messages", fmt.Sprintf(`{"model":%q,"max_tokens":16,"messages":[{"role":"user","content":"hi"}]}`, model)
++		return q.Anthropic + "/v1/messages", fmt.Sprintf(`{"model":%q,"max_tokens":16,"system":%s,"stream":true,"messages":[{"role":"user","content":"hi"}]}`, model, anthropicProbeSystem)
+ 	case Gemini:
+ 		if q.IsVertex() {
+ 			return vertexTest(q, model)
+diff --git a/internal/provider/test_test.go b/internal/provider/test_test.go
+index 7bc513dcf..9d2cb5cb6 100644
+--- a/internal/provider/test_test.go
++++ b/internal/provider/test_test.go
+@@ -3,6 +3,7 @@ package provider
+ import (
+ 	"context"
+ 	"encoding/json"
++	"io"
+ 	"net/http"
+ 	"net/http/httptest"
+ 	"path/filepath"
+@@ -411,3 +412,78 @@ func TestTestModelsAsAClientMovesAsTheGatewayDoes(t *testing.T) {
+ 		t.Errorf("as Claude Code: results %+v, asked %q", rs, got)
+ 	}
+ }
++
++// The Anthropic probe is asked the way a relay of Claude Code's takes a
++// request: with a system prompt in it and streamed. One that serves Claude
++// Code alone turned a bare /v1/messages probe away with 503, and a
++// non-streaming one with 520, while agents' requests — always a system
++// prompt and a stream — were answered on the same model (double12gzh,
++// #4754).
++func TestTestAnthropicProbesAsTheGatewayRelays(t *testing.T) {
++	oneHome(t)
++	var mu sync.Mutex
++	var asked map[string]any
++	srv := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
++		mu.Lock()
++		defer mu.Unlock()
++		b, _ := io.ReadAll(r.Body)
++		asked = map[string]any{}
++		if json.Unmarshal(b, &asked) != nil {
++			t.Errorf("the probe's body is not JSON: %s", b)
++			return
++		}
++		if _, ok := asked["system"]; !ok {
++			rw.WriteHeader(http.StatusServiceUnavailable)
++			_, _ = rw.Write([]byte("503 Service Unavailable"))
++			return
++		}
++		if s, _ := asked["stream"].(bool); !s {
++			rw.WriteHeader(520)
++			_, _ = rw.Write([]byte("520 Cloudflare Error"))
++			return
++		}
++		rw.Header().Set("Content-Type", "text/event-stream")
++		_, _ = rw.Write([]byte("event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\"}}\n\nevent: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0}\n\n"))
++	}))
++	defer srv.Close()
++	p := Provider{ID: "relay", Name: "Relay", Key: "k", Anthropic: srv.URL}
++	rs := p.TestModels(context.Background(), []string{"claude-opus-5"})
++	mu.Lock()
++	defer mu.Unlock()
++	if len(rs) != 1 || !rs[0].OK || rs[0].Status != http.StatusOK {
++		t.Fatalf("results %+v", rs)
++	}
++	sys, _ := asked["system"].([]any)
++	if len(sys) == 0 {
++		t.Fatalf("the probe asked with no system prompt: %v", asked["system"])
++	}
++	blk, _ := sys[0].(map[string]any)
++	if blk["type"] != "text" || blk["text"] == "" {
++		t.Errorf("the probe's system is %v, want a text block with words in it", asked["system"])
++	}
++	if s, _ := asked["stream"].(bool); !s {
++		t.Error("the probe asked without a stream")
++	}
++}
++
++// On Vertex AI the same probe goes where the SDK sends a streamed Claude
++// request: :streamRawPredict, with the system prompt along — the stream in
++// the body is what picks that route (VertexClaudeRequest).
++func TestTestAnthropicOnVertexStreamsAtStreamRawPredict(t *testing.T) {
++	q := Provider{ID: "vertex", Name: "Vertex", Preset: VertexPreset, Vertex: &Vertex{Project: "acme-vertex"}}
++	u, body := tinyBody(q, Anthropic, "claude-opus-5")
++	if !strings.HasSuffix(u, "/publishers/anthropic/models/claude-opus-5:streamRawPredict") {
++		t.Errorf("asked at %q", u)
++	}
++	var m map[string]any
++	if json.Unmarshal([]byte(body), &m) != nil {
++		t.Fatalf("body %q", body)
++	}
++	sys, _ := m["system"].([]any)
++	if len(sys) == 0 {
++		t.Errorf("asked with no system prompt: %s", body)
++	}
++	if s, _ := m["stream"].(bool); !s {
++		t.Errorf("asked without a stream: %s", body)
++	}
++}
+diff --git a/internal/provider/vertex_test.go b/internal/provider/vertex_test.go
+index ff98adb3e..5c61205fd 100644
+--- a/internal/provider/vertex_test.go
++++ b/internal/provider/vertex_test.go
+@@ -177,6 +177,10 @@ func (f *vertexGoogle) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+ 	case vertex && strings.Contains(r.URL.Path, "/models/gemini-9-pro:"):
+ 		w.WriteHeader(http.StatusNotFound)
+ 		io.WriteString(w, "{\"error\":{\"code\":404,\"message\":\"Publisher Model `projects/acme-vertex/locations/global/publishers/google/models/gemini-9-pro` was not found or your project does not have access to it. Please ensure you are using a valid model version. For more information, see: https://cloud.google.com/vertex-ai/generative-ai/docs/learn/model-versions\",\"status\":\"NOT_FOUND\"}}")
++	case vertex && strings.HasSuffix(r.URL.Path, ":streamRawPredict") && strings.Contains(r.URL.Path, "/publishers/anthropic/models/"):
++		// a Claude request streamed, answered as Vertex AI streams one
++		w.Header().Set("Content-Type", "text/event-stream")
++		io.WriteString(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_vrtx_1\"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hi\"}}\n\n")
+ 	case vertex && strings.HasSuffix(r.URL.Path, ":rawPredict") && strings.Contains(r.URL.Path, "/publishers/anthropic/models/"):
+ 		w.Header().Set("Content-Type", "application/json")
+ 		io.WriteString(w, `{"id":"msg_vrtx_1","type":"message","role":"assistant","model":"claude-sonnet-5-5","content":[{"type":"text","text":"Hi"}],"stop_reason":"max_tokens","usage":{"input_tokens":8,"output_tokens":1}}`)
+@@ -1660,10 +1664,10 @@ func TestVertexPartnerModels(t *testing.T) {
+ // token as Gemini and with nothing more set by the user: global lists the
+ // current ones, the id alone puts a model on that API (one typed in with
+ // Vertex's @date too), and its test is asked as Anthropic's Vertex SDK
+-// asks: :rawPredict at the model's path, the model out of the body and
+-// anthropic_version vertex-2023-10-16 in it. The provider's own test
+-// still asks Gemini alone, as Claude answers only once the project turned
+-// it on in Model Garden.
++// asks a streamed one: :streamRawPredict at the model's path, the model
++// out of the body and anthropic_version vertex-2023-10-16 in it. The
++// provider's own test still asks Gemini alone, as Claude answers only once
++// the project turned it on in Model Garden.
+ func TestVertexClaudeModels(t *testing.T) {
+ 	vertexHome(t)
+ 	f := newVertexGoogle(t)
+@@ -1711,11 +1715,12 @@ func TestVertexClaudeModels(t *testing.T) {
+ 	c := calls[1]
+ 	var body map[string]any
+ 	json.Unmarshal([]byte(c.body), &body)
+-	if c.path != "/vertex/v1/projects/acme-vertex/locations/global/publishers/anthropic/models/claude-sonnet-4-5@20250929:rawPredict" ||
++	if c.path != "/vertex/v1/projects/acme-vertex/locations/global/publishers/anthropic/models/claude-sonnet-4-5@20250929:streamRawPredict" ||
+ 		c.header.Get("Authorization") != "Bearer ya29.minted-1" {
+ 		t.Errorf("Claude asked at %s with %q", c.path, c.header.Get("Authorization"))
+ 	}
+-	if _, has := body["model"]; has || body["anthropic_version"] != "vertex-2023-10-16" || body["max_tokens"] != float64(16) {
++	if _, has := body["model"]; has || body["anthropic_version"] != "vertex-2023-10-16" || body["max_tokens"] != float64(16) ||
++		body["stream"] != true || body["system"] == nil {
+ 		t.Errorf("Claude asked with %s", c.body)
+ 	}
+ }
+-- 
+2.50.1 (Apple Git-155)
+
+```
+
+</details>
+
+Branch with the commit: [fix/4754-anthropic-probe-503](https://github.com/ggbdpq/magpie/tree/fix/4754-anthropic-probe-503) (head `2dc6a3d6ea97ee9127a2a0d36e783d228b1bb6af`).

@@ -1,0 +1,58 @@
+provider, gateway: a rest the vendor gave the time of keeps till it
+ends, and the reading that lifted it does not bring the image picker
+back to the account (#2718)
+
+What changed:
+
+A refusal that says when its quota comes back (ChatGPT's resets_at, or
+a Retry-After: restAfterMarked keeps it by "resets" or "retry-after")
+rested the account till then, but the rest did not keep. Every failure
+asks the usage read again (staleAllowance), and when the reading came
+back finding the window less than full — which the vendor's own usage
+endpoint can say while its refusal stands — renewedFrom read it as full
+till sooner, and renewed lifted the rest. The account went first in its
+group and was refused again, every few minutes, all saying the same
+reset: parkavenue9639 counted 11 such tries in 92 minutes, and 21 more
+from magpie's own image descriptions, without one gaining anything.
+
+What a reading may lift is now told from what only a window truly
+starting again may. Allowances still tells renewed by renewedFrom, and
+renewed lifts by it what no vendor gave the time of (by "quota",
+"window"): unchanged. A new startedAgain says whether a window full at
+the last reading — a pool of some models as much as the whole account's
+— has its reset gone by, or stands a new, later cycle: the two ways a
+window really restarted. Allowances tells that to a second hook
+(OnStarted), which alone lifts what the vendor itself timed ("resets",
+"retry-after"). A reset spent tells both hooks (renewedNow), and lifts
+at once, as before. A Claude account whose /usage finds its five hours
+started again before Claude Code's word said is told by the new read's
+reset standing a new cycle, and its rest is lifted as it was. A key's
+own readings tell the two the same way (keyAllowance's keep returns
+both).
+
+AutoVision needed nothing of its own: it has kept off a resting
+describer since #1801 (spentModel counts a quota rest as spent, and
+autoSpent asks none "until one is back"). Its 21 refusals in the report
+were this lifting: the rest gone, the pick went back to the refused
+account, and the next image asked it again. The test drives both: with
+the rest standing, a reading that finds the window at 80% with the same
+reset lifts nothing, and AutoVision keeps the other describer.
+
+Run: TestReadingKeepsARefusalsRest,
+TestAutoVisionKeepsOffARefusedAccount red on f5b01574 (a reading that
+found the window less than full lifted the refusal's rest; AutoVision =
+"codex/gpt-6.1-sol", back on the refused account), green with the
+change, red again with the lift gated off. TestStartedAgain added by
+TestRenewedFrom's table. TestClaudeAccountBackOnceItsWindowRenews now
+reads the restart as a new cycle, as a fresh /usage says it;
+TestQuotaRestsUntilItsReset and TestFactoryStandardOutLeavesCore tell
+the reset-spent and pool-renewed word through both hooks, as
+renewedNow does. go test ./internal/gateway/ ./internal/provider/
+-p 1 -timeout 30m ok (gateway 328s, provider 74s); go test -race of
+the Renewed, Rest, AutoVision, SpentModel, Allowance, QuotaRests,
+FactoryStandard, ClaudeAccountBack families ok; go vet of both
+packages clean; gofmt clean; go build ./... ok.
+
+Fixes #2718
+Co-authored-by: parkavenue9639 <92194680+parkavenue9639@users.noreply.github.com>
+Generated-by: GLM-5.3-Flash (ZCode)

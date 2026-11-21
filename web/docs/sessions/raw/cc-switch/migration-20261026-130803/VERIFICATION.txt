@@ -1,0 +1,25 @@
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py cc-switch baseline
+INPUT: CONFIG: fixed cc-switch source allowlist
+OUTPUT: BASELINE PASS groups=2 files=71 bytes=524434501 protected=1
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py cc-switch archive
+INPUT: 439af9d06f5ad8dca1fa2811b9a375932dd8acd8330d05070eb447d729ed9c22
+OUTPUT: ARCHIVE PASS zip_files=2 files=71 bytes=524434501
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py cc-switch apply
+INPUT: 3a22fa9e072a99eb31f25de36eab94c057fdb150883a58ce6325c4846960394a
+OUTPUT: APPLY PASS removed_files=71 removed_bytes=524434501
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py cc-switch verify
+INPUT: 48993b7138044ba2a8b2c97919ef125e1d7a6f18ee5644b1fff54fbc2cbe0f5a
+OUTPUT: MODIFIED PASS files=71 bytes=524434501 originals_absent=true protected_unchanged=true
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py cc-switch rollback-test
+INPUT: 48993b7138044ba2a8b2c97919ef125e1d7a6f18ee5644b1fff54fbc2cbe0f5a
+OUTPUT: ROLLBACK PASS restored_files=71 restored_bytes=524434501 hashes_match=true originals_untouched=true
+EXIT: 0
+

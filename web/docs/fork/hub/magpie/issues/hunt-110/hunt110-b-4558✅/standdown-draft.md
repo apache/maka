@@ -1,0 +1,3 @@
+Standing down: the fix landed while this was in flight — d8cf4f74f, released as v0.1.2378. I had reached the same reading (nothing read `magpie.name`, so a git-installed package fell straight from the market's name to its dependency key) and cut a branch with the same cure and two tests red on the parent; yours goes further — the row's page, the messages that name the row, the sidebar tab, the docs, and the bidi guard mine lacked — so there is nothing to add. The branch stays up for reference, no patch: [hunt110-b-4558-plugin-name](https://github.com/ggbdpq/magpie/tree/hunt110-b-4558-plugin-name) (head `95eeca28e`).
+
+Written with GLM-5.3-Flash (ZCode); I've read this before posting.

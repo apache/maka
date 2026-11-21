@@ -1,0 +1,25 @@
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py codegeex baseline
+INPUT: CONFIG: fixed codegeex source allowlist
+OUTPUT: BASELINE PASS groups=2 files=17108 bytes=352695800 protected=0
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py codegeex archive
+INPUT: e53a6e2668d1a9553babbd8bb39859f6b94b05ed3d97b0b34e749c68f9e5f371
+OUTPUT: ARCHIVE PASS zip_files=2 files=17108 bytes=352695800
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py codegeex apply
+INPUT: 5ee081970f8bfa2e67dc8b2110129790cbd95e7a61d33980d926c1803dce8776
+OUTPUT: APPLY PASS removed_files=17108 removed_bytes=352695800
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py codegeex verify
+INPUT: 1943537f6a298043db3c08b305ff51a550d0da425a31f47406f93b4a6c20a2a4
+OUTPUT: MODIFIED PASS files=17108 bytes=352695800 originals_absent=true protected_unchanged=true
+EXIT: 0
+
+COMMAND: D:\DevTools\Languages\Backend\Python\python.exe E:\cc\guahub\sessions\tools\migrate_home_agents.py codegeex rollback-test
+INPUT: 1943537f6a298043db3c08b305ff51a550d0da425a31f47406f93b4a6c20a2a4
+OUTPUT: ROLLBACK PASS restored_files=17108 restored_bytes=352695800 hashes_match=true originals_untouched=true
+EXIT: 0
+

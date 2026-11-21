@@ -1,0 +1,118 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Tue, 10 Nov 2026 05:11:47 +0800
+Subject: [PATCH] bridge: fold a root union off a client tool's schema, as the
+ Anthropic path does
+
+A tool whose input schema has an anyOf/oneOf/allOf at the root (Codex
+desktop's cua_repl js, the in-app browser) reached the subscription
+bridge's Claude Code as it came, and Claude Code drops every such MCP
+tool ("Skipping tool: its input schema uses top-level oneOf, which the
+Anthropic API does not accept"), so the run's model never saw the tool
+and could not drive the browser, while its plain-rooted sibling js_reset
+arrived. bridgeTools now hands each schema through objectSchema, the
+fold the translated Anthropic path applies (#646): a root union is
+folded to an object with every field kept, and a schema with no root
+union goes as it came. Both of the bridge's turns, a conversation's
+first and a resumed run's, offer tools through bridgeTools, so the two
+are fixed together.
+
+(#5822)
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ .../gateway/claude_bridge_root_union_test.go  | 64 +++++++++++++++++++
+ internal/gateway/claude_subscription.go       |  6 +-
+ 2 files changed, 69 insertions(+), 1 deletion(-)
+ create mode 100644 internal/gateway/claude_bridge_root_union_test.go
+
+diff --git a/internal/gateway/claude_bridge_root_union_test.go b/internal/gateway/claude_bridge_root_union_test.go
+new file mode 100644
+index 000000000..ccc295330
+--- /dev/null
++++ b/internal/gateway/claude_bridge_root_union_test.go
+@@ -0,0 +1,64 @@
++package gateway
++
++import (
++	"encoding/json"
++	"strings"
++	"testing"
++)
++
++// #5822: Codex's cua_repl js (the in-app browser) has an input schema with
++// a oneOf at its root, and bridgeTools handed it to the bridge's Claude
++// Code unchanged. Claude Code drops every MCP tool whose schema has an
++// anyOf/oneOf/allOf at the root ("Skipping tool: its input schema uses
++// top-level oneOf, which the Anthropic API does not accept"), so the run's
++// model never saw the tool and could not drive the browser, while its
++// sibling js_reset, whose root is a plain object, arrived. The Anthropic
++// path has folded root unions all along (objectSchema, #646); the bridge
++// now folds there too. A schema with no root union goes as it came.
++func TestClaudeBridgeFoldsToolRootUnions(t *testing.T) {
++	js := `{"type":"object","properties":{"code":{"type":"string","description":"JavaScript to run"},"completion_summary":{"type":"string","description":"What the code did"},"timeout_ms":{"type":"number","description":"Timeout"},"title":{"type":"string","description":"Short title"}},"additionalProperties":false,"oneOf":[{"type":"object","properties":{"code":{"type":"string"},"timeout_ms":{"type":"number"},"title":{"type":"string"}},"required":["code"],"additionalProperties":false},{"type":"object","properties":{"completion_summary":{"type":"string"}},"required":["completion_summary"],"additionalProperties":false}]}`
++	jsReset := `{"type":"object","properties":{},"additionalProperties":false}`
++	body := `{"model":"claude-opus-5-5","stream":false,"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"open example.com in the browser"}]}],"tools":[{"type":"namespace","name":"mcp__cua_repl","tools":[` +
++		`{"type":"function","name":"js","description":"Evaluate JavaScript in the page","parameters":` + js + `},` +
++		`{"type":"function","name":"js_reset","description":"Reset the REPL","parameters":` + jsReset + `}]}]}`
++	req, err := parseResponses([]byte(body))
++	if err != nil {
++		t.Fatalf("parseResponses: %v", err)
++	}
++	if len(req.Tools) != 2 || req.Tools[0].Name != "mcp__cua_repl__js" || req.Tools[1].Name != "mcp__cua_repl__js_reset" {
++		t.Fatalf("parsed tools %v", req.Tools)
++	}
++	offered := map[string]string{}
++	for _, bt := range bridgeTools(req) {
++		offered[bt.Name] = string(bt.InputSchema)
++	}
++	if len(offered) != 2 {
++		t.Fatalf("offered %d tools, want 2: %q", len(offered), offered)
++	}
++	got, ok := offered["mcp__cua_repl__js"]
++	if !ok {
++		t.Fatalf("mcp__cua_repl__js was never offered: %q", offered)
++	}
++	if strings.Contains(got, "oneOf") {
++		t.Errorf("cua_repl js is offered with oneOf at its root, which Claude Code drops: %s", got)
++	}
++	var m map[string]any
++	if err := json.Unmarshal([]byte(got), &m); err != nil {
++		t.Fatalf("offered schema: %v", err)
++	}
++	if m["type"] != "object" {
++		t.Errorf("folded root is %v, want object", m["type"])
++	}
++	props, _ := m["properties"].(map[string]any)
++	for _, f := range []string{"code", "completion_summary", "timeout_ms", "title"} {
++		if _, has := props[f]; !has {
++			t.Errorf("folded schema lost the %q field: %s", f, got)
++		}
++	}
++	if _, has := m["required"]; has {
++		t.Errorf("folded schema keeps a root required, though no field is one everywhere: %s", got)
++	}
++	if got, want := offered["mcp__cua_repl__js_reset"], jsReset; got != want {
++		t.Errorf("js_reset's schema was rewritten: %s, want as it came %s", got, want)
++	}
++}
+diff --git a/internal/gateway/claude_subscription.go b/internal/gateway/claude_subscription.go
+index 71ff2d8bd..4a37ef140 100644
+--- a/internal/gateway/claude_subscription.go
++++ b/internal/gateway/claude_subscription.go
+@@ -7371,7 +7371,11 @@ func bridgeTools(req *Request) []bridgeTool {
+ 		if strings.HasPrefix(req.ToolChoice, "name:") && t.Name != strings.TrimPrefix(req.ToolChoice, "name:") {
+ 			continue
+ 		}
+-		schema := t.Schema
++		// a root union Claude Code drops whole (it folds, or skips, a tool
++		// whose schema has an anyOf/oneOf/allOf at the root), so the fold
++		// the Anthropic path applies (#646) is applied here too; a schema
++		// with no root union goes as it came (#5822)
++		schema := objectSchema(t.Schema)
+ 		if len(schema) == 0 {
+ 			schema = json.RawMessage(`{"type":"object","properties":{}}`)
+ 		}
+-- 
+2.50.1 (Apple Git-155)
+

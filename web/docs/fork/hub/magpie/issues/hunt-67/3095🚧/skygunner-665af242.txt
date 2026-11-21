@@ -1,0 +1,67 @@
+commit 665af2426e7923646b1b6997121b058024f23d67
+Author:     vincent <webmaster@palmit.com.au>
+AuthorDate: Fri Oct 23 07:33:39 2026 +1000
+Commit:     vincent <webmaster@palmit.com.au>
+CommitDate: Fri Oct 23 07:33:39 2026 +1000
+
+    test(provider): keep hold assertions independent of cache expiry
+    
+    TestHoldReadsMigrationsOnce and three count-sensitive siblings require
+    one held value, but the production one-second TTL can expire between
+    adjacent statements on a loaded runner. Pin the TTL to an hour within
+    those tests and restore it afterwards, using the existing in-file pattern.
+    The simple build-count fixture also starts with no key from a prior run.
+    Production expiry and invalidation rules remain unchanged.
+    
+    Adapt ggbdpq/magpie de90e3eaf61693d5432583f38e2d183aecb335f1
+    and cover TestHoldBuildsOnce, TestHoldReadsSettingsOnce and
+    TestHoldBuildsProvidersOnce too. A temporary 1.2s pause between held reads
+    fails all four original tests; with the fix the same pause passes three
+    times under -race. Without the pause, all four pass ten times under -race,
+    and the simple build-count test passes twenty isolated repetitions.
+    No artificial delay is committed.
+    
+    Fixes yetone/magpie#3095
+    Co-authored-by: ggbdpq <ggbdpq@gmail.com>
+
+diff --git a/internal/provider/hold_test.go b/internal/provider/hold_test.go
+index 6b5c415e..790283ef 100644
+--- a/internal/provider/hold_test.go
++++ b/internal/provider/hold_test.go
+@@ -20,6 +20,9 @@ import (
+ // (/api/state took 4s, resolving each agent's models anew); outside one,
+ // and after a write, it is built again.
+ func TestHoldBuildsOnce(t *testing.T) {
++	Changed() // a previous run may have kept the same test key
++	defer func(d time.Duration) { heldFor = d }(heldFor)
++	heldFor = time.Hour // expiry is not what this test measures
+ 	n := 0
+ 	build := func() int { n++; return n }
+ 	heldOf("t", build)
+@@ -168,6 +171,8 @@ func TestHeldGoesWithAPluginChange(t *testing.T) {
+ // the agents read settings.json for every model of every agent), and a
+ // setting saved meanwhile is seen at once.
+ func TestHoldReadsSettingsOnce(t *testing.T) {
++	defer func(d time.Duration) { heldFor = d }(heldFor)
++	heldFor = time.Hour                      // expiry is not what this test measures
+ 	t.Setenv("XDG_CONFIG_HOME", t.TempDir()) // a run starts from no files, not the last run's
+ 	defer Hold()()
+ 	if _, ok := VisibleTo("held-agent"); ok {
+@@ -224,6 +229,8 @@ func TestHoldSeesWrites(t *testing.T) {
+ // account written meanwhile has them built again, and a caller changing
+ // its list changes no one else's.
+ func TestHoldBuildsProvidersOnce(t *testing.T) {
++	defer func(d time.Duration) { heldFor = d }(heldFor)
++	heldFor = time.Hour                      // expiry is not what this test measures
+ 	t.Setenv("XDG_CONFIG_HOME", t.TempDir()) // a run starts from no files, not the last run's
+ 	// nor from the plugins' list an earlier test's folder had: seen last,
+ 	// it reads as changed here, and the change, told in the background,
+@@ -305,6 +312,8 @@ func TestCursorKeychainReadOnce(t *testing.T) {
+ // and a move written meanwhile, even one read from the file as it was
+ // before, is seen at once.
+ func TestHoldReadsMigrationsOnce(t *testing.T) {
++	defer func(d time.Duration) { heldFor = d }(heldFor)
++	heldFor = time.Hour                      // expiry is not what this test measures
+ 	t.Setenv("XDG_CONFIG_HOME", t.TempDir()) // a run starts from no files, not the last run's
+ 	defer Hold()()
+ 	if Moved("held-sub") {

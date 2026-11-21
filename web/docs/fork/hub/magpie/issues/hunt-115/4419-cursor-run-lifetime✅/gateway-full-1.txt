@@ -1,0 +1,28 @@
+# 原件摘要：gateway-full-1.txt
+
+> 原件超过 200KB，按 handbook/10 §5 改为摘要（2026-11-08 治理）。原件仍在 git 历史中。
+
+- 原文件名：`gateway-full-1.txt`
+- 字节：435242
+- sha256：`636147f9fb977b7c8058c0183dffc51d951379f166e0d37adf39ec67bafa2e29`
+- 回取：`git -C /Users/ggbdpq/cc show dbdf77a4:guahub/fork/docs/hub/magpie/issues/hunt-115/4419-cursor-run-lifetime✅/gateway-full-1.txt > /tmp/gateway-full-1.txt`
+- 用途：原始测试套件日志（验证矩阵留证）
+
+## 关键结论
+
+- `ok` 包行 0 条；`FAIL`/`--- FAIL` 行 4 条。
+- FAIL 行（前 15 条）：
+```
+--- FAIL: TestCodexPoolSaysTheClientsVersion (0.03s)
+FAIL
+FAIL	github.com/yetone/magpie/internal/gateway	540.553s
+FAIL
+```
+- 末 5 行：
+```
+2026/11/02 05:06:28 refused POST /v1/magpie/usage/requests: a web page reached loopback under the name "rebound.example:3425"
+2026/11/02 05:06:33 refused POST /mcp/magpie/vision from 192.0.2.7:4000: no API key was sent: send a magpie gateway key as Authorization: Bearer <key> (or x-api-key)
+FAIL
+FAIL	github.com/yetone/magpie/internal/gateway	540.553s
+FAIL
+```

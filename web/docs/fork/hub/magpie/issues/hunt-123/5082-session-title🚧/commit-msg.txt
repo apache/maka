@@ -1,0 +1,21 @@
+gateway: a format a relay drops without a word is told in words beside the field
+
+Claude Code's session-title request asks for its answer as JSON through
+output_config.format (the structured-outputs beta), and reads the text
+block as JSON. Through magpie to a custom provider speaking Anthropic,
+the body is relayed as it came: the field goes out, and a relay in front
+of a model without structured output takes it and drops it without a
+word - a 200 with plain text, no refusal to learn from. The schema never
+reached the model in any form, so the answer came back unstructured and
+the title silently never appeared (#5082); the same relayed request on
+Chat's response_format and Responses' text.format went the same way.
+
+The format was only told in words after an upstream had turned it away
+once (formatRefused, #2126): a relay that neither honors the field nor
+refuses it never taught magpie anything. Now a relayed request that
+carries a format and no refusal yet is told the format in the system
+prompt beside the field it asked in, the field kept: an upstream that
+honors it answers as asked, and one that drops it reads the words, so
+the ask reaches the model either way.
+
+Generated-by: GLM-5.3-Flash (ZCode)

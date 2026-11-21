@@ -1,0 +1,36 @@
+{
+  "name": "console",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "packageManager": "pnpm@12.15.0",
+  "engines": {
+    "node": ">=24.21.0 <25"
+  },
+  "scripts": {
+    "dev": "pnpm -r --parallel run dev",
+    "dev:portal": "pnpm --filter @ggbdpq/portal run dev",
+    "dev:console": "pnpm --filter @ggbdpq/console run dev",
+    "dev:blog": "pnpm --filter @ggbdpq/blog run dev",
+    "dev:toolbox": "pnpm --filter @ggbdpq/toolbox run dev",
+    "dev:agent": "pnpm --filter @ggbdpq/agent run dev",
+    "start": "pnpm -r --parallel run start",
+    "start:portal": "pnpm --filter @ggbdpq/portal run start",
+    "start:console": "pnpm --filter @ggbdpq/console run start",
+    "start:blog": "pnpm --filter @ggbdpq/blog run start",
+    "start:toolbox": "pnpm --filter @ggbdpq/toolbox run start",
+    "start:agent": "pnpm --filter @ggbdpq/agent run start",
+    "build": "pnpm -r run build",
+    "test": "pnpm -r run test",
+    "typecheck": "pnpm -r run typecheck",
+    "style:check": "node scripts/check-style.mjs",
+    "lint": "pnpm -r run lint",
+    "cli": "pnpm --filter @ggbdpq/console-cli run start",
+    "format": "oxfmt --write .",
+    "format:check": "oxfmt --check ."
+  },
+  "devDependencies": {
+    "oxlint": "^1.89.0",
+    "oxfmt": "^0.74.0"
+  }
+}

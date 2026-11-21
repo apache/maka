@@ -1,0 +1,39 @@
+provider: quota history draws measured windows set aside for routing (#4612)
+
+chowyuan1314: the Cursor plugin marks its Weekly window aside when
+on-demand or free credit can pay, and Grok Bot always — using them up
+doesn't stop the account, so routing sets them behind — and both carry a
+real percentage. pointOf refused every window set aside that wasn't a
+pool's, so quota-history.json took no point for them and the card had no
+curve, while the same account's Codex windows drew theirs. The aside
+check predates the pools' (#651); the pools' own exception (14e4d8040)
+freed only the row the card shows, not every measured window.
+
+Aside is for routing, not history: what a window says is drawn
+independently of whether using it up stops the account. pointOf now
+refuses only what has no share to tell — a window whose text alone is
+told (Text), an unlimited one, a family's, an unnamed one, a NaN — so a
+pool's window needs no exception of its own and every measured aside
+window keeps its line: the Cursor plugin's Weekly and Grok Bot, Copilot's
+completions, a Factory account's windows read while it may spend extra.
+
+Factory's "Extra usage" row, a balance in cents, told no share either and
+stayed out only because it was aside; it is Text now, its display alone —
+as Claude's row of the same name already is (claudeOveragesWindow).
+Without it, the new condition would have drawn it as a fictitious 100%
+left.
+
+Routing reads Aside where it did; nothing is set aside that wasn't.
+
+Run (at d1a94f579 + this change, macOS arm64):
+- TestQuotaHistoryKeepsAsideReadings and TestFactoryExtraUsageIsTextAlone
+  (new) fail before and pass after; TestQuotaHistoryKeepsAntigravityPools
+  now also expects the aside "Extra" window's line, the new rule's own
+  doing.
+- go test ./internal/provider -tags nogui -count=1: ok.
+- gofmt -l clean; go vet ./internal/provider, GOOS=linux and
+  GOOS=windows (nogui) clean; builds darwin, linux, windows ok.
+
+Fixes #4612
+
+Generated-by: GLM-5.3-Flash (ZCode)

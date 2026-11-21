@@ -1,0 +1,161 @@
+diff --git a/internal/provider/commandcode_key_credits_test.go b/internal/provider/commandcode_key_credits_test.go
+index 14113189..f051de7a 100644
+--- a/internal/provider/commandcode_key_credits_test.go
++++ b/internal/provider/commandcode_key_credits_test.go
+@@ -4,6 +4,7 @@ import (
+ 	"context"
+ 	"net/http"
+ 	"net/http/httptest"
++	"strconv"
+ 	"sync/atomic"
+ 	"testing"
+ )
+@@ -78,3 +79,38 @@ func TestCommandCodeKeyCardHasCredits(t *testing.T) {
+ 		t.Errorf("plan never read: %v %q %+v", err, plan, ws)
+ 	}
+ }
++
++// The Credits window #2451 added renews when the plan's period does: the
++// end is in the same billing/subscriptions reply the plan id is read
++// from, and the card's other two windows each say when they start again.
++func TestCommandCodeKeyCreditsRenewAtPeriodEnd(t *testing.T) {
++	const end = int64(4102444800000) // 2100-01-01, in ms as cmdTime reads it
++	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		switch r.Header.Get("X-Host") + r.URL.Path {
++		case "api.commandcode.ai/alpha/billing/credits":
++			w.Write([]byte(`{"credits":{"monthlyCredits":5.22,"purchasedCredits":0,"freeCredits":0},
++ "windowLimits":{"limited":true,
++   "fiveHour":{"used":1,"cap":14,"resetAt":4102444800000},
++   "weekly":{"used":2,"cap":35,"resetAt":4102444800000}}}`))
++		case "api.commandcode.ai/alpha/billing/subscriptions":
++			w.Write([]byte(`{"success":true,"data":{"planId":"individual-go-monthly","status":"active","currentPeriodEnd":` + strconv.FormatInt(end, 10) + `}}`))
++		default:
++			t.Errorf("asked %s%s", r.Header.Get("X-Host"), r.URL.Path)
++			w.WriteHeader(http.StatusNotFound)
++		}
++	}))
++	defer srv.Close()
++	old := http.DefaultClient.Transport
++	http.DefaultClient.Transport = rewrite{srv}
++	t.Cleanup(func() { http.DefaultClient.Transport = old })
++
++	p := Provider{ID: "commandcode", Key: "cmd-reset", Chat: "https://api.commandcode.ai/provider/v1"}
++	src, _ := planQuotaSourceOf(p)
++	_, ws, _, err := planKeyWindows(context.Background(), p, src, p.Key)
++	if err != nil || len(ws) != 3 {
++		t.Fatalf("%v %+v", err, ws)
++	}
++	if c := ws[2]; c.Name != "Credits" || c.ResetsAt == nil || c.ResetsAt.UnixMilli() != end {
++		t.Errorf("the key card's credits have no reset: %+v", c)
++	}
++}
+diff --git a/internal/provider/commandcode_plan.go b/internal/provider/commandcode_plan.go
+index d90c5406..507e3cee 100644
+--- a/internal/provider/commandcode_plan.go
++++ b/internal/provider/commandcode_plan.go
+@@ -114,7 +114,10 @@ func cmdLogins() []cmdLogin {
+ 
+ type cmdSeen struct {
+ 	plan string
+-	at   time.Time
++	// until is, on a key's plan (cmdKeyPlanID), when the plan's period
++	// ends: the month's credits come back then, on the Credits window.
++	until *time.Time
++	at    time.Time
+ }
+ 
+ // ---- allowance ----------------------------------------------------------------
+@@ -241,14 +244,15 @@ func cmdLeft(c cmdCredits) (monthly, left float64, ok bool) {
+ }
+ 
+ // cmdQuotaOf makes the credits reply into the plan's windows: the 5-hour
+-// and weekly limits, and the month's credits as one more. A card's
++// and weekly limits, and the month's credits as one more, renewing at
++// until, the plan's period's end (nil when that isn't known). A card's
+ // Balance is shown instead of its windows — it is a key's money, not an
+ // allowance — so, set beside them, it hid both limits on the Usage page,
+ // the panel and the TUI. The dollars are a window when the plan is known,
+ // used of the CLI's pool (the plan's month of credits, or what is left of
+ // it if more, and the bought and free ones) as its /usage bar is; a reply
+ // with neither windows nor a plan is a Balance still.
+-func cmdQuotaOf(q SubscriptionQuota, c cmdCredits) SubscriptionQuota {
++func cmdQuotaOf(q SubscriptionQuota, c cmdCredits, until *time.Time) SubscriptionQuota {
+ 	name, planMonthly := cmdPlanOf(c.Credits.PlanID)
+ 	if name != "" {
+ 		q.Plan = name
+@@ -260,7 +264,7 @@ func cmdQuotaOf(q SubscriptionQuota, c cmdCredits) SubscriptionQuota {
+ 	case planMonthly > 0:
+ 		pool := max(planMonthly, monthly) + left - monthly
+ 		q.Windows = append(q.Windows, QuotaWindow{Name: "Credits", Used: min(100, 100*(pool-left)/pool),
+-			Display: money("$", pool-left) + " / " + money("$", pool)})
++			Display: money("$", pool-left) + " / " + money("$", pool), ResetsAt: until})
+ 	case len(q.Windows) == 0:
+ 		q.Balance = money("$", left)
+ 	}
+@@ -315,10 +319,11 @@ func cmdKeyWindows(ctx context.Context, src planQuotaSource, key string) (string
+ 	if len(cmdWindows(c)) == 0 {
+ 		return cmdPlanName(c.Credits.PlanID), []QuotaWindow{}, nil
+ 	}
++	var until *time.Time
+ 	if c.Credits.PlanID == "" {
+-		c.Credits.PlanID = cmdKeyPlanID(ctx, key)
++		c.Credits.PlanID, until = cmdKeyPlanID(ctx, key)
+ 	}
+-	q := cmdQuotaOf(SubscriptionQuota{}, c)
++	q := cmdQuotaOf(SubscriptionQuota{}, c, until)
+ 	return q.Plan, q.Windows, nil
+ }
+ 
+@@ -327,21 +332,24 @@ var cmdKeyPlans = struct {
+ 	m map[string]cmdSeen // plan is the subscription's id here
+ }{m: map[string]cmdSeen{}}
+ 
+-func cmdKeyPlanID(ctx context.Context, key string) string {
++// cmdKeyPlanID is the key's subscription's plan id, and the end of its
++// period, for the Credits window's reset: asked at most every ten minutes,
++// and the pair read before kept while it can't be read.
++func cmdKeyPlanID(ctx context.Context, key string) (string, *time.Time) {
+ 	cmdKeyPlans.Lock()
+ 	seen, had := cmdKeyPlans.m[key]
+ 	cmdKeyPlans.Unlock()
+ 	if had && time.Since(seen.at) < 10*time.Minute {
+-		return seen.plan
++		return seen.plan, seen.until
+ 	}
+-	id, _, _, _, ok := cmdSubscription(ctx, cmdAuth{APIKey: key})
++	id, _, until, _, ok := cmdSubscription(ctx, cmdAuth{APIKey: key})
+ 	if !ok {
+-		return seen.plan
++		return seen.plan, seen.until
+ 	}
+ 	cmdKeyPlans.Lock()
+-	cmdKeyPlans.m[key] = cmdSeen{id, time.Now()}
++	cmdKeyPlans.m[key] = cmdSeen{plan: id, until: until, at: time.Now()}
+ 	cmdKeyPlans.Unlock()
+-	return id
++	return id, until
+ }
+ 
+ // ---- signing in ---------------------------------------------------------------
+diff --git a/internal/provider/planquota_test.go b/internal/provider/planquota_test.go
+index 858fd102..3f56c870 100644
+--- a/internal/provider/planquota_test.go
++++ b/internal/provider/planquota_test.go
+@@ -104,7 +104,7 @@ func TestCommandCodeQuotaShowsWindows(t *testing.T) {
+ 	if err := json.Unmarshal([]byte(cmdCreditsReply), &c); err != nil {
+ 		t.Fatal(err)
+ 	}
+-	q := cmdQuotaOf(SubscriptionQuota{}, c)
++	q := cmdQuotaOf(SubscriptionQuota{}, c, nil)
+ 	if q.Balance != "" || q.Plan != "GOAT" || len(q.Windows) != 3 {
+ 		t.Fatalf("%+v", q)
+ 	}
+@@ -116,7 +116,7 @@ func TestCommandCodeQuotaShowsWindows(t *testing.T) {
+ 	// no plan and no windows: what is left is all there is to show
+ 	var none cmdCredits
+ 	_ = json.Unmarshal([]byte(`{"credits":{"purchasedCredits":"20","freeCredits":1}}`), &none)
+-	if q := cmdQuotaOf(SubscriptionQuota{}, none); q.Balance != "$21.00" || len(q.Windows) != 0 {
++	if q := cmdQuotaOf(SubscriptionQuota{}, none, nil); q.Balance != "$21.00" || len(q.Windows) != 0 {
+ 		t.Errorf("no plan: %+v", q)
+ 	}
+ }

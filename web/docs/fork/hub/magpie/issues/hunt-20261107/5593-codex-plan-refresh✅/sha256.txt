@@ -1,0 +1,4 @@
+b6e48befe04532c3746f1644baebdde8d4ccb12b
+patch sha256: 6871f944368b2937485787180eeb9c6285d32d39cb6c16a8167fa44f75f005d6
+branch: fix/5593-codex-plan-refresh (fork ggbdpq/magpie)
+rebased onto upstream/main: 999ba6a00e46b3a295f773824e190f1d9f9060fa

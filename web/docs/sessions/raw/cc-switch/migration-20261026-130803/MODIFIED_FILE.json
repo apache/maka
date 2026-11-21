@@ -1,0 +1,478 @@
+{
+  "state": "migrated",
+  "groups": [
+    {
+      "name": "logs",
+      "source": "C:\\Users\\802165\\.cc-switch\\logs",
+      "pattern": "**/*",
+      "remove_root": true,
+      "category": "archive",
+      "archive": "E:\\cc\\guahub\\sessions\\raw\\cc-switch\\migration-20261026-130803\\logs.zip",
+      "files": [
+        {
+          "path": "cc-switch.log",
+          "size": 16486486,
+          "mtime_ns": 1792470215034854300,
+          "sha256": "223d7f96210719342997045a7c8ffdc9ce4198c7047fe081eadaa8dbcb846e3e"
+        },
+        {
+          "path": "cc-switch_2026-08-15_09-59-09.log",
+          "size": 20971475,
+          "mtime_ns": 1786759149233311700,
+          "sha256": "71774b8a1c57a307d156baa87fd3bc18757a66fe730256cc17a88b5ad5b6e41a"
+        },
+        {
+          "path": "cc-switch_2026-08-18_06-20-12.log",
+          "size": 20971374,
+          "mtime_ns": 1787005212646361700,
+          "sha256": "ca6ae4480cd571df40a05e8f3852b3eb80c2f7ac3c911dec9816a70db5fa26ed"
+        },
+        {
+          "path": "cc-switch_2026-08-27_18-39-06.log",
+          "size": 20971196,
+          "mtime_ns": 1787827146739628000,
+          "sha256": "6b736de7e1df72d8f1ab807d8daddc72521c98c68513f1e7c2adc924aef6cf5d"
+        },
+        {
+          "path": "cc-switch_2026-08-31_13-55-44.log",
+          "size": 20971364,
+          "mtime_ns": 1788155744740214500,
+          "sha256": "9e0aa77ebc5d7714b573fa0e1ba33375d18227c1bcd2a32e508925ac9646e6fc"
+        }
+      ],
+      "directories": []
+    },
+    {
+      "name": "backups",
+      "source": "C:\\Users\\802165\\.cc-switch\\backups",
+      "pattern": "**/*",
+      "remove_root": true,
+      "category": "cache",
+      "archive": "E:\\cc\\guahub\\sessions\\_trash\\cc-switch-migration-20261026-130803\\backups.zip",
+      "files": [
+        {
+          "path": "codex-official-history-unify-v1/20260702_134132/jsonl/sessions/2026/06/01/rollout-2026-06-01T13-37-13-019e81af-95b5-7d51-9498-a991a9725f79.jsonl",
+          "size": 1722031,
+          "mtime_ns": 1780293546312164800,
+          "sha256": "43569d684340d22e4de71496dc0073e8407b66d530a7d8bc5a2c43f8a6a7de78"
+        },
+        {
+          "path": "codex-official-history-unify-v1/20260702_134132/jsonl/sessions/2026/06/01/rollout-2026-06-01T14-12-32-019e81cf-ec0c-7081-956f-e761acaafc20.jsonl",
+          "size": 2533677,
+          "mtime_ns": 1780300620810976900,
+          "sha256": "00fbfaaf8615ac7d97143567f3b9e1e3df668ff2a8ce6c7b299e0adcd17940fb"
+        },
+        {
+          "path": "codex-official-history-unify-v1/20260702_134132/jsonl/sessions/2026/06/01/rollout-2026-06-01T16-51-23-019e8261-4f41-75e0-8d5d-8437157972ce.jsonl",
+          "size": 3082688,
+          "mtime_ns": 1780306912848477900,
+          "sha256": "2b4c9937484aa764f83f2918b1eb531b174ed1cb99fbb6356f45cefca1aa18a6"
+        },
+        {
+          "path": "codex-official-history-unify-v1/20260702_134132/jsonl/sessions/2026/06/02/rollout-2026-06-02T14-23-29-019e8700-5fb8-7310-bd62-974b8e3701d8.jsonl",
+          "size": 99065,
+          "mtime_ns": 1780381740478038500,
+          "sha256": "24d862f54c9dff2d57b5cd3cf34b12705a65a08473a471c1dbca5d37e6249f7c"
+        },
+        {
+          "path": "codex-official-history-unify-v1/20260702_134132/jsonl/sessions/2026/06/10/rollout-2026-06-10T09-00-47-019eaf0b-bbed-74e0-b924-abae5e342096.jsonl",
+          "size": 6305269,
+          "mtime_ns": 1781237668900072300,
+          "sha256": "82ed286cbf8276db8acafc9baa0a302e722efbb8172497a6a5ec65a9208ae136"
+        },
+        {
+          "path": "codex-official-history-unify-v1/20260702_134132/jsonl/sessions/2026/06/15/rollout-2026-06-15T09-31-43-019ec8e7-da05-7662-a91c-f7f65e5583b0.jsonl",
+          "size": 10274544,
+          "mtime_ns": 1781576470937735200,
+          "sha256": "cd1f175d8bb5dc0407b3c649b7b93436ae68e3696b18cd3a346e1fe5740b4020"
+        },
+        {
+          "path": "codex-official-history-unify-v1/20260702_134132/jsonl/sessions/2026/06/15/rollout-2026-06-15T09-42-34-019ec8f1-cac3-72a0-a6f3-d3938d889d26.jsonl",
+          "size": 1063001,
+          "mtime_ns": 1781488293237302700,
+          "sha256": "bf9157446a6f7d3a7c8bea4f8a51b88ef5d1f238539cdf5db1abb38ecd97e2b5"
+        },
+        {
+          "path": "codex-official-history-unify-v1/20260702_134132/jsonl/sessions/2026/06/15/rollout-2026-06-15T10-20-41-019ec914-a3cb-78a0-9ddb-b1922aaed421.jsonl",
+          "size": 3408746,
+          "mtime_ns": 1781493090050162400,
+          "sha256": "4bb39f54c99224e394d08a78f865c0f125557eaec68feb317f0907cadcf08980"
+        },
+        {
+          "path": "codex-official-history-unify-v1/20260702_134132/jsonl/sessions/2026/06/17/rollout-2026-06-17T12-40-57-019ed3e1-e419-7a93-89b9-6b318a840c64.jsonl",
+          "size": 1920156,
+          "mtime_ns": 1781673494464446100,
+          "sha256": "0caad6449fe9e450127e951be3006ecb3f29e45593bcc9526581a8e1714aa177"
+        },
+        {
+          "path": "codex-official-history-unify-v1/20260702_134132/jsonl/sessions/2026/06/17/rollout-2026-06-17T13-00-04-019ed3f3-648f-7e61-a0ae-a1ac68ef988f.jsonl",
+          "size": 4079574,
+          "mtime_ns": 1782799614642480600,
+          "sha256": "849ede8d803f931bd9cbef6d7cde065e4981e6fa5c461183b9cbdd75853329e2"
+        },
+        {
+          "path": "codex-official-history-unify-v1/20260702_134132/jsonl/sessions/2026/06/17/rollout-2026-06-17T17-45-27-019ed4f8-9a4c-7200-b24d-ff572eb179fa.jsonl",
+          "size": 33808861,
+          "mtime_ns": 1781767888937484400,
+          "sha256": "6b27a9f2f6a382adbc273c66e467ad6e78cb4c21d06e26edfbf6be20dc4859be"
+        },
+        {
+          "path": "codex-official-history-unify-v1/20260702_134132/jsonl/sessions/2026/06/18/rollout-2026-06-18T10-47-48-019ed8a0-97cb-7332-bb7b-79d4af60cbc0.jsonl",
+          "size": 8130153,
+          "mtime_ns": 1781767220483510900,
+          "sha256": "a4c62ab38e587370d007300ec5a8b6ed47592bdfbc614a4a3d04f97ae37f053a"
+        },
+        {
+          "path": "codex-official-history-unify-v1/20260702_134132/jsonl/sessions/2026/06/22/rollout-2026-06-22T13-23-32-019eedc8-9a01-7aa2-a5cf-d7ac7de45333.jsonl",
+          "size": 6085353,
+          "mtime_ns": 1782110156749556400,
+          "sha256": "32bcab1f269c6794dc118d2d28fc2541a40e597310cc57a42d4007fc9143d74c"
+        },
+        {
+          "path": "codex-official-history-unify-v1/20260702_134132/jsonl/sessions/2026/06/23/rollout-2026-06-23T17-52-31-019ef3e5-3a2a-73e2-b52c-f00340108885.jsonl",
+          "size": 7883325,
+          "mtime_ns": 1782211536364336300,
+          "sha256": "cb54620241e0f70a99f73109bc269d559fb57015638d3e7b6b973d674c315cdf"
+        },
+        {
+          "path": "codex-official-history-unify-v1/20260702_134132/jsonl/sessions/2026/06/23/rollout-2026-06-23T18-08-38-019ef3f3-f92c-7e01-bfd8-8bfba0ffc18a.jsonl",
+          "size": 448240,
+          "mtime_ns": 1782211419668876300,
+          "sha256": "041caa0023a73f66a9de6b9be03032dfa48fa3c654b2581a8169df2e49b78ee3"
+        },
+        {
+          "path": "codex-official-history-unify-v1/20260702_134132/jsonl/sessions/2026/06/29/rollout-2026-06-29T11-37-32-019f1174-1d8d-75d3-8c37-8e498ba86982.jsonl",
+          "size": 194460,
+          "mtime_ns": 1782704397599195400,
+          "sha256": "33eb61ce18d5c1fa609177240d1bdafd539bf70787da444e22247ac6eb580320"
+        },
+        {
+          "path": "codex-official-history-unify-v1/20260702_134132/jsonl/sessions/2026/06/29/rollout-2026-06-29T11-39-37-019f1175-e5c5-7761-8104-57d35bf108dd.jsonl",
+          "size": 47434,
+          "mtime_ns": 1782704387850313300,
+          "sha256": "0d895c7490beda3d5879cf29188f53ed95e83d4524df59c84e6a37b221849c6a"
+        },
+        {
+          "path": "codex-official-history-unify-v1/20260702_134132/jsonl/sessions/2026/06/29/rollout-2026-06-29T12-24-08-019f119e-bdbf-71f1-b866-072c00efd146.jsonl",
+          "size": 288881,
+          "mtime_ns": 1782707181011631100,
+          "sha256": "7b067d5e89d2073975578ff6b53721205e651ca84c599d4d23964aabe4067cc3"
+        },
+        {
+          "path": "codex-official-history-unify-v1/20260702_134132/jsonl/sessions/2026/06/29/rollout-2026-06-29T17-08-16-019f12a2-de2c-78d1-b8b4-a6447a201695.jsonl",
+          "size": 1165411,
+          "mtime_ns": 1782727406323233500,
+          "sha256": "9cd005918c3e6083f8abdf5a4989471f75cf39c55fcdff2ac68fd57724e5b760"
+        },
+        {
+          "path": "codex-official-history-unify-v1/20260702_134132/jsonl/sessions/2026/06/29/rollout-2026-06-29T18-52-30-019f1302-4a86-7f70-a79c-4067b35816b1.jsonl",
+          "size": 190029,
+          "mtime_ns": 1782730495006963000,
+          "sha256": "86fca75c65128a9dbd57e3341d31fc3c4ffc6af48083ff489a185f37b6e0858d"
+        },
+        {
+          "path": "codex-official-history-unify-v1/20260702_134132/jsonl/sessions/2026/06/29/rollout-2026-06-29T18-57-30-019f1306-dfb8-7d23-b838-c6cf275c52a5.jsonl",
+          "size": 291401,
+          "mtime_ns": 1782730929801839700,
+          "sha256": "054c2e326f220f40413c197df94961c82f337d682db46e53ad961a0a6a37dc9f"
+        },
+        {
+          "path": "codex-official-history-unify-v1/20260702_134132/jsonl/sessions/2026/06/29/rollout-2026-06-29T19-00-13-019f1309-5915-7dd2-8d6d-5edd79c4bea1.jsonl",
+          "size": 127993,
+          "mtime_ns": 1782730895123448000,
+          "sha256": "a1e9d7e78305eff497313b54545f07bc966101d2c333e5b7c02031224d940ee4"
+        },
+        {
+          "path": "codex-official-history-unify-v1/20260702_134132/jsonl/sessions/2026/06/30/rollout-2026-06-30T09-08-34-019f1612-0b91-78f2-874d-aef73a4d3a6e.jsonl",
+          "size": 310962,
+          "mtime_ns": 1782782154264356300,
+          "sha256": "ee007eeb5c89fc55b989de263eaf907dfcc5a7158a5cc02d1eb85d6054cb6342"
+        },
+        {
+          "path": "codex-official-history-unify-v1/20260702_134132/jsonl/sessions/2026/06/30/rollout-2026-06-30T09-28-21-019f1624-29b9-7060-9c6c-9d57e6d0ec0f.jsonl",
+          "size": 1449570,
+          "mtime_ns": 1782878844552789800,
+          "sha256": "a6ce683852e8f05acea063080c22a843f9a41da29cfdfcaa31410db4dad1b6d4"
+        },
+        {
+          "path": "codex-official-history-unify-v1/20260702_134132/jsonl/sessions/2026/06/30/rollout-2026-06-30T09-28-57-019f1624-b424-7413-8ba2-ffdd85508b5b.jsonl",
+          "size": 824075,
+          "mtime_ns": 1782789885156218200,
+          "sha256": "18a6e8ae0161ba29fa19f0018a9955fe1c0aae6b13bc28f8d98c4c8c45986fd7"
+        },
+        {
+          "path": "codex-official-history-unify-v1/20260702_134132/jsonl/sessions/2026/06/30/rollout-2026-06-30T09-29-54-019f1625-82e8-7733-ac2c-2b1cedda083e.jsonl",
+          "size": 863922,
+          "mtime_ns": 1782784243188320300,
+          "sha256": "4ae3aceb8ba22f580bb74475ac1d719fdc0ec6e357e31621dfaa823bf019f052"
+        },
+        {
+          "path": "codex-official-history-unify-v1/20260702_134132/jsonl/sessions/2026/06/30/rollout-2026-06-30T09-31-58-019f1627-7844-78c3-ad3b-530ba4d05463.jsonl",
+          "size": 690987,
+          "mtime_ns": 1782784190731850400,
+          "sha256": "acc5ca43b93e6e4012b0270d0bebd1e79caecd25545d87eb2fda0b03cb0280c3"
+        },
+        {
+          "path": "codex-official-history-unify-v1/20260702_134132/jsonl/sessions/2026/06/30/rollout-2026-06-30T11-22-32-019f168c-b463-76b2-9096-7278ae2a5b22.jsonl",
+          "size": 1269022,
+          "mtime_ns": 1782793122741923800,
+          "sha256": "c577f16c54da1b0da891c3f361ed462132fdd8c67d0b7d8fcaa80ce1093fa56d"
+        },
+        {
+          "path": "codex-official-history-unify-v1/20260702_134132/jsonl/sessions/2026/06/30/rollout-2026-06-30T11-23-23-019f168d-7afa-7b72-b42d-85251313c82a.jsonl",
+          "size": 318693,
+          "mtime_ns": 1782793104809712900,
+          "sha256": "7692287799d769e51268d326e260b196040ccac98e1c6bbfdce66271a2c63974"
+        },
+        {
+          "path": "codex-official-history-unify-v1/20260702_134132/jsonl/sessions/2026/06/30/rollout-2026-06-30T13-17-15-019f16f5-b9fb-7770-9727-20204ececf6e.jsonl",
+          "size": 14466686,
+          "mtime_ns": 1782886958745379100,
+          "sha256": "480d473c1474afb70863cf2329f1775070297af6224c9b574a9036d6e62d313f"
+        },
+        {
+          "path": "codex-official-history-unify-v1/20260702_134132/jsonl/sessions/2026/06/30/rollout-2026-06-30T13-28-23-019f16ff-eb28-76b1-857a-3124aaf81914.jsonl",
+          "size": 697954,
+          "mtime_ns": 1782800353269685800,
+          "sha256": "a9ec806cb684d3abe3adce70409bc085a4dc37909d87fa6b0efca14038102754"
+        },
+        {
+          "path": "codex-official-history-unify-v1/20260702_134132/jsonl/sessions/2026/06/30/rollout-2026-06-30T13-36-12-019f1707-128a-7e33-a7bb-85a105b81a73.jsonl",
+          "size": 351156,
+          "mtime_ns": 1782797945752579400,
+          "sha256": "bd84d70357a96e03aa74ac1007107df0f6a4047d1e1198bbd6807be6fedaf9b1"
+        },
+        {
+          "path": "codex-official-history-unify-v1/20260702_134132/jsonl/sessions/2026/06/30/rollout-2026-06-30T13-37-28-019f1708-3ceb-7b03-94fa-f7376e1460d5.jsonl",
+          "size": 110863,
+          "mtime_ns": 1782797884191796300,
+          "sha256": "dd7d6872b908c3e61a34953ca17841e77ab4f6dac1c51da3a72b9aa0119bc71c"
+        },
+        {
+          "path": "codex-official-history-unify-v1/20260702_134132/jsonl/sessions/2026/06/30/rollout-2026-06-30T13-37-40-019f1708-6a50-71e0-b2cc-a27054fede33.jsonl",
+          "size": 132879,
+          "mtime_ns": 1782797924108270800,
+          "sha256": "906e933f972835dca18b57ce97781985883bdab8b803e67e8321317a020e66a5"
+        },
+        {
+          "path": "codex-official-history-unify-v1/20260702_134132/jsonl/sessions/2026/06/30/rollout-2026-06-30T13-37-46-019f1708-7e94-7e83-872c-61b4e58f6f25.jsonl",
+          "size": 34285,
+          "mtime_ns": 1782797891416627300,
+          "sha256": "e41e4d0d0ff9d8f9bd0bad14c03188b71f6cca40d8cac562134e669f8b642395"
+        },
+        {
+          "path": "codex-official-history-unify-v1/20260702_134132/jsonl/sessions/2026/06/30/rollout-2026-06-30T13-37-54-019f1708-9793-7ef0-96fe-2635254e0f7e.jsonl",
+          "size": 106575,
+          "mtime_ns": 1782797909525436500,
+          "sha256": "082ee679ffbeead824746ecf6d8af1f2c5f9cfe407a22b6361c1c9bf5c25cbec"
+        },
+        {
+          "path": "codex-official-history-unify-v1/20260702_134132/jsonl/sessions/2026/06/30/rollout-2026-06-30T13-59-26-019f171c-58e6-7e20-87a9-33b56192ecb8.jsonl",
+          "size": 288472,
+          "mtime_ns": 1782799597383151900,
+          "sha256": "9fddc4b67051e8580558f85af5571927064130c9c9909619cf1a827164fb4b78"
+        },
+        {
+          "path": "codex-official-history-unify-v1/20260702_134132/jsonl/sessions/2026/07/01/rollout-2026-07-01T11-30-45-019f1bba-9244-7391-a74a-1e0c4d9d7640.jsonl",
+          "size": 258608,
+          "mtime_ns": 1782878834863738000,
+          "sha256": "30ee372d851423bfa4861e1ebc376971b1f873b42f1593c4ae595f33f79b7ec7"
+        },
+        {
+          "path": "codex-official-history-unify-v1/20260702_134132/jsonl/sessions/2026/07/01/rollout-2026-07-01T12-58-41-019f1c0b-17fd-7a21-86c5-ee4db2e19c95.jsonl",
+          "size": 1104698,
+          "mtime_ns": 1782886937746089100,
+          "sha256": "a4ea515669eb48bebc00c9e2b2d64b6fc5bd538acdc4e465f519d61df433179e"
+        },
+        {
+          "path": "codex-official-history-unify-v1/20260702_134132/jsonl/sessions/2026/07/02/rollout-2026-07-02T09-08-07-019f205e-706a-7d21-b729-22bcc8eed7ed.jsonl",
+          "size": 968388,
+          "mtime_ns": 1782970895788668000,
+          "sha256": "d010bc511a55f1eb96dd0fbead5b5420f71b5c7188f40184113b3377d5380751"
+        },
+        {
+          "path": "codex-official-history-unify-v1/20260702_134132/jsonl/sessions/2026/07/02/rollout-2026-07-02T09-11-05-019f2061-1195-7d43-9c16-ffb82fa4705e.jsonl",
+          "size": 1116134,
+          "mtime_ns": 1782955775735836500,
+          "sha256": "b69c90678191aeab85fe8271c5f5804e2888b234ea2994a0ebaa3cc4b9a783bb"
+        },
+        {
+          "path": "codex-official-history-unify-v1/20260702_134132/jsonl/sessions/2026/07/02/rollout-2026-07-02T09-26-44-019f206f-63d3-7750-ada1-0a07e3a7ec6e.jsonl",
+          "size": 177149,
+          "mtime_ns": 1782955743801012600,
+          "sha256": "72404de3f43f3d904dd6e803d29211806d69c3c2175571af21dce3174c315cc0"
+        },
+        {
+          "path": "codex-official-history-unify-v1/20260702_134132/jsonl/sessions/2026/07/02/rollout-2026-07-02T13-19-02-019f2144-2749-7733-87b0-7f0e425ea76b.jsonl",
+          "size": 250024,
+          "mtime_ns": 1782969726457192800,
+          "sha256": "3b5f0d2c7255f760bc1c27362b2d0dc91a5533c7938cf7fc2977fac19c4ca7e0"
+        },
+        {
+          "path": "codex-official-history-unify-v1/20260702_134132/jsonl/sessions/2026/07/02/rollout-2026-07-02T13-29-43-019f214d-ef73-7270-b804-e363f7c0b005.jsonl",
+          "size": 207638,
+          "mtime_ns": 1782970314698137600,
+          "sha256": "e3ce436af052f730f21273b124dd92cec066120ecce500ef10afbcba1a25b49a"
+        },
+        {
+          "path": "codex-official-history-unify-v1/20260702_134132/meta.json",
+          "size": 58,
+          "mtime_ns": 1782970955455855500,
+          "sha256": "cf34e7b5dbceb3418131348a37d6ceeb7f890b316803ffbd340da14fa17b7e09"
+        },
+        {
+          "path": "codex-official-history-unify-v1/20260702_134132/state/state_5.sqlite",
+          "size": 18132992,
+          "mtime_ns": 1782970955405990200,
+          "sha256": "20936995de2627ffc540894028ce57d292311ef4e7c5810fb1e6fc33a75e5e7b"
+        },
+        {
+          "path": "db_backup_20260916_163105.db",
+          "size": 31621120,
+          "mtime_ns": 1789547467595578400,
+          "sha256": "59fb5071e31961f9516573d507a055c49c2fbdddcd519b0591211052977cc6ae"
+        },
+        {
+          "path": "db_backup_20260917_193707.db",
+          "size": 31612928,
+          "mtime_ns": 1789645027869291500,
+          "sha256": "9f39d8cc120651ade5f23e7e207968a1d0c12bef2620d16c639bb306aaa81f33"
+        },
+        {
+          "path": "db_backup_20260921_141705.db",
+          "size": 31608832,
+          "mtime_ns": 1789971426178290900,
+          "sha256": "084ed96ed5e94e7e0a8e2e171c614d7d2a4b64367e2d4df9a7707c6ae6be3df0"
+        },
+        {
+          "path": "db_backup_20260923_103641.db",
+          "size": 31600640,
+          "mtime_ns": 1790131001361743200,
+          "sha256": "a85e4e1a4bc43dd992874d6ceea36e3b891f91540e33a168ceacac1d9af8a44f"
+        },
+        {
+          "path": "db_backup_20260923_103713.db",
+          "size": 31600640,
+          "mtime_ns": 1790131033440871700,
+          "sha256": "e03cadae9f72323c16a248003ff8904be38cec3c529ba17435549dd4a3655456"
+        },
+        {
+          "path": "db_backup_20260928_092211.db",
+          "size": 31588352,
+          "mtime_ns": 1790558532044227800,
+          "sha256": "befa363040f9c45d105f8c7c65f4b8bd133c6172330d92061108d5f316d8ee51"
+        },
+        {
+          "path": "db_backup_20260929_161231.db",
+          "size": 31584256,
+          "mtime_ns": 1790669551708205400,
+          "sha256": "920af9736ae463e83197e3a2aafd1dc1167344bd6d3925ddf56efe0a5a8e2480"
+        },
+        {
+          "path": "db_backup_20261015_173712.db",
+          "size": 31576064,
+          "mtime_ns": 1792057032662259500,
+          "sha256": "d5de2fd78a6c06591512f95a9d2c450e4b5d54455ce66574f5b0fd5a96d6c204"
+        },
+        {
+          "path": "db_backup_20261016_121608.db",
+          "size": 31576064,
+          "mtime_ns": 1792124168868762700,
+          "sha256": "dc1fa2b4ab138d5338db2c4bf3f69e499d7883a4c4bbbabb34cc8d7c6ee7fa79"
+        },
+        {
+          "path": "db_backup_20261020_104206.db",
+          "size": 2371584,
+          "mtime_ns": 1792464126523836700,
+          "sha256": "0b30db785175d50236189b73a9cf209bf588fbd4ab670d0cf68335c96e5bd343"
+        },
+        {
+          "path": "env-backup-20260702_054004.json",
+          "size": 465,
+          "mtime_ns": 1782970804326054100,
+          "sha256": "c1f295b3601d17d4158c067d6b83c5ec4578d4c81f7705ab24278a428cc0bea5"
+        },
+        {
+          "path": "live-first-write/0455b1425053-codex-login-stash.json.source",
+          "size": 49,
+          "mtime_ns": 1792465940455116200,
+          "sha256": "0455b1425053db66d3bff2414aac337868c3261b488a1fe34a9e36925ad19a25"
+        },
+        {
+          "path": "live-first-write/1d123f6027a1-cc-switch-model-catalog.json",
+          "size": 23623,
+          "mtime_ns": 1792465940444144600,
+          "sha256": "0ff6011d2e60b1300805d581492781f2081f04d0252a78d26eaace7ff7268d11"
+        },
+        {
+          "path": "live-first-write/1d123f6027a1-cc-switch-model-catalog.json.source",
+          "size": 51,
+          "mtime_ns": 1792465940446139600,
+          "sha256": "1d123f6027a178a900814cf1e1d470b2fd1edddf32b3926904a80e53589920ed"
+        },
+        {
+          "path": "live-first-write/2b1eb9b3fcc7-auth.json",
+          "size": 50,
+          "mtime_ns": 1792465940414224300,
+          "sha256": "583503504bfd478aadc5a0bbe7d550767516dc4f376c07d901c782abb89ce043"
+        },
+        {
+          "path": "live-first-write/2b1eb9b3fcc7-auth.json.source",
+          "size": 32,
+          "mtime_ns": 1792465940416219500,
+          "sha256": "2b1eb9b3fcc7585e0b86a7d4032d641f078f707da3f4fdaf7215ffc7a1760bc4"
+        },
+        {
+          "path": "live-first-write/831718214cb4-settings.json",
+          "size": 9621,
+          "mtime_ns": 1792124170299573500,
+          "sha256": "7dd87b36fa626155b814c9abf26082a572bd6c8636cf7877d0938a0c4901f3ec"
+        },
+        {
+          "path": "live-first-write/831718214cb4-settings.json.source",
+          "size": 37,
+          "mtime_ns": 1792124170301581900,
+          "sha256": "831718214cb45c187aab89632dc29849c3019bb0640d0ff198d150bc8b75542f"
+        },
+        {
+          "path": "live-first-write/b3129811809a-config.toml",
+          "size": 6082,
+          "mtime_ns": 1792465940431179000,
+          "sha256": "7aea6ffa006f5c8aa906ce8eff34c6ef6a2c1e2b3478fbc2770b3a7cf7020e4b"
+        },
+        {
+          "path": "live-first-write/b3129811809a-config.toml.source",
+          "size": 34,
+          "mtime_ns": 1792465940434171900,
+          "sha256": "b3129811809a5638a9747bc36e389f2c5e8801346eed701d6c8a509d54e4eb84"
+        }
+      ],
+      "directories": [
+        "codex-official-history-unify-v1",
+        "codex-official-history-unify-v1/20260702_134132",
+        "codex-official-history-unify-v1/20260702_134132/jsonl",
+        "codex-official-history-unify-v1/20260702_134132/jsonl/sessions",
+        "codex-official-history-unify-v1/20260702_134132/jsonl/sessions/2026",
+        "codex-official-history-unify-v1/20260702_134132/jsonl/sessions/2026/06",
+        "codex-official-history-unify-v1/20260702_134132/jsonl/sessions/2026/06/01",
+        "codex-official-history-unify-v1/20260702_134132/jsonl/sessions/2026/06/02",
+        "codex-official-history-unify-v1/20260702_134132/jsonl/sessions/2026/06/10",
+        "codex-official-history-unify-v1/20260702_134132/jsonl/sessions/2026/06/15",
+        "codex-official-history-unify-v1/20260702_134132/jsonl/sessions/2026/06/17",
+        "codex-official-history-unify-v1/20260702_134132/jsonl/sessions/2026/06/18",
+        "codex-official-history-unify-v1/20260702_134132/jsonl/sessions/2026/06/22",
+        "codex-official-history-unify-v1/20260702_134132/jsonl/sessions/2026/06/23",
+        "codex-official-history-unify-v1/20260702_134132/jsonl/sessions/2026/06/29",
+        "codex-official-history-unify-v1/20260702_134132/jsonl/sessions/2026/06/30",
+        "codex-official-history-unify-v1/20260702_134132/jsonl/sessions/2026/07",
+        "codex-official-history-unify-v1/20260702_134132/jsonl/sessions/2026/07/01",
+        "codex-official-history-unify-v1/20260702_134132/jsonl/sessions/2026/07/02",
+        "codex-official-history-unify-v1/20260702_134132/state",
+        "live-first-write"
+      ]
+    }
+  ],
+  "protected": {
+    "C:\\Users\\802165\\.cc-switch\\settings.json": "591f70b112ec827b2dfd65ce5ac76b512d4c16f129d75931cb3596a9535436e1"
+  }
+}

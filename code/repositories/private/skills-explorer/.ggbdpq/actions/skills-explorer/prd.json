@@ -1,0 +1,131 @@
+{
+  "project": {
+    "name": "skills-explorer",
+    "repo_type": "single-app",
+    "description": "本机 ~/.ai/categories 技能库的可视化目录：Vue 3 + TypeScript 7 + Vite 8 纯静态 SPA，构建时索引、正文懒加载、无需后端。与 console 的治理工件同构，供 governance 台与人工追踪进度",
+    "ssot": {
+      "prd": ".ggbdpq/actions/skills-explorer/prd.json",
+      "progress": ".ggbdpq/progress.txt",
+      "bugs": "BUGS.md"
+    }
+  },
+  "items": [
+    {
+      "id": 0,
+      "component": "skeleton",
+      "priority": "P0",
+      "title": "工程骨架：pnpm 12 + Vite 8（rolldown）+ Vue 3 + TypeScript 7 + Tailwind 4 + shadcn-vue",
+      "steps": [
+        "操作：pnpm create vite（vue-ts 模板）+ 安装 vue-router/pinia/axios/zod/markdown-it/highlight.js\n产物：package.json、vite.config.ts（base './' + @ 别名 + tailwindcss 插件）\n验收命令：pnpm typecheck",
+        "操作：shadcn-vue init（neutral/reka/lucide）+ 添加 button/card/input/badge/scroll-area/separator/checkbox/skeleton\n产物：components.json、src/components/ui/*\n验收命令：ls src/components/ui",
+        "操作：TS7 兼容处理——移除已废除的 baseUrl；vue-tsc 3.x 不适配 TS7（Go 原生编译器无 lib/tsc API），typecheck 降级为原生 tsc --noEmit 覆盖 .ts 逻辑层，.vue SFC 内部检查等生态适配；shims-vue.d.ts 兜底 .vue 导入\n产物：package.json scripts.typecheck、src/shims-vue.d.ts\n验收命令：pnpm typecheck && pnpm build",
+        "操作：rolldown-vite 编译环境无跨文件类型解析所需 fs，6 个 shadcn-vue 生成组件的 defineProps 外部类型内联（Badge/Button/Separator/ScrollArea/ScrollBar/Checkbox，文件内有注释说明）\n产物：src/components/ui/* 补丁\n验收命令：pnpm build"
+      ],
+      "passes": true
+    },
+    {
+      "id": 1,
+      "component": "index",
+      "priority": "P0",
+      "title": "索引管线：扫描 ~/.ai/categories 生成 public/data（元数据 index.json + 正文懒加载 md）",
+      "steps": [
+        "操作：scripts/build-index.mjs——栈式递归收录（含嵌套子技能，借鉴 console sync-skills.mjs）、扁平单段安全 id（段间 -- 防碰撞）、frontmatter 解析支持 YAML 块标量、候选池来源/作者提取\n产物：public/data/index.json（856KB）+ content/*.md（1682 份）\n验收命令：pnpm index",
+        "操作：数据质量护栏——技能数 <300 报错退出、空描述点名\n产物：脚本尾部断言\n验收命令：pnpm index（空描述输出提示清单）",
+        "操作：Zod schema（src/lib/schemas.ts）校验 index.json 响应；Axios 实例封装（src/api/skills.ts）\n产物：src/lib/schemas.ts、src/api/skills.ts\n验收命令：pnpm typecheck"
+      ],
+      "passes": true
+    },
+    {
+      "id": 2,
+      "component": "browse",
+      "priority": "P0",
+      "title": "浏览页（参考 skills.qiaomu.ai 单页目录式）：搜索 + 区域开关 + 分类 chips + 排序 + 卡片列表 + 加载更多",
+      "steps": [
+        "操作：Pinia store（过滤/排序/分页/区域可见性）+ 搜索框 + 区域按钮（精选 340/候选池 1225/归档 18）+ 分类 chips 带计数 + 每页 48 条加载更多\n产物：src/views/BrowseView.vue、src/stores/skills.ts\n验收命令：pnpm build",
+        "操作：SkillCard 组件（名称/描述两行截断/区域徽标/来源徽标/收藏星标）\n产物：src/components/SkillCard.vue\n验收命令：浏览器实测"
+      ],
+      "passes": true
+    },
+    {
+      "id": 3,
+      "component": "detail",
+      "priority": "P0",
+      "title": "详情页：结构化头部 + 事实卡侧栏 + SKILL.md 剥离 frontmatter 渲染（markdown-it + highlight.js）",
+      "steps": [
+        "操作：面包屑/标题/徽标/收藏头部；本体位置与安装命令代码块（候选池两段来源名可无歧义还原 owner/repo 时才给 GitHub 链接，不造假链接）；事实卡（分类/子分类/区域/来源/作者）\n产物：src/views/SkillDetailView.vue\n验收命令：浏览器实测 frontmatter 零残留",
+        "操作：markdown 排版（正文限宽 768px、行高 1.75、标题分隔线、代码块/表格/引用样式）\n产物：src/style.css .markdown-body 段\n验收命令：浏览器实测"
+      ],
+      "passes": true
+    },
+    {
+      "id": 4,
+      "component": "stats-collections",
+      "priority": "P1",
+      "title": "统计页（区域总量/精选分类分布/候选池来源 Top20）+ 收藏页（localStorage 持久化）",
+      "steps": [
+        "操作：StatsView 聚合 store 计算属性渲染条形图；CollectionsView 按收藏 id 反查索引渲染卡片\n产物：src/views/StatsView.vue、src/views/CollectionsView.vue、src/stores/favorites.ts\n验收命令：pnpm build"
+      ],
+      "passes": true
+    },
+    {
+      "id": 5,
+      "component": "bugfix",
+      "priority": "P0",
+      "title": "BUG-001~005 修复批次（明细见 BUGS.md）：index.html 回退 / 块标量描述 / frontmatter 残留 / 排版浆糊 / 固定三层漏收",
+      "steps": [
+        "操作：内容文件名扁平化（去 %2F）；parseMeta 块标量折叠；渲染前剥离 frontmatter；详情页重排；栈式递归收录\n产物：build-index.mjs、SkillDetailView.vue\n验收命令：BUGS.md 五条全部'已修复'；pnpm index 1682 条 id 唯一"
+      ],
+      "passes": true
+    },
+    {
+      "id": 6,
+      "component": "consolidation",
+      "priority": "P1",
+      "title": "技能线收拢：console 删除 /skill-manager 与 /skills 两处旧实现（本仓库成为技能浏览唯一 SSOT）",
+      "steps": [
+        "操作：删除 agent 的 features/skill-manager、路由、API 与导航入口；blog 的 app/skills、server 模块、content 快照、sync 脚本与侧栏入口；保留共用 lib/frontmatter.ts\n产物：console 仓库工作区改动（未提交）\n验收命令：console pnpm typecheck 全绿、test 304/305（唯一失败为预存 governance git 端点问题，stash 已定性）、style:check 0 违例"
+      ],
+      "passes": true
+    },
+    {
+      "id": 7,
+      "component": "deploy",
+      "priority": "P2",
+      "title": "静态托管部署（产物 base './' + hash 路由已就绪，任选 GitHub Pages/Vercel）",
+      "steps": [
+        "操作：pnpm build 产物 dist/ 部署；数据更新流程 = .ai 变更后 pnpm index && pnpm build\n产物：托管站点\n验收命令：线上 URL 可访问且详情页可达"
+      ],
+      "passes": false
+    },
+    {
+      "id": 8,
+      "component": "perf",
+      "priority": "P3",
+      "title": "highlight.js 按需注册语言（消除 500KB chunk 警告）",
+      "steps": [
+        "操作：highlight.js/lib/core + 常用语言按需注册\n产物：src/views/SkillDetailView.vue 调整\n验收命令：pnpm build 无 chunk 警告"
+      ],
+      "passes": true
+    },
+    {
+      "id": 9,
+      "component": "data",
+      "priority": "P3",
+      "title": "候选池技能补'原文'链接：收录台账记录仓库内路径（当前 owner-slug 无法可靠还原 owner/repo，不造假链接）",
+      "steps": [
+        "操作：下次批量收录时在台账与索引记录 repo 内 SKILL.md 相对路径\n产物：index.json 增 sourceUrl 字段\n验收命令：详情页出现可用原文链接"
+      ],
+      "passes": false
+    },
+    {
+      "id": 10,
+      "component": "typecheck",
+      "priority": "P3",
+      "title": ".vue SFC 类型检查恢复：等待 vue-tsc 适配 TypeScript 7（当前 3.3.11 不兼容 Go 原生编译器）",
+      "steps": [
+        "操作：vue-tsc 发布 TS7 兼容版后升级，typecheck 恢复 SFC 覆盖\n产物：package.json 依赖升级\n验收命令：pnpm typecheck 覆盖 .vue 无报错"
+      ],
+      "passes": false
+    }
+  ]
+}

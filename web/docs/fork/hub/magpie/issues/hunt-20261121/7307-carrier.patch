@@ -1,0 +1,329 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: eisen0419 <usetoken0419@gmail.com>
+Date: Fri, 20 Nov 2026 16:18:16 +0800
+Subject: [PATCH] gateway: a function_call with no text still sends content
+ (#7307, Yongfei-Hu)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+buildChat left content off an assistant message that called tools and
+said nothing: a function_call after a function_call_output, a
+function_call with no assistant text before it, or an assistant message
+whose text is empty. The message was {"role":"assistant","tool_calls":[…]}
+and a strict Chat upstream refused it, 400 "Invalid message at index N:
+missing role or content". Codex resends the history, so the session
+stayed broken.
+
+The field is content "". A turn that already had text is unchanged.
+Parallel calls in one step stay on that message. DeepSeek still gets
+reasoning_content. A custom_tool_call is the same turn.
+
+TestResponsesChatFunctionCallAfterOutput failed before the change.
+call_after_output message 3, call_with_no_text message 1,
+empty_text_then_call message 1, reasoning_then_call message 1,
+custom_tool_call_with_no_text message 1, deepseek_call_after_output
+message 3 and deepseek_reasoning_then_call message 1 were
+{"role":"assistant","tool_calls":[…]} (DeepSeek also had
+reasoning_content) where the test wanted "content":"" beside the calls.
+The shapes that already had text passed on the old code.
+
+Verified under a temporary HOME, with GOPATH, GOMODCACHE and GOCACHE
+pinned first:
+
+- go test -count=1 -run TestResponsesChatFunctionCallAfterOutput
+  ./internal/gateway: ok.
+- go test -race -count=1 -timeout 40m ./internal/gateway/...: FAIL,
+  1699.723s. The new test passed. TestUpstreamBodiesUnchanged/responses-to-chat
+  failed because testdata/upstream_bodies/responses-to-chat.json still
+  omitted content; that file now has "content":"". Re-run of
+  TestUpstreamBodiesUnchanged, TestResponsesChatFunctionCallAfterOutput,
+  TestChatEmptyAssistant and TestRealtimeHeldToKeyLimit: ok, 2.716s.
+- The same package run also failed TestMarshalRawIsEncodingJSON,
+  TestMarshalSizedIsJSONMarshal, FuzzMarshalRaw/seed#7,
+  TestOpenCodeGoOwnFreeModelGetsNothingOfOpenCodes,
+  TestServeWSLListensBesideLoopback and TestServeWSLListensAtVia.
+  Those are the failures recorded on origin/main for #7258.
+  TestRealtimeHeldToKeyLimit reported a race while another gateway
+  suite shared the machine and passed when run alone.
+- gofmt -l on the changed Go files: empty.
+- go vet ./...: exit 0. Darwin warning, pre-existing:
+  internal/proc/disclaim_darwin.go:35 posix_spawn_file_actions_addchdir_np
+  deprecated.
+- GOOS=linux go vet -tags nogui ./...: exit 0.
+- GOOS=windows go vet ./...: exit 0.
+- go build: exit 0. Linker warned about duplicate -lobjc and a newer
+  macOS min version. Pre-existing.
+- GOOS=linux go build -tags nogui: exit 0.
+- GOOS=windows go build: exit 0.
+
+Not run: go test ./..., go test -tags nogui ./..., a real Chat upstream,
+a Windows runtime, the GUI.
+---
+ docs/subsystems/gateway-routing.md            |   1 +
+ internal/gateway/chat.go                      |   8 +-
+ .../responses_chat_fc_after_fco_test.go       | 211 ++++++++++++++++++
+ .../upstream_bodies/responses-to-chat.json    |   2 +-
+ 4 files changed, 218 insertions(+), 4 deletions(-)
+ create mode 100644 internal/gateway/responses_chat_fc_after_fco_test.go
+
+diff --git a/docs/subsystems/gateway-routing.md b/docs/subsystems/gateway-routing.md
+index 571080190..69d81f598 100644
+--- a/docs/subsystems/gateway-routing.md
++++ b/docs/subsystems/gateway-routing.md
+@@ -416,6 +416,7 @@ the key's leaves the call as asked, with a log line (`compactRefused`).
+ - A Chat upstream that wants a turn's reasoning back (`chatReplaysReasoning` in [`chat.go`](../../internal/gateway/chat.go): a host or a model, as magpie or the provider names it, with `deepseek` in it, such as OpenCode Go's `deepseek-v4.1-flash`, or Command Code's plugin) gets every assistant tool call with `reasoning_content`, relayed (`withReasoningOnToolTurns` in `passthrough`) or translated (`buildChat`). DeepSeek turns the whole request away ("The `reasoning_content` in the thinking mode must be passed back to the API") when a tool call made since the user's last message has none, which a client sends for a turn it saw no thinking on: another model's, a translated one (#1462). The turn's own thinking goes back as it came; one sent in `reasoning` or `reasoning_details` is copied in, and `reasoning` is then left out (`asReasoningContent`): a self-hosted DeepSeek server reads the two as one field and refused pi's tool turn, which carried its thinking in `reasoning`, as "duplicate field reasoning" (ArvinCharl on X, v0.1.1560), while `reasoning_details`, a list of typed entries that can hold an encrypted one, stays; otherwise it goes with a space (`noReasoning`: DeepSeek's Chat API takes an empty one, but a relay that leaves empty fields out would drop it). An assistant message right after a tool result, a reply with no call of its own, gets one too: DeepSeek refuses it the same way (checked 2026-10-12, #1822). A reply to the user, any other model and Mistral (#494) are sent as before.
+ - A message content that is a list of plain text parts (`[{"type":"text","text":…}]`, nothing else in a part) is relayed to a Chat upstream as the string it says, the parts joined by a newline (`textPartsAsString` in [`chat_text_parts.go`](../../internal/gateway/chat_text_parts.go), in `passthrough` before `silentAssistantsOut`). OpenAI takes either, but a vendor's own server may take a string alone: the Intern discovery API (a custom provider on OpenAI compatible, Atria-Dawn, Discord) answered DeepSeek Harness, whose pi-ai sends every user message as such a list, 422 with an "Input should be a valid string" per message. A list with an image, a file, a thinking part or a `cache_control` mark stays a list, and every other byte of the body stays as sent; `buildChat` already writes text as a string. `TestChatRelayTextPartsAsString`, `TestTextPartsAsStringOnlyPlainText`.
+ - An assistant turn the user cut off before it said anything (only its thinking, an empty text, nothing; an isolated Codex reasoning item; a Gemini thought alone) stays in the agent's history and is sent on every later turn. DeepSeek and Kimi turn the whole request away over an assistant message with neither content nor tool calls, `reasoning_content` alone included ("Invalid assistant message: content or tool_calls must be set", #2599). Every Chat upstream gets such a turn left out, translated (`buildChat`, before `pairToolMessages`) or relayed (`silentAssistantsOut` in `passthrough`), by one rule (`withoutSilentAssistants` in [`chat.go`](../../internal/gateway/chat.go)): the two user messages it stood between join into one, and after a tool result the user's message follows the tool message. A prefill to go on from (`prefix`, `partial`, a Resume), a legacy `function_call`, a refusal and an audio reply stay, and a relayed body without such a turn goes byte for byte. `TestChatEmptyAssistantLeftOutFromAnthropic`, `…FromResponses`, `…FromGemini`, `TestChatRelayLeavesOutEmptyAssistant`, `TestChatRelaySilentAssistantsOnly`.
++- An assistant turn that calls tools and says nothing — a Responses `function_call` with no text before it, one that follows a `function_call_output`, or an assistant message whose text is empty — goes to a Chat upstream with `content` `""` beside its `tool_calls` (`buildChat` in [`chat.go`](../../internal/gateway/chat.go)). The field used to be left out, and a strict Chat upstream refused the request, 400 "Invalid message at index N: missing role or content", on every later turn of the conversation (#7307, Yongfei-Hu). `""` and `null` are both taken there; the missing field is not. A turn with text keeps that text. Parallel calls in one step stay on the message that has the text. A `custom_tool_call` and a `tool_search_call` are the same turn. `TestResponsesChatFunctionCallAfterOutput`.
+ - Kimi's Chat API (`isKimi`: the Kimi platform's and a Kimi Code membership's hosts or presets) turns `reasoning_details` in a message away in any shape: an entry with a stream's `index` ("the reasoning_details at position 1 entry 0 must not contain streaming index") and any other entry ("… has an invalid type"), checked against api.kimi.com/coding on 2026-10-12. pi keeps another vendor's thinking there (MiMo's, through Command Code, with `index: 0`), so a conversation routed on to Kimi was refused on every turn (#1765). `passthrough` sends it to Kimi as `reasoning_content` (`reasoningDetailsAsContent`, with the message's `reasoning` left out once its text is there), which Kimi takes; a message with `reasoning_content` of its own keeps that. Another upstream that refuses a thinking field "at position N", as Kimi words it (a relay in front of it), is asked once more the same way and marked (`refusedInMessages`, `withoutMessageReasoning`).
+ - Vertex AI takes a function declaration's parameters as its own Schema object, whose `type` is required, and turns the whole request away over one schema without it, though the tool is never called: 400 "`mcp__cua-driver__drag` functionDeclaration `parameters.target` schema didn't specify the schema type field." (kthink on Discord: dsh with cua-driver's MCP tools, from before cua's own fix in its #4888, on Command Code's `google/gemini-3.8-flash`, which Command Code's gateway serves on Vertex; `target` was an anyOf of an untyped oneOf and null, `scope` a const). A body whose `model` names Gemini (`geminiNamed`: the id's last `/` segment starts with `gemini`, whoever serves it) has each untyped schema under its tools' `function.parameters`, `parameters` or `input_schema` given its type in place (`geminiToolTypes` in [`gemini_schema.go`](../../internal/gateway/gemini_schema.go), in `forwardOnce`, so a plugin's request too): from its enum or const values, its keywords or its branches, null left out (an object's or array's keywords, `properties` or `items`, before its values: a string enum beside `items` typed `"string"` sent items on a string, and Antigravity turned the turn away with "properties[display].items: field predicate failed: $type == Type.ARRAY", ferock on Discord; `TestGeminiToolTypesItemsBeforeEnum`), `{}` or a description alone a string, a tool's root an object. A node whose branches have more than one type, an unresolved `$ref` or union, and anything under `not` or `if` are left as they came, so such a schema can still be refused; every other model's tools go byte for byte. Google's own Gemini API and Code Assist are sent `parametersJsonSchema` and Antigravity `plainSchema`, so a Gemini-shaped body isn't walked (`TestGeminiToolTypesCuaDriverDrag`, with cua-driver's drag schema as its server listed it, `TestGeminiToolTypes`). `plainSchema` itself keeps an array's keywords (`items`, `minItems`, `maxItems`) on an array only and an object's (`properties`, `required` …) on an object only, and of a type list takes the type its `items` or `properties` are for, so a body a magpie from before sends is taken too (`TestAntigravityItemsOnlyOnArrays`). Google's Schema is an object with a fixed set of fields, so a boolean schema (`items: true`, a property's `true` or `false`) or an `x-` keyword such as MCP's `x-mcp-header` (2026-07-28 spec, SEP-2243) turns the whole request away ("Invalid value at '…items.items' (…aiplatform.master.Schema), true" and 'Unknown name "x-mcp-header" … Cannot find field', han_tiv on Discord). `plainSchema` is an allow-list, so `x-` keys never pass it; a boolean is `{}` for true and left out for false (a false property leaves `required` too, a false `items` is `items {}` with `maxItems 0`). Before typing, `geminiToolTypes` runs `geminiSchemaShapes`, which does the same for the relay's case: true is `{}`, false is left out, `x-` keywords go (a property named `x-…` stays), and `additionalProperties` and the `unevaluated…` keywords keep their booleans; a schema with neither goes byte for byte (`TestAntigravityBooleanSchemaAndXKeys`, `TestPlainSchemaBooleansAndXKeysEverywhere`, `TestGeminiToolTypesDropsBooleansAndXKeys`). What is left is still JSON Schema, so `parametersJsonSchema` (Gemini API, Code Assist, Vertex), which runs after it on a Gemini-named body, takes it as before.
+ - An object of any fields (`{"type":"object"}`, no properties, more not ruled out) has no form in Google's Schema object, and a relay or Copilot that turns a Chat, Responses or Messages body into one leaves the model unable to fill it: Hermes Agent's `tool_call` bridge, whose `calls[].arguments` is such an object, got its nested objects cut to strings (`"boundary": "{strategy:"`) or made booleans through a relay's chat completions to gemini-4-hydrogen (#7363, @JNDliuliuM on X), and Copilot's Gemini, given `properties {}` for it, answered `"arguments": {}`. On a Gemini-named body `geminiTypes` sends each one under a tool's root as `{"type":"string"}` with its description and "A JSON object, written as JSON text." beside it (`geminiFreeObjects` in [`gemini_free_objects.go`](../../internal/gateway/gemini_free_objects.go)); walked through `properties` and `items`, a union, `$ref` or `patternProperties` left as it came. The model writes the object whole as text (probed live on Copilot's gemini-4-hydrogen and gemini-4-argon and Antigravity's gemini-3.8-flash), and its calls reach the client with a string at such a place that is a JSON object read back into it, anything else as it came: `Request.Free` from the client's tools for a translated reply (`freeEncoder`, which holds a call's argument pieces to its end, and `freeResult`), and `freeTidy` for a reply relayed as it came, on Chat (argument pieces emptied, the whole arguments in the chunk that ends the choice), Responses and Messages (the last delta held to the call's end and given the whole), whole or streamed. Every other model's request and reply go as they came (`TestGeminiFreeObjectsSentAsText`, `TestGeminiFreeObjectsReadBack`, `TestGeminiFreeObjectsWhich`).
+diff --git a/internal/gateway/chat.go b/internal/gateway/chat.go
+index 2d5c1e2c7..fe70f17cd 100644
+--- a/internal/gateway/chat.go
++++ b/internal/gateway/chat.go
+@@ -522,9 +522,11 @@ func buildChat(r *Request, model, host string, rejectTemp bool) []byte {
+ 			if think != "" && inlineThink && !(r.Resume && i == len(r.Messages)-1) {
+ 				t = "<think>" + think + "</think>\n\n" + t
+ 			}
+-			if t != "" || len(calls) == 0 {
+-				am["content"] = t
+-			}
++			// A call with no text still carries content. Leaving the field
++			// out sends {"role":"assistant","tool_calls":[…]}, which a
++			// strict Chat upstream refuses: "Invalid message at index N:
++			// missing role or content" (#7307).
++			am["content"] = t
+ 			if len(calls) > 0 {
+ 				am["tool_calls"] = calls
+ 			}
+diff --git a/internal/gateway/responses_chat_fc_after_fco_test.go b/internal/gateway/responses_chat_fc_after_fco_test.go
+new file mode 100644
+index 000000000..4f2f1fe3f
+--- /dev/null
++++ b/internal/gateway/responses_chat_fc_after_fco_test.go
+@@ -0,0 +1,211 @@
++package gateway
++
++import (
++	"encoding/json"
++	"fmt"
++	"strings"
++	"testing"
++)
++
++// A Responses function_call that follows a function_call_output, or that
++// has no assistant text before it, or that follows an assistant message
++// whose text is empty, is one assistant turn that calls a tool and says
++// nothing. Translated to Chat it went out as
++// {"role":"assistant","tool_calls":[…]} with content left out, and a
++// strict Chat upstream refused the request, 400 "Invalid message at index
++// N: missing role or content", on every later turn (#7307). The message
++// carries content "" beside its tool_calls. A turn that said something
++// keeps that text. Parallel calls in one step stay on the message that
++// has the text. A reasoning item alone, and a function_call_output with
++// no call, stay as they were. DeepSeek still gets reasoning_content.
++func TestResponsesChatFunctionCallAfterOutput(t *testing.T) {
++	const (
++		model = "m"
++		host  = "api.example.com"
++	)
++	user := `{"content":"go","role":"user"}`
++	step1 := assistantCalls("step 1", execCall(1))
++	step1Two := assistantCalls("step 1", execCall(1), execCall(2))
++	step2 := assistantCalls("step 2", execCall(2))
++	step2Call3 := assistantCalls("step 2", execCall(3))
++	blank := assistantCalls("", execCall(1))
++	blank2 := assistantCalls("", execCall(2))
++	cases := []struct {
++		name, model, host, input string
++		want                     []string
++	}{
++		{
++			name: "text then one call", model: model, host: host,
++			input: joinItems(msg("user", "go"), msg("assistant", "step 1"), fc(1), fco(1)),
++			want:  []string{user, step1, toolHi(1)},
++		},
++		{
++			name: "parallel calls", model: model, host: host,
++			input: joinItems(msg("user", "go"), msg("assistant", "step 1"), fc(1), fc(2), fco(1), fco(2)),
++			want:  []string{user, step1Two, toolHi(1), toolHi(2)},
++		},
++		{
++			name: "call after output", model: model, host: host,
++			input: joinItems(msg("user", "go"), msg("assistant", "step 1"), fc(1), fco(1), fc(2), fco(2)),
++			want:  []string{user, step1, toolHi(1), blank2, toolHi(2)},
++		},
++		{
++			name: "text between calls", model: model, host: host,
++			input: joinItems(msg("user", "go"), msg("assistant", "step 1"), fc(1), fco(1), msg("assistant", "step 2"), fc(2), fco(2)),
++			want:  []string{user, step1, toolHi(1), step2, toolHi(2)},
++		},
++		{
++			name: "parallel then text", model: model, host: host,
++			input: joinItems(msg("user", "go"), msg("assistant", "step 1"), fc(1), fc(2), fco(1), fco(2), msg("assistant", "step 2"), fc(3), fco(3)),
++			want:  []string{user, step1Two, toolHi(1), toolHi(2), step2Call3, toolHi(3)},
++		},
++		{
++			name: "call with no text", model: model, host: host,
++			input: joinItems(msg("user", "go"), fc(1), fco(1)),
++			want:  []string{user, blank, toolHi(1)},
++		},
++		{
++			name: "empty text then call", model: model, host: host,
++			input: joinItems(msg("user", "go"), msg("assistant", ""), fc(1)),
++			want:  []string{user, blank, interruptedToolMessage("call_1")},
++		},
++		{
++			name: "reasoning then call", model: model, host: host,
++			input: joinItems(msg("user", "go"), reasoningInput("think"), fc(1), fco(1)),
++			want:  []string{user, blank, toolHi(1)},
++		},
++		{
++			name: "reasoning only", model: model, host: host,
++			input: reasoningInput("think"),
++			want:  nil,
++		},
++		{
++			name: "output only", model: model, host: host,
++			input: fco(1),
++			want:  []string{`{"content":"hi","role":"user"}`},
++		},
++		{
++			name: "custom tool call with no text", model: model, host: host,
++			input: joinItems(msg("user", "go"), customCall("call_c", "apply_patch", "print(1)"), customOut("call_c", "hi")),
++			want:  []string{user, assistantCalls("", customCallJSON("call_c", "apply_patch", "print(1)")), toolMessage("call_c", "hi")},
++		},
++		{
++			name: "deepseek text keeps reasoning", model: "deepseek-chat", host: "api.deepseek.com",
++			input: joinItems(msg("user", "go"), msg("assistant", "step 1"), fc(1), fco(1)),
++			want:  []string{user, assistantReason("step 1", " ", execCall(1)), toolHi(1)},
++		},
++		{
++			name: "deepseek call after output", model: "deepseek-chat", host: "api.deepseek.com",
++			input: joinItems(msg("user", "go"), msg("assistant", "step 1"), fc(1), fco(1), fc(2), fco(2)),
++			want: []string{
++				user,
++				assistantReason("step 1", " ", execCall(1)),
++				toolHi(1),
++				assistantReason("", " ", execCall(2)),
++				toolHi(2),
++			},
++		},
++		{
++			name: "deepseek reasoning then call", model: "deepseek-chat", host: "api.deepseek.com",
++			input: joinItems(msg("user", "go"), reasoningInput("think"), fc(1), fco(1)),
++			want:  []string{user, assistantReason("", "think", execCall(1)), toolHi(1)},
++		},
++	}
++	for _, c := range cases {
++		t.Run(c.name, func(t *testing.T) {
++			body := `{"model":"` + c.model + `","stream":false,"max_output_tokens":16,"input":[` + c.input + `]}`
++			r, err := parseResponses([]byte(body))
++			if err != nil {
++				t.Fatalf("parse: %v", err)
++			}
++			got := chatMessageBytes(t, buildChat(r, c.model, c.host, false))
++			if len(got) != len(c.want) {
++				t.Fatalf("got %d messages, want %d:\n%s", len(got), len(c.want), strings.Join(got, "\n"))
++			}
++			for i := range c.want {
++				if got[i] != c.want[i] {
++					t.Errorf("message %d\n got %s\nwant %s", i, got[i], c.want[i])
++				}
++			}
++		})
++	}
++}
++
++func chatMessageBytes(t *testing.T, body []byte) []string {
++	t.Helper()
++	var q struct {
++		Messages []json.RawMessage `json:"messages"`
++	}
++	if err := json.Unmarshal(body, &q); err != nil {
++		t.Fatalf("body: %v\n%s", err, body)
++	}
++	out := make([]string, len(q.Messages))
++	for i, m := range q.Messages {
++		out[i] = string(m)
++	}
++	return out
++}
++
++func joinItems(items ...string) string { return strings.Join(items, ",") }
++
++func msg(role, text string) string {
++	kind := "input_text"
++	if role == "assistant" {
++		kind = "output_text"
++	}
++	quoted, _ := json.Marshal(text)
++	return `{"type":"message","role":"` + role + `","content":[{"type":"` + kind + `","text":` + string(quoted) + `}]}`
++}
++
++func fc(n int) string {
++	return fmt.Sprintf(`{"type":"function_call","name":"exec_command","arguments":"{\"cmd\":\"echo hi\"}","call_id":"call_%d"}`, n)
++}
++
++func fco(n int) string {
++	return fmt.Sprintf(`{"type":"function_call_output","call_id":"call_%d","output":"hi"}`, n)
++}
++
++func reasoningInput(text string) string {
++	quoted, _ := json.Marshal(text)
++	return `{"type":"reasoning","id":"rs_1","summary":[{"type":"summary_text","text":` + string(quoted) + `}]}`
++}
++
++func customCall(id, name, input string) string {
++	return `{"type":"custom_tool_call","name":"` + name + `","input":"` + input + `","call_id":"` + id + `"}`
++}
++
++func customOut(id, output string) string {
++	return `{"type":"custom_tool_call_output","call_id":"` + id + `","output":"` + output + `"}`
++}
++
++func execCall(n int) string {
++	return `{"function":{"arguments":"{\"cmd\":\"echo hi\"}","name":"exec_command"},"id":"call_` + fmt.Sprint(n) + `","type":"function"}`
++}
++
++func customCallJSON(id, name, input string) string {
++	args, _ := json.Marshal(map[string]string{"input": input})
++	quoted, _ := json.Marshal(string(args))
++	return `{"function":{"arguments":` + string(quoted) + `,"name":"` + name + `"},"id":"` + id + `","type":"function"}`
++}
++
++func assistantCalls(content string, calls ...string) string {
++	quoted, _ := json.Marshal(content)
++	return `{"content":` + string(quoted) + `,"role":"assistant","tool_calls":[` + strings.Join(calls, ",") + `]}`
++}
++
++func assistantReason(content, reason string, calls ...string) string {
++	c, _ := json.Marshal(content)
++	r, _ := json.Marshal(reason)
++	return `{"content":` + string(c) + `,"reasoning_content":` + string(r) + `,"role":"assistant","tool_calls":[` + strings.Join(calls, ",") + `]}`
++}
++
++func toolHi(n int) string { return toolMessage(fmt.Sprintf("call_%d", n), "hi") }
++
++func toolMessage(id, content string) string {
++	quoted, _ := json.Marshal(content)
++	return `{"content":` + string(quoted) + `,"role":"tool","tool_call_id":"` + id + `"}`
++}
++
++func interruptedToolMessage(id string) string {
++	return toolMessage(id, "[The result of this tool call is unavailable: the turn was interrupted.]")
++}
+diff --git a/internal/gateway/testdata/upstream_bodies/responses-to-chat.json b/internal/gateway/testdata/upstream_bodies/responses-to-chat.json
+index 9f0203da5..f9407a9f4 100644
+--- a/internal/gateway/testdata/upstream_bodies/responses-to-chat.json
++++ b/internal/gateway/testdata/upstream_bodies/responses-to-chat.json
+@@ -1 +1 @@
+-{"messages":[{"content":"be brief — ok","role":"system"},{"content":[{"text":"hi","type":"text"},{"image_url":{"url":"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="},"type":"image_url"}],"role":"user"},{"role":"assistant","tool_calls":[{"function":{"arguments":"{\"path\":\"/x\"}","name":"Read"},"id":"call_1","type":"function"}]},{"content":"done\t\"x\"","role":"tool","tool_call_id":"call_1"},{"content":"go on","role":"user"}],"model":"m1","prompt_cache_key":"792f8d82-337c-0905-4730-10546e0bd386","reasoning_effort":"medium","service_tier":"priority","stream":true,"stream_options":{"include_usage":true},"tools":[{"function":{"description":"Reads","name":"Read","parameters":{"type":"object","properties":{"path":{"type":"string"}}}},"type":"function"}]}
+\ No newline at end of file
++{"messages":[{"content":"be brief — ok","role":"system"},{"content":[{"text":"hi","type":"text"},{"image_url":{"url":"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="},"type":"image_url"}],"role":"user"},{"content":"","role":"assistant","tool_calls":[{"function":{"arguments":"{\"path\":\"/x\"}","name":"Read"},"id":"call_1","type":"function"}]},{"content":"done\t\"x\"","role":"tool","tool_call_id":"call_1"},{"content":"go on","role":"user"}],"model":"m1","prompt_cache_key":"792f8d82-337c-0905-4730-10546e0bd386","reasoning_effort":"medium","service_tier":"priority","stream":true,"stream_options":{"include_usage":true},"tools":[{"function":{"description":"Reads","name":"Read","parameters":{"type":"object","properties":{"path":{"type":"string"}}}},"type":"function"}]}
+\ No newline at end of file
+-- 
+2.50.1 (Apple Git-155)
+

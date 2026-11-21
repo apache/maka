@@ -1,0 +1,107 @@
+From 46b6c628d6450b7ec1b749510e972501c0133b4b Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Fri, 16 Oct 2026 22:48:41 +0800
+Subject: [PATCH] provider: a Usage only ChatGPT account keeps its visible
+ models out of Codex's picker, as out of the general catalog (#2530)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+What changed: CodexNativePicked narrows the backend's own list to none of
+the account's models when the codex provider is Usage only (noModels with
+nothing picked), as Exposed already keeps them out of the general catalog;
+the hidden ones stay for Codex's jobs of its own (#1460), and a switched
+off provider keeps leaving the list whole, as before.
+
+Why: the picks narrowing (aed12ac6) left the account's list whole whenever
+nothing was picked — and Usage only is exactly that state, though there the
+account serves no agent anything while its balance and usage still read —
+so every native model the account could reach stayed in magpie's
+/backend-api/codex/models answer and Codex's picker, while /v1/models had
+none of them (SavitarC's report, GET on both).
+
+Fixes #2530
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gateway/codex_backend_test.go | 38 ++++++++++++++++++++++++++
+ internal/provider/codex_models.go      | 13 +++++++--
+ 2 files changed, 49 insertions(+), 2 deletions(-)
+
+diff --git a/internal/gateway/codex_backend_test.go b/internal/gateway/codex_backend_test.go
+index 781a0d17..90b93d92 100644
+--- a/internal/gateway/codex_backend_test.go
++++ b/internal/gateway/codex_backend_test.go
+@@ -610,6 +610,44 @@ func TestCodexModelListPicksKeepHidden(t *testing.T) {
+ 	}
+ }
+ 
++// Usage only (Select none with nothing picked) narrows the backend's own
++// list to its hidden entries alone (#2530): the account serves no agent
++// anything, so its visible models leave Codex's picker as they have left
++// the general catalog, and magpie's own stay.
++func TestCodexModelListNarrowedByUsageOnly(t *testing.T) {
++	codexSignedIn(t)
++	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		io.WriteString(w, `{"models":[{"slug":"gpt-6-sol","priority":1,"visibility":"list"},{"slug":"gpt-5.5","priority":2,"visibility":"list"},{"slug":"codex-auto-review","priority":3,"visibility":"hide"}]}`)
++	}))
++	defer up.Close()
++	if err := provider.Save(provider.Provider{ID: "fake", Name: "Fake", Key: "k", Models: []string{"m1"}, Chat: up.URL + "/v1"}); err != nil {
++		t.Fatal(err)
++	}
++	if err := provider.Save(provider.Provider{ID: "codex", NoModels: true}); err != nil {
++		t.Fatal(err)
++	}
++	was := provider.CodexBase
++	provider.CodexBase = up.URL + "/backend-api/codex"
++	defer func() { provider.CodexBase = was }()
++
++	rec := httptest.NewRecorder()
++	req := httptest.NewRequest("GET", CodexPath+"/models", nil)
++	req.Header.Set("Authorization", "Bearer chatgpt-token")
++	New().Handler().ServeHTTP(rec, req)
++	var list struct {
++		Models []map[string]any `json:"models"`
++	}
++	json.Unmarshal(rec.Body.Bytes(), &list)
++	got := map[string]bool{}
++	for _, m := range list.Models {
++		slug, _ := m["slug"].(string)
++		got[slug] = true
++	}
++	if rec.Code != 200 || got["gpt-6-sol"] || got["gpt-5.5"] || !got["codex-auto-review"] || !got["fake/m1"] {
++		t.Errorf("under usage only: %v (want codex-auto-review and magpie's own, the account's visible models gone); code %d", got, rec.Code)
++	}
++}
++
+ // A native model taken out of Codex's list on the Agents page is dropped
+ // from the backend's list too, and the ETag changes so Codex asks again.
+ func TestCodexModelListHidesOnAgentsPage(t *testing.T) {
+diff --git a/internal/provider/codex_models.go b/internal/provider/codex_models.go
+index 82c39cad..6ba182ed 100644
+--- a/internal/provider/codex_models.go
++++ b/internal/provider/codex_models.go
+@@ -543,10 +543,19 @@ func codexListTag(kind string) string {
+ //
+ // A provider switched off picks nothing, as it serves no agent anything
+ // (Provider.Off): its picks are kept for when it is switched on again and
+-// are not a narrowing now.
++// are not a narrowing now. Usage only (noModels with nothing picked) is a
++// narrowing, to none of them: the account serves no agent anything, as
++// Exposed keeps its models out of the general catalog (#2530), and the
++// hidden ones stay for Codex's jobs of its own (codexModels).
+ func CodexNativePicked() (map[string]bool, bool) {
+ 	p, ok := find(All(), "codex")
+-	if !ok || p.Off || len(p.Models) == 0 {
++	if !ok || p.Off {
++		return nil, false
++	}
++	if p.ServesNone() {
++		return map[string]bool{}, true
++	}
++	if len(p.Models) == 0 {
+ 		return nil, false
+ 	}
+ 	keep := make(map[string]bool, len(p.Models))
+-- 
+2.50.1 (Apple Git-155)
+

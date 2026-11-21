@@ -1,0 +1,84 @@
+From 67dc6530a577050a7d6a637d7e5d5454986e07d4 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Mon, 2 Nov 2026 02:52:54 +0800
+Subject: [PATCH] fix(copilot): list an Experimental vendor's model the picker
+ offers (#4343)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+What changed: copilotModels dropped every model whose vendor is
+"Experimental" before looking at anything else, so mai-code-2-flash —
+an Enterprise account's, vendor "Experimental", model_picker_enabled
+true, served on /responses — never reached the catalog. A saved
+selection of it then failed everywhere with "copilot has no model
+mai-code-2-flash (magpie provider copilot lists them)" (serves() is
+Available() ∪ Exposed(), both built from the fetched list).
+
+The vendor is now only one more reason a model no picker offers stays
+out: an Experimental model the picker offers (model_picker_enabled
+true) is listed, as VS Code's own picker shows it. One the picker
+doesn't offer (kimi-k3-base) stays out.
+
+Run: TestCopilotSignAndModels fails on the old code (ids end
+"gpt-4.1,auto"), passes now; the fixture carries both shapes.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/provider/account.go      | 9 ++++++---
+ internal/provider/account_test.go | 7 +++++--
+ 2 files changed, 11 insertions(+), 5 deletions(-)
+
+diff --git a/internal/provider/account.go b/internal/provider/account.go
+index 406866660..93285ca65 100644
+--- a/internal/provider/account.go
++++ b/internal/provider/account.go
+@@ -1784,11 +1784,14 @@ func copilotModels(ctx context.Context, app copilotApp) ([]catalog.Model, error)
+ 	}
+ 	copilotSeenMu.Unlock()
+ 	for _, m := range v.Data {
+-		if m.Capabilities.Type != "chat" || copilotInternal.MatchString(m.ID) || m.Vendor == "Experimental" {
++		if m.Capabilities.Type != "chat" || copilotInternal.MatchString(m.ID) {
+ 			continue
+ 		}
+-		// a model no picker offers is an old snapshot or Copilot's own
+-		if !m.Picker && m.Category == "" {
++		// a model no picker offers is an old snapshot or Copilot's own; an
++		// Experimental vendor's is Copilot's own too, unless the picker
++		// offers it (#4343: mai-code-2-flash, an Enterprise account's,
++		// served on /responses)
++		if !m.Picker && (m.Category == "" || m.Vendor == "Experimental") {
+ 			continue
+ 		}
+ 		switch {
+diff --git a/internal/provider/account_test.go b/internal/provider/account_test.go
+index 5009ee797..0f093778b 100644
+--- a/internal/provider/account_test.go
++++ b/internal/provider/account_test.go
+@@ -394,6 +394,7 @@ func TestCopilotSignAndModels(t *testing.T) {
+ 			  {"id":"claude-opus-5","name":"Claude Opus 5","model_picker_category":"powerful","policy":{"state":"disabled"},"capabilities":{"type":"chat"}},
+ 			  {"id":"gpt-4.1","name":"GPT-4.1","model_picker_category":"versatile","policy":{"state":"enabled"},"capabilities":{"type":"chat"}},
+ 			  {"id":"gpt-4.1-2025-04-14","name":"GPT-4.1","policy":{"state":"enabled"},"capabilities":{"type":"chat"}},
++			  {"id":"mai-code-2-flash","name":"MAI-Code-2-Flash","vendor":"Experimental","model_picker_enabled":true,"model_picker_category":"lightweight","policy":{"state":"enabled"},"supported_endpoints":["/chat/completions","/responses"],"capabilities":{"type":"chat","supports":{"reasoning_effort":["high"]}}},
+ 			  {"id":"kimi-k3-base","name":"Kimi K3 (GitHub)","vendor":"Experimental","model_picker_category":"powerful","policy":{"state":"enabled"},"capabilities":{"type":"chat"}},
+ 			  {"id":"exec-agent-a","name":"Exec","model_picker_enabled":true,"capabilities":{"type":"chat"}},
+ 			  {"id":"text-embedding-3-small","name":"Emb","model_picker_enabled":true,"capabilities":{"type":"embeddings"}}]}`
+@@ -432,11 +433,13 @@ func TestCopilotSignAndModels(t *testing.T) {
+ 	for _, m := range ms {
+ 		ids = append(ids, m.ID)
+ 	}
+-	if strings.Join(ids, ",") != "gpt-5.5,claude-sonnet-5,gpt-4.1,auto" || len(ms[0].Efforts) != 2 {
++	// an Experimental vendor's the picker offers stays listed (#4343), one
++	// it doesn't (kimi-k3-base) stays out
++	if strings.Join(ids, ",") != "gpt-5.5,claude-sonnet-5,gpt-4.1,mai-code-2-flash,auto" || len(ms[0].Efforts) != 2 {
+ 		t.Fatalf("models: %v %+v", ids, ms)
+ 	}
+ 	p, _ = find(All(), "copilot")
+-	if got := p.Available(); len(got) != 4 || got[0].ID != "gpt-5.5" {
++	if got := p.Available(); len(got) != 5 || got[0].ID != "gpt-5.5" {
+ 		t.Fatalf("available after fetch: %+v", got)
+ 	}
+ 
+-- 
+2.50.1 (Apple Git-155)
+

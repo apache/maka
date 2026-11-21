@@ -1,0 +1,48 @@
+From 49c21c59906ef6295e01542e6a37deb12cdc2948 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Sun, 25 Oct 2026 02:14:44 +0800
+Subject: [PATCH] gui: key-replace allows 15s, its press and waitFor went over
+ 5s under load
+
+At load ~190, in a run of the key/provider/account GUI files, two of
+this file's 420px cases went red with the element already there: the
+double-click case's press on the key's field (resolved to the input,
+then the action didn't finish in 5s) and zh-TW's waitFor of the row
+the replace answer gives. Run again alone at load ~650, the file was
+all green. The room is the file's own 5s default, as with
+key-import.test.cjs (ce5b23cdb), not a rerun.
+
+Run:
+- key-replace.test.cjs, Chromium, all five languages, 1100 and 420,
+  10 consecutive runs after the change, 40/40 each. Before it, the
+  same file with an injected 6s stall on the field's Escape and a
+  7s-late replace answer went red with the reported signatures
+  (locator.press on elementHandle.press("Escape"), locator.waitFor on
+  .acc[data-account-id="cccccccccc"]); with the room both pass under
+  the injections.
+
+Fixes #3476
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gui/tests/key-replace.test.cjs | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/internal/gui/tests/key-replace.test.cjs b/internal/gui/tests/key-replace.test.cjs
+index fa0107b8..c7cc346b 100644
+--- a/internal/gui/tests/key-replace.test.cjs
++++ b/internal/gui/tests/key-replace.test.cjs
+@@ -82,7 +82,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
+         const browser = await (engine === "webkit" ? webkit.launch() : chromium.launch({ channel: "chromium" }));
+         const context = await browser.newContext({ viewport: { width, height: 800 }, reducedMotion: "reduce" });
+         const page = await context.newPage();
+-        page.setDefaultTimeout(5000);
++        // room for a busy machine: at load ~190 a press and a waitFor went
++        // over the 5s default with the element already there (#3476)
++        page.setDefaultTimeout(15000);
+         const errors = [], posts = [];
+         page.on("pageerror", (e) => errors.push(e.message));
+         await page.route("**/*", serve(lang, posts));
+-- 
+2.50.1 (Apple Git-155)
+

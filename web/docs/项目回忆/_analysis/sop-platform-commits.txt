@@ -1,0 +1,56 @@
+2024-08-01|ggbdpq|[GYLJG-3888] refactor: sso-sdk版本升级到0.1.2
+2024-08-01|ggbdpq|[GYLJG-3888] refactor: 去掉导航头部的帮助跳转链接,格式化和优化部分样式
+2024-07-04|ggbdpq|Merge branch 'GYLJG-3193' into master_merge_GYLJG-3193
+2024-07-04|ggbdpq|[GYLJG-3193] fix: 修复项目配置
+2024-07-04|ggbdpq|[GYLJG-3193] fix: 修复babel配置
+2024-07-04|ggbdpq|[GYLJG-3193] refactor: 更新pnpm-lock配置文件
+2024-07-04|ggbdpq|[GYLJG-3193] refactor: 完善doLoad处理函数
+2024-07-02|ggbdpq|Merge branch 'GYLJG-3193' into master_merge_GYLJG-3193
+2024-07-02|ggbdpq|[GYLJG-3193] fix: 修复数组取值的兼容性问题
+2024-07-02|ggbdpq|Merge branch 'GYLJG-3193' into master_merge_GYLJG-3193
+2024-07-02|ggbdpq|[GYLJG-3193] refactor: 完善ruleList数组字段的兼容性
+2024-07-01|ggbdpq|Merge branch 'GYLJG-3193' into master_merge_GYLJG-3193
+2024-07-01|ggbdpq|[GYLJG-3193] refactor: 删除根文件对于百度地图外链的引用
+2024-05-31|ggbdpq|[GYLJG-3193] fix: 修复解决冲突取错的地方
+2024-05-31|ggbdpq|Merge branch 'GYLJG-3193' into master_merge_GYLJG-3193
+2024-05-31|ggbdpq|Merge branch 'master' into GYLJG-3193
+2024-05-30|ggbdpq|Merge branch 'GYLJG-3110' into master_merge_GYLJG-3110
+2024-05-30|ggbdpq|Merge branch 'GYLJG-3193' into master_merge_GYLJG-3193
+2024-05-30|ggbdpq|[GYLJG-3193] fix: 修复定义路由规则回显数据问题
+2024-05-30|ggbdpq|Merge branch 'GYLJG-3193' into master_merge_GYLJG-3193
+2024-05-27|ggbdpq|[GYLJG-3122] refactor: 完善外部对接详情-新增弹窗关闭弹窗
+2024-05-24|ggbdpq|[GYLJG-3193] refactor: 代码格式化;修复存在的代码写法问题;
+2024-05-16|ggbdpq|使用em标签替换i标签
+2024-05-15|ggbdpq|消除存在质量问题的相关代码复杂度
+2024-05-15|ggbdpq|消除常见代码质量问题
+2023-08-29|ggbdpq|[perf_20230829] refactor: 优化代码写法
+2023-08-29|ggbdpq|[perf_20230829] fix: 修改开发者管理-账号管理的密码修改问题
+2023-08-11|ggbdpq|Merge branch 'pref_20230712' into master_merge
+2023-08-11|ggbdpq|[pref_20230712] refactor: 查漏补缺，Prettier格式化路由映射函数
+2023-08-08|ggbdpq|Merge branch 'master' into pref_20230712
+2023-07-13|ggbdpq|[pref_20230712] refactor: 解决挂载到window上'BMap'没有被定义的问题
+2023-07-13|ggbdpq|[pref_20230712] refactor: 部分代码格式化整理
+2023-07-13|ggbdpq|[pref_20230712] refactor: 部分代码格式化整理
+2023-07-12|ggbdpq|[pref_20230712] refactor: 修复api/statistic目录下的json格式数据
+2023-07-12|ggbdpq|[pref_20230712] refactor: 修复api目录下的代码前后空格、代码缩进、空行、引号等等
+2023-07-12|ggbdpq|[pref_20230712] refactor: 代码格式化整理，手动修改小部分代码，很多代码都是自动修改
+2023-07-04|ggbdpq|[GYLJG-1019] fix: 修复密码校验规则
+2023-07-04|ggbdpq|[GYLJG-1019] fix: 修复问题
+2023-07-04|ggbdpq|[GYLJG-1019] fix: 修复开发者管理账号密码加密问题
+2023-07-03|ggbdpq|[GYLJG-1019] fix: 修改dev公钥
+2023-07-03|ggbdpq|[GYLJG-1019] fix: merge branch 'master' into GYLJG-1019
+2023-06-30|ggbdpq|[GYLJG-1089] fix: 统一修改邮箱校验规则
+2023-06-30|ggbdpq|[GYLJG-1089] fix: 修复脱敏邮箱的校验规则
+2023-06-30|ggbdpq|[GYLJG-1089] fix: 修改邮箱的校验规则
+2023-06-19|ggbdpq|fix: 查漏补缺，修复新增密钥的默认校验规则
+2023-06-16|ggbdpq|fix: 修复默认邮箱的脱敏校验
+2023-06-15|Ggbdpq Guan|Merge branch 'GYLJG-1049' into 'master'
+2023-06-15|Ggbdpq Guan|fix: 修复布尔值命名
+2023-06-15|Ggbdpq Guan|fix(global): 修复校验规则
+2023-06-15|Ggbdpq Guan|fix(global): 修复脱敏邮箱，布尔值恢复默认值
+2023-06-15|Ggbdpq Guan|fix(global): 修复脱敏邮箱正则匹配规则
+2023-06-15|Ggbdpq Guan|fix(customer): 修复修改密码返回脱敏数据的邮箱验证
+2023-06-15|Ggbdpq Guan|fix(customer): 修复callback邮箱验证写法
+2023-06-15|Ggbdpq Guan|fix(global): 修复sop邮箱正则匹配规则
+2023-06-12|Ggbdpq Guan|pref(common): 临时修改网关管理菜单名称，和增加左侧菜单栏宽度
+2023-06-06|Ggbdpq Guan|feat: 新增jsencrypt依赖，对重置密码进行RSA加密

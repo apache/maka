@@ -1,0 +1,260 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Sun, 8 Nov 2026 02:53:26 +0800
+Subject: [PATCH] gateway: a conversation whose client took the images of
+ earlier turns out goes on in its run (#5612)
+
+A client that strips the images of turns before the last one out
+between turns (WorkBuddy) sent a conversation whose key no run had:
+the images a client took out were told from any other change in the
+last turn alone (looseTurn.rewrote, #1382), while the earlier turns'
+were in the looseTurn key's hash, so a new turn after such a strip
+found no run and no lost record (the run's, keyed by keys the
+conversation had before the strip), and a new Claude Code was told
+the whole conversation in one message, a prefix the cache had seen
+only up to the taken-out image: cache_read fell back to the system
+prompt's size (previous_message_not_found) and the whole history was
+written again. WorkBuddy's images flip 1-0-1-3-0 between turns; a
+Claude subscription's hit rate fell to 92%.
+
+looseTurn keeps the whole conversation as heardRuns too (whole), and
+rewritten takes a run, or a saved session, whose conversation the
+request's is with the images of earlier turns taken out and nothing
+else changed (lostMedia over the whole, mediaLost), as follows and
+rewrote already took the images of the results and the last turn. A
+conversation whose words changed is never this. The log says which
+rewrite went on, in its run or from its saved session.
+
+Tests: TestClaudeTurnAfterTheImagesOfEarlierTurnsTakenOutGoesOnInItsRun,
+an image taken out and one replaced by the line going on in the run
+that had them, told the new turn alone, and the user's words changed
+still starting anew.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ docs/subsystems/claude-subscription-bridge.md | 10 +++
+ internal/gateway/claude_lost_media_test.go    | 40 +++++++++++
+ internal/gateway/claude_subscription.go       | 70 ++++++++++++++-----
+ 3 files changed, 103 insertions(+), 17 deletions(-)
+
+diff --git a/docs/subsystems/claude-subscription-bridge.md b/docs/subsystems/claude-subscription-bridge.md
+index 7f06c6949..8e6303647 100644
+--- a/docs/subsystems/claude-subscription-bridge.md
++++ b/docs/subsystems/claude-subscription-bridge.md
+@@ -1405,6 +1405,16 @@ A client that drops the images' message without adding text to a result
+ goes on only when that message held images alone, no text. A tool result of an image alone (pi-ai's "(see attached image)")
+ whose text is replaced by the line is not this shape, and starts anew.
+ 
++`looseTurn` keeps the whole conversation as `heardRuns` too (`whole`),
++and `rewritten` takes a run, or a saved session, whose conversation the
++request's is with the images of turns BEFORE the last taken out
++(`looseTurn.mediaLost`, #5612): WorkBuddy strips the images of earlier
++turns between turns, and the conversation it sent back then had a key no
++run had, so its next turn was told to a new Claude Code whole, all of it
++written to the prompt cache again, `cache_read` back to the system
++prompt's size (previous_message_not_found). A conversation whose words
++changed is never this, and starts anew.
++
+ ## How many Claude Code processes run (`claudeRoom`, #2956)
+ 
+ Every Claude Code magpie starts for a Claude subscription takes a place in
+diff --git a/internal/gateway/claude_lost_media_test.go b/internal/gateway/claude_lost_media_test.go
+index c039154b5..e599cf1f3 100644
+--- a/internal/gateway/claude_lost_media_test.go
++++ b/internal/gateway/claude_lost_media_test.go
+@@ -193,6 +193,46 @@ func TestClaudeTurnWithItsImagesTakenOutGoesOnInItsRun(t *testing.T) {
+ 	}
+ }
+ 
++// A client that takes the images of EARLIER turns out between turns
++// (WorkBuddy, #5612) sends a conversation whose key no run had: its next
++// turn was told to a new Claude Code whole, all of it written to the
++// prompt cache again, cache_read back to the system prompt's size
++// (previous_message_not_found). It goes on in the run that had the
++// conversation, told the new turn alone, the run's Claude Code holding
++// the images still. A conversation whose words changed starts anew.
++func TestClaudeTurnAfterTheImagesOfEarlierTurnsTakenOutGoesOnInItsRun(t *testing.T) {
++	for _, c := range []struct {
++		name     string
++		was, now string // the first turn's user message as sent, then as sent back
++		runs     int
++	}{
++		{"an image taken out",
++			piUserParts(piText("这是什么"), piImage()),
++			piUser("这是什么"), 1},
++		{"an image replaced by the line",
++			piUserParts(piText("这是什么"), piImage()),
++			piUserParts(piText("这是什么"), piText(hanaImageGone)), 1},
++		{"the user's words changed",
++			piUserParts(piText("这是什么"), piImage()),
++			piUser("这是谁"), 2},
++	} {
++		t.Run(c.name, func(t *testing.T) {
++			h := newReplyHarness(t, "一只猫")
++			h.sendChat(c.was)
++			h.sendChat([]string{c.now, piSays("一只猫"), piUser("第二个问题"), piSays("好的"), piUser("more")}...)
++			if n := len(h.runs()); n != c.runs {
++				t.Fatalf("runs: %d, want %d", n, c.runs)
++			}
++			if c.runs == 1 {
++				told := h.toldLast()
++				if !strings.Contains(told, "more") || strings.Contains(told, "这是什么") || strings.Contains(told, "第二个") {
++					t.Fatalf("the run was told more than the turn:\n%s", told)
++				}
++			}
++		})
++	}
++}
++
+ // Tool results after a step that read an image, sent by Hana with the
+ // image taken out (#1382), are the run's that read it: it goes on, where
+ // it was let go and the conversation told to a new one. A conversation
+diff --git a/internal/gateway/claude_subscription.go b/internal/gateway/claude_subscription.go
+index 992609a88..c86abef7d 100644
+--- a/internal/gateway/claude_subscription.go
++++ b/internal/gateway/claude_subscription.go
+@@ -1950,9 +1950,13 @@ func (b *subscriptionBridge) resume(req *Request, owner string) (*subscriptionRu
+ 		// the client sent the conversation back rewritten (#912): the
+ 		// run is its own when nothing else could be, and its agent was
+ 		// told every tool the client offers now
+-		if r, _ := b.rewritten(req, owner); r != nil && r.offers(req.Tools) && !r.asideOf(req) {
++		if r, _, media := b.rewritten(req, owner); r != nil && r.offers(req.Tools) && !r.asideOf(req) {
+ 			run = r
+-			log.Printf("claude: a conversation whose last turn the client rewrote goes on in its run")
++			if media {
++				log.Printf("claude: a conversation whose client took the images of earlier turns out goes on in its run")
++			} else {
++				log.Printf("claude: a conversation whose last turn the client rewrote goes on in its run")
++			}
+ 		}
+ 	}
+ 	if run != nil {
+@@ -2104,6 +2108,12 @@ func nextTurn(req *Request, owner string) (string, []Message) {
+ type looseTurn struct {
+ 	key  string
+ 	turn []turnWords
++	// whole is the conversation the earlier turns hold, as lostMedia
++	// compares it (#1382): a client that takes the images of turns
++	// before the last one out between turns (WorkBuddy, #5612) sends a
++	// key no run had, and its next turn was told to a new Claude Code
++	// whole, all of it written to the prompt cache again
++	whole []heardRun
+ 	// runs is the turn as lostMedia compares it (#1382): sealed as a run
+ 	// keeps it, with its words as a request has it
+ 	runs []heardRun
+@@ -2135,7 +2145,7 @@ func newLooseTurn(owner string, req *Request, msgs []Message, sealed bool) *loos
+ 	fmt.Fprintf(h, "%s\x00%s\x00%t\x00%t\x00%s\x00%s\x00%t\x00%s\x00%d", owner, req.Model, req.Effort != "", req.ThinkOff, req.ToolChoice, withoutBillingHeader(req.System), req.WebSearch, req.Format.schema(), start)
+ 	cacheIdentity(h, req)
+ 	hashMessages(h, msgs[:start], nil)
+-	l := &looseTurn{key: hex.EncodeToString(h.Sum(nil)), runs: heardRuns(msgs[start:], sealed)}
++	l := &looseTurn{key: hex.EncodeToString(h.Sum(nil)), whole: heardRuns(msgs, sealed), runs: heardRuns(msgs[start:], sealed)}
+ 	words := messageWords(msgs)
+ 	for i := start; i < len(msgs); i++ {
+ 		tools := false
+@@ -2159,6 +2169,16 @@ func (l *looseTurn) rewrote(now *looseTurn) bool {
+ 	return len(now.runs) == len(l.runs) && lostMedia(l.runs, now.runs)
+ }
+ 
++// mediaLost says now's conversation is the one l kept with the images or
++// files of the turns before the last taken out, and that alone
++// (lostMedia over the whole conversation, #5612): rewrote compares the
++// last turn a client sent back rewritten, while a client that strips the
++// images of earlier turns between turns sends a conversation whose key no
++// run had.
++func (l *looseTurn) mediaLost(now *looseTurn) bool {
++	return lostMedia(l.whole, now.whole)
++}
++
+ // cut is rewrote for a client that cut a user's message or the reply.
+ func (l *looseTurn) cut(turn []turnWords) bool {
+ 	if len(turn) != len(l.turn) {
+@@ -2198,38 +2218,50 @@ func cutFrom(was, s string) bool {
+ 
+ // rewritten finds the run, or the saved session, waiting at the
+ // conversation a request goes on from as its client rewrote it
+-// (looseTurn), when there is just one (b.mu held). Two that could be it
+-// are two conversations alike as far as their words go, and neither is
+-// taken: a run handed another's would answer from what the other was told.
+-func (b *subscriptionBridge) rewritten(req *Request, owner string) (*subscriptionRun, *savedSession) {
++// (looseTurn), or as its client took the images of earlier turns out
++// (mediaLost, #5612), when there is just one (b.mu held). Two that could
++// be it are two conversations alike as far as their words go, and neither
++// is taken: a run handed another's would answer from what the other was
++// told. The bool says the match was the images taken out.
++func (b *subscriptionBridge) rewritten(req *Request, owner string) (*subscriptionRun, *savedSession, bool) {
+ 	key, since := nextTurn(req, owner)
+ 	if key == "" {
+-		return nil, nil
++		return nil, nil, false
+ 	}
+ 	l := newLooseTurn(owner, req, req.Messages[:len(req.Messages)-len(since)], false)
+ 	if l == nil {
+-		return nil, nil
++		return nil, nil, false
+ 	}
+ 	var run *subscriptionRun
+ 	var saved *savedSession
+-	found := 0
++	found, media := 0, false
+ 	for _, r := range b.idle {
+-		if r.owned() == owner && r.loose != nil && r.loose.key == l.key && r.loose.rewrote(l) {
++		if r.owned() != owner || r.loose == nil {
++			continue
++		}
++		if r.loose.key == l.key && r.loose.rewrote(l) {
+ 			run, found = r, found+1
++		} else if r.loose.mediaLost(l) {
++			run, found, media = r, found+1, true
+ 		}
+ 	}
+ 	for _, s := range b.shelf {
+-		if s.owner == owner && s.loose != nil && s.loose.key == l.key && s.loose.rewrote(l) {
++		if s.owner != owner || s.loose == nil {
++			continue
++		}
++		if s.loose.key == l.key && s.loose.rewrote(l) {
+ 			saved, found = s, found+1
++		} else if s.loose.mediaLost(l) {
++			saved, found, media = s, found+1, true
+ 		}
+ 	}
+ 	if found != 1 {
+ 		if found > 1 {
+ 			log.Printf("claude: %d conversations could be the one a rewritten turn goes on from; none is taken", found)
+ 		}
+-		return nil, nil
++		return nil, nil, false
+ 	}
+-	return run, saved
++	return run, saved, media
+ }
+ 
+ // toolsCover says tools has every one of names: a session resumed with
+@@ -2616,9 +2648,13 @@ func (b *subscriptionBridge) unshelve(req *Request, owner string) *savedSession
+ 		// rewritten (resume); its Claude Code is told the tools the
+ 		// client offers now, and the session keeps the calls made of
+ 		// those it had
+-		if _, saved := b.rewritten(req, owner); saved != nil && toolsCover(req.Tools, saved.tools) {
++		if _, saved, media := b.rewritten(req, owner); saved != nil && toolsCover(req.Tools, saved.tools) {
+ 			s, key = saved, saved.key
+-			log.Printf("claude: a conversation whose last turn the client rewrote goes on from its saved session")
++			if media {
++				log.Printf("claude: a conversation whose client took the images of earlier turns out goes on from its saved session")
++			} else {
++				log.Printf("claude: a conversation whose last turn the client rewrote goes on from its saved session")
++			}
+ 		}
+ 	}
+ 	if s == nil {
+@@ -6796,7 +6832,7 @@ func (b *subscriptionBridge) whyNoRun(req *Request, owner string) string {
+ 	keys := conversationKeys(owner, req.Messages)
+ 	b.mu.Lock()
+ 	defer b.mu.Unlock()
+-	if r, _ := b.rewritten(req, owner); r != nil {
++	if r, _, _ := b.rewritten(req, owner); r != nil {
+ 		if n, names := r.untold(req.Tools); n > 0 {
+ 			return fmt.Sprintf("its run waits under another key: the client offers %d tool(s) its Claude Code wasn't told of (%s), and a run is told its tools when it starts", n, names)
+ 		}
+-- 
+2.50.1 (Apple Git-155)
+

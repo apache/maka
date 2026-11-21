@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "dynatrace": {
+      "url": "YOUR_DT_URL",
+      "headers": {
+        "Authorization": "Bearer YOUR_BEARER_TOKEN"
+      },
+      "disabled": false,
+      "autoApprove": [
+        "create-dql",
+        "execute-dql"
+      ],
+      "disabledTools": []
+    }
+  }
+}

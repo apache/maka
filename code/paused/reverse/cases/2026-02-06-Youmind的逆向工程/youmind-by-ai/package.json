@@ -1,0 +1,37 @@
+{
+  "name": "youmind-by-ai",
+  "version": "0.3.0-alpha21",
+  "description": "YouMind Chrome Extension - Reverse Engineered",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "build:watch": "tsc --watch",
+    "type-check": "tsc --noEmit",
+    "clean": "rm -rf dist",
+    "prebuild": "npm run clean"
+  },
+  "keywords": [
+    "chrome-extension",
+    "web-clipper",
+    "youtube",
+    "twitter",
+    "ai"
+  ],
+  "author": "Reverse Engineered by AI",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/chrome": "^0.0.254",
+    "typescript": "^5.3.3"
+  },
+  "dependencies": {
+    "@types/react": "^18.2.45",
+    "@types/react-dom": "^18.2.18",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=9.0.0"
+  }
+}

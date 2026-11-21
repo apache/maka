@@ -1,0 +1,418 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Sun, 8 Nov 2026 22:12:43 +0800
+Subject: [PATCH] gateway: a provider's failWords fail a 200 that is only its
+ pitch for a spent plan (#5692)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+A relay that has spent its plan and answers with a 200 and a pitch of
+its own — finish reason stop, the usage counted, no word of error —
+went to the agent as the answer it isn't: an agent asking for JSON had
+a JSONDecodeError, one asking for code an advert, request after
+request, while every page said 200, for as long as the plan was spent
+(leavrcn). failure reads a try that has failed already (carriedStatus),
+holdWriter.failed wants a status of its own (400 up), errorReply an
+error envelope with no choices beside it, and saidAnything a Text part
+saying — nothing of the five covers a completion that is legally one.
+
+failWords are the words a whole reply of a success status is read by,
+per provider, off by default: nothing is read of a reply a user hasn't
+opted in for, the same words in a real answer failing it being that
+user's own to weigh. The words are read as they are written, never as
+a guess of what a pitch says (#5089's rule); one magpie can't read is
+dropped, not fatal. A reply saying one of them fails as its own words
+stand for (streamStatus), asked of the next member, the account rested
+as the vendor's own 429 would rest it; nobody left, the agent is told
+the failure, never handed the pitch. Set in providers.json by hand; a
+save of the editor's, whose form doesn't carry them, keeps what was
+stored. The reply as it streams, whose first content is let through
+for its TTFT, is not read: a pitch that went out stays out, and the
+rest keeps the next request away.
+
+Attribution: 分析与补丁由 GLM-5.3-Flash (ZCode) 协助完成
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gateway/fallback.go         |  13 +++
+ internal/gateway/gateway.go          |  12 +++
+ internal/gateway/reply_spent.go      |  85 ++++++++++++++++
+ internal/gateway/reply_spent_test.go | 146 +++++++++++++++++++++++++++
+ internal/provider/provider.go        |  34 +++++++
+ 5 files changed, 290 insertions(+)
+ create mode 100644 internal/gateway/reply_spent.go
+ create mode 100644 internal/gateway/reply_spent_test.go
+
+diff --git a/internal/gateway/fallback.go b/internal/gateway/fallback.go
+index 34ecff207..a8f107095 100644
+--- a/internal/gateway/fallback.go
++++ b/internal/gateway/fallback.go
+@@ -2512,6 +2512,12 @@ type holdWriter struct {
+ 	// buffered: the vendor said it holds the reply back for safety checks,
+ 	// which may end in a refusal: held longer (holdBuffered)
+ 	buffered bool
++	// spent is the words a whole reply of a success status is read by
++	// (the provider's failWords, the user's own opt-in): a relay that
++	// answers a spent plan with a 200 and a pitch of its own fails as the
++	// words stand for, asked of the next, the account rested (#5692).
++	// nil reads nothing, as no provider has any by default
++	spent *regexp.Regexp
+ 	// thinking: the reply has reasoned but said nothing yet, which a
+ 	// refusal may still end: held longer (holdThinking)
+ 	thinking bool
+@@ -3456,6 +3462,13 @@ func (h *holdWriter) settle() {
+ 			h.failure, h.failMsg = status, msg
+ 			return
+ 		}
++		// a 200 that says one of the provider's failWords (the user's own
++		// opt-in for a vendor that answers a spent plan with a pitch of
++		// its own) fails as the words stand for, the same way (#5692)
++		if status, msg, ok := pitchSaid(h.spent, h.held.Bytes()); ok {
++			h.failure, h.failMsg = status, msg
++			return
++		}
+ 	}
+ 	if h.alive != nil && h.alive.sent && h.status < 400 && wholeEvents(h.alive.proto, h.held.Bytes()) == nil {
+ 		// a 200 that is no reply of the protocol's, once the agent has a
+diff --git a/internal/gateway/gateway.go b/internal/gateway/gateway.go
+index 40b6b4696..ec842a9b9 100644
+--- a/internal/gateway/gateway.go
++++ b/internal/gateway/gateway.go
+@@ -3512,6 +3512,12 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
+ 		// a compaction's summary is held to its end, for a cut or an
+ 		// error halfway to go to the next candidate (#2274)
+ 		hw.wantWhole = wantWhole && !pass
++		// the words a whole reply of a success status is read by (the
++		// provider's failWords, #5692): none where the user leaves the
++		// errors to the client, its replies going as they come
++		if !pass {
++			hw.spent = failWordsOf(c.p)
++		}
+ 		// Claude's and GPT's reasoning is held for a refusal after it only
+ 		// while another candidate could answer instead: the last one's
+ 		// refusal isn't asked again, so holding it only kept a lone relay's
+@@ -5139,6 +5145,12 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
+ 			s.trace.update(tr, func(t *Route) { t.Fail = toldFail(other) })
+ 			failTo(w, kept, from, call.Status, call.Error)
+ 			break
++		} else if !hw.passing && hw.spent != nil && hw.code() >= 400 {
++			// nobody is left, and what this one answered is the vendor's
++			// own pitch for a spent plan (failWords): the agent is told
++			// the failure the words stand for, not handed the pitch as an
++			// answer it declared it isn't (#5692)
++			failTo(w, kept, from, hw.code(), call.Error)
+ 		} else if outgrew {
+ 			// in the agent's own words for it, for it to compact
+ 			failTo(w, kept, from, call.Status, hw.failMsg)
+diff --git a/internal/gateway/reply_spent.go b/internal/gateway/reply_spent.go
+new file mode 100644
+index 000000000..900528594
+--- /dev/null
++++ b/internal/gateway/reply_spent.go
+@@ -0,0 +1,85 @@
++package gateway
++
++import (
++	"fmt"
++	"regexp"
++	"strings"
++
++	"github.com/tidwall/gjson"
++	"github.com/yetone/magpie/internal/provider"
++)
++
++// spentPitch is what a reply a provider's failWords match is failed as: a
++// relay that has spent its plan answering a 200 with a pitch of its own is
++// asked no more, this try's rest saying what the words stand for, as the
++// vendor's own error status would (leavrcn, #5692).
++const spentPitch = "the provider answered with words of a plan spent (failWords)"
++
++// spentRunes is how much of what the vendor actually said a failure of
++// this kind carries, for the agent to see the pitch it would have had.
++const spentRunes = 300
++
++// failWordsOf is a provider's failWords as the words they are matched by,
++// each standing for itself: one magpie can't read is dropped, not fatal —
++// a word mistyped mustn't fail every reply the provider answers. nil when
++// none is configured, or none is left: nothing is read of a reply then,
++// a 200 being an answer, whatever it says.
++func failWordsOf(p provider.Provider) *regexp.Regexp {
++	var good []string
++	for _, w := range p.FailWords {
++		if w = strings.TrimSpace(w); w == "" {
++			continue
++		}
++		if _, err := regexp.Compile(w); err != nil {
++			continue
++		}
++		good = append(good, w)
++	}
++	if len(good) == 0 {
++		return nil
++	}
++	re, err := regexp.Compile(`(?i)(?:` + strings.Join(good, `|`) + `)`)
++	if err != nil {
++		return nil
++	}
++	return re
++}
++
++// pitchSaid is whether a reply that came whole under a success status says
++// one of the provider's failWords, which the user opted in for: the words
++// are read as they are written, never as a guess of what a pitch says
++// (#5089's rule — an answer that carries one of the words of the language
++// alone is an answer still). The status is what the reply's own words
++// stand for (streamStatus), as the same reading of an error said under a
++// 200 is (errorReply), and msg carries the pitch itself, short.
++func pitchSaid(re *regexp.Regexp, body []byte) (status int, msg string, ok bool) {
++	if re == nil {
++		return 0, "", false
++	}
++	w := wordsOf(body)
++	if hit := re.Find(w); hit == nil {
++		return 0, "", false
++	}
++	said := pitchOf(body)
++	if r := []rune(said); len(r) > spentRunes {
++		said = string(r[:spentRunes])
++	}
++	return streamStatus(string(w)), fmt.Sprintf("%s: %s", spentPitch, said), true
++}
++
++// pitchOf is what a reply actually says, in whichever of the four shapes
++// it came, for a failure to carry the words rather than their JSON: the
++// body's own words when none of the shapes has it.
++func pitchOf(body []byte) string {
++	for _, at := range []string{
++		"choices.0.message.content", "choices.0.delta.content",
++		"content", "content.0.text",
++		"output_text", "output.0.content.0.text",
++		"candidates.0.content.parts.0.text",
++	} {
++		if s := gjson.GetBytes(body, at); s.Type == gjson.String && strings.TrimSpace(s.String()) != "" {
++			return s.String()
++		}
++	}
++	return string(wordsOf(body))
++}
+diff --git a/internal/gateway/reply_spent_test.go b/internal/gateway/reply_spent_test.go
+new file mode 100644
+index 000000000..4dea7653e
+--- /dev/null
++++ b/internal/gateway/reply_spent_test.go
+@@ -0,0 +1,146 @@
++package gateway
++
++import (
++	"net/http/httptest"
++	"strings"
++	"testing"
++
++	"github.com/yetone/magpie/internal/provider"
++)
++
++// What tianyi (eaichat.ctyun.cn) answers a spent plan with, the reporter's
++// own reply short of its last clause (leavrcn, #5692): a 200, finish
++// reason "stop", the usage counted, and no word of error in it.
++const pitchBody = `{"model":"deepseek-v4-flash-0731-oc","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"您的Token额度已用完！当前套餐的额度已耗尽，如需继续使用，请前往 desk.ctyun.cn 购买或兑换套餐码。购买后，请新建会话。"},"finish_reason":"stop"}],"usage":{"prompt_tokens":9,"completion_tokens":198,"total_tokens":207}}`
++
++// A reply that only mentions the word of the plan, as an answer would.
++const plainAnswer = `{"id":"cn","choices":[{"index":0,"message":{"role":"assistant","content":"您的额度还很充足，请放心使用。"},"finish_reason":"stop"}]}`
++
++// scriptedOnWords registers a provider on its own fake upstream, with the
++// words given as its failWords.
++func scriptedOnWords(t *testing.T, id string, words []string, fallback []string, s *scripted) {
++	t.Helper()
++	up := httptest.NewServer(s)
++	t.Cleanup(up.Close)
++	p := provider.Provider{ID: id, Name: strings.ToUpper(id), Key: "k", Models: []string{"m"}, Chat: up.URL + "/v1", FailWords: words, Fallback: fallback}
++	if err := provider.Save(p); err != nil {
++		t.Fatal(err)
++	}
++}
++
++// A 200 that is only the vendor's own pitch for a spent plan fails as the
++// words stand for it, and rests the account: an agent asking for JSON had
++// the pitch for an answer, request after request, for as long as the plan
++// was spent, with every page saying 200 (leavrcn, #5692). A member that
++// can still answer is asked in its place.
++func TestFailWordsFailAPitch(t *testing.T) {
++	fresh(t)
++	clineRestsCleared(t)
++	old := allowances
++	defer func() { allowances = old }()
++	allowances = func(string) map[string]provider.Allowance { return nil }
++	a := &scripted{replies: []reply{{200, "", pitchBody}}}
++	b := &scripted{replies: []reply{{200, "", chatOK}}}
++	scriptedOnWords(t, "a", []string{"额度已用完", `desk\.ctyun\.cn`}, []string{"b/m"}, a)
++	scriptedOn(t, "b", provider.Chat, b)
++	s := New()
++	code, body := postAs(t, s, "", `{"model":"a/m","messages":[{"role":"user","content":"hi"}]}`)
++	if code != 200 || !strings.Contains(body, "hello") || a.n != 1 || b.n != 1 {
++		t.Fatalf("%d %s (a asked %d times, b %d)", code, body, a.n, b.n)
++	}
++	if try := firstTry(t, s); try.Fail != failQuota || try.Rest == nil {
++		t.Errorf("the pitch failed as %q (rest %v), want %q with a rest", try.Fail, try.Rest, failQuota)
++	}
++}
++
++// With nobody left to ask, the pitch is told as the failure it stands for,
++// not handed over as the answer it isn't: the agent has an error, never a
++// completion that says the words.
++func TestFailWordsToldWhenNobodyLeft(t *testing.T) {
++	fresh(t)
++	clineRestsCleared(t)
++	a := &scripted{replies: []reply{{200, "", pitchBody}}}
++	scriptedOnWords(t, "a", []string{"额度已用完"}, nil, a)
++	s := New()
++	code, body := postAs(t, s, "", `{"model":"a/m","messages":[{"role":"user","content":"hi"}]}`)
++	if code < 400 || strings.Contains(body, `"choices"`) {
++		t.Fatalf("%d %s", code, body)
++	}
++}
++
++// Without the words the pitch goes as it always has: an answer, whatever
++// it says. Nothing is read of a reply that the user hasn't opted in for.
++func TestFailWordsOffByDefault(t *testing.T) {
++	fresh(t)
++	clineRestsCleared(t)
++	a := &scripted{replies: []reply{{200, "", pitchBody}}}
++	scriptedOn(t, "a", provider.Chat, a)
++	s := New()
++	code, body := postAs(t, s, "", `{"model":"a/m","messages":[{"role":"user","content":"hi"}]}`)
++	if code != 200 || !strings.Contains(body, "额度已用完") || a.n != 1 {
++		t.Fatalf("%d %s (asked %d times)", code, body, a.n)
++	}
++	if try := firstTry(t, s); try.Fail != "" || try.Rest != nil {
++		t.Errorf("an answer the user opted nothing for failed as %q (rest %v)", try.Fail, try.Rest)
++	}
++}
++
++// An answer that only mentions the word of the plan is spared: the words
++// are matched as they are written, not as a guess of what a pitch says.
++func TestFailWordsSpareAnAnswer(t *testing.T) {
++	fresh(t)
++	clineRestsCleared(t)
++	a := &scripted{replies: []reply{{200, "", plainAnswer}}}
++	scriptedOnWords(t, "a", []string{"额度已用完", "套餐已耗尽"}, nil, a)
++	s := New()
++	code, body := postAs(t, s, "", `{"model":"a/m","messages":[{"role":"user","content":"hi"}]}`)
++	if code != 200 || !strings.Contains(body, "额度还很充足") || a.n != 1 {
++		t.Fatalf("%d %s (asked %d times)", code, body, a.n)
++	}
++	if try := firstTry(t, s); try.Fail != "" || try.Rest != nil {
++		t.Errorf("an answer that says none of the words failed as %q (rest %v)", try.Fail, try.Rest)
++	}
++}
++
++// Each word stands for itself: one magpie can't read is dropped, and one
++// it can is still matched. Nothing configured, nothing read at all.
++func TestFailWordsRead(t *testing.T) {
++	if re := failWordsOf(provider.Provider{}); re != nil {
++		t.Errorf("nothing configured, %v is read of every reply", re)
++	}
++	if re := failWordsOf(provider.Provider{FailWords: []string{"  ", "", "("}}); re != nil {
++		t.Errorf("words none of them readable: %v", re)
++	}
++	re := failWordsOf(provider.Provider{FailWords: []string{"额度已用完", " ( ", `desk\.ctyun\.cn`}})
++	if re == nil {
++		t.Fatal("a word magpie can read was dropped beside one it can't")
++	}
++	for _, said := range []string{"您的Token额度已用完！", "请前往 desk.ctyun.cn 购买"} {
++		if !re.MatchString(said) {
++			t.Errorf("%v doesn't match %q", re, said)
++		}
++	}
++	if re.MatchString("您的额度还很充足，请放心使用") {
++		t.Errorf("%v matched an answer that says none of the words", re)
++	}
++}
++
++// failWords survive a save that left them out, as the editor's form
++// doesn't carry them, and a save that sends none keeps what was stored.
++func TestFailWordsKeptOnSave(t *testing.T) {
++	fresh(t)
++	p := provider.Provider{ID: "pitchy", Name: "Pitchy", Key: "k", Chat: "https://relay.example/v1", FailWords: []string{"额度已用完", "   "}}
++	if err := provider.Save(p); err != nil {
++		t.Fatal(err)
++	}
++	saved, err := provider.Find("pitchy")
++	if err != nil || len(saved.FailWords) != 1 || saved.FailWords[0] != "额度已用完" {
++		t.Fatalf("stored %v (%v)", saved.FailWords, err)
++	}
++	if err := provider.Save(provider.Provider{ID: "pitchy", Name: "Pitchy", Key: "k", Chat: "https://relay.example/v1"}); err != nil {
++		t.Fatal(err)
++	}
++	if saved, err = provider.Find("pitchy"); err != nil || len(saved.FailWords) != 1 {
++		t.Errorf("a save that left failWords out dropped them: %v (%v)", saved.FailWords, err)
++	}
++}
+diff --git a/internal/provider/provider.go b/internal/provider/provider.go
+index cc5d0db75..86bb3b334 100644
+--- a/internal/provider/provider.go
++++ b/internal/provider/provider.go
+@@ -120,6 +120,20 @@ type Provider struct {
+ 	// tried in order.
+ 	Fallback []string `json:"fallback,omitempty"`
+ 
++	// FailWords are the words a whole reply of this provider's is read by
++	// before it goes to the agent (gateway.spentSaid): a relay that has
++	// spent its plan and answers with a 200 and a pitch of its own — the
++	// plan is out, buy more at a link it names — said an agent asking for
++	// JSON a JSONDecodeError, and one asking for code an advert, request
++	// after request, with every page saying 200, for as long as the plan
++	// was spent (leavrcn, #5692). Off, the default, nothing is read of a
++	// reply: a 200 is an answer, whatever it says — the same words in a
++	// real answer would fail it, and that is the user's own to weigh.
++	// Set in providers.json by hand; a save of the editor's, whose form
++	// doesn't carry them, keeps what was stored. One word magpie can't
++	// read as a regular expression is dropped, not fatal.
++	FailWords []string `json:"failWords,omitempty"`
++
+ 	// Routing is how requests spread over the keys or accounts it has on:
+ 	// "" smart, the first while it has quota to spare, then whichever has
+ 	// the most; "order" in order, the next one only when the one before
+@@ -1254,6 +1268,12 @@ func Save(p Provider) error {
+ 		if p.Gave == nil {
+ 			p.Gave = was.Gave
+ 		}
++		// failWords are set in providers.json by hand, which the editor's
++		// form doesn't carry: a save that sends none keeps what was stored
++		// (#1604's kind), and clearing them is clearing them there
++		if p.FailWords == nil {
++			p.FailWords = was.FailWords
++		}
+ 		if sameStored(*was, p) {
+ 			// Save pressed on an editor left as it was: providers.json
+ 			// would be written byte for byte as it is, and its write
+@@ -1712,6 +1732,7 @@ func normalize(p Provider) Provider {
+ 	p.AccountNames = normalAccountNames(p.AccountNames)
+ 	p.KeySpendCaps = normalKeySpendCaps(p.KeySpendCaps)
+ 	p.KeyOwnBalances = normalKeyOwnBalances(p.KeyOwnBalances)
++	p.FailWords = normalFailWords(p.FailWords)
+ 	if len(p.Models) > 0 {
+ 		p.NoModels = false // a pick is no longer Select none
+ 	}
+@@ -1872,6 +1893,19 @@ func normalize(p Provider) Provider {
+ 	return p
+ }
+ 
++// normalFailWords is a provider's failWords as they are kept: each
++// trimmed, the blank ones gone, and none left, nil — a word that is all
++// whitespace reads as no word at all, not as one nothing matches.
++func normalFailWords(in []string) []string {
++	var out []string
++	for _, w := range in {
++		if w = strings.TrimSpace(w); w != "" {
++			out = append(out, w)
++		}
++	}
++	return out
++}
++
+ // Catalogs are the models.dev ids the provider's models are looked up in,
+ // first match wins: a gateway that resells several vendors names them all
+ // ("openai, deepseek").
+-- 
+2.50.1 (Apple Git-155)
+

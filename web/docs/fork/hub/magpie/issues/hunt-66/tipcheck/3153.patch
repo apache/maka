@@ -1,0 +1,176 @@
+diff --git a/docs/subsystems/provider-plugins.md b/docs/subsystems/provider-plugins.md
+index bc3e24a8..c5da7eee 100644
+--- a/docs/subsystems/provider-plugins.md
++++ b/docs/subsystems/provider-plugins.md
+@@ -72,7 +72,7 @@ A plugin can instead mark single models of its list with `searches: true` (on th
+ 
+ A plugin says which service tiers its vendor serves a model at with `serviceTiers` on the model (#2514): ids such as `"priority"` and `"ultrafast"`, or objects with an `id`. The host keeps the ids (`tiersOf` in `host.js`, into `plugin.Model.ServiceTiers`), `pluginCatalog` puts them on the catalog model's `Tiers`, and [`CodexTiers`](../../internal/provider/codex_models.go) offers them to Codex, as `codexcat` names them (`priority` is Fast). In [`forwardTranslated`](../../internal/gateway/gateway.go) a request translated to the plugin's Chat or Responses keeps its `service_tier` (`Request.OwnTier`) only when it is among the model's tiers (`provider.PluginTiers`); a request relayed in its own protocol was sent as the client wrote it before, and still is. A model served at `priority` on its Chat or Responses API has fast mode ([`CanFast`](../../internal/provider/groupfast.go), via `pluginTierOn`), whichever plugin it is: it can be a group's fast member or an agent's fast pick, and it can be picked Ultrafast when it is served at `ultrafast` too (`UltraOn`). Fast mode in Claude's words (speed `"fast"`, or a fast pick from an agent on Claude's API) reaches the plugin as tier `priority`, or as `ultrafast` for an Ultrafast pick, when the model is served at that tier (Lovest on Discord). Cursor's `fast` flag and `-fast` siblings still give Cursor's plugin fast mode as before.
+ 
+-A request translated to the Grok plugin's Responses API that turned tools off with no tools declared (Chat's `tool_choice: "none"`, Anthropic's `{"type":"none"}`, Gemini's `functionCallingConfig.mode` `NONE`) reaches the plugin's `fetch` with `tool_choice: "none"` and no `tools` (#3110). Before, it went without a `tool_choice`, the same as a request with no preference, so a plugin that adds a server-side tool of its own (Grok's `x_search`, magpie-community/plugins#263) couldn't respect it. [`buildResponses`](../../internal/gateway/responses.go) keeps the `"none"`, and [`forwardTranslated`](../../internal/gateway/gateway.go) leaves a lone `tool_choice` out for every other upstream (`keepsLoneNone`): every vendor, xAI and Copilot (`refusesLoneToolChoice`, #378), and every other plugin, whose vendors haven't been tried with a lone `"none"`. So what a vendor is sent is unchanged. Grok's Responses backend doesn't take it either: the Grok plugin's bodies are shaped by `grokPluginBody`, which keeps the lone `"none"` that `grokBody` drops for the built-in, and the plugin leaves it out before its request goes to Grok (0.1.18, the mover's `min`). Chat, Anthropic and Gemini requests still carry no tool choice beside no tools, which OpenAI's Chat refuses ("'tool_choice' is only allowed when 'tools' are specified"). `TestToolsOffWithoutToolsReachesPlugin`, `TestToolsOffWithoutToolsNotSentToOtherPlugins`, `TestToolsOffWithoutToolsNotSentToVendor`, `TestToolsOffWithoutToolsLeftOutForXAI` and `TestToolsOffWithoutToolsPerBuilder` in [`tool_choice_none_test.go`](../../internal/gateway/tool_choice_none_test.go), and `TestGrokPluginBodyKeepsLoneNone`, cover it.
++A request translated to the Grok plugin's Responses API that turned tools off with no tools declared (Chat's `tool_choice: "none"`, Anthropic's `{"type":"none"}`, Gemini's `functionCallingConfig.mode` `NONE`) reaches the plugin's `fetch` with `tool_choice: "none"` and no `tools` (#3110). Before, it went without a `tool_choice`, the same as a request with no preference, so a plugin that adds a server-side tool of its own (Grok's `x_search`, magpie-community/plugins#263) couldn't respect it. [`buildResponses`](../../internal/gateway/responses.go) keeps the `"none"`, and [`forwardTranslated`](../../internal/gateway/gateway.go) leaves a lone `tool_choice` out for every other upstream (`keepsLoneNone`): every vendor, xAI and Copilot (`refusesLoneToolChoice`, #378), and every other plugin, whose vendors haven't been tried with a lone `"none"`. So what a vendor is sent is unchanged. Grok's Responses backend doesn't take it either: the Grok plugin's bodies are shaped by `grokPluginBody`, which keeps the lone `"none"` that `grokBody` drops for the built-in, and the plugin leaves it out before its request goes to Grok (0.1.18, the mover's `min`). A request the plugin serves in its own Responses protocol goes to its `fetch` as the client wrote it, and the client's own `tool_choice` object of a type Grok's backend doesn't take (an `allowed_tools` naming the client's tools) was dropped the same way (`grokShaped`), so the plugin couldn't tell it from no choice and added `x_search` over it: a tool outside the client's allowed list went out. `grokPluginBody` keeps such an object for the plugin to read now, and the plugin leaves it out before Grok as it does the lone `"none"` (#3153); the built-in, which is Grok's last stop, still drops it. Chat, Anthropic and Gemini requests still carry no tool choice beside no tools, which OpenAI's Chat refuses ("'tool_choice' is only allowed when 'tools' are specified"). `TestToolsOffWithoutToolsReachesPlugin`, `TestToolsOffWithoutToolsNotSentToOtherPlugins`, `TestToolsOffWithoutToolsNotSentToVendor`, `TestToolsOffWithoutToolsLeftOutForXAI` and `TestToolsOffWithoutToolsPerBuilder` in [`tool_choice_none_test.go`](../../internal/gateway/tool_choice_none_test.go), `TestGrokPluginBodyKeepsLoneNone`, `TestGrokPluginBodyKeepsUnsupportedToolChoice` and the gateway-to-plugin `TestAllowedToolsReachesGrokPlugin`, cover it.
+ 
+ ## A plugin's decision API
+ 
+diff --git a/internal/gateway/tool_choice_none_test.go b/internal/gateway/tool_choice_none_test.go
+index 80ab1c02..0261dd13 100644
+--- a/internal/gateway/tool_choice_none_test.go
++++ b/internal/gateway/tool_choice_none_test.go
+@@ -190,3 +190,30 @@ func TestToolsOffWithoutToolsPerBuilder(t *testing.T) {
+ 		}
+ 	}
+ }
++
++// #3153: the Grok plugin must see the client's allowed list before it
++// decides whether to add its own server-side search tool.
++func TestAllowedToolsReachesGrokPlugin(t *testing.T) {
++	var mu sync.Mutex
++	var sent []byte
++	pid := besideFake(t, "grok", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		b, _ := io.ReadAll(r.Body)
++		mu.Lock()
++		sent = b
++		mu.Unlock()
++		w.Header().Set("Content-Type", "text/event-stream")
++		io.WriteString(w, noneReply)
++	}))
++	const choice = `{"type":"allowed_tools","mode":"auto","tools":[{"type":"function","name":"read_file"}]}`
++	code, body := postTo(t, New(), "/v1/responses", `{"model":"`+pid+`/fake-resp","stream":true,"input":"hi","tools":[{"type":"function","name":"read_file","parameters":{"type":"object","properties":{}}}],"tool_choice":`+choice+`}`)
++	if code != 200 {
++		t.Fatalf("%d %s", code, body)
++	}
++	mu.Lock()
++	defer mu.Unlock()
++	var got map[string]json.RawMessage
++	if err := json.Unmarshal(sent, &got); err != nil {
++		t.Fatal(err)
++	}
++	sameJSON(t, got["tool_choice"], choice)
++}
+diff --git a/internal/provider/grok.go b/internal/provider/grok.go
+index 8fa7f64d..5303cb28 100644
+--- a/internal/provider/grok.go
++++ b/internal/provider/grok.go
+@@ -182,14 +182,17 @@ var grokTools = map[string]bool{"function": true, "web_search": true, "x_search"
+ // user's message, its sender and recipient said first (PlainAgentMessage).
+ func grokBody(body []byte) []byte { return grokShaped(body, false) }
+ 
+-// grokPluginBody is grokBody for the Grok plugin, but a tool_choice "none"
+-// with no tools stays: a request that turned tools off says so to the
+-// plugin, which reads it before adding a tool of its own (x_search) and
+-// leaves a lone tool_choice out before the request goes to Grok
+-// (@magpie-community/opencode-grok-auth 0.1.18, #3110).
++// grokPluginBody is grokBody for the Grok plugin, but the tool_choice the
++// plugin reads stays: a lone "none" (a request that turned tools off says
++// so to the plugin, which reads it before adding a tool of its own
++// (x_search) and leaves a lone tool_choice out before the request goes to
++// Grok; @magpie-community/opencode-grok-auth 0.1.18, #3110), and an object
++// of a type Grok's backend doesn't take, an allowed_tools naming the
++// client's own tools among them, which the plugin reads the same way and
++// leaves out before Grok (#3153).
+ func grokPluginBody(body []byte) []byte { return grokShaped(body, true) }
+ 
+-func grokShaped(body []byte, keepNone bool) []byte {
++func grokShaped(body []byte, forPlugin bool) []byte {
+ 	if !bytes.Contains(body, []byte(`"tools"`)) && !bytes.Contains(body, []byte(`"reasoning"`)) && !bytes.Contains(body, []byte(`"tool_choice"`)) && !bytes.Contains(body, []byte(`"namespace"`)) && !bytes.Contains(body, []byte(`"agent_message"`)) {
+ 		return body
+ 	}
+@@ -231,13 +234,17 @@ func grokShaped(body []byte, keepNone bool) []byte {
+ 			if flatCall(tc) {
+ 				dirty = true
+ 			}
+-			if ty, _ := tc["type"].(string); !grokTools[ty] {
++			// a type the backend turns the request away over goes for the
++			// plugin to read, as the lone "none" does: it leaves an
++			// unsupported one out before Grok instead of adding x_search
++			// over it (#3153). The built-in is Grok's last stop.
++			if ty, _ := tc["type"].(string); !grokTools[ty] && !forPlugin {
+ 				delete(m, "tool_choice")
+ 				dirty = true
+ 			}
+ 		}
+ 	}
+-	if tools, _ := m["tools"].([]any); len(tools) == 0 && !(keepNone && m["tool_choice"] == "none") {
++	if tools, _ := m["tools"].([]any); len(tools) == 0 && !(forPlugin && m["tool_choice"] == "none") {
+ 		if _, ok := m["tool_choice"]; ok {
+ 			delete(m, "tool_choice")
+ 			dirty = true
+diff --git a/internal/provider/grok_test.go b/internal/provider/grok_test.go
+index b74619a3..d95daf30 100644
+--- a/internal/provider/grok_test.go
++++ b/internal/provider/grok_test.go
+@@ -119,6 +119,47 @@ func TestGrokPluginBodyKeepsLoneNone(t *testing.T) {
+ 	}
+ }
+ 
++// The Grok plugin is handed a tool_choice object of a type Grok's backend
++// doesn't take (#3153), as an allowed_tools naming the client's own tools:
++// it reads it instead of adding x_search over it, and leaves it out before
++// Grok. The built-in, which is Grok's last stop, still drops it: the
++// backend turns the request away over one.
++func TestGrokPluginBodyKeepsUnsupportedToolChoice(t *testing.T) {
++	in := []byte(`{"model":"grok-4.7","tool_choice":{"type":"allowed_tools","mode":"auto","tools":[{"type":"function","name":"read_file"}]},"tools":[{"type":"function","name":"read_file"}]}`)
++	var got struct {
++		Choice struct {
++			Type  string           `json:"type"`
++			Mode  string           `json:"mode"`
++			Tools []map[string]any `json:"tools"`
++		} `json:"tool_choice"`
++		Tools []map[string]any `json:"tools"`
++	}
++	if err := json.Unmarshal(grokPluginBody(in), &got); err != nil {
++		t.Fatal(err)
++	}
++	if got.Choice.Type != "allowed_tools" || got.Choice.Mode != "auto" || len(got.Choice.Tools) != 1 || got.Choice.Tools[0]["name"] != "read_file" {
++		t.Fatalf("plugin: tool_choice %+v", got.Choice)
++	}
++	if len(got.Tools) != 1 || got.Tools[0]["name"] != "read_file" {
++		t.Fatalf("plugin: tools %+v", got.Tools)
++	}
++	var builtin struct {
++		Choice struct {
++			Type string `json:"type"`
++		} `json:"tool_choice"`
++		Tools []map[string]any `json:"tools"`
++	}
++	if err := json.Unmarshal(grokBody(in), &builtin); err != nil {
++		t.Fatal(err)
++	}
++	if builtin.Choice.Type != "" {
++		t.Fatalf("built-in: tool_choice %+v", builtin.Choice)
++	}
++	if len(builtin.Tools) != 1 || builtin.Tools[0]["name"] != "read_file" {
++		t.Fatalf("built-in: tools %+v", builtin.Tools)
++	}
++}
++
+ // Codex's reasoning, handed back with a null content, is sent without it.
+ func TestGrokBodyDropsNullReasoningContent(t *testing.T) {
+ 	in := []byte(`{"input":[{"type":"reasoning","id":"rs_1","summary":[],"content":null,"encrypted_content":"a+b/c="},{"type":"message","role":"user","content":"hi"}]}`)
+diff --git a/internal/provider/migrate_side.go b/internal/provider/migrate_side.go
+index 9c05f4e6..053c45f9 100644
+--- a/internal/provider/migrate_side.go
++++ b/internal/provider/migrate_side.go
+@@ -97,7 +97,7 @@ func init() {
+ 	// names, as the built-in does: the homes stay where they are.
+ 	movers["grok"] = &mover{
+ 		pkg:    "@magpie-community/opencode-grok-auth",
+-		min:    "0.1.18", // the sign-in page opens once, where Grok Build opened it and magpie again (andyfmyth on X); a Go key the Provider API refuses is taken as Go's and asked at /alpha/generate (#969); a failure's status and its sign-in mark as the built-in's; grok-4.7's reasoning levels; a token Grok refuses early reads as expired; the sign-in renewed ahead of time through auth.refresh; a 429 shows a spent Rate limit window until it lifts; a login with no link says why; a tool whose parameters are a root union goes as a plain object (#1271); a plain Codex agent_message (a subagent's task or reply) goes as the user's message, not refused with 422 "unknown item type", a sealed one as it came (plugins#61); a model Grok lists at two windows is offered at each, grok-4.7@500k sent with x-grok-context-window (plugins#83); a window offered without a k (grok-4.7@131072) goes as that window, not as a model named so (#1679); a sign-in without Grok Build names GROK_BIN_DIR (#2223); a sign-in with no email (an X account) is kept by its xAI user id, GROK_AUTH_PATH no longer takes it elsewhere, and a login that leaves none says where it looked; a tool_choice with no tools beside it, which magpie hands the plugin as "none" when a client turned tools off (#3110), is left out before Grok
++		min:    "0.1.18", // the sign-in page opens once, where Grok Build opened it and magpie again (andyfmyth on X); a Go key the Provider API refuses is taken as Go's and asked at /alpha/generate (#969); a failure's status and its sign-in mark as the built-in's; grok-4.7's reasoning levels; a token Grok refuses early reads as expired; the sign-in renewed ahead of time through auth.refresh; a 429 shows a spent Rate limit window until it lifts; a login with no link says why; a tool whose parameters are a root union goes as a plain object (#1271); a plain Codex agent_message (a subagent's task or reply) goes as the user's message, not refused with 422 "unknown item type", a sealed one as it came (plugins#61); a model Grok lists at two windows is offered at each, grok-4.7@500k sent with x-grok-context-window (plugins#83); a window offered without a k (grok-4.7@131072) goes as that window, not as a model named so (#1679); a sign-in without Grok Build names GROK_BIN_DIR (#2223); a sign-in with no email (an X account) is kept by its xAI user id, GROK_AUTH_PATH no longer takes it elsewhere, and a login that leaves none says where it looked; a tool_choice with no tools beside it, which magpie hands the plugin as "none" when a client turned tools off (#3110), and a tool_choice object of a type Grok's backend doesn't take, which magpie hands the plugin to read so it adds no x_search over an allowed_tools (#3153), are left out before Grok
+ 		agents: []string{"grok"},
+ 		out: func() ([]Moving, error) {
+ 			var out []Moving
+diff --git a/internal/provider/plugins.go b/internal/provider/plugins.go
+index 4f0fb9c2..a7363aa3 100644
+--- a/internal/provider/plugins.go
++++ b/internal/provider/plugins.go
+@@ -385,7 +385,9 @@ func pluginProviderServing(pp plugin.Provider, l pluginLogin, keys []string) Pro
+ 		// them (#404): the plugin's own rewrite would leave them out; and
+ 		// a plain agent_message goes as the user's message, as the plugin
+ 		// itself sends it from 0.1.11. A lone tool_choice "none" stays,
+-		// for the plugin to read (grokPluginBody, #3110)
++		// and so does a tool_choice object Grok's backend doesn't take (an
++		// allowed_tools names the client's tools), for the plugin to read
++		// (grokPluginBody, #3110, #3153)
+ 		a.body = grokPluginBody
+ 	}
+ 	if pp.ID == "zed" {

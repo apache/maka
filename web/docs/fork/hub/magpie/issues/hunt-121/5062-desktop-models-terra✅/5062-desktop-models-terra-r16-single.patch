@@ -1,0 +1,145 @@
+From cdb175add08e696ae44f49381874d7e6dda44c21 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Tue, 3 Nov 2026 19:55:24 +0800
+Subject: [PATCH] gateway: a model the vendor lists after the codex picks were
+ saved still reaches the desktop catalog (#5062)
+
+What changed
+- CodexNativePicked built its keep-set from p.Models, the account list
+  frozen at the moment the user last picked - so a model the vendor
+  began listing afterwards (gpt-6.1-terra, the reporter's case) was
+  excluded from the desktop catalog the gateway writes for Codex
+  Desktop's model_catalog_json, and the picker could not see it even
+  though the gateway's own /v1/models served it. The keep-set now comes
+  from p.Picks(): the picked ids stay picked, and anything the vendor
+  lists since is kept beside them.
+
+Run
+- TestCodexDesktopCatalogKeepsNewlyListedBesidePicks on a3768cdd1-era
+  product (reverted, tests kept): FAIL - the newly listed model was
+  dropped from the catalog; with the fix: ok. gofmt clean; vet -tags
+  nogui (provider+gateway) clean.
+
+Generated-by: GLM-5.3-Flash (ZCode)
+---
+ internal/gateway/codex_desktop_test.go | 64 ++++++++++++++++++++++++++
+ internal/provider/codex_models.go      | 10 ++--
+ 2 files changed, 71 insertions(+), 3 deletions(-)
+
+diff --git a/internal/gateway/codex_desktop_test.go b/internal/gateway/codex_desktop_test.go
+index 3c04585bb..63b824e7f 100644
+--- a/internal/gateway/codex_desktop_test.go
++++ b/internal/gateway/codex_desktop_test.go
+@@ -1,6 +1,7 @@
+ package gateway
+ 
+ import (
++	"context"
+ 	"encoding/base64"
+ 	"encoding/json"
+ 	"io"
+@@ -8,6 +9,7 @@ import (
+ 	"net/http/httptest"
+ 	"os"
+ 	"path/filepath"
++	"slices"
+ 	"strings"
+ 	"sync/atomic"
+ 	"testing"
+@@ -200,3 +202,65 @@ func TestCodexDesktopCatalogFollowsTheSignIn(t *testing.T) {
+ 		t.Fatalf("the Pro account's list: %v\n%s", ok, b)
+ 	}
+ }
++
++// A model the vendor lists after the picks were saved (OpenAI listed
++// GPT-6.1 Terra to ChatGPT accounts on 10-26) stays in the account's own
++// list: the picks it is narrowed by are the picks with those listed since
++// (provider.Picks), as magpie's catalog serves them — or the file and the
++// list Codex reads froze at what was listed when the user picked, while
++// /v1/models had the model (wenzijie2002: codex/gpt-6.1-terra picked in
++// magpie, the Codex app's picker without it, the log "fetched its list
++// again, 8 models" and 7 in the file).
++func TestCodexDesktopCatalogKeepsNewlyListedBesidePicks(t *testing.T) {
++	codexSignedIn(t)
++	codexDeskReset(t)
++	list := `{"models":[{"slug":"gpt-6-sol","priority":1,"visibility":"list"}]}`
++	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		io.WriteString(w, list)
++	}))
++	defer up.Close()
++	was := provider.CodexBase
++	provider.CodexBase = up.URL + "/backend-api/codex"
++	defer func() { provider.CodexBase = was }()
++
++	// picks saved while the account listed gpt-6-sol alone
++	p, err := provider.Find("codex")
++	if err != nil {
++		t.Fatal(err)
++	}
++	if _, err := p.Fetch(context.Background()); err != nil {
++		t.Fatal(err)
++	}
++	if err := provider.Save(provider.Provider{ID: "codex", Models: []string{"gpt-6-sol"}}); err != nil {
++		t.Fatal(err)
++	}
++
++	// gpt-6.1-terra listed since; the account's list asked for again
++	list = `{"models":[{"slug":"gpt-6-sol","priority":1,"visibility":"list"},` +
++		`{"slug":"gpt-6.1-terra","priority":2,"visibility":"list","base_instructions":"You are Codex, based on GPT-6.1 Terra."}]}`
++	if _, err := p.Fetch(context.Background()); err != nil {
++		t.Fatal(err)
++	}
++
++	CodexDesktopCatalog()
++	codexDeskAsked(t)
++	b, ok := CodexDesktopCatalog()
++	if !ok {
++		t.Fatal("not known after the backend answered")
++	}
++	var got struct {
++		Models []map[string]any `json:"models"`
++	}
++	if err := json.Unmarshal(b, &got); err != nil {
++		t.Fatal(err)
++	}
++	var own []string
++	for _, m := range got.Models {
++		if s, _ := m["slug"].(string); slices.Contains([]string{"gpt-6-sol", "gpt-6.1-terra"}, s) {
++			own = append(own, s)
++		}
++	}
++	if !slices.Equal(own, []string{"gpt-6-sol", "gpt-6.1-terra"}) {
++		t.Errorf("the account's own models beside the picks: %v\n%s", own, b)
++	}
++}
+diff --git a/internal/provider/codex_models.go b/internal/provider/codex_models.go
+index 2c2ef624e..0dadf32db 100644
+--- a/internal/provider/codex_models.go
++++ b/internal/provider/codex_models.go
+@@ -672,7 +672,10 @@ func buildCodexListTag(kind string) string {
+ // user kept, and whether they narrowed that list at all. The backend lists
+ // every model the account can reach; when the user has picked among them on
+ // the codex provider, the gateway keeps its /models answer to those (see
+-// codexModels). Not narrowed — the account's list is left whole.
++// codexModels). Not narrowed — the account's list is left whole. The picks
++// are Picks: a model the vendor listed since they were saved is kept, as
++// magpie's catalog serves it, or the account's own list froze at what was
++// listed when the user picked (#5062).
+ //
+ // A provider switched off picks nothing, as it serves no agent anything
+ // (Provider.Off): its picks are kept for when it is switched on again and
+@@ -699,8 +702,9 @@ func CodexNativePicked() (map[string]bool, bool) {
+ 	if len(p.Models) == 0 {
+ 		return nil, false
+ 	}
+-	keep := make(map[string]bool, len(p.Models))
+-	for _, id := range p.Models {
++	picks := p.Picks()
++	keep := make(map[string]bool, len(picks))
++	for _, id := range picks {
+ 		keep[id] = true
+ 	}
+ 	return keep, true
+-- 
+2.55.0.windows.4
+
