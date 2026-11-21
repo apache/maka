@@ -17,10 +17,12 @@
  * under the License.
  */
 
+import { compactTitle, compactTitles, evidenceMetadata } from './presentation.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { NetworkStore, sourceOf } from './store.js';
 
 type RecordHead = {
+  evidenceKind?: string;
   key: string;
   source: string;
   id: string;
@@ -44,10 +46,21 @@ export type WorkRange = {
   visibility: string[];
   completed: boolean;
 };
+export class HistoryRangeUnavailableError extends Error {
+  readonly code = 'MEMORY_RANGE_UNAVAILABLE';
+  constructor() {
+    super(
+      'Cursor source visibility changed; use MemoryIndexMaintain to renew the working range, or MemoryRange for a new history query. Coverage is unchanged.',
+    );
+  }
+}
+
 const digest = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 
 /** Opaque snapshot boundaries, independent of read pagination and index content edits. */
 export class CorpusStore extends NetworkStore {
+  // Base-store migrations can call reference() before the corpus tables exist.
+  private readonly corpusReady = true;
   constructor(directory: string) {
     super(directory);
     this.db.exec(`
@@ -68,6 +81,19 @@ export class CorpusStore extends NetworkStore {
           .prepare('INSERT OR IGNORE INTO memory_worker_sessions VALUES(?)')
           .run(worker.sessionId);
     }
+  }
+  override reference(ref: string): any | undefined {
+    const reference = super.reference(ref);
+    if (!reference) return reference;
+    const kind =
+      reference.object.evidenceKind ??
+      (reference.local && this.corpusReady
+        ? this.record(reference.recordKey)?.evidenceKind
+        : undefined) ??
+      (['computer_history_summary', 'codex_memory'].includes(reference.object.kind)
+        ? 'generated'
+        : undefined);
+    return kind ? { ...reference, object: { ...reference.object, evidenceKind: kind } } : reference;
   }
   rememberRecord(head: Omit<RecordHead, 'documents'>, messages: readonly any[]) {
     this.transaction(() => {
@@ -97,6 +123,7 @@ export class CorpusStore extends NetworkStore {
         id: object.id,
         revision: object.revision,
         title: object.title,
+        evidenceKind: object.evidenceKind,
         updatedAt: object.updatedAt,
         documents: [r.ref],
         external: true,
@@ -195,8 +222,7 @@ export class CorpusStore extends NetworkStore {
   }
   assertVisible(cursor: Cursor, visible: string[]) {
     const allowed = new Set(visible);
-    if (cursor.records.some((r) => !allowed.has(r.key)))
-      throw Error('Cursor source visibility changed; refresh the range');
+    if (cursor.records.some((r) => !allowed.has(r.key))) throw new HistoryRangeUnavailableError();
   }
   boundary(indexId: string): string | null {
     return (
@@ -263,8 +289,13 @@ export class CorpusStore extends NetworkStore {
   begin(indexId: string, to: string, visible: string[]): WorkRange {
     const old = this.work(indexId);
     if (old && !old.completed) {
-      this.assertVisible(this.cursor(old.to), visible);
-      return old;
+      try {
+        this.assertVisible(this.cursor(old.to), visible);
+        return old;
+      } catch (error) {
+        if (!(error instanceof HistoryRangeUnavailableError)) throw error;
+        // Replace only an unusable unfinished range. Published coverage and entries stay intact.
+      }
     }
     this.assertVisible(this.cursor(to), visible);
     const range: WorkRange = {
@@ -342,7 +373,24 @@ export class CorpusStore extends NetworkStore {
       ? { id: Number(row.id), complete: JSON.parse(String(row.body)).complete as boolean }
       : null;
   }
-  notes(indexId: string) {
+  notes(indexId: string, visible?: string[]) {
+    if (visible) {
+      const latest = this.db
+        .prepare(
+          "SELECT body FROM commits WHERE index_id=? AND json_extract(body,'$.rangeId') IS NOT NULL ORDER BY id DESC LIMIT 1",
+        )
+        .get(indexId);
+      const to = latest ? JSON.parse(String(latest.body)).to : this.boundary(indexId);
+      if (to) {
+        try {
+          this.assertVisible(this.cursor(to), visible);
+        } catch (error) {
+          if (!(error instanceof HistoryRangeUnavailableError)) throw error;
+          // Keep the old progress note on disk, but do not re-expose revoked evidence.
+          return '';
+        }
+      }
+    }
     return (
       this.db.prepare('SELECT notes FROM memory_boundaries WHERE index_id=?').get(indexId)?.notes ??
       ''
@@ -381,7 +429,12 @@ export class CorpusStore extends NetworkStore {
         results.push({
           source: record.source,
           recordId: record.id,
-          title: record.title ?? record.id,
+          title: compactTitle(record.title ?? record.id),
+          ...evidenceMetadata(
+            record.evidenceKind === 'test'
+              ? 'test'
+              : (this.record(record.key)?.evidenceKind ?? record.evidenceKind),
+          ),
           revision: record.revision,
           external: true,
           refs: from ? record.delta : record.documents,
@@ -408,7 +461,12 @@ export class CorpusStore extends NetworkStore {
         results.push({
           source: record.source,
           recordId: record.id,
-          title: record.title ?? record.id,
+          title: compactTitle(record.title ?? record.id),
+          ...evidenceMetadata(
+            record.evidenceKind === 'test'
+              ? 'test'
+              : (this.record(record.key)?.evidenceKind ?? record.evidenceKind),
+          ),
           revision: record.revision,
           matchedMessages: pages.length,
           typeCounts: summary.typeCounts,
@@ -422,6 +480,11 @@ export class CorpusStore extends NetworkStore {
             ref: `${ids[item.position]}:0`,
             citation: `[source](memory-original:${ids[item.position]}:0)`,
             message: item.message,
+            ...evidenceMetadata(
+              record.evidenceKind === 'test'
+                ? 'test'
+                : (this.record(record.key)?.evidenceKind ?? record.evidenceKind),
+            ),
           });
         }
     }
@@ -431,7 +494,7 @@ export class CorpusStore extends NetworkStore {
       from,
       to,
       total: results.length,
-      items: results.slice(offset, offset + limit),
+      ...compactTitles(results.slice(offset, offset + limit)),
       nextOffset: offset + limit < results.length ? offset + limit : null,
       notice:
         'Pagination is navigation only. All message types are included unless you explicitly choose types or view. Choose any records, searches, dates, or types; no batches must be consumed.',
@@ -445,8 +508,19 @@ export class CorpusStore extends NetworkStore {
     this.assertIndexVisible(indexId, visible);
     return super.entries(indexId, visible, after, limit);
   }
+  evidenceForRefs(refs: string[]) {
+    const kinds = [...new Set(refs.map((ref) => this.reference(ref)?.object.evidenceKind))].filter(
+      (kind) => kind === 'test' || kind === 'generated',
+    );
+    return kinds.length ? { sourceEvidence: kinds.map((kind) => evidenceMetadata(kind)) } : {};
+  }
   override overview(indexId: string, visible: string[]) {
-    return { ...super.overview(indexId, visible), readFull: 'MemoryIndexContent' };
+    const overview = super.overview(indexId, visible);
+    return {
+      ...overview,
+      ...this.evidenceForRefs(this.allEntries(indexId, visible).flatMap((entry) => entry.refs)),
+      readFull: 'MemoryIndexContent',
+    };
   }
   override original(ref: string, visible: string[]) {
     const original = super.original(ref, visible);
@@ -473,7 +547,12 @@ export class CorpusStore extends NetworkStore {
       .prepare('SELECT ref FROM links WHERE index_id=? AND entry_id=?')
       .all(indexId, key);
     refs.forEach((r) => this.fragment(String(r.ref), visible));
-    return { key, text: String(row.body), revision: this.index(indexId).revision };
+    return {
+      key,
+      text: String(row.body),
+      revision: this.index(indexId).revision,
+      ...this.evidenceForRefs(refs.map((r) => String(r.ref))),
+    };
   }
   write(indexId: string, key: string, text: string, expectedRevision: number, visible: string[]) {
     return this.transaction(() => {

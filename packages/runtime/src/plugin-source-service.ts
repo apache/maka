@@ -33,8 +33,12 @@ declare module './plugin-kernel.js' {
   }
 }
 
+export type SourceEvidenceKind = 'test' | 'generated';
+
 /** Native locators remain adapter-owned; IDs include account/tenant identity via source.id. */
 export interface SourceObject {
+  /** Explicit origin, never inferred from words in the message body. */
+  readonly evidenceKind?: SourceEvidenceKind;
   readonly id: string;
   readonly locator: Readonly<Record<string, unknown>>;
   readonly revision: string;
@@ -53,6 +57,7 @@ export interface SourceRead {
   readonly content?: unknown;
 }
 export interface PluginSourceAdapter {
+  readonly evidenceKind?: SourceEvidenceKind;
   readonly id: string;
   readonly description: string;
   /** Describes provider-supported query fields and the configured enumeration scope. */
@@ -113,12 +118,13 @@ export class PluginSourceService extends Service {
     this.caller();
     return this.adapters
       .entries('profile')
-      .map(({ adapter: { id, description, queryHelp, scope } }) => ({
+      .map(({ adapter: { id, description, queryHelp, scope, evidenceKind } }) => ({
         id,
         description,
         queryHelp,
         scope,
         storage: 'on-demand' as const,
+        ...(evidenceKind ? { evidenceKind } : {}),
       }));
   }
   async activityToken(id: string): Promise<string | null> {
@@ -128,11 +134,13 @@ export class PluginSourceService extends Service {
   }
   async enumerate(id: string, cursor?: string) {
     const caller = this.caller();
-    return this.page(await this.adapter(id).enumerate(cursor, caller));
+    const adapter = this.adapter(id);
+    return this.page(await adapter.enumerate(cursor, caller), adapter.evidenceKind);
   }
   async query(id: string, request: Readonly<Record<string, unknown>>) {
     const caller = this.caller();
-    return this.page(await this.adapter(id).query(structuredClone(request), caller));
+    const adapter = this.adapter(id);
+    return this.page(await adapter.query(structuredClone(request), caller), adapter.evidenceKind);
   }
   async authorize(id: string, objects: readonly SourceObject[]) {
     const caller = this.caller();
@@ -143,7 +151,26 @@ export class PluginSourceService extends Service {
       adapter = this.adapter(id);
     if (!(await adapter.authorize([object], caller)).includes(object.id))
       throw Error('Source read permission denied');
-    const result = await adapter.read(object, caller);
+    let result = await adapter.read(object, caller);
+    if (result.object) {
+      result = {
+        ...result,
+        object: this.page(
+          {
+            items: [
+              {
+                ...result.object,
+                evidenceKind:
+                  object.evidenceKind === 'test'
+                    ? 'test'
+                    : (result.object.evidenceKind ?? object.evidenceKind),
+              },
+            ],
+          },
+          adapter.evidenceKind,
+        ).items[0],
+      };
+    }
     if (result.status === 'ok') {
       if (!result.object || result.object.id !== object.id || result.content === undefined)
         throw Error('Invalid source read response');
@@ -153,11 +180,14 @@ export class PluginSourceService extends Service {
     }
     return result;
   }
-  private page(page: SourcePage) {
+  private page(page: SourcePage, evidenceKind?: SourceEvidenceKind) {
+    if (evidenceKind !== undefined && !['test', 'generated'].includes(evidenceKind))
+      throw Error('Invalid source evidence kind');
     if (!Array.isArray(page.items) || (page.next !== undefined && typeof page.next !== 'string'))
       throw Error('Invalid source page');
     for (const o of page.items) {
       if (
+        (o.evidenceKind !== undefined && !['test', 'generated'].includes(o.evidenceKind)) ||
         typeof o.id !== 'string' ||
         !o.id ||
         typeof o.revision !== 'string' ||
@@ -177,6 +207,19 @@ export class PluginSourceService extends Service {
           locator: o.locator,
           revision: o.revision,
           kind: o.kind,
+          ...(evidenceKind === 'test' || o.evidenceKind === 'test'
+            ? { evidenceKind: 'test' as const }
+            : (o.evidenceKind ??
+                evidenceKind ??
+                (['computer_history_summary', 'codex_memory'].includes(o.kind)
+                  ? 'generated'
+                  : undefined))
+              ? {
+                  evidenceKind: (o.evidenceKind ??
+                    evidenceKind ??
+                    'generated') as SourceEvidenceKind,
+                }
+              : {}),
           ...(o.title !== undefined ? { title: o.title } : {}),
           ...(o.url !== undefined ? { url: o.url } : {}),
           ...(o.updatedAt !== undefined ? { updatedAt: o.updatedAt } : {}),
