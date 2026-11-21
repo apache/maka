@@ -56,6 +56,7 @@
     "smoke:browser": "npm run build:workspace-deps && npm run build:main && npm run smoke:browser:run",
     "smoke:workhub-browser:run": "electron scripts/workhub-browser-presentation-smoke.mjs",
     "smoke:browser:run": "electron scripts/browser-observe-act-smoke.mjs",
+    "smoke:preview:run": "electron scripts/artifact-preview-verification-smoke.mjs",
     "smoke:browser-load-failure:run": "electron scripts/browser-load-failure-smoke.mjs",
     "build:assistant-web": "vite build --config vite.assistant-web.config.ts",
     "typecheck:assistant-web": "tsc -p tsconfig.assistant-web.json --noEmit"
