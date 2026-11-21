@@ -1563,7 +1563,7 @@ export function createConversationUi(
         await pendingDefaultRead;
         requireOwner();
         const backend = pendingBackend();
-        if (backend?.kind !== 'model') throw new UiError('This action requires a native model.');
+        if (!backend) throw new UiError('Choose a model.');
         await pendingModel.refreshModel();
         requireOwner();
         const model = pendingModelDetails();
@@ -1635,8 +1635,7 @@ export function createConversationUi(
                 boundaryRevision: observed.boundaryRevision,
                 binding: observed.binding,
               },
-              model: nativeModelSelection(backend),
-              thinkingLevel: backend.thinkingLevel ?? null,
+              backend,
             },
           });
           if (created.kind === 'conflict')

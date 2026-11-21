@@ -383,10 +383,14 @@ async function acp(id, method, params) {
   }
   if (method === 'session/prompt' && params.sessionId === thread) {
     const text = params.prompt.findLast((block) => block.type === 'text').text;
-    const start = text.indexOf('MAKA_EXTERNAL_CASE ');
+    const start = text.lastIndexOf('MAKA_EXTERNAL_CASE ');
     if (start === -1) throw Error('Missing task in ACP prompt');
-    if (job) throw Error('Duplicate ACP task prompt');
-    job = JSON.parse(text.slice(start + 'MAKA_EXTERNAL_CASE '.length).split('\n')[0]);
+    const submitted = JSON.parse(text.slice(start + 'MAKA_EXTERNAL_CASE '.length).split('\n')[0]);
+    if (job) {
+      if (job.label !== 'ACP-goal' || submitted.label !== 'ACP-goal-resumed')
+        throw Error('Duplicate ACP task prompt');
+    }
+    job = submitted;
     turn = id;
     const checkpoint =
       job.label === 'ACP-child'
@@ -480,6 +484,27 @@ async function acp(id, method, params) {
       if (!task.taskId) throw Error('ScheduledTask omitted the automation ID');
       await record('scheduled', { thread, taskId: task.taskId, promptId: id });
       return;
+    }
+    if (job.label === 'ACP-goal') {
+      const goal = await codeResult(
+        'text(await tools.CreateGoal(' +
+          JSON.stringify({
+            objective: `MAKA_EXTERNAL_CASE ${JSON.stringify({ label: 'ACP-goal-resumed' })}`,
+          }) +
+          '))',
+      );
+      if (goal.current?.status !== 'active') throw Error('CreateGoal did not arm the current run');
+      await record('goal_created', { thread, goalId: goal.current.id });
+      return;
+    }
+    if (job.label === 'ACP-goal-resumed') {
+      await codeResult(
+        'text(await tools.GoalStatus(' +
+          JSON.stringify({ status: 'achieved', note: 'The resumed ACP turn completed the Goal.' }) +
+          '))',
+      );
+      await record('goal_achieved', { thread });
+      return reply(id, { stopReason: 'end_turn' });
     }
     if (job.label === 'ACP-followup') {
       await readArchivedResult();

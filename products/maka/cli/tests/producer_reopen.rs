@@ -861,7 +861,7 @@ async fn body(
     assert_eq!(session_dto["id"], parent);
     let target = json!({"sessionId":session_dto["id"],"workspace":session_dto["workspace"],"permissions":session_dto["permissions"],
         "boundaryRevision":session_dto["boundaryRevision"],"binding":session_dto["binding"]});
-    let approval = json!({"target":target,"model":{"connectionId":connection,"modelId":"gpt-4.1"},"thinkingLevel":null});
+    let approval = json!({"target":target,"backend":{"kind":"model","connectionId":connection,"modelId":"gpt-4.1","thinkingLevel":null}});
     if matches!(producer, Producer::Automation) {
         return automation_delivery(
             client, &parent, target, connection, sandbox, model, events, base,
@@ -1015,8 +1015,8 @@ async fn body(
                 let target = json!({"sessionId":session_dto["id"],"workspace":session_dto["workspace"],
                     "permissions":session_dto["permissions"],"boundaryRevision":session_dto["boundaryRevision"],
                     "binding":session_dto["binding"]});
-                let renewed = json!({"target":target,"model":{"connectionId":connection,"modelId":"gpt-4.1"},
-                    "thinkingLevel":null});
+                let renewed = json!({"target":target,"backend":{"kind":"model","connectionId":connection,
+                    "modelId":"gpt-4.1","thinkingLevel":null}});
                 let resumed = mutate(client, "agent", "changeGoal", json!({
                     "kind":"control","sessionId":parent,"goalId":id,"revision":current["revision"],
                     "action":"resume","approval":renewed

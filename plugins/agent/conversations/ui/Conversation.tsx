@@ -496,7 +496,7 @@ export function Conversation(props: ConversationProps) {
   const stopping = () => runId() !== null && stoppingRun() === runId();
   const workspace = signal('');
   const permissions = createSessionPermissions(host, sessionId, props.control);
-  const goal = createSessionGoal(host, sessionId, props.control, permissions, () => selection());
+  const goal = createSessionGoal(host, sessionId, props.control, permissions, () => goalBackend());
   const projectMcp = createProjectMcp(host, sessionId, props.control);
   const runTurn = signal<string | null>(null);
   const lastCompletedTurn = signal<string | null>(null);
@@ -2905,6 +2905,20 @@ export function Conversation(props: ConversationProps) {
       model: nativeModelSelection(backend),
       thinkingLevel: backend.thinkingLevel ?? null,
     };
+  };
+  // Goal iterations run on the conversation's own source, native model or external Agent.
+  const goalBackend = async (): Promise<BackendIdentity> => {
+    const observed = await observe();
+    if (!alive) return null;
+    const backend = observed.session.backend ?? observed.rememberedBackend;
+    if (!backend) throw new UiError('Choose a model.');
+    const resolved = await host.query('agent', 'model', { backend });
+    if (!alive) return null;
+    if (resolved.kind !== 'ready')
+      throw new UiError('Model unavailable: {model}. Choose another model.', {
+        model: backendName(backend),
+      });
+    return backend;
   };
 
   const terminal = (value: AgentExecution): value is ComposerContinuation['source'] =>
