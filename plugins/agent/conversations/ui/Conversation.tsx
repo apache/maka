@@ -75,9 +75,9 @@ import {
   View,
   List,
 } from 'nsh';
-import type { ListRef, ReadonlyListSource, ScrollRef, ViewRef } from 'nsh';
+import type { ListRef, ReadonlyListSource, ViewRef } from 'nsh';
 import { Button } from 'nsh/base';
-import { keymap, platform, reduceMotion, Scroll } from 'nsh';
+import { keymap, platform, reduceMotion } from 'nsh';
 import { AnimatedValue } from 'nsh';
 import {
   useHost,
@@ -1423,23 +1423,6 @@ export function Conversation(props: ConversationProps) {
     return list.length ? list.at(list.length - 1) : undefined;
   };
   const displayKeys = () => keySections().flat();
-  const latestQuestion = computed(() =>
-    props.compact
-      ? display().findLastIndex(
-          (item) => item.kind === 'row' && currentRow(item.rowId)?.role === 'user',
-        )
-      : -1,
-  );
-  const latestQuestionKey = () => displayKeys()[latestQuestion()] ?? null;
-  // Set by the first follow-up, so the exchanges of this popup stay above the newest one.
-  const compactStart = signal<string | null>(null);
-  const shownKeys = computed(() => {
-    if (!props.compact) return [];
-    const start = compactStart();
-    const anchored = start === null ? -1 : displayKeys().indexOf(start);
-    const first = anchored >= 0 ? anchored : latestQuestion();
-    return first <= 0 ? displayKeys() : displayKeys().slice(first);
-  });
   const navigationItems = computed<TurnNavigationItem[]>(() => {
     const items = new Map<string, TurnNavigationItem>();
     for (const item of landmarks().items) {
@@ -1618,8 +1601,6 @@ export function Conversation(props: ConversationProps) {
     if (innerReader() !== null) followLatestActivity();
     resumeHistoryFollowing();
   };
-  let compactScroll: ScrollRef | undefined;
-  let followCompact = false;
   let alive = true;
   let subscription: Subscription | null = null;
   let transcriptTask: Promise<void> | null = null;
@@ -3880,10 +3861,7 @@ export function Conversation(props: ConversationProps) {
     heldDraft = savedComposerEdit;
     holding = true;
     error.set('');
-    if (props.compact) {
-      if (compactStart() === null) compactStart.set(latestQuestionKey());
-      followCompact = true;
-    }
+    if (props.compact) list?.scrollToEnd({ animated: false });
     void freezeSend(frozen);
     return true;
   };
@@ -4080,10 +4058,7 @@ export function Conversation(props: ConversationProps) {
     },
     changeDraft,
     submit(event) {
-      if (props.compact) {
-        if (compactStart() === null) compactStart.set(latestQuestionKey());
-        followCompact = true;
-      }
+      if (props.compact) list?.scrollToEnd({ animated: false });
       void send(event.text);
     },
     sendRendered,
@@ -4716,7 +4691,7 @@ export function Conversation(props: ConversationProps) {
                   platform.idiom === 'terminal'
                     ? () =>
                         list?.scrollToIndex({
-                          index: (props.compact ? shownKeys() : displayKeys()).indexOf(ownedKey()),
+                          index: displayKeys().indexOf(ownedKey()),
                           viewPosition: 0,
                           animated: false,
                         })
@@ -4770,6 +4745,7 @@ export function Conversation(props: ConversationProps) {
             };
             return (
               <BotReply
+                showTimestamp={props.compact}
                 quote={(message, text) => {
                   if (!draftReady() || savingFailed() || !text.trim()) return;
                   const next = appendDraftQuote(
@@ -4823,6 +4799,7 @@ export function Conversation(props: ConversationProps) {
           return (
             <MessageRow
               item={row}
+              showMessageDate={props.compact}
               hasSources={() => {
                 const item = entry();
                 return item.kind === 'row' && Boolean(item.sources?.length);
@@ -4948,39 +4925,37 @@ export function Conversation(props: ConversationProps) {
         style={{
           flexShrink: 1,
           minHeight: 0,
-          borderTopWidth: shownKeys().length ? 1 : 0,
+          borderTopWidth: historyList().length ? 1 : 0,
           borderTopColor: C.line,
         }}
       >
-        <Scroll
-          ref={(node) => (compactScroll = node)}
+        <List
+          ref={list}
+          each={historyList()}
+          alignment="bottom"
+          estimatedItemSize={96}
+          maintainVisibleContentPosition={{ autoscrollToBottomThreshold: 32 }}
+          style={{ height: historyList().length ? 400 : 0, flexShrink: 1, minHeight: 0 }}
+          contentStyle={{ paddingVertical: historyList().length ? 16 : 0 }}
+          loadMoreAtStartThreshold={HISTORY_LOOKAHEAD_VIEWPORTS}
+          onLoadMoreAtStart={prefetchOlder}
+          onScrollIntent={({ intent, delta }) => {
+            if (intent === 'start' || (intent === 'scroll' && (delta ?? 0) <= 0)) {
+              deferOlderUntilScroll = false;
+              if (nearHistoryStart()) prefetchOlder();
+            }
+          }}
           onScroll={(event) => {
-            followCompact =
-              event.offset.y >= Math.max(0, event.contentSize.height - event.size.height) - 32;
+            historyOffset = event.offset.y;
             changedReadExposure();
           }}
-          style={{ flexShrink: 1, minHeight: 0 }}
-          contentStyle={{ paddingVertical: shownKeys().length ? 16 : 0 }}
+          onViewableItemsChange={(event) => {
+            visibleRows.set(new Set(event.viewableItems.map((item) => item.item)));
+            changedReadExposure();
+          }}
         >
-          <View
-            onLayout={() => {
-              if (followCompact) compactScroll?.scrollToEnd({ animated: false });
-            }}
-          >
-            <List
-              ref={list}
-              viewport="parent"
-              each={shownKeys()}
-              estimatedItemSize={96}
-              onViewableItemsChange={(event) => {
-                visibleRows.set(new Set(event.viewableItems.map((item) => item.item)));
-                changedReadExposure();
-              }}
-            >
-              {entryRow}
-            </List>
-          </View>
-        </Scroll>
+          {entryRow}
+        </List>
       </View>
     );
   return (

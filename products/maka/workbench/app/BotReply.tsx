@@ -23,7 +23,7 @@ import { MarkdownImageView } from './MarkdownImage';
 import { MermaidView } from './MermaidView';
 import { SpecView, markdownExtensions } from './SpecView';
 import type { BotTranscriptMessage } from './botTranscript';
-import { tr } from './locale';
+import { messageDateTime, tr } from './locale';
 import { Icon } from './Icon';
 import { splitSpecMarkdown } from './spec/session.ts';
 import { C, bodyTextStyle, captionTextStyle } from './ui';
@@ -32,6 +32,7 @@ import { C, bodyTextStyle, captionTextStyle } from './ui';
 export function BotReply(props: {
   messages: () => BotTranscriptMessage[];
   sessionId?: string;
+  showTimestamp?: boolean;
   openLink(target: string, restoreFocus: () => boolean): Promise<void>;
   userScroll(): void;
   quote?(message: BotTranscriptMessage, text: string): void;
@@ -51,7 +52,10 @@ export function BotReply(props: {
         {(message) => {
           const segments = computed(() => splitSpecMarkdown(message().text));
           return (
-            <View style={{ width: '100%', gap: 16 }}>
+            <View
+              class={props.showTimestamp ? 'group' : undefined}
+              style={{ width: '100%', gap: 16 }}
+            >
               <If when={!!message().discovery}>
                 <Text style={{ ...captionTextStyle, color: C.muted }}>
                   {tr('Proactive discovery')}
@@ -173,6 +177,14 @@ export function BotReply(props: {
                     {tr('Open investigation')}
                   </Text>
                 </Button>
+              </If>
+              <If when={props.showTimestamp}>
+                <Text
+                  class="opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"
+                  style={{ ...captionTextStyle, color: C.muted }}
+                >
+                  {messageDateTime(message().at)}
+                </Text>
               </If>
             </View>
           );

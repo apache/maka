@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { tr } from './locale';
+import { messageDateTime, tr } from './locale';
 import { CompactionDivider, NoteDivider } from './CompactionDivider';
 import { cleanup, computed, inputAction, signal, Text, View } from 'nsh';
 import type { JSX, Signal } from 'nsh';
@@ -160,6 +160,7 @@ type MessageRowToggle = {
 
 export function MessageRow({
   item,
+  showMessageDate,
   citations,
   hasSources,
   openSources,
@@ -185,6 +186,7 @@ export function MessageRow({
   failureActions,
 }: {
   item: () => Row;
+  showMessageDate?: boolean;
   citations?(): readonly InlineCitation[] | undefined;
   hasSources?(): boolean;
   openSources?(): void;
@@ -470,12 +472,12 @@ export function MessageRow({
         const user = () => row().role === 'user';
         const summary = () => `${tr('Thinking')}${preview() ? ` · ${preview()}` : ''}`;
         const timestamp = () => {
-          const value = (row() as Row & { timestamp?: number }).timestamp;
+          const value = row().timestamp;
           if (typeof value !== 'number') return '';
           const date = new Date(value);
-          return Number.isNaN(date.getTime())
-            ? ''
-            : `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+          if (Number.isNaN(date.getTime())) return '';
+          if (showMessageDate) return messageDateTime(value);
+          return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
         };
         // On the desktop a message's actions show while the pointer is on it or
         // the keyboard focus is in them; its context menu has the same commands.
@@ -586,6 +588,18 @@ export function MessageRow({
                           <If when={quickDetails()}>
                             <Text style={{ color: C.muted, ...captionTextStyle }}>
                               {replyDetails(row())}
+                            </Text>
+                          </If>
+                          <If
+                            when={
+                              showMessageDate &&
+                              row().role === 'assistant' &&
+                              row().field === 'body' &&
+                              timestamp()
+                            }
+                          >
+                            <Text style={{ color: C.muted, ...captionTextStyle }}>
+                              {timestamp()}
                             </Text>
                           </If>
                         </View>

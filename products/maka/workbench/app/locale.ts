@@ -85,6 +85,11 @@ export function tr(key: MessageKey, values?: Readonly<Record<string, string | nu
       );
 }
 
+/** A recorded chat message's local date and time in the compact transcript. */
+export function messageDateTime(at: number): string {
+  return new Date(at).toLocaleString(currentLocale(), { dateStyle: 'medium', timeStyle: 'short' });
+}
+
 /** A plugin's name and description in the interface's language, as its manifest translates them. */
 export function localizedPresentation<T extends { displayName: string; description: string }>(
   presentation: T & { localizations?: { [locale: string]: T | undefined } },
