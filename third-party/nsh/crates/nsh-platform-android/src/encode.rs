@@ -618,6 +618,9 @@ pub(crate) fn encode(batch: MountBatch, web_generation: u64) -> Encoded {
                         e.bool(c.animated);
                     }
                     Command::Dialog(d) => {
+                        // Unbox first: moving `buttons` and then `input` out of
+                        // a `Box` is not a disjoint move.
+                        let d = *d;
                         e.int(12);
                         e.int(d.id as i32);
                         e.opt_string(d.title.as_deref());

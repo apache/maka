@@ -3563,7 +3563,9 @@ final class Mounter {
     }
 
     void zoom(int id, float scale) {
-        Native.zoom(handle(), id, scale);
+        long handle = handle();
+        if (handle == 0) return;
+        Native.zoom(handle, id, scale);
     }
 
     void scroll(int id, float x, float y, int applied) {
@@ -3573,14 +3575,22 @@ final class Mounter {
     }
 
     void inputScroll(int id, float y, float contentWidth, float contentHeight, float width, float height) {
-        Native.inputScroll(handle(), id, y, contentWidth, contentHeight, width, height);
+        long handle = handle();
+        if (handle == 0) return;
+        Native.inputScroll(handle, id, y, contentWidth, contentHeight, width, height);
     }
 
     void pull(int id, float distance) {
-        outputs(Native.pull(handle(), id, distance));
+        long handle = handle();
+        if (handle == 0) return;
+        outputs(Native.pull(handle, id, distance));
     }
 
-    /** Scroll view {@code id} came to rest: snapping animated values settle. */
+    /**
+     * Scroll view {@code id} came to rest: snapping animated values settle.
+     * Its settle timer can fire after the view is destroyed; the native side
+     * takes a live handle only.
+     */
     void scrollEnded(int id) {
         long handle = handle();
         if (handle == 0) return;
@@ -3589,11 +3599,15 @@ final class Mounter {
 
     void pan(int id, int state, float tx, float ty, float vx, float vy) {
         if (state == 0) for (TouchTracker t : touchTrackers) t.cancelFeedback();
-        outputs(Native.pan(handle(), id, state, tx, ty, vx, vy));
+        long handle = handle();
+        if (handle == 0) return;
+        outputs(Native.pan(handle, id, state, tx, ty, vx, vy));
     }
 
     void transformGesture(int id, boolean rotation, int state, float amount, float velocity) {
         if (state == 0) for (TouchTracker t : touchTrackers) t.cancelFeedback();
-        outputs(Native.transformGesture(handle(), id, rotation, state, amount, velocity));
+        long handle = handle();
+        if (handle == 0) return;
+        outputs(Native.transformGesture(handle, id, rotation, state, amount, velocity));
     }
 }

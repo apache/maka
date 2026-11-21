@@ -256,6 +256,8 @@ pub(crate) fn state(hwnd: HWND) -> Option<WindowState> {
         } else {
             WindowMode::Normal
         };
+        // A hidden window is in the mode it shows in.
+        let mode = window::held_mode(hwnd).filter(|_| !shown).unwrap_or(mode);
         // Where it is, or returns to, in the normal mode.
         let normal = match window::windowed(hwnd) {
             Some(windowed) if full => {
@@ -343,12 +345,53 @@ pub(crate) fn displays_changed(surface: &Surface) {
     report_main(surface);
 }
 
+/// The mode `hwnd` itself is in: a hidden window may be held for another
+/// ([`window::held_mode`]).
+fn own_mode(hwnd: HWND) -> WindowMode {
+    if window::is_full_screen(hwnd) {
+        WindowMode::FullScreen
+    } else if zoomed(hwnd) {
+        WindowMode::Maximized
+    } else {
+        WindowMode::Normal
+    }
+}
+
+fn hidden(hwnd: HWND) -> bool {
+    // SAFETY: a plain query.
+    !unsafe { IsWindowVisible(hwnd) }.as_bool()
+}
+
+/// Hidden window `hwnd` takes `mode` when it shows: Windows maximizes and
+/// restores a window by showing it (`ShowWindow`, `SetWindowPlacement`), so
+/// the mode waits, and the window's state reads it meanwhile.
+fn hold_mode(hwnd: HWND, mode: WindowMode) {
+    let held = Some(mode).filter(|mode| *mode != own_mode(hwnd));
+    if window::held_mode(hwnd) != held {
+        window::hold_mode(hwnd, held);
+        window::report_state(hwnd);
+    }
+}
+
+/// `hwnd` was shown: it takes the mode it was asked for while hidden.
+pub(crate) fn enter_held_mode(hwnd: HWND) {
+    if let Some(mode) = window::held_mode(hwnd) {
+        set_mode(hwnd, mode);
+    }
+}
+
 /// Puts `hwnd` in `mode` (doing it again changes nothing). A minimized
-/// window stays minimized and comes back in that mode.
+/// window stays minimized and comes back in that mode; a hidden one stays
+/// hidden and shows in it.
 pub(crate) fn set_mode(hwnd: HWND, mode: WindowMode) {
     if !top_level(hwnd) {
         return;
     }
+    if hidden(hwnd) {
+        hold_mode(hwnd, mode);
+        return;
+    }
+    window::hold_mode(hwnd, None);
     // SAFETY: plain calls on a live window.
     unsafe {
         if IsIconic(hwnd).as_bool() && mode != WindowMode::FullScreen {
@@ -387,13 +430,28 @@ pub(crate) fn set_mode(hwnd: HWND, mode: WindowMode) {
 }
 
 /// Moves and sizes `hwnd` (screen points; a field left out keeps its
-/// value), out of full screen and maximized first.
+/// value), out of full screen and maximized first. A hidden window stays
+/// hidden: one in another mode shows in the normal mode with these bounds.
 pub(crate) fn set_bounds(hwnd: HWND, frame: &WindowFrame) {
     if !top_level(hwnd) {
         return;
     }
     if frame.x.is_none() && frame.y.is_none() && frame.width.is_none() && frame.height.is_none() {
         return;
+    }
+    if hidden(hwnd) {
+        let Some(state) = state(hwnd) else {
+            return;
+        };
+        // Leaving a mode would show it: the bounds it returns to change,
+        // and the normal mode waits for it to show.
+        // SAFETY: a plain query.
+        let minimized = unsafe { IsIconic(hwnd) }.as_bool();
+        if state.mode != WindowMode::Normal || own_mode(hwnd) != WindowMode::Normal || minimized {
+            let bounds = moved(state.placement.bounds, frame);
+            set_placement(hwnd, WindowPlacement::new(WindowMode::Normal, bounds));
+            return;
+        }
     }
     window::set_full_screen(hwnd, false);
     // SAFETY: plain calls on a live window.
@@ -478,11 +536,24 @@ pub(crate) fn set_placement(hwnd: HWND, placement: WindowPlacement) {
         let full = window::is_full_screen(hwnd);
         native.flags = WINDOWPLACEMENT_FLAGS(0);
         native.rcNormalPosition = normal;
-        let shown = match placement.mode {
+        if !visible {
+            // The bounds now, the mode when it shows.
+            if full {
+                native.showCmd = SW_SHOWNORMAL.0 as u32;
+                window::set_windowed(hwnd, native);
+            } else {
+                native.showCmd = SW_HIDE.0 as u32;
+                let _ = SetWindowPlacement(hwnd, &native);
+            }
+            hold_mode(hwnd, placement.mode);
+            return;
+        }
+        window::hold_mode(hwnd, None);
+        native.showCmd = match placement.mode {
             WindowMode::Maximized => SW_SHOWMAXIMIZED,
             _ => SW_SHOWNORMAL,
-        };
-        native.showCmd = if visible { shown } else { SW_HIDE }.0 as u32;
+        }
+        .0 as u32;
         match placement.mode {
             WindowMode::FullScreen if full => {
                 // Back to these bounds when it leaves full screen.
@@ -490,7 +561,7 @@ pub(crate) fn set_placement(hwnd: HWND, placement: WindowPlacement) {
                 window::set_windowed(hwnd, native);
             }
             WindowMode::FullScreen => {
-                native.showCmd = if visible { SW_SHOWNORMAL } else { SW_HIDE }.0 as u32;
+                native.showCmd = SW_SHOWNORMAL.0 as u32;
                 let _ = SetWindowPlacement(hwnd, &native);
                 window::set_full_screen(hwnd, true);
             }
@@ -685,5 +756,47 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(moved(start, &frame).size.width, px(300.0));
+    }
+
+    /// Windows changes a window's mode by showing it: a hidden window keeps
+    /// hidden, reads the mode asked for and takes it when it shows.
+    #[test]
+    fn a_hidden_window_stays_hidden_in_the_mode_asked_for() {
+        if crate::gfx::get().is_err() {
+            return;
+        }
+        let surface = Surface::new(Default::default());
+        let hwnd =
+            window::create(&surface, "NSH hidden mode test", (300, 200), None, false).unwrap();
+        let read = || {
+            assert!(hidden(hwnd), "the window was shown");
+            state(hwnd).unwrap()
+        };
+        assert_eq!(read().mode, WindowMode::Normal);
+        set_mode(hwnd, WindowMode::Maximized);
+        assert_eq!(read().mode, WindowMode::Maximized);
+        assert_eq!(read().placement.mode, WindowMode::Maximized);
+        assert_eq!(own_mode(hwnd), WindowMode::Normal, "it waits for the show");
+        // Bounds are the normal mode's.
+        let frame = WindowFrame {
+            width: Some(px(420.0)),
+            ..Default::default()
+        };
+        set_bounds(hwnd, &frame);
+        assert_eq!(read().mode, WindowMode::Normal);
+        assert!((read().placement.bounds.size.width.0 - 420.0).abs() < 1.0);
+        set_mode(hwnd, WindowMode::FullScreen);
+        assert_eq!(read().mode, WindowMode::FullScreen);
+        let bounds = Bounds::new(point(px(120.0), px(90.0)), size(px(360.0), px(240.0)));
+        set_placement(hwnd, WindowPlacement::new(WindowMode::Maximized, bounds));
+        assert_eq!(read().mode, WindowMode::Maximized);
+        set_mode(hwnd, WindowMode::Normal);
+        let state = read();
+        assert_eq!(state.mode, WindowMode::Normal);
+        assert_eq!(window::held_mode(hwnd), None);
+        assert!((state.placement.bounds.size.width.0 - 360.0).abs() < 1.0);
+        assert!((state.placement.bounds.origin.x.0 - 120.0).abs() < 1.0);
+        // SAFETY: the test's own window.
+        let _ = unsafe { DestroyWindow(hwnd) };
     }
 }

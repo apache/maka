@@ -54,9 +54,9 @@ websocket = ["nsh-core/websocket", "dep:rustls-platform-verifier", "dep:jni-veri
 # App self-updates (`nsh/updater`). Without it a check finds no update.
 updater = ["nsh-core/updater"]
 
-# SVG images (resvg). Without it an SVG is recognized and shows nothing,
-# its load failing with a message naming the feature.
-svg = ["nsh-core/svg"]
+# Kept so feature lists naming `svg` still build: SVG images are always on
+# (an app that turned it off lost every SVG without a build error).
+svg = []
 
 [dependencies]
 log.workspace = true
@@ -68,7 +68,7 @@ jni.workspace = true
 # needs the app's Context over JNI; the verifier speaks jni 0.22.
 rustls-platform-verifier = { workspace = true, optional = true }
 jni-verifier = { package = "jni", version = "0.22", optional = true }
-nsh-core.workspace = true
+nsh-core = { workspace = true, features = ["svg"] }
 nsh-engine.workspace = true
 nsh-base.workspace = true
 serde_json.workspace = true

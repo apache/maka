@@ -148,8 +148,12 @@ server client, log forwarding, the error overlay: `dev.rs`). The host turns on `
   code. The UI thread sets per-monitor DPI awareness and `OleInitialize`s (clipboard, drag and drop, WIC).
   With nsh.json `window.defaultVisible: false` the window is made and its app runs, unshown: the app's first
   `show()` / `focus()`, or a link from a later launch (`linking.rs`), shows it as `AppView::show` does
-  (`app::show_main`: cloaked until its background and a frame are drawn, then in the mode it opens in,
-  `Surface::main_opening_mode`). A development host holds its first show until the first app came (`dev.rs`,
+  (`app::show_main`: cloaked until its background and a frame are drawn, then in the mode it opens in).
+  Windows changes a window's mode by showing it (`ShowWindow`, `SetWindowPlacement`), so a hidden window (the main
+  one or one of the app's own, before its first show or hidden by the app) is not put in a mode: the mode asked for
+  (nsh.json's, `setMode`, `setPlacement`, `setBounds` out of another mode) is held (`window::held_mode`), read as the
+  window's mode in its state, and entered when the window shows (`window::show`,
+  `window_state::enter_held_mode`). A development host holds its first show until the first app came (`dev.rs`,
   `DevUi::held`): a session's first bundle places the window as a runner does (`AppView::place_main_window`: its
   size, place and the mode it opens in, which waits for the first show while the window is hidden), and the app's
   `defaultVisible` decides whether it shows. An error shows the window while it is hidden (held, or hidden by the

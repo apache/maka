@@ -53,9 +53,9 @@ websocket = ["nsh-core/websocket"]
 # App self-updates (`nsh/updater`). Without it a check finds no update.
 updater = ["nsh-core/updater"]
 
-# SVG images (resvg). Without it an SVG is recognized and shows nothing,
-# its load failing with a message naming the feature.
-svg = ["nsh-core/svg"]
+# Kept so feature lists naming `svg` still build: SVG images are always on
+# (an app that turned it off lost every SVG without a build error).
+svg = []
 # HTTP: `fetch` and remote images (ureq, rustls). Without it `fetch`
 # rejects and an `<Image>` shows only files, assets and inline data.
 net = ["nsh-core/loader", "nsh-engine/net"]
@@ -71,7 +71,7 @@ log.workspace = true
 
 # Empty off Linux (like the other platform crates off their targets).
 [target.'cfg(target_os = "linux")'.dependencies]
-nsh-core.workspace = true
+nsh-core = { workspace = true, features = ["svg"] }
 nsh-engine.workspace = true
 nsh-base.workspace = true
 gtk4.workspace = true
