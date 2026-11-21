@@ -186,6 +186,15 @@ export function computeEditedSource(
     matchedVia: EditMatchStrategy,
   ): EditMatch {
     const index = content.indexOf(span);
+    // A line-based match can end between the CR and LF of a CRLF terminator;
+    // keep the CR outside the replaced span so it is not dropped.
+    if (span.endsWith('\r') && content[index + span.length] === '\n') {
+      span = span.slice(0, -1);
+    }
+    // In a file that uses CRLF throughout, write the replacement with CRLF too.
+    if (content.includes('\r\n') && !/(?<!\r)\n/.test(content)) {
+      replacement = replacement.replace(/\r?\n/g, '\r\n');
+    }
     const before = content.slice(0, index);
     const startLine = countOccurrences(before, '\n') + 1;
     // A trailing newline in the span is the last line's terminator, not an

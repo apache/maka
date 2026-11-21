@@ -233,3 +233,72 @@ describe('computeEditedSource — oversized / binary fuzzy guards', () => {
     );
   });
 });
+
+describe('computeEditedSource — CRLF files', () => {
+  const crlf = 'function a() {\r\n  return 1;\r\n}\r\n\r\nfunction b() {\r\n  return 2;\r\n}\r\n';
+
+  test('a line-trimmed match keeps every CRLF terminator', () => {
+    const edit = computeEditedSource(
+      crlf,
+      'function a() {\n  return 1;\n}',
+      'function a() {\n  return 10;\n}',
+      'f.js',
+    );
+    assert.equal(edit.matchedVia, 'line-trimmed');
+    assert.equal(
+      edit.content,
+      'function a() {\r\n  return 10;\r\n}\r\n\r\nfunction b() {\r\n  return 2;\r\n}\r\n',
+    );
+  });
+
+  test('an exact match with a multi-line LF replacement is written with CRLF', () => {
+    const edit = computeEditedSource(crlf, '  return 2;', '  const x = 2;\n  return x;', 'f.js');
+    assert.equal(edit.matchedVia, 'exact');
+    assert.equal(
+      edit.content,
+      'function a() {\r\n  return 1;\r\n}\r\n\r\nfunction b() {\r\n  const x = 2;\r\n  return x;\r\n}\r\n',
+    );
+  });
+
+  test('LF-only files keep LF replacements', () => {
+    const edit = computeEditedSource('a\nb\nc\n', 'b', 'x\ny', 'f.txt');
+    assert.equal(edit.content, 'a\nx\ny\nc\n');
+  });
+
+  test('files with mixed endings are not rewritten to CRLF', () => {
+    const edit = computeEditedSource('a\r\nb\nc\r\n', 'b', 'x\ny', 'f.txt');
+    assert.equal(edit.content, 'a\r\nx\ny\nc\r\n');
+  });
+
+  test('a file without a trailing newline keeps CRLF', () => {
+    const edit = computeEditedSource('a\r\nb\r\nc', 'c', 'c\nd', 'f.txt');
+    assert.equal(edit.content, 'a\r\nb\r\nc\r\nd');
+  });
+
+  test('an old_string ending in a newline keeps the blank lines around it', () => {
+    const edit = computeEditedSource(
+      'a\r\n\r\n  gamma\r\n\r\nc\r\n',
+      'gamma\n',
+      'GAMMA\nG2\n',
+      'f.txt',
+    );
+    assert.equal(edit.matchedVia, 'line-trimmed');
+    assert.equal(edit.content, 'a\r\n\r\nGAMMA\r\nG2\r\n\r\nc\r\n');
+  });
+
+  test('deleting a block keeps the surrounding CRLF terminators', () => {
+    const edit = computeEditedSource(
+      'a\r\n  beta\r\n  gamma\r\nd\r\n',
+      'beta\ngamma\n',
+      '',
+      'f.txt',
+    );
+    assert.equal(edit.matchedVia, 'line-trimmed');
+    assert.equal(edit.content, 'a\r\nd\r\n');
+  });
+
+  test('a replacement that already uses CRLF is not doubled', () => {
+    const edit = computeEditedSource('a\r\nb\r\nc\r\n', 'b', 'x\r\ny', 'f.txt');
+    assert.equal(edit.content, 'a\r\nx\r\ny\r\nc\r\n');
+  });
+});
