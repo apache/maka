@@ -436,17 +436,18 @@ impl DriverModel {
         Ok((!instruction.is_empty()).then(|| Arc::new(instruction)))
     }
 
+    /// Cuts a summary input to `budget` estimated tokens; a native compaction passes none.
     async fn prepare_summary_input(
         &self,
         prompt: &mut maka_agent_engine::prepared_prompt::PreparedPrompt,
         model: &maka_agent_engine::PreparedModel,
         language: maka_agent_facts::language::Language,
-        native: bool,
+        budget: Option<u64>,
     ) -> Result<(), RunError> {
-        if !native {
+        if let Some(budget) = budget {
             *prompt = maka_agent_engine::context_input::fit_prepared_summary(
                 prompt,
-                maka_agent_engine::context_input::summary_budget(model.context.as_ref()),
+                budget,
                 language,
                 &self.cancellation,
             )
@@ -853,7 +854,8 @@ impl DriverModel {
                 let covered = CoveredPrefix::capture(&prompt).await?;
                 let instruction = self.summary_instruction(view, native_compaction, summary_options.prompt.as_deref()).await?;
                 prompt.initialize_overlays(Some(rendered), true, instruction).await?;
-                self.prepare_summary_input(&mut prompt, model, view.spec.language, native_compaction).await?;
+                let budget = (!native_compaction).then(|| maka_agent_engine::context_input::summary_budget(model.context.as_ref()));
+                self.prepare_summary_input(&mut prompt, model, view.spec.language, budget).await?;
                 Some(covered)
             } else {
                 None
@@ -3408,6 +3410,18 @@ impl DriverModel {
                 contents: vec![proof],
             });
         };
+        // A Summary closes on overflow instead of being interrupted, so it has no overflow
+        // recovery of its own: the engine falls back to its Main or fails the Run.
+        if request.accounting.purpose == ModelPurpose::Summary
+            && matches!(failure, maka_model::ModelError::ContextOverflow { .. })
+        {
+            return Ok(RecoveryEvidence {
+                recovery: AttemptRecovery::Blocked {
+                    diagnostic: "the summary request exceeded the model's context limit".into(),
+                },
+                contents: vec![],
+            });
+        }
         let frozen = self.frozen_input(reader, view.run, &request).await?;
         let parts = self.canonical_parts(view, attempt).await?;
         if !parts.is_empty() && !frozen.item_acceptance {
