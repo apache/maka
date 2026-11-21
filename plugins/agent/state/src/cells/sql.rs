@@ -266,18 +266,7 @@ pub(super) fn project(
     }
     c.execute("INSERT INTO agent_cells(cell,session,run,pending,body) VALUES(?,?,?,?,?) ON CONFLICT(cell) DO UPDATE SET pending=excluded.pending,body=excluded.body",params![view.id.to_string(),session,run.map(|r|r.to_string()),view.pending(),serde_json::to_string(view)?])?;
     match event {
-        CellEvent::ChildBound {
-            cell,
-            operation,
-            reference,
-        } => {
-            let encoded = serde_json::to_string(reference)?;
-            let prior:Option<String>=c.query_row("SELECT reference_json FROM agent_cell_operation_pins WHERE cell=? AND operation=?",params![cell.to_string(),operation.to_string()],|r|r.get(0)).optional()?;
-            if prior.as_ref().is_some_and(|p| p != &encoded) {
-                return Err(StoreError::EventConflict);
-            }
-            c.execute("INSERT OR IGNORE INTO agent_cell_operation_pins(cell,operation,reference_json) VALUES(?,?,?)",params![cell.to_string(),operation.to_string(),encoded])?;
-        }
+        CellEvent::ChildBound { .. } => {}
         CellEvent::SessionValuePublished { key, value, .. } => {
             c.execute("INSERT INTO agent_session_values(session,key,value_content_id,fact_id) VALUES(?,?,?,?) ON CONFLICT(session,key) DO UPDATE SET value_content_id=excluded.value_content_id,fact_id=excluded.fact_id",params![session,key,content_id(c,value)?,id.to_string()])?;
         }
@@ -504,7 +493,6 @@ pub(crate) fn apply(
     project(c, session, Some(recorded.run), recorded.id, event, &view)
 }
 pub(crate) fn clear_run(c: &Connection, run: RunId) -> Result<(), StoreError> {
-    c.execute("DELETE FROM agent_cell_operation_pins WHERE cell IN (SELECT cell FROM agent_cells WHERE run=?)",[run.to_string()])?;
     c.execute(
         "DELETE FROM agent_cell_notifications WHERE run=?",
         [run.to_string()],
@@ -545,7 +533,6 @@ pub(crate) fn rebuild_run(c: &Connection, run: RunId) -> Result<(), StoreError> 
     rebuild_session(c, &session)
 }
 pub(super) fn rebuild_session(c: &Connection, session: &str) -> Result<(), StoreError> {
-    c.execute("DELETE FROM agent_cell_operation_pins WHERE cell IN (SELECT cell FROM agent_cells WHERE session=?)",[session])?;
     c.execute(
         "DELETE FROM agent_usage_calls WHERE source='cell' AND session=?",
         [session],

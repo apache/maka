@@ -61,6 +61,7 @@ const RUN_HISTORY_RELEASES: &[Step] = &[
          AND sequence IN(SELECT sequence FROM agent_facts WHERE run=?1)",
     ),
     Step::Run("DELETE FROM agent_catalog_runs WHERE run=?1"),
+    Step::Run("DELETE FROM agent_cells WHERE run=?1"),
     Step::Run("DELETE FROM agent_diagnostic_coverage WHERE run=?1"),
     Step::Run("DELETE FROM agent_diagnostics WHERE run=?1"),
     Step::Run("DELETE FROM agent_external_publication_items WHERE run=?1"),
@@ -171,6 +172,8 @@ const SESSION_RELEASES: &[Step] = &[
     ),
     Step::OwnerSession("DELETE FROM agent_recall_heads WHERE owner=?1 AND session=?2"),
     Step::OwnerSession("DELETE FROM agent_recall_gaps WHERE owner=?1 AND session=?2"),
+    Step::OwnerSession("DELETE FROM agent_catalog_sessions WHERE owner=?1 AND session=?2"),
+    Step::OwnerSession("DELETE FROM agent_catalog_controls WHERE owner=?1 AND session=?2"),
 ];
 
 impl Store {
@@ -503,6 +506,174 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn removed_session_releases_cells_and_catalog_projections_while_preserving_standalone_and_events()
+     {
+        let directory = tempfile::tempdir().unwrap();
+        let (root, store) = open(directory.path(), true).await;
+        let (mut removed, contents) = spec();
+        removed.session_id = "removed".into();
+        let mut kept = removed.clone();
+        kept.session_id = "kept".into();
+        let removed_run = Admission::new(removed.clone(), UnixMillis(1), contents.clone());
+        store.admit(removed_run.clone()).await.unwrap();
+        let kept_run = Admission::new(kept.clone(), UnixMillis(2), contents);
+        store.admit(kept_run.clone()).await.unwrap();
+
+        struct SeedCellsAndCatalog {
+            owner: String,
+            removed_run: String,
+            kept_run: String,
+        }
+        impl Statement for SeedCellsAndCatalog {
+            type Value = ();
+            type Output = ();
+            fn execute(self, c: &Connection) -> Result<Prepared<()>, StoreError> {
+                c.execute(
+                    "INSERT INTO agent_cells(cell,session,run,pending,body) VALUES('cell-run','removed',?,0,'{}')",
+                    [&self.removed_run],
+                )?;
+                c.execute(
+                    "INSERT INTO agent_cells(cell,session,run,pending,body) VALUES('cell-standalone','removed',NULL,0,'{}')",
+                    [],
+                )?;
+                c.execute(
+                    "INSERT INTO agent_cells(cell,session,run,pending,body) VALUES('cell-kept','kept',?,0,'{}')",
+                    [&self.kept_run],
+                )?;
+                for session in ["removed", "kept"] {
+                    c.execute(
+                        "INSERT INTO agent_catalog_controls(owner,session,revision,read_through) VALUES(?,?,1,1)",
+                        params![self.owner, session],
+                    )?;
+                    c.execute(
+                        "INSERT INTO agent_catalog_events(owner,session,revision,id,at,schema_version,command_json,event_json) VALUES(?,?,1,'cmd-1',1,1,'{}','{}')",
+                        params![self.owner, session],
+                    )?;
+                }
+                Ok(Prepared {
+                    value: (),
+                    changed: true,
+                    notification: Notification::NONE,
+                })
+            }
+            fn committed(_: ()) {}
+            fn isolated_rejection(_: &StoreError) -> bool {
+                false
+            }
+        }
+
+        store
+            .data
+            .write(SeedCellsAndCatalog {
+                owner: serde_json::to_string(&removed.owner).unwrap(),
+                removed_run: removed_run.run().to_string(),
+                kept_run: kept_run.run().to_string(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            rows(
+                &store,
+                "SELECT count(*) FROM agent_catalog_sessions WHERE session=?1",
+                "removed"
+            )
+            .await,
+            vec![1]
+        );
+
+        store.data.write(Fence("removed".into())).await.unwrap();
+        store
+            .release_removed_session(removed.owner.clone(), "removed".into())
+            .await
+            .unwrap();
+
+        assert_eq!(
+            rows(
+                &store,
+                "SELECT count(*) FROM agent_cells WHERE run=?1",
+                &removed_run.run().to_string()
+            )
+            .await,
+            vec![0]
+        );
+        assert_eq!(
+            rows(
+                &store,
+                "SELECT count(*) FROM agent_cells WHERE cell=?1",
+                "cell-standalone"
+            )
+            .await,
+            vec![1]
+        );
+        assert_eq!(
+            rows(
+                &store,
+                "SELECT count(*) FROM agent_cells WHERE cell=?1",
+                "cell-kept"
+            )
+            .await,
+            vec![1]
+        );
+        assert_eq!(
+            rows(
+                &store,
+                "SELECT count(*) FROM agent_catalog_sessions WHERE session=?1",
+                "removed"
+            )
+            .await,
+            vec![0]
+        );
+        assert_eq!(
+            rows(
+                &store,
+                "SELECT count(*) FROM agent_catalog_controls WHERE session=?1",
+                "removed"
+            )
+            .await,
+            vec![0]
+        );
+        assert_eq!(
+            rows(
+                &store,
+                "SELECT count(*) FROM agent_catalog_events WHERE session=?1",
+                "removed"
+            )
+            .await,
+            vec![1]
+        );
+        assert_eq!(
+            rows(
+                &store,
+                "SELECT count(*) FROM agent_catalog_sessions WHERE session=?1",
+                "kept"
+            )
+            .await,
+            vec![1]
+        );
+        assert_eq!(
+            rows(
+                &store,
+                "SELECT count(*) FROM agent_catalog_controls WHERE session=?1",
+                "kept"
+            )
+            .await,
+            vec![1]
+        );
+        assert_eq!(
+            rows(
+                &store,
+                "SELECT count(*) FROM pragma_foreign_key_check WHERE ?1=?1",
+                ""
+            )
+            .await,
+            vec![0]
+        );
+
+        drop(store);
+        root.close().await.unwrap();
+    }
+
+    #[tokio::test]
     async fn releases_ordinary_interactions_and_preserves_profile_grants_across_rebuilds() {
         let directory = tempfile::tempdir().unwrap();
         let (root, store) = open(directory.path(), true).await;
@@ -822,11 +993,18 @@ mod tests {
                     "DELETE FROM agent_computer_facts WHERE run=?1",
                     "DELETE FROM agent_queue_events WHERE session=?1",
                     "DELETE FROM agent_cell_notifications WHERE session=?1",
+                    "DELETE FROM agent_cells WHERE run=?1",
+                    "DELETE FROM agent_catalog_sessions WHERE owner=?1 AND session=?2",
+                    "DELETE FROM agent_catalog_controls WHERE owner=?1 AND session=?2",
                     "DELETE FROM agent_continuation_successors WHERE run=?1 OR source_run=?1",
                 ] {
                     let mut stmt = c.prepare(&format!("EXPLAIN QUERY PLAN {sql}"))?;
+                    let n = stmt.parameter_count();
                     let plan: Vec<String> = stmt
-                        .query_map(["probe"], |row| row.get(3))?
+                        .query_map(
+                            rusqlite::params_from_iter(std::iter::repeat_n("probe", n)),
+                            |row| row.get(3),
+                        )?
                         .collect::<Result<_, _>>()?;
                     for detail in plan {
                         if detail.starts_with("SCAN ") {
@@ -857,9 +1035,12 @@ mod tests {
             "agent_attempt_ids",
             "agent_attempts",
             "agent_blockers",
+            "agent_catalog_controls",
             "agent_catalog_messages",
             "agent_catalog_runs",
+            "agent_catalog_sessions",
             "agent_cell_notifications",
+            "agent_cells",
             "agent_computer_activities",
             "agent_computer_authorizations",
             "agent_computer_facts",
@@ -911,12 +1092,8 @@ mod tests {
         .collect();
         let retained_or_global: BTreeSet<&str> = [
             "agent_artifacts",
-            "agent_catalog_controls",
             "agent_catalog_events",
             "agent_catalog_revision",
-            "agent_catalog_sessions",
-            "agent_cell_operation_pins",
-            "agent_cells",
             "agent_computer_revocations",
             "agent_executor_profile_contents",
             "agent_history_snapshot_catalog",
