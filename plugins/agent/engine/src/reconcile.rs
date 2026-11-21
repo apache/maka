@@ -1415,6 +1415,12 @@ fn next_action(
     if attempt.admission.is_none() && attempt.closed.is_none() && attempt.interrupted.is_none() {
         return Action::Start(id);
     }
+    // A captured source failure proves the stream ended, so there is nothing left to observe.
+    // Interrupt before assessing, as the live driver does: overflow recovery needs it.
+    if attempt.source_failure.is_some() && attempt.closed.is_none() && attempt.interrupted.is_none()
+    {
+        return Action::Interrupt(id, "Original model source failed".into());
+    }
     if attempt.recovery.is_none()
         && attempt.closed.as_ref().is_none_or(|closed| {
             closed.diagnostic.is_some()

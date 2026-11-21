@@ -1692,3 +1692,73 @@ fn historical_run_wide_fallback_folds_after_earlier_step_succeeded() {
         RetryStreak::AfterFallbackTransition { charged: 0 }
     );
 }
+
+#[test]
+fn an_overflow_whose_interruption_was_not_recorded_still_recovers() {
+    let mut view = policy_view(None);
+    let spec = ContentBlob::json(&view.spec).unwrap();
+    apply_policy_fact(
+        &mut view,
+        Fact::RunAdmitted {
+            spec: spec.reference().clone(),
+        },
+    );
+    let step = StepId::new();
+    let attempt = ModelAttemptId::new();
+    let request = ContentBlob::json(&serde_json::json!({})).unwrap();
+    apply_policy_fact(
+        &mut view,
+        Fact::StepPrepared {
+            step,
+            request: request.reference().clone(),
+            adjudications: vec![],
+        },
+    );
+    apply_policy_fact(&mut view, Fact::ModelAttemptPrepared { attempt, step });
+    apply_policy_fact(
+        &mut view,
+        Fact::ModelAttemptAdmitted {
+            attempt,
+            upstream: serde_json::json!({}),
+        },
+    );
+    let failure = ContentBlob::json(&maka_agent_facts::context::ModelFailureProtocol {
+        failure: maka_model::ModelError::ContextOverflow {
+            observed_output: true,
+        },
+        transport: None,
+    })
+    .unwrap();
+    apply_policy_fact(
+        &mut view,
+        Fact::ModelSourceFailureCaptured {
+            attempt,
+            failure: failure.reference().clone(),
+        },
+    );
+    // The stream's failure is recorded, but the interruption the driver published for it
+    // lost a revision race, or the Host stopped before writing it.
+    for _ in 0..2 {
+        match next(&view, &Live::default(), UnixMillis(1), None, false) {
+            Action::Interrupt(id, diagnostic) if id == attempt => apply_policy_fact(
+                &mut view,
+                Fact::ModelInterrupted {
+                    attempt,
+                    diagnostic,
+                },
+            ),
+            // The native adapter assesses a captured overflow as overflow recovery.
+            Action::Assess(id) if id == attempt => apply_policy_fact(
+                &mut view,
+                Fact::AttemptRecoveryRecorded {
+                    attempt,
+                    recovery: AttemptRecovery::ContextOverflow {
+                        observed_output: true,
+                    },
+                },
+            ),
+            _ => panic!("expected the overflowed attempt to be interrupted or assessed"),
+        }
+    }
+    assert!(view.attempts[&attempt].compactable_overflow());
+}
