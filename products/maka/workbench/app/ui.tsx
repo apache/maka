@@ -346,6 +346,7 @@ export function Disclosure(props: {
   tooltip?: string;
   open: boolean;
   foldable?: boolean;
+  reserveChevron?: boolean;
   /** On the desktop, what the row is, in place of the chevron. */
   icon?: Parameters<typeof Icon>[0]['name'];
   terminalInset?: number;
@@ -390,8 +391,8 @@ export function Disclosure(props: {
             <If
               when={props.foldable !== false}
               else={
-                // The label stays on the text lane where there is nothing to fold.
-                <If when={platform.idiom !== 'terminal'}>
+                // Nested rows can align their labels with foldable siblings.
+                <If when={platform.idiom !== 'terminal' && props.reserveChevron !== false}>
                   <View style={{ width: 16, height: 16 }} />
                 </If>
               }

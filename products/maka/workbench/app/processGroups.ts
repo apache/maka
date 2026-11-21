@@ -119,6 +119,13 @@ export function turnWorkFold(
   return terminal ? 'unavailable' : 'open';
 }
 
+/** A completed answer needs a work header only when it has work to describe. */
+export function showTurnSummary(turn: TurnPresentation, terminal: boolean): boolean {
+  const outcome = turnOutcome(turn);
+  if (outcome === 'completed') return turn.worked;
+  return !terminal || outcome !== null || turnWorkFold(turn, terminal) === 'closed';
+}
+
 export function displayOrder(row: ProcessRow): HistoryOrder | undefined {
   if (row.order) return row.order;
   const sequence = row.startSequence ?? row.sequence;

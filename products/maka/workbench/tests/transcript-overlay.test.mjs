@@ -23,6 +23,7 @@ import {
   orderProcessRows,
   projectProcessGroups,
   sameProcessRows,
+  showTurnSummary,
   turnOutcome,
   turnWorkFold,
 } from '../app/processGroups.ts';
@@ -311,6 +312,30 @@ test('work stays open during streamed text and folds when the answer is confirme
   assert.equal(chat(completed), 'closed');
   assert.equal(turnWorkFold(completed, true), 'closed');
   assert.deepEqual(completed.answerOutputIds, [], 'the earlier text now belongs to the work');
+});
+
+test('a direct final reply has no work header, including after history reloads', () => {
+  const request = row('request', 'Hi', 1, { role: 'user' });
+  const final = row('reply', 'Hello!', 3, { finalOutput: true });
+  const completed = { startedAt: 1000, finished: { at: 12000, outcome: 'completed' } };
+  const project = (rows, activeTurnId = null) =>
+    projectProcessGroups({ rows, toolActivity: [], activeTurnId }).turns.get('run');
+  const thought = row('thought', 'Checking', 2, { role: 'thinking', field: 'thinking' });
+  const tool = row('call', '', 2, { role: 'tool_call', tool: { toolUseId: 'read' } });
+  for (const terminal of [false, true]) {
+    assert.equal(showTurnSummary(project([request, final], 'run'), terminal), false);
+    assert.equal(
+      showTurnSummary(project([{ ...request, timing: completed }, final]), terminal),
+      false,
+    );
+    assert.equal(showTurnSummary(project([request, thought, final]), terminal), true);
+    assert.equal(showTurnSummary(project([request, tool, final]), terminal), true);
+    for (const outcome of ['failed', 'aborted']) {
+      const timing = { ...completed, finished: { ...completed.finished, outcome } };
+      assert.equal(showTurnSummary(project([{ ...request, timing }]), terminal), true);
+    }
+  }
+  assert.equal(showTurnSummary(project([request], 'run'), false), true);
 });
 
 test('recovered snapshot failures mark only their source-aware turn as having work', () => {

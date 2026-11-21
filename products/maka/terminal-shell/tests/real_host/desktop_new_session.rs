@@ -2026,6 +2026,14 @@ async fn desktop_message_actions_show_on_hover_or_focus_and_in_a_context_menu() 
         .wait("the reply did not finish", reply.finish())
         .await;
     let copy = desktop.control("Copy message").await;
+    desktop
+        .until("a direct reply kept an empty work header", || {
+            desktop
+                .controls("Turn work details")
+                .is_empty()
+                .then_some(())
+        })
+        .await;
     let composer = desktop.control("Focus message composer").await.center();
     // Inside the reply, above its row of actions.
     let body = point(copy.center().x + px(64.), copy.top() - px(16.));

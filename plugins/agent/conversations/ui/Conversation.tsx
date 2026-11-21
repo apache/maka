@@ -238,6 +238,7 @@ import {
   orderProcessRows,
   turnOutcome,
   turnWorkFold,
+  showTurnSummary,
 } from '../../../../products/maka/workbench/app/processGroups';
 import type {
   ProcessActivity,
@@ -1247,7 +1248,7 @@ export function Conversation(props: ConversationProps) {
           // Recovered failures sit under the summary that folds them.
           (row?.role === 'failure' && (outcome === 'completed' || foldedWork))) &&
         !summaries.has(turn.turnKey) &&
-        (platform.idiom !== 'terminal' || outcome !== null || foldedWork)
+        showTurnSummary(turn, platform.idiom === 'terminal')
       ) {
         summaries.add(turn.turnKey);
         result.push({
