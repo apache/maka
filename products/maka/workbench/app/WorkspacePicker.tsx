@@ -524,7 +524,7 @@ export function WorkspacePicker(props: {
                 >
                   <Text style={{ color: C.accent, fontSize: 13 }}>{tr('Manage locations')}</Text>
                 </Button>
-                <If when={ownTitleBar}>
+                <If when={ownTitleBar && host.localFolderPicker !== false}>
                   <View style={{ flex: 1 }} />
                   <Button
                     disabled={picking()}

@@ -159,3 +159,7 @@ libc.workspace = true
 nsh-platform-windows = { workspace = true, features = ["terminal"] }
 windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_System_Com", "Win32_System_TaskScheduler", "Win32_System_Variant", "Win32_System_Ole"] }
 windows-sys = { version = "0.61.2", features = ["Win32_System_Diagnostics_Debug", "Win32_System_StationsAndDesktops", "Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_Console", "Win32_System_JobObjects", "Win32_System_Threading"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+maka-wsl-bridge.workspace = true
+tokio = { workspace = true, features = ["io-std"] }

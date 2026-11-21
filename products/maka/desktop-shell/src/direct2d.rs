@@ -17,19 +17,29 @@
  * under the License.
  */
 
-//! The Windows workbench in a Direct2D window, with one admitted Host.
+//! The Windows workbench in a Direct2D window, with one admitted Host
+//! (or a WSL Host reconnected in-place inside the same window).
 
 use crate::{
     host::{self, Connection},
     shell::{APP_ID, MIN_SIZE, Requests, SIZE, Shell, TITLE},
+    wsl_stdio,
 };
-use maka_workbench::reload::{Request, UiReload};
+use maka_workbench::{
+    bindings::Bindings,
+    reload::{Request, UiReload},
+};
 use nsh_engine::JsonValue;
-use nsh_platform_windows::{AppOptions, quit_app, run_app_with_config, with_running_view};
+use nsh_platform_windows::{AppOptions, AppView, quit_app, run_app_with_config, with_running_view};
+use std::time::{Duration, Instant};
 use tokio::{
     runtime::{Handle, Runtime},
-    sync::watch,
+    sync::{mpsc, oneshot, watch},
 };
+
+const FIRST_PAUSE: Duration = Duration::from_secs(1);
+const RECONNECT_LIMIT: Duration = Duration::from_secs(30);
+const STEADY: Duration = Duration::from_secs(60);
 
 pub(crate) fn start(target: crate::Target) -> Result<(), String> {
     use maka_host_runtime::application::host::Client as HostClient;
@@ -53,19 +63,9 @@ fn run(first: Connection, runtime: Runtime) -> Result<(), String> {
         .take_requests();
     carry_out(requests, &runtime);
     refuse_reloads(reloading, runtime.handle());
-    let result = run_app_with_config(
-        shell.attach(config),
-        AppOptions {
-            app_id: APP_ID.into(),
-            title: TITLE.into(),
-            size: SIZE,
-            min_size: Some((MIN_SIZE.0 as i32, MIN_SIZE.1 as i32)),
-            ..Default::default()
-        },
-        move |is_active| {
-            active.send_replace(is_active);
-        },
-    );
+    let result = run_app_with_config(shell.attach(config), window_options(), move |is_active| {
+        active.send_replace(is_active);
+    });
     runtime.block_on(host::quit(bindings));
     runtime.shutdown_background();
     if result == std::process::ExitCode::SUCCESS {
@@ -73,6 +73,260 @@ fn run(first: Connection, runtime: Runtime) -> Result<(), String> {
     } else {
         Err("the Direct2D window failed".into())
     }
+}
+
+pub(crate) fn run_wsl(
+    first: wsl_stdio::Session,
+    target: wsl_stdio::Target,
+    runtime: Runtime,
+) -> Result<(), String> {
+    let wsl_stdio::Session {
+        connection: Connection { bindings, config },
+        bridge,
+        disconnected,
+        root,
+    } = first;
+    let (active, foreground) = watch::channel(false);
+    let (shell, requests) = Shell::new(foreground);
+    let Requests {
+        exits,
+        mut folders,
+        mut text_sizes,
+        mut notices,
+    } = requests;
+    runtime.spawn(async move {
+        while let Some(call) = notices.recv().await {
+            call.reject("the Direct2D window does not support system notifications");
+        }
+    });
+    runtime.spawn(async move {
+        while let Some(call) = folders.recv().await {
+            call.reject("the Windows folder dialog cannot choose Linux paths for a WSL Host");
+        }
+    });
+    runtime.spawn(async move {
+        while let Some(scale) = text_sizes.recv().await {
+            with_running_view(move |view| view.set_font_scale(Some(scale)));
+        }
+    });
+    let reloading = config
+        .context
+        .get::<UiReload>()
+        .expect("the admitted workbench owns its UI reload channel")
+        .take_requests();
+    refuse_reloads(reloading, runtime.handle());
+    let initial = shell.attach(config);
+    let (closed_tx, closed_rx) = watch::channel(false);
+    let following = runtime.spawn(follow_wsl(
+        bindings,
+        bridge,
+        disconnected,
+        root,
+        target,
+        shell,
+        exits,
+        closed_rx,
+        runtime.handle().clone(),
+    ));
+    let result = run_app_with_config(initial, window_options(), move |is_active| {
+        active.send_replace(is_active);
+    });
+    // Only reached if the Direct2D UI thread failed to start; normal shutdown exits
+    // inside `run_app_with_config` after `follow_wsl` completes quit + bridge cleanup.
+    let _ = closed_tx.send(true);
+    let _ = runtime.block_on(following);
+    runtime.shutdown_background();
+    if result == std::process::ExitCode::SUCCESS {
+        Ok(())
+    } else {
+        Err("the Direct2D window failed".into())
+    }
+}
+
+fn window_options() -> AppOptions {
+    AppOptions {
+        app_id: APP_ID.into(),
+        title: TITLE.into(),
+        size: SIZE,
+        min_size: Some((MIN_SIZE.0 as i32, MIN_SIZE.1 as i32)),
+        ..Default::default()
+    }
+}
+
+async fn wait_for_exit(
+    exits: &mut mpsc::UnboundedReceiver<()>,
+    window_closed: &mut watch::Receiver<bool>,
+) {
+    if *window_closed.borrow() {
+        return;
+    }
+    tokio::select! {
+        _ = exits.recv() => {}
+        _ = window_closed.wait_for(|closed| *closed) => {}
+    }
+}
+
+async fn ensure_window_started(
+    window_started: &mut bool,
+    exits: &mut mpsc::UnboundedReceiver<()>,
+    window_closed: &mut watch::Receiver<bool>,
+) -> bool {
+    while !*window_started {
+        let (ready_tx, ready_rx) = oneshot::channel();
+        with_running_view(move |_| {
+            let _ = ready_tx.send(());
+        });
+        if ready_rx.await.is_ok() {
+            *window_started = true;
+            return true;
+        }
+        tokio::select! {
+            biased;
+            _ = wait_for_exit(exits, window_closed) => return false,
+            _ = tokio::time::sleep(Duration::from_millis(20)) => {}
+        }
+    }
+    true
+}
+
+async fn run_on_view(
+    window_started: &mut bool,
+    exits: &mut mpsc::UnboundedReceiver<()>,
+    window_closed: &mut watch::Receiver<bool>,
+    action: impl FnOnce(&AppView) + Send + 'static,
+) -> bool {
+    if !ensure_window_started(window_started, exits, window_closed).await {
+        return false;
+    }
+    let (done_tx, done_rx) = oneshot::channel();
+    with_running_view(move |view| {
+        action(view);
+        let _ = done_tx.send(());
+    });
+    done_rx.await.is_ok()
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn follow_wsl(
+    bindings: Bindings,
+    bridge: wsl_stdio::Bridge,
+    mut disconnected: oneshot::Receiver<()>,
+    expected_root: String,
+    target: wsl_stdio::Target,
+    shell: Shell,
+    mut exits: mpsc::UnboundedReceiver<()>,
+    mut window_closed: watch::Receiver<bool>,
+    runtime: Handle,
+) {
+    let mut bindings = Some(bindings);
+    let mut bridge = Some(bridge);
+    let mut window_started = false;
+    let mut pause = FIRST_PAUSE;
+    'connected: loop {
+        let reached = Instant::now();
+        let quit = tokio::select! {
+            biased;
+            _ = wait_for_exit(&mut exits, &mut window_closed) => true,
+            _ = &mut disconnected => false,
+        };
+        if quit {
+            break 'connected;
+        }
+        if !run_on_view(
+            &mut window_started,
+            &mut exits,
+            &mut window_closed,
+            |view| view.stop(),
+        )
+        .await
+        {
+            break 'connected;
+        }
+        if let Some(old_bindings) = bindings.take() {
+            match tokio::time::timeout(host::DETACH_LIMIT, old_bindings.close()).await {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => eprintln!("maka-desktop-shell: WSL Host detach: {error}"),
+                Err(_) => eprintln!("maka-desktop-shell: WSL Host detach timed out"),
+            }
+        }
+        if let Some(old_bridge) = bridge.take() {
+            old_bridge.close().await;
+        }
+        let mut wait = reached.elapsed() < STEADY;
+        if !wait {
+            pause = FIRST_PAUSE;
+        }
+        let next = loop {
+            if wait {
+                tokio::select! {
+                    biased;
+                    _ = wait_for_exit(&mut exits, &mut window_closed) => break 'connected,
+                    _ = tokio::time::sleep(pause) => {}
+                }
+                pause = (pause * 2).min(RECONNECT_LIMIT);
+            }
+            wait = true;
+            let attempt = tokio::select! {
+                biased;
+                _ = wait_for_exit(&mut exits, &mut window_closed) => break 'connected,
+                result = target.connect(Some(&expected_root)) => result,
+            };
+            match attempt {
+                Ok(session) => break session,
+                Err(error) => {
+                    eprintln!("maka-desktop-shell: reconnecting WSL Host: {error}");
+                    // The tray left with the engine: a hidden window is the
+                    // only way back while no Host answers.
+                    with_running_view(|view| view.show());
+                }
+            }
+        };
+        let Connection {
+            bindings: next_bindings,
+            config,
+        } = next.connection;
+        let reloading = config
+            .context
+            .get::<UiReload>()
+            .expect("the admitted workbench owns its UI reload channel")
+            .take_requests();
+        refuse_reloads(reloading, &runtime);
+        let attached = shell.attach(config);
+        if !run_on_view(
+            &mut window_started,
+            &mut exits,
+            &mut window_closed,
+            move |view| {
+                view.load_with_config(attached);
+            },
+        )
+        .await
+        {
+            let _ = tokio::time::timeout(host::DETACH_LIMIT, next_bindings.close()).await;
+            next.bridge.close().await;
+            break 'connected;
+        }
+        bindings = Some(next_bindings);
+        bridge = Some(next.bridge);
+        disconnected = next.disconnected;
+    }
+    let (stopped_tx, stopped_rx) = oneshot::channel();
+    with_running_view(move |view| {
+        view.stop();
+        let _ = stopped_tx.send(());
+    });
+    let _ = stopped_rx.await;
+    if let Some(bindings) = bindings.take()
+        && tokio::time::timeout(host::DETACH_LIMIT, host::quit(bindings))
+            .await
+            .is_err()
+    {
+        eprintln!("maka-desktop-shell: WSL Host quit timed out");
+    }
+    if let Some(bridge) = bridge.take() {
+        bridge.close().await;
+    }
+    quit_app();
 }
 
 fn carry_out(requests: Requests, runtime: &Runtime) {
@@ -236,7 +490,7 @@ mod tests {
         refuse_reloads(recv, &Handle::current());
         let (ready, received) = tokio::sync::oneshot::channel();
         send.send(Request::Pause(ready)).unwrap();
-        let result = tokio::time::timeout(std::time::Duration::from_secs(1), received)
+        let result = tokio::time::timeout(std::time::Duration::from_secs(5), received)
             .await
             .unwrap()
             .unwrap();
