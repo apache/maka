@@ -58,6 +58,8 @@ import {
   createConversationCopySlice,
   prepareConversationRuntimeLedgerCopy,
   rewriteConversationCopyMessage,
+  rewriteLedgerArchiveText,
+  type ConversationCopyMessageReferenceMap,
 } from '../conversation-copy.js';
 import {
   buildHistoryCompactCheckpoint,
@@ -4210,3 +4212,128 @@ function invocationOpenedEvent(run: SeededRun = {}): RuntimeEvent {
     opening: invocationOpening(run),
   });
 }
+
+const TOOL_RESULTS_PREFIX = 'maka://runtime/tool-results/';
+
+function ledgerRewriteReferences(
+  overrides: {
+    ledgerArchives?: ConversationCopyMessageReferenceMap['ledgerArchives'];
+    runtimeEventIds?: ConversationCopyMessageReferenceMap['runtimeEventIds'];
+  } = {},
+): ConversationCopyMessageReferenceMap {
+  return {
+    sourceSessionId: 'session-source',
+    targetSessionId: 'session-target',
+    artifactIds: new Map(),
+    relativePaths: new Map(),
+    runIds: new Map(),
+    runtimeEventIds: new Map(),
+    providerTraceIds: new Map(),
+    ...overrides,
+  };
+}
+
+test('ledger text rewriting leaves text without mapped references untouched', () => {
+  const references = ledgerRewriteReferences({
+    runtimeEventIds: new Map([['event-source', 'event-target']]),
+  });
+  assert.equal(
+    rewriteLedgerArchiveText('ordinary assistant reply without any resource reference', references),
+    'ordinary assistant reply without any resource reference',
+  );
+  assert.equal(
+    rewriteLedgerArchiveText(`${TOOL_RESULTS_PREFIX}event-unknown`, references),
+    `${TOOL_RESULTS_PREFIX}event-unknown`,
+  );
+  assert.equal(
+    rewriteLedgerArchiveText(`${TOOL_RESULTS_PREFIX}event-source`, ledgerRewriteReferences()),
+    `${TOOL_RESULTS_PREFIX}event-source`,
+  );
+});
+
+test('ledger text rewriting replaces every occurrence of a mapped event address', () => {
+  const references = ledgerRewriteReferences({
+    runtimeEventIds: new Map([['event-source', 'event-target']]),
+  });
+  assert.equal(
+    rewriteLedgerArchiveText(
+      `before ${TOOL_RESULTS_PREFIX}event-source middle ${TOOL_RESULTS_PREFIX}event-source after`,
+      references,
+    ),
+    `before ${TOOL_RESULTS_PREFIX}event-target middle ${TOOL_RESULTS_PREFIX}event-target after`,
+  );
+});
+
+test('ledger text rewriting rebuilds the memoized plan when a reference map grows on the same object', () => {
+  const runtimeEventIds = new Map([['event-source', 'event-target']]);
+  const references = ledgerRewriteReferences({ runtimeEventIds });
+  assert.equal(
+    rewriteLedgerArchiveText(`${TOOL_RESULTS_PREFIX}event-source`, references),
+    `${TOOL_RESULTS_PREFIX}event-target`,
+  );
+  runtimeEventIds.set('event-second', 'event-target-2');
+  assert.equal(
+    rewriteLedgerArchiveText(`${TOOL_RESULTS_PREFIX}event-second`, references),
+    `${TOOL_RESULTS_PREFIX}event-target-2`,
+  );
+});
+
+test('ledger text rewriting rewrites mixed mapped addresses and encoded special characters', () => {
+  const sourceId = 'ev.a(b)*c+d?e f';
+  const references = ledgerRewriteReferences({
+    runtimeEventIds: new Map([
+      [sourceId, 't(x)*y'],
+      ['plain-event', 'plain-target'],
+    ]),
+  });
+  assert.equal(
+    rewriteLedgerArchiveText(
+      `run ${TOOL_RESULTS_PREFIX}${encodeURIComponent(sourceId)} then ${TOOL_RESULTS_PREFIX}plain-event done`,
+      references,
+    ),
+    `run ${TOOL_RESULTS_PREFIX}t(x)*y then ${TOOL_RESULTS_PREFIX}plain-target done`,
+  );
+});
+
+test('ledger text rewriting rewrites ledger archive refs ahead of runtime event addresses', () => {
+  const ledgerPlaceholder = buildLedgerArchivedToolResultPlaceholder({
+    storage: 'ledger',
+    runtimeEventId: 'event-copy',
+    toolCallId: 'tool-1',
+    toolName: 'search',
+    originalEstimatedTokens: 42,
+    reason: 'stale_tool_result_pruned_before_compact',
+    sourceProjectionDigest: `sha256:${'b'.repeat(64)}`,
+    bodySha256: 'c'.repeat(64),
+    originalBytes: 128,
+  });
+  const archiveKey = buildToolResultArchiveResourceRef({
+    storage: 'ledger',
+    runtimeEventId: 'event-source',
+    toolCallId: 'tool-1',
+    toolName: 'search',
+    sourceProjectionDigest: `sha256:${'a'.repeat(64)}`,
+    bodySha256: 'd'.repeat(64),
+    originalBytes: 128,
+  });
+  const references = ledgerRewriteReferences({
+    ledgerArchives: new Map([
+      [archiveKey, ledgerPlaceholder],
+      [`${TOOL_RESULTS_PREFIX}event-source`, ledgerPlaceholder],
+    ]),
+    runtimeEventIds: new Map([
+      ['event-source', 'event-target'],
+      ['event-source-x', 'event-target-x'],
+    ]),
+  });
+  // The event address also maps through runtimeEventIds; the ledger entry wins
+  // because the archive pass ran first. `event-source` is a prefix of
+  // `event-source-x`, and replacing the prefix leaves the same tail either way.
+  assert.equal(
+    rewriteLedgerArchiveText(
+      `start ${TOOL_RESULTS_PREFIX}event-source mid ${TOOL_RESULTS_PREFIX}event-source-x end ${archiveKey} tail`,
+      references,
+    ),
+    `start ${TOOL_RESULTS_PREFIX}event-copy mid ${TOOL_RESULTS_PREFIX}event-copy-x end ${TOOL_RESULTS_PREFIX}event-copy tail`,
+  );
+});
