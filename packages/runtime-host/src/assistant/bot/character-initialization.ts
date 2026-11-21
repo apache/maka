@@ -45,6 +45,8 @@ interface Initialization {
 const KEY = 'characterInitialization';
 const TITLE = '为自己设计人物包';
 const PET_KEY = 'petInitialization';
+const SETTLED_TASK_NOTICE = '创建任务已结束，未完成初始化；可以重新选择或跳过。正常聊天不受影响。';
+const CANCELLED_TASK_NOTICE = '创建任务已取消，可以重新选择或跳过。正常聊天不受影响。';
 
 /** One persisted Matter, on the normal scheduler; never blocks the Bot's conversation loop. */
 export class CharacterInitialization {
@@ -71,8 +73,17 @@ export class CharacterInitialization {
     if (!owner) throw Error('Bind the assistant conversation first.');
     const key = input.kind === 'assistant' ? KEY : PET_KEY;
     const state = this.store.get<Initialization>(key);
-    if (state?.phase === 'running' || state?.phase === 'starting')
+    if (state?.phase === 'starting')
       return { ...state, notice: '已有创建任务，请继续该任务，不要重复创建。' };
+    if (state?.phase === 'running') {
+      if (input.action === 'create')
+        return { ...state, notice: '已有创建任务，请继续该任务，不要重复创建。' };
+      // The user may back out of a running task; the Matter settles in the
+      // background and the skipped phase is final for this decision.
+      this.store.set(key, { ...state, phase: 'skipped', error: undefined });
+      await this.tick();
+      return this.store.get<Initialization>(key);
+    }
     if (state?.phase === 'completed')
       return {
         ...state,
@@ -187,7 +198,57 @@ export class CharacterInitialization {
       (input.content as { status?: string })?.status === 'completed'
     ) {
       this.store.set(KEY, { ...state, phase: 'completed', error: undefined });
+      return;
     }
+    if (state && !state.prepared && input.source === state.worker && input.type === 'task_update')
+      // A settlement that arrives without prepare() must still retire the phase.
+      this.retire(KEY, String((input.content as { status?: string })?.status));
+  }
+  /** Terminal settlements retire the running phase even when prepare() never happened. */
+  private retire(key: string, status: string) {
+    const state = this.store.get<Initialization>(key);
+    if (state?.phase !== 'running') return;
+    if (status === 'completed') {
+      if (key !== PET_KEY && !state.prepared && !this.pack.hasPersona()) {
+        this.store.set(key, {
+          ...state,
+          phase: 'offered',
+          error: SETTLED_TASK_NOTICE,
+          retryAt: undefined,
+        });
+        return;
+      }
+      this.store.set(key, {
+        ...state,
+        phase: 'completed',
+        error: undefined,
+        ...(key === KEY && !state.prepared ? { adopted: true } : {}),
+      });
+    } else if (status === 'cancelled') {
+      this.store.set(key, {
+        ...state,
+        phase: 'offered',
+        error: CANCELLED_TASK_NOTICE,
+        retryAt: undefined,
+      });
+    }
+  }
+  /** Cancellations never post a task_update, so the tick observes settled Matters directly. */
+  private async observe(key: string, state: Initialization) {
+    if (!state.taskId) return;
+    let status: string | undefined;
+    try {
+      const target = this.ctx.tools
+        .resolve(this.bot.owner())
+        .tools.find((tool) => tool.name === 'MatterTasks');
+      // A missing reader is unknown state, never a settlement.
+      if (!target) return;
+      const call = this.bot.invocation(this.bot.owner());
+      status = ((await target.impl({ id: state.taskId }, call)) as { status?: string })?.status;
+    } catch {
+      return; // Unknown state must not retire the phase.
+    }
+    this.retire(key, String(status));
   }
   start() {
     this.timer = setInterval(() => void this.tick(), 5000);
@@ -262,10 +323,15 @@ export class CharacterInitialization {
       this.store.set(KEY, state);
     }
     if (state.phase === 'starting') await this.launch(KEY, state, TITLE);
+    if (state.phase === 'running') await this.observe(KEY, state);
     if (!this.ctx.petPacks) return;
     const pet = this.store.get<Initialization>(PET_KEY);
     if (pet?.phase === 'starting') {
       await this.launch(PET_KEY, pet, '创建桌面宠物');
+      return;
+    }
+    if (pet?.phase === 'running') {
+      await this.observe(PET_KEY, pet);
       return;
     }
     if (state.phase !== 'completed' && state.phase !== 'skipped') return;
@@ -281,6 +347,7 @@ export class CharacterInitialization {
     if (state.owner !== owner) throw Error('Appearance setup belongs to another conversation');
     if ((state.retryAt ?? 0) > Date.now()) return;
     let invalidRequest = false;
+    let settledTask = false;
     try {
       const target = this.ctx.tools
         .resolve(owner)
@@ -305,7 +372,10 @@ export class CharacterInitialization {
       const call = this.bot.invocation(owner);
       const task = (await this.ctx.agents.withInvocation(call, () =>
         target.impl(arguments_, call),
-      )) as { id: string; sessionId: string };
+      )) as { id: string; sessionId: string; status?: string };
+      // A settled Matter is never re-run; reusing its taskKey must not resurrect it.
+      settledTask = ['completed', 'cancelled'].includes(String(task.status));
+      if (settledTask) throw Error(SETTLED_TASK_NOTICE);
       this.bot.ready();
       const saved = this.store.get<Initialization>(key)!;
       this.store.set(key, {
@@ -317,11 +387,12 @@ export class CharacterInitialization {
       });
     } catch (error) {
       this.bot.ready();
+      const bounced = invalidRequest || settledTask;
       const updated = {
         ...this.store.get<Initialization>(key)!,
-        ...(invalidRequest ? { phase: 'offered' as const } : {}),
+        ...(bounced ? { phase: 'offered' as const } : {}),
         error: String(error),
-        retryAt: invalidRequest ? undefined : Date.now() + 60_000,
+        retryAt: bounced ? undefined : Date.now() + 60_000,
       };
       this.store.set(key, updated);
       if (this.store.get(`${key}Error`) !== updated.error) {
@@ -334,7 +405,9 @@ export class CharacterInitialization {
             taskKey: state.taskKey,
             message: invalidRequest
               ? '创建请求未能通过校验，尚未创建任务；可以重新选择或跳过。正常聊天不受影响。'
-              : '创建未能启动，保留原任务身份重试。正常聊天不受影响。',
+              : settledTask
+                ? SETTLED_TASK_NOTICE
+                : '创建未能启动，保留原任务身份重试。正常聊天不受影响。',
           },
         });
         this.store.set(`${key}Error`, updated.error);
