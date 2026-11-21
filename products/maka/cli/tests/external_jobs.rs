@@ -1351,131 +1351,249 @@ async fn sigkill_reopens_original_external_transcript_without_resubmission() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn antigravity_can_continue_after_host_restarts_during_a_prompt() {
     let mut rig = Rig::new().await.expect("isolated Host and ACP fixture");
-    let outcome = AssertUnwindSafe(async {
-        let (mut anchor, bootstrap) = phase("start original Host", rig.start()).await?;
-        phase("enable Antigravity ACP", rig.configure(&mut anchor, &bootstrap, "antigravity")).await?;
-        let global_agents = rig.sandbox.home.join(".gemini/config/agents");
-        let managed_profile = rig.sandbox.home.join(".maka/external-agents/antigravity/agent/.agents/agents/maka.md");
-        assert!(!tokio::fs::try_exists(&managed_profile).await.map_err(|error| error.to_string())?);
-        bootstrap.close().await?;
-        rig.clients.pop();
-        let sdk = connect_sdk(&mut rig, &anchor).await?;
-        let (session, run) = phase(
-            "send first prompt",
-            launch(&sdk, &rig.sandbox.workspace, "ACP-original", "Antigravity restart", true, "antigravity"),
-        ).await?;
-        let original = phase("first ACP prompt delivered", rig.controller.event("ACP-original", "ready")).await?;
-        let before = phase("first ACP output saved", checkpoint(&sdk, &session, &run, &original["checkpoint"])).await?;
-        let pid = original["pid"].as_u64().unwrap();
-        assert!(isolated::closed_evidence(&rig.resource(pid)?).await.map_err(|e| e.to_string())?.is_none());
-        sdk.close().await?;
-        rig.clients.pop();
-        phase("kill and reap original Host", rig.hosts[0].sigkill()).await?;
-        let (mut reopened, recovery) = phase("reopen the same Root", rig.start()).await?;
-        assert_ne!(reopened.epoch(), anchor.epoch());
-        let transcript = phase("original ACP process exited and all streams drained", rig.transcript(pid)).await?;
-        assert!(!transcript.output.iter().any(|row| row["id"] == transcript.task_prompt()["id"] && row.get("method").is_none()));
-        phase("interrupted Run", terminal_state(&recovery, &session, &run, "cancelled")).await?;
-        let after = phase("original partial answer remains", checkpoint(&recovery, &session, &run, &original["checkpoint"])).await?;
-        assert_eq!(after["prefix"], before["prefix"]);
-        tokio::fs::write(rig.sandbox.home.join(".maka/AGENTS.md"), "ACP resumed instruction revision")
-            .await.map_err(|e| e.to_string())?;
-        let next = phase("send a new message in the original conversation",
-            send_native(&recovery, &session, "ACP-followup", "Antigravity restart", false)).await?;
-        assert_ne!(next, run);
-        let resumed = phase("new prompt reaches Antigravity",
-            rig.controller.event("ACP-followup", "ready")).await?;
-        assert_eq!(resumed["thread"], original["thread"]);
-        phase("follow-up completes", terminal_state(&recovery, &session, &next, "completed")).await?;
-        let resumed_transcript = phase("seal resumed process", rig.transcript(resumed["pid"].as_u64().unwrap())).await?;
-        for (wire, method, label, revised) in [
-            (&transcript, "session/new", "ACP-original", false),
-            (&resumed_transcript, "session/resume", "ACP-followup", true),
-        ] {
-            let open = wire
-                .input
-                .iter()
-                .find(|row| row["method"] == method)
-                .unwrap();
-            let instructions = open
-                .pointer("/params/_meta/antigravity/systemPrompt/append")
-                .and_then(Value::as_str)
-                .unwrap();
-            assert!(!instructions.trim().is_empty());
-            assert_eq!(
-                instructions.contains("ACP resumed instruction revision"),
-                revised
+    let outcome =
+        AssertUnwindSafe(async {
+            let (mut anchor, bootstrap) = phase("start original Host", rig.start()).await?;
+            phase(
+                "enable Antigravity ACP",
+                rig.configure(&mut anchor, &bootstrap, "antigravity"),
+            )
+            .await?;
+            let global_agents = rig.sandbox.home.join(".gemini/config/agents");
+            let managed_profile = rig
+                .sandbox
+                .home
+                .join(".maka/external-agents/antigravity/agent/.agents/agents/maka.md");
+            assert!(
+                !tokio::fs::try_exists(&managed_profile)
+                    .await
+                    .map_err(|error| error.to_string())?
             );
-            let [user] = wire.task_prompt()["params"]["prompt"]
-                .as_array()
-                .unwrap()
-                .as_slice()
-            else {
-                panic!("expected only the user task block when systemPrompt.append is supported");
-            };
-            let task = user["text"].as_str().unwrap();
-            assert!(task.contains(label));
-            assert!(!task.contains("<maka_system_instructions>"));
-            if revised {
-                assert!(!task.contains("ACP-original"));
+            bootstrap.close().await?;
+            rig.clients.pop();
+            let sdk = connect_sdk(&mut rig, &anchor).await?;
+            let (session, run) = phase(
+                "send first prompt",
+                launch(
+                    &sdk,
+                    &rig.sandbox.workspace,
+                    "ACP-original",
+                    "Antigravity restart",
+                    true,
+                    "antigravity",
+                ),
+            )
+            .await?;
+            let original = phase(
+                "first ACP prompt delivered",
+                rig.controller.event("ACP-original", "ready"),
+            )
+            .await?;
+            let before = phase(
+                "first ACP output saved",
+                checkpoint(&sdk, &session, &run, &original["checkpoint"]),
+            )
+            .await?;
+            let pid = original["pid"].as_u64().unwrap();
+            assert!(
+                isolated::closed_evidence(&rig.resource(pid)?)
+                    .await
+                    .map_err(|e| e.to_string())?
+                    .is_none()
+            );
+            sdk.close().await?;
+            rig.clients.pop();
+            phase("kill and reap original Host", rig.hosts[0].sigkill()).await?;
+            let (mut reopened, recovery) = phase("reopen the same Root", rig.start()).await?;
+            assert_ne!(reopened.epoch(), anchor.epoch());
+            let transcript = phase(
+                "original ACP process exited and all streams drained",
+                rig.transcript(pid),
+            )
+            .await?;
+            assert!(
+                !transcript
+                    .output
+                    .iter()
+                    .any(|row| row["id"] == transcript.task_prompt()["id"]
+                        && row.get("method").is_none())
+            );
+            phase(
+                "interrupted Run",
+                terminal_state(&recovery, &session, &run, "cancelled"),
+            )
+            .await?;
+            let after = phase(
+                "original partial answer remains",
+                checkpoint(&recovery, &session, &run, &original["checkpoint"]),
+            )
+            .await?;
+            assert_eq!(after["prefix"], before["prefix"]);
+            tokio::fs::write(
+                rig.sandbox.home.join(".maka/AGENTS.md"),
+                "ACP resumed instruction revision",
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+            let next = phase(
+                "send a new message in the original conversation",
+                send_native(
+                    &recovery,
+                    &session,
+                    "ACP-followup",
+                    "Antigravity restart",
+                    false,
+                ),
+            )
+            .await?;
+            assert_ne!(next, run);
+            let resumed = phase(
+                "new prompt reaches Antigravity",
+                rig.controller.event("ACP-followup", "ready"),
+            )
+            .await?;
+            assert_eq!(resumed["thread"], original["thread"]);
+            phase(
+                "follow-up completes",
+                terminal_state(&recovery, &session, &next, "completed"),
+            )
+            .await?;
+            let resumed_transcript = phase(
+                "seal resumed process",
+                rig.transcript(resumed["pid"].as_u64().unwrap()),
+            )
+            .await?;
+            for (wire, method, label, revised) in [
+                (&transcript, "session/new", "ACP-original", false),
+                (&resumed_transcript, "session/resume", "ACP-followup", true),
+            ] {
+                let open = wire
+                    .input
+                    .iter()
+                    .find(|row| row["method"] == method)
+                    .unwrap();
+                let instructions = open
+                    .pointer("/params/_meta/antigravity/systemPrompt/append")
+                    .and_then(Value::as_str)
+                    .unwrap();
+                assert!(!instructions.trim().is_empty());
+                assert_eq!(
+                    instructions.contains("ACP resumed instruction revision"),
+                    revised
+                );
+                let [user] = wire.task_prompt()["params"]["prompt"]
+                    .as_array()
+                    .unwrap()
+                    .as_slice()
+                else {
+                    panic!(
+                        "expected only the user task block when systemPrompt.append is supported"
+                    );
+                };
+                let task = user["text"].as_str().unwrap();
+                assert!(task.contains(label));
+                assert!(!task.contains("<maka_system_instructions>"));
+                if revised {
+                    assert!(!task.contains("ACP-original"));
+                }
             }
-        }
-        let events = rig.controller.events();
-        assert_eq!(events.iter().filter(|e| e["kind"] == "hello").count(), 2, "{events:?}");
-        assert!(events.iter().all(|e| e["kind"] != "failure"), "{events:?}");
-        phase("resumed Run settles before Host quit", readiness(&recovery, &session, &next)).await?;
-        let observed = query(&recovery, "agent", "observe", json!({"sessionId":session})).await?;
-        assert_eq!(observed["session"]["hasUnread"], true);
-        let history = query(&recovery, "agent", "history", json!({
+            let events = rig.controller.events();
+            assert_eq!(
+                events.iter().filter(|e| e["kind"] == "hello").count(),
+                2,
+                "{events:?}"
+            );
+            assert!(events.iter().all(|e| e["kind"] != "failure"), "{events:?}");
+            phase(
+                "resumed Run settles before Host quit",
+                readiness(&recovery, &session, &next),
+            )
+            .await?;
+            let observed =
+                query(&recovery, "agent", "observe", json!({"sessionId":session})).await?;
+            assert_eq!(observed["session"]["hasUnread"], true);
+            let history = query(&recovery, "agent", "history", json!({
             "sessionId":session,"position":{"kind":"tail"},"includeThinking":false,"view":"chat"
         })).await?;
-        let final_reply = history["chunks"].as_array().unwrap().iter().rev()
-            .find(|chunk| chunk["role"] == "assistant" && chunk["text"] == "ACP follow-up final reply")
-            .ok_or("external final reply missing from history")?;
-        let message = final_reply["messageId"].as_str().ok_or("final reply identity missing")?;
-        assert_eq!(observed["session"]["tailMessageId"], message);
-        let read = recovery.control(Uuid::new_v4(), "markRead", json!({
-            "sessionId":session,"messageId":message
-        })).await?;
-        read.prepare().await?;
-        receipt_value(&read.confirm().await?)?;
-        let observed = query(&recovery, "agent", "observe", json!({"sessionId":session})).await?;
-        assert_eq!(observed["session"]["hasUnread"], false);
-        let external = query(&recovery, "agent", "externalAgents", json!({"inspect":true})).await?;
-        let target = &external["target"];
-        let source = query(&recovery, "management", "read", json!({})).await?;
-        let original_epoch = reopened.catalogue().describe("agent")?.registration_epoch;
-        let mut setting = target["path"].as_array().ok_or("external target path missing")?.clone();
-        setting.extend([json!("runtimes"), json!("antigravity")]);
-        let changed = mutate(
-            &recovery,
-            "management",
-            "configureBatch",
-            json!({
-                "expectedRevision":source["source"]["reference"]["revision"],
-                "edits":[{"instance":target["source"]["namespace"],"changes":[
-                    {"path":setting,"value":{"kind":"boolean","value":false}}
-                ]}]
-            })
-        ).await?;
-        assert_eq!(changed["status"], "committed", "{changed}");
-        phase("apply the disabled Antigravity runtime", async {
-            loop {
-                reopened.refresh().await?;
-                let epoch = reopened.catalogue().describe("agent")?.registration_epoch;
-                if epoch.is_some() && epoch != original_epoch {
-                    break;
+            let final_reply = history["chunks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .rev()
+                .find(|chunk| {
+                    chunk["role"] == "assistant" && chunk["text"] == "ACP follow-up final reply"
+                })
+                .ok_or("external final reply missing from history")?;
+            let message = final_reply["messageId"]
+                .as_str()
+                .ok_or("final reply identity missing")?;
+            assert_eq!(observed["session"]["tailMessageId"], message);
+            let read = recovery
+                .control(
+                    Uuid::new_v4(),
+                    "markRead",
+                    json!({
+                        "sessionId":session,"messageId":message
+                    }),
+                )
+                .await?;
+            read.prepare().await?;
+            receipt_value(&read.confirm().await?)?;
+            let observed =
+                query(&recovery, "agent", "observe", json!({"sessionId":session})).await?;
+            assert_eq!(observed["session"]["hasUnread"], false);
+            let external = query(
+                &recovery,
+                "agent",
+                "externalAgents",
+                json!({"inspect":true}),
+            )
+            .await?;
+            let target = &external["target"];
+            let source = query(&recovery, "management", "read", json!({})).await?;
+            let original_epoch = reopened.catalogue().describe("agent")?.registration_epoch;
+            let mut setting = target["path"]
+                .as_array()
+                .ok_or("external target path missing")?
+                .clone();
+            setting.extend([json!("runtimes"), json!("antigravity")]);
+            let changed = mutate(
+                &recovery,
+                "management",
+                "configureBatch",
+                json!({
+                    "expectedRevision":source["source"]["reference"]["revision"],
+                    "edits":[{"instance":target["source"]["namespace"],"changes":[
+                        {"path":setting,"value":{"kind":"boolean","value":false}}
+                    ]}]
+                }),
+            )
+            .await?;
+            assert_eq!(changed["status"], "committed", "{changed}");
+            phase("apply the disabled Antigravity runtime", async {
+                loop {
+                    reopened.refresh().await?;
+                    let epoch = reopened.catalogue().describe("agent")?.registration_epoch;
+                    if epoch.is_some() && epoch != original_epoch {
+                        break;
+                    }
+                    tokio::task::yield_now().await;
                 }
-                tokio::task::yield_now().await;
-            }
-            Ok(())
-        }).await?;
-        assert!(!tokio::fs::try_exists(&global_agents).await.map_err(|error| error.to_string())?);
-        recovery.close().await?;
-        rig.clients.pop();
-        phase("quit reopened Host", rig.hosts[1].quit(&mut reopened)).await?;
-        Ok::<_, String>(())
-    }).catch_unwind().await;
+                Ok(())
+            })
+            .await?;
+            assert!(
+                !tokio::fs::try_exists(&global_agents)
+                    .await
+                    .map_err(|error| error.to_string())?
+            );
+            recovery.close().await?;
+            rig.clients.pop();
+            phase("quit reopened Host", rig.hosts[1].quit(&mut reopened)).await?;
+            Ok::<_, String>(())
+        })
+        .catch_unwind()
+        .await;
     let cleanup = rig.cleanup().await;
     match outcome {
         Err(panic) => std::panic::resume_unwind(panic),
