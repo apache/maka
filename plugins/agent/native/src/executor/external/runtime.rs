@@ -1211,7 +1211,7 @@ async fn pipe_owned<P: PipeProtocol<Output = Outcome>>(
             let result = std::panic::AssertUnwindSafe(async { protocol.run(&mut io).await })
                 .catch_unwind()
                 .await
-                .unwrap_or_else(|_| Err(Error::Unknown));
+                .unwrap_or(Err(Error::Unknown));
             (result, Some(io))
         }
         Err(error) => (

@@ -308,49 +308,6 @@ impl StreamTurn {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    #[derive(Default)]
-    struct Sink(std::sync::Mutex<String>);
-
-    impl OutputSink for Sink {
-        fn emit(&self, output: Output) -> BoxFuture<'_, Result<(), Error>> {
-            Box::pin(async move {
-                if let Output::OutputDelta { text, .. } = output {
-                    self.0.lock().unwrap().push_str(&text);
-                }
-                Ok(())
-            })
-        }
-    }
-
-    #[tokio::test]
-    async fn command_lifecycle_can_precede_claude_initialization() {
-        let output = Sink::default();
-        let mut turn = StreamTurn::new("session".into(), true);
-        turn.sent("input".into());
-        for row in [
-            json!({"type":"command_lifecycle","stage":"started","session_id":"session","uuid":"input"}),
-            json!({"type":"system","subtype":"init","session_id":"session"}),
-            json!({"type":"user","isReplay":true,"session_id":"session","uuid":"input","parent_tool_use_id":null}),
-            json!({"type":"assistant","session_id":"session","uuid":"output","message":{"id":"message","content":[{"type":"text","text":"Hello"}]}}),
-        ] {
-            assert!(turn.row(row, &output).await.unwrap().is_none());
-        }
-        let outcome = turn
-            .row(json!({"type":"result","session_id":"session","subtype":"success","is_error":false}), &output)
-            .await
-            .unwrap();
-        assert!(
-            matches!(outcome, Some(Outcome::Completed { message_id: Some(id) }) if id == "message")
-        );
-        assert_eq!(*output.0.lock().unwrap(), "Hello");
-    }
-}
-
 fn result_usage(row: &Value) -> Option<maka_agent_facts::executor::TurnUsage> {
     let usage = row.get("usage")?.as_object()?;
     let counter = |key| usage.get(key).and_then(Value::as_u64);
@@ -449,4 +406,47 @@ pub(super) async fn replay(
         return Err(Error::Unknown);
     }
     Ok(outcome)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[derive(Default)]
+    struct Sink(std::sync::Mutex<String>);
+
+    impl OutputSink for Sink {
+        fn emit(&self, output: Output) -> BoxFuture<'_, Result<(), Error>> {
+            Box::pin(async move {
+                if let Output::OutputDelta { text, .. } = output {
+                    self.0.lock().unwrap().push_str(&text);
+                }
+                Ok(())
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn command_lifecycle_can_precede_claude_initialization() {
+        let output = Sink::default();
+        let mut turn = StreamTurn::new("session".into(), true);
+        turn.sent("input".into());
+        for row in [
+            json!({"type":"command_lifecycle","stage":"started","session_id":"session","uuid":"input"}),
+            json!({"type":"system","subtype":"init","session_id":"session"}),
+            json!({"type":"user","isReplay":true,"session_id":"session","uuid":"input","parent_tool_use_id":null}),
+            json!({"type":"assistant","session_id":"session","uuid":"output","message":{"id":"message","content":[{"type":"text","text":"Hello"}]}}),
+        ] {
+            assert!(turn.row(row, &output).await.unwrap().is_none());
+        }
+        let outcome = turn
+            .row(json!({"type":"result","session_id":"session","subtype":"success","is_error":false}), &output)
+            .await
+            .unwrap();
+        assert!(
+            matches!(outcome, Some(Outcome::Completed { message_id: Some(id) }) if id == "message")
+        );
+        assert_eq!(*output.0.lock().unwrap(), "Hello");
+    }
 }

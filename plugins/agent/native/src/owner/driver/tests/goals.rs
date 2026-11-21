@@ -228,7 +228,7 @@ async fn exercise(
         .await?
         .ok_or("worker notice was not queued")?;
     assert_eq!(
-        stop(&rig, &session, older_run).await?,
+        stop(rig, &session, older_run).await?,
         json!({"requested":true})
     );
     assert_eq!(current(rig, &session).await?.status, Status::Active);
@@ -237,12 +237,12 @@ async fn exercise(
     writer.write(Sql("CREATE TRIGGER reject_goal_pause BEFORE UPDATE ON plugin_data
             WHEN NEW.package_id = 'maka.agent.goal' AND json_extract(NEW.value_json, '$.status') = 'paused'
             BEGIN SELECT RAISE(ABORT, 'goal_pause_rejected'); END;")).await?;
-    let error = stop(&rig, &session, run).await.unwrap_err();
+    let error = stop(rig, &session, run).await.unwrap_err();
     assert!(error.to_string().contains("goal_pause_rejected"), "{error}");
     assert!(!driver.state.frontier(run).await?.stopped);
     assert_eq!(current(rig, &session).await?.status, Status::Active);
     writer.write(Sql("DROP TRIGGER reject_goal_pause")).await?;
-    assert_eq!(stop(&rig, &session, run).await?, json!({"requested":true}));
+    assert_eq!(stop(rig, &session, run).await?, json!({"requested":true}));
     assert!(driver.state.frontier(run).await?.stopped);
     assert!(!driver.state.frontier(observed).await?.stopped);
     assert_eq!(current(rig, &session).await?.status, Status::Paused);
@@ -336,7 +336,7 @@ async fn exercise(
     );
 
     // A new stop command for the stopped Run cannot undo the explicit resume.
-    assert_eq!(stop(&rig, &session, run).await?, json!({"requested":true}));
+    assert_eq!(stop(rig, &session, run).await?, json!({"requested":true}));
     assert_eq!(current(rig, &session).await?.status, Status::Active);
     Ok(())
 }
@@ -419,6 +419,311 @@ async fn goal_tells_the_next_iteration_why_one_failed_and_pauses_after_two() -> 
             received.try_recv().is_err(),
             "a paused Goal sent another request"
         );
+        Ok::<_, Box<dyn Error + Send + Sync>>(())
+    }))
+    .catch_unwind()
+    .await;
+    let cleanup = rig.finish().await;
+    serving.abort();
+    match outcome {
+        Ok(result) => result??,
+        Err(panic) => std::panic::resume_unwind(panic),
+    }
+    assert!(cleanup.is_empty(), "{cleanup:?}");
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn background_wakeups_and_continuation_preserve_inherited_skill_catalog() -> TestResult<()> {
+    let mut rig = Rig::new()?;
+    let listener = tokio::net::TcpListener::from_std(rig.model_listener.try_clone()?)?;
+    let (requests, mut received) = tokio::sync::mpsc::unbounded_channel::<Value>();
+    let step_index = Arc::new(AtomicUsize::new(0));
+    let app = axum::Router::new().route(
+        "/v1/chat/completions",
+        axum::routing::post(move |body: axum::body::Bytes| {
+            let requests = requests.clone();
+            let index = step_index.fetch_add(1, Ordering::SeqCst);
+            async move {
+                let _ = requests.send(serde_json::from_slice(&body).unwrap_or_default());
+                let tool_sse = |id: &str, name: &str, args: &str| {
+                    let c1 = json!({
+                        "id":format!("cont-skill-{index}"),"object":"chat.completion.chunk",
+                        "created":1,"model":"llama3.2","choices":[{"index":0,"delta":{
+                            "role":"assistant",
+                            "tool_calls":[{"index":0,"id":id,"type":"function","function":{"name":name,"arguments":args}}]
+                        },"finish_reason":null}]
+                    });
+                    let c2 = json!({
+                        "id":format!("cont-skill-{index}"),"object":"chat.completion.chunk",
+                        "created":1,"model":"llama3.2","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],
+                        "usage":{"prompt_tokens":100,"completion_tokens":10,"total_tokens":110}
+                    });
+                    format!("data: {c1}\n\ndata: {c2}\n\ndata: [DONE]\n\n")
+                };
+                let text_sse = |text: &str| {
+                    let chunk = json!({
+                        "id":format!("cont-skill-{index}"),"object":"chat.completion.chunk",
+                        "created":1,"model":"llama3.2","choices":[{"index":0,
+                        "delta":{"role":"assistant","content":text},"finish_reason":"stop"}],
+                        "usage":{"prompt_tokens":100,"completion_tokens":5,"total_tokens":105}
+                    });
+                    format!("data: {chunk}\n\ndata: [DONE]\n\n")
+                };
+                // 0: initial Continuation Main -> call CompactContext
+                // 1: Summary -> produce checkpoint summary (sets view.baseline)
+                // 2: post-compaction Main (view.baseline.is_some()) -> call exec tool
+                // 3: post-compaction tool continuation (view.baseline.is_some()) -> finish
+                let sse = match index {
+                    0 => tool_sse("call-compact", "CompactContext", "{}"),
+                    1 => text_sse("Compacted checkpoint summary."),
+                    2 => tool_sse("call-post-compact", "exec", r#"{"code":"text(\"post-compact\")"}"#),
+                    _ => text_sse("Continued after compaction"),
+                };
+                ([("content-type", "text/event-stream")], sse)
+            }
+        }),
+    );
+    let serving = tokio::spawn(async move { axum::serve(listener, app).await });
+    let outcome = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(30), async {
+        let session = rig
+            .start_configured(None, |config| config["todo"] = json!(true))
+            .await?;
+        rig.assemble(&session).await?;
+        let driver = rig.driver.as_ref().unwrap();
+        let seed = driver.access.execution().run_id;
+        let base_spec = driver.state.frontier(seed).await?.spec;
+        rig.append(
+            vec![Fact::RunTerminated {
+                terminal: Terminal::Completed,
+                diagnostic: None,
+            }],
+            vec![],
+        )
+        .await?;
+
+        let skill_receipt = |prompt: &str, rev: &str| maka_agent_facts::input::InputReceipt {
+            source: maka_agent_facts::composition::SourceRevision {
+                kind: maka_agent_facts::composition::SourceKind::Input,
+                name: "maka.agent.skills".into(),
+                package_id: "maka.skills".into(),
+                entry_id: "skills".into(),
+                activation: "act".into(),
+                revision: rev.into(),
+            },
+            receipt: serde_json::to_value(maka_skills_api::contract::PreparationRecord {
+                revision: "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+                    .into(),
+                metadata_prompt: prompt.into(),
+                invocation: Default::default(),
+            })
+            .unwrap(),
+        };
+        let message_input = |text: &str, preparation| maka_agent_facts::input::RunInput::Message {
+            content: maka_agent_facts::input::MessageInput {
+                text: text.into(),
+                display_text: None,
+                inline_references: None,
+                directory_references: None,
+                quotes: None,
+                attachments: None,
+                preparation,
+            },
+            request_fingerprint: None,
+            source_messages: Vec::new(),
+        };
+        let admit_sealed = |driver: &NativeDriver,
+                            base: &maka_agent_facts::durable::RunSpec,
+                            trigger: Trigger,
+                            input: maka_agent_facts::input::RunInput,
+                            terminal: Terminal| {
+            let state = driver.state.clone();
+            let mut spec = base.clone();
+            async move {
+                let blob = ContentBlob::json(&input)?;
+                spec.turn_id = Uuid::new_v4().to_string();
+                spec.trigger = trigger;
+                spec.input = blob.reference().clone();
+                let admission = Admission::new(spec, at(), vec![blob]);
+                let run = admission.run();
+                state.admit(admission).await?;
+                let claim = state.claim(run).await?;
+                let view = state.frontier(run).await?;
+                let diagnostic =
+                    (terminal == Terminal::Failed).then(|| "scheduled run failed".into());
+                state
+                    .append(
+                        &claim,
+                        (&view).into(),
+                        vec![Change::new(
+                            Fact::RunTerminated {
+                                terminal,
+                                diagnostic,
+                            },
+                            at(),
+                        )],
+                        vec![],
+                    )
+                    .await?;
+                Ok::<_, Box<dyn Error + Send + Sync>>(run)
+            }
+        };
+
+        // 1. User message with a prepared non-empty skills catalog.
+        admit_sealed(
+            driver,
+            &base_spec,
+            Trigger::Message {
+                message_id: Uuid::new_v4().to_string(),
+            },
+            message_input("start", vec![skill_receipt("SKILL_CATALOG_ALPHA", "rev-1")]),
+            Terminal::Completed,
+        )
+        .await?;
+
+        // 2. 18 consecutive background wakeups (> old 16-run cap) without skill receipts;
+        // the 18th fails and is continued via continueRun.
+        let mut last_bg = seed;
+        for i in 0..18 {
+            let terminal = if i == 17 {
+                Terminal::Failed
+            } else {
+                Terminal::Completed
+            };
+            last_bg = admit_sealed(
+                driver,
+                &base_spec,
+                Trigger::Schedule {
+                    schedule_id: format!("sched-{i}"),
+                },
+                message_input(&format!("tick {i}"), vec![]),
+                terminal,
+            )
+            .await?;
+        }
+        let failed_view = driver.state.frontier(last_bg).await?;
+        let NativeBackend::Model { model, .. } = &driver.backend else {
+            unreachable!()
+        };
+        let connection_id = &model.source.accepted.binding.connection_id;
+        let model_id = &model.source.accepted.binding.model;
+        let continued = model_recovery::call(
+            rig.client.as_ref().unwrap(),
+            "agent",
+            "continueRun",
+            json!({
+                "sessionId": session,
+                "sourceRunId": last_bg,
+                "sourceHighWater": failed_view.revision,
+                "model": {"connectionId": connection_id, "modelId": model_id}
+            }),
+        )
+        .await?;
+        assert_eq!(continued["kind"], "started", "{continued}");
+
+        // Continuation must pass replay-signature verification, compact in-run,
+        // execute a post-compaction tool call (entering view.baseline.is_some()),
+        // and deliver the inherited skills catalog exactly once on every Main step.
+        let mut captured: Vec<Value> = Vec::new();
+        for i in 0..4 {
+            let req = match tokio::time::timeout(Duration::from_secs(5), received.recv()).await {
+                Ok(Some(req)) => req,
+                other => {
+                    let work = model_recovery::call(
+                        rig.client.as_ref().unwrap(),
+                        "agent",
+                        "work",
+                        json!({"sessionId":session,"target":{"kind":"run","runId":continued["execution"]["runId"]}}),
+                    ).await?;
+                    return Err(format!("step {i} stopped ({other:?}); received={} work={work}", captured.len()).into());
+                }
+            };
+            captured.push(req);
+        }
+        for step in [0_usize, 2, 3] {
+            let system = captured[step]["messages"]
+                .as_array()
+                .and_then(|m| m.iter().find(|msg| msg["role"] == "system"))
+                .and_then(|msg| msg["content"].as_str())
+                .ok_or("system message missing")?;
+            assert_eq!(
+                system.matches("SKILL_CATALOG_ALPHA").count(),
+                1,
+                "step {step} system prompt should inherit SKILL_CATALOG_ALPHA once: {system}"
+            );
+        }
+
+        let continued_target = json!({"kind":"run","runId":continued["execution"]["runId"]});
+        loop {
+            let work = model_recovery::call(
+                rig.client.as_ref().unwrap(),
+                "agent",
+                "work",
+                json!({"sessionId":session,"target":continued_target}),
+            )
+            .await?;
+            match work["execution"]["state"]["kind"].as_str() {
+                Some("completed") => break,
+                Some("failed" | "cancelled") => {
+                    return Err(format!("continuation failed: {work}").into());
+                }
+                _ => tokio::task::yield_now().await,
+            }
+        }
+
+        // 3. An interactive user turn without any skill receipt (e.g. unconfigured
+        // skill library) does not inherit prior skills and terminates inheritance
+        // for subsequent background wakeups.
+        let bare_user = admit_sealed(
+            driver,
+            &base_spec,
+            Trigger::Message {
+                message_id: Uuid::new_v4().to_string(),
+            },
+            message_input("bare user turn", vec![]),
+            Terminal::Completed,
+        )
+        .await?;
+        let bare_view = driver.state.frontier(bare_user).await?;
+        let bare_input = message_input("bare user turn", vec![]);
+        let mut system = None;
+        super::super::super::driver_model::resolve_input_skills(
+            &driver.state,
+            &bare_view,
+            &bare_input,
+            &mut system,
+        )
+        .await?;
+        assert!(
+            system.is_none(),
+            "interactive user turn without receipt must not inherit prior skills: {system:?}"
+        );
+
+        let after_bare = admit_sealed(
+            driver,
+            &base_spec,
+            Trigger::Schedule {
+                schedule_id: "sched-after-bare".into(),
+            },
+            message_input("tick after bare user", vec![]),
+            Terminal::Completed,
+        )
+        .await?;
+        let after_bare_view = driver.state.frontier(after_bare).await?;
+        let after_bare_input = message_input("tick after bare user", vec![]);
+        let mut system = None;
+        super::super::super::driver_model::resolve_input_skills(
+            &driver.state,
+            &after_bare_view,
+            &after_bare_input,
+            &mut system,
+        )
+        .await?;
+        assert!(
+            system.is_none(),
+            "background wakeup after interactive user turn without skills must not resurrect old skills: {system:?}"
+        );
+
         Ok::<_, Box<dyn Error + Send + Sync>>(())
     }))
     .catch_unwind()

@@ -28,6 +28,7 @@ pub struct ReturnedToolResult {
     pub projection: DurableToolProjection,
     pub is_error: bool,
     pub loaded_tools: BTreeSet<String>,
+    pub display_budget_chars: Option<usize>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -50,6 +51,8 @@ struct StoredReturn<O, P, T> {
     projection: StoredProjection<P>,
     is_error: bool,
     loaded_tools: T,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    display_budget_chars: Option<usize>,
 }
 
 fn output_json(output: &ToolOutput) -> Option<&serde_json::Value> {
@@ -82,6 +85,7 @@ impl Serialize for ReturnedToolResult {
             projection,
             is_error: self.is_error,
             loaded_tools: &self.loaded_tools,
+            display_budget_chars: self.display_budget_chars,
         }
         .serialize(serializer)
     }
@@ -94,6 +98,7 @@ impl<'de> Deserialize<'de> for ReturnedToolResult {
             projection,
             is_error,
             loaded_tools,
+            display_budget_chars,
         } = StoredReturn::<ToolOutput, DurableToolProjection, BTreeSet<String>>::deserialize(
             deserializer,
         )?;
@@ -110,6 +115,7 @@ impl<'de> Deserialize<'de> for ReturnedToolResult {
             projection,
             is_error,
             loaded_tools,
+            display_budget_chars,
         })
     }
 }
@@ -118,7 +124,7 @@ impl<'de> Deserialize<'de> for ReturnedToolResult {
 #[serde(untagged)]
 pub enum StoredToolResult {
     Operation(Box<StoredOperationReturn>),
-    Inline(ReturnedToolResult),
+    Inline(Box<ReturnedToolResult>),
 }
 
 #[derive(Serialize, Deserialize)]
@@ -204,6 +210,7 @@ impl StoredOperationReturn {
             projection,
             is_error: self.is_error,
             loaded_tools: self.loaded_tools,
+            display_budget_chars: None,
         })
     }
 }

@@ -1005,7 +1005,7 @@ impl RunCells {
                 }
                 return Ok(());
             }
-            let view = self.access.fresh().await.map_err(persistence)?;
+            let view = self.access.original_frontier().await.map_err(persistence)?;
             if view.terminal.is_some() {
                 return Ok(());
             }
@@ -1530,7 +1530,10 @@ impl CellPersistence for FailFirstCellRead {
 impl NativeCellPort {
     async fn new(run: Arc<RunCells>, parent: ToolCallContext) -> Result<Arc<Self>, ToolError> {
         run.access.check_context(&parent).await?;
-        let view = run.access.fresh().await.map_err(persistence)?;
+        let view = run.access.original_frontier().await.map_err(persistence)?;
+        if view.stopped || view.terminal.is_some() {
+            return Err(ToolError::Failed("Cell admission is stopped".into()));
+        }
         let owner = match &parent.call.origin {
             ToolOrigin::Provider { link } => {
                 let key = ToolKey {
@@ -1679,7 +1682,12 @@ impl NativeCellPort {
             }
         }
         loop {
-            let view = self.run.access.fresh().await.map_err(persistence)?;
+            let view = self
+                .run
+                .access
+                .original_frontier()
+                .await
+                .map_err(persistence)?;
             if self.admission_closed.is_cancelled()
                 || !self.run.cleanup.confirmed()
                 || view.stopped

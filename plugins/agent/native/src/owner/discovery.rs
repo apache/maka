@@ -870,7 +870,7 @@ impl Owner {
                         .preparing
                         .get(&job.worker)
                         .is_some_and(|p| p.run == run)
-                    || (runs.controls.get(&job.worker).is_none()
+                    || (!runs.controls.contains_key(&job.worker)
                         && runs.retained_cleanup.contains_key(&job.worker))
                 {
                     return Ok(None);
@@ -1070,7 +1070,6 @@ impl Owner {
             &basis,
             &job.request,
             Default::default(),
-            maka_agent_state::queue::Placement::Followup,
             false,
         )
         .await?;

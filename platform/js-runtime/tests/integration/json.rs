@@ -149,3 +149,121 @@ async fn exit_and_non_json_inputs_stop_before_tool_or_draft_dispatch() {
     assert!(tool_calls.is_empty(), "{tool_calls:?}");
     assert_eq!(dispatched.load(Ordering::SeqCst), 0);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn array_buffer_allocations_are_bounded_by_heap_limit() {
+    let tools = Arc::new(Tools(|value: Value| -> ToolFuture {
+        Box::pin(async move { Ok(value) })
+    }));
+    let limits = CellLimits {
+        heap_bytes: 16 * 1024 * 1024,
+        ..CellLimits::default()
+    };
+    let engine = CodeExecutor::new(limits).unwrap();
+
+    // Finite allocation within budget succeeds and exercises normal ArrayBuffer views/slice.
+    let within = engine
+        .execute(
+            r#"
+            const buf = new ArrayBuffer(8 * 1024 * 1024);
+            const view = new Uint8Array(buf);
+            view[0] = 7;
+            const copy = buf.slice(0, 4);
+            return { len: buf.byteLength, copyLen: copy.byteLength, first: new Uint8Array(copy)[0] };
+            "#
+            .into(),
+            tools.clone(),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    let CellResult::Success { value, .. } = within else {
+        panic!("expected in-budget ArrayBuffer allocation to succeed, got {within:?}");
+    };
+    assert_eq!(
+        value,
+        json!({ "len": 8 * 1024 * 1024, "copyLen": 4, "first": 7 })
+    );
+
+    // Finite single-shot and cumulative allocations exceeding the 16 MiB budget are rejected
+    // immediately (either as a catchable RangeError from the allocator or V8's heap-limit abort
+    // triggered by allocator refusal — never succeeding and never timing out).
+    for (label, source) in [
+        (
+            "single-shot",
+            "new ArrayBuffer(17 * 1024 * 1024); return 'allowed';",
+        ),
+        (
+            "cumulative",
+            "const a = new Uint8Array(6 * 1024 * 1024); const b = new Uint8Array(6 * 1024 * 1024); const c = new Uint8Array(6 * 1024 * 1024); return a.byteLength + b.byteLength + c.byteLength;",
+        ),
+    ] {
+        let outcome = engine
+            .execute(source.into(), tools.clone(), CancellationToken::new())
+            .await
+            .unwrap();
+        match outcome {
+            CellResult::Failure { error, .. }
+                if matches!(
+                    error.kind,
+                    maka_code_runtime::CellDiagnosticKind::LimitExceeded
+                        | maka_code_runtime::CellDiagnosticKind::ExecutionError
+                ) => {}
+            other => panic!(
+                "{label} over-budget allocation must fail via budget/heap rejection, got {other:?}"
+            ),
+        }
+    }
+
+    // Resizable ArrayBuffers bypass V8's ArrayBuffer::Allocator and must be disabled across all entry points.
+    let resizable = engine
+        .execute(
+            r#"
+            const results = {};
+            const check = (key, fn) => {
+                try { fn(); results[key] = "allowed"; }
+                catch (err) { results[key] = err.name; }
+            };
+            check("direct", () => new ArrayBuffer(1024, { maxByteLength: 32 * 1024 * 1024 }));
+            check("protoCtor", () => {
+                const Ctor = new Uint8Array(8).buffer.constructor;
+                return new Ctor(1024, { maxByteLength: 32 * 1024 * 1024 });
+            });
+            check("reflect", () => Reflect.construct(ArrayBuffer, [1024, { maxByteLength: 32 * 1024 * 1024 }]));
+            check("subclass", () => {
+                class SubAB extends ArrayBuffer {}
+                return new SubAB(1024, { maxByteLength: 32 * 1024 * 1024 });
+            });
+            results.hasResize = "resize" in ArrayBuffer.prototype;
+            return results;
+            "#
+            .into(),
+            tools.clone(),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    let CellResult::Success { value, .. } = resizable else {
+        panic!("expected resizable ArrayBuffer check to complete, got {resizable:?}");
+    };
+    assert_eq!(
+        value,
+        json!({
+            "direct": "RangeError",
+            "protoCtor": "RangeError",
+            "reflect": "RangeError",
+            "subclass": "RangeError",
+            "hasResize": false
+        })
+    );
+
+    // Subsequent healthy cell execution must still succeed cleanly.
+    let healthy = engine
+        .execute("return 21 + 21;".into(), tools, CancellationToken::new())
+        .await
+        .unwrap();
+    let CellResult::Success { value, .. } = healthy else {
+        panic!("expected healthy cell after budget tests, got {healthy:?}");
+    };
+    assert_eq!(value, json!(42));
+}

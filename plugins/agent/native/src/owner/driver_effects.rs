@@ -1009,12 +1009,13 @@ async fn prepare_local_result(
                     (body, Some(*reply), Some(stored), content)
                 }
                 output => (
-                    StoredToolResult::Inline(ReturnedToolResult {
+                    StoredToolResult::Inline(Box::new(ReturnedToolResult {
                         output,
                         projection: normalized.projection,
                         is_error: normalized.is_error,
                         loaded_tools: normalized.loaded_tools,
-                    }),
+                        display_budget_chars: normalized.display_budget_chars,
+                    })),
                     None,
                     None,
                     None,

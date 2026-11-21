@@ -102,6 +102,7 @@ const icons = {
   minimize: { custom: 'minimize', glyph: '⤡' },
   globe: { custom: 'globe', glyph: '⊕' },
   eyeOff: { custom: 'eyeOff', glyph: '◌' },
+  rooms: { custom: 'rooms', glyph: '◎' },
 } satisfies Record<
   string,
   | { lucide: keyof typeof lucide; glyph: string }
@@ -174,6 +175,12 @@ const customIcons = {
     },
     { tag: 'path', d: 'M6.61 6.61A13.52 13.52 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61' },
     { tag: 'line', x1: 2, y1: 2, x2: 22, y2: 22 },
+  ],
+  rooms: [
+    { tag: 'path', d: 'M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2' },
+    { tag: 'circle', cx: 9, cy: 7, r: 4 },
+    { tag: 'path', d: 'M22 21v-2a4 4 0 0 0-3-3.87' },
+    { tag: 'path', d: 'M16 3.13a4 4 0 0 1 0 7.75' },
   ],
 } satisfies Record<string, LucideElement[]>;
 

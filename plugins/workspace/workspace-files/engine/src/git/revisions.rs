@@ -416,13 +416,14 @@ pub(super) fn compare(
     let left = base_index.entries();
     let right = head_index.entries();
     let (mut i, mut j) = (0_usize, 0_usize);
-    let mut raw_changes: Vec<(
+    type TreeChange = (
         Vec<u8>,
         GitChangeKind,
         String,
         Option<(ObjectId, u32)>,
         Option<(ObjectId, u32)>,
-    )> = Vec::new();
+    );
+    let mut raw_changes = Vec::<TreeChange>::new();
 
     while i < left.len() || j < right.len() {
         interrupted(&repo.cancel)?;

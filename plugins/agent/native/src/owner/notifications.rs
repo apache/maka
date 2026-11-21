@@ -360,7 +360,6 @@ impl Owner {
         basis: &CapturedRun,
         key: &str,
         required_tools: BTreeSet<String>,
-        placement: QueuePlacement,
         steer: bool,
     ) -> Result<PreparedRequest, String> {
         self.enqueue_background_checked(
@@ -369,7 +368,7 @@ impl Owner {
             basis,
             key,
             required_tools,
-            placement,
+            QueuePlacement::Followup,
             steer,
             None,
             UnixMillis(now() as i64),

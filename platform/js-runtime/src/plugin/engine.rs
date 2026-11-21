@@ -45,10 +45,11 @@ fn runtime_base(health: &Arc<Health>, limits: &Limits, realm: super::Realm) -> R
     }
     let mut runtime = JsRuntime::try_new(RuntimeOptions {
         extensions,
-        create_params: Some(v8::CreateParams::default().heap_limits(0, limits.heap_bytes)),
+        create_params: Some(crate::bounded_create_params(limits.heap_bytes)),
         ..Default::default()
     })
     .map_err(failed)?;
+    crate::disable_resizable_array_buffers(&mut runtime).map_err(failed)?;
     let _ = health
         .isolate
         .set(runtime.v8_isolate().thread_safe_handle());
@@ -74,6 +75,9 @@ fn runtime_base(health: &Arc<Health>, limits: &Limits, realm: super::Realm) -> R
                 for (const name of names) Object.defineProperty(globalThis, name, {
                     value: exports[name], configurable: true, writable: true,
                 });
+            }
+            for (const name of ['Atomics', 'SharedArrayBuffer', 'WebAssembly']) {
+                delete globalThis[name];
             }"#,
         )
         .map_err(failed)?;

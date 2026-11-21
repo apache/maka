@@ -19,6 +19,8 @@
 
 use super::*;
 mod ax_session_tools;
+mod code_mode_budget;
+mod mcp_connection;
 mod rooms;
 mod stop_queue;
 enum ModelReply {
@@ -411,6 +413,29 @@ async fn approved_round(
     input: Value,
     scope: &str,
 ) -> TestResult<String> {
+    permission_round(rig, provider, session, code, name, input, Some(scope)).await
+}
+
+async fn denied_round(
+    rig: &Rig,
+    provider: &mut Provider,
+    session: &str,
+    code: bool,
+    name: &str,
+    input: Value,
+) -> TestResult<String> {
+    permission_round(rig, provider, session, code, name, input, None).await
+}
+
+async fn permission_round(
+    rig: &Rig,
+    provider: &mut Provider,
+    session: &str,
+    code: bool,
+    name: &str,
+    input: Value,
+    approval_scope: Option<&str>,
+) -> TestResult<String> {
     let client = rig.client.as_ref().unwrap();
     let sent = call(
         client,
@@ -470,10 +495,15 @@ async fn approved_round(
                 let pending = call(client,"agent","pendingInteractions",json!({"sessionId":session})).await?;
                 if let Some(entry) = pending["entries"].as_array().unwrap().first() {
                     assert_eq!(entry["kind"],"permissions","{entry}");
-                    let record = call(client,"agent","interaction",json!({"sessionId":session,"requestId":entry["requestId"]})).await?;
-                    let approved = call(client,"agent","respond",json!({"sessionId":session,"requestId":entry["requestId"],
-                        "answer":{"kind":"permissions","decision":{"decision":"allow","permissions":record["request"]["request"]["permissions"],"scope":scope}}})).await?;
-                    assert_eq!(approved["kind"],"recorded","{approved}; {record}");
+                    let answer = match approval_scope {
+                        Some(scope) => {
+                            let record = call(client,"agent","interaction",json!({"sessionId":session,"requestId":entry["requestId"]})).await?;
+                            json!({"kind":"permissions","decision":{"decision":"allow","permissions":record["request"]["request"]["permissions"],"scope":scope}})
+                        }
+                        None => json!({"kind":"permissions","decision":{"decision":"deny"}}),
+                    };
+                    let responded = call(client,"agent","respond",json!({"sessionId":session,"requestId":entry["requestId"],"answer":answer})).await?;
+                    assert_eq!(responded["kind"],"recorded","{responded}; {entry}");
                     return Ok::<_,Box<dyn Error + Send + Sync>>(());
                 }
                 tokio::task::yield_now().await;
@@ -626,7 +656,7 @@ async fn tool_matrix(code: bool) -> TestResult<()> {
             if allowed {
                 assert!(output.contains("https://www.rust-lang.org/"), "{output}");
             } else {
-                assert!(output.contains("WebSearch network access was denied"), "{output}");
+                assert!(output.contains("Workspace policy does not allow requesting additional permissions"), "{output}");
             }
             if requests {
                 // An HTTP error page is an ordinary result, not an unknown effect.
@@ -696,7 +726,7 @@ async fn tool_matrix(code: bool) -> TestResult<()> {
                 } else {
                     for (output,reason) in [
                         (&write,"Workspace policy does not allow requesting additional permissions"),
-                        (&web,"HTTP call authority is retired or denied"),
+                        (&web,"Workspace policy does not allow requesting additional permissions"),
                         (&mcp,"IsolationUnavailable: this MCP server cannot prove compatibility with the Run's sandbox floor"),
                     ] {assert!(output.contains(reason),"{output}");}
                 }
@@ -794,6 +824,11 @@ async fn shell_and_web_network_grants_stay_with_their_tools() -> TestResult<()> 
 
         // A Web grant does not reach Shell. The proxy a leaked Web grant installs
         // would carry this request, so it runs without `--noproxy`.
+        let before_denied_web = calls.load(Ordering::SeqCst);
+        let denied_web = denied_round(&rig, &mut provider, id, false, "WebFetch", json!({"url":format!("{first}/page")})).await?;
+        assert!(denied_web.contains(r#"\"kind\":\"failed\""#) && denied_web.contains("Permission request was denied"), "{denied_web}");
+        assert_eq!(calls.load(Ordering::SeqCst), before_denied_web, "{denied_web}");
+
         let web = approved_round(&rig, &mut provider, id, false, "WebFetch", json!({"url":format!("{first}/page")}), "session").await?;
         assert!(web.contains("network-grant-marker"), "{web}");
         let before = calls.load(Ordering::SeqCst);
@@ -883,6 +918,11 @@ async fn read_only_writes_ask_for_permission() -> TestResult<()> {
         assert_eq!(changed["kind"], "committed", "{changed}");
         let workspace = std::fs::canonicalize(base.join("workspace"))?;
 
+        let denied_write = denied_round(&rig, &mut provider, id, false, "Write",
+            json!({"path":"denied.md","content":"blocked"})).await?;
+        assert!(denied_write.contains(r#"\"kind\":\"failed\""#) && denied_write.contains("Permission request was denied"), "{denied_write}");
+        assert!(!tokio::fs::try_exists(workspace.join("denied.md")).await?, "{denied_write}");
+
         let write = approved_round(&rig, &mut provider, id, false, "Write",
             json!({"path":"notes.md","content":"approved"}), "once").await?;
         let notes = std::fs::read_to_string(workspace.join("notes.md"))
@@ -892,6 +932,14 @@ async fn read_only_writes_ask_for_permission() -> TestResult<()> {
         // On Linux the sandbox must mount an existing target for an exact writable path.
         let shell_file = workspace.join("shell.txt");
         std::fs::File::create(&shell_file)?;
+        let denied_shell = denied_round(&rig, &mut provider, id, false, "Shell", json!({
+            "command":"echo denied > shell.txt","login":false,
+            "additional_permissions":{"filesystem":[{"path":shell_file,"scope":"exact","access":"write"}],"network":"denied"},
+            "justification":"Record the result"
+        })).await?;
+        assert!(denied_shell.contains(r#"\"kind\":\"failed\""#) && denied_shell.contains("Permission request was denied"), "{denied_shell}");
+        assert_eq!(tokio::fs::read_to_string(&shell_file).await?, "", "{denied_shell}");
+
         let shell = approved_round(&rig, &mut provider, id, false, "Shell", json!({
             "command":"echo approved > shell.txt","login":false,
             "additional_permissions":{"filesystem":[{"path":shell_file,"scope":"exact","access":"write"}],"network":"denied"},
@@ -2094,9 +2142,13 @@ async fn context_overflow_after_partial_output_compacts_and_continues() -> TestR
             ModelReply::Stream(format!("data: {chunk}\n\ndata: {error}\n\n"))
         };
         let summary_request = |request: &Value| {
-            request["messages"].as_array().and_then(|messages| messages.last())
-                .and_then(|message| message["content"].as_str())
-                .is_some_and(|text| text.starts_with("Summarize the captured conversation"))
+            // A summary cut to fit opens with excerpts in place of the closing instruction.
+            request["messages"].as_array().is_some_and(|messages| {
+                messages.iter().filter_map(|message| message["content"].as_str()).any(|text| {
+                    text.starts_with("Summarize the captured conversation")
+                        || text.starts_with("Conversation excerpts for summarization")
+                })
+            })
         };
         let note = "[Host] Your previous response was cut off";
 
@@ -2151,6 +2203,134 @@ async fn context_overflow_after_partial_output_compacts_and_continues() -> TestR
             .send(completion(json!({"role":"assistant","content":"Third file read."}), "stop"))
             .map_err(|_| "provider reply lost")?;
         quiescent_message(client, id, &third).await?;
+        Ok::<_, Box<dyn Error + Send + Sync>>(())
+    }))
+    .catch_unwind()
+    .await;
+    let cleanup = tokio::time::timeout(Duration::from_secs(30), rig.finish()).await?;
+    match outcome {
+        Ok(result) => result??,
+        Err(panic) => std::panic::resume_unwind(panic),
+    }
+    assert!(cleanup.is_empty(), "{cleanup:?}");
+    Ok(())
+}
+
+/// A request the provider rejects as too long is summarized from less than what
+/// overflowed, and a summary that still overflows fails the turn with its own reason.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn overflow_summary_is_cut_below_the_request_that_overflowed() -> TestResult<()> {
+    let mut rig = Rig::new()?;
+    let mut provider = Provider::start().await?;
+    let outcome = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(90), async {
+        let base = rig.directory.path().to_path_buf();
+        let boot = bootstrap(&base, provider.url.clone(), false).await?;
+        attach(&mut rig, &boot).await?;
+        let client = rig.client.as_ref().unwrap();
+        // The declared window is far above what the provider accepts, so nothing
+        // compacts before the request is sent.
+        let model = model_options(
+            client,
+            &provider.url,
+            false,
+            json!({"contextWindow":400000,"compactionThreshold":200000}),
+        )
+        .await?;
+        let session = create(client, &base, &model, None).await?;
+        let id = session["id"].as_str().unwrap();
+        let send = async |message: &str| -> TestResult<Value> {
+            let sent = call(
+                client,
+                "agent",
+                "send",
+                json!({"sessionId":id,"message":message,"delivery":"queue"}),
+            )
+            .await?;
+            Ok(sent["messageId"].clone())
+        };
+        let failed = async |message: &Value| -> TestResult<Value> {
+            loop {
+                let work = call(
+                    client,
+                    "agent",
+                    "work",
+                    json!({"sessionId":id,"target":{"kind":"message","messageId":message}}),
+                )
+                .await?;
+                match work["execution"]["state"]["kind"].as_str() {
+                    Some("failed") => return Ok(work),
+                    Some("completed" | "cancelled") => {
+                        return Err(format!("turn did not fail: {work}").into());
+                    }
+                    _ => tokio::time::sleep(Duration::from_millis(30)).await,
+                }
+            }
+        };
+        let overflow =
+            || ModelReply::Fatal("This model's maximum context length is 8192 tokens.".into());
+        let summary_request = |request: &Value| {
+            // A summary cut to fit opens with excerpts in place of the closing instruction.
+            request["messages"].as_array().is_some_and(|messages| {
+                messages.iter().filter_map(|message| message["content"].as_str()).any(|text| {
+                    text.starts_with("Summarize the captured conversation")
+                        || text.starts_with("Conversation excerpts for summarization")
+                })
+            })
+        };
+
+        let first = send("Produce long history.").await?;
+        let (_, reply) = provider.next().await?;
+        reply
+            .send(completion(json!({"role":"assistant","content":"padding ".repeat(20_000)}), "stop"))
+            .map_err(|_| "provider reply lost")?;
+        quiescent_message(client, id, &first).await?;
+
+        // The summary of an overflowed request is smaller than that request; it
+        // overflows anyway, and the turn fails saying so.
+        let second = send("Read the second file.").await?;
+        let (main, reply) = provider.next().await?;
+        assert!(!summary_request(&main), "{main}");
+        reply.send(overflow()).map_err(|_| "provider reply lost")?;
+        let (summary, reply) = tokio::select! {
+            request = provider.next() => request?,
+            work = failed(&second) => {
+                return Err(format!("overflow ended without a summary: {:?}", work?).into());
+            }
+        };
+        assert!(summary_request(&summary), "{summary}");
+        let (asked, overflowed) = (text_messages(&summary).len(), text_messages(&main).len());
+        assert!(asked < overflowed, "summary {asked} bytes, overflowed request {overflowed} bytes");
+        assert!(main["tools"].as_array().is_some_and(|tools| !tools.is_empty()), "{main}");
+        assert!(summary.get("tools").is_none_or(|tools| tools.as_array().is_some_and(Vec::is_empty)), "{summary}");
+        reply.send(overflow()).map_err(|_| "provider reply lost")?;
+        let work = failed(&second).await?.to_string();
+        assert!(!work.contains("invalid event transition"), "{work}");
+
+        // A summary that fits lets the next turn continue from it.
+        let third = send("Read the third file.").await?;
+        let (_, reply) = provider.next().await?;
+        reply.send(overflow()).map_err(|_| "provider reply lost")?;
+        let (summary, reply) = provider.next().await?;
+        assert!(summary_request(&summary), "{summary}");
+        reply
+            .send(completion(json!({"role":"assistant","content":"overflow-summary-marker"}), "stop"))
+            .map_err(|_| "provider reply lost")?;
+        let (resumed, reply) = provider.next().await?;
+        let text = text_messages(&resumed);
+        assert!(text.contains("overflow-summary-marker"), "{text}");
+        reply
+            .send(completion(json!({"role":"assistant","content":"Third file read."}), "stop"))
+            .map_err(|_| "provider reply lost")?;
+        quiescent_message(client, id, &third).await?;
+        let history = call(
+            client,
+            "agent",
+            "history",
+            json!({"sessionId":id,"position":{"kind":"tail"},"includeThinking":false,"view":"conversation"}),
+        )
+        .await?
+        .to_string();
+        assert!(!history.contains("invalid event transition"), "{history}");
         Ok::<_, Box<dyn Error + Send + Sync>>(())
     }))
     .catch_unwind()

@@ -1574,7 +1574,7 @@ enum PendingResolve {
     Searching {
         epoch: NativeEpochId,
         point: [f64; 2],
-        resolver: TargetResolver,
+        resolver: Box<TargetResolver>,
         processes: HashMap<i32, ProcessState>,
         global: GlobalWindowObservation,
         needed: NeededObservation,
@@ -1582,7 +1582,7 @@ enum PendingResolve {
     },
     Ready {
         epoch: NativeEpochId,
-        _target: EventTarget,
+        _target: Box<EventTarget>,
     },
     ElementClick {
         epoch: NativeEpochId,
@@ -2278,7 +2278,7 @@ impl WorkerState {
                     Observation::WindowOrder { ids },
                 ) => {
                     check_cancelled(&cancellation)?;
-                    let resolver = TargetResolver::new(
+                    let resolver = Box::new(TargetResolver::new(
                         self.pid,
                         self.bundle.as_deref(),
                         &windows,
@@ -2286,7 +2286,7 @@ impl WorkerState {
                         &PointMetadata {
                             on_screen_window_ids: ids,
                         },
-                    )?;
+                    )?);
                     (
                         epoch,
                         point,

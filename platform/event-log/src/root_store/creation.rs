@@ -24,11 +24,11 @@ use serde_json::Value;
 
 mod prepared;
 
-pub struct SessionCreationRequest<'a, W> {
+pub struct SessionCreationRequest<'a, B> {
     pub id: &'a str,
     pub fingerprint: &'a str,
     pub owner_scope: &'a str,
-    pub workspace: &'a W,
+    pub workspace: B,
     pub project: Option<super::ProjectWorkspacePlan>,
     pub now: u64,
 }

@@ -245,7 +245,12 @@ async fn encode_message(
     let mut items = Vec::new();
     match message_recipe {
         MessageRecipe::System { content, .. } => {
-            items.push(item(message("system", text(content), &budget).await?))
+            let role = if plaintext.is_some() {
+                "system"
+            } else {
+                "developer"
+            };
+            items.push(item(message(role, text(content), &budget).await?))
         }
         MessageRecipe::User { content: parts, .. } => items.push(item(
             message("user", content(parts, &budget).await?, &budget).await?,

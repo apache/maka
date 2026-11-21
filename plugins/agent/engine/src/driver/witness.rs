@@ -853,6 +853,12 @@ mod tests {
             "modelContext": null,
             "previousCheckpointId": null,
         }))?;
+        let surface = ContentBlob::json(&maka_agent_facts::composition::CompositionSurface {
+            system_prompt: None,
+            tools: vec![],
+            sources: vec![],
+        })?;
+        request.composition.surface = surface.reference().clone();
         request.provenance = provenance.reference().clone();
         let encoded = ContentBlob::json(&request)?;
         let mut changes = vec![Fact::StepPrepared {
@@ -872,7 +878,7 @@ mod tests {
                 },
             ]);
         }
-        append(&store, &claim, changes, vec![encoded, provenance]).await?;
+        append(&store, &claim, changes, vec![encoded, provenance, surface]).await?;
         let witness = ModelWitness::new(store.clone(), claim.clone(), attempt);
         Ok((temp, root, store, claim, attempt, witness))
     }

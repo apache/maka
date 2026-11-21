@@ -80,6 +80,7 @@ export default {
         },
       },
       contributions: {
+        quickConversations: { kind: 'view', contract: 'maka.quick-launcher.tool' },
         rooms: { kind: 'view', contract: 'maka.conversations.rooms' },
         navigation: {
           kind: 'view',

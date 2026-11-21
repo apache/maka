@@ -99,9 +99,6 @@ windows-sys = { version = "0.61.2", features = ["Win32_UI_WindowsAndMessaging"] 
 [target.'cfg(target_os = "linux")'.dependencies]
 platform-linux = { git = "https://github.com/maka-agent/cua", rev = "f767531b26772afea29985d360d3f00d730baeb0", optional = true }
 
-[target.'cfg(target_os = "linux")'.dev-dependencies]
-x11rb = "0.13"
-
 [target.'cfg(target_os = "macos")'.dev-dependencies]
 imagesize.workspace = true
 

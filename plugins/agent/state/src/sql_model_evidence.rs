@@ -154,11 +154,12 @@ pub(super) fn validate_control(
             let transport = failure.transport.as_ref().ok_or_else(|| {
                 invalid("transport fallback has no original warm Primary route evidence")
             })?;
+            let surface: maka_agent_facts::composition::CompositionSurface =
+                owned(c, view.run, &request.composition.surface)?;
             if transport.fallback
                 != maka_agent_facts::model::retry_transport::FallbackAvailability::WarmIdlePrimary
                 || transport.adapter.kind != SourceKind::ModelAdapter
-                || !request
-                    .composition
+                || !surface
                     .sources
                     .iter()
                     .any(|source| source == &transport.adapter)
@@ -378,11 +379,12 @@ pub(super) fn validate_source_failure(
         ));
     }
     if let Some(transport) = &value.transport {
+        let surface: maka_agent_facts::composition::CompositionSurface =
+            owned(c, view.run, &request.composition.surface)?;
         if request.accounting.purpose != ModelPurpose::Main
             || transport.route_identity.is_empty()
             || transport.adapter.kind != SourceKind::ModelAdapter
-            || !request
-                .composition
+            || !surface
                 .sources
                 .iter()
                 .any(|source| source == &transport.adapter)

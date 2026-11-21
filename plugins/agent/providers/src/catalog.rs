@@ -284,8 +284,13 @@ impl Snapshot {
     /// Shared model capacities and prose fill unknown routes through exact IDs
     /// or unambiguous public aliases. Route-specific controls stay local.
     pub fn get(&self, provider: &str, exact_model_id: &str) -> Option<&ModelInfo> {
+        let lookup = if matches!(self.kind, SnapshotKind::Live) && provider == "chatgpt" {
+            "openai-codex"
+        } else {
+            provider
+        };
         self.models
-            .get(provider)
+            .get(lookup)
             .and_then(|models| models.get(exact_model_id))
             .or_else(|| self.shared.get(exact_model_id))
     }

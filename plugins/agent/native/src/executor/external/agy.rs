@@ -18,13 +18,16 @@
  */
 
 use super::*;
+#[cfg(any(unix, test))]
 use std::{
     fs,
     io::{self, Write},
     path::Path,
 };
 
+#[cfg(unix)]
 pub(super) const HOST_AGENT: &str = "maka";
+#[cfg(any(unix, test))]
 const PROFILE: &str = "---
 name: maka
 description: Antigravity agent for Maka conversations
@@ -35,6 +38,7 @@ tools: [search_web]
 Use Maka MCP tools for workspace operations, session/Room coordination (`maka://session/<id>`), and automation. Pass `maka://` resource URIs directly to Maka's `Read` tool (via `mcp_maka_exec` or direct MCP tools) or use `Session*` tools.
 ";
 
+#[cfg(unix)]
 pub(super) async fn host_agent_directory() -> Result<PathBuf, Error> {
     let home = std::env::home_dir()
         .ok_or_else(|| Error::Invalid("Cannot locate the account home for Antigravity".into()))?;
@@ -48,6 +52,7 @@ pub(super) async fn host_agent_directory() -> Result<PathBuf, Error> {
         })
 }
 
+#[cfg(any(unix, test))]
 fn prepare_profile(home: &Path) -> io::Result<PathBuf> {
     let root = home.join(".maka/external-agents/antigravity/agent");
     let agents = root.join(".agents/agents");

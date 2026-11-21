@@ -34,10 +34,12 @@ async fn provider(
             let requests = requests.clone();
             async move {
                 let request: Value = serde_json::from_slice(&body).unwrap();
-                let text = if request["messages"].as_array().unwrap().last().unwrap()["content"]
-                    .to_string().contains(INSTRUCTION)
-                {
+                let last = request["messages"].as_array().unwrap().last().unwrap()["content"]
+                    .to_string();
+                let text = if last.contains(INSTRUCTION) {
                     json!({"suggestion": SUGGESTION}).to_string()
+                } else if last.contains("<message>") {
+                    "Model generated title".to_owned()
                 } else {
                     "The image shows a red square.".to_owned()
                 };
@@ -192,9 +194,10 @@ async fn quick_questions_stream_with_explicit_history_outside_the_bot_transcript
         let backend = json!({"kind":"model","connectionId":connection["connection"]["connectionId"],"modelId":"llama3.2"});
         call(client, "agent", "selectBackend", json!({"sessionId":session,"backend":backend})).await?;
         let before = call(client, "agent", "observe", json!({"sessionId":session})).await?;
-        for (id, previous) in [("one", None), ("two", Some("one")), ("three", None)] {
+        for (id, previous) in [("one", None), ("two", Some("one")), ("three", None), ("restored", None)] {
+            let history = if id == "restored" { json!([{"question":"Saved question", "answer":"Saved answer"}]) } else { json!([]) };
             let mut question = client.call("agent", "askQuickQuestion".into(), json!({
-                "sessionId":session,"requestId":id,"question":"Describe the square.","continueFrom":previous
+                "sessionId":session,"requestId":id,"question":"Describe the square.","continueFrom":previous, "history":history
             }), Attachments::new()).await?;
             question.start().await?;
             assert!(matches!(question.receive().await?, Reply::Prepared { .. }));
@@ -211,7 +214,10 @@ async fn quick_questions_stream_with_explicit_history_outside_the_bot_transcript
             let request = upstream.recv().await.ok_or("missing model request")?;
             assert!(request["tools"].as_array().is_none_or(Vec::is_empty));
             let messages = request["messages"].as_array().unwrap();
-            assert_eq!(messages.iter().any(|m| m["role"] == "assistant"), previous.is_some());
+            assert_eq!(messages.iter().any(|m| m["role"] == "assistant"), previous.is_some() || id == "restored");
+            if id == "restored" {
+                assert!(messages.iter().any(|m| m["role"] == "assistant" && m["content"].to_string().contains("Saved answer")));
+            }
         }
         let after = call(client, "agent", "observe", json!({"sessionId":session})).await?;
         assert_eq!(before["lastCompletedTurnId"], after["lastCompletedTurnId"]);
@@ -226,6 +232,72 @@ async fn quick_questions_stream_with_explicit_history_outside_the_bot_transcript
     assert!(
         matches!(result, Ok(Ok(Ok(())))),
         "quick question fixture failed: {result:?}"
+    );
+    assert!(matches!(provider, Some(Ok(Ok(())))), "{provider:?}");
+    assert!(cleanup.is_empty(), "{cleanup:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn automatic_title_persists_for_model_sessions() {
+    let mut rig = Rig::new().unwrap();
+    let stop = CancellationToken::new();
+    let (requests, _upstream) = tokio::sync::mpsc::unbounded_channel();
+    let mut wire = None;
+    let result = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(60), async {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
+        let base = rig.directory.path().to_path_buf();
+        let boot = bootstrap_with(
+            &base,
+            format!("http://{}/v1", listener.local_addr()?),
+            |config| config["automaticTitles"] = json!(true),
+        )
+        .await?;
+        wire = Some(tokio::spawn(provider(listener, requests, stop.clone())));
+        attach(&mut rig, &boot).await?;
+        let client = rig.client.as_ref().ok_or("test client missing")?;
+        let catalog = call(client, "settings", "connections", json!({"kind":"start"})).await?;
+        let connection = call(client, "settings", "create", json!({
+            "expectedCatalogRevision":catalog["revision"],
+            "connection":{
+                "slug":"title-model","name":"Title model",
+                "provider":{"packageId":"maka.providers","entryId":"maka.providers","scope":"profile","name":"ollama"},
+                "configuration":{"baseUrl":boot.base_url},"enabled":true,"enabledModelIds":["llama3.2"],
+                "modelOverrides":{"llama3.2":{"apiProtocol":"openai-chat-completions","codeMode":false}}
+            }
+        })).await?;
+        assert_eq!(connection["kind"], "committed", "{connection}");
+
+        let created = call(client, "agent", "create", json!({
+            "title":"New conversation","automaticTitle":true,"labels":[],
+            "workspace":{"kind":"directory","path":base.join("workspace")}
+        })).await?;
+        let session = created["session"]["id"].as_str().ok_or("missing Session")?;
+        let sent = call(client, "agent", "send", json!({
+            "sessionId":session,"message":"Explain the retry loop.","attachments":[],
+            "delivery":"queue",
+            "backend":{"kind":"model","connectionId":connection["connection"]["connectionId"],"modelId":"llama3.2"}
+        })).await?;
+        assert_eq!(sent["kind"], "queued", "{sent}");
+        loop {
+            let observed = call(client, "agent", "observe", json!({"sessionId":session})).await?;
+            if observed["session"]["title"] == "Model generated title" {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        Ok::<_, Box<dyn Error + Send + Sync>>(())
+    }))
+    .catch_unwind()
+    .await;
+    stop.cancel();
+    let provider = match wire {
+        Some(wire) => Some(wire.await),
+        None => None,
+    };
+    let cleanup = rig.finish().await;
+    assert!(
+        matches!(result, Ok(Ok(Ok(())))),
+        "model automatic title fixture failed: {result:?}"
     );
     assert!(matches!(provider, Some(Ok(Ok(())))), "{provider:?}");
     assert!(cleanup.is_empty(), "{cleanup:?}");

@@ -251,13 +251,13 @@ impl<'a, 'source> TailReplay<'a, 'source> {
                         .append_notification(
                             reader,
                             view,
-                            notice.knowledge.through,
+                            notice.through,
                             &maka_agent_state::cells::PendingNotification {
                                 cell: notice.cell,
                                 id: notice.id,
                                 content: notice.content,
                             },
-                            &notice.knowledge,
+                            notice.knowledge.as_ref(),
                             vision,
                             messages,
                         )
@@ -400,7 +400,7 @@ impl<'a, 'source> TailReplay<'a, 'source> {
                     *compaction_request = Some(tool.clone());
                 }
                 let output = if let Some(output) = driver
-                    .archived_tool_result(reader, view, fact.id, &fact.fact, &call)
+                    .archived_tool_result(reader, view, after, fact.id, &fact.fact, &call, vision)
                     .await?
                 {
                     output

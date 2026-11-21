@@ -245,6 +245,7 @@ impl Session {
         ))
     }
 
+    #[cfg(not(target_os = "windows"))]
     async fn raw_tool(
         &self,
         tool: RawTool,
@@ -252,7 +253,6 @@ impl Session {
         pixels: bool,
         cancellation: &CancellationToken,
         language: Language,
-        #[cfg(target_os = "windows")] invocation: &crate::InvocationContext<'_>,
     ) -> Result<CallResult, ToolError> {
         Driver::invoke_raw_native(
             &self.native,
@@ -262,8 +262,6 @@ impl Session {
             cancellation,
             language,
             pixels,
-            #[cfg(target_os = "windows")]
-            invocation,
         )
         .await
     }
@@ -337,6 +335,7 @@ fn window_id(input: &Value) -> Result<u64, ToolError> {
         .ok_or_else(|| failed("window.id is required"))
 }
 
+#[cfg(not(target_os = "windows"))]
 fn structured(result: CallResult) -> Result<Value, ToolError> {
     result
         .structured_content

@@ -61,7 +61,7 @@ impl Store {
             normalized_artifacts,
         } = result;
         self.validate_root(business_writer)?;
-        if !Arc::ptr_eq(&self.domain.inner, &claim.ticket.domain) {
+        if !Arc::ptr_eq(&self.domain.inner, claim.ticket.domain()) {
             return Err(invalid("foreign driver claim"));
         }
         if !matches!(

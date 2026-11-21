@@ -114,6 +114,10 @@ impl ProtocolSession {
     pub fn last_delivered_run(&self) -> Option<RunId> {
         self.session.last_delivered_run
     }
+    #[cfg(unix)]
+    pub fn has_delivered_instructions(&self) -> bool {
+        self.session.instructions_digest.is_some()
+    }
     pub fn instruction_update(&self, instructions: Option<&str>) -> Option<InstructionUpdate> {
         let digest = instruction_digest(instructions);
         if self.session.instructions_digest.as_deref() == Some(digest.as_str())
@@ -160,7 +164,7 @@ impl ProtocolSession {
     }
 }
 
-fn instruction_text(instructions: Option<&str>) -> String {
+pub(super) fn instruction_text(instructions: Option<&str>) -> String {
     match instructions {
             Some(text) => format!("These are the current Maka instructions. They replace all earlier Maka instruction blocks; do not retain superseded Maka instructions.\n\n{text}"),
             None => "The previous Maka instruction blocks are now cleared. Do not apply their instructions to subsequent requests. Continue following your native system instructions and the user's requests.".into(),

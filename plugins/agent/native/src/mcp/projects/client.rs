@@ -120,10 +120,19 @@ impl Projects {
         let revision = maka_agent_facts::artifact::content_digest(
             &serde_json::to_vec(&(&generation, &base.revision)).expect("MCP lease identity"),
         );
-        if let Ok(catalog) = self.catalog(Some(&revision)) {
+        // A layer reopened under the same revision needs a new composition.
+        let composes = |catalog: &Arc<Catalog>| {
+            catalog
+                ._parent
+                .as_ref()
+                .is_some_and(|parent| Arc::ptr_eq(parent, &base))
+        };
+        if let Ok(catalog) = self.catalog(Some(&revision))
+            && composes(&catalog)
+        {
             return Ok(catalog);
         }
-        let catalog = compose(base, generation, &servers)?;
+        let catalog = compose(base.clone(), generation, &servers)?;
         let scope = format!("client:{session}");
         let mut snapshots = self.snapshots.write().expect("MCP snapshots");
         if !snapshots.clients.get(session).is_some_and(|client| {
@@ -131,19 +140,30 @@ impl Projects {
         }) {
             return Err("agent_session_mcp_changed".into());
         }
-        let snapshot = snapshots
+        let existing = snapshots
             .revisions
-            .entry(revision.clone())
-            .or_insert_with(|| {
-                Arc::new(Snapshot {
+            .get(&revision)
+            .filter(|snapshot| composes(&snapshot.catalog))
+            .cloned();
+        let snapshot = match existing {
+            Some(snapshot) => snapshot,
+            None => {
+                let snapshot = Arc::new(Snapshot {
                     scope: scope.clone(),
                     acquired: AtomicU64::new(0),
                     catalog,
                     servers: None,
                     overrides: BTreeSet::new(),
-                })
-            })
-            .clone();
+                });
+                if let Some(replaced) = snapshots
+                    .revisions
+                    .insert(revision.clone(), snapshot.clone())
+                {
+                    snapshots.replaced.push(replaced);
+                }
+                snapshot
+            }
+        };
         snapshots.current.insert(scope, revision);
         Ok(snapshot.catalog.clone())
     }

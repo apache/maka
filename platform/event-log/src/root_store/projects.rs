@@ -487,6 +487,38 @@ impl ProjectWorkspacePlan {
     pub fn project_id(&self) -> uuid::Uuid {
         self.id
     }
+
+    pub(super) async fn refresh_under_mutation(&mut self) -> Result<(), StoreError> {
+        let WorkspaceProject::Register {
+            registration,
+            expected,
+        } = &mut self.kind
+        else {
+            return Ok(());
+        };
+        let actual = self
+            .control
+            .project_by_identity(&registration.identity)
+            .await?;
+        if actual
+            .as_ref()
+            .is_some_and(|record| record.archived_at.is_some())
+        {
+            return Err(ProjectError::Archived.into());
+        }
+        match &actual {
+            Some(record) => {
+                self.id = uuid::Uuid::parse_str(&record.id)
+                    .map_err(|_| invalid("invalid stored project UUID"))?;
+            }
+            None if expected.is_some() => {
+                self.id = uuid::Uuid::new_v4();
+            }
+            None => {}
+        }
+        *expected = actual;
+        Ok(())
+    }
 }
 impl Statement for ProjectWorkspacePlan {
     type Value = Result<ProjectRecord, ProjectError>;

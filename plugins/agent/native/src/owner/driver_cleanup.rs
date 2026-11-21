@@ -30,9 +30,9 @@ pub(super) enum OriginalScope {
         driver: Option<Arc<driver::NativeDriver>>,
         effects: WorkEffects,
         state: maka_agent_state::Store,
-        pending: Option<maka_agent_engine::PendingPublication>,
+        pending: Option<Box<maka_agent_engine::PendingPublication>>,
     },
-    Preparation(Option<driver_model::DriverModel>),
+    Preparation(Option<Box<driver_model::DriverModel>>),
 }
 struct RetainedMaterial {
     original: Arc<OriginalScope>,
@@ -175,8 +175,12 @@ impl Owner {
         lease: SessionWorkLease,
         model: Option<driver_model::DriverModel>,
     ) {
-        self.retain_original_scope(session, lease, OriginalScope::Preparation(model))
-            .await;
+        self.retain_original_scope(
+            session,
+            lease,
+            OriginalScope::Preparation(model.map(Box::new)),
+        )
+        .await;
     }
     pub(super) async fn retain_original_scope(
         self: &Arc<Self>,

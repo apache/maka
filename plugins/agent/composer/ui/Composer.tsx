@@ -1025,59 +1025,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                         );
                       }
                       if (slot === 'workspace') {
-                        return (
-                          <>
-                            <If when={hero()}>{workspaceControl()}</If>
-                            <If
-                              when={
-                                !hero() &&
-                                props.openFiles !== undefined &&
-                                Boolean(props.session()?.workspace())
-                              }
-                            >
-                              <Button
-                                accessibilityLabel={tr('Browse workspace files')}
-                                tooltip={textTooltip(
-                                  () =>
-                                    props.session()?.workspace() || tr('Browse workspace files'),
-                                )}
-                                ref={
-                                  props.filesOpener ? (node) => props.filesOpener!(node) : undefined
-                                }
-                                onPress={props.openFiles!}
-                                style={{
-                                  ...toolbarControlStyle,
-                                  flexDirection: 'row',
-                                  alignItems: 'center',
-                                  maxWidth: narrowToolbar() ? 32 : 200,
-                                  minWidth: 0,
-                                  flexShrink: narrowToolbar() ? 0 : 1,
-                                  gap: 4,
-                                }}
-                                hoverStyle={{ backgroundColor: C.line }}
-                                focusStyle={{ backgroundColor: C.line }}
-                                activeStyle={{ backgroundColor: C.surface }}
-                              >
-                                <Icon name="folder" color={C.muted} />
-                                <If when={!narrowToolbar()}>
-                                  <Text
-                                    style={[
-                                      {
-                                        ...captionTextStyle,
-                                        color: C.secondary,
-                                        flexShrink: 1,
-                                        minWidth: 0,
-                                      },
-                                      { numberOfLines: 1 },
-                                    ]}
-                                  >
-                                    {workspaceLabel()}
-                                  </Text>
-                                </If>
-                              </Button>
-                            </If>
-                          </>
-                        );
+                        return <If when={hero()}>{workspaceControl()}</If>;
                       }
                       if (slot === 'usage') {
                         return (

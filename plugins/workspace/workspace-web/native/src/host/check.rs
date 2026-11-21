@@ -96,6 +96,6 @@ pub(super) async fn run(
         return encode(Update::Changed);
     }
     encode(Update::Updated {
-        snapshot: owner.repository.snapshot().await.map_err(message)?,
+        snapshot: Box::new(owner.repository.snapshot().await.map_err(message)?),
     })
 }

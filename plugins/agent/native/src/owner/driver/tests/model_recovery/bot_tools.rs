@@ -20,10 +20,12 @@
 use super::*;
 use maka_plugin_core::contract::ServiceTarget;
 
+type ObservedRequest = (Value, oneshot::Sender<String>);
+
 pub(super) fn observed_provider(
     listener: tokio::net::TcpListener,
 ) -> (
-    tokio::sync::mpsc::Receiver<(Value, oneshot::Sender<String>)>,
+    tokio::sync::mpsc::Receiver<ObservedRequest>,
     tokio::task::JoinHandle<std::io::Result<()>>,
 ) {
     let (requests, observed) = tokio::sync::mpsc::channel(1);

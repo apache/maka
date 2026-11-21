@@ -18,17 +18,18 @@
  */
 
 //! Bounded text pages. A continuation identifies content, never read authority.
-mod page;
+pub(crate) mod page;
 mod resource;
 mod shell;
 mod source;
 mod tool_result;
-pub use page::{ReadPage, TextPageScan};
+pub use page::{PageBudget, ReadPage, TextPageScan};
 pub use resource::{
     ResourceAddress, SESSION_RESOURCE_PREFIX, imported_tool_result_path,
     parse_imported_tool_result_path,
 };
 pub use shell::{ReadMetadata, read_shell_page};
+pub(crate) use source::projection_page_with_budget_and_prefix;
 pub use source::{Utf8Page, json_page, projection_page};
 
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -36,6 +37,7 @@ use serde::{Deserialize, Deserializer, Serialize, de::Error as _};
 use std::num::NonZeroUsize;
 
 pub const MAX_PAGE_CHARS: usize = 7_500;
+pub const CELL_READ_PAGE_CHARS: usize = 65_536;
 pub const DESCRIPTION: &str = "Read UTF-8 text, a PNG/JPEG/GIF/WebP image, or a Maka resource by path. Supported Maka resources: maka://session/<id> or session:<id> (reads a Room or Conversation transcript), maka://session/<id>/tool-results/<event-id>, attachment:<id>, and archive:<event-id> (short unique ID prefixes are accepted for attachment/archive). Background shell tasks use ProcessRead, not Read. offset is a 0-based line index and limit is a positive line count; symlinks and parent (..) path components are rejected for workspace files. If next is non-null, pass page.next unchanged to Read to continue; restart with the original path if content changed.";
 const PREFIX: &str = "maka://read/";
 const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;

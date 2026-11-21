@@ -27,7 +27,7 @@ use maka_agent_engine::{
     preparation::{self, PromptSettings, RequestSource},
 };
 use maka_agent_facts::{
-    composition::{RequestComposition, SourceRevision},
+    composition::{CompositionSurface, RequestComposition, SourceRevision},
     context::{CompactionOptions, ModelOperation, ModelPurpose},
     durable::*,
     execution::SystemPrompt,
@@ -169,9 +169,11 @@ struct FrozenSystem {
 struct FrozenNotification {
     cell: maka_agent_facts::cells::CellId,
     id: FactId,
+    through: u64,
     content: ContentRef,
     dependencies: Vec<ContentRef>,
-    knowledge: FrozenCellKnowledge,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    knowledge: Option<FrozenCellKnowledge>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -434,17 +436,18 @@ impl DriverModel {
         Ok((!instruction.is_empty()).then(|| Arc::new(instruction)))
     }
 
+    /// Cuts a summary input to `budget` estimated tokens; a native compaction passes none.
     async fn prepare_summary_input(
         &self,
         prompt: &mut maka_agent_engine::prepared_prompt::PreparedPrompt,
         model: &maka_agent_engine::PreparedModel,
         language: maka_agent_facts::language::Language,
-        native: bool,
+        budget: Option<u64>,
     ) -> Result<(), RunError> {
-        if !native {
+        if let Some(budget) = budget {
             *prompt = maka_agent_engine::context_input::fit_prepared_summary(
                 prompt,
-                maka_agent_engine::context_input::summary_budget(model.context.as_ref()),
+                budget,
                 language,
                 &self.cancellation,
             )
@@ -698,15 +701,20 @@ impl DriverModel {
                     });
                 let notification_through = view.revision;
                 let mut notification_sources = Vec::with_capacity(notifications.len());
+                let mut seen_knowledge_cells = std::collections::BTreeSet::new();
                 for notice in &notifications {
-                    let knowledge = FrozenCellKnowledge::capture(view, notice.cell)?;
+                    // Project each cell's child graph once per step cut instead of repeating up to 256 KiB per notice.
+                    let knowledge = seen_knowledge_cells
+                        .insert(notice.cell)
+                        .then(|| FrozenCellKnowledge::capture(view, notice.cell))
+                        .transpose()?;
                     let dependencies = self
                         .append_notification(
                             reader,
                             view,
                             notification_through,
                             notice,
-                            &knowledge,
+                            knowledge.as_ref(),
                             model.supports_vision,
                             &mut messages,
                         )
@@ -714,6 +722,7 @@ impl DriverModel {
                     notification_sources.push(FrozenNotification {
                         cell: notice.cell,
                         id: notice.id,
+                        through: notification_through,
                         content: notice.content.clone(),
                         dependencies,
                         knowledge,
@@ -845,7 +854,8 @@ impl DriverModel {
                 let covered = CoveredPrefix::capture(&prompt).await?;
                 let instruction = self.summary_instruction(view, native_compaction, summary_options.prompt.as_deref()).await?;
                 prompt.initialize_overlays(Some(rendered), true, instruction).await?;
-                self.prepare_summary_input(&mut prompt, model, view.spec.language, native_compaction).await?;
+                let budget = (!native_compaction).then(|| maka_agent_engine::context_input::summary_budget(model.context.as_ref()));
+                self.prepare_summary_input(&mut prompt, model, view.spec.language, budget).await?;
                 Some(covered)
             } else {
                 None
@@ -865,7 +875,7 @@ impl DriverModel {
                 &settings,
                 prompt.clone(),
                 definitions.clone(),
-                model.main_output_limit,
+                preparation::OutputBudget::Compute(model.main_output_limit),
                 purpose,
                 calibration,
             )?;
@@ -980,14 +990,18 @@ impl DriverModel {
                 .unwrap_or_default();
             revisions.push(adapter.source().clone());
             revisions.push(model.revision.clone());
-            let composition = RequestComposition {
+            let tool_catalog_digest = maka_agent_engine::digest(&definitions)?;
+            let surface = ContentBlob::json(&CompositionSurface {
                 system_prompt: system.map(|value| value.text),
-                dynamic_context,
-                tool_catalog_digest: maka_agent_engine::digest(&definitions)?,
                 tools: definitions,
+                sources: revisions,
+            })?;
+            let composition = RequestComposition {
+                surface: surface.reference().clone(),
+                dynamic_context,
+                tool_catalog_digest,
                 provider_options: Some(model.options.clone()),
                 max_output_tokens: request.request.max_output_tokens,
-                sources: revisions,
             };
             let spec = RequestSpec {
                 schema_version: SCHEMA_VERSION,
@@ -1034,6 +1048,7 @@ impl DriverModel {
                 contents: {
                     let mut contents = vec![
                         body,
+                        surface,
                         recovery_contract,
                         capture,
                         provenance,
@@ -1073,7 +1088,9 @@ impl DriverModel {
         Box::pin(async move {
             let mut system: Option<SystemPrompt> =
                 self.decode(view.run, &view.spec.system_prompt).await?;
-            merge_input_skills(&mut system, input)?;
+            if !matches!(input, RunInput::Continuation { .. }) {
+                resolve_input_skills(&self.state, view, input, &mut system).await?;
+            }
             let history = self
                 .state
                 .session_history(view.spec.owner.clone(), view.spec.session_id.clone());
@@ -1169,6 +1186,14 @@ impl DriverModel {
             if pre_turn_summary {
                 let before = history.capture_before(view.run).await?;
                 previous_checkpoint_id = if let Some(baseline) = &view.baseline {
+                    if let RunInput::Continuation { claim, .. } = input {
+                        resolve_continuation_skills(
+                            &self.state,
+                            claim.source.execution.run_id,
+                            &mut system,
+                        )
+                        .await?;
+                    }
                     self.append_compacted(
                         reader,
                         view.run,
@@ -1208,6 +1233,14 @@ impl DriverModel {
                 source_evidence.current = before;
                 source_evidence.current_revision = 0;
             } else if view.baseline.is_some() {
+                if let RunInput::Continuation { claim, .. } = input {
+                    resolve_continuation_skills(
+                        &self.state,
+                        claim.source.execution.run_id,
+                        &mut system,
+                    )
+                    .await?;
+                }
                 (previous_checkpoint_id, tail) = self
                     .project_history(
                         target,
@@ -1332,6 +1365,8 @@ impl DriverModel {
         }
         let provenance: Value = self.decode(view.run, &request.provenance).await?;
         validate_model_input_policy(&provenance, &model)?;
+        let surface: CompositionSurface =
+            self.decode(view.run, &request.composition.surface).await?;
         let recovery: FrozenRecovery = self
             .protocol_data(
                 view.run,
@@ -1347,7 +1382,7 @@ impl DriverModel {
                 != original_recovery_contract(
                     &binding,
                     &model.provider,
-                    &request.composition.tools,
+                    &surface.tools,
                     frozen.operation,
                 )
         {
@@ -1377,11 +1412,11 @@ impl DriverModel {
         view: &RunView,
         through: u64,
         notification: &maka_agent_state::cells::PendingNotification,
-        knowledge: &FrozenCellKnowledge,
+        knowledge: Option<&FrozenCellKnowledge>,
         vision: bool,
         messages: &mut preparation::PromptBuilder,
     ) -> Result<Vec<ContentRef>, RunError> {
-        let (message, dependencies) = preparation::project_cell_notification_from(
+        let (message, mut dependencies) = preparation::project_cell_notification_from(
             reader.notification_source(),
             &maka_agent_state::artifacts::ArtifactScope {
                 owner: view.spec.owner.clone(),
@@ -1397,28 +1432,29 @@ impl DriverModel {
         )
         .await?;
         messages.append(message).await?;
-        let (message, extra) = preparation::project_cell_knowledge(
-            reader.notification_source(),
-            &self.history,
-            &maka_agent_state::artifacts::ArtifactScope {
-                owner: view.spec.owner.clone(),
-                session: view.spec.session_id.clone(),
-                run: view.run,
-                through: knowledge.through,
-            },
-            knowledge.cell,
-            &knowledge.children,
-            view.spec.language,
-            vision,
-            &self.resources,
-            &self.cancellation,
-        )
-        .await?;
-        messages.append(message).await?;
-        let mut dependencies = dependencies;
-        for reference in extra {
-            if !dependencies.contains(&reference) {
-                dependencies.push(reference);
+        if let Some(knowledge) = knowledge {
+            let (message, extra) = preparation::project_cell_knowledge(
+                reader.notification_source(),
+                &self.history,
+                &maka_agent_state::artifacts::ArtifactScope {
+                    owner: view.spec.owner.clone(),
+                    session: view.spec.session_id.clone(),
+                    run: view.run,
+                    through: knowledge.through,
+                },
+                knowledge.cell,
+                &knowledge.children,
+                view.spec.language,
+                vision,
+                &self.resources,
+                &self.cancellation,
+            )
+            .await?;
+            messages.append(message).await?;
+            for reference in extra {
+                if !dependencies.contains(&reference) {
+                    dependencies.push(reference);
+                }
             }
         }
         Ok(dependencies)
@@ -1532,7 +1568,8 @@ impl DriverModel {
         if request.protocol != PROTOCOL || request.protocol_version != VERSION {
             return Err(unsupported("frozen-input-protocol-version"));
         }
-        super::driver::validate_tool_digest(request)?;
+        let surface: CompositionSurface = reader.decode(run, &request.composition.surface).await?;
+        super::driver::validate_tool_digest(request, &surface)?;
         let value: Value = reader.decode(run, &request.request).await?;
         let frozen: FrozenInput = serde_json::from_value(value)
             .map_err(|_| unsupported("frozen-input-manifest-schema"))?;
@@ -2148,6 +2185,19 @@ impl DriverModel {
                         let capture = self
                             .append_compacted(reader, run, &baseline, target, language, messages)
                             .await?;
+                        let (anchor, anchor_input) = &ancestry[index];
+                        if !run_went_through_skill_preparation(
+                            &anchor.spec.trigger,
+                            &anchor.spec.session_id,
+                            anchor_input,
+                        ) {
+                            let history = self.state.session_history(
+                                anchor.spec.owner.clone(),
+                                anchor.spec.session_id.clone(),
+                            );
+                            let before = history.capture_before(anchor.run).await?;
+                            inherit_prior_skills(&self.state, &history, before, system).await?;
+                        }
                         (
                             Some(id.to_string()),
                             Some(capture.current.through_sequence),
@@ -2191,11 +2241,18 @@ impl DriverModel {
                 }
                 Ok(previous)
             } else {
-                let root = &ancestry.last().expect("source ancestry").0;
+                let (root, root_input) = ancestry.last().expect("source ancestry");
                 let history = self
                     .state
                     .session_history(root.spec.owner.clone(), root.spec.session_id.clone());
                 let cut = history.capture_before(root.run).await?;
+                if !run_went_through_skill_preparation(
+                    &root.spec.trigger,
+                    &root.spec.session_id,
+                    root_input,
+                ) {
+                    inherit_prior_skills(&self.state, &history, cut.clone(), system).await?;
+                }
                 let previous = self
                     .canonical_messages(target, &cut, vision, language, messages)
                     .await?;
@@ -2445,7 +2502,7 @@ impl DriverModel {
             .map_err(|_| unsupported("tool-return-envelope-version"))?;
         use maka_agent_facts::tool_output::StoredToolResult;
         let body = match returned.body {
-            StoredToolResult::Inline(body) => body,
+            StoredToolResult::Inline(body) => *body,
             StoredToolResult::Operation(body) => {
                 let reply = reader.operation_reply(view.run, &body.operation).await?;
                 body.resolve(reply)
@@ -2596,6 +2653,7 @@ impl DriverModel {
         {
             return Err(unsupported("admitted-recovery-contract"));
         }
+        let surface: CompositionSurface = self.decode(run, &request.composition.surface).await?;
         let provenance: Value = self.decode(run, &request.provenance).await?;
         let context_evidence: maka_agent_facts::context::RequestContextEvidence =
             serde_json::from_value(provenance.clone()).map_err(RunError::Json)?;
@@ -2686,7 +2744,7 @@ impl DriverModel {
                         != original_recovery_contract(
                             &binding,
                             &prepared.provider,
-                            &request.composition.tools,
+                            &surface.tools,
                             frozen.operation,
                         )
                 {
@@ -2720,6 +2778,7 @@ impl DriverModel {
                     cut,
                     run,
                     frozen,
+                    surface,
                     request: request.clone(),
                     access: access.clone(),
                     model_source: source.clone(),
@@ -3204,12 +3263,14 @@ impl DriverModel {
         let Some(contract) = recovery.contract.as_ref() else {
             return Err(unsupported("provider-effects-or-unproved-adapter"));
         };
+        let surface: CompositionSurface =
+            self.decode(view.run, &request.composition.surface).await?;
         if !same_adapter(binding.source(), &frozen.adapter)
             || preparation::route_identity(&model.provider)? != frozen.route_identity
             || original_recovery_contract(
                 &binding,
                 &model.provider,
-                &request.composition.tools,
+                &surface.tools,
                 frozen.operation,
             )
             .as_ref()
@@ -3349,6 +3410,18 @@ impl DriverModel {
                 contents: vec![proof],
             });
         };
+        // A Summary closes on overflow instead of being interrupted, so it has no overflow
+        // recovery of its own: the engine falls back to its Main or fails the Run.
+        if request.accounting.purpose == ModelPurpose::Summary
+            && matches!(failure, maka_model::ModelError::ContextOverflow { .. })
+        {
+            return Ok(RecoveryEvidence {
+                recovery: AttemptRecovery::Blocked {
+                    diagnostic: "the summary request exceeded the model's context limit".into(),
+                },
+                contents: vec![],
+            });
+        }
         let frozen = self.frozen_input(reader, view.run, &request).await?;
         let parts = self.canonical_parts(view, attempt).await?;
         if !parts.is_empty() && !frozen.item_acceptance {
@@ -3893,6 +3966,135 @@ fn terminal_outcome(
         .then_some(maka_agent_facts::accounting::Outcome::Error)
 }
 
+fn input_has_skill_preparation(input: &RunInput) -> bool {
+    let RunInput::Message {
+        content,
+        source_messages,
+        ..
+    } = input
+    else {
+        return false;
+    };
+    if source_messages.is_empty() {
+        super::skills::has_receipt(content)
+    } else {
+        source_messages
+            .iter()
+            .any(|source| super::skills::has_receipt(&source.message.content))
+    }
+}
+
+/// Background wake-ups (`SessionCompletion`, `ScheduledTask`, `Goal`,
+/// `CheckpointHandoff`, `ContextCompact`) bypass `prepare_skills`, so inherit
+/// the most recent prepared Run's skill catalog to keep `system.text` stable
+/// across turns and preserve prompt caches.
+/// True when this Run went through `prepare_skills` (so an absent skill receipt
+/// means no skill library is configured or the catalog is empty, avoiding any
+/// backwards history walk on interactive turns).
+fn run_went_through_skill_preparation(
+    trigger: &maka_agent_facts::durable::Trigger,
+    session_id: &str,
+    input: &RunInput,
+) -> bool {
+    if input_has_skill_preparation(input) {
+        return true;
+    }
+    let maka_agent_facts::durable::Trigger::Message { .. } = trigger else {
+        return false;
+    };
+    let RunInput::Message {
+        source_messages, ..
+    } = input
+    else {
+        return false;
+    };
+    if source_messages.is_empty() {
+        return true;
+    }
+    source_messages.iter().any(|source| {
+        matches!(
+            &source.message.origin,
+            None | Some(maka_agent_facts::message::MessageOrigin::Room { .. })
+        ) || matches!(
+            &source.message.origin,
+            Some(maka_agent_facts::message::MessageOrigin::Session { execution })
+                if execution.session_id != session_id
+        )
+    })
+}
+
+async fn inherit_prior_skills(
+    state: &maka_agent_state::Store,
+    history: &maka_agent_state::session_history::SessionHistory,
+    mut before: maka_agent_state::session_history::HistoryCut,
+    system: &mut Option<SystemPrompt>,
+) -> Result<(), RunError> {
+    while let Some(prior) = history.latest(&before).await? {
+        if let Ok(prior_input) =
+            serde_json::from_slice::<RunInput>(&state.content(prior.run, prior.spec.input).await?)
+            && run_went_through_skill_preparation(
+                &prior.spec.trigger,
+                &prior.spec.session_id,
+                &prior_input,
+            )
+        {
+            merge_input_skills(system, &prior_input)?;
+            break;
+        }
+        before = history.capture_before(prior.run).await?;
+    }
+    Ok(())
+}
+
+async fn resolve_continuation_skills(
+    state: &maka_agent_state::Store,
+    source_run: RunId,
+    system: &mut Option<SystemPrompt>,
+) -> Result<(), RunError> {
+    let mut ancestry = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+    let mut current = source_run;
+    while seen.insert(current) {
+        let view = state.frontier(current).await?;
+        let input: RunInput =
+            serde_json::from_slice(&state.content(current, view.spec.input.clone()).await?)
+                .map_err(|error| RunError::InvalidInput(error.to_string()))?;
+        let predecessor = input
+            .inherited_claim()
+            .map(|claim| claim.source.execution.run_id);
+        ancestry.push((view, input));
+        let Some(predecessor) = predecessor else {
+            break;
+        };
+        current = predecessor;
+    }
+    let (root, root_input) = ancestry.last().expect("continuation ancestry");
+    if !run_went_through_skill_preparation(&root.spec.trigger, &root.spec.session_id, root_input) {
+        let history = state.session_history(root.spec.owner.clone(), root.spec.session_id.clone());
+        let before = history.capture_before(root.run).await?;
+        inherit_prior_skills(state, &history, before, system).await?;
+    }
+    for (_, input) in ancestry.into_iter().rev() {
+        merge_input_skills(system, &input)?;
+    }
+    Ok(())
+}
+
+pub(super) async fn resolve_input_skills(
+    state: &maka_agent_state::Store,
+    view: &RunView,
+    input: &RunInput,
+    system: &mut Option<SystemPrompt>,
+) -> Result<(), RunError> {
+    merge_input_skills(system, input)?;
+    if run_went_through_skill_preparation(&view.spec.trigger, &view.spec.session_id, input) {
+        return Ok(());
+    }
+    let history = state.session_history(view.spec.owner.clone(), view.spec.session_id.clone());
+    let before = history.capture_before(view.run).await?;
+    inherit_prior_skills(state, &history, before, system).await
+}
+
 pub(super) fn merge_input_skills(
     system: &mut Option<SystemPrompt>,
     input: &RunInput,
@@ -3928,12 +4130,28 @@ fn merge_skill(
     }
     Ok(())
 }
+fn has_skill_section(system_text: &str, skill_text: &str) -> bool {
+    system_text == skill_text
+        || system_text
+            .strip_suffix(skill_text)
+            .is_some_and(|prefix| prefix.ends_with("\n\n"))
+        || system_text
+            .strip_prefix(skill_text)
+            .is_some_and(|rest| rest.starts_with("\n\n"))
+        || system_text.contains(&format!("\n\n{skill_text}\n\n"))
+}
 fn append_skill(system: &mut Option<SystemPrompt>, skill: SystemPrompt) {
     match system {
         Some(system) => {
-            system.text.push_str("\n\n");
-            system.text.push_str(&skill.text);
-            system.sources.extend(skill.sources);
+            if !has_skill_section(&system.text, &skill.text) {
+                system.text.push_str("\n\n");
+                system.text.push_str(&skill.text);
+            }
+            for source in skill.sources {
+                if !system.sources.contains(&source) {
+                    system.sources.push(source);
+                }
+            }
         }
         None => *system = Some(skill),
     }
@@ -4491,5 +4709,57 @@ mod frozen_text_tests {
             Some(shared)
         );
         assert_eq!(hydrated.content_refs(), to_seal.content_refs());
+    }
+
+    #[test]
+    fn append_skill_deduplicates_identical_catalog_sections() {
+        let source = |rev: &str| SourceRevision {
+            kind: maka_agent_facts::composition::SourceKind::Input,
+            name: "maka.agent.skills".into(),
+            package_id: "maka.skills".into(),
+            entry_id: "skills".into(),
+            activation: "act".into(),
+            revision: rev.into(),
+        };
+        let mut system = Some(SystemPrompt {
+            text: "Base instructions".into(),
+            policy_revision: 1,
+            sources: Vec::new(),
+        });
+        append_skill(
+            &mut system,
+            SystemPrompt {
+                text: "Available skills: alpha".into(),
+                policy_revision: 0,
+                sources: vec![source("rev-1")],
+            },
+        );
+        // Repeated merge (e.g. steering or ancestry replay) with the same catalog text
+        // must not mutate system.text and invalidate the prompt cache prefix.
+        append_skill(
+            &mut system,
+            SystemPrompt {
+                text: "Available skills: alpha".into(),
+                policy_revision: 0,
+                sources: vec![source("rev-1"), source("rev-2")],
+            },
+        );
+        let merged = system.as_ref().unwrap();
+        assert_eq!(merged.text, "Base instructions\n\nAvailable skills: alpha");
+        assert_eq!(merged.sources, vec![source("rev-1"), source("rev-2")]);
+
+        // A genuinely updated catalog still appends once.
+        append_skill(
+            &mut system,
+            SystemPrompt {
+                text: "Available skills: alpha, beta".into(),
+                policy_revision: 0,
+                sources: vec![source("rev-3")],
+            },
+        );
+        assert_eq!(
+            system.as_ref().unwrap().text,
+            "Base instructions\n\nAvailable skills: alpha\n\nAvailable skills: alpha, beta"
+        );
     }
 }

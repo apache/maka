@@ -111,7 +111,7 @@ static void recordSpeech(NSURL *file, NSWindow *window, NSString *key, bool zh, 
                                                  : "Allow microphone access for Maka in System Settings.");
                                          return;
                                      }
-                                     if (!window.visible || window.attachedSheet) {
+                                     if (window && (!window.visible || window.attachedSheet)) {
                                          done(context, NULL, NULL);
                                          return;
                                      }
@@ -135,7 +135,7 @@ bool maka_has_dictation_key(void) {
     return legacyKey(&error).length > 0;
 }
 
-void maka_record_message(const char *path, bool zh, bool modelConnection, void *context, Completion done) {
+void maka_record_message(const char *path, bool zh, bool modelConnection, bool quickLauncher, void *context, Completion done) {
     NSURL *file = [NSURL fileURLWithPath:[NSString stringWithUTF8String:path]];
     dispatch_async(dispatch_get_main_queue(), ^{
         if (!recorders) {
@@ -147,13 +147,17 @@ void maka_record_message(const char *path, bool zh, bool modelConnection, void *
             return;
         }
         [pending addObject:file.path];
-        NSWindow *window = dictationWindow();
-        if (!window || window.sheetParent || window.attachedSheet || !window.visible) {
-            done(context, NULL, zh ? "请先打开聊天窗口。" : "Open the chat window first.");
-            return;
+        // The launcher owns cancellation through its popup lifetime. It may still be
+        // opening when the hotkey starts capture, and must leave the foreground app alone.
+        NSWindow *window = quickLauncher ? nil : dictationWindow();
+        if (!quickLauncher) {
+            if (!window.visible || window.sheetParent || window.attachedSheet) {
+                done(context, NULL, zh ? "请先打开聊天窗口。" : "Open the chat window first.");
+                return;
+            }
+            [NSApp activateIgnoringOtherApps:YES];
+            [window makeKeyAndOrderFront:nil];
         }
-        [NSApp activateIgnoringOtherApps:YES];
-        [window makeKeyAndOrderFront:nil];
         if (![NSBundle.mainBundle objectForInfoDictionaryKey:@"NSMicrophoneUsageDescription"]) {
             done(context, NULL, zh ? "请从 Maka.app 打开听写。" : "Open Maka.app to use dictation.");
             return;

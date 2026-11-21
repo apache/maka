@@ -181,7 +181,7 @@ impl Handler for Service {
                     }
                     match owner.repository.save(input.revision, input.settings).await {
                         Ok(_) => encode(Update::Updated {
-                            snapshot: owner.repository.snapshot().await.map_err(message)?,
+                            snapshot: Box::new(owner.repository.snapshot().await.map_err(message)?),
                         }),
                         Err(maka_plugin_core::storage::StoreError::Conflict { .. }) => {
                             encode(Update::Changed)
@@ -261,7 +261,9 @@ impl Handler for Service {
                     {
                         maka_capabilities::credentials::WriteResult::Written { .. } => {
                             encode(Update::Updated {
-                                snapshot: owner.repository.snapshot().await.map_err(message)?,
+                                snapshot: Box::new(
+                                    owner.repository.snapshot().await.map_err(message)?,
+                                ),
                             })
                         }
                         maka_capabilities::credentials::WriteResult::Conflict { .. } => {
@@ -308,6 +310,13 @@ impl Handler for Service {
                             })
                             .map_err(|error| match error {
                                 crate::search::Error::Settlement(error) => error,
+                                crate::search::Error::Denied => {
+                                    maka_agent_facts::tools::ToolError::Failed(
+                                        failure
+                                            .take_permission_error()
+                                            .unwrap_or_else(|| message(error)),
+                                    )
+                                }
                                 error => maka_agent_facts::tools::ToolError::Failed(message(error)),
                             })
                     } else {
@@ -322,6 +331,13 @@ impl Handler for Service {
                                     maka_capabilities::http::Error::CleanupUnconfirmed,
                                 ) => maka_agent_facts::tools::ToolError::CleanupUnconfirmed(
                                     "Web HTTP cleanup unconfirmed".into(),
+                                ),
+                                crate::fetch::Error::Http(
+                                    maka_capabilities::http::Error::Denied,
+                                ) => maka_agent_facts::tools::ToolError::Failed(
+                                    failure
+                                        .take_permission_error()
+                                        .unwrap_or_else(|| message(error)),
                                 ),
                                 error => maka_agent_facts::tools::ToolError::Failed(message(error)),
                             })

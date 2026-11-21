@@ -413,6 +413,12 @@ impl Owner {
         })
     }
 }
+pub(super) fn has_receipt(message: &MessageInput) -> bool {
+    message
+        .preparation
+        .iter()
+        .any(|receipt| receipt.source.name == SOURCE)
+}
 pub(super) fn prompt(message: &MessageInput) -> Result<Option<SystemPrompt>, String> {
     let mut receipts = message
         .preparation

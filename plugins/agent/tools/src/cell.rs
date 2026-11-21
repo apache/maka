@@ -169,10 +169,39 @@ mod tests {
         let (message, unknown) = explained("UnknownTool");
         assert_eq!(unknown, message);
     }
+
+    #[test]
+    fn exec_and_wait_inputs_default_to_30s_and_10k_tokens() {
+        let exec_in = source(&serde_json::json!("text('hi')"), CodeLanguage::JavaScript).unwrap();
+        assert_eq!(exec_in.yield_time_ms, 30_000);
+        assert_eq!(exec_in.max_output_tokens, 10_000);
+
+        let wait_in =
+            wait_input(&serde_json::json!({"cell_id": "00000000-0000-0000-0000-000000000001"}))
+                .unwrap();
+        assert_eq!(wait_in.yield_time_ms, 30_000);
+        assert_eq!(wait_in.max_tokens, 10_000);
+
+        for (lang, prefix) in [
+            (CodeLanguage::JavaScript, "// @exec:"),
+            (CodeLanguage::Python, "# @exec:"),
+        ] {
+            let def = definition(lang);
+            let pragma_line = def
+                .description
+                .lines()
+                .find_map(|line| line.find(prefix).map(|idx| &line[idx..]))
+                .expect("exec pragma example line");
+            let parsed = source(&serde_json::json!(format!("{pragma_line}\n1")), lang)
+                .expect("copied exec pragma example must parse");
+            assert_eq!(parsed.yield_time_ms, 30_000);
+            assert_eq!(parsed.max_output_tokens, 10_000);
+        }
+    }
 }
 
 fn default_wait_yield() -> u64 {
-    10_000
+    30_000
 }
 
 pub(super) fn definition(language: CodeLanguage) -> ToolDefinition {
@@ -193,6 +222,7 @@ pub(super) fn definition(language: CodeLanguage) -> ToolDefinition {
         name: "exec".into(),
         description: r#"Orchestrate tool calls in a fresh V8 async ES module. Use top-level await and output helpers; top-level return, Node, filesystem, network, imports and console are unavailable.
 Pass raw JavaScript on freeform transports; on JSON-only transports put the same source in code. Optional first line: // @exec: {"yield_time_ms": 30000, "max_output_tokens": 10000}
+Extend yield_time_ms (up to 600000) for long builds/tests.
 Call tools.<name>(input). Names are normalized JavaScript identifiers. Await every intended operation, including Promise.all/Promise.allSettled. When the module finishes, unawaited operations are cancelled; admitted Host effects still settle before completion.
 Helpers:
 - text(value): emit a string or JSON value.
@@ -216,7 +246,7 @@ Host execution: 64 MiB V8 heap and 30 seconds cumulative synchronous execution (
 pub(super) struct CodeInput {
     /// Source in the selected Code Mode language. Emit content using helpers.
     code: String,
-    /// Observation wait in milliseconds; steering can yield earlier.
+    /// Observation wait in ms (default 30000; pass 120000-300000 for builds/tests within client deadlines); steering yields earlier.
     #[serde(default = "default_yield")]
     yield_time_ms: u64,
     /// Approximate text-output budget in tokens. Full output is retained as evidence.
@@ -228,7 +258,7 @@ fn default_yield() -> u64 {
     30_000
 }
 fn default_tokens() -> usize {
-    10_000
+    maka_agent_facts::archive::DEFAULT_CELL_OUTPUT_TOKENS
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -236,7 +266,7 @@ fn default_tokens() -> usize {
 pub(super) struct WaitInput {
     /// Identifier returned by a running exec cell.
     cell_id: String,
-    /// Observation wait in milliseconds; steering can yield earlier.
+    /// Observation wait in ms (default 30000; extend for long commands within client deadlines); steering yields earlier.
     #[serde(default = "default_wait_yield")]
     yield_time_ms: u64,
     /// Approximate text-output budget in tokens.

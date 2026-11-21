@@ -1175,3 +1175,211 @@ async fn a_session_stop_takes_back_only_what_that_session_sent() {
     drop(store);
     root.close().await.unwrap();
 }
+
+#[tokio::test]
+async fn distinct_runs_do_not_block_and_takeover_fences_prior_claim() {
+    let directory = tempfile::tempdir().unwrap();
+    let (root, store) = open(directory.path(), true).await;
+    let (spec1, contents1) = spec();
+    let run1_admission = Admission::new(spec1.clone(), UnixMillis(1), contents1);
+    let run1 = run1_admission.run();
+    store.admit(run1_admission).await.unwrap();
+
+    let mut spec2 = spec1.clone();
+    spec2.session_id = "other-session".into();
+    spec2.turn_id = "other-turn".into();
+    spec2.trigger = Trigger::Message {
+        message_id: "other-msg".into(),
+    };
+    let blob2 = ContentBlob::json(&"selection-2").unwrap();
+    spec2.tool_selection = blob2.reference().clone();
+    let run2_admission = Admission::new(spec2, UnixMillis(1), vec![blob2]);
+    let run2 = run2_admission.run();
+    store.admit(run2_admission).await.unwrap();
+
+    let claim1 = store.claim(run1).await.unwrap();
+    let claim2 = store.claim(run2).await.unwrap();
+
+    // Concurrent frontier reads & appends across distinct runs succeed cleanly.
+    let (r1, r2) = tokio::join!(
+        async {
+            let view = store.frontier(run1).await?;
+            store
+                .append(
+                    &claim1,
+                    Head::from(&view),
+                    vec![Change::new(
+                        Fact::StopRequested {
+                            diagnostic: "r1".into(),
+                            requester: StopRequester::Internal,
+                        },
+                        UnixMillis(2),
+                    )],
+                    vec![],
+                )
+                .await
+        },
+        async {
+            let view = store.frontier(run2).await?;
+            store
+                .append(
+                    &claim2,
+                    Head::from(&view),
+                    vec![Change::new(
+                        Fact::StopRequested {
+                            diagnostic: "r2".into(),
+                            requester: StopRequester::Internal,
+                        },
+                        UnixMillis(2),
+                    )],
+                    vec![],
+                )
+                .await
+        }
+    );
+    r1.unwrap();
+    r2.unwrap();
+
+    // Active business claim is respected by reserve_driver, and explicit claim takeover fences claim1
+    // without disturbing claim2 on run2.
+    assert!(
+        store
+            .reserve_driver(
+                run1,
+                crate::DriverPurpose::Business,
+                tokio_util::sync::CancellationToken::new(),
+            )
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let takeover = store.claim(run1).await.unwrap();
+    let view1 = store.frontier(run1).await.unwrap();
+    let fenced = store
+        .append(
+            &claim1,
+            Head::from(&view1),
+            vec![Change::new(
+                Fact::RunTerminated {
+                    terminal: Terminal::Cancelled,
+                    diagnostic: None,
+                },
+                UnixMillis(3),
+            )],
+            vec![],
+        )
+        .await;
+    assert!(
+        fenced.is_err(),
+        "stale claim1 must be fenced after takeover"
+    );
+
+    // New takeover claim on run1 and existing claim2 on run2 both remain live.
+    store
+        .append(
+            &takeover,
+            Head::from(&view1),
+            vec![Change::new(
+                Fact::RunTerminated {
+                    terminal: Terminal::Cancelled,
+                    diagnostic: None,
+                },
+                UnixMillis(4),
+            )],
+            vec![],
+        )
+        .await
+        .unwrap();
+    let view2 = store.frontier(run2).await.unwrap();
+    store
+        .append(
+            &claim2,
+            Head::from(&view2),
+            vec![Change::new(
+                Fact::RunTerminated {
+                    terminal: Terminal::Cancelled,
+                    diagnostic: None,
+                },
+                UnixMillis(4),
+            )],
+            vec![],
+        )
+        .await
+        .unwrap();
+
+    drop(store);
+    root.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn cancelled_contested_takeover_preserves_prior_claim() {
+    use std::future::Future;
+    use std::task::{Context, Poll, Waker};
+
+    let directory = tempfile::tempdir().unwrap();
+    let (root, store) = open(directory.path(), true).await;
+    let (spec1, contents1) = spec();
+    let run1_admission = Admission::new(spec1, UnixMillis(1), contents1);
+    let run1 = run1_admission.run();
+    store.admit(run1_admission).await.unwrap();
+
+    let claim1 = store.claim(run1).await.unwrap();
+    let slot_read = claim1.ticket.slot.current.read().await;
+
+    let mut pending_takeover = Box::pin(store.claim(run1));
+    let mut cx = Context::from_waker(Waker::noop());
+    assert!(
+        matches!(pending_takeover.as_mut().poll(&mut cx), Poll::Pending),
+        "takeover must wait while prior claim holds slot read lock"
+    );
+
+    // Cancel the contested takeover before releasing the read lock.
+    drop(pending_takeover);
+    drop(slot_read);
+
+    // Prior claim must neither be retired nor superseded.
+    assert!(
+        !claim1.retirement().is_cancelled(),
+        "cancelled takeover must not retire prior claim"
+    );
+    let view1 = store.frontier(run1).await.unwrap();
+    store
+        .append(
+            &claim1,
+            Head::from(&view1),
+            vec![Change::new(
+                Fact::StopRequested {
+                    diagnostic: "still-current".into(),
+                    requester: StopRequester::Internal,
+                },
+                UnixMillis(2),
+            )],
+            vec![],
+        )
+        .await
+        .expect("prior claim must still own SQL writes after cancelled takeover");
+
+    // A non-cancelled takeover must retire and fence claim1 atomically.
+    let claim2 = store.claim(run1).await.unwrap();
+    assert!(claim1.retirement().is_cancelled());
+    let view2 = store.frontier(run1).await.unwrap();
+    assert!(
+        store
+            .append(
+                &claim1,
+                Head::from(&view2),
+                vec![Change::new(
+                    Fact::RunTerminated {
+                        terminal: Terminal::Cancelled,
+                        diagnostic: None,
+                    },
+                    UnixMillis(3),
+                )],
+                vec![],
+            )
+            .await
+            .is_err()
+    );
+    drop((claim1, claim2, store));
+    root.close().await.unwrap();
+}

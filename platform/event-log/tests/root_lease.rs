@@ -140,3 +140,208 @@ async fn relocated_root_keeps_logical_identity_and_blocks_competing_copy() {
     drop(relocated_owner);
     assert_eq!(RootOwner::open(&original, &ns).unwrap().root_id(), root_id);
 }
+
+#[test]
+fn validate_current_fences_marker_tampering_and_parent_rebind() {
+    use maka_event_log::root::ROOT_MARKER;
+    use std::io::{Seek, SeekFrom, Write};
+
+    // 1. In-place overwrite keeping the exact same inode and byte length.
+    {
+        let temp = tempfile::tempdir().unwrap();
+        let ns = namespaces(temp.path());
+        let path = temp.path().join("root");
+        let owner = RootOwner::create(&path, &ns).unwrap();
+        owner.validate_current().unwrap();
+
+        let marker = path.join(ROOT_MARKER);
+        let original = fs::read(&marker).unwrap();
+        let mut tampered = original.clone();
+        let idx = tampered
+            .iter()
+            .position(|b| b.is_ascii_hexdigit())
+            .expect("marker contains hex id bytes");
+        tampered[idx] = if tampered[idx] == b'0' { b'1' } else { b'0' };
+        assert_eq!(tampered.len(), original.len());
+
+        let mut file = fs::OpenOptions::new().write(true).open(&marker).unwrap();
+        file.seek(SeekFrom::Start(0)).unwrap();
+        file.write_all(&tampered).unwrap();
+        file.sync_all().unwrap();
+        drop(file);
+
+        assert!(
+            owner.validate_current().is_err(),
+            "in-place same-length marker overwrite must be fenced immediately"
+        );
+    }
+
+    // 2. Atomic rename-replace of the marker file.
+    {
+        let temp = tempfile::tempdir().unwrap();
+        let ns = namespaces(temp.path());
+        let path = temp.path().join("root");
+        let owner = RootOwner::create(&path, &ns).unwrap();
+        owner.validate_current().unwrap();
+
+        let replacement = path.join("marker.tmp");
+        fs::write(
+            &replacement,
+            br#"{"rootId":"00000000-0000-0000-0000-000000000000"}"#,
+        )
+        .unwrap();
+        fs::rename(&replacement, path.join(ROOT_MARKER)).unwrap();
+
+        assert!(
+            owner.validate_current().is_err(),
+            "atomically replaced marker must be fenced immediately"
+        );
+    }
+
+    // 3. Marker deletion.
+    {
+        let temp = tempfile::tempdir().unwrap();
+        let ns = namespaces(temp.path());
+        let path = temp.path().join("root");
+        let owner = RootOwner::create(&path, &ns).unwrap();
+        owner.validate_current().unwrap();
+
+        fs::remove_file(path.join(ROOT_MARKER)).unwrap();
+        assert!(
+            owner.validate_current().is_err(),
+            "deleted marker must be fenced immediately"
+        );
+    }
+
+    // 4. Ancestor directory renamed and replaced by symlink to another directory (Unix).
+    #[cfg(unix)]
+    {
+        let temp = tempfile::tempdir().unwrap();
+        let ns = namespaces(temp.path());
+        let parent = temp.path().join("parent");
+        let decoy = temp.path().join("decoy");
+        fs::create_dir(&parent).unwrap();
+        fs::create_dir(&decoy).unwrap();
+        let path = parent.join("root");
+        let owner = RootOwner::create(&path, &ns).unwrap();
+        owner.validate_current().unwrap();
+
+        let moved = temp.path().join("parent-moved");
+        fs::rename(&parent, &moved).unwrap();
+        std::os::unix::fs::symlink(&decoy, &parent).unwrap();
+
+        assert!(
+            owner.validate_current().is_err(),
+            "rebound ancestor directory must be fenced immediately"
+        );
+    }
+}
+
+#[tokio::test]
+async fn concurrent_fresh_workspace_creation_converges_on_single_project() {
+    use maka_event_log::{
+        ROOT_MIGRATIONS, RootStore, projects::ProjectRegistration,
+        root_store::SessionCreationRequest,
+    };
+    use serde_json::json;
+    use std::collections::BTreeSet;
+    use std::sync::Arc;
+    use tokio::sync::Barrier;
+
+    let temp = tempfile::tempdir().unwrap();
+    let ns = namespaces(temp.path());
+    let root_path = temp.path().join("root");
+    let workspace = temp.path().join("brand-new-workspace");
+    fs::create_dir(&workspace).unwrap();
+    let ws_str = workspace.to_string_lossy().to_string();
+
+    let owner = Arc::new(RootOwner::create(&root_path, &ns).unwrap());
+    let store = Arc::new(RootStore::open(owner, ROOT_MIGRATIONS).await.unwrap());
+
+    const N: usize = 16;
+    let barrier = Arc::new(Barrier::new(N));
+    let mut set = tokio::task::JoinSet::new();
+    for i in 0..N {
+        let store = store.clone();
+        let ws = ws_str.clone();
+        let barrier = barrier.clone();
+        set.spawn(async move {
+            let writer = store.data_writer().unwrap();
+            // All N tasks plan the fresh workspace BEFORE anyone commits, reproducing the exact race.
+            let plan = store
+                .plan_available_project(
+                    ProjectRegistration {
+                        identity: format!("dir:{ws}"),
+                        name: "brand-new-workspace".into(),
+                        path: ws.clone(),
+                        is_worktree: false,
+                    },
+                    1000 + i as u64,
+                    &writer,
+                )
+                .await
+                .unwrap();
+            barrier.wait().await;
+            let sid = format!("session-race-{i}");
+            let fp = format!("fp-race-{i}");
+            let creation = store
+                .prepare_session_creation(
+                    SessionCreationRequest {
+                        id: &sid,
+                        fingerprint: &fp,
+                        owner_scope: "test/agent",
+                        workspace: move |project_id| {
+                            json!({
+                                "kind": "directory",
+                                "path": ws,
+                                "projectId": project_id,
+                            })
+                        },
+                        project: Some(plan),
+                        now: 1000 + i as u64,
+                    },
+                    &writer,
+                    |binding| {
+                        Ok(json!({
+                            "workspace": binding,
+                            "boundary_revision": 1,
+                        }))
+                    },
+                )
+                .await
+                .expect(
+                    "concurrent fresh-workspace creation must not fail with ProjectError::Changed",
+                );
+            writer.write(creation).await.unwrap();
+            let record = store
+                .get_session::<serde_json::Value>(&sid)
+                .await
+                .unwrap()
+                .expect("session committed");
+            let binding_id = record.configuration["workspace"]["id"]
+                .as_str()
+                .unwrap()
+                .to_owned();
+            let binding_uuid = uuid::Uuid::parse_str(&binding_id).unwrap();
+            let binding = store
+                .workspace_binding::<serde_json::Value>(binding_uuid)
+                .await
+                .unwrap()
+                .expect("workspace binding");
+            binding.workspace["projectId"].as_str().unwrap().to_owned()
+        });
+    }
+
+    let mut project_ids = BTreeSet::new();
+    while let Some(res) = set.join_next().await {
+        project_ids.insert(res.unwrap());
+    }
+    assert_eq!(
+        project_ids.len(),
+        1,
+        "all {N} concurrent creations must converge on a single project_id, got {project_ids:?}"
+    );
+    let projects = store.list_projects().await.unwrap();
+    assert_eq!(projects.len(), 1);
+    Arc::try_unwrap(store).ok().unwrap().close().await.unwrap();
+}

@@ -23,10 +23,19 @@ use maka_agent_state::session_history::snapshot::Adoption;
 use maka_agent_state::session_history::snapshot::ImportedCaptureRequest;
 use maka_event_log::writeback::{Prepared, Statement};
 
+pub(super) enum CopySource {
+    External(ImportSelection),
+    Quick {
+        thread: uuid::Uuid,
+        turns: Vec<QuickTurn>,
+        backend: Option<BackendPreference>,
+    },
+}
+
 impl Owner {
     pub(super) async fn import_copy(
         &self,
-        selection: ImportSelection,
+        input: CopySource,
         path: String,
         title: String,
         operation: &RecoveryRef,
@@ -56,41 +65,64 @@ impl Owner {
         {
             Some((_, original)) => original,
             None => {
-                let reader = self.import_source(&selection.source, scope).await?;
-                let source = maka_agent_facts::import::Source {
-                    adapter: match &reader.source.location {
-                        ImportLocation::Codex { .. } => "codex",
-                        ImportLocation::ClaudeCode { .. } => "claude-code",
-                        ImportLocation::OpenCode { .. } => "opencode",
+                let reader = match &input {
+                    CopySource::External(selection) => {
+                        Some(self.import_source(&selection.source, scope).await?)
                     }
-                    .into(),
-                    session_id: selection.entry.session_id.clone(),
+                    CopySource::Quick { .. } => None,
+                };
+                let source = match (&input, &reader) {
+                    (CopySource::External(selection), Some(reader)) => {
+                        maka_agent_facts::import::Source {
+                            adapter: match &reader.source.location {
+                                ImportLocation::Codex { .. } => "codex",
+                                ImportLocation::ClaudeCode { .. } => "claude-code",
+                                ImportLocation::OpenCode { .. } => "opencode",
+                            }
+                            .into(),
+                            session_id: selection.entry.session_id.clone(),
+                        }
+                    }
+                    (CopySource::Quick { thread, .. }, _) => maka_agent_facts::import::Source {
+                        adapter: "maka-quick-question".into(),
+                        session_id: thread.to_string(),
+                    },
+                    _ => unreachable!(),
                 };
                 let mut capture = capture::Capture::new(
                     self.run_owner(),
                     target.clone(),
-                    source,
+                    source.clone(),
                     operation.operation,
                     history_source::turn(operation),
                     now(),
                 )
                 .await?;
-                let selected = source::Selection {
-                    source_id: selection.source.id,
-                    source_revision: selection.source.revision,
-                    session_id: selection.entry.session_id.clone(),
-                    path: selection.entry.path.clone(),
+                let transcript = match (&input, &reader) {
+                    (CopySource::External(selection), Some(reader)) => {
+                        let selected = source::Selection {
+                            source_id: selection.source.id,
+                            source_revision: selection.source.revision,
+                            session_id: selection.entry.session_id.clone(),
+                            path: selection.entry.path.clone(),
+                        };
+                        let transcript = reader
+                            .adapter
+                            .read_exact(reader, &selected, &mut capture)
+                            .await?;
+                        reader.validate(self).await?;
+                        if preview::digest(&transcript.fingerprint)? != selection.digest
+                            || self.import_sources().await?.revision != selection.source.revision
+                        {
+                            return Err(Failure::Changed);
+                        }
+                        transcript
+                    }
+                    (CopySource::Quick { turns, .. }, _) => {
+                        capture.quick_turns(source, turns).await?
+                    }
+                    _ => unreachable!(),
                 };
-                let transcript = reader
-                    .adapter
-                    .read_exact(&reader, &selected, &mut capture)
-                    .await?;
-                reader.validate(self).await?;
-                if preview::digest(&transcript.fingerprint)? != selection.digest
-                    || self.import_sources().await?.revision != selection.source.revision
-                {
-                    return Err(Failure::Changed);
-                }
                 let (file, fingerprint) = capture.finish(&transcript).await?;
                 let request = ImportedCaptureRequest {
                     id,
@@ -132,11 +164,17 @@ impl Owner {
             .await
             .map_err(|_| Failure::Unknown)?
             .ok_or(Failure::Unavailable)?;
+        let mut selected = workspace.workspace;
         let (candidate, workspace_statement) = self
             .store
             .prepare_creation_workspace(
                 &self.prefix,
-                &workspace.workspace,
+                move |project_id| {
+                    if let Some(project_id) = project_id {
+                        selected.project_id = Some(project_id);
+                    }
+                    selected
+                },
                 Some(workspace.project),
                 &writer,
             )
@@ -150,13 +188,22 @@ impl Owner {
             .creation_policy(scope)
             .await
             .map_err(|_| Failure::Unavailable)?;
+        let (labels, backend) = match input {
+            CopySource::External(_) => (vec![], None),
+            CopySource::Quick {
+                thread, backend, ..
+            } => (
+                vec!["quick-question".into(), format!("quick:{thread}")],
+                backend,
+            ),
+        };
         let configuration = StoredSessionConfiguration {
             incognito: policy.incognito,
             parent_session_id: scope
                 .identity
                 .agent()
                 .map(|source| source.session_id.clone()),
-            backend: None,
+            backend,
             applied_preset: None,
             compaction_prompt: None,
             collaboration_mode: CollaborationMode::Agent,
@@ -164,7 +211,7 @@ impl Owner {
             title,
             title_is_manual: true,
             pinned: false,
-            labels: vec![],
+            labels,
             workspace: binding,
             permissions: policy.permissions,
             boundary_revision: 0,

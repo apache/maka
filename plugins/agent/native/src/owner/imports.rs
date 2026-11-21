@@ -376,8 +376,44 @@ impl Owner {
                 path,
                 title,
             } => {
-                self.import_copy(selection, path, title, operation, scope)
-                    .await
+                self.import_copy(
+                    copy::CopySource::External(selection),
+                    path,
+                    title,
+                    operation,
+                    scope,
+                )
+                .await
+            }
+            ImportChange::QuickQuestion {
+                thread,
+                turns,
+                path,
+                title,
+                backend,
+            } => {
+                if turns.is_empty()
+                    || turns.len() > 32
+                    || turns.iter().any(|t| {
+                        t.question.trim().is_empty()
+                            || t.question.len() > 16000
+                            || t.answer.len() > 131072
+                    })
+                {
+                    return Err(Failure::Invalid);
+                }
+                self.import_copy(
+                    copy::CopySource::Quick {
+                        thread,
+                        turns,
+                        backend,
+                    },
+                    path,
+                    title,
+                    operation,
+                    scope,
+                )
+                .await
             }
             other => {
                 if self.runs.state().await.closing || scope.cancellation.is_cancelled() {
@@ -440,7 +476,9 @@ impl Owner {
                         }
                         current.sources.retain(|source| source.id != id);
                     }
-                    ImportChange::Copy { .. } => unreachable!(),
+                    ImportChange::Copy { .. } | ImportChange::QuickQuestion { .. } => {
+                        unreachable!()
+                    }
                 }
                 if scope.cancellation.is_cancelled() {
                     return Err(Failure::Unavailable);

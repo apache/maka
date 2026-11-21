@@ -104,7 +104,7 @@ pub(crate) fn initialize_connection(
     }
     crate::migration::run(connection, catalog)?;
     connection.execute_batch(
-        "PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL; PRAGMA temp_store = FILE;",
+        "PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL; PRAGMA temp_store = FILE; PRAGMA journal_size_limit = 16777216;",
     )?;
     Ok(())
 }

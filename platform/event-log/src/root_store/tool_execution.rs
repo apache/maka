@@ -83,7 +83,8 @@ impl RootStore {
         store.check_session(session_id)?;
         let owner = store.owner()?;
         store.work_lifetime()?;
-        if !Arc::ptr_eq(&self.log.owned_root()?, &owner.owned_root()?) {
+        let root = self.log.owned_root()?;
+        if !Arc::ptr_eq(&root, owner.root_owner_ref()?) {
             return Err(StoreError::InvalidTransition(
                 "foreign Root work custody".into(),
             ));

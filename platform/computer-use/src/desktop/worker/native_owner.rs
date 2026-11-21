@@ -178,6 +178,12 @@ impl NativePresentationSource {
     }
 }
 
+pub(crate) struct NativeInvocationTarget {
+    pub(crate) epoch: NativeEpochId,
+    pub(crate) expected: Option<NativeGeneration>,
+    pub(crate) coordinate_frame: NativeCoordinateFrame,
+}
+
 pub(crate) struct NativeReply {
     pub source: NativePresentationSource,
     pub result: NativeResult,
@@ -437,16 +443,19 @@ impl NativeOwner {
     }
     pub(crate) async fn invoke(
         &self,
-        name: &str,
-        input: Value,
-        epoch: NativeEpochId,
-        expected: Option<NativeGeneration>,
-        coordinate_frame: NativeCoordinateFrame,
+        tool: (&str, Value),
+        target: NativeInvocationTarget,
         audio: bool,
         cancellation: &CancellationToken,
         language: Language,
         invocation: &InvocationContext<'_>,
     ) -> Result<NativeReply, ToolError> {
+        let (name, input) = tool;
+        let NativeInvocationTarget {
+            epoch,
+            expected,
+            coordinate_frame,
+        } = target;
         if cancellation.is_cancelled() {
             return Err(ToolError::Failed(
                 "Computer Use cancelled before native dispatch".into(),
@@ -590,57 +599,6 @@ impl NativeOwner {
             return Err(ToolError::Failed("native_generation_retired".into()));
         }
         Ok(slot.generation)
-    }
-    pub(crate) async fn audio_completion(
-        &self,
-        epoch: NativeEpochId,
-    ) -> Result<NativeAudioCompletion, ToolError> {
-        let current = self.current.lock().await;
-        let slot = current
-            .as_ref()
-            .filter(|slot| slot.key().epoch == epoch.to_string())
-            .ok_or_else(|| ToolError::Failed("native audio epoch is unavailable".into()))?;
-        let receipt = slot
-            .audio
-            .lock()
-            .map_err(|_| {
-                ToolError::CleanupUnconfirmed("native audio receipt mutex poisoned".into())
-            })?
-            .clone();
-        let (key, output, completion) = receipt
-            .ok_or_else(|| ToolError::Failed("computer audio recording is not active".into()))?;
-        Ok(NativeAudioCompletion {
-            slot: slot.clone(),
-            key,
-            output,
-            completion,
-        })
-    }
-    pub(crate) async fn discard_audio(&self, epoch: NativeEpochId) -> Result<(), ToolError> {
-        let slot = self
-            .current
-            .lock()
-            .await
-            .as_ref()
-            .filter(|slot| slot.key().epoch == epoch.to_string())
-            .cloned();
-        let Some(slot) = slot else {
-            return Ok(());
-        };
-        slot.connection
-            .invoke(
-                Request::NativeDiscardAudio {
-                    key: slot.key(),
-                    output: None,
-                },
-                None,
-                CancellationToken::new(),
-            )
-            .await?;
-        *slot.audio.lock().map_err(|_| {
-            ToolError::CleanupUnconfirmed("native audio receipt mutex poisoned".into())
-        })? = None;
-        Ok(())
     }
     pub(crate) async fn finish_turn(
         &self,
@@ -879,12 +837,11 @@ async fn serve(
                 NativeEvent::Audio { id, result } => write(&mut output, &WorkerFrame::AudioFinished { id, result }).await?,
                 NativeEvent::Control { id, retired_monitor, result } => {
                     if !controls.remove(&id) { return Err(io::Error::other("native control completion identity mismatch")); }
-                    if result.is_ok() {
-                        if let (Some(current), Some(retired)) = (bound.as_mut(), retired_monitor.as_ref()) {
-                            if current.monitor.as_ref().is_some_and(|monitor| Arc::ptr_eq(monitor, retired)) {
-                                current.monitor = None;
-                            }
-                        }
+                    if result.is_ok()
+                        && let (Some(current), Some(retired)) = (bound.as_mut(), retired_monitor.as_ref())
+                        && current.monitor.as_ref().is_some_and(|monitor| Arc::ptr_eq(monitor, retired))
+                    {
+                        current.monitor = None;
                     }
                     write(&mut output, &WorkerFrame::Response { id, result }).await?;
                 },

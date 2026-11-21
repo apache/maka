@@ -80,13 +80,7 @@ impl ComputerAppTarget {
     }
 }
 
-#[cfg(any(
-    all(
-        feature = "native-desktop",
-        any(target_os = "macos", target_os = "windows")
-    ),
-    test
-))]
+#[cfg(any(all(feature = "native-desktop", target_os = "macos"), test))]
 pub(crate) fn macos_target(
     name: String,
     application_id: String,

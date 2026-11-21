@@ -18,7 +18,9 @@
  */
 
 use super::*;
-use std::{fs, io::Write, path::PathBuf, process::Command, time::SystemTime};
+#[cfg(unix)]
+use std::io::Write;
+use std::{fs, path::PathBuf, process::Command, time::SystemTime};
 
 struct Fixture {
     _temp: tempfile::TempDir,

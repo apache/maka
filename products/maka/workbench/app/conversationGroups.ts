@@ -27,6 +27,7 @@ type Groupable = {
   id: string;
   parentSessionId: string | null;
   pinned: boolean;
+  updatedAt?: number;
   workspace: { projectId?: string | null; path: string };
 };
 type Listable = { reference: { id: string }; archived: boolean };
@@ -186,11 +187,78 @@ export function browserOrder(
   });
 }
 
+/** Pinned conversations, then unpinned conversations bucketed by recency while preserving Host page order. */
+export function groupConversationsByTime<Project>(
+  sessions: readonly Groupable[],
+  now = Date.now(),
+): ConversationGroup<Project>[] {
+  const pinned: string[] = [];
+  const unpinned: Groupable[] = [];
+  for (const session of sessions) {
+    if (session.pinned) pinned.push(session.id);
+    else unpinned.push(session);
+  }
+
+  const ref = new Date(now);
+  const todayMs = new Date(ref.getFullYear(), ref.getMonth(), ref.getDate()).getTime();
+  const yesterdayMs = new Date(ref.getFullYear(), ref.getMonth(), ref.getDate() - 1).getTime();
+
+  const today: string[] = [];
+  const yesterday: string[] = [];
+  const earlier: string[] = [];
+  for (const session of unpinned) {
+    const ts = session.updatedAt ?? 0;
+    if (ts >= todayMs) today.push(session.id);
+    else if (ts >= yesterdayMs) yesterday.push(session.id);
+    else earlier.push(session.id);
+  }
+
+  const empty = new Set<string>();
+  const groups: ConversationGroup<Project>[] = [];
+  if (pinned.length)
+    groups.push({
+      key: 'pinned',
+      pinned: true,
+      project: null,
+      path: null,
+      sessions: pinned,
+      nested: empty,
+    });
+  if (today.length)
+    groups.push({
+      key: 'time:today',
+      pinned: false,
+      project: null,
+      path: null,
+      sessions: today,
+      nested: empty,
+    });
+  if (yesterday.length)
+    groups.push({
+      key: 'time:yesterday',
+      pinned: false,
+      project: null,
+      path: null,
+      sessions: yesterday,
+      nested: empty,
+    });
+  if (earlier.length)
+    groups.push({
+      key: 'time:earlier',
+      pinned: false,
+      project: null,
+      path: null,
+      sessions: earlier,
+      nested: empty,
+    });
+  return groups;
+}
+
 /** Resolve creation through an owned workspace, never a display path. */
 export function groupWorkspace(
   group: ConversationGroup<Pick<AgentProject, 'reference' | 'archived' | 'available' | 'path'>>,
 ): AgentWorkspaceSelection | null {
-  if (group.pinned) return null;
+  if (group.pinned || group.key.startsWith('time:')) return null;
   if (group.project) {
     const project = group.project;
     if (project.archived || !project.available || !project.path) return null;

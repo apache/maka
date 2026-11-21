@@ -39,12 +39,10 @@ fn executable_tempdir() -> tempfile::TempDir {
 mod candidate;
 
 mod initialize;
-#[allow(dead_code)]
-#[path = "../../../../../platform/transport/tests/integration/support/mod.rs"]
-mod local_fixture;
 #[cfg(target_os = "linux")]
 mod network_sandbox;
 
+mod run;
 mod sandbox;
 mod startup;
 mod terminal_shell;

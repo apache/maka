@@ -188,15 +188,17 @@ async fn project_item(
             let mut row = projection::project(
                 &data,
                 item,
-                cache.source.as_ref().expect("current original Run"),
                 address,
                 &mut cache.views,
-                cache.executor.as_ref(),
-                cache.final_attempt,
-                cache
-                    .timing
-                    .as_ref()
-                    .is_some_and(|timing| timing.finished.is_some()),
+                projection::RunProjection {
+                    source: cache.source.as_ref().expect("current original Run"),
+                    executor: cache.executor.as_ref(),
+                    final_attempt: cache.final_attempt,
+                    terminated: cache
+                        .timing
+                        .as_ref()
+                        .is_some_and(|timing| timing.finished.is_some()),
+                },
                 stop,
             )
             .await?

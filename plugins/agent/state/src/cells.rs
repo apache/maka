@@ -50,7 +50,7 @@ impl CellsStore {
     pub async fn value(&self, session: &str, key: &str) -> Result<Option<Vec<u8>>, StoreError> {
         self.data.query(ReadValue(session.into(), key.into())).await
     }
-    pub async fn loaded(&self, session: &str) -> Result<BTreeSet<String>, StoreError> {
+    pub async fn loaded(&self, session: &str) -> Result<Vec<String>, StoreError> {
         self.data.query(ReadLoaded(session.into())).await
     }
     pub async fn content(
@@ -128,7 +128,7 @@ impl maka_session_state::SessionDataReader for Reader {
             })?
             .map_err(|e| maka_session_state::Error::Unavailable(e.to_string()))
     }
-    fn loaded(&self) -> maka_session_state::Result<BTreeSet<String>> {
+    fn loaded(&self) -> maka_session_state::Result<Vec<String>> {
         let cells = self.cells.clone();
         let session = self.session.clone();
         let (reply, observed) = std::sync::mpsc::sync_channel(1);
@@ -220,7 +220,7 @@ impl Query for ReadValue {
 }
 struct ReadLoaded(String);
 impl Query for ReadLoaded {
-    type Output = BTreeSet<String>;
+    type Output = Vec<String>;
     fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
         sql::loaded(c, &self.0)
     }

@@ -81,6 +81,8 @@ export function createPreviewDialog(props: {
 export function createSidebarHover(available: () => boolean) {
   const shown = signal(false);
   let waitForExit = false;
+  let inside = false;
+  let held = 0;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const cancel = () => clearTimeout(timer);
   const close = () => {
@@ -97,13 +99,19 @@ export function createSidebarHover(available: () => boolean) {
     suppressUntilExit() {
       waitForExit = true;
     },
-    hover(inside: boolean) {
-      if (!inside) waitForExit = false;
+    hold(active: boolean) {
+      held = Math.max(0, held + (active ? 1 : -1));
+      if (held > 0) cancel();
+      else if (!inside && shown()) timer = setTimeout(close, 180);
+    },
+    hover(entered: boolean) {
+      inside = entered;
+      if (!entered) waitForExit = false;
       if (waitForExit) return;
       cancel();
       if (platform.idiom !== 'desktop' || !available()) return;
-      if (inside) shown.set(true);
-      else timer = setTimeout(close, 180);
+      if (entered) shown.set(true);
+      else if (held === 0) timer = setTimeout(close, 180);
     },
   };
 }

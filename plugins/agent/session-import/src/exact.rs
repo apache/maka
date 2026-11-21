@@ -202,6 +202,7 @@ impl ExactPart {
                             projection: DurableToolProjection::Content { parts },
                             is_error,
                             loaded_tools: std::collections::BTreeSet::new(),
+                            display_budget_chars: None,
                         },
                     },
                 })

@@ -28,6 +28,7 @@ pub(super) struct FrozenMaterializer {
     pub cut: HistoryCut,
     pub run: RunId,
     pub frozen: FrozenInput,
+    pub surface: CompositionSurface,
     pub request: RequestSpec,
     pub access: Arc<crate::owner::RunAccess>,
     pub model_source: Arc<Source>,
@@ -61,7 +62,7 @@ impl FrozenMaterializer {
                     ||preparation::route_identity(&model.provider)?!=self.frozen.route_identity
                     ||recovery.protocol!=format!("{PROTOCOL}/recovery")||recovery.version!=VERSION
                     ||recovery.request!=self.request.request||recovery.adapter!=self.frozen.adapter
-                    ||recovery.contract!=original_recovery_contract(&binding,&model.provider,&self.request.composition.tools,self.frozen.operation){
+                    ||recovery.contract!=original_recovery_contract(&binding,&model.provider,&self.surface.tools,self.frozen.operation){
                     return Err(unsupported("current-frozen-model-dispatch-contract"));
                 }
                 Ok(())
@@ -125,7 +126,7 @@ impl FrozenMaterializer {
             preparation::prepare_wire(
                 &settings,
                 &mut prompt,
-                &self.request.composition.tools,
+                &self.surface.tools,
                 self.request.composition.max_output_tokens,
                 cancellation,
             )
@@ -133,8 +134,8 @@ impl FrozenMaterializer {
             let rebuilt = preparation::prepare_request(
                 &settings,
                 prompt.clone(),
-                self.request.composition.tools.clone(),
-                self.request.composition.max_output_tokens,
+                self.surface.tools.clone(),
+                preparation::OutputBudget::Frozen(self.request.composition.max_output_tokens),
                 self.request.accounting.purpose,
                 None,
             )?;

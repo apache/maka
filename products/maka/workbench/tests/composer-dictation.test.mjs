@@ -19,7 +19,7 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { dictateIntoDraft } from '../app/composerDictation.ts';
+import { dictateIntoDraft, speechEndpoint } from '../app/composerDictation.ts';
 
 test('dictation replaces the captured UTF-16 selection in an editable draft', async () => {
   const draft = '🎙今天开会';
@@ -77,4 +77,25 @@ test('a concurrent edit preserves both the draft and the returned transcription'
     ),
     { kind: 'changed', text: 'world' },
   );
+});
+
+test('launcher dictation finishes after a phrase and a pause, including a quiet tail', () => {
+  const sample = speechEndpoint(0);
+  for (const at of [300, 390, 480]) assert.equal(sample(at, 0.6), undefined);
+  assert.equal(sample(1400, 0.06), undefined);
+  assert.equal(sample(1500, 0.5), undefined);
+  assert.equal(sample(2699, 0.05), undefined);
+  assert.equal(sample(2700, 0.05), 'finish');
+});
+
+test('silence or a single click never submits an empty launcher recording', () => {
+  const sample = speechEndpoint(0);
+  assert.equal(sample(100, 0.95), undefined);
+  assert.equal(sample(190, 0.01), undefined);
+  assert.equal(sample(12000, 0.01), 'cancel');
+  assert.equal(speechEndpoint(0)(120000, -1), 'cancel');
+  const limit = speechEndpoint(0);
+  limit(0, 0.8);
+  limit(180, 0.8);
+  assert.equal(limit(120000, -1), 'finish');
 });

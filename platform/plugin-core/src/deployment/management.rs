@@ -212,6 +212,8 @@ pub struct UiInstance {
     pub instance: InstanceId,
     pub path: Vec<String>,
     pub package: PackageRef,
+    #[serde(default)]
+    pub presentation: crate::package::PackagePresentation,
     pub configuration: serde_json::Value,
     pub module: String,
     #[serde(rename = "definitionBasis")]

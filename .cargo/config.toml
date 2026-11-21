@@ -33,3 +33,9 @@ rustflags = [
 # rustc own incremental artifacts for this workspace.
 [build]
 rustc-wrapper = ""
+
+# Disable SQLite's global MEMSTATUS allocator mutex at compile time so
+# concurrent WAL readers and the writer do not serialize on sqlite3Malloc
+# without relying on a racy runtime sqlite3_config() call.
+[env]
+LIBSQLITE3_FLAGS = "SQLITE_DEFAULT_MEMSTATUS=0"

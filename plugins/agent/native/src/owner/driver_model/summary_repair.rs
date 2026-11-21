@@ -227,8 +227,23 @@ impl DriverModel {
                         instruction,
                     )
                     .await?;
-                self.prepare_summary_input(&mut prompt, &model, frozen.language, native_compaction)
+                // The provider rejected this history as too long, so the configured window did
+                // not hold; the size that overflowed is the only bound known to be too large.
+                let budget = (!native_compaction).then(|| {
+                    maka_agent_engine::context_input::summary_budget(model.context.as_ref())
+                        .min(prompt.breakdown().estimated_tokens() / 4 * 3)
+                });
+                self.prepare_summary_input(&mut prompt, &model, frozen.language, budget)
                     .await?;
+            }
+            // Excerpts no longer share the request's cached prefix, so its tool definitions
+            // would only take window the summary needs.
+            let excerpted = !repair && !native_compaction;
+            let mut surface: CompositionSurface = reader
+                .decode(view.run, &request.composition.surface)
+                .await?;
+            if excerpted {
+                surface.tools.clear();
             }
             let settings = PromptSettings {
                 operation,
@@ -245,7 +260,7 @@ impl DriverModel {
                 } else {
                     context.and_then(|value| value.model_context_window)
                 },
-                tool_choice: if repair {
+                tool_choice: if repair || excerpted {
                     ToolChoiceMode::None
                 } else {
                     ToolChoiceMode::Auto
@@ -259,16 +274,21 @@ impl DriverModel {
             preparation::prepare_wire(
                 &settings,
                 &mut prompt,
-                &request.composition.tools,
+                &surface.tools,
                 output,
                 &self.cancellation,
             )
             .await?;
+            let output_budget = if repair {
+                preparation::OutputBudget::Frozen(request.composition.max_output_tokens)
+            } else {
+                preparation::OutputBudget::Compute(model.main_output_limit)
+            };
             let prepared = preparation::prepare_request(
                 &settings,
                 prompt.clone(),
-                request.composition.tools.clone(),
-                output,
+                surface.tools.clone(),
+                output_budget,
                 ModelPurpose::Summary,
                 None,
             )?;
@@ -294,26 +314,33 @@ impl DriverModel {
                 .collect();
             frozen.layout = layout;
             contents.extend(chunks);
-            let mut provenance: Value = reader.decode(view.run, &request.provenance).await?;
-            current_context(&mut provenance, &model, settings.operation)?;
-            let fields = provenance
-                .as_object_mut()
-                .ok_or_else(|| unsupported("frozen-summary-provenance"))?;
-            if let Some(model) = &options.resume_model {
-                fields.insert("resumeModel".into(), json!(model));
-            }
-            fields.insert("inputDigest".into(), json!(prepared.input_digest));
-            fields.insert("routeIdentity".into(), json!(prepared.route_identity));
-            fields.insert("breakdown".into(), json!(prepared.context_breakdown));
-            fields.insert(
-                "estimatedInputTokens".into(),
-                json!(prepared.estimated_input_tokens),
-            );
-            let provenance = ContentBlob::json(&provenance)?;
-            request.provenance = provenance.reference().clone();
-            contents.push(provenance);
-            request.composition.max_output_tokens = prepared.request.max_output_tokens;
             if !repair {
+                let mut provenance: Value = reader.decode(view.run, &request.provenance).await?;
+                current_context(&mut provenance, &model, settings.operation)?;
+                let fields = provenance
+                    .as_object_mut()
+                    .ok_or_else(|| unsupported("frozen-summary-provenance"))?;
+                if let Some(model) = &options.resume_model {
+                    fields.insert("resumeModel".into(), json!(model));
+                }
+                fields.insert("inputDigest".into(), json!(prepared.input_digest));
+                fields.insert("routeIdentity".into(), json!(prepared.route_identity));
+                fields.insert("breakdown".into(), json!(prepared.context_breakdown));
+                fields.insert(
+                    "estimatedInputTokens".into(),
+                    json!(prepared.estimated_input_tokens),
+                );
+                let provenance = ContentBlob::json(&provenance)?;
+                request.provenance = provenance.reference().clone();
+                contents.push(provenance);
+                request.composition.max_output_tokens = prepared.request.max_output_tokens;
+                if excerpted {
+                    let surface_blob = ContentBlob::json(&surface)?;
+                    request.composition.surface = surface_blob.reference().clone();
+                    request.composition.tool_catalog_digest =
+                        maka_agent_engine::digest(&surface.tools)?;
+                    contents.push(surface_blob);
+                }
                 request.adjudications.clear();
                 request.compaction_recovery = Some(attempt);
             }
@@ -332,7 +359,7 @@ impl DriverModel {
                 contract: original_recovery_contract(
                     &adapter,
                     &model.provider,
-                    &request.composition.tools,
+                    &surface.tools,
                     frozen.operation,
                 ),
             })?;

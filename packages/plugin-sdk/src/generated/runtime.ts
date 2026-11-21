@@ -3154,6 +3154,18 @@ export type AgentImportChange =
       id: string;
     }
   | {
+      kind: 'quick_question';
+      thread: string;
+      /**
+       * @minItems 1
+       * @maxItems 32
+       */
+      turns: [QuickTurn, ...QuickTurn[]];
+      path: string;
+      title: string;
+      backend?: AgentBackendPreference | null;
+    }
+  | {
       kind: 'copy';
       selection: AgentImportSelection;
       path: string;
@@ -5428,6 +5440,7 @@ export interface UiInstance {
   instance: InstanceId;
   path: string[];
   package: PackageRef;
+  presentation?: PackagePresentation;
   configuration: unknown;
   module: string;
   definitionBasis: string;
@@ -5438,6 +5451,20 @@ export interface UiInstance {
   contributions: {
     [k: string]: UiContribution | undefined;
   };
+}
+export interface PackagePresentation {
+  displayName: string;
+  description: string;
+  localizations?: {
+    [k: string]: PackageDescription | undefined;
+  };
+}
+/**
+ * Author-provided copy for plugin discovery; never an authority declaration.
+ */
+export interface PackageDescription {
+  displayName: string;
+  description: string;
 }
 export interface UiText {
   fallback: string;
@@ -5520,20 +5547,6 @@ export interface ManagedInstance {
   structural: boolean;
   disabled: boolean;
   parentDisabled: boolean;
-}
-export interface PackagePresentation {
-  displayName: string;
-  description: string;
-  localizations?: {
-    [k: string]: PackageDescription | undefined;
-  };
-}
-/**
- * Author-provided copy for plugin discovery; never an authority declaration.
- */
-export interface PackageDescription {
-  displayName: string;
-  description: string;
 }
 export interface InstanceSetEnabled {
   expectedRevision: number;
@@ -7814,6 +7827,10 @@ export interface AgentImportPreviewItem {
   kind: AgentImportRecordKind;
   text: string;
   truncated: boolean;
+}
+export interface QuickTurn {
+  question: string;
+  answer: string;
 }
 export interface AgentProjectCursor {
   revision: string;

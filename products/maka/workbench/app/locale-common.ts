@@ -30,6 +30,25 @@ import {
 
 /** Shared interface terms have one translation owner across every surface. */
 export const commonMessages = {
+  'New quick question': ['New quick question', '新建快问', '新建快問'],
+  'Save new quick questions to conversations': [
+    'Save new quick questions to conversations',
+    '将新快问自动存为会话',
+    '將新快問自動存為對話',
+  ],
+  'Applies to new quick questions. You can add an earlier one from its actions menu.': [
+    'Applies to new quick questions. You can add an earlier one from its actions menu.',
+    '仅对新快问生效。历史快问可以从操作菜单转为会话。',
+    '僅對新快問生效。歷史快問可以從操作選單轉為對話。',
+  ],
+  'Continue as a conversation': ['Continue as a conversation', '转为正式会话', '轉為正式對話'],
+  'Continue in the main window to keep chatting.': [
+    'Continue in the main window to keep chatting.',
+    '请转为正式会话继续聊。',
+    '請轉為正式對話繼續聊。',
+  ],
+  'Session chat': ['Session chat', '普通会话', '一般對話'],
+  'Quick Q&A': ['Quick Q&A', '快问快答', '快問快答'],
   'Quick question': ['Quick question', '快问', '快問'],
   'Continue last question': ['Continue last question', '继续上次提问', '繼續上次提問'],
   'Ask a question': ['Ask a question', '输入问题', '輸入問題'],
@@ -333,7 +352,6 @@ export const commonMessages = {
   Name: ['Name', '名称', '名稱'],
   Open: ['Open', '打开', '開啟'],
   Recommended: ['Recommended', '推荐', '推薦'],
-  'Recently used': ['Recently used', '最近使用', '最近使用'],
   'Frequently used': ['Frequently used', '常用', '常用'],
   'Search tools or ask Maka': [
     'Search tools or ask Maka',
