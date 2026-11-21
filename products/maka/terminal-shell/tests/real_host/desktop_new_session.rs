@@ -4410,7 +4410,14 @@ async fn desktop_sidebar_customizes_features_switches_order_and_expands_full_wid
     desktop.artifact("sidebar-after-more-features");
     desktop.press("Show Rooms in sidebar").await;
     desktop.key("escape", false);
-    desktop.control("Rooms").await;
+    desktop
+        .until("closing More features did not leave Rooms pinned", || {
+            // The open popover has its own Rooms button over the sidebar.
+            (desktop.controls("Show Rooms in sidebar").is_empty()
+                && desktop.controls("Rooms").len() == 1)
+                .then_some(())
+        })
+        .await;
 
     desktop.press("Sort by time").await;
     desktop.control("Group by project").await;
