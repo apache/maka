@@ -54,12 +54,12 @@ websocket = ["nsh-core/websocket"]
 # App self-updates (`nsh/updater`). Without it a check finds no update.
 updater = ["nsh-core/updater"]
 
-# Kept so feature lists naming `svg` still build: SVG images are always on
-# (an app that turned it off lost every SVG without a build error).
-svg = []
+# SVG images (resvg). Without it an SVG is recognized and shows nothing,
+# its load failing with a message naming the feature.
+svg = ["nsh-core/svg"]
 
 [dependencies]
-nsh-core = { workspace = true, features = ["svg"] }
+nsh-core.workspace = true
 nsh-engine.workspace = true
 nsh-base.workspace = true
 serde_json.workspace = true

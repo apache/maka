@@ -242,7 +242,7 @@
   crate. It reads each variant's size: one that cannot be read, or whose pixels are off, fails the build (a proc macro
   has errors only, where the bundler warns about the size). A proc macro cannot read nsh-core, so its `VARIANT_SCALES`
   repeats `IMAGE_SCALES` above 1: change them together.
-- **SVG** (`nsh_core::svg`, always on in every native platform crate and `nsh-platform-web` never
+- **SVG** (`nsh_core::svg`, cargo feature `svg`, which every native platform crate enables and `nsh-platform-web` never
   does: browsers draw SVG with `<img>`, and the tint mask works on it as on bitmaps). The decoders sniff the bytes
   (`svg::sniff`: `<svg` after a BOM, XML declaration, comments and doctype, or gzip) before their platform decoder and
   draw with resvg. iOS, macOS and Android draw for the requested pixel size, the view's longer side (the size bitmaps
