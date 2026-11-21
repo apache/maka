@@ -61,9 +61,9 @@ the chunks of a split bundle (`Screen.js`: a name that is no native module, with
   `nsh`'s `platform.os` tell which. `nsh/desktop`'s `isAvailable` (`Os::is_desktop`: macOS, Windows, Linux) says
   its window and menu APIs work; it is narrower than desktop behavior, `platform.desktop` (`Environment::desktop()`,
   which browsers in the desktop idiom and terminals have too: "One definition of desktop" in `api-naming.md`).
-- **Platform-only props** are grouped: `ios={{…}}` / `android={{…}}` / `macos={{…}}` / `web={{…}}` / `desktop={{…}}` (macOS, Windows, Linux, browsers in the desktop idiom, and terminals) on
-  elements and components (`IOSProps` / `AndroidProps` / `MacOSProps` / `DesktopProps` in `types.d.ts`, each extending its
-  generated `IOSHostProps` / `AndroidHostProps` / `MacOSHostProps` / `DesktopHostProps`, and extended per element with its own
+- **Platform-only props** are grouped: `ios={{…}}` / `android={{…}}` / `macos={{…}}` / `windows={{…}}` / `web={{…}}` / `desktop={{…}}` (macOS, Windows, Linux, browsers in the desktop idiom, and terminals) on
+  elements and components (`IOSProps` / `AndroidProps` / `MacOSProps` / `WindowsProps` / `DesktopProps` in `types.d.ts`, each extending its
+  generated `IOSHostProps` / `AndroidHostProps` / `MacOSHostProps` / `WindowsHostProps` / `DesktopHostProps`, and extended per element with its own
   `IOS…HostProps` / `MacOS…HostProps` / `Desktop…HostProps`; a test holds every `…HostProps` to an element's props). The renderers
   (`platform_props` in `nsh-js`'s `dom.rs`, `platformProps` in the browser runtime's `browser/dom.js`; a change to one
   goes to both) send only the current platform's object, each key as a prop of its own (keys removed
@@ -71,7 +71,11 @@ the chunks of a split bundle (`Screen.js`: a name that is no native module, with
   `accessibilityLiveRegion`, Dialog `statusBarTranslucent`. iOS: `backdropMaterial` (the system material of a
   backdrop blur), input `inputAccessoryViewID` / `textContentType` / `keyboardAppearance`, Dialog
   `supportedOrientations`, WebView `allowsBackForwardNavigationGestures`. macOS: `backdrop` (an
-  `NSVisualEffectView` material, blending and state, `MacOsBackdrop` in the core). Desktop:
+  `NSVisualEffectView` material, blending and state, `MacOsBackdrop` in the core). Windows: `backdrop` (the
+  `{ material: "blur" }`, the system's blur behind a transparent window, `WindowsBackdrop`). An object with a recognized
+  `material` is required. Both renderers qualify Windows keys before decoding so `windows.backdrop` and the macOS
+  object's `backdrop` have separate payloads and clear independently.
+  Desktop:
   `windowDrag`, WebView `allowsBackForwardNavigationGestures` (macOS' and Linux's trackpad swipes, Windows'
   touchscreen swipes; a system feature of several platforms names each: `#[prop(ios = "x", desktop = "x")]`). What
   an element means on every platform is a top-level prop, ignored where it does not apply (`presentation`,

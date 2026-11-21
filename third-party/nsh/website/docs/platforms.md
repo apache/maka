@@ -105,7 +105,7 @@ In minified builds, keep the bridge class's names (`-keep class com.example.app.
 Most of an app needs no platform checks: elements, styles, layout and modules behave the same everywhere. Where platforms differ, NSH gives the difference one place ([Platform-specific code](./platform-specific.md)):
 
 - **The environment says where the app runs**: in Rust `os()`, `idiom()` and `is_desktop()` (`nsh_core::prelude`), in TSX `platform.os`, `platform.idiom`, `platform.desktop` and `platform.select` from `nsh`. The OS is iOS, Android, macOS, Windows, Linux or the web; in a terminal, the idiom is `"terminal"` and the OS the machine's own.
-- **Platform-only props** go in `ios={{…}}`, `android={{…}}`, `macos={{…}}`, `web={{…}}` or `desktop={{…}}` in TSX (`desktop`: macOS, Windows, Linux, desktop browsers and terminals).
+- **Platform-only props** go in `ios={{…}}`, `android={{…}}`, `macos={{…}}`, `windows={{…}}`, `web={{…}}` or `desktop={{…}}` in TSX (`desktop`: macOS, Windows, Linux, desktop browsers and terminals).
 - **Input follows the platform.** Phones get touches and the software keyboard; desktops get the mouse, the trackpad and the keyboard.
 
 An app's components are drawn with NSH's primitives, so they run on desktops as well as on phones, looking the same on both. A desktop layout is built from the primitives (`view`, `text`, `scroll`, `virtual_list`, …; `View`, `Text`, `Scroll`, `List`, … in TSX) and a check for the desktop, as the gallery's desktop layout is:

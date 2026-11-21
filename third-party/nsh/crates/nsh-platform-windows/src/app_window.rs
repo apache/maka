@@ -44,7 +44,7 @@ use nsh_core::{
     Bounds, Color, EdgeInsets, EventKind, EventPayload, NodeId, Points, ROOT_ID, Size,
     desktop::{
         Backdrop, CloseReason, DesktopCommand, OpenWindow, WindowCloseCause, WindowEvent,
-        WindowKind, WindowMode, WindowPosition, WindowRequest, WindowState,
+        WindowKind, WindowPosition, WindowRequest, WindowState,
     },
     geometry::Edges,
 };
@@ -102,8 +102,6 @@ pub(crate) struct AppWindow {
     reported: Cell<Option<Size<Points>>>,
     /// It was shown once (its first frame drawn).
     opened: Cell<bool>,
-    /// The mode it takes once shown.
-    opening_mode: Cell<Option<WindowMode>>,
     /// `focus()` came while it waited for its first frame.
     focus_on_show: Cell<bool>,
     /// A policy hid it, reported as `Closed`: it waits for the app to
@@ -315,7 +313,6 @@ fn open(surface: &Rc<Surface>, view: &NshView, open: &OpenWindow) {
         invalid: Cell::new(false),
         reported: Cell::new(None),
         opened: Cell::new(false),
-        opening_mode: Cell::new(None),
         focus_on_show: Cell::new(false),
         closed: Cell::new(false),
         state: Cell::new(None),
@@ -360,14 +357,11 @@ fn place(window: &AppWindow, open: &OpenWindow) {
     let options = &open.options;
     if let Some(placement) = open.placement {
         crate::window_state::set_placement(hwnd, placement);
-        window
-            .opening_mode
-            .set(Some(placement.mode).filter(|m| *m != WindowMode::Normal));
         return;
     }
-    window
-        .opening_mode
-        .set(options.default_mode.filter(|m| *m != WindowMode::Normal));
+    if let Some(mode) = options.default_mode {
+        crate::window_state::set_mode(hwnd, mode);
+    }
     let content = options
         .default_size
         .filter(|s| s.width.0 >= 1.0 && s.height.0 >= 1.0)
@@ -428,9 +422,6 @@ fn first_show(surface: &Rc<Surface>, window: &AppWindow) {
     crate::window::show(window.hwnd);
     if window.focus_on_show.take() {
         crate::shell::request(window.hwnd, &WindowRequest::Focus);
-    }
-    if let Some(mode) = window.opening_mode.take() {
-        crate::window_state::set_mode(window.hwnd, mode);
     }
     report_now(surface, window);
 }

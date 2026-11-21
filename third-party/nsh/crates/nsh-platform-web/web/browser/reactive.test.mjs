@@ -53,6 +53,33 @@ test("platform props set the props of the web's and the desktop's objects and ig
   assert.deepEqual(props(), []);
 });
 
+test("platform backdrops set, update and clear with the matching decoder key", () => {
+  const mac = { blending: "behindWindow" };
+  const macUpdated = { material: "sidebar" };
+  const win = { material: "blur" };
+  for (const [os, group, key, first, updated] of [
+    ["windows", "windows", "windows.backdrop", win, {}],
+    ["macos", "macos", "backdrop", mac, macUpdated],
+  ]) {
+    const values = new Values();
+    const calls = [];
+    const dom = createDom((op, args) => calls.push([op, args]), values, { getOwner: () => null }, () => true, () => {});
+    dom.setPlatform({ os, desktop: true });
+    const view = values.makeNode(2);
+    const other = group === "windows" ? "macos" : "windows";
+    dom.rt.prop(view, group, { backdrop: first });
+    dom.rt.prop(view, other, { backdrop: group === "windows" ? mac : win });
+    dom.rt.prop(view, group, { backdrop: updated });
+    dom.rt.prop(view, other, {});
+    dom.rt.prop(view, group, {});
+    assert.deepEqual(calls, [
+      [303, [view, key, first]],
+      [303, [view, key, updated]],
+      [303, [view, key, undefined]],
+    ]);
+  }
+});
+
 test("browser web view refs forward sendInput to the command bridge", () => {
   const values = new Values();
   const calls = [];

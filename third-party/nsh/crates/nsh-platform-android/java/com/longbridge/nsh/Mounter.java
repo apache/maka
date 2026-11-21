@@ -81,9 +81,31 @@ final class Mounter {
     final int[] dialogColors = new int[10];
     /** The alerts shown and not answered yet, by dialog id: what {@link SystemUi#closeDialog} takes back. */
     final SparseArray<android.app.AlertDialog> dialogs = new SparseArray<>();
-    /** The status bar the app asked for last (style, hidden), applied again when the appearance changes. */
+    /**
+     * The status bar the app asked for last (style, hidden; -1: never), applied again when the app's or the system's
+     * appearance changes.
+     */
     private int barStyle = -1;
     private boolean barHidden;
+    /**
+     * The activity's system bars are the app's (an app on its own, {@link NshView#ownSystemBars}): their default
+     * follows the app's appearance. Embedded in another app's activity, its bars stay the host's until the app asks.
+     */
+    boolean ownsSystemBars;
+
+    /**
+     * Sets the system bars the app has: the status bar it asked for last, else, where it owns the bars, the default,
+     * whose icons contrast with the appearance shown, as the navigation bar's. Run again when the app's or the
+     * system's appearance changes: the default depends on both, and the activity's own bar setup reads only the
+     * system's.
+     */
+    void applySystemBars() {
+        int style = Math.max(barStyle, 0);
+        boolean night = night();
+        if (ownsSystemBars) DevActivity.systemBars(SystemUi.activity(context), night);
+        if (barStyle >= 0 || ownsSystemBars) SystemUi.statusBar(context, style, barHidden, night);
+        for (ModalHost m : shownModals) m.systemBars(style, barHidden, night);
+    }
 
     /** Dark appearance as shown: the app's, else the system's. */
     boolean night() {
@@ -493,10 +515,7 @@ final class Mounter {
                         }
                         if (v instanceof StackBox.ScreenBox) ((StackBox.ScreenBox) v).appearanceChanged();
                     }
-                    if (barStyle == 0) {
-                        SystemUi.statusBar(context, barStyle, barHidden, night());
-                        for (ModalHost m : shownModals) m.statusBar(barStyle, barHidden, night());
-                    }
+                    applySystemBars();
                     break;
                 }
                 case LAYOUT_DIRECTION: {
@@ -2052,7 +2071,7 @@ final class Mounter {
                 modal.show();
                 shownModals.remove(modal);
                 shownModals.add(modal);
-                if (barStyle >= 0) modal.statusBar(barStyle, barHidden, night());
+                modal.statusBar(Math.max(barStyle, 0), barHidden, night());
             } else {
                 modal.dismiss();
                 shownModals.remove(modal);
@@ -2062,11 +2081,14 @@ final class Mounter {
         updateBack();
     }
 
-    /** Reports every mounted screen's insets again, after the view's safe area changed. */
+    /** Pads every mounted screen's toolbar and reports its insets again, after the view's safe area changed. */
     void reportAllScreenInsets() {
         for (int i = 0; i < screenOptions.size(); i++) {
             int id = screenOptions.keyAt(i);
-            if (views.get(id) instanceof StackBox.ScreenBox) reportScreenInsets(id, screenOptions.valueAt(i));
+            View v = views.get(id);
+            if (!(v instanceof StackBox.ScreenBox)) continue;
+            ((StackBox.ScreenBox) v).padToolbar();
+            reportScreenInsets(id, screenOptions.valueAt(i));
         }
     }
 
@@ -3563,7 +3585,9 @@ final class Mounter {
     }
 
     void zoom(int id, float scale) {
-        Native.zoom(handle(), id, scale);
+        long handle = handle();
+        if (handle == 0) return;
+        Native.zoom(handle, id, scale);
     }
 
     void scroll(int id, float x, float y, int applied) {
@@ -3573,14 +3597,22 @@ final class Mounter {
     }
 
     void inputScroll(int id, float y, float contentWidth, float contentHeight, float width, float height) {
-        Native.inputScroll(handle(), id, y, contentWidth, contentHeight, width, height);
+        long handle = handle();
+        if (handle == 0) return;
+        Native.inputScroll(handle, id, y, contentWidth, contentHeight, width, height);
     }
 
     void pull(int id, float distance) {
-        outputs(Native.pull(handle(), id, distance));
+        long handle = handle();
+        if (handle == 0) return;
+        outputs(Native.pull(handle, id, distance));
     }
 
-    /** Scroll view {@code id} came to rest: snapping animated values settle. */
+    /**
+     * Scroll view {@code id} came to rest: snapping animated values settle.
+     * Its settle timer can fire after the view is destroyed; the native side
+     * takes a live handle only.
+     */
     void scrollEnded(int id) {
         long handle = handle();
         if (handle == 0) return;
@@ -3589,11 +3621,15 @@ final class Mounter {
 
     void pan(int id, int state, float tx, float ty, float vx, float vy) {
         if (state == 0) for (TouchTracker t : touchTrackers) t.cancelFeedback();
-        outputs(Native.pan(handle(), id, state, tx, ty, vx, vy));
+        long handle = handle();
+        if (handle == 0) return;
+        outputs(Native.pan(handle, id, state, tx, ty, vx, vy));
     }
 
     void transformGesture(int id, boolean rotation, int state, float amount, float velocity) {
         if (state == 0) for (TouchTracker t : touchTrackers) t.cancelFeedback();
-        outputs(Native.transformGesture(handle(), id, rotation, state, amount, velocity));
+        long handle = handle();
+        if (handle == 0) return;
+        outputs(Native.transformGesture(handle, id, rotation, state, amount, velocity));
     }
 }

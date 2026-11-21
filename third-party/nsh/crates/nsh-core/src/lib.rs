@@ -72,6 +72,28 @@ pub mod svg;
 #[cfg(not(feature = "svg"))]
 #[path = "svg_off.rs"]
 pub mod svg;
+
+/// Expanded by `asset!`/`assets!` for an SVG file: fails the build when the
+/// native runtime has no SVG renderer, instead of an image that never shows.
+/// The web runtime leaves `svg` off on purpose: the browser draws SVG.
+#[doc(hidden)]
+#[macro_export]
+#[cfg(any(feature = "svg", target_arch = "wasm32"))]
+macro_rules! __require_svg {
+    () => {};
+}
+#[doc(hidden)]
+#[macro_export]
+#[cfg(not(any(feature = "svg", target_arch = "wasm32")))]
+macro_rules! __require_svg {
+    () => {
+        ::core::compile_error!(
+            "this app uses SVG assets, but NSH was built without the `svg` feature: \
+             add \"svg\" to the features of the nsh-platform-* dependency (it is on \
+             by default; `default-features = false` turns it off)"
+        );
+    };
+}
 pub mod tailwind;
 mod text;
 pub mod text_edit;
@@ -100,7 +122,8 @@ pub use crate::{
         BackdropMaterial, BlendMode, BoxShadow, ColorStop, Cursor, Effects, Filter, GlassEffect,
         Gradient, GradientKind, GradientSize, KeyframeAnimation, Keyframes, MacOsBackdrop,
         MacOsBackdropBlending, MacOsBackdropMaterial, MacOsBackdropState, Outline, Transition,
-        TransitionProps, blur_radius, compose_color_matrices,
+        TransitionProps, WindowsBackdrop, WindowsBackdropMaterial, blur_radius,
+        compose_color_matrices,
     },
     geometry::{Bounds, Corners, Edges, Point, Points, Size},
     image::ImageData,

@@ -2682,6 +2682,13 @@ impl IntoReactive<Option<crate::MacOsBackdrop>> for crate::MacOsBackdrop {
     }
 }
 
+/// A backdrop where an optional one goes (`.windows_backdrop(backdrop)`).
+impl IntoReactive<Option<crate::WindowsBackdrop>> for crate::WindowsBackdrop {
+    fn into_reactive(self) -> super::Reactive<Option<crate::WindowsBackdrop>> {
+        super::Reactive::Static(Some(self))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

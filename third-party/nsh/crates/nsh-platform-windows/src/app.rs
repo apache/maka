@@ -411,16 +411,7 @@ impl AppView {
                 launch.default_mode.unwrap_or(WindowMode::Normal)
             }
         };
-        // SAFETY: a plain query.
-        let visible =
-            unsafe { windows::Win32::UI::WindowsAndMessaging::IsWindowVisible(hwnd).as_bool() };
-        if visible {
-            crate::window_state::set_mode(hwnd, mode);
-        } else {
-            self.surface
-                .main_opening_mode
-                .set(Some(mode).filter(|m| *m != WindowMode::Normal));
-        }
+        crate::window_state::set_mode(hwnd, mode);
     }
 
     /// The channel with the apps this view runs (`nsh/host`;
@@ -905,14 +896,12 @@ pub(crate) fn show_main(surface: &Rc<Surface>, hwnd: HWND) {
     crate::window::set_cloaked(hwnd, true);
     crate::window::fill_background(surface, hwnd);
     surface.paint();
-    crate::window::show(hwnd);
+    crate::window::show_as_it_is(hwnd);
     crate::window::set_cloaked(hwnd, false);
     // The show's own messages worked the state out while the window was
     // still cloaked, and uncloaking sends the window none.
     crate::system::lifecycle_changed(surface);
-    if let Some(mode) = surface.main_opening_mode.take() {
-        crate::window_state::set_mode(hwnd, mode);
-    }
+    crate::window_state::enter_held_mode(hwnd);
 }
 
 /// The content size of `hwnd` in points.

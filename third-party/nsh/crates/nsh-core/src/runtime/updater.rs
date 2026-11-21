@@ -348,9 +348,9 @@ fn unavailable() -> JsError {
 
 #[cfg(all(not(target_arch = "wasm32"), feature = "updater"))]
 mod native {
-    use nsh_updater::{Available, Config, Download};
-
     use std::collections::BTreeMap;
+
+    use nsh_updater::{Available, Config, Download};
 
     use super::*;
 
@@ -1112,6 +1112,14 @@ mod native {
         _: Option<String>,
         _: Option<String>,
     ) -> Result<Option<AppUpdate>, JsError> {
+        // A native app built without the feature cannot update; saying so
+        // beats reporting "no update" forever.
+        #[cfg(not(target_arch = "wasm32"))]
+        return Err(JsError::Error(
+            "this runtime was built without the NSH platform crate's feature `updater`".into(),
+        )
+        .with_code(codes::UNAVAILABLE));
+        #[cfg(target_arch = "wasm32")]
         Ok(None)
     }
 

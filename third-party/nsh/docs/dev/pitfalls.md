@@ -274,6 +274,10 @@ Things that were found the hard way. Read the section of the area you change bef
   negative `additionalSafeAreaInsets` worked out from the window and the stack's frame alone. Deriving what UIKit
   granted by subtracting the compensation already applied looks equivalent and cannot heal: UIKit floors a safe area at
   zero, so after an overshoot that subtraction returns the value already applied, for good.
+- **iOS, a container's transform can shrink a stack's safe area**: UIKit measures a safe area through the
+  transforms around a view, and only on its own layout passes, so a pass while a container shows a stack scaled or
+  moved aside leaves the stack the insets of that picture after the transform is gone. A stack's safe area follows
+  where it is laid out: the navigation controller makes up what a transform takes away.
 - **iPadOS 26, the window controls' corner**: `safeAreaInsets` leaves out the controls a windowed app has at its
   top-leading corner; the safe-area layout region with horizontal corner adaptation
   (`edgeInsetsForLayoutRegion:`) covers them, and also pads both sides alike for the display's rounded corners
@@ -834,7 +838,10 @@ Things that were found the hard way. Read the section of the area you change bef
   controllers in the window's DirectComposition tree for this reason (`compose.rs`); native components that bring an
   `HWND` of their own still cover NSH content (one that brings a composition visual instead,
   `NativeComponent::visual`, is stacked in order). Offscreen drawings of the window have no web views or composed
-  components: the test agent's screenshots capture them (`PrintWindow` with `PW_RENDERFULLCONTENT`).
+  components: the test agent's screenshots capture them (`PrintWindow` with `PW_RENDERFULLCONTENT`). A window has one
+  composition target below its child windows and one above them; a `Windows.UI.Composition` brush (the host backdrop
+  of `windows={{ backdrop }}`) needs a target of its own, so NSH's tree moves above the child windows while one
+  shows (`backdrop.rs`).
 - **`IDCompositionVisual::AddVisual(visual, TRUE, NULL)` puts the visual below all its siblings**, not on top: to
   stack bottom to top, insert each one above the one added before it (`compose.rs`).
 - **A focused WebView2 page has the keyboard in a window of its own** (`Chrome_WidgetWin_0`, a child of the

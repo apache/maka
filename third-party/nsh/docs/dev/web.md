@@ -1065,8 +1065,13 @@ scroll events postpone it, and the browser's `scrollend` cancels it.
   source it is given).
 - **Videos** are `<video>`s: `onLoadStart`, `onLoad` (`loadedmetadata`), `onProgress` on a timer at
   `progressUpdateInterval` while playing, `onBuffer` (`waiting` / `playing` / `canplay`), `onEnd`, `onError`; a
-  deleted video is stopped (a detached media element plays on). Browsers only start a video with sound after a user
-  gesture (a warning says so).
+  deleted video is stopped (a detached media element plays on). `paused` is acted on when it changes or a new source
+  is set (`op_video`), so another prop never plays a video that ended or its controls paused; the browser's own pauses
+  are followed where the other platforms play on: a seek past the end of a video the app has not paused plays it
+  (`seek`), and one the browser paused as it left the document plays again when it is back (`videosBack`). Browsers
+  only start a video with sound after a user gesture (a warning says so): a refused play is tried again on the next
+  update (`playVideo`). `crates/nsh-platform-web/tests/video` checks these in Chrome (`--target web` only: headless
+  runs play no video).
 - **Registered native components** are the native apps' own: their view stays empty, with a warning once per name.
 - **The host** (`nsh`'s `host`): the page answers the app's calls with `createPlayer`'s `host` option, an object whose
   `call(name, args)` returns the result or a promise of it. `Command::HostCall` is the command `hostCall` (`encode.rs`;

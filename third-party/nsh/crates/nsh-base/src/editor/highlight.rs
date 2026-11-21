@@ -162,7 +162,10 @@ impl Syntax {
                 syntect_lines::Syntect::new(hint).map(|h| Box::new(h) as Box<dyn EditorHighlighter>)
             }
             #[cfg(not(feature = "highlight"))]
-            Syntax::Builtin(_) => None,
+            Syntax::Builtin(_) => {
+                crate::syntax::warn_no_highlight();
+                None
+            }
             Syntax::App(make) => Some(make()),
         }
     }

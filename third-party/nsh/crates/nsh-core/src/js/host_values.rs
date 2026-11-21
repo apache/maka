@@ -10,7 +10,8 @@ use crate::{
     CellSlot, EdgeInsets, HeaderItem, HeaderItemContent, HeaderSystemItem, ImageScales,
     ImageSource, KeyboardTaps, ListContentStyle, MacOsBackdrop, MacOsBackdropBlending,
     MacOsBackdropMaterial, MacOsBackdropState, ModalProp, Prop, RevealOptions, ScreenProp,
-    ScrollAlignment, ScrollProp, StatusBarSetting, StatusBarStyle, Viewability,
+    ScrollAlignment, ScrollProp, StatusBarSetting, StatusBarStyle, Viewability, WindowsBackdrop,
+    WindowsBackdropMaterial,
     element::{ElementTarget, JsHost, JsIn, JsKind, JsOwned, JsValue, PropError, TsTypes},
     geometry::{Bounds, Percentage, Points, point, size},
     mount::ModalConfig,
@@ -231,6 +232,27 @@ impl HostValue for MacOsBackdrop {
                 "/** The material a view draws with on macOS (`macos={{{{ backdrop }}}}`). */\n\
                  export interface MacOsBackdrop {{\n  material?: {material};\n  \
                  blending?: {blending};\n  state?: {state};\n}}"
+            )
+        })
+    }
+}
+
+impl HostValue for WindowsBackdrop {
+    fn decode<I: HostInput>(input: &I, cx: &mut HostCx) -> Option<Self> {
+        if !input.is_object() {
+            return None;
+        }
+        Some(Self {
+            material: field(input, "material", cx)?,
+        })
+    }
+
+    fn ts_type(types: &mut TsTypes) -> String {
+        let material = <WindowsBackdropMaterial as HostValue>::ts_type(types);
+        types.declare("WindowsBackdrop", |_| {
+            format!(
+                "/** The material a view draws with on Windows (`windows={{{{ backdrop }}}}`). */\n\
+                 export interface WindowsBackdrop {{\n  material: {material};\n}}"
             )
         })
     }

@@ -169,7 +169,7 @@ go elsewhere under these rules rather than into them.
   system feature (a system gesture, a system material) goes in that platform's object; when several platforms have
   it, each object carries it under one name (WebView's `allowsBackForwardNavigationGestures` in `ios={{…}}` and
   `desktop={{…}}`: iOS, macOS, Windows and Linux have the swipes, Android and the web none; decided by the user,
-  2026-10-29). Each object is typed (`IOSProps`, `AndroidProps`, `MacOSProps`, `DesktopProps`, an element's own
+  2026-10-29). Each object is typed (`IOSProps`, `AndroidProps`, `MacOSProps`, `WindowsProps`, `DesktopProps`, an element's own
   extending them), so a key no platform has fails the type check.
 - **One definition of desktop**: desktop is a desktop OS (macOS, Windows, Linux), the web in the desktop idiom or
   a terminal (`Idiom::desktop_on`, `Environment::desktop()`); everything else is mobile, Mac Catalyst included (it

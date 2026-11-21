@@ -415,10 +415,6 @@ pub(crate) fn command(surface: &Rc<Surface>, command: &DesktopCommand) {
                 {
                     crate::app::show_main(surface, hwnd);
                 }
-                // The app's own mode replaces the one it was to open in.
-                WindowRequest::SetMode(_) | WindowRequest::SetPlacement(_) => {
-                    surface.main_opening_mode.take();
-                }
                 _ => {}
             }
             if !crate::shell::request(hwnd, request) {

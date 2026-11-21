@@ -42,6 +42,21 @@ test("seeking a paused video does not play it", async () => {
   expect(lastRun(app)).toBeGreaterThanOrEqual(CLIP_MS - 500);
 });
 
+test("changing another prop leaves a video that ended at its end", async () => {
+  const app = await open("./Video.tsx");
+  await app.waitFor("Duration: 3.0", { timeout: 10_000 });
+  await app.press("Keep playing at end");
+  await app.waitFor("Keeps playing at end");
+  await app.press("Play");
+  await app.waitFor("Ends: 1", { timeout: 10_000 });
+  // `paused` stayed false: a new volume does not play the clip again.
+  await app.press("Volume 1");
+  await app.waitFor("Volume 0.5");
+  await app.wait(2000);
+  expect(app.shows("Ends: 1")).toBe(true);
+  expect(app.shows("text:/^Time: (0\\.\\d|1\\.\\d|2\\.[0-4])$/")).toBe(false);
+});
+
 test("seeking a video the app has not paused plays it on after its end", async () => {
   const app = await open("./Video.tsx");
   await app.waitFor("Duration: 3.0", { timeout: 10_000 });

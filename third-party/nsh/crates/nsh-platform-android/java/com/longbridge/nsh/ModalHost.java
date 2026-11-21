@@ -238,6 +238,13 @@ final class ModalHost {
         if (dialog != null && !closing) SystemUi.statusBar(dialog.getWindow(), style, hidden, night);
     }
 
+    /** The dialog's bar icons as the activity's again (they changed with the appearance), then its status bar. */
+    void systemBars(int style, boolean hidden, boolean night) {
+        if (dialog == null || closing) return;
+        matchSystemBars(dialog.getWindow());
+        statusBar(style, hidden, night);
+    }
+
     /** The dialog's bar icons as the activity's. */
     @SuppressWarnings("deprecation")
     private void matchSystemBars(Window window) {
