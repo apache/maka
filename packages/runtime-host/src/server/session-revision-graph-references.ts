@@ -220,10 +220,13 @@ export async function prepareLinkedChildCopyReferences(
     // admissible and simply resolves to nothing, while one that crosses a
     // Session or a lineage was never admissible and still fails.
     for (const artifactId of request.artifactIds) {
-      const artifact = await dependencies.artifacts
-        .getInSession(childSessionId, artifactId)
-        .catch(() => null);
-      if (!artifact?.record) continue;
+      let artifact: Awaited<ReturnType<typeof dependencies.artifacts.getInSession>>;
+      try {
+        artifact = await dependencies.artifacts.getInSession(childSessionId, artifactId);
+      } catch {
+        return failure('operation_unavailable', 'Retained linked child Artifact is unavailable');
+      }
+      if (!artifact.record) continue;
       if (
         artifact.record.sessionId !== childSessionId ||
         !lineage.turnIds.has(artifact.record.turnId)
