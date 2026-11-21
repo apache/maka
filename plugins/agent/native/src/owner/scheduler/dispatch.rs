@@ -700,7 +700,7 @@ impl Owner {
             Ok(basis) => basis,
             // Nothing is queued yet, so a fire that keeps failing can settle without racing delivery.
             Err(error)
-                if retries_exhausted
+                if (retries_exhausted && error != "agent_closed" && !self.stop.is_cancelled())
                     || matches!(
                         error.as_str(),
                         "scheduler_authorization_changed"
