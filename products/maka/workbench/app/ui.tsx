@@ -646,7 +646,8 @@ export function Header(props: {
             alignItems: 'center',
             gap: desktop ? 4 : 8,
             maxWidth: desktop ? 180 : 240,
-            minWidth: 0,
+            minWidth: desktop ? 30 : 0,
+            ...(desktop ? { overflow: 'hidden' as const } : {}),
             flexShrink: desktop ? 2 : 1,
           }}
           hoverStyle={desktop ? quietHoverStyle() : { backgroundColor: C.surface }}

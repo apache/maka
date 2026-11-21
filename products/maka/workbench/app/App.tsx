@@ -321,7 +321,8 @@ function App(
     sidebarShown: sidebarExpanded,
     sidebarHover: (inside) => sidebarHover.hover(inside),
     sidebarDocked: () => canDockBrowser(previewShown()),
-    previewDocked: () => previewShown() && canDockPreview(),
+    previewDocked: () =>
+      (previewShown() && canDockPreview()) || Math.min(sideRoom(), sides().length) > 0,
     showSidebar() {
       if (!blocked()) sidebarExpanded.set(true);
     },
@@ -438,7 +439,13 @@ function App(
       openSettings: shell.openSettings,
       sidebarShown: () => true,
       sidebarDocked: () => true,
-      previewDocked: () => false,
+      previewDocked: () => {
+        const index = sides().indexOf(pane);
+        return (
+          (previewShown() && canDockPreview()) ||
+          (index >= 0 && index + 1 < Math.min(sideRoom(), sides().length))
+        );
+      },
       showSidebar() {},
       hideSidebar() {},
       dismissRoute: shell.dismissRoute,
@@ -452,6 +459,7 @@ function App(
       ...sideShell(pane),
       visible: () => true,
       paneVisible: () => true,
+      previewDocked: () => false,
       async openSession(id) {
         if (id === pane.id()) return true;
         if (!(await closeLauncher())) return false;
