@@ -272,6 +272,7 @@ struct Started {
     helper_pid: u32,
 }
 
+#[cfg(unix)]
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ChildExited {
@@ -280,6 +281,7 @@ struct ChildExited {
 }
 
 /// An OS/process closure only. Native business completion is a separate protocol fact.
+#[cfg(unix)]
 #[derive(Serialize, Deserialize)]
 #[serde(
     tag = "kind",
@@ -305,6 +307,7 @@ enum Closure {
         streams_drained: bool,
     },
 }
+#[cfg(unix)]
 impl Closure {
     fn is_closed(&self) -> bool {
         match self {
@@ -530,12 +533,14 @@ impl TaskOwner {
         .await
         .map_err(io::Error::other)??;
         let resource = tokio::task::spawn_blocking(move || -> io::Result<PathBuf> {
-            let mut builder = std::fs::DirBuilder::new();
+            let builder = std::fs::DirBuilder::new();
             #[cfg(unix)]
-            {
+            let builder = {
                 use std::os::unix::fs::DirBuilderExt;
+                let mut builder = builder;
                 builder.mode(0o700);
-            }
+                builder
+            };
             match builder.create(&namespace) {
                 Ok(()) => {}
                 Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
@@ -1317,7 +1322,7 @@ fn publish_proof(resource: &Path, name: &str, value: &impl Serialize) -> io::Res
     owner.sync_all()?;
     Ok(())
 }
-#[cfg(not(target_os = "macos"))]
+#[cfg(all(unix, not(target_os = "macos")))]
 fn publish_proof(_: &Path, _: &str, _: &impl Serialize) -> io::Result<()> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
