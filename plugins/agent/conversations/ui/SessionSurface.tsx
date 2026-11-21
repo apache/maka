@@ -149,7 +149,10 @@ import {
 import {
   browserOrder,
   groupConversations,
+  groupConversationsByTime,
 } from '../../../../products/maka/workbench/app/conversationGroups';
+import { workspaceSessions } from '../../../../products/maka/workbench/app/sessionNesting';
+import { sidebarPreferences } from '../../../../products/maka/workbench/app/sidebarPreferences';
 import {
   WorkspaceBrowser,
   type WorkspaceBrowserProps,
@@ -1968,16 +1971,26 @@ export function createConversationUi(
     const current = overlay();
     if (switching() || busy() || (current && current.kind !== 'sessions')) return;
     const bot = botSession() ?? null;
+    const visible = workspaceSessions(
+      browsing.sessions(),
+      bot,
+      browsing.filter(),
+      platform.idiom !== 'terminal',
+    );
+    const byTime =
+      platform.idiom !== 'terminal' &&
+      browsing.filter() === 'all' &&
+      sidebarPreferences.sortMode() === 'time';
     const rows = browserOrder(
-      groupConversations(
-        browsing.sessions().filter((session) => session.id !== bot),
-        browsing.projects(),
-        false,
-      ),
+      byTime
+        ? groupConversationsByTime(visible)
+        : groupConversations(visible, browsing.projects(), false),
       collapsedGroups(),
       selected(),
       platform.idiom === 'terminal' ? undefined : expandedProjects(),
-      platform.idiom === 'terminal' || browsing.filter() !== 'all' ? undefined : foldedFamilies(),
+      platform.idiom === 'terminal' || browsing.filter() !== 'all' || byTime
+        ? undefined
+        : foldedFamilies(),
     );
     const index = rows.indexOf(selected() ?? '');
     const next = rows[index === -1 ? 0 : index + step];
@@ -2322,9 +2335,11 @@ export function createConversationUi(
       return (
         <WorkspaceBrowser
           {...browserProps}
+          openRooms={input.openRooms}
           navigationMore={input.navigationMore}
           pinSidebar={input.pinSidebar}
           suppressSidebarHover={input.suppressSidebarHover}
+          holdSidebarHover={input.holdSidebarHover}
         />
       );
     },

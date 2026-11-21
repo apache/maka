@@ -4296,6 +4296,141 @@ async fn desktop_system_permission_guidance_uses_native_actions_without_paths() 
     fixture.finish().await;
 }
 
+async fn desktop_sidebar_customizes_features_switches_order_and_expands_full_width() {
+    let fixture = Fixture::configured(Options::default()).await;
+    let workspace_dir = fixture.directory.path().join("workspace").join("maka");
+    std::fs::create_dir_all(&workspace_dir).unwrap();
+    let workspace_path = std::fs::canonicalize(&workspace_dir)
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    let client = fixture.client().await;
+    let registered = mutate(
+        &client,
+        "project",
+        json!({
+            "kind": "register",
+            "path": workspace_path,
+            "expected": null,
+        }),
+    )
+    .await;
+    assert_eq!(registered["kind"], "committed", "{registered}");
+    let project_id = registered["project"]["reference"]["id"]
+        .as_str()
+        .expect("registered project id")
+        .to_owned();
+    let project_name = registered["project"]["name"]
+        .as_str()
+        .expect("registered project name")
+        .to_owned();
+    let backend = json!({
+        "kind": "model",
+        "connectionId": fixture.selection["connectionId"],
+        "modelId": fixture.selection["modelId"],
+    });
+    for index in 1..=8 {
+        let created = mutate(
+            &client,
+            "create",
+            json!({
+                "title": format!("Sidebar task {index}"),
+                "labels": [],
+                "workspace": {
+                    "kind": "project",
+                    "projectId": project_id,
+                    "path": workspace_path,
+                },
+                "backend": backend,
+            }),
+        )
+        .await;
+        assert_eq!(created["kind"], "created", "{created}");
+    }
+    client.close().await.unwrap();
+
+    let desktop = Desktop::open_at(
+        &fixture,
+        &fixture.address,
+        size(
+            nsh_terminal::DevicePixels(1120),
+            nsh_terminal::DevicePixels(860),
+        ),
+        nsh_core::platform::Appearance::Dark,
+    )
+    .await;
+
+    let show_more_label = format!("Show more conversations in {project_name}");
+    let show_fewer_label = format!("Show fewer conversations in {project_name}");
+    let sample_row = desktop.control("Open conversation Sidebar task 8").await;
+    let show_more = desktop.control(&show_more_label).await;
+    assert!(
+        desktop.controls("Waiting for you").is_empty(),
+        "Waiting for you should no longer appear in the sidebar navigation"
+    );
+    assert!(
+        desktop.controls("Rooms").is_empty(),
+        "Rooms should start unpinned behind More features"
+    );
+    assert!(
+        (show_more.left() - sample_row.left()).abs() <= px(1.0)
+            && show_more.size.width >= sample_row.size.width,
+        "Show more button should span the full sidebar row width: show_more={show_more:?}, row={sample_row:?}"
+    );
+    desktop.artifact("sidebar-after-project");
+
+    desktop.press(&show_more_label).await;
+    desktop.control("Open conversation Sidebar task 1").await;
+    desktop.control(&show_fewer_label).await;
+
+    desktop.press("More features").await;
+    desktop.control("Show Rooms in sidebar").await;
+    desktop.artifact("sidebar-after-more-features");
+    desktop.press("Show Rooms in sidebar").await;
+    desktop.key("escape", false);
+    desktop.control("Rooms").await;
+
+    desktop.press("Sort by time").await;
+    desktop.control("Group by project").await;
+    assert!(
+        desktop.controls(&show_fewer_label).is_empty(),
+        "chronological mode should not render project show-more rows"
+    );
+    assert!(
+        desktop
+            .controls(&format!("Collapse {project_name}"))
+            .is_empty(),
+        "chronological mode should hide project group headings"
+    );
+    desktop.artifact("sidebar-after-time");
+
+    desktop.press("Group by project").await;
+    desktop.control(&format!("Collapse {project_name}")).await;
+    desktop.control("Sort by time").await;
+
+    desktop.press("Collapse session browser").await;
+    let expand = desktop.control("Expand session browser").await;
+    let composer = desktop.control("Focus message composer").await;
+    desktop.hover_at(expand.center());
+    desktop.hover_at(composer.center());
+    desktop.hover_at(expand.center());
+    desktop.press("More features").await;
+    let rooms_switch = desktop.control("Show Rooms in sidebar").await;
+    desktop.hover_at(rooms_switch.center());
+    tokio::time::sleep(Duration::from_millis(260)).await;
+    desktop.press("Show Rooms in sidebar").await;
+    desktop.key("escape", false);
+    desktop
+        .until(
+            "unpinning Rooms did not remove it from the sidebar navigation",
+            || desktop.controls("Rooms").is_empty().then_some(()),
+        )
+        .await;
+
+    desktop.close().await;
+    fixture.finish().await;
+}
+
 async fn desktop_composer_toolbar_customizes_layout_and_context_usage() {
     let mut fixture = Fixture::configured(Options {
         usage_limits: true,
@@ -4896,6 +5031,7 @@ pub(crate) const CASES: &[&str] = &[
     "desktop_todo_strip_keeps_its_row_in_place_and_closes_until_the_list_changes",
     "desktop_composer_large_paste_keeps_controls_on_screen",
     "desktop_system_permission_guidance_uses_native_actions_without_paths",
+    "desktop_sidebar_customizes_features_switches_order_and_expands_full_width",
     "desktop_composer_toolbar_customizes_layout_and_context_usage",
     "desktop_composer_sandbox_choice_becomes_the_default",
     "desktop_workspace_stage_inspector_worktrees_and_fullscreen_review",
@@ -5023,6 +5159,8 @@ pub(crate) fn run(name: &str) {
         "desktop_system_permission_guidance_uses_native_actions_without_paths" => {
             runtime.block_on(desktop_system_permission_guidance_uses_native_actions_without_paths())
         }
+        "desktop_sidebar_customizes_features_switches_order_and_expands_full_width" => runtime
+            .block_on(desktop_sidebar_customizes_features_switches_order_and_expands_full_width()),
         "desktop_composer_toolbar_customizes_layout_and_context_usage" => {
             runtime.block_on(desktop_composer_toolbar_customizes_layout_and_context_usage())
         }

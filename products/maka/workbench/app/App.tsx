@@ -31,7 +31,7 @@ import {
   type Signal,
 } from 'nsh';
 import { host as nativeHost } from 'maka/host';
-import { Button, Collapsible } from 'nsh/base';
+import { Button } from 'nsh/base';
 import type { UiModule, UiRootProps } from '../../../../packages/plugin-sdk/src/workbench.js';
 import type {
   ModelSelection,
@@ -65,15 +65,7 @@ import {
 import { createWorkbenchPlugins, type PanelRoute } from './plugins/context';
 import { PluginPanel } from './plugins/PluginPanel';
 import { currentLocale, tr } from './locale';
-import {
-  bodyTextStyle,
-  C,
-  controlStyle,
-  controlHoverStyle,
-  controlFocusStyle,
-  sidebarDisclosureStyle,
-} from './ui';
-import { Icon } from './Icon';
+import { bodyTextStyle, C, controlStyle, controlHoverStyle, controlFocusStyle } from './ui';
 
 type Configuration = {
   navigation: UiTarget;
@@ -110,7 +102,6 @@ function App(
   const selected = signal(saved === null ? nativeHost.initialSession : saved.sessionId);
   const sidebarExpanded = signal(saved?.sidebarExpanded ?? true);
   const workspaceMode = signal<'conversations' | 'rooms'>(saved?.workspaceMode ?? 'conversations');
-  const moreNavigation = signal(false);
   const roomWorkspace = signal<RoomWorkspaceHandle | null>(null);
   const settingsOpened = signal(saved?.settings !== null && saved?.settings !== undefined);
   const settingsModel = signal<ModelSelection | undefined>(saved?.settings?.model);
@@ -395,24 +386,7 @@ function App(
       </Each>
     </View>
   );
-  const navigationMore = () => (
-    <Collapsible open={moreNavigation()} reveal content={modeSwitch()}>
-      <View
-        role="button"
-        accessibilityLabel={moreNavigation() ? tr('Less navigation') : tr('More navigation')}
-        accessibilityState={{ expanded: moreNavigation() }}
-        onPress={() => moreNavigation.set(!moreNavigation())}
-        style={{ ...sidebarDisclosureStyle, gap: 6 }}
-        hoverStyle={controlHoverStyle()}
-        focusStyle={controlFocusStyle()}
-      >
-        <Text style={{ color: C.muted, fontSize: 12 }}>
-          {moreNavigation() ? tr('Less navigation') : tr('More navigation')}
-        </Text>
-        <Icon name={moreNavigation() ? 'up' : 'down'} size={12} color={C.muted} />
-      </View>
-    </Collapsible>
-  );
+
   function openBeside(id: string) {
     if (!alive || blocked() || id === selected() || sideFor(id)) return;
     if (assistant()?.id() === id) {
@@ -541,8 +515,9 @@ function App(
           navigation={(temporary) =>
             runtime.renderView(configuration.navigation, conversationNavigationView, {
               shell,
-              navigationMore,
+              openRooms: () => void switchWorkspace('rooms'),
               suppressSidebarHover: sidebarHover.suppressUntilExit,
+              holdSidebarHover: temporary ? sidebarHover.hold : undefined,
               pinSidebar: temporary ? shell.showSidebar : undefined,
             })
           }

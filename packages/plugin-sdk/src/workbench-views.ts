@@ -165,9 +165,11 @@ export interface ConversationPreviewHandle {
 
 export interface ConversationNavigationInput<Element = unknown> {
   readonly shell: ConversationShell;
-  navigationMore(): Element;
+  openRooms?: (() => void) | undefined;
+  navigationMore?: (() => Element) | undefined;
   pinSidebar?: (() => void) | undefined;
   suppressSidebarHover?: (() => void) | undefined;
+  holdSidebarHover?: ((active: boolean) => void) | undefined;
 }
 
 /** What a conversation drawn compactly, with its input on top, leaves to its host. */
