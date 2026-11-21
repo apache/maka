@@ -326,6 +326,35 @@ mod tests {
         app.press("role:button[Show image at actual size]").unwrap();
         app.wait_for("text:/· 100%/").unwrap();
 
+        // A taking trackpad listener owns the gesture: the outer native
+        // binding must not apply the same scale again at PinchEnd.
+        app.trackpad_pinch("label:Image viewport", 1.44).unwrap();
+        app.wait_for("text:/· 144%/").unwrap();
+        app.trackpad_pinch("label:Image viewport", 1.0 / 1.44)
+            .unwrap();
+        app.wait_for("text:/· 100%/").unwrap();
+
+        app.hold_keys("ctrl", true).unwrap();
+        app.wheel(
+            "label:Image viewport",
+            nsh_core::geometry::point(nsh_core::prelude::px(0.0), nsh_core::prelude::px(-10.0)),
+        )
+        .unwrap();
+        app.wait_for("text:/· 108%/").unwrap();
+        app.wheel(
+            "label:Image viewport",
+            nsh_core::geometry::point(nsh_core::prelude::px(0.0), nsh_core::prelude::px(10.0)),
+        )
+        .unwrap();
+        app.wait_for("text:/· 100%/").unwrap();
+        app.hold_keys("ctrl", false).unwrap();
+
+        app.press("label:Image viewport").unwrap();
+        app.press("label:Image viewport").unwrap();
+        app.wait_for("text:/· 200%/").unwrap();
+        app.press("role:button[Show image at actual size]").unwrap();
+        app.wait_for("text:/· 100%/").unwrap();
+
         // Escape closes the full-screen viewer.
         app.press_key("escape").unwrap();
         assert!(
@@ -409,8 +438,8 @@ mod tests {
         // Inline render uses the light palette.
         let inline = pending.recv_timeout(nsh_testing::WAIT).unwrap();
         assert!(
-            inline.svg.contains("#1c1d1f"),
-            "expected light text token in inline SVG"
+            !inline.svg.contains("var(--pele-"),
+            "inline SVG colors must be resolved for an image document"
         );
         let inline_outlined = outline_with_fonts(&inline.svg, fonts()).unwrap();
         inline
@@ -425,9 +454,13 @@ mod tests {
         // Opening the dark full-screen viewer requests a dark-palette diagram.
         app.press("role:button[Open diagram full screen]").unwrap();
         let dark = pending.recv_timeout(nsh_testing::WAIT).unwrap();
+        assert_ne!(
+            dark.svg, inline.svg,
+            "the viewer must request a new palette instead of reusing the inline SVG"
+        );
         assert!(
-            dark.svg.contains("#f0f1f3"),
-            "expected dark text token in viewer SVG"
+            !dark.svg.contains("var(--pele-"),
+            "viewer SVG colors must be resolved for an image document"
         );
         let dark_outlined = outline_with_fonts(&dark.svg, fonts()).unwrap();
         dark.reply

@@ -216,6 +216,25 @@ export function ImageViewer(props: { image: ViewerImage; close(): void }) {
     alive = false;
     unbind();
   });
+  const headerStyle = {
+    position: 'absolute',
+    flexDirection: 'row',
+    gap: 16,
+    alignItems: 'center',
+    pointerEvents: 'box-none',
+    ...(ownTitleBar
+      ? {
+          top: 0,
+          left: 0,
+          right: 0,
+          minHeight: TITLE_BAR_HEIGHT,
+          paddingTop: 6,
+          paddingBottom: 6,
+          paddingLeft: 16 + controlsLeft(true),
+          paddingRight: 16 + controlsRight(true),
+        }
+      : { top: 16, left: 16, right: 16 }),
+  } as const;
   return (
     <Dialog
       animation="none"
@@ -231,10 +250,10 @@ export function ImageViewer(props: { image: ViewerImage; close(): void }) {
       >
         <View
           accessibilityLabel={tr('Image viewport')}
+          focusable={false}
           pan={{ x, y }}
           pinch={{ scale }}
           onWheel={handleWheel}
-          onPinch={handlePinch}
           onPinchEnd={handlePinchEnd}
           onPress={handleViewportPress}
           onLayout={({ bounds: event }) => {
@@ -254,25 +273,38 @@ export function ImageViewer(props: { image: ViewerImage; close(): void }) {
             cursor: 'grab',
           }}
         >
-          <If when={viewport().width > 0 && viewport().height > 0}>
-            <Image
-              src={image.uri}
-              role="image"
-              accessibilityLabel={image.title}
-              onError={(reason) => {
-                if (alive) error.set(reason.message);
-              }}
-              style={[
-                {
-                  width: image.width,
-                  height: image.height,
-                  flexShrink: 0,
-                  transform: [{ translateX: x }, { translateY: y }, { scale }],
-                },
-                { pointerEvents: 'none', objectFit: 'contain' },
-              ]}
-            />
-          </If>
+          {/* Trackpad pinches belong to onPinch alone; touchscreen pinches still reach the outer native binding. */}
+          <View
+            onPinch={handlePinch}
+            style={{
+              flex: 1,
+              alignSelf: 'stretch',
+              minWidth: 0,
+              minHeight: 0,
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}
+          >
+            <If when={viewport().width > 0 && viewport().height > 0}>
+              <Image
+                src={image.uri}
+                role="image"
+                accessibilityLabel={image.title}
+                onError={(reason) => {
+                  if (alive) error.set(reason.message);
+                }}
+                style={[
+                  {
+                    width: image.width,
+                    height: image.height,
+                    flexShrink: 0,
+                    transform: [{ translateX: x }, { translateY: y }, { scale }],
+                  },
+                  { pointerEvents: 'none', objectFit: 'contain' },
+                ]}
+              />
+            </If>
+          </View>
         </View>
         {/* Light mode on Windows/Linux draws dark window caption glyphs in the top-right corner; back them with chrome fill so they remain visible over the dark viewer. */}
         <If when={ownTitleBar && !isDark() && controlsRight(true) > 0}>
@@ -291,36 +323,7 @@ export function ImageViewer(props: { image: ViewerImage; close(): void }) {
             ]}
           />
         </If>
-        <View
-          style={
-            ownTitleBar
-              ? {
-                  position: 'absolute',
-                  top: 0,
-                  left: 0,
-                  right: 0,
-                  minHeight: TITLE_BAR_HEIGHT,
-                  paddingTop: 6,
-                  paddingBottom: 6,
-                  paddingLeft: 16 + controlsLeft(true),
-                  paddingRight: 16 + controlsRight(true),
-                  flexDirection: 'row',
-                  gap: 16,
-                  alignItems: 'center',
-                  pointerEvents: 'box-none',
-                }
-              : {
-                  position: 'absolute',
-                  top: 16,
-                  left: 16,
-                  right: 16,
-                  flexDirection: 'row',
-                  gap: 16,
-                  alignItems: 'center',
-                  pointerEvents: 'box-none',
-                }
-          }
-        >
+        <View style={headerStyle}>
           <View style={[{ flex: 1, gap: 4 }, { pointerEvents: 'none' }]}>
             <Text style={[{ ...captionTextStyle, color: DARK.text }, { numberOfLines: 1 }]}>
               {image.title}

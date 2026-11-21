@@ -236,7 +236,8 @@ export function MermaidView(props: { source(): string; editable?: boolean }) {
       <Each of={images()} key={(image) => image.uri}>
         {(image) => {
           const selected = image();
-          const diagram = (interactive: boolean) => (
+          const interactive = !props.editable;
+          const diagram = (
             <Image
               src={selected.uri}
               accessibilityLabel={interactive ? undefined : tr('Mermaid diagram')}
@@ -245,10 +246,9 @@ export function MermaidView(props: { source(): string; editable?: boolean }) {
                   width: selected.width,
                   maxWidth: '100%',
                   aspectRatio: selected.width / selected.height,
+                  objectFit: 'contain',
                 },
-                interactive
-                  ? { pointerEvents: 'none', objectFit: 'contain' }
-                  : { objectFit: 'contain' },
+                interactive && { pointerEvents: 'none' },
               ]}
               onError={({ message }) => {
                 if (alive && state() === selected) state.set({ kind: 'error', message });
@@ -256,7 +256,7 @@ export function MermaidView(props: { source(): string; editable?: boolean }) {
             />
           );
           // Editable Markdown preview uses clicks on the diagram to reveal its source fence in place.
-          if (props.editable) return diagram(false);
+          if (props.editable) return diagram;
           return (
             <Button
               ref={(node) => {
@@ -273,7 +273,7 @@ export function MermaidView(props: { source(): string; editable?: boolean }) {
               focusStyle={controlFocusStyle()}
               onPress={() => openViewer(selected, diagramButton)}
             >
-              {diagram(true)}
+              {diagram}
             </Button>
           );
         }}
