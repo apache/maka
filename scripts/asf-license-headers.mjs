@@ -296,6 +296,16 @@ export const exclusionRules = [
       isNamed('.gitignore')(path) ||
       isOneOf('.git-blame-ignore-revs', '.gitattributes', '.mailmap')(path),
   },
+  {
+    id: 'website-machine-readable-entry-points',
+    justification:
+      'Published robots, sitemap, and llms entry points are protocol payloads kept intentionally minimal for crawlers and automated readers; adding an in-band source header would add non-index content to those public files.',
+    matches: isOneOf(
+      'website/public/llms.txt',
+      'website/public/robots.txt',
+      'website/public/sitemap.xml',
+    ),
+  },
 ];
 
 /**
