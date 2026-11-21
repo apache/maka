@@ -276,6 +276,7 @@ pub(super) async fn row(
             has_references: false,
             quotes: Vec::new(),
             final_output: false,
+            reply_info: message.reply_info.clone(),
             final_answer: false,
             model: None,
             origin: None,

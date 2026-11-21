@@ -497,6 +497,11 @@ export const conversationMessages = {
     '浏览器来源：{origin}',
     '瀏覽器來源：{origin}',
   ],
+  'Duration and token usage were not recorded.': [
+    'Duration and token usage were not recorded.',
+    '未记录耗时和 token 用量',
+    '未記錄耗時和 token 用量',
+  ],
   'Cache hit {rate}': ['Cache hit {rate}', '缓存命中 {rate}', '快取命中 {rate}'],
   'Cache hit rate': ['Cache hit rate', '缓存命中率', '快取命中率'],
   'Cache read tokens': ['Cache read tokens', '缓存读取 Token', '快取讀取 Token'],

@@ -26,11 +26,19 @@ import { ContextMenu, MenuItem, TextView } from 'nsh/base';
 import { createMessageMenu, type MessageMenu } from './messageMenu';
 import type { MessageSenders } from './messageSenders';
 import { Icon } from './Icon';
-import { hasTextPrefix, messageBytes, messageKey, senderSession, type Row } from './history';
+import {
+  hasTextPrefix,
+  isReplyWithActions,
+  messageBytes,
+  messageKey,
+  senderSession,
+  type Row,
+} from './history';
 import type { MessageOrigin } from '../../../../packages/plugin-sdk/src/index.js';
 import type { InlineCitation } from './answerCitations';
 import { MarkdownBody } from './MarkdownBody';
 import { SourceText } from './SourceText';
+import { replyDetails } from './replyDetails';
 import { SkillMessage, userMessagePresentation } from './SkillMessage';
 import {
   C,
@@ -264,7 +272,11 @@ export function MessageRow({
           expanded.set(action.value);
         };
         const actionRow = () =>
-          platform.idiom === 'terminal' || row().finalOutput || sourceMode() || hasSources?.();
+          platform.idiom === 'terminal' ||
+          isReplyWithActions(row()) ||
+          !!row().replyInfo ||
+          sourceMode() ||
+          hasSources?.();
         const sourceId = () => `${sessionId}/${rowKey(row())}`;
         const userPresentation = computed(() => userMessagePresentation(row()));
         const sender = () => (row().role === 'user' ? senderSession(row().origin) : null);
@@ -534,14 +546,7 @@ export function MessageRow({
                             marginLeft: platform.idiom === 'terminal' ? 0 : -8,
                           }}
                         >
-                          <If
-                            when={
-                              row().finalOutput &&
-                              row().role === 'assistant' &&
-                              row().field === 'body' &&
-                              row().position
-                            }
-                          >
+                          <If when={isReplyWithActions(row()) && row().position}>
                             <If
                               when={finalActions}
                               else={
@@ -556,6 +561,11 @@ export function MessageRow({
                             >
                               {finalActions?.(row, () => rowKey(row()), menu)}
                             </If>
+                          </If>
+                          <If when={!row().position && row().replyInfo}>
+                            <Text style={{ color: C.muted, ...captionTextStyle }}>
+                              {replyDetails(row())}
+                            </Text>
                           </If>
                           <If when={hasSources?.()}>
                             <IconButton

@@ -20,7 +20,7 @@
 import { cleanup, signal, Storage } from 'nsh';
 import { randomUUID } from 'crypto';
 import { host } from 'maka/host';
-import type { OperationReply } from '../../../../packages/plugin-sdk/src/index';
+import type { AgentHistoryChunk, OperationReply } from '../../../../packages/plugin-sdk/src/index';
 import type { OriginalMutation } from './host';
 import { tr } from './locale';
 
@@ -28,7 +28,7 @@ function returned(reply: OperationReply) {
   const receipt = reply.receipt;
   const outcome = receipt.kind === 'recorded' ? receipt.outcome : receipt;
   const failure = outcome.kind === 'returned' ? outcome.result : outcome;
-  if (failure.kind === 'success') return;
+  if (failure.kind === 'success') return failure.value as AgentHistoryChunk['replyInfo'];
   if ('diagnostic' in failure) {
     throw Error(
       failure.diagnostic === 'quick_question_model_required'
@@ -41,7 +41,7 @@ function returned(reply: OperationReply) {
 
 export interface QuickThread {
   id: string;
-  turns: { question: string; answer: string }[];
+  turns: { question: string; answer: string; replyInfo?: AgentHistoryChunk['replyInfo'] }[];
   updatedAt: number;
 }
 
@@ -92,7 +92,7 @@ export function createQuickQuestion(openBot: () => Promise<string>) {
         sessionId,
         question,
         requestId: randomUUID(),
-        history: previous,
+        history: previous.map(({ question, answer }) => ({ question, answer })),
       })) as OriginalMutation;
       if (stopped) active.cancel();
       for (;;) {
@@ -103,7 +103,11 @@ export function createQuickQuestion(openBot: () => Promise<string>) {
           thread.set(value);
         }
         if (event.kind === 'finished') {
-          returned(event.reply);
+          const replyInfo = returned(event.reply);
+          if (replyInfo) {
+            value = { ...value, turns: [...previous, { ...value.turns.at(-1)!, replyInfo }] };
+            thread.set(value);
+          }
           if (event.cleanupError) throw Error(event.cleanupError);
           break;
         }

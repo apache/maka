@@ -519,6 +519,7 @@ impl Rig {
                 "tools",
                 "predictNextMessage",
                 "askQuickQuestion",
+                "import",
                 "compact",
                 "selectBackend",
                 "execution",

@@ -133,7 +133,7 @@ impl Owner {
         operation: &RecoveryRef,
         dispatch: OperationDispatchScope,
         progress: tokio::sync::watch::Sender<String>,
-    ) -> Result<(), String> {
+    ) -> Result<maka_agent_facts::model::QuickReplyInfo, String> {
         use maka_model::prompt::Message;
         if input.question.trim().is_empty()
             || input.question.len() > 16000
@@ -175,6 +175,7 @@ impl Owner {
                 prompt.extend(owner.quick_answer.lock().await.begin(&input)?);
                 let cancellation = scope.cancellation.child_token();
                 let _guard = cancellation.clone().drop_guard();
+                let started = std::time::Instant::now();
                 let generation = owner.auxiliary.generate_streamed(
                     maka_model::ModelRequest {
                         operation: maka_agent_facts::context::ModelOperation::Inference,
@@ -207,10 +208,15 @@ impl Owner {
                     result = &mut generation => result,
                     _ = owner.stop.cancelled() => { cancellation.cancel(); generation.await }
                 };
+                let duration_ms = started.elapsed().as_millis() as u64;
                 let answer = progress.borrow().clone();
                 owner.quick_answer.lock().await.finish(&input, answer);
                 result
-                    .map(|_| ())
+                    .map(|generation| maka_agent_facts::model::QuickReplyInfo {
+                        model_id: generation.model_id,
+                        duration_ms,
+                        usage: generation.usage,
+                    })
                     .map_err(|e| maka_agent_facts::tools::ToolError::from(e).to_string())
             })
         })

@@ -183,16 +183,125 @@ export const contracts: {
                   answer: {
                     type: 'string',
                   },
+                  replyInfo: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/QuickReplyInfo',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                 },
                 additionalProperties: false,
                 required: ['question', 'answer'],
+              },
+              QuickReplyInfo: {
+                description:
+                  'Provider-reported counters and measured generation time, copied with a quick reply.',
+                type: 'object',
+                properties: {
+                  modelId: {
+                    type: 'string',
+                  },
+                  durationMs: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  usage: {
+                    $ref: '#/$defs/ModelUsage',
+                  },
+                },
+                additionalProperties: false,
+                required: ['modelId', 'durationMs', 'usage'],
+              },
+              ModelUsage: {
+                type: 'object',
+                properties: {
+                  input_tokens: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  output_tokens: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  cache_read_tokens: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  cache_write_tokens: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  reasoning_tokens: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
               },
             },
           },
           output: {
             $schema: 'https://json-schema.org/draft/2020-12/schema',
-            title: 'null',
-            type: 'null',
+            title: 'QuickReplyInfo',
+            description:
+              'Provider-reported counters and measured generation time, copied with a quick reply.',
+            type: 'object',
+            properties: {
+              modelId: {
+                type: 'string',
+              },
+              durationMs: {
+                type: 'integer',
+                format: 'uint64',
+                minimum: 0,
+              },
+              usage: {
+                $ref: '#/$defs/ModelUsage',
+              },
+            },
+            additionalProperties: false,
+            required: ['modelId', 'durationMs', 'usage'],
+            $defs: {
+              ModelUsage: {
+                type: 'object',
+                properties: {
+                  input_tokens: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  output_tokens: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  cache_read_tokens: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  cache_write_tokens: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  reasoning_tokens: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+              },
+            },
           },
           progress: {
             type: 'string',
@@ -16193,6 +16302,16 @@ export const contracts: {
                       "Part of the successfully completed native Turn's final output at `through`.\nIncludes body text and source citations; never a Thinking field.",
                     type: 'boolean',
                   },
+                  replyInfo: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/QuickReplyInfo',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                   finalAnswer: {
                     description:
                       'The provider identified this text as final before the Turn completed.',
@@ -16462,6 +16581,56 @@ export const contracts: {
                 additionalProperties: false,
                 required: ['text', 'truncated'],
               },
+              QuickReplyInfo: {
+                description:
+                  'Provider-reported counters and measured generation time, copied with a quick reply.',
+                type: 'object',
+                properties: {
+                  modelId: {
+                    type: 'string',
+                  },
+                  durationMs: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  usage: {
+                    $ref: '#/$defs/ModelUsage',
+                  },
+                },
+                additionalProperties: false,
+                required: ['modelId', 'durationMs', 'usage'],
+              },
+              ModelUsage: {
+                type: 'object',
+                properties: {
+                  input_tokens: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  output_tokens: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  cache_read_tokens: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  cache_write_tokens: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  reasoning_tokens: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+              },
               HistoryModel: {
                 description: 'Model identity recorded for the exact historical assistant step.',
                 oneOf: [
@@ -16643,6 +16812,16 @@ export const contracts: {
                   'Recorded logical Turn boundaries at the same history fence. An unfinished\nhistorical boundary alone does not establish that execution is still live.',
                 type: 'object',
                 properties: {
+                  modelTokens: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ModelUsage',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                   startedAt: {
                     type: 'integer',
                     format: 'uint64',
@@ -16722,36 +16901,6 @@ export const contracts: {
                 },
                 additionalProperties: false,
                 required: ['tokens'],
-              },
-              ModelUsage: {
-                type: 'object',
-                properties: {
-                  input_tokens: {
-                    type: ['integer', 'null'],
-                    format: 'uint64',
-                    minimum: 0,
-                  },
-                  output_tokens: {
-                    type: ['integer', 'null'],
-                    format: 'uint64',
-                    minimum: 0,
-                  },
-                  cache_read_tokens: {
-                    type: ['integer', 'null'],
-                    format: 'uint64',
-                    minimum: 0,
-                  },
-                  cache_write_tokens: {
-                    type: ['integer', 'null'],
-                    format: 'uint64',
-                    minimum: 0,
-                  },
-                  reasoning_tokens: {
-                    type: ['integer', 'null'],
-                    format: 'uint64',
-                    minimum: 0,
-                  },
-                },
               },
               PromptCacheUsage: {
                 description: 'Reported cache reads and their share of total prompt input.',
@@ -19200,9 +19349,69 @@ export const contracts: {
                   answer: {
                     type: 'string',
                   },
+                  replyInfo: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/QuickReplyInfo',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                 },
                 additionalProperties: false,
                 required: ['question', 'answer'],
+              },
+              QuickReplyInfo: {
+                description:
+                  'Provider-reported counters and measured generation time, copied with a quick reply.',
+                type: 'object',
+                properties: {
+                  modelId: {
+                    type: 'string',
+                  },
+                  durationMs: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  usage: {
+                    $ref: '#/$defs/ModelUsage',
+                  },
+                },
+                additionalProperties: false,
+                required: ['modelId', 'durationMs', 'usage'],
+              },
+              ModelUsage: {
+                type: 'object',
+                properties: {
+                  input_tokens: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  output_tokens: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  cache_read_tokens: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  cache_write_tokens: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  reasoning_tokens: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
               },
               AgentBackendPreference: {
                 description:
@@ -25100,6 +25309,16 @@ export const contracts: {
                       "Part of the successfully completed native Turn's final output at `through`.\nIncludes body text and source citations; never a Thinking field.",
                     type: 'boolean',
                   },
+                  replyInfo: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/QuickReplyInfo',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                   finalAnswer: {
                     description:
                       'The provider identified this text as final before the Turn completed.',
@@ -25369,6 +25588,56 @@ export const contracts: {
                 additionalProperties: false,
                 required: ['text', 'truncated'],
               },
+              QuickReplyInfo: {
+                description:
+                  'Provider-reported counters and measured generation time, copied with a quick reply.',
+                type: 'object',
+                properties: {
+                  modelId: {
+                    type: 'string',
+                  },
+                  durationMs: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  usage: {
+                    $ref: '#/$defs/ModelUsage',
+                  },
+                },
+                additionalProperties: false,
+                required: ['modelId', 'durationMs', 'usage'],
+              },
+              ModelUsage: {
+                type: 'object',
+                properties: {
+                  input_tokens: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  output_tokens: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  cache_read_tokens: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  cache_write_tokens: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  reasoning_tokens: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+              },
               HistoryModel: {
                 description: 'Model identity recorded for the exact historical assistant step.',
                 oneOf: [
@@ -25550,6 +25819,16 @@ export const contracts: {
                   'Recorded logical Turn boundaries at the same history fence. An unfinished\nhistorical boundary alone does not establish that execution is still live.',
                 type: 'object',
                 properties: {
+                  modelTokens: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ModelUsage',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                   startedAt: {
                     type: 'integer',
                     format: 'uint64',
@@ -25629,36 +25908,6 @@ export const contracts: {
                 },
                 additionalProperties: false,
                 required: ['tokens'],
-              },
-              ModelUsage: {
-                type: 'object',
-                properties: {
-                  input_tokens: {
-                    type: ['integer', 'null'],
-                    format: 'uint64',
-                    minimum: 0,
-                  },
-                  output_tokens: {
-                    type: ['integer', 'null'],
-                    format: 'uint64',
-                    minimum: 0,
-                  },
-                  cache_read_tokens: {
-                    type: ['integer', 'null'],
-                    format: 'uint64',
-                    minimum: 0,
-                  },
-                  cache_write_tokens: {
-                    type: ['integer', 'null'],
-                    format: 'uint64',
-                    minimum: 0,
-                  },
-                  reasoning_tokens: {
-                    type: ['integer', 'null'],
-                    format: 'uint64',
-                    minimum: 0,
-                  },
-                },
               },
               PromptCacheUsage: {
                 description: 'Reported cache reads and their share of total prompt input.',

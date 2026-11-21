@@ -124,6 +124,7 @@ async fn imported_context_boundary_keeps_history_and_survives_export() {
         originals.push(original.clone());
         let part = content(&mut tape, json!({"kind":"input","content":{"text":text}}));
         let message = ImportedMessage {
+            reply_info: None,
             turn_ordinal: ImportedTurnOrdinal(i as u64),
             original_ordinal: i as u64,
             media: vec![],

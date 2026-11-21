@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { formatDuration } from './duration';
+import { replyDetails } from './replyDetails';
 import { createText, UiError, errorText, message as uiMessage } from './text';
 import { tr } from './locale';
 import { cleanup, computed, inputAction, signal, Text, View } from 'nsh';
@@ -30,7 +30,7 @@ import { MessageCopy } from './MessageCopy';
 import { forkTitle, type SessionAction } from './sessionLifecycle';
 import { Button } from 'nsh/base';
 import type { MessageMenu } from './messageMenu';
-import { cacheHitRate, ExecutorTokenCounts, TurnUsage } from './TurnUsage';
+import { ExecutorTokenCounts, TurnUsage } from './TurnUsage';
 import {
   C,
   controlDisabledStyle,
@@ -139,22 +139,6 @@ export function FinalActions(props: {
     if (!alive || original === null || !sameValue(usage(), original)) return;
     usage.set(null);
   };
-  const details = () => {
-    const row = props.row();
-    const model = row.model;
-    const name =
-      model?.kind === 'native' ? (model.reportedModelId ?? model.requestedModelId) : model?.modelId;
-    const timing = row.timing;
-    const elapsed =
-      timing?.finished && timing.finished.at >= timing.startedAt
-        ? timing.finished.at - timing.startedAt
-        : null;
-    const duration = elapsed === null ? '' : formatDuration(elapsed, 'tenths');
-    const cache = row.timing?.promptCache;
-    return [name, duration, cache ? tr('Cache hit {rate}', { rate: cacheHitRate(cache) }) : '']
-      .filter(Boolean)
-      .join(' · ');
-  };
   return (
     <View style={{ gap: 8, maxWidth: '100%' }}>
       <View
@@ -180,24 +164,34 @@ export function FinalActions(props: {
           onPress={inputAction(fork, target())}
         />
         {props.extra}
-        <Button
-          accessibilityLabel={tr("View this turn's model usage")}
-          tooltip={textTooltip(() => tr("View this turn's model usage"))}
-          disabled={
-            (target()?.position.kind !== 'live' && !reportedUsage()) ||
-            target()?.turnId === undefined
+        <If
+          when={target()?.position.kind === 'imported'}
+          else={
+            <Button
+              accessibilityLabel={tr("View this turn's model usage")}
+              tooltip={textTooltip(() => tr("View this turn's model usage"))}
+              disabled={
+                (target()?.position.kind !== 'live' && !reportedUsage()) ||
+                target()?.turnId === undefined
+              }
+              onPress={inputAction(showUsage, target())}
+              style={{ ...controlStyle, paddingHorizontal: 8 }}
+              hoverStyle={quietHoverStyle()}
+              activeStyle={quietActiveStyle()}
+              focusStyle={quietFocusStyle()}
+              disabledStyle={controlDisabledStyle}
+            >
+              <Text style={{ color: C.muted, fontSize: 12, lineHeight: 16 }}>
+                {replyDetails(props.row()) ||
+                  tr(reportedUsage() ? 'Turn usage' : 'Main model usage')}
+              </Text>
+            </Button>
           }
-          onPress={inputAction(showUsage, target())}
-          style={{ ...controlStyle, paddingHorizontal: 8 }}
-          hoverStyle={quietHoverStyle()}
-          activeStyle={quietActiveStyle()}
-          focusStyle={quietFocusStyle()}
-          disabledStyle={controlDisabledStyle}
         >
           <Text style={{ color: C.muted, fontSize: 12, lineHeight: 16 }}>
-            {details() || tr(reportedUsage() ? 'Turn usage' : 'Main model usage')}
+            {replyDetails(props.row()) || tr('Duration and token usage were not recorded.')}
           </Text>
-        </Button>
+        </If>
         <If when={reportedUsage()}>
           <ExecutorTokenCounts
             usage={reportedUsage()!}

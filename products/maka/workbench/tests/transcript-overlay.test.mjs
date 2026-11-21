@@ -32,6 +32,7 @@ import {
   historyFollowTail,
   historyRowThrough,
   historyTurnKey,
+  isReplyWithActions,
   mergeHistoryPage,
   stableRowId,
 } from '../app/history.ts';
@@ -360,6 +361,9 @@ test('imported replies stay visible and only tool activity folds', () => {
     tool: { toolUseId: 'lookup', result: { isError: false } },
   });
   const thought = imported(1, '回顾之前的问题', { field: 'thinking' });
+  assert.equal(isReplyWithActions(reply), true);
+  for (const other of [request, call, result, thought, { ...reply, sourceCitation: true }])
+    assert.equal(isReplyWithActions(other), false);
   for (const rows of [
     [request, reply],
     [request, thought, reply],

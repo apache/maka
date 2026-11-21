@@ -60,7 +60,13 @@ export function QuickQuestionPanel(props: {
         ] as const
       )
         .filter(([, text]) => text.length > 0)
-        .map(([role, text]) => ({ key: i + '-' + role, role, text, field: 'body' })),
+        .map(([role, text]) => ({
+          key: i + '-' + role,
+          role,
+          text,
+          field: 'body',
+          replyInfo: role === 'assistant' ? turn.replyInfo : undefined,
+        })),
     );
   return (
     <View style={{ backgroundColor: C.panel, borderRadius: 12, overflow: 'hidden' }}>
