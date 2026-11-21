@@ -2680,6 +2680,12 @@ async fn desktop_side_pane_keeps_its_draft_separate_when_closed_and_reopened() {
         }),
     )
     .await;
+    let more = desktop.control("Actions for Side conversation").await;
+    let title = desktop.control("Open conversation Side conversation").await;
+    assert!(
+        more.size.width <= px(32.) && title.size.width > more.size.width,
+        "the More menu should occupy only the trailing icon slot: {title:?}, {more:?}"
+    );
     let original = desktop.platform.text_input_target();
     desktop.press("Actions for Side conversation").await;
     desktop.press("Open to the side").await;
