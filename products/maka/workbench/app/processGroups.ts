@@ -316,10 +316,7 @@ export function projectProcessGroups(input: {
     const rowTurn = historyTurnKey(row);
     if (rowTurn === undefined) continue;
     const presentation = turn(rowTurn);
-    if (row.position?.kind === 'imported') {
-      presentation.imported = true;
-      if (row.tool) presentation.worked = true;
-    }
+    if (row.position?.kind === 'imported') presentation.imported = true;
     if (row.foldedWork) {
       presentation.foldedWork = row.foldedWork;
       presentation.worked = true;
@@ -454,10 +451,10 @@ export function projectProcessGroups(input: {
     const rowTurn = historyTurnKey(row);
     if (current && current.turnKey !== rowTurn) flush(true);
     // Imports preserve message roles and parts, but have no native run outcome.
-    // Keep their transcript text visible even when the tool steps are closed.
+    // Keep their transcript text visible even when thinking or tool steps are closed.
     if (rowTurn && row.position?.kind === 'imported') {
       if (emptyThinking(row)) continue;
-      if (row.tool || (row.field === 'thinking' && turn(rowTurn).worked)) {
+      if (row.tool || row.field === 'thinking') {
         append(rowTurn, { kind: 'row', rowId: position.rowId, toolUseId: row.tool?.toolUseId });
       } else {
         flush(true);

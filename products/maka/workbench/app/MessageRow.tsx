@@ -271,12 +271,14 @@ export function MessageRow({
           if (!ownsRow(action)) return;
           expanded.set(action.value);
         };
-        const actionRow = () =>
+        const replyActions = () => isReplyWithActions(row()) && Boolean(row().position);
+        const iconActions = () =>
           platform.idiom === 'terminal' ||
-          isReplyWithActions(row()) ||
-          !!row().replyInfo ||
+          replyActions() ||
           sourceMode() ||
-          hasSources?.();
+          Boolean(hasSources?.());
+        const quickDetails = () => !row().position && Boolean(row().replyInfo);
+        const actionRow = () => iconActions() || quickDetails();
         const sourceId = () => `${sessionId}/${rowKey(row())}`;
         const userPresentation = computed(() => userMessagePresentation(row()));
         const sender = () => (row().role === 'user' ? senderSession(row().origin) : null);
@@ -543,10 +545,10 @@ export function MessageRow({
                             alignItems: 'center',
                             gap: 8,
                             // The first glyph starts where the message does.
-                            marginLeft: platform.idiom === 'terminal' ? 0 : -8,
+                            marginLeft: platform.idiom === 'terminal' || !iconActions() ? 0 : -8,
                           }}
                         >
-                          <If when={isReplyWithActions(row()) && row().position}>
+                          <If when={replyActions()}>
                             <If
                               when={finalActions}
                               else={
@@ -562,11 +564,6 @@ export function MessageRow({
                               {finalActions?.(row, () => rowKey(row()), menu)}
                             </If>
                           </If>
-                          <If when={!row().position && row().replyInfo}>
-                            <Text style={{ color: C.muted, ...captionTextStyle }}>
-                              {replyDetails(row())}
-                            </Text>
-                          </If>
                           <If when={hasSources?.()}>
                             <IconButton
                               label={tr('Sources')}
@@ -574,16 +571,23 @@ export function MessageRow({
                               onPress={() => openSources?.()}
                             />
                           </If>
-                          <IconButton
-                            label={
-                              sourceMode()
-                                ? tr('Show formatted message')
-                                : tr('Show message source')
-                            }
-                            icon={sourceMode() ? 'file' : 'markdown'}
-                            selected={sourceMode()}
-                            onPress={toggleSource()}
-                          />
+                          <If when={iconActions()}>
+                            <IconButton
+                              label={
+                                sourceMode()
+                                  ? tr('Show formatted message')
+                                  : tr('Show message source')
+                              }
+                              icon={sourceMode() ? 'file' : 'markdown'}
+                              selected={sourceMode()}
+                              onPress={toggleSource()}
+                            />
+                          </If>
+                          <If when={quickDetails()}>
+                            <Text style={{ color: C.muted, ...captionTextStyle }}>
+                              {replyDetails(row())}
+                            </Text>
+                          </If>
                         </View>
                       </If>
                     </View>

@@ -339,7 +339,7 @@ test('a direct final reply has no work header, including after history reloads',
   assert.equal(showTurnSummary(project([request], 'run'), false), true);
 });
 
-test('imported replies stay visible and only tool activity folds', () => {
+test('imported replies stay visible while thinking and tool activity fold', () => {
   const imported = (ordinal, text, changes = {}) =>
     row(String(ordinal), text, ordinal, {
       position: {
@@ -371,15 +371,25 @@ test('imported replies stay visible and only tool activity folds', () => {
   ]) {
     const { entries, turns } = projectProcessGroups({ rows, activeTurnId: null, toolActivity: [] });
     const turn = turns.get(historyTurnKey(reply));
+    const hasWork = rows.includes(thought) || rows.includes(call);
     const hasTools = rows.includes(call);
     for (const terminal of [false, true]) {
-      assert.equal(showTurnSummary(turn, terminal), hasTools);
-      assert.equal(turnWorkFold(turn, terminal), hasTools ? 'closed' : 'unavailable');
+      assert.equal(showTurnSummary(turn, terminal), hasWork);
+      assert.equal(turnWorkFold(turn, terminal), hasWork ? 'closed' : 'unavailable');
     }
+    const groups = entries.filter((entry) => entry.kind === 'process');
+    assert.equal(groups.length, hasWork ? 1 : 0);
     assert.deepEqual(
-      entries.filter((entry) => entry.kind === 'process').flatMap((group) => group.toolIds),
+      groups.flatMap((group) => group.toolIds),
       hasTools ? ['lookup'] : [],
     );
+    if (rows.includes(thought)) {
+      assert.equal(
+        entries.some((entry) => entry.kind === 'message' && entry.rowId === stableRowId(thought)),
+        false,
+      );
+      assert.equal(groups[0].rowIds.includes(stableRowId(thought)), true);
+    }
     const answer = entries.find((entry) => entry.rowId === stableRowId(reply));
     assert.equal(answer.kind, 'message');
     assert.equal(answer.processTurnKey, undefined);

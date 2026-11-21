@@ -1677,11 +1677,6 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                             </View>
                           </If>
                           <Menu
-                            style={
-                              platform.idiom === 'terminal'
-                                ? undefined
-                                : { width: 32, flexShrink: 0 }
-                            }
                             offset={4}
                             margin={8}
                             align="end"
