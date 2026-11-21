@@ -9168,6 +9168,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "maka-peer-mesh"
+version = "0.2.0"
+dependencies = [
+ "maka-event-log",
+ "maka-host-runtime",
+ "maka-packages",
+ "maka-peer",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-util",
+ "uuid",
+]
+
+[[package]]
 name = "maka-plugin-core"
 version = "0.3.0"
 dependencies = [
