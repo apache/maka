@@ -19,6 +19,7 @@
 
 use super::*;
 mod ax_session_tools;
+mod mcp_connection;
 mod rooms;
 mod stop_queue;
 enum ModelReply {

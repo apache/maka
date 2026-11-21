@@ -117,6 +117,13 @@ impl Catalog {
             live_bindings,
         }))
     }
+    /// Every connection of this file layer and the file layers below it is usable.
+    /// Installation servers below them change only by reactivation.
+    fn layers_available(&self) -> bool {
+        self.revision.is_none()
+            || (self.live_bindings.iter().all(super::LiveBinding::available)
+                && self._parent.as_deref().is_none_or(Self::layers_available))
+    }
     pub(crate) fn unavailable_selected_binding<'a>(
         &self,
         names: impl IntoIterator<Item = &'a str>,
@@ -178,6 +185,9 @@ struct Snapshots {
     revisions: BTreeMap<String, Arc<Snapshot>>,
     current: BTreeMap<String, String>,
     clients: BTreeMap<String, Client>,
+    // Layers reopened under the same revision. Admitted Runs may still hold them;
+    // each closes once nothing references its catalog.
+    replaced: Vec<Arc<Snapshot>>,
 }
 pub(crate) enum Prepared {
     Ready(Arc<Catalog>),
@@ -432,7 +442,9 @@ impl Projects {
                 .revision
                 .as_ref()
                 .and_then(|revision| snapshots.revisions.get(revision))
-                .filter(|snapshot| Arc::ptr_eq(&snapshot.catalog, layer))
+                .into_iter()
+                .chain(&snapshots.replaced)
+                .find(|snapshot| Arc::ptr_eq(&snapshot.catalog, layer))
                 .ok_or("agent_mcp_activation_unavailable")?;
             if !original.scope.is_empty() && original.scope != key && original.scope != client_scope
             {
@@ -538,7 +550,9 @@ impl Projects {
             self.prune().await?;
             return Ok(Prepared::Ready(catalog));
         }
-        if let Ok(catalog) = self.catalog(Some(&proposal.revision)) {
+        if let Ok(catalog) = self.catalog(Some(&proposal.revision))
+            && catalog.layers_available()
+        {
             self.publish_cached(&proposal, &catalog)?;
             self.prune().await?;
             return Ok(Prepared::Ready(catalog));
@@ -657,18 +671,23 @@ impl Projects {
                 if !files::merge(&[], &[&proposal.global, &proposal.file]).is_empty() {
                     super::require_compatible_floor(&floor).map_err(str::to_owned)?;
                 }
-                if let Ok(catalog) = owner.catalog(Some(&proposal.revision)) {
-                    owner.publish_cached(&proposal, &catalog)?;
+                // A cached layer whose connection retired is reopened under the same
+                // revision; it stays in use only if reopening fails.
+                let cached = owner.catalog(Some(&proposal.revision)).ok();
+                if let Some(catalog) = cached.as_ref().filter(|catalog| catalog.layers_available())
+                {
+                    owner.publish_cached(&proposal, catalog)?;
                     owner.prune().await?;
-                    return Ok(catalog);
+                    return Ok(catalog.clone());
                 }
-                if let Some(error) = owner
+                let failure = owner
                     .cleanup_failures
                     .lock()
                     .expect("MCP cleanup state")
                     .first()
-                {
-                    return Err(error.message().to_owned());
+                    .map(|error| error.message().to_owned());
+                if let Some(error) = failure {
+                    return owner.keep_cached(&proposal, cached, error).await;
                 }
                 let empty = files::FileConfiguration::default();
                 let global_revision = maka_agent_facts::artifact::content_digest(
@@ -684,10 +703,12 @@ impl Projects {
                 let mut opened_global = None;
                 let global = if proposal.global.path.is_none() {
                     owner.base.clone()
-                } else if let Ok(catalog) = owner.catalog(Some(&global_revision)) {
+                } else if let Ok(catalog) = owner.catalog(Some(&global_revision))
+                    && catalog.layers_available()
+                {
                     catalog
                 } else {
-                    let opened = owner
+                    let opened = match owner
                         .open_layer(
                             &proposal.global,
                             owner.base.clone(),
@@ -695,7 +716,11 @@ impl Projects {
                             global_revision.clone(),
                             &floor,
                         )
-                        .await?;
+                        .await
+                    {
+                        Ok(opened) => opened,
+                        Err(error) => return owner.keep_cached(&proposal, cached, error).await,
+                    };
                     let catalog = opened.catalog.clone();
                     opened_global = Some(opened);
                     catalog
@@ -726,18 +751,21 @@ impl Projects {
                             {
                                 let message = format!("{error}; {}", cleanup.message);
                                 owner.retain_transport_cleanup(cleanup);
-                                return Err(message);
+                                return owner.keep_cached(&proposal, cached, message).await;
                             }
-                            return Err(error);
+                            return owner.keep_cached(&proposal, cached, error).await;
                         }
                     }
                 };
+                drop(cached);
                 {
                     let mut snapshots = owner.snapshots.write().expect("MCP snapshots");
-                    if let Some(opened) = opened_global {
-                        snapshots
+                    if let Some(opened) = opened_global
+                        && let Some(replaced) = snapshots
                             .revisions
-                            .insert(global_revision.clone(), Arc::new(opened));
+                            .insert(global_revision.clone(), Arc::new(opened))
+                    {
+                        snapshots.replaced.push(replaced);
                     }
                     if proposal.global.path.is_some() {
                         snapshots.current.insert(String::new(), global_revision);
@@ -745,9 +773,12 @@ impl Projects {
                         snapshots.current.remove("");
                     }
                     if let Some(opened) = opened_project {
-                        snapshots
+                        if let Some(replaced) = snapshots
                             .revisions
-                            .insert(proposal.revision.clone(), Arc::new(opened));
+                            .insert(proposal.revision.clone(), Arc::new(opened))
+                        {
+                            snapshots.replaced.push(replaced);
+                        }
                         snapshots
                             .current
                             .insert(proposal.workspace, proposal.revision);
@@ -761,8 +792,29 @@ impl Projects {
             .await
             .map_err(|_| "agent_mcp_startup_unknown".to_owned())?
     }
+    /// A reopen that could not start leaves the cached layer published, as before.
+    async fn keep_cached(
+        &self,
+        proposal: &Proposal,
+        cached: Option<Arc<Catalog>>,
+        error: String,
+    ) -> Result<Arc<Catalog>, String> {
+        let catalog = cached.ok_or(error)?;
+        self.publish_cached(proposal, &catalog)?;
+        self.prune().await?;
+        Ok(catalog)
+    }
     pub(crate) async fn prune(&self) -> Result<(), String> {
         loop {
+            let mut retired = {
+                let mut snapshots = self.snapshots.write().expect("MCP snapshots");
+                let (unreferenced, held): (Vec<_>, Vec<_>) =
+                    std::mem::take(&mut snapshots.replaced)
+                        .into_iter()
+                        .partition(|snapshot| Arc::strong_count(&snapshot.catalog) == 1);
+                snapshots.replaced = held;
+                unreferenced
+            };
             let candidates: Vec<_> = {
                 let snapshots = self.snapshots.read().expect("MCP snapshots");
                 snapshots
@@ -781,17 +833,14 @@ impl Projects {
                     })
                     .collect()
             };
-            if candidates.is_empty() {
-                return Ok(());
-            }
-            let retained: std::collections::BTreeSet<_> = self
-                .store
-                .referenced_mcp_revisions(self.run_owner.clone())
-                .await
-                .map_err(|error| error.to_string())?;
-            let retired: Vec<_> = {
+            if !candidates.is_empty() {
+                let retained: std::collections::BTreeSet<_> = self
+                    .store
+                    .referenced_mcp_revisions(self.run_owner.clone())
+                    .await
+                    .map_err(|error| error.to_string())?;
                 let mut snapshots = self.snapshots.write().expect("MCP snapshots");
-                let retired = candidates
+                let pruned: Vec<_> = candidates
                     .into_iter()
                     .filter_map(|(revision, original, acquired)| {
                         let snapshot = snapshots.revisions.get(&revision)?;
@@ -810,8 +859,8 @@ impl Projects {
                     revisions, current, ..
                 } = &mut *snapshots;
                 current.retain(|_, revision| revisions.contains_key(revision));
-                retired
-            };
+                retired.extend(pruned);
+            }
             if retired.is_empty() {
                 return Ok(());
             }
@@ -833,14 +882,15 @@ impl Projects {
         self.stop.cancel();
     }
     pub async fn close(&self) -> Result<(), String> {
-        let snapshots: Vec<_> = self
-            .snapshots
-            .read()
-            .expect("MCP snapshots")
-            .revisions
-            .values()
-            .cloned()
-            .collect();
+        let snapshots: Vec<_> = {
+            let snapshots = self.snapshots.read().expect("MCP snapshots");
+            snapshots
+                .revisions
+                .values()
+                .chain(&snapshots.replaced)
+                .cloned()
+                .collect()
+        };
         let mut error = self.close_clients().await.err();
         if let Some(failure) = self
             .cleanup_failures
