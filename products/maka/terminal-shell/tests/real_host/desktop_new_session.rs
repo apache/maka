@@ -1276,11 +1276,14 @@ async fn desktop_composer_references_a_conversation_without_waking_it() {
         .unwrap();
     assert_eq!(target["session"]["activity"], "idle");
     assert_eq!(fixture.request_count.load(Ordering::SeqCst), 2);
+    let full_width_reply = desktop.control("Copy message").await;
     for from_reply in [false, true] {
         if from_reply {
-            // The Markdown link starts the line above the reply's actions.
-            let copy = desktop.control("Copy message").await;
-            desktop.press_at(point(copy.center().x + px(16.), copy.top() - px(16.)));
+            // Locate the Markdown link from the reply's actions after its layout is restored.
+            desktop.press_at(point(
+                full_width_reply.center().x + px(16.),
+                full_width_reply.top() - px(16.),
+            ));
         } else {
             desktop.press("@Release checklist").await;
         }
@@ -1316,7 +1319,16 @@ async fn desktop_composer_references_a_conversation_without_waking_it() {
             .await;
         assert_eq!(copied, history);
         desktop.press("Close side pane").await;
-        desktop.control("@Release checklist").await;
+        desktop
+            .until(
+                "closing the side pane did not restore the reply layout",
+                || {
+                    (desktop.controls("Close side pane").is_empty()
+                        && desktop.controls("Copy message").as_slice() == [full_width_reply])
+                    .then_some(())
+                },
+            )
+            .await;
     }
     assert_eq!(fixture.request_count.load(Ordering::SeqCst), 2);
     desktop.close().await;
