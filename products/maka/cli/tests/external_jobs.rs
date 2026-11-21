@@ -2472,3 +2472,150 @@ async fn antigravity_automatic_title_falls_back_to_first_message() {
         Ok(Ok(())) => assert!(cleanup.is_empty(), "{cleanup:?}"),
     }
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn antigravity_falls_back_to_user_block_and_supersedes_after_upgrade() {
+    let mut rig = Rig::new().await.expect("isolated Host and ACP fixture");
+    let outcome = AssertUnwindSafe(async {
+        let disable_flag = rig.sandbox.home.join("disable-acp-system-prompt-append");
+        tokio::fs::write(&disable_flag, "1")
+            .await
+            .map_err(|e| e.to_string())?;
+        let (mut anchor, bootstrap) = phase("start Host with legacy agy", rig.start()).await?;
+        phase(
+            "enable Antigravity ACP",
+            rig.configure(&mut anchor, &bootstrap, "antigravity"),
+        )
+        .await?;
+        bootstrap.close().await?;
+        rig.clients.pop();
+        let sdk = connect_sdk(&mut rig, &anchor).await?;
+
+        let (session, first_run) = launch(
+            &sdk,
+            &rig.sandbox.workspace,
+            "ACP-steer-legacy",
+            "unused",
+            false,
+            "antigravity",
+        )
+        .await?;
+        let first_ready = phase(
+            "legacy ACP turn admitted",
+            rig.controller.event("ACP-steer-legacy", "ready"),
+        )
+        .await?;
+        phase(
+            "legacy ACP turn completes",
+            terminal_state(&sdk, &session, &first_run, "completed"),
+        )
+        .await?;
+        let legacy_wire = phase(
+            "seal legacy ACP transcript",
+            rig.transcript(first_ready["pid"].as_u64().unwrap()),
+        )
+        .await?;
+        let legacy_open = legacy_wire
+            .input
+            .iter()
+            .find(|row| row["method"] == "session/new")
+            .unwrap();
+        assert_eq!(
+            legacy_open.pointer("/params/_meta/antigravity/systemPrompt"),
+            None
+        );
+        let [instructions_block, user_block] = legacy_wire.task_prompt()["params"]["prompt"]
+            .as_array()
+            .unwrap()
+            .as_slice()
+        else {
+            panic!("expected legacy [instructions, user] prompt blocks");
+        };
+        assert!(instructions_block["text"]
+            .as_str()
+            .unwrap()
+            .starts_with("<maka_system_instructions>"));
+        assert!(user_block["text"]
+            .as_str()
+            .unwrap()
+            .contains("ACP-steer-legacy"));
+
+        sdk.close().await?;
+        rig.clients.pop();
+        phase("quit legacy Host", rig.hosts[0].quit(&mut anchor)).await?;
+
+        tokio::fs::remove_file(&disable_flag)
+            .await
+            .map_err(|e| e.to_string())?;
+        tokio::fs::create_dir_all(rig.sandbox.home.join(".maka"))
+            .await
+            .map_err(|e| e.to_string())?;
+        tokio::fs::write(
+            rig.sandbox.home.join(".maka/AGENTS.md"),
+            "Upgraded instruction set",
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+
+        let (mut upgraded, next_sdk) = phase("reopen Host with upgraded agy", rig.start()).await?;
+        let second_run = send_native(
+            &next_sdk,
+            &session,
+            "ACP-steer-upgraded",
+            "unused",
+            false,
+        )
+        .await?;
+        let upgraded_ready = phase(
+            "upgraded ACP turn admitted",
+            rig.controller.event("ACP-steer-upgraded", "ready"),
+        )
+        .await?;
+        assert_eq!(upgraded_ready["thread"], first_ready["thread"]);
+        phase(
+            "upgraded ACP turn completes",
+            terminal_state(&next_sdk, &session, &second_run, "completed"),
+        )
+        .await?;
+        let upgraded_wire = phase(
+            "seal upgraded ACP transcript",
+            rig.transcript(upgraded_ready["pid"].as_u64().unwrap()),
+        )
+        .await?;
+        let resume_open = upgraded_wire
+            .input
+            .iter()
+            .find(|row| row["method"] == "session/resume")
+            .unwrap();
+        let append = resume_open
+            .pointer("/params/_meta/antigravity/systemPrompt/append")
+            .and_then(Value::as_str)
+            .unwrap();
+        assert!(append.contains("replace all earlier Maka instruction blocks"));
+        assert!(append.contains("Upgraded instruction set"));
+        let [upgraded_user] = upgraded_wire.task_prompt()["params"]["prompt"]
+            .as_array()
+            .unwrap()
+            .as_slice()
+        else {
+            panic!("expected only user prompt block after upgrading to systemPrompt.append");
+        };
+        assert!(upgraded_user["text"]
+            .as_str()
+            .unwrap()
+            .contains("ACP-steer-upgraded"));
+
+        next_sdk.close().await?;
+        rig.clients.pop();
+        phase("quit upgraded Host", rig.hosts[1].quit(&mut upgraded)).await?;
+        Ok::<_, String>(())
+    })
+    .catch_unwind()
+    .await;
+    let cleanup = rig.cleanup().await;
+    match outcome {
+        Err(panic) => std::panic::resume_unwind(panic),
+        Ok(Err(error)) => panic!("{error}; cleanup={cleanup:?}"),
+        Ok(Ok(())) => assert!(cleanup.is_empty(), "{cleanup:?}"),
+    }
+}

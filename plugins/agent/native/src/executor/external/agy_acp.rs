@@ -207,14 +207,20 @@ impl Protocol<'_> {
     ) -> Result<(String, Vec<Value>, Option<String>, bool), Error> {
         let initialized = io.request("initialize", initialize_params()).await?;
         let system_prompt_append = supports_system_prompt_append(&initialized);
+        let system_prompt = system_prompt_append
+            .then(|| {
+                system_prompt_text(
+                    self.request["instructions"].as_str(),
+                    self.journal.has_delivered_instructions(),
+                )
+            })
+            .flatten();
         let (method, params) = open_params(
             self.cwd,
             &self.bridge.url,
             self.bridge.bearer(),
             self.journal.native_session(),
-            system_prompt_append
-                .then(|| self.request["instructions"].as_str())
-                .flatten(),
+            system_prompt.as_deref(),
         );
         let opened = io.request(method, params).await?;
         let session = match self.journal.native_session() {
@@ -239,6 +245,15 @@ impl Protocol<'_> {
 fn supports_system_prompt_append(initialized: &Value) -> bool {
     initialized.pointer("/agentCapabilities/_meta/antigravity/systemPrompt/append")
         == Some(&Value::Bool(true))
+}
+
+fn system_prompt_text(instructions: Option<&str>, had_user_block: bool) -> Option<String> {
+    let instructions = instructions.filter(|text| !text.trim().is_empty());
+    if had_user_block {
+        Some(journal::instruction_text(instructions))
+    } else {
+        instructions.map(str::to_owned)
+    }
 }
 
 fn open_params(
@@ -851,5 +866,16 @@ mod tests {
 
         let (_, blank) = open_params("/ws", "http://127.0.0.1:1/mcp", "tok", None, Some("   "));
         assert_eq!(blank.pointer("/_meta/antigravity/systemPrompt"), None);
+
+        assert_eq!(
+            system_prompt_text(Some("Fresh"), false).as_deref(),
+            Some("Fresh")
+        );
+        assert_eq!(system_prompt_text(Some("   "), false), None);
+        let superseded = system_prompt_text(Some("Revised"), true).unwrap();
+        assert!(superseded.contains("replace all earlier Maka instruction blocks"));
+        assert!(superseded.contains("Revised"));
+        let cleared = system_prompt_text(None, true).unwrap();
+        assert!(cleared.contains("previous Maka instruction blocks are now cleared"));
     }
 }
