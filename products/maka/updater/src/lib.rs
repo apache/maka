@@ -742,8 +742,9 @@ fn sanitize_filename(version: &str) -> String {
         .collect()
 }
 
+/// Returns the enclosing macOS app for an executable in its `Contents/MacOS` directory.
 #[cfg(unix)]
-fn app_bundle(exe: &Path) -> Option<&Path> {
+pub fn app_bundle(exe: &Path) -> Option<&Path> {
     let macos = exe.parent()?;
     let contents = macos.parent()?;
     let bundle = contents.parent()?;
