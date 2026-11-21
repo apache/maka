@@ -34878,12 +34878,20 @@ export const contracts: {
             type: 'object',
             properties: {
               terms: {
+                description: 'Supply 1 to 32 search terms of at most 256 UTF-8 bytes each.',
                 type: 'array',
                 items: {
                   type: 'string',
                   minLength: 1,
                 },
                 minItems: 1,
+                maxItems: 32,
+              },
+              facts_after: {
+                description: 'Resume current memory facts after the last returned key.',
+                type: ['integer', 'null'],
+                format: 'uint64',
+                minimum: 0,
               },
               limit: {
                 description:
@@ -34915,6 +34923,17 @@ export const contracts: {
             title: 'AgentRecallPage',
             type: 'object',
             properties: {
+              facts: {
+                type: 'array',
+                items: {
+                  $ref: '#/$defs/RecallFact',
+                },
+              },
+              nextFactsAfter: {
+                type: ['integer', 'null'],
+                format: 'uint64',
+                minimum: 0,
+              },
               titles: {
                 type: 'array',
                 items: {
@@ -34938,8 +34957,302 @@ export const contracts: {
               },
             },
             additionalProperties: false,
-            required: ['titles', 'passages', 'complete', 'gaps'],
+            required: ['facts', 'titles', 'passages', 'complete', 'gaps'],
             $defs: {
+              RecallFact: {
+                type: 'object',
+                properties: {
+                  metadata: {
+                    $ref: '#/$defs/MemoryMetadata',
+                  },
+                  id: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  revision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  assertion: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  scope: {
+                    $ref: '#/$defs/MemoryScope',
+                  },
+                  body: {
+                    type: 'string',
+                  },
+                  sources: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/RecallFactSource',
+                    },
+                  },
+                  sourcesComplete: {
+                    type: 'boolean',
+                  },
+                },
+                required: [
+                  'metadata',
+                  'id',
+                  'revision',
+                  'assertion',
+                  'scope',
+                  'body',
+                  'sources',
+                  'sourcesComplete',
+                ],
+              },
+              MemoryMetadata: {
+                type: 'object',
+                properties: {
+                  kind: {
+                    $ref: '#/$defs/MemoryKind',
+                  },
+                  statement: {
+                    $ref: '#/$defs/MemoryStatement',
+                  },
+                  temporal: {
+                    $ref: '#/$defs/MemoryTemporal',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'statement', 'temporal'],
+              },
+              MemoryKind: {
+                type: 'string',
+                enum: ['unspecified', 'fact', 'preference', 'instruction'],
+              },
+              MemoryStatement: {
+                type: 'string',
+                enum: ['unspecified', 'assertion', 'preference', 'intention'],
+              },
+              MemoryTemporal: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'unspecified',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'timeless',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    description:
+                      'Half-open validity interval in Unix milliseconds; no end means unbounded.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'interval',
+                      },
+                      start: {
+                        type: 'integer',
+                        format: 'int64',
+                      },
+                      end: {
+                        type: ['integer', 'null'],
+                        format: 'int64',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'start'],
+                  },
+                ],
+              },
+              MemoryScope: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'personal',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'project',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId'],
+                  },
+                ],
+              },
+              RecallFactSource: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'user_operation',
+                      },
+                      operationId: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                    },
+                    required: ['kind', 'operationId'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'conversation',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      row: {
+                        $ref: '#/$defs/HistoryRowAddress',
+                      },
+                      start: {
+                        type: 'integer',
+                        format: 'uint32',
+                        minimum: 0,
+                      },
+                      end: {
+                        type: 'integer',
+                        format: 'uint32',
+                        minimum: 0,
+                      },
+                    },
+                    required: ['kind', 'sessionId', 'row', 'start', 'end'],
+                  },
+                ],
+              },
+              HistoryRowAddress: {
+                description:
+                  'An original row within the actual read capability supplied by the caller.\nMarker paths are relative to that capability; none of these fields grants access.',
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'live',
+                      },
+                      sequence: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      fact: {
+                        $ref: '#/$defs/FactId',
+                      },
+                      itemIndex: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sequence', 'fact', 'itemIndex'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'snapshot',
+                      },
+                      path: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/RunId',
+                        },
+                      },
+                      snapshot: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      sequence: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      fact: {
+                        $ref: '#/$defs/FactId',
+                      },
+                      itemIndex: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path', 'snapshot', 'sequence', 'fact', 'itemIndex'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'imported',
+                      },
+                      path: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/RunId',
+                        },
+                      },
+                      snapshot: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      messageOrdinal: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      partOrdinal: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path', 'snapshot', 'messageOrdinal', 'partOrdinal'],
+                  },
+                ],
+              },
+              FactId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              RunId: {
+                type: 'string',
+                format: 'uuid',
+              },
               AgentSession: {
                 type: 'object',
                 properties: {
@@ -35247,109 +35560,6 @@ export const contracts: {
                     required: ['kind', 'position'],
                   },
                 ],
-              },
-              HistoryRowAddress: {
-                description:
-                  'An original row within the actual read capability supplied by the caller.\nMarker paths are relative to that capability; none of these fields grants access.',
-                oneOf: [
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'live',
-                      },
-                      sequence: {
-                        type: 'integer',
-                        format: 'uint64',
-                        minimum: 0,
-                      },
-                      fact: {
-                        $ref: '#/$defs/FactId',
-                      },
-                      itemIndex: {
-                        type: 'integer',
-                        format: 'uint64',
-                        minimum: 0,
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'sequence', 'fact', 'itemIndex'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'snapshot',
-                      },
-                      path: {
-                        type: 'array',
-                        items: {
-                          $ref: '#/$defs/RunId',
-                        },
-                      },
-                      snapshot: {
-                        type: 'string',
-                        format: 'uuid',
-                      },
-                      sequence: {
-                        type: 'integer',
-                        format: 'uint64',
-                        minimum: 0,
-                      },
-                      fact: {
-                        $ref: '#/$defs/FactId',
-                      },
-                      itemIndex: {
-                        type: 'integer',
-                        format: 'uint64',
-                        minimum: 0,
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'path', 'snapshot', 'sequence', 'fact', 'itemIndex'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'imported',
-                      },
-                      path: {
-                        type: 'array',
-                        items: {
-                          $ref: '#/$defs/RunId',
-                        },
-                      },
-                      snapshot: {
-                        type: 'string',
-                        format: 'uuid',
-                      },
-                      messageOrdinal: {
-                        type: 'integer',
-                        format: 'uint64',
-                        minimum: 0,
-                      },
-                      partOrdinal: {
-                        type: 'integer',
-                        format: 'uint64',
-                        minimum: 0,
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'path', 'snapshot', 'messageOrdinal', 'partOrdinal'],
-                  },
-                ],
-              },
-              FactId: {
-                type: 'string',
-                format: 'uuid',
-              },
-              RunId: {
-                type: 'string',
-                format: 'uuid',
               },
               AgentBackendPreference: {
                 description:

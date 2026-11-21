@@ -43,7 +43,10 @@ async fn project_scope(
 }
 
 impl Owner {
-    fn memory_data(&self, scope: &Scope) -> Result<maka_event_log::root_store::DataWriter, String> {
+    pub(crate) fn memory_data(
+        &self,
+        scope: &Scope,
+    ) -> Result<maka_event_log::root_store::DataWriter, String> {
         if let Some(execution) = scope.identity.agent() {
             self.store.data_writer_for_work(
                 scope
@@ -153,7 +156,10 @@ impl Owner {
         .await
     }
 
-    async fn memory_scope(&self, requested: MemoryScope) -> Result<stored::Scope, String> {
+    pub(super) async fn memory_scope(
+        &self,
+        requested: MemoryScope,
+    ) -> Result<stored::Scope, String> {
         let mut binding = None;
         let location = match requested {
             MemoryScope::Personal => "personal".into(),
@@ -176,7 +182,7 @@ impl Owner {
             binding,
         })
     }
-    async fn memory_read_access(
+    pub(super) async fn memory_read_access(
         &self,
         scope: &Scope,
         requested: &MemoryScope,

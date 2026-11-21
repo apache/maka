@@ -299,6 +299,7 @@ impl QueueStore {
         message: String,
         cursor: Option<(RunId, u64)>,
         limit: u32,
+        model_read: bool,
     ) -> Result<(MessageResolution, Option<crate::store::RunObservation>), StoreError> {
         self.data
             .query(MessageWork {
@@ -306,6 +307,7 @@ impl QueueStore {
                 message,
                 cursor,
                 limit,
+                model_read,
             })
             .await
     }
@@ -585,6 +587,7 @@ struct MessageWork {
     message: String,
     cursor: Option<(RunId, u64)>,
     limit: u32,
+    model_read: bool,
 }
 impl Query for MessageWork {
     type Output = (MessageResolution, Option<crate::store::RunObservation>);
@@ -599,6 +602,7 @@ impl Query for MessageWork {
                     run,
                     self.cursor.map_or(0, |(_, offset)| offset),
                     self.limit,
+                    self.model_read,
                 )?
             }
             _ => None,

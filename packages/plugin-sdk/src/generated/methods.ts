@@ -797,14 +797,6 @@ export type AgentLoadedHistoryCheckpointToolImageInput_HistoryRowAddress =
     };
 export type AgentLoadedHistoryCheckpointToolImageInput_FactId = string;
 export type AgentLoadedHistoryCheckpointToolImageInput_RunId = string;
-export type AgentMemoriesInput_MemoryScope =
-  | {
-      kind: 'personal';
-    }
-  | {
-      kind: 'project';
-      sessionId: string;
-    };
 export type AgentMemoriesOutput_MemoryMode = 'auto_recall' | 'user_recall' | 'user_always';
 export type AgentMemoriesOutput_MemoryState = 'active' | 'unresolved' | 'suppressed';
 export type AgentMemoriesOutput_MemoryKind = 'unspecified' | 'fact' | 'preference' | 'instruction';
@@ -824,14 +816,6 @@ export type AgentMemoriesOutput_MemoryTemporal =
       kind: 'interval';
       start: number;
       end?: number | null;
-    };
-export type AgentMemoryInput_MemoryScope =
-  | {
-      kind: 'personal';
-    }
-  | {
-      kind: 'project';
-      sessionId: string;
     };
 export type AgentMemoryOutput_MemoryMode = 'auto_recall' | 'user_recall' | 'user_always';
 export type AgentMemoryOutput_MemoryState = 'active' | 'unresolved' | 'suppressed';
@@ -853,14 +837,6 @@ export type AgentMemoryOutput_MemoryTemporal =
       start: number;
       end?: number | null;
     };
-export type AgentMemoryEvidenceInput_MemoryScope =
-  | {
-      kind: 'personal';
-    }
-  | {
-      kind: 'project';
-      sessionId: string;
-    };
 export type AgentMemoryEvidenceOutput_MemorySource =
   | {
       kind: 'conversation';
@@ -872,14 +848,6 @@ export type AgentMemoryEvidenceOutput_MemorySource =
       kind: 'user_operation';
       operationId: string;
       observedAt: number;
-    };
-export type AgentMemoryHistoryInput_MemoryScope =
-  | {
-      kind: 'personal';
-    }
-  | {
-      kind: 'project';
-      sessionId: string;
     };
 export type AgentMemoryHistoryOutput_MemoryKind =
   | 'unspecified'
@@ -920,14 +888,6 @@ export type AgentOpenBotOutput_AgentBotRejection =
   | 'disabled'
   | 'creation_rejected'
   | 'no_workspace';
-export type AgentPendingMemoriesInput_MemoryScope =
-  | {
-      kind: 'personal';
-    }
-  | {
-      kind: 'project';
-      sessionId: string;
-    };
 export type AgentPendingMemoriesOutput_MemoryMode = 'auto_recall' | 'user_recall' | 'user_always';
 export type AgentPendingMemoriesOutput_MemoryState = 'active' | 'unresolved' | 'suppressed';
 export type AgentPendingMemoriesOutput_MemoryKind =
@@ -3528,7 +3488,7 @@ export interface ServiceMethods {
     memories: {
       mode: 'query';
       input: {
-        scope: AgentMemoriesInput_MemoryScope;
+        scope: Runtime.MemoryScope;
         after?: string | null;
         limit: number;
       };
@@ -3540,7 +3500,7 @@ export interface ServiceMethods {
     memory: {
       mode: 'query';
       input: {
-        scope: AgentMemoryInput_MemoryScope;
+        scope: Runtime.MemoryScope;
         id: string;
       };
       output: AgentMemoryOutput_MemoryRecord | null;
@@ -3548,7 +3508,7 @@ export interface ServiceMethods {
     memoryEvidence: {
       mode: 'query';
       input: {
-        scope: AgentMemoryEvidenceInput_MemoryScope;
+        scope: Runtime.MemoryScope;
         id: string;
         assertion: number;
         after?: number | null;
@@ -3562,7 +3522,7 @@ export interface ServiceMethods {
     memoryHistory: {
       mode: 'query';
       input: {
-        scope: AgentMemoryHistoryInput_MemoryScope;
+        scope: Runtime.MemoryScope;
         id: string;
         after?: number | null;
         limit: number;
@@ -3648,7 +3608,7 @@ export interface ServiceMethods {
     pendingMemories: {
       mode: 'query';
       input: {
-        scope: AgentPendingMemoriesInput_MemoryScope;
+        scope: Runtime.MemoryScope;
         after?: string | null;
         limit: number;
       };

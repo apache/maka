@@ -2142,11 +2142,27 @@ pub(crate) fn cleanup_frontier(
         not_before: task.cleanup_not_before,
     })
 }
+// Nonempty answer parts are contiguous. The first end at or beyond the page end
+// is the inclusive upper key on (run, end), even when a page cuts through a part.
+const ANSWER_TEXT: &str =
+    "SELECT substr(c.payload,max(?1-p.start,0)+1,min(p.end,?2)-max(p.start,?1))
+    FROM agent_answer_parts p JOIN contents c ON c.id=p.content_id
+    WHERE p.run=?3 AND p.end>?1
+      AND p.end<=(SELECT min(end) FROM agent_answer_parts WHERE run=?3 AND end>=?2)
+    ORDER BY p.end";
+const ANSWER_SPANS: &str = "SELECT p.start+s.start,p.start+s.end FROM agent_answer_parts p
+    CROSS JOIN agent_facts f ON f.run=p.run AND f.revision=p.revision
+    CROSS JOIN agent_memory_hidden_spans s
+    WHERE p.run=?1 AND p.end>?2
+      AND p.end<=(SELECT min(end) FROM agent_answer_parts WHERE run=?1 AND end>=?3)
+      AND s.namespace=?4 AND s.fact=f.id AND s.ordinal=0";
+
 pub(crate) fn work(
     c: &Connection,
     run: RunId,
     offset: u64,
     count: u32,
+    model_read: bool,
 ) -> Result<Option<crate::store::RunObservation>, StoreError> {
     if !(4..=65536).contains(&count) {
         return Err(invalid("answer page size must be in 4..=65536 bytes"));
@@ -2162,7 +2178,7 @@ pub(crate) fn work(
         return Err(invalid("answer offset is beyond the captured prefix"));
     }
     let end = offset.saturating_add(u64::from(count)).min(high_water);
-    let mut statement=c.prepare_cached("SELECT substr(c.payload,max(?1-p.start,0)+1,min(p.end,?2)-max(p.start,?1)) FROM agent_answer_parts p JOIN contents c ON c.id=p.content_id WHERE p.run=?3 AND p.end>?1 AND p.start<?2 ORDER BY p.start")?;
+    let mut statement = c.prepare_cached(ANSWER_TEXT)?;
     let mut rows = statement.query(params![signed(offset)?, signed(end)?, run.to_string()])?;
     let mut bytes = Vec::new();
     while let Some(row) = rows.next()? {
@@ -2180,7 +2196,23 @@ pub(crate) fn work(
     if next == offset && offset < high_water {
         return Err(invalid("answer page made no UTF-8 progress"));
     }
-    let text = String::from_utf8(bytes).map_err(|_| invalid("invalid canonical answer bytes"))?;
+    let mut text =
+        String::from_utf8(bytes).map_err(|_| invalid("invalid canonical answer bytes"))?;
+    if model_read && !text.is_empty() {
+        let mut stmt = c.prepare_cached(ANSWER_SPANS)?;
+        let spans = stmt
+            .query_map(
+                params![
+                    run.to_string(),
+                    signed(offset)?,
+                    signed(next)?,
+                    serde_json::to_string(&view.spec.owner)?
+                ],
+                |row| Ok((column_u64(row, 0)?, column_u64(row, 1)?)),
+            )?
+            .collect::<Result<Vec<_>, _>>()?;
+        crate::memory::recall::mask(&mut text, offset, &spans);
+    }
     let pending_interactions =
         if !view.stopped && view.terminal.is_none() && matches!(view.spec.origin, RunOrigin::Local)
         {
@@ -2256,6 +2288,87 @@ pub(crate) fn model_items(
         result.push(fact);
     }
     Ok(result)
+}
+
+#[cfg(test)]
+mod answer_page_tests {
+    use super::*;
+    use rusqlite::StatementStatus;
+
+    #[test]
+    fn answer_pages_visit_only_intersecting_parts() {
+        let db = Connection::open_in_memory().unwrap();
+        let catalog: Vec<_> = maka_event_log::ROOT_MIGRATIONS
+            .iter()
+            .chain(crate::MIGRATIONS)
+            .copied()
+            .collect();
+        maka_event_log::migration::run(&db, &catalog).unwrap();
+        db.execute_batch(r#"
+            INSERT INTO contents VALUES(1,'spec',x'7b7d'),(2,'text',CAST('A你B' AS BLOB));
+            INSERT INTO agent_run_specs VALUES('run',1,'owner','chat',1);
+            INSERT INTO agent_memories VALUES('owner','personal','m',1,1,'user_recall','suppressed',0,0);
+            INSERT INTO agent_memory_versions(namespace,scope,id,revision,body,source,digest,disposition)
+              VALUES('owner','personal','m',1,'sample','{}','digest','suppressed');
+            INSERT INTO agent_memory_evidence(namespace,scope,id,assertion,source,source_key)
+              VALUES('owner','personal','m',1,'{"kind":"conversation","reference":{"sessionId":"chat","sequence":2,"factId":"f2","itemIndex":0,"start":1,"end":4}}','address');
+        "#).unwrap();
+        let window = |start: i64, end: i64| {
+            let mut body = db.prepare(ANSWER_TEXT).unwrap();
+            let mut bytes = Vec::new();
+            for chunk in body
+                .query_map(params![start, end, "run"], |r| r.get::<_, Vec<u8>>(0))
+                .unwrap()
+            {
+                bytes.extend(chunk.unwrap());
+            }
+            let mut evidence = db.prepare(ANSWER_SPANS).unwrap();
+            let spans = evidence
+                .query_map(params!["run", start, end, "owner"], |r| {
+                    Ok((column_u64(r, 0)?, column_u64(r, 1)?))
+                })
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+            let mut text = String::from_utf8(bytes).unwrap();
+            crate::memory::recall::mask(&mut text, start as u64, &spans);
+            (
+                text,
+                body.get_status(StatementStatus::VmStep),
+                evidence.get_status(StatementStatus::VmStep),
+            )
+        };
+        let mut costs = Vec::new();
+        let mut previous = 0;
+        for count in [16, 2048] {
+            db.execute(
+                "WITH RECURSIVE n(v) AS (VALUES(?1+1) UNION ALL SELECT v+1 FROM n WHERE v<?2)
+                        INSERT INTO agent_facts SELECT v,'f'||v,'run',v,1,0,1 FROM n",
+                params![previous, count],
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO agent_answer_parts SELECT 'run',revision,5*(revision-1),5*revision,2
+                        FROM agent_facts WHERE revision>?",
+                [previous],
+            )
+            .unwrap();
+            let early = window(4, 11);
+            let late = window(5 * count - 6, 5 * count);
+            assert_eq!(early.0, "BA***BA");
+            assert_eq!(late.0, "BA你B");
+            assert_eq!(window(5, 10).0, "A***B");
+            assert_eq!(window(5 * count, 5 * count).0, "");
+            costs.push([early.1, early.2, late.1, late.2]);
+            previous = count;
+        }
+        for (small, large) in costs[0].into_iter().zip(costs[1]) {
+            assert!(
+                large <= small * 2,
+                "fixed page cost grew from {small} to {large} VM steps"
+            );
+        }
+    }
 }
 
 #[cfg(test)]

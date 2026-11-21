@@ -339,7 +339,10 @@ impl Owner {
                     continue;
                 }
             };
-            let inline = self.run_result(&worker, run, &terminal).await.inline();
+            let inline = self
+                .run_result(&worker, run, &terminal, true)
+                .await
+                .inline();
             let Some(admission) = self
                 .prepare_notification(
                     &source,

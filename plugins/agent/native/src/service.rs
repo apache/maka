@@ -365,8 +365,8 @@ impl Handler for Agent {
             "preset" => json_rpc(&mut args, |owner, input, _context| async move {
                 encode(owner.preset(decode(input)?).await?)
             }),
-            "work" => json_rpc(&mut args, |owner, input, _context| async move {
-                encode(owner.work(decode(input)?).await?)
+            "work" => json_rpc(&mut args, |owner, input, context| async move {
+                encode(owner.work(decode(input)?, context.scope()).await?)
             }),
             "workReadiness" => json_rpc(&mut args, |owner, input, _context| async move {
                 encode(owner.work_readiness(decode(input)?).await?)
@@ -476,8 +476,8 @@ impl Handler for Agent {
                         .await?,
                 )
             }),
-            "execution" => json_rpc(&mut args, |owner, input, _context| async move {
-                encode(owner.execution(decode(input)?).await?)
+            "execution" => json_rpc(&mut args, |owner, input, context| async move {
+                encode(owner.execution(decode(input)?, context.scope()).await?)
             }),
             "compactionPrompt" => json_rpc(&mut args, |owner, input, _context| async move {
                 encode(owner.compaction_prompt(decode(input)?).await?)
@@ -1266,11 +1266,4 @@ pub(crate) async fn history_observation_for_tool(
     input: SessionRead,
 ) -> Result<Observation, String> {
     history::observation(owner, scope, input).await
-}
-pub(crate) async fn history_read_for_tool(
-    owner: &Owner,
-    scope: &maka_capabilities::call::Scope,
-    input: History,
-) -> Result<HistoryPage, String> {
-    history::read(owner, scope, input).await
 }

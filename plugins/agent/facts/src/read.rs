@@ -161,6 +161,21 @@ impl ReadInput {
     }
 }
 
+/// Resource reads must be authorized again when a historical tool result is replayed.
+pub fn reads_history_resource(path: &str) -> bool {
+    let resolved = ReadInput {
+        path: path.to_owned(),
+        offset: None,
+        limit: None,
+    }
+    .resolve();
+    resolved.is_ok_and(|request| {
+        let path = request.path();
+        parse_imported_tool_result_path(path).is_ok_and(|address| address.is_some()) ||
+            matches!(ResourceAddress::parse(path), Ok(Some(address)) if !matches!(address, ResourceAddress::Task(_)))
+    })
+}
+
 impl ReadRequest {
     pub fn bind_imported_tool_result(
         &mut self,

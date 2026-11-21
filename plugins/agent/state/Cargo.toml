@@ -29,7 +29,7 @@ maka-agent-facts.workspace = true
 maka-event-log.workspace = true
 maka-plugin-core.workspace = true
 maka-provider-protocol.workspace = true
-rusqlite.workspace = true
+rusqlite = { workspace = true, features = ["functions"] }
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true

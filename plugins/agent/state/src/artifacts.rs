@@ -184,6 +184,7 @@ impl SessionArtifactWrite {
 }
 #[derive(Clone)]
 pub struct CopyArtifact {
+    recall: bool,
     source: CopySource,
     destination: SessionScope,
     operation: String,
@@ -204,11 +205,16 @@ impl CopyArtifact {
         artifact.turn_id = artifact.id.clone();
         artifact.created_at = created_at;
         Self {
+            recall: false,
             source,
             destination,
             operation,
             artifact,
         }
+    }
+    pub fn for_recall(mut self) -> Self {
+        self.recall = true;
+        self
     }
     pub fn artifact(&self) -> &Artifact {
         &self.artifact
@@ -230,6 +236,16 @@ impl ArtifactStore {
     pub fn new(data: DataWriter) -> Self {
         Self { data }
     }
+    pub async fn check_memory_access(
+        &self,
+        scope: SessionScope,
+        artifact: String,
+    ) -> Result<(), StoreError> {
+        self.data
+            .query(crate::memory::recall::MaterialAccess { scope, artifact })
+            .await
+    }
+
     pub async fn get(
         &self,
         scope: impl Into<ArtifactReadScope>,
