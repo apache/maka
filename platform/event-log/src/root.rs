@@ -78,6 +78,7 @@ pub struct RootOwner {
     pub(crate) operation_live: std::sync::Arc<crate::applications::operations::LiveOperations>,
     canonical_path: PathBuf,
     marker: Marker,
+    #[cfg(unix)]
     marker_path: PathBuf,
     mounted_identity: MountedIdentity,
     #[cfg(unix)]
@@ -222,6 +223,7 @@ impl RootOwner {
         let control_directory = namespaces.control.join(&marker.root_id);
         directory(&control_directory)?;
         let control_identity = directory_identity(&control_directory)?;
+        #[cfg(unix)]
         let marker_path = canonical_path.join(ROOT_MARKER);
         #[cfg(unix)]
         let root_dir = open_directory(&canonical_path, mounted_identity)?;
@@ -238,6 +240,7 @@ impl RootOwner {
             ),
             canonical_path,
             marker,
+            #[cfg(unix)]
             marker_path,
             mounted_identity,
             #[cfg(unix)]

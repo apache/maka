@@ -576,7 +576,7 @@ impl Owner {
                     .collect();
 
                 Ok(GitHubPullDetailResult::Ready {
-                    detail: GitHubPullDetail {
+                    detail: Box::new(GitHubPullDetail {
                         repo,
                         auth: auth.status(),
                         number: raw_pr.number,
@@ -599,7 +599,7 @@ impl Owner {
                         reviews,
                         issue_comments,
                         patch,
-                    },
+                    }),
                 })
             })
         })
@@ -1615,10 +1615,11 @@ fn strip_yaml_comment(line: &str) -> &str {
         match ch {
             '\'' if !in_double => in_single = !in_single,
             '"' if !in_single => in_double = !in_double,
-            '#' if !in_single && !in_double => {
-                if idx == 0 || line.as_bytes()[idx - 1].is_ascii_whitespace() {
-                    return &line[..idx];
-                }
+            '#' if !in_single
+                && !in_double
+                && (idx == 0 || line.as_bytes()[idx - 1].is_ascii_whitespace()) =>
+            {
+                return &line[..idx];
             }
             _ => {}
         }
@@ -1669,9 +1670,7 @@ pub(crate) fn parse_netrc_token(content: &str, target_host: &str) -> Option<Stri
 }
 
 async fn fetch_gh_cli_token(host: &str) -> Option<String> {
-    if normalize_host(host).is_none() {
-        return None;
-    }
+    normalize_host(host)?;
     let mut cmd = tokio::process::Command::new("gh");
     cmd.args(["auth", "token", "--hostname", host])
         .env("GH_PROMPT_DISABLED", "1")

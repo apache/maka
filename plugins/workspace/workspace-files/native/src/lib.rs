@@ -571,8 +571,7 @@ async fn execute(
             &state_root,
             tool,
             &input,
-            context.scope().sandbox_floor(),
-            cancellation,
+            context.scope(),
         )
         .await?;
     }

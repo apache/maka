@@ -784,10 +784,7 @@ impl Engine {
                                         error.underlying(),
                                         StoreError::RevisionConflict { .. }
                                             | StoreError::SessionRevisionConflict { .. }
-                                    ) =>
-                                {
-                                    ()
-                                }
+                                    ) => {}
                                 Err(error) => return Err(error),
                             }
                             return Ok(true);

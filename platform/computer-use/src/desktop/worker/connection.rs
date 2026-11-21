@@ -285,46 +285,40 @@ impl Connection {
                 cleanup
             };
             #[cfg(all(target_os = "windows", feature = "native-desktop"))]
-            if let Some(native) = task.native.as_mut() {
-                if let Some(mut settled) = native.deferred.take() {
-                    if cleanup.is_ok() {
-                        if let (Some(interruption), Some(source)) =
-                            (native.interruption.clone(), settled.native_source.take())
-                        {
-                            if source.key == native.key {
-                                if let (Some(operation), Some(observer)) =
-                                    (source.operation_id, source.observer)
-                                {
-                                    match crate::NativeInterruptionDrain::from_drained_native(
-                                        interruption,
-                                        operation,
-                                    ) {
-                                        Ok(observed) => {
-                                            // Await the original Host drain future before delivering
-                                            // this same action's original Unknown result.
-                                            if let Err(error) = own_native_observation(|| {
-                                                observer.drained(observed)
-                                            })
-                                            .await
-                                            {
-                                                native.observation.send_modify(|state| {
-                                                    state.persisted = Some(Err(error))
-                                                });
-                                            }
-                                        }
-                                        Err(error) => {
-                                            native.observation.send_modify(|state| {
-                                                state.persisted = Some(Err(error))
-                                            });
-                                        }
-                                    }
-                                }
+            if let Some(native) = task.native.as_mut()
+                && let Some(mut settled) = native.deferred.take()
+            {
+                if cleanup.is_ok()
+                    && let (Some(interruption), Some(source)) =
+                        (native.interruption.clone(), settled.native_source.take())
+                    && source.key == native.key
+                    && let (Some(operation), Some(observer)) =
+                        (source.operation_id, source.observer)
+                {
+                    match crate::NativeInterruptionDrain::from_drained_native(
+                        interruption,
+                        operation,
+                    ) {
+                        Ok(observed) => {
+                            // Await the original Host drain future before delivering
+                            // this same action's original Unknown result.
+                            if let Err(error) =
+                                own_native_observation(|| observer.drained(observed)).await
+                            {
+                                native
+                                    .observation
+                                    .send_modify(|state| state.persisted = Some(Err(error)));
                             }
                         }
+                        Err(error) => {
+                            native
+                                .observation
+                                .send_modify(|state| state.persisted = Some(Err(error)));
+                        }
                     }
-                    drop(settled._native_admission);
-                    let _ = settled.reply.send(settled.result);
                 }
+                drop(settled._native_admission);
+                let _ = settled.reply.send(settled.result);
             }
             let settlement = CloseSettlement {
                 transport,
@@ -1048,11 +1042,9 @@ impl ConnectionTask {
                             };
                             let released = result.map_err(ToolError::from);
                             native.observation.send_modify(|observed| observed.retired = Some(released.clone()));
-                            if released.is_err() {
-                                if let Some(settled) = native.deferred.take() {
-                                    drop(settled._native_admission);
-                                    let _ = settled.reply.send(settled.result);
-                                }
+                            if released.is_err() && let Some(settled) = native.deferred.take() {
+                                drop(settled._native_admission);
+                                let _ = settled.reply.send(settled.result);
                             }
                         },
                         WorkerFrame::BrowserCallback { message: WorkerMessage::NativeObserver { invocation_id, id, identity, notice } } => {
@@ -1170,12 +1162,12 @@ impl ConnectionTask {
                     };
                     pending.remove(&result.id);
                     #[cfg(all(target_os = "windows", feature = "native-desktop"))]
-                    if let Some(native) = self.native.as_mut().filter(|native| native.interruption.is_some() && !matches!(native.observation.borrow().retired, Some(Err(_)))) {
-                        if native.affected_request == Some(result.id) {
-                            if native.deferred.is_some() { terminal.get_or_insert(ToolError::CleanupUnconfirmed("multiple native inputs escaped single-owner custody".into())); break; }
-                            native.deferred = Some(result);
-                            continue;
-                        }
+                    if let Some(native) = self.native.as_mut().filter(|native| native.interruption.is_some() && !matches!(native.observation.borrow().retired, Some(Err(_))))
+                        && native.affected_request == Some(result.id)
+                    {
+                        if native.deferred.is_some() { terminal.get_or_insert(ToolError::CleanupUnconfirmed("multiple native inputs escaped single-owner custody".into())); break; }
+                        native.deferred = Some(result);
+                        continue;
                     }
                     let result_value = match result.result {
                         Ok(reply) => Ok(reply),
@@ -1233,11 +1225,11 @@ impl ConnectionTask {
                             drop(invocation.native_admission);
                             let _ = invocation.reply.send(Err(ToolError::CleanupUnconfirmed("native call source changed before wire admission".into()))); continue;
                         };
-                        if let Some(binding) = source.binding.as_ref() {
-                            if source.observer.is_none() || binding.session() != key.session || binding.turn() != key.turn || binding.execution_correlation() != &key.execution || binding.native_epoch() != key.epoch || binding.generation() != native.generation.observed() || Some(binding.operation_id()) != operation_id.as_deref() {
-                                drop(invocation.native_admission);
-                                let _ = invocation.reply.send(Err(ToolError::CleanupUnconfirmed("native binding source changed before wire admission".into()))); continue;
-                            }
+                        if let Some(binding) = source.binding.as_ref()
+                            && (source.observer.is_none() || binding.session() != key.session || binding.turn() != key.turn || binding.execution_correlation() != &key.execution || binding.native_epoch() != key.epoch || binding.generation() != native.generation.observed() || Some(binding.operation_id()) != operation_id.as_deref())
+                        {
+                            drop(invocation.native_admission);
+                            let _ = invocation.reply.send(Err(ToolError::CleanupUnconfirmed("native binding source changed before wire admission".into()))); continue;
                         }
                         let observed = native.observation.borrow().clone();
                         let replacement = native.key != *key || (source.binding.is_some() && matches!(observed.retired, Some(Ok(()))));
@@ -1378,11 +1370,11 @@ impl ConnectionTask {
                     if let Some(native) = self.native.as_mut().filter(|native| {
                         native.interruption.is_some()
                             && !matches!(native.observation.borrow().retired, Some(Err(_)))
-                    }) {
-                        if native.affected_request == Some(result.id) && native.deferred.is_none() {
-                            native.deferred = Some(result);
-                            continue;
-                        }
+                    }) && native.affected_request == Some(result.id)
+                        && native.deferred.is_none()
+                    {
+                        native.deferred = Some(result);
+                        continue;
                     }
                     #[cfg(all(target_os = "windows", feature = "native-desktop"))]
                     drop(result._native_admission);

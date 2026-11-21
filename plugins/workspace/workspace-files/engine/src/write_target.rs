@@ -32,6 +32,7 @@ use std::{
 use tokio_util::sync::CancellationToken;
 
 mod delete;
+#[cfg(unix)]
 mod publication;
 #[cfg(windows)]
 mod windows;
@@ -42,6 +43,7 @@ pub(crate) enum ReadMode {
     None,
     Required,
     Preview,
+    #[cfg(unix)]
     Permissions,
 }
 fn identity(metadata: &Metadata) -> Identity {
@@ -109,13 +111,14 @@ impl Target {
                 if !metadata.is_file() {
                     return Err(failed("Write supports only regular files, not symlinks"));
                 }
+                let mut options = file_options(false);
+                options.read(!matches!(read, ReadMode::None));
+                #[cfg(unix)]
+                if matches!(read, ReadMode::Permissions) {
+                    options.write(false);
+                }
                 let file = parent
-                    .open_with(
-                        &name,
-                        file_options(false)
-                            .read(!matches!(read, ReadMode::None))
-                            .write(!matches!(read, ReadMode::Permissions)),
-                    )
+                    .open_with(&name, &options)
                     .or_else(|error| {
                         if matches!(read, ReadMode::Preview)
                             && error.kind() == io::ErrorKind::PermissionDenied

@@ -28,8 +28,7 @@ pub(super) async fn authorize(
     state_root: &Path,
     tool: &'static str,
     input: &Value,
-    floor: &Sandbox,
-    cancellation: &CancellationToken,
+    scope: &maka_capabilities::call::Scope,
 ) -> Result<Captured, ToolError> {
     if matches!(captured.sandbox, Sandbox::Disabled) {
         return Ok(captured);
@@ -41,7 +40,8 @@ pub(super) async fn authorize(
             PermissionSource::Files,
         )
         .await?;
-    let floor = floor.clone();
+    let cancellation = &scope.cancellation;
+    let floor = scope.sandbox_floor().clone();
     let grant_floor = floor.clone();
     let input = input.clone();
     let workspace = configuration.workspace.clone();

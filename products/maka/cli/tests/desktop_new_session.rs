@@ -21,10 +21,7 @@
 
 // The real Desktop workbench on NSH's native surface, admitted to an owned Root.
 // This is not an OS-window/Desktop Shell E2E test or a terminal-keyboard surface.
-#[path = "support/host.rs"]
-mod host;
-
-use host::{Host, Result, Sandbox};
+use crate::host::{Host, Result, Sandbox};
 use http_body_util::{BodyExt, Full, Limited};
 use hyper::{
     Request, Response,

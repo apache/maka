@@ -379,10 +379,10 @@ impl<'tree> Reader<'_, '_, 'tree> {
                     }
                 }
                 LinkReference(link) => {
-                    if let Some(content) = content {
-                        if let Some(&url) = self.destinations.get(link.identifier.as_str()) {
-                            self.link(range, content, url);
-                        }
+                    if let Some(content) = content
+                        && let Some(&url) = self.destinations.get(link.identifier.as_str())
+                    {
+                        self.link(range, content, url);
                     }
                 }
                 InlineCode(_) => {

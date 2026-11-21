@@ -181,7 +181,7 @@ impl Handler for Service {
                     }
                     match owner.repository.save(input.revision, input.settings).await {
                         Ok(_) => encode(Update::Updated {
-                            snapshot: owner.repository.snapshot().await.map_err(message)?,
+                            snapshot: Box::new(owner.repository.snapshot().await.map_err(message)?),
                         }),
                         Err(maka_plugin_core::storage::StoreError::Conflict { .. }) => {
                             encode(Update::Changed)
@@ -261,7 +261,9 @@ impl Handler for Service {
                     {
                         maka_capabilities::credentials::WriteResult::Written { .. } => {
                             encode(Update::Updated {
-                                snapshot: owner.repository.snapshot().await.map_err(message)?,
+                                snapshot: Box::new(
+                                    owner.repository.snapshot().await.map_err(message)?,
+                                ),
                             })
                         }
                         maka_capabilities::credentials::WriteResult::Conflict { .. } => {

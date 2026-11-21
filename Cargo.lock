@@ -8625,7 +8625,6 @@ dependencies = [
  "unicode-segmentation",
  "uuid",
  "windows-sys 0.61.2",
- "x11rb",
 ]
 
 [[package]]
@@ -9601,12 +9600,8 @@ version = "0.2.0"
 dependencies = [
  "maka-event-log",
  "maka-host-runtime",
- "maka-packages",
- "maka-plugin-core",
- "serde_json",
  "tokio",
  "tokio-util",
- "uuid",
 ]
 
 [[package]]

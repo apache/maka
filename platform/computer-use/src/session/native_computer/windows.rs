@@ -362,8 +362,7 @@ impl Session {
             }
             let call = Driver::invoke_native_window_frame_in_generation(
                 &self.native,
-                tool.name(),
-                arguments,
+                (tool.name(), arguments),
                 self.epoch,
                 (generation, frame),
                 cancellation,
@@ -398,8 +397,7 @@ impl Session {
             // exact Arc<Slot>, with no replacement spawn/reroute/replay.
             Driver::invoke_in_generation(
                 &self.native,
-                tool.name(),
-                arguments,
+                (tool.name(), arguments),
                 self.epoch,
                 generation,
                 cancellation,
@@ -425,8 +423,7 @@ impl Session {
     ) -> Result<NativeWindowsCall<CallResult>, ToolError> {
         Driver::invoke_raw_windows(
             &self.native,
-            tool,
-            arguments,
+            (tool, arguments),
             self.epoch,
             cancellation,
             language,

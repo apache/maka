@@ -391,17 +391,27 @@ fn tool(row: &mut Row, id: String, name: Option<String>, is_error: Option<bool>)
     });
 }
 
+pub(super) struct RunProjection<'a> {
+    pub source: &'a maka_agent_state::session_history::RunSource,
+    pub executor: Option<&'a maka_agent_state::session_history::ExecutorTranscript>,
+    pub final_attempt: Option<maka_agent_facts::durable::ModelAttemptId>,
+    pub terminated: bool,
+}
+
 pub(super) async fn project(
     reader: &data::DataSource,
     item: &HistoryItem,
-    source: &maka_agent_state::session_history::RunSource,
     address: &wire::HistoryRowAddress,
     views: &mut std::collections::BTreeMap<RunId, maka_agent_state::fold::RunView>,
-    executor: Option<&maka_agent_state::session_history::ExecutorTranscript>,
-    final_attempt: Option<maka_agent_facts::durable::ModelAttemptId>,
-    terminated: bool,
+    run: RunProjection<'_>,
     stop: &tokio_util::sync::CancellationToken,
 ) -> Result<Vec<Row>, String> {
+    let RunProjection {
+        source,
+        executor,
+        final_attempt,
+        terminated,
+    } = run;
     let turn = source.spec.turn_id.as_str();
     let ordinal = match address {
         wire::HistoryRowAddress::Live { item_index, .. }

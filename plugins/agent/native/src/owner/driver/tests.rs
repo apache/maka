@@ -6384,7 +6384,7 @@ mod replay_origin_regressions {
                 provider_options: None,
             };
             let mut checkpoint_only = builder(&rig).await?;
-            append_observed(&mut checkpoint_only, checkpoint.clone(), origin.clone()).await?;
+            append_observed(&mut checkpoint_only, checkpoint.clone(), origin).await?;
             assert!(!checkpoint_only.needs_continuation_cue());
             let prompt = finish(&rig, checkpoint_only, &current, ModelOperation::Inference).await?;
             maka_agent_engine::preparation::validate_replay_boundary(&prompt).await?;

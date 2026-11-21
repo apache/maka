@@ -119,7 +119,7 @@ pub fn run(first: Connection, root: Root, runtime: Runtime) -> Result<(), String
         &options.components,
         MainThreadMarker::new().expect("the desktop shell runs on AppKit's main thread"),
     );
-    run_app_with_config(config, options, move |is_active| {
+    let result = run_app_with_config(config, options, move |is_active| {
         active.send_replace(is_active);
     });
     if let Some(monitor) = monitor {
@@ -131,7 +131,11 @@ pub fn run(first: Connection, root: Root, runtime: Runtime) -> Result<(), String
         .block_on(following)
         .map_err(|error| error.to_string())?;
     runtime.shutdown_background();
-    Ok(())
+    if result == std::process::ExitCode::SUCCESS {
+        Ok(())
+    } else {
+        Err("the AppKit window failed".into())
+    }
 }
 
 fn permission_requests(connection: &Connection) -> mpsc::UnboundedReceiver<SystemPermissionWindow> {
