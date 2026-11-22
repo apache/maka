@@ -101,10 +101,16 @@ fn project(
         output: include_output.then(|| model_output(record.output, preview)),
     };
     bound(&mut result)?;
+    let mut correlation = record.correlation;
+    if let (Some(delivery), Some(fields)) =
+        (record.initial_command_delivery, correlation.as_object_mut())
+    {
+        fields.insert("initialCommandDelivery".into(), serde_json::json!(delivery));
+    }
     Ok(ResourceUpdate {
         session_id: record.session_id,
         ownership: Ownership::Local,
-        correlation: record.correlation,
+        correlation,
         visibility: record.visibility,
         initiator: if record.source_work_id.is_some() {
             super::ShellInitiator::Agent

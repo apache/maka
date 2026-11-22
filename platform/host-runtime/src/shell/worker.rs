@@ -27,10 +27,10 @@ use super::{
 };
 use futures_util::FutureExt;
 use maka_event_log::root_store::SessionStore;
-use maka_plugin_core::shell_run::ShellOutcome;
 use maka_plugin_core::shell_run::ShellOutput;
 use maka_plugin_core::shell_run::ShellPatch;
 use maka_plugin_core::shell_run::ShellState;
+use maka_plugin_core::shell_run::{InitialCommandDelivery, ShellOutcome};
 use maka_plugin_core::shell_run::{ShellObservation, ShellRun};
 use maka_plugin_core::terminal::TerminalSize;
 use maka_process::pty::{self, PtyChild, PtyCommand, PtyIo};
@@ -55,9 +55,16 @@ pub(super) struct Worker {
     pub output: Output,
 }
 impl Worker {
-    pub async fn run(mut self, command: PtyCommand, size: TerminalSize) -> Result<()> {
+    pub async fn run(
+        mut self,
+        command: PtyCommand,
+        size: TerminalSize,
+        initial_input: Option<String>,
+    ) -> Result<()> {
         let mut terminal = Terminal::new(size, self.output.clone());
-        let result = self.run_terminal(command, size, &mut terminal).await;
+        let result = self
+            .run_terminal(command, size, &mut terminal, initial_input)
+            .await;
         terminal.close();
         result
     }
@@ -67,6 +74,7 @@ impl Worker {
         command: PtyCommand,
         size: TerminalSize,
         terminal: &mut Terminal,
+        initial_input: Option<String>,
     ) -> Result<()> {
         let mut initial = (*self.record).clone();
         initial.output = ShellOutput::Pty {
@@ -91,6 +99,8 @@ impl Worker {
         };
         #[cfg(windows)]
         let command = command.with_startup_cancellation(self.cancellation.clone());
+        let rejected_input =
+            initial_input.and_then(|source| terminal.input.start(source, &terminal.preview));
         let spawned = if self.cancellation.is_cancelled() {
             Err(maka_agent_facts::tools::ToolError::Failed(
                 "PTY launch cancelled before spawn".into(),
@@ -105,17 +115,21 @@ impl Worker {
                 return Err(error.into());
             }
             Err(error) => {
+                let delivery = terminal.input.interrupt().or(rejected_input);
                 return self
-                    .persist(terminal, Some(finished(failed(&error))?))
+                    .persist_with_delivery(terminal, Some(finished(failed(&error))?), delivery)
                     .await;
             }
         };
-        let result = match self.persist(terminal, Some(ShellState::Running)).await {
+        let result = match self
+            .persist_with_delivery(terminal, Some(ShellState::Running), rejected_input)
+            .await
+        {
             Ok(()) => self.active(terminal, &mut child, &io).await,
             Err(error) => Err(error),
         };
         self.commands.close();
-        terminal.fail_writes("PTY is closing");
+        terminal.input.fail_queued("PTY is closing");
         // Pending commands have performed no effect; acknowledge that explicitly.
         while let Ok(control) = self.commands.try_recv() {
             let _ = control
@@ -161,7 +175,7 @@ impl Worker {
         }
         drop(io);
         drop(child);
-        terminal.fail_writes("PTY closed");
+        terminal.input.fail_queued("PTY closed");
         self.settle(terminal, outcome, cleanup_failure).await
     }
 
@@ -187,7 +201,9 @@ impl Worker {
             ));
         }
         // T2 and final screen become visible together, after native cleanup.
-        self.persist(terminal, Some(finished(outcome)?)).await
+        let delivery = terminal.input.interrupt();
+        self.persist_with_delivery(terminal, Some(finished(outcome)?), delivery)
+            .await
     }
 
     async fn active(
@@ -228,17 +244,20 @@ impl Worker {
                     }
                     // Complete the parser cut before persisting or handling controls.
                     terminal.output(&buffer[..count], eof)?;
-                    self.publish(terminal);
+                    let delivery = if eof { terminal.input.interrupt() } else { None };
+                    if let Some(delivery) = delivery {
+                        self.persist_with_delivery(terminal, None, Some(delivery)).await?;
+                    } else {
+                        self.publish(terminal);
+                    }
                     if let Some(error) = failure { return Err(error.into()); }
                 }
-                written = async { io.write(terminal.writes.front().unwrap().remaining()).await }, if !terminal.writes.is_empty() => {
-                    let count = written?;
-                    if count == 0 { return Err(std::io::Error::from(std::io::ErrorKind::WriteZero).into()); }
-                    if terminal.writes.front_mut().unwrap().advance(count) {
-                        terminal.writes.pop_front().unwrap().finish(self.current_cut());
+                written = terminal.input.write(io, &self.cancellation, eof) => {
+                    if let Some(delivery) = terminal.input.accept(written?, || self.current_cut())? {
+                        self.persist_with_delivery(terminal, None, Some(delivery)).await?;
                     }
                 }
-                command = self.commands.recv(), if terminal.writes.is_empty() => {
+                command = self.commands.recv(), if terminal.input.controls_ready() => {
                     match command {
                         Some(control) => self.control(terminal, child, control).await?,
                         None => return Ok(ShellOutcome::Cancelled { message: None }),
@@ -265,11 +284,21 @@ impl Worker {
     }
 
     async fn persist(&mut self, terminal: &Terminal, state: Option<ShellState>) -> Result<()> {
+        self.persist_with_delivery(terminal, state, None).await
+    }
+
+    async fn persist_with_delivery(
+        &mut self,
+        terminal: &Terminal,
+        state: Option<ShellState>,
+        initial_command_delivery: Option<InitialCommandDelivery>,
+    ) -> Result<()> {
         let output = ShellOutput::Pty {
             screen: terminal.display(),
         };
         let patch = ShellPatch {
             state,
+            initial_command_delivery,
             output: Some(output),
             updated_at: Some(now()?),
             ..Default::default()

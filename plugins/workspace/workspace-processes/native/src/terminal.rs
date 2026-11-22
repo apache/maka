@@ -128,9 +128,26 @@ impl Processes {
                     .await
             }
             "start" => self
-                .terminal_start(decode(value)?, context)
+                .terminal_start(decode(value)?, None, context)
                 .await
                 .and_then(completed),
+            "startWithCommand" => {
+                let input: StartWithCommand = decode(value)?;
+                if input.initial_command.len() > 4096 {
+                    return Err(failed("Action requires a command up to 4 KiB"));
+                }
+                self.terminal_start(
+                    Start {
+                        session_id: input.session_id,
+                        command: None,
+                        size: input.size,
+                    },
+                    Some(input.initial_command),
+                    context,
+                )
+                .await
+                .and_then(completed)
+            }
             "stop" => self
                 .terminal_stop(decode(value)?, context)
                 .await

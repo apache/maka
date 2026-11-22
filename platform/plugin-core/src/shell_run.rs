@@ -35,6 +35,16 @@ pub enum ShellVisibility {
     User,
 }
 
+/// Evidence for input to the original PTY, independent of command execution.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InitialCommandDelivery {
+    Pending,
+    Submitted,
+    NotSubmitted,
+    Unknown,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum PipeStream {
@@ -79,6 +89,8 @@ pub struct ShellRun {
     pub source_work_id: Option<String>,
     /// Opaque caller-owned observation; resource owners never interpret it.
     pub correlation: serde_json::Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initial_command_delivery: Option<InitialCommandDelivery>,
     pub visibility: ShellVisibility,
     pub permissions: ShellPermissions,
     pub cwd: String,
@@ -106,6 +118,7 @@ pub struct ShellPatch {
     pub output: Option<ShellOutput>,
     pub observed_at: Option<u64>,
     pub updated_at: Option<u64>,
+    pub initial_command_delivery: Option<InitialCommandDelivery>,
 }
 
 impl ShellRun {
@@ -147,6 +160,14 @@ impl ShellRun {
 
     pub fn patched(&self, patch: ShellPatch) -> Result<Self, &'static str> {
         let mut next = self.clone();
+        if let Some(delivery) = patch.initial_command_delivery {
+            if self.initial_command_delivery != Some(InitialCommandDelivery::Pending)
+                || delivery == InitialCommandDelivery::Pending
+            {
+                return Err("invalid initial command delivery transition");
+            }
+            next.initial_command_delivery = Some(delivery);
+        }
         if let Some(state) = patch.state {
             if !self.state.accepts(&state) {
                 return Err("invalid shell state transition");

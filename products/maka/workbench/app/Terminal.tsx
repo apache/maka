@@ -46,7 +46,7 @@ import type {
   TerminalModifiers,
   TerminalSize,
 } from '../../../../packages/plugin-sdk/src/index.js';
-import { terminalStatus, type TerminalModel } from './terminalState';
+import { terminalActionNotice, terminalStatus, type TerminalModel } from './terminalState';
 import { createTerminalViewport } from './terminalViewport';
 import { Icon } from './Icon';
 import { tr } from './locale';
@@ -437,6 +437,11 @@ export function Terminal(props: { model: TerminalModel }) {
           </Button>
         </If>
       </View>
+      <If when={terminalActionNotice(model.entry())}>
+        <Text style={{ ...captionTextStyle, color: C.warning }}>
+          {terminalActionNotice(model.entry())}
+        </Text>
+      </If>
       <View
         style={{
           flex: 1,

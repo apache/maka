@@ -29,7 +29,7 @@ const native = {
   grid: `export class TerminalGrid { apply(event) { return {after:event.sequence ?? 0, status:'live'}; } discardDisplay() {} reset() {} }`,
   locale: `export const tr = key => key;`,
   host: `const unused = () => { throw new Error('Unexpected Session host call'); };
-    export const terminalMutation = (...args) => globalThis.terminalTestHost.mutate(...args); export const pendingTerminals = (...args) => globalThis.terminalTestHost.pending(...args); export const recoverTerminal = unused, abandonTerminal = unused;`,
+    export const terminalMutation = (...args) => globalThis.terminalTestHost.mutate(...args); export const pendingTerminals = (...args) => globalThis.terminalTestHost.pending(...args); export const recoverTerminal = (...args) => globalThis.terminalTestHost.recover(...args); export const abandonTerminal = unused;`,
 };
 const hooks = registerHooks({
   resolve(specifier, context, next) {
@@ -284,38 +284,31 @@ test('a live PTY draws output and gets its exit status from the terminal list', 
   assert.equal(model.error(), '');
 });
 
-test('Actions write to independent ordinary terminals after their start receipts', async () => {
+test('each Action sends a complete launch request and opens its original terminal', async () => {
   const calls = [];
   const receipts = [Promise.withResolvers(), Promise.withResolvers()];
-  const leases = new Map();
   const opened = [];
   const sessionId = 'session-one';
   const command = 'printf "%s" ready\nfalse';
   globalThis.terminalTestHost = {
     pending: async () => [],
     async mutate(owner, method, input) {
+      const index = calls.length;
       calls.push([method, input]);
-      if (method === 'start') {
-        const index = calls.length - 1;
-        await receipts[index].promise;
-        return completed({
-          ...entry(),
-          sessionId: owner.sessionId,
-          result: { ...entry().result, ref: 'shell:' + index },
-        });
-      }
-      return completed({ sequence: 1 });
+      assert.equal(method, 'startWithCommand');
+      await receipts[index].promise;
+      return completed({
+        ...entry(),
+        sessionId: owner.sessionId,
+        result: { ...entry().result, ref: 'shell:' + index },
+      });
     },
   };
   const terminals = createTerminals(
     {
       session: (id) => ({ sessionId: id }),
-      async subscribe(_service, method, target) {
-        assert.equal(method, 'acquire');
-        const lease = stream();
-        lease.push(completed({ held: true, controllerId: target.ref, nextSequence: 1 }));
-        leases.set(target.ref, lease);
-        return lease;
+      async subscribe() {
+        throw new Error('The UI must not acquire a lease to submit an Action.');
       },
     },
     {
@@ -326,9 +319,11 @@ test('Actions write to independent ordinary terminals after their start receipts
   );
   const first = terminals.runCommand(command);
   const second = terminals.runCommand(command);
-  const start = ['start', { sessionId, size: { cols: 80, rows: 24 } }];
+  const start = [
+    'startWithCommand',
+    { sessionId, size: { cols: 80, rows: 24 }, initialCommand: command },
+  ];
   assert.deepEqual(calls, [start, start]);
-  assert.equal(leases.size, 0);
 
   for (const [index, action] of [
     [1, second],
@@ -336,23 +331,66 @@ test('Actions write to independent ordinary terminals after their start receipts
   ]) {
     receipts[index].resolve();
     terminals.open(await action);
-    const ref = 'shell:' + index;
-    const controller = { target: { sessionId, ref }, controllerId: ref };
-    assert.deepEqual(calls.slice(-2), [
-      [
-        'control',
-        {
-          controller,
-          sequence: 1,
-          actions: [
-            { type: 'paste', text: ' ' + command },
-            { type: 'key', key: 'enter' },
-          ],
-        },
-      ],
-      ['release', controller],
-    ]);
-    assert.equal(leases.get(ref).cancelled(), true);
   }
+  assert.deepEqual(calls, [start, start]);
   assert.deepEqual(opened, ['shell:1', 'shell:0']);
+});
+
+test('a lost Action start reply reads the original terminal without resubmitting', async () => {
+  const sessionId = 'session-one';
+  const ref = 'shell:original';
+  const original = { id: 'original-operation', method: 'startWithCommand' };
+  const calls = [];
+  let pending = [];
+  const resource = {
+    ...entry(),
+    sessionId,
+    correlation: { operationId: original.id, initialCommandDelivery: 'pending' },
+    result: { ...entry().result, ref, revision: 2 },
+  };
+  globalThis.terminalTestHost = {
+    pending: async () => pending,
+    async mutate(_owner, method, input) {
+      calls.push([method, input]);
+      pending = [original];
+      throw new Error('Action start reply lost');
+    },
+    async recover(_owner, id) {
+      assert.equal(id, original.id);
+      pending = [];
+      return {
+        reference: { operation: id },
+        receipt: {
+          kind: 'recorded',
+          outcome: { kind: 'returned', result: { kind: 'success', value: completed(resource) } },
+        },
+      };
+    },
+  };
+  const terminals = createTerminals(
+    {
+      session: (id) => ({ sessionId: id }),
+      async query(service, method, target) {
+        calls.push([service, method, target]);
+        return completed({
+          ...resource,
+          correlation: { ...resource.correlation, initialCommandDelivery: 'submitted' },
+          result: { ...resource.result, revision: 3 },
+        });
+      },
+    },
+    {
+      sessionId: () => sessionId,
+      active: () => false,
+      open: () => assert.fail('Recovery should preserve the current focus'),
+    },
+  );
+  assert.equal(await terminals.runCommand('echo once'), undefined);
+  await terminals.recover({ sessionId, id: original.id, abandon: false });
+  assert.deepEqual(calls, [
+    ['startWithCommand', { sessionId, size: { cols: 80, rows: 24 }, initialCommand: 'echo once' }],
+    ['terminal', 'read', { sessionId, ref }],
+  ]);
+  assert.equal(terminals.entries()[0].value().correlation.initialCommandDelivery, 'submitted');
+  assert.deepEqual(terminals.pending(), []);
 });

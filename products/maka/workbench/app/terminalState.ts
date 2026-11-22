@@ -62,6 +62,23 @@ export function completed<T>(
 }
 export const terminalRunning = (entry: TerminalEntry) =>
   entry.result.status === 'starting' || entry.result.status === 'running';
+function actionDelivery({ correlation }: Pick<TerminalEntry, 'correlation'>) {
+  return typeof correlation !== 'object' ||
+    correlation === null ||
+    !('initialCommandDelivery' in correlation)
+    ? undefined
+    : correlation.initialCommandDelivery;
+}
+export function terminalActionNotice(entry: TerminalEntry): string {
+  switch (actionDelivery(entry)) {
+    case 'not_submitted':
+      return tr('Action was not submitted.');
+    case 'unknown':
+      return tr('Action submission status is unknown.');
+    default:
+      return '';
+  }
+}
 const stop = (watch: Watch<unknown> | null) => {
   if (!watch) return;
   watch.closed = true;
@@ -111,7 +128,10 @@ export function createTerminals(
     }
   };
   const admitsControl = (owner: ScopedHost) =>
-    owns(owner.sessionId) && scope === owner && known() && !pending().length;
+    owns(owner.sessionId) &&
+    scope === owner &&
+    known() &&
+    pending().every((operation) => operation.method === 'startWithCommand');
   const mutate = async <M extends Method<'terminal', 'mutation'>>(
     owner: ScopedHost,
     method: M,
@@ -156,6 +176,13 @@ export function createTerminals(
           return row;
         }),
     );
+  };
+  const remember = (launched: ResourceUpdate) => {
+    const resources = entries().map((row) => row.value());
+    const current = resources.find((row) => row.result.ref === launched.result.ref);
+    if (current && current.result.revision > launched.result.revision) return current;
+    accept([...resources.filter((row) => row.result.ref !== launched.result.ref), launched]);
+    return launched;
   };
   const follow = (session: string) => {
     stop(watch);
@@ -289,30 +316,6 @@ export function createTerminals(
     });
     if (options.active()) follow(selected);
   };
-  const submit = async (owner: ScopedHost, entry: ResourceUpdate, source: string) => {
-    const target = { sessionId: entry.sessionId, ref: entry.result.ref };
-    const input = await host.subscribe('terminal', 'acquire', target);
-    try {
-      const first = await input.next();
-      const lease = first && completed(first);
-      if (!lease?.held || lease.nextSequence == null)
-        throw new UiError('Could not control the terminal.');
-      const controller = { target, controllerId: lease.controllerId };
-      completed(
-        await terminalMutation(owner, 'control', {
-          controller,
-          sequence: lease.nextSequence,
-          actions: [
-            { type: 'paste', text: ' ' + source },
-            { type: 'key', key: 'enter' },
-          ],
-        }),
-      );
-      completed(await terminalMutation(owner, 'release', controller));
-    } finally {
-      await input.close();
-    }
-  };
   const start = async (source?: string) => {
     adopt(options.sessionId());
     const owner = scope;
@@ -332,21 +335,10 @@ export function createTerminals(
       const launched = completed(
         await (source === undefined
           ? mutate(owner, 'start', input)
-          : terminalMutation(owner, 'start', input)),
+          : terminalMutation(owner, 'startWithCommand', { ...input, initialCommand: source })),
       );
-      if (source !== undefined) await submit(owner, launched, source);
       if (!owns(selected) || scope !== owner) return;
-      const current = entries()
-        .find((row) => row.value().result.ref === launched.result.ref)
-        ?.value();
-      const entry =
-        current && current.result.revision > launched.result.revision ? current : launched;
-      accept([
-        ...entries()
-          .map((row) => row.value())
-          .filter((item) => item.result.ref !== entry.result.ref),
-        entry,
-      ]);
+      const entry = remember(launched);
       if (source === undefined) open(entry);
       return entry;
     } catch (reason) {
@@ -374,12 +366,40 @@ export function createTerminals(
       if (target.abandon) await abandonTerminal(owner, target.id);
       else {
         const reply: OperationReply = await recoverTerminal(owner, target.id);
-        if (reply.receipt.kind !== 'recorded' || reply.receipt.outcome.kind !== 'returned')
+        if (reply.receipt.kind !== 'recorded' || reply.receipt.outcome.kind !== 'returned') {
+          if (original.method === 'startWithCommand') {
+            const observed = entries()
+              .map((row) => row.value())
+              .find(
+                ({ correlation }) =>
+                  typeof correlation === 'object' &&
+                  correlation !== null &&
+                  'operationId' in correlation &&
+                  correlation.operationId === reply.reference.operation,
+              );
+            const delivery = observed && actionDelivery(observed);
+            if (delivery === 'submitted' || delivery === 'not_submitted') return;
+            throw new UiError('Action submission status is unknown.');
+          }
           throw new Error(
             `Terminal recovery: no returned result (${reply.receipt.kind === 'recorded' ? reply.receipt.outcome.kind : reply.receipt.kind})`,
           );
+        }
         if (reply.receipt.outcome.result.kind === 'failure')
           throw new Error(reply.receipt.outcome.result.diagnostic);
+        if (original.method === 'startWithCommand') {
+          const originalTerminal = completed(
+            reply.receipt.outcome.result.value as Output<'terminal', 'startWithCommand'>,
+          );
+          const latest = completed(
+            await host.query('terminal', 'read', {
+              sessionId: target.sessionId,
+              ref: originalTerminal.result.ref,
+            }),
+          );
+          if (owns(target.sessionId) && scope === owner) remember(latest);
+          return;
+        }
       }
       if (owns(target.sessionId) && scope === owner && options.active()) follow(target.sessionId);
     } catch (reason) {
@@ -428,7 +448,8 @@ export function createTerminals(
   };
 }
 
-type TerminalEntry = Pick<ResourceUpdate, 'result' | 'ownership' | 'visibility' | 'initiator'>;
+type TerminalEntry = Pick<ResourceUpdate, 'result' | 'ownership' | 'visibility' | 'initiator'> &
+  Partial<Pick<ResourceUpdate, 'correlation'>>;
 type TerminalSubscription<M extends 'readDisplay' | 'watch' | 'watchOutput' | 'acquire'> = Promise<
   Stream<Output<'terminal', M>>
 >;

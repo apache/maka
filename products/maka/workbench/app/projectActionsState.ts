@@ -180,8 +180,7 @@ export function createProjectActions(
       workspaceLookupFailed.set(false);
       if (!owner) return;
       directory.set(owner);
-      const originals = await refreshPending();
-      if (!originals || originals.length || !alive || current !== generation) return;
+      void refreshPending();
       await loadDefinitions();
     } catch (reason) {
       if (alive && current === generation) {
@@ -236,10 +235,11 @@ export function createProjectActions(
           }
         }
       } finally {
-        if (originals.length && alive && current === generation) await refreshPending();
+        if (alive && current === generation) {
+          await Promise.all([loadDefinitions(), originals.length && refreshPending()]);
+        }
       }
       if (!alive || current !== generation || !known()) return;
-      await loadDefinitions();
       if (selection() && !directory() && !pending().length)
         selectionVersion.set(selectionVersion() + 1);
     } catch (reason) {

@@ -226,6 +226,17 @@ impl ShellExecutor {
         Ok((source, self.capture(command)?))
     }
 
+    /// Capture an interactive shell and the input to send after the PTY opens.
+    pub fn interactive_pty_with_command(
+        &self,
+        source: String,
+    ) -> Result<(pty::PtyCommand, String, String), ToolError> {
+        validate_command(&source)?;
+        let (_, mut command) = self.shell.interactive(&self.cwd);
+        let input = self.shell.interactive_input(&mut command, &source);
+        Ok((self.capture(command)?, source, input))
+    }
+
     /// The selected dialect and quoting match pipes, but stdin is a terminal.
     /// Capturing a plan performs no native effect.
     pub fn command_pty(&self, command: &str) -> Result<pty::PtyCommand, ToolError> {

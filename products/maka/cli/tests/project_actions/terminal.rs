@@ -256,3 +256,187 @@ async fn mutate_terminal(
     mutation.close().await?;
     Ok(reply)
 }
+
+#[cfg(target_os = "macos")]
+mod action_input {
+    use super::*;
+
+    real_host_test!(action_stays_with_the_original_shell_and_receipt, recovery);
+    real_host_test!(action_sends_input_before_the_shell_prompt, direct_input);
+
+    fn put(path: &Path, source: &str) -> Result<()> {
+        std::fs::write(path, source).map_err(|error| error.to_string())
+    }
+
+    fn profile(home: &Path, source: &str) -> Result<()> {
+        for name in [".zshrc", ".bash_profile"] {
+            put(&home.join(name), source)?;
+        }
+        Ok(())
+    }
+
+    async fn resource_where(
+        client: &Client,
+        session: &str,
+        predicate: impl Fn(&Value) -> bool,
+    ) -> Result<Value> {
+        phase("matching original terminal state", async {
+            loop {
+                let list = completed(
+                    client
+                        .query("terminal", "list", json!({"sessionId":session}))
+                        .await?,
+                )?;
+                if let Some(entry) = list["resources"]
+                    .as_array()
+                    .and_then(|rows| rows.iter().find(|entry| predicate(entry)))
+                {
+                    return Ok(entry.clone());
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+    }
+
+    async fn visible_text(client: &Client, target: &Value, text: &str) -> Result<()> {
+        phase("original terminal output", async {
+            loop {
+                let value = completed(client.query("terminal", "read", target.clone()).await?)?;
+                if terminal_text(&value).contains(text) {
+                    return Ok(());
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+    }
+
+    async fn file(path: &Path, expected: &str) -> Result<()> {
+        phase("file written by the actual shell", async {
+            while std::fs::read_to_string(path).as_deref().ok() != Some(expected) {
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+            Ok(())
+        })
+        .await
+    }
+
+    async fn recovery(rig: &mut Rig) -> Result<()> {
+        let project = rig.sandbox.workspace.clone();
+        profile(&rig.sandbox.home, "HISTFILE=/dev/null\n")?;
+        std::fs::create_dir(project.join("nested")).map_err(|error| error.to_string())?;
+        let client = rig.start().await?;
+        let session = create_session(&client, &project).await?;
+        let id = Uuid::new_v4();
+        let mutation = client
+            .terminal_mutation(
+                id,
+                "startWithCommand",
+                json!({
+                    "sessionId":session,
+                    "initialCommand":"cd nested\nexport ACTION_TEST_STATE=inside\nprintf '%s\\n' 'quotes ! $ 中文' >> ../deliveries"
+                }),
+                &session,
+            )
+            .await?;
+        let prepared = mutation.prepare().await?;
+        let reference = prepared.reference.ok_or("missing original reference")?;
+        let journal =
+            rusqlite::Connection::open(&rig.sandbox.journal).map_err(|error| error.to_string())?;
+        journal
+            .execute_batch(&format!(
+                "CREATE TRIGGER lose_action_receipt BEFORE UPDATE OF receipt ON operations
+             WHEN NEW.id = '{id}' BEGIN SELECT RAISE(ABORT, 'fixture lost Action receipt'); END;"
+            ))
+            .map_err(|error| error.to_string())?;
+        let confirmation = mutation.confirm().await;
+        assert!(confirmation.is_err(), "{confirmation:?}");
+        let _ = mutation.close().await;
+        journal
+            .execute_batch("DROP TRIGGER lose_action_receipt")
+            .map_err(|error| error.to_string())?;
+        let original = rig.connect().await?;
+        assert!(
+            original
+                .pending_terminals(&session)
+                .await?
+                .iter()
+                .any(|item| item.id == id)
+        );
+        let entry = resource_where(&original, &session, |row| {
+            row["correlation"]["operationId"] == reference.operation.to_string()
+                && row["correlation"]["initialCommandDelivery"] == "submitted"
+        })
+        .await?;
+        let receipt = original.recover(id).await?;
+        assert_eq!(receipt.reference, reference);
+        let recovered = completed(returned(&receipt)?)?;
+        assert_eq!(recovered["result"]["ref"], entry["result"]["ref"]);
+        assert!(
+            !original
+                .pending_terminals(&session)
+                .await?
+                .iter()
+                .any(|item| item.id == id)
+        );
+
+        let shell = target(&session, &entry);
+        send_command(
+            &original,
+            &session,
+            &shell,
+            "test \"$ACTION_TEST_STATE\" = inside && printf same-shell > same-shell; exit",
+        )
+        .await?;
+        let ended = finished_terminal(&original, shell).await?;
+        assert_eq!(ended["result"]["exitCode"], 0);
+        file(&project.join("nested/same-shell"), "same-shell").await?;
+        file(&project.join("deliveries"), "quotes ! $ 中文\n").await?;
+        rig.quit().await
+    }
+
+    async fn direct_input(rig: &mut Rig) -> Result<()> {
+        let project = rig.sandbox.workspace.clone();
+        profile(
+            &rig.sandbox.home,
+            "/bin/sh -c 'read -r answer; printf \"%s\\n\" \"$answer\" > startup-answer'\nPS1='maka-prompt> '\n",
+        )?;
+        let client = rig.start().await?;
+        let session = create_session(&client, &project).await?;
+        let command = "printf action > action-ran";
+        let entry = completed(returned(
+            &mutate_terminal(
+                &client,
+                &session,
+                "startWithCommand",
+                json!({"sessionId":session,"initialCommand":command}),
+            )
+            .await?,
+        )?)?;
+        let delivery = resource_where(&client, &session, |row| {
+            row["result"]["ref"] == entry["result"]["ref"]
+                && row["correlation"]["initialCommandDelivery"] != "pending"
+        })
+        .await?;
+        assert_eq!(
+            delivery["correlation"]["initialCommandDelivery"],
+            "submitted"
+        );
+        file(&project.join("startup-answer"), &format!("{command}\n")).await?;
+        let shell = target(&session, &entry);
+        visible_text(&client, &shell, "maka-prompt>").await?;
+        send_command(
+            &client,
+            &session,
+            &shell,
+            "printf manual > manual-ran; exit",
+        )
+        .await?;
+        let ended = finished_terminal(&client, shell).await?;
+        assert_eq!(ended["correlation"]["initialCommandDelivery"], "submitted");
+        file(&project.join("manual-ran"), "manual").await?;
+        assert!(!project.join("action-ran").exists());
+        rig.quit().await
+    }
+}

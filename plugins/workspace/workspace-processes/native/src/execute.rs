@@ -209,6 +209,7 @@ impl Processes {
             id: format!("{}{}", self.prefix, uuid::Uuid::new_v4()),
             session_id: tool.execution.session_id.clone(),
             source_work_id: Some(tool.execution.run_id.to_string()),
+            initial_command_delivery: None,
             correlation: serde_json::json!({ "execution": tool.execution, "operationId": tool.operation_id, "toolUseId": tool.tool_use_id() }),
             visibility: ShellVisibility::Model,
             permissions: ShellPermissions {
@@ -238,8 +239,14 @@ impl Processes {
         };
         let custody = tool.custody.clone();
         let mut handle = if input.pty {
-            self.resources
-                .start_pty(record, command, size, custody, Some(captured.workspace))
+            self.resources.start_pty(
+                record,
+                command,
+                size,
+                custody,
+                Some(captured.workspace),
+                None,
+            )
         } else {
             self.resources
                 .start_pipes(record, command, custody, Some(captured.workspace))

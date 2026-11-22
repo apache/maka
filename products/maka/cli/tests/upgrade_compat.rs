@@ -1214,6 +1214,49 @@ async fn verify_capsule(bin: &Path, capsule_dir: &Path) {
         );
 
         // Stage 3: Live continuation on upgraded State Root.
+        let location = call(
+            &client,
+            "agent",
+            "projects",
+            json!({"kind": "directory", "path": dirs.workspace}),
+            Attachments::new(),
+        )
+        .await;
+        let registered = call(
+            &client,
+            "agent",
+            "project",
+            json!({
+                "kind": "register",
+                "path": dirs.workspace,
+                "expected": location["location"]["project"]["reference"],
+            }),
+            Attachments::new(),
+        )
+        .await;
+        assert_eq!(registered["kind"], "committed", "{registered}");
+        let project_id = registered["project"]["reference"]["id"]
+            .as_str()
+            .expect("registered project ID");
+        let action = call(
+            &client,
+            "projectActions",
+            "create",
+            json!({"projectId": project_id, "name": "Compat Action", "command": "echo ready"}),
+            Attachments::new(),
+        )
+        .await;
+        assert_eq!(action["kind"], "completed", "{action}");
+        let definitions = call(
+            &client,
+            "projectActions",
+            "definitions",
+            json!({"projectId": project_id}),
+            Attachments::new(),
+        )
+        .await;
+        assert_eq!(definitions, json!({"kind": "completed", "value": [action["value"]]}));
+
         let updated_conn = call(
             &client,
             "settings",

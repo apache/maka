@@ -113,6 +113,15 @@ pub struct Start {
     pub command: Option<String>,
     pub size: Option<TerminalSize>,
 }
+#[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "TerminalStartWithCommand")]
+pub struct StartWithCommand {
+    pub session_id: String,
+    #[schemars(length(min = 1, max = 4096))]
+    pub initial_command: String,
+    pub size: Option<TerminalSize>,
+}
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "TerminalController")]
@@ -226,6 +235,10 @@ pub fn contract() -> Contract {
                 (
                     "start".into(),
                     method::<Start, ResourceUpdate>(MethodMode::Mutation),
+                ),
+                (
+                    "startWithCommand".into(),
+                    method::<StartWithCommand, ResourceUpdate>(MethodMode::Mutation),
                 ),
                 (
                     "stop".into(),

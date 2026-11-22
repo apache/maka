@@ -18,6 +18,7 @@
  */
 
 use super::*;
+use maka_plugin_core::shell_run::InitialCommandDelivery;
 use maka_plugin_core::shell_run::ShellOutput;
 use maka_plugin_core::shell_run::ShellPermissions;
 use maka_plugin_core::shell_run::ShellRun;
@@ -29,6 +30,7 @@ impl Processes {
     pub(super) async fn terminal_start(
         &self,
         input: Start,
+        initial_command: Option<String>,
         context: &Context,
     ) -> Result<ResourceUpdate, ToolError> {
         if self.drain.is_cancelled() {
@@ -83,18 +85,24 @@ impl Processes {
             .with_sandbox(sandbox.clone())
             .with_network_route(route);
         let workspace = captured.workspace;
-        let (command, source, pty) = tokio::task::spawn_blocking(move || match input.command {
-            Some(source) => captured
-                .executor
-                .command_pipes(&source)
-                .map(|command| (command, source, false)),
-            None => captured
-                .executor
-                .interactive_pty()
-                .map(|(source, command)| (command, source, true)),
-        })
-        .await
-        .map_err(failed)??;
+        let (command, source, pty, submission) =
+            tokio::task::spawn_blocking(move || match (input.command, initial_command) {
+                (None, Some(source)) => captured
+                    .executor
+                    .interactive_pty_with_command(source)
+                    .map(|(command, source, submission)| (command, source, true, Some(submission))),
+                (Some(source), None) => captured
+                    .executor
+                    .command_pipes(&source)
+                    .map(|command| (command, source, false, None)),
+                (None, None) => captured
+                    .executor
+                    .interactive_pty()
+                    .map(|(source, command)| (command, source, true, None)),
+                (Some(_), Some(_)) => Err(failed("Interactive input requires a PTY")),
+            })
+            .await
+            .map_err(failed)??;
         let current = self
             .terminal_session(&input.session_id, true, context)
             .await?
@@ -119,11 +127,13 @@ impl Processes {
             .size
             .unwrap_or(TerminalSize::new(80, 24).expect("default terminal size"));
         let at = maka_agent_authority::now();
+        let has_initial_input = submission.is_some();
         let record = ShellRun {
             id: format!("{}{}", self.prefix, uuid::Uuid::new_v4()),
             session_id: input.session_id,
             source_work_id: None,
             correlation: serde_json::json!({"operationId": origin}),
+            initial_command_delivery: has_initial_input.then_some(InitialCommandDelivery::Pending),
             visibility: if pty {
                 ShellVisibility::Model
             } else {
@@ -159,7 +169,7 @@ impl Processes {
         let custody = context.work_custody().cloned();
         let mut handle = if pty {
             self.resources
-                .start_pty(record, command, size, custody, Some(workspace))
+                .start_pty(record, command, size, custody, Some(workspace), submission)
         } else {
             self.resources
                 .start_pipes(record, command, custody, Some(workspace))
@@ -168,6 +178,10 @@ impl Processes {
             ShellError::Process(error) => error,
             error => failed(error),
         })?;
+        if has_initial_input {
+            // The admitted worker owns delivery even if this receipt is lost.
+            return snapshot((*handle.ready().await.map_err(worker_error)?).clone());
+        }
         let record = tokio::select! { biased;
             _ = context.scope().cancellation.cancelled() => {
                 handle.stop(); handle.drained().await.map_err(worker_error)?

@@ -5404,6 +5404,15 @@ export interface ServiceMethods {
       input: Runtime.TerminalStart;
       output: Runtime.TerminalOutcome_ResourceUpdate;
     };
+    startWithCommand: {
+      mode: 'mutation';
+      input: {
+        sessionId: string;
+        initialCommand: string;
+        size?: Runtime.TerminalSize | null;
+      };
+      output: Runtime.TerminalOutcome_ResourceUpdate;
+    };
     stop: {
       mode: 'mutation';
       input: Runtime.TerminalTarget;

@@ -96,6 +96,7 @@ impl ShellResources {
         size: TerminalSize,
         custody: Option<Arc<dyn maka_plugin_core::work::WorkCustody>>,
         workspace: Option<std::fs::File>,
+        initial_input: Option<String>,
     ) -> Result<ShellHandle> {
         record.validate().map_err(ShellError::Rejected)?;
         let work = prepare_work(&self.log, &record, custody, workspace)?;
@@ -168,7 +169,7 @@ impl ShellResources {
                             persistence_failed: false,
                             output: output.clone(),
                         }
-                        .run(command, size)
+                        .run(command, size, initial_input)
                         .await;
                         finish_work(lease, &result);
                         result

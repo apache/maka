@@ -186,6 +186,9 @@ impl EventLog {
                                     observed_at: None,
                                 }),
                                 updated_at: Some(now),
+                                initial_command_delivery: current.initial_command_delivery
+                                    .filter(|status| *status == maka_plugin_core::shell_run::InitialCommandDelivery::Pending)
+                                    .map(|_| maka_plugin_core::shell_run::InitialCommandDelivery::Unknown),
                                 ..Default::default()
                             })
                             .map_err(invalid)?;

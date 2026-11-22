@@ -21,7 +21,7 @@ use super::Worker;
 use crate::shell::{
     Result,
     control::{Control, ControlError, Input},
-    terminal::{PendingWrite, Terminal},
+    terminal::Terminal,
 };
 use maka_plugin_core::shell_run::ShellObservation;
 use maka_plugin_core::terminal::input::encode_actions_with_paste;
@@ -102,12 +102,9 @@ impl Worker {
                 record: self.current_cut(),
             }));
         } else {
-            terminal.writes.push_back(PendingWrite::new(
-                bytes,
-                Some(control.reply),
-                resized,
-                resize_changed,
-            ));
+            terminal
+                .input
+                .enqueue_control(bytes, control.reply, resized, resize_changed);
         }
         Ok(())
     }

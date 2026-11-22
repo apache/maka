@@ -544,9 +544,7 @@ hostPrototype.session = function(...args) {
     const terminal = scopePrototype.terminal;
     scopePrototype.terminal = async function(method, input) {
       const reply = await terminal.call(this, method, input);
-      if (method === 'control' && input.actions.some(
-          action => action.type === 'paste' && action.text.includes('held-action')
-      )) {
+      if (method === 'startWithCommand' && input.initialCommand.includes('held-action')) {
         const id = ++nextReceipt;
         const released = new Promise(resolve => heldReceipts.set(id, resolve));
         await terminalFixtureEvents.call('fixture.terminalHeld', { id });
@@ -673,7 +671,9 @@ async fn desktop_actions_at_width(width: i32, docked: bool) {
     let command = "Add-Content -Encoding ascii native-action-count start; Set-Location nested; $answer = Read-Host 'Answer'; Write-Output \"result $answer\"";
     desktop.control("Toggle session details").await;
     assert!(desktop.controls("Add Action").is_empty());
-    desktop.press("Toggle session details").await;
+    desktop
+        .press_until("Toggle session details", "Add Action")
+        .await;
     desktop.press("Add Action").await;
     fill_action(&desktop, "Native command A", command).await;
     desktop.press("Save").await;
@@ -703,6 +703,7 @@ async fn desktop_actions_at_width(width: i32, docked: bool) {
     desktop.press(second_action).await;
     desktop.control("Close workspace preview").await;
     desktop.control("Release input").await;
+    terminal_contains(&desktop, "Answer:").await;
     let terminal = desktop.control("Focus terminal input").await;
     let composers = desktop.controls("Focus message composer");
     if docked {
@@ -738,6 +739,7 @@ async fn desktop_actions_at_width(width: i32, docked: bool) {
     desktop.press("Close workspace preview").await;
     desktop.press(first_action).await;
     desktop.control("Release input").await;
+    terminal_contains(&desktop, "Answer:").await;
     desktop.paste("second answer").await;
     desktop.key("enter", false);
     terminal_contains(&desktop, "result second answer").await;
@@ -829,14 +831,14 @@ pub(super) async fn terminal_actions_preserve_keyboard_input_and_original_output
     support::evidence("actions-session-launcher", &launcher);
     support::click_button(&mut view, "Run current Action Terminal command").await;
     support::wait_enabled_button(&mut view, "Release input").await;
-    support::wait_view_state(&mut view, |view, _| {
-        view.input_context().is_some_and(|input| {
-            input.editable
-                && view
-                    .accessibility_snapshot()
-                    .iter()
-                    .any(|node| node.id == input.node && node.label == "Terminal keyboard input")
-        })
+    support::wait_view_state(&mut view, |view, snapshot| {
+        snapshot.contains("Answer:")
+            && view.input_context().is_some_and(|input| {
+                input.editable
+                    && view.accessibility_snapshot().iter().any(|node| {
+                        node.id == input.node && node.label == "Terminal keyboard input"
+                    })
+            })
     })
     .await;
     handle_event(&mut view, Event::Paste("first answer".into()));

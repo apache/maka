@@ -60,7 +60,8 @@ const native = {
     export const cleanup = fn => scope.push(fn);
     export const context = initial => ({ value: initial });`,
   host: `export const host = {}; export class TerminalGrid {}`,
-  locale: `export const tr = key => key;`,
+  locale: `export const tr = (key, values) =>
+    Object.entries(values ?? {}).reduce((text, [name, value]) => text.replace('{' + name + '}', value), key);`,
 };
 const hooks = registerHooks({
   resolve(specifier, context, next) {
@@ -859,3 +860,44 @@ test('unresolved and failed recovery do not complete a save', async (t) => {
     assert.equal(closed, 0);
   }
 });
+
+for (const receipt of [
+  returned({ kind: 'failed', message: 'Action rejected' }),
+  {
+    receipt: {
+      kind: 'recorded',
+      outcome: { kind: 'returned', result: { kind: 'failure', diagnostic: 'Action rejected' } },
+    },
+  },
+]) {
+  test(`settings reload definitions after a rejected ${receipt.receipt.outcome.result.kind} receipt`, async (t) => {
+    const { open, rows, projectId } = setup(t);
+    const original = {
+      id: randomUUID(),
+      projectId,
+      revision: 1,
+      name: 'Existing',
+      command: 'true',
+    };
+    rows.set(projectId, [original]);
+    const view = open(settingsActions, projectId);
+    view.loseNextReply(receipt);
+    await ready(view);
+    await view.model.save(null, 'Lost edit', 'true');
+    rows.set(projectId, [original]);
+    const other = { kind: 'project', projectId: randomUUID(), path: '/other' };
+    view.selection.set(other);
+    view.selection.set({ kind: 'project', projectId, path: '/last-used' });
+    await turn();
+
+    assert.deepEqual(view.model.definitions(), [original]);
+    assert.equal(view.model.ready(), false);
+
+    const current = { ...original, name: 'Updated while offline', revision: 2 };
+    rows.set(projectId, [current]);
+    await view.model.recover();
+    assert.deepEqual(view.model.definitions(), [current]);
+    assert.match(view.model.problem().message, /Action rejected/);
+    assert.equal(view.model.ready(), true);
+  });
+}

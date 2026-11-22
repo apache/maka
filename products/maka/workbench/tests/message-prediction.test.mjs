@@ -53,9 +53,11 @@ test('a late prediction cannot replace the next turn’s suggestion', async (t) 
 });
 
 let bundleSequence = 0;
-async function bundles(t) {
-  delete globalThis[Symbol.for('maka.prediction-preferences')];
-  t.after(() => delete globalThis[Symbol.for('maka.prediction-preferences')]);
+const preferencesKey = Symbol.for('maka.prediction-preferences');
+async function bundles(t, owner) {
+  if (owner) globalThis[preferencesKey] = owner;
+  else delete globalThis[preferencesKey];
+  t.after(() => delete globalThis[preferencesKey]);
   const fixture = ++bundleSequence;
   const settings = await import(`../app/messagePrediction.ts?fixture=${fixture}&bundle=settings`);
   const conversation = await import(
@@ -243,6 +245,56 @@ test('an occupied composer does not regenerate a stale result after a settings c
   controller.eligible(true, 'empty');
   await setImmediate();
   assert.equal(requests.length, 1);
+  assert.equal(controller.presentation.current(), null);
+});
+
+test('an older conversation can subscribe when the updated Settings bundle loads first', async (t) => {
+  const { settings } = await bundles(t);
+  const owner = globalThis[preferencesKey];
+  const revisions = [];
+  t.after(owner.subscribe(() => revisions.push(owner.revision())));
+  settings.invalidatePredictionPreferences(2);
+  assert.deepEqual(revisions, [2]);
+});
+
+test('an updated conversation clears its suggestion when an older preference owner notifies it', async (t) => {
+  let saved = { revision: 1, predictions: { enabled: true } };
+  let cached = saved;
+  let revision = saved.revision;
+  const observers = new Set();
+  const notify = () => {
+    for (const observe of observers) observe();
+  };
+  const owner = {
+    revision: () => revision,
+    value: () => cached,
+    observe(value) {
+      if (cached === value) return;
+      cached = value;
+      revision = value.revision;
+      notify();
+    },
+    invalidate(next) {
+      cached = null;
+      revision = next;
+      notify();
+    },
+    subscribe(observe) {
+      observers.add(observe);
+      return () => observers.delete(observe);
+    },
+  };
+  const { conversation } = await bundles(t, owner);
+  const { controller, requests } = prediction(t, conversation, async () => saved);
+  controller.source('turn-one', 'live');
+  controller.eligible(true, 'empty');
+  await setImmediate();
+  requests[0].finish(1, 'Review the patch.');
+  await setImmediate();
+  assert.equal(controller.presentation.current()?.text, 'Review the patch.');
+
+  saved = { revision: 2, predictions: { enabled: false } };
+  owner.invalidate(saved.revision);
   assert.equal(controller.presentation.current(), null);
 });
 

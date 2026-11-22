@@ -229,6 +229,12 @@ export const workspaceMessages = {
       '将当前历史复制到一个独立对话中。此草稿保留在原对话中。',
       '將目前的歷史複製到一個獨立對話中。此草稿保留在原對話中。',
     ],
+  'Action was not submitted.': ['Action was not submitted.', 'Action 未提交。', 'Action 未提交。'],
+  'Action submission status is unknown.': [
+    'Action submission status is unknown.',
+    'Action 提交状态未知。',
+    'Action 提交狀態未知。',
+  ],
   'Copy visible terminal': ['Copy visible terminal', '复制可见终端内容', '複製可見終端內容'],
   'Copy visible terminal · Ctrl+Shift+C': [
     'Copy visible terminal · Ctrl+Shift+C',

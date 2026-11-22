@@ -27,7 +27,7 @@ use uuid::Uuid;
 
 fn session<'a>(method: &str, input: &'a JsonValue) -> Result<&'a str, String> {
     let target = match method {
-        "start" => input,
+        "start" | "startWithCommand" => input,
         "stop" => input,
         "release" => &input["target"],
         "control" => &input["controller"]["target"],

@@ -116,6 +116,31 @@ impl ShellPlan {
         (source, command)
     }
 
+    pub(crate) fn interactive_input(&self, command: &mut crate::Command, source: &str) -> String {
+        // Keep scripts and long lines intact across line editors and canonical PTYs.
+        if source.len() <= 512 && !source.chars().any(char::is_control) {
+            return format!(" {source}");
+        }
+        let input = match self {
+            #[cfg(unix)]
+            Self::Posix { .. } => {
+                r#" eval 'unset __MAKA_INITIAL_COMMAND;' "$__MAKA_INITIAL_COMMAND""#
+            }
+            #[cfg(windows)]
+            Self::GitBash(_) => {
+                r#" eval 'unset __MAKA_INITIAL_COMMAND;' "$__MAKA_INITIAL_COMMAND""#
+            }
+            #[cfg(windows)]
+            Self::Pwsh(_) | Self::WindowsPowerShell(_) => {
+                " . ([scriptblock]::Create($env:__MAKA_INITIAL_COMMAND)); Remove-Item Env:\\__MAKA_INITIAL_COMMAND"
+            }
+            #[cfg(windows)]
+            Self::Cmd(_) => return format!(" {source}"),
+        };
+        command.env("__MAKA_INITIAL_COMMAND", source);
+        input.into()
+    }
+
     pub(crate) fn detect() -> Self {
         #[cfg(unix)]
         return select_posix(account_shell().map(PathBuf::from), find_posix);

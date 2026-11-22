@@ -17,19 +17,16 @@
  * under the License.
  */
 
-use super::{
-    Result, ShellError,
-    control::{ControlError, WriteReceipt},
-    output::Output,
-};
+mod input;
+
+use super::{Result, ShellError, output::Output};
+use input::TerminalInput;
 use maka_plugin_core::terminal::TerminalSize;
 use maka_plugin_core::terminal::{PREVIEW_BYTES, TerminalScreen, display::Display};
 use maka_process::pty::PtyIo;
 use maka_process::terminal::Screen;
-use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
 pub(super) struct Terminal {
@@ -38,7 +35,7 @@ pub(super) struct Terminal {
     frozen: Option<Arc<Display>>,
     incomplete: bool,
     decoder: Decoder,
-    pub writes: VecDeque<PendingWrite>,
+    pub input: TerminalInput,
     output: Output,
 }
 impl Terminal {
@@ -49,7 +46,7 @@ impl Terminal {
             frozen: None,
             incomplete: false,
             decoder: Decoder::default(),
-            writes: VecDeque::new(),
+            input: TerminalInput::default(),
             output,
         }
     }
@@ -65,21 +62,9 @@ impl Terminal {
         match screen.write(&text) {
             Ok(replies) => {
                 self.preview = Arc::new(screen.preview(PREVIEW_BYTES)?);
-                if !replies.is_empty() {
-                    let pending: usize = self
-                        .writes
-                        .iter()
-                        // Accepted user controls own independent queued custody;
-                        // their extent is not an automatic parser reply budget.
-                        .filter(|write| write.reply.is_none())
-                        .map(|write| write.remaining().len())
-                        .sum();
-                    if pending.saturating_add(replies.len()) > 1024 * 1024 {
-                        self.freeze();
-                        return Err(ShellError::Rejected("terminal reply queue exceeds 1 MiB"));
-                    }
-                    self.writes
-                        .push_back(PendingWrite::new(replies, None, false, false));
+                if let Err(error) = self.input.enqueue_replies(replies) {
+                    self.freeze();
+                    return Err(error);
                 }
                 Ok(())
             }
@@ -103,15 +88,6 @@ impl Terminal {
         screen.resize(size)?;
         self.preview = Arc::new(screen.preview(PREVIEW_BYTES)?);
         Ok(())
-    }
-
-    pub fn fail_writes(&mut self, message: &str) {
-        for mut pending in self.writes.drain(..) {
-            if let Some(reply) = pending.reply.take() {
-                let _ = reply.send(Err(ControlError::new(message, pending.accepted)
-                    .after_resize(pending.resized, pending.resize_changed)));
-            }
-        }
     }
 
     pub fn display(&self) -> Arc<Display> {
@@ -140,48 +116,6 @@ impl Terminal {
 
     pub fn close(&mut self) {
         self.screen = None;
-    }
-}
-
-pub(super) struct PendingWrite {
-    bytes: Vec<u8>,
-    pub accepted: usize,
-    reply: Option<oneshot::Sender<std::result::Result<WriteReceipt, ControlError>>>,
-    resized: bool,
-    resize_changed: bool,
-}
-impl PendingWrite {
-    pub fn new(
-        text: String,
-        reply: Option<oneshot::Sender<std::result::Result<WriteReceipt, ControlError>>>,
-        resized: bool,
-        resize_changed: bool,
-    ) -> Self {
-        Self {
-            bytes: text.into_bytes(),
-            accepted: 0,
-            reply,
-            resized,
-            resize_changed,
-        }
-    }
-    pub fn remaining(&self) -> &[u8] {
-        &self.bytes[self.accepted..]
-    }
-    pub fn advance(&mut self, count: usize) -> bool {
-        self.accepted += count;
-        self.accepted == self.bytes.len()
-    }
-
-    pub fn finish(mut self, record: std::sync::Arc<maka_plugin_core::shell_run::ShellObservation>) {
-        if let Some(reply) = self.reply.take() {
-            let _ = reply.send(Ok(WriteReceipt {
-                accepted_bytes: self.accepted,
-                resized: self.resized,
-                resize_changed: self.resize_changed,
-                record,
-            }));
-        }
     }
 }
 
@@ -255,7 +189,7 @@ pub(super) async fn drain(
             failure.get_or_insert(error);
         }
         // After root exit replies have no consumer and are not input effects.
-        terminal.fail_writes("PTY root exited");
+        terminal.input.fail_queued("PTY root exited");
         if count == 0 {
             return failure.map_or(Ok(()), Err);
         }

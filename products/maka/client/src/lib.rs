@@ -81,7 +81,7 @@ const CONTROL_METHODS: &[&str] = &[
 const CONTROL_KIND: &str = "agent-control";
 const SETTINGS_KIND: &str = "settings";
 const TERMINAL_KIND: &str = "terminal";
-const TERMINAL_METHODS: [&str; 4] = ["start", "stop", "control", "release"];
+const TERMINAL_METHODS: [&str; 5] = ["start", "startWithCommand", "stop", "control", "release"];
 const SETTINGS_ENDPOINTS: [&str; 7] = [
     "settings",
     "agent",
