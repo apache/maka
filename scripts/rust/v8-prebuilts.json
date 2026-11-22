@@ -22,5 +22,13 @@
       "commit": "76a3e47547ed8596f8195ef8da21a5f50939703b",
       "run": "https://github.com/apache/maka/actions/runs/45039417335"
     }
+  },
+  "aef9712d96f54b0dc0b4b0704b63af5eff698817570bf1abbef8692ad9d7730d": {
+    "url": "https://github.com/apache/maka/releases/download/deps-v8-150.4.0-79e7f7255/v8-x86_64-pc-windows-msvc-aef9712d96f54b0dc0b4b0704b63af5eff698817570bf1abbef8692ad9d7730d.tar.gz",
+    "sha256": "2f30fffd84641f216c5cb9f7811ba7f281d5f5d4a5c525bb41be955fd1607f1f",
+    "verifiedBy": {
+      "commit": "600e617fa497d6f25258776d1ee1c594c63fd008",
+      "run": "https://github.com/apache/maka/actions/runs/45060301393"
+    }
   }
 }
