@@ -55,31 +55,41 @@ export async function prepareV8SourceDir(
 }
 
 /** Build the locked V8 without its optional LGPL glibc implementation. */
-export async function buildV8({ root, directory, cache, target, env, metadata }) {
+export async function buildV8({
+  root,
+  directory,
+  cache,
+  target,
+  env,
+  metadata,
+  compile = compileV8,
+  prepareSourceDir = prepareV8SourceDir,
+}) {
   const configuration = await v8Configuration(root, target, metadata);
   const manifest = JSON.parse(await readFile(join(root, 'scripts/rust/v8-prebuilts.json'), 'utf8'));
   const pin = manifest[configuration.key];
-  return cachedV8({
-    directory: cache,
-    key: configuration.key,
-    target,
-    build: async () => {
-      if (Object.hasOwn(manifest, configuration.key)) {
-        return downloadV8({
-          pin,
-          directory: join(directory, 'prebuilt'),
-          key: configuration.key,
-          target,
-        });
-      }
-      const sourceDir = await prepareV8SourceDir(directory);
-      try {
-        return await compileV8({ ...configuration, directory: sourceDir.directory, target, env });
-      } finally {
-        await sourceDir.cleanup();
-      }
-    },
-  });
+  let sourceDir = null;
+  try {
+    return await cachedV8({
+      directory: cache,
+      key: configuration.key,
+      target,
+      build: async () => {
+        if (Object.hasOwn(manifest, configuration.key)) {
+          return downloadV8({
+            pin,
+            directory: join(directory, 'prebuilt'),
+            key: configuration.key,
+            target,
+          });
+        }
+        sourceDir = await prepareSourceDir(directory);
+        return compile({ ...configuration, directory: sourceDir.directory, target, env });
+      },
+    });
+  } finally {
+    await sourceDir?.cleanup();
+  }
 }
 
 async function v8Configuration(root, target, metadata) {

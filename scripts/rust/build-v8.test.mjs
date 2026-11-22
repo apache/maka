@@ -18,8 +18,11 @@
  */
 
 import assert from 'node:assert/strict';
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 import test from 'node:test';
-import { prepareV8SourceDir } from './build-v8.mjs';
+import { buildV8, prepareV8SourceDir } from './build-v8.mjs';
 
 test('prepareV8SourceDir keeps caller directory on non-Windows', async () => {
   const result = await prepareV8SourceDir('/tmp/maka-nightly-build-abc/v8', {
@@ -60,4 +63,82 @@ test('prepareV8SourceDir falls back to caller directory when drive root is not w
   });
   assert.equal(result.directory, '/tmp/maka-nightly-build-abc/v8');
   await result.cleanup();
+});
+
+test('buildV8 keeps short temp outputs alive until cache admission completes, then cleans up', async () => {
+  const repoRoot = resolve(import.meta.dirname, '../..');
+  const source = JSON.parse(await readFile(join(repoRoot, 'scripts/rust/v8-source.json'), 'utf8'));
+  const metadata = {
+    packages: [{ id: 'v8-pkg', name: 'v8', version: source.version }],
+    resolve: { nodes: [{ id: 'v8-pkg', features: ['default', 'test-unpinned-feature'] }] },
+  };
+  const scratch = await mkdtemp(join(tmpdir(), 'maka-build-v8-test-'));
+  let allocatedDir = null;
+  try {
+    const cacheDir = join(scratch, 'cache');
+    const result = await buildV8({
+      root: repoRoot,
+      directory: join(scratch, 'long-work-dir', 'v8'),
+      cache: cacheDir,
+      target: 'x86_64-pc-windows-msvc',
+      env: {},
+      metadata,
+      prepareSourceDir: (dir) =>
+        prepareV8SourceDir(dir, {
+          platform: 'win32',
+          mkdtempFn: async () => {
+            allocatedDir = await mkdtemp(join(scratch, 'v8-'));
+            return allocatedDir;
+          },
+        }),
+      compile: async ({ directory }) => {
+        const archive = join(directory, 'rusty_v8.lib');
+        const binding = join(directory, 'src_binding.rs');
+        await writeFile(archive, 'fake-win-v8-archive');
+        await writeFile(binding, 'pub const BINDING: usize = 1;');
+        return {
+          environment: { RUSTY_V8_ARCHIVE: archive, RUSTY_V8_SRC_BINDING_PATH: binding },
+          notices: 'Apache-2.0 test notices\n',
+        };
+      },
+    });
+    assert.ok(allocatedDir);
+    assert.equal(
+      await readFile(result.environment.RUSTY_V8_ARCHIVE, 'utf8'),
+      'fake-win-v8-archive',
+    );
+    assert.equal(
+      await readFile(result.environment.RUSTY_V8_SRC_BINDING_PATH, 'utf8'),
+      'pub const BINDING: usize = 1;',
+    );
+    await assert.rejects(stat(allocatedDir), { code: 'ENOENT' });
+
+    let failedAllocatedDir = null;
+    await assert.rejects(
+      buildV8({
+        root: repoRoot,
+        directory: join(scratch, 'long-work-dir', 'v8'),
+        cache: join(scratch, 'cache-fail'),
+        target: 'x86_64-pc-windows-msvc',
+        env: {},
+        metadata,
+        prepareSourceDir: (dir) =>
+          prepareV8SourceDir(dir, {
+            platform: 'win32',
+            mkdtempFn: async () => {
+              failedAllocatedDir = await mkdtemp(join(scratch, 'v8-fail-'));
+              return failedAllocatedDir;
+            },
+          }),
+        compile: async () => {
+          throw new Error('simulated compile failure');
+        },
+      }),
+      /simulated compile failure/,
+    );
+    assert.ok(failedAllocatedDir);
+    await assert.rejects(stat(failedAllocatedDir), { code: 'ENOENT' });
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
+  }
 });
