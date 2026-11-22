@@ -33,12 +33,104 @@ use maka_agent_state::session_history::{
     source_tree::{CompletedWork, QualifiedRow, RunRows, SourceItem, SourceTree},
 };
 
+pub(super) struct RenderedExcerpt {
+    pub format: SourceFormat,
+    pub offset: u64,
+    pub total: u64,
+    pub text: String,
+    pub indexed_field: Option<ProjectedField>,
+}
+
 pub(super) struct Selected {
     pub data: data::DataSource,
     pub item: SourceItem,
     pub row: projection::Row,
 }
+impl Selected {
+    pub(super) fn indexed_field(
+        &self,
+        field: SourceField,
+        format: SourceFormat,
+    ) -> Option<ProjectedField> {
+        use maka_agent_state::recall::Field;
+        let SourceItem::Canonical(item) = &self.item else {
+            return None;
+        };
+        use maka_agent_facts::{cells::CellEvent, external_effects::ExternalEffectEvent};
+        let last_text = match &item.recorded.fact {
+            Fact::LocalToolReturned { .. }
+            | Fact::Cell {
+                event: CellEvent::LocalChildReturned { .. } | CellEvent::ChildResultRecorded { .. },
+            }
+            | Fact::HostToolResultRecorded { .. }
+            | Fact::ToolResultAccepted { .. }
+            | Fact::ExternalEffect {
+                event: ExternalEffectEvent::Returned { .. },
+            } => Some(SourceField::Result),
+            Fact::Cell {
+                event: CellEvent::Started { .. },
+            } => Some(SourceField::Body),
+            _ => None,
+        };
+        let index = match field {
+            SourceField::Body => Field::Body,
+            SourceField::Result => Field::Result,
+            SourceField::Arguments => Field::Arguments,
+            SourceField::Receipt => Field::Receipt,
+            _ => return None,
+        };
+        if format == SourceFormat::Text
+            && matches!(field, SourceField::Arguments | SourceField::Result)
+            && self.row.fields.iter().any(|(kind, value)| {
+                *kind == field && matches!(value, projection::Field::Json(Value::String(_)))
+            })
+        {
+            Some(ProjectedField::json_value(index, true))
+        } else if format == SourceFormat::Text && last_text == Some(field) {
+            Some(ProjectedField::Last(index))
+        } else {
+            Some(ProjectedField::Complete(index))
+        }
+    }
+
+    pub(super) fn goal_objective_offset(&self) -> Option<u64> {
+        let maka_agent_facts::message::MessageOrigin::Goal { objective, .. } =
+            self.row.chunk.origin.as_ref()?
+        else {
+            return None;
+        };
+        let projection::Body::Text(body) = &self.row.body else {
+            return None;
+        };
+        // Goal::reserve places the objective between the first newline and a blank line
+        // in every locale. Verify its bytes against the whole row before paging.
+        let mut bytes = body.chunks().flat_map(str::bytes);
+        let offset = bytes.position(|b| b == b'\n')? + 1;
+        objective
+            .bytes()
+            .chain(*b"\n\n")
+            .all(|b| bytes.next() == Some(b))
+            .then_some(offset as u64)
+    }
+
+    pub(super) fn conversation_prose(&self) -> bool {
+        if self.row.chunk.role == wire::Role::User {
+            return true;
+        }
+        matches!(&self.item, SourceItem::Canonical(item) if matches!(item.recorded.fact,
+            Fact::ModelObserved {part: ModelPart::Text { text_kind: TextKind::Text, .. }, ..}
+            | Fact::ExternalTaskObserved { output: maka_agent_facts::executor::Output::OutputDelta { .. }, .. }
+        ))
+    }
+}
 type ToolScope = (Vec<RunId>, Option<SnapshotId>, String);
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub(super) enum Reader {
+    #[default]
+    Original,
+    ModelTool,
+    Conversation,
+}
 #[derive(Default)]
 pub(super) struct Cache {
     key: Option<(
@@ -54,6 +146,7 @@ pub(super) struct Cache {
     completed: std::collections::BTreeMap<RunId, Option<CompletedWork>>,
     folded_work: std::collections::BTreeMap<RunId, wire::FoldedWork>,
     pub chat: bool,
+    pub reader: Reader,
 }
 pub(super) fn snapshot_id(
     address: &wire::HistoryRowAddress,
@@ -150,7 +243,7 @@ async fn project_item(
                 cache.executor = None;
                 if let BackendSpec::Executor { selection, .. } = &source.spec.backend {
                     let (view, transcript) = data
-                        .executor_view(source.run)
+                        .executor_view(source.run, cache.reader == Reader::ModelTool)
                         .await
                         .map_err(|error| error.to_string())?;
                     timing.executor_usage = view
@@ -188,15 +281,18 @@ async fn project_item(
             let mut row = projection::project(
                 &data,
                 item,
-                cache.source.as_ref().expect("current original Run"),
                 address,
                 &mut cache.views,
-                cache.executor.as_ref(),
-                cache.final_attempt,
-                cache
-                    .timing
-                    .as_ref()
-                    .is_some_and(|timing| timing.finished.is_some()),
+                projection::RunProjection {
+                    source: cache.source.as_ref().expect("current original Run"),
+                    executor: cache.executor.as_ref(),
+                    final_attempt: cache.final_attempt,
+                    terminated: cache
+                        .timing
+                        .as_ref()
+                        .is_some_and(|timing| timing.finished.is_some()),
+                },
+                cache.reader != Reader::Original,
                 stop,
             )
             .await?
@@ -278,6 +374,13 @@ async fn project_item(
     {
         media::describe_imported(snapshot, *message_ordinal, &mut row, stop).await?;
     }
+    // Material titles can reveal the original attachment filename.
+    if cache.reader != Reader::Original
+        && let Some(call) = row.chunk.tool.as_mut().and_then(|tool| tool.call.as_mut())
+        && call.presentation.as_deref() == Some(crate::tools::title::RECALL_MATERIAL_PRESENTATION)
+    {
+        call.title = None;
+    }
     row.chunk.order = order;
     Ok(Selected { data, item, row })
 }
@@ -303,15 +406,16 @@ async fn timing(
             })
         })
         .transpose()?;
-    let prompt_cache =
+    let (model_tokens, prompt_cache) =
         if finished.is_some() && matches!(&source.spec.backend, BackendSpec::Model { .. }) {
-            data.main_prompt_cache(source.run)
+            data.main_model_usage(source.run)
                 .await
                 .map_err(|error| error.to_string())?
         } else {
-            None
+            (None, None)
         };
     Ok(wire::TurnTiming {
+        model_tokens,
         prompt_cache,
         started_at: millis(source.admission.at)?,
         finished,
@@ -745,7 +849,12 @@ async fn group(
         if member.row.chunk.field == wire::HistoryField::Thinking
             && matches!(member.row.body, projection::Body::Field(_))
         {
-            let (_, offset, total, text) = display(
+            let RenderedExcerpt {
+                offset,
+                total,
+                text,
+                ..
+            } = display(
                 member,
                 wire::HistoryView::Chat,
                 SourcePosition::Start,
@@ -915,6 +1024,7 @@ fn summarize(members: Vec<Selected>) -> Option<Selected> {
             chunk,
             visible: true,
             continuation: None,
+            evidence_text: projection::EvidenceText::Unmapped,
             body: projection::Body::Empty,
             fields: Vec::new(),
         },
@@ -1041,18 +1151,8 @@ pub(super) async fn pair(
     cache.tools.insert(key, Some(paired));
     Ok(())
 }
-pub(super) async fn display(
-    selected: &Selected,
-    view: wire::HistoryView,
-    position: SourcePosition,
-    limit: usize,
-    stop: &tokio_util::sync::CancellationToken,
-) -> Result<(SourceFormat, u64, u64, String), String> {
-    let row = &selected.row;
-    if view != wire::HistoryView::Text && row.chunk.role == wire::Role::Compaction {
-        return excerpt_ref(&Field::Text(TextBody::default()), None, position, limit);
-    }
-    let field = if view == wire::HistoryView::Text
+pub(super) fn display_field(row: &projection::Row, view: wire::HistoryView) -> Option<SourceField> {
+    if view == wire::HistoryView::Text
         && (row.chunk.role == wire::Role::ToolResult
             || row
                 .chunk
@@ -1084,8 +1184,20 @@ pub(super) async fn display(
             projection::Body::Field(field) => Some(*field),
             _ => None,
         }
-    };
-    if let Some(field) = field {
+    }
+}
+pub(super) async fn display(
+    selected: &Selected,
+    view: wire::HistoryView,
+    position: SourcePosition,
+    limit: usize,
+    stop: &tokio_util::sync::CancellationToken,
+) -> Result<RenderedExcerpt, String> {
+    let row = &selected.row;
+    if view != wire::HistoryView::Text && row.chunk.role == wire::Role::Compaction {
+        return excerpt_ref(&Field::Text(TextBody::default()), None, position, limit);
+    }
+    if let Some(field) = display_field(row, view) {
         let value = &row
             .fields
             .iter()
@@ -1157,8 +1269,23 @@ pub(crate) async fn source(
             found.ok_or("agent_history_source_missing")?
         }
     };
-    let selected = selected(&tree, &address, &mut Cache::default(), &scope.cancellation).await?;
-    let source = source_value(
+    let mut cache = Cache::default();
+    if scope.identity.agent().is_some() {
+        cache.reader = Reader::ModelTool;
+    }
+    let selected = selected(&tree, &address, &mut cache, &scope.cancellation).await?;
+    if scope.identity.agent().is_some()
+        && input.field == SourceField::Original
+        && let (data::DataSource::Snapshot(snapshot), SourceItem::Imported { message, .. }) =
+            (&selected.data, &selected.item)
+        && snapshot
+            .restricted_original(message)
+            .await
+            .map_err(|e| e.to_string())?
+    {
+        return Err("Restricted memory source".into());
+    }
+    let (mut source, indexed_field) = source_value(
         &selected,
         input.field,
         input.path,
@@ -1166,6 +1293,55 @@ pub(crate) async fn source(
         &scope.cancellation,
     )
     .await?;
+    if scope.identity.agent().is_some() {
+        let mut positions = std::collections::BTreeSet::from([address.clone()]);
+        if let Some(tool) = &source.tool {
+            positions.extend(tool_positions(tool).cloned());
+        }
+        let rows = restrictions(owner, scope, &tree, positions.into_iter().collect()).await?;
+        if let Some(tool) = &mut source.tool {
+            filter_tool(tool, &rows);
+        }
+        if let Some(spans) = rows.get(&address) {
+            mask_goal_objective(&mut source.origin, selected.goal_objective_offset(), spans);
+        }
+        let origin = selected.row.field_origin(source.field);
+        match field_access(&rows, &address, origin) {
+            FieldAccess::Hidden => return Err("Restricted memory source".into()),
+            FieldAccess::Open => {}
+            FieldAccess::Restricted(spans) => {
+                if source.path.as_ref().is_some_and(|path| !path.is_empty()) {
+                    return Err("Restricted memory source".into());
+                }
+                let start = if source.role == wire::SourceRole::User
+                    && source.field == SourceField::Body
+                {
+                    Some(0)
+                } else if let Some(start) = selected.row.evidence_text.source_offset(source.field) {
+                    Some(start)
+                } else if let Some(field) =
+                    indexed_field.or_else(|| selected.indexed_field(source.field, source.format))
+                    && let Some(excerpt) =
+                        field.excerpt(&address, source.offset, source.total_bytes, &source.text)
+                {
+                    history
+                        .excerpt_offsets(vec![excerpt])
+                        .await
+                        .map_err(|e| e.to_string())?
+                        .get(&address)
+                        .copied()
+                } else {
+                    None
+                };
+                let start = start.ok_or("Restricted memory source")?;
+                maka_agent_state::memory::recall::mask(
+                    &mut source.text,
+                    start + source.offset,
+                    spans,
+                );
+            }
+        }
+    }
     let file_path = match &selected.item {
         SourceItem::Canonical(item) => {
             let original = selected
@@ -1196,7 +1372,9 @@ pub(crate) async fn snapshot_source(
         .await
         .map_err(|error| error.to_string())?;
     let selected = selected(&tree, &address, &mut Cache::default(), stop).await?;
-    source_value(&selected, field, path, position, stop).await
+    source_value(&selected, field, path, position, stop)
+        .await
+        .map(|(source, _)| source)
 }
 async fn source_value(
     selected: &Selected,
@@ -1204,7 +1382,7 @@ async fn source_value(
     path: Option<Vec<SourceSegment>>,
     position: SourcePosition,
     stop: &tokio_util::sync::CancellationToken,
-) -> Result<wire::HistorySource, String> {
+) -> Result<(wire::HistorySource, Option<ProjectedField>), String> {
     let row = &selected.row;
     let value = &row
         .fields
@@ -1212,7 +1390,13 @@ async fn source_value(
         .find(|(kind, _)| *kind == field)
         .ok_or("agent_history_field_invalid")?
         .1;
-    let (format, offset, total_bytes, text) = stream::field_excerpt(
+    let RenderedExcerpt {
+        format,
+        offset,
+        total: total_bytes,
+        text,
+        indexed_field,
+    } = stream::field_excerpt(
         &selected.data,
         &selected.item,
         value,
@@ -1224,7 +1408,7 @@ async fn source_value(
         stop,
     )
     .await?;
-    Ok(wire::HistorySource {
+    let source = wire::HistorySource {
         model: row.chunk.model.clone(),
         origin: row.chunk.origin.clone(),
         position: row.chunk.position.clone(),
@@ -1247,7 +1431,8 @@ async fn source_value(
         total_bytes,
         text,
         tool: row.chunk.tool.clone(),
-    })
+    };
+    Ok((source, indexed_field))
 }
 pub(crate) async fn prompt(
     owner: &Owner,
@@ -1267,7 +1452,9 @@ pub(crate) async fn prompt(
     )
     .await?;
     let result = if selected.row.chunk.role == wire::Role::User {
-        let (_, _, _, text) = display(
+        let RenderedExcerpt {
+            offset, mut text, ..
+        } = display(
             &selected,
             wire::HistoryView::Text,
             SourcePosition::Start,
@@ -1275,6 +1462,12 @@ pub(crate) async fn prompt(
             &scope.cancellation,
         )
         .await?;
+        if scope.identity.agent().is_some() {
+            let rows = restrictions(owner, scope, &tree, vec![input.position.clone()]).await?;
+            if let Some(spans) = rows.get(&input.position) {
+                maka_agent_state::memory::recall::mask(&mut text, offset, spans);
+            }
+        }
         Some(ui::HistoryPrompt {
             position: input.position,
             text,
@@ -1291,7 +1484,7 @@ pub(super) fn excerpt_ref(
     path: Option<&[SourceSegment]>,
     position: SourcePosition,
     limit: usize,
-) -> Result<(SourceFormat, u64, u64, String), String> {
+) -> Result<RenderedExcerpt, String> {
     enum ValueRef<'a> {
         Text(&'a TextBody),
         String(&'a str),
@@ -1361,7 +1554,7 @@ pub(super) fn finish(
     total: u64,
     mut bytes: Vec<u8>,
     position: SourcePosition,
-) -> Result<(SourceFormat, u64, u64, String), String> {
+) -> Result<RenderedExcerpt, String> {
     let mut offset = start;
     if matches!(
         position,
@@ -1384,12 +1577,13 @@ pub(super) fn finish(
             Err(_) => return Err("agent_cursor_invalid".into()),
         }
     }
-    Ok((
+    Ok(RenderedExcerpt {
         format,
         offset,
         total,
-        String::from_utf8(bytes).map_err(|_| "agent_cursor_invalid")?,
-    ))
+        text: String::from_utf8(bytes).map_err(|_| "agent_cursor_invalid")?,
+        indexed_field: None,
+    })
 }
 pub(super) struct Window {
     start: u64,

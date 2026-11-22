@@ -27,26 +27,36 @@ pub const ROOT_MIGRATIONS: &[crate::migration::Migration] = &[
         version: 1,
         description: "runtime",
         sql: include_str!("../migrations/0001_runtime.sql"),
+        configure: None,
+        data: None,
     },
     crate::migration::Migration {
         version: 23,
         description: "plugin_data_live",
         sql: include_str!("../migrations/0023_plugin_data_live.sql"),
+        configure: None,
+        data: None,
     },
     crate::migration::Migration {
         version: 36,
         description: "deferred content release",
         sql: include_str!("../migrations/0036_pending_content_release.sql"),
+        configure: None,
+        data: None,
     },
     crate::migration::Migration {
         version: 42,
         description: "checkpoint repository",
         sql: include_str!("../migrations/0042_checkpoint_repository.sql"),
+        configure: None,
+        data: None,
     },
     crate::migration::Migration {
-        version: 51,
+        version: 53,
         description: "project actions",
-        sql: include_str!("../migrations/0051_project_actions.sql"),
+        sql: include_str!("../migrations/0053_project_actions.sql"),
+        configure: None,
+        data: None,
     },
 ];
 
@@ -109,7 +119,7 @@ pub(crate) fn initialize_connection(
     }
     crate::migration::run(connection, catalog)?;
     connection.execute_batch(
-        "PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL; PRAGMA temp_store = FILE;",
+        "PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL; PRAGMA temp_store = FILE; PRAGMA journal_size_limit = 16777216;",
     )?;
     Ok(())
 }

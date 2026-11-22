@@ -493,6 +493,7 @@ impl Rig {
                 "memoryHistory",
                 "memoryEvidence",
                 "memorySource",
+                "recall",
                 "changeMemory",
                 "reconcileMemories",
                 "pendingMemories",
@@ -514,11 +515,15 @@ impl Rig {
                 "models",
                 "observe",
                 "history",
+                "roomState",
+                "roomSearch",
+                "roomManage",
                 "markRead",
                 "toolImage",
                 "tools",
                 "predictNextMessage",
                 "askQuickQuestion",
+                "import",
                 "compact",
                 "selectBackend",
                 "execution",
@@ -548,7 +553,10 @@ impl Rig {
         } else {
             &[
                 "create",
+                "memorySource",
+                "changeMemory",
                 "history",
+                "historyRequests",
                 "observe",
                 "send",
                 "work",
@@ -1054,35 +1062,48 @@ impl Rig {
         prepared.contents.push(body.clone());
         let attempt = ModelAttemptId::new();
         let started = at();
+        let mut changes = vec![Change::new(
+            Fact::StepPrepared {
+                step: request.step,
+                request: body.reference().clone(),
+                adjudications: vec![],
+            },
+            started,
+        )];
+        for notice in prepared.notifications {
+            changes.push(Change::new(
+                Fact::Cell {
+                    event: maka_agent_facts::cells::CellEvent::NotificationConsumed {
+                        cell: notice.cell,
+                        notification: notice.id,
+                        step: request.step,
+                    },
+                },
+                started,
+            ));
+        }
+        changes.extend([
+            Change::new(
+                Fact::ModelAttemptPrepared {
+                    attempt,
+                    step: request.step,
+                },
+                started,
+            ),
+            Change::new(
+                Fact::ModelAttemptAdmitted {
+                    attempt,
+                    upstream: json!({"test":"compaction"}),
+                },
+                started,
+            ),
+        ]);
         driver
             .state
             .append(
                 driver.access.claim(),
                 (&view).into(),
-                vec![
-                    Change::new(
-                        Fact::StepPrepared {
-                            step: request.step,
-                            request: body.reference().clone(),
-                            adjudications: vec![],
-                        },
-                        started,
-                    ),
-                    Change::new(
-                        Fact::ModelAttemptPrepared {
-                            attempt,
-                            step: request.step,
-                        },
-                        started,
-                    ),
-                    Change::new(
-                        Fact::ModelAttemptAdmitted {
-                            attempt,
-                            upstream: json!({"test":"compaction"}),
-                        },
-                        started,
-                    ),
-                ],
+                changes,
                 prepared.contents,
             )
             .await?;
@@ -1127,18 +1148,21 @@ impl Rig {
             unreachable!()
         };
         let source = ContentBlob::json(&json!({"test":"native-wait-provider-input"}))?;
+        let surface = ContentBlob::json(&maka_agent_facts::composition::CompositionSurface {
+            system_prompt: None,
+            tools: vec![],
+            sources: vec![],
+        })?;
         let step = StepId::new();
         let request = ContentBlob::json(&RequestSpec {
             schema_version: SCHEMA_VERSION,
             step,
             composition: RequestComposition {
-                system_prompt: None,
+                surface: surface.reference().clone(),
                 dynamic_context: vec![],
                 tool_catalog_digest: source.reference().digest.clone(),
-                tools: vec![],
                 provider_options: None,
                 max_output_tokens: None,
-                sources: vec![],
             },
             summary_repair_of: None,
             compaction_recovery: None,
@@ -1175,7 +1199,7 @@ impl Rig {
                     upstream: json!({"test":"native-wait-provider-input"}),
                 },
             ],
-            vec![source, request],
+            vec![source, surface, request],
         )
         .await?;
         Ok(attempt)
@@ -1187,6 +1211,18 @@ impl Rig {
         name: &str,
         call: &str,
         input: Value,
+    ) -> TestResult<(ToolKey, u64)> {
+        self.tool_with_display(attempt, name, call, input, ToolDisplay::default())
+            .await
+    }
+
+    async fn tool_with_display(
+        &self,
+        attempt: ModelAttemptId,
+        name: &str,
+        call: &str,
+        input: Value,
+        display: ToolDisplay,
     ) -> TestResult<(ToolKey, u64)> {
         let driver = self.driver.as_ref().unwrap();
         let view = driver
@@ -1222,7 +1258,7 @@ impl Rig {
                             input: input_blob.reference().clone(),
                             resources: vec![],
                             approval: None,
-                            display: ToolDisplay::default(),
+                            display,
                         },
                     },
                     Fact::ToolAdmitted { tool: key.clone() },
@@ -1630,7 +1666,7 @@ mod bounded_risk {
                 attempt,
                 "exec",
                 "bounded-cell-parent",
-                json!({"code":"logical fixture"}),
+                json!({"code":"logical bounded Cell source"}),
             )
             .await?;
         let driver = rig.driver.as_ref().ok_or("fixture driver missing")?;
@@ -1704,6 +1740,7 @@ mod bounded_risk {
                     },
                     is_error: false,
                     loaded_tools: Default::default(),
+                    display_budget_chars: None,
                 },
             })?;
             let completed =
@@ -1872,6 +1909,7 @@ mod bounded_risk {
                         projection: DurableToolProjection::Text { text: text.into() },
                         is_error: false,
                         loaded_tools: Default::default(),
+                        display_budget_chars: None,
                     },
                 })
             };
@@ -2211,6 +2249,7 @@ mod bounded_risk {
                     },
                     is_error: false,
                     loaded_tools: Default::default(),
+                    display_budget_chars: None,
                 },
             })?;
             let accepted = ContentBlob::json(&AcceptedToolResult::Local {
@@ -2381,7 +2420,7 @@ mod bounded_risk {
         }
     }
 
-    async fn running_cell_with_returned_parent(
+    pub(super) async fn running_cell_with_returned_parent(
         rig: &Rig,
         attempt: ModelAttemptId,
     ) -> TestResult<CellId> {
@@ -2400,6 +2439,7 @@ mod bounded_risk {
                 },
                 is_error: false,
                 loaded_tools: Default::default(),
+                display_budget_chars: None,
             },
         })?;
         let accepted = ContentBlob::json(&AcceptedToolResult::Local {
@@ -5141,7 +5181,7 @@ mod model_recovery {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn a_delegated_permission_no_one_answers_counts_as_denied() {
+    async fn a_delegated_permission_no_one_answers_times_out() {
         delegated_notifications("stop", Waits::Permission).await;
     }
 
@@ -5388,7 +5428,11 @@ mod model_recovery {
                     let (continued, worker_reply) = observed.recv().await.ok_or("the delegated task did not continue")?;
                     let result = continued["messages"].as_array().unwrap().iter().rev()
                         .find(|message| message["role"] == "tool").ok_or("tool result missing")?.to_string();
-                    assert!(result.contains("denied"), "{result}");
+                    assert!(
+                        result.contains(r#"\"kind\":\"failed\""#)
+                            && result.contains("No one approved this request in time"),
+                        "{result}"
+                    );
                     worker_reply
                 }
             };
@@ -6377,7 +6421,7 @@ mod replay_origin_regressions {
                 provider_options: None,
             };
             let mut checkpoint_only = builder(&rig).await?;
-            append_observed(&mut checkpoint_only, checkpoint.clone(), origin.clone()).await?;
+            append_observed(&mut checkpoint_only, checkpoint.clone(), origin).await?;
             assert!(!checkpoint_only.needs_continuation_cue());
             let prompt = finish(&rig, checkpoint_only, &current, ModelOperation::Inference).await?;
             maka_agent_engine::preparation::validate_replay_boundary(&prompt).await?;
@@ -6507,9 +6551,13 @@ async fn a_run_that_did_not_fail_reports_no_failure_reason() {
             vec![],
         )
         .await?;
-        let result = owner.run_result(&session, run, &Terminal::Cancelled).await;
+        let result = owner
+            .run_result(&session, run, &Terminal::Cancelled, true)
+            .await;
         assert_eq!(result.failure, None);
-        let failed = owner.run_result(&session, run, &Terminal::Failed).await;
+        let failed = owner
+            .run_result(&session, run, &Terminal::Failed, true)
+            .await;
         assert_eq!(failed.failure, None);
         Ok(())
     }
@@ -6589,7 +6637,7 @@ async fn run_result_extracts_last_message_and_failure_without_tail_rolloff_narra
             terminal: Terminal::Failed,
             diagnostic: Some("HTTP 400 bad request".into()),
         });
-        rig.append(facts, vec![]).await?;
+        let committed = rig.append(facts, vec![]).await?;
 
         // 2. Admit a second external-worker Run in the SAME session to roll run1 off the
         //    session tail page, with early narration, newline-split deltas, and failure.
@@ -6687,7 +6735,9 @@ async fn run_result_extracts_last_message_and_failure_without_tail_rolloff_narra
         drop(claim2);
 
         // Delayed lookup of run1 (after run2 in the same session) still returns exact head excerpt + failure.
-        let r1 = owner.run_result(&session, run1, &Terminal::Failed).await;
+        let r1 = owner
+            .run_result(&session, run1, &Terminal::Failed, true)
+            .await;
         let reply = r1.reply.as_deref().expect("reply present");
         assert!(
             reply.starts_with("BEGIN_MARKER\n"),
@@ -6704,9 +6754,34 @@ async fn run_result_extracts_last_message_and_failure_without_tail_rolloff_narra
         );
         assert_eq!(r1.failure.as_deref(), Some("HTTP 400 bad request"));
 
-        let r2 = owner.run_result(&session, run2, &Terminal::Failed).await;
+        let r2 = owner
+            .run_result(&session, run2, &Terminal::Failed, true)
+            .await;
         assert_eq!(r2.reply.as_deref(), Some("Line one\nLine two"));
         assert_eq!(r2.failure.as_deref(), Some("usage limit reached"));
+        let history = owner
+            .durable
+            .session_history(owner.run_owner(), session.clone());
+        let cut = history.capture().await?;
+        let sequence = history
+            .fact_sequence(&cut, run1, committed.facts[1].id)
+            .await?
+            .ok_or("missing final reply address")?;
+        tool_history::suppress_history_quotes(&rig, &session, &[(sequence, 0, "BEGIN_MARKER")])
+            .await?;
+        let model = owner
+            .run_result(&session, run1, &Terminal::Failed, true)
+            .await;
+        assert!(
+            model
+                .reply
+                .as_deref()
+                .is_some_and(|text| text.starts_with("************\nx"))
+        );
+        let user = owner
+            .run_result(&session, run1, &Terminal::Failed, false)
+            .await;
+        assert_eq!(user.reply, r1.reply);
         Ok(())
     }
     .await;
@@ -6973,7 +7048,51 @@ async fn compacted_history_checks_the_producing_requests_original_cut() {
                 )
                 .await;
             if accepted {
-                published?;
+                let fact = published?.facts.last().unwrap().id;
+                let history = driver
+                    .state
+                    .session_history(driver.owner.run_owner(), session.clone());
+                let cut = history.capture().await?;
+                let sequence = history
+                    .fact_sequence(&cut, run, fact)
+                    .await?
+                    .ok_or("missing compaction")?;
+                let position = maka_agent_ports::session::history::HistoryRowAddress::Live {
+                    sequence,
+                    fact,
+                    item_index: 0,
+                };
+                tool_history::suppress_history_quotes(
+                    &rig,
+                    &session,
+                    &[(sequence, 13, "original")],
+                )
+                .await?;
+                let reader = driver.owner.services.request_with_work(
+                    maka_capabilities::call::Identity::Agent {
+                        execution: driver.access.execution().clone(),
+                        operation_id: None,
+                    },
+                    CancellationToken::new(),
+                    driver.access.custody().clone(),
+                )?;
+                let transcript = driver
+                    .owner
+                    .session_read_tool(
+                        serde_json::from_value(json!({"sessionId":session,
+                    "row":{"through":cut.through_sequence,"position":position}}))?,
+                        reader.scope(),
+                    )
+                    .await?;
+                assert!(
+                    serde_json::to_value(transcript)?["transcript"]["items"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|row| row["role"] == "compaction"
+                            && row["text"] == "Continue the ******** task.")
+                );
+                reader.finish().await?;
                 let view = driver.state.frontier(run).await?;
                 model
                     .prepare_step(&view, Preparation::Initial, driver)

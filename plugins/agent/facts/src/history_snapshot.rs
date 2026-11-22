@@ -227,6 +227,8 @@ pub struct ImportedTurnOrdinal(pub u64);
 pub struct ImportedMessage {
     pub turn_ordinal: ImportedTurnOrdinal,
     pub original_ordinal: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply_info: Option<crate::model::QuickReplyInfo>,
     pub media: Vec<String>,
     pub source_message_id: Option<String>,
     pub source_turn_id: Option<String>,

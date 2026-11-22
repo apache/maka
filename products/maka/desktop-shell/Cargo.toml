@@ -24,7 +24,9 @@ publish.workspace = true
 
 [dependencies]
 maka-event-log.workspace = true
+maka-app-client.workspace = true
 maka-host-runtime.workspace = true
+maka-updater.workspace = true
 maka-workbench.workspace = true
 nsh-engine.workspace = true
 serde.workspace = true
@@ -42,6 +44,8 @@ libc.workspace = true
 nsh-platform-linux.workspace = true
 
 [target.'cfg(windows)'.dependencies]
+maka-wsl-bridge.workspace = true
+tokio = { workspace = true, features = ["process"] }
 nsh-platform-windows.workspace = true
 [target.'cfg(target_os = "macos")'.dependencies]
 nsh-platform-macos.workspace = true

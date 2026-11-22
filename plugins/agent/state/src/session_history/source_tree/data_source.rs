@@ -39,6 +39,14 @@ impl HistoryDataSource {
         &self,
         item: &HistoryItem,
     ) -> Result<Option<String>, StoreError> {
+        self.recovery_failure_for_reader(item, false).await
+    }
+
+    pub async fn recovery_failure_for_reader(
+        &self,
+        item: &HistoryItem,
+        mask_evidence: bool,
+    ) -> Result<Option<String>, StoreError> {
         let recorded = &item.recorded;
         match self {
             Self::Live { history, cut } => {
@@ -50,12 +58,13 @@ impl HistoryDataSource {
                         recorded.run,
                         recorded.revision,
                         item.sequence,
+                        mask_evidence,
                     ))
                     .await
             }
             Self::Snapshot(source) => {
                 source
-                    .recovery_failure_at(recorded.run, item.sequence)
+                    .recovery_failure_at(recorded.run, item.sequence, mask_evidence)
                     .await
             }
         }
@@ -63,15 +72,21 @@ impl HistoryDataSource {
     pub async fn executor_view(
         &self,
         run: RunId,
+        mask_evidence: bool,
     ) -> Result<(crate::fold::RunView, ExecutorTranscript), StoreError> {
         match self {
             Self::Live { history, cut } => {
                 history
                     .data
-                    .query(ExecutorViewAt(history.clone(), cut.clone(), run))
+                    .query(ExecutorViewAt(
+                        history.clone(),
+                        cut.clone(),
+                        run,
+                        mask_evidence,
+                    ))
                     .await
             }
-            Self::Snapshot(snapshot) => snapshot.executor_view(run).await,
+            Self::Snapshot(snapshot) => snapshot.executor_view(run, mask_evidence).await,
         }
     }
     pub async fn terminated(

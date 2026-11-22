@@ -17,10 +17,9 @@
 
 
 DELETE FROM agent_history_content_refs
-WHERE (owner,session,run,content_id,first_sequence) IN (
- SELECT r.owner,r.session,a.run,p.content_id,f.sequence
+WHERE (run,content_id,first_sequence) IN (
+ SELECT a.run,p.content_id,f.sequence
  FROM agent_history_snapshot_adoptions a
- JOIN agent_run_specs r ON r.run=a.run
  JOIN agent_facts f ON f.id=a.fact AND f.run=a.run
  JOIN agent_history_snapshot_pins p ON p.snapshot=a.snapshot
 );
@@ -41,8 +40,9 @@ CREATE VIEW agent_run_content AS
  );
 
 CREATE VIEW agent_history_content AS
- SELECT d.owner,d.session,d.run,d.content_id,d.first_sequence,0 AS inherited
+ SELECT r.owner,r.session,d.run,d.content_id,d.first_sequence,0 AS inherited
  FROM agent_history_content_refs d
+ JOIN agent_run_specs r ON r.run=d.run
  WHERE NOT EXISTS (
   SELECT 1 FROM agent_history_snapshot_adoptions a
   JOIN agent_facts f ON f.id=a.fact AND f.run=a.run
@@ -57,6 +57,6 @@ CREATE VIEW agent_history_content AS
  JOIN agent_history_snapshot_pins p ON p.snapshot=a.snapshot
  WHERE NOT EXISTS (
   SELECT 1 FROM agent_history_content_refs d
-  WHERE d.owner=r.owner AND d.session=r.session AND d.run=a.run AND d.content_id=p.content_id
+  WHERE d.run=a.run AND d.content_id=p.content_id
     AND d.first_sequence<=f.sequence
  );

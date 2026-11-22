@@ -296,7 +296,7 @@ enabled?, reducedMotion?})` changes this Session's display. Colors are `blue`, `
 `violet`, `amber`, `rose`, `cyan`; labels allow up to 48 characters. `cua.cursor.getState()`
 reports settings and native/browser visibility. A native renderer in `idle` state starts
 on the first native indication; `unavailable` reports a missing/failed display host.
-Configure again to retry a failed renderer. Idle cursors remain until disabled or cleaned up.
+Configure again to retry a failed renderer. The cursor belongs to the Session but does not stay on screen after a Turn: it is shown during the Turn, hidden when the Turn ends, and appears again on the next input action.
 Cursors share no input authority and do not move the system pointer. Multiple cursors
 do not isolate the physical keyboard, application focus or input method.
 Cancelled, timed-out or heap-exhausted REPLs require `cua_reset`, then target rebinding. Admitted

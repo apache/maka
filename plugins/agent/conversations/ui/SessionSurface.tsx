@@ -1300,6 +1300,8 @@ export function createConversationUi(
       },
     };
   });
+  const usageComposer = () =>
+    composerSession() ?? (selected() === null && pendingWorkspace() ? pendingComposer() : null);
   cleanup(() => {
     prefills.clear();
   });
@@ -1569,7 +1571,7 @@ export function createConversationUi(
         await pendingDefaultRead;
         requireOwner();
         const backend = pendingBackend();
-        if (backend?.kind !== 'model') throw new UiError('This action requires a native model.');
+        if (!backend) throw new UiError('Choose a model.');
         await pendingModel.refreshModel();
         requireOwner();
         const model = pendingModelDetails();
@@ -1641,8 +1643,7 @@ export function createConversationUi(
                 boundaryRevision: observed.boundaryRevision,
                 binding: observed.binding,
               },
-              model: nativeModelSelection(backend),
-              thinkingLevel: backend.thinkingLevel ?? null,
+              backend,
             },
           });
           if (created.kind === 'conflict')
@@ -2967,12 +2968,11 @@ export function createConversationUi(
                 usageLimits={
                   platform.idiom === 'terminal' ? undefined : (
                     <ComposerUsageLimits
-                      backend={() =>
-                        composerSession()?.backend() ??
-                        (selected() === null && pendingWorkspace()
-                          ? pendingComposer().backend()
-                          : null)
-                      }
+                      backend={() => usageComposer()?.backend() ?? null}
+                      model={() => {
+                        const details = usageComposer()?.modelDetails();
+                        return details?.kind === 'ready' ? details.choice.label : null;
+                      }}
                     />
                   )
                 }

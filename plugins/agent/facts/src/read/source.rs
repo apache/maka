@@ -17,7 +17,7 @@
  * under the License.
  */
 
-use super::{ReadMetadata, ReadPage, ReadRequest, TextPageScan};
+use super::{PageBudget, ReadMetadata, ReadPage, ReadRequest, TextPageScan};
 use crate::model::prompt_source::source::{
     self as pull, JsonSource, SourceBudget, SourceBytes, TextEncoding, TextSource,
     json::{self, JsonKind, JsonValue},
@@ -35,8 +35,39 @@ pub async fn projection_page(
     budget: Arc<dyn SourceBudget>,
     stop: &CancellationToken,
 ) -> io::Result<ReadPage> {
+    projection_page_with_budget_and_prefix(
+        projection,
+        tool_name,
+        request,
+        PageBudget::SerializedPage(max_chars),
+        0,
+        budget,
+        stop,
+    )
+    .await
+    .map(|(page, _, _)| page)
+}
+
+pub(crate) async fn projection_page_with_budget_and_prefix(
+    projection: JsonSource,
+    tool_name: &str,
+    request: &ReadRequest,
+    page_budget: PageBudget,
+    tail_serialized_budget: usize,
+    budget: Arc<dyn SourceBudget>,
+    stop: &CancellationToken,
+) -> io::Result<(ReadPage, Option<String>, String)> {
     let (parts, metadata) = projection_parts(projection, tool_name, &budget).await?;
-    page(parts, metadata, request, max_chars, budget, stop).await
+    page_with_budget_and_prefix(
+        parts,
+        metadata,
+        request,
+        page_budget,
+        tail_serialized_budget,
+        budget,
+        stop,
+    )
+    .await
 }
 
 pub async fn json_page(
@@ -60,15 +91,44 @@ async fn page(
     budget: Arc<dyn SourceBudget>,
     stop: &CancellationToken,
 ) -> io::Result<ReadPage> {
+    page_with_budget_and_prefix(
+        parts,
+        metadata,
+        request,
+        PageBudget::SerializedPage(max_chars),
+        0,
+        budget,
+        stop,
+    )
+    .await
+    .map(|(page, _, _)| page)
+}
+
+async fn page_with_budget_and_prefix(
+    parts: Vec<SourceBytes>,
+    metadata: Option<ReadMetadata>,
+    request: &ReadRequest,
+    page_budget: PageBudget,
+    tail_serialized_budget: usize,
+    budget: Arc<dyn SourceBudget>,
+    stop: &CancellationToken,
+) -> io::Result<(ReadPage, Option<String>, String)> {
     let overhead = metadata
         .as_ref()
         .map(serde_json::to_string)
         .transpose()
         .map_err(io::Error::other)?
         .map_or(0, |value| value.encode_utf16().count() + 12);
+    let adjusted_budget = match page_budget {
+        PageBudget::SerializedPage(limit) => {
+            PageBudget::SerializedPage(limit.saturating_sub(overhead))
+        }
+        PageBudget::DisplayBody(limit) => PageBudget::DisplayBody(limit),
+    };
     // These parts are serialized JSON or decoded JSON strings, so a NUL
     // belongs to the tool result and is escaped again when the page is encoded.
-    let mut page = Utf8Page::with_nul_policy(request, max_chars.saturating_sub(overhead), false);
+    let mut page =
+        Utf8Page::with_page_budget(request, adjusted_budget, false, tail_serialized_budget);
     let mut previous = false;
     for bytes in parts {
         let mut cursor = bytes.open(budget.clone());
@@ -96,9 +156,9 @@ async fn page(
             }
         }
     }
-    let mut page = page.finish()?;
+    let (mut page, tail, prefix) = page.finish_with_tail_and_prefix(tail_serialized_budget)?;
     page.metadata = metadata;
-    Ok(page)
+    Ok((page, tail, prefix))
 }
 
 async fn small(value: JsonValue, budget: &Arc<dyn SourceBudget>) -> io::Result<Value> {
@@ -390,8 +450,17 @@ impl<'a> Utf8Page<'a> {
     }
 
     fn with_nul_policy(request: &'a ReadRequest, budget: usize, reject_nul: bool) -> Self {
+        Self::with_page_budget(request, PageBudget::SerializedPage(budget), reject_nul, 0)
+    }
+
+    fn with_page_budget(
+        request: &'a ReadRequest,
+        budget: PageBudget,
+        reject_nul: bool,
+        tail_serialized_budget: usize,
+    ) -> Self {
         Self {
-            scan: request.scan_with_budget(budget),
+            scan: request.scan_with_page_budget(budget, tail_serialized_budget),
             pending: Vec::new(),
             reject_nul,
         }
@@ -418,9 +487,18 @@ impl<'a> Utf8Page<'a> {
         Ok(())
     }
     pub fn finish(self) -> io::Result<ReadPage> {
+        self.finish_with_tail_and_prefix(0).map(|(page, _, _)| page)
+    }
+
+    pub(crate) fn finish_with_tail_and_prefix(
+        self,
+        tail_serialized_budget: usize,
+    ) -> io::Result<(ReadPage, Option<String>, String)> {
         if !self.pending.is_empty() {
             return Err(io::Error::other("Read cannot decode incomplete UTF-8 text"));
         }
-        self.scan.finish().map_err(io::Error::other)
+        self.scan
+            .finish_with_tail_and_prefix(tail_serialized_budget)
+            .map_err(io::Error::other)
     }
 }

@@ -58,6 +58,13 @@ pub(super) struct Finger {
     moved: bool,
 }
 
+fn transform_payload(key: &'static str, amount: f32) -> EventPayload {
+    EventPayload::Map(vec![
+        (key, nsh_core::PayloadValue::Number(amount as f64)),
+        ("velocity", nsh_core::PayloadValue::Number(0.0)),
+    ])
+}
+
 impl Headless {
     /// The step `drag(<selector>, <by>)`: a finger lands on the middle of
     /// the view `selector` names, rests there for 100 ms, moves by `by`
@@ -437,6 +444,72 @@ impl Headless {
         }
         self.animator.scroll_ended(view);
         self.send(view, EventKind::ScrollEnd, self.scroll_payload(view));
+    }
+
+    /// A trackpad pinch over selector, from its current scale to scale.
+    /// As on macOS and Linux, a listener that does not take the gesture and
+    /// the native pinch binding around it both run; a taking listener owns
+    /// it exclusively. The gesture ends after one move.
+    pub fn trackpad_pinch(&mut self, selector: &str, scale: f32) -> Result<(), String> {
+        if !scale.is_finite() || scale <= 0.0 {
+            return Err("trackpad pinch scale must be finite and positive".into());
+        }
+        self.step(format!("trackpadPinch({selector}, {scale})"));
+        self.input_with(nsh_core::platform::InputModality::Pointer);
+        let parsed = Selector::parse(selector)?;
+        let named = self.picked(self.screen.view(&parsed), selector, "view")?;
+        let page = self
+            .screen
+            .bounds_in_root(named)
+            .map(|bounds| bounds.center())
+            .ok_or_else(|| format!("view is not on screen: {selector}"))?;
+        let hit = self.screen.hit_pointer_at(page, named);
+        let listener = self.screen.pinch_listener(hit);
+        let takes = listener.is_some_and(|(_, takes)| takes);
+        let native = (!takes).then(|| self.screen.pinch_transform(hit)).flatten();
+        if listener.is_none() && native.is_none() {
+            return Err(format!("no pinch listener or binding around {selector}"));
+        }
+        let event = |phase, delta| {
+            listener.map(|(view, _)| {
+                let position = self
+                    .screen
+                    .bounds_in_root(view)
+                    .map_or(Point::default(), |bounds| page - bounds.origin);
+                (
+                    view,
+                    nsh_core::PinchEvent::new(
+                        position,
+                        page,
+                        nsh_core::geometry::Percentage(delta),
+                        phase,
+                        self.held,
+                    ),
+                )
+            })
+        };
+        if let Some((view, pinch)) = event(nsh_core::PinchPhase::Start, 0.0) {
+            self.send(view, EventKind::Pinch, EventPayload::Pinch(pinch));
+        }
+        if let Some(view) = native {
+            self.animator.transform_began(view);
+            self.send(view, EventKind::PinchStart, transform_payload("scale", 1.0));
+        }
+        if let Some((view, pinch)) = event(nsh_core::PinchPhase::Move, scale - 1.0) {
+            self.send(view, EventKind::Pinch, EventPayload::Pinch(pinch));
+        }
+        if let Some(view) = native {
+            self.animator.transform_moved(view, scale);
+        }
+        let end = event(nsh_core::PinchPhase::End, 0.0);
+        self.display_frame();
+        if let Some((view, pinch)) = end {
+            self.send(view, EventKind::Pinch, EventPayload::Pinch(pinch));
+        }
+        if let Some(view) = native {
+            self.send(view, EventKind::PinchEnd, transform_payload("scale", scale));
+        }
+        self.done()
     }
 
     /// Moves the scroll view's offset along its axis to `offset`, as its

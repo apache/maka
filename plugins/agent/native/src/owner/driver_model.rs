@@ -27,12 +27,12 @@ use maka_agent_engine::{
     preparation::{self, PromptSettings, RequestSource},
 };
 use maka_agent_facts::{
-    composition::{RequestComposition, SourceRevision},
+    composition::{CompositionSurface, RequestComposition, SourceRevision},
     context::{CompactionOptions, ModelOperation, ModelPurpose},
     durable::*,
     execution::SystemPrompt,
     input::RunInput,
-    model::prompt::Message,
+    model::{ModelPart, prompt::Message},
 };
 use maka_agent_state::{ContentBlob, Store, fold::RunView, session_history::SessionHistory};
 use maka_event_log::SessionStore;
@@ -436,17 +436,18 @@ impl DriverModel {
         Ok((!instruction.is_empty()).then(|| Arc::new(instruction)))
     }
 
+    /// Cuts a summary input to `budget` estimated tokens; a native compaction passes none.
     async fn prepare_summary_input(
         &self,
         prompt: &mut maka_agent_engine::prepared_prompt::PreparedPrompt,
         model: &maka_agent_engine::PreparedModel,
         language: maka_agent_facts::language::Language,
-        native: bool,
+        budget: Option<u64>,
     ) -> Result<(), RunError> {
-        if !native {
+        if let Some(budget) = budget {
             *prompt = maka_agent_engine::context_input::fit_prepared_summary(
                 prompt,
-                maka_agent_engine::context_input::summary_budget(model.context.as_ref()),
+                budget,
                 language,
                 &self.cancellation,
             )
@@ -853,7 +854,8 @@ impl DriverModel {
                 let covered = CoveredPrefix::capture(&prompt).await?;
                 let instruction = self.summary_instruction(view, native_compaction, summary_options.prompt.as_deref()).await?;
                 prompt.initialize_overlays(Some(rendered), true, instruction).await?;
-                self.prepare_summary_input(&mut prompt, model, view.spec.language, native_compaction).await?;
+                let budget = (!native_compaction).then(|| maka_agent_engine::context_input::summary_budget(model.context.as_ref()));
+                self.prepare_summary_input(&mut prompt, model, view.spec.language, budget).await?;
                 Some(covered)
             } else {
                 None
@@ -988,14 +990,18 @@ impl DriverModel {
                 .unwrap_or_default();
             revisions.push(adapter.source().clone());
             revisions.push(model.revision.clone());
-            let composition = RequestComposition {
+            let tool_catalog_digest = maka_agent_engine::digest(&definitions)?;
+            let surface = ContentBlob::json(&CompositionSurface {
                 system_prompt: system.map(|value| value.text),
-                dynamic_context,
-                tool_catalog_digest: maka_agent_engine::digest(&definitions)?,
                 tools: definitions,
+                sources: revisions,
+            })?;
+            let composition = RequestComposition {
+                surface: surface.reference().clone(),
+                dynamic_context,
+                tool_catalog_digest,
                 provider_options: Some(model.options.clone()),
                 max_output_tokens: request.request.max_output_tokens,
-                sources: revisions,
             };
             let spec = RequestSpec {
                 schema_version: SCHEMA_VERSION,
@@ -1042,6 +1048,7 @@ impl DriverModel {
                 contents: {
                     let mut contents = vec![
                         body,
+                        surface,
                         recovery_contract,
                         capture,
                         provenance,
@@ -1358,6 +1365,8 @@ impl DriverModel {
         }
         let provenance: Value = self.decode(view.run, &request.provenance).await?;
         validate_model_input_policy(&provenance, &model)?;
+        let surface: CompositionSurface =
+            self.decode(view.run, &request.composition.surface).await?;
         let recovery: FrozenRecovery = self
             .protocol_data(
                 view.run,
@@ -1373,7 +1382,7 @@ impl DriverModel {
                 != original_recovery_contract(
                     &binding,
                     &model.provider,
-                    &request.composition.tools,
+                    &surface.tools,
                     frozen.operation,
                 )
         {
@@ -1559,7 +1568,8 @@ impl DriverModel {
         if request.protocol != PROTOCOL || request.protocol_version != VERSION {
             return Err(unsupported("frozen-input-protocol-version"));
         }
-        super::driver::validate_tool_digest(request)?;
+        let surface: CompositionSurface = reader.decode(run, &request.composition.surface).await?;
+        super::driver::validate_tool_digest(request, &surface)?;
         let value: Value = reader.decode(run, &request.request).await?;
         let frozen: FrozenInput = serde_json::from_value(value)
             .map_err(|_| unsupported("frozen-input-manifest-schema"))?;
@@ -2286,7 +2296,24 @@ impl DriverModel {
         failure_note: replay::FailureNote,
     ) -> BoxFuture<'a, Result<ReplayedTail, RunError>> {
         Box::pin(async move {
-            let recorded = self.recorded_inputs(reader, view, after_revision).await?;
+            #[derive(Deserialize, Default)]
+            struct Readers {
+                #[serde(default)]
+                services: Vec<crate::tools::ServiceSelection>,
+            }
+            let aliases = if view.run != self.execution.run_id {
+                let frozen: Readers = reader.decode(view.run, &view.spec.tool_selection).await?;
+                frozen
+                    .services
+                    .into_iter()
+                    .filter_map(crate::tools::ServiceSelection::history_alias)
+                    .collect()
+            } else {
+                Default::default()
+            };
+            let recorded = self
+                .recorded_inputs(reader, view, after_revision, &aliases)
+                .await?;
             let mut replay = replay::TailReplay::new(
                 self,
                 target,
@@ -2298,6 +2325,7 @@ impl DriverModel {
                 messages,
                 recorded,
                 failure_note,
+                aliases,
             );
             let mut after = after_revision;
             loop {
@@ -2305,12 +2333,33 @@ impl DriverModel {
                 if page.is_empty() {
                     break;
                 }
+                let restricted = if view.run != self.execution.run_id {
+                    let results = page
+                        .iter()
+                        .take_while(|f| f.revision <= view.revision)
+                        .filter(|f| {
+                            matches!(
+                                f.fact,
+                                Fact::ToolResultAccepted { .. }
+                                    | Fact::ModelObserved {
+                                        part: ModelPart::ToolCall { .. }
+                                            | ModelPart::ToolResult { .. },
+                                        ..
+                                    }
+                            )
+                        })
+                        .map(|f| f.id)
+                        .collect();
+                    self.history.restricted_archives(results).await?
+                } else {
+                    Default::default()
+                };
                 for fact in &page {
                     if fact.revision > view.revision {
                         return replay.finish().await;
                     }
                     after = fact.revision;
-                    if let Some(work) = replay.apply(fact)? {
+                    if let Some(work) = replay.apply(fact, restricted.get(&fact.id).copied())? {
                         work.await?;
                     }
                 }
@@ -2492,7 +2541,7 @@ impl DriverModel {
             .map_err(|_| unsupported("tool-return-envelope-version"))?;
         use maka_agent_facts::tool_output::StoredToolResult;
         let body = match returned.body {
-            StoredToolResult::Inline(body) => body,
+            StoredToolResult::Inline(body) => *body,
             StoredToolResult::Operation(body) => {
                 let reply = reader.operation_reply(view.run, &body.operation).await?;
                 body.resolve(reply)
@@ -2643,6 +2692,7 @@ impl DriverModel {
         {
             return Err(unsupported("admitted-recovery-contract"));
         }
+        let surface: CompositionSurface = self.decode(run, &request.composition.surface).await?;
         let provenance: Value = self.decode(run, &request.provenance).await?;
         let context_evidence: maka_agent_facts::context::RequestContextEvidence =
             serde_json::from_value(provenance.clone()).map_err(RunError::Json)?;
@@ -2733,7 +2783,7 @@ impl DriverModel {
                         != original_recovery_contract(
                             &binding,
                             &prepared.provider,
-                            &request.composition.tools,
+                            &surface.tools,
                             frozen.operation,
                         )
                 {
@@ -2767,6 +2817,7 @@ impl DriverModel {
                     cut,
                     run,
                     frozen,
+                    surface,
                     request: request.clone(),
                     access: access.clone(),
                     model_source: source.clone(),
@@ -3251,12 +3302,14 @@ impl DriverModel {
         let Some(contract) = recovery.contract.as_ref() else {
             return Err(unsupported("provider-effects-or-unproved-adapter"));
         };
+        let surface: CompositionSurface =
+            self.decode(view.run, &request.composition.surface).await?;
         if !same_adapter(binding.source(), &frozen.adapter)
             || preparation::route_identity(&model.provider)? != frozen.route_identity
             || original_recovery_contract(
                 &binding,
                 &model.provider,
-                &request.composition.tools,
+                &surface.tools,
                 frozen.operation,
             )
             .as_ref()
@@ -3396,6 +3449,18 @@ impl DriverModel {
                 contents: vec![proof],
             });
         };
+        // A Summary closes on overflow instead of being interrupted, so it has no overflow
+        // recovery of its own: the engine falls back to its Main or fails the Run.
+        if request.accounting.purpose == ModelPurpose::Summary
+            && matches!(failure, maka_model::ModelError::ContextOverflow { .. })
+        {
+            return Ok(RecoveryEvidence {
+                recovery: AttemptRecovery::Blocked {
+                    diagnostic: "the summary request exceeded the model's context limit".into(),
+                },
+                contents: vec![],
+            });
+        }
         let frozen = self.frozen_input(reader, view.run, &request).await?;
         let parts = self.canonical_parts(view, attempt).await?;
         if !parts.is_empty() && !frozen.item_acceptance {

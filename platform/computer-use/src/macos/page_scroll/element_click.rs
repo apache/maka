@@ -92,7 +92,7 @@ enum Intent {
         point: Option<[f64; 2]>,
     },
     Physical {
-        target: EventTarget,
+        target: Box<EventTarget>,
         point: [f64; 2],
     },
 }
@@ -100,7 +100,7 @@ enum Intent {
 enum Phase {
     Chess,
     Searching {
-        resolver: TargetResolver,
+        resolver: Box<TargetResolver>,
         processes: HashMap<i32, ProcessState>,
         global: GlobalWindowObservation,
         needed: Need,
@@ -284,13 +284,13 @@ impl PendingClick {
         let point = self
             .point()?
             .ok_or_else(|| SynthesizedEventError::CannotClickOffscreenElement.into_tool_error())?;
-        let resolver = TargetResolver::from_known(
+        let resolver = Box::new(TargetResolver::from_known(
             self.pid,
             self.bundle.as_deref(),
             self.window.clone(),
             self.element.clone(),
             point,
-        )?;
+        )?);
         self.resolve(
             resolver,
             HashMap::new(),
@@ -378,7 +378,7 @@ impl PendingClick {
 
     fn resolve(
         &mut self,
-        mut resolver: TargetResolver,
+        mut resolver: Box<TargetResolver>,
         processes: HashMap<i32, ProcessState>,
         global: GlobalWindowObservation,
         point: [f64; 2],

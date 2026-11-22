@@ -28,6 +28,7 @@ const IMPORTED_TOOL_RESULT_PREFIX: &str = "maka://history/tool-result/";
 pub const SESSION_RESOURCE_PREFIX: &str = "maka://session/";
 const SESSION_TOOL_RESULT_SEGMENT: &str = "/tool-results/";
 const SESSION_IMPORTED_TOOL_RESULT_SEGMENT: &str = "/imported-tool-results/";
+const SESSION_ATTACHMENT_SEGMENT: &str = "/attachments/";
 const SESSION_THROUGH_QUERY_PREFIX: &str = "through=";
 const MAX_SAFE_THROUGH: u64 = (1 << 53) - 1;
 
@@ -100,6 +101,10 @@ pub enum ResourceAddress {
         session_id: String,
         address: HistoryRowAddress,
     },
+    SessionAttachment {
+        session_id: String,
+        attachment_id: String,
+    },
 }
 
 impl ResourceAddress {
@@ -128,6 +133,15 @@ impl ResourceAddress {
                 return Ok(Some(Self::SessionImportedToolResult {
                     session_id: session_id.into(),
                     address,
+                }));
+            }
+            if let Some((session_id, attachment_id)) = rest.split_once(SESSION_ATTACHMENT_SEGMENT) {
+                let attachment_id = attachment_id.strip_suffix('/').unwrap_or(attachment_id);
+                entity_id(session_id)?;
+                entity_id(attachment_id)?;
+                return Ok(Some(Self::SessionAttachment {
+                    session_id: session_id.into(),
+                    attachment_id: attachment_id.into(),
                 }));
             }
             if let Some((raw_id, query)) = rest.split_once('?') {
@@ -194,6 +208,7 @@ impl ResourceAddress {
             Self::Session { session_id, .. }
             | Self::SessionImportedToolResult { session_id, .. } => session_id,
             Self::SessionToolResult { event_id, .. } => event_id,
+            Self::SessionAttachment { attachment_id, .. } => attachment_id,
         }
     }
 
@@ -203,6 +218,7 @@ impl ResourceAddress {
             Self::Session { session_id, .. }
             | Self::SessionImportedToolResult { session_id, .. } => *session_id = resolved,
             Self::SessionToolResult { event_id, .. } => *event_id = resolved,
+            Self::SessionAttachment { attachment_id, .. } => *attachment_id = resolved,
         }
         self
     }
@@ -249,6 +265,16 @@ impl ResourceAddress {
                 let encoded = encode_imported_address(address)?;
                 Ok(format!(
                     "{SESSION_RESOURCE_PREFIX}{session_id}{SESSION_IMPORTED_TOOL_RESULT_SEGMENT}{encoded}"
+                ))
+            }
+            Self::SessionAttachment {
+                session_id,
+                attachment_id,
+            } => {
+                entity_id(session_id)?;
+                entity_id(attachment_id)?;
+                Ok(format!(
+                    "{SESSION_RESOURCE_PREFIX}{session_id}{SESSION_ATTACHMENT_SEGMENT}{attachment_id}"
                 ))
             }
         }
@@ -318,6 +344,22 @@ mod tests {
                 session_id: "ma_123".into(),
                 address: imported,
             })
+        );
+        assert_eq!(
+            ResourceAddress::parse("maka://session/ma_123/attachments/att_789").unwrap(),
+            Some(ResourceAddress::SessionAttachment {
+                session_id: "ma_123".into(),
+                attachment_id: "att_789".into(),
+            })
+        );
+        assert_eq!(
+            ResourceAddress::SessionAttachment {
+                session_id: "ma_123".into(),
+                attachment_id: "att_789".into(),
+            }
+            .canonical_path()
+            .unwrap(),
+            "maka://session/ma_123/attachments/att_789"
         );
         let http_err = ResourceAddress::parse("https://github.com/apache/maka").unwrap_err();
         assert!(http_err.contains("WebFetch"), "{http_err}");

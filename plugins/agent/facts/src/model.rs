@@ -118,6 +118,15 @@ impl PromptCacheUsage {
     }
 }
 
+/// Provider-reported counters and measured generation time, copied with a quick reply.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct QuickReplyInfo {
+    pub model_id: String,
+    pub duration_ms: u64,
+    pub usage: ModelUsage,
+}
+
 /// Auxiliary Host generation, not an assistant step in the parent conversation.
 /// Usage is provider-reported; absent counters are unknown, not zero.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -271,6 +280,22 @@ pub enum ModelSource {
         filename: Option<String>,
         provider_options: Option<Value>,
     },
+}
+
+impl ModelSource {
+    /// The history index and displayed citation share these UTF-8 byte coordinates.
+    pub fn citation_text(&self) -> String {
+        match self {
+            Self::Url { url, title, .. } => title
+                .as_ref()
+                .map_or_else(|| url.clone(), |title| format!("[{title}]({url})")),
+            Self::Document {
+                title, filename, ..
+            } => filename
+                .as_ref()
+                .map_or_else(|| title.clone(), |file| format!("{title} ({file})")),
+        }
+    }
 }
 
 impl ModelStep {

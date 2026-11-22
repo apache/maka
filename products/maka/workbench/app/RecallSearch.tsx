@@ -61,7 +61,7 @@ type Request = {
 type Answer = { request: Request; page: AgentRecallPage };
 type SearchState =
   | { kind: 'empty' }
-  | { kind: 'loading'; request: Request; previous: Answer | null }
+  | { kind: 'loading'; request: Request }
   | { kind: 'failed'; request: Request; error: UiText }
   | { kind: 'ready'; request: Request; page: AgentRecallPage };
 type Result =
@@ -136,11 +136,7 @@ export function RecallSearch(props: {
   });
   const answer = computed<Answer | null>(() => {
     const current = state();
-    return current.kind === 'ready'
-      ? current
-      : current.kind === 'loading'
-        ? current.previous
-        : null;
+    return current.kind === 'ready' ? current : null;
   });
   const results = computed<Result[]>(() => {
     const current = answer();
@@ -219,13 +215,12 @@ export function RecallSearch(props: {
     const signature = JSON.stringify([terms, sessionId]);
     query.set(text);
     if (!retry && signature === wanted?.signature) return;
-    const previous = answer();
     cancel();
     wanted = terms
       ? { id: ++sequence, terms, sessionId, signature, stream: null, closing: null }
       : null;
     batch(() => {
-      state.set(wanted ? { kind: 'loading', request: wanted, previous } : { kind: 'empty' });
+      state.set(wanted ? { kind: 'loading', request: wanted } : { kind: 'empty' });
       selected.set(0);
       openError.set('');
     });

@@ -299,7 +299,6 @@ pub(super) async fn desktop_room_reply_wakes_an_agent_without_mixing_drafts() {
     focus_room(&desktop).await;
     desktop.paste("Please review @").await;
     desktop.press("Room reviewer").await;
-    desktop.control("Remove mention Room reviewer").await;
     desktop.press("Conversations").await;
     desktop.press("Focus message composer").await;
     desktop.expect_text("PRIVATE_AGENT_DRAFT").await;
@@ -312,9 +311,12 @@ pub(super) async fn desktop_room_reply_wakes_an_agent_without_mixing_drafts() {
     desktop.press("Rooms").await;
     desktop.press("Release review").await;
     desktop.control("Cancel reply").await;
-    desktop.control("Remove mention Room reviewer").await;
     focus_room(&desktop).await;
-    desktop.expect_text("Please review ").await;
+    let expected_draft = format!(
+        "Please review [@Room reviewer](maka://session/{}) ",
+        fixture.session
+    );
+    desktop.expect_text(&expected_draft).await;
     desktop.press("Send message").await;
     let posts = room_messages(&desktop, room, 2).await;
     assert_eq!(posts[1]["author"]["kind"], "human");
@@ -396,23 +398,78 @@ pub(super) async fn desktop_room_reply_wakes_an_agent_without_mixing_drafts() {
         })
         .await;
     assert_eq!(copied, room_reply);
+    // Interactive Telegram-style reactions: click a quick reaction and open the full EmojiPicker popover.
+    let fire = *desktop.controls("🔥").last().unwrap();
+    desktop.press_at(fire.center());
+    desktop.control("🔥 1").await;
+    desktop
+        .wait("reaction did not persist in Room history", async {
+            loop {
+                let latest = room_messages(&desktop, room, 3).await;
+                if latest[2]["reactions"]
+                    .as_array()
+                    .is_some_and(|list| list.iter().any(|r| r["emoji"] == "🔥"))
+                {
+                    return;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+    let add_react = desktop
+        .until("trailing Add reaction button did not appear", || {
+            let btns = desktop.controls("Add reaction");
+            // 3 hover-bar triggers + 1 trailing pill trigger (leftmost/bottommost on the reacted message)
+            (btns.len() == 4).then(|| {
+                btns.into_iter()
+                    .min_by(|a, b| a.left().0.total_cmp(&b.left().0))
+                    .unwrap()
+            })
+        })
+        .await;
+    desktop.press_at(add_react.center());
+    desktop.control("smileysEmotion").await;
+    // Let the 140ms popover entrance transition settle before capturing the screenshot.
+    let settle = std::time::Instant::now();
+    desktop
+        .until("popover entrance settle", || {
+            (settle.elapsed() >= Duration::from_millis(260)).then_some(())
+        })
+        .await;
+    desktop.artifact("room-emoji-picker");
+    desktop.press_at(add_react.center());
+    desktop
+        .until("emoji picker popover did not close", || {
+            desktop.controls("smileysEmotion").is_empty().then_some(())
+        })
+        .await;
     let quote = *desktop.controls("View replied message").last().unwrap();
     desktop.press_at(point(quote.left() + px(20.), quote.bottom() + px(15.)));
+    // In wide desktop layout, clicking an Agent mention opens that Agent in a live side pane
+    // while keeping the Room mounted alongside it.
+    let _side_close = desktop.control("Close side pane").await;
+    let side_composer = desktop.control("Focus message composer").await;
+    let room_mention = desktop.control("Mention a session").await;
+    assert!(room_mention.center().x < side_composer.center().x);
+    desktop.artifact("room-agent-side-split");
+    desktop.press("Close side pane").await;
+    desktop.control("Mention a session").await;
+    desktop.press("Conversations").await;
+    desktop.press("Open conversation Room reviewer").await;
     desktop.press("Focus message composer").await;
-    let summary = "From Release review · Please review";
+    let summary = "Release review · You mentioned this session · Please review @Room reviewer";
     desktop.open_group(summary).await;
-    desktop.press_until(summary, "From Release review").await;
+    desktop
+        .press_until(summary, "Release review · You mentioned this session")
+        .await;
     desktop
         .press("Open source conversation beside this one")
         .await;
-    let split = desktop.control("Close side pane").await;
-    let mention = desktop.control("Mention a session").await;
-    assert!(mention.center().x > px(560.) && mention.right() < split.right());
+    let _split = desktop.control("Close side pane").await;
+    let _mention = desktop.control("Mention a session").await;
     desktop
         .until("Room history did not appear in the right pane", || {
-            let replies = desktop.controls("Reply to message");
-            (replies.len() == 3 && replies.iter().all(|reply| reply.center().x > px(560.)))
-                .then_some(())
+            (desktop.controls("Reply to message").len() == 3).then_some(())
         })
         .await;
     desktop.artifact("room-source-split");

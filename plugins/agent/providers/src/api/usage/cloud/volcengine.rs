@@ -161,6 +161,7 @@ impl CodingUsage {
                     _ => return None,
                 };
                 Some(UsageLimit::Window {
+                    models: Vec::new(),
                     label: None,
                     period: Some(period),
                     resets_at: window.reset_timestamp.and_then(|time| time.unix_seconds()),
@@ -216,6 +217,7 @@ impl AgentWindow {
         let used = self.used.nonnegative()?;
         let limit = self.quota.nonnegative().filter(|&limit| limit > 0.0)?;
         Some(UsageLimit::Window {
+            models: Vec::new(),
             label: None,
             period: Some(period),
             resets_at: self

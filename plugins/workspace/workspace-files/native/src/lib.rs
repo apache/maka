@@ -382,6 +382,50 @@ async fn execute(
                     }
                     return attachments::read(&artifacts, scope, id, request, cancellation).await;
                 }
+                ResourceAddress::SessionAttachment {
+                    session_id,
+                    mut attachment_id,
+                } => {
+                    access.authorize_session_read(&session_id, context).await?;
+                    let scope = maka_agent_state::artifacts::SessionScope {
+                        owner: access.run_owner().clone(),
+                        session: session_id.clone(),
+                    };
+                    let artifacts = maka_agent_state::artifacts::ArtifactStore::new(
+                        root.data_writer_for_work(
+                            custody.as_ref(),
+                            &tool_context.execution.session_id,
+                        )
+                        .map_err(failed)?,
+                    );
+                    if !request.is_continuation() {
+                        let record = artifacts
+                            .resolve(scope.clone(), attachment_id)
+                            .await
+                            .map_err(failed)?
+                            .ok_or_else(|| {
+                                failed("Attachment was not found in the target Session")
+                            })?;
+                        if record.source != maka_agent_facts::artifact::ArtifactSource::UserUpload {
+                            return Err(failed("Attachment was not found in the target Session"));
+                        }
+                        attachment_id = record.id;
+                        request
+                            .bind_resource(&ResourceAddress::SessionAttachment {
+                                session_id: session_id.clone(),
+                                attachment_id: attachment_id.clone(),
+                            })
+                            .map_err(failed)?;
+                    }
+                    return attachments::read(
+                        &artifacts,
+                        scope,
+                        attachment_id,
+                        request,
+                        cancellation,
+                    )
+                    .await;
+                }
                 ResourceAddress::ToolResult(id) => {
                     let history = maka_agent_state::session_history::SessionHistory::new(
                         root.data_writer_for_work(
@@ -571,8 +615,7 @@ async fn execute(
             &state_root,
             tool,
             &input,
-            context.scope().sandbox_floor(),
-            cancellation,
+            context.scope(),
         )
         .await?;
     }
@@ -621,7 +664,7 @@ async fn execute(
         match executor
             .read(
                 input.resolve().map_err(failed)?,
-                read_page_budget(),
+                workspace_file_read_page_budget(&tool_context.call.origin),
                 cancellation.clone(),
             )
             .await?
@@ -683,9 +726,23 @@ fn failed(message: impl std::fmt::Display) -> ToolError {
 
 // Reserve the public service envelope so model pruning preserves the file continuation.
 fn read_page_budget() -> usize {
+    page_budget_for(maka_agent_facts::read::MAX_PAGE_CHARS)
+}
+
+fn workspace_file_read_page_budget(origin: &maka_agent_facts::tool_call::ToolOrigin) -> usize {
+    let target = match origin {
+        maka_agent_facts::tool_call::ToolOrigin::CodeCell { .. } => {
+            maka_agent_facts::read::CELL_READ_PAGE_CHARS
+        }
+        _ => maka_agent_facts::read::MAX_PAGE_CHARS,
+    };
+    page_budget_for(target)
+}
+
+fn page_budget_for(target: usize) -> usize {
     let envelope = serde_json::to_string(&FileResult::Completed { value: Value::Null })
         .expect("file result envelope")
         .len()
         - "null".len();
-    maka_agent_facts::read::MAX_PAGE_CHARS - envelope
+    target - envelope
 }

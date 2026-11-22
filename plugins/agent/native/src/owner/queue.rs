@@ -36,6 +36,10 @@ impl Owner {
         self.recover_removed_sessions();
         self.scheduler.bind(self);
         self.todo.bind(self);
+        self.recall
+            .authority
+            .set(Arc::downgrade(self))
+            .expect("Recall bound once");
         self.bot.bind(self);
         self.goals.bind(self);
         self.start_goals();

@@ -23,10 +23,6 @@ CREATE INDEX agent_cells_pending ON agent_cells(run,pending,cell);
 CREATE INDEX agent_cells_session ON agent_cells(session,cell);
 CREATE UNIQUE INDEX agent_cell_parent ON agent_cells(run,json_extract(body,'$.owner.link.attempt'),json_extract(body,'$.owner.call')) WHERE run IS NOT NULL;
 
-CREATE TABLE agent_cell_operation_pins (
- cell TEXT NOT NULL, operation TEXT NOT NULL, reference_json TEXT NOT NULL CHECK(json_valid(reference_json)),
- PRIMARY KEY(cell,operation)
-);
 CREATE TABLE agent_session_values (
  session TEXT NOT NULL, key TEXT NOT NULL,
  value_content_id INTEGER NOT NULL REFERENCES contents(id),

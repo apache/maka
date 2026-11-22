@@ -118,7 +118,7 @@ impl ToolRejection {
                 reason: ClosureReason::TimedOut,
                 ..
             } => Self::PolicyDenied {
-                message: "No one approved this request in time".into(),
+                message: ClosureReason::TIMED_OUT_MESSAGE.into(),
             },
             InteractionOutcome::Closure { .. } => Self::Cancelled,
             _ => Self::PolicyDenied {

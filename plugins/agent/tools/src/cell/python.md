@@ -1,5 +1,6 @@
 Orchestrate tool calls in a fresh Monty Python interpreter. Use Python source with top-level await. Supported standard-library modules include asyncio, json, re, math and collections; installing packages, native extensions, direct filesystem/network access and subprocesses are unavailable. Use authorized Host tools for external work.
 Pass raw Python on freeform transports; on JSON-only transports put the same source in code. Optional first line: # @exec: {"yield_time_ms": 30000, "max_output_tokens": 10000}
+Extend yield_time_ms (up to 600000) for long builds/tests.
 Call await tools.name(input), with a JSON-compatible value, or await tools.name(**kwargs) for an object input. Names are normalized Python identifiers. Await every intended operation. Use import asyncio and await asyncio.gather(...) for parallel calls. To collect partial failures, wrap each awaited call in try/except and return an explicit success/error value. Monty supports asyncio.run/gather/sleep; create_task, wait_for, TaskGroup and gather(return_exceptions=True) are unavailable. When source finishes, unawaited operations are cancelled; admitted Host effects still settle before completion.
 Helpers:
 - text(value): emit a string or JSON value. Final expressions and print() do not publish output.

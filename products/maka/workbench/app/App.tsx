@@ -53,6 +53,7 @@ import {
 } from '../../../../packages/plugin-sdk/src/workbench-views.js';
 import { currentWindow } from 'nsh/desktop';
 import { QuickLauncher } from './QuickLauncher';
+import { UpdateBanner } from './UpdateBanner';
 import { createQuickTools, QuickToolsSettings, type QuickTools } from './QuickTools';
 import { ownTitleBar, windowTitle } from './chrome';
 import {
@@ -580,6 +581,7 @@ function App(
           },
         })}
       </WorkspaceSurface>
+      <UpdateBanner />
       <If when={runtime.updateError() !== null}>
         <View
           style={{

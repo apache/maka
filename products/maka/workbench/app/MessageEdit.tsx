@@ -148,6 +148,7 @@ async function forkBefore(
 export function MessageEdit(
   props: EditProps & {
     menu?: MessageMenu;
+    menuOnly?: boolean;
     /** Where an in-place edit of this message is kept. */
     inline?: Signal<InlineEdit | null>;
   },
@@ -197,14 +198,14 @@ export function MessageEdit(
   });
   // Render nothing when hidden, so the row of actions keeps its spacing.
   return (
-    <If when={Boolean(notice()) || target() !== null}>
+    <If when={Boolean(notice()) || (!props.menuOnly && target() !== null)}>
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, minWidth: 0 }}>
         <If when={notice()}>
           <Text style={[{ color: C.danger, fontSize: 12, lineHeight: 16 }, { userSelect: 'text' }]}>
             {notice()}
           </Text>
         </If>
-        <If when={target() !== null}>
+        <If when={!props.menuOnly && target() !== null}>
           <IconButton
             label={label()}
             tooltip={pending() ? tr('Creating fork…') : undefined}

@@ -20,6 +20,7 @@
 //! Canonical permission decisions shared by native workspace executors.
 use crate::interaction_wait::{wait, withdraw};
 use maka_agent_api::session::{ResolvedConfiguration, StoredSessionConfiguration};
+use maka_agent_facts::interaction::ClosureReason;
 use maka_agent_facts::interaction::InteractionOutcome;
 use maka_agent_facts::interaction::InteractionRecord;
 use maka_agent_facts::interaction::InteractionRequest;
@@ -131,14 +132,19 @@ pub async fn request(
     if cancellation.is_cancelled() {
         return Err(failed("Permission request cancelled"));
     }
-    if !matches!(
-        outcome,
-        InteractionOutcome::PermissionsDecision {
-            decision: PermissionDecision::Allow { .. },
+    match outcome {
+        InteractionOutcome::PermissionsDecision { decision, .. } => match decision {
+            PermissionDecision::Allow { .. } => {}
+            PermissionDecision::Deny => return Err(failed("Permission request was denied")),
+        },
+        InteractionOutcome::Closure {
+            reason: ClosureReason::TimedOut,
             ..
+        } => return Err(failed(ClosureReason::TIMED_OUT_MESSAGE)),
+        InteractionOutcome::Closure { .. } => {
+            return Err(failed("Permission request closed before a decision"));
         }
-    ) {
-        return Err(failed("Additional permissions were not granted"));
+        _ => return Err(failed("Unexpected permission request outcome")),
     }
     access
         .permission_grants(target, &configuration.permission_basis(), source)
@@ -172,4 +178,288 @@ pub fn resolve_session(
         .resolve(workspace, binding.stamp())
         .map_err(|error| StoreError::InvalidTransition(error.into()))?;
     Ok(session.map_configuration(|_| configuration))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures_util::future::BoxFuture;
+    use maka_agent_facts::durable::{ExecutionIdentity, ModelAttemptId, RunId, ToolKey};
+    use maka_agent_facts::interaction::PermissionScope;
+    use maka_agent_ports::execution::Interactions;
+    use maka_sandbox::Network;
+    use maka_sandbox::grant::Permissions;
+    use maka_sandbox::workspace::PermissionBasis;
+    use std::sync::Mutex;
+    use tokio::sync::watch;
+    use uuid::Uuid;
+
+    struct FakeAccess {
+        execution: ExecutionIdentity,
+        request_permissions: bool,
+        record: Mutex<Option<InteractionRecord>>,
+        notify: watch::Sender<()>,
+    }
+
+    impl FakeAccess {
+        fn new(request_permissions: bool) -> Self {
+            let (notify, _) = watch::channel(());
+            Self {
+                execution: ExecutionIdentity {
+                    session_id: "sess-1".into(),
+                    turn_id: "turn-1".into(),
+                    run_id: RunId::new(),
+                },
+                request_permissions,
+                record: Mutex::new(None),
+                notify,
+            }
+        }
+
+        fn settle(&self, outcome: InteractionOutcome) {
+            let mut slot = self.record.lock().expect("lock record");
+            if let Some(rec) = slot.as_mut()
+                && rec.outcome.is_none()
+            {
+                rec.outcome = Some(outcome);
+            }
+            let _ = self.notify.send(());
+        }
+    }
+
+    impl Interactions for FakeAccess {
+        fn execution(&self) -> &ExecutionIdentity {
+            &self.execution
+        }
+
+        fn changes(&self) -> Result<watch::Receiver<()>, String> {
+            Ok(self.notify.subscribe())
+        }
+
+        fn read<'a>(
+            &'a self,
+            request_id: &'a str,
+        ) -> BoxFuture<'a, Result<Option<InteractionRecord>, String>> {
+            Box::pin(async move {
+                Ok(self
+                    .record
+                    .lock()
+                    .expect("lock record")
+                    .as_ref()
+                    .filter(|r| r.request_id == request_id)
+                    .cloned())
+            })
+        }
+
+        fn establish<'a>(
+            &'a self,
+            record: &'a InteractionRecord,
+        ) -> BoxFuture<'a, Result<InteractionRecord, String>> {
+            Box::pin(async move {
+                let mut slot = self.record.lock().expect("lock record");
+                if let Some(existing) = slot.as_ref() {
+                    return Ok(existing.clone());
+                }
+                *slot = Some(record.clone());
+                let _ = self.notify.send(());
+                Ok(record.clone())
+            })
+        }
+
+        fn commit_outcome<'a>(
+            &'a self,
+            request_id: &'a str,
+            outcome: InteractionOutcome,
+        ) -> BoxFuture<'a, Result<InteractionRecord, String>> {
+            Box::pin(async move {
+                let mut slot = self.record.lock().expect("lock record");
+                let rec = slot
+                    .as_mut()
+                    .filter(|r| r.request_id == request_id)
+                    .ok_or_else(|| "missing interaction".to_owned())?;
+                if rec.outcome.is_none() {
+                    rec.outcome = Some(outcome);
+                }
+                let cloned = rec.clone();
+                let _ = self.notify.send(());
+                Ok(cloned)
+            })
+        }
+    }
+
+    impl Access for FakeAccess {
+        fn permission_request_original(
+            &self,
+        ) -> Result<Option<&maka_plugin_core::operation::RecoveryRef>, ToolError> {
+            Ok(None)
+        }
+
+        fn live_configuration(&self) -> BoxFuture<'_, Result<ResolvedConfiguration, ToolError>> {
+            Box::pin(async move {
+                Ok(serde_json::from_value(serde_json::json!({
+                    "title": "Test",
+                    "titleIsManual": false,
+                    "labels": [],
+                    "workspace": { "path": "/tmp" },
+                    "binding": { "id": Uuid::from_u128(1), "permissionEpoch": 1 },
+                    "permissions": {
+                        "access": "workspace_write",
+                        "requestPermissions": self.request_permissions
+                    },
+                    "boundary_revision": 1
+                }))
+                .expect("test configuration"))
+            })
+        }
+
+        fn permission_grants<'a>(
+            &'a self,
+            _target: &'a maka_agent_facts::durable::AuthorizationObligation,
+            _basis: &'a PermissionBasis,
+            _source: PermissionSource,
+        ) -> BoxFuture<'a, Result<Vec<PermissionGrant>, ToolError>> {
+            Box::pin(async move {
+                let slot = self.record.lock().expect("lock record");
+                let grants = slot
+                    .as_ref()
+                    .and_then(|rec| match &rec.outcome {
+                        Some(InteractionOutcome::PermissionsDecision {
+                            decision: PermissionDecision::Allow { permissions, scope },
+                            ..
+                        }) => Some(PermissionGrant {
+                            approval_id: None,
+                            request_id: rec.request_id.clone(),
+                            permissions: permissions.clone(),
+                            scope: *scope,
+                        }),
+                        _ => None,
+                    })
+                    .into_iter()
+                    .collect();
+                Ok(grants)
+            })
+        }
+    }
+
+    fn sample_request() -> (
+        PermissionRequest,
+        maka_agent_facts::durable::AuthorizationObligation,
+    ) {
+        let req = PermissionRequest {
+            reason: "Allow network access".into(),
+            command: None,
+            permissions: Permissions {
+                filesystem: Vec::new(),
+                network: Network::Allowed,
+            },
+            source: PermissionSource::Web,
+        };
+        let target = maka_agent_facts::durable::AuthorizationObligation::Tool {
+            tool: ToolKey {
+                attempt: ModelAttemptId::new(),
+                call: "call-1".into(),
+            },
+        };
+        (req, target)
+    }
+
+    async fn after_publish(
+        on_publish: impl FnOnce(&FakeAccess, &CancellationToken),
+    ) -> Result<PermissionGrant, ToolError> {
+        let access = FakeAccess::new(true);
+        let (req, target) = sample_request();
+        let cancel = CancellationToken::new();
+        let mut published = access.notify.subscribe();
+        let driver = async {
+            let ready = published
+                .wait_for(|_| access.record.lock().expect("lock record").is_some())
+                .await
+                .is_ok();
+            if ready {
+                on_publish(&access, &cancel);
+            }
+            std::future::pending::<()>().await;
+        };
+        tokio::select! {
+            result = request(&access, req, &target, &cancel) => result,
+            _ = driver => unreachable!(),
+        }
+    }
+
+    fn assert_failed(err: ToolError, expected: &str) {
+        match err {
+            ToolError::Failed(msg) => assert_eq!(msg, expected),
+            other => panic!("expected ToolError::Failed({expected:?}), got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn policy_disabled_rejects_without_publishing() {
+        let access = FakeAccess::new(false);
+        let (req, target) = sample_request();
+        let cancel = CancellationToken::new();
+        let err = request(&access, req, &target, &cancel).await.unwrap_err();
+        assert_failed(err, REQUESTS_DISABLED);
+        assert!(access.record.lock().unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn allow_decision_returns_grant() {
+        let (req, _) = sample_request();
+        let grant = after_publish(|access, _| {
+            access.settle(InteractionOutcome::PermissionsDecision {
+                decision: PermissionDecision::Allow {
+                    permissions: req.permissions.clone(),
+                    scope: PermissionScope::Once,
+                },
+                committed_at: 1,
+            });
+        })
+        .await
+        .expect("allow returns grant");
+        assert_eq!(grant.permissions, req.permissions);
+        assert_eq!(grant.scope, PermissionScope::Once);
+    }
+
+    #[tokio::test]
+    async fn failure_outcomes_distinguish_deny_timeout_closure_cancel_and_unexpected() {
+        let cases = [
+            (
+                InteractionOutcome::PermissionsDecision {
+                    decision: PermissionDecision::Deny,
+                    committed_at: 1,
+                },
+                "Permission request was denied",
+            ),
+            (
+                InteractionOutcome::Closure {
+                    reason: ClosureReason::TimedOut,
+                    committed_at: 1,
+                },
+                ClosureReason::TIMED_OUT_MESSAGE,
+            ),
+            (
+                InteractionOutcome::Closure {
+                    reason: ClosureReason::RunStopped,
+                    committed_at: 1,
+                },
+                "Permission request closed before a decision",
+            ),
+            (
+                InteractionOutcome::SystemPermissionGranted { committed_at: 1 },
+                "Unexpected permission request outcome",
+            ),
+        ];
+        for (outcome, expected) in cases {
+            let err = after_publish(|access, _| access.settle(outcome))
+                .await
+                .unwrap_err();
+            assert_failed(err, expected);
+        }
+
+        let err = after_publish(|_, cancel| cancel.cancel())
+            .await
+            .unwrap_err();
+        assert_failed(err, "Permission request cancelled");
+    }
 }

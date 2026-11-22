@@ -72,6 +72,18 @@ pub fn run(first: Connection, root: Root, runtime: Runtime) -> Result<(), String
     let frame_autosave_name = Some(format!("{TITLE} {}", directory.display()));
     let (active, foreground) = watch::channel(false);
     let (shell, requests) = Shell::new(foreground);
+    let (active_host_tx, active_host_rx) = watch::channel((first.endpoint.clone(), first.epoch));
+    let (updating_tx, updating_rx) = watch::channel(false);
+    let updater = crate::updater::Controller::new(
+        root.path().to_path_buf(),
+        active_host_rx,
+        updating_tx,
+        shell.exit_sender(),
+        shell.events.clone(),
+        runtime.handle().clone(),
+    );
+    let updater_exit = Arc::clone(&updater);
+    let shell = shell.with_updater(updater);
     let config = shell.attach(first.config.clone());
     // Keyboard-only navigation also works when the pointer is outside the panel.
     let events = shell.events.clone();
@@ -106,7 +118,15 @@ pub fn run(first: Connection, root: Root, runtime: Runtime) -> Result<(), String
         runtime.handle(),
     );
     let (quit, quitting) = watch::channel(false);
-    let following = runtime.spawn(follow(first, root, shell, windows, quitting));
+    let following = runtime.spawn(follow(
+        first,
+        root,
+        shell,
+        windows,
+        quitting,
+        active_host_tx,
+        updating_rx,
+    ));
     let options = AppOptions {
         app_id: APP_ID.into(),
         title: TITLE.into(),
@@ -119,7 +139,7 @@ pub fn run(first: Connection, root: Root, runtime: Runtime) -> Result<(), String
         &options.components,
         MainThreadMarker::new().expect("the desktop shell runs on AppKit's main thread"),
     );
-    run_app_with_config(config, options, move |is_active| {
+    let result = run_app_with_config(config, options, move |is_active| {
         active.send_replace(is_active);
     });
     if let Some(monitor) = monitor {
@@ -130,8 +150,13 @@ pub fn run(first: Connection, root: Root, runtime: Runtime) -> Result<(), String
     runtime
         .block_on(following)
         .map_err(|error| error.to_string())?;
+    updater_exit.wait_for_in_flight_swap();
     runtime.shutdown_background();
-    Ok(())
+    if result == std::process::ExitCode::SUCCESS {
+        Ok(())
+    } else {
+        Err("the AppKit window failed".into())
+    }
 }
 
 fn permission_requests(connection: &Connection) -> mpsc::UnboundedReceiver<SystemPermissionWindow> {
@@ -140,12 +165,31 @@ fn permission_requests(connection: &Connection) -> mpsc::UnboundedReceiver<Syste
     receive
 }
 
+async fn wait_while_updating(
+    updating: &mut watch::Receiver<bool>,
+    quit: &mut watch::Receiver<bool>,
+) -> bool {
+    while *updating.borrow_and_update() {
+        tokio::select! {
+            _ = quit.changed() => return true,
+            changed = updating.changed() => {
+                if changed.is_err() {
+                    return true;
+                }
+            }
+        }
+    }
+    *quit.borrow()
+}
+
 async fn follow(
     current: Connection,
     root: Root,
     shell: Shell,
     mut windows: mpsc::UnboundedReceiver<SystemPermissionWindow>,
     mut quit: watch::Receiver<bool>,
+    active_host: watch::Sender<(std::path::PathBuf, uuid::Uuid)>,
+    mut updating: watch::Receiver<bool>,
 ) {
     let Connection {
         bindings,
@@ -181,6 +225,9 @@ async fn follow(
             }
         }
         alive.store(false, Ordering::Release);
+        if wait_while_updating(&mut updating, &mut quit).await {
+            break 'connected;
+        }
         // Main-thread barrier: no old engine or drag source survives into the
         // next connection. Quitting can end the standalone runner first.
         let (closed, closing) = tokio::sync::oneshot::channel();
@@ -211,7 +258,7 @@ async fn follow(
                 }
                 pause = (pause * 2).min(Duration::from_secs(30));
             }
-            if *quit.borrow() {
+            if wait_while_updating(&mut updating, &mut quit).await {
                 break 'connected;
             }
             wait = true;
@@ -245,7 +292,8 @@ async fn follow(
         bindings = Some(admitted);
         endpoint = reached_endpoint;
         epoch = reached_epoch;
-        if *quit.borrow() {
+        active_host.send_replace((endpoint.clone(), epoch));
+        if wait_while_updating(&mut updating, &mut quit).await {
             break;
         }
         let reloading = config
@@ -259,7 +307,9 @@ async fn follow(
         with_running_view(move |view| view.load_with_config(config));
     }
     if let Some(bindings) = bindings {
-        host::quit(bindings).await;
+        if !*updating.borrow() {
+            host::quit(bindings).await;
+        }
     }
 }
 
@@ -318,4 +368,39 @@ pub(crate) fn command_only(flags: objc2_app_kit::NSEventModifierFlags) -> bool {
     use objc2_app_kit::NSEventModifierFlags as Flags;
     flags.contains(Flags::Command)
         && !flags.intersects(Flags::Shift | Flags::Control | Flags::Option)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::wait_while_updating;
+    use tokio::sync::watch;
+
+    #[tokio::test]
+    async fn wait_while_updating_resumes_reconnect_when_update_aborts_and_exits_on_quit() {
+        let (updating_tx, mut updating_rx) = watch::channel(true);
+        let (_quit_tx, mut quit_rx) = watch::channel(false);
+        let handle =
+            tokio::spawn(async move { wait_while_updating(&mut updating_rx, &mut quit_rx).await });
+        tokio::task::yield_now().await;
+        assert!(
+            !handle.is_finished(),
+            "reconnect must stay paused while updating"
+        );
+        updating_tx.send_replace(false);
+        assert!(
+            !handle.await.unwrap(),
+            "clearing updating must resume reconnect rather than exiting"
+        );
+
+        let (_updating_tx, mut updating_rx) = watch::channel(true);
+        let (quit_tx, mut quit_rx) = watch::channel(false);
+        let handle =
+            tokio::spawn(async move { wait_while_updating(&mut updating_rx, &mut quit_rx).await });
+        tokio::task::yield_now().await;
+        quit_tx.send_replace(true);
+        assert!(
+            handle.await.unwrap(),
+            "quitting during an update must exit the follow loop"
+        );
+    }
 }

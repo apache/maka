@@ -167,6 +167,8 @@ pub enum Request {
         interrupt: bool,
         #[serde(default)]
         allow_idle_connections: bool,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        refuse_active_sessions: bool,
     },
     PrepareAccess {
         principal: String,

@@ -37,6 +37,11 @@ use tokio::sync::watch;
 #[derive(Clone)]
 pub struct Foreground(pub watch::Receiver<bool>);
 
+/// Marks a Host whose filesystem namespace differs from the shell's local OS
+/// (such as a Linux WSL Host driven from Windows), disabling the shell's
+/// native folder picker.
+pub struct RemoteHostFilesystem;
+
 /// Reads and previews interface scale from the shell's pixel renderer.
 /// The shell puts it in the engine context.
 pub struct UiScale {
@@ -342,6 +347,23 @@ mod tests {
         app.press("role:button[Send message]").unwrap();
         app.wait_for("text:Sent Second selected passage").unwrap();
         assert!(!app.screen().matches("role:button[Remove quote]").unwrap());
+    }
+
+    #[test]
+    fn turn_usage_shows_coverage_for_each_partially_reported_field() {
+        let mut app = headless_fixture(
+            "tests/fixtures/turn-usage.tsx",
+            Size::new(px(600.0), px(480.0)),
+            false,
+        );
+        let input = "role:button[Input tokens: 1.2k (2/3 requests) · Show exact token count]";
+        app.wait_for(input).unwrap();
+        app.press(input).unwrap();
+        app.wait_for("text:1,220 (2/3 requests)").unwrap();
+        app.wait_for("text:250").unwrap();
+        app.wait_for("text:0 (1/3 requests)").unwrap();
+        app.wait_for("text:$0.006000 (2/3 requests)").unwrap();
+        app.wait_for("text:Unavailable >> nth=1").unwrap();
     }
 
     #[test]

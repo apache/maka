@@ -123,6 +123,7 @@ export type Row = {
   timestamp?: number;
   timing?: HistoryTurnTiming;
   model?: HistoryModel;
+  replyInfo?: AgentHistoryChunk['replyInfo'];
   finalOutput?: boolean;
   finalAnswer?: boolean;
   sourceCitation?: boolean;
@@ -141,6 +142,19 @@ export type Row = {
   preview?: { stepOrder: number; ordinal: number; revision: number };
   closedAt?: number | null;
 };
+
+/** Imported reply text has no native final-output marker. */
+export function isReplyWithActions(
+  row: Pick<Row, 'role' | 'field' | 'tool' | 'sourceCitation' | 'finalOutput' | 'position'>,
+): boolean {
+  return (
+    row.role === 'assistant' &&
+    row.field === 'body' &&
+    !row.tool &&
+    !row.sourceCitation &&
+    (row.finalOutput === true || row.position?.kind === 'imported')
+  );
+}
 
 export function modelPartRowId({ stepId, attemptId, ordinal }: NonNullable<Row['modelPart']>) {
   return `model/${stepId}/${attemptId}/${ordinal}`;
@@ -321,6 +335,7 @@ export function historyMetadata(
     origin: chunk.origin ?? previous?.origin,
     importedTurn: chunk.importedTurn ?? undefined,
     timing: chunk.timing ?? undefined,
+    replyInfo: chunk.replyInfo ?? undefined,
     model: chunk.model ?? undefined,
     modelPart: chunk.modelPart ?? undefined,
     runId: chunk.runId ?? undefined,

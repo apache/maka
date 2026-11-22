@@ -17,6 +17,16 @@
   under the License.
 -->
 
-# Pull Request Review
+# `maka-agent`
 
-Follow [.github/skills/code-review/SKILL.md](skills/code-review/SKILL.md) when reviewing pull requests. Focus on concrete bugs, broken invariants, and unverified failure paths.
+> **Unofficial Developer Nightly Build — Not an Apache Software Foundation Release.**
+>
+> Nightly pre-built binaries are provided strictly for developer testing. They have not been approved by an ASF release vote and are not intended for general production use.
+
+`maka-agent` is a convenience alias for [`@maka-agent/cli`](https://www.npmjs.com/package/@maka-agent/cli). Installing either package provides the `maka` command backed by the matching native platform binary (`darwin-arm64`, `linux-x64-gnu`, `linux-arm64-gnu`, or `win32-x64`).
+
+```sh
+npm install --global maka-agent@nightly
+# equivalent to:
+npm install --global @maka-agent/cli@nightly
+```

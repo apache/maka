@@ -169,6 +169,7 @@ async fn work_groups_page_cleanly_across_skipped_leading_steps() -> TestResult<(
                         projection: DurableToolProjection::Text { text: "ok".into() },
                         is_error: false,
                         loaded_tools: Default::default(),
+                        display_budget_chars: None,
                     },
                 })?;
                 let acc = ContentBlob::json(&AcceptedToolResult::Local {

@@ -377,6 +377,7 @@ export function SettingsSelect(props: {
   preview?: JSX.Element;
   trailing?: JSX.Element;
   flush?: boolean;
+  onOpen?(): void;
   change(value: string): void;
 }) {
   const current = () => props.choices.find((choice) => choice.value === props.value);
@@ -401,6 +402,9 @@ export function SettingsSelect(props: {
       </View>
       <Select
         items={props.choices}
+        onOpenChange={({ open }) => {
+          if (open) props.onOpen?.();
+        }}
         value={props.value}
         onChange={({ value }) => {
           if (value !== null && value !== props.value) props.change(value);

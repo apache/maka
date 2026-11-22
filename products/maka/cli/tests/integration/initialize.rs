@@ -162,11 +162,35 @@ async fn public_init_persists_settings_from_stdin_and_rejects_reconfiguration() 
     }
     drop(acp_stdin);
     let _ = acp.wait();
-    let mut retire = Command::new(crate::maka_executable());
-    retire.args(["host", "retire", "--root"]).arg(&root);
-    #[cfg(unix)]
-    retire.env("TMPDIR", socket_temp.path());
-    let _ = retire.output();
+    // `maka host retire` returns once retirement is prepared, before the host
+    // finishes releasing the RootOwner lock; wait until the lock is free so
+    // reconfiguration and subsequent store reads do not race with shutdown.
+    let retire_deadline = Instant::now() + Duration::from_secs(15);
+    let mut attempt = 0u32;
+    loop {
+        if attempt % 8 == 0 {
+            let mut retire = Command::new(crate::maka_executable());
+            retire.args(["host", "retire", "--root"]).arg(&root);
+            #[cfg(unix)]
+            retire.env("TMPDIR", socket_temp.path());
+            let _ = retire.output();
+        }
+        match RootOwner::open_existing(&root, &namespaces) {
+            Ok(owner) => {
+                drop(owner);
+                break;
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                assert!(
+                    Instant::now() < retire_deadline,
+                    "retired host did not release RootOwner lock in time"
+                );
+                attempt += 1;
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+            Err(err) => panic!("failed to acquire RootOwner after retire: {err}"),
+        }
+    }
 
     let session_response = session_response.expect("session/new response from maka acp");
     assert!(

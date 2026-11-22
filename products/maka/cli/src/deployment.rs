@@ -35,6 +35,7 @@ mod host_identity {
     }
 }
 mod local;
+pub(crate) use local::acquire_launch_lock;
 mod logs;
 mod package;
 mod policy;
@@ -218,7 +219,9 @@ impl Install {
                 .join("runtime-host-rust"),
         };
         let (root, directory, lease) = tokio::task::spawn_blocking(move || {
-            root::initialize(&root_path, &RootNamespaces::for_current_account()?)?;
+            let namespaces = RootNamespaces::for_current_account()?;
+            let _launch = acquire_launch_lock(&root_path, &namespaces)?;
+            root::initialize(&root_path, &namespaces)?;
             let root = root::resolve(&root_path)?;
             let directory = directory(root.root_id())?;
             root::private_directory(&directory)?;

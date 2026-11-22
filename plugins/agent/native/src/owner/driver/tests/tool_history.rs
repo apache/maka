@@ -30,6 +30,18 @@ use maka_agent_facts::{
 use maka_agent_ports::session::history as wire;
 use maka_agent_state::session_history::snapshot::CaptureRequest;
 
+fn model_reader(
+    driver: &NativeDriver,
+) -> Result<maka_host_runtime::application::NativeRequest, String> {
+    driver.owner.services.request_with_work(
+        maka_capabilities::call::Identity::Agent {
+            execution: driver.access.execution().clone(),
+            operation_id: None,
+        },
+        CancellationToken::new(),
+        driver.access.custody().clone(),
+    )
+}
 async fn query(rig: &Rig, method: &str, input: Value) -> TestResult<Value> {
     let mut call = rig
         .client
@@ -45,6 +57,55 @@ async fn query(rig: &Rig, method: &str, input: Value) -> TestResult<Value> {
     let value = result?;
     call.close().await?;
     Ok(value)
+}
+pub(super) async fn suppress_history_quotes(
+    rig: &Rig,
+    session: &str,
+    quotes: &[(u64, usize, &str)],
+) -> TestResult<()> {
+    use super::model_recovery::call;
+    let client = rig.client.as_ref().unwrap();
+    let scope = json!({"kind":"personal"});
+    let saved = call(
+        client,
+        "agent",
+        "changeMemory",
+        json!({"scope":scope,"edit":{"kind":"create","body":quotes[0].2}}),
+    )
+    .await?;
+    let id = saved["id"]
+        .as_str()
+        .ok_or_else(|| format!("memory creation failed: {saved}"))?;
+    let mut revision = saved["revision"].clone();
+    for &(sequence, start, quote) in quotes {
+        let evidence = query(
+            rig,
+            "memorySource",
+            json!({
+                "sessionId": session, "sequence": sequence, "itemIndex": 0,
+                "start": start, "end": start + quote.len(), "quote": quote,
+            }),
+        )
+        .await?;
+        let added = call(
+            client,
+            "agent",
+            "changeMemory",
+            json!({"scope":scope,"edit":{"kind":"add_evidence","id":id,
+                "expectedRevision":revision,"assertion":1,"reference":evidence}}),
+        )
+        .await?;
+        revision = added["revision"].clone();
+    }
+    let deleted = call(
+        client,
+        "agent",
+        "changeMemory",
+        json!({"scope":scope,"edit":{"kind":"delete","id":id,"expectedRevision":revision}}),
+    )
+    .await?;
+    assert_eq!(deleted["kind"], "deleted", "{deleted}");
+    Ok(())
 }
 async fn live(rig: &Rig, session: &str, position: wire::Position) -> TestResult<Value> {
     query(rig,"history",json!({"sessionId":session,"through":null,"position":position,"includeThinking":true,"view":"conversation"})).await
@@ -68,6 +129,669 @@ fn timing(page: &Value) -> wire::TurnTiming {
         .expect("a native Turn row has timing");
     assert!(timings.all(|timing| timing.as_ref() == Some(&first)));
     first
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn citation_history_keeps_readable_bytes_after_memory_deletion() -> TestResult<()> {
+    use maka_agent_engine::ports::Preparation;
+    use maka_agent_facts::model::ModelSource;
+
+    let mut rig = Rig::new()?;
+    let session = rig.start().await?;
+    rig.assemble(&session).await?;
+    let (_, attempt, _) = rig.record_model_request(Preparation::Initial).await?;
+    let title = "项目旧称";
+    let url = "https://example.org/project";
+    let original = format!("[{title}]({url})");
+    rig.append(
+        vec![Fact::ModelObserved {
+            attempt,
+            index: 0,
+            part: ModelPart::Source {
+                anchor: None,
+                source: ModelSource::Url {
+                    id: "citation-1".into(),
+                    title: Some(title.into()),
+                    url: url.into(),
+                    provider_options: None,
+                },
+            },
+            continuation: None,
+        }],
+        vec![],
+    )
+    .await?;
+    rig.finish_model_request(attempt, None).await?;
+    let page = live(&rig, &session, wire::Position::Tail).await?;
+    let row = page["chunks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["text"] == original)
+        .ok_or("missing citation")?;
+    let position = &row["position"];
+    suppress_history_quotes(
+        &rig,
+        &session,
+        &[(position["sequence"].as_u64().unwrap(), 1, title)],
+    )
+    .await?;
+    let driver = rig.driver.as_ref().unwrap();
+    let reader = model_reader(driver)?;
+    let input = json!({"sessionId": session, "through": page["through"], "view":"conversation",
+        "position":{"kind":"row","position":position,"field":"body"}});
+    let model_page = crate::service::history::read(
+        &driver.owner,
+        reader.scope(),
+        serde_json::from_value(input)?,
+    )
+    .await?;
+    let expected = original.replace(title, &"*".repeat(title.len()));
+    assert!(
+        serde_json::to_value(model_page)?["chunks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|chunk| chunk["text"] == expected && chunk["citation"].is_null())
+    );
+    let input = json!({"sessionId":session,"through":page["through"],"source":{"kind":"row","position":position},
+        "field":"body","position":{"kind":"start"}});
+    let model_source = crate::service::history::source(
+        &driver.owner,
+        reader.scope(),
+        serde_json::from_value(input)?,
+    )
+    .await?;
+    assert_eq!(
+        serde_json::to_value(model_source)?["source"]["text"],
+        expected
+    );
+    assert!(
+        live(&rig, &session, wire::Position::Tail).await?["chunks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["text"] == original)
+    );
+    reader.finish().await?;
+    assert!(rig.finish().await.is_empty());
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn model_reads_independent_bytes_of_a_rejected_tool_result() -> TestResult<()> {
+    let mut rig = Rig::new()?;
+    let session = rig.start().await?;
+    rig.assemble(&session).await?;
+    let attempt = rig.attempt().await?;
+    let (tool, _) = rig.tool(attempt, "Calendar", "meeting", json!({})).await?;
+    let quote = "旧会议";
+    let rejection = maka_agent_facts::tool_call::ToolRejection::PreparationFailed {
+        message: format!("{} {quote} room is available", "a".repeat(8300)),
+    };
+    let diagnostic = rejection.to_string();
+    let content = ContentBlob::json(&AcceptedToolResult::Rejected {
+        diagnostic: diagnostic.clone(),
+    })?;
+    let written = rig
+        .append(
+            vec![
+                Fact::ToolPreventedBeforeHostAdmission {
+                    tool: tool.clone(),
+                    rejection,
+                },
+                Fact::ToolResultAccepted {
+                    tool,
+                    result: content.reference().clone(),
+                    outcome: AcceptedResult::Rejected,
+                },
+            ],
+            vec![content],
+        )
+        .await?;
+    let driver = rig.driver.as_ref().unwrap();
+    let history = driver
+        .state
+        .session_history(driver.owner.run_owner(), session.clone());
+    let cut = history.capture().await?;
+    let id = written.facts.last().unwrap().id;
+    let sequence = history
+        .fact_sequence(&cut, driver.access.execution().run_id, id)
+        .await?
+        .ok_or("missing rejection")?;
+    let position = wire::HistoryRowAddress::Live {
+        sequence,
+        fact: id,
+        item_index: 0,
+    };
+    let start = diagnostic.find(quote).unwrap();
+    suppress_history_quotes(&rig, &session, &[(sequence, start, quote)]).await?;
+    let reader = model_reader(driver)?;
+    let expected = diagnostic.replace(quote, &"*".repeat(quote.len()));
+    let result = crate::service::history::source(&driver.owner, reader.scope(), serde_json::from_value(json!({
+        "sessionId":session,"through":cut.through_sequence,"source":{"kind":"row","position":position},
+        "field":"result","position":{"kind":"after","offset":start}
+    }))?).await?;
+    assert_eq!(
+        serde_json::to_value(result)?["source"]["text"],
+        &expected[start..]
+    );
+    let page = crate::service::history::read_page(&driver.owner, reader.scope(), serde_json::from_value(json!({
+        "sessionId":session,"through":cut.through_sequence,"position":{"kind":"row","position":position,"field":"body"}
+    }))?).await?;
+    assert!(
+        serde_json::to_value(page)?["chunks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["position"]["sequence"] == sequence && row["text"] == expected)
+    );
+    reader.finish().await?;
+    assert!(rig.finish().await.is_empty());
+    Ok(())
+}
+
+async fn assert_partial_result_pages(
+    rig: &Rig,
+    session: &str,
+    fact: FactId,
+    field_start: usize,
+    body: &str,
+    quote: &str,
+) -> TestResult<()> {
+    let driver = rig.driver.as_ref().unwrap();
+    let history = driver
+        .state
+        .session_history(driver.owner.run_owner(), session.to_owned());
+    let cut = history.capture().await?;
+    let sequence = history
+        .fact_sequence(&cut, driver.access.execution().run_id, fact)
+        .await?
+        .ok_or("missing tool return")?;
+    let position = wire::HistoryRowAddress::Live {
+        sequence,
+        fact,
+        item_index: 0,
+    };
+    let start = body.find(quote).unwrap();
+    let reader = model_reader(driver)?;
+    let read = async |input| -> TestResult<Value> {
+        let page = driver
+            .owner
+            .session_read_tool(serde_json::from_value(input)?, reader.scope())
+            .await?;
+        Ok(serde_json::to_value(page)?)
+    };
+    let mut input =
+        json!({"sessionId":session, "row":{"through":cut.through_sequence,"position":position}});
+    let original = read(input.clone()).await?;
+    assert!(
+        original["transcript"]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["role"] == "tool_result" && item["resultPath"].is_string())
+    );
+    suppress_history_quotes(rig, session, &[(sequence, field_start + start, quote)]).await?;
+    let expected = body.replace(quote, &"*".repeat(quote.len()));
+    let source = crate::service::history::source(&driver.owner, reader.scope(), serde_json::from_value(json!({
+        "sessionId":session,"through":cut.through_sequence,"source":{"kind":"row","position":position},
+        "field":"result","position":{"kind":"after","offset":start}
+    }))?).await?;
+    assert_eq!(
+        serde_json::to_value(source)?["source"]["text"],
+        &expected[start..start + 8192]
+    );
+    for text in [&expected[..32 * 1024], &expected[32 * 1024..]] {
+        let page = read(input).await?;
+        let result = page["transcript"]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["role"] == "tool_result")
+            .ok_or("missing tool result")?;
+        assert_eq!(result["text"], text);
+        assert!(
+            result.get("resultPath").is_none(),
+            "a partially readable result must omit the full archive path"
+        );
+        input = json!({"sessionId":session,"cursor":page["transcript"]["afterCursor"]});
+    }
+    reader.finish().await?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn child_result_text_uses_its_own_offset_in_the_recall_document() -> TestResult<()> {
+    use maka_agent_facts::tool_output::DurableToolProjection;
+    let mut rig = Rig::new()?;
+    let session = rig.start().await?;
+    rig.assemble(&session).await?;
+    let (_, attempt, _) = rig
+        .record_model_request(maka_agent_engine::ports::Preparation::Initial)
+        .await?;
+    let quote = "旧事项";
+    let body = format!(
+        "{} {quote} review the schedule {}",
+        "a".repeat(9200),
+        "b".repeat(25_000)
+    );
+    let (_, fact, field_start) = record_background_notice(
+        &rig,
+        attempt,
+        "list ready",
+        &body,
+        "todo_read",
+        Some(DurableToolProjection::Text { text: body.clone() }),
+    )
+    .await?;
+    assert_partial_result_pages(&rig, &session, fact, field_start, &body, quote).await?;
+    assert!(rig.finish().await.is_empty());
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn external_return_keeps_the_name_of_its_original_call() -> TestResult<()> {
+    use maka_agent_facts::external_effects::{
+        ExternalEffectDescriptor, ExternalEffectEvent, ExternalEffectKey, ExternalReturn,
+    };
+    let mut rig = Rig::new()?;
+    let session = rig
+        .start_configured(None, |config| {
+            config["external"] = json!({"runtimes":{"codex":true}});
+        })
+        .await?;
+    rig.assemble_backend(
+        &session,
+        Budget {
+            tokens: None,
+            retries: 0,
+            deadline: None,
+        },
+        false,
+        true,
+    )
+    .await?;
+    let driver = rig.driver.as_ref().unwrap();
+    let task = ExternalTaskId::new();
+    let key = ExternalEffectKey {
+        task,
+        operation: Uuid::new_v4(),
+    };
+    let binding = maka_agent_facts::executor::Binding {
+        executor_id: "external".to_string().try_into()?,
+        package_id: "maka.agent".into(),
+        entry_id: "maka.agent".into(),
+        activation: "fixture".into(),
+    };
+    let task_descriptor = ContentBlob::json(&maka_agent_facts::executor::TaskDescriptor {
+        protocol: maka_agent_facts::executor::NATIVE_TASK_PROTOCOL.into(),
+        source: binding.clone(),
+        payload: json!({}),
+    })?;
+    let name = "calendar_lookup";
+    let descriptor = ContentBlob::json(&ExternalEffectDescriptor {
+        schema_version: SCHEMA_VERSION,
+        protocol: "fixture".into(),
+        execution: driver.access.execution().clone(),
+        key,
+        origin: maka_agent_facts::tool_call::ToolOrigin::External {
+            task,
+            operation: key.operation,
+            package_id: binding.package_id,
+            entry_id: binding.entry_id,
+            activation: binding.activation,
+        },
+        operation_id: format!("external:{task}:{}", key.operation),
+        name: name.into(),
+        input: json!({}),
+        definition: ToolDefinition {
+            name: name.into(),
+            description: "Read schedule".into(),
+            input_schema: json!({}),
+            provider: None,
+            freeform: None,
+            output_schema: None,
+        },
+        catalog_digest: maka_agent_engine::digest(&json!({}))?,
+        resources: vec![],
+    })?;
+    let result = ContentBlob::json(&ExternalReturn::Failure {
+        settlement: ToolSettlement::Failed,
+        diagnostic: "Monday is unavailable".into(),
+    })?;
+    rig.append(
+        vec![
+            Fact::ExternalTaskPrepared {
+                task,
+                descriptor: task_descriptor.reference().clone(),
+                live_workspace: true,
+            },
+            Fact::ExternalTaskAdmitted { task },
+        ],
+        vec![task_descriptor],
+    )
+    .await?;
+    rig.append(
+        vec![
+            Fact::ExternalEffect {
+                event: ExternalEffectEvent::Prepared {
+                    key,
+                    descriptor: descriptor.reference().clone(),
+                },
+            },
+            Fact::ExternalEffect {
+                event: ExternalEffectEvent::Admitted {
+                    key,
+                    approval: None,
+                },
+            },
+        ],
+        vec![descriptor],
+    )
+    .await?;
+    let written = rig
+        .append(
+            vec![
+                Fact::ExternalEffect {
+                    event: ExternalEffectEvent::CleanupObserved {
+                        key,
+                        cleanup: OperationCleanup::Confirmed,
+                    },
+                },
+                Fact::ExternalEffect {
+                    event: ExternalEffectEvent::Returned {
+                        key,
+                        output: result.reference().clone(),
+                        finish_turn: false,
+                    },
+                },
+            ],
+            vec![result],
+        )
+        .await?;
+    let history = driver
+        .state
+        .session_history(driver.owner.run_owner(), session.clone());
+    let cut = history.capture().await?;
+    let fact = written.facts.last().unwrap().id;
+    let sequence = history
+        .fact_sequence(&cut, driver.access.execution().run_id, fact)
+        .await?
+        .ok_or("missing return")?;
+    let position = wire::HistoryRowAddress::Live {
+        sequence,
+        fact,
+        item_index: 0,
+    };
+    let reader = model_reader(driver)?;
+    let (before, _) = driver
+        .owner
+        .render_session_markdown(&session, Some(cut.through_sequence), reader.scope())
+        .await?;
+    assert!(
+        before.contains("[Tool calendar_lookup · error]"),
+        "{before}"
+    );
+    suppress_history_quotes(&rig, &session, &[(sequence, 0, "Monday")]).await?;
+    let source = crate::service::history::source(&driver.owner, reader.scope(), serde_json::from_value(json!({
+        "sessionId":session,"through":cut.through_sequence,"source":{"kind":"row","position":position},
+        "field":"tool_name","position":{"kind":"start"}
+    }))?).await?;
+    assert_eq!(serde_json::to_value(source)?["source"]["text"], name);
+    let mut context = Vec::new();
+    crate::service::history::readable_context_into(
+        &history,
+        &cut,
+        None,
+        &mut context,
+        &CancellationToken::new(),
+    )
+    .await?;
+    assert!(String::from_utf8(context)?.contains("[tool result]\nToolName: calendar_lookup\n"));
+    let transcript = driver
+        .owner
+        .session_read_tool(
+            serde_json::from_value(json!({"sessionId":session, "view":"turns"}))?,
+            reader.scope(),
+        )
+        .await?;
+    let transcript = serde_json::to_value(transcript)?;
+    let call = transcript["transcript"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["role"] == "tool" && entry["toolName"] == name)
+        .ok_or("missing call entry")?;
+    assert!(
+        call["status"].is_null(),
+        "a hidden result must not be reported as pending"
+    );
+    assert!(call["resultPath"].is_null());
+    let (markdown, _) = driver
+        .owner
+        .render_session_markdown(&session, Some(cut.through_sequence), reader.scope())
+        .await?;
+    assert!(markdown.contains("[Tool calendar_lookup]"), "{markdown}");
+    reader.finish().await?;
+    assert!(rig.finish().await.is_empty());
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn accepted_provider_json_preserves_independent_bytes_across_pages() -> TestResult<()> {
+    let mut rig = Rig::new()?;
+    let session = rig.start().await?;
+    rig.assemble(&session).await?;
+    let attempt = rig.attempt().await?;
+    let tool = ToolKey {
+        attempt,
+        call: "forecast".into(),
+    };
+    let quote = "旧预报";
+    let output = json!({"report": format!("{} {quote} for tomorrow {}", "a".repeat(9200), "b".repeat(25_000))});
+    let serialized = serde_json::to_string(&output)?;
+    let result = ContentBlob::json(&AcceptedToolResult::Provider {
+        output: output.clone(),
+        is_error: false,
+        provider_options: None,
+    })?;
+    let written = rig
+        .append(
+            vec![
+                Fact::ModelObserved {
+                    attempt,
+                    index: 0,
+                    continuation: None,
+                    part: ModelPart::ToolCall {
+                        call: ModelToolCall {
+                            id: tool.call.clone(),
+                            name: "forecast".into(),
+                            input: ToolInput::Json(json!({})),
+                            provider_options: None,
+                            provider_executed: true,
+                        },
+                    },
+                },
+                Fact::ModelObserved {
+                    attempt,
+                    index: 1,
+                    continuation: None,
+                    part: ModelPart::ToolResult {
+                        id: tool.call.clone(),
+                        name: "forecast".into(),
+                        output,
+                        is_error: false,
+                        provider_options: None,
+                    },
+                },
+                Fact::ToolResultAccepted {
+                    tool,
+                    result: result.reference().clone(),
+                    outcome: AcceptedResult::Succeeded,
+                },
+            ],
+            vec![result],
+        )
+        .await?;
+    let fact = written.facts.last().unwrap().id;
+    assert_partial_result_pages(&rig, &session, fact, 0, &serialized, quote).await?;
+    assert!(rig.finish().await.is_empty());
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn goal_history_masks_the_same_objective_bytes_in_body_and_origin() -> TestResult<()> {
+    use maka_agent_facts::{
+        input::DeliveredMessage,
+        message::{MessageDisposition, MessageOrigin, Placement, RootSourceMessage},
+    };
+    use maka_goal::goal::{Arm, Pending, Repository};
+
+    let mut rig = Rig::new()?;
+    let session = rig.start().await?;
+    rig.assemble(&session).await?;
+    let driver = rig.driver.as_ref().unwrap();
+    let goal_id = Uuid::new_v4();
+    let hidden = "旧计划";
+    let objective = format!("核对{hidden}和日期");
+    let (mut goal, _) = Repository::prepare_arm(
+        &session,
+        Arm {
+            operation_id: goal_id,
+            objective: objective.clone(),
+            grant: (),
+            token_budget: None,
+            start: true,
+            language: Language::ZhCn,
+        },
+        Default::default(),
+        None,
+        None,
+        None,
+        Default::default(),
+    )?;
+    goal.note = "previous checkpoint".into();
+    assert!(goal.reserve()?);
+    let Some(Pending::Dispatch { request }) = goal.pending else {
+        return Err("missing Goal dispatch".into());
+    };
+    let content = request.content;
+    let message = RootSourceMessage {
+        message: DeliveredMessage {
+            origin: Some(MessageOrigin::Goal {
+                goal_id: goal_id.to_string(),
+                objective: objective.clone(),
+            }),
+            message_id: Uuid::new_v4().to_string(),
+            submitted_content_digest: content.content_digest()?,
+            content: content.clone(),
+        },
+        unprepared_content: content.clone(),
+        submitted_placement: Placement::CurrentTurn,
+        disposition: MessageDisposition::TurnStarted,
+        submitted_intent: None,
+    };
+    let input = ContentBlob::json(&RunInput::Message {
+        content,
+        request_fingerprint: None,
+        source_messages: vec![message],
+    })?;
+    let mut spec = driver
+        .state
+        .frontier(driver.access.execution().run_id)
+        .await?
+        .spec;
+    spec.turn_id = Uuid::new_v4().to_string();
+    spec.trigger = Trigger::Goal { goal_id };
+    spec.input = input.reference().clone();
+    let admitted = driver
+        .state
+        .admit(Admission::new(spec, at(), vec![input]))
+        .await?;
+    let claim = driver.state.claim(admitted.facts[0].run).await?;
+    driver
+        .state
+        .append(
+            &claim,
+            admitted.head,
+            vec![Change::new(
+                Fact::RunTerminated {
+                    terminal: Terminal::Cancelled,
+                    diagnostic: None,
+                },
+                at(),
+            )],
+            vec![],
+        )
+        .await?;
+    drop(claim);
+    let original = live(&rig, &session, wire::Position::Tail).await?;
+    let row = original["chunks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["origin"]["objective"] == objective)
+        .ok_or("missing Goal row")?;
+    let position = &row["position"];
+    let sequence = position["sequence"].as_u64().unwrap();
+    let body = row["text"].as_str().unwrap();
+    let reader = model_reader(driver)?;
+    for (quote, expected) in [
+        ("previous checkpoint", objective.clone()),
+        (hidden, objective.replace(hidden, &"*".repeat(hidden.len()))),
+    ] {
+        suppress_history_quotes(
+            &rig,
+            &session,
+            &[(sequence, body.find(quote).unwrap(), quote)],
+        )
+        .await?;
+        let page_input = json!({
+            "sessionId": session, "through": original["through"], "view": "conversation",
+            "position": {"kind": "row", "position": position, "field": "body"}
+        });
+        let page = crate::service::history::read(
+            &driver.owner,
+            reader.scope(),
+            serde_json::from_value(page_input)?,
+        )
+        .await?;
+        let page = serde_json::to_value(page)?;
+        let chunk = page["chunks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| &r["position"] == position)
+            .ok_or("missing model Goal row")?;
+        assert_eq!(chunk["origin"]["objective"], expected);
+        assert_eq!(chunk["origin"]["goalId"], goal_id.to_string());
+        assert!(!chunk["text"].as_str().unwrap().contains(quote));
+        let source_input = json!({
+            "sessionId": session, "through": original["through"], "field": "body",
+            "source": {"kind": "row", "position": position}, "position": {"kind": "tail"}
+        });
+        let source = crate::service::history::source(
+            &driver.owner,
+            reader.scope(),
+            serde_json::from_value(source_input)?,
+        )
+        .await?;
+        assert_eq!(
+            serde_json::to_value(source)?["source"]["origin"]["objective"],
+            expected
+        );
+    }
+    assert!(
+        live(&rig, &session, wire::Position::Tail)
+            .await?
+            .to_string()
+            .contains(&objective)
+    );
+    reader.finish().await?;
+    let cleanup = rig.finish().await;
+    assert!(cleanup.is_empty(), "{cleanup:?}");
+    Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -412,11 +1136,11 @@ async fn unknown_tool_effect_releases_followup_only_after_cleanup() {
                     observed(OperationCleanup::Unconfirmed),
                     Fact::Blocked {
                         blocker: BlockerId::new(),
-                        reason: reason.clone(),
+                        reason,
                     },
                     Fact::RunTerminated {
                         terminal: Terminal::Failed,
-                        diagnostic: Some(format!("{reason:?}")),
+                        diagnostic: Some(diagnostic.into()),
                     },
                 ],
                 vec![],
@@ -452,6 +1176,7 @@ async fn unknown_tool_effect_releases_followup_only_after_cleanup() {
             .item(sequence)
             .await?
             .ok_or("missing archived termination")?;
+        let snapshot_tree = maka_agent_state::session_history::source_tree::SourceTree::snapshot(&snapshot).await?;
         let archived =
             maka_agent_state::session_history::source_tree::HistoryDataSource::Snapshot(snapshot);
         assert_eq!(
@@ -495,6 +1220,44 @@ async fn unknown_tool_effect_releases_followup_only_after_cleanup() {
             }
         }).await.map_err(|_| "queued follow-up did not start")??;
         assert_ne!(successor, run);
+        let receipt = &committed.facts[1];
+        let Fact::OperationObserved { reply, .. } = &receipt.fact else {
+            return Err("missing observed receipt".into());
+        };
+        let start = serde_json::to_string(reply)?
+            .find(diagnostic)
+            .ok_or("missing diagnostic")?;
+        let cut = history.capture().await?;
+        let at = history
+            .fact_sequence(&cut, run, receipt.id)
+            .await?
+            .ok_or("missing receipt address")?;
+        suppress_history_quotes(&rig, &session, &[(at, start, diagnostic)]).await?;
+        let page = snapshot_tree.find_page(maka_agent_state::session_history::navigation::SourceFind {
+            after: None, query: "evaluate".into(), case_sensitive: true, whole_word: true,
+            include_internal: true, mask_evidence: true,
+        }, CancellationToken::new()).await?;
+        assert!(page.matches.iter().any(|hit| hit.field == maka_agent_state::recall::Field::Receipt
+            && matches!(hit.position, wire::HistoryRowAddress::Snapshot {sequence, ..} if sequence == at)
+            && hit.preview.contains("evaluate") && !hit.preview.contains(diagnostic)));
+        assert!(
+            history
+                .restricted_archives(vec![termination.recorded.id])
+                .await?
+                .contains_key(&termination.recorded.id)
+        );
+        let live = maka_agent_state::session_history::source_tree::HistoryDataSource::Live {
+            history,
+            cut,
+        };
+        for data in [live, archived] {
+            let model = data.recovery_failure_for_reader(&termination, true).await?;
+            assert!(model.is_some_and(|message| !message.contains(diagnostic)));
+            assert_eq!(
+                data.recovery_failure_at(&termination).await?.as_deref(),
+                Some(shown)
+            );
+        }
         Ok::<_, Box<dyn Error + Send + Sync>>(())
     })
     .catch_unwind()
@@ -701,6 +1464,374 @@ async fn ended_calls_with_unknown_results_reach_the_model_and_settle_the_run() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn failed_execution_preserves_readable_cleanup_diagnostic_text() {
+    let mut rig = Rig::new().unwrap();
+    let result = AssertUnwindSafe(async {
+        let session = rig.start().await?;
+        rig.assemble(&session).await?;
+        let attempt = rig.attempt().await?;
+        let (tool, _) = rig.tool(attempt, "Computer", "cleanup", json!({})).await?;
+        let driver = rig.driver.as_ref().unwrap();
+        let run = driver.access.execution().run_id;
+        let history = driver
+            .state
+            .session_history(driver.owner.run_owner(), session.clone());
+        let observation = query(&rig, "observe", json!({"sessionId":session})).await?;
+        let active: crate::contract::Run = serde_json::from_value(observation["run"].clone())?;
+        let diagnostic = "Printer unavailable; cleanup pending";
+        let committed = rig
+            .append(
+                vec![
+                    Fact::Blocked {
+                        blocker: BlockerId::new(),
+                        reason: BlockerKind::ToolCleanupUnconfirmed {
+                            tool,
+                            diagnostic: diagnostic.into(),
+                        },
+                    },
+                    Fact::RunTerminated {
+                        terminal: Terminal::Failed,
+                        diagnostic: Some(diagnostic.into()),
+                    },
+                ],
+                vec![],
+            )
+            .await?;
+        let cut = history.capture().await?;
+        let at = history
+            .fact_sequence(&cut, run, committed.facts[1].id)
+            .await?
+            .ok_or("missing terminal diagnostic")?;
+        let reader = model_reader(driver)?;
+        for restricted in [false, true] {
+            if restricted {
+                suppress_history_quotes(&rig, &session, &[(at, 0, "Printer")]).await?;
+            }
+            let input = crate::contract::ExecutionRead {
+                session_id: session.clone(),
+                run_id: run,
+            };
+            let projected =
+                serde_json::to_value(driver.owner.execution(input, reader.scope()).await?)?;
+            let raw = model_recovery::call(
+                rig.client.as_ref().unwrap(),
+                "agent",
+                "execution",
+                json!({"sessionId":session,"runId":run}),
+            )
+            .await?;
+            assert_eq!(
+                raw["execution"]["state"]["reason"]["diagnostic"],
+                diagnostic
+            );
+            let state = &projected["execution"]["state"];
+            assert_eq!(state["kind"], "failed");
+            assert_eq!(state["reason"]["kind"], "tool_cleanup_unconfirmed");
+            let expected = if restricted {
+                "******* unavailable; cleanup pending"
+            } else {
+                diagnostic
+            };
+            assert_eq!(state["reason"]["diagnostic"], expected);
+            let overview = driver
+                .owner
+                .session_run_overview(&session, Some(&active), reader.scope())
+                .await?
+                .ok_or("missing failed Run overview")?;
+            assert_eq!(overview.state, "failed");
+            assert!(overview.blockers.is_empty());
+            assert_eq!(overview.error.as_deref(), Some(expected));
+        }
+        use maka_agent_state::session_history::{navigation::SourceFind, source_tree::SourceTree};
+        let snapshot = history
+            .capture_snapshot(
+                CaptureRequest {
+                    id: SnapshotId::new(),
+                    cut: cut.clone(),
+                },
+                CancellationToken::new(),
+            )
+            .await?;
+        let page = SourceTree::snapshot(&snapshot)
+            .await?
+            .find_page(
+                SourceFind {
+                    after: None,
+                    query: "cleanup pending".into(),
+                    case_sensitive: true,
+                    whole_word: false,
+                    include_internal: false,
+                    mask_evidence: true,
+                },
+                CancellationToken::new(),
+            )
+            .await?;
+        assert!(page.matches.iter().any(|hit| hit.field
+            == maka_agent_state::recall::Field::FailureMessage
+            && hit.preview == "******* unavailable; cleanup pending"));
+        reader.finish().await?;
+        Ok::<_, Box<dyn Error + Send + Sync>>(())
+    })
+    .catch_unwind()
+    .await;
+    let cleanup = rig.finish().await;
+    assert!(matches!(result, Ok(Ok(()))), "{result:?}");
+    assert!(cleanup.is_empty(), "{cleanup:?}");
+}
+
+async fn record_background_notice(
+    rig: &Rig,
+    first: ModelAttemptId,
+    notice_text: &str,
+    background_quote: &str,
+    child_name: &str,
+    projection: Option<maka_agent_facts::tool_output::DurableToolProjection>,
+) -> TestResult<(CellId, FactId, usize)> {
+    let background = super::bounded_risk::running_cell_with_returned_parent(rig, first).await?;
+    rig.finish_model_request(first, None).await?;
+    let notice = ContentBlob::json(&CellNotification {
+        schema_version: 1,
+        body: CellNotificationBody::Text {
+            text: notice_text.into(),
+        },
+    })?;
+    let input = ContentBlob::json(&json!({}))?;
+    let result = ContentBlob::json(&ToolReturn {
+        schema_version: SCHEMA_VERSION,
+        artifacts: vec![],
+        body: CellReturnedResult {
+            output: ToolOutput::Text(background_quote.into()),
+            projection,
+            is_error: false,
+        },
+    })?;
+    let operation = Uuid::new_v4();
+    let returned = CellEvent::LocalChildReturned {
+        cell: background,
+        operation,
+        result: result.reference().clone(),
+        is_error: false,
+        settlement: ToolSettlement::Returned,
+    };
+    let completed = ContentBlob::json(&CellObservation::Completed {
+        cell_id: background,
+        content: vec![],
+        result: json!(background_quote),
+    })?;
+    let committed = rig
+        .append(
+            vec![
+                Fact::Cell {
+                    event: CellEvent::VmBound {
+                        cell: background,
+                        binding: CellVmBinding {
+                            runtime: "fixture".into(),
+                            version: 1,
+                            descriptor: input.reference().clone(),
+                        },
+                    },
+                },
+                Fact::Cell {
+                    event: CellEvent::ChildPrepared {
+                        cell: background,
+                        operation,
+                        name: child_name.into(),
+                        semantics: ToolSemantics::Parallel,
+                        input: input.reference().clone(),
+                        resources: vec![],
+                    },
+                },
+                Fact::Cell {
+                    event: CellEvent::ChildAdmitted {
+                        cell: background,
+                        operation,
+                    },
+                },
+                Fact::Cell {
+                    event: returned.clone(),
+                },
+                Fact::Cell {
+                    event: CellEvent::NotificationQueued {
+                        cell: background,
+                        notification: FactId::new(),
+                        content: notice.reference().clone(),
+                    },
+                },
+                Fact::Cell {
+                    event: CellEvent::Completed {
+                        cell: background,
+                        result: completed.reference().clone(),
+                        publication: SessionPublication {
+                            values: Default::default(),
+                            loaded_tools: None,
+                        },
+                    },
+                },
+            ],
+            vec![input, result, notice, completed],
+        )
+        .await?;
+    let background_result = committed
+        .facts
+        .iter()
+        .find(|f| {
+            matches!(
+                f.fact,
+                Fact::Cell {
+                    event: CellEvent::LocalChildReturned { .. }
+                }
+            )
+        })
+        .ok_or("missing child result")?
+        .id;
+    Ok((
+        background,
+        background_result,
+        serde_json::to_string(&returned)?.len() + 1,
+    ))
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn wait_archive_uses_the_observed_cell_at_each_return() -> TestResult<()> {
+    let mut rig = Rig::new()?;
+    let result = AssertUnwindSafe(check_wait_archive(&mut rig))
+        .catch_unwind()
+        .await;
+    let cleanup = rig.finish().await;
+    assert!(matches!(&result, Ok(Ok(()))), "{result:?}");
+    assert!(cleanup.is_empty(), "{cleanup:?}");
+    Ok(())
+}
+
+async fn check_wait_archive(rig: &mut Rig) -> TestResult<()> {
+    use maka_agent_engine::ports::Preparation;
+    use maka_agent_facts::{
+        cells::{CellReply, CellReplyState},
+        tool_output::{DurableToolProjection, ReturnedToolResult},
+    };
+
+    let session = rig.start().await?;
+    rig.assemble(&session).await?;
+    let (_, first, _) = rig.record_model_request(Preparation::Initial).await?;
+    let (cell, _, _) =
+        record_background_notice(rig, first, "update", "history result", "Recall", None).await?;
+    let (_, attempt, _) = rig
+        .record_model_request(Preparation::Notifications { attempt: first })
+        .await?;
+    let (wait, _) = rig
+        .tool(attempt, "wait", "observe", json!({"cell_id":cell}))
+        .await?;
+    let driver = rig.driver.as_ref().unwrap();
+    let run = driver.access.execution().run_id;
+    let view = driver.state.frontier(run).await?;
+    let history = driver
+        .state
+        .session_history(view.spec.owner.clone(), session.clone());
+    let maka_agent_facts::cells::CellStatus::Completed { result, .. } = &view.cells[&cell].status
+    else {
+        return Err("missing cell completion".into());
+    };
+    let returned = ContentBlob::json(&ToolReturn {
+        schema_version: SCHEMA_VERSION,
+        artifacts: vec![],
+        body: ReturnedToolResult {
+            display_budget_chars: None,
+            output: ToolOutput::Cell(Box::new(CellReply {
+                cell,
+                state: CellReplyState::Completed {
+                    result: result.clone(),
+                },
+                observation: Value::Null,
+            })),
+            projection: DurableToolProjection::Text {
+                text: "history result".into(),
+            },
+            is_error: false,
+            loaded_tools: Default::default(),
+        },
+    })?;
+    let accepted = ContentBlob::json(&AcceptedToolResult::Local {
+        result: returned.reference().clone(),
+    })?;
+    let waited = rig
+        .append(
+            vec![
+                Fact::LocalToolReturned {
+                    tool: wait.clone(),
+                    settlement: ToolSettlement::Returned,
+                    result: returned.reference().clone(),
+                    is_error: false,
+                    cell_observation: Some(result.clone()),
+                },
+                Fact::ToolResultAccepted {
+                    tool: wait,
+                    result: accepted.reference().clone(),
+                    outcome: AcceptedResult::Succeeded,
+                },
+            ],
+            vec![returned, accepted],
+        )
+        .await?;
+    let records = driver.state.history(run, 0, 128).await?;
+    let early = records
+        .iter()
+        .find(|f| matches!(&f.fact, Fact::ToolResultAccepted { tool, .. } if tool.attempt == first))
+        .ok_or("missing parent result")?;
+    let restricted = history
+        .restricted_archives(vec![early.id, waited.facts[0].id, waited.facts[1].id])
+        .await?;
+    assert!(!restricted.contains_key(&early.id));
+    assert!(waited.facts.iter().all(|f| restricted.contains_key(&f.id)));
+
+    let (started, event) = records
+        .iter()
+        .find_map(|f| match &f.fact {
+            Fact::Cell {
+                event: event @ CellEvent::Started { cell: id, .. },
+            } if *id == cell => Some((f, event)),
+            _ => None,
+        })
+        .ok_or("missing original source")?;
+    let (caller, input) = records
+        .iter()
+        .find_map(|f| match &f.fact {
+            Fact::ModelObserved {
+                attempt,
+                part: ModelPart::ToolCall { call },
+                ..
+            } if *attempt == first && call.name == "exec" => Some((f, &call.input)),
+            _ => None,
+        })
+        .ok_or("missing original exec")?;
+    let ToolInput::Json(args) = input else {
+        return Err("missing exec input".into());
+    };
+    let cut = history.capture().await?;
+    let source_sequence = history
+        .fact_sequence(&cut, run, started.id)
+        .await?
+        .ok_or("missing source address")?;
+    let caller_sequence = history
+        .fact_sequence(&cut, run, caller.id)
+        .await?
+        .ok_or("missing caller address")?;
+    let caller_address = maka_agent_facts::history::HistoryRowAddress::Live {
+        sequence: caller_sequence,
+        fact: caller.id,
+        item_index: 0,
+    };
+    let start = serde_json::to_string(event)?.len() + 1;
+    suppress_history_quotes(rig, &session, &[(source_sequence, start, "logical")]).await?;
+    let spans = history
+        .read_restrictions(vec![caller_address.clone()])
+        .await?;
+    let call_body = format!("exec\n{}", serde_json::to_string(args)?);
+    let from = call_body.find("logical").ok_or("missing code literal")? as u64;
+    assert_eq!(spans[&caller_address], [(from, from + 7)]);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn followup_pairs_tool_call_with_failure_observed_after_run_termination() -> TestResult<()> {
     use maka_agent_engine::ports::Preparation;
     use maka_agent_facts::operation::inline_reply;
@@ -736,7 +1867,11 @@ async fn followup_pairs_tool_call_with_failure_observed_after_run_termination() 
     let result = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(30), async {
         let session = rig.start().await?;
         rig.assemble(&session).await?;
-        let (_, attempt, _) = rig.record_model_request(Preparation::Initial).await?;
+        let (_, first, _) = rig.record_model_request(Preparation::Initial).await?;
+        let notice_text = "background child update";
+        let background_quote = "background child result";
+        let (background_cell, background_result, background_start) = record_background_notice(&rig, first, notice_text, background_quote, "list_files", None).await?;
+        let (_, attempt, _) = rig.record_model_request(Preparation::Notifications { attempt: first }).await?;
         let (img_tool, _) = rig.tool(attempt, "exec", "snap-1", json!({"code":"1"})).await?;
         let (cell_tool, _) = rig.tool(attempt, "exec", "cell-1", json!({"code":"1"})).await?;
         let (tool, _) = rig.tool(attempt, "computer", "click-1", json!({})).await?;
@@ -757,6 +1892,14 @@ async fn followup_pairs_tool_call_with_failure_observed_after_run_termination() 
             content: vec![],
             result: json!({"ok":"recovered-cell-ok"}),
         })?;
+        let child_quote = "hidden-child-argument";
+        let input = ContentBlob::json(&json!({"value":child_quote}))?;
+        let operation = Uuid::new_v4();
+        let child = CellEvent::ChildPrepared {
+            cell: rec_cell, operation, name: "write_file".into(),
+            semantics: ToolSemantics::Parallel, input: input.reference().clone(), resources: vec![],
+        };
+        let child_id = FactId::new();
         driver.state.append(
             driver.access.claim(),
             (&view).into(),
@@ -764,10 +1907,12 @@ async fn followup_pairs_tool_call_with_failure_observed_after_run_termination() 
                 Change { id: img_cell.started_fact_id(), at: at(), fact: Fact::Cell { event: CellEvent::Started { cell: img_cell, owner: CellOwner::Agent { link, call: img_tool.call.clone() }, source: src.reference().clone() } } },
                 Change { id: rec_cell.started_fact_id(), at: at(), fact: Fact::Cell { event: CellEvent::Started { cell: rec_cell, owner: CellOwner::Agent { link, call: cell_tool.call.clone() }, source: src.reference().clone() } } },
                 Change::new(Fact::Cell { event: CellEvent::VmBound { cell: rec_cell, binding: maka_agent_facts::cells::CellVmBinding { runtime: "fixture".into(), version: 1, descriptor: src.reference().clone() } } }, at()),
+                Change { id: child_id, at: at(), fact: Fact::Cell { event: child.clone() } },
+                Change::new(Fact::Cell { event: CellEvent::ChildRejected { cell: rec_cell, operation, reason: maka_agent_facts::tool_call::RejectionKind::Cancelled, diagnostic:"cancelled".into() } }, at()),
                 Change::new(Fact::Cell { event: CellEvent::Interrupted { cell: img_cell, report: interrupted.reference().clone() } }, at()),
                 Change::new(Fact::Cell { event: CellEvent::Completed { cell: rec_cell, result: completed.reference().clone(), publication: maka_agent_facts::cells::SessionPublication { values: BTreeMap::new(), loaded_tools: None } } }, at()),
             ],
-            vec![src, interrupted, completed],
+            vec![src, interrupted, completed, input],
         ).await?;
         rig.finish_model_request(attempt, None).await?;
         super::super::effects::publish_return_for_test(
@@ -842,14 +1987,15 @@ async fn followup_pairs_tool_call_with_failure_observed_after_run_termination() 
             vec![],
         )
         .await?;
-        driver
+        let diagnostic = "App identity did not match. Click was not sent.";
+        let receipt = driver
             .state
             .observe(
                 run,
                 vec![Change::new(
                     observed(OperationOutcome::Returned {
                         result: OperationResult::Failure {
-                            diagnostic: "App identity did not match. Click was not sent.".into(),
+                            diagnostic: diagnostic.into(),
                         },
                     }),
                     at(),
@@ -863,45 +2009,71 @@ async fn followup_pairs_tool_call_with_failure_observed_after_run_termination() 
         else {
             return Err("fixture model binding missing".into());
         };
-        let sent = model_recovery::call(client, "agent", "send", json!({
-            "sessionId":session, "message":"Did the click run?",
-            "backend":{"kind":"model","connectionId":binding.connection_id,"modelId":binding.model},
-            "delivery":"queue",
-        })).await?;
-        assert_eq!(sent["kind"], "queued", "{sent}");
-        let request = captured
-            .recv()
-            .await
-            .ok_or("follow-up did not reach the model")?;
-        let messages = request["messages"]
-            .as_array()
-            .ok_or("model messages missing")?;
-        let exchange: Vec<_> = messages
-            .iter()
-            .filter_map(|message| {
-                if message["tool_calls"]
-                    .as_array()
-                    .is_some_and(|calls| calls.iter().any(|call| call["id"] == "click-1"))
-                {
-                    Some("call")
-                } else if message["role"] == "tool" && message["tool_call_id"] == "click-1" {
-                    assert!(
-                        message["content"]
-                            .as_str()
-                            .unwrap_or_default()
-                            .contains("App identity did not match. Click was not sent.")
-                    );
-                    Some("failure")
-                } else {
-                    None
-                }
-            })
-            .collect();
-        assert_eq!(exchange, ["call", "failure"]);
-        let req_text = request.to_string();
-        assert!(req_text.contains("image/png"), "local_returned lost to RecoveredCell: {req_text}");
-        assert!(req_text.contains("recovered-cell-ok"), "RecoveredCell fallback missing: {req_text}");
-        model_recovery::completed_message(client, &session, &sent["messageId"]).await?;
+        let history = driver.state.session_history(view.spec.owner.clone(), session.clone());
+        for restricted in [false, true] {
+            if restricted {
+                let cut = history.capture().await?;
+                let fact = &receipt.facts[0];
+                let Fact::OperationObserved { reply, .. } = &fact.fact else {
+                    return Err("missing observed diagnostic".into());
+                };
+                let receipt_at = history.fact_sequence(&cut, run, fact.id).await?.ok_or("missing receipt")?;
+                let receipt_start = serde_json::to_string(reply)?.find(diagnostic).ok_or("missing diagnostic")?;
+                let child_at = history.fact_sequence(&cut, run, child_id).await?.ok_or("missing child")?;
+                let child_start = serde_json::to_string(&child)?.len() + "\nvalue\n".len();
+                let background_at = history.fact_sequence(&cut, run, background_result).await?.ok_or("missing background result")?;
+                suppress_history_quotes(&rig, &session, &[
+                    (receipt_at, receipt_start, diagnostic),
+                    (child_at, child_start, child_quote),
+                    (background_at, background_start, background_quote),
+                ]).await?;
+            }
+            let publications: Vec<_> = driver.state.history(run,0,128).await?.into_iter().filter(|f|
+                matches!(&f.fact,Fact::Cell {event: CellEvent::NotificationQueued { cell,.. }|CellEvent::Completed {cell,..}} if *cell == background_cell)
+            ).map(|f| f.id).collect();
+            assert_eq!(publications.len(),2);
+            let visibility = history.restricted_archives(publications.clone()).await?;
+            assert!(publications.iter().all(|id| visibility.contains_key(id) == restricted));
+            let sent = model_recovery::call(client, "agent", "send", json!({
+                "sessionId":session, "message":"Did the click run?",
+                "backend":{"kind":"model","connectionId":binding.connection_id,"modelId":binding.model},
+                "delivery":"queue",
+            })).await?;
+            assert_eq!(sent["kind"], "queued", "{sent}");
+            let request = captured
+                .recv()
+                .await
+                .ok_or("follow-up did not reach the model")?;
+            let messages = request["messages"]
+                .as_array()
+                .ok_or("model messages missing")?;
+            let exchange: Vec<_> = messages
+                .iter()
+                .filter_map(|message| {
+                    if message["tool_calls"]
+                        .as_array()
+                        .is_some_and(|calls| calls.iter().any(|call| call["id"] == "click-1"))
+                    {
+                        Some("call")
+                    } else if message["role"] == "tool" && message["tool_call_id"] == "click-1" {
+                        let text = message["content"].as_str().unwrap_or_default();
+                        assert_eq!(text.contains(diagnostic), !restricted, "{message}");
+                        Some("failure")
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            assert_eq!(exchange, ["call", "failure"]);
+            let req_text = request.to_string();
+            assert!(req_text.contains("image/png"), "local_returned lost to RecoveredCell: {req_text}");
+            assert_eq!(req_text.contains(child_quote), !restricted, "{req_text}");
+            assert_eq!(req_text.contains(notice_text), !restricted, "{req_text}");
+            assert_eq!(req_text.contains(background_quote), !restricted, "{req_text}");
+            assert_eq!(req_text.contains("recovered-cell-ok"), !restricted, "{req_text}");
+            assert_eq!(req_text.contains(diagnostic), !restricted, "{req_text}");
+            model_recovery::completed_message(client, &session, &sent["messageId"]).await?;
+        }
         Ok::<_, Box<dyn Error + Send + Sync>>(())
     }))
     .catch_unwind()
@@ -914,11 +2086,94 @@ async fn followup_pairs_tool_call_with_failure_observed_after_run_termination() 
     Ok(())
 }
 
+async fn assert_restricted_retry_history(
+    rig: &Rig,
+    session: &str,
+    page: &Value,
+    diagnostic: &str,
+) -> TestResult<()> {
+    use maka_agent_state::session_history::source_tree::HistoryDataSource;
+    use maka_capabilities::call::Identity;
+    use maka_plugin_core::contract::ServiceTarget;
+
+    let chunks = page["chunks"].as_array().unwrap();
+    let sequence = chunks.last().unwrap()["position"]["sequence"]
+        .as_u64()
+        .unwrap();
+    let owner = rig.captured.lock().unwrap().clone().unwrap();
+    let driver = rig.driver.as_ref().unwrap();
+    let history = driver
+        .state
+        .session_history(owner.run_owner(), session.to_owned());
+    let earlier = history
+        .capture_snapshot(
+            CaptureRequest {
+                id: SnapshotId::new(),
+                cut: history.capture_at(sequence - 1).await?,
+            },
+            CancellationToken::new(),
+        )
+        .await?;
+    suppress_history_quotes(rig, session, &[(sequence, 0, "provider failed")]).await?;
+
+    let target = ServiceTarget::Export {
+        name: "agent".into(),
+    };
+    let reader = owner
+        .services
+        .select_method(&target, "historyRequests")?
+        .request_with_work(
+            Identity::Agent {
+                execution: driver.access.execution().clone(),
+                operation_id: None,
+            },
+            CancellationToken::new(),
+            driver.access.custody().clone(),
+        )?;
+    for through in [sequence - 1, sequence] {
+        let input = json!({"sessionId":session,"through":through,"position":chunks[0]["position"]});
+        let user = query(rig, "historyRequests", input.clone()).await?;
+        let model = reader
+            .call_target(&target, "historyRequests".into(), input, Attachments::new())?
+            .await?;
+        let requests = model["requests"].as_array().unwrap();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(user["requests"][1]["finished"]["diagnostic"], diagnostic);
+        assert_eq!(requests[0]["finished"]["diagnostic"], diagnostic);
+        assert_eq!(
+            requests[1]["finished"]["diagnostic"],
+            diagnostic.replacen("provider failed", "***************", 1)
+        );
+    }
+    reader.finish().await?;
+
+    let traces = HistoryDataSource::Snapshot(earlier)
+        .model_request_traces_for_reader(driver.access.execution().run_id, 0, 24, true)
+        .await?;
+    assert!(!traces.run_terminated);
+    assert_eq!(traces.requests.len(), 2);
+    for (i, trace) in traces.requests.into_iter().enumerate() {
+        let finished = trace.finished.unwrap();
+        let expected = if i == 1 {
+            diagnostic.replacen("provider failed", "***************", 1)
+        } else {
+            diagnostic.to_owned()
+        };
+        assert_eq!(finished.diagnostic, Some(expected));
+    }
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn history_shows_only_the_final_model_failure() -> TestResult<()> {
+    use axum::http::StatusCode;
     use maka_agent_engine::DriverExit;
 
-    for recover in [true, false] {
+    for (recover, status) in [
+        (true, StatusCode::OK),
+        (false, StatusCode::OK),
+        (false, StatusCode::SERVICE_UNAVAILABLE),
+    ] {
         let mut rig = Rig::new()?;
         let first_request = Arc::new(AtomicBool::new(true));
         let app = axum::Router::new().route(
@@ -926,6 +2181,9 @@ async fn history_shows_only_the_final_model_failure() -> TestResult<()> {
             axum::routing::post(move |_: axum::body::Bytes| {
                 let first = first_request.swap(false, Ordering::SeqCst);
                 async move {
+                    if status == StatusCode::SERVICE_UNAVAILABLE {
+                        return (status, [("content-type", "application/json")], r#"{"error":{"message":"example unavailable"}}"#);
+                    }
                     let body = if recover && !first {
                         concat!(
                             "data: {\"id\":\"retry\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"Recovered after retry.\"},\"finish_reason\":null}]}\n\n",
@@ -935,7 +2193,7 @@ async fn history_shows_only_the_final_model_failure() -> TestResult<()> {
                     } else {
                         ": stream ended before completion\n\n"
                     };
-                    ([("content-type", "text/event-stream")], body)
+                    (status, [("content-type", "text/event-stream")], body)
                 }
             }),
         );
@@ -1021,6 +2279,11 @@ async fn history_shows_only_the_final_model_failure() -> TestResult<()> {
                 .collect();
             let last = if recover {
                 ("assistant", "Recovered after retry.")
+            } else if status == StatusCode::SERVICE_UNAVAILABLE {
+                (
+                    "failure",
+                    "provider failed (ProviderUnavailable): example unavailable",
+                )
             } else {
                 (
                     "failure",
@@ -1059,6 +2322,9 @@ async fn history_shows_only_the_final_model_failure() -> TestResult<()> {
                     CancellationToken::new(),
                 )
                 .await?;
+            if !recover {
+                assert_restricted_retry_history(&rig, &session, &page, last.1).await?;
+            }
             let frozen = crate::service::history::snapshot_page(
                 &frozen,
                 wire::Position::Tail,
@@ -1158,6 +2424,8 @@ async fn history_exposes_only_reported_prompt_cache_usage() -> TestResult<()> {
                 .find(|chunk| chunk["finalOutput"] == true)
                 .expect("completed reply");
             assert_eq!(reply["text"], "Cached turn.");
+            assert_eq!(reply["timing"]["modelTokens"]["input_tokens"], 100);
+            assert_eq!(reply["timing"]["modelTokens"]["output_tokens"], 5);
             let observed = query(&rig, "observe", json!({"sessionId":session})).await?;
             assert!(
                 observed["metrics"]["outputTokensPerSecond"]
@@ -1501,6 +2769,50 @@ async fn named_cell_tools_survive_receipt_only_pages_and_frozen_history() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn material_history_preserves_the_original_filename_for_the_user() -> TestResult<()> {
+    let mut rig = Rig::new()?;
+    let session = rig.start().await?;
+    rig.assemble(&session).await?;
+    let attempt = rig.attempt().await?;
+    let filename = "planning-notes.txt";
+    rig.tool_with_display(
+        attempt,
+        "RecallMaterial",
+        "material",
+        json!({"session_id":session,"artifact_id":"opaque-id"}),
+        ToolDisplay {
+            title: Some(format!("Read historical attachment · {filename}")),
+            presentation: Some("maka.agent.Builtin@1/RecallMaterial".into()),
+        },
+    )
+    .await?;
+    let page = live(&rig, &session, wire::Position::Tail).await?;
+    assert!(page.to_string().contains(filename));
+    let driver = rig.driver.as_ref().unwrap();
+    let reader = model_reader(driver)?;
+    let model = crate::service::history::read(
+        &driver.owner,
+        reader.scope(),
+        serde_json::from_value(
+            json!({"sessionId":session, "position":{"kind":"tail"},"view":"conversation"}),
+        )?,
+    )
+    .await?;
+    let model = serde_json::to_value(model)?;
+    let calls = tools(&model);
+    assert!(calls.iter().any(|tool| {
+        tool.call
+            .as_ref()
+            .is_some_and(|call| call.name == "RecallMaterial")
+    }));
+    assert!(!model.to_string().contains(filename));
+    reader.finish().await?;
+    let cleanup = rig.finish().await;
+    assert!(cleanup.is_empty(), "{cleanup:?}");
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn compact_cell_tool_result_reads_the_original_observation() {
     use maka_agent_facts::{
         cells::{CellReply, CellReplyState},
@@ -1756,6 +3068,7 @@ async fn shared_operation_receipt_survives_snapshot_transfer() {
                 case_sensitive: true,
                 whole_word: false,
                 include_internal: true,
+                mask_evidence: false,
             }, stop.clone()).await?;
             assert!(found.matches.iter().any(|item| item.field == Field::Receipt), "receipt missing for {query}");
             assert!(found.matches.iter().any(|item| item.field == Field::Result), "accepted result missing for {query}");
@@ -2151,6 +3464,7 @@ async fn shared_cell_child_receipt_survives_snapshot_transfer() {
                     case_sensitive: true,
                     whole_word: false,
                     include_internal: true,
+                    mask_evidence: false,
                 },
                 stop,
             )
@@ -2479,6 +3793,139 @@ async fn executor_history_keeps_message_boundaries_and_tool_results() {
             assert_eq!(tool.tool_use_id, displayed[0].tool_use_id);
             assert_eq!(call.position, displayed[0].call.as_ref().unwrap().position);
         }
+        let wire::HistoryRowAddress::Live {sequence, ..} = displayed[0].call.as_ref().unwrap().position else {
+            return Err("missing live tool start".into());
+        };
+        let quote = "cat config.toml";
+        let arguments = serde_json::to_string(&json!({"CommandLine":quote,"toolSummary":"Read configuration"}))?;
+        let start = "run_command\n".len() + arguments.find(quote).unwrap();
+        suppress_history_quotes(&rig, &session, &[(sequence, start, quote)]).await?;
+        let wire::HistoryRowAddress::Live { sequence: answer_sequence, .. } = position else {
+            return Err("missing executor answer".into());
+        };
+        suppress_history_quotes(&rig, &session, &[(answer_sequence, 0, "Written")]).await?;
+        let history = driver.state.session_history(original.spec.owner.clone(), session.clone());
+        let cut = history.capture().await?;
+        let input = "native wait original read failure";
+        let prompt_sequence = page["chunks"].as_array().unwrap().iter()
+            .filter(|row| row["role"] == "user" && row["text"] == input)
+            .filter_map(|row| row["position"]["sequence"].as_u64()).max().ok_or("missing user input")?;
+        suppress_history_quotes(&rig, &session, &[(prompt_sequence, 0, "native wait")]).await?;
+        let mut transcript = Vec::new();
+        crate::service::history::readable_context_into(
+            &history, &cut, Some(original.run), &mut transcript, &CancellationToken::new()
+        ).await?;
+        let transcript = String::from_utf8(transcript)?;
+        assert!(transcript.contains(input), "{transcript}");
+        assert!(transcript.contains("Written `tmp_test_file.txt` successfully."), "{transcript}");
+        assert!(!transcript.contains(quote));
+        let reader = model_reader(driver)?;
+        let target = maka_plugin_core::contract::ServiceTarget::Export { name: "agent".into() };
+        let navigator = driver.owner.services.select_method(&target, "historyLandmarks")?.request_with_work(
+            maka_capabilities::call::Identity::Agent { execution: driver.access.execution().clone(), operation_id: None },
+            CancellationToken::new(), driver.access.custody().clone()
+        )?;
+        let landmarks: Value = navigator.call_target(&target, "historyLandmarks".into(),
+            json!({"sessionId":session,"through":page["through"]}), Attachments::new())?.await?;
+        assert!(landmarks["landmarks"].as_array().unwrap().iter()
+            .any(|entry| entry["label"] == "*********** original read failure"), "{landmarks}");
+        navigator.finish().await?;
+        let model = crate::service::history::read(
+            &driver.owner, reader.scope(),
+            serde_json::from_value(json!({"sessionId":session,"position":{"kind":"tail"},"view":"conversation"}))?,
+        ).await?;
+        let source = crate::service::history::source(&driver.owner, reader.scope(),
+            serde_json::from_value(json!({"sessionId":session,"through":page["through"],"source":{"kind":"row","position":position},"field":"body","path":[],"position":{"kind":"start"}}))?).await?;
+        assert_eq!(serde_json::to_value(source)?["source"]["text"], "******* `tmp_test_file.txt` successfully.");
+        let external_result = &displayed[0].result.as_ref().unwrap().position;
+        let source = crate::service::history::source(&driver.owner, reader.scope(),
+            serde_json::from_value(json!({"sessionId":session,"through":page["through"],"source":{"kind":"row","position":external_result},"field":"result","position":{"kind":"start"}}))?).await?;
+        let source = serde_json::to_value(source)?;
+        assert_eq!(source["source"]["text"], "File not found");
+        assert!(source["source"]["tool"]["call"].is_null());
+        assert!(!source.to_string().contains(quote));
+        use maka_agent_state::session_history::{navigation::SourceFind, source_tree::SourceTree};
+        let snapshot = history.capture_snapshot(
+            CaptureRequest { id: SnapshotId::new(), cut: cut.clone() }, CancellationToken::new()
+        ).await?;
+        for tree in [SourceTree::live(&history, &cut).await?, SourceTree::snapshot(&snapshot).await?] {
+            let names = tree.find_page(SourceFind {
+                after: None, query: "run_command".into(), case_sensitive: true, whole_word: true,
+                include_internal: false, mask_evidence: true,
+            }, CancellationToken::new()).await?;
+            assert!(names.matches.iter().any(|hit| hit.field == maka_agent_state::recall::Field::ToolName
+                && hit.preview.contains("run_command") && !hit.preview.contains(quote)
+                && matches!(hit.position, wire::HistoryRowAddress::Live {sequence: s, ..}
+                    | wire::HistoryRowAddress::Snapshot {sequence: s, ..} if s == sequence)));
+            let arguments = tree.find_page(SourceFind {
+                after: None, query: "Read configuration".into(), case_sensitive: true, whole_word: false,
+                include_internal: false, mask_evidence: true,
+            }, CancellationToken::new()).await?;
+            assert!(arguments.matches.iter().any(|hit| hit.field == maka_agent_state::recall::Field::Arguments
+                && hit.preview.contains("Read configuration") && !hit.preview.contains(quote)
+                && matches!(hit.position, wire::HistoryRowAddress::Live {sequence: s, ..}
+                    | wire::HistoryRowAddress::Snapshot {sequence: s, ..} if s == sequence)));
+            for (keyword, expected) in [("Written", false), ("tmp_test_file", true)] {
+                let found = tree.find_page(SourceFind {
+                    after: None, query: keyword.into(), case_sensitive: true, whole_word: false,
+                    include_internal: false, mask_evidence: true,
+                }, CancellationToken::new()).await?;
+                assert_eq!(!found.matches.is_empty(), expected, "{keyword}");
+                assert!(found.matches.iter().all(|hit| !hit.preview.contains("Written")));
+            }
+            let found = tree.find_page(SourceFind {
+                after: None, query: "tmp_test_fi".into(), case_sensitive: true, whole_word: false,
+                include_internal: false, mask_evidence: true,
+            }, CancellationToken::new()).await?;
+            assert!(found.matches.iter().any(|hit| hit.field == maka_agent_state::recall::Field::Body
+                && hit.preview.contains("tmp_test_fi") && !hit.preview.contains("Written")));
+        }
+        let start_row = &displayed[0].call.as_ref().unwrap().position;
+        let text_page = crate::service::history::read_page(
+            &driver.owner, reader.scope(),
+            serde_json::from_value(json!({"sessionId":session,"through":page["through"],
+                "position":{"kind":"row","position":start_row,"field":"body"}}))?
+        ).await?;
+        let text_page = serde_json::to_value(text_page)?;
+        let masked_args = arguments.replace(quote, &"*".repeat(quote.len()));
+        assert!(text_page["chunks"].as_array().unwrap().iter().any(|row|
+            row["position"]["sequence"] == sequence && row["text"] == masked_args));
+        let transcript = driver.owner.session_read_tool(serde_json::from_value(json!({"sessionId":session,
+            "row":{"through":page["through"],"position":start_row}}))?, reader.scope()).await?;
+        assert!(serde_json::to_value(transcript)?["transcript"]["items"].as_array().unwrap().iter().any(|row|
+            row["role"] == "tool" && row["text"] == masked_args && row["toolName"].is_null()));
+        let args = crate::service::history::source(&driver.owner, reader.scope(),
+            serde_json::from_value(json!({"sessionId":session,"through":page["through"],"source":{"kind":"row","position":start_row},
+                "field":"arguments","position":{"kind":"start"}}))?).await?;
+        assert_eq!(serde_json::to_value(args)?["source"]["text"], masked_args);
+        let tool_name = |position: &wire::HistoryRowAddress| serde_json::from_value(json!({
+            "sessionId":session,"through":page["through"],"source":{"kind":"row","position":position},
+            "field":"tool_name","position":{"kind":"start"}
+        }));
+        let name = crate::service::history::source(&driver.owner, reader.scope(), tool_name(start_row)?).await?;
+        assert_eq!(serde_json::to_value(name)?["source"]["text"], "run_command");
+        suppress_history_quotes(&rig, &session, &[(sequence, 0, "run_")]).await?;
+        let name = crate::service::history::source(&driver.owner, reader.scope(), tool_name(start_row)?).await?;
+        assert_eq!(serde_json::to_value(name)?["source"]["text"], "****command");
+        let wire::HistoryRowAddress::Live { sequence: result_seq, .. } = external_result else {
+            return Err("missing live executor result".into());
+        };
+        suppress_history_quotes(&rig, &session, &[(*result_seq, 0, "File")]).await?;
+        let source = crate::service::history::source(&driver.owner, reader.scope(),
+            serde_json::from_value(json!({"sessionId":session,"through":page["through"],"source":{"kind":"row","position":external_result},"field":"result","position":{"kind":"start"}}))?).await?;
+        assert_eq!(serde_json::to_value(source)?["source"]["text"], "**** not found");
+        let tree = SourceTree::snapshot(&snapshot).await?;
+        let found = tree.find_page(SourceFind {
+            after: None, query: "not found".into(), case_sensitive: true, whole_word: false,
+            include_internal: false, mask_evidence: true,
+        }, CancellationToken::new()).await?;
+        assert!(found.matches.iter().any(|hit| hit.field == maka_agent_state::recall::Field::Result
+            && hit.preview == "**** not found"));
+        reader.finish().await?;
+        let model = serde_json::to_value(model)?;
+        assert!(!model.to_string().contains(quote));
+        let results = tools(&model);
+        assert!(results.iter().any(|tool| tool.call.is_none() && tool.result.as_ref().is_some_and(|r| r.is_error)));
         Ok::<_, Box<dyn Error + Send + Sync>>(())
     }))
     .catch_unwind()

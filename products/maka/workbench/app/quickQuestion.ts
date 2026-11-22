@@ -20,7 +20,7 @@
 import { cleanup, signal, Storage } from 'nsh';
 import { randomUUID } from 'crypto';
 import { host } from 'maka/host';
-import type { OperationReply } from '../../../../packages/plugin-sdk/src/index';
+import type { AgentHistoryChunk, OperationReply } from '../../../../packages/plugin-sdk/src/index';
 import type { OriginalMutation } from './host';
 import { tr } from './locale';
 
@@ -28,7 +28,7 @@ function returned(reply: OperationReply) {
   const receipt = reply.receipt;
   const outcome = receipt.kind === 'recorded' ? receipt.outcome : receipt;
   const failure = outcome.kind === 'returned' ? outcome.result : outcome;
-  if (failure.kind === 'success') return;
+  if (failure.kind === 'success') return failure.value as AgentHistoryChunk['replyInfo'];
   if ('diagnostic' in failure) {
     throw Error(
       failure.diagnostic === 'quick_question_model_required'
@@ -41,7 +41,13 @@ function returned(reply: OperationReply) {
 
 export interface QuickThread {
   id: string;
-  turns: { question: string; answer: string }[];
+  turns: {
+    question: string;
+    answer: string;
+    askedAt?: number;
+    answeredAt?: number;
+    replyInfo?: AgentHistoryChunk['replyInfo'];
+  }[];
   updatedAt: number;
 }
 
@@ -77,10 +83,11 @@ export function createQuickQuestion(openBot: () => Promise<string>) {
     scope = '';
     running.set(true);
     stopped = false;
+    const askedAt = Date.now();
     let value: QuickThread = {
       id: existing?.id ?? randomUUID(),
-      updatedAt: Date.now(),
-      turns: [...previous, { question, answer: '' }],
+      updatedAt: askedAt,
+      turns: [...previous, { question, askedAt, answer: '' }],
     };
     thread.set(value);
     try {
@@ -92,18 +99,23 @@ export function createQuickQuestion(openBot: () => Promise<string>) {
         sessionId,
         question,
         requestId: randomUUID(),
-        history: previous,
+        history: previous.map(({ question, answer }) => ({ question, answer })),
       })) as OriginalMutation;
       if (stopped) active.cancel();
       for (;;) {
         const event = await active.next();
         if (!event || event.kind === 'not_dispatched') throw Error(tr('Quick question failed.'));
         if (event.kind === 'progress' && typeof event.value === 'string') {
-          value = { ...value, turns: [...previous, { question, answer: event.value }] };
+          value = { ...value, turns: [...previous, { question, askedAt, answer: event.value }] };
           thread.set(value);
         }
         if (event.kind === 'finished') {
-          returned(event.reply);
+          const replyInfo = returned(event.reply);
+          value = {
+            ...value,
+            turns: [...previous, { ...value.turns.at(-1)!, answeredAt: Date.now(), replyInfo }],
+          };
+          thread.set(value);
           if (event.cleanupError) throw Error(event.cleanupError);
           break;
         }

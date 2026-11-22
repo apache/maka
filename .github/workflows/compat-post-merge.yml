@@ -1,0 +1,68 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+name: Upgrade Compatibility (Post-Merge)
+
+# Runs after commits land on main (not on ordinary PRs) to replay historical
+# State Root time capsules against the newly built maka binary and catch
+# forward-upgrade regressions the same day they merge.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: compat-post-merge-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  compat-replay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/ci-setup
+        with:
+          role: compat-post-merge
+          cache_role: root
+          dependencies: headless
+          javascript: "true"
+
+      - name: Verify immutable migration ledger
+        run: node scripts/ci.mjs check migrations
+
+      - name: Build maka binary and upgrade compatibility harness
+        run: |
+          cargo build --locked -p maka-cli --bin maka
+          cargo test --locked -p maka-cli --test upgrade_compat --no-run
+
+      - name: Run current-HEAD self-roundtrip scenario
+        run: cargo test --locked -p maka-cli --test upgrade_compat -- --exact upgrade_compat_capsule_roundtrip --nocapture
+
+      - name: Replay all published historical time capsules against current HEAD
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          node scripts/rust/compat-capsule.mjs verify-release \
+            --bin "${CARGO_TARGET_DIR:-target}/debug/maka" \
+            --repo "$GITHUB_REPOSITORY"

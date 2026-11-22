@@ -311,7 +311,7 @@ dependencies = [
 
 [[package]]
 name = "apply-patch"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "thiserror 2.0.21",
 ]
@@ -8105,7 +8105,7 @@ checksum = "dae608c151f68243f2b000364e1f7b186d9c29845f7d2d85bd31b9ad77ad552b"
 
 [[package]]
 name = "maka-acp"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "agent-client-protocol",
  "base64 0.23.1",
@@ -8128,7 +8128,7 @@ dependencies = [
 
 [[package]]
 name = "maka-acp-native"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "futures-util",
  "hex",
@@ -8153,7 +8153,7 @@ dependencies = [
 
 [[package]]
 name = "maka-agent-api"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "jsonschema 0.60.1",
  "maka-agent-facts",
@@ -8176,7 +8176,7 @@ dependencies = [
 
 [[package]]
 name = "maka-agent-authority"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "futures-util",
  "hex",
@@ -8199,7 +8199,7 @@ dependencies = [
 
 [[package]]
 name = "maka-agent-engine"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "base64 0.23.1",
  "bytes",
@@ -8234,7 +8234,7 @@ dependencies = [
 
 [[package]]
 name = "maka-agent-facts"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "base64 0.23.1",
  "bytes",
@@ -8258,7 +8258,7 @@ dependencies = [
 
 [[package]]
 name = "maka-agent-native"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "asyncband",
  "axum",
@@ -8334,7 +8334,7 @@ dependencies = [
 
 [[package]]
 name = "maka-agent-ports"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "futures-util",
  "hex",
@@ -8355,7 +8355,7 @@ dependencies = [
 
 [[package]]
 name = "maka-agent-state"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "hex",
  "maka-agent-facts",
@@ -8381,7 +8381,7 @@ dependencies = [
 
 [[package]]
 name = "maka-app-client"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "maka-agent-facts",
  "maka-capabilities",
@@ -8399,7 +8399,7 @@ dependencies = [
 
 [[package]]
 name = "maka-assistant"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "futures-util",
  "maka-agent-facts",
@@ -8415,7 +8415,7 @@ dependencies = [
 
 [[package]]
 name = "maka-background-health"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "maka-agent-facts",
  "maka-capabilities",
@@ -8429,7 +8429,7 @@ dependencies = [
 
 [[package]]
 name = "maka-capabilities"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "base64 0.23.1",
  "bytes",
@@ -8459,7 +8459,7 @@ dependencies = [
 
 [[package]]
 name = "maka-cli"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "aws-lc-rs",
  "base64 0.23.1",
@@ -8504,7 +8504,9 @@ dependencies = [
  "maka-tools",
  "maka-transport",
  "maka-ui-build",
+ "maka-updater",
  "maka-workbench",
+ "maka-wsl-bridge",
  "nsh-core",
  "nsh-engine",
  "nsh-platform-macos",
@@ -8533,7 +8535,7 @@ dependencies = [
 
 [[package]]
 name = "maka-code-runtime"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "futures-util",
  "maka-agent-facts",
@@ -8549,7 +8551,7 @@ dependencies = [
 
 [[package]]
 name = "maka-computer-native"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "base64 0.23.1",
  "futures-util",
@@ -8581,7 +8583,7 @@ dependencies = [
 
 [[package]]
 name = "maka-computer-use"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "base64 0.23.1",
@@ -8625,12 +8627,11 @@ dependencies = [
  "unicode-segmentation",
  "uuid",
  "windows-sys 0.61.2",
- "x11rb",
 ]
 
 [[package]]
 name = "maka-config"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "hex",
  "libc",
@@ -8652,7 +8653,7 @@ dependencies = [
 
 [[package]]
 name = "maka-decisions-api"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "futures-util",
  "hex",
@@ -8670,7 +8671,7 @@ dependencies = [
 
 [[package]]
 name = "maka-decisions-api-native"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "futures-util",
  "maka-agent-facts",
@@ -8692,15 +8693,18 @@ dependencies = [
 
 [[package]]
 name = "maka-desktop-shell"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "block2 0.6.2",
  "dispatch2",
  "embed-resource",
  "libc",
+ "maka-app-client",
  "maka-event-log",
  "maka-host-runtime",
+ "maka-updater",
  "maka-workbench",
+ "maka-wsl-bridge",
  "nsh-engine",
  "nsh-platform-linux",
  "nsh-platform-macos",
@@ -8718,7 +8722,7 @@ dependencies = [
 
 [[package]]
 name = "maka-eval"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "clap",
  "maka-agent-api",
@@ -8740,7 +8744,7 @@ dependencies = [
 
 [[package]]
 name = "maka-event-log"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-channel",
  "cap-fs-ext",
@@ -8770,7 +8774,7 @@ dependencies = [
 
 [[package]]
 name = "maka-external-agent"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "agent-client-protocol",
  "base64 0.23.1",
@@ -8797,7 +8801,7 @@ dependencies = [
 
 [[package]]
 name = "maka-files-native"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "base64 0.23.1",
  "cap-std",
@@ -8821,7 +8825,7 @@ dependencies = [
 
 [[package]]
 name = "maka-fs-tools"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "apply-patch",
  "base64 0.23.1",
@@ -8851,7 +8855,7 @@ dependencies = [
 
 [[package]]
 name = "maka-goal"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "hex",
  "maka-agent-facts",
@@ -8868,7 +8872,7 @@ dependencies = [
 
 [[package]]
 name = "maka-host-js"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "futures-util",
  "maka-host-runtime",
@@ -8880,7 +8884,7 @@ dependencies = [
 
 [[package]]
 name = "maka-host-runtime"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "base64 0.23.1",
  "cap-std",
@@ -8922,14 +8926,14 @@ dependencies = [
 
 [[package]]
 name = "maka-host-shell"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "libc",
 ]
 
 [[package]]
 name = "maka-insights"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "maka-agent-facts",
  "maka-plugin-core",
@@ -8939,7 +8943,7 @@ dependencies = [
 
 [[package]]
 name = "maka-interactions-api"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "maka-agent-facts",
  "maka-plugin-core",
@@ -8950,7 +8954,7 @@ dependencies = [
 
 [[package]]
 name = "maka-interactions-native"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "futures-util",
  "hex",
@@ -8966,7 +8970,7 @@ dependencies = [
 
 [[package]]
 name = "maka-js-runtime"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "deno_cache_dir",
@@ -9023,7 +9027,7 @@ dependencies = [
 
 [[package]]
 name = "maka-mcp"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "futures-util",
  "maka-agent-facts",
@@ -9041,7 +9045,7 @@ dependencies = [
 
 [[package]]
 name = "maka-mock-ai"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "base64 0.23.1",
  "bytes",
@@ -9071,7 +9075,7 @@ dependencies = [
 
 [[package]]
 name = "maka-model"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "base64 0.23.1",
  "bytes",
@@ -9100,7 +9104,7 @@ dependencies = [
 
 [[package]]
 name = "maka-network"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "base64 0.23.1",
  "futures-util",
@@ -9126,7 +9130,7 @@ dependencies = [
 
 [[package]]
 name = "maka-packages"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "base64 0.23.1",
  "cap-fs-ext",
@@ -9145,7 +9149,7 @@ dependencies = [
 
 [[package]]
 name = "maka-plugin-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "futures-util",
  "hex",
@@ -9163,7 +9167,7 @@ dependencies = [
 
 [[package]]
 name = "maka-presentation"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "maka-agent-facts",
  "maka-plugin-core",
@@ -9176,7 +9180,7 @@ dependencies = [
 
 [[package]]
 name = "maka-process"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "alacritty_terminal",
  "dunce",
@@ -9201,7 +9205,7 @@ dependencies = [
 
 [[package]]
 name = "maka-processes-native"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "base64 0.23.1",
  "futures-util",
@@ -9232,7 +9236,7 @@ dependencies = [
 
 [[package]]
 name = "maka-product-native"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "futures-util",
  "maka-acp-native",
@@ -9261,7 +9265,7 @@ dependencies = [
 
 [[package]]
 name = "maka-provider-protocol"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "base64 0.23.1",
  "schemars 1.2.3",
@@ -9271,7 +9275,7 @@ dependencies = [
 
 [[package]]
 name = "maka-providers"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "base64 0.23.1",
  "futures-util",
@@ -9294,7 +9298,7 @@ dependencies = [
 
 [[package]]
 name = "maka-python-runtime"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "futures-util",
  "maka-agent-facts",
@@ -9311,7 +9315,7 @@ dependencies = [
 
 [[package]]
 name = "maka-sandbox"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "cap-fs-ext",
  "cap-std",
@@ -9337,7 +9341,7 @@ dependencies = [
 
 [[package]]
 name = "maka-scheduler"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "jiff",
  "maka-agent-facts",
@@ -9350,7 +9354,7 @@ dependencies = [
 
 [[package]]
 name = "maka-schema"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "maka-agent-api",
  "maka-agent-facts",
@@ -9371,7 +9375,7 @@ dependencies = [
 
 [[package]]
 name = "maka-session-import"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "base64 0.23.1",
  "dunce",
@@ -9397,7 +9401,7 @@ dependencies = [
 
 [[package]]
 name = "maka-session-recap"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "futures-util",
  "hex",
@@ -9416,7 +9420,7 @@ dependencies = [
 
 [[package]]
 name = "maka-session-state"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -9425,7 +9429,7 @@ dependencies = [
 
 [[package]]
 name = "maka-session-title"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "maka-agent-ports",
  "unicode-normalization",
@@ -9433,7 +9437,7 @@ dependencies = [
 
 [[package]]
 name = "maka-settings-native"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "base64 0.23.1",
  "futures-util",
@@ -9466,7 +9470,7 @@ dependencies = [
 
 [[package]]
 name = "maka-skills"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "libc",
  "maka-agent-facts",
@@ -9483,7 +9487,7 @@ dependencies = [
 
 [[package]]
 name = "maka-skills-api"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "maka-agent-api",
  "maka-agent-facts",
@@ -9498,7 +9502,7 @@ dependencies = [
 
 [[package]]
 name = "maka-skills-native"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "cap-fs-ext",
  "cap-std",
@@ -9532,7 +9536,7 @@ dependencies = [
 
 [[package]]
 name = "maka-terminal-shell"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "base64 0.23.1",
  "clap",
@@ -9559,7 +9563,7 @@ dependencies = [
 
 [[package]]
 name = "maka-tool-catalog"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "jsonschema 0.60.1",
  "maka-agent-facts",
@@ -9575,7 +9579,7 @@ dependencies = [
 
 [[package]]
 name = "maka-tools"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "futures-util",
  "maka-agent-facts",
@@ -9597,21 +9601,17 @@ dependencies = [
 
 [[package]]
 name = "maka-transport"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "maka-event-log",
  "maka-host-runtime",
- "maka-packages",
- "maka-plugin-core",
- "serde_json",
  "tokio",
  "tokio-util",
- "uuid",
 ]
 
 [[package]]
 name = "maka-ui-build"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "clap",
  "hex",
@@ -9627,7 +9627,7 @@ dependencies = [
 
 [[package]]
 name = "maka-ui-support"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "cap-fs-ext",
  "cap-std",
@@ -9645,8 +9645,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "maka-updater"
+version = "0.3.0"
+dependencies = [
+ "flate2",
+ "futures-util",
+ "libc",
+ "maka-event-log",
+ "maka-host-runtime",
+ "nsh-updater",
+ "reqwest",
+ "semver",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "tar",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "maka-web"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "dom_smoothie",
  "encoding_rs",
@@ -9674,7 +9696,7 @@ dependencies = [
 
 [[package]]
 name = "maka-web-api"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "maka-plugin-core",
  "maka-sandbox",
@@ -9686,7 +9708,7 @@ dependencies = [
 
 [[package]]
 name = "maka-workbench"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "base64 0.23.1",
  "cc",
@@ -9732,7 +9754,7 @@ dependencies = [
 
 [[package]]
 name = "maka-workspace-api"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "maka-agent-api",
  "maka-agent-facts",
@@ -9751,7 +9773,7 @@ dependencies = [
 
 [[package]]
 name = "maka-workspace-support"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "cap-std",
  "maka-agent-api",
@@ -9763,6 +9785,18 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+]
+
+[[package]]
+name = "maka-wsl-bridge"
+version = "0.3.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-util",
+ "uuid",
+ "yamux",
 ]
 
 [[package]]
@@ -19418,6 +19452,22 @@ checksum = "2a6a39b6b5ba0d02c910d05d7fbc366a4befb8901ea107dcde9c1c97acb8a366"
 dependencies = [
  "rowan",
  "winnow 0.6.26",
+]
+
+[[package]]
+name = "yamux"
+version = "0.13.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1991f6690292030e31b0144d73f5e8368936c58e45e7068254f7138b23b00672"
+dependencies = [
+ "futures",
+ "log",
+ "nohash-hasher",
+ "parking_lot",
+ "pin-project",
+ "rand 0.9.5",
+ "static_assertions",
+ "web-time",
 ]
 
 [[package]]

@@ -216,6 +216,14 @@ impl SessionHistory {
     }
 }
 impl Snapshot {
+    pub(super) fn owner(&self) -> &RunOwner {
+        match &self.access {
+            Access::Captured { owner, .. }
+            | Access::Imported { owner, .. }
+            | Access::Adopted { owner, .. } => owner,
+        }
+    }
+
     pub fn id(&self) -> SnapshotId {
         self.id
     }
@@ -362,6 +370,27 @@ impl Snapshot {
             .query(read::ImportedReference(self.clone(), ordinal))
             .await
     }
+    pub async fn restricted_imported_parts(
+        &self,
+        first: u64,
+        last: u64,
+    ) -> Result<std::collections::BTreeSet<(u64, u64)>, StoreError> {
+        self.data
+            .query(read::RestrictedImported(self.clone(), first, last))
+            .await
+    }
+    pub async fn restricted_original(
+        &self,
+        message: &maka_agent_facts::history_snapshot::ImportedMessage,
+    ) -> Result<bool, StoreError> {
+        self.data
+            .query(read::RestrictedOriginal(
+                self.clone(),
+                message.original_ordinal,
+                message.original.clone(),
+            ))
+            .await
+    }
     pub async fn imported_message(
         &self,
         ordinal: u64,
@@ -383,16 +412,25 @@ impl Snapshot {
         &self,
         run: RunId,
         sequence: u64,
+        mask_evidence: bool,
     ) -> Result<Option<String>, StoreError> {
         self.data
-            .query(read::RecoveryFailureAt(self.clone(), run, sequence))
+            .query(read::RecoveryFailureAt(
+                self.clone(),
+                run,
+                sequence,
+                mask_evidence,
+            ))
             .await
     }
     pub(super) async fn executor_view(
         &self,
         run: RunId,
+        mask_evidence: bool,
     ) -> Result<(crate::fold::RunView, ExecutorTranscript), StoreError> {
-        self.data.query(read::ExecutorView(self.clone(), run)).await
+        self.data
+            .query(read::ExecutorView(self.clone(), run, mask_evidence))
+            .await
     }
     pub async fn terminated(
         &self,

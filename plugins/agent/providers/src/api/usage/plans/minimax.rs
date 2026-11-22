@@ -99,6 +99,7 @@ impl Interval {
             })
         });
         Some(UsageLimit::Window {
+            models: Vec::new(),
             label: (!name.eq_ignore_ascii_case("general")).then(|| name.into()),
             period: seconds.map(duration),
             resets_at,

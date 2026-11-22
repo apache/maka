@@ -171,8 +171,15 @@ export function workspaceVersion(manifest) {
  * and icon macOS reads, and the Host's helper `Maka Host.app`, built beside
  * the shell.
  */
-export async function stageDesktopBundle(repositoryRoot, shell, destination, resources = []) {
-  const version = workspaceVersion(await readFile(join(repositoryRoot, 'Cargo.toml'), 'utf8'));
+export async function stageDesktopBundle(
+  repositoryRoot,
+  shell,
+  destination,
+  resources = [],
+  { executables = [], version: versionOverride } = {},
+) {
+  const version =
+    versionOverride ?? workspaceVersion(await readFile(join(repositoryRoot, 'Cargo.toml'), 'utf8'));
   const icon = icns(await readFile(join(repositoryRoot, 'assets/logo.png')));
   const metadata = await lstat(shell);
   if (!metadata.isFile() || metadata.size === 0) {
@@ -192,9 +199,23 @@ export async function stageDesktopBundle(repositoryRoot, shell, destination, res
     }
     await copyFile(shell, executable, constants.COPYFILE_FICLONE);
     await chmod(executable, 0o755);
-    await stageHostBundle(join(dirname(shell), 'maka-host-shell'), contents);
-    await chmod(stage, 0o755);
-    signBundle(stage, desktopApp.id);
+    const entitlements = join(stage, '..', `.maka-jit-${process.pid}-${Date.now()}.entitlements`);
+    await writeFile(entitlements, jitEntitlementsPlist(), 'utf8');
+    try {
+      for (const extra of executables) {
+        const target = join(contents, 'MacOS', basename(extra));
+        await copyFile(extra, target, constants.COPYFILE_FICLONE);
+        await chmod(target, 0o755);
+        signMachO(target, `${desktopApp.id}.${basename(extra)}`, {
+          entitlements: basename(extra) === 'maka' ? entitlements : undefined,
+        });
+      }
+      await stageHostBundle(join(dirname(shell), 'maka-host-shell'), contents);
+      await chmod(stage, 0o755);
+      signBundle(stage, desktopApp.id, { entitlements });
+    } finally {
+      await rm(entitlements, { force: true });
+    }
     await rm(destination, { recursive: true, force: true });
     await rename(stage, destination);
   } catch (error) {
@@ -236,15 +257,55 @@ async function stageHostBundle(hostShell, contents) {
   signBundle(dirname(host), hostApp.id);
 }
 
+function jitEntitlementsPlist() {
+  return [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
+    '<plist version="1.0">',
+    '<dict>',
+    '  <key>com.apple.security.cs.allow-jit</key>',
+    '  <true/>',
+    '</dict>',
+    '</plist>',
+    '',
+  ].join('\n');
+}
+
+function codesignArgs(identity, id, { entitlements } = {}) {
+  // Real Developer ID signatures need hardened runtime and a secure timestamp for notarization;
+  // V8 on Apple Silicon needs MAP_JIT (allow-jit) under hardened runtime.
+  const hardened = identity !== '-' && /Developer ID/u.test(identity);
+  return [
+    '--force',
+    '--sign',
+    identity,
+    '--identifier',
+    id,
+    ...(hardened
+      ? [
+          '--options',
+          'runtime',
+          '--timestamp',
+          ...(entitlements ? ['--entitlements', entitlements] : []),
+        ]
+      : ['--timestamp=none']),
+  ];
+}
+
+function signMachO(binary, id, options = {}) {
+  const identity = process.env.MAKA_CODESIGN_IDENTITY || '-';
+  execFileSync('/usr/bin/codesign', [...codesignArgs(identity, id, options), binary], {
+    stdio: 'pipe',
+  });
+}
+
 // Ad-hoc signatures change with every build, so macOS forgets privacy grants;
 // a stable local identity keeps them.
-function signBundle(bundle, id) {
+function signBundle(bundle, id, options = {}) {
   const identity = process.env.MAKA_CODESIGN_IDENTITY || '-';
-  execFileSync(
-    '/usr/bin/codesign',
-    ['--force', '--sign', identity, '--identifier', id, '--timestamp=none', bundle],
-    { stdio: 'pipe' },
-  );
+  execFileSync('/usr/bin/codesign', [...codesignArgs(identity, id, options), bundle], {
+    stdio: 'pipe',
+  });
   execFileSync(
     '/usr/bin/codesign',
     ['--verify', '--strict', '--test-requirement', `=identifier "${id}"`, bundle],

@@ -537,10 +537,10 @@ fn reports(value: &Value, out: &mut Vec<Value>) {
         }
         Value::String(text) => {
             for line in text.lines() {
-                if let Ok(v) = serde_json::from_str::<Value>(line) {
-                    if !v.is_string() {
-                        reports(&v, out);
-                    }
+                if let Ok(v) = serde_json::from_str::<Value>(line)
+                    && !v.is_string()
+                {
+                    reports(&v, out);
                 }
             }
         }

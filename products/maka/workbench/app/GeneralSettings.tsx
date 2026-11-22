@@ -33,6 +33,7 @@ import {
 } from './generalSettingsState.ts';
 import { ComposerToolbarSettings } from './ComposerToolbarSettings';
 import { composerToolbar } from './composerToolbar';
+import { appUpdater } from './appUpdater';
 import { UiScaleSettings } from './UiScaleSettings';
 import { PredictionSettings } from './PredictionSettings';
 import { uiScale } from './uiScale';
@@ -253,6 +254,7 @@ function GeneralRoot(props: { owner: GeneralSettingsOwner; request: GeneralActio
           />
         </If>
       </SettingsSection>
+      <UpdatesSection />
     </SettingsBody>
   );
 }
@@ -557,6 +559,106 @@ const paletteSwatch = (id: PaletteId) => {
   const colors = recipe ? paletteTokens(recipe, dark) : defaultColors(dark);
   return [colors.background, colors.raised, colors.accent];
 };
+
+function UpdatesSection() {
+  appUpdater.init();
+  const channelLabel = () => {
+    switch (appUpdater.snapshot()?.channel) {
+      case 'nightly':
+        return tr('Nightly (unofficial developer build)');
+      case 'release':
+        return tr('Release');
+      default:
+        return tr('Development');
+    }
+  };
+  const description = () => {
+    const state = appUpdater.snapshot();
+    if (!state) return undefined;
+    if (state.channel === 'dev') {
+      return tr('Automatic updates are disabled for local development builds.');
+    }
+    const version = state.available?.version ?? '';
+    switch (state.status) {
+      case 'checking':
+        return tr('Checking for updates…');
+      case 'available':
+        return state.canInstall
+          ? tr('Version {version} is available to download.', { version })
+          : tr('Version {version} is available for manual download.', { version });
+      case 'downloading': {
+        const pct = appUpdater.progressPercent();
+        return pct === null
+          ? tr('Downloading update {version}…', { version })
+          : tr('Downloading update {version}… {percent}%', { version, percent: String(pct) });
+      }
+      case 'ready':
+        return tr(
+          'Update {version} is ready. Maka Host will restart to apply it; active runs resume automatically.',
+          { version },
+        );
+      case 'installing':
+        return tr('Stopping Maka Host and applying update…');
+      case 'upToDate':
+        return tr('You are on the latest build for this channel.');
+      case 'error':
+        return state.error ?? tr('Update check failed.');
+      default:
+        return tr('Check for updates on this channel.');
+    }
+  };
+  return (
+    <If when={appUpdater.snapshot() !== null}>
+      <SettingsSection title={tr('Updates')}>
+        <SettingsRow
+          label={`${appUpdater.snapshot()?.currentVersion ?? ''} · ${channelLabel()}`}
+          description={description()}
+          trailing={
+            <If when={appUpdater.snapshot()?.channel !== 'dev'}>
+              <If when={appUpdater.snapshot()?.status === 'ready'}>
+                <SettingsButton
+                  tone="primary"
+                  label={tr('Restart to update')}
+                  onPress={() => void appUpdater.installAndRestart()}
+                />
+              </If>
+              <If when={appUpdater.snapshot()?.status === 'available'}>
+                <If
+                  when={appUpdater.snapshot()?.canInstall === true}
+                  else={
+                    <SettingsButton
+                      tone="primary"
+                      label={tr('Open download')}
+                      onPress={() => void appUpdater.openDownload()}
+                    />
+                  }
+                >
+                  <SettingsButton
+                    tone="primary"
+                    label={tr('Download update')}
+                    onPress={() => void appUpdater.download()}
+                  />
+                </If>
+              </If>
+              <If
+                when={
+                  appUpdater.snapshot()?.status === 'idle' ||
+                  appUpdater.snapshot()?.status === 'upToDate' ||
+                  appUpdater.snapshot()?.status === 'error'
+                }
+              >
+                <SettingsButton
+                  label={tr('Check for updates')}
+                  onPress={() => void appUpdater.check()}
+                />
+              </If>
+            </If>
+          }
+        />
+      </SettingsSection>
+    </If>
+  );
+}
 
 function Swatch(props: { id: PaletteId }) {
   return (

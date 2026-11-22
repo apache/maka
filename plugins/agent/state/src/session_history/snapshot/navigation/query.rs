@@ -18,6 +18,7 @@
  */
 //! Indexed coordinates and bounded verification over derived UTF-8 chunks.
 use super::*;
+use crate::session_history::evidence::IndexedBody;
 use regex::{Regex, RegexBuilder};
 const POSITION_JSON: &str = "CASE WHEN p.kind='canonical' THEN json_object('kind','canonical','run',p.run,'sequence',p.major,'admission_sequence',p.admission_sequence,'fact',p.fact,'item_index',p.minor,'internal',json(CASE p.internal WHEN 1 THEN 'true' ELSE 'false' END)) ELSE json_object('kind','imported','message_ordinal',p.major,'part_ordinal',p.minor,'internal',json(CASE p.internal WHEN 1 THEN 'true' ELSE 'false' END)) END";
 #[derive(Clone)]
@@ -28,6 +29,7 @@ pub(in crate::session_history) struct FindInput {
     pub case_sensitive: bool,
     pub whole_word: bool,
     pub include_internal: bool,
+    pub mask_evidence: bool,
     pub work: crate::recall::FindWork,
 }
 pub(in crate::session_history) struct LocalFound {
@@ -162,37 +164,121 @@ impl Query for FindQuery {
                 )?
                 .collect::<Result<Vec<_>, _>>()?
         };
+        let rows = headers
+            .into_iter()
+            .map(|(id, raw, bytes)| {
+                Ok((id, serde_json::from_str::<SnapshotPosition>(&raw)?, bytes))
+            })
+            .collect::<Result<Vec<_>, StoreError>>()?;
+        let restrictions = if input.mask_evidence {
+            let mut canonical = Vec::new();
+            let mut imported = Vec::new();
+            for (index, (_, row, _)) in rows.iter().enumerate() {
+                match row {
+                    SnapshotPosition::Canonical {
+                        fact, item_index, ..
+                    } => canonical.push((index, *fact, *item_index)),
+                    SnapshotPosition::Imported {
+                        message_ordinal,
+                        part_ordinal,
+                        ..
+                    } => imported.push((index, snapshot.id, *message_ordinal, *part_ordinal)),
+                }
+            }
+            crate::memory::recall::indexed_spans(c, snapshot.owner(), &canonical, &imported)?
+        } else {
+            Default::default()
+        };
         let mut matches = Vec::new();
         let mut processed = 0;
         let mut work = input.work;
         let mut last = None;
-        for (id, raw, bytes) in &headers {
+        for (index, (id, row, bytes)) in rows.iter().enumerate() {
             check(&stop)?;
-            let row: SnapshotPosition = serde_json::from_str(raw)?;
+            let spans = restrictions.get(&index);
             let bytes =
                 u64::try_from(*bytes).map_err(|_| invalid("negative derived field bytes"))?;
             if !work.admit(bytes) {
                 break;
             }
-            let fields=c.prepare_cached(&format!("SELECT f.ordinal,f.field FROM agent_history_snapshot_nav_fields f WHERE f.document=?{fields_visible} ORDER BY f.ordinal"))?.query_map([id],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,String>(1)?)))?.collect::<Result<Vec<_>,_>>()?;
-            for (ordinal, field) in fields {
-                if let Some(preview) = search_field(c, *id, ordinal, &matcher, &input.query, &stop)?
+            processed += 1;
+            last = Some(row.clone());
+            let spans = spans.map(Vec::as_slice).unwrap_or_default();
+            if spans.contains(&(0, i64::MAX as u64)) {
+                continue;
+            }
+            let original = match row {
+                SnapshotPosition::Canonical {
+                    fact, item_index, ..
+                } if !spans.is_empty() => {
+                    IndexedBody::load(c, snapshot.owner(), *fact, *item_index)?
+                }
+                _ => None,
+            };
+            let canonical_sequence = match row {
+                SnapshotPosition::Canonical { sequence, .. } if !spans.is_empty() => {
+                    Some(bind_u64(*sequence)?)
+                }
+                _ => None,
+            };
+            // External tool progress and results store the original text as their sole Result field.
+            let mut stmt = c.prepare_cached(&format!(
+                "SELECT f.ordinal, f.field, f.bytes, f.internal, CASE WHEN ?2 IS NOT NULL AND f.field='\"result\"' THEN EXISTS (
+                   SELECT 1 FROM agent_history_snapshot_entries e WHERE e.snapshot=?3 AND e.kind='fact'
+                   AND e.sequence=?2 AND e.fact_kind='external_task_observed') ELSE 0 END
+                 FROM agent_history_snapshot_nav_fields f WHERE f.document=?1{fields_visible} ORDER BY f.ordinal"
+            ))?;
+            let mut fields =
+                stmt.query(params![id, canonical_sequence, snapshot.id.to_string()])?;
+            while let Some(row_field) = fields.next()? {
+                let ordinal: i64 = row_field.get(0)?;
+                let field = serde_json::from_str(&row_field.get::<_, String>(1)?)?;
+                let bytes = read_u64(row_field, 2)?;
+                let internal: bool = row_field.get(3)?;
+                let external_result: bool = row_field.get(4)?;
+                let chunks = FieldChunks {
+                    document: *id,
+                    ordinal,
+                    bytes,
+                };
+                let original_text = ordinal == 0
+                    && (matches!(field, Field::Body | Field::Thinking | Field::FailureMessage)
+                        || (field == Field::ToolName && canonical_sequence.is_some())
+                        || external_result);
+                let proof = if spans.is_empty() || original_text {
+                    None
+                } else {
+                    let Some(body) = &original else { continue };
+                    let Some(start) = body.field_start(&chunks, field, internal) else {
+                        continue;
+                    };
+                    Some((body, start))
+                };
+                let start = proof.map_or(0, |(_, start)| start);
+                if spans.iter().any(|&(a, b)| a <= start && b >= start + bytes) {
+                    continue;
+                }
+                if let Some(preview) =
+                    search_field(c, &chunks, &matcher, &input.query, start, spans, &stop)?
                 {
+                    if let Some((body, start)) = proof
+                        && !body.matches(c, &chunks, start, &stop)?
+                    {
+                        continue;
+                    }
                     matches.push(LocalFound {
                         row: row.clone(),
-                        field: serde_json::from_str(&field)?,
+                        field,
                         preview,
                     });
                     break;
                 }
             }
-            processed += 1;
-            last = Some(row);
             if matches.len() == 16 {
                 break;
             }
         }
-        let next_after = if processed < headers.len() {
+        let next_after = if processed < rows.len() {
             last.clone()
         } else {
             None
@@ -208,20 +294,65 @@ impl Query for FindQuery {
 fn header(r: &rusqlite::Row<'_>) -> rusqlite::Result<(i64, String, i64)> {
     Ok((r.get(0)?, r.get(1)?, r.get(2)?))
 }
+impl IndexedBody<'_> {
+    fn field_start(&self, chunks: &FieldChunks, field: Field, internal: bool) -> Option<u64> {
+        let span = self.fields.get(usize::try_from(chunks.ordinal).ok()?)?;
+        (span.field == field
+            && span.internal == internal
+            && span.end.checked_sub(span.start)? as u64 == chunks.bytes
+            && span.end <= self.body.len())
+        .then_some(span.start as u64)
+    }
+
+    // Only verify a matching field. Different serializers can preserve its size while moving text.
+    fn matches(
+        &self,
+        c: &Connection,
+        chunks: &FieldChunks,
+        start: u64,
+        stop: &CancellationToken,
+    ) -> Result<bool, StoreError> {
+        let mut stmt = c.prepare_cached("SELECT body FROM agent_history_snapshot_nav_chunks WHERE document=? AND field_ordinal=? ORDER BY ordinal")?;
+        let mut rows = stmt.query(params![chunks.document, chunks.ordinal])?;
+        let mut offset = start as usize;
+        let end = offset + chunks.bytes as usize;
+        let mut buffer = Vec::new();
+        while let Some(row) = rows.next()? {
+            check(stop)?;
+            let text: String = row.get(0)?;
+            if text.len() > end - offset {
+                return Ok(false);
+            }
+            buffer.resize(text.len(), 0);
+            self.body.read_at_exact(&mut buffer, offset)?;
+            if buffer != text.as_bytes() {
+                return Ok(false);
+            }
+            offset += text.len();
+        }
+        Ok(offset == end)
+    }
+}
+
+struct FieldChunks {
+    document: i64,
+    ordinal: i64,
+    bytes: u64,
+}
 fn search_field(
     c: &Connection,
-    document: i64,
-    field: i64,
+    chunks: &FieldChunks,
     matcher: &Regex,
     query: &str,
+    start_byte: u64,
+    spans: &[(u64, u64)],
     stop: &CancellationToken,
 ) -> Result<Option<String>, StoreError> {
-    let expected: i64 = c.query_row(
-        "SELECT bytes FROM agent_history_snapshot_nav_fields WHERE document=? AND ordinal=?",
-        params![document, field],
-        |r| r.get(0),
-    )?;
-    let expected = u64::try_from(expected).map_err(|_| invalid("negative field byte count"))?;
+    let FieldChunks {
+        document,
+        ordinal: field,
+        bytes: expected,
+    } = *chunks;
     let keep = query
         .chars()
         .count()
@@ -234,7 +365,16 @@ fn search_field(
     loop {
         check(stop)?;
         let chunk=c.query_row("SELECT body FROM agent_history_snapshot_nav_chunks WHERE document=? AND field_ordinal=? AND ordinal=?",params![document,field,ordinal],|r|r.get::<_,String>(0)).optional()?;
-        if let Some(chunk) = chunk {
+        if let Some(mut chunk) = chunk {
+            let chunk_bytes = chunk.len();
+            crate::memory::recall::mask(
+                &mut chunk,
+                start_byte + offset + window.len() as u64,
+                spans,
+            );
+            if chunk.len() != chunk_bytes {
+                return Ok(None);
+            }
             window.push_str(&chunk);
         } else if offset + window.len() as u64 != expected {
             return Err(invalid(
@@ -346,4 +486,48 @@ impl Query for LandmarkCount {
         let count:i64=c.query_row("SELECT COUNT(*) FROM(SELECT d.kind,CASE WHEN d.kind='canonical' THEN d.turn ELSE NULL END,d.turn_ordinal FROM agent_history_snapshot_nav_documents d JOIN agent_history_snapshot_positions p ON p.snapshot=d.snapshot AND p.kind=d.kind AND p.major=d.major AND p.minor=d.minor WHERE d.snapshot=? AND p.internal=0 AND d.role='\"user\"' AND d.origin_json IS NULL AND (p.kind='imported' OR p.admission_sequence>?) GROUP BY d.kind,CASE WHEN d.kind='canonical' THEN d.turn ELSE NULL END,d.turn_ordinal)",params![self.0.id.to_string(),bind_u64(self.1)?],|r|r.get(0))?;
         u64::try_from(count).map_err(|_| invalid("negative source turn count"))
     }
+}
+
+#[cfg(test)]
+#[test]
+fn matching_preview_requires_the_entire_original_field() -> Result<(), StoreError> {
+    let c = Connection::open_in_memory()?;
+    c.execute_batch(
+        "CREATE TABLE original(body TEXT);
+         INSERT INTO original VALUES ('prefix:route west');
+         CREATE TABLE agent_history_snapshot_nav_chunks(document,field_ordinal,ordinal,body);
+         INSERT INTO agent_history_snapshot_nav_chunks VALUES (1,1,0,'route '),(1,1,1,'east');",
+    )?;
+    let span = crate::recall::FieldSpan {
+        field: Field::Arguments,
+        start: 7,
+        end: 17,
+        internal: false,
+    };
+    let body = IndexedBody {
+        body: c.blob_open("main", "original", "body", 1, true)?,
+        fields: vec![
+            crate::recall::FieldSpan {
+                field: Field::ToolName,
+                start: 0,
+                end: 6,
+                internal: false,
+            },
+            span,
+        ],
+    };
+    let chunks = FieldChunks {
+        document: 1,
+        ordinal: 1,
+        bytes: 10,
+    };
+    let start = body.field_start(&chunks, Field::Arguments, false).unwrap();
+    let stop = CancellationToken::new();
+    assert!(!body.matches(&c, &chunks, start, &stop)?);
+    c.execute(
+        "UPDATE agent_history_snapshot_nav_chunks SET body='west' WHERE ordinal=1",
+        [],
+    )?;
+    assert!(body.matches(&c, &chunks, start, &stop)?);
+    Ok(())
 }

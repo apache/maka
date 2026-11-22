@@ -233,6 +233,8 @@ mod tests {
         let text = format!("{}匹配位置\n{}", "旧正文".repeat(300), "尾部".repeat(800));
         let result = tool_passages(
             ResultSet {
+                facts: vec![],
+                next_facts_after: None,
                 passages: vec![Passage {
                     session_id: "session".into(),
                     session_title: "Search fixture".into(),

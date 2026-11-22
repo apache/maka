@@ -71,6 +71,18 @@ fn run(first: Connection, root: Root, runtime: tokio::runtime::Runtime) -> Resul
     let detach = Detach::new(bindings, runtime);
     let (active, foreground) = watch::channel(false);
     let (shell, requests) = Shell::new(foreground);
+    let (active_host_tx, active_host_rx) = watch::channel((endpoint.clone(), epoch));
+    let (updating_tx, updating_rx) = watch::channel(false);
+    let updater = crate::updater::Controller::new(
+        root.path().to_path_buf(),
+        active_host_rx,
+        updating_tx,
+        shell.exit_sender(),
+        shell.events.clone(),
+        handle.clone(),
+    );
+    let updater_exit = std::sync::Arc::clone(&updater);
+    let shell = shell.with_updater(updater);
     glib::set_prgname(Some(APP_ID));
     let app = gtk::Application::builder()
         .application_id(APP_ID)
@@ -126,10 +138,13 @@ fn run(first: Connection, root: Root, runtime: tokio::runtime::Runtime) -> Resul
             handle.clone(),
             follow_detach,
             shell.clone(),
+            active_host_tx.clone(),
+            updating_rx.clone(),
         );
         window.present();
     });
     let result = app.run_with_args::<&str>(&[]);
+    updater_exit.wait_for_in_flight_swap();
     // Covers display initialization failures and shutdown without close-request.
     glib::MainContext::default().block_on(detach.start());
     if result == glib::ExitCode::SUCCESS {
@@ -382,6 +397,8 @@ fn follow(
     runtime: Handle,
     detach: Detach,
     shell: Shell,
+    active_host: watch::Sender<(PathBuf, uuid::Uuid)>,
+    mut updating: watch::Receiver<bool>,
 ) {
     glib::MainContext::default().spawn_local(async move {
         let mut pause = FIRST_PAUSE;
@@ -403,6 +420,17 @@ fn follow(
                     }
                 }
             }
+            while *updating.borrow_and_update() {
+                if detach.0.borrow().quitting || window.upgrade().is_none() {
+                    return;
+                }
+                if updating.changed().await.is_err() {
+                    return;
+                }
+            }
+            if detach.0.borrow().quitting || window.upgrade().is_none() {
+                return;
+            }
             let Some((stale, moving)) = detach.take() else { return; };
             let _ = detach.close(stale).await;
             drop(moving);
@@ -412,6 +440,14 @@ fn follow(
                 if wait {
                     glib::timeout_future(pause).await;
                     pause = (pause * 2).min(RECONNECT_LIMIT);
+                }
+                while *updating.borrow_and_update() {
+                    if detach.0.borrow().quitting || window.upgrade().is_none() {
+                        return;
+                    }
+                    if updating.changed().await.is_err() {
+                        return;
+                    }
                 }
                 wait = true;
                 let Some(moving) = detach.moving() else { return; };
@@ -428,6 +464,7 @@ fn follow(
                 return;
             }
             drop(moving);
+            active_host.send_replace((endpoint.clone(), epoch));
             current = ConnectedView::new((endpoint, epoch), shell.attach(config));
             if window.upgrade().is_none() { return; }
             view.load_with_config(current.config.clone());
@@ -722,13 +759,15 @@ mod tests {
         }
 
         fn load_source(&self, source: &str) -> (EngineConfig, mpsc::UnboundedReceiver<JsonValue>) {
-            let mut policy = nsh_engine::Policy::default();
-            policy.declared = Some(
-                nsh_engine::parse_capabilities(
-                    r#"{"host":["observed"],"windows":{},"application":true}"#,
-                )
-                .unwrap(),
-            );
+            let policy = nsh_engine::Policy {
+                declared: Some(
+                    nsh_engine::parse_capabilities(
+                        r#"{"host":["observed"],"windows":{},"application":true}"#,
+                    )
+                    .unwrap(),
+                ),
+                ..Default::default()
+            };
             let config =
                 EngineConfig::new(nsh_engine::Bundle::source(source.into()).with_policy(policy));
             let (observed, received) = mpsc::unbounded_channel();

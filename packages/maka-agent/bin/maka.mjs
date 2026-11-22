@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 /*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
@@ -17,4 +18,9 @@
  * under the License.
  */
 
-mod support;
+import { createRequire } from 'node:module';
+import { pathToFileURL } from 'node:url';
+
+const require = createRequire(import.meta.url);
+const entry = require.resolve('@maka-agent/cli/bin/maka.mjs');
+await import(pathToFileURL(entry).href);

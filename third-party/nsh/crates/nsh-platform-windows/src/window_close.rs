@@ -38,16 +38,14 @@ pub(crate) fn close_press(surface: &Surface, reason: CloseReason) {
     let Some(shell) = crate::window::shell(hwnd) else {
         return;
     };
-    let closes = shell.attrs().close_on_press;
     let mut running = false;
     surface.control(|_| running = true);
     if !running {
         // No app to ask: it closes as any window does.
-        if closes {
-            destroy(hwnd);
-        }
+        destroy(hwnd);
         return;
     }
+    let closes = shell.attrs().close_on_press;
     surface.event(
         ROOT_ID,
         EventKind::Window,

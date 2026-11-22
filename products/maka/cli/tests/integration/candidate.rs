@@ -349,6 +349,11 @@ async fn verify_takeover(root: &Path, registration: &Value, client: &mut Client)
                 .await
                 .unwrap()
         );
+        assert!(
+            !Client::retire_if_no_sessions(&discovery.endpoint, client.epoch(), true)
+                .await
+                .unwrap()
+        );
         observer.close().await.unwrap();
         assert!(
             Client::retire_with_options(&discovery.endpoint, client.epoch(), false, true)

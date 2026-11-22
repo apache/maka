@@ -64,6 +64,8 @@ macOS 构建会在 `maka` 同级目录生成 `Maka.app`，Windows 产物带 `.ex
 
 ## 分发方式
 
-`@maka-agent/cli` 只做按平台分发并启动原生二进制的薄封装，本身不包含运行时逻辑；各平台二进制由同一份经校验的源码归档构建，发布流程见 [packages/cli](packages/cli/README.zh-CN.md)。
+**Apache Releases**：最新获批的正式版本是 Apache Maka `0.2.2`（孵化中）。带签名的源码包才是正式 release，下载与验包步骤见[下载页面](https://maka.apache.org/zh-CN/downloads/)与 [`.github/ASF_SOURCE_RELEASE.md`](.github/ASF_SOURCE_RELEASE.md)。
+
+**便利构建**：`@maka-agent/cli` 只做按平台分发并启动原生二进制的薄封装，本身不包含运行时逻辑；各平台二进制由同一份经校验的源码归档构建，发布流程见 [packages/cli](packages/cli/README.zh-CN.md)。
 
 Apache Maka 正在 Apache 软件基金会（ASF）孵化，详见 [DISCLAIMER](DISCLAIMER)、[LICENSE](LICENSE) 与 [NOTICE](NOTICE)。

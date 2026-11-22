@@ -363,11 +363,7 @@ impl Document {
     }
     pub async fn finish(self) -> Result<(), StoreError> {
         check(&self.stop)?;
-        let label = self
-            .label
-            .chars()
-            .map(|c| if c.is_control() { ' ' } else { c })
-            .collect();
+        let label = crate::recall::landmark_label(&self.label);
         self.snapshot
             .data
             .write(Write {

@@ -119,7 +119,12 @@ pub(super) async fn run(args: Args) -> Result<(), maka_host_runtime::HostError> 
     let owner = if args.root.join(maka_event_log::root::ROOT_MARKER).exists() {
         RootOwner::open(&args.root, &namespaces)?
     } else {
-        RootOwner::create(&args.root, &namespaces)?
+        let _launch = crate::deployment::acquire_launch_lock(&args.root, &namespaces)?;
+        if args.root.join(maka_event_log::root::ROOT_MARKER).exists() {
+            RootOwner::open(&args.root, &namespaces)?
+        } else {
+            RootOwner::create(&args.root, &namespaces)?
+        }
     };
     let root = Arc::new(
         maka_transport::open_store(Arc::new(owner), &maka_product_native::root_migrations())

@@ -235,7 +235,7 @@ export function installation(
     [
       'sessionRead',
       'SessionRead',
-      'Inspect an Agent conversation or Room in one call: metadata, active/latest Run state and blockers, pending questions/approvals, queued messages, and transcript. Omit sessionId to inspect your own Session. Links like [#Room](maka://session/<id>) or [@Conversation](maka://session/<id>) can be read with Read({ path: "maka://session/<id>" }) or SessionRead({ sessionId: "<id>" }). For Agent sessions, view defaults to "turns" (conversation digest with resultPath URIs you can pass to Read for full tool outputs); use "raw" for raw chunks or "status_only" to skip transcript rows. Paginate with beforeCursor/afterCursor as cursor, navigate Rooms with messageId + anchor ("at" | "before" | "after"), or pass row for exact Recall/Cell lookups.',
+      'Inspect an Agent conversation or Room in one call: metadata, active/latest Run state and blockers, pending questions/approvals, queued messages, Room roster/topic/pins, and transcript. Omit sessionId to inspect your own Session. Links like [#Room](maka://session/<id>), [@Conversation](maka://session/<id>), or Room attachment URIs maka://session/<id>/attachments/<attachment-id> can be read with Read({ path }) or SessionRead({ sessionId: "<id>" }). For Agent sessions, view defaults to "turns" (conversation digest with resultPath URIs you can pass to Read for full tool outputs); use "raw" for raw chunks or "status_only" to skip transcript rows. Paginate with beforeCursor/afterCursor as cursor, navigate Rooms with messageId + anchor ("at" | "before" | "after" | "around"), search Rooms with searchQuery, or pass row for exact Recall/Cell lookups.',
     ],
     [
       'sessionCreate',
@@ -245,7 +245,7 @@ export function installation(
     [
       'sessionSend',
       'SessionSend',
-      'Send a message to an Agent conversation (a worker you created or an existing conversation when requested) or post to a Room. For Room posts, replyTo threads your reply and mentions wakes listed Agent session IDs. For Agent workers, state the objective, context, constraints, and expected deliverable (workers do not share your chat history unless forked). Delivery defaults to "steer" to guide an active turn immediately; use "queue" to wait until the current turn ends. For Agent callers, onComplete defaults to "notify_caller", waking you automatically with an inline <worker_result> summary when the target finishes or needs attention—do other work or finish your turn instead of polling.',
+      'Send a message to an Agent conversation (a worker you created or an existing conversation when requested) or post to a Room. For Room posts, replyTo threads your reply, inline [@Name](maka://session/<id>) tokens or mentions wake listed Agent sessions (with automatic Room context, co-mentions, and hop-limit safety), and attachments may reference uploads in the Room or your own Session. Delivery defaults to "steer" (injected cleanly at the next step boundary so long-running teammates stay responsive); pass "queue" to wait until their active turn finishes. For Agent workers, state the objective, context, constraints, and expected deliverable (workers do not share your chat history unless forked); onComplete defaults to "notify_caller" when messaging a worker, waking you automatically with an inline <worker_result> summary.',
     ],
     [
       'respond',
@@ -260,7 +260,7 @@ export function installation(
     [
       'sessionManage',
       'SessionManage',
-      'Manage Session metadata, lifecycle, queued messages, or native-model Run continuation via action: update (title, labels, pinned), archive, restore, remove (deletes history permanently; not needed to hide workers, which are already hidden from the main sidebar), edit_queue (retract, promote, update, or reorder messages sent by your Session), or continue_run (continue an eligible terminal native-model Run). Omit expectedRevision to apply against current state, or pass it for optimistic concurrency.',
+      'Manage Session metadata, lifecycle, queued messages, native-model Run continuation, or Room collaboration state via action: update (title, labels, pinned), archive, restore, remove (deletes history permanently; not needed to hide workers, which are already hidden from the main sidebar), edit_queue (retract, promote, update, or reorder messages sent by your Session), continue_run (continue an eligible terminal native-model Run), or for Rooms: room_topic, room_members, room_react (lightweight acknowledgement like ✅ or 👀), room_pin, room_edit, and room_delete. Omit expectedRevision to apply against current state, or pass it for optimistic concurrency.',
     ],
   ] as const satisfies readonly (readonly [keyof ServiceMethods['agent'], string, string])[])
     tools.push({

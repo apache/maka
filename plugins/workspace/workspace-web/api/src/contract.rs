@@ -83,10 +83,14 @@ pub struct Key {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 #[schemars(rename = "WebUpdate")]
 pub enum Update {
-    Updated { snapshot: crate::settings::Snapshot },
+    Updated {
+        snapshot: Box<crate::settings::Snapshot>,
+    },
     Changed,
     InvalidKey,
-    InvalidSettings { message: String },
+    InvalidSettings {
+        message: String,
+    },
     CheckUnavailable,
 }
 #[derive(Serialize, Deserialize, JsonSchema)]

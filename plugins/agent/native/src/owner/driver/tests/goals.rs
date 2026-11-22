@@ -228,7 +228,7 @@ async fn exercise(
         .await?
         .ok_or("worker notice was not queued")?;
     assert_eq!(
-        stop(&rig, &session, older_run).await?,
+        stop(rig, &session, older_run).await?,
         json!({"requested":true})
     );
     assert_eq!(current(rig, &session).await?.status, Status::Active);
@@ -237,12 +237,12 @@ async fn exercise(
     writer.write(Sql("CREATE TRIGGER reject_goal_pause BEFORE UPDATE ON plugin_data
             WHEN NEW.package_id = 'maka.agent.goal' AND json_extract(NEW.value_json, '$.status') = 'paused'
             BEGIN SELECT RAISE(ABORT, 'goal_pause_rejected'); END;")).await?;
-    let error = stop(&rig, &session, run).await.unwrap_err();
+    let error = stop(rig, &session, run).await.unwrap_err();
     assert!(error.to_string().contains("goal_pause_rejected"), "{error}");
     assert!(!driver.state.frontier(run).await?.stopped);
     assert_eq!(current(rig, &session).await?.status, Status::Active);
     writer.write(Sql("DROP TRIGGER reject_goal_pause")).await?;
-    assert_eq!(stop(&rig, &session, run).await?, json!({"requested":true}));
+    assert_eq!(stop(rig, &session, run).await?, json!({"requested":true}));
     assert!(driver.state.frontier(run).await?.stopped);
     assert!(!driver.state.frontier(observed).await?.stopped);
     assert_eq!(current(rig, &session).await?.status, Status::Paused);
@@ -336,7 +336,7 @@ async fn exercise(
     );
 
     // A new stop command for the stopped Run cannot undo the explicit resume.
-    assert_eq!(stop(&rig, &session, run).await?, json!({"requested":true}));
+    assert_eq!(stop(rig, &session, run).await?, json!({"requested":true}));
     assert_eq!(current(rig, &session).await?.status, Status::Active);
     Ok(())
 }

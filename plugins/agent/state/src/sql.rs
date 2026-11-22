@@ -706,8 +706,11 @@ fn validate_request(
     let request: RequestSpec = decode(c, reference)?;
     version(request.schema_version)?;
     request.accounting.validate().map_err(invalid)?;
+    let surface: maka_agent_facts::composition::CompositionSurface =
+        decode(c, &request.composition.surface)?;
+    request.composition.validate(&surface).map_err(invalid)?;
     let fallback = if proactive {
-        compaction::validate_proactive_request(c, view, &request)?;
+        compaction::validate_proactive_request(c, view, &request, &surface)?;
         None
     } else {
         validate_request_lineage(c, view, &request)?
@@ -723,7 +726,6 @@ fn validate_request(
     {
         return Err(invalid("invalid frozen source digest"));
     }
-    request.composition.clone().freeze().map_err(invalid)?;
     if request
         .adjudications
         .iter()
@@ -1959,14 +1961,7 @@ pub(crate) fn ready(
     }
     Ok(ready)
 }
-pub(crate) fn model_reconciliation_runs(
-    c: &Connection,
-    owner: RunOwner,
-    after: Option<u64>,
-    count: u32,
-    cold_probe: bool,
-) -> Result<Vec<crate::store::ReadyRun>, StoreError> {
-    let mut statement = c.prepare_cached("WITH candidates AS (
+const MODEL_RECONCILIATION_RUNS_SQL: &str = "WITH candidates AS (
         SELECT a.run FROM agent_attempts a INDEXED BY agent_model_cleanup_pending
         WHERE json_extract(a.body,'$.admission') IS NOT NULL AND json_extract(a.body,'$.cleanup.kind') IS NOT 'confirmed'
         AND (?4=1 OR EXISTS(SELECT 1 FROM agent_runs live WHERE live.run=a.run AND live.terminal IS NULL))
@@ -1989,8 +1984,17 @@ pub(crate) fn model_reconciliation_runs(
                 AND json_extract(b.body,'$.reason.kind') IS NOT 'current_authority_unavailable')
             AND NOT EXISTS(SELECT 1 FROM agent_attempts pending INDEXED BY agent_model_cleanup_pending WHERE pending.run=r.run
                 AND json_extract(pending.body,'$.admission') IS NOT NULL AND json_extract(pending.body,'$.cleanup.kind') IS NOT 'confirmed')
-    ) SELECT r.run,r.admission_sequence,r.session FROM candidates p JOIN agent_runs r ON r.run=p.run
-        WHERE r.owner=?1 AND r.local=1 AND r.admission_sequence>?2 ORDER BY r.admission_sequence LIMIT ?3")?;
+    ) SELECT r.run,r.admission_sequence,r.session FROM candidates p CROSS JOIN agent_runs r ON r.run=p.run
+        WHERE r.owner=?1 AND r.local=1 AND r.admission_sequence>?2 ORDER BY r.admission_sequence LIMIT ?3";
+
+pub(crate) fn model_reconciliation_runs(
+    c: &Connection,
+    owner: RunOwner,
+    after: Option<u64>,
+    count: u32,
+    cold_probe: bool,
+) -> Result<Vec<crate::store::ReadyRun>, StoreError> {
+    let mut statement = c.prepare_cached(MODEL_RECONCILIATION_RUNS_SQL)?;
     let mut rows = statement.query(params![
         serde_json::to_string(&owner)?,
         signed(after.unwrap_or(0))?,
@@ -2138,11 +2142,27 @@ pub(crate) fn cleanup_frontier(
         not_before: task.cleanup_not_before,
     })
 }
+// Nonempty answer parts are contiguous. The first end at or beyond the page end
+// is the inclusive upper key on (run, end), even when a page cuts through a part.
+const ANSWER_TEXT: &str =
+    "SELECT substr(c.payload,max(?1-p.start,0)+1,min(p.end,?2)-max(p.start,?1))
+    FROM agent_answer_parts p JOIN contents c ON c.id=p.content_id
+    WHERE p.run=?3 AND p.end>?1
+      AND p.end<=(SELECT min(end) FROM agent_answer_parts WHERE run=?3 AND end>=?2)
+    ORDER BY p.end";
+const ANSWER_SPANS: &str = "SELECT p.start+s.start,p.start+s.end FROM agent_answer_parts p
+    CROSS JOIN agent_facts f ON f.run=p.run AND f.revision=p.revision
+    CROSS JOIN agent_memory_hidden_spans s
+    WHERE p.run=?1 AND p.end>?2
+      AND p.end<=(SELECT min(end) FROM agent_answer_parts WHERE run=?1 AND end>=?3)
+      AND s.namespace=?4 AND s.fact=f.id AND s.ordinal=0";
+
 pub(crate) fn work(
     c: &Connection,
     run: RunId,
     offset: u64,
     count: u32,
+    model_read: bool,
 ) -> Result<Option<crate::store::RunObservation>, StoreError> {
     if !(4..=65536).contains(&count) {
         return Err(invalid("answer page size must be in 4..=65536 bytes"));
@@ -2158,7 +2178,7 @@ pub(crate) fn work(
         return Err(invalid("answer offset is beyond the captured prefix"));
     }
     let end = offset.saturating_add(u64::from(count)).min(high_water);
-    let mut statement=c.prepare_cached("SELECT substr(c.payload,max(?1-p.start,0)+1,min(p.end,?2)-max(p.start,?1)) FROM agent_answer_parts p JOIN contents c ON c.id=p.content_id WHERE p.run=?3 AND p.end>?1 AND p.start<?2 ORDER BY p.start")?;
+    let mut statement = c.prepare_cached(ANSWER_TEXT)?;
     let mut rows = statement.query(params![signed(offset)?, signed(end)?, run.to_string()])?;
     let mut bytes = Vec::new();
     while let Some(row) = rows.next()? {
@@ -2176,7 +2196,23 @@ pub(crate) fn work(
     if next == offset && offset < high_water {
         return Err(invalid("answer page made no UTF-8 progress"));
     }
-    let text = String::from_utf8(bytes).map_err(|_| invalid("invalid canonical answer bytes"))?;
+    let mut text =
+        String::from_utf8(bytes).map_err(|_| invalid("invalid canonical answer bytes"))?;
+    if model_read && !text.is_empty() {
+        let mut stmt = c.prepare_cached(ANSWER_SPANS)?;
+        let spans = stmt
+            .query_map(
+                params![
+                    run.to_string(),
+                    signed(offset)?,
+                    signed(next)?,
+                    serde_json::to_string(&view.spec.owner)?
+                ],
+                |row| Ok((column_u64(row, 0)?, column_u64(row, 1)?)),
+            )?
+            .collect::<Result<Vec<_>, _>>()?;
+        crate::memory::recall::mask(&mut text, offset, &spans);
+    }
     let pending_interactions =
         if !view.stopped && view.terminal.is_none() && matches!(view.spec.origin, RunOrigin::Local)
         {
@@ -2252,4 +2288,121 @@ pub(crate) fn model_items(
         result.push(fact);
     }
     Ok(result)
+}
+
+#[cfg(test)]
+mod answer_page_tests {
+    use super::*;
+    use rusqlite::StatementStatus;
+
+    #[test]
+    fn answer_pages_visit_only_intersecting_parts() {
+        let db = Connection::open_in_memory().unwrap();
+        let catalog: Vec<_> = maka_event_log::ROOT_MIGRATIONS
+            .iter()
+            .chain(crate::MIGRATIONS)
+            .copied()
+            .collect();
+        maka_event_log::migration::run(&db, &catalog).unwrap();
+        db.execute_batch(r#"
+            INSERT INTO contents VALUES(1,'spec',x'7b7d'),(2,'text',CAST('A你B' AS BLOB));
+            INSERT INTO agent_run_specs VALUES('run',1,'owner','chat',1);
+            INSERT INTO agent_memories VALUES('owner','personal','m',1,1,'user_recall','suppressed',0,0);
+            INSERT INTO agent_memory_versions(namespace,scope,id,revision,body,source,digest,disposition)
+              VALUES('owner','personal','m',1,'sample','{}','digest','suppressed');
+            INSERT INTO agent_memory_evidence(namespace,scope,id,assertion,source,source_key)
+              VALUES('owner','personal','m',1,'{"kind":"conversation","reference":{"sessionId":"chat","sequence":2,"factId":"f2","itemIndex":0,"start":1,"end":4}}','address');
+        "#).unwrap();
+        let window = |start: i64, end: i64| {
+            let mut body = db.prepare(ANSWER_TEXT).unwrap();
+            let mut bytes = Vec::new();
+            for chunk in body
+                .query_map(params![start, end, "run"], |r| r.get::<_, Vec<u8>>(0))
+                .unwrap()
+            {
+                bytes.extend(chunk.unwrap());
+            }
+            let mut evidence = db.prepare(ANSWER_SPANS).unwrap();
+            let spans = evidence
+                .query_map(params!["run", start, end, "owner"], |r| {
+                    Ok((column_u64(r, 0)?, column_u64(r, 1)?))
+                })
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+            let mut text = String::from_utf8(bytes).unwrap();
+            crate::memory::recall::mask(&mut text, start as u64, &spans);
+            (
+                text,
+                body.get_status(StatementStatus::VmStep),
+                evidence.get_status(StatementStatus::VmStep),
+            )
+        };
+        let mut costs = Vec::new();
+        let mut previous = 0;
+        for count in [16, 2048] {
+            db.execute(
+                "WITH RECURSIVE n(v) AS (VALUES(?1+1) UNION ALL SELECT v+1 FROM n WHERE v<?2)
+                        INSERT INTO agent_facts SELECT v,'f'||v,'run',v,1,0,1 FROM n",
+                params![previous, count],
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO agent_answer_parts SELECT 'run',revision,5*(revision-1),5*revision,2
+                        FROM agent_facts WHERE revision>?",
+                [previous],
+            )
+            .unwrap();
+            let early = window(4, 11);
+            let late = window(5 * count - 6, 5 * count);
+            assert_eq!(early.0, "BA***BA");
+            assert_eq!(late.0, "BA你B");
+            assert_eq!(window(5, 10).0, "A***B");
+            assert_eq!(window(5 * count, 5 * count).0, "");
+            costs.push([early.1, early.2, late.1, late.2]);
+            previous = count;
+        }
+        for (small, large) in costs[0].into_iter().zip(costs[1]) {
+            assert!(
+                large <= small * 2,
+                "fixed page cost grew from {small} to {large} VM steps"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::MODEL_RECONCILIATION_RUNS_SQL;
+    use rusqlite::{Connection, params};
+
+    #[test]
+    fn model_reconciliation_runs_drives_join_from_candidates_not_due_index() {
+        let db = Connection::open_in_memory().unwrap();
+        let catalog: Vec<_> = maka_event_log::ROOT_MIGRATIONS
+            .iter()
+            .chain(crate::MIGRATIONS)
+            .copied()
+            .collect();
+        maka_event_log::migration::run(&db, &catalog).unwrap();
+        let mut stmt = db
+            .prepare(&format!(
+                "EXPLAIN QUERY PLAN {MODEL_RECONCILIATION_RUNS_SQL}"
+            ))
+            .unwrap();
+        let plan: Vec<String> = stmt
+            .query_map(params!["{}", 0i64, 64i64, false], |r| r.get(3))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert!(
+            plan.iter().all(|step| !step.contains("agent_runs_due")),
+            "reconciliation query must not scan historical runs via agent_runs_due: {plan:?}"
+        );
+        assert!(
+            plan.iter()
+                .any(|step| step.contains("SEARCH r USING") && step.contains("(run=?)")),
+            "outer join must probe agent_runs by run PK from candidates: {plan:?}"
+        );
+    }
 }

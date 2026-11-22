@@ -67,17 +67,25 @@ pub(super) fn shell(executable: &Path) -> Result<Option<PathBuf>, String> {
         .parent()
         .ok_or("Host identity directory has no parent")?
         .join(BUNDLE);
-    let packaged = executable
-        .parent()
-        .ok_or("Host executable has no parent")?
-        .join("Maka.app/Contents/Helpers")
-        .join(BUNDLE);
+    let packaged = packaged_host_bundle(executable)?;
     let shell = prepare(&packaged, &installed)
         .map_err(|error| format!("prepare macOS Host identity: {error}"))?;
     if shell.is_some() {
         maka_computer_use::system_permission::register_application(&installed)?;
     }
     Ok(shell)
+}
+
+fn packaged_host_bundle(executable: &Path) -> Result<PathBuf, String> {
+    let parent = executable.parent().ok_or("Host executable has no parent")?;
+    // Self-contained Maka.app places `maka` in Contents/MacOS/ beside Helpers/.
+    if let Some(contents) = parent.parent() {
+        let bundled = contents.join("Helpers").join(BUNDLE);
+        if bundled.exists() {
+            return Ok(bundled);
+        }
+    }
+    Ok(parent.join("Maka.app/Contents/Helpers").join(BUNDLE))
 }
 
 fn prepare(packaged: &Path, installed: &Path) -> std::io::Result<Option<PathBuf>> {

@@ -52,7 +52,11 @@ fn gram_keys(text: &str, minimum: u32) -> Vec<u64> {
             // Three nonzero 21-bit lanes fit in 63 bits, including U+0000 as 1.
             window = ((window << GRAM_BITS) | (u64::from(u32::from(scalar)) + 1)) & (u64::MAX >> 1);
             available = (available + 1).min(3);
-            for size in minimum..=available {
+            // A repeated window already contributed all of its shorter suffixes.
+            if available < minimum || !unique.insert(window) {
+                continue;
+            }
+            for size in minimum..available {
                 unique.insert(window & ((1 << (size * GRAM_BITS)) - 1));
             }
         }

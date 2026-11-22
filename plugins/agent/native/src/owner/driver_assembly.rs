@@ -598,7 +598,7 @@ impl Owner {
             // Constructors before NativeDriver only assemble ports; none dispatch Run-owned work.
             // A pending canonical batch still owns its original payload independently of that proof.
             if original_driver.is_none() && !matches!(&result, Err(RunError::PublicationUncertain { .. })) { cleanup_confirmed = true; }
-            let pending = match &result { Err(RunError::PublicationUncertain { publication, .. }) => Some(publication.as_ref().clone()), _ => None };
+            let pending = match &result { Err(RunError::PublicationUncertain { publication, .. }) => Some(publication.clone()), _ => None };
             if !cleanup_confirmed || pending.is_some() {
                 let _historical_failure = effects.seal();
                 self.retain_original_scope(

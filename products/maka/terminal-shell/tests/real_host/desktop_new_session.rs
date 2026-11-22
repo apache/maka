@@ -1279,11 +1279,14 @@ async fn desktop_composer_references_a_conversation_without_waking_it() {
         .unwrap();
     assert_eq!(target["session"]["activity"], "idle");
     assert_eq!(fixture.request_count.load(Ordering::SeqCst), 2);
+    let full_width_reply = desktop.control("Copy message").await;
     for from_reply in [false, true] {
         if from_reply {
-            // The Markdown link starts the line above the reply's actions.
-            let copy = desktop.control("Copy message").await;
-            desktop.press_at(point(copy.center().x + px(16.), copy.top() - px(16.)));
+            // Locate the Markdown link from the reply's actions after its layout is restored.
+            desktop.press_at(point(
+                full_width_reply.center().x + px(16.),
+                full_width_reply.top() - px(16.),
+            ));
         } else {
             desktop.press("@Release checklist").await;
         }
@@ -1319,7 +1322,16 @@ async fn desktop_composer_references_a_conversation_without_waking_it() {
             .await;
         assert_eq!(copied, history);
         desktop.press("Close side pane").await;
-        desktop.control("@Release checklist").await;
+        desktop
+            .until(
+                "closing the side pane did not restore the reply layout",
+                || {
+                    (desktop.controls("Close side pane").is_empty()
+                        && desktop.controls("Copy message").as_slice() == [full_width_reply])
+                    .then_some(())
+                },
+            )
+            .await;
     }
     assert_eq!(fixture.request_count.load(Ordering::SeqCst), 2);
     desktop.close().await;
@@ -1401,7 +1413,7 @@ async fn desktop_creates_only_on_first_submission_and_preserves_the_confirmed_sn
     desktop.new_draft().await;
     desktop.attach(&path).await;
     std::fs::write(&path, b"changed after selection").unwrap();
-    desktop.replace_text("FIRST_DESKTOP_MESSAGE").await;
+    desktop.type_text("FIRST_DESKTOP_MESSAGE").await;
     assert_eq!(desktop.sessions().await.len(), 1);
     gate.arm();
     desktop.press("Send message").await;
@@ -1729,14 +1741,30 @@ async fn desktop_recall_opens_passages_at_their_history_boundaries() {
     // Using the first result's fence for the second must fail the Host's exact row read.
     assert!(passages[1]["anchorPosition"]["sequence"].as_u64().unwrap() > fences[0]);
 
-    let desktop = Desktop::open(&fixture, &fixture.address).await;
+    let gate = ReplyGate::recall(fixture.directory.path(), fixture.address.clone());
+    let desktop = Desktop::open(&fixture, &gate.address).await;
     for (within, selected) in [(true, 0), (false, 1)] {
         let previous = desktop.platform.text_input_target();
         desktop.key("o", true);
         desktop.target_after(previous).await;
         desktop.paste("needle").await;
         if within {
+            let other = format!(
+                "Open matching passage in {}",
+                passages[1]["session"]["title"].as_str().unwrap()
+            );
+            desktop.control(&other).await;
+            desktop.artifact("recall-all-conversations");
+            gate.arm();
             desktop.press("This conversation").await;
+            desktop.held(&gate).await;
+            desktop
+                .until("a result outside the new scope remained visible", || {
+                    desktop.controls(&other).is_empty().then_some(())
+                })
+                .await;
+            desktop.artifact("recall-scope-change");
+            gate.release();
         }
         let title = passages[selected]["session"]["title"].as_str().unwrap();
         desktop
@@ -2017,6 +2045,14 @@ async fn desktop_message_actions_show_on_hover_or_focus_and_in_a_context_menu() 
         .wait("the reply did not finish", reply.finish())
         .await;
     let copy = desktop.control("Copy message").await;
+    desktop
+        .until("a direct reply kept an empty work header", || {
+            desktop
+                .controls("Turn work details")
+                .is_empty()
+                .then_some(())
+        })
+        .await;
     let composer = desktop.control("Focus message composer").await.center();
     // Inside the reply, above its row of actions.
     let body = point(copy.center().x + px(64.), copy.top() - px(16.));
@@ -2116,7 +2152,7 @@ async fn desktop_edits_a_message_in_place_and_forks_only_when_sent() {
     desktop.expect_text("ORIGINAL_EDIT_MESSAGE").await;
     desktop.artifact("message-editor");
     assert_eq!(desktop.sessions().await.len(), 2);
-    desktop.replace_text("EDITED_IN_PLACE_MESSAGE").await;
+    desktop.type_text("EDITED_IN_PLACE_MESSAGE").await;
     assert_eq!(desktop.sessions().await.len(), 2);
     desktop.press("Send edited message in a fork").await;
     let edited = desktop.request(&mut fixture).await;
@@ -2648,7 +2684,7 @@ async fn desktop_side_pane_keeps_its_draft_separate_when_closed_and_reopened() {
         nsh_core::platform::Appearance::Dark,
     )
     .await;
-    desktop.replace_text("MAIN_DRAFT").await;
+    desktop.type_text("MAIN_DRAFT").await;
     let roots = desktop
         .client
         .query("agent", "directories", json!({"kind":"roots"}))
@@ -2663,11 +2699,19 @@ async fn desktop_side_pane_keeps_its_draft_separate_when_closed_and_reopened() {
         }),
     )
     .await;
+    let more = desktop.control("Actions for Side conversation").await;
+    let title = desktop.control("Open conversation Side conversation").await;
+    assert!(
+        more.size.width <= px(32.)
+            && more.size.height == title.size.height
+            && title.size.width > more.size.width,
+        "the More menu should fill the trailing icon slot without collapsing vertically: {title:?}, {more:?}"
+    );
     let original = desktop.platform.text_input_target();
     desktop.press("Actions for Side conversation").await;
     desktop.press("Open to the side").await;
     desktop.target_after(original).await;
-    desktop.replace_text("SIDE_DRAFT").await;
+    desktop.type_text("SIDE_DRAFT").await;
     desktop.press("Close side pane").await;
     desktop.press("Focus message composer").await;
     desktop.expect_text("MAIN_DRAFT").await;
@@ -3782,6 +3826,38 @@ async fn desktop_mermaid_renders_markdown_and_toggles_its_source() {
     desktop.press("Hide diagram source").await;
     desktop.control("Show diagram source").await;
     assert!(desktop.controls("Copy code block").is_empty());
+    desktop.press("Open diagram full screen").await;
+    desktop.control("Close full screen image").await;
+    desktop.press("Zoom image in").await;
+    desktop.press("Zoom image in").await;
+    desktop
+        .until(
+            "the enlarged diagram never painted in the full-screen viewer",
+            || {
+                let guard = desktop.frame.lock().unwrap();
+                let frame = guard.as_ref()?;
+                let filled = frame
+                    .pixels()
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .filter(|pixel| pixel[..3] == [0x1d, 0x74, 0x5a])
+                    .count();
+                (filled > 1000).then_some(())
+            },
+        )
+        .await;
+    desktop.artifact(&format!("mermaid-workbench-viewer-{theme}-{layout}"));
+    desktop.press("Zoom image out").await;
+    desktop.press("Close full screen image").await;
+    desktop
+        .until("the diagram viewer did not close", || {
+            desktop
+                .controls("Close full screen image")
+                .is_empty()
+                .then_some(())
+        })
+        .await;
     desktop.close().await;
     fixture.finish().await;
 }
@@ -4406,7 +4482,14 @@ async fn desktop_sidebar_customizes_features_switches_order_and_expands_full_wid
     desktop.artifact("sidebar-after-more-features");
     desktop.press("Show Rooms in sidebar").await;
     desktop.key("escape", false);
-    desktop.control("Rooms").await;
+    desktop
+        .until("closing More features did not leave Rooms pinned", || {
+            // The open popover has its own Rooms button over the sidebar.
+            (desktop.controls("Show Rooms in sidebar").is_empty()
+                && desktop.controls("Rooms").len() == 1)
+                .then_some(())
+        })
+        .await;
 
     desktop.press("Sort by time").await;
     desktop.control("Group by project").await;

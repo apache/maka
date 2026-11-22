@@ -43,6 +43,8 @@ enum Command {
     Desktop(crate::desktop::Args),
     /// Open the NSH terminal shell (connects to or starts the selected Host).
     TerminalShell(maka_terminal_shell::entry::Args),
+    /// Execute a single headless Agent prompt to completion.
+    Run(crate::run::Args),
     /// Author, inspect and serve plugin applications.
     #[command(subcommand)]
     Application(crate::application::Command),
@@ -61,6 +63,8 @@ enum Command {
     /// Diagnose commands and manage native sandbox setup.
     #[command(subcommand)]
     Sandbox(crate::sandbox::Command),
+    /// Check for and install updates on this build's release channel.
+    Update(crate::update::Args),
 }
 
 #[derive(Subcommand)]
@@ -156,6 +160,7 @@ impl Cli {
                     | Command::Application(crate::application::Command::Serve(_))
                     | Command::Code(_)
                     | Command::Acp(_)
+                    | Command::Run(_)
             )
         )
     }
@@ -204,6 +209,13 @@ impl Cli {
             }
             return result;
         }
+        if self.timeout_ms.is_some()
+            && !matches!(&self.command, Some(Command::Host(_) | Command::Sandbox(_)))
+        {
+            return Err(
+                "--timeout-ms is only supported by finite Host and sandbox commands".into(),
+            );
+        }
         self.execute().await
     }
 
@@ -223,6 +235,7 @@ impl Cli {
             Command::TerminalShell(args) => {
                 command_exit(async move { args.run().await.map_err(Into::into) })
             }
+            Command::Run(args) => command_exit(args.run()),
             Command::Application(args) => command_exit(args.run()),
             Command::Sandbox(args) => Box::pin(args.run(self.timeout_ms)),
             Command::Host(HostCommand::Fetch(args)) => command_exit(args.run()),
@@ -294,6 +307,7 @@ impl Cli {
                 println!("{}", serde_json::to_string(&inspection)?);
                 Ok(())
             }),
+            Command::Update(args) => command_exit(args.run()),
         }
     }
 }

@@ -28,6 +28,7 @@ github:
     - llm
     - tool-use
     - event-sourcing
+    - desktop
     - rust
     - tui
     - cli
@@ -76,10 +77,46 @@ github:
       restrict_force_push: true
 
   environments:
+    # These environments are the deployment boundaries around signing secrets
+    # and npm OIDC. Release publication adds human review; scheduled npm
+    # Nightly relies on exact ref admission instead. Naming an environment here
+    # replaces its settings wholesale, so keep every protection rule in this
+    # declarative authority.
+    release:
+      required_reviewers:
+        - id: M4n5ter
+          type: User
+      wait_timer: 0
+      prevent_self_review: true
+      deployment_branch_policy:
+        protected_branches: false
+        policies:
+          - name: "v*-incubating-rc*"
+            type: tag
     npm-publication:
       required_reviewers: []
       wait_timer: 0
       prevent_self_review: false
+      deployment_branch_policy:
+        protected_branches: false
+        policies:
+          - name: main
+            type: branch
+    nightly:
+      required_reviewers: []
+      wait_timer: 0
+      prevent_self_review: false
+      deployment_branch_policy:
+        protected_branches: false
+        policies:
+          - name: main
+            type: branch
+    product-release:
+      required_reviewers:
+        - id: M4n5ter
+          type: User
+      wait_timer: 0
+      prevent_self_review: true
       deployment_branch_policy:
         protected_branches: false
         policies:

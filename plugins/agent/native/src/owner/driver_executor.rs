@@ -1679,15 +1679,17 @@ mod tests {
         settle_execution(&sink, settlement, descriptor(), &cleanup, &retained)
             .await
             .unwrap();
-        let closed = sink.closed.lock().unwrap();
-        assert_eq!(closed.len(), 1);
-        assert!(matches!(
-            &closed[0],
-            Outcome::Failed { message, code, recoverable }
-                if message == "executor failed: usage limit reached"
-                    && code.as_deref() == Some("native_preparation_failed")
-                    && !recoverable
-        ));
+        {
+            let closed = sink.closed.lock().unwrap();
+            assert_eq!(closed.len(), 1);
+            assert!(matches!(
+                &closed[0],
+                Outcome::Failed { message, code, recoverable }
+                    if message == "executor failed: usage limit reached"
+                        && code.as_deref() == Some("native_preparation_failed")
+                        && !recoverable
+            ));
+        }
         assert!(retained.lock().await.is_empty());
 
         let sink = RecordingSink::default();

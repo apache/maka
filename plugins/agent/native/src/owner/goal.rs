@@ -21,7 +21,11 @@
 mod dispatch;
 mod stop;
 pub(super) mod tools;
-use super::{notifications::BackgroundApproval, scheduler::BackgroundGrant, *};
+use super::{
+    notifications::BackgroundApproval,
+    scheduler::{BackgroundGrant, ExecutorApproval},
+    *,
+};
 use maka_event_log::{
     StoreError,
     root_store::DataWriter,
@@ -191,24 +195,49 @@ impl Owner {
         if approval.target.session_id != session {
             return Err("goal_approval_session_changed".into());
         }
-        let basis = self
-            .approve_background(
-                &approval.target,
-                approval.model.clone(),
-                approval.thinking_level,
-                BackgroundKind::Goal(id),
-                None,
-            )
-            .await?;
-        self.check_goal_tools(&basis)?;
-        Ok(BackgroundGrant::Model(BackgroundApproval {
-            target: approval.target,
-            model: approval.model,
-            accepted_model: basis.model.clone().ok_or("goal_model_unavailable")?,
-            thinking_level: approval.thinking_level,
-            language: basis.language,
-            sandbox_ceiling: None,
-        }))
+        let kind = BackgroundKind::Goal(id);
+        match approval.backend {
+            BackendPreference::Model {
+                connection_id,
+                model_id,
+                service_tier,
+                thinking_level,
+            } => {
+                let model = ModelSelection {
+                    connection_id,
+                    model_id,
+                    service_tier,
+                };
+                let basis = self
+                    .approve_background(&approval.target, model.clone(), thinking_level, kind, None)
+                    .await?;
+                self.check_goal_tools(&basis)?;
+                Ok(BackgroundGrant::Model(BackgroundApproval {
+                    target: approval.target,
+                    model,
+                    accepted_model: basis.model.clone().ok_or("goal_model_unavailable")?,
+                    thinking_level,
+                    language: basis.language,
+                    sandbox_ceiling: None,
+                }))
+            }
+            BackendPreference::Executor { selection } => {
+                let grant = ExecutorApproval {
+                    language: self.native_language,
+                    target: approval.target,
+                    selection,
+                    sandbox_ceiling: None,
+                };
+                let basis = self
+                    .prepare_background(&BackgroundGrant::Executor(grant.clone()), kind)
+                    .await?;
+                self.check_goal_tools(&basis)?;
+                Ok(BackgroundGrant::Executor(ExecutorApproval {
+                    language: basis.language,
+                    ..grant
+                }))
+            }
+        }
     }
     pub(super) fn check_goal_tools(&self, basis: &CapturedRun) -> Result<(), String> {
         if basis

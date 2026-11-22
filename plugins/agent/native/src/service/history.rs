@@ -27,7 +27,9 @@ use maka_agent_facts::{
     model::{ModelPart, TextKind, body::TextBody},
 };
 use maka_agent_ports::session::history as wire;
-use maka_agent_state::session_history::{HistoryCut, HistoryItem, SessionHistory};
+use maka_agent_state::session_history::{
+    HistoryCut, HistoryItem, SessionHistory, evidence::ProjectedField,
+};
 use maka_capabilities::call::Scope;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
@@ -60,7 +62,7 @@ pub(super) async fn open(
     authorize(owner, scope, session).await?;
     Ok(scoped_state(owner, scope)?.session_history(owner.run_owner(), session.to_owned()))
 }
-pub(super) fn scoped_state(
+pub(crate) fn scoped_state(
     owner: &Owner,
     scope: &Scope,
 ) -> Result<maka_agent_state::Store, String> {
@@ -88,11 +90,23 @@ async fn cut(history: &SessionHistory, through: Option<u64>) -> Result<HistoryCu
     .map_err(|e| e.to_string())
 }
 
+pub(crate) type RestrictedToolResultRows = std::collections::BTreeSet<wire::HistoryRowAddress>;
+
 pub(crate) async fn read(
     owner: &Owner,
     scope: &Scope,
-    mut input: ui::History,
+    input: ui::History,
 ) -> Result<ui::HistoryPage, String> {
+    read_with_result_visibility(owner, scope, input)
+        .await
+        .map(|(page, _)| page)
+}
+
+pub(crate) async fn read_with_result_visibility(
+    owner: &Owner,
+    scope: &Scope,
+    mut input: ui::History,
+) -> Result<(ui::HistoryPage, RestrictedToolResultRows), String> {
     wire::Read {
         session_id: input.session_id.clone(),
         through: input.through,
@@ -115,6 +129,7 @@ pub(crate) async fn read(
             wire::Position::Message { message_id } => RoomPosition::Message { message_id },
             wire::Position::BeforeMessage { message_id } => RoomPosition::Before { message_id },
             wire::Position::AfterMessage { message_id } => RoomPosition::After { message_id },
+            wire::Position::AroundMessage { message_id } => RoomPosition::Around { message_id },
             _ => return Err("agent_cursor_invalid".into()),
         };
         let page = rooms
@@ -122,16 +137,67 @@ pub(crate) async fn read(
             .await
             .map_err(|error| error.to_string())?;
         authorize(owner, scope, &input.session_id).await?;
-        return Ok(ui::HistoryPage::Room { page: page.into() });
+        return Ok((
+            ui::HistoryPage::Room { page: page.into() },
+            RestrictedToolResultRows::new(),
+        ));
     }
     let history = open(owner, scope, &input.session_id).await?;
     if input.view == wire::HistoryView::Chat && owner.has_bot_history(&input.session_id).await? {
         input.view = wire::HistoryView::Conversation;
     }
     let cut = cut(&history, input.through).await?;
-    let page = window(owner, scope, &history, &cut, &input).await?;
+    let (page, restricted_result_rows) = window(owner, scope, &history, &cut, &input).await?;
     authorize(owner, scope, &input.session_id).await?;
-    Ok(page.into())
+    Ok((page.into(), restricted_result_rows))
+}
+type Restrictions = std::collections::BTreeMap<wire::HistoryRowAddress, Vec<(u64, u64)>>;
+fn tool_positions(tool: &wire::Tool) -> impl Iterator<Item = &wire::HistoryRowAddress> {
+    tool.call
+        .iter()
+        .map(|call| &call.position)
+        .chain(tool.result.iter().map(|result| &result.position))
+}
+/// A filtered result and a call awaiting its first result have distinct transcript states.
+fn filter_tool(tool: &mut wire::Tool, restrictions: &Restrictions) -> bool {
+    if tool
+        .call
+        .as_ref()
+        .is_some_and(|call| restrictions.contains_key(&call.position))
+    {
+        tool.call = None;
+    }
+    if tool
+        .result
+        .as_ref()
+        .is_some_and(|result| restrictions.contains_key(&result.position))
+    {
+        tool.result = None;
+        return true;
+    }
+    false
+}
+async fn restrictions(
+    owner: &Owner,
+    scope: &Scope,
+    tree: &maka_agent_state::session_history::source_tree::SourceTree,
+    addresses: Vec<wire::HistoryRowAddress>,
+) -> Result<Restrictions, String> {
+    for address in &addresses {
+        if let wire::HistoryRowAddress::Imported { path, snapshot, .. } = address {
+            tree.source_for_path(path, Some(*snapshot))
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    owner
+        .memory_data(scope)?
+        .query(maka_agent_state::memory::recall::ReadRestrictions {
+            owner: owner.run_owner(),
+            addresses,
+        })
+        .await
+        .map_err(|e| e.to_string())
 }
 
 pub(super) async fn requests(
@@ -173,7 +239,12 @@ pub(super) async fn requests(
         .await
         .map_err(|error| error.to_string())?;
     let traces = data
-        .model_request_traces(item.recorded.run, input.after.unwrap_or(0), LIMIT + 1)
+        .model_request_traces_for_reader(
+            item.recorded.run,
+            input.after.unwrap_or(0),
+            LIMIT + 1,
+            scope.identity.agent().is_some(),
+        )
         .await
         .map_err(|error| error.to_string())?;
     let mut path = qualified.order.path;
@@ -257,27 +328,83 @@ pub(crate) async fn read_page(
         include_thinking: input.include_thinking,
         view: wire::HistoryView::Text,
     };
-    let page = window(owner, scope, &history, &cut, &input).await?;
+    let (page, _) = window(owner, scope, &history, &cut, &input).await?;
     authorize(owner, scope, &input.session_id).await?;
     Ok(page)
 }
 
+fn whole_record_restricted(spans: &[(u64, u64)]) -> bool {
+    spans.contains(&(0, i64::MAX as u64))
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FieldAccess<'a> {
+    Open,
+    Restricted(&'a [(u64, u64)]),
+    Hidden,
+}
+
+fn field_access<'a>(
+    restrictions: &'a Restrictions,
+    row: &wire::HistoryRowAddress,
+    origin: Option<&wire::HistoryRowAddress>,
+) -> FieldAccess<'a> {
+    let Some(origin) = origin else {
+        return FieldAccess::Hidden;
+    };
+    if origin != row
+        && restrictions
+            .get(row)
+            .is_some_and(|spans| whole_record_restricted(spans))
+    {
+        return FieldAccess::Hidden;
+    }
+    match restrictions.get(origin) {
+        Some(spans) if whole_record_restricted(spans) => FieldAccess::Hidden,
+        Some(spans) => FieldAccess::Restricted(spans),
+        None => FieldAccess::Open,
+    }
+}
+
+#[derive(Default)]
+struct EvidenceCoordinates {
+    fields: std::collections::BTreeMap<wire::HistoryRowAddress, ProjectedField>,
+    plain: std::collections::BTreeMap<wire::HistoryRowAddress, u64>,
+    objectives: std::collections::BTreeMap<wire::HistoryRowAddress, u64>,
+}
+
+fn mask_goal_objective(
+    origin: &mut Option<maka_agent_facts::message::MessageOrigin>,
+    offset: Option<u64>,
+    spans: &[(u64, u64)],
+) {
+    if let Some(maka_agent_facts::message::MessageOrigin::Goal { objective, .. }) = origin {
+        match offset {
+            Some(offset) => maka_agent_state::memory::recall::mask(objective, offset, spans),
+            None => objective.clear(),
+        }
+    }
+}
+
 async fn window(
-    _owner: &Owner,
+    owner: &Owner,
     scope: &Scope,
     history: &SessionHistory,
     cut: &HistoryCut,
     input: &ui::History,
-) -> Result<wire::Page, String> {
+) -> Result<(wire::Page, RestrictedToolResultRows), String> {
+    let mask_evidence = scope.identity.agent().is_some();
     let tree = maka_agent_state::session_history::source_tree::SourceTree::live(history, cut)
         .await
         .map_err(|error| error.to_string())?;
-    tree_window(
+    let mut coordinates = EvidenceCoordinates::default();
+    let mut page = tree_window(
         &tree,
         Some(cut.through_sequence),
         input.position.clone(),
         input.include_thinking,
         input.view,
+        mask_evidence.then_some(&mut coordinates),
         &scope.cancellation,
     )
     .await
@@ -286,7 +413,103 @@ async fn window(
             tracing::warn!(session = %input.session_id, through = cut.through_sequence,
                 position = ?input.position, view = ?input.view, %error, "History page read failed");
         }
-    })
+    })?;
+    let mut restricted_result_rows = RestrictedToolResultRows::new();
+    if mask_evidence && let wire::Page::Ready { chunks, .. } = &mut page {
+        let mut positions = std::collections::BTreeSet::new();
+        for chunk in chunks.iter() {
+            positions.insert(chunk.position.clone());
+            if let Some(tool) = &chunk.tool {
+                positions.extend(tool_positions(tool).cloned());
+            }
+            if let Some(work) = &chunk.work {
+                positions.extend(work.last_call.iter().map(|call| call.position.clone()));
+                positions.extend(work.images.iter().map(|image| image.position.clone()));
+            }
+            if let Some(work) = &chunk.folded_work {
+                positions.extend(work.images.iter().map(|image| image.position.clone()));
+            }
+        }
+        let restrictions =
+            restrictions(owner, scope, &tree, positions.into_iter().collect()).await?;
+        let excerpts = chunks
+            .iter()
+            .filter_map(|chunk| {
+                let spans = restrictions.get(&chunk.position)?;
+                if whole_record_restricted(spans) {
+                    return None;
+                }
+                let field = coordinates.fields.get(&chunk.position)?;
+                field.excerpt(
+                    &chunk.position,
+                    chunk.offset,
+                    chunk.total_bytes,
+                    &chunk.text,
+                )
+            })
+            .collect();
+        coordinates.plain.extend(
+            history
+                .excerpt_offsets(excerpts)
+                .await
+                .map_err(|e| e.to_string())?,
+        );
+        for chunk in chunks {
+            if let Some(tool) = &mut chunk.tool
+                && filter_tool(tool, &restrictions)
+                && chunk.role == wire::Role::ToolCall
+            {
+                restricted_result_rows.insert(chunk.position.clone());
+            }
+            if let Some(work) = &mut chunk.work {
+                work.last_call = work
+                    .last_call
+                    .take()
+                    .filter(|call| !restrictions.contains_key(&call.position));
+                work.images
+                    .retain(|image| !restrictions.contains_key(&image.position));
+            }
+            if let Some(work) = &mut chunk.folded_work {
+                work.images
+                    .retain(|image| !restrictions.contains_key(&image.position));
+            }
+            if let Some(spans) = restrictions.get(&chunk.position) {
+                mask_goal_objective(
+                    &mut chunk.origin,
+                    coordinates.objectives.get(&chunk.position).copied(),
+                    spans,
+                );
+                let start =
+                    if chunk.role == wire::Role::User && chunk.field == wire::HistoryField::Body {
+                        Some(0)
+                    } else {
+                        coordinates.plain.get(&chunk.position).copied()
+                    };
+                if let Some(start) = start
+                    && !whole_record_restricted(spans)
+                {
+                    maka_agent_state::memory::recall::mask(
+                        &mut chunk.text,
+                        start + chunk.offset,
+                        spans,
+                    );
+                } else {
+                    chunk.text.clear();
+                }
+                if chunk.role == wire::Role::ToolResult && !chunk.text.is_empty() {
+                    restricted_result_rows.insert(chunk.position.clone());
+                }
+                chunk.quotes.clear();
+                chunk.citation = None;
+                chunk.citation_anchor = None;
+                chunk.attachments.clear();
+                chunk.tool = None;
+                chunk.work = None;
+                chunk.folded_work = None;
+            }
+        }
+    }
+    Ok((page, restricted_result_rows))
 }
 pub async fn snapshot_page(
     snapshot: &maka_agent_state::session_history::snapshot::Snapshot,
@@ -307,7 +530,7 @@ pub async fn snapshot_page(
     let tree = maka_agent_state::session_history::source_tree::SourceTree::snapshot(snapshot)
         .await
         .map_err(|error| error.to_string())?;
-    tree_window(&tree, through, position, include_thinking, view, stop).await
+    tree_window(&tree, through, position, include_thinking, view, None, stop).await
 }
 async fn tree_window(
     tree: &maka_agent_state::session_history::source_tree::SourceTree,
@@ -315,6 +538,7 @@ async fn tree_window(
     position: wire::Position,
     include_thinking: bool,
     view: wire::HistoryView,
+    mut coordinates: Option<&mut EvidenceCoordinates>,
     stop: &tokio_util::sync::CancellationToken,
 ) -> Result<wire::Page, String> {
     use maka_agent_state::session_history::source_tree::RunRows;
@@ -365,6 +589,9 @@ async fn tree_window(
         _ => None,
     };
     let mut cache = source::Cache::default();
+    if coordinates.is_some() {
+        cache.reader = source::Reader::ModelTool;
+    }
     cache.chat = view == wire::HistoryView::Chat;
     let mut turn = None;
     if matches!(view, wire::HistoryView::Turn | wire::HistoryView::Steps) && anchor.is_none() {
@@ -462,13 +689,36 @@ async fn tree_window(
             _ => SourcePosition::Start,
         };
         source::pair(tree, &mut selected, &mut cache, stop).await?;
-        let (_, offset, total, text) =
-            source::display(&selected, view, source_position, remaining, stop).await?;
+        let source::RenderedExcerpt {
+            format,
+            offset,
+            total,
+            text,
+            indexed_field,
+        } = source::display(&selected, view, source_position, remaining, stop).await?;
         if matches!(&position, Position::After { .. }) && anchored.is_some() && offset == total {
             continue;
         }
         if total > 0 && text.is_empty() {
             break;
+        }
+        if let Some(coordinates) = &mut coordinates {
+            if let Some(start) = selected.row.evidence_text.display_offset(view) {
+                coordinates
+                    .plain
+                    .insert(selected.row.chunk.position.clone(), start);
+            } else if let Some(field) = source::display_field(&selected.row, view)
+                && let Some(proof) = indexed_field.or_else(|| selected.indexed_field(field, format))
+            {
+                coordinates
+                    .fields
+                    .insert(selected.row.chunk.position.clone(), proof);
+            }
+            if let Some(offset) = selected.goal_objective_offset() {
+                coordinates
+                    .objectives
+                    .insert(selected.row.chunk.position.clone(), offset);
+            }
         }
         let mut chunk = selected.row.chunk;
         chunk.offset = offset;
@@ -653,7 +903,8 @@ fn encoded_bytes(value: &impl serde::Serialize) -> Result<usize, String> {
     Ok(count.0)
 }
 
-pub(super) use source::{prompt, source};
+pub(super) use source::prompt;
+pub(crate) use source::source;
 
 fn output_rate(tokens: Option<u64>, millis: Option<u64>) -> Option<f64> {
     Some(tokens? as f64 * 1000.0 / millis.filter(|ms| *ms > 0)? as f64)
@@ -921,6 +1172,7 @@ pub(crate) async fn readable_context_into(
     }
     let mut anchor = None;
     let mut cache = source::Cache::default();
+    cache.reader = source::Reader::Conversation;
     loop {
         if stop.is_cancelled() {
             return Err("agent_history_cancelled".into());
@@ -932,6 +1184,12 @@ pub(crate) async fn readable_context_into(
         if page.is_empty() {
             break;
         }
+        let mut checked: std::collections::BTreeSet<_> =
+            page.iter().map(|r| r.address.clone()).collect();
+        let mut restricted = history
+            .read_restrictions(checked.iter().cloned().collect())
+            .await
+            .map_err(|e| e.to_string())?;
         let mut advanced = false;
         for qualified in page {
             if anchor.as_ref() == Some(&qualified.address) {
@@ -944,6 +1202,22 @@ pub(crate) async fn readable_context_into(
             {
                 continue;
             }
+            let name_origin = selected.row.field_origin(wire::SourceField::ToolName);
+            if let Some(origin) = name_origin
+                && origin != &qualified.address
+                && checked.insert(origin.clone())
+            {
+                restricted.extend(
+                    history
+                        .read_restrictions(vec![origin.clone()])
+                        .await
+                        .map_err(|e| e.to_string())?,
+                );
+            }
+            let name_access = field_access(&restricted, &qualified.address, name_origin);
+            let row_access =
+                field_access(&restricted, &qualified.address, Some(&qualified.address));
+            let conversation_text = selected.conversation_prose();
             let source::Selected { data, item, row } = selected;
             if row.chunk.field == wire::HistoryField::Thinking {
                 continue;
@@ -974,12 +1248,31 @@ pub(crate) async fn readable_context_into(
                 stream::write_bytes(writer, origin.prompt_header(language).as_bytes(), stop)
                     .await?;
             }
-            for (field, value) in row.fields {
+            for (field, mut value) in row.fields {
                 if !public_context_field(field)
                     || (field == wire::SourceField::Body
                         && matches!(&row.body, projection::Body::Empty))
                 {
                     continue;
+                }
+                let access = if field == wire::SourceField::ToolName {
+                    name_access
+                } else {
+                    row_access
+                };
+                match access {
+                    FieldAccess::Open => {}
+                    _ if conversation_text && field == wire::SourceField::Body => {}
+                    FieldAccess::Restricted(spans)
+                        if field == wire::SourceField::ToolName
+                            && let Some(start) = row.evidence_text.source_offset(field)
+                            && let projection::Field::Text(body) = &value =>
+                    {
+                        let mut name = body.to_string();
+                        maka_agent_state::memory::recall::mask(&mut name, start, spans);
+                        value = projection::Field::Text(name.into());
+                    }
+                    _ => continue,
                 }
                 stream::write_bytes(writer, format!("{field:?}: ").as_bytes(), stop).await?;
                 if let (wire::SourceField::Body, projection::Body::Text(body)) = (field, &row.body)
@@ -991,6 +1284,9 @@ pub(crate) async fn readable_context_into(
                     stream::write_field(&data, &item, value, writer, stop).await?;
                 }
                 stream::write_bytes(writer, b"\n", stop).await?;
+            }
+            if row_access != FieldAccess::Open {
+                continue;
             }
             for attachment in &row.chunk.attachments {
                 let reference =
@@ -1013,4 +1309,34 @@ fn public_context_field(field: wire::SourceField) -> bool {
             | wire::SourceField::ProviderMetadata
             | wire::SourceField::Original
     )
+}
+
+#[cfg(test)]
+#[test]
+fn field_access_uses_the_original_field_and_respects_whole_record_restrictions() {
+    let addr = |sequence| wire::HistoryRowAddress::Live {
+        sequence,
+        fact: FactId::new(),
+        item_index: 0,
+    };
+    let call = addr(1);
+    let returned = addr(2);
+    let mut rows = Restrictions::from([
+        (call.clone(), vec![(0, 3)]),
+        (returned.clone(), vec![(4, 9)]),
+    ]);
+    assert_eq!(
+        field_access(&rows, &returned, Some(&call)),
+        FieldAccess::Restricted(&[(0, 3)])
+    );
+    assert_eq!(
+        field_access(&rows, &returned, Some(&returned)),
+        FieldAccess::Restricted(&[(4, 9)])
+    );
+    assert_eq!(field_access(&rows, &returned, None), FieldAccess::Hidden);
+    rows.insert(returned.clone(), vec![(0, i64::MAX as u64)]);
+    assert_eq!(
+        field_access(&rows, &returned, Some(&call)),
+        FieldAccess::Hidden
+    );
 }

@@ -28,7 +28,7 @@ append-only-vec@0.1.10		X										X
 apple-cf@0.9.3		X										X							
 apple-metal@0.8.8		X										X							
 apple-native-keyring-store@1.0.2		X										X							
-apply-patch@0.2.0		X																	
+apply-patch@0.3.0		X																	
 ar_archive_writer@0.5.3			X																
 arc-swap@1.9.3		X										X							
 arcstr@1.2.0		X										X							X
@@ -644,70 +644,72 @@ lru-slab@0.1.3		X										X							X
 lru@0.18.5												X							
 mac@0.1.1		X										X							
 mach2@0.6.0		X		X								X							
-maka-acp-native@0.2.0		X																	
-maka-acp@0.2.0		X																	
-maka-agent-api@0.2.0		X																	
-maka-agent-authority@0.2.0		X																	
-maka-agent-engine@0.2.0		X																	
-maka-agent-facts@0.2.0		X																	
-maka-agent-native@0.2.0		X																	
-maka-agent-ports@0.2.0		X																	
-maka-agent-state@0.2.0		X																	
-maka-app-client@0.2.0		X																	
-maka-assistant@0.2.0		X																	
-maka-capabilities@0.2.0		X																	
-maka-cli@0.2.0		X																	
-maka-code-runtime@0.2.0		X																	
-maka-computer-native@0.2.0		X																	
-maka-computer-use@0.2.0		X																	
-maka-config@0.2.0		X																	
-maka-decisions-api-native@0.2.0		X																	
-maka-decisions-api@0.2.0		X																	
-maka-desktop-shell@0.2.0		X																	
-maka-event-log@0.2.0		X																	
-maka-external-agent@0.2.0		X																	
-maka-files-native@0.2.0		X																	
-maka-fs-tools@0.2.0		X																	
-maka-goal@0.2.0		X																	
-maka-host-js@0.2.0		X																	
-maka-host-runtime@0.2.0		X																	
-maka-interactions-api@0.2.0		X																	
-maka-interactions-native@0.2.0		X																	
-maka-js-runtime@0.2.0		X																	
-maka-mcp@0.2.0		X																	
-maka-model@0.2.0		X																	
-maka-network@0.2.0		X																	
-maka-packages@0.2.0		X																	
-maka-plugin-core@0.2.0		X																	
-maka-presentation@0.2.0		X																	
-maka-process@0.2.0		X																	
-maka-processes-native@0.2.0		X																	
-maka-product-native@0.2.0		X																	
-maka-provider-protocol@0.2.0		X																	
-maka-providers@0.2.0		X																	
-maka-python-runtime@0.2.0		X																	
-maka-sandbox@0.2.0		X																	
-maka-scheduler@0.2.0		X																	
-maka-schema@0.2.0		X																	
-maka-session-import@0.2.0		X																	
-maka-session-recap@0.2.0		X																	
-maka-session-state@0.2.0		X																	
-maka-session-title@0.2.0		X																	
-maka-settings-native@0.2.0		X																	
-maka-skills-api@0.2.0		X																	
-maka-skills-native@0.2.0		X																	
-maka-skills@0.2.0		X																	
-maka-terminal-shell@0.2.0		X																	
-maka-tool-catalog@0.2.0		X																	
-maka-tools@0.2.0		X																	
-maka-transport@0.2.0		X																	
-maka-ui-build@0.2.0		X																	
-maka-ui-support@0.2.0		X																	
-maka-web-api@0.2.0		X																	
-maka-web@0.2.0		X																	
-maka-workbench@0.2.0		X																	
-maka-workspace-api@0.2.0		X																	
-maka-workspace-support@0.2.0		X																	
+maka-acp-native@0.3.0		X																	
+maka-acp@0.3.0		X																	
+maka-agent-api@0.3.0		X																	
+maka-agent-authority@0.3.0		X																	
+maka-agent-engine@0.3.0		X																	
+maka-agent-facts@0.3.0		X																	
+maka-agent-native@0.3.0		X																	
+maka-agent-ports@0.3.0		X																	
+maka-agent-state@0.3.0		X																	
+maka-app-client@0.3.0		X																	
+maka-assistant@0.3.0		X																	
+maka-capabilities@0.3.0		X																	
+maka-cli@0.3.0		X																	
+maka-code-runtime@0.3.0		X																	
+maka-computer-native@0.3.0		X																	
+maka-computer-use@0.3.0		X																	
+maka-config@0.3.0		X																	
+maka-decisions-api-native@0.3.0		X																	
+maka-decisions-api@0.3.0		X																	
+maka-desktop-shell@0.3.0		X																	
+maka-event-log@0.3.0		X																	
+maka-external-agent@0.3.0		X																	
+maka-files-native@0.3.0		X																	
+maka-fs-tools@0.3.0		X																	
+maka-goal@0.3.0		X																	
+maka-host-js@0.3.0		X																	
+maka-host-runtime@0.3.0		X																	
+maka-interactions-api@0.3.0		X																	
+maka-interactions-native@0.3.0		X																	
+maka-js-runtime@0.3.0		X																	
+maka-mcp@0.3.0		X																	
+maka-model@0.3.0		X																	
+maka-network@0.3.0		X																	
+maka-packages@0.3.0		X																	
+maka-plugin-core@0.3.0		X																	
+maka-presentation@0.3.0		X																	
+maka-process@0.3.0		X																	
+maka-processes-native@0.3.0		X																	
+maka-product-native@0.3.0		X																	
+maka-provider-protocol@0.3.0		X																	
+maka-providers@0.3.0		X																	
+maka-python-runtime@0.3.0		X																	
+maka-sandbox@0.3.0		X																	
+maka-scheduler@0.3.0		X																	
+maka-schema@0.3.0		X																	
+maka-session-import@0.3.0		X																	
+maka-session-recap@0.3.0		X																	
+maka-session-state@0.3.0		X																	
+maka-session-title@0.3.0		X																	
+maka-settings-native@0.3.0		X																	
+maka-skills-api@0.3.0		X																	
+maka-skills-native@0.3.0		X																	
+maka-skills@0.3.0		X																	
+maka-terminal-shell@0.3.0		X																	
+maka-tool-catalog@0.3.0		X																	
+maka-tools@0.3.0		X																	
+maka-transport@0.3.0		X																	
+maka-ui-build@0.3.0		X																	
+maka-ui-support@0.3.0		X																	
+maka-updater@0.3.0		X																	
+maka-web-api@0.3.0		X																	
+maka-web@0.3.0		X																	
+maka-workbench@0.3.0		X																	
+maka-workspace-api@0.3.0		X																	
+maka-workspace-support@0.3.0		X																	
+maka-wsl-bridge@0.3.0		X																	
 manyhow-macros@0.14.1		X										X							
 manyhow@0.14.1		X										X							
 markdown@1.0.0												X							
@@ -1369,6 +1371,7 @@ wayland-protocols@0.32.13												X
 wayland-scanner@0.31.11												X							
 wayland-sys@0.31.11												X							
 web_atoms@0.2.6		X										X							
+web-time@1.1.0		X										X							
 web-transport-proto@0.2.8		X										X							
 webpki-root-certs@1.0.11									X										
 webpki-roots@0.26.11									X										
@@ -1453,6 +1456,7 @@ xmlwriter@0.1.0												X
 xxhash-rust@0.8.19						X													
 yaml_parser@0.2.1												X							
 yaml-rust2@0.13.0		X										X							
+yamux@0.13.10		X										X							
 yansi@1.0.1		X										X							
 yasna@0.5.2		X										X							
 yoke-derive@0.7.5																X			

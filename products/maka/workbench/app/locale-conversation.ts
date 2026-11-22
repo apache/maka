@@ -497,6 +497,11 @@ export const conversationMessages = {
     '浏览器来源：{origin}',
     '瀏覽器來源：{origin}',
   ],
+  'Duration and token usage were not recorded.': [
+    'Duration and token usage were not recorded.',
+    '未记录耗时和 token 用量',
+    '未記錄耗時和 token 用量',
+  ],
   'Cache hit {rate}': ['Cache hit {rate}', '缓存命中 {rate}', '快取命中 {rate}'],
   'Cache hit rate': ['Cache hit rate', '缓存命中率', '快取命中率'],
   'Cache read tokens': ['Cache read tokens', '缓存读取 Token', '快取讀取 Token'],
@@ -883,6 +888,7 @@ export const conversationMessages = {
   'Show diagram source': ['Show diagram source', '显示图表源码', '顯示圖表原始碼'],
   'Hide diagram source': ['Hide diagram source', '隐藏图表源码', '隱藏圖表原始碼'],
   'Mermaid diagram': ['Mermaid diagram', 'Mermaid 图表', 'Mermaid 圖表'],
+  'Open diagram full screen': ['Open diagram full screen', '全屏查看图表', '全螢幕檢視圖表'],
   'Rendering diagram…': ['Rendering diagram…', '正在绘制图表…', '正在繪製圖表…'],
   'Diagram unavailable: {reason}': [
     'Diagram unavailable: {reason}',
@@ -945,12 +951,16 @@ export const conversationMessages = {
     '等待处理的消息',
     '等待處理的訊息',
   ],
-  'Missing provider counters or prices are unavailable. Auxiliary requests and tools are counted separately.':
-    [
-      'Missing provider counters or prices are unavailable. Auxiliary requests and tools are counted separately.',
-      '提供方缺失的计数或价格显示为不可用。辅助请求和工具另行计费。',
-      '供應方缺少的計數或價格顯示為無法取得。輔助請求和工具另行計費。',
-    ],
+  'Auxiliary requests and tools are counted separately.': [
+    'Auxiliary requests and tools are counted separately.',
+    '辅助请求和工具单独统计。',
+    '輔助請求和工具單獨統計。',
+  ],
+  '{value} ({reported}/{requests} requests)': [
+    '{value} ({reported}/{requests} requests)',
+    '{value}（已统计 {reported}/{requests} 个请求）',
+    '{value}（已統計 {reported}/{requests} 個請求）',
+  ],
   'Model selection rejected: {reason}': [
     'Model selection rejected: {reason}',
     '模型选择被拒绝：{reason}',

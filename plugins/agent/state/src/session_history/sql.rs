@@ -843,8 +843,9 @@ fn index_refs(
         let mut find_content = c.prepare_cached(
             "SELECT b.id FROM agent_run_content p JOIN contents b ON b.id=p.content_id WHERE p.run=? AND b.content_sha256=? AND length(b.payload)=?",
         )?;
-        let mut insert_ref =
-            c.prepare_cached("INSERT OR IGNORE INTO agent_history_content_refs VALUES(?,?,?,?,?)")?;
+        let mut insert_ref = c.prepare_cached(
+            "INSERT OR IGNORE INTO agent_history_content_refs(run,content_id,first_sequence) VALUES(?,?,?)",
+        )?;
         for reference in references {
             let content_id: i64 = find_content
                 .query_row(
@@ -855,16 +856,10 @@ fn index_refs(
                 .ok_or_else(|| {
                     invalid("canonical history content is not retained by its original Run")
                 })?;
-            insert_ref.execute(params![
-                &owner,
-                session,
-                &run_id,
-                content_id,
-                bound_sequence
-            ])?;
+            insert_ref.execute(params![&run_id, content_id, bound_sequence])?;
         }
     }
-    c.prepare_cached("INSERT OR IGNORE INTO agent_history_content_refs(owner,session,run,content_id,first_sequence) SELECT ?1,?2,?3,a.content_id,?4 FROM agent_artifact_run_bindings r JOIN agent_artifacts a ON a.session=r.session AND a.artifact=r.artifact JOIN agent_run_content p ON p.run=r.run AND p.content_id=a.content_id WHERE r.run=?3 AND r.fact=?5 AND r.revision=?6 AND a.owner=?1 AND a.session=?2")?
+    c.prepare_cached("INSERT OR IGNORE INTO agent_history_content_refs(run,content_id,first_sequence) SELECT ?3,a.content_id,?4 FROM agent_artifact_run_bindings r JOIN agent_artifacts a ON a.session=r.session AND a.artifact=r.artifact JOIN agent_run_content p ON p.run=r.run AND p.content_id=a.content_id WHERE r.run=?3 AND r.fact=?5 AND r.revision=?6 AND a.owner=?1 AND a.session=?2")?
         .execute(params![owner, session, run_id, bound_sequence, record.id.to_string(), bind_u64(record.revision)?])?;
     Ok(())
 }
@@ -1115,7 +1110,7 @@ pub(super) fn rebuild(
         }
     }
     c.execute(
-        "DELETE FROM agent_history_content_refs WHERE owner=? AND session=?",
+        "DELETE FROM agent_history_content_refs WHERE run IN(SELECT run FROM agent_run_specs WHERE owner=? AND session=?)",
         params![owner, history.session],
     )?;
     c.execute("DELETE FROM agent_continuation_successors WHERE run IN(SELECT run FROM agent_run_specs WHERE owner=? AND session=?)",params![owner,history.session])?;
@@ -1482,6 +1477,7 @@ pub(super) fn recovery_failure_at(
     run: RunId,
     revision: u64,
     sequence: u64,
+    mask_evidence: bool,
 ) -> Result<Option<String>, StoreError> {
     let owner = check_cut(c, history, cut)?;
     let head: Option<u64> = c
@@ -1504,6 +1500,29 @@ pub(super) fn recovery_failure_at(
             |_, _| {},
         )?
     };
+    recovery_diagnostic(c, &view, mask_evidence)
+}
+
+pub(super) fn recovery_diagnostic(
+    c: &Connection,
+    view: &crate::fold::RunView,
+    mask_evidence: bool,
+) -> Result<Option<String>, StoreError> {
+    if mask_evidence
+        && let Some(BlockerKind::OperationUnknown { tool, .. }) = view.recovery_failure()
+    {
+        let use_id =
+            maka_agent_facts::tool_call::tool_use_id(view.run, &crate::fold::tool_key(tool));
+        let restricted: bool = c.query_row(
+            "SELECT EXISTS(SELECT 1 FROM agent_memory_shared_fields f CROSS JOIN agent_memory_hidden_spans s
+             WHERE f.run=?1 AND f.tool=?2 AND s.namespace=?3 AND s.fact=f.fact AND s.ordinal=0
+             AND s.start<f.end AND s.end>f.start)",
+            params![view.run.to_string(), use_id, encode(&view.spec.owner)?], |r| r.get(0),
+        )?;
+        if restricted {
+            return Ok(Some("The operation outcome is unknown.".into()));
+        }
+    }
     Ok(view.recovery_failure_diagnostic())
 }
 

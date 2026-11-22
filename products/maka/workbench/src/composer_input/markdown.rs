@@ -89,10 +89,9 @@ impl PluginSpec for Formatting {
             && self.file_focused.is_none_or(|focus| focus.get_untracked()))
         .then(|| state.selection().head());
         let mut decorations = presentation.decorations(cursor, self.link_color.get_untracked());
-        if let Some(focused) = self.file_focused {
-            let active = focused.get_untracked().then_some(state.selection().head());
+        if self.file_focused.is_some() {
             for (span, code) in &presentation.diagrams {
-                if active.is_some_and(|pos| span.contains(&pos) || pos == span.end) {
+                if cursor.is_some_and(|pos| touches(span, pos)) {
                     continue;
                 }
                 let doc = state.doc();
@@ -198,7 +197,7 @@ impl Presentation {
         result.extend(
             self.syntax
                 .iter()
-                .filter(|(owner, _)| cursor.is_none_or(|pos| !owner.contains(&pos)))
+                .filter(|(owner, _)| cursor.is_none_or(|pos| !touches(owner, pos)))
                 .map(|(_, decoration)| decoration.clone()),
         );
         result
@@ -273,9 +272,7 @@ impl<'tree> Reader<'_, '_, 'tree> {
             && let Some(marker) = self.span(start..start + 1)
         {
             let bullet = Decoration::replace_char(marker.start, '•');
-            self.result
-                .syntax
-                .push((marker.start..marker.end + 1, bullet));
+            self.result.syntax.push((marker, bullet));
         }
     }
 
@@ -303,26 +300,37 @@ impl<'tree> Reader<'_, '_, 'tree> {
         }
     }
 
-    fn code_block(&mut self, range: Range<usize>) {
+    fn code_block(&mut self, range: Range<usize>, value: &str) -> bool {
         let source = &self.source.source[range.clone()];
         self.style(range.clone(), "font-mono");
         let first_line = source.split(['\r', '\n']).next().unwrap_or("");
-        let mut prefix = first_line.trim_start().chars();
+        let Some(open) = strip_fence_indent(first_line) else {
+            return false;
+        };
+        let mut prefix = open.chars();
         let Some(marker @ ('`' | '~')) = prefix.next() else {
-            return;
+            return false;
         };
         let fence_len = 1 + prefix.take_while(|&ch| ch == marker).count();
         if fence_len < 3 {
-            return;
+            return false;
+        }
+        let Some(last_break) = source.rfind(['\r', '\n']) else {
+            return false;
+        };
+        let Some(close) = strip_fence_indent(&source[last_break + 1..]) else {
+            return false;
+        };
+        let fence = close.trim_end_matches([' ', '\t', '\r']);
+        if fence.len() < fence_len || !fence.chars().all(|ch| ch == marker) {
+            return false;
+        }
+        if value.trim().is_empty() {
+            return false;
         }
         self.conceal(range.clone(), range.start..range.start + first_line.len());
-        if let Some(last_break) = source.rfind(['\r', '\n']) {
-            let last_line = &source[last_break + 1..];
-            let fence = last_line.trim();
-            if fence.len() >= fence_len && fence.chars().all(|ch| ch == marker) {
-                self.conceal(range.clone(), range.start + last_break + 1..range.end);
-            }
-        }
+        self.conceal(range.clone(), range.start + last_break + 1..range.end);
+        true
     }
 
     fn quote(&mut self, range: Range<usize>) {
@@ -331,7 +339,9 @@ impl<'tree> Reader<'_, '_, 'tree> {
         let mut offset = range.start;
         for line in source.split_inclusive('\n') {
             let trimmed = line.trim_start_matches([' ', '\t']);
-            if let Some(tail) = trimmed.strip_prefix('>') {
+            if let Some(tail) = trimmed.strip_prefix('>')
+                && !tail.trim_start_matches([' ', '\t', '>']).trim().is_empty()
+            {
                 let marker_end =
                     offset + (line.len() - tail.len()) + usize::from(tail.starts_with(' '));
                 self.conceal(range.clone(), offset..marker_end);
@@ -379,10 +389,10 @@ impl<'tree> Reader<'_, '_, 'tree> {
                     }
                 }
                 LinkReference(link) => {
-                    if let Some(content) = content {
-                        if let Some(&url) = self.destinations.get(link.identifier.as_str()) {
-                            self.link(range, content, url);
-                        }
+                    if let Some(content) = content
+                        && let Some(&url) = self.destinations.get(link.identifier.as_str())
+                    {
+                        self.link(range, content, url);
                     }
                 }
                 InlineCode(_) => {
@@ -395,15 +405,15 @@ impl<'tree> Reader<'_, '_, 'tree> {
                 }
                 Blockquote(_) => self.quote(range),
                 Code(code) => {
-                    if code
-                        .lang
-                        .as_deref()
-                        .is_some_and(|lang| lang.eq_ignore_ascii_case("mermaid"))
-                        && let Some(span) = self.span(range.clone())
+                    if self.code_block(range.clone(), &code.value)
+                        && code
+                            .lang
+                            .as_deref()
+                            .is_some_and(|lang| lang.eq_ignore_ascii_case("mermaid"))
+                        && let Some(span) = self.span(range)
                     {
                         self.result.diagrams.push((span, code.value.clone()));
                     }
-                    self.code_block(range);
                 }
                 ListItem(_) => self.list_marker(range.start),
                 _ => {}
@@ -417,6 +427,15 @@ impl<'tree> Reader<'_, '_, 'tree> {
     }
 }
 
+fn strip_fence_indent(line: &str) -> Option<&str> {
+    let spaces = line.bytes().take_while(|&b| b == b' ').count();
+    (spaces <= 3).then(|| &line[spaces..])
+}
+
+fn touches(owner: &Range<usize>, pos: usize) -> bool {
+    owner.start <= pos && pos <= owner.end
+}
+
 fn bounds(node: &mdast::Node) -> Option<Range<usize>> {
     let position = node.position()?;
     Some(position.start.offset..position.end.offset)
@@ -426,7 +445,26 @@ fn bounds(node: &mdast::Node) -> Option<Range<usize>> {
 mod tests {
     use super::*;
     use crate::composer_input::model;
-    use nsh_base::rich_editor::state::DecorationKind;
+    use nsh_base::rich_editor::state::{AllSelection, DecorationKind, Selection};
+
+    fn hidden_slices(raw: &str, cursor: Option<usize>) -> Vec<String> {
+        let doc = model::document(&model::schema(), raw);
+        let projection = Projection::new(&doc);
+        let presentation = Presentation::new(&doc);
+        let units: Vec<u16> = raw.encode_utf16().collect();
+        presentation
+            .decorations(cursor, Color(0x8ab8_f8ff))
+            .into_iter()
+            .filter(|deco| matches!(deco.kind, DecorationKind::Replacement(None)))
+            .map(|deco| {
+                String::from_utf16(
+                    &units[projection.source_at(deco.from) as usize
+                        ..projection.source_at(deco.to) as usize],
+                )
+                .unwrap()
+            })
+            .collect()
+    }
 
     #[test]
     fn previews_markdown_at_source_positions_through_cjk_and_emoji() {
@@ -441,16 +479,8 @@ mod tests {
             )
             .unwrap()
         };
-        let hidden = |cursor| {
-            presentation
-                .decorations(cursor, Color(0x8ab8_f8ff))
-                .into_iter()
-                .filter(|deco| matches!(deco.kind, DecorationKind::Replacement(None)))
-                .map(|deco| text(deco.from..deco.to))
-                .collect::<Vec<_>>()
-        };
         assert_eq!(
-            hidden(None),
+            hidden_slices(raw, None),
             ["**", "**", "[", "](https://example.org/doc)"]
         );
         let [named, bare] = presentation.links.as_slice() else {
@@ -459,7 +489,7 @@ mod tests {
         assert_eq!(text(named.text.clone()), "文档");
         assert_eq!(text(bare.text.clone()), "https://example.org");
         assert_eq!(bare.url.as_deref(), Some("https://example.org/"));
-        assert_eq!(hidden(Some(named.text.start + 1)), ["**", "**"]);
+        assert_eq!(hidden_slices(raw, Some(named.text.start + 1)), ["**", "**"]);
         assert_eq!(model::source(&doc), raw);
     }
 
@@ -483,5 +513,84 @@ mod tests {
         assert_eq!(bullets(Some(before_plus + 1)), [0, 16]);
         assert_eq!(bullets(Some(before_plus + 2)), [0, 9, 16]);
         assert_eq!(model::source(&doc), raw);
+    }
+
+    #[test]
+    fn keeps_active_syntax_visible_at_trailing_caret_without_expanding_on_select_all() {
+        for raw in [
+            "> hello",
+            "# title",
+            "**bold**",
+            "`code`",
+            "```rust\nlet x = 1;\n```",
+        ] {
+            let doc = model::document(&model::schema(), raw);
+            let projection = Projection::new(&doc);
+            let end = projection
+                .doc_at(raw.encode_utf16().count() as u32, true)
+                .unwrap();
+            assert!(
+                hidden_slices(raw, Some(end)).is_empty(),
+                "syntax should stay visible with caret at end of {raw:?}"
+            );
+        }
+
+        let raw = "a **bold** b";
+        let doc = model::document(&model::schema(), raw);
+        let all: Selection = AllSelection::new(&doc).into();
+        assert_eq!(hidden_slices(raw, Some(all.head())), ["**", "**"]);
+    }
+
+    #[test]
+    fn keeps_empty_quotes_and_incomplete_fences_visible_even_without_focus() {
+        for raw in [
+            ">",
+            "> ",
+            ">>",
+            ">>>",
+            "> > ",
+            "```",
+            "```rust",
+            "~~~py",
+            "```\n",
+            "```\nlet x = 1;",
+            "```\n```",
+            "```\n\n```",
+            "```rust\nx\n    ```",
+            "    ```\n    x\n    ```",
+        ] {
+            assert!(
+                hidden_slices(raw, None).is_empty(),
+                "incomplete syntax should not conceal: {raw:?}"
+            );
+        }
+
+        assert_eq!(hidden_slices("> line1\n>\n> line2", None), ["> ", "> "]);
+        assert_eq!(
+            hidden_slices("```rust\nlet x = 1;\n```", None),
+            ["```rust", "```"]
+        );
+        assert_eq!(
+            hidden_slices("   ```rust\nlet x = 1;\n   ```  ", None),
+            ["```rust", "   ```  "]
+        );
+
+        let schema = model::schema();
+        for raw in ["```mermaid\nflowchart TD\n  A --> B", "```mermaid\n```"] {
+            assert!(
+                Presentation::new(&model::document(&schema, raw))
+                    .diagrams
+                    .is_empty()
+            );
+        }
+        assert_eq!(
+            Presentation::new(&model::document(
+                &schema,
+                "```mermaid\nflowchart TD\n  A --> B\n```"
+            ))
+            .diagrams
+            .len(),
+            1
+        );
     }
 }

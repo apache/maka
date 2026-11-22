@@ -54,6 +54,7 @@ impl SnapshotProof {
     pub fn files(&self) -> &[SnapshotFile] {
         &self.files
     }
+    #[cfg(unix)]
     pub(super) fn baseline_identity(&self) -> FileIdentity {
         self.baseline_identity
     }
@@ -162,27 +163,27 @@ fn copy_directory(
             if !policy.access(&target).can_read() {
                 continue;
             }
-            let target_relative = target
-                .strip_prefix(&proof.source)
-                .map_err(|_| unsupported("workspace symlink targets an external resource"))?;
-            // Preserve relative links byte-for-byte. Absolute source links must
-            // instead name the corresponding independently owned working entry.
-            let working_target = if source_target.is_absolute() {
-                proof.resource_ref.join("workspace").join(target_relative)
-            } else {
-                source_target.clone()
-            };
             #[cfg(unix)]
             {
+                let target_relative = target
+                    .strip_prefix(&proof.source)
+                    .map_err(|_| unsupported("workspace symlink targets an external resource"))?;
+                // Preserve relative links byte-for-byte. Absolute source links must
+                // instead name the corresponding independently owned working entry.
+                let working_target = if source_target.is_absolute() {
+                    proof.resource_ref.join("workspace").join(target_relative)
+                } else {
+                    source_target.clone()
+                };
                 std::os::unix::fs::symlink(&source_target, &base)?;
                 std::os::unix::fs::symlink(&working_target, &work)?;
+                SnapshotKind::Symlink {
+                    source_target,
+                    working_target,
+                }
             }
             #[cfg(not(unix))]
             return Err(unsupported("snapshot symlinks unavailable"));
-            SnapshotKind::Symlink {
-                source_target,
-                working_target,
-            }
         } else if original.is_dir() {
             fs::create_dir(&base)?;
             fs::create_dir(&work)?;

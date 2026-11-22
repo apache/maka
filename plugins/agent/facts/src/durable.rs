@@ -845,6 +845,7 @@ impl RequestSpec {
     pub fn content_refs(&self) -> Vec<&ContentRef> {
         {
             let mut refs = vec![
+                &self.composition.surface,
                 &self.source_capture,
                 &self.provenance,
                 &self.request,

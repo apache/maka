@@ -203,6 +203,34 @@ struct Job {
     command: Control,
     reply: tokio::sync::oneshot::Sender<Result<Response, ToolError>>,
 }
+#[cfg(test)]
+pub(crate) struct TestRemove {
+    pub(crate) id: String,
+    reply: tokio::sync::oneshot::Sender<Result<Response, ToolError>>,
+}
+#[cfg(test)]
+impl TestRemove {
+    pub(crate) fn reply(self, result: Result<(), ToolError>) {
+        let _ = self.reply.send(result.map(|()| Response::Render {
+            state: RenderState::default(),
+        }));
+    }
+}
+#[cfg(test)]
+pub(crate) struct TestHostReceiver(tokio::sync::mpsc::Receiver<Job>);
+#[cfg(test)]
+impl TestHostReceiver {
+    pub(crate) async fn recv_remove(&mut self) -> Option<TestRemove> {
+        let job = self.0.recv().await?;
+        let Control::Call(Request::Remove { id }) = job.command else {
+            panic!("expected cursor Remove request");
+        };
+        Some(TestRemove {
+            id,
+            reply: job.reply,
+        })
+    }
+}
 enum Control {
     Call(Request),
     Configure(Spec),
@@ -405,12 +433,31 @@ impl Host {
         }
     }
     /// Remove a logical cursor while preserving any helper cleanup uncertainty.
-    pub(crate) async fn remove(&mut self, id: &str) -> Result<(), ToolError> {
-        if self.sender.is_some() {
-            self.call(Control::Call(Request::Remove { id: id.into() }))
-                .await?;
+    pub(crate) fn remove(
+        &mut self,
+        id: &str,
+    ) -> impl std::future::Future<Output = Result<(), ToolError>> + Send + 'static {
+        let pending = self
+            .sender
+            .is_some()
+            .then(|| self.schedule(Control::Call(Request::Remove { id: id.into() })));
+        async move {
+            if let Some(pending) = pending {
+                pending.await?;
+            }
+            Ok(())
         }
-        Ok(())
+    }
+    #[cfg(test)]
+    pub(crate) fn test_with_channel() -> (Self, TestHostReceiver) {
+        let (sender, receiver) = tokio::sync::mpsc::channel(4);
+        (
+            Self {
+                executable: None,
+                sender: Some(sender),
+            },
+            TestHostReceiver(receiver),
+        )
     }
     /// Retire the actor only after its original stop job confirms child exit.
     ///

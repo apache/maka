@@ -62,6 +62,7 @@ const CONTROL_METHODS: &[&str] = &[
     "setCompactionPrompt",
     "markRead",
     "markBotRead",
+    "roomManage",
     "stop",
     "stopComputerApp",
     "respond",

@@ -57,6 +57,7 @@ impl OllamaWindow {
     fn usage(self, label: Option<String>, period: Option<UsagePeriod>) -> Option<UsageLimit> {
         let remaining = self.remaining_percent.value()?;
         Some(UsageLimit::Window {
+            models: Vec::new(),
             label,
             period,
             resets_at: self.resets_at.and_then(Time::seconds),
@@ -118,6 +119,7 @@ pub(super) fn ollama(data: Ollama) -> Vec<UsageLimit> {
             };
             if let Some(used_percent) = share(&quantity) {
                 limits.push(UsageLimit::Window {
+                    models: Vec::new(),
                     label: None,
                     period,
                     resets_at: until.and_then(|time| u64::try_from(time.as_second()).ok()),
@@ -176,6 +178,7 @@ impl CommandWindow {
     fn usage(self, period: UsagePeriod) -> Option<UsageLimit> {
         let quantity = quantity(self.used, self.cap, None)?;
         Some(UsageLimit::Window {
+            models: Vec::new(),
             label: None,
             period: Some(period),
             resets_at: self.reset_at.and_then(Time::seconds),
@@ -286,6 +289,7 @@ fn mistral_budget(plan: &str, budgets: MistralBudgets) -> Option<UsageLimit> {
     let used_percent = budget.usage_percentage.value()?;
     let used = limit * (used_percent / 100.0);
     Some(UsageLimit::Window {
+        models: Vec::new(),
         label,
         period: Some(UsagePeriod::Monthly),
         resets_at: budget.reset_at.and_then(Time::seconds),

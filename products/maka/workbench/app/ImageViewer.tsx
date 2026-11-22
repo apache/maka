@@ -17,28 +17,33 @@
  * under the License.
  */
 
-import { textTooltip } from './ui';
-import { createText } from './text';
-import { cleanup, inputAction, signal, Text, View, Image } from 'nsh';
-import type { ViewRef } from 'nsh';
-import { createAnimatedValue } from 'nsh';
+import { cleanup, createAnimatedValue, Image, inputAction, keymap, signal, Text, View } from 'nsh';
+import type { PinchEvent, PressEvent, ViewRef, WheelEvent } from 'nsh';
 import { Button, Dialog } from 'nsh/base';
-import { keymap } from 'nsh';
+import { controlsLeft, controlsRight, ownTitleBar, TITLE_BAR_HEIGHT } from './chrome';
 import { Icon } from './Icon';
 import { tr } from './locale';
+import { createText } from './text';
 import {
   C,
   captionTextStyle,
-  controlStyle,
-  controlHoverStyle,
   controlFocusStyle,
+  controlHoverStyle,
+  controlStyle,
   defaultColors,
+  isDark,
+  textTooltip,
 } from './ui';
-import { dialogTop } from './chrome';
 
 export type ViewerImage = { uri: string; width: number; height: number; title: string };
 export type OpenImageViewer = (image: ViewerImage, restoreFocus: () => boolean) => void;
 type ImageControl = 'fit' | 'actual' | 'in' | 'out';
+
+const ZOOM_STEP = 1.25;
+const MIN_ZOOM_FLOOR = 0.1;
+const MAX_ZOOM_CEIL = 12;
+const KEY_PAN_STEP = 32;
+
 // The viewer is dark in every appearance, so its controls take the dark colors.
 const DARK = defaultColors(true);
 const darkControlStyle = {
@@ -92,27 +97,52 @@ export function ImageViewer(props: { image: ViewerImage; close(): void }) {
   const scale = createAnimatedValue(1);
   const x = createAnimatedValue(0);
   const y = createAnimatedValue(0);
+  const zoomPercent = signal(100);
+  let currentScale = 1;
   let alive = true;
-  let unbind = () => {};
-  cleanup(() => {
-    alive = false;
-    unbind();
-  });
-  const fit = () => Math.min(viewport().width / image.width, viewport().height / image.height);
+  let closeButton: ViewRef | undefined;
+  const fit = () => {
+    const size = viewport();
+    if (size.width <= 0 || size.height <= 0 || image.width <= 0 || image.height <= 0) return 1;
+    return Math.min(size.width / image.width, size.height / image.height);
+  };
+  const minScale = () => Math.min(MIN_ZOOM_FLOOR, fit() * 0.5);
+  const maxScale = () => Math.max(MAX_ZOOM_CEIL, fit() * 8);
+  const clampScale = (value: number) => Math.min(maxScale(), Math.max(minScale(), value));
   const reset = (zoom: number) => {
-    scale.set(zoom);
+    const next = clampScale(zoom);
+    currentScale = next;
+    zoomPercent.set(Math.round(next * 100));
+    scale.set(next);
     x.set(0);
     y.set(0);
+  };
+  const zoomBy = (factor: number, anchor?: { x: number; y: number }) => {
+    if (!alive || !Number.isFinite(factor) || factor <= 0) return;
+    const previous = currentScale;
+    const next = clampScale(previous * factor);
+    const applied = next / previous;
+    if (!Number.isFinite(applied) || Math.abs(applied - 1) < 1e-4) return;
+    currentScale = next;
+    zoomPercent.set(Math.round(next * 100));
+    scale.adjust(applied, 0);
+    if (anchor) {
+      const size = viewport();
+      const offsetX = anchor.x - size.width / 2;
+      const offsetY = anchor.y - size.height / 2;
+      x.adjust(applied, offsetX * (1 - applied));
+      y.adjust(applied, offsetY * (1 - applied));
+    } else {
+      x.adjust(applied, 0);
+      y.adjust(applied, 0);
+    }
   };
   const control = (target: { uri: string; kind: ImageControl }) => {
     if (!alive || target.uri !== image.uri) return;
     if (target.kind === 'fit' || target.kind === 'actual') {
       reset(target.kind === 'fit' ? fit() : 1);
     } else {
-      const factor = target.kind === 'in' ? 1.25 : 1 / 1.25;
-      scale.adjust(factor, 0);
-      x.adjust(factor, 0);
-      y.adjust(factor, 0);
+      zoomBy(target.kind === 'in' ? ZOOM_STEP : 1 / ZOOM_STEP);
     }
   };
   const move = (dx: number, dy: number) => {
@@ -120,35 +150,112 @@ export function ImageViewer(props: { image: ViewerImage; close(): void }) {
     x.adjust(1, dx);
     y.adjust(1, dy);
   };
-  const bind = (node: ViewRef) => {
-    unbind();
-    unbind = keymap.bind(
-      {
-        escape: props.close,
-        'mod+plus': () => control({ uri: image.uri, kind: 'in' }),
-        'mod+shift+plus': () => control({ uri: image.uri, kind: 'in' }),
-        'mod+minus': () => control({ uri: image.uri, kind: 'out' }),
-        'mod+0': () => control({ uri: image.uri, kind: 'fit' }),
-        'mod+1': () => control({ uri: image.uri, kind: 'actual' }),
-        left: () => move(16, 0),
-        right: () => move(-16, 0),
-        up: () => move(0, 16),
-        down: () => move(0, -16),
-      },
-      { when: 'always', repeat: true, within: node },
-    );
+  const handleWheel = (event: WheelEvent) => {
+    if (!alive) return;
+    const zoomWheel =
+      event.deltaMode === 'lines' || event.modifiers.control || event.modifiers.platform;
+    if (zoomWheel) {
+      if (event.delta.y === 0) return;
+      const step = event.deltaMode === 'lines' ? 0.075 : 0.008;
+      const exponent = Math.max(-0.5, Math.min(0.5, -event.delta.y * step));
+      zoomBy(Math.exp(exponent), event.position);
+      return;
+    }
+    if (event.delta.x !== 0) x.adjust(1, -event.delta.x);
+    if (event.delta.y !== 0) y.adjust(1, -event.delta.y);
   };
+  const handlePinch = (event: PinchEvent) => {
+    if (!alive || event.delta === 0) return;
+    const factor = 1 + event.delta;
+    if (factor > 0) zoomBy(factor, event.position);
+  };
+  const handlePinchEnd = ({ scale: gestureScale }: { scale: number }) => {
+    if (!alive || !Number.isFinite(gestureScale) || gestureScale <= 0) return;
+    const raw = currentScale * gestureScale;
+    const clamped = clampScale(raw);
+    currentScale = clamped;
+    zoomPercent.set(Math.round(clamped * 100));
+    const correction = clamped / raw;
+    if (Number.isFinite(correction) && Math.abs(correction - 1) > 1e-4) {
+      scale.adjust(correction, 0);
+    }
+  };
+  const handleViewportPress = (event?: PressEvent) => {
+    if (!alive || event?.clickCount !== 2) return;
+    const initial = Math.min(1, fit());
+    if (currentScale > initial * 1.05) {
+      reset(initial);
+    } else {
+      const target = initial < 0.98 ? 1 : 2;
+      zoomBy(target / currentScale, event.position);
+    }
+  };
+  // Own the window's zoom/pan/dismiss keys while the full-screen modal is open, even after dragging the canvas.
+  // Bind both modified and plain zoom keys because desktop menu bars may claim mod+plus/minus/0.
+  const unbind = keymap.bind(
+    {
+      escape: props.close,
+      'mod+plus': () => control({ uri: image.uri, kind: 'in' }),
+      'mod+shift+plus': () => control({ uri: image.uri, kind: 'in' }),
+      plus: () => control({ uri: image.uri, kind: 'in' }),
+      'shift+plus': () => control({ uri: image.uri, kind: 'in' }),
+      'mod+minus': () => control({ uri: image.uri, kind: 'out' }),
+      minus: () => control({ uri: image.uri, kind: 'out' }),
+      'mod+0': () => control({ uri: image.uri, kind: 'fit' }),
+      '0': () => control({ uri: image.uri, kind: 'fit' }),
+      'mod+1': () => control({ uri: image.uri, kind: 'actual' }),
+      '1': () => control({ uri: image.uri, kind: 'actual' }),
+      left: () => move(KEY_PAN_STEP, 0),
+      right: () => move(-KEY_PAN_STEP, 0),
+      up: () => move(0, KEY_PAN_STEP),
+      down: () => move(0, -KEY_PAN_STEP),
+    },
+    { when: 'always', repeat: true },
+  );
+  cleanup(() => {
+    alive = false;
+    unbind();
+  });
+  const headerStyle = {
+    position: 'absolute',
+    flexDirection: 'row',
+    gap: 16,
+    alignItems: 'center',
+    pointerEvents: 'box-none',
+    ...(ownTitleBar
+      ? {
+          top: 0,
+          left: 0,
+          right: 0,
+          minHeight: TITLE_BAR_HEIGHT,
+          paddingTop: 6,
+          paddingBottom: 6,
+          paddingLeft: 16 + controlsLeft(true),
+          paddingRight: 16 + controlsRight(true),
+        }
+      : { top: 16, left: 16, right: 16 }),
+  } as const;
   return (
-    <Dialog animation="none" onOpenChange={props.close} style={{ flex: 1 }}>
+    <Dialog
+      animation="none"
+      onOpen={() => {
+        if (alive) closeButton?.focus();
+      }}
+      onOpenChange={props.close}
+      style={{ flex: 1 }}
+    >
       <View
-        ref={bind}
         accessibilityLabel={tr('Full screen image viewer')}
         style={{ flex: 1, minWidth: 0, minHeight: 0, backgroundColor: DARK.background }}
       >
         <View
           accessibilityLabel={tr('Image viewport')}
+          focusable={false}
           pan={{ x, y }}
           pinch={{ scale }}
+          onWheel={handleWheel}
+          onPinchEnd={handlePinchEnd}
+          onPress={handleViewportPress}
           onLayout={({ bounds: event }) => {
             const previous = viewport();
             if (previous.width === event.size.width && previous.height === event.size.height)
@@ -166,50 +273,72 @@ export function ImageViewer(props: { image: ViewerImage; close(): void }) {
             cursor: 'grab',
           }}
         >
-          <If when={viewport().width > 0 && viewport().height > 0}>
-            <Image
-              src={image.uri}
-              role="image"
-              accessibilityLabel={image.title}
-              onError={(reason) => {
-                if (alive) error.set(reason.message);
-              }}
-              style={[
-                {
-                  width: image.width,
-                  height: image.height,
-                  flexShrink: 0,
-                  transform: [{ translateX: x }, { translateY: y }, { scale }],
-                },
-                { pointerEvents: 'none', objectFit: 'contain' },
-              ]}
-            />
-          </If>
+          {/* Trackpad pinches belong to onPinch alone; touchscreen pinches still reach the outer native binding. */}
+          <View
+            onPinch={handlePinch}
+            style={{
+              flex: 1,
+              alignSelf: 'stretch',
+              minWidth: 0,
+              minHeight: 0,
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}
+          >
+            <If when={viewport().width > 0 && viewport().height > 0}>
+              <Image
+                src={image.uri}
+                role="image"
+                accessibilityLabel={image.title}
+                onError={(reason) => {
+                  if (alive) error.set(reason.message);
+                }}
+                style={[
+                  {
+                    width: image.width,
+                    height: image.height,
+                    flexShrink: 0,
+                    transform: [{ translateX: x }, { translateY: y }, { scale }],
+                  },
+                  { pointerEvents: 'none', objectFit: 'contain' },
+                ]}
+              />
+            </If>
+          </View>
         </View>
-        <View
-          style={{
-            position: 'absolute',
-            top: dialogTop(16),
-            left: 16,
-            right: 16,
-            flexDirection: 'row',
-            gap: 16,
-            alignItems: 'center',
-            pointerEvents: 'box-none',
-          }}
-        >
+        {/* Light mode on Windows/Linux draws dark window caption glyphs in the top-right corner; back them with chrome fill so they remain visible over the dark viewer. */}
+        <If when={ownTitleBar && !isDark() && controlsRight(true) > 0}>
+          <View
+            style={[
+              {
+                position: 'absolute',
+                top: 0,
+                right: 0,
+                width: controlsRight(true),
+                height: TITLE_BAR_HEIGHT,
+                backgroundColor: C.chrome,
+                borderBottomLeftRadius: 8,
+              },
+              { pointerEvents: 'none' },
+            ]}
+          />
+        </If>
+        <View style={headerStyle}>
           <View style={[{ flex: 1, gap: 4 }, { pointerEvents: 'none' }]}>
             <Text style={[{ ...captionTextStyle, color: DARK.text }, { numberOfLines: 1 }]}>
               {image.title}
             </Text>
             <Text style={{ ...captionTextStyle, color: DARK.muted }}>
-              {image.width} × {image.height}
+              {image.width} × {image.height} · {zoomPercent()}%
             </Text>
             <If when={error()}>
               <Text style={{ ...captionTextStyle, color: DARK.danger }}>{error()}</Text>
             </If>
           </View>
           <Button
+            ref={(node) => {
+              closeButton = node;
+            }}
             accessibilityLabel={tr('Close full screen image')}
             tooltip={textTooltip(() => tr('Close · Esc'))}
             onPress={props.close}

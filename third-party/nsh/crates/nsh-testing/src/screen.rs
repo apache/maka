@@ -562,6 +562,30 @@ pub(crate) struct Scroll {
 }
 
 impl Screen {
+    /// The view around a trackpad pinch that listens to it, and whether the
+    /// listener keeps a native pinch binding from handling the gesture too.
+    pub(crate) fn pinch_listener(&self, id: NodeId) -> Option<(NodeId, bool)> {
+        let window = self.window_of(id);
+        nsh_core::input::wheel_listener(
+            self.window_chain(id),
+            |&id| self.hears(id, EventKind::Pinch) && !self.disabled_from(id, Some(window)),
+            |&id| self.native_pinches(id),
+        )
+    }
+
+    /// The innermost native pinch binding around the pointer.
+    pub(crate) fn pinch_transform(&self, id: NodeId) -> Option<NodeId> {
+        self.window_chain(id)
+            .into_iter()
+            .find(|&id| self.native_pinches(id))
+    }
+
+    fn native_pinches(&self, id: NodeId) -> bool {
+        self.nodes
+            .get(&id)
+            .is_some_and(|view| nsh_core::input::transforms(&view.gestures, view.events).0)
+    }
+
     /// Applies `batch`.
     pub fn apply(&mut self, batch: &MountBatch) {
         for item in &batch.items {

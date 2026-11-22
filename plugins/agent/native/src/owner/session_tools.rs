@@ -22,8 +22,16 @@ use super::*;
 use crate::service;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use maka_agent_facts::{
-    durable::Terminal, history::HistoryRowAddress, message::MessageOrigin, read::ResourceAddress,
-    room::RoomAuthor, session::ForkPosition,
+    attachment::StorageRef,
+    durable::Terminal,
+    history::HistoryRowAddress,
+    message::MessageOrigin,
+    read::ResourceAddress,
+    room::{
+        RoomActor, RoomAuthor, RoomDeliveryState, RoomMember, RoomMessage as FactRoomMessage,
+        RoomPosition,
+    },
+    session::ForkPosition,
 };
 use maka_agent_ports::session::history as wire;
 use maka_capabilities::call::Scope;
@@ -93,6 +101,18 @@ pub(crate) fn humanize_agent_error(err: String) -> String {
         "agent_room_reply_unavailable" => {
             "replyTo messageId was not found in the target Room; read recent Room messages first".into()
         }
+        "agent_room_expected_run_unsupported" => {
+            "expectedRunId is only valid for Agent conversations, not Rooms".into()
+        }
+        "agent_room_self_mention" => {
+            "An Agent session cannot mention itself in a Room".into()
+        }
+        "agent_room_hop_limit_reached" => {
+            "Room reached the consecutive Agent-to-Agent mention limit; waiting for human input before waking more Agents".into()
+        }
+        "agent_room_reply_tool_unavailable" => {
+            "Target Agent session does not have SessionSend enabled and cannot reply in a Room".into()
+        }
         "agent_message_invalid" => {
             "Message must include non-empty text or at least one valid attachment".into()
         }
@@ -129,6 +149,7 @@ fn chunk_to_entry(
     chunk: HistoryChunk,
     include_byte_bounds: bool,
     include_thinking: bool,
+    restricted_result_rows: &crate::service::history::RestrictedToolResultRows,
 ) -> Option<AgentTranscriptEntry> {
     let sliced =
         include_byte_bounds || chunk.offset > 0 || chunk.total_bytes > chunk.text.len() as u64;
@@ -202,7 +223,19 @@ fn chunk_to_entry(
             }
         }
         wire::Role::ToolCall => {
-            let tool = chunk.tool?;
+            let Some(tool) = chunk.tool else {
+                return (!chunk.text.is_empty()).then(|| AgentTranscriptEntry {
+                    role: "tool".into(),
+                    turn_id: chunk.turn_id,
+                    message_id: chunk.message_id,
+                    tool_name: None,
+                    status: None,
+                    result_path: None,
+                    offset,
+                    total_bytes,
+                    text: chunk.text,
+                });
+            };
             let call = tool.call.as_ref();
             if call.is_some_and(|c| !c.ancestor_tool_use_ids.is_empty()) && chunk.text.is_empty() {
                 return None;
@@ -216,6 +249,7 @@ fn chunk_to_entry(
                     };
                     (Some(st), tool_result_path(session_id, &res.position))
                 }
+                None if restricted_result_rows.contains(&chunk.position) => (None, None),
                 None => (
                     Some(
                         if call.is_some_and(|c| c.pending) {
@@ -263,7 +297,11 @@ fn chunk_to_entry(
                     .as_ref()
                     .and_then(|t| t.call.as_ref())
                     .map(|c| c.name.clone());
-                let result_path = tool_result_path(session_id, &chunk.position);
+                let result_path = if restricted_result_rows.contains(&chunk.position) {
+                    None
+                } else {
+                    tool_result_path(session_id, &chunk.position)
+                };
                 Some(AgentTranscriptEntry {
                     role: "tool_result".into(),
                     turn_id: chunk.turn_id,
@@ -348,7 +386,7 @@ impl Owner {
             let page = service::catalog_page_for_tool(
                 self,
                 &List {
-                    kind: input.kind.clone(),
+                    kind: input.kind,
                     filter: if only_archived {
                         SessionFilter::Archived
                     } else {
@@ -432,6 +470,88 @@ impl Owner {
         })
     }
 
+    pub(super) async fn session_run_overview(
+        &self,
+        session_id: &str,
+        observed: Option<&crate::contract::Run>,
+        scope: &Scope,
+    ) -> Result<Option<SessionRunOverview>, String> {
+        let latest = match observed {
+            Some(active) => Some(active.run_id),
+            None => self
+                .durable
+                .latest_run(session_id.to_owned())
+                .await
+                .ok()
+                .flatten(),
+        };
+        let view = if let Some(id) = latest {
+            self.session_run(session_id, id).await.ok().flatten()
+        } else {
+            None
+        };
+        // The Run can finish between the observation and the detail read.
+        if let Some(active) =
+            observed.filter(|_| view.as_ref().is_none_or(|v| v.terminal.is_none()))
+        {
+            let blockers = view
+                .iter()
+                .flat_map(|v| v.blockers.values())
+                .filter(|b| b.decision.is_none() && b.resolved_by.is_none())
+                .map(|b| format!("{:?}", b.reason))
+                .collect();
+            return Ok(Some(SessionRunOverview {
+                run_id: active.run_id,
+                state: enum_snake(&active.state),
+                stopped: view.as_ref().is_some_and(|v| v.stopped),
+                error: None,
+                blockers,
+            }));
+        }
+        let Some(view) = view else {
+            return Ok(None);
+        };
+
+        let latest_id = view.run;
+        let state = match &view.terminal {
+            Some(term) => enum_snake(term),
+            None if view.stopped => "stopped".into(),
+            None => "running".into(),
+        };
+        let failure = match self.execution_for_reader(&view, scope).await?.state {
+            ExecutionState::Failed { reason } => reason,
+            _ => view.recovery_failure().cloned(),
+        };
+        let mut error = failure.as_ref().and_then(|f| {
+            serde_json::to_value(f)
+                .ok()
+                .and_then(|v| {
+                    v.get("diagnostic")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                })
+                .or_else(|| serde_json::to_string(f).ok())
+        });
+        if error.is_none() && matches!(view.terminal, Some(Terminal::Failed)) {
+            error = self
+                .run_result(
+                    session_id,
+                    latest_id,
+                    &Terminal::Failed,
+                    scope.identity.agent().is_some(),
+                )
+                .await
+                .failure;
+        }
+        Ok(Some(SessionRunOverview {
+            run_id: latest_id,
+            state,
+            stopped: view.stopped,
+            error,
+            blockers: Vec::new(),
+        }))
+    }
+
     pub async fn session_read_tool(
         self: &Arc<Self>,
         input: SessionReadInput,
@@ -439,13 +559,18 @@ impl Owner {
     ) -> Result<SessionReadOutput, String> {
         let cursor = input.cursor.filter(|c| !c.trim().is_empty());
         let message_id = input.message_id.filter(|m| !m.trim().is_empty());
+        let search_query = input
+            .search_query
+            .map(|q| q.trim().to_owned())
+            .filter(|q| !q.is_empty());
         let locator_count = u8::from(input.position.is_some())
             + u8::from(cursor.is_some())
             + u8::from(message_id.is_some())
+            + u8::from(search_query.is_some())
             + u8::from(input.row.is_some());
         if locator_count > 1 {
             return Err(
-                "Specify at most one of position, cursor, messageId, or row in SessionRead".into(),
+                "Specify at most one of position, cursor, messageId, searchQuery, or row in SessionRead".into(),
             );
         }
         if input.anchor.is_some() && message_id.is_none() {
@@ -466,12 +591,12 @@ impl Owner {
         let is_room = matches!(observed.session.kind, SessionKind::Room);
         if is_room && input.row.is_some() {
             return Err(
-                "row is only valid for Agent conversations, not Rooms; use messageId or cursor for Rooms".into(),
+                "row is only valid for Agent conversations, not Rooms; use messageId, searchQuery, or cursor for Rooms".into(),
             );
         }
-        if !is_room && (message_id.is_some() || input.anchor.is_some()) {
+        if !is_room && (message_id.is_some() || input.anchor.is_some() || search_query.is_some()) {
             return Err(
-                "messageId and anchor are only valid for Rooms; use position, cursor, or row for Agent conversations".into(),
+                "messageId, anchor, and searchQuery are only valid for Rooms; use position, cursor, or row for Agent conversations".into(),
             );
         }
 
@@ -480,65 +605,22 @@ impl Owner {
         let mut run_overview = None;
         let mut live_output_preview = None;
         if !is_room {
-            if let Some(active_run) = &observed.run {
-                if let Ok(Some(work)) = self.durable.work(active_run.run_id, 0, 2048).await
-                    && !work.answer.text.is_empty()
-                {
-                    let mut preview: String = work.answer.text.chars().take(800).collect();
-                    if work.answer.next.is_some() || work.answer.text.chars().count() > 800 {
-                        preview.push('…');
-                    }
-                    live_output_preview = Some(preview);
-                }
-                let mut blockers = Vec::new();
-                let mut stopped = false;
-                if let Ok(Some(view)) = self.session_run(&session_id, active_run.run_id).await {
-                    stopped = view.stopped;
-                    for b in view.blockers.values() {
-                        if b.decision.is_none() && b.resolved_by.is_none() {
-                            blockers.push(format!("{:?}", b.reason));
-                        }
-                    }
-                }
-                run_overview = Some(SessionRunOverview {
-                    run_id: active_run.run_id,
-                    state: enum_snake(&active_run.state),
-                    stopped,
-                    error: None,
-                    blockers,
-                });
-            } else if let Ok(Some(latest_id)) = self.durable.latest_run(session_id.clone()).await
-                && let Ok(Some(view)) = self.session_run(&session_id, latest_id).await
+            if let Some(active_run) = &observed.run
+                && let Ok(Some(work)) = self
+                    .durable
+                    .work_for_reader(active_run.run_id, 0, 2048, scope.identity.agent().is_some())
+                    .await
+                && !work.answer.text.is_empty()
             {
-                let state = match &view.terminal {
-                    Some(term) => enum_snake(term),
-                    None if view.stopped => "stopped".into(),
-                    None => "running".into(),
-                };
-                let mut error = view.recovery_failure().and_then(|f| {
-                    serde_json::to_value(f)
-                        .ok()
-                        .and_then(|v| {
-                            v.get("diagnostic")
-                                .and_then(Value::as_str)
-                                .map(str::to_owned)
-                        })
-                        .or_else(|| serde_json::to_string(f).ok())
-                });
-                if error.is_none() && matches!(view.terminal, Some(Terminal::Failed)) {
-                    error = self
-                        .run_result(&session_id, latest_id, &Terminal::Failed)
-                        .await
-                        .failure;
+                let mut preview: String = work.answer.text.chars().take(800).collect();
+                if work.answer.next.is_some() || work.answer.text.chars().count() > 800 {
+                    preview.push('…');
                 }
-                run_overview = Some(SessionRunOverview {
-                    run_id: latest_id,
-                    state,
-                    stopped: view.stopped,
-                    error,
-                    blockers: Vec::new(),
-                });
+                live_output_preview = Some(preview);
             }
+            run_overview = self
+                .session_run_overview(&session_id, observed.run.as_ref(), scope)
+                .await?;
         }
 
         let mut pending_interactions = Vec::new();
@@ -577,85 +659,101 @@ impl Owner {
             }
         }
 
+        let room_state = if is_room {
+            self.rooms()?
+                .state(&session_id)
+                .await
+                .map_err(|e| humanize_agent_error(e.to_string()))
+                .ok()
+        } else {
+            None
+        };
+        let room_overview = room_state.as_ref().map(|st| RoomOverview {
+            topic: st.topic.clone(),
+            members: st.members.clone(),
+            pinned_message_ids: st.pinned.iter().map(|m| m.id.clone()).collect(),
+        });
+
         let transcript = if matches!(input.view, SessionTranscriptView::StatusOnly) {
             None
         } else if is_room {
-            let (through, pos) = if let Some(cur) = cursor.as_deref() {
-                match decode_cursor(cur)? {
-                    OpaqueSessionCursor::RoomBefore {
-                        through,
-                        message_id,
-                    } => (Some(through), wire::Position::BeforeMessage { message_id }),
-                    OpaqueSessionCursor::RoomAfter {
-                        through,
-                        message_id,
-                    } => (Some(through), wire::Position::AfterMessage { message_id }),
-                    _ => return Err("Cursor belongs to an Agent session, not a Room".into()),
-                }
-            } else if let Some(mid) = message_id {
-                let pos = match input.anchor.unwrap_or(RoomAnchorMode::At) {
-                    RoomAnchorMode::At => wire::Position::Message { message_id: mid },
-                    RoomAnchorMode::Before => wire::Position::BeforeMessage { message_id: mid },
-                    RoomAnchorMode::After => wire::Position::AfterMessage { message_id: mid },
-                };
-                (None, pos)
+            let rooms = self.rooms()?;
+            if let Some(query) = search_query {
+                let matches = rooms
+                    .search(&session_id, query, 32)
+                    .await
+                    .map_err(|e| humanize_agent_error(e.to_string()))?;
+                let names = participant_name_map(
+                    room_state
+                        .as_ref()
+                        .map(|s| s.members.as_slice())
+                        .unwrap_or(&[]),
+                );
+                let items = matches
+                    .into_iter()
+                    .map(|m| fact_to_room_post_entry(m.message, &names))
+                    .collect();
+                Some(SessionTranscript::Room {
+                    items,
+                    before_cursor: None,
+                    after_cursor: None,
+                })
             } else {
-                let p = match input.position.unwrap_or(SessionWindowPosition::Tail) {
-                    SessionWindowPosition::Tail => wire::Position::Tail,
-                    SessionWindowPosition::Start => wire::Position::Start,
+                let (through, pos) = if let Some(cur) = cursor.as_deref() {
+                    match decode_cursor(cur)? {
+                        OpaqueSessionCursor::RoomBefore {
+                            through,
+                            message_id,
+                        } => (Some(through), RoomPosition::Before { message_id }),
+                        OpaqueSessionCursor::RoomAfter {
+                            through,
+                            message_id,
+                        } => (Some(through), RoomPosition::After { message_id }),
+                        _ => return Err("Cursor belongs to an Agent session, not a Room".into()),
+                    }
+                } else if let Some(mid) = message_id {
+                    let pos = match input.anchor.unwrap_or(RoomAnchorMode::At) {
+                        RoomAnchorMode::At => RoomPosition::Message { message_id: mid },
+                        RoomAnchorMode::Before => RoomPosition::Before { message_id: mid },
+                        RoomAnchorMode::After => RoomPosition::After { message_id: mid },
+                        RoomAnchorMode::Around => RoomPosition::Around { message_id: mid },
+                    };
+                    (None, pos)
+                } else {
+                    let p = match input.position.unwrap_or(SessionWindowPosition::Tail) {
+                        SessionWindowPosition::Tail => RoomPosition::Tail,
+                        SessionWindowPosition::Start => RoomPosition::Start,
+                    };
+                    (None, p)
                 };
-                (None, p)
-            };
 
-            let page = service::history_read_for_tool(
-                self,
-                scope,
-                History {
-                    session_id: session_id.clone(),
-                    through,
-                    position: pos,
-                    include_thinking: false,
-                    view: wire::HistoryView::Conversation,
-                },
-            )
-            .await
-            .map_err(humanize_agent_error)?;
-
-            match page {
-                HistoryPage::Room { page } => {
-                    let before_cursor = page.before.as_ref().and_then(|mid| {
-                        encode_cursor(&OpaqueSessionCursor::RoomBefore {
-                            through: page.through,
-                            message_id: mid.clone(),
-                        })
-                    });
-                    let after_cursor = page.after.as_ref().and_then(|mid| {
-                        encode_cursor(&OpaqueSessionCursor::RoomAfter {
-                            through: page.through,
-                            message_id: mid.clone(),
-                        })
-                    });
-                    let items = page
-                        .items
-                        .into_iter()
-                        .map(|m| RoomPostEntry {
-                            id: m.id,
-                            sequence: m.sequence,
-                            at: m.at,
-                            author: m.author,
-                            text: m.content.text,
-                            reply_to: m.reply_to,
-                            mentions: m.mentions,
-                            deliveries: m.deliveries,
-                        })
-                        .collect();
-                    Some(SessionTranscript::Room {
-                        items,
-                        before_cursor,
-                        after_cursor,
+                let page = rooms
+                    .page(session_id.clone(), through, pos, 48)
+                    .await
+                    .map_err(|e| humanize_agent_error(e.to_string()))?;
+                let before_cursor = page.before.as_ref().and_then(|mid| {
+                    encode_cursor(&OpaqueSessionCursor::RoomBefore {
+                        through: page.through,
+                        message_id: mid.clone(),
                     })
-                }
-                HistoryPage::Ready { .. } => None,
+                });
+                let after_cursor = page.after.as_ref().and_then(|mid| {
+                    encode_cursor(&OpaqueSessionCursor::RoomAfter {
+                        through: page.through,
+                        message_id: mid.clone(),
+                    })
+                });
+                let names = participant_name_map(&page.participants);
+                let items = page
+                    .items
+                    .into_iter()
+                    .map(|m| fact_to_room_post_entry(m, &names))
+                    .collect();
+                Some(SessionTranscript::Room {
+                    items,
+                    before_cursor,
+                    after_cursor,
+                })
             }
         } else {
             let (through, pos, hist_view, is_raw, include_thinking) = if let Some(row) = input.row {
@@ -729,19 +827,20 @@ impl Owner {
                 (None, p, view, use_raw, false)
             };
 
-            let page = service::history_read_for_tool(
-                self,
-                scope,
-                History {
-                    session_id: session_id.clone(),
-                    through,
-                    position: pos,
-                    include_thinking,
-                    view: hist_view,
-                },
-            )
-            .await
-            .map_err(humanize_agent_error)?;
+            let (page, restricted_result_rows) =
+                crate::service::history::read_with_result_visibility(
+                    self,
+                    scope,
+                    History {
+                        session_id: session_id.clone(),
+                        through,
+                        position: pos,
+                        include_thinking,
+                        view: hist_view,
+                    },
+                )
+                .await
+                .map_err(humanize_agent_error)?;
 
             match page {
                 HistoryPage::Ready {
@@ -768,7 +867,15 @@ impl Owner {
                     });
                     let items = chunks
                         .into_iter()
-                        .filter_map(|c| chunk_to_entry(&session_id, c, is_raw, include_thinking))
+                        .filter_map(|c| {
+                            chunk_to_entry(
+                                &session_id,
+                                c,
+                                is_raw,
+                                include_thinking,
+                                &restricted_result_rows,
+                            )
+                        })
                         .collect();
                     Some(SessionTranscript::Agent {
                         items,
@@ -787,6 +894,7 @@ impl Owner {
             queued_messages,
             queue_revision,
             live_output_preview,
+            room: room_overview,
             transcript,
         })
     }
@@ -814,52 +922,86 @@ impl Owner {
         match summary.kind {
             SessionKind::Room => {
                 out.push_str(&format!(
-                    "# Room: {} (maka://session/{})\nWorkspace: {}\n\n",
+                    "# Room: {} (maka://session/{})\nWorkspace: {}\n",
                     summary.title, summary.id, summary.workspace_path
                 ));
-                let mut all_posts: Vec<RoomPostEntry> = Vec::new();
-                let mut pos = wire::Position::Tail;
-                let mut older_message_id = None;
-                for _ in 0..4 {
-                    let page = service::history_read_for_tool(
-                        self,
-                        scope,
-                        History {
-                            session_id: session_id.to_owned(),
-                            through: Some(pinned_through),
-                            position: pos,
-                            include_thinking: false,
-                            view: wire::HistoryView::Conversation,
-                        },
+                let rooms = self.rooms()?;
+                if let Ok(state) = rooms.state(session_id).await {
+                    if !state.topic.is_empty() {
+                        out.push_str(&format!("Topic: {}\n", state.topic));
+                    }
+                    if !state.members.is_empty() {
+                        let roster: Vec<String> = state
+                            .members
+                            .iter()
+                            .filter(|m| !m.unavailable)
+                            .map(|m| {
+                                let mut s = format!("{} ({})", m.title, m.session_id);
+                                if let Some(preset) = &m.preset_name {
+                                    s.push_str(&format!(" [preset: {preset}]"));
+                                }
+                                let act = enum_snake(&m.activity);
+                                if act != "idle" {
+                                    s.push_str(&format!(" [{act}]"));
+                                }
+                                s
+                            })
+                            .collect();
+                        if !roster.is_empty() {
+                            out.push_str(&format!("Participants: {}\n", roster.join(", ")));
+                        }
+                    }
+                    if !state.pinned.is_empty() {
+                        out.push_str("\n## Pinned\n");
+                        for pin in &state.pinned {
+                            let preview: String = pin.content.text.chars().take(200).collect();
+                            out.push_str(&format!(
+                                "- [{} · #{}] {}\n",
+                                pin.id, pin.sequence, preview
+                            ));
+                        }
+                    }
+                }
+                out.push('\n');
+
+                let page = rooms
+                    .page(
+                        session_id.to_owned(),
+                        Some(pinned_through),
+                        RoomPosition::Tail,
+                        48,
                     )
                     .await
-                    .map_err(humanize_agent_error)?;
-                    let HistoryPage::Room { page } = page else {
+                    .map_err(|e| humanize_agent_error(e.to_string()))?;
+                let names = participant_name_map(&page.participants);
+                let entries: Vec<RoomPostEntry> = page
+                    .items
+                    .into_iter()
+                    .map(|m| fact_to_room_post_entry(m, &names))
+                    .collect();
+
+                let mut rendered_blocks: Vec<String> = Vec::new();
+                let mut budget_used = out.len();
+                const TARGET_PAGE_BUDGET: usize = 6_200;
+                let mut first_included_idx = entries.len();
+                for (idx, post) in entries.iter().enumerate().rev() {
+                    let block = format_room_post_markdown(post, &names);
+                    if !rendered_blocks.is_empty() && budget_used + block.len() > TARGET_PAGE_BUDGET
+                    {
                         break;
-                    };
-                    let mut batch: Vec<RoomPostEntry> = page
-                        .items
-                        .into_iter()
-                        .map(|m| RoomPostEntry {
-                            id: m.id,
-                            sequence: m.sequence,
-                            at: m.at,
-                            author: m.author,
-                            text: m.content.text,
-                            reply_to: m.reply_to,
-                            mentions: m.mentions,
-                            deliveries: m.deliveries,
-                        })
-                        .collect();
-                    older_message_id = page.before;
-                    batch.extend(all_posts);
-                    all_posts = batch;
-                    let Some(mid) = older_message_id.clone() else {
-                        break;
-                    };
-                    pos = wire::Position::BeforeMessage { message_id: mid };
+                    }
+                    budget_used += block.len();
+                    rendered_blocks.push(block);
+                    first_included_idx = idx;
                 }
-                if let Some(mid) = older_message_id
+                rendered_blocks.reverse();
+
+                let older_cursor_mid = if first_included_idx > 0 {
+                    entries.get(first_included_idx).map(|p| p.id.clone())
+                } else {
+                    page.before
+                };
+                if let Some(mid) = older_cursor_mid
                     && let Some(cur) = encode_cursor(&OpaqueSessionCursor::RoomBefore {
                         through: pinned_through,
                         message_id: mid,
@@ -873,29 +1015,11 @@ impl Owner {
                         "> Earlier Room messages omitted; call SessionRead({more_call}) for older posts.\n\n"
                     ));
                 }
-                if all_posts.is_empty() {
+                if rendered_blocks.is_empty() {
                     out.push_str("(No messages in this Room yet.)\n");
                 } else {
-                    for post in all_posts {
-                        let author = match &post.author {
-                            RoomAuthor::Human => "Human".to_owned(),
-                            RoomAuthor::Session { execution } => {
-                                format!("Agent {}", execution.session_id)
-                            }
-                        };
-                        out.push_str(&format!(
-                            "### [{} · #{} · {}]",
-                            post.id, post.sequence, author
-                        ));
-                        if let Some(reply) = &post.reply_to {
-                            out.push_str(&format!(" (replyTo: {reply})"));
-                        }
-                        out.push('\n');
-                        out.push_str(&post.text);
-                        if !post.text.ends_with('\n') {
-                            out.push('\n');
-                        }
-                        out.push('\n');
+                    for block in rendered_blocks {
+                        out.push_str(&block);
                     }
                 }
             }
@@ -909,19 +1033,20 @@ impl Owner {
                 let mut older_wire_cursor = None;
                 let mut effective_through = Some(pinned_through);
                 for _ in 0..6 {
-                    let page = service::history_read_for_tool(
-                        self,
-                        scope,
-                        History {
-                            session_id: session_id.to_owned(),
-                            through: effective_through,
-                            position: pos,
-                            include_thinking: false,
-                            view: wire::HistoryView::Conversation,
-                        },
-                    )
-                    .await
-                    .map_err(humanize_agent_error)?;
+                    let (page, restricted_result_rows) =
+                        crate::service::history::read_with_result_visibility(
+                            self,
+                            scope,
+                            History {
+                                session_id: session_id.to_owned(),
+                                through: effective_through,
+                                position: pos,
+                                include_thinking: false,
+                                view: wire::HistoryView::Conversation,
+                            },
+                        )
+                        .await
+                        .map_err(humanize_agent_error)?;
                     let HistoryPage::Ready {
                         through: page_through,
                         chunks,
@@ -935,7 +1060,9 @@ impl Owner {
                     older_wire_cursor = before;
                     let mut batch: Vec<AgentTranscriptEntry> = chunks
                         .into_iter()
-                        .filter_map(|c| chunk_to_entry(session_id, c, false, false))
+                        .filter_map(|c| {
+                            chunk_to_entry(session_id, c, false, false, &restricted_result_rows)
+                        })
                         .collect();
                     batch.extend(all_entries);
                     all_entries = batch;
@@ -999,15 +1126,19 @@ impl Owner {
                             }
                             "tool" => {
                                 let name = entry.tool_name.as_deref().unwrap_or("tool");
-                                let st = entry.status.as_deref().unwrap_or("done");
+                                let status = entry
+                                    .status
+                                    .as_ref()
+                                    .map(|status| format!(" · {status}"))
+                                    .unwrap_or_default();
                                 if let Some(path) = &entry.result_path {
                                     out.push_str(&format!(
-                                        "- [Tool {name} · {st}]: {} (output: {path})\n",
+                                        "- [Tool {name}{status}]: {} (output: {path})\n",
                                         entry.text
                                     ));
                                 } else {
                                     out.push_str(&format!(
-                                        "- [Tool {name} · {st}]: {}\n",
+                                        "- [Tool {name}{status}]: {}\n",
                                         entry.text
                                     ));
                                 }
@@ -1432,6 +1563,307 @@ impl Owner {
                     }
                 })
             }
+            SessionManageAction::RoomTopic { topic } => self
+                .room_manage_mapped(
+                    RoomManage {
+                        session_id,
+                        action: RoomManageAction::SetTopic { topic },
+                    },
+                    scope,
+                    |result| SessionManageOutput::RoomUpdated { result },
+                )
+                .await
+                .map_err(humanize_agent_error),
+            SessionManageAction::RoomMembers { add, remove } => {
+                if !add.is_empty() && !remove.is_empty() {
+                    return Err(
+                        "Specify either add or remove in a single room_members action".into(),
+                    );
+                }
+                let action = if !add.is_empty() {
+                    RoomManageAction::AddMembers {
+                        member_session_ids: add,
+                    }
+                } else if !remove.is_empty() {
+                    RoomManageAction::RemoveMembers {
+                        member_session_ids: remove,
+                    }
+                } else {
+                    return Err(
+                        "room_members requires at least one session ID in add or remove".into(),
+                    );
+                };
+                self.room_manage_mapped(RoomManage { session_id, action }, scope, |result| {
+                    SessionManageOutput::RoomUpdated { result }
+                })
+                .await
+                .map_err(humanize_agent_error)
+            }
+            SessionManageAction::RoomReact {
+                message_id,
+                emoji,
+                add,
+            } => self
+                .room_manage_mapped(
+                    RoomManage {
+                        session_id,
+                        action: RoomManageAction::React {
+                            message_id,
+                            emoji,
+                            add,
+                        },
+                    },
+                    scope,
+                    |result| SessionManageOutput::RoomUpdated { result },
+                )
+                .await
+                .map_err(humanize_agent_error),
+            SessionManageAction::RoomPin { message_id, pinned } => {
+                let action = if pinned {
+                    RoomManageAction::Pin { message_id }
+                } else {
+                    RoomManageAction::Unpin { message_id }
+                };
+                self.room_manage_mapped(RoomManage { session_id, action }, scope, |result| {
+                    SessionManageOutput::RoomUpdated { result }
+                })
+                .await
+                .map_err(humanize_agent_error)
+            }
+            SessionManageAction::RoomEdit { message_id, text } => self
+                .room_manage_mapped(
+                    RoomManage {
+                        session_id,
+                        action: RoomManageAction::EditMessage { message_id, text },
+                    },
+                    scope,
+                    |result| SessionManageOutput::RoomUpdated { result },
+                )
+                .await
+                .map_err(humanize_agent_error),
+            SessionManageAction::RoomDelete { message_id } => self
+                .room_manage_mapped(
+                    RoomManage {
+                        session_id,
+                        action: RoomManageAction::DeleteMessage { message_id },
+                    },
+                    scope,
+                    |result| SessionManageOutput::RoomUpdated { result },
+                )
+                .await
+                .map_err(humanize_agent_error),
         }
     }
+}
+
+fn participant_name_map(members: &[RoomMember]) -> std::collections::HashMap<String, String> {
+    members
+        .iter()
+        .map(|m| {
+            let label = if m.unavailable {
+                format!("{} (deleted)", m.title)
+            } else {
+                m.title.clone()
+            };
+            (m.session_id.clone(), label)
+        })
+        .collect()
+}
+
+fn fact_to_room_post_entry(
+    m: FactRoomMessage,
+    names: &std::collections::HashMap<String, String>,
+) -> RoomPostEntry {
+    let author_name = match &m.author {
+        RoomAuthor::Human => Some("Human".to_owned()),
+        RoomAuthor::Session { execution } => names
+            .get(&execution.session_id)
+            .cloned()
+            .or_else(|| Some(execution.session_id.clone())),
+    };
+    let attachments = m
+        .content
+        .attachments
+        .unwrap_or_default()
+        .into_iter()
+        .map(|att| {
+            let resource_path = match &att.storage_ref {
+                StorageRef::SessionFile {
+                    session_id,
+                    relative_path,
+                } => ResourceAddress::SessionAttachment {
+                    session_id: session_id.clone(),
+                    attachment_id: relative_path.clone(),
+                }
+                .canonical_path()
+                .ok(),
+                _ => None,
+            };
+            RoomAttachmentEntry {
+                name: att.name,
+                mime_type: att.mime_type,
+                bytes: att.bytes,
+                kind: att.kind,
+                resource_path,
+            }
+        })
+        .collect();
+    RoomPostEntry {
+        id: m.id,
+        sequence: m.sequence,
+        at: m.at,
+        author: m.author,
+        author_name,
+        text: m.content.display_text.unwrap_or(m.content.text),
+        attachments,
+        reply_to: m.reply_to,
+        mentions: m.mentions,
+        deliveries: m.deliveries,
+        delivery_states: m.delivery_states,
+        reactions: m.reactions,
+        pinned: m.pinned,
+        edited_at: m.edited_at,
+        deleted: m.deleted_at.is_some(),
+    }
+}
+
+fn format_utc_millis(ms: u64) -> String {
+    let secs = (ms / 1000) as i64;
+    let days = secs.div_euclid(86_400);
+    let rem = secs.rem_euclid(86_400);
+    let hour = rem / 3600;
+    let minute = (rem % 3600) / 60;
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = y + i64::from(m <= 2);
+    format!("{year:04}-{m:02}-{d:02} {hour:02}:{minute:02} UTC")
+}
+
+fn format_room_post_markdown(
+    post: &RoomPostEntry,
+    names: &std::collections::HashMap<String, String>,
+) -> String {
+    let mut out = String::new();
+    let author = match &post.author {
+        RoomAuthor::Human => "Human".to_owned(),
+        RoomAuthor::Session { execution } => match &post.author_name {
+            Some(name) if name != &execution.session_id => {
+                format!("{name} ({})", execution.session_id)
+            }
+            _ => format!("Agent {}", execution.session_id),
+        },
+    };
+    let ts = format_utc_millis(post.at);
+    out.push_str(&format!(
+        "### [{} · #{} · {} · {}]",
+        post.id, post.sequence, author, ts
+    ));
+    if let Some(reply) = &post.reply_to {
+        out.push_str(&format!(" (replyTo: {reply})"));
+    }
+    if post.pinned {
+        out.push_str(" [pinned]");
+    }
+    if post.edited_at.is_some() {
+        out.push_str(" [edited]");
+    }
+    out.push('\n');
+    if !post.mentions.is_empty() {
+        let mlist: Vec<String> = post
+            .mentions
+            .iter()
+            .map(|id| match names.get(id) {
+                Some(name) => format!("@{name} ({id})"),
+                None => format!("@{id}"),
+            })
+            .collect();
+        out.push_str(&format!("Mentions: {}\n", mlist.join(", ")));
+    }
+    if post.deleted {
+        out.push_str("*(Message deleted)*\n\n");
+        return out;
+    }
+    if !post.text.is_empty() {
+        out.push_str(&post.text);
+        if !post.text.ends_with('\n') {
+            out.push('\n');
+        }
+    }
+    if !post.attachments.is_empty() {
+        out.push_str("Attachments:\n");
+        for att in &post.attachments {
+            if let Some(uri) = &att.resource_path {
+                out.push_str(&format!(
+                    "- {} ({}, {} B) -> Read({{\"path\":\"{uri}\"}})\n",
+                    att.name, att.mime_type, att.bytes
+                ));
+            } else {
+                out.push_str(&format!(
+                    "- {} ({}, {} B)\n",
+                    att.name, att.mime_type, att.bytes
+                ));
+            }
+        }
+    }
+    if !post.reactions.is_empty() {
+        let rlist: Vec<String> = post
+            .reactions
+            .iter()
+            .map(|r| {
+                let actors: Vec<String> = r
+                    .actors
+                    .iter()
+                    .map(|a| match a {
+                        RoomActor::Human => "Human".to_owned(),
+                        RoomActor::Session { session_id } => names
+                            .get(session_id)
+                            .cloned()
+                            .unwrap_or_else(|| session_id.clone()),
+                    })
+                    .collect();
+                format!("{} {} ({})", r.emoji, r.actors.len(), actors.join(", "))
+            })
+            .collect();
+        out.push_str(&format!("Reactions: {}\n", rlist.join(" · ")));
+    }
+    let failed: Vec<String> = post
+        .delivery_states
+        .iter()
+        .filter_map(|st| match st {
+            RoomDeliveryState::Rejected { session_id, reason } => Some(format!(
+                "{}: rejected ({reason})",
+                names
+                    .get(session_id)
+                    .map(String::as_str)
+                    .unwrap_or(session_id)
+            )),
+            RoomDeliveryState::Silent { session_id, .. } => Some(format!(
+                "{}: finished run without posting in Room",
+                names
+                    .get(session_id)
+                    .map(String::as_str)
+                    .unwrap_or(session_id)
+            )),
+            RoomDeliveryState::Failed { session_id, .. } => Some(format!(
+                "{}: run failed",
+                names
+                    .get(session_id)
+                    .map(String::as_str)
+                    .unwrap_or(session_id)
+            )),
+            _ => None,
+        })
+        .collect();
+    if !failed.is_empty() {
+        out.push_str(&format!("Delivery notes: {}\n", failed.join("; ")));
+    }
+    out.push('\n');
+    out
 }

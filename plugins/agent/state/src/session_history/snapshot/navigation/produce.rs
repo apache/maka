@@ -365,10 +365,8 @@ impl Producer {
                                 text_field(&mut doc, Field::Result, false, value, &self.budget)
                                     .await?;
                             }
-                            ToolResultSource::Returned(_) => {
-                                return Err(invalid(
-                                    "External return is not a ToolReturn envelope",
-                                ));
+                            ToolResultSource::Returned(_) | ToolResultSource::Provider(_) => {
+                                return Err(invalid("Unexpected canonical external return"));
                             }
                         }
                     }
@@ -1001,15 +999,7 @@ async fn model_source(
             budget,
         )
         .await?;
-        let text = match value {
-            maka_agent_facts::model::ModelSource::Url { url, title, .. } => {
-                title.map_or_else(|| url.clone(), |title| format!("[{title}]({url})"))
-            }
-            maka_agent_facts::model::ModelSource::Document {
-                title, filename, ..
-            } => filename.map_or_else(|| title.clone(), |file| format!("{title} ({file})")),
-        };
-        literal(doc, Field::Body, &text).await?;
+        literal(doc, Field::Body, &value.citation_text()).await?;
     } else {
         return Err(invalid("unsupported model document kind"));
     }

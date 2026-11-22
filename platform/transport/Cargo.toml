@@ -28,13 +28,3 @@ maka-host-runtime.workspace = true
 maka-event-log.workspace = true
 tokio = { workspace = true, features = ["net", "process"] }
 tokio-util = { workspace = true, features = ["io-util"] }
-
-[dev-dependencies]
-maka-packages.workspace = true
-maka-plugin-core.workspace = true
-serde_json.workspace = true
-uuid.workspace = true
-
-[[test]]
-name = "integration"
-path = "tests/integration/main.rs"

@@ -52,6 +52,7 @@ pub(crate) struct Shell {
     notify: tokio::sync::mpsc::UnboundedSender<HostCall>,
     /// The loaded workbench's host channel, which hears the notification chosen.
     pub(crate) events: Arc<Mutex<Option<HostChannel>>>,
+    updater: Option<Arc<crate::updater::Controller>>,
 }
 
 impl Shell {
@@ -67,6 +68,7 @@ impl Shell {
             text_size,
             notify,
             events: Arc::default(),
+            updater: None,
         };
         let requests = Requests {
             exits,
@@ -75,6 +77,15 @@ impl Shell {
             notices,
         };
         (shell, requests)
+    }
+
+    pub(crate) fn exit_sender(&self) -> tokio::sync::mpsc::UnboundedSender<()> {
+        self.exit.clone()
+    }
+
+    pub(crate) fn with_updater(mut self, updater: Arc<crate::updater::Controller>) -> Self {
+        self.updater = Some(updater);
+        self
     }
 
     pub(crate) fn attach(&self, mut config: EngineConfig) -> EngineConfig {
@@ -123,6 +134,44 @@ impl Shell {
                 error.0.reject("the window is closing");
             }
         });
+        if let Some(updater) = self.updater.clone() {
+            let state_controller = Arc::clone(&updater);
+            config.host.handle("updater.state", move |call| {
+                call.resolve(state_controller.snapshot_json());
+            });
+            let check_controller = Arc::clone(&updater);
+            config.host.handle("updater.check", move |call| {
+                let controller = Arc::clone(&check_controller);
+                check_controller.runtime().spawn(async move {
+                    let snapshot = controller.check(true).await;
+                    call.resolve(serde_json::to_value(snapshot).unwrap_or(JsonValue::Null));
+                });
+            });
+            let download_controller = Arc::clone(&updater);
+            config.host.handle("updater.download", move |call| {
+                let controller = Arc::clone(&download_controller);
+                download_controller.runtime().spawn(async move {
+                    match controller.download().await {
+                        Ok(snapshot) => {
+                            call.resolve(serde_json::to_value(snapshot).unwrap_or(JsonValue::Null))
+                        }
+                        Err(error) => call.reject(error),
+                    }
+                });
+            });
+            let install_controller = Arc::clone(&updater);
+            config
+                .host
+                .handle("updater.installAndRestart", move |call| {
+                    let controller = Arc::clone(&install_controller);
+                    install_controller.runtime().spawn(async move {
+                        match controller.install_and_restart().await {
+                            Ok(()) => call.resolve(JsonValue::Null),
+                            Err(error) => call.reject(error),
+                        }
+                    });
+                });
+        }
         *self.events.lock().unwrap_or_else(|e| e.into_inner()) = Some(config.host.clone());
         config
     }

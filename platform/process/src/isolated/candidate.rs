@@ -42,6 +42,7 @@ struct CaptureInput {
 /// Dropping this handle leaves the protected artifact intact.
 pub struct FrozenCandidate {
     input: Arc<CaptureInput>,
+    #[cfg(unix)]
     directory: File,
     entries: Vec<SnapshotFile>,
 }

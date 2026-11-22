@@ -43,7 +43,7 @@ product *args: setup
 
 # Check the root workspace, product, tooling and terminal; setup runs once.
 [group('Checks')]
-check: setup fmt-check typecheck test-js test test-termina licenses
+check: setup fmt-check typecheck test-js test test-termina licenses migrations
 
 # Format Rust, JavaScript, TypeScript and project metadata.
 [group('Checks')]
@@ -87,6 +87,11 @@ test-js: setup
 licenses: setup
     node scripts/ci.mjs check licenses
     node scripts/ci.mjs check notices
+
+# Verify sealed SQLite migrations remain immutable and monotonically ordered.
+[group('Checks')]
+migrations:
+    node scripts/ci.mjs check migrations
 
 # Build a source-bound native npm package without publishing.
 [group('Release')]

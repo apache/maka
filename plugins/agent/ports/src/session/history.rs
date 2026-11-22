@@ -183,6 +183,10 @@ pub enum Position {
     AfterMessage {
         message_id: String,
     },
+    /// Room messages centered around this message.
+    AroundMessage {
+        message_id: String,
+    },
     /// Reveal this exact row field from its beginning, including empty tool rows.
     Row {
         position: RowPosition,
@@ -228,7 +232,8 @@ impl Read {
         match &self.position {
             Position::Message { message_id }
             | Position::BeforeMessage { message_id }
-            | Position::AfterMessage { message_id } => {
+            | Position::AfterMessage { message_id }
+            | Position::AroundMessage { message_id } => {
                 crate::name(message_id).map_err(|_| invalid())?;
             }
             Position::Row { position, field } | Position::RowEnd { position, field } => {
@@ -538,6 +543,8 @@ pub struct Chunk {
     /// absence does not establish liveness or identify an imported final answer.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub final_output: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply_info: Option<maka_agent_facts::model::QuickReplyInfo>,
     /// The provider identified this text as final before the Turn completed.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub final_answer: bool,
@@ -638,6 +645,8 @@ pub struct Compaction {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "HistoryTurnTiming")]
 pub struct TurnTiming {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_tokens: Option<maka_agent_facts::model::ModelUsage>,
     #[schemars(range(max = 9_007_199_254_740_991u64))]
     pub started_at: u64,
     #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<TurnFinished>")]

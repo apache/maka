@@ -48,7 +48,7 @@ class MakaHostAgent(BaseAgent):
         return "maka-host"
 
     def version(self) -> str:
-        return "0.2.0"
+        return "0.3.0"
 
     async def _resolve_uid_gid(self, environment: BaseEnvironment) -> tuple[str, str]:
         uid_res = await environment.exec("id -u && id -g")
