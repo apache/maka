@@ -300,6 +300,18 @@ describe('ASF source release verification', () => {
     }
   });
 
+  test('accepts native C text source inputs', async () => {
+    const fixture = createFixtureCandidate({
+      'packages/runtime-host/scripts/macos-checkpoint-capability-probe.c':
+        '#include <stdio.h>\nint main(void) { return 0; }\n',
+    });
+    try {
+      await assert.doesNotReject(() => verifySourceCandidate({ archivePath: fixture.archivePath }));
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
   test('accepts XML text source inputs', async () => {
     const fixture = createFixtureCandidate({
       'website/public/sitemap.xml': '<?xml version="1.0" encoding="UTF-8"?>\n<urlset></urlset>\n',

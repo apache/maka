@@ -281,6 +281,13 @@ describe('ASF header classification', () => {
     }
   });
 
+  test('covers native C probes with the canonical block header', () => {
+    const path = 'packages/runtime-host/scripts/macos-checkpoint-capability-probe.c';
+    assert.equal(classifyPath(path).status, 'covered');
+    assert.equal(commentStyleFor(path), 'block');
+    assert.ok(hasHeader(applyHeader('int main(void) { return 0; }\n', 'block'), 'block'));
+  });
+
   test('leaves an unknown file type unclassified so the audit fails closed', () => {
     assert.equal(classifyPath('vendor/thing.kt').status, 'unclassified');
     assert.equal(commentStyleFor('vendor/thing.kt'), undefined);
