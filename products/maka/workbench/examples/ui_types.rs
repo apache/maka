@@ -55,6 +55,7 @@ const SOURCES: &[&str] = &[
     "products/maka/terminal-shell/tests/real_host/mermaid_preview.tsx",
     "products/maka/terminal-shell/tests/real_host/model_settings_preview.tsx",
     "products/maka/terminal-shell/tests/real_host/permission_preview.tsx",
+    "products/maka/terminal-shell/tests/real_host/terminal_output_preview.tsx",
     "plugins/agent/conversations/ui/index.tsx",
     "plugins/agent/composer/ui/index.tsx",
     "plugins/settings/settings/ui.tsx",

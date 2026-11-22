@@ -98,6 +98,11 @@ fn viewport_range(
 }
 
 impl Screen {
+    /// Number of physical rows in the active screen and retained history.
+    pub fn total_rows(&self) -> usize {
+        self.state.term.history_size() + self.state.term.screen_lines()
+    }
+
     /// Capture at most one screen of original styled cells, without walking or
     /// encoding the retained history. Offset zero follows the live bottom.
     pub fn viewport(&self, offset: usize, count: usize) -> Result<Viewport, &'static str> {

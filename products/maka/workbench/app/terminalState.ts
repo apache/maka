@@ -700,7 +700,7 @@ function createTerminal(
     focusRequested,
     controllable,
     position: { x: 0, y: 0 },
-    atBottom: true,
+    historyTop: signal<number | null>(null),
     update(value: ResourceUpdate) {
       if (alive && value.sessionId === target.sessionId && value.result.ref === target.ref) {
         entry.set(value);

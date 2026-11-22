@@ -95,6 +95,7 @@ const desktopInputs = [
   ...skillInputs,
   externalCodexFixture,
   externalAgentFixture,
+  'products/maka/terminal-shell/tests/real_host/terminal_output_preview.tsx',
 ];
 
 export const productConsumers = [

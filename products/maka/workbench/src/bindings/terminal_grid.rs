@@ -196,26 +196,30 @@ impl TerminalGrid {
         Ok(json!({"after": self.after, "status": live.status.name()}))
     }
 
-    /// Capture only the requested physical rows. Offset zero follows the bottom;
-    /// positive offsets scroll upward. A taller presentation fits the current
-    /// original PTY height until its own resize is observed in the raw stream.
-    pub fn display(&self, offset: u32, rows: u16) -> Result<JsonValue, String> {
+    /// Capture only the requested physical rows. A first row counts from the oldest
+    /// retained line, and its absence follows the bottom. A taller presentation fits
+    /// the original PTY height until its own resize is observed in the raw stream.
+    pub fn display(&self, first_row: Option<u32>, rows: u16) -> Result<JsonValue, String> {
+        let count = |size: TerminalSize| usize::from(rows.min(size.rows()));
+        let offset = |total_rows: usize, count| {
+            first_row.map_or(0, |first| {
+                total_rows
+                    .saturating_sub(count)
+                    .saturating_sub(first as usize)
+            })
+        };
         let (viewport, status) = match &self.content {
-            Content::Live(live) => (
-                live.screen.viewport(
-                    offset as usize,
-                    usize::from(rows.min(live.screen.size().rows())),
-                )?,
-                live.status.name(),
-            ),
-            Content::Settled(display) => (
-                Viewport::from_display(
-                    display,
-                    offset as usize,
-                    usize::from(rows.min(display.metadata.size.rows())),
-                )?,
-                "settled",
-            ),
+            Content::Live(live) => {
+                let count = count(live.screen.size());
+                let offset = offset(live.screen.total_rows(), count);
+                (live.screen.viewport(offset, count)?, live.status.name())
+            }
+            Content::Settled(display) => {
+                let size = display.metadata.size;
+                let count = count(size);
+                let offset = offset(display.scrollback.len() + usize::from(size.rows()), count);
+                (Viewport::from_display(display, offset, count)?, "settled")
+            }
         };
         let mut value = serde_json::to_value(viewport).map_err(|error| error.to_string())?;
         value["after"] = json!(self.after);

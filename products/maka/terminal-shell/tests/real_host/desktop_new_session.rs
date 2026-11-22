@@ -51,6 +51,10 @@ macro_rules! native {
     }};
 }
 
+#[cfg(target_os = "macos")]
+#[path = "desktop_new_session/terminal_output.rs"]
+mod terminal_output;
+
 const PNG: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGMQNE5uAAACKAEoAfdvjgAAAABJRU5ErkJggg==";
 
 struct Desktop {
@@ -5087,6 +5091,8 @@ async fn desktop_workspace_stage_inspector_worktrees_and_fullscreen_review() {
 
 /// Native cases run on the process main thread, required by AppKit.
 pub(crate) const CASES: &[&str] = &[
+    #[cfg(target_os = "macos")]
+    "desktop_follows_terminal_output_across_batches",
     "desktop_room_reply_wakes_an_agent_without_mixing_drafts",
     "desktop_composer_references_a_room_without_posting",
     "desktop_context_menus_follow_the_pointer_and_manage_rooms",
@@ -5138,6 +5144,10 @@ pub(crate) fn run(name: &str) {
         .build()
         .unwrap();
     match name {
+        #[cfg(target_os = "macos")]
+        "desktop_follows_terminal_output_across_batches" => {
+            runtime.block_on(terminal_output::follows_terminal_output())
+        }
         "desktop_room_reply_wakes_an_agent_without_mixing_drafts" => {
             runtime.block_on(rooms::desktop_room_reply_wakes_an_agent_without_mixing_drafts())
         }
