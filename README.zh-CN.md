@@ -17,7 +17,7 @@
   under the License.
 -->
 
-<h1 align="center"><img src="assets/logo.png" alt="Maka" width="72" /> Apache Maka (Incubating)</h1>
+<h1 align="center"><img src="assets/logo.png" alt="Maka" width="72" align="absmiddle" /> Apache Maka (Incubating)</h1>
 
 [English](README.md)
 
