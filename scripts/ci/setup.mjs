@@ -46,6 +46,8 @@ const cargoHome = () => process.env.CARGO_HOME || join(homedir(), '.cargo');
 const role = process.env.MAKA_CI_ROLE;
 const cacheRole = process.env.MAKA_CI_CACHE_ROLE || role;
 const workspace = process.env.MAKA_CI_WORKSPACE;
+const profile = process.env.MAKA_CI_PROFILE || 'dev';
+const cargoTarget = process.env.MAKA_CI_TARGET || '';
 const version = process.env.MAKA_CI_NEXTEST;
 const selectedManifests = [manifests[workspace]];
 const tools =
@@ -321,6 +323,21 @@ async function rootLocalPackages(manifest, wantThirdParty) {
   ];
 }
 
+async function cleanPackages(manifest, packages) {
+  if (!packages.length) return;
+  const base = [
+    'clean',
+    '--manifest-path',
+    manifest,
+    '--target-dir',
+    TARGET_ROOT,
+    ...(profile === 'release' ? ['--release'] : []),
+    ...packages.flatMap((name) => ['--package', name]),
+  ];
+  await command('cargo', base);
+  if (cargoTarget) await command('cargo', [...base, '--target', cargoTarget]);
+}
+
 async function main(action) {
   if (action === 'tool-list') {
     output({ tools: tools.join(' ') });
@@ -351,6 +368,7 @@ async function main(action) {
         readFileSync('.cargo/config.toml'),
         readFileSync('.github/actions/ci-setup/action.yml'),
         readFileSync('.github/actions/ci-cache/action.yml'),
+        ...(profile === 'release' ? [readFileSync('scripts/rust/build-cli.mjs')] : []),
       ]),
     );
     const compiled = `rust-deps-${process.env.RUNNER_OS}-${process.env.RUNNER_ARCH}-${hash(compiler)}-${cacheRole}-${configuration}`;
@@ -376,17 +394,7 @@ async function main(action) {
   } else if (action === 'clean-third-party') {
     if (!existsSync(TARGET_ROOT)) return;
     ensureCargoTargetTag();
-    const packages = await rootLocalPackages(manifests.root, true);
-    if (packages.length) {
-      await command('cargo', [
-        'clean',
-        '--manifest-path',
-        manifests.root,
-        '--target-dir',
-        TARGET_ROOT,
-        ...packages.flatMap((name) => ['--package', name]),
-      ]);
-    }
+    await cleanPackages(manifests.root, await rootLocalPackages(manifests.root, true));
   } else if (action === 'prune') {
     if (existsSync(TARGET_ROOT)) ensureCargoTargetTag();
     for (const manifest of selectedManifests) {
@@ -406,16 +414,7 @@ async function main(action) {
           ),
         );
       }
-      if (packages.length) {
-        await command('cargo', [
-          'clean',
-          '--manifest-path',
-          manifest,
-          '--target-dir',
-          TARGET_ROOT,
-          ...packages.flatMap((name) => ['--package', name]),
-        ]);
-      }
+      await cleanPackages(manifest, packages);
     }
   } else if (action === 'native') {
     const dependencies = process.env.MAKA_CI_DEPENDENCIES;
