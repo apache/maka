@@ -2137,7 +2137,7 @@ impl Engine {
     ) -> Result<String, RunError> {
         use maka_agent_facts::{
             artifact::ToolReturn,
-            tool_output::{ReturnedToolResult, StoredToolResult, ToolOutput},
+            tool_output::{StoredToolResult, ToolOutput},
         };
         if let Some(maka_agent_facts::operation::RecordedReceipt::Recorded {
             outcome: OperationOutcome::Unknown { diagnostic },
@@ -2155,10 +2155,12 @@ impl Engine {
                 RunError::InvalidInput(format!("original tool return is invalid: {error}"))
             })?;
         match returned.body {
-            StoredToolResult::Inline(ReturnedToolResult {
-                output: ToolOutput::Text(text),
-                ..
-            }) => Ok(text),
+            StoredToolResult::Inline(body) if matches!(body.output, ToolOutput::Text(_)) => {
+                let ToolOutput::Text(text) = body.output else {
+                    unreachable!()
+                };
+                Ok(text)
+            }
             _ => Err(RunError::InvalidInput(
                 "an unknown tool return has no diagnostic text".into(),
             )),

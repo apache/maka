@@ -52,6 +52,10 @@ mod login_path;
 mod placement;
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 mod shell;
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+mod updater;
+#[cfg(windows)]
+mod wsl_stdio;
 #[cfg(target_os = "macos")]
 use appkit as backend;
 #[cfg(target_os = "linux")]
@@ -171,6 +175,11 @@ fn main() -> ExitCode {
 
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 fn run() -> Result<(), String> {
+    wait_for_restarting_pid();
+    #[cfg(windows)]
+    if let Some(distro) = std::env::var_os("MAKA_DESKTOP_WSL_DISTRO") {
+        return wsl_stdio::Target::from_env(distro)?.run();
+    }
     if [ROOT, ENDPOINT, EPOCH, LAUNCHER]
         .iter()
         .all(|name| std::env::var_os(name).is_none())
@@ -181,22 +190,75 @@ fn run() -> Result<(), String> {
     backend::start(target)
 }
 
+#[cfg(windows)]
+fn wait_for_restarting_pid() {
+    use std::ffi::c_void;
+    const SYNCHRONIZE: u32 = 0x0010_0000;
+    const WAIT_MS: u32 = 15_000;
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn OpenProcess(access: u32, inherit: i32, pid: u32) -> *mut c_void;
+        fn WaitForSingleObject(handle: *mut c_void, millis: u32) -> u32;
+        fn CloseHandle(handle: *mut c_void) -> i32;
+    }
+    let Some(raw) = std::env::var_os(maka_updater::RESTART_WAIT_PID_ENV) else {
+        return;
+    };
+    if let Ok(pid) = raw.to_string_lossy().trim().parse::<u32>() {
+        // SAFETY: OpenProcess/WaitForSingleObject/CloseHandle operate on an OS
+        // handle checked for null before waiting and closed immediately after.
+        unsafe {
+            let handle = OpenProcess(SYNCHRONIZE, 0, pid);
+            if !handle.is_null() {
+                WaitForSingleObject(handle, WAIT_MS);
+                CloseHandle(handle);
+            }
+        }
+    }
+}
+
+#[cfg(all(unix, any(target_os = "linux", target_os = "macos")))]
+fn wait_for_restarting_pid() {}
+
+/// Resolves `maka` beside `shell`.
+/// On macOS, a self-contained `Maka.app` places `maka` right beside
+/// `maka-desktop-shell` inside `Contents/MacOS/`; dev/npm layouts place
+/// `maka` beside `Maka.app` (4 ancestors up).
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+fn launcher_path(shell: &std::path::Path) -> Result<PathBuf, String> {
+    let binary = if cfg!(windows) { "maka.exe" } else { "maka" };
+    if cfg!(target_os = "macos") {
+        let bundled = shell.with_file_name(binary);
+        if bundled.is_file() {
+            return Ok(bundled);
+        }
+    }
+    let levels = if cfg!(target_os = "macos") { 4 } else { 1 };
+    shell
+        .ancestors()
+        .nth(levels)
+        .ok_or_else(|| format!("{} is not in a Maka installation", shell.display()))
+        .map(|dir| dir.join(binary))
+}
+
 /// Runs `maka desktop` from the directory the launcher stages the shell in,
-/// which opens a window of its own for the default Root.
+/// which opens a window of its own for the default (or restarted) Root.
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 fn launch() -> Result<(), String> {
     let shell = std::env::current_exe()
         .and_then(|shell| shell.canonicalize())
         .map_err(|error| error.to_string())?;
-    // The inverse of the launcher's `SHELL` path.
-    let levels = if cfg!(target_os = "macos") { 4 } else { 1 };
-    let launcher = shell
-        .ancestors()
-        .nth(levels)
-        .ok_or_else(|| format!("{} is not in a Maka installation", shell.display()))?
-        .join(if cfg!(windows) { "maka.exe" } else { "maka" });
+    let launcher = launcher_path(&shell)?;
     let mut command = std::process::Command::new(&launcher);
     command.arg("desktop");
+    if let Some(root) = std::env::var_os(maka_updater::RESTART_ROOT_ENV) {
+        if !root.is_empty() {
+            command.arg("--root").arg(root);
+        }
+    }
+    command
+        .env_remove(maka_updater::RESTART_ROOT_ENV)
+        .env_remove(maka_updater::RESTART_WAIT_PID_ENV);
     #[cfg(unix)]
     if let Some(path) = login_path::resolve() {
         command.env("PATH", path);
@@ -234,6 +296,26 @@ mod tests {
         assert!(help.starts_with(&format!("{version}\n\n")), "{help}");
         assert!(help.contains("maka desktop --root PATH"), "{help}");
         assert_eq!(answer(&[]), None);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn launcher_path_prefers_self_contained_bundle_and_falls_back_to_sibling_layout() {
+        let dir = std::env::temp_dir().join(format!("maka-launcher-path-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let macos = dir.join("Maka.app/Contents/MacOS");
+        std::fs::create_dir_all(&macos).unwrap();
+        let shell = macos.join("maka-desktop-shell");
+        std::fs::write(&shell, b"shell").unwrap();
+
+        // Sibling layout (dev / npm): Maka.app beside maka.
+        assert_eq!(launcher_path(&shell).unwrap(), dir.join("maka"));
+
+        // Self-contained bundle: maka sits right beside maka-desktop-shell inside Contents/MacOS.
+        let bundled = macos.join("maka");
+        std::fs::write(&bundled, b"cli").unwrap();
+        assert_eq!(launcher_path(&shell).unwrap(), bundled);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn target(vars: &[(&str, &str)]) -> Result<Target, String> {

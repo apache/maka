@@ -73,6 +73,33 @@ impl Owner {
         }
     }
 
+    pub(super) async fn execution_for_reader(
+        &self,
+        view: &RunView,
+        scope: &maka_capabilities::call::Scope,
+    ) -> Result<Execution, String> {
+        use durable::BlockerKind;
+        let mut execution = project(view);
+        if scope.identity.agent().is_some()
+            && let ExecutionState::Failed {
+                reason:
+                    Some(
+                        BlockerKind::ExternalPublicationUnavailable { diagnostic, .. }
+                        | BlockerKind::CurrentAuthorityUnavailable { diagnostic, .. }
+                        | BlockerKind::ToolCleanupUnconfirmed { diagnostic, .. }
+                        | BlockerKind::ModelCleanupUnconfirmed { diagnostic, .. },
+                    ),
+            } = &mut execution.state
+        {
+            *diagnostic = crate::service::history::scoped_state(self, scope)?
+                .session_history(view.spec.owner.clone(), view.spec.session_id.clone())
+                .mask_terminal_diagnostic(view.run, std::mem::take(diagnostic))
+                .await
+                .map_err(|error| error.to_string())?;
+        }
+        Ok(execution)
+    }
+
     pub(super) async fn session_run(
         &self,
         session: &str,
@@ -149,27 +176,42 @@ impl Owner {
         })
     }
 
-    pub async fn work(&self, input: WorkRead) -> Result<Work, String> {
+    pub async fn work(
+        &self,
+        input: WorkRead,
+        scope: &maka_capabilities::call::Scope,
+    ) -> Result<Work, String> {
         use maka_agent_state::queue::MessageResolution;
-        self.session(&input.session_id).await?;
+        self.scoped_session(scope, &input.session_id).await?;
+        let state = crate::service::history::scoped_state(self, scope)?;
+        let model_read = scope.identity.agent().is_some();
         let cursor = input.cursor.map(|cursor| (cursor.run_id, cursor.offset));
         let (run, shared, observed) = match input.target {
             WorkTarget::Run { run_id } => {
                 if cursor.is_some_and(|(run, _)| run != run_id) {
                     return Ok(Work::Changed);
                 }
-                let work = self
-                    .durable
-                    .work(run_id, cursor.map_or(0, |(_, offset)| offset), 8192)
+                let work = state
+                    .work_for_reader(
+                        run_id,
+                        cursor.map_or(0, |(_, offset)| offset),
+                        8192,
+                        model_read,
+                    )
                     .await
                     .map_err(|error| error.to_string())?;
                 (run_id, false, work)
             }
             WorkTarget::Message { message_id } => {
-                let (resolution, work) = self
-                    .durable
+                let (resolution, work) = state
                     .queue()
-                    .message_work(input.session_id.clone(), message_id, cursor, 8192)
+                    .message_work(
+                        input.session_id.clone(),
+                        message_id,
+                        cursor,
+                        8192,
+                        model_read,
+                    )
                     .await
                     .map_err(|error| error.to_string())?;
                 match resolution {
@@ -210,17 +252,21 @@ impl Owner {
         };
         Ok(Work::Delivered {
             shared,
-            execution: project(&observed.view),
+            execution: self.execution_for_reader(&observed.view, scope).await?,
             answer,
             pending_interactions,
         })
     }
 
-    pub async fn execution(&self, input: ExecutionRead) -> Result<ExecutionResult, String> {
+    pub async fn execution(
+        &self,
+        input: ExecutionRead,
+        scope: &maka_capabilities::call::Scope,
+    ) -> Result<ExecutionResult, String> {
         Ok(
             match self.session_run(&input.session_id, input.run_id).await? {
                 Some(view) => ExecutionResult::Found {
-                    execution: project(&view),
+                    execution: self.execution_for_reader(&view, scope).await?,
                 },
                 None => ExecutionResult::Missing,
             },

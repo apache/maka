@@ -93,7 +93,10 @@ pub async fn project_cell_notification_from(
     }
     let mut observation = match notice.body {
         CellNotificationBody::Text { text } => CellReport {
-            report: json!({"cell":notification.cell,"state":"notification","text":text}),
+            body: CellReportBody::Notification {
+                cell: notification.cell,
+                text,
+            },
             output: vec![],
             dependencies: vec![],
         },
@@ -183,8 +186,23 @@ async fn check_source(
     Ok(())
 }
 
+enum CellReportBody {
+    Notification {
+        cell: CellId,
+        text: String,
+    },
+    Completed {
+        cell: CellId,
+        result: serde_json::Value,
+    },
+    Interrupted {
+        cell: CellId,
+        diagnostic: String,
+    },
+}
+
 struct CellReport {
-    report: serde_json::Value,
+    body: CellReportBody,
     output: Vec<CellOutput>,
     dependencies: Vec<ContentRef>,
 }
@@ -215,7 +233,10 @@ async fn read_final(
                 return Err(invalid("Cell completion evidence belongs to another Cell"));
             }
             Ok(CellReport {
-                report: json!({"cell":cell_id,"state":"completed","result":value}),
+                body: CellReportBody::Completed {
+                    cell: cell_id,
+                    result: value,
+                },
                 output: content,
                 dependencies: vec![result.clone()],
             })
@@ -249,7 +270,7 @@ async fn read_final(
                 ));
             }
             Ok(CellReport {
-                report: json!({"cell":cell,"state":"interrupted","diagnostic":diagnostic}),
+                body: CellReportBody::Interrupted { cell, diagnostic },
                 output,
                 dependencies: vec![report.clone()],
             })
@@ -271,10 +292,42 @@ async fn render(
         Language::ZhCn => "[Host 异步 Cell 观察数据，非用户请求]",
         Language::ZhTw => "[Host 非同步 Cell 觀察資料，非使用者請求]",
     };
-    let mut content = vec![ContentPart::text(format!(
-        "{label}\n{}",
-        serde_json::to_string(&observation.report).map_err(|error| invalid(error.to_string()))?
-    ))];
+    let mut remaining_text_budget = maka_agent_facts::archive::DEFAULT_CELL_DISPLAY_CHARS;
+    let report = match observation.body {
+        CellReportBody::Notification { cell, text } => {
+            let (bounded, used_json_chars) =
+                maka_agent_facts::archive::bound_json_field_text(&text, remaining_text_budget);
+            remaining_text_budget = remaining_text_budget.saturating_sub(used_json_chars);
+            json!({"cell": cell, "state": "notification", "text": bounded.as_ref()})
+        }
+        CellReportBody::Completed { cell, result } => {
+            let serialized =
+                serde_json::to_string(&result).map_err(|error| invalid(error.to_string()))?;
+            let chars = serialized.encode_utf16().count();
+            let result = if chars <= remaining_text_budget {
+                remaining_text_budget -= chars;
+                result
+            } else {
+                let (bounded, used_json_chars) = maka_agent_facts::archive::bound_json_field_text(
+                    &serialized,
+                    remaining_text_budget,
+                );
+                remaining_text_budget = remaining_text_budget.saturating_sub(used_json_chars);
+                serde_json::Value::String(bounded.into_owned())
+            };
+            json!({"cell": cell, "state": "completed", "result": result})
+        }
+        CellReportBody::Interrupted { cell, diagnostic } => {
+            let (bounded, used_json_chars) = maka_agent_facts::archive::bound_json_field_text(
+                &diagnostic,
+                remaining_text_budget,
+            );
+            remaining_text_budget = remaining_text_budget.saturating_sub(used_json_chars);
+            json!({"cell": cell, "state": "interrupted", "diagnostic": bounded.as_ref()})
+        }
+    };
+    let report_json = serde_json::to_string(&report).map_err(|error| invalid(error.to_string()))?;
+    let mut content = vec![ContentPart::text(format!("{label}\n{report_json}"))];
     let artifacts;
     let media = match source {
         NotificationSource::Live(store) => {
@@ -289,10 +342,36 @@ async fn render(
             scope: scope.clone().into(),
         },
     };
+    let total_text_chars: usize = observation
+        .output
+        .iter()
+        .filter_map(|part| match part {
+            CellOutput::Text { text } => Some(text.encode_utf16().count()),
+            _ => None,
+        })
+        .sum();
+    let mut text_budget = (total_text_chars > remaining_text_budget).then(|| {
+        maka_agent_facts::archive::BoundedTextAccumulator::for_plain_text(remaining_text_budget)
+    });
+    let mut seen_text = false;
     for part in observation.output {
         check(cancellation)?;
         match part {
-            CellOutput::Text { text } => content.push(ContentPart::text(text)),
+            CellOutput::Text { text } => {
+                if let Some(acc) = text_budget.as_mut() {
+                    if seen_text {
+                        acc.push_separator();
+                    }
+                    seen_text = true;
+                    let mut kept = String::new();
+                    acc.push_chunk(&text, &mut kept);
+                    if !kept.is_empty() {
+                        content.push(ContentPart::text(kept));
+                    }
+                } else {
+                    content.push(ContentPart::text(text));
+                }
+            }
             CellOutput::Image { image } => {
                 content.push(super::image_reference(&image.reference)?);
                 if !vision {
@@ -319,6 +398,21 @@ async fn render(
                 project_media(media, detail, language, vision, &mut content)?;
             }
         }
+    }
+    if let Some(acc) = text_budget
+        && acc.truncated()
+    {
+        let total_utf16 = acc.total_utf16();
+        let total_lines = acc.total_lines();
+        let tail = acc.finish_tail();
+        let mut notice = format!(
+            "[output truncated: {total_utf16} chars across {total_lines} lines exceeded display budget of {remaining_text_budget} chars]"
+        );
+        if let Some(tail) = tail {
+            notice.push_str("\n[tailPreview]\n");
+            notice.push_str(&tail);
+        }
+        content.push(ContentPart::text(notice));
     }
     Ok((
         Message::User {
@@ -450,5 +544,37 @@ fn check(cancellation: &CancellationToken) -> Result<(), RunError> {
         Err(RunError::Cancelled)
     } else {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn json_field_bounding_accounts_for_json_escaping_in_reports() {
+        let short = "ok".repeat(100);
+        let (bounded_short, _) = maka_agent_facts::archive::bound_json_field_text(&short, 500);
+        assert_eq!(bounded_short.as_ref(), short);
+
+        // 1,200 JSON lines: 38,401 raw UTF-16 (< 40,000) but > 45,000 once JSON-escaped.
+        let json_log = format!(
+            "{}FINAL-JSON-DIAG: line 1200",
+            "{\"path\":\"src/lib.rs\",\"ok\":true}\n".repeat(1_200)
+        );
+        assert!(
+            json_log.encode_utf16().count() < maka_agent_facts::archive::DEFAULT_CELL_DISPLAY_CHARS
+        );
+        let (bounded, used_json_chars) = maka_agent_facts::archive::bound_json_field_text(
+            &json_log,
+            maka_agent_facts::archive::DEFAULT_CELL_DISPLAY_CHARS,
+        );
+        assert!(bounded.contains("output truncated"));
+        assert!(bounded.contains("FINAL-JSON-DIAG: line 1200"));
+        let encoded = serde_json::to_string(bounded.as_ref()).unwrap();
+        let encoded_body_utf16 = encoded.encode_utf16().count() - 2;
+        assert_eq!(encoded_body_utf16, used_json_chars);
+        assert!(
+            encoded_body_utf16 <= maka_agent_facts::archive::DEFAULT_CELL_DISPLAY_CHARS,
+            "JSON-escaped report field exceeded 40k budget: {encoded_body_utf16}"
+        );
     }
 }

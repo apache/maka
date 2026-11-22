@@ -440,6 +440,10 @@ impl ApplicationHost {
         format!("dictation.{}.", self.owner.client.source().state_domain)
     }
 
+    pub fn dictation_microphones(&self) -> Vec<serde_json::Value> {
+        dictation::microphones()
+    }
+
     pub fn legacy_dictation_key(&self) -> bool {
         dictation::legacy_key()
     }
@@ -586,6 +590,12 @@ impl ApplicationHost {
     #[getter]
     pub fn ui_scale_supported(&self) -> bool {
         engine_context::<crate::UiScale>().is_some()
+    }
+
+    /// Whether the shell's native folder picker yields paths valid on the Host.
+    #[getter]
+    pub fn local_folder_picker(&self) -> bool {
+        engine_context::<crate::RemoteHostFilesystem>().is_none()
     }
 
     /// Re-layout and rasterize at the requested density, using the same input geometry.

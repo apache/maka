@@ -39,6 +39,7 @@ pub struct SourceFind {
     pub case_sensitive: bool,
     pub whole_word: bool,
     pub include_internal: bool,
+    pub mask_evidence: bool,
 }
 pub struct SourceFound {
     pub position: HistoryRowAddress,
@@ -60,6 +61,96 @@ pub struct SourceLandmark {
     pub label: String,
     pub origin: Option<MessageOrigin>,
 }
+struct ModelLandmarks(RunOwner, Vec<SourceLandmark>);
+
+impl SessionHistory {
+    pub async fn mask_landmark_labels(
+        &self,
+        landmarks: Vec<SourceLandmark>,
+    ) -> Result<Vec<SourceLandmark>, StoreError> {
+        self.data
+            .query(ModelLandmarks(self.namespace.owner.clone(), landmarks))
+            .await
+    }
+}
+
+impl Query for ModelLandmarks {
+    type Output = Vec<SourceLandmark>;
+    fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
+        let Self(owner, mut landmarks) = self;
+        let mut restricted =
+            crate::memory::recall::address_spans(c, &owner, landmarks.iter().map(|l| &l.position))?;
+        if restricted.is_empty() {
+            return Ok(landmarks);
+        }
+        let keys: Vec<_> = restricted
+            .keys()
+            .filter_map(|&i| match landmarks[i].position {
+                HistoryRowAddress::Live {
+                    sequence,
+                    fact,
+                    item_index,
+                }
+                | HistoryRowAddress::Snapshot {
+                    sequence,
+                    fact,
+                    item_index,
+                    ..
+                } => Some((i, sequence, fact, item_index)),
+                HistoryRowAddress::Imported { .. } => None,
+            })
+            .collect();
+        // A label may include attachment names after the message. Only the indexed
+        // Body field provides original user text with reliable byte coordinates.
+        let mut stmt = c.prepare_cached(
+            "SELECT k.value->>0,substr(d.body,1,96),d.fields_json->>'$[0].end'
+             FROM json_each(?1) k CROSS JOIN agent_session_history h
+             CROSS JOIN agent_recall_messages d
+             WHERE h.sequence=k.value->>1 AND h.fact_id=k.value->>2 AND h.owner=?2
+               AND d.owner=h.owner AND d.session=h.session AND d.sequence=h.sequence AND d.ordinal=k.value->>3
+               AND d.role='\"user\"' AND d.fields_json->>'$[0].field'='body' AND d.fields_json->>'$[0].start'=0"
+        )?;
+        let mut rows = stmt.query(params![
+            serde_json::to_string(&keys)?,
+            serde_json::to_string(&owner)?
+        ])?;
+        while let Some(row) = rows.next()? {
+            let i = usize::try_from(row.get::<_, i64>(0)?)
+                .map_err(|_| invalid("invalid landmark index"))?;
+            let raw: String = row.get(1)?;
+            let body_end = usize::try_from(row.get::<_, i64>(2)?)
+                .map_err(|_| invalid("invalid landmark body length"))?;
+            let spans = restricted
+                .remove(&i)
+                .expect("queried a restricted landmark");
+            landmarks[i].label =
+                masked_landmark_label(&raw, body_end, &landmarks[i].label, &spans)?;
+        }
+        for i in restricted.into_keys() {
+            landmarks[i].label.clear();
+        }
+        Ok(landmarks)
+    }
+}
+fn masked_landmark_label(
+    raw: &str,
+    body_end: usize,
+    label: &str,
+    spans: &[(u64, u64)],
+) -> Result<String, StoreError> {
+    let end = raw.floor_char_boundary(96.min(raw.len())).min(body_end);
+    if label != recall::landmark_label(raw) || spans.iter().any(|&(a, b)| a == 0 && b >= end as u64)
+    {
+        return Ok(String::new());
+    }
+    let mut body = raw
+        .get(..end)
+        .ok_or_else(|| invalid("invalid landmark body boundary"))?
+        .to_owned();
+    crate::memory::recall::mask(&mut body, 0, spans);
+    Ok(recall::landmark_label(&body))
+}
+
 fn cancelled(stop: &CancellationToken) -> Result<(), StoreError> {
     if stop.is_cancelled() {
         Err(invalid("source navigation cancelled"))
@@ -98,6 +189,7 @@ impl SourceTree {
                 case_sensitive: input.case_sensitive,
                 whole_word: input.whole_word,
                 include_internal: input.include_internal,
+                mask_evidence: input.mask_evidence,
                 work,
             };
             let page = match &section.source {
@@ -307,6 +399,7 @@ impl Query for LiveFind {
             },
             &stop,
             input.min_admission,
+            input.mask_evidence.then_some(&scope.owner),
             &mut work,
         )?;
         Ok(LocalFindPage {
@@ -375,5 +468,28 @@ impl Query for LiveLandmarks {
             })
         })
         .collect()
+    }
+}
+
+#[cfg(test)]
+mod landmark_tests {
+    use super::*;
+
+    #[test]
+    fn landmark_spans_use_original_bytes_and_exclude_attachment_labels() {
+        let raw = format!("a\u{85}界{}附件", "x".repeat(100));
+        let label = recall::landmark_label(&raw);
+        assert_eq!(
+            masked_landmark_label(&raw, raw.len(), &label, &[(100, 101)]).unwrap(),
+            label
+        );
+        assert_eq!(
+            masked_landmark_label(&raw, 6, &label, &[(3, 6)]).unwrap(),
+            "a ***"
+        );
+        assert_eq!(
+            masked_landmark_label(&raw, 6, "unmapped", &[(3, 6)]).unwrap(),
+            ""
+        );
     }
 }

@@ -110,7 +110,10 @@ const send = (value) =>
       error ? reject(error) : resolve(),
     ),
   );
-const reply = (id, result) => send({ jsonrpc: '2.0', id, result });
+const reply = (id, result) => {
+  if (antigravity && id === turn) turn = null;
+  return send({ jsonrpc: '2.0', id, result });
+};
 const event = (method, params) => send({ jsonrpc: '2.0', method, params });
 const diagnosticText = (value, limit = 256) => {
   if (typeof value !== 'string') return undefined;
@@ -131,6 +134,8 @@ const fail = async (error) => {
       ? 'Invalid protocol JSON'
       : diagnosticText(String(error?.message ?? 'Provider failure'), 4096);
   await record('failure', { message }).catch(() => {});
+  if (antigravity && turn !== null && !finished)
+    await send({ jsonrpc: '2.0', id: turn, error: { code: -32000, message } }).catch(() => {});
   process.exit(1);
 };
 socket.on('error', () => process.exit(1));
@@ -232,10 +237,18 @@ async function codeResult(code) {
 async function readArchivedResult() {
   const tail = 'end of archived output';
   const result = await callTool('exec', {
-    code: `text('x'.repeat(30000) + ${JSON.stringify(tail)});`,
+    code: `text('x'.repeat(12000) + ${JSON.stringify(tail)});`,
     yield_time_ms: 10000,
+    max_output_tokens: 1000,
   });
-  const archived = JSON.parse(result.content[0].text);
+  let archived;
+  try {
+    archived = JSON.parse(result.content[0].text);
+  } catch {
+    throw Error(
+      `Expected archived tool result JSON, got: ${diagnosticText(result.content[0]?.text, 256)}`,
+    );
+  }
   if (archived.kind !== 'maka.archived_tool_result' || !archived.page.next)
     throw Error('Expected a continuation for the large tool result');
   const suffix = await codeResult(`
@@ -370,10 +383,14 @@ async function acp(id, method, params) {
   }
   if (method === 'session/prompt' && params.sessionId === thread) {
     const text = params.prompt.findLast((block) => block.type === 'text').text;
-    const start = text.indexOf('MAKA_EXTERNAL_CASE ');
+    const start = text.lastIndexOf('MAKA_EXTERNAL_CASE ');
     if (start === -1) throw Error('Missing task in ACP prompt');
-    if (job) throw Error('Duplicate ACP task prompt');
-    job = JSON.parse(text.slice(start + 'MAKA_EXTERNAL_CASE '.length).split('\n')[0]);
+    const submitted = JSON.parse(text.slice(start + 'MAKA_EXTERNAL_CASE '.length).split('\n')[0]);
+    if (job) {
+      if (job.label !== 'ACP-goal' || submitted.label !== 'ACP-goal-resumed')
+        throw Error('Duplicate ACP task prompt');
+    }
+    job = submitted;
     turn = id;
     const checkpoint =
       job.label === 'ACP-child'
@@ -467,6 +484,27 @@ async function acp(id, method, params) {
       if (!task.taskId) throw Error('ScheduledTask omitted the automation ID');
       await record('scheduled', { thread, taskId: task.taskId, promptId: id });
       return;
+    }
+    if (job.label === 'ACP-goal') {
+      const goal = await codeResult(
+        'text(await tools.CreateGoal(' +
+          JSON.stringify({
+            objective: `MAKA_EXTERNAL_CASE ${JSON.stringify({ label: 'ACP-goal-resumed' })}`,
+          }) +
+          '))',
+      );
+      if (goal.current?.status !== 'active') throw Error('CreateGoal did not arm the current run');
+      await record('goal_created', { thread, goalId: goal.current.id });
+      return;
+    }
+    if (job.label === 'ACP-goal-resumed') {
+      await codeResult(
+        'text(await tools.GoalStatus(' +
+          JSON.stringify({ status: 'achieved', note: 'The resumed ACP turn completed the Goal.' }) +
+          '))',
+      );
+      await record('goal_achieved', { thread });
+      return reply(id, { stopReason: 'end_turn' });
     }
     if (job.label === 'ACP-followup') {
       await readArchivedResult();

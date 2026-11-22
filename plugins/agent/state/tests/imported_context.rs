@@ -70,9 +70,48 @@ async fn store(base: &std::path::Path) -> (Arc<RootStore>, Store) {
     let store = Store::new(data.clone(), DriverDomain::new(data).unwrap()).unwrap();
     (root, store)
 }
-async fn assert_context(snapshot: &Snapshot) {
+async fn assert_context(snapshot: &Snapshot, root: &RootStore, owner: &RunOwner) {
+    let addresses: Vec<_> = (0..3)
+        .map(
+            |message_ordinal| maka_agent_facts::history::HistoryRowAddress::Imported {
+                path: Vec::new(),
+                snapshot: snapshot.id(),
+                message_ordinal,
+                part_ordinal: 0,
+            },
+        )
+        .collect();
+    let restricted = root
+        .data_writer()
+        .unwrap()
+        .query(maka_agent_state::memory::recall::ReadRestrictions {
+            owner: owner.clone(),
+            addresses: addresses.clone(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        restricted.into_keys().collect::<Vec<_>>(),
+        vec![addresses[0].clone()]
+    );
     let full = snapshot.imported(None, 20).await.unwrap();
     assert_eq!(full.items.len(), 3, "browsing retains pre-summary history");
+    assert_eq!(
+        snapshot.restricted_imported_parts(0, 0).await.unwrap(),
+        [(0, 0), (0, 4)].into_iter().collect()
+    );
+    assert!(
+        snapshot
+            .restricted_original(&full.items[0].1)
+            .await
+            .unwrap()
+    );
+    assert!(
+        !snapshot
+            .restricted_original(&full.items[1].1)
+            .await
+            .unwrap()
+    );
     let model = snapshot.model_messages(None, 1).await.unwrap();
     assert_eq!(model.items[0].0, 1, "model starts with the summary itself");
     assert_eq!(model.items[0].1.role, HistoricalRole::Context);
@@ -85,8 +124,8 @@ async fn assert_context(snapshot: &Snapshot) {
     let visible = snapshot.positions(None, false, false, 0, 20).await.unwrap();
     assert_eq!(
         visible.len(),
-        2,
-        "summary is internal, genuine messages remain visible"
+        full.items[0].1.parts.len() + full.items[2].1.parts.len(),
+        "summary is internal, genuine message parts remain visible"
     );
     let part: ImportedPart = snapshot
         .with_imported_content(1, &model.items[0].1.parts[0], |reader| {
@@ -110,7 +149,7 @@ async fn imported_context_boundary_keeps_history_and_survives_export() {
     tape.write_all(IMPORT_TAPE_MAGIC).unwrap();
     let mut originals = Vec::new();
     for (i, (role, text)) in [
-        (HistoricalRole::User, "Original long task"),
+        (HistoricalRole::Assistant, "Earlier Recall result"),
         (
             HistoricalRole::Context,
             "Work already completed; continue the outstanding task.",
@@ -122,8 +161,37 @@ async fn imported_context_boundary_keeps_history_and_survives_export() {
     {
         let original = content(&mut tape, json!({"id":i,"text":text}));
         originals.push(original.clone());
-        let part = content(&mut tape, json!({"kind":"input","content":{"text":text}}));
+        let part = if i == 0 {
+            content(
+                &mut tape,
+                json!({"kind":"model","part":{"kind":"tool_result","id":"r","name":"Recall","output":text,"is_error":false,"provider_options":null}}),
+            )
+        } else {
+            content(&mut tape, json!({"kind":"input","content":{"text":text}}))
+        };
+        let mut parts = vec![part];
+        if i == 0 {
+            let call = |id, path| {
+                json!({"kind":"model","part":{"kind":"tool_call","call":{
+                    "id":id,"name":"Read","input":{"kind":"json","data":{"path":path}},"provider_executed":false
+                }}})
+            };
+            let result = |id| {
+                json!({"kind":"model","part":{"kind":"tool_result","id":id,
+                "name":"Read","output":"saved page","is_error":false}})
+            };
+            for value in [
+                call("f", "README.md"),
+                result("f"),
+                call("f", "session:previous"),
+                result("f"),
+                result("unknown"),
+            ] {
+                parts.push(content(&mut tape, value));
+            }
+        }
         let message = ImportedMessage {
+            reply_info: None,
             turn_ordinal: ImportedTurnOrdinal(i as u64),
             original_ordinal: i as u64,
             media: vec![],
@@ -135,7 +203,7 @@ async fn imported_context_boundary_keeps_history_and_survives_export() {
                 owner: owner.clone(),
                 session: "conversation".into(),
             },
-            parts: vec![part],
+            parts,
             provider_metadata: None,
             original,
         };
@@ -180,7 +248,7 @@ async fn imported_context_boundary_keeps_history_and_survives_export() {
         )
         .await
         .unwrap();
-    assert_context(&snapshot).await;
+    assert_context(&snapshot, &root, &owner).await;
     let archive = snapshot
         .export(tempfile::tempfile().unwrap())
         .await
@@ -188,7 +256,7 @@ async fn imported_context_boundary_keeps_history_and_survives_export() {
     let other = tempfile::tempdir().unwrap();
     let (other_root, other_db) = store(other.path()).await;
     let imported = other_db
-        .session_history(owner, "destination".into())
+        .session_history(owner.clone(), "destination".into())
         .import_snapshot(
             Uuid::new_v4(),
             archive.history,
@@ -197,7 +265,7 @@ async fn imported_context_boundary_keeps_history_and_survives_export() {
         )
         .await
         .unwrap();
-    assert_context(&imported).await;
+    assert_context(&imported, &other_root, &owner).await;
     let ordinary = history
         .capture_imported(
             ImportedCaptureRequest {

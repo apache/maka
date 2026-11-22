@@ -1468,6 +1468,8 @@ pub struct HistoryChunk {
     /// Includes body text and source citations; never a Thinking field.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub final_output: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply_info: Option<maka_agent_facts::model::QuickReplyInfo>,
     /// The provider identified this text as final before the Turn completed.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub final_answer: bool,
@@ -1965,6 +1967,7 @@ impl From<maka_agent_ports::session::history::Page> for HistoryPage {
                     has_references: chunk.has_references,
                     quotes: chunk.quotes,
                     final_output: chunk.final_output,
+                    reply_info: chunk.reply_info,
                     final_answer: chunk.final_answer,
                     model: chunk.model,
                     origin: chunk.origin,
@@ -2271,7 +2274,7 @@ pub fn contract() -> Contract {
                 ),
                 (
                     "askQuickQuestion".into(),
-                    Method { progress: Some(schemars::schema_for!(String).into()), ..method::<QuickQuestion, ()>(MethodMode::Mutation) },
+                    Method { progress: Some(schemars::schema_for!(String).into()), ..method::<QuickQuestion, maka_agent_facts::model::QuickReplyInfo>(MethodMode::Mutation) },
                 ),
                 (
                     "predictNextMessage".into(),

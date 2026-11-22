@@ -2324,6 +2324,126 @@ async fn antigravity_resumes_from_a_room_mention_and_replies_in_the_room() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn antigravity_goal_resumes_after_stop_with_ui_approval() {
+    let mut rig = Rig::new().await.expect("isolated Host and ACP fixture");
+    let outcome = AssertUnwindSafe(async {
+        let (mut anchor, bootstrap) = phase("start Host", rig.start()).await?;
+        phase(
+            "enable Antigravity",
+            rig.configure(&mut anchor, &bootstrap, "antigravity"),
+        )
+        .await?;
+        bootstrap.close().await?;
+        rig.clients.pop();
+        let sdk = connect_sdk(&mut rig, &anchor).await?;
+        let (session, run) = phase(
+            "start a prompt that creates a Goal",
+            launch(
+                &sdk,
+                &rig.sandbox.workspace,
+                "ACP-goal",
+                "Create a persistent Goal",
+                true,
+                "antigravity",
+            ),
+        )
+        .await?;
+        let original = phase(
+            "AGY creates the Goal through MCP",
+            rig.controller.event("ACP-goal", "goal_created"),
+        )
+        .await?;
+        let stopped = mutate(
+            &sdk,
+            "agent",
+            "stop",
+            json!({"sessionId":session,"runId":run}),
+        )
+        .await?;
+        assert_eq!(stopped["requested"], true);
+        let paused = phase("the stopped Goal becomes resumable", async {
+            let mut tick = tokio::time::interval(Duration::from_millis(20));
+            loop {
+                tick.tick().await;
+                let view = query(&sdk, "agent", "goal", json!({"sessionId":session})).await?;
+                let current = &view["current"];
+                if current["status"] == "paused" && current["pending"] == false {
+                    return Ok(current.clone());
+                }
+            }
+        })
+        .await?;
+        assert_eq!(paused["id"], original["goalId"]);
+
+        let observed = query(&sdk, "agent", "observe", json!({"sessionId":session})).await?;
+        let current = &observed["session"];
+        let approval = json!({
+            "target": {
+                "sessionId":current["id"],
+                "workspace":current["workspace"],
+                "permissions":current["permissions"],
+                "boundaryRevision":current["boundaryRevision"],
+                "binding":current["binding"],
+            },
+            "backend": {
+                "kind":"executor",
+                "selection":{
+                    "executor":"external",
+                    "settings":{"runtime":"antigravity","model":"default"},
+                },
+            },
+        });
+        let resumed = mutate(
+            &sdk,
+            "agent",
+            "changeGoal",
+            json!({
+                "kind":"control",
+                "sessionId":session,
+                "goalId":paused["id"],
+                "revision":paused["revision"],
+                "action":"resume",
+                "approval":approval,
+            }),
+        )
+        .await?;
+        assert_eq!(resumed["kind"], "committed", "{resumed}");
+
+        let continued = phase(
+            "the resumed Goal submits another ACP turn",
+            rig.controller.event("ACP-goal-resumed", "ready"),
+        )
+        .await?;
+        assert_eq!(continued["thread"], original["thread"]);
+        let achieved = phase("AGY reports Goal achievement and finishes", async {
+            let mut tick = tokio::time::interval(Duration::from_millis(20));
+            loop {
+                tick.tick().await;
+                let view = query(&sdk, "agent", "goal", json!({"sessionId":session})).await?;
+                let current = &view["current"];
+                if current["status"] == "achieved" && current["pending"] == false {
+                    return Ok(current.clone());
+                }
+            }
+        })
+        .await?;
+        assert_eq!(achieved["iterations"], 2);
+        sdk.close().await?;
+        rig.clients.pop();
+        phase("quit Host", rig.hosts[0].quit(&mut anchor)).await?;
+        Ok::<_, String>(())
+    })
+    .catch_unwind()
+    .await;
+    let cleanup = rig.cleanup().await;
+    match outcome {
+        Err(panic) => std::panic::resume_unwind(panic),
+        Ok(Err(error)) => panic!("{error}; cleanup={cleanup:?}"),
+        Ok(Ok(())) => assert!(cleanup.is_empty(), "{cleanup:?}"),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn antigravity_automation_wakes_the_original_conversation_after_the_turn() {
     let mut rig = Rig::new().await.expect("isolated Host and ACP fixture");
     let outcome = AssertUnwindSafe(async {

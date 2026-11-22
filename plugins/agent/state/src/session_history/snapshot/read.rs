@@ -878,6 +878,30 @@ impl Query for Item {
             .filter(|item| item.sequence == self.1))
     }
 }
+pub(super) struct RestrictedImported(pub Snapshot, pub u64, pub u64);
+impl Query for RestrictedImported {
+    type Output = std::collections::BTreeSet<(u64, u64)>;
+    fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
+        authorize(c, &self.0)?;
+        crate::memory::recall::register_read_classifier(c)?;
+        let mut stmt=c.prepare_cached("SELECT message,part FROM agent_memory_imported_outputs WHERE snapshot=?1 AND message BETWEEN ?2 AND ?3 AND (read_path IS NULL OR maka_reads_history_resource(read_path))")?;
+        Ok(stmt
+            .query_map(
+                params![self.0.id.to_string(), bind_u64(self.1)?, bind_u64(self.2)?],
+                |r| Ok((read_u64(r, 0)?, read_u64(r, 1)?)),
+            )?
+            .collect::<Result<_, _>>()?)
+    }
+}
+pub(super) struct RestrictedOriginal(pub Snapshot, pub u64, pub ContentRef);
+impl Query for RestrictedOriginal {
+    type Output = bool;
+    fn execute(self, c: &Connection) -> Result<bool, StoreError> {
+        authorize(c, &self.0)?;
+        crate::memory::recall::register_read_classifier(c)?;
+        Ok(c.query_row("SELECT EXISTS(SELECT 1 FROM agent_memory_imported_outputs WHERE snapshot=?1 AND original_ordinal=?2 AND original=?3 AND (read_path IS NULL OR maka_reads_history_resource(read_path)))",params![self.0.id.to_string(),bind_u64(self.1)?,self.2.digest],|r|r.get(0))?)
+    }
+}
 pub(super) struct ImportedItem(pub Snapshot, pub u64);
 pub(super) struct ImportedReference(pub Snapshot, pub u64);
 impl Query for ImportedReference {
@@ -943,24 +967,26 @@ pub(super) fn view_with_late(
     read_view(c, snapshot, run_id, None, |_, _| {})
 }
 
-pub(super) struct ExecutorView(pub Snapshot, pub RunId);
+pub(super) struct ExecutorView(pub Snapshot, pub RunId, pub bool);
 impl Query for ExecutorView {
     type Output = (crate::fold::RunView, ExecutorTranscript);
     fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
         let mut transcript = ExecutorTranscript::default();
+        let mut pieces = self.2.then(Vec::new);
         let (view, _) = read_view(c, &self.0, self.1, None, |sequence, record| {
-            transcript.observe(sequence, record);
+            transcript.observe(sequence, record, &mut pieces);
         })?;
+        transcript.mask_pieces(c, &view.spec.owner, pieces)?;
         Ok((view, transcript))
     }
 }
 
-pub(super) struct RecoveryFailureAt(pub Snapshot, pub RunId, pub u64);
+pub(super) struct RecoveryFailureAt(pub Snapshot, pub RunId, pub u64, pub bool);
 impl Query for RecoveryFailureAt {
     type Output = Option<String>;
     fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
         let (view, _) = read_view(c, &self.0, self.1, Some(self.2), |_, _| {})?;
-        Ok(view.recovery_failure_diagnostic())
+        crate::session_history::sql::recovery_diagnostic(c, &view, self.3)
     }
 }
 

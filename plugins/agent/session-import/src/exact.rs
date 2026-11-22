@@ -58,6 +58,7 @@ pub struct ExactRecord {
 }
 
 pub struct ExactMessage {
+    pub reply_info: Option<maka_agent_facts::model::QuickReplyInfo>,
     pub source_message_id: Option<String>,
     pub source_turn_id: Option<String>,
     pub turn_ordinal: ImportedTurnOrdinal,
@@ -202,6 +203,7 @@ impl ExactPart {
                             projection: DurableToolProjection::Content { parts },
                             is_error,
                             loaded_tools: std::collections::BTreeSet::new(),
+                            display_budget_chars: None,
                         },
                     },
                 })

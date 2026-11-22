@@ -79,6 +79,9 @@ const distributionInputs = [
   'scripts/rust/notices.mjs',
   'scripts/rust/notices-sources.json',
   'scripts/rust/licenses',
+  'scripts/rust/nightly-manifest.mjs',
+  'scripts/rust/package-nightly.mjs',
+  'scripts/install-nightly.sh',
 ];
 const bundledSkillInputs = ['skills/maka-generative-ui', 'skills/maka-plugin-authoring'];
 const skillInputs = [...bundledSkillInputs, 'platform/computer-use/skills'];
@@ -110,6 +113,7 @@ const distributionConsumers = [
   'maka-desktop-shell',
   'maka-host-shell',
   'maka-python-runtime',
+  'maka-updater',
 ];
 
 export const suites = {

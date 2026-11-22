@@ -149,6 +149,7 @@ fn chunk_to_entry(
     chunk: HistoryChunk,
     include_byte_bounds: bool,
     include_thinking: bool,
+    restricted_result_rows: &crate::service::history::RestrictedToolResultRows,
 ) -> Option<AgentTranscriptEntry> {
     let sliced =
         include_byte_bounds || chunk.offset > 0 || chunk.total_bytes > chunk.text.len() as u64;
@@ -222,7 +223,19 @@ fn chunk_to_entry(
             }
         }
         wire::Role::ToolCall => {
-            let tool = chunk.tool?;
+            let Some(tool) = chunk.tool else {
+                return (!chunk.text.is_empty()).then(|| AgentTranscriptEntry {
+                    role: "tool".into(),
+                    turn_id: chunk.turn_id,
+                    message_id: chunk.message_id,
+                    tool_name: None,
+                    status: None,
+                    result_path: None,
+                    offset,
+                    total_bytes,
+                    text: chunk.text,
+                });
+            };
             let call = tool.call.as_ref();
             if call.is_some_and(|c| !c.ancestor_tool_use_ids.is_empty()) && chunk.text.is_empty() {
                 return None;
@@ -236,6 +249,7 @@ fn chunk_to_entry(
                     };
                     (Some(st), tool_result_path(session_id, &res.position))
                 }
+                None if restricted_result_rows.contains(&chunk.position) => (None, None),
                 None => (
                     Some(
                         if call.is_some_and(|c| c.pending) {
@@ -283,7 +297,11 @@ fn chunk_to_entry(
                     .as_ref()
                     .and_then(|t| t.call.as_ref())
                     .map(|c| c.name.clone());
-                let result_path = tool_result_path(session_id, &chunk.position);
+                let result_path = if restricted_result_rows.contains(&chunk.position) {
+                    None
+                } else {
+                    tool_result_path(session_id, &chunk.position)
+                };
                 Some(AgentTranscriptEntry {
                     role: "tool_result".into(),
                     turn_id: chunk.turn_id,
@@ -452,6 +470,88 @@ impl Owner {
         })
     }
 
+    pub(super) async fn session_run_overview(
+        &self,
+        session_id: &str,
+        observed: Option<&crate::contract::Run>,
+        scope: &Scope,
+    ) -> Result<Option<SessionRunOverview>, String> {
+        let latest = match observed {
+            Some(active) => Some(active.run_id),
+            None => self
+                .durable
+                .latest_run(session_id.to_owned())
+                .await
+                .ok()
+                .flatten(),
+        };
+        let view = if let Some(id) = latest {
+            self.session_run(session_id, id).await.ok().flatten()
+        } else {
+            None
+        };
+        // The Run can finish between the observation and the detail read.
+        if let Some(active) =
+            observed.filter(|_| view.as_ref().is_none_or(|v| v.terminal.is_none()))
+        {
+            let blockers = view
+                .iter()
+                .flat_map(|v| v.blockers.values())
+                .filter(|b| b.decision.is_none() && b.resolved_by.is_none())
+                .map(|b| format!("{:?}", b.reason))
+                .collect();
+            return Ok(Some(SessionRunOverview {
+                run_id: active.run_id,
+                state: enum_snake(&active.state),
+                stopped: view.as_ref().is_some_and(|v| v.stopped),
+                error: None,
+                blockers,
+            }));
+        }
+        let Some(view) = view else {
+            return Ok(None);
+        };
+
+        let latest_id = view.run;
+        let state = match &view.terminal {
+            Some(term) => enum_snake(term),
+            None if view.stopped => "stopped".into(),
+            None => "running".into(),
+        };
+        let failure = match self.execution_for_reader(&view, scope).await?.state {
+            ExecutionState::Failed { reason } => reason,
+            _ => view.recovery_failure().cloned(),
+        };
+        let mut error = failure.as_ref().and_then(|f| {
+            serde_json::to_value(f)
+                .ok()
+                .and_then(|v| {
+                    v.get("diagnostic")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                })
+                .or_else(|| serde_json::to_string(f).ok())
+        });
+        if error.is_none() && matches!(view.terminal, Some(Terminal::Failed)) {
+            error = self
+                .run_result(
+                    session_id,
+                    latest_id,
+                    &Terminal::Failed,
+                    scope.identity.agent().is_some(),
+                )
+                .await
+                .failure;
+        }
+        Ok(Some(SessionRunOverview {
+            run_id: latest_id,
+            state,
+            stopped: view.stopped,
+            error,
+            blockers: Vec::new(),
+        }))
+    }
+
     pub async fn session_read_tool(
         self: &Arc<Self>,
         input: SessionReadInput,
@@ -505,65 +605,22 @@ impl Owner {
         let mut run_overview = None;
         let mut live_output_preview = None;
         if !is_room {
-            if let Some(active_run) = &observed.run {
-                if let Ok(Some(work)) = self.durable.work(active_run.run_id, 0, 2048).await
-                    && !work.answer.text.is_empty()
-                {
-                    let mut preview: String = work.answer.text.chars().take(800).collect();
-                    if work.answer.next.is_some() || work.answer.text.chars().count() > 800 {
-                        preview.push('…');
-                    }
-                    live_output_preview = Some(preview);
-                }
-                let mut blockers = Vec::new();
-                let mut stopped = false;
-                if let Ok(Some(view)) = self.session_run(&session_id, active_run.run_id).await {
-                    stopped = view.stopped;
-                    for b in view.blockers.values() {
-                        if b.decision.is_none() && b.resolved_by.is_none() {
-                            blockers.push(format!("{:?}", b.reason));
-                        }
-                    }
-                }
-                run_overview = Some(SessionRunOverview {
-                    run_id: active_run.run_id,
-                    state: enum_snake(&active_run.state),
-                    stopped,
-                    error: None,
-                    blockers,
-                });
-            } else if let Ok(Some(latest_id)) = self.durable.latest_run(session_id.clone()).await
-                && let Ok(Some(view)) = self.session_run(&session_id, latest_id).await
+            if let Some(active_run) = &observed.run
+                && let Ok(Some(work)) = self
+                    .durable
+                    .work_for_reader(active_run.run_id, 0, 2048, scope.identity.agent().is_some())
+                    .await
+                && !work.answer.text.is_empty()
             {
-                let state = match &view.terminal {
-                    Some(term) => enum_snake(term),
-                    None if view.stopped => "stopped".into(),
-                    None => "running".into(),
-                };
-                let mut error = view.recovery_failure().and_then(|f| {
-                    serde_json::to_value(f)
-                        .ok()
-                        .and_then(|v| {
-                            v.get("diagnostic")
-                                .and_then(Value::as_str)
-                                .map(str::to_owned)
-                        })
-                        .or_else(|| serde_json::to_string(f).ok())
-                });
-                if error.is_none() && matches!(view.terminal, Some(Terminal::Failed)) {
-                    error = self
-                        .run_result(&session_id, latest_id, &Terminal::Failed)
-                        .await
-                        .failure;
+                let mut preview: String = work.answer.text.chars().take(800).collect();
+                if work.answer.next.is_some() || work.answer.text.chars().count() > 800 {
+                    preview.push('…');
                 }
-                run_overview = Some(SessionRunOverview {
-                    run_id: latest_id,
-                    state,
-                    stopped: view.stopped,
-                    error,
-                    blockers: Vec::new(),
-                });
+                live_output_preview = Some(preview);
             }
+            run_overview = self
+                .session_run_overview(&session_id, observed.run.as_ref(), scope)
+                .await?;
         }
 
         let mut pending_interactions = Vec::new();
@@ -770,19 +827,20 @@ impl Owner {
                 (None, p, view, use_raw, false)
             };
 
-            let page = service::history_read_for_tool(
-                self,
-                scope,
-                History {
-                    session_id: session_id.clone(),
-                    through,
-                    position: pos,
-                    include_thinking,
-                    view: hist_view,
-                },
-            )
-            .await
-            .map_err(humanize_agent_error)?;
+            let (page, restricted_result_rows) =
+                crate::service::history::read_with_result_visibility(
+                    self,
+                    scope,
+                    History {
+                        session_id: session_id.clone(),
+                        through,
+                        position: pos,
+                        include_thinking,
+                        view: hist_view,
+                    },
+                )
+                .await
+                .map_err(humanize_agent_error)?;
 
             match page {
                 HistoryPage::Ready {
@@ -809,7 +867,15 @@ impl Owner {
                     });
                     let items = chunks
                         .into_iter()
-                        .filter_map(|c| chunk_to_entry(&session_id, c, is_raw, include_thinking))
+                        .filter_map(|c| {
+                            chunk_to_entry(
+                                &session_id,
+                                c,
+                                is_raw,
+                                include_thinking,
+                                &restricted_result_rows,
+                            )
+                        })
                         .collect();
                     Some(SessionTranscript::Agent {
                         items,
@@ -967,19 +1033,20 @@ impl Owner {
                 let mut older_wire_cursor = None;
                 let mut effective_through = Some(pinned_through);
                 for _ in 0..6 {
-                    let page = service::history_read_for_tool(
-                        self,
-                        scope,
-                        History {
-                            session_id: session_id.to_owned(),
-                            through: effective_through,
-                            position: pos,
-                            include_thinking: false,
-                            view: wire::HistoryView::Conversation,
-                        },
-                    )
-                    .await
-                    .map_err(humanize_agent_error)?;
+                    let (page, restricted_result_rows) =
+                        crate::service::history::read_with_result_visibility(
+                            self,
+                            scope,
+                            History {
+                                session_id: session_id.to_owned(),
+                                through: effective_through,
+                                position: pos,
+                                include_thinking: false,
+                                view: wire::HistoryView::Conversation,
+                            },
+                        )
+                        .await
+                        .map_err(humanize_agent_error)?;
                     let HistoryPage::Ready {
                         through: page_through,
                         chunks,
@@ -993,7 +1060,9 @@ impl Owner {
                     older_wire_cursor = before;
                     let mut batch: Vec<AgentTranscriptEntry> = chunks
                         .into_iter()
-                        .filter_map(|c| chunk_to_entry(session_id, c, false, false))
+                        .filter_map(|c| {
+                            chunk_to_entry(session_id, c, false, false, &restricted_result_rows)
+                        })
                         .collect();
                     batch.extend(all_entries);
                     all_entries = batch;
@@ -1057,15 +1126,19 @@ impl Owner {
                             }
                             "tool" => {
                                 let name = entry.tool_name.as_deref().unwrap_or("tool");
-                                let st = entry.status.as_deref().unwrap_or("done");
+                                let status = entry
+                                    .status
+                                    .as_ref()
+                                    .map(|status| format!(" · {status}"))
+                                    .unwrap_or_default();
                                 if let Some(path) = &entry.result_path {
                                     out.push_str(&format!(
-                                        "- [Tool {name} · {st}]: {} (output: {path})\n",
+                                        "- [Tool {name}{status}]: {} (output: {path})\n",
                                         entry.text
                                     ));
                                 } else {
                                     out.push_str(&format!(
-                                        "- [Tool {name} · {st}]: {}\n",
+                                        "- [Tool {name}{status}]: {}\n",
                                         entry.text
                                     ));
                                 }

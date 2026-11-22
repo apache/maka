@@ -1078,6 +1078,14 @@ mod tests {
             "agent_interaction_outcomes",
             "agent_interaction_pending",
             "agent_interaction_requests",
+            // Deleting history, recall messages and their derived rows cascades to these indexes.
+            "agent_memory_cell_candidates",
+            "agent_memory_cell_events",
+            "agent_memory_cell_observations",
+            "agent_memory_recall_attachments",
+            "agent_memory_recall_calls",
+            "agent_memory_run_restrictions",
+            "agent_memory_shared_fields",
             "agent_model_items",
             "agent_operation_pins",
             "agent_queue_content_pins",
@@ -1124,6 +1132,13 @@ mod tests {
             "agent_history_snapshots",
             "agent_memories",
             "agent_memory_evidence",
+            "agent_memory_history_boundary",
+            // Imported bindings follow their snapshot; frozen aliases follow the retained run spec.
+            "agent_memory_imported_tools",
+            "agent_memory_read_aliases",
+            // The scoped fact index belongs to the memory record and survives session removal.
+            "agent_memory_recall_keys",
+            "agent_memory_recall_terms",
             "agent_memory_matches",
             "agent_memory_relations",
             "agent_memory_scopes",

@@ -59,11 +59,12 @@ async function flush() {
   for (let i = 0; i < 20; i++) await Promise.resolve();
 }
 
-function setup({ beforeQueryReturns } = {}) {
+function setup({ beforeQueryReturns, backend = null, permissions = {} } = {}) {
   const queued = [];
   let waiting;
   let latest = snapshot(4);
   const sent = [];
+  const requests = [];
   const host = {
     subscribe: async () => ({
       next: () =>
@@ -81,11 +82,12 @@ function setup({ beforeQueryReturns } = {}) {
     },
   };
   const control = async (_method, request) => {
+    requests.push(request);
     sent.push(request.revision);
-    latest = snapshot(request.revision + 1);
+    latest = snapshot(request.kind === 'create' ? 1 : request.revision + 1);
     return { kind: 'committed' };
   };
-  const goal = createSessionGoal(host, 'session', control, {}, async () => null);
+  const goal = createSessionGoal(host, 'session', control, permissions, async () => backend);
   const push = async (view) => {
     if (waiting) {
       const resolve = waiting;
@@ -94,7 +96,7 @@ function setup({ beforeQueryReturns } = {}) {
     } else queued.push(view);
     await flush();
   };
-  return { goal, push, sent };
+  return { goal, push, sent, requests };
 }
 
 test('a stale stream snapshot does not undo what a change returned', async () => {
@@ -107,6 +109,43 @@ test('a stale stream snapshot does not undo what a change returned', async () =>
   assert.equal(goal.view().current.revision, 5);
   assert.equal(await goal.change('resume'), true);
   assert.deepEqual(sent, [4, 5]);
+});
+
+test('an external Agent supplies the approval for Goal creation and resume', async () => {
+  const backend = {
+    kind: 'executor',
+    selection: {
+      executor: 'external',
+      settings: { runtime: 'antigravity', model: 'gemini-4-neon', thinkingLevel: 'high' },
+    },
+  };
+  const session = {
+    workspace: { path: '/workspace' },
+    permissions: { access: 'workspace_write', requestPermissions: false },
+    boundaryRevision: 3,
+    binding: { id: 'binding', permissionEpoch: 4 },
+  };
+  const { goal, push, requests } = setup({
+    backend,
+    permissions: { snapshot: () => session },
+  });
+  await push({ current: null });
+
+  assert.equal(await goal.create('keep working', null), true);
+  assert.equal(await goal.change('pause'), true);
+  assert.equal(await goal.change('resume'), true);
+
+  const approval = {
+    target: { sessionId: 'session', ...session },
+    backend,
+  };
+  assert.deepEqual(
+    requests.map((request) => request.kind),
+    ['create', 'control', 'control'],
+  );
+  assert.deepEqual(requests[0].approval, approval);
+  assert.equal(requests[1].approval, undefined);
+  assert.deepEqual(requests[2].approval, approval);
 });
 
 test('a change whose query is overtaken by the stream keeps the newer snapshot', async () => {

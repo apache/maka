@@ -280,6 +280,7 @@ export const menuSeparatorStyle = () => ({
 export const quietActiveStyle = () => ({ backgroundColor: C.cardRaised });
 
 export function IconButton(props: {
+  compact?: boolean;
   label: string;
   tooltip?: string;
   icon: Parameters<typeof Icon>[0]['name'];
@@ -296,8 +297,10 @@ export function IconButton(props: {
       onPress={props.onPress}
       style={{
         ...controlStyle,
-        width: 32,
-        paddingHorizontal: 8,
+        width: props.compact ? 24 : 32,
+        minHeight: props.compact ? 24 : 32,
+        paddingVertical: props.compact ? 4 : 8,
+        paddingHorizontal: props.compact ? 4 : 8,
         alignItems: 'center',
         flexShrink: 0,
       }}
@@ -346,6 +349,7 @@ export function Disclosure(props: {
   tooltip?: string;
   open: boolean;
   foldable?: boolean;
+  reserveChevron?: boolean;
   /** On the desktop, what the row is, in place of the chevron. */
   icon?: Parameters<typeof Icon>[0]['name'];
   terminalInset?: number;
@@ -390,8 +394,8 @@ export function Disclosure(props: {
             <If
               when={props.foldable !== false}
               else={
-                // The label stays on the text lane where there is nothing to fold.
-                <If when={platform.idiom !== 'terminal'}>
+                // Nested rows can align their labels with foldable siblings.
+                <If when={platform.idiom !== 'terminal' && props.reserveChevron !== false}>
                   <View style={{ width: 16, height: 16 }} />
                 </If>
               }

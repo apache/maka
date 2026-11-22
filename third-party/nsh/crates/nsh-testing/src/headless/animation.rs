@@ -91,6 +91,18 @@ impl Animator {
         self.graph.pan_values(id)
     }
 
+    /// A native trackpad pinch began on view id.
+    pub(crate) fn transform_began(&mut self, id: NodeId) {
+        self.graph.transform_began(id, false);
+        self.wake();
+    }
+
+    /// A native trackpad pinch moved to scale since it began.
+    pub(crate) fn transform_moved(&mut self, id: NodeId, scale: f32) {
+        self.graph.transform_moved(id, false, scale);
+        self.wake();
+    }
+
     /// Starts the frames when something animates.
     fn wake(&mut self) {
         if self.graph.animating() && self.next.is_none() {

@@ -24,12 +24,21 @@ import { join } from 'node:path';
 import { v8Notices } from './v8-notices.mjs';
 
 export async function compileV8({ source, features, directory, target, env }) {
+  if (process.platform === 'linux' && process.arch === 'arm64') {
+    throw new Error(
+      'V8 source builds for Linux ARM64 must cross-compile from a linux/x64 host (Chromium Clang 23 only ships Linux_x64 host binaries). Use a pinned prebuilt or cross-build on linux/x64.',
+    );
+  }
   const checkout = join(directory, 'source');
   const output = join(directory, 'target');
   await mkdir(checkout, { recursive: true });
   const run = async (command, args, variables = env) =>
     new Promise((resolve, reject) => {
-      const child = spawn(command, args, { cwd: checkout, env: variables, stdio: 'inherit' });
+      const child = spawn(command, args, {
+        cwd: checkout,
+        env: variables,
+        stdio: 'inherit',
+      });
       child.once('error', reject);
       child.once('exit', (code, signal) =>
         code === 0
@@ -64,12 +73,20 @@ export async function compileV8({ source, features, directory, target, env }) {
   await access(archiver, constants.X_OK);
   let gnArgs = source.gnArgs;
   const bindingEnvironment = {};
-  if (target === 'x86_64-unknown-linux-gnu') {
+  if (target === 'x86_64-unknown-linux-gnu' || target === 'aarch64-unknown-linux-gnu') {
+    const sysrootArch = target === 'aarch64-unknown-linux-gnu' ? 'arm64' : 'amd64';
     // Chromium's sysroot headers preserve the glibc baseline used by Zig below.
-    await run(python, ['build/linux/sysroot_scripts/install-sysroot.py', '--arch=amd64']);
-    gnArgs += ' use_sysroot=true';
+    // ARM64 cross-builds also need the amd64 sysroot for host snapshot/torque tools.
+    await run(python, ['build/linux/sysroot_scripts/install-sysroot.py', `--arch=${sysrootArch}`]);
+    if (sysrootArch === 'arm64') {
+      await run(python, ['build/linux/sysroot_scripts/install-sysroot.py', '--arch=amd64']);
+    } else {
+      // rusty_v8's build.rs already adds use_sysroot=true for aarch64 Linux.
+      gnArgs += ' use_sysroot=true';
+    }
     bindingEnvironment.BINDGEN_EXTRA_CLANG_ARGS =
-      '--sysroot=' + JSON.stringify(join(checkout, 'build/linux/debian_bullseye_amd64-sysroot'));
+      '--sysroot=' +
+      JSON.stringify(join(checkout, `build/linux/debian_bullseye_${sysrootArch}-sysroot`));
   }
   const suffix = windows ? '.exe' : '';
   const buildEnvironment = {

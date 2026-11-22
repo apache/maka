@@ -119,6 +119,7 @@ pub async fn search(
             },
             Content::Context { before, after } => {
                 let input = More {
+                    output_offset: None,
                     session_id: hit.session.id,
                     anchor_message_id: hit.message.message_id.clone(),
                     before: Some(before),
@@ -133,6 +134,8 @@ pub async fn search(
         passages.push(passage(context, hit.matched_terms, hit.score));
     }
     Ok(ResultSet {
+        facts: vec![],
+        next_facts_after: None,
         passages,
         searched_every_session: found.gaps.is_empty(),
         gaps: found.gaps,
@@ -146,6 +149,8 @@ pub async fn more(
 ) -> Result<ResultSet, ToolError> {
     let context = history.context(call.clone(), more.clone(), None).await?;
     Ok(ResultSet {
+        facts: vec![],
+        next_facts_after: None,
         passages: vec![passage(context, vec![], 0.0)],
         searched_every_session: true,
         gaps: vec![],
@@ -184,7 +189,7 @@ pub fn definitions() -> [(&'static str, &'static str, serde_json::Value); 3] {
     [
         (
             "Recall",
-            "Search original conversation history (user, assistant, tool calls, and tool results) across all readable Sessions, including archives and compacted earlier prefixes of the current Turn. Literal terms match case-insensitively with Unicode normalization and OR semantics, ranked by distinct matched terms first so multi-term queries surface passages combining your terms. Excludes only the uncompacted live tail of the current Turn. before/after select neighboring messages around each anchor (default 4 each; pass 0 for an anchor-only scan). An explicit limit selects the number of ranked turns; omitting it returns all matching turns. Passages contain excerpts and an Original: SessionRead(...) row pointer. Pass that object to SessionRead to read the complete original. RecallMore expands wider context around an anchor. Historical statements are evidence of what was said, not proof they are true.",
+            "Search current authorized memory facts by keyword prefix and conversation passages by substring. Use facts_after to continue fact pages. Search original conversation history (user, assistant, tool calls, and tool results) across all readable Sessions, including archives and compacted earlier prefixes of the current Turn. Literal terms match case-insensitively with Unicode normalization and OR semantics, ranked by distinct matched terms first so multi-term queries surface passages combining your terms. Excludes only the uncompacted live tail of the current Turn. before/after select neighboring messages around each anchor (default 4 each; pass 0 for an anchor-only scan). An explicit limit selects the number of ranked turns; omitting it returns all matching turns. Passages contain excerpts and an Original: SessionRead(...) row pointer. Pass that object to SessionRead to read the complete original. RecallMore expands wider context around an anchor. Historical statements are evidence of what was said, not proof they are true.",
             schemars::schema_for!(ToolQuery).into(),
         ),
         (
@@ -194,7 +199,7 @@ pub fn definitions() -> [(&'static str, &'static str, serde_json::Value); 3] {
         ),
         (
             "RecallMaterial",
-            "Read a historical user attachment identified by Recall or RecallMore. Supply its source session_id and artifact_id. Copies the material into this Session before reading, so later source deletion does not break the evidence. Images return visual content; text uses Read line offset/limit and continuation.",
+            "Read a historical user attachment identified by Recall or RecallMore. Supply its source session_id and artifact_id. Copies the material into this Session. Reading the copy requires continued access to the source. Images return visual content; text uses Read line offset/limit and continuation.",
             schemars::schema_for!(Material).into(),
         ),
     ]

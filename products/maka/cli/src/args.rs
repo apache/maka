@@ -63,6 +63,8 @@ enum Command {
     /// Diagnose commands and manage native sandbox setup.
     #[command(subcommand)]
     Sandbox(crate::sandbox::Command),
+    /// Check for and install updates on this build's release channel.
+    Update(crate::update::Args),
 }
 
 #[derive(Subcommand)]
@@ -305,6 +307,7 @@ impl Cli {
                 println!("{}", serde_json::to_string(&inspection)?);
                 Ok(())
             }),
+            Command::Update(args) => command_exit(args.run()),
         }
     }
 }

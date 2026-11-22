@@ -1,4 +1,8 @@
 {
+  "yamux@0.13.10": [
+    "https://raw.githubusercontent.com/libp2p/rust-yamux/70db05dc63e8368bd0559a5ec0dba6e5fc2bdd41/LICENSE-APACHE",
+    "https://raw.githubusercontent.com/libp2p/rust-yamux/70db05dc63e8368bd0559a5ec0dba6e5fc2bdd41/LICENSE-MIT"
+  ],
   "@pierre/trees@1.0.0": [
     {
       "file": "scripts/rust/licenses/pierre-vscode-icons.txt",

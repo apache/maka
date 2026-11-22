@@ -18,7 +18,6 @@
  */
 
 use super::*;
-use maka_agent_facts::execution::ThinkingLevel;
 pub use maka_goal::goal::{Control as GoalControl, Status as GoalStatus};
 
 #[derive(Clone, Serialize, Deserialize, JsonSchema)]
@@ -77,7 +76,7 @@ pub enum GoalChange {
         action: GoalControl,
         #[serde(default)]
         budget: Option<GoalBudget>,
-        /// Explicit renewed model and session authority, only for Resume without a pending iteration.
+        /// Explicit renewed execution source and session authority, only for Resume without a pending iteration.
         #[serde(default)]
         approval: Option<GoalApproval>,
     },
@@ -101,8 +100,8 @@ pub enum GoalResult {
 #[schemars(rename = "AgentGoalApproval")]
 pub struct GoalApproval {
     pub target: ScheduledTarget,
-    pub model: ModelSelection,
-    pub thinking_level: Option<ThinkingLevel>,
+    /// Native model or external Agent that runs later iterations.
+    pub backend: BackendPreference,
 }
 
 #[derive(Clone, Serialize, Deserialize, JsonSchema)]

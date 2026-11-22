@@ -1738,14 +1738,30 @@ async fn desktop_recall_opens_passages_at_their_history_boundaries() {
     // Using the first result's fence for the second must fail the Host's exact row read.
     assert!(passages[1]["anchorPosition"]["sequence"].as_u64().unwrap() > fences[0]);
 
-    let desktop = Desktop::open(&fixture, &fixture.address).await;
+    let gate = ReplyGate::recall(fixture.directory.path(), fixture.address.clone());
+    let desktop = Desktop::open(&fixture, &gate.address).await;
     for (within, selected) in [(true, 0), (false, 1)] {
         let previous = desktop.platform.text_input_target();
         desktop.key("o", true);
         desktop.target_after(previous).await;
         desktop.paste("needle").await;
         if within {
+            let other = format!(
+                "Open matching passage in {}",
+                passages[1]["session"]["title"].as_str().unwrap()
+            );
+            desktop.control(&other).await;
+            desktop.artifact("recall-all-conversations");
+            gate.arm();
             desktop.press("This conversation").await;
+            desktop.held(&gate).await;
+            desktop
+                .until("a result outside the new scope remained visible", || {
+                    desktop.controls(&other).is_empty().then_some(())
+                })
+                .await;
+            desktop.artifact("recall-scope-change");
+            gate.release();
         }
         let title = passages[selected]["session"]["title"].as_str().unwrap();
         desktop
@@ -2026,6 +2042,14 @@ async fn desktop_message_actions_show_on_hover_or_focus_and_in_a_context_menu() 
         .wait("the reply did not finish", reply.finish())
         .await;
     let copy = desktop.control("Copy message").await;
+    desktop
+        .until("a direct reply kept an empty work header", || {
+            desktop
+                .controls("Turn work details")
+                .is_empty()
+                .then_some(())
+        })
+        .await;
     let composer = desktop.control("Focus message composer").await.center();
     // Inside the reply, above its row of actions.
     let body = point(copy.center().x + px(64.), copy.top() - px(16.));
@@ -2672,6 +2696,14 @@ async fn desktop_side_pane_keeps_its_draft_separate_when_closed_and_reopened() {
         }),
     )
     .await;
+    let more = desktop.control("Actions for Side conversation").await;
+    let title = desktop.control("Open conversation Side conversation").await;
+    assert!(
+        more.size.width <= px(32.)
+            && more.size.height == title.size.height
+            && title.size.width > more.size.width,
+        "the More menu should fill the trailing icon slot without collapsing vertically: {title:?}, {more:?}"
+    );
     let original = desktop.platform.text_input_target();
     desktop.press("Actions for Side conversation").await;
     desktop.press("Open to the side").await;
@@ -3786,6 +3818,38 @@ async fn desktop_mermaid_renders_markdown_and_toggles_its_source() {
     desktop.press("Hide diagram source").await;
     desktop.control("Show diagram source").await;
     assert!(desktop.controls("Copy code block").is_empty());
+    desktop.press("Open diagram full screen").await;
+    desktop.control("Close full screen image").await;
+    desktop.press("Zoom image in").await;
+    desktop.press("Zoom image in").await;
+    desktop
+        .until(
+            "the enlarged diagram never painted in the full-screen viewer",
+            || {
+                let guard = desktop.frame.lock().unwrap();
+                let frame = guard.as_ref()?;
+                let filled = frame
+                    .pixels()
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .filter(|pixel| pixel[..3] == [0x1d, 0x74, 0x5a])
+                    .count();
+                (filled > 1000).then_some(())
+            },
+        )
+        .await;
+    desktop.artifact(&format!("mermaid-workbench-viewer-{theme}-{layout}"));
+    desktop.press("Zoom image out").await;
+    desktop.press("Close full screen image").await;
+    desktop
+        .until("the diagram viewer did not close", || {
+            desktop
+                .controls("Close full screen image")
+                .is_empty()
+                .then_some(())
+        })
+        .await;
     desktop.close().await;
     fixture.finish().await;
 }

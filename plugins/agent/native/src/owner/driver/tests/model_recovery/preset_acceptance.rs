@@ -19,6 +19,7 @@
 
 use super::*;
 mod ax_session_tools;
+mod code_mode_budget;
 mod mcp_connection;
 mod rooms;
 mod stop_queue;
@@ -2339,6 +2340,119 @@ async fn overflow_summary_is_cut_below_the_request_that_overflowed() -> TestResu
         Ok(result) => result??,
         Err(panic) => std::panic::resume_unwind(panic),
     }
+    assert!(cleanup.is_empty(), "{cleanup:?}");
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn recall_model_observes_current_fact_and_policy() -> TestResult<()> {
+    let mut rig = Rig::new()?;
+    let mut provider = Provider::start().await?;
+    let outcome = AssertUnwindSafe(async {
+        let base = rig.directory.path().to_path_buf();
+        let boot = bootstrap_with(&base, provider.url.clone(), |config| {
+            config["recall"] = json!(true);
+        }).await?;
+        attach(&mut rig, &boot).await?;
+        let client = rig.client.as_ref().unwrap();
+        let model = model(client, &provider.url, false).await?;
+        let selected = create(client, &base, &model, None).await?;
+        let session = selected["id"].as_str().unwrap();
+        let scope = json!({"kind": "project", "sessionId": session});
+        let saved = call(client, "agent", "changeMemory", json!({
+            "scope": scope, "edit": {"kind": "create", "body": "Apricot database 🧭 ა"}
+        })).await?;
+        assert_eq!(saved["kind"], "saved", "{saved}");
+        for terms in [json!(["Ა", "ა"]), json!(["apri"])] {
+            let result = super::memory::recall_page(
+                client, json!({"session_id": session, "terms": terms})
+            ).await?;
+            assert_eq!(result["facts"][0]["id"], saved["id"], "{terms}: {result}");
+        }
+        let worker = call(client, "agent", "create", json!({
+            "title": "Restricted reader", "labels": [], "tools": ["Recall"],
+            "backend": {"kind": "model", "connectionId": model["connectionId"], "modelId": model["modelId"]},
+            "workspace": {"kind": "session", "sessionId": session}
+        })).await?;
+        let worker = worker["session"]["id"].as_str().ok_or("missing restricted worker")?;
+        for (reader, enabled, expected_gap) in [
+            (session, true, None),
+            (worker, true, Some("agent_memory_model_read_not_admitted")),
+            (session, false, Some("agent_memory_read_disabled")),
+        ] {
+            let settings = call(client, "settings", "assistantPreferences", json!({})).await?;
+            call(client, "settings", "updateAssistantPreferences", json!({
+                "expectedRevision": settings["revision"],
+                "mutation": {"kind": "memory", "value": {"enabled": true, "agentReadEnabled": enabled}}
+            })).await?;
+            let terms = if expected_gap.is_none() { vec!["🧭", "apricot-orchard"] } else { vec!["apri"] };
+            let output = tool_round(&rig, &mut provider, reader, false, "Recall", json!({
+                "terms": terms, "before": 0, "after": 0
+            })).await?;
+            assert_eq!(output.contains("Apricot database"), expected_gap.is_none(), "{output}");
+            if let Some(gap) = expected_gap {
+                assert!(output.contains(gap), "{output}");
+            }
+        }
+        let history = super::memory::recall_page(client, json!({
+            "session_id": session, "terms": ["Execute"]
+        })).await?;
+        let anchor = history["passages"].as_array().unwrap().iter()
+            .find(|p| p["excerpt"] == "Execute Recall")
+            .ok_or("missing original user passage")?;
+        let address = &anchor["anchorPosition"];
+        let reference = call(client, "agent", "memorySource", json!({
+            "sessionId": session, "sequence": address["sequence"], "itemIndex": address["itemIndex"],
+            "start": 0, "end": 7, "quote": "Execute"
+        })).await?;
+        let evidence = call(client, "agent", "changeMemory", json!({
+            "scope": scope, "edit": {"kind": "add_evidence", "id": saved["id"],
+                "expectedRevision": 1, "assertion": 1, "reference": reference}
+        })).await?;
+        let argument = "apricot-orchard";
+        let calls = super::memory::recall_page(client, json!({"session_id":session,"terms":["Recall",argument]})).await?;
+        let tool = calls["passages"].as_array().unwrap().iter()
+            .find(|row| row["excerpt"].as_str().is_some_and(|text| text.starts_with("Recall") && text.contains(argument)))
+            .ok_or_else(|| format!("missing original Recall arguments: {calls}"))?;
+        let start = tool["excerpt"].as_str().unwrap().find(argument).unwrap();
+        let address = &tool["anchorPosition"];
+        let reference = call(client, "agent", "memorySource", json!({
+            "sessionId":session, "sequence":address["sequence"], "itemIndex":address["itemIndex"],
+            "start":start, "end":start+argument.len(), "quote":argument
+        })).await?;
+        let evidence = call(client, "agent", "changeMemory", json!({
+            "scope":scope,"edit":{"kind":"add_evidence","id":saved["id"],"expectedRevision":evidence["revision"],
+                                  "assertion":1,"reference":reference}
+        })).await?;
+        let deleted = call(client, "agent", "changeMemory", json!({
+            "scope": scope, "edit": {"kind": "delete", "id": saved["id"], "expectedRevision": evidence["revision"]}
+        })).await?;
+        assert_eq!(deleted["kind"], "deleted", "{deleted}");
+        let continued = call(client, "agent", "send", json!({"sessionId":session,"message":"继续"})).await?;
+        let (request, reply) = provider.next().await?;
+        let prompts: Vec<_> = request["messages"].as_array().unwrap().iter()
+            .filter(|message| message["role"] == "user").map(|message| message["content"].to_string()).collect();
+        assert_eq!(prompts.iter().filter(|text| text.contains("Execute Recall")).count(), 2, "{prompts:?}");
+        let replayed: Vec<_> = request["messages"].as_array().unwrap().iter()
+            .filter_map(|message| message["tool_calls"].as_array()).flatten()
+            .filter(|tool| tool["function"]["name"] == "Recall").map(|tool| tool["function"]["arguments"].to_string()).collect();
+        assert!(replayed.iter().any(|args| args.contains("Historical tool arguments are restricted")), "{replayed:?}");
+        assert!(replayed.iter().all(|args| !args.contains(argument)), "{replayed:?}");
+        assert!(replayed.iter().any(|args| args.contains("apri")), "{replayed:?}");
+        assert!(prompts.last().unwrap().contains("继续"));
+        reply.send(completion(json!({"role":"assistant","content":"好的。"}), "stop")).map_err(|_| "response lost")?;
+        tokio::time::timeout(Duration::from_secs(20),
+            quiescent_message(client, session, &continued["messageId"])).await??;
+        let more = tool_round(&rig, &mut provider, session, false, "RecallMore", json!({
+            "session_id": session, "anchor_message_id": anchor["anchorMessageId"], "before": 2, "after": 4
+        })).await?;
+        assert!(more.contains("******* Recall"), "{more}");
+        assert!(!more.contains("Apricot database"), "{more}");
+        Ok::<_, Box<dyn Error + Send + Sync>>(())
+    }).catch_unwind().await;
+    drop(provider);
+    let cleanup = rig.finish().await;
+    assert!(matches!(outcome, Ok(Ok(()))), "{outcome:?}");
     assert!(cleanup.is_empty(), "{cleanup:?}");
     Ok(())
 }

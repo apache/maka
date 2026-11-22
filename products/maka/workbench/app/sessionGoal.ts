@@ -18,11 +18,10 @@
  */
 import { batch, cleanup, signal } from 'nsh';
 import type {
+  AgentBackendPreference,
   AgentGoalView,
   AgentGoalApproval,
   AgentGoalResult,
-  ModelSelection,
-  ThinkingLevel,
 } from '../../../../packages/plugin-sdk/src/index.js';
 import type { ComposerGoal } from '../../../../packages/plugin-sdk/src/composer-view.js';
 import type { Control } from '../../../../plugins/agent/conversations/ui/Conversation';
@@ -49,10 +48,7 @@ export function createSessionGoal(
   sessionId: string,
   control: Control,
   permissions: SessionPermissions,
-  selection: () => Promise<{
-    model: ModelSelection;
-    thinkingLevel: ThinkingLevel | null;
-  } | null>,
+  backend: () => Promise<AgentBackendPreference | null>,
 ): ComposerGoal {
   const view = signal<AgentGoalView | null>(null);
   const pending = signal(false);
@@ -115,7 +111,7 @@ export function createSessionGoal(
   };
   void watch();
   const approval = async (): Promise<AgentGoalApproval | null> => {
-    const chosen = await selection();
+    const chosen = await backend();
     if (!chosen) return null;
     const session = permissions.snapshot();
     if (!session) throw new UiError('Loading sandbox settings…');
@@ -127,7 +123,7 @@ export function createSessionGoal(
         boundaryRevision: session.boundaryRevision,
         binding: session.binding,
       },
-      ...chosen,
+      backend: chosen,
     };
   };
   const change = async (input: () => Promise<object | null>) => {

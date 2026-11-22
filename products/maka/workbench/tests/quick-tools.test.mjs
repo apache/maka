@@ -101,6 +101,15 @@ test('only used, rememberable results are recommended', () => {
   assert.deepEqual(recommended([{ key: 'used', remembered: false }], usage), []);
 });
 
+test('unread answers lead recommendations by reply time and do not require prior use', () => {
+  const usage = recordUse({}, 'app', 100);
+  const app = { key: 'app', remembered: true };
+  const older = { key: 'old reply', remembered: false, recommendedAt: 15 };
+  const newer = { key: 'new reply', remembered: false, recommendedAt: 20 };
+  assert.deepEqual(recommended([app, older, newer], usage), [newer, older, app]);
+  assert.deepEqual(recommended([app, older], usage), [older, app]);
+});
+
 test('usage stays bounded by forgetting the least recent', () => {
   let usage = {};
   for (let at = 0; at <= MAX_USAGE; at += 1) usage = recordUse(usage, `key-${at}`, at);

@@ -256,6 +256,7 @@ async fn retained_preview_after_input(stop: bool) {
                 },
                 is_error: false,
                 loaded_tools: Default::default(),
+                display_budget_chars: None,
             },
         })?;
         let accepted = ContentBlob::json(&AcceptedToolResult::Local {

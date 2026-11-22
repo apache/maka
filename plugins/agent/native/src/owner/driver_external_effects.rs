@@ -1333,7 +1333,7 @@ impl NativeExternalEffects {
                 let run = self.claim.run();
                 let id = returned_fact_id(run, key);
                 let name = name.to_owned();
-                let (blob, artifacts, output, is_error, projection) =
+                let (blob, artifacts, output, is_error, display_budget_chars, projection) =
                     tokio::task::spawn_blocking(move || {
                         let normalized = success
                             .into_durable(
@@ -1360,23 +1360,27 @@ impl NativeExternalEffects {
                                     }
                                 })
                                 .collect(),
+                            display_budget_chars: normalized.display_budget_chars,
                         };
                         let blob = ContentBlob::json(&returned).map_err(persistence)?;
                         let ExternalReturn::Output {
                             output,
                             is_error,
                             projection,
+                            display_budget_chars,
                             ..
                         } = returned
                         else {
                             unreachable!()
                         };
-                        let projection = display_projection(id, key, &name, projection);
+                        let projection =
+                            display_projection(id, key, &name, projection, display_budget_chars);
                         Ok::<_, ToolError>((
                             blob,
                             normalized.artifacts,
                             output,
                             is_error,
+                            display_budget_chars,
                             projection,
                         ))
                     })
@@ -1401,6 +1405,7 @@ impl NativeExternalEffects {
                     is_error,
                     projection: projection?,
                     loaded_tools: Default::default(),
+                    display_budget_chars,
                 })
             }
             Err(
@@ -1657,21 +1662,23 @@ fn render_return(
     name: &str,
     returned: ExternalReturn,
 ) -> Result<ReturnedToolResult, ToolError> {
-    let (output, is_error, projection) = match returned {
+    let (output, is_error, projection, display_budget_chars) = match returned {
         ExternalReturn::Output {
             output,
             is_error,
             projection,
+            display_budget_chars,
             ..
-        } => (output, is_error, projection),
+        } => (output, is_error, projection, display_budget_chars),
         ExternalReturn::Failure { diagnostic, .. } => return Err(ToolError::Failed(diagnostic)),
     };
-    let projection = display_projection(id, key, name, projection)?;
+    let projection = display_projection(id, key, name, projection, display_budget_chars)?;
     Ok(ReturnedToolResult {
         output,
         is_error,
         projection,
         loaded_tools: Default::default(),
+        display_budget_chars,
     })
 }
 
@@ -1680,16 +1687,18 @@ fn display_projection(
     key: ExternalEffectKey,
     name: &str,
     projection: DurableToolProjection,
+    display_budget_chars: Option<usize>,
 ) -> Result<DurableToolProjection, ToolError> {
-    match maka_agent_facts::archive::ArchivedPlaceholder::prepare(
+    match maka_agent_facts::archive::ArchivedPlaceholder::prepare_projection(
         id.to_string(),
         format!("external:{}:{}", key.task, key.operation),
         name.to_owned(),
         &projection,
+        display_budget_chars.unwrap_or(maka_agent_facts::read::MAX_PAGE_CHARS),
     )
     .map_err(persistence)?
     {
-        Some(archived) => archived.to_canonical_projection().map_err(persistence),
+        Some(archived) => Ok(archived),
         None => Ok(projection),
     }
 }

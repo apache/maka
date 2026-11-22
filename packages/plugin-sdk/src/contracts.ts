@@ -183,16 +183,125 @@ export const contracts: {
                   answer: {
                     type: 'string',
                   },
+                  replyInfo: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/QuickReplyInfo',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                 },
                 additionalProperties: false,
                 required: ['question', 'answer'],
+              },
+              QuickReplyInfo: {
+                description:
+                  'Provider-reported counters and measured generation time, copied with a quick reply.',
+                type: 'object',
+                properties: {
+                  modelId: {
+                    type: 'string',
+                  },
+                  durationMs: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  usage: {
+                    $ref: '#/$defs/ModelUsage',
+                  },
+                },
+                additionalProperties: false,
+                required: ['modelId', 'durationMs', 'usage'],
+              },
+              ModelUsage: {
+                type: 'object',
+                properties: {
+                  input_tokens: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  output_tokens: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  cache_read_tokens: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  cache_write_tokens: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  reasoning_tokens: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
               },
             },
           },
           output: {
             $schema: 'https://json-schema.org/draft/2020-12/schema',
-            title: 'null',
-            type: 'null',
+            title: 'QuickReplyInfo',
+            description:
+              'Provider-reported counters and measured generation time, copied with a quick reply.',
+            type: 'object',
+            properties: {
+              modelId: {
+                type: 'string',
+              },
+              durationMs: {
+                type: 'integer',
+                format: 'uint64',
+                minimum: 0,
+              },
+              usage: {
+                $ref: '#/$defs/ModelUsage',
+              },
+            },
+            additionalProperties: false,
+            required: ['modelId', 'durationMs', 'usage'],
+            $defs: {
+              ModelUsage: {
+                type: 'object',
+                properties: {
+                  input_tokens: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  output_tokens: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  cache_read_tokens: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  cache_write_tokens: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  reasoning_tokens: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+              },
+            },
           },
           progress: {
             type: 'string',
@@ -1744,7 +1853,7 @@ export const contracts: {
                   },
                   approval: {
                     description:
-                      'Explicit renewed model and session authority, only for Resume without a pending iteration.',
+                      'Explicit renewed execution source and session authority, only for Resume without a pending iteration.',
                     anyOf: [
                       {
                         $ref: '#/$defs/AgentGoalApproval',
@@ -1767,22 +1876,13 @@ export const contracts: {
                   target: {
                     $ref: '#/$defs/AgentScheduledTarget',
                   },
-                  model: {
-                    $ref: '#/$defs/ModelSelection',
-                  },
-                  thinkingLevel: {
-                    anyOf: [
-                      {
-                        $ref: '#/$defs/ThinkingLevel',
-                      },
-                      {
-                        type: 'null',
-                      },
-                    ],
+                  backend: {
+                    description: 'Native model or external Agent that runs later iterations.',
+                    $ref: '#/$defs/AgentBackendPreference',
                   },
                 },
                 additionalProperties: false,
-                required: ['target', 'model'],
+                required: ['target', 'backend'],
               },
               AgentScheduledTarget: {
                 description:
@@ -1896,28 +1996,103 @@ export const contracts: {
                 additionalProperties: false,
                 required: ['id', 'permissionEpoch'],
               },
-              ModelSelection: {
+              AgentBackendPreference: {
                 description:
-                  'Selected model and optional service tier, resolved from the connection at admission.',
-                type: 'object',
-                properties: {
-                  serviceTier: {
-                    type: ['string', 'null'],
+                  "The next turn's choice, independent of an already admitted execution.\nModel revisions are resolved afresh; preferences never grant execution authority.",
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'model',
+                      },
+                      connectionId: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                      modelId: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                      serviceTier: {
+                        type: ['string', 'null'],
+                      },
+                      thinkingLevel: {
+                        anyOf: [
+                          {
+                            $ref: '#/$defs/ThinkingLevel',
+                          },
+                          {
+                            type: 'null',
+                          },
+                        ],
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'connectionId', 'modelId'],
                   },
-                  connectionId: {
-                    type: 'string',
-                    minLength: 1,
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'executor',
+                      },
+                      selection: {
+                        $ref: '#/$defs/AgentExecutorSelection',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'selection'],
                   },
-                  modelId: {
-                    type: 'string',
-                    minLength: 1,
-                  },
-                },
-                required: ['connectionId', 'modelId'],
+                ],
               },
               ThinkingLevel: {
                 type: 'string',
                 enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+              },
+              AgentExecutorSelection: {
+                type: 'object',
+                properties: {
+                  executor: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  settings: {
+                    $ref: '#/$defs/ExecutorSettings',
+                  },
+                },
+                additionalProperties: false,
+                required: ['executor', 'settings'],
+              },
+              ExecutorSettings: {
+                description:
+                  'Executor-owned model selection, independent of Host model connections.',
+                type: 'object',
+                properties: {
+                  model: {
+                    type: ['string', 'null'],
+                  },
+                  thinkingLevel: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ExecutorEffort',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  runtime: {
+                    type: ['string', 'null'],
+                  },
+                },
+                additionalProperties: false,
+              },
+              ExecutorEffort: {
+                description: "Runtime-native effort, not a Host model's closed reasoning enum.",
+                type: 'string',
               },
               GoalControl: {
                 type: 'string',
@@ -16490,6 +16665,16 @@ export const contracts: {
                       "Part of the successfully completed native Turn's final output at `through`.\nIncludes body text and source citations; never a Thinking field.",
                     type: 'boolean',
                   },
+                  replyInfo: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/QuickReplyInfo',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                   finalAnswer: {
                     description:
                       'The provider identified this text as final before the Turn completed.',
@@ -16759,6 +16944,56 @@ export const contracts: {
                 additionalProperties: false,
                 required: ['text', 'truncated'],
               },
+              QuickReplyInfo: {
+                description:
+                  'Provider-reported counters and measured generation time, copied with a quick reply.',
+                type: 'object',
+                properties: {
+                  modelId: {
+                    type: 'string',
+                  },
+                  durationMs: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  usage: {
+                    $ref: '#/$defs/ModelUsage',
+                  },
+                },
+                additionalProperties: false,
+                required: ['modelId', 'durationMs', 'usage'],
+              },
+              ModelUsage: {
+                type: 'object',
+                properties: {
+                  input_tokens: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  output_tokens: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  cache_read_tokens: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  cache_write_tokens: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  reasoning_tokens: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+              },
               HistoryModel: {
                 description: 'Model identity recorded for the exact historical assistant step.',
                 oneOf: [
@@ -16952,6 +17187,16 @@ export const contracts: {
                   'Recorded logical Turn boundaries at the same history fence. An unfinished\nhistorical boundary alone does not establish that execution is still live.',
                 type: 'object',
                 properties: {
+                  modelTokens: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ModelUsage',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                   startedAt: {
                     type: 'integer',
                     format: 'uint64',
@@ -17031,36 +17276,6 @@ export const contracts: {
                 },
                 additionalProperties: false,
                 required: ['tokens'],
-              },
-              ModelUsage: {
-                type: 'object',
-                properties: {
-                  input_tokens: {
-                    type: ['integer', 'null'],
-                    format: 'uint64',
-                    minimum: 0,
-                  },
-                  output_tokens: {
-                    type: ['integer', 'null'],
-                    format: 'uint64',
-                    minimum: 0,
-                  },
-                  cache_read_tokens: {
-                    type: ['integer', 'null'],
-                    format: 'uint64',
-                    minimum: 0,
-                  },
-                  cache_write_tokens: {
-                    type: ['integer', 'null'],
-                    format: 'uint64',
-                    minimum: 0,
-                  },
-                  reasoning_tokens: {
-                    type: ['integer', 'null'],
-                    format: 'uint64',
-                    minimum: 0,
-                  },
-                },
               },
               PromptCacheUsage: {
                 description: 'Reported cache reads and their share of total prompt input.',
@@ -19521,9 +19736,69 @@ export const contracts: {
                   answer: {
                     type: 'string',
                   },
+                  replyInfo: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/QuickReplyInfo',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                 },
                 additionalProperties: false,
                 required: ['question', 'answer'],
+              },
+              QuickReplyInfo: {
+                description:
+                  'Provider-reported counters and measured generation time, copied with a quick reply.',
+                type: 'object',
+                properties: {
+                  modelId: {
+                    type: 'string',
+                  },
+                  durationMs: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  usage: {
+                    $ref: '#/$defs/ModelUsage',
+                  },
+                },
+                additionalProperties: false,
+                required: ['modelId', 'durationMs', 'usage'],
+              },
+              ModelUsage: {
+                type: 'object',
+                properties: {
+                  input_tokens: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  output_tokens: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  cache_read_tokens: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  cache_write_tokens: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  reasoning_tokens: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
               },
               AgentBackendPreference: {
                 description:
@@ -25718,6 +25993,16 @@ export const contracts: {
                       "Part of the successfully completed native Turn's final output at `through`.\nIncludes body text and source citations; never a Thinking field.",
                     type: 'boolean',
                   },
+                  replyInfo: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/QuickReplyInfo',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                   finalAnswer: {
                     description:
                       'The provider identified this text as final before the Turn completed.',
@@ -25987,6 +26272,56 @@ export const contracts: {
                 additionalProperties: false,
                 required: ['text', 'truncated'],
               },
+              QuickReplyInfo: {
+                description:
+                  'Provider-reported counters and measured generation time, copied with a quick reply.',
+                type: 'object',
+                properties: {
+                  modelId: {
+                    type: 'string',
+                  },
+                  durationMs: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  usage: {
+                    $ref: '#/$defs/ModelUsage',
+                  },
+                },
+                additionalProperties: false,
+                required: ['modelId', 'durationMs', 'usage'],
+              },
+              ModelUsage: {
+                type: 'object',
+                properties: {
+                  input_tokens: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  output_tokens: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  cache_read_tokens: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  cache_write_tokens: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  reasoning_tokens: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+              },
               HistoryModel: {
                 description: 'Model identity recorded for the exact historical assistant step.',
                 oneOf: [
@@ -26180,6 +26515,16 @@ export const contracts: {
                   'Recorded logical Turn boundaries at the same history fence. An unfinished\nhistorical boundary alone does not establish that execution is still live.',
                 type: 'object',
                 properties: {
+                  modelTokens: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ModelUsage',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                   startedAt: {
                     type: 'integer',
                     format: 'uint64',
@@ -26259,36 +26604,6 @@ export const contracts: {
                 },
                 additionalProperties: false,
                 required: ['tokens'],
-              },
-              ModelUsage: {
-                type: 'object',
-                properties: {
-                  input_tokens: {
-                    type: ['integer', 'null'],
-                    format: 'uint64',
-                    minimum: 0,
-                  },
-                  output_tokens: {
-                    type: ['integer', 'null'],
-                    format: 'uint64',
-                    minimum: 0,
-                  },
-                  cache_read_tokens: {
-                    type: ['integer', 'null'],
-                    format: 'uint64',
-                    minimum: 0,
-                  },
-                  cache_write_tokens: {
-                    type: ['integer', 'null'],
-                    format: 'uint64',
-                    minimum: 0,
-                  },
-                  reasoning_tokens: {
-                    type: ['integer', 'null'],
-                    format: 'uint64',
-                    minimum: 0,
-                  },
-                },
               },
               PromptCacheUsage: {
                 description: 'Reported cache reads and their share of total prompt input.',
@@ -35217,12 +35532,20 @@ export const contracts: {
             type: 'object',
             properties: {
               terms: {
+                description: 'Supply 1 to 32 search terms of at most 256 UTF-8 bytes each.',
                 type: 'array',
                 items: {
                   type: 'string',
                   minLength: 1,
                 },
                 minItems: 1,
+                maxItems: 32,
+              },
+              facts_after: {
+                description: 'Resume current memory facts after the last returned key.',
+                type: ['integer', 'null'],
+                format: 'uint64',
+                minimum: 0,
               },
               limit: {
                 description:
@@ -35254,6 +35577,17 @@ export const contracts: {
             title: 'AgentRecallPage',
             type: 'object',
             properties: {
+              facts: {
+                type: 'array',
+                items: {
+                  $ref: '#/$defs/RecallFact',
+                },
+              },
+              nextFactsAfter: {
+                type: ['integer', 'null'],
+                format: 'uint64',
+                minimum: 0,
+              },
               titles: {
                 type: 'array',
                 items: {
@@ -35277,8 +35611,302 @@ export const contracts: {
               },
             },
             additionalProperties: false,
-            required: ['titles', 'passages', 'complete', 'gaps'],
+            required: ['facts', 'titles', 'passages', 'complete', 'gaps'],
             $defs: {
+              RecallFact: {
+                type: 'object',
+                properties: {
+                  metadata: {
+                    $ref: '#/$defs/MemoryMetadata',
+                  },
+                  id: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  revision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  assertion: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  scope: {
+                    $ref: '#/$defs/MemoryScope',
+                  },
+                  body: {
+                    type: 'string',
+                  },
+                  sources: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/RecallFactSource',
+                    },
+                  },
+                  sourcesComplete: {
+                    type: 'boolean',
+                  },
+                },
+                required: [
+                  'metadata',
+                  'id',
+                  'revision',
+                  'assertion',
+                  'scope',
+                  'body',
+                  'sources',
+                  'sourcesComplete',
+                ],
+              },
+              MemoryMetadata: {
+                type: 'object',
+                properties: {
+                  kind: {
+                    $ref: '#/$defs/MemoryKind',
+                  },
+                  statement: {
+                    $ref: '#/$defs/MemoryStatement',
+                  },
+                  temporal: {
+                    $ref: '#/$defs/MemoryTemporal',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'statement', 'temporal'],
+              },
+              MemoryKind: {
+                type: 'string',
+                enum: ['unspecified', 'fact', 'preference', 'instruction'],
+              },
+              MemoryStatement: {
+                type: 'string',
+                enum: ['unspecified', 'assertion', 'preference', 'intention'],
+              },
+              MemoryTemporal: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'unspecified',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'timeless',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    description:
+                      'Half-open validity interval in Unix milliseconds; no end means unbounded.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'interval',
+                      },
+                      start: {
+                        type: 'integer',
+                        format: 'int64',
+                      },
+                      end: {
+                        type: ['integer', 'null'],
+                        format: 'int64',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'start'],
+                  },
+                ],
+              },
+              MemoryScope: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'personal',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'project',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId'],
+                  },
+                ],
+              },
+              RecallFactSource: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'user_operation',
+                      },
+                      operationId: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                    },
+                    required: ['kind', 'operationId'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'conversation',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      row: {
+                        $ref: '#/$defs/HistoryRowAddress',
+                      },
+                      start: {
+                        type: 'integer',
+                        format: 'uint32',
+                        minimum: 0,
+                      },
+                      end: {
+                        type: 'integer',
+                        format: 'uint32',
+                        minimum: 0,
+                      },
+                    },
+                    required: ['kind', 'sessionId', 'row', 'start', 'end'],
+                  },
+                ],
+              },
+              HistoryRowAddress: {
+                description:
+                  'An original row within the actual read capability supplied by the caller.\nMarker paths are relative to that capability; none of these fields grants access.',
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'live',
+                      },
+                      sequence: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      fact: {
+                        $ref: '#/$defs/FactId',
+                      },
+                      itemIndex: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sequence', 'fact', 'itemIndex'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'snapshot',
+                      },
+                      path: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/RunId',
+                        },
+                      },
+                      snapshot: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      sequence: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      fact: {
+                        $ref: '#/$defs/FactId',
+                      },
+                      itemIndex: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path', 'snapshot', 'sequence', 'fact', 'itemIndex'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'imported',
+                      },
+                      path: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/RunId',
+                        },
+                      },
+                      snapshot: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      messageOrdinal: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      partOrdinal: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path', 'snapshot', 'messageOrdinal', 'partOrdinal'],
+                  },
+                ],
+              },
+              FactId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              RunId: {
+                type: 'string',
+                format: 'uuid',
+              },
               AgentSession: {
                 type: 'object',
                 properties: {
@@ -35586,109 +36214,6 @@ export const contracts: {
                     required: ['kind', 'position'],
                   },
                 ],
-              },
-              HistoryRowAddress: {
-                description:
-                  'An original row within the actual read capability supplied by the caller.\nMarker paths are relative to that capability; none of these fields grants access.',
-                oneOf: [
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'live',
-                      },
-                      sequence: {
-                        type: 'integer',
-                        format: 'uint64',
-                        minimum: 0,
-                      },
-                      fact: {
-                        $ref: '#/$defs/FactId',
-                      },
-                      itemIndex: {
-                        type: 'integer',
-                        format: 'uint64',
-                        minimum: 0,
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'sequence', 'fact', 'itemIndex'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'snapshot',
-                      },
-                      path: {
-                        type: 'array',
-                        items: {
-                          $ref: '#/$defs/RunId',
-                        },
-                      },
-                      snapshot: {
-                        type: 'string',
-                        format: 'uuid',
-                      },
-                      sequence: {
-                        type: 'integer',
-                        format: 'uint64',
-                        minimum: 0,
-                      },
-                      fact: {
-                        $ref: '#/$defs/FactId',
-                      },
-                      itemIndex: {
-                        type: 'integer',
-                        format: 'uint64',
-                        minimum: 0,
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'path', 'snapshot', 'sequence', 'fact', 'itemIndex'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'imported',
-                      },
-                      path: {
-                        type: 'array',
-                        items: {
-                          $ref: '#/$defs/RunId',
-                        },
-                      },
-                      snapshot: {
-                        type: 'string',
-                        format: 'uuid',
-                      },
-                      messageOrdinal: {
-                        type: 'integer',
-                        format: 'uint64',
-                        minimum: 0,
-                      },
-                      partOrdinal: {
-                        type: 'integer',
-                        format: 'uint64',
-                        minimum: 0,
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'path', 'snapshot', 'messageOrdinal', 'partOrdinal'],
-                  },
-                ],
-              },
-              FactId: {
-                type: 'string',
-                format: 'uuid',
-              },
-              RunId: {
-                type: 'string',
-                format: 'uuid',
               },
               AgentBackendPreference: {
                 description:

@@ -37,6 +37,11 @@ use tokio::sync::watch;
 #[derive(Clone)]
 pub struct Foreground(pub watch::Receiver<bool>);
 
+/// Marks a Host whose filesystem namespace differs from the shell's local OS
+/// (such as a Linux WSL Host driven from Windows), disabling the shell's
+/// native folder picker.
+pub struct RemoteHostFilesystem;
+
 /// Reads and previews interface scale from the shell's pixel renderer.
 /// The shell puts it in the engine context.
 pub struct UiScale {

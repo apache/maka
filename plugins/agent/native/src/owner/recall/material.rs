@@ -48,14 +48,16 @@ impl Recall {
             .validate_root(&writer)
             .map_err(|error| preparation(error.to_string()))?;
         let artifacts = ArtifactStore::new(writer);
+        let source_scope = SessionScope {
+            owner: self.owner.clone(),
+            session: input.session_id.clone(),
+        };
+        artifacts
+            .check_memory_access(source_scope.clone(), input.artifact_id.clone())
+            .await
+            .map_err(|error| preparation(error.to_string()))?;
         let source = artifacts
-            .copy_source(
-                SessionScope {
-                    owner: self.owner.clone(),
-                    session: input.session_id.clone(),
-                },
-                input.artifact_id.clone(),
-            )
+            .copy_source(source_scope, input.artifact_id.clone())
             .await
             .map_err(|error| preparation(error.to_string()))?
             .ok_or_else(|| preparation("Historical user attachment unavailable".into()))?;
@@ -83,6 +85,7 @@ impl Recall {
             context.operation_id.clone(),
             u64::try_from(created_at).map_err(|error| preparation(error.to_string()))?,
         );
+        let copy = copy.for_recall();
         let path = StorageRef::SessionFile {
             session_id: context.execution.session_id.clone(),
             relative_path: copy.artifact().id.clone(),
@@ -133,7 +136,7 @@ impl Recall {
                 result
             })
         })
-        .presented("maka.agent.Builtin@1/RecallMaterial".into());
+        .presented(crate::tools::title::RECALL_MATERIAL_PRESENTATION.into());
         Ok(super::super::driver::PreparedTool {
             effect: if let Some(title) = title {
                 effect.titled(title)
@@ -161,6 +164,8 @@ impl Recall {
         self.worker(&call, async move {
             recall.check(&scope).await?;
             let source_scope = SessionScope { owner: recall.owner.clone(), session: input.session_id };
+            let guard=maka_agent_state::memory::recall::MaterialAccess {scope:source_scope.clone(),artifact:input.artifact_id.clone()};
+            recall.data(&scope)?.query(guard.clone()).await.map_err(failed)?;
             let output = artifacts.with_content(source_scope, input.artifact_id,
                 move |record, source| -> Result<ToolSuccess, ToolError> {
                     if record != &expected.artifact { return Err(failed("Original attachment changed")); }
@@ -190,6 +195,7 @@ impl Recall {
                 },
             ).await.map_err(failed)?.ok_or_else(|| failed("Original attachment unavailable"))??;
             recall.check(&scope).await?;
+            recall.data(&scope)?.query(guard).await.map_err(failed)?;
             Ok(output)
         }).await
     }

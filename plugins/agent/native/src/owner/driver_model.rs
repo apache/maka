@@ -32,7 +32,7 @@ use maka_agent_facts::{
     durable::*,
     execution::SystemPrompt,
     input::RunInput,
-    model::prompt::Message,
+    model::{ModelPart, prompt::Message},
 };
 use maka_agent_state::{ContentBlob, Store, fold::RunView, session_history::SessionHistory};
 use maka_event_log::SessionStore;
@@ -2296,7 +2296,24 @@ impl DriverModel {
         failure_note: replay::FailureNote,
     ) -> BoxFuture<'a, Result<ReplayedTail, RunError>> {
         Box::pin(async move {
-            let recorded = self.recorded_inputs(reader, view, after_revision).await?;
+            #[derive(Deserialize, Default)]
+            struct Readers {
+                #[serde(default)]
+                services: Vec<crate::tools::ServiceSelection>,
+            }
+            let aliases = if view.run != self.execution.run_id {
+                let frozen: Readers = reader.decode(view.run, &view.spec.tool_selection).await?;
+                frozen
+                    .services
+                    .into_iter()
+                    .filter_map(crate::tools::ServiceSelection::history_alias)
+                    .collect()
+            } else {
+                Default::default()
+            };
+            let recorded = self
+                .recorded_inputs(reader, view, after_revision, &aliases)
+                .await?;
             let mut replay = replay::TailReplay::new(
                 self,
                 target,
@@ -2308,6 +2325,7 @@ impl DriverModel {
                 messages,
                 recorded,
                 failure_note,
+                aliases,
             );
             let mut after = after_revision;
             loop {
@@ -2315,12 +2333,33 @@ impl DriverModel {
                 if page.is_empty() {
                     break;
                 }
+                let restricted = if view.run != self.execution.run_id {
+                    let results = page
+                        .iter()
+                        .take_while(|f| f.revision <= view.revision)
+                        .filter(|f| {
+                            matches!(
+                                f.fact,
+                                Fact::ToolResultAccepted { .. }
+                                    | Fact::ModelObserved {
+                                        part: ModelPart::ToolCall { .. }
+                                            | ModelPart::ToolResult { .. },
+                                        ..
+                                    }
+                            )
+                        })
+                        .map(|f| f.id)
+                        .collect();
+                    self.history.restricted_archives(results).await?
+                } else {
+                    Default::default()
+                };
                 for fact in &page {
                     if fact.revision > view.revision {
                         return replay.finish().await;
                     }
                     after = fact.revision;
-                    if let Some(work) = replay.apply(fact)? {
+                    if let Some(work) = replay.apply(fact, restricted.get(&fact.id).copied())? {
                         work.await?;
                     }
                 }
@@ -2502,7 +2541,7 @@ impl DriverModel {
             .map_err(|_| unsupported("tool-return-envelope-version"))?;
         use maka_agent_facts::tool_output::StoredToolResult;
         let body = match returned.body {
-            StoredToolResult::Inline(body) => body,
+            StoredToolResult::Inline(body) => *body,
             StoredToolResult::Operation(body) => {
                 let reply = reader.operation_reply(view.run, &body.operation).await?;
                 body.resolve(reply)

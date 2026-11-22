@@ -81,10 +81,14 @@ impl Query for ReadFind {
         check(&stop)?;
         query::checked_cut(c, &store, &cut)?;
         let mut work = FindWork::default();
-        find_index(c, &store.key()?, &cut, input, &stop, 0, &mut work).map(|(page, _)| page)
+        find_index(c, &store.key()?, &cut, input, &stop, 0, None, &mut work).map(|(page, _)| page)
     }
 }
 /// Callers validate their own real scoped cut before entering this shared index.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "The verified section cut, reader and shared work budget come from the enclosing history search"
+)]
 pub(crate) fn find_index(
     c: &Connection,
     owner_key: &str,
@@ -92,6 +96,7 @@ pub(crate) fn find_index(
     input: Find,
     stop: &CancellationToken,
     min_admission: u64,
+    reader: Option<&RunOwner>,
     work: &mut FindWork,
 ) -> Result<(FindPage, Option<RowPosition>), StoreError> {
     if input.query.is_empty()
@@ -162,7 +167,7 @@ pub(crate) fn find_index(
         "agent_recall_messages d"
     };
     let mut statement = c.prepare_cached(&format!(
-        "SELECT d.sequence,d.ordinal,octet_length(d.body) FROM {source}
+        "SELECT d.sequence,d.ordinal,octet_length(d.body),h.fact_id FROM {source}
          CROSS JOIN agent_session_history h ON h.owner=d.owner AND h.session=d.session AND h.sequence=d.sequence
          WHERE d.owner=?1 AND d.session=?2 AND d.sequence<=?3 AND (d.sequence,d.ordinal)>(?4,?5)
            AND h.admission_sequence>?6{visible} AND d.role<>'\"compaction\"'
@@ -194,17 +199,30 @@ pub(crate) fn find_index(
                     row.get::<_, i64>(0)?,
                     row.get::<_, i64>(1)?,
                     row.get::<_, i64>(2)?,
+                    row.get::<_, String>(3)?,
                 ))
             },
         )?
         .collect::<Result<Vec<_>, _>>()?;
+    let restrictions = if let Some(owner) = reader {
+        let keys = headers
+            .iter()
+            .enumerate()
+            .map(|(i, (_, ordinal, _, fact))| {
+                Ok((i, crate::sql::identity(fact.clone())?, unsigned(*ordinal)?))
+            })
+            .collect::<Result<Vec<_>, StoreError>>()?;
+        crate::memory::recall::indexed_spans(c, owner, &keys, &[])?
+    } else {
+        BTreeMap::new()
+    };
     let mut matches = vec![];
     let mut next_after = None;
     let mut position = input.after;
     let mut statement = c.prepare_cached(
         "SELECT body,fields_json FROM agent_recall_messages WHERE owner=? AND session=? AND sequence=? AND ordinal=?",
     )?;
-    for (sequence, ordinal, size) in headers {
+    for (index, (sequence, ordinal, size, _)) in headers.into_iter().enumerate() {
         check(stop)?;
         let size = unsigned(size)?;
         if matches.len() == 16 || !work.admit(size) {
@@ -217,9 +235,18 @@ pub(crate) fn find_index(
         };
         let mut rows = statement.query(params![owner_key, cut.session, sequence, ordinal])?;
         let row = rows.next()?.ok_or(StoreError::EventConflict)?;
-        let body: String = row.get(0)?;
+        let mut body: String = row.get(0)?;
         let fields: Vec<FieldSpan> = serde_json::from_str(&row.get::<_, String>(1)?)?;
         position = Some(locator);
+        if let Some(spans) = restrictions.get(&index) {
+            if spans.iter().any(|&(a, b)| a == 0 && b >= body.len() as u64) {
+                continue;
+            }
+            crate::memory::recall::mask(&mut body, 0, spans);
+            if body.is_empty() {
+                continue;
+            }
+        }
         for span in fields {
             if span.internal && !input.include_internal {
                 continue;
@@ -351,11 +378,7 @@ pub(crate) fn landmarks_selected_index(
         let last: i64 = row.get(2)?;
         let (ordinal,body,origin):(i64,String,Option<String>)=c.query_row("SELECT ordinal,substr(body,1,96),origin_json FROM agent_recall_messages WHERE owner=? AND session=? AND turn=? AND sequence=? AND internal=0 AND role='\"user\"' AND origin_json IS NULL ORDER BY ordinal LIMIT 1",params![owner_key,cut.session,turn,first],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;
         let last_ordinal:i64=c.query_row("SELECT MAX(ordinal) FROM agent_recall_messages WHERE owner=? AND session=? AND turn=? AND sequence=? AND internal=0",params![owner_key,cut.session,turn,last],|r|r.get(0))?;
-        let end = body.floor_char_boundary(body.len().min(96));
-        let label = body[..end]
-            .chars()
-            .map(|c| if c.is_control() { ' ' } else { c })
-            .collect();
+        let label = landmark_label(&body);
         out.push(Landmark {
             turn_id: turn,
             position: RowPosition {

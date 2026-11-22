@@ -38,6 +38,7 @@ pub struct ToolSuccess {
     value: ToolSuccessValue,
     pub(crate) is_error: bool,
     loaded_tools: BTreeSet<String>,
+    display_budget_chars: Option<usize>,
 }
 
 #[derive(Debug)]
@@ -75,6 +76,7 @@ pub struct NormalizedToolSuccess {
     pub output: ToolOutput,
     pub projection: DurableToolProjection,
     pub artifacts: Vec<ProjectionArtifactWrite>,
+    pub display_budget_chars: Option<usize>,
 }
 
 impl From<ToolSuccessValue> for ToolSuccess {
@@ -83,6 +85,7 @@ impl From<ToolSuccessValue> for ToolSuccess {
             value,
             is_error: false,
             loaded_tools: BTreeSet::new(),
+            display_budget_chars: None,
         }
     }
 }
@@ -114,6 +117,11 @@ impl ToolSuccess {
 
     pub fn reporting_error(self, is_error: bool) -> Self {
         Self { is_error, ..self }
+    }
+
+    pub fn with_display_budget_chars(mut self, display_budget_chars: usize) -> Self {
+        self.display_budget_chars = Some(display_budget_chars);
+        self
     }
 
     /// The executor owns authorization and image-header/dimension validation.
@@ -204,6 +212,7 @@ impl ToolSuccess {
                     output,
                     projection,
                     artifacts,
+                    display_budget_chars: self.display_budget_chars,
                 });
             }
             ToolSuccessValue::Output(output) => (output, None),
@@ -219,6 +228,7 @@ impl ToolSuccess {
                     output,
                     projection,
                     artifacts: Vec::new(),
+                    display_budget_chars: self.display_budget_chars,
                 });
             }
             ToolSuccessValue::Image {
@@ -242,6 +252,7 @@ impl ToolSuccess {
             output,
             projection,
             artifacts,
+            display_budget_chars: self.display_budget_chars,
         })
     }
 }

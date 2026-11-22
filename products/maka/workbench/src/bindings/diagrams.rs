@@ -135,16 +135,12 @@ mod tests {
         }
     }
 
-    fn diagram_app(
-        terminal: bool,
+    fn diagram_app_with_environment(
+        mut environment: nsh_core::platform::Environment,
         pending: Option<std::sync::mpsc::Sender<PendingImage>>,
     ) -> nsh_testing::Headless {
-        use nsh_core::{
-            Size,
-            element::Instance,
-            platform::{Environment, Idiom, Os},
-            prelude::px,
-        };
+        environment.native_focus_scopes = true;
+        use nsh_core::{Size, element::Instance, prelude::px};
         let mut registry = nsh_core::element::Registry::ui_set("maka/host");
         registry.value("host", move || {
             Instance::new(DiagramHost {
@@ -171,7 +167,20 @@ mod tests {
         .unwrap();
         nsh_testing::Headless::start(nsh_engine::EngineConfig {
             viewport: Size::new(px(720.0), px(900.0)),
-            environment: Environment {
+            environment,
+            ui_sets: sets,
+            ..nsh_engine::EngineConfig::new(nsh_engine::Bundle::source(bundle.code))
+        })
+        .unwrap()
+    }
+
+    fn diagram_app(
+        terminal: bool,
+        pending: Option<std::sync::mpsc::Sender<PendingImage>>,
+    ) -> nsh_testing::Headless {
+        use nsh_core::platform::{Environment, Idiom, Os};
+        diagram_app_with_environment(
+            Environment {
                 os: Os::MacOs,
                 idiom: if terminal {
                     Idiom::Terminal
@@ -180,10 +189,8 @@ mod tests {
                 },
                 ..Environment::default()
             },
-            ui_sets: sets,
-            ..nsh_engine::EngineConfig::new(nsh_engine::Bundle::source(bundle.code))
-        })
-        .unwrap()
+            pending,
+        )
     }
 
     #[test]
@@ -288,5 +295,181 @@ mod tests {
                 .iter()
                 .all(|image| image.as_slice() == latest_image.as_bytes())
         );
+    }
+
+    #[test]
+    fn diagram_opens_full_screen_zooms_in_and_out_and_closes() {
+        use nsh_core::platform::{ColorScheme, Environment, Idiom, Os};
+        let mut app = diagram_app_with_environment(
+            Environment {
+                os: Os::MacOs,
+                idiom: Idiom::Desktop,
+                color_scheme: ColorScheme::Dark,
+                ..Environment::default()
+            },
+            None,
+        );
+        app.wait_for("label:Mermaid diagram").unwrap();
+        // Clicking the diagram itself opens the full-screen viewer.
+        app.press("role:button[Mermaid diagram]").unwrap();
+        app.wait_for("role:button[Close full screen image]")
+            .unwrap();
+        app.wait_for("text:/· 100%/").unwrap();
+
+        // Zoom in, then zoom back out via buttons and plain keyboard shortcuts.
+        app.press("role:button[Zoom image in]").unwrap();
+        app.wait_for("text:/· 125%/").unwrap();
+        app.press("role:button[Zoom image out]").unwrap();
+        app.wait_for("text:/· 100%/").unwrap();
+        app.press_key("minus").unwrap();
+        app.wait_for("text:/· 80%/").unwrap();
+        app.press("role:button[Show image at actual size]").unwrap();
+        app.wait_for("text:/· 100%/").unwrap();
+
+        // A taking trackpad listener owns the gesture: the outer native
+        // binding must not apply the same scale again at PinchEnd.
+        app.trackpad_pinch("label:Image viewport", 1.44).unwrap();
+        app.wait_for("text:/· 144%/").unwrap();
+        app.trackpad_pinch("label:Image viewport", 1.0 / 1.44)
+            .unwrap();
+        app.wait_for("text:/· 100%/").unwrap();
+
+        app.hold_keys("ctrl", true).unwrap();
+        app.wheel(
+            "label:Image viewport",
+            nsh_core::geometry::point(nsh_core::prelude::px(0.0), nsh_core::prelude::px(-10.0)),
+        )
+        .unwrap();
+        app.wait_for("text:/· 108%/").unwrap();
+        app.wheel(
+            "label:Image viewport",
+            nsh_core::geometry::point(nsh_core::prelude::px(0.0), nsh_core::prelude::px(10.0)),
+        )
+        .unwrap();
+        app.wait_for("text:/· 100%/").unwrap();
+        app.hold_keys("ctrl", false).unwrap();
+
+        app.press("label:Image viewport").unwrap();
+        app.press("label:Image viewport").unwrap();
+        app.wait_for("text:/· 200%/").unwrap();
+        app.press("role:button[Show image at actual size]").unwrap();
+        app.wait_for("text:/· 100%/").unwrap();
+
+        // Escape closes the full-screen viewer.
+        app.press_key("escape").unwrap();
+        assert!(
+            !app.screen()
+                .matches("role:button[Close full screen image]")
+                .unwrap()
+        );
+
+        // The header expand button also opens the viewer, and the close button dismisses it.
+        app.press("role:button[Open diagram full screen]").unwrap();
+        app.wait_for("role:button[Close full screen image]")
+            .unwrap();
+        app.press("role:button[Close full screen image]").unwrap();
+        assert!(
+            !app.screen()
+                .matches("role:button[Close full screen image]")
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn windows_viewer_close_button_stays_clear_of_caption_controls() {
+        use nsh_core::{
+            geometry::Edges,
+            platform::{ColorScheme, Environment, Idiom, Os},
+            prelude::px,
+        };
+        let caption_right = 138.0_f32;
+        let mut app = diagram_app_with_environment(
+            Environment {
+                os: Os::Windows,
+                idiom: Idiom::Desktop,
+                color_scheme: ColorScheme::Light,
+                title_bar: Edges {
+                    top: px(48.0),
+                    right: px(caption_right),
+                    bottom: px(0.0),
+                    left: px(0.0),
+                },
+                ..Environment::default()
+            },
+            None,
+        );
+        app.wait_for("label:Mermaid diagram").unwrap();
+        app.press("role:button[Open diagram full screen]").unwrap();
+        app.wait_for("role:button[Close full screen image]")
+            .unwrap();
+
+        let close_id = app
+            .screen()
+            .id("role:button[Close full screen image]")
+            .unwrap();
+        let close_bounds = app
+            .screen()
+            .layout_nodes()
+            .into_iter()
+            .find(|node| node.id == close_id)
+            .expect("close button layout bounds")
+            .bounds;
+        let close_right = close_bounds.origin.x.0 + close_bounds.size.width.0;
+        assert!(
+            close_right <= 720.0 - caption_right,
+            "viewer close button right edge ({close_right}) overlaps Windows caption controls starting at {}",
+            720.0 - caption_right
+        );
+    }
+
+    #[test]
+    fn light_mode_viewer_renders_dark_palette_diagram() {
+        use nsh_core::platform::{ColorScheme, Environment, Idiom, Os};
+        let (send, pending) = std::sync::mpsc::channel();
+        let mut app = diagram_app_with_environment(
+            Environment {
+                os: Os::MacOs,
+                idiom: Idiom::Desktop,
+                color_scheme: ColorScheme::Light,
+                ..Environment::default()
+            },
+            Some(send),
+        );
+        // Inline render uses the light palette.
+        let inline = pending.recv_timeout(nsh_testing::WAIT).unwrap();
+        assert!(
+            !inline.svg.contains("var(--pele-"),
+            "inline SVG colors must be resolved for an image document"
+        );
+        let inline_outlined = outline_with_fonts(&inline.svg, fonts()).unwrap();
+        inline
+            .reply
+            .send(format!(
+                "data:image/svg+xml;base64,{}",
+                STANDARD.encode(&inline_outlined)
+            ))
+            .unwrap();
+        app.wait_for("label:Mermaid diagram").unwrap();
+
+        // Opening the dark full-screen viewer requests a dark-palette diagram.
+        app.press("role:button[Open diagram full screen]").unwrap();
+        let dark = pending.recv_timeout(nsh_testing::WAIT).unwrap();
+        assert_ne!(
+            dark.svg, inline.svg,
+            "the viewer must request a new palette instead of reusing the inline SVG"
+        );
+        assert!(
+            !dark.svg.contains("var(--pele-"),
+            "viewer SVG colors must be resolved for an image document"
+        );
+        let dark_outlined = outline_with_fonts(&dark.svg, fonts()).unwrap();
+        dark.reply
+            .send(format!(
+                "data:image/svg+xml;base64,{}",
+                STANDARD.encode(&dark_outlined)
+            ))
+            .unwrap();
+        app.wait_for("role:button[Close full screen image]")
+            .unwrap();
     }
 }

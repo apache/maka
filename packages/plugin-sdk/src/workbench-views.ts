@@ -104,6 +104,8 @@ export interface QuickItem {
   readonly action: string;
   /** How well it matches the query, lower being better. */
   readonly match: number;
+  /** A fresh result to put ahead of usage-based recommendations, newest first. */
+  readonly recommendedAt?: number | undefined;
   /** Counts its uses for ranking and recommendations; private results leave it unset. */
   readonly remembered?: boolean | undefined;
   run(): void;

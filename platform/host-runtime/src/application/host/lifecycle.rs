@@ -52,7 +52,12 @@ impl Drop for Connection {
     }
 }
 impl Host {
-    pub async fn retire(&self, interrupt: bool, allow_idle_connections: bool) -> Result<bool> {
+    pub async fn retire(
+        &self,
+        interrupt: bool,
+        allow_idle_connections: bool,
+        refuse_active_sessions: bool,
+    ) -> Result<bool> {
         if !interrupt {
             let mut updates = self.application.client().updates;
             loop {
@@ -86,7 +91,9 @@ impl Host {
             }
         }
         let _gate = self.access_gate.lock().await;
-        if !interrupt && !allow_idle_connections && !self.sessions.lock().unwrap().is_empty() {
+        if (refuse_active_sessions || (!interrupt && !allow_idle_connections))
+            && !self.sessions.lock().unwrap().is_empty()
+        {
             return Ok(false);
         }
         if interrupt {

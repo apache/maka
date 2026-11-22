@@ -497,6 +497,11 @@ export const conversationMessages = {
     '浏览器来源：{origin}',
     '瀏覽器來源：{origin}',
   ],
+  'Duration and token usage were not recorded.': [
+    'Duration and token usage were not recorded.',
+    '未记录耗时和 token 用量',
+    '未記錄耗時和 token 用量',
+  ],
   'Cache hit {rate}': ['Cache hit {rate}', '缓存命中 {rate}', '快取命中 {rate}'],
   'Cache hit rate': ['Cache hit rate', '缓存命中率', '快取命中率'],
   'Cache read tokens': ['Cache read tokens', '缓存读取 Token', '快取讀取 Token'],
@@ -883,6 +888,7 @@ export const conversationMessages = {
   'Show diagram source': ['Show diagram source', '显示图表源码', '顯示圖表原始碼'],
   'Hide diagram source': ['Hide diagram source', '隐藏图表源码', '隱藏圖表原始碼'],
   'Mermaid diagram': ['Mermaid diagram', 'Mermaid 图表', 'Mermaid 圖表'],
+  'Open diagram full screen': ['Open diagram full screen', '全屏查看图表', '全螢幕檢視圖表'],
   'Rendering diagram…': ['Rendering diagram…', '正在绘制图表…', '正在繪製圖表…'],
   'Diagram unavailable: {reason}': [
     'Diagram unavailable: {reason}',

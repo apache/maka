@@ -655,6 +655,30 @@ impl Client {
             Request::Retire {
                 interrupt,
                 allow_idle_connections,
+                refuse_active_sessions: false,
+            },
+        )
+        .await?
+        {
+            Response::Retired(result) => result,
+            _ => Err("Host retirement response mismatch".into()),
+        }
+    }
+    /// Atomically retires the Host only when zero interactive sessions are
+    /// attached. With `interrupt = true`, active background runs are still
+    /// interrupted once the Host verifies no sessions are connected.
+    pub async fn retire_if_no_sessions(
+        address: &Path,
+        epoch: Uuid,
+        interrupt: bool,
+    ) -> Result<bool> {
+        match control(
+            address,
+            Some(epoch),
+            Request::Retire {
+                interrupt,
+                allow_idle_connections: false,
+                refuse_active_sessions: interrupt,
             },
         )
         .await?

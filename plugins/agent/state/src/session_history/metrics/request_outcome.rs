@@ -86,29 +86,32 @@ pub(super) fn read(
                 attempt: actual,
                 diagnostic,
             } if actual == attempt => {
-                interruption = Some((sequence, record.at, diagnostic));
+                interruption = Some((sequence, record.at, record.id, diagnostic));
             }
             Fact::ModelSourceFailureCaptured {
                 attempt: actual,
                 failure,
             } if actual == attempt => {
-                source_failure = Some((record.at, failure));
+                source_failure = Some((record.at, record.id, failure));
             }
             _ => return Err(invalid("request outcome differs from its original attempt")),
         }
     }
     if finished.is_none() {
-        let failure = if let Some((at, reference)) = source_failure {
+        let failure = if let Some((at, id, reference)) = source_failure {
             let protocol: ModelFailureProtocol = metadata(c, source, run, &reference)?;
-            Some((at, Outcome::Error, Some(protocol.failure.to_string())))
-        } else if let Some((sequence, at, diagnostic)) = interruption {
+            let text = protocol.failure.to_string();
+            let sources = related_diagnostics(c, id, &text)?;
+            Some((at, Outcome::Error, Some(text), sources))
+        } else if let Some((sequence, at, id, diagnostic)) = interruption {
             let outcome = if end.stop.is_some_and(|stop| stop < sequence) {
                 Outcome::Aborted
             } else {
                 Outcome::Error
             };
-            Some((at, outcome, Some(diagnostic)))
+            Some((at, outcome, Some(diagnostic), vec![id]))
         } else if let Some(RecordedFact {
+            id,
             at,
             fact:
                 Fact::RunTerminated {
@@ -123,15 +126,19 @@ pub(super) fn read(
             } else {
                 Outcome::Unknown
             };
-            Some((*at, outcome, diagnostic.clone()))
+            Some((*at, outcome, diagnostic.clone(), vec![*id]))
         } else {
             None
         };
-        finished = failure.map(|(at, outcome, diagnostic)| ModelRequestTraceFinished {
-            at,
-            outcome,
-            usage: ModelUsage::default(),
-            diagnostic: diagnostic.map(|text| diagnostic_preview(&text)),
+        finished = failure.map(|(at, outcome, diagnostic, facts)| {
+            let (diagnostic, evidence) = diagnostic_preview(diagnostic.as_deref(), facts);
+            ModelRequestTraceFinished {
+                evidence,
+                at,
+                outcome,
+                usage: ModelUsage::default(),
+                diagnostic,
+            }
         });
     }
     let retry = retry
