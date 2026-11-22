@@ -23,6 +23,21 @@ import { access, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { v8Notices } from './v8-notices.mjs';
 
+/**
+ * Cargo 1.100+ places build-script OUT_DIR under `build/<pkg>/<hash>/out`, so
+ * rusty_v8's relative parent walk writes `gn_out` inside `<buildDirectory>/build`.
+ */
+export async function locateGnOut(buildDirectory, archiveName) {
+  const candidates = [join(buildDirectory, 'gn_out'), join(buildDirectory, 'build', 'gn_out')];
+  for (const candidate of candidates) {
+    try {
+      await access(join(candidate, 'obj', archiveName), constants.R_OK);
+      return candidate;
+    } catch {}
+  }
+  throw new Error(`Built V8 archive (${archiveName}) not found in: ${candidates.join(', ')}`);
+}
+
 export async function compileV8({ source, features, directory, target, env }) {
   if (process.platform === 'linux' && process.arch === 'arm64') {
     throw new Error(
@@ -119,12 +134,9 @@ export async function compileV8({ source, features, directory, target, env }) {
     ],
     buildEnvironment,
   );
-  const generated = join(buildDirectory, 'gn_out');
-  const archive = join(
-    generated,
-    'obj',
-    target.includes('windows') ? 'rusty_v8.lib' : 'librusty_v8.a',
-  );
+  const archiveName = target.includes('windows') ? 'rusty_v8.lib' : 'librusty_v8.a';
+  const generated = await locateGnOut(buildDirectory, archiveName);
+  const archive = join(generated, 'obj', archiveName);
   const members = execFileSync(archiver, [...(windows ? ['/lib', '/list'] : ['t']), archive], {
     encoding: 'utf8',
     maxBuffer: 4 * 1024 * 1024,
