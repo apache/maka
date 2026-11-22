@@ -24,10 +24,15 @@ publish.workspace = true
 
 [dependencies]
 maka-peer.workspace = true
+quinn = { version = "0.11.12", default-features = false, features = ["runtime-tokio", "rustls-aws-lc-rs", "bloom"] }
+rustls = { version = "0.23.46", default-features = false, features = ["aws_lc_rs", "std"] }
+rustls-pki-types = "1.15.1"
 serde.workspace = true
+tokio-util.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
+tracing = { version = "0.1.44", default-features = false, features = ["std"] }
 
 [dev-dependencies]
 maka-event-log.workspace = true

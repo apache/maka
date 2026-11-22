@@ -34,7 +34,8 @@ enum Ingress {
 }
 
 pub struct WebSocketListener {
-    ingress: Ingress,
+    ingress: Option<Ingress>,
+    extra_streams: Option<mpsc::Receiver<Channel>>,
     allowed_origins: Arc<[String]>,
 }
 impl WebSocketListener {
@@ -44,11 +45,12 @@ impl WebSocketListener {
         }
         let allowed_origins = validate_origins(allowed_origins)?;
         Ok(Self {
-            ingress: Ingress::Tcp(
+            ingress: Some(Ingress::Tcp(
                 TcpListener::bind(address)
                     .await
                     .map_err(|error| error.to_string())?,
-            ),
+            )),
+            extra_streams: None,
             allowed_origins,
         })
     }
@@ -59,15 +61,22 @@ impl WebSocketListener {
         allowed_origins: Vec<String>,
     ) -> Result<Self> {
         Ok(Self {
-            ingress: Ingress::Streams(streams),
+            ingress: Some(Ingress::Streams(streams)),
+            extra_streams: None,
             allowed_origins: validate_origins(allowed_origins)?,
         })
     }
 
+    /// Attach an additional supplied-stream ingress (such as a QUIC P2P Mesh
+    /// node) alongside an existing TCP WebSocket listener.
+    pub fn attach_streams(&mut self, streams: mpsc::Receiver<Channel>) {
+        self.extra_streams = Some(streams);
+    }
+
     pub fn local_addr(&self) -> std::io::Result<SocketAddr> {
         match &self.ingress {
-            Ingress::Tcp(listener) => listener.local_addr(),
-            Ingress::Streams(_) => Err(io::Error::new(
+            Some(Ingress::Tcp(listener)) => listener.local_addr(),
+            Some(Ingress::Streams(_)) | None => Err(io::Error::new(
                 io::ErrorKind::AddrNotAvailable,
                 "supplied stream listener has no socket address",
             )),
@@ -75,17 +84,43 @@ impl WebSocketListener {
     }
 
     pub(super) async fn accept(&mut self) -> io::Result<Option<(Channel, Arc<[String]>)>> {
-        let stream: Channel = match &mut self.ingress {
-            Ingress::Tcp(listener) => {
-                let (stream, _) = listener.accept().await?;
-                Box::new(stream)
+        loop {
+            if self.ingress.is_none() && self.extra_streams.is_none() {
+                return Ok(None);
             }
-            Ingress::Streams(streams) => match streams.recv().await {
-                Some(stream) => stream,
-                None => return Ok(None),
-            },
-        };
-        Ok(Some((stream, self.allowed_origins.clone())))
+            let stream: Option<Channel> = tokio::select! {
+                primary = async {
+                    match &mut self.ingress {
+                        Some(Ingress::Tcp(listener)) => {
+                            listener.accept().await.map(|(s, _)| Some(Box::new(s) as Channel))
+                        }
+                        Some(Ingress::Streams(streams)) => Ok(streams.recv().await),
+                        None => std::future::pending().await,
+                    }
+                } => match primary? {
+                    Some(stream) => Some(stream),
+                    None => {
+                        self.ingress = None;
+                        None
+                    }
+                },
+                extra = async {
+                    match &mut self.extra_streams {
+                        Some(streams) => streams.recv().await,
+                        None => std::future::pending().await,
+                    }
+                } => match extra {
+                    Some(stream) => Some(stream),
+                    None => {
+                        self.extra_streams = None;
+                        None
+                    }
+                },
+            };
+            if let Some(stream) = stream {
+                return Ok(Some((stream, self.allowed_origins.clone())));
+            }
+        }
     }
 }
 

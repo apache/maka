@@ -95,6 +95,7 @@ maka-agent-api.workspace = true
 maka-agent-native.workspace = true
 maka-host-js.workspace = true
 maka-peer.workspace = true
+maka-peer-mesh.workspace = true
 maka-transport.workspace = true
 maka-computer-use.workspace = true
 maka-acp.workspace = true

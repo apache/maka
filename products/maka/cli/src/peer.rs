@@ -17,7 +17,8 @@
  * under the License.
  */
 
-//! CLI commands for P2P node identity, pairing ticket generation, and SAS verification.
+//! CLI commands for P2P node identity, pairing tickets, SAS verification,
+//! owner-signed mesh rosters, QUIC RTT probing, and mesh transit relaying.
 
 use crate::{access, args::Root, host_client::HostClient};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -25,11 +26,17 @@ use clap::{Args, Subcommand};
 use maka_event_log::root;
 use maka_host_runtime::HostError;
 use maka_peer::{NodeIdentity, PeerId};
+use maka_peer_mesh::{
+    MeshId, MeshMemberEntry, MeshRole, MeshTransportNode, PeerMeshRosterV1, SignedPeerMeshRosterV1,
+};
 use serde::Serialize;
 use std::{
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
+    num::NonZeroUsize,
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 const PAIRING_URI_PREFIX: &str = "maka://pair/v1?payload=";
@@ -43,6 +50,12 @@ pub(super) enum Command {
     PairTicket(PairTicketArgs),
     /// Compute the 6-digit Short Authentication String (SAS) for two peers and a nonce.
     Sas(SasArgs),
+    /// Measure live mutual-Ed25519 QUIC round-trip latency to a remote peer.
+    Ping(PingArgs),
+    /// Create an owner-signed mesh roster authorizing active members and relays.
+    RosterSign(RosterSignArgs),
+    /// Run a fail-closed QUIC `A -> C -> B` mesh transit relay node.
+    Relay(RelayArgs),
 }
 
 #[derive(Args)]
@@ -75,6 +88,44 @@ pub(super) struct SasArgs {
     nonce: String,
 }
 
+#[derive(Args)]
+pub(super) struct PingArgs {
+    #[arg(long)]
+    identity: PathBuf,
+    #[arg(long)]
+    peer_id: String,
+    #[arg(long)]
+    addr: SocketAddr,
+}
+
+#[derive(Args)]
+pub(super) struct RosterSignArgs {
+    #[arg(long)]
+    identity: PathBuf,
+    #[arg(long)]
+    mesh_id: String,
+    #[arg(long, default_value_t = 1)]
+    revision: u64,
+    #[arg(long = "member", required = true)]
+    members: Vec<String>,
+    #[arg(long)]
+    output: Option<PathBuf>,
+}
+
+#[derive(Args)]
+pub(super) struct RelayArgs {
+    #[arg(long)]
+    identity: PathBuf,
+    #[arg(long)]
+    listen: SocketAddr,
+    #[arg(long)]
+    roster: Option<PathBuf>,
+    #[arg(long = "peer")]
+    peers: Vec<String>,
+    #[arg(long)]
+    max_circuits: Option<NonZeroUsize>,
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct PairingTicketPayload<'a> {
@@ -93,11 +144,14 @@ impl Command {
             Self::Identity(args) => args.run().await,
             Self::PairTicket(args) => args.run().await,
             Self::Sas(args) => args.run(),
+            Self::Ping(args) => args.run().await,
+            Self::RosterSign(args) => args.run().await,
+            Self::Relay(args) => args.run().await,
         }
     }
 }
 
-fn identity_file_path(root_dir: &Path) -> PathBuf {
+pub(crate) fn identity_file_path(root_dir: &Path) -> PathBuf {
     root_dir.join("peer").join("node-identity.json")
 }
 
@@ -112,6 +166,36 @@ fn now_epoch_ms() -> Result<u64, HostError> {
 fn encode_pairing_uri(payload: &PairingTicketPayload<'_>) -> Result<String, HostError> {
     let json = serde_json::to_vec(payload)?;
     Ok(format!("{PAIRING_URI_PREFIX}{}", URL_SAFE_NO_PAD.encode(json)))
+}
+
+fn parse_member_spec(raw: &str) -> Result<MeshMemberEntry, HostError> {
+    let (peer_str, role, relay_allowed) = match raw.split_once(':') {
+        Some((peer, "owner")) => (peer, MeshRole::Owner, true),
+        Some((peer, "relay")) => (peer, MeshRole::RelayCapable, true),
+        Some((peer, "member")) => (peer, MeshRole::Member, false),
+        Some((_, other)) => {
+            return Err(
+                format!("unknown mesh member role `{other}` (expected `owner`, `relay`, or `member`)")
+                    .into(),
+            );
+        }
+        None => (raw, MeshRole::Member, false),
+    };
+    let peer_id = PeerId::parse(peer_str).map_err(|err| err.to_string())?;
+    let display_name = peer_id.as_str().to_owned();
+    MeshMemberEntry::new(peer_id, display_name, role, relay_allowed, false)
+        .map_err(|err| err.to_string().into())
+}
+
+fn parse_peer_addr_spec(raw: &str) -> Result<(PeerId, SocketAddr), HostError> {
+    let (peer_str, addr_str) = raw
+        .split_once('=')
+        .ok_or_else(|| format!("expected `<peer_id>=<ip:port>`, got `{raw}`"))?;
+    let peer_id = PeerId::parse(peer_str).map_err(|err| err.to_string())?;
+    let addr: SocketAddr = addr_str
+        .parse()
+        .map_err(|err| format!("invalid peer socket address `{addr_str}`: {err}"))?;
+    Ok((peer_id, addr))
 }
 
 impl IdentityArgs {
@@ -181,6 +265,122 @@ impl SasArgs {
         let remote = PeerId::parse(self.remote_peer_id).map_err(|err| err.to_string())?;
         let code = local.short_auth_code(&remote, &self.nonce);
         println!("{}", serde_json::json!({ "sas": code }));
+        Ok(())
+    }
+}
+
+impl PingArgs {
+    async fn run(self) -> Result<(), HostError> {
+        let identity = NodeIdentity::load_or_create_async(self.identity)
+            .await
+            .map_err(|err| err.to_string())?;
+        let remote_peer = PeerId::parse(self.peer_id).map_err(|err| err.to_string())?;
+        let bind_addr = match self.addr.ip() {
+            IpAddr::V4(_) => SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
+            IpAddr::V6(_) => SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0),
+        };
+        let (node, _rx) =
+            MeshTransportNode::bind(bind_addr, identity, None).map_err(|err| err.to_string())?;
+        let rtt = node
+            .measure_rtt(&remote_peer, self.addr)
+            .await
+            .map_err(|err| err.to_string())?;
+        node.shutdown();
+        println!(
+            "{}",
+            serde_json::json!({
+                "localPeerId": node.peer_id(),
+                "remotePeerId": remote_peer,
+                "addr": self.addr.to_string(),
+                "rttMs": rtt.as_secs_f64() * 1_000.0,
+            })
+        );
+        Ok(())
+    }
+}
+
+impl RosterSignArgs {
+    async fn run(self) -> Result<(), HostError> {
+        let owner = NodeIdentity::load_or_create_async(self.identity)
+            .await
+            .map_err(|err| err.to_string())?;
+        let mesh_id = MeshId::parse(self.mesh_id).map_err(|err| err.to_string())?;
+        let mut members = Vec::with_capacity(self.members.len() + 1);
+        for raw in &self.members {
+            members.push(parse_member_spec(raw)?);
+        }
+        if !members.iter().any(|entry| entry.peer_id() == owner.peer_id()) {
+            members.push(
+                MeshMemberEntry::new(
+                    owner.peer_id().clone(),
+                    owner.peer_id().as_str(),
+                    MeshRole::Owner,
+                    true,
+                    false,
+                )
+                .map_err(|err| err.to_string())?,
+            );
+        }
+        let roster = PeerMeshRosterV1::new(
+            mesh_id,
+            owner.peer_id().clone(),
+            self.revision,
+            now_epoch_ms()?,
+            members,
+        )
+        .map_err(|err| err.to_string())?;
+        let signed = SignedPeerMeshRosterV1::sign(roster, &owner).map_err(|err| err.to_string())?;
+        let json = serde_json::to_string_pretty(&signed)?;
+        if let Some(output) = self.output {
+            tokio::fs::write(&output, json.as_bytes()).await?;
+            println!(
+                "{}",
+                serde_json::json!({
+                    "ownerPeerId": owner.peer_id(),
+                    "output": output,
+                })
+            );
+        } else {
+            println!("{json}");
+        }
+        Ok(())
+    }
+}
+
+impl RelayArgs {
+    async fn run(self) -> Result<(), HostError> {
+        let identity = NodeIdentity::load_or_create_async(self.identity)
+            .await
+            .map_err(|err| err.to_string())?;
+        let (node, _rx) = MeshTransportNode::bind(self.listen, identity, self.max_circuits)
+            .map_err(|err| err.to_string())?;
+        let mut relay_authorized = false;
+        if let Some(roster_path) = self.roster {
+            let bytes = tokio::fs::read(&roster_path).await?;
+            let signed: SignedPeerMeshRosterV1 = serde_json::from_slice(&bytes)?;
+            relay_authorized = signed
+                .roster()
+                .member(node.peer_id())
+                .is_some_and(MeshMemberEntry::can_transit);
+            node.set_transit_roster(signed);
+        }
+        for raw in &self.peers {
+            let (peer_id, addr) = parse_peer_addr_spec(raw)?;
+            node.set_peer_address(peer_id, addr);
+        }
+        let cancellation = CancellationToken::new();
+        let _signals = crate::signals::watch(cancellation.clone())?;
+        println!(
+            "{}",
+            serde_json::json!({
+                "kind": "ready",
+                "peerId": node.peer_id(),
+                "listen": node.local_addr().to_string(),
+                "relayAuthorized": relay_authorized,
+            })
+        );
+        cancellation.cancelled().await;
+        node.shutdown();
         Ok(())
     }
 }

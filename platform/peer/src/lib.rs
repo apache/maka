@@ -23,6 +23,7 @@
 pub mod identity;
 pub mod reachability;
 pub mod resumable;
+pub mod tls;
 
 pub use identity::{IdentityError, NodeIdentity, PeerId, verify_signature};
 pub use reachability::{

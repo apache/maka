@@ -25,6 +25,7 @@
 pub mod dialer;
 pub mod roster;
 pub mod transit;
+pub mod transport;
 
 pub use dialer::{
     DEFAULT_HEDGE_DELAY, DialError, DialWinner, WinningPath, hedged_dial,
@@ -37,4 +38,8 @@ pub use roster::{
 };
 pub use transit::{
     TransitCircuitGuard, TransitError, TransitPolicy, bridge_transit_streams,
+};
+pub use transport::{
+    IncomingPeerStream, MESH_QUIC_ALPN, MeshTransportNode, PeerIo, PeerStream, QuicBiStream,
+    TransportError, parse_quic_socket_addr,
 };

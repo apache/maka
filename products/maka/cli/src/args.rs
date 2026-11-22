@@ -131,6 +131,9 @@ enum HostCommand {
         root: Root,
         #[arg(long)]
         websocket: Option<SocketAddr>,
+        /// Bind a mutual-Ed25519 QUIC P2P Mesh listener feeding remote Host channels.
+        #[arg(long)]
+        peer_listen: Option<SocketAddr>,
     },
 }
 
@@ -265,10 +268,14 @@ impl Cli {
                 command_exit(args.run(crate::deployment::ControlAction::Uninstall))
             }
             Command::Host(HostCommand::Init(args)) => command_exit(args.run()),
-            Command::Host(HostCommand::Serve { root, websocket }) => command_exit(async move {
+            Command::Host(HostCommand::Serve {
+                root,
+                websocket,
+                peer_listen,
+            }) => command_exit(async move {
                 #[cfg(windows)]
                 crate::windows::own_process_tree()?;
-                serve::run(&root.root, websocket, None).await
+                serve::run(&root.root, websocket, peer_listen, None).await
             }),
             Command::Host(HostCommand::ServiceRun(args)) => command_exit(args.run()),
             Command::Host(HostCommand::Status(args)) => command_exit(args.run()),
