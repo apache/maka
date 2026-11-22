@@ -67,6 +67,9 @@ async fn admit_at(
 ) -> Result<(Client, PathBuf), String> {
     let prepare = async {
         let (root_id, directory) = location?;
+        if root_id.trim().is_empty() {
+            return Err("expected Root id must not be empty".into());
+        }
         if host.source().state_domain != root_id {
             return Err(format!(
                 "application Host changed during {shell} startup admission"
@@ -348,5 +351,142 @@ mod tests {
             r#"{"existing":"1"}"#
         );
         assert!(clients_dest.join("default/storage.json").exists());
+    }
+
+    async fn mock_host_client(
+        state_domain: &str,
+        receipts_contract: maka_plugin_core::contract::Contract,
+    ) -> (HostClient, std::sync::Arc<std::sync::atomic::AtomicBool>) {
+        use maka_host_runtime::application::{
+            host::OpenChannel,
+            transport::{Catalogue, Description, wire},
+        };
+        use maka_plugin_core::{composition::InstanceId, deployment::DeploymentRef};
+        use serde_json::{Value, json};
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        };
+        use uuid::Uuid;
+
+        let epoch = Uuid::from_u128(0x1111);
+        let session = Uuid::from_u128(0x2222);
+        let provider = InstanceId(vec![Uuid::from_u128(0x4444)]);
+        let state_domain = state_domain.to_owned();
+        let closed = Arc::new(AtomicBool::new(false));
+        let closed_for_server = closed.clone();
+
+        let description = Description {
+            provider: provider.clone(),
+            export: "receipts".into(),
+            contract: receipts_contract,
+            registration_epoch: Some(Uuid::from_u128(0x3333)),
+        };
+        let catalogue: Catalogue = serde_json::from_value(json!({
+            "endpoints": {
+                "receipts": description
+            }
+        }))
+        .unwrap();
+
+        let open: OpenChannel = Arc::new(move || {
+            let state_domain = state_domain.clone();
+            let catalogue = catalogue.clone();
+            let provider = provider.clone();
+            let closed_for_server = closed_for_server.clone();
+            Box::pin(async move {
+                let (client_io, mut server_io) = tokio::io::duplex(64 * 1024);
+                tokio::spawn(async move {
+                    let mut reader = wire::Reader::new(&mut server_io);
+                    let _opening: Value = match reader.read().await {
+                        Ok(value) => value,
+                        Err(_) => return,
+                    };
+                    let source = DeploymentRef {
+                        state_domain,
+                        deployment: Uuid::from_u128(2),
+                        revision: 1,
+                    };
+                    let response = json!({
+                        "kind": "connected",
+                        "value": {
+                            "version": 1,
+                            "epoch": epoch,
+                            "session": session,
+                            "source": source,
+                            "consumers": {
+                                "receipts": provider
+                            },
+                            "catalogue": catalogue,
+                            "ui": null
+                        }
+                    });
+                    if wire::write(&mut reader.inner, &response).await.is_err() {
+                        return;
+                    }
+                    if let Ok(control) = reader.read::<Value>().await
+                        && control["kind"] == "close"
+                    {
+                        closed_for_server.store(true, Ordering::SeqCst);
+                        let _ = wire::write(&mut reader.inner, &json!({ "kind": "closed" })).await;
+                    }
+                });
+                Ok(Box::new(client_io) as _)
+            })
+        });
+
+        let client = HostClient::connect_on(open, Some(epoch), Some(Arc::from("ios-test")))
+            .await
+            .unwrap();
+        (client, closed)
+    }
+
+    #[tokio::test]
+    async fn admit_in_opens_journal_in_client_data_dir_when_root_and_contract_match() {
+        use std::sync::atomic::Ordering;
+        let temp = tempfile::TempDir::new().unwrap();
+        let root_alpha = "a".repeat(64);
+        let data_dir = temp.path().join("remote-host-a");
+        let (host, closed) = mock_host_client(&root_alpha, receipt_reader_contract()).await;
+
+        let (client, directory) = admit_in(host, &root_alpha, data_dir.clone(), "ios")
+            .await
+            .expect("remote admission should succeed");
+        assert_eq!(directory, data_dir);
+        assert!(data_dir.join("ios.sqlite").is_file());
+        assert!(!closed.load(Ordering::SeqCst));
+
+        client.close().await.unwrap();
+        assert!(closed.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn admit_in_rejects_mismatched_or_empty_root_id_and_closes_host() {
+        use std::sync::atomic::Ordering;
+        let temp = tempfile::TempDir::new().unwrap();
+        let root_alpha = "a".repeat(64);
+        let root_beta = "b".repeat(64);
+        let (host_empty, closed_empty) =
+            mock_host_client(&root_alpha, receipt_reader_contract()).await;
+        let err_empty = match admit_in(host_empty, "   ", temp.path().to_path_buf(), "ios").await {
+            Ok(_) => panic!("empty root id must fail"),
+            Err(err) => err,
+        };
+        assert_eq!(err_empty, "expected Root id must not be empty");
+        assert!(closed_empty.load(Ordering::SeqCst));
+
+        let (host_mismatch, closed_mismatch) =
+            mock_host_client(&root_alpha, receipt_reader_contract()).await;
+        let err_mismatch =
+            match admit_in(host_mismatch, &root_beta, temp.path().to_path_buf(), "ios").await {
+                Ok(_) => panic!("mismatched root id must fail"),
+                Err(err) => err,
+            };
+        assert_eq!(
+            err_mismatch,
+            "application Host changed during ios startup admission"
+        );
+        assert!(closed_mismatch.load(Ordering::SeqCst));
+        assert!(!temp.path().join("ios.sqlite").exists());
     }
 }

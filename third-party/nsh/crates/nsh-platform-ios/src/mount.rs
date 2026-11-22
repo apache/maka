@@ -806,6 +806,7 @@ impl Mounter {
         control: EngineControl,
         shared: SharedMounter,
         asset_base: Option<AssetBase>,
+        assets: Option<std::sync::Arc<dyn nsh_engine::Assets>>,
         access: std::sync::Arc<nsh_engine::Access>,
         components: crate::component::Components,
     ) -> Self {
@@ -826,6 +827,7 @@ impl Mounter {
             target,
             images: ImageLoader::new(
                 asset_base.clone(),
+                assets,
                 {
                     let shared = shared.clone();
                     std::sync::Arc::new(move |event| {
