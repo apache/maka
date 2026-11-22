@@ -391,10 +391,10 @@ test('the Host app has a valid stable bundle signature', {
 });
 
 test('linuxSystemLibraryRustflags exposes host system library dirs for zigbuild', () => {
+  const shlib = '-C link-arg=-Wl,--allow-shlib-undefined';
   const ubuntuX64 = (dir) => dir === '/usr/lib/x86_64-linux-gnu' || dir === '/usr/lib';
   assert.deepEqual(linuxSystemLibraryRustflags('x86_64-unknown-linux-gnu', {}, ubuntuX64), {
-    CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS:
-      '-L native=/usr/lib/x86_64-linux-gnu -L native=/usr/lib',
+    CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: `-L native=/usr/lib/x86_64-linux-gnu -L native=/usr/lib ${shlib}`,
   });
   assert.deepEqual(
     linuxSystemLibraryRustflags(
@@ -403,8 +403,7 @@ test('linuxSystemLibraryRustflags exposes host system library dirs for zigbuild'
       ubuntuX64,
     ),
     {
-      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS:
-        '-C link-arg=-s -L native=/usr/lib -L native=/usr/lib/x86_64-linux-gnu',
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: `-C link-arg=-s -L native=/usr/lib -L native=/usr/lib/x86_64-linux-gnu ${shlib}`,
     },
   );
   assert.deepEqual(
@@ -414,17 +413,15 @@ test('linuxSystemLibraryRustflags exposes host system library dirs for zigbuild'
       ubuntuX64,
     ),
     {
-      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS:
-        '-L native=/usr/lib/x86_64-linux-gnu -L native=/usr/lib',
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: `-L native=/usr/lib/x86_64-linux-gnu -L native=/usr/lib ${shlib}`,
     },
   );
   const ubuntuArm64 = (dir) => dir === '/usr/lib/aarch64-linux-gnu' || dir === '/usr/lib';
   assert.deepEqual(linuxSystemLibraryRustflags('aarch64-unknown-linux-gnu', {}, ubuntuArm64), {
-    CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS:
-      '-L native=/usr/lib/aarch64-linux-gnu -L native=/usr/lib',
+    CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS: `-L native=/usr/lib/aarch64-linux-gnu -L native=/usr/lib ${shlib}`,
   });
   const fedora = (dir) => dir === '/usr/lib64' || dir === '/usr/lib';
   assert.deepEqual(linuxSystemLibraryRustflags('x86_64-unknown-linux-gnu', {}, fedora), {
-    CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: '-L native=/usr/lib64 -L native=/usr/lib',
+    CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: `-L native=/usr/lib64 -L native=/usr/lib ${shlib}`,
   });
 });
