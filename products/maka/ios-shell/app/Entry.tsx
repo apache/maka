@@ -830,6 +830,13 @@ function App() {
       return;
     }
 
+    // Clear offline preview placeholders as soon as a real Agent Host connects.
+    messages.set([]);
+    permissions.set([]);
+    questions.set([]);
+    diffLines.set([]);
+    diffTruncatedNotice.set(null);
+
     agentListProjects().then(
       (list) => {
         if (!isHostStillCurrent(gen, epoch)) return;
@@ -849,6 +856,11 @@ function App() {
         if (!isHostStillCurrent(gen, epoch)) return;
         const list = page.sessions ?? [];
         sessions.set(list);
+        // When already on the chat route with no session selected (e.g. right after
+        // pairing), immediately open the latest real session instead of an empty shell.
+        if (route() === 'chat' && !drawerOpen() && activeSession() === null && list.length > 0) {
+          openAgentSession(list[0]);
+        }
       },
       (err: Error) => {
         if (isHostStillCurrent(gen, epoch)) {
@@ -1096,8 +1108,8 @@ function App() {
         ticketUri.set('');
         parsedTicket.set(null);
         statusBanner.set('已连接 ' + (res.state.active?.hostName ?? '远端 Host'));
-        syncConnectedAgentHost(res.state);
         route.set('chat');
+        syncConnectedAgentHost(res.state);
       },
       (err: Error) => {
         pairingError.set(err.message);
@@ -1363,30 +1375,55 @@ function App() {
 
     const sess = activeSession();
     const active = hostState().active;
-    if (sess && active && hasAgentEndpoint(active)) {
+    if (active && hasAgentEndpoint(active)) {
       const gen = hostSyncGen;
       const epoch = active.epoch;
-      const sGen = sessionSyncGen;
-      const sessionId = sess.id;
       const delivery = defaultDelivery();
-      agentSend(sessionId, content, delivery).then(
-        (res) => {
-          if (!isSessionStillCurrent(gen, epoch, sGen, sessionId)) return;
-          if (res.kind === 'queued') {
-            queuedMessages.set([...queuedMessages(), content]);
-          } else if (res.kind === 'started' && res.runId) {
-            activeRunId.set(res.runId);
-          } else if (res.kind === 'rejected') {
-            statusBanner.set('消息被 Host 拒绝: ' + (res.reason ?? 'unknown'));
-          }
-          refreshSessionTranscript(sessionId, false, gen, epoch, sGen);
-        },
-        (err: Error) => {
-          if (isSessionStillCurrent(gen, epoch, sGen, sessionId)) {
-            statusBanner.set('发送失败: ' + err.message);
-          }
-        },
-      );
+
+      const dispatchToSession = (targetSessionId: string, targetSGen: number) => {
+        agentSend(targetSessionId, content, delivery).then(
+          (res) => {
+            if (!isSessionStillCurrent(gen, epoch, targetSGen, targetSessionId)) return;
+            if (res.kind === 'queued') {
+              queuedMessages.set([...queuedMessages(), content]);
+            } else if (res.kind === 'started' && res.runId) {
+              activeRunId.set(res.runId);
+            } else if (res.kind === 'rejected') {
+              const reasonText =
+                typeof res.reason === 'string'
+                  ? res.reason
+                  : JSON.stringify(res.reason ?? 'unknown');
+              statusBanner.set('消息被 Host 拒绝: ' + reasonText);
+            }
+            refreshSessionTranscript(targetSessionId, false, gen, epoch, targetSGen);
+          },
+          (err: Error) => {
+            if (isSessionStillCurrent(gen, epoch, targetSGen, targetSessionId)) {
+              statusBanner.set('发送失败: ' + err.message);
+            }
+          },
+        );
+      };
+
+      if (sess) {
+        dispatchToSession(sess.id, sessionSyncGen);
+      } else {
+        const wsPath = directoryRoots()[0]?.path ?? '~';
+        const autoTitle = content.replace(/\s+/g, ' ').slice(0, 28) || '新会话';
+        agentCreateSession(autoTitle, 'agent', wsPath).then(
+          (created) => {
+            if (!isHostStillCurrent(gen, epoch)) return;
+            sessions.set([created, ...sessions().filter((s) => s.id !== created.id)]);
+            openAgentSession(created);
+            dispatchToSession(created.id, sessionSyncGen);
+          },
+          (err: Error) => {
+            if (isHostStillCurrent(gen, epoch)) {
+              statusBanner.set('自动创建会话失败: ' + err.message);
+            }
+          },
+        );
+      }
       return;
     }
 

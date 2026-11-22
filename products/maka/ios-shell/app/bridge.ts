@@ -554,12 +554,16 @@ export async function agentListDirectoryRoots(): Promise<{ name: string; path: s
   return page && page.kind === 'roots' && Array.isArray(page.roots) ? page.roots : [];
 }
 
-export function agentCreateSession(
+export async function agentCreateSession(
   title: string,
   kind: 'agent' | 'room',
   workspacePath: string,
 ): Promise<AgentSession> {
-  return hostMutate<AgentSession>('agent', 'create', {
+  const res = await hostMutate<
+    | { kind: 'created'; session: AgentSession }
+    | { kind: 'rejected'; reason: unknown }
+    | AgentSession
+  >('agent', 'create', {
     incognito: false,
     kind,
     presetId: null,
@@ -570,6 +574,16 @@ export function agentCreateSession(
     labels: [],
     workspace: { kind: 'directory', path: workspacePath },
   });
+  if (res && typeof res === 'object' && 'kind' in res) {
+    if (res.kind === 'created' && 'session' in res && res.session) {
+      return res.session;
+    }
+    if (res.kind === 'rejected') {
+      const reason = 'reason' in res ? res.reason : 'unknown';
+      throw new Error(typeof reason === 'string' ? reason : JSON.stringify(reason));
+    }
+  }
+  return res as AgentSession;
 }
 
 export function agentOpenBot(): Promise<{ kind: string; sessionId?: string }> {
