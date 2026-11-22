@@ -423,16 +423,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn update_prepare_migrates_installed_v1_deployment_atomically_and_strict_reader_reopens()
+    async fn update_prepare_migrates_installed_v1_deployment_atomically_and_v1_scheduler_hands_off()
     {
+        const V1_MIGRATION: Migration = Migration {
+            version: 1,
+            description: "deployment",
+            sql: include_str!("../../migrations/deployment/0001_deployment.sql"),
+            configure: None,
+            data: None,
+        };
+        static V1: &[Migration] = &[V1_MIGRATION];
         static UPGRADED: &[Migration] = &[
-            Migration {
-                version: 1,
-                description: "deployment",
-                sql: include_str!("../../migrations/deployment/0001_deployment.sql"),
-                configure: None,
-                data: None,
-            },
+            V1_MIGRATION,
             // Intentionally omit PRAGMA user_version = 2; store::migrate_with must update it.
             Migration::sql(
                 2,
@@ -463,9 +465,15 @@ mod tests {
             project_directory_roots: None,
             admission: super::super::Admission::Active,
         };
-        store::install(&directory, lease.clone(), Arc::new(owner), current.clone())
-            .await
-            .unwrap();
+        store::install_with(
+            &directory,
+            lease.clone(),
+            Arc::new(owner),
+            current.clone(),
+            V1,
+        )
+        .await
+        .unwrap();
 
         let mut next = current.clone();
         next.config_revision += 1;
@@ -495,13 +503,13 @@ mod tests {
 
         // If prepare fails while writing pending intent, both the v2 schema migration
         // and PRAGMA user_version must roll back so the v1 executor is not stranded.
-        let writer = store::open_writer(&directory, lease.clone(), None)
+        let writer = store::open_writer_with(&directory, lease.clone(), None, V1)
             .await
             .unwrap();
         writer
             .run(|connection| {
                 connection.execute_batch(
-                    "CREATE TRIGGER reject_prepare BEFORE INSERT ON deployment_update                      BEGIN SELECT RAISE(ABORT, 'prepare failed'); END;",
+                    "CREATE TRIGGER reject_prepare BEFORE INSERT ON deployment_update BEGIN SELECT RAISE(ABORT, 'prepare failed'); END;",
                 )?;
                 Ok(())
             })
@@ -519,14 +527,15 @@ mod tests {
             .await
             .is_err()
         );
-        let store::Installation::Installed(rolled_back) = store::read(&directory).await.unwrap()
+        let store::Installation::Installed(rolled_back) =
+            store::read_with(&directory, V1, false).await.unwrap()
         else {
             panic!("failed prepare must leave the original v1 deployment readable");
         };
         assert_eq!(rolled_back, current);
 
         // Remove the trigger and run the real prepare path on v1 -> v2.
-        let writer = store::open_writer(&directory, lease.clone(), None)
+        let writer = store::open_writer_with(&directory, lease.clone(), None, V1)
             .await
             .unwrap();
         writer
@@ -559,7 +568,94 @@ mod tests {
             read_with(&directory, lease.clone(), UPGRADED)
                 .await
                 .unwrap(),
-            (current, Some(target))
+            (current.clone(), Some(target.clone()))
+        );
+
+        // If v2 returned ActiveTasks, the v1 scheduled auto-updater must still be able
+        // to locate the validated v2 pending executable and hand off recovery instead of
+        // failing on the newer schema, while v2 takes over strict local reconciliation.
+        assert_eq!(
+            policy::worker::resolve_dispatch_with(
+                &directory,
+                &current.root_id,
+                &current.executable,
+                V1,
+            )
+            .await
+            .unwrap(),
+            policy::worker::Dispatch::Handoff {
+                executable: target.deployment.executable.clone(),
+                root_id: current.root_id.clone(),
+            }
+        );
+        assert_eq!(
+            policy::worker::resolve_dispatch_with(
+                &directory,
+                &current.root_id,
+                &target.deployment.executable,
+                UPGRADED,
+            )
+            .await
+            .unwrap(),
+            policy::worker::Dispatch::Local {
+                current: current.clone(),
+                pending: Some(target.clone()),
+            }
+        );
+
+        // Handoff tolerates forward-added fields in v2+ pending JSON, but still rejects
+        // stores whose known historical prefix checksum was tampered with.
+        let writer = store::open_writer_with(&directory, lease.clone(), None, UPGRADED)
+            .await
+            .unwrap();
+        writer
+            .run(|connection| {
+                connection.execute(
+                    "UPDATE deployment_update SET target = json_set(target, '$.futureFlag', json('true')) WHERE singleton = 1",
+                    [],
+                )?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        writer.close().await.unwrap();
+        assert_eq!(
+            policy::worker::resolve_dispatch_with(
+                &directory,
+                &current.root_id,
+                &current.executable,
+                V1,
+            )
+            .await
+            .unwrap(),
+            policy::worker::Dispatch::Handoff {
+                executable: target.deployment.executable,
+                root_id: current.root_id.clone(),
+            }
+        );
+
+        let writer = store::open_writer_with(&directory, lease, None, UPGRADED)
+            .await
+            .unwrap();
+        writer
+            .run(|connection| {
+                connection.execute_batch(
+                    "UPDATE _sqlx_migrations SET checksum = X'00' WHERE version = 1;",
+                )?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        writer.close().await.unwrap();
+        assert!(
+            policy::worker::resolve_dispatch_with(
+                &directory,
+                &current.root_id,
+                &current.executable,
+                V1,
+            )
+            .await
+            .is_err()
         );
     }
 }

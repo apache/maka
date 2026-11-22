@@ -19,14 +19,91 @@
 
 use super::{Policy, Record, now_ms, read, write};
 use crate::{
-    deployment::{self, Admission, Deployment, RootId, directory, query, store, update::Action},
+    deployment::{
+        self, Admission, Deployment, RootId, directory, query, store, update::Action, updates,
+    },
     distribution,
 };
 use clap::Args;
-use maka_event_log::root::FileLease;
+use maka_event_log::{migration::Migration, root::FileLease};
 use maka_host_runtime::HostError;
 use semver::Version;
-use std::{path::Path, process::Stdio, sync::Arc};
+use std::{
+    path::{Path, PathBuf},
+    process::Stdio,
+    sync::Arc,
+};
+
+#[derive(Debug, PartialEq, Eq)]
+pub(in crate::deployment) enum Dispatch {
+    Skip,
+    Handoff {
+        executable: PathBuf,
+        root_id: String,
+    },
+    Local {
+        current: Deployment,
+        pending: Option<updates::Pending>,
+    },
+}
+
+pub(in crate::deployment) async fn resolve_dispatch_with(
+    directory: &Path,
+    root_id: &str,
+    current_exe: &Path,
+    migrations: &'static [Migration],
+) -> Result<Dispatch, HostError> {
+    match store::read_handoff_with(directory, migrations).await? {
+        store::Handoff::Current(store::Installation::Missing | store::Installation::Incomplete) => {
+            Ok(Dispatch::Skip)
+        }
+        store::Handoff::Current(store::Installation::Installed(current)) => {
+            current.validate_record(directory)?;
+            if current.root_id != root_id {
+                return Err("deployment root identity differs".into());
+            }
+            if current.admission != Admission::Active {
+                return Ok(Dispatch::Skip);
+            }
+            // Pending can already carry a newer schema while Active still serves
+            // old code. Select its executor before any policy writer or migration.
+            let pending = query::pending(directory, &current).await?;
+            let executor = pending
+                .as_ref()
+                .map(|pending| &pending.deployment)
+                .unwrap_or(&current)
+                .executable
+                .clone();
+            if current_exe != executor {
+                return Ok(Dispatch::Handoff {
+                    executable: executor,
+                    root_id: current.root_id,
+                });
+            }
+            Ok(Dispatch::Local { current, pending })
+        }
+        store::Handoff::Newer { active, pending } => {
+            if active.root_id != root_id {
+                return Err("deployment root identity differs".into());
+            }
+            if active.admission != Admission::Active {
+                return Ok(Dispatch::Skip);
+            }
+            let executor = pending
+                .as_ref()
+                .map(|pending| &pending.executable)
+                .unwrap_or(&active.executable)
+                .clone();
+            if current_exe == executor {
+                return Err("deployment schema is newer than its selected executor".into());
+            }
+            Ok(Dispatch::Handoff {
+                executable: executor,
+                root_id: active.root_id,
+            })
+        }
+    }
+}
 
 #[derive(Args)]
 pub(crate) struct Reconcile {
@@ -38,37 +115,34 @@ impl Reconcile {
     pub async fn run(self) -> Result<(), HostError> {
         crate::operation::check()?;
         let directory = directory(&self.root_id.0)?;
-        let store::Installation::Installed(current) = store::read(&directory).await? else {
-            return Ok(());
+        let current_exe = std::env::current_exe()?.canonicalize()?;
+        let (current, pending) = match resolve_dispatch_with(
+            &directory,
+            &self.root_id.0,
+            &current_exe,
+            store::MIGRATIONS,
+        )
+        .await?
+        {
+            Dispatch::Skip => return Ok(()),
+            Dispatch::Handoff {
+                executable,
+                root_id,
+            } => {
+                return execute(
+                    &executable,
+                    &[
+                        "host".into(),
+                        "auto-update".into(),
+                        "--root-id".into(),
+                        root_id,
+                    ],
+                )
+                .await;
+            }
+            Dispatch::Local { current, pending } => (current, pending),
         };
-        current.validate_record(&directory)?;
-        if current.root_id != self.root_id.0 {
-            return Err("deployment root identity differs".into());
-        }
-        if current.admission != Admission::Active {
-            return Ok(());
-        }
-        // Pending can already carry a newer schema while Active still serves
-        // old code. Select its executor before any policy writer or migration.
-        let pending = query::pending(&directory, &current).await?;
-        let executor = pending
-            .as_ref()
-            .map(|pending| &pending.deployment)
-            .unwrap_or(&current)
-            .executable
-            .clone();
-        if std::env::current_exe()?.canonicalize()? != executor {
-            return execute(
-                &executor,
-                &[
-                    "host".into(),
-                    "auto-update".into(),
-                    "--root-id".into(),
-                    current.root_id,
-                ],
-            )
-            .await;
-        }
+        let executor = current_exe;
         let lease = Arc::new(FileLease::acquire(&directory.join("executor.lock"))?);
         let previous = read(&directory).await?;
         if previous.policy == Policy::Manual || previous.next_check_ms > now_ms()? {
@@ -82,7 +156,9 @@ impl Reconcile {
         // Neither the executor nor Root is held across any network request.
         let result = perform(&current, pending, &claim).await;
         let lease = Arc::new(FileLease::acquire(&directory.join("executor.lock"))?);
-        let store::Installation::Installed(active) = store::read(&directory).await? else {
+        let store::Handoff::Current(store::Installation::Installed(active)) =
+            store::read_handoff(&directory).await?
+        else {
             return Ok(());
         };
         // The new executable may have migrated policy storage. Its next
