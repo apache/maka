@@ -1,0 +1,109 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ggbdpq <ggbdpq@gmail.com>
+Date: Sat, 21 Nov 2026 17:10:53 +0800
+Subject: [PATCH] gateway: a compaction on /v1/responses goes on the model set
+ for it (#7398)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+T3 Code's magpie · Codex instance points Codex at /v1 (t3CodexArgs), not
+CodexPath, so its compactions arrive on /v1/responses with a
+compaction_trigger. There the summary magpie makes stayed on the thread's
+model whatever codexCompactModel said: a long agy-cli thread sent its
+whole history to the plugin, whose single-prompt cap left the summary a
+few last messages, and the conversation resumed amnesiac. One of
+magpie's models compacts on the model set for it now, as on CodexPath;
+one of Codex's own models stays where it is, as there too.
+
+- TestCodexCompactOnV1OnItsOwnModel: the compaction magpie makes on
+  /v1/responses is asked of the model set for Codex's compactions when
+  one is set, of the session's own when none is; red on the old code,
+  the ask staying on the session's model ("set: 200; session 2, other 0").
+
+Run: go test -tags nogui -count=1 -run Compact ./internal/gateway — ok.
+---
+ internal/gateway/codex_compact_model_test.go | 34 ++++++++++++++++++++
+ internal/gateway/gateway.go                  | 19 ++++++++---
+ 2 files changed, 49 insertions(+), 4 deletions(-)
+
+diff --git a/internal/gateway/codex_compact_model_test.go b/internal/gateway/codex_compact_model_test.go
+index 8124851cf..18fe7e56e 100644
+--- a/internal/gateway/codex_compact_model_test.go
++++ b/internal/gateway/codex_compact_model_test.go
+@@ -60,6 +60,40 @@ func TestCodexCompactOnItsOwnModel(t *testing.T) {
+ 	}
+ }
+ 
++// T3 Code's magpie · Codex instance points Codex at /v1 (t3CodexArgs), not
++// CodexPath, so its compactions arrive on /v1/responses with a
++// compaction_trigger: a compaction magpie makes there goes on the model
++// set for it, as one on CodexPath does (#7398 — left on the thread's
++// model, a long agy-cli thread's whole history went to the plugin, whose
++// single-prompt cap left the summary a few last messages).
++func TestCodexCompactOnV1OnItsOwnModel(t *testing.T) {
++	setup(t, provider.Responses, &fake{t: t})
++	sessionURL, session := summaryUpstream(t)
++	otherURL, other := summaryUpstream(t)
++	for _, p := range []provider.Provider{
++		{ID: "fake", Name: "Fake", Key: "k", Models: []string{"m1"}, Responses: sessionURL},
++		{ID: "cheap", Name: "Cheap", Key: "k", Models: []string{"m2"}, Responses: otherURL},
++	} {
++		if err := provider.Save(p); err != nil {
++			t.Fatal(err)
++		}
++	}
++	code, body := post(t, "/v1/responses", systemCompaction)
++	if code != 200 || session() != 1 || other() != 0 {
++		t.Fatalf("unset: %d %s; session %d, other %d", code, body, session(), other())
++	}
++	if err := provider.SetCodexCompactModel("cheap/m2"); err != nil {
++		t.Fatal(err)
++	}
++	code, body = post(t, "/v1/responses", systemCompaction)
++	if code != 200 || session() != 1 || other() != 1 {
++		t.Fatalf("set: %d %s; session %d, other %d", code, body, session(), other())
++	}
++	if sum := compactedText(t, body); !strings.Contains(sum, "SUMMARY") {
++		t.Errorf("summary %q", sum)
++	}
++}
++
+ // A compaction a ChatGPT account seals, or one put on such a model, is
+ // left where it is: only the account that wrote the summary reads it.
+ func TestCodexCompactToLeavesNative(t *testing.T) {
+diff --git a/internal/gateway/gateway.go b/internal/gateway/gateway.go
+index 2a9186956..26f5bc810 100644
+--- a/internal/gateway/gateway.go
++++ b/internal/gateway/gateway.go
+@@ -2589,12 +2589,23 @@ func (s *Server) handle(from provider.Protocol) http.HandlerFunc {
+ 			}
+ 			// Codex compacts remotely, a compaction_trigger here, on a
+ 			// provider table named "OpenAI" (CC Switch's relay tables,
+-			// which magpie points here, #1301): the summary is magpie's to
+-			// make, as on CodexPath, and magpie's summaries go back as text;
+-			// a provider set to compact natively is asked Codex's own (#1099)
++			// which magpie points here, #1301, and T3 Code's magpie · Codex
++			// instance, #7398): the summary is magpie's to make, as on
++			// CodexPath, and magpie's summaries go back as text; a provider
++			// set to compact natively is asked Codex's own (#1099). One of
++			// magpie's models compacts on the model set for Codex's
++			// compactions, as on CodexPath — left on the thread's model, a
++			// long agy-cli thread's whole history went to the plugin, whose
++			// single-prompt cap left the summary a few last messages
+ 			if bodyHas(body, `"compaction`) {
++				native := s.nativeCompactionFor(model)
+ 				var compact bool
+-				if body, compact = codexInputAs(body, true, s.nativeCompactionFor(modelOf(body))); compact {
++				if body, compact = codexInputAs(body, true, native); compact {
++					if strings.Contains(model, "/") {
++						if to := codexCompactTo(r, model, native, s.nativeCompactionFor); to != "" {
++							body = withModel(body, to)
++						}
++					}
+ 					s.codexCompact(w, r, body)
+ 					return
+ 				}
+-- 
+2.50.1 (Apple Git-155)
+
