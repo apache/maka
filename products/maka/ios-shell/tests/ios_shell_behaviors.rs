@@ -1137,36 +1137,113 @@ fn ios_shell_drives_live_agent_host_with_real_agent_contract_schemas() {
                             .await
                             .map_err(|e| HandlerError::from(e.to_string()))?;
 
-                        // 2. Real DeliveryPage::Preview with PreviewPage::Cut
-                        let preview_page = serde_json::to_value(&DeliveryPage::Preview {
-                            page: PreviewPage::Cut {
-                                host_epoch: "epoch-1".into(),
-                                run_id: active_run,
-                                turn_id: "t-1".into(),
-                                step_id,
-                                attempt_id,
-                                revision: 1,
-                                depends_on: 0,
-                                first: true,
-                                last: true,
-                                parts: vec![PreviewPart {
-                                    ordinal: Some(0),
-                                    message_id: "m-preview-1".into(),
-                                    provider_part_id: Some("p-1".into()),
-                                    started_at: 1_795_300_000_000.0,
-                                    field: PreviewField::Text {
-                                        text_kind: ContentKind::Text,
-                                        final_answer: false,
-                                    },
-                                    offset: 0,
-                                    total_bytes: 60,
-                                    text: "实时流式预览：远端 QUIC 握手校验已就绪。".into(),
-                                }],
-                            },
-                        })
-                        .unwrap();
+                        // 2. Real incremental multi-chunk DeliveryPage::Preview (thinking + body UTF-8 byte offsets)
+                        let think_a = "正在推演 ";
+                        let think_b = "RPK 链路";
+                        let think_total = (think_a.len() + think_b.len()) as u64;
+                        let body_a = "实时流式预览：";
+                        let body_b = "远端 QUIC 握手校验已就绪。";
+                        let body_total = (body_a.len() + body_b.len()) as u64;
+
+                        let emit_cut = |rev: u64,
+                                        ordinal: u64,
+                                        msg_id: &str,
+                                        text_kind: ContentKind,
+                                        offset: u64,
+                                        total_bytes: u64,
+                                        text: &str| {
+                            serde_json::to_value(&DeliveryPage::Preview {
+                                page: PreviewPage::Cut {
+                                    host_epoch: "epoch-1".into(),
+                                    run_id: active_run,
+                                    turn_id: "t-1".into(),
+                                    step_id,
+                                    attempt_id,
+                                    revision: rev,
+                                    depends_on: 0,
+                                    first: true,
+                                    last: true,
+                                    parts: vec![PreviewPart {
+                                        ordinal: Some(ordinal),
+                                        message_id: msg_id.into(),
+                                        provider_part_id: Some("p-1".into()),
+                                        started_at: 1_795_300_000_000.0,
+                                        field: PreviewField::Text {
+                                            text_kind,
+                                            final_answer: false,
+                                        },
+                                        offset,
+                                        total_bytes,
+                                        text: text.into(),
+                                    }],
+                                },
+                            })
+                            .unwrap()
+                        };
+
                         context
-                            .emit(preview_page)
+                            .emit(emit_cut(
+                                1,
+                                0,
+                                "m-think-1",
+                                ContentKind::Thinking,
+                                0,
+                                think_total,
+                                think_a,
+                            ))
+                            .await
+                            .map_err(|e| HandlerError::from(e.to_string()))?;
+                        // Mid-stream transcript_changed (e.g. user prompt committed) must NOT wipe active preview.
+                        context
+                            .emit(
+                                serde_json::to_value(&DeliveryPage::Events {
+                                    through: 12,
+                                    next_after: 12,
+                                    events: vec![Delivery {
+                                        sequence: 12,
+                                        run_id: active_run,
+                                        turn_id: "t-1".into(),
+                                        fact: DeliveryFact::TranscriptChanged,
+                                    }],
+                                })
+                                .unwrap(),
+                            )
+                            .await
+                            .map_err(|e| HandlerError::from(e.to_string()))?;
+                        context
+                            .emit(emit_cut(
+                                2,
+                                0,
+                                "m-think-1",
+                                ContentKind::Thinking,
+                                think_a.len() as u64,
+                                think_total,
+                                think_b,
+                            ))
+                            .await
+                            .map_err(|e| HandlerError::from(e.to_string()))?;
+                        context
+                            .emit(emit_cut(
+                                3,
+                                1,
+                                "m-preview-1",
+                                ContentKind::Text,
+                                0,
+                                body_total,
+                                body_a,
+                            ))
+                            .await
+                            .map_err(|e| HandlerError::from(e.to_string()))?;
+                        context
+                            .emit(emit_cut(
+                                4,
+                                1,
+                                "m-preview-1",
+                                ContentKind::Text,
+                                body_a.len() as u64,
+                                body_total,
+                                body_b,
+                            ))
                             .await
                             .map_err(|e| HandlerError::from(e.to_string()))?;
 
@@ -1632,6 +1709,7 @@ fn ios_shell_drives_live_agent_host_with_real_agent_contract_schemas() {
     app.press("label:Session 修复 QUIC 握手超时").unwrap();
     app.wait_for("label:Stop active run").unwrap();
     app.wait_for("text:/已定位到 SPKI 校验分支/").unwrap();
+    app.wait_for("text:/正在推演 RPK 链路/").unwrap();
     app.wait_for("text:/实时流式预览：远端 QUIC 握手校验已就绪/")
         .unwrap();
     app.wait_for("text:/已排队 1 条消息: 顺手跑一下 clippy/")
@@ -2436,6 +2514,7 @@ fn session_switch_fences_stale_send_and_renders_room_session_author() {
                                     through: 2,
                                     before: None,
                                     after: None,
+                                    participants: vec![],
                                     items: vec![
                                         RoomMessage {
                                             id: "rm-1".into(),
@@ -2449,6 +2528,11 @@ fn session_switch_fences_stale_send_and_renders_room_session_author() {
                                             reply_to: None,
                                             mentions: vec!["sess-alpha".into()],
                                             deliveries: vec![],
+                                            edited_at: None,
+                                            deleted_at: None,
+                                            reactions: vec![],
+                                            pinned: false,
+                                            delivery_states: vec![],
                                         },
                                         RoomMessage {
                                             id: "rm-2".into(),
@@ -2468,6 +2552,11 @@ fn session_switch_fences_stale_send_and_renders_room_session_author() {
                                             reply_to: Some("rm-1".into()),
                                             mentions: vec![],
                                             deliveries: vec![],
+                                            edited_at: None,
+                                            deleted_at: None,
+                                            reactions: vec![],
+                                            pinned: false,
+                                            delivery_states: vec![],
                                         },
                                     ],
                                 },

@@ -17,7 +17,17 @@
  * under the License.
  */
 
-import { cleanup, mount, safeAreaInsets, Scroll, signal, Text, UrlScheme, View } from 'nsh';
+import {
+  cleanup,
+  mount,
+  safeAreaInsets,
+  Scroll,
+  signal,
+  Text,
+  UrlScheme,
+  View,
+  type ScrollRef,
+} from 'nsh';
 import { Input } from 'nsh/base';
 import {
   ApplePermissionCard,
@@ -88,6 +98,11 @@ import {
   ReactionPillsRow,
   type ReactionEntry,
 } from './Reactions';
+import {
+  LivePreviewAccumulator,
+  type LivePreviewSnapshot,
+  type LiveToolPreview,
+} from './streaming';
 import { palette } from './theme';
 
 type Route = 'home' | 'chat' | 'pairing' | 'diff' | 'automations' | 'settings' | 'new_session';
@@ -518,6 +533,10 @@ function App() {
   const activeSession = signal<AgentSession | null>(null);
   const activeRunId = signal<string | null>(null);
   const streamingText = signal<string>('');
+  const streamingThinking = signal<string>('');
+  const streamingThinkingExpanded = signal<boolean>(true);
+  const streamingTools = signal<LiveToolPreview[]>([]);
+  const awaitingReply = signal<boolean>(false);
   const schedules = signal<AgentScheduledSummary[]>([]);
   const schedulesLoading = signal(false);
 
@@ -560,6 +579,27 @@ function App() {
   let lastHostEpoch: string | null = null;
   let catalogSub: SubSlot | null = null;
   let watchSub: SubSlot | null = null;
+  let chatScroll: ScrollRef | null = null;
+  let stickToBottom = true;
+  const previewAccumulator = new LivePreviewAccumulator();
+
+  const applyLivePreview = (snap: LivePreviewSnapshot) => {
+    streamGen += 1;
+    streamingThinking.set(snap.thinking);
+    streamingText.set(snap.body);
+    streamingTools.set(snap.tools);
+    if (snap.thinking.length > 0 || snap.body.length > 0 || snap.tools.length > 0) {
+      awaitingReply.set(false);
+    }
+    if (stickToBottom) {
+      chatScroll?.scrollToEnd({ animated: false });
+    }
+  };
+
+  const resetLivePreview = () => {
+    applyLivePreview(previewAccumulator.reset());
+    awaitingReply.set(false);
+  };
 
   const isHostStillCurrent = (gen: number, epoch: string) =>
     gen === hostSyncGen && hostState().active?.epoch === epoch;
@@ -638,8 +678,16 @@ function App() {
       (page) => {
         if (!isSessionStillCurrent(gen, epoch, sGen, sessionId)) return;
         messages.set(mapHistoryPageToMessages(page, sessions()));
-        if (clearStream && streamGen === streamGenAtStart) {
-          streamingText.set('');
+        if (clearStream) {
+          if (streamGen === streamGenAtStart) {
+            resetLivePreview();
+          } else {
+            const handoff = previewAccumulator.completeHandoffIfPending();
+            if (handoff) applyLivePreview(handoff);
+          }
+        }
+        if (stickToBottom) {
+          chatScroll?.scrollToEnd({ animated: false });
         }
       },
       (err: Error) => {
@@ -751,11 +799,12 @@ function App() {
 
     stopWatchSubscription();
     busy.set(false);
+    stickToBottom = true;
     activeSession.set(session);
     activeRunId.set(null);
     watchCursor = 0;
-    streamGen += 1;
-    streamingText.set('');
+    streamingThinkingExpanded.set(true);
+    resetLivePreview();
     queuedMessages.set([]);
     messages.set([]);
     permissions.set([]);
@@ -806,7 +855,7 @@ function App() {
       activeSession.set(null);
       activeRunId.set(null);
       queuedMessages.set([]);
-      streamingText.set('');
+      resetLivePreview();
       return;
     }
     if (lastHostEpoch === active.epoch) return;
@@ -824,7 +873,7 @@ function App() {
     activeSession.set(null);
     activeRunId.set(null);
     queuedMessages.set([]);
-    streamingText.set('');
+    resetLivePreview();
 
     if (!hasAgentEndpoint(active)) {
       return;
@@ -965,24 +1014,30 @@ function App() {
         if (!fact) continue;
         if (fact.kind === 'opened' || fact.kind === 'executor_started') {
           activeRunId.set(delivery.runId);
+          awaitingReply.set(true);
         } else if (fact.kind === 'delta' && typeof fact.text === 'string') {
           activeRunId.set(delivery.runId);
-          streamGen += 1;
-          streamingText.set(streamingText() + fact.text);
+          applyLivePreview(previewAccumulator.applyDelta(delivery.runId, fact.text));
         } else if (fact.kind === 'ended') {
           activeRunId.set(null);
+          awaitingReply.set(false);
           needRefresh = true;
           clearStreamOnRefresh = true;
         } else if (
           fact.kind === 'transcript_changed' ||
           fact.kind === 'part_committed' ||
+          fact.kind === 'step_ended' ||
           fact.kind === 'executor_text_changed' ||
           fact.kind === 'tool_dispatched' ||
           fact.kind === 'tool_settled'
         ) {
           needRefresh = true;
-          if (fact.kind === 'transcript_changed') {
-            clearStreamOnRefresh = true;
+          if (fact.kind === 'part_committed' || fact.kind === 'step_ended') {
+            // Only clear live preview once empty/handoff arrives; do NOT wipe mid-stream
+            // when the user's own message commits via transcript_changed.
+            if (previewAccumulator.snapshot().awaitingHistoryHandoff) {
+              clearStreamOnRefresh = true;
+            }
           }
         }
       }
@@ -994,19 +1049,13 @@ function App() {
 
     if (page.kind === 'preview') {
       const p = page.page;
-      if (p.kind === 'empty') {
-        streamGen += 1;
-        streamingText.set('');
-      } else if (p.kind === 'cut') {
+      const snap = previewAccumulator.applyPreviewPage(p);
+      if (p.kind === 'cut') {
         activeRunId.set(p.runId);
-        const body = (p.parts ?? [])
-          .filter((part) => part.field?.kind === 'text' && part.field.textKind === 'text')
-          .map((part) => part.text)
-          .join('');
-        if (body.length > 0) {
-          streamGen += 1;
-          streamingText.set(body);
-        }
+        applyLivePreview(snap);
+      } else if (p.kind === 'empty') {
+        applyLivePreview(snap);
+        refreshSessionTranscript(sessionId, true, gen, epoch, sGen);
       }
       return;
     }
@@ -1381,14 +1430,30 @@ function App() {
       const delivery = defaultDelivery();
 
       const dispatchToSession = (targetSessionId: string, targetSGen: number) => {
+        const hadActiveRun = activeRunId() !== null;
+        stickToBottom = true;
+        messages.set([
+          ...messages(),
+          {
+            id: 'optimistic-' + String(Date.now()),
+            role: 'user',
+            text: content,
+            reactions: [],
+          },
+        ]);
+        awaitingReply.set(true);
+        chatScroll?.scrollToEnd({ animated: false });
         agentSend(targetSessionId, content, delivery).then(
           (res) => {
             if (!isSessionStillCurrent(gen, epoch, targetSGen, targetSessionId)) return;
             if (res.kind === 'queued') {
-              queuedMessages.set([...queuedMessages(), content]);
+              if (hadActiveRun) {
+                queuedMessages.set([...queuedMessages(), content]);
+              }
             } else if (res.kind === 'started' && res.runId) {
               activeRunId.set(res.runId);
             } else if (res.kind === 'rejected') {
+              awaitingReply.set(false);
               const reasonText =
                 typeof res.reason === 'string'
                   ? res.reason
@@ -1399,6 +1464,7 @@ function App() {
           },
           (err: Error) => {
             if (isSessionStillCurrent(gen, epoch, targetSGen, targetSessionId)) {
+              awaitingReply.set(false);
               statusBanner.set('发送失败: ' + err.message);
             }
           },
@@ -1692,142 +1758,286 @@ function App() {
             </View>
           </If>
 
-          <Scroll style={{ flex: 1 }} contentStyle={{ padding: 16, gap: 16, paddingBottom: 24 }}>
-            <If when={messages().length === 0 && streamingText().length === 0}>
-              <View style={{ paddingVertical: 32, alignItems: 'center', gap: 6 }}>
-                <Text style={{ fontSize: 15, fontWeight: '600', color: palette().ink }}>
-                  {chatTitle()}
-                </Text>
-                <Text style={{ fontSize: 13, color: palette().ink3 }}>
-                  发一条消息开始对话，Maka 会实时同步执行过程
-                </Text>
-              </View>
-            </If>
+          <Scroll
+            ref={(node) => {
+              chatScroll = node;
+            }}
+            style={{ flex: 1, minHeight: 0 }}
+            onScroll={(event) => {
+              stickToBottom = event.offset.y >= event.contentSize.height - event.size.height - 64;
+            }}
+            contentStyle={{ padding: 16, paddingBottom: 24 }}
+          >
+            <View
+              style={{ width: '100%', gap: 16 }}
+              onLayout={() => {
+                if (stickToBottom) chatScroll?.scrollToEnd({ animated: false });
+              }}
+            >
+              <If
+                when={
+                  messages().length === 0 &&
+                  streamingText().length === 0 &&
+                  streamingThinking().length === 0 &&
+                  !awaitingReply()
+                }
+              >
+                <View style={{ paddingVertical: 32, alignItems: 'center', gap: 6 }}>
+                  <Text style={{ fontSize: 15, fontWeight: '600', color: palette().ink }}>
+                    {chatTitle()}
+                  </Text>
+                  <Text style={{ fontSize: 13, color: palette().ink3 }}>
+                    发一条消息开始对话，Maka 会实时同步执行过程
+                  </Text>
+                </View>
+              </If>
 
-            <Each of={messages()} key={(m) => m.id}>
-              {(msg) => (
-                <View
-                  style={{
-                    alignItems: msg().role === 'user' ? 'flex-end' : 'flex-start',
-                    gap: 6,
-                  }}
-                >
-                  <If when={msg().role === 'user'}>
-                    <View
-                      role="button"
-                      accessibilityLabel={'Message ' + msg().id}
-                      onPress={() => activeReactionMsgId.set(msg().id)}
-                      style={{
-                        maxWidth: '84%',
-                        paddingHorizontal: 14,
-                        paddingVertical: 10,
-                        borderRadius: 18,
-                        backgroundColor: palette().userBubble,
-                      }}
-                    >
-                      <Text
-                        style={{ fontSize: 15.5, lineHeight: 22, color: palette().userBubbleText }}
-                      >
-                        {msg().text}
-                      </Text>
-                    </View>
-                  </If>
-
-                  <If when={msg().role === 'agent'}>
-                    <View style={{ width: '100%', gap: 6 }}>
-                      <If when={activeSession()?.kind === 'room'}>
-                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7 }}>
-                          <View
-                            style={{
-                              width: 20,
-                              height: 20,
-                              borderRadius: 5,
-                              backgroundColor: palette().surface2,
-                              borderWidth: 1,
-                              borderColor: palette().line,
-                              alignItems: 'center',
-                              justifyContent: 'center',
-                            }}
-                          >
-                            <Text style={{ fontSize: 10, fontWeight: '700', color: palette().ink }}>
-                              A
-                            </Text>
-                          </View>
-                          <Text
-                            style={{ fontSize: 12.5, fontWeight: '600', color: palette().ink2 }}
-                          >
-                            {msg().author ?? 'Maka'}
-                          </Text>
-                        </View>
-                      </If>
-
-                      <If when={!!msg().turnSummary && (msg().steps?.length ?? 0) > 0}>
-                        <TurnPanel
-                          id={msg().id}
-                          summary={() => msg().turnSummary ?? ''}
-                          steps={() => msg().steps ?? []}
-                          onOpenDiff={(p) => runOpenDiff(p)}
-                        />
-                      </If>
-
+              <Each of={messages()} key={(m) => m.id}>
+                {(msg) => (
+                  <View
+                    style={{
+                      alignItems: msg().role === 'user' ? 'flex-end' : 'flex-start',
+                      gap: 6,
+                    }}
+                  >
+                    <If when={msg().role === 'user'}>
                       <View
                         role="button"
-                        accessibilityLabel={'Agent message ' + msg().id}
+                        accessibilityLabel={'Message ' + msg().id}
                         onPress={() => activeReactionMsgId.set(msg().id)}
-                        style={{ gap: 4 }}
+                        style={{
+                          maxWidth: '84%',
+                          paddingHorizontal: 14,
+                          paddingVertical: 10,
+                          borderRadius: 18,
+                          backgroundColor: palette().userBubble,
+                        }}
                       >
-                        <Text style={{ fontSize: 15.5, lineHeight: 23.5, color: palette().ink }}>
+                        <Text
+                          style={{
+                            fontSize: 15.5,
+                            lineHeight: 22,
+                            color: palette().userBubbleText,
+                          }}
+                        >
                           {msg().text}
                         </Text>
                       </View>
-                    </View>
-                  </If>
+                    </If>
 
-                  <If when={activeReactionMsgId() === msg().id}>
-                    <ReactionPickerBar
-                      onPick={(emoji) => toggleReaction(msg().id, emoji)}
-                      onDismiss={() => activeReactionMsgId.set(null)}
+                    <If when={msg().role === 'agent'}>
+                      <View style={{ width: '100%', gap: 6 }}>
+                        <If when={activeSession()?.kind === 'room'}>
+                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7 }}>
+                            <View
+                              style={{
+                                width: 20,
+                                height: 20,
+                                borderRadius: 5,
+                                backgroundColor: palette().surface2,
+                                borderWidth: 1,
+                                borderColor: palette().line,
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                              }}
+                            >
+                              <Text
+                                style={{ fontSize: 10, fontWeight: '700', color: palette().ink }}
+                              >
+                                A
+                              </Text>
+                            </View>
+                            <Text
+                              style={{ fontSize: 12.5, fontWeight: '600', color: palette().ink2 }}
+                            >
+                              {msg().author ?? 'Maka'}
+                            </Text>
+                          </View>
+                        </If>
+
+                        <If when={!!msg().turnSummary && (msg().steps?.length ?? 0) > 0}>
+                          <TurnPanel
+                            id={msg().id}
+                            summary={() => msg().turnSummary ?? ''}
+                            steps={() => msg().steps ?? []}
+                            onOpenDiff={(p) => runOpenDiff(p)}
+                          />
+                        </If>
+
+                        <View
+                          role="button"
+                          accessibilityLabel={'Agent message ' + msg().id}
+                          onPress={() => activeReactionMsgId.set(msg().id)}
+                          style={{ gap: 4 }}
+                        >
+                          <Text style={{ fontSize: 15.5, lineHeight: 23.5, color: palette().ink }}>
+                            {msg().text}
+                          </Text>
+                        </View>
+                      </View>
+                    </If>
+
+                    <If when={activeReactionMsgId() === msg().id}>
+                      <ReactionPickerBar
+                        onPick={(emoji) => toggleReaction(msg().id, emoji)}
+                        onDismiss={() => activeReactionMsgId.set(null)}
+                      />
+                    </If>
+
+                    <ReactionPillsRow
+                      reactions={msg().reactions}
+                      onToggle={(emoji) => toggleReaction(msg().id, emoji)}
+                      onRetryWithNewIdea={() => {
+                        composerDraft.set('换一个更直接的思路重新处理');
+                      }}
                     />
-                  </If>
+                  </View>
+                )}
+              </Each>
 
-                  <ReactionPillsRow
-                    reactions={msg().reactions}
-                    onToggle={(emoji) => toggleReaction(msg().id, emoji)}
-                    onRetryWithNewIdea={() => {
-                      composerDraft.set('换一个更直接的思路重新处理');
+              <If
+                when={
+                  awaitingReply() &&
+                  streamingThinking().length === 0 &&
+                  streamingText().length === 0 &&
+                  streamingTools().length === 0
+                }
+              >
+                <View
+                  style={{
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    gap: 8,
+                    paddingVertical: 4,
+                  }}
+                >
+                  <View
+                    style={{
+                      width: 7,
+                      height: 7,
+                      borderRadius: 4,
+                      backgroundColor: palette().working,
                     }}
                   />
+                  <Text style={{ fontSize: 13, color: palette().ink3 }}>Maka 正在思考…</Text>
                 </View>
-              )}
-            </Each>
+              </If>
 
-            <If when={streamingText().length > 0}>
-              <View style={{ width: '100%', gap: 4 }}>
-                <Text style={{ fontSize: 15.5, lineHeight: 23.5, color: palette().ink }}>
-                  {streamingText()}
-                </Text>
-              </View>
-            </If>
+              <If when={streamingThinking().length > 0}>
+                <View
+                  style={{
+                    width: '100%',
+                    borderRadius: 14,
+                    backgroundColor: palette().surface,
+                    borderWidth: 1,
+                    borderColor: palette().line,
+                    paddingHorizontal: 12,
+                    paddingVertical: 10,
+                    gap: 6,
+                  }}
+                >
+                  <View
+                    role="button"
+                    accessibilityLabel="Toggle live thinking"
+                    onPress={() => streamingThinkingExpanded.set(!streamingThinkingExpanded())}
+                    style={{
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                    }}
+                  >
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7 }}>
+                      <View
+                        style={{
+                          width: 6,
+                          height: 6,
+                          borderRadius: 3,
+                          backgroundColor: palette().working,
+                        }}
+                      />
+                      <Text style={{ fontSize: 12.5, fontWeight: '600', color: palette().ink2 }}>
+                        {streamingText().length > 0 ? '思考过程' : '正在思考…'}
+                      </Text>
+                    </View>
+                    <Text style={{ fontSize: 11.5, color: palette().ink3 }}>
+                      {streamingThinkingExpanded() ? '收起 ▾' : '展开 ▸'}
+                    </Text>
+                  </View>
+                  <If when={streamingThinkingExpanded()}>
+                    <Text style={{ fontSize: 13, lineHeight: 19.5, color: palette().ink2 }}>
+                      {streamingThinking()}
+                    </Text>
+                  </If>
+                </View>
+              </If>
 
-            <Each of={permissions()} key={(p) => p.id}>
-              {(perm) => (
-                <ApplePermissionCard
-                  item={perm}
-                  busy={busy}
-                  onDecide={(action) => resolvePermission(perm(), action)}
-                />
-              )}
-            </Each>
+              <Each of={streamingTools()} key={(t) => t.toolUseId}>
+                {(tool) => (
+                  <View
+                    style={{
+                      width: '100%',
+                      borderRadius: 12,
+                      backgroundColor: palette().surface,
+                      borderWidth: 1,
+                      borderColor: palette().line,
+                      paddingHorizontal: 12,
+                      paddingVertical: 8,
+                      gap: 3,
+                    }}
+                  >
+                    <Text style={{ fontSize: 12.5, fontWeight: '600', color: palette().ink2 }}>
+                      {'准备调用工具 · ' + tool().name}
+                    </Text>
+                    <If when={tool().inputPreview.length > 0}>
+                      <Text style={{ fontSize: 12, color: palette().ink3 }}>
+                        {tool().inputPreview}
+                      </Text>
+                    </If>
+                  </View>
+                )}
+              </Each>
 
-            <Each of={questions()} key={(q) => q.id}>
-              {(q) => (
-                <AppleQuestionCard
-                  item={q}
-                  busy={busy}
-                  onSubmit={(answers) => submitQuestion(q(), answers)}
-                />
-              )}
-            </Each>
+              <If when={streamingText().length > 0}>
+                <View style={{ width: '100%', gap: 4 }}>
+                  <Text style={{ fontSize: 15.5, lineHeight: 23.5, color: palette().ink }}>
+                    {streamingText()}
+                  </Text>
+                  <If when={activeRunId() !== null}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                      <View
+                        style={{
+                          width: 6,
+                          height: 6,
+                          borderRadius: 3,
+                          backgroundColor: palette().working,
+                        }}
+                      />
+                      <Text style={{ fontSize: 11.5, color: palette().ink3 }}>正在输出…</Text>
+                    </View>
+                  </If>
+                </View>
+              </If>
+
+              <Each of={permissions()} key={(p) => p.id}>
+                {(perm) => (
+                  <ApplePermissionCard
+                    item={perm}
+                    busy={busy}
+                    onDecide={(action) => resolvePermission(perm(), action)}
+                  />
+                )}
+              </Each>
+
+              <Each of={questions()} key={(q) => q.id}>
+                {(q) => (
+                  <AppleQuestionCard
+                    item={q}
+                    busy={busy}
+                    onSubmit={(answers) => submitQuestion(q(), answers)}
+                  />
+                )}
+              </Each>
+            </View>
           </Scroll>
 
           <ReactionBurstLayer burst={burst} />
