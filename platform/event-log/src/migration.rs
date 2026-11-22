@@ -25,6 +25,7 @@ use sha2::{Digest, Sha384};
 use std::{collections::BTreeMap, time::Instant};
 
 pub type ConfigureConnection = fn(&Connection) -> Result<(), StoreError>;
+pub type MigrateData = fn(&Connection) -> Result<(), StoreError>;
 
 /// An immutable schema migration and its ledger identity.
 #[derive(Debug, Clone, Copy)]
@@ -37,6 +38,31 @@ pub struct Migration {
     pub sql: &'static str,
     /// Register functions required by this schema on every writer, including reopen.
     pub configure: Option<ConfigureConnection>,
+    /// Optional in-place Rust data rewrite executed inside the migration savepoint
+    /// right after `sql`, before the ledger entry is recorded.
+    pub data: Option<MigrateData>,
+}
+
+impl Migration {
+    pub const fn sql(version: i64, description: &'static str, sql: &'static str) -> Self {
+        Self {
+            version,
+            description,
+            sql,
+            configure: None,
+            data: None,
+        }
+    }
+
+    pub const fn with_configure(mut self, configure: ConfigureConnection) -> Self {
+        self.configure = Some(configure);
+        self
+    }
+
+    pub const fn with_data(mut self, data: MigrateData) -> Self {
+        self.data = Some(data);
+        self
+    }
 }
 
 /// Compute the SHA384 checksum recorded by the migration ledger.
@@ -126,6 +152,9 @@ fn apply(connection: &Connection, migrations: &[Migration]) -> Result<(), StoreE
         }
         let started = Instant::now();
         connection.execute_batch(migration.sql)?;
+        if let Some(data) = migration.data {
+            data(connection)?;
+        }
         let execution_time = started.elapsed().as_nanos() as i64;
         connection.execute(
             "INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time)
@@ -151,6 +180,7 @@ mod tests {
         description: "base",
         sql: "CREATE TABLE migrated(value INTEGER);",
         configure: None,
+        data: None,
     };
 
     fn migrated_database() -> Connection {
@@ -169,6 +199,7 @@ mod tests {
                 description: "populate",
                 sql: "INSERT INTO migrated VALUES (7);",
                 configure: None,
+                data: None,
             },
         ];
         run(&connection, &migrations).unwrap();
@@ -242,6 +273,7 @@ mod tests {
                     description: "broken",
                     sql: "INSERT INTO migrated VALUES(7); INSERT INTO absent VALUES(8);",
                     configure: None,
+                    data: None,
                 },
             ],
         )
@@ -263,5 +295,106 @@ mod tests {
             .query_row("SELECT value FROM caller", [], |row| row.get(0))
             .unwrap();
         assert_eq!(value, 9, "migration rollback must preserve caller writes");
+    }
+
+    #[test]
+    fn data_migration_rewrites_existing_rows_in_place_and_records_ledger() {
+        let connection = Connection::open_in_memory().unwrap();
+        let v1 = Migration::sql(
+            1,
+            "payloads",
+            "CREATE TABLE payloads(id INTEGER PRIMARY KEY, body TEXT NOT NULL);",
+        );
+        run(&connection, &[v1]).unwrap();
+        connection
+            .execute(
+                r#"INSERT INTO payloads(id, body) VALUES (1, '{"legacy_name":"alpha"}')"#,
+                [],
+            )
+            .unwrap();
+
+        fn rewrite_payloads(connection: &Connection) -> Result<(), StoreError> {
+            let rows: Vec<(i64, String)> = {
+                let mut stmt = connection.prepare("SELECT id, body FROM payloads")?;
+                stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+                    .collect::<Result<_, _>>()?
+            };
+            for (id, body) in rows {
+                let mut value: serde_json::Value = serde_json::from_str(&body)?;
+                if let Some(name) = value.as_object_mut().and_then(|m| m.remove("legacy_name")) {
+                    value["name"] = name;
+                }
+                connection.execute(
+                    "UPDATE payloads SET body = ?1 WHERE id = ?2",
+                    params![serde_json::to_string(&value)?, id],
+                )?;
+            }
+            Ok(())
+        }
+
+        let v2 = Migration::sql(
+            2,
+            "rename payload field",
+            "-- rewrite payloads.body legacy_name -> name in place",
+        )
+        .with_data(rewrite_payloads);
+        run(&connection, &[v1, v2]).unwrap();
+        // Re-running is idempotent and does not invoke the data hook twice.
+        run(&connection, &[v1, v2]).unwrap();
+
+        let body: String = connection
+            .query_row("SELECT body FROM payloads WHERE id = 1", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        let value: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(value, serde_json::json!({"name": "alpha"}));
+    }
+
+    #[test]
+    fn failed_data_migration_rolls_back_sql_and_data_atomically() {
+        let connection = Connection::open_in_memory().unwrap();
+        run(&connection, &[BASE]).unwrap();
+        connection
+            .execute("INSERT INTO migrated VALUES (1)", [])
+            .unwrap();
+
+        fn failing_rewrite(connection: &Connection) -> Result<(), StoreError> {
+            connection.execute("UPDATE migrated SET value = 99", [])?;
+            Err(StoreError::Migration("corrupt payload".into()))
+        }
+
+        let v2 = Migration::sql(
+            2,
+            "rewrite fails",
+            "ALTER TABLE migrated ADD COLUMN tag TEXT;",
+        )
+        .with_data(failing_rewrite);
+        let error = run(&connection, &[BASE, v2]).unwrap_err();
+        assert!(matches!(error, StoreError::Migration(ref m) if m.contains("corrupt payload")));
+
+        let value: i64 = connection
+            .query_row("SELECT value FROM migrated", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(value, 1, "failed data hook must roll back row mutations");
+        let has_tag: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('migrated') WHERE name = 'tag'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(has_tag, 0, "failed data hook must roll back SQL DDL");
+        let ledger_v2: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM _sqlx_migrations WHERE version = 2",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            ledger_v2, 0,
+            "failed data hook must not record ledger entry"
+        );
     }
 }

@@ -65,6 +65,10 @@ name = "producer_reopen"
 path = "tests/producer_reopen.rs"
 
 [[test]]
+name = "upgrade_compat"
+path = "tests/upgrade_compat.rs"
+
+[[test]]
 name = "native-desktop"
 path = "tests/native_desktop.rs"
 harness = false

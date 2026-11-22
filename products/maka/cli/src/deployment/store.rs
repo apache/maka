@@ -17,7 +17,7 @@
  * under the License.
  */
 
-use super::Deployment;
+use super::{Admission, Deployment, RootId, package};
 use maka_event_log::{
     StoreError,
     connection::{ConnectionAuthority, OpenOptions, OwnedConnection},
@@ -26,16 +26,21 @@ use maka_event_log::{
 };
 use maka_host_runtime::HostError;
 use rusqlite::{Connection, OptionalExtension, params};
-use std::{fs::File, path::Path, sync::Arc};
+use std::{
+    fs::File,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 const DATABASE: &str = "deployment.sqlite";
 const APPLICATION_ID: i64 = 0x4d414b44;
 
-static MIGRATIONS: &[Migration] = &[Migration {
+pub(super) static MIGRATIONS: &[Migration] = &[Migration {
     version: 1,
     description: "deployment",
     sql: include_str!("../../migrations/deployment/0001_deployment.sql"),
     configure: None,
+    data: None,
 }];
 
 pub(super) enum Installation {
@@ -44,36 +49,195 @@ pub(super) enum Installation {
     Installed(Deployment),
 }
 
+/// Minimal stable descriptor used by an older scheduled updater to hand off
+/// recovery to a newer executable after `updates::prepare` migrated the schema.
+#[derive(Debug, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct HandoffRecord {
+    pub root_id: String,
+    pub executable: PathBuf,
+    pub sha256: String,
+    pub admission: Admission,
+}
+
+impl HandoffRecord {
+    fn validate(&self, directory: &Path) -> Result<(), HostError> {
+        if self.root_id.parse::<RootId>().is_err()
+            || self.sha256.len() != 64
+            || !self
+                .sha256
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            || self.executable != package::path(directory, &self.sha256)
+        {
+            return Err("deployment does not match its native root or package".into());
+        }
+        Ok(())
+    }
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HandoffPending {
+    deployment: HandoffRecord,
+}
+
+pub(super) enum Handoff {
+    /// Store matches this binary's exact schema.
+    Current(Installation),
+    /// Store belongs to a newer Maka deployment schema (`user_version > latest`).
+    /// Callers may only hand off to the validated target executable and must
+    /// never open a writer against this newer schema.
+    Newer {
+        active: HandoffRecord,
+        pending: Option<HandoffRecord>,
+    },
+}
+
+fn database_file(directory: &Path) -> Result<Option<PathBuf>, HostError> {
+    let path = directory.join(DATABASE);
+    match path.symlink_metadata() {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.into()),
+        Ok(metadata) if !metadata.is_file() => Err("invalid deployment database".into()),
+        Ok(_) => Ok(Some(path)),
+    }
+}
+
+fn read_connection(
+    connection: &Connection,
+    migrations: &[Migration],
+    allow_pending_migrations: bool,
+) -> Result<Installation, HostError> {
+    validate_schema_with(connection, migrations, allow_pending_migrations)?;
+    let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if version == 0 {
+        return Ok(Installation::Incomplete);
+    }
+    let value: Option<String> = connection
+        .query_row(
+            "SELECT CASE WHEN length(CAST(configuration AS BLOB)) <= 65536 THEN configuration END FROM deployment WHERE singleton = 1",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(value) = value else {
+        return Ok(Installation::Incomplete);
+    };
+    Ok(Installation::Installed(serde_json::from_str(&value)?))
+}
+
 /// No executor lock and no schema initialization: launchers can read while an
 /// operator waits for their Ready acknowledgement.
 pub(super) async fn read(directory: &Path) -> Result<Installation, HostError> {
-    let path = directory.join(DATABASE);
-    match path.symlink_metadata() {
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(Installation::Missing);
-        }
-        Err(error) => return Err(error.into()),
-        Ok(metadata) if !metadata.is_file() => return Err("invalid deployment database".into()),
-        Ok(_) => {}
-    }
-    read_database(path, |connection| {
-        validate_schema(connection)?;
-        let application: i64 = connection.query_row("PRAGMA application_id", [], |row| row.get(0))?;
+    read_with(directory, MIGRATIONS, false).await
+}
+
+/// Read under an active executor lease during update/reconcile so a verified
+/// historical schema prefix can reach `updates::prepare`'s atomic migration.
+pub(super) async fn read_for_update(
+    directory: &Path,
+    lease: &FileLease,
+) -> Result<Installation, HostError> {
+    read_for_update_with(directory, lease, MIGRATIONS).await
+}
+
+pub(super) async fn read_for_update_with(
+    directory: &Path,
+    lease: &FileLease,
+    migrations: &'static [Migration],
+) -> Result<Installation, HostError> {
+    lease.validate()?;
+    let installation = read_with(directory, migrations, true).await?;
+    lease.validate()?;
+    Ok(installation)
+}
+
+pub(super) async fn read_with(
+    directory: &Path,
+    migrations: &'static [Migration],
+    allow_pending_migrations: bool,
+) -> Result<Installation, HostError> {
+    let Some(path) = database_file(directory)? else {
+        return Ok(Installation::Missing);
+    };
+    read_database(path, move |connection| {
+        read_connection(connection, migrations, allow_pending_migrations)
+    })
+    .await
+}
+
+/// Read for the scheduled auto-update dispatcher. When a newer executable has
+/// already migrated the store (for example after returning `ActiveTasks`),
+/// locate its validated executable so the older scheduler can hand off instead
+/// of failing on the newer schema.
+pub(super) async fn read_handoff(directory: &Path) -> Result<Handoff, HostError> {
+    read_handoff_with(directory, MIGRATIONS).await
+}
+
+pub(super) async fn read_handoff_with(
+    directory: &Path,
+    migrations: &'static [Migration],
+) -> Result<Handoff, HostError> {
+    let Some(path) = database_file(directory)? else {
+        return Ok(Handoff::Current(Installation::Missing));
+    };
+    let directory = directory.to_path_buf();
+    read_database(path, move |connection| {
+        let application: i64 =
+            connection.query_row("PRAGMA application_id", [], |row| row.get(0))?;
         let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-        if version == 0 && application == APPLICATION_ID {
-            return Ok(Installation::Incomplete);
+        let latest_version = migrations.last().map(|m| m.version).unwrap_or(0);
+        if application == APPLICATION_ID && version > latest_version {
+            let (ledger, applied) = applied_migrations(connection)?;
+            let prefix_ok = ledger
+                && applied.len() >= migrations.len()
+                && matches_prefix(&applied[..migrations.len()], migrations)
+                && applied.iter().all(|row| row.success)
+                && applied.last().is_some_and(|row| row.version == version);
+            if !prefix_ok {
+                return Err(StoreError::InvalidTransition(
+                    "unsupported deployment schema".into(),
+                )
+                .into());
+            }
+            let active: Option<String> = connection
+                .query_row(
+                    "SELECT CASE WHEN length(CAST(configuration AS BLOB)) <= 65536 THEN configuration END FROM deployment WHERE singleton = 1",
+                    [],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            let Some(active) = active else {
+                return Ok(Handoff::Current(Installation::Incomplete));
+            };
+            let active: HandoffRecord = serde_json::from_str(&active)?;
+            active.validate(&directory)?;
+            let pending: Option<String> = connection
+                .query_row(
+                    "SELECT CASE WHEN length(CAST(target AS BLOB)) <= 65536 THEN target ELSE '' END FROM deployment_update WHERE singleton = 1",
+                    [],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            let pending = match pending {
+                Some(value) => {
+                    let parsed: HandoffPending = serde_json::from_str(&value)?;
+                    parsed.deployment.validate(&directory)?;
+                    if parsed.deployment.root_id != active.root_id {
+                        return Err("pending deployment root identity differs".into());
+                    }
+                    Some(parsed.deployment)
+                }
+                None => None,
+            };
+            return Ok(Handoff::Newer { active, pending });
         }
-        if version == 0 && application == 0 {
-            let tables: i64 = connection.query_row("SELECT COUNT(*) FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%'", [], |row| row.get(0))?;
-            if tables == 0 { return Ok(Installation::Incomplete) }
-        }
-        if application != APPLICATION_ID || version != 1 {
-            return Err("unsupported or incomplete deployment database".into());
-        }
-        let value: Option<String> = connection.query_row("SELECT CASE WHEN length(CAST(configuration AS BLOB)) <= 65536 THEN configuration END FROM deployment WHERE singleton = 1", [], |row| row.get(0)).optional()?;
-        let Some(value) = value else { return Ok(Installation::Incomplete) };
-        Ok(Installation::Installed(serde_json::from_str(&value)?))
-    }).await
+        Ok(Handoff::Current(read_connection(
+            connection, migrations, false,
+        )?))
+    })
+    .await
 }
 
 pub(super) async fn read_database<T: Send + 'static>(
@@ -98,7 +262,17 @@ pub(super) async fn install(
     owner: Arc<RootOwner>,
     deployment: Deployment,
 ) -> Result<Deployment, HostError> {
-    let connection = open_writer(directory, lease, None).await?;
+    install_with(directory, lease, owner, deployment, MIGRATIONS).await
+}
+
+pub(super) async fn install_with(
+    directory: &Path,
+    lease: Arc<FileLease>,
+    owner: Arc<RootOwner>,
+    deployment: Deployment,
+    migrations: &'static [Migration],
+) -> Result<Deployment, HostError> {
+    let connection = open(directory, lease, None, true, migrations).await?;
     let result = connection
         .run(move |connection| {
             // The accepted database job owns Root until its actual commit, even if
@@ -124,14 +298,25 @@ pub(super) async fn open_writer(
     lease: Arc<FileLease>,
     root: Option<Arc<RootOwner>>,
 ) -> Result<OwnedConnection, HostError> {
-    open(directory, lease, root, true).await
+    open(directory, lease, root, true, MIGRATIONS).await
+}
+
+#[cfg(test)]
+pub(super) async fn open_writer_with(
+    directory: &Path,
+    lease: Arc<FileLease>,
+    root: Option<Arc<RootOwner>>,
+    migrations: &'static [Migration],
+) -> Result<OwnedConnection, HostError> {
+    open(directory, lease, root, true, migrations).await
 }
 
 pub(super) async fn open_update_writer(
     directory: &Path,
     lease: Arc<FileLease>,
+    migrations: &'static [Migration],
 ) -> Result<OwnedConnection, HostError> {
-    open(directory, lease, None, false).await
+    open(directory, lease, None, false, migrations).await
 }
 
 async fn open(
@@ -139,6 +324,7 @@ async fn open(
     lease: Arc<FileLease>,
     root: Option<Arc<RootOwner>>,
     migrate_on_open: bool,
+    migrations: &'static [Migration],
 ) -> Result<OwnedConnection, HostError> {
     let path = directory.join(DATABASE);
     let file = private_file(&path)?;
@@ -149,9 +335,9 @@ async fn open(
         OpenOptions::file(path),
         ConnectionAuthority::Writer { lease, root },
         move |connection| {
-            initialize(connection)?;
+            initialize_with(connection, migrations)?;
             if migrate_on_open {
-                migrate(connection)?;
+                migrate_with(connection, migrations)?;
             }
             Ok(())
         },
@@ -272,8 +458,11 @@ fn private_file(path: &Path) -> Result<File, HostError> {
     Ok(file)
 }
 
-fn initialize(connection: &mut Connection) -> Result<(), StoreError> {
-    validate_schema(connection)?;
+fn initialize_with(
+    connection: &mut Connection,
+    migrations: &[Migration],
+) -> Result<(), StoreError> {
+    validate_schema_with(connection, migrations, true)?;
     connection.execute_batch(
         "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA application_id=1296124740;",
     )?;
@@ -281,46 +470,41 @@ fn initialize(connection: &mut Connection) -> Result<(), StoreError> {
 }
 
 /// Reject unsupported stores before a writer changes journaling or creates metadata.
-fn validate_schema(connection: &Connection) -> Result<(), StoreError> {
+/// Writers (and lease-held update readers) accept a verified historical prefix;
+/// strict readers and post-migration checks require the complete current ledger
+/// with `PRAGMA user_version` matching the latest applied migration.
+fn validate_schema_with(
+    connection: &Connection,
+    migrations: &[Migration],
+    allow_pending_migrations: bool,
+) -> Result<(), StoreError> {
     let application: i64 = connection.query_row("PRAGMA application_id", [], |row| row.get(0))?;
     let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    let latest_version = migrations.last().map(|m| m.version).unwrap_or(0);
     let tables: i64 = connection.query_row(
         "SELECT COUNT(*) FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%'",
         [],
         |row| row.get(0),
     )?;
     if !((application == 0 && version == 0 && tables == 0)
-        || (application == APPLICATION_ID && (0..=1).contains(&version)))
+        || (application == APPLICATION_ID && (0..=latest_version).contains(&version)))
     {
         return Err(StoreError::InvalidTransition(
             "unsupported deployment database".into(),
         ));
     }
-    let ledger: bool = connection.query_row(
-        "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='_sqlx_migrations')",
-        [],
-        |row| row.get(0),
-    )?;
-    let applied: Vec<(i64, bool, Vec<u8>)> = if ledger {
-        connection
-            .prepare("SELECT version, success, checksum FROM _sqlx_migrations ORDER BY version")?
-            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
-            .collect::<Result<_, _>>()?
-    } else {
-        Vec::new()
-    };
+    let (ledger, applied) = applied_migrations(connection)?;
     let valid = if version == 0 {
         tables == i64::from(ledger) && applied.is_empty()
     } else {
-        applied.len() == MIGRATIONS.iter().len()
-            && applied.iter().zip(MIGRATIONS.iter()).all(
-                |((version, success, checksum), expected)| {
-                    *version == expected.version
-                        && *success
-                        && checksum.as_slice()
-                            == maka_event_log::migration::checksum(expected.sql).as_slice()
-                },
-            )
+        let len_ok = if allow_pending_migrations {
+            !applied.is_empty() && applied.len() <= migrations.len()
+        } else {
+            applied.len() == migrations.len()
+        };
+        len_ok
+            && applied.last().is_some_and(|row| row.version == version)
+            && matches_prefix(&applied, migrations)
     };
     if !valid {
         return Err(StoreError::InvalidTransition(
@@ -330,7 +514,128 @@ fn validate_schema(connection: &Connection) -> Result<(), StoreError> {
     Ok(())
 }
 
-pub(super) fn migrate(connection: &Connection) -> Result<(), StoreError> {
-    maka_event_log::migration::run(connection, MIGRATIONS)?;
-    Ok(())
+struct AppliedMigration {
+    version: i64,
+    success: bool,
+    checksum: Vec<u8>,
+}
+
+fn applied_migrations(
+    connection: &Connection,
+) -> Result<(bool, Vec<AppliedMigration>), StoreError> {
+    let ledger: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='_sqlx_migrations')",
+        [],
+        |row| row.get(0),
+    )?;
+    let applied = if ledger {
+        connection
+            .prepare("SELECT version, success, checksum FROM _sqlx_migrations ORDER BY version")?
+            .query_map([], |row| {
+                Ok(AppliedMigration {
+                    version: row.get(0)?,
+                    success: row.get(1)?,
+                    checksum: row.get(2)?,
+                })
+            })?
+            .collect::<Result<_, _>>()?
+    } else {
+        Vec::new()
+    };
+    Ok((ledger, applied))
+}
+
+fn matches_prefix(applied: &[AppliedMigration], migrations: &[Migration]) -> bool {
+    applied
+        .iter()
+        .zip(migrations.iter())
+        .all(|(row, expected)| {
+            row.version == expected.version
+                && row.success
+                && row.checksum.as_slice()
+                    == maka_event_log::migration::checksum(expected.sql).as_slice()
+        })
+}
+
+pub(super) fn migrate_with(
+    connection: &Connection,
+    migrations: &[Migration],
+) -> Result<(), StoreError> {
+    connection.execute_batch("SAVEPOINT maka_deployment_migrate")?;
+    let result = (|| {
+        maka_event_log::migration::run(connection, migrations)?;
+        if let Some(latest) = migrations.last() {
+            let version = i32::try_from(latest.version).map_err(|_| {
+                StoreError::Migration(format!(
+                    "deployment migration version {} out of PRAGMA user_version range",
+                    latest.version
+                ))
+            })?;
+            connection.execute_batch(&format!("PRAGMA user_version = {version};"))?;
+        }
+        validate_schema_with(connection, migrations, false)?;
+        Ok(())
+    })();
+    match result {
+        Ok(()) => {
+            connection.execute_batch("RELEASE maka_deployment_migrate")?;
+            Ok(())
+        }
+        Err(error) => {
+            connection
+                .execute_batch(
+                    "ROLLBACK TO maka_deployment_migrate; RELEASE maka_deployment_migrate",
+                )
+                .map_err(|rollback| {
+                    StoreError::Migration(format!(
+                        "{error}; rolling back deployment migrations failed: {rollback}"
+                    ))
+                })?;
+            Err(error)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn migrate_updates_user_version_and_rejects_drifted_or_future_versions() {
+        let v1 = [MIGRATIONS[0]];
+        let mut connection = Connection::open_in_memory().unwrap();
+        initialize_with(&mut connection, &v1).unwrap();
+        migrate_with(&connection, &v1).unwrap();
+        validate_schema_with(&connection, &v1, false).unwrap();
+
+        // v2 intentionally omits PRAGMA user_version: migrate_with must advance it atomically.
+        let v2 = Migration::sql(
+            2,
+            "add_note",
+            "ALTER TABLE deployment ADD COLUMN note TEXT;",
+        );
+        let upgraded = [v1[0], v2];
+
+        assert!(validate_schema_with(&connection, &upgraded, false).is_err());
+        validate_schema_with(&connection, &upgraded, true).unwrap();
+        migrate_with(&connection, &upgraded).unwrap();
+        validate_schema_with(&connection, &upgraded, false).unwrap();
+        let user_version: i64 = connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(user_version, 2);
+
+        // Drift between PRAGMA user_version and _sqlx_migrations is rejected in both modes.
+        connection
+            .execute_batch("PRAGMA user_version = 1;")
+            .unwrap();
+        assert!(validate_schema_with(&connection, &upgraded, false).is_err());
+        assert!(validate_schema_with(&connection, &upgraded, true).is_err());
+
+        // Unknown future user_version is rejected.
+        connection
+            .execute_batch("PRAGMA user_version = 3;")
+            .unwrap();
+        assert!(validate_schema_with(&connection, &upgraded, true).is_err());
+    }
 }

@@ -40,6 +40,11 @@ Tool(s) and scope:
 - [ ] Tests cover the change and fail without it
 - [ ] Format, typecheck and the affected suites pass locally
 
+Does this PR entail a breaking change or persisted-data migration?
+
+- [ ] Yes — describe user/data impact, in-place migration, and `upgrade_compat.rs` coverage under Summary above
+- [ ] No
+
 Does this PR entail a change in behavior?
 
 - [ ] Yes — described under Summary above

@@ -20,6 +20,7 @@
 use super::{Deployment, query, store};
 use maka_event_log::{
     StoreError,
+    migration::Migration,
     root::{FileLease, RootOwner},
 };
 use maka_host_runtime::HostError;
@@ -38,8 +39,18 @@ pub(super) async fn read(
     directory: &Path,
     lease: Arc<FileLease>,
 ) -> Result<(Deployment, Option<Pending>), HostError> {
+    read_with(directory, lease, store::MIGRATIONS).await
+}
+
+async fn read_with(
+    directory: &Path,
+    lease: Arc<FileLease>,
+    migrations: &'static [Migration],
+) -> Result<(Deployment, Option<Pending>), HostError> {
     lease.validate()?;
-    let store::Installation::Installed(active) = store::read(directory).await? else {
+    let store::Installation::Installed(active) =
+        store::read_for_update_with(directory, &lease, migrations).await?
+    else {
         return Err("Host deployment is absent or incomplete".into());
     };
     let pending = query::pending(directory, &active).await?;
@@ -53,14 +64,24 @@ pub(super) async fn prepare(
     expected: Deployment,
     target: Pending,
 ) -> Result<(), HostError> {
+    prepare_with(directory, lease, expected, target, store::MIGRATIONS).await
+}
+
+async fn prepare_with(
+    directory: &Path,
+    lease: Arc<FileLease>,
+    expected: Deployment,
+    target: Pending,
+    migrations: &'static [Migration],
+) -> Result<(), HostError> {
     validate_target(&expected, &target)?;
-    let connection = store::open_update_writer(directory, lease).await?;
+    let connection = store::open_update_writer(directory, lease, migrations).await?;
     let result = connection.run(move |connection| {
         let transaction = connection.transaction()?;
         // Never strand the old executor on a newer schema without a durable
         // pointer to the executable which can recover it. SQLite migrations
         // use nested savepoints inside this same transaction.
-        store::migrate(&transaction)?;
+        store::migrate_with(&transaction, migrations)?;
         let (active, pending) = load(&transaction)?;
         if active != expected || pending.as_ref().is_some_and(|pending| pending != &target) {
             return Err(conflict());
@@ -207,7 +228,7 @@ mod tests {
                 .await
                 .is_err()
         );
-        let writer = store::open_update_writer(&directory, lease.clone())
+        let writer = store::open_update_writer(&directory, lease.clone(), store::MIGRATIONS)
             .await
             .unwrap();
         writer
@@ -399,5 +420,242 @@ mod tests {
         );
         drop(owner);
         drop(RootOwner::open(&root_path, &namespaces).unwrap());
+    }
+
+    #[tokio::test]
+    async fn update_prepare_migrates_installed_v1_deployment_atomically_and_v1_scheduler_hands_off()
+    {
+        const V1_MIGRATION: Migration = Migration {
+            version: 1,
+            description: "deployment",
+            sql: include_str!("../../migrations/deployment/0001_deployment.sql"),
+            configure: None,
+            data: None,
+        };
+        static V1: &[Migration] = &[V1_MIGRATION];
+        static UPGRADED: &[Migration] = &[
+            V1_MIGRATION,
+            // Intentionally omit PRAGMA user_version = 2; store::migrate_with must update it.
+            Migration::sql(
+                2,
+                "add_note",
+                "ALTER TABLE deployment ADD COLUMN note TEXT;",
+            ),
+        ];
+
+        let temporary = tempfile::tempdir().unwrap();
+        let namespaces = RootNamespaces {
+            ownership: temporary.path().join("ownership"),
+            control: temporary.path().join("control"),
+        };
+        let root_path = temporary.path().join("root");
+        let owner = RootOwner::create(&root_path, &namespaces).unwrap();
+        let directory = temporary.path().join("deployment");
+        root::private_directory(&directory).unwrap();
+        let lease = Arc::new(FileLease::acquire(&directory.join("executor.lock")).unwrap());
+        let current = Deployment {
+            deployment_id: uuid::Uuid::new_v4(),
+            config_revision: 1,
+            root_id: owner.root_id().into(),
+            root_path: owner.canonical_path().into(),
+            executable: package::path(&directory, &"a".repeat(64)),
+            sha256: "a".repeat(64),
+            mode: Mode::OnDemand,
+            websocket: "127.0.0.1:0".parse().unwrap(),
+            project_directory_roots: None,
+            admission: super::super::Admission::Active,
+        };
+        store::install_with(
+            &directory,
+            lease.clone(),
+            Arc::new(owner),
+            current.clone(),
+            V1,
+        )
+        .await
+        .unwrap();
+
+        let mut next = current.clone();
+        next.config_revision += 1;
+        next.sha256 = "b".repeat(64);
+        next.executable = package::path(&directory, &next.sha256);
+        let target = Pending {
+            deployment: next,
+            roots: None,
+        };
+
+        // Strict v2 reader rejects unmigrated v1; lease-held update readers accept it.
+        assert!(store::read_with(&directory, UPGRADED, false).await.is_err());
+        let store::Installation::Installed(before) =
+            store::read_for_update_with(&directory, &lease, UPGRADED)
+                .await
+                .unwrap()
+        else {
+            panic!("update reader must accept verified v1 deployment");
+        };
+        assert_eq!(before, current);
+        assert_eq!(
+            read_with(&directory, lease.clone(), UPGRADED)
+                .await
+                .unwrap(),
+            (current.clone(), None)
+        );
+
+        // If prepare fails while writing pending intent, both the v2 schema migration
+        // and PRAGMA user_version must roll back so the v1 executor is not stranded.
+        let writer = store::open_writer_with(&directory, lease.clone(), None, V1)
+            .await
+            .unwrap();
+        writer
+            .run(|connection| {
+                connection.execute_batch(
+                    "CREATE TRIGGER reject_prepare BEFORE INSERT ON deployment_update BEGIN SELECT RAISE(ABORT, 'prepare failed'); END;",
+                )?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        writer.close().await.unwrap();
+        assert!(
+            prepare_with(
+                &directory,
+                lease.clone(),
+                current.clone(),
+                target.clone(),
+                UPGRADED,
+            )
+            .await
+            .is_err()
+        );
+        let store::Installation::Installed(rolled_back) =
+            store::read_with(&directory, V1, false).await.unwrap()
+        else {
+            panic!("failed prepare must leave the original v1 deployment readable");
+        };
+        assert_eq!(rolled_back, current);
+
+        // Remove the trigger and run the real prepare path on v1 -> v2.
+        let writer = store::open_writer_with(&directory, lease.clone(), None, V1)
+            .await
+            .unwrap();
+        writer
+            .run(|connection| {
+                connection.execute_batch("DROP TRIGGER reject_prepare")?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        writer.close().await.unwrap();
+
+        prepare_with(
+            &directory,
+            lease.clone(),
+            current.clone(),
+            target.clone(),
+            UPGRADED,
+        )
+        .await
+        .unwrap();
+
+        // After prepare commits, strict v2 store::read and updates::read both see active + pending.
+        let store::Installation::Installed(after) =
+            store::read_with(&directory, UPGRADED, false).await.unwrap()
+        else {
+            panic!("strict v2 reader must accept deployment migrated by prepare");
+        };
+        assert_eq!(after, current);
+        assert_eq!(
+            read_with(&directory, lease.clone(), UPGRADED)
+                .await
+                .unwrap(),
+            (current.clone(), Some(target.clone()))
+        );
+
+        // If v2 returned ActiveTasks, the v1 scheduled auto-updater must still be able
+        // to locate the validated v2 pending executable and hand off recovery instead of
+        // failing on the newer schema, while v2 takes over strict local reconciliation.
+        assert_eq!(
+            policy::worker::resolve_dispatch_with(
+                &directory,
+                &current.root_id,
+                &current.executable,
+                V1,
+            )
+            .await
+            .unwrap(),
+            policy::worker::Dispatch::Handoff {
+                executable: target.deployment.executable.clone(),
+                root_id: current.root_id.clone(),
+            }
+        );
+        assert_eq!(
+            policy::worker::resolve_dispatch_with(
+                &directory,
+                &current.root_id,
+                &target.deployment.executable,
+                UPGRADED,
+            )
+            .await
+            .unwrap(),
+            policy::worker::Dispatch::Local {
+                current: current.clone(),
+                pending: Some(target.clone()),
+            }
+        );
+
+        // Handoff tolerates forward-added fields in v2+ pending JSON, but still rejects
+        // stores whose known historical prefix checksum was tampered with.
+        let writer = store::open_writer_with(&directory, lease.clone(), None, UPGRADED)
+            .await
+            .unwrap();
+        writer
+            .run(|connection| {
+                connection.execute(
+                    "UPDATE deployment_update SET target = json_set(target, '$.futureFlag', json('true')) WHERE singleton = 1",
+                    [],
+                )?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        writer.close().await.unwrap();
+        assert_eq!(
+            policy::worker::resolve_dispatch_with(
+                &directory,
+                &current.root_id,
+                &current.executable,
+                V1,
+            )
+            .await
+            .unwrap(),
+            policy::worker::Dispatch::Handoff {
+                executable: target.deployment.executable,
+                root_id: current.root_id.clone(),
+            }
+        );
+
+        let writer = store::open_writer_with(&directory, lease, None, UPGRADED)
+            .await
+            .unwrap();
+        writer
+            .run(|connection| {
+                connection.execute_batch(
+                    "UPDATE _sqlx_migrations SET checksum = X'00' WHERE version = 1;",
+                )?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        writer.close().await.unwrap();
+        assert!(
+            policy::worker::resolve_dispatch_with(
+                &directory,
+                &current.root_id,
+                &current.executable,
+                V1,
+            )
+            .await
+            .is_err()
+        );
     }
 }
