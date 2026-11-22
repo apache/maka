@@ -374,6 +374,7 @@ pub const MIGRATIONS: &[maka_event_log::migration::Migration] = &[
         description: "room members, topic, reactions, pins, edits, and full-text search",
         sql: include_str!("../migrations/0052_room_overhaul.sql"),
         configure: None,
+        data: None,
     },
 ];
 
