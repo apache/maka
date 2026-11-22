@@ -30,6 +30,7 @@ use rusqlite::{Connection, OptionalExtension, Row, params};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tokio::sync::watch;
 
+pub mod changes;
 #[cfg(test)]
 mod tests;
 mod tracking;
@@ -485,7 +486,8 @@ fn get(c: &Connection, owner: &str, topic: &TopicId) -> Result<Option<DossierRec
 }
 fn list(c: &Connection, owner: &str) -> Result<Vec<DossierSummary>, StoreError> {
     // Each signal is an ordered range of the priority index, including its topic-id tie breaker.
-    let mut stmt=c.prepare_cached("SELECT topic_id,title,window_at,revision,last_material_change_at,muted,json_array_length(artifacts_json)
+    let mut stmt=c.prepare_cached("SELECT topic_id,title,window_at,revision,last_material_change_at,muted,json_array_length(artifacts_json),
+               last_notified_revision,last_interrupt_reason,last_interrupt_at
         FROM discovery_dossiers WHERE owner=?1 AND signal=?2 ORDER BY priority_weight DESC,last_material_change_at DESC,topic_id")?;
     let mut result = Vec::new();
     for signal in [
@@ -504,6 +506,9 @@ fn list(c: &Connection, owner: &str) -> Result<Vec<DossierSummary>, StoreError> 
                 last_material_change_at: UnixMillis(r.get(4)?),
                 muted: r.get(5)?,
                 artifact_count: unsigned(r, 6)?,
+                last_notified_revision: unsigned(r, 7)?,
+                last_interrupt_reason: r.get(8)?,
+                last_interrupt_at: optional_time(r, 9)?,
             })
         })?;
         for row in rows {

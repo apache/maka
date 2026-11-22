@@ -384,6 +384,13 @@ pub const MIGRATIONS: &[maka_event_log::migration::Migration] = &[
         configure: None,
         data: None,
     },
+    maka_event_log::migration::Migration {
+        version: 54,
+        description: "pending discovery changes and sliding write windows",
+        sql: include_str!("../migrations/0054_discovery_changes.sql"),
+        configure: None,
+        data: None,
+    },
 ];
 
 #[cfg(test)]
@@ -395,7 +402,7 @@ mod migration_tests {
             .chain(super::MIGRATIONS)
             .copied()
             .collect();
-        for through in [0, 41].into_iter().chain(46..=52) {
+        for through in [0, 41].into_iter().chain(46..=53) {
             let directory = tempfile::tempdir().unwrap();
             let path = directory.path().join("root.sqlite");
             let db = rusqlite::Connection::open(&path).unwrap();
@@ -407,7 +414,22 @@ mod migration_tests {
                     .collect();
                 maka_event_log::migration::run(&db, &previous).unwrap();
             }
+            if through == 53 {
+                db.execute(r#"INSERT INTO plugin_data(package_id,scope_id,key,revision,value_json)
+                    VALUES ('maka.agent.scheduler','profile','fixture_ready',1,'{"pending":[],"due":{}}')"#, []).unwrap();
+            }
             maka_event_log::migration::run(&db, &catalog).unwrap();
+            if through == 53 {
+                let rebuilt: bool = db
+                    .query_row(
+                        "SELECT revision=2 AND value_json IS NULL FROM plugin_data
+                    WHERE package_id='maka.agent.scheduler' AND key='fixture_ready'",
+                        [],
+                        |r| r.get(0),
+                    )
+                    .unwrap();
+                assert!(rebuilt);
+            }
             drop(db);
             let db = rusqlite::Connection::open(&path).unwrap();
             maka_event_log::migration::run(&db, &catalog).unwrap();

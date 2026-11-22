@@ -95,6 +95,9 @@ pub struct DossierSummary {
     pub last_material_change_at: UnixMillis,
     pub muted: bool,
     pub artifact_count: u64,
+    pub last_notified_revision: u64,
+    pub last_interrupt_reason: Option<String>,
+    pub last_interrupt_at: Option<UnixMillis>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]

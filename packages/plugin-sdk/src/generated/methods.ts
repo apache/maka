@@ -6074,6 +6074,9 @@ export interface AgentDossiersOutput_DossierSummary {
   lastMaterialChangeAt: number;
   muted: boolean;
   artifactCount: number;
+  lastNotifiedRevision: number;
+  lastInterruptReason?: string | null;
+  lastInterruptAt?: number | null;
 }
 export interface AgentExternalUsageLimitsOutput_UsageQuantity {
   used: number;
@@ -7473,6 +7476,9 @@ export interface AgentWatchDossiersOutput_DossierSummary {
   lastMaterialChangeAt: number;
   muted: boolean;
   artifactCount: number;
+  lastNotifiedRevision: number;
+  lastInterruptReason?: string | null;
+  lastInterruptAt?: number | null;
 }
 export interface AgentWatchDossiersOutput_DiscoveryInterrupt {
   topicId: string;

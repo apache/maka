@@ -30,6 +30,7 @@ axum = { version = "0.8", default-features = false, features = ["http1", "tokio"
 rmcp = { version = "=3.8.0", default-features = false, features = ["server", "transport-streamable-http-server"] }
 tempfile.workspace = true
 fastrand.workspace = true
+notify = "8.2.1"
 unicode-normalization = "0.1.25"
 maka-code-runtime.workspace = true
 maka-computer-use.workspace = true

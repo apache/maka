@@ -701,8 +701,8 @@ fn seed_discovery_tracking(root: &Path, topic: &str) {
         )
         .unwrap();
     tx.execute(
-        "INSERT INTO discovery_source_cursors(owner,source_uri,last_hash,updated_at)
-         VALUES (?1,'annex.md','v1',1)",
+        "INSERT INTO discovery_source_cursors(owner,source_uri,last_hash,updated_at,delta_kind,delta_at)
+         VALUES (?1,'annex.md','v1',1,'modified',1)",
         [&owner],
     )
     .unwrap();
@@ -1507,6 +1507,12 @@ async fn verify_capsule(bin: &Path, capsule_dir: &Path) {
             [], |row| row.get(0),
         ).unwrap();
         assert_eq!(cursors, i64::from(manifest.discovery.is_some()));
+        let pending: i64 = conn.query_row(
+            "SELECT count(*) FROM discovery_source_cursors WHERE source_uri='annex.md' AND delta_kind='modified' AND delta_at=1",
+            [], |row| row.get(0),
+        ).unwrap();
+        let captured_changes = manifest.migrations.get(maka_event_log::root::ROOT_DATABASE).is_some_and(|versions|versions.contains(&54));
+        assert_eq!(pending, i64::from(manifest.discovery.is_some() && captured_changes));
         drop(conn);
         let upgraded_migrations = verify_sqlite_integrity_and_migrations(&dirs.root);
         for (db, prev_versions) in &manifest.migrations {

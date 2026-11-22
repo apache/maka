@@ -17,7 +17,9 @@
  * under the License.
  */
 
-pub use maka_agent_facts::discovery::{DiscoveryInterrupt, DossierDetail, Dossiers, TopicId};
+pub use maka_agent_facts::discovery::{
+    DiscoveryInterrupt, DossierDetail, DossierSummary, Dossiers, TopicId,
+};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 

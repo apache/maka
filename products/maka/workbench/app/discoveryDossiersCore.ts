@@ -48,20 +48,24 @@ export function notificationTarget(tag: unknown) {
   return id ? { kind: 'discovery' as const, id } : null;
 }
 
+export type DossierNotification = { tag: string; title: string; body: string };
+
 export function dossierInterrupt(
   seen: ReadonlyMap<string, number> | null,
   snapshot: DossiersSnapshot,
 ) {
-  // latestInterrupt is the committed lastNotifiedRevision, reason and time, independent
-  // of the dossier's material revision. Quiet updates can repeat it indefinitely.
-  const event = snapshot.latestInterrupt;
-  if (!event || (seen?.get(event.topicId) ?? 0) >= event.revision)
-    return { seen: seen ?? new Map<string, number>(), notification: null };
-  const next = new Map(seen).set(event.topicId, event.revision);
-  const row = snapshot.dossiers.find((item) => item.topicId === event.topicId);
-  const notification =
-    seen !== null && snapshot.notificationsEnabled && row && !row.muted
-      ? { tag: discoveryTag(row.topicId), title: row.title, body: event.reason }
-      : null;
-  return { seen: next, notification };
+  const next = new Map(seen);
+  const notifications: DossierNotification[] = [];
+  for (const row of snapshot.dossiers) {
+    if (row.lastNotifiedRevision <= (next.get(row.topicId) ?? 0)) continue;
+    next.set(row.topicId, row.lastNotifiedRevision);
+    if (seen && snapshot.notificationsEnabled && !row.muted && row.lastInterruptAt != null) {
+      notifications.push({
+        tag: discoveryTag(row.topicId),
+        title: row.title,
+        body: row.lastInterruptReason ?? '',
+      });
+    }
+  }
+  return { seen: next, notifications };
 }

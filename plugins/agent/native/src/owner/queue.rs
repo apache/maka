@@ -44,6 +44,7 @@ impl Owner {
         self.goals.bind(self);
         self.start_goals();
         self.start_schedules();
+        self.start_change_tracker();
         self.start_bot_wake();
         self.start_completion_notifications();
         let owner = self.clone();

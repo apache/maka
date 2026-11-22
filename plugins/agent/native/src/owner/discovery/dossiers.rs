@@ -285,7 +285,7 @@ impl Owner {
         &self,
         dossier: S,
         writes: Vec<Mutation>,
-    ) -> Result<S::Output, StoreError> {
+    ) -> Result<Vec<maka_plugin_core::storage::Record>, StoreError> {
         let writer = self.store.data_writer()?;
         let storage = self.scheduler.storage.prepare_statement(writes, &writer)?;
         writer.write(WithStorage(dossier, storage)).await
@@ -296,6 +296,8 @@ fn model_summary(row: maka_agent_facts::discovery::DossierSummary) -> Value {
         "topic_id": row.topic_id, "title": row.title, "signal": row.signal, "window_at": row.window_at,
         "revision": row.revision, "last_material_change_at": row.last_material_change_at,
         "muted": row.muted, "artifact_count": row.artifact_count,
+        "last_notified_revision": row.last_notified_revision, "last_interrupt_reason": row.last_interrupt_reason,
+        "last_interrupt_at": row.last_interrupt_at,
     })
 }
 
@@ -329,7 +331,7 @@ fn model_detail(detail: DossierDetail) -> Value {
 struct WithStorage<A, B>(A, B);
 impl<A: Statement, B: Statement> Statement for WithStorage<A, B> {
     type Value = (A::Value, B::Value);
-    type Output = A::Output;
+    type Output = B::Output;
     const PREPARE_OFF_THREAD: bool = A::PREPARE_OFF_THREAD || B::PREPARE_OFF_THREAD;
     fn retain(&self) -> Vec<Arc<dyn std::marker::Send + Sync>> {
         let mut held = self.0.retain();
@@ -349,8 +351,9 @@ impl<A: Statement, B: Statement> Statement for WithStorage<A, B> {
         })
     }
     fn committed((a, b): Self::Value) -> Self::Output {
-        B::committed(b);
-        A::committed(a)
+        let records = B::committed(b);
+        A::committed(a);
+        records
     }
     fn isolated_rejection(e: &StoreError) -> bool {
         A::isolated_rejection(e) || B::isolated_rejection(e)

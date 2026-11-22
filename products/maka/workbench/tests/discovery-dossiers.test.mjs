@@ -38,6 +38,9 @@ const dossier = (topicId, fields = {}) => ({
   revision: 1,
   lastMaterialChangeAt: 1000,
   artifactCount: 0,
+  lastNotifiedRevision: 0,
+  lastInterruptReason: null,
+  lastInterruptAt: null,
   ...fields,
 });
 const a = dossier('a');
@@ -68,55 +71,51 @@ test('a notification or lead receipt pins its requested topic ahead of list deli
   assert.equal(pinDossier([a, b, dossier('incoming')], arrived), arrived);
 });
 
-const update = (topic, revision, fields = {}) => ({
-  dossiers: [a, b],
-  notificationsEnabled: true,
-  latestInterrupt: topic ? { topicId: topic, revision, reason: 'Deadline moved', at: 1000 } : null,
-  ...fields,
+const interrupted = (row, revision, reason = 'Deadline moved') => ({
+  ...row,
+  revision,
+  lastNotifiedRevision: revision,
+  lastInterruptReason: reason,
+  lastInterruptAt: 1000 + revision,
+});
+const update = (...dossiers) => ({ dossiers, notificationsEnabled: true });
+
+test('first and reconnected snapshots seed every topic without replay', () => {
+  const baseline = update(interrupted(a, 7), interrupted(b, 12));
+  const seed = dossierInterrupt(null, baseline);
+  assert.deepEqual(seed.notifications, []);
+  assert.deepEqual(dossierInterrupt(seed.seen, baseline).notifications, []);
+  const reconnect = dossierInterrupt(null, update(interrupted(a, 8), interrupted(b, 13)));
+  assert.deepEqual(reconnect.notifications, []);
+  assert.deepEqual(dossierInterrupt(reconnect.seen, baseline).notifications, []);
 });
 
-test('a first snapshot and a reconnected snapshot seed interrupt revisions without replay', () => {
-  for (const baseline of [update(null), update('a', 7)]) {
-    const seed = dossierInterrupt(null, baseline);
-    assert.equal(seed.notification, null);
-    assert.equal(dossierInterrupt(seed.seen, baseline).notification, null);
-  }
-  const reconnect = dossierInterrupt(null, update('b', 12));
-  assert.equal(reconnect.notification, null);
-  assert.equal(dossierInterrupt(reconnect.seen, update('b', 12)).notification, null);
-  assert.equal(dossierInterrupt(reconnect.seen, update('b', 13)).notification.tag, 'discovery:b');
-});
-
-test('quiet revisions do not notify and a later interrupt for an already visible revision does', () => {
-  const quiet = update(null, 0, { dossiers: [dossier('a', { revision: 8 })] });
+test('coalesced interrupts notify once per topic, including after a later quiet revision', () => {
+  const quiet = update({ ...a, revision: 8 }, b);
   const seed = dossierInterrupt(null, quiet);
-  assert.equal(dossierInterrupt(seed.seen, quiet).notification, null);
-  const interrupt = update('a', 8, {
-    dossiers: [dossier('a', { revision: 8, title: 'Revised deadline' })],
-  });
-  const first = dossierInterrupt(seed.seen, interrupt);
-  assert.deepEqual(first.notification, {
-    tag: 'discovery:a',
-    title: 'Revised deadline',
-    body: 'Deadline moved',
-  });
-  const second = dossierInterrupt(first.seen, update('b', 1));
-  assert.equal(second.notification.tag, 'discovery:b');
-  assert.equal(dossierInterrupt(second.seen, interrupt).notification, null);
-  assert.equal(dossierInterrupt(second.seen, update('a', 7)).notification, null);
+  assert.deepEqual(dossierInterrupt(seed.seen, quiet).notifications, []);
+  const snapshot = update({ ...interrupted(a, 8), revision: 9 }, interrupted(b, 1, 'New terms'));
+  const first = dossierInterrupt(seed.seen, snapshot);
+  assert.deepEqual(first.notifications, [
+    { tag: 'discovery:a', title: 'a', body: 'Deadline moved' },
+    { tag: 'discovery:b', title: 'b', body: 'New terms' },
+  ]);
+  assert.deepEqual(dossierInterrupt(first.seen, snapshot).notifications, []);
 });
 
-test('disabled, muted or missing topics do not replay a suppressed interrupt later', () => {
-  for (const fields of [
-    { notificationsEnabled: false },
-    { dossiers: [b, { ...a, muted: true }] },
-    { dossiers: [b] },
+test('disabled or muted interrupts stay suppressed after notifications resume', () => {
+  for (const snapshot of [
+    { ...update(interrupted(a, 2)), notificationsEnabled: false },
+    update({ ...interrupted(a, 2), muted: true }),
   ]) {
-    const seed = dossierInterrupt(null, update(null));
-    const hidden = dossierInterrupt(seed.seen, update('a', 2, fields));
-    assert.equal(hidden.notification, null);
-    assert.equal(dossierInterrupt(hidden.seen, update('a', 2)).notification, null);
-    assert.equal(dossierInterrupt(hidden.seen, update('a', 3)).notification.tag, 'discovery:a');
+    const seed = dossierInterrupt(null, update(a));
+    const hidden = dossierInterrupt(seed.seen, snapshot);
+    assert.deepEqual(hidden.notifications, []);
+    assert.deepEqual(dossierInterrupt(hidden.seen, update(interrupted(a, 2))).notifications, []);
+    assert.equal(
+      dossierInterrupt(hidden.seen, update(interrupted(a, 3))).notifications[0].tag,
+      'discovery:a',
+    );
   }
 });
 
@@ -193,10 +192,8 @@ test('the window posts native interrupts, rebaselines a reconnected stream and r
     openDiscovery: (id) => opened.push(['dossier', id]),
   });
   const revision = (n) =>
-    update('b', n, {
-      latestInterrupt: { topicId: 'b', revision: n, reason: `Deadline ${n}`, at: 1000 + n },
-    });
-  streams[0].enqueue(update('a', 1));
+    update(interrupted(a, n, 'Signature due'), interrupted(b, n, `Deadline ${n}`));
+  streams[0].enqueue(update(interrupted(a, 1), b));
   streams[0].enqueue(revision(3));
   streams[0].enqueue(revision(3));
   await flush();
@@ -210,10 +207,16 @@ test('the window posts native interrupts, rebaselines a reconnected stream and r
   await flush();
   assert.deepEqual(
     calls,
-    [3, 5].map((n) => ({
-      method: 'notification.show',
-      data: { tag: 'discovery:b', title: 'b', body: `Deadline ${n}` },
-    })),
+    [3, 5].flatMap((n) => [
+      {
+        method: 'notification.show',
+        data: { tag: 'discovery:a', title: 'a', body: 'Signature due' },
+      },
+      {
+        method: 'notification.show',
+        data: { tag: 'discovery:b', title: 'b', body: `Deadline ${n}` },
+      },
+    ]),
   );
   const click = listeners.get('notification.open');
   click({ tag: 'discovery:b' });

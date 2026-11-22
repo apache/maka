@@ -942,6 +942,7 @@ impl Rig {
         )?;
         self.cells = Some(cells.clone());
         let model = DriverModel {
+            discovery: None,
             state: state.clone(),
             history: state.session_history(view.spec.owner.clone(), view.spec.session_id.clone()),
             log: Arc::new(lease.store()),

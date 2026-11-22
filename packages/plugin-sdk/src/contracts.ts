@@ -9932,6 +9932,18 @@ export const contracts: {
                     format: 'uint64',
                     minimum: 0,
                   },
+                  lastNotifiedRevision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  lastInterruptReason: {
+                    type: ['string', 'null'],
+                  },
+                  lastInterruptAt: {
+                    type: ['integer', 'null'],
+                    format: 'int64',
+                  },
                 },
                 additionalProperties: false,
                 required: [
@@ -9942,6 +9954,7 @@ export const contracts: {
                   'lastMaterialChangeAt',
                   'muted',
                   'artifactCount',
+                  'lastNotifiedRevision',
                 ],
               },
               DossierSignal: {
@@ -57746,6 +57759,18 @@ export const contracts: {
                     format: 'uint64',
                     minimum: 0,
                   },
+                  lastNotifiedRevision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  lastInterruptReason: {
+                    type: ['string', 'null'],
+                  },
+                  lastInterruptAt: {
+                    type: ['integer', 'null'],
+                    format: 'int64',
+                  },
                 },
                 additionalProperties: false,
                 required: [
@@ -57756,6 +57781,7 @@ export const contracts: {
                   'lastMaterialChangeAt',
                   'muted',
                   'artifactCount',
+                  'lastNotifiedRevision',
                 ],
               },
               DossierSignal: {

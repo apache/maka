@@ -78,16 +78,17 @@ export function watchDiscoveryDossiers(host: Host, viewOpen: () => boolean) {
         if (!ownTitleBar) return;
         const next = dossierInterrupt(first ? null : seen, update);
         seen = next.seen;
-        const notice = next.notification;
-        if (!notice) return;
+        if (!next.notifications.length) return;
         void resolvePermission()
           .then((status) => {
             if (status !== 'granted' || !alive) return;
-            return Notifications.show({
-              id: notice.tag,
-              title: notice.title,
-              body: notice.body || tr('Discovery interrupt'),
-            });
+            for (const notice of next.notifications) {
+              void Notifications.show({
+                id: notice.tag,
+                title: notice.title,
+                body: notice.body || tr('Discovery interrupt'),
+              }).catch((reason) => console.warn('Could not show Discovery notification', reason));
+            }
           })
           .catch((reason) => console.warn('Could not show Discovery notification', reason));
       },

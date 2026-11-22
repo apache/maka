@@ -580,12 +580,7 @@ impl Owner {
         let active = plan.task.status == Status::Active;
         if matches!(fire.effect, ScheduledEffect::Discovery { .. }) {
             return self
-                .dispatch_discovery(
-                    fire,
-                    active && !expired,
-                    &plan.timezone,
-                    plan.task.runs.first(),
-                )
+                .dispatch_discovery(fire, active && !expired, &plan.timezone)
                 .await;
         }
         let Some(Approval::Execution { approval }) = &fire.authorization else {

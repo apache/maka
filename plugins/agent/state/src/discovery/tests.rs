@@ -112,6 +112,15 @@ async fn reviews_preserve_material_order_and_stale_writers_cannot_overwrite() {
         sorted,
         ["red-heavy", "red-new", "red", "yellow", "green", "done"]
     );
+    let active = s.active_dossier_index(2).await.unwrap();
+    assert_eq!(
+        active
+            .iter()
+            .map(|r| r.topic_id.0.as_str())
+            .collect::<Vec<_>>(),
+        ["red-heavy", "red-new"]
+    );
+    assert_eq!(s.active_dossier_index(15).await.unwrap().len(), 5);
     let (a, b) = tokio::join!(
         s.upsert_dossier(dossier("red", Green, 1., 1), UnixMillis(40)),
         s.upsert_dossier(dossier("red", Yellow, 1., 1), UnixMillis(41))
@@ -254,4 +263,34 @@ async fn persisted_tracking_records_keep_their_cas_and_receipt() {
     .unwrap();
     assert!(other.list_dossiers().await.unwrap().is_empty());
     assert!(other.get_watch(watch.watch_id).await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn discovery_snapshot_retains_concurrent_topic_interrupts_after_quiet_revisions() {
+    let (_dir, _root, s) = fixture().await;
+    let mut stream = s.subscribe();
+    let save = |name| {
+        s.data.write(s.upsert_statement(
+            dossier(name, DossierSignal::Red, 1., 0),
+            Some(format!("Update {name}")),
+            UnixMillis(10),
+        ))
+    };
+    let (a, b) = tokio::join!(save("alpha"), save("beta"));
+    assert!(a.unwrap().notified && b.unwrap().notified);
+    let mut quiet = dossier("alpha", DossierSignal::Yellow, 1., 1);
+    quiet.summary_md = "Checked".into();
+    s.upsert_dossier(quiet, UnixMillis(11)).await.unwrap();
+    stream.changed().await.unwrap();
+    let snapshot = s.dossiers().await.unwrap();
+    assert_eq!(snapshot.dossiers.len(), 2);
+    for row in snapshot.dossiers {
+        assert_eq!(row.last_notified_revision, 1);
+        assert_eq!(row.last_interrupt_at, Some(UnixMillis(10)));
+        assert_eq!(
+            row.last_interrupt_reason,
+            Some(format!("Update {}", row.title))
+        );
+        assert_eq!(row.revision, if row.title == "alpha" { 2 } else { 1 });
+    }
 }

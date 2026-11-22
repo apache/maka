@@ -122,6 +122,11 @@ pub struct Root {
 }
 
 impl Root {
+    /// The explicitly configured directory. Shared temporary locations only authorize individual private workspaces.
+    pub fn configured_directory(&self) -> Option<&PublishedDirectory> {
+        self.temporary.is_none().then_some(self.directory.as_ref())
+    }
+
     pub fn execution_basis(&self) -> std::io::Result<(&Path, serde_json::Value, Option<&Path>)> {
         Ok((
             self.directory.path(),

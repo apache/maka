@@ -2025,3 +2025,217 @@ async fn discovery_lead_opens_one_isolated_thread_with_its_initial_summary() {
     f.quiescent(session).await;
     f.close().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn discovery_stalled_worker_settles_quietly_and_releases_the_slot() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut f = Fixture::new(&listener).await;
+    let task = f.create("Review terms").await;
+    f.change(&task, "trigger_now").await;
+    let (mut worker, opening) = next(&listener).await;
+    assert!(
+        opening["messages"]
+            .to_string()
+            .contains("Deltas [kind,path,ms]")
+    );
+    for step in 1..=9 {
+        let path = if step % 2 == 1 {
+            "discovery.txt"
+        } else {
+            "./discovery.txt"
+        };
+        tool(&mut worker, "Read", json!({"path":path})).await;
+        if step < 9 {
+            let (socket, request) = next(&listener).await;
+            worker = socket;
+            let message = request["messages"].as_array().unwrap().last().unwrap();
+            assert_eq!(message["role"], "tool");
+            assert_eq!(
+                message["content"]
+                    .to_string()
+                    .contains("Wrap up immediately"),
+                step == 7,
+                "{message}"
+            );
+        }
+    }
+    let result = f.settled(&task, 1).await;
+    assert_eq!(result["task"]["runs"][0]["outcome"], "ok", "{result}");
+    assert!(
+        result["task"]["runs"][0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("repeated")
+    );
+    assert_bot_untouched(&f).await;
+    f.change(&task, "trigger_now").await;
+    let (mut worker, _) = next(&listener).await;
+    tool(&mut worker, "FinishNoChange", json!({"note":"Done"})).await;
+    f.settled(&task, 2).await;
+    f.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn discovery_checkpoints_reach_the_worker_tool_result_and_skip_bot_chat() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut f = Fixture::new(&listener).await;
+    let dir = f.rig.directory.path().join("workspace").join("evidence");
+    tokio::fs::create_dir(&dir).await.unwrap();
+    for n in 1..=35 {
+        tokio::fs::write(dir.join(format!("{n}.txt")), format!("Verified source {n}"))
+            .await
+            .unwrap();
+    }
+    let task = f.create("Follow the evidence").await;
+    f.change(&task, "trigger_now").await;
+    let (mut worker, _) = next(&listener).await;
+    for step in 1..=35 {
+        tool(
+            &mut worker,
+            "Read",
+            json!({"path":format!("evidence/{step}.txt")}),
+        )
+        .await;
+        let (socket, request) = next(&listener).await;
+        worker = socket;
+        let msg = request["messages"].as_array().unwrap().last().unwrap();
+        assert_eq!(msg["role"], "tool");
+        assert!(
+            msg["content"]
+                .to_string()
+                .contains(&format!("Verified source {step}"))
+        );
+        assert_eq!(
+            msg["content"]
+                .to_string()
+                .contains(&format!("Checkpoint (step {step})")),
+            matches!(step, 15 | 35),
+            "{msg}"
+        );
+    }
+    tool(
+        &mut worker,
+        "FinishNoChange",
+        json!({"note":"Finished all topics"}),
+    )
+    .await;
+    f.settled(&task, 1).await;
+    f.send("Read the evidence", json!([])).await;
+    let (mut bot, _) = next(&listener).await;
+    for _ in 0..15 {
+        tool(&mut bot, "Read", json!({"path":"discovery.txt"})).await;
+        let (socket, request) = next(&listener).await;
+        bot = socket;
+        let content =
+            request["messages"].as_array().unwrap().last().unwrap()["content"].to_string();
+        assert!(
+            !content.contains("Wrap up immediately") && !content.contains("Checkpoint (step"),
+            "{content}"
+        );
+    }
+    quiet(&f, &listener, &mut bot).await;
+    f.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn discovery_file_drop_in_another_authorized_root_wakes_only_an_active_plan() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut f = Fixture::new(&listener).await;
+    let task = f.create("Review new arrivals").await;
+    f.change(&task, "pause").await;
+    tokio::fs::write(
+        f.rig
+            .directory
+            .path()
+            .join("other-workspace")
+            .join("terms.pdf"),
+        b"new terms",
+    )
+    .await
+    .unwrap();
+    let owner = f.owner();
+    let state = &owner.discovery;
+    tokio::time::timeout(Duration::from_secs(30), async {
+        let mut poll = tokio::time::interval(Duration::from_millis(100));
+        loop {
+            poll.tick().await;
+            if state.has_ready_changes(at()).await.unwrap() {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("watcher did not publish a debounced delta");
+    let paused = f.detail(&task).await;
+    assert!(
+        paused["pendingFire"].is_null() && paused["task"]["runs"].as_array().unwrap().is_empty()
+    );
+    f.change(&task, "resume").await;
+    let (mut worker, request) = next(&listener).await;
+    let messages = request["messages"].to_string();
+    assert!(
+        messages.contains("terms.pdf") && messages.contains("created"),
+        "{messages}"
+    );
+    tool(
+        &mut worker,
+        "FinishNoChange",
+        json!({"note":"Reviewed the new file"}),
+    )
+    .await;
+    assert_eq!(
+        f.settled(&task, 1).await["task"]["runs"][0]["outcome"],
+        "ok"
+    );
+    assert!(!state.has_ready_changes(at()).await.unwrap());
+    assert_bot_untouched(&f).await;
+    drop(owner);
+    f.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn discovery_code_mode_counts_new_files_read_inside_cells() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut f=Fixture::with_tools(&listener,&[json!({
+        "name":"ReadPart","description":"Read a source file.","nestable":true,
+        "input":"json","result":"image","confirmation":"preapproved","target":{"kind":"import","name":"files"},"method":"read"
+    })]).await;
+    f.update_model_connection(ConnectionCatalogEntryUpdate {
+        model_overrides: serde_json::from_value(
+            json!({"llama3.2":{"codeMode":true,"apiProtocol":"openai-chat-completions"}}),
+        )
+        .unwrap(),
+        ..Default::default()
+    })
+    .await;
+    let dir = f.rig.directory.path().join("workspace");
+    for n in 0..9 {
+        tokio::fs::write(dir.join(format!("part-{n}")), "same text")
+            .await
+            .unwrap();
+    }
+    let task = f.create("Check each part").await;
+    f.change(&task, "trigger_now").await;
+    let (mut worker, _) = next(&listener).await;
+    for n in 0..9 {
+        tool(&mut worker,"exec",json!({"code":format!("const page = await tools.ReadPart({{path:'part-{n}'}}); text(page.value.content);"),"yield_time_ms":30000})).await;
+        let (socket, request) = next(&listener).await;
+        worker = socket;
+        let last = output(&request).to_string();
+        assert!(
+            last.contains("same text") && !last.contains("Wrap up immediately"),
+            "{last}"
+        );
+    }
+    tool(
+        &mut worker,
+        "FinishNoChange",
+        json!({"note":"Checked each part"}),
+    )
+    .await;
+    assert_eq!(
+        f.settled(&task, 1).await["task"]["runs"][0]["outcome"],
+        "ok"
+    );
+    f.close().await;
+}
