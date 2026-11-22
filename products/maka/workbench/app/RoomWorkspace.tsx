@@ -1080,21 +1080,27 @@ export function RoomTimeline(props: {
     return result.page;
   };
 
+  const loadState = async (): Promise<void> => {
+    const state = await props.host.query('agent', 'roomState', { sessionId: props.sessionId });
+    if (!alive) return;
+    batch(() => {
+      topic.set(state.topic);
+      members.set(state.members);
+      pinnedMessages.set(state.pinned);
+    });
+    props.rememberParticipants?.(state.members);
+  };
+
   const refreshState = async (): Promise<boolean> => {
     try {
-      const state = await props.host.query('agent', 'roomState', { sessionId: props.sessionId });
-      if (!alive) return false;
-      batch(() => {
-        topic.set(state.topic);
-        members.set(state.members);
-        pinnedMessages.set(state.pinned);
-      });
-      props.rememberParticipants?.(state.members);
-      return true;
+      await loadState();
+      return alive;
     } catch {
       return false;
     }
   };
+
+  const loadedSequence = () => messages().at(-1)?.sequence ?? 0;
 
   const publish = (
     page: AgentRoomHistoryPage,
@@ -1113,15 +1119,19 @@ export function RoomTimeline(props: {
     }
     const merged = mode === 'replace' ? page.items : [...messages(), ...page.items];
     batch(() => {
-      messages.set(
-        [...new Map(merged.map((message) => [message.id, message])).values()].sort(
-          (a, b) => a.sequence - b.sequence,
-        ),
+      const next = [...new Map(merged.map((message) => [message.id, message])).values()].sort(
+        (a, b) => a.sequence - b.sequence,
       );
+      messages.set(next);
       if (mode !== 'append') before.set(page.before ?? null);
       if (mode !== 'prepend') after.set(page.after ?? null);
-      watchState.through = Math.max(watchState.through, page.through);
-      throughSignal.set(watchState.through);
+      // Never advance watchState.through on prepend or incomplete middle pages so unseen tail posts are never skipped.
+      if (mode === 'replace') {
+        watchState.through = page.through;
+      } else if (mode === 'append' && page.after === null) {
+        watchState.through = Math.max(watchState.through, next.at(-1)?.sequence ?? 0);
+      }
+      throughSignal.set(Math.max(throughSignal(), page.through));
       if (after() === null) unseenCount.set(0);
       ready.set(true);
     });
@@ -1155,9 +1165,9 @@ export function RoomTimeline(props: {
     const loaded = messages();
     const first = loaded[0];
     const last = loaded.at(-1);
-    const stateOk = await refreshState();
+    await loadState();
     if (!alive) return false;
-    if (!first || !last) return stateOk;
+    if (!first || !last) return true;
     const stopSeq = upToSequence ?? last.sequence;
     const updated = new Map<string, AgentRoomMessage>();
     const maxPages = Math.ceil(loaded.length / 48) + 2;
@@ -1175,24 +1185,35 @@ export function RoomTimeline(props: {
     if (updated.size > 0) {
       messages.set(messages().map((item) => updated.get(item.id) ?? item));
     }
-    return stateOk;
+    return true;
   };
 
-  const refresh = async (includeMetadata = false): Promise<boolean> => {
-    if (reading) {
+  const refresh = async (includeMetadata = false, targetThrough?: number): Promise<boolean> => {
+    while (reading) {
       const prevOk = await reading;
       if (!alive) return false;
-      return includeMetadata ? (await refreshVisibleMetadata()) && prevOk : prevOk;
+      if (
+        prevOk &&
+        !includeMetadata &&
+        targetThrough !== undefined &&
+        after() === null &&
+        loadedSequence() >= targetThrough
+      ) {
+        return true;
+      }
     }
     const run = (async (): Promise<boolean> => {
       const current = messages();
       const last = current.at(-1);
       if (after() !== null) {
-        return includeMetadata ? refreshVisibleMetadata() : refreshState();
+        if (includeMetadata) return refreshVisibleMetadata();
+        await loadState();
+        return alive;
       }
       if (!last) {
         publish(await read({ kind: 'tail' }), 'replace', false);
-        return refreshState();
+        await loadState();
+        return alive && (targetThrough === undefined || loadedSequence() >= targetThrough);
       }
       let cursor = last.id;
       do {
@@ -1202,7 +1223,8 @@ export function RoomTimeline(props: {
         cursor = page.after;
       } while (alive);
       if (!alive) return false;
-      return includeMetadata ? refreshVisibleMetadata(last.sequence) : true;
+      if (includeMetadata) return refreshVisibleMetadata(last.sequence);
+      return targetThrough === undefined || loadedSequence() >= targetThrough;
     })().finally(() => {
       reading = null;
     });
@@ -1313,7 +1335,7 @@ export function RoomTimeline(props: {
       const first = await opened.next();
       if (!alive) return;
       if (first === null || first.kind !== 'room') throw new Error(tr('Live updates ended.'));
-      const [page] = await Promise.all([read({ kind: 'tail' }), refreshState()]);
+      const [page] = await Promise.all([read({ kind: 'tail' }), loadState()]);
       if (!alive) return;
       publish(page, 'replace');
       watchState.revision = first.revision;
@@ -1325,9 +1347,10 @@ export function RoomTimeline(props: {
         if (update.kind === 'room') {
           const ok = await applyRoomWatchUpdate(watchState, update, {
             hasAfterCursor: () => after() !== null,
-            onThrough: (nextThrough) => throughSignal.set(nextThrough),
+            loadedThrough: loadedSequence,
+            onThrough: (nextThrough) => throughSignal.set(Math.max(throughSignal(), nextThrough)),
             onUnseenDelta: (delta) => unseenCount.set(unseenCount() + delta),
-            appendNew: (refreshExisting) => refresh(refreshExisting),
+            appendNew: (refreshExisting, targetThrough) => refresh(refreshExisting, targetThrough),
             refreshExisting: () => refreshVisibleMetadata(),
           });
           if (!ok && alive) throw new Error(tr('Live updates ended.'));

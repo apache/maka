@@ -118,16 +118,18 @@ test('formatRoomPreviewText strips session link URIs and roomTextNeedsMarkdown k
   assert.equal(roomTextNeedsMarkdown('line 1\nline 2'), true);
 });
 
-test('applyRoomWatchUpdate catches retractions between initial read and first watch frame, skips quiet first frames, and avoids full rescans on plain appends', async () => {
-  // 1. Retraction between initial read (through=1, rev=10) and first watch frame (through=1, rev=11).
+test('applyRoomWatchUpdate catches retractions, skips quiet frames, avoids plain-append rescans, and never confirms unloaded messages', async () => {
+  // 1. Retraction between initial read (through=1, rev=10) and watch update (through=1, rev=11).
   let refreshed = 0;
   let appended = 0;
+  let loaded = 1;
   const state1 = { through: 1, revision: 10 };
   const ok1 = await applyRoomWatchUpdate(
     state1,
     { through: 1, revision: 11 },
     {
       hasAfterCursor: () => false,
+      loadedThrough: () => loaded,
       onThrough: () => {},
       onUnseenDelta: () => {},
       appendNew: async () => {
@@ -145,13 +147,14 @@ test('applyRoomWatchUpdate catches retractions between initial read and first wa
   assert.equal(appended, 0);
   assert.deepEqual(state1, { through: 1, revision: 11 });
 
-  // 2. Quiet first frame with matching (through, revision) does zero reads.
+  // 2. Quiet frame with matching (through, revision) does zero reads.
   refreshed = 0;
   const ok2 = await applyRoomWatchUpdate(
     state1,
     { through: 1, revision: 11 },
     {
       hasAfterCursor: () => false,
+      loadedThrough: () => loaded,
       onThrough: () => {},
       onUnseenDelta: () => {},
       appendNew: async () => {
@@ -168,18 +171,21 @@ test('applyRoomWatchUpdate catches retractions between initial read and first wa
   assert.equal(refreshed, 0);
   assert.equal(appended, 0);
 
-  // 3. Plain append (through advances, revision unchanged) calls appendNew(false) without rescanning existing pages.
+  // 3. Plain append (through advances, revision unchanged) calls appendNew(false, 433) without rescanning existing pages.
   const calls = [];
+  loaded = 432;
   const state3 = { through: 432, revision: 11 };
   const ok3 = await applyRoomWatchUpdate(
     state3,
     { through: 433, revision: 11 },
     {
       hasAfterCursor: () => false,
+      loadedThrough: () => loaded,
       onThrough: () => {},
       onUnseenDelta: () => {},
-      appendNew: async (refreshExisting) => {
-        calls.push(refreshExisting);
+      appendNew: async (refreshExisting, targetThrough) => {
+        calls.push([refreshExisting, targetThrough]);
+        loaded = targetThrough;
         return true;
       },
       refreshExisting: async () => {
@@ -189,42 +195,73 @@ test('applyRoomWatchUpdate catches retractions between initial read and first wa
     },
   );
   assert.equal(ok3, true);
-  assert.deepEqual(calls, [false]);
+  assert.deepEqual(calls, [[false, 433]]);
   assert.equal(refreshed, 0);
   assert.deepEqual(state3, { through: 433, revision: 11 });
 
-  // 4. Coalesced append + retraction (both through and revision advance) calls appendNew(true).
+  // 4. Coalesced append + retraction (both through and revision advance) calls appendNew(true, 434).
   const ok4 = await applyRoomWatchUpdate(
     state3,
     { through: 434, revision: 12 },
     {
       hasAfterCursor: () => false,
+      loadedThrough: () => loaded,
       onThrough: () => {},
       onUnseenDelta: () => {},
-      appendNew: async (refreshExisting) => {
-        calls.push(refreshExisting);
+      appendNew: async (refreshExisting, targetThrough) => {
+        calls.push([refreshExisting, targetThrough]);
+        loaded = targetThrough;
         return true;
       },
       refreshExisting: async () => true,
     },
   );
   assert.equal(ok4, true);
-  assert.deepEqual(calls, [false, true]);
+  assert.deepEqual(calls, [
+    [false, 433],
+    [true, 434],
+  ]);
   assert.deepEqual(state3, { through: 434, revision: 12 });
 
-  // 5. Failed refresh must not advance stored revision or through.
-  const state5 = { through: 1, revision: 10 };
+  // 5. Even if an in-flight read returned true after only loading seq 2, a watch frame for seq 3 must NOT confirm through=3.
+  let loaded5 = 2;
+  const state5 = { through: 2, revision: 10 };
   const ok5 = await applyRoomWatchUpdate(
     state5,
-    { through: 2, revision: 11 },
+    { through: 3, revision: 10 },
     {
       hasAfterCursor: () => false,
+      loadedThrough: () => loaded5,
       onThrough: () => {},
       onUnseenDelta: () => {},
-      appendNew: async () => false,
-      refreshExisting: async () => false,
+      appendNew: async () => true, // simulated stale in-flight read that did not load seq 3
+      refreshExisting: async () => true,
     },
   );
   assert.equal(ok5, false);
-  assert.deepEqual(state5, { through: 1, revision: 10 });
+  assert.deepEqual(state5, { through: 2, revision: 10 });
+
+  // 6. If stored state.through ever got ahead of loaded tail (e.g. from paging), watch still catches up to 101.
+  let loaded6 = 100;
+  let caughtUp = false;
+  const state6 = { through: 101, revision: 10 };
+  const ok6 = await applyRoomWatchUpdate(
+    state6,
+    { through: 101, revision: 10 },
+    {
+      hasAfterCursor: () => false,
+      loadedThrough: () => loaded6,
+      onThrough: () => {},
+      onUnseenDelta: () => {},
+      appendNew: async (_refreshExisting, targetThrough) => {
+        caughtUp = true;
+        loaded6 = targetThrough;
+        return true;
+      },
+      refreshExisting: async () => true,
+    },
+  );
+  assert.equal(ok6, true);
+  assert.equal(caughtUp, true);
+  assert.deepEqual(state6, { through: 101, revision: 10 });
 });

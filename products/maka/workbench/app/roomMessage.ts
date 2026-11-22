@@ -200,15 +200,17 @@ export interface RoomWatchState {
 
 export interface RoomWatchActions {
   hasAfterCursor: () => boolean;
+  loadedThrough: () => number;
   onThrough: (through: number) => void;
   onUnseenDelta: (delta: number) => void;
-  appendNew: (refreshExisting: boolean) => Promise<boolean>;
+  appendNew: (refreshExisting: boolean, targetThrough: number) => Promise<boolean>;
   refreshExisting: () => Promise<boolean>;
 }
 
 /**
  * Reconcile one Room watch watermark against the client's loaded timeline state.
- * Only advances `state.through` / `state.revision` after the corresponding read completes.
+ * Only advances `state.through` / `state.revision` after the corresponding read reaches
+ * `update.through` (when at the live tail) and completes cleanly.
  */
 export async function applyRoomWatchUpdate(
   state: RoomWatchState,
@@ -216,8 +218,11 @@ export async function applyRoomWatchUpdate(
   actions: RoomWatchActions,
 ): Promise<boolean> {
   const revChanged = state.revision === null || update.revision !== state.revision;
-  if (update.through > state.through) {
-    const delta = update.through - state.through;
+  const effectiveThrough = actions.hasAfterCursor()
+    ? state.through
+    : Math.min(state.through, actions.loadedThrough());
+  if (update.through > effectiveThrough) {
+    const delta = update.through - effectiveThrough;
     if (actions.hasAfterCursor()) {
       const ok = revChanged ? await actions.refreshExisting() : true;
       if (!ok) return false;
@@ -227,10 +232,11 @@ export async function applyRoomWatchUpdate(
       state.revision = update.revision;
       return true;
     }
-    const ok = await actions.appendNew(revChanged);
-    if (!ok) return false;
-    state.through = update.through;
-    actions.onThrough(update.through);
+    const ok = await actions.appendNew(revChanged, update.through);
+    const loaded = actions.loadedThrough();
+    if (!ok || loaded < update.through) return false;
+    state.through = loaded;
+    actions.onThrough(loaded);
     state.revision = update.revision;
     return true;
   }
