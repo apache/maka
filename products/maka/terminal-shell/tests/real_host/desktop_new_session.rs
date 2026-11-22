@@ -4922,8 +4922,27 @@ async fn desktop_workspace_stage_inspector_worktrees_and_fullscreen_review() {
     );
     #[cfg(not(windows))]
     {
+        let scroll_inspector = |lines| {
+            desktop
+                .platform
+                .dispatch_input(PlatformInput::ScrollWheel(native!(
+                    nsh_terminal::ScrollWheelEvent {
+                        position: inspector_wt.center(),
+                        delta: nsh_terminal::ScrollDelta::Lines(point(0., lines)),
+                    }
+                )))
+                .unwrap();
+        };
+        desktop
+            .retry(
+                "subagent expansion control did not scroll into view",
+                || !desktop.controls("Show all (12)").is_empty(),
+                || scroll_inspector(-4.),
+            )
+            .await;
         desktop.press("Show all (12)").await;
         desktop.control("Show less").await;
+        scroll_inspector(12.);
     }
     let composer_with_expanded_inspector = desktop.control("Focus message composer").await;
     assert!(
