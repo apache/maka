@@ -31,7 +31,7 @@ use std::{fs::File, path::Path, sync::Arc};
 const DATABASE: &str = "deployment.sqlite";
 const APPLICATION_ID: i64 = 0x4d414b44;
 
-static MIGRATIONS: &[Migration] = &[Migration {
+pub(super) static MIGRATIONS: &[Migration] = &[Migration {
     version: 1,
     description: "deployment",
     sql: include_str!("../../migrations/deployment/0001_deployment.sql"),
@@ -48,6 +48,34 @@ pub(super) enum Installation {
 /// No executor lock and no schema initialization: launchers can read while an
 /// operator waits for their Ready acknowledgement.
 pub(super) async fn read(directory: &Path) -> Result<Installation, HostError> {
+    read_with(directory, MIGRATIONS, false).await
+}
+
+/// Read under an active executor lease during update/reconcile so a verified
+/// historical schema prefix can reach `updates::prepare`'s atomic migration.
+pub(super) async fn read_for_update(
+    directory: &Path,
+    lease: &FileLease,
+) -> Result<Installation, HostError> {
+    read_for_update_with(directory, lease, MIGRATIONS).await
+}
+
+pub(super) async fn read_for_update_with(
+    directory: &Path,
+    lease: &FileLease,
+    migrations: &'static [Migration],
+) -> Result<Installation, HostError> {
+    lease.validate()?;
+    let installation = read_with(directory, migrations, true).await?;
+    lease.validate()?;
+    Ok(installation)
+}
+
+pub(super) async fn read_with(
+    directory: &Path,
+    migrations: &'static [Migration],
+    allow_pending_migrations: bool,
+) -> Result<Installation, HostError> {
     let path = directory.join(DATABASE);
     match path.symlink_metadata() {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -57,25 +85,25 @@ pub(super) async fn read(directory: &Path) -> Result<Installation, HostError> {
         Ok(metadata) if !metadata.is_file() => return Err("invalid deployment database".into()),
         Ok(_) => {}
     }
-    read_database(path, |connection| {
-        validate_schema(connection, false)?;
-        let application: i64 = connection.query_row("PRAGMA application_id", [], |row| row.get(0))?;
+    read_database(path, move |connection| {
+        validate_schema_with(connection, migrations, allow_pending_migrations)?;
         let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-        let latest_version = MIGRATIONS.last().map(|m| m.version).unwrap_or(0);
-        if version == 0 && application == APPLICATION_ID {
+        if version == 0 {
             return Ok(Installation::Incomplete);
         }
-        if version == 0 && application == 0 {
-            let tables: i64 = connection.query_row("SELECT COUNT(*) FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%'", [], |row| row.get(0))?;
-            if tables == 0 { return Ok(Installation::Incomplete) }
-        }
-        if application != APPLICATION_ID || version != latest_version {
-            return Err("unsupported or incomplete deployment database".into());
-        }
-        let value: Option<String> = connection.query_row("SELECT CASE WHEN length(CAST(configuration AS BLOB)) <= 65536 THEN configuration END FROM deployment WHERE singleton = 1", [], |row| row.get(0)).optional()?;
-        let Some(value) = value else { return Ok(Installation::Incomplete) };
+        let value: Option<String> = connection
+            .query_row(
+                "SELECT CASE WHEN length(CAST(configuration AS BLOB)) <= 65536 THEN configuration END FROM deployment WHERE singleton = 1",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(value) = value else {
+            return Ok(Installation::Incomplete);
+        };
         Ok(Installation::Installed(serde_json::from_str(&value)?))
-    }).await
+    })
+    .await
 }
 
 pub(super) async fn read_database<T: Send + 'static>(
@@ -126,14 +154,15 @@ pub(super) async fn open_writer(
     lease: Arc<FileLease>,
     root: Option<Arc<RootOwner>>,
 ) -> Result<OwnedConnection, HostError> {
-    open(directory, lease, root, true).await
+    open(directory, lease, root, true, MIGRATIONS).await
 }
 
 pub(super) async fn open_update_writer(
     directory: &Path,
     lease: Arc<FileLease>,
+    migrations: &'static [Migration],
 ) -> Result<OwnedConnection, HostError> {
-    open(directory, lease, None, false).await
+    open(directory, lease, None, false, migrations).await
 }
 
 async fn open(
@@ -141,6 +170,7 @@ async fn open(
     lease: Arc<FileLease>,
     root: Option<Arc<RootOwner>>,
     migrate_on_open: bool,
+    migrations: &'static [Migration],
 ) -> Result<OwnedConnection, HostError> {
     let path = directory.join(DATABASE);
     let file = private_file(&path)?;
@@ -151,10 +181,9 @@ async fn open(
         OpenOptions::file(path),
         ConnectionAuthority::Writer { lease, root },
         move |connection| {
-            initialize(connection, migrate_on_open)?;
+            initialize_with(connection, migrations)?;
             if migrate_on_open {
-                migrate(connection)?;
-                validate_schema(connection, false)?;
+                migrate_with(connection, migrations)?;
             }
             Ok(())
         },
@@ -275,11 +304,11 @@ fn private_file(path: &Path) -> Result<File, HostError> {
     Ok(file)
 }
 
-fn initialize(
+fn initialize_with(
     connection: &mut Connection,
-    allow_pending_migrations: bool,
+    migrations: &[Migration],
 ) -> Result<(), StoreError> {
-    validate_schema(connection, allow_pending_migrations)?;
+    validate_schema_with(connection, migrations, true)?;
     connection.execute_batch(
         "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA application_id=1296124740;",
     )?;
@@ -287,15 +316,9 @@ fn initialize(
 }
 
 /// Reject unsupported stores before a writer changes journaling or creates metadata.
-/// Writers that are about to run `migrate()` accept a verified historical prefix;
-/// read-only and post-migration checks require the complete current ledger.
-fn validate_schema(
-    connection: &Connection,
-    allow_pending_migrations: bool,
-) -> Result<(), StoreError> {
-    validate_schema_with(connection, MIGRATIONS, allow_pending_migrations)
-}
-
+/// Writers (and lease-held update readers) accept a verified historical prefix;
+/// strict readers and post-migration checks require the complete current ledger
+/// with `PRAGMA user_version` matching the latest applied migration.
 fn validate_schema_with(
     connection: &Connection,
     migrations: &[Migration],
@@ -338,9 +361,12 @@ fn validate_schema_with(
             applied.len() == migrations.len()
         };
         len_ok
+            && applied
+                .last()
+                .is_some_and(|(applied_version, _, _)| *applied_version == version)
             && applied.iter().zip(migrations.iter()).all(
-                |((version, success, checksum), expected)| {
-                    *version == expected.version
+                |((applied_version, success, checksum), expected)| {
+                    *applied_version == expected.version
                         && *success
                         && checksum.as_slice()
                             == maka_event_log::migration::checksum(expected.sql).as_slice()
@@ -355,9 +381,43 @@ fn validate_schema_with(
     Ok(())
 }
 
-pub(super) fn migrate(connection: &Connection) -> Result<(), StoreError> {
-    maka_event_log::migration::run(connection, MIGRATIONS)?;
-    Ok(())
+pub(super) fn migrate_with(
+    connection: &Connection,
+    migrations: &[Migration],
+) -> Result<(), StoreError> {
+    connection.execute_batch("SAVEPOINT maka_deployment_migrate")?;
+    let result = (|| {
+        maka_event_log::migration::run(connection, migrations)?;
+        if let Some(latest) = migrations.last() {
+            let version = i32::try_from(latest.version).map_err(|_| {
+                StoreError::Migration(format!(
+                    "deployment migration version {} out of PRAGMA user_version range",
+                    latest.version
+                ))
+            })?;
+            connection.execute_batch(&format!("PRAGMA user_version = {version};"))?;
+        }
+        validate_schema_with(connection, migrations, false)?;
+        Ok(())
+    })();
+    match result {
+        Ok(()) => {
+            connection.execute_batch("RELEASE maka_deployment_migrate")?;
+            Ok(())
+        }
+        Err(error) => {
+            connection
+                .execute_batch(
+                    "ROLLBACK TO maka_deployment_migrate; RELEASE maka_deployment_migrate",
+                )
+                .map_err(|rollback| {
+                    StoreError::Migration(format!(
+                        "{error}; rolling back deployment migrations failed: {rollback}"
+                    ))
+                })?;
+            Err(error)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -365,27 +425,37 @@ mod tests {
     use super::*;
 
     #[test]
-    fn writer_accepts_verified_historical_prefix_before_migrating_to_latest() {
+    fn migrate_updates_user_version_and_rejects_drifted_or_future_versions() {
         let mut connection = Connection::open_in_memory().unwrap();
-        initialize(&mut connection, true).unwrap();
-        migrate(&connection).unwrap();
-        validate_schema(&connection, false).unwrap();
+        initialize_with(&mut connection, MIGRATIONS).unwrap();
+        migrate_with(&connection, MIGRATIONS).unwrap();
+        validate_schema_with(&connection, MIGRATIONS, false).unwrap();
 
+        // v2 intentionally omits PRAGMA user_version: migrate_with must advance it atomically.
         let v2 = Migration::sql(
             2,
             "add_note",
-            "ALTER TABLE deployment ADD COLUMN note TEXT; PRAGMA user_version = 2;",
+            "ALTER TABLE deployment ADD COLUMN note TEXT;",
         );
         let upgraded = [MIGRATIONS[0], v2];
 
-        // Read-only / strict validation rejects unmigrated v1 when v2 is expected.
         assert!(validate_schema_with(&connection, &upgraded, false).is_err());
-        // Writer pre-migration validation accepts the verified v1 prefix and migrates cleanly.
         validate_schema_with(&connection, &upgraded, true).unwrap();
-        maka_event_log::migration::run(&connection, &upgraded).unwrap();
+        migrate_with(&connection, &upgraded).unwrap();
         validate_schema_with(&connection, &upgraded, false).unwrap();
+        let user_version: i64 = connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(user_version, 2);
 
-        // Unknown future user_version is still rejected.
+        // Drift between PRAGMA user_version and _sqlx_migrations is rejected in both modes.
+        connection
+            .execute_batch("PRAGMA user_version = 1;")
+            .unwrap();
+        assert!(validate_schema_with(&connection, &upgraded, false).is_err());
+        assert!(validate_schema_with(&connection, &upgraded, true).is_err());
+
+        // Unknown future user_version is rejected.
         connection
             .execute_batch("PRAGMA user_version = 3;")
             .unwrap();

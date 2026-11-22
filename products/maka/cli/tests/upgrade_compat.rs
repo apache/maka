@@ -1170,7 +1170,7 @@ async fn verify_capsule(bin: &Path, capsule_dir: &Path) {
         }
 
         // Exact personal memory sweep by ID + body (independent of chat Recall passages).
-        let memories = call(
+        let memory = call(
             &client,
             "agent",
             "memory",
@@ -1178,11 +1178,15 @@ async fn verify_capsule(bin: &Path, capsule_dir: &Path) {
             Attachments::new(),
         )
         .await;
-        let memories_json = serde_json::to_string(&memories).unwrap();
-        assert!(
-            memories_json.contains(&manifest.memory_id)
-                && memories_json.contains(&manifest.memory_body),
-            "persisted personal memory missing after upgrade: {memories}"
+        assert_eq!(
+            memory["id"].as_str(),
+            Some(manifest.memory_id.as_str()),
+            "persisted personal memory id mismatch after upgrade: {memory}"
+        );
+        assert_eq!(
+            memory["body"].as_str(),
+            Some(manifest.memory_body.as_str()),
+            "persisted personal memory body mismatch after upgrade: {memory}"
         );
 
         // Recall sweep.
