@@ -112,6 +112,7 @@ fn append(limits: &mut Vec<UsageLimit>, label: Option<&str>, windows: Option<Win
                 .into_iter()
                 .flatten()
                 .map(|window| UsageLimit::Window {
+                    models: Vec::new(),
                     label: label.map(str::to_owned),
                     used_percent: f64::from(window.used_percent),
                     period: (window.limit_window_seconds > 0).then_some(UsagePeriod::Duration {

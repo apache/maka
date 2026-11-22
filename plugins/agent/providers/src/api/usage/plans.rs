@@ -164,6 +164,7 @@ fn zhipu(reply: Zhipu) -> Result<Vec<UsageLimit>, Error> {
                 .and_then(Number::value)
                 .or_else(|| share(quantity.as_ref()?))?;
             Some(UsageLimit::Window {
+                models: Vec::new(),
                 label,
                 period,
                 resets_at: entry.next_reset_time.filter(|n| *n > 0).map(|n| n / 1000),
@@ -204,6 +205,7 @@ fn opencode_go(reply: OpenCodeGo) -> Result<Vec<UsageLimit>, Error> {
         let value = value?;
         let used_percent = value.percent?;
         Some(UsageLimit::Window {
+            models: Vec::new(),
             label: None,
             period: Some(period),
             // OpenCode reports now + window length for a window that has yet to start.

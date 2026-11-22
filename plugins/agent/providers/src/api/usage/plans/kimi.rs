@@ -88,6 +88,7 @@ impl Count {
             unit: None,
         };
         Some(UsageLimit::Window {
+            models: Vec::new(),
             label: None,
             period,
             resets_at: self.reset_time.and_then(Time::seconds),
@@ -120,6 +121,7 @@ struct Ratio {
 impl Ratio {
     fn reading(self, period: UsagePeriod) -> Option<UsageLimit> {
         Some(UsageLimit::Window {
+            models: Vec::new(),
             label: None,
             period: Some(period),
             resets_at: self.reset_time.and_then(Time::seconds),

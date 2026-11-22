@@ -397,6 +397,10 @@ export type AgentExternalUsageLimitsOutput_UsageLimit =
       resetsAt?: number | null;
       usedPercent: number;
       quantity?: AgentExternalUsageLimitsOutput_UsageQuantity | null;
+      /**
+       * Display names of the models sharing this window; empty when it covers every model.
+       */
+      models?: string[];
     }
   | {
       kind: 'balance';
@@ -2283,6 +2287,10 @@ export type SettingsConnectionUsageLimitsOutput_UsageLimit =
       resetsAt?: number | null;
       usedPercent: number;
       quantity?: SettingsConnectionUsageLimitsOutput_UsageQuantity | null;
+      /**
+       * Display names of the models sharing this window; empty when it covers every model.
+       */
+      models?: string[];
     }
   | {
       kind: 'balance';

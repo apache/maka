@@ -11217,6 +11217,14 @@ export const contracts: {
                           },
                         ],
                       },
+                      models: {
+                        description:
+                          'Display names of the models sharing this window; empty when it covers every model.',
+                        type: 'array',
+                        items: {
+                          type: 'string',
+                        },
+                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'usedPercent'],
@@ -67006,6 +67014,14 @@ export const contracts: {
                             type: 'null',
                           },
                         ],
+                      },
+                      models: {
+                        description:
+                          'Display names of the models sharing this window; empty when it covers every model.',
+                        type: 'array',
+                        items: {
+                          type: 'string',
+                        },
                       },
                     },
                     additionalProperties: false,

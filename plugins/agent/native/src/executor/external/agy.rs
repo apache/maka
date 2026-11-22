@@ -126,6 +126,7 @@ fn parse_usage(stdout: &[u8]) -> Result<Value, Error> {
     #[derive(Deserialize)]
     struct Group {
         name: String,
+        description: Option<String>,
         buckets: Vec<Bucket>,
     }
     #[derive(Deserialize)]
@@ -168,6 +169,16 @@ fn parse_usage(stdout: &[u8]) -> Result<Value, Error> {
         if label.is_empty() || label.chars().any(char::is_control) {
             return Err(invalid());
         }
+        let models: Vec<String> = group
+            .description
+            .as_deref()
+            .and_then(|text| text.strip_prefix("Models within this group:"))
+            .into_iter()
+            .flat_map(|names| names.split(','))
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(Into::into)
+            .collect();
         for bucket in group.buckets {
             let period = UsagePeriod::Duration {
                 seconds: match bucket.window {
@@ -197,6 +208,7 @@ fn parse_usage(stdout: &[u8]) -> Result<Value, Error> {
                     resets_at,
                     used_percent: (1.0 - bucket.remaining_fraction) * 100.0,
                     quantity: None,
+                    models: models.clone(),
                 });
             }
         }
@@ -434,12 +446,12 @@ mod tests {
     #[test]
     fn headless_usage_keeps_account_groups_and_disabled_windows() {
         let output = br#"{"event":"command_result","command":{"name":"usage"}}
-{"event":"result","result":{"status":"SUCCESS","num_turns":0,"command":{"name":"usage","data":{"groups":[{"name":"Gemini Models","buckets":[{"window":"weekly","remaining_fraction":0,"reset_time":"2026-11-12T00:00:00Z"},{"window":"5h","remaining_fraction":0,"disabled":true}]},{"name":"Claude and GPT models","buckets":[{"window":"5h","remaining_fraction":0.75}]}]}}}}
+{"event":"result","result":{"status":"SUCCESS","num_turns":0,"command":{"name":"usage","data":{"groups":[{"name":"Gemini Models","description":"Models within this group: Gemini 4 Neon, Orchestrator (Neon)","buckets":[{"window":"weekly","remaining_fraction":0,"reset_time":"2026-11-12T00:00:00Z"},{"window":"5h","remaining_fraction":0,"disabled":true}]},{"name":"Claude and GPT models","buckets":[{"window":"5h","remaining_fraction":0.75}]}]}}}}
 "#;
         assert_eq!(
             parse_usage(output).unwrap(),
             json!({"kind":"ready","limits":[
-                {"kind":"window","label":"Gemini Models","period":{"kind":"duration","seconds":604800},"usedPercent":100.0,"resetsAt":1794441600u64},
+                {"kind":"window","label":"Gemini Models","period":{"kind":"duration","seconds":604800},"usedPercent":100.0,"resetsAt":1794441600u64,"models":["Gemini 4 Neon","Orchestrator (Neon)"]},
                 {"kind":"disabled","label":"Gemini Models","period":{"kind":"duration","seconds":18000}},
                 {"kind":"window","label":"Claude and GPT models","period":{"kind":"duration","seconds":18000},"usedPercent":25.0}
             ]})
