@@ -287,7 +287,58 @@ jobs:
           path: target/v8/${{ steps.v8-key.outputs.key }}
           key: maka-v8-${{ matrix.target }}-${{ steps.v8-key.outputs.key }}
 
+      - name: Identify Rust release cache
+        id: rust-cache-keys
+        env:
+          MAKA_CI_ROLE: nightly-release-${{ matrix.target }}
+          MAKA_CI_WORKSPACE: root
+          MAKA_CI_PROFILE: release
+        run: |
+          node scripts/ci/setup.mjs keys
+          echo "target=$(node --input-type=module -e 'import { rustTarget } from "./scripts/rust/build-cli.mjs"; console.log(rustTarget());')" >> "$GITHUB_OUTPUT"
+
+      - name: Restore shared Cargo downloads
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: ${{ steps.rust-cache-keys.outputs.downloads }}
+          restore-keys: ${{ steps.rust-cache-keys.outputs.downloads_prefix }}
+          enableCrossOsArchive: true
+
+      - name: Restore Rust release dependencies
+        id: rust-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            target/CACHEDIR.TAG
+            target/release/.fingerprint
+            target/release/build
+            target/release/deps/*.*
+            target/${{ steps.rust-cache-keys.outputs.target }}/release/.fingerprint
+            target/${{ steps.rust-cache-keys.outputs.target }}/release/build
+            target/${{ steps.rust-cache-keys.outputs.target }}/release/deps/*.*
+            !target/**/deps/*.exe
+            !target/**/deps/*.pdb
+          key: ${{ steps.rust-cache-keys.outputs.compiled }}
+          restore-keys: ${{ steps.rust-cache-keys.outputs.compiled_prefix }}
+
+      - name: Stabilize third-party timestamps on exact cache hit
+        if: steps.rust-cache.outputs.cache-hit == 'true'
+        run: node scripts/ci/setup.mjs stamp-third-party
+
+      - name: Clean vendored third-party outputs on fallback restore
+        if: steps.rust-cache.outputs.cache-hit != 'true'
+        env:
+          MAKA_CI_WORKSPACE: root
+          MAKA_CI_PROFILE: release
+          MAKA_CI_TARGET: ${{ steps.rust-cache-keys.outputs.target }}
+        run: node scripts/ci/setup.mjs clean-third-party
+
       - name: Build, smoke test, and package nightly artifacts
+        id: build
         env:
           V8_CACHE_KEY: ${{ steps.v8-key.outputs.key }}
         run: |
@@ -335,6 +386,30 @@ jobs:
           path: v8-out/*
           if-no-files-found: error
           compression-level: 0
+
+      - name: Prune workspace crates from Rust release cache
+        if: ${{ !cancelled() && steps.rust-cache.outputs.cache-hit != 'true' && steps.build.outcome == 'success' }}
+        env:
+          MAKA_CI_WORKSPACE: root
+          MAKA_CI_PROFILE: release
+          MAKA_CI_TARGET: ${{ steps.rust-cache-keys.outputs.target }}
+        run: node scripts/ci/setup.mjs prune
+
+      - name: Save Rust release dependencies
+        uses: actions/cache/save@v6
+        if: ${{ !cancelled() && steps.rust-cache.outputs.cache-hit != 'true' && steps.build.outcome == 'success' }}
+        with:
+          path: |
+            target/CACHEDIR.TAG
+            target/release/.fingerprint
+            target/release/build
+            target/release/deps/*.*
+            target/${{ steps.rust-cache-keys.outputs.target }}/release/.fingerprint
+            target/${{ steps.rust-cache-keys.outputs.target }}/release/build
+            target/${{ steps.rust-cache-keys.outputs.target }}/release/deps/*.*
+            !target/**/deps/*.exe
+            !target/**/deps/*.pdb
+          key: ${{ steps.rust-cache-keys.outputs.compiled }}
 
   build-linux-arm64:
     needs: [prepare, v8-linux-arm64]
@@ -415,7 +490,58 @@ jobs:
           mkdir -p "$dest"
           tar -xzf "v8-staged/v8-aarch64-unknown-linux-gnu-${{ steps.v8-key.outputs.key }}.tar.gz" -C "$dest"
 
+      - name: Identify Rust release cache
+        id: rust-cache-keys
+        env:
+          MAKA_CI_ROLE: nightly-release-linux-arm64-gnu
+          MAKA_CI_WORKSPACE: root
+          MAKA_CI_PROFILE: release
+        run: |
+          node scripts/ci/setup.mjs keys
+          echo "target=$(node --input-type=module -e 'import { rustTarget } from "./scripts/rust/build-cli.mjs"; console.log(rustTarget());')" >> "$GITHUB_OUTPUT"
+
+      - name: Restore shared Cargo downloads
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: ${{ steps.rust-cache-keys.outputs.downloads }}
+          restore-keys: ${{ steps.rust-cache-keys.outputs.downloads_prefix }}
+          enableCrossOsArchive: true
+
+      - name: Restore Rust release dependencies
+        id: rust-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            target/CACHEDIR.TAG
+            target/release/.fingerprint
+            target/release/build
+            target/release/deps/*.*
+            target/${{ steps.rust-cache-keys.outputs.target }}/release/.fingerprint
+            target/${{ steps.rust-cache-keys.outputs.target }}/release/build
+            target/${{ steps.rust-cache-keys.outputs.target }}/release/deps/*.*
+            !target/**/deps/*.exe
+            !target/**/deps/*.pdb
+          key: ${{ steps.rust-cache-keys.outputs.compiled }}
+          restore-keys: ${{ steps.rust-cache-keys.outputs.compiled_prefix }}
+
+      - name: Stabilize third-party timestamps on exact cache hit
+        if: steps.rust-cache.outputs.cache-hit == 'true'
+        run: node scripts/ci/setup.mjs stamp-third-party
+
+      - name: Clean vendored third-party outputs on fallback restore
+        if: steps.rust-cache.outputs.cache-hit != 'true'
+        env:
+          MAKA_CI_WORKSPACE: root
+          MAKA_CI_PROFILE: release
+          MAKA_CI_TARGET: ${{ steps.rust-cache-keys.outputs.target }}
+        run: node scripts/ci/setup.mjs clean-third-party
+
       - name: Build, smoke test, and package nightly artifacts
+        id: build
         env:
           V8_CACHE_KEY: ${{ steps.v8-key.outputs.key }}
         run: |
@@ -450,6 +576,30 @@ jobs:
           path: v8-out/*
           if-no-files-found: error
           compression-level: 0
+
+      - name: Prune workspace crates from Rust release cache
+        if: ${{ !cancelled() && steps.rust-cache.outputs.cache-hit != 'true' && steps.build.outcome == 'success' }}
+        env:
+          MAKA_CI_WORKSPACE: root
+          MAKA_CI_PROFILE: release
+          MAKA_CI_TARGET: ${{ steps.rust-cache-keys.outputs.target }}
+        run: node scripts/ci/setup.mjs prune
+
+      - name: Save Rust release dependencies
+        uses: actions/cache/save@v6
+        if: ${{ !cancelled() && steps.rust-cache.outputs.cache-hit != 'true' && steps.build.outcome == 'success' }}
+        with:
+          path: |
+            target/CACHEDIR.TAG
+            target/release/.fingerprint
+            target/release/build
+            target/release/deps/*.*
+            target/${{ steps.rust-cache-keys.outputs.target }}/release/.fingerprint
+            target/${{ steps.rust-cache-keys.outputs.target }}/release/build
+            target/${{ steps.rust-cache-keys.outputs.target }}/release/deps/*.*
+            !target/**/deps/*.exe
+            !target/**/deps/*.pdb
+          key: ${{ steps.rust-cache-keys.outputs.compiled }}
 
   compat-gate:
     needs: [prepare, build]
