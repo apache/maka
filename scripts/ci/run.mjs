@@ -548,13 +548,10 @@ export function executor(
     } else if (id === 'windows-ci') {
       await node(['--test', 'scripts/ci.test.mjs']);
     } else if (id === 'macos-agent-execution' || id === 'desktop') {
-      const partition =
-        id === 'desktop' && worker.desktopPartition ? ['--partition', worker.desktopPartition] : [];
       await nextest(id, false, filter ?? suites[id].filter, [
         '--no-tests=fail',
         '--test-threads',
         '1',
-        ...partition,
         ...extra,
       ]);
     } else if (id === 'macos-host') {

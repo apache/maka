@@ -16,6 +16,9 @@ pub struct ListSourceRows {
     pub source_len: u64,
     /// UTF-8 length captured by the projection that produced these rows.
     pub projection_len: u64,
+    /// True while a provisional projection (such as a literal fallback while
+    /// async parsing is still running) is shown and will be replaced on finish.
+    pub provisional: bool,
     /// Canonical UTF-8 ranges for each logical row, in row order.
     pub rows: Arc<[Vec<std::ops::Range<u64>>]>,
 }

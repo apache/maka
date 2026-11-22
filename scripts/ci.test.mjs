@@ -26,8 +26,9 @@ import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { promisify } from 'node:util';
 import { gzipSync } from 'node:zlib';
+import { resolvePullRequestBaseline } from './ci.mjs';
 import { executor, runSuites } from './ci/run.mjs';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, join } from 'node:path';
 import { checkResults, createPlan, documentation } from './ci/plan.mjs';
 import { suites } from './ci/suites.mjs';
@@ -226,28 +227,31 @@ test('a shared input plans the maintained platform jobs rather than silently nar
   }
 });
 
-test('macOS recovery cases run in parallel with desktop on a cache-sharing worker', () => {
+test('macOS-only external_jobs run on native-macos without duplicating Linux recovery suites', () => {
   const plan = full();
-  const worker = plan.workers.find((worker) => worker.id === 'native-macos-agent');
+  assert.equal(
+    plan.workers.find((worker) => worker.id === 'native-macos-agent'),
+    undefined,
+  );
+  const worker = plan.workers.find((worker) => worker.id === 'native-macos');
   assert.ok(worker.suites.includes('macos-agent-execution'));
-  assert.equal(worker.cacheRole, 'native-macos');
-  assert.equal(worker.saveCache, false);
-  const desktopWorker = plan.workers.find((worker) => worker.id === 'native-macos');
-  assert.ok(!desktopWorker.suites.includes('macos-agent-execution'));
-  assert.ok(!desktopWorker.suites.includes('macos-nsh'));
+  assert.ok(!worker.suites.includes('macos-nsh'));
   assert.ok(!suites['macos-agent-execution'].cargoArgs.includes('--workspace'));
-  for (const name of [
-    'mainline_reopen',
-    'journal_recovery',
-    'codemode_reopen',
-    'external_jobs',
-    'producer_reopen',
-  ]) {
-    assert.ok(suites['macos-agent-execution'].cargoArgs.includes(name));
-    assert.ok(
-      plan.suites['macos-agent-execution'].filter.includes('binary_id(=maka-cli::' + name + ')'),
-    );
-  }
+  assert.equal(plan.suites['macos-agent-execution'].filter, 'binary_id(=maka-cli::external_jobs)');
+});
+
+test('Node tooling tests under scripts/ map to tooling instead of triggering full CI', () => {
+  const plan = createPlan({
+    root,
+    changes: ['scripts/rust/build-v8.test.mjs'],
+    metadata: {},
+    revision: 'test',
+    baseline: 'base',
+  });
+  assert.equal(plan.full, false);
+  assert.ok(plan.suites.tooling);
+  assert.equal(plan.suites.root, undefined);
+  assert.deepEqual(plan.workers, []);
 });
 
 test('skill and product inputs still select the native Windows skills consumer', () => {
@@ -342,11 +346,9 @@ test('native pixel and desktop regressions run only on their native OS workers',
     (worker) => worker.runner === 'windows-latest' && worker.suites.includes('desktop'),
   );
   assert.deepEqual(
-    winDesktopWorkers.map((worker) => worker.desktopPartition),
-    ['count:1/2', 'count:2/2'],
+    winDesktopWorkers.map((worker) => worker.id),
+    ['native-windows'],
   );
-  assert.equal(winDesktopWorkers[1].cacheRole, 'native-windows');
-  assert.equal(winDesktopWorkers[1].saveCache, false);
   assert.deepEqual(
     plan.workers
       .filter((worker) => worker.suites.includes('linux-nsh'))
@@ -946,6 +948,8 @@ test('scoped native workers compile once with one unified Cargo feature scope', 
         '--test',
         'open_directly',
         '--test',
+        'external_jobs',
+        '--test',
         'native-desktop',
         '--test',
         'native-pixels',
@@ -1024,4 +1028,68 @@ test('every root suite package reference matches a real workspace crate', () => 
     }
   }
   assert.deepEqual(missing, []);
+});
+
+test('stacked PR baseline uses synthetic merge first parent to exclude unrelated trunk commits', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'maka-ci-stack-'));
+  const orig = join(dir, 'orig');
+  const depth2 = join(dir, 'depth2');
+  const depth1 = join(dir, 'depth1');
+  const git = (cwd, args) =>
+    execFileSync('git', args, {
+      cwd,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        GIT_AUTHOR_NAME: 'Test',
+        GIT_AUTHOR_EMAIL: 'test@example.com',
+        GIT_COMMITTER_NAME: 'Test',
+        GIT_COMMITTER_EMAIL: 'test@example.com',
+      },
+    }).trim();
+  try {
+    mkdirSync(orig);
+    git(orig, ['init', '-b', 'main']);
+    writeFileSync(join(orig, 'base.txt'), 'base\n');
+    git(orig, ['add', 'base.txt']);
+    git(orig, ['commit', '-m', 'init']);
+    git(orig, ['checkout', '-b', 'pr1']);
+    writeFileSync(join(orig, 'lower.txt'), 'lower\n');
+    git(orig, ['add', 'lower.txt']);
+    git(orig, ['commit', '-m', 'lower PR']);
+    const pr1Head = git(orig, ['rev-parse', 'HEAD']);
+    git(orig, ['checkout', '-b', 'pr2']);
+    writeFileSync(join(orig, 'upper.txt'), 'upper\n');
+    git(orig, ['add', 'upper.txt']);
+    git(orig, ['commit', '-m', 'upper PR']);
+    const pr2Head = git(orig, ['rev-parse', 'HEAD']);
+    git(orig, ['checkout', 'main']);
+    writeFileSync(join(orig, 'trunk-only.txt'), 'trunk\n');
+    git(orig, ['add', 'trunk-only.txt']);
+    git(orig, ['commit', '-m', 'unrelated trunk commit']);
+    git(orig, ['merge', '--no-ff', 'pr1', '-m', 'merge pr1 into main']);
+    const pr1Merge = git(orig, ['rev-parse', 'HEAD']);
+    git(orig, ['merge', '--no-ff', 'pr2', '-m', 'merge pr2 into pr1 merge']);
+
+    const remoteUrl = pathToFileURL(orig).href;
+    execFileSync('git', ['clone', '--depth=2', remoteUrl, depth2], { stdio: 'pipe' });
+    const resolved = await resolvePullRequestBaseline(depth2, {
+      base: { sha: pr1Head },
+      head: { sha: pr2Head },
+    });
+    assert.deepEqual(resolved, { baseline: pr1Merge, fetch: false });
+    assert.deepEqual(
+      git(depth2, ['diff', '--name-only', resolved.baseline, 'HEAD']).split('\n').filter(Boolean),
+      ['upper.txt'],
+    );
+
+    execFileSync('git', ['clone', '--depth=1', remoteUrl, depth1], { stdio: 'pipe' });
+    const fallback = await resolvePullRequestBaseline(depth1, {
+      base: { sha: pr1Head },
+      head: { sha: pr2Head },
+    });
+    assert.deepEqual(fallback, { baseline: pr1Head, fetch: true });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

@@ -107,7 +107,12 @@ function matchesEntry(entry, path, owner) {
   return contains(entry, path) && (!(owner && path.endsWith('.rs')) || entry === path);
 }
 
+function isToolingTestInput(path) {
+  return /^scripts\/(?!ci(?:\/|$)).+\.test\.mjs$/.test(path);
+}
+
 function suiteExtraInput(suite, path, owner) {
+  if (suite.always && isToolingTestInput(path)) return true;
   return Boolean(suite.extraInputs?.some((entry) => matchesEntry(entry, path, owner)));
 }
 

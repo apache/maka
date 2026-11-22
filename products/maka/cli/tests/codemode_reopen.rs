@@ -94,11 +94,21 @@ impl ReadResource for FixtureKey {
     }
 }
 
-async fn phase<T>(name: &str, future: impl Future<Output = Result<T>>) -> Result<T> {
-    tokio::time::timeout(Duration::from_secs(30), future)
+const COLD_HOST_STARTUP_TIMEOUT: Duration = Duration::from_secs(60);
+
+async fn phase_within<T>(
+    timeout: Duration,
+    name: &str,
+    future: impl Future<Output = Result<T>>,
+) -> Result<T> {
+    tokio::time::timeout(timeout, future)
         .await
         .map_err(|_| format!("deadline: {name}"))?
         .map_err(|error| format!("{name}: {error}"))
+}
+
+async fn phase<T>(name: &str, future: impl Future<Output = Result<T>>) -> Result<T> {
+    phase_within(Duration::from_secs(30), name, future).await
 }
 
 fn success(reply: &OperationReply) -> Value {
@@ -1139,7 +1149,12 @@ async fn case(
         }
     };
     hosts.push(Host::spawn(sandbox)?);
-    let (first, _) = phase("first default Host ready", hosts[0].ready()).await?;
+    let (first, _) = phase_within(
+        COLD_HOST_STARTUP_TIMEOUT,
+        "first default Host ready",
+        hosts[0].ready(),
+    )
+    .await?;
     let epoch = first.epoch();
     let original_source = first.source().clone();
     let publication =
@@ -1400,7 +1415,12 @@ async fn case(
         state.reopened = true;
     }
     hosts.push(Host::spawn(sandbox)?);
-    let (mut reopened, address) = phase("reopened default Host ready", hosts[1].ready()).await?;
+    let (mut reopened, address) = phase_within(
+        COLD_HOST_STARTUP_TIMEOUT,
+        "reopened default Host ready",
+        hosts[1].ready(),
+    )
+    .await?;
     assert_ne!(reopened.epoch(), epoch);
     assert_eq!(reopened.source(), &original_source);
     assert_eq!(

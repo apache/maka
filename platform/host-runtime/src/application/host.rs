@@ -81,6 +81,7 @@ pub struct Host {
     configuration: Mutex<Configuration>,
     sessions: Mutex<BTreeMap<Uuid, Arc<Session>>>,
     stop: CancellationToken,
+    accept_closed: CancellationToken,
     residency: Mutex<lifecycle::Residency>,
 }
 struct Session {
@@ -204,6 +205,7 @@ impl Host {
             configuration: Mutex::new(configuration),
             sessions: Mutex::default(),
             stop: CancellationToken::new(),
+            accept_closed: CancellationToken::new(),
             residency: Mutex::new(lifecycle::Residency::default()),
         }))
     }
@@ -358,6 +360,7 @@ impl Host {
             Remote(tokio::net::TcpStream),
         }
         let tasks = TaskTracker::new();
+        let mut rejected = None;
         let accepted = loop {
             let stream = tokio::select! {
                 biased;
@@ -378,13 +381,48 @@ impl Host {
                 },
             };
             let connection = {
-                let mut residency = self.residency.lock().unwrap();
-                if residency.paused || self.stop.is_cancelled() {
-                    continue;
+                let fast = {
+                    let mut residency = self.residency.lock().unwrap();
+                    if self.stop.is_cancelled() || cancel.is_cancelled() {
+                        rejected = Some(stream);
+                        break Ok(());
+                    }
+                    if !residency.paused {
+                        residency.connections += 1;
+                        residency.last_activity = tokio::time::Instant::now();
+                        Some(lifecycle::Connection { host: self.clone() })
+                    } else {
+                        None
+                    }
+                };
+                match fast {
+                    Some(connection) => connection,
+                    None => {
+                        // An idle probe temporarily pauses admission under access_gate while
+                        // checking shutdown_if_idle(). Wait for that fence to either cancel the
+                        // Host or resume admission instead of dropping an accepted client socket.
+                        let _gate = tokio::select! {
+                            biased;
+                            () = self.stop.cancelled() => {
+                                rejected = Some(stream);
+                                break Ok(());
+                            }
+                            () = cancel.cancelled() => {
+                                rejected = Some(stream);
+                                break Ok(());
+                            }
+                            gate = self.access_gate.lock() => gate,
+                        };
+                        let mut residency = self.residency.lock().unwrap();
+                        if residency.paused || self.stop.is_cancelled() || cancel.is_cancelled() {
+                            rejected = Some(stream);
+                            break Ok(());
+                        }
+                        residency.connections += 1;
+                        residency.last_activity = tokio::time::Instant::now();
+                        lifecycle::Connection { host: self.clone() }
+                    }
                 }
-                residency.connections += 1;
-                residency.last_activity = tokio::time::Instant::now();
-                lifecycle::Connection { host: self.clone() }
             };
             let host = self.clone();
             let origins = websocket
@@ -408,6 +446,13 @@ impl Host {
                 }
             });
         };
+        // Stop accepting new peers and unlink the local socket BEFORE closing
+        // any rejected stream or cancelling in-flight handshakes, so a peer
+        // observing EOF/ECONNRESET while the Host retires sees the endpoint gone.
+        drop(listener);
+        drop(websocket);
+        drop(rejected);
+        self.accept_closed.cancel();
         self.stop.cancel();
         tasks.close();
         tasks.wait().await;
@@ -431,7 +476,7 @@ impl Host {
         let mut input = wire::Reader::new(input);
         let opening: Opening = tokio::select! {
             biased;
-            () = self.stop.cancelled() => return Err("Host is closing".into()),
+            () = self.accept_closed.cancelled() => return Err("Host is closing".into()),
             value = tokio::time::timeout(self.options.handshake_timeout, input.read()) => value.map_err(|_| "Host handshake timed out")??,
         };
         if opening.version != VERSION || opening.epoch.is_some_and(|epoch| epoch != self.epoch) {
@@ -938,6 +983,7 @@ impl Host {
     /// Physical transport cleanup precedes Application cleanup and SQL drain.
     /// Errors retain this Host and its original Root for the embedding to hold.
     pub async fn shutdown(&self) -> Result<()> {
+        self.accept_closed.cancel();
         self.stop.cancel();
         let sessions: Vec<_> = self.sessions.lock().unwrap().values().cloned().collect();
         let mut errors = Vec::new();
