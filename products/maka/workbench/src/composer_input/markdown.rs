@@ -301,31 +301,37 @@ impl<'tree> Reader<'_, '_, 'tree> {
         }
     }
 
-    fn code_block(&mut self, range: Range<usize>) {
+    fn code_block(&mut self, range: Range<usize>, value: &str) -> bool {
         let source = &self.source.source[range.clone()];
         self.style(range.clone(), "font-mono");
         let first_line = source.split(['\r', '\n']).next().unwrap_or("");
-        let mut prefix = first_line.trim_start().chars();
+        let Some(open) = strip_fence_indent(first_line) else {
+            return false;
+        };
+        let mut prefix = open.chars();
         let Some(marker @ ('`' | '~')) = prefix.next() else {
-            return;
+            return false;
         };
         let fence_len = 1 + prefix.take_while(|&ch| ch == marker).count();
         if fence_len < 3 {
-            return;
+            return false;
         }
         let Some(last_break) = source.rfind(['\r', '\n']) else {
-            return;
+            return false;
         };
-        let last_line = &source[last_break + 1..];
-        let fence = last_line.trim();
+        let Some(close) = strip_fence_indent(&source[last_break + 1..]) else {
+            return false;
+        };
+        let fence = close.trim_end_matches([' ', '\t', '\r']);
         if fence.len() < fence_len || !fence.chars().all(|ch| ch == marker) {
-            return;
+            return false;
         }
-        if source[first_line.len()..last_break].trim().is_empty() {
-            return;
+        if value.trim().is_empty() {
+            return false;
         }
         self.conceal(range.clone(), range.start..range.start + first_line.len());
         self.conceal(range.clone(), range.start + last_break + 1..range.end);
+        true
     }
 
     fn quote(&mut self, range: Range<usize>) {
@@ -400,15 +406,15 @@ impl<'tree> Reader<'_, '_, 'tree> {
                 }
                 Blockquote(_) => self.quote(range),
                 Code(code) => {
-                    if code
-                        .lang
-                        .as_deref()
-                        .is_some_and(|lang| lang.eq_ignore_ascii_case("mermaid"))
-                        && let Some(span) = self.span(range.clone())
+                    if self.code_block(range.clone(), &code.value)
+                        && code
+                            .lang
+                            .as_deref()
+                            .is_some_and(|lang| lang.eq_ignore_ascii_case("mermaid"))
+                        && let Some(span) = self.span(range)
                     {
                         self.result.diagrams.push((span, code.value.clone()));
                     }
-                    self.code_block(range);
                 }
                 ListItem(_) => self.list_marker(range.start),
                 _ => {}
@@ -420,6 +426,11 @@ impl<'tree> Reader<'_, '_, 'tree> {
             }
         }
     }
+}
+
+fn strip_fence_indent(line: &str) -> Option<&str> {
+    let spaces = line.bytes().take_while(|&b| b == b' ').count();
+    (spaces <= 3).then(|| &line[spaces..])
 }
 
 fn touches(owner: &Range<usize>, selection: &Range<usize>) -> bool {
@@ -552,6 +563,8 @@ mod tests {
             "```\nlet x = 1;",
             "```\n```",
             "```\n\n```",
+            "```rust\nx\n    ```",
+            "    ```\n    x\n    ```",
         ] {
             assert!(
                 hidden_slices(raw, None).is_empty(),
@@ -563,6 +576,28 @@ mod tests {
         assert_eq!(
             hidden_slices("```rust\nlet x = 1;\n```", None),
             ["```rust", "```"]
+        );
+        assert_eq!(
+            hidden_slices("   ```rust\nlet x = 1;\n   ```  ", None),
+            ["```rust", "   ```  "]
+        );
+
+        let schema = model::schema();
+        for raw in ["```mermaid\nflowchart TD\n  A --> B", "```mermaid\n```"] {
+            assert!(
+                Presentation::new(&model::document(&schema, raw))
+                    .diagrams
+                    .is_empty()
+            );
+        }
+        assert_eq!(
+            Presentation::new(&model::document(
+                &schema,
+                "```mermaid\nflowchart TD\n  A --> B\n```"
+            ))
+            .diagrams
+            .len(),
+            1
         );
     }
 }
