@@ -51,6 +51,8 @@ export interface ConversationShell {
 
 export interface ConversationSessionHandle {
   title(): string | null;
+  /** The window-wide dossiers view covers the underlying conversation or room. */
+  discoveryOpen?(): boolean;
   kind(sessionId: string): Promise<AgentSessionKind>;
   leave(): Promise<boolean>;
   /** Finds or creates the Maka Bot conversation and returns its id. */

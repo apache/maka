@@ -79,6 +79,7 @@ import { ownTitleBar, TITLE_BAR_HEIGHT, windowDrag } from './chrome';
 
 export type WorkspaceBrowserProps = {
   openRooms?: (() => void) | undefined;
+  openDiscovery?: (() => void) | undefined;
   navigationMore?: (() => JSX.Element) | undefined;
   pinSidebar?: (() => void) | undefined;
   suppressSidebarHover?: (() => void) | undefined;
@@ -561,6 +562,20 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
         automationsOpen.set(true);
       },
     },
+    ...(props.openDiscovery
+      ? [
+          {
+            id: 'discovery' as const,
+            icon: 'activity' as const,
+            label: tr('Discovery dossiers'),
+            disabled: props.connectionLost(),
+            open: () => {
+              setMoreFeaturesOpen(false);
+              props.openDiscovery?.();
+            },
+          },
+        ]
+      : []),
     ...(props.openRooms !== undefined
       ? [
           {
@@ -825,6 +840,35 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
           >
             <Icon name="activity" color={navIcon()} />
             <Text style={{ color: navText(), flex: 1, fontSize: 14 }}>{tr('Automations')}</Text>
+          </Button>
+        </If>
+        <If
+          when={
+            props.openDiscovery &&
+            (platform.idiom === 'terminal' || sidebarPreferences.isPinned('discovery'))
+          }
+        >
+          <Button
+            accessibilityLabel={tr('Discovery dossiers')}
+            disabled={props.connectionLost()}
+            onPress={() => props.openDiscovery?.()}
+            style={{
+              ...controlStyle,
+              flexDirection: 'row',
+              alignItems: 'center',
+              gap: 8,
+              paddingHorizontal: 8,
+              height: navigationRowHeight(),
+              borderRadius: 8,
+            }}
+            hoverStyle={controlHoverStyle()}
+            focusStyle={controlFocusStyle()}
+            disabledStyle={controlDisabledStyle}
+          >
+            <Icon name="activity" color={navIcon()} />
+            <Text style={{ color: navText(), flex: 1, fontSize: 14 }}>
+              {tr('Discovery dossiers')}
+            </Text>
           </Button>
         </If>
         <If when={showRoomsNav()}>

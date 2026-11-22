@@ -108,10 +108,13 @@ function App(
   const settingsModel = signal<ModelSelection | undefined>(saved?.settings?.model);
   const settingsPage = signal<string | undefined>(saved?.settings?.page);
   const session = signal<ConversationSessionHandle | null>(null);
+  const discoveryOpen = () => session()?.discoveryOpen?.() ?? false;
   windowTitle(() =>
-    workspaceMode() === 'rooms'
-      ? (roomWorkspace()?.title() ?? tr('Rooms'))
-      : (session()?.title() ?? null),
+    discoveryOpen()
+      ? tr('Discovery dossiers')
+      : workspaceMode() === 'rooms'
+        ? (roomWorkspace()?.title() ?? tr('Rooms'))
+        : (session()?.title() ?? null),
   );
   const restoredSides = platform.idiom === 'terminal' ? [] : (saved?.sideSessionIds ?? []);
   const sides = signal<SidePane[]>(restoredSides.map((id) => createSide(id)));
@@ -295,6 +298,7 @@ function App(
     sessionId: selected,
     visible: () =>
       workspaceMode() === 'conversations' &&
+      !discoveryOpen() &&
       !settingsOpened() &&
       !(plugins.panel() && !canDockPreview()),
     paneVisible: conversationPaneVisible,
@@ -562,7 +566,7 @@ function App(
           initialSessionId: saved?.roomSessionId ?? null,
           agentSessionId: selected,
           active: () => workspaceMode() === 'rooms',
-          visible: () => workspaceMode() === 'rooms' && !settingsOpened(),
+          visible: () => workspaceMode() === 'rooms' && !settingsOpened() && !discoveryOpen(),
           blocked,
           sidebarExpanded,
           setSidebarExpanded: (expanded) => sidebarExpanded.set(expanded),

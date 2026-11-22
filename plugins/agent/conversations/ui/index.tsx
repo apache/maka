@@ -43,6 +43,7 @@ import { QuickConversations, type QuickConversationsInput } from './QuickConvers
 import { quickToolView } from '../../../../packages/plugin-sdk/src/workbench-views.js';
 import { RoomView } from './RoomView';
 import { createHost, HostProvider } from '../../../../products/maka/workbench/app/host';
+import { watchDiscoveryDossiers } from '../../../../products/maka/workbench/app/notifications';
 import { initializeComposerToolbar } from '../../../../products/maka/workbench/app/composerToolbar';
 import { initializeSidebarPreferences } from '../../../../products/maka/workbench/app/sidebarPreferences';
 import {
@@ -61,7 +62,10 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
   initializeSidebarPreferences();
   const sides = signal<ReturnType<typeof createConversationUi>[]>([]);
   const rooms = signal<{ id: string; flush(): Promise<void> }[]>([]);
+  const discovery = signal<{ topicId: string | null } | null>(null);
   const window: ConversationWindow = {
+    discovery,
+    dossiers: watchDiscoveryDossiers(host, () => discovery() !== null),
     workspace: signal<WorkspaceViewHandle | null>(null),
     sessions: () => [
       ...[views, ...sides()].flatMap((pane) => {

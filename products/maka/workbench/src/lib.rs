@@ -130,6 +130,61 @@ mod tests {
     }
 
     #[test]
+    fn discovery_dossiers_keep_the_selected_topic_and_send_to_its_thread() {
+        let mut app = headless_fixture(
+            "tests/fixtures/discovery-dossiers.tsx",
+            Size::new(px(920.0), px(760.0)),
+            false,
+        );
+        app.wait_for("role:button[Proactive discovery]").unwrap();
+        app.press("role:button[Proactive discovery]").unwrap();
+        app.wait_for("text:Review copy").unwrap();
+        app.press("label:Discovery desktop notifications: On")
+            .unwrap();
+        app.wait_for("label:Discovery desktop notifications: Off")
+            .unwrap();
+        app.wait_for("text:Stale").unwrap();
+        app.wait_for("text:ReviewExport").unwrap();
+        app.wait_for("text:1 linked schedule").unwrap();
+        assert!(!app.screen().matches("text:/Last material change/").unwrap());
+        app.press("role:button[Watches and activity]").unwrap();
+        app.wait_for("text:/Last material change/").unwrap();
+        app.wait_for("text:/Signing window/").unwrap();
+        app.press("role:button[Release, New findings]").unwrap();
+        app.wait_for("text:Release summary").unwrap();
+        assert!(!app.screen().matches("text:Artifacts").unwrap());
+        assert!(
+            !app.screen()
+                .matches("role:button[Open full thread]")
+                .unwrap()
+        );
+        app.type_text("label:Reply to this dossier…", "Review this")
+            .unwrap();
+        app.press_key("mod+u").unwrap();
+        app.wait_for("text:Revised Release").unwrap();
+        app.press("role:button[Send]").unwrap();
+        app.wait_for("text:Review this").unwrap();
+        app.press("role:button[Mute]").unwrap();
+        app.wait_for("role:button[Release, New findings, Muted]")
+            .unwrap();
+        app.press("role:button[Drop lead]").unwrap();
+        app.type_text("label:Paste text or drop files here", "New lead")
+            .unwrap();
+        app.press("role:button[Add lead]").unwrap();
+        app.wait_for("text:New lead summary").unwrap();
+        app.press_key("mod+d").unwrap();
+        app.wait_for("text:Review this").unwrap();
+        app.type_text("label:Reply to this dossier…", "Thanks")
+            .unwrap();
+        app.press("role:button[Send]").unwrap();
+        app.wait_for("text:Thanks").unwrap();
+        app.press_key("mod+r").unwrap();
+        app.wait_for("text:Reviewed").unwrap();
+        app.press("role:button[Open full thread]").unwrap();
+        app.wait_for("text:thread-two").unwrap();
+    }
+
+    #[test]
     fn discovery_panel_approves_scope_controls_runs_and_rejects_stale_edits() {
         let mut app = headless_fixture(
             "tests/fixtures/discovery.tsx",

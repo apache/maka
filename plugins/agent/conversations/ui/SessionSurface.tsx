@@ -173,7 +173,12 @@ import {
 } from '../../../../products/maka/workbench/app/TerminalInterrupt';
 import { viewRuntimeContext } from '../../../../products/maka/workbench/app/plugins/viewContext';
 import { projectComposerAttachments } from '../../../../products/maka/workbench/app/composerSession';
-import { watchNotifications } from '../../../../products/maka/workbench/app/notifications';
+import {
+  watchNotifications,
+  type watchDiscoveryDossiers,
+} from '../../../../products/maka/workbench/app/notifications';
+import { DiscoveryDossiers } from '../../../../products/maka/workbench/app/DiscoveryDossiers';
+import { sessionIdFromLink } from '../../../../products/maka/workbench/app/skillTokenText';
 
 type OverlayTarget = {
   sessionId: string | null;
@@ -250,6 +255,8 @@ type Submission =
     }
   | { kind: 'finishing'; attempt: SubmissionAttempt };
 export type ConversationWindow = {
+  discovery: Signal<{ topicId: string | null } | null>;
+  dossiers: ReturnType<typeof watchDiscoveryDossiers>;
   workspace: Signal<WorkspaceViewHandle | null>;
   sessions(): readonly string[];
   command(id: string): void;
@@ -265,6 +272,7 @@ export function createConversationUi(
   side?: { browsing: Browsing },
 ) {
   const runtime = context.runtime;
+  const openDiscovery = (topicId: string | null = null) => window.discovery.set({ topicId });
   effect(() => currentLocale.set(context.locale()));
   const shell = signal<ConversationShell | null>(null);
   const bind = (next: ConversationShell) => {
@@ -1779,6 +1787,7 @@ export function createConversationUi(
     bindKeys();
     watchNotifications({
       sessions: browsing.sessions,
+      openDiscovery,
       foreground,
       open: (sessionId) => void selectBrowsed(sessionId, selected()),
     });
@@ -2044,6 +2053,7 @@ export function createConversationUi(
     create,
     newConversation: (sessionId) => invokeCommand({ id: 'new', sessionId }),
     openBot: (sessionId) => invokeCommand({ id: 'bot', sessionId }),
+    openDiscovery: () => openDiscovery(),
     botSession,
     botWorkers: botWorkers.sessions,
     settings: (sessionId) => invokeCommand({ id: 'settings', sessionId }),
@@ -2189,6 +2199,7 @@ export function createConversationUi(
   );
   const sessionHandle: ConversationSessionHandle = {
     title: () => handle()?.title() ?? null,
+    discoveryOpen: () => window.discovery() !== null,
     floatingComposer: () =>
       selected() === null ? null : (
         <StageFloatingComposer
@@ -2375,7 +2386,53 @@ export function createConversationUi(
           },
         },
       );
-      return workspaceView;
+      if (input.surface !== 'overlays') return workspaceView;
+      const showSession = async (id: string) => {
+        const route = window.discovery();
+        if (!(await input.shell.openSession(id)) || route !== window.discovery()) return false;
+        const previous = overlay();
+        if (previous) closeOverlay(previous.instance);
+        window.discovery.set(null);
+        return true;
+      };
+      return (
+        <>
+          {workspaceView}
+          <If when={window.discovery() !== null}>
+            <DiscoveryDossiers
+              route={window.discovery}
+              snapshot={window.dossiers.snapshot}
+              watchError={window.dossiers.error}
+              botSession={() => botSession() ?? null}
+              openBot={sessionHandle.openBot}
+              control={control}
+              openSession={(id) => void showSession(id).catch(report)}
+              chooseModel={(id) =>
+                void showSession(id)
+                  .then((shown) => {
+                    if (shown) open({ kind: 'models', sessionId: id });
+                  })
+                  .catch(report)
+              }
+              openLink={async (id, target, restoreFocus) => {
+                const linked = sessionIdFromLink(target);
+                if (linked !== undefined) {
+                  await showSession(linked);
+                  return;
+                }
+                if (/^https?:\/\//i.test(target)) {
+                  await host.openBrowser(target);
+                  return;
+                }
+                const sessionId = id ?? (await sessionHandle.openBot());
+                if (await showSession(sessionId))
+                  await requireWorkspace().openLink(sessionId, target, restoreFocus);
+              }}
+              close={() => window.discovery.set(null)}
+            />
+          </If>
+        </>
+      );
     },
     session(input: ConversationSessionInput) {
       if (input.firstMessage !== undefined)
@@ -2692,7 +2749,6 @@ export function createConversationUi(
             <Each of={selected() ? [selected()!] : []} key={(id: string) => id}>
               {(id) => (
                 <Conversation
-                  chooseModel={() => open({ kind: 'models', sessionId: id() })}
                   compact={input.compact !== undefined}
                   client={host.session(id())}
                   connectionLost={connectionLost}
@@ -2815,6 +2871,7 @@ export function createConversationUi(
                   focusComposer={focusComposer}
                   stopAction={stopAction}
                   restartBot={restartBot}
+                  openDiscovery={() => openDiscovery()}
                   attach={(next) => {
                     handle.set(next);
                     const request = pendingReveal;
