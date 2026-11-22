@@ -73,7 +73,9 @@ export function linuxSystemLibraryRustflags(triple, env = {}, exists = existsSyn
   if (!dirs.length) return {};
   const key = `CARGO_TARGET_${triple.toUpperCase().replace(/-/g, '_')}_RUSTFLAGS`;
   const existing = env[key]?.trim() ?? '';
-  const added = dirs.map((dir) => `-L native=${dir}`).filter((flag) => !existing.includes(flag));
+  const hasFlag = (flag) =>
+    new RegExp(`(?:^|\\s)${flag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?:\\s|$)`).test(existing);
+  const added = dirs.map((dir) => `-L native=${dir}`).filter((flag) => !hasFlag(flag));
   if (!added.length) return {};
   return { [key]: existing ? `${existing} ${added.join(' ')}` : added.join(' ') };
 }

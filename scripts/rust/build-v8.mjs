@@ -44,7 +44,8 @@ export async function prepareV8SourceDir(
     const shortDir = await mkdtempFn(join(root, 'v8-'));
     return {
       directory: shortDir,
-      cleanup: () => rmFn(shortDir, { recursive: true, force: true }),
+      cleanup: () =>
+        rmFn(shortDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }),
     };
   } catch (error) {
     if (error && (error.code === 'EACCES' || error.code === 'EPERM' || error.code === 'EROFS')) {
