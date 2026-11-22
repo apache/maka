@@ -1,0 +1,10 @@
+{
+  "name": "Host Echo",
+  "id": "com.example.hostecho",
+  "capabilities": {
+    "host": ["echo", "note"]
+  },
+  "web": {
+    "host": "./host.js"
+  }
+}

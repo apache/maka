@@ -1,0 +1,53 @@
+//! Implements the CRC32c "combine" function, which calculates the CRC32c of two byte streams
+//! concatenated together using their individual CRC32c values (plus the length of the second byte
+//! stream).
+//!
+//! This module is essentially a line-by-line translation of ZLIB's CRC "combine" function
+//! implementation from C to Rust, except for the CRC polynomial used (original uses the CRC32
+//! polynomial 0xedb88320UL, we use the CRC32c polynomial 0x82F63B78).
+//!
+//! Link to original implementation: https://github.com/madler/zlib/blob/master/crc32.c
+//!
+//! This file is based on the Zlib project, located at: https://github.com/madler/zlib,
+//! which includes the following notice:
+//!
+//! crc32.c -- compute the CRC-32 of a data stream
+//! Copyright (C) 1995-2006, 2010, 2011, 2012, 2016 Mark Adler
+//! For conditions of distribution and use, see copyright notice in zlib.h
+//!
+//! Thanks to Rodney Brown <rbrown64@csc.com.au> for his contribution of faster
+//! CRC methods: exclusive-oring 32 bits of data at a time, and pre-computing
+//! tables for updating the shift register in one step with three exclusive-ors
+//! instead of four steps with four exclusive-ors.  This results in about a
+//! factor of two increase in speed on a Power PC G4 (PPC7455) using gcc -O3.
+
+
+/* zlib.h -- interface of the 'zlib' general purpose compression library
+  version 1.2.11, January 15th, 2017
+
+  Copyright (C) 1995-2017 Jean-loup Gailly and Mark Adler
+
+  This software is provided 'as-is', without any express or implied
+  warranty.  In no event will the authors be held liable for any damages
+  arising from the use of this software.
+
+  Permission is granted to anyone to use this software for any purpose,
+  including commercial applications, and to alter it and redistribute it
+  freely, subject to the following restrictions:
+
+  1. The origin of this software must not be misrepresented; you must not
+     claim that you wrote the original software. If you use this software
+     in a product, an acknowledgment in the product documentation would be
+     appreciated but is not required.
+  2. Altered source versions must be plainly marked as such, and must not be
+     misrepresented as being the original software.
+  3. This notice may not be removed or altered from any source distribution.
+
+  Jean-loup Gailly        Mark Adler
+  jloup@gzip.org          madler@alumni.caltech.edu
+
+
+  The data format used by the zlib library is described by RFCs (Request for
+  Comments) 1950 to 1952 in the files http://tools.ietf.org/html/rfc1950
+  (zlib format), rfc1951 (deflate format) and rfc1952 (gzip format).
+*/

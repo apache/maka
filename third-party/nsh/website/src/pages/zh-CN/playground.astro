@@ -1,0 +1,18 @@
+---
+import BaseLayout from '../../layouts/BaseLayout.astro';
+import Nav from '../../components/Nav.astro';
+import Playground from '../../components/Playground.astro';
+import { url } from '../../lib/site';
+---
+
+<BaseLayout
+  lang="zh-CN"
+  title="在线试用"
+  description="在浏览器里编写 NSH 应用并立即看到运行效果：代码直接在本页编译和运行。"
+  alternates={{ en: '/playground', 'zh-CN': '/zh-CN/playground' }}
+>
+  <Nav lang="zh-CN" currentPath={Astro.url.pathname} langHref={url('playground')} />
+  <main id="main" data-pagefind-ignore>
+    <Playground lang="zh-CN" />
+  </main>
+</BaseLayout>

@@ -1,0 +1,526 @@
+# What a user does and sees (compat/apps.rs): each case after its tap.
+# context
+tap id:case-context
+expect Theme: light
+expect Theme: dark
+expect Locale read
+frame id:root 0 0 390 844
+frame id:box 16 140 120 40
+expect Taps: 0
+tap id:tap
+expect Taps: 1
+tap id:tap
+expect Taps: 2
+covers [nsh] context
+covers [nsh] mount
+covers [nsh] signal
+covers [nsh] Text
+covers [nsh] View
+covers [nsh] locale
+covers [nsh:rt] append
+covers [nsh:rt] component
+covers [nsh:rt] element
+covers [nsh:rt] insert
+covers [nsh:rt] prop
+covers [nsh:rt] text
+covers [props] testID
+covers [props] children
+covers [events] onPress
+covers [styles] flex
+covers [styles] paddingTop
+covers [styles] width
+covers [styles] height
+covers [styles] marginLeft
+covers [styles] marginTop
+# core-animated
+tap id:case-core-animated
+expect Linear: 0.000 0.500 1.000
+expect Quad: 0.000 0.250 1.000
+expect Quad out: 0.000 0.750 1.000
+expect Bezier ends: 0.000 1.000
+expect Spring rests at: 1.00
+expect Spring moves: yes
+expect Decay starts at: 0.0
+expect Decay moves forward: yes
+expect Value is a node: true
+expect Sum is a node: true
+expect Interpolation is a node: true
+# A node, the same for the same options, another without `snap`.
+expect Snapping diffClamp: true true true
+# Below the views whose frames the steps check, so they keep their place.
+expect Spring without stiffness rests at: 1.00
+expect Overdamped spring stays finite: yes
+expect Overdamped spring rests at: 1.00
+expect Composite: function/function/function
+expect Preset duration: 300
+expect Created: 250 linear opacity
+expect Keyboard: keyboard
+frame id:faded 0 302 40 40
+frame id:box 0 359 50 20
+tap id:grow
+frame id:box 0 359 150 20
+# A physical spring animates the next commit, and one view's change.
+tap id:spring
+expect Laid out: sprung 150
+tap id:scoped
+expect Laid out: scoped 150
+covers [nsh] Animated
+covers [nsh] AnimatedNode
+covers [nsh] AnimatedValue
+covers [nsh] Easing
+covers [nsh] LayoutAnimation
+covers [nsh] createAnimatedValue
+# core-canvas
+tap id:case-core-canvas
+frame id:canvas 0 64 200 100
+drawing id:canvas fillStyle createLinearGradient(0, 0, 200, 0)...
+drawing id:canvas fill path(moveTo 0 0, lineTo 100 0, lineTo 100 100, closePath)
+drawing id:canvas lineWidth 4
+drawing id:canvas setLineDash 4 2
+drawing id:canvas strokeStyle #000000ff
+drawing id:canvas font 16px sans-serif
+drawing id:canvas fillText "Hi" 120 50
+drawing id:canvas rect 120 10 60 40
+nodrawing id:canvas clearRect...
+expect Not checked
+tap id:check
+expect size 200x100 canvas 200x100 drawn true context true gradient true in true out false added true current true stroke true dash 3,1 measured true
+covers [nsh] Canvas
+covers [nsh] CanvasGradient
+covers [nsh] CanvasRenderingContext2D
+covers [nsh] Path2D
+covers [props] Canvas.draw
+# core-shader
+tap id:case-core-shader
+expect Over the shader
+frame id:shader 0 64 200 100
+frame id:label 10 10 180 17
+frame id:still 0 164 50 50
+covers [nsh] Shader
+# core-shader-effects
+tap id:case-core-shader-effects
+expect Pressed 0
+expect Spring
+expect Season 1
+frame id:effect 0 64 200 60
+frame id:inside 10 10 180 17
+frame id:transition 0 124 200 40
+frame id:fade 0 164 100 20
+# The effect's children keep their presses; a transition's change with its
+# value, the shader drawing the change over them.
+tap id:inside
+expect Pressed 1
+tap id:next
+expect Summer
+absent Spring
+expect Season 2
+tap id:next
+expect Autumn
+expect Season 3
+# core-elements
+tap id:case-core-elements
+expect In scroll
+frame id:scroll 0 64 390 100
+frame id:tall 0 0 390 300
+frame id:input 0 164 200 36
+frame id:image 0 200 64 48
+frame id:video 0 248 160 90
+frame id:web 0 338 180 60
+frame id:map 0 398 100 50
+frame id:map-animated 0 448 100 50
+frame id:pan 0 498 50 50
+expect Missing module: ReferenceError
+expect Base module: object
+expect Same object: true
+expect Pan handlers: some
+expect Pan start: true
+covers [nsh] Scroll
+covers [nsh/base] Input
+covers [nsh] Image
+covers [nsh] Video
+covers [nsh] WebView
+covers [nsh] nativeComponent
+covers [nsh] nativeModule
+covers [nsh] PanResponder
+# core-frame-rate
+tap id:case-core-frame-rate
+expect Frame rates started: yes
+# Each animation asks for a rate and still ends where it would.
+animated id:fade opacity 1
+animated id:slide transform.0 0
+# The decay stops at its bound.
+animated id:glide transform.0 20
+animated id:pulse opacity 1
+animated id:tint opacity 1
+style id:spinner animationName spin
+style id:spinner animationFrameRate 30
+nostyle id:uncapped animationFrameRate
+covers [styles] animationFrameRate
+# core-offscreen-canvas
+tap id:case-core-offscreen-canvas
+expect Offscreen 120x80
+expect Context kept true, other kinds null true
+expect Measured true
+expect Render failed ERR_FEATURE_UNAVAILABLE_ON_PLATFORM
+covers [nsh] OffscreenCanvas
+# core-list
+tap id:case-core-list
+expect Fruits
+expect 1. Apple
+expect 2. Banana
+expect 3. Cherry
+absent 4. Item 4
+expect End of fruits
+frame id:row-0 0 0 370 40
+# Separators between the rows, none after the last.
+origin id:row-0 10 98
+origin id:row-1 10 140
+origin id:row-2 10 182
+frame id:plum 0 0 358 30
+frame id:inner 12 12 366 20
+frame id:inner2 8 8 374 20
+expect Plum
+absent No plums
+expect Nothing here
+# A viewport of overscan below the visible rows (100 pt): bound after the
+# first frame, never further.
+expect Long 0
+expect Long 4
+absent Long 6
+drawing id:sep-0 fillStyle #ff0000ff
+drawing id:sep-1 fillStyle #ff0000ff
+tap id:reload
+expect Separator cleanups: 0
+tap id:theme
+drawing id:sep-0 fillStyle #0000ffff
+drawing id:sep-1 fillStyle #0000ffff
+tap id:add
+expect 4. Item 4
+expect 3. Cherry
+covers [nsh] List
+covers [nsh:rt] list
+covers [props] contentStyle
+covers [props] contentClass
+covers [props] List.each
+covers [props] List.header
+covers [props] List.footer
+covers [props] List.empty
+covers [props] List.separator
+# core-list-anchor
+tap id:case-core-list-anchor
+expect Row 1
+absent Row new 1
+# A list at its start shows the rows that arrive above its first one: it
+# stays at its start, where they are (no scroll keeps the first row in
+# place).
+tap id:prepend-rows
+expect Row new 1
+noprop scroll:text:"Row 1" contentOffset
+# One loading pages at its start keeps its rows in place: the page it
+# prepends lies above them, 120 points up (shown, it would ask for the
+# next at once).
+expect Page 1
+tap id:prepend-page
+expect Page new 1
+prop scroll:text:"Page 1" contentOffset y=120
+# core-list-initial-end
+tap id:case-core-list-initial-end
+expect Shrink 49
+absent Shrink 0
+tap id:read-initial-end
+expect Shrink 48/0; Tall 49/180; Short 0/0; Empty null
+expect Short 0
+expect Short 1
+# Both rows fit: opening at the end does not bottom-align their content.
+frame parent:parent:text:"Short 0" 0 0 390 30
+covers [props] List.initialScrollAtEnd
+# core-list-position
+tap id:case-core-list-position
+expect Positioned 0
+tap id:read-position
+expect Row 0, 0 in; empty: null
+# Rows of 40, 60 and 80 points: 130 points down is 30 points into row 2.
+scroll id:positioned 0 130
+tap id:read-position
+expect Row 2, 30 in; empty: null
+covers [nsh] List
+# core-reactive
+tap id:case-core-reactive
+expect Sum: 3
+expect Peek: 3
+expect Effect runs: 1
+expect Batched: yes
+expect Child shown
+expect Cleanups: 0
+expect Split label
+expect Merged label
+tap id:only-b
+expect Sum: 4
+expect Peek: 3
+expect Effect runs: 2
+tap id:both
+expect Sum: 30
+expect Peek: 30
+expect Effect runs: 3
+tap id:toggle
+expect Child hidden
+absent Child shown
+expect Cleanups: 1
+tap id:toggle
+expect Child shown
+expect Cleanups: 1
+covers [nsh] batch
+covers [nsh] cleanup
+covers [nsh] computed
+covers [nsh] effect
+covers [nsh] split
+covers [nsh] untracked
+covers [nsh:rt] cond
+covers [nsh:rt] merge
+covers [nsh:rt] spread
+# core-ref
+tap id:case-core-ref
+# The signal and the function got their node when the views were made.
+expect Signal: set
+expect Calls: 1
+expect Sizes: none
+# Each form holds its own view: measuring each gives its size.
+tap id:measure
+expect Sizes: 100x10 110x11 120x12 130x13 150x15 160x16
+expect Calls: 1
+covers [nsh:rt] ref
+# core-reveal
+tap id:case-core-reveal
+expect Called: none
+# The ref's method takes no options, vertical, horizontal and animated.
+tap id:default
+expect Called: default
+tap id:center
+expect Called: center
+tap id:nearest
+expect Called: nearest
+tap id:end
+expect Called: end
+# An alignment it does not know is a TypeError, at the call.
+tap id:unknown
+expect Unknown alignment: TypeError
+# core-resource
+tap id:case-core-resource
+# Resources without a source: a value at once, an initial value while the
+# first load runs, a fetcher that throws.
+expect Now: ready 42
+expect Kept: refreshing first loading
+expect Thrown: errored Error: thrown
+expect Child: pending
+expect Child aborts: 0
+# The first load runs, then ends.
+expect State: pending
+expect Value: none
+expect Error: none
+expect Loading: yes
+expect Loads: 1
+expect Aborts: 0
+tap id:resolve
+expect State: ready
+expect Value: user 1
+expect Loading: no
+# A new source loads again, keeping the value; another one supersedes
+# that load, which is aborted.
+tap id:next
+expect State: refreshing
+expect Loading: yes
+expect Loads: 2
+expect Value: user 1
+tap id:next
+expect Loads: 3
+expect Aborts: 1
+expect State: refreshing
+# The load fails: the value stays.
+tap id:reject
+expect State: errored
+expect Error: Error: no user 3
+expect Value: user 1
+expect Loading: no
+# A value set here clears the error.
+tap id:mutate
+expect State: ready
+expect Value: local
+expect Error: none
+# A refetch loads the same source again, and the fetcher knows.
+tap id:refetch
+expect State: refreshing
+expect Loads: 4
+expect Value: local
+tap id:resolve
+expect State: ready
+expect Value: user 3 again
+# An unset source loads nothing.
+tap id:clear
+absent Loads: 5
+absent Loading: yes
+expect Loads: 4
+expect Aborts: 1
+expect State: ready
+expect Value: user 3 again
+# A resource whose component goes away aborts its load.
+tap id:hide
+expect Child gone
+absent Child: pending
+expect Child aborts: 1
+covers [nsh] resource
+# asset-imports
+tap id:case-asset-imports
+# an imported video, and any file imported with `?url`, is its URL
+expect Video: asset:/media/intro.mp4
+expect File: asset:/data/model.bin
+# module-url
+tap id:case-module-url
+expect Module URL: true
+covers [nsh:rt] metaUrl
+# steps
+tap id:case-steps
+log steps: mounted
+expect Plain bold
+style id:card backgroundColor #3366ffff
+style id:card borderRadius 12
+style id:card borderTopLeftRadius 12
+style id:card opacity 0.5
+style id:card transform rotate(45deg) scale(2)
+nostyle id:plain backgroundColor
+nostyle id:plain transform
+# CSS's order: translate, rotate, scale, then transform (its functions, or
+# its list of steps); a percentage of translate is of the view's own size.
+style id:moved transform translateX(10) translateY(20) rotate(30deg) scale(1.5)
+style id:composed transform translateX(5) translateY(20) rotateX(40deg) scaleX(2) scaleY(3) translateX(4) rotate(10deg)
+style id:stepped transform perspective(800) rotateY(30deg) translateX(4)
+prop id:card role button
+noprop id:plain role
+listens id:card onLongPress
+style id:label color #ff0000ff
+style span:Plain fontWeight 400
+style span:bold fontWeight 700
+style text:"Plain bold" color #ff0000ff
+prop id:field placeholder Name
+prop id:field ios.keyboardAppearance dark
+covers [globals] console
+covers [nsh/base] Input
+covers [props] role
+covers [props] ios
+covers [props] ios.keyboardAppearance
+covers [props] placeholder
+covers [events] onLongPress
+covers [styles] backgroundColor
+covers [styles] borderRadius
+covers [styles] opacity
+covers [styles] transform
+covers [styles] translate
+covers [styles] rotate
+covers [styles] scale
+covers [styles] color
+covers [styles] fontWeight
+# core-primitives
+tap id:case-core-primitives
+frame id:image 0 64 64 48
+frame id:video 0 112 160 90
+frame id:web 0 202 180 60
+frame id:canvas 0 262 100 50
+frame id:list 0 312 390 80
+expect Fruit Fig
+expect Fruit Kiwi
+expect Not checked
+tap id:check
+expect functions true context true gradient true path true blob 3x2
+covers [nsh] Image
+covers [nsh] Video
+covers [nsh] WebView
+covers [nsh] Canvas
+covers [nsh] CanvasGradient
+covers [nsh] CanvasRenderingContext2D
+covers [nsh] Path2D
+covers [nsh] List
+# core-motion
+tap id:case-core-motion
+expect Presets: many
+expect Kinds: attention enter exit loop
+expect Shake moves: translateX
+expect Fade in up from: 24
+expect Steps: 0 0.25 0.5 0.75 1
+expect Transform steps: 7
+expect Bound: true
+expect Started: yes
+expect Sprung: yes
+# The exit interrupts the entrance and springs on from there to its end.
+animated id:sprung opacity 0
+animated id:sprung transform.1 24
+expect Staggered: function function
+covers [nsh] createMotion
+covers [nsh] motions
+# core-overlay
+tap id:case-core-overlay
+expect OverlayContent
+# Against its anchor (40, 100, 60 × 20) in a 100 × 30 box that clips: on
+# its right, 8 points away, their bottoms lined up; outside the box.
+frame id:overlay 108 110 50 10
+expect Placed right
+listens id:overlay onPressOutside
+listens id:overlay onCancel
+# A finger down outside it.
+touch start text:"At a point" 5 5
+touch end
+expect Pressed outside
+# At a point by the right edge: no room on the right, so on the left; kept
+# 4 points from the top.
+tap id:point
+expect Placed left
+frame id:overlay 322 4 50 10
+# Against a box (300, 50, 1 × 20): on its right, 8 points away, their
+# bottoms lined up.
+tap id:box
+frame id:overlay 309 60 50 10
+# Escape or back.
+event text:OverlayContent onCancel
+absent OverlayContent
+covers [nsh] Overlay
+covers [props] anchor
+covers [props] placement
+covers [props] align
+covers [props] offset
+covers [props] margin
+covers [events] onPosition
+covers [events] onPressOutside
+covers [events] onCancel
+# core-error-boundary
+tap id:case-core-error-boundary
+expect Around the boundary
+expect Risky ok
+expect Outer caught fallback of binding
+expect Rest caught binding
+tap id:break
+expect Caught binding
+absent Risky ok
+expect Around the boundary
+tap id:retry
+expect Risky ok
+tap id:risky
+expect Caught pressed
+expect Break
+covers [nsh] ErrorBoundary
+# web-load
+tap id:case-web-load
+tap id:load
+expect Loaded, invalid header: TypeError
+covers [nsh] WebView
+
+# web-evaluate (headless backend advertises deterministic unavailability)
+tap id:case-web-evaluate
+tap id:evaluate
+expect Evaluation: false/TypeError,RangeError/ERR_FEATURE_UNAVAILABLE_ON_PLATFORM
+# web-available
+tap id:case-web-available
+expect Web views available: true
+expect No error
+covers [nsh] WebView
+# shaders-available
+tap id:case-shaders-available
+expect Shaders available: true
+covers [nsh] shadersAvailable

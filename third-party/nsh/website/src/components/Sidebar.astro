@@ -1,0 +1,76 @@
+---
+import { label } from '../lib/locales';
+import { GROUPS, type Page } from '../lib/sections';
+import type { Lang } from '../lib/site';
+
+export interface Props {
+  title: string;
+  pages: Page[];
+  current: string;
+  lang?: Lang;
+  /** The pages' locale, when other than `lang`. */
+  locale?: string;
+}
+
+const { title, pages, current, lang = 'en', locale = lang } = Astro.props;
+const isZh = lang === 'zh-CN';
+const currentPage = pages.find((page) => page.route === current);
+// A group's label goes before the first page of each run of pages in it.
+const groupLabel = (index: number) => {
+  const group = pages[index].group;
+  if (!group || group === pages[index - 1]?.group) return undefined;
+  return GROUPS[group] && label(GROUPS[group], locale);
+};
+---
+
+<aside class="docs-sidebar" aria-label={isZh ? '文档目录' : 'Documentation'}>
+  <!-- Under 960px the list folds behind this button; it names the page you are on. -->
+  <button class="docs-sidebar__toggle" type="button" aria-controls="docs-sidebar-nav" aria-expanded="false">
+    <span class="docs-sidebar__toggle-label">
+      <span class="docs-sidebar__toggle-section">{title}</span>
+      {currentPage && <span class="docs-sidebar__toggle-page">{currentPage.title}</span>}
+    </span>
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+  </button>
+  <nav id="docs-sidebar-nav">
+    <p class="sidebar-group__title">{title}</p>
+    <ul class="sidebar-group__items">
+      {pages.map((page, index) => (
+        <>
+        {groupLabel(index) && <li class="sidebar-subgroup" role="presentation">{groupLabel(index)}</li>}
+        <li>
+          <a
+            href={page.href}
+            class:list={['sidebar-item', { active: page.route === current }]}
+            aria-current={page.route === current ? 'page' : undefined}
+          >
+            {page.title}
+          </a>
+        </li>
+        </>
+      ))}
+    </ul>
+  </nav>
+</aside>
+
+<script is:inline>
+  (function () {
+    var sidebar = document.querySelector('.docs-sidebar');
+    if (!sidebar) return;
+    var toggle = sidebar.querySelector('.docs-sidebar__toggle');
+    sidebar.setAttribute('data-nav-ready', '');
+    toggle.addEventListener('click', function () {
+      var open = sidebar.getAttribute('data-mobile-open') !== 'true';
+      sidebar.setAttribute('data-mobile-open', String(open));
+      toggle.setAttribute('aria-expanded', String(open));
+    });
+    var active = sidebar.querySelector('.sidebar-item.active');
+    if (active && window.matchMedia('(min-width: 960px)').matches) {
+      var box = sidebar.getBoundingClientRect();
+      var item = active.getBoundingClientRect();
+      if (item.bottom > box.bottom || item.top < box.top) {
+        sidebar.scrollTop = active.offsetTop - sidebar.clientHeight / 2;
+      }
+    }
+  })();
+</script>

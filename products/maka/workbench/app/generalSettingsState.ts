@@ -1,0 +1,736 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import { batch, cleanup, signal } from 'nsh';
+import type { Host } from './host';
+import { applyLanguagePreference, currentLocale, tr } from './locale';
+import { errorText, message, UiError } from './text';
+import type {
+  AgentGlobalInstructionsView,
+  LanguagePreference,
+  MessagePredictionSettings,
+  ProfileAvatar,
+  SettingsAssistantPreferences,
+  SettingsPreferencesMutation,
+  SettingsPreferencesUpdated,
+} from '../../../../packages/plugin-sdk/src/index.js';
+import type { SettingsOperations } from './settingsOperations';
+import { sameValue } from '../../../../plugins/shared/value';
+import { invalidatePredictionPreferences, observePredictionPreferences } from './messagePrediction';
+import { createSettingsDiscard } from './settingsDiscard';
+
+type PreferencesEditor =
+  | { kind: 'dictation'; id: number; basis: SettingsAssistantPreferences }
+  | {
+      kind: 'personalization';
+      id: number;
+      basis: SettingsAssistantPreferences;
+      displayName: string;
+      avatar: ProfileAvatar | null;
+    }
+  | {
+      kind: 'shell';
+      id: number;
+      basis: SettingsAssistantPreferences;
+      preference: 'auto' | 'git_bash';
+      executable: string;
+    }
+  | {
+      kind: 'compaction';
+      id: number;
+      basis: SettingsAssistantPreferences;
+      prompt: string;
+      useDefault: boolean;
+    }
+  | {
+      kind: 'predictions';
+      id: number;
+      basis: SettingsAssistantPreferences;
+      enabled: boolean;
+      ordinarySessionsOnly: boolean;
+      liveSamplePercent: string;
+      catchUpSamplePercent: string;
+      prompt: string;
+      useDefault: boolean;
+    };
+export type PredictionEditor = Extract<PreferencesEditor, { kind: 'predictions' }>;
+export type PredictionEdit =
+  | { field: 'enabled' | 'ordinarySessionsOnly'; value: boolean }
+  | { field: 'liveSamplePercent' | 'catchUpSamplePercent' | 'prompt'; value: string };
+type GlobalInstructions = Extract<AgentGlobalInstructionsView, { kind: 'available' }>;
+type GlobalEditor = {
+  kind: 'globalInstructions';
+  id: number;
+  document: { basis: GlobalInstructions; content: string; conflict: boolean } | null;
+};
+type Editor = PreferencesEditor | GlobalEditor;
+export type GeneralSettingsSnapshot = {
+  facts: SettingsAssistantPreferences | null;
+  editor: Editor | null;
+  view: number;
+};
+type PreferencesAction = {
+  view: number;
+  policyRevision: number | null;
+  kind: 'root' | PreferencesEditor['kind'];
+};
+export type GeneralAction =
+  | PreferencesAction
+  | {
+      view: number;
+      kind: 'globalInstructions';
+      fileBasis: Pick<GlobalInstructions, 'source' | 'revision'> | null;
+    };
+export const assistantLanguages = (): { value: LanguagePreference; label: string }[] => [
+  { value: 'auto', label: tr('Automatic') },
+  { value: 'en', label: 'English' },
+  { value: 'zh-CN', label: '简体中文' },
+  { value: 'zh-TW', label: '繁體中文' },
+];
+
+export function createGeneralSettings(
+  host: Host,
+  operations: SettingsOperations,
+  active: () => boolean,
+  restored?: GeneralSettingsSnapshot,
+  languageChanged?: (locale: string) => void,
+) {
+  const facts = signal<SettingsAssistantPreferences | null>(restored?.facts ?? null);
+  const editor = signal<Editor | null>(restored?.editor ?? null);
+  const loading = signal(false);
+  const view = signal(restored?.view ?? 0);
+  let alive = true;
+  let enabled = false;
+  let read = 0;
+  const visible = () => alive && enabled && active();
+  const action = (): GeneralAction => {
+    const form = editor();
+    if (form?.kind === 'globalInstructions')
+      return {
+        view: view(),
+        kind: form.kind,
+        fileBasis: form.document
+          ? { source: form.document.basis.source, revision: form.document.basis.revision }
+          : null,
+      };
+    return {
+      view: view(),
+      policyRevision: form?.basis.revision ?? facts()?.revision ?? null,
+      kind: form?.kind ?? 'root',
+    };
+  };
+  const current = (request: GeneralAction) => {
+    const selected = action();
+    if (!visible() || request.view !== selected.view || request.kind !== selected.kind)
+      return false;
+    return request.kind === 'globalInstructions'
+      ? selected.kind === 'globalInstructions' &&
+          request.fileBasis?.source === selected.fileBasis?.source &&
+          request.fileBasis?.revision === selected.fileBasis?.revision
+      : selected.kind !== 'globalInstructions' &&
+          request.policyRevision === selected.policyRevision;
+  };
+  const blocked = () =>
+    !visible() ||
+    loading() ||
+    operations.busy() ||
+    !operations.pendingKnown() ||
+    operations.pending().length > 0;
+  const globalDocument = () => {
+    const form = editor();
+    return form?.kind === 'globalInstructions' ? form.document : null;
+  };
+  const disabled = () =>
+    blocked() ||
+    (editor()?.kind === 'globalInstructions' ? globalDocument() === null : facts() === null);
+  const cancelRead = () => {
+    read += 1;
+    view.set(view() + 1);
+    loading.set(false);
+  };
+  const load = async () => {
+    if (!visible() || editor()) return;
+    const generation = ++read;
+    const capturedView = view();
+    const owns = () => visible() && generation === read && capturedView === view() && !editor();
+    batch(() => {
+      facts.set(null);
+      loading.set(true);
+    });
+    try {
+      const result: SettingsAssistantPreferences = await host.query(
+        'settings',
+        'assistantPreferences',
+        {},
+      );
+      observePredictionPreferences(result);
+      applyLanguagePreference(result.language ?? 'auto', result.revision);
+      languageChanged?.(currentLocale());
+      if (owns()) facts.set(result);
+    } catch (reason) {
+      if (owns()) operations.report(reason);
+    } finally {
+      if (owns()) loading.set(false);
+    }
+  };
+  const mutate = (
+    request: PreferencesAction,
+    mutation: SettingsPreferencesMutation,
+    submitted: PreferencesEditor | null = null,
+  ) => {
+    if (!current(request) || disabled() || request.policyRevision === null) return;
+    const expectedRevision = request.policyRevision;
+    return operations.run(async () => {
+      if (!current(request)) return;
+      const result: SettingsPreferencesUpdated = await operations.mutate(
+        'settings',
+        'updateAssistantPreferences',
+        { expectedRevision, mutation },
+      );
+      if (!alive) return;
+      switch (result.kind) {
+        case 'committed':
+          invalidatePredictionPreferences(result.revision);
+          if (mutation.kind === 'language') {
+            applyLanguagePreference(mutation.preference, result.revision);
+            languageChanged?.(currentLocale());
+          }
+          // Retire the submitted editor before reading new facts. A failed read
+          // cannot leave a committed draft available to submit a second time.
+          batch(() => {
+            facts.set(null);
+            if (submitted && editor()?.id === submitted.id) editor.set(null);
+            cancelRead();
+          });
+          if (visible()) await load();
+          operations.notice.set(message('Preferences saved.'));
+          break;
+        case 'revision_conflict':
+          facts.set(null);
+          throw new UiError(
+            'Preferences changed elsewhere. Cancel this edit and refresh before saving again.',
+          );
+        case 'rejected':
+          throw new UiError(
+            mutation.kind === 'shell'
+              ? 'Git Bash must be an existing GNU Bash executable on this Windows Runtime Host.'
+              : 'The Host rejected these preferences. Check the values before saving.',
+          );
+      }
+    });
+  };
+  const loadGlobal = async (id: number) => {
+    const form = editor();
+    if (!visible() || form?.kind !== 'globalInstructions' || form.id !== id) return;
+    const generation = ++read;
+    const capturedView = view();
+    const owns = () =>
+      visible() &&
+      generation === read &&
+      capturedView === view() &&
+      editor()?.kind === 'globalInstructions' &&
+      editor()?.id === id;
+    loading.set(true);
+    try {
+      const result = await host.query('agent', 'globalInstructions', {});
+      if (!owns()) return;
+      if (result.kind !== 'available')
+        throw new UiError('Source unavailable. Reload to try again.');
+      editor.set({
+        kind: 'globalInstructions',
+        id,
+        document: { basis: result, content: result.content, conflict: false },
+      });
+    } catch (reason) {
+      if (owns()) operations.report(reason);
+    } finally {
+      if (owns()) loading.set(false);
+    }
+  };
+  const settleGlobal = async (value: unknown, submittedId: number | null) => {
+    if (!alive) return;
+    const kind = value !== null && typeof value === 'object' && 'kind' in value ? value.kind : null;
+    const form = editor();
+    switch (kind) {
+      case 'saved':
+        if (
+          form?.kind === 'globalInstructions' &&
+          (submittedId === null ? form.document === null : form.id === submittedId)
+        ) {
+          // The committed draft cannot be submitted again, even if this read fails.
+          batch(() => {
+            cancelRead();
+            editor.set({ kind: form.kind, id: form.id, document: null });
+          });
+          if (visible()) await loadGlobal(form.id);
+        }
+        if (alive) operations.notice.set(message('Global instructions saved.'));
+        return;
+      case 'changed':
+        if (form?.kind === 'globalInstructions' && form.document) {
+          const document = form.document;
+          batch(() => {
+            cancelRead();
+            editor.set({ ...form, document: { ...document, conflict: true } });
+          });
+        }
+        throw new UiError(
+          'Source changed. Your draft is preserved. Reload the source before saving again.',
+        );
+      case 'unavailable':
+        throw new UiError('Source unavailable. Reload to try again.');
+      default:
+        throw new UiError('The Host returned an invalid global instructions result.');
+    }
+  };
+  const recovered = async (value: unknown) => {
+    if (!alive) return;
+    const kind = value !== null && typeof value === 'object' && 'kind' in value ? value.kind : null;
+    const form = editor();
+    if (kind !== 'saved' || form?.kind !== 'globalInstructions' || !form.document)
+      return settleGlobal(value, null);
+    // The journal can contain another shell's action. Its saved receipt does
+    // not grant ownership of this editor's unsaved draft.
+    const document = form.document;
+    cancelRead();
+    const generation = ++read;
+    const capturedView = view();
+    const owns = () =>
+      alive &&
+      generation === read &&
+      capturedView === view() &&
+      editor()?.kind === 'globalInstructions' &&
+      editor()?.id === form.id;
+    loading.set(true);
+    let current: AgentGlobalInstructionsView;
+    try {
+      current = await host.query('agent', 'globalInstructions', {});
+    } catch (reason) {
+      if (!owns()) return;
+      editor.set({ ...form, document: { ...document, conflict: true } });
+      throw new UiError(
+        'The original action completed, but the source could not be read. Your draft is preserved. Reload before saving again. ({reason})',
+        { reason: errorText(reason, 'Source unavailable. Reload to try again.') },
+      );
+    } finally {
+      if (owns()) loading.set(false);
+    }
+    if (!owns()) return;
+    if (
+      current.kind === 'available' &&
+      current.source === document.basis.source &&
+      current.path === document.basis.path &&
+      current.exists &&
+      current.content === document.content
+    ) {
+      editor.set({
+        ...form,
+        document: { basis: current, content: document.content, conflict: false },
+      });
+      operations.notice.set(message('Global instructions saved.'));
+      return;
+    }
+    editor.set({ ...form, document: { ...document, conflict: true } });
+    throw new UiError(
+      current.kind === 'unavailable'
+        ? 'The original action completed, but the source could not be read. Your draft is preserved. Reload before saving again.'
+        : 'Source changed. Your draft is preserved. Reload the source before saving again.',
+    );
+  };
+  const predictionDraft = (
+    basis: SettingsAssistantPreferences,
+  ): Omit<PredictionEditor, 'kind' | 'id' | 'basis'> => ({
+    enabled: basis.predictions.enabled,
+    ordinarySessionsOnly: basis.predictions.ordinarySessionsOnly,
+    liveSamplePercent: String(basis.predictions.liveSamplePercent),
+    catchUpSamplePercent: String(basis.predictions.catchUpSamplePercent),
+    prompt: basis.predictions.prompt ?? basis.defaultPredictionPrompt,
+    useDefault: basis.predictions.prompt === null,
+  });
+  const samplePercent = (text: string) => {
+    const trimmed = text.trim();
+    const value = Number(trimmed);
+    if (!trimmed || !Number.isFinite(value) || value < 0 || value > 100)
+      throw new UiError('Enter a percentage from 0 to 100.');
+    return value;
+  };
+  const predictionSettings = (form: PredictionEditor): MessagePredictionSettings => {
+    return {
+      enabled: form.enabled,
+      ordinarySessionsOnly: form.ordinarySessionsOnly,
+      liveSamplePercent: samplePercent(form.liveSamplePercent),
+      catchUpSamplePercent: samplePercent(form.catchUpSamplePercent),
+      prompt: form.useDefault || !form.prompt.trim() ? null : form.prompt,
+    };
+  };
+  const open = (request: GeneralAction, kind: PreferencesEditor['kind']) => {
+    const basis = facts();
+    if (!basis || request.kind !== 'root' || !current(request) || disabled()) return;
+    cancelRead();
+    editor.set(
+      kind === 'dictation'
+        ? { kind, id: view(), basis }
+        : kind === 'shell'
+          ? {
+              kind,
+              id: view(),
+              basis,
+              preference: basis.shell.preference,
+              executable: basis.shell.executable,
+            }
+          : kind === 'personalization'
+            ? {
+                kind,
+                id: view(),
+                basis,
+                displayName: basis.displayName,
+                avatar: basis.avatar ?? null,
+              }
+            : kind === 'compaction'
+              ? { kind, id: view(), basis, prompt: basis.compactionPrompt, useDefault: false }
+              : { kind, id: view(), basis, ...predictionDraft(basis) },
+    );
+  };
+  const dirty = () => {
+    const form = editor();
+    return form?.kind === 'personalization'
+      ? form.displayName !== form.basis.displayName || form.avatar !== (form.basis.avatar ?? null)
+      : form?.kind === 'compaction'
+        ? form.useDefault || form.prompt !== form.basis.compactionPrompt
+        : form?.kind === 'shell'
+          ? form.preference !== form.basis.shell.preference ||
+            form.executable !== form.basis.shell.executable
+          : form?.kind === 'predictions'
+            ? !sameValue(
+                {
+                  enabled: form.enabled,
+                  ordinarySessionsOnly: form.ordinarySessionsOnly,
+                  liveSamplePercent: form.liveSamplePercent,
+                  catchUpSamplePercent: form.catchUpSamplePercent,
+                  prompt: form.useDefault ? null : form.prompt,
+                },
+                {
+                  ...form.basis.predictions,
+                  liveSamplePercent: String(form.basis.predictions.liveSamplePercent),
+                  catchUpSamplePercent: String(form.basis.predictions.catchUpSamplePercent),
+                },
+              )
+            : form?.kind === 'globalInstructions' &&
+              !!form.document &&
+              (!form.document.basis.exists ||
+                form.document.content !== form.document.basis.content);
+  };
+  // A missing AGENTS.md can be saved as is, but leaving it untouched loses nothing.
+  const unsaved = () => {
+    const form = editor();
+    return form?.kind === 'globalInstructions'
+      ? !!form.document && form.document.content !== form.document.basis.content
+      : dirty();
+  };
+  const closeEditor = () => {
+    cancelRead();
+    editor.set(null);
+    if (visible()) void load();
+  };
+  const discarding = createSettingsDiscard(unsaved, closeEditor);
+  const back = () => {
+    if (operations.busy() || discarding.back()) return false;
+    if (!editor()) return true;
+    closeEditor();
+    return false;
+  };
+  cleanup(() => {
+    alive = false;
+    enabled = false;
+    cancelRead();
+  });
+  return {
+    async initializeLanguage() {
+      const result = await host.query('settings', 'assistantPreferences', {});
+      if (!alive) return;
+      observePredictionPreferences(result);
+      applyLanguagePreference(result.language ?? 'auto', result.revision);
+      languageChanged?.(currentLocale());
+    },
+    snapshot: (): GeneralSettingsSnapshot => ({
+      facts: facts(),
+      editor: editor(),
+      view: view(),
+    }),
+    facts,
+    editor,
+    loading,
+    busy: operations.busy,
+    action,
+    navigation: () => JSON.stringify(action()),
+    disabled,
+    blocked,
+    globalDocument,
+    predictionEditor: () => {
+      const form = editor();
+      return form?.kind === 'predictions' ? form : null;
+    },
+    saveDisabled: () => disabled() || !dirty() || !!globalDocument()?.conflict,
+    dirty,
+    discarding,
+    leave: discarding.leave,
+    activate() {
+      if (!alive || enabled) return;
+      enabled = true;
+      cancelRead();
+      const form = editor();
+      if (form?.kind === 'globalInstructions' && !form.document) void loadGlobal(form.id);
+      else if (!form) void load();
+    },
+    deactivate() {
+      const preserveDraft = dirty();
+      enabled = false;
+      cancelRead();
+      discarding.clear();
+      if (!preserveDraft) editor.set(null);
+    },
+    reset() {
+      cancelRead();
+      discarding.clear();
+      editor.set(null);
+      facts.set(null);
+      if (visible()) void load();
+    },
+    back,
+    title: () =>
+      editor()?.kind === 'dictation'
+        ? tr('Dictation')
+        : editor()?.kind === 'personalization'
+          ? tr('Personalization')
+          : editor()?.kind === 'shell'
+            ? tr('Bash tool shell')
+            : editor()?.kind === 'globalInstructions'
+              ? tr('Global instructions')
+              : editor()?.kind === 'compaction'
+                ? tr('Compaction prompt')
+                : editor()?.kind === 'predictions'
+                  ? tr('Message predictions')
+                  : tr('General'),
+    open: ({ request, kind }: { request: GeneralAction; kind: PreferencesEditor['kind'] }) =>
+      open(request, kind),
+    openGlobal(request: GeneralAction) {
+      if (request.kind !== 'root' || !current(request) || blocked()) return;
+      batch(() => {
+        cancelRead();
+        editor.set({ kind: 'globalInstructions', id: view(), document: null });
+      });
+      void loadGlobal(view());
+    },
+    reloadGlobal(request: GeneralAction) {
+      const form = editor();
+      if (
+        request.kind !== 'globalInstructions' ||
+        !current(request) ||
+        blocked() ||
+        form?.kind !== 'globalInstructions'
+      )
+        return;
+      operations.error.set('');
+      cancelRead();
+      void loadGlobal(form.id);
+    },
+    editGlobal(request: GeneralAction, content: string) {
+      const form = editor();
+      if (
+        request.kind !== 'globalInstructions' ||
+        !current(request) ||
+        disabled() ||
+        form?.kind !== 'globalInstructions' ||
+        !form.document
+      )
+        return;
+      editor.set({ ...form, document: { ...form.document, content } });
+    },
+    recovered,
+    refresh() {
+      if (!visible() || editor() || operations.busy() || loading()) return;
+      operations.error.set('');
+      void load();
+    },
+    cancel(request: GeneralAction) {
+      if (current(request) && !operations.busy()) closeEditor();
+    },
+    toggle({
+      request,
+      kind,
+    }: {
+      request: GeneralAction;
+      kind: 'instructions' | 'titles' | 'predictions';
+    }) {
+      const saved = facts();
+      if (!saved || request.kind !== 'root') return;
+      return mutate(
+        request,
+        kind === 'instructions'
+          ? { kind: 'workspace_instructions', enabled: !saved.workspaceInstructions }
+          : kind === 'titles'
+            ? { kind: 'shell', value: { ...saved.shell, titles: !saved.shell.titles } }
+            : {
+                kind: 'message_predictions',
+                settings: { ...saved.predictions, enabled: !saved.predictions.enabled },
+              },
+      );
+    },
+    language({ request, preference }: { request: GeneralAction; preference: LanguagePreference }) {
+      if (request.kind !== 'root' || facts()?.language === preference) return;
+      return mutate(request, { kind: 'language', preference });
+    },
+    sandboxMode({
+      request,
+      mode,
+    }: {
+      request: GeneralAction;
+      mode: SettingsAssistantPreferences['defaultSandboxMode'];
+    }) {
+      if (request.kind !== 'root' || facts()?.defaultSandboxMode === mode) return;
+      return mutate(request, { kind: 'default_sandbox', mode });
+    },
+    editShell({
+      request,
+      change,
+    }: {
+      request: GeneralAction;
+      change: { preference?: 'auto' | 'git_bash'; executable?: string };
+    }) {
+      const form = editor();
+      if (!current(request) || disabled() || form?.kind !== 'shell') return;
+      editor.set({ ...form, ...change });
+    },
+    editName(request: GeneralAction, displayName: string) {
+      const form = editor();
+      if (!current(request) || disabled() || form?.kind !== 'personalization') return;
+      editor.set({ ...form, displayName });
+    },
+    editAvatar(request: GeneralAction, avatar: ProfileAvatar | null) {
+      const form = editor();
+      if (!current(request) || disabled() || form?.kind !== 'personalization') return;
+      editor.set({ ...form, avatar });
+    },
+    editPrompt(request: GeneralAction, prompt: string) {
+      const form = editor();
+      if (!current(request) || disabled() || form?.kind !== 'compaction') return;
+      editor.set({ ...form, prompt, useDefault: false });
+    },
+    useDefault(request: GeneralAction) {
+      const form = editor();
+      if (!current(request) || disabled() || form?.kind !== 'compaction') return;
+      editor.set({ ...form, prompt: form.basis.defaultCompactionPrompt, useDefault: true });
+    },
+    editPrediction(request: GeneralAction, change: PredictionEdit) {
+      const form = editor();
+      if (!current(request) || disabled() || form?.kind !== 'predictions') return;
+      editor.set({
+        ...form,
+        [change.field]: change.value,
+        ...(change.field === 'prompt' ? { useDefault: false } : {}),
+      });
+    },
+    restorePredictionPrompt(request: GeneralAction) {
+      const form = editor();
+      if (!current(request) || disabled() || form?.kind !== 'predictions') return;
+      editor.set({ ...form, prompt: form.basis.defaultPredictionPrompt, useDefault: true });
+    },
+    restorePredictions(request: GeneralAction) {
+      const form = editor();
+      if (!current(request) || disabled() || form?.kind !== 'predictions') return;
+      editor.set({
+        ...form,
+        enabled: true,
+        ordinarySessionsOnly: false,
+        liveSamplePercent: '100',
+        catchUpSamplePercent: '50',
+        prompt: form.basis.defaultPredictionPrompt,
+        useDefault: true,
+      });
+    },
+    save(request: GeneralAction) {
+      const form = editor();
+      if (!form || !current(request) || disabled() || !dirty()) return;
+      if (request.kind === 'globalInstructions') {
+        if (form.kind !== 'globalInstructions' || !form.document || form.document.conflict) return;
+        const document = form.document;
+        return operations.run(async () => {
+          if (!current(request)) return;
+          const result = await operations.mutate('agent', 'updateGlobalInstructions', {
+            source: document.basis.source,
+            revision: document.basis.revision,
+            content: document.content,
+          });
+          await settleGlobal(result, form.id);
+        });
+      }
+      if (form.kind === 'globalInstructions' || form.kind === 'dictation') return;
+      if (form.kind === 'shell') {
+        if (form.preference === 'git_bash' && !form.executable.trim()) {
+          operations.report(new UiError('Select a Git Bash executable.'));
+          return;
+        }
+        return mutate(
+          request,
+          {
+            kind: 'shell',
+            value: {
+              ...form.basis.shell,
+              preference: form.preference,
+              executable: form.executable.trim(),
+            },
+          },
+          form,
+        );
+      }
+      if (form.kind === 'personalization') {
+        return mutate(
+          request,
+          {
+            kind: 'personalization',
+            displayName: form.displayName,
+            avatar: form.avatar,
+          },
+          form,
+        );
+      }
+      if (form.kind === 'predictions') {
+        let settings: MessagePredictionSettings;
+        try {
+          settings = predictionSettings(form);
+        } catch (reason) {
+          operations.report(reason);
+          return;
+        }
+        return mutate(request, { kind: 'message_predictions', settings }, form);
+      }
+      if (!form.useDefault && !form.prompt.trim()) {
+        operations.report(new UiError('Enter a compaction prompt or choose the Host default.'));
+        return;
+      }
+      return mutate(
+        request,
+        { kind: 'compaction_prompt', prompt: form.useDefault ? null : form.prompt },
+        form,
+      );
+    },
+  };
+}
+
+export type GeneralSettingsOwner = ReturnType<typeof createGeneralSettings>;

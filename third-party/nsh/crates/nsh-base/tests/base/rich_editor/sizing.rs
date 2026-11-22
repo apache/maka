@@ -1,0 +1,230 @@
+//! An editor without a height is as tall as its document, as a block with
+//! `height: auto`: it grows with each line, stops at its `max-height` and
+//! scrolls past it, holds its `min-height`; a set height stays.
+
+use nsh_testing::LayoutNode;
+
+use super::*;
+
+#[derive(Clone, PartialEq, Props)]
+struct SizedProps {
+    sessions: Vec<EditorSession>,
+}
+
+/// Four editors in a column 300 points wide: `auto` without a height,
+/// `capped` at 60 points at most, `held` at 50 points at least, `fixed` 120
+/// points tall.
+#[component]
+fn Sized(props: SizedProps) -> impl IntoElement {
+    let Ok([auto, capped, held, fixed]) = <[EditorSession; 4]>::try_from(props.sessions.clone())
+    else {
+        panic!("four sessions");
+    };
+    view()
+        .w(px(300.0))
+        .child(view().test_id("auto").child(rich_editor().editor(auto)))
+        .child(
+            view()
+                .test_id("capped")
+                .child(rich_editor().editor(capped).max_h(px(60.0))),
+        )
+        .child(
+            view()
+                .test_id("held")
+                .child(rich_editor().editor(held).min_h(px(50.0))),
+        )
+        .child(
+            view()
+                .test_id("fixed")
+                .child(rich_editor().editor(fixed).h(px(120.0))),
+        )
+        .child(text("Ready"))
+}
+
+fn start_sized() -> Headless {
+    let config = EngineConfig {
+        viewport: Size::new(px(800.0), px(900.0)),
+        ..EngineConfig::new(Root::new::<Sized>(|| SizedProps {
+            sessions: (0..4).map(|_| session(paragraphs(&["one"]))).collect(),
+        }))
+    };
+    let mut app = Headless::start(config).expect("the engine starts");
+    app.wait_for("text:Ready").unwrap();
+    app
+}
+
+fn node(app: &Headless, test_id: &str) -> LayoutNode {
+    app.screen()
+        .layout_nodes()
+        .into_iter()
+        .find(|n| n.test_id.as_deref() == Some(test_id))
+        .unwrap_or_else(|| panic!("no view {test_id}"))
+}
+
+fn height(app: &Headless, test_id: &str) -> f32 {
+    node(app, test_id).bounds.size.height.0
+}
+
+/// The bounds of the text view `text`.
+fn text_bounds(app: &Headless, text: &str) -> Bounds<Points> {
+    app.screen()
+        .layout_nodes()
+        .into_iter()
+        .find(|n| n.text.as_ref().is_some_and(|t| t.text.text == text))
+        .unwrap_or_else(|| panic!("no text {text}"))
+        .bounds
+}
+
+/// Types `lines` new lines at the end of editor `test_id`.
+fn add_lines(app: &mut Headless, test_id: &str, lines: &[&str]) {
+    app.type_text(&format!("id:{test_id}"), "").unwrap();
+    keys(app, &["ctrl+end"]);
+    for line in lines {
+        keys(app, &["enter"]);
+        app.type_text(&format!("id:{test_id}"), line).unwrap();
+    }
+    // Laid out with its last line, not after a fixed time.
+    if let Some(last) = lines.last() {
+        app.wait_for(&format!("text:{last}")).unwrap();
+    }
+}
+
+#[test]
+fn an_editor_without_a_height_is_as_tall_as_its_document() {
+    let mut app = start_sized();
+    let line = height(&app, "auto");
+    assert!(line > 0.0, "one line shows");
+    add_lines(&mut app, "auto", &["two", "three"]);
+    let grown = height(&app, "auto");
+    assert!(
+        (grown - 3.0 * line).abs() < 1.0,
+        "three lines: {grown} for lines of {line}"
+    );
+    keys(
+        &mut app,
+        &[
+            "backspace",
+            "backspace",
+            "backspace",
+            "backspace",
+            "backspace",
+            "backspace",
+        ],
+    );
+    see(&mut app, "two");
+    app.wait_for_gone("text:three", Duration::from_secs(5))
+        .unwrap();
+    let shrunk = height(&app, "auto");
+    assert!(
+        (shrunk - 2.0 * line).abs() < 1.0,
+        "back to two lines: {shrunk}"
+    );
+}
+
+#[test]
+fn past_its_max_height_an_editor_scrolls() {
+    let mut app = start_sized();
+    let line = height(&app, "auto");
+    add_lines(&mut app, "capped", &["two", "three", "four", "five", "six"]);
+    let editor = node(&app, "capped").bounds;
+    assert_eq!(editor.size.height.0, 60.0);
+    let content = app
+        .screen()
+        .layout_nodes()
+        .into_iter()
+        .filter(|n| n.bounds.origin == editor.origin)
+        .find_map(|n| n.scroll)
+        .and_then(|s| s.content_size)
+        .expect("the editor's scroll view");
+    assert!(content.height.0 >= 6.0 * line - 1.0, "{content:?}");
+    // Scrolled to the caret: the last line inside, the first above. The
+    // scroll lands after the line it brings into view.
+    let bottom = editor.bottom() + px(0.5);
+    let _ = app.wait_until(
+        "the caret's line scrolled into view",
+        Duration::from_secs(5),
+        |s| {
+            s.layout_nodes().into_iter().any(|n| {
+                n.text.as_ref().is_some_and(|t| t.text.text == "six") && n.bounds.bottom() <= bottom
+            })
+        },
+    );
+    let last = text_bounds(&app, "six");
+    assert!(
+        last.bottom() <= editor.bottom() + px(0.5),
+        "{last:?} in {editor:?}"
+    );
+    assert!(text_bounds(&app, "one").top() < editor.top());
+}
+
+/// A full editor scrolled to its end, six lines in a box of 60 points. (A
+/// line that wraps there is not covered: the headless text reports one line
+/// for it.)
+fn start_full() -> (Headless, f32, Bounds<Points>) {
+    let mut app = start_sized();
+    let line = height(&app, "auto");
+    add_lines(
+        &mut app,
+        "capped",
+        &["two", "three", "four", "five", "sixty"],
+    );
+    let editor = node(&app, "capped").bounds;
+    (app, line, editor)
+}
+
+#[test]
+fn a_line_broken_off_at_the_end_of_a_full_editor_comes_into_view() {
+    let (mut app, line, editor) = start_full();
+    // No text follows the break: the caret alone is on the new line.
+    keys(&mut app, &["enter"]);
+    app.wait(Duration::from_millis(100)).unwrap();
+    let last = text_bounds(&app, "sixty");
+    assert!(
+        last.bottom() <= editor.bottom() - px(line) + px(0.5),
+        "the empty line is below {last:?} in {editor:?}"
+    );
+}
+
+#[test]
+fn a_line_broken_in_two_at_the_end_of_a_full_editor_shows_its_second_half() {
+    let (mut app, _, editor) = start_full();
+    keys(&mut app, &["left", "left", "enter"]);
+    app.wait(Duration::from_millis(100)).unwrap();
+    let rest = text_bounds(&app, "ty");
+    assert!(
+        rest.bottom() <= editor.bottom() + px(0.5),
+        "{rest:?} in {editor:?}"
+    );
+}
+
+#[test]
+fn an_editor_holds_its_min_height_and_keeps_a_set_height() {
+    let mut app = start_sized();
+    let line = height(&app, "auto");
+    assert_eq!(height(&app, "held"), 50.0);
+    assert_eq!(height(&app, "fixed"), 120.0);
+    add_lines(&mut app, "held", &["two", "three", "four", "five"]);
+    assert!((height(&app, "held") - 5.0 * line).abs() < 1.0);
+    add_lines(
+        &mut app,
+        "fixed",
+        &["two", "three", "four", "five", "six", "seven", "eight"],
+    );
+    assert_eq!(height(&app, "fixed"), 120.0);
+}
+
+#[test]
+fn collapsing_a_selection_to_its_end_scrolls_the_caret_into_view() {
+    let (mut app, _, editor) = start_full();
+    keys(&mut app, &["ctrl+home"]);
+    app.wait(Duration::from_millis(100)).unwrap();
+    assert!(text_bounds(&app, "sixty").bottom() > editor.bottom() + px(1.0));
+
+    keys(&mut app, &["mod+a", "right"]);
+    app.wait(Duration::from_millis(100)).unwrap();
+    let last = text_bounds(&app, "sixty");
+    assert!(
+        last.bottom() <= editor.bottom() + px(0.5),
+        "{last:?} in {editor:?}"
+    );
+}

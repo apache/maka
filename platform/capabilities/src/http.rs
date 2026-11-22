@@ -1,0 +1,220 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+//! Host-authorized HTTP. Redirect and retry policy belongs to the plugin;
+//! proxy configuration, bounded I/O and resource settlement belong to Host.
+
+pub mod upload;
+
+use crate::call::Scope;
+pub use bytes::Bytes;
+use futures_util::{Stream, StreamExt, future::BoxFuture, stream::BoxStream};
+use maka_plugin_core::http::Method;
+use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+use tokio_util::sync::CancellationToken;
+
+/// A single-use, pull-driven upload. Retrying opens a fresh source; the transport
+/// never buffers a complete body to make it replayable. Dropping the stream must
+/// release its resources, so producers must not detach work from this owner.
+pub struct RequestBody {
+    stream: BoxStream<'static, Result<Bytes, Error>>,
+    length: Option<u64>,
+    replay: Option<ReplaySource>,
+    cleanup: Option<Arc<dyn UploadCleanup>>,
+}
+
+/// Explicit close responsibility for a materialized upload source. The transport
+/// invokes it only after its producer and retained byte slices have drained.
+pub trait UploadCleanup: Send + Sync {
+    fn close(&self) -> BoxFuture<'_, Result<(), Error>>;
+}
+/// Reopens the same immutable source without retaining an encoded body buffer.
+#[derive(Clone)]
+pub struct ReplaySource(
+    Arc<dyn Fn(CancellationToken) -> BoxFuture<'static, Result<RequestBody, Error>> + Send + Sync>,
+);
+impl ReplaySource {
+    pub async fn open(&self, cancellation: CancellationToken) -> Result<RequestBody, Error> {
+        let mut body = (self.0)(cancellation).await?;
+        body.replay = Some(self.clone());
+        Ok(body)
+    }
+}
+impl RequestBody {
+    pub fn replayable(factory: impl Fn() -> RequestBody + Send + Sync + 'static) -> Self {
+        let initial = factory();
+        Self::with_replay(initial, move |_| {
+            let body = factory();
+            Box::pin(async move { Ok(body) })
+        })
+    }
+
+    /// Consume the initial source once. Only an actual replay invokes `reopen`;
+    /// its captured state must be independent of the initial materialization.
+    pub fn with_replay(
+        mut initial: Self,
+        reopen: impl Fn(CancellationToken) -> BoxFuture<'static, Result<RequestBody, Error>>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Self {
+        initial.replay = Some(ReplaySource(Arc::new(reopen)));
+        initial
+    }
+    pub fn with_cleanup(mut self, cleanup: Arc<dyn UploadCleanup>) -> Self {
+        self.cleanup = Some(cleanup);
+        self
+    }
+    pub fn cleanup(&self) -> Option<Arc<dyn UploadCleanup>> {
+        self.cleanup.clone()
+    }
+    pub fn replay_source(&self) -> Option<ReplaySource> {
+        self.replay.clone()
+    }
+    /// Observe each pulled chunk without reopening the current stream or changing
+    /// its declared length. Replayed streams retain the same observer.
+    pub fn inspect(
+        self,
+        inspect: impl Fn(&Result<Bytes, Error>) + Clone + Send + Sync + 'static,
+    ) -> Self {
+        let replay_inspect = inspect.clone();
+        Self {
+            stream: self.stream.inspect(inspect).boxed(),
+            length: self.length,
+            cleanup: self.cleanup,
+            replay: self.replay.map(|replay| {
+                ReplaySource(Arc::new(move |cancellation| {
+                    let replay = replay.clone();
+                    let inspect = replay_inspect.clone();
+                    Box::pin(async move { Ok(replay.open(cancellation).await?.inspect(inspect)) })
+                }))
+            }),
+        }
+    }
+
+    pub fn stream(stream: impl Stream<Item = Result<Bytes, Error>> + Send + 'static) -> Self {
+        Self {
+            stream: stream.boxed(),
+            length: None,
+            replay: None,
+            cleanup: None,
+        }
+    }
+    /// Declare an exact length without reading the source. The caller guarantees
+    /// this length (including an empty source for zero). The transport rejects
+    /// observed short or oversized streams without buffering the body.
+    pub fn with_length(
+        stream: impl Stream<Item = Result<Bytes, Error>> + Send + 'static,
+        length: u64,
+    ) -> Self {
+        Self {
+            stream: stream.boxed(),
+            length: Some(length),
+            replay: None,
+            cleanup: None,
+        }
+    }
+    pub fn length(&self) -> Option<u64> {
+        self.length
+    }
+    pub fn into_stream(self) -> BoxStream<'static, Result<Bytes, Error>> {
+        self.stream
+    }
+}
+impl Default for RequestBody {
+    fn default() -> Self {
+        Self::replayable(|| Self::with_length(futures_util::stream::empty(), 0))
+    }
+}
+impl From<Vec<u8>> for RequestBody {
+    fn from(bytes: Vec<u8>) -> Self {
+        let bytes = Bytes::from(bytes);
+        let length = bytes.len() as u64;
+        Self::replayable(move || {
+            let bytes = bytes.clone();
+            Self::with_length(futures_util::stream::once(async move { Ok(bytes) }), length)
+        })
+    }
+}
+
+pub struct Request {
+    pub url: String,
+    pub method: Method,
+    pub headers: Vec<(String, String)>,
+    pub body: RequestBody,
+}
+
+/// Explicit buffered external DTO boundary, separate from native uploads.
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct BufferedRequest {
+    pub url: String,
+    pub method: Method,
+    #[serde(default)]
+    pub headers: Vec<(String, String)>,
+    #[serde(default)]
+    pub body: Vec<u8>,
+}
+impl From<BufferedRequest> for Request {
+    fn from(input: BufferedRequest) -> Self {
+        Self {
+            url: input.url,
+            method: input.method,
+            headers: input.headers,
+            body: input.body.into(),
+        }
+    }
+}
+
+#[derive(Serialize)]
+pub struct Head {
+    pub status: u16,
+    pub url: String,
+    /// Preserve duplicate headers and non-UTF-8 values.
+    pub headers: Vec<(String, Vec<u8>)>,
+}
+
+pub struct Response {
+    pub head: Head,
+    pub body: Arc<dyn Body>,
+}
+
+pub trait Client: Send + Sync {
+    fn request(&self, call: Scope, input: Request) -> BoxFuture<'_, Result<Response, Error>>;
+}
+pub trait Body: Send + Sync {
+    /// One outstanding read; successful EOF confirms completion.
+    fn next(&self) -> BoxFuture<'_, Result<Option<Vec<u8>>, Error>>;
+    /// Signal before awaiting cleanup. Dropping the last body also cancels I/O.
+    fn cancel(&self);
+    fn close(&self) -> BoxFuture<'_, Result<(), Error>>;
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    #[error("HTTP call authority is retired or denied")]
+    Denied,
+    #[error("invalid HTTP request: {0}")]
+    Invalid(String),
+    #[error("HTTP operation failed; remote side effects may already have occurred: {0}")]
+    Failed(String),
+    #[error("HTTP resource cleanup is unconfirmed")]
+    CleanupUnconfirmed,
+}

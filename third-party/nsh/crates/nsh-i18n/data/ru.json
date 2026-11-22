@@ -1,0 +1,32 @@
+{
+  "numbers": {
+    "decimal": ",",
+    "group": " ",
+    "minGrouping": 1,
+    "indian": false,
+    "minus": "-",
+    "percent": " %",
+    "currencyBefore": false,
+    "currencySpace": " ",
+    "compactShort": [[3, " тыс."], [6, " млн"], [9, " млрд"], [12, " трлн"]],
+    "compactLong": []
+  },
+  "dates": {
+    "hour12": false,
+    "padHour24": true,
+    "am": "AM",
+    "pm": "PM",
+    "periodFirst": false,
+    "periodSpace": " ",
+    "hourSuffix": "",
+    "numeric": [["day", "."], ["month", "."], ["year", ""]],
+    "shortYear2digit": false,
+    "text": null,
+    "textLong": null,
+    "weekdayFirst": true,
+    "weekdaySep": ", ",
+    "dateTimeSep": ", ",
+    "names": null,
+    "cjk": false
+  }
+}

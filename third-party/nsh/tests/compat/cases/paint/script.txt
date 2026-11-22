@@ -1,0 +1,758 @@
+# What a user does and sees (compat/apps.rs): each case after its tap.
+# paint-borders
+tap id:case-paint-borders
+expect Borders
+style id:all borderWidth 2
+style id:all borderTopWidth 2
+style id:all borderLeftWidth 2
+style id:all borderColor #ff0000ff
+style id:all borderBottomColor #ff0000ff
+style id:sides borderTopWidth 1
+style id:sides borderRightWidth 2
+style id:sides borderBottomWidth 3
+style id:sides borderLeftWidth 4
+style id:sides borderTopColor #00ff00ff
+style id:sides borderRightColor #0000ff80
+style id:sides borderBottomColor #ff8000ff
+style id:sides borderLeftColor #008000ff
+nostyle id:sides borderWidth
+nostyle id:sides borderColor
+style id:over borderTopWidth 5
+style id:over borderRightWidth 2
+style id:over borderBottomWidth 2
+style id:over borderLeftWidth 2
+style id:over borderTopColor #ff0000ff
+style id:over borderLeftColor #0000ffff
+style id:rgba borderColor #0000ff80
+style id:hsla borderColor #0000ff40
+style id:named borderColor #663399ff
+style id:clear borderColor #00000000
+style id:hex4 borderColor #aabbccdd
+style id:modern borderColor #0a141e80
+style id:upper borderColor #abcdefff
+style id:solid borderStyle solid
+style id:dashed borderStyle dashed
+style id:dotted borderStyle dotted
+style id:corners borderTopLeftRadius 1
+style id:corners borderTopRightRadius 2
+style id:corners borderBottomRightRadius 3
+style id:corners borderBottomLeftRadius 4
+style id:corner-over borderRadius 10
+style id:corner-over borderTopLeftRadius 2
+style id:corner-over borderTopRightRadius 10
+style id:corner-over borderBottomRightRadius 6
+style id:corner-over borderBottomLeftRadius 10
+style id:circular borderCurve circular
+style id:continuous borderCurve continuous
+style id:continuous borderTopLeftRadius 4
+style id:ltr borderLeftWidth 3
+style id:ltr borderRightWidth 5
+style id:ltr borderLeftColor #112233ff
+style id:ltr borderRightColor #445566ff
+style id:ltr borderTopLeftRadius 1
+style id:ltr borderTopRightRadius 2
+style id:ltr borderBottomRightRadius 3
+style id:ltr borderBottomLeftRadius 4
+style id:rtl borderRightWidth 3
+style id:rtl borderLeftWidth 5
+style id:rtl borderRightColor #112233ff
+style id:rtl borderLeftColor #445566ff
+style id:rtl borderTopRightRadius 1
+style id:rtl borderTopLeftRadius 2
+style id:rtl borderBottomLeftRadius 3
+style id:rtl borderBottomRightRadius 4
+# Right to left, left and right stay where they say.
+style id:rtl-sides borderLeftWidth 1
+style id:rtl-sides borderRightWidth 2
+style id:rtl-sides borderLeftColor #112233ff
+style id:rtl-sides borderTopLeftRadius 6
+covers [styles] borderWidth
+covers [styles] borderTopWidth
+covers [styles] borderRightWidth
+covers [styles] borderBottomWidth
+covers [styles] borderLeftWidth
+covers [styles] borderColor
+covers [styles] borderTopColor
+covers [styles] borderRightColor
+covers [styles] borderBottomColor
+covers [styles] borderLeftColor
+covers [styles] borderStyle
+covers [styles] borderTopLeftRadius
+covers [styles] borderTopRightRadius
+covers [styles] borderBottomRightRadius
+covers [styles] borderBottomLeftRadius
+covers [styles] borderCurve
+covers [styles] borderStartWidth
+covers [styles] borderEndWidth
+covers [styles] borderStartColor
+covers [styles] borderEndColor
+covers [styles] borderTopStartRadius
+covers [styles] borderTopEndRadius
+covers [styles] borderBottomEndRadius
+covers [styles] borderBottomStartRadius
+# paint-current-color
+tap id:case-paint-current-color
+expect Current color
+style id:current borderColor #00ff00ff
+style id:current backgroundColor #00ff00ff
+style id:current-mix backgroundColor #008080ff
+style id:current-gradient backgroundImage linear-gradient(180deg, #00ff00ff, #0000ffff)
+style id:current-drop filter drop-shadow(0 1 2 #00ff00ff)
+style id:current-class backgroundColor #00ff00ff
+style id:current-class borderColor #00ff0080
+style id:current-class-mix backgroundColor #008080ff
+# paint-effects
+tap id:case-paint-effects
+expect Effects
+style id:linear backgroundImage linear-gradient(180deg, #ff0000ff, #0000ffff)
+style id:linear-angle backgroundImage linear-gradient(45deg, #ff0000ff 0%, #0000ffff 100%)
+style id:linear-to backgroundImage linear-gradient(90deg, #ff0000ff, #008000ff 40%, #0000ffff)
+style id:linear-corner backgroundImage linear-gradient(to bottom right, #ffffffff, #000000ff)
+style id:radial backgroundImage radial-gradient(ellipse farthest-corner at 50% 50%, #ff0000ff, #0000ffff)
+style id:radial-circle backgroundImage radial-gradient(circle farthest-corner at 0% 0%, #ff0000ff, #0000ffff)
+style id:radial-size backgroundImage radial-gradient(ellipse closest-side at 50% 50%, #ff0000ff 20%, #0000ffff)
+style id:conic backgroundImage conic-gradient(from 0deg at 50% 50%, #ff0000ff, #0000ffff)
+style id:conic-from backgroundImage conic-gradient(from 90deg at 25% 75%, #ff0000ff, #0000ffff)
+style id:repeating backgroundImage repeating-linear-gradient(90deg, #ff0000ff 0%, #0000ffff 10%)
+style id:layers backgroundImage linear-gradient(180deg, #ff0000ff, #0000ffff), radial-gradient(ellipse farthest-corner at 50% 50%, #ffffffff, #000000ff)
+style id:over-color backgroundColor #ffffffff
+style id:over-color backgroundImage linear-gradient(180deg, #00000000, #000000ff)
+style id:brightness filter brightness(1.5)
+style id:contrast filter contrast(2)
+style id:grayscale filter grayscale(1)
+style id:hue-rotate filter hue-rotate(90deg)
+style id:invert filter invert(0.5)
+style id:saturate filter saturate(2)
+style id:sepia filter sepia(1)
+style id:opacity filter opacity(0.25)
+style id:blur filter blur(4)
+style id:drop-shadow filter drop-shadow(2 2 4 #ff0000ff)
+style id:filters filter grayscale(0.5) blur(2) brightness(0.8)
+nostyle id:no-filter filter
+nostyle id:filters backdropFilter
+style id:backdrop backdropFilter blur(10)
+style id:backdrops backdropFilter saturate(1.8) blur(20)
+nostyle id:backdrops filter
+style id:mask maskImage linear-gradient(180deg, #000000ff 70%, #00000000)
+nostyle id:no-mask maskImage
+prop id:material ios.backdropMaterial regular
+prop id:material-chrome ios.backdropMaterial chrome
+prop id:no-material ios.backdropMaterial ultraThin
+prop id:material-thin ios.backdropMaterial thin
+prop id:material-thick ios.backdropMaterial thick
+prop id:material-change ios.backdropMaterial regular
+tap id:material-change
+prop id:material-change ios.backdropMaterial chrome
+tap id:material-change
+prop id:material-change ios.backdropMaterial ultraThin
+style id:material-change backdropFilter blur(30)
+style id:glass backdropFilter blur(10)
+style id:glass glassEffect regular
+style id:glass-clear glassEffect clear
+nostyle id:no-glass glassEffect
+style id:blend-normal mixBlendMode normal
+style id:blend-multiply mixBlendMode multiply
+style id:blend-screen mixBlendMode screen
+style id:blend-overlay mixBlendMode overlay
+style id:blend-darken mixBlendMode darken
+style id:blend-lighten mixBlendMode lighten
+style id:blend-color-dodge mixBlendMode color-dodge
+style id:blend-color-burn mixBlendMode color-burn
+style id:blend-hard-light mixBlendMode hard-light
+style id:blend-soft-light mixBlendMode soft-light
+style id:blend-difference mixBlendMode difference
+style id:blend-exclusion mixBlendMode exclusion
+style id:blend-hue mixBlendMode hue
+style id:blend-saturation mixBlendMode saturation
+style id:blend-color mixBlendMode color
+style id:blend-luminosity mixBlendMode luminosity
+style id:blend-plus-darker mixBlendMode plus-darker
+style id:blend-plus-lighter mixBlendMode plus-lighter
+covers [styles] backgroundImage
+covers [styles] filter
+covers [styles] backdropFilter
+covers [styles] maskImage
+covers [props] ios.backdropMaterial
+covers [styles] glassEffect
+covers [styles] mixBlendMode
+# paint-misc
+tap id:case-paint-misc
+expect Misc
+style id:outline outlineWidth 2
+style id:outline outlineColor #0a84ffff
+style id:outline outlineStyle solid
+style id:outline outlineOffset 3
+style id:outline-dashed outlineWidth 1
+style id:outline-dashed outlineColor #ff0000ff
+style id:outline-dashed outlineStyle dashed
+style id:outline-dashed outlineOffset -2
+style id:outline-dotted outlineWidth 3
+style id:outline-dotted outlineColor #008000ff
+style id:outline-dotted outlineStyle dotted
+nostyle id:outline-none outlineWidth
+nostyle id:outline-hidden outlineWidth
+style id:visible visibility visible
+style id:hidden visibility hidden
+style id:collapse visibility hidden
+frame id:hidden 0 105 390 4
+frame id:collapse 0 109 390 4
+frame id:after-hidden 0 113 390 4
+style id:overflow-visible overflow visible
+style id:overflow-hidden overflow hidden
+style id:cursor-auto cursor auto
+style id:cursor-default cursor default
+style id:cursor-pointer cursor pointer
+style id:cursor-text cursor text
+style id:cursor-wait cursor wait
+style id:cursor-progress cursor progress
+style id:cursor-help cursor help
+style id:cursor-crosshair cursor crosshair
+style id:cursor-move cursor move
+style id:cursor-grab cursor grab
+style id:cursor-grabbing cursor grabbing
+style id:cursor-not-allowed cursor not-allowed
+style id:cursor-zoom-in cursor zoom-in
+style id:cursor-zoom-out cursor zoom-out
+style id:cursor-col-resize cursor col-resize
+style id:cursor-row-resize cursor row-resize
+style id:cursor-none cursor none
+style id:cursor-nwse-resize cursor nwse-resize
+style id:cursor-nesw-resize cursor nesw-resize
+style id:cursor-nw-resize cursor nwse-resize
+style id:cursor-se-resize cursor nwse-resize
+style id:cursor-ne-resize cursor nesw-resize
+style id:cursor-sw-resize cursor nesw-resize
+style id:cursor-class-nwse cursor nwse-resize
+style id:cursor-class-nesw cursor nesw-resize
+style id:cursor-dynamic cursor crosshair
+tap id:cursor-dynamic
+style id:cursor-dynamic cursor none
+tap id:cursor-dynamic
+style id:cursor-dynamic cursor crosshair
+style id:tinted tintColor #ff9500ff
+style id:tinted-hsl tintColor #0080ffff
+style id:origin-center transformOrigin 50% 50% 0
+style id:origin-keywords transformOrigin 0% 0% 0
+style id:origin-keywords-swapped transformOrigin 100% 100% 0
+style id:origin-percent transformOrigin 50% 0 0
+style id:origin-lengths transformOrigin 10 20 30
+style id:origin-list transformOrigin 10 25% 0
+style id:backface-visible backfaceVisibility visible
+style id:backface-hidden backfaceVisibility hidden
+covers [styles] outlineWidth
+covers [styles] outlineColor
+covers [styles] outlineStyle
+covers [styles] outlineOffset
+covers [styles] visibility
+covers [styles] overflow
+covers [styles] cursor
+covers [styles] tintColor
+covers [styles] transformOrigin
+covers [styles] backfaceVisibility
+# paint-object-position
+tap id:case-paint-object-position
+expect Object position
+# Where each image sits, as edges with offsets: the center by default.
+style id:centered objectPosition left 50% top 50%
+style id:top objectPosition left 50% top 0%
+style id:top-left objectPosition left 0% top 0%
+style id:bottom-right objectPosition left 100% top 100%
+style id:percent objectPosition left 25% top 75%
+style id:lengths objectPosition left 10 top 16
+style id:edges objectPosition right 10 bottom 20%
+style id:class-top objectPosition left 50% top 0%
+prop id:class-top resizeMode cover
+style id:class-bottom-left objectPosition left 0% top 100%
+style id:class-arbitrary objectPosition right 4 top 50%
+style id:changed objectPosition left 50% top 0%
+tap id:flip
+style id:changed objectPosition left 50% top 100%
+covers [styles] objectPosition
+# paint-motion
+tap id:case-paint-motion
+expect Motion
+style id:fade transitionProperty opacity, transform
+style id:fade transitionDuration 300
+style id:fade transitionDelay 50
+style id:fade transitionTimingFunction cubic-bezier(0.42, 0, 0.58, 1)
+style id:all transitionProperty all
+style id:all transitionDuration 200
+style id:all transitionTimingFunction cubic-bezier(0, 0, 1, 1)
+style id:colors transitionProperty colors
+style id:colors transitionTimingFunction cubic-bezier(0.25, 0.1, 0.25, 1)
+style id:shadow transitionProperty shadow
+style id:shadow transitionTimingFunction cubic-bezier(0.42, 0, 1, 1)
+style id:shape transitionProperty shape
+style id:shape transitionTimingFunction cubic-bezier(0, 0, 0.58, 1)
+style id:none transitionProperty none
+style id:bezier transitionDuration 150
+style id:bezier transitionTimingFunction cubic-bezier(0.4, 0, 0.2, 1)
+style id:overshoot transitionDuration 200
+style id:overshoot transitionTimingFunction cubic-bezier(0.3, 1.25, 0.6, 1)
+# A spring as a style and as a class is accepted; its timing is checked
+# once nsh-compat's values print a transition's spring.
+style id:spring transitionProperty transform
+style id:spring-class transitionProperty transform
+style id:spin animationName spin
+style id:spin animationDuration 1000
+style id:spin animationDelay 0
+style id:spin animationTimingFunction cubic-bezier(0, 0, 1, 1)
+style id:spin animationIterationCount infinite
+style id:ping animationName ping
+style id:ping animationDuration 1000
+style id:ping animationDelay 200
+style id:ping animationTimingFunction cubic-bezier(0, 0, 0.2, 1)
+style id:ping animationIterationCount 3
+style id:pulse animationName pulse
+style id:pulse animationDuration 2000
+style id:pulse animationTimingFunction cubic-bezier(0.42, 0, 0.58, 1)
+style id:bounce animationName bounce
+style id:bounce animationIterationCount 1
+nostyle id:still animationName
+covers [styles] transitionProperty
+covers [styles] transitionDuration
+covers [styles] transitionDelay
+covers [styles] transitionTimingFunction
+covers [styles] animationName
+covers [styles] animationDuration
+covers [styles] animationDelay
+covers [styles] animationTimingFunction
+covers [styles] animationIterationCount
+# paint-shadows
+tap id:case-paint-shadows
+expect Shadows
+style id:shadow boxShadow 2 4 6 0 #0000004d
+style id:shadow-red boxShadow -1 0 0 0 #ff000080
+style id:box boxShadow 2 4 6 1 #00000080
+style id:box-two boxShadow 0 1 2 0 #00000033, inset 0 0 0 1 #ff0000ff
+style id:box-layers boxShadow 0 1 2 0 #00000033, inset 0 0 0 1 #ff0000ff
+style id:box-offsets boxShadow 3 3 0 0 #0000ffff
+style id:box-first boxShadow -2 -3 5 0 #ff0000ff
+style id:box-inset boxShadow inset 1 2 3 4 #00ff0088
+nostyle id:box-none boxShadow
+style id:text-shadow textShadowColor #336699ff
+style id:text-shadow textShadowOffset width=1 height=2
+style id:text-shadow textShadowRadius 3
+style id:text-shadow-layers-numbers textShadowColor #336699ff
+style id:text-shadow-layers-numbers textShadowOffset width=1 height=2
+style id:text-shadow-layers-numbers textShadowRadius 3
+style id:text-shadow-alpha textShadowColor #00000080
+style id:text-shadow-alpha textShadowOffset width=-2 height=0
+style id:text-shadow-alpha textShadowRadius 0
+# Of several layers, the widest.
+style id:text-shadow-layers textShadowColor #0000ffff
+style id:text-shadow-layers textShadowOffset width=3 height=4
+style id:text-shadow-layers textShadowRadius 5
+nostyle id:text-shadow-none textShadowColor
+covers [styles] boxShadow
+covers [styles] textShadow
+# paint-text
+tap id:case-paint-text
+expect Plain
+frame id:plain 0 64 39 17
+frame id:big 0 81 53 39
+style id:big fontSize 32
+style id:tall fontSize 10
+style id:tall lineHeight 30
+style id:tall-two lineHeight 20
+style id:wide letterSpacing 4
+style id:wide-em fontSize 20
+style id:wide-em letterSpacing 2
+style id:family fontFamily Georgia
+style id:italic fontStyle italic
+style id:upright fontStyle normal
+style id:variant fontVariant small-caps, tabular-nums
+style id:variant-old fontVariant oldstyle-nums, proportional-nums
+style id:variant-lining fontVariant lining-nums
+style id:underline textDecorationLine underline
+style id:underline textDecorationColor #ff3b30ff
+style id:struck textDecorationLine line-through
+style id:struck textDecorationStyle double
+style id:struck textDecorationThickness 2
+style id:both textDecorationLine underline line-through
+style id:both textDecorationStyle wavy
+style id:both textDecorationColor #0000ff80
+style id:both textUnderlineOffset 3
+style id:dotted textDecorationStyle dotted
+style id:dashed textDecorationStyle dashed
+style id:solid textDecorationStyle solid
+style id:undecorated textDecorationLine none
+expect UPPER CASE
+expect lower case
+expect Capital Words
+expect As written
+expect LOUD quiet
+style id:upper textTransform uppercase
+style id:lower textTransform lowercase
+style id:capital textTransform capitalize
+style id:untransformed textTransform none
+style id:align-auto textAlign auto
+style id:align-left textAlign left
+style id:align-center textAlign center
+style id:align-right textAlign right
+style id:align-justify textAlign justify
+# Left to right, the start is the left and the end the right.
+style id:align-start textAlign left
+style id:align-end textAlign right
+style id:dir-auto writingDirection auto
+style id:dir-ltr writingDirection ltr
+style id:dir-rtl writingDirection rtl
+frame id:mark-top 23.1 12.8 4 4
+frame id:mark-auto 30.8 12.8 4 4
+frame id:mark-center 46.2 34.3 4 4
+frame id:mark-bottom 46.2 55.8 4 4
+style span:LOUD fontStyle italic
+style span:LOUD textTransform uppercase
+style span:quiet fontStyle normal
+style span:quiet textTransform none
+style span:Base fontSize 12
+nostyle span:Base fontFamily
+style span:mono fontFamily Menlo
+style span:mono fontSize 12
+style span:large fontSize 20
+style span:slanted fontStyle italic
+style span:slanted fontSize 12
+style span:"spaced leading" letterSpacing 2
+style span:leading lineHeight 24
+style span:"figures marked" fontVariant tabular-nums
+style span:marked textDecorationLine underline
+style span:marked textDecorationColor #008000ff
+style span:marked textDecorationStyle dashed
+style span:gone textDecorationLine line-through
+style span:gone textDecorationThickness 1.5
+style span:gone textUnderlineOffset 2
+style span:SHOUT textTransform uppercase
+style span:outer color #007affff
+style span:inner color #007affff
+# A hidden span keeps its characters and their place: as wide as shown.
+expect Seen unseen words
+frame id:hidden-span 0 942 131 17
+frame id:shown-span 0 959 131 17
+style span:inner fontSize 16
+covers [styles] fontFamily
+covers [styles] fontSize
+covers [styles] fontStyle
+covers [styles] fontVariant
+covers [styles] letterSpacing
+covers [styles] lineHeight
+covers [styles] textAlign
+covers [styles] textAlignVertical
+covers [styles] textDecorationLine
+covers [styles] textDecorationColor
+covers [styles] textDecorationStyle
+covers [styles] textDecorationThickness
+covers [styles] textUnderlineOffset
+covers [styles] textTransform
+covers [styles] writingDirection
+# state-styles
+tap id:case-state-styles
+expect Presses: 0
+expect Disabled: true
+# Pressed: activeStyle goes over the style while the finger is down, and
+# the press still reaches the handler.
+style id:active backgroundColor #3366ffff
+style id:active opacity 1
+state id:active pressed
+style id:active backgroundColor #ff0000ff
+style id:active opacity 0.5
+state id:active none
+style id:active backgroundColor #3366ffff
+style id:active opacity 1
+tap id:active
+expect Presses: 1
+# A text's state style is a text style.
+style id:link color #3366ffff
+state id:link pressed
+style id:link color #ff0000ff
+state id:link none
+style id:link color #3366ffff
+# Hovered: hoverStyle while the pointer is over the view.
+style id:hover backgroundColor #ffffffff
+style id:hover borderWidth 0
+state id:hover hovered
+style id:hover backgroundColor #eeeeeeff
+style id:hover borderWidth 2
+style id:hover borderColor #000000ff
+state id:hover none
+style id:hover backgroundColor #ffffffff
+style id:hover borderWidth 0
+# Focused: focusStyle while the input has focus.
+style id:field borderWidth 1
+style id:field borderColor #ccccccff
+state id:field focused
+style id:field borderWidth 2
+style id:field borderColor #3366ffff
+state id:field none
+style id:field borderWidth 1
+style id:field borderColor #ccccccff
+# Disabled: disabledStyle wins over every other state, and a press goes to
+# the pressable around the view.
+style id:target backgroundColor #888888ff
+style id:target opacity 0.4
+state id:target hovered
+style id:target backgroundColor #888888ff
+state id:target none
+tap id:target
+expect Outer: 1
+expect Presses: 1
+# Enabled again: its own style, the later state winning (active over
+# hover), and its presses its own.
+tap id:toggle
+expect Disabled: false
+style id:target backgroundColor #00ff00ff
+style id:target opacity 1
+state id:target hovered
+style id:target backgroundColor #0000ffff
+state id:target hovered pressed
+style id:target backgroundColor #ff0000ff
+state id:target none
+style id:target backgroundColor #00ff00ff
+tap id:target
+expect Presses: 2
+expect Outer: 1
+# Disabled once more: the state style comes back.
+tap id:toggle
+expect Disabled: true
+style id:target backgroundColor #888888ff
+style id:target opacity 0.4
+covers [props] activeStyle
+covers [props] hoverStyle
+covers [props] focusStyle
+covers [props] disabledStyle
+covers [props] disabled
+# state-checked
+tap id:case-state-checked
+expect On: false
+# Off: the plain classes, on the track and on the thumb.
+prop id:switch role switch
+style id:switch backgroundColor #ccccccff
+style id:switch borderWidth 0
+style id:thumb backgroundColor #ffffffff
+# On: `checked:` and `checkedStyle` on the track, `group-checked:` on
+# the thumb.
+tap id:switch
+expect On: true
+prop id:switch accessibilityState checked=true
+style id:switch backgroundColor #00aa55ff
+style id:switch borderWidth 2
+style id:switch borderColor #000000ff
+style id:thumb backgroundColor #222222ff
+# Mixed is not checked.
+tap id:mixed
+prop id:switch accessibilityState checked=mixed
+style id:switch backgroundColor #ccccccff
+style id:switch borderWidth 0
+style id:thumb backgroundColor #ffffffff
+tap id:mixed
+style id:switch backgroundColor #00aa55ff
+style id:thumb backgroundColor #222222ff
+# Disabled: `disabledStyle` applies and `checkedStyle` does not; the
+# `checked:` class still does, as every class variant but `enabled:`.
+tap id:disable
+style id:switch opacity 0.4
+style id:switch borderWidth 0
+style id:switch backgroundColor #00aa55ff
+tap id:disable
+style id:switch opacity 1
+style id:switch borderWidth 2
+# Off again.
+tap id:switch
+expect On: false
+style id:switch backgroundColor #ccccccff
+style id:switch borderWidth 0
+style id:thumb backgroundColor #ffffffff
+covers [props] checkedStyle
+covers [props] accessibilityState
+covers [props] role
+# state-indeterminate
+tap id:case-state-indeterminate
+expect Value: mixed
+# Mixed: `indeterminate:` and `indeterminateStyle` on the box,
+# `group-indeterminate:` on the mark.
+prop id:box role checkbox
+prop id:box accessibilityState checked=mixed
+style id:box backgroundColor #3355ffff
+style id:box borderWidth 2
+style id:box borderColor #000000ff
+style id:mark backgroundColor #222222ff
+# Checked is not indeterminate.
+tap id:box
+expect Value: true
+prop id:box accessibilityState checked=true
+style id:box backgroundColor #00aa55ff
+style id:box borderWidth 0
+style id:mark backgroundColor #ffffffff
+# Unchecked.
+tap id:box
+expect Value: false
+style id:box backgroundColor #ccccccff
+style id:mark backgroundColor #ffffffff
+# Mixed again.
+tap id:mix
+expect Value: mixed
+style id:box backgroundColor #3355ffff
+style id:box borderWidth 2
+style id:mark backgroundColor #222222ff
+# Disabled: `disabledStyle` applies and `indeterminateStyle` does not;
+# the `indeterminate:` class still does, as every class variant but
+# `enabled:`.
+tap id:disable
+style id:box opacity 0.4
+style id:box borderWidth 0
+style id:box backgroundColor #3355ffff
+tap id:disable
+style id:box opacity 1
+style id:box borderWidth 2
+covers [props] indeterminateStyle
+# state-expanded
+tap id:case-state-expanded
+# Closed: the plain classes, on the trigger and on the chevron.
+prop id:trigger accessibilityState expanded=false hasPopup=true
+style id:trigger backgroundColor #ccccccff
+style id:trigger borderWidth 0
+style id:chevron backgroundColor #ffffffff
+# Open: `aria-expanded:` and `expandedStyle` on the trigger,
+# `group-aria-expanded:` on the chevron.
+tap id:trigger
+expect Popup
+prop id:trigger accessibilityState expanded=true hasPopup=true
+style id:trigger backgroundColor #3355ffff
+style id:trigger borderWidth 2
+style id:trigger borderColor #000000ff
+style id:chevron backgroundColor #222222ff
+# Closed again.
+tap id:trigger
+prop id:trigger accessibilityState expanded=false hasPopup=true
+style id:trigger backgroundColor #ccccccff
+style id:trigger borderWidth 0
+style id:chevron backgroundColor #ffffffff
+covers [props] expandedStyle
+# state-pressed
+tap id:case-state-pressed
+expect Bold: false
+# Off: the plain classes, on the button and on the icon.
+prop id:bold role button
+style id:bold backgroundColor #ccccccff
+style id:bold borderWidth 0
+style id:icon backgroundColor #ffffffff
+# On: `aria-pressed:` and `pressedStyle` on the button,
+# `group-aria-pressed:` on the icon.
+tap id:bold
+expect Bold: true
+style id:bold backgroundColor #3355ffff
+style id:bold borderWidth 2
+style id:bold borderColor #000000ff
+style id:icon backgroundColor #222222ff
+# Mixed is not pressed.
+tap id:mixed
+style id:bold backgroundColor #ccccccff
+style id:bold borderWidth 0
+style id:icon backgroundColor #ffffffff
+tap id:mixed
+style id:bold backgroundColor #3355ffff
+style id:icon backgroundColor #222222ff
+# Off again.
+tap id:bold
+expect Bold: false
+style id:bold backgroundColor #ccccccff
+style id:bold borderWidth 0
+style id:icon backgroundColor #ffffffff
+# The other `aria-*` variants, from their accessibility states.
+style id:busy backgroundColor #ff0000ff
+style id:checked backgroundColor #00ff00ff
+style id:selected backgroundColor #0000ffff
+style id:invalid backgroundColor #ff8800ff
+# `data-*:` and `group-data-*:` are known classes; without the attribute
+# (only components' parts show them) the plain ones apply.
+style id:data backgroundColor #ccccccff
+style id:data-inner backgroundColor #ffffffff
+covers [props] pressedStyle
+# state-focus-within
+tap id:case-state-focus-within
+# No focus: the frame's own style.
+style id:frame backgroundColor #ccccccff
+style id:frame opacity 0.5
+# The input inside it has the focus: `focus-within:` and
+# `focusWithinStyle` on the frame.
+state id:field focused
+style id:frame backgroundColor #3366ffff
+style id:frame opacity 1
+state id:field none
+style id:frame backgroundColor #ccccccff
+style id:frame opacity 0.5
+# An overlay's content is inside the view the overlay is in.
+style id:holder backgroundColor #ccccccff
+state id:popup-field focused
+style id:holder backgroundColor #00ff00ff
+style id:frame backgroundColor #ccccccff
+state id:popup-field none
+style id:holder backgroundColor #ccccccff
+covers [props] focusWithinStyle
+# state-focus-visible
+tap id:case-state-focus-visible
+# No focus: the field's own style.
+style id:ringed backgroundColor #ccccccff
+style id:ringed opacity 0.5
+# A field that edits shows its focus: `focus-visible:` and
+# `focusVisibleStyle`.
+state id:ringed focused
+style id:ringed backgroundColor #3366ffff
+style id:ringed opacity 1
+state id:ringed none
+style id:ringed backgroundColor #ccccccff
+style id:ringed opacity 0.5
+covers [props] focusVisibleStyle
+# paint-inline-align
+tap id:case-paint-inline-align
+# The headless engine's 16.8 pt line has its baseline at the bottom and a
+# 7 pt x height: on the baseline the view stands on the line's bottom, at
+# the text's top at the line's top, in the middle 9.5 pt above the bottom.
+frame id:icon-default 7.7 4.8 4 12
+frame id:icon-baseline 7.7 4.8 4 12
+frame id:icon-top 7.7 0 4 12
+frame id:icon-bottom 7.7 4.8 4 12
+frame id:icon-middle 7.7 7.3 4 12
+frame id:icon-class 7.7 0 4 12
+covers [styles] verticalAlign
+# A box 20 pt tall with no text stands on its bottom edge: it fills the
+# line from its top. A chip as tall whose label's baseline is 14 pt below
+# its top (2 of padding, a 12 pt line) stands on the line by that
+# baseline, 2.8 pt down.
+frame id:chip-edge 7.7 0 6 20
+frame id:chip-first 15.4 2.8 6 20
+
+# paint-tailwind
+tap id:case-paint-tailwind
+expect Tailwind paint
+style id:transform-none transform translateX(8) rotate(12deg) scale(0.9)
+style id:property-none transform rotateX(45deg)
+style id:rotate-z transform rotate(12deg) rotateX(45deg) rotate(30deg)
+# A style's scale replaces the classes' scale and keeps their rotate; its
+# transform replaces their transform functions (rotate-x-*) and composes
+# after their translate.
+style id:style-scale transform rotate(12deg) scale(2)
+style id:style-transform transform translateX(8) rotate(5deg)
+style id:border-none borderWidth 0
+style id:border-none borderStyle solid
+style id:border-hidden borderTopWidth 0
+style id:border-class borderWidth 0
+style id:outline-dashed outlineStyle dashed
+style id:outline-dashed outlineWidth 2
+style id:outline-none outlineWidth 0
+style id:outline-medium outlineStyle dotted
+style id:outline-medium outlineWidth 3
+style id:current borderColor #ff0000ff
+style id:style-current borderColor #ff0000ff
+style id:drop-shadow filter drop-shadow(0 1 2 #0000001a) drop-shadow(0 1 1 #0000000f)
+style id:perspective-child transform translateX(50) translateY(50) perspective(400) translateX(-50) translateY(-50) rotateY(45deg)
+style id:selection selectionColor #ff6600ff
+style id:shadow-color boxShadow 0 1 3 0 #ff0000ff, 0 1 2 -1 #ff0000ff
+style id:shadow-alpha boxShadow 0 1 3 0 #00000033, 0 1 2 -1 #00000033
+style id:drop-shadow-color filter drop-shadow(0 3 3 #ff000080)
+style id:bg-current backgroundColor #ff000080
+style id:perspective-none transform rotateY(45deg)
+style id:palette backgroundColor #79697bff
+style id:bg-image backgroundImage linear-gradient(180deg, #ff0000ff, #0000ffff)
+covers [styles] borderStyle
+covers [styles] borderWidth
+covers [styles] borderTopWidth

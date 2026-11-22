@@ -1,0 +1,558 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+use crate::{PreparationFuture, ToolCallContext};
+use jsonschema::{ValidationError, Validator, error::ValidationErrorKind};
+use maka_agent_facts::tool_call::ToolRejection;
+use serde_json::Value;
+use std::{collections::BTreeMap, sync::Arc};
+use tokio_util::sync::CancellationToken;
+
+pub use maka_agent_facts::execution::ToolMode;
+pub use maka_agent_facts::tools::ToolDefinition;
+pub use maka_agent_facts::tools::ToolNesting;
+pub use maka_agent_facts::tools::ToolRegistration;
+pub use maka_agent_facts::tools::ToolSemantics;
+
+#[derive(Debug, thiserror::Error)]
+pub enum CatalogError {
+    #[error("invalid tool catalog: {0}")]
+    Invalid(String),
+    #[error("invalid tool schema: {0}")]
+    Schema(String),
+}
+
+#[derive(Clone)]
+pub(crate) struct RegisteredTool {
+    pub(crate) always_visible: bool,
+    pub(crate) definition: Arc<ToolDefinition>,
+    pub(crate) nesting: ToolNesting,
+    pub(crate) semantics: ToolSemantics,
+    pub(crate) handler: maka_agent_facts::tools::ToolHandler,
+    pub(crate) validator: Arc<Validator>,
+}
+
+#[derive(Clone, Default)]
+pub struct ToolCatalog {
+    pub(crate) entries: Arc<BTreeMap<String, Arc<RegisteredTool>>>,
+    pub(super) discovery: bool,
+    pub(crate) request_bindings: Arc<Vec<crate::request::Group>>,
+}
+
+impl ToolCatalog {
+    pub fn new(
+        registrations: impl IntoIterator<Item = ToolRegistration>,
+    ) -> Result<Self, CatalogError> {
+        let mut entries = BTreeMap::new();
+        for mut registration in registrations {
+            if let Some(provider) = &registration.definition.provider {
+                provider
+                    .validate()
+                    .map_err(|error| CatalogError::Invalid(error.into()))?;
+                if registration.semantics != ToolSemantics::Parallel {
+                    return Err(CatalogError::Invalid(
+                        "provider tools cannot control Host turn settlement".into(),
+                    ));
+                }
+                registration.nesting = ToolNesting::DirectOnly;
+            }
+            if registration.semantics == ToolSemantics::FinishTurn
+                && registration.nesting != ToolNesting::DirectOnly
+            {
+                return Err(CatalogError::Invalid(
+                    "a finishing tool must be direct-only".into(),
+                ));
+            }
+            let definition = &mut registration.definition;
+            if definition.name.is_empty()
+                || definition.name.len() > 128
+                || matches!(
+                    definition.name.as_str(),
+                    "exec" | "wait" | "code_cell" | "invalid" | "tool_search" | "maka_tool_search"
+                )
+                || entries.contains_key(&definition.name)
+                || !registration.handler.names().contains(&definition.name)
+            {
+                return Err(CatalogError::Invalid(
+                    "duplicate, reserved, absent or invalid tool name".into(),
+                ));
+            }
+            definition.input_schema =
+                crate::input::inline_refs(std::mem::take(&mut definition.input_schema));
+            // Matches Maka's JSON-schema tool path: no format assertions,
+            // defaults/coercion or fetching file/network references.
+            let validator = jsonschema::options()
+                .offline()
+                .should_validate_formats(false)
+                .build(&definition.input_schema)
+                .map_err(|e| CatalogError::Schema(e.to_string()))?;
+            let name = definition.name.clone();
+            entries.insert(
+                name,
+                Arc::new(RegisteredTool {
+                    always_visible: false,
+                    definition: Arc::new(registration.definition),
+                    nesting: registration.nesting,
+                    semantics: registration.semantics,
+                    handler: registration.handler,
+                    validator: Arc::new(validator),
+                }),
+            );
+        }
+        Ok(Self {
+            entries: Arc::new(entries),
+            discovery: false,
+            request_bindings: Arc::default(),
+        })
+    }
+
+    /// Add independently validated registrations without losing request bindings
+    /// or visibility of the existing catalog. Duplicate names are rejected.
+    pub fn with_additional(
+        mut self,
+        registrations: impl IntoIterator<Item = ToolRegistration>,
+    ) -> Result<Self, CatalogError> {
+        let additional = Self::new(registrations)?;
+        let entries = Arc::make_mut(&mut self.entries);
+        for (name, entry) in additional.entries.iter() {
+            if entries.insert(name.clone(), entry.clone()).is_some() {
+                return Err(CatalogError::Invalid(
+                    "duplicate additional tool name".into(),
+                ));
+            }
+        }
+        Ok(self)
+    }
+
+    /// Replace handlers on already-validated entries, reusing their pre-inlined
+    /// definitions and compiled JSON Schema validators.
+    pub fn with_rebound_handlers(
+        mut self,
+        handlers: impl IntoIterator<Item = (String, maka_agent_facts::tools::ToolHandler)>,
+    ) -> Result<Self, CatalogError> {
+        let mut iter = handlers.into_iter().peekable();
+        if iter.peek().is_none() {
+            return Ok(self);
+        }
+        let entries = Arc::make_mut(&mut self.entries);
+        for (name, handler) in iter {
+            if !handler.names().contains(&name) {
+                return Err(CatalogError::Invalid(
+                    "rebound handler does not match tool name".into(),
+                ));
+            }
+            let entry = entries.get_mut(&name).ok_or_else(|| {
+                CatalogError::Invalid("rebound handler references absent tool".into())
+            })?;
+            *entry = Arc::new(RegisteredTool {
+                handler,
+                ..(**entry).clone()
+            });
+        }
+        Ok(self)
+    }
+
+    /// Add pre-validated entries from `source` with new per-run handlers,
+    /// reusing their pre-inlined definitions and compiled JSON Schema validators.
+    pub fn with_rebound_from(
+        mut self,
+        source: &Self,
+        handlers: impl IntoIterator<Item = (String, maka_agent_facts::tools::ToolHandler)>,
+    ) -> Result<Self, CatalogError> {
+        let mut iter = handlers.into_iter().peekable();
+        if iter.peek().is_none() {
+            return Ok(self);
+        }
+        let entries = Arc::make_mut(&mut self.entries);
+        for (name, handler) in iter {
+            if !handler.names().contains(&name) {
+                return Err(CatalogError::Invalid(
+                    "rebound handler does not match tool name".into(),
+                ));
+            }
+            let template = source.entries.get(&name).ok_or_else(|| {
+                CatalogError::Invalid("rebound source is missing tool entry".into())
+            })?;
+            let entry = Arc::new(RegisteredTool {
+                always_visible: false,
+                handler,
+                ..(**template).clone()
+            });
+            if entries.insert(name, entry).is_some() {
+                return Err(CatalogError::Invalid(
+                    "duplicate additional tool name".into(),
+                ));
+            }
+        }
+        Ok(self)
+    }
+
+    /// Defer non-core schemas until discovered within this Session.
+    pub fn with_discovery(mut self) -> Self {
+        self.discovery = true;
+        self
+    }
+
+    /// Keep an already registered control visible while discovery defers other
+    /// schemas. Selection and tool authorization still apply normally.
+    pub fn with_always_visible(mut self, names: &[&str]) -> Result<Self, CatalogError> {
+        for name in names {
+            let entries = Arc::make_mut(&mut self.entries);
+            let entry = entries.get(*name).ok_or_else(|| {
+                CatalogError::Invalid(format!("visible tool is not registered: {name}"))
+            })?;
+            entries.insert(
+                (*name).into(),
+                Arc::new(RegisteredTool {
+                    always_visible: true,
+                    ..(**entry).clone()
+                }),
+            );
+        }
+        Ok(self)
+    }
+
+    pub(super) fn select(&self, keep: impl Fn(&str) -> bool) -> Self {
+        self.filtered(|name, _| keep(name))
+    }
+
+    fn filtered(&self, keep: impl Fn(&str, &RegisteredTool) -> bool) -> Self {
+        let mut entries = self.entries.iter().enumerate();
+        while let Some((index, (name, entry))) = entries.next() {
+            if !keep(name, entry) {
+                let prefix = self.entries.iter().take(index);
+                let remaining = entries
+                    .map(|(_, entry)| entry)
+                    .filter(|(name, entry)| keep(name, entry));
+                return Self {
+                    entries: Arc::new(
+                        prefix
+                            .chain(remaining)
+                            .map(|(name, entry)| (name.clone(), entry.clone()))
+                            .collect(),
+                    ),
+                    discovery: self.discovery,
+                    request_bindings: self.request_bindings.clone(),
+                };
+            }
+        }
+        self.clone()
+    }
+
+    pub fn definitions(&self) -> impl Iterator<Item = &ToolDefinition> {
+        self.entries.values().map(|entry| entry.definition.as_ref())
+    }
+
+    pub fn shared_definitions(&self) -> impl Iterator<Item = Arc<ToolDefinition>> + '_ {
+        self.entries
+            .values()
+            .map(|entry| Arc::clone(&entry.definition))
+    }
+
+    /// Narrow registered Host tools without changing plugin scope or authority.
+    pub fn excluding(&self, names: &[&str]) -> Self {
+        self.select(|name| !names.contains(&name))
+    }
+
+    pub fn nested(&self) -> Self {
+        self.filtered(|_, entry| entry.nesting == ToolNesting::Nestable)
+    }
+
+    pub fn direct_only(&self) -> Self {
+        self.select(|name| self.entries[name].nesting == ToolNesting::DirectOnly)
+    }
+
+    /// Stable request-surface identity; process-local handler addresses are excluded.
+    pub fn digest(&self) -> String {
+        let entries: Vec<_> = self
+            .entries
+            .values()
+            .map(|entry| {
+                let r = entry;
+                (
+                    &r.definition,
+                    r.nesting == ToolNesting::Nestable,
+                    r.semantics != ToolSemantics::Parallel,
+                )
+            })
+            .collect();
+        let finishing: Vec<_> = self
+            .entries
+            .values()
+            .filter(|entry| entry.semantics == ToolSemantics::FinishTurn)
+            .map(|entry| &entry.definition.name)
+            .collect();
+        let visible: Vec<_> = self
+            .entries
+            .values()
+            .filter(|entry| entry.always_visible)
+            .map(|entry| &entry.definition.name)
+            .collect();
+        // Preserve the existing durable identity when no new semantic is used.
+        let bytes = if !visible.is_empty() {
+            serde_json::to_vec(&(self.discovery, entries, finishing, visible))
+        } else if finishing.is_empty() {
+            serde_json::to_vec(&(self.discovery, entries))
+        } else {
+            serde_json::to_vec(&(self.discovery, entries, finishing))
+        }
+        .expect("tool definitions are JSON");
+        maka_agent_facts::artifact::content_digest(&bytes)
+    }
+
+    pub fn semantics(&self, name: &str) -> Result<ToolSemantics, ToolRejection> {
+        self.entries
+            .get(name)
+            .map(|entry| entry.semantics)
+            .ok_or(ToolRejection::Unavailable)
+    }
+
+    pub fn validate(&self, name: &str, input: &Value) -> Result<(), ToolRejection> {
+        let entry = self.entries.get(name).ok_or(ToolRejection::Unavailable)?;
+        if entry.definition.provider.is_some() {
+            return Err(ToolRejection::Unavailable);
+        }
+        if !entry.validator.is_valid(input) {
+            return Err(ToolRejection::InvalidInput {
+                message: schema_mismatch(&entry.validator, &entry.definition.input_schema, input),
+            });
+        }
+        Ok(())
+    }
+}
+
+/// How many schema errors a rejection names; the model fixes the first ones first.
+const SHOWN_ERRORS: usize = 3;
+
+/// Why `input` fails its schema, so the model can correct the call: where each of
+/// the first errors is and what it is, with the values masked since they can be long.
+fn schema_mismatch(validator: &Validator, schema: &Value, input: &Value) -> String {
+    let mut reasons = Vec::new();
+    let mut more = 0;
+    for error in validator.iter_errors(input) {
+        collect_reason(&error, schema, &mut reasons, &mut more);
+    }
+    let mut message = String::from("arguments do not match the declared schema");
+    if !reasons.is_empty() {
+        message.push_str(": ");
+        message.push_str(&reasons.join("; "));
+    }
+    if more > 0 {
+        message.push_str(&format!("; and {more} more"));
+    }
+    message
+}
+
+/// Collects schema errors up to `SHOWN_ERRORS`. A failed union unwraps `X | null`
+/// or names/narrows a tagged-union alternative so the model does not have to guess.
+fn collect_reason(
+    error: &ValidationError<'_>,
+    schema: &Value,
+    reasons: &mut Vec<String>,
+    more: &mut usize,
+) {
+    let mut what = None;
+    if let ValidationErrorKind::AnyOf { context } | ValidationErrorKind::OneOfNotValid { context } =
+        error.kind()
+        && let Some(branches) = schema
+            .pointer(error.schema_path().as_str())
+            .and_then(Value::as_array)
+        && branches.len() == context.len()
+    {
+        // `X` or null: the input is not null, so say why it is not `X`.
+        if let [first, second] = branches.as_slice()
+            && let Some(other) = match (is_null(first), is_null(second)) {
+                (true, false) => Some(1),
+                (false, true) => Some(0),
+                _ => None,
+            }
+        {
+            for inner in &context[other] {
+                collect_reason(inner, schema, reasons, more);
+            }
+            return;
+        }
+        if let Some((tag, values)) = tag(branches) {
+            let chosen = error.instance().get(tag).and_then(Value::as_str);
+            if let Some(index) = chosen.and_then(|chosen| values.iter().position(|v| *v == chosen))
+            {
+                for inner in &context[index] {
+                    collect_reason(inner, schema, reasons, more);
+                }
+                return;
+            }
+            what = Some(alternatives(branches, tag, &values));
+        }
+    }
+    if reasons.len() == SHOWN_ERRORS {
+        *more += 1;
+        return;
+    }
+    let what = what.unwrap_or_else(|| error.masked().to_string());
+    let path = error.instance_path().as_str();
+    let mut reason = if path.is_empty() {
+        what
+    } else {
+        format!("{path}: {what}")
+    };
+    // Only a value of the wrong kind can be a structure sent as its text; a string
+    // failing a string rule (length, pattern) is meant to be a string.
+    let wrong_kind = matches!(
+        error.kind(),
+        ValidationErrorKind::Type { .. }
+            | ValidationErrorKind::AnyOf { .. }
+            | ValidationErrorKind::OneOfNotValid { .. }
+    );
+    if wrong_kind && encodes_json(error.instance()) {
+        reason.push_str(" (it is a JSON-encoded string; pass the object or array itself)");
+    }
+    reasons.push(reason);
+}
+
+fn is_null(branch: &Value) -> bool {
+    branch.get("type").is_some_and(|kind| kind == "null")
+}
+
+fn literal_tag(schema: &Value) -> Option<&str> {
+    schema.get("const").and_then(Value::as_str).or_else(|| {
+        let [only] = schema.get("enum")?.as_array()?.as_slice() else {
+            return None;
+        };
+        only.as_str()
+    })
+}
+
+/// The property every alternative requires with its own constant (or single-value enum),
+/// as a serde-tagged enum or external MCP schema declares it.
+fn tag(branches: &[Value]) -> Option<(&str, Vec<&str>)> {
+    let first = branches.first()?.get("properties")?.as_object()?;
+    first.keys().find_map(|name| {
+        let values = branches
+            .iter()
+            .map(|branch| {
+                let required = branch.get("required")?.as_array()?;
+                if !required.iter().any(|field| field == name.as_str()) {
+                    return None;
+                }
+                literal_tag(branch.get("properties")?.get(name)?)
+            })
+            .collect::<Option<Vec<_>>>()?;
+        let distinct = values.iter().collect::<std::collections::BTreeSet<_>>();
+        (distinct.len() == values.len()).then_some((name.as_str(), values))
+    })
+}
+
+/// Each tag value with the fields it takes; `?` marks an optional field.
+fn alternatives(branches: &[Value], tag: &str, values: &[&str]) -> String {
+    let alternatives: Vec<_> = branches
+        .iter()
+        .zip(values)
+        .map(|(branch, value)| {
+            let required = branch.get("required").and_then(Value::as_array);
+            let fields: Vec<_> = branch
+                .get("properties")
+                .and_then(Value::as_object)
+                .into_iter()
+                .flatten()
+                .filter(|(name, _)| name.as_str() != tag)
+                .map(|(name, _)| {
+                    if required
+                        .is_some_and(|required| required.iter().any(|field| field == name.as_str()))
+                    {
+                        name.clone()
+                    } else {
+                        format!("{name}?")
+                    }
+                })
+                .collect();
+            if fields.is_empty() {
+                format!("{value:?}")
+            } else {
+                format!("{value:?} ({})", fields.join(", "))
+            }
+        })
+        .collect();
+    format!(
+        "expected an object with {tag:?} set to one of these values, each with its fields: {}",
+        alternatives.join(", ")
+    )
+}
+
+/// A string holding a JSON object or array, the usual way a model mistakes a
+/// structured argument.
+fn encodes_json(value: &Value) -> bool {
+    value.as_str().is_some_and(|text| {
+        serde_json::from_str::<Value>(text).is_ok_and(|value| value.is_object() || value.is_array())
+    })
+}
+
+impl ToolCatalog {
+    pub fn names(&self) -> Vec<String> {
+        self.entries.keys().cloned().collect()
+    }
+
+    pub fn contains(&self, name: &str) -> bool {
+        self.entries.contains_key(name)
+    }
+
+    pub fn is_prepared_by(&self, name: &str, preparer: &Arc<dyn crate::ToolPreparer>) -> bool {
+        self.entries.get(name).is_some_and(|entry| {
+            entry.definition.provider.is_none()
+                && matches!(
+                    &entry.handler,
+                    crate::ToolHandler::Prepared(current) if Arc::ptr_eq(current, preparer)
+                )
+        })
+    }
+
+    pub(crate) fn always_visible(&self, name: &str) -> bool {
+        self.entries
+            .get(name)
+            .is_some_and(|entry| entry.always_visible)
+    }
+
+    pub fn prepare(
+        &self,
+        name: String,
+        input: Value,
+        context: ToolCallContext,
+        cancellation: CancellationToken,
+    ) -> PreparationFuture {
+        if cancellation.is_cancelled() {
+            return Box::pin(async { Err(ToolRejection::Cancelled) });
+        }
+        if let Err(reason) = self.validate(&name, &input) {
+            return Box::pin(async move { Err(reason) });
+        }
+        let preparation =
+            self.entries[&name]
+                .handler
+                .prepare(name, input, context, cancellation.clone());
+        Box::pin(async move {
+            let effect = preparation.await?;
+            if cancellation.is_cancelled() {
+                return Err(ToolRejection::Cancelled);
+            }
+            Ok(effect)
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests;

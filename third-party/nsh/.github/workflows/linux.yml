@@ -1,0 +1,232 @@
+name: Linux
+
+# Builds, lints and tests the Linux backend (GTK 4) and the tooling that runs
+# it (`nsh run --target linux`, `nsh package --target linux`), and runs the
+# gallery's real-platform tests in GPUI windows on a virtual X11 display.
+
+on:
+  # Pull requests test every change before it merges; main runs every three
+  # hours when it moved, instead of on every push, which only tested again what its pull request
+  # had, and saves the dependencies' caches pull requests restore.
+  schedule:
+    - cron: "0 */3 * * *"
+  pull_request:
+    # `closed` runs nothing, but it takes the pull request's concurrency group
+    # and so cancels its runs still queued or running once it merges or closes.
+    types: [opened, synchronize, reopened, ready_for_review, closed]
+    paths:
+      - "crates/gpui/**"
+      - "crates/nsh-bundler/**"
+      - "crates/nsh-cli/**"
+      - "crates/nsh-core/**"
+      - "crates/nsh-dev/**"
+      - "crates/nsh-engine/**"
+      - "crates/nsh-i18n/**"
+      - "crates/nsh-js/**"
+      - "crates/nsh-linux-app/**"
+      - "crates/nsh-linux-host/**"
+      - "crates/nsh-macros/**"
+      - "crates/nsh-package/**"
+      - "crates/nsh-updater/**"
+      - "crates/nsh-platform-linux/**"
+      - "crates/nsh-testing/**"
+      - "crates/nsh-base/**"
+      - "crates/xtask/**"
+      - "examples/counter/**"
+      - "examples/gallery/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".cargo/**"
+      - "rust-toolchain.toml"
+      - ".github/workflows/linux.yml"
+      - ".github/actions/cargo/**"
+  merge_group:
+    types: [checks_requested]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linux-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  # CI builds each crate once: no incremental state and no debug info
+  # (faster builds, smaller caches; panics still name their file and line).
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  # The toolchain file's iOS and Android targets are only the release's.
+  RUSTUP_TOOLCHAIN: stable
+
+jobs:
+  # Scheduled runs: only when main moved since the last one.
+  changed:
+    if: github.event_name == 'schedule'
+    permissions:
+      actions: read
+    uses: ./.github/workflows/changed.yml
+
+  gpui-gallery:
+    needs: changed
+    # Nothing for drafts or a pull request being closed, nor for a scheduled
+    # run when main has not changed since the last one.
+    if: ${{ !cancelled() && needs.changed.outputs.run != 'false' && (github.event_name != 'pull_request' || (github.event.action != 'closed' && !github.event.pull_request.draft)) }}
+    environment:
+      name: ci-debounce
+      deployment: false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      # Wry embeds GTK 3 web views in X11 child windows. Mesa's software
+      # Vulkan driver draws GPUI on the runner without a physical GPU.
+      GDK_BACKEND: x11
+      WEBKIT_DISABLE_DMABUF_RENDERER: "1"
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up temporary directories outside the checkout
+        run: |
+          mkdir -p "$RUNNER_TEMP/tmp"
+          echo "TMPDIR=$RUNNER_TEMP/tmp" >> "$GITHUB_ENV"
+
+      - name: Install GPUI, Vulkan and Xvfb dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            clang libclang-dev build-essential pkg-config \
+            libasound2-dev libfontconfig-dev libfreetype-dev libssl-dev \
+            libvulkan1 mesa-vulkan-drivers libwayland-dev libx11-xcb-dev libxcb1-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev libzstd-dev \
+            libgtk-3-dev libwebkit2gtk-4.1-dev \
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+            gstreamer1.0-plugins-base gstreamer1.0-plugins-good xvfb xauth
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          workspaces: |
+            . -> target
+            crates/gpui -> ../../target
+          key: gpui-gallery
+
+      - name: Build the CLI and GPUI host
+        run: |
+          cargo build -p nsh-cli
+          cargo build --manifest-path crates/gpui/Cargo.toml --target-dir target -p nsh-gpui-host
+
+      # Match the GTK job's gallery coverage. No allowed failures: each
+      # invocation must pass, and Bash stops at the first failing suite.
+      - name: Run the gallery's tests in GPUI windows
+        run: |
+          run() { env -u WAYLAND_DISPLAY dbus-run-session -- xvfb-run -a -s '-screen 0 1280x1024x24' ./target/debug/nsh test "$@" --target gpui; }
+          for file in context-menu device dock form gestures hover links navigation network photos resizable shortcuts storage timers; do
+            run "examples/gallery/tests/$file.test.tsx"
+          done
+          run examples/gallery/tests/environment.test.tsx --filter appearance
+
+  check:
+    needs: changed
+    # Nothing for drafts or a pull request being closed, nor for a scheduled
+    # run when main has not changed since the last one.
+    if: ${{ !cancelled() && needs.changed.outputs.run != 'false' && (github.event_name != 'pull_request' || (github.event.action != 'closed' && !github.event.pull_request.draft)) }}
+    # Debounce (AGENTS.md "CI"): waits without a runner, so a newer
+    # push cancels this run before it takes one.
+    environment:
+      name: ci-debounce
+      deployment: false
+    # 24.04 has GTK 4.14 and Pango 1.52+, what `nsh-platform-linux` needs.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+
+      # QuickJS is C (bindgen needs libclang); the backend links GTK 4 and
+      # Pango, and WebKitGTK 6.0 for web views (the hosts' default); Xvfb
+      # is the display the examples' tests open their windows on. GStreamer
+      # decodes and mixes sounds; its base and good plug-ins are what the
+      # sound tests decode (WAV) and mix with.
+      - name: Install clang, GTK 4, WebKitGTK and GStreamer
+        run: sudo apt-get update && sudo apt-get install -y clang libclang-dev libgtk-4-dev libwebkitgtk-6.0-dev xvfb xauth at-spi2-core python3 libxtst6 libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev gstreamer1.0-plugins-base gstreamer1.0-plugins-good
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      # huacnlee/cargo, and the dependencies' builds: main's runs save
+      # them, pull requests restore them.
+      - name: Cargo
+        uses: ./.github/actions/cargo
+        with:
+          cache: linux
+
+      - name: Clippy
+        run: >
+          cargo clippy --all-targets
+          -p nsh-platform-linux -p nsh-linux-host -p nsh-linux-app
+          -p nsh-cli -p nsh-dev -p xtask
+          -- -D warnings
+
+      # The backend alone, without the `webview` feature the hosts turn on:
+      # web views as placeholders.
+      - name: Clippy (without WebKitGTK)
+        run: cargo clippy --all-targets -p nsh-platform-linux -- -D warnings
+
+      # Without the optional features: no naga, wgpu, syntect, RaTeX, ropey,
+      # imara-diff, tungstenite, rustls, GStreamer; no `zlib` or `crypto`
+      # module, no updater.
+      - name: Check without optional features
+        run: cargo clippy -p nsh-linux-app --no-default-features --features js -- -D warnings
+
+      # Each optional feature alone, so that none leans on another.
+      - name: Check each optional feature alone
+        run: |
+          for feature in shader editor rich-editor plot highlight math zlib crypto websocket updater svg net sound; do
+            cargo clippy -p nsh-linux-app --no-default-features --features "$feature" -- -D warnings
+          done
+
+      - name: Test without optional features
+        run: xvfb-run -a cargo test -p nsh-platform-linux --no-default-features --features js --lib without_the_feature
+
+      # The backend's tests that make GTK widgets (`gtk_test`) run where a
+      # display opens: the second run has a virtual one, with a session bus
+      # of its own, as the examples' tests below.
+      - name: Test
+        run: >
+          cargo test -p nsh-platform-linux -p nsh-cli -p nsh-dev
+          && dbus-run-session -- xvfb-run -a cargo test -p nsh-platform-linux --features webview
+
+      # Opt-in Action-interface tests use an independent AT client, not GTK signals.
+      # dev also executes the hosted editor/wrapper input regression.
+      - name: Test AT-SPI activation and input
+        env:
+          GTK_A11Y: atspi
+          GDK_BACKEND: x11
+          GSK_RENDERER: cairo
+          RUST_TEST_THREADS: "1"
+        run: |
+          dbus-run-session -- xvfb-run -a cargo test -p nsh-platform-linux --no-default-features --features dev --lib access::tests::activation_ -- --nocapture
+          dbus-run-session -- xvfb-run -a cargo test -p nsh-platform-linux --no-default-features --features dev --lib access::tests::atspi_activation_ -- --ignored --nocapture
+
+      # The examples' tests in GTK windows on a virtual display, with the
+      # platform's input (`nsh test --target linux`): those a real platform
+      # runs (real time).
+      - name: Run the examples' tests in GTK windows
+        run: |
+          cargo build -p nsh-cli
+          # A session bus of its own: without one, GTK's portal and
+          # accessibility lookups wait for D-Bus autolaunch on each display.
+          run() { dbus-run-session -- xvfb-run -a ./target/debug/nsh test "$@" --target linux; }
+          run examples/counter
+          for file in combobox-click context-menu device dock form gestures hover links navigation network photos resizable shortcuts storage timers; do
+            run "examples/gallery/tests/$file.test.tsx"
+          done
+          run examples/gallery/tests/environment.test.tsx --filter appearance
+          # Apps with Rust crates, in hosts built with them: a TSX app and a
+          # Rust app (its root).
+          run examples/rust-exports/App.test.tsx
+          run examples/gallery-rs/App.test.tsx

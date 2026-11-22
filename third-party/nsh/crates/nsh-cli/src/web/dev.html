@@ -1,0 +1,280 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<!-- The dev server serves the page at every path of the app (`/sports/football`) and its files at the root. -->
+<base href="/">
+<title>nsh dev</title>
+<meta name="color-scheme" content="light dark">
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #fff; color: #1c1c1e; }
+  @media (prefers-color-scheme: dark) { html, body { background: #000; color: #f2f2f7; } }
+  #app { position: fixed; inset: 0; }
+  #status { position: fixed; left: 50%; top: 12px; transform: translateX(-50%); z-index: 3000; padding: 6px 12px;
+    border-radius: 999px; background: rgba(60,60,67,.85); color: #fff; pointer-events: none;
+    font: 12px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  #status[hidden], #problem[hidden] { display: none; }
+  #problem { position: fixed; inset: 0; z-index: 3000; overflow: auto; padding: 24px; box-sizing: border-box;
+    background: rgba(20,20,22,.94); color: #f2f2f7; font: 14px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  #problem h1 { margin: 0 0 12px; font-size: 17px; color: #ff6b5f; }
+  #problem pre { margin: 0; white-space: pre-wrap; font: 12px/1.5 ui-monospace, Menlo, Consolas, monospace;
+    -webkit-user-select: text; user-select: text; }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<div id="status" role="status">Connecting…</div>
+<div id="problem" role="alert" hidden><h1></h1><pre></pre></div>
+<script type="module">
+  // The web development host, served by `nsh dev` / `nsh run --target web`:
+  // connects to the dev server's WebSocket as the other hosts do, runs
+  // each bundle (an ES module) on the browser's JavaScript engine, applies
+  // hot updates in place, forwards the
+  // app's logs to the terminal and shows build errors over the app.
+  import { createPlayer } from "./nsh.js";
+
+  const PROTOCOL = {{protocol}};
+  const UI_SETS = {{ui_sets}};
+  // The runtime this page loaded: a server that serves another one (the
+  // app's Rust code changed and its runtime was built again) loads the
+  // page again.
+  const RUNTIME = {{runtime}};
+  // A Rust app (`nsh.json` "root"): the runtime mounts its root; there are
+  // no bundles. A change to its Rust code makes another runtime (above).
+  const RUST = {{rust}};
+  // The runtime's wasm-bindgen glue (an app's crates that call JS through it).
+  const GLUE = {{glue}};
+  // The page's host (`nsh.json` `web.host`): its `createHost(player)` runs
+  // once the player exists, before the first bundle, as on a packaged page.
+  const HOST = {{host}};
+  // Whether pages and dialogs are browser history entries (`nsh.json`
+  // `web.history`; `null`: the player's default).
+  const HISTORY = {{history}};
+  const status = document.getElementById("status");
+  const problem = document.getElementById("problem");
+  const decoder = new TextDecoder();
+  const text = (data) => (data ? decoder.decode(data) : "");
+
+  let socket;
+  let session = 0;
+  // The build the page runs: { session, version }.
+  let running = null;
+  // A message whose binary frames are still coming: { message, frames, count }.
+  let pending = null;
+  let retry = 100;
+
+  function showStatus(message) {
+    status.textContent = message;
+    status.hidden = !message;
+  }
+
+  function showProblem(title, detail) {
+    problem.querySelector("h1").textContent = title;
+    problem.querySelector("pre").textContent = detail;
+    problem.hidden = false;
+  }
+
+  const send = (message) => socket?.readyState === WebSocket.OPEN && socket.send(JSON.stringify(message));
+  const levels = { error: "error", warn: "warn", log: "info" };
+
+  // Fonts are read synchronously (text is measured with them).
+  const fonts = new Map();
+  function readAsset(uri) {
+    const path = uri.replace(/^asset:\/+/, "");
+    if (fonts.has(path)) return fonts.get(path);
+    const xhr = new XMLHttpRequest();
+    xhr.open("GET", `/assets/${path}`, false);
+    xhr.overrideMimeType("text/plain; charset=x-user-defined");
+    xhr.send();
+    let data = null;
+    if (xhr.status === 200) {
+      const s = xhr.responseText;
+      data = new Uint8Array(s.length);
+      for (let i = 0; i < s.length; i++) data[i] = s.charCodeAt(i) & 0xff;
+    }
+    fonts.set(path, data);
+    return data;
+  }
+
+  let host;
+  const player = await createPlayer(document.getElementById("app"), {
+    wasm: "./nsh.wasm",
+    glue: GLUE ?? undefined,
+    host: HOST ? { call: (name, args) => host.call(name, args), post: (name, args) => (host.post ?? host.call).call(host, name, args) } : undefined,
+    assetBase: "/assets/",
+    history: HISTORY ?? undefined,
+    readAsset,
+    onLog: (level, message) => send({ type: "log", level: levels[level] ?? "info", target: "js", message }),
+  });
+  window.player = player;
+  if (HOST) {
+    try {
+      host = await (await import(HOST)).createHost(player);
+      if (typeof host?.call !== "function") throw new Error("createHost(player) returned no call(name, args)");
+    } catch (err) {
+      showProblem("nsh.json web.host", String(err?.stack ?? err));
+      host = { call: () => Promise.reject(new Error("nsh.json web.host did not load")) };
+    }
+  }
+
+  function device() {
+    const ua = navigator.userAgent;
+    const browser = /Edg\//.test(ua) ? "Edge" : /Firefox\//.test(ua) ? "Firefox"
+      : /Chrome\//.test(ua) ? "Chrome" : /Safari\//.test(ua) ? "Safari" : "browser";
+    return `Web (${browser})`;
+  }
+
+  // Bundles, hot updates and what depends on the app that runs are
+  // handled one at a time, in the order they came: a bundle and a hot
+  // update take a while to load, and what follows (the patch of the next
+  // version, a test step) waits for them. A test session's fetch replies
+  // and the build's status go through at once: an app's top-level code may
+  // be waiting for a reply as its bundle loads.
+  const ORDERED = new Set(["root", "step"]);
+  let queue = Promise.resolve();
+  function handle(message, frames) {
+    if (!frames && !ORDERED.has(message.type)) {
+      control(message);
+      return;
+    }
+    queue = queue.then(() => (frames ? received(message, frames) : control(message))).catch((err) => {
+      console.error("[nsh]", err);
+    });
+  }
+
+  async function received(message, frames) {
+    switch (message.type) {
+      case "patch": {
+        if (running?.session !== session || running.version !== message.base) return;
+        const applied = await player.hotUpdate(text(frames[0]), `hot-${message.version}.js`, text(frames[1]));
+        if (applied) {
+          running = { session, version: message.version };
+          problem.hidden = true;
+        } else {
+          // The bundle of this version follows: it loads from scratch.
+          running = null;
+        }
+        return;
+      }
+      case "bundle": {
+        showStatus("");
+        if (running?.session === session && running.version === message.version) return;
+        running = { session, version: message.version };
+        problem.hidden = true;
+        try {
+          await player.runSource(text(frames[0]), {
+            capabilities: message.capabilities ?? "",
+            sourceMap: text(frames[1]),
+            appId: message.app_id ?? "",
+            name: `bundle-${message.version}.js`,
+          });
+        } catch {
+          // The player shows the error; a patch cannot apply to a bundle
+          // that did not start, the next bundle runs from scratch.
+          if (running?.session === session && running.version === message.version) running = null;
+        }
+        return;
+      }
+    }
+  }
+
+  function connect() {
+    const scheme = location.protocol === "https:" ? "wss" : "ws";
+    socket = new WebSocket(`${scheme}://${location.host}/ws`);
+    socket.binaryType = "arraybuffer";
+    socket.onopen = async () => {
+      retry = 100;
+      pending = null;
+      const served = await fetch("./nsh.version", { cache: "no-store" }).then((r) => (r.ok ? r.text() : null), () => null);
+      // A session still starting serves no runtime yet: connect again.
+      if (served === null) {
+        socket.close();
+        return;
+      }
+      if (served !== RUNTIME) {
+        showStatus("The runtime changed — reloading…");
+        // The app's own question before the page leaves is not for this reload.
+        player.askBeforeLeaving?.(false);
+        location.reload();
+        return;
+      }
+      // No bytecode version: this host runs JS source.
+      send({ type: "hello", protocol: PROTOCOL, bytecode_version: "", device: device(), platform: "web", ui_sets: UI_SETS, tests: player.takesTests });
+    };
+    socket.onmessage = (event) => {
+      if (typeof event.data !== "string") {
+        if (!pending) return;
+        pending.frames.push(new Uint8Array(event.data));
+        if (pending.frames.length === pending.count) {
+          const { message, frames } = pending;
+          pending = null;
+          handle(message, frames);
+        }
+        return;
+      }
+      const message = JSON.parse(event.data);
+      if (message.type === "patch" || message.type === "bundle") {
+        pending = { message, frames: [], count: message.source_map ? 2 : 1 };
+        return;
+      }
+      handle(message);
+    };
+    socket.onclose = () => {
+      showStatus("Dev server disconnected — reconnecting…");
+      setTimeout(connect, retry);
+      retry = Math.min(retry * 2, 2000);
+    };
+  }
+
+  function control(message) {
+    switch (message.type) {
+      case "hello":
+        session = message.session ?? 0;
+        // A test session (`nsh test --target web`): the model of the app
+        // starts before its first bundle.
+        if (message.test) player.testStart();
+        showStatus("");
+        // A test session's Rust app starts when the server says so,
+        // after what the test sets it up with.
+        if (RUST && !running && !message.test) {
+          running = { session, version: 0 };
+          player.runRust();
+        }
+        break;
+      case "test_setup":
+        player.onTestSend = send;
+        player.testSetup(message.storage, message.trace, message.environment);
+        break;
+      case "fetch":
+        player.testFetchReply(message.id, message.reply);
+        break;
+      case "step":
+        send({ type: "step_done", id: message.id, outcome: player.testStep(message.step) });
+        break;
+      case "root":
+        // The app is this runtime's own Rust root. Outside a test session
+        // `hello` has started it already: it runs once.
+        if (running) break;
+        running = { session, version: 0 };
+        showStatus("");
+        player.runRust();
+        break;
+      case "building":
+        showStatus("Building…");
+        break;
+      case "build_failed":
+        showStatus("");
+        showProblem("Build failed", message.message);
+        break;
+      case "cannot_run":
+        showStatus("");
+        showProblem("This host cannot run the app", message.message);
+        break;
+    }
+  }
+
+  connect();
+</script>
+</body>
+</html>

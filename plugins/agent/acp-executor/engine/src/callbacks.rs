@@ -1,0 +1,318 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+use crate::ports::Ports;
+use agent_client_protocol::v1::schema as acp;
+use maka_agent_facts::capability::FormField;
+use maka_agent_facts::capability::FormFieldSpec;
+use maka_agent_facts::capability::FormOption;
+use maka_agent_facts::capability::FormResult;
+use maka_agent_facts::capability::FormValue;
+use maka_agent_ports::execution::OfferInteraction;
+use maka_agent_ports::execution::Prompt;
+use maka_agent_ports::executor::Context;
+use maka_agent_ports::executor::Request;
+use maka_capabilities::filesystem::Operation;
+use maka_capabilities::filesystem::Write;
+use serde::Serialize;
+use serde_json::Value;
+use sha2::{Digest, Sha256};
+use std::path::Path;
+
+mod read;
+
+#[derive(Debug)]
+pub struct CallbackError {
+    pub code: i32,
+    pub message: String,
+}
+impl CallbackError {
+    fn invalid(message: impl ToString) -> Self {
+        Self {
+            code: -32602,
+            message: message.to_string(),
+        }
+    }
+    fn host(message: impl ToString) -> Self {
+        Self {
+            code: -32000,
+            message: message.to_string(),
+        }
+    }
+}
+
+/// Agent callbacks borrow the admitted call; external consent creates no Host grant.
+pub(crate) async fn read_file(
+    input: acp::ReadTextFileRequest,
+    session: &str,
+    context: &Context,
+    host: &Ports,
+    rpc_id: &Value,
+) -> Result<acp::ReadTextFileResponse, CallbackError> {
+    check_session(&input.session_id, session)?;
+    check_path(&input.path)?;
+    Ok(acp::ReadTextFileResponse::new(
+        read::text(input, context, host, rpc_id).await?,
+    ))
+}
+
+pub(crate) async fn write_file(
+    input: acp::WriteTextFileRequest,
+    session: &str,
+    context: &Context,
+    host: &Ports,
+    rpc_id: &Value,
+) -> Result<acp::WriteTextFileResponse, CallbackError> {
+    check_session(&input.session_id, session)?;
+    let path = check_path(&input.path)?.to_owned();
+    host.callbacks
+        .file(
+            call(context)?,
+            rpc_id.to_string(),
+            Operation::Write(Write {
+                path,
+                content: input.content,
+            }),
+            context.cancellation.clone(),
+        )
+        .await
+        .map_err(CallbackError::host)?;
+    Ok(acp::WriteTextFileResponse::default())
+}
+
+pub(crate) async fn permission_v1(
+    input: acp::RequestPermissionRequest,
+    session: &str,
+    request: &Request,
+    context: &Context,
+    host: &Ports,
+    rpc_id: &Value,
+) -> Result<acp::RequestPermissionResponse, CallbackError> {
+    check_session(&input.session_id, session)?;
+    let outcome = match permission(input, request, context, host, rpc_id).await? {
+        Some(id) => {
+            acp::RequestPermissionOutcome::Selected(acp::SelectedPermissionOutcome::new(id))
+        }
+        None => acp::RequestPermissionOutcome::Cancelled,
+    };
+    Ok(acp::RequestPermissionResponse::new(outcome))
+}
+
+pub(crate) async fn permission_v2(
+    input: agent_client_protocol::v2::schema::RequestPermissionRequest,
+    session: &str,
+    request: &Request,
+    context: &Context,
+    host: &Ports,
+    rpc_id: &Value,
+) -> Result<agent_client_protocol::v2::schema::RequestPermissionResponse, CallbackError> {
+    if input.session_id.to_string() != session {
+        return Err(CallbackError::invalid(
+            "Callback belongs to another ACP session",
+        ));
+    }
+    let details = serde_json::to_string(&input).map_err(CallbackError::invalid)?;
+    let options = input
+        .options
+        .iter()
+        .map(|option| FormOption {
+            value: option.option_id.to_string(),
+            label: option.name.clone(),
+        })
+        .collect();
+    let result = permission_offer(
+        PermissionPrompt {
+            title: input.title.clone(),
+            details,
+            options,
+            identity: encode(&input)?,
+        },
+        request,
+        context,
+        host,
+        rpc_id,
+    )
+    .await?;
+    use agent_client_protocol::v2::schema as v2;
+    let outcome = match result {
+        Some(id) => v2::RequestPermissionOutcome::Selected(v2::SelectedPermissionOutcome::new(id)),
+        None => v2::RequestPermissionOutcome::Cancelled(v2::CancelledPermissionOutcome::new()),
+    };
+    Ok(v2::RequestPermissionResponse::new(outcome))
+}
+
+fn encode(value: impl Serialize) -> Result<Value, CallbackError> {
+    serde_json::to_value(value).map_err(CallbackError::host)
+}
+fn check_session(actual: &acp::SessionId, expected: &str) -> Result<(), CallbackError> {
+    if actual.0.as_ref() != expected {
+        return Err(CallbackError::invalid(
+            "Callback belongs to another ACP session",
+        ));
+    }
+    Ok(())
+}
+fn check_path(path: &Path) -> Result<&str, CallbackError> {
+    let text = path
+        .to_str()
+        .ok_or_else(|| CallbackError::invalid("Path is not UTF-8"))?;
+    if !path.is_absolute() || text.contains('\0') {
+        return Err(CallbackError::invalid(
+            "ACP filesystem callbacks require an absolute path",
+        ));
+    }
+    Ok(text)
+}
+fn call(context: &Context) -> Result<maka_capabilities::call::Scope, CallbackError> {
+    context
+        .call
+        .clone()
+        .ok_or_else(|| CallbackError::host("No admitted Host call"))
+}
+
+async fn permission(
+    input: acp::RequestPermissionRequest,
+    request: &Request,
+    context: &Context,
+    host: &Ports,
+    rpc_id: &Value,
+) -> Result<Option<String>, CallbackError> {
+    let title = input
+        .tool_call
+        .fields
+        .title
+        .as_deref()
+        .unwrap_or("External agent tool");
+    let details = serde_json::to_string(&input.tool_call).map_err(CallbackError::invalid)?;
+    let options = input
+        .options
+        .iter()
+        .map(|option| FormOption {
+            value: option.option_id.to_string(),
+            label: option.name.clone(),
+        })
+        .collect();
+    permission_offer(
+        PermissionPrompt {
+            title: title.to_owned(),
+            details,
+            options,
+            identity: encode(&input)?,
+        },
+        request,
+        context,
+        host,
+        rpc_id,
+    )
+    .await
+}
+
+struct PermissionPrompt {
+    title: String,
+    details: String,
+    options: Vec<FormOption>,
+    identity: Value,
+}
+
+async fn permission_offer(
+    prompt: PermissionPrompt,
+    request: &Request,
+    context: &Context,
+    host: &Ports,
+    rpc_id: &Value,
+) -> Result<Option<String>, CallbackError> {
+    let PermissionPrompt {
+        title,
+        details,
+        options,
+        identity,
+    } = prompt;
+    if options.is_empty() || options.len() > 32 {
+        return Err(CallbackError::invalid(
+            "Permission request needs 1 to 32 options",
+        ));
+    }
+    let fields = vec![FormField {
+        name: "permission".into(),
+        label: "External agent permission".into(),
+        required: true,
+        description: None,
+        spec: FormFieldSpec::SingleSelect {
+            options: options.clone(),
+            default: None,
+        },
+    }];
+    let message = format!(
+        "{}\nConsent for the external agent's sandboxed process.\n{}",
+        excerpt(&title, 256),
+        excerpt(&details, 1600)
+    );
+    let digest = serde_json::to_vec(&(&request.task_id, rpc_id, identity))
+        .map_err(CallbackError::invalid)?;
+    let operation_id = format!("acp-{}", hex::encode(Sha256::digest(digest)));
+    let offer = OfferInteraction {
+        operation_id: operation_id.clone(),
+        execution: request.execution.clone(),
+        prompt: Prompt::Form {
+            message,
+            fields: fields.clone(),
+        },
+    };
+    // Reuse the public form contract for option IDs, uniqueness, labels and budgets.
+    offer
+        .request("external-agent")
+        .map_err(CallbackError::invalid)?;
+    if context.cancellation.is_cancelled() {
+        return Ok(None);
+    }
+    let result = host
+        .callbacks
+        .form(call(context)?, offer, context.cancellation.clone())
+        .await
+        .map_err(CallbackError::host)?;
+    let Some(result) = result else {
+        return Ok(None);
+    };
+    result
+        .validate_for_fields(&fields)
+        .map_err(CallbackError::host)?;
+    if let FormResult::Accept { values } = result {
+        let Some(FormValue::String(selected)) = values.get("permission") else {
+            return Err(CallbackError::host("Permission selection is missing"));
+        };
+        let option = options
+            .iter()
+            .find(|option| &option.value == selected)
+            .ok_or_else(|| CallbackError::host("Unknown permission selection"))?;
+        Ok(Some(option.value.clone()))
+    } else {
+        Ok(None)
+    }
+}
+
+fn excerpt(text: &str, max: usize) -> String {
+    if text.len() <= max {
+        return text.to_owned();
+    }
+    let mut end = max;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{} [excerpt]", &text[..end])
+}

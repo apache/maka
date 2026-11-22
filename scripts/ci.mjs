@@ -1,0 +1,210 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { join, resolve } from 'node:path';
+import { command } from './ci/command.mjs';
+import { checkResults, createPlan, documentation, sharedInput } from './ci/plan.mjs';
+import { manifests, suites, workers } from './ci/suites.mjs';
+import { executor, runSuites } from './ci/run.mjs';
+
+const root = fileURLToPath(new URL('../', import.meta.url));
+const temporary = process.env.RUNNER_TEMP ?? join(root, 'target/ci');
+const planFile = join(temporary, 'ci-plan.json');
+
+function output(values) {
+  if (process.env.GITHUB_OUTPUT)
+    appendFileSync(
+      process.env.GITHUB_OUTPUT,
+      Object.entries(values)
+        .map(
+          ([key, value]) => `${key}=${typeof value === 'string' ? value : JSON.stringify(value)}\n`,
+        )
+        .join(''),
+    );
+}
+
+export async function resolvePullRequestBaseline(cwd, pullRequest) {
+  const [, ...parents] = (
+    await command('git', ['rev-list', '--parents', '-n', '1', 'HEAD'], { cwd, capture: true })
+  )
+    .trim()
+    .split(/\s+/);
+  // GitHub Actions checks out a synthetic merge commit whose first parent is the exact tree
+  // merged into (trunk for regular PRs, or trunk + lower stack PRs for stacked PRs).
+  if (parents.length === 2 && parents[1] === pullRequest.head?.sha) {
+    return { baseline: parents[0], fetch: false };
+  }
+  return { baseline: pullRequest.base.sha, fetch: true };
+}
+
+export async function plan({ baseline = null, event = process.env.GITHUB_EVENT_NAME } = {}) {
+  const revision = (
+    await command('git', ['rev-parse', 'HEAD'], { cwd: root, capture: true })
+  ).trim();
+  if (process.env.GITHUB_SHA && revision !== process.env.GITHUB_SHA)
+    throw new Error('Checkout differs from the workflow revision');
+  const worker = process.env.MAKA_CI_WORKER || null;
+  if (worker !== null) {
+    if (event !== 'workflow_dispatch')
+      throw new Error('A CI worker can only be selected for manual validation');
+    return createPlan({ root, revision, baseline, worker });
+  }
+  let fetchBaseline = false;
+  if (event === 'push') {
+    baseline = JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH, 'utf8')).before;
+    if (/^0+$/.test(baseline)) baseline = null;
+    fetchBaseline = baseline !== null;
+  }
+  if (event === 'pull_request') {
+    const { pull_request: pullRequest } = JSON.parse(
+      readFileSync(process.env.GITHUB_EVENT_PATH, 'utf8'),
+    );
+    ({ baseline, fetch: fetchBaseline } = await resolvePullRequestBaseline(root, pullRequest));
+  }
+  if (baseline !== null && fetchBaseline) {
+    await command('git', ['fetch', '--no-tags', '--depth=1', 'origin', baseline], { cwd: root });
+  }
+  const changes =
+    baseline === null
+      ? null
+      : (
+          await command(
+            'git',
+            ['diff', '--name-only', '--no-renames', '-z', baseline, revision, '--'],
+            { cwd: root, capture: true },
+          )
+        )
+          .split('\0')
+          .filter(Boolean);
+  // Branch pushes retain full root coverage; vendored workspaces run only when touched.
+  const fullRoot = event === 'push' && Boolean(changes?.some((path) => !documentation(path)));
+  const metadata = {};
+  if (changes && !changes.some(sharedInput) && changes.some((path) => !documentation(path))) {
+    for (const [workspace, manifest] of Object.entries(manifests)) {
+      metadata[workspace] = JSON.parse(
+        await command(
+          'cargo',
+          [
+            'metadata',
+            '--locked',
+            '--format-version',
+            '1',
+            '--all-features',
+            '--manifest-path',
+            manifest,
+          ],
+          { cwd: root, capture: true },
+        ),
+      );
+    }
+  }
+  return createPlan({ root, changes, metadata, revision, baseline, fullRoot });
+}
+
+async function main(args) {
+  const [action, ...rest] = args;
+  if (action === 'plan') {
+    const baseline = rest.length ? rest[1] : null;
+    if (rest.length && (rest[0] !== '--base' || rest.length !== 2))
+      throw new Error('Usage: ci.mjs plan [--base REVISION]');
+    const result = await plan({ baseline });
+    console.log(JSON.stringify(result, null, 2));
+    if (process.env.GITHUB_OUTPUT) {
+      mkdirSync(temporary, { recursive: true });
+      writeFileSync(planFile, JSON.stringify(result));
+      output({
+        root: Boolean(result.suites.root),
+        tooling: Boolean(result.suites.tooling),
+        workers: result.workers,
+      });
+    }
+    return;
+  }
+  if (action === 'check') {
+    await executor(root).check(rest[0]);
+    return;
+  }
+  if (action === 'run') {
+    const [id, ...extra] = rest;
+    if (!suites[id]) throw new Error(`Unknown suite: ${id}`);
+    const run = executor(root);
+    await run.prepare(id, suites[id].filter ?? 'all()', extra);
+    await run.verify(id, suites[id].filter ?? 'all()', extra);
+    return;
+  }
+  if (action === 'gate') {
+    const results = JSON.parse(process.env.MAKA_CI_RESULTS);
+    if (results.plan?.result !== 'success') throw new Error('CI planning did not succeed');
+    const selected = JSON.parse(readFileSync(planFile, 'utf8'));
+    const hasTests = process.env.MAKA_CI_HAS_TESTS;
+    checkResults(
+      selected,
+      results,
+      hasTests === '' || hasTests === undefined ? undefined : JSON.parse(hasTests),
+    );
+    console.log('All planned CI work succeeded');
+    return;
+  }
+  if (action === 'archive') {
+    const selected = JSON.parse(readFileSync(planFile, 'utf8'));
+    const partitions = await executor(root).archive(
+      selected,
+      join(temporary, 'root-tests.tar.zst'),
+      rest[0] ?? 'root',
+    );
+    const version = (await command('cargo', ['nextest', '--version'], { capture: true }))
+      .trim()
+      .split(/\s+/)[1];
+    output({
+      partitions,
+      has_tests: partitions.length > 0,
+      nextest: version,
+      filter: selected.suites[rest[0] ?? 'root'].filter,
+    });
+    return;
+  }
+  if (action === 'replay') {
+    await executor(root).replay(
+      join(temporary, `root-tests-${rest[0]}.tar.zst`),
+      root,
+      JSON.parse(rest[2]),
+      ['--profile', 'ci', '--partition', rest[1], ...rest.slice(3)],
+    );
+    return;
+  }
+  if (action === 'prepare' || action === 'verify') {
+    const selected = JSON.parse(readFileSync(planFile, 'utf8'));
+    const worker = selected.workers.find((entry) => entry.id === rest[0]);
+    if (!worker) throw new Error(`Worker not selected: ${rest[0]}`);
+    const run = executor(root, worker);
+    if (action === 'prepare') await run.prepareWorker(worker.suites, selected.suites);
+    else await runSuites(worker.suites, (id) => run.verify(id, selected.suites[id].filter));
+    return;
+  }
+  throw new Error('Usage: ci.mjs plan|run|check|prepare|verify|archive|replay|gate');
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+  main(process.argv.slice(2)).catch((error) => {
+    console.error(error);
+    process.exitCode = 1;
+  });
+}

@@ -1,0 +1,908 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import { messageDateTime, messageTime, tr } from './locale';
+import { CompactionDivider, NoteDivider } from './CompactionDivider';
+import { cleanup, computed, inputAction, signal, Text, View } from 'nsh';
+import type { JSX, Signal } from 'nsh';
+import { platform, reduceMotion } from 'nsh';
+import { ContextMenu, MenuItem, TextView } from 'nsh/base';
+import { createMessageMenu, type MessageMenu } from './messageMenu';
+import type { MessageSenders } from './messageSenders';
+import { Icon } from './Icon';
+import {
+  hasTextPrefix,
+  isReplyWithActions,
+  messageBytes,
+  messageKey,
+  senderSession,
+  type Row,
+} from './history';
+import type { MessageOrigin } from '../../../../packages/plugin-sdk/src/index.js';
+import type { InlineCitation } from './answerCitations';
+import { MarkdownBody } from './MarkdownBody';
+import { SourceText } from './SourceText';
+import { compactCopyInset, CompactReplyFooter, LocalMessageCopy } from './CompactReplyFooter';
+import { replyDetails, replyMetrics } from './replyDetails';
+import { SkillMessage, userMessagePresentation } from './SkillMessage';
+import {
+  C,
+  bodyTextStyle,
+  captionTextStyle,
+  textTooltip,
+  controlDisabledStyle,
+  controlStyle,
+  secondaryTextStyle,
+  Disclosure,
+  disclosureContentInset,
+  disclosureTitleStyle,
+  IconButton,
+  floatingStyle,
+  menuRowHoverStyle,
+  menuRowStyle,
+} from './ui';
+import { HistoryAttachments } from './Attachments';
+import type { ToolActivity } from './toolActivity';
+import { ToolCard } from './ToolCard';
+import { MessageQuotes } from './MessageQuotes';
+import { MessageCopy, readOriginal, type OriginalMessage } from './MessageCopy';
+import type { ImagePreview } from './ImageThumbnail';
+import type { InlineEdit } from './MessageEdit';
+import { LoadingIndicator } from './Loading';
+import { useHost } from './host';
+import { createText, errorText } from './text';
+
+/** What names a message the Host generated in place of its text; null for the user's own. */
+export function originLabel(origin: MessageOrigin | null | undefined): string | null {
+  // One line: an objective written on several lines reads on as far as there is room.
+  return origin?.kind === 'goal'
+    ? tr('Pursuing Goal: {objective}', {
+        objective: origin.objective.replace(/\s+/g, ' ').trim(),
+      })
+    : null;
+}
+
+function sessionTitle(sessionId: string, senders?: MessageSenders): string {
+  const title = senders?.session(sessionId)?.title.trim();
+  return title && title !== sessionId ? title : tr('Agent conversation');
+}
+
+function senderLabel(sessionId: string, senders?: MessageSenders): string {
+  const title = senders?.session(sessionId)?.title.trim();
+  return title && title !== sessionId ? tr('From {title}', { title }) : tr('Agent conversation');
+}
+
+function SenderLink(props: { sessionId(): string; senders?: MessageSenders }) {
+  const source = () => props.senders?.session(props.sessionId());
+  const label = () => senderLabel(props.sessionId(), props.senders);
+  const canOpen = () => !!source() && !!props.senders?.openBeside;
+  const open = (sessionId: string) => {
+    if (canOpen() && sessionId === props.sessionId()) props.senders?.openBeside?.(sessionId);
+  };
+  return (
+    <IconButton
+      label={tr('Open source conversation beside this one')}
+      tooltip={label()}
+      icon="split"
+      disabled={!canOpen()}
+      onPress={inputAction(open, props.sessionId())}
+    />
+  );
+}
+
+function FullAgentMessage(props: {
+  original: OriginalMessage;
+  sourceId: string;
+  /** How the text reads once it is here; plain text when absent. */
+  render?(text: () => string): JSX.Element;
+}) {
+  const host = useHost();
+  const body = signal<string | null>(null);
+  const failure = createText();
+  let alive = true;
+  cleanup(() => {
+    alive = false;
+  });
+  void readOriginal(host, props.original, () => alive).then(
+    (text) => {
+      if (alive) body.set(text);
+    },
+    (reason) => {
+      if (alive) failure.set(errorText(reason, 'Message is unavailable'));
+    },
+  );
+  return (
+    <If
+      when={body() !== null || !!failure()}
+      else={<LoadingIndicator label={tr('Reading details…')} color={C.muted} />}
+    >
+      <If
+        when={!failure() && props.render}
+        else={
+          <Text
+            style={{
+              ...secondaryTextStyle,
+              color: failure() ? C.danger : C.text,
+              userSelect: 'text',
+            }}
+            textSource={failure() ? undefined : { id: props.sourceId, offset: 0 }}
+          >
+            {failure() || body()}
+          </Text>
+        }
+      >
+        {props.render!(() => body() ?? '')}
+      </If>
+    </If>
+  );
+}
+
+export type MessageViewState = {
+  expanded: Signal<boolean>;
+  sourceMode: Signal<boolean>;
+  /** An edit open in place of a user message. */
+  edit?: Signal<InlineEdit | null>;
+};
+type MessageRowToggle = {
+  sessionId: string;
+  key: string;
+  value: boolean;
+};
+
+export function MessageRow({
+  item,
+  localQuickReply,
+  compactChat,
+  citations,
+  hasSources,
+  openSources,
+  highlighted,
+  repeats,
+  sessionId,
+  through,
+  viewState,
+  previewImage,
+  previewTerminal,
+  openLink,
+  openSession,
+  senders,
+  userScroll,
+  ownerKey,
+  toolMaxHeight,
+  toolProgress,
+  onToolReading,
+  inspectTool,
+  finalActions,
+  editMessage,
+  messageEditor,
+  failureActions,
+}: {
+  item: () => Row;
+  compactChat?: boolean;
+  localQuickReply?: boolean;
+  citations?(): readonly InlineCitation[] | undefined;
+  hasSources?(): boolean;
+  openSources?(): void;
+  highlighted?: () => boolean;
+  /** How many identical failures this row stands for. */
+  repeats?: () => number;
+  sessionId: string;
+  through: () => number;
+  viewState?: MessageViewState;
+  previewImage(image: ImagePreview): void;
+  previewTerminal?(ref: string, restoreFocus: () => boolean): void;
+  openLink(target: string, restoreFocus: () => boolean): Promise<void>;
+  openSession?(sessionId: string): void;
+  senders?: MessageSenders;
+  userScroll(): void;
+  ownerKey?: () => string;
+  toolMaxHeight: () => number;
+  toolProgress?(id: string): ToolActivity['phase'] | null;
+  onToolReading?(key: string): void;
+  inspectTool?(key: string): void;
+  finalActions?(row: () => Row, ownerKey: () => string, menu?: MessageMenu): JSX.Element;
+  /** An action on a user message, beside its copy button. */
+  editMessage?(row: () => Row, ownerKey: () => string, menu?: MessageMenu): JSX.Element;
+  /** What takes a user message's place while `viewState.edit` holds an edit of it. */
+  messageEditor?(row: () => Row, ownerKey: () => string): JSX.Element;
+  /** An action beside a failure notice. */
+  failureActions?(row: () => Row): JSX.Element;
+}) {
+  const rowKey = (row: Row) => ownerKey?.() ?? messageKey(row);
+  return (
+    <Each of={[item()]} key={rowKey}>
+      {(row) => {
+        if (row().role === 'compaction')
+          return (
+            <CompactionDivider state="completed" durationMs={() => row().compaction!.durationMs} />
+          );
+        // Host-generated execution prompts retain their full model input;
+        // the conversation names the user-approved work.
+        const note = () => (row().role === 'user' ? originLabel(row().origin) : null);
+        if (note()) return <NoteDivider label={note()!} />;
+        // A failure is a notice about the run, not an answer: one quiet line, with
+        // no source view since its source is the same text.
+        // On the desktop its mark sits over Retry's, and the text over Retry's label.
+        if (row().role === 'failure')
+          return (
+            <View style={{ gap: 4, paddingVertical: 4 }}>
+              <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 4 }}>
+                <If when={platform.idiom !== 'terminal'}>
+                  <View
+                    style={{
+                      height: secondaryTextStyle.lineHeight,
+                      justifyContent: 'center',
+                      flexShrink: 0,
+                    }}
+                  >
+                    <Icon name="statusError" color={C.warning} />
+                  </View>
+                </If>
+                <Text
+                  style={[
+                    { ...secondaryTextStyle, color: C.warning, flex: 1, minWidth: 0 },
+                    { userSelect: 'text' },
+                  ]}
+                >
+                  {/* Host reasons start in lower case: "model HTTP request failed …". */}
+                  {row().text.replace(/^[a-z]/, (letter) => letter.toUpperCase())}
+                  {(repeats?.() ?? 1) > 1
+                    ? ` · ${tr('Failed {count} times', { count: repeats!() })}`
+                    : ''}
+                </Text>
+              </View>
+              {failureActions?.(row)}
+            </View>
+          );
+        const expanded = viewState?.expanded ?? signal(false),
+          sourceMode = viewState?.sourceMode ?? signal(false);
+        const ownsRow = (action: MessageRowToggle) => {
+          return action.sessionId === sessionId && action.key === rowKey(row());
+        };
+        const setSourceMode = (action: MessageRowToggle) => {
+          if (ownsRow(action)) sourceMode.set(action.value);
+        };
+        const setExpanded = (action: MessageRowToggle) => {
+          if (!ownsRow(action)) return;
+          expanded.set(action.value);
+        };
+        const replyActions = () => isReplyWithActions(row()) && Boolean(row().position);
+        const iconActions = () =>
+          platform.idiom === 'terminal' ||
+          replyActions() ||
+          sourceMode() ||
+          Boolean(hasSources?.());
+        const quickDetails = () => !row().position && Boolean(row().replyInfo);
+        const actionRow = () => iconActions() || quickDetails();
+        const sourceId = () => `${sessionId}/${rowKey(row())}`;
+        const userPresentation = computed(() => userMessagePresentation(row()));
+        const sender = () => (row().role === 'user' ? senderSession(row().origin) : null);
+        const automation = () => {
+          const origin = row().origin;
+          return row().role === 'user' && origin?.kind === 'automation' ? origin : null;
+        };
+        if (sender() || automation()) {
+          const title = () => {
+            const auto = automation();
+            if (auto) return tr('Automation: {title}', { title: auto.title });
+            const rawOrigin = row().origin;
+            if (rawOrigin?.kind === 'room') {
+              const roomName = sessionTitle(rawOrigin.sessionId, senders);
+              if (rawOrigin.author.kind === 'human') {
+                return tr('From room human', { room: roomName });
+              }
+              return tr('From room agent', {
+                room: roomName,
+                sender: sessionTitle(rawOrigin.author.execution.sessionId, senders),
+              });
+            }
+            return senderLabel(sender()!, senders);
+          };
+          const preview = computed(() => {
+            if (expanded()) return '';
+            const value = row();
+            if (value.fragments && value.fragments[0]?.offset !== 0) return '';
+            const start = /\S[\s\S]{0,239}/u.exec(value.text)?.[0];
+            return start
+              ? TextView.plainText(TextView.parse(start, { streaming: true }))
+                  .replace(/\s+/g, ' ')
+                  .trim()
+              : '';
+          });
+          const original = computed<OriginalMessage | null>(() => {
+            if (!expanded()) return null;
+            const value = row();
+            if (
+              value.field !== 'body' ||
+              !value.position ||
+              value.totalBytes === undefined ||
+              (hasTextPrefix(value) && messageBytes(value.text) === value.totalBytes)
+            )
+              return null;
+            return {
+              sessionId,
+              key: rowKey(value),
+              role: 'user',
+              position: value.position,
+              through: value.metadataThrough ?? through(),
+            };
+          });
+          // An agent writes Markdown; an Automation's prompt is the user's own text.
+          const agentMarkdown = (text?: () => string) => (
+            <MarkdownBody
+              sessionId={sessionId}
+              row={row}
+              sourceId={sourceId()}
+              compact
+              fullColor
+              text={text}
+              openLink={openLink}
+              userScroll={userScroll}
+            />
+          );
+          return (
+            <View style={{ width: '100%', minWidth: 0 }}>
+              <Disclosure
+                label={preview() ? `${title()} · ${preview()}` : title()}
+                tooltip={title()}
+                icon={automation() ? 'activity' : 'split'}
+                open={expanded()}
+                terminalInset={controlStyle.paddingHorizontal}
+                onPress={inputAction(setExpanded, {
+                  sessionId,
+                  key: rowKey(row()),
+                  value: !expanded(),
+                })}
+                trailing={
+                  <If when={expanded()}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                      <If when={sender()}>
+                        <SenderLink sessionId={() => sender()!} senders={senders} />
+                      </If>
+                      <MessageCopy
+                        row={row}
+                        ownerKey={() => rowKey(row())}
+                        sessionId={sessionId}
+                        through={through}
+                      />
+                    </View>
+                  </If>
+                }
+              >
+                <View
+                  style={{
+                    flex: 1,
+                    minWidth: 0,
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    gap: 6,
+                  }}
+                >
+                  <Text
+                    style={[
+                      {
+                        ...captionTextStyle,
+                        minWidth: 0,
+                        maxWidth: preview() ? '48%' : undefined,
+                        flexShrink: 1,
+                        color: expanded() ? C.text : C.secondary,
+                      },
+                      { numberOfLines: 1, textOverflow: 'ellipsis' },
+                    ]}
+                  >
+                    {title()}
+                  </Text>
+                  <If when={preview()}>
+                    <Text
+                      style={[
+                        { ...captionTextStyle, minWidth: 0, flexShrink: 1, color: C.muted },
+                        { numberOfLines: 1, textOverflow: 'ellipsis' },
+                      ]}
+                    >
+                      {`·  ${preview()}`}
+                    </Text>
+                  </If>
+                  <If when={platform.idiom !== 'terminal'}>
+                    <Icon name={expanded() ? 'down' : 'right'} size={12} color={C.muted} />
+                  </If>
+                </View>
+              </Disclosure>
+              <If when={expanded()}>
+                <View
+                  style={{
+                    paddingLeft: disclosureContentInset(24),
+                    paddingVertical: 4,
+                    gap: 8,
+                  }}
+                >
+                  <If
+                    when={original()}
+                    else={
+                      <If
+                        when={sender()}
+                        else={
+                          <Text
+                            style={{ ...secondaryTextStyle, color: C.text, userSelect: 'text' }}
+                          >
+                            <SourceText row={row} sourceId={sourceId()} />
+                          </Text>
+                        }
+                      >
+                        {agentMarkdown()}
+                      </If>
+                    }
+                  >
+                    <FullAgentMessage
+                      original={original()!}
+                      sourceId={sourceId()}
+                      render={sender() ? agentMarkdown : undefined}
+                    />
+                  </If>
+                  <If when={(row().attachments?.length ?? 0) > 0}>
+                    <HistoryAttachments
+                      userScroll={userScroll}
+                      sessionId={sessionId}
+                      through={row().metadataThrough ?? through()}
+                      position={row().position}
+                      attachments={row().attachments!}
+                      preview={previewImage}
+                    />
+                  </If>
+                </View>
+              </If>
+            </View>
+          );
+        }
+        const text = computed(() => row().text);
+        const thinking = () => row().field === 'thinking' || row().role === 'thinking';
+        const firstLine = computed(() => (thinking() ? /\S[^\r\n]*/.exec(text()) : null));
+        const preview = computed(() =>
+          TextView.plainText(TextView.parse(firstLine()?.[0] ?? '', { streaming: true }))
+            .replace(/\s+/g, ' ')
+            .trim(),
+        );
+        // Thinking that is only a bold title has nothing more to show; any other
+        // single line may be longer than its one-line preview.
+        const detailed = () => {
+          const line = firstLine();
+          if (!line) return false;
+          if (/\S/.test(text().slice(line.index + line[0].length))) return true;
+          return !/^\*\*[^*]+\*\*$/.test(line[0].trim());
+        };
+        const isTool = () =>
+          row().tool != null || row().role === 'tool_call' || row().role === 'tool_result';
+        const compact = () => thinking() || isTool();
+        const user = () => row().role === 'user';
+        const summary = () => `${tr('Thinking')}${preview() ? ` · ${preview()}` : ''}`;
+        const timestamp = () => {
+          const value = row().timestamp;
+          if (typeof value !== 'number') return '';
+          const date = new Date(value);
+          if (Number.isNaN(date.getTime())) return '';
+          return messageTime(value);
+        };
+        // On the desktop a message's actions show while the pointer is on it or
+        // the keyboard focus is in them; its context menu has the same commands.
+        const menu = platform.idiom === 'terminal' || compact() ? undefined : createMessageMenu();
+        const revealed = menu && 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100';
+        const toggleSource = () =>
+          inputAction(setSourceMode, { sessionId, key: rowKey(row()), value: !sourceMode() });
+        const message = (
+          <View
+            class={menu && 'group'}
+            // Launcher questions share a line with their hover actions and leave
+            // 12 pt before the reply. The full transcript has actions underneath.
+            style={{
+              paddingTop: user() && !compactChat ? 16 : 0,
+              paddingBottom: user()
+                ? compactChat
+                  ? 12
+                  : platform.idiom === 'terminal'
+                    ? 16
+                    : 0
+                : 0,
+              gap: 0,
+              width: '100%',
+            }}
+          >
+            <If
+              when={user()}
+              else={
+                <If
+                  when={compact()}
+                  else={
+                    <View style={{ gap: compactChat ? 0 : 8 }}>
+                      <If
+                        when={sourceMode()}
+                        else={
+                          <If
+                            when={row().role === 'assistant' && row().field === 'body'}
+                            else={
+                              <Text
+                                style={[
+                                  { color: C.text, ...bodyTextStyle },
+                                  { userSelect: 'text' },
+                                ]}
+                              >
+                                <SourceText row={row} sourceId={sourceId()} />
+                              </Text>
+                            }
+                          >
+                            <MarkdownBody
+                              citations={citations}
+                              sessionId={sessionId}
+                              row={row}
+                              sourceId={sourceId()}
+                              openLink={openLink}
+                              userScroll={userScroll}
+                            />
+                          </If>
+                        }
+                      >
+                        <Text style={[{ color: C.text, ...bodyTextStyle }, { userSelect: 'text' }]}>
+                          <SourceText row={row} sourceId={sourceId()} />
+                        </Text>
+                      </If>
+                      <If
+                        when={localQuickReply && row().role === 'assistant'}
+                        else={
+                          <If when={actionRow()}>
+                            <View
+                              class={revealed}
+                              style={{
+                                flexDirection: 'row',
+                                flexWrap: 'wrap',
+                                width: '100%',
+                                minWidth: 0,
+                                justifyContent: 'flex-start',
+                                alignItems: 'center',
+                                gap: 8,
+                                // The first glyph starts where the message does.
+                                marginLeft:
+                                  platform.idiom === 'terminal'
+                                    ? 0
+                                    : compactChat && replyActions()
+                                      ? compactCopyInset
+                                      : iconActions()
+                                        ? -8
+                                        : 0,
+                              }}
+                            >
+                              <If when={replyActions()}>
+                                <If
+                                  when={finalActions}
+                                  else={
+                                    <MessageCopy
+                                      row={row}
+                                      ownerKey={() => rowKey(row())}
+                                      sessionId={sessionId}
+                                      through={through}
+                                      menu={menu}
+                                    />
+                                  }
+                                >
+                                  {finalActions?.(row, () => rowKey(row()), menu)}
+                                </If>
+                              </If>
+                              <If when={hasSources?.() && !(compactChat && replyActions())}>
+                                <IconButton
+                                  label={tr('Sources')}
+                                  icon="globe"
+                                  onPress={() => openSources?.()}
+                                />
+                              </If>
+                              <If when={iconActions() && !(compactChat && replyActions())}>
+                                <IconButton
+                                  label={
+                                    sourceMode()
+                                      ? tr('Show formatted message')
+                                      : tr('Show message source')
+                                  }
+                                  icon={sourceMode() ? 'file' : 'markdown'}
+                                  selected={sourceMode()}
+                                  onPress={toggleSource()}
+                                />
+                              </If>
+                              <If when={quickDetails()}>
+                                <Text style={{ color: C.muted, ...captionTextStyle }}>
+                                  {replyDetails(row())}
+                                </Text>
+                              </If>
+                            </View>
+                          </If>
+                        }
+                      >
+                        <View class={revealed} style={{ marginLeft: compactCopyInset }}>
+                          <CompactReplyFooter
+                            copy={<LocalMessageCopy text={() => row().text} />}
+                            at={row().timestamp}
+                            metrics={() => replyMetrics(row())}
+                          />
+                        </View>
+                      </If>
+                    </View>
+                  }
+                >
+                  <If
+                    when={isTool()}
+                    else={
+                      <View>
+                        <Disclosure
+                          label={summary()}
+                          tooltip={summary()}
+                          icon="thinking"
+                          foldable={detailed()}
+                          open={expanded() && detailed()}
+                          onPress={inputAction(setExpanded, {
+                            sessionId,
+                            key: rowKey(row()),
+                            value: !expanded(),
+                          })}
+                          trailing={
+                            <If when={expanded() && detailed()}>
+                              <IconButton
+                                label={
+                                  sourceMode()
+                                    ? tr('Show formatted thinking')
+                                    : tr('Show thinking source')
+                                }
+                                icon={sourceMode() ? 'file' : 'markdown'}
+                                selected={sourceMode()}
+                                onPress={inputAction(setSourceMode, {
+                                  sessionId,
+                                  key: rowKey(row()),
+                                  value: !sourceMode(),
+                                })}
+                              />
+                            </If>
+                          }
+                        >
+                          <If when={platform.idiom === 'terminal'}>
+                            <Icon name="thinking" color={C.muted} />
+                          </If>
+                          <Text
+                            style={[
+                              { ...disclosureTitleStyle, color: C.secondary },
+                              { numberOfLines: 1, textOverflow: 'ellipsis' },
+                            ]}
+                          >
+                            {preview()}
+                          </Text>
+                        </Disclosure>
+                        <If when={expanded() && detailed()}>
+                          <View
+                            style={{
+                              paddingLeft: disclosureContentInset(24),
+                              paddingVertical: 4,
+                            }}
+                          >
+                            <If
+                              when={sourceMode()}
+                              else={
+                                <MarkdownBody
+                                  citations={citations}
+                                  sessionId={sessionId}
+                                  row={row}
+                                  sourceId={sourceId()}
+                                  openLink={openLink}
+                                  userScroll={userScroll}
+                                  compact
+                                />
+                              }
+                            >
+                              <Text
+                                style={[
+                                  { ...secondaryTextStyle, color: C.muted },
+                                  { userSelect: 'text' },
+                                ]}
+                              >
+                                <SourceText row={row} sourceId={sourceId()} />
+                              </Text>
+                            </If>
+                          </View>
+                        </If>
+                      </View>
+                    }
+                  >
+                    <ToolCard
+                      openLink={openLink}
+                      row={row}
+                      progress={() => toolProgress?.(row().tool?.toolUseId ?? '') ?? null}
+                      sessionId={sessionId}
+                      through={through}
+                      ownerKey={() => rowKey(row())}
+                      expanded={() => expanded() ?? false}
+                      original={() => sourceMode() ?? false}
+                      maxHeight={toolMaxHeight}
+                      reading={() => {
+                        if (expanded()) onToolReading?.(rowKey(row()));
+                      }}
+                      previewImage={previewImage}
+                      previewTerminal={previewTerminal}
+                      senders={senders}
+                      userScroll={userScroll}
+                      expand={(action) => {
+                        if (!ownsRow(action)) return;
+                        setExpanded(action);
+                        if (action.value) onToolReading?.(action.key);
+                      }}
+                      showOriginal={setSourceMode}
+                      inspect={inspectTool}
+                    />
+                  </If>
+                </If>
+              }
+            >
+              <If
+                when={!!messageEditor && (viewState?.edit?.() ?? null) !== null}
+                else={
+                  <View
+                    style={
+                      compactChat
+                        ? { flexDirection: 'row-reverse', alignItems: 'center', gap: 8 }
+                        : undefined
+                    }
+                  >
+                    <View
+                      class={
+                        highlighted && !reduceMotion()
+                          ? 'transition-colors duration-300'
+                          : undefined
+                      }
+                      style={{
+                        alignSelf: compactChat ? 'center' : 'flex-end',
+                        maxWidth: '78%',
+                        width: userPresentation().kind === 'markdown' ? '78%' : undefined,
+                        paddingHorizontal: 16,
+                        paddingVertical: compactChat ? 10 : 16,
+                        borderRadius: compactChat ? 17 : 20,
+                        backgroundColor: highlighted?.() ? C.cardRaised : C.card,
+                        gap: 8,
+                      }}
+                    >
+                      <MessageQuotes quotes={() => row().quotes ?? []} />
+                      <SkillMessage
+                        row={row}
+                        presentation={userPresentation}
+                        sourceId={sourceId()}
+                        sessionId={sessionId}
+                        openSession={openSession}
+                        openLink={openLink}
+                        userScroll={userScroll}
+                      />
+                      <If when={(row().attachments?.length ?? 0) > 0}>
+                        <HistoryAttachments
+                          userScroll={userScroll}
+                          sessionId={sessionId}
+                          through={row().metadataThrough ?? through()}
+                          position={row().position}
+                          attachments={row().attachments!}
+                          preview={previewImage}
+                        />
+                      </If>
+                    </View>
+                    <View
+                      class={revealed}
+                      style={
+                        compactChat
+                          ? {
+                              flexDirection: 'row',
+                              alignItems: 'center',
+                              gap: 5,
+                              flexShrink: 0,
+                            }
+                          : {
+                              alignSelf: 'flex-end',
+                              width: '78%',
+                              minWidth: 0,
+                              flexDirection: 'row',
+                              flexWrap: 'wrap',
+                              alignItems: 'center',
+                              justifyContent: 'flex-end',
+                              gap: 8,
+                              paddingTop: 4,
+                              // The last glyph ends where the bubble does.
+                              marginRight: platform.idiom === 'terminal' ? 0 : -8,
+                            }
+                      }
+                    >
+                      <If when={timestamp()}>
+                        <Text
+                          tooltip={
+                            compactChat
+                              ? textTooltip(() =>
+                                  row().timestamp != null
+                                    ? messageDateTime(row().timestamp!)
+                                    : undefined,
+                                )
+                              : undefined
+                          }
+                          style={{ color: C.muted, fontSize: 12, lineHeight: 16 }}
+                        >
+                          {timestamp()}
+                        </Text>
+                      </If>
+                      <If
+                        when={localQuickReply}
+                        else={
+                          <MessageCopy
+                            compact={compactChat}
+                            row={row}
+                            ownerKey={() => rowKey(row())}
+                            sessionId={sessionId}
+                            through={through}
+                            menu={menu}
+                          />
+                        }
+                      >
+                        <LocalMessageCopy user text={() => row().text} />
+                      </If>
+                      {editMessage?.(row, () => rowKey(row()), menu)}
+                    </View>
+                  </View>
+                }
+              >
+                {messageEditor?.(row, () => rowKey(row()))}
+              </If>
+            </If>
+          </View>
+        );
+        if (!menu) return message;
+        const Item = (props: { label: string; disabled?: boolean; select(): void }) => (
+          <MenuItem
+            accessibilityLabel={props.label}
+            disabled={props.disabled}
+            onSelect={props.select}
+            style={{ ...menuRowStyle(), minWidth: 160 }}
+            hoverStyle={menuRowHoverStyle()}
+            focusStyle={menuRowHoverStyle()}
+            disabledStyle={controlDisabledStyle}
+          >
+            <Text style={{ ...captionTextStyle, color: C.text }}>{props.label}</Text>
+          </MenuItem>
+        );
+        return (
+          <ContextMenu offset={4} margin={8} popupStyle={floatingStyle()} trigger={message}>
+            <Each
+              of={menu.commands().filter((command) => command.action() !== null)}
+              key={(command) => command.kind}
+            >
+              {(command) => (
+                <Item
+                  label={command().label()}
+                  disabled={command().busy()}
+                  select={command().action()!}
+                />
+              )}
+            </Each>
+            <If when={compactChat && hasSources?.() && replyActions()}>
+              <Item label={tr('Sources')} select={() => openSources?.()} />
+            </If>
+            <If when={!user()}>
+              <Item
+                label={sourceMode() ? tr('Show formatted message') : tr('Show message source')}
+                select={toggleSource()}
+              />
+            </If>
+          </ContextMenu>
+        );
+      }}
+    </Each>
+  );
+}

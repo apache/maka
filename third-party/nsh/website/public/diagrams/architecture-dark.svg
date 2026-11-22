@@ -1,0 +1,173 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"
+     viewBox="0 0 880 540" width="100%" role="img" aria-labelledby="t d">
+  <title id="t">How an nsh app runs: two threads, one batch per commit</title>
+  <desc id="d">Three layers. At build time, the nsh CLI turns App.tsx into QuickJS bytecode with Oxc, nsh's JSX compiler and rolldown; the bundle holds only the app's code, because nsh's modules are native. On the engine thread, QuickJS runs the app's code, for example a handler that calls count.set. The reactive graph in nsh-js re-runs only the bindings that read the signal, and the renderer queues one native op for each change, with no JSON. When the JavaScript turn ends, nsh-core commits: it renders Rust components, lays out text, runs Taffy layout, diffs, and produces one MountBatch. The batch crosses to the main thread in one hop per commit; the main thread never waits for JavaScript. There, nsh-platform-ios or nsh-platform-android applies the batch to the platform's native views (UIKit, Android views, AppKit, GTK 4 or Win32 with Direct2D) and draws text that was laid out off the main thread. Native animations run every frame on the main thread without JavaScript. The next touch becomes an event sent back to the engine thread, which starts another turn.</desc>
+
+  <defs>
+    <style>
+      :root{
+        --band:rgba(255,255,255,.045);
+        --band-line:rgba(255,255,255,.13);
+        --band-hi:rgba(200,242,109,.08);
+        --seam:rgba(255,255,255,.07);
+        --card:#24262a;
+        --card-line:rgba(255,255,255,.20);
+        --card-hi:#2b3122;
+        --ink:#eceef1;
+        --muted:#8d9198;
+        --line:rgba(255,255,255,.48);
+        --faint:rgba(255,255,255,.26);
+        --fill:rgba(255,255,255,.12);
+        --accent:#c8f26d;
+        --danger:#ff6170;
+      }
+
+      text{font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif}
+      .mono{font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace}
+      .h1{fill:var(--ink);font-size:16px;font-weight:650}
+      .lede{fill:var(--muted);font-size:11.5px}
+      .layer{fill:var(--ink);font-size:12.5px;font-weight:650}
+      .layer-sub{fill:var(--muted);font-size:11px}
+      .seam-name{fill:var(--accent);font-size:12px;font-weight:650}
+      .name{fill:var(--ink);font-size:14px;font-weight:600}
+      .band-name{fill:var(--ink);font-size:13px;font-weight:600}
+      .fact{fill:var(--ink);font-size:11.5px}
+      .note{fill:var(--muted);font-size:11px}
+      .tag{fill:var(--muted);font-size:10.5px;font-weight:600}
+      .edge{fill:var(--accent);font-size:11px;font-weight:600}
+      .claim{fill:var(--accent);font-size:11px;font-weight:600}
+
+      .band{fill:var(--band);stroke:var(--band-line);stroke-width:1}
+      .card{fill:var(--card);stroke:var(--card-line);stroke-width:1}
+      .seam{fill:var(--seam)}
+      .seam-edge{fill:none;stroke:var(--accent);stroke-width:1;stroke-dasharray:4 4;opacity:.6}
+      .flow{fill:none;stroke:var(--line);stroke-width:1.4}
+      .arrowhead{fill:var(--line)}
+      .token-halo{fill:var(--accent);opacity:.16}
+      .token-core{fill:var(--accent)}
+      .tick{fill:var(--accent);animation:tick 1s linear infinite}
+      .track{stroke:var(--faint);stroke-width:1}
+
+      .stage{animation:stage 8s linear infinite}
+      .stage-last{animation:stagelast 8s linear infinite}
+
+      @keyframes stage{
+        0%,8%{stroke:var(--accent);fill:var(--card-hi)}
+        13%,100%{stroke:var(--card-line);fill:var(--card)}
+      }
+      @keyframes stagelast{
+        0%,20%{stroke:var(--accent);fill:var(--card-hi)}
+        26%,100%{stroke:var(--card-line);fill:var(--card)}
+      }
+      @keyframes tick{
+        0%{transform:translateX(0)}
+        100%{transform:translateX(44px)}
+      }
+
+      @media (prefers-reduced-motion: reduce){
+        .stage,.stage-last,.tick{animation:none}
+        .token{display:none}
+      }
+    </style>
+
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="6.5" markerHeight="6.5" orient="auto">
+      <path class="arrowhead" d="M0,0 L10,5 L0,10 Z"/>
+    </marker>
+
+    <path id="frame" fill="none" stroke="none"
+          d="M272,219 L736,219 L736,454 Q736,468 722,468 L286,468 Q272,468 272,454 Z"/>
+  </defs>
+
+  <text class="h1" x="24" y="30">How an nsh app runs</text>
+  <text class="lede" x="24" y="50">JavaScript describes and handles events. Rust lays out and diffs. The main thread applies one batch per commit, and never waits.</text>
+
+  <!-- layer bands -->
+  <rect class="band" x="160" y="72"  width="688" height="64" rx="12"/>
+  <rect class="band" x="160" y="156" width="688" height="132" rx="12"/>
+  <rect class="band" x="160" y="308" width="688" height="188" rx="12"/>
+
+  <text class="layer"     x="24" y="100">Build time</text>
+  <text class="layer-sub" x="24" y="116">nsh CLI, in Rust</text>
+  <text class="layer"     x="24" y="214">Engine thread</text>
+  <text class="layer-sub" x="24" y="230">nsh-js · nsh-core</text>
+  <text class="layer"     x="24" y="396">Main thread</text>
+  <text class="layer-sub" x="24" y="412">nsh-platform-ios</text>
+  <text class="layer-sub" x="24" y="427">nsh-platform-android</text>
+
+  <!-- build -->
+  <text class="band-name mono" x="192" y="100">App.tsx → Oxc → JSX compiler → rolldown → bytecode</text>
+  <text class="note" x="192" y="118">the bundle holds only your code: nsh's modules are native, served by the runtime</text>
+  <text class="note" x="832" y="100" text-anchor="end">no Node.js</text>
+
+  <!-- the hop to the main thread -->
+  <path class="seam" d="M160,320 Q160,308 172,308 L836,308 Q848,308 848,320 L848,348 L160,348 Z"/>
+  <path class="seam-edge" d="M160,348 L848,348"/>
+  <text class="seam-name" x="296" y="333">one hop per commit</text>
+  <text class="note" x="420" y="333">the main thread never waits for JavaScript</text>
+
+  <!-- flow -->
+  <path class="flow" d="M272,136 L272,178" marker-end="url(#arrow)"/>
+  <text class="note mono" x="284" y="151">bundle.nshc</text>
+  <path class="flow" d="M368,219 L406,219" marker-end="url(#arrow)"/>
+  <path class="flow" d="M600,219 L638,219" marker-end="url(#arrow)"/>
+  <text class="edge" x="388" y="210" text-anchor="middle">set</text>
+  <text class="edge" x="620" y="210" text-anchor="middle">ops</text>
+  <path class="flow" d="M736,258 L736,364" marker-end="url(#arrow)"/>
+  <text class="edge" x="748" y="333">MountBatch</text>
+  <path class="flow" d="M272,366 L272,260" marker-end="url(#arrow)"/>
+  <text class="edge" x="260" y="333" text-anchor="end">event</text>
+  <path class="flow" d="M736,444 L736,454 Q736,468 722,468 L286,468 Q272,468 272,454 L272,446" marker-end="url(#arrow)"/>
+  <text class="note" x="504" y="486" text-anchor="middle">on screen; the next touch starts another turn</text>
+
+  <!-- the travelling token: one turn, beneath the cards -->
+  <g class="token">
+    <circle class="token-halo" r="9"/>
+    <circle class="token-core" r="4"/>
+    <animateMotion dur="8s" repeatCount="indefinite" rotate="0" calcMode="linear"
+                   keyPoints="0;0.0679;0.0962;0.2320;0.2603;0.3557;0.4321;0.4873;0.8409;0.8960;0.9724;1;1"
+                   keyTimes="0;0.05;0.10;0.18;0.23;0.30;0.38;0.45;0.62;0.70;0.80;0.85;1">
+      <mpath href="#frame" xlink:href="#frame"/>
+    </animateMotion>
+  </g>
+
+  <!-- engine thread -->
+  <rect class="card stage-last" x="176" y="180" width="192" height="78" rx="9" style="animation-delay:-1.6s"/>
+  <text class="name" x="196" y="205">QuickJS</text>
+  <text class="tag" x="352" y="205" text-anchor="end">your code only</text>
+  <text class="fact" x="196" y="225">a handler runs</text>
+  <text class="note mono" x="196" y="242">count.set(count() + 1)</text>
+
+  <rect class="card stage" x="408" y="180" width="192" height="78" rx="9" style="animation-delay:-7.2s"/>
+  <text class="name" x="428" y="205">Reactive graph</text>
+  <text class="tag mono" x="584" y="205" text-anchor="end">nsh-js</text>
+  <text class="fact" x="428" y="225">only the bindings re-run</text>
+  <text class="note" x="428" y="242">one native op each, no JSON</text>
+
+  <rect class="card stage" x="640" y="180" width="192" height="78" rx="9" style="animation-delay:-6.16s"/>
+  <text class="name" x="660" y="205">Commit</text>
+  <text class="tag mono" x="816" y="205" text-anchor="end">nsh-core</text>
+  <text class="fact" x="660" y="225">text, Taffy layout, diff</text>
+  <text class="note" x="660" y="242">when the JS turn ends</text>
+
+  <!-- main thread -->
+  <rect class="card stage" x="176" y="366" width="192" height="78" rx="9" style="animation-delay:-3.04s"/>
+  <text class="name" x="196" y="391">Touches</text>
+  <text class="fact" x="196" y="411">become events for JS</text>
+  <text class="note" x="196" y="428">pan and scroll values stay native</text>
+
+  <rect class="card" x="408" y="366" width="192" height="78" rx="9"/>
+  <text class="name" x="428" y="391">Native animations</text>
+  <text class="fact" x="428" y="411">every frame, no JavaScript</text>
+  <text class="note mono" x="428" y="428">nsh/animated</text>
+  <line class="track" x1="536" y1="424" x2="580" y2="424"/>
+  <circle class="tick" cx="536" cy="424" r="2.5"/>
+
+  <rect class="card stage" x="640" y="366" width="192" height="78" rx="9" style="animation-delay:-4.96s"/>
+  <text class="name" x="660" y="391">Apply the batch</text>
+  <text class="fact" x="660" y="411">the platform's native views</text>
+  <text class="note" x="660" y="428">draws text laid out off-thread</text>
+
+  <text class="claim" x="24" y="524">A busy engine thread can delay updates. It cannot freeze scrolling, animations or the system's gestures.</text>
+</svg>

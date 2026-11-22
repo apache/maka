@@ -1,0 +1,5 @@
+{
+  "capabilities": {
+    "network": { "hosts": ["api.test"] }
+  }
+}

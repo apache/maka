@@ -1,0 +1,86 @@
+[package]
+name = "nsh-base"
+description = "Behavior and infrastructure foundations of NSH apps' UI (`nsh/base`), unstyled: navigation, safe areas, dialogs, the keyboard and the status bar."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = ["editor", "highlight", "plot", "rich-editor", "term"]
+# `Editor` and `DiffView`, which draws with the Editor's text measure.
+editor = ["dep:ropey", "dep:imara-diff"]
+# `RichEditor` and its schema, session and plugin classes.
+rich-editor = []
+# `Terminal` and its emulator on `vte` (pure Rust, no C).
+term = ["dep:vte"]
+# The charts: `nsh/base/plot`.
+plot = []
+# Built-in syntax highlighting of `TextView`'s code blocks (syntect).
+highlight = ["dep:syntect", "dep:two-face"]
+# `EmojiPicker`, with Unicode's emoji and their English names embedded (about
+# 440 kB of code and data in a release runner); without it `nsh/base` has no
+# `EmojiPicker`.
+emoji-picker = []
+# `TextView`'s formulas typeset natively (RaTeX), with the KaTeX fonts
+# embedded (about 230 kB); without it a formula shows as its TeX, or as the
+# app's `renderMath`.
+math = ["dep:ratex-parser", "dep:ratex-layout", "dep:ratex-types", "dep:ratex-font", "dep:ttf-parser", "dep:zstd"]
+
+[dependencies]
+zstd = { workspace = true, optional = true }
+nsh-core.workspace = true
+chrono.workspace = true
+rustc-hash.workspace = true
+serde_json.workspace = true
+serde.workspace = true
+markdown.workspace = true
+html5ever.workspace = true
+markup5ever_rcdom.workspace = true
+regex.workspace = true
+ropey = { workspace = true, optional = true }
+unicode-segmentation.workspace = true
+imara-diff = { workspace = true, optional = true }
+unicode-width.workspace = true
+vte = { workspace = true, optional = true }
+log.workspace = true
+syntect = { workspace = true, optional = true }
+ratex-parser = { workspace = true, optional = true }
+ratex-layout = { workspace = true, optional = true }
+ratex-types = { workspace = true, optional = true }
+ratex-font = { workspace = true, optional = true }
+ttf-parser = { workspace = true, optional = true }
+
+# The syntaxes' data: the native runtimes keep it in their binaries; the web
+# runtime leaves it out and fetches the page's copy on first use (`syntax.rs`).
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The local time zone (`Local`): the web runtime asks the page instead.
+chrono = { workspace = true, features = ["clock"] }
+two-face = { workspace = true, optional = true }
+# Oniguruma's regexes where C builds: they compile about 20 times faster
+# than fancy-regex's (TSX's grammar: 15 ms against 280 ms), which an
+# editor's first lines wait for. syntect takes onig when both are on; the
+# web runtime keeps fancy-regex.
+syntect = { workspace = true, optional = true, features = ["regex-onig"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt"] }
+# The declarations tests read the specs' text (nsh-core `declarations`).
+nsh-core = { workspace = true, features = ["declarations"] }
+# The components' tests run them headless (`tests/base`), without QuickJS.
+# Path only, unlike the workspace's entries: `cargo publish` drops a
+# dev-dependency without a version, and these two depend on nsh-js, which
+# depends on this crate, so with versions nsh-base could not be packaged
+# before nsh-js is on crates.io.
+nsh-engine = { path = "../nsh-engine", default-features = false }
+nsh-testing = { path = "../nsh-testing", default-features = false }
+
+[[test]]
+name = "base"
+path = "tests/base/main.rs"
+required-features = ["editor", "plot", "rich-editor"]

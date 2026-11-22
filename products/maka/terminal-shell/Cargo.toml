@@ -1,0 +1,60 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+[package]
+name = "maka-terminal-shell"
+autobins = false
+autotests = false
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+base64 = "0.23.1"
+clap.workspace = true
+maka-event-log.workspace = true
+maka-host-runtime.workspace = true
+maka-workbench.workspace = true
+nsh-core.workspace = true
+nsh-engine.workspace = true
+nsh-platform-tui.workspace = true
+nsh-base.workspace = true
+crossterm.workspace = true
+ratatui = { workspace = true, features = ["unstable-backend-writer"] }
+serde_json.workspace = true
+termina.workspace = true
+tokio.workspace = true
+uuid.workspace = true
+
+nsh-terminal.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+nsh-platform-macos = { workspace = true, features = ["terminal"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+maka-sandbox.workspace = true
+nsh-platform-windows = { workspace = true, features = ["terminal"] }
+
+[dev-dependencies]
+nsh-bundler = { workspace = true, features = ["bundle"] }
+tempfile.workspace = true
+
+[[test]]
+name = "native-pixels"
+path = "tests/native_pixels.rs"
+harness = false

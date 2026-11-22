@@ -1,0 +1,423 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+use super::*;
+use maka_agent_api::contract::WorkspaceAccess;
+use maka_agent_facts::interaction::PermissionCommand;
+use maka_agent_facts::interaction::{PermissionRequest, PermissionSource};
+use maka_plugin_core::shell_run::ShellOutput;
+use maka_plugin_core::shell_run::ShellPermissions;
+use maka_plugin_core::shell_run::ShellRun;
+use maka_plugin_core::shell_run::ShellState;
+use maka_plugin_core::shell_run::ShellVisibility;
+use maka_plugin_core::terminal::TerminalSize;
+use maka_plugin_core::terminal::display::Display;
+use maka_sandbox::filesystem::{Access, Rule};
+
+pub(super) struct Captured {
+    pub(super) executor: maka_process::ShellExecutor,
+    pub(super) workspace: std::fs::File,
+    ceiling: Sandbox,
+}
+pub(super) fn capture(
+    configuration: &ResolvedConfiguration,
+    settings: &Configuration,
+    state_root: &std::path::Path,
+    shell: &maka_agent_facts::configuration::policy::ShellPolicy,
+    floor: &Sandbox,
+) -> Result<Captured, ToolError> {
+    let workspace = &configuration.workspace;
+    if workspace.worktree.is_some() && !settings.isolated_workspaces {
+        return Err(failed("Isolated workspace execution is not installed"));
+    }
+    let (path, directory, identity) =
+        maka_workspace_support::capture_selected(workspace).map_err(failed)?;
+    let workspace_directory = directory.try_clone().map_err(failed)?.into_std_file();
+    if configuration.permissions.access == WorkspaceAccess::DangerFullAccess {
+        let ceiling = Sandbox::Disabled.intersect(floor).map_err(failed)?;
+        // A managed floor comes from a Run captured below full access. It is that
+        // Run's approval ceiling, so the command starts without network until a
+        // grant applies, as it would in a managed Session. `prepare` keeps its
+        // files within the Run's own ceiling.
+        let sandbox = match &ceiling {
+            Sandbox::Managed { filesystem, .. } => Sandbox::Managed {
+                filesystem: filesystem.clone(),
+                network: Network::Denied,
+            },
+            unmanaged => unmanaged.clone(),
+        };
+        let executor =
+            maka_process::ShellExecutor::from_directory(path, directory.into_std_file(), sandbox)?;
+        return Ok(Captured {
+            executor: select_shell(platform(executor, settings, state_root), shell)?,
+            workspace: workspace_directory,
+            ceiling,
+        });
+    }
+    let (base, protections) =
+        maka_workspace_support::sandbox(workspace, configuration.permissions.access, state_root)
+            .map_err(failed)?;
+    let mut installed_filesystem = settings.filesystem.clone();
+    if workspace.worktree.is_some() {
+        installed_filesystem
+            .rules
+            .push(Rule::subtree(&path, Access::Write));
+    }
+    let installation = Sandbox::Managed {
+        filesystem: installed_filesystem,
+        network: settings.network.clone(),
+    };
+    let ceiling = installation
+        .intersect(&protections)
+        .map_err(failed)?
+        .intersect(floor)
+        .map_err(failed)?;
+    let base = base.intersect(&ceiling).map_err(failed)?;
+    maka_fs_tools::directory::open(&path, &identity).map_err(failed)?;
+    let executor =
+        maka_process::ShellExecutor::from_directory(path, directory.into_std_file(), base)?;
+    let executor = select_shell(platform(executor, settings, state_root), shell)?;
+    Ok(Captured {
+        executor,
+        workspace: workspace_directory,
+        ceiling,
+    })
+}
+/// Platform bootstrap shared by Session and explicitly installed setup launches.
+pub(super) fn platform(
+    executor: maka_process::ShellExecutor,
+    settings: &Configuration,
+    state_root: &std::path::Path,
+) -> maka_process::ShellExecutor {
+    let _ = (settings, state_root);
+    #[cfg(target_os = "linux")]
+    let executor = match &settings.helper {
+        Some(helper) => executor.with_network_helper(helper.clone()),
+        None => executor,
+    };
+    #[cfg(windows)]
+    let executor =
+        executor.with_backend(Arc::new(maka_host_runtime::sandbox::windows::Backend::new(
+            state_root,
+            settings.helper.as_ref().expect("validated helper"),
+        )));
+    executor
+}
+
+fn select_shell(
+    executor: maka_process::ShellExecutor,
+    shell: &maka_agent_facts::configuration::policy::ShellPolicy,
+) -> Result<maka_process::ShellExecutor, ToolError> {
+    let _ = shell;
+    #[cfg(windows)]
+    let executor = match shell.preference {
+        maka_agent_facts::configuration::policy::ShellPreference::Auto => executor,
+        maka_agent_facts::configuration::policy::ShellPreference::GitBash => {
+            executor.with_git_bash(std::path::Path::new(&shell.executable))?
+        }
+    };
+    Ok(executor)
+}
+
+impl Processes {
+    pub(super) async fn execute(
+        &self,
+        mut input: Execute,
+        access: &dyn NativeCallAccess,
+        configuration: ResolvedConfiguration,
+        floor: &Sandbox,
+        cancellation: &CancellationToken,
+    ) -> Result<Value, ToolError> {
+        let tool = access.call();
+        let requested = input
+            .additional_permissions
+            .take()
+            .map(|permissions| PermissionRequest {
+                reason: input.justification.take().expect("validated justification"),
+                command: Some(PermissionCommand {
+                    command: input.command.clone(),
+                    cwd: configuration.workspace.path.clone(),
+                }),
+                permissions,
+                source: PermissionSource::Processes,
+            });
+        let captured = self
+            .prepare(
+                access,
+                &configuration,
+                requested,
+                input.shell.take(),
+                floor,
+                cancellation,
+            )
+            .await?;
+        let captured = Captured {
+            executor: captured.executor.with_login_shell(input.login),
+            ..captured
+        };
+        let compiler = captured.executor.clone();
+        let source = input.command.clone();
+        let terminal = input.pty;
+        let command = tokio::task::spawn_blocking(move || {
+            if terminal {
+                compiler.command_pty(&source)
+            } else {
+                compiler.command_pipes(&source)
+            }
+        })
+        .await
+        .map_err(failed)??;
+        let current = access.current().await?;
+        if current.permission_basis() != configuration.permission_basis()
+            || current.workspace != configuration.workspace
+        {
+            return Err(failed(
+                "Workspace permissions changed before process admission",
+            ));
+        }
+        cancelled(cancellation)?;
+        if !input.run_in_background {
+            let mut process = command.observe(input.timeout_ms, cancellation.clone())?;
+            let mut events_open = true;
+            let output = loop {
+                tokio::select! {
+                    event = process.events.recv(), if events_open => { if event.is_none() { events_open = false; } },
+                    output = &mut process.completion => break output?,
+                }
+            };
+            return Ok(output.into_output(captured.executor.cwd().to_owned(), input.command));
+        }
+        let size = TerminalSize::new(80, 24).expect("terminal size");
+        let at = maka_agent_authority::now();
+        let record = ShellRun {
+            id: format!("{}{}", self.prefix, uuid::Uuid::new_v4()),
+            session_id: tool.execution.session_id.clone(),
+            source_work_id: Some(tool.execution.run_id.to_string()),
+            correlation: serde_json::json!({ "execution": tool.execution, "operationId": tool.operation_id, "toolUseId": tool.tool_use_id() }),
+            visibility: ShellVisibility::Model,
+            permissions: ShellPermissions {
+                basis: configuration.permission_basis(),
+                sandbox: captured.executor.sandbox().clone(),
+            },
+            cwd: configuration.workspace.path,
+            command: input.command,
+            started_at: at,
+            updated_at: at,
+            timeout_ms: input.timeout_ms,
+            revision: 1,
+            state: ShellState::Starting,
+            output: if input.pty {
+                ShellOutput::Pty {
+                    screen: Arc::new(Display::new(size)),
+                }
+            } else {
+                ShellOutput::Pipes {
+                    stdout: String::new(),
+                    stderr: String::new(),
+                    latest_stream: None,
+                    stdout_truncated: false,
+                    stderr_truncated: false,
+                }
+            },
+        };
+        let custody = tool.custody.clone();
+        let mut handle = if input.pty {
+            self.resources
+                .start_pty(record, command, size, custody, Some(captured.workspace))
+        } else {
+            self.resources
+                .start_pipes(record, command, custody, Some(captured.workspace))
+        }
+        .map_err(|error| match error {
+            ShellError::Process(error) => error,
+            error => failed(error),
+        })?;
+        let record = tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => { handle.stop(); handle.drained().await.map_err(worker_error)? },
+            ready = handle.ready() => ready.map_err(worker_error)?,
+        };
+        let record = if cancellation.is_cancelled() {
+            handle.stop();
+            handle.drained().await.map_err(worker_error)?
+        } else {
+            record
+        };
+        self.project(tool, (*record).clone(), record.state.active())
+            .await
+    }
+}
+
+impl Processes {
+    pub(super) async fn prepare(
+        &self,
+        access: &dyn NativeCallAccess,
+        configuration: &ResolvedConfiguration,
+        requested: Option<PermissionRequest>,
+        shell: Option<maka_agent_facts::configuration::policy::ShellPolicy>,
+        floor: &Sandbox,
+        cancellation: &CancellationToken,
+    ) -> Result<Captured, ToolError> {
+        let shell = match shell {
+            Some(shell) => shell,
+            None => {
+                self.configuration
+                    .runtime_policy()
+                    .await
+                    .map_err(|e| failed(e.to_string()))?
+                    .policy
+                    .shell
+            }
+        };
+        let settings = self.settings.clone();
+        let state_root = self.state_root.clone();
+        let captured_configuration = configuration.clone();
+        let captured_floor = floor.clone();
+        let mut captured = tokio::task::spawn_blocking(move || {
+            capture(
+                &captured_configuration,
+                &settings,
+                &state_root,
+                &shell,
+                &captured_floor,
+            )
+        })
+        .await
+        .map_err(failed)??;
+        let grants = access
+            .permission_grants(
+                access.target(),
+                &configuration.permission_basis(),
+                PermissionSource::Processes,
+            )
+            .await?;
+        // The floor bounds grants; without one the command holds no more than its Run.
+        let mut sandbox = captured
+            .executor
+            .sandbox()
+            .intersect(access.permission_ceiling())
+            .map_err(failed)?;
+        for grant in grants {
+            sandbox = sandbox
+                .with_grant(&grant.permissions, &captured.ceiling)
+                .map_err(failed)?;
+        }
+        if let Some(requested) = requested {
+            let permissions = requested.permissions;
+            let required = tokio::task::spawn_blocking(move || {
+                maka_fs_tools::workspace::permissions::materialize(permissions)
+            })
+            .await
+            .map_err(failed)?
+            .map_err(failed)?;
+            if !captured.ceiling.permits(&required).map_err(failed)? {
+                return Err(failed(
+                    "Requested access exceeds the process installation or protected workspace boundary",
+                ));
+            }
+            if !sandbox.permits(&required).map_err(failed)? {
+                let grant = maka_agent_authority::permissions::request(
+                    access,
+                    PermissionRequest {
+                        permissions: required.clone(),
+                        ..requested
+                    },
+                    access.target(),
+                    cancellation,
+                )
+                .await?;
+                sandbox = sandbox
+                    .with_grant(&grant.permissions, &captured.ceiling)
+                    .map_err(failed)?;
+            }
+            if !sandbox.permits(&required).map_err(failed)? {
+                return Err(failed(
+                    "Not all requested process permissions were approved; command was not started",
+                ));
+            }
+        }
+        let network = self
+            .configuration
+            .network_configuration()
+            .await
+            .map_err(|_| failed("Process network configuration unavailable"))?;
+        let route =
+            maka_network::Policy::from_host_settings(&network.proxy, network.password.as_deref())
+                .map_err(|_| failed("Process network route unavailable"))?;
+        captured.executor = captured
+            .executor
+            .with_sandbox(sandbox.intersect(floor).map_err(failed)?)
+            .with_network_route(route);
+        Ok(captured)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use maka_agent_facts::configuration::policy::{ShellPolicy, ShellPreference};
+
+    /// A full-access Session can run a Run captured below full access, such as a
+    /// read-only external recovery Run. Its commands start without network.
+    #[test]
+    fn full_access_commands_start_with_the_runs_base_network() {
+        let directory = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        std::fs::create_dir(&directory).unwrap();
+        let path = std::fs::canonicalize(&directory).unwrap();
+        let configuration: ResolvedConfiguration = serde_json::from_value(serde_json::json!({
+            "title": "Full access", "titleIsManual": false, "labels": [],
+            "workspace": {"path": path},
+            "binding": {"id": uuid::Uuid::new_v4(), "permissionEpoch": 0},
+            "permissions": {"access": "danger_full_access", "requestPermissions": false},
+            "boundary_revision": 0
+        }))
+        .unwrap();
+        let settings: Configuration = serde_json::from_value(serde_json::json!({
+            "filesystem": {"default": "write", "rules": [], "denyGlobs": []},
+            "network": "allowed",
+            "helper": null
+        }))
+        .unwrap();
+        let shell = ShellPolicy {
+            preference: ShellPreference::Auto,
+            executable: String::new(),
+            titles: false,
+        };
+        let capped = Sandbox::Managed {
+            filesystem: Policy {
+                default: Access::Read,
+                rules: Vec::new(),
+                deny_globs: Vec::new(),
+            },
+            // The Run's network approval ceiling, raised in the floor of process tools.
+            network: Network::Allowed,
+        };
+        let captured = capture(&configuration, &settings, &path, &shell, &capped).unwrap();
+        let networks =
+            [captured.executor.sandbox(), &captured.ceiling].map(|sandbox| match sandbox {
+                Sandbox::Managed { network, .. } => network.clone(),
+                other => panic!("expected a managed sandbox, got {other:?}"),
+            });
+        assert_eq!(networks, [Network::Denied, Network::Allowed]);
+        let captured =
+            capture(&configuration, &settings, &path, &shell, &Sandbox::Disabled).unwrap();
+        assert_eq!(captured.executor.sandbox(), &Sandbox::Disabled);
+        std::fs::remove_dir_all(&directory).unwrap();
+    }
+}

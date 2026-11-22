@@ -1,0 +1,413 @@
+# What a user does and sees (compat/apps.rs): each case after its tap.
+# core-register-font
+tap id:case-core-register-font
+expect Registered: Pacifico, true
+expect No font: refused, true
+covers [nsh] registerFont
+# core-theme
+tap id:case-core-theme
+expect Family: Pacifico
+expect WOFF family: Pacifico
+expect WOFF2 family: Pacifico
+frame id:spaced 0 81 80 40
+covers [nsh:rt] font
+covers [nsh:rt] setup
+# layout-box
+tap id:case-layout-box
+expect Box layout
+frame id:padding-a 10 10 280 20
+frame id:padding-axes-a 20 5 260 20
+frame id:padding-sides-a 7 50 284 20
+frame id:padding-override-a 6 10 292 20
+frame id:padding-percent-a 39 39 222 20
+frame id:padding-hug 0 0 61 38
+frame id:padding-hug-a 0 3 50 20
+frame id:margin-a 10 10 280 20
+frame id:margin-axes-a 20 6 260 20
+frame id:margin-sides-a 0 0 50 20
+frame id:margin-sides-b 65 0 50 20
+frame id:margin-bottom-a 0 0 50 20
+frame id:margin-bottom-b 0 32 50 20
+frame id:margin-override-a 4 10 266 20
+frame id:margin-percent-a 15 15 50 20
+frame id:margin-auto-a 125 0 50 20
+frame id:margin-auto-b 125 50 50 20
+frame id:margin-negative-a 0 0 50 20
+frame id:margin-negative-b 30 -5 50 20
+frame id:min-a 0 0 60 30
+frame id:min-b 0 30 150 8
+frame id:max-a 0 0 80 40
+frame id:max-b 0 40 150 10
+frame id:max-stretch-a 0 0 120 20
+frame id:min-max-a 0 0 100 20
+frame id:max-grow-a 0 0 100 20
+frame id:max-grow-b 100 0 200 20
+frame id:min-shrink-a 0 0 180 20
+frame id:min-shrink-b 180 0 120 20
+frame id:min-auto-a 0 0 200 100
+frame id:min-auto-b 200 0 200 20
+frame id:min-unset-a 0 0 100 100
+frame id:min-unset-b 100 0 200 20
+frame id:ratio-a 0 0 100 50
+frame id:ratio-b 0 50 90 60
+frame id:ratio-stretch-a 0 0 300 100
+frame id:absolute-tl 20 10 50 20
+frame id:absolute-br 240 75 50 20
+frame id:absolute-fill 10 0 260 100
+frame id:absolute-percent 75 50 50 20
+frame id:absolute-size 4 4 150 10
+frame id:absolute-flow 4 4 50 20
+frame id:absolute-align-a 125 80 50 20
+frame id:relative-a 7 5 50 20
+frame id:relative-b -7 15 50 20
+frame id:relative-c 0 40 50 20
+frame id:display-none 0 0 0 0
+frame id:display-a 0 0 50 20
+frame id:display-flex-a 0 0 50 20
+frame id:display-flex-b 50 0 50 20
+# `display: "flex"` alone lays its children out in a row, as CSS does.
+frame id:display-row-a 0 0 50 20
+frame id:display-row-b 50 0 50 20
+frame id:display-block-a 0 0 300 20
+frame id:display-block-b 0 20 50 20
+# Of siblings sharing a testID, `frame` finds the first in native order:
+# the lowest zIndex, the one drawn below the others.
+frame id:z-first 0 60 50 20
+frame id:z-low 0 30 50 20
+frame id:overflow-a 0 0 400 150
+frame id:overflow-visible-a 0 0 400 20
+style id:overflow overflow hidden
+style id:overflow-visible overflow visible
+covers [styles] padding
+covers [styles] paddingHorizontal
+covers [styles] paddingVertical
+covers [styles] paddingLeft
+covers [styles] paddingRight
+covers [styles] paddingBottom
+covers [styles] margin
+covers [styles] marginHorizontal
+covers [styles] marginVertical
+covers [styles] marginRight
+covers [styles] marginBottom
+covers [styles] minWidth
+covers [styles] minHeight
+covers [styles] maxWidth
+covers [styles] maxHeight
+covers [styles] aspectRatio
+covers [styles] position
+covers [styles] top
+covers [styles] left
+covers [styles] right
+covers [styles] bottom
+covers [styles] display
+covers [styles] zIndex
+covers [styles] overflow
+# layout-direction
+tap id:case-layout-direction
+expect Layout direction
+frame id:rtl-row 0 17 300 100
+frame id:rtl-row-a 250 0 50 20
+frame id:rtl-row-b 200 0 50 20
+frame id:ltr-row-a 0 0 50 20
+frame id:ltr-row-b 50 0 50 20
+frame id:rtl-column-a 250 0 50 20
+frame id:rtl-column-b 0 20 300 20
+frame id:rtl-justify-a 60 0 50 20
+frame id:rtl-justify-b 0 0 50 20
+frame id:rtl-wrap-a 70 0 50 20
+frame id:rtl-wrap-b 20 0 50 20
+frame id:rtl-wrap-c 70 20 50 20
+frame id:inherit-row 0 0 300 20
+frame id:inherit-row-a 250 0 50 20
+frame id:inherit-ltr 0 20 300 20
+frame id:inherit-ltr-a 0 0 50 20
+frame id:inherit-explicit 0 40 300 20
+frame id:inherit-explicit-a 250 0 50 20
+frame id:ltr-inset-start 10 0 50 20
+frame id:ltr-inset-end 240 30 50 20
+frame id:ltr-inset-both 20 60 240 20
+frame id:rtl-inset-start 240 0 50 20
+frame id:rtl-inset-end 10 30 50 20
+frame id:rtl-inset-both 40 60 240 20
+frame id:rtl-inset-percent-a 220 0 50 20
+# Right to left, left and right keep their sides.
+frame id:rtl-sides-left 10 0 50 20
+frame id:rtl-sides-right 240 30 50 20
+frame id:start-wins-a 20 0 50 20
+frame id:ltr-margin-a 10 0 50 20
+frame id:ltr-margin-b 75 0 50 20
+frame id:rtl-margin-a 240 0 50 20
+frame id:rtl-margin-b 175 0 50 20
+frame id:rtl-margin-right-a 235 0 50 20
+frame id:rtl-margin-right-b 185 0 50 20
+frame id:ltr-padding-a 12 0 258 20
+frame id:rtl-padding-a 30 0 258 20
+frame id:rtl-padding-sides-a 12 0 258 20
+covers [styles] direction
+covers [styles] start
+covers [styles] end
+covers [styles] marginStart
+covers [styles] marginEnd
+covers [styles] paddingStart
+covers [styles] paddingEnd
+# layout-flex
+tap id:case-layout-flex
+expect Flex layout
+frame id:row-a 0 0 50 20
+frame id:row-b 50 0 50 20
+frame id:column-a 0 0 50 20
+frame id:column-b 0 20 50 20
+frame id:row-reverse-a 250 0 50 20
+frame id:row-reverse-b 200 0 50 20
+frame id:column-reverse-a 0 80 50 20
+frame id:column-reverse-b 0 60 50 20
+frame id:jc-start-a 0 0 50 20
+frame id:jc-start-b 50 0 50 20
+frame id:jc-center-a 100 0 50 20
+frame id:jc-center-b 150 0 50 20
+frame id:jc-end-a 200 0 50 20
+frame id:jc-end-b 250 0 50 20
+frame id:jc-between-a 0 0 50 20
+frame id:jc-between-b 250 0 50 20
+frame id:jc-around-a 50 0 50 20
+frame id:jc-around-b 200 0 50 20
+frame id:jc-evenly-a 50 0 50 20
+frame id:jc-evenly-b 150 0 50 20
+frame id:jc-column-a 0 80 50 20
+frame id:ai-start-a 0 0 50 20
+frame id:ai-center-a 0 40 50 20
+frame id:ai-end-a 0 80 50 20
+frame id:ai-stretch-a 0 0 50 100
+frame id:ai-baseline-a 0 20 50 20
+frame id:ai-baseline-b 50 0 50 40
+frame id:ai-column-a 125 0 50 20
+frame id:ai-column-b 150 20 0 20
+frame id:as-start 0 0 50 20
+frame id:as-center 50 40 50 20
+frame id:as-end 100 80 50 20
+frame id:as-stretch 150 0 50 100
+frame id:as-auto 200 80 50 20
+frame id:grow-a 0 0 100 20
+frame id:grow-b 100 0 200 20
+frame id:grow-column-a 0 0 50 20
+frame id:grow-column-b 0 20 50 80
+frame id:shrink-a 0 0 175 20
+frame id:shrink-b 175 0 125 20
+frame id:no-shrink-a 0 0 200 20
+frame id:no-shrink-b 200 0 200 20
+frame id:basis-a 0 0 120 20
+frame id:basis-b 120 0 150 20
+frame id:basis-grow-a 0 0 200 20
+frame id:basis-grow-b 200 0 100 20
+frame id:flex-number-a 0 0 100 20
+frame id:flex-number-b 100 0 200 20
+frame id:flex-auto-a 0 0 250 20
+frame id:flex-auto-b 250 0 50 20
+frame id:flex-none-a 0 0 200 20
+frame id:flex-none-b 200 0 100 20
+frame id:flex-written-a 0 0 200 20
+frame id:flex-written-b 200 0 100 20
+frame id:flex-zero-a 0 0 0 20
+frame id:wrap-a 0 0 50 20
+frame id:wrap-b 50 0 50 20
+frame id:wrap-c 0 20 50 20
+frame id:nowrap-a 0 0 50 20
+frame id:nowrap-b 50 0 50 20
+frame id:nowrap-c 100 0 50 20
+frame id:wrap-reverse-a 0 80 50 20
+frame id:wrap-reverse-b 50 80 50 20
+frame id:wrap-reverse-c 0 60 50 20
+frame id:wrap-column-a 0 0 50 20
+frame id:wrap-column-b 0 20 50 20
+frame id:wrap-column-c 50 0 50 20
+frame id:ac-start-a 0 0 50 20
+frame id:ac-start-b 50 0 50 20
+frame id:ac-start-c 0 20 50 20
+frame id:ac-center-a 0 30 50 20
+frame id:ac-center-b 50 30 50 20
+frame id:ac-center-c 0 50 50 20
+frame id:ac-end-a 0 60 50 20
+frame id:ac-end-b 50 60 50 20
+frame id:ac-end-c 0 80 50 20
+frame id:ac-between-a 0 0 50 20
+frame id:ac-between-b 50 0 50 20
+frame id:ac-between-c 0 80 50 20
+frame id:ac-around-a 0 15 50 20
+frame id:ac-around-b 50 15 50 20
+frame id:ac-around-c 0 65 50 20
+frame id:ac-evenly-a 0 20 50 20
+frame id:ac-evenly-b 50 20 50 20
+frame id:ac-evenly-c 0 60 50 20
+frame id:ac-stretch-a 0 0 50 50
+frame id:ac-stretch-b 50 0 50 50
+frame id:ac-stretch-c 0 50 50 50
+frame id:gap-row-a 0 0 50 20
+frame id:gap-row-b 60 0 50 20
+frame id:gap-column-a 0 0 50 20
+frame id:gap-column-b 0 28 50 20
+frame id:gap-wrap-a 0 0 50 20
+frame id:gap-wrap-b 56 0 50 20
+frame id:gap-wrap-c 0 26 50 20
+frame id:gaps-a 0 0 50 20
+frame id:gaps-b 55 0 50 20
+frame id:gaps-c 0 30 50 20
+frame id:gap-override-a 0 0 50 20
+frame id:gap-override-b 54 0 50 20
+covers [styles] flexDirection
+covers [styles] flex
+covers [styles] justifyContent
+covers [styles] alignItems
+covers [styles] alignSelf
+covers [styles] flexGrow
+covers [styles] flexShrink
+covers [styles] flexBasis
+covers [styles] flexWrap
+covers [styles] alignContent
+covers [styles] gap
+covers [styles] rowGap
+covers [styles] columnGap
+# layout-grid
+tap id:case-layout-grid
+expect Grid layout
+frame id:tracks-a 0 0 100 20
+frame id:tracks-b 100 0 150 20
+frame id:tracks-c 250 0 50 20
+frame id:tracks-d 0 20 100 30
+frame id:fr-a 0 0 100 25
+frame id:fr-b 100 0 200 25
+frame id:fr-c 0 25 100 75
+frame id:percent-a 0 0 75 50
+frame id:percent-b 75 0 225 50
+frame id:repeat-a 0 0 100 40
+frame id:repeat-b 100 0 100 40
+frame id:repeat-c 200 0 100 40
+frame id:repeat-d 0 40 100 40
+frame id:fill-a 0 0 100 20
+frame id:fill-b 100 0 100 20
+frame id:fill-c 200 0 100 20
+frame id:fill-d 0 20 100 20
+frame id:auto-a 0 0 80 30
+frame id:auto-b 80 0 220 30
+frame id:minmax-a 0 0 200 30
+frame id:minmax-b 200 0 100 30
+frame id:flow-column-a 0 0 60 20
+frame id:flow-column-b 0 20 60 20
+frame id:flow-column-c 60 0 60 20
+frame id:flow-row-a 0 0 100 25
+frame id:flow-row-b 100 0 100 25
+frame id:flow-row-c 0 25 100 25
+frame id:sparse-a 0 0 200 20
+frame id:sparse-b 0 20 200 20
+frame id:sparse-c 200 20 100 20
+frame id:dense-a 0 0 200 20
+frame id:dense-b 0 20 200 20
+frame id:dense-c 200 0 100 20
+frame id:dense-only-a 0 0 200 20
+frame id:dense-only-b 0 20 200 20
+frame id:dense-only-c 200 0 100 20
+frame id:column-dense-a 0 0 50 40
+frame id:column-dense-b 50 0 50 40
+frame id:column-dense-c 0 40 50 20
+frame id:place-column 100 0 200 25
+frame id:place-row 0 25 100 50
+frame id:place-start 100 50 100 25
+frame id:place-end 200 75 100 25
+frame id:place-span 100 25 200 50
+frame id:items-a 30 30 40 20
+frame id:items-b 100 0 40 20
+frame id:items-c 260 15 40 20
+frame id:items-d 0 80 100 20
+frame id:items-e 130 50 40 50
+frame id:items-start-a 0 0 40 20
+frame id:items-start-b 150 0 0 20
+frame id:items-end-a 60 15 40 20
+frame id:items-stretch-a 0 0 100 50
+frame id:content-a 0 60 100 20
+frame id:content-b 200 60 100 20
+frame id:content-c 0 80 100 20
+frame id:gap-a 0 0 145 45
+frame id:gap-b 155 0 145 45
+frame id:gap-c 0 55 145 45
+frame id:gaps-a 0 0 147 40
+frame id:gaps-b 153 0 147 40
+frame id:gaps-c 0 60 147 40
+frame id:rtl-a 200 0 100 40
+frame id:rtl-b 0 0 200 40
+covers [styles] display
+covers [styles] gridTemplateColumns
+covers [styles] gridTemplateRows
+covers [styles] gridAutoColumns
+covers [styles] gridAutoRows
+covers [styles] gridAutoFlow
+covers [styles] gridColumn
+covers [styles] gridColumnStart
+covers [styles] gridColumnEnd
+covers [styles] gridRow
+covers [styles] gridRowStart
+covers [styles] gridRowEnd
+covers [styles] justifyItems
+covers [styles] justifySelf
+
+# layout-tailwind
+tap id:case-layout-tailwind
+expect Tailwind layout
+frame id:static-style 0 0 50 20
+frame id:static-class 0 20 50 20
+frame id:fixed 5 3 40 10
+frame id:after-fixed 10 10 50 10
+frame id:inline-block-a 0 0 50 20
+frame id:inline-block-b 0 20 50 20
+frame id:space-a 0 0 50 20
+frame id:space-b 60 0 50 20
+frame id:space-c 120 0 50 20
+frame id:overlap-b 40 0 50 20
+frame id:important-space 50 0 30 20
+frame id:static-containing-block -20 -20 10 10
+frame id:rtl-ml 250 0 50 20
+frame id:rtl-mr 240 0 50 20
+frame id:rtl-key 240 0 50 20
+frame id:variant-order 0 0 20 20
+covers [styles] position
+covers [styles] marginRight
+
+# layout-sibling-classes
+tap id:case-layout-sibling-classes
+expect Sibling classes
+style id:sibling-1 backgroundColor #00ff00ff
+style id:sibling-2 backgroundColor #ff0000ff
+style id:sibling-3 backgroundColor #0000ffff
+frame id:sibling-1 0 0 10 20
+frame id:sibling-2 0 20 10 30
+frame id:sibling-3 0 50 10 20
+tap text:Reorder siblings
+style id:sibling-3 backgroundColor #00ff00ff
+style id:sibling-1 backgroundColor #ff0000ff
+style id:sibling-2 backgroundColor #0000ffff
+frame id:sibling-3 0 0 10 20
+frame id:sibling-1 0 20 10 30
+frame id:sibling-2 0 50 10 20
+tap text:Append sibling
+style id:sibling-2 backgroundColor #ff0000ff
+style id:sibling-4 backgroundColor #0000ffff
+frame id:sibling-4 0 70 10 30
+tap text:Keep one sibling
+style id:sibling-2 backgroundColor #0000ffff
+frame id:sibling-2 0 0 10 20
+frame id:sibling-inner-2 2 2 1 1
+
+# layout-sticky
+tap id:case-layout-sticky
+expect Sticky bar
+# In the flow: its insets say where it sticks, not where it is laid out.
+frame id:sticky-bar 0 100 390 40
+frame id:sticky-heading 0 0 390 30
+# `top: 16`: from 84 (its 100 less 16)
+# until its end meets the end of the content (1140).
+prop scroll:text:"Sticky bar" stickyHeaderIndices start=84 end=1084
+# The heading sticks within its section (50 to 450).
+prop scroll:text:"Sticky heading" stickyHeaderIndices start=50 end=420
+# An animated `top`: the platform adds its value as it pins, every frame,
+# so the travel is the one at the top: from 60 until its end meets the
+# content's (690).
+frame id:sticky-animated 0 60 390 30
+prop scroll:text:"Sticky animated" stickyHeaderIndices start=60 end=660

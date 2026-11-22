@@ -1,0 +1,16 @@
+---
+import BaseLayout from '../../layouts/BaseLayout.astro';
+import Nav from '../../components/Nav.astro';
+import Home from '../../components/Home.astro';
+import SiteFooter from '../../components/SiteFooter.astro';
+import { homeAlternates, homeCopy, homeLanguages } from '../../lib/home';
+import { url } from '../../lib/site';
+
+const { copy } = homeCopy('zh-CN');
+---
+
+<BaseLayout lang="zh-CN" title={copy.title} description={copy.description} alternates={homeAlternates()}>
+  <Nav lang="zh-CN" currentPath={Astro.url.pathname} langHref={url('')} languages={homeLanguages()} />
+  <Home lang="zh-CN" />
+  <SiteFooter lang="zh-CN" />
+</BaseLayout>

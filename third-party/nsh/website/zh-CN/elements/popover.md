@@ -1,0 +1,172 @@
+---
+title: Popover
+description: Popover 组件：锚定在触发元素上、显示在一切之上的内容，触发元素、外部按压、Escape 和返回键都会关闭它，样式由应用决定。
+group: base
+demo: el-popover
+---
+
+# Popover
+
+弹出框把内容显示在触发元素旁边、其他一切之上：详情、一个小表单、一个取色器。按下触发元素会打开和关闭它；外部按压、Escape、Android 返回键和 VoiceOver 的退出手势会关闭它。它放在触发元素的某一侧，空间不够时换到另一侧，始终位于安全区之内，并在触发元素滚动时跟随它。它自己不绘制任何东西：弹出层和其中的内容都属于应用。
+
+```rust tabs
+use nsh_base::{OpenChangeReason, PopoverEvent, popover};
+use nsh_core::prelude::*;
+
+fn details() -> impl IntoElement {
+    popover()
+        .offset(px(6.0))
+        .margin(px(8.0))
+        .trigger(view().px_3().py_2().rounded_md().bg(rgb(0xe5e7eb)).child(text("Details")))
+        .on_open_change(|e: &PopoverEvent| {
+            if let PopoverEvent::OpenChange(open, OpenChangeReason::PressOutside) = e {
+                log::info!("closed by a press outside: {open}");
+            }
+        })
+        .child(
+            view()
+                .w(px(240.0))
+                .gap_1()
+                .p_3()
+                .rounded_lg()
+                .bg(white())
+                .shadow_lg()
+                .child(text("Order #1024").font_weight(FontWeight::SEMIBOLD))
+                .child(text("Shipped yesterday, arriving Friday.")),
+        )
+}
+```
+
+```tsx tabs
+import { Text, View } from "nsh";
+import { Popover } from "nsh/base";
+
+function Details() {
+  return (
+    <Popover
+      offset={6}
+      margin={8}
+      popupClass="w-60 gap-1 rounded-lg bg-white p-3 shadow-lg"
+      trigger={
+        <View class="rounded-md bg-gray-200 px-3 py-2">
+          <Text>Details</Text>
+        </View>
+      }
+    >
+      <Text class="font-semibold">Order #1024</Text>
+      <Text>Shipped yesterday, arriving Friday.</Text>
+    </Popover>
+  );
+}
+```
+
+`Popover` 来自 [`nsh/base`](../modules/nsh-base.md)。它的内容在每次打开时创建，所以其中的状态每次都从头开始。
+
+<a id="open-state"></a>
+
+## 打开状态
+
+没有 `open` 时，弹出框自己保存状态，初始值为 `defaultOpen`。有 `open` 时，状态由应用持有：在 `onOpenChange({ open, reason })` 中修改它，每次打开或关闭的请求都会带着原因（`"triggerPress"`、`"pressOutside"`、`"cancel"`）报告给它。
+
+```tsx
+const open = signal(false);
+
+<Popover open={open()} onOpenChange={(e) => open.set(e.open)} trigger={<Text>Filters</Text>}>
+  <FilterForm onApply={() => open.set(false)} />
+</Popover>
+```
+
+`closeOnEscape={false}` 让它在 Escape 和返回键时保持打开（`onCancel` 仍会收到它们，可以先询问用户）；`closeOnPressOutside={false}` 让它在外部按压时保持打开。
+
+<a id="keyboard-focus"></a>
+
+## 键盘焦点
+
+弹出框打开时不移动键盘焦点。要让弹出框像一个小的非模态对话框那样接住焦点，就在 `onOpen` 中聚焦它的内容：`onOpen` 在内容渲染之后才触发，此时内容里的 ref 已经指向各自的视图。给这个视图加上 `focusable`（或一个按压处理函数），它才能持有焦点。焦点在弹出框内时，弹出框因 Escape 或被应用关闭，焦点会在桌面平台上于它开始离开时回到触发元素，离开途中按下的键归触发元素；外部按压则让焦点留在按压所在的位置；应用在关闭它的同一轮里对弹出框外的视图调用 `focus()` 也一样，焦点留在那里。
+
+```rust tabs
+let panel = element_ref();
+
+popover()
+    .on_open(move || panel.focus())
+    .trigger(text("Filters"))
+    .child(view().element_ref(&panel).focusable(true).child(filter_form()))
+```
+
+```tsx tabs
+let panel!: ViewRef;
+<Popover onOpen={() => panel.focus()} trigger={<Text>Filters</Text>}>
+  <View ref={panel} focusable>
+    <FilterForm />
+  </View>
+</Popover>;
+```
+
+<a id="phones-and-desktops"></a>
+
+## 手机与桌面
+
+在每种设备上，弹出框都锚定在触发元素上：它显示的内容属于打开它的那个元素旁边。
+
+- 在桌面平台和桌面浏览器中，外部按压会关闭它，并继续传给指针下方的内容，所以一次单击既关闭弹出框，又按下了落点处的按钮。
+- 在手机和平板上，外部按压只会关闭它：一个透明的背景层接住这次按压，与系统的弹出框一致。
+
+一组操作请使用 [Menu](./menu.md)，它在手机上会变成 sheet；面板请使用 [Sheet](./sheet.md)。
+
+<a id="entrance-and-exit"></a>
+
+## 出现与离开
+
+弹出框随你的过渡出现和离开。`popupStartingClass` 是弹出层第一帧的外观，`popupClass` 里的 `transition-*` 类把它过渡到自己的外观：这就是它的出现。`popupEndingClass` 是关闭后的外观：弹出框会保留下来、不再接受按压和按键，直到这些过渡播放完毕才离开，随后触发 `onClose`。在离开途中再次打开时，它从当前状态回到自己的外观。`popupStartingStyle` 和 `popupEndingStyle` 以内联样式做同样的事。用户要求减少动态效果时，它立即出现、立即离开。
+
+```tsx
+<Popover
+  popupClass="rounded-lg bg-white p-3 shadow-lg transition-all duration-150 ease-out"
+  popupStartingClass="opacity-0 scale-95"
+  popupEndingClass="opacity-0 scale-95"
+  onPosition={({ placement }) => side.set(placement)}
+  trigger={<Text>Details</Text>}
+>
+  <OrderSummary />
+</Popover>
+```
+
+`onPosition({ placement, bounds, available })` 说明弹出层放在了哪里：它位于触发元素的哪一侧（`placement` 那一侧空间不够时是另一侧）、它的框以及那一侧的空间，方便箭头或出现动画指向触发元素。
+
+<a id="props"></a>
+
+## 属性
+
+| 属性 | Rust | 类型 | 默认值 | 说明 |
+|---|---|---|---|---|
+| `open` | `.open(..)` | `boolean` | 无 | 是否打开，由应用控制。 |
+| `defaultOpen` | `.default_open(..)` | `boolean` | `false` | 没有 `open` 时，初始是否打开。 |
+| `placement` | `.placement(..)` | `"top" \| "bottom" \| "left" \| "right"` | `"bottom"` | 它位于触发元素的哪一侧。 |
+| `align` | `.align(..)` | `"start" \| "center" \| "end"` | `"center"` | 它沿这一侧如何与触发元素对齐。 |
+| `offset` | `.offset(..)` | `number` | `0` | 触发元素与弹出层之间的间距。 |
+| `margin` | `.margin(..)` | `number` | `0` | 它与安全区边缘保持的距离。 |
+| `closeOnEscape` | `.close_on_escape(..)` | `boolean` | `true` | Escape 和 Android 返回键会关闭它。 |
+| `closeOnPressOutside` | `.close_on_press_outside(..)` | `boolean` | `true` | 外部按压会关闭它。 |
+| `popupClass`、`popupStyle` | `popup_class`、`popup_style` | `string`、`StyleProp<ViewStyle>` | 无 | 弹出层（装着内容的盒子）的外观。 |
+| `popupStartingClass`、`popupStartingStyle` | `popup_starting_class`、`popup_starting_style` | `string`、`StyleProp<ViewStyle>` | 无 | 弹出层第一帧的外观，叠加在它自己的外观之上：它的过渡从这里开始。 |
+| `popupEndingClass`、`popupEndingStyle` | `popup_ending_class`、`popup_ending_style` | `string`、`StyleProp<ViewStyle>` | 无 | 弹出层关闭后的外观，叠加在它自己的外观之上：过渡播放期间它会保留。 |
+| `trigger` | `.trigger(..)` | `JSX.Element` | 无 | 打开它的元素；它相对这个元素放置。弹出层打开时，它的 `aria-expanded:` 类和 `expandedStyle` 生效。 |
+| `children` | `.child(..)` | `JSX.Element` | 无 | 内容。 |
+
+<a id="events"></a>
+
+## 事件
+
+| 事件 | Rust | 说明 |
+|---|---|---|
+| `onOpenChange` | `.on_open_change(\|e\| ..)` | 它打开或关闭了，附带原因：`"triggerPress"`、`"pressOutside"` 或 `"cancel"`。 |
+| `onOpen` | `.on_open(\|\| ..)` | 它已显示，内容已渲染：其中的 ref 已指向各自的视图。 |
+| `onClose` | `.on_close(\|\| ..)` | 它已消失（在离开过渡之后），应用关闭它时也会触发。 |
+| `onCancel` | `.on_cancel(\|\| ..)` | 用户尝试关闭它（Escape 或返回键、外部按压），无论它是否关闭。 |
+| `onPosition` | `.on_position(\|e\| ..)` | 弹出层已放置：`placement`（它所在的一侧）、`bounds`（它的框）、`available`（那一侧的空间）。 |
+
+<a id="accessibility"></a>
+
+## 无障碍
+
+触发元素会告诉屏幕阅读器弹出框是否已展开。Escape 和返回键会关闭它，与用户对弹出层的预期一致。在 TSX 中，触发元素就是你传入的元素（`Button` 或你自己的视图都可以）：按压和展开状态都在它自己身上，所以它自己的 `active:` 类和 `activeStyle` 会在按下时生效，它自己的 `onPress` 也照常运行。

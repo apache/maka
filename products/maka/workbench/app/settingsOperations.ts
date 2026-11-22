@@ -1,0 +1,249 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import { cleanup, signal } from 'nsh';
+import type { Host, Method, Input, Output } from './host';
+import { createTransientText, createText, errorText, message, UiError } from './text';
+import type {
+  ClientOperation,
+  CredentialStatus,
+  CredentialVersionBasis,
+} from '../../../../packages/plugin-sdk/src/generated/runtime';
+
+const record = (value: unknown): value is Record<string, unknown> =>
+  value !== null && typeof value === 'object' && !Array.isArray(value);
+export function settingsValue(reply: unknown): unknown {
+  const receipt = record(reply) && record(reply.receipt) ? reply.receipt : null;
+  if (receipt?.kind === 'unavailable' && typeof receipt.diagnostic === 'string')
+    throw new Error(receipt.diagnostic);
+  const outcome = receipt?.kind === 'recorded' && record(receipt.outcome) ? receipt.outcome : null;
+  if (outcome?.kind !== 'returned')
+    throw new Error(
+      `No returned result for settings operation (${outcome?.kind ?? receipt?.kind ?? 'missing receipt'})`,
+    );
+  const result = outcome.result;
+  if (!record(result)) throw new Error('Invalid settings operation result');
+  if (result.kind === 'failure' && typeof result.diagnostic === 'string')
+    throw new Error(result.diagnostic);
+  if (result.kind !== 'success') throw new Error(`Invalid settings result kind: ${result.kind}`);
+  return result.value;
+}
+
+export const credentialBasis = (status: CredentialStatus | null): CredentialVersionBasis | null =>
+  status?.configured && status.credentialId !== null && status.revision !== null
+    ? { locator: status.locator, credentialId: status.credentialId, revision: status.revision }
+    : null;
+export function settingsRejection(value: any): UiError {
+  if (
+    value?.kind === 'connection_stale' ||
+    value?.kind === 'revision_conflict' ||
+    value?.kind === 'superseded' ||
+    value?.kind === 'credential_stale' ||
+    value?.reason === 'credential_changed' ||
+    value?.reason === 'connection_changed'
+  )
+    return new UiError('These settings changed elsewhere. Reload before saving again.');
+  if (value?.kind === 'connection_exists')
+    return new UiError('That connection ID is already in use. Choose another ID.');
+  if (value?.kind === 'invalid_default_target')
+    return new UiError('Enable the connection and model before making it the default.');
+  return new UiError('The Host rejected this action ({reason}).', {
+    reason: value?.reason ?? value?.kind ?? message('unknown result'),
+  });
+}
+// One presentation owner for the existing native journal. The Client's
+// atomic reservation remains the write fence across pages and processes.
+export function createSettingsOperations(host: Host) {
+  const task = signal<Promise<void> | null>(null);
+  const busy = () => task() !== null;
+  const backgroundTask = signal<Promise<void> | null>(null);
+  const navigationBusy = () => busy() && task() !== backgroundTask();
+  const whenIdle = () => task() ?? Promise.resolve();
+  const error = createText();
+  const notice = createTransientText();
+  const pending = signal<ClientOperation[]>([]);
+  const pendingKnown = signal(false);
+  let alive = true;
+  cleanup(() => {
+    alive = false;
+  });
+  const report = (reason: unknown) => {
+    if (alive) error.set(errorText(reason, 'Could not read or update settings.'));
+  };
+  const refreshPending = async () => {
+    try {
+      const rows = await host.pendingSettings();
+      if (alive) {
+        pending.set(rows);
+        pendingKnown.set(true);
+      }
+    } catch (reason) {
+      if (alive) pendingKnown.set(false);
+      throw reason;
+    }
+  };
+  function mutate<E extends 'agent' | 'skills', M extends Method<E, 'mutation'>>(
+    endpoint: E,
+    method: M,
+    input: Input<E, M>,
+  ): Promise<Output<E, M>>;
+  function mutate(
+    endpoint: 'settings' | 'setup' | 'authentication' | 'management' | 'web',
+    method: string,
+    input: unknown,
+    secret?: string | null,
+  ): Promise<any>;
+  async function mutate(
+    endpoint: 'settings' | 'setup' | 'authentication' | 'management' | 'web' | 'agent' | 'skills',
+    method: string,
+    input: unknown,
+    secret: string | null = null,
+  ): Promise<unknown> {
+    return settingsValue((await host.settingsMutation(endpoint, method, input, secret)).reply);
+  }
+  const run = (
+    operation: () => Promise<void>,
+    options?: { background?: boolean },
+  ): Promise<void> => {
+    if (!alive || busy() || !pendingKnown() || pending().length) return Promise.resolve();
+    const completion = Promise.resolve()
+      .then(async () => {
+        error.set('');
+        notice.set('');
+        try {
+          await operation();
+        } catch (reason) {
+          report(reason);
+        } finally {
+          await refreshPending().catch(report);
+        }
+      })
+      .finally(() => {
+        task.set(null);
+        backgroundTask.set(null);
+      });
+    if (options?.background) backgroundTask.set(completion);
+    task.set(completion);
+    return completion;
+  };
+  const recover = (
+    afterKnown: (original: ClientOperation, value: unknown) => void | Promise<void>,
+  ) => {
+    if (!alive || busy()) return;
+    const completion = Promise.resolve()
+      .then(async () => {
+        error.set('');
+        try {
+          for (const original of await host.pendingSettings()) {
+            try {
+              const reply = await host.recoverSetting(original.id);
+              if (
+                record(reply) &&
+                record(reply.receipt) &&
+                reply.receipt.kind === 'recorded' &&
+                record(reply.receipt.outcome) &&
+                reply.receipt.outcome.kind === 'unresolved'
+              )
+                continue;
+              const value = settingsValue(reply);
+              if (!alive) return;
+              if (
+                original.endpoint === 'skills' ||
+                (original.endpoint === 'agent' &&
+                  ['selectWorkspace', 'manageMcpServer'].includes(original.method))
+              ) {
+                await afterKnown(original, value);
+                if (record(value) && (value.kind === 'rejected' || value.kind === 'changed'))
+                  throw settingsRejection(value);
+                if (record(value) && Array.isArray(value.results)) {
+                  const rejected = value.results.filter(
+                    (result) => record(result) && result.kind === 'rejected',
+                  );
+                  if (rejected.length)
+                    throw new Error(rejected.map((result) => result.reason).join('\n'));
+                }
+                continue;
+              }
+              if (
+                original.endpoint === 'agent' &&
+                [
+                  'updateGlobalInstructions',
+                  'createPreset',
+                  'updatePreset',
+                  'deletePreset',
+                ].includes(original.method)
+              ) {
+                // Editors preserve their drafts when an original receipt reports a conflict.
+                await afterKnown(original, value);
+                continue;
+              }
+              if (
+                original.endpoint === 'management' ||
+                (original.endpoint === 'settings' && original.method === 'updateWorkspaceLocations')
+              ) {
+                if (!record(value) || value.status !== 'committed') {
+                  if (record(value) && value.status === 'conflict')
+                    throw new UiError(
+                      'These settings changed elsewhere. Reload before saving again.',
+                    );
+                  if (record(value) && typeof value.diagnostic === 'string')
+                    throw new Error(value.diagnostic);
+                  throw new UiError('The Host rejected this service change. Reload and review it.');
+                }
+              } else {
+                const outcome = record(value) && value.kind === 'applied' ? value.result : value;
+                if (
+                  !record(outcome) ||
+                  !['committed', 'saved', 'ready'].some((kind) => kind === outcome.kind)
+                )
+                  throw settingsRejection(outcome);
+              }
+              await afterKnown(original, value);
+            } catch (reason) {
+              report(reason);
+            }
+          }
+        } catch (reason) {
+          report(reason);
+        } finally {
+          await refreshPending().catch(report);
+        }
+      })
+      .finally(() => {
+        task.set(null);
+      });
+    task.set(completion);
+    return completion;
+  };
+  void refreshPending().catch(report);
+  return {
+    busy,
+    whenIdle,
+    navigationBusy,
+    error,
+    notice,
+    pending,
+    pendingKnown,
+    report,
+    mutate,
+    run,
+    recover,
+  };
+}
+export type SettingsOperations = ReturnType<typeof createSettingsOperations>;

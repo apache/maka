@@ -1,0 +1,184 @@
+{
+  "title": "Native Shell — Build once, native everywhere | Rust UI framework",
+  "description": "Native Shell is a Rust-first native UI framework: build one app for iOS, Android, macOS, Windows, Linux and the web, with each platform’s own UI and interaction.",
+  "slogan": "Build once, native everywhere",
+  "lead": "Write only TSX and ship native clients that keep pace with Rust. One codebase runs on 8 platforms, each with the system’s own UI and interaction.",
+  "idle": "Your app sits in the middle. Each arch around it is a platform.",
+  "start": "Get started",
+  "gallery": "Gallery",
+  "try": "Playground",
+  "heroStats": [
+    "FPS",
+    "first frame",
+    "platforms"
+  ],
+  "numbersTitle": "A client written in TSX, right beside Rust",
+  "numbersLead": "In NSH only your app’s code is JS. The reactive graph, the renderer, layout and every module are Rust. TSX and Rust apps share the same native execution pipeline.",
+  "stats": [
+    "22 live sparklines, an order book and a tape updating together, frame p95 under 4 ms",
+    "Engine startup (75–155 µs)",
+    "First frame of a counter app",
+    "One tap, from event to commit",
+    "A hello world’s app code",
+    "A TSX app’s download on the web (Wasm runtime)"
+  ],
+  "compareHead": "Small apps measured: a few MB above the bare system window",
+  "compareCols": [
+    "",
+    "TSX",
+    "Rust",
+    "Bare system window"
+  ],
+  "compareRows": [
+    "Memory footprint, macOS",
+    "Private dirty memory, Linux (GTK, GL)",
+    "Above the system window, macOS / Linux",
+    "Private working set, Windows"
+  ],
+  "sizeHead": "Size on each platform: nsh init’s hello world",
+  "sizeCols": [
+    "",
+    "TSX executable",
+    "TSX package",
+    "Rust executable",
+    "Rust package"
+  ],
+  "sizeRows": [
+    "macOS (Apple silicon)",
+    "Linux (x86_64)",
+    "Windows (x86_64)",
+    "Web"
+  ],
+  "sizeWeb": "~1.1 MB download",
+  "numbersNote": "Release builds. Memory at rest: macOS footprint on an Apple M3 (the counter app and the Rust template at 1200 × 800; the system window holds one label at 480 × 640); Linux private dirty memory on an NVIDIA RTX 3060 Ti (nsh init’s TSX and Rust templates and a GTK window with one label, all at 480 × 640); Windows private working set. Each platform’s measure, with RSS and USS, is in the report. Sizes: nsh package’s release builds, with link-time optimization and stripped; the TSX executable holds the QuickJS runtime, the app’s code is under 1 KB; the package is the zipped .app on macOS, the .tar.gz on Linux and the .zip on Windows; on the web, what the browser downloads, runtime and app.",
+  "numbersCta": "The full performance report",
+  "zeroTitle": "TSX with 0 dependencies",
+  "zeroLead": "An app is the files below. The nsh command line brings its own bundler and toolchain, and the modules you import are native.",
+  "zeroPoints": [
+    "One nsh executable creates, runs, tests and packages",
+    "~120 ms from saving a file to the new version running",
+    "nsh check type-checks with TypeScript 7’s native tsc"
+  ],
+  "viewsTitle": "8 platforms, each with the system’s own controls",
+  "viewsLead": "NSH builds each UI from what its platform already has. Text input, selection, input methods and accessibility come from the system, and what a new OS release brings to them reaches the app with it.",
+  "cols": [
+    "Platform",
+    "Views",
+    "Text",
+    "Text input",
+    "Requires"
+  ],
+  "embedNote": "Maps, web views, video and any native view the host registers are one more subview in the same hierarchy: they lay out, clip, scroll and take touches with the rest of the app.",
+  "embedCta": "The backend of each platform",
+  "formTitle": "One app, in each device’s own form",
+  "formLead": "The same compiled code runs twice here, and only the device differs. With a pointer it is a window with its conversations at the side; on a phone the buttons and the composer float in Liquid Glass with the thread scrolling beneath; in a terminal it sits on the character grid. The app is written once.",
+  "desktop": "Desktop",
+  "phone": "Phone",
+  "terminal": "Terminal",
+  "formHint": "Live: type a message",
+  "formCaption": "Desktop and phone run live in your browser on Native Shell’s web runtime. The terminal is real output of nsh run --target tui.",
+  "pending": "The live preview is not built yet: run bun run dev (or cargo xtask web).",
+  "tuiCta": "Explore TUI",
+  "langTitle": "The same engine in Rust, when you want it",
+  "langLead": "Rust is a first-class language for whole apps: UI, logic and components compile to native code, ready for demanding business logic. Both use the same elements and signals, and TSX screens import your Rust components.",
+  "langCta": "Building with Rust",
+  "fastTitle": "Only the views that changed are touched",
+  "fastLead": "Every element is a view the platform keeps. A change runs only the expressions that read the changed signal, in one batch per frame. The main thread never waits for JS and native animations run without it, so scrolling and animation hold 120 FPS and the app sits near idle at rest.",
+  "fastPress": "Press +1",
+  "fastLegend": "The two texts that read the signals change and the history gains a row; no other view is touched.",
+  "fastIdle": "24 nodes, at rest",
+  "fastTouched": "Updated by this press",
+  "fastKept": "Left untouched",
+  "fastStat": "1 commit · 7 mount items",
+  "fastCta": "How it stays fast",
+  "shipTitle": "After release, your app can still take new UI",
+  "shipLead": "Your team can write it, or a model can generate it for each request. It reaches the device as a signed module, runs in a sandbox the host sets, and shows natively.",
+  "trust": "Trust boundary",
+  "flow": [
+    {
+      "title": "Write",
+      "body": "Your team or a model writes a TSX module."
+    },
+    {
+      "title": "Check",
+      "body": "Type-check it, then run its tests headless."
+    },
+    {
+      "title": "Sign",
+      "body": "An Ed25519-signed .nshpkg, its release key certified by an offline root."
+    },
+    {
+      "title": "Run",
+      "body": "The device verifies the signature, certificate and revocations. Each view gets a VM with memory, call-time and node limits, and only the capabilities the host grants."
+    }
+  ],
+  "waysHead": "Three ways to ship, one engine",
+  "foundTitle": "Behavior from NSH, the look from you",
+  "foundLead": "nsh/base holds unstyled base components that own state, focus, keyboard and accessibility, and the app styles every part. One nsh command line does the rest.",
+  "kitNote": [
+    "Building for the desktop only? ",
+    "GPUI Kit",
+    ", from the same Longbridge team, is a ready-to-use UI component library for macOS, Windows and Linux. Much of NSH's design comes from GPUI Kit, and apps built with NSH embed directly in GPUI Kit apps."
+  ],
+  "closeTitle": [
+    "Native views and interaction,",
+    "your visual design"
+  ],
+  "closeBody": "Install nsh and have your first TSX app running in a minute.",
+  "closeCta": "Start building",
+  "platforms": "Platforms",
+  "chat": "Chat",
+  "terminalLabel": "The chat in a terminal",
+  "surfaces": {
+    "Windows": {
+      "input": "NSH’s editor, IMM32"
+    },
+    "Web": {
+      "text": "The browser’s",
+      "needs": "Modern browsers"
+    },
+    "Android": {
+      "views": "Android views"
+    },
+    "TUI": {
+      "text": "The terminal’s font",
+      "input": "Readline keys, input methods"
+    },
+    "GPUI": {
+      "text": "GPUI’s text system",
+      "input": "NSH’s editor",
+      "needs": "Embedded in GPUI Kit apps"
+    }
+  },
+  "ways": [
+    {
+      "label": "Standalone apps",
+      "body": "Write it in Rust, TSX or both, and package an installable iOS, Android, macOS, Windows or Linux app, or a static website.",
+      "cta": "Getting started"
+    },
+    {
+      "label": "Dynamic UI and plugins",
+      "body": "Embed a view on any screen and load signed TSX modules into it at run time, next to the host’s own native components.",
+      "cta": "Embedding, per platform"
+    },
+    {
+      "label": "AI-generated UI",
+      "body": "A model writes a module per request, so the app answers with an interface. Your server checks and signs it.",
+      "cta": "Signing and sandboxing"
+    }
+  ],
+  "found": [
+    {
+      "title": "Unstyled base components",
+      "body": "Navigation, dialogs, menus, popovers, tabs, selects, data tables, a code editor and a rich text kernel. Style every part with Tailwind classes or typed styles."
+    },
+    {
+      "title": "One toolchain, for people and agents",
+      "body": "One nsh executable creates, builds, type-checks, hot-reloads, tests, packages and signs. Declarations are generated from the Rust sources and the docs are served as llms.txt, so an agent runs the whole loop with the same commands."
+    },
+    {
+      "title": "Checked on every target",
+      "body": "The same tests run headless, and in real windows, an iOS simulator, an Android device or a browser, with the platform’s own input."
+    }
+  ]
+}

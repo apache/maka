@@ -1,0 +1,40 @@
+[package]
+name = "nsh-platform-apple"
+description = "Code shared by the macOS and iOS backends: sound playback, offscreen canvas bitmaps and their encoding, which images of a decoded file to show, the Speech recognizer, the notification center, the URL schemes web views serve from the app, web views' script evaluation and the unified log as the release runners' logger."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+readme.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[build-dependencies]
+# `os_log_with_type`, a C macro, compiled into a function (`src/os_log.c`).
+cc.workspace = true
+
+# Empty off Apple platforms (like the platform crates off their targets).
+[target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
+libc.workspace = true
+log.workspace = true
+nsh-core.workspace = true
+nsh-engine.workspace = true
+block2.workspace = true
+dispatch2.workspace = true
+objc2.workspace = true
+objc2-core-foundation.workspace = true
+objc2-core-graphics.workspace = true
+objc2-core-text.workspace = true
+objc2-foundation.workspace = true
+objc2-image-io.workspace = true
+serde_json.workspace = true
+unicode-bidi.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-app-kit.workspace = true
+
+[target.'cfg(target_os = "ios")'.dependencies]
+objc2-ui-kit.workspace = true

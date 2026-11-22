@@ -1,0 +1,541 @@
+# What a user does and sees (compat/apps.rs): each case after its tap.
+# props-gesture-values
+tap id:case-props-gesture-values
+expect Card
+# Drags drive the values on both axes, each told apart by where it starts.
+prop id:card pan x=11 y=22
+noprop id:card pinch
+noprop id:card rotation
+# On one axis.
+prop id:sheet pan y=33
+# Pinches drive the scale, rotations the angle.
+prop id:photo pinch scale=1.5
+prop id:photo rotation angle=45
+noprop id:photo pan
+covers [props] pan
+covers [props] pinch
+covers [props] rotation
+# props-input-config
+tap id:case-props-input-config
+# for each input.
+prop id:keys keyboardType email-address
+prop id:plain keyboardType default
+prop id:keys returnKeyType send
+prop id:plain returnKeyType default
+prop id:keys autoCapitalize none
+prop id:plain autoCapitalize sentences
+prop id:keys autoCorrect false
+prop id:plain autoCorrect true
+prop id:complete autoComplete one-time-code
+prop id:content-type ios.textContentType email
+prop id:plain autoComplete default
+prop id:short maxLength 4
+noprop id:plain maxLength
+prop id:submit submitBehavior submit
+noprop id:plain submitBehavior
+prop id:focused autoFocus true
+prop id:plain autoFocus false
+prop id:focused caret false
+prop id:plain caret true
+# `defaultValue`: the initial text.
+prop id:initial value Hello
+noprop id:plain value
+expect Name: Ada
+# `value`: what the app sets, also after an edit.
+prop id:controlled value Ada
+type id:controlled x
+expect Name: ADAX
+prop id:controlled value ADAX
+tap id:reset
+expect Name: Grace
+prop id:controlled value Grace
+covers [props] keyboardType
+covers [props] returnKeyType
+covers [props] autoCapitalize
+covers [props] autoCorrect
+covers [props] autoComplete
+covers [props] ios.textContentType
+covers [props] maxLength
+covers [props] submitBehavior
+covers [props] autoFocus
+covers [props] caret
+covers [props] defaultValue
+covers [props] value
+# props-list-events
+tap id:case-props-list-events
+expect Feed 0
+expect Ends: 0
+# 20 items of 40 points in 200: 600 points to scroll. A viewport from the
+# end is not within the threshold's fifth of one (40 points); 10 points
+# from it is.
+scroll scroll:text:"Feed 0" 0 420
+absent Ends: 1
+scroll scroll:text:"Feed 12" 0 590
+expect Ends: 1
+# A pull to refresh: the app shows it refreshing until it is done.
+prop scroll:text:"Feed 19" refreshing false
+event scroll:text:"Feed 19" onRefresh
+expect Refreshes: 1
+prop scroll:text:"Feed 19" refreshing true
+tap id:done
+prop scroll:text:"Feed 19" refreshing false
+# Starts at item 5, 200 points down, with the keys `keyExtractor` gives.
+prop scroll:text:"Jump 5" contentOffset y=200
+expect Jump 5
+expect Keys: k5,k6,k7
+covers [props] List.loadMoreThreshold
+covers [events] onLoadMore
+covers [events] onRefresh
+covers [props] refreshing
+covers [props] List.initialScrollIndex
+covers [props] List.keyExtractor
+covers [events] List.onViewableItemsChange
+# props-list-follow
+tap id:case-props-list-follow
+expect Feed 0
+# At the end of its 10 items (400 points in 200), an item added below
+# keeps the list at the end.
+scroll scroll:text:"Feed 0" 0 200
+tap id:add
+prop scroll:text:"Feed 9" contentOffset y=240
+# Fully visible items only count as viewable: 0 and 1 of the 100 points,
+# not 2, half shown.
+expect Viewable: 0,1
+# A bottom-aligned list opens at its end: 10 items of 40 in 100.
+prop scroll:text:"Tail 9" contentOffset y=300
+covers [props] alignment
+covers [props] maintainVisibleContentPosition
+covers [props] viewabilityConfig
+covers [events] List.onViewableItemsChange
+# props-list-layout
+tap id:case-props-list-layout
+# Two columns: item 1 beside item 0, item 2 below them.
+expect Grid 0
+frame id:grid-1 0 0 195 40
+origin id:grid-0 0 64
+origin id:grid-1 195 64
+origin id:grid-2 0 104
+# From the end: item 0 last, at the bottom, and the list starts scrolled to
+# the end.
+expect Chat 0
+origin id:chat-0 0 544
+origin id:chat-2 0 464
+prop scroll:text:"Chat 0" contentOffset y=200
+# Items 0 and 3 stick to the top while scrolled past, item 3 pushing item
+# 0 out.
+expect Sticky 0
+prop scroll:text:"Sticky 0" stickyHeaderIndices start=0 end=80, start=120 end=Infinity
+# Items not measured yet count 100 points each: 30 items are 3000 tall.
+scroll scroll:text:"Estimated 0" 0 10
+expect Content: 3000
+covers [props] numColumns
+covers [props] inverted
+covers [props] stickyHeaderIndices
+covers [props] estimatedItemSize
+# props-media-image
+tap id:case-props-media-image
+expect Next
+# The image as the platform receives it.
+prop id:photo src https://example.com/a.png
+prop id:photo resizeMode contain
+prop id:photo placeholder https://example.com/placeholder.png
+prop id:photo blurRadius 6
+prop id:photo fadeDuration 150
+# A new source when the app changes it.
+tap id:next
+prop id:photo src https://example.com/b.png
+# One with a URL alone: the defaults.
+prop id:plain src https://example.com/plain.png
+prop id:plain resizeMode cover
+prop id:scale-down resizeMode scale-down
+prop id:object-none resizeMode center
+prop id:object-scale-down resizeMode scale-down
+# objectFit's `fill` stretches, `none` centers at the natural size, and a
+# style's value wins over a class's.
+prop id:fit-fill resizeMode stretch
+prop id:fit-none resizeMode center
+prop id:style-over-class resizeMode cover
+prop id:plain blurRadius 0
+noprop id:plain placeholder
+noprop id:plain fadeDuration
+covers [props] src
+covers [styles] objectFit
+covers [props] placeholder
+covers [props] blurRadius
+covers [props] fadeDuration
+# props-media-video
+tap id:case-props-media-video
+expect Play
+# The video as the platform receives it.
+prop id:clip src https://example.com/clip.mp4
+prop id:clip paused true
+prop id:clip muted true
+prop id:clip volume 0.25
+prop id:clip rate 1.5
+prop id:clip repeat true
+prop id:clip controls true
+prop id:clip resizeMode cover
+prop id:clip progressUpdateInterval 500
+# It plays when the app says so.
+tap id:play
+prop id:clip paused false
+covers [props] src
+covers [props] paused
+covers [props] muted
+covers [props] volume
+covers [props] rate
+covers [props] repeat
+covers [props] controls
+covers [styles] objectFit
+covers [props] progressUpdateInterval
+# props-media-webview
+tap id:case-props-media-webview
+expect HTML
+# The web view as the platform receives it on iOS.
+prop id:page src https://example.com/start
+prop id:page injectedJavaScript window.after = 1;
+prop id:page injectedJavaScriptBeforeContentLoaded window.before = 1;
+prop id:page javaScriptEnabled false
+prop id:page userAgent CompatAgent/1
+prop id:page scrollable false
+prop id:page incognito true
+prop id:page ios.allowsBackForwardNavigationGestures true
+# A page of HTML with its base URL when the app switches to it.
+tap id:html
+prop id:page html <p>Hi</p>
+prop id:page baseUrl https://example.com/
+covers [props] html
+covers [props] baseUrl
+covers [props] injectedJavaScript
+covers [props] injectedJavaScriptBeforeContentLoaded
+covers [props] javaScriptEnabled
+covers [props] userAgent
+covers [props] scrollable
+covers [props] incognito
+covers [props] ios.allowsBackForwardNavigationGestures
+# props-scroll-behavior
+tap id:case-props-scroll-behavior
+expect Done
+# How the first scroll view scrolls, as the platform receives it.
+prop id:paged pagingEnabled true
+prop id:paged snapToInterval 80
+prop id:paged snapToOffsets 0, 150, 300
+prop id:paged snapToAlignment center
+prop id:paged decelerationRate 0.99
+prop id:paged bounces false
+prop id:paged contentInset top=8 bottom=16
+prop id:paged scrollbarInset top=4 bottom=40
+prop id:paged contentOffset y=40
+prop id:paged keyboardShouldPersistTaps handled
+prop id:paged disableIntervalMomentum true
+prop id:paged scrollbar false
+prop id:paged keyboardDismissMode on-drag
+prop id:paged horizontal false
+prop id:paged scrollable true
+prop id:paged refreshing true
+# The spinner stops when the app says so.
+tap id:done
+prop id:paged refreshing false
+# The second scrolls sideways, not by the user.
+prop id:sideways horizontal true
+prop id:sideways scrollable false
+prop id:sideways decelerationRate 0.5
+prop id:sideways scrollbar true
+prop id:sideways bounces true
+prop id:sideways contentInset {}
+prop id:sideways scrollbarInset {}
+noprop id:sideways contentOffset
+# The third reports a scroll at most every 3 seconds: the second scroll
+# shows only once that has passed.
+expect Scrolled: none
+scroll id:throttled 0 100
+expect Scrolled: 100
+scroll id:throttled 0 200
+absent Scrolled: 200
+expect Scrolled: 100
+expect Scrolled: 200
+prop id:throttled contentOffset y=200
+covers [props] pagingEnabled
+covers [props] snapToInterval
+covers [props] snapToOffsets
+covers [props] snapToAlignment
+covers [props] decelerationRate
+covers [props] bounces
+covers [props] contentInset
+covers [props] scrollbarInset
+covers [props] contentOffset
+covers [props] keyboardShouldPersistTaps
+covers [props] disableIntervalMomentum
+covers [props] scrollbar
+covers [props] keyboardDismissMode
+covers [props] horizontal
+covers [props] scrollable
+covers [props] refreshing
+covers [props] scrollEventThrottle
+# props-refresh-indicator
+tap id:case-props-refresh-indicator
+expect Pull me
+# The app's indicator, 72 tall, takes the spinner's place; the pull feeds
+# the animated value the app made (created at 3).
+prop id:pull refreshIndicator height=72
+prop id:pull pullValue 3
+listens id:pull onRefresh
+# A list passes it to its scroll view.
+prop scroll:text:"Row 0" refreshIndicator height=60
+# Without a height there is no indicator: the platform's spinner stays.
+noprop id:none refreshIndicator
+covers [props] pullValue
+covers [props] refreshIndicator
+# props-scroll-zoom
+tap id:case-props-scroll-zoom
+expect Zoom
+# The zoom limits and how pinching behaves, as the platform receives them.
+prop id:photo minimumZoomScale 0.5
+prop id:photo maximumZoomScale 4
+prop id:photo bouncesZoom false
+prop id:photo zoomable false
+prop id:photo centerContent true
+# It is told to zoom to the app's scale, and again when that changes.
+prop id:photo zoomScale 2
+tap id:zoom
+prop id:photo zoomScale 1.5
+# Its offset feeds the animated value the app made (created at 7).
+prop id:photo scrollValue 7
+covers [props] minimumZoomScale
+covers [props] maximumZoomScale
+covers [props] bouncesZoom
+covers [props] zoomable
+covers [props] centerContent
+covers [props] zoomScale
+covers [props] scrollValue
+# props-text-lines
+tap id:case-props-text-lines
+style id:two numberOfLines 2
+style id:all numberOfLines 0
+frame id:two 0 64 100 24
+frame id:all 0 88 100 48
+style id:head textOverflow ellipsis-start
+style id:plain textOverflow ellipsis
+style id:selectable userSelect text
+nostyle id:plain userSelect
+# Shrunk to fit: at most to minimumFontScale; what fits keeps its size.
+style id:fit fontSize 20
+style id:fit-min fontSize 10
+style id:fixed-height numberOfLines 1
+style id:fixed-height lineHeight 20
+expect Hello
+covers [styles] numberOfLines
+covers [styles] textOverflow
+covers [styles] userSelect
+covers [props] adjustsFontSizeToFit
+covers [props] minimumFontScale
+# props-view-accessibility
+tap id:case-props-view-accessibility
+# for each view's accessibility.
+expect Group
+prop id:group accessible true
+noprop id:plain accessible
+prop id:hint accessibilityHint Opens the settings
+noprop id:plain accessibilityHint
+prop id:description accessibilityDescription Letters and digits only
+noprop id:plain accessibilityDescription
+# The error line describing a field: its text is the field's description
+# while it is there, the field's own after.
+prop id:described accessibilityDescription Enter a name
+tap id:fix
+absent Enter a name
+prop id:described accessibilityDescription Your name
+covers [props] accessibilityDescribedBy
+prop id:state accessibilityState disabled=true checked=mixed expanded=false
+prop id:plain accessibilityState {}
+# A popup's trigger: `hasPopup` beside `expanded` (nsh-compat's values.rs
+# shows `hasPopup` once it reads the field).
+prop id:popup-state accessibilityState expanded=false hasPopup=true
+prop id:value accessibilityValue min=0 max=10 now=4 text=four
+noprop id:plain accessibilityValue
+prop id:hidden accessibilityElementsHidden true
+prop id:plain accessibilityElementsHidden false
+# "no-hide-descendants": not an element, and its subtree hidden.
+prop id:important-no accessible false
+prop id:important-no accessibilityElementsHidden true
+prop id:important-yes accessible true
+prop id:important-yes accessibilityElementsHidden false
+prop id:actions accessibilityActions activate, magicTap:Magic
+noprop id:plain accessibilityActions
+# A select's popup: a listbox of options, the chosen one selected.
+prop id:listbox role listbox
+prop id:listbox accessibilityLabel Fruit
+prop id:option role option
+prop id:option accessibilityState selected=true
+prop id:other-option role option
+prop id:other-option accessibilityState {}
+# The structural roles.
+prop id:role-group role group
+prop id:role-region role region
+prop id:role-navigation role navigation
+prop id:role-tree role tree
+prop id:role-treeitem role treeitem
+prop id:role-menuitemcheckbox role menuitemcheckbox
+prop id:role-menuitemradio role menuitemradio
+prop id:role-dialog role dialog
+prop id:role-alertdialog role alertdialog
+covers [props] accessible
+covers [props] accessibilityHint
+covers [props] accessibilityDescription
+covers [props] accessibilityState
+covers [props] accessibilityValue
+covers [props] accessibilityElementsHidden
+covers [props] importantForAccessibility
+covers [props] accessibilityActions
+# props-view-styling
+tap id:case-props-view-styling
+# `style`: an object, and a nested list merged left to right.
+frame id:styled 0 64 390 20
+style id:styled backgroundColor #3366ffff
+style id:styled opacity 0.5
+frame id:list 0 84 390 20
+style id:list backgroundColor #00ff00ff
+# `class`: Tailwind's classes, under `style`.
+frame id:classes 0 104 390 20
+style id:classes backgroundColor #fb2c36ff
+style id:classes borderRadius 8
+style id:over backgroundColor #0000ffff
+# `classList`: the classes whose value is truthy, as it changes.
+expect Busy
+style id:toggled opacity 0.5
+nostyle id:toggled backgroundColor
+tap id:toggle
+expect Idle
+style id:toggled backgroundColor #2b7fffff
+nostyle id:toggled opacity
+# `ref`: the function got the view's node.
+expect Ref: 120x12
+# `nativeID`: the input that names a mounted accessory view gets it.
+expect Accessory bar
+prop id:field ios.inputAccessoryViewID bar
+prop id:field inputAccessoryView true
+prop id:other inputAccessoryViewID missing
+noprop id:other inputAccessoryView
+covers [props] style
+covers [props] class
+covers [props] classList
+covers [props] ref
+covers [props] nativeID
+covers [props] ios.inputAccessoryViewID
+# props-view-touch
+tap id:case-props-view-touch
+# for each view's touch handling.
+style id:none pointerEvents none
+style id:box-none pointerEvents box-none
+style id:plain pointerEvents auto
+prop id:slop hitSlop top=10 right=10 bottom=10 left=10
+prop id:slop-sides hitSlop top=4 left=2
+prop id:plain hitSlop {}
+prop id:long delayLongPress 800
+listens id:long onLongPress
+noprop id:plain delayLongPress
+prop id:pan panActivation activeOffsetX=20 failOffsetY=10
+noprop id:plain panActivation
+prop id:unfocusable focusable false
+prop id:stop focusable true
+noprop id:plain focusable
+covers [styles] pointerEvents
+covers [props] hitSlop
+covers [props] delayLongPress
+covers [props] panActivation
+covers [props] focusable
+# props-media-svg
+tap id:case-props-media-svg
+# Imported SVG files as the platform receives them, each laid out at its
+# size in points: width and height, the viewBox alone, one side and the
+# viewBox's aspect ratio.
+prop id:sized src asset:/svg/badge.svg
+frame id:sized 0 64 48 20
+prop id:view-box src asset:/svg/star.svg
+frame id:view-box 0 84 24 24
+prop id:one-side src asset:/svg/mark.svg
+frame id:one-side 0 108 32 16
+covers [nsh] Image
+covers [props] src
+# props-media-image-variants
+tap id:case-props-media-image-variants
+# An imported image with @2x and @3x files loads the file for the
+# screen's pixel ratio, as a source and as a placeholder, and keeps the
+# imported file's size in points.
+prop id:flag src asset:/images/flag.png
+prop id:remote placeholder asset:/images/flag.png
+frame id:flag 0 64 4 3
+pixelratio 3
+prop id:flag src asset:/images/flag@3x.png
+prop id:remote placeholder asset:/images/flag@3x.png
+pixelratio 2
+prop id:flag src asset:/images/flag@2x.png
+prop id:remote placeholder asset:/images/flag@2x.png
+frame id:flag 0 64 4 3
+# Back to the start's ratio, for the cases after this one.
+pixelratio 1
+prop id:flag src asset:/images/flag.png
+covers [props] src
+covers [props] placeholder
+# props-media-image-inline
+tap id:case-props-media-image-inline
+# A data: URI (base64, and percent-encoded as the placeholder) and a blob:
+# URL show their bytes. The platforms get them under a key of the core's
+# own, which no app sees and which may change between releases, so no
+# step here names it (the engine's `images` tests check it).
+# The upload finished: the remote URL replaces the local preview, and the
+# blob's URL is revoked.
+tap id:uploaded
+prop id:preview src https://example.com/photo.png
+covers [props] src
+covers [globals] URL
+covers [globals] Blob
+# props-list-start
+tap id:case-props-list-start
+# Opens at its start: not an approach.
+expect Item 0
+expect Starts: 0
+# 20 items of 40 points in 200. Away from the start, then back: 100
+# points from it is not within the threshold's quarter of a viewport (50
+# points, not the default whole one); 40 points is.
+scroll scroll:text:"Item 0" 0 300
+absent Starts: 1
+scroll scroll:text:"Item 9" 0 100
+absent Starts: 1
+scroll scroll:text:"Item 9" 0 40
+expect Starts: 1
+# Five items arrive above: the rows on screen keep their place, 200
+# points further down, out of the threshold, so nothing more loads.
+expect Item -4
+prop scroll:text:"Item 0" contentOffset y=240
+absent Starts: 2
+covers [props] List.loadMoreAtStartThreshold
+covers [events] onLoadMoreAtStart
+# props-list-sticky-offset
+tap id:case-props-list-sticky-offset
+# Items 0 and 3 stick 24 points below the top: each moves with the scroll
+# from 24 points before its position, and item 3 pushes item 0 out when it
+# reaches item 0's bottom there.
+expect Offset 0
+prop scroll:text:"Offset 0" stickyHeaderIndices start=-24 end=56, start=96 end=Infinity
+# An animated offset: the platform adds its value as it pins, every frame,
+# so the travel is the one at the top.
+prop scroll:text:"Animated 0" stickyHeaderIndices start=0 end=80, start=120 end=Infinity
+covers [props] stickyHeaderOffset
+# props-list-viewport
+tap id:case-props-list-viewport
+# The list lies below the header at its full length (200 rows of 40) and
+# shows its rows from its start to the viewport's end and a screen more.
+expect Row 0
+expect Row 34
+absent Row 35
+frame id:rows 0 300 390 8000
+# Row 0 sticks to the page's top from the list's start (300) until row 50
+# pushes it out; the page pins it, in its offsets.
+prop scroll:text:"Row 1" stickyHeaderIndices start=300 end=2260
+# The page scrolls it: 5000 down, the rows 4700 into it show.
+scroll id:page 0 5000
+expect Row 120
+origin id:row-120 0 5100
+absent Row 160
+covers [props] viewport

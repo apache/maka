@@ -1,0 +1,6 @@
+viewport 1200 800
+expect nsh desktop
+expect Word wrap: on
+tap text:Toggle title bar
+tap text:Toggle title bar
+expect A title bar of the app's own

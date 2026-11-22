@@ -1,0 +1,175 @@
+name: GPUI
+
+# Builds, lints and tests the GPUI backend (the workspace in `crates/gpui`) on
+# macOS, Windows and Linux, and lints the GPUI Kit example
+# (`examples/embed-gpui`, a workspace of its own) on Linux. The main workspace's CI covers the CLI that runs
+# it (`nsh run --target gpui`).
+
+on:
+  # Pull requests run it on the GPUI workspace's own changes; a run every three
+  # hours on main (when it moved) catches what changes to the crates it shares with the main workspace
+  # break, and saves the dependencies' caches pull requests restore.
+  pull_request:
+    # `closed` runs nothing, but it takes the pull request's concurrency group
+    # and so cancels its runs still queued or running once it merges or closes.
+    types: [opened, synchronize, reopened, ready_for_review, closed]
+    paths:
+      - "crates/gpui/**"
+      - "examples/embed-gpui/**"
+      - ".github/workflows/gpui.yml"
+      - ".github/actions/cargo/**"
+  schedule:
+    - cron: "0 */3 * * *"
+  merge_group:
+    types: [checks_requested]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gpui-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  # CI builds each crate once: no incremental state and no debug info
+  # (faster builds, smaller caches; panics still name their file and line).
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  # The toolchain file's iOS and Android targets are only the release's.
+  RUSTUP_TOOLCHAIN: stable
+
+jobs:
+  # Scheduled runs: only when main moved since the last one.
+  changed:
+    if: github.event_name == 'schedule'
+    permissions:
+      actions: read
+    uses: ./.github/workflows/changed.yml
+
+  check:
+    needs: changed
+    # Nothing for drafts or a pull request being closed, nor for a scheduled
+    # run when main has not changed since the last one.
+    if: ${{ !cancelled() && needs.changed.outputs.run != 'false' && (github.event_name != 'pull_request' || (github.event.action != 'closed' && !github.event.pull_request.draft)) }}
+    # Debounce (AGENTS.md "CI"): waits without a runner, so a newer
+    # push cancels this run before it takes one.
+    environment:
+      name: ci-debounce
+      deployment: false
+    name: check (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15, windows-latest]
+    # The Linux and Windows runs of a pull request from this repository run
+    # on the self-hosted runners; forks' pull requests, the scheduled runs
+    # (which save the dependencies' caches forks restore) and macOS run on
+    # GitHub's runners (docs/dev/tooling.md "Runners").
+    runs-on: ${{ (github.event_name != 'schedule' && !(github.event.pull_request && github.event.pull_request.head.repo.full_name != github.repository)) && (matrix.os == 'ubuntu-24.04' && fromJSON('["public", "Linux", "X64"]') || matrix.os == 'windows-latest' && fromJSON('["public", "Windows", "X64"]')) || matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+
+      # Temporary directories (tests) outside the checkout.
+      - name: Set up the environment
+        run: |
+          mkdir -p "$RUNNER_TEMP/tmp"
+          echo "TMPDIR=$RUNNER_TEMP/tmp" >> "$GITHUB_ENV"
+
+      # QuickJS is C (bindgen needs libclang); GPUI links X11, Wayland,
+      # xkbcommon, fontconfig and FreeType, and draws with Vulkan (GPUI
+      # Fast's CI list); web views (feature `webview`, wry) need GTK 3 and
+      # WebKitGTK 4.1, videos (feature `video`) GStreamer 1.20+.
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            clang libclang-dev build-essential pkg-config \
+            libasound2-dev libfontconfig-dev libfreetype-dev libssl-dev \
+            libvulkan1 libwayland-dev libx11-xcb-dev libxcb1-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev libzstd-dev \
+            libgtk-3-dev libwebkit2gtk-4.1-dev \
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
+
+      - name: Set up Windows
+        if: runner.os == 'Windows'
+        run: |
+          # QuickJS is C: bindgen needs libclang, which the image's LLVM has.
+          echo "LIBCLANG_PATH=C:\\Program Files\\LLVM\\bin" >> "$GITHUB_ENV"
+          # rustc can overflow its default stack on the `windows` crate.
+          echo "RUST_MIN_STACK=268435456" >> "$GITHUB_ENV"
+
+      - name: Setup Rust
+        if: runner.environment == 'github-hosted'
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      # The self-hosted runner is shared: install the toolchain without
+      # making it the machine's default (RUSTUP_TOOLCHAIN picks it).
+      - name: Setup Rust (self-hosted)
+        if: runner.environment == 'self-hosted'
+        shell: bash
+        run: |
+          bin="${CARGO_HOME:-$HOME/.cargo}/bin"
+          export PATH="$bin:$PATH"
+          command -v rustup || curl -fsSL https://sh.rustup.rs | sh -s -- -y --no-modify-path --default-toolchain none
+          rustup toolchain install stable --profile minimal -c clippy
+          echo "$bin" >> "$GITHUB_PATH"
+
+      # huacnlee/cargo, and the dependencies' builds: main's runs save
+      # them, pull requests restore them.
+      - name: Cargo
+        uses: ./.github/actions/cargo
+        with:
+          cache: gpui
+          # The GPUI workspace's and the GPUI Kit example's, besides the
+          # main workspace's.
+          lockfiles: "**/Cargo.lock"
+
+      # A workspace of its own: huacnlee/cargo builds the dependencies it
+      # shares with the main workspace once (`shared-deps`). `--locked`: a
+      # change to those crates that left crates/gpui/Cargo.lock behind fails
+      # here, on main's scheduled runs too, rather than in the release
+      # (`cargo xtask dist` builds the GPUI host `--locked`).
+      - name: Clippy
+        working-directory: crates/gpui
+        run: cargo clippy --locked --all-targets --features nsh-platform-gpui/dev -- -D warnings
+
+      # Without the optional features: no shader renderer (naga, NSH's
+      # wgpu), syntect, RaTeX, ropey, imara-diff; no `zlib` or `crypto`
+      # module.
+      - name: Check without optional features
+        working-directory: crates/gpui
+        run: cargo clippy -p nsh-platform-gpui --no-default-features --features js -- -D warnings
+
+      # Tests need no display: they open no window.
+      - name: Test
+        working-directory: crates/gpui
+        run: cargo test
+
+      # With the tests in windows of GPUI's test platform (feature `shot`, GPUI's
+      # test support): still no display.
+      - name: Test (GPUI's test platform)
+        if: runner.os == 'Linux'
+        working-directory: crates/gpui
+        run: cargo test -p nsh-platform-gpui --features shot
+
+      # What a Mac without Xcode's Metal Toolchain builds (the CLI turns
+      # the feature on there): GPUI's build script stitches its shaders
+      # for run time compilation instead of running `metal`.
+      - name: Check (runtime-shaders)
+        if: runner.os == 'macOS'
+        working-directory: crates/gpui
+        run: cargo check -p nsh-gpui-host --features nsh-platform-gpui/runtime-shaders
+
+      # The GPUI Kit example: its `build.rs` bundles its app.
+      - name: Clippy (examples/embed-gpui)
+        if: runner.os == 'Linux'
+        working-directory: examples/embed-gpui
+        run: cargo clippy --all-targets -- -D warnings

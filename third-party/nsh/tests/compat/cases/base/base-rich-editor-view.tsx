@@ -1,0 +1,72 @@
+// A case of the API's test suite (docs/dev/compatibility.md): the
+// `RichEditor` view's bubble menu: the app's content shown next to the
+// selection while the app passes it, gone when it does not; its layer over
+// the document (`contentLayer`) and the box of a block in it; files
+// dragged over it and dropped on it; the touch selection's handle parts' classes; and a table shown as a grid of
+// its cells, with the table parts' classes; and editors without a height,
+// as tall as their documents, one stopped by its `maxHeight`.
+import { Text, View, signal } from "nsh";
+import { RichEditor, StarterKit, TableKit, createRichEditor } from "nsh/base";
+
+function App() {
+  const editor = createRichEditor({ extensions: [StarterKit], content: "Some text" });
+  const open = signal(true);
+  const drop = signal("none");
+  // The layer over the document: a marker the app places at the first block, pressed to read the block's box.
+  const mark = signal("LayerMark");
+  const box = () => editor.nodeRect(0) as { x: number; y: number; width: number; height: number } | null;
+  const tables = createRichEditor({
+    extensions: [StarterKit, TableKit],
+    content: "| CellA | CellB |\n| --- | --- |\n| CellC | CellD |\n",
+    format: "markdown",
+  });
+  const auto = createRichEditor({ extensions: [StarterKit], content: "AutoOne\n\nAutoTwo", format: "markdown" });
+  const capped = createRichEditor({
+    extensions: [StarterKit],
+    content: "CapOne\n\nCapTwo\n\nCapThree\n\nCapFour",
+    format: "markdown",
+  });
+  return (
+    <View style={{ flex: 1, paddingTop: 60, paddingLeft: 20, gap: 4 }}>
+      <View onPress={() => open.set(!open())}>
+        <Text>ToggleMenu</Text>
+      </View>
+      <RichEditor
+        editor={editor}
+        style={{ height: 120 }}
+        bubbleMenu={open() ? <Text>BubbleMenu</Text> : undefined}
+        bubbleMenuPlacement="bottom"
+        bubbleMenuOffset={4}
+        contentLayer={
+          <View style={{ position: "absolute", right: 0, top: 0 }} onPress={() => mark.set(`LayerBox ${(box()?.height ?? 0) > 0} ${box()?.x} ${box()?.y}`)}>
+            <Text>{mark()}</Text>
+          </View>
+        }
+        classes={{ selectionHandle: "bg-blue-500", selectionHandleStart: "size-3", selectionHandleEnd: "size-3" }}
+        styles={{ selectionHandle: { opacity: 0.9 } }}
+        testID="rich-drop"
+        onFileDragEnter={(e) => drop.set(`enter ${e.uris.join(" ")} [${e.mimeTypes.join(" ")}]`)}
+        onFileDragLeave={() => drop.set(`${drop()} leave`)}
+        onFileDrop={(e) => drop.set(`dropped ${e.uris.join(" ")} [${e.mimeTypes.join(" ")}]`)}
+      />
+      <RichEditor
+        editor={tables}
+        style={{ height: 120 }}
+        classes={{
+          selectedCell: "bg-blue-500/20",
+          tableGrip: "bg-neutral-400",
+          tableResizeHandle: "bg-blue-500",
+          tableDropIndicator: "bg-blue-500",
+          nodes: { tableHeader: "font-semibold", tableCell: "px-2" },
+        }}
+        styles={{ selectedCell: { opacity: 0.5 } }}
+      />
+      <RichEditor testID="rich-auto" editor={auto} />
+      <RichEditor testID="rich-capped" editor={capped} style={{ maxHeight: 40 }} />
+      {/* Last, so it moves none of the frames the script checks. */}
+      <Text>{`RichDrop: ${drop()}`}</Text>
+    </View>
+  );
+}
+
+export default App;

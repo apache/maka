@@ -1,0 +1,92 @@
+---
+import '@fontsource-variable/figtree/wght.css';
+import '../styles/global.css';
+import 'virtual:nsh-gallery-ui.css';
+import { BASE, SITE_DESCRIPTION, SITE_TITLE, SITE_URL, type Lang } from '../lib/site';
+import { isLatestVersion, siteVersions, latestVersion, versionHref, versionPath } from '../lib/versions';
+
+export interface Props {
+  title?: string;
+  description?: string;
+  /** The page's language; may be a machine locale. */
+  lang?: string;
+  /** The page's direction: `rtl` for a language written right to left. */
+  dir?: 'ltr' | 'rtl';
+  /** Routes (without the base) of this page in each locale, for hreflang. */
+  alternates?: Record<string, string | undefined>;
+  robots?: string;
+}
+
+const { title, description = SITE_DESCRIPTION, lang = 'en', dir = 'ltr', alternates, robots: robotsProp } = Astro.props;
+// Other versions are not indexed: their canonical is the same page of the latest.
+const robots = robotsProp ?? (isLatestVersion ? undefined : 'noindex');
+
+// A title that already names the site (the home pages') is used as it is.
+const pageTitle = !title || title === SITE_TITLE
+  ? `${SITE_TITLE} — Build once, native everywhere | Rust UI framework`
+  : title.startsWith(SITE_TITLE) ? title : `${title} · ${SITE_TITLE}`;
+const latest = siteVersions.find((version) => version.id === latestVersion);
+const canonical = isLatestVersion || !latest
+  ? new URL(Astro.url.pathname.replace(/\/+$/, '') || '/', SITE_URL).href
+  : new URL(versionHref(latest, versionPath(Astro.url.pathname, BASE)), SITE_URL).href;
+const abs = (route: string) => new URL(`${BASE.replace(/\/$/, '')}${route}`, SITE_URL).href;
+---
+
+<!doctype html>
+<html lang={lang} dir={dir === 'rtl' ? 'rtl' : undefined} class="dark" data-theme-pref="system">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{pageTitle}</title>
+    <meta name="description" content={description} />
+    {robots && <meta name="robots" content={robots} />}
+    <meta name="color-scheme" content="dark light" />
+    <!-- The site's ground, `--background` in global.css. -->
+    <meta name="theme-color" content="#0e1016" media="(prefers-color-scheme: dark)" />
+    <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />
+    <!-- Before first paint: `theme` in localStorage is "light" or "dark";
+         absent follows the system. <html> gets `dark` or `light`. -->
+    <script is:inline>
+      (function () {
+        var stored = null;
+        try { stored = localStorage.getItem('theme'); } catch (e) {}
+        var pref = stored === 'light' || stored === 'dark' ? stored : 'system';
+        var media = window.matchMedia('(prefers-color-scheme: dark)');
+        var root = document.documentElement;
+        var apply = function () {
+          var p = root.dataset.themePref;
+          var dark = p === 'dark' || (p === 'system' && media.matches);
+          root.classList.toggle('dark', dark);
+          root.classList.toggle('light', !dark);
+        };
+        root.dataset.themePref = pref;
+        apply();
+        media.addEventListener('change', apply);
+        window.__applyTheme = apply;
+      })();
+    </script>
+    <link rel="icon" type="image/svg+xml" href={`${BASE}favicon.svg`} />
+    <link rel="apple-touch-icon" href={`${BASE}apple-touch-icon.png`} />
+    <link rel="canonical" href={canonical} />
+    {Object.entries(alternates ?? {}).map(([code, route]) => route && <link rel="alternate" hreflang={code} href={abs(route)} />)}
+    {alternates?.en && <link rel="alternate" hreflang="x-default" href={abs(alternates.en)} />}
+    <meta property="og:type" content="website" />
+    <meta property="og:locale" content={lang === 'zh-CN' ? 'zh_CN' : 'en_US'} />
+    <meta property="og:site_name" content={SITE_TITLE} />
+    <meta property="og:title" content={pageTitle} />
+    <meta property="og:description" content={description} />
+    <meta property="og:url" content={canonical} />
+    <meta property="og:image" content={abs('/og-image.png')} />
+    <meta property="og:image:type" content="image/png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content={`${SITE_TITLE}: Build once, native everywhere`} />
+    <meta name="twitter:card" content="summary_large_image" />
+    <link rel="alternate" type="text/plain" title="llms.txt" href={`${BASE}llms.txt`} />
+
+  </head>
+  <body>
+    <a class="skip-link" href="#main">{lang === 'zh-CN' ? '跳到正文' : 'Skip to content'}</a>
+    <slot />
+  </body>
+</html>

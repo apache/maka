@@ -1,0 +1,5 @@
+{
+  "name": "Rust Exports",
+  "id": "com.longbridge.nsh.rustexports",
+  "rust": "native"
+}

@@ -1,0 +1,37 @@
+{
+  "numbers": {
+    "decimal": ".",
+    "group": ",",
+    "minGrouping": 1,
+    "indian": false,
+    "minus": "-",
+    "percent": "%",
+    "currencyBefore": true,
+    "currencySpace": "",
+    "compactShort": [[3, "천"], [4, "만"], [8, "억"], [12, "조"]],
+    "compactLong": []
+  },
+  "dates": {
+    "hour12": true,
+    "padHour24": false,
+    "am": "오전",
+    "pm": "오후",
+    "periodFirst": true,
+    "periodSpace": " ",
+    "hourSuffix": "시",
+    "numeric": [["year", ". "], ["month", ". "], ["day", "."]],
+    "shortYear2digit": true,
+    "text": [["year", "년 "], ["month", "월 "], ["day", "일"]],
+    "textLong": null,
+    "weekdayFirst": false,
+    "weekdaySep": " ",
+    "dateTimeSep": " ",
+    "names": {
+      "months": ["", "", "", "", "", "", "", "", "", "", "", ""],
+      "monthsShort": ["", "", "", "", "", "", "", "", "", "", "", ""],
+      "weekdays": ["일요일", "월요일", "화요일", "수요일", "목요일", "금요일", "토요일"],
+      "weekdaysShort": ["(일)", "(월)", "(화)", "(수)", "(목)", "(금)", "(토)"]
+    },
+    "cjk": true
+  }
+}

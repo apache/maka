@@ -1,0 +1,21 @@
+{
+  "name": "API Base",
+  "id": "com.example.api-base",
+  "statusBar": {
+    "foreground": "dark",
+    "hidden": true
+  },
+  "theme": {
+    "cssVars": {
+      "theme": {
+        "radius-card": "14px"
+      },
+      "light": {
+        "up": "#138a5a"
+      },
+      "dark": {
+        "up": "#45d49a"
+      }
+    }
+  }
+}

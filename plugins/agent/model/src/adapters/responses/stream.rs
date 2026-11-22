@@ -1,0 +1,476 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+//! Responses dispatch. Protocol code never enters the model V8 isolate.
+use super::super::error::QuotaScope;
+use super::{
+    decode::Decoder,
+    transport::{Exchange, ResponsesLane, Shared},
+};
+use maka_agent_facts::model::error::ModelError;
+use maka_agent_facts::model::error::ProviderFailure;
+use maka_agent_facts::model::error::ProviderFailureReason;
+use maka_agent_ports::model::Context;
+use maka_agent_ports::model::Credentials as ProviderAuth;
+use maka_agent_ports::model::Events;
+use maka_agent_ports::model::ProviderKind;
+use maka_agent_ports::model::Request as ModelRequest;
+use maka_capabilities::http;
+use serde_json::Value;
+use std::{collections::BTreeMap, sync::Arc, time::Duration};
+use tokio_util::sync::CancellationToken;
+
+pub async fn stream(
+    mut request: ModelRequest,
+    context: Context,
+    lane: Option<super::Lane>,
+    transport: Arc<Shared>,
+) -> Result<(), ModelError> {
+    let skip = if let Some(lane) = &lane {
+        tokio::select! {
+            biased;
+            _ = context.cancellation.cancelled() => return Err(ModelError::Cancelled),
+            skip = lane.prepare(&mut request) => skip,
+        }
+    } else {
+        0
+    };
+    let lane = lane.map(|lane| lane.transport);
+    run(request, skip, context, lane, transport).await
+}
+fn interruption(
+    decoder: &Decoder,
+    reason: ProviderFailureReason,
+    message: impl Into<String>,
+) -> ModelError {
+    ModelError::Provider(
+        ProviderFailure::new(reason, message, decoder.replay_safe, None)
+            .with_retained_output(decoder.retained_output_safe()),
+    )
+}
+async fn wait<T>(
+    duration: Duration,
+    decoder: &Decoder,
+    cancellation: &CancellationToken,
+    future: impl Future<Output = T>,
+) -> Result<T, ModelError> {
+    tokio::select! {
+        biased;
+        _ = cancellation.cancelled() => Err(ModelError::Cancelled),
+        result = tokio::time::timeout(duration, future) => result.map_err(|_| interruption(
+            decoder, ProviderFailureReason::TimedOut, ModelError::TimedOut.to_string(),
+        )),
+    }
+}
+
+/// Cancellation and idle timeout signal the upload, then await its physical
+/// source settlement. Dropping request() here could orphan a retained chunk.
+async fn request_http(
+    network: &dyn maka_agent_ports::model::Transport,
+    input: http::Request,
+    cancellation: &CancellationToken,
+    duration: Duration,
+    decoder: &Decoder,
+) -> Result<http::Response, ModelError> {
+    let upload_cancel = cancellation.child_token();
+    let operation = network.request(input, upload_cancel.clone());
+    tokio::pin!(operation);
+    let timeout = tokio::select! {
+        biased;
+        _ = cancellation.cancelled() => false,
+        result = &mut operation => return result,
+        _ = tokio::time::sleep(duration) => true,
+    };
+    upload_cancel.cancel();
+    match operation.await {
+        Ok(response) => {
+            response.body.cancel();
+            response.body.close().await.map_err(|error| match error {
+                http::Error::CleanupUnconfirmed => ModelError::CleanupUnconfirmed,
+                other => ModelError::Adapter(other.to_string()),
+            })?;
+        }
+        Err(ModelError::Cancelled) => {}
+        Err(error) => return Err(error),
+    }
+    if timeout {
+        Err(interruption(
+            decoder,
+            ProviderFailureReason::TimedOut,
+            ModelError::TimedOut.to_string(),
+        ))
+    } else {
+        Err(ModelError::Cancelled)
+    }
+}
+async fn emit(
+    decoder: &mut Decoder,
+    value: Value,
+    quota_scope: QuotaScope,
+    sender: &Arc<dyn Events>,
+    cancellation: &CancellationToken,
+) -> Result<(), ModelError> {
+    for event in decoder
+        .push(value)
+        .map_err(|error| failure(error, quota_scope))?
+    {
+        tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => return Err(ModelError::Cancelled),
+            result = sender.emit(event.into()) => result?,
+        }
+    }
+    Ok(())
+}
+async fn run(
+    request: ModelRequest,
+    skip: usize,
+    context: Context,
+    lane: Option<ResponsesLane>,
+    transport: Arc<Shared>,
+) -> Result<(), ModelError> {
+    let Context {
+        events: sender,
+        cancellation,
+        idle_timeout,
+        transport: network,
+        source,
+    } = context;
+    let quota_scope = QuotaScope::endpoint(&request.provider.base_url);
+    let plaintext = match request.provider.kind {
+        ProviderKind::OpenResponses(p) => Some(p),
+        _ => None,
+    };
+    let mut body = super::body::RequestBody::new(&request, plaintext, skip)
+        .map_err(|error| failure(error, quota_scope))?;
+    let mut url = reqwest::Url::parse(&request.provider.base_url)
+        .map_err(|_| ModelError::Adapter("invalid Responses endpoint".into()))?;
+    url.set_path(&format!("{}/responses", url.path().trim_end_matches('/')));
+    let headers = headers(&request)?;
+    let mut decoder = Decoder::new(plaintext, &request.tools).operation(request.operation);
+    // DeepSeek's Responses endpoint streams over HTTP.
+    let lane = lane.filter(|_| {
+        !(plaintext.is_some() && crate::is_deepseek_endpoint(&request.provider.base_url))
+    });
+    if lane.as_ref().is_some_and(|lane| {
+        lane.retry_transport_phase() == maka_agent_ports::model::RetryTransportPhase::Primary
+    }) && (!request.provider.headers.is_empty()
+        || request
+            .provider
+            .body_overlay
+            .as_ref()
+            .is_some_and(|value| !value.is_empty()))
+    {
+        return Err(ModelError::Adapter("Responses primary conversation cannot silently use HTTP for custom headers or request overlays".into()));
+    }
+    drop(request);
+    if let Some(lane) = lane {
+        let exchange = Exchange::new(lane, cancellation.clone(), network.clone(), transport);
+        match wait(
+            idle_timeout,
+            &decoder,
+            &cancellation,
+            exchange.start(url.to_string(), headers.clone(), body),
+        )
+        .await?
+        .map_err(|error| match error {
+            super::Error::Interrupted(message) => {
+                interruption(&decoder, ProviderFailureReason::Network, message)
+            }
+            error => failure(error, quota_scope),
+        })? {
+            Some(full) => body = full,
+            None => {
+                if let Some(source) = &source {
+                    source.cleanup.close().await.map_err(|error| {
+                        tracing::error!(stage = "responses_websocket_source_close", %error, "cleanup unconfirmed");
+                        ModelError::CleanupUnconfirmed
+                    })?;
+                }
+                while let Some(frame) = wait(idle_timeout, &decoder, &cancellation, exchange.next())
+                    .await?
+                    .map_err(|error| match error {
+                        super::Error::Interrupted(message) => {
+                            interruption(&decoder, ProviderFailureReason::StreamTruncated, message)
+                        }
+                        error => failure(error, quota_scope),
+                    })?
+                {
+                    sender.progress();
+                    let value = serde_json::from_str(&frame).map_err(|_| {
+                        ModelError::Adapter("invalid Responses WebSocket JSON".into())
+                    })?;
+                    emit(&mut decoder, value, quota_scope, &sender, &cancellation).await?;
+                }
+                return decoder.end().map_err(|error| failure(error, quota_scope));
+            }
+        }
+    }
+    let response = request_http(
+        network.as_ref(),
+        http::Request {
+            method: maka_plugin_core::http::Method::Post,
+            url: url.to_string(),
+            headers: headers.into_iter().collect(),
+            body: body.http(source),
+        },
+        &cancellation,
+        idle_timeout,
+        &decoder,
+    )
+    .await?;
+    let retry_at = super::super::retry::at(&response.head);
+    let result = read_response(
+        &response,
+        &mut decoder,
+        &sender,
+        idle_timeout,
+        &cancellation,
+        retry_at,
+        quota_scope,
+    )
+    .await
+    .map_err(|error| match error {
+        ModelError::Provider(failure) => ModelError::Provider(failure.with_retry_at(retry_at)),
+        error => error,
+    });
+    // A provider may finish before it consumes the complete upload. All exits,
+    // including terminal SSE, rejection, timeout and cancellation, settle the
+    // response's upload lease before this adapter returns.
+    response.body.close().await.map_err(|error| match error {
+        http::Error::CleanupUnconfirmed => ModelError::CleanupUnconfirmed,
+        other => ModelError::Adapter(other.to_string()),
+    })?;
+    result
+}
+async fn read_response(
+    response: &http::Response,
+    decoder: &mut Decoder,
+    sender: &Arc<dyn Events>,
+    idle_timeout: Duration,
+    cancellation: &CancellationToken,
+    retry_at: Option<u64>,
+    quota_scope: QuotaScope,
+) -> Result<(), ModelError> {
+    let content_type = header(&response.head, "content-type");
+    // Some Responses endpoints omit Content-Type even for a valid event
+    // stream. The decoder still validates its frames and terminal outcome.
+    let event_stream = content_type.is_none_or(|value| {
+        value
+            .split(';')
+            .next()
+            .is_some_and(|value| value.trim().eq_ignore_ascii_case("text/event-stream"))
+    });
+    if !(200..300).contains(&response.head.status) || !event_stream {
+        let status = response.head.status;
+        let body_failure = |message: String| {
+            super::super::error::Evidence {
+                quota_scope,
+                ..Default::default()
+            }
+            .provider(
+                super::super::error::http_body_error(status, message),
+                retry_at,
+            )
+        };
+        let mut bytes = Vec::new();
+        while let Some(chunk) = wait(idle_timeout, decoder, cancellation, response.body.next())
+            .await
+            .map_err(|error| {
+                if matches!(error, ModelError::Cancelled) {
+                    error
+                } else {
+                    body_failure(error.to_string())
+                }
+            })?
+            .map_err(|error| match error {
+                http::Error::Denied => ModelError::Cancelled,
+                http::Error::CleanupUnconfirmed => ModelError::CleanupUnconfirmed,
+                http::Error::Failed(message) => body_failure(
+                    ProviderFailure::new(ProviderFailureReason::Network, message, false, None)
+                        .to_string(),
+                ),
+                error => body_failure(error.to_string()),
+            })?
+        {
+            bytes.extend_from_slice(&chunk);
+        }
+        let value: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+        if (200..300).contains(&status) {
+            if value.get("error").is_some_and(|error| {
+                error.is_object()
+                    && ["code", "type", "message"].iter().any(|key| {
+                        error.get(key).is_some_and(|value| {
+                            value.is_number()
+                                || value.as_str().is_some_and(|value| !value.is_empty())
+                        })
+                    })
+            }) {
+                return Err(super::super::error::Evidence {
+                    quota_scope,
+                    ..Default::default()
+                }
+                .provider(super::super::error::http_error(status, &bytes), retry_at));
+            }
+            let message = value["error"]["message"]
+                .as_str()
+                .or_else(|| value["detail"].as_str())
+                .unwrap_or("request rejected");
+            let content_type = content_type.unwrap_or("missing Content-Type");
+            return Err(ModelError::Adapter(format!(
+                "Responses HTTP {status} returned {content_type}, expected text/event-stream: {message}"
+            )));
+        }
+        return Err(super::super::error::Evidence {
+            quota_scope,
+            ..Default::default()
+        }
+        .provider(super::super::error::http_error(status, &bytes), retry_at));
+    }
+    let mut sse = maka_provider_protocol::responses::sse::Sse::default();
+    let mut received_event = false;
+    let missing_events = || {
+        ModelError::Adapter(format!(
+            "Responses HTTP {} had missing Content-Type and no SSE events",
+            response.head.status
+        ))
+    };
+    while let Some(chunk) = wait(idle_timeout, decoder, cancellation, response.body.next())
+        .await
+        .map_err(|error| {
+            if matches!(error, ModelError::Cancelled) {
+                error
+            } else if content_type.is_none() && !received_event {
+                missing_events()
+            } else {
+                error
+            }
+        })?
+        .map_err(|error| match error {
+            http::Error::Failed(_) if content_type.is_none() && !received_event => missing_events(),
+            http::Error::Failed(_) => interruption(
+                decoder,
+                ProviderFailureReason::Network,
+                "Responses stream read failed",
+            ),
+            http::Error::Denied => ModelError::Cancelled,
+            http::Error::CleanupUnconfirmed => ModelError::CleanupUnconfirmed,
+            other => ModelError::Adapter(other.to_string()),
+        })?
+    {
+        for byte in chunk {
+            if let Some(value) = sse
+                .push(byte)
+                .map_err(|error| failure(error.into(), quota_scope))?
+            {
+                received_event = true;
+                emit(decoder, value, quota_scope, sender, cancellation).await?;
+                if decoder.finished() {
+                    return Ok(());
+                }
+            }
+        }
+    }
+    if content_type.is_none() && !received_event {
+        // An untyped JSON/HTML response is not evidence of a retryable stream
+        // interruption, whether it ends, stalls, or disconnects.
+        return Err(missing_events());
+    }
+    decoder.end().map_err(|error| failure(error, quota_scope))
+}
+
+fn headers(request: &ModelRequest) -> Result<BTreeMap<String, String>, ModelError> {
+    let mut headers = BTreeMap::from([
+        ("content-type".into(), "application/json".into()),
+        ("accept".into(), "text/event-stream".into()),
+    ]);
+    match &request.provider.auth {
+        ProviderAuth::ApiKey(token) => {
+            headers.insert("authorization".into(), format!("Bearer {token}"));
+        }
+        ProviderAuth::RequestHeaders(prepared) => {
+            for (name, value) in prepared {
+                let name = name.to_ascii_lowercase();
+                if headers.get(&name).is_some_and(|existing| existing != value) {
+                    return Err(ModelError::Adapter(format!(
+                        "Authentication header conflicts with protocol header: {name}"
+                    )));
+                }
+                headers.insert(name, value.clone());
+            }
+        }
+    }
+    for (key, value) in &request.provider.headers {
+        let key = key.to_ascii_lowercase();
+        if headers.get(&key).is_some_and(|existing| existing != value) {
+            return Err(ModelError::Adapter(format!(
+                "Custom request header conflicts with a generated header: {key}"
+            )));
+        }
+        headers.insert(key, value.clone());
+    }
+    Ok(headers)
+}
+fn failure(error: super::Error, quota_scope: QuotaScope) -> ModelError {
+    use super::Error;
+    match error {
+        Error::LocalAuthorization(cause) => ModelError::LocalAuthorization(cause),
+        Error::Cancelled => ModelError::Cancelled,
+        Error::CleanupUnconfirmed => ModelError::CleanupUnconfirmed,
+        Error::Truncated {
+            replay_safe,
+            retained_output_safe,
+        } => ModelError::Provider(
+            ProviderFailure::new(
+                ProviderFailureReason::StreamTruncated,
+                "model stream ended without finish",
+                replay_safe,
+                None,
+            )
+            .with_retained_output(retained_output_safe),
+        ),
+        Error::Provider {
+            error,
+            observed_output,
+            replay_safe,
+            retained_output_safe,
+        } => {
+            let evidence = super::super::error::Evidence {
+                quota_scope,
+                observed: observed_output,
+                unsafe_replay: !replay_safe,
+                ..Default::default()
+            };
+            match evidence.provider(*error, None) {
+                ModelError::Provider(failure) => {
+                    ModelError::Provider(failure.with_retained_output(retained_output_safe))
+                }
+                error => error,
+            }
+        }
+        error => ModelError::Adapter(error.to_string()),
+    }
+}
+
+fn header<'a>(head: &'a http::Head, name: &str) -> Option<&'a str> {
+    head.headers
+        .iter()
+        .find(|(key, _)| key.eq_ignore_ascii_case(name))
+        .and_then(|(_, value)| std::str::from_utf8(value).ok())
+}

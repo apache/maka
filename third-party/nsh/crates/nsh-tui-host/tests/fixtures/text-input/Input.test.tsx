@@ -1,0 +1,53 @@
+import { expect, open, test } from "nsh/test";
+
+test("fields use real terminal input, one paste edit, selection and the engine clipboard", async () => {
+  const app = await open("./App.tsx", { width: 640, height: 240 });
+  await app.keyboard.press("tab");
+  await app.waitFor("status:editing submit:no");
+  await app.paste("id:name", { text: "Ada 界🙂" });
+  await app.waitFor("changes:1 selection:7:7");
+  await app.keyboard.press("ctrl+a");
+  await app.keyboard.press("shift+right");
+  await app.keyboard.press("shift+right");
+  await app.keyboard.press("shift+right");
+  await app.keyboard.press("ctrl+shift+c");
+  expect(app.clipboard()).toBe("Ada");
+  await app.keyboard.press("ctrl+shift+x");
+  expect(app.value("id:name")).toBe(" 界🙂");
+  await app.keyboard.press("ctrl+v");
+  expect(app.value("id:name")).toBe("Ada 界🙂");
+  await app.keyboard.press("enter");
+  await app.waitFor("status:idle submit:Ada 界🙂");
+  await app.clear("id:name");
+  expect(app.value("id:name")).toBe("");
+  const large = "x".repeat(4096);
+  await app.paste("id:name", { text: large });
+  expect(app.value("id:name")).toBe(large);
+  await app.waitFor("changes:5 selection:4096:4096");
+  await app.paste("id:password", { text: "secret" });
+  const picture = JSON.parse(new TextDecoder().decode(new Uint8Array(await app.screenshot())));
+  const password = picture.rows[1].map((cell: { symbol: string }) => cell.symbol).join("");
+  expect(password).toContain("••••••");
+  expect(password.includes("secret")).toBe(false);
+  await app.keyboard.press("ctrl+shift+a");
+  await app.keyboard.press("ctrl+shift+c");
+  expect(app.clipboard()).toBe("Ada");
+  await app.paste("id:notes", { text: "first\r\nsecond" });
+  expect(app.value("id:notes")).toBe("first\nsecond");
+  await app.paste("id:report", { text: "reported" });
+  await app.waitFor("status:paste:reported submit:Ada 界🙂");
+  expect(app.value("id:report")).toBe("");
+});
+
+test("the gallery Form validates name email and password and creates the account", async () => {
+  const app = await open("./Form.tsx", { width: 960, height: 640 });
+  await app.press("Create account");
+  await app.waitFor("✗ Enter your name");
+  await app.waitFor("✗ Enter an email like ada@example.com");
+  await app.waitFor("✗ At least 6 characters");
+  await app.type("Ada Lovelace", "Ada");
+  await app.type("ada@example.com", "ada@example.com");
+  await app.type("6 characters or more", "secret123");
+  await app.press("Create account");
+  await app.waitFor("✓ Account created for Ada <ada@example.com>, subscribed");
+});

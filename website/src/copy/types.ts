@@ -27,13 +27,12 @@ export interface Copy {
   siteName: string;
   positioning: string;
   theme: { toDark: string; toLight: string };
-  // The README hero's alt text, which describes the same scene the social
+  // The social preview's alt text, which describes the same scene the social
   // preview shows; the site test holds it to README.md's `<img alt>`.
   sceneAlt: string;
   nav: {
     docs: string;
     downloads: string;
-    benchmarks: string;
     community: string;
     security: string;
     asf: string;
@@ -44,8 +43,8 @@ export interface Copy {
   hero: {
     headline: [string, string, string];
     lede: string;
-    releases: string;
-    contribute: string;
+    nightly: string;
+    source: string;
     fine: string;
     architecture: string;
   };
@@ -62,24 +61,15 @@ export interface Copy {
     caption: string;
     formula: string;
   };
-  measured: { h2: string; p: string };
-  leaderboard: { h3: string; p: string; more: string; caption: string };
-  paired: { h3: string; p: string; more: string; stat: string; statSmall: string };
+  features: { h2: string; p: string };
   host: { h3: string; p: string; more: string; clients: string[]; core: string; coreSmall: string };
   log: { h3: string; p: string; more: string };
   get: {
     h3: string;
     p: string;
-    contribute: { title: string; body: string; note: string };
+    nightly: { title: string; body: string; note: string };
+    source: { title: string; body: string; note: string };
     releases: { title: string; body: string; note: string };
-  };
-  reads: {
-    h2: string;
-    p: string;
-    blogLog: { cover: string; small: string; h3: string; meta: string };
-    blogTools: { cover: string; small: string; h3: string; meta: string };
-    nineArm: { cover: string; small: string; h3: string; meta: string };
-    paired: { cover: string; small: string; h3: string; meta: string };
   };
   footer: {
     foundation: string;
@@ -103,9 +93,12 @@ export interface Copy {
     status: {
       h3: string;
       release: { label: string };
+      nightly: { label: string; value: string; note: string };
+      source: { label: string; value: string; note: string };
     };
     releases: { h2: string; p: string; checksum: string; signature: string; archiveNote: string };
     verify: { h2: string; p: string; keys: string; signature: string; checksum: string };
-    development: { h2: string; p: string; contribute: string; discuss: string };
+    nightly: { h2: string; note: string; p: string; windows: string };
+    source: { h2: string; prerequisites: string[]; clone: string; build: string; after: string };
   };
 }

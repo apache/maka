@@ -1,0 +1,1029 @@
+//! The loader's contract: one read per source, priorities, cancellation,
+//! failures remembered, L3, and decodes at display size
+//! shared by key.
+
+use std::{
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+        mpsc,
+    },
+    time::Duration,
+};
+
+use super::*;
+use crate::{
+    ResizeMode,
+    geometry::{Points, size},
+    image::{Budget, Frames, Images, Natural, Request, Target, Want},
+};
+
+/// A loader of the test's own (the process's is shared by every test).
+fn own_loader() -> &'static Loader {
+    Box::leak(Box::new(Loader::default()))
+}
+
+/// Assets that block until released, logging the order they are read in.
+#[derive(Clone, Default)]
+struct Gate {
+    started: Arc<Mutex<Vec<String>>>,
+    /// By URI: the release of a read started, or the result of one to come.
+    gates: Arc<Mutex<HashMap<String, Opening>>>,
+}
+
+enum Opening {
+    Started(mpsc::Sender<Result<Vec<u8>, String>>),
+    Opened(mpsc::Receiver<Result<Vec<u8>, String>>),
+}
+
+impl Gate {
+    fn context(&self) -> Context {
+        let gate = self.clone();
+        Context {
+            read_asset: Some(ReadAsset::new(move |uri: &str| {
+                let rx = {
+                    let mut gates = gate.gates.lock().unwrap();
+                    match gates.remove(uri) {
+                        Some(Opening::Opened(rx)) => rx,
+                        _ => {
+                            let (tx, rx) = mpsc::channel();
+                            gates.insert(uri.to_owned(), Opening::Started(tx));
+                            rx
+                        }
+                    }
+                };
+                gate.started.lock().unwrap().push(uri.to_owned());
+                rx.recv_timeout(Duration::from_secs(10))
+                    .unwrap_or_else(|_| Err("never released".into()))
+            })),
+            ..Context::default()
+        }
+    }
+
+    /// Lets the read of `uri` end with `result` (when it starts).
+    fn open(&self, uri: &str, result: Result<Vec<u8>, String>) {
+        let mut gates = self.gates.lock().unwrap();
+        match gates.remove(uri) {
+            Some(Opening::Started(tx)) => tx.send(result).unwrap(),
+            _ => {
+                let (tx, rx) = mpsc::channel();
+                tx.send(result).unwrap();
+                gates.insert(uri.to_owned(), Opening::Opened(rx));
+            }
+        }
+    }
+
+    fn started(&self) -> Vec<String> {
+        self.started.lock().unwrap().clone()
+    }
+
+    fn wait_started(&self, n: usize) {
+        for _ in 0..1000 {
+            if self.started().len() >= n {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        panic!("{} reads started, not {n}", self.started().len());
+    }
+}
+
+fn asset(context: &Context, uri: &str) -> Location {
+    context.resolve(uri).unwrap()
+}
+
+/// Waits for `rx`'s next value.
+fn next<T>(rx: &mpsc::Receiver<T>) -> T {
+    rx.recv_timeout(Duration::from_secs(10)).expect("no result")
+}
+
+#[test]
+fn one_read_per_source_however_many_wait() {
+    let loader = own_loader();
+    let gate = Gate::default();
+    let context = gate.context();
+    let (tx, rx) = mpsc::channel();
+    let tickets: Vec<Ticket> = (0..3)
+        .map(|i| {
+            let tx = tx.clone();
+            loader.read(
+                asset(&context, "asset:/a.png"),
+                &context,
+                Priority::Normal,
+                None,
+                Box::new(move |r| tx.send((i, r.map(|b| b.to_vec()))).unwrap()),
+            )
+        })
+        .collect();
+    gate.wait_started(1);
+    gate.open("asset:/a.png", Ok(b"png".to_vec()));
+    let mut got: Vec<_> = (0..3).map(|_| next(&rx)).collect();
+    got.sort_by_key(|(i, _)| *i);
+    assert_eq!(
+        got,
+        [
+            (0, Ok(b"png".to_vec())),
+            (1, Ok(b"png".to_vec())),
+            (2, Ok(b"png".to_vec()))
+        ]
+    );
+    assert_eq!(gate.started(), ["asset:/a.png"]);
+    drop(tickets);
+    // Kept in L3: read again from memory, here and now.
+    let (tx, rx) = mpsc::channel();
+    loader
+        .read(
+            asset(&context, "asset:/a.png"),
+            &context,
+            Priority::Normal,
+            None,
+            Box::new(move |r| tx.send(r.is_ok()).unwrap()),
+        )
+        .detach();
+    assert_eq!(rx.try_recv(), Ok(true));
+    assert_eq!(gate.started().len(), 1);
+}
+
+/// Fills every read thread with a read that waits for the gate.
+fn occupy(loader: &'static Loader, gate: &Gate, context: &Context) -> Vec<Ticket> {
+    let tickets = (0..DOWNLOADS)
+        .map(|i| {
+            loader.read(
+                asset(context, &format!("asset:/busy{i}")),
+                context,
+                Priority::Visible,
+                None,
+                Box::new(|_| {}),
+            )
+        })
+        .collect();
+    gate.wait_started(DOWNLOADS);
+    tickets
+}
+
+#[test]
+fn reads_go_highest_priority_first() {
+    let loader = own_loader();
+    let gate = Gate::default();
+    let context = gate.context();
+    let _busy = occupy(loader, &gate, &context);
+    let queue = |uri: &str, priority| {
+        loader.read(
+            asset(&context, uri),
+            &context,
+            priority,
+            None,
+            Box::new(|_| {}),
+        )
+    };
+    let _prefetch = queue("asset:/prefetch", Priority::Prefetch);
+    let _normal = queue("asset:/normal", Priority::Normal);
+    let visible = queue("asset:/visible", Priority::Visible);
+    let _later = queue("asset:/later", Priority::Normal);
+    // A view scrolled away: its load waits behind the others.
+    visible.set_priority(Priority::Prefetch);
+    for (n, busy) in (0..4).map(|i| format!("asset:/busy{i}")).enumerate() {
+        gate.open(&busy, Ok(Vec::new()));
+        gate.wait_started(DOWNLOADS + n + 1);
+    }
+    assert_eq!(
+        gate.started()[DOWNLOADS..],
+        [
+            "asset:/normal",
+            "asset:/later",
+            "asset:/prefetch",
+            "asset:/visible"
+        ]
+    );
+}
+
+#[test]
+fn a_read_nobody_waits_for_is_cancelled() {
+    let loader = own_loader();
+    let gate = Gate::default();
+    let context = gate.context();
+    let busy = occupy(loader, &gate, &context);
+    let called = Arc::new(AtomicUsize::new(0));
+    let ticket = {
+        let called = called.clone();
+        loader.read(
+            asset(&context, "asset:/gone"),
+            &context,
+            Priority::Visible,
+            None,
+            Box::new(move |_| {
+                called.fetch_add(1, Ordering::Relaxed);
+            }),
+        )
+    };
+    // Two wait; one gives up: the read stays for the other.
+    let (tx, rx) = mpsc::channel();
+    let kept = loader.read(
+        asset(&context, "asset:/kept"),
+        &context,
+        Priority::Normal,
+        None,
+        Box::new(move |r| tx.send(r.is_ok()).unwrap()),
+    );
+    let gave_up = loader.read(
+        asset(&context, "asset:/kept"),
+        &context,
+        Priority::Normal,
+        None,
+        Box::new(|_| panic!("gave up")),
+    );
+    drop(gave_up);
+    drop(ticket);
+    for i in 0..DOWNLOADS {
+        gate.open(&format!("asset:/busy{i}"), Ok(Vec::new()));
+    }
+    gate.wait_started(DOWNLOADS + 1);
+    gate.open("asset:/kept", Ok(b"x".to_vec()));
+    assert!(next(&rx));
+    drop((busy, kept));
+    assert!(!gate.started().contains(&"asset:/gone".to_owned()));
+    assert_eq!(called.load(Ordering::Relaxed), 0);
+}
+
+#[test]
+fn failures_are_remembered_for_a_while() {
+    let loader = own_loader();
+    let gate = Gate::default();
+    let context = gate.context();
+    let (tx, rx) = mpsc::channel();
+    let read = |tx: mpsc::Sender<Result<ImageData, String>>| {
+        loader.read(
+            asset(&context, "asset:/broken"),
+            &context,
+            Priority::Normal,
+            None,
+            Box::new(move |r| tx.send(r).unwrap()),
+        )
+    };
+    let _first = read(tx.clone());
+    gate.open("asset:/broken", Err("404".into()));
+    assert_eq!(next(&rx).unwrap_err(), "404");
+    // Answered from memory, not read again.
+    read(tx).detach();
+    assert_eq!(rx.try_recv().unwrap().unwrap_err(), "404");
+    assert_eq!(gate.started().len(), 1);
+}
+
+#[test]
+fn reads_keep_to_the_per_host_limit() {
+    let mut reads = Reads::default();
+    let job = |host: &str, seq| ReadJob {
+        location: Location::Url(format!("https://{host}/{seq}")),
+        context: Context::default(),
+        host: host.into(),
+        priority: Priority::Normal,
+        seq,
+        running: false,
+        cancelled: Arc::default(),
+        waiters: Vec::new(),
+    };
+    reads.jobs.insert("a5".into(), job("a.org", 5));
+    reads.jobs.insert("b9".into(), job("b.org", 9));
+    reads.hosts.insert("a.org".into(), PER_HOST);
+    reads.running = PER_HOST;
+    assert_eq!(next_read(&reads).as_deref(), Some("b9"));
+    reads.running = DOWNLOADS;
+    assert_eq!(next_read(&reads), None);
+}
+
+/// A transport answering every GET with `body`, logging what it was asked.
+struct Canned {
+    body: Vec<u8>,
+    asked: Mutex<Vec<(String, bool)>>,
+}
+
+impl Transport for Canned {
+    fn get(&self, get: Get<'_>) -> Result<crate::image::Fetched, String> {
+        self.asked
+            .lock()
+            .unwrap()
+            .push((get.url.to_owned(), get.cached));
+        (get.progress)(self.body.len() as u64, self.body.len() as u64);
+        Ok(crate::image::Fetched::new(
+            200,
+            Default::default(),
+            self.body.clone(),
+        ))
+    }
+}
+
+#[test]
+fn a_backend_transport_downloads_within_the_loaders_limits() {
+    let loader = own_loader();
+    let canned = Arc::new(Canned {
+        body: b"png".to_vec(),
+        asked: Mutex::default(),
+    });
+    let context = Context {
+        transport: Some(canned.clone()),
+        ..Context::default()
+    };
+    let (tx, rx) = mpsc::channel();
+    let url = "https://a.org/a.png";
+    let read = |tx: mpsc::Sender<Result<Vec<u8>, String>>| {
+        loader.read(
+            context.resolve(url).unwrap(),
+            &context,
+            Priority::Normal,
+            None,
+            Box::new(move |r| tx.send(r.map(|b| b.to_vec())).unwrap()),
+        )
+    };
+    let _first = read(tx.clone());
+    assert_eq!(next(&rx), Ok(b"png".to_vec()));
+    // Kept in L3: not asked again.
+    let _again = read(tx.clone());
+    assert_eq!(next(&rx), Ok(b"png".to_vec()));
+    assert_eq!(*canned.asked.lock().unwrap(), [(url.to_owned(), false)]);
+    // A body over the limit is refused whatever the transport did.
+    let huge = Context {
+        transport: Some(Arc::new(Canned {
+            body: vec![0; MAX_BYTES as usize + 1],
+            asked: Mutex::default(),
+        })),
+        ..Context::default()
+    };
+    let _huge = loader.read(
+        huge.resolve("https://a.org/huge.png").unwrap(),
+        &huge,
+        Priority::Normal,
+        None,
+        Box::new(move |r| tx.send(r.map(|b| b.to_vec())).unwrap()),
+    );
+    assert!(next(&rx).unwrap_err().contains("larger than"));
+}
+
+/// A transport whose every GET ends at a redirect the app may not load.
+struct Refusing;
+
+impl Transport for Refusing {
+    fn get(&self, _get: Get<'_>) -> Result<crate::image::Fetched, String> {
+        Ok(crate::image::Fetched::refused(
+            302,
+            "redirect to `http://b.org/x.png` is not granted by capabilities.network",
+        ))
+    }
+}
+
+/// A fresh directory under the system's temporary one, removed on drop.
+struct TempDir(std::path::PathBuf);
+
+impl TempDir {
+    fn new(name: &str) -> Self {
+        let dir = std::env::temp_dir().join(format!("nsh-loader-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        Self(dir)
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// A redirect the transport refused fails the load with why: the copy the
+/// disk cache held for the URL is neither served nor kept, so the network
+/// failing later does not serve it either.
+#[test]
+fn a_refused_redirect_is_not_answered_from_the_disk_cache() {
+    let dir = TempDir::new("refused");
+    let disk = DiskCache::open(&dir.0, crate::ByteSize::from_bytes(1 << 20)).unwrap();
+    let url = "https://a.org/a.png";
+    // A copy from before, with nothing said about freshness: stale.
+    disk.complete(
+        url,
+        &Access::all(),
+        Ok(crate::image::Fetched::new(
+            200,
+            Default::default(),
+            b"old".to_vec(),
+        )),
+    )
+    .unwrap();
+    let context = Context {
+        transport: Some(Arc::new(Refusing)),
+        disk: Some(disk.clone()),
+        ..Context::default()
+    };
+    let error = fetch(url, &context, &AtomicBool::new(false), &mut |_, _| {}).unwrap_err();
+    assert!(error.contains("is not granted"), "{error}");
+    assert!(matches!(
+        disk.lookup(url, &Access::all()),
+        crate::image::Lookup::Miss
+    ));
+    // Without a disk cache, the refusal is the error too.
+    let bare = Context {
+        transport: Some(Arc::new(Refusing)),
+        ..Context::default()
+    };
+    let error = fetch(url, &bare, &AtomicBool::new(false), &mut |_, _| {}).unwrap_err();
+    assert!(error.contains("is not granted"), "{error}");
+}
+
+#[test]
+fn redirects_never_go_from_https_to_http() {
+    let access = Access::default();
+    assert_eq!(
+        redirect(&access, "https://a.org/x", "/y").as_deref(),
+        Ok("https://a.org/y")
+    );
+    assert!(redirect(&access, "https://a.org/x", "http://a.org/y").is_err());
+    assert!(redirect(&access, "http://a.org/x", "https://b.org/y").is_ok());
+}
+
+#[test]
+fn encoded_bytes_are_kept_least_recently_used_out() {
+    let mut l3 = Encoded::new(100);
+    l3.insert("big", vec![0; 26].into());
+    assert!(l3.get("big").is_none(), "over a quarter: not kept");
+    l3.insert("a", vec![0; 25].into());
+    l3.insert("b", vec![0; 25].into());
+    l3.insert("c", vec![0; 25].into());
+    l3.insert("d", vec![0; 25].into());
+    assert!(l3.get("a").is_some());
+    l3.insert("e", vec![0; 25].into());
+    assert!(l3.get("b").is_none());
+    assert!(l3.get("a").is_some() && l3.get("e").is_some());
+}
+
+#[test]
+fn a_new_encoded_limit_drops_what_no_longer_fits() {
+    let mut l3 = Encoded::new(100);
+    for key in ["a", "b", "c", "d"] {
+        l3.insert(key, vec![0; 20].into());
+    }
+    assert!(l3.get("a").is_some(), "a is now the most recently used");
+    // 40 bytes: the two most recently used stay, and an entry over a
+    // quarter of the new limit (10) goes however recent.
+    l3.set_limit(40);
+    assert!(
+        l3.get("b").is_none()
+            && l3.get("c").is_none()
+            && l3.get("a").is_none()
+            && l3.get("d").is_none()
+    );
+    assert_eq!(l3.used, 0);
+    // Five of 10 bytes (each within a quarter of 40): one too many, and
+    // the least recently used goes.
+    l3.set_limit(100);
+    for key in ["e", "f", "g", "h", "i"] {
+        l3.insert(key, vec![0; 10].into());
+    }
+    assert!(l3.get("e").is_some(), "e is now the most recently used");
+    l3.set_limit(40);
+    assert!(l3.get("f").is_none(), "the least recently used went");
+    assert!(
+        l3.get("e").is_some()
+            && l3.get("g").is_some()
+            && l3.get("h").is_some()
+            && l3.get("i").is_some()
+    );
+    assert_eq!(l3.used, 40);
+    l3.set_limit(0);
+    assert_eq!(l3.used, 0);
+    l3.insert("j", vec![0; 1].into());
+    assert!(l3.get("j").is_none(), "0 keeps none");
+}
+
+#[test]
+fn asset_directories_take_the_first_that_has_the_file() {
+    let root = std::env::temp_dir().join(format!("nsh-asset-dirs-{}", std::process::id()));
+    let (app, host) = (root.join("app"), root.join("host"));
+    std::fs::create_dir_all(&app).unwrap();
+    std::fs::create_dir_all(&host).unwrap();
+    std::fs::write(host.join("a.png"), b"host").unwrap();
+    std::fs::write(app.join("b.png"), b"app").unwrap();
+    std::fs::write(host.join("b.png"), b"host").unwrap();
+    let base = AssetBase::Directories(vec![app.clone(), host.clone()]);
+    let file = |uri| match resolve(uri, Some(&base)) {
+        Some(Location::File(path)) => path,
+        _ => panic!("{uri}: not a file"),
+    };
+    assert_eq!(file("asset:/a.png"), host.join("a.png"));
+    assert_eq!(
+        file("asset:/b.png"),
+        app.join("b.png"),
+        "the app's own first"
+    );
+    // In none: the first's, which fails to read naming it.
+    assert_eq!(file("asset:/c.png"), app.join("c.png"));
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn bundled_files_load_whatever_fs_read_roots_are_declared() {
+    let root = std::env::temp_dir().join(format!("nsh-asset-fs-read-{}", std::process::id()));
+    let (bundle, data) = (root.join("bundle"), root.join("data"));
+    std::fs::create_dir_all(&bundle).unwrap();
+    std::fs::create_dir_all(&data).unwrap();
+    std::fs::write(bundle.join("logo.png"), b"logo").unwrap();
+    std::fs::write(root.join("outside.png"), b"outside").unwrap();
+    let declared = crate::access::Capabilities::from_json(&serde_json::json!({
+        "fs": { "read": [data.to_str().unwrap()] }
+    }))
+    .unwrap();
+    let access = Access {
+        declared,
+        granted: None,
+    };
+    let context = Context {
+        asset_base: Some(AssetBase::Directory(bundle.clone())),
+        media_files: Arc::new(crate::access::MediaFiles::new(
+            &access,
+            None,
+            &Default::default(),
+            true,
+        )),
+        ..Context::default()
+    };
+    let read = |uri: &str| read_now(&context.resolve(uri).unwrap(), &context);
+    assert_eq!(&*read("asset:/logo.png").unwrap(), b"logo");
+    // Out of the bundle by `..`: an `fs.read` read, outside the roots.
+    assert!(read("asset:/../outside.png").is_err());
+    let outside = root.join("outside.png");
+    assert!(read(outside.to_str().unwrap()).is_err());
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn resolves_uris() {
+    // Declared before `key`, which borrows it.
+    #[cfg(unix)]
+    let dir = AssetBase::Directory("/app/assets".into());
+    #[cfg(windows)]
+    let dir = AssetBase::Directory(r"C:\app\assets".into());
+    let http = AssetBase::Http("http://10.0.0.2:8080/assets/".into());
+    let key = |uri, base| resolve(uri, base).map(|l: Location| l.key());
+    assert_eq!(
+        key("asset:/a.png", Some(&http)).as_deref(),
+        Some("http://10.0.0.2:8080/assets/a.png")
+    );
+    assert_eq!(key("asset:/a.png", None), None);
+    assert_eq!(
+        key("https://x.org/a.jpg", None).as_deref(),
+        Some("https://x.org/a.jpg")
+    );
+    // The cache key keeps the platform's separators, so Windows checks the path.
+    #[cfg(windows)]
+    assert!(matches!(
+        resolve("asset:/img/a.png", Some(&dir)),
+        Some(Location::File(path)) if path == std::path::Path::new(r"C:\app\assets\img\a.png")
+    ));
+    #[cfg(unix)]
+    {
+        assert_eq!(
+            key("asset:/img/a.png", Some(&dir)).as_deref(),
+            Some("file:///app/assets/img/a.png")
+        );
+        assert_eq!(
+            key("file:///home/a%20b.png", None).as_deref(),
+            Some("file:///home/a b.png")
+        );
+        assert_eq!(
+            key("/home/a.png", None).as_deref(),
+            Some("file:///home/a.png")
+        );
+    }
+    assert_eq!(key("relative.png", None), None);
+    assert!(matches!(
+        resolve("data:image/png;base64,AA==", None),
+        Some(Location::Data(_))
+    ));
+    assert_eq!(density("asset:/logo@2x.png"), 2.0);
+    assert_eq!(density("/a/b.png"), 1.0);
+}
+
+/// A PNG header of `w`×`h` (all `imagesize` reads).
+fn png(w: u32, h: u32) -> Vec<u8> {
+    let mut bytes = b"\x89PNG\r\n\x1a\n\0\0\0\x0dIHDR".to_vec();
+    bytes.extend(w.to_be_bytes());
+    bytes.extend(h.to_be_bytes());
+    bytes.extend([8, 6, 0, 0, 0, 0, 0, 0, 0]);
+    bytes
+}
+
+/// Images whose "decode" records its target and costs 4 bytes a pixel.
+fn images(budget: &Arc<Budget>, loader: &'static Loader) -> (Images<u32>, Arc<Mutex<Vec<Target>>>) {
+    let decodes = Arc::new(Mutex::new(Vec::new()));
+    let log = decodes.clone();
+    let images = Images::new(budget, move |_: &ImageData, target: &Target| {
+        log.lock().unwrap().push(*target);
+        let natural = target.natural.ok_or("no size")?;
+        let Natural::Pixels(w, h) = natural else {
+            return Err("not a bitmap".into());
+        };
+        let scale = target.longest as f32 / w.max(h) as f32;
+        let pixels = (w as f32 * scale) as usize * (h as f32 * scale) as usize;
+        Ok((target.longest, natural, pixels * 4))
+    })
+    .on(loader);
+    (images, decodes)
+}
+
+fn request(context: &Context, uri: &str, side: f32) -> Request {
+    Request {
+        location: asset(context, uri),
+        context: context.clone(),
+        declared: None,
+        want: Want {
+            size: size(Points(side), Points(side)),
+            scale: 2.0,
+            mode: ResizeMode::Cover,
+        },
+        frames: Frames::All,
+        priority: Priority::Visible,
+        progress: None,
+    }
+}
+
+#[test]
+fn images_decode_at_the_bucket_of_their_view_once_per_key() {
+    let loader = own_loader();
+    let gate = Gate::default();
+    let context = gate.context();
+    let budget = Budget::new(64 << 20);
+    let (images, decodes) = images(&budget, loader);
+    gate.open("asset:/photo.jpg", Ok(png(4000, 3000)));
+    let (tx, rx) = mpsc::channel();
+    let load = |side: f32| {
+        let tx = tx.clone();
+        images.load(
+            request(&context, "asset:/photo.jpg", side),
+            Box::new(move |r| tx.send(r.map(|(d, lease)| (d.value, lease))).unwrap()),
+        )
+    };
+    // 100 points at 2× covering a 4:3 photo: 268 px → the 362 bucket.
+    let first = load(100.0);
+    let second = load(110.0);
+    let (a, lease_a) = next(&rx).unwrap();
+    let (b, lease_b) = next(&rx).unwrap();
+    assert_eq!((a, b), (362, 362));
+    assert_eq!(decodes.lock().unwrap().len(), 1, "one decode for the key");
+    assert_eq!(budget.used(), 362 * 271 * 4);
+    // Its size is known now: a hit is answered here and now.
+    load(98.0).detach();
+    assert_eq!(rx.try_recv().unwrap().unwrap().0, 362);
+    // A bigger view asks for the next bucket; a huge one for the natural
+    // size, never more.
+    load(150.0).detach();
+    assert_eq!(next(&rx).unwrap().0, 512);
+    load(5000.0).detach();
+    assert_eq!(next(&rx).unwrap().0, 4000);
+    assert_eq!(gate.started().len(), 1, "the bytes were read once");
+    drop((first, second, lease_a, lease_b));
+}
+
+#[test]
+fn raw_uris_cannot_reuse_cached_images_from_attached_bytes() {
+    let loader = own_loader();
+    let context = Context::default();
+    let budget = Budget::new(64 << 20);
+    let (images, _) = images(&budget, loader);
+    // MIME parameters can contain commas; these identifiers still name
+    // attached bytes, not the payload of a data URI.
+    for mime in ["image/png", "image/png,x"] {
+        let source = ImageSource::default().with_bytes(mime, png(400, 300).into());
+        let attached = Request {
+            location: context.locate(&source).unwrap(),
+            context: context.clone(),
+            declared: None,
+            want: Want::natural(1.0),
+            frames: Frames::First,
+            priority: Priority::Visible,
+            progress: None,
+        };
+        let (tx, rx) = mpsc::channel();
+        images
+            .load(attached.clone(), Box::new(move |r| tx.send(r).unwrap()))
+            .detach();
+        let (decoded, lease) = next(&rx).unwrap();
+        assert_eq!(decoded.value, 400);
+        let raw = Request {
+            location: context.resolve(&source.uri).unwrap(),
+            ..attached
+        };
+        let (tx, rx) = mpsc::channel();
+        images
+            .load(raw, Box::new(move |r| tx.send(r).unwrap()))
+            .detach();
+        assert!(next(&rx).is_err(), "raw URIs must read their own payload");
+        drop(lease);
+    }
+}
+
+#[test]
+fn a_decode_nobody_waits_for_is_cancelled() {
+    let loader = own_loader();
+    let gate = Gate::default();
+    let context = gate.context();
+    let budget = Budget::new(64 << 20);
+    let (images, decodes) = images(&budget, loader);
+    let ticket = images.load(
+        request(&context, "asset:/never.png", 100.0),
+        Box::new(|_| panic!("given up")),
+    );
+    gate.wait_started(1);
+    drop(ticket);
+    gate.open("asset:/never.png", Ok(png(10, 10)));
+    // The read ends; nothing is decoded.
+    std::thread::sleep(Duration::from_millis(100));
+    assert!(decodes.lock().unwrap().is_empty());
+    assert!(images.memory().is_empty());
+}
+
+#[test]
+fn wanted_sizes_pick_buckets_by_natural_size() {
+    let want = Want {
+        size: size(Points(100.0), Points(100.0)),
+        scale: 2.0,
+        mode: ResizeMode::Contain,
+    };
+    assert_eq!(want.longest(Natural::Pixels(4000, 3000), 1.0, None), 256);
+    assert_eq!(want.longest(Natural::Pixels(120, 90), 1.0, None), 120);
+    // An SVG is drawn at its bucket, whatever its own size.
+    let icon = Natural::Vector(size(Points(24.0), Points(24.0)));
+    assert_eq!(want.longest(icon, 1.0, None), 256);
+    assert_eq!(Want::natural(2.0).longest(icon, 1.0, None), 64);
+    assert_eq!(
+        Want::natural(2.0).longest(Natural::Pixels(4000, 3000), 1.0, None),
+        4000
+    );
+}
+
+/// Occupy every real decode worker so jobs submitted next cannot start.
+fn occupy_decoders(loader: &'static Loader) -> Vec<mpsc::Sender<()>> {
+    let (started, ready) = mpsc::channel();
+    let mut releases = Vec::new();
+    for _ in 0..decoders() {
+        let (release, opening) = mpsc::channel();
+        let started = started.clone();
+        loader
+            .decode(Priority::Normal, move || {
+                started.send(()).unwrap();
+                opening.recv_timeout(Duration::from_secs(10)).unwrap();
+            })
+            .detach();
+        releases.push(release);
+    }
+    for _ in 0..decoders() {
+        ready.recv_timeout(Duration::from_secs(5)).unwrap();
+    }
+    releases
+}
+
+#[test]
+fn cancelled_queued_decodes_release_bytes_and_queue_entries_immediately() {
+    let loader = own_loader();
+    let releases = occupy_decoders(loader);
+    for _ in 0..512 {
+        let bytes: Arc<[u8]> = vec![0_u8; 4096].into();
+        let alive = Arc::downgrade(&bytes);
+        let bytes = ImageData::new(bytes);
+        let ticket = loader.decode(Priority::Visible, move || {
+            // Capture the actual bytes, not just a cancellation flag.
+            assert_eq!(bytes.bytes().len(), 4096);
+            panic!("cancelled decode ran");
+        });
+        assert!(alive.upgrade().is_some());
+        drop(ticket);
+        assert!(
+            alive.upgrade().is_none(),
+            "bytes released before any worker is free"
+        );
+        assert!(
+            lock(&loader.decodes).is_empty(),
+            "no cancelled queue entries accumulate"
+        );
+    }
+    // Dropping a captured ticket re-enters cancellation on the same queue.
+    let inner = loader.decode(Priority::Normal, || panic!("nested cancelled decode ran"));
+    let outer = loader.decode(Priority::Normal, move || drop(inner));
+    drop(outer);
+    assert!(lock(&loader.decodes).is_empty());
+    for release in releases {
+        release.send(()).unwrap();
+    }
+}
+
+#[test]
+fn decode_cancellation_preserves_other_jobs_priority_and_fifo_order() {
+    let loader = own_loader();
+    let mut releases = occupy_decoders(loader);
+    let (ran, events) = mpsc::channel();
+    let mut tickets = Vec::new();
+    for (priority, name) in [
+        (Priority::Prefetch, "prefetch"),
+        (Priority::Visible, "first visible"),
+        (Priority::Normal, "normal"),
+        (Priority::Visible, "cancelled visible"),
+        (Priority::Visible, "second visible"),
+    ] {
+        let ran = ran.clone();
+        tickets.push(loader.decode(priority, move || {
+            ran.send(name).unwrap();
+        }));
+    }
+    drop(tickets.remove(3));
+    // Free just one real worker so start order is observable without races.
+    releases.remove(0).send(()).unwrap();
+    for expected in ["first visible", "second visible", "normal", "prefetch"] {
+        assert_eq!(
+            events.recv_timeout(Duration::from_secs(5)).unwrap(),
+            expected
+        );
+    }
+    assert!(events.try_recv().is_err());
+    for release in releases {
+        release.send(()).unwrap();
+    }
+    drop(tickets);
+}
+
+#[test]
+fn cancelling_a_running_decode_allows_it_to_finish() {
+    let loader = own_loader();
+    let (started, ready) = mpsc::channel();
+    let (release, opening) = mpsc::channel();
+    let (finished, completed) = mpsc::channel();
+    let ticket = loader.decode(Priority::Normal, move || {
+        started.send(()).unwrap();
+        opening.recv_timeout(Duration::from_secs(5)).unwrap();
+        finished.send(()).unwrap();
+    });
+    ready.recv_timeout(Duration::from_secs(5)).unwrap();
+    drop(ticket);
+    release.send(()).unwrap();
+    completed.recv_timeout(Duration::from_secs(5)).unwrap();
+}
+
+#[cfg(feature = "loader")]
+#[test]
+fn loopback_urls_skip_the_environment_proxy() {
+    use super::http::is_loopback;
+    assert!(is_loopback("http://127.0.0.1:8790/assets/logo.svg"));
+    assert!(is_loopback("http://localhost:8790/assets/a.ttf"));
+    assert!(is_loopback("http://[::1]:8790/assets/a.png"));
+    assert!(!is_loopback("http://10.0.0.2:8790/assets/a.png"));
+    assert!(!is_loopback("https://pbs.twimg.com/media/a?format=jpg"));
+}
+
+/// The loader's own downloads (ureq) end at a redirect the app may not load
+/// without requesting it, and the disk cache's copy of the URL goes: a
+/// server on this machine redirects a granted URL to a host the app is not
+/// granted, then goes away.
+#[cfg(feature = "loader")]
+#[test]
+fn ureq_downloads_end_at_a_refused_redirect() {
+    use std::{
+        io::{BufRead, BufReader, Write},
+        net::TcpListener,
+    };
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let requested = Arc::new(Mutex::new(Vec::new()));
+    let server = std::thread::spawn({
+        let requested = requested.clone();
+        move || {
+            // One request: the granted URL's.
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut line = String::new();
+            BufReader::new(&stream).read_line(&mut line).unwrap();
+            requested.lock().unwrap().push(line.trim().to_owned());
+            let reply = format!(
+                "HTTP/1.1 302 Found\r\nLocation: http://localhost:{port}/private/b.png\r\n\
+                 Content-Length: 0\r\nConnection: close\r\n\r\n"
+            );
+            stream.write_all(reply.as_bytes()).unwrap();
+        }
+    });
+    let access = Access {
+        declared: crate::access::Capabilities::from_json(&serde_json::json!({
+            "network": { "http": [{ "host": "127.0.0.1", "pathPrefix": "/public" }] }
+        }))
+        .unwrap(),
+        granted: None,
+    };
+    let dir = TempDir::new("ureq-refused");
+    let disk = DiskCache::open(&dir.0, crate::ByteSize::from_bytes(1 << 20)).unwrap();
+    let url = format!("http://127.0.0.1:{port}/public/a.png");
+    disk.complete(
+        &url,
+        &Access::all(),
+        Ok(crate::image::Fetched::new(
+            200,
+            Default::default(),
+            b"old".to_vec(),
+        )),
+    )
+    .unwrap();
+    let context = Context {
+        access: Arc::new(access),
+        disk: Some(disk.clone()),
+        ..Context::default()
+    };
+    let error = fetch(&url, &context, &AtomicBool::new(false), &mut |_, _| {}).unwrap_err();
+    server.join().unwrap();
+    assert!(error.contains("is not granted"), "{error}");
+    assert_eq!(*requested.lock().unwrap(), ["GET /public/a.png HTTP/1.1"]);
+    assert!(matches!(
+        disk.lookup(&url, &Access::all()),
+        crate::image::Lookup::Miss
+    ));
+    // The server is gone: the network fails, and nothing stale is served.
+    fetch(&url, &context, &AtomicBool::new(false), &mut |_, _| {}).unwrap_err();
+    assert!(matches!(
+        disk.lookup(&url, &Access::all()),
+        crate::image::Lookup::Miss
+    ));
+}
+
+/// A copy the disk cache holds fresh is served without a request, so the
+/// cache checks the redirects it came through: a server on this machine
+/// redirects a URL to a path the app is granted at first, then no longer.
+#[cfg(feature = "loader")]
+#[test]
+fn a_cached_copy_is_not_served_past_a_redirect_no_longer_granted() {
+    use std::{
+        io::{BufRead, BufReader, Write},
+        net::TcpListener,
+    };
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let requested = Arc::new(Mutex::new(Vec::new()));
+    let server = std::thread::spawn({
+        let requested = requested.clone();
+        move || {
+            // The URL, where it redirects to, then the URL again.
+            for _ in 0..3 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut line = String::new();
+                BufReader::new(&stream).read_line(&mut line).unwrap();
+                let line = line.trim().to_owned();
+                let reply: &[u8] = if line.starts_with("GET /public/") {
+                    b"HTTP/1.1 302 Found\r\nLocation: /cdn/b.png\r\n\
+                      Content-Length: 0\r\nConnection: close\r\n\r\n"
+                } else {
+                    b"HTTP/1.1 200 OK\r\nCache-Control: max-age=3600\r\n\
+                      Content-Length: 3\r\nConnection: close\r\n\r\npng"
+                };
+                requested.lock().unwrap().push(line);
+                stream.write_all(reply).unwrap();
+            }
+        }
+    });
+    let granted = |prefixes: &[&str]| {
+        let http: Vec<_> = prefixes
+            .iter()
+            .map(|prefix| serde_json::json!({ "host": "127.0.0.1", "pathPrefix": prefix }))
+            .collect();
+        Arc::new(Access {
+            declared: crate::access::Capabilities::from_json(
+                &serde_json::json!({ "network": { "http": http } }),
+            )
+            .unwrap(),
+            granted: None,
+        })
+    };
+    let dir = TempDir::new("ureq-recheck");
+    let disk = DiskCache::open(&dir.0, crate::ByteSize::from_bytes(1 << 20)).unwrap();
+    let url = format!("http://127.0.0.1:{port}/public/a.png");
+    let context = |access: Arc<Access>| Context {
+        access,
+        disk: Some(disk.clone()),
+        ..Context::default()
+    };
+    let load = |context: &Context| {
+        fetch(&url, context, &AtomicBool::new(false), &mut |_, _| {}).map(|bytes| bytes.to_vec())
+    };
+    let wide = context(granted(&["/public", "/cdn"]));
+    assert_eq!(load(&wide), Ok(b"png".to_vec()));
+    // Fresh: served again without a request.
+    assert_eq!(load(&wide), Ok(b"png".to_vec()));
+    assert_eq!(requested.lock().unwrap().len(), 2);
+    // The app may no longer load where the copy came from: it is asked for
+    // again, and the redirect is refused as a first request's is.
+    let narrow = context(granted(&["/public"]));
+    let error = load(&narrow).unwrap_err();
+    server.join().unwrap();
+    assert!(error.contains("is not granted"), "{error}");
+    assert_eq!(
+        *requested.lock().unwrap(),
+        [
+            "GET /public/a.png HTTP/1.1",
+            "GET /cdn/b.png HTTP/1.1",
+            "GET /public/a.png HTTP/1.1"
+        ]
+    );
+    // Dropped: nothing for the app that may load it either.
+    assert!(matches!(
+        disk.lookup(&url, &wide.access),
+        crate::image::Lookup::Miss
+    ));
+}

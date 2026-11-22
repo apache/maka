@@ -1,0 +1,426 @@
+# What a user does and sees (compat/apps.rs): each case after its tap.
+# web-blob
+tap id:case-web-blob
+expect blob.size=6
+expect blob.type=text/plain
+expect blob.text=abcdef
+expect blob.empty=0|""
+expect blob.badType=""
+expect blob.utf8=5
+expect blob.stringParts=1xtrue
+expect blob.endings=4
+expect blob.slice=bc
+expect blob.sliceNegative=ef
+expect blob.sliceClamp=ef
+expect blob.sliceEmpty=0
+expect blob.sliceType=""|x/y
+expect blob.arrayBuffer=true|6|99
+expect blob.bytes=[97,98,99]
+expect blob.stream=abcdef
+expect blob.binary=[0,255]
+expect file.fields=[greeting.txt,text/plain,5,1700000000000,""]
+expect file.isBlob=[true,true]
+expect file.text=hello
+expect file.defaultLastModified=true
+expect file.sliceIsBlob=false|true
+expect file.nameKept=a/b.txt
+expect form.get=[1,null]
+expect form.getAll=[1,2]
+expect form.has=[true,false]
+expect form.blobEntry=File(blob,text/csv,3)
+expect form.blobName=File(q.bin,,1)
+expect form.file=File(greeting.txt,text/plain,5)
+expect form.fileContent=q
+expect form.coerce=string
+expect form.set=[9]
+expect form.keys=[a,c,d]
+expect form.entries=[a:9,c:File(q.bin,,1),d:File(greeting.txt,text/plain,5)]
+expect form.values=[9,File(q.bin,,1),File(greeting.txt,text/plain,5)]
+expect form.iterator=3
+expect form.forEach=[a,c,d]
+expect done
+covers [globals] Blob
+covers [globals] File
+covers [globals] FormData
+# web-control-flow
+tap id:case-web-control-flow
+# If: children while `when` is truthy, else `else`; a falsy number shows nothing.
+expect If: children
+absent If: else branch
+absent If: count is 0
+tap id:toggle
+expect If: else branch
+absent If: children
+tap id:toggle
+expect If: children
+absent If: else branch
+tap id:count
+expect If: count is 1
+tap id:count
+expect If: count is 2
+# Each, kept by item: order on screen, a row's own state, index().
+expect Alpha at 0 pressed 0
+expect Beta at 1 pressed 0
+expect Gamma at 2 pressed 0
+frame id:row-a 0 0 390 20
+frame id:row-b 0 20 390 20
+frame id:row-c 0 40 390 20
+tap id:row-a
+expect Alpha at 0 pressed 1
+tap id:reverse
+expect Gamma at 0 pressed 0
+expect Beta at 1 pressed 0
+expect Alpha at 2 pressed 1
+frame id:row-c 0 0 390 20
+frame id:row-a 0 40 390 20
+tap id:drop
+absent Beta at 1 pressed 0
+expect Alpha at 1 pressed 1
+frame id:row-a 0 20 390 20
+tap id:add
+expect Delta at 2 pressed 0
+frame id:row-d 0 40 390 20
+# Each with a key function: new items with the same keys keep their rows.
+expect One at 0 pressed 0
+expect Two at 1 pressed 0
+tap id:row-k1
+expect One at 0 pressed 1
+tap id:rekey
+expect Two again at 0 pressed 0
+expect One again at 1 pressed 1
+frame id:row-k1 0 20 390 20
+# Each with key="index": rows stay by position, item() changes.
+expect red at 0 pressed 0
+expect green at 1 pressed 0
+tap id:row-w0
+expect red at 0 pressed 1
+tap id:recolor
+expect blue at 0 pressed 1
+expect green at 1 pressed 0
+expect yellow at 2 pressed 0
+absent red at 0 pressed 1
+# Each of null shows nothing.
+absent Maybe: filled
+tap id:fill
+expect Maybe: filled
+tap id:fill
+absent Maybe: filled
+covers [globals] If
+covers [globals] Each
+# web-encoding
+tap id:case-web-encoding
+expect enc.encoding=utf-8
+expect enc.ascii=[72,105]
+expect enc.euro=[226,130,172]
+expect enc.astral=[240,159,152,128]
+expect enc.empty=0|0
+expect enc.loneSurrogate=[239,191,189]
+expect enc.type=true
+expect enc.into=3,4 [104,195,169,108]
+expect enc.intoNoSplit=1,1
+expect dec.encoding=utf-8|false|false
+expect dec.euro=€
+expect dec.empty=""
+expect dec.arrayBuffer=hi
+expect dec.dataView=ok
+expect dec.bom=41
+expect dec.ignoreBOM=feff 41
+expect dec.invalid=61 fffd 62
+expect dec.truncated=fffd
+expect dec.fatal=threw TypeError
+expect dec.fatalFlag=true
+expect dec.stream=["","€!",""]
+expect dec.labels=[utf-8,utf-8,utf-8,utf-16le,utf-16be,windows-1252,windows-1252]
+expect dec.unknownLabel=threw RangeError
+expect dec.utf16le=hi
+expect dec.utf16be=hi
+expect dec.windows1252=41 20ac e9
+expect dec.roundTrip=true
+expect btoa.hello=aGVsbG8=
+expect btoa.padding=[,YQ==,YWI=,YWJj]
+expect btoa.latin1=//4=
+expect btoa.wide=threw InvalidCharacterError
+expect btoa.wideError=true|InvalidCharacterError
+expect atob.hello=hello
+expect atob.noPadding=hello
+expect atob.whitespace=hello
+expect atob.binary=ff
+expect atob.badLength=threw InvalidCharacterError
+expect atob.badChar=threw InvalidCharacterError
+expect atob.badError=true|InvalidCharacterError|5
+expect atob.roundTrip=true
+expect done
+covers [globals] TextEncoder
+covers [globals] TextDecoder
+covers [globals] atob
+covers [globals] btoa
+# web-events
+tap id:case-web-events
+expect event.init=[ping,false,false,false,false,false]
+expect event.idle=[0,null,null]
+expect event.timeStamp=true
+expect event.constants=[0,1,2,3,2]
+expect event.notCancelable=false
+expect event.cancelable=[true,true,false]
+expect event.noType=TypeError
+expect event.instance=true
+expect custom.detail={"n":1}
+expect custom.defaultDetail=null
+expect custom.isEvent=true
+expect target.order=[first,object:ping,once,first,object:ping]
+expect target.removed=[object:ping]
+expect target.during=true,true,2,true|0,,true
+expect target.canceled=[false,true]
+expect target.stopImmediate=[1,2]
+expect target.signal=1
+expect target.redispatch=InvalidStateError
+expect target.subclass=true|7|true
+expect target.addedDuring=[a]
+expect abort.before=[false,undefined,true,true]
+expect abort.after=[true,listener:abort+onabort]
+expect abort.reason=true|AbortError|20
+expect abort.throwIfAborted=AbortError
+expect abort.notAborted=nothing
+expect abort.customReason=why|value why
+expect abort.static=true|r|AbortError
+expect abort.any=false|true|b
+expect abort.anyAborted=x
+expect abort.timeoutBefore=false
+expect abort.timeoutAfter=true|TimeoutError|23
+expect domex.fields=[NotFoundError,missing,8]
+expect domex.defaults=[Error,"",0]
+expect domex.codes=[1,5,11,12,20,23,25,0]
+expect domex.isError=[true,true,[object DOMException]]
+expect domex.toString=NotFoundError: missing
+expect done
+covers [globals] Event
+covers [globals] EventTarget
+covers [globals] CustomEvent
+covers [globals] AbortController
+covers [globals] AbortSignal
+covers [globals] DOMException
+# web-fetch
+tap id:case-web-fetch
+expect headers.get=[text/plain,text/plain,two,null]
+expect headers.combined=1, 2
+expect headers.sorted=[content-type:text/plain,x-a:1, 2,x-b:two]
+expect headers.setDelete=[3,false,true]
+expect headers.pairsInit=[a:2,b:1]
+expect headers.copy=[content-type:text/plain,x-a:3]
+expect headers.setCookie=[a=1+b=2,set-cookie:a=1+set-cookie:b=2]
+expect headers.badName=threw TypeError
+expect headers.badValue=threw TypeError
+expect headers.badPair=threw TypeError
+expect headers.forEach=[content-type=text/plain,x-a=3]
+expect headers.keysValues=[content-type,x-a,text/plain,3]
+expect request.fields=[POST,https://h.test/a?b#frag,1,text/plain;charset=UTF-8]
+expect request.defaults=[GET,null,false,follow,true,true]
+expect request.methodCase=[PATCH,GET]
+expect request.badMethod=threw TypeError
+expect request.forbiddenMethod=threw TypeError
+expect request.getBody=threw TypeError
+expect request.relative=threw TypeError
+expect request.text=hi
+expect request.used=hi|true|TypeError
+expect request.cloneUsed=threw TypeError
+expect request.fromRequest=[PUT,https://h.test/x,false,2]
+expect request.json={"k":[1,2]}
+expect request.searchParamsBody=application/x-www-form-urlencoded;charset=UTF-8
+expect request.formBody=true|v
+expect request.signal=true
+expect response.defaults=[200,true,"",default,"",false]
+expect response.contentType=text/plain;charset=UTF-8
+expect response.text=hi
+expect response.used=true|true
+expect response.usedAgain=threw TypeError
+expect response.status=[404,false,Nope,b,null]
+expect response.badStatus=threw RangeError
+expect response.nullBodyStatus=threw TypeError
+expect response.json=201|application/json|{"a":[1,"b"]}
+expect response.badJson=threw SyntaxError
+expect response.error=[error,0,false,null]
+expect response.redirect=[301,https://h.test/next,null]
+expect response.redirectDefault=302
+expect response.badRedirect=threw RangeError
+expect response.bytes=[1,2,3]
+expect response.arrayBuffer=4
+expect response.blob=3|text/csv
+expect response.blobBody=image/png|z
+expect response.urlencodedForm=1|x y
+expect response.stream=stream
+expect response.clone=twice|twice
+expect response.bodyReader=true|[120,121]
+expect fetch.dataBase64=[200,true,text/plain,hi]
+expect fetch.dataPercent=a b
+expect fetch.dataJson={"a":1}
+expect fetch.dataDefaultType=text/plain;charset=US-ASCII
+expect fetch.request=via request
+expect fetch.url=via url
+expect fetch.blob=true|text/x-a|from blob|TypeError
+expect fetch.asset=[asset:/images/flag.png,200,true,73,73,[80,78,71]]
+expect fetch.assetHead=[image/png,true]
+expect fetch.assetSpelling=[200,asset:/images/flag.png?v=2,image/png,73]
+expect fetch.assetMissing=threw TypeError
+expect fetch.badScheme=threw TypeError
+expect fetch.badUrl=threw TypeError
+expect fetch.badDataUrl=threw TypeError
+expect fetch.aborted=threw AbortError
+expect fetch.abortReason=rejected:mine
+expect fetch.rejectsAsync=true
+expect done
+covers [globals] Headers
+covers [globals] Request
+covers [globals] Response
+covers [globals] fetch
+# web-streams
+tap id:case-web-streams
+expect readable.read=[a:false,b:false,undefined:true]
+expect readable.controller=true|1|0
+expect readable.locked=[false,true,TypeError,false,true]
+expect readable.readerConstructor=c
+expect readable.pull=1,2,3|pulls=4
+expect readable.cancel=enough|true
+expect readable.error=TypeError:bad source|bad source
+expect readable.closed=resolved
+expect readable.tee=1,2|1,2
+expect readable.asyncIterator=[p,q]
+expect readable.values=[5,6]
+expect readable.iteratorBreak=true|false
+expect readable.from=1,2,3|g1,g2
+expect bytes.byob=true|true|4|true|[7,8]|false
+expect bytes.enqueue=[[1,2],[3],true:0]
+expect bytes.respondWithNewView=[42]
+expect bytes.defaultReader=[[9]]
+expect bytes.autoAllocate=[1]
+expect writable.write=true|true|true|true|1|write:a,write:b,close
+expect writable.backpressure=[2,1,-1]
+expect writable.abort=stop|true|stop
+expect writable.sinkError=RangeError|full
+expect writable.controllerError=broken
+expect writable.writerConstructor=z|false
+expect pipe.to=[1,2,3]
+expect transform.through=true|AB,2,C,1,end
+expect transform.identity=i1,i2
+expect transform.terminate=only
+expect transform.error=TypeError:no
+expect transform.desiredSize=3
+expect pipe.preventClose=false|false
+expect pipe.signal=AbortError
+expect strategy.byteLength=[16,5,function]
+expect strategy.count=[4,1]
+expect strategy.inStream=7
+expect textStream.encode=utf-8|[104][195,169]
+expect textStream.decode=utf-8|false|false|a€b
+expect textStream.decodeLabel=windows-1252
+expect textStream.roundTrip=x😀y
+expect textStream.fatal=TypeError
+expect done
+covers [globals] ReadableStream
+covers [globals] ReadableStreamDefaultReader
+covers [globals] ReadableStreamDefaultController
+covers [globals] ReadableByteStreamController
+covers [globals] ReadableStreamBYOBReader
+covers [globals] ReadableStreamBYOBRequest
+covers [globals] WritableStream
+covers [globals] WritableStreamDefaultWriter
+covers [globals] WritableStreamDefaultController
+covers [globals] TransformStream
+covers [globals] TransformStreamDefaultController
+covers [globals] ByteLengthQueuingStrategy
+covers [globals] CountQueuingStrategy
+covers [globals] TextEncoderStream
+covers [globals] TextDecoderStream
+# web-timers
+tap id:case-web-timers
+wait 2000
+expect order.tasks=[sync,microtask,promise,microtask2,timeout]
+expect order.delays=[0,10,20,30]
+expect order.fifo=abcd
+expect order.nested=[outer,outer-micro,sibling,inner]
+expect order.microtaskChain=[1,2,3]
+expect order.badDelays=[negative,nan,later]
+expect ids=[number,true,true,true]
+expect clearTimeout=[kept]
+expect clearFromTimer=[first]
+expect setInterval=3
+expect clearInterval=2|2
+expect clearIntervalUnknown=ok
+expect requestAnimationFrame=[number,true,2,true]
+expect cancelAnimationFrame=[kept]
+expect performance.now=[number,true,true]
+expect performance.delay=true
+expect performance.subMs=true
+expect console=[undefined,undefined,undefined,undefined,undefined]
+expect console.methods=[function,function,function,function,function]
+expect done
+covers [globals] setTimeout
+covers [globals] clearTimeout
+covers [globals] setInterval
+covers [globals] clearInterval
+covers [globals] requestAnimationFrame
+covers [globals] cancelAnimationFrame
+covers [globals] queueMicrotask
+covers [globals] performance
+covers [globals] console
+# web-url
+tap id:case-web-url
+expect url.href=https://user:pw@example.com:8080/a/c?x=1&y=2#frag
+expect url.protocol=https:
+expect url.username=user
+expect url.password=pw
+expect url.host=example.com:8080
+expect url.hostname=example.com
+expect url.port=8080
+expect url.pathname=/a/c
+expect url.search=?x=1&y=2
+expect url.hash=#frag
+expect url.origin=https://example.com:8080
+expect url.toString=true
+expect url.toJSON={"u":"https://user:pw@example.com:8080/a/c?x=1&y=2#frag"}
+expect url.defaultPort=https://example.com/
+expect url.emptyPath=/
+expect url.space=https://h.test/a%20b?c%20d
+expect url.idna=xn--bcher-kva.example
+expect url.ipv4=127.0.0.1
+expect url.ipv6=[::1]:81
+expect url.file=/tmp/a.txt
+expect url.fileOrigin=null
+expect url.opaque=a@b.test
+expect url.relative=https://h.test/a/d?q
+expect url.schemeRelative=https://other.test/x
+expect url.queryOnly=https://h.test/a/b?z
+expect url.baseURL=https://h.test/a/e
+expect url.invalid=threw TypeError
+expect url.badBase=threw TypeError
+expect url.canParse=[false,true,true]
+expect url.parse=[null,https://a.test/b]
+expect url.set=https://other.test:81/new%20path?a=1#h
+expect url.setDefaultPort=other.test
+expect url.clear=https://other.test/new%20path
+expect url.setHref=/q|z.test
+expect url.badHref=threw TypeError
+expect url.searchParams=?a=1&b=x+y
+expect url.searchParamsLive=3|false
+expect usp.get=1
+expect usp.getMissing=null
+expect usp.getAll=[1,3]
+expect usp.size=3
+expect usp.toString=a=1&b=2&a=3
+expect usp.has=[true,true,false]
+expect usp.set=a=9&b=2
+expect usp.delete=a=9&c=1
+expect usp.deleteValue=a=9&c=2
+expect usp.decode=a b c|€|
+expect usp.encode=q=a+b%26c%3Dd&k=%C3%A9%7E*-._%21
+expect usp.record=x=1&y=2
+expect usp.pairs=x=1&x=2
+expect usp.copy=m=1
+expect usp.sort=a=2&a=1&b=3&c=1
+expect usp.entries=[a:2,a:1,b:3,c:1]
+expect usp.keys=[a,a,b,c]
+expect usp.values=[2,1,3,1]
+expect usp.iterator=4
+expect usp.forEach=[a2,a1,b3,c1]
+expect done
+covers [globals] URL
+covers [globals] URLSearchParams

@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>{{title}}</title>
+{{head}}
+<link rel="stylesheet" href="{{style}}">
+</head>
+<body>
+<div id="app"></div>
+<div id="status" role="status" aria-live="polite"><div class="spinner" aria-label="Loading"></div></div>
+<noscript><div id="nojs">{{title}} needs JavaScript.</div></noscript>
+<script type="application/json" id="nsh-app">{{app}}</script>
+<script type="module" src="{{start}}"></script>
+</body>
+</html>

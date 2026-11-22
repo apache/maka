@@ -1,0 +1,18 @@
+{
+  "repository": "https://github.com/awslabs/llrt",
+  "revision": "d9fd873e793c6551c5d92b2e31480f3279e3cd8d",
+  "files": {
+    "types/assert.d.ts": "809575879c742b5af3811f3a003cff570c237d589c91bcc64cc7f2c16e8afbd6",
+    "types/buffer.d.ts": "d5c2a5b4691ef176a43c9df94a05f9b00665c795cb8bcb339e7964ecb86757c5",
+    "types/crypto.d.ts": "748f7185c2116041431d79d7b69f9e1210929e751dd8d29f4dc231b1c41c4a35",
+    "types/events.d.ts": "5c9e0370d9d25d7d02ac8563a3354a0bbb6a667b45f2b8fdadb6bf9804104123",
+    "types/globals.d.ts": "b501921a9b27b06d2063c54ec8228ab5f991905f1c84a12e6712d3b01acfca07",
+    "types/path.d.ts": "d062fa26471cfeb2849f17152e973860bd3969044b5e83735f805c120e96ec6b",
+    "types/string_decoder.d.ts": "0263398329a1a3d6cc2334970febe178c50de01acdb29abe43112feb1622d166",
+    "types/url.d.ts": "f2b8632ba1cd6dcf65f7eb41dc16165474a4d2989396448f95e4ee01bbfa2d9c",
+    "types/util.d.ts": "f488392f03a780f04aba4c1fdc6ce0cc04dfa9beb80e115adbf4a377f8f4da22",
+    "types/zlib.d.ts": "c09afd8cf8290e4de2e885660be60b8b9380efc45d6df81b6f0c907bd80ddc49",
+    "types/dom-events.d.ts": "9d86dccf921a73a602d6519ba6f89816e6102966c3a262a445d3860f659e084b",
+    "LICENSE": "58d1e17ffe5109a7ae296caafcadfdbe6a7d176f0bc4ab01e12a689b0499d8bd"
+  }
+}

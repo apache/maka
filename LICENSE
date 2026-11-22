@@ -203,153 +203,32 @@
 
 THIRD-PARTY COMPONENTS
 
-Vercel Code Mode and run execution-budget patches
+Playwright browser injected script and keyboard data (Apache License 2.0)
 
-Source: https://www.npmjs.com/package/@ai-sdk/code-mode/v/1.0.79
-        https://www.npmjs.com/package/run/v/2.1.4
-Repository: https://github.com/vercel/ai/tree/main/packages/code-mode
-            https://github.com/vercel-labs/run/tree/run%402.1.4/packages/run
-Dependency patches: patches/@ai-sdk+code-mode+1.0.79.patch
-                    patches/run+2.1.4.patch
-Readable source changes: patches/run-2.1.4-source.diff
-Copyright 2023 Vercel, Inc.
-License: Apache-2.0
+third-party/playwright contains the injected script and US keyboard data from
+playwright-core 1.58.2, revision ce480a952553175eae75342aad2c5e86cdf2cbba.
+Source: https://github.com/microsoft/playwright
+Copyright (c) Microsoft Corporation
+Original LICENSE, NOTICE and ThirdPartyNotices.txt are preserved beside the
+source. The published archive, extraction method and file hashes are recorded
+in third-party/playwright/upstream.json.
 
-These patches modify the execution time policy and its SDK forwarding. The
-Apache License, Version 2.0 above applies. The generated run Worker includes
-embedded third-party code; its upstream notices and license texts are retained
-in patches/run-2.1.4-notices.md. The patch carries no WebAssembly binary:
-postinstall substitutes the unchanged payload from the installed run package
-for `__MAKA_RUN_WASM_BASE64__` before applying the patch.
+reqwest HTTP client source (adapted, Apache License 2.0 OR MIT)
 
-Vercel AI SDK
+third-party/reqwest contains reqwest 0.13.5 from
+https://github.com/seanmonstar/reqwest at revision
+de55373434f07f42926599dbb5a88550d8e55112.
+Copyright (c) 2016-2026 Sean McArthur
+Original license texts, source hashes and local changes are recorded in
+third-party/reqwest/{LICENSE-APACHE,LICENSE-MIT,upstream.json,SOURCE.md}.
 
-Source: https://www.npmjs.com/package/@ai-sdk/provider-utils/v/5.0.11
-        https://www.npmjs.com/package/@ai-sdk/provider/v/4.0.3
-Patched package: https://www.npmjs.com/package/@ai-sdk/provider-utils/v/5.0.51
-Repository: https://github.com/vercel/ai/tree/main/packages/provider-utils
-            https://github.com/vercel/ai/tree/main/packages/provider
-Adapted declarations: @ai-sdk/provider-utils 5.0.11, @ai-sdk/provider 4.0.3
-Dependency patch: patches/@ai-sdk+provider-utils+5.0.51.patch
-Copyright 2023 Vercel, Inc.
-License: Apache-2.0
+image-webp decoder source (adapted, Apache License 2.0 OR MIT)
 
-`packages/runtime/src/model-protocol.ts` adapts the JSON value, provider
-option, file data, content part, and message shapes from these components and
-modifies them. That file carries the required modification notice. The Apache
-License, Version 2.0 above applies to the adapted material.
-
-The pinned versions are the ones present when the adaptation was made. The
-adapted declarations are unchanged through @ai-sdk/provider-utils 5.0.25 and
-@ai-sdk/provider 4.0.7, the versions recorded by the code origin audit. Maka
-also redistributes a patch against @ai-sdk/provider-utils 5.0.51; that patch
-modifies Apache-2.0 source and is covered by the license reproduced above.
-
-Astryx
-
-Source: https://github.com/facebook/astryx
-ChatReasoning revision: c9fe4379e9959b9ba5eeff56def34c752223450e
-Theme revision: ea888ef33283ea44e37817d36bc8e84a0568bc30
-Copyright (c) 2026 Meta Platforms, Inc.
-License: MIT
-
-Maka includes an ejected adaptation of Astryx ChatReasoning v0.1.9 in
-`packages/ui/src/astryx-chat-reasoning.tsx` and generated theme artifacts in
-`apps/desktop/src/renderer/astryx-theme/`, based on Astryx theme-neutral v0.6.3.
-Maka also redistributes
-`patches/@astryxdesign+core+0.6.3.patch`, which modifies the MIT-licensed Astryx
-core package. The following MIT License applies to that material:
-
-MIT License
-
-Copyright (c) 2026 Meta Platforms, Inc.
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-
-xterm.js dependency patch
-
-Source: https://www.npmjs.com/package/@xterm/xterm/v/6.0.0
-Repository: https://github.com/xtermjs/xterm.js
-Version: 6.0.0
-Dependency patch: patches/@xterm+xterm+6.0.0.patch
-License: MIT
-
-Maka redistributes a patch to the TypeScript source and both shipped JavaScript
-bundles that defers selection rendering while the terminal is hidden. The
-following upstream license applies to that material:
-
-Copyright (c) 2017-2019, The xterm.js authors (https://github.com/xtermjs/xterm.js)
-Copyright (c) 2014-2016, SourceLair Private Company (https://www.sourcelair.com)
-Copyright (c) 2012-2013, Christopher Jeffrey (https://github.com/chjj/)
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in
-all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-THE SOFTWARE.
-
-Pi TUI dependency patch
-
-Source: https://www.npmjs.com/package/@earendil-works/pi-tui/v/0.87.1
-Repository: https://github.com/earendil-works/pi/tree/v0.87.1/packages/tui
-Version: 0.87.1
-Dependency patch: patches/@earendil-works+pi-tui+0.87.1.patch
-Copyright (c) 2025 Mario Zechner
-License: MIT
-
-Maka redistributes a source patch that copies mutable editor undo state while
-sharing immutable pasted strings. The following MIT License applies to that
-material:
-
-MIT License
-
-Copyright (c) 2025 Mario Zechner
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+third-party/image-webp contains image-webp 0.2.4 from
+https://github.com/image-rs/image-webp at revision
+08b57d473c90148dd4b37a075df365afc3dfcc2b.
+Original license texts, source hashes and local changes are recorded in
+third-party/image-webp/{LICENSE-APACHE,LICENSE-MIT,upstream.json,SOURCE.md}.
 
 Zod dependency patch
 
@@ -385,347 +264,6 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-Model Context Protocol client dependency patch
-
-Source: https://www.npmjs.com/package/@modelcontextprotocol/client/v/2.3.0
-Repository: https://github.com/modelcontextprotocol/typescript-sdk
-Version: 2.3.0
-Dependency patch: patches/@modelcontextprotocol+client+2.3.0.patch
-Copyright (c) 2024-2025 Model Context Protocol a Series of LF Projects, LLC.
-Declared package license: Apache-2.0
-
-Maka redistributes a source patch that releases settled request observers under
-transport backpressure. The upstream package's LICENSE describes a transition
-from MIT to Apache-2.0: contributions with relicensing consent use Apache-2.0,
-while contributions without that consent retain their original MIT license.
-The Apache License, Version 2.0 is reproduced above. The upstream MIT notice is:
-
-MIT License
-
-Copyright (c) 2024-2025 Model Context Protocol a Series of LF Projects, LLC.
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-
-Sigstore dependency patch
-
-Source: https://www.npmjs.com/package/@sigstore/core/v/4.0.1
-Repository: https://github.com/sigstore/sigstore-js/tree/main/packages/core
-Version: 4.0.1
-Dependency patch: patches/@sigstore+core+4.0.1.patch
-Copyright 2023 The Sigstore Authors
-License: Apache-2.0
-
-Maka redistributes a source patch that selects the signature digest in
-@sigstore/core. The patch modifies Apache-2.0 source and is covered by the
-Apache License, Version 2.0 reproduced above.
-
-TUF metadata models dependency patch
-
-Source: https://www.npmjs.com/package/@tufjs/models/v/5.0.0
-Repository: https://github.com/theupdateframework/tuf-js/tree/main/packages/models
-Version: 5.0.0
-Dependency patch: patches/@tufjs+models+5.0.0.patch
-Copyright (c) 2022 GitHub and the TUF Contributors
-License: MIT
-
-Maka redistributes a source patch that selects the signature digest in
-@tufjs/models. The following MIT License applies to that material:
-
-MIT License
-
-Copyright (c) 2022 GitHub and the TUF Contributors
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in
-all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-THE SOFTWARE.
-
-electron-builder dependency patches
-
-Source: https://www.npmjs.com/package/app-builder-lib/v/26.17.0
-        https://www.npmjs.com/package/electron-updater/v/6.8.9
-Repository: https://github.com/electron-userland/electron-builder
-Versions: app-builder-lib 26.17.0; electron-updater 6.8.9
-Dependency patch: patches/app-builder-lib+26.17.0.patch
-                  patches/electron-updater+6.8.9.patch
-License: MIT
-
-Maka redistributes source patches that omit modification and access times
-from 7-Zip ZIP archives, keep macOS ZIP archives on the system zip, and skip
-withdrawn prereleases whose update metadata is missing. The following MIT
-License applies to that material:
-
-The MIT License (MIT)
-
-Copyright (c) 2015 Loopline Systems
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-
-node-pty dependency patch
-
-Source: https://www.npmjs.com/package/node-pty/v/1.2.0-beta.15
-Repository: https://github.com/microsoft/node-pty
-Version: 1.2.0-beta.15
-Dependency patch: patches/node-pty+1.2.0-beta.15.patch
-License: MIT
-
-Maka redistributes a source patch for node-pty's Unix PTY write lifecycle. The
-following license notices are reproduced from node-pty 1.2.0-beta.15:
-
-Copyright (c) 2012-2015, Christopher Jeffrey (https://github.com/chjj/)
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in
-all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-THE SOFTWARE.
-
-Copyright (c) 2016, Daniel Imms (http://www.growingwiththeweb.com)
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-
-Copyright (c) 2018 - present Microsoft Corporation
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-
-virtua dependency patch
-
-Source: https://www.npmjs.com/package/virtua/v/0.52.7
-Repository: https://github.com/inokawa/virtua
-Version: 0.52.7
-Dependency patch: patches/virtua+0.52.7.patch
-Copyright (c) 2022 inokawa
-License: MIT
-
-Maka redistributes a source patch that applies virtua's scroll correction
-absolutely after the browser clamps the scroll offset. The following MIT
-License applies to that material:
-
-MIT License
-
-Copyright (c) 2022 inokawa
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-
-trycua/cua cursor-overlay
-
-Source: https://github.com/trycua/cua
-Revision: 8c921b2b3bf13494724ead4f0a814d80c56a7e8b
-Copyright (c) 2025 Cua AI, Inc.
-License: MIT
-
-`apps/desktop/src/renderer/computer-use-overlay/engine/cursor-engine.ts` and
-`apps/desktop/src/renderer/computer-use-overlay/engine/palette.ts` include
-adaptations of this component.
-The following MIT License applies to that material:
-
-Maka-authored modifications are licensed under the Apache License, Version 2.0
-reproduced above; the upstream portions retain the MIT terms below.
-
-MIT License
-
-Copyright (c) 2025 Cua AI, Inc.
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-
-
-anomalyco/opencode (adapted source)
-
-Source: https://github.com/anomalyco/opencode
-Revision: fc80874f45a595ff6874a4d36b1090f6a64424d2
-Copyright (c) 2025 opencode
-License: MIT
-
-Maka's tool-output truncation (packages/runtime/src/tool-output.ts) and
-string-edit matching strategies (packages/runtime/src/edit-replace.ts) include
-adaptations of this software. Each file marks the adapted portion in its header;
-the surrounding Maka source stays under this repository's Apache-2.0 license.
-
-Maka took the string-edit strategies from opencode, but opencode's edit.ts
-credits cline diff-apply and the gemini-cli editCorrector upstream of itself,
-and both are Apache-2.0. That region of edit-replace.ts is therefore not
-uniformly MIT, and its header lists each piece with the license that governs
-it. The two Apache-2.0 pieces are recorded separately below. The MIT License
-here applies to the rest: tool-output.ts, and opencode's own additions and
-modifications in edit-replace.ts.
-
-MIT License
-
-Copyright (c) 2025 opencode
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-
-
-cline/cline diff-apply (adapted source, reached through opencode)
-
-Source: https://github.com/cline/cline
-Revision: 50b43c0559a9658a4fda79645b2cfe66cfa2f133
-Path: evals/diff-edits/diff-apply/diff-06-23-25.ts
-Copyright 2025 Cline Bot Inc.
-License: Apache-2.0
-
-The line-trimmed matcher in packages/runtime/src/edit-replace.ts is adapted
-from this file's lineTrimmedFallbackMatch. Maka reached it through opencode
-rather than directly. The Apache License 2.0 that governs it is the same
-license reproduced at the top of this file; cline ships no NOTICE file. The
-modifications Maka made are stated in the header of edit-replace.ts, as
-Apache-2.0 section 4(b) requires.
-
-
-google-gemini/gemini-cli editCorrector (adapted source, reached through opencode)
-
-Source: https://github.com/google-gemini/gemini-cli
-Revision: 93909a2dd3bf901e8f98a9fd41e1300faa585a84
-Path: packages/core/src/utils/editCorrector.ts
-Copyright 2025 Google LLC
-License: Apache-2.0
-
-The escape-normalizing matcher in packages/runtime/src/edit-replace.ts carries
-the regular expression and the first eight escape branches, in order, from this
-file's unescapeStringForGeminiBug. opencode added a ninth branch and changed the
-pattern; Maka took opencode's result. The Apache License 2.0 that governs it is
-the same license reproduced at the top of this file; gemini-cli ships no NOTICE
-file. The modifications Maka made are stated in the header of edit-replace.ts,
-as Apache-2.0 section 4(b) requires.
-
-
 anomalyco/models.dev (generated model catalog snapshot)
 
 Source: https://models.dev/api.json
@@ -733,24 +271,9 @@ Repository: https://github.com/anomalyco/models.dev
 Copyright (c) 2025 models.dev
 License: MIT
 
-packages/core/src/model-metadata.generated.ts and
-packages/runtime/src/telemetry/model-pricing.generated.ts are generated from the
-models.dev catalog by scripts/sync-model-metadata.mjs during installation or
-build and are redistributed with compiled Maka packages, but are not tracked as
-source. The exact selected input projection is stored at
-scripts/model-metadata/models-dev-api.snapshot.json. Its origin record either
-binds a refresh to the downloaded response digest or identifies the exact Maka
-commit whose generated outputs seeded the migration snapshot. The snapshot
-is the sole build input for a particular repository revision and release;
-models.dev remains the upstream source used by an explicit refresh. Normal
-installation and build paths do not fetch the latest catalog implicitly. The
-snapshot also carries a digest of its normalized projection; the generated-file
-headers bind each output to that digest. They copy and transform selected model
-and provider metadata from that catalog, including upstream display names and
-descriptive text, lifecycle status values, reasoning effort options, context
-and output limits, modalities, and prices. Which providers are kept, which
-fields are kept, and the order they appear in are decided by the generator. The
-following MIT License applies to the material taken from upstream:
+plugins/agent/providers/data/catalog-facts.json and plugins/settings/store/data/pricing-facts.json
+contain normalized provider, model and pricing facts from this catalog.
+
 
 MIT License
 
@@ -775,22 +298,152 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 
-DeepSeek Harness (adapted source)
+OpenAI Codex apply-patch (adapted source)
 
-Source: https://github.com/deepseek-ai/deepseek-harness
-Revision: 47f943859bef60e4160492346772ded9b24f765a
-Path: examples/jsonrpc-agent/minimal.cordis.yml
-Copyright (c) 2026 DeepSeek
-License: MIT
+Source: https://github.com/openai/codex
+Copyright 2025 OpenAI
+License: Apache License 2.0 (the text at the beginning of this file).
 
-`packages/eval/harbor/deepseek-harness-profile/cordis.patch.yml` adapts the
-upstream plugin composition, persistent-bash description, and persona. The
-file identifies Maka's modifications and scopes this MIT notice to the derived
-material; the surrounding modifications are Apache-2.0.
+The pure patch parser, contextual matching and line-ending reconstruction in
+plugins/workspace/workspace-files/patch/src/{lib,parser,seek_sequence,text_file,update}.rs
+contain adapted portions of codex-rs/apply-patch. The parser is based on revision
+d45513ce5ad99d37638f355601f075d55860001e; matching and line-ending handling are
+based on revision 624ccf794703e2d84e748fc3ef547d6191a8c0a4. Maka removes filesystem,
+shell, streaming and execution-service dependencies, adds bounded pure APIs,
+and excludes unsupported patch operations. Detailed provenance and modifications
+are recorded in plugins/workspace/workspace-files/patch/SOURCE.md.
 
-MIT License
+OpenAI Codex sandbox policy (unmodified source)
 
-Copyright (c) 2026 DeepSeek
+platform/sandbox/src/seatbelt/{base,network}.sbpl are Copyright OpenAI, Apache License 2.0.
+Source provenance is recorded in platform/sandbox/README.md.
+
+OpenAI Codex Windows MXC sandbox adapter (adapted source)
+
+Copyright 2025 OpenAI
+License: Apache License 2.0 (the text at the beginning of this file).
+
+platform/sandbox/src/windows/mxc.rs and
+platform/sandbox/src/windows/mxc/{availability,policy}.rs contain portions
+adapted from codex-rs/mxc-sandbox at revision
+4610b573e59b211bf9430cf6ffb97cfb84623090. Maka integrates native capability
+probing, network mapping and filesystem normalization with its own permission
+policy, process transports and execution ownership. Detailed source provenance
+is recorded in platform/sandbox/README.md.
+
+Native Computer Use dependency notices are recorded in
+platform/computer-use/THIRD_PARTY_NOTICES.
+
+NSH native shell sources (Apache License 2.0)
+
+third-party/nsh contains NSH initially imported from
+https://github.com/M4n5ter/nsh at revision
+de176695240d550f2b303643b8019146c7989e7f and synchronized with
+https://github.com/longbridge/nsh through revision
+80b17ee2ca33fa187a0a8575d5644e62b817517b.
+Copyright 2026 Longbridge <https://longbridge.com>.
+Original license texts, the complete source inventory and local integration
+changes are recorded in third-party/nsh/{LICENSE-APACHE,upstream.json,SOURCE.md}.
+The snapshot preserves the separate licenses for its bundled icy_sixel
+sources, LLRT type definitions, browser polyfills, KaTeX fonts, sound
+fixtures, and example and test fonts.
+The IBM Plex Sans test font in products/maka/workbench/tests/fonts retains
+its SIL Open Font License in the adjacent OFL.txt.
+
+async-io timer source (adapted, Apache License 2.0 OR MIT)
+
+third-party/async-io contains async-io 2.6.0 from
+https://github.com/smol-rs/async-io at revision
+576b470ca3cadefdec8b169279df23c9a0a63495. Original license texts,
+finite file provenance and the timer wake modification are recorded in
+third-party/async-io/{LICENSE-APACHE,LICENSE-MIT,upstream.json,SOURCE.md}.
+
+Deno TLS dependency alignment (adapted, MIT)
+
+third-party/deno-tls contains deno_tls 0.247.0 from
+https://github.com/denoland/deno at revision
+fe7ed012d92c642fd8e5607ac5a45d517538b5c5. The original MIT license
+and finite file provenance are recorded in third-party/deno-tls/{LICENSE.md,upstream.json}.
+The manifest uses the rustls security update from https://github.com/denoland/deno/pull/37059.
+
+Deno Node SQLite dependency alignment (adapted, MIT)
+
+third-party/deno-node-sqlite contains deno_node_sqlite 0.30.0 from
+https://github.com/denoland/deno at revision
+fe7ed012d92c642fd8e5607ac5a45d517538b5c5. Its manifest uses the workspace
+rusqlite version. The original MIT license and finite file provenance are
+recorded in third-party/deno-node-sqlite/{LICENSE.md,upstream.json}.
+
+SQLx SQLite dependency alignment (adapted, Apache License 2.0 OR MIT)
+
+third-party/sqlx-sqlite contains sqlx-sqlite 0.9.0 from
+https://github.com/launchbadge/sqlx at revision
+003b698e99e024f3621b8043a2426fde5b741171. Original license texts,
+finite source hashes and the SQLite dependency/plan configuration changes are in
+third-party/sqlx-sqlite/{LICENSE-APACHE,LICENSE-MIT,upstream.json,SOURCE.md}.
+
+Termina terminal input source (adapted, MIT OR MPL-2.0)
+
+third-party/termina contains Termina 0.4.0 from
+https://github.com/helix-editor/termina at revision
+7be7389fd3509d508a66a7e887aa9935e037b801, used under its MIT license option.
+Original MIT and MPL license texts, the Crossterm and TermWiz MIT notices,
+finite source hashes and the bounded CSI input modifications are preserved in
+third-party/termina/{LICENSE-MIT,LICENSE-MPL,README.md,upstream.json,SOURCE.md}.
+
+gix-index long-path source (adapted, Apache License 2.0 OR MIT)
+
+third-party/gix-index contains gix-index 0.58.0 from
+https://github.com/GitoxideLabs/gitoxide at revision
+dd39fb66e3b1551c9fe849043e39b357a9799ca1. Original license texts,
+finite source hashes and the version 2/3 pathname-padding correction are in
+third-party/gix-index/{LICENSE-APACHE,LICENSE-MIT,upstream.json,SOURCE.md}.
+
+gix-discover repository discovery source (adapted, Apache License 2.0 OR MIT)
+
+third-party/gix-discover contains gix-discover 0.57.1 from
+https://github.com/GitoxideLabs/gitoxide at revision
+dd39fb66e3b1551c9fe849043e39b357a9799ca1. Original license texts,
+finite source hashes and the repository I/O error preservation are in
+third-party/gix-discover/{LICENSE-APACHE,LICENSE-MIT,upstream.json,SOURCE.md}.
+
+Lucide Workbench icons (ISC and MIT)
+
+products/maka/workbench/app/lucide.ts contains selected geometry from
+lucide-static 1.61.0 (https://www.npmjs.com/package/lucide-static/v/1.61.0),
+generated by products/maka/workbench/scripts/lucide.py from icon-nodes.json.
+The selected icons are listed in that script. Icon.tsx draws these on the
+original 24-point grid, with filled transport controls, a custom unread dot and the retained first-party
+Markdown mark.
+The data generator and Canvas renderer are adapted from the NSH Gallery
+(third-party/nsh/examples/gallery/scripts/lucide.py and icons.tsx; see NSH
+upstream records).
+
+ISC License
+
+Copyright (c) 2026 Lucide Icons and Contributors
+
+Permission to use, copy, modify, and/or distribute this software for any
+purpose with or without fee is hereby granted, provided that the above
+copyright notice and this permission notice appear in all copies.
+
+THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+
+---
+
+The following Lucide icons are derived from the Feather project:
+
+airplay, alert-circle, alert-octagon, alert-triangle, aperture, arrow-down-circle, arrow-down-left, arrow-down-right, arrow-down, arrow-left-circle, arrow-left, arrow-right-circle, arrow-right, arrow-up-circle, arrow-up-left, arrow-up-right, arrow-up, at-sign, calendar, cast, check, chevron-down, chevron-left, chevron-right, chevron-up, chevrons-down, chevrons-left, chevrons-right, chevrons-up, circle, clipboard, clock, code, columns, command, compass, corner-down-left, corner-down-right, corner-left-down, corner-left-up, corner-right-down, corner-right-up, corner-up-left, corner-up-right, crosshair, database, divide-circle, divide-square, dollar-sign, download, external-link, feather, frown, hash, headphones, help-circle, info, italic, key, layout, life-buoy, link-2, link, loader, lock, log-in, log-out, maximize, meh, minimize, minimize-2, minus-circle, minus-square, minus, monitor, moon, more-horizontal, more-vertical, move, music, navigation-2, navigation, octagon, pause-circle, percent, plus-circle, plus-square, plus, power, radio, rss, search, server, share, shopping-bag, sidebar, smartphone, smile, square, table-2, tablet, target, terminal, trash-2, trash, triangle, tv, type, upload, x-circle, x-octagon, x-square, x, zoom-in, zoom-out
+
+The MIT License (MIT) (for the icons listed above)
+
+Copyright (c) 2013-present Cole Bemis
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -810,15 +463,39 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-Desktop renderer vendored source assets
+---
 
-The source archive includes third-party SVG paths and source assets from
-Lobe Icons (MIT), LocalAI (MIT), Simple Icons (CC0-1.0), TDesign Icons (MIT),
-MingCute (Apache-2.0), and Allogo (MIT), used by the desktop renderer. Their file-by-file inventory, immutable upstream revisions,
-copyright notices, and license texts are in:
+OpenCode provider error recognition in
+plugins/agent/model/src/adapters/error/overflow.rs is adapted from
+packages/ai/src/provider-error.ts and packages/ai/src/utils/provider-codes.ts
+at https://github.com/anomalyco/opencode/tree/55276f2108c8853f94cf16dc530e7754a6ce8318.
+The measured-input calibration and background preparation in
+plugins/agent/engine/src/auto_context.rs follow the algorithms in
+packages/core/src/session/compaction.ts and packages/core/src/session/runner/llm.ts
+at the same revision.
 
-  apps/desktop/src/renderer/public/THIRD_PARTY_LICENSES.txt
+MIT License
 
-Additional verbatim license texts referenced by that inventory are in:
+Copyright (c) 2025 opencode
 
-  apps/desktop/resources/licenses/renderer/
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+Pierre Trees file icons and filename rules (@pierre/trees, Apache-2.0).
+The icon artwork from @pierre/vscode-icons is used under the MIT License.
+See scripts/rust/licenses/pierre-vscode-icons.txt.

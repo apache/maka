@@ -1,0 +1,235 @@
+---
+title: View
+description: 最基础的容器元素：布局、背景、边框、阴影、按压处理和手势。
+order: 10
+group: primitives
+demo: el-view
+---
+
+# View
+
+`View` 是每个界面的基本构件：一个原生容器（iOS 和 Mac Catalyst 上是 UIView，Android 上是 ViewGroup），用 flexbox 或 grid 布局子元素，绘制背景、边框、阴影和渐变，并处理按压。按钮、卡片、列表行和整个界面都是 view。Rust 用 `view()` 创建，TSX 用从 `nsh` 导入的 `<View>`。
+
+```rust tabs
+use nsh_core::prelude::*;
+
+fn app() -> impl IntoElement {
+    let liked = signal(false);
+    view()
+        .flex_1()
+        .p_6()
+        .gap_4()
+        .bg(rgb(0xf6f8fa))
+        .child(
+            view()
+                .flex_row()
+                .items_center()
+                .gap_3()
+                .p_4()
+                .rounded(px(16.0))
+                .bg(white())
+                .shadow_md()
+                .child(view().size(px(40.0)).rounded_full().bg(rgb(0x8250df)))
+                .child(text("一张卡片").flex_1().text_base())
+                .child(
+                    view()
+                        .hit_slop(EdgeInsets::all(px(8.0)))
+                        .active(|s| s.opacity(0.5))
+                        .on_press(move || liked.update(|l| *l = !*l))
+                        .child(text(move || if liked.get() { "♥" } else { "♡" }).text_size(px(22.0))),
+                ),
+        )
+}
+```
+
+```tsx tabs
+import { mount, signal, Text, View } from "nsh";
+
+function App() {
+  const liked = signal(false);
+  return (
+    <View style={{ flex: 1, padding: 24, gap: 16, backgroundColor: "#f6f8fa" }}>
+      <View
+        style={{
+          backgroundColor: "#ffffff",
+          borderRadius: 16,
+          padding: 16,
+          boxShadow: "0 4px 12px rgba(0, 0, 0, 0.08)",
+          flexDirection: "row",
+          alignItems: "center",
+          gap: 12,
+        }}
+      >
+        <View style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: "#8250df" }} />
+        <Text style={{ flex: 1, fontSize: 16 }}>一张卡片</Text>
+        <View onPress={() => liked.set(!liked())} activeStyle={{ opacity: 0.5 }} hitSlop={8}>
+          <Text style={{ fontSize: 22 }}>{liked() ? "♥" : "♡"}</Text>
+        </View>
+      </View>
+    </View>
+  );
+}
+
+mount(App);
+```
+
+## 布局
+
+view 用 flexbox 布局子元素，默认值为：`flexDirection: "column"`、`flexShrink: 0`、`alignContent: "flex-start"`、`position: "relative"`。`display: "grid"`（Rust 中为 `.grid()`）切换为 CSS grid，`display: "block"` 切换为块布局。尺寸单位是点。参见[布局](../docs/layout.md)和[样式参考](../modules/style-reference.md)。
+
+`display: "flex"` 遵循 CSS：无论在样式中，还是作为 `flex` 类和 Rust 的 `.flex()`，它都是横向排列，除非设置了方向（`flexDirection: "column"`、`flex-col`、`.flex_col()`）。未设置 display 的视图把子元素纵向排列。
+
+## 属性
+
+`View` 有一个自己的属性 `selectable`（Rust 中为 `.selectable(true)`）：视图中的文字作为一个选区一起选择（[文字选择](./text-selection.md)）。其余是[通用属性](./index.md#通用属性)：样式（`style`、`class`、`classList`；Rust 中为 `Styled` 方法）、`disabled`，按压属性（`onPress`、`onLongPress`、`onPressDown`、`onPressUp`、`delayLongPress`、`hitSlop`），状态样式（`activeStyle`、`hoverStyle`、`focusStyle`、`disabledStyle`、`checkedStyle`），`onMouseEnter` / `onMouseMove` / `onMouseLeave`、`onWheel`、`onPinch`、`onMouseUp`、`onContextMenu`，`onFileDragEnter` / `onFileDragLeave` / `onFileDrop`，`focusable`、`captureKeys`、`onKeyDown` / `onKeyUp`、`onLayout`、`ref`、`nativeID`、`testID`，Web 上页面的标记（`web={{ element }}`），手势属性（`pan`、`pinch`、`rotation` 及其事件），触摸与响应者属性，无障碍属性，以及 `ios` / `android` / `desktop`。
+
+## 可选择的视图
+
+设置 `selectable` 后，选区按阅读顺序跨越视图中的 [`Text`](./text.md) 元素和 [`TextView`](./text-view.md)；设置了 `selectable={false}` 的文字不参与，可选择视图中的另一个可选择视图属于外层视图。各平台的手势参见[文字选择](./text-selection.md)。
+
+```tsx
+<View selectable class="gap-3 p-4">
+  <Text>One selection runs from here…</Text>
+  <Text>…to here.</Text>
+</View>
+```
+
+## 按压反馈
+
+带有按压处理函数的 view 就是可按压的。它的反馈由应用决定：按下时的样式，在手指按下期间于原生侧生效，不经过应用代码。`hoverStyle`、`focusStyle` 和 `disabledStyle` 对其他状态同样如此：
+
+```rust tabs
+// 整个视图淡化。
+view().on_press(open).active(|s| s.opacity(0.6))
+
+// 显示背景色；group_active 设置子元素的样式。
+view()
+    .group()
+    .on_press(open)
+    .active(|s| s.bg(rgb(0xe5e7eb)))
+    .child(text("打开").group_active(|s| s.opacity(0.7)))
+
+// 按下时改变任意样式。
+view().on_press(open).bg(rgb(0x2563eb)).active(|s| s.bg(rgb(0x1e40af)).scale(0.95))
+```
+
+```tsx tabs
+// 整个视图淡化。
+<View onPress={open} activeStyle={{ opacity: 0.6 }}>…</View>
+
+// 显示背景色；group-active: 设置子元素的样式。
+<View onPress={open} class="group" activeStyle={{ backgroundColor: "#e5e7eb" }}>
+  <Text class="group-active:opacity-70">打开</Text>
+</View>
+
+// 用 active: 类在按下时改变任意样式。
+<View onPress={open} class="bg-blue-600 active:bg-blue-800 active:scale-95">…</View>
+```
+
+在 Android 上，`android={{ ripple: { color: "#0000001f" } }}`（Rust 中为 `.ripple(Ripple { .. })`）会加上 Material 水波纹（可用 `borderless`、`radius` 和 `foreground` 调整）。
+
+`disabled` 会从原生视图上移除按压监听（既不响应按压，也没有反馈），并应用禁用状态的样式：
+
+```rust tabs
+view()
+    .on_press(submit)
+    .disabled(move || !valid.get())
+    .bg(rgb(0x16a34a))
+    .disabled_style(|s| s.opacity(0.4))
+```
+
+```tsx tabs
+<View onPress={submit} disabled={!valid()} class="bg-green-600 disabled:opacity-40">…</View>
+```
+
+## 事件
+
+| 事件 | Rust | 载荷 | 触发时机 |
+|---|---|---|---|
+| `onPress` | `.on_press` | `PressEvent`（Rust 中无） | 在视图内完成一次点击。 |
+| `onLongPress` | `.on_long_press` | `PressEvent`（Rust 中无） | 手指按住达到 `delayLongPress`（500 ms）。 |
+| `onPressDown` / `onPressUp` | `.on_press_down` / `.on_press_up` | `PressEvent`（Rust 中无） | 手指按下 / 抬起或移出。 |
+| `onMouseEnter` / `onMouseLeave` | `.on_mouse_enter` / `.on_mouse_leave` | `MouseEvent` | 鼠标移到视图（或其内部的视图）上 / 离开视图或窗口（见[悬停](./index.md#悬停)）；`onMouseLeave` 的位置是鼠标最后所在之处。 |
+| `onMouseMove` | `.on_mouse_move` | `MouseEvent` | 鼠标在视图（或其内部的视图）上移动，无论是否按着按键；或鼠标停在那里、没有按键按下时按下或松开了修饰键：`position`、`pagePosition`（`Point`）、`modifiers` 和 `pressedButton`（`"left"`、`"right"`、`"middle"`、`"back"`、`"forward"` 或 `null`）；每帧最多一次。 |
+| `onWheel` | `.on_wheel` | `WheelEvent` | 鼠标滚轮或触控板在视图（或其内部的视图）上滚动：`position`、`pagePosition`、`delta`、`deltaMode`（`"lines"` 或 `"points"`）和 `modifiers`；比指针下方滚动视图更近的监听者接管滚轮（见[滚轮](./index.md#滚轮)）。 |
+| `onPinch` | `.on_pinch` | `PinchEvent` | 触控板在视图（或其内部的视图）上捏合：`position`、`pagePosition`、`delta`（相对上一次事件的缩放变化）、`phase`（`"start"`、`"move"`、`"end"`）和 `modifiers`；macOS、Linux、GPUI 后端和 Safari 支持，从捏合开始到结束（[触控板捏合](./index.md#滚轮)）。 |
+| `onMouseUp` | `.on_mouse_up` | `MouseEvent` | 鼠标按键在视图（或其内部的视图）上松开：`button`、`position`、`pagePosition` 和 `modifiers`；桌面平台、终端和 Web 支持，iOS 和 Android 不报告。视图外松开不会报告（没有指针捕获）。 |
+| `onContextMenu` | `.on_context_menu` | `ContextMenuEvent` | 在视图上请求了上下文菜单：辅助按钮、浏览器中的键盘，或 macOS 和 Windows 上的读屏软件（见[上下文菜单](./index.md#上下文菜单)）。 |
+| `onFileDragEnter` | `.on_file_drag_enter` | `{ uris: string[], mimeTypes: string[] }`（`FileDragEvent`） | 本地文件进入当前桌面拖放目标，附带文件列表及其类型。 |
+| `onFileDragLeave` | `.on_file_drag_leave` | 无 | 本地文件离开当前桌面拖放目标。 |
+| `onFileDrop` | `.on_file_drop` | `{ uris: string[], mimeTypes: string[] }`（`FileDropEvent`） | 本地文件或目录被放到桌面拖放目标。 |
+| `onLayout` | `.on_layout` | `{ bounds }`（`Bounds<Points>`） | 相对父视图的 frame 发生变化。 |
+| `onPanStart` / `onPanEnd` | `.on_pan_start` / `.on_pan_end` | `PanEvent` | 通过 `pan` 绑定的拖动开始 / 结束；系统取消时 `cancelled` 为 true。 |
+| `onPinchStart` / `onPinchEnd` | `.on_pinch_start` / `.on_pinch_end` | `{ scale, velocity }` | 通过 `pinch` 绑定的捏合开始 / 结束。 |
+| `onRotationStart` / `onRotationEnd` | `.on_rotation_start` / `.on_rotation_end` | `{ rotation, velocity }` | 通过 `rotation` 绑定的旋转开始 / 结束。 |
+| `onAccessibilityAction` | `.on_accessibility_action` | `{ actionName }` | 执行了一个自定义无障碍操作。 |
+
+触摸与响应者事件：参见[通用属性](./index.md#原始触摸与响应者系统)。
+
+## 桌面文件拖放
+
+在 AppKit、GTK、Win32 和 GPUI 上，带有 `onFileDrop` 的视图可以接收从其他应用拖入的本地文件和目录。`onFileDragEnter` 和 `onFileDrop` 都接收 `{ uris: string[], mimeTypes: string[] }`，顺序与原生文件列表一致。`uris` 的每项都是绝对 `file:` URL，空格和非 ASCII 字符使用 URL 转义。请解析 URL 获取文件系统路径。`mimeTypes[i]` 是 `uris[i]` 按文件名得出的 MIME 类型（`a.png` 为 `image/png`），文件名看不出类型时（例如目录）为 `""`，与 DOM 的 `File.type` 相同。各平台结果一致，得出它不读取任何文件。
+
+进入时的列表可用于预告文件名、数量与类型（“松开添加 2 张图片”），只传元数据；松手后仍需重新校验文件。AppKit 把 Finder 文件引用解析为路径 URL。GTK 等异步文件列表预加载完成后报告进入，鼠标停住也会通知；离开或重置后的迟到通知会被忽略。跨目标移动时先报告离开，再携同一列表报告进入；`onFileDragLeave` 用于清除预告。Rust 进入回调接收 `&FileDragEvent`，原有的 `||`、`|_: &()|` 和 `Listener<()>` 仍可使用。
+
+```rust tabs
+let hint = signal(String::new());
+let files = signal(Vec::<String>::new());
+
+view()
+    .min_h(px(160.0))
+    .p_6()
+    .on_file_drag_enter(move |event: &FileDragEvent| {
+        let images = event.mime_types.iter().filter(|t| t.starts_with("image/")).count();
+        hint.set(format!("松开添加 {images} 张图片（共 {} 个文件）", event.uris.len()));
+    })
+    .on_file_drag_leave(move || hint.set(String::new()))
+    .on_file_drop(move |event: &FileDropEvent| {
+        files.set(event.uris.clone());
+        hint.set(String::new());
+    })
+    .child(text(move || if hint.get().is_empty() { "将文件拖到这里".into() } else { hint.get() }))
+    .child(text(move || files.get().join("\n")))
+```
+
+```tsx tabs
+const hint = signal("");
+const files = signal<string[]>([]);
+
+<View
+  onFileDragEnter={(event) => {
+    const images = event.mimeTypes.filter((t) => t.startsWith("image/")).length;
+    hint.set(`松开添加 ${images} 张图片（共 ${event.uris.length} 个文件）`);
+  }}
+  onFileDragLeave={() => hint.set("")}
+  onFileDrop={(event) => {
+    files.set(event.uris);
+    hint.set("");
+  }}
+  style={{ minHeight: 160, padding: 24 }}
+>
+  <Text>{hint() || "将文件拖到这里"}</Text>
+  <Text>{files().join("\n")}</Text>
+</View>
+```
+
+最近的、已启用且监听 `onFileDrop` 的祖先视图接收文件，搜索范围止于模态根节点。`disabled` 会移除文件拖入、离开和放下的监听；离开、取消、完成或移除目标会清除当前拖放状态。原生侧根据已挂载的状态同步接受 Copy 操作。应用决定如何读取、打开或传输收到的文件。
+
+文本输入框属于包住它的拖放目标：文件放到输入框的文字上，和放到目标其他位置一样由该目标接收，拖入、离开事件也相同，输入框里的文字保持不变。拖进输入框的文字，以及放到不在任何拖放目标内的输入框上的文件，按平台文本框的方式处理。
+
+## ref 方法
+
+普通 view 的 ref 是 `ViewRef`：`focus()`、`blur()`、`measure()` 和 [`reveal()`](../docs/scrolling.md#把视图滚到可见处)。`ref`（Rust 中为 `.element_ref(&handle)`）拿到它的节点，例如可以传给 `setAccessibilityFocus`（[`nsh` 的无障碍 API](../modules/nsh.md#accessibility)），或者测量它（Rust 中为 `handle.measure()`）。
+
+## 文本中的视图
+
+放在文本里的 view 是行内附件：它坐落在基线上、随文字一起换行，并且可以单独响应按压。参见 [Text](./text.md#行内视图和图片)。
+
+## 平台说明
+
+- `boxShadow` 在所有平台上都会绘制；`android={{ elevation }}` 则改用 Android 的 Material 阴影。在 Android 上阴影需要背景色（背景透明的视图不会投下阴影）。
+- view 上的 `filter`：iOS 支持 `opacity()`、不超过 1 的 `brightness()` 和 `drop-shadow()`（图片支持所有颜色滤镜和 `blur()`）；Android 从 API 31 起全部支持，低于该版本支持颜色滤镜。
+- `backdropFilter: "blur(…)"` 在 iOS 上是系统材质（近似效果），在 Android 上需要 API 31。
+- Android 绘制 `translate`、`scale` 和 `rotate` 变换；斜切（`skew()`、`skewX()`、`skewY()`）在其他平台上生效。
+- `borderCurve: "continuous"`（`.border_curve(BorderCurve::Continuous)`）在两个平台上都会绘制平滑过渡到边的圆角（如同 iOS 应用图标）。
+- `cursor` 样式在有指针的场合生效（Mac Catalyst、连接指针设备的 iPad、桌面平台）。

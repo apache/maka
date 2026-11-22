@@ -1,0 +1,232 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+//! Bounded text pages. A continuation identifies content, never read authority.
+pub(crate) mod page;
+mod resource;
+mod shell;
+mod source;
+mod tool_result;
+pub use page::{PageBudget, ReadPage, TextPageScan};
+pub use resource::{
+    ResourceAddress, SESSION_RESOURCE_PREFIX, imported_tool_result_path,
+    parse_imported_tool_result_path,
+};
+pub use shell::{ReadMetadata, read_shell_page};
+pub(crate) use source::projection_page_with_budget_and_prefix;
+pub use source::{Utf8Page, json_page, projection_page};
+
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+use serde::{Deserialize, Deserializer, Serialize, de::Error as _};
+use std::num::NonZeroUsize;
+
+pub const MAX_PAGE_CHARS: usize = 7_500;
+pub const CELL_READ_PAGE_CHARS: usize = 65_536;
+pub const DESCRIPTION: &str = "Read UTF-8 text, a PNG/JPEG/GIF/WebP image, or a Maka resource by path. Supported Maka resources: maka://session/<id> or session:<id> (reads a Room or Conversation transcript), maka://session/<id>/tool-results/<event-id>, attachment:<id>, and archive:<event-id> (short unique ID prefixes are accepted for attachment/archive). Background shell tasks use ProcessRead, not Read. offset is a 0-based line index and limit is a positive line count; symlinks and parent (..) path components are rejected for workspace files. If next is non-null, pass page.next unchanged to Read to continue; restart with the original path if content changed.";
+const PREFIX: &str = "maka://read/";
+const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ReadInput {
+    #[schemars(length(min = 1))]
+    #[serde(deserialize_with = "nonempty_path")]
+    pub path: String,
+    #[serde(
+        default,
+        deserialize_with = "present_offset",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[schemars(with = "usize", range(max = MAX_SAFE_INTEGER))]
+    pub offset: Option<usize>,
+    #[serde(
+        default,
+        deserialize_with = "present_limit",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[schemars(with = "NonZeroUsize", range(max = MAX_SAFE_INTEGER))]
+    pub limit: Option<NonZeroUsize>,
+}
+
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum ReadError {
+    #[error("Read requires a nonempty path and safe integer line range")]
+    InvalidInput,
+    #[error(
+        "Invalid Read continuation. Copy the complete next object, or restart with the original path"
+    )]
+    InvalidContinuation,
+    #[error("The content changed since the previous page. Read the original path again")]
+    ContentChanged,
+    #[error("Invalid Read continuation position. Copy the complete next object")]
+    InvalidPosition,
+}
+
+#[derive(Clone, Debug)]
+pub struct ReadRequest {
+    path: String,
+    start: Start,
+    limit: Option<NonZeroUsize>,
+}
+
+#[derive(Clone, Debug)]
+enum Start {
+    Line(usize),
+    Continuation { position: usize, digest: String },
+}
+
+impl ReadInput {
+    /// Resolve only the address; the caller must authorize the decoded path.
+    pub fn resolve(&self) -> Result<ReadRequest, ReadError> {
+        if self.path.is_empty()
+            || self.offset.is_some_and(|n| n as u64 > MAX_SAFE_INTEGER)
+            || self
+                .limit
+                .is_some_and(|n| n.get() as u64 > MAX_SAFE_INTEGER)
+        {
+            return Err(ReadError::InvalidInput);
+        }
+        if !self.path.starts_with(PREFIX) {
+            return Ok(ReadRequest {
+                path: self.path.clone(),
+                start: Start::Line(self.offset.unwrap_or(0)),
+                limit: self.limit,
+            });
+        }
+        let invalid = || ReadError::InvalidContinuation;
+        let url = url::Url::parse(&self.path).map_err(|_| invalid())?;
+        let path = String::from_utf8(
+            URL_SAFE_NO_PAD
+                .decode(&url.path()[1..])
+                .map_err(|_| invalid())?,
+        )
+        .map_err(|_| invalid())?;
+        let mut position = None;
+        let mut digest = None;
+        for (key, value) in url.query_pairs() {
+            match key.as_ref() {
+                "at" if position.is_none()
+                    && !value.is_empty()
+                    && value.bytes().all(|c| c.is_ascii_digit()) =>
+                {
+                    let number = value.parse::<u64>().map_err(|_| invalid())?;
+                    if number > MAX_SAFE_INTEGER {
+                        return Err(invalid());
+                    }
+                    position = Some(usize::try_from(number).map_err(|_| invalid())?);
+                }
+                "sha"
+                    if digest.is_none()
+                        && value.len() == 32
+                        && value
+                            .bytes()
+                            .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c)) =>
+                {
+                    digest = Some(value.into_owned())
+                }
+                _ => return Err(invalid()),
+            }
+        }
+        if self.offset.is_some()
+            || path.is_empty()
+            || path.starts_with(PREFIX)
+            || url.fragment().is_some()
+        {
+            return Err(invalid());
+        }
+        Ok(ReadRequest {
+            path,
+            start: Start::Continuation {
+                position: position.ok_or_else(invalid)?,
+                digest: digest.ok_or_else(invalid)?,
+            },
+            limit: self.limit,
+        })
+    }
+}
+
+/// Resource reads must be authorized again when a historical tool result is replayed.
+pub fn reads_history_resource(path: &str) -> bool {
+    let resolved = ReadInput {
+        path: path.to_owned(),
+        offset: None,
+        limit: None,
+    }
+    .resolve();
+    resolved.is_ok_and(|request| {
+        let path = request.path();
+        parse_imported_tool_result_path(path).is_ok_and(|address| address.is_some()) ||
+            matches!(ResourceAddress::parse(path), Ok(Some(address)) if !matches!(address, ResourceAddress::Task(_)))
+    })
+}
+
+impl ReadRequest {
+    pub fn bind_imported_tool_result(
+        &mut self,
+        address: &crate::history::HistoryRowAddress,
+    ) -> Result<(), ReadError> {
+        if self.is_continuation() {
+            return Err(ReadError::InvalidContinuation);
+        }
+        self.path = imported_tool_result_path(address).map_err(|_| ReadError::InvalidInput)?;
+        Ok(())
+    }
+
+    pub fn is_continuation(&self) -> bool {
+        matches!(self.start, Start::Continuation { .. })
+    }
+
+    /// Bind a first page to its resolved identity before issuing continuations.
+    pub fn bind_resource(&mut self, address: &ResourceAddress) -> Result<(), ReadError> {
+        if self.is_continuation() {
+            return Err(ReadError::InvalidContinuation);
+        }
+        self.path = address
+            .canonical_path()
+            .map_err(|_| ReadError::InvalidInput)?;
+        Ok(())
+    }
+
+    pub fn path(&self) -> &str {
+        &self.path
+    }
+}
+
+fn nonempty_path<'de, D: Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+    let path = String::deserialize(d)?;
+    if path.is_empty() {
+        return Err(D::Error::custom(ReadError::InvalidInput));
+    }
+    Ok(path)
+}
+
+fn present_offset<'de, D: Deserializer<'de>>(d: D) -> Result<Option<usize>, D::Error> {
+    let value = u64::deserialize(d)?;
+    if value > MAX_SAFE_INTEGER {
+        return Err(D::Error::custom(ReadError::InvalidInput));
+    }
+    usize::try_from(value).map(Some).map_err(D::Error::custom)
+}
+
+fn present_limit<'de, D: Deserializer<'de>>(d: D) -> Result<Option<NonZeroUsize>, D::Error> {
+    present_offset(d)?
+        .and_then(NonZeroUsize::new)
+        .map(Some)
+        .ok_or_else(|| D::Error::custom("Read limit must be positive"))
+}

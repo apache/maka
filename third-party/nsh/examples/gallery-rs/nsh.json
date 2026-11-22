@@ -1,0 +1,9 @@
+{
+  "name": "Rust Gallery",
+  "id": "com.longbridge.nsh.galleryrs",
+  "icon": "icon.png",
+  "appearance": "system",
+  "theme": "theme.json",
+  "rust": "native",
+  "root": "Gallery"
+}

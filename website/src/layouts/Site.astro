@@ -21,7 +21,7 @@ import '@fontsource-variable/geist';
 import '@fontsource-variable/geist-mono';
 import '../styles/site.css';
 import { Image } from 'astro:assets';
-import logo from '../../../apps/desktop/assets/app-icons/sky.png';
+import logo from '../../../assets/logo.png';
 import incubator from '../assets/incubator.png';
 import Preview from '../components/Preview.astro';
 import { links } from '../copy/links';
@@ -45,7 +45,6 @@ const downloads = `/${copy.locale}/downloads/`;
 const primary = [
   [links.docs, copy.nav.docs],
   [downloads, copy.nav.downloads],
-  [links.eval, copy.nav.benchmarks],
   [links.discussions, copy.nav.community],
   [links.security, copy.nav.security],
 ];

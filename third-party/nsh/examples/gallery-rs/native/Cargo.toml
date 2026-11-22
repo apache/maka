@@ -1,0 +1,26 @@
+[package]
+name = "gallery-native"
+description = "The Rust gallery's components: every demo written in Rust (examples/gallery-rs)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+env_logger.workspace = true
+log.workspace = true
+nsh-core.workspace = true
+nsh-base.workspace = true
+serde_json.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+nsh-platform-linux.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+nsh-platform-macos.workspace = true
+
+[target.'cfg(target_os = "windows")'.dependencies]
+nsh-platform-windows.workspace = true

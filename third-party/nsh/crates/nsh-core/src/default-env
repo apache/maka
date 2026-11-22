@@ -1,0 +1,44 @@
+# Environment variables every NSH application can read from
+# `process.env` without listing them in `capabilities.process.env`.
+#
+# One name per line, in upper case; `#` starts a comment. Compiled into the
+# runtime by `access.rs`, whose tests check every entry. A name matches
+# regardless of case, under the spelling the environment uses.
+#
+# A variable belongs here only when it is presentation metadata: it tells an
+# app how to format text and time, never who the user is, where their files
+# live or how to reach anything. So the user and machine names (`USER`,
+# `HOME`, `HOSTNAME`, ...), paths (`PATH`, `TMPDIR`, `XDG_*_HOME`,
+# `XDG_RUNTIME_DIR`, `APPDATA`, ...: most embed the user name), proxies
+# (`HTTP_PROXY` and friends, whose URLs can carry a user name and password)
+# and session addresses (`DISPLAY`, `DBUS_SESSION_BUS_ADDRESS`,
+# `SSH_AUTH_SOCK`) are left out. An application that needs one asks for it by
+# name in its manifest, where the user and the embedding app can see it.
+
+# Language and time.
+LANG
+LANGUAGE
+LC_ALL
+LC_ADDRESS
+LC_COLLATE
+LC_CTYPE
+LC_IDENTIFICATION
+LC_MEASUREMENT
+LC_MESSAGES
+LC_MONETARY
+LC_NAME
+LC_NUMERIC
+LC_PAPER
+LC_TELEPHONE
+LC_TIME
+TZ
+
+# The terminal's capabilities (colour output of command-line tools).
+TERM
+COLORTERM
+
+# The kind of desktop and machine, for following its conventions.
+XDG_CURRENT_DESKTOP
+XDG_SESSION_TYPE
+DESKTOP_SESSION
+PROCESSOR_ARCHITECTURE

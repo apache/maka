@@ -1,0 +1,644 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+//! Small request overlays over a fixed, already projected history view.
+use maka_agent_facts::context::PreparedContextBreakdown;
+use maka_agent_facts::model::prompt_source::source::{
+    MessageMetadata, MessageRecipe, MessageSource, NextRecipe, RecipeCursor, RecipeSource,
+};
+use maka_model::prompt::{Prompt, PromptCursor, PromptSource};
+use std::{collections::VecDeque, sync::Arc};
+mod media;
+mod owned_overlay;
+mod wire;
+pub(crate) use owned_overlay::OwnedOverlay;
+
+#[derive(Clone)]
+pub struct PreparedPrompt {
+    body: Prompt,
+    media_view: Option<Arc<media::MediaView>>,
+    resources: Option<maka_model::ModelPreparationResources>,
+    arena: Option<crate::history::capture_arena::CaptureArena>,
+    resident_bytes: usize,
+    preparation: Option<Arc<crate::history::preparation::RequestPreparation>>,
+    wire: Option<maka_agent_facts::model::prompt_source::PreparedWire>,
+    system: Option<OwnedOverlay>,
+    prefix: Arc<Vec<OwnedOverlay>>,
+    suffix: Arc<Vec<OwnedOverlay>>,
+    recipe_source: Option<Arc<dyn MessageSource>>,
+    overlay_owner: Option<Arc<OverlayOwner>>,
+    overlay_resident_bytes: usize,
+}
+
+impl PreparedPrompt {
+    pub fn new(body: Prompt) -> Self {
+        let recipe_source = body.recipes().cloned();
+        Self {
+            body,
+            media_view: None,
+            resources: None,
+            arena: None,
+            resident_bytes: 0,
+            preparation: None,
+            wire: None,
+            system: None,
+            prefix: Arc::new(Vec::new()),
+            suffix: Arc::new(Vec::new()),
+            recipe_source,
+            overlay_owner: None,
+            overlay_resident_bytes: 0,
+        }
+    }
+
+    pub(crate) fn from_canonical(
+        body: Prompt,
+        arena: crate::history::capture_arena::CaptureArena,
+        resources: maka_model::ModelPreparationResources,
+        preparation: Arc<crate::history::preparation::RequestPreparation>,
+        resident_bytes: usize,
+    ) -> Self {
+        let mut prompt = Self::new(body);
+        prompt.resources = Some(resources);
+        prompt.resident_bytes = resident_bytes;
+        prompt.preparation = Some(preparation);
+        prompt.arena = Some(arena);
+        prompt
+    }
+
+    pub fn with_frozen_transport(
+        mut self,
+        instructions: Option<&str>,
+        normalization: Option<maka_model::ProviderKind>,
+    ) -> Self {
+        if let Some(instructions) = instructions {
+            self.body = self.body.with_instructions(instructions);
+        }
+        if let Some(normalization) = normalization {
+            self.body = self.body.with_normalization(normalization);
+        }
+        self
+    }
+
+    pub fn with_resources(mut self, resources: maka_model::ModelPreparationResources) -> Self {
+        self.resources = Some(resources);
+        self
+    }
+
+    pub fn active(&self) -> Option<Arc<maka_capabilities::model_preparation::ActivePreparation>> {
+        self.preparation
+            .as_ref()
+            .and_then(|preparation| preparation.active())
+    }
+    pub fn with_preparation_from(mut self, original: &Self) -> Self {
+        self.preparation = original.preparation.clone();
+        self.overlay_owner = original.overlay_owner.clone();
+        self.overlay_resident_bytes = 0;
+        self
+    }
+    pub fn without_wire(&self) -> Self {
+        let mut source = self.clone();
+        source.wire = None;
+        source
+    }
+    pub async fn promote(
+        &self,
+        peak: usize,
+        cancellation: &tokio_util::sync::CancellationToken,
+    ) -> Result<(), crate::RunError> {
+        let preparation = self
+            .preparation
+            .as_ref()
+            .ok_or_else(|| crate::RunError::Internal("source lacks its staging account".into()))?;
+        let peak = peak
+            .checked_add(self.media_view.as_ref().map_or(0, |view| view.peak_bytes()))
+            .ok_or_else(|| {
+                crate::RunError::Preparation(std::io::Error::other(
+                    "media preparation peak overflows",
+                ))
+            })?;
+        preparation
+            .promote(peak, cancellation)
+            .await
+            .map_err(crate::RunError::preparation)?;
+        if let Some(view) = &self.media_view {
+            view.materialize(self.active().expect("promoted request"), cancellation)
+                .await?;
+        }
+        Ok(())
+    }
+    pub fn resident_bytes(&self) -> usize {
+        self.resident_bytes
+    }
+    pub fn backed_wire_bytes() -> usize {
+        wire::backed_resident_bytes()
+    }
+    pub(crate) fn plan_directory(
+        &self,
+        bytes: usize,
+    ) -> std::io::Result<maka_model::DirectoryLease> {
+        self.preparation
+            .as_ref()
+            .ok_or_else(|| std::io::Error::other("summary source lacks its staging account"))?
+            .plan_directory(bytes)
+    }
+    pub fn with_resident_bytes(mut self, bytes: usize) -> Self {
+        self.resident_bytes = bytes;
+        self
+    }
+    pub fn is_generated(&self) -> bool {
+        self.body.memory_messages().is_some()
+    }
+
+    pub fn resources(&self) -> Option<&maka_model::ModelPreparationResources> {
+        self.resources.as_ref()
+    }
+    pub(crate) fn arena(&self) -> Option<&crate::history::capture_arena::CaptureArena> {
+        self.arena.as_ref()
+    }
+    pub(crate) fn with_arena(mut self, arena: crate::history::capture_arena::CaptureArena) -> Self {
+        self.arena = Some(arena);
+        self
+    }
+    pub fn cleanup(&self) -> Arc<dyn maka_capabilities::http::UploadCleanup> {
+        Arc::new(MaterializationCleanup(self.arena.clone()))
+    }
+
+    pub async fn close(&self) -> std::io::Result<()> {
+        if let Some(arena) = &self.arena {
+            arena.close().await?;
+        }
+        Ok(())
+    }
+
+    pub fn overlay_plan_bytes(system: bool, checkpoint: bool, suffixes: usize) -> usize {
+        let adapters = Self::overlay_metadata_bytes(system, usize::from(checkpoint), suffixes);
+        if adapters == 0 {
+            return 0;
+        }
+        // The source template and one attempt/fit view can coexist.
+        2 * adapters
+            + usize::from(checkpoint) * OwnedOverlay::checkpoint_metadata_bytes()
+            + suffixes * OwnedOverlay::user_metadata_bytes()
+            + 2 * (2 * std::mem::size_of::<usize>() + std::mem::size_of::<Vec<OwnedOverlay>>())
+    }
+
+    pub async fn initialize_overlays(
+        &mut self,
+        system: Option<Arc<String>>,
+        summary: bool,
+        instruction: Option<Arc<String>>,
+    ) -> Result<(), crate::RunError> {
+        let bytes = Self::overlay_plan_bytes(
+            system.is_some(),
+            false,
+            usize::from(summary) + usize::from(instruction.is_some()),
+        );
+        if bytes == 0 {
+            return Ok(());
+        }
+        let preparation = self.preparation.as_ref().ok_or_else(|| {
+            crate::RunError::Internal("request overlays lack staging account".into())
+        })?;
+        let owner = Arc::new(OverlayOwner {
+            _lease: preparation
+                .plan_directory(bytes)
+                .map_err(crate::RunError::Preparation)?,
+        });
+        self.overlay_owner = Some(owner.clone());
+        self.overlay_resident_bytes = bytes;
+        let arena = self.arena.as_ref().ok_or_else(|| {
+            crate::RunError::Internal("request overlays lack original worker".into())
+        })?;
+        let (system, instruction) = arena
+            .with_writer(move |_| {
+                Ok((
+                    system.map(|text| OwnedOverlay::system(text).bound(owner.clone())),
+                    instruction.map(|text| OwnedOverlay::user(text).bound(owner)),
+                ))
+            })
+            .await
+            .map_err(crate::RunError::Preparation)?;
+        self.system = system;
+        self.suffix = Arc::new(instruction.into_iter().collect());
+        self.rebuild_recipes();
+        Ok(())
+    }
+
+    fn rebuild_recipes(&mut self) {
+        let Some(body) = self.body.recipes().cloned() else {
+            return;
+        };
+        if self.system.is_none() && self.prefix.is_empty() && self.suffix.is_empty() {
+            self.recipe_source = Some(body);
+            return;
+        }
+        self.recipe_source = Some(Arc::new(RecipeOverlay {
+            _owner: self.overlay_owner.clone(),
+            segments: [
+                self.system.as_ref().map(OwnedOverlay::source),
+                (!self.prefix.is_empty())
+                    .then(|| Arc::new(OwnedList(self.prefix.clone())) as Arc<dyn MessageSource>),
+                Some(body),
+                (!self.suffix.is_empty())
+                    .then(|| Arc::new(OwnedList(self.suffix.clone())) as Arc<dyn MessageSource>),
+            ],
+        }));
+    }
+
+    pub async fn fit_image_request(
+        &mut self,
+        language: maka_agent_facts::language::Language,
+        provider: &maka_model::ProviderConfig,
+        options: &serde_json::Value,
+        tools: &[Arc<maka_model::ToolDefinition>],
+        max_output_tokens: Option<u64>,
+        cancellation: &tokio_util::sync::CancellationToken,
+    ) -> Result<(), crate::RunError> {
+        media::fit_request(
+            self,
+            language,
+            provider,
+            options,
+            tools,
+            max_output_tokens,
+            cancellation,
+        )
+        .await
+    }
+
+    pub async fn prepare_media(
+        &mut self,
+        provider: &maka_model::ProviderConfig,
+        cancellation: &tokio_util::sync::CancellationToken,
+    ) -> Result<(), crate::RunError> {
+        media::prepare(self, provider, cancellation).await
+    }
+
+    pub async fn compile_wire(
+        &mut self,
+        language: maka_agent_facts::language::Language,
+        provider: &maka_model::ProviderConfig,
+        options: &serde_json::Value,
+        tools: &[Arc<maka_model::ToolDefinition>],
+        cancellation: &tokio_util::sync::CancellationToken,
+    ) -> Result<(), crate::RunError> {
+        wire::compile(self, language, provider, options, tools, cancellation).await
+    }
+
+    pub fn breakdown(&self) -> PreparedContextBreakdown {
+        let mut result = self.body.breakdown().clone();
+        for overlay in self
+            .system
+            .iter()
+            .chain(self.prefix.iter())
+            .chain(self.suffix.iter())
+        {
+            result.accumulate(overlay.breakdown());
+        }
+        result
+    }
+
+    /// New request allocations; frozen input DTO text is shared outside this account.
+    pub fn overlay_bytes(&self) -> usize {
+        self.overlay_resident_bytes
+    }
+    pub fn overlay_metadata_bytes(system: bool, prefix: usize, suffix: usize) -> usize {
+        if !system && prefix == 0 && suffix == 0 {
+            return 0;
+        }
+        let arc_header = 2 * std::mem::size_of::<usize>();
+        usize::from(system)
+            * (OwnedOverlay::system_metadata_bytes()
+                + OwnedOverlay::system_binding_metadata_bytes())
+            + (prefix + suffix)
+                * (OwnedOverlay::user_binding_metadata_bytes()
+                    + std::mem::size_of::<OwnedOverlay>())
+            + (usize::from(prefix != 0) + usize::from(suffix != 0))
+                * (arc_header + std::mem::size_of::<OwnedList>())
+            + arc_header
+            + std::mem::size_of::<RecipeOverlay>()
+            + arc_header
+            + std::mem::size_of::<OverlayOwner>()
+    }
+    pub fn freeze_overlays(&mut self) -> Result<(), crate::RunError> {
+        if self.overlay_owner.is_some() {
+            return Ok(());
+        }
+        let bytes = Self::overlay_metadata_bytes(
+            self.system.is_some(),
+            self.prefix.capacity(),
+            self.suffix.capacity(),
+        );
+        if bytes == 0 {
+            return Ok(());
+        }
+        let preparation = self.preparation.as_ref().ok_or_else(|| {
+            crate::RunError::Internal("request overlays lack their staging account".into())
+        })?;
+        self.recipe_source = None;
+        let owner = Arc::new(OverlayOwner {
+            _lease: preparation
+                .directory(bytes)
+                .map_err(crate::RunError::Preparation)?,
+        });
+        if let Some(system) = &mut self.system {
+            *system = system.bound(owner.clone());
+        }
+        for overlay in Arc::make_mut(&mut self.prefix)
+            .iter_mut()
+            .chain(Arc::make_mut(&mut self.suffix).iter_mut())
+        {
+            *overlay = overlay.bound(owner.clone());
+        }
+        self.overlay_owner = Some(owner);
+        self.overlay_resident_bytes = bytes;
+        self.rebuild_recipes();
+        Ok(())
+    }
+
+    pub fn model(&self) -> Prompt {
+        #[derive(serde::Serialize)]
+        struct Identity<'a> {
+            domain: &'static str,
+            body: &'a str,
+            system: Option<&'a str>,
+            prefix: Identities<'a>,
+            suffix: Identities<'a>,
+        }
+        let identity = crate::digest(&Identity {
+            domain: "maka.prepared-prompt.v1",
+            body: self.body.identity(),
+            system: self.system.as_ref().map(OwnedOverlay::identity),
+            prefix: Identities(&self.prefix),
+            suffix: Identities(&self.suffix),
+        })
+        .expect("prepared overlays are serializable");
+        let count = self.body.len()
+            + usize::from(self.system.is_some())
+            + self.prefix.len()
+            + self.suffix.len();
+        let mut prompt = if let Some(recipes) = self.recipes() {
+            Prompt::from_recipes(recipes, identity, count, self.breakdown())
+        } else {
+            Prompt::new(
+                Arc::new(Overlay(self.clone())),
+                identity,
+                count,
+                self.breakdown(),
+            )
+        };
+        if let Some(provider) = self.body.normalization() {
+            prompt = prompt.with_normalization(provider.clone());
+        }
+        if let Some(instructions) = self
+            .system
+            .iter()
+            .chain(self.prefix.iter())
+            .chain(self.suffix.iter())
+            .find_map(OwnedOverlay::instructions)
+        {
+            prompt = prompt.with_instruction_source(instructions);
+        } else {
+            prompt = prompt.with_instructions_from(&self.body);
+        }
+        if let Some(wire) = &self.wire {
+            prompt = prompt.with_wire(
+                wire.format,
+                wire.codec.clone(),
+                wire.identity.clone(),
+                wire.source.clone(),
+            );
+        }
+        prompt
+    }
+
+    /// Every clone shares the same frozen overlay directory and body owners.
+    pub fn recipes(&self) -> Option<Arc<dyn MessageSource>> {
+        self.recipe_source.clone()
+    }
+
+    pub fn open(&self) -> Box<dyn PromptCursor> {
+        if self.is_generated() {
+            Overlay(self.clone()).open()
+        } else {
+            self.model().open()
+        }
+    }
+}
+
+struct Identities<'a>(&'a [OwnedOverlay]);
+impl serde::Serialize for Identities<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_seq(self.0.iter().map(OwnedOverlay::identity))
+    }
+}
+struct OwnedList(Arc<Vec<OwnedOverlay>>);
+impl RecipeSource<MessageRecipe> for OwnedList {
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+    fn open(&self, start: usize) -> Box<dyn RecipeCursor<MessageRecipe>> {
+        Box::new(OwnedCursor {
+            entries: self.0.clone(),
+            position: start,
+        })
+    }
+}
+impl MessageSource for OwnedList {
+    fn open_metadata(&self, start: usize) -> Box<dyn RecipeCursor<MessageMetadata>> {
+        Box::new(OwnedMetadata {
+            entries: self.0.clone(),
+            position: start,
+        })
+    }
+}
+struct OwnedCursor {
+    entries: Arc<Vec<OwnedOverlay>>,
+    position: usize,
+}
+impl RecipeCursor<MessageRecipe> for OwnedCursor {
+    fn next(&mut self) -> NextRecipe<'_, MessageRecipe> {
+        Box::pin(async move {
+            let result = self.entries.get(self.position).map(OwnedOverlay::recipe);
+            self.position += usize::from(result.is_some());
+            Ok(result)
+        })
+    }
+}
+struct OwnedMetadata {
+    entries: Arc<Vec<OwnedOverlay>>,
+    position: usize,
+}
+impl RecipeCursor<MessageMetadata> for OwnedMetadata {
+    fn next(&mut self) -> NextRecipe<'_, MessageMetadata> {
+        Box::pin(async move {
+            let result = self
+                .entries
+                .get(self.position)
+                .map(|entry| entry.metadata(self.position));
+            self.position += usize::from(result.is_some());
+            Ok(result)
+        })
+    }
+}
+
+struct OverlayOwner {
+    _lease: maka_model::DirectoryLease,
+}
+struct RecipeOverlay {
+    _owner: Option<Arc<OverlayOwner>>,
+    segments: [Option<Arc<dyn MessageSource>>; 4],
+}
+impl RecipeSource<MessageRecipe> for RecipeOverlay {
+    fn len(&self) -> usize {
+        self.segments
+            .iter()
+            .flatten()
+            .map(|segment| segment.len())
+            .sum()
+    }
+    fn open(&self, start: usize) -> Box<dyn RecipeCursor<MessageRecipe>> {
+        let mut offset = 0;
+        let mut cursors = VecDeque::new();
+        for segment in self.segments.iter().flatten() {
+            if start < offset + segment.len() {
+                cursors.push_back(segment.open(start.saturating_sub(offset)));
+            }
+            offset += segment.len();
+        }
+        Box::new(RecipeOverlayCursor { cursors })
+    }
+}
+impl MessageSource for RecipeOverlay {
+    fn open_metadata(&self, start: usize) -> Box<dyn RecipeCursor<MessageMetadata>> {
+        let mut offset = 0;
+        let mut cursors = VecDeque::new();
+        for segment in self.segments.iter().flatten() {
+            if start < offset + segment.len() {
+                cursors.push_back((offset, segment.open_metadata(start.saturating_sub(offset))));
+            }
+            offset += segment.len();
+        }
+        Box::new(RecipeMetadataCursor { cursors })
+    }
+}
+struct RecipeMetadataCursor {
+    cursors: VecDeque<(usize, Box<dyn RecipeCursor<MessageMetadata>>)>,
+}
+impl RecipeCursor<MessageMetadata> for RecipeMetadataCursor {
+    fn next(&mut self) -> NextRecipe<'_, MessageMetadata> {
+        Box::pin(async move {
+            loop {
+                let Some((offset, cursor)) = self.cursors.front_mut() else {
+                    return Ok(None);
+                };
+                if let Some(mut message) = cursor.next().await? {
+                    message.message_index += *offset;
+                    return Ok(Some(message));
+                }
+                self.cursors.pop_front();
+            }
+        })
+    }
+}
+struct RecipeOverlayCursor {
+    cursors: VecDeque<Box<dyn RecipeCursor<MessageRecipe>>>,
+}
+impl RecipeCursor<MessageRecipe> for RecipeOverlayCursor {
+    fn next(&mut self) -> NextRecipe<'_, MessageRecipe> {
+        Box::pin(async move {
+            loop {
+                let Some(cursor) = self.cursors.front_mut() else {
+                    return Ok(None);
+                };
+                if let Some(message) = cursor.next().await? {
+                    return Ok(Some(message));
+                }
+                self.cursors.pop_front();
+            }
+        })
+    }
+}
+
+struct Overlay(PreparedPrompt);
+impl PromptSource for Overlay {
+    fn open(&self) -> Box<dyn PromptCursor> {
+        Box::new(Cursor {
+            system: self.0.system.clone(),
+            prefix: self.0.prefix.clone(),
+            prefix_offset: 0,
+            body: self.0.body.open(),
+            suffix: self.0.suffix.clone(),
+            body_done: false,
+            offset: 0,
+        })
+    }
+}
+struct Cursor {
+    system: Option<OwnedOverlay>,
+    prefix: Arc<Vec<OwnedOverlay>>,
+    prefix_offset: usize,
+    body: Box<dyn PromptCursor>,
+    suffix: Arc<Vec<OwnedOverlay>>,
+    body_done: bool,
+    offset: usize,
+}
+impl PromptCursor for Cursor {
+    fn next(&mut self) -> maka_agent_facts::model::prompt_source::Next<'_> {
+        Box::pin(async move {
+            if let Some(system) = self.system.take() {
+                return Ok(Some(system.owned_message()));
+            }
+            if let Some(message) = self.prefix.get(self.prefix_offset) {
+                self.prefix_offset += 1;
+                return Ok(Some(message.owned_message()));
+            }
+            if !self.body_done {
+                if let Some(message) = self.body.next().await? {
+                    return Ok(Some(message));
+                }
+                self.body_done = true;
+            }
+            let message = self
+                .suffix
+                .get(self.offset)
+                .map(OwnedOverlay::owned_message);
+            self.offset += usize::from(message.is_some());
+            Ok(message)
+        })
+    }
+}
+
+struct MaterializationCleanup(Option<crate::history::capture_arena::CaptureArena>);
+impl maka_capabilities::http::UploadCleanup for MaterializationCleanup {
+    fn close(
+        &self,
+    ) -> futures_util::future::BoxFuture<'_, Result<(), maka_capabilities::http::Error>> {
+        Box::pin(async move {
+            if let Some(arena) = &self.0 {
+                arena.close().await.map_err(|error| {
+                    maka_capabilities::http::Error::Failed(format!(
+                        "materialization close failed: {error}"
+                    ))
+                })?;
+            }
+            Ok(())
+        })
+    }
+}

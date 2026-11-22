@@ -1,0 +1,78 @@
+[package]
+name = "nsh-cli"
+description = "The nsh command line tool: build, package and run apps."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+readme.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "nsh"
+path = "src/main.rs"
+
+[dependencies]
+dunce.workspace = true
+semver.workspace = true
+nsh-bundler = { workspace = true, features = ["bundle"] }
+nsh-core = { workspace = true, features = ["declarations", "websocket", "updater"] }
+# A Rust app's translations (`locales/`), compiled into its runners.
+nsh-i18n = { workspace = true, features = ["build"] }
+nsh-engine = { workspace = true, features = ["js"] }
+nsh-dev = { workspace = true, features = ["server"] }
+nsh-js = { workspace = true, features = ["zlib", "crypto"] }
+nsh-base = { workspace = true, features = ["editor", "emoji-picker", "highlight", "plot", "rich-editor", "term"] }
+nsh-package.workspace = true
+nsh-testing = { workspace = true, features = ["agent", "bundle"] }
+crossbeam-channel.workspace = true
+anyhow.workspace = true
+clap = { workspace = true, features = ["env"] }
+notify.workspace = true
+log.workspace = true
+libc.workspace = true
+ureq.workspace = true
+ring.workspace = true
+nsh-updater.workspace = true
+serde.workspace = true
+tungstenite.workspace = true
+serde_json.workspace = true
+serde_ignored.workspace = true
+serde_path_to_error.workspace = true
+plist.workspace = true
+zip.workspace = true
+brotli.workspace = true
+flate2.workspace = true
+tar.workspace = true
+sha2.workspace = true
+base64.workspace = true
+image.workspace = true
+wasmparser.workspace = true
+# `--asset-url`: checked as an http(s) URL, its origin allowed to `connect-src`.
+url.workspace = true
+
+[build-dependencies]
+serde_json.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = [
+  "Win32_Foundation",
+  "Win32_NetworkManagement_IpHelper",
+  "Win32_NetworkManagement_Ndis",
+  "Win32_Networking_WinSock",
+  "Win32_Security",
+  "Win32_System_Console",
+  "Win32_System_JobObjects",
+  "Win32_System_LibraryLoader",
+  "Win32_System_Threading",
+] }
+
+[dev-dependencies]
+# The syntaxes file the web runtime fetches must be a dump its syntect reads.
+syntect.workspace = true
+# Pages loaded at the app's paths resolve their files as browsers do.
+url.workspace = true

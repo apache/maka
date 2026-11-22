@@ -1,0 +1,36 @@
+[package]
+name = "nsh-tui-host"
+description = "Development host that runs a prebuilt Native Shell bundle in a terminal."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+readme.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+nsh-core.workspace = true
+base64.workspace = true
+nsh-platform-tui = { workspace = true, features = ["js", "run-app", "dev"] }
+nsh-engine.workspace = true
+ratatui-core.workspace = true
+ratatui-crossterm.workspace = true
+clap.workspace = true
+log.workspace = true
+
+[dev-dependencies]
+nsh-base.workspace = true
+nsh-dev = { workspace = true, features = ["server"] }
+nsh-bundler = { workspace = true, features = ["bundle"] }
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+# Its bounded poll reader returns on EOF; the default mio reader can spin inside read.
+crossterm = { workspace = true, features = ["use-dev-tty"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = ["Win32_System_Console"] }

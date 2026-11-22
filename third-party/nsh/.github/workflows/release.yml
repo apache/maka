@@ -1,0 +1,484 @@
+name: Release
+
+# Builds the distribution (`cargo xtask dist`: the CLI, the prebuilt runtimes
+# and the embedding SDKs) on macOS, Linux and Windows, and publishes it as a
+# GitHub release.
+#
+# - Pushing a tag `vX.Y.Z` (the workspace version in Cargo.toml) builds every
+#   platform and, once all of them have built, creates a draft release with
+#   their archives; publish it from the releases page.
+# - Running it by hand without a tag builds the archives only (workflow
+#   artifacts): a dry run before tagging, and the check of a change to this
+#   workflow or to how xtask builds the distribution. With a tag it releases
+#   that tag.
+#
+# - Every night it builds the latest `main` and publishes it as the release
+#   `nightly`, a prerelease that is never the latest: `install.sh --nightly`
+#   installs it, `nsh update nightly` switches to it (its CLI is
+#   built with `NSH_CHANNEL=nightly`, and `nsh-release.json` names its
+#   revision). A night without new commits
+#   builds nothing. There is one `nightly` tag, moved to each build's commit,
+#   never a tag per night. Running it by hand with *nightly* publishes one now.
+#   Wednesday (Singapore time) is release day: the scheduled nightly skips it,
+#   and publishing a stable release rebuilds the nightly from the latest
+#   `main` instead, so `install.sh --nightly` is never older than stable.
+#
+# Pull requests and the merge queue never run it: its builds are CI's
+# longest and held the runners every queued pull request waited for.
+#
+# Asset names carry no version (`nsh-macos-arm64.tar.gz`,
+# `nsh-macos-x86_64.tar.gz`, `nsh-linux-x86_64.tar.gz`,
+# `nsh-linux-arm64.tar.gz`, `nsh-windows-x86_64.zip`, `nsh-windows-arm64.zip`,
+# each with a `.sha256`), so `releases/latest/download/<asset>` always
+# resolves: the installers (`website/public/install.sh`, `install.ps1`, also
+# attached to each release), mise's `github:` backend and the Scoop manifest
+# download by that name. Every archive holds one directory, `nsh/`, laid out
+# as `dist/nsh`: a platform's archive the CLI and that machine's runtime, and
+# the components (`nsh-android.tar.gz`, `nsh-web.tar.gz`,
+# `nsh-android-symbols.tar.gz`, `nsh-ios-macos-arm64.tar.gz`,
+# `nsh-gpui-<platform>.tar.gz`, `nsh-tui-<platform>.tar.gz`) the other
+# runtimes, which an installed nsh downloads from its own release
+# (`nsh component`). The embedding SDKs are `nsh-embed-ios.zip` and
+# `nsh-embed-android.zip`. Publishing the draft runs `packages.yml` (Homebrew).
+
+on:
+  push:
+    tags: ["v*"]
+  # Publishing a stable release refreshes the nightly (see above).
+  release:
+    types: [published]
+  schedule:
+    # 18:30 UTC, 02:30 in Singapore: after the day's merges.
+    - cron: "30 18 * * *"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to release (e.g. v0.1.0); empty: build only"
+        required: false
+        type: string
+      nightly:
+        description: "Publish the latest main as the nightly release"
+        required: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ inputs.tag || ((github.event_name == 'schedule' || github.event_name == 'release' || inputs.nightly) && 'nightly') || github.ref_name }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  CARGO_TERM_COLOR: always
+  TAG: ${{ inputs.tag || (github.event_name == 'push' && github.ref_type == 'tag' && github.ref_name) || '' }}
+  NIGHTLY: ${{ github.event_name == 'schedule' || (github.event_name == 'release' && !github.event.release.prerelease) || inputs.nightly == true }}
+
+jobs:
+  # What to build: the tag, the latest main for the nightly (nothing when
+  # the nightly already has it), or the branch the run was started on.
+  plan:
+    name: Plan
+    runs-on: ubuntu-latest
+    # A published prerelease (the nightly itself) is not a stable release.
+    if: github.event_name != 'release' || !github.event.release.prerelease
+    outputs:
+      ref: ${{ steps.plan.outputs.ref }}
+      build: ${{ steps.plan.outputs.build }}
+    steps:
+      - id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if [[ -n "$TAG" && "$NIGHTLY" == true ]]; then
+            echo "::error::a run releases a tag or the nightly, not both"
+            exit 1
+          fi
+          build=true
+          if [[ -n "$TAG" ]]; then
+            ref="$TAG"
+          elif [[ "$NIGHTLY" == true ]]; then
+            ref=$(gh api "repos/$GH_REPO/commits/main" --jq .sha)
+            # Release day: the stable release refreshes the nightly once it
+            # is published, so the 02:30 build would only be replaced.
+            if [[ "$GITHUB_EVENT_NAME" == schedule && "$(TZ=Asia/Singapore date +%u)" == 3 ]]; then
+              echo "Wednesday is release day; the stable release refreshes the nightly."
+              build=false
+            fi
+            built=$(gh api "repos/$GH_REPO/commits/nightly" --jq .sha 2> /dev/null || true)
+            if [[ "$ref" == "$built" && "$GITHUB_EVENT_NAME" == schedule ]]; then
+              echo "The nightly already has main ($ref)."
+              build=false
+            fi
+          else
+            ref="$GITHUB_SHA"
+          fi
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "build=$build" >> "$GITHUB_OUTPUT"
+
+  dist:
+    name: dist (${{ matrix.name }})
+    needs: plan
+    if: needs.plan.outputs.build == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        # The CLI, the desktop runtime and the GPUI and terminal hosts are
+        # built for the runner's processor, so each architecture has a runner
+        # of its own. `embed` names the embedding SDK a build releases. The
+        # components the same everywhere (Android, web) come from x86_64
+        # Linux's build alone (`shared`); every other build sets
+        # `NSH_DIST_NO_ANDROID` and `NSH_DIST_NO_WEB` and skips them: built
+        # there, they were thrown away at packing, and cost the macOS and
+        # x86_64 Windows builds 40 to 65 minutes each.
+        include:
+          # The iOS runtimes and SDK need Xcode and Apple silicon; the macOS
+          # runtime is built for this machine. Xcode's iOS 26+ SDK opts apps
+          # into the system's Liquid Glass appearance (deployment stays 15).
+          - name: macos-arm64
+            os: macos-26
+            embed: ios
+          - name: macos-x86_64
+            os: macos-15-intel
+          # Ubuntu 24.04 has GTK 4.14 and Pango 1.52+, what the Linux runtime
+          # needs; its binaries need glibc 2.39 and GTK 4.14 or newer where
+          # they run.
+          - name: linux-x86_64
+            os: ubuntu-24.04
+            embed: android
+            shared: true
+          - name: linux-arm64
+            os: ubuntu-24.04-arm
+          - name: windows-x86_64
+            os: windows-latest
+          - name: windows-arm64
+            os: windows-11-arm
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # A release run builds the tag, never the branch it was started on;
+          # the nightly builds the commit of main the plan saw.
+          ref: ${{ needs.plan.outputs.ref }}
+
+      - name: Check the Apple SDKs
+        if: matrix.embed == 'ios'
+        run: |
+          xcodebuild -version
+          # Catalyst uses the macOS SDK's iOSSupport. Check all three before
+          # spending time building, even if the runner's default Xcode changes.
+          for sdk in iphoneos iphonesimulator macosx; do
+            version=$(xcrun --sdk "$sdk" --show-sdk-version)
+            echo "$sdk SDK: $version ($(xcrun --sdk "$sdk" --show-sdk-path))"
+            if (( ${version%%.*} < 26 )); then
+              echo "::error::$sdk SDK 26 or newer is required for the iOS distribution"
+              exit 1
+            fi
+          done
+
+      - name: Check the version
+        if: env.TAG != ''
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
+          if [[ "$TAG" != "v$version" ]]; then
+            echo "::error::tag $TAG does not match the workspace version $version"
+            exit 1
+          fi
+
+      # Temporary directories (tests, tools) outside the checkout.
+      - name: Set up the environment
+        run: |
+          mkdir -p "$RUNNER_TEMP/tmp"
+          echo "TMPDIR=$RUNNER_TEMP/tmp" >> "$GITHUB_ENV"
+          echo "ARCHIVE=nsh-${{ matrix.name }}" >> "$GITHUB_ENV"
+
+      - name: Set up Windows
+        if: runner.os == 'Windows'
+        run: |
+          # QuickJS is C: bindgen needs libclang, which the image's LLVM has.
+          echo "LIBCLANG_PATH=C:\\Program Files\\LLVM\\bin" >> "$GITHUB_ENV"
+          # rustc can overflow its default stack on the `windows` crate.
+          echo "RUST_MIN_STACK=268435456" >> "$GITHUB_ENV"
+
+      # QuickJS is C (bindgen needs libclang); the Linux runtime links GTK 4,
+      # the GPUI runtime X11, Wayland, xkbcommon, fontconfig and FreeType,
+      # GTK 3 and WebKitGTK 4.1 (web views) and GStreamer (videos).
+      - name: Install clang, GTK 4 and GPUI's libraries
+        if: runner.os == 'Linux' && runner.environment == 'github-hosted'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang llvm libclang-dev libgtk-4-dev libwebkitgtk-6.0-dev \
+            libfontconfig-dev libfreetype-dev libwayland-dev libx11-xcb-dev libxcb1-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev libzstd-dev libgtk-3-dev libwebkit2gtk-4.1-dev \
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
+
+      # The Android runtime: `javac` + `d8` (Java 17), the SDK's
+      # `platforms;android-35` and an NDK (the images have the SDK and NDKs).
+      - uses: actions/setup-java@v4
+        if: ${{ matrix.shared }}
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Install the Android platform
+        if: ${{ matrix.shared }}
+        run: |
+          if [[ ! -f "$ANDROID_HOME/platforms/android-35/android.jar" ]]; then
+            sdkmanager=$(ls "$ANDROID_HOME"/cmdline-tools/latest/bin/sdkmanager* | head -1)
+            yes | "$sdkmanager" "platforms;android-35" > /dev/null || true
+          fi
+          test -f "$ANDROID_HOME/platforms/android-35/android.jar"
+          ls "$ANDROID_HOME/ndk" || true
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      # The web runtime's C code (zstd) needs upstream LLVM: Apple's clang
+      # does not target wasm32. Check the C tools before building runtimes.
+      - name: Set up WebAssembly C tools
+        if: ${{ matrix.shared }}
+        run: |
+          suffix=""
+          if [[ "$RUNNER_OS" == macOS ]]; then
+            brew list llvm > /dev/null 2>&1 || brew install llvm
+            llvm_bin="$(brew --prefix llvm)/bin"
+          elif [[ "$RUNNER_OS" == Windows ]]; then
+            llvm_bin="C:/Program Files/LLVM/bin"
+            suffix=".exe"
+          else
+            llvm_bin=/usr/bin
+          fi
+          cc="$llvm_bin/clang$suffix"
+          ar="$llvm_bin/llvm-ar$suffix"
+          if [[ "$RUNNER_OS" == Windows ]]; then
+            # quickjs-jit-sys canonicalizes its vendored WASI include directory
+            # to a verbatim Windows path. Give clang ordinary drive paths
+            # so nested includes such as bits/alltypes.h resolve correctly.
+            cat > "$RUNNER_TEMP/nsh-wasm-clang.py" <<'PYTHON'
+          import os
+          import subprocess
+          import sys
+
+          def normalize(argument):
+              for prefix in ("-isystem", "-I", "-L", ""):
+                  marker = prefix + "\\\\?\\"
+                  if argument.startswith(marker):
+                      path = argument[len(marker):]
+                      if len(path) > 2 and path[1:3] == ":\\":
+                          return prefix + path.replace("\\", "/")
+              return argument
+
+          if __name__ == "__main__":
+              sys.exit(subprocess.call([os.environ["NSH_WASM_CLANG"], *map(normalize, sys.argv[1:])]))
+          PYTHON
+            printf '@echo off\r\npython "%%~dp0nsh-wasm-clang.py" %%*\r\n' > "$RUNNER_TEMP/nsh-wasm-clang.cmd"
+            export NSH_WASM_CLANG="$cc"
+            echo "NSH_WASM_CLANG=$cc" >> "$GITHUB_ENV"
+            cc="$(cygpath -m "$RUNNER_TEMP")/nsh-wasm-clang.cmd"
+          fi
+          printf 'int nsh_wasm_probe(void) { return 0; }\n' | \
+            "$cc" --target=wasm32-unknown-unknown -x c -c - -o "$RUNNER_TEMP/wasm-probe.o"
+          "$ar" rcs "$RUNNER_TEMP/wasm-probe.a" "$RUNNER_TEMP/wasm-probe.o"
+          echo "CC_wasm32_unknown_unknown=$cc" >> "$GITHUB_ENV"
+          echo "AR_wasm32_unknown_unknown=$ar" >> "$GITHUB_ENV"
+
+      - name: Cache Cargo
+        if: runner.environment == 'github-hosted'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-release-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-release-cargo-
+
+      # A self-hosted runner builds with huacnlee/cargo (AGENTS.md
+      # "Commands"), whose build directory outside the checkout survives
+      # the checkout's clean: a release rebuilds only what changed.
+      - name: Cargo
+        if: runner.environment == 'self-hosted'
+        uses: ./.github/actions/cargo
+        with:
+          cache: release-${{ matrix.name }}
+
+      # A nightly CLI knows its channel: `nsh update` stays on it.
+      # The release profile's fat LTO over one codegen unit links each of
+      # the distribution's ~15 executables single-threaded, 5 to 25 minutes
+      # apiece: thin LTO over 16 units takes a fraction of that for little
+      # run-time cost. The web profile, which inherits release, keeps fat
+      # LTO: what pages download is built for size (docs/dev/web.md).
+      - name: Build the distribution
+        env:
+          CARGO_PROFILE_RELEASE_LTO: thin
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+          CARGO_PROFILE_WEB_LTO: fat
+          CARGO_PROFILE_WEB_CODEGEN_UNITS: "1"
+          NSH_CHANNEL: ${{ env.NIGHTLY == 'true' && 'nightly' || 'stable' }}
+          NSH_DIST_NO_ANDROID: ${{ !matrix.shared && '1' || '' }}
+          NSH_DIST_NO_WEB: ${{ !matrix.shared && '1' || '' }}
+        # `--locked` for xtask's own run, which resolves the main workspace;
+        # xtask's builds pass it on themselves (crates/xtask/src/cargo.rs).
+        run: cargo --locked xtask dist -v
+
+      - name: Check the iOS runtime build versions
+        if: matrix.embed == 'ios'
+        run: python3 .github/ci/ios-build-versions.py dist/nsh/runtime/ios
+
+      # The packaged CLI makes and bundles a new app.
+      - name: Smoke test
+        run: |
+          nsh=dist/nsh/bin/nsh
+          [[ "$RUNNER_OS" != Windows ]] || nsh=dist/nsh/bin/nsh.exe
+          "$nsh" --version
+          app="$RUNNER_TEMP/smoke-app"
+          "$nsh" init "$app"
+          "$nsh" build "$app" -o "$RUNNER_TEMP/smoke-out" --release
+          ls "$RUNNER_TEMP/smoke-out"
+          find dist/nsh -type f | sort
+
+      - name: Package
+        run: |
+          # `target/` outlives the run on a self-hosted runner: start empty,
+          # never upload the previous release's assets.
+          rm -rf target/release-assets
+          mkdir -p target/release-assets
+          cd target/release-assets
+          cp -R ../../dist/nsh nsh
+          cp ../../README.md ../../LICENSE-APACHE nsh/
+          # The embedding SDKs on their own, for native apps that embed nsh
+          # and need no CLI (iOS from Apple silicon, Android from x86_64
+          # Linux); the CLI's archive holds none.
+          embed() {
+            local name="nsh-embed-$1"
+            mkdir -p "$name"
+            cp -R "nsh/embed/$1/." "$name/"
+            zip -qry "$name.zip" "$name"
+          }
+          [[ -z "${{ matrix.embed }}" ]] || embed "${{ matrix.embed }}"
+          rm -rf nsh/embed
+          # The runtimes of other platforms than this machine's are
+          # components (`nsh component`), each an archive of its own that an
+          # installed nsh adds when it needs one. The archive leaves the CLI
+          # and this machine's runtime.
+          nsh=nsh/bin/nsh
+          [[ "$RUNNER_OS" != Windows ]] || nsh=nsh/bin/nsh.exe
+          "$nsh" component pack --out .
+          # Components the same on every machine come from x86_64 Linux's build.
+          if [[ "${{ matrix.name }}" != linux-x86_64 ]]; then
+            rm -f nsh-android.tar.gz nsh-android-symbols.tar.gz nsh-web.tar.gz
+          fi
+          if [[ "$RUNNER_OS" == Windows ]]; then
+            7z a -tzip "$ARCHIVE.zip" nsh > /dev/null
+          else
+            tar -czf "$ARCHIVE.tar.gz" nsh
+          fi
+          rm -rf nsh nsh-embed-*/
+          for asset in *.tar.gz *.zip; do
+            [[ -e "$asset" ]] || continue
+            if [[ "$RUNNER_OS" == Windows ]]; then
+              sha256sum "$asset" > "$asset.sha256"
+            else
+              shasum -a 256 "$asset" > "$asset.sha256"
+            fi
+          done
+          ls -l
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nsh-${{ matrix.name }}
+          path: target/release-assets/*
+          if-no-files-found: error
+
+  release:
+    name: Release
+    needs: dist
+    if: inputs.tag != '' || (github.event_name == 'push' && github.ref_type == 'tag')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ env.TAG }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: nsh-*
+          path: assets
+          merge-multiple: true
+
+      # The installers go with the archives they download, and Scoop installs
+      # from the manifest attached to the latest release:
+      # `scoop install https://github.com/<repo>/releases/latest/download/nsh.json`.
+      - name: Add the installers and the Scoop manifest
+        run: |
+          cp website/public/install.sh website/public/install.ps1 assets/
+          read -r hash _ < assets/nsh-windows-x86_64.zip.sha256
+          # shellcheck disable=SC2016 # envsubst's list of variables
+          NSH_VERSION="${TAG#v}" NSH_HASH="$hash" NSH_REPO="$GITHUB_REPOSITORY" \
+            envsubst '$NSH_VERSION $NSH_HASH $NSH_REPO' < .github/packages/nsh.json > assets/nsh.json
+          cat assets/nsh.json
+
+      # Created only after every platform has built; a draft until it is
+      # published by hand.
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG }}
+          name: nsh ${{ env.TAG }}
+          draft: true
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: assets/*
+
+  # The nightly replaces the previous one: its release and its tag are
+  # deleted and made again at the new commit, the assets under the same
+  # names. `gh release create` uploads them to a draft and publishes it
+  # once all are up, so the release is missing only for that upload.
+  nightly:
+    name: Nightly
+    needs: [plan, dist]
+    if: needs.plan.outputs.build == 'true' && (github.event_name == 'schedule' || github.event_name == 'release' || inputs.nightly == true)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: nsh-*
+          path: assets
+          merge-multiple: true
+
+      - name: Publish the nightly
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          SHA: ${{ needs.plan.outputs.ref }}
+        run: |
+          short="${SHA:0:7}"
+          # What `nsh update nightly` compares its revision with.
+          version=$(gh api "repos/$GH_REPO/contents/Cargo.toml?ref=$SHA" --jq .content | base64 -d |
+            sed -n 's/^version = "\(.*\)"$/\1/p' | head -1)
+          date=$(date -u +%Y-%m-%d)
+          jq -n --arg version "$version" --arg commit "$SHA" --arg date "$date" \
+            '{version: $version, commit: $commit, date: $date}' \
+            > assets/nsh-release.json
+          cat assets/nsh-release.json
+          notes=$(cat <<NOTES
+          The latest \`main\`, built $date from [\`$short\`](https://github.com/$GH_REPO/commit/$SHA). It is rebuilt every night that \`main\` changes.
+
+          \`\`\`sh
+          curl -fsSL https://nsh.dev/install.sh | sh -s -- --nightly
+          \`\`\`
+
+          An installed nsh switches to it with \`nsh update nightly\`, and back with \`nsh update stable\`.
+          NOTES
+          )
+          gh release delete nightly --cleanup-tag --yes 2> /dev/null || true
+          gh release create nightly assets/* --target "$SHA" --prerelease --latest=false \
+            --title "nsh nightly $date ($short)" --notes "$notes"

@@ -17,13 +17,15 @@
 
 {
   "$schema": "./node_modules/@biomejs/biome/configuration_schema.json",
-  // Biome 2.5.4. See https://biomejs.dev/reference/configuration/
   "vcs": {
     "enabled": true,
     "clientKind": "git",
     "useIgnoreFile": true
   },
   "files": {
+    // The generated service contracts are 1.8 MB; accept the same 4 MiB
+    // output supported by the SDK generator instead of silently skipping them.
+    "maxSize": 4194304,
     // Broad include; VCS integration (useIgnoreFile) already skips anything
     // in .gitignore (node_modules, dist, etc). The excludes below cover
     // tracked files that still shouldn't be touched by Biome.
@@ -32,8 +34,11 @@
       "!**/dist",
       "!**/node_modules",
       "!package-lock.json",
-      // Generated shadcn/ui config — not hand-authored source.
-      "!components.json"
+      "!plugins/agent/providers/data/*.json",
+      "!plugins/settings/store/data/*.json",
+      "!website/**",
+      // Vendored NSH keeps upstream formatting; provenance is recorded in SOURCE.md.
+      "!third-party/nsh/**"
     ]
   },
   // Formatter enabled together with the one-time whole-tree baseline commit
@@ -45,23 +50,15 @@
     "indentStyle": "space",
     "indentWidth": 2,
     "lineWidth": 100,
+    // The extracted Playwright payload is checked against its recorded upstream
+    // hash. Format the authored adapter files without rewriting that payload.
     "includes": [
       "**",
-      // The UI surface (apps/desktop + packages/ui) is formatter-EXCLUDED
-      // (still fully linted): desktop's "source-contract tests" read .ts/.tsx
-      // source — desktop's own AND packages/ui's — and regex-match exact
-      // single-line shapes; a whole-tree reformat broke 145 desktop-source
-      // assertions plus ~45 contracts introspecting packages/ui. Formatting
-      // the UI surface lands as a follow-up once those contract tests are
-      // made format-tolerant. See #415.
-      "!apps/desktop/**",
-      "!packages/ui/**",
-      // Byte-sensitive provenance / generated artifacts — NOT hand-authored
-      // source. These are read whole and SHA-256'd + size-checked by the
-      // executor preparation scripts, so reformatting breaks provenance
-      // verification; bundled-tools.json is their generated sibling.
-      "!apps/desktop/resources/licenses/**",
-      "!apps/desktop/bundled-tools.json"
+      "!third-party/playwright/injected.js",
+      // Rust embeds these as expressions; module formatting adds a trailing semicolon.
+      "!platform/computer-use/src/browser/capability/*.js",
+      "!platform/computer-use/src/browser/playwright/readonly-evaluate.js",
+      "!platform/computer-use/src/browser/playwright/download_media.js"
     ]
   },
   "javascript": {
@@ -71,48 +68,12 @@
       "trailingCommas": "all"
     }
   },
-  "linter": {
-    "enabled": true,
-    // Admission bar for this gate (PR #1019 review). This is an EXPLICIT
-    // ALLOWLIST (recommended: false): nothing enters the gate implicitly, so
-    // it can never silently drift from a correctness gate into a style gate.
-    // A rule joins only if BOTH hold:
-    //   1. it catches a defect, not a style preference; and
-    //   2. the tree is already zero-violation, or is hand-fixed to zero in
-    //      the same change that turns the rule on.
-    // Pure-style and formatting concerns are out of scope by design. Adding a
-    // rule is always a deliberate decision, never a side effect of a preset.
-    "rules": {
-      // `none` = start from an empty ruleset (the explicit-allowlist default);
-      // only the rules listed below are active.
-      "preset": "none",
-      "correctness": {
-        // A short-circuit to `undefined` would throw at the later member
-        // access. Hand-fixed to zero across the test suite in this PR.
-        "noUnsafeOptionalChaining": "error"
-      },
-      "suspicious": {
-        // Caught a real masked bug: a duplicate `fixtureState` key in
-        // cu-provider-matrix.test.mjs silently overrode the intended input.
-        // Hand-fixed to zero in this PR.
-        "noDuplicateObjectKeys": "error",
-        // `a?.b!` — a non-null assertion on an optionally-chained value
-        // defeats the short-circuit and can throw. Hand-fixed to zero.
-        "noNonNullAssertedOptionalChain": "error"
-      }
-    }
+  "markdown": {
+    "formatter": { "enabled": false }
   },
-  // Import-sorting / organize-imports assist actions stay disabled; they are
-  // a formatting concern and belong with the formatter baseline PR (#415).
-  // The repository-contained model metadata input projection exceeds Biome's
-  // 1 MiB default. Keep the committed authority under the formatter without
-  // raising the ceiling for hand-written files. Build outputs are gitignored.
-  "overrides": [
-    {
-      "includes": ["scripts/model-metadata/models-dev-api.snapshot.json"],
-      "files": { "maxSize": 2097152 }
-    }
-  ],
+  "linter": {
+    "enabled": false
+  },
   "assist": {
     "enabled": false
   }

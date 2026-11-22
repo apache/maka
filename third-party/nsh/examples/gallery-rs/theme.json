@@ -1,0 +1,44 @@
+{
+  "name": "Gallery",
+  "cssVars": {
+    "theme": {
+      "radius": "12px"
+    },
+    "light": {
+      "background": "#ffffff",
+      "foreground": "#101319",
+      "card": "#ffffff",
+      "card-foreground": "var(--foreground)",
+      "popover": "#ffffff",
+      "popover-foreground": "var(--foreground)",
+      "primary": "#101319",
+      "primary-foreground": "#ffffff",
+      "secondary": "#eeeff2",
+      "secondary-foreground": "var(--foreground)",
+      "muted": "#eeeff2",
+      "muted-foreground": "#5f636a",
+      "accent": "#eeeff2",
+      "accent-foreground": "var(--foreground)",
+      "destructive": "#d43a4a",
+      "border": "#e0e1e3",
+      "input": "#e0e1e3",
+      "ring": "#a3a8b2"
+    },
+    "dark": {
+      "background": "#12151b",
+      "foreground": "#eeeff1",
+      "card": "#12151b",
+      "popover": "#171a20",
+      "primary": "#f0f0f3",
+      "primary-foreground": "#0a0d13",
+      "secondary": "#1f2228",
+      "muted": "#1f2228",
+      "muted-foreground": "#8d9198",
+      "accent": "#1f2228",
+      "destructive": "#ff6170",
+      "border": "#272a30",
+      "input": "#272a30",
+      "ring": "#c8f26d"
+    }
+  }
+}

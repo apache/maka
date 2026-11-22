@@ -17,246 +17,55 @@
   under the License.
 -->
 
-<h1 align="center">
-  <img src="apps/desktop/assets/app-icons/sky.png" alt="Maka" width="72" valign="middle" /> Apache Maka (Incubating)
-</h1>
+<h1 align="center"><img src="assets/logo.png" alt="Maka" width="72" align="absmiddle" /> Apache Maka (Incubating)</h1>
 
-<h3 align="center">Apache Maka（孵化中）是一个高性能的 Agent 工作台，并完整记录它做过的每一件事。</h3>
+[English](README.md)
 
-<p align="center">
-  <a href="https://maka.apache.org/zh-CN/">官网</a> ·
-  <a href="./docs/README.md">文档</a> ·
-  <a href="https://maka.apache.org/zh-CN/downloads/">下载</a> ·
-  <a href="./README.md">English</a>
-</p>
+Apache Maka (Incubating) 是一个面向终端与桌面的本地 Agent 工作台。后台由 Rust 实现的 Runtime Host 统一承载模型调用、沙箱隔离、权限控制与 SQLite 持久化，完整留存每次运行、审批与工具调用回执。
 
-<p align="center">
-  <a href="https://github.com/apache/maka/stargazers"><img src="https://img.shields.io/github/stars/apache/maka?style=flat&label=stars&color=4C8DFF" alt="GitHub stars" /></a>
-  <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-4C8DFF?style=flat" alt="License: Apache 2.0" /></a>
-  <img src="https://img.shields.io/badge/%E5%B9%B3%E5%8F%B0-macOS%20%C2%B7%20Windows%20%E9%A2%84%E8%A7%88%20%C2%B7%20Linux%20%E9%A2%84%E8%A7%88-4C8DFF?style=flat" alt="平台：macOS、Windows 预览、Linux 预览" />
-</p>
+## 快速上手
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="./.github/assets/readme-hero.zh-CN.dark.png" />
-  <img alt="一轮交互的运行时事件：模型说、执行命令、请求权限、你批准了、拿到结果、编辑文件、本轮结束。" src="./.github/assets/readme-hero.zh-CN.light.png" />
-</picture>
-
-## 什么是 Maka
-
-Agent harness 的本职就是把任务做完。衡量它的标准只有一条：完成了多少，花了多少。我们公开每一次运行：同一个模型，同一个官方验证器，逐任务的完整记录。
-
-- **靠测量，不靠宣称。** Maka 与其他 harness 在同一个模型、同一个官方验证器下对比跑分，每份报告都附逐任务结果，见 [`docs/eval/`](./docs/eval)。
-- **日志就是运行时。** 每条模型消息、工具调用、权限决定和终止都是一条只追加的 RuntimeEvent。界面、下一轮 prompt 和崩溃恢复都是这份日志的投影，从不是唯一副本。旧的工具输出可以不进下一轮 prompt，但不会从日志里消失。
-- **数据在你的机器上，模型由你接。** 会话、设置和运行记录保存在本机；云 API、本地模型或兼容网关都可以。
-- **一个 Runtime Host。** Desktop、TUI 和 CLI、Eval 都是瘦客户端，执行只由这一个 Runtime Host 说了算；Eval 只负责实验和分数。
-
-[官网](https://maka.apache.org/zh-CN/)演示了日志中的一轮，并链接到公开的运行结果。系统地图见 [ARCHITECTURE.zh-CN.md](./ARCHITECTURE.zh-CN.md)。
-
-## 获取 Maka
-
-**Apache Releases**：最新的 Apache release 是 0.2.2（孵化中）。带签名的源码包才是正式 release，其他渠道分发的包属于便利构建。候选版本的准入标准、签名路径与验包步骤见[下载页面](https://maka.apache.org/zh-CN/downloads/)与 [`.github/ASF_SOURCE_RELEASE.md`](./.github/ASF_SOURCE_RELEASE.md)。
-
-**开发测试**：如果希望贡献代码或协助测试尚未发布的改动，请阅读[贡献指南](./CONTRIBUTING.zh-CN.md)并关注[开发邮件列表](https://lists.apache.org/list.html?dev@maka.apache.org)。开发构建不是获批的 Apache 正式版本。
-
-**从源码构建**：要从源码 checkout 直接构建并运行 Desktop、TUI 或 CLI，见下方的[从源码构建](#从源码构建)一节。
-
-## 从源码构建
-
-### 环境要求
-
-- Node.js 22.19 或更高的 22.x 版本，或 Node.js 24 及以上（CI 使用 Node.js 24；不支持 Node.js 23）；
-- npm（仓库 lockfile 和 scripts 以 npm 为准，`packageManager` 当前为 npm 11）；
-- Git；
-- `ripgrep`，供 Runtime 的 `Grep` 工具使用。
-
-### 启动 Desktop
+环境依赖：Rust stable、Node.js 24+（CI 使用 26）、npm 与 [just](https://github.com/casey/just)。启用原生 Computer Use 时，macOS 需安装 Xcode Command Line Tools，Linux 需安装 X11 开发库。
 
 ```sh
 git clone https://github.com/apache/maka.git
 cd maka
-npm ci
-npm run dev
+just setup
+just run
 ```
 
-`npm run dev` 启动带 HMR 的 Desktop 开发环境。需要先完整构建再启动 Electron 时使用：
+`just run` 默认启动终端工作台，并自动连接或拉起 `~/.maka/application/host` 下的本地 Host。可通过 `--root <path>` 切换 State Root，`--session <id>` 打开指定会话，或用 `just run --help` 查看全部 CLI 子命令。
+
+构建 Release 版 CLI 与原生桌面端：
 
 ```sh
-npm run dev:full
+just build --release
+target/release/maka desktop
 ```
 
-开发 Direct Peer 和 Peer Mesh 还需要 Rust stable 1.98 或更高版本及平台 linker
-（macOS 使用 Xcode Command Line Tools，Windows 使用 MSVC Build Tools）。使用 Peer 开发入口，
-Desktop 会在启动前构建原生 addon：
+macOS 构建会在 `maka` 同级目录生成 `Maka.app`，Windows 产物带 `.exe` 后缀。终端与桌面壳层共用同一套 NSH 工作台并连接同一个 Host——关闭窗口只是断开前端，已接纳的后台任务会继续跑完。
 
-```sh
-npm run dev:peer       # HMR
-npm run dev:full:peer  # 完整构建
-```
+在 WSL 环境下，`just run` 默认不编译 Linux 本地 `native-desktop` 驱动，Computer Use 会桥接到宿主机 Windows 桌面。源码运行时需通过 `MAKA_CUA_WINDOWS_EXECUTABLE` 指定同版本 Windows `maka.exe` 的 WSL 绝对路径，详见 [Computer Use](platform/computer-use/README.zh-CN.md)。
 
-如果安装时设置过 `ELECTRON_SKIP_BINARY_DOWNLOAD=1`，启动前需要补装 Electron 平台二进制：
+## 目录结构
 
-```sh
-node node_modules/electron/install.js
-```
+| 目录 | 职责 |
+| --- | --- |
+| [platform/](platform/README.zh-CN.md) | 插件内核、SQLite 事件存储、Host 运行时、V8/Python 执行环境、系统沙箱与 Computer Use |
+| [plugins/](plugins/README.zh-CN.md) | Agent 核心引擎、工作区工具、技能、设置、交互及领域契约 |
+| [products/maka/](products/maka/README.zh-CN.md) | 产品组装、NSH 工作台、CLI、ACP 服务及终端/桌面壳层 |
+| [products/eval/](products/eval/README.zh-CN.md) | 基于 Harbor 容器环境的评测运行器 |
+| [packages/plugin-sdk/](packages/plugin-sdk/README.zh-CN.md) | 供 Host 与 NSH UI 插件使用的 TypeScript 类型契约与辅助库 |
+| [packages/cli/](packages/cli/README.zh-CN.md) | 分发各平台原生二进制的 `@maka-agent/cli` npm 启动器 |
+| [scripts/rust/](scripts/rust/README.zh-CN.md) | 原生打包、V8 预编译缓存、许可证审计与 CI 调度脚本 |
+| `website/` | 独立构建的项目官网 |
 
-### 第一次运行
+常用开发命令可通过 `just --list` 查看。延伸阅读：[系统架构](ARCHITECTURE.zh-CN.md)、[界面设计规范](DESIGN.md)、[贡献指南](CONTRIBUTING.zh-CN.md)与[安全策略](SECURITY.md)。
 
-Maka 不内置共享模型账号。第一次打开时：
+## 分发方式
 
-1. 进入 `设置 → 模型`；
-2. 添加一个 API、本地模型或已经接通的账号连接；
-3. 测试连接并选择默认模型；
-4. 返回工作台开始任务。
+**Apache Releases**：最新获批的正式版本是 Apache Maka `0.2.2`（孵化中）。带签名的源码包才是正式 release，下载与验包步骤见[下载页面](https://maka.apache.org/zh-CN/downloads/)与 [`.github/ASF_SOURCE_RELEASE.md`](.github/ASF_SOURCE_RELEASE.md)。
 
-应用会根据真实连接状态区分“已配置”“可发送”和“实验入口”，不会把没有接入 Runtime 的账号展示成可用模型。
+**便利构建**：`@maka-agent/cli` 只做按平台分发并启动原生二进制的薄封装，本身不包含运行时逻辑；各平台二进制由同一份经校验的源码归档构建，发布流程见 [packages/cli](packages/cli/README.zh-CN.md)。
 
-## 使用终端入口
-
-公共 npm 包的安装和使用方式请查看 [CLI 中文指南](./packages/cli/README.zh-CN.md)。下面的命令
-用于从源码 checkout 运行开发版 CLI。
-
-先构建 workspace：
-
-```sh
-npm run build
-```
-
-然后可以启动 TUI 或执行单次 Turn：
-
-```sh
-npm run cli:dev
-npm run cli:dev -- run "总结当前仓库并指出最重要的风险"
-npm run cli:dev -- run --graph "并行实现两个切片，完成集成，然后独立审查"
-npm run cli:dev -- --help
-```
-
-TUI 同时支持 `/graph on`、`/graph off` 和 `/graph <任务>`。非交互
-`--graph` 会等待持久化 Graph 真正结束，再输出 supervisor 的最终结果。
-Graph 的 implementation operator 使用隔离的 Git worktree，因此源项目必须是干净的
-Git worktree。
-
-仓库 CLI 使用与开发版 Desktop 构建相同的 `Maka Dev` profile；发布版 `maka` 二进制仍使用
-`Maka` profile，二者不会自动复制或同步。评测 spec 和 adapter 位于 [`packages/eval`](./packages/eval)。
-
-## 架构
-
-Maka 后端可以用一条主线概括：
-
-```text
-Desktop / TUI / CLI → Runtime Host → SessionManager → AgentRun
-                                             ↓
-                         Model + Tool Runtime → Runtime Event Log
-                                             ↓
-                              Context / Session / UI projections
-
-Experiment → Cells → Attempts → Results
-                    ↓
-       Runtime Host 执行 Maka subjects
-```
-
-从 [ARCHITECTURE.zh-CN.md](./ARCHITECTURE.zh-CN.md) 开始阅读。它提供总体架构图、代码边界、按问题组织的阅读路径，以及 `docs/architecture/` 下深度文章的链接。
-
-## 仓库结构
-
-```text
-apps/desktop/          Electron main / preload / React renderer
-
-packages/core/         Session、Event、Permission、Connection 等纯 contracts
-packages/storage/      SQLite 运行状态、配置与 payload stores
-packages/mcp/          与提供商无关的 Model Context Protocol 客户端集成
-packages/runtime/      AgentRun、模型适配、工具、上下文和恢复
-packages/runtime-host/ 单一所有者的 Runtime Host 生命周期、协议和客户端启动
-packages/eval/         Experiment cell、attempt、result 与 executor/subject adapter
-packages/computer-use/ Computer Use 后端选择、Host 生命周期和协议适配
-packages/cli/          TUI 和非交互 CLI
-packages/ui/           共享对话、Markdown、Artifact 与 UI primitives
-native/                Rust：Runtime Host 的 direct-peer addon 与 Windows task launcher，以及 gitoxide helper
-website/               maka.apache.org 的 Astro 源码
-
-docs/                  架构、产品、安全、隐私和测试契约
-scripts/               Build hygiene、视觉检查、smoke 和 release helpers
-skills/                随仓库分发的 agent skill
-patches/               安装时应用到 npm 依赖的补丁
-experiments/           平台实验，目前是 Windows 沙箱 smoke 脚本
-```
-
-## 本地数据与恢复
-
-Workspace 数据默认放在 Electron `userData` 下：
-
-```text
-<Electron userData>/workspaces/default/
-  runtime.sqlite
-  settings.json                  # 界面与工作区偏好
-  connection-catalog.json        # 提供商与模型元数据
-  credential-vault.json          # 本地提供商密钥
-  artifacts/
-```
-
-- 手动编辑 `settings.json` 或 `mcp.json` 时，请保存为 UTF-8（建议不带 BOM；也支持 UTF-8 BOM）。Maka 不会猜测无 BOM 文件的其他编码，也不会自动转换 UTF-16；请先在编辑器中显式转换为 UTF-8，再使用这些文件。
-- API key 一类的机密存在本地明文文件（`credential-vault.json`），只有你的系统账号能读。界面进程拿不到明文。
-- 写文件、跑 Shell 的工具必须先过沙箱边界。
-- `runtime.sqlite` 是当前生效的那份记录。更早的 JSONL transcript 和 Electron `safeStorage` 凭据不会导入；升级后会话可能是空的，那些凭据需要重新填写。
-- Desktop 与 CLI/TUI `/resume` 默认可以显式恢复中断回合；成功续跑会请求模型并消耗 token。设置 `MAKA_RUNTIME_SAFE_BOUNDARY_RESUME=0` 可关闭新的 resume planning；设置 `=1` 会额外开启 activation 和 WorkHub 的自动 resume。默认情况下，即使 activation 使用已有 Session，也会处理这次新的 stimulus。启动恢复只修复已经 admission 的 continuation，不会自动选择普通的 failed 或 cancelled Turn。
-
-细节见 [SECURITY.md](./SECURITY.md)、[隐私](./docs/workspace-privacy-context.md)、[续跑](./docs/architecture/runtime-resume-architecture.zh-CN.md)。
-
-## 开发与验证
-
-提交改动前请先阅读 [CONTRIBUTING.zh-CN.md](./CONTRIBUTING.zh-CN.md)。
-
-常用仓库级命令：
-
-```sh
-npm run build
-npm run typecheck
-npm test
-npm run check:release
-```
-
-针对单个 workspace：
-
-```sh
-npm --workspace @maka/runtime run test:dist
-npm --workspace @maka/eval run test:dist
-npm --workspace @maka/desktop run test:dist
-```
-
-用 `refresh:model-metadata` 从 models.dev 获取当前目录、更新仓库内快照，并重新生成派生的 TypeScript 文件。已提交的模型、能力、provider override 或 pricing 字段消失时，refresh 会 fail closed；审查确认上游确实有意删除后，用 `npm run refresh:model-metadata -- --accept-upstream-removals` 显式确认。`sync:model-metadata` 刻意保持离线，只会从已提交快照重新生成这些文件。访问路径特有的 override 写在 `model-metadata.ts`，不要手动修改生成文件。
-
-```sh
-npm run refresh:model-metadata
-npm --workspace @maka/core run test:dist
-```
-
-Desktop 的真实窗口与视觉验证：
-
-```sh
-npm --workspace @maka/desktop run e2e
-npm --workspace @maka/desktop run smoke:real-window
-```
-
-提交代码前至少运行与改动范围相称的 typecheck、build 和 focused tests，并执行 `git diff --check`。
-
-## 文档入口
-
-- [官网](https://maka.apache.org/zh-CN/)
-- [文档索引与权威来源说明](./docs/README.md)
-- [后端架构总览](./ARCHITECTURE.zh-CN.md)
-- [产品设计](./DESIGN.md)
-- [贡献指南](./CONTRIBUTING.zh-CN.md)
-- [安全政策](./SECURITY.md)
-- [DeepWiki](https://deepwiki.com/apache/maka)，第三方 AI 生成文档，不由项目维护
-
-## 开源协议
-
-Maka 使用 [Apache License 2.0](./LICENSE) 开源，归属信息见
-[NOTICE](./NOTICE)。第三方组件仍分别适用其自身的许可证与声明。
-
-Apache Maka、Maka、Apache、Apache 羽毛标志和 Apache Maka 项目标志是 Apache 软件基金会的注册商标或商标。
-
-> [!NOTE]
-> Apache Maka (Incubating) 是一个正在 Apache 软件基金会（ASF）孵化的项目，由 Apache Incubator PMC 主办。所有新接受的项目都必须经过孵化，直到进一步审查表明其基础设施、沟通方式和决策流程已经稳定到与其他成功的 ASF 项目一致的程度。孵化状态未必反映代码的完成度或稳定性，但它确实表明该项目尚未得到 ASF 的完全认可。项目当前已知的问题记录在 [DISCLAIMER-WIP](./DISCLAIMER-WIP)（以英文原文为准）。
-
-> [!IMPORTANT]
-> Maka 仍在活跃开发中。数据格式、CLI 和实验能力仍可能变化。
+Apache Maka 正在 Apache 软件基金会（ASF）孵化，详见 [DISCLAIMER](DISCLAIMER)、[LICENSE](LICENSE) 与 [NOTICE](NOTICE)。

@@ -1,0 +1,101 @@
+// A case of the API's test suite (docs/dev/compatibility.md): the
+// accessibility props of every element as the platform receives them on
+// iOS (the scripts' default platform): `accessible`, `accessibilityHint`,
+// `accessibilityDescription`,
+// `accessibilityState` (with `hasPopup`, a popup's trigger), `accessibilityValue`, `accessibilityElementsHidden`,
+// `accessibilityActions`, `importantForAccessibility`, which decides
+// `accessible` and hides the descendants for `"no-hide-descendants"`, and
+// the `"listbox"` and `"option"` roles of a select's popup, the chosen
+// option `selected`, and the structural roles of `nsh/base`'s accordions,
+// toolbars, paginations, trees and checkable menu items (`"group"`,
+// `"region"`, `"navigation"`, `"tree"`, `"treeitem"`, `"menuitemcheckbox"`,
+// `"menuitemradio"`) and of dialogs (`"dialog"`, `"alertdialog"`), and
+// `accessibilityDescribedBy`: a field whose error line's text is its
+// description while the line is there, its own description after. Its
+// script checks each.
+import { Text, View, type ViewRef, signal } from "nsh";
+
+function App() {
+  const error = signal<ViewRef>();
+  const failed = signal(true);
+  return (
+    <View style={{ flex: 1, paddingTop: 64 }}>
+      <View testID="group" accessible={true} style={{ height: 20 }}>
+        <Text>Group</Text>
+      </View>
+      <View testID="hint" accessibilityHint="Opens the settings" style={{ height: 20 }} />
+      <View
+        testID="description"
+        accessibilityDescription="Letters and digits only"
+        style={{ height: 20 }}
+      />
+      <View
+        testID="described"
+        accessibilityDescription="Your name"
+        accessibilityDescribedBy={error() ?? null}
+        style={{ height: 20 }}
+      />
+      <If when={failed()}>
+        <View ref={error} style={{ height: 20 }}>
+          <Text>Enter a name</Text>
+        </View>
+      </If>
+      <View testID="fix" onPress={() => failed.set(false)} style={{ height: 20 }}>
+        <Text>Fix</Text>
+      </View>
+      <View
+        testID="state"
+        accessibilityState={{ disabled: true, checked: "mixed", expanded: false }}
+        style={{ height: 20 }}
+      />
+      <View
+        testID="popup-state"
+        accessibilityState={{ expanded: false, hasPopup: true }}
+        style={{ height: 20 }}
+      />
+      <View
+        testID="value"
+        accessibilityValue={{ min: 0, max: 10, now: 4, text: "four" }}
+        style={{ height: 20 }}
+      />
+      <View testID="hidden" accessibilityElementsHidden={true} style={{ height: 20 }} />
+      <View
+        testID="important-no"
+        importantForAccessibility="no-hide-descendants"
+        style={{ height: 20 }}
+      />
+      <View testID="important-yes" importantForAccessibility="yes" style={{ height: 20 }} />
+      <View
+        testID="actions"
+        accessibilityActions={[{ name: "activate" }, { name: "magicTap", label: "Magic" }]}
+        style={{ height: 20 }}
+      />
+      <View testID="listbox" role="listbox" accessibilityLabel="Fruit">
+        <View
+          testID="option"
+          role="option"
+          accessibilityState={{ selected: true }}
+          style={{ height: 20 }}
+        >
+          <Text>Apple</Text>
+        </View>
+        <View testID="other-option" role="option" style={{ height: 20 }}>
+          <Text>Banana</Text>
+        </View>
+      </View>
+      <View testID="role-group" role="group" style={{ height: 4 }} />
+      <View testID="role-region" role="region" style={{ height: 4 }} />
+      <View testID="role-navigation" role="navigation" style={{ height: 4 }} />
+      <View testID="role-tree" role="tree" style={{ height: 4 }}>
+        <View testID="role-treeitem" role="treeitem" accessibilityLevel={1} style={{ height: 4 }} />
+      </View>
+      <View testID="role-menuitemcheckbox" role="menuitemcheckbox" style={{ height: 4 }} />
+      <View testID="role-menuitemradio" role="menuitemradio" style={{ height: 4 }} />
+      <View testID="role-dialog" role="dialog" style={{ height: 4 }} />
+      <View testID="role-alertdialog" role="alertdialog" style={{ height: 4 }} />
+      <View testID="plain" style={{ height: 20 }} />
+    </View>
+  );
+}
+
+export default App;

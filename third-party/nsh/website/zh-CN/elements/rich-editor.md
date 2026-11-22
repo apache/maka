@@ -1,0 +1,466 @@
+---
+title: RichEditor
+description: nsh/base 的富文本编辑器：由应用的 schema 定义的文档、命令、插件、历史、键位、输入规则和 Markdown，按 ProseMirror 的架构构建，状态在 Rust 中。
+group: base
+demo: el-rich-editor
+---
+
+# RichEditor
+
+`RichEditor` 是按 ProseMirror 的架构构建的富文本编辑器。应用用 schema 定义文档由什么组成（段落、标题、列表、提及，以及它需要的任何节点和标记类型），编辑器让每个文档都符合它。修改是归入事务的步骤，所以它们可以撤销、映射位置，并以 JSON 传递；行为来自插件（历史、键位、输入规则、Markdown 快捷方式、应用自己的插件）；命令是工具栏运行和询问的值。编辑器的状态、命令和插件在 Rust 中运行：输入、键位绑定和输入规则从不等待 JS，应用在需要时以 JSON 读取状态。
+
+一个编辑器有两部分：会话（`createRichEditor`），它拥有状态，由应用的代码驱动；视图（`<RichEditor editor={…} />`），它原生地渲染会话，并把平台的输入变成事务。多个视图可以显示同一个会话。
+
+编辑器的内核是 Marijn Haverbeke 的 [ProseMirror](https://prosemirror.net) 的 Rust 移植，扩展层遵循 [Tiptap](https://tiptap.dev)：它们的数据结构、命令和名称都沿用下来，你对它们的了解在这里同样适用。两者都以 MIT 许可发布，移植自它们的部分适用其许可。
+
+```tsx
+import { mount } from "nsh";
+import { RichEditor, createRichEditor, history, inputRules, keymap, markdown, markdownRules, starterKeymap, baseKeymap, toggleMark } from "nsh/base";
+
+const editor = createRichEditor({
+  content: "# Notes\n\nStart typing…",
+  format: "markdown",
+  plugins: [
+    history(),
+    keymap({ "Mod-b": toggleMark("bold"), "Mod-i": toggleMark("italic") }),
+    starterKeymap(),
+    baseKeymap(),
+    inputRules(markdownRules()),
+    markdown(),
+  ],
+});
+
+function App() {
+  return <RichEditor editor={editor} class="flex-1" />;
+}
+
+mount(App);
+```
+
+省略 `schema` 时编辑器使用起步 schema（`starterSchema()`）；省略 `plugins` 时它得到起步套件（`starterKit()`：起步的输入规则和键位绑定、基础键位绑定和历史）。空的 `plugins` 数组创建一个完全没有插件的编辑器。
+
+`onCompositionChange({ composing })` 在此视图开始输入法组合输入时报告 `true`，结束时报告 `false`，取消也会报告结束。组合中的文本更新保持当前状态。回调执行时，会话的 `composing` 值和已提交文本已经更新，应用可以在组合输入期间保留编辑器视图，在结束时释放它。开始或取消组合输入可以保持文档及其修订号不变；`onChange` 报告文档修改。
+
+## 样式
+
+编辑器以应用的外观绘制文档：`classes` 和 `styles` 设置它的各个部件（`root`、`content`、`caret`、`selection`、`placeholder`、`composition`、`selectedNode`、`listMarker`、触摸选区的手柄 `selectionHandle`、`selectionHandleStart`、`selectionHandleEnd`，以及表格的 `selectedCell`、`tableGrip`、`tableResizeHandle`、`tableDropIndicator`），按类型设置节点（`nodes: { heading: "text-2xl font-bold", "heading[level=2]": "text-xl" }`），以及设置标记（`marks: { bold: "font-bold" }`）。节点规格把 `extra.listMarker` 设为 `"bullet"` 或 `"ordered"` 的列表（starter schema 的列表）中，每一项都在 `listMarker` 部件中显示标记：按层级显示 `•`、`◦`、`▪`，或从列表的 `start` 开始编号，放在列表项之前、列表的缩进中（如浏览器缩进 `ul`，在列表上设置 `pl-6`）。
+
+```tsx
+<RichEditor
+  editor={editor}
+  classes={{
+    nodes: { heading: "text-2xl font-bold", bulletList: "pl-6", codeBlock: "font-mono bg-muted p-3 rounded-md" },
+    marks: { bold: "font-bold", italic: "italic", code: "font-mono bg-muted" },
+    listMarker: "text-muted-foreground",
+  }}
+/>
+```
+
+`content` 部件是编辑器滚动视图中文档的盒子：它的内边距（`content: "px-6 py-5"`）就是文本周围的留白，滚动条贴着编辑器自己的边缘。拖动选择越过编辑器的上下边缘时，文档随之滚动，指针越远滚得越快。
+
+### 尺寸
+
+编辑器的尺寸如同 `height: auto` 的块：不设高度时，它的高度是文档按其宽度排版后的高度加上内边距，并随每次编辑增高或变矮。`maxHeight`（`max-h-*`）让它停在该高度，此后文档在其中滚动，并保持光标可见，与多行 `Input` 一样；`minHeight`（`min-h-*`）让它至少有该高度。设置高度或弹性尺寸（`h-*`、`flex-1`）时，它是一个固定的盒子，文档在其中滚动。聊天输入框就是设置了 `maxHeight`、不设高度的编辑器：
+
+```tsx
+<RichEditor editor={editor} class="max-h-40 px-3 py-2" />
+```
+
+`onContentSizeChange={({ contentSize }) => …}` 与 `Input` 的同名事件一样，在已排版文档的尺寸变化时报告，每帧最多一次。`contentSize` 是完整内容流的尺寸，单位为点，包含视口外的块，不含 `content` 部件的内边距，且独立于固定的视口高度。滚动不会触发该事件，滚动偏移请用 `onScroll`。
+
+### 触摸选区
+
+在 iOS 和 Android 上，编辑器像平台自己的文本视图一样选择文本。长按选中手指下的词，之后移动手指按整词扩展选区；在空白处长按则放置光标。双击选中一个词，三击选中整段。触摸产生的选区两端各有一个手柄（`selectionHandle`，主题 `primary` 色的圆点），手指拖动手柄即可移动那一端。手指抬起时，系统编辑菜单在选区上方打开，提供剪切、拷贝、粘贴和全选；点按选区会再次打开它，点按光标则打开粘贴和全选。菜单只提供适用的操作：全部选中后不再提供全选，只读编辑器只提供拷贝和全选。每个操作都是编辑器的事务，因此工具栏的 `isActive` 跟随选区，`toggleMark` 作用于它，撤销可以撤回剪切或粘贴。点按、键盘、输入法和鼠标的选择方式不变。
+
+### 气泡菜单
+
+`bubbleMenu` 即 Tiptap 的气泡菜单：应用的内容显示在选区旁，默认在其上方（`bubbleMenuPlacement`，没有空间时翻到另一侧），相距 `bubbleMenuOffset` 点（8），位于一个随文本滚动的浮层中。应用在希望显示它时传入，依据会话的状态：
+
+```tsx
+const revision = signal(editor.revision);
+editor.on("revision", ({ revision: r }) => revision.set(r));
+const inLink = () => (revision(), editor.isActive("link"));
+
+<RichEditor
+  editor={editor}
+  bubbleMenu={inLink() ? <LinkMenu href={editor.getAttributes("link").href} /> : undefined}
+  bubbleMenuPlacement="bottom"
+/>
+```
+
+链接菜单用 `chain([extendMarkRange("link"), command("setLink", { href })])` 编辑光标所在的链接，用同样的 `extendMarkRange` 之后的 `command("unsetLink")` 移除它。
+
+`contentLayer` 是应用自己铺在文档上的一层，位于滚动的内容框之内：它里面的内容与文字在同一帧一起移动。它的子元素按内容框的点来摆放，`editor.nodeRect(pos)`（从 `pos` 开始的块的框）和 `editor.coordsAtPos(pos)` 用的就是这套坐标：块边距里的手柄、节点旁的标记。这一层本身不接收按压，它的子元素接收。
+
+```tsx
+const box = editor.nodeRect(blockStart);
+
+<RichEditor
+  editor={editor}
+  contentLayer={box ? <Handle style={{ position: "absolute", left: box.x - 28, top: box.y }} /> : undefined}
+/>
+```
+
+### 复制和粘贴
+
+复制或剪切时，选区以两种形式放到剪贴板上，和 ProseMirror 一样：纯文本（启用 `markdown` 扩展的 `copyAsMarkdown` 时为
+Markdown），以及按 schema 的 `renderHTML` 写出的 HTML，邮件、文档和其他编辑器粘贴时会保留格式。HTML 上标记了复制的切片
+（`data-pm-slice`），所以粘贴回 `RichEditor` 时得到同样的节点：提及等行内节点保留，列表项的一部分仍是列表项的一部分，空格
+也保留。其他来源的 HTML 按 schema 的解析规则读取。Rust 插件可以用 `transform_copied` 修改复制的内容。
+
+### 粘贴和拖入的文件
+
+文件交给应用，由应用决定它们变成什么（图片节点、附件、指向上传副本的链接）；编辑器不为它们插入任何内容，选区保持不变，应用在选区处插入自己生成的内容。粘贴图片或在文件管理器中复制的文件时调用 `onPasteFiles`，参数为 `{ files, uris }`：`files` 是带字节的图片，`uris` 是被复制文件的 `file:` URL。在桌面平台上，从其他应用拖到编辑器上的文件调用它的 `onFileDrop`，参数为 `{ uris, mimeTypes }`，与[视图的文件拖放](./view.md#桌面文件拖放)相同；`onFileDragEnter` / `onFileDragLeave` 跟随拖动，可用于显示「松开以添加附件」之类的提示。没有 `onFileDrop` 时，拖入的文件交给外层监听的视图。
+
+```tsx
+<RichEditor
+  editor={editor}
+  onPasteFiles={({ files }) => attach(files)}
+  onFileDrop={({ uris, mimeTypes }) => attachFiles(uris, mimeTypes)}
+/>
+```
+
+## Schema
+
+`defineSchema(spec)` 读取 ProseMirror 形式的 schema，并在出错时抛出错误说明哪里不对。节点类型声明它们的 `content`（内容表达式：`"inline*"`、`"paragraph+"`、`"(heading | paragraph) block*"`）、`group`、是否为 `inline` 或 `atom`、允许的 `marks`，以及带默认值和校验（`"string"`、`"number"`、`"boolean"`）的 `attrs`。第一个块类型是默认类型：回车创建的、填充必需内容的类型。spec 中其他的键作为类型的附加数据保留，供构建在编辑器之上的框架使用。
+
+```tsx
+import { createRichEditor, defineSchema } from "nsh/base";
+
+const schema = defineSchema({
+  nodes: {
+    doc: { content: "block+" },
+    paragraph: { content: "inline*", group: "block" },
+    mention: { group: "inline", inline: true, atom: true, attrs: { id: {}, label: { default: "" } } },
+    text: { group: "inline" },
+  },
+  marks: { bold: {}, link: { attrs: { href: {} }, inclusive: false } },
+});
+
+const editor = createRichEditor({ schema, doc: schema.parse("Hello") });
+```
+
+`RichSchema` 读写文档：`parse(content, format?)`（默认纯文本，也可以是 `"markdown"`、`"html"` 或 JSON）、`parseMarkdown(markdown)`、`serialize(doc, format?)`（默认 Markdown，也可以是 `"text"`、`"html"`、`"json"`）以及 `check(doc)`，它返回填好属性默认值的文档。`nodes`、`marks` 和 `topNode` 列出它的类型。Markdown 对应起步 schema 的名称（`paragraph`、`heading`、`blockquote`、`codeBlock`、`bulletList`、`orderedList`、`listItem`、`bold`、`italic`、`code`、`link`、`strike`）。
+
+## 命令
+
+命令是一个值：`toggleMark("bold")` 创建一个对象，应用可以保存它、绑定到按键、传给编辑器。`editor.run(command)` 运行它并返回是否生效；`editor.can(command)` 只询问而不做任何修改，工具栏用它决定按钮是否可用。`editor.isActive(name, attrs?)` 判断某个标记或节点在选区处是否生效（`isActive("heading", { level: 2 })`）。
+
+| 命令 | 作用 |
+| --- | --- |
+| `toggleMark(name, attrs?)` | 给选区加上标记，已有时去掉；在光标处作用于接下来输入的文字 |
+| `setMark(name, attrs?)` / `unsetMark(name)` | 加上或去掉标记 |
+| `setBlockType(name, attrs?)` | 把选中的文本块变成某个类型（`setBlockType("heading", { level: 2 })`） |
+| `wrapIn(name, attrs?)` / `lift()` | 用一个节点包裹选中的块（引用）/ 把它们提出父节点 |
+| `wrapInList(name, attrs?)` | 用列表包裹选中的块 |
+| `splitListItem(name)` / `sinkListItem(name)` / `liftListItem(name)` | 拆分、缩进或减少缩进列表项 |
+| `undo()` / `redo()` | 撤销或重做修改（需要 `history()`） |
+| `selectAll()`、`setTextSelection(anchor, head?)`、`setNodeSelection(pos)` | 选择 |
+| `insertText(text)`、`insertContent(content, format?)` | 在选区处插入文字或内容 |
+| `setNodeAttribute(pos, attr, value)` | 设置某位置节点的属性，作为一次可撤销的修改 |
+| `command(name)` | 按名称取无参数的命令：`"splitBlock"`、`"joinBackward"`、`"exitCode"`、`"newlineInCode"`、`"selectParentNode"`…… |
+| `chain(commands)` | 依次运行命令，合成一个事务（一个撤销步骤）；所有命令都生效时才生效 |
+| `first(commands)` | 运行第一个生效的命令 |
+
+```tsx
+editor.run(chain([setBlockType("heading", { level: 1 }), toggleMark("bold")]));
+const canIndent = editor.can(sinkListItem("listItem"));
+```
+
+## 会话
+
+| 成员 | 含义 |
+| --- | --- |
+| `state`、`doc`、`selection` | 以 JSON 表示的状态、文档和选区，读取时生成 |
+| `revision` | 状态已应用的事务数 |
+| `isEmpty`、`undoDepth`、`redoDepth`、`composing` | 界面显示的编辑器信息 |
+| `setContent(content, format?)` | 替换文档，作为一次可撤销的修改 |
+| `insertContent(content, format?)` | 在选区处插入内容 |
+| `pasteHTML(html)`、`pasteText(text)` | 像粘贴一样把 HTML 或纯文本放到选区处；返回是否粘贴了内容 |
+| `getJSON()`、`getHTML()`、`getMarkdown()`、`getText()`、`textBetween(from?, to?, separator?)` | 某种格式的文档 |
+| `dispatch(tr)` | 应用以 JSON 给出的事务（其步骤基于当前文档） |
+| `on(event, listener)` | 每次发生 `event` 后，在 JS 的下一轮以它的数据调用 `listener`：`revision`（`{ revision }`，每次修改之后，无论来自何处）、`update`、`selectionUpdate`、`transaction`、`focus`、`blur`、`delete`。返回一个停止监听的函数；在组件渲染期间添加的监听器随组件一起停止 |
+| `focus()`、`blur()` | 把键盘焦点移到显示编辑器的视图，或从中移开 |
+
+位置的计算与 ProseMirror 相同：文本按 UTF-16 码元计数，叶子节点计为一，有内容的节点计其两个边界。需要在编辑后仍然有效的东西，在节点属性或标记中保存一个 id。位置查询（`resolve(pos)`、`nodeAt(pos)`、`coordsAtPos(pos)`、`findParentNode(name, pos)` 等）在位置超出文档（`0` 到 `doc.content.size`）时抛出 `RangeError`，与 ProseMirror 的 `resolve` 相同；那里没有东西时回答 `null`（`nodeAt` 在节点末尾，`coordsAtPos` 在没有视图显示编辑器时）。`run` 和 `can` 遇到编辑器不认识的命令、节点或标记类型时抛出 `TypeError`。
+
+### 接管事务
+
+`editor.dispatchTransaction = (tr) => { … }` 让应用自己提交每个事务：处理函数以 JSON 收到每个事务，用 `editor.applyTransaction(tr)` 提交，或者丢弃它。协作、日志和需要通过应用检查的事务会用到它；设为 `null` 把提交交还给编辑器。处理函数在 JS 的下一轮收到输入产生的事务，文档在它提交时改变。
+
+## 扩展
+
+扩展即 Tiptap 的扩展：每个扩展一并带来它的节点或标记类型、按键绑定、输入规则与粘贴规则、插件和具名命令；由扩展创建的编辑器从中得到 schema、键位、规则和命令表。内置扩展是与 Tiptap 同名的类，可直接使用，也可配置：
+
+```tsx
+import { RichEditor, StarterKit, Underline, command, createRichEditor } from "nsh/base";
+
+const editor = createRichEditor({
+  extensions: [StarterKit.configure({ heading: { levels: [1, 2, 3] }, codeBlock: false })],
+  content: "Hello",
+  editable: true,
+});
+
+editor.run(command("toggleHeading", { level: 2 }));
+editor.run(command("toggleBold"));
+```
+
+`StarterKit` 包含 `Document`、`Paragraph`、文本节点、`Heading`、`Blockquote`、`BulletList`、`OrderedList`、`ListItem`、`TaskList`、`TaskItem`、`CodeBlock`、`HardBreak`、`HorizontalRule`、`RichImage`（Tiptap 的 `Image`）、`Bold`、`Italic`、`Strike`、`Code`、`Underline`、`RichLink`（Tiptap 的 `Link`）、`Highlight`、`Subscript`、`Superscript`、`RichTextStyle`（Tiptap 的 `TextStyle`）、`TextAlign`、`History`、`TrailingNode`、`Typography` 和 `ListKeymap`。以某个扩展命名的选项设为 `false` 即不包含它，设为对象则配置它（`heading: { levels }`、`history: { depth }`、`textAlign: { types }`、`codeBlock: { enableTabIndentation }`）。每个类的 `configure(options)` 与 `extend({...})` 生成 `RichExtension`，它有 `name`、`type`、`priority` 和 `options`。每个编辑器还带有核心键位（Enter、Backspace、Delete、全选）。
+
+每个扩展都加入 Tiptap 的命令，由 `command(name, args)` 运行：`toggleBold`、`setItalic`、`unsetStrike`、`toggleHeading({ level })`、`setParagraph`、`toggleBlockquote`、`toggleBulletList`、`toggleOrderedList`、`toggleTaskList`、`toggleCodeBlock({ language })`、`setHardBreak`、`setHorizontalRule`、`setImage({ src })`、`toggleHighlight({ color })`、`setTextAlign("center")`、`unsetTextAlign`，以及下文的链接、字数统计与建议命令。图片的 `src` 与 `Image` 接受的相同（URL、文件路径或 `file:` URL、`data:` URI）；不设 `width` 和 `height` 时按原始尺寸显示，只设其一时按该边和图片的宽高比显示。
+
+列表切换作用于整个列表，如同文字处理软件的列表按钮：在项目符号列表中执行 `toggleOrderedList` 会把它的每一层（包括嵌套列表）都改为编号列表，而列表自身的切换会把选中的块从它们所在的每一层列表中移出。
+
+`extensions` 中的顺序是同优先级扩展之间的次序：排在后面的扩展先处理按键；其余情况由 `priority`（默认 100）排序。使用 `extensions` 时，编辑器的 `plugins` 排在扩展的插件之后。
+
+### 应用的扩展
+
+`defineExtension` 创建扩展。它的函数在用它创建编辑器时以扩展的选项运行一次，返回数据：即上文工厂函数生成的命令、规则与插件。
+
+```tsx
+import { StarterKit, command, createRichEditor, defineExtension, insertText, textRule } from "nsh/base";
+
+const Signature = defineExtension({
+  name: "signature",
+  priority: 200,
+  addOptions: () => ({ text: "— Sent from NSH" }),
+  addCommands: (options) => ({ insertSignature: insertText(options.text) }),
+  addKeyboardShortcuts: () => ({ "Mod-Alt-s": command("insertSignature") }),
+  addInputRules: () => [textRule("\\(sig\\)$", "✍")],
+});
+
+const editor = createRichEditor({ extensions: [StarterKit, Signature.configure({ text: "Best, Ana" })] });
+```
+
+`node` 或 `mark`（`defineSchema` 的写法）使它成为节点或标记扩展；`addGlobalAttributes` 为其他类型添加属性；`addProseMirrorPlugins` 返回插件，包括 `RichEditorPlugin`；`addPasteRules` 返回作用于粘贴文本的 `textRule` 与 `markRule` 规则。内置类的 `extend({...})` 替换所给的部分：`Underline.extend({ addKeyboardShortcuts: () => ({ "Mod-Alt-u": toggleMark("underline") }) })`。
+
+### 节点视图
+
+`addNodeView` 返回一个组件，由它渲染该扩展节点类型的每个节点：正文里的股票标签、段落之间的卡片、@ 提及、嵌入内容。节点类型必须是原子节点（`atom: true` 或叶子节点）：光标把它当作一个字符或一个块跳过，Backspace 删除它。有内容的节点会被拒绝。
+
+```tsx
+import { RichEditor, StarterKit, createRichEditor, defineExtension, type RichNodeViewProps } from "nsh/base";
+
+function StockTag(props: RichNodeViewProps) {
+  return (
+    <View class={props.selected ? "rounded border border-primary px-1" : "rounded border border-transparent px-1"}>
+      <Text>{`$${props.node.attrs.symbol}`}</Text>
+    </View>
+  );
+}
+
+const Stock = defineExtension({
+  name: "stock",
+  node: { group: "inline", inline: true, atom: true, attrs: { symbol: { default: "AAPL" } } },
+  addNodeView: () => StockTag,
+});
+
+const editor = createRichEditor({ extensions: [StarterKit, Stock] });
+```
+
+组件对每个节点只运行一次。它的 props 跟随节点：在 JSX 或 effect 中读取时，节点的属性或选中状态变化，`node`（`{ type, attrs, textContent }`）与 `selected` 就地更新；在节点前后输入不会调用组件。`editor` 是节点所在的编辑器，`extension` 是 `{ name, options }`。`getPos()` 返回节点当前的起始位置（节点删除后为 `null`）；`updateAttributes(attrs)` 设置部分属性，`deleteNode()` 删除节点，两者都是经由编辑器（及其 `dispatchTransaction`）的一次可撤销修改。
+
+按在视图自身的区域上会选中它的节点，并让编辑器获得焦点，行内视图和块级视图都是如此（ProseMirror 点击原子节点也会选中它）；按住 Shift 时改为扩展选区，按住 Mod 时与在文字上按下的效果相同。视图里的控件（`Button`、`Link`）照常处理自己的按下，选区保持不变。
+
+应用的 crate 通过其 UI 集注册用 Rust 编写的扩展，JS 按名称取用：
+
+```rust
+use nsh_base::rich_editor::extensions::{Extension, RichExtensionRegistry};
+
+#[native_module("app/native")]
+fn native(registry: &mut Registry) {
+    registry.rich_extension("mention", || Extension::new("mention") /* .add_plugins(...) */);
+}
+```
+
+```tsx
+const editor = createRichEditor({ extensions: [StarterKit, richExtension("mention", { char: "@" })] });
+```
+
+`richExtension(name, options)` 也按名称找到每个内置扩展（`"text"`、`"bold"` 等）。
+
+## 插件
+
+| 工厂函数 | 添加的内容 |
+| --- | --- |
+| `history({ depth?, newGroupDelay? })` | 撤销历史；`newGroupDelay` 毫秒（500）内的修改一起撤销 |
+| `keymap(bindings)` | 按键名绑定命令：`"Mod-b"`（Apple 平台上为 Cmd，其他平台为 Ctrl）、`"Shift-Enter"`、`"Alt-ArrowUp"` |
+| `baseKeymap()` | 回车、退格、删除、全选和平台的文本编辑按键 |
+| `starterKeymap()` | 起步 schema 的键位：标记、标题、列表、代码块、硬换行 |
+| `inputRules(rules)` | 光标前输入的文字匹配某条规则时变成规则生成的内容；紧接着按退格撤销它 |
+| `markdown(options?)` | 边输入边转换的 Markdown、Markdown 粘贴和 Markdown 复制（`blockRules`、`inlineRules`、`paste`、`copyAsMarkdown`） |
+| `starterKit()` | 起步的输入规则和键位、基础键位和历史 |
+
+插件在列表中的位置就是它的优先级：列表中靠前的键位和输入规则先处理按键或文字。输入规则来自 `markdownRules()`（标题、引用、列表、代码围栏、分隔线、常用标记）、`typographyRules()`（智能引号、省略号、破折号）、`textRule(match, replacement)`、`markRule(match, mark)`、`wrappingRule(match, node)` 和 `textblockRule(match, node)`。规则的 `match` 是以 `$` 结尾的正则表达式，与光标前的文字匹配。
+
+### 应用的插件
+
+`new RichEditorPlugin(key)` 创建一个行为由应用决定的插件，用链式调用设置：
+
+```tsx
+import { RichEditorPlugin, createRichEditor, starterKit } from "nsh/base";
+
+const suggestions = new RichEditorPlugin("suggestions")
+  .captureKeys(["ArrowUp", "ArrowDown", "Enter", "Escape"], (key) => moveSuggestion(key))
+  .filterTransaction((tr) => tr.meta?.locked !== true)
+  .appendTransaction((trs, state) => null);
+
+const editor = createRichEditor({ plugins: [starterKit(), suggestions] });
+
+// 建议列表打开时，这些按键归列表处理。
+suggestions.capturing = true;
+editor.setDecorations("suggestions", [{ from: 5, to: 9, kind: "inline", attrs: { class: "bg-accent" } }]);
+```
+
+- `captureKeys(keys, handler)`：`capturing` 为 true 时，编辑器消费这些按键，并随即告诉 `handler` 按下的是哪一个；键盘响应与没有插件时一样快。
+- `editor.setDecorations(key, decorations)`：视图绘制在文档之上、不改变文档的行内属性、节点属性和小部件。它们随每次修改移动，直到再次设置。
+- `filterTransaction(hook)` 和 `appendTransaction(hook)` 在应用自己的调用（`run`、`dispatch`、`setContent`……）中看到这些调用产生的事务：`filterTransaction` 可以丢弃一个事务，`appendTransaction` 可以返回一个与之一起应用的事务。`on("revision", …)` 收到每次修改，包括输入。
+
+#### 粘贴
+
+插件可以用 ProseMirror 的 `transformPasted` 和 `handlePaste` 参与粘贴：
+
+```tsx
+const paste = new RichEditorPlugin("paste")
+  .transformPasted((slice) => slice)
+  // Word 的列表项、Google Docs 的加粗、单独粘贴的视频链接：由应用自己读取剪贴板。
+  .handlePaste((slice, clipboard) => {
+    if (!isVideoLink(clipboard.text)) return false;
+    editor.run(insertContent({ type: "video", attrs: { src: clipboard.text } }));
+    return true;
+  });
+```
+
+- `transformPasted(slice)` 在内容插入前修改它，各插件依次运行。内容是 `RichSliceJSON`（`{ content, openStart, openEnd }`），优先按 schema 的规则从剪贴板的 HTML 解析，没有 HTML 时从纯文本解析。
+- `handlePaste(slice, clipboard)` 返回 `true` 表示应用已经处理了这次粘贴，编辑器不再插入内容。`clipboard` 是 `{ text, html }`，即剪贴板里的内容。应用如果要按自己的方式读取 Word 或 Google Docs 的 HTML、Markdown 或链接，就自己插入结果（`editor.run(insertContent(...))`）并返回 `true`。
+
+应用自己清洗剪贴板里的 HTML（Word 的列表、Google Docs 的外壳、转成 HTML 的 Markdown）时，用 `editor.pasteHTML(html)`
+把结果接着粘贴进去并返回 `true`；纯文本用 `editor.pasteText(text)`。它们就是 ProseMirror 的 `pasteHTML` 和 `pasteText`：
+内容按粘贴的方式读取，即按 schema 的规则解析并适配选区，所以标了 `isolating` 的节点（带图注的图片）会完整保留，而
+`insertContent(html, "html")` 会把它打开；编辑器自己的粘贴步骤（链接、字数限制、粘贴规则）照常生效。插件的 `transformPasted`
+和 `handlePaste` 不会再被调用。返回值表示是否粘贴了内容。
+
+```tsx
+const paste = new RichEditorPlugin("paste").handlePaste((_slice, clipboard) => {
+  const docs = /^<b id="docs-internal-guid-[^"]*">([\s\S]*)<\/b>$/.exec(clipboard.html);
+  return docs ? editor.pasteHTML(docs[1]) : false;
+});
+```
+
+粘贴是唯一会等待 JS 的输入：插件一旦有粘贴钩子，粘贴就会在钩子都给出结果之后（晚一个 JS 轮次）才插入。多次粘贴按发生的顺序插入。钩子运行期间文档或选区发生变化的粘贴，会按编辑器当时的状态重新执行。打字和按键从不等待。要插入需要更长时间的内容（例如上传），就让 `handlePaste` 返回 `true`，由应用在内容准备好时再插入。
+
+## 链接、字数统计与建议
+
+三个插件提供 Tiptap 的 Link、CharacterCount 和 Suggestion 行为，全部原生运行：
+
+```tsx
+import { RichEditor, characterCount, createRichEditor, insertMention, link, setSuggestionOpen, starterKit, starterSchema, suggestion, withMention } from "nsh/base";
+
+const editor = createRichEditor({
+  schema: withMention(starterSchema()),
+  plugins: [
+    suggestion({ key: "mention", char: "@", decorationClass: "text-primary", captureKeys: ["ArrowUp", "ArrowDown", "Enter"] }),
+    starterKit(),
+    link({ defaultProtocol: "https" }),
+    characterCount({ limit: 280 }),
+  ],
+});
+
+editor.on("transaction", () => {
+  const s = editor.suggestion("mention");
+  if (s?.active) {
+    const people = peopleMatching(s.query);
+    editor.run(setSuggestionOpen(people.length > 0, "mention"));
+    showPeople(people, editor.coordsAtPos(s.range.from), s.lastKey);
+  }
+  setCount(`${editor.characters()} / ${editor.characterLimit}`);
+});
+
+// 列表选中了某人：
+editor.run(insertMention(editor.suggestion("mention")!.range, "u1", "Joan"));
+```
+
+- `link(options?)`：在 URL 后输入空格或 Enter 时，URL 变为链接，粘贴文本中的 URL 也一样（`autolink`）；在选区上粘贴 URL 会给选区加上链接（`linkOnPaste`）；按住 Mod 点按链接，或在编辑器只读时点按，会通过应用的 URL 处理打开它（`openOnClick`）；`enableClickSelection` 点按时选中整个链接。带协议和不带协议的 URL（`nsh.dev`、`https://nsh.dev/docs`、电子邮件地址）都能识别，不带协议的主机名使用 `defaultProtocol`（`http`）。链接接受 `http`、`https`、`ftp`、`ftps`、`mailto`、`tel`、`callto`、`sms`、`cid`、`xmpp` 以及 `protocols` 中的协议，因此 `setLink({ href })`、`toggleLink(attrs?)` 和自动链接会把脚本（`javascript:`）和 data URL 挡在外面。`unsetLink()` 移除选区所在的链接。在桌面平台和桌面形态的 Web 上，指针停在带链接的文字上时，会在指针下方显示链接的 `title` 和目的地，与 [TextView 的链接](./text-view.md)相同；在链接里按压和输入照常进行。由应用的标记视图渲染的文字，显示应用元素自己的内容。
+- `characterCount(options?)`：`editor.characters(mode?)` 统计文本的字符（`"textSize"`，与 JS 的 `length` 一样按 UTF-16 单元）或文档的位置数（`"nodeSize"`）；`editor.words()` 统计词数（Unicode 词边界）。设置 `limit` 后，会超出上限的修改被拒绝，粘贴的内容被截到放得下的长度；超出上限的初始文档会被截短（`autoTrim`）。`setCharacterLimit(limit)` 修改上限，`editor.characterLimit` 读取上限。
+- `suggestion(options?)`：跟踪光标前输入的触发字符（`char`，默认 `@`）。`allowSpaces` 让查询可以包含空格，`allowedPrefixes` 列出触发字符前可以出现的字符（默认一个空格；`anyPrefix` 接受任何字符），`startOfLine` 要求触发字符位于行首（`/` 命令菜单）。`editor.suggestion(key)` 给出 `{ active, range, query, text, lastKey, keyCount, open }`；活动范围带有应用的 `decorationClass`（查询为空时还有 `decorationEmptyClass`）。建议活动期间，`captureKeys` 中的按键归应用的列表：编辑器接收它们并把最后一个记录在状态中；Escape 关闭建议（`exitSuggestion(key)` 也可以）。`setSuggestionOpen(open, key?)` 告诉建议当前查询下列表是否显示（即状态中的 `open`）：关闭时，`captureKeys` 中的按键交给编辑器继续处理，没有匹配时 Enter 照常发送或换行，Escape 仍然关闭建议。它只对设置时的查询有效，查询每次变化都要重新设置；在此之前列表视为打开，按键归列表。异步加载条目的列表（例如远程搜索联系人）要等确定列表为空后再关闭，结果还在加载时不要关闭，否则 Enter 会在结果到达之前就生效。在 `plugins` 中，建议要放在 `starterKit()` 和应用自己的按键之前，按键才会先到达它。`replaceSuggestion(content, key?)` 用文本或 JSON 内容替换触发字符和查询。
+- `withMention(schema, { name?, char? })` 添加 Tiptap 的提及节点：带 `id`、`label` 和触发字符的行内原子节点，在文本中写作 `@label`，在 HTML 中写作 `<span data-type="mention">`。`insertMention(range, id, label?)` 用一个提及和一个空格替换建议的范围。
+
+弹出层属于应用：它读取建议的状态，放在 `coordsAtPos(range.from)` 处，并以自己的方式绘制条目。
+
+## 块编辑器
+
+Notion 式的编辑器由上面这些部分组成，文档周围的界面是应用自己的。画廊的 Block editor 演示（`examples/gallery/demos/BlockEditorDemo.tsx`）就是一个：`/` 块菜单、每个块上的手柄，以及选区上方的工具栏。
+
+```tsx
+import { Overlay } from "nsh";
+import { RichEditor, StarterKit, chain, command, createRichEditor, defineExtension, deleteRange, suggestion } from "nsh/base";
+
+// 扩展排在键位之前，所以回车会先选中菜单项，再轮到它拆分段落。
+const slash = defineExtension({
+  name: "slashCommand",
+  priority: 1000,
+  addProseMirrorPlugins: () => [suggestion({ key: "slash", char: "/", captureKeys: ["ArrowUp", "ArrowDown", "Enter"] })],
+});
+const editor = createRichEditor({ extensions: [StarterKit, slash] });
+
+// `editor.suggestion("slash")?.active` 时，菜单放进 `bubbleMenu`；选中一项就替换触发符和查询。
+const { range } = editor.suggestion("slash")!;
+editor.run(chain([deleteRange({ from: range.from, to: range.to }), command("toggleBulletList")]));
+
+// 手柄：指针下的块，以及它在页面上的位置，供锚定在那里的 `Overlay` 使用。
+const start = editor.posAtPageCoords(event.pagePosition);
+const rect = editor.pageNodeRect(start!);
+editor.dragBlock(start!, { x: e.pageX, y: e.pageY }); // 移动时 dragTo(point)，松开时 endDrag()
+```
+
+- `createRichEditor` 自己的 `plugins` 排在扩展和键位之后；键要先处理的插件（建议菜单的回车）写成 `priority` 较高的扩展。
+- `pageNodeRect(pos)` 和 `posAtPageCoords(point)` 用页面点作答，与 `Overlay` 的 `anchor` 和指针事件的坐标相同，所以手柄可以作为跟随块的浮层放在编辑器的边距里。
+- `dragBlock(pos, point)`、`dragTo(point)` 和 `endDrag()` 随指针移动一个块：落点线跟着指针，放下是一步撤销。点一下还要打开菜单的手柄，在指针移动之后才认领指针（`onMoveShouldSetResponder`），点按仍走 `onPress`；`Button` 自己处理按压，不会把拖动交给响应器。
+
+## 表格
+
+`TableKit` 提供 Tiptap 的表格：`RichTable`（Tiptap 的 `Table`）、`RichTableRow`、`RichTableHeader` 和 `RichTableCell`。它与 `StarterKit` 一起添加：
+
+```tsx
+import { RichEditor, StarterKit, TableKit, addRowAfter, createRichEditor, insertTable, mergeCells } from "nsh/base";
+
+const editor = createRichEditor({
+  extensions: [StarterKit, TableKit.configure({ table: { cellMinWidth: 40 } })],
+});
+
+editor.run(insertTable({ rows: 3, cols: 3, withHeaderRow: true }));
+editor.run(addRowAfter());
+```
+
+表格接受选项 `resizable`（true）、`cellMinWidth`（25）、`lastColumnResizable`（true）、`allowTableNodeSelection`（false）和 `HTMLAttributes`；`TableKit.configure({ tableHeader: false })` 不包含其中一个扩展。单元格包含块，带有 `colspan`、`rowspan` 和 `colwidth`（其跨越的每一列的宽度，以点为单位）；行带有 `height`。
+
+Tab 与 Shift-Tab 在单元格之间移动，在最后一个单元格按 Tab 会添加一行。在单元格边缘按方向键会进入相邻单元格；Shift 加方向键，或跨单元格拖动，会选中一个矩形区域的单元格（类型为 `"cell"` 的选区，其 `anchor` 与 `head` 是首尾单元格之前的位置）。Backspace 与 Delete 清空选中的单元格，选中全部单元格时删除整个表格。
+
+在编辑器中，表格是由其单元格组成的网格：每列与其单元格的 `colwidth` 一样宽，没有宽度的列分享剩余空间（至少 `cellMinWidth` 宽），每行至少为其 `height` 高。默认外观来自主题：1 点 `border` 网格线，表头单元格使用 `muted` 背景，单元格带内边距，选中的单元格覆盖一层 `selectedCell` 部件，使用选区颜色。`classes.nodes`（`table`、`tableCell`、`tableHeader`）和这些部件可以重新设置全部外观。在单元格的第一行或最后一行按上下方向键，会进入上方或下方的单元格。
+
+文档可编辑时：
+
+- 在桌面平台上，每列的右边框和每行的下边框可以调整尺寸：指针显示调整光标和 `tableResizeHandle` 线条，表格随拖动变化，松开时在一步中设置 `colwidth` 或 `height`，撤销可以一次撤回。`resizable: false` 关闭此功能，`lastColumnResizable: false` 保持最后一列的宽度。
+- 选区所在的表格在其上边框每列上方、左边框每行旁边显示抓手（`tableGrip`）。按下抓手选中该列或该行；在桌面平台上拖动抓手会显示放置位置（`tableDropIndicator`），松开时移动到那里。
+
+```tsx
+<RichEditor
+  editor={editor}
+  classes={{
+    nodes: { tableHeader: "font-semibold", tableCell: "px-3 py-2" },
+    selectedCell: "bg-primary/10",
+    tableGrip: "bg-muted-foreground/60 rounded-full",
+  }}
+/>
+```
+
+这些命令都是 `nsh/base` 的辅助函数：
+
+- `insertTable({ rows, cols, withHeaderRow })`（默认 3 × 3，带表头行）和 `deleteTable()`。
+- `addColumnBefore()`、`addColumnAfter()`、`deleteColumn()`、`addRowBefore()`、`addRowAfter()`、`deleteRow()`。
+- `mergeCells()`、`splitCell()` 和 `mergeOrSplit()`。
+- `toggleHeaderRow()`、`toggleHeaderColumn()` 和 `toggleHeaderCell()`。
+- `setCellAttribute(name, value)`、`setCellSelection({ anchorCell, headCell })`、`goToNextCell()`、`goToPreviousCell()` 和 `fixTables()`（修复缺少或重叠单元格的表格）。
+- `moveTableRow({ from, to, select })` 与 `moveTableColumn({ from, to, select })` 移动一行或一列，连同其合并单元格跨越的行或列；`setColumnWidth({ col, width })` 与 `setRowHeight({ row, height })` 设置尺寸（`null` 表示随内容）。这些命令接受 `table`（表格之前的位置），以作用于选区所在表格之外的表格。
+
+表格可读写 HTML（`<table>` 与 `<th>` / `<td>`、`colspan`、`rowspan` 和 `data-colwidth`）和 Markdown：带表头行且每个单元格只有一个段落的表格写成 GFM 管道表格，其他表格写成其 HTML，读回后保持不变。纯文本中，一行是用制表符分隔的单元格组成的一行文字。

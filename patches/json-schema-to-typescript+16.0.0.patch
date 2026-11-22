@@ -1,0 +1,29 @@
+--- a/node_modules/json-schema-to-typescript/dist/src/cli.js
++++ b/node_modules/json-schema-to-typescript/dist/src/cli.js
+@@ -23,7 +23,7 @@
+ const minimist_1 = __importDefault(require("minimist"));
+ const fs_1 = require("fs");
+ const lodash_1 = require("lodash");
+-const tinyglobby_1 = require("tinyglobby");
++const glob_1 = require("tinyglobby");
+ const path_1 = require("path");
+ const index_1 = require("./index");
+ const utils_1 = require("./utils");
+@@ -58,7 +58,7 @@
+         }
+         const argIn = argv._[0] || argv.input;
+         const argOut = argv._[1] || argv.output; // the output can be omitted so this can be undefined
+-        const ISGLOB = argIn && (0, tinyglobby_1.isDynamicPattern)(argIn);
++        const ISGLOB = argIn && (0, glob_1.hasMagic)(argIn, { magicalBraces: true });
+         const ISDIR = !!argIn && isDir(argIn);
+         if ((ISGLOB || ISDIR) && argOut && argOut.includes('.d.ts')) {
+             throw new ReferenceError(`You have specified a single file ${argOut} output for a multi file input ${argIn}. This feature is not yet supported, refer to issue #272 (https://github.com/bcherny/json-schema-to-typescript/issues/272)`);
+@@ -88,7 +88,7 @@
+ }
+ function processGlob(argIn, argOut, argv) {
+     return __awaiter(this, void 0, void 0, function* () {
+-        const files = yield (0, tinyglobby_1.glob)(argIn, { expandDirectories: false }); // execute glob pattern match
++        const files = yield (0, glob_1.glob)(argIn, { nodir: true }); // execute glob pattern match
+         if (files.length === 0) {
+             throw ReferenceError(`You passed a glob pattern "${argIn}", but there are no files that match that pattern in ${process.cwd()}`);
+         }

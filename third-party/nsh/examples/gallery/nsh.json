@@ -1,0 +1,82 @@
+{
+  "name": "Gallery",
+  "id": "com.longbridge.nsh.gallery",
+  "version": "1.0.0",
+  "build": 1,
+  "schemes": [
+    "nsh-gallery"
+  ],
+  "icon": "icon.png",
+  "appearance": "system",
+  "window": {
+    "title": "Gallery",
+    "titleBar": {
+      "style": "hidden",
+      "height": 44
+    }
+  },
+  "theme": "../nsh-gallery-ui/theme.json",
+  "capabilities": {
+    "network": {
+      "hosts": [
+        "*"
+      ],
+      "sockets": [
+        "127.0.0.1:9876"
+      ]
+    },
+    "fs": {
+      "read": [
+        "${dataDir}"
+      ],
+      "write": [
+        "${dataDir}"
+      ]
+    },
+    "process": {
+      "exit": false,
+      "execute": [
+        "echo",
+        "cat",
+        "sh",
+        "bash",
+        "zsh",
+        "cmd.exe",
+        "claude",
+        "codex"
+      ],
+      "env": [
+        "NSH_GALLERY_DEMO",
+        "NSH_GALLERY_SECTION"
+      ]
+    },
+    "webview": {
+      "hosts": [
+        "*"
+      ]
+    },
+    "statusBar": true,
+    "clipboard": true,
+    "openUrl": {
+      "schemes": [
+        "https",
+        "nsh-gallery"
+      ]
+    },
+    "picker": true,
+    "share": true,
+    "speech": true,
+    "notifications": true,
+    "audio": true,
+    "windows": {
+      "kinds": [
+        "normal",
+        "dialog",
+        "panel",
+        "popup"
+      ]
+    },
+    "application": true,
+    "homeDir": true
+  }
+}

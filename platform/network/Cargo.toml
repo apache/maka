@@ -1,0 +1,59 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+#
+
+[package]
+autotests = false
+name = "maka-network"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+maka-agent-facts.workspace = true
+maka-sandbox.workspace = true
+reqwest = { workspace = true, features = ["stream"] }
+tokio-tungstenite.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+serde_json.workspace = true
+tokio-util = { workspace = true, features = ["rt"] }
+hyper = { version = "1.12.0", features = ["server", "http1"] }
+hyper-util = { version = "0.1.21", features = ["tokio", "client-proxy"] }
+http-body-util = "0.1.5"
+futures-util.workspace = true
+base64 = "0.23.1"
+percent-encoding = "2.3.2"
+tokio-socks = "0.5.3"
+tokio-rustls = { version = "0.26.6", default-features = false, features = ["aws_lc_rs", "tls12"] }
+rustls-platform-verifier = "0.7.1"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-cf-network = { version = "0.3.2", default-features = false, features = ["std", "CFProxySupport"] }
+objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFArray", "CFDate", "CFDictionary", "CFError", "CFNumber", "CFRunLoop", "CFStream", "CFString", "CFURL"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Networking_WinHttp", "Win32_Networking_WinSock"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["net", "io-util"] }
+futures-util.workspace = true
+
+[[test]]
+name = "integration"
+path = "tests/integration/main.rs"

@@ -19,78 +19,46 @@
 
 # Contributing to Maka
 
-[![docs](https://img.shields.io/badge/docs-%E7%AE%80%E4%BD%93%E4%B8%AD%E6%96%87-blue?logo=googletranslate&logoColor=white)](./CONTRIBUTING.zh-CN.md)
+[简体中文](CONTRIBUTING.zh-CN.md)
 
-## Where to start
+Use [Issues](https://github.com/apache/maka/issues) for bugs and concrete proposals, [Discussions](https://github.com/apache/maka/discussions) for open-ended questions, and [SECURITY.md](SECURITY.md) for private vulnerability reports. Comment `take` alone to claim an unassigned issue, or `untake` to release it.
 
-**Start new feature work from `rust-preview` and target that branch in your PR.** As agreed in [Discussion #6366](https://github.com/apache/maka/discussions/6366), `main` is limited to bug fixes, security fixes, dependency updates, release work and documentation for the 0.2.x line. For an existing issue or PR, confirm which implementation it concerns before starting; labels such as `good first issue` do not identify the target branch.
+Project direction, governance, and major product changes belong on [dev@maka.apache.org](https://lists.apache.org/list.html?dev@maka.apache.org). Implementation details can stay on the pull request.
 
-The two branches use different implementations. Follow the [Rust contribution guide](https://github.com/apache/maka/blob/rust-preview/CONTRIBUTING.md) for setup and validation on `rust-preview`; the setup and development commands below apply to TypeScript `main`.
+## Local development
 
-Bug fixes, model provider support, tests, performance work, and documentation merge most readily. Pick something up from [`help wanted`](https://github.com/apache/maka/issues?q=is%3Aissue+is%3Aopen+label%3A%22help+wanted%22) · [`good first issue`](https://github.com/apache/maka/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22) · [`bug`](https://github.com/apache/maka/issues?q=is%3Aissue+is%3Aopen+label%3Abug) · [`enhancement`](https://github.com/apache/maka/issues?q=is%3Aissue+is%3Aopen+label%3Aenhancement) and claim it in a comment. Use the **Bug report** or **Feature request** template for new issues; report security problems through [SECURITY.md](./SECURITY.md), never as a public issue. Questions, ideas, and not-yet-actionable proposals belong in [Discussions](https://github.com/apache/maka/discussions), which reaches the whole team by email.
-
-To self-assign an unclaimed issue, post a comment whose entire body is exactly `take`; post `untake` to remove your assignment. Other claim text does not trigger the workflow.
-
-Project direction, governance, and material product decisions are discussed publicly on [`dev@maka.apache.org`](https://lists.apache.org/list.html?dev@maka.apache.org) before implementation; implementation-level decisions may live in the pull request.
-
-## Human ownership and AI attribution
-
-Every contribution has a human contributor of record who reviews the work, decides to submit it, and owns its accuracy, provenance, and licensing. Agents may commit and push freely; the final review and merge decision always belongs to a human.
-
-Each pull request states whether generative tooling contributed substantively, naming the tool if so; translation, wording edits, autocomplete, and spelling correction don't count. Automated messages must identify themselves. When AI authors a material part of a contribution, add a `Generated-by: <tool>` trailer to each affected commit, and keep it in the final commit through squash or amend.
-
-## Review
-
-Every pull request to `main` needs an approving review from a committer other than the author and a passing `test` check; branch protection in [`.asf.yaml`](./.asf.yaml) enforces both. An approval stays valid across later pushes — push follow-up commits in the open, and ask for another look when the change grows past what was reviewed. The review must be an independent human judgment — AI review does not count. A maintainer decides whether a change is material and whether the review it received is enough.
-
-## Provenance and licensing
-
-Submit only work you have the right to contribute, and record third-party sources, licenses, and attribution. Contributions are licensed under the [Apache License 2.0](./LICENSE); for material AI-generated content, follow the [ASF Generative Tooling Guidance](https://www.apache.org/legal/generative-tooling.html).
-
-Pending clarification of Grok's terms of use, please do not use Grok to generate contributions to Maka.
-
-## Quick start
-
-Requires Node `^22.19.0 || >=24.0.0` (Node 23 is not supported: its `node:sqlite` lacks `DatabaseSync.isTransaction`) and npm `11.19.0` (root `package.json`). Direct Peer or Peer Mesh Desktop development additionally needs Rust stable 1.98 or newer and Xcode Command Line Tools on macOS, or MSVC Build Tools on Windows.
+Install Rust stable, Node.js 24+ (CI uses 26), npm, `just`, `cargo-nextest`, `cargo-deny`, and Python 3. On Windows, ensure Git for Windows' `sh` is on `PATH`.
 
 ```sh
-git clone https://github.com/apache/maka.git
-cd maka
-npm install                 # root only — never inside a workspace
-npm run build               # builds every workspace in dependency order
-npm --workspace @maka/core run test:dist
+just setup
+just run --help
+just check
 ```
 
-## Developing Maka
+`just check` runs formatting, typechecks, tests, and license checks across the workspace. While iterating on a single Rust crate, run focused tests first:
 
 ```sh
-npm run dev          # desktop app with HMR
-npm run dev:worktree # desktop HMR with a separate data directory for this checkout
-npm run cli:dev      # TUI; `npm run cli:dev -- run "…"` runs one non-interactive turn
-npm test             # all workspaces, or: npm --workspace @maka/core run test:dist
+cargo nextest run -p <crate> --lib
 ```
 
-Use `dev:worktree` when developing multiple checkouts or testing changes to stored data formats. It starts with a separate configuration and keeps using the same data directory for that checkout. See [worktree development profiles](./apps/desktop/README.md#worktree-development-profiles) for locations and overrides.
+`just` and GitHub Actions share suite definitions in [`scripts/ci.mjs`](scripts/ci.mjs). See [scripts/rust](scripts/rust/README.md#ci) for change-plan inspection, V8 prebuilt caching, and native packaging. The [website](website/README.md) maintains its own `package.json` and lockfile.
 
-Building a single workspace only succeeds when its dependencies are already built — when unsure, build from the root. Tests run against compiled output in `dist/`, so `test:dist` covers whatever the last build produced; rebuild before running it. `npm test` from the root does both.
+## Engineering conventions
 
-Before pushing, match CI locally:
+- Use `name.rs` + `name/` for submodules (avoid `mod.rs` in new code). Keep unit tests next to the implementation and integration tests under `tests/`.
+- Test observable behavior and real failure boundaries—avoid brittle source-text assertions, redundant fixtures, and fixed sleeps.
+- Validate inputs at system boundaries and trust typed internal contracts. Represent closed state machines with enums and derive wire schemas with `schemars`.
+- Keep domain policy in plugins; the Host owns admission, capabilities, and resource cleanup.
+- Evolve persisted state via forward, append-only `maka_event_log::migration::Migration` steps (locked by `scripts/rust/migrations.lock.json`). Rewrite old SQLite rows or JSON payloads in place inside a migration (`Migration::with_data`) rather than accumulating legacy read branches or external migration scripts; derived indexes (such as Recall/FTS) may be dropped and rebuilt. Update `products/maka/cli/tests/upgrade_compat.rs` whenever persisted features or formats change.
+- Keep wire fields separate from UI copy, and maintain all three product locales (`en`, `zh-CN`, `zh-TW`) when adding UI strings.
+- Write documentation only where it saves reader time. Keep maintained English and Chinese guides aligned, and link to types/schemas instead of duplicating field lists.
 
-```sh
-npm run lint
-npm run format:check
-npm run build
-npm run typecheck
-npx knip --workspace apps/desktop
-npx knip --workspace packages/ui
-```
+## Pull requests and provenance
 
-Architecture is documented in [ARCHITECTURE.md](./ARCHITECTURE.md); evaluation commands and contracts live in [`packages/eval`](./packages/eval).
+Use Conventional Commit PR titles and `<type>/<description>` branch names. Because the repository squash-merges PRs, the PR title becomes the final commit subject. Fill out the [PR template](.github/pull_request_template.md) with verification evidence, and attach screenshots or recordings for UI changes.
 
-## Pull requests
+Every contribution requires a human owner accountable for its correctness, provenance, and licensing under [Apache-2.0](LICENSE). Preserve third-party notices and review [source provenance](docs/code-origin-audit.md) and the [license header policy](.github/ASF_SOURCE_HEADERS.md) when adapting external code.
 
-Opening a pull request pre-fills [`pull_request_template.md`](./.github/pull_request_template.md); fill it in rather than replacing it.
+Disclose substantive AI assistance in the PR description (routine autocomplete, typo fixes, and translation polish do not require disclosure). Commits with material AI-authored code or prose must carry a `Generated-by: <tool>` trailer preserved through squash merge.
 
-Branches and titles follow [Conventional Commits](https://www.conventionalcommits.org/): branches are `<type>/<description>`, titles are `<type>(<scope>): <summary>`. The repository squash-merges, so the title becomes the commit on the target branch; `git log` shows the types and scopes in use.
-
-For UI changes, include before/after screenshots or a recording. Keep the description short and your own — if it needs many paragraphs, the pull request is probably too large.
+Agents may commit and push branches. Merging into protected branches requires passing CI checks and independent human committer approval.

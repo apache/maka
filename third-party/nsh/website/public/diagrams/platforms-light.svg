@@ -1,0 +1,184 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"
+     viewBox="0 0 880 480" width="100%" role="img" aria-labelledby="t d">
+  <title id="t">One module, many hosts</title>
+  <desc id="d">One module, App.tsx, is built once into bundle.nshc. The same Rust runtime runs it everywhere: QuickJS, the reactive graph, the renderer, Taffy layout, text and the components. iOS draws UIKit views from iOS 15.0, embedded as NshAppView. Android draws Android views from API 26, Android 8, embedded as NshView. The desktops draw AppKit views on macOS, Win32 windows with Direct2D on Windows and GTK 4 widgets on Linux, embedded as AppView. GPUI draws GPUI elements on macOS, Windows and Linux, embedded as an AppView in GPUI apps. The web renders HTML in a browser page, embedded with createPlayer. All are supported.</desc>
+
+  <defs>
+    <style>
+      :root{
+        --band:rgba(20,20,22,.035);
+        --band-line:rgba(20,20,22,.10);
+        --band-hi:rgba(90,122,18,.07);
+        --seam:rgba(20,20,22,.055);
+        --card:#ffffff;
+        --card-line:rgba(20,20,22,.16);
+        --card-hi:#f4f8e8;
+        --ink:#16171a;
+        --muted:#5f636a;
+        --line:rgba(20,20,22,.42);
+        --faint:rgba(20,20,22,.22);
+        --fill:rgba(20,20,22,.08);
+        --accent:#5a7a12;
+        --danger:#e5484d;
+      }
+
+      text{font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif}
+      .mono{font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace}
+      .h1{fill:var(--ink);font-size:16px;font-weight:650}
+      .lede{fill:var(--muted);font-size:11.5px}
+      .layer{fill:var(--ink);font-size:12.5px;font-weight:650}
+      .layer-sub{fill:var(--muted);font-size:11px}
+      .seam-name{fill:var(--accent);font-size:12px;font-weight:650}
+      .name{fill:var(--ink);font-size:14px;font-weight:600}
+      .band-name{fill:var(--ink);font-size:13px;font-weight:600}
+      .fact{fill:var(--ink);font-size:11.5px}
+      .note{fill:var(--muted);font-size:11px}
+      .tag{fill:var(--muted);font-size:10.5px;font-weight:600}
+      .edge{fill:var(--accent);font-size:11px;font-weight:600}
+      .claim{fill:var(--accent);font-size:11px;font-weight:600}
+
+      .band{fill:var(--band);stroke:var(--band-line);stroke-width:1}
+      .card{fill:var(--card);stroke:var(--card-line);stroke-width:1}
+      .seam{fill:var(--seam)}
+      .seam-edge{fill:none;stroke:var(--accent);stroke-width:1;stroke-dasharray:4 4;opacity:.6}
+      .flow{fill:none;stroke:var(--line);stroke-width:1.4}
+      .arrowhead{fill:var(--line)}
+      .token-halo{fill:var(--accent);opacity:.16}
+      .token-core{fill:var(--accent)}
+      .status{fill:var(--accent);font-size:10.5px;font-weight:650;letter-spacing:.04em}
+      .status-muted{fill:var(--muted);font-size:10.5px;font-weight:650;letter-spacing:.04em}
+      .card-dim{fill:none;stroke:var(--faint);stroke-width:1;stroke-dasharray:5 4}
+      .card-demo{fill:var(--band);stroke:var(--card-line);stroke-width:1}
+      .dim{opacity:.62}
+      .flow-dim{fill:none;stroke:var(--faint);stroke-width:1.4;stroke-dasharray:4 4}
+      .arrowhead-dim{fill:var(--faint)}
+      .token-muted-halo{fill:var(--muted);opacity:.18}
+      .token-muted-core{fill:var(--muted)}
+
+      .stage{animation:stage 5s linear infinite}
+
+      @keyframes stage{
+        0%,14%{stroke:var(--accent);fill:var(--card-hi)}
+        26%,100%{stroke:var(--card-line);fill:var(--card)}
+      }
+
+      @media (prefers-reduced-motion: reduce){
+        .stage{animation:none}
+        .token{display:none}
+      }
+    </style>
+
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="6.5" markerHeight="6.5" orient="auto">
+      <path class="arrowhead" d="M0,0 L10,5 L0,10 Z"/>
+    </marker>
+    <marker id="arrow-dim" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="6.5" markerHeight="6.5" orient="auto">
+      <path class="arrowhead-dim" d="M0,0 L10,5 L0,10 Z"/>
+    </marker>
+
+    <path id="to-ios" d="M504,248 V262 Q504,268 498,268 H238 Q232,268 232,274 V310"/>
+    <path id="to-android" d="M504,248 V262 Q504,268 498,268 H374 Q368,268 368,274 V310"/>
+    <path id="to-desktop" d="M504,248 V310"/>
+    <path id="to-gpui" d="M504,248 V262 Q504,268 510,268 H634 Q640,268 640,274 V310"/>
+    <path id="to-web" d="M504,248 V262 Q504,268 510,268 H770 Q776,268 776,274 V310"/>
+  </defs>
+
+  <text class="h1" x="24" y="30">One module, many hosts</text>
+  <text class="lede" x="24" y="50">The same bundle and the same Rust runtime on every backend. Each backend draws with its platform's own UI.</text>
+
+  <!-- layer bands -->
+  <rect class="band" x="160" y="72"  width="688" height="78" rx="12"/>
+  <rect class="band" x="160" y="170" width="688" height="78" rx="12"/>
+  <rect class="band" x="160" y="288" width="688" height="152" rx="12"/>
+
+  <text class="layer"     x="24" y="107">Module</text>
+  <text class="layer-sub" x="24" y="123">built once</text>
+  <text class="layer"     x="24" y="205">Runtime</text>
+  <text class="layer-sub" x="24" y="221">Rust, shared</text>
+  <text class="layer"     x="24" y="360">Backends</text>
+  <text class="layer-sub" x="24" y="376">each platform's UI</text>
+
+  <text class="band-name mono" x="192" y="105">App.tsx → bundle.nshc</text>
+  <text class="note" x="192" y="123">your code only, built by nsh build</text>
+  <text class="note" x="832" y="105" text-anchor="end">one bundle for every platform</text>
+
+  <text class="band-name" x="192" y="203">QuickJS · reactive graph · renderer · Taffy · text</text>
+  <text class="note" x="192" y="221">nsh-js, nsh-core and the native modules, the same on every backend</text>
+
+  <!-- flow -->
+  <path class="flow" d="M504,150 L504,168" marker-end="url(#arrow)"/>
+  <path class="flow" d="M504,248 V268"/>
+  <path class="flow" d="M232,274 Q232,268 238,268 H770 Q776,268 776,274"/>
+  <path class="flow" d="M232,274 V310" marker-end="url(#arrow)"/>
+  <path class="flow" d="M368,274 V310" marker-end="url(#arrow)"/>
+  <path class="flow" d="M504,268 V310" marker-end="url(#arrow)"/>
+  <path class="flow" d="M640,274 V310" marker-end="url(#arrow)"/>
+  <path class="flow" d="M776,274 V310" marker-end="url(#arrow)"/>
+
+  <!-- tokens: one bundle, handed to each backend -->
+  <g class="token">
+    <circle class="token-halo" r="8"/><circle class="token-core" r="3.5"/>
+    <animateMotion dur="5s" repeatCount="indefinite" rotate="0" keyPoints="0;1;1" keyTimes="0;0.5;1" calcMode="linear"><mpath href="#to-ios" xlink:href="#to-ios"/></animateMotion>
+    <animate attributeName="opacity" dur="5s" repeatCount="indefinite" values="0;1;1;0;0" keyTimes="0;0.06;0.46;0.52;1"/>
+  </g>
+  <g class="token">
+    <circle class="token-halo" r="8"/><circle class="token-core" r="3.5"/>
+    <animateMotion dur="5s" repeatCount="indefinite" rotate="0" keyPoints="0;1;1" keyTimes="0;0.5;1" calcMode="linear"><mpath href="#to-android" xlink:href="#to-android"/></animateMotion>
+    <animate attributeName="opacity" dur="5s" repeatCount="indefinite" values="0;1;1;0;0" keyTimes="0;0.06;0.46;0.52;1"/>
+  </g>
+  <g class="token">
+    <circle class="token-halo" r="8"/><circle class="token-core" r="3.5"/>
+    <animateMotion dur="5s" repeatCount="indefinite" rotate="0" keyPoints="0;1;1" keyTimes="0;0.5;1" calcMode="linear"><mpath href="#to-desktop" xlink:href="#to-desktop"/></animateMotion>
+    <animate attributeName="opacity" dur="5s" repeatCount="indefinite" values="0;1;1;0;0" keyTimes="0;0.06;0.46;0.52;1"/>
+  </g>
+  <g class="token">
+    <circle class="token-halo" r="8"/><circle class="token-core" r="3.5"/>
+    <animateMotion dur="5s" repeatCount="indefinite" rotate="0" keyPoints="0;1;1" keyTimes="0;0.5;1" calcMode="linear"><mpath href="#to-gpui" xlink:href="#to-gpui"/></animateMotion>
+    <animate attributeName="opacity" dur="5s" repeatCount="indefinite" values="0;1;1;0;0" keyTimes="0;0.06;0.46;0.52;1"/>
+  </g>
+  <g class="token">
+    <circle class="token-halo" r="8"/><circle class="token-core" r="3.5"/>
+    <animateMotion dur="5s" repeatCount="indefinite" rotate="0" keyPoints="0;1;1" keyTimes="0;0.5;1" calcMode="linear"><mpath href="#to-web" xlink:href="#to-web"/></animateMotion>
+    <animate attributeName="opacity" dur="5s" repeatCount="indefinite" values="0;1;1;0;0" keyTimes="0;0.06;0.46;0.52;1"/>
+  </g>
+
+  <!-- backends -->
+  <rect class="card stage" x="170" y="312" width="124" height="112" rx="9" style="animation-delay:-2.6s"/>
+  <text class="name" x="184" y="337">iOS</text>
+  <text class="fact" x="184" y="357" font-size="10.5">UIKit views</text>
+  <text class="note" x="184" y="374" font-size="10">iOS 15.0+</text>
+  <text class="note mono" x="184" y="391">NshAppView</text>
+  <text class="status" x="184" y="412">SUPPORTED</text>
+
+  <rect class="card stage" x="306" y="312" width="124" height="112" rx="9" style="animation-delay:-2.6s"/>
+  <text class="name" x="320" y="337">Android</text>
+  <text class="fact" x="320" y="357" font-size="10.5">Android views</text>
+  <text class="note" x="320" y="374" font-size="10">API 26+ (Android 8)</text>
+  <text class="note mono" x="320" y="391">NshView</text>
+  <text class="status" x="320" y="412">SUPPORTED</text>
+
+  <rect class="card stage" x="442" y="312" width="124" height="112" rx="9" style="animation-delay:-2.6s"/>
+  <text class="name" x="456" y="337">Desktop</text>
+  <text class="fact" x="456" y="357" font-size="10.5">AppKit, Win32, GTK</text>
+  <text class="note" x="456" y="374" font-size="10">Mac, Windows, Linux</text>
+  <text class="note mono" x="456" y="391">AppView</text>
+  <text class="status" x="456" y="412">SUPPORTED</text>
+
+  <rect class="card stage" x="578" y="312" width="124" height="112" rx="9" style="animation-delay:-2.6s"/>
+  <text class="name" x="592" y="337">GPUI</text>
+  <text class="fact" x="592" y="357" font-size="10.5">GPUI elements</text>
+  <text class="note" x="592" y="374" font-size="10">Mac, Windows, Linux</text>
+  <text class="note mono" x="592" y="391">AppView</text>
+  <text class="status" x="592" y="412">SUPPORTED</text>
+
+  <rect class="card stage" x="714" y="312" width="124" height="112" rx="9" style="animation-delay:-2.6s"/>
+  <text class="name" x="728" y="337">Web</text>
+  <text class="fact" x="728" y="357" font-size="10.5">HTML in the page</text>
+  <text class="note" x="728" y="374" font-size="10">modern browsers</text>
+  <text class="note mono" x="728" y="391">createPlayer</text>
+  <text class="status" x="728" y="412">SUPPORTED</text>
+
+  <text class="claim" x="24" y="466">iOS, Android, macOS, Windows, Linux, GPUI and the web: one bundle, every platform's own UI.</text>
+</svg>

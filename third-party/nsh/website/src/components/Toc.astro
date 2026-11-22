@@ -1,0 +1,61 @@
+---
+import type { Lang } from '../lib/site';
+
+export interface Heading { depth: number; slug: string; text: string }
+export interface Props { headings?: Heading[]; lang?: Lang; title?: string }
+
+const { headings = [], lang = 'en', title } = Astro.props;
+const items = headings.filter((h) => h.depth === 2 || h.depth === 3);
+const label = title ?? (lang === 'zh-CN' ? '本页内容' : 'On this page');
+---
+
+<nav class="toc" aria-label={label}>
+  {items.length > 1 && (
+    <>
+      <p class="toc__label">{label}</p>
+      <ul>
+        {items.map((h) => (
+          <li class:list={['toc__item', { 'toc__item--sub': h.depth === 3 }]}>
+            <a href={`#${h.slug}`}>{h.text}</a>
+          </li>
+        ))}
+      </ul>
+    </>
+  )}
+</nav>
+
+<script>
+  // Marks the section being read: the band starts just under the sticky bar.
+  const links = new Map<string, HTMLAnchorElement>();
+  document.querySelectorAll<HTMLAnchorElement>('.toc a[href^="#"]').forEach((a) => {
+    links.set(decodeURIComponent(a.hash.slice(1)), a);
+  });
+
+  if (links.size > 0) {
+    const targets = [...links.keys()].map((id) => document.getElementById(id)).filter((el): el is HTMLElement => el !== null);
+    let current: HTMLAnchorElement | null = null;
+    const setCurrent = (id: string | undefined) => {
+      const next = id ? links.get(id) ?? null : null;
+      if (next === current) return;
+      current?.classList.remove('is-current');
+      next?.classList.add('is-current');
+      current = next;
+    };
+    const seen = new Set<string>();
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (entry.isIntersecting) seen.add(entry.target.id);
+          else seen.delete(entry.target.id);
+        }
+        const first = targets.find((el) => seen.has(el.id));
+        if (first) return setCurrent(first.id);
+        let passed: string | undefined;
+        for (const el of targets) if (el.getBoundingClientRect().top <= 88) passed = el.id;
+        if (passed) setCurrent(passed);
+      },
+      { rootMargin: '-88px 0px -55% 0px', threshold: 0 },
+    );
+    targets.forEach((el) => observer.observe(el));
+  }
+</script>

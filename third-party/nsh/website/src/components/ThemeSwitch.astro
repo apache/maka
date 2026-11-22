@@ -1,0 +1,68 @@
+---
+// System / Light / Dark, as the design's segmented control. The choice is
+// kept in localStorage (`theme`, absent for System); the pre-paint script in
+// BaseLayout applies it before the first frame and follows the system.
+import type { Lang } from '../lib/site';
+import ToggleGroup from './ui/ToggleGroup.astro';
+import ToggleGroupItem from './ui/ToggleGroupItem.astro';
+export interface Props { lang?: Lang }
+const { lang = 'en' } = Astro.props;
+const names = lang === 'zh-CN'
+  ? { label: '外观', system: '跟随系统', light: '浅色', dark: '深色' }
+  : { label: 'Appearance', system: 'System', light: 'Light', dark: 'Dark' };
+const icons = {
+  system: '<rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/>',
+  light: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/>',
+  dark: '<path d="M20.985 12.486a9 9 0 1 1-9.473-9.472c.405-.022.617.46.402.803a6 6 0 0 0 8.268 8.268c.344-.215.825-.004.803.401"/>',
+};
+---
+<ToggleGroup class="theme-switch" variant="segmented" size="xs" aria-label={names.label}>
+  {(['system', 'light', 'dark'] as const).map((pref) => (
+    <ToggleGroupItem data-pref={pref} aria-label={names[pref]} title={names[pref]}>
+      <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" set:html={icons[pref]} />
+    </ToggleGroupItem>
+  ))}
+</ToggleGroup>
+
+<script>
+  import { playSelect } from '../lib/sound';
+
+  const root = document.documentElement;
+  for (const group of document.querySelectorAll<HTMLElement>('.theme-switch')) {
+    const buttons = [...group.querySelectorAll<HTMLButtonElement>('[data-pref]')];
+    const sync = () => {
+      for (const b of buttons) {
+        const on = b.dataset.pref === (root.dataset.themePref ?? 'system');
+        b.setAttribute('aria-checked', String(on));
+        b.tabIndex = on ? 0 : -1;
+      }
+    };
+    const choose = (pref: string) => {
+      if (pref !== (root.dataset.themePref ?? 'system')) playSelect();
+      root.dataset.themePref = pref;
+      try {
+        if (pref === 'system') localStorage.removeItem('theme');
+        else localStorage.setItem('theme', pref);
+      } catch {}
+      (window as unknown as { __applyTheme?: () => void }).__applyTheme?.();
+      sync();
+    };
+    sync();
+    group.addEventListener('click', (e) => {
+      const b = (e.target as HTMLElement).closest<HTMLButtonElement>('[data-pref]');
+      if (b) choose(b.dataset.pref!);
+    });
+    group.addEventListener('keydown', (e) => {
+      if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+      const i = buttons.findIndex((b) => b.dataset.pref === root.dataset.themePref);
+      const next = buttons[(i + (e.key === 'ArrowRight' ? 1 : buttons.length - 1)) % buttons.length];
+      choose(next.dataset.pref!);
+      next.focus();
+      e.preventDefault();
+    });
+  }
+</script>
+
+<style is:global>
+  .theme-switch { flex-shrink: 0; margin-right: 0.25rem; }
+</style>

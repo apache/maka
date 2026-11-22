@@ -1,0 +1,379 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import { UiError } from './text';
+import { immutableAsset } from './immutableAsset';
+import { tr } from './locale';
+import { host as nativeHost } from 'maka/host';
+import { context } from 'nsh';
+import type { ApplicationHost, CapturedFile, ScopedHost } from 'maka/host';
+import type {
+  AgentFileKind,
+  AgentSessionKind,
+  ClientDraft,
+  ClientDraftEdit,
+  ClientOperation,
+  OperationReply,
+  ServiceMethods,
+  SystemPermissionGrant,
+} from '../../../../packages/plugin-sdk/src/index.js';
+import type { UiHost } from '../../../../packages/plugin-sdk/src/workbench.js';
+import type { ComposerIntake } from '../../../../packages/plugin-sdk/src/composer-view.js';
+
+// Native JSON results have Rust-owned shapes. Project the shared API while
+// retaining the admitted native Host object and its original request custody.
+export const uiHost = nativeHost as UiHost;
+
+type Services = {
+  agent: ServiceMethods['agent'];
+  skills: ServiceMethods['skillLibrary'];
+  settings: ServiceMethods['settings'];
+  authentication: ServiceMethods['settingsAuthentication'];
+  setup: ServiceMethods['settingsSetup'];
+  management: ServiceMethods['deploymentManager'];
+  web: ServiceMethods['workspaceWeb'];
+  terminal: ServiceMethods['terminal'];
+};
+type Endpoint = keyof Services;
+export type Method<E extends Endpoint, Mode extends string> = {
+  [M in keyof Services[E]]: Services[E][M] extends { mode: Mode } ? M : never;
+}[keyof Services[E]] &
+  string;
+export type Input<E extends Endpoint, M extends string> = M extends keyof Services[E]
+  ? Services[E][M] extends { input: infer I }
+    ? I
+    : never
+  : never;
+export type Output<E extends Endpoint, M extends string> = M extends keyof Services[E]
+  ? Services[E][M] extends { output: infer O }
+    ? O
+    : never
+  : never;
+type Subscription<T> = { next(): Promise<T | null>; close(): Promise<void> };
+type FileSubscription = { readFile(): Promise<FileView>; close(): Promise<void> };
+type StreamMethod<E extends Endpoint> = E extends 'agent'
+  ? Exclude<Method<E, 'subscription'>, 'readFile'>
+  : Method<E, 'subscription'>;
+
+// This is the native collector's presentation, not agent.readFile's wire stream.
+export type FileView =
+  | {
+      kind: 'text';
+      rows: CapturedFile;
+      version: string;
+      digest: string;
+      bytes: number;
+    }
+  | {
+      kind: 'image';
+      uri: string;
+      mimeType: string;
+      version: string;
+      digest: string;
+      bytes: number;
+    }
+  | { kind: 'absent' }
+  | { kind: 'changed' }
+  | { kind: 'binary'; bytes: number }
+  | { kind: 'unsupported'; fileKind: AgentFileKind };
+
+const object = (value: unknown): value is Record<string, unknown> =>
+  value !== null && typeof value === 'object' && !Array.isArray(value);
+const count = (value: unknown): value is number =>
+  typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+function fileView(capture: CapturedFile): FileView {
+  const value: unknown = capture.metadata();
+  if (!object(value)) throw new UiError('Invalid native file presentation.');
+  const { version, digest, bytes } = value;
+  if (
+    value.kind === 'text' &&
+    typeof version === 'string' &&
+    typeof digest === 'string' &&
+    count(bytes) &&
+    count(capture.length)
+  )
+    return { kind: 'text', rows: capture, version, digest, bytes };
+  const captured = () =>
+    typeof value.version === 'string' && typeof value.digest === 'string' && count(value.bytes);
+  const valid =
+    value.kind === 'absent' ||
+    value.kind === 'changed' ||
+    (value.kind === 'binary' && count(value.bytes)) ||
+    (value.kind === 'unsupported' &&
+      typeof value.fileKind === 'string' &&
+      ['file', 'directory', 'symlink', 'other'].includes(value.fileKind)) ||
+    (value.kind === 'image' &&
+      captured() &&
+      typeof value.uri === 'string' &&
+      typeof value.mimeType === 'string');
+  if (!valid) throw new UiError('Invalid native file presentation.');
+  return value as FileView;
+}
+
+type Attempt = { operationId: string; reply: unknown };
+export type OriginalMutationEvent =
+  | { kind: 'progress'; value: unknown }
+  | { kind: 'not_dispatched' }
+  | { kind: 'finished'; reply: OperationReply; cleanupError: string | null };
+export type OriginalMutation = {
+  readonly operationId: string;
+  next(): Promise<OriginalMutationEvent | null>;
+  cancel(): void;
+};
+function attempt(value: unknown): Attempt {
+  if (!object(value) || typeof value.operationId !== 'string' || !('reply' in value))
+    throw new UiError('Invalid native operation observation.');
+  return { operationId: value.operationId, reply: value.reply };
+}
+
+export function createHost(application: UiHost) {
+  const nativeHost = application as ApplicationHost;
+  async function query<E extends Endpoint, M extends Method<E, 'query'>>(
+    endpoint: E,
+    method: M,
+    input: Input<E, M>,
+  ): Promise<Output<E, M>> {
+    return nativeHost.query(endpoint, method, input) as Promise<Output<E, M>>;
+  }
+  function subscribe<E extends Endpoint, M extends StreamMethod<E>>(
+    endpoint: E,
+    method: M,
+    input: Input<E, M>,
+  ): Promise<Subscription<Output<E, M>>> {
+    return nativeHost.subscribe(endpoint, method, input) as Promise<Subscription<Output<E, M>>>;
+  }
+  async function readFile(input: Input<'agent', 'readFile'>): Promise<FileSubscription> {
+    const opened = await nativeHost.readFile(input);
+    return {
+      readFile: async () => fileView(await opened.readFile()),
+      close: () => opened.close(),
+    };
+  }
+
+  async function markdownSource(sessionId: string, target: string) {
+    const link = nativeHost.markdownLink(target);
+    if (link.kind === 'attachment') {
+      const read = { sessionId, source: { kind: 'artifact' as const, id: link.id }, offset: 0 };
+      return {
+        kind: 'image' as const,
+        uri: nativeHost.assetUri(immutableAsset('attachment-image', read)),
+      };
+    }
+    if (link.kind === 'remote') return link;
+    const path = await query('agent', 'resolveFileLink', { sessionId, pathBytes: link.pathBytes });
+    return {
+      kind: 'disk' as const,
+      path,
+      line: link.line,
+      endLine: link.endLine,
+      column: link.column,
+    };
+  }
+
+  // Local journal methods serialize these actual Rust DTOs. Their receipt business
+  // values remain unknown and continue through the application's existing guards.
+  return {
+    assetUri: (uri: string) => nativeHost.assetUri(uri),
+    markdownSource,
+    openBrowser: (target: string) => nativeHost.openBrowser(target),
+    async openLink(target: string, sessionId: string) {
+      const source = await markdownSource(sessionId, target);
+      if (source.kind === 'remote') {
+        await nativeHost.openBrowser(source.uri);
+        return null;
+      }
+      if (source.kind === 'image') return source;
+      if ('absolute' in source.path) {
+        const stream = await readFile({ sessionId, path: source.path });
+        try {
+          const file = await stream.readFile();
+          if (file.kind !== 'image') throw new UiError('This file is not a supported image.');
+          return { kind: 'image' as const, uri: file.uri };
+        } finally {
+          await stream.close();
+        }
+      }
+      return {
+        path: source.path,
+        line: source.line ?? undefined,
+        endLine: source.endLine ?? undefined,
+        column: source.column ?? undefined,
+      };
+    },
+    query,
+    get systemPermissionWindow() {
+      return nativeHost.systemPermissionWindow;
+    },
+    get localFolderPicker() {
+      return nativeHost.localFolderPicker;
+    },
+    openSystemPermissionSetup: (sessionId: string, requestId: string) =>
+      nativeHost.openSystemPermissionSetup(sessionId, requestId),
+    systemPermissionStatus: (sessionId: string, requestId: string) =>
+      nativeHost.systemPermissionStatus(sessionId, requestId) as Promise<
+        Output<'agent', 'systemPermissionStatus'>
+      >,
+    requestSystemPermission: (sessionId: string, requestId: string, grant: SystemPermissionGrant) =>
+      nativeHost.requestSystemPermission(sessionId, requestId, grant) as Promise<
+        Output<'agent', 'systemPermissionStatus'>
+      >,
+    systemPermissionActions: (sessionId: string, requestId: string) =>
+      nativeHost.systemPermissionActions(sessionId, requestId),
+    systemPermissionAction: (sessionId: string, requestId: string, action: string) =>
+      nativeHost.systemPermissionAction(sessionId, requestId, action),
+    stageIntake: (input: ComposerIntake) => nativeHost.stageIntake(input),
+    recentWorkspaces: () => nativeHost.recentWorkspaces(),
+    setRecentWorkspace: (path: string) => nativeHost.setRecentWorkspace(path),
+    hasService: (endpoint: string) => nativeHost.hasService(endpoint),
+    refresh: () => nativeHost.refresh(),
+    subscribe,
+    readFile,
+    get initialSession() {
+      return nativeHost.initialSession;
+    },
+    session(sessionId: string) {
+      return nativeHost.session(sessionId);
+    },
+    pathLabel(path: unknown) {
+      return nativeHost.pathLabel(path);
+    },
+    async saveFile(input: Input<'agent', 'saveFile'>, text: string) {
+      return attempt(await nativeHost.control('saveFile', input, text));
+    },
+    async control(method: string, input: unknown) {
+      return attempt(await nativeHost.control(method, input));
+    },
+    beginControl: (method: string, input: unknown) =>
+      nativeHost.beginControl(method, input) as Promise<OriginalMutation>,
+    async settingsMutation(
+      endpoint: string,
+      method: string,
+      input: unknown,
+      secret?: string | null,
+    ) {
+      return attempt(await nativeHost.settingsMutation(endpoint, method, input, secret));
+    },
+    beginSetting<
+      E extends Exclude<Endpoint, 'agent' | 'terminal'>,
+      M extends Method<E, 'mutation'>,
+    >(
+      endpoint: E,
+      method: M,
+      input: Input<E, M>,
+      secret?: string | null,
+    ): Promise<OriginalMutation> {
+      return nativeHost.beginSetting(endpoint, method, input, secret) as Promise<OriginalMutation>;
+    },
+    pendingSettings: () => nativeHost.pendingSettings() as Promise<ClientOperation[]>,
+    recoverSetting: (id: string) => nativeHost.recoverSetting(id) as Promise<OperationReply>,
+    abandonSetting: (id: string) => nativeHost.abandonSetting(id) as Promise<ClientOperation>,
+    pendingControls: () => nativeHost.pendingControls() as Promise<ClientOperation[]>,
+    recoverControl: (id: string) => nativeHost.recoverControl(id) as Promise<OperationReply>,
+    dismissControl: (id: string) => nativeHost.dismissControl(id) as Promise<void>,
+    abandonControl: (id: string) => nativeHost.abandonControl(id) as Promise<ClientOperation>,
+    [Symbol.for('maka.hostIdentity')]: uiHost,
+  };
+}
+
+export type Host = ReturnType<typeof createHost>;
+export async function searchSessions(host: Host, kind: AgentSessionKind, query: string) {
+  const page = await host.query('agent', 'list', {
+    kind,
+    filter: 'all',
+    scope: { kind: 'all' },
+    position: { kind: 'start' },
+    titleQuery: query,
+  });
+  return page.sessions;
+}
+
+const hostContext = context<Host | null>(null);
+export const HostProvider = hostContext.Provider;
+export function useHost(): Host {
+  const host = hostContext();
+  if (host === null) throw new Error('A bound application Host must be provided.');
+  return host;
+}
+
+// Session methods take the original native Instance. In particular, the same
+// instance still goes directly into AttachmentPicker.client.
+export type { ScopedHost };
+// Native draft results always include attachments, including [] for an empty draft.
+type SavedDraft = ClientDraft & Required<Pick<ClientDraft, 'attachments'>>;
+export type SendOperation = Omit<ClientOperation, 'correlation'> & {
+  correlation: {
+    draft: SavedDraft;
+    selection: { delivery: 'steer' | 'queue'; [key: string]: unknown };
+  };
+};
+export const loadDraft = (scope: ScopedHost) => scope.loadDraft() as Promise<SavedDraft>;
+export const saveDraft = (scope: ScopedHost, revision: number, edit: ClientDraftEdit) =>
+  scope.saveDraft(revision, edit) as Promise<SavedDraft>;
+// Once the returned operation id resolves, new draft saves never join this send.
+export const reserveSend = (scope: ScopedHost, revision: number, selection: unknown) =>
+  scope.reserveSend(revision, selection) as Promise<string>;
+export async function confirmSend(scope: ScopedHost, id: string) {
+  return attempt(await scope.confirmSend(id));
+}
+export const pendingSends = (scope: ScopedHost) => scope.pending() as Promise<SendOperation[]>;
+export const retrySend = (scope: ScopedHost, id: string, selection: unknown) =>
+  scope.retrySend(id, selection) as Promise<string>;
+export const restoreSend = (scope: ScopedHost, id: string, revision: number) =>
+  scope.restoreSend(id, revision) as Promise<SavedDraft>;
+export const dismissSend = (scope: ScopedHost, id: string) =>
+  scope.dismissSend(id) as Promise<void>;
+export type SendDelivery = 'accepted' | 'delivered' | 'cancelled' | 'unknown';
+export const sendDelivery = (scope: ScopedHost, id: string) =>
+  scope.sendDelivery(id) as Promise<SendDelivery>;
+export const recoverSend = (scope: ScopedHost, id: string) =>
+  scope.recover(id) as Promise<OperationReply>;
+export const abandonSend = (scope: ScopedHost, id: string) =>
+  scope.abandonUnprepared(id) as Promise<SendOperation>;
+export const findUpload = (scope: ScopedHost, id: string) =>
+  scope.findUpload(id) as Promise<ClientOperation | null>;
+export const recoverUpload = (scope: ScopedHost, id: string) =>
+  scope.recoverUpload(id) as Promise<ClientOperation>;
+export const abandonUpload = (scope: ScopedHost, id: string) =>
+  scope.abandonUpload(id) as Promise<ClientOperation>;
+export const watchUploads = (scope: ScopedHost) =>
+  scope.watchUploads() as { next(): Promise<ClientOperation[] | null>; close(): void };
+
+// The immutable native scope checks the original terminal session before dispatch.
+export async function terminalMutation<M extends Method<'terminal', 'mutation'>>(
+  scope: ScopedHost,
+  method: M,
+  input: Input<'terminal', M>,
+): Promise<Output<'terminal', M>> {
+  const observed = await scope.terminal(method, input);
+  if (!object(observed) || !object(observed.reply)) throw new Error('Invalid terminal receipt.');
+  const reply = observed.reply as unknown as OperationReply;
+  if (reply.receipt.kind !== 'recorded' || reply.receipt.outcome.kind !== 'returned')
+    throw new Error(
+      `Terminal ${method}: no returned result (${reply.receipt.kind === 'recorded' ? reply.receipt.outcome.kind : reply.receipt.kind})`,
+    );
+  if (reply.receipt.outcome.result.kind === 'failure')
+    throw new Error(reply.receipt.outcome.result.diagnostic);
+  return reply.receipt.outcome.result.value as Output<'terminal', M>;
+}
+export const pendingTerminals = (scope: ScopedHost) =>
+  scope.pendingTerminals() as Promise<ClientOperation[]>;
+export const recoverTerminal = (scope: ScopedHost, id: string) =>
+  scope.recoverTerminal(id) as Promise<OperationReply>;
+export const abandonTerminal = (scope: ScopedHost, id: string) =>
+  scope.abandonTerminal(id) as Promise<ClientOperation>;

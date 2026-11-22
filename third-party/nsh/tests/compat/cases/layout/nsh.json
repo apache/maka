@@ -1,0 +1,7 @@
+{
+  "name": "API Layout",
+  "id": "com.example.api-layout",
+  "tailwind": {
+    "spacing": 8
+  }
+}

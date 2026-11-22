@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="120" height="60" viewBox="0 0 120 60">
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#070b24"/>
+      <stop offset="0.55" stop-color="#23306b"/>
+      <stop offset="0.85" stop-color="#b25a6a"/>
+      <stop offset="1" stop-color="#f6a96b"/>
+    </linearGradient>
+    <linearGradient id="trail" x1="0" y1="1" x2="1" y2="0">
+      <stop offset="0" stop-color="#fff6dc"/>
+      <stop offset="0.6" stop-color="#ffc27a"/>
+      <stop offset="1" stop-color="#ff8a4d" stop-opacity="0.15"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#ffd9a0" stop-opacity="0.75"/>
+      <stop offset="1" stop-color="#ffd9a0" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect width="120" height="60" fill="url(#sky)"/>
+  <g fill="#ffffff">
+    <circle cx="14" cy="9" r="0.6"/><circle cx="27" cy="18" r="0.4"/><circle cx="41" cy="6" r="0.5"/>
+    <circle cx="9" cy="26" r="0.4"/><circle cx="58" cy="13" r="0.4"/><circle cx="74" cy="5" r="0.6"/>
+    <circle cx="103" cy="11" r="0.5"/><circle cx="112" cy="24" r="0.4"/><circle cx="92" cy="27" r="0.3"/>
+  </g>
+  <circle cx="34" cy="50" r="16" fill="url(#glow)"/>
+  <path d="M34 52 C40 28 62 8 98 7" fill="none" stroke="url(#trail)" stroke-width="1.5" stroke-linecap="round"/>
+  <path d="M0 60 V54 L22 52 L46 53.5 L74 51 L120 54 V60 Z" fill="#090b18"/>
+</svg>

@@ -1,0 +1,8 @@
+---
+// shadcn/ui's TabsList: a track holding TabsTriggers. Panels and the
+// switching stay with the page (each has its own `role="tabpanel"`).
+import type { HTMLAttributes } from 'astro/types';
+type Props = HTMLAttributes<'div'> & { size?: 'default' | 'sm' | 'xs' };
+const { size = 'default', ...rest } = Astro.props;
+---
+<div data-slot="tabs-list" data-size={size} role="tablist" {...rest}><slot /></div>

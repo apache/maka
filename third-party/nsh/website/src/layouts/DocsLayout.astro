@@ -1,0 +1,152 @@
+---
+import BaseLayout from './BaseLayout.astro';
+import Nav from '../components/Nav.astro';
+import Sidebar from '../components/Sidebar.astro';
+import Toc, { type Heading } from '../components/Toc.astro';
+import SiteFooter from '../components/SiteFooter.astro';
+import { EDIT_BASE, type Lang } from '../lib/site';
+import { chromeLang, direction, isMachine, label, machineLocales, ui } from '../lib/locales';
+import { SECTIONS, pages, type Page } from '../lib/sections';
+
+export interface Props {
+  page: Page;
+  headings?: Heading[];
+}
+
+const { page, headings = [] } = Astro.props;
+const locale = page.lang;
+const machine = isMachine(locale);
+// The site's own strings: machine locales have only the few `ui` names.
+const lang: Lang = chromeLang(locale);
+const isZh = lang === 'zh-CN';
+const section = SECTIONS.find((s) => s.id === page.section)!;
+
+const all = await pages(locale);
+const sidebar = all.filter((p) => p.section === page.section);
+const at = all.findIndex((p) => p.route === page.route);
+const prev = at > 0 ? all[at - 1] : undefined;
+const next = at >= 0 && at < all.length - 1 ? all[at + 1] : undefined;
+
+// The language switch goes to the same page when it is translated, else to
+// the other locale's section.
+const same = async (l: string) => (await pages(l)).find((p) => p.section === page.section && p.slug === page.slug);
+const english = await same('en');
+const otherLang: Lang = isZh ? 'en' : 'zh-CN';
+const counterpart = await same(otherLang);
+const otherSection = (await pages(otherLang)).find((p) => p.section === page.section);
+const langHref = counterpart?.href ?? otherSection?.href;
+// Every language of this page, for the language menu and hreflang.
+const languages = [
+  { code: 'en', name: 'English', page: english },
+  { code: 'zh-CN', name: '简体中文', page: await same('zh-CN') },
+  ...(await Promise.all(machineLocales.map(async ({ code, name }) => ({ code, name, page: await same(code) })))),
+];
+const alternates = Object.fromEntries(languages.filter((l) => l.page?.translated).map((l) => [l.code, l.page!.route]));
+
+const editUrl = `${EDIT_BASE}website/${machine ? english?.sourcePath : page.sourcePath}`;
+const t = isZh
+  ? { prev: '上一页', next: '下一页', edit: '在 GitHub 上编辑此页', markdown: 'Markdown 原文', pager: '翻页' }
+  : { prev: 'Previous', next: 'Next', edit: 'Edit this page on GitHub', markdown: 'View as Markdown', pager: 'Pagination' };
+const prevLabel = machine ? ui(locale, 'prev') : t.prev;
+const nextLabel = machine ? ui(locale, 'next') : t.next;
+const sectionOf = (p: Page) => label(SECTIONS.find((s) => s.id === p.section)!.label, locale);
+---
+
+<BaseLayout title={page.title} description={page.description} lang={machine && !page.translated ? 'en' : locale} dir={machine && !page.translated ? 'ltr' : direction(locale)} alternates={alternates} robots={machine && !page.translated ? 'noindex' : undefined}>
+  <Nav lang={lang} locale={locale} currentPath={Astro.url.pathname} langHref={langHref} languages={languages.map((l) => ({ code: l.code, name: l.name, href: l.page?.href }))} />
+
+  <div class="docs-layout">
+    <Sidebar title={label(section.label, locale)} pages={sidebar} current={page.route} lang={lang} locale={locale} />
+
+    <main class="docs-main" id="main">
+      {machine && (
+        <p class="doc-machine-notice" data-pagefind-ignore>
+          {ui(locale, page.translated ? 'notice' : 'fallback')} <a href={english?.href} hreflang="en">{ui(locale, 'original')}</a>
+        </p>
+      )}
+      <article class="doc-content" data-pagefind-body>
+        <header class="doc-header">
+          <p class="doc-header__kicker" data-pagefind-ignore>{label(section.label, locale)}</p>
+          <h1 data-pagefind-meta="title">{page.title}</h1>
+        </header>
+        <div class="doc-body">
+          <slot />
+        </div>
+      </article>
+
+      <div class="doc-meta">
+        <a href={editUrl} target="_blank" rel="noopener noreferrer">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.38 3.62a2.12 2.12 0 1 1 3 3L7.37 18.64a2 2 0 0 1-.86.5l-2.87.84.84-2.87a2 2 0 0 1 .5-.86z"/></svg>
+          {t.edit}
+        </a>
+        <a href={`${page.href}.md`}>
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 3v4a1 1 0 0 0 1 1h4"/><path d="M17 21H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7l5 5v11a2 2 0 0 1-2 2Z"/></svg>
+          {t.markdown}
+        </a>
+      </div>
+
+      {(prev || next) && (
+        <nav class="doc-pager" aria-label={t.pager}>
+          {prev ? (
+            <a class="doc-pager__link" href={prev.href} rel="prev">
+              <span class="doc-pager__label"><span class="doc-pager__arrow" aria-hidden="true">←</span> {prevLabel}{prev.section !== page.section && ` · ${sectionOf(prev)}`}</span>
+              <span class="doc-pager__title">{prev.title}</span>
+            </a>
+          ) : <span />}
+          {next && (
+            <a class="doc-pager__link doc-pager__link--next" href={next.href} rel="next">
+              <span class="doc-pager__label">{next.section !== page.section && `${sectionOf(next)} · `}{nextLabel} <span class="doc-pager__arrow" aria-hidden="true">→</span></span>
+              <span class="doc-pager__title">{next.title}</span>
+            </a>
+          )}
+        </nav>
+      )}
+    </main>
+
+    <Toc headings={headings} lang={lang} title={machine ? ui(locale, 'toc') : undefined} />
+  </div>
+
+  <SiteFooter lang={lang} />
+</BaseLayout>
+
+<script>
+  import { initDemos } from '../lib/demo-client';
+  import { initCodeTabs } from '../lib/code-tabs-client';
+  import { playSound } from '../lib/sound';
+
+  const copyIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg>';
+  const checkIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 4 4L19 6"/></svg>';
+  const isZh = document.documentElement.lang === 'zh-CN';
+  const copyLabel = isZh ? '复制代码' : 'Copy code';
+  const copiedLabel = isZh ? '已复制' : 'Copied';
+
+  for (const pre of document.querySelectorAll<HTMLPreElement>('.doc-content pre')) {
+    const code = pre.querySelector('code');
+    if (!code) continue;
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'doc-code-copy';
+    button.setAttribute('aria-label', copyLabel);
+    button.innerHTML = copyIcon;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    button.addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(code.textContent ?? '');
+        playSound('success', 0.3);
+        button.dataset.copied = '';
+        button.setAttribute('aria-label', copiedLabel);
+        button.innerHTML = checkIcon;
+        clearTimeout(timer);
+        timer = setTimeout(() => {
+          delete button.dataset.copied;
+          button.setAttribute('aria-label', copyLabel);
+          button.innerHTML = copyIcon;
+        }, 1600);
+      } catch {}
+    });
+    pre.append(button);
+  }
+
+  initCodeTabs();
+  initDemos();
+</script>

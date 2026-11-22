@@ -1,0 +1,1223 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+use super::*;
+use maka_agent_facts::{input::MessageInput, message::MessageOrigin, model::ToolInput};
+use wire::{Chunk, HistoryField, Role, SourceField};
+
+mod cells;
+
+pub(super) enum Field {
+    Text(TextBody),
+    Json(Value),
+    Content(ContentRef),
+    Receipt(Box<maka_agent_facts::operation::RecordedOperationReply>),
+    CellChildReceipt {
+        cell: maka_agent_facts::cells::CellId,
+        operation: uuid::Uuid,
+        reply: Box<maka_agent_facts::operation::RecordedOperationReply>,
+    },
+    Imported {
+        reference: ContentRef,
+        selectors: Vec<String>,
+        returned: bool,
+    },
+}
+pub(super) enum Body {
+    Text(TextBody),
+    Field(SourceField),
+    Empty,
+}
+/// Positions of projected text in the authoritative Recall document.
+pub(super) enum EvidenceText {
+    Unmapped,
+    DisplayOnly,
+    ReturnedToolName,
+    Call { arguments: Option<u64> },
+    DisplayAndSource(SourceField),
+}
+impl EvidenceText {
+    fn call(name: &str, serialized_arguments: bool) -> Self {
+        Self::Call {
+            arguments: serialized_arguments
+                .then_some(name.len() as u64 + u64::from(!name.is_empty())),
+        }
+    }
+
+    pub(super) fn source_offset(&self, field: SourceField) -> Option<u64> {
+        match self {
+            Self::Call { .. } | Self::ReturnedToolName if field == SourceField::ToolName => Some(0),
+            Self::Call { arguments } if field == SourceField::Arguments => *arguments,
+            Self::DisplayAndSource(source) if *source == field => Some(0),
+            _ => None,
+        }
+    }
+
+    pub(super) fn display_offset(&self, view: wire::HistoryView) -> Option<u64> {
+        match self {
+            Self::Call { arguments } if view == wire::HistoryView::Text => *arguments,
+            Self::DisplayOnly if view == wire::HistoryView::Text => Some(0),
+            Self::DisplayAndSource(_) => Some(0),
+            _ => None,
+        }
+    }
+}
+pub(super) struct Row {
+    pub chunk: Chunk,
+    pub visible: bool,
+    pub continuation: Option<wire::HistoryRowAddress>,
+    pub body: Body,
+    pub evidence_text: EvidenceText,
+    pub fields: Vec<(SourceField, Field)>,
+}
+impl Row {
+    pub(super) fn field_origin(&self, field: SourceField) -> Option<&wire::HistoryRowAddress> {
+        if field == SourceField::ToolName
+            && matches!(self.evidence_text, EvidenceText::ReturnedToolName)
+        {
+            return Some(&self.chunk.tool.as_ref()?.call.as_ref()?.position);
+        }
+        Some(&self.chunk.position)
+    }
+}
+pub(super) fn visible(fact: &Fact) -> bool {
+    use maka_agent_facts::cells::CellEvent;
+    match fact {
+        Fact::Cell {
+            event:
+                CellEvent::ChildPrepared { .. }
+                | CellEvent::ChildRejected { .. }
+                | CellEvent::ChildResultRecorded { .. }
+                | CellEvent::LocalChildReturned { .. },
+        } => true,
+        Fact::Cell {
+            event: CellEvent::ChildObserved { reply, .. },
+        } => super::super::delivery::recorded_settlement(reply).is_some(),
+        Fact::OperationObserved { reply, .. } => {
+            super::super::delivery::recorded_settlement(reply).is_some()
+        }
+        Fact::Cell { .. } | Fact::ModelInterrupted { .. } => false,
+        Fact::ExternalTaskObserved {
+            output:
+                maka_agent_facts::executor::Output::TurnUsage { .. }
+                | maka_agent_facts::executor::Output::ContextUsage(_),
+            ..
+        } => false,
+        Fact::ExternalEffect { event } => matches!(
+            event,
+            maka_agent_facts::external_effects::ExternalEffectEvent::Prepared { .. }
+                | maka_agent_facts::external_effects::ExternalEffectEvent::Returned { .. }
+        ),
+        _ => true,
+    }
+}
+fn base(
+    item: &HistoryItem,
+    turn: &str,
+    index: u64,
+    role: Role,
+    address: &wire::HistoryRowAddress,
+) -> Result<Row, String> {
+    let position = address.with_item_index(index);
+    Ok(Row {
+        visible: visible(&item.recorded.fact),
+        continuation: None,
+        chunk: Chunk {
+            order: wire::HistoryOrder {
+                path: vec![item.sequence],
+                item_index: index,
+            },
+            position,
+            model_part: None,
+            source_citation: false,
+            citation: None,
+            citation_anchor: None,
+            has_references: false,
+            quotes: Vec::new(),
+            final_output: false,
+            reply_info: None,
+            final_answer: false,
+            model: None,
+            origin: None,
+            compaction: None,
+            timing: None,
+            folded_work: None,
+            work: None,
+            field: HistoryField::Body,
+            imported_turn: None,
+            message_id: Some(item.recorded.id.to_string()),
+            run_id: Some(item.recorded.run),
+            turn_id: Some(turn.into()),
+            timestamp: Some(
+                item.recorded
+                    .at
+                    .0
+                    .try_into()
+                    .map_err(|_| "agent_history_timestamp_invalid")?,
+            ),
+            role,
+            offset: 0,
+            total_bytes: 0,
+            text: String::new(),
+            tool: None,
+            attachments: Vec::new(),
+        },
+        evidence_text: EvidenceText::Unmapped,
+        body: Body::Empty,
+        fields: Vec::new(),
+    })
+}
+fn text(row: &mut Row, field: SourceField, body: TextBody) {
+    row.body = Body::Text(body.clone());
+    row.fields.push((field, Field::Text(body)));
+}
+pub(super) fn citation_body(chunk: &mut Chunk, mut citation: wire::HistoryCitation) -> String {
+    // Metadata must fit even on a page containing just the first byte of a
+    // source row. The complete label and URL remain in the paginated body.
+    fn bound_label(label: &mut String) {
+        label.truncate(label.floor_char_boundary(512));
+    }
+    chunk.source_citation = true;
+    let body = match &mut citation {
+        wire::HistoryCitation::Url { url, title } => {
+            let body = title
+                .as_ref()
+                .map_or_else(|| url.clone(), |title| format!("[{title}]({url})"));
+            // A prefix of a URL could point somewhere else.
+            if url.len() > 8192 {
+                return body;
+            }
+            if let Some(title) = title {
+                bound_label(title);
+            }
+            body
+        }
+        wire::HistoryCitation::Document {
+            title, filename, ..
+        } => {
+            let body = filename
+                .as_ref()
+                .map_or_else(|| title.clone(), |file| format!("{title} ({file})"));
+            bound_label(title);
+            if let Some(filename) = filename {
+                bound_label(filename);
+            }
+            body
+        }
+    };
+    chunk.citation = Some(citation);
+    body
+}
+pub(super) fn quotes(input: &[maka_agent_facts::input::QuoteRef]) -> Vec<wire::HistoryQuote> {
+    fn prefix(text: &str, bytes: usize) -> String {
+        let mut end = text.len().min(bytes);
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        text[..end].to_owned()
+    }
+    // Bound even JSON-escaped text below the history frame budget. Original
+    // input and feedback provenance remain in the durable message unchanged.
+    input
+        .iter()
+        .take(16)
+        .map(|quote| {
+            let text = prefix(&quote.text, 256);
+            wire::HistoryQuote {
+                truncated: text.len() < quote.text.len(),
+                text,
+                label: quote
+                    .label
+                    .as_deref()
+                    .or_else(|| quote.source.as_ref().map(|s| s.session_name.as_str()))
+                    .map(|label| prefix(label, 64)),
+            }
+        })
+        .collect()
+}
+
+fn user(
+    item: &HistoryItem,
+    turn: &str,
+    index: u64,
+    content: &MessageInput,
+    message_id: Option<String>,
+    origin: Option<MessageOrigin>,
+    address: &wire::HistoryRowAddress,
+) -> Result<Row, String> {
+    let mut row = base(item, turn, index, Role::User, address)?;
+    row.chunk.message_id = message_id;
+    row.chunk.origin = origin;
+    row.chunk.quotes = quotes(content.quotes.as_deref().unwrap_or_default());
+    let has_references = content
+        .quotes
+        .as_ref()
+        .is_some_and(|value| !value.is_empty())
+        || content
+            .directory_references
+            .as_ref()
+            .is_some_and(|value| !value.is_empty())
+        || content
+            .inline_references
+            .as_ref()
+            .is_some_and(|value| !value.is_empty());
+    input(
+        &mut row,
+        Field::Text(
+            content
+                .display_text
+                .as_ref()
+                .unwrap_or(&content.text)
+                .clone()
+                .into(),
+        ),
+        content.attachments.clone().unwrap_or_default(),
+        has_references,
+    );
+    Ok(row)
+}
+pub(super) fn input(
+    row: &mut Row,
+    body: Field,
+    attachments: Vec<maka_agent_facts::attachment::AttachmentRef>,
+    has_references: bool,
+) {
+    row.chunk.attachments = attachments;
+    row.chunk.has_references = has_references;
+    row.body = match &body {
+        Field::Text(text) => Body::Text(text.clone()),
+        _ => Body::Field(SourceField::Body),
+    };
+    row.fields.push((SourceField::Body, body));
+}
+fn apply_display(call: &mut wire::ToolCall, display: &ToolDisplay) {
+    call.title = display
+        .title
+        .as_ref()
+        .map(|title| Box::new(maka_agent_facts::display::Text::plain(title.clone())));
+    call.presentation = display.presentation.as_deref().map(Into::into);
+}
+
+fn web_search_name(name: &str) -> bool {
+    // Providers and gateways may qualify a tool, change its casing, or append a release date.
+    let name = name.to_ascii_lowercase();
+    let mut segments = name.rsplit(['.', ':', '/']).filter(|s| !s.is_empty());
+    let leaf = segments.next().unwrap_or_default();
+    let namespace = segments.next();
+    if matches!(
+        (namespace, leaf),
+        (Some("web"), "run" | "search") | (Some("browser" | "google" | "bing"), "search")
+    ) {
+        return true;
+    }
+    let compact: String = leaf.chars().filter(|c| !matches!(c, '_' | '-')).collect();
+    let stem = compact.trim_end_matches(|c: char| c.is_ascii_digit());
+    if !matches!(compact.len() - stem.len(), 0 | 8) {
+        return false;
+    }
+    matches!(
+        stem,
+        "websearch"
+            | "websearchcall"
+            | "websearchpreview"
+            | "webrun"
+            | "browsersearch"
+            | "deepseekwebsearch"
+            | "searchweb"
+            | "searchtheweb"
+            | "internetsearch"
+            | "searchinternet"
+            | "googlesearchretrieval"
+            | "googlesearch"
+            | "bingsearch"
+    )
+}
+
+fn first_search_query(value: &Value) -> Option<&str> {
+    match value {
+        Value::String(s) if !s.trim().is_empty() => Some(s.trim()),
+        Value::Array(entries) => entries.iter().find_map(first_search_query),
+        Value::Object(fields) => [
+            "queries",
+            "query",
+            "q",
+            "search_query",
+            "searchQuery",
+            "search_queries",
+            "searchQueries",
+            "search_terms",
+            "searchTerms",
+            "keywords",
+        ]
+        .iter()
+        .filter_map(|k| fields.get(*k))
+        .find_map(first_search_query),
+        _ => None,
+    }
+}
+
+fn apply_provider_search(call: &mut wire::ToolCall, state: &maka_agent_state::fold::Tool) {
+    let recorded = &state.call;
+    if !recorded.provider_executed
+        || recorded
+            .provider_options
+            .as_ref()
+            .and_then(|v| v.pointer("/anthropic/serverName"))
+            .is_some()
+    {
+        return;
+    }
+    let result = state.provider_result.as_ref();
+    let replay = result
+        .and_then(|r| r.provider_options.as_ref())
+        .and_then(|v| v.pointer("/openai/responsesReplay/fields/type"))
+        .and_then(Value::as_str);
+    let is_search = match replay {
+        Some(kind) => kind == "web_search_call",
+        None => web_search_name(&recorded.name),
+    };
+    if !is_search {
+        return;
+    }
+    call.presentation = Some("provider.web_search".into());
+    let action = result.map(|result| &result.output["action"]);
+    let query = recorded
+        .input
+        .as_json()
+        .filter(|input| input.is_object())
+        .and_then(first_search_query)
+        .or_else(|| action.and_then(first_search_query))
+        .or_else(|| {
+            result
+                .filter(|r| r.output.is_object())
+                .and_then(|r| first_search_query(&r.output))
+        });
+    call.title = query
+        .and_then(maka_agent_facts::display::Text::single_line)
+        .map(Box::new);
+}
+
+fn tool(row: &mut Row, id: String, name: Option<String>, is_error: Option<bool>) {
+    row.chunk.tool = Some(wire::Tool {
+        tool_use_id: id,
+        call: name.map(|name| wire::ToolCall {
+            ancestor_tool_use_ids: Vec::new(),
+            origin: wire::ToolCallOrigin::Provider,
+            presentation: None,
+            position: row.chunk.position.clone(),
+            name,
+            title: None,
+            pending: false,
+            dispatched: false,
+            external_target: None,
+        }),
+        result: is_error.map(|is_error| wire::ToolResult {
+            settlement: None,
+            position: row.chunk.position.clone(),
+            is_error,
+            image: false,
+            images: 0,
+            details: None,
+        }),
+    });
+}
+
+pub(super) struct RunProjection<'a> {
+    pub source: &'a maka_agent_state::session_history::RunSource,
+    pub executor: Option<&'a maka_agent_state::session_history::ExecutorTranscript>,
+    pub final_attempt: Option<maka_agent_facts::durable::ModelAttemptId>,
+    pub terminated: bool,
+}
+
+pub(super) async fn project(
+    reader: &data::DataSource,
+    item: &HistoryItem,
+    address: &wire::HistoryRowAddress,
+    views: &mut std::collections::BTreeMap<RunId, maka_agent_state::fold::RunView>,
+    run: RunProjection<'_>,
+    mask_evidence: bool,
+    stop: &tokio_util::sync::CancellationToken,
+) -> Result<Vec<Row>, String> {
+    let RunProjection {
+        source,
+        executor,
+        final_attempt,
+        terminated,
+    } = run;
+    let turn = source.spec.turn_id.as_str();
+    let ordinal = match address {
+        wire::HistoryRowAddress::Live { item_index, .. }
+        | wire::HistoryRowAddress::Snapshot { item_index, .. } => *item_index,
+        wire::HistoryRowAddress::Imported { .. } => {
+            return Err("agent_history_canonical_address_invalid".into());
+        }
+    };
+    let mut result = Vec::new();
+    if matches!(
+        item.recorded.fact,
+        Fact::RunAdmitted { .. } | Fact::StepPrepared { .. } | Fact::ExternalTaskPrepared { .. }
+    ) {
+        if let Some(message) = data::input(reader, item.sequence, ordinal).await? {
+            result.push(user(
+                item,
+                turn,
+                ordinal,
+                &message.message.content,
+                Some(message.message.message_id),
+                message.message.origin,
+                address,
+            )?);
+        }
+        if !result.is_empty() {
+            return Ok(result);
+        }
+    }
+    match &item.recorded.fact {
+        Fact::RunAdmitted { .. } => {
+            let input: RunInput =
+                data::content(reader, item.recorded.run, &source.spec.input).await?;
+            match input {
+                RunInput::Message {
+                    content,
+                    source_messages,
+                    ..
+                } => {
+                    if source_messages.is_empty() {
+                        let id = match &source.spec.trigger {
+                            Trigger::Message { message_id } => Some(message_id.clone()),
+                            _ => None,
+                        };
+                        result.push(user(item, turn, 0, &content, id, None, address)?);
+                    } else {
+                        if let Some(source) = source_messages.into_iter().nth(
+                            usize::try_from(ordinal)
+                                .map_err(|_| "agent_history_ordinal_invalid")?,
+                        ) {
+                            result.push(user(
+                                item,
+                                turn,
+                                ordinal,
+                                &source.message.content,
+                                Some(source.message.message_id),
+                                source.message.origin,
+                                address,
+                            )?);
+                        }
+                    }
+                }
+                RunInput::Code { source } => {
+                    let mut row = base(item, turn, 0, Role::User, address)?;
+                    text(&mut row, SourceField::Body, source.into());
+                    result.push(row);
+                }
+                RunInput::Continuation { .. }
+                | RunInput::CheckpointHandoff { .. }
+                | RunInput::ContextCompact { .. }
+                | RunInput::HistorySource { .. } => {}
+            }
+        }
+        Fact::StepPrepared { step, .. } => {
+            let request = reader
+                .request(item.recorded.run, *step)
+                .await
+                .map_err(|e| e.to_string())?;
+            if let Some(reference) = request
+                .steering
+                .get(usize::try_from(ordinal).map_err(|_| "agent_history_ordinal_invalid")?)
+            {
+                let source: maka_agent_facts::message::RootSourceMessage =
+                    data::content(reader, item.recorded.run, reference).await?;
+                result.push(user(
+                    item,
+                    turn,
+                    ordinal,
+                    &source.message.content,
+                    Some(source.message.message_id),
+                    source.message.origin,
+                    address,
+                )?);
+            }
+        }
+        Fact::ModelObserved {
+            attempt,
+            index,
+            part,
+            ..
+        } => {
+            let mut row = base(item, turn, 0, Role::Assistant, address)?;
+            row.chunk.model_part = Some(wire::ModelPartIdentity {
+                step_id: item.scope.step.ok_or("agent_history_step_missing")?,
+                attempt_id: *attempt,
+                ordinal: *index,
+            });
+            row.chunk.message_id = Some(item.recorded.id.to_string());
+            if let BackendSpec::Model { binding, .. } = &source.spec.backend {
+                let reported_model_id = if let Some(step) = item.scope.step
+                    && matches!(reader, data::DataSource::Live { .. })
+                {
+                    reader
+                        .reported_model(item.recorded.run, step, *attempt)
+                        .await
+                        .map_err(|error| error.to_string())?
+                } else {
+                    if let std::collections::btree_map::Entry::Vacant(e) =
+                        views.entry(item.recorded.run)
+                    {
+                        e.insert(
+                            reader
+                                .view_at(item.recorded.run)
+                                .await
+                                .map_err(|error| error.to_string())?,
+                        );
+                    }
+                    let original = views[&item.recorded.run]
+                        .attempts
+                        .get(attempt)
+                        .ok_or("agent_history_original_attempt_missing")?;
+                    original
+                        .closed
+                        .as_ref()
+                        .filter(|closed| {
+                            closed.outcome == maka_agent_facts::accounting::Outcome::Success
+                        })
+                        .map(|closed| {
+                            serde::Deserialize::deserialize(&closed.protocol)
+                                .map(
+                                    |protocol: maka_agent_facts::context::ModelClosureProtocol| {
+                                        protocol.model
+                                    },
+                                )
+                                .map_err(|error| error.to_string())
+                        })
+                        .transpose()?
+                        .flatten()
+                };
+                row.chunk.model = Some(wire::HistoryModel::Native {
+                    requested_model_id: binding.model.clone(),
+                    reported_model_id,
+                });
+            }
+            let final_output_part = match part {
+                ModelPart::Text {
+                    text_kind,
+                    text: body,
+                    provider_options,
+                } => {
+                    let phase = provider_options
+                        .as_deref()
+                        .and_then(maka_agent_facts::model::responses_message_phase);
+                    row.chunk.final_answer =
+                        *text_kind == TextKind::Text && phase == Some("final_answer");
+                    row.chunk.field = if *text_kind == TextKind::Thinking {
+                        HistoryField::Thinking
+                    } else {
+                        HistoryField::Body
+                    };
+                    let body = if *text_kind == TextKind::Thinking {
+                        maka_presentation::reasoning_text(body, provider_options.as_deref())
+                    } else {
+                        body.clone()
+                    };
+                    let field = if *text_kind == TextKind::Thinking {
+                        SourceField::Thinking
+                    } else {
+                        SourceField::Body
+                    };
+                    if *text_kind == TextKind::Text {
+                        row.evidence_text = EvidenceText::DisplayAndSource(field);
+                    }
+                    text(&mut row, field, body);
+                    if let ModelPart::Text { text: original, .. } = part {
+                        row.fields[0].1 = Field::Text(original.clone());
+                    }
+                    *text_kind == TextKind::Text && phase != Some("commentary")
+                }
+                ModelPart::Source { source, anchor } => {
+                    use maka_agent_facts::model::ModelSource;
+                    let citation = match source {
+                        ModelSource::Url { url, title, .. } => wire::HistoryCitation::Url {
+                            url: url.clone(),
+                            title: title.clone(),
+                        },
+                        ModelSource::Document {
+                            title,
+                            filename,
+                            provider_options,
+                            ..
+                        } => wire::HistoryCitation::Document {
+                            title: title.clone(),
+                            filename: filename.clone(),
+                            document_index: provider_options
+                                .as_ref()
+                                .and_then(|v| v["anthropic"]["documentIndex"].as_u64()),
+                        },
+                    };
+                    row.chunk.citation_anchor = *anchor;
+                    row.evidence_text = EvidenceText::DisplayAndSource(SourceField::Body);
+                    let body = citation_body(&mut row.chunk, citation);
+                    text(&mut row, SourceField::Body, body.into());
+                    true
+                }
+                ModelPart::ToolCall { call } => {
+                    row.evidence_text = EvidenceText::call(
+                        &call.name,
+                        !matches!(call.input, ToolInput::Json(Value::String(_))),
+                    );
+                    row.chunk.role = Role::ToolCall;
+                    tool(
+                        &mut row,
+                        super::super::delivery::tool_id(
+                            item.recorded.run,
+                            &ToolKey {
+                                attempt: *attempt,
+                                call: call.id.clone(),
+                            },
+                        ),
+                        Some(call.name.clone()),
+                        None,
+                    );
+                    row.fields
+                        .push((SourceField::ToolName, Field::Text(call.name.clone().into())));
+                    row.fields.push((
+                        SourceField::Arguments,
+                        match &call.input {
+                            ToolInput::Json(value) => Field::Json(value.clone()),
+                            ToolInput::InvalidJson { raw } => Field::Text(raw.clone().into()),
+                        },
+                    ));
+                    false
+                }
+                ModelPart::ToolResult {
+                    id,
+                    output,
+                    is_error,
+                    ..
+                } => {
+                    if !output.is_string() {
+                        row.evidence_text = EvidenceText::DisplayAndSource(SourceField::Result);
+                    }
+                    row.chunk.role = Role::ToolResult;
+                    tool(
+                        &mut row,
+                        super::super::delivery::tool_id(
+                            item.recorded.run,
+                            &ToolKey {
+                                attempt: *attempt,
+                                call: id.clone(),
+                            },
+                        ),
+                        None,
+                        Some(*is_error),
+                    );
+                    row.fields
+                        .push((SourceField::Result, Field::Json(output.clone())));
+                    false
+                }
+            };
+            row.chunk.final_output = final_attempt == Some(*attempt) && final_output_part;
+            if let ModelPart::ToolCall { call } = part {
+                let key = ToolKey {
+                    attempt: *attempt,
+                    call: call.id.clone(),
+                };
+                let projected = reader
+                    .projected_tool(item.recorded.run, key.clone())
+                    .await
+                    .map_err(|error| error.to_string())?;
+                let state = if let Some(state) = projected.as_ref() {
+                    Some(state)
+                } else {
+                    if let std::collections::btree_map::Entry::Vacant(e) =
+                        views.entry(item.recorded.run)
+                    {
+                        e.insert(
+                            reader
+                                .view_at(item.recorded.run)
+                                .await
+                                .map_err(|error| error.to_string())?,
+                        );
+                    }
+                    views[&item.recorded.run]
+                        .tools
+                        .get(&maka_agent_state::fold::tool_key(&key))
+                };
+                if let Some(state) = state
+                    && let Some(call) = row.chunk.tool.as_mut().and_then(|tool| tool.call.as_mut())
+                {
+                    call.pending = !terminated && state.accepted.is_none();
+                    call.dispatched = state.admitted;
+                    if let Some(display) = state.decision.as_ref().map(ToolDecision::display) {
+                        apply_display(call, display);
+                    } else {
+                        apply_provider_search(call, state);
+                    }
+                    if call.presentation.is_none()
+                        && !state.call.provider_executed
+                        && state.call.name == crate::owner::compaction::TOOL
+                    {
+                        call.presentation = Some("maka.agent.Builtin@1/CompactContext".into());
+                    }
+                }
+            }
+            result.push(row);
+        }
+        Fact::LocalToolReturned {
+            tool: key,
+            result: returned,
+            is_error,
+            ..
+        }
+        | Fact::HostToolResultRecorded {
+            tool: key,
+            result: returned,
+            is_error,
+            ..
+        } => {
+            let mut row = base(item, turn, 0, Role::ToolResult, address)?;
+            tool(
+                &mut row,
+                super::super::delivery::tool_id(item.recorded.run, key),
+                None,
+                Some(*is_error),
+            );
+            if let Fact::LocalToolReturned { settlement, .. } = &item.recorded.fact {
+                row.chunk
+                    .tool
+                    .as_mut()
+                    .expect("tool result row")
+                    .result
+                    .as_mut()
+                    .expect("tool result metadata")
+                    .settlement = Some(*settlement);
+            }
+            if let Fact::HostToolResultRecorded { reference, .. } = &item.recorded.fact {
+                row.fields.push((
+                    SourceField::Receipt,
+                    Field::Json(serde_json::to_value(reference).map_err(|e| e.to_string())?),
+                ));
+            }
+            row.fields
+                .push((SourceField::Result, Field::Content(returned.clone())));
+            result.push(row);
+        }
+        Fact::ToolResultAccepted {
+            tool: key,
+            result: reference,
+            outcome,
+        } => {
+            use maka_agent_facts::{cells::CellStatus, tool_call::ToolSettlement};
+            let settlement = match outcome {
+                AcceptedResult::Succeeded => ToolSettlement::Returned,
+                AcceptedResult::Failed => ToolSettlement::Failed,
+                AcceptedResult::Rejected => ToolSettlement::Rejected,
+                AcceptedResult::ProviderOutcomeUnknown
+                | AcceptedResult::OutcomeUnknown
+                | AcceptedResult::RiskAdjudicated { .. } => ToolSettlement::Unknown,
+                AcceptedResult::CellRecovered { cell } => {
+                    if let std::collections::btree_map::Entry::Vacant(e) =
+                        views.entry(item.recorded.run)
+                    {
+                        e.insert(
+                            reader
+                                .view_at(item.recorded.run)
+                                .await
+                                .map_err(|error| error.to_string())?,
+                        );
+                    }
+                    match views[&item.recorded.run]
+                        .cells
+                        .get(cell)
+                        .ok_or("agent_history_cell_missing")?
+                        .status
+                    {
+                        CellStatus::Completed { .. } => ToolSettlement::Returned,
+                        CellStatus::Interrupted { .. } => ToolSettlement::Failed,
+                        CellStatus::Running => {
+                            return Err("agent_history_cell_result_not_final".into());
+                        }
+                    }
+                }
+            };
+            let mut row = base(item, turn, 0, Role::ToolResult, address)?;
+            tool(
+                &mut row,
+                super::super::delivery::tool_id(item.recorded.run, key),
+                None,
+                Some(settlement != ToolSettlement::Returned),
+            );
+            row.chunk
+                .tool
+                .as_mut()
+                .and_then(|tool| tool.result.as_mut())
+                .expect("accepted tool result")
+                .settlement = Some(settlement);
+            row.fields
+                .push((SourceField::Result, Field::Content(reference.clone())));
+            result.push(row);
+        }
+        Fact::OperationObserved { tool: key, reply } => {
+            let mut row = base(item, turn, 0, Role::ToolResult, address)?;
+            let settlement = super::super::delivery::recorded_settlement(reply);
+            tool(
+                &mut row,
+                super::super::delivery::tool_id(item.recorded.run, key),
+                None,
+                settlement
+                    .map(|value| value != maka_agent_facts::tool_call::ToolSettlement::Returned),
+            );
+            if let Some(result) = row
+                .chunk
+                .tool
+                .as_mut()
+                .and_then(|tool| tool.result.as_mut())
+            {
+                result.settlement = settlement;
+            }
+            row.fields.push((
+                SourceField::Receipt,
+                Field::Receipt(Box::new(reply.clone())),
+            ));
+            result.push(row);
+        }
+        Fact::ExternalEffect { event } => {
+            use maka_agent_facts::external_effects::{
+                ExternalEffectDescriptor, ExternalEffectEvent,
+            };
+            let key = event.key();
+            if !matches!(
+                event,
+                ExternalEffectEvent::Prepared { .. } | ExternalEffectEvent::Returned { .. }
+            ) {
+                return Ok(result);
+            }
+            if let std::collections::btree_map::Entry::Vacant(e) = views.entry(item.recorded.run) {
+                e.insert(
+                    reader
+                        .view_at(item.recorded.run)
+                        .await
+                        .map_err(|error| error.to_string())?,
+                );
+            }
+            let view = &views[&item.recorded.run];
+            let state = view
+                .external
+                .as_ref()
+                .filter(|external| external.task == key.task)
+                .and_then(|external| external.effects.get(&key.operation))
+                .ok_or("agent_history_external_effect_missing")?;
+            let descriptor: ExternalEffectDescriptor =
+                data::content(reader, item.recorded.run, &state.descriptor).await?;
+            let id = maka_agent_facts::tool_call::tool_use_id(
+                item.recorded.run,
+                &descriptor.operation_id,
+            );
+            let mut row = match event {
+                ExternalEffectEvent::Prepared { .. } => {
+                    let mut row = base(item, turn, 0, Role::ToolCall, address)?;
+                    // The Recall index retains the descriptor's raw JSON formatting.
+                    row.evidence_text = EvidenceText::Call { arguments: None };
+                    tool(&mut row, id, Some(descriptor.name.clone()), None);
+                    let call = row
+                        .chunk
+                        .tool
+                        .as_mut()
+                        .and_then(|tool| tool.call.as_mut())
+                        .expect("external Host call");
+                    call.origin = wire::ToolCallOrigin::HostSdk;
+                    if let Some(display) = &state.display {
+                        apply_display(call, display);
+                    }
+                    call.dispatched = state.admitted;
+                    call.pending = view.terminal.is_none()
+                        && state.returned.is_none()
+                        && state.rejected.is_none();
+                    row.fields
+                        .push((SourceField::Arguments, Field::Json(descriptor.input)));
+                    row
+                }
+                ExternalEffectEvent::Returned { output, .. } => {
+                    let (is_error, settlement) =
+                        super::stream::external_result_metadata(reader, item, output, stop).await?;
+                    let mut row = base(item, turn, 0, Role::ToolResult, address)?;
+                    row.evidence_text = EvidenceText::ReturnedToolName;
+                    tool(&mut row, id, None, Some(is_error));
+                    row.chunk
+                        .tool
+                        .as_mut()
+                        .and_then(|tool| tool.result.as_mut())
+                        .expect("external Host return")
+                        .settlement = Some(settlement);
+                    row.fields
+                        .push((SourceField::Result, Field::Content(output.clone())));
+                    row
+                }
+                _ => unreachable!("selected external history event"),
+            };
+            row.fields
+                .push((SourceField::ToolName, Field::Text(descriptor.name.into())));
+            result.push(row);
+        }
+        Fact::ExternalTaskObserved { task, output, .. } => {
+            use maka_agent_facts::executor::Output;
+            let mut row = base(item, turn, 0, Role::Assistant, address)?;
+            match output {
+                Output::OutputDelta {
+                    message_id,
+                    text: body,
+                }
+                | Output::ThinkingDelta {
+                    message_id,
+                    text: body,
+                } => {
+                    let thinking = matches!(output, Output::ThinkingDelta { .. });
+                    let message = executor
+                        .and_then(|transcript| transcript.text(message_id, thinking))
+                        .ok_or("agent_history_executor_text_missing")?;
+                    row.chunk.message_id = Some(maka_agent_facts::executor::message_id(
+                        item.recorded.run,
+                        *task,
+                        message_id,
+                    ));
+                    if item.sequence != message.sequence {
+                        let mut first = address.clone();
+                        match &mut first {
+                            wire::HistoryRowAddress::Live { sequence, fact, .. }
+                            | wire::HistoryRowAddress::Snapshot { sequence, fact, .. } => {
+                                *sequence = message.sequence;
+                                *fact = message.fact;
+                            }
+                            wire::HistoryRowAddress::Imported { .. } => unreachable!(),
+                        }
+                        row.continuation = Some(first);
+                        row.visible = false;
+                    }
+                    if !thinking {
+                        row.chunk.final_output = views[&item.recorded.run]
+                            .external
+                            .as_ref()
+                            .filter(|external| external.task == *task)
+                            .and_then(|external| external.closed.as_ref())
+                            .and_then(|closed| closed.final_message.as_ref())
+                            .is_some_and(|final_message| final_message.message_id == *message_id);
+                    }
+                    row.chunk.field = if thinking {
+                        HistoryField::Thinking
+                    } else {
+                        HistoryField::Body
+                    };
+                    let body = if row.visible {
+                        message.body.clone()
+                    } else {
+                        body.clone().into()
+                    };
+                    let field = if thinking {
+                        SourceField::Thinking
+                    } else {
+                        SourceField::Body
+                    };
+                    row.evidence_text = EvidenceText::DisplayAndSource(field);
+                    text(&mut row, field, body);
+                }
+                Output::ToolStart {
+                    tool_call_id,
+                    name,
+                    input,
+                } => {
+                    row.evidence_text = EvidenceText::call(name, !input.is_string());
+                    row.chunk.role = Role::ToolCall;
+                    let id = super::super::delivery::executor_tool_id(
+                        item.recorded.run,
+                        *task,
+                        tool_call_id,
+                    );
+                    tool(&mut row, id, Some(name.clone()), None);
+                    if let Some(call) = row.chunk.tool.as_mut().and_then(|tool| tool.call.as_mut())
+                    {
+                        let (title, target) =
+                            super::super::delivery::executor_tool_display(name, input);
+                        call.origin = wire::ToolCallOrigin::Executor;
+                        call.title = title.map(Box::new);
+                        call.external_target = target.map(Box::new);
+                    }
+                    row.fields
+                        .push((SourceField::ToolName, Field::Text(name.clone().into())));
+                    row.fields
+                        .push((SourceField::Arguments, Field::Json(input.clone())));
+                }
+                Output::ToolProgress {
+                    tool_call_id,
+                    text: body,
+                }
+                | Output::ToolResult {
+                    tool_call_id,
+                    text: body,
+                    ..
+                } => {
+                    row.chunk.role = Role::ToolResult;
+                    let id = super::super::delivery::executor_tool_id(
+                        item.recorded.run,
+                        *task,
+                        tool_call_id,
+                    );
+                    let is_error = match output {
+                        Output::ToolResult { is_error, .. } => Some(*is_error),
+                        _ => None,
+                    };
+                    tool(&mut row, id, None, is_error);
+                    if let Output::ToolResult { details, .. } = output
+                        && let Some(result) = row
+                            .chunk
+                            .tool
+                            .as_mut()
+                            .and_then(|tool| tool.result.as_mut())
+                    {
+                        result.details = details.clone();
+                    }
+                    row.evidence_text = EvidenceText::DisplayAndSource(SourceField::Result);
+                    text(&mut row, SourceField::Result, body.clone().into());
+                }
+                Output::MessageStart { .. }
+                | Output::MessageEnd { .. }
+                | Output::ContextUsage(_)
+                | Output::TurnUsage { .. } => return Ok(result),
+            }
+            result.push(row);
+        }
+        Fact::Cell { event } => {
+            let projected;
+            let cell = if !visible(&item.recorded.fact) {
+                None
+            } else if let Some(view) = views.get(&item.recorded.run) {
+                view.cells.get(&event.cell())
+            } else {
+                projected = reader
+                    .projected_cell(item.recorded.run, event.cell())
+                    .await
+                    .map_err(|error| error.to_string())?;
+                match &projected {
+                    Some(cell) => Some(cell),
+                    None => {
+                        let view = reader
+                            .view_at(item.recorded.run)
+                            .await
+                            .map_err(|error| error.to_string())?;
+                        views
+                            .entry(item.recorded.run)
+                            .or_insert(view)
+                            .cells
+                            .get(&event.cell())
+                    }
+                }
+            };
+            result.push(cells::project(
+                item, turn, address, event, cell, terminated,
+            )?);
+        }
+        Fact::ContextCompacted { baseline } => {
+            let compact: maka_agent_facts::context::CompactedContext =
+                data::content(reader, item.recorded.run, baseline).await?;
+            compact.validate().map_err(str::to_owned)?;
+            let mut row = base(item, turn, 0, Role::Compaction, address)?;
+            let duration_ms = reader
+                .compaction_duration_ms(
+                    item.recorded.run,
+                    compact
+                        .summary_origin
+                        .map_or(item.recorded.run, |origin| origin.run),
+                    compact.checkpoint.summary_step_id,
+                    item.sequence,
+                )
+                .await
+                .map_err(|error| error.to_string())?;
+            row.chunk.compaction = Some(wire::Compaction { duration_ms });
+            if let maka_agent_facts::context::CheckpointContent::Text(summary) =
+                compact.checkpoint.summary
+            {
+                row.evidence_text = EvidenceText::DisplayOnly;
+                row.body = Body::Text(summary.into());
+            }
+            row.fields
+                .push((SourceField::Body, Field::Content(baseline.clone())));
+            result.push(row);
+        }
+        Fact::ModelInterrupted { diagnostic, .. }
+        | Fact::RunTerminated {
+            diagnostic: Some(diagnostic),
+            ..
+        } => {
+            let recovery = if matches!(
+                item.recorded.fact,
+                Fact::RunTerminated {
+                    terminal: Terminal::Failed,
+                    ..
+                }
+            ) {
+                reader
+                    .recovery_failure_for_reader(item, mask_evidence)
+                    .await
+                    .map_err(|error| error.to_string())?
+            } else {
+                None
+            };
+            let mut row = base(item, turn, 0, Role::Failure, address)?;
+            if recovery.is_none() {
+                row.evidence_text = EvidenceText::DisplayAndSource(SourceField::FailureMessage);
+            }
+            text(
+                &mut row,
+                SourceField::FailureMessage,
+                recovery.unwrap_or_else(|| diagnostic.clone()).into(),
+            );
+            result.push(row);
+        }
+        _ => {}
+    }
+    for row in &mut result {
+        if row.chunk.role == Role::ToolResult {
+            super::media::describe_source(reader, item, row, stop).await?;
+        }
+    }
+    Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn quote_previews_fit_history_pages_without_changing_the_original_input() {
+        let quote = maka_agent_facts::input::QuoteRef {
+            text: format!("{}{}", "引用".repeat(10_000), "\u{0001}".repeat(10_000)),
+            label: Some("\u{0001}".repeat(10_000)),
+            source: None,
+            source_message_id: None,
+            source_turn_id: None,
+        };
+        let original = vec![quote; 16];
+        let preview = quotes(&original);
+        assert_eq!(preview.len(), 16);
+        assert!(
+            preview
+                .iter()
+                .all(|quote| quote.truncated && quote.text.starts_with("引用"))
+        );
+        assert!(serde_json::to_vec(&preview).unwrap().len() < 32 * 1024);
+        assert_eq!(original[0].text.len(), 70_000);
+    }
+}

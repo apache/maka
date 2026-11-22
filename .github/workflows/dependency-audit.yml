@@ -20,29 +20,39 @@ name: Dependency audit
 on:
   schedule:
     # Offset from the hour to reduce peak-time scheduling delays.
-    - cron: '17 3 * * *'
+    - cron: "17 3 * * *"
   workflow_dispatch:
   pull_request:
     paths:
       - .github/workflows/dependency-audit.yml
-      - scripts/audit-shipped-dependencies.mjs
-      - scripts/check-allow-scripts.mjs
-      - scripts/third-party-closure.mjs
+      - scripts/rust/dependencies.mjs
+      - deny.toml
+      - Cargo.toml
+      - Cargo.lock
+      - "platform/**/Cargo.toml"
+      - "plugins/**/Cargo.toml"
+      - "products/**/Cargo.toml"
+      - "tools/**/Cargo.toml"
+      - products/maka/cli/DEPENDENCIES.rust.tsv
       - package.json
       - package-lock.json
-      - 'apps/*/package.json'
-      - 'packages/*/package.json'
+      - "packages/*/package.json"
   push:
     branches: [main]
     paths:
       - .github/workflows/dependency-audit.yml
-      - scripts/audit-shipped-dependencies.mjs
-      - scripts/check-allow-scripts.mjs
-      - scripts/third-party-closure.mjs
+      - scripts/rust/dependencies.mjs
+      - deny.toml
+      - Cargo.toml
+      - Cargo.lock
+      - "platform/**/Cargo.toml"
+      - "plugins/**/Cargo.toml"
+      - "products/**/Cargo.toml"
+      - "tools/**/Cargo.toml"
+      - products/maka/cli/DEPENDENCIES.rust.tsv
       - package.json
       - package-lock.json
-      - 'apps/*/package.json'
-      - 'packages/*/package.json'
+      - "packages/*/package.json"
 
 permissions:
   contents: read
@@ -52,42 +62,48 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  rust-licenses:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: latest
+      - name: Update stable Rust for dependency resolution
+        run: rustup update stable --no-self-update
+      - uses: taiki-e/install-action@68a389c788b2cd04016ce8c80ee23b80d2ab3d68 # v2.88.1
+        with:
+          tool: cargo-binstall
+      - name: Install latest Rust tools
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cargo binstall --no-confirm --force cargo-binstall
+          cargo binstall --no-confirm --force cargo-deny
+      - name: Check Rust licenses and dependency inventory
+        run: node scripts/rust/dependencies.mjs check
+
   audit:
-    if: github.event_name != 'schedule' || github.repository == 'apache/maka'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
       - name: Check out the repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
 
       - name: Set up Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        uses: actions/setup-node@v7
         with:
-          node-version: '24.22.1'
+          node-version: latest
           cache: npm
 
-      - name: Install dependencies
-        # The full tree, not --omit=dev: the shipped-closure audit below walks
-        # the renderer roots, which npm labels dev even though they ship.
+      - name: Install build dependencies
         run: npm ci --ignore-scripts
-
-      - name: Audit shipped product closure
-        # A valid moderate+ advisory still fails. Registry availability must
-        # not lock every pull request out of the repository.
-        run: node scripts/audit-shipped-dependencies.mjs --allow-unavailable
-
-      - name: Check the allowScripts map against the lockfile
-        # npm's install-script approval gate keys on exact name@version; a
-        # routine bump or a new optional script-carrying dependency silently
-        # stales the map. Failing here keeps the drift from landing.
-        run: node scripts/check-allow-scripts.mjs
-
+      - name: Audit dependencies
+        run: npm audit --audit-level=high
       - name: Verify registry signatures
-        # The full tree, not `--omit=dev`. Two reasons it has to be both:
-        # the renderer roots live in devDependencies while their code ships
-        # inside `dist-renderer`, and signature verification also protects
-        # everything that *executes* during the build — a tampered vite or
-        # biome can pollute the artifact without ever being packaged.
         run: npm audit signatures

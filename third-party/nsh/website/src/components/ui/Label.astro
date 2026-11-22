@@ -1,0 +1,6 @@
+---
+// shadcn/ui's Label: a field's name, above it.
+import type { HTMLAttributes } from 'astro/types';
+type Props = HTMLAttributes<'label'>;
+---
+<label data-slot="label" {...Astro.props}><slot /></label>

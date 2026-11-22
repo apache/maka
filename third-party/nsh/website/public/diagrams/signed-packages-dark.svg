@@ -1,0 +1,188 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"
+     viewBox="0 0 880 620" width="100%" role="img" aria-labelledby="t d">
+  <title id="t">Signed packages: from an offline root key to a verified module</title>
+  <desc id="d">Three layers. Offline, the root key (root.secret) certifies a release key with nsh certify: the certificate names the app ids it may sign for, such as com.example.*, and a time window; the root also signs revocation lists with nsh revoke. On the build machine, nsh publish builds the module and signs it with the release key (release.secret), attaching the certificate, into app.nshpkg with a build number. The app downloads the package across the trust boundary. On the device, NshTrust trusts only root.pub, added with addRoot, and the newest revocation list. It checks, in order: the certificate against a trusted root, that the key and the package are not revoked, the release key's signature, that the certificate covers the app id and signing time, the file hashes, and that the build is not older than the last one accepted. If every check passes the module runs in the sandbox; if any fails, an error names the check and the app that was running keeps running. Apps know only the root, so release keys can rotate or be revoked without an app update.</desc>
+
+  <defs>
+    <style>
+      :root{
+        --band:rgba(255,255,255,.045);
+        --band-line:rgba(255,255,255,.13);
+        --band-hi:rgba(200,242,109,.08);
+        --seam:rgba(255,255,255,.07);
+        --card:#24262a;
+        --card-line:rgba(255,255,255,.20);
+        --card-hi:#2b3122;
+        --ink:#eceef1;
+        --muted:#8d9198;
+        --line:rgba(255,255,255,.48);
+        --faint:rgba(255,255,255,.26);
+        --fill:rgba(255,255,255,.12);
+        --accent:#c8f26d;
+        --danger:#ff6170;
+      }
+
+      text{font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif}
+      .mono{font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace}
+      .h1{fill:var(--ink);font-size:16px;font-weight:650}
+      .lede{fill:var(--muted);font-size:11.5px}
+      .layer{fill:var(--ink);font-size:12.5px;font-weight:650}
+      .layer-sub{fill:var(--muted);font-size:11px}
+      .seam-name{fill:var(--accent);font-size:12px;font-weight:650}
+      .name{fill:var(--ink);font-size:14px;font-weight:600}
+      .band-name{fill:var(--ink);font-size:13px;font-weight:600}
+      .fact{fill:var(--ink);font-size:11.5px}
+      .note{fill:var(--muted);font-size:11px}
+      .tag{fill:var(--muted);font-size:10.5px;font-weight:600}
+      .edge{fill:var(--accent);font-size:11px;font-weight:600}
+      .claim{fill:var(--accent);font-size:11px;font-weight:600}
+
+      .band{fill:var(--band);stroke:var(--band-line);stroke-width:1}
+      .card{fill:var(--card);stroke:var(--card-line);stroke-width:1}
+      .seam{fill:var(--seam)}
+      .seam-edge{fill:none;stroke:var(--accent);stroke-width:1;stroke-dasharray:4 4;opacity:.6}
+      .flow{fill:none;stroke:var(--line);stroke-width:1.4}
+      .arrowhead{fill:var(--line)}
+      .token-halo{fill:var(--accent);opacity:.16}
+      .token-core{fill:var(--accent)}
+      .refuse{fill:var(--danger);font-size:14px;font-weight:600}
+      .divider{stroke:var(--band-line);stroke-width:1}
+
+      .stage{animation:stage 10s linear infinite}
+      .stage-mid{animation:stagemid 10s linear infinite}
+      .stage-last{animation:stagelast 10s linear infinite}
+
+      @keyframes stage{
+        0%,8%{stroke:var(--accent);fill:var(--card-hi)}
+        13%,100%{stroke:var(--card-line);fill:var(--card)}
+      }
+      @keyframes stagemid{
+        0%,19%{stroke:var(--accent);fill:var(--card-hi)}
+        24%,100%{stroke:var(--card-line);fill:var(--card)}
+      }
+      @keyframes stagelast{
+        0%,27%{stroke:var(--accent);fill:var(--card-hi)}
+        30%,100%{stroke:var(--card-line);fill:var(--card)}
+      }
+
+      @media (prefers-reduced-motion: reduce){
+        .stage,.stage-mid,.stage-last{animation:none}
+        .token{display:none}
+      }
+    </style>
+
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="6.5" markerHeight="6.5" orient="auto">
+      <path class="arrowhead" d="M0,0 L10,5 L0,10 Z"/>
+    </marker>
+
+    <path id="route" fill="none" stroke="none" d="M272,135 L504,135 L504,277 L736,277 L736,445 L272,445"/>
+  </defs>
+
+  <text class="h1" x="24" y="30">Signed packages</text>
+  <text class="lede" x="24" y="50">An offline root certifies release keys. A release key signs packages. The device trusts the root, and checks everything before code runs.</text>
+
+  <!-- layer bands -->
+  <rect class="band" x="160" y="72"  width="688" height="122" rx="12"/>
+  <rect class="band" x="160" y="214" width="688" height="122" rx="12"/>
+  <rect class="band" x="160" y="356" width="688" height="220" rx="12"/>
+
+  <text class="layer"     x="24" y="131">Offline</text>
+  <text class="layer-sub" x="24" y="147">whoever holds the root</text>
+  <text class="layer"     x="24" y="273">Build machine</text>
+  <text class="layer-sub" x="24" y="289">your server or CI</text>
+  <text class="layer"     x="24" y="481">The device</text>
+  <text class="layer-sub" x="24" y="497">your native app</text>
+
+  <!-- the trust boundary -->
+  <path class="seam" d="M160,368 Q160,356 172,356 L836,356 Q848,356 848,368 L848,396 L160,396 Z"/>
+  <path class="seam-edge" d="M160,396 L848,396"/>
+  <text class="seam-name" x="180" y="381">trust boundary</text>
+  <text class="note" x="282" y="381">the device checks everything before any code runs</text>
+
+  <!-- flow -->
+  <path class="flow" d="M368,135 L406,135" marker-end="url(#arrow)"/>
+  <path class="flow" d="M504,174 L504,236" marker-end="url(#arrow)"/>
+  <text class="edge" x="516" y="208">certificate</text>
+  <path class="flow" d="M368,277 L406,277" marker-end="url(#arrow)"/>
+  <path class="flow" d="M600,277 L638,277" marker-end="url(#arrow)"/>
+  <path class="flow" d="M736,316 L736,412" marker-end="url(#arrow)"/>
+  <text class="edge" x="748" y="381">download</text>
+  <path class="flow" d="M408,445 L370,445" marker-end="url(#arrow)"/>
+  <path class="flow" d="M408,524 L370,524" marker-end="url(#arrow)"/>
+
+  <!-- the travelling token, beneath the cards -->
+  <g class="token">
+    <circle class="token-halo" r="9"/>
+    <circle class="token-core" r="4"/>
+    <animateMotion dur="10s" repeatCount="indefinite" rotate="0" calcMode="linear"
+                   keyPoints="0;0.0775;0.1099;0.2189;0.2706;0.3796;0.4120;0.5210;0.6002;0.8901;0.9225;1;1"
+                   keyTimes="0;0.05;0.10;0.15;0.21;0.27;0.32;0.39;0.47;0.66;0.71;0.76;1">
+      <mpath href="#route" xlink:href="#route"/>
+    </animateMotion>
+  </g>
+
+  <!-- offline -->
+  <rect class="card stage" x="176" y="96" width="192" height="78" rx="9" style="animation-delay:0s"/>
+  <text class="name mono" x="196" y="121">root.secret</text>
+  <text class="tag" x="352" y="121" text-anchor="end">offline</text>
+  <text class="fact" x="196" y="141">the root key</text>
+  <text class="note" x="196" y="158">apps ship only root.pub</text>
+
+  <rect class="card stage" x="408" y="96" width="192" height="78" rx="9" style="animation-delay:-9s"/>
+  <text class="name mono" x="428" y="121">release.cert</text>
+  <text class="fact" x="428" y="141">a release key, for app ids</text>
+  <text class="note mono" x="428" y="158">nsh certify</text>
+
+  <rect class="card" x="640" y="96" width="192" height="78" rx="9"/>
+  <text class="name mono" x="660" y="121">revocations</text>
+  <text class="fact" x="660" y="141">keys and packages to refuse</text>
+  <text class="note mono" x="660" y="158">nsh revoke</text>
+
+  <!-- build machine -->
+  <rect class="card" x="176" y="238" width="192" height="78" rx="9"/>
+  <text class="name mono" x="196" y="263">release.secret</text>
+  <text class="fact" x="196" y="283">the release key</text>
+  <text class="note" x="196" y="300">rotates without an app update</text>
+
+  <rect class="card stage" x="408" y="238" width="192" height="78" rx="9" style="animation-delay:-7.9s"/>
+  <text class="name mono" x="428" y="263">nsh publish</text>
+  <text class="tag" x="584" y="263" text-anchor="end">Ed25519</text>
+  <text class="fact" x="428" y="283">builds, then signs</text>
+  <text class="note" x="428" y="300">attaches the certificate</text>
+
+  <rect class="card stage" x="640" y="238" width="192" height="78" rx="9" style="animation-delay:-6.8s"/>
+  <text class="name mono" x="660" y="263">app.nshpkg</text>
+  <text class="tag" x="816" y="263" text-anchor="end">build 2</text>
+  <text class="fact" x="660" y="283">source, bytecode, assets</text>
+  <text class="note" x="660" y="300">one signature over it all</text>
+
+  <!-- device -->
+  <rect class="card stage-mid" x="408" y="414" width="424" height="142" rx="9" style="animation-delay:-5.3s"/>
+  <text class="name mono" x="428" y="439">NshTrust</text>
+  <text class="tag" x="816" y="439" text-anchor="end">off the main thread</text>
+  <line class="divider" x1="580" y1="454" x2="580" y2="540"/>
+  <text class="tag" x="428" y="464">TRUSTS</text>
+  <text class="fact mono" x="428" y="484">root.pub</text>
+  <text class="note" x="428" y="500">addRoot</text>
+  <text class="fact" x="428" y="522">newest revocations</text>
+  <text class="note" x="428" y="538">a lower sequence is ignored</text>
+  <text class="tag" x="598" y="464">CHECKS, IN ORDER</text>
+  <text class="fact" x="598" y="484">certificate by a trusted root</text>
+  <text class="fact" x="598" y="500">key and package not revoked</text>
+  <text class="fact" x="598" y="516">signature by the release key</text>
+  <text class="fact" x="598" y="532">app id, signing time, file hashes</text>
+  <text class="fact" x="598" y="548">build not older than the last</text>
+
+  <rect class="card stage-last" x="176" y="414" width="192" height="63" rx="9" style="animation-delay:-2.9s"/>
+  <text class="name" x="196" y="438">Run</text>
+  <text class="fact" x="196" y="458">in the sandbox, as native views</text>
+
+  <rect class="card" x="176" y="493" width="192" height="63" rx="9"/>
+  <text class="refuse" x="196" y="517">Refuse</text>
+  <text class="tag" x="352" y="517" text-anchor="end">any check fails</text>
+  <text class="fact" x="196" y="537">the running app keeps running</text>
+
+  <text class="claim" x="24" y="602">Apps know only the root: release keys rotate, and keys or packages are revoked, without an app update.</text>
+</svg>

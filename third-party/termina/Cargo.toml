@@ -1,0 +1,63 @@
+[package]
+name = "termina"
+version = "0.4.0"
+authors = ["Michael Davis <mcarsondavis@gmail.com>"]
+description = "A cross-platform VT manipulation library"
+readme = "README.md"
+repository = "https://github.com/helix-editor/termina"
+edition = "2021"
+license = "MIT OR MPL-2.0"
+rust-version = "1.71"
+
+[features]
+default = []
+event-stream = ["dep:futures-core"]
+windows-legacy = [
+  "windows-sys/Win32_UI_Input_KeyboardAndMouse",
+  "windows-sys/Win32_UI_WindowsAndMessaging",
+]
+
+[dependencies]
+parking_lot = "0.12"
+bitflags = "2"
+futures-core = { version = "0.3", optional = true }
+
+[target.'cfg(unix)'.dependencies]
+signal-hook = "0.3"
+
+[target.'cfg(unix)'.dependencies.rustix]
+version = "1"
+default-features = false
+features = [
+  "std",
+  "stdio",
+  "termios",
+  "event",
+]
+
+[dev-dependencies]
+criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
+
+[target.'cfg(windows)'.dependencies.windows-sys]
+# TODO: this could probably be loosened.
+version = ">=0.60"
+default-features = false
+# https://microsoft.github.io/windows-rs/features/#/0.59.0/search
+features = [
+  # Interaction with the legacy and modern console APIs.
+  "Win32_System_Console",
+  # Writing files (including console handles).
+  "Win32_Storage_FileSystem",
+  "Win32_System_IO",
+  # Polling for input.
+  "Win32_System_Threading",
+  "Win32_Security",
+]
+
+[[example]]
+name = "event-read"
+required-features = ["windows-legacy"]
+
+[[bench]]
+name = "parse"
+harness = false

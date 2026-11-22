@@ -1,0 +1,285 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+//! One-shot Host resource facts. Only the Host adapter writes these records;
+//! caller correlation is opaque and plugin business state lives with its owner.
+
+use crate::{EventLog, StoreError};
+use maka_plugin_core::storage::Namespace;
+use rusqlite::{OptionalExtension, Transaction, TransactionBehavior};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use uuid::Uuid;
+
+/// Durable observation of the original resource owner; never a live grant.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum Owner {
+    Resource(ResourceOwner),
+    Native(NativeOwner),
+}
+
+/// Existing resource activation provenance, preserving its original JSON shape.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ResourceOwner {
+    pub package_id: String,
+    pub entry_id: String,
+    pub scope: maka_plugin_core::scope::Scope,
+    pub activation: String,
+    pub generation: u64,
+}
+
+/// Actual native deployment source and UUID activation epoch from NativeContext.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NativeOwner {
+    pub package_id: String,
+    pub entry_id: String,
+    pub scope: maka_plugin_core::scope::Scope,
+    pub source: maka_plugin_core::deployment::DeploymentRef,
+    pub epoch: Uuid,
+}
+impl Owner {
+    /// Original package namespace for this observation.
+    pub fn package_id(&self) -> &str {
+        match self {
+            Self::Resource(owner) => &owner.package_id,
+            Self::Native(owner) => &owner.package_id,
+        }
+    }
+    /// Original selected entry, without activating another service.
+    pub fn entry_id(&self) -> &str {
+        match self {
+            Self::Resource(owner) => &owner.entry_id,
+            Self::Native(owner) => &owner.entry_id,
+        }
+    }
+    /// Original data scope, shared by both closed provenance forms.
+    pub fn scope(&self) -> &maka_plugin_core::scope::Scope {
+        match self {
+            Self::Resource(owner) => &owner.scope,
+            Self::Native(owner) => &owner.scope,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "kind", content = "input", rename_all = "snake_case")]
+pub enum Operation {
+    #[serde(rename_all = "camelCase")]
+    BrowserLeaseChild {
+        browser_id: String,
+        generation: String,
+        opener_subject: maka_plugin_core::computer::BrowserLeaseSubject,
+        opener_tab_id: u64,
+        url: String,
+    },
+    Http {
+        method: maka_plugin_core::http::Method,
+        url: String,
+        /// Source-declared length; digest and byte count are upload observations
+        /// recorded in the outcome, never a preflight full-body materialization.
+        body_length: Option<u64>,
+    },
+    Notification {
+        input: Value,
+        provider: Value,
+        registration_id: String,
+    },
+    File(Value),
+    Model {
+        input: Value,
+        model: Value,
+        thinking_level: Option<Value>,
+    },
+    Client {
+        input: Value,
+        provider: Value,
+        registration_id: String,
+        offer_id: String,
+        tool_call_id: String,
+    },
+}
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Request {
+    /// Opaque caller correlation; authorization is carried by the live adapter.
+    pub source: Value,
+    pub owner: Owner,
+    pub boundary: maka_plugin_core::authorization::Boundary,
+    pub operation: Operation,
+}
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+pub enum Outcome {
+    Completed { value: Value },
+    Image { mime_type: String, digest: String },
+    Failed { message: String },
+    Unknown { message: String },
+}
+pub struct Record {
+    pub request: Request,
+    pub outcome: Option<Outcome>,
+    pub payload: Option<Vec<u8>>,
+}
+impl EventLog {
+    /// Caller may start the effect only after this durable admission succeeds.
+    pub async fn begin_host_effect(&self, request: Request) -> Result<Uuid, StoreError> {
+        if matches!(request.operation, Operation::BrowserLeaseChild { .. }) {
+            let session = browser_lease_session(&request)?;
+            if self.expected_session.as_deref() != Some(session) {
+                return Err(invalid(
+                    "browser lease effect requires its selected Session SQL owner",
+                ));
+            }
+            self.check_bound_session(session)?;
+        }
+        let namespace = Namespace::new(
+            request.owner.package_id().to_owned(),
+            request.owner.scope().clone(),
+        )
+        .map_err(|error| invalid(error.to_string()))?;
+        let raw = serde_json::to_string(&request)?;
+        let session = match &request.boundary {
+            maka_plugin_core::authorization::Boundary::Session { boundary } => {
+                Some(boundary.session_id.clone())
+            }
+            _ => None,
+        };
+        let id = Uuid::new_v4();
+        self.connection.run(move |connection| {
+            let tx = Transaction::new_unchecked(connection, TransactionBehavior::Immediate)?;
+            if let Some(session) = session { crate::sessions::retain(&tx, &session)?; }
+            tx.execute("INSERT INTO host_effects (id, package_id, scope_id, request) VALUES (?, ?, ?, ?)", rusqlite::params![id.to_string(), namespace.package(), String::from(namespace.scope().clone()), raw])?;
+            tx.commit().map_err(StoreError::CommitUnknown)?;
+            Ok(id)
+        }).await
+    }
+
+    /// Settlement cannot overwrite a known outcome, including recovery's unknown.
+    pub async fn settle_host_effect(
+        &self,
+        id: Uuid,
+        outcome: Outcome,
+        payload: Option<Vec<u8>>,
+    ) -> Result<(), StoreError> {
+        match (&outcome, &payload) {
+            (Outcome::Image { mime_type, digest }, Some(bytes))
+                if matches!(
+                    mime_type.as_str(),
+                    "image/png" | "image/jpeg" | "image/gif" | "image/webp"
+                ) && &format!(
+                    "sha256:{}",
+                    hex::encode(<sha2::Sha256 as sha2::Digest>::digest(bytes))
+                ) == digest => {}
+            (Outcome::Image { .. }, _) | (_, Some(_)) => {
+                return Err(invalid("invalid effect image payload"));
+            }
+            _ => {}
+        }
+        let raw = serde_json::to_string(&outcome)?;
+        self.connection.run(move |connection| {
+            let tx = Transaction::new_unchecked(connection, TransactionBehavior::Immediate)?;
+            let result = tx.execute("UPDATE host_effects SET outcome = ?, payload = ? WHERE id = ? AND outcome IS NULL", rusqlite::params![raw, payload, id.to_string()])?;
+            if result != 1 {
+                return Err(StoreError::EventConflict);
+            }
+            tx.commit().map_err(StoreError::CommitUnknown)?;
+            Ok(())
+        }).await
+    }
+
+    pub async fn host_effect(
+        &self,
+        namespace: Namespace,
+        id: Uuid,
+    ) -> Result<Option<Record>, StoreError> {
+        self.connection.read(move |connection| {
+            let row: Option<(String,Option<String>,Option<Vec<u8>>)> = connection.query_row("SELECT request, outcome, payload FROM host_effects WHERE id = ? AND package_id = ? AND scope_id = ?", rusqlite::params![id.to_string(), namespace.package(), String::from(namespace.scope().clone())], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?,))).optional()?;
+            row.map(|(request,outcome,payload)| {
+                Ok(Record {
+                    request: serde_json::from_str(&request)?,
+                    outcome: outcome.as_deref().map(serde_json::from_str).transpose()?,
+                    payload,
+                })
+            }).transpose()
+        }).await
+    }
+
+    /// Called only at exclusive Host recovery, before accepting new resource work.
+    pub async fn recover_host_effects(&self) -> Result<(), StoreError> {
+        let outcome = serde_json::to_string(&Outcome::Unknown {
+            message:
+                "Host stopped before recording the effect outcome; do not replay automatically"
+                    .into(),
+        })?;
+        self.connection
+            .run(move |connection| {
+                let tx = Transaction::new_unchecked(connection, TransactionBehavior::Immediate)?;
+                tx.execute(
+                    "UPDATE host_effects SET outcome = ? WHERE outcome IS NULL",
+                    rusqlite::params![outcome],
+                )?;
+                tx.commit().map_err(StoreError::CommitUnknown)?;
+                Ok(())
+            })
+            .await
+    }
+}
+pub(crate) fn browser_lease_session(request: &Request) -> Result<&str, StoreError> {
+    let (
+        Owner::Native(owner),
+        maka_plugin_core::authorization::Boundary::Session { boundary },
+        Operation::BrowserLeaseChild {
+            browser_id,
+            generation,
+            opener_subject,
+            ..
+        },
+    ) = (&request.owner, &request.boundary, &request.operation)
+    else {
+        return Err(invalid(
+            "browser lease effect requires native provenance and a Session boundary",
+        ));
+    };
+    boundary
+        .validate()
+        .map_err(|error| invalid(error.to_string()))?;
+    owner.source.validate().map_err(invalid)?;
+    if owner.entry_id.is_empty()
+        || owner.epoch.is_nil()
+        || browser_id.is_empty()
+        || generation.is_empty()
+        || opener_subject.routing_id().is_empty()
+    {
+        return Err(invalid(
+            "browser lease effect identity does not match its captured source",
+        ));
+    }
+    Ok(&boundary.session_id)
+}
+
+fn invalid(message: impl Into<String>) -> StoreError {
+    StoreError::InvalidTransition(message.into())
+}

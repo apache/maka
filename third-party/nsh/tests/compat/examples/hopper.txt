@@ -1,0 +1,77 @@
+# Hopper Lab: the three sections of its tab bar, the hop log's own screen,
+# the flight plan's controls and flying a hop.
+expect Hop tests
+expect 40 flown · 4 off-nominal in the last 40
+expect Hop 40
+style text:"Hop 40 · 132 m · hover 12 s" numberOfLines 1
+prop label:Flights role tab
+prop label:Flights accessibilityState selected=true
+prop label:Plan accessibilityState {}
+listens label:Plan onPress
+frame label:Flights 0 9 130 48
+frame label:Plan 130 9 130 48
+frame label:Vehicle 260 9 130 48
+style text:Flights fontWeight 600
+# The hop log's own screen, pushed and popped.
+prop label:"Hop tests details" role button
+tap label:Hop tests details
+expect Hop log
+expect Hop 29
+tap label:Back
+absent Hop 29
+absent Hop log
+# The flight plan.
+tap label:Plan
+prop label:Plan accessibilityState selected=true
+prop label:Flights accessibilityState {}
+style text:Plan fontWeight 600
+style text:Flights fontWeight 400
+expect ±6°
+prop label:"Gimbal limit" accessibilityValue text=±6°
+prop label:"Increase Gimbal limit" hitSlop top=6 right=6 bottom=6 left=6
+tap label:Increase Gimbal limit
+expect ±7°
+prop label:"Gimbal limit" accessibilityValue text=±7°
+tap label:Decrease Gimbal limit
+tap label:Decrease Gimbal limit
+expect ±5°
+style text:Hover fontWeight 600
+tap text:Translate
+style text:Translate fontWeight 600
+style text:Hover fontWeight 400
+prop label:"Terrain-relative navigation" role switch
+prop label:"Terrain-relative navigation" accessibilityState checked=true
+tap label:Terrain-relative navigation
+prop label:"Terrain-relative navigation" accessibilityState checked=false
+prop label:"Abort on excess tilt" accessibilityState disabled=true checked=false
+style label:"Abort on excess tilt" opacity 0.4
+tap text:Defaults
+expect ±6°
+style text:Hover fontWeight 600
+prop label:"Terrain-relative navigation" accessibilityState checked=true
+tap text:Fly hop
+expect Flying…
+wait 1000
+expect Fly hop
+expect Hop 41: nominal · hover 12 s
+# The log, on the flights tab, has the new hop.
+tap label:Flights
+expect 41 flown · 4 off-nominal in the last 40
+# The vehicle.
+tap label:Vehicle
+prop label:Vehicle accessibilityState selected=true
+expect 645 kg wet
+expect Propellant · 85%
+covers [props] accessibilityLabel
+covers [props] accessibilityState
+covers [props] accessibilityValue
+covers [props] hitSlop
+covers [styles] numberOfLines
+covers [props] role
+covers [events] onPress
+covers [styles] flex
+covers [styles] fontWeight
+covers [styles] opacity
+covers [nsh/base] createNavStack
+covers [nsh/base] NavStack
+covers [nsh/base] NavPage

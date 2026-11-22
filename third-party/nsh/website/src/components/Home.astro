@@ -1,0 +1,933 @@
+---
+// The landing page, in the banners' language (DESIGN.md "The home page"): the
+// mark's glass arches and halftone field, Figtree display type, one citrus
+// accent, hairlines instead of cards. Each band shows something that is
+// particular to NSH: measured numbers of TSX apps next to Rust's, TSX with
+// nothing else to install, a backend for each of eight platforms, one component
+// taking each device's form (live), retained views, UI delivered after release.
+// Every number is from website/docs/performance-report.md or web.md.
+import { BASE, REPO_URL, SITE_TITLE, SITE_URL, url, type Lang } from '../lib/site';
+import { homeCopy } from '../lib/home';
+import { hasPlayer } from '../lib/demo.js';
+import HeroArches from './HeroArches.astro';
+import Logo from './Logo.astro';
+import Button from './ui/Button.astro';
+
+export interface Props {
+  lang?: Lang;
+  /** The page's locale, when other than `lang`: a machine translation's. */
+  locale?: string;
+}
+const { lang = 'en', locale = lang } = Astro.props;
+const zh = lang === 'zh-CN';
+const machine = locale !== lang;
+const { copy } = homeCopy(locale);
+// Machine locales have the documentation's sections; every other page is English.
+const link = (path: string) =>
+  url(zh ? `zh-CN/${path}` : machine && /^(docs|elements|modules)(\/|$)/.test(path) ? `${locale}/${path}` : path);
+const player = hasPlayer();
+// Structured data for search engines and AI answers: the site, the
+// framework as a free developer application, and its source code.
+const jsonLd = JSON.stringify({
+  '@context': 'https://schema.org',
+  '@graph': [
+    { '@type': 'WebSite', name: SITE_TITLE, alternateName: 'NSH', url: `${SITE_URL}/`, inLanguage: locale },
+    {
+      '@type': 'SoftwareApplication',
+      name: SITE_TITLE,
+      alternateName: 'NSH',
+      url: `${SITE_URL}/`,
+      description: copy.description,
+      applicationCategory: 'DeveloperApplication',
+      operatingSystem: 'iOS, Android, macOS, Windows, Linux, Web',
+      license: 'https://www.apache.org/licenses/LICENSE-2.0',
+      isAccessibleForFree: true,
+      offers: { '@type': 'Offer', price: '0', priceCurrency: 'USD' },
+      publisher: { '@type': 'Organization', name: 'Longbridge', url: 'https://longbridge.com' },
+      sameAs: [REPO_URL],
+    },
+    {
+      '@type': 'SoftwareSourceCode',
+      name: SITE_TITLE,
+      codeRepository: REPO_URL,
+      programmingLanguage: ['Rust', 'TypeScript'],
+      license: 'https://www.apache.org/licenses/LICENSE-2.0',
+    },
+  ],
+});
+
+const chatSrc = (idiom: string) => `${BASE}play/index.html?theme=dark&idiom=${idiom}#home-chat`;
+
+// The measured numbers and commands, the same in every language; the words
+// beside them are `copy`'s, in the same order.
+const heroStats = ['120', '~1 ms', '8'].map((n, i) => [n, copy.heroStats[i]]);
+const stats = ['120 FPS', '~0.1 ms', '~1 ms', '~0.12 ms', '< 1 KB', '~1.1 MB'].map((n, i) => ({ n, label: copy.stats[i] }));
+const compareRows = [
+  ['~20 MB', '~19 MB', '~17 MB'],
+  ['~48 MB', '~44 MB', '~38 MB'],
+  ['+3 / +9 MB', '+2 / +5 MB', ''],
+  ['~15 MB', '~14 MB', ''],
+].map((cells, i) => [copy.compareRows[i], ...cells]);
+const sizeRows = [
+  ['19.8 MB', '9.5 MB', '12.4 MB', '6.0 MB'],
+  ['25.7 MB', '11.6 MB', '21.5 MB', '9.7 MB'],
+  ['28.6 MB', '12.4 MB', '25.3 MB', '10.7 MB'],
+  ['', copy.sizeWeb, '', ''],
+].map((cells, i) => [copy.sizeRows[i], ...cells]);
+const flow = ['App.tsx', 'nsh check\nnsh test', 'nsh publish', 'NshAppView\nNshView\nAppView'].map((code, i) => ({ ...copy.flow[i], code }));
+
+// The eight platforms, each one arch of the hero, from the bead outward.
+const surfaces = [
+  { name: 'macOS', views: 'AppKit', text: 'CoreText', input: 'NSTextView', needs: 'macOS 14+', cmd: 'macos' },
+  { name: 'Linux', views: 'GTK 4', text: 'Pango', input: 'GtkTextView', needs: 'GTK 4.14+', cmd: 'linux' },
+  { name: 'Windows', views: 'Win32, Direct2D', text: 'DirectWrite', input: '', needs: 'Windows 10 1809+', cmd: 'windows' },
+  { name: 'Web', views: 'HTML, CSS', text: '', input: '<input>, <textarea>', needs: '', cmd: 'web' },
+  { name: 'iOS', views: 'UIKit', text: 'CoreText', input: 'UITextView', needs: 'iOS 15+', cmd: 'ios' },
+  { name: 'Android', views: '', text: 'StaticLayout', input: 'EditText', needs: 'API 26+', cmd: 'android' },
+  { name: 'TUI', views: 'ratatui', text: '', input: '', needs: 'macOS, Windows, Linux', cmd: 'tui' },
+  { name: 'GPUI', views: 'GPUI', text: '', input: '', needs: '', cmd: 'gpui' },
+].map((s) => ({ ...s, ...(copy.surfaces as Record<string, Partial<typeof s>>)[s.name] }));
+
+const ways = [
+  { code: 'app', href: 'docs/getting-started' },
+  { code: 'host', href: 'docs/platforms' },
+  { code: 'ai', href: 'docs/sandbox-and-capabilities' },
+].map((w, i) => ({ ...copy.ways[i], ...w }));
+
+const found = [
+  { chips: 'nsh/base', href: 'docs/jsx-and-components' },
+  { chips: 'nsh run, nsh test, nsh package', href: 'docs/getting-started' },
+  { chips: 'nsh test --target ios', href: 'docs/testing-and-trace' },
+].map((f, i) => ({ ...copy.found[i], ...f }));
+
+// Hand-colored snippets: real API, coloured with the site's code tokens.
+const k = (s: string) => `<span class="c-k">${s}</span>`;
+const st = (s: string) => `<span class="c-s">${s}</span>`;
+const fn = (s: string) => `<span class="c-f">${s}</span>`;
+const cm = (s: string) => `<span class="c-c">${s}</span>`;
+const ty = (s: string) => `<span class="c-t">${s}</span>`;
+const snippets: Record<string, string> = {
+  ai: [
+    `${k('import')} { mount, signal, View } ${k('from')} ${st('"nsh"')};`,
+    ``,
+    `${k('function')} ${fn('Answer')}() {`,
+    `  ${k('const')} range = ${fn('signal')}(${st('"1W"')});`,
+    `  ${k('return')} &lt;${ty('View')} class=${st('"gap-3 p-4"')}&gt;…&lt;/${ty('View')}&gt;;`,
+    `}`,
+    `${fn('mount')}(Answer);`,
+  ].join('\n'),
+  host: [
+    `${k('let')} app = ${ty('NshAppView')}()`,
+    `${k('try')} app.${fn('grantCapabilities')}(grants)`,
+    `${k('let')} info = ${k('try await')} app`,
+    `  .${fn('loadPackage')}(at: file, trust: trust)`,
+    `${cm('// verified, sandboxed, running')}`,
+    `${cm('// NshView on Android, AppView elsewhere')}`,
+  ].join('\n'),
+  app: [
+    `${cm('$')} nsh init my-app ${k('--template')} ${st('rust')}`,
+    `${cm('$')} nsh run my-app ${k('--target')} macos`,
+    `${cm('$')} nsh package my-app ${k('--target')} windows`,
+    `${cm('# --template ts for TSX')}`,
+    `${cm('# ios · android · macos · windows · linux · gpui · web')}`,
+  ].join('\n'),
+};
+
+// The same counter in both languages, Rust first.
+const langs = [
+  {
+    id: 'rust',
+    label: 'Rust',
+    file: 'src/lib.rs',
+    code: [
+      `${k('use')} nsh_core::element::prelude::*;`,
+      ``,
+      `#[component]`,
+      `${k('pub fn')} ${fn('App')}() -&gt; ${k('impl')} ${ty('IntoElement')} {`,
+      `    ${k('let')} count = ${fn('signal')}(0);`,
+      `    ${fn('view')}()`,
+      `        .${fn('items_center')}()`,
+      `        .${fn('gap_4')}()`,
+      `        .${fn('child')}(${fn('text')}(${k('move')} || ${fn('format!')}(${st('"Count: {}"')}, count.${fn('get')}())))`,
+      `        .${fn('child')}(`,
+      `            ${fn('view')}()`,
+      `                .${fn('rounded_lg')}().${fn('bg')}(${fn('rgb')}(0x2563eb)).${fn('px_5')}().${fn('py_3')}()`,
+      `                .${fn('on_press')}(${k('move')} || count.${fn('update')}(|n| *n += 1))`,
+      `                .${fn('child')}(${fn('text')}(${st('"Tap"')}).${fn('text_color')}(${fn('white')}())),`,
+      `        )`,
+      `}`,
+    ].join('\n'),
+  },
+  {
+    id: 'tsx',
+    label: 'TSX',
+    file: 'App.tsx',
+    code: [
+      `${k('import')} { mount, signal, Text, View } ${k('from')} ${st('"nsh"')};`,
+      ``,
+      `${k('function')} ${fn('App')}() {`,
+      `  ${k('const')} count = ${fn('signal')}(0);`,
+      `  ${k('return')} (`,
+      `    &lt;${ty('View')} class=${st('"items-center gap-4"')}&gt;`,
+      `      &lt;${ty('Text')}&gt;Count: {${fn('count')}()}&lt;/${ty('Text')}&gt;`,
+      `      &lt;${ty('View')}`,
+      `        class=${st('"rounded-lg bg-blue-600 px-5 py-3"')}`,
+      `        onPress={() =&gt; count.${fn('update')}((n) =&gt; n + 1)}`,
+      `      &gt;`,
+      `        &lt;${ty('Text')} class=${st('"text-white"')}&gt;Tap&lt;/${ty('Text')}&gt;`,
+      `      &lt;/${ty('View')}&gt;`,
+      `    &lt;/${ty('View')}&gt;`,
+      `  );`,
+      `}`,
+      `${fn('mount')}(App);`,
+    ].join('\n'),
+  },
+];
+
+
+---
+
+<script type="application/ld+json" set:html={jsonLd} />
+<main class="home" id="main">
+  <section class="hero" data-hero>
+    <HeroArches />
+    <div class="band__inner hero__inner">
+      <div class="hero__title" data-fit>
+        <h1 class="rise">Native Shell</h1>
+        <p class="hero__slogan rise"><span>{copy.slogan}</span></p>
+        <ul class="hero__platforms rise" aria-label={copy.platforms}>
+          {surfaces.map((p, i) => (
+            <li><button type="button" data-arch={i} data-stack={`${p.views}, ${p.text}, ${p.needs}`}>{p.name}</button></li>
+          ))}
+        </ul>
+      </div>
+      <p class="hero__readout rise" data-readout data-idle={copy.idle} aria-live="polite">{copy.idle}</p>
+      <p class="hero__lead rise">{copy.lead}</p>
+      <div class="hero__actions rise">
+        <Button size="lg" href={link('docs')}>{copy.start}</Button>
+        <Button size="lg" variant="secondary" href={link('gallery')}>{copy.gallery}</Button>
+        <Button size="lg" variant="secondary" href={link('playground')}>{copy.try}</Button>
+      </div>
+      <dl class="hero__stats rise">
+        {heroStats.map(([n, label]) => <div><dt>{label}</dt><dd>{n}</dd></div>)}
+      </dl>
+    </div>
+  </section>
+
+  <section class="band">
+    <div class="band__inner">
+      <header class="head head--wide">
+        <h2>{copy.numbersTitle}</h2>
+        <p>{copy.numbersLead}</p>
+      </header>
+      <dl class="stats">
+        {stats.map((x) => <div><dd>{x.n}</dd><dt>{x.label}</dt></div>)}
+      </dl>
+      <div class="compare" role="region" tabindex="0" aria-label={copy.compareHead}>
+        <table>
+          <caption>{copy.compareHead}</caption>
+          <thead><tr>{copy.compareCols.map((c, i) => <th scope="col" class:list={[{ 'is-tsx': i === 1 }]}>{c}</th>)}</tr></thead>
+          <tbody>
+            {compareRows.map(([name, ...cells]) => (
+              <tr><th scope="row">{name}</th>{cells.map((c, i) => <td class:list={[{ 'is-tsx': i === 0 }]}>{c}</td>)}</tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <div class="compare compare--sizes" role="region" tabindex="0" aria-label={copy.sizeHead}>
+        <table>
+          <caption>{copy.sizeHead}</caption>
+          <thead><tr>{copy.sizeCols.map((c, i) => <th scope="col" class:list={[{ 'is-tsx': i === 1 || i === 2 }]}>{c}</th>)}</tr></thead>
+          <tbody>
+            {sizeRows.map(([name, ...cells]) => (
+              <tr><th scope="row">{name}</th>{cells.map((c, i) => <td class:list={[{ 'is-tsx': i < 2 }]}>{c || '—'}</td>)}</tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <p class="note">{copy.numbersNote} <a href={link('docs/performance-report')}>{copy.numbersCta}</a></p>
+    </div>
+  </section>
+
+  <section class="band band--tinted">
+    <div class="band__inner zero">
+      <div>
+        <header class="head">
+          <h2>{copy.zeroTitle}</h2>
+          <p>{copy.zeroLead}</p>
+        </header>
+        <pre class="zero__tree" tabindex="0"><code><span class="c-c">$</span> nsh init my-app --template ts
+<span class="c-c">$</span> nsh run my-app --target macos
+
+my-app/
+  App.tsx
+  nsh.json
+  tsconfig.json</code></pre>
+        <ul class="zero__points">{copy.zeroPoints.map((x) => <li>{x}</li>)}</ul>
+      </div>
+      <figure class="code">
+        <figcaption><span>TSX</span><em>{langs[1].file}</em></figcaption>
+        <pre tabindex="0"><code set:html={langs[1].code} /></pre>
+      </figure>
+    </div>
+  </section>
+
+  <section class="band">
+    <div class="band__inner">
+      <header class="head head--wide">
+        <h2>{copy.viewsTitle}</h2>
+        <p>{copy.viewsLead}</p>
+      </header>
+      <div class="stack" role="region" tabindex="0" aria-label={copy.viewsTitle}>
+        <table>
+          <thead><tr>{copy.cols.map((c) => <th scope="col">{c}</th>)}</tr></thead>
+          <tbody>
+            {surfaces.map((s) => (
+              <tr>
+                <th scope="row">{s.name}</th>
+                <td>{s.views}</td>
+                <td>{s.text}</td>
+                <td><code>{s.input}</code></td>
+                <td>{s.needs}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <p class="note">{copy.embedNote} <a href={link('docs/platforms')}>{copy.embedCta}</a></p>
+    </div>
+  </section>
+
+  <section class="band band--dots">
+    <div class="band__inner">
+      <header class="head head--wide">
+        <h2>{copy.formTitle}</h2>
+        <p>{copy.formLead}</p>
+      </header>
+      <div class="forms" data-forms>
+        <figure class="form form--desktop">
+          <figcaption><span>{copy.desktop}</span><em>{copy.formHint}</em></figcaption>
+          <div class="form__screen">
+            {player
+              ? <iframe data-player-src={chatSrc('desktop')} title={`${copy.chat}, ${copy.desktop}`} loading="lazy"></iframe>
+              : <p class="form__pending">{copy.pending}</p>}
+          </div>
+        </figure>
+        <figure class="form form--phone">
+          <figcaption><span>{copy.phone}</span><em>{copy.formHint}</em></figcaption>
+          <div class="form__screen">
+            {player
+              ? <iframe data-player-src={chatSrc('phone')} title={`${copy.chat}, ${copy.phone}`} loading="lazy"></iframe>
+              : <p class="form__pending">{copy.pending}</p>}
+          </div>
+        </figure>
+        <figure class="form form--terminal">
+          <figcaption><span>{copy.terminal}</span><a href={link('docs/tui')}>{copy.tuiCta}</a></figcaption>
+          <!-- Cells of `nsh test --target tui` running demos/home-chat.tsx at 88 × 25, after its exchange played. -->
+          <pre class="term" aria-label={copy.terminalLabel}><span class="b">+ New chat</span>           <span class="d">│</span> <span class="b">What makes an NSH app native?</span>
+<span class="d">Today</span>                <span class="d">│</span> A signal holds the count; only the <span class="g">Text</span> that reads it updates   <span class="d">│</span>
+<span class="s">What makes an NSH…   </span><span class="d">│</span> when you press.                                                 ┃
+<span class="d">Plot a week of NSH</span>   <span class="d">│</span> <span class="d">import &#123; mount, signal, Text, View &#125; from "nsh";</span>                ┃
+<span class="d">Signed packages,…</span>    <span class="d">│</span>                                                                 ┃
+<span class="d">A sheet with two…</span>    <span class="d">│</span> <span class="d">const count = signal(0);</span>                                        ┃
+<span class="d">Taffy grid vs flex</span>   <span class="d">│</span> mount(() =&gt; (                                                   ┃
+                     <span class="d">│</span>   &lt;View onPress=&#123;() =&gt; count.set(count() + 1)&#125;&gt;                 ┃
+                     <span class="d">│</span>     &lt;Text&gt;&#123;count()&#125;&lt;/Text&gt;                                      ┃
+                     <span class="d">│</span>   &lt;/View&gt;                                                       ┃
+                     <span class="d">│</span> ));                                                             ┃
+                     <span class="d">│</span>                                   <span class="s">What makes an NSH app native?</span> ┃
+                     <span class="d">│</span> Every element is the platform's own view: <span class="b">UIKit</span> on iOS, <span class="b">Android</span> ┃
+                     <span class="d">│</span> <span class="b">views</span>, <span class="b">AppKit</span> on macOS and <span class="b">GTK 4</span> on Linux. Your TSX describes   ┃
+                     <span class="d">│</span> them; layout, text and the reactive graph run in <span class="b">Rust</span>.          ┃
+                     <span class="d">│</span>                                 <span class="s">And the glass around this chat?</span> ┃
+                     <span class="d">│</span> It's <span class="b">Liquid Glass</span>, one <span class="g">glassEffect</span> style. iOS 26 and macOS 26   ┃
+                     <span class="d">│</span> draw the system's material; elsewhere it blurs what scrolls     ┃
+                     <span class="d">│</span> beneath.                                                        ┃
+                     <span class="d">│</span> • The buttons and the composer float over the thread            ┃
+                     <span class="d">│</span> • Messages pass under them as you scroll                        ┃
+                     <span class="d">│</span> • The same code at every idiom                                  ┃
+                     <span class="d">│</span> <span class="d">╭───────────────────────────────────────────────────────────────╮</span>
+                     <span class="d">│</span> <span class="d">│</span> › <span class="d">Ask anything</span>                                                <span class="d">│</span>
+                     <span class="d">│</span> <span class="d">╰───────────────────────────────────────────────────────────────╯</span></pre>
+        </figure>
+      </div>
+      <p class="note">{copy.formCaption}</p>
+    </div>
+  </section>
+
+  <section class="band">
+    <div class="band__inner">
+      <div class="rust">
+        <header class="head">
+          <h2>{copy.langTitle}</h2>
+          <p>{copy.langLead}</p>
+          <p class="note"><a href={link('docs/rust')}>{copy.langCta}</a></p>
+        </header>
+        <figure class="code">
+          <figcaption><span>Rust</span><em>{langs[0].file}</em></figcaption>
+          <pre tabindex="0"><code set:html={langs[0].code} /></pre>
+        </figure>
+      </div>
+    </div>
+  </section>
+
+  <section class="band band--tinted">
+    <div class="band__inner fast">
+      <header class="head">
+        <h2>{copy.fastTitle}</h2>
+        <p>{copy.fastLead}</p>
+        <p class="note"><a href={link('docs/performance-report')}>{copy.fastCta}</a></p>
+      </header>
+      <div class="fast__panel" data-fast data-stat-press={copy.fastStat}>
+        <!-- examples/counter's 24 views as glass beads over the banners'
+             halftone field: a press relights only the beads its trace
+             touches, the field swelling around them; the rest stays still. -->
+        <div class="field" aria-hidden="true">
+          <div class="field__head"><span>examples/counter</span><span class="field__stat" data-stat>{copy.fastIdle}</span></div>
+          <canvas class="field__canvas" data-field></canvas>
+          <div class="field__key"><span><i class="is-lit"></i>{copy.fastTouched}</span><span><i></i>{copy.fastKept}</span></div>
+        </div>
+        <div class="fast__row">
+          <Button data-press>{copy.fastPress}</Button>
+          <p class="fast__legend">{copy.fastLegend}</p>
+        </div>
+        <pre class="fast__trace"><code><span class="c-c">$</span> nsh test examples/counter/App.tsx --trace
+perf commit: 56 ops, 50 mount items, 21 nodes
+<span class="c-c">press(+1)</span>
+perf commit: <b>10 ops, 7 mount items</b>, 24 nodes</code></pre>
+      </div>
+    </div>
+  </section>
+
+  <section class="band">
+    <div class="band__inner">
+      <header class="head head--wide">
+        <h2>{copy.shipTitle}</h2>
+        <p>{copy.shipLead}</p>
+      </header>
+      <ol class="flow">
+        {flow.map((f, i) => (
+          <li class:list={[{ 'flow__device': i === flow.length - 1 }]}>
+            {i === flow.length - 1 && <span class="flow__trust"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="3.25" y="7" width="9.5" height="6.5" rx="1.75" /><path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2" /></svg>{copy.trust}</span>}
+            <h3>{f.title}</h3>
+            <p>{f.body}</p>
+            <code>{f.code}</code>
+          </li>
+        ))}
+      </ol>
+      <h3 class="ways__head">{copy.waysHead}</h3>
+      <div class="ways">
+        {ways.map((w) => (
+          <article>
+            <h4>{w.label}</h4>
+            <p>{w.body}</p>
+            <pre tabindex="0"><code set:html={snippets[w.code]} /></pre>
+            <a href={link(w.href)}>{w.cta}</a>
+          </article>
+        ))}
+      </div>
+    </div>
+  </section>
+
+  <section class="band">
+    <div class="band__inner">
+      <header class="head head--wide">
+        <h2>{copy.foundTitle}</h2>
+        <p>{copy.foundLead}</p>
+      </header>
+      <div class="found">
+        {found.map((f) => (
+          <article>
+            <h3><a href={link(f.href)}>{f.title}</a></h3>
+            <p>{f.body}</p>
+            <code>{f.chips}</code>
+          </article>
+        ))}
+      </div>
+      <p class="note">{copy.kitNote[0]}<a href={zh ? 'https://gpui-kit.com/zh-CN' : 'https://gpui-kit.com'}>{copy.kitNote[1]}</a>{copy.kitNote[2]}</p>
+    </div>
+  </section>
+
+  <section class="band band--dots closing">
+    <div class="band__inner closing__inner">
+      <div class="closing__title">
+        <Logo class="closing__logo" />
+        <h2>{copy.closeTitle[0]}<br />{copy.closeTitle[1]}</h2>
+      </div>
+      <div class="closing__body">
+        <p>{copy.closeBody}</p>
+        <div class="hero__actions">
+          <Button size="lg" href={link('docs/getting-started')}>{copy.closeCta}</Button>
+          <Button size="lg" variant="secondary" href={REPO_URL}>
+            <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .5a11.5 11.5 0 0 0-3.64 22.41c.58.1.79-.25.79-.56v-2c-3.2.7-3.88-1.37-3.88-1.37-.53-1.33-1.28-1.69-1.28-1.69-1.05-.72.08-.7.08-.7 1.16.08 1.77 1.19 1.77 1.19 1.03 1.77 2.7 1.26 3.36.96.1-.75.4-1.26.73-1.55-2.56-.29-5.25-1.28-5.25-5.69 0-1.26.45-2.29 1.19-3.09-.12-.29-.52-1.46.11-3.05 0 0 .97-.31 3.17 1.18a11 11 0 0 1 5.78 0c2.2-1.49 3.17-1.18 3.17-1.18.63 1.59.23 2.76.11 3.05.74.8 1.19 1.83 1.19 3.09 0 4.42-2.7 5.39-5.26 5.68.41.36.78 1.06.78 2.14v3.17c0 .31.21.67.8.56A11.5 11.5 0 0 0 12 .5Z"/></svg>
+            GitHub
+          </Button>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<script>
+  import { playSound } from '../lib/sound';
+
+  // The platform names and the arches name the same thing: naming one lights
+  // its arch (HeroArches.astro), and an arch under the pointer lights its name.
+  for (const hero of document.querySelectorAll<HTMLElement>('[data-hero]')) {
+    const buttons = [...hero.querySelectorAll<HTMLButtonElement>('[data-arch]')];
+    const readout = hero.querySelector<HTMLElement>('[data-readout]')!;
+    const show = (index: number) => {
+      buttons.forEach((b, i) => b.classList.toggle('is-on', i === index));
+      readout.textContent = index >= 0 ? buttons[index].dataset.stack! : readout.dataset.idle!;
+    };
+    const select = (index: number) => {
+      hero.dispatchEvent(new CustomEvent('arch-select', { detail: { index } }));
+      show(index);
+    };
+    buttons.forEach((b, i) => {
+      b.addEventListener('pointerenter', () => select(i));
+      b.addEventListener('pointerleave', () => select(-1));
+      b.addEventListener('focus', () => select(i));
+      b.addEventListener('blur', () => select(-1));
+      b.addEventListener('click', () => select(i));
+    });
+    hero.addEventListener('arch-hover', ((e: CustomEvent<{ index: number }>) => show(e.detail.index)) as EventListener);
+  }
+
+  // The title, the slogan and the platforms are one width: the title's. The
+  // slogan's type is scaled to it once the fonts are in, and again on resize;
+  // the platforms spread across it (CSS).
+  for (const title of document.querySelectorAll<HTMLElement>('[data-fit]')) {
+    const h1 = title.querySelector('h1')!;
+    const slogan = title.querySelector<HTMLElement>('.hero__slogan')!;
+    const text = slogan.querySelector('span')!;
+    const fit = () => {
+      // Measured free: a width left from a narrower window would hold the
+      // platforms to it as their type grows with the window, and wrap them.
+      slogan.style.fontSize = '';
+      title.style.width = '';
+      const width = h1.getBoundingClientRect().width;
+      const natural = text.getBoundingClientRect().width;
+      if (!width || !natural) return;
+      const size = parseFloat(getComputedStyle(slogan).fontSize);
+      slogan.style.fontSize = `${size * Math.min(1.6, Math.max(0.6, width / natural))}px`;
+      title.style.width = `${width}px`;
+    };
+    document.fonts.ready.then(fit);
+    // The hero, not the title: the title's own width is the one fit sets.
+    new ResizeObserver(fit).observe(title.parentElement!);
+  }
+
+  // The live frames load when they come near the screen, in the page's theme,
+  // and follow it after that.
+  const theme = () => (document.documentElement.classList.contains('light') ? 'light' : 'dark');
+  const frames = [...document.querySelectorAll<HTMLIFrameElement>('[data-forms] iframe')];
+  const load = new IntersectionObserver((entries) => {
+    for (const entry of entries) {
+      if (!entry.isIntersecting) continue;
+      const frame = entry.target as HTMLIFrameElement;
+      frame.src = frame.dataset.playerSrc!.replace(/theme=(dark|light)/, `theme=${theme()}`);
+      load.unobserve(frame);
+    }
+  }, { rootMargin: '600px' });
+  frames.forEach((frame) => load.observe(frame));
+  new MutationObserver(() => frames.forEach((frame) => frame.contentWindow?.postMessage({ theme: theme() }, '*'))).observe(document.documentElement, {
+    attributes: true,
+    attributeFilter: ['class'],
+  });
+
+  // The counter's press, as its trace shows it: the two texts that read the
+  // signals change and the history gains a row; nothing else is touched.
+  // Drawn as the banners are: a halftone field, its dots swelling where
+  // something happens, under glass beads, one per view. Frames run only
+  // while something moves; at rest the canvas is still, as the app is.
+  for (const panel of document.querySelectorAll<HTMLElement>('[data-fast]')) {
+    const canvas = panel.querySelector<HTMLCanvasElement>('[data-field]')!;
+    const stat = panel.querySelector<HTMLElement>('[data-stat]')!;
+    const cx = canvas.getContext('2d');
+    if (!cx) continue;
+    const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const COLS = 8, ROWS = 3, CELL = 13;
+    // Views 0–18 are the counter's own; 19–23 the history, newest first.
+    const COUNT = 4, LENGTH = 11, HISTORY = 19;
+    type Bead = { slot: number; from: number; born: number; lit: number; gone?: number };
+    let beads: Bead[] = Array.from({ length: 24 }, (_, i) => ({ slot: i, from: i, born: -1e9, lit: -1e9 }));
+    let moved = -1e9;
+    let w = 0, h = 0, dpr = 1;
+    let pointer: { x: number; y: number; at: number } | null = null;
+    let frame = 0;
+
+    const hash = (x: number, y: number) => {
+      const v = Math.sin(x * 127.1 + y * 311.7) * 43758.5453;
+      return v - Math.floor(v);
+    };
+    const noise = (x: number, y: number) => {
+      const ix = Math.floor(x), iy = Math.floor(y), fx = x - ix, fy = y - iy;
+      const sx = fx * fx * (3 - 2 * fx), sy = fy * fy * (3 - 2 * fy);
+      const a = hash(ix, iy), b = hash(ix + 1, iy), c = hash(ix, iy + 1), d = hash(ix + 1, iy + 1);
+      return a + (b - a) * sx + (c - a) * sy + (a - b - c + d) * sx * sy;
+    };
+    const ease = (t: number) => 1 - Math.pow(1 - Math.min(Math.max(t, 0), 1), 3);
+    // A spring's overshoot, for a bead that appears.
+    const pop = (t: number) => (t >= 1 ? 1 : t <= 0 ? 0 : 1 - Math.exp(-6 * t) * Math.cos(9 * t));
+    const place = (slot: number) => {
+      const gx = w / (COLS + 1), gy = (h - 24) / (ROWS + 1);
+      return { x: gx * ((slot % COLS) + 1), y: 12 + gy * (Math.floor(slot / COLS) + 1) };
+    };
+    const at = (b: Bead, now: number) => {
+      const a = place(b.from), z = place(b.slot), t = ease((now - moved) / 520);
+      return { x: a.x + (z.x - a.x) * t, y: a.y + (z.y - a.y) * t };
+    };
+
+    const sphere = (x: number, y: number, r: number, lit: number, dark: boolean) => {
+      if (r <= 0.2) return;
+      // The glow under a lit bead, as the banner's tube lights the glass.
+      if (lit > 0.01) {
+        const glow = cx.createRadialGradient(x, y, r * 0.4, x, y, r * 3.4);
+        glow.addColorStop(0, `rgba(196, 238, 82, ${0.32 * lit})`);
+        glow.addColorStop(1, 'rgba(196, 238, 82, 0)');
+        cx.fillStyle = glow;
+        cx.beginPath(); cx.arc(x, y, r * 3.4, 0, Math.PI * 2); cx.fill();
+      }
+      const mix = (a: number[], b: number[]) => a.map((v, i) => Math.round(v + (b[i] - v) * lit)).join(',');
+      const top = dark ? [92, 98, 108] : [250, 250, 251];
+      const bottom = dark ? [24, 27, 32] : [178, 182, 189];
+      const g = cx.createRadialGradient(x - r * 0.35, y - r * 0.4, r * 0.1, x, y, r);
+      g.addColorStop(0, `rgb(${mix(top, [232, 252, 150])})`);
+      g.addColorStop(0.55, `rgb(${mix(dark ? [52, 57, 65] : [216, 219, 224], [178, 228, 60])})`);
+      g.addColorStop(1, `rgb(${mix(bottom, [86, 128, 14])})`);
+      cx.fillStyle = g;
+      cx.beginPath(); cx.arc(x, y, r, 0, Math.PI * 2); cx.fill();
+      // Rim light and the specular spot of glass.
+      cx.strokeStyle = dark ? `rgba(255,255,255,${0.1 + 0.25 * lit})` : `rgba(255,255,255,${0.7})`;
+      cx.lineWidth = 0.75;
+      cx.beginPath(); cx.arc(x, y, r - 0.4, 0, Math.PI * 2); cx.stroke();
+      const s = cx.createRadialGradient(x - r * 0.38, y - r * 0.45, 0, x - r * 0.38, y - r * 0.45, r * 0.5);
+      s.addColorStop(0, 'rgba(255,255,255,0.85)');
+      s.addColorStop(1, 'rgba(255,255,255,0)');
+      cx.fillStyle = s;
+      cx.beginPath(); cx.arc(x - r * 0.38, y - r * 0.45, r * 0.5, 0, Math.PI * 2); cx.fill();
+    };
+
+    const draw = (now: number) => {
+      frame = 0;
+      const dark = !document.documentElement.classList.contains('light');
+      cx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      cx.clearRect(0, 0, w, h);
+      // Where something happened, and how long ago: the lit beads.
+      const sources = beads.filter((b) => now - b.lit < 1800).map((b) => ({ ...at(b, now), t: (now - b.lit) / 1800 }));
+      let busy = sources.length > 0 || now - moved < 600;
+      // The halftone field: patchy, as the banners', fading to the edges.
+      for (let y = CELL / 2; y < h; y += CELL) {
+        for (let x = CELL / 2; x < w; x += CELL) {
+          const i = x / CELL, j = y / CELL;
+          // Clouds of larger dots with open ground between, as the banners'.
+          const patch = Math.min(Math.max((noise(i * 0.11 + 3, j * 0.11) - 0.42) / 0.32, 0), 1) ** 1.4;
+          let r = CELL * (0.035 + 0.26 * patch * (0.35 + 0.65 * hash(i, j)));
+          let warm = 0;
+          for (const src of sources) {
+            // A ring running out from the bead, the dots swelling as it passes.
+            const d = Math.hypot(x - src.x, y - src.y);
+            const front = ease(src.t) * 190;
+            const ring = Math.exp(-((d - front) ** 2) / 900) * (1 - src.t);
+            const core = Math.exp(-(d * d) / 2600) * (1 - src.t) ** 2;
+            r += CELL * 0.15 * (ring + core);
+            warm = Math.max(warm, ring + core);
+          }
+          if (pointer) {
+            const d2 = (x - pointer.x) ** 2 + (y - pointer.y) ** 2;
+            r += CELL * 0.12 * Math.exp(-d2 / 5200);
+          }
+          const edge = Math.min(x, w - x, y, h - y);
+          const fade = Math.min(edge / 40, 1);
+          const o = (dark ? 0.34 : 0.46) * (0.3 + 0.7 * patch) * fade;
+          warm = Math.min(warm, 1);
+          cx.fillStyle = warm > 0.02
+            ? `rgba(${dark ? 196 : 122}, ${dark ? 238 : 178}, ${dark ? 82 : 22}, ${o + 0.38 * warm})`
+            : dark ? `rgba(190, 199, 209, ${o})` : `rgba(86, 118, 66, ${o})`;
+          cx.beginPath(); cx.arc(x, y, Math.min(r, CELL * 0.46), 0, Math.PI * 2); cx.fill();
+        }
+      }
+      const R = Math.min(10, w / (COLS + 1) / 4.2);
+      for (const b of beads) {
+        const p = at(b, now);
+        const grow = b.gone !== undefined ? 1 - ease((now - b.gone) / 420) : pop((now - b.born) / 700);
+        const lit = now - b.lit < 1800 ? 1 - ease((now - b.lit) / 1800) : 0;
+        sphere(p.x, p.y, R * grow, lit, dark);
+        if (now - b.born < 800 || (b.gone !== undefined && now - b.gone < 450)) busy = true;
+      }
+      beads = beads.filter((b) => b.gone === undefined || now - b.gone < 450);
+      if (busy || (pointer && now - pointer.at < 400)) frame = requestAnimationFrame(draw);
+    };
+    const kick = () => { if (!frame) frame = requestAnimationFrame(draw); };
+
+    new ResizeObserver(() => {
+      dpr = Math.min(devicePixelRatio || 1, 2);
+      w = canvas.clientWidth; h = canvas.clientHeight;
+      canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr);
+      draw(performance.now());
+    }).observe(canvas);
+    new MutationObserver(() => draw(performance.now())).observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
+    if (!reduce) {
+      canvas.addEventListener('pointermove', (e) => {
+        const r = canvas.getBoundingClientRect();
+        pointer = { x: e.clientX - r.left, y: e.clientY - r.top, at: performance.now() };
+        kick();
+      });
+      canvas.addEventListener('pointerleave', () => { pointer = null; kick(); });
+    }
+
+    panel.querySelector('[data-press]')?.addEventListener('click', () => {
+      playSound('tap');
+      const now = reduce ? performance.now() - 1e4 : performance.now();
+      moved = now;
+      const next: Bead[] = [];
+      for (const b of beads) {
+        if (b.gone !== undefined) continue;
+        b.from = b.slot;
+        if (b.slot >= HISTORY) {
+          // The history keeps five: the oldest goes as the newest comes.
+          if (b.slot === 23) { b.gone = now; next.push(b); continue; }
+          b.slot += 1;
+        }
+        if (b.slot === COUNT || b.slot === LENGTH) b.lit = now;
+        next.push(b);
+      }
+      next.push({ slot: HISTORY, from: HISTORY, born: now, lit: now });
+      beads = next;
+      stat.textContent = panel.dataset.statPress!;
+      stat.classList.remove('is-on');
+      void stat.offsetWidth;
+      stat.classList.add('is-on');
+      kick();
+    });
+  }
+</script>
+
+<style>
+  .home {
+    --section-gap: 7rem;
+    --halftone: radial-gradient(circle, color-mix(in srgb, var(--foreground) 16%, transparent) 1.1px, transparent 1.6px);
+    /* The room the arches take at the hero's foot on narrow screens (HeroArches.astro). */
+    --arch-room: calc(min(46vw, 290px) * 1.26);
+  }
+  section { position: relative; }
+  /* Light: the site is white; the hero keeps the banners' pale green, the
+     tinted bands and the closing answer it, and panels on a green band are
+     white with a green hairline. */
+  :global(html.light) .home { --halftone: radial-gradient(circle, rgb(52 60 78 / 20%) 1.1px, transparent 1.6px); }
+  :global(html.light) :is(.hero, .closing) { background: linear-gradient(180deg, #f6f7f9, #fbfbfc); }
+  :global(html.light) .band--tinted { background: #f7f8fa; --code-bg: #ffffff; --border: #e2e4e9; --line: #e9ebef; }
+  .band { border-top: 1px solid var(--line); }
+  .band__inner { position: relative; width: min(1280px, calc(100% - 3rem)); margin: 0 auto; padding: var(--section-gap) 0; }
+  .band--tinted { background: var(--band-tinted); }
+  .band--dots::before { content: ""; position: absolute; inset: 0; background-image: var(--halftone); background-size: 15px 15px; mask-image: radial-gradient(52% 70% at 88% 12%, black, transparent); pointer-events: none; }
+
+  h1, h2, h3, h4 { font-family: var(--font-display); text-wrap: balance; }
+  html[lang^="zh"] h2 { letter-spacing: 0; line-height: 1.2; word-break: keep-all; overflow-wrap: anywhere; }
+  .head { max-width: 40rem; margin-bottom: 3.25rem; }
+  .head--wide { max-width: 48rem; }
+  .head h2, .closing h2 { margin: 0; font-size: clamp(2rem, 4vw, 3.25rem); font-weight: 600; line-height: 1.06; letter-spacing: -0.03em; }
+  .head p { margin: 1.1rem 0 0; color: var(--muted-foreground); font-size: 1.05rem; line-height: 1.6; }
+  .head .note { margin-top: 1.25rem; }
+  .note { margin: 1.5rem 0 0; max-width: 48rem; color: var(--muted-foreground); font-size: 0.92rem; line-height: 1.6; }
+  .note a, .ways a, .found a, figcaption a { color: var(--doc-link); text-decoration: none; }
+  .note a:hover, .ways a:hover, figcaption a:hover { text-decoration: underline; text-underline-offset: 3px; }
+
+  /* Hero: the banner's composition. Name, slogan, platforms; the arches at
+     the right, standing on the hero's foot. */
+  .hero { overflow: hidden; display: flex; align-items: center; min-height: clamp(640px, calc(100svh - var(--nav-height)), 880px); }
+  .hero__inner { z-index: 1; padding: 4rem 0; }
+  .hero h1 { margin: 0; font-size: clamp(3.4rem, 8.1vw, 7.25rem); font-weight: 500; line-height: 0.98; letter-spacing: -0.035em; }
+  .hero__title { width: max-content; max-width: 100%; }
+  .hero__slogan { white-space: nowrap; margin: 1rem 0 0; color: var(--citrus); font-family: var(--font-display); font-size: clamp(1.5rem, 3.4vw, 3rem); font-weight: 400; line-height: 1.12; letter-spacing: -0.02em; }
+  html[lang^="zh"] .hero__slogan { letter-spacing: 0; }
+  .hero__platforms { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; margin: 1.5rem -0.45rem 0; padding: 0; list-style: none; }
+  /* Spread across the title's width, each slash centred in its gap. */
+  .hero__platforms li + li { display: flex; flex: 1 1 auto; align-items: center; }
+  .hero__platforms li + li::before { content: "/"; margin: 0 auto; padding: 0 0.15rem; color: var(--faint); font-weight: 300; }
+  .hero__platforms button { padding: 0.2rem 0.45rem; border: 0; border-radius: 6px; background: none; color: var(--foreground); font-family: var(--font-display); font-size: clamp(1rem, 1.5vw, 1.25rem); font-weight: 300; cursor: default; transition: color 0.15s; }
+  .hero__platforms button.is-on { color: var(--citrus); }
+  .hero__platforms button:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
+  .hero__readout { min-height: 3em; max-width: 32rem; margin: 0.6rem 0 0; color: var(--muted-foreground); font-size: 0.92rem; line-height: 1.5; }
+  .hero__lead { max-width: 33rem; margin: 0.75rem 0 0; font-size: 1.08rem; line-height: 1.6; }
+  .hero__actions { display: flex; flex-wrap: wrap; gap: 0.75rem; margin-top: 1.75rem; }
+  .hero__stats { display: flex; flex-wrap: wrap; gap: 0.75rem 2.25rem; margin: 2rem 0 0; }
+  .hero__stats div { display: flex; flex-direction: column-reverse; gap: 0.1rem; }
+  .hero__stats dd { margin: 0; font-family: var(--font-display); font-size: 1.75rem; font-weight: 500; line-height: 1.1; letter-spacing: -0.02em; }
+  .hero__stats dt { color: var(--muted-foreground); font-size: 0.82rem; }
+
+  /* The numbers: large, on hairlines, then TSX against Rust. */
+  .stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 2.5rem 2rem; margin: 0; }
+  .stats div { padding-top: 1.1rem; border-top: 1px solid var(--border); }
+  .stats dd { margin: 0; font-family: var(--font-display); font-size: clamp(2.4rem, 4.6vw, 3.75rem); font-weight: 500; line-height: 1; letter-spacing: -0.035em; white-space: nowrap; }
+  .stats dt { max-width: 22rem; margin-top: 0.6rem; color: var(--muted-foreground); font-size: 0.92rem; line-height: 1.5; }
+  .compare { margin-top: 4rem; overflow-x: auto; }
+  .compare table { width: 100%; min-width: 560px; border-collapse: collapse; font-size: 0.95rem; }
+  .compare caption { padding-bottom: 1rem; font-family: var(--font-display); font-size: 1.4rem; font-weight: 500; letter-spacing: -0.015em; text-align: left; }
+  .compare th, .compare td { padding: 0.7rem 1rem 0.7rem 0; text-align: left; font-weight: 400; font-variant-numeric: tabular-nums; }
+  .compare thead th { border-bottom: 1px solid var(--border); color: var(--muted-foreground); font-size: 0.82rem; font-weight: 500; }
+  .compare tbody tr { border-bottom: 1px solid var(--line); }
+  .compare tbody th { color: var(--muted-foreground); }
+  .compare td { color: var(--muted-foreground); }
+  .compare .is-tsx { color: var(--citrus); font-weight: 600; }
+
+  /* TSX and nothing else: the files beside the code. */
+  .zero { display: grid; grid-template-columns: minmax(0, 0.9fr) minmax(0, 1fr); gap: 4rem; align-items: start; }
+  .zero .head { margin-bottom: 2rem; }
+  .zero .code pre { height: auto; }
+  .zero__tree { margin: 0; color: var(--foreground); font: 0.86rem/1.7 var(--font-mono); overflow-x: auto; }
+  .zero__points { display: grid; gap: 0.5rem; margin: 1.75rem 0 0; padding: 0; list-style: none; color: var(--muted-foreground); font-size: 0.92rem; line-height: 1.5; }
+  .rust { display: grid; grid-template-columns: minmax(0, 0.9fr) minmax(0, 1fr); gap: 4rem; align-items: start; }
+  .rust .head { margin-bottom: 0; }
+  .rust .code pre { height: auto; }
+
+  /* The backends: one table, hairlines, the platform's name large. */
+  .stack { overflow-x: auto; }
+  .stack table { width: 100%; min-width: 760px; border-collapse: collapse; font-size: 0.95rem; }
+  .stack thead th { padding: 0 1rem 0.75rem 0; border-bottom: 1px solid var(--border); color: var(--muted-foreground); font-size: 0.82rem; font-weight: 500; text-align: left; }
+  .stack tbody th { padding: 0.8rem 1rem 0.8rem 0; font-family: var(--font-display); font-size: clamp(1.25rem, 2vw, 1.6rem); font-weight: 500; letter-spacing: -0.015em; text-align: left; white-space: nowrap; }
+  .stack td { padding: 0.8rem 1rem 0.8rem 0; color: var(--muted-foreground); }
+  .stack td:nth-child(2) { color: var(--foreground); }
+  .stack td code { color: var(--citrus); font: 0.86rem/1.4 var(--font-mono); }
+  .stack tbody tr { border-bottom: 1px solid var(--line); }
+
+  /* One chat app in three forms: a desktop frame and a terminal stacked beside a
+     tall phone, the phone at its real width. */
+  .forms { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) 372px; grid-template-rows: 360px auto; gap: 1rem; }
+  .form { display: flex; flex-direction: column; min-width: 0; margin: 0; }
+  .form--phone { grid-column: 2; grid-row: 1 / span 2; }
+  .form figcaption, .code figcaption { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; padding: 0 0 0.6rem; font-size: 0.85rem; font-weight: 500; }
+  figcaption em { color: var(--faint); font-size: 0.8rem; font-style: normal; font-weight: 400; }
+  .form__screen { flex: 1; min-height: 0; border: 1px solid var(--border); border-radius: var(--radius-surface); background: var(--inset); overflow: hidden; }
+  .form__screen iframe { display: block; width: 100%; height: 100%; border: 0; }
+  .form__pending { display: grid; place-items: center; height: 100%; margin: 0; padding: 2rem; color: var(--muted-foreground); font-size: 0.85rem; text-align: center; }
+  /* 88 columns across the panel, whatever its width: the grid fills it, its
+     scroll bar on the right edge as in a terminal window. */
+  .form--terminal { container-type: inline-size; }
+  .term { margin: 0; padding: 1.1rem 1.25rem; border: 1px solid var(--border); border-radius: var(--radius-surface); background: #0a0b0e; color: #d9dde3; font: clamp(0.56rem, calc((100cqi - 2.5rem - 2px) / 88 / 0.6), 1.1rem)/1.3 var(--font-mono); overflow-x: auto; }
+  .term .d { color: #6a7078; }
+  .term .b { font-weight: 600; }
+  .term .s { background: #2a2d33; }
+  .term .g { color: var(--citrus); }
+  .term .u { text-decoration: underline; text-decoration-color: #6a7078; }
+  /* Light: the terminal follows the page, as the live frames beside it do. */
+  :global(html.light) .term { background: #f7f8fa; color: #24262a; }
+  :global(html.light) .term .d { color: #868b94; }
+  :global(html.light) .term .u { text-decoration-color: #b4b8bf; }
+  :global(html.light) .term .s { background: #e6e8ec; }
+
+  .code { min-width: 0; margin: 0; }
+  .code pre, .ways pre { margin: 0; border: 1px solid var(--border); border-radius: var(--radius-surface); background: var(--code-bg); color: var(--code-fg); overflow-x: auto; white-space: pre; }
+  .code pre { height: calc(100% - 1.9rem); padding: 1.25rem 1.35rem; font: 0.78rem/1.7 var(--font-mono); }
+  :global(.c-k) { color: var(--code-keyword); }
+  :global(.c-s) { color: var(--code-string); }
+  :global(.c-f) { color: var(--code-fn); }
+  :global(.c-t) { color: var(--code-type); }
+  :global(.c-c) { color: var(--code-comment); }
+
+  /* Retained views: the counter's nodes as a halftone. */
+  .fast { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 4rem; align-items: center; }
+  .fast .head { margin-bottom: 0; }
+  .fast__panel { min-width: 0; }
+  /* The same surface as the code beside it. */
+  .field { border: 1px solid var(--border); border-radius: var(--radius-surface); background: var(--code-bg); overflow: hidden; }
+  .field__head { display: flex; justify-content: space-between; gap: 1rem; padding: 0.7rem 1rem; border-bottom: 1px solid var(--line); color: var(--muted-foreground); font-size: 0.78rem; }
+  .field__stat { color: var(--faint); font-variant-numeric: tabular-nums; }
+  .field__stat.is-on { color: var(--citrus); animation: stat 0.5s cubic-bezier(0.16, 1, 0.3, 1); }
+  @keyframes stat { from { opacity: 0; transform: translateY(4px); } }
+  .field__canvas { display: block; width: 100%; height: clamp(190px, 22vw, 250px); }
+  .field__key { display: flex; gap: 1.25rem; padding: 0 1rem 0.8rem; color: var(--faint); font-size: 0.75rem; }
+  .field__key span { display: inline-flex; align-items: center; gap: 0.45rem; }
+  .field__key i { width: 0.6rem; height: 0.6rem; border-radius: 50%; background: radial-gradient(circle at 35% 30%, #5c626c, #181b20); box-shadow: inset 0 0 0 0.5px rgba(255, 255, 255, 0.15); }
+  .field__key i.is-lit { background: radial-gradient(circle at 35% 30%, #e8fc96, #b2e43c 55%, #56800e); box-shadow: 0 0 6px rgba(196, 238, 82, 0.5); }
+  :global(html.light) .field__key i:not(.is-lit) { background: radial-gradient(circle at 35% 30%, #f6f6f7, #b5b9c0); }
+  .fast__row { display: flex; align-items: center; gap: 1rem; margin-top: 1.25rem; }
+  .fast__legend { margin: 0; color: var(--muted-foreground); font-size: 0.88rem; }
+  .fast__trace { margin: 1.25rem 0 0; color: var(--muted-foreground); font: 0.76rem/1.7 var(--font-mono); overflow-x: auto; }
+  .fast__trace b { color: var(--foreground); font-weight: 500; }
+
+  /* A real sequence, with the trust boundary before the device. */
+  /* Four steps along one track: a numbered marker each, joined to the
+     next; the track turns citrus where it reaches the device. */
+  .flow { display: grid; grid-template-columns: repeat(3, minmax(0, 0.8fr)) minmax(0, 1.5fr); margin: 0; padding: 0; list-style: none; counter-reset: step; }
+  .flow li { position: relative; display: flex; flex-direction: column; padding: 3.1rem 1.75rem 0 0; counter-increment: step; }
+  /* Each step a glass bead, as the banners' and the views above are: lit
+     from the upper left, a rim of light, a soft shadow; the device's one is
+     the citrus tube's glass. */
+  .flow li::before { content: counter(step); position: absolute; top: 0; left: 0; z-index: 1; display: grid; place-items: center; width: 1.9rem; height: 1.9rem; border-radius: 50%; background: radial-gradient(circle at 34% 28%, rgba(255, 255, 255, 0.55), rgba(255, 255, 255, 0) 38%), radial-gradient(circle at 50% 40%, #4e545d, #1c1f24 72%, #121418); box-shadow: inset 0 0 0 0.5px rgba(255, 255, 255, 0.16), inset 0 -2px 4px rgba(0, 0, 0, 0.35), 0 3px 8px rgba(0, 0, 0, 0.35); color: #e9edf1; font: 600 0.78rem/1 var(--font-display); text-shadow: 0 1px 1px rgba(0, 0, 0, 0.45); }
+  :global(html.light) .flow li::before { background: radial-gradient(circle at 34% 28%, rgba(255, 255, 255, 0.95), rgba(255, 255, 255, 0) 42%), radial-gradient(circle at 50% 40%, #fafafb, #d8dbe0 70%, #b9bdc4); box-shadow: inset 0 0 0 0.5px rgba(255, 255, 255, 0.9), inset 0 -2px 4px rgba(40, 44, 52, 0.16), 0 3px 8px rgba(30, 34, 42, 0.14); color: #3d4149; text-shadow: 0 1px 0 rgba(255, 255, 255, 0.7); }
+  .flow li:not(.flow__device)::after { content: ""; position: absolute; top: 0.95rem; left: 2.5rem; right: 0.6rem; height: 1px; background: var(--border); }
+  .flow li:nth-last-child(2)::after { right: -0.6rem; }
+  .flow h3 { margin: 0; font-size: 1.4rem; font-weight: 500; letter-spacing: -0.015em; }
+  .flow p { flex: 1; margin: 0.6rem 0 1.1rem; color: var(--muted-foreground); font-size: 0.92rem; line-height: 1.6; }
+  .flow code { color: var(--citrus); font: 0.8rem/1.6 var(--font-mono); white-space: pre; }
+  /* The device: a panel past the trust boundary, its marker lit and the
+     boundary named beside it. */
+  .flow__device { margin-left: 0.6rem; padding: 3.1rem 1.75rem 1.5rem !important; border: 1px solid var(--border); border-radius: var(--radius-card); background: var(--band-tinted); }
+  .flow li.flow__device::before, :global(html.light) .flow li.flow__device::before { top: 0; left: 1.25rem; translate: 0 -50%; width: 2.2rem; height: 2.2rem; background: radial-gradient(circle at 34% 26%, rgba(255, 255, 255, 0.85), rgba(255, 255, 255, 0) 40%), radial-gradient(circle at 50% 42%, #d9f77a, #a6d832 58%, #5f8c10); box-shadow: inset 0 0 0 0.5px rgba(255, 255, 255, 0.5), inset 0 -3px 5px rgba(46, 76, 0, 0.45), 0 0 14px rgba(196, 238, 82, 0.35), 0 4px 10px rgba(0, 0, 0, 0.3); color: #1d2a00; text-shadow: 0 1px 0 rgba(255, 255, 255, 0.45); }
+  .flow__trust { position: absolute; top: 0; left: 3.95rem; translate: 0 -50%; display: inline-flex; align-items: center; gap: 0.35rem; padding: 0.2rem 0.65rem 0.2rem 0.5rem; border: 1px solid var(--border); border-radius: 999px; background: var(--band-tinted); color: var(--citrus); font-size: 0.75rem; font-weight: 500; line-height: 1.2; }
+  .flow__trust svg { width: 0.8rem; height: 0.8rem; }
+  :global(html.light) .flow__device { border-color: #e2e4e9; background: #ffffff; box-shadow: 0 1px 2px rgb(16 20 30 / 5%), 0 12px 32px -18px rgb(16 20 30 / 16%); }
+  :global(html.light) .flow__trust { border-color: #e2e4e9; background: #ffffff; }
+
+  .ways__head { margin: 5rem 0 1.5rem; font-size: 1.5rem; font-weight: 500; letter-spacing: -0.015em; }
+  /* Each column's heading, text, code and link share a row with the
+     others', so the code blocks line up and match in height. */
+  .ways { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); column-gap: 2rem; }
+  .ways article { display: grid; grid-row: span 4; grid-template-rows: subgrid; row-gap: 0; min-width: 0; padding-top: 1.25rem; border-top: 1px solid var(--border); }
+  .ways h4 { margin: 0; font-size: 1.1rem; font-weight: 600; }
+  .ways p { margin: 0.5rem 0 1rem; color: var(--muted-foreground); font-size: 0.92rem; line-height: 1.6; }
+  .ways pre { padding: 0.9rem 1rem; font: 0.72rem/1.65 var(--font-mono); }
+  .ways a { margin-top: 0.9rem; font-size: 0.9rem; font-weight: 500; }
+
+  .found { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 2rem; }
+  .found article { padding-top: 1.25rem; border-top: 1px solid var(--border); }
+  .found h3 { margin: 0; font-size: 1.15rem; font-weight: 600; }
+  .found h3 a { color: inherit; }
+  .found p { margin: 0.5rem 0 0.9rem; color: var(--muted-foreground); font-size: 0.92rem; line-height: 1.6; }
+  .found code { color: var(--citrus); font: 0.78rem/1.5 var(--font-mono); }
+
+  .closing { overflow: hidden; }
+  /* The mark beside the title, as tall as its two lines. */
+  .closing__inner { --logo: clamp(56px, 7vw, 96px); --logo-gap: clamp(1rem, 2.5vw, 1.75rem); }
+  .closing__title { display: flex; align-items: center; gap: var(--logo-gap); }
+  .closing__inner :global(.closing__logo) { display: block; flex: none; width: var(--logo); height: var(--logo); }
+  /* The text and the buttons start where the title does, past the logo. */
+  .closing__body { padding-left: calc(var(--logo) + var(--logo-gap)); }
+  .closing p { max-width: 34rem; margin: 1.1rem 0 0; color: var(--muted-foreground); font-size: 1.05rem; line-height: 1.6; }
+
+  /* One orchestrated entrance, with the arches' light passing outward. */
+  @media (prefers-reduced-motion: no-preference) {
+    .rise { animation: rise 0.7s cubic-bezier(0.16, 1, 0.3, 1) both; }
+  }
+  @keyframes rise { from { opacity: 0; transform: translateY(10px); } }
+  @media (prefers-reduced-motion: reduce) {
+    .field__stat { animation-duration: 0.01s !important; }
+  }
+
+  @media (max-width: 999px) {
+    .home { --section-gap: 5rem; }
+    .hero { align-items: flex-start; min-height: 0; }
+    .hero__inner { padding: 3rem 0 calc(var(--arch-room) + 2rem); }
+    .hero__readout { min-height: 0; }
+    .forms { grid-template-columns: minmax(0, 1fr); grid-template-rows: none; }
+    .form--phone { grid-column: auto; grid-row: auto; }
+    .form--desktop .form__screen { flex: none; height: 340px; }
+    .form--phone .form__screen { flex: none; width: min(100%, 372px); height: 640px; }
+    .zero, .rust, .fast { grid-template-columns: minmax(0, 1fr); gap: 2.5rem; }
+    .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .flow { grid-template-columns: repeat(3, minmax(0, 1fr)); row-gap: 1.5rem; }
+    .flow li:nth-last-child(2)::after { right: 0.6rem; background: var(--border); }
+    .flow__device { grid-column: 1 / -1; margin: 1.5rem 0 0; }
+    .ways, .found { grid-template-columns: minmax(0, 1fr); gap: 2.25rem; }
+    .ways article { grid-row: auto; grid-template-rows: none; }
+  }
+  @media (max-width: 640px) {
+    /* Two even rows: a separator would open the second line. */
+    .hero__platforms { display: grid; grid-template-columns: repeat(4, auto); justify-content: start; column-gap: 0.5rem; }
+    .hero__platforms li + li::before { content: none; }
+    .band__inner { width: calc(100% - 2rem); }
+    .flow, .stats { grid-template-columns: minmax(0, 1fr); }
+  }
+</style>

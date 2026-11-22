@@ -1,0 +1,61 @@
+---
+// A demo app from website/demos/<name>.tsx.
+//
+// - `variant="panel"` (default): the same block documentation pages get from
+//   `demo:` frontmatter — the phone and the source behind a Preview / Source
+//   switch, or the source alone while there is no player in public/play/.
+// - `variant="phone"`: just the device, as on the home page, with a caption.
+import { demoPanelHtml, hasPlayer, phoneHtml, playerHref } from '../lib/demo.js';
+import { BASE, type Lang } from '../lib/site';
+
+export interface Props {
+  name: string;
+  lang?: Lang;
+  variant?: 'panel' | 'phone';
+  eager?: boolean;
+}
+
+const { name, lang = 'en', variant = 'panel', eager = false } = Astro.props;
+const zh = lang === 'zh-CN';
+const html = variant === 'panel' ? await demoPanelHtml(name, { base: BASE, lang }) : phoneHtml(name, { base: BASE, lang, eager });
+const live = hasPlayer();
+---
+
+{variant === 'panel' ? (
+  <Fragment set:html={html} />
+) : (
+  <figure class="demo-phone">
+    <Fragment set:html={html} />
+    <figcaption>
+      {live ? (
+        <>
+          <span class="demo-phone__live" aria-hidden="true"></span>
+          <span>{zh ? '实时运行' : 'Running live'} · <code>{name}.tsx</code></span>
+          <a href={playerHref(name, BASE)} target="_blank" rel="noopener">{zh ? '新标签页打开' : 'Open'} ↗</a>
+        </>
+      ) : (
+        <span><code>{name}.tsx</code></span>
+      )}
+    </figcaption>
+  </figure>
+)}
+
+{variant === 'panel' && (
+  <script>
+    import { initDemos } from '../lib/demo-client';
+    initDemos();
+  </script>
+)}
+
+<style is:global>
+  .demo-phone { display: flex; flex-direction: column; align-items: center; gap: 1rem; margin: 0; }
+  .demo-phone figcaption { display: inline-flex; align-items: center; gap: 0.5rem; color: var(--muted-foreground); font-size: 0.78rem; }
+  .demo-phone figcaption code { font: 0.75rem/1 var(--font-mono); color: var(--foreground); }
+  .demo-phone figcaption a { color: var(--muted-foreground); text-decoration: none; }
+  .demo-phone figcaption a:hover { color: var(--foreground); }
+  .demo-phone__live { width: 0.4rem; height: 0.4rem; border-radius: 50%; background: var(--success); box-shadow: 0 0 0 3px color-mix(in srgb, var(--success) 20%, transparent); }
+  @media (prefers-reduced-motion: no-preference) {
+    .demo-phone__live { animation: demo-pulse 2.4s ease-in-out infinite; }
+  }
+  @keyframes demo-pulse { 50% { box-shadow: 0 0 0 5px color-mix(in srgb, var(--success) 8%, transparent); } }
+</style>

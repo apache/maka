@@ -1,29 +1,36 @@
-# Git on Windows converts LF to CRLF in the working tree by default. That breaks
-# every byte comparison against a generated file — `npm run check:third-party-notices`
-# fails on a checkout it has not touched — and it would ship license text whose
-# bytes differ from the macOS build of the same release. Nothing in this
-# repository needs CRLF, so the working tree stays LF everywhere.
+# Preserve deterministic source and license bytes on every platform.
 * text=auto eol=lf
 
 # Unified diffs require a leading space for context, including empty and tab-indented lines.
 /patches/*.patch whitespace=-space-before-tab,-blank-at-eol
 /patches/*.diff whitespace=-space-before-tab,-blank-at-eol
+# Empty trailing columns belong to the generated cargo-deny TSV schema.
+/products/maka/cli/DEPENDENCIES.rust.tsv whitespace=-blank-at-eol
+# Preserve whitespace in redistributed upstream license texts.
+/products/maka/cli/THIRD_PARTY_NOTICES.txt whitespace=-blank-at-eol
+/scripts/rust/licenses/*.txt whitespace=-blank-at-eol
 
 # Repository-local agent configuration, visual review evidence, and incubation
 # working notes are not source-release inputs.
 /.claude export-ignore
 /.maka-shots export-ignore
-/maka-proposal-zh-review.txt export-ignore
 
-# Repository-only plugin examples are tested from a Git checkout, but are not
-# ASF source-release inputs.
-/scripts/plugins export-ignore
-# These integration tests use repository-only plugin examples.
-/packages/runtime-host/test/assistant/memory-network/test/feishu-source.test.ts export-ignore
-/packages/runtime-host/test/assistant/proactive-matters/test/source-assistant-loop.test.ts export-ignore
-/packages/ui/src/__tests__/codex-composer-integration.test.tsx export-ignore
+# Preserve verbatim whitespace in the pinned NSH source snapshot.
+/third-party/nsh/.gitattributes whitespace=-blank-at-eof
+/third-party/nsh/docs/dev/browser-js-size.md whitespace=-blank-at-eof
+/third-party/nsh/docs/dev/data-table.md whitespace=-blank-at-eof
+/third-party/nsh/docs/dev/elements.md whitespace=-blank-at-eof
+/third-party/nsh/examples/gallery/TitleBar.tsx whitespace=-blank-at-eof
+/third-party/nsh/examples/gallery/demos/chat/markdown.tsx whitespace=-blank-at-eof
+/third-party/nsh/examples/nsh-gallery-ui/theme.ts whitespace=-blank-at-eof
+/third-party/nsh/third-party/icy_sixel/Cargo.toml whitespace=-blank-at-eof
+/third-party/nsh/crates/nsh-base/fonts/katex.LICENSE.txt whitespace=-blank-at-eol
+/third-party/nsh/examples/gallery-rs/native/assets/fonts/OFL.txt whitespace=-blank-at-eol
+/third-party/nsh/examples/gallery/fonts/OFL.txt whitespace=-blank-at-eol
+/third-party/nsh/tests/compat/cases/layout/fonts/OFL.txt whitespace=-blank-at-eol
+/third-party/nsh/third-party/icy_sixel/src/decoder.rs whitespace=-blank-at-eol
 
-# DeepSeek Harness remains available to repository development and benchmarks,
-# but its external runtime dependency closure is not an ASF source-release input.
-/packages/eval/harbor/deepseek-harness-toolchain/package.json export-ignore
-/packages/eval/harbor/deepseek-harness-toolchain/package-lock.json export-ignore
+# The pinned upstream license checksum includes its published CRLF bytes.
+/third-party/playwright/LICENSE -text whitespace=cr-at-eol
+
+/products/maka/workbench/tests/fonts/OFL.txt whitespace=-blank-at-eol

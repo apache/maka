@@ -1,0 +1,427 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import assert from 'node:assert/strict';
+import childProcess from 'node:child_process';
+import { EventEmitter } from 'node:events';
+import { syncBuiltinESMExports } from 'node:module';
+import { dirname, join } from 'node:path';
+import { lstat, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { PassThrough } from 'node:stream';
+import test from 'node:test';
+import {
+  buildCli,
+  linuxSystemLibraryRustflags,
+  rustTarget,
+  stageDesktopBundle,
+} from './build-cli.mjs';
+
+const manifest = [
+  '[workspace]',
+  'members = ["products/maka/cli"]',
+  '',
+  '[workspace.package]',
+  'edition = "2024"',
+  'version = "1.2.3-beta.1"',
+  '',
+  '[workspace.dependencies]',
+  'version = "9.9.9"',
+  '',
+].join('\n');
+
+// A PNG signature and IHDR are all the icon staging reads.
+function logo(size = 1024) {
+  const png = Buffer.alloc(33);
+  Buffer.from('\x89PNG\r\n\x1a\n', 'latin1').copy(png);
+  png.writeUInt32BE(13, 8);
+  png.write('IHDR', 12, 'latin1');
+  png.writeUInt32BE(size, 16);
+  png.writeUInt32BE(size, 20);
+  return png;
+}
+
+async function repository(root) {
+  await mkdir(root, { recursive: true });
+  await writeFile(join(root, 'Cargo.toml'), manifest);
+  await mkdir(join(root, 'assets'), { recursive: true });
+  await writeFile(join(root, 'assets/logo.png'), logo());
+}
+
+function mockCodesign(t) {
+  const execute = childProcess.execFileSync;
+  t.mock.method(childProcess, 'execFileSync', (command, args, options) =>
+    command === '/usr/bin/codesign' ? Buffer.alloc(0) : execute(command, args, options),
+  );
+  syncBuiltinESMExports();
+  t.after(() => {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+  });
+}
+
+test('CLI builds use the requested target and artifact path', async (t) => {
+  mockCodesign(t);
+  const root = await mkdtemp(join(tmpdir(), 'maka-build-cli-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const sourceRoot = join(root, 'extracted-source');
+  for (const directory of [root, sourceRoot]) await repository(directory);
+  const previous = process.env.CARGO_TARGET_DIR;
+  process.env.CARGO_TARGET_DIR = 'target/isolated release';
+  let invocation;
+  let exitCode = 0;
+  let executable;
+  t.mock.method(childProcess, 'spawn', (command, args, options) => {
+    invocation = { command, args, options };
+    const child = new EventEmitter();
+    child.stdout = new PassThrough();
+    queueMicrotask(() => {
+      if (exitCode === 0) {
+        child.stdout.write(
+          JSON.stringify({
+            reason: 'build-script-executed',
+            package_id: 'cli-source',
+            out_dir: join(dirname(executable), 'build/cli-source/out'),
+          }) + '\n',
+        );
+        child.stdout.write(
+          JSON.stringify({
+            reason: 'build-script-executed',
+            package_id: 'other-package',
+            out_dir: join(root, 'unrelated-output'),
+          }) + '\n',
+        );
+        child.stdout.write(
+          JSON.stringify({
+            reason: 'compiler-artifact',
+            package_id: 'cli-source',
+            target: { name: 'maka', kind: ['bin'] },
+            executable,
+          }) + '\n',
+        );
+      }
+      child.stdout.end();
+      child.emit('exit', exitCode, null);
+    });
+    return child;
+  });
+  syncBuiltinESMExports();
+  t.after(() => {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+    if (previous === undefined) delete process.env.CARGO_TARGET_DIR;
+    else process.env.CARGO_TARGET_DIR = previous;
+  });
+  for (const target of [
+    undefined,
+    'x86_64-unknown-linux-gnu',
+    'aarch64-unknown-linux-gnu',
+    'aarch64-apple-darwin',
+    'x86_64-pc-windows-msvc',
+  ]) {
+    const triple = target ?? rustTarget();
+    const linux = target !== undefined && triple.includes('-linux-');
+    const directory = join(root, process.env.CARGO_TARGET_DIR);
+    const binaryDirectory = join(directory, ...(linux || target ? [triple] : []), 'release');
+    const macos = triple.includes('-apple-darwin');
+    await mkdir(binaryDirectory, { recursive: true });
+    await writeFile(join(binaryDirectory, 'maka-desktop-shell'), 'shell bytes');
+    await writeFile(join(binaryDirectory, 'maka-host-shell'), 'host shell bytes');
+    executable = join(binaryDirectory, triple.includes('-windows-') ? 'maka.exe' : 'maka');
+    const inputManifest = join(binaryDirectory, 'build/cli-source/out/product/bundle-inputs.json');
+    await mkdir(dirname(inputManifest), { recursive: true });
+    await writeFile(inputManifest, JSON.stringify(['actual-input-for-' + triple]));
+    const { binary: output, bundleInputs } = await buildCli({
+      release: true,
+      target,
+      timings: true,
+      repositoryRoot: root,
+    });
+    assert.equal(
+      bundleInputs,
+      join(binaryDirectory, 'build/cli-source/out/product/bundle-inputs.json'),
+    );
+    assert.deepEqual(JSON.parse(await readFile(bundleInputs, 'utf8')), [
+      'actual-input-for-' + triple,
+    ]);
+    // The workbench is compiled into the shell: nothing is staged beside it.
+    await assert.rejects(lstat(join(dirname(output), 'app')), { code: 'ENOENT' });
+    if (macos) {
+      const contents = join(dirname(output), 'Maka.app/Contents');
+      assert.equal(
+        await readFile(join(contents, 'MacOS/maka-desktop-shell'), 'utf8'),
+        'shell bytes',
+      );
+      if (process.platform !== 'win32')
+        assert.equal((await lstat(join(contents, 'MacOS/maka-desktop-shell'))).mode & 0o777, 0o755);
+      const plist = await readFile(join(contents, 'Info.plist'), 'utf8');
+      for (const [key, value] of [
+        ['CFBundleDisplayName', 'Maka'],
+        [
+          'NSMicrophoneUsageDescription',
+          'Maka uses the microphone to transcribe speech into your message draft.',
+        ],
+        ['CFBundleExecutable', 'maka-desktop-shell'],
+        ['CFBundleIconFile', 'Maka'],
+        ['CFBundleIdentifier', 'org.apache.maka.desktop'],
+        ['CFBundleName', 'Maka'],
+        ['CFBundleShortVersionString', '1.2.3-beta.1'],
+        ['CFBundleVersion', '1.2.3'],
+      ])
+        assert.ok(plist.includes(`<key>${key}</key>\n  <string>${value}</string>`), key);
+      if (process.platform === 'darwin')
+        childProcess.execFileSync('plutil', ['-lint', join(contents, 'Info.plist')]);
+      const icon = await readFile(join(contents, 'Resources/Maka.icns'));
+      assert.equal(icon.toString('latin1', 0, 4), 'icns');
+      assert.equal(icon.readUInt32BE(4), icon.length);
+      assert.equal(icon.toString('latin1', 8, 12), 'ic10');
+      assert.equal(icon.readUInt32BE(12), icon.length - 8);
+      assert.deepEqual(icon.subarray(16), logo());
+      assert.deepEqual(await readdir(join(contents, 'Resources')), ['Maka.icns']);
+      const host = join(contents, 'Helpers/Maka Host.app/Contents');
+      assert.equal(await readFile(join(host, 'MacOS/maka-host-shell'), 'utf8'), 'host shell bytes');
+      if (process.platform !== 'win32')
+        assert.equal((await lstat(join(host, 'MacOS/maka-host-shell'))).mode & 0o777, 0o755);
+      const hostPlist = await readFile(join(host, 'Info.plist'), 'utf8');
+      for (const [key, value] of [
+        ['CFBundleExecutable', 'maka-host-shell'],
+        ['CFBundleIdentifier', 'org.apache.maka.host'],
+        ['CFBundleName', 'Maka Host'],
+      ])
+        assert.ok(hostPlist.includes(`<key>${key}</key>\n  <string>${value}</string>`), key);
+      assert.ok(hostPlist.includes('<key>LSUIElement</key>\n  <true/>'));
+      assert.ok(!hostPlist.includes('1.2.3'));
+      if (process.platform === 'darwin')
+        childProcess.execFileSync('plutil', ['-lint', join(host, 'Info.plist')]);
+    }
+    assert.equal(invocation.command, 'cargo');
+    assert.equal(invocation.options.cwd, root);
+    assert.deepEqual(invocation.args, [
+      linux ? 'zigbuild' : 'build',
+      '--locked',
+      '-p',
+      'maka-cli',
+      '-p',
+      'maka-desktop-shell',
+      ...(macos ? ['-p', 'maka-host-shell'] : []),
+      '-p',
+      'maka-python-runtime',
+      '--release',
+      '--timings',
+      ...(linux ? ['--target', triple + '.2.28'] : target ? ['--target', target] : []),
+      '--message-format=json',
+    ]);
+    assert.equal(
+      output,
+      join(
+        directory,
+        ...(linux || target ? [triple] : []),
+        'release',
+        triple.includes('-windows-') ? 'maka.exe' : 'maka',
+      ),
+    );
+  }
+  const development = join(root, process.env.CARGO_TARGET_DIR, 'debug');
+  await mkdir(development, { recursive: true });
+  await writeFile(join(development, 'maka-desktop-shell'), 'shell bytes');
+  await writeFile(join(development, 'maka-host-shell'), 'host shell bytes');
+  executable = join(development, process.platform === 'win32' ? 'maka.exe' : 'maka');
+  assert.equal(
+    (
+      await buildCli({
+        repositoryRoot: root,
+        timings: true,
+        env: { ...process.env, MAKA_CUA_BUILD_MODE: 'native' },
+      })
+    ).binary,
+    executable,
+  );
+  assert.deepEqual(invocation.args, [
+    'build',
+    '--locked',
+    '-p',
+    'maka-cli',
+    '-p',
+    'maka-desktop-shell',
+    ...(rustTarget().includes('-apple-darwin') ? ['-p', 'maka-host-shell'] : []),
+    '-p',
+    'maka-python-runtime',
+    '--timings',
+    '--message-format=json',
+  ]);
+  const sourceEnv = { MAKA_JS_DEPS: sourceRoot };
+  await mkdir(join(sourceRoot, 'target/aarch64-apple-darwin/release'), { recursive: true });
+  await writeFile(
+    join(sourceRoot, 'target/aarch64-apple-darwin/release/maka-desktop-shell'),
+    'shell bytes',
+  );
+  await writeFile(
+    join(sourceRoot, 'target/aarch64-apple-darwin/release/maka-host-shell'),
+    'host shell bytes',
+  );
+  executable = join(sourceRoot, 'target/aarch64-apple-darwin/release/maka');
+  assert.equal(
+    (
+      await buildCli({
+        release: true,
+        target: 'aarch64-apple-darwin',
+        repositoryRoot: sourceRoot,
+        env: sourceEnv,
+      })
+    ).binary,
+    join(sourceRoot, 'target/aarch64-apple-darwin/release/maka'),
+  );
+  assert.equal(invocation.options.cwd, sourceRoot);
+  assert.equal(invocation.options.env, sourceEnv);
+  exitCode = 1;
+  await assert.rejects(buildCli({ release: true, repositoryRoot: root }), /Maka build failed: 1/u);
+});
+
+test('a failed bundle staging keeps the previous Maka.app', async (t) => {
+  mockCodesign(t);
+  const root = await mkdtemp(join(tmpdir(), 'maka-bundle-staging-'));
+  try {
+    await repository(root);
+    const shell = join(root, 'maka-desktop-shell');
+    await writeFile(shell, 'original shell');
+    await writeFile(join(root, 'maka-host-shell'), 'host shell');
+    const destination = join(root, 'bin/Maka.app');
+    await mkdir(dirname(destination));
+    await stageDesktopBundle(root, shell, destination);
+    await writeFile(shell, 'replacement shell');
+    await writeFile(join(root, 'assets/logo.png'), logo(512));
+    await assert.rejects(stageDesktopBundle(root, shell, destination), /1024x1024 PNG/);
+    await writeFile(join(root, 'assets/logo.png'), logo());
+    await writeFile(join(root, 'Cargo.toml'), '[workspace]\nversion = "1.0.0"\n');
+    await assert.rejects(stageDesktopBundle(root, shell, destination), /no \[workspace.package\]/);
+    assert.equal(
+      await readFile(join(destination, 'Contents/MacOS/maka-desktop-shell'), 'utf8'),
+      'original shell',
+    );
+    assert.deepEqual(await readdir(dirname(destination)), ['Maka.app']);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('bundles are signed with the configured identity', async (t) => {
+  const signed = [];
+  const execute = childProcess.execFileSync;
+  t.mock.method(childProcess, 'execFileSync', (command, args, options) => {
+    if (command !== '/usr/bin/codesign') return execute(command, args, options);
+    if (args[0] === '--force') signed.push(args[args.indexOf('--sign') + 1]);
+    return Buffer.alloc(0);
+  });
+  syncBuiltinESMExports();
+  const previous = process.env.MAKA_CODESIGN_IDENTITY;
+  t.after(() => {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+    if (previous === undefined) delete process.env.MAKA_CODESIGN_IDENTITY;
+    else process.env.MAKA_CODESIGN_IDENTITY = previous;
+  });
+  const root = await mkdtemp(join(tmpdir(), 'maka-sign-identity-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await repository(root);
+  const shell = join(root, 'maka-desktop-shell');
+  await writeFile(shell, 'shell');
+  await writeFile(join(root, 'maka-host-shell'), 'host');
+
+  delete process.env.MAKA_CODESIGN_IDENTITY;
+  await stageDesktopBundle(root, shell, join(root, 'Maka.app'));
+  process.env.MAKA_CODESIGN_IDENTITY = 'Maka Dev';
+  await stageDesktopBundle(root, shell, join(root, 'Maka.app'));
+  assert.deepEqual(signed, ['-', '-', 'Maka Dev', 'Maka Dev']);
+});
+
+test('the Host app has a valid stable bundle signature', {
+  skip: process.platform !== 'darwin',
+}, async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-host-signature-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await repository(root);
+  const shell = join(root, 'maka-desktop-shell');
+  await writeFile(shell, await readFile('/usr/bin/true'));
+  await writeFile(join(root, 'maka-host-shell'), await readFile('/usr/bin/true'));
+  const destination = join(root, 'Maka.app');
+  const helper = join(destination, 'Contents/Helpers/Maka Host.app');
+  const identity = () => {
+    const verify = childProcess.spawnSync(
+      '/usr/bin/codesign',
+      ['--verify', '--strict', '--test-requirement', '=identifier "org.apache.maka.host"', helper],
+      { encoding: 'utf8' },
+    );
+    assert.equal(verify.status, 0, verify.stderr);
+    const display = childProcess.spawnSync(
+      '/usr/bin/codesign',
+      ['--display', '--verbose=4', helper],
+      { encoding: 'utf8' },
+    );
+    assert.equal(display.status, 0, display.stderr);
+    assert.match(display.stderr, /^Identifier=org\.apache\.maka\.host$/m);
+    const hash = /^CDHash=(.+)$/m.exec(display.stderr)?.[1];
+    assert.ok(hash, display.stderr);
+    return hash;
+  };
+  await stageDesktopBundle(root, shell, destination);
+  const first = identity();
+  await writeFile(join(root, 'Cargo.toml'), manifest.replace('1.2.3-beta.1', '1.2.4'));
+  await stageDesktopBundle(root, shell, destination);
+  assert.equal(
+    identity(),
+    first,
+    'an unrelated product version must not change the Host privacy identity',
+  );
+});
+
+test('linuxSystemLibraryRustflags exposes host system library dirs for zigbuild', () => {
+  const shlib = '-C link-arg=-Wl,--allow-shlib-undefined';
+  const ubuntuX64 = (dir) => dir === '/usr/lib/x86_64-linux-gnu' || dir === '/usr/lib';
+  assert.deepEqual(linuxSystemLibraryRustflags('x86_64-unknown-linux-gnu', {}, ubuntuX64), {
+    CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: `-L native=/usr/lib/x86_64-linux-gnu -L native=/usr/lib ${shlib}`,
+  });
+  assert.deepEqual(
+    linuxSystemLibraryRustflags(
+      'x86_64-unknown-linux-gnu',
+      { CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: '-C link-arg=-s -L native=/usr/lib' },
+      ubuntuX64,
+    ),
+    {
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: `-C link-arg=-s -L native=/usr/lib -L native=/usr/lib/x86_64-linux-gnu ${shlib}`,
+    },
+  );
+  assert.deepEqual(
+    linuxSystemLibraryRustflags(
+      'x86_64-unknown-linux-gnu',
+      { CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: '-L native=/usr/lib/x86_64-linux-gnu' },
+      ubuntuX64,
+    ),
+    {
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: `-L native=/usr/lib/x86_64-linux-gnu -L native=/usr/lib ${shlib}`,
+    },
+  );
+  const ubuntuArm64 = (dir) => dir === '/usr/lib/aarch64-linux-gnu' || dir === '/usr/lib';
+  assert.deepEqual(linuxSystemLibraryRustflags('aarch64-unknown-linux-gnu', {}, ubuntuArm64), {
+    CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS: `-L native=/usr/lib/aarch64-linux-gnu -L native=/usr/lib ${shlib}`,
+  });
+  const fedora = (dir) => dir === '/usr/lib64' || dir === '/usr/lib';
+  assert.deepEqual(linuxSystemLibraryRustflags('x86_64-unknown-linux-gnu', {}, fedora), {
+    CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: `-L native=/usr/lib64 -L native=/usr/lib ${shlib}`,
+  });
+});

@@ -1,0 +1,459 @@
+//! `nsh/mobile`'s `TabBar` on iOS: a `UITabBar` with the system appearance.
+//! The app places it and decides what each tab shows; the component reports
+//! its intrinsic height while its container owns its frame.
+
+use std::{
+    cell::{Cell, RefCell},
+    rc::Rc,
+};
+
+use nsh_core::JsonValue;
+use objc2::{
+    DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, rc::Retained,
+    runtime::ProtocolObject, sel,
+};
+use objc2_core_foundation::{CGPoint, CGRect, CGSize};
+use objc2_foundation::{NSArray, NSObject, NSObjectProtocol, NSString};
+use objc2_ui_kit::{
+    UIColor, UIImage, UIResponder, UITabBar, UITabBarDelegate, UITabBarItem, UIView,
+};
+
+use crate::component::{ComponentContext, ComponentFactory, NativeComponent};
+
+/// What the delegate and the bar share: the items to show and which is
+/// selected, for the bar to lay them out again when it gets its width.
+struct BarIvars {
+    items: Rc<RefCell<Vec<Retained<UITabBarItem>>>>,
+    selected: Cell<usize>,
+    /// The size the items were last laid out at: an element is made before
+    /// the layout that sizes it, so the first `setItems:` lands at width 0
+    /// and draws nothing until the bar is laid out again; and a bar left
+    /// to its intrinsic height is first laid out at the height it has out
+    /// of a window, too short for the titles, which stay missing when it
+    /// grows to the height it reports there.
+    laid_out: Cell<(f64, f64)>,
+    height: Cell<f64>,
+    visibility: crate::bottom_bar::Visibility,
+    /// The state the transform was last set for: a layout pass must not set it
+    /// again, or it ends a running animation (a snap, not a slide).
+    applied: Cell<bool>,
+    context: ComponentContext,
+}
+
+define_class!(
+    /// A `UITabBar` that shows its items once it has a width to lay them out
+    /// in.
+    #[unsafe(super(UITabBar, UIView, UIResponder, NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[ivars = BarIvars]
+    struct NshTabBar;
+
+    impl NshTabBar {
+        /// Shows the items, once the bar has a width (a turn after the
+        /// layout that gave it one).
+        #[unsafe(method(nshShowItems))]
+        fn nsh_show_items(&self) {
+            show(self, &self.ivars().items.borrow(), self.ivars().selected.get());
+        }
+
+        /// `hidesBottomBarWhenPushed` (called by the navigation stack inside
+        /// its transition): off the bottom, or back where the app put it.
+        #[unsafe(method(nshSetBottomHidden:))]
+        fn set_bottom_hidden(&self, hidden: bool) {
+            self.put_bottom_hidden(hidden);
+        }
+
+        /// A bar makes its item views once it is in a window: the items set
+        /// before that draw nothing.
+        #[unsafe(method(didMoveToWindow))]
+        fn did_move_to_window(&self) {
+            // SAFETY: forwarding UIView's callback to its superclass on the main thread.
+            let _: () = unsafe { msg_send![super(self), didMoveToWindow] };
+            show(self, &self.ivars().items.borrow(), self.ivars().selected.get());
+        }
+
+        #[unsafe(method(layoutSubviews))]
+        fn layout_subviews(&self) {
+            // UIKit can give the bar its natural height before the host is
+            // sized. Flexible-height autoresizing then adds the host's height
+            // to that initial size; fill the host exactly instead.
+            // Setting a frame while a transform is applied makes UIKit move the
+            // view somewhere else (frame and transform do not mix): while the
+            // navigation stack keeps the bar out of sight, its frame is already
+            // the host's, so leave it alone.
+            if !self.bottom_bar_hidden()
+                && let Some(host) = self.superview()
+            {
+                let frame = host.bounds();
+                if self.frame() != frame {
+                    self.setFrame(frame);
+                }
+            }
+            // SAFETY: the superclass' own layout.
+            let _: () = unsafe { msg_send![super(self), layoutSubviews] };
+            let width = self.bounds().size.width;
+            let height = self.sizeThatFits(CGSize::new(width, f64::INFINITY)).height;
+            if height != self.ivars().height.replace(height) {
+                self.ivars().context.set_size(0.0, height as f32);
+            }
+            if self.bottom_bar_hidden() != self.ivars().applied.get() {
+                self.apply_bottom_hidden();
+            }
+            let size = (width, self.bounds().size.height);
+            if !lays_out_items_again(self.ivars().laid_out.get(), size) {
+                return;
+            }
+            self.ivars().laid_out.set(size);
+            // Items laid out while the bar had no width, or less height, keep
+            // no labels: give them up and set them again for the size it has
+            // now.
+            self.setItems(None);
+            // After the layout pass: items set inside it are not laid out.
+            // SAFETY: this zero-argument selector is defined on this class above.
+            // NSObject retains the receiver until the main run loop invokes it.
+            let _: () = unsafe {
+                msg_send![
+                    self,
+                    performSelector: sel!(nshShowItems),
+                    withObject: std::ptr::null::<NSObject>(),
+                    afterDelay: 0.0f64
+                ]
+            };
+        }
+    }
+);
+
+impl NshTabBar {
+    /// Puts the bar where its element is (`false`) or a screen below the
+    /// bottom of it (`true`), as a layer transform so the frame stays the
+    /// app's.
+    /// Either of the two, as UIKit's bar is hidden while its tab bar
+    /// controller or the page showing says so.
+    /// Navigation updates only its own reason; the app keeps ownership of
+    /// `TabBar.hidden` across pushes, pops and option updates.
+    fn put_bottom_hidden(&self, hidden: bool) {
+        self.ivars().visibility.set_navigation(hidden);
+        self.apply_bottom_hidden();
+    }
+
+    fn bottom_bar_hidden(&self) -> bool {
+        self.ivars().visibility.hidden()
+    }
+
+    fn apply_bottom_hidden(&self) {
+        let hidden = self.bottom_bar_hidden();
+        self.ivars().applied.set(hidden);
+        // Far enough to clear whatever inset the app left below the bar.
+        let offset = if hidden {
+            self.bounds().size.height + 200.0
+        } else {
+            0.0
+        };
+        // The view's own transform, not its layer's: UIKit scrubs a view
+        // animation with an interactive transition (the swipe back follows the
+        // finger) only for view properties.
+        let transform = objc2_core_foundation::CGAffineTransform {
+            a: 1.0,
+            b: 0.0,
+            c: 0.0,
+            d: 1.0,
+            tx: 0.0,
+            ty: offset,
+        };
+        self.setTransform(transform);
+        // Back in place: the frame may have been left stale while hidden.
+        if !hidden
+            && let Some(host) = self.superview()
+            && self.frame() != host.bounds()
+        {
+            self.setFrame(host.bounds());
+        }
+    }
+
+    fn new(
+        mtm: MainThreadMarker,
+        items: Rc<RefCell<Vec<Retained<UITabBarItem>>>>,
+        context: ComponentContext,
+    ) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(BarIvars {
+            items,
+            selected: Cell::new(0),
+            laid_out: Cell::new((0.0, 0.0)),
+            height: Cell::new(0.0),
+            visibility: Default::default(),
+            applied: Cell::new(false),
+            context,
+        });
+        // SAFETY: `UITabBar`'s initializer is `UIView`'s `initWithFrame:`;
+        // a bar made with `init` has no item views. The element's layout
+        // sets the frame again.
+        let frame = CGRect::new(CGPoint::new(0.0, 0.0), CGSize::new(0.0, 0.0));
+        unsafe { msg_send![super(this), initWithFrame: frame] }
+    }
+}
+
+/// Whether a bar laid out at `size` (width, height) sets its items again,
+/// having last laid them out at `last`: once it has a width, each time its
+/// size changes.
+fn lays_out_items_again(last: (f64, f64), size: (f64, f64)) -> bool {
+    size.0 >= 1.0 && size != last
+}
+
+/// One tab as the app gave it (`TabBarItem`: `{ title, icon, badge }`).
+#[derive(Debug, Default, PartialEq)]
+struct Tab {
+    title: String,
+    /// An SF Symbol's name, empty for none.
+    icon: String,
+    /// Its badge: a text, `""` for one with no text, `None` for none.
+    badge: Option<String>,
+}
+
+/// The tabs of an `items` prop; what is not a `{ title, icon, badge }`
+/// object is a tab without a title.
+fn parse_items(items: &[JsonValue]) -> Vec<Tab> {
+    let text = |item: &JsonValue, key: &str| {
+        item.get(key)
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string()
+    };
+    items
+        .iter()
+        .map(|item| Tab {
+            title: text(item, "title"),
+            icon: text(item, "icon"),
+            badge: item
+                .get("badge")
+                .and_then(|v| v.as_str())
+                .map(str::to_owned),
+        })
+        .collect()
+}
+
+/// The `tint` prop: the theme's `primary` as the core's hex (`None`: the
+/// system's).
+fn parse_tint(value: Option<&JsonValue>) -> Option<nsh_core::Color> {
+    let hex = value?.as_str()?;
+    nsh_core::Hsla::parse_hex(hex)
+        .ok()
+        .map(nsh_core::Color::from)
+}
+
+/// Shows `items` on `bar`, with `selected` chosen.
+fn show(bar: &UITabBar, items: &[Retained<UITabBarItem>], selected: usize) {
+    if items.is_empty() {
+        // An empty list empties the bar: the items it holds belong to a list
+        // that is gone, and a bar left holding them keeps them showing and
+        // tappable.
+        let none = NSArray::new();
+        bar.setItems(Some(&none));
+        bar.setSelectedItem(None);
+        return;
+    }
+    let array = NSArray::from_retained_slice(items);
+    bar.setItems(Some(&array));
+    bar.setNeedsLayout();
+    // An index past the tabs selects none.
+    bar.setSelectedItem(items.get(selected).map(|item| &**item));
+}
+
+struct DelegateIvars {
+    context: ComponentContext,
+}
+
+define_class!(
+    /// Reports the tab the user chose, by its index (the item's tag).
+    #[unsafe(super(NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[ivars = DelegateIvars]
+    struct TabDelegate;
+
+    unsafe impl NSObjectProtocol for TabDelegate {}
+
+    unsafe impl UITabBarDelegate for TabDelegate {
+        #[unsafe(method(tabBar:didSelectItem:))]
+        fn did_select(&self, _bar: &UITabBar, item: &UITabBarItem) {
+            self.ivars()
+                .context
+                // The index itself (the core's `TabBarEvent::Change`; JS hears
+                // `onChange({ index })`).
+                .emit("change", serde_json::json!(item.tag() as u32));
+        }
+    }
+);
+
+impl TabDelegate {
+    fn new(mtm: MainThreadMarker, context: ComponentContext) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(DelegateIvars { context });
+        // SAFETY: NSObject's designated initializer.
+        unsafe { msg_send![super(this), init] }
+    }
+}
+
+/// The tab bar of one `TabBar` element.
+pub(crate) struct SystemTabBar {
+    bar: Retained<NshTabBar>,
+    /// The tabs, as the app gave them.
+    tabs: Vec<Tab>,
+    items: Rc<RefCell<Vec<Retained<UITabBarItem>>>>,
+    mtm: MainThreadMarker,
+    _delegate: Retained<TabDelegate>,
+}
+
+impl SystemTabBar {
+    /// Makes the items from the tabs the app gave and shows them, with the
+    /// current selection.
+    fn rebuild(&mut self) {
+        let items: Vec<_> = self
+            .tabs
+            .iter()
+            .enumerate()
+            .map(|(index, tab)| {
+                let image = (!tab.icon.is_empty())
+                    .then(|| UIImage::systemImageNamed(&NSString::from_str(&tab.icon)))
+                    .flatten();
+                let item = UITabBarItem::initWithTitle_image_tag(
+                    UITabBarItem::alloc(self.mtm),
+                    Some(&NSString::from_str(&tab.title)),
+                    image.as_deref(),
+                    index as isize,
+                );
+                // The system's badge, in its color (an empty text is its
+                // badge with no text, as large as a one-digit one);
+                // VoiceOver says it with the tab.
+                if let Some(badge) = &tab.badge {
+                    item.setBadgeValue(Some(&NSString::from_str(badge)));
+                }
+                item
+            })
+            .collect();
+        *self.items.borrow_mut() = items;
+        let items = self.items.borrow();
+        show(&self.bar, &items, self.bar.ivars().selected.get());
+        drop(items);
+    }
+}
+
+impl NativeComponent for SystemTabBar {
+    fn view(&self) -> &UIView {
+        &self.bar
+    }
+
+    fn set_prop(&mut self, name: &str, value: Option<&JsonValue>) {
+        // `TabBar`'s own props arrive as `$items` and `$selectedIndex`.
+        match (name.strip_prefix('$').unwrap_or(name), value) {
+            ("items", value) => {
+                let items = value.and_then(JsonValue::as_array);
+                self.tabs = items.map(|items| parse_items(items)).unwrap_or_default();
+                self.rebuild();
+            }
+            ("hidden", value) => {
+                let hidden = value.and_then(JsonValue::as_bool).unwrap_or(false);
+                // The visible stack owns the other hiding reason.
+                self.bar.ivars().visibility.set_app(hidden);
+                self.bar.apply_bottom_hidden();
+            }
+            ("selectedIndex", value) => {
+                // Removed (or not a whole number): the first tab, the default.
+                let selected = value.and_then(JsonValue::as_u64).unwrap_or(0) as usize;
+                self.bar.ivars().selected.set(selected);
+                let items = self.items.borrow();
+                // Only the selection: the items and their layout stay.
+                self.bar
+                    .setSelectedItem(items.get(selected).map(|item| &**item));
+            }
+            ("tint", value) => {
+                // The bar draws its selected item in its `tintColor`.
+                let tint = parse_tint(value).map(|c| {
+                    let (r, g, b, a) = c.to_f64();
+                    UIColor::colorWithRed_green_blue_alpha(r, g, b, a)
+                });
+                // SAFETY: a plain setter on the main thread; `None` restores
+                // the inherited tint.
+                unsafe { self.bar.setTintColor(tint.as_deref()) };
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Makes the bar of each `TabBar` element (`nsh_core::platform::TAB_BAR_COMPONENT`),
+/// which every surface has (`Components::default`).
+pub(crate) fn factory() -> ComponentFactory {
+    Rc::new(|context: ComponentContext| {
+        let mtm = MainThreadMarker::new().expect("the tab bar is made on the main thread");
+        let items = Rc::new(RefCell::new(Vec::new()));
+        let bar = NshTabBar::new(mtm, items.clone(), context.clone());
+        let delegate = TabDelegate::new(mtm, context.clone());
+        bar.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
+        Box::new(SystemTabBar {
+            bar,
+            tabs: Vec::new(),
+            items,
+            mtm,
+            _delegate: delegate,
+        }) as Box<dyn NativeComponent>
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::{Tab, lays_out_items_again, parse_items, parse_tint};
+
+    /// The items are laid out again for every new size once the bar has a
+    /// width: a bar left to its intrinsic height grows from the height it
+    /// has out of a window (49) to the one it reports in it (83), width
+    /// unchanged, and only items laid out at that height show their titles.
+    #[test]
+    fn items_are_laid_out_again_when_the_bar_grows() {
+        assert!(!lays_out_items_again((0.0, 0.0), (0.0, 49.0)));
+        assert!(lays_out_items_again((0.0, 0.0), (430.0, 49.0)));
+        assert!(lays_out_items_again((430.0, 49.0), (430.0, 83.0)));
+        assert!(!lays_out_items_again((430.0, 83.0), (430.0, 83.0)));
+        assert!(lays_out_items_again((430.0, 83.0), (932.0, 83.0)));
+    }
+
+    /// Each tab carries its own title, icon and badge; a tab without an
+    /// icon or a badge has none.
+    #[test]
+    fn tabs_carry_their_titles_icons_and_badges() {
+        let tabs = parse_items(&[
+            json!({ "title": "Records", "icon": "list.bullet", "badge": "3" }),
+            json!({ "title": "Stats", "badge": "" }),
+        ]);
+        assert_eq!(
+            tabs,
+            [
+                Tab {
+                    title: "Records".into(),
+                    icon: "list.bullet".into(),
+                    badge: Some("3".into()),
+                },
+                Tab {
+                    title: "Stats".into(),
+                    icon: String::new(),
+                    badge: Some(String::new()),
+                },
+            ]
+        );
+    }
+
+    /// The core's hex is the tint; anything else is none (the system's).
+    #[test]
+    fn the_tint_is_the_cores_hex_color() {
+        assert_eq!(
+            parse_tint(Some(&json!("#26251E"))),
+            Some(nsh_core::Color(0x26251eff))
+        );
+        assert_eq!(
+            parse_tint(Some(&json!("#EDECE600"))),
+            Some(nsh_core::Color(0xedece600))
+        );
+        assert_eq!(parse_tint(Some(&json!(null))), None);
+        assert_eq!(parse_tint(Some(&json!("primary"))), None);
+        assert_eq!(parse_tint(None), None);
+    }
+}

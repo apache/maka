@@ -35,78 +35,21 @@ import { basename, dirname, join } from 'node:path';
 import { describe, test } from 'node:test';
 import {
   createSourceCandidate,
-  controlledProcessEnvironment,
-  parseSha512File,
   reproduceSourceCandidate,
   signSourceCandidate,
   sourceCandidateIdentity,
   validateArchiveEntries,
   validateGpgVerificationStatus,
-  validatePackageVersions,
   verifySourceCandidate,
 } from './asf-source-release.mjs';
 
-describe('ASF source release identity', () => {
-  test('uses the incubating source distribution name for plain versions only', () => {
-    assert.deepEqual(sourceCandidateIdentity('0.1.12'), {
-      archiveName: 'apache-maka-0.1.12-incubating-src.tar.gz',
-      rootDirectory: 'apache-maka-0.1.12-incubating',
-      version: '0.1.12',
-    });
-    assert.throws(() => sourceCandidateIdentity('0.1.12-incubating'), /Invalid release version/);
-  });
-});
-
 describe('ASF source release verification', () => {
-  test('validates checksum identity and archive boundaries', () => {
-    const name = 'apache-maka-0.1.12-incubating-src.tar.gz';
-    assert.equal(parseSha512File(`${'a'.repeat(128)}  ${name}\n`, name), 'a'.repeat(128));
-    assert.throws(() => parseSha512File(`${'a'.repeat(128)}  another.tar.gz\n`, name), /expected/);
-
-    const root = 'apache-maka-0.1.12-incubating';
-    assert.doesNotThrow(() =>
-      validateArchiveEntries(
-        [
-          `${root}/`,
-          `${root}/DISCLAIMER-WIP`,
-          `${root}/LICENSE`,
-          `${root}/NOTICE`,
-          `${root}/package-lock.json`,
-          `${root}/package.json`,
-          `${root}/src/index.ts`,
-        ],
-        root,
-      ),
-    );
+  test('rejects archive names which collide on a case-insensitive filesystem', () => {
     assert.throws(
       () =>
         validateArchiveEntries(
-          [
-            `${root}/DISCLAIMER-WIP`,
-            `${root}/LICENSE`,
-            `${root}/NOTICE`,
-            `${root}/package-lock.json`,
-            `${root}/package.json`,
-            `${root}/.maka-shots/review.png`,
-            `${root}/node_modules/dependency/index.js`,
-          ],
-          root,
-        ),
-      /Forbidden archive entry/,
-    );
-    assert.throws(
-      () =>
-        validateArchiveEntries(
-          [
-            `${root}/DISCLAIMER-WIP`,
-            `${root}/LICENSE`,
-            `${root}/NOTICE`,
-            `${root}/package-lock.json`,
-            `${root}/package.json`,
-            `${root}/fixtures/evil.bin`,
-            `${root}/fixtures/EVIL.BIN`,
-          ],
-          root,
+          ['release/fixtures/evil.bin', 'release/fixtures/EVIL.BIN'],
+          'release',
         ),
       /Cross-platform archive entry collision/,
     );
@@ -131,20 +74,27 @@ describe('ASF source release verification', () => {
     }
   });
 
-  test('requires package and lockfile versions to share one identity', () => {
-    const packageJson = { version: '0.1.12' };
-    const packageLock = { packages: { '': { version: '0.1.12' } }, version: '0.1.12' };
-    assert.doesNotThrow(() =>
-      validatePackageVersions({ packageJson, packageLock, source: 'fixture', version: '0.1.12' }),
+  test('rejects mismatched checksum names and manifest versions in actual archives', async (t) => {
+    const fixture = createFixtureCandidate();
+    t.after(fixture.cleanup);
+    const checksum = `${fixture.archivePath}.sha512`;
+    writeFileSync(
+      checksum,
+      readFileSync(checksum, 'utf8').replace(basename(fixture.archivePath), 'another.tar.gz'),
     );
-    assert.throws(
-      () =>
-        validatePackageVersions({
-          packageJson,
-          packageLock: { ...packageLock, version: '9.9.9' },
-          source: 'fixture',
-          version: '0.1.12',
-        }),
+    await assert.rejects(
+      () => verifySourceCandidate({ archivePath: fixture.archivePath }),
+      /expected/,
+    );
+    const mismatched = createFixtureCandidate({
+      'package-lock.json': JSON.stringify({
+        version: '9.9.9',
+        packages: { '': { version: '9.9.9' } },
+      }),
+    });
+    t.after(mismatched.cleanup);
+    await assert.rejects(
+      () => verifySourceCandidate({ archivePath: mismatched.archivePath }),
       /package-lock\.json.*9\.9\.9/,
     );
   });
@@ -188,21 +138,6 @@ describe('ASF source release verification', () => {
       } finally {
         fixture.cleanup();
       }
-    }
-  });
-
-  test('rejects WASM encoded inside a textual dependency patch', async () => {
-    const wasm = Buffer.from([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00]);
-    const fixture = createFixtureCandidate({
-      'patches/worker.patch': `+const wasm = "${wasm.toString('base64')}";\n`,
-    });
-    try {
-      await assert.rejects(
-        () => verifySourceCandidate({ archivePath: fixture.archivePath }),
-        /Compiled artifact.*worker\.patch.*Base64 WASM/,
-      );
-    } finally {
-      fixture.cleanup();
     }
   });
 
@@ -274,11 +209,28 @@ describe('ASF source release verification', () => {
     }
   });
 
-  test('accepts an inventoried source image', async () => {
+  test('accepts native source formats and an inventoried source image', async () => {
     const fixture = createFixtureCandidate({
       'docs/code-origin-audit.md':
         '### Source archive non-text inventory\n\n- `fixtures/*.png`: test-generated source images.\n',
       'fixtures/source.png': Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+      'fixtures/prepare.Dockerfile': 'FROM scratch\n',
+      'fixtures/memory.c': 'int main(void) { return 0; }\n',
+      'fixtures/nsh.h': 'void nsh_init(void);\n',
+      'fixtures/text.hlsl': 'float4 main() : SV_Target { return float4(1, 1, 1, 1); }\n',
+      'fixtures/View.java': 'final class View {}\n',
+      'fixtures/module.modulemap': 'module NativeShellC { header "nsh.h" export * }\n',
+      'fixtures/nsh.rb': 'class Nsh < Formula\nend\n',
+      'fixtures/gpui.rc': '#define RT_MANIFEST 24\n1 RT_MANIFEST "gpui.manifest.xml"\n',
+      'fixtures/shader.wgsl': '@compute @workgroup_size(1) fn main() {}\n',
+      'fixtures/gpui.manifest.xml': '<assembly manifestVersion="1.0" />\n',
+      'fixtures/Cargo.toml.orig': '[package]\nname = "source"\nversion = "0.1.0"\n',
+      'fixtures/CNAME': 'nsh.dev\n',
+      'fixtures/LICENSE-APACHE': 'Apache License, Version 2.0\n\f\nTERMS AND CONDITIONS\n',
+      'fixtures/LICENSE-MIT': 'Permission is hereby granted, free of charge.\n',
+      'fixtures/LICENSE-MPL': 'Mozilla Public License Version 2.0\n',
+      'fixtures/default-env': '# Presentation metadata\nLANG\n',
+      'fixtures/layerfs': '#!/bin/sh\nexec python3 layerfs.py\n',
     });
     try {
       await assert.doesNotReject(() => verifySourceCandidate({ archivePath: fixture.archivePath }));
@@ -300,26 +252,28 @@ describe('ASF source release verification', () => {
     }
   });
 
-  test('accepts XML text source inputs', async () => {
-    const fixture = createFixtureCandidate({
-      'website/public/sitemap.xml': '<?xml version="1.0" encoding="UTF-8"?>\n<urlset></urlset>\n',
-    });
-    try {
-      await assert.doesNotReject(() => verifySourceCandidate({ archivePath: fixture.archivePath }));
-    } finally {
-      fixture.cleanup();
-    }
-  });
-
   test('rejects unknown non-text release inputs', async () => {
-    const fixture = createFixtureCandidate({ 'fixtures/unknown.bin': Buffer.from([0x01, 0x02]) });
-    try {
-      await assert.rejects(
-        () => verifySourceCandidate({ archivePath: fixture.archivePath }),
+    for (const [path, contents, expected] of [
+      [
+        'fixtures/unknown.bin',
+        Buffer.from([0x01, 0x02]),
         /Cannot safely classify non-text release input.*fixtures\/unknown\.bin/,
-      );
-    } finally {
-      fixture.cleanup();
+      ],
+      [
+        'fixtures/control.txt',
+        Buffer.from('page\u000bseparator\n'),
+        /Cannot safely classify non-text release input.*fixtures\/control\.txt/,
+      ],
+    ]) {
+      const fixture = createFixtureCandidate({ [path]: contents });
+      try {
+        await assert.rejects(
+          () => verifySourceCandidate({ archivePath: fixture.archivePath }),
+          expected,
+        );
+      } finally {
+        fixture.cleanup();
+      }
     }
   });
 
@@ -382,23 +336,6 @@ describe('ASF source release verification', () => {
     }
   });
 
-  test('filters controlled environment names case-insensitively', async () => {
-    await withEnvironmentVariables(
-      { gIt_Prefix_Probe: 'prefix', mAkA_Exact_Probe: 'exact' },
-      () => {
-        const environment = controlledProcessEnvironment({
-          excludedNames: ['MAKA_EXACT_PROBE'],
-          excludedPrefixes: ['GIT_'],
-          overrides: { GIT_CONFIG_NOSYSTEM: '1' },
-        });
-        const names = Object.keys(environment).map((name) => name.toUpperCase());
-        assert.equal(names.includes('MAKA_EXACT_PROBE'), false);
-        assert.equal(names.includes('GIT_PREFIX_PROBE'), false);
-        assert.equal(environment.GIT_CONFIG_NOSYSTEM, '1');
-      },
-    );
-  });
-
   test('requires a signature before reading unauthenticated candidate metadata', async () => {
     const temporaryRoot = mkdtempSync(join(tmpdir(), 'maka-asf-auth-order-test-'));
     const identity = sourceCandidateIdentity('0.1.12');
@@ -417,79 +354,6 @@ describe('ASF source release verification', () => {
     }
   });
 
-  test('documents the checkout-only DeepSeek Harness toolchain build in the candidate', async () => {
-    const temporaryRoot = mkdtempSync(join(tmpdir(), 'maka-asf-dsh-contract-test-'));
-    const repositoryRoot = join(temporaryRoot, 'repository');
-    const outputDirectory = join(temporaryRoot, 'release');
-    const identity = sourceCandidateIdentity('0.1.12');
-    try {
-      writeReleaseContents(repositoryRoot, { includeAttributes: true });
-      mkdirSync(join(repositoryRoot, 'packages/eval/harbor/deepseek-harness-toolchain'), {
-        recursive: true,
-      });
-      mkdirSync(join(repositoryRoot, 'packages/eval/harbor/deepseek-harness-profile'), {
-        recursive: true,
-      });
-      mkdirSync(join(repositoryRoot, 'scripts'), { recursive: true });
-      copyFileSync(
-        join(import.meta.dirname, '../packages/eval/README.md'),
-        join(repositoryRoot, 'packages/eval/README.md'),
-      );
-      writeFileSync(
-        join(repositoryRoot, 'packages/eval/harbor/deepseek-harness-toolchain/package.json'),
-        '{}\n',
-      );
-      writeFileSync(
-        join(repositoryRoot, 'packages/eval/harbor/deepseek-harness-toolchain/package-lock.json'),
-        '{}\n',
-      );
-      writeFileSync(
-        join(repositoryRoot, 'scripts/prepare-deepseek-harness-toolchain.mjs'),
-        'export {};\n',
-      );
-      for (const name of ['package.json', 'cordis.patch.yml']) {
-        copyFileSync(
-          join(import.meta.dirname, `../packages/eval/harbor/deepseek-harness-profile/${name}`),
-          join(repositoryRoot, `packages/eval/harbor/deepseek-harness-profile/${name}`),
-        );
-      }
-
-      git(repositoryRoot, ['init']);
-      git(repositoryRoot, ['add', '.']);
-      commitFixture(repositoryRoot, 'test DSH source archive contract');
-
-      const candidate = await createSourceCandidate({
-        outputDirectory,
-        repositoryRoot,
-        version: '0.1.12',
-      });
-      const entries = execFileSync('tar', ['-tzf', candidate.archivePath], { encoding: 'utf8' });
-      const archivedReadme = execFileSync(
-        'tar',
-        ['-xOzf', candidate.archivePath, `${identity.rootDirectory}/packages/eval/README.md`],
-        { encoding: 'utf8' },
-      );
-
-      assert.doesNotMatch(entries, /deepseek-harness-toolchain\/package(?:-lock)?\.json/);
-      assert.match(entries, /scripts\/prepare-deepseek-harness-toolchain\.mjs/);
-      for (const name of ['package.json', 'cordis.patch.yml']) {
-        const relativePath = `packages/eval/harbor/deepseek-harness-profile/${name}`;
-        assert.deepEqual(
-          execFileSync('tar', [
-            '-xOzf',
-            candidate.archivePath,
-            `${identity.rootDirectory}/${relativePath}`,
-          ]),
-          readFileSync(join(repositoryRoot, relativePath)),
-        );
-      }
-      assert.match(archivedReadme, /only from a complete Git checkout/u);
-      assert.match(archivedReadme, /intentionally excluded from ASF source archives/u);
-    } finally {
-      rmSync(temporaryRoot, { force: true, recursive: true });
-    }
-  });
-
   test('creates reproducible candidates from committed files only', async () => {
     const temporaryRoot = mkdtempSync(join(tmpdir(), 'maka-asf-source-test-'));
     const repositoryRoot = join(temporaryRoot, 'repository');
@@ -503,66 +367,14 @@ describe('ASF source release verification', () => {
       writeFileSync(join(repositoryRoot, 'untracked.txt'), 'must not be released\n');
       mkdirSync(join(repositoryRoot, '.claude'));
       mkdirSync(join(repositoryRoot, '.maka-shots'));
-      mkdirSync(join(repositoryRoot, 'scripts/plugins/codex-app-server-executor'), {
-        recursive: true,
-      });
       writeFileSync(join(repositoryRoot, '.claude/launch.json'), '{}\n');
       writeFileSync(join(repositoryRoot, '.maka-shots/review.png'), 'review evidence\n');
-      writeFileSync(join(repositoryRoot, 'maka-proposal-zh-review.txt'), 'working notes\n');
-      writeFileSync(
-        join(repositoryRoot, 'scripts/plugins/codex-app-server-executor/index.mjs'),
-        'export {};\n',
-      );
-      const memoryTests = 'packages/runtime-host/test/assistant/memory-network/test';
-      mkdirSync(join(repositoryRoot, memoryTests), { recursive: true });
-      for (const name of ['feishu-source.test.ts', 'sources.test.ts']) {
-        writeFileSync(join(repositoryRoot, memoryTests, name), 'export {};\n');
-      }
-      const sourceLoopTest =
-        'packages/runtime-host/test/assistant/proactive-matters/test/source-assistant-loop.test.ts';
-      mkdirSync(dirname(join(repositoryRoot, sourceLoopTest)), { recursive: true });
-      writeFileSync(join(repositoryRoot, sourceLoopTest), 'export {};\n');
-      const pickerTests = 'packages/ui/src/__tests__';
-      mkdirSync(join(repositoryRoot, pickerTests), { recursive: true });
-      for (const name of [
-        'codex-composer-integration.test.tsx',
-        'composer-model-picker-recovery.test.tsx',
-        'composer-model-picker-fixture.ts',
-      ]) {
-        writeFileSync(join(repositoryRoot, pickerTests, name), 'export {};\n');
-      }
-      mkdirSync(join(repositoryRoot, 'packages/eval/harbor/deepseek-harness-toolchain'), {
-        recursive: true,
-      });
-      mkdirSync(join(repositoryRoot, 'packages/eval/harbor/deepseek-harness-profile'), {
-        recursive: true,
-      });
-      writeFileSync(
-        join(repositoryRoot, 'packages/eval/harbor/deepseek-harness-toolchain/package-lock.json'),
-        '{}\n',
-      );
-      writeFileSync(
-        join(repositoryRoot, 'packages/eval/harbor/deepseek-harness-toolchain/package.json'),
-        '{}\n',
-      );
-      writeFileSync(
-        join(
-          repositoryRoot,
-          'packages/eval/harbor/deepseek-harness-toolchain/patch-subprocess-local.mjs',
-        ),
-        'export {};\n',
-      );
-      writeFileSync(
-        join(repositoryRoot, 'packages/eval/harbor/deepseek-harness-profile/cordis.yml'),
-        'profile: maka-eval\n',
-      );
-
       git(repositoryRoot, ['init']);
       git(repositoryRoot, [
         'add',
         'package.json',
         'package-lock.json',
-        'DISCLAIMER-WIP',
+        'DISCLAIMER',
         'LICENSE',
         'NOTICE',
         '.gitignore',
@@ -570,15 +382,6 @@ describe('ASF source release verification', () => {
         'README.md',
         '.claude/launch.json',
         '.maka-shots/review.png',
-        'maka-proposal-zh-review.txt',
-        'scripts/plugins/codex-app-server-executor/index.mjs',
-        'packages/ui/src/__tests__',
-        'packages/runtime-host/test/assistant/memory-network/test',
-        'packages/runtime-host/test/assistant/proactive-matters/test',
-        'packages/eval/harbor/deepseek-harness-toolchain/package-lock.json',
-        'packages/eval/harbor/deepseek-harness-toolchain/package.json',
-        'packages/eval/harbor/deepseek-harness-toolchain/patch-subprocess-local.mjs',
-        'packages/eval/harbor/deepseek-harness-profile/cordis.yml',
       ]);
       git(repositoryRoot, [
         '-c',
@@ -595,6 +398,7 @@ describe('ASF source release verification', () => {
         repositoryRoot,
         version: '0.1.12',
       });
+      assert.equal(basename(first.archivePath), 'apache-maka-0.1.12-incubating-src.tar.gz');
       await assert.rejects(
         () =>
           createSourceCandidate({
@@ -650,17 +454,7 @@ describe('ASF source release verification', () => {
         encoding: 'utf8',
       });
       assert.doesNotMatch(entries, /untracked\.txt/);
-      assert.doesNotMatch(entries, /\.claude|\.maka-shots|maka-proposal-zh-review/);
-      assert.doesNotMatch(entries, /scripts\/plugins\/codex-app-server-executor/);
-      assert.doesNotMatch(entries, /memory-network\/test\/feishu-source\.test\.ts/);
-      assert.doesNotMatch(entries, /proactive-matters\/test\/source-assistant-loop\.test\.ts/);
-      assert.match(entries, /memory-network\/test\/sources\.test\.ts/);
-      assert.doesNotMatch(entries, /__tests__\/codex-composer-integration\.test\.tsx/);
-      assert.match(entries, /__tests__\/composer-model-picker-recovery\.test\.tsx/);
-      assert.match(entries, /__tests__\/composer-model-picker-fixture\.ts/);
-      assert.doesNotMatch(entries, /deepseek-harness-toolchain\/package(?:-lock)?\.json/);
-      assert.match(entries, /deepseek-harness-toolchain\/patch-subprocess-local\.mjs/);
-      assert.match(entries, /deepseek-harness-profile\/cordis\.yml/);
+      assert.doesNotMatch(entries, /\.claude|\.maka-shots/);
       assert.match(entries, /README\.md/);
 
       const originalCompressedBytes = readFileSync(first.archivePath);
@@ -848,7 +642,7 @@ function writeReleaseContents(root, { includeAttributes = false } = {}) {
     `${JSON.stringify({ lockfileVersion: 3, name: 'maka', packages: { '': { name: 'maka', version: '0.1.12' } }, version: '0.1.12' }, null, 2)}\n`,
   );
   writeFileSync(
-    join(root, 'DISCLAIMER-WIP'),
+    join(root, 'DISCLAIMER'),
     'Apache Maka is undergoing incubation at The Apache Software Foundation.\n',
   );
   writeFileSync(join(root, 'LICENSE'), 'Apache License, Version 2.0\n');

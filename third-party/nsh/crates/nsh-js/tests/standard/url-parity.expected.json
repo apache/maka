@@ -1,0 +1,156 @@
+{
+  "formats": [
+    [
+      "https://user:pass@example.com:8443/p?q=1#x",
+      "https://example.com:8443/p",
+      "https://user:pass@/p?q=1#x"
+    ],
+    [
+      "https://a%20b:p%40ss@example.com/p",
+      "https://example.com/p",
+      "https://a%20b:p%40ss@example.com/p"
+    ],
+    [
+      "https://example.com/",
+      "https://example.com/",
+      "https://example.com/"
+    ],
+    [
+      "https://example.com/p",
+      "https://example.com/p",
+      "https://example.com/p"
+    ],
+    [
+      "mailto://user@example.com",
+      "mailto://user@example.com",
+      "mailto://user@example.com"
+    ],
+    [
+      "file:///a%20b.txt",
+      "file:///a%20b.txt",
+      "file:///a%20b.txt"
+    ],
+    [
+      "https://[::1]:8443/p?q=1#x",
+      "https://[::1]:8443/p",
+      "https:///p?q=1#x"
+    ],
+    [
+      "https://xn--fiq228c.com:8443/p?q=1#x",
+      "https://xn--fiq228c.com:8443/p",
+      "https:///p?q=1#x"
+    ]
+  ],
+  "options": [
+    {
+      "protocol": "https:",
+      "hostname": "example.com",
+      "hash": "x",
+      "search": "?q=1",
+      "pathname": "/p",
+      "path": "/p?q=1",
+      "href": "https://user:pass@example.com:8443/p?q=1#x",
+      "auth": "user:pass",
+      "port": "8443"
+    },
+    {
+      "protocol": "https:",
+      "hostname": "example.com",
+      "pathname": "/p",
+      "path": "/p",
+      "href": "https://a%20b:p%40ss@example.com/p",
+      "auth": "a%20b:p%40ss"
+    },
+    {
+      "protocol": "https:",
+      "hostname": "example.com",
+      "pathname": "/",
+      "path": "/",
+      "href": "https://example.com/"
+    },
+    {
+      "protocol": "https:",
+      "hostname": "example.com",
+      "pathname": "/p",
+      "path": "/p",
+      "href": "https://example.com/p?#"
+    },
+    {
+      "protocol": "mailto:",
+      "hostname": "",
+      "pathname": "user@example.com",
+      "path": "user@example.com",
+      "href": "mailto:user@example.com"
+    },
+    {
+      "protocol": "file:",
+      "hostname": "",
+      "pathname": "/a%20b.txt",
+      "path": "/a%20b.txt",
+      "href": "file:///a%20b.txt"
+    },
+    {
+      "protocol": "https:",
+      "hostname": "[::1]",
+      "hash": "x",
+      "search": "?q=1",
+      "pathname": "/p",
+      "path": "/p?q=1",
+      "href": "https://[::1]:8443/p?q=1#x",
+      "port": "8443"
+    },
+    {
+      "protocol": "https:",
+      "hostname": "xn--fiq228c.com",
+      "hash": "x",
+      "search": "?q=1",
+      "pathname": "/p",
+      "path": "/p?q=1",
+      "href": "https://xn--fiq228c.com:8443/p?q=1#x",
+      "port": "8443"
+    }
+  ],
+  "paths": [
+    [
+      "/a%20b.txt",
+      "/a%20b.txt"
+    ],
+    [
+      "/a%2Fb",
+      "/a%2Fb"
+    ],
+    [
+      "server/share/a",
+      "server/share/a"
+    ],
+    [
+      "/C:/hello%20world",
+      "/C:/hello%20world"
+    ],
+    [
+      "https://example.com/not-file",
+      "https://example.com/not-file"
+    ]
+  ],
+  "files": [
+    [
+      "file:///a%20b%23%25.txt",
+      true,
+      "/a%20b%23%25.txt"
+    ],
+    [
+      "file:///%E4%BD%A0%E5%A5%BD/file.txt",
+      true,
+      "/%E4%BD%A0%E5%A5%BD/file.txt"
+    ]
+  ],
+  "domain": [
+    "xn--fiq228c.com",
+    "中文.com"
+  ],
+  "brands": [
+    true,
+    true,
+    true
+  ]
+}

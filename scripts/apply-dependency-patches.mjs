@@ -18,71 +18,33 @@
  * under the License.
  */
 
-// Applies patches/ during the root postinstall.
-//
-// patch-package is a root devDependency, so `npm ci --workspace <name>` and
-// `npm ci --omit=dev` install a tree without it while still running the root
-// postinstall. Failing there would break install modes that work on main, so a
-// missing patch-package is reported and skipped; a patch that exists but no
-// longer applies still fails the install via --error-on-fail.
-//
-// Skipping is safe because those trees are not what ships: every release and CI
-// lane runs a plain root `npm ci`, and an unpatched tree turns
-// packages/runtime/src/__tests__/model-factory-tool-call-index.test.ts red.
+// Apply the exact-version dependency patches used by product bundles.
+// Release builds install the complete locked dependency tree. A types-only
+// workspace install may omit some of the patched dependencies.
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
-import { createRequire } from 'node:module';
-import { dirname, join, relative } from 'node:path';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const patchesDirectory = join(repoRoot, 'patches');
 
-if (
-  !existsSync(patchesDirectory) ||
-  !readdirSync(patchesDirectory).some((entry) => entry.endsWith('.patch'))
-) {
-  process.exit(0);
-}
-
-let patchPackageEntry;
-try {
-  patchPackageEntry = createRequire(import.meta.url).resolve('patch-package/index.js');
-} catch {
-  console.warn(
-    'patch-package is not installed; skipping patches/. Run a plain `npm ci` from the repo root before building or packaging.',
-  );
-  process.exit(0);
-}
-
-let temporaryPatches;
-try {
-  const runPatchName = 'run+2.1.4.patch';
-  const runPatchPath = join(patchesDirectory, runPatchName);
-  const runPatch = existsSync(runPatchPath) ? readFileSync(runPatchPath, 'utf8') : '';
-  const marker = '__MAKA_RUN_WASM_BASE64__';
-  if (runPatch.includes(marker)) {
-    // The patch changes worker code, not WASM. Reuse the npm package's binary
-    // during installation so the source distribution carries only the changes.
-    const worker = readFileSync(
-      join(repoRoot, 'node_modules/run/dist/runtime/worker-source.js'),
-      'utf8',
-    );
-    const wasm = /__RUN_QUICKJS_WASM_BASE64__ = \\"([A-Za-z0-9+/=]+)\\";/u.exec(worker)?.[1];
-    if (!wasm) throw new Error('Cannot find the installed run 2.1.4 QuickJS payload');
-    temporaryPatches = mkdtempSync(join(repoRoot, 'node_modules/.maka-patches-'));
-    for (const name of readdirSync(patchesDirectory).filter((name) => name.endsWith('.patch'))) {
-      const contents =
-        name === runPatchName
-          ? runPatch.replaceAll(marker, wasm)
-          : readFileSync(join(patchesDirectory, name), 'utf8');
-      writeFileSync(join(temporaryPatches, name), contents);
-    }
-  }
-  const arguments_ = [patchPackageEntry, '--error-on-fail'];
-  if (temporaryPatches) arguments_.push('--patch-dir', relative(repoRoot, temporaryPatches));
-  const result = spawnSync(process.execPath, arguments_, { cwd: repoRoot, stdio: 'inherit' });
-  process.exitCode = result.status ?? 1;
-} finally {
-  if (temporaryPatches) rmSync(temporaryPatches, { recursive: true, force: true });
+for (const patch of readdirSync(patchesDirectory)
+  .filter((name) => name.endsWith('.patch'))
+  .sort()) {
+  const [name, version] = patch.slice(0, -'.patch'.length).split('+');
+  const manifest = join(repoRoot, 'node_modules', name, 'package.json');
+  if (!existsSync(manifest)) continue;
+  const installed = JSON.parse(readFileSync(manifest, 'utf8')).version;
+  if (installed !== version)
+    throw new Error(`Patch ${patch} expects ${version}, installed ${installed}`);
+  const file = join(patchesDirectory, patch);
+  const apply = (...args) =>
+    spawnSync('git', ['apply', '--ignore-space-change', ...args, file], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+    });
+  if (apply('--reverse', '--check').status === 0) continue;
+  const result = apply();
+  if (result.status !== 0) throw result.error ?? new Error(result.stderr);
 }

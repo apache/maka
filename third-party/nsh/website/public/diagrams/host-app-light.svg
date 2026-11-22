@@ -1,0 +1,193 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"
+     viewBox="0 0 880 560" width="100%" role="img" aria-labelledby="t d">
+  <title id="t">A host app with two modules, one engine per view</title>
+  <desc id="d">A phone running a native host app: its own status bar, title, list rows and tab bar, with two NshAppView regions between them. Each region is its own engine, with its own engine thread and QuickJS VM, and they update independently. Engine 1 runs booking.nshpkg; the host granted it network access to api.example.com, and everything else is refused. Engine 2 runs chart.nshpkg with no capabilities granted, and shows maps.view, a native map component the host registered. The host app, written in Swift or Kotlin and released as always, creates each view, grants capabilities, sets limits for memory, time and nodes, and registers native components. There are no global singletons: each view is one engine.</desc>
+
+  <defs>
+    <style>
+      :root{
+        --band:rgba(20,20,22,.035);
+        --band-line:rgba(20,20,22,.10);
+        --band-hi:rgba(90,122,18,.07);
+        --seam:rgba(20,20,22,.055);
+        --card:#ffffff;
+        --card-line:rgba(20,20,22,.16);
+        --card-hi:#f4f8e8;
+        --ink:#16171a;
+        --muted:#5f636a;
+        --line:rgba(20,20,22,.42);
+        --faint:rgba(20,20,22,.22);
+        --fill:rgba(20,20,22,.08);
+        --accent:#5a7a12;
+        --danger:#e5484d;
+      }
+
+      text{font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif}
+      .mono{font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace}
+      .h1{fill:var(--ink);font-size:16px;font-weight:650}
+      .lede{fill:var(--muted);font-size:11.5px}
+      .layer{fill:var(--ink);font-size:12.5px;font-weight:650}
+      .layer-sub{fill:var(--muted);font-size:11px}
+      .seam-name{fill:var(--accent);font-size:12px;font-weight:650}
+      .name{fill:var(--ink);font-size:14px;font-weight:600}
+      .band-name{fill:var(--ink);font-size:13px;font-weight:600}
+      .fact{fill:var(--ink);font-size:11.5px}
+      .note{fill:var(--muted);font-size:11px}
+      .tag{fill:var(--muted);font-size:10.5px;font-weight:600}
+      .edge{fill:var(--accent);font-size:11px;font-weight:600}
+      .claim{fill:var(--accent);font-size:11px;font-weight:600}
+
+      .ptitle{fill:var(--ink);font-size:17px;font-weight:700}
+      .hlabel{fill:var(--muted);font-size:10.5px;font-weight:600}
+      .htile{fill:var(--accent)}
+      .ptag{fill:var(--accent);font-size:9.5px;font-weight:650}
+      .pmono{fill:var(--muted);font-size:9.5px}
+      .device{fill:var(--card);stroke:var(--line);stroke-width:1.2}
+      .screen{fill:var(--band)}
+      .region{fill:var(--card);stroke:var(--accent);stroke-width:1.2;stroke-dasharray:5 3}
+      .ghost{fill:var(--fill)}
+      .solid{fill:var(--ink)}
+      .hair{stroke:var(--band-line);stroke-width:1}
+      .wire{fill:none;stroke:var(--accent);stroke-width:1.2;stroke-dasharray:4 4;opacity:.7}
+      .mapbox{fill:var(--band);stroke:var(--line);stroke-width:1}
+      .band{fill:var(--band);stroke:var(--band-line);stroke-width:1}
+      .card{fill:var(--card);stroke:var(--card-line);stroke-width:1}
+      .seam{fill:var(--seam)}
+      .seam-edge{fill:none;stroke:var(--accent);stroke-width:1;stroke-dasharray:4 4;opacity:.6}
+      .flow{fill:none;stroke:var(--line);stroke-width:1.4}
+      .arrowhead{fill:var(--line)}
+      .token-halo{fill:var(--accent);opacity:.16}
+      .token-core{fill:var(--accent)}
+      .tick{fill:var(--accent);animation:tick 1s linear infinite}
+      .track{stroke:var(--faint);stroke-width:1}
+
+      .stage{animation:stage 8s linear infinite}
+      .stage-last{animation:stagelast 8s linear infinite}
+
+      @keyframes stage{
+        0%,8%{stroke:var(--accent);fill:var(--card-hi)}
+        13%,100%{stroke:var(--card-line);fill:var(--card)}
+      }
+      @keyframes stagelast{
+        0%,20%{stroke:var(--accent);fill:var(--card-hi)}
+        26%,100%{stroke:var(--card-line);fill:var(--card)}
+      }
+      @keyframes tick{
+        0%{transform:translateX(0)}
+        100%{transform:translateX(44px)}
+      }
+
+      @media (prefers-reduced-motion: reduce){
+        .stage,.stage-last,.tick{animation:none}
+        .token{display:none}
+      }
+    </style>
+
+    <path id="w1" d="M344,104 H316 Q308,104 308,112 V206 Q308,214 300,214 H272"/>
+    <path id="w2" d="M344,256 H316 Q308,256 308,264 V424 Q308,432 300,432 H272"/>
+  </defs>
+
+  <text class="h1" x="24" y="30">One host app, two modules</text>
+  <text class="lede" x="24" y="50">Each NshAppView is its own engine: its own thread, VM, limits and grants. No global singletons.</text>
+
+  <!-- the host app, in a card frame of the site's design (no device chrome) -->
+  <rect class="device" x="40" y="72" width="250" height="448" rx="18"/>
+  <rect class="htile" x="54" y="85" width="16" height="16" rx="5"/>
+  <text class="hlabel" x="78" y="97">Host app · native screen</text>
+  <rect class="screen" x="50" y="110" width="230" height="400" rx="12"/>
+  <text class="ptitle" x="64" y="140">Trip</text>
+  <circle class="ghost" cx="76" cy="166" r="10"/>
+  <rect class="ghost" x="94" y="159" width="116" height="6" rx="3"/>
+  <rect class="ghost" x="94" y="170" width="72" height="5" rx="2.5"/>
+
+  <rect class="region" x="60" y="190" width="212" height="112" rx="12"/>
+  <text class="ptag" x="72" y="206">NshAppView</text>
+  <text class="pmono mono" x="260" y="206" text-anchor="end">engine 1</text>
+  <rect class="ghost" x="72" y="218" width="150" height="8" rx="4"/>
+  <rect class="ghost" x="72" y="234" width="188" height="5" rx="2.5"/>
+  <rect class="ghost" x="72" y="245" width="164" height="5" rx="2.5"/>
+  <rect class="solid" x="72" y="266" width="76" height="22" rx="11" opacity=".85"/>
+  <rect class="ghost" x="156" y="266" width="64" height="22" rx="11"/>
+
+  <circle class="ghost" cx="76" cy="328" r="10"/>
+  <rect class="ghost" x="94" y="321" width="100" height="6" rx="3"/>
+  <rect class="ghost" x="94" y="332" width="60" height="5" rx="2.5"/>
+
+  <rect class="region" x="60" y="356" width="212" height="122" rx="12"/>
+  <text class="ptag" x="72" y="372">NshAppView</text>
+  <text class="pmono mono" x="260" y="372" text-anchor="end">engine 2</text>
+  <rect class="mapbox" x="72" y="382" width="188" height="64" rx="8"/>
+  <path class="hair" d="M72,420 C110,404 150,436 190,410 S240,400 260,404" fill="none"/>
+  <circle class="solid" cx="170" cy="410" r="4" opacity=".85"/>
+  <text class="pmono mono" x="80" y="440">maps.view</text>
+  <rect class="ghost" x="72" y="456" width="120" height="6" rx="3"/>
+  <rect class="ghost" x="72" y="467" width="80" height="5" rx="2.5"/>
+
+  <line class="hair" x1="50" y1="488" x2="280" y2="488"/>
+  <circle class="solid" cx="96" cy="500" r="4" opacity=".85"/>
+  <circle class="ghost" cx="141" cy="500" r="4"/>
+  <circle class="ghost" cx="186" cy="500" r="4"/>
+  <circle class="ghost" cx="231" cy="500" r="4"/>
+
+  <!-- wires from each engine to its view -->
+  <path class="wire" d="M344,104 H316 Q308,104 308,112 V206 Q308,214 300,214 H272"/>
+  <path class="wire" d="M344,256 H316 Q308,256 308,264 V424 Q308,432 300,432 H272"/>
+
+  <!-- engine 1 -->
+  <rect class="band" x="344" y="72" width="504" height="136" rx="12"/>
+  <text class="band-name" x="364" y="100">Engine 1</text>
+  <text class="note" x="428" y="100">own thread · own QuickJS VM</text>
+  <text class="tag mono" x="832" y="100" text-anchor="end">booking.nshpkg</text>
+  <rect class="card" x="360" y="114" width="228" height="78" rx="9"/>
+  <text class="name" x="380" y="139">Capabilities</text>
+  <text class="fact mono" x="380" y="159">network: api.example.com</text>
+  <text class="note" x="380" y="176">everything else is refused</text>
+  <rect class="card" x="604" y="114" width="228" height="78" rx="9"/>
+  <text class="name" x="624" y="139">Limits</text>
+  <text class="fact" x="624" y="159">memory, time per call, nodes</text>
+  <text class="note" x="624" y="176">over a quota, only this VM stops</text>
+
+  <!-- engine 2 -->
+  <rect class="band" x="344" y="224" width="504" height="136" rx="12"/>
+  <text class="band-name" x="364" y="252">Engine 2</text>
+  <text class="note" x="428" y="252">own thread · own QuickJS VM</text>
+  <text class="tag mono" x="832" y="252" text-anchor="end">chart.nshpkg</text>
+  <rect class="card" x="360" y="266" width="228" height="78" rx="9"/>
+  <text class="name" x="380" y="291">Capabilities</text>
+  <text class="fact" x="380" y="311">none granted</text>
+  <text class="note" x="380" y="328">no network, no web pages</text>
+  <rect class="card" x="604" y="266" width="228" height="78" rx="9"/>
+  <text class="name" x="624" y="291">Native component</text>
+  <text class="fact mono" x="624" y="311">maps.view</text>
+  <text class="note" x="624" y="328">the host's own map, in the module</text>
+
+  <!-- the host -->
+  <rect class="band" x="344" y="376" width="504" height="144" rx="12"/>
+  <text class="band-name" x="364" y="404">The host app</text>
+  <text class="note" x="832" y="404" text-anchor="end">Swift or Kotlin, released as always</text>
+  <text class="fact mono" x="364" y="432">NshAppView() · NshView</text>
+  <text class="note" x="572" y="432">one engine per view</text>
+  <text class="fact mono" x="364" y="453">grantCapabilities(…)</text>
+  <text class="note" x="572" y="453">what a module may reach</text>
+  <text class="fact mono" x="364" y="474">limits · setLimits</text>
+  <text class="note" x="572" y="474">memory, time, nodes</text>
+  <text class="fact mono" x="364" y="495">register(component:)</text>
+  <text class="note" x="572" y="495">the host's own views, by name</text>
+
+  <text class="claim" x="24" y="546">Two engines, updating on their own: one module's work never blocks the other, or the host.</text>
+
+  <!-- each engine hands its own batches to its own view, on its own clock -->
+  <g class="token">
+    <circle class="token-halo" r="8"/>
+    <circle class="token-core" r="3.5"/>
+    <animateMotion dur="2.6s" repeatCount="indefinite" rotate="0" keyPoints="0;1;1" keyTimes="0;0.6;1" calcMode="linear"><mpath href="#w1" xlink:href="#w1"/></animateMotion>
+    <animate attributeName="opacity" dur="2.6s" repeatCount="indefinite" values="0;1;1;0;0" keyTimes="0;0.08;0.55;0.62;1"/>
+  </g>
+  <g class="token">
+    <circle class="token-halo" r="8"/>
+    <circle class="token-core" r="3.5"/>
+    <animateMotion dur="3.7s" begin="-1.1s" repeatCount="indefinite" rotate="0" keyPoints="0;1;1" keyTimes="0;0.6;1" calcMode="linear"><mpath href="#w2" xlink:href="#w2"/></animateMotion>
+    <animate attributeName="opacity" dur="3.7s" begin="-1.1s" repeatCount="indefinite" values="0;1;1;0;0" keyTimes="0;0.08;0.55;0.62;1"/>
+  </g>
+</svg>

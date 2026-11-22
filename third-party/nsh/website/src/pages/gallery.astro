@@ -1,0 +1,18 @@
+---
+import BaseLayout from '../layouts/BaseLayout.astro';
+import Nav from '../components/Nav.astro';
+import Gallery from '../components/Gallery.astro';
+import { url } from '../lib/site';
+---
+
+<BaseLayout
+  lang="en"
+  title="Gallery"
+  description="The NSH gallery, a whole app written in TSX, running in the browser as nsh package --target web publishes it."
+  alternates={{ en: '/gallery', 'zh-CN': '/zh-CN/gallery' }}
+>
+  <Nav lang="en" currentPath={Astro.url.pathname} langHref={url('zh-CN/gallery')} />
+  <main id="main" data-pagefind-ignore>
+    <Gallery lang="en" />
+  </main>
+</BaseLayout>

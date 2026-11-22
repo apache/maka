@@ -1,0 +1,549 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import {
+  activityMessage,
+  historyTurnKey,
+  compareHistoryOrder,
+  stableRowId,
+  type Row,
+} from './history.ts';
+import type { HistoryOrder } from '../../../../packages/plugin-sdk/src/index.js';
+import type { ToolActivity } from './toolActivity';
+
+/** Source identity, ordering, failure text and whether text has appeared. */
+export type ProcessRow = Pick<
+  Row,
+  | 'messageId'
+  | 'field'
+  | 'role'
+  | 'text'
+  | 'position'
+  | 'order'
+  | 'tool'
+  | 'turnId'
+  | 'importedTurn'
+  | 'timing'
+  | 'foldedWork'
+  | 'work'
+  | 'finalOutput'
+  | 'finalAnswer'
+  | 'sourceCitation'
+  | 'citation'
+  | 'citationAnchor'
+  | 'runId'
+  | 'origin'
+  | 'metadataThrough'
+  | 'sequence'
+  | 'startSequence'
+  | 'preview'
+  | 'modelPart'
+>;
+export type ProcessActivity = Pick<
+  ToolActivity,
+  'toolUseId' | 'turnId' | 'stepId' | 'attemptId' | 'startSequence' | 'previewOrder'
+>;
+
+export type MemberRef =
+  | { kind: 'row'; rowId: string; toolUseId?: string }
+  | { kind: 'activity'; toolUseId: string };
+export type ProcessGroup = {
+  kind: 'process';
+  key: string;
+  turnKey: string;
+  members: MemberRef[];
+  rowIds: string[];
+  toolIds: string[];
+  workRowId?: string;
+  /** A presentation boundary, never evidence that a tool effect settled. */
+  closed: boolean;
+};
+export type MessageEntry = {
+  kind: 'message';
+  key: string;
+  rowId: string;
+  processTurnKey?: string;
+  /** How many identical failures in a row this entry stands for, when more than one. */
+  repeats?: number;
+};
+export type ProcessEntry = ProcessGroup | MessageEntry;
+export type TurnPresentation = {
+  turnKey: string;
+  imported?: boolean;
+  timing: Row['timing'] | null;
+  foldedWork?: Row['foldedWork'];
+  active: boolean;
+  finalOutputIds: string[];
+  /** Trailing assistant text until more work arrives or history identifies the final output. */
+  answerOutputIds: string[];
+  finalAnswerStarted: boolean;
+  interleavedInput: boolean;
+  /** Whether the turn did anything besides its final answer: steps or text between them. */
+  worked: boolean;
+};
+export type ProcessProjection = {
+  entries: ProcessEntry[];
+  turns: Map<string, TurnPresentation>;
+  rowsById: Map<string, ProcessRow>;
+};
+
+export function turnOutcome(turn: TurnPresentation): string | null {
+  return turn.finalOutputIds.length > 0 ? 'completed' : (turn.timing?.finished?.outcome ?? null);
+}
+
+export function turnWorkFold(
+  turn: TurnPresentation,
+  terminal: boolean,
+): 'unavailable' | 'open' | 'closed' {
+  if (turn.imported) return turn.worked ? 'closed' : 'unavailable';
+  const outcome = turnOutcome(turn);
+  if (turn.foldedWork) return 'closed';
+  if (!turn.worked || turn.interleavedInput || (outcome !== null && outcome !== 'completed'))
+    return 'unavailable';
+  if (turn.finalAnswerStarted) return 'closed';
+  if (outcome === 'completed' && (!turn.active || turn.finalOutputIds.length > 0)) return 'closed';
+  return terminal ? 'unavailable' : 'open';
+}
+
+/** A completed answer needs a work header only when it has work to describe. */
+export function showTurnSummary(turn: TurnPresentation, terminal: boolean): boolean {
+  const outcome = turnOutcome(turn);
+  if (turn.imported || outcome === 'completed') return turn.worked;
+  return !terminal || outcome !== null || turnWorkFold(turn, terminal) === 'closed';
+}
+
+export function displayOrder(row: ProcessRow): HistoryOrder | undefined {
+  if (row.order) return row.order;
+  const sequence = row.startSequence ?? row.sequence;
+  return sequence === undefined ? undefined : { path: [sequence], itemIndex: 0 };
+}
+function compareOptionalOrder(
+  left: HistoryOrder | undefined,
+  right: HistoryOrder | undefined,
+): number {
+  if (left === undefined) return right === undefined ? 0 : 1;
+  if (right === undefined) return -1;
+  return compareHistoryOrder(left, right);
+}
+
+function emptyThinking(row: ProcessRow): boolean {
+  return (row.field === 'thinking' || row.role === 'thinking') && !/\S/.test(row.text);
+}
+
+function stepKey(row: ProcessRow): string | undefined {
+  if (!row.modelPart) return undefined;
+  const p = row.position;
+  const source = p && p.kind !== 'live' ? [p.kind, p.path, p.snapshot] : 'live';
+  return JSON.stringify([source, row.modelPart.stepId, row.modelPart.attemptId]);
+}
+/** Canonical step seats take precedence over previews within the same source. */
+export function orderProcessRows<T extends ProcessRow>(rows: readonly T[]): T[] {
+  const seats = new Map<string, HistoryOrder>();
+  const anchors = new Map<string, HistoryOrder>();
+  for (const row of rows) {
+    const key = stepKey(row);
+    const order = displayOrder(row);
+    if (key && order) {
+      const target = row.preview ? anchors : seats;
+      const old = target.get(key);
+      if (old === undefined || compareHistoryOrder(order, old) < 0) target.set(key, order);
+    }
+  }
+  for (const [step, anchor] of anchors) if (!seats.has(step)) seats.set(step, anchor);
+  return rows.toSorted((left, right) => {
+    const lkey = stepKey(left),
+      rkey = stepKey(right);
+    if (lkey !== undefined && lkey === rkey && left.modelPart && right.modelPart)
+      return (
+        left.modelPart.ordinal - right.modelPart.ordinal ||
+        Number(!left.work) - Number(!right.work) ||
+        Number(left.field === 'body') - Number(right.field === 'body')
+      );
+    const order = compareOptionalOrder(
+      lkey === undefined ? displayOrder(left) : seats.get(lkey),
+      rkey === undefined ? displayOrder(right) : seats.get(rkey),
+    );
+    if (order) return order;
+    if (left.preview && right.preview)
+      return (
+        left.preview.stepOrder - right.preview.stepOrder ||
+        left.preview.ordinal - right.preview.ordinal
+      );
+    return (
+      (left.order?.itemIndex ?? 0) - (right.order?.itemIndex ?? 0) ||
+      Number(left.field === 'body') - Number(right.field === 'body')
+    );
+  });
+}
+
+/** Compare only the small live set; a text delta keeps its original source seat. */
+export function sameProcessRows(
+  left: readonly ProcessRow[],
+  right: readonly ProcessRow[],
+): boolean {
+  return (
+    left.length === right.length &&
+    left.every((row, index) => {
+      const next = right[index];
+      return (
+        stableRowId(row) === stableRowId(next) &&
+        row.role === next.role &&
+        row.origin?.kind === next.origin?.kind &&
+        (row.role !== 'failure' || row.text === next.text) &&
+        (row.role !== 'assistant' ||
+          row.field !== 'body' ||
+          Boolean(row.text) === Boolean(next.text)) &&
+        row.field === next.field &&
+        emptyThinking(row) === emptyThinking(next) &&
+        row.turnId === next.turnId &&
+        row.importedTurn === next.importedTurn &&
+        compareOptionalOrder(displayOrder(row), displayOrder(next)) === 0 &&
+        row.modelPart?.stepId === next.modelPart?.stepId &&
+        row.modelPart?.attemptId === next.modelPart?.attemptId &&
+        row.modelPart?.ordinal === next.modelPart?.ordinal &&
+        row.preview?.stepOrder === next.preview?.stepOrder &&
+        row.preview?.ordinal === next.preview?.ordinal &&
+        (row.order?.itemIndex ?? 0) === (next.order?.itemIndex ?? 0) &&
+        Boolean(row.tool) === Boolean(next.tool) &&
+        row.tool?.toolUseId === next.tool?.toolUseId &&
+        Boolean(row.tool?.call) === Boolean(next.tool?.call) &&
+        Boolean(row.tool?.result) === Boolean(next.tool?.result) &&
+        row.finalOutput === next.finalOutput &&
+        row.finalAnswer === next.finalAnswer &&
+        row.sourceCitation === next.sourceCitation &&
+        row.citation === next.citation &&
+        row.citationAnchor === next.citationAnchor &&
+        (!row.sourceCitation || row.citation || row.text === next.text) &&
+        row.timing === next.timing &&
+        row.metadataThrough === next.metadataThrough
+      );
+    })
+  );
+}
+
+export function sameProcessActivity(
+  left: readonly ProcessActivity[],
+  right: readonly ProcessActivity[],
+): boolean {
+  return (
+    left.length === right.length &&
+    left.every((activity, index) => {
+      const next = right[index];
+      return (
+        activity.toolUseId === next.toolUseId &&
+        activity.turnId === next.turnId &&
+        activity.stepId === next.stepId &&
+        activity.attemptId === next.attemptId &&
+        activity.startSequence === next.startSequence &&
+        activity.previewOrder === next.previewOrder
+      );
+    })
+  );
+}
+
+function memberId(member: MemberRef): string {
+  if (member.kind === 'activity') return `tool/${member.toolUseId}`;
+  return member.toolUseId ? `tool/${member.toolUseId}` : member.rowId;
+}
+
+/**
+ * Segment source order before any Chat/Trajectory filtering. Rows remain Host
+ * references; a live tool preview can own a header but never becomes a message.
+ */
+export function projectProcessGroups(input: {
+  rows: readonly ProcessRow[];
+  toolActivity: readonly ProcessActivity[];
+  activeTurnId: string | null;
+  answerTurnId?: string | null;
+  previous?: readonly ProcessEntry[];
+  /** The slice ends before another source turn. */
+  followed?: boolean;
+  /** Only caller-known missing coverage, not gaps between raw event numbers. */
+  gapsBefore?: ReadonlySet<string>;
+}): ProcessProjection {
+  const entries: ProcessEntry[] = [];
+  const turns = new Map<string, TurnPresentation>();
+  const rowsById = new Map<string, ProcessRow>();
+  const positions: { rowId: string; order: HistoryOrder | undefined }[] = [];
+  const canonicalTools = new Set<string>();
+  const timingThrough = new Map<string, number | null>();
+  const progressed = new Set<string>();
+  const turn = (turnKey: string) => {
+    let value = turns.get(turnKey);
+    if (!value) {
+      value = {
+        turnKey,
+        timing: null,
+        active: input.activeTurnId === turnKey,
+        finalOutputIds: [],
+        answerOutputIds: [],
+        finalAnswerStarted: false,
+        interleavedInput: false,
+        worked: false,
+      };
+      turns.set(turnKey, value);
+    }
+    return value;
+  };
+
+  for (const row of input.rows) {
+    const rowId = stableRowId(row);
+    if (!rowsById.has(rowId))
+      positions.push({
+        rowId,
+        order: displayOrder(row),
+      });
+    // A paired result refreshes the original call's seat, not a second row.
+    if (!rowsById.has(rowId) || !row.tool?.call || row.tool.result) rowsById.set(rowId, row);
+    if (row.tool && (row.position === undefined || row.position.kind === 'live'))
+      canonicalTools.add(row.tool.toolUseId);
+    const rowTurn = historyTurnKey(row);
+    if (rowTurn === undefined) continue;
+    const presentation = turn(rowTurn);
+    if (row.position?.kind === 'imported') presentation.imported = true;
+    if (row.foldedWork) {
+      presentation.foldedWork = row.foldedWork;
+      presentation.worked = true;
+    }
+    const through = row.metadataThrough ?? null;
+    const previousThrough = timingThrough.get(rowTurn);
+    if (row.timing && (through === null || previousThrough == null || through >= previousThrough)) {
+      presentation.timing = row.timing;
+      timingThrough.set(rowTurn, through);
+    }
+    if (
+      row.finalOutput &&
+      row.role === 'assistant' &&
+      row.field === 'body' &&
+      !presentation.finalOutputIds.includes(rowId)
+    )
+      presentation.finalOutputIds.push(rowId);
+  }
+  if (input.activeTurnId) turn(input.activeTurnId);
+
+  const previousMembership = new Map<string, ProcessGroup>();
+  for (const entry of input.previous ?? []) {
+    if (entry.kind !== 'process') continue;
+    for (const member of entry.members) previousMembership.set(memberId(member), entry);
+  }
+  const groupKey = (turnKey: string, members: MemberRef[]) => {
+    const ids = members.map(memberId);
+    const offset = ids.findIndex((id) => previousMembership.has(id));
+    const previous = offset < 0 ? undefined : previousMembership.get(ids[offset]);
+    if (previous?.turnKey === turnKey) {
+      const oldIds = previous.members.map(memberId);
+      if (
+        oldIds.every((id, index) => ids[offset + index] === id) &&
+        ids.slice(offset + oldIds.length).every((id) => !previousMembership.has(id))
+      )
+        return previous.key;
+    }
+    // The first semantic source owns new groups, including a preview-only
+    // group's canonical handoff after a temporary history catchup gap. A split
+    // retains that owner's state only in the piece containing its first source.
+    return JSON.stringify(['process', turnKey, ids[0]]);
+  };
+  let current:
+    | { turnKey: string; members: MemberRef[]; workRowId?: string; first?: string }
+    | undefined;
+  const flush = (closed: boolean) => {
+    if (!current) return;
+    const presentation = turn(current.turnKey);
+    const { turnKey, members, workRowId, first } = current;
+    // A script is shown as the tools it ran, and as itself only when it fails.
+    const callers = new Set(
+      members.flatMap((member) => {
+        const call = member.kind === 'row' ? rowsById.get(member.rowId)!.tool?.call : undefined;
+        return call?.origin === 'code_mode' ? call.ancestorToolUseIds : [];
+      }),
+    );
+    const shown = members.filter(
+      (member) =>
+        !member.toolUseId ||
+        !callers.has(member.toolUseId) ||
+        (member.kind === 'row' && rowsById.get(member.rowId)!.tool?.result?.isError),
+    );
+    entries.push({
+      kind: 'process',
+      key: groupKey(
+        turnKey,
+        first
+          ? [
+              { kind: 'row', rowId: first },
+              ...members.filter((member) => memberId(member) !== first),
+            ]
+          : members,
+      ),
+      turnKey,
+      members,
+      workRowId,
+      rowIds: shown.flatMap((member) => (member.kind === 'row' ? [member.rowId] : [])),
+      toolIds: [
+        ...new Set(shown.flatMap((member) => (member.toolUseId ? [member.toolUseId] : []))),
+      ],
+      closed:
+        closed ||
+        presentation.imported === true ||
+        Boolean(presentation.timing?.finished) ||
+        presentation.finalOutputIds.length > 0,
+    });
+    current = undefined;
+  };
+  const moveAnswerToWork = (presentation: TurnPresentation) => {
+    if (presentation.answerOutputIds.length === 0) return;
+    presentation.worked = true;
+    presentation.answerOutputIds.length = 0;
+    presentation.finalAnswerStarted = false;
+  };
+  const append = (turnKey: string, member: MemberRef) => {
+    if (current?.turnKey !== turnKey) {
+      flush(true);
+      current = { turnKey, members: [] };
+    }
+    current!.members.push(member);
+    progressed.add(turnKey);
+    const presentation = turn(turnKey);
+    presentation.worked = true;
+    moveAnswerToWork(presentation);
+  };
+  const activities = input.toolActivity
+    .filter((activity) => !canonicalTools.has(activity.toolUseId))
+    .toSorted((left, right) => left.startSequence - right.startSequence);
+  let nextActivity = 0;
+  for (const position of positions) {
+    const row = rowsById.get(position.rowId)!;
+    while (nextActivity < activities.length) {
+      const activity = activities[nextActivity];
+      // A preview cut publishes its text parts before pending tool inputs.
+      const before =
+        activity.previewOrder !== undefined &&
+        activity.stepId !== undefined &&
+        row.modelPart?.stepId === activity.stepId &&
+        row.modelPart?.attemptId === activity.attemptId
+          ? false
+          : activity.previewOrder !== undefined && row.preview !== undefined
+            ? activity.previewOrder < row.preview.stepOrder
+            : compareOptionalOrder(
+                { path: [activity.startSequence], itemIndex: 0 },
+                position.order,
+              ) < Number(!row.work);
+      if (!before) break;
+      nextActivity += 1;
+      append(activity.turnId, { kind: 'activity', toolUseId: activity.toolUseId });
+    }
+    if (input.gapsBefore?.has(position.rowId)) flush(true);
+    const rowTurn = historyTurnKey(row);
+    if (current && current.turnKey !== rowTurn) flush(true);
+    // Imports preserve message roles and parts, but have no native run outcome.
+    // Keep their transcript text visible even when thinking or tool steps are closed.
+    if (rowTurn && row.position?.kind === 'imported') {
+      if (emptyThinking(row)) continue;
+      if (row.tool || row.field === 'thinking') {
+        append(rowTurn, { kind: 'row', rowId: position.rowId, toolUseId: row.tool?.toolUseId });
+      } else {
+        flush(true);
+        entries.push({ kind: 'message', key: position.rowId, rowId: position.rowId });
+      }
+      continue;
+    }
+    if (row.work && rowTurn) {
+      flush(true);
+      current = {
+        turnKey: rowTurn,
+        members: [],
+        workRowId: position.rowId,
+        first: row.work.firstToolUseId
+          ? memberId({ kind: 'activity', toolUseId: row.work.firstToolUseId })
+          : stableRowId({ ...row, work: undefined }),
+      };
+      progressed.add(rowTurn);
+      const presentation = turn(rowTurn);
+      presentation.worked = true;
+      moveAnswerToWork(presentation);
+      continue;
+    }
+    if (emptyThinking(row)) {
+      // An encrypted or not-yet-streamed thought can resume work without a visible row.
+      if (rowTurn) {
+        moveAnswerToWork(turn(rowTurn));
+        progressed.add(rowTurn);
+      }
+      continue;
+    }
+    const body = !row.tool && row.role === 'assistant' && row.field === 'body';
+    const outside =
+      body ||
+      (!row.tool && row.role === 'user' && !activityMessage(row.origin)) ||
+      row.role === 'failure' ||
+      row.role === 'compaction';
+    if (!rowTurn || outside) {
+      flush(true);
+      // A failure the turn recovered from folds away with its work.
+      if (row.role === 'failure' && rowTurn) turn(rowTurn).worked = true;
+      // A provider that keeps refusing (a rate limit, an overload) fails each retry
+      // with the same text; show the run once with its count.
+      const last = entries.at(-1);
+      const lastRow = last?.kind === 'message' ? rowsById.get(last.rowId) : undefined;
+      if (
+        row.role === 'failure' &&
+        last?.kind === 'message' &&
+        lastRow?.role === 'failure' &&
+        historyTurnKey(lastRow) === rowTurn &&
+        lastRow.text === row.text
+      ) {
+        last.repeats = (last.repeats ?? 1) + 1;
+        continue;
+      }
+      const message: MessageEntry = { kind: 'message', key: position.rowId, rowId: position.rowId };
+      if (rowTurn) {
+        const presentation = turn(rowTurn);
+        if (row.role === 'user' && progressed.has(rowTurn)) presentation.interleavedInput = true;
+        if (body && !row.finalOutput) {
+          message.processTurnKey = rowTurn;
+          if (rowTurn === input.answerTurnId && !row.timing?.finished) {
+            if (row.text) {
+              if (row.finalAnswer && !presentation.finalAnswerStarted) {
+                moveAnswerToWork(presentation);
+                presentation.finalAnswerStarted = true;
+              }
+              presentation.answerOutputIds.push(position.rowId);
+            }
+          } else {
+            presentation.worked = true;
+            moveAnswerToWork(presentation);
+          }
+        } else moveAnswerToWork(presentation);
+        if (body) progressed.add(rowTurn);
+      }
+      entries.push(message);
+    } else {
+      append(rowTurn, {
+        kind: 'row',
+        rowId: position.rowId,
+        ...(row.tool ? { toolUseId: row.tool.toolUseId } : {}),
+      });
+    }
+  }
+  for (; nextActivity < activities.length; nextActivity++) {
+    const activity = activities[nextActivity];
+    append(activity.turnId, { kind: 'activity', toolUseId: activity.toolUseId });
+  }
+  flush(input.followed ?? false);
+  return { entries, turns, rowsById };
+}

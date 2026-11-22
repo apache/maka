@@ -1,0 +1,15 @@
+---
+import DocPage from '../../components/DocPage.astro';
+import { pages, type Page } from '../../lib/sections';
+
+export async function getStaticPaths() {
+  return (await pages('en')).map((page) => ({
+    params: { section: page.section, slug: page.slug === 'index' ? undefined : page.slug },
+    props: { page },
+  }));
+}
+
+const { page } = Astro.props as { page: Page };
+---
+
+<DocPage page={page} />

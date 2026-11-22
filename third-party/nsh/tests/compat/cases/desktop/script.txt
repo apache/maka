@@ -1,0 +1,129 @@
+# What a user does and sees (compat/apps.rs): each case after its tap.
+platform macos
+# A title supplements the destination instead of hiding it.
+tap id:case-link-hover
+event id:destination onMouseEnter
+wait 600
+expect Documentation reference
+expect https://example.com
+expect /docs
+event id:destination onMouseLeave
+wait 20
+absent Documentation reference
+# window-open
+tap id:case-window-open
+expect Windows: main
+expect Get: true none none
+tap id:open
+expect Result: same true, main false, parent true, state null
+expect Windows: main,first,second
+expect Get: true first second
+expect In first: main false, parent none, shared 0
+expect In second: main false, parent main, shared 0
+# One engine renders every window: the app's signals reach them.
+tap id:shared
+expect In first: main false, parent none, shared 1
+tap id:close
+expect Result: closed, state null, get null
+expect Windows: main
+expect Closes: 1
+absent In first: main false, parent none, shared 1
+covers [nsh/desktop] Window
+covers [nsh/desktop] windows
+covers [nsh/desktop] currentWindow
+# window-element
+tap id:case-window-element
+expect Windows: main
+expect Open: false changes none events none
+absent Never shown
+tap id:toggle
+expect Windows: main,inspector
+expect Inside inspector
+tap id:rename
+expect Inside inspector
+# The app closed it: no onOpenChange.
+tap id:toggle
+expect Windows: main
+expect Open: false changes none events none
+tap id:toggle
+expect Inside inspector
+tap id:close
+expect Windows: main
+expect Open: false changes false close events none
+absent Inside inspector
+covers [nsh/desktop] Window
+# window-ref
+tap id:case-window-ref
+expect Result: not called
+tap id:calls
+expect Result: done, state null, title bar 0 0 0, wrong mode TypeError
+expect Document
+tap id:close
+expect Result: closed null
+absent Document
+# window-access
+tap id:case-window-access
+tap id:overlay
+expect Result: overlay ERR_ACCESS_DENIED windows hud
+tap id:many
+expect Result: fourth ERR_ACCESS_DENIED windows d
+expect a
+expect c
+absent d
+tap id:cleanup
+expect Result: closed
+tap id:outside
+expect Result: outside TypeError
+covers [nsh/desktop] currentWindow
+# window-props
+tap id:case-window-props
+expect Document
+prop id:bar desktop.windowDrag true
+prop id:minimize desktop.windowControl minimize
+prop id:maximize desktop.windowControl maximize
+prop id:close desktop.windowControl close
+prop id:edge desktop.windowResize right
+prop id:corner desktop.windowResize bottomRight
+covers [props] desktop.windowControl
+covers [props] desktop.windowResize
+# tray-click
+tap id:case-tray-click
+expect Tray clicks: none
+# A click where the system says where the icon is (macOS, Windows): its
+# frame on the screen, in points.
+tray click 1180 0 32 24
+expect Tray clicks: 1180 0 32 24
+# Where it does not (Linux): null.
+tray click
+expect Tray clicks: 1180 0 32 24, null
+covers [nsh/desktop] Tray
+# home-dir-access
+tap id:case-home-dir-access
+expect Home: Error ERR_ACCESS_DENIED homeDir ""
+covers [os] homedir
+# launch-at-login
+tap id:case-launch-at-login
+# A run that cannot launch at login (headless, as a view embedded in another
+# app and `nsh run`): reading it is false, turning it on rejects, and so does
+# a wrong use, with a TypeError.
+expect Launch at login: boolean false
+tap id:enable
+expect Set: true ERR_FEATURE_UNAVAILABLE_ON_PLATFORM
+tap id:misuse
+expect Misuse: TypeError
+covers [nsh/desktop] Application
+
+# Hover tracks pass presses through while the content fits, and start
+# receiving the pointer once it grows beyond the viewport on their axis.
+tap id:case-scrollbar-hover
+expect Grow
+style label:"Vertical hover bar" pointerEvents none
+style label:"Horizontal hover bar" pointerEvents none
+tap id:resize-content
+expect Shrink
+style label:"Vertical hover bar" pointerEvents auto
+style label:"Horizontal hover bar" pointerEvents auto
+tap id:resize-content
+expect Grow
+style label:"Vertical hover bar" pointerEvents none
+style label:"Horizontal hover bar" pointerEvents none

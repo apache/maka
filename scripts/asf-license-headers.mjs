@@ -27,7 +27,7 @@
  *      recorded reason, or an audit failure. Nothing is dropped from the tree
  *      under audit; the enumeration only decides which tree that is.
  *   2. In every covered file the ASF license text occurs exactly once, and
- *      that occurrence is the canonical rendering at the top of the file.
+ *      that occurrence has accepted syntax at the top of the file.
  *
  * Both are properties of the artifact, stated without reference to what
  * `write` produces. That separation is the point: an audit defined as "starts
@@ -36,10 +36,10 @@
  *
  * So detection is deliberately loose and acceptance deliberately strict.
  * `countLicenseText` finds the license text through any comment syntax,
- * indentation, or line wrapping; only the exact canonical rendering is
- * accepted. `write` is correspondingly dumb — it inserts a header where there
- * is none and refuses every other state, because every other state is a
- * decision a person has to make.
+ * indentation, or line wrapping; acceptance preserves the license lines,
+ * allowing only horizontal spacing differences inside an accepted syntax.
+ * `write` inserts a header where there is none and refuses every other state,
+ * because every other state is a decision a person has to make.
  *
  * See `.github/ASF_SOURCE_HEADERS.md` for the policy this file implements.
  */
@@ -90,6 +90,7 @@ export const licenseLines = [
 const commentStyles = {
   block: { open: '/*', line: ' *', close: ' */', prefixPattern: /^#![^\n]*\n/ },
   slash: { linePrefix: '//' },
+  dash: { linePrefix: '--' },
   hash: { linePrefix: '#', prefixPattern: /^#![^\n]*\n/ },
   // A doctype must open an HTML file, and YAML front matter must open a
   // Markdown file, so the header follows either one.
@@ -106,38 +107,41 @@ const commentStyles = {
 
 /**
  * File extensions covered by the header policy, and the comment syntax used
- * for each. A covered file must carry the header; nothing else may.
+ * for each, in writer preference order. A covered file must carry the header.
  */
 const coveredExtensions = new Map([
-  ['.astro', 'astro'],
-  ['.cjs', 'block'],
-  ['.css', 'block'],
-  ['.html', 'html'],
-  ['.js', 'block'],
-  ['.jsonc', 'slash'],
-  ['.md', 'html'],
-  ['.mjs', 'block'],
-  ['.mts', 'block'],
-  ['.nsh', 'hash'],
-  ['.ps1', 'hash'],
-  ['.py', 'hash'],
-  ['.rs', 'block'],
-  ['.sh', 'hash'],
-  ['.sql', 'block'],
-  ['.swift', 'block'],
-  ['.toml', 'hash'],
-  ['.ts', 'block'],
-  ['.tsx', 'block'],
-  ['.yaml', 'hash'],
-  ['.yml', 'hash'],
+  ['.astro', ['astro']],
+  ['.cjs', ['block']],
+  ['.css', ['block']],
+  ['.ftl', ['hash']],
+  ['.html', ['html']],
+  ['.js', ['block']],
+  ['.jsonc', ['slash']],
+  ['.md', ['html']],
+  ['.m', ['block']],
+  ['.mjs', ['block']],
+  ['.mts', ['block']],
+  ['.nsh', ['hash']],
+  ['.ps1', ['hash']],
+  ['.py', ['hash']],
+  ['.rc', ['block']],
+  ['.rs', ['block']],
+  ['.sh', ['hash']],
+  ['.sql', ['block', 'dash']],
+  ['.svg', ['html']],
+  ['.swift', ['block']],
+  ['.toml', ['hash']],
+  ['.ts', ['block']],
+  ['.tsx', ['block']],
+  ['.yaml', ['hash']],
+  ['.yml', ['hash']],
 ]);
 
 /** Covered files whose name carries no extension. */
 const coveredNames = new Map([
-  ['Dockerfile', 'hash'],
-  ['pre-commit', 'hash'],
-  // A POSIX shell script that the Eval egress sidecar invokes by name.
-  ['network-policy', 'hash'],
+  ['Dockerfile', ['hash']],
+  ['pre-commit', ['hash']],
+  ['justfile', ['hash']],
 ]);
 
 const startsWith = (prefix) => (path) => path === prefix || path.startsWith(`${prefix}/`);
@@ -158,6 +162,30 @@ const isUnder =
   (path) =>
     startsWith(prefix)(path) && hasExtension(...extensions)(path);
 
+// Finite reviewed upstream files, not a blanket third-party directory exemption.
+// New Maka-only files (including platform/cleanup.rs) still require ASF headers.
+const upstreamFiles = new Set(
+  [
+    'async-io',
+    'deno-tls',
+    'deno-node-sqlite',
+    'gix-index',
+    'gix-discover',
+    'sqlx-sqlite',
+    'reqwest',
+    'image-webp',
+    'termina',
+    'nsh',
+    'playwright',
+  ].flatMap((project) =>
+    Object.keys(
+      JSON.parse(
+        readFileSync(join(defaultRepoRoot, `third-party/${project}/upstream.json`), 'utf8'),
+      ).files,
+    ).map((path) => `third-party/${project}/${path}`),
+  ),
+);
+
 /**
  * The reviewed exclusion list. Order matters only for reporting: a file is
  * attributed to the first rule that matches it.
@@ -175,27 +203,32 @@ const isUnder =
  */
 export const exclusionRules = [
   {
+    id: 'network-test-certificates',
+    justification:
+      'Generated PEM certificates and a public test-only key for loopback TLS acceptance. Their format is consumed directly by TLS parsers; provenance and regeneration guidance live in the adjacent README.md.',
+    matches: isOneOf(
+      'platform/network/tests/integration/fixtures/ca.pem',
+      'platform/network/tests/integration/fixtures/localhost.pem',
+      'platform/network/tests/integration/fixtures/localhost.key',
+    ),
+  },
+  {
     id: 'asf-release-documents',
     justification:
       'These files are the license, notice, and incubation disclosure themselves. ASF policy fixes their contents, so a header inside them would be circular.',
-    matches: isOneOf('DISCLAIMER-WIP', 'LICENSE', 'NOTICE'),
+    matches: isOneOf('DISCLAIMER', 'LICENSE', 'NOTICE'),
   },
   {
     id: 'third-party-license-texts',
     justification:
-      'Third-party license and notice texts redistributed with the product. An ASF header on any of them would assert ASF provenance over content ASF does not own. The upstream texts additionally have to stay byte-identical to what their projects published, and the aggregated notices are generator output that a hand-written header would not survive.',
-    matches: isOneOf(
-      'apps/desktop/resources/licenses/cargo/THIRD_PARTY_NOTICES.txt',
-      'apps/desktop/resources/licenses/npm/THIRD_PARTY_NOTICES.txt',
-      'apps/desktop/resources/licenses/renderer/ALLOGO_LICENSE.txt',
-      'apps/desktop/resources/licenses/renderer/SIMPLE_ICONS_LICENSE.md',
-      'apps/desktop/resources/licenses/renderer/TDESIGN_ICONS_LICENSE.txt',
-      'apps/desktop/src/renderer/public/THIRD_PARTY_LICENSES.txt',
-      'packages/cli/RUNTIME_HOST_PEER_DEPENDENCIES.rust.tsv',
-      'packages/cli/RUNTIME_HOST_PEER_THIRD_PARTY_NOTICES.txt',
-      'packages/cli/THIRD_PARTY_NOTICES.txt',
-      'patches/run-2.1.4-notices.md',
-    ),
+      'Third-party license and notice texts redistributed with the product. An ASF header on any of them would assert ASF provenance over content ASF does not own. The upstream texts additionally have to stay byte-identical to what their projects published. Some aggregated notices are generator output that a hand-written header would not survive.',
+    matches: (path) =>
+      isOneOf(
+        'products/maka/cli/DEPENDENCIES.rust.tsv',
+        'platform/computer-use/THIRD_PARTY_NOTICES',
+        'products/maka/cli/THIRD_PARTY_NOTICES.txt',
+        'products/maka/workbench/tests/fonts/OFL.txt',
+      )(path) || path.startsWith('scripts/rust/licenses/'),
   },
   {
     id: 'third-party-source',
@@ -203,59 +236,45 @@ export const exclusionRules = [
       'Work of third parties kept under its own license, including files Maka adapted from an upstream project and therefore does not wholly own. ASF policy treats the non-Maka portion of a mixed-origin file as third-party work, so Maka may not assert a whole-file ASF header over one; whether a heavily modified file should instead carry a combined header is a PPMC decision, not a mechanical sweep. Their attribution belongs to LICENSE and the NOTICE audit, not to this gate.',
     matches: (path) =>
       isOneOf(
-        'experiments/windows-sandbox/launcher/Cargo.lock',
-        'patches/run-2.1.4-source.diff',
-        // Adapted from opencode under MIT; attribution pinned by #3325.
-        'packages/runtime/src/edit-replace.ts',
-        'packages/runtime/src/tool-output.ts',
-        // Adapted from Vercel AI SDK material; recorded by the #2907 origin audit.
-        'packages/runtime/src/model-protocol.ts',
-        'packages/eval/harbor/deepseek-harness-profile/cordis.patch.yml',
-        'packages/ui/src/astryx-chat-reasoning.tsx',
-        'apps/desktop/src/renderer/computer-use-overlay/engine/palette.ts',
-        'apps/desktop/src/renderer/computer-use-overlay/engine/cursor-engine.ts',
+        'products/maka/workbench/app/Icon.tsx',
+        'products/maka/workbench/app/lucide.ts',
+        'products/maka/workbench/scripts/lucide.py',
+        'products/maka/workbench/tests/fonts/IBMPlexSans-Regular.ttf',
+        // Codex Apache-2.0 adaptations; exact origins and modifications in SOURCE.md / LICENSE.
+        'plugins/workspace/workspace-files/patch/src/lib.rs',
+        'plugins/workspace/workspace-files/patch/src/parser.rs',
+        'plugins/workspace/workspace-files/patch/src/seek_sequence.rs',
+        'plugins/workspace/workspace-files/patch/src/text_file.rs',
+        'plugins/workspace/workspace-files/patch/src/update.rs',
+        'platform/sandbox/src/seatbelt/base.sbpl',
+        'platform/sandbox/src/seatbelt/network.sbpl',
       )(path) ||
-      isUnder('apps/desktop/src/renderer/assets/provider-brands', '.svg')(path) ||
+      upstreamFiles.has(path) ||
       isUnder('patches', '.patch')(path),
   },
   {
     id: 'generated-files',
     justification:
       'Mechanically derived from a generator in this repository. A hand-written header would be reverted by the next regeneration; the generators themselves carry the header.',
-    matches: isOneOf(
-      'apps/desktop/src/renderer/astryx-theme/maka.css',
-      'apps/desktop/src/renderer/astryx-theme/maka.d.ts',
-      'apps/desktop/src/renderer/astryx-theme/maka.js',
-      'docs/astryx-surface-file-inventory.md',
-      'docs/astryx-surface-file-inventory.paths',
-      'docs/windows-test-inventory.md',
-      'native/gitoxide-helper/Cargo.lock',
-      'native/runtime-host-peer/Cargo.lock',
-      'native/runtime-host-windows-task-launcher/Cargo.lock',
-      'packages/runtime/src/bundled-skill-catalog.generated.ts',
-    ),
+    matches: isOneOf('Cargo.lock', 'third-party/termina/Cargo.lock'),
   },
   {
     id: 'verbatim-runtime-payloads',
     justification:
-      'Bundled skill payloads are embedded in the generated catalog verbatim, pinned there by content digest, and delivered to the model as instructions. A header would be republished as agent prompt text and would invalidate the recorded digests. Each payload is listed, so a new bundled skill is reviewed rather than inheriting this reason from its directory.',
-    matches: isOneOf('packages/runtime/resources/bundled-skills/computer-use/SKILL.md'),
+      'Bundled skills and runtime API documentation are embedded verbatim and delivered to the model as instructions or tool output. Skill bytes also participate in catalog and installation digests. A header would become agent prompt text and change those digests. Each payload is listed, so new content is reviewed rather than inheriting this reason from its directory.',
+    matches: isOneOf(
+      'platform/computer-use/skills/maka-cua/SKILL.md',
+      'platform/computer-use/src/api.md',
+      'platform/computer-use/src/api.zh-CN.md',
+      'platform/computer-use/src/api.zh-TW.md',
+      'plugins/agent/tools/src/cell/python.md',
+    ),
   },
   {
     id: 'verbatim-github-templates',
     justification:
       'GitHub copies this file into every new pull request description. A header here would be republished into unrelated prose instead of licensing a source file.',
     matches: isOneOf('.github/pull_request_template.md'),
-  },
-  {
-    id: 'byte-significant-fixtures',
-    justification:
-      'Recorded inputs and captured historical state. Tests assert on their exact bytes or parse them with a strict reader, and their value is that they reproduce what a real system produced rather than that they are authored source.',
-    matches: (path) =>
-      isOneOf(
-        'packages/storage/src/__tests__/fixtures/codex-rollout-v0.144.jsonl',
-        'packages/storage/test-fixtures/workflow-schema-v8.sql',
-      )(path) || isUnder('docs/eval', '.csv')(path),
   },
   {
     id: 'no-comment-syntax',
@@ -266,8 +285,8 @@ export const exclusionRules = [
   {
     id: 'binary-files',
     justification:
-      'Binary image, video, and database content. There is no text position in these formats where a header could be added without corrupting the file.',
-    matches: hasExtension('.png', '.mp4', '.sqlite'),
+      'Binary image and database content. There is no text position in these formats where a header could be added without corrupting the file.',
+    matches: hasExtension('.ico', '.png', '.sqlite'),
   },
   {
     id: 'no-creative-content',
@@ -275,13 +294,7 @@ export const exclusionRules = [
       'Version-control metadata and platform manifests whose content is a list of names or required platform keys. Apache RAT excludes the same kind of file by default.',
     matches: (path) =>
       isNamed('.gitignore')(path) ||
-      isOneOf(
-        '.git-blame-ignore-revs',
-        '.gitattributes',
-        '.mailmap',
-        'apps/desktop/build/entitlements.mac.inherit.plist',
-        'apps/desktop/build/entitlements.mac.plist',
-      )(path),
+      isOneOf('.git-blame-ignore-revs', '.gitattributes', '.mailmap')(path),
   },
   {
     id: 'website-machine-readable-entry-points',
@@ -325,45 +338,31 @@ const provenanceMarkers = [
  */
 const reviewedProvenance = new Map([
   [
-    'website/src/copy/en.ts',
-    'Website footer copy. The copyright line it carries is the ASF’s own, as the site footer must show it.',
-  ],
-  [
-    'website/test/site.test.mjs',
-    'Website test. It quotes the ASF copyright line to assert the built footer carries it.',
-  ],
-  [
-    '.github/ASF_SOURCE_HEADERS.md',
-    'Documents the marker patterns; the match is the policy describing its own rule.',
+    'plugins/agent/model/src/adapters/error/overflow.rs',
+    'Maka Rust adaptation of OpenCode MIT provider error recognition; upstream copyright and license are preserved in LICENSE and docs/code-origin-audit.md.',
   ],
   [
     'docs/code-origin-audit.md',
-    'Maka-authored audit report whose subject is other projects’ licensing. The copyright lines it quotes are its findings, not a claim over the file.',
+    'Maka-authored source record quotes the attributed OpenCode copyright; the upstream MIT license is preserved in LICENSE.',
   ],
   [
-    'scripts/asf-license-headers.mjs',
-    'Defines the marker patterns; the match is this module quoting its own rule.',
+    'plugins/workspace/workspace-files/patch/SOURCE.md',
+    'Maka-authored adaptation record quoting the attributed upstream copyright.',
   ],
   [
-    'scripts/asf-license-headers.test.mjs',
-    'Synthetic fixtures written to exercise the provenance markers.',
+    'platform/sandbox/README.md',
+    'Maka-authored sandbox documentation records attributed Codex source provenance.',
   ],
   [
-    'scripts/generate-third-party-notices.mjs',
-    'Maka-authored generator that emits upstream copyright lines into THIRD_PARTY_NOTICES.txt. The copyright it names is its output, not its own.',
+    'platform/sandbox/README.zh-CN.md',
+    'Maka-authored sandbox documentation records attributed Codex source provenance.',
   ],
-  [
-    'scripts/generate-runtime-host-peer-notices.mjs',
-    'Maka-authored generator that emits upstream copyright lines into the Runtime Host peer notices. The copyright it names is its output, not its own.',
-  ],
-  [
-    'scripts/source-legal-inventory.test.mjs',
-    'Legal inventory tests quote upstream copyright and license notices to check their preservation.',
-  ],
-  [
-    'scripts/sync-model-metadata.mjs',
-    'Maka-authored generator that writes the models.dev attribution into the header of the catalog it generates. The copyright it names is its output, not its own.',
-  ],
+  ['website/src/copy/en.ts', 'Website footer copy includes the ASF copyright statement.'],
+  ['website/src/copy/zh-CN.ts', 'Website footer copy includes the ASF copyright statement.'],
+  ['website/test/site.test.mjs', 'Checks the ASF copyright statement in the built website.'],
+  ['.github/ASF_SOURCE_HEADERS.md', 'Documents the provenance marker policy.'],
+  ['scripts/asf-license-headers.mjs', 'Defines provenance markers and their interpretation.'],
+  ['scripts/asf-license-headers.test.mjs', 'Synthetic fixtures exercise provenance detection.'],
 ]);
 
 /**
@@ -392,7 +391,7 @@ export function renderHeader(styleName) {
   return `${style.open}\n${body}\n${style.close}\n`;
 }
 
-export function commentStyleFor(path) {
+export function commentStylesFor(path) {
   const name = basename(path);
   if (coveredNames.has(name)) return coveredNames.get(name);
   const extension = name.includes('.') ? name.slice(name.lastIndexOf('.')) : '';
@@ -407,23 +406,41 @@ export function commentStyleFor(path) {
 export function classifyPath(path) {
   const rule = exclusionRules.find((candidate) => candidate.matches(path));
   if (rule) return { rule: rule.id, status: 'excluded' };
-  const style = commentStyleFor(path);
-  if (style) return { status: 'covered', style };
+  const styles = commentStylesFor(path);
+  if (styles) return { status: 'covered', styles };
   return { status: 'unclassified' };
 }
 
-/**
- * Acceptance, strictly: the canonical rendering byte for byte, first in the
- * file apart from a shebang, a doctype, or Markdown front matter.
- */
-export function findHeaderOffset(contents, styleName) {
-  const style = commentStyles[styleName];
-  const prefix = style.prefixPattern?.exec(contents)?.[0] ?? '';
-  return contents.startsWith(renderHeader(styleName), prefix.length) ? prefix.length : -1;
+/** Accepted syntax at the top, with unchanged license lines apart from horizontal spacing. */
+export function findHeaderOffset(contents, styleNames) {
+  const normalize = (line) => line.replace(/^[ \t]+|[ \t]+$/g, '').replace(/[ \t]+/g, ' ');
+  for (const styleName of styleNames) {
+    const style = commentStyles[styleName];
+    const prefix = style.prefixPattern?.exec(contents)?.[0] ?? '';
+    const bodyStart = style.open ? 1 : 0;
+    const lineCount = licenseLines.length + (style.open ? 2 : 0);
+    const lines = contents.slice(prefix.length).split('\n', lineCount + 1);
+    if (lines.length <= lineCount) continue;
+    if (style.open && (lines[0] !== style.open || lines[lineCount - 1] !== style.close)) continue;
+    const marker = style.linePrefix ?? style.line;
+    if (
+      licenseLines.every((expected, index) => {
+        const line = lines[bodyStart + index];
+        const body = line.startsWith(marker)
+          ? line.slice(marker.length)
+          : marker.trim() === '' && line === ''
+            ? ''
+            : undefined;
+        return body !== undefined && normalize(body) === normalize(expected);
+      })
+    )
+      return prefix.length;
+  }
+  return -1;
 }
 
-export function hasHeader(contents, styleName) {
-  return findHeaderOffset(contents, styleName) >= 0;
+export function hasHeader(contents, styleNames) {
+  return findHeaderOffset(contents, styleNames) >= 0;
 }
 
 /** The opening line of the ASF header, which every rendering of it contains. */
@@ -432,11 +449,11 @@ const licenseMarker = licenseLines[0];
 /**
  * Detection, loosely: comment punctuation and line wrapping flattened away, so
  * the license text is found whatever syntax it was written in — a `//` header,
- * a JSDoc block, `#`, an HTML comment, any indentation, an `https` variant of
+ * a JSDoc block, `#`, SQL `--`, an HTML comment, an `https` variant of
  * the URL, or a rewrapped paragraph.
  */
 export function countLicenseText(contents) {
-  const flattened = contents.replace(/[*#/]/g, ' ').replace(/\s+/g, ' ');
+  const flattened = contents.replace(/[*#/-]/g, ' ').replace(/\s+/g, ' ');
   let count = 0;
   let index = flattened.indexOf(licenseMarker);
   while (index >= 0) {
@@ -450,11 +467,11 @@ export function countLicenseText(contents) {
  * How a covered file stands against property 2. Only `absent` is safe for a
  * program to act on; every other state is one a person has to resolve.
  */
-export function classifyHeader(contents, styleName, { textAsData = false } = {}) {
+export function classifyHeader(contents, styleNames, { textAsData = false } = {}) {
   const occurrences = countLicenseText(contents);
   if (occurrences === 0) return 'absent';
   if (occurrences > 1 && !textAsData) return 'duplicated';
-  return hasHeader(contents, styleName) ? 'canonical' : 'unrecognized';
+  return hasHeader(contents, styleNames) ? 'canonical' : 'unrecognized';
 }
 
 export class HeaderNotWritableError extends Error {
@@ -462,7 +479,7 @@ export class HeaderNotWritableError extends Error {
     super(
       status === 'duplicated'
         ? 'the file already contains the ASF license text more than once; remove the extra copy by hand'
-        : 'the file already carries the ASF license text in a form this policy does not render; reconcile it by hand',
+        : 'the file already carries the ASF license text in a form this policy does not recognize; reconcile it by hand',
     );
     this.name = 'HeaderNotWritableError';
     this.status = status;
@@ -474,10 +491,11 @@ export class HeaderNotWritableError extends Error {
  * license text in some other shape is left alone and reported, because
  * rewriting it would mean deciding what someone else's rendering meant.
  */
-export function applyHeader(contents, styleName, options) {
-  const status = classifyHeader(contents, styleName, options);
+export function applyHeader(contents, styleNames, options) {
+  const status = classifyHeader(contents, styleNames, options);
   if (status === 'canonical') return contents;
   if (status !== 'absent') throw new HeaderNotWritableError(status);
+  const styleName = styleNames[0];
   const style = commentStyles[styleName];
   const prefix = style.prefixPattern?.exec(contents)?.[0] ?? '';
   const rest = contents.slice(prefix.length);
@@ -534,7 +552,14 @@ function listCheckoutFiles(root) {
   )
     .split('\0')
     .filter(Boolean);
-  const unique = [...new Set(names)].sort();
+  const deleted = new Set(
+    execFileSync('git', ['ls-files', '-z', '--deleted'], {
+      cwd: root,
+      encoding: 'utf8',
+      maxBuffer: maxCommandBuffer,
+    }).split('\0'),
+  );
+  const unique = [...new Set(names)].filter((path) => !deleted.has(path)).sort();
   const ignored = exportIgnoredPaths(root, unique);
   const released = unique.filter((path) =>
     path
@@ -631,7 +656,7 @@ export function auditTree({ root = defaultRepoRoot } = {}) {
     const classification = classifyPath(path);
     if (classification.status !== 'covered') continue;
     const contents = readFileSync(join(root, path), 'utf8');
-    const status = classifyHeader(contents, classification.style, {
+    const status = classifyHeader(contents, classification.styles, {
       textAsData: licenseTextAsData.has(path),
     });
     if (status === 'absent') result.missing.push(path);
@@ -663,7 +688,7 @@ export function auditStaged({ root = defaultRepoRoot } = {}) {
       encoding: 'utf8',
       maxBuffer: maxCommandBuffer,
     });
-    const status = classifyHeader(contents, classification.style, {
+    const status = classifyHeader(contents, classification.styles, {
       textAsData: licenseTextAsData.has(path),
     });
     if (status === 'absent') result.missing.push(path);
@@ -689,7 +714,7 @@ export function writeHeaders({ root = defaultRepoRoot } = {}) {
     const contents = readFileSync(absolutePath, 'utf8');
     let updated;
     try {
-      updated = applyHeader(contents, classification.style, {
+      updated = applyHeader(contents, classification.styles, {
         textAsData: licenseTextAsData.has(path),
       });
     } catch (error) {
@@ -739,13 +764,16 @@ function runCheck({ report, root, staged = false }) {
     ],
     [
       result.unrecognized,
-      'carry the ASF license text in a form this policy does not render. Reconcile each one by hand rather than adding a second header',
+      'carry the ASF license text in a form this policy does not recognize. Reconcile each one by hand rather than adding a second header',
     ],
     [
       result.unreviewedProvenance,
       'claim a third-party origin — an SPDX identifier, a foreign copyright line, or an adaptation notice — while carrying an ASF header. Record the decision in `reviewedProvenance`, or exclude the file as third-party source',
     ],
-    [result.missing, 'are missing the ASF license header. Run `npm run write:asf-headers`'],
+    [
+      result.missing,
+      'are missing the ASF license header. Run `node scripts/asf-license-headers.mjs write`',
+    ],
   ];
 
   let failed = false;

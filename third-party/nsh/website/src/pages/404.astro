@@ -1,0 +1,50 @@
+---
+import BaseLayout from '../layouts/BaseLayout.astro';
+import Nav from '../components/Nav.astro';
+import SiteFooter from '../components/SiteFooter.astro';
+import Button from '../components/ui/Button.astro';
+import { url } from '../lib/site';
+---
+
+<BaseLayout title="Page not found" description="The page you are looking for does not exist." robots="noindex">
+  <Nav lang="en" currentPath="/404" langHref={url('zh-CN')} />
+  <main class="not-found" id="main">
+    <p class="not-found__code">404</p>
+    <h1>This page does not exist.</h1>
+    <p class="not-found__zh" lang="zh-CN">页面不存在。</p>
+    <div class="not-found__actions">
+      <Button size="lg" href={url('')}>Go home</Button>
+      <Button size="lg" variant="secondary" href={url('docs')}>Read the guide</Button>
+    </div>
+  </main>
+  <SiteFooter lang="en" />
+</BaseLayout>
+
+<script is:inline>
+  // A Chinese URL that is missing gets Chinese links.
+  if (/^\/(?:[^/]+\/)*zh-CN(?:\/|$)/.test(location.pathname)) {
+    document.documentElement.lang = 'zh-CN';
+    var links = document.querySelectorAll('.not-found__actions a');
+    links[0].textContent = '返回首页';
+    links[0].href = links[0].getAttribute('href').replace(/\/?$/, '/zh-CN').replace('//', '/');
+    links[1].textContent = '阅读指南';
+    links[1].href = links[1].getAttribute('href').replace(/docs$/, 'zh-CN/docs');
+  }
+</script>
+
+<style>
+  .not-found {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0.75rem;
+    min-height: calc(100vh - var(--nav-height) - 12rem);
+    padding: 4rem 1rem;
+    text-align: center;
+  }
+  .not-found__code { margin: 0; color: var(--muted-foreground); font: 600 0.75rem/1 var(--font-mono); letter-spacing: 0.14em; }
+  h1 { margin: 0; font-size: clamp(1.8rem, 4vw, 2.6rem); font-weight: 680; letter-spacing: -0.04em; }
+  .not-found__zh { margin: 0; color: var(--muted-foreground); }
+  .not-found__actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 0.6rem; margin-top: 1rem; }
+</style>

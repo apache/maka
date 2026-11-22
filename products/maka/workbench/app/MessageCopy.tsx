@@ -1,0 +1,185 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import type { HistoryRowAddress } from '../../../../packages/plugin-sdk/src/index.js';
+import { createText, UiError, errorText, message as uiMessage } from './text';
+import { tr } from './locale';
+import { cleanup, computed, inputAction, signal, Text, View } from 'nsh';
+import { Clipboard } from 'nsh';
+import { useHost } from './host';
+import { messageBytes, sameHistoryRow, type Row } from './history';
+import type { MessageMenu } from './messageMenu';
+import { C, IconButton } from './ui';
+
+export type OriginalMessage = {
+  sessionId: string;
+  key: string;
+  role: 'user' | 'assistant';
+  position: HistoryRowAddress;
+  through: number;
+};
+const sameMessage = (left: OriginalMessage | null, right: OriginalMessage | null) =>
+  left === right ||
+  (left !== null &&
+    right !== null &&
+    left.sessionId === right.sessionId &&
+    left.key === right.key &&
+    left.role === right.role &&
+    sameHistoryRow(left.position, right.position));
+
+/** The whole original text of a message, read page by page; null once it is no longer current. */
+export async function readOriginal(
+  host: ReturnType<typeof useHost>,
+  original: OriginalMessage,
+  current: () => boolean,
+): Promise<string | null> {
+  let content = '';
+  let offset = 0;
+  let total: number | null = null;
+  for (;;) {
+    const page = await host.query('agent', 'source', {
+      sessionId: original.sessionId,
+      through: original.through,
+      source: { kind: 'row', position: original.position },
+      field: 'body',
+      position: offset === 0 ? { kind: 'start' } : { kind: 'after', offset },
+    });
+    if (!current()) return null;
+    const source = page.source;
+    const end = offset + messageBytes(source.text);
+    if (
+      page.kind !== 'ready' ||
+      page.through !== original.through ||
+      !sameHistoryRow(source.position, original.position) ||
+      source.field !== 'body' ||
+      source.role !== original.role ||
+      source.format !== 'text' ||
+      source.path != null ||
+      source.offset !== offset ||
+      !Number.isSafeInteger(source.totalBytes) ||
+      source.totalBytes < 0 ||
+      (total !== null && source.totalBytes !== total) ||
+      end > source.totalBytes ||
+      (end === offset && end !== source.totalBytes)
+    ) {
+      throw new UiError('The original message source could not be verified.');
+    }
+    total = source.totalBytes;
+    content += source.text;
+    offset = end;
+    if (offset === total) break;
+  }
+  return content;
+}
+
+/** Copy one canonical body, including text outside the loaded history window. */
+export function MessageCopy(props: {
+  compact?: boolean;
+  row(): Row;
+  ownerKey(): string;
+  sessionId: string;
+  through(): number;
+  menu?: MessageMenu;
+}) {
+  const host = useHost();
+  const busy = signal(false);
+  const notice = createText();
+  const failed = signal(false);
+  let alive = true;
+  cleanup(() => {
+    alive = false;
+  });
+  const target = computed<OriginalMessage | null>(
+    () => {
+      const row = props.row();
+      if (row.field !== 'body' || !row.position) return null;
+      if (
+        row.role !== 'user' &&
+        (row.role !== 'assistant' || (!row.finalOutput && row.position.kind === 'live'))
+      )
+        return null;
+      return {
+        sessionId: props.sessionId,
+        key: props.ownerKey(),
+        role: row.role,
+        position: { ...row.position },
+        through: row.metadataThrough ?? props.through(),
+      };
+    },
+    // A canonical body is immutable at its position. New metadata fences
+    // do not replace the original copy target while another turn streams.
+    { equals: sameMessage },
+  );
+  const owns = (original: OriginalMessage) => alive && sameMessage(target(), original);
+  const copy = async (original: OriginalMessage | null) => {
+    if (original === null || !owns(original) || busy()) return;
+    busy.set(true);
+    notice.set('');
+    failed.set(false);
+    try {
+      const content = await readOriginal(host, original, () => owns(original));
+      if (content === null) return;
+      await Clipboard.writeText(content);
+      if (owns(original))
+        notice.set(
+          original.role === 'user' ? uiMessage('User message copied') : uiMessage('Message copied'),
+        );
+    } catch (reason) {
+      if (owns(original)) {
+        failed.set(true);
+        notice.set(errorText(reason, 'Could not copy to the clipboard.'));
+      }
+    } finally {
+      if (owns(original)) busy.set(false);
+    }
+  };
+  const label = () => (props.row().role === 'user' ? tr('Copy user message') : tr('Copy message'));
+  props.menu?.add({
+    kind: 'copy',
+    label,
+    busy,
+    action: () => (target() === null ? null : inputAction(copy, target())),
+  });
+  return (
+    <View
+      style={{
+        flexDirection: 'row',
+        flexWrap: 'wrap',
+        alignItems: 'center',
+        gap: 8,
+        minWidth: 0,
+        maxWidth: '100%',
+      }}
+    >
+      <If when={notice() && (!props.compact || failed())}>
+        <Text style={{ color: failed() ? C.danger : C.muted, fontSize: 12, lineHeight: 16 }}>
+          {notice()}
+        </Text>
+      </If>
+      <IconButton
+        compact={props.compact}
+        label={label()}
+        tooltip={busy() ? tr('Reading original message…') : undefined}
+        icon={notice() && !failed() ? 'check' : 'copy'}
+        disabled={target() === null}
+        onPress={inputAction(copy, target())}
+      />
+    </View>
+  );
+}

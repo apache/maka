@@ -1,0 +1,201 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements. See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership. The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License. You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+import type { Catalog } from '../../../../plugins/shared/locale.js';
+export const discoveryMessages = {
+  'Proactive discovery': ['Proactive discovery', '主动发现', '主動發現'],
+  'Discovery broad placeholder': [
+    'Leave blank for broad exploration',
+    '留空则进行广域探索',
+    '留空則進行廣域探索',
+  ],
+  'Discovery existing schedule': [
+    'This plan’s existing schedule will be preserved.',
+    '保留此计划原有的定时方式。',
+    '保留此計畫原有的排程方式。',
+  ],
+  'Discovery plan': ['Plan', '计划', '計畫'],
+  'Discovery after completion': ['After completion', '上轮结束后', '上輪結束後'],
+  'Discovery fixed interval': ['Fixed interval', '固定间隔', '固定間隔'],
+  'Discovery interval (minutes)': ['Interval (minutes)', '检查间隔（分钟）', '檢查間隔（分鐘）'],
+  'Discovery instructions': [
+    'Investigation direction (optional)',
+    '调查方向（可选）',
+    '調查方向（選填）',
+  ],
+  'Discovery permission notice': [
+    'Selected tools use the workspace permissions shown above. Terminal, desktop, and extension tools may also access files or the network. The selected model may incur charges.',
+    '已选工具使用上方的工作区权限。终端、桌面和扩展工具也可能读写文件或联网。所选模型可能产生费用。',
+    '已選工具使用上方的工作區權限。終端機、桌面與擴充工具也可能讀寫檔案或連網。選用的模型可能產生費用。',
+  ],
+  'Discovery read-only notice': [
+    'This plan uses read-only investigation tools. Its selected model may incur charges.',
+    '此计划使用只读调查工具，所选模型可能产生费用。',
+    '此計畫使用唯讀調查工具，選用的模型可能產生費用。',
+  ],
+  'Only investigation completion': [
+    'Submit investigation results only',
+    '仅提交调查结果',
+    '僅提交調查結果',
+  ],
+  'Discovery tool catalog changed': [
+    'Available tools changed. Review the updated selection and confirm again.',
+    '可用工具已变化，请核对已选工具并重新确认。',
+    '可用工具已變更，請檢查已選工具並再次確認。',
+  ],
+  'Discovery selected groups': [
+    '{selected} of {total} groups selected',
+    '已选 {selected} / {total} 组',
+    '已選 {selected} / {total} 組',
+  ],
+  'Discovery minutes': ['minutes', '分钟', '分鐘'],
+  'Discovery direction': ['Investigation direction', '调查方向', '調查方向'],
+  'Discovery schedule': ['Check schedule', '检查安排', '檢查安排'],
+  'New discovery plan title': ['New discovery plan', '新建主动发现计划', '新增主動發現計畫'],
+  'Edit discovery plan title': ['Edit discovery plan', '编辑主动发现计划', '編輯主動發現計畫'],
+  'Discovery model cost': [
+    'Model calls may incur charges.',
+    '模型调用可能产生费用。',
+    '模型呼叫可能產生費用。',
+  ],
+  'Discovery workspace scope': [
+    'Workspace access: {access}.',
+    '工作区权限为「{access}」。',
+    '工作區權限為「{access}」。',
+  ],
+  'Discovery list separator': [', ', '、', '、'],
+  'Discovery external tool scope': [
+    '{tools} may also access files or the network.',
+    '已选的{tools}也可能读写文件或联网。',
+    '已選的{tools}也可能讀寫檔案或連網。',
+  ],
+  'Discovery interval too long': [
+    'This interval is too long. Enter a shorter interval.',
+    '检查间隔过长，请缩短间隔。',
+    '檢查間隔過長，請縮短間隔。',
+  ],
+  'Show approved tool names': ['Show selected tools', '查看具体工具', '檢視具體工具'],
+  'Hide approved tool names': ['Hide tool names', '收起具体工具', '收合具體工具'],
+  'Discovery partially enabled': [
+    'Partially enabled ({selected}/{total})',
+    '部分开启（{selected}/{total}）',
+    '部分開啟（{selected}/{total}）',
+  ],
+  'Discovery Read scope': [
+    'Read and its aliases can also open existing references to read the contents of conversations this investigation can access.',
+    'Read 及其别名也可通过已有会话引用读取本次调查有权访问的会话正文。',
+    'Read 及其別名也可透過已有對話參照讀取本次調查有權存取的對話內容。',
+  ],
+  'Discovery file reading tools': ['File reading', '读取文件', '讀取檔案'],
+  'Discovery file editing tools': ['File editing', '编辑文件', '編輯檔案'],
+  'Discovery history tools': ['Conversations and memory', '会话与记忆', '對話與記憶'],
+  'Discovery terminal tools': ['Terminal tools', '终端工具', '終端機工具'],
+  'Discovery web tools': ['Web tools', '网页工具', '網頁工具'],
+  'Discovery session tools': ['Sessions and tasks', '会话与任务管理', '對話與任務管理'],
+  'Discovery desktop tools': ['Desktop controls', '桌面操作', '桌面操作'],
+  'Discovery extension tools': ['Extensions and other tools', '扩展与其他工具', '擴充與其他工具'],
+  'Discovery plugin management': [
+    'Install and manage plugins',
+    '安装与管理插件',
+    '安裝與管理外掛程式',
+  ],
+  'Use read-only investigation tools': ['Read-only tools', '只读工具', '唯讀工具'],
+  'Use standard Session tools': ['Standard Session tools', '普通会话工具', '一般對話工具'],
+  'Discovery permissions': ['Investigation permissions', '调查权限', '調查權限'],
+  'Discovery workspace': ['Bot workspace', 'Bot 工作区', 'Bot 工作區'],
+  'Change discovery model': ['Change model', '更换模型', '更換模型'],
+  'Discovery model': ['Investigation model', '调查模型', '調查模型'],
+  'Approve and enable discovery': ['Approve and enable', '批准并启用', '核准並啟用'],
+  'Approve and save discovery': ['Approve and save', '批准并保存', '核准並儲存'],
+  'New discovery plan': ['New plan', '新建计划', '新增計畫'],
+  'Edit discovery plan': ['Edit plan', '编辑计划', '編輯計畫'],
+  'View background follow-ups': ['View background follow-ups', '查看后台复查', '查看背景複查'],
+  'Hide background follow-ups': ['Hide background follow-ups', '收起后台复查', '收合背景複查'],
+  'Discovery not enabled': ['Not enabled', '尚未启用', '尚未啟用'],
+  'Discovery active': ['Enabled', '已启用', '已啟用'],
+  'Discovery paused': ['Paused', '已暂停', '已暫停'],
+  'Discovery plan completed': ['Completed', '已完成', '已完成'],
+  'Discovery plan expired': ['Expired', '已过期', '已過期'],
+  'Discovery investigating': ['Investigating', '正在调查', '正在調查'],
+  'Discovery delivering': ['Waiting for Bot', '等待 Bot 接收', '等待 Bot 接收'],
+  'Discovery stopping': ['Stopping investigation', '正在停止调查', '正在停止調查'],
+  'Discovery queued': ['Waiting for the investigation slot', '等待调查位', '等待調查位置'],
+  'Discovery needs renewed approval': ['Needs renewed approval', '等待重新授权', '等待重新授權'],
+  'Delete discovery plan?': ['Delete this plan?', '删除此计划？', '刪除此計畫？'],
+  'Discovery needs approval': ['Needs approval', '等待批准', '等待核准'],
+  'Discovery last check': ['Last check', '上次检查', '上次檢查'],
+  'Discovery next check': ['Next check', '下次检查', '下次檢查'],
+  'Discovery next check pending': [
+    'Scheduled when this check ends',
+    '本轮结束后排期',
+    '本輪結束後排期',
+  ],
+  'Discovery no history': ['No investigations yet', '尚无调查记录', '尚無調查紀錄'],
+  'Discovery no report': ['No report needed', '没有需要通知的发现', '沒有需要通知的發現'],
+  'Discovery reported': ['Findings handed to Bot', '发现已交给 Bot', '發現已交給 Bot'],
+  'Discovery failed': ['Investigation failed', '调查失败', '調查失敗'],
+  'Discovery blocked': [
+    'Investigation cancelled or unavailable',
+    '调查已取消或无法执行',
+    '調查已取消或無法執行',
+  ],
+  'Run discovery now': ['Check now', '立即检查', '立即檢查'],
+  'Pause discovery': ['Pause', '暂停', '暫停'],
+  'Resume discovery': ['Resume', '恢复', '恢復'],
+  'Review discovery permissions': ['Review permissions', '查看授权范围', '查看授權範圍'],
+  'Approve and resume discovery': ['Approve and resume', '批准并恢复', '核准並恢復'],
+  'Open investigation': ['View investigation', '查看调查过程', '檢視調查過程'],
+  'Open previous investigation': ['View previous investigation', '查看上次调查', '檢視上次調查'],
+  'Could not load the discovery plan.': [
+    'Could not load the discovery plan.',
+    '无法读取主动发现计划。',
+    '無法讀取主動發現計畫。',
+  ],
+  'Could not update the discovery plan.': [
+    'Could not update the discovery plan.',
+    '无法更新主动发现计划。',
+    '無法更新主動發現計畫。',
+  ],
+  'Discovery settings changed': [
+    'The workspace or model changed. Review the displayed settings and confirm again.',
+    '工作区或模型已变化，请核对更新后的配置并再次确认。',
+    '工作區或模型已變更，請核對更新後的設定並再次確認。',
+  ],
+  'Discovery plan changed': [
+    'The plan changed. Refresh and review it before trying again.',
+    '计划已变化，请刷新并核对后重试。',
+    '計畫已變更，請重新整理並核對後重試。',
+  ],
+  'Discovery invalid settings': [
+    'Enter a positive whole number of minutes.',
+    '请输入大于零的整数分钟数。',
+    '請輸入大於零的整數分鐘數。',
+  ],
+  'Discovery updates disconnected': [
+    'Status updates disconnected. Refresh to reconnect.',
+    '状态更新已断开，请刷新重连。',
+    '狀態更新已中斷，請重新整理連線。',
+  ],
+  'Quote selection': ['Quote selection', '引用选中文字', '引用選取文字'],
+  'Remove quote': ['Remove quote', '移除引用', '移除引用'],
+  'Too many quotes': [
+    'You can attach up to 16 quotes.',
+    '最多可附带 16 条引用。',
+    '最多可附加 16 則引用。',
+  ],
+} satisfies Catalog;

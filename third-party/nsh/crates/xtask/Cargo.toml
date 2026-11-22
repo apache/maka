@@ -1,0 +1,28 @@
+[package]
+name = "xtask"
+description = "Maintainer tasks: `cargo run` (the gallery), Android builds and the distribution (`cargo xtask --help`)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow.workspace = true
+clap = { workspace = true, features = ["env"] }
+libc.workspace = true
+notify.workspace = true
+serde_json.workspace = true
+zip.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_System_Console",
+  "Win32_System_JobObjects",
+  "Win32_System_Threading",
+] }

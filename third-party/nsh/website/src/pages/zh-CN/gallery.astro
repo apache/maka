@@ -1,0 +1,18 @@
+---
+import BaseLayout from '../../layouts/BaseLayout.astro';
+import Nav from '../../components/Nav.astro';
+import Gallery from '../../components/Gallery.astro';
+import { url } from '../../lib/site';
+---
+
+<BaseLayout
+  lang="zh-CN"
+  title="示例应用"
+  description="NSH 的示例应用 Gallery：用 TSX 编写的完整应用，以 nsh package --target web 发布的形式在浏览器中运行。"
+  alternates={{ en: '/gallery', 'zh-CN': '/zh-CN/gallery' }}
+>
+  <Nav lang="zh-CN" currentPath={Astro.url.pathname} langHref={url('gallery')} />
+  <main id="main" data-pagefind-ignore>
+    <Gallery lang="zh-CN" />
+  </main>
+</BaseLayout>

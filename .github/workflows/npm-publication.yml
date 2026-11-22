@@ -16,197 +16,250 @@
 # under the License.
 
 name: npm publication
-run-name: npm ${{ inputs.channel || 'nightly' }} publication
+run-name: Unofficial experimental Rust preview (${{ github.ref_name }})
 
 on:
-  schedule:
-    - cron: '17 18 * * *'
   workflow_dispatch:
     inputs:
-      channel:
-        description: Publication channel
-        required: true
-        type: choice
-        default: nightly
-        options:
-          - nightly
-          - formal
-      version:
-        description: Exact formal product version; ignored for Nightly
-        required: false
-        type: string
-        default: ''
+      publish:
+        description: Publish an unofficial experimental preview (not an ASF release) to rust-preview
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
-concurrency:
-  group: npm-publication-${{ inputs.channel || 'nightly' }}
-  cancel-in-progress: false
-
 jobs:
-  formal:
-    if: github.event_name == 'workflow_dispatch' && inputs.channel == 'formal'
-    permissions:
-      contents: read
-      id-token: write
-    uses: ./.github/workflows/release-cli-stage.yml
-    with:
-      version: ${{ inputs.version }}
-
-  identity:
-    if: vars.NPM_NIGHTLY_ENABLED == 'true' && (github.event_name == 'schedule' || inputs.channel == 'nightly')
-    runs-on: ubuntu-24.04
+  source:
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
-      source_commit: ${{ steps.identity.outputs.source_commit }}
-      version: ${{ steps.identity.outputs.version }}
+      version: ${{ steps.source.outputs.version }}
+      build_id: ${{ steps.source.outputs.build_id }}
     steps:
-      - name: Reject in-place workflow reruns
-        if: github.run_attempt != 1
-        run: |
-          echo "npm Nightly retries require a fresh workflow dispatch" >&2
-          exit 1
-
-      - name: Check out the scheduled main commit
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@v7
         with:
-          ref: ${{ github.sha }}
           persist-credentials: false
-
-      - name: Require the Apache main branch
+      - uses: actions/setup-node@v7
+        with:
+          node-version: latest
+      - id: source
+        name: Freeze one source archive for every platform
         run: |
-          test "$GITHUB_REPOSITORY" = apache/maka
-          test "$GITHUB_REF" = refs/heads/main
+          node --input-type=module <<'JS'
+          import { readFileSync, appendFileSync } from 'node:fs';
+          import { createSourceCandidate } from './scripts/asf-source-release.mjs';
+          const { version } = JSON.parse(readFileSync('package.json', 'utf8'));
+          await createSourceCandidate({ revision: process.env.GITHUB_SHA, version });
+          appendFileSync(process.env.GITHUB_OUTPUT, 'version=' + version + '\n' +
+            'build_id=' + process.env.GITHUB_RUN_ID + '.' + process.env.GITHUB_RUN_ATTEMPT + '\n');
+          JS
+      - uses: actions/upload-artifact@v7
+        with:
+          name: native-preview-source
+          path: release/asf/*
+          if-no-files-found: error
 
-      - name: Resolve the immutable Nightly identity
-        id: identity
+  build:
+    needs: source
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Computer Use's Swift bindings use the current macOS SDK.
+          - runner: macos-latest
+            target: darwin-arm64
+          - runner: ubuntu-latest
+            target: linux-x64-gnu
+          - runner: windows-latest
+            target: win32-x64
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
+      NATIVE_TARGET: ${{ matrix.target }}
+      SOURCE_VERSION: ${{ needs.source.outputs.version }}
+      BUILD_ID: ${{ needs.source.outputs.build_id }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: latest
+      - name: Update Rust
+        run: rustup update stable --no-self-update
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.x"
+          check-latest: true
+      - name: Select latest npm
+        shell: bash
+        run: npm install --global --ignore-scripts --no-audit --no-fund npm@latest
+      - name: Install the Linux baseline linker
+        if: runner.os == 'Linux'
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: latest
+      - name: Install native build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libx11-dev libxi-dev libxtst-dev libxext-dev libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev libfontconfig1-dev libfreetype6-dev libwayland-dev libglib2.0-dev libclang-dev llvm-dev
+          echo "LIBCLANG_PATH=$(/usr/bin/llvm-config --libdir)" >> "$GITHUB_ENV"
+      - name: Select libclang on macOS
+        if: runner.os == 'macOS'
+        run: echo "LIBCLANG_PATH=$(xcode-select -p)/Toolchains/XcodeDefault.xctoolchain/usr/lib" >> "$GITHUB_ENV"
+      - name: Bootstrap cargo-binstall
+        if: runner.os == 'Linux'
+        uses: taiki-e/install-action@68a389c788b2cd04016ce8c80ee23b80d2ab3d68 # v2.88.1
+        with:
+          tool: cargo-binstall
+      - name: Install latest cargo-zigbuild
+        if: runner.os == 'Linux'
         env:
-          GITHUB_SHA: ${{ github.sha }}
-          GITHUB_RUN_NUMBER: ${{ github.run_number }}
-        run: node scripts/product-nightly.mjs identity
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cargo binstall --no-confirm --force cargo-binstall
+          cargo binstall --no-confirm --force cargo-zigbuild
+      - uses: actions/download-artifact@v8
+        with:
+          name: native-preview-source
+          path: source
+      - id: v8-key
+        name: Identify the V8 build inputs
+        shell: bash
+        run: |
+          v8_key=$(node scripts/rust/build-v8.mjs --cache-key)
+          echo "key=$v8_key" >> "$GITHUB_OUTPUT"
+      - id: v8-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: target/v8/${{ steps.v8-key.outputs.key }}
+          key: maka-v8-${{ matrix.target }}-${{ steps.v8-key.outputs.key }}
+      - name: Build verified source and exercise the native executables
+        env:
+          V8_CACHE_KEY: ${{ steps.v8-key.outputs.key }}
+        shell: bash
+        run: |
+          node --input-type=module <<'JS'
+          import { releaseNativeCli } from './scripts/rust/release-cli.mjs';
+          import { rustTarget } from './scripts/rust/build-cli.mjs';
+          import { packV8 } from './scripts/rust/v8-prebuilt.mjs';
+          import { readFileSync } from 'node:fs';
+          const target = process.env.NATIVE_TARGET;
+          await releaseNativeCli({
+            source: 'source/apache-maka-' + process.env.SOURCE_VERSION + '-incubating-src.tar.gz',
+            target, buildId: process.env.BUILD_ID, output: 'native-preview',
+          });
+          const pins = JSON.parse(readFileSync('scripts/rust/v8-prebuilts.json', 'utf8'));
+          if (!Object.hasOwn(pins, process.env.V8_CACHE_KEY)) {
+            await packV8({
+              directory: process.env.CARGO_TARGET_DIR + '/v8',
+              key: process.env.V8_CACHE_KEY, target: rustTarget(), output: 'v8-preview',
+              verifiedBy: { commit: process.env.GITHUB_SHA,
+                run: 'https://github.com/' + process.env.GITHUB_REPOSITORY + '/actions/runs/' + process.env.GITHUB_RUN_ID },
+            });
+          }
+          JS
+      # A later Maka build failure does not invalidate a completed V8 dependency.
+      - uses: actions/cache/save@v6
+        if: ${{ !cancelled() && steps.v8-cache.outputs.cache-hit != 'true' && hashFiles(format('target/v8/{0}/receipt.json', steps.v8-key.outputs.key)) != '' }}
+        with:
+          path: target/v8/${{ steps.v8-key.outputs.key }}
+          key: maka-v8-${{ matrix.target }}-${{ steps.v8-key.outputs.key }}
+      - uses: actions/upload-artifact@v7
+        with:
+          name: native-preview-${{ matrix.target }}
+          path: native-preview/*
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v7
+        if: ${{ hashFiles('v8-preview/*.json') != '' }}
+        with:
+          name: v8-prebuilt-${{ matrix.target }}
+          path: v8-preview/*
+          if-no-files-found: error
 
-  cli:
-    name: Validate npm Nightly
-    needs: identity
-    uses: ./.github/workflows/cli-package-validation.yml
-    with:
-      source_commit: ${{ needs.identity.outputs.source_commit }}
-      package_version: ${{ needs.identity.outputs.version }}
+  prepare:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: latest
+      - name: Select latest npm
+        run: npm install --global --ignore-scripts --no-audit --no-fund npm@latest
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: native-preview-*
+          merge-multiple: true
+          path: native-preview
+      - name: Package the launcher from the verified source
+        run: node scripts/rust/pack-launcher.mjs native-preview
+      - name: Validate the complete release
+        run: node scripts/rust/publish-cli.mjs native-preview
+      - uses: actions/upload-artifact@v7
+        with:
+          name: npm-release
+          path: native-preview/*
+          if-no-files-found: error
+
+  verify:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-latest, ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: latest
+      - name: Select latest npm
+        shell: bash
+        run: npm install --global --ignore-scripts --no-audit --no-fund npm@latest
+      - uses: actions/download-artifact@v8
+        with:
+          name: npm-release
+          path: native-preview
+      - name: Install offline and exercise the packaged launcher
+        run: node scripts/rust/verify-release.mjs native-preview
 
   publish:
-    name: Publish npm Nightly
-    needs: [identity, cli]
-    runs-on: ubuntu-24.04
-    environment: npm-publication
+    needs: verify
+    if: inputs.publish && github.repository == 'M4n5ter/maka-agent' && github.ref == 'refs/heads/feat/runtime-host-rust'
+    concurrency:
+      group: npm-publication-rust-preview
+      cancel-in-progress: false
+    environment: npm-rust-preview
+    runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
       contents: read
       id-token: write
     steps:
-      - name: Reject in-place workflow reruns
-        if: github.run_attempt != 1
-        run: |
-          echo "npm Nightly retries require a fresh workflow dispatch" >&2
-          exit 1
-
-      - name: Check out the Nightly publisher
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@v7
         with:
-          ref: ${{ needs.identity.outputs.source_commit }}
           persist-credentials: false
-
-      - name: Set up Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@v7
         with:
-          node-version: '24.22.1'
-          cache: npm
-
-      - name: Install publisher dependencies
-        run: npm ci --ignore-scripts --no-audit
-
-      - name: Block shipped advisories without blocking on audit availability
-        run: node scripts/audit-shipped-dependencies.mjs --allow-unavailable
-
-      - name: Select the publication npm toolchain
-        run: npm install --global --no-audit --no-fund "$(node -p 'require("./package.json").packageManager')"
-
-      - name: Download the validated npm Nightly
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+          node-version: latest
+          registry-url: https://registry.npmjs.org
+      - name: Select latest npm
+        run: npm install --global --ignore-scripts --no-audit --no-fund npm@latest
+      - uses: actions/download-artifact@v8
         with:
-          artifact-ids: ${{ needs.cli.outputs.release_candidate_artifact_id }}
-          path: packages/cli/release
-
-      - name: Bind the npm Nightly to this workflow run
-        id: npm-nightly
+          name: npm-release
+          path: native-preview
+      - name: Publish the verified release
         env:
-          NIGHTLY_VERSION: ${{ needs.identity.outputs.version }}
-        run: |
-          node scripts/release-cli-publication.mjs prepare-nightly \
-            packages/cli/release \
-            "$NIGHTLY_VERSION" \
-            "$GITHUB_OUTPUT"
-
-      - name: Require the qualified predecessor and Nightly channel advance
-        env:
-          NIGHTLY_VERSION: ${{ steps.npm-nightly.outputs.version }}
-          PREDECESSOR_VERSION: ${{ needs.cli.outputs.release_predecessor_version }}
-          PREDECESSOR_TARBALL_URL: ${{ needs.cli.outputs.release_predecessor_tarball_url }}
-          PREDECESSOR_INTEGRITY: ${{ needs.cli.outputs.release_predecessor_integrity }}
-        run: |
-          node scripts/release-cli-publication.mjs assert-nightly-predecessor \
-            "$PREDECESSOR_VERSION" \
-            "$PREDECESSOR_TARBALL_URL" \
-            "$PREDECESSOR_INTEGRITY"
-          current="$(npm view maka-agent dist-tags.nightly --registry https://registry.npmjs.org/)"
-          node scripts/product-nightly.mjs assert-channel-advance "$NIGHTLY_VERSION" "$current"
-
-      - name: Publish the exact npm Nightly
-        env:
-          NIGHTLY_DIST_TAG: ${{ steps.npm-nightly.outputs.dist_tag }}
-          NIGHTLY_TARBALL: ${{ steps.npm-nightly.outputs.tarball }}
-        run: |
-          test "$NIGHTLY_DIST_TAG" = nightly
-          npm publish "$NIGHTLY_TARBALL" \
-            --tag nightly \
-            --registry https://registry.npmjs.org/ \
-            --provenance
-
-      - name: Require the public npm Nightly
-        env:
-          NIGHTLY_VERSION: ${{ steps.npm-nightly.outputs.version }}
-        run: |
-          # npm scans a published version before it becomes readable, so the
-          # registry can stay silent for minutes after `npm publish` returns.
-          # Poll the exact version for up to 45 minutes, revalidating the cache
-          # on every attempt so a cached packument cannot keep hiding it.
-          for attempt in {1..135}; do
-            published="$(npm view "maka-agent@$NIGHTLY_VERSION" version --registry https://registry.npmjs.org/ --prefer-online 2>/dev/null || true)"
-            tagged="$(npm view maka-agent dist-tags.nightly --registry https://registry.npmjs.org/ --prefer-online 2>/dev/null || true)"
-            if [[ "$published" == "$NIGHTLY_VERSION" && "$tagged" == "$NIGHTLY_VERSION" ]]; then
-              exit 0
-            fi
-            echo "attempt $attempt: published='$published' tagged='$tagged'" >&2
-            sleep 20
-          done
-          echo "npm Nightly did not become readable with the exact nightly tag after 45 minutes; a pending publish-time scan hides a version until it finishes" >&2
-          exit 1
-
-      - name: Record the published Product Nightly version
-        env:
-          VERSION_DIRECTORY: ${{ runner.temp }}/product-nightly-version
-          NIGHTLY_VERSION: ${{ steps.npm-nightly.outputs.version }}
-        run: |
-          mkdir -p "$VERSION_DIRECTORY"
-          node scripts/product-nightly.mjs write-version \
-            "$VERSION_DIRECTORY/version.txt" \
-            "$NIGHTLY_VERSION"
-
-      - name: Hand the exact version to Desktop Nightly
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: product-nightly-version
-          path: ${{ runner.temp }}/product-nightly-version/version.txt
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 30
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: node scripts/rust/publish-cli.mjs native-preview --publish --provenance

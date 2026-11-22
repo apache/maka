@@ -1,0 +1,28 @@
+[package]
+name = "tasks-rs"
+description = "The tasks app written in Rust (examples/tasks is its TSX form)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+env_logger.workspace = true
+nsh-core.workspace = true
+nsh-base.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+nsh-platform-linux.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+nsh-platform-macos.workspace = true
+
+[target.'cfg(target_os = "windows")'.dependencies]
+nsh-platform-windows.workspace = true
+
+[dev-dependencies]
+nsh-engine.workspace = true
+nsh-testing = { workspace = true, features = ["live"] }

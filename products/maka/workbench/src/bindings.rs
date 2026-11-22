@@ -1,0 +1,1607 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+//! The application receives this already connected Host object; it cannot choose a Root.
+
+mod assets;
+mod community;
+mod diagrams;
+mod dictation;
+mod file_search;
+mod files;
+mod links;
+mod mutation;
+mod permission_window;
+mod plugins;
+mod quick_tools;
+mod resources;
+mod system_permission;
+mod terminal;
+mod terminal_grid;
+mod ui_services;
+mod uploads;
+
+pub use mutation::OriginalMutation;
+pub use permission_window::SystemPermissionWindow;
+
+use maka_app_client::{Client, Subscription, SubscriptionEvent};
+use maka_plugin_core::contract::{Contract, Interface};
+use maka_plugin_core::operation::OperationResult;
+use nsh_core::JsonValue;
+use nsh_core::prelude::*;
+use std::{
+    collections::HashMap,
+    future::Future,
+    sync::{Arc, LazyLock, Mutex as StdMutex},
+};
+use tokio::runtime::Handle;
+use tokio_util::task::TaskTracker;
+use uuid::Uuid;
+
+const AGENT: &str = "agent";
+const EDITOR: &str = "composer";
+
+/// Own native tasks independently of a JavaScript view's lifetime.
+pub struct Bindings {
+    owner: Arc<Owner>,
+}
+struct Owner {
+    client: Client,
+    runtime: Handle,
+    tasks: StdMutex<Option<TaskTracker>>,
+    plugins: plugins::Packages,
+    reload: crate::reload::UiReload,
+    staged_images: StdMutex<HashMap<Uuid, Arc<maka_ui_support::file::FileSnapshot>>>,
+    permission_windows:
+        StdMutex<Option<tokio::sync::mpsc::UnboundedSender<SystemPermissionWindow>>>,
+}
+struct Scope {
+    owner: Arc<Owner>,
+    client: ApplicationClient,
+    session: String,
+    /// Sends reserved by `reserve_send` until `confirm_send` takes them.
+    reserved: StdMutex<HashMap<Uuid, maka_app_client::DraftSend>>,
+}
+
+/// Root services and session scopes within the Host admitted by the launcher.
+#[class]
+pub struct ApplicationHost {
+    owner: Arc<Owner>,
+    client: ApplicationClient,
+    initial_session: Option<String>,
+}
+
+#[derive(Clone)]
+enum ApplicationClient {
+    Root,
+    Ui(Arc<ui_services::Services>),
+    // Setup windows retain the exact admitted connection, never a rebindable UI source.
+    Permission(Client),
+}
+
+impl ApplicationClient {
+    async fn resolve(&self, owner: &Owner) -> Result<Client, String> {
+        match self {
+            Self::Root => Ok(owner.client.clone()),
+            Self::Ui(services) => services.client().await,
+            Self::Permission(client) => Ok(client.clone()),
+        }
+    }
+
+    async fn read<T, F, Fut>(&self, owner: &Owner, mut operation: F) -> Result<T, String>
+    where
+        F: FnMut(Client) -> Fut,
+        Fut: Future<Output = Result<T, String>>,
+    {
+        let client = self.resolve(owner).await?;
+        let was_retired = client.binding_retired();
+        match operation(client.clone()).await {
+            Ok(value) => Ok(value),
+            Err(error) if !was_retired && client.binding_retired() => {
+                let fresh = match self {
+                    Self::Root => {
+                        owner.client.refresh().await?;
+                        owner.client.clone()
+                    }
+                    Self::Ui(services) => services.client().await?,
+                    Self::Permission(_) => return Err(error),
+                };
+                operation(fresh).await
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    async fn local(&self, owner: &Owner) -> Result<Client, String> {
+        match self {
+            Self::Root => Ok(owner.client.clone()),
+            Self::Ui(services) => services.local_client().await,
+            Self::Permission(client) => Ok(client.clone()),
+        }
+    }
+
+    async fn refresh(&self, owner: &Owner) -> Result<(), String> {
+        match self {
+            Self::Root => owner.client.refresh().await,
+            Self::Permission(_) => Err(
+                "Reopen permission setup from its conversation to adopt a new Host binding".into(),
+            ),
+            Self::Ui(services) => {
+                owner.read_ui(serde_json::json!({})).await?;
+                services.client().await?;
+                // Changed UI bindings must be adopted before recapturing public endpoints.
+                owner.client.refresh().await
+            }
+        }
+    }
+
+    async fn mutation_context(
+        &self,
+        owner: &Owner,
+        endpoint: String,
+    ) -> Result<(Client, String, JsonValue), String> {
+        match self {
+            Self::Root => Ok((owner.client.clone(), endpoint, JsonValue::Null)),
+            Self::Ui(services) => services.mutation_context(&endpoint).await,
+            Self::Permission(_) => Err(
+                "Permission setup uses the original human controls, not generic UI mutations"
+                    .into(),
+            ),
+        }
+    }
+
+    fn asset_uri(&self, uri: String) -> Result<String, String> {
+        match self {
+            Self::Root => Ok(uri),
+            Self::Ui(services) => services.asset_uri(&uri),
+            Self::Permission(_) => Err("Permission setup does not resolve package assets".into()),
+        }
+    }
+}
+
+/// One immutable Agent session's editor and original send operations.
+#[class]
+pub struct ScopedHost {
+    scope: Arc<Scope>,
+}
+
+impl Bindings {
+    pub fn new(client: Client, runtime: Handle) -> Self {
+        Self {
+            owner: Arc::new(Owner {
+                client,
+                runtime,
+                tasks: StdMutex::new(Some(TaskTracker::new())),
+                plugins: Default::default(),
+                reload: Default::default(),
+                staged_images: Default::default(),
+                permission_windows: Default::default(),
+            }),
+        }
+    }
+
+    /// Package assets and immutable tool images read through this original Host.
+    pub fn assets(&self) -> Arc<dyn nsh_engine::Assets> {
+        Arc::new(assets::HostAssets(self.owner.clone()))
+    }
+
+    pub fn chunk_loader(&self) -> Arc<dyn nsh_engine::ChunkLoader> {
+        Arc::new(plugins::Loader(self.owner.clone()))
+    }
+
+    pub fn reload(&self) -> crate::reload::UiReload {
+        self.owner.reload.clone()
+    }
+
+    /// Installs the shell's dedicated system-permission window presenter.
+    pub fn set_system_permission_windows(
+        &self,
+        sender: tokio::sync::mpsc::UnboundedSender<SystemPermissionWindow>,
+    ) {
+        *self.owner.permission_windows.lock().unwrap() = Some(sender);
+    }
+
+    /// Native objects own subscriptions; the launcher owns calls and durable recovery.
+    pub fn registry(&self, initial_session: Option<String>) -> Registry {
+        let owner = self.owner.clone();
+        registry(move || {
+            Instance::new(ApplicationHost {
+                owner: owner.clone(),
+                client: ApplicationClient::Root,
+                initial_session: initial_session.clone(),
+            })
+        })
+    }
+
+    /// Fence new native tasks, close the original Host session and finish admitted IO.
+    pub async fn close(&self) -> Result<(), String> {
+        self.close_with(self.owner.client.close()).await
+    }
+
+    pub async fn quit_ephemeral(&self) -> Result<(), String> {
+        self.close_with(self.owner.client.quit_ephemeral()).await
+    }
+
+    async fn close_with(
+        &self,
+        close: impl std::future::Future<Output = Result<(), String>>,
+    ) -> Result<(), String> {
+        let tasks = self.owner.tasks.lock().unwrap().take();
+        let (closed, ()) = tokio::join!(close, async move {
+            if let Some(tasks) = tasks {
+                tasks.close();
+                tasks.wait().await;
+            }
+        });
+        closed
+    }
+}
+
+/// Describes the native Host types without connecting or creating runtime objects.
+#[must_use]
+pub fn ui_set_description() -> nsh_core::element::description::SetDescription {
+    let registry = registry(|| panic!("declaration metadata must not instantiate the native Host"));
+    (&registry).into()
+}
+
+fn registry(make_host: impl Fn() -> Instance<ApplicationHost> + Send + Sync + 'static) -> Registry {
+    let mut registry = ui_registry();
+    registry.value("host", make_host);
+    registry
+}
+
+/// Native workbench components and classes, independent of the Host connection.
+#[must_use]
+pub fn ui_registry() -> Registry {
+    let mut registry = Registry::ui_set("maka/host");
+    registry.register::<crate::composer_input::ComposerInput>();
+    registry.register::<crate::live_image::LiveImage>();
+    registry.register::<crate::composer_input::file::MarkdownFileEditor>();
+    registry.class::<crate::composer_input::ComposerInputState>();
+    registry.register::<uploads::AttachmentPicker>();
+    registry.class::<dictation::MessageDictation>();
+    registry.class::<terminal_grid::TerminalGrid>();
+    registry.class::<uploads::UploadIntake>();
+    registry.class::<uploads::StagedFile>();
+    registry.class::<ui_services::UiScope>();
+    registry
+}
+
+impl Owner {
+    async fn read_ui(&self, input: JsonValue) -> Result<JsonValue, String> {
+        require_contract(
+            "management",
+            "readUi",
+            &self.client.describe("management").await?.contract,
+        )?;
+        let value = self.client.query("management", "readUi", input).await?;
+        self.plugins
+            .observe(serde_json::from_value(value.clone()).map_err(|error| error.to_string())?);
+        Ok(value)
+    }
+
+    fn spawn<T: Send + 'static>(
+        &self,
+        operation: impl Future<Output = T> + Send + 'static,
+    ) -> Result<tokio::task::JoinHandle<T>, String> {
+        let tasks = self.tasks.lock().unwrap();
+        Ok(tasks
+            .as_ref()
+            .ok_or("application bindings are closing")?
+            .spawn_on(operation, &self.runtime))
+    }
+}
+
+// A JS observer may disappear while IO is in progress. Execute on the launcher
+// runtime, so freezing presentation never freezes a Call mutex or its cleanup.
+async fn execute<T: Send + 'static>(
+    owner: Arc<Owner>,
+    operation: impl Future<Output = Result<T, String>> + Send + 'static,
+) -> Result<T, String> {
+    owner
+        .spawn(operation)?
+        .await
+        .map_err(|error| format!("Host task failed: {error}"))?
+}
+
+// Validate the exact typed method, including its nominal service identity.
+// An unrelated added method must not invalidate an existing Host's unchanged
+// methods. Host output validation still checks the captured actual descriptor.
+fn require_contract(endpoint: &str, method: &str, actual: &Contract) -> Result<(), String> {
+    static AGENT_CONTRACT: LazyLock<Contract> = LazyLock::new(maka_agent_api::contract);
+    static TERMINAL_CONTRACT: LazyLock<Contract> =
+        LazyLock::new(maka_workspace_api::terminal::contract);
+    static SETTINGS_CONTRACT: LazyLock<Contract> =
+        LazyLock::new(maka_settings_native::contract::contract);
+    static AUTHENTICATION_CONTRACT: LazyLock<Contract> =
+        LazyLock::new(maka_settings_native::contract::authentication_contract);
+    static SETUP_CONTRACT: LazyLock<Contract> =
+        LazyLock::new(maka_settings_native::contract::setup_contract);
+    static MANAGEMENT_CONTRACT: LazyLock<Contract> =
+        LazyLock::new(maka_plugin_core::deployment::management::deployment_manager_contract);
+    let expected: &Contract = match endpoint {
+        "agent" => &AGENT_CONTRACT,
+        "terminal" => &TERMINAL_CONTRACT,
+        "settings" => &SETTINGS_CONTRACT,
+        "authentication" => &AUTHENTICATION_CONTRACT,
+        "setup" => &SETUP_CONTRACT,
+        "management" => &MANAGEMENT_CONTRACT,
+        // Generic plugin queries keep the raw native unknown result contract.
+        _ => return Ok(()),
+    };
+    if actual.name != expected.name
+        || actual.version != expected.version
+        || actual.transport != expected.transport
+    {
+        return Err(format!(
+            "Host {endpoint}.{method} has an incompatible service contract; update this Host to use this feature"
+        ));
+    }
+    let (Interface::Service { methods: expected }, Interface::Service { methods: actual }) =
+        (&expected.interface, &actual.interface)
+    else {
+        return Err(format!("Host {endpoint}.{method} is not a service method"));
+    };
+    let expected = expected
+        .get(method)
+        .ok_or_else(|| format!("Unknown typed Host method {endpoint}.{method}"))?;
+    let actual = actual.get(method).ok_or_else(|| {
+        format!("Host does not support {endpoint}.{method}; update this Host to use this feature")
+    })?;
+    if actual != expected {
+        return Err(format!(
+            "Host {endpoint}.{method} has an incompatible method contract; update this Host to use this feature"
+        ));
+    }
+    Ok(())
+}
+
+#[class]
+impl ApplicationHost {
+    pub async fn community_plugins(
+        this: Instance<Self>,
+        query: String,
+        page: u32,
+        locale: String,
+    ) -> Result<community::Page, String> {
+        let owner = this.with(|host| host.owner.clone());
+        drop(this);
+        execute(owner, community::search(query, page, locale)).await
+    }
+
+    pub async fn installed_applications(this: Instance<Self>) -> Result<Vec<String>, String> {
+        let owner = this.with(|host| host.owner.clone());
+        drop(this);
+        execute(owner, quick_tools::installed_applications()).await
+    }
+
+    pub async fn application_icon(this: Instance<Self>, path: String) -> Result<String, String> {
+        let owner = this.with(|host| host.owner.clone());
+        drop(this);
+        execute(owner, quick_tools::application_icon(path)).await
+    }
+
+    pub async fn application_instance(
+        this: Instance<Self>,
+        path: String,
+    ) -> Result<Option<i32>, String> {
+        let owner = this.with(|host| host.owner.clone());
+        drop(this);
+        execute(owner, quick_tools::application_instance(path)).await
+    }
+
+    pub async fn application_action(
+        this: Instance<Self>,
+        path: String,
+        pid: i32,
+        action: String,
+    ) -> Result<(), String> {
+        let owner = this.with(|host| host.owner.clone());
+        drop(this);
+        execute(owner, quick_tools::application_action(path, pid, action)).await
+    }
+
+    pub async fn search_file_names(
+        this: Instance<Self>,
+        query: String,
+    ) -> Result<Vec<String>, String> {
+        let owner = this.with(|host| host.owner.clone());
+        drop(this);
+        execute(owner, quick_tools::search_file_names(query)).await
+    }
+
+    pub async fn scoped_file_search(
+        this: Instance<Self>,
+        query: String,
+        roots: Vec<String>,
+    ) -> Result<file_search::SearchResult, String> {
+        let owner = this.with(|host| host.owner.clone());
+        drop(this);
+        execute(owner, file_search::search(query, roots)).await
+    }
+
+    pub fn dictation_storage_prefix(&self) -> String {
+        format!("dictation.{}.", self.owner.client.source().state_domain)
+    }
+
+    pub fn dictation_microphones(&self) -> Vec<serde_json::Value> {
+        dictation::microphones()
+    }
+
+    pub fn legacy_dictation_key(&self) -> bool {
+        dictation::legacy_key()
+    }
+
+    pub fn message_dictation(&self) -> Result<Instance<dictation::MessageDictation>, String> {
+        Ok(Instance::new(dictation::MessageDictation::new(
+            self.owner.clone(),
+            self.client.clone(),
+        )?))
+    }
+
+    pub async fn open_local_path(this: Instance<Self>, path: String) -> Result<(), String> {
+        let owner = this.with(|host| host.owner.clone());
+        drop(this);
+        execute(owner, quick_tools::open_local_path(path)).await
+    }
+
+    pub async fn clipboard_text_change(
+        this: Instance<Self>,
+        seen: Option<f64>,
+    ) -> Result<quick_tools::ClipboardChange, String> {
+        let owner = this.with(|host| host.owner.clone());
+        drop(this);
+        execute(owner, quick_tools::clipboard_text_change(seen)).await
+    }
+
+    pub async fn clipboard_history_change(
+        this: Instance<Self>,
+        seen: Option<f64>,
+    ) -> Result<quick_tools::HistoryChange, String> {
+        let owner = this.with(|host| host.owner.clone());
+        drop(this);
+        execute(owner, quick_tools::clipboard_history_change(seen)).await
+    }
+
+    pub async fn restore_clipboard_entry(
+        this: Instance<Self>,
+        entry: quick_tools::ClipboardEntry,
+    ) -> Result<(), String> {
+        let owner = this.with(|host| host.owner.clone());
+        drop(this);
+        execute(owner, quick_tools::restore_clipboard_entry(entry)).await
+    }
+
+    pub async fn recent_workspaces(this: Instance<Self>) -> Result<JsonValue, String> {
+        let (owner, source) = this.with(|host| (host.owner.clone(), host.client.clone()));
+        drop(this);
+        let original = owner.clone();
+        execute(owner, async move {
+            let client = source.local(&original).await?;
+            serde_json::to_value(client.recent_workspaces().await?)
+                .map_err(|error| error.to_string())
+        })
+        .await
+    }
+
+    pub async fn set_recent_workspace(
+        this: Instance<Self>,
+        path: String,
+    ) -> Result<JsonValue, String> {
+        let (owner, source) = this.with(|host| (host.owner.clone(), host.client.clone()));
+        drop(this);
+        let original = owner.clone();
+        execute(owner, async move {
+            let recent = source
+                .local(&original)
+                .await?
+                .set_recent_workspace(path)
+                .await?;
+            serde_json::to_value(recent).map_err(|error| error.to_string())
+        })
+        .await
+    }
+
+    /// Capture attachment input before a session exists.
+    pub async fn stage_intake(
+        this: Instance<Self>,
+        input: uploads::IntakeInput,
+    ) -> Result<uploads::StagedIntake, String> {
+        let owner = this.with(|host| host.owner.clone());
+        drop(this);
+        uploads::stage_intake(owner, input).await
+    }
+    pub fn asset_uri(&self, uri: String) -> Result<String, String> {
+        self.client.asset_uri(uri)
+    }
+
+    #[getter]
+    pub fn restored(&self) -> JsonValue {
+        self.owner.reload.restored()
+    }
+
+    pub async fn begin_ui_reload(this: Instance<Self>) -> Result<(), String> {
+        let reload = this.with(|host| host.owner.reload.clone());
+        drop(this);
+        reload.pause().await
+    }
+
+    pub fn cancel_ui_reload(&self) -> Result<(), String> {
+        self.owner.reload.resume()
+    }
+
+    pub fn reload_ui(&self, state: JsonValue, cx: CallCx<'_>) -> Result<(), String> {
+        let pending = self.owner.reload.prepare(state)?;
+        // Queue after this JS call, so replacing its engine cannot interrupt it.
+        cx.start(async move {
+            if let Err(error) = pending.enqueue() {
+                eprintln!("maka-workbench: UI reload failed: {error}");
+            }
+        });
+        Ok(())
+    }
+
+    pub fn markdown_link(&self, target: String) -> Result<links::MarkdownLink, String> {
+        links::markdown_link(&target)
+    }
+
+    /// Convert diagram labels to paths locally; NSH keeps its existing SVG loader.
+    pub async fn diagram_image(this: Instance<Self>, svg: String) -> Result<String, String> {
+        let owner = this.with(|host| host.owner.clone());
+        drop(this);
+        execute(owner, async move {
+            tokio::task::spawn_blocking(move || diagrams::image(&svg))
+                .await
+                .map_err(|error| format!("Diagram worker failed: {error}"))?
+        })
+        .await
+    }
+
+    pub async fn open_browser(this: Instance<Self>, target: String) -> Result<(), String> {
+        let owner = this.with(|host| host.owner.clone());
+        drop(this);
+        links::open_browser(owner, target).await
+    }
+
+    /// Display only. Keep the original opaque WorkspacePath for every Host call.
+    pub fn path_label(&self, path: JsonValue) -> Result<String, String> {
+        let path: maka_agent_api::contract::WorkspacePath =
+            serde_json::from_value(path).map_err(|_| "Invalid workspace path")?;
+        path.validate().map_err(|_| "Invalid workspace path")?;
+        files::path_label(&path)
+    }
+    /// Full interface scaling is available only on the pixel renderer.
+    #[getter]
+    pub fn ui_scale_supported(&self) -> bool {
+        engine_context::<crate::UiScale>().is_some()
+    }
+
+    /// Whether the shell's native folder picker yields paths valid on the Host.
+    #[getter]
+    pub fn local_folder_picker(&self) -> bool {
+        engine_context::<crate::RemoteHostFilesystem>().is_none()
+    }
+
+    /// Re-layout and rasterize at the requested density, using the same input geometry.
+    pub fn preview_ui_scale(&self, scale: f32) -> Result<(), String> {
+        let control = engine_context::<crate::UiScale>()
+            .ok_or("interface scale is controlled by this terminal's font size")?;
+        (control.preview)(scale)
+    }
+
+    /// The pixel renderer's current interface scale, shared by all UI packages.
+    #[getter]
+    pub fn ui_scale_factor(&self) -> Result<f32, String> {
+        engine_context::<crate::UiScale>().map_or(Ok(1.0), |control| (control.current)())
+    }
+
+    /// Physical terminal activity, independent of any focused input field.
+    #[getter]
+    pub fn foreground(&self) -> bool {
+        engine_context::<crate::Foreground>().is_some_and(|foreground| *foreground.0.borrow())
+    }
+
+    /// Observe this terminal's current activity for the calling view's lifetime.
+    pub fn watch_foreground(&self, callback: Callback<bool>, cx: CallCx<'_>) {
+        let Some(foreground) = engine_context::<crate::Foreground>() else {
+            callback.post(false);
+            return;
+        };
+        let mut changes = foreground.0.clone();
+        let stopped = tokio_util::sync::CancellationToken::new();
+        let stop = stopped.clone();
+        let cleanup = cx.on_cleanup(move || stop.cancel());
+        cx.start(async move {
+            while !stopped.is_cancelled() {
+                let active = *changes.borrow_and_update();
+                callback.post(active);
+                tokio::select! {
+                    biased;
+                    _ = stopped.cancelled() => break,
+                    changed = changes.changed() => if changed.is_err() { break },
+                }
+            }
+            cleanup.release();
+        });
+    }
+
+    /// The native startup language, using the same resolver as the desktop.
+    #[getter]
+    pub fn system_locale(&self) -> String {
+        maka_ui_support::locale::system()
+    }
+
+    /// The optional session initially requested by the launcher.
+    #[getter]
+    pub fn initial_session(&self) -> Option<String> {
+        self.initial_session.clone()
+    }
+
+    /// Capture a session without rebinding another view's editor or sends.
+    pub fn session(&self, session_id: String) -> Result<Instance<ScopedHost>, String> {
+        if session_id.is_empty() {
+            return Err("session must not be empty".into());
+        }
+        Ok(Instance::new(ScopedHost {
+            scope: Arc::new(Scope {
+                owner: self.owner.clone(),
+                client: self.client.clone(),
+                session: session_id,
+                reserved: Default::default(),
+            }),
+        }))
+    }
+
+    pub async fn refresh(this: Instance<Self>) -> Result<(), String> {
+        let (owner, source) = this.with(|host| (host.owner.clone(), host.client.clone()));
+        drop(this);
+        execute(owner.clone(), async move { source.refresh(&owner).await }).await
+    }
+
+    /// Whether this Host published the service in its captured catalogue.
+    pub async fn has_service(this: Instance<Self>, endpoint: String) -> Result<bool, String> {
+        let (owner, source) = this.with(|host| (host.owner.clone(), host.client.clone()));
+        drop(this);
+        execute(owner.clone(), async move {
+            let ok = source
+                .read(&owner, |client| {
+                    let endpoint = endpoint.clone();
+                    async move { client.describe(&endpoint).await.map(|_| ()) }
+                })
+                .await
+                .is_ok();
+            Ok(ok)
+        })
+        .await
+    }
+
+    /// Bind declared UI services locally; the first service call captures its
+    /// child Host session from the latest observed deployment source.
+    pub fn bind_ui(
+        &self,
+        source: JsonValue,
+        instance: JsonValue,
+        definition_basis: String,
+    ) -> Result<Instance<ui_services::UiScope>, String> {
+        let source = serde_json::from_value(source).map_err(|error| error.to_string())?;
+        let instance = serde_json::from_value(instance).map_err(|error| error.to_string())?;
+        Ok(Instance::new(ui_services::UiScope::new(
+            self.owner.clone(),
+            source,
+            instance,
+            definition_basis,
+            self.initial_session.clone(),
+        )?))
+    }
+
+    /// Confirm one generic service operation, retaining its original receipt.
+    pub async fn mutation(
+        this: Instance<Self>,
+        endpoint: String,
+        method: String,
+        input: JsonValue,
+    ) -> Result<JsonValue, String> {
+        let (owner, source) = this.with(|host| (host.owner.clone(), host.client.clone()));
+        drop(this);
+        execute(owner.clone(), async move {
+            let (client, endpoint, correlation) = source.mutation_context(&owner, endpoint).await?;
+            let id = Uuid::new_v4();
+            let mutation = client
+                .mutation(
+                    id,
+                    &endpoint,
+                    &method,
+                    input,
+                    Default::default(),
+                    None,
+                    correlation,
+                )
+                .await?;
+            mutation.prepare().await?;
+            let reply = mutation.confirm().await?;
+            Ok(serde_json::json!({"operationId": id, "reply": reply}))
+        })
+        .await
+    }
+
+    /// Observe progress and cancellation of the original generic service call.
+    pub async fn begin_mutation(
+        this: Instance<Self>,
+        endpoint: String,
+        method: String,
+        input: JsonValue,
+    ) -> Result<Instance<OriginalMutation>, String> {
+        let (owner, source) = this.with(|host| (host.owner.clone(), host.client.clone()));
+        drop(this);
+        let original = execute(owner.clone(), async move {
+            let (client, endpoint, correlation) = source.mutation_context(&owner, endpoint).await?;
+            let mutation = client
+                .mutation(
+                    Uuid::new_v4(),
+                    &endpoint,
+                    &method,
+                    input,
+                    Default::default(),
+                    None,
+                    correlation,
+                )
+                .await?;
+            mutation.prepare().await?;
+            Ok(OriginalMutation::new(owner, mutation))
+        })
+        .await?;
+        Ok(Instance::new(original))
+    }
+
+    /// Whether this shell presents system permissions in a dedicated window.
+    #[getter]
+    pub fn system_permission_window(&self) -> bool {
+        self.owner
+            .permission_windows
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|sender| !sender.is_closed())
+    }
+
+    /// Opens the original pending request, preserving this UI's Host scope.
+    pub async fn open_system_permission_setup(
+        this: Instance<Self>,
+        session_id: String,
+        request_id: String,
+    ) -> Result<(), String> {
+        let (owner, source) = this.with(|host| (host.owner.clone(), host.client.clone()));
+        drop(this);
+        execute(owner.clone(), async move {
+            permission_window::open(owner, source, session_id, request_id).await
+        })
+        .await
+    }
+
+    /// Reads effective grants on the Host, never in the desktop process.
+    pub async fn system_permission_status(
+        this: Instance<Self>,
+        session_id: String,
+        request_id: String,
+    ) -> Result<JsonValue, String> {
+        let (owner, source) = this.with(|host| (host.owner.clone(), host.client.clone()));
+        drop(this);
+        execute(owner.clone(), async move {
+            source
+                .read(&owner, |client| {
+                    let input =
+                        serde_json::json!({"sessionId": session_id, "requestId": request_id});
+                    async move {
+                        require_contract(
+                            AGENT,
+                            "systemPermissionStatus",
+                            &client.describe(AGENT).await?.contract,
+                        )?;
+                        client.query(AGENT, "systemPermissionStatus", input).await
+                    }
+                })
+                .await
+        })
+        .await
+    }
+
+    /// Requests one OS grant through a human-only, journaled Host operation.
+    pub async fn request_system_permission(
+        this: Instance<Self>,
+        session_id: String,
+        request_id: String,
+        grant: String,
+    ) -> Result<JsonValue, String> {
+        use maka_plugin_core::operation::{OperationCleanup, OperationOutcome, Receipt};
+        let (owner, source) = this.with(|host| (host.owner.clone(), host.client.clone()));
+        drop(this);
+        execute(owner.clone(), async move {
+            let grant: maka_agent_facts::interaction::SystemPermissionGrant =
+                serde_json::from_value(serde_json::Value::String(grant)).map_err(|error| error.to_string())?;
+            let client = source.resolve(&owner).await?;
+            require_contract(AGENT, "requestSystemPermission", &client.describe(AGENT).await?.contract)?;
+            let grant_value = serde_json::to_value(grant).map_err(|error| error.to_string())?;
+            let original = client.pending_controls().await?.into_iter().find(|operation| {
+                operation.method == "requestSystemPermission"
+                    && operation.session_id.as_deref() == Some(session_id.as_str())
+                    && operation.correlation["requestId"] == request_id
+                    && operation.correlation["grant"] == grant_value
+            });
+            let (id, reply) = if let Some(original) = original {
+                client.operation_for_control(original.id).await?;
+                (original.id, client.recover(original.id).await?)
+            } else {
+                let id = Uuid::new_v4();
+                let mutation = client.control(id, "requestSystemPermission", serde_json::json!({
+                    "sessionId": session_id, "requestId": request_id, "grant": grant,
+                })).await?;
+                mutation.prepare().await?;
+                (id, mutation.confirm().await?)
+            };
+            match reply.receipt {
+                Receipt::Recorded { outcome: OperationOutcome::Returned { result: OperationResult::Success { value } }, cleanup: OperationCleanup::Confirmed } => Ok(value),
+                Receipt::Recorded { outcome: OperationOutcome::Returned { result: OperationResult::Failure { diagnostic } }, cleanup: OperationCleanup::Confirmed } => Err(diagnostic),
+                Receipt::Recorded { outcome: OperationOutcome::NotExecuted { .. }, cleanup: OperationCleanup::Confirmed } => Err("The permission request was prevented before execution.".into()),
+                _ => Err(format!("The permission request has no confirmed result. Recover original operation {id} before requesting again.")),
+            }
+        }).await
+    }
+
+    pub async fn system_permission_actions(
+        this: Instance<Self>,
+        session_id: String,
+        request_id: String,
+    ) -> Result<Vec<String>, String> {
+        let (owner, source) = this.with(|host| (host.owner.clone(), host.client.clone()));
+        drop(this);
+        execute(owner.clone(), async move {
+            let record = source
+                .read(&owner, |client| {
+                    let session_id = session_id.clone();
+                    let request_id = request_id.clone();
+                    async move { system_permission::read(&client, &session_id, &request_id).await }
+                })
+                .await?;
+            Ok(system_permission::actions(
+                &record,
+                &owner.client.source().state_domain,
+            ))
+        })
+        .await
+    }
+
+    pub async fn system_permission_action(
+        this: Instance<Self>,
+        session_id: String,
+        request_id: String,
+        action: String,
+    ) -> Result<(), String> {
+        let (owner, source) = this.with(|host| (host.owner.clone(), host.client.clone()));
+        drop(this);
+        execute(owner.clone(), async move {
+            let client = source.resolve(&owner).await?;
+            let record = system_permission::read(&client, &session_id, &request_id).await?;
+            system_permission::perform(&record, &owner.client.source().state_domain, &action).await
+        })
+        .await
+    }
+
+    /// Query any service exposed by the original Host catalogue.
+    pub async fn query(
+        this: Instance<Self>,
+        endpoint: String,
+        method: String,
+        input: JsonValue,
+    ) -> Result<JsonValue, String> {
+        let (owner, source) = this.with(|host| (host.owner.clone(), host.client.clone()));
+        drop(this);
+        execute(owner.clone(), async move {
+            source
+                .read(&owner, |client| {
+                    let endpoint = endpoint.clone();
+                    let method = method.clone();
+                    let input = input.clone();
+                    async move { client.query(&endpoint, &method, input).await }
+                })
+                .await
+        })
+        .await
+    }
+
+    /// Read the platform UI catalog and publish its immutable package locators.
+    pub async fn read_ui(this: Instance<Self>, input: JsonValue) -> Result<JsonValue, String> {
+        let owner = this.with(|host| host.owner.clone());
+        drop(this);
+        execute(owner.clone(), async move { owner.read_ui(input).await }).await
+    }
+
+    /// Return an owned generic subscription, with no second handle table.
+    pub async fn subscribe(
+        this: Instance<Self>,
+        endpoint: String,
+        method: String,
+        input: JsonValue,
+    ) -> Result<Instance<ScopedSubscription>, String> {
+        let (owner, source) = this.with(|host| (host.owner.clone(), host.client.clone()));
+        drop(this);
+        let subscription = execute(owner.clone(), async move {
+            let subscription = source
+                .read(&owner, |client| {
+                    let endpoint = endpoint.clone();
+                    let method = method.clone();
+                    let input = input.clone();
+                    async move { client.subscribe(&endpoint, &method, input).await }
+                })
+                .await?;
+            Ok(ScopedSubscription {
+                owner,
+                subscription: Arc::new(subscription),
+                kind: SubscriptionKind::Events,
+            })
+        })
+        .await?;
+        Ok(Instance::new(subscription))
+    }
+
+    /// Keep the original Agent file stream with its typed native collector.
+    pub async fn read_file(
+        this: Instance<Self>,
+        input: JsonValue,
+    ) -> Result<Instance<ScopedSubscription>, String> {
+        let file: maka_agent_api::contract::FileRead =
+            serde_json::from_value(input.clone()).map_err(|_| "Invalid file read selector")?;
+        let (owner, source) = this.with(|host| (host.owner.clone(), host.client.clone()));
+        drop(this);
+        let subscription = execute(owner.clone(), async move {
+            let subscription = source
+                .read(&owner, |client| {
+                    let input = input.clone();
+                    async move {
+                        require_contract(
+                            AGENT,
+                            "readFile",
+                            &client.describe(AGENT).await?.contract,
+                        )?;
+                        client.subscribe(AGENT, "readFile", input).await
+                    }
+                })
+                .await?;
+            Ok(ScopedSubscription {
+                owner,
+                subscription: Arc::new(subscription),
+                kind: SubscriptionKind::File {
+                    source: Some(file),
+                    client: source,
+                },
+            })
+        })
+        .await?;
+        Ok(Instance::new(subscription))
+    }
+
+    /// Prepare and confirm one allowed Agent control, preserving its original receipt.
+    pub async fn control(
+        this: Instance<Self>,
+        method: String,
+        input: JsonValue,
+        content: Option<String>,
+    ) -> Result<JsonValue, String> {
+        let (owner, source) = this.with(|host| (host.owner.clone(), host.client.clone()));
+        drop(this);
+        execute(owner.clone(), async move {
+            let client = source.resolve(&owner).await?;
+            let id = Uuid::new_v4();
+            let resources = content
+                .map(|text| resources::text("content", text))
+                .unwrap_or_default();
+            let mutation = client
+                .control_with_resources(id, &method, input, resources)
+                .await?;
+            mutation.prepare().await?;
+            let reply = mutation.confirm().await?;
+            Ok(serde_json::json!({"operationId": id, "reply": reply}))
+        })
+        .await
+    }
+
+    /// Prepare an Agent control before the caller confirms the original operation.
+    pub async fn begin_control(
+        this: Instance<Self>,
+        method: String,
+        input: JsonValue,
+    ) -> Result<Instance<OriginalMutation>, String> {
+        let (owner, source) = this.with(|host| (host.owner.clone(), host.client.clone()));
+        drop(this);
+        let original = execute(owner.clone(), async move {
+            let client = source.resolve(&owner).await?;
+            let mutation = client.control(Uuid::new_v4(), &method, input).await?;
+            mutation.prepare().await?;
+            Ok(OriginalMutation::new(owner, mutation))
+        })
+        .await?;
+        Ok(Instance::new(original))
+    }
+
+    /// Confirm one Settings mutation with an optional request-local secret resource.
+    pub async fn settings_mutation(
+        this: Instance<Self>,
+        endpoint: String,
+        method: String,
+        input: JsonValue,
+        secret: Option<String>,
+    ) -> Result<JsonValue, String> {
+        let resources = resources::settings(&endpoint, &method, &input, secret)?;
+        let (owner, source) = this.with(|host| (host.owner.clone(), host.client.clone()));
+        drop(this);
+        execute(owner.clone(), async move {
+            let client = source.resolve(&owner).await?;
+            let id = Uuid::new_v4();
+            require_contract(
+                &endpoint,
+                &method,
+                &client.describe(&endpoint).await?.contract,
+            )?;
+            let mutation = client
+                .settings_mutation(id, &endpoint, &method, input, resources)
+                .await?;
+            mutation.prepare().await?;
+            let reply = mutation.confirm().await?;
+            Ok(serde_json::json!({"operationId": id, "reply": reply}))
+        })
+        .await
+    }
+
+    /// Prepare one Settings attempt whose progress and cancellation keep the original Call.
+    pub async fn begin_setting(
+        this: Instance<Self>,
+        endpoint: String,
+        method: String,
+        input: JsonValue,
+        secret: Option<String>,
+    ) -> Result<Instance<OriginalMutation>, String> {
+        let resources = resources::settings(&endpoint, &method, &input, secret)?;
+        let (owner, source) = this.with(|host| (host.owner.clone(), host.client.clone()));
+        drop(this);
+        let original = execute(owner.clone(), async move {
+            let client = source.resolve(&owner).await?;
+            require_contract(
+                &endpoint,
+                &method,
+                &client.describe(&endpoint).await?.contract,
+            )?;
+            let mutation = client
+                .settings_mutation(Uuid::new_v4(), &endpoint, &method, input, resources)
+                .await?;
+            mutation.prepare().await?;
+            Ok(OriginalMutation::new(owner, mutation))
+        })
+        .await?;
+        Ok(Instance::new(original))
+    }
+
+    /// Unresolved Settings attempts, independent of the selected Agent session.
+    pub async fn pending_settings(this: Instance<Self>) -> Result<JsonValue, String> {
+        let (owner, source) = this.with(|host| (host.owner.clone(), host.client.clone()));
+        drop(this);
+        execute(owner.clone(), async move {
+            let client = source.local(&owner).await?;
+            let operations = client.pending_settings().await?;
+            serde_json::to_value(operations).map_err(|error| error.to_string())
+        })
+        .await
+    }
+
+    /// Read a Settings attempt's original receipt without repeating its mutation.
+    pub async fn recover_setting(
+        this: Instance<Self>,
+        operation_id: String,
+    ) -> Result<JsonValue, String> {
+        let (owner, source) = this.with(|host| (host.owner.clone(), host.client.clone()));
+        drop(this);
+        let id = Uuid::parse_str(&operation_id).map_err(|error| error.to_string())?;
+        execute(owner.clone(), async move {
+            let client = source.local(&owner).await?;
+            client.operation_for_settings(id).await?;
+            let reply = client.recover(id).await?;
+            serde_json::to_value(reply).map_err(|error| error.to_string())
+        })
+        .await
+    }
+
+    /// Fence a Settings attempt only before its preparation has committed.
+    pub async fn abandon_setting(
+        this: Instance<Self>,
+        operation_id: String,
+    ) -> Result<JsonValue, String> {
+        let (owner, source) = this.with(|host| (host.owner.clone(), host.client.clone()));
+        drop(this);
+        let id = Uuid::parse_str(&operation_id).map_err(|error| error.to_string())?;
+        execute(owner.clone(), async move {
+            let client = source.local(&owner).await?;
+            client.operation_for_settings(id).await?;
+            let operation = client.abandon_unprepared(id).await?;
+            serde_json::to_value(operation).map_err(|error| error.to_string())
+        })
+        .await
+    }
+
+    /// Unresolved controls across this admitted Root, independent of the selected session.
+    pub async fn pending_controls(this: Instance<Self>) -> Result<JsonValue, String> {
+        let (owner, source) = this.with(|host| (host.owner.clone(), host.client.clone()));
+        drop(this);
+        execute(owner.clone(), async move {
+            let client = source.local(&owner).await?;
+            let operations = client.pending_controls().await?;
+            serde_json::to_value(operations).map_err(|error| error.to_string())
+        })
+        .await
+    }
+
+    /// Read a control's original receipt without reissuing its business method.
+    pub async fn recover_control(
+        this: Instance<Self>,
+        operation_id: String,
+    ) -> Result<JsonValue, String> {
+        let (owner, source) = this.with(|host| (host.owner.clone(), host.client.clone()));
+        drop(this);
+        let id = Uuid::parse_str(&operation_id).map_err(|error| error.to_string())?;
+        execute(owner.clone(), async move {
+            let client = source.local(&owner).await?;
+            client.operation_for_control(id).await?;
+            let reply = client.recover(id).await?;
+            serde_json::to_value(reply).map_err(|error| error.to_string())
+        })
+        .await
+    }
+
+    /// Dismiss an original's recovery prompt, retaining its reference and actual outcome.
+    pub async fn dismiss_control(this: Instance<Self>, operation_id: String) -> Result<(), String> {
+        let (owner, source) = this.with(|host| (host.owner.clone(), host.client.clone()));
+        drop(this);
+        let id = Uuid::parse_str(&operation_id).map_err(|error| error.to_string())?;
+        execute(owner.clone(), async move {
+            let client = source.local(&owner).await?;
+            client.dismiss_control(id).await
+        })
+        .await
+    }
+
+    /// Fence a control only if its preparation has not committed.
+    pub async fn abandon_control(
+        this: Instance<Self>,
+        operation_id: String,
+    ) -> Result<JsonValue, String> {
+        let (owner, source) = this.with(|host| (host.owner.clone(), host.client.clone()));
+        drop(this);
+        let id = Uuid::parse_str(&operation_id).map_err(|error| error.to_string())?;
+        execute(owner.clone(), async move {
+            let client = source.local(&owner).await?;
+            client.operation_for_control(id).await?;
+            let operation = client.abandon_unprepared(id).await?;
+            serde_json::to_value(operation).map_err(|error| error.to_string())
+        })
+        .await
+    }
+}
+
+#[class]
+impl ScopedHost {
+    /// The immutable session selected when this editor scope was created.
+    #[getter]
+    pub fn session_id(&self) -> String {
+        self.scope.session.clone()
+    }
+
+    /// Execute one original terminal mutation in this immutable session.
+    pub async fn terminal(
+        this: Instance<Self>,
+        method: String,
+        input: JsonValue,
+    ) -> Result<JsonValue, String> {
+        let scope = this.with(|host| host.scope.clone());
+        drop(this);
+        terminal::mutate(scope, method, input).await
+    }
+
+    /// Unresolved original terminal actions for this exact session and Host.
+    pub async fn pending_terminals(this: Instance<Self>) -> Result<JsonValue, String> {
+        let scope = this.with(|host| host.scope.clone());
+        drop(this);
+        terminal::pending(scope).await
+    }
+
+    /// Recover an original terminal receipt, never repeat its business input.
+    pub async fn recover_terminal(
+        this: Instance<Self>,
+        operation_id: String,
+    ) -> Result<JsonValue, String> {
+        let scope = this.with(|host| host.scope.clone());
+        drop(this);
+        terminal::recover(scope, operation_id).await
+    }
+
+    /// Fence a terminal original only if preparation did not commit.
+    pub async fn abandon_terminal(
+        this: Instance<Self>,
+        operation_id: String,
+    ) -> Result<JsonValue, String> {
+        let scope = this.with(|host| host.scope.clone());
+        drop(this);
+        terminal::abandon(scope, operation_id).await
+    }
+
+    /// Read this editor's persisted draft and its monotonic editing revision.
+    pub async fn load_draft(this: Instance<Self>) -> Result<JsonValue, String> {
+        let scope = this.with(|host| host.scope.clone());
+        execute(scope.owner.clone(), async move {
+            let client = scope.client.local(&scope.owner).await?;
+            match client.load_draft(AGENT, &scope.session, EDITOR).await? {
+                Some(draft) => serde_json::to_value(draft).map_err(|error| error.to_string()),
+                None => Ok(serde_json::json!({"revision": 0, "text": "", "attachments": []})),
+            }
+        })
+        .await
+    }
+
+    /// Persist an edit before sending; a stale writer cannot replace a newer draft.
+    pub async fn save_draft(
+        this: Instance<Self>,
+        expected_revision: u64,
+        edit: JsonValue,
+    ) -> Result<JsonValue, String> {
+        let scope = this.with(|host| host.scope.clone());
+        let edit: maka_app_client::DraftEdit =
+            serde_json::from_value(edit).map_err(|_| "Invalid complete draft edit")?;
+        execute(scope.owner.clone(), async move {
+            let client = scope.client.local(&scope.owner).await?;
+            let draft = client
+                .save_draft(
+                    AGENT,
+                    &scope.session,
+                    EDITOR,
+                    (expected_revision != 0).then_some(expected_revision),
+                    edit,
+                )
+                .await?;
+            serde_json::to_value(draft).map_err(|error| error.to_string())
+        })
+        .await
+    }
+
+    /// Admit attachment input under this editor's session owner.
+    pub fn begin_intake(&self, input: uploads::IntakeInput) -> Instance<uploads::UploadIntake> {
+        Instance::new(uploads::UploadIntake::begin(self.scope.clone(), input))
+    }
+
+    /// Upload a file that was selected before the session was created.
+    pub fn begin_staged_upload(
+        &self,
+        file: Instance<uploads::StagedFile>,
+    ) -> Result<Instance<uploads::UploadIntake>, String> {
+        Ok(Instance::new(uploads::UploadIntake::staged(
+            self.scope.clone(),
+            file,
+        )?))
+    }
+
+    /// Observe original upload receipts, including work admitted by an older view.
+    pub fn watch_uploads(&self) -> Instance<uploads::UploadSubscription> {
+        Instance::new(uploads::UploadSubscription::new(self.scope.clone()))
+    }
+
+    /// Distinguish a local selection failure from an original journaled upload.
+    pub async fn find_upload(
+        this: Instance<Self>,
+        operation_id: String,
+    ) -> Result<JsonValue, String> {
+        let scope = this.with(|host| host.scope.clone());
+        let id = Uuid::parse_str(&operation_id).map_err(|error| error.to_string())?;
+        execute(scope.owner.clone(), async move {
+            let client = scope.client.local(&scope.owner).await?;
+            let operation = client.find_upload(&scope.session, EDITOR, id).await?;
+            serde_json::to_value(operation).map_err(|error| error.to_string())
+        })
+        .await
+    }
+
+    /// Read an original upload's receipt without selecting or uploading bytes again.
+    pub async fn recover_upload(
+        this: Instance<Self>,
+        operation_id: String,
+    ) -> Result<JsonValue, String> {
+        let scope = this.with(|host| host.scope.clone());
+        let id = Uuid::parse_str(&operation_id).map_err(|error| error.to_string())?;
+        execute(scope.owner.clone(), async move {
+            let client = scope.client.local(&scope.owner).await?;
+            client
+                .operation_for_upload(&scope.session, EDITOR, id)
+                .await?;
+            client.recover(id).await?;
+            let operation = client
+                .operation_for_upload(&scope.session, EDITOR, id)
+                .await?;
+            serde_json::to_value(operation).map_err(|error| error.to_string())
+        })
+        .await
+    }
+
+    /// Fence an upload only before its original preparation has committed.
+    pub async fn abandon_upload(
+        this: Instance<Self>,
+        operation_id: String,
+    ) -> Result<JsonValue, String> {
+        let scope = this.with(|host| host.scope.clone());
+        let id = Uuid::parse_str(&operation_id).map_err(|error| error.to_string())?;
+        execute(scope.owner.clone(), async move {
+            let client = scope.client.local(&scope.owner).await?;
+            client
+                .operation_for_upload(&scope.session, EDITOR, id)
+                .await?;
+            let operation = client.abandon_unprepared(id).await?;
+            serde_json::to_value(operation).map_err(|error| error.to_string())
+        })
+        .await
+    }
+
+    /// Reserve one new send of an exact persisted draft revision. Once this
+    /// returns, saving the draft makes a new revision this send never takes.
+    pub async fn reserve_send(
+        this: Instance<Self>,
+        draft_revision: u64,
+        selection: JsonValue,
+    ) -> Result<String, String> {
+        let scope = this.with(|host| host.scope.clone());
+        execute(scope.owner.clone(), async move {
+            let client = scope.client.local(&scope.owner).await?;
+            let id = Uuid::new_v4();
+            let mutation = client
+                .reserve_send_draft(id, AGENT, &scope.session, EDITOR, draft_revision, selection)
+                .await?;
+            scope.reserved.lock().unwrap().insert(id, mutation);
+            Ok(id.to_string())
+        })
+        .await
+    }
+
+    /// Prepare and confirm a send reserved by `reserve_send`.
+    pub async fn confirm_send(
+        this: Instance<Self>,
+        operation_id: String,
+    ) -> Result<JsonValue, String> {
+        let scope = this.with(|host| host.scope.clone());
+        let id = Uuid::parse_str(&operation_id).map_err(|error| error.to_string())?;
+        execute(scope.owner.clone(), async move {
+            let mutation = scope
+                .reserved
+                .lock()
+                .unwrap()
+                .remove(&id)
+                .ok_or("send was not reserved by this view")?;
+            let mutation = mutation.open().await?;
+            mutation.prepare().await?;
+            let reply = mutation.confirm().await?;
+            Ok(serde_json::json!({"operationId": id, "reply": reply}))
+        })
+        .await
+    }
+
+    /// Freeze a new attempt of a confirmed unsent message without touching the editor.
+    pub async fn retry_send(
+        this: Instance<Self>,
+        operation_id: String,
+        selection: JsonValue,
+    ) -> Result<String, String> {
+        let scope = this.with(|host| host.scope.clone());
+        let original = Uuid::parse_str(&operation_id).map_err(|error| error.to_string())?;
+        execute(scope.owner.clone(), async move {
+            let client = scope.client.local(&scope.owner).await?;
+            scope.owned_operation(&client, original).await?;
+            let id = Uuid::new_v4();
+            let send = client.retry_send(original, id, selection).await?;
+            scope.reserved.lock().unwrap().insert(id, send);
+            Ok(id.to_string())
+        })
+        .await
+    }
+
+    /// Observe the native message ledger without replaying the original send.
+    pub async fn send_delivery(
+        this: Instance<Self>,
+        operation_id: String,
+    ) -> Result<JsonValue, String> {
+        let scope = this.with(|host| host.scope.clone());
+        let id = Uuid::parse_str(&operation_id).map_err(|error| error.to_string())?;
+        execute(scope.owner.clone(), async move {
+            let client = scope.client.local(&scope.owner).await?;
+            scope.owned_operation(&client, id).await?;
+            serde_json::to_value(client.send_delivery(id).await?).map_err(|error| error.to_string())
+        })
+        .await
+    }
+
+    /// Restore a confirmed unsent message and its verified attachments into the
+    /// persisted draft and dismiss the pending send in one journal transaction.
+    pub async fn restore_send(
+        this: Instance<Self>,
+        operation_id: String,
+        expected_revision: u64,
+    ) -> Result<JsonValue, String> {
+        let scope = this.with(|host| host.scope.clone());
+        let original = Uuid::parse_str(&operation_id).map_err(|error| error.to_string())?;
+        execute(scope.owner.clone(), async move {
+            let client = scope.client.local(&scope.owner).await?;
+            scope.owned_operation(&client, original).await?;
+            let draft = client
+                .restore_send(
+                    original,
+                    AGENT,
+                    &scope.session,
+                    EDITOR,
+                    (expected_revision != 0).then_some(expected_revision),
+                )
+                .await?;
+            serde_json::to_value(draft).map_err(|error| error.to_string())
+        })
+        .await
+    }
+
+    /// Hide one original message without replaying or cancelling it.
+    pub async fn dismiss_send(this: Instance<Self>, operation_id: String) -> Result<(), String> {
+        let scope = this.with(|host| host.scope.clone());
+        let id = Uuid::parse_str(&operation_id).map_err(|error| error.to_string())?;
+        execute(scope.owner.clone(), async move {
+            let client = scope.client.local(&scope.owner).await?;
+            scope.owned_operation(&client, id).await?;
+            client.dismiss_send(id).await
+        })
+        .await
+    }
+
+    /// Read unresolved original sends after a view or application restart.
+    pub async fn pending(this: Instance<Self>) -> Result<JsonValue, String> {
+        let scope = this.with(|host| host.scope.clone());
+        execute(scope.owner.clone(), async move {
+            let client = scope.client.local(&scope.owner).await?;
+            let operations = client
+                .pending_operations(AGENT, &scope.session, EDITOR)
+                .await?;
+            serde_json::to_value(operations).map_err(|error| error.to_string())
+        })
+        .await
+    }
+
+    /// Query only a previously persisted operation; never submit its send again.
+    pub async fn recover(this: Instance<Self>, operation_id: String) -> Result<JsonValue, String> {
+        let scope = this.with(|host| host.scope.clone());
+        let id = Uuid::parse_str(&operation_id).map_err(|error| error.to_string())?;
+        execute(scope.owner.clone(), async move {
+            let client = scope.client.local(&scope.owner).await?;
+            scope.owned_operation(&client, id).await?;
+            let reply = client.recover(id).await?;
+            serde_json::to_value(reply).map_err(|error| error.to_string())
+        })
+        .await
+    }
+
+    /// Fence only an original attempt whose preparation has not committed.
+    pub async fn abandon_unprepared(
+        this: Instance<Self>,
+        operation_id: String,
+    ) -> Result<JsonValue, String> {
+        let scope = this.with(|host| host.scope.clone());
+        let id = Uuid::parse_str(&operation_id).map_err(|error| error.to_string())?;
+        execute(scope.owner.clone(), async move {
+            let client = scope.client.local(&scope.owner).await?;
+            scope.owned_operation(&client, id).await?;
+            scope.reserved.lock().unwrap().remove(&id);
+            let operation = client.abandon_unprepared(id).await?;
+            serde_json::to_value(operation).map_err(|error| error.to_string())
+        })
+        .await
+    }
+}
+
+impl Scope {
+    async fn owned_operation(&self, client: &Client, id: Uuid) -> Result<(), String> {
+        client
+            .operation_for_draft(AGENT, &self.session, EDITOR, id)
+            .await?;
+        Ok(())
+    }
+}
+
+/// A native subscription owns cleanup even if its promise or VM disappears.
+#[class]
+pub struct ScopedSubscription {
+    owner: Arc<Owner>,
+    subscription: Arc<Subscription>,
+    kind: SubscriptionKind,
+}
+enum SubscriptionKind {
+    Events,
+    File {
+        source: Option<maka_agent_api::contract::FileRead>,
+        client: ApplicationClient,
+    },
+}
+
+impl Drop for ScopedSubscription {
+    fn drop(&mut self) {
+        let subscription = self.subscription.clone();
+        let _ = self.owner.spawn(async move { subscription.close().await });
+        // Once task admission closes, Client.close owns final session cleanup.
+    }
+}
+
+#[class]
+impl ScopedSubscription {
+    /// Verify a complete current-file stream using its original selector, off the JS heap.
+    pub async fn read_file(this: Instance<Self>) -> Result<Instance<files::CapturedFile>, String> {
+        let (owner, subscription, source) = this.with_mut(|item| {
+            let source = match &mut item.kind {
+                SubscriptionKind::File { source, client } => {
+                    source.take().map(|source| (source, client.clone()))
+                }
+                SubscriptionKind::Events => None,
+            };
+            (item.owner.clone(), item.subscription.clone(), source)
+        });
+        drop(this);
+        let (source, client) =
+            source.ok_or("File subscription already consumed or is not a file read")?;
+        let capture = execute(owner, async move {
+            let outcome = files::collect(&subscription, &source).await?;
+            tokio::task::spawn_blocking(move || {
+                let mut capture = files::presentation(outcome, source)?;
+                capture.route_image(&client)?;
+                Ok(capture)
+            })
+            .await
+            .map_err(|_| "Current file presentation worker failed")?
+        })
+        .await?;
+        Ok(Instance::new(capture))
+    }
+    /// Pull one observation from the original subscription.
+    pub async fn next(this: Instance<Self>) -> Result<JsonValue, String> {
+        if this.with(|item| matches!(item.kind, SubscriptionKind::File { .. })) {
+            return Err("Consume file subscriptions with readFile".into());
+        }
+        let (owner, subscription) =
+            this.with(|item| (item.owner.clone(), item.subscription.clone()));
+        drop(this);
+        execute(owner, async move {
+            match subscription.next().await? {
+                Some(SubscriptionEvent::Item(value) | SubscriptionEvent::Finished(value)) => {
+                    Ok(value)
+                }
+                None => Ok(JsonValue::Null),
+            }
+        })
+        .await
+    }
+
+    /// Close this original subscription without releasing unknown physical work.
+    pub async fn close(this: Instance<Self>) -> Result<(), String> {
+        let (owner, subscription) =
+            this.with(|item| (item.owner.clone(), item.subscription.clone()));
+        drop(this);
+        execute(owner, async move { subscription.close().await }).await
+    }
+}

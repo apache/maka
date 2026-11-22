@@ -1,0 +1,81 @@
+import { mount, Scroll, signal, Text, View, type ScrollRef } from "nsh";
+import { Scrollbar, type ScrollbarMode } from "nsh/base";
+import { desktop, Panel, scrollbarTheme, sectionSurface, Segmented, size, Split, ui } from "./palette";
+
+// A list of messages in a card whose own indicator is off, with the app's
+// bar over its right edge in the shared look (`scrollbarTheme`, the one the
+// gallery gives every scroll view), timed as gpui-component's: a 6-point
+// pill (3 on a touch screen) in an opaque mix of the muted text into the
+// page, so rows never show through it, that widens to 8 and darkens under
+// the pointer (`hover:`) and while dragged (`active:`), fading in over
+// 300 ms and out over 500 ms, 2 s after the last scroll (`motion`);
+// pointing at its hidden thumb in the `hover` mode slides it in. The
+// inspector switches when it shows and follows the offset the list reports.
+const MESSAGES = Array.from({ length: 60 }, (_, i) => ({
+  from: ["Ada", "Grace", "Linus", "Ken", "Barbara"][i % 5],
+  text: ["Shipped the build", "Review when you can", "Tests are green", "Moved the meeting", "Draft is ready"][i % 5],
+  at: `${9 + Math.floor(i / 6)}:${String((i * 7) % 60).padStart(2, "0")}`,
+}));
+
+function App() {
+  const mode = signal<ScrollbarMode>("scrolling");
+  const offset = signal(0);
+  let inbox: ScrollRef | undefined;
+  return (
+    <View style={{ flex: 1, backgroundColor: ui().page, padding: 20, paddingTop: 24, gap: 14 }}>
+      <Text style={{ fontSize: 22, fontWeight: "700", color: ui().text }}>scrollbar</Text>
+      <Text style={{ color: ui().muted }}>
+        {desktop ? "Scroll the list, drag the thumb or click the track" : "Scroll the list, or drag the thumb"}
+      </Text>
+      <Split
+        gap={14}
+        grow
+        inspector={
+          <Panel title="scrollbar">
+            <Segmented
+              label="mode"
+              options={["scrolling", "hover", "always"] as const}
+              value={mode()}
+              onChange={(v) => mode.set(v)}
+            />
+            <Text style={{ fontSize: 13, color: ui().text, fontVariant: ["tabular-nums"] }}>
+              {`offset ${Math.round(offset())}`}
+            </Text>
+          </Panel>
+        }
+      >
+        <View style={{ ...sectionSurface(), flex: 1, minHeight: 320, overflow: "hidden" }}>
+          <Scroll
+            ref={inbox}
+            scrollbar={false}
+            style={{ flex: 1 }}
+            onScroll={(e) => offset.set(e.offset.y)}
+          >
+            {MESSAGES.map((m) => (
+              <View
+                class={desktop ? "flex-row gap-3 px-3 py-2.5" : "flex-row gap-3 px-4 py-3"}
+                style={{ borderBottomWidth: 1, borderColor: ui().line }}
+              >
+                <View style={{ flex: 1, gap: 2 }}>
+                  <Text style={{ fontSize: size.label, fontWeight: "500", color: ui().text }}>{m.from}</Text>
+                  <Text style={{ fontSize: size.detail, color: ui().muted }}>{m.text}</Text>
+                </View>
+                <Text style={{ fontSize: size.detail, color: ui().muted, fontVariant: ["tabular-nums"] }}>{m.at}</Text>
+              </View>
+            ))}
+          </Scroll>
+          <Scrollbar
+            scroll={inbox}
+            mode={mode()}
+            motion={scrollbarTheme.motion}
+            accessibilityLabel="Messages"
+            class={scrollbarTheme.vertical?.class ?? undefined}
+            thumbClass={scrollbarTheme.vertical?.thumbClass ?? undefined}
+          />
+        </View>
+      </Split>
+    </View>
+  );
+}
+
+mount(App);

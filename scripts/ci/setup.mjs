@@ -1,0 +1,498 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import { createHash } from 'node:crypto';
+import {
+  appendFileSync,
+  chmodSync,
+  copyFileSync,
+  existsSync,
+  linkSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  lstatSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
+import { basename, dirname, join, relative } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
+import { gunzipSync } from 'node:zlib';
+import { command } from './command.mjs';
+import { manifests } from './suites.mjs';
+
+const hash = (input) => createHash('sha256').update(input).digest('hex');
+const cargoHome = () => process.env.CARGO_HOME || join(homedir(), '.cargo');
+const role = process.env.MAKA_CI_ROLE;
+const cacheRole = process.env.MAKA_CI_CACHE_ROLE || role;
+const workspace = process.env.MAKA_CI_WORKSPACE;
+const profile = process.env.MAKA_CI_PROFILE || 'dev';
+const cargoTarget = process.env.MAKA_CI_TARGET || '';
+const version = process.env.MAKA_CI_NEXTEST;
+const selectedManifests = [manifests[workspace]];
+const tools =
+  role === 'tooling'
+    ? ['cargo-deny']
+    : [
+          'root',
+          'replay',
+          'linux-checks',
+          'desktop',
+          'termina',
+          'nsh',
+          'macos-nsh',
+          'windows-nsh',
+          'native-windows',
+          'native-macos',
+        ].includes(role)
+      ? [`cargo-nextest${version ? `@${version}` : ''}`]
+      : [];
+
+function output(values) {
+  appendFileSync(
+    process.env.GITHUB_OUTPUT,
+    Object.entries(values)
+      .map(([key, value]) => `${key}=${value}\n`)
+      .join(''),
+  );
+}
+
+function hostCpu(arch = process.arch) {
+  const cpu = { x64: 'x86_64', arm64: 'aarch64' }[arch];
+  if (!cpu) throw new Error(`Unsupported CI architecture: ${arch}`);
+  return cpu;
+}
+
+async function fetchGitHub(url, accept) {
+  const token = process.env.GH_TOKEN || process.env.GITHUB_TOKEN;
+  const retryBaseMs = Number(process.env.MAKA_CI_RETRY_DELAY_MS ?? 1000);
+  const headers = {
+    Accept: accept,
+    'User-Agent': 'maka-ci',
+    'X-GitHub-Api-Version': '2022-11-28',
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  };
+  let lastError;
+  for (let attempt = 0; attempt < 4; attempt++) {
+    if (attempt > 0) await delay(retryBaseMs * 2 ** (attempt - 1));
+    try {
+      const response = await fetch(url, { headers });
+      if (response.ok) return response;
+      lastError = new Error(`GitHub API ${url} failed: HTTP ${response.status}`);
+      if (response.status !== 429 && response.status < 500) throw lastError;
+    } catch (error) {
+      lastError = error;
+      if (error instanceof Error && /^GitHub API .* failed: HTTP 4(?!29)\d\d$/u.test(error.message))
+        throw error;
+    }
+  }
+  throw lastError;
+}
+
+async function downloadReleaseAsset(releasePath, matchAsset) {
+  const apiBase = (process.env.MAKA_CI_GITHUB_API ?? 'https://api.github.com').replace(/\/+$/u, '');
+  const metadata = await (
+    await fetchGitHub(`${apiBase}${releasePath}`, 'application/vnd.github+json')
+  ).json();
+  const asset = metadata.assets?.find(matchAsset);
+  if (!asset) throw new Error(`Release ${releasePath} has no matching asset`);
+  const bytes = Buffer.from(
+    await (await fetchGitHub(asset.url, 'application/octet-stream')).arrayBuffer(),
+  );
+  if (asset.digest) {
+    if (!asset.digest.startsWith('sha256:'))
+      throw new Error(`Unsupported digest format for ${asset.name}: ${asset.digest}`);
+    const actual = `sha256:${hash(bytes)}`;
+    if (actual !== asset.digest)
+      throw new Error(`Digest mismatch for ${asset.name}: expected ${asset.digest}, got ${actual}`);
+  }
+  return { asset, bytes };
+}
+
+function toolRelease(spec, platform = process.platform, arch = process.arch) {
+  const [name, pin] = spec.split('@');
+  const cpu = hostCpu(arch);
+  const exe = platform === 'win32' ? `${name}.exe` : name;
+  if (name === 'cargo-nextest') {
+    const target =
+      platform === 'darwin'
+        ? 'universal-apple-darwin'
+        : platform === 'linux'
+          ? `${cpu}-unknown-linux-gnu`
+          : platform === 'win32'
+            ? `${cpu}-pc-windows-msvc`
+            : null;
+    if (!target) throw new Error(`Unsupported platform for ${name}: ${platform}`);
+    return {
+      name,
+      exe,
+      releasePath: pin
+        ? `/repos/nextest-rs/nextest/releases/tags/cargo-nextest-${pin}`
+        : '/repos/nextest-rs/nextest/releases/latest',
+      suffix: `-${target}.tar.gz`,
+    };
+  }
+  if (name === 'cargo-deny') {
+    const target =
+      platform === 'darwin'
+        ? `${cpu}-apple-darwin`
+        : platform === 'linux'
+          ? `${cpu}-unknown-linux-musl`
+          : platform === 'win32'
+            ? `${cpu}-pc-windows-msvc`
+            : null;
+    if (!target) throw new Error(`Unsupported platform for ${name}: ${platform}`);
+    return {
+      name,
+      exe,
+      releasePath: pin
+        ? `/repos/EmbarkStudios/cargo-deny/releases/tags/${pin}`
+        : '/repos/EmbarkStudios/cargo-deny/releases/latest',
+      suffix: `-${target}.tar.gz`,
+    };
+  }
+  throw new Error(`Unsupported CI tool: ${spec}`);
+}
+
+async function installTool(spec) {
+  const { name, exe, releasePath, suffix } = toolRelease(spec);
+  const { asset, bytes } = await downloadReleaseAsset(
+    releasePath,
+    (entry) => entry.name.startsWith(`${name}-`) && entry.name.endsWith(suffix),
+  );
+  const scratch = mkdtempSync(join(tmpdir(), 'maka-ci-tool-'));
+  try {
+    writeFileSync(join(scratch, 'tool.tar.gz'), bytes);
+    mkdirSync(join(scratch, 'out'));
+    await command('tar', ['-xzf', 'tool.tar.gz', '-C', 'out'], { cwd: scratch });
+    const match = readdirSync(join(scratch, 'out'), { recursive: true }).find(
+      (entry) => basename(entry) === exe,
+    );
+    if (!match) throw new Error(`Archive ${asset.name} did not contain ${exe}`);
+    const binDir = join(cargoHome(), 'bin');
+    mkdirSync(binDir, { recursive: true });
+    const destination = join(binDir, exe);
+    const staged = `${destination}.tmp-${process.pid}`;
+    copyFileSync(join(scratch, 'out', match), staged);
+    if (process.platform !== 'win32') chmodSync(staged, 0o755);
+    renameSync(staged, destination);
+    console.log(`Installed ${asset.name} to ${destination}`);
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+}
+
+const TARGET_ROOT = 'target';
+const CACHEDIR_TAG = [
+  'Signature: 8a477f597d28d172789f06886806bc55',
+  '# This file is a cache directory tag created by cargo.',
+  '# For information about cache directory tags see https://bford.info/cachedir/',
+  '',
+].join('\n');
+
+function writeAtomic(destination, contents) {
+  mkdirSync(dirname(destination), { recursive: true });
+  const staged = `${destination}.tmp-${process.pid}`;
+  writeFileSync(staged, contents);
+  renameSync(staged, destination);
+}
+
+function ensureCargoTargetTag() {
+  const tagPath = join(TARGET_ROOT, 'CACHEDIR.TAG');
+  if (!existsSync(tagPath)) writeAtomic(tagPath, CACHEDIR_TAG);
+}
+
+async function stageV8() {
+  const lockfile = readFileSync(join(dirname(manifests.root), 'Cargo.lock'), 'utf8');
+  const match = /^\[\[package\]\]\r?\nname = "v8"\r?\nversion = "([^"]+)"/mu.exec(lockfile);
+  if (!match) return;
+  const v8Version = match[1];
+  const cpu = hostCpu();
+  const os = { darwin: 'apple-darwin', linux: 'unknown-linux-gnu', win32: 'pc-windows-msvc' }[
+    process.platform
+  ];
+  if (!os) throw new Error(`Unsupported platform for V8 archive: ${process.platform}`);
+  const target = `${cpu}-${os}`;
+  const assetName =
+    process.platform === 'win32'
+      ? `rusty_v8_simdutf_release_${target}.lib.gz`
+      : `librusty_v8_simdutf_release_${target}.a.gz`;
+  const url = `https://github.com/denoland/rusty_v8/releases/download/v${v8Version}/${assetName}`;
+  const cachePath = join(cargoHome(), '.rusty_v8', url.replace(/[^0-9A-Za-z]/gu, '_'));
+  const libName = process.platform === 'win32' ? 'rusty_v8.lib' : 'librusty_v8.a';
+  const sumName = process.platform === 'win32' ? 'rusty_v8.sum' : 'librusty_v8.sum';
+  const libDirs = [
+    join(TARGET_ROOT, 'debug', 'gn_out', 'obj'),
+    join(TARGET_ROOT, 'debug', 'build', 'gn_out', 'obj'),
+  ];
+  const primaryLib = join(libDirs[0], libName);
+  const primarySum = join(libDirs[0], sumName);
+  const mirrorBuildDir = () => {
+    const secondaryLib = join(libDirs[1], libName);
+    const secondarySum = join(libDirs[1], sumName);
+    if (
+      existsSync(secondaryLib) &&
+      existsSync(secondarySum) &&
+      readFileSync(secondarySum, 'utf8') === url
+    ) {
+      return;
+    }
+    mkdirSync(libDirs[1], { recursive: true });
+    rmSync(secondaryLib, { force: true });
+    if (process.platform === 'win32') copyFileSync(primaryLib, secondaryLib);
+    else linkSync(primaryLib, secondaryLib);
+    writeAtomic(secondarySum, url);
+  };
+  if (
+    existsSync(primaryLib) &&
+    existsSync(primarySum) &&
+    readFileSync(primarySum, 'utf8') === url
+  ) {
+    ensureCargoTargetTag();
+    mirrorBuildDir();
+    return;
+  }
+  let archive;
+  if (existsSync(cachePath)) {
+    try {
+      archive = gunzipSync(readFileSync(cachePath));
+    } catch {
+      rmSync(cachePath, { force: true });
+    }
+  }
+  if (!archive) {
+    const { bytes } = await downloadReleaseAsset(
+      `/repos/denoland/rusty_v8/releases/tags/v${v8Version}`,
+      (entry) => entry.name === assetName,
+    );
+    archive = gunzipSync(bytes);
+    writeAtomic(cachePath, bytes);
+  }
+  // Cargo only writes CACHEDIR.TAG when creating `target/` itself; creating
+  // `target/debug/gn_out/obj` beforehand without it breaks `cargo clean`.
+  ensureCargoTargetTag();
+  // v8's build.rs skips writing `.sum` when reading `.cargo/.rusty_v8`, causing
+  // parallel host/target build scripts to truncate the shared static library.
+  // Cargo 1.100+ places build script OUT_DIR under `target/debug/build/<pkg>/<hash>/out`,
+  // so v8's relative lookup resolves to `target/debug/build/gn_out/obj`.
+  writeAtomic(primaryLib, archive);
+  writeAtomic(primarySum, url);
+  mirrorBuildDir();
+  console.log(`Staged ${assetName} to ${primaryLib} and ${join(libDirs[1], libName)}`);
+}
+
+async function rootLocalPackages(manifest, wantThirdParty) {
+  const metadata = JSON.parse(
+    await command(
+      'cargo',
+      ['metadata', '--locked', '--format-version=1', '--manifest-path', manifest],
+      { capture: true },
+    ),
+  );
+  const repoRoot = process.cwd();
+  return [
+    ...new Set(
+      metadata.packages
+        .filter((pkg) => {
+          if (pkg.source !== null) return false;
+          const rel = relative(repoRoot, pkg.manifest_path).replaceAll('\\', '/');
+          return rel.startsWith('third-party/') === wantThirdParty;
+        })
+        .map((pkg) => pkg.name),
+    ),
+  ];
+}
+
+async function cleanPackages(manifest, packages) {
+  if (!packages.length) return;
+  const base = [
+    'clean',
+    '--manifest-path',
+    manifest,
+    '--target-dir',
+    TARGET_ROOT,
+    ...(profile === 'release' ? ['--release'] : []),
+    ...packages.flatMap((name) => ['--package', name]),
+  ];
+  await command('cargo', base);
+  if (cargoTarget) await command('cargo', [...base, '--target', cargoTarget]);
+}
+
+async function main(action) {
+  if (action === 'tool-list') {
+    output({ tools: tools.join(' ') });
+  } else if (action === 'tools') {
+    for (const spec of tools) await installTool(spec);
+  } else if (action === 'v8') {
+    await stageV8();
+  } else if (action === 'keys') {
+    const compiler = await command('rustc', ['-vV'], { capture: true });
+    const lock = hash(
+      Buffer.concat(
+        selectedManifests.map((manifest) => readFileSync(join(dirname(manifest), 'Cargo.lock'))),
+      ),
+    );
+    let thirdPartyTree = 'none';
+    if (workspace === 'root') {
+      try {
+        thirdPartyTree = (
+          await command('git', ['rev-parse', 'HEAD:third-party'], { capture: true })
+        ).trim();
+      } catch {
+        thirdPartyTree = 'none';
+      }
+    }
+    const configuration = hash(
+      Buffer.concat([
+        ...selectedManifests.map((manifest) => readFileSync(manifest)),
+        readFileSync('.cargo/config.toml'),
+        readFileSync('.github/actions/ci-setup/action.yml'),
+        readFileSync('.github/actions/ci-cache/action.yml'),
+        ...(profile === 'release' ? [readFileSync('scripts/rust/build-cli.mjs')] : []),
+      ]),
+    );
+    const compiled = `rust-deps-${process.env.RUNNER_OS}-${process.env.RUNNER_ARCH}-${hash(compiler)}-${cacheRole}-${configuration}`;
+    output({
+      compiled: `${compiled}-${thirdPartyTree}-${lock}-${hash(readFileSync(new URL(import.meta.url)))}`,
+      compiled_prefix: `${compiled}-`,
+      downloads: `cargo-sources-${workspace}-${lock}`,
+      downloads_prefix: `cargo-sources-${workspace}-`,
+      downloads_writer: role === 'root' || role === 'nsh' || role === 'termina',
+    });
+  } else if (action === 'stamp-third-party') {
+    const fixed = new Date('2020-01-01T00:00:00Z');
+    const visit = (dir) => {
+      for (const entry of readdirSync(dir)) {
+        const full = join(dir, entry);
+        const info = lstatSync(full);
+        if (info.isSymbolicLink()) continue;
+        if (info.isDirectory()) visit(full);
+        else if (info.isFile()) utimesSync(full, fixed, fixed);
+      }
+    };
+    if (existsSync('third-party')) visit('third-party');
+  } else if (action === 'clean-third-party') {
+    if (!existsSync(TARGET_ROOT)) return;
+    ensureCargoTargetTag();
+    await cleanPackages(manifests.root, await rootLocalPackages(manifests.root, true));
+  } else if (action === 'prune') {
+    if (existsSync(TARGET_ROOT)) ensureCargoTargetTag();
+    for (const manifest of selectedManifests) {
+      let packages;
+      if (workspace === 'root') {
+        packages = await rootLocalPackages(manifest, false);
+      } else {
+        packages = JSON.parse(
+          await command(
+            process.platform === 'win32' ? 'python' : 'python3',
+            [
+              '-c',
+              'import json, sys, tomllib; print(json.dumps([pkg["name"] for pkg in tomllib.load(open(sys.argv[1], "rb"))["package"] if "source" not in pkg]))',
+              join(dirname(manifest), 'Cargo.lock'),
+            ],
+            { capture: true },
+          ),
+        );
+      }
+      await cleanPackages(manifest, packages);
+    }
+  } else if (action === 'native') {
+    const dependencies = process.env.MAKA_CI_DEPENDENCIES;
+    const shared = [
+      'clang',
+      'lld',
+      'libclang-dev',
+      'pkg-config',
+      'libfontconfig1-dev',
+      'libfreetype6-dev',
+      'libssl-dev',
+    ];
+    const headless = [
+      'at-spi2-core',
+      'bubblewrap',
+      'libgtk-4-dev',
+      'libgstreamer1.0-dev',
+      'libgstreamer-plugins-base1.0-dev',
+      'gstreamer1.0-plugins-base',
+      'gstreamer1.0-plugins-good',
+      'xvfb',
+      'ripgrep',
+      'libx11-dev',
+      'libxi-dev',
+      'libxtst-dev',
+      'libxext-dev',
+      'libxcb1-dev',
+      'libxrandr-dev',
+      'libxfixes-dev',
+      'libxkbcommon-dev',
+      'libxkbcommon-x11-dev',
+      'libwayland-dev',
+      'libvulkan1',
+      'mesa-vulkan-drivers',
+    ];
+    const replay = [
+      'bubblewrap',
+      'ripgrep',
+      'xvfb',
+      'libgtk-4-1',
+      'libgstreamer1.0-0',
+      'libgstreamer-plugins-base1.0-0',
+      'gstreamer1.0-plugins-base',
+      'gstreamer1.0-plugins-good',
+      'libxkbcommon0',
+      'libxkbcommon-x11-0',
+      'libwayland-client0',
+      'libxtst6',
+      'libxi6',
+      'libvulkan1',
+      'mesa-vulkan-drivers',
+    ];
+    const packages =
+      dependencies === 'replay'
+        ? replay
+        : dependencies === 'computer-use'
+          ? [
+              ...shared,
+              'libx11-dev',
+              'libxi-dev',
+              'libxtst-dev',
+              'libxext-dev',
+              'libxrandr-dev',
+              'libxfixes-dev',
+              'libxkbcommon-dev',
+              'libwayland-dev',
+            ]
+          : [...shared, ...headless];
+    await command('sudo', ['apt-get', '-o', 'APT::Update::Error-Mode=any', 'update']);
+    await command('sudo', ['apt-get', 'install', '-y', ...packages]);
+    if (dependencies !== 'computer-use')
+      await command('sudo', ['sysctl', '-w', 'kernel.apparmor_restrict_unprivileged_userns=0']);
+  } else {
+    throw new Error(`Unknown CI setup action: ${action}`);
+  }
+}
+
+main(process.argv[2]).catch((error) => {
+  console.error(error);
+  process.exitCode = 1;
+});

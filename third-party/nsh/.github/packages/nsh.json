@@ -1,0 +1,15 @@
+{
+    "version": "${NSH_VERSION}",
+    "description": "Native UI from TSX modules: the nsh command line and its prebuilt runtimes",
+    "homepage": "https://nsh.dev",
+    "license": "Apache-2.0",
+    "notes": "Scoop updates nsh from the latest release's manifest: scoop update nsh",
+    "architecture": {
+        "64bit": {
+            "url": "https://github.com/${NSH_REPO}/releases/download/v${NSH_VERSION}/nsh-windows-x86_64.zip",
+            "hash": "${NSH_HASH}"
+        }
+    },
+    "extract_dir": "nsh",
+    "bin": "bin\\nsh.exe"
+}

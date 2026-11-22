@@ -1,0 +1,20 @@
+---
+import BaseLayout from '../layouts/BaseLayout.astro';
+import Nav from '../components/Nav.astro';
+import Releases from '../components/Releases.astro';
+import SiteFooter from '../components/SiteFooter.astro';
+import { url } from '../lib/site';
+---
+
+<BaseLayout
+  lang="en"
+  title="Release notes"
+  description="The most recent versions of Native Shell, with the notes from their GitHub releases."
+  alternates={{ en: '/releases', 'zh-CN': '/zh-CN/releases' }}
+>
+  <Nav lang="en" currentPath={Astro.url.pathname} langHref={url('zh-CN/releases')} />
+  <main id="main">
+    <Releases lang="en" />
+  </main>
+  <SiteFooter lang="en" />
+</BaseLayout>
