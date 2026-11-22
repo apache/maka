@@ -335,11 +335,38 @@ async fn universal_read_and_human_symmetric_session_tools_coordinate_rooms_and_w
                 .any(|item| item["role"] == "user" && item["text"] == "Execute Read"),
             "{self_read_output}"
         );
+        let history_read_entry = self_items
+            .iter()
+            .find(|item| item["toolName"] == "Read")
+            .ok_or_else(|| format!("missing Read entry in self transcript: {self_read_output}"))?;
         assert!(
-            self_items
+            history_read_entry["resultPath"].is_null() && history_read_entry["status"].is_null(),
+            "stale history-resource Read results must omit resultPath/status for Agent callers: {history_read_entry}"
+        );
+
+        let child_agent_read = tool_round(
+            &rig,
+            &mut provider,
+            parent_id,
+            false,
+            "SessionRead",
+            json!({"sessionId": child_id}),
+        )
+        .await?;
+        let child_agent_msgs: Vec<Value> = serde_json::from_str(&child_agent_read)?;
+        let child_agent_output: Value = serde_json::from_str(
+            child_agent_msgs[0]["content"]
+                .as_str()
+                .ok_or("missing child SessionRead tool content")?,
+        )?;
+        let child_agent_items = child_agent_output["transcript"]["items"]
+            .as_array()
+            .ok_or("missing child Agent transcript")?;
+        assert!(
+            child_agent_items
                 .iter()
                 .any(|item| item["toolName"] == "Read" && item["resultPath"].is_string()),
-            "{self_read_output}"
+            "workspace file Read should retain resultPath for Agent callers: {child_agent_output}"
         );
 
         let updated = tool_round(
