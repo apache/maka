@@ -1231,7 +1231,7 @@ mod tests {
         let socket = dir.path().join("host.sock");
         #[cfg(windows)]
         let socket = std::path::PathBuf::from(format!(
-            r"\.\pipe\maka-retire-order-test-{}",
+            r"\\.\pipe\maka-retire-order-test-{}",
             Uuid::new_v4()
         ));
         let listener = LocalListener::bind(&socket).unwrap();
