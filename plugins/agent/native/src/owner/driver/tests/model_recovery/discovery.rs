@@ -2563,4 +2563,52 @@ async fn discovery_wander_starts_blind_rotates_sources_and_learns_only_in_follow
     f.close().await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn upsert_then_legacy_discovery_complete_skips_duplicate_task_dossier() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut f = Fixture::new(&listener).await;
+    let task = f.create("Review evidence").await;
+    f.change(&task, "trigger_now").await;
+    let (worker, _) = next(&listener).await;
+    let (mut worker, saved) = worker_upsert(
+        &listener,
+        worker,
+        json!({
+            "topic_id": "contract",
+            "expected_revision": 0,
+            "title": "Contract compliance",
+            "signal": "red",
+            "priority_weight": 9.0,
+            "summary_md": "Ready for one-click decision.",
+            "artifacts": [],
+            "notify_intent": {"kind": "interrupt", "reason": "Action needed"}
+        }),
+    )
+    .await;
+    assert_eq!(saved["revision"], 1, "{saved}");
+    tool(
+        &mut worker,
+        "DiscoveryComplete",
+        json!({"kind": "report", "text": "Duplicate legacy summary"}),
+    )
+    .await;
+    let detail = f.settled(&task, 1).await;
+    let run = &detail["task"]["runs"][0];
+    assert_eq!(run["outcome"], "ok");
+    assert_eq!(run["message"], "Dossiers updated");
+    let list = f.query("dossiers", json!({})).await;
+    let ids: Vec<&str> = list["dossiers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|d| d["topicId"].as_str())
+        .collect();
+    assert_eq!(
+        ids,
+        vec!["contract"],
+        "legacy DiscoveryComplete must not create a duplicate task dossier: {list}"
+    );
+    f.close().await;
+}
+
 mod guards;

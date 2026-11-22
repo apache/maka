@@ -103,7 +103,7 @@ impl scheduler::Scheduler {
             (PREFERENCES, "Save an explicit user instruction for future discovery. Append a concise natural-language rule, or replace the rules for one scope. The host records the date.",
              schemars::schema_for!(preferences::Update), ToolSemantics::ExclusiveStep),
             (FINISH,
-             "Finish the investigation quietly with a concise note. Pass checked_topic_ids for topics reviewed without further material changes.",
+             "End the investigation turn cleanly after saving all UpsertDossier updates (or when nothing material changed). Pass checked_topic_ids for topics reviewed without further material changes.",
              schemars::schema_for!(Finish), ToolSemantics::FinishTurn),
             (LIST, "List compact discovery topics and user leads in urgency order.",
              schemars::schema_for!(DossiersRead), ToolSemantics::Parallel),
@@ -500,6 +500,19 @@ impl Statement for DossierMutation {
             expected_revision: last.map(|r| r.revision),
             data: Data::Present(serde_json::to_value(receipt)?),
         });
+        if let Some(active) = storage.read_in_transaction(c, ACTIVE, &self.writer)?
+            && let Some(value) = active.data.value()
+        {
+            let mut job: Job = serde_json::from_value(value.clone())?;
+            if !job.upserted_dossiers {
+                job.upserted_dossiers = true;
+                writes.push(Mutation {
+                    key: ACTIVE.into(),
+                    expected_revision: Some(active.revision),
+                    data: Data::Present(serde_json::to_value(&job)?),
+                });
+            }
+        }
         let storage = storage
             .prepare_statement(writes, &self.writer)?
             .execute(c)?;
