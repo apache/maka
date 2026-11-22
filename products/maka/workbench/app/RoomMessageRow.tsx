@@ -203,29 +203,45 @@ export function RoomMessageRow(props: {
         </View>
       </If>
       <If when={!isDeleted() && !props.isEditing() && Boolean(props.message().content.text)}>
-        <If
-          when={isHuman() && !roomTextNeedsMarkdown(props.message().content.text)}
-          else={
-            <MarkdownBody
-              selectable={false}
-              row={() => ({
-                key: props.message().id + ':' + String(props.message().editedAt ?? 0),
-                messageId: props.message().id,
-                field: 'body',
-                role: isHuman() ? 'user' : 'assistant',
-                text: props.message().content.text,
-                prefix: true,
-                closedAt: props.message().at,
-              })}
-              sourceId={props.message().id}
-              sessionId={props.sessionId}
-              openLink={props.onOpenLink}
-              userScroll={props.onUserScroll}
-            />
+        {/* Keep selectable scoped to prose so outer double-click quick-react still fires,
+            while binding ContextMenu directly to the selectable trigger so right-click opens
+            the Room menu instead of the default selectable-text menu. */}
+        <ContextMenu
+          offset={4}
+          margin={8}
+          popupStyle={floatingStyle()}
+          trigger={
+            <View selectable>
+              <If
+                when={isHuman() && !roomTextNeedsMarkdown(props.message().content.text)}
+                else={
+                  <MarkdownBody
+                    selectable={false}
+                    row={() => ({
+                      key: props.message().id + ':' + String(props.message().editedAt ?? 0),
+                      messageId: props.message().id,
+                      field: 'body',
+                      role: isHuman() ? 'user' : 'assistant',
+                      text: props.message().content.text,
+                      prefix: true,
+                      closedAt: props.message().at,
+                    })}
+                    sourceId={props.message().id}
+                    sessionId={props.sessionId}
+                    openLink={props.onOpenLink}
+                    userScroll={props.onUserScroll}
+                  />
+                }
+              >
+                <Text style={{ ...bodyTextStyle, color: C.text }}>
+                  {props.message().content.text}
+                </Text>
+              </If>
+            </View>
           }
         >
-          <Text style={{ ...bodyTextStyle, color: C.text }}>{props.message().content.text}</Text>
-        </If>
+          {contextMenuContent()}
+        </ContextMenu>
       </If>
       <If when={!isDeleted() && props.message().content.attachments.length > 0}>
         <HistoryAttachments
@@ -366,7 +382,6 @@ export function RoomMessageRow(props: {
         popupStyle={floatingStyle()}
         trigger={
           <View
-            selectable
             class="group"
             onPress={handleDoubleClick}
             style={{

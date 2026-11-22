@@ -193,6 +193,55 @@ export function roomDeliveryReasonKey(reason: string): RoomDeliveryReasonKey | n
   }
 }
 
+export interface RoomWatchState {
+  through: number;
+  revision: number | null;
+}
+
+export interface RoomWatchActions {
+  hasAfterCursor: () => boolean;
+  onThrough: (through: number) => void;
+  onUnseenDelta: (delta: number) => void;
+  appendNew: (refreshExisting: boolean) => Promise<boolean>;
+  refreshExisting: () => Promise<boolean>;
+}
+
+/**
+ * Reconcile one Room watch watermark against the client's loaded timeline state.
+ * Only advances `state.through` / `state.revision` after the corresponding read completes.
+ */
+export async function applyRoomWatchUpdate(
+  state: RoomWatchState,
+  update: { through: number; revision: number },
+  actions: RoomWatchActions,
+): Promise<boolean> {
+  const revChanged = state.revision === null || update.revision !== state.revision;
+  if (update.through > state.through) {
+    const delta = update.through - state.through;
+    if (actions.hasAfterCursor()) {
+      const ok = revChanged ? await actions.refreshExisting() : true;
+      if (!ok) return false;
+      state.through = update.through;
+      actions.onThrough(update.through);
+      actions.onUnseenDelta(delta);
+      state.revision = update.revision;
+      return true;
+    }
+    const ok = await actions.appendNew(revChanged);
+    if (!ok) return false;
+    state.through = update.through;
+    actions.onThrough(update.through);
+    state.revision = update.revision;
+    return true;
+  }
+  if (revChanged) {
+    const ok = await actions.refreshExisting();
+    if (!ok) return false;
+    state.revision = update.revision;
+  }
+  return true;
+}
+
 export function roomResult<T>(reply: unknown): T {
   const receipt = (reply as OperationReply).receipt;
   if (receipt.kind !== 'recorded') throw new Error('Operation receipt is not recorded.');

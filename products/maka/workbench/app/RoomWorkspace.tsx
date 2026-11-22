@@ -78,6 +78,7 @@ import {
   RoomWorkingFooter,
 } from './RoomPanels';
 import {
+  applyRoomWatchUpdate,
   isGroupContinuation,
   roomAuthorSession,
   roomAvatarColor,
@@ -85,6 +86,7 @@ import {
   roomDayKey,
   roomResult,
   workspaceTailName,
+  type RoomWatchState,
 } from './roomMessage';
 import { motionEnabled, ROOM_SPRING } from './roomMotion';
 
@@ -1049,8 +1051,7 @@ export function RoomTimeline(props: {
   }
 
   const liveAddedIds = new Set<string>();
-  let through = 0;
-  let watchRevision: number | null = null;
+  const watchState: RoomWatchState = { through: 0, revision: null };
   let alive = true;
   let scroll: ScrollRef | null = null;
   let stream: { next(): Promise<Output<'agent', 'watch'> | null>; close(): Promise<void> } | null =
@@ -1062,8 +1063,7 @@ export function RoomTimeline(props: {
   let scrollY = 0;
   let prependAnchor: { height: number; y: number } | null = null;
   let lastMarked: string | null = null;
-  let reading: Promise<void> | null = null;
-  let reloadingState = false;
+  let reading: Promise<boolean> | null = null;
 
   const map = () => new Map(messages().map((message) => [message.id, message]));
   const waitingMembers = () =>
@@ -1080,22 +1080,19 @@ export function RoomTimeline(props: {
     return result.page;
   };
 
-  const refreshState = async () => {
-    if (reloadingState) return;
-    reloadingState = true;
+  const refreshState = async (): Promise<boolean> => {
     try {
       const state = await props.host.query('agent', 'roomState', { sessionId: props.sessionId });
-      if (!alive) return;
+      if (!alive) return false;
       batch(() => {
         topic.set(state.topic);
         members.set(state.members);
         pinnedMessages.set(state.pinned);
       });
       props.rememberParticipants?.(state.members);
+      return true;
     } catch {
-      // Non-fatal: timeline remains usable even if state refresh races with reconnect.
-    } finally {
-      reloadingState = false;
+      return false;
     }
   };
 
@@ -1123,8 +1120,8 @@ export function RoomTimeline(props: {
       );
       if (mode !== 'append') before.set(page.before ?? null);
       if (mode !== 'prepend') after.set(page.after ?? null);
-      through = Math.max(through, page.through);
-      throughSignal.set(through);
+      watchState.through = Math.max(watchState.through, page.through);
+      throughSignal.set(watchState.through);
       if (after() === null) unseenCount.set(0);
       ready.set(true);
     });
@@ -1153,71 +1150,64 @@ export function RoomTimeline(props: {
     }
   };
 
-  // Re-fetch ALL loaded messages across the entire visible window so edits/deletes/reactions never go stale.
-  const refreshVisibleMetadata = async () => {
+  // Walk from the first loaded row up to `upToSequence` so edits/deletes/reactions refresh in-place without evicting earlier rows.
+  const refreshVisibleMetadata = async (upToSequence?: number): Promise<boolean> => {
     const loaded = messages();
     const first = loaded[0];
     const last = loaded.at(-1);
-    await refreshState();
-    if (!alive || !first || !last) return;
-    try {
-      const updated = new Map<string, AgentRoomMessage>();
-      if (loaded.length <= 48 && after() === null) {
-        const page = await read({ kind: 'tail' });
-        if (!alive) return;
-        if (page.participants?.length) props.rememberParticipants?.(page.participants);
-        for (const item of page.items) updated.set(item.id, item);
-      } else {
-        const maxPages = Math.ceil(loaded.length / 48) + 2;
-        let position: HistoryPosition = { kind: 'message', messageId: first.id };
-        for (let i = 0; i < maxPages && alive; i++) {
-          const page = await read(position);
-          if (!alive) return;
-          if (page.participants?.length) props.rememberParticipants?.(page.participants);
-          for (const item of page.items) updated.set(item.id, item);
-          const pageLast = page.items.at(-1);
-          if (!pageLast || !page.after || pageLast.sequence >= last.sequence) break;
-          position = { kind: 'after_message', messageId: pageLast.id };
-        }
-      }
-      if (updated.size > 0) {
-        messages.set(messages().map((item) => updated.get(item.id) ?? item));
-      }
-    } catch {
-      // Ignore transient refresh failures; next revision will reconcile.
+    const stateOk = await refreshState();
+    if (!alive) return false;
+    if (!first || !last) return stateOk;
+    const stopSeq = upToSequence ?? last.sequence;
+    const updated = new Map<string, AgentRoomMessage>();
+    const maxPages = Math.ceil(loaded.length / 48) + 2;
+    let position: HistoryPosition = { kind: 'message', messageId: first.id };
+    for (let i = 0; i < maxPages && alive; i++) {
+      const page = await read(position);
+      if (!alive) return false;
+      if (page.participants?.length) props.rememberParticipants?.(page.participants);
+      for (const item of page.items) updated.set(item.id, item);
+      const pageLast = page.items.at(-1);
+      if (!pageLast || !page.after || pageLast.sequence >= stopSeq) break;
+      position = { kind: 'after_message', messageId: pageLast.id };
     }
+    if (!alive) return false;
+    if (updated.size > 0) {
+      messages.set(messages().map((item) => updated.get(item.id) ?? item));
+    }
+    return stateOk;
   };
 
-  const refresh = (includeMetadata = false): Promise<void> => {
-    if (reading) return reading;
-    reading = (async () => {
+  const refresh = async (includeMetadata = false): Promise<boolean> => {
+    if (reading) {
+      const prevOk = await reading;
+      if (!alive) return false;
+      return includeMetadata ? (await refreshVisibleMetadata()) && prevOk : prevOk;
+    }
+    const run = (async (): Promise<boolean> => {
       const current = messages();
-      const last = current.at(-1)?.id;
+      const last = current.at(-1);
       if (after() !== null) {
-        await refreshVisibleMetadata();
-        return;
+        return includeMetadata ? refreshVisibleMetadata() : refreshState();
       }
-      if (!last || current.length <= 48) {
-        publish(await read({ kind: 'tail' }), 'replace', Boolean(last));
-        await refreshState();
-        return;
+      if (!last) {
+        publish(await read({ kind: 'tail' }), 'replace', false);
+        return refreshState();
       }
-      let cursor = last;
+      let cursor = last.id;
       do {
         const page = await read({ kind: 'after_message', messageId: cursor });
         publish(page, 'append', true);
         if (!page.after || !alive) break;
         cursor = page.after;
       } while (alive);
-      if (includeMetadata) {
-        await refreshVisibleMetadata();
-      } else {
-        await refreshState();
-      }
+      if (!alive) return false;
+      return includeMetadata ? refreshVisibleMetadata(last.sequence) : true;
     })().finally(() => {
       reading = null;
     });
-    return reading;
+    reading = run;
+    return run;
   };
 
   const latest = async () => {
@@ -1309,43 +1299,38 @@ export function RoomTimeline(props: {
     error.set('');
     streamBroken.set(false);
     try {
-      const [page] = await Promise.all([read({ kind: 'tail' }), refreshState()]);
-      if (!alive) return;
-      publish(page, 'replace');
+      // Subscribe and capture the baseline watch revision BEFORE reading history so any edit or
+      // retraction committed around the initial read emits a newer revision on this same stream.
       const opened = await props.host.subscribe('agent', 'watch', {
         sessionId: props.sessionId,
-        after: page.through,
+        after: 0,
       });
       if (!alive) {
         await opened.close();
         return;
       }
       stream = opened;
+      const first = await opened.next();
+      if (!alive) return;
+      if (first === null || first.kind !== 'room') throw new Error(tr('Live updates ended.'));
+      const [page] = await Promise.all([read({ kind: 'tail' }), refreshState()]);
+      if (!alive) return;
+      publish(page, 'replace');
+      watchState.revision = first.revision;
       reconnectBackoff = 1000;
       for (;;) {
         const update = await opened.next();
         if (!alive) break;
         if (update === null) throw new Error(tr('Live updates ended.'));
         if (update.kind === 'room') {
-          const rev = update.revision;
-          const revChanged = watchRevision !== null && rev !== watchRevision;
-          if (update.through > through) {
-            const delta = update.through - through;
-            through = update.through;
-            throughSignal.set(through);
-            watchRevision = rev;
-            if (after() !== null) {
-              unseenCount.set(unseenCount() + delta);
-              await refreshVisibleMetadata();
-            } else {
-              await refresh(revChanged);
-            }
-          } else if (watchRevision === null) {
-            watchRevision = rev;
-          } else if (revChanged) {
-            watchRevision = rev;
-            await refreshVisibleMetadata();
-          }
+          const ok = await applyRoomWatchUpdate(watchState, update, {
+            hasAfterCursor: () => after() !== null,
+            onThrough: (nextThrough) => throughSignal.set(nextThrough),
+            onUnseenDelta: (delta) => unseenCount.set(unseenCount() + delta),
+            appendNew: (refreshExisting) => refresh(refreshExisting),
+            refreshExisting: () => refreshVisibleMetadata(),
+          });
+          if (!ok && alive) throw new Error(tr('Live updates ended.'));
         }
       }
     } catch (reason) {
@@ -1759,7 +1744,9 @@ export function RoomTimeline(props: {
         message={(id) => map().get(id)}
         searchSessions={props.searchSessions}
         openAgent={props.openAgent}
-        posted={refresh}
+        posted={async () => {
+          await refresh();
+        }}
         preview={(image) => viewer.set(image)}
         attach={(handle) => {
           composer = handle;
@@ -1775,7 +1762,9 @@ export function RoomTimeline(props: {
           members={members}
           searchSessions={props.searchSessions}
           onOpenAgent={props.openAgent}
-          onChanged={refreshState}
+          onChanged={async () => {
+            await refreshState();
+          }}
           onClose={() => membersOpen.set(false)}
         />
       </If>

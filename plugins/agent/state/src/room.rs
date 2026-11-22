@@ -892,89 +892,94 @@ impl Query for Capture {
 
 struct WatchWatermark(RunOwner, String);
 
+fn watch_revision(c: &Connection, owner: &str, session: &str) -> Result<u64, StoreError> {
+    let room_rev: Option<i64> = c
+        .query_row(
+            "SELECT revision FROM agent_rooms WHERE owner=? AND session=?",
+            params![owner, session],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(room_rev) = room_rev else {
+        return Err(StoreError::SessionNotFound);
+    };
+    // Fingerprint ONLY this Room's revision + its own members' live/blocked/pending/terminal/title
+    // state so reactions or streaming in other Rooms never trigger cross-room refreshes.
+    let mut hash: u64 = 0xcbf29ce484222325;
+    let mix_u64 = |h: &mut u64, v: u64| {
+        for b in v.to_le_bytes() {
+            *h ^= u64::from(b);
+            *h = h.wrapping_mul(0x100000001b3);
+        }
+    };
+    let mix_bytes = |h: &mut u64, bytes: &[u8]| {
+        for &b in bytes {
+            *h ^= u64::from(b);
+            *h = h.wrapping_mul(0x100000001b3);
+        }
+        *h ^= 0xff;
+        *h = h.wrapping_mul(0x100000001b3);
+    };
+    mix_u64(&mut hash, unsigned(room_rev)?);
+    let mut stmt = c.prepare_cached(
+        "SELECT m.member_session,
+                COALESCE(json_extract(s.configuration, '$.title'), s.id),
+                COALESCE(s.archived, 0),
+                EXISTS(SELECT 1 FROM agent_catalog_runs w WHERE w.owner=?1 AND w.session=m.member_session AND w.live=1),
+                EXISTS(SELECT 1 FROM agent_catalog_runs w WHERE w.owner=?1 AND w.session=m.member_session AND w.live=1 AND w.blocked=1),
+                (SELECT COUNT(*) FROM agent_interaction_pending p
+                    JOIN agent_interaction_requests q ON q.request=p.request
+                    JOIN agent_run_specs spec ON spec.run=q.run
+                    JOIN agent_catalog_runs r ON r.run=q.run
+                    WHERE p.session=m.member_session AND spec.owner=?1 AND r.live=1),
+                COALESCE((SELECT r.admission_sequence FROM agent_catalog_runs r WHERE r.owner=?1 AND r.session=m.member_session ORDER BY r.admission_sequence DESC LIMIT 1), 0),
+                COALESCE((SELECT r.stopped FROM agent_catalog_runs r WHERE r.owner=?1 AND r.session=m.member_session ORDER BY r.admission_sequence DESC LIMIT 1), 0),
+                COALESCE((SELECT r.terminal FROM agent_catalog_runs r WHERE r.owner=?1 AND r.session=m.member_session ORDER BY r.admission_sequence DESC LIMIT 1), '')
+         FROM agent_room_members m
+         LEFT JOIN session_control s ON s.id=m.member_session
+           AND NOT EXISTS(SELECT 1 FROM session_retirements d WHERE d.session_id=s.id AND d.remove_session=1)
+         WHERE m.owner=?1 AND m.session=?2
+         ORDER BY m.member_session ASC",
+    )?;
+    let rows = stmt.query_map(params![owner, session], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, Option<String>>(1)?,
+            r.get::<_, i64>(2)?,
+            r.get::<_, i64>(3)?,
+            r.get::<_, i64>(4)?,
+            r.get::<_, i64>(5)?,
+            r.get::<_, i64>(6)?,
+            r.get::<_, i64>(7)?,
+            r.get::<_, String>(8)?,
+        ))
+    })?;
+    for row in rows {
+        let (id, title, archived, live, blocked, pending, seq, stopped, terminal) = row?;
+        mix_bytes(&mut hash, id.as_bytes());
+        if let Some(t) = title {
+            mix_bytes(&mut hash, t.as_bytes());
+        }
+        mix_u64(&mut hash, archived as u64);
+        mix_u64(&mut hash, live as u64);
+        mix_u64(&mut hash, blocked as u64);
+        mix_u64(&mut hash, pending as u64);
+        mix_u64(&mut hash, seq as u64);
+        mix_u64(&mut hash, stopped as u64);
+        mix_bytes(&mut hash, terminal.as_bytes());
+    }
+    // Mask to 53 bits so JSON -> JS number preserves exact equality.
+    Ok(hash & ((1u64 << 53) - 1))
+}
+
 impl Query for WatchWatermark {
     type Output = (u64, u64);
 
     fn execute(self, c: &Connection) -> Result<(u64, u64), StoreError> {
         let owner = serde_json::to_string(&self.0)?;
-        let room_rev: Option<i64> = c
-            .query_row(
-                "SELECT revision FROM agent_rooms WHERE owner=? AND session=?",
-                params![owner, self.1],
-                |row| row.get(0),
-            )
-            .optional()?;
-        let Some(room_rev) = room_rev else {
-            return Err(StoreError::SessionNotFound);
-        };
+        let revision = watch_revision(c, &owner, &self.1)?;
         let through = tail(c, &owner, &self.1)?;
-        // Fingerprint ONLY this Room's revision + its own members' live/blocked/pending/terminal/title
-        // state so reactions or streaming in other Rooms never trigger cross-room refreshes.
-        let mut hash: u64 = 0xcbf29ce484222325;
-        let mix_u64 = |h: &mut u64, v: u64| {
-            for b in v.to_le_bytes() {
-                *h ^= u64::from(b);
-                *h = h.wrapping_mul(0x100000001b3);
-            }
-        };
-        let mix_bytes = |h: &mut u64, bytes: &[u8]| {
-            for &b in bytes {
-                *h ^= u64::from(b);
-                *h = h.wrapping_mul(0x100000001b3);
-            }
-            *h ^= 0xff;
-            *h = h.wrapping_mul(0x100000001b3);
-        };
-        mix_u64(&mut hash, unsigned(room_rev)?);
-        let mut stmt = c.prepare_cached(
-            "SELECT m.member_session,
-                    COALESCE(json_extract(s.configuration, '$.title'), s.id),
-                    COALESCE(s.archived, 0),
-                    EXISTS(SELECT 1 FROM agent_catalog_runs w WHERE w.owner=?1 AND w.session=m.member_session AND w.live=1),
-                    EXISTS(SELECT 1 FROM agent_catalog_runs w WHERE w.owner=?1 AND w.session=m.member_session AND w.live=1 AND w.blocked=1),
-                    (SELECT COUNT(*) FROM agent_interaction_pending p
-                        JOIN agent_interaction_requests q ON q.request=p.request
-                        JOIN agent_run_specs spec ON spec.run=q.run
-                        JOIN agent_catalog_runs r ON r.run=q.run
-                        WHERE p.session=m.member_session AND spec.owner=?1 AND r.live=1),
-                    COALESCE((SELECT r.admission_sequence FROM agent_catalog_runs r WHERE r.owner=?1 AND r.session=m.member_session ORDER BY r.admission_sequence DESC LIMIT 1), 0),
-                    COALESCE((SELECT r.stopped FROM agent_catalog_runs r WHERE r.owner=?1 AND r.session=m.member_session ORDER BY r.admission_sequence DESC LIMIT 1), 0),
-                    COALESCE((SELECT r.terminal FROM agent_catalog_runs r WHERE r.owner=?1 AND r.session=m.member_session ORDER BY r.admission_sequence DESC LIMIT 1), '')
-             FROM agent_room_members m
-             LEFT JOIN session_control s ON s.id=m.member_session
-               AND NOT EXISTS(SELECT 1 FROM session_retirements d WHERE d.session_id=s.id AND d.remove_session=1)
-             WHERE m.owner=?1 AND m.session=?2
-             ORDER BY m.member_session ASC",
-        )?;
-        let rows = stmt.query_map(params![owner, self.1], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, Option<String>>(1)?,
-                r.get::<_, i64>(2)?,
-                r.get::<_, i64>(3)?,
-                r.get::<_, i64>(4)?,
-                r.get::<_, i64>(5)?,
-                r.get::<_, i64>(6)?,
-                r.get::<_, i64>(7)?,
-                r.get::<_, String>(8)?,
-            ))
-        })?;
-        for row in rows {
-            let (id, title, archived, live, blocked, pending, seq, stopped, terminal) = row?;
-            mix_bytes(&mut hash, id.as_bytes());
-            if let Some(t) = title {
-                mix_bytes(&mut hash, t.as_bytes());
-            }
-            mix_u64(&mut hash, archived as u64);
-            mix_u64(&mut hash, live as u64);
-            mix_u64(&mut hash, blocked as u64);
-            mix_u64(&mut hash, pending as u64);
-            mix_u64(&mut hash, seq as u64);
-            mix_u64(&mut hash, stopped as u64);
-            mix_bytes(&mut hash, terminal.as_bytes());
-        }
-        // Mask to 53 bits so JSON -> JS number preserves exact equality.
-        Ok((through, hash & ((1u64 << 53) - 1)))
+        Ok((through, revision))
     }
 }
 
@@ -2082,5 +2087,128 @@ mod tests {
             plan_str.contains("VIRTUAL TABLE INDEX 0:="),
             "FTS rowid delete must seek by integer rowid (=), not full-scan: {plan_str}"
         );
+    }
+
+    #[test]
+    fn plain_posts_keep_watch_revision_stable_while_retractions_and_agent_replies_advance_it() {
+        let db = open_db();
+        let owner = test_owner();
+        seed_session(&db, "room_sync", "Sync Room");
+        seed_session(&db, "alice", "Alice");
+        CreateRoom {
+            owner: owner.clone(),
+            session: "room_sync".into(),
+        }
+        .execute(&db)
+        .unwrap();
+        AddMembersStatement {
+            owner: owner.clone(),
+            session: "room_sync".into(),
+            member_sessions: vec!["alice".into()],
+            at: UnixMillis(5),
+        }
+        .execute(&db)
+        .unwrap();
+
+        PostStatement {
+            owner: owner.clone(),
+            post: Post {
+                session: "room_sync".into(),
+                id: "m1".into(),
+                at: UnixMillis(10),
+                author: RoomAuthor::Human,
+                content: MessageInput::from("first".to_owned()),
+                reply_to: None,
+                mentions: vec![],
+                deliveries: vec![],
+            },
+        }
+        .execute(&db)
+        .unwrap();
+        let wm1 = WatchWatermark(owner.clone(), "room_sync".into())
+            .execute(&db)
+            .unwrap();
+        assert_eq!(wm1.0, 1);
+
+        // Plain unthreaded post and human reply advance through without bumping revision so long timelines avoid full rescans.
+        PostStatement {
+            owner: owner.clone(),
+            post: Post {
+                session: "room_sync".into(),
+                id: "m2".into(),
+                at: UnixMillis(20),
+                author: RoomAuthor::Human,
+                content: MessageInput::from("second plain post".to_owned()),
+                reply_to: None,
+                mentions: vec![],
+                deliveries: vec![],
+            },
+        }
+        .execute(&db)
+        .unwrap();
+        let wm2 = WatchWatermark(owner.clone(), "room_sync".into())
+            .execute(&db)
+            .unwrap();
+        assert_eq!(wm2, (2, wm1.1));
+
+        PostStatement {
+            owner: owner.clone(),
+            post: Post {
+                session: "room_sync".into(),
+                id: "m3".into(),
+                at: UnixMillis(25),
+                author: RoomAuthor::Human,
+                content: MessageInput::from("human reply".to_owned()),
+                reply_to: Some("m2".into()),
+                mentions: vec![],
+                deliveries: vec![],
+            },
+        }
+        .execute(&db)
+        .unwrap();
+        let wm3 = WatchWatermark(owner.clone(), "room_sync".into())
+            .execute(&db)
+            .unwrap();
+        assert_eq!(wm3, (3, wm1.1));
+
+        // Retracting m1 keeps through=3 while advancing revision so subscribers refresh visible rows.
+        DeleteMessageStatement {
+            owner: owner.clone(),
+            session: "room_sync".into(),
+            message_id: "m1".into(),
+            actor: RoomActor::Human,
+            at: UnixMillis(30),
+        }
+        .execute(&db)
+        .unwrap();
+        let wm4 = WatchWatermark(owner.clone(), "room_sync".into())
+            .execute(&db)
+            .unwrap();
+        assert_eq!(wm4.0, 3);
+        assert_ne!(wm4.1, wm3.1);
+
+        // Agent threaded reply bumps revision so the parent message's delivery chip transitions to replied.
+        PostStatement {
+            owner: owner.clone(),
+            post: Post {
+                session: "room_sync".into(),
+                id: "m4".into(),
+                at: UnixMillis(40),
+                author: RoomAuthor::Session {
+                    execution: exec_id("alice"),
+                },
+                content: MessageInput::from("agent threaded reply".to_owned()),
+                reply_to: Some("m2".into()),
+                mentions: vec![],
+                deliveries: vec![],
+            },
+        }
+        .execute(&db)
+        .unwrap();
+        let wm5 = WatchWatermark(owner.clone(), "room_sync".into())
+            .execute(&db)
+            .unwrap();
+        assert_eq!(wm5.0, 4);
+        assert_ne!(wm5.1, wm4.1);
     }
 }

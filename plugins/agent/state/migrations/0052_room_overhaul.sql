@@ -85,7 +85,8 @@ CREATE TRIGGER agent_room_member_delete AFTER DELETE ON agent_room_members BEGIN
     UPDATE agent_catalog_revision SET revision = revision + 1 WHERE singleton = 1;
 END;
 
-CREATE TRIGGER agent_room_message_rev_insert AFTER INSERT ON agent_room_messages BEGIN
+CREATE TRIGGER agent_room_message_reply_insert AFTER INSERT ON agent_room_messages
+WHEN NEW.reply_to IS NOT NULL AND json_extract(NEW.body_json, '$.author.execution.sessionId') IS NOT NULL BEGIN
     UPDATE agent_rooms SET revision = revision + 1 WHERE owner = NEW.owner AND session = NEW.session;
 END;
 CREATE TRIGGER agent_room_message_update AFTER UPDATE OF body_json, edited_at, deleted_at ON agent_room_messages BEGIN

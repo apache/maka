@@ -132,8 +132,6 @@ export function RoomHeaderControls(props: {
             const isWaiting = () =>
               member().activity === 'waiting' || (member().pendingInteractions ?? 0) > 0;
             const isInspected = () => props.inspecting() === member().sessionId;
-            const workingPulse = useBreathingStyle(false);
-            const waitingPulse = useBreathingStyle(true);
             const tip = () => {
               const status = isWaiting()
                 ? tr('Delivery waiting')
@@ -151,23 +149,7 @@ export function RoomHeaderControls(props: {
                 }}
               >
                 <If when={isWorking() && !isInspected()}>
-                  <View
-                    accessibilityElementsHidden
-                    style={[
-                      {
-                        position: 'absolute',
-                        top: -2,
-                        left: -2,
-                        right: -2,
-                        bottom: -2,
-                        borderRadius: 13,
-                        borderWidth: 1.5,
-                        borderColor: C.accent,
-                        pointerEvents: 'none',
-                      },
-                      workingPulse,
-                    ]}
-                  />
+                  <BreathingMemberRing />
                 </If>
                 <Button
                   accessibilityLabel={member().title}
@@ -191,24 +173,7 @@ export function RoomHeaderControls(props: {
                   </Text>
                 </Button>
                 <If when={isWaiting()}>
-                  <View
-                    accessibilityElementsHidden
-                    style={[
-                      {
-                        position: 'absolute',
-                        right: -1,
-                        bottom: -1,
-                        width: 8,
-                        height: 8,
-                        borderRadius: 4,
-                        backgroundColor: C.warning,
-                        borderWidth: 1.5,
-                        borderColor: C.background,
-                        pointerEvents: 'none',
-                      },
-                      waitingPulse,
-                    ]}
-                  />
+                  <BreathingWaitingDot />
                 </If>
               </View>
             );
