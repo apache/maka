@@ -58,9 +58,10 @@ pub(super) async fn read(directory: &Path) -> Result<Installation, HostError> {
         Ok(_) => {}
     }
     read_database(path, |connection| {
-        validate_schema(connection)?;
+        validate_schema(connection, false)?;
         let application: i64 = connection.query_row("PRAGMA application_id", [], |row| row.get(0))?;
         let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+        let latest_version = MIGRATIONS.last().map(|m| m.version).unwrap_or(0);
         if version == 0 && application == APPLICATION_ID {
             return Ok(Installation::Incomplete);
         }
@@ -68,7 +69,7 @@ pub(super) async fn read(directory: &Path) -> Result<Installation, HostError> {
             let tables: i64 = connection.query_row("SELECT COUNT(*) FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%'", [], |row| row.get(0))?;
             if tables == 0 { return Ok(Installation::Incomplete) }
         }
-        if application != APPLICATION_ID || version != 1 {
+        if application != APPLICATION_ID || version != latest_version {
             return Err("unsupported or incomplete deployment database".into());
         }
         let value: Option<String> = connection.query_row("SELECT CASE WHEN length(CAST(configuration AS BLOB)) <= 65536 THEN configuration END FROM deployment WHERE singleton = 1", [], |row| row.get(0)).optional()?;
@@ -150,9 +151,10 @@ async fn open(
         OpenOptions::file(path),
         ConnectionAuthority::Writer { lease, root },
         move |connection| {
-            initialize(connection)?;
+            initialize(connection, migrate_on_open)?;
             if migrate_on_open {
                 migrate(connection)?;
+                validate_schema(connection, false)?;
             }
             Ok(())
         },
@@ -273,8 +275,11 @@ fn private_file(path: &Path) -> Result<File, HostError> {
     Ok(file)
 }
 
-fn initialize(connection: &mut Connection) -> Result<(), StoreError> {
-    validate_schema(connection)?;
+fn initialize(
+    connection: &mut Connection,
+    allow_pending_migrations: bool,
+) -> Result<(), StoreError> {
+    validate_schema(connection, allow_pending_migrations)?;
     connection.execute_batch(
         "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA application_id=1296124740;",
     )?;
@@ -282,16 +287,30 @@ fn initialize(connection: &mut Connection) -> Result<(), StoreError> {
 }
 
 /// Reject unsupported stores before a writer changes journaling or creates metadata.
-fn validate_schema(connection: &Connection) -> Result<(), StoreError> {
+/// Writers that are about to run `migrate()` accept a verified historical prefix;
+/// read-only and post-migration checks require the complete current ledger.
+fn validate_schema(
+    connection: &Connection,
+    allow_pending_migrations: bool,
+) -> Result<(), StoreError> {
+    validate_schema_with(connection, MIGRATIONS, allow_pending_migrations)
+}
+
+fn validate_schema_with(
+    connection: &Connection,
+    migrations: &[Migration],
+    allow_pending_migrations: bool,
+) -> Result<(), StoreError> {
     let application: i64 = connection.query_row("PRAGMA application_id", [], |row| row.get(0))?;
     let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    let latest_version = migrations.last().map(|m| m.version).unwrap_or(0);
     let tables: i64 = connection.query_row(
         "SELECT COUNT(*) FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%'",
         [],
         |row| row.get(0),
     )?;
     if !((application == 0 && version == 0 && tables == 0)
-        || (application == APPLICATION_ID && (0..=1).contains(&version)))
+        || (application == APPLICATION_ID && (0..=latest_version).contains(&version)))
     {
         return Err(StoreError::InvalidTransition(
             "unsupported deployment database".into(),
@@ -313,8 +332,13 @@ fn validate_schema(connection: &Connection) -> Result<(), StoreError> {
     let valid = if version == 0 {
         tables == i64::from(ledger) && applied.is_empty()
     } else {
-        applied.len() == MIGRATIONS.iter().len()
-            && applied.iter().zip(MIGRATIONS.iter()).all(
+        let len_ok = if allow_pending_migrations {
+            !applied.is_empty() && applied.len() <= migrations.len()
+        } else {
+            applied.len() == migrations.len()
+        };
+        len_ok
+            && applied.iter().zip(migrations.iter()).all(
                 |((version, success, checksum), expected)| {
                     *version == expected.version
                         && *success
@@ -334,4 +358,37 @@ fn validate_schema(connection: &Connection) -> Result<(), StoreError> {
 pub(super) fn migrate(connection: &Connection) -> Result<(), StoreError> {
     maka_event_log::migration::run(connection, MIGRATIONS)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn writer_accepts_verified_historical_prefix_before_migrating_to_latest() {
+        let mut connection = Connection::open_in_memory().unwrap();
+        initialize(&mut connection, true).unwrap();
+        migrate(&connection).unwrap();
+        validate_schema(&connection, false).unwrap();
+
+        let v2 = Migration::sql(
+            2,
+            "add_note",
+            "ALTER TABLE deployment ADD COLUMN note TEXT; PRAGMA user_version = 2;",
+        );
+        let upgraded = [MIGRATIONS[0], v2];
+
+        // Read-only / strict validation rejects unmigrated v1 when v2 is expected.
+        assert!(validate_schema_with(&connection, &upgraded, false).is_err());
+        // Writer pre-migration validation accepts the verified v1 prefix and migrates cleanly.
+        validate_schema_with(&connection, &upgraded, true).unwrap();
+        maka_event_log::migration::run(&connection, &upgraded).unwrap();
+        validate_schema_with(&connection, &upgraded, false).unwrap();
+
+        // Unknown future user_version is still rejected.
+        connection
+            .execute_batch("PRAGMA user_version = 3;")
+            .unwrap();
+        assert!(validate_schema_with(&connection, &upgraded, true).is_err());
+    }
 }

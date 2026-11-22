@@ -18,8 +18,12 @@
  */
 
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
-import { selectPrunableCapsules } from './compat-capsule.mjs';
+import { selectPrunableCapsules, verifyCapsule } from './compat-capsule.mjs';
 
 test('rolling capsule pruning never deletes first-nightly or milestone baselines', () => {
   const assets = [
@@ -36,4 +40,30 @@ test('rolling capsule pruning never deletes first-nightly or milestone baselines
     'capsule-nightly-0.2.0-nightly.20261123.1.tar.gz',
     'capsule-nightly-0.2.0-nightly.20261122.1.tar.gz',
   ]);
+});
+
+test('verifyCapsule rejects non-canonical baseDir without touching the referenced directory', () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'maka-capsule-basedir-'));
+  const sentinelDir = join(scratch, 'victim');
+  const sentinelFile = join(sentinelDir, 'keep.txt');
+  const payloadDir = join(scratch, 'payload');
+  const tarball = join(scratch, 'malicious.tar.gz');
+  try {
+    mkdirSync(sentinelDir, { recursive: true });
+    writeFileSync(sentinelFile, 'must survive', 'utf8');
+    mkdirSync(payloadDir, { recursive: true });
+    writeFileSync(
+      join(payloadDir, 'capsule-manifest.json'),
+      JSON.stringify({ formatVersion: 1, baseDir: sentinelDir }),
+      'utf8',
+    );
+    execFileSync('tar', ['-czf', tarball, '-C', payloadDir, '.']);
+    assert.throws(
+      () => verifyCapsule({ bin: '/bin/true', capsule: tarball }),
+      /does not match canonical mount/,
+    );
+    assert.equal(existsSync(sentinelFile), true, 'sentinel directory must not be deleted');
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
 });

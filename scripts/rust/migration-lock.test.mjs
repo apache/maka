@@ -44,7 +44,7 @@ function createFixture() {
   return { root, lockPath, write, cleanup: () => rmSync(root, { recursive: true, force: true }) };
 }
 
-test('sealed baseline and newer appended forward migrations pass check', () => {
+test('unsealed appended migration fails check until sealed, then passes', () => {
   const fx = createFixture();
   try {
     assert.equal(
@@ -52,10 +52,21 @@ test('sealed baseline and newer appended forward migrations pass check', () => {
       true,
     );
     fx.write('agent-state/migrations/0003_rooms.sql', 'CREATE TABLE rooms(id TEXT PRIMARY KEY);\n');
-    const result = checkMigrations({ root: fx.root, lockPath: fx.lockPath, ledgers: testLedgers });
-    assert.equal(result.ok, true, result.errors.join('\n'));
-    assert.equal(result.lockedCount, 3);
-    assert.equal(result.pendingCount, 1);
+    const unsealed = checkMigrations({
+      root: fx.root,
+      lockPath: fx.lockPath,
+      ledgers: testLedgers,
+    });
+    assert.equal(unsealed.ok, false);
+    assert.equal(unsealed.lockedCount, 3);
+    assert.equal(unsealed.pendingCount, 1);
+    assert.ok(unsealed.errors.some((e) => /unsealed migration/.test(e)));
+
+    sealMigrations({ root: fx.root, lockPath: fx.lockPath, ledgers: testLedgers });
+    const sealed = checkMigrations({ root: fx.root, lockPath: fx.lockPath, ledgers: testLedgers });
+    assert.equal(sealed.ok, true, sealed.errors.join('\n'));
+    assert.equal(sealed.lockedCount, 4);
+    assert.equal(sealed.pendingCount, 0);
   } finally {
     fx.cleanup();
   }

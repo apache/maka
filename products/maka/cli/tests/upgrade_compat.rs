@@ -41,7 +41,11 @@
 
 #![cfg(unix)]
 
+#[path = "support/host.rs"]
+mod host;
+
 use futures_util::FutureExt;
+use host::Host;
 use http_body_util::{BodyExt, Full};
 use hyper::{
     Request, Response,
@@ -66,19 +70,13 @@ use std::{
     os::unix::fs::PermissionsExt,
     panic::AssertUnwindSafe,
     path::{Path, PathBuf},
-    process::{ExitStatus, Stdio},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
     time::Duration,
 };
-use tokio::{
-    io::{AsyncBufReadExt, AsyncReadExt, BufReader},
-    net::TcpListener,
-    process::{Child, ChildStdout, Command},
-    task::JoinSet,
-};
+use tokio::{net::TcpListener, process::Command, task::JoinSet};
 use tokio_util::sync::CancellationToken;
 
 const PRODUCE_ENV: &str = "MAKA_COMPAT_PRODUCE_CAPSULE";
@@ -108,6 +106,8 @@ struct CapsuleManifest {
     checkpoint_revision: Value,
     portable_archive: String,
     session_data_key: String,
+    #[serde(default)]
+    operation_ref: Option<Value>,
     migrations: BTreeMap<String, Vec<i64>>,
 }
 
@@ -192,122 +192,16 @@ impl EnvDirs {
 }
 
 fn build_command(bin: &Path, dirs: &EnvDirs) -> Command {
-    let mut cmd = Command::new(bin);
-    cmd.env_clear()
-        .current_dir(&dirs.workspace)
-        .env("HOME", &dirs.home)
-        .env("USERPROFILE", &dirs.home)
-        .env("XDG_CONFIG_HOME", dirs.home.join("config"))
-        .env("XDG_DATA_HOME", dirs.home.join("data"))
-        .env("XDG_STATE_HOME", dirs.home.join("state"))
-        .env("XDG_CACHE_HOME", dirs.home.join("cache"))
-        .env("CODEX_HOME", dirs.home.join("codex"))
-        .env("CLAUDE_CONFIG_DIR", dirs.home.join("claude"))
-        .env("ZDOTDIR", &dirs.home)
-        .env("LC_ALL", "en_US.UTF-8")
-        .env("HTTPS_PROXY", "http://127.0.0.1:9")
-        .env("NO_PROXY", "127.0.0.1,localhost")
-        .env("no_proxy", "127.0.0.1,localhost");
-    if let Some(path) = std::env::var_os("PATH") {
-        cmd.env("PATH", path);
-    }
-    cmd
+    host::command_for(bin, &dirs.home, &dirs.workspace)
 }
 
-struct ManagedHost {
-    child: Child,
-    stdout: BufReader<ChildStdout>,
-    status: Option<ExitStatus>,
-}
-
-impl ManagedHost {
-    fn spawn(bin: &Path, dirs: &EnvDirs) -> Self {
-        let mut cmd = build_command(bin, dirs);
-        let mut child = cmd
-            .args(["host", "serve", "--root"])
-            .arg(&dirs.root)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .unwrap_or_else(|e| panic!("spawn Host {}: {e}", bin.display()));
-        let stdout = BufReader::new(child.stdout.take().expect("piped stdout"));
-        Self {
-            child,
-            stdout,
-            status: None,
-        }
-    }
-
-    async fn ready(&mut self) -> Client {
-        let mut line = String::new();
-        let n = self.stdout.read_line(&mut line).await.unwrap();
-        assert!(n > 0, "Host exited before emitting ready line");
-        let ready: Value = serde_json::from_str(&line)
-            .unwrap_or_else(|e| panic!("invalid ready JSON ({line}): {e}"));
-        assert_eq!(ready["kind"], "ready", "unexpected Host startup: {ready}");
-        let address = PathBuf::from(ready["socketPath"].as_str().unwrap());
-        let epoch = serde_json::from_value(ready["hostEpoch"].clone()).unwrap();
-        let mut client = Client::connect(&address, Some(epoch)).await.unwrap();
-        let status = Client::status(&address, Some(epoch)).await.unwrap();
-        assert_eq!(Some(status.pid.get()), self.child.id());
-        loop {
-            if let Some(error) = client.catalogue().startup_error() {
-                panic!("Host startup failed: {error:?}");
-            }
-            let mut registered = true;
-            for endpoint in ["agent", "settings", "receipts"] {
-                registered &= client
-                    .catalogue()
-                    .describe(endpoint)
-                    .unwrap()
-                    .registration_epoch
-                    .is_some();
-            }
-            if registered {
-                break;
-            }
-            client.refresh().await.unwrap();
-            tokio::task::yield_now().await;
-        }
-        client
-    }
-
-    async fn wait_and_eof(&mut self) -> ExitStatus {
-        let mut tail = Vec::new();
-        let (eof, status) = tokio::join!(self.stdout.read_to_end(&mut tail), self.child.wait());
-        let status = status.expect("wait Host");
-        self.status = Some(status);
-        eof.expect("Host stdout EOF");
-        status
-    }
-
-    async fn quit(&mut self, client: &mut Client) {
-        client.quit().await.expect("quit Host");
-        let status = self.wait_and_eof().await;
-        assert!(status.success(), "Host quit failed: {status}");
-    }
-
-    async fn cleanup(&mut self) {
-        if self.status.is_some() {
-            return;
-        }
-        if let Ok(Some(status)) = self.child.try_wait() {
-            self.status = Some(status);
-            return;
-        }
-        let _ = self.child.start_kill();
-        let _ = self.wait_and_eof().await;
-    }
-}
-
-async fn call(
+async fn call_with_ref(
     client: &Client,
     endpoint: &str,
     method: &str,
     input: Value,
     resources: Attachments,
-) -> Value {
+) -> (Value, Option<Value>) {
     tokio::time::timeout(Duration::from_secs(30), async {
         let mut call = client
             .call(endpoint, method.into(), input, resources)
@@ -332,28 +226,44 @@ async fn call(
             .as_ref()
             .expect("call cleanup confirmed");
         match reply {
-            Reply::Finished { result, .. } => {
-                result.unwrap_or_else(|e| panic!("{endpoint}.{method} finished error: {e}"))
-            }
-            Reply::Mutation { reply, .. } => match reply.receipt {
-                Receipt::Recorded {
-                    outcome:
-                        OperationOutcome::Returned {
-                            result: OperationResult::Success { value },
-                        },
-                    cleanup,
-                    ..
-                } => {
-                    assert_eq!(cleanup, OperationCleanup::Confirmed);
-                    value
+            Reply::Finished { result, .. } => (
+                result.unwrap_or_else(|e| panic!("{endpoint}.{method} finished error: {e}")),
+                None,
+            ),
+            Reply::Mutation { reply, .. } => {
+                let reference = serde_json::to_value(&reply.reference).unwrap();
+                match reply.receipt {
+                    Receipt::Recorded {
+                        outcome:
+                            OperationOutcome::Returned {
+                                result: OperationResult::Success { value },
+                            },
+                        cleanup,
+                        ..
+                    } => {
+                        assert_eq!(cleanup, OperationCleanup::Confirmed);
+                        (value, Some(reference))
+                    }
+                    other => panic!("unexpected {endpoint}.{method} mutation receipt: {other:?}"),
                 }
-                other => panic!("unexpected {endpoint}.{method} mutation receipt: {other:?}"),
-            },
+            }
             other => panic!("unexpected {endpoint}.{method} reply: {other:?}"),
         }
     })
     .await
     .unwrap_or_else(|_| panic!("timeout calling {endpoint}.{method}"))
+}
+
+async fn call(
+    client: &Client,
+    endpoint: &str,
+    method: &str,
+    input: Value,
+    attachments: Attachments,
+) -> Value {
+    call_with_ref(client, endpoint, method, input, attachments)
+        .await
+        .0
 }
 
 async fn wait_run_completed(client: &Client, session: &str, message_id: &str) -> Value {
@@ -551,11 +461,21 @@ text("pre-cell-ok:{nonce}");
             saw_pre_context,
             saw_session_data,
         } => {
-            let prompt_dump = serde_json::to_string(messages).unwrap();
-            if prompt_dump.contains(pre_nonce) {
-                saw_pre_context.store(true, Ordering::SeqCst);
-            }
             let call_id = format!("compat-post-{post_nonce}");
+            // Verify pre-upgrade conversation context strictly on the FIRST
+            // post-upgrade request, before this mock emits any post-upgrade tool
+            // call containing pre_nonce.
+            if !tool_called.load(Ordering::SeqCst) {
+                let has_pre_turn = messages.iter().any(|m| {
+                    matches!(m["role"].as_str(), Some("user" | "assistant"))
+                        && serde_json::to_string(&m["content"])
+                            .unwrap_or_default()
+                            .contains(pre_nonce)
+                });
+                if has_pre_turn {
+                    saw_pre_context.store(true, Ordering::SeqCst);
+                }
+            }
             if let Some(tool_msg) = messages
                 .iter()
                 .find(|m| m["role"] == "tool" && m["tool_call_id"] == call_id)
@@ -628,7 +548,7 @@ async fn run_mock_server(listener: TcpListener, mode: MockMode, stop: Cancellati
                                 .unwrap_or("");
                             assert_eq!(
                                 auth, "Bearer compat-fixture-secret",
-                                "persisted vault credential must be decrypted and sent to provider"
+                                "persisted vault credential must be loaded and sent to provider"
                             );
                             let bytes = request.into_body().collect().await.unwrap().to_bytes();
                             let body: Value = serde_json::from_slice(&bytes).unwrap();
@@ -748,11 +668,12 @@ async fn produce_capsule(bin: &Path, capsule_dir: &Path) -> CapsuleManifest {
         stop_server.clone(),
     ));
 
-    let mut host = ManagedHost::spawn(bin, &dirs);
+    let mut host = Host::spawn_with(bin, &dirs.root, &dirs.home, &dirs.workspace)
+        .unwrap_or_else(|e| panic!("spawn Host {}: {e}", bin.display()));
     let outcome = AssertUnwindSafe(async {
-        let mut client = host.ready().await;
+        let (mut client, _) = host.ready().await.expect("Host ready");
 
-        // 1. Settings: provider connection, encrypted vault credential, preferences.
+        // 1. Settings: provider connection, persisted vault credential, preferences.
         let catalog = call(
             &client,
             "settings",
@@ -842,7 +763,7 @@ async fn produce_capsule(bin: &Path, capsule_dir: &Path) -> CapsuleManifest {
         assert_eq!(updated_prefs["kind"], "committed", "{updated_prefs}");
 
         // 2. Primary session: upload attachment, run Shell + Code Mode SessionData turn.
-        let created_session = call(
+        let (created_session, operation_ref) = call_with_ref(
             &client,
             "agent",
             "create",
@@ -1056,7 +977,7 @@ async fn produce_capsule(bin: &Path, capsule_dir: &Path) -> CapsuleManifest {
             String::from_utf8_lossy(&export_out.stderr)
         );
 
-        host.quit(&mut client).await;
+        host.quit(&mut client).await.expect("Host quit");
 
         let migrations = verify_sqlite_integrity_and_migrations(&dirs.root);
         CapsuleManifest {
@@ -1077,6 +998,7 @@ async fn produce_capsule(bin: &Path, capsule_dir: &Path) -> CapsuleManifest {
             checkpoint_revision,
             portable_archive: portable_archive_name,
             session_data_key: "compat_capsule_state".into(),
+            operation_ref,
             migrations,
         }
     })
@@ -1085,10 +1007,12 @@ async fn produce_capsule(bin: &Path, capsule_dir: &Path) -> CapsuleManifest {
 
     stop_server.cancel();
     let _ = server.await;
-    host.cleanup().await;
-
+    let cleanup = host.cleanup().await;
     let manifest = match outcome {
-        Ok(m) => m,
+        Ok(m) => {
+            cleanup.expect("Host cleanup");
+            m
+        }
         Err(panic) => std::panic::resume_unwind(panic),
     };
     fs::write(
@@ -1138,9 +1062,10 @@ async fn verify_capsule(bin: &Path, capsule_dir: &Path) {
     ));
 
     // Stage 1: Cold startup & in-place schema/data migrations.
-    let mut host = ManagedHost::spawn(bin, &dirs);
+    let mut host = Host::spawn_with(bin, &dirs.root, &dirs.home, &dirs.workspace)
+        .unwrap_or_else(|e| panic!("spawn Host {}: {e}", bin.display()));
     let outcome = AssertUnwindSafe(async {
-        let mut client = host.ready().await;
+        let (mut client, _) = host.ready().await.expect("Host ready");
 
         // Stage 2: Exhaustive read/deserialization sweep across every persisted domain.
         let catalog = call(
@@ -1227,7 +1152,40 @@ async fn verify_capsule(bin: &Path, capsule_dir: &Path) {
             "preset missing after upgrade: {presets}"
         );
 
-        // Recall & memory sweep.
+        // Persisted operation receipt sweep (application_operations).
+        if let Some(op_ref) = &manifest.operation_ref {
+            let receipt = call(
+                &client,
+                "receipts",
+                "read",
+                op_ref.clone(),
+                Attachments::new(),
+            )
+            .await;
+            let receipt_json = serde_json::to_string(&receipt).unwrap();
+            assert!(
+                receipt_json.contains(&manifest.primary_session_id),
+                "persisted application_operations receipt lost across upgrade: {receipt}"
+            );
+        }
+
+        // Exact personal memory sweep by ID + body (independent of chat Recall passages).
+        let memories = call(
+            &client,
+            "agent",
+            "memory",
+            json!({"scope": {"kind": "personal"}, "id": manifest.memory_id}),
+            Attachments::new(),
+        )
+        .await;
+        let memories_json = serde_json::to_string(&memories).unwrap();
+        assert!(
+            memories_json.contains(&manifest.memory_id)
+                && memories_json.contains(&manifest.memory_body),
+            "persisted personal memory missing after upgrade: {memories}"
+        );
+
+        // Recall sweep.
         let pre_recall = recall_search(&client, &manifest.nonce).await;
         let pre_recall_json = serde_json::to_string(&pre_recall).unwrap();
         assert!(
@@ -1337,7 +1295,44 @@ async fn verify_capsule(bin: &Path, capsule_dir: &Path) {
             "recall did not index post-upgrade continuation: {post_recall}"
         );
 
-        host.quit(&mut client).await;
+        host.quit(&mut client).await.expect("Host quit");
+
+        // Online checkpoint re-export & open sweep on the upgraded live Root
+        // (proves checkpoint heads and objects survived upgrade, not only the pre-upgrade tarball).
+        let live_export = work_tmp.path().join("upgraded-checkpoint.tar.gz");
+        let live_export_out = build_command(bin, &dirs)
+            .args(["checkpoint", "export", "--root"])
+            .arg(&dirs.root)
+            .args([
+                "--session",
+                &manifest.primary_session_id,
+                "--revision",
+                manifest.checkpoint_revision.as_str().unwrap(),
+                "--output",
+            ])
+            .arg(&live_export)
+            .output()
+            .await
+            .unwrap();
+        assert!(
+            live_export_out.status.success(),
+            "maka checkpoint export failed on upgraded Root: {}",
+            String::from_utf8_lossy(&live_export_out.stderr)
+        );
+        let live_open_dir = work_tmp.path().join("opened-upgraded-checkpoint");
+        let live_open_out = build_command(bin, &dirs)
+            .args(["checkpoint", "open"])
+            .arg(&live_export)
+            .arg("--output")
+            .arg(&live_open_dir)
+            .output()
+            .await
+            .unwrap();
+        assert!(
+            live_open_out.status.success(),
+            "maka checkpoint open failed on post-upgrade export: {}",
+            String::from_utf8_lossy(&live_open_out.stderr)
+        );
 
         // Canonical event log CLI inspect sweep.
         let inspect_out = build_command(bin, &dirs)
@@ -1372,10 +1367,11 @@ async fn verify_capsule(bin: &Path, capsule_dir: &Path) {
 
     stop_server.cancel();
     let _ = server.await;
-    host.cleanup().await;
+    let cleanup = host.cleanup().await;
 
-    if let Err(panic) = outcome {
-        std::panic::resume_unwind(panic);
+    match outcome {
+        Ok(()) => cleanup.expect("Host cleanup"),
+        Err(panic) => std::panic::resume_unwind(panic),
     }
 }
 

@@ -89,6 +89,7 @@ export function checkMigrations({
   root = repoRoot,
   lockPath = join(root, defaultLockFile),
   ledgers = defaultLedgers,
+  allowPending = false,
 } = {}) {
   const { discovered, errors } = discoverMigrations(root, ledgers);
   if (!existsSync(lockPath)) {
@@ -140,12 +141,22 @@ export function checkMigrations({
         errors.push(
           `[${ledger}] new migration ${relPath} (v${actual.version}) must use a version strictly greater than highest locked version v${maxLockedVersion}`,
         );
+      } else if (!allowPending) {
+        errors.push(
+          `[${ledger}] unsealed migration ${relPath} (v${actual.version}): run \`node scripts/rust/migration-lock.mjs seal\` and commit ${defaultLockFile}`,
+        );
       }
     }
   }
   for (const ledger of Object.keys(discovered)) {
     if (!(ledger in lock.ledgers)) {
-      pendingCount += Object.keys(discovered[ledger]).length;
+      const count = Object.keys(discovered[ledger]).length;
+      pendingCount += count;
+      if (!allowPending && count > 0) {
+        errors.push(
+          `[${ledger}] unsealed migration ledger (${count} file(s)): run \`node scripts/rust/migration-lock.mjs seal\` and commit ${defaultLockFile}`,
+        );
+      }
     }
   }
   return { ok: errors.length === 0, errors, discovered, lockedCount, pendingCount };
@@ -157,7 +168,7 @@ export function sealMigrations({
   ledgers = defaultLedgers,
 } = {}) {
   if (existsSync(lockPath)) {
-    const existing = checkMigrations({ root, lockPath, ledgers });
+    const existing = checkMigrations({ root, lockPath, ledgers, allowPending: true });
     if (!existing.ok) {
       throw new Error(
         `Refusing to seal over invalid migration history:\n${existing.errors.join('\n')}`,

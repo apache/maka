@@ -137,6 +137,30 @@ export function produceCapsule({ bin, out, testBin, workDir = CANONICAL_CAPSULE_
   }
 }
 
+function normalizeCanonicalPath(dirPath) {
+  return resolve(dirPath).replace(/^\/private\/tmp(\/|$)/, '/tmp$1');
+}
+
+function readTarManifest(capsulePath) {
+  const probeDir = mkdtempSync(join(tmpdir(), 'maka-capsule-probe-'));
+  try {
+    for (const member of ['./capsule-manifest.json', 'capsule-manifest.json']) {
+      try {
+        execFileSync('tar', ['-xzf', capsulePath, '-C', probeDir, member], { stdio: 'pipe' });
+        const manifestPath = join(probeDir, 'capsule-manifest.json');
+        if (existsSync(manifestPath)) {
+          return JSON.parse(readFileSync(manifestPath, 'utf8'));
+        }
+      } catch {
+        // Try alternate archive member path.
+      }
+    }
+    throw new Error(`Capsule archive missing capsule-manifest.json: ${capsulePath}`);
+  } finally {
+    rmSync(probeDir, { recursive: true, force: true });
+  }
+}
+
 export function verifyCapsule({ bin, capsule, testBin }) {
   const capsulePath = resolve(capsule);
   if (!existsSync(capsulePath)) {
@@ -147,26 +171,22 @@ export function verifyCapsule({ bin, capsule, testBin }) {
   try {
     let targetDir = capsulePath;
     if (!isDir) {
-      const probeDir = mkdtempSync(join(tmpdir(), 'maka-capsule-probe-'));
-      let mountDir = CANONICAL_CAPSULE_DIR;
-      try {
-        execFileSync('tar', ['-xzf', capsulePath, '-C', probeDir, './capsule-manifest.json'], {
-          stdio: 'pipe',
-        });
-        const probed = JSON.parse(readFileSync(join(probeDir, 'capsule-manifest.json'), 'utf8'));
-        if (typeof probed.baseDir === 'string' && probed.baseDir.startsWith('/')) {
-          mountDir = probed.baseDir;
-        }
-      } catch {
-        // Fall back to CANONICAL_CAPSULE_DIR when archive entry lacks ./ prefix.
-      } finally {
-        rmSync(probeDir, { recursive: true, force: true });
+      // Validate baseDir before touching CANONICAL_CAPSULE_DIR; never allow
+      // archive metadata to select an arbitrary rmSync target.
+      const probed = readTarManifest(capsulePath);
+      if (
+        typeof probed.baseDir !== 'string' ||
+        normalizeCanonicalPath(probed.baseDir) !== normalizeCanonicalPath(CANONICAL_CAPSULE_DIR)
+      ) {
+        throw new Error(
+          `Capsule ${basename(capsulePath)} baseDir (${String(probed.baseDir)}) does not match canonical mount ${CANONICAL_CAPSULE_DIR}`,
+        );
       }
-      rmSync(mountDir, { recursive: true, force: true });
-      mkdirSync(mountDir, { recursive: true });
-      cleanupDir = mountDir;
-      execFileSync('tar', ['-xzf', capsulePath, '-C', mountDir], { stdio: 'inherit' });
-      targetDir = mountDir;
+      rmSync(CANONICAL_CAPSULE_DIR, { recursive: true, force: true });
+      mkdirSync(CANONICAL_CAPSULE_DIR, { recursive: true });
+      cleanupDir = CANONICAL_CAPSULE_DIR;
+      execFileSync('tar', ['-xzf', capsulePath, '-C', CANONICAL_CAPSULE_DIR], { stdio: 'inherit' });
+      targetDir = CANONICAL_CAPSULE_DIR;
     }
     const manifestPath = join(targetDir, 'capsule-manifest.json');
     if (!existsSync(manifestPath)) {
@@ -243,6 +263,11 @@ export function verifyReleaseCapsules({
       `Release ${repo}@${tag} exists but contains zero capsule-*.tar.gz assets; refusing silent pass.`,
     );
   }
+  if (!capsules.some((asset) => asset.name === FIRST_CAPSULE_ASSET)) {
+    throw new Error(
+      `Release ${repo}@${tag} is missing required permanent baseline asset ${FIRST_CAPSULE_ASSET}`,
+    );
+  }
   const downloadDir = mkdtempSync(join(tmpdir(), 'maka-capsule-dl-'));
   const failures = [];
   const verified = [];
@@ -275,41 +300,45 @@ export function verifyReleaseCapsules({
 export function publishCapsule({ capsule, repo, name, tag = DEFAULT_CAPSULE_TAG, maxRolling = 3 }) {
   const capsulePath = resolve(capsule);
   if (!existsSync(capsulePath)) throw new Error(`Capsule tarball not found: ${capsulePath}`);
-  let release = queryReleaseByTag(repo, tag);
-  if (!release) {
-    const createArgs = [
-      'release',
-      'create',
-      tag,
-      '--repo',
-      repo,
-      '--prerelease',
-      '--latest=false',
-      '--title',
-      'Upgrade Compatibility Capsules',
-      '--notes',
-      'Automated State Root time capsules used by post-merge CI and nightly release compatibility gates. Do not edit manually.',
-    ];
-    if (process.env.GITHUB_SHA) {
-      createArgs.push('--target', process.env.GITHUB_SHA);
-    }
-    execFileSync('gh', createArgs, { stdio: 'inherit' });
-    release = queryReleaseByTag(repo, tag);
-  }
+  const release = queryReleaseByTag(repo, tag);
   const existingNames = new Set((release?.assets ?? []).map((a) => a.name));
   const uploadDir = mkdtempSync(join(tmpdir(), 'maka-capsule-pub-'));
   try {
     const staged = join(uploadDir, name);
     execFileSync('cp', [capsulePath, staged]);
     const uploads = [staged];
-    if (!existingNames.has(FIRST_CAPSULE_ASSET)) {
+    if (!release) {
       const firstStaged = join(uploadDir, FIRST_CAPSULE_ASSET);
       execFileSync('cp', [capsulePath, firstStaged]);
       uploads.push(firstStaged);
+      const createArgs = [
+        'release',
+        'create',
+        tag,
+        ...uploads,
+        '--repo',
+        repo,
+        '--prerelease',
+        '--latest=false',
+        '--title',
+        'Upgrade Compatibility Capsules',
+        '--notes',
+        'Automated State Root time capsules used by post-merge CI and nightly release compatibility gates. Do not edit manually.',
+      ];
+      if (process.env.GITHUB_SHA) {
+        createArgs.push('--target', process.env.GITHUB_SHA);
+      }
+      execFileSync('gh', createArgs, { stdio: 'inherit' });
+    } else {
+      if (!existingNames.has(FIRST_CAPSULE_ASSET)) {
+        throw new Error(
+          `Release ${repo}@${tag} already exists without ${FIRST_CAPSULE_ASSET}; refusing to backfill a later nightly as the permanent first-nightly baseline.`,
+        );
+      }
+      execFileSync('gh', ['release', 'upload', tag, ...uploads, '--repo', repo, '--clobber'], {
+        stdio: 'inherit',
+      });
     }
-    execFileSync('gh', ['release', 'upload', tag, ...uploads, '--repo', repo, '--clobber'], {
-      stdio: 'inherit',
-    });
   } finally {
     rmSync(uploadDir, { recursive: true, force: true });
   }
