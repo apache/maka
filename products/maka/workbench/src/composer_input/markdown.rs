@@ -85,14 +85,13 @@ impl PluginSpec for Formatting {
 
     fn decorations(&self, state: &EditorState) -> Option<DecorationSet> {
         let presentation = self.presentation(state)?;
-        let selection = (!self.read_only.get_untracked()
+        let cursor = (!self.read_only.get_untracked()
             && self.file_focused.is_none_or(|focus| focus.get_untracked()))
-        .then(|| state.selection().from()..state.selection().to());
-        let mut decorations =
-            presentation.decorations(selection.clone(), self.link_color.get_untracked());
+        .then(|| state.selection().head());
+        let mut decorations = presentation.decorations(cursor, self.link_color.get_untracked());
         if self.file_focused.is_some() {
             for (span, code) in &presentation.diagrams {
-                if selection.as_ref().is_some_and(|sel| touches(span, sel)) {
+                if cursor.is_some_and(|pos| touches(span, pos)) {
                     continue;
                 }
                 let doc = state.doc();
@@ -185,7 +184,7 @@ impl Presentation {
         reader.result
     }
 
-    fn decorations(&self, selection: Option<Range<usize>>, link_color: Color) -> Vec<Decoration> {
+    fn decorations(&self, cursor: Option<usize>, link_color: Color) -> Vec<Decoration> {
         let mut result = self.styles.clone();
         let link_class = format!("underline text-[#{:08x}]", link_color.0);
         result.extend(self.links.iter().map(|link| {
@@ -198,7 +197,7 @@ impl Presentation {
         result.extend(
             self.syntax
                 .iter()
-                .filter(|(owner, _)| selection.as_ref().is_none_or(|sel| !touches(owner, sel)))
+                .filter(|(owner, _)| cursor.is_none_or(|pos| !touches(owner, pos)))
                 .map(|(_, decoration)| decoration.clone()),
         );
         result
@@ -433,8 +432,8 @@ fn strip_fence_indent(line: &str) -> Option<&str> {
     (spaces <= 3).then(|| &line[spaces..])
 }
 
-fn touches(owner: &Range<usize>, selection: &Range<usize>) -> bool {
-    selection.start <= owner.end && owner.start <= selection.end
+fn touches(owner: &Range<usize>, pos: usize) -> bool {
+    owner.start <= pos && pos <= owner.end
 }
 
 fn bounds(node: &mdast::Node) -> Option<Range<usize>> {
@@ -446,15 +445,15 @@ fn bounds(node: &mdast::Node) -> Option<Range<usize>> {
 mod tests {
     use super::*;
     use crate::composer_input::model;
-    use nsh_base::rich_editor::state::DecorationKind;
+    use nsh_base::rich_editor::state::{AllSelection, DecorationKind, Selection};
 
-    fn hidden_slices(raw: &str, selection: Option<Range<usize>>) -> Vec<String> {
+    fn hidden_slices(raw: &str, cursor: Option<usize>) -> Vec<String> {
         let doc = model::document(&model::schema(), raw);
         let projection = Projection::new(&doc);
         let presentation = Presentation::new(&doc);
         let units: Vec<u16> = raw.encode_utf16().collect();
         presentation
-            .decorations(selection, Color(0x8ab8_f8ff))
+            .decorations(cursor, Color(0x8ab8_f8ff))
             .into_iter()
             .filter(|deco| matches!(deco.kind, DecorationKind::Replacement(None)))
             .map(|deco| {
@@ -490,8 +489,7 @@ mod tests {
         assert_eq!(text(named.text.clone()), "文档");
         assert_eq!(text(bare.text.clone()), "https://example.org");
         assert_eq!(bare.url.as_deref(), Some("https://example.org/"));
-        let caret = named.text.start + 1;
-        assert_eq!(hidden_slices(raw, Some(caret..caret)), ["**", "**"]);
+        assert_eq!(hidden_slices(raw, Some(named.text.start + 1)), ["**", "**"]);
         assert_eq!(model::source(&doc), raw);
     }
 
@@ -501,9 +499,9 @@ mod tests {
         let doc = model::document(&model::schema(), raw);
         let projection = Projection::new(&doc);
         let presentation = Presentation::new(&doc);
-        let bullets = |selection| {
+        let bullets = |cursor| {
             presentation
-                .decorations(selection, Color(0x8ab8_f8ff))
+                .decorations(cursor, Color(0x8ab8_f8ff))
                 .iter()
                 .filter(|d| matches!(d.kind, DecorationKind::Replacement(Some('•'))))
                 .map(|d| projection.source_at(d.from))
@@ -511,14 +509,14 @@ mod tests {
         };
         assert_eq!(bullets(None), [0, 9, 16]);
         let before_plus = projection.doc_at(9, false).unwrap();
-        assert_eq!(bullets(Some(before_plus..before_plus)), [0, 16]);
-        assert_eq!(bullets(Some(before_plus + 1..before_plus + 1)), [0, 16]);
-        assert_eq!(bullets(Some(before_plus + 2..before_plus + 2)), [0, 9, 16]);
+        assert_eq!(bullets(Some(before_plus)), [0, 16]);
+        assert_eq!(bullets(Some(before_plus + 1)), [0, 16]);
+        assert_eq!(bullets(Some(before_plus + 2)), [0, 9, 16]);
         assert_eq!(model::source(&doc), raw);
     }
 
     #[test]
-    fn keeps_active_syntax_visible_at_trailing_caret_and_across_selections() {
+    fn keeps_active_syntax_visible_at_trailing_caret_without_expanding_on_select_all() {
         for raw in [
             "> hello",
             "# title",
@@ -532,20 +530,15 @@ mod tests {
                 .doc_at(raw.encode_utf16().count() as u32, true)
                 .unwrap();
             assert!(
-                hidden_slices(raw, Some(end..end)).is_empty(),
+                hidden_slices(raw, Some(end)).is_empty(),
                 "syntax should stay visible with caret at end of {raw:?}"
             );
         }
 
         let raw = "a **bold** b";
         let doc = model::document(&model::schema(), raw);
-        let projection = Projection::new(&doc);
-        let start = projection.doc_at(0, false).unwrap();
-        let end = projection
-            .doc_at(raw.encode_utf16().count() as u32, true)
-            .unwrap();
-        assert!(hidden_slices(raw, Some(start..end)).is_empty());
-        assert_eq!(hidden_slices(raw, Some(end..end)), ["**", "**"]);
+        let all: Selection = AllSelection::new(&doc).into();
+        assert_eq!(hidden_slices(raw, Some(all.head())), ["**", "**"]);
     }
 
     #[test]
