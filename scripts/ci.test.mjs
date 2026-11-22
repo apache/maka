@@ -226,28 +226,31 @@ test('a shared input plans the maintained platform jobs rather than silently nar
   }
 });
 
-test('macOS recovery cases run in parallel with desktop on a cache-sharing worker', () => {
+test('macOS-only external_jobs run on native-macos without duplicating Linux recovery suites', () => {
   const plan = full();
-  const worker = plan.workers.find((worker) => worker.id === 'native-macos-agent');
+  assert.equal(
+    plan.workers.find((worker) => worker.id === 'native-macos-agent'),
+    undefined,
+  );
+  const worker = plan.workers.find((worker) => worker.id === 'native-macos');
   assert.ok(worker.suites.includes('macos-agent-execution'));
-  assert.equal(worker.cacheRole, 'native-macos');
-  assert.equal(worker.saveCache, false);
-  const desktopWorker = plan.workers.find((worker) => worker.id === 'native-macos');
-  assert.ok(!desktopWorker.suites.includes('macos-agent-execution'));
-  assert.ok(!desktopWorker.suites.includes('macos-nsh'));
+  assert.ok(!worker.suites.includes('macos-nsh'));
   assert.ok(!suites['macos-agent-execution'].cargoArgs.includes('--workspace'));
-  for (const name of [
-    'mainline_reopen',
-    'journal_recovery',
-    'codemode_reopen',
-    'external_jobs',
-    'producer_reopen',
-  ]) {
-    assert.ok(suites['macos-agent-execution'].cargoArgs.includes(name));
-    assert.ok(
-      plan.suites['macos-agent-execution'].filter.includes('binary_id(=maka-cli::' + name + ')'),
-    );
-  }
+  assert.equal(plan.suites['macos-agent-execution'].filter, 'binary_id(=maka-cli::external_jobs)');
+});
+
+test('Node tooling tests under scripts/ map to tooling instead of triggering full CI', () => {
+  const plan = createPlan({
+    root,
+    changes: ['scripts/rust/build-v8.test.mjs'],
+    metadata: {},
+    revision: 'test',
+    baseline: 'base',
+  });
+  assert.equal(plan.full, false);
+  assert.ok(plan.suites.tooling);
+  assert.equal(plan.suites.root, undefined);
+  assert.deepEqual(plan.workers, []);
 });
 
 test('skill and product inputs still select the native Windows skills consumer', () => {
@@ -342,11 +345,9 @@ test('native pixel and desktop regressions run only on their native OS workers',
     (worker) => worker.runner === 'windows-latest' && worker.suites.includes('desktop'),
   );
   assert.deepEqual(
-    winDesktopWorkers.map((worker) => worker.desktopPartition),
-    ['count:1/2', 'count:2/2'],
+    winDesktopWorkers.map((worker) => worker.id),
+    ['native-windows'],
   );
-  assert.equal(winDesktopWorkers[1].cacheRole, 'native-windows');
-  assert.equal(winDesktopWorkers[1].saveCache, false);
   assert.deepEqual(
     plan.workers
       .filter((worker) => worker.suites.includes('linux-nsh'))
@@ -945,6 +946,8 @@ test('scoped native workers compile once with one unified Cargo feature scope', 
         'maka-desktop-shell',
         '--test',
         'open_directly',
+        '--test',
+        'external_jobs',
         '--test',
         'native-desktop',
         '--test',

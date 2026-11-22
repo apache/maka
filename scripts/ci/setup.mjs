@@ -61,9 +61,7 @@ const tools =
           'macos-nsh',
           'windows-nsh',
           'native-windows',
-          'native-windows-desktop-2',
           'native-macos',
-          'native-macos-agent',
         ].includes(role)
       ? [`cargo-nextest${version ? `@${version}` : ''}`]
       : [];
