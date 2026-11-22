@@ -4032,12 +4032,19 @@ async fn desktop_goal_commands_create_pause_resume_and_finish_without_losing_the
         .type_text("Unsubmitted draft for the previous Goal")
         .await;
     desktop.press(finished_goal).await;
+    desktop
+        .until("the Goal panel did not close", || {
+            desktop.controls("Cancel editing").is_empty().then_some(())
+        })
+        .await;
     desktop.press("Focus message composer").await;
     desktop.expect_text("KEEP_MY_DRAFT").await;
     desktop.type_text("/goal Finish the follow-up").await;
     desktop.submit().await;
     let next = desktop.request(&mut fixture).await;
     assert!(next.body.to_string().contains("Finish the follow-up"));
+    desktop.wait_editor_cleared().await;
+    desktop.control(active_goal).await;
     assert!(
         desktop.controls("Dismiss Goal").is_empty(),
         "an active Goal must not offer strip dismissal"
@@ -4045,6 +4052,12 @@ async fn desktop_goal_commands_create_pause_resume_and_finish_without_losing_the
     desktop.press(active_goal).await;
     desktop.control("Pause Goal").await;
     desktop.press(active_goal).await;
+    desktop
+        .until(
+            "the Goal panel did not close after inspecting the active Goal",
+            || desktop.controls("Pause Goal").is_empty().then_some(()),
+        )
+        .await;
     next.tool_call(
         "GoalStatus",
         json!({"status":"achieved", "note":"Follow-up verified"}),

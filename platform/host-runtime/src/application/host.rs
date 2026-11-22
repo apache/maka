@@ -81,6 +81,7 @@ pub struct Host {
     configuration: Mutex<Configuration>,
     sessions: Mutex<BTreeMap<Uuid, Arc<Session>>>,
     stop: CancellationToken,
+    accept_closed: CancellationToken,
     residency: Mutex<lifecycle::Residency>,
 }
 struct Session {
@@ -204,6 +205,7 @@ impl Host {
             configuration: Mutex::new(configuration),
             sessions: Mutex::default(),
             stop: CancellationToken::new(),
+            accept_closed: CancellationToken::new(),
             residency: Mutex::new(lifecycle::Residency::default()),
         }))
     }
@@ -358,6 +360,7 @@ impl Host {
             Remote(tokio::net::TcpStream),
         }
         let tasks = TaskTracker::new();
+        let mut rejected = None;
         let accepted = loop {
             let stream = tokio::select! {
                 biased;
@@ -381,6 +384,7 @@ impl Host {
                 let fast = {
                     let mut residency = self.residency.lock().unwrap();
                     if self.stop.is_cancelled() || cancel.is_cancelled() {
+                        rejected = Some(stream);
                         break Ok(());
                     }
                     if !residency.paused {
@@ -399,12 +403,19 @@ impl Host {
                         // Host or resume admission instead of dropping an accepted client socket.
                         let _gate = tokio::select! {
                             biased;
-                            () = self.stop.cancelled() => break Ok(()),
-                            () = cancel.cancelled() => break Ok(()),
+                            () = self.stop.cancelled() => {
+                                rejected = Some(stream);
+                                break Ok(());
+                            }
+                            () = cancel.cancelled() => {
+                                rejected = Some(stream);
+                                break Ok(());
+                            }
                             gate = self.access_gate.lock() => gate,
                         };
                         let mut residency = self.residency.lock().unwrap();
                         if residency.paused || self.stop.is_cancelled() || cancel.is_cancelled() {
+                            rejected = Some(stream);
                             break Ok(());
                         }
                         residency.connections += 1;
@@ -435,6 +446,13 @@ impl Host {
                 }
             });
         };
+        // Stop accepting new peers and unlink the local socket BEFORE closing
+        // any rejected stream or cancelling in-flight handshakes, so a peer
+        // observing EOF/ECONNRESET while the Host retires sees the endpoint gone.
+        drop(listener);
+        drop(websocket);
+        drop(rejected);
+        self.accept_closed.cancel();
         self.stop.cancel();
         tasks.close();
         tasks.wait().await;
@@ -458,7 +476,7 @@ impl Host {
         let mut input = wire::Reader::new(input);
         let opening: Opening = tokio::select! {
             biased;
-            () = self.stop.cancelled() => return Err("Host is closing".into()),
+            () = self.accept_closed.cancelled() => return Err("Host is closing".into()),
             value = tokio::time::timeout(self.options.handshake_timeout, input.read()) => value.map_err(|_| "Host handshake timed out")??,
         };
         if opening.version != VERSION || opening.epoch.is_some_and(|epoch| epoch != self.epoch) {
@@ -965,6 +983,7 @@ impl Host {
     /// Physical transport cleanup precedes Application cleanup and SQL drain.
     /// Errors retain this Host and its original Root for the embedding to hold.
     pub async fn shutdown(&self) -> Result<()> {
+        self.accept_closed.cancel();
         self.stop.cancel();
         let sessions: Vec<_> = self.sessions.lock().unwrap().values().cloned().collect();
         let mut errors = Vec::new();
@@ -1135,6 +1154,126 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(5), server)
             .await
             .expect("host server should stop after cancel")
+            .unwrap()
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn serve_closes_listener_before_rejecting_client_on_stop() {
+        let dir = tempfile::tempdir().unwrap();
+        private_directory(dir.path()).unwrap();
+        let root = Arc::new(
+            RootOwner::create(
+                &dir.path().join("root"),
+                &RootNamespaces {
+                    ownership: dir.path().join("ownership"),
+                    control: dir.path().join("control"),
+                },
+            )
+            .unwrap(),
+        );
+        let store = Arc::new(RootStore::open(root, ROOT_MIGRATIONS).await.unwrap());
+        let contract = logs::contract();
+        let logs = test_package(
+            "test.logs",
+            json!({
+                "implementation":{"kind":"native","implementation":logs::HOST_LOGS},
+                "configuration":{"type":"object"},"imports":{},
+                "exports":{"HostLogs":{"contract":contract,"availability":"required"}}
+            }),
+        );
+        let gateway = test_package(
+            "test.gateway",
+            json!({
+                "implementation":{"kind":"native","implementation":GATEWAY},
+                "configuration":{"type":"object"},"exports":{},
+                "imports":{"hostLogs":{"contract":contract,"cardinality":{"kind":"one"}}}
+            }),
+        );
+        let consumer = Uuid::new_v4();
+        let deployment = Uuid::new_v4();
+        store
+            .commit_application(
+                deployment,
+                0,
+                serde_json::from_value(json!({"instances":{
+                    "logs":{"key":Uuid::new_v4(),"package":{"source":"pinned","package":logs.application_ref()},"usePackage":"host"},
+                    "gateway":{"key":consumer,"package":{"source":"pinned","package":gateway.application_ref()},"usePackage":"host",
+                        "bindings":{"hostLogs":[{"kind":"instance","path":["logs"],"export":"HostLogs"}]}}
+                }})).unwrap(),
+                vec![],
+                vec![logs, gateway],
+            )
+            .await
+            .unwrap();
+        let host = Host::open_with_options(
+            store,
+            deployment,
+            Default::default(),
+            None,
+            Configuration::PublicHost {
+                endpoints: serde_json::from_value(json!({
+                    "hostLogs":{"consumer":[consumer],"import":"hostLogs","grant":{"methods":["read"],"recovery":false}}
+                })).unwrap(),
+                native: Default::default(),
+                product_methods: Default::default(),
+            },
+            Options {
+                lifecycle_mode: LifecycleMode::Ephemeral,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        let epoch = host.epoch();
+        #[cfg(unix)]
+        let socket = dir.path().join("host.sock");
+        #[cfg(windows)]
+        let socket = std::path::PathBuf::from(format!(
+            r"\.\pipe\maka-retire-order-test-{}",
+            Uuid::new_v4()
+        ));
+        let listener = LocalListener::bind(&socket).unwrap();
+        let cancel = CancellationToken::new();
+        let server = tokio::spawn({
+            let host = host.clone();
+            let cancel = cancel.clone();
+            async move { host.serve(listener, None, cancel).await }
+        });
+
+        let gate = host.access_gate.lock().await;
+        host.residency.lock().unwrap().paused = true;
+
+        let probe = tokio::spawn({
+            let socket = socket.clone();
+            async move { Client::status(&socket, Some(epoch)).await }
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(!probe.is_finished());
+
+        // Retire the Host while the client is parked behind access_gate.
+        host.stop.cancel();
+        drop(gate);
+
+        let err = tokio::time::timeout(Duration::from_secs(5), probe)
+            .await
+            .expect("parked client should fail promptly when Host retires")
+            .unwrap()
+            .expect_err("retired Host must reject parked client");
+        assert!(!err.is_empty());
+
+        // Immediately after the client sees rejection, the listener must already
+        // be closed (never accepting another connect during shutdown drain).
+        let follow_up = crate::ipc::connect(&socket).await;
+        assert!(
+            follow_up.is_err(),
+            "listener must be closed before rejecting an accepted client on stop"
+        );
+
+        tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .expect("host server should stop")
             .unwrap()
             .unwrap();
     }

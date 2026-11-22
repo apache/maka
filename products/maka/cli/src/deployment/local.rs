@@ -652,10 +652,16 @@ async fn target_gone(
         }
     }
     match ipc::connect(&discovery.endpoint).await {
-        Ok(stream) => {
-            drop(stream);
-            Ok(None)
-        }
+        Ok(stream) => match Client::status_stream(stream, Some(discovery.host_epoch)).await {
+            Ok(status) if status.closing => Ok(Some(Live::Retired)),
+            Ok(_) => Ok(None),
+            Err(_) => match ipc::connect(&discovery.endpoint).await {
+                Err(error) if error.downcast_ref::<io::Error>().is_some_and(absent) => {
+                    Ok(Some(Live::Missing))
+                }
+                _ => Ok(None),
+            },
+        },
         Err(error) if error.downcast_ref::<io::Error>().is_some_and(absent) => {
             Ok(Some(Live::Missing))
         }
