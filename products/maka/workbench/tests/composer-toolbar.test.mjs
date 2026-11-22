@@ -179,6 +179,15 @@ test('summarizeComposerUsage picks hottest window with remainingPercent and form
   assert.equal(win.tone, usageSeverity(94.75));
   assert.equal(win.tone, 'warning');
 
+  const groups = [
+    { kind: 'window', usedPercent: 8.11, models: ['Gemini 4 Neon'] },
+    { kind: 'window', usedPercent: 9.93, models: ['Claude Opus 5.5'] },
+  ];
+  assert.equal(summarizeComposerUsage(groups, undefined, 'Gemini 4 Neon').remainingPercent, 92);
+  assert.equal(summarizeComposerUsage(groups, undefined, 'Unknown').remainingPercent, 90);
+  const account = [...groups, { kind: 'window', usedPercent: 50 }];
+  assert.equal(summarizeComposerUsage(account, undefined, 'Gemini 4 Neon').remainingPercent, 50);
+
   const bal = summarizeComposerUsage([{ kind: 'balance', amount: 12.5, unit: '$' }]);
   assert.equal(bal?.kind, 'balance');
   assert.equal(bal.text, '$12.5');

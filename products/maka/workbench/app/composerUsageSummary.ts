@@ -59,10 +59,15 @@ export function shortUsagePeriod(period: UsageLimitPeriod | undefined): string {
 export function summarizeComposerUsage(
   limits: readonly UsageLimitEntry[],
   formatNumber: (value: number) => string = (value) => String(Math.round(value * 100) / 100),
+  model: string | null = null,
 ): ComposerUsageSummary | null {
-  const windows = limits.filter(
+  const all = limits.filter(
     (entry): entry is Extract<UsageLimitEntry, { kind: 'window' }> => entry.kind === 'window',
   );
+  const applicable = all.filter(
+    (entry) => !entry.models?.length || (model !== null && entry.models.includes(model)),
+  );
+  const windows = applicable.length ? applicable : all;
   if (windows.length) {
     let hottest = windows[0]!;
     for (let i = 1; i < windows.length; i++) {

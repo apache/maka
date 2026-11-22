@@ -67,6 +67,9 @@ pub enum UsageLimit {
         used_percent: f64,
         #[serde(skip_serializing_if = "Option::is_none")]
         quantity: Option<UsageQuantity>,
+        /// Display names of the models sharing this window; empty when it covers every model.
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        models: Vec<String>,
     },
     Balance {
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -114,8 +117,10 @@ impl UsageLimit {
                 resets_at,
                 used_percent,
                 quantity,
+                models,
             } => {
                 valid_text(label.as_deref())
+                    && models.iter().all(|model| valid_text(Some(model)))
                     && !matches!(period, Some(UsagePeriod::Duration { seconds: 0 }))
                     && resets_at.is_none_or(|time| time <= 8_640_000_000_000)
                     && nonnegative(*used_percent)
