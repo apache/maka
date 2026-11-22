@@ -9600,6 +9600,393 @@ export const contracts: {
           },
           resources: {},
         },
+        dossier: {
+          mode: 'query',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'DossierRead',
+            type: 'object',
+            properties: {
+              topicId: {
+                type: 'string',
+              },
+            },
+            additionalProperties: false,
+            required: ['topicId'],
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'Nullable_DossierDetail',
+            anyOf: [
+              {
+                $ref: '#/$defs/DossierDetail',
+              },
+              {
+                type: 'null',
+              },
+            ],
+            $defs: {
+              DossierDetail: {
+                type: 'object',
+                properties: {
+                  topicId: {
+                    type: 'string',
+                  },
+                  title: {
+                    type: 'string',
+                  },
+                  signal: {
+                    $ref: '#/$defs/DossierSignal',
+                  },
+                  priorityWeight: {
+                    type: 'number',
+                    format: 'double',
+                  },
+                  windowAt: {
+                    type: ['integer', 'null'],
+                    format: 'int64',
+                  },
+                  revision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  summaryMd: {
+                    type: 'string',
+                  },
+                  artifacts: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/DossierArtifact',
+                    },
+                  },
+                  linkedTaskIds: {
+                    type: 'array',
+                    items: {
+                      type: 'string',
+                    },
+                  },
+                  threadSessionId: {
+                    type: ['string', 'null'],
+                  },
+                  muted: {
+                    type: 'boolean',
+                  },
+                  lastCheckedAt: {
+                    type: 'integer',
+                    format: 'int64',
+                  },
+                  lastMaterialChangeAt: {
+                    type: 'integer',
+                    format: 'int64',
+                  },
+                  lastNotifiedRevision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  lastInterruptReason: {
+                    type: ['string', 'null'],
+                  },
+                  lastInterruptAt: {
+                    type: ['integer', 'null'],
+                    format: 'int64',
+                  },
+                  createdAt: {
+                    type: 'integer',
+                    format: 'int64',
+                  },
+                  updatedAt: {
+                    type: 'integer',
+                    format: 'int64',
+                  },
+                  watches: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/WatchRecord',
+                    },
+                  },
+                  pendingActions: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/PendingActionRecord',
+                    },
+                  },
+                },
+                additionalProperties: false,
+                required: [
+                  'topicId',
+                  'title',
+                  'signal',
+                  'priorityWeight',
+                  'revision',
+                  'summaryMd',
+                  'artifacts',
+                  'linkedTaskIds',
+                  'muted',
+                  'lastCheckedAt',
+                  'lastMaterialChangeAt',
+                  'lastNotifiedRevision',
+                  'createdAt',
+                  'updatedAt',
+                  'watches',
+                  'pendingActions',
+                ],
+              },
+              DossierSignal: {
+                type: 'string',
+                enum: ['red', 'yellow', 'green', 'done'],
+              },
+              DossierArtifact: {
+                type: 'object',
+                properties: {
+                  path: {
+                    type: 'string',
+                  },
+                  purpose: {
+                    type: 'string',
+                  },
+                  inputHashes: {
+                    type: 'object',
+                    additionalProperties: {
+                      type: 'string',
+                    },
+                    default: {},
+                  },
+                },
+                additionalProperties: false,
+                required: ['path', 'purpose'],
+              },
+              WatchRecord: {
+                type: 'object',
+                properties: {
+                  watchId: {
+                    type: 'string',
+                  },
+                  topicId: {
+                    type: 'string',
+                  },
+                  kind: {
+                    $ref: '#/$defs/WatchKind',
+                  },
+                  target: {
+                    type: 'string',
+                  },
+                  predicate: true,
+                  onTrigger: {
+                    $ref: '#/$defs/WatchTrigger',
+                  },
+                  lastStateHash: {
+                    type: ['string', 'null'],
+                  },
+                  expiresAt: {
+                    type: ['integer', 'null'],
+                    format: 'int64',
+                  },
+                  createdAt: {
+                    type: 'integer',
+                    format: 'int64',
+                  },
+                  updatedAt: {
+                    type: 'integer',
+                    format: 'int64',
+                  },
+                },
+                additionalProperties: false,
+                required: [
+                  'watchId',
+                  'topicId',
+                  'kind',
+                  'target',
+                  'predicate',
+                  'onTrigger',
+                  'createdAt',
+                  'updatedAt',
+                ],
+              },
+              WatchKind: {
+                type: 'string',
+                enum: ['file_hash', 'http_check', 'deadline'],
+              },
+              WatchTrigger: {
+                type: 'string',
+                enum: ['notify_direct', 'invalidate_action', 'enqueue_followup'],
+              },
+              PendingActionRecord: {
+                type: 'object',
+                properties: {
+                  actionId: {
+                    type: 'string',
+                  },
+                  topicId: {
+                    type: 'string',
+                  },
+                  connectorTool: {
+                    type: 'string',
+                  },
+                  params: true,
+                  inputHashes: {
+                    type: 'object',
+                    additionalProperties: {
+                      type: 'string',
+                    },
+                  },
+                  idempotencyKey: {
+                    type: 'string',
+                  },
+                  status: {
+                    $ref: '#/$defs/PendingActionStatus',
+                  },
+                  receipt: true,
+                  expiresAt: {
+                    type: 'integer',
+                    format: 'int64',
+                  },
+                  createdAt: {
+                    type: 'integer',
+                    format: 'int64',
+                  },
+                  updatedAt: {
+                    type: 'integer',
+                    format: 'int64',
+                  },
+                },
+                additionalProperties: false,
+                required: [
+                  'actionId',
+                  'topicId',
+                  'connectorTool',
+                  'params',
+                  'inputHashes',
+                  'idempotencyKey',
+                  'status',
+                  'expiresAt',
+                  'createdAt',
+                  'updatedAt',
+                ],
+              },
+              PendingActionStatus: {
+                type: 'string',
+                enum: ['awaiting_confirm', 'stale', 'executing', 'done', 'unknown_pending_receipt'],
+              },
+            },
+          },
+          resources: {},
+        },
+        dossiers: {
+          mode: 'query',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'DossiersRead',
+            type: 'object',
+            additionalProperties: false,
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'Dossiers',
+            type: 'object',
+            properties: {
+              dossiers: {
+                type: 'array',
+                items: {
+                  $ref: '#/$defs/DossierSummary',
+                },
+              },
+              notificationsEnabled: {
+                type: 'boolean',
+              },
+            },
+            additionalProperties: false,
+            required: ['dossiers', 'notificationsEnabled'],
+            $defs: {
+              DossierSummary: {
+                type: 'object',
+                properties: {
+                  topicId: {
+                    type: 'string',
+                  },
+                  title: {
+                    type: 'string',
+                  },
+                  signal: {
+                    $ref: '#/$defs/DossierSignal',
+                  },
+                  windowAt: {
+                    type: ['integer', 'null'],
+                    format: 'int64',
+                  },
+                  revision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  lastMaterialChangeAt: {
+                    type: 'integer',
+                    format: 'int64',
+                  },
+                  muted: {
+                    type: 'boolean',
+                  },
+                  artifactCount: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: [
+                  'topicId',
+                  'title',
+                  'signal',
+                  'revision',
+                  'lastMaterialChangeAt',
+                  'muted',
+                  'artifactCount',
+                ],
+              },
+              DossierSignal: {
+                type: 'string',
+                enum: ['red', 'yellow', 'green', 'done'],
+              },
+            },
+          },
+          resources: {},
+        },
+        dropDiscoveryLead: {
+          mode: 'mutation',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'DiscoveryLead',
+            type: 'object',
+            properties: {
+              text: {
+                type: 'string',
+              },
+              paths: {
+                type: 'array',
+                items: {
+                  type: 'string',
+                },
+                default: [],
+              },
+            },
+            additionalProperties: false,
+            required: ['text'],
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'DossierRead',
+            type: 'object',
+            properties: {
+              topicId: {
+                type: 'string',
+              },
+            },
+            additionalProperties: false,
+            required: ['topicId'],
+          },
+          resources: {},
+        },
         editQueue: {
           mode: 'mutation',
           input: {
@@ -33109,6 +33496,34 @@ export const contracts: {
           },
           resources: {},
         },
+        openDossierThread: {
+          mode: 'mutation',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'DossierRead',
+            type: 'object',
+            properties: {
+              topicId: {
+                type: 'string',
+              },
+            },
+            additionalProperties: false,
+            required: ['topicId'],
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'DossierThread',
+            type: 'object',
+            properties: {
+              sessionId: {
+                type: 'string',
+              },
+            },
+            additionalProperties: false,
+            required: ['sessionId'],
+          },
+          resources: {},
+        },
         pendingInteractions: {
           mode: 'query',
           input: {
@@ -53209,6 +53624,51 @@ export const contracts: {
           },
           resources: {},
         },
+        setDiscoveryNotifications: {
+          mode: 'mutation',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'DiscoveryNotifications',
+            type: 'object',
+            properties: {
+              enabled: {
+                type: 'boolean',
+              },
+            },
+            additionalProperties: false,
+            required: ['enabled'],
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'null',
+            type: 'null',
+          },
+          resources: {},
+        },
+        setDossierMuted: {
+          mode: 'mutation',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'DossierMute',
+            type: 'object',
+            properties: {
+              topicId: {
+                type: 'string',
+              },
+              muted: {
+                type: 'boolean',
+              },
+            },
+            additionalProperties: false,
+            required: ['topicId', 'muted'],
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'null',
+            type: 'null',
+          },
+          resources: {},
+        },
         skillCandidates: {
           mode: 'query',
           input: {
@@ -57214,6 +57674,117 @@ export const contracts: {
             },
             additionalProperties: false,
             required: ['revision'],
+          },
+          resources: {},
+        },
+        watchDossiers: {
+          mode: 'subscription',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'DossiersRead',
+            type: 'object',
+            additionalProperties: false,
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'DossiersUpdate',
+            type: 'object',
+            properties: {
+              dossiers: {
+                type: 'array',
+                items: {
+                  $ref: '#/$defs/DossierSummary',
+                },
+              },
+              notificationsEnabled: {
+                type: 'boolean',
+              },
+              latestInterrupt: {
+                anyOf: [
+                  {
+                    $ref: '#/$defs/DiscoveryInterrupt',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
+              },
+            },
+            additionalProperties: false,
+            required: ['dossiers', 'notificationsEnabled'],
+            $defs: {
+              DossierSummary: {
+                type: 'object',
+                properties: {
+                  topicId: {
+                    type: 'string',
+                  },
+                  title: {
+                    type: 'string',
+                  },
+                  signal: {
+                    $ref: '#/$defs/DossierSignal',
+                  },
+                  windowAt: {
+                    type: ['integer', 'null'],
+                    format: 'int64',
+                  },
+                  revision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  lastMaterialChangeAt: {
+                    type: 'integer',
+                    format: 'int64',
+                  },
+                  muted: {
+                    type: 'boolean',
+                  },
+                  artifactCount: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: [
+                  'topicId',
+                  'title',
+                  'signal',
+                  'revision',
+                  'lastMaterialChangeAt',
+                  'muted',
+                  'artifactCount',
+                ],
+              },
+              DossierSignal: {
+                type: 'string',
+                enum: ['red', 'yellow', 'green', 'done'],
+              },
+              DiscoveryInterrupt: {
+                type: 'object',
+                properties: {
+                  topicId: {
+                    type: 'string',
+                  },
+                  revision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  reason: {
+                    type: 'string',
+                  },
+                  at: {
+                    type: 'integer',
+                    format: 'int64',
+                  },
+                },
+                additionalProperties: false,
+                required: ['topicId', 'revision', 'reason', 'at'],
+              },
+            },
           },
           resources: {},
         },

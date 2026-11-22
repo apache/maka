@@ -219,6 +219,7 @@ pub(crate) struct Owner {
     helper: std::path::PathBuf,
     pricing: Option<Arc<dyn maka_agent_engine::pricing::Pricing>>,
     pub(super) durable: maka_agent_state::Store,
+    pub(crate) discovery: maka_agent_state::discovery::DiscoveryStore,
     pub(super) services: maka_host_runtime::application::NativeServices,
     wake_notify: tokio::sync::Notify,
     physical_changes: tokio::sync::watch::Sender<()>,
@@ -401,6 +402,7 @@ impl Owner {
             deployment: data_source.deployment,
             namespace: data_source.namespace.clone(),
         };
+        let discovery = durable.discovery(&run_owner).map_err(|e| e.to_string())?;
         let auxiliary = auxiliary::Auxiliary::new(models.clone(), run_owner.clone());
         let code_executor = maka_tools::CodeExecutor::new(maka_code_runtime::CellLimits::default())
             .and_then(|executor| {
@@ -585,6 +587,7 @@ impl Owner {
             todo,
             bot,
             recap_storage,
+            discovery,
             scheduler,
             recall,
             store: persistence.store().clone(),
@@ -1118,6 +1121,7 @@ impl Owner {
                 backend,
                 applied_preset,
                 compaction_prompt: None,
+                dossier_seed: None,
                 collaboration_mode: CollaborationMode::Agent,
                 tools,
                 title: input.title,
@@ -1303,7 +1307,9 @@ impl Owner {
             .filter(|name| {
                 let bot_only = *name == bot::SEND_USER || *name == bot::SLEEP;
                 let memory = *name == discovery::MEMORY;
-                (*name == discovery::COMPLETE && !investigation)
+                (discovery::WORKER_TOOLS.contains(name) && !investigation)
+                    || (matches!(*name, discovery::LIST | discovery::READ)
+                        && !(bot || investigation))
                     || (memory && (!self.settings.scheduled_tasks || !(bot || investigation)))
                     || (bot_only && !bot)
                     || (!bot_only

@@ -100,6 +100,8 @@ struct CapsuleManifest {
     forked_session_id: String,
     room_id: String,
     room_pre_message: String,
+    #[serde(default)]
+    discovery: Option<DiscoveryCapsule>,
     preset_id: String,
     memory_id: String,
     memory_body: String,
@@ -109,6 +111,13 @@ struct CapsuleManifest {
     #[serde(default)]
     operation_ref: Option<Value>,
     migrations: BTreeMap<String, Vec<i64>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DiscoveryCapsule {
+    topic_id: String,
+    thread_session_id: String,
 }
 
 struct FixtureSecret;
@@ -639,6 +648,137 @@ fn verify_sqlite_integrity_and_migrations(root: &Path) -> BTreeMap<String, Vec<i
     ledgers
 }
 
+async fn create_discovery_capsule(client: &Client, nonce: &str) -> DiscoveryCapsule {
+    let lead = call(
+        client,
+        "agent",
+        "dropDiscoveryLead",
+        json!({"text":format!("compat discovery {nonce}"), "paths":["annex.md"]}),
+        Attachments::new(),
+    )
+    .await;
+    let topic_id = lead["topicId"].as_str().unwrap().to_owned();
+    let thread = call(
+        client,
+        "agent",
+        "openDossierThread",
+        lead,
+        Attachments::new(),
+    )
+    .await;
+    let thread_session_id = thread["sessionId"].as_str().unwrap().to_owned();
+    call(
+        client,
+        "agent",
+        "setDiscoveryNotifications",
+        json!({"enabled":false}),
+        Attachments::new(),
+    )
+    .await;
+    call(
+        client,
+        "agent",
+        "setDossierMuted",
+        json!({"topicId":topic_id,"muted":true}),
+        Attachments::new(),
+    )
+    .await;
+    DiscoveryCapsule {
+        topic_id,
+        thread_session_id,
+    }
+}
+
+// No public RPC creates tracking records. Seed them while the capsule's Host is stopped.
+fn seed_discovery_tracking(root: &Path, topic: &str) {
+    let conn = Connection::open(root.join(maka_event_log::root::ROOT_DATABASE)).unwrap();
+    let tx = conn.unchecked_transaction().unwrap();
+    let owner: String = tx
+        .query_row(
+            "SELECT owner FROM discovery_dossiers WHERE topic_id=?1",
+            [topic],
+            |row| row.get(0),
+        )
+        .unwrap();
+    tx.execute(
+        "INSERT INTO discovery_source_cursors(owner,source_uri,last_hash,updated_at)
+         VALUES (?1,'annex.md','v1',1)",
+        [&owner],
+    )
+    .unwrap();
+    tx.execute(
+        "INSERT INTO discovery_watches(owner,watch_id,topic_id,kind,target,predicate_json,on_trigger,last_state_hash,created_at,updated_at)
+         VALUES (?1,'compat-watch',?2,'file_hash','annex.md','{}','invalidate_action','v1',1,1)",
+        [owner.as_str(), topic],
+    ).unwrap();
+    tx.execute(
+        "INSERT INTO discovery_pending_actions(owner,action_id,topic_id,connector_tool,params_json,
+             input_hashes_json,idempotency_key,status,expires_at,created_at,updated_at)
+         VALUES (?1,'compat-action',?2,'review','{}',json_object('annex.md','v1'),'compat-idempotency','unknown_pending_receipt',100,1,1)",
+        [owner.as_str(), topic],
+    ).unwrap();
+    tx.commit().unwrap();
+}
+
+async fn verify_dossiers(
+    client: &Client,
+    saved: Option<&DiscoveryCapsule>,
+    nonce: &str,
+    post_nonce: &str,
+) {
+    let page = call(client, "agent", "dossiers", json!({}), Attachments::new()).await;
+    if let Some(saved) = saved {
+        assert_eq!(page["notificationsEnabled"], false);
+        let topic = json!({"topicId":saved.topic_id});
+        let detail = call(
+            client,
+            "agent",
+            "dossier",
+            topic.clone(),
+            Attachments::new(),
+        )
+        .await;
+        assert_eq!(detail["muted"], true);
+        assert!(detail["summaryMd"].as_str().unwrap().contains(nonce));
+        assert_eq!(detail["watches"][0]["lastStateHash"], "v1");
+        assert_eq!(detail["pendingActions"][0]["inputHashes"]["annex.md"], "v1");
+        assert_eq!(
+            detail["pendingActions"][0]["status"],
+            "unknown_pending_receipt"
+        );
+        let thread = call(
+            client,
+            "agent",
+            "openDossierThread",
+            topic,
+            Attachments::new(),
+        )
+        .await;
+        assert_eq!(thread["sessionId"], saved.thread_session_id);
+        call(
+            client,
+            "agent",
+            "setDossierMuted",
+            json!({"topicId":saved.topic_id, "muted":false}),
+            Attachments::new(),
+        )
+        .await;
+    } else {
+        assert_eq!(page["notificationsEnabled"], true);
+        assert!(page["dossiers"].as_array().unwrap().is_empty());
+    }
+    let lead = call(
+        client,
+        "agent",
+        "dropDiscoveryLead",
+        json!({"text":format!("post-upgrade discovery {post_nonce}")}),
+        Attachments::new(),
+    )
+    .await;
+    let detail = call(client, "agent", "dossier", lead, Attachments::new()).await;
+    assert_eq!(detail["revision"], 1);
+}
+
 async fn produce_capsule(bin: &Path, capsule_dir: &Path) -> CapsuleManifest {
     fs::create_dir_all(capsule_dir).unwrap();
     let canonical_base = fs::canonicalize(capsule_dir).unwrap();
@@ -884,6 +1024,8 @@ async fn produce_capsule(bin: &Path, capsule_dir: &Path) -> CapsuleManifest {
         .await;
         assert_eq!(room_post["kind"], "posted", "{room_post}");
 
+        let discovery = create_discovery_capsule(&client, &nonce).await;
+
         // 5. Subagent Preset.
         let preset = call(
             &client,
@@ -979,6 +1121,7 @@ async fn produce_capsule(bin: &Path, capsule_dir: &Path) -> CapsuleManifest {
 
         host.quit(&mut client).await.expect("Host quit");
 
+        seed_discovery_tracking(&dirs.root, &discovery.topic_id);
         let migrations = verify_sqlite_integrity_and_migrations(&dirs.root);
         CapsuleManifest {
             format_version: 1,
@@ -992,6 +1135,7 @@ async fn produce_capsule(bin: &Path, capsule_dir: &Path) -> CapsuleManifest {
             forked_session_id,
             room_id,
             room_pre_message,
+            discovery: Some(discovery),
             preset_id,
             memory_id,
             memory_body,
@@ -1108,6 +1252,8 @@ async fn verify_capsule(bin: &Path, capsule_dir: &Path) {
             prefs["compactionPrompt"], COMPACTION_PROMPT,
             "assistantPreferences lost across upgrade: {prefs}"
         );
+
+        verify_dossiers(&client, manifest.discovery.as_ref(), &manifest.nonce, &post_nonce).await;
 
         // Sessions & full history deserialization.
         for session_id in [
@@ -1355,6 +1501,13 @@ async fn verify_capsule(bin: &Path, capsule_dir: &Path) {
         assert!(!inspected["facts"].as_array().unwrap().is_empty());
 
         // Post-upgrade SQLite integrity and monotonic migration check.
+        let conn = Connection::open(dirs.root.join(maka_event_log::root::ROOT_DATABASE)).unwrap();
+        let cursors: i64 = conn.query_row(
+            "SELECT count(*) FROM discovery_source_cursors WHERE source_uri='annex.md' AND last_hash='v1'",
+            [], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(cursors, i64::from(manifest.discovery.is_some()));
+        drop(conn);
         let upgraded_migrations = verify_sqlite_integrity_and_migrations(&dirs.root);
         for (db, prev_versions) in &manifest.migrations {
             let now_versions = upgraded_migrations

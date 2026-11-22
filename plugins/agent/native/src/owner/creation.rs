@@ -26,11 +26,15 @@ use maka_event_log::{
 use maka_plugin_core::storage::{Mutation, Record};
 use maka_sandbox::workspace::BindingRef;
 
-#[derive(Clone, Copy)]
 enum ReplyFormat {
     Created,
     SessionCreate,
     Bot,
+    Dossier {
+        store: maka_agent_state::discovery::DiscoveryStore,
+        topic: TopicId,
+        revision: u64,
+    },
 }
 
 pub(super) enum Purpose {
@@ -39,6 +43,11 @@ pub(super) enum Purpose {
     },
     Room {
         session_create_tool: bool,
+    },
+    Dossier {
+        topic: TopicId,
+        revision: u64,
+        summary: String,
     },
     Bot {
         guard: Arc<tokio::sync::OwnedMutexGuard<()>>,
@@ -96,6 +105,7 @@ impl Owner {
         F: FnOnce(BindingRef) -> StoredSessionConfiguration + std::marker::Send + 'static,
     {
         let is_room = matches!(purpose, Purpose::Room { .. });
+        let mut seed = None;
         let (reply_format, guard, mutations) = match purpose {
             Purpose::Session {
                 session_create_tool,
@@ -119,6 +129,22 @@ impl Owner {
                 None,
                 Vec::new(),
             ),
+            Purpose::Dossier {
+                topic,
+                revision,
+                summary,
+            } => {
+                seed = Some(summary);
+                (
+                    ReplyFormat::Dossier {
+                        store: self.discovery.clone(),
+                        topic,
+                        revision,
+                    },
+                    None,
+                    vec![],
+                )
+            }
             Purpose::Bot { guard, mutations } => (ReplyFormat::Bot, Some(guard), mutations),
         };
         let writer = match scope.identity.agent() {
@@ -148,7 +174,11 @@ impl Owner {
                     now: now(),
                 },
                 &writer,
-                move |binding| Ok(serde_json::to_value(configuration(binding))?),
+                move |binding| {
+                    let mut configuration = configuration(binding);
+                    configuration.dossier_seed = seed;
+                    Ok(serde_json::to_value(configuration)?)
+                },
             )
             .await
         {
@@ -221,9 +251,15 @@ struct CreationCommit<T, E> {
     extra: Option<E>,
     bot: Arc<bot::Bot>,
     registration: Option<bot::Registration>,
+    thread: Option<maka_agent_state::discovery::DiscoveryCommit<String>>,
 }
-fn creation_reply(format: ReplyFormat, reason: Rejection) -> Result<Value, StoreError> {
+fn creation_reply(format: &ReplyFormat, reason: Rejection) -> Result<Value, StoreError> {
     Ok(match format {
+        ReplyFormat::Dossier { .. } => {
+            return Err(StoreError::InvalidTransition(format!(
+                "dossier thread creation rejected: {reason:?}"
+            )));
+        }
         ReplyFormat::Bot => serde_json::to_value(BotOpened::Rejected {
             reason: BotRejection::CreationRejected,
         })?,
@@ -272,7 +308,7 @@ where
         {
             return Ok(Prepared {
                 value: CreationResult {
-                    reply: creation_reply(reply_format, reason)?,
+                    reply: creation_reply(&reply_format, reason)?,
                     success: None,
                 },
                 changed: false,
@@ -290,13 +326,29 @@ where
             if let Some(reason) = reason {
                 return Ok(Prepared {
                     value: CreationResult {
-                        reply: creation_reply(reply_format, reason)?,
+                        reply: creation_reply(&reply_format, reason)?,
                         success: None,
                     },
                     changed: false,
                     notification: maka_event_log::writeback::Notification::NONE,
                 });
             }
+        }
+        if let ReplyFormat::Dossier {
+            store,
+            topic,
+            revision,
+        } = &reply_format
+            && let Some(session_id) = store.thread_at_revision(connection, topic, *revision)?
+        {
+            return Ok(Prepared {
+                value: CreationResult {
+                    reply: serde_json::to_value(DossierThread { session_id })?,
+                    success: None,
+                },
+                changed: false,
+                notification: maka_event_log::writeback::Notification::NONE,
+            });
         }
         let written = creation_sql(
             connection,
@@ -324,7 +376,22 @@ where
                 }
                 let mut record = self.planned.record(creation.value.clone())?;
                 record.is_room = is_room;
-                let reply = match reply_format {
+                let mut thread = None;
+                let reply = match &reply_format {
+                    ReplyFormat::Dossier { store, topic, .. } => {
+                        let session_id = record.metadata.id;
+                        let bound = store
+                            .bind_thread_statement(
+                                topic.clone(),
+                                session_id.clone(),
+                                maka_agent_facts::durable::UnixMillis(now() as i64),
+                            )
+                            .execute(connection)?;
+                        changed |= bound.changed;
+                        notification = notification.combine(bound.notification);
+                        thread = Some(bound.value);
+                        serde_json::to_value(DossierThread { session_id })?
+                    }
                     ReplyFormat::Bot => serde_json::to_value(BotOpened::Opened {
                         session_id: record.metadata.id,
                         created: true,
@@ -336,7 +403,7 @@ where
                                 diagnostic,
                             },
                         )?;
-                        match reply_format {
+                        match &reply_format {
                             ReplyFormat::SessionCreate => {
                                 serde_json::to_value(SessionCreateOutput::Created {
                                     session: Box::new(session),
@@ -356,6 +423,7 @@ where
                             extra: extra_value,
                             bot: self.bot,
                             registration,
+                            thread,
                         }),
                     },
                     changed,
@@ -368,7 +436,7 @@ where
             Ok(success) => Ok(success),
             Err(reason) => Ok(Prepared {
                 value: CreationResult {
-                    reply: creation_reply(reply_format, reason)?,
+                    reply: creation_reply(&reply_format, reason)?,
                     success: None,
                 },
                 changed: false,
@@ -378,6 +446,9 @@ where
     }
     fn committed(value: Self::Value) -> Self::Output {
         let converted = value.success.map(|success| {
+            if let Some(thread) = success.thread {
+                thread.publish();
+            }
             let inner = S::committed(success.inner);
             let extra = success.extra.map(B::committed);
             if let Some(registration) = success.registration {
@@ -388,8 +459,10 @@ where
         (value.reply, converted)
     }
     fn isolated_rejection(error: &StoreError) -> bool {
-        matches!(error.underlying(), StoreError::StatementRejected { .. })
-            || S::isolated_rejection(error)
+        matches!(
+            error.underlying(),
+            StoreError::StatementRejected { .. } | StoreError::RevisionConflict { .. }
+        ) || S::isolated_rejection(error)
             || B::isolated_rejection(error)
     }
 }

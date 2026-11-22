@@ -536,6 +536,12 @@ impl Store {
     pub fn artifacts(&self) -> crate::artifacts::ArtifactStore {
         crate::artifacts::ArtifactStore::new(self.data.clone())
     }
+    pub fn discovery(
+        &self,
+        owner: &RunOwner,
+    ) -> Result<crate::discovery::DiscoveryStore, StoreError> {
+        crate::discovery::DiscoveryStore::new(self.data.clone(), owner)
+    }
     pub fn rooms(&self, owner: RunOwner) -> crate::room::RoomStore {
         crate::room::RoomStore::new(self.data.clone(), owner)
     }

@@ -478,13 +478,13 @@ impl scheduler::Scheduler {
         }))
     }
 
-    pub(super) async fn report_for_delivery(&self, job: &Job) -> Result<(String, String), String> {
+    pub(super) async fn report_for_delivery(&self, job: &Job) -> Result<String, String> {
         let id = outcome_id(job)?;
         match self.memory_entry(&job_scope(job)?, &id).await?.content {
             Content::Investigation {
                 result: Some(Report::Report { text, .. }),
                 ..
-            } => Ok((id, text)),
+            } => Ok(text),
             _ => Err("discovery_report_record_invalid".into()),
         }
     }
