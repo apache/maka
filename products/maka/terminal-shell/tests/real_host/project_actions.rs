@@ -49,7 +49,7 @@ async fn with_terminal_launch_diagnostics<T>(
                 ),
             )
             .await;
-            eprintln!("Host terminal catalog when Action input was unavailable: {snapshot:?}");
+            eprintln!("Host terminal catalog after Action wait failed: {snapshot:?}");
             std::panic::resume_unwind(panic);
         }
     }
@@ -635,7 +635,12 @@ hostPrototype.session = function(...args) {
         })
         .await;
     desktop.press("Run Action Fast fixture").await;
-    terminal_contains(&desktop, "newer-action").await;
+    with_terminal_launch_diagnostics(
+        &desktop.client,
+        &fixture.session,
+        terminal_contains(&desktop, "newer-action"),
+    )
+    .await;
     desktop.event("fixture.releaseTerminal", json!({ "id": 1 }));
     desktop
         .until("first terminal receipt was not released", || {

@@ -177,6 +177,8 @@ impl ShellExecutor {
             return Err(failed("Shell cwd must be an absolute UTF-8 directory"));
         }
         let directory = directory::Directory::capture(&cwd, directory).map_err(failed)?;
+        #[cfg(windows)]
+        let cwd = dunce::simplified(&cwd).to_owned();
         Ok(Self {
             cwd,
             directory: Some(std::sync::Arc::new(directory)),
