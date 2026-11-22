@@ -112,6 +112,7 @@ impl nsh_engine::Assets for AssetReader {
 enum Source {
     Url(Retained<NSURL>),
     File(std::path::PathBuf),
+    Assets(std::sync::Arc<dyn nsh_engine::Assets>),
     /// A `data:` URI (base64), decoded off the main thread.
     Data,
 }
@@ -198,6 +199,7 @@ pub(crate) struct ImageLoader {
     inflight: FxHashMap<String, Inflight>,
     downloads: FxHashMap<String, Download>,
     asset_base: Option<AssetBase>,
+    assets: Option<std::sync::Arc<dyn nsh_engine::Assets>>,
     notify: Notify,
     /// What the app may load, checked at every redirect.
     access: std::sync::Arc<nsh_engine::Access>,
@@ -213,6 +215,7 @@ impl ImageLoader {
 
     pub(crate) fn new(
         asset_base: Option<AssetBase>,
+        assets: Option<std::sync::Arc<dyn nsh_engine::Assets>>,
         notify: Notify,
         access: std::sync::Arc<nsh_engine::Access>,
     ) -> Self {
@@ -231,6 +234,7 @@ impl ImageLoader {
             inflight: FxHashMap::default(),
             downloads: FxHashMap::default(),
             asset_base,
+            assets,
             notify,
             access,
             disk: None,
@@ -378,6 +382,17 @@ impl ImageLoader {
                     let result = std::fs::read(&path)
                         .map(|bytes| NSData::with_bytes(&bytes))
                         .map_err(|e| format!("{}: {e}", path.display()));
+                    on_main(&notify, LoadEvent::Bytes { uri, result });
+                });
+                None
+            }
+            Some(Source::Assets(assets)) => {
+                let uri = uri.to_owned();
+                DispatchQueue::global_queue(GlobalQueueIdentifier::Priority(
+                    DispatchQueueGlobalPriority::Default,
+                ))
+                .exec_async(move || {
+                    let result = assets.read(&uri).map(NSData::from_vec);
                     on_main(&notify, LoadEvent::Bytes { uri, result });
                 });
                 None
@@ -595,6 +610,9 @@ impl ImageLoader {
 
     fn resolve(&self, uri: &str) -> Option<Source> {
         if let Some(path) = uri.strip_prefix("asset:/") {
+            if let Some(assets) = &self.assets {
+                return Some(Source::Assets(assets.clone()));
+            }
             return match self.asset_base.as_ref()? {
                 AssetBase::Http(base) => url(&format!("{base}{path}")).map(Source::Url),
                 AssetBase::Directory(dir) => Some(Source::File(dir.join(path))),
