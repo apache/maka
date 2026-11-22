@@ -41,6 +41,20 @@ function output(values) {
     );
 }
 
+export async function resolvePullRequestBaseline(cwd, pullRequest) {
+  const [, ...parents] = (
+    await command('git', ['rev-list', '--parents', '-n', '1', 'HEAD'], { cwd, capture: true })
+  )
+    .trim()
+    .split(/\s+/);
+  // GitHub Actions checks out a synthetic merge commit whose first parent is the exact tree
+  // merged into (trunk for regular PRs, or trunk + lower stack PRs for stacked PRs).
+  if (parents.length === 2 && parents[1] === pullRequest.head?.sha) {
+    return { baseline: parents[0], fetch: false };
+  }
+  return { baseline: pullRequest.base.sha, fetch: true };
+}
+
 export async function plan({ baseline = null, event = process.env.GITHUB_EVENT_NAME } = {}) {
   const revision = (
     await command('git', ['rev-parse', 'HEAD'], { cwd: root, capture: true })
@@ -53,14 +67,19 @@ export async function plan({ baseline = null, event = process.env.GITHUB_EVENT_N
       throw new Error('A CI worker can only be selected for manual validation');
     return createPlan({ root, revision, baseline, worker });
   }
+  let fetchBaseline = false;
   if (event === 'push') {
     baseline = JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH, 'utf8')).before;
     if (/^0+$/.test(baseline)) baseline = null;
+    fetchBaseline = baseline !== null;
   }
-  if (event === 'pull_request')
-    baseline = JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH, 'utf8')).pull_request.base
-      .sha;
-  if (baseline !== null && ['push', 'pull_request'].includes(event)) {
+  if (event === 'pull_request') {
+    const { pull_request: pullRequest } = JSON.parse(
+      readFileSync(process.env.GITHUB_EVENT_PATH, 'utf8'),
+    );
+    ({ baseline, fetch: fetchBaseline } = await resolvePullRequestBaseline(root, pullRequest));
+  }
+  if (baseline !== null && fetchBaseline) {
     await command('git', ['fetch', '--no-tags', '--depth=1', 'origin', baseline], { cwd: root });
   }
   const changes =
