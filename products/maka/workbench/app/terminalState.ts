@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { createTerminalViewport } from './terminalViewport';
 import { createPendingRecovery } from './pendingRecovery';
 import { ActionPending, errorText, isObservationCancelled, renderText, UiError } from './text';
 import { cleanup, effect, signal, untracked, type Signal } from 'nsh';
@@ -699,8 +700,7 @@ function createTerminal(
     agentOwned,
     focusRequested,
     controllable,
-    position: { x: 0, y: 0 },
-    historyTop: signal<number | null>(null),
+    viewport: createTerminalViewport(),
     update(value: ResourceUpdate) {
       if (alive && value.sessionId === target.sessionId && value.result.ref === target.ref) {
         entry.set(value);

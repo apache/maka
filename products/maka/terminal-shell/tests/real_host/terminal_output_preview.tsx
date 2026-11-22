@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { createTerminalViewport } from '../../../workbench/app/terminalViewport';
 import { mount, signal, Text, View } from 'nsh';
 import { Button } from 'nsh/base';
 import { TerminalGrid } from 'maka/host';
@@ -64,8 +65,7 @@ function Preview() {
     agentOwned: () => false,
     focusRequested: signal(false),
     controllable: () => false,
-    position: { x: 0, y: 0 },
-    historyTop: signal(null),
+    viewport: createTerminalViewport(),
     update: noop,
     activate: noop,
     suspend: noop,

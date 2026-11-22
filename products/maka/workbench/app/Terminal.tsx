@@ -148,26 +148,20 @@ export function Terminal(props: { model: TerminalModel }) {
   let mounted = true;
   let reset: ReturnType<typeof setTimeout> | null = null;
   let unbind = () => {};
-  let scrollInput: 'idle' | 'pending' | 'dragging' = 'idle';
   const rows = () => Math.max(1, Math.min(1024, Math.floor(dimensions().height / LINE)));
   const frame = computed(() => {
     model.version();
-    return model.grid.display(model.historyTop(), rows()) as unknown as Frame;
+    return model.grid.display(model.viewport.historyTop(), rows()) as unknown as Frame;
   });
-  const scrollEnd = () => Math.max(0, frame().totalRows * LINE - dimensions().height);
-  const showHistory = (y: number) => model.historyTop.set(Math.floor(Math.max(0, y) / LINE));
-  const pageHistory = (direction: -1 | 1) => {
-    const end = scrollEnd();
-    const start = model.historyTop() === null ? end : model.position.y;
-    const y = Math.min(end, Math.max(0, start + direction * rows() * LINE));
-    scrollInput = 'idle';
-    model.position.y = y;
-    if (y >= end) model.historyTop.set(null);
-    else {
-      showHistory(y);
-      scroll?.scrollTo({ y, animated: false });
-    }
-  };
+  const viewport = model.viewport.attach({
+    lineHeight: LINE,
+    textTerminal,
+    totalRows: () => frame().totalRows,
+    height: () => dimensions().height,
+    rows,
+    scrollTo: (y) => scroll?.scrollTo({ y, animated: false }),
+    scrollToEnd: () => scroll?.scrollToEnd({ animated: false }),
+  });
   const pointerInput = () =>
     model.controllable() &&
     model.control() === 'held' &&
@@ -280,8 +274,8 @@ export function Terminal(props: { model: TerminalModel }) {
       model.release();
       fallback?.focus();
     };
-    bindings['shift+pageup'] = () => pageHistory(-1);
-    bindings['shift+pagedown'] = () => pageHistory(1);
+    bindings['shift+pageup'] = () => viewport.page(-1);
+    bindings['shift+pagedown'] = () => viewport.page(1);
     unbind = keymap.bind(bindings, { when: 'always', repeat: true, within: node });
     focusShell();
   };
@@ -326,7 +320,9 @@ export function Terminal(props: { model: TerminalModel }) {
       geometry !== dimensions()
     )
       return;
-    const column = Math.floor((x - bounds.pagePosition.x + model.position.x) / cellWidth());
+    const column = Math.floor(
+      (x - bounds.pagePosition.x + model.viewport.position.x) / cellWidth(),
+    );
     const row = current.firstLine + Math.floor((y - bounds.pagePosition.y) / LINE);
     if (
       column < 0 ||
@@ -348,8 +344,7 @@ export function Terminal(props: { model: TerminalModel }) {
   effect(() => {
     model.version();
     dimensions();
-    if (model.historyTop() === null && scrollInput !== 'dragging')
-      scroll?.scrollToEnd({ animated: false });
+    viewport.follow();
   });
   cleanup(() => {
     mounted = false;
@@ -487,7 +482,7 @@ export function Terminal(props: { model: TerminalModel }) {
             <Scroll
               horizontal
               onScroll={(event) => {
-                model.position.x = event.offset.x;
+                model.viewport.position.x = event.offset.x;
               }}
               style={{ flex: 1 }}
             >
@@ -495,42 +490,11 @@ export function Terminal(props: { model: TerminalModel }) {
                 ref={(node) => {
                   scroll = node;
                 }}
-                contentOffset={model.position}
-                onScrollIntent={({ intent, delta }) => {
-                  if (
-                    intent === 'end' ||
-                    ((delta ?? 0) > 0 &&
-                      model.historyTop() !== null &&
-                      model.position.y >= scrollEnd() - 1)
-                  )
-                    model.historyTop.set(null);
-                  else if (scrollInput !== 'dragging') scrollInput = 'pending';
-                }}
-                onScrollDragStart={({ offset }) => {
-                  model.position.y = offset.y;
-                  scrollInput = 'dragging';
-                }}
-                onScrollEnd={({ offset }) => {
-                  if (scrollInput === 'idle') return;
-                  // The final offset may settle before its throttled onScroll arrives.
-                  scrollInput = offset.y === model.position.y ? 'idle' : 'pending';
-                  if (scrollInput === 'idle' && model.historyTop() === null)
-                    scroll?.scrollToEnd({ animated: false });
-                }}
-                onScroll={({ offset, contentSize, size }) => {
-                  const movement = offset.y - model.position.y;
-                  model.position.y = offset.y;
-                  const end = Math.max(0, contentSize.height - size.height);
-                  const atEnd = end - offset.y <= 1;
-                  const userMoved = scrollInput !== 'idle' && movement !== 0;
-                  if (userMoved && scrollInput === 'pending') scrollInput = 'idle';
-                  // An old automatic scroll report may arrive after more output.
-                  if (model.historyTop() === null) {
-                    if (userMoved && movement < 0 && !atEnd) showHistory(offset.y);
-                  } else if (atEnd && movement > 0 && (userMoved || textTerminal)) {
-                    model.historyTop.set(null);
-                  } else showHistory(offset.y);
-                }}
+                contentOffset={model.viewport.position}
+                onScrollIntent={viewport.onScrollIntent}
+                onScrollDragStart={viewport.onScrollDragStart}
+                onScrollEnd={viewport.onScrollEnd}
+                onScroll={viewport.onScroll}
                 style={{
                   width: Math.max(dimensions().width, frame().metadata.size.cols * cellWidth()),
                   height: dimensions().height,
