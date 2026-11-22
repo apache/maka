@@ -115,6 +115,9 @@ export interface TaskEntryCatalogService {
   getCatalog(): Promise<TaskEntryCatalog>;
   subscribeChanges(handler: () => void): TaskEntryUnsubscribe;
   addProject(host: TaskEntryHostRef, name?: string): Promise<TaskEntryProjectMutationResult>;
+  addDroppedProject(host: TaskEntryHostRef, file: File): Promise<
+    TaskEntryProjectMutationResult | { readonly ok: false; readonly reason: 'not-directory' }
+  >;
   restoreProject(host: TaskEntryHostRef, projectId: string): Promise<TaskEntryProjectMutationResult>;
   relinkProject(
     host: TaskEntryHostRef,

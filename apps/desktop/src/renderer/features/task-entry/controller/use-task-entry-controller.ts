@@ -93,6 +93,7 @@ export interface TaskEntryControllerSelectors {
   readonly workspacePicker: WorkspacePickerModel;
   readonly sessionWorkspaceRecovery?: SessionWorkspaceRecoveryRequest;
   readonly canAddProject: boolean;
+  readonly canDropProjectFolders: boolean;
   /** Every ready Host's Projects, with the owning Host retained as identity. */
   readonly projectScopes: readonly TaskEntryProjectScope[];
 }
@@ -107,6 +108,7 @@ export interface TaskEntryControllerCommands {
   relinkProject(projectKey: string): Promise<void>;
   /** `name` is what the New project dialog collected, when there was one. */
   addProject(name?: string): void;
+  addDroppedProjectFolders(files: File[]): Promise<void>;
   openNewProject(): void;
   chooseProjectForProfile(profileId: string): Promise<void>;
   openSessionWorkspaceRecovery(sessionId: string): void;
@@ -427,6 +429,53 @@ export function useTaskEntryController(
       setPending(false);
     }
   }, [copy.archivedProjectCancel, copy.archivedProjectDescription, copy.archivedProjectRestore, copy.archivedProjectTitle, copy.readPathFailedFallback, copy.selectDirectoryFailedTitle, input.confirm, locale, refreshAfterProjectMutation, reportError, service, toast]);
+
+  const addDroppedProjectFolders = useCallback(async (files: File[]): Promise<void> => {
+    if (!files.length || projectMutationPendingRef.current || !localHost?.capabilities.chooseClientDirectory) return;
+    // OS drops always belong to the local Host, even while a remote task is open.
+    const hostRef = { profileId: localHost.profile.id, hostId: localHost.hostId };
+    projectMutationPendingRef.current = true;
+    setPending(true);
+    const failures: string[] = [];
+    try {
+      for (const file of files) {
+        try {
+          await resolveProjectRegistration({
+            register: async () => {
+              const result = await service.addDroppedProject(hostRef, file);
+              if (!result.ok && result.reason === 'not-directory') {
+                failures.push(`${file.name}: ${copy.dropDirectoriesOnly}`);
+                return { ok: false, reason: 'cancelled' };
+              }
+              return result;
+            },
+            confirm: (onConfirm) => (input.confirm ?? toast.confirm)({
+              onConfirm,
+              title: copy.archivedProjectTitle,
+              description: copy.archivedProjectDescription,
+              confirmLabel: copy.archivedProjectRestore,
+              cancelLabel: copy.archivedProjectCancel,
+            }),
+            restore: (projectId) => service.restoreProject(hostRef, projectId),
+            isCurrent: () => true,
+          });
+        } catch (cause) {
+          failures.push(`${file.name}: ${localizedShellErrorMessage(cause, copy.readPathFailedFallback, locale)}`);
+        }
+      }
+      await refresh();
+    } catch (cause) {
+      failures.push(localizedShellErrorMessage(cause, copy.projectUpdateFailedFallback, locale));
+    } finally {
+      projectMutationPendingRef.current = false;
+      setPending(false);
+    }
+    if (failures.length) reportError({
+      title: copy.projectUpdateFailedTitle,
+      description: failures.join('\n'),
+      profileId: hostRef.profileId,
+    });
+  }, [copy, input.confirm, localHost, locale, refresh, reportError, service, toast]);
 
   const chooseProjectForProfile = useCallback(async (profileId: string): Promise<void> => {
     let next: TaskEntryCatalog | undefined;
@@ -793,6 +842,7 @@ export function useTaskEntryController(
         );
       }),
       addProject: addSelectedProject,
+      addDroppedProjectFolders,
       openNewProject,
       chooseProjectForProfile,
       openSessionWorkspaceRecovery,
@@ -825,11 +875,15 @@ export function useTaskEntryController(
           (selectedHost.capabilities.chooseClientDirectory ||
             selectedHost.capabilities.chooseHostDirectory),
       ),
+      canDropProjectFolders: !pending && Boolean(localHost?.capabilities.chooseClientDirectory),
       projectScopes,
     },
   }), [
     acceptRegisteredProject,
     addSelectedProject,
+    addDroppedProjectFolders,
+    localHost,
+    pending,
     newProjectDialog,
     openNewProject,
     addSessionWorkspace,

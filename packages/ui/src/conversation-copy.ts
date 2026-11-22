@@ -414,6 +414,7 @@ export interface ConversationCopy {
     recent: string;
     /** Project-sort section title, sibling of `pinned` (SideNavSection). */
     projects: string;
+    dropProjectFolders: string;
     groupByTime: string;
     groupByProject: string;
     groupingAriaLabel: string;
@@ -557,6 +558,7 @@ const conversationCopyZhCn: ConversationCopy = {
       revisionVersionsAriaLabel: '任务版本', revisionVersion: (current, total) => `版本 ${current} / ${total}`, previousRevision: '查看上一版本', nextRevision: '查看下一版本',
     },
     sessions: {
+      dropProjectFolders: '松开以添加项目',
       untitled: '新建任务',
       status: { active: '可继续', running: '进行中', waiting_for_user: '等你确认', blocked: '需要处理', aborted: '已中止' },
       blockedReason: { NO_REAL_CONNECTION: '等待配置可用模型连接', auth: '需要重新登录', permission_required: '等待权限确认', tool_failed: '工具调用失败', unknown: '运行中断，可重试' },
@@ -681,6 +683,7 @@ const conversationCopyZhTw: ConversationCopy = {
       revisionVersionsAriaLabel: '任務版本', revisionVersion: (current, total) => `版本 ${current} / ${total}`, previousRevision: '檢視上一版本', nextRevision: '檢視下一版本',
     },
     sessions: {
+      dropProjectFolders: '放開以新增專案',
       untitled: '建立任務',
       status: { active: '可繼續', running: '進行中', waiting_for_user: '等你確認', blocked: '需要處理', aborted: '已中止' },
       blockedReason: { NO_REAL_CONNECTION: '等待設定可用模型連線', auth: '需要重新登入', permission_required: '等待權限確認', tool_failed: '工具呼叫失敗', unknown: '執行中斷，可重試' },
@@ -804,6 +807,7 @@ const conversationCopyEn: ConversationCopy = {
       revisionVersionsAriaLabel: 'Task versions', revisionVersion: (current, total) => `Version ${current} of ${total}`, previousRevision: 'View previous version', nextRevision: 'View next version',
     },
     sessions: {
+      dropProjectFolders: 'Drop to add projects',
       untitled: 'New task',
       status: { active: 'Ready', running: 'Running', waiting_for_user: 'Waiting for you', blocked: 'Needs attention', aborted: 'Stopped' },
       blockedReason: { NO_REAL_CONNECTION: 'Waiting for an available model connection', auth: 'Sign in again', permission_required: 'Waiting for permission', tool_failed: 'Tool call failed', unknown: 'Run interrupted; retry available' },

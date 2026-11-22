@@ -149,6 +149,8 @@ export function registerAppIpc(
       select: options?.select !== false,
       ...(options?.name === undefined ? {} : { name: requireProjectName(options.name) }),
     }));
+  targetIpc.handle('projects:addDroppedDirectory', (_event, path: unknown) =>
+    deps.projectManagement.addDroppedDirectory(path));
   handleReconnectableRead(targetIpc, 'projects:directoryRoots', () =>
     deps.projectManagement.directoryRoots());
   handleReconnectableRead(targetIpc, 'projects:listDirectory', (_event, input: unknown) =>
